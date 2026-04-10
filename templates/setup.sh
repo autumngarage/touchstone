@@ -107,9 +107,13 @@ fi
 # --------------------------------------------------------------------------
 info "Setting up git hooks"
 if [ -f ".pre-commit-config.yaml" ]; then
-  pre-commit install --install-hooks 2>&1 | tail -1 | while read -r line; do ok "$line"; done
+  # Clear core.hooksPath if set — it conflicts with pre-commit.
+  git config --unset-all core.hooksPath 2>/dev/null || true
+  # Install hook shims (environments install lazily on first run).
+  pre-commit install 2>&1 | tail -1 | while read -r line; do ok "$line"; done
+  pre-commit install --hook-type pre-push 2>&1 | tail -1 | while read -r line; do ok "$line"; done
   pre-commit install --hook-type commit-msg 2>&1 | tail -1 | while read -r line; do ok "$line"; done
-  ok "pre-commit hooks installed"
+  ok "pre-commit hooks installed (pre-commit, pre-push, commit-msg)"
 else
   warn "No .pre-commit-config.yaml found — skipping hooks"
 fi
