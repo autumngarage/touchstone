@@ -3,14 +3,13 @@
 # lib/release.sh — automate the toolkit release cycle.
 #
 # Bumps VERSION, tags, creates GitHub release, computes SHA,
-# updates the homebrew-toolkit formula, and pushes everything.
+# clones the homebrew tap to a temp dir, updates the formula, pushes, cleans up.
 #
 set -euo pipefail
 
 source "${TOOLKIT_ROOT}/lib/colors.sh"
 
 TOOLKIT_ROOT="${TOOLKIT_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-TAP_DIR="$HOME/Repos/homebrew-toolkit"
 
 toolkit_release() {
   local bump_type="${1:-minor}"
@@ -68,23 +67,29 @@ toolkit_release() {
   sha256="$(curl -fsSL "$tarball_url" | shasum -a 256 | awk '{print $1}')"
   tk_ok "SHA256: ${sha256}"
 
-  # Update homebrew formula.
-  if [ -d "$TAP_DIR" ]; then
-    local formula="$TAP_DIR/Formula/toolkit.rb"
+  # Update homebrew formula — clone tap to temp dir, update, push, clean up.
+  local tap_tmp
+  tap_tmp="$(mktemp -d -t toolkit-tap.XXXXXX)"
+  trap "rm -rf '$tap_tmp'" EXIT
+
+  tk_dim "Cloning tap repo..."
+  if gh repo clone henrymodisett/homebrew-toolkit "$tap_tmp" -- --depth=1 2>/dev/null; then
+    local formula="$tap_tmp/Formula/toolkit.rb"
     if [ -f "$formula" ]; then
-      # Update URL and SHA in the formula.
       sed -i '' "s|url \"https://github.com/henrymodisett/toolkit/archive/refs/tags/v[^\"]*\.tar\.gz\"|url \"${tarball_url}\"|" "$formula"
       sed -i '' "s|sha256 \"[a-f0-9]*\"|sha256 \"${sha256}\"|" "$formula"
 
-      git -C "$TAP_DIR" add Formula/toolkit.rb
-      git -C "$TAP_DIR" commit -m "Bump formula to v${new_version}"
-      git -C "$TAP_DIR" push
+      git -C "$tap_tmp" add Formula/toolkit.rb
+      git -C "$tap_tmp" commit -m "Bump formula to v${new_version}"
+      git -C "$tap_tmp" push
       tk_ok "Homebrew formula updated and pushed"
     else
-      tk_warn "Formula not found at $formula — update manually"
+      tk_warn "Formula not found — update manually"
+      tk_dim "  URL: $tarball_url"
+      tk_dim "  SHA: $sha256"
     fi
   else
-    tk_warn "Tap repo not found at $TAP_DIR — update formula manually"
+    tk_warn "Could not clone tap repo — update formula manually"
     tk_dim "  URL: $tarball_url"
     tk_dim "  SHA: $sha256"
   fi
