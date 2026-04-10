@@ -7,7 +7,7 @@
 #
 set -euo pipefail
 
-source "$(dirname "$0")/colors.sh"
+source "${TOOLKIT_ROOT}/lib/colors.sh"
 
 TOOLKIT_ROOT="${TOOLKIT_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 TAP_DIR="$HOME/Repos/homebrew-toolkit"
