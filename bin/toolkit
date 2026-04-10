@@ -23,13 +23,9 @@
 set -euo pipefail
 
 # Resolve TOOLKIT_ROOT — works whether installed via brew or running from clone.
-if [ -L "$0" ]; then
-  # Symlink (brew or manual ln -s) — resolve to real path.
-  REAL_PATH="$(readlink "$0" 2>/dev/null || python3 -c "import os; print(os.path.realpath('$0'))")"
-  TOOLKIT_ROOT="$(cd "$(dirname "$REAL_PATH")/.." && pwd)"
-else
-  TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-fi
+# macOS readlink doesn't have -f, so we use python3 to fully resolve symlink chains.
+REAL_PATH="$(python3 -c "import os; print(os.path.realpath('$0'))")"
+TOOLKIT_ROOT="$(cd "$(dirname "$REAL_PATH")/.." && pwd)"
 export TOOLKIT_ROOT
 
 # Source shared libraries.
