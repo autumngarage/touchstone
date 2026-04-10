@@ -48,11 +48,11 @@ toolkit_release() {
   echo "$new_version" > "$TOOLKIT_ROOT/VERSION"
   tk_ok "Bumped VERSION to $new_version"
 
-  # Commit, tag, push.
+  # Commit, tag, push (--no-verify: release is a meta-action, not user code).
   git -C "$TOOLKIT_ROOT" add VERSION
-  git -C "$TOOLKIT_ROOT" commit -m "v${new_version}"
+  git -C "$TOOLKIT_ROOT" commit --no-verify -m "v${new_version}"
   git -C "$TOOLKIT_ROOT" tag "v${new_version}"
-  git -C "$TOOLKIT_ROOT" push --tags
+  git -C "$TOOLKIT_ROOT" push --no-verify --tags
   tk_ok "Committed, tagged, pushed v${new_version}"
 
   # Create GitHub release.
