@@ -1,0 +1,19 @@
+# .codex-review.toml — Codex pre-push review config for the toolkit itself.
+#
+# The toolkit dogfoods its own Codex hook.
+
+[codex_review]
+max_iterations = 3
+max_diff_lines = 5000
+
+# Auto-fix is safe for most toolkit code.
+safe_by_default = true
+
+# Bootstrap and update scripts are high-scrutiny — a bug here propagates
+# to every downstream project.
+unsafe_paths = [
+  "bootstrap/new-project.sh",
+  "bootstrap/update-project.sh",
+  "bootstrap/sync-all.sh",
+  "hooks/codex-review.sh",
+]
