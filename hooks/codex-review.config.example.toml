@@ -1,0 +1,30 @@
+# .codex-review.toml — per-project configuration for the Codex pre-push review hook.
+#
+# Place this file at the repo root. The hook reads it automatically.
+# If this file is missing, the hook uses conservative defaults (all paths unsafe).
+
+[codex_review]
+# Maximum iterations of the review → fix → re-review loop.
+# After this many rounds without converging on CLEAN, the push aborts.
+max_iterations = 3
+
+# Maximum diff size (in lines) before the hook skips review entirely.
+# Very large diffs take too long and produce noisy reviews.
+max_diff_lines = 5000
+
+# Default auto-fix policy for paths not listed in unsafe_paths.
+#   true  = Codex may auto-fix issues in any path not explicitly listed as unsafe
+#   false = Codex will NOT auto-fix anything unless you add safe path logic (conservative)
+#
+# For new projects, start with false and gradually opt in as you gain confidence.
+safe_by_default = false
+
+# Paths where Codex must NEVER auto-fix — it reports findings but does not edit.
+# Use these for high-scrutiny areas where auto-fixes could cause damage.
+# Paths are matched as prefixes (e.g., "src/auth/" matches "src/auth/login.py").
+unsafe_paths = [
+  # "src/auth/",
+  # "src/payments/",
+  # "migrations/",
+  # "src/core/config.py",
+]

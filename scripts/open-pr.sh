@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+#
+# scripts/open-pr.sh — push the current branch and open a PR via gh.
+#
+# Refuses to run on the default branch. Sets upstream on first push.
+# Idempotent: if a PR already exists for this branch it just prints the URL.
+# Always uses the project's PR template if one exists.
+#
+# Usage:
+#   bash scripts/open-pr.sh                # title from last commit
+#   bash scripts/open-pr.sh --draft        # same, opened as draft
+#   bash scripts/open-pr.sh "Custom title" # explicit title
+#
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+TEMPLATE_PATH="$REPO_ROOT/.github/pull_request_template.md"
+
+# Fail fast if gh is missing or unauthenticated.
+if ! command -v gh >/dev/null 2>&1; then
+  echo "ERROR: 'gh' (GitHub CLI) is not installed. Install it before opening PRs." >&2
+  exit 1
+fi
+if ! DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null)"; then
+  echo "ERROR: Failed to resolve default branch via 'gh'. Is gh authenticated?" >&2
+  echo "       Run: gh auth status" >&2
+  exit 1
+fi
+
+CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+
+if [ "$CURRENT_BRANCH" = "$DEFAULT_BRANCH" ] || [ "$CURRENT_BRANCH" = "master" ]; then
+  echo "ERROR: You are on '$CURRENT_BRANCH'. Code changes must go through a feature branch + PR." >&2
+  echo "  git checkout -b feat/short-description   # or fix/, chore/, refactor/, docs/" >&2
+  exit 1
+fi
+
+# Warn on uncommitted changes.
+UNTRACKED="$(git ls-files --others --exclude-standard)"
+if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$UNTRACKED" ]; then
+  echo "WARNING: working tree has uncommitted changes — they will NOT be included in this PR." >&2
+  if [ -n "$UNTRACKED" ]; then
+    echo "         Untracked files detected:" >&2
+    printf '           %s\n' $UNTRACKED >&2
+  fi
+  echo "         Commit them first if they should be part of the PR." >&2
+  read -r -p "         Continue anyway? [y/N] " answer
+  case "$answer" in
+    y|Y|yes|YES) ;;
+    *) echo "Aborted."; exit 1 ;;
+  esac
+fi
+
+# Push (set upstream on first push, plain push afterwards).
+if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+  echo "==> Pushing $CURRENT_BRANCH ..."
+  git push
+else
+  echo "==> Pushing $CURRENT_BRANCH (setting upstream) ..."
+  git push -u origin "$CURRENT_BRANCH"
+fi
+
+# If a PR already exists for this branch, just print the URL.
+EXISTING_PR_URL="$(gh pr list --head "$CURRENT_BRANCH" --author "@me" --state open --json url --jq '.[0].url // empty' 2>/dev/null || echo "")"
+if [ -n "$EXISTING_PR_URL" ]; then
+  echo "==> PR already open for $CURRENT_BRANCH: $EXISTING_PR_URL"
+  exit 0
+fi
+
+# Build title + body.
+DRAFT_FLAG=""
+if [ "$#" -gt 0 ] && [ "$1" = "--draft" ]; then
+  DRAFT_FLAG="--draft"
+  shift
+fi
+
+if [ "$#" -gt 0 ]; then
+  TITLE="$1"
+else
+  TITLE="$(git log -1 --format=%s)"
+fi
+
+COMMIT_BODY="$(git log -1 --format=%b)"
+
+# Build body from commit body + PR template (if present).
+BODY_FILE="$(mktemp -t toolkit-pr-body.XXXXXX.md)"
+trap 'rm -f "$BODY_FILE"' EXIT
+
+{
+  if [ -n "$COMMIT_BODY" ]; then
+    printf '%s\n\n---\n\n' "$COMMIT_BODY"
+  fi
+  if [ -f "$TEMPLATE_PATH" ]; then
+    cat "$TEMPLATE_PATH"
+  fi
+} > "$BODY_FILE"
+
+echo "==> Opening PR against $DEFAULT_BRANCH ..."
+if [ -n "$DRAFT_FLAG" ]; then
+  PR_URL="$(gh pr create --base "$DEFAULT_BRANCH" --title "$TITLE" --body-file "$BODY_FILE" --draft)"
+else
+  PR_URL="$(gh pr create --base "$DEFAULT_BRANCH" --title "$TITLE" --body-file "$BODY_FILE")"
+fi
+
+echo "$PR_URL"
+
+if [ -n "$DRAFT_FLAG" ]; then
+  echo "    Opened as draft. Mark ready on github.com when ready to merge."
+fi

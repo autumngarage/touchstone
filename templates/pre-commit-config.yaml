@@ -1,0 +1,43 @@
+# Pre-commit hooks — installed via: pre-commit install --install-hooks
+# Docs: https://pre-commit.com
+#
+# The Codex review hook runs at pre-push time (not pre-commit) so it
+# only fires when you're about to push, not on every local commit.
+
+repos:
+  # Standard hooks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: detect-private-key
+      - id: no-commit-to-branch
+        args: ['--branch', 'main', '--branch', 'master']
+
+  # Codex pre-push review (local hook)
+  - repo: local
+    hooks:
+      - id: codex-review
+        name: Codex pre-push review
+        entry: bash scripts/codex-review.sh
+        language: system
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false
+
+  # {{PROJECT_SPECIFIC_HOOKS — add your project's test suite, linters, etc.}}
+  # Example for Python:
+  # - repo: local
+  #   hooks:
+  #     - id: tests
+  #       name: Run tests
+  #       entry: bash -c 'python -m pytest tests/ -x --timeout=60 -q'
+  #       language: system
+  #       stages: [pre-push]
+  #       always_run: true
+  #       pass_filenames: false
