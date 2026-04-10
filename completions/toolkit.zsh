@@ -3,7 +3,8 @@
 _toolkit() {
   local -a commands
   commands=(
-    'new:Bootstrap a new project with toolkit files'
+    'init:Add toolkit to the current project'
+    'new:Bootstrap a new project from scratch'
     'update:Update current project to latest toolkit'
     'sync:Update all registered projects'
     'status:Dashboard — health of all projects'

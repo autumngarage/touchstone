@@ -65,6 +65,11 @@ cmd_new() {
   exec bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$@"
 }
 
+cmd_init() {
+  # Init the current directory — convenience alias for existing projects.
+  exec bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$(pwd)" "$@"
+}
+
 cmd_update() {
   exec bash "$TOOLKIT_ROOT/bootstrap/update-project.sh" "$@"
 }
@@ -448,7 +453,8 @@ cmd_release() {
 cmd_help() {
   tk_header "toolkit — shared engineering toolkit"
   echo "  ${BOLD}Project commands:${RESET}"
-  printf "    ${BOLD}toolkit new${RESET} <dir>              Bootstrap a new project\n"
+  printf "    ${BOLD}toolkit init${RESET}                   Add toolkit to the current project\n"
+  printf "    ${BOLD}toolkit new${RESET} <dir>              Bootstrap a new project from scratch\n"
   printf "    ${BOLD}toolkit update${RESET}                 Update current project to latest\n"
   printf "    ${BOLD}toolkit update${RESET} --dry-run       Preview what would change\n"
   printf "    ${BOLD}toolkit sync${RESET}                   Update all registered projects\n"
@@ -481,6 +487,7 @@ shift 2>/dev/null || true
 
 case "$COMMAND" in
   new)          cmd_new "$@" ;;
+  init)         cmd_init "$@" ;;
   update)       cmd_update "$@" ;;
   sync)         cmd_sync "$@" ;;
   status)       cmd_status ;;
