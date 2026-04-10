@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+#
+# toolkit — CLI for the shared engineering toolkit.
+#
+# Usage:
+#   toolkit new <project-dir>          Create a new project with toolkit files
+#   toolkit update                     Update current project to latest toolkit
+#   toolkit update --dry-run           Show what would change without applying
+#   toolkit sync                       Update all registered projects
+#   toolkit sync --pull-first          Pull latest toolkit, then sync all projects
+#   toolkit version                    Show installed version
+#   toolkit doctor                     Check health of toolkit installation
+#   toolkit help                       Show this help
+#
+# Install:
+#   brew tap henrymodisett/toolkit
+#   brew install toolkit
+#
+# Or clone directly:
+#   gh repo clone henrymodisett/toolkit ~/Repos/toolkit
+#   ln -s ~/Repos/toolkit/bin/toolkit /usr/local/bin/toolkit
+#
+set -euo pipefail
+
+# Resolve TOOLKIT_ROOT — works whether installed via brew or running from clone.
+if [ -L "$0" ]; then
+  # Symlink (brew or manual ln -s) — resolve to real path.
+  REAL_PATH="$(readlink "$0" 2>/dev/null || python3 -c "import os; print(os.path.realpath('$0'))")"
+  TOOLKIT_ROOT="$(cd "$(dirname "$REAL_PATH")/.." && pwd)"
+else
+  TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+fi
+export TOOLKIT_ROOT
+
+# Source shared libraries.
+source "$TOOLKIT_ROOT/lib/auto-update.sh"
+
+# Auto-update check (throttled, non-blocking on failure).
+toolkit_auto_update || true
+
+# --------------------------------------------------------------------------
+# Subcommands
+# --------------------------------------------------------------------------
+
+cmd_new() {
+  if [ "$#" -lt 1 ]; then
+    echo "Usage: toolkit new <project-dir> [--no-register]" >&2
+    exit 1
+  fi
+  exec bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$@"
+}
+
+cmd_update() {
+  exec bash "$TOOLKIT_ROOT/bootstrap/update-project.sh" "$@"
+}
+
+cmd_sync() {
+  exec bash "$TOOLKIT_ROOT/bootstrap/sync-all.sh" "$@"
+}
+
+cmd_version() {
+  local version
+  version="$(cat "$TOOLKIT_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]')"
+  echo "toolkit v${version:-unknown}"
+
+  # Show install method.
+  if command -v brew >/dev/null 2>&1 && brew list toolkit &>/dev/null; then
+    echo "  installed via: brew"
+    echo "  prefix: $(brew --prefix toolkit 2>/dev/null || echo unknown)"
+  elif [ -d "$TOOLKIT_ROOT/.git" ]; then
+    echo "  installed via: git clone"
+    echo "  path: $TOOLKIT_ROOT"
+    echo "  commit: $(git -C "$TOOLKIT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  fi
+
+  # Show registered projects.
+  local projects_file="$HOME/.toolkit-projects"
+  if [ -f "$projects_file" ]; then
+    local count
+    count="$(grep -c '[^[:space:]]' "$projects_file" 2>/dev/null || echo 0)"
+    echo "  projects: $count registered"
+  fi
+}
+
+cmd_doctor() {
+  echo "==> Toolkit Doctor"
+  echo ""
+  local issues=0
+
+  # Check version.
+  local version
+  version="$(cat "$TOOLKIT_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]')"
+  echo "  Version: v${version:-MISSING}"
+  [ -z "$version" ] && issues=$((issues + 1))
+
+  # Check required tools.
+  for tool in git gh bash; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      echo "  $tool: $(command -v "$tool")"
+    else
+      echo "  $tool: MISSING"
+      issues=$((issues + 1))
+    fi
+  done
+
+  # Check optional tools.
+  for tool in codex pre-commit; do
+    if command -v "$tool" >/dev/null 2>&1; then
+      echo "  $tool: $(command -v "$tool")"
+    else
+      echo "  $tool: not installed (optional)"
+    fi
+  done
+
+  # Check registered projects.
+  echo ""
+  local projects_file="$HOME/.toolkit-projects"
+  if [ -f "$projects_file" ]; then
+    echo "  Registered projects:"
+    while IFS= read -r project_dir; do
+      [ -z "$project_dir" ] && continue
+      [[ "$project_dir" == \#* ]] && continue
+      if [ -d "$project_dir" ]; then
+        local proj_version
+        proj_version="$(cat "$project_dir/.toolkit-version" 2>/dev/null | head -c 7 || echo "none")"
+        local name
+        name="$(basename "$project_dir")"
+        if [ "$proj_version" = "$(git -C "$TOOLKIT_ROOT" rev-parse --short HEAD 2>/dev/null)" ]; then
+          echo "    $name — up to date ($proj_version)"
+        else
+          echo "    $name — outdated ($proj_version)"
+          issues=$((issues + 1))
+        fi
+      else
+        echo "    $project_dir — DIRECTORY NOT FOUND"
+        issues=$((issues + 1))
+      fi
+    done < "$projects_file"
+  else
+    echo "  No projects registered yet."
+  fi
+
+  # Latest release check.
+  echo ""
+  local latest
+  latest="$(curl -fsSL --max-time 5 \
+    "https://api.github.com/repos/henrymodisett/toolkit/releases/latest" 2>/dev/null \
+    | grep '"tag_name"' | head -1 | sed 's/.*"v\([^"]*\)".*/\1/')" || latest=""
+  if [ -n "$latest" ]; then
+    if [ "$version" = "$latest" ]; then
+      echo "  Latest release: v${latest} (you're current)"
+    else
+      echo "  Latest release: v${latest} (you have v${version} — run: brew upgrade toolkit)"
+      issues=$((issues + 1))
+    fi
+  else
+    echo "  Latest release: couldn't check (network issue?)"
+  fi
+
+  echo ""
+  if [ "$issues" -eq 0 ]; then
+    echo "  All good."
+  else
+    echo "  $issues issue(s) found."
+  fi
+}
+
+cmd_help() {
+  sed -n '3,16p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# --------------------------------------------------------------------------
+# Dispatch
+# --------------------------------------------------------------------------
+
+COMMAND="${1:-help}"
+shift 2>/dev/null || true
+
+case "$COMMAND" in
+  new)      cmd_new "$@" ;;
+  update)   cmd_update "$@" ;;
+  sync)     cmd_sync "$@" ;;
+  version)  cmd_version ;;
+  doctor)   cmd_doctor ;;
+  help|-h|--help) cmd_help ;;
+  *)
+    echo "Unknown command: $COMMAND" >&2
+    echo "Run 'toolkit help' for usage." >&2
+    exit 1
+    ;;
+esac
