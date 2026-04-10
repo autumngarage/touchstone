@@ -190,6 +190,25 @@ PROMPT_EOF
 
 FIX_COMMITS=0
 
+# Colors (respect NO_COLOR).
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_BOLD='\033[1m' C_DIM='\033[2m' C_GREEN='\033[0;32m'
+  C_YELLOW='\033[0;33m' C_RED='\033[0;31m' C_CYAN='\033[0;36m' C_RESET='\033[0m'
+else
+  C_BOLD='' C_DIM='' C_GREEN='' C_YELLOW='' C_RED='' C_CYAN='' C_RESET=''
+fi
+
+printf "${C_CYAN}"
+cat <<'BANNER'
+
+  ╔══════════════════════════════════════╗
+  ║         ⚡ TOOLKIT REVIEW ⚡        ║
+  ║      Codex pre-push code review      ║
+  ╚══════════════════════════════════════╝
+
+BANNER
+printf "${C_RESET}"
+
 for iter in $(seq 1 "$MAX_ITERATIONS"); do
   DIFF_LINE_COUNT="$(git diff "$MERGE_BASE"..HEAD | wc -l | tr -d ' ')"
   if [ "$DIFF_LINE_COUNT" -gt "$MAX_DIFF_LINES" ]; then
@@ -198,7 +217,7 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
     exit 0
   fi
 
-  echo "==> Codex review iteration $iter/$MAX_ITERATIONS ($DIFF_LINE_COUNT lines vs $BASE) ..."
+  printf "  ${C_DIM}iteration ${iter}/${MAX_ITERATIONS} · ${DIFF_LINE_COUNT} lines vs ${BASE}${C_RESET}\n"
 
   set +e
   OUTPUT="$(codex exec --full-auto --ephemeral "$REVIEW_PROMPT" 2>/dev/null)"
@@ -214,11 +233,19 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
   LAST_LINE="$(printf '%s\n' "$OUTPUT" | tail -1 | tr -d '\r ')"
   case "$LAST_LINE" in
     CODEX_REVIEW_CLEAN)
+      echo ""
+      printf "${C_GREEN}"
+      cat <<'PASS'
+  ╔══════════════════════════════════════╗
+  ║           ✅ ALL CLEAR              ║
+  ║         Push approved.              ║
+  ╚══════════════════════════════════════╝
+PASS
+      printf "${C_RESET}"
       if [ "$FIX_COMMITS" -gt 0 ]; then
-        echo "==> Codex: CLEAN after $FIX_COMMITS auto-fix commit(s). Push allowed."
-      else
-        echo "==> Codex: CLEAN. Push allowed."
+        printf "  ${C_DIM}($FIX_COMMITS auto-fix commit(s) applied)${C_RESET}\n"
       fi
+      echo ""
       exit 0
       ;;
 
@@ -229,7 +256,7 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
         exit 0
       fi
 
-      echo "==> Codex applied fixes. Diff of auto-fix:"
+      printf "\n  ${C_YELLOW}🔧 Auto-fixing...${C_RESET}\n\n"
       git diff --stat
       echo ""
 
@@ -243,7 +270,14 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
 
     CODEX_REVIEW_BLOCKED)
       echo ""
-      echo "==> Codex flagged blocking issues it would not auto-fix:"
+      printf "${C_RED}"
+      cat <<'BLOCKED'
+  ╔══════════════════════════════════════╗
+  ║          🚫 PUSH BLOCKED           ║
+  ║    Codex found issues to address    ║
+  ╚══════════════════════════════════════╝
+BLOCKED
+      printf "${C_RESET}"
       echo ""
       printf '%s\n' "$OUTPUT" | sed 's/^/    /'
       echo ""

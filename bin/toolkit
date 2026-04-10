@@ -66,8 +66,12 @@ cmd_new() {
 }
 
 cmd_init() {
-  # Init the current directory — convenience alias for existing projects.
-  exec bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$(pwd)" "$@"
+  # Init the current directory — bootstrap + setup in one command.
+  bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$(pwd)" "$@"
+  if [ -f "$(pwd)/setup.sh" ]; then
+    echo ""
+    bash "$(pwd)/setup.sh"
+  fi
 }
 
 cmd_update() {
