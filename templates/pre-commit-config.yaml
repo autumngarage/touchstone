@@ -1,11 +1,12 @@
 # Pre-commit hooks — installed via: pre-commit install --install-hooks
 # Docs: https://pre-commit.com
 #
-# The Codex review hook runs at pre-push time (not pre-commit) so it
-# only fires when you're about to push, not on every local commit.
+# Hooks run at two stages:
+#   pre-commit: fast checks on every commit (formatting, secrets, file hygiene)
+#   pre-push:   heavier checks before pushing (Codex review, tests)
 
 repos:
-  # Standard hooks
+  # ── Standard file hygiene ──────────────────────────────────────────────
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
@@ -13,13 +14,45 @@ repos:
       - id: end-of-file-fixer
       - id: check-yaml
       - id: check-json
+        exclude: tsconfig.*\.json$
       - id: check-added-large-files
         args: ['--maxkb=500']
       - id: detect-private-key
       - id: no-commit-to-branch
         args: ['--branch', 'main', '--branch', 'master']
+      - id: check-merge-conflict
 
-  # Codex pre-push review (local hook)
+  # ── Secret scanning ────────────────────────────────────────────────────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.22.1
+    hooks:
+      - id: gitleaks
+
+  # ── Shell script quality ───────────────────────────────────────────────
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        args: ['--severity=warning']
+
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.10.0-1
+    hooks:
+      - id: shfmt
+        args: ['-i', '2', '-ci']
+
+  # ── Branch naming enforcement ──────────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: branch-naming
+        name: Branch naming convention
+        entry: bash -c 'branch="$(git rev-parse --abbrev-ref HEAD)"; [[ "$branch" == "main" || "$branch" == "master" || "$branch" =~ ^(feat|fix|chore|refactor|docs)/ ]] || { echo "Branch name must match: feat/, fix/, chore/, refactor/, or docs/"; exit 1; }'
+        language: system
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false
+
+  # ── Codex pre-push review ──────────────────────────────────────────────
   - repo: local
     hooks:
       - id: codex-review
@@ -30,13 +63,23 @@ repos:
         always_run: true
         pass_filenames: false
 
-  # {{PROJECT_SPECIFIC_HOOKS — add your project's test suite, linters, etc.}}
-  # Example for Python:
+  # ── Project-specific hooks ─────────────────────────────────────────────
+  # Uncomment and customize for your project:
+  #
+  # Python:
+  # - repo: https://github.com/astral-sh/ruff-pre-commit
+  #   rev: v0.8.6
+  #   hooks:
+  #     - id: ruff
+  #       args: ['--fix']
+  #     - id: ruff-format
+  #
+  # Tests (pre-push):
   # - repo: local
   #   hooks:
   #     - id: tests
   #       name: Run tests
-  #       entry: bash -c 'python -m pytest tests/ -x --timeout=60 -q'
+  #       entry: bash -c 'YOUR_TEST_COMMAND_HERE'
   #       language: system
   #       stages: [pre-push]
   #       always_run: true

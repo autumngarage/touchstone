@@ -8,6 +8,7 @@
 #   toolkit update --dry-run           Show what would change without applying
 #   toolkit sync                       Update all registered projects
 #   toolkit sync --pull-first          Pull latest toolkit, then sync all projects
+#   toolkit status                     Dashboard — health of all registered projects
 #   toolkit version                    Show installed version
 #   toolkit doctor                     Check health of toolkit installation
 #   toolkit help                       Show this help
@@ -16,23 +17,41 @@
 #   brew tap henrymodisett/toolkit
 #   brew install toolkit
 #
-# Or clone directly:
-#   gh repo clone henrymodisett/toolkit ~/Repos/toolkit
-#   ln -s ~/Repos/toolkit/bin/toolkit /usr/local/bin/toolkit
-#
 set -euo pipefail
 
 # Resolve TOOLKIT_ROOT — works whether installed via brew or running from clone.
-# macOS readlink doesn't have -f, so we use python3 to fully resolve symlink chains.
 REAL_PATH="$(python3 -c "import os; print(os.path.realpath('$0'))")"
 TOOLKIT_ROOT="$(cd "$(dirname "$REAL_PATH")/.." && pwd)"
 export TOOLKIT_ROOT
 
 # Source shared libraries.
 source "$TOOLKIT_ROOT/lib/auto-update.sh"
+source "$TOOLKIT_ROOT/lib/colors.sh"
 
 # Auto-update check (throttled, non-blocking on failure).
 toolkit_auto_update || true
+
+# Helper: get toolkit version string.
+toolkit_version_str() {
+  cat "$TOOLKIT_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]'
+}
+
+# Helper: get toolkit identifier for comparison (git SHA or version).
+toolkit_current_id() {
+  if [ -d "$TOOLKIT_ROOT/.git" ]; then
+    git -C "$TOOLKIT_ROOT" rev-parse HEAD
+  else
+    toolkit_version_str
+  fi
+}
+
+toolkit_current_id_short() {
+  if [ -d "$TOOLKIT_ROOT/.git" ]; then
+    git -C "$TOOLKIT_ROOT" rev-parse --short HEAD
+  else
+    toolkit_version_str
+  fi
+}
 
 # --------------------------------------------------------------------------
 # Subcommands
@@ -56,129 +75,206 @@ cmd_sync() {
 
 cmd_version() {
   local version
-  version="$(cat "$TOOLKIT_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]')"
-  echo "toolkit v${version:-unknown}"
+  version="$(toolkit_version_str)"
+  tk_header "toolkit v${version:-unknown}"
 
-  # Show install method.
   if command -v brew >/dev/null 2>&1 && brew list toolkit &>/dev/null; then
-    echo "  installed via: brew"
-    echo "  prefix: $(brew --prefix toolkit 2>/dev/null || echo unknown)"
+    tk_dim "installed via: brew"
+    tk_dim "prefix: $(brew --prefix toolkit 2>/dev/null || echo unknown)"
   elif [ -d "$TOOLKIT_ROOT/.git" ]; then
-    echo "  installed via: git clone"
-    echo "  path: $TOOLKIT_ROOT"
-    echo "  commit: $(git -C "$TOOLKIT_ROOT" rev-parse --short HEAD 2>/dev/null)"
+    tk_dim "installed via: git clone"
+    tk_dim "path: $TOOLKIT_ROOT"
+    tk_dim "commit: $(git -C "$TOOLKIT_ROOT" rev-parse --short HEAD 2>/dev/null)"
   fi
 
-  # Show registered projects.
   local projects_file="$HOME/.toolkit-projects"
   if [ -f "$projects_file" ]; then
     local count
     count="$(grep -c '[^[:space:]]' "$projects_file" 2>/dev/null || echo 0)"
-    echo "  projects: $count registered"
+    tk_dim "projects: $count registered"
   fi
 }
 
-cmd_doctor() {
-  echo "==> Toolkit Doctor"
+cmd_status() {
+  local version
+  version="$(toolkit_version_str)"
+  local current_id
+  current_id="$(toolkit_current_id)"
+
+  tk_header "Toolkit Status — v${version}"
+
+  local projects_file="$HOME/.toolkit-projects"
+  if [ ! -f "$projects_file" ]; then
+    tk_warn "No projects registered. Run: toolkit new <dir>"
+    return
+  fi
+
+  while IFS= read -r project_dir; do
+    [ -z "$project_dir" ] && continue
+    [[ "$project_dir" == \#* ]] && continue
+
+    local name
+    name="$(basename "$project_dir")"
+
+    if [ ! -d "$project_dir" ]; then
+      printf "  ${RED}✗${RESET} ${BOLD}%-20s${RESET} directory not found\n" "$name"
+      continue
+    fi
+
+    # Gather project state.
+    local proj_version
+    proj_version="$(cat "$project_dir/.toolkit-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
+    local synced=""
+    if [ "$proj_version" = "$current_id" ]; then
+      synced="${GREEN}synced${RESET}"
+    else
+      synced="${YELLOW}needs sync${RESET}"
+    fi
+
+    # Git state.
+    local git_status=""
+    if [ -d "$project_dir/.git" ]; then
+      local dirty=""
+      local unpushed=""
+      local branch=""
+      branch="$(git -C "$project_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")"
+
+      if [ -n "$(git -C "$project_dir" status --porcelain 2>/dev/null)" ]; then
+        dirty="${YELLOW}dirty${RESET}"
+      else
+        dirty="${GREEN}clean${RESET}"
+      fi
+
+      local ahead
+      ahead="$(git -C "$project_dir" rev-list --count '@{u}..HEAD' 2>/dev/null || echo "?")"
+      if [ "$ahead" = "?" ] || [ "$ahead" = "0" ]; then
+        unpushed=""
+      else
+        unpushed=" ${YELLOW}${ahead} unpushed${RESET}"
+      fi
+
+      git_status="${dirty}${unpushed} ${DIM}(${branch})${RESET}"
+    else
+      git_status="${DIM}not a git repo${RESET}"
+    fi
+
+    printf "  ${GREEN}✓${RESET} ${BOLD}%-20s${RESET} %b  %b\n" "$name" "$synced" "$git_status"
+  done < "$projects_file"
+
   echo ""
+}
+
+cmd_doctor() {
+  local version
+  version="$(toolkit_version_str)"
   local issues=0
 
-  # Check version.
-  local version
-  version="$(cat "$TOOLKIT_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]')"
-  echo "  Version: v${version:-MISSING}"
-  [ -z "$version" ] && issues=$((issues + 1))
+  tk_header "Toolkit Doctor"
 
-  # Check required tools.
+  # Version.
+  if [ -n "$version" ]; then
+    tk_ok "Version: v${version}"
+  else
+    tk_fail "Version: MISSING"
+    issues=$((issues + 1))
+  fi
+
+  # Required tools.
   for tool in git gh bash; do
     if command -v "$tool" >/dev/null 2>&1; then
-      echo "  $tool: $(command -v "$tool")"
+      tk_ok "$tool: $(command -v "$tool")"
     else
-      echo "  $tool: MISSING"
+      tk_fail "$tool: MISSING"
       issues=$((issues + 1))
     fi
   done
 
-  # Check optional tools.
-  for tool in codex pre-commit; do
+  # Recommended tools.
+  for tool in pre-commit gitleaks shellcheck shfmt; do
     if command -v "$tool" >/dev/null 2>&1; then
-      echo "  $tool: $(command -v "$tool")"
+      tk_ok "$tool: $(command -v "$tool")"
     else
-      echo "  $tool: not installed (optional)"
+      tk_warn "$tool: not installed (run setup.sh to install)"
+      issues=$((issues + 1))
     fi
   done
 
-  # Check registered projects.
-  echo ""
+  # Optional tools.
+  if command -v codex >/dev/null 2>&1; then
+    tk_ok "codex: $(command -v codex)"
+  else
+    tk_dim "codex: not installed (optional — npm install -g @openai/codex)"
+  fi
+
+  # Registered projects.
+  tk_info "Projects"
   local projects_file="$HOME/.toolkit-projects"
+  local current_id
+  current_id="$(toolkit_current_id)"
   if [ -f "$projects_file" ]; then
-    echo "  Registered projects:"
     while IFS= read -r project_dir; do
       [ -z "$project_dir" ] && continue
       [[ "$project_dir" == \#* ]] && continue
       if [ -d "$project_dir" ]; then
         local proj_version
-        proj_version="$(cat "$project_dir/.toolkit-version" 2>/dev/null | head -c 7 || echo "none")"
+        proj_version="$(cat "$project_dir/.toolkit-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
         local name
         name="$(basename "$project_dir")"
-        # Compare against git SHA (clone) or VERSION (brew).
-        local toolkit_id
-        local toolkit_id=""
-        if [ -d "$TOOLKIT_ROOT/.git" ]; then
-          toolkit_id="$(git -C "$TOOLKIT_ROOT" rev-parse --short HEAD)"
-        fi
-        if [ -z "$toolkit_id" ]; then
-          # Brew install — compare version strings.
-          local proj_full
-          proj_full="$(cat "$project_dir/.toolkit-version" 2>/dev/null | tr -d '[:space:]')"
-          if [ "$proj_full" = "$version" ]; then
-            echo "    $name — up to date (v$version)"
-          else
-            echo "    $name — needs sync ($proj_version → v$version)"
-            issues=$((issues + 1))
-          fi
-        elif [ "$proj_version" = "$toolkit_id" ]; then
-          echo "    $name — up to date ($proj_version)"
+        if [ "$proj_version" = "$current_id" ]; then
+          tk_ok "$name — up to date"
         else
-          echo "    $name — needs sync ($proj_version → $toolkit_id)"
+          tk_warn "$name — needs sync (run: toolkit sync)"
           issues=$((issues + 1))
         fi
       else
-        echo "    $project_dir — DIRECTORY NOT FOUND"
+        tk_fail "$project_dir — directory not found"
         issues=$((issues + 1))
       fi
     done < "$projects_file"
   else
-    echo "  No projects registered yet."
+    tk_dim "No projects registered yet."
   fi
 
   # Latest release check.
-  echo ""
+  tk_info "Latest release"
   local latest
   latest="$(curl -fsSL --max-time 5 \
     "https://api.github.com/repos/henrymodisett/toolkit/releases/latest" 2>/dev/null \
     | grep '"tag_name"' | head -1 | sed 's/.*"v\([^"]*\)".*/\1/')" || latest=""
   if [ -n "$latest" ]; then
     if [ "$version" = "$latest" ]; then
-      echo "  Latest release: v${latest} (you're current)"
+      tk_ok "v${latest} — you're current"
     else
-      echo "  Latest release: v${latest} (you have v${version} — run: brew upgrade toolkit)"
+      tk_warn "v${latest} available (you have v${version}). Run: brew upgrade toolkit"
       issues=$((issues + 1))
     fi
   else
-    echo "  Latest release: couldn't check (network issue?)"
+    tk_dim "Couldn't check (network issue?)"
   fi
 
   echo ""
   if [ "$issues" -eq 0 ]; then
-    echo "  All good."
+    tk_ok "All good."
   else
-    echo "  $issues issue(s) found."
+    tk_warn "$issues issue(s) found."
   fi
+  echo ""
 }
 
 cmd_help() {
-  sed -n '3,16p' "$0" | sed 's/^# \{0,1\}//'
+  tk_header "toolkit — shared engineering toolkit"
+  printf "  ${BOLD}toolkit new${RESET} <dir>              Bootstrap a new project\n"
+  printf "  ${BOLD}toolkit update${RESET}                 Update current project to latest toolkit\n"
+  printf "  ${BOLD}toolkit update${RESET} --dry-run       Preview what would change\n"
+  printf "  ${BOLD}toolkit sync${RESET}                   Update all registered projects\n"
+  printf "  ${BOLD}toolkit sync${RESET} --pull-first      Pull latest toolkit first, then sync\n"
+  printf "  ${BOLD}toolkit status${RESET}                 Dashboard — health of all projects\n"
+  printf "  ${BOLD}toolkit doctor${RESET}                 Check toolkit installation health\n"
+  printf "  ${BOLD}toolkit version${RESET}                Show installed version\n"
+  printf "  ${BOLD}toolkit help${RESET}                   Show this help\n"
+  echo ""
+  printf "  Install: ${DIM}brew tap henrymodisett/toolkit && brew install toolkit${RESET}\n"
+  echo ""
 }
 
 # --------------------------------------------------------------------------
@@ -192,11 +288,12 @@ case "$COMMAND" in
   new)      cmd_new "$@" ;;
   update)   cmd_update "$@" ;;
   sync)     cmd_sync "$@" ;;
+  status)   cmd_status ;;
   version)  cmd_version ;;
   doctor)   cmd_doctor ;;
   help|-h|--help) cmd_help ;;
   *)
-    echo "Unknown command: $COMMAND" >&2
+    printf "${RED}Unknown command: $COMMAND${RESET}\n" >&2
     echo "Run 'toolkit help' for usage." >&2
     exit 1
     ;;

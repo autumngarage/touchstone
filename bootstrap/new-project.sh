@@ -132,15 +132,54 @@ if [ "$REGISTER" = true ]; then
   fi
 fi
 
+# --------------------------------------------------------------------------
+# Interactive placeholder filling (if stdin is a terminal)
+# --------------------------------------------------------------------------
+if [ -t 0 ] && [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
+  echo ""
+  echo "==> Fill in project details (press Enter to skip any):"
+  echo ""
+
+  read -r -p "   Project name [$(basename "$PROJECT_DIR")]: " INPUT_NAME
+  INPUT_NAME="${INPUT_NAME:-$(basename "$PROJECT_DIR")}"
+
+  read -r -p "   One-line description: " INPUT_DESC
+
+  read -r -p "   Test command (e.g., pnpm build, pytest tests/): " INPUT_TEST
+
+  read -r -p "   High-scrutiny paths (comma-separated, e.g., src/auth/,migrations/): " INPUT_UNSAFE
+
+  # Apply to CLAUDE.md.
+  if [ -n "$INPUT_NAME" ]; then
+    sed -i '' "s/{{PROJECT_NAME}}/$INPUT_NAME/g" "$PROJECT_DIR/CLAUDE.md" 2>/dev/null || true
+    sed -i '' "s/{{PROJECT_NAME}}/$INPUT_NAME/g" "$PROJECT_DIR/AGENTS.md" 2>/dev/null || true
+  fi
+
+  if [ -n "$INPUT_DESC" ]; then
+    # Escape special characters for sed.
+    ESCAPED_DESC="$(echo "$INPUT_DESC" | sed 's/[&/\]/\\&/g')"
+    sed -i '' "s/{{PROJECT_DESCRIPTION[^}]*}}/$ESCAPED_DESC/g" "$PROJECT_DIR/CLAUDE.md" 2>/dev/null || true
+  fi
+
+  if [ -n "$INPUT_TEST" ]; then
+    ESCAPED_TEST="$(echo "$INPUT_TEST" | sed 's/[&/\]/\\&/g')"
+    sed -i '' "s/{{TEST_COMMAND[^}]*}}/$ESCAPED_TEST/g" "$PROJECT_DIR/CLAUDE.md" 2>/dev/null || true
+  fi
+
+  if [ -n "$INPUT_UNSAFE" ]; then
+    # Write unsafe paths to .codex-review.toml.
+    TOML_PATHS="$(echo "$INPUT_UNSAFE" | tr ',' '\n' | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//' | sed 's/.*/"&",/' | tr '\n' ' ' | sed 's/, $//')"
+    sed -i '' "s|unsafe_paths = \[.*\]|unsafe_paths = [$TOML_PATHS]|" "$PROJECT_DIR/.codex-review.toml" 2>/dev/null || true
+  fi
+
+  echo ""
+  echo "==> Placeholders filled! Review CLAUDE.md and AGENTS.md to add more detail."
+fi
+
 echo ""
 echo "==> Done! Next steps:"
 echo ""
-echo "   1. Fill in {{PLACEHOLDERS}} in CLAUDE.md and AGENTS.md"
-echo "   2. Configure .codex-review.toml with your high-scrutiny paths"
-echo "   3. Install pre-commit hooks:"
-echo "        cd $PROJECT_DIR"
-echo "        pip install pre-commit  # if not installed"
-echo "        pre-commit install --install-hooks"
-echo "   4. Install Codex CLI (optional, for pre-push review):"
-echo "        npm install -g @openai/codex && codex login"
+echo "   1. Review CLAUDE.md and AGENTS.md — add architecture, key files, hard-won lessons"
+echo "   2. Run setup.sh to install all dev tools:"
+echo "        cd $PROJECT_DIR && bash setup.sh"
 echo ""
