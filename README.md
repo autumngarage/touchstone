@@ -1,103 +1,129 @@
 # toolkit
 
-Private engineering toolkit — universal principles, reusable scripts, and a Codex pre-push review hook for all projects.
-
-## What this is
-
-A single source of truth for engineering standards and tooling that can be bootstrapped into any project. After bootstrap, each project is self-contained — no runtime dependency on this repo.
+Shared engineering toolkit — universal principles, reusable scripts, and a Codex pre-push review hook for all your projects.
 
 ## Install
 
 ```bash
-# Clone once per machine
-gh repo clone henrymodisett/toolkit ~/Repos/toolkit
+brew tap henrymodisett/toolkit
+brew install toolkit
 ```
 
-## Usage
+Requires `git` and `gh` (installed automatically as brew dependencies).
 
-### New project
+## Quick start
 
 ```bash
-~/Repos/toolkit/bootstrap/new-project.sh my-new-project
+# Create a new project with all the toolkit goodies
+toolkit new ~/Repos/my-new-project
+
+# Fill in the placeholders
+$EDITOR ~/Repos/my-new-project/CLAUDE.md
+$EDITOR ~/Repos/my-new-project/AGENTS.md
+
+# Set up pre-commit hooks (optional but recommended)
+cd ~/Repos/my-new-project
+pip install pre-commit && pre-commit install --install-hooks
+
+# Set up Codex pre-push review (optional)
+npm install -g @openai/codex && codex login
 ```
 
-This copies templates, principles, hooks, and scripts into the new project directory. Fill in the `{{PLACEHOLDERS}}` in `CLAUDE.md` and `AGENTS.md` with project-specific context.
+## Commands
 
-### Update an existing project
+| Command | What it does |
+|---------|-------------|
+| `toolkit new <dir>` | Bootstrap a new project with principles, scripts, hooks, and templates |
+| `toolkit update` | Update the current project's toolkit-owned files to latest |
+| `toolkit update --dry-run` | Preview what would change |
+| `toolkit sync` | Update all registered projects at once |
+| `toolkit sync --pull-first` | Pull latest toolkit first, then sync all projects |
+| `toolkit version` | Show installed version and install method |
+| `toolkit doctor` | Health check — version, tools, project staleness |
+
+## How it works
+
+### What you get in each project
+
+When you run `toolkit new`, these files get copied into your project:
+
+**Project-owned** (yours to customize, never auto-updated):
+- `CLAUDE.md` — AI coding instructions with `{{PLACEHOLDERS}}` to fill in
+- `AGENTS.md` — AI reviewer rubric with project-specific priorities
+- `.codex-review.toml` — Codex hook config (safe/unsafe paths for auto-fix)
+- `.pre-commit-config.yaml` — Pre-commit hooks including Codex review
+- `.gitignore` — Sensible defaults
+- `.github/pull_request_template.md` — PR checklist
+
+**Toolkit-owned** (auto-updated when you run `toolkit update` or `toolkit sync`):
+- `principles/*.md` — Universal engineering principles
+- `scripts/codex-review.sh` — Codex pre-push review + auto-fix loop
+- `scripts/open-pr.sh` — Push + create PR via `gh`
+- `scripts/merge-pr.sh` — Squash-merge + sync main
+- `scripts/cleanup-branches.sh` — Safe branch hygiene
+
+### Keeping projects up to date
+
+When you improve the toolkit (add a principle, fix a script), run:
 
 ```bash
-cd ~/Repos/my-existing-project
-~/Repos/toolkit/bootstrap/update-project.sh
+toolkit sync
 ```
 
-Updates toolkit-owned files (principles, scripts, hooks). Never touches project-owned files (CLAUDE.md, AGENTS.md, .codex-review.toml). Creates `.bak` backups of any locally-modified toolkit files before overwriting.
+This updates all toolkit-owned files across every registered project. Project-owned files are never touched — you get a hint to review them against the latest templates.
 
-### Update all projects at once
+Projects are auto-registered in `~/.toolkit-projects` when you bootstrap them.
 
-```bash
-~/Repos/toolkit/bootstrap/sync-all.sh --pull-first
-```
+### Auto-update
 
-Pulls the latest toolkit, then runs `update-project.sh` on every project registered in `~/.toolkit-projects`. Projects are auto-registered when you bootstrap them.
-
-For fully automated sync (e.g., every Monday at 9am):
-
-```bash
-crontab -e
-# Add:
-0 9 * * 1  cd ~/Repos/toolkit && git pull && ~/Repos/toolkit/bootstrap/sync-all.sh
-```
-
-### Update the toolkit itself
-
-```bash
-cd ~/Repos/toolkit && git pull
-```
+The `toolkit` CLI checks for new versions hourly. When a newer release exists, it auto-upgrades via `brew upgrade toolkit` before running your command. Disable with `TOOLKIT_NO_AUTO_UPDATE=1`.
 
 ## What's included
 
-### Principles (`principles/`)
+### Principles
 
-Universal engineering principles extracted and generalized from production systems. These get copied into each project so `CLAUDE.md` can reference them via `@principles/*.md`.
+Universal engineering standards, extracted and battle-tested from production systems:
 
-- **engineering-principles.md** — Hard requirements: no band-aids, no silent failures, every fix gets a test, think in invariants, derive don't persist
-- **pre-implementation-checklist.md** — 4 questions to answer before writing code
-- **audit-weak-points.md** — Methodology for auditing structural bug patterns across a codebase
-- **documentation-ownership.md** — Single canonical owner per volatile fact
-- **git-workflow.md** — Feature branch lifecycle with pre-push review
+- **[engineering-principles.md](principles/engineering-principles.md)** — No band-aids, no silent failures, every fix gets a test, think in invariants, derive don't persist, one code path, audit weak-point classes
+- **[pre-implementation-checklist.md](principles/pre-implementation-checklist.md)** — 4 questions to answer before writing any code
+- **[audit-weak-points.md](principles/audit-weak-points.md)** — Methodology: find one bug → audit the whole class → ranked fix → guardrail test
+- **[documentation-ownership.md](principles/documentation-ownership.md)** — Single canonical owner per volatile fact
+- **[git-workflow.md](principles/git-workflow.md)** — Feature branch → pre-push review → PR → squash merge
 
-### Templates (`templates/`)
+### Codex pre-push hook
 
-Starter files for new projects with placeholders for project-specific context.
+Automatically reviews your code before every `git push`:
+- Runs `codex exec --full-auto` against your diff
+- Auto-fixes safe issues (typos, missing error logging)
+- Blocks the push for unsafe findings (high-scrutiny paths you configure)
+- Loops up to N times, gracefully skips if Codex isn't installed
 
-- **CLAUDE.md** — Thin starter that imports principles and provides structure for project context
-- **AGENTS.md** — AI reviewer rubric skeleton
-- **pull_request_template.md** — PR checklist
-- **pre-commit-config.yaml** — Pre-commit hooks including Codex review
-- **gitignore** — Sensible defaults
+Configure per-project behavior in `.codex-review.toml`. Write your review rubric in `AGENTS.md`. See [hooks/README.md](hooks/README.md) for details.
 
-### Hooks (`hooks/`)
+### Helper scripts
 
-- **codex-review.sh** — Pre-push Codex review + auto-fix loop. Configurable via `.codex-review.toml` in the project root. Gracefully skips if Codex CLI isn't installed.
-
-### Scripts (`scripts/`)
-
-- **open-pr.sh** — Push + create PR via `gh`. Idempotent.
-- **merge-pr.sh** — Sanity-check + squash-merge + sync main.
-- **cleanup-branches.sh** — Safe branch cleanup with dry-run default.
+- **open-pr.sh** — `git push` + `gh pr create` with your PR template. Idempotent.
+- **merge-pr.sh** — Sanity-check mergeability + squash-merge + delete branch + sync main.
+- **cleanup-branches.sh** — Dry-run by default. Never deletes unmerged work.
 
 ## Project structure
 
 ```
 toolkit/
-├── principles/          # Universal engineering docs
-├── templates/           # Starter files for new projects
-├── hooks/               # Reusable git hooks
-├── scripts/             # Reusable helper scripts
-├── bootstrap/           # new-project.sh + update-project.sh
-└── tests/               # Self-tests
+├── bin/             # toolkit CLI entrypoint
+├── lib/             # shared libraries (auto-update)
+├── principles/      # universal engineering docs
+├── templates/       # starter files for new projects
+├── hooks/           # Codex pre-push hook
+├── scripts/         # helper scripts (open-pr, merge-pr, cleanup)
+├── bootstrap/       # new-project.sh, update-project.sh, sync-all.sh
+└── tests/           # self-tests
 ```
 
-## Future: Homebrew distribution
+## For contributors / friends
 
-Once the content stabilizes, this will be packaged as a private Homebrew tap for `brew install toolkit` convenience. The current `gh clone` + scripts approach is intentional for the iteration phase.
+Install, bootstrap a project, and start using the principles and scripts. If you have ideas for new principles or improvements to the scripts, PRs welcome.
+
+## License
+
+MIT

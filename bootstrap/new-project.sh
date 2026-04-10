@@ -88,6 +88,8 @@ copy_file "$TOOLKIT_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-co
 copy_file "$TOOLKIT_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
 copy_file "$TOOLKIT_ROOT/templates/pull_request_template.md" "$PROJECT_DIR/.github/pull_request_template.md"
 copy_file "$TOOLKIT_ROOT/hooks/codex-review.config.example.toml" "$PROJECT_DIR/.codex-review.toml"
+copy_file "$TOOLKIT_ROOT/templates/setup.sh" "$PROJECT_DIR/setup.sh"
+chmod +x "$PROJECT_DIR/setup.sh" 2>/dev/null || true
 
 echo ""
 echo "==> Copying principles (toolkit-owned, will be auto-updated):"
