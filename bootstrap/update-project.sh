@@ -39,7 +39,8 @@ if [ ! -f "$PROJECT_DIR/.toolkit-version" ]; then
 fi
 
 OLD_SHA="$(cat "$PROJECT_DIR/.toolkit-version" | tr -d '[:space:]')"
-CURRENT_SHA="$(git -C "$TOOLKIT_ROOT" rev-parse HEAD 2>/dev/null || echo "unknown")"
+# Use git SHA if available (git clone install), fall back to VERSION (brew install).
+CURRENT_SHA="$(git -C "$TOOLKIT_ROOT" rev-parse HEAD 2>/dev/null || cat "$TOOLKIT_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")"
 
 echo "==> Updating project: $PROJECT_DIR"
 echo "    Toolkit: $OLD_SHA → $CURRENT_SHA"

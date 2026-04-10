@@ -121,10 +121,23 @@ cmd_doctor() {
         proj_version="$(cat "$project_dir/.toolkit-version" 2>/dev/null | head -c 7 || echo "none")"
         local name
         name="$(basename "$project_dir")"
-        if [ "$proj_version" = "$(git -C "$TOOLKIT_ROOT" rev-parse --short HEAD 2>/dev/null)" ]; then
+        # Compare against git SHA (clone) or VERSION (brew).
+        local toolkit_id
+        toolkit_id="$(git -C "$TOOLKIT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "")"
+        if [ -z "$toolkit_id" ]; then
+          # Brew install — compare version strings.
+          local proj_full
+          proj_full="$(cat "$project_dir/.toolkit-version" 2>/dev/null | tr -d '[:space:]')"
+          if [ "$proj_full" = "$version" ]; then
+            echo "    $name — up to date (v$version)"
+          else
+            echo "    $name — needs sync ($proj_version → v$version)"
+            issues=$((issues + 1))
+          fi
+        elif [ "$proj_version" = "$toolkit_id" ]; then
           echo "    $name — up to date ($proj_version)"
         else
-          echo "    $name — outdated ($proj_version)"
+          echo "    $name — needs sync ($proj_version → $toolkit_id)"
           issues=$((issues + 1))
         fi
       else
