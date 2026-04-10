@@ -32,6 +32,22 @@ cd ~/Repos/my-existing-project
 
 Updates toolkit-owned files (principles, scripts, hooks). Never touches project-owned files (CLAUDE.md, AGENTS.md, .codex-review.toml). Creates `.bak` backups of any locally-modified toolkit files before overwriting.
 
+### Update all projects at once
+
+```bash
+~/Repos/toolkit/bootstrap/sync-all.sh --pull-first
+```
+
+Pulls the latest toolkit, then runs `update-project.sh` on every project registered in `~/.toolkit-projects`. Projects are auto-registered when you bootstrap them.
+
+For fully automated sync (e.g., every Monday at 9am):
+
+```bash
+crontab -e
+# Add:
+0 9 * * 1  cd ~/Repos/toolkit && git pull && ~/Repos/toolkit/bootstrap/sync-all.sh
+```
+
 ### Update the toolkit itself
 
 ```bash
