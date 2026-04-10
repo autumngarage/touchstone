@@ -106,7 +106,12 @@ copy_file_force "$TOOLKIT_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/script
 chmod +x "$PROJECT_DIR/scripts/"*.sh
 
 # Write toolkit version.
-TOOLKIT_SHA="$(git -C "$TOOLKIT_ROOT" rev-parse HEAD 2>/dev/null || echo "unknown")"
+# Use git SHA if this is a git clone, otherwise use VERSION (brew install).
+if [ -d "$TOOLKIT_ROOT/.git" ]; then
+  TOOLKIT_SHA="$(git -C "$TOOLKIT_ROOT" rev-parse HEAD)"
+else
+  TOOLKIT_SHA="$(cat "$TOOLKIT_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")"
+fi
 echo "$TOOLKIT_SHA" > "$PROJECT_DIR/.toolkit-version"
 echo ""
 echo "==> Wrote .toolkit-version: $TOOLKIT_SHA"

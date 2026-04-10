@@ -66,7 +66,7 @@ cmd_version() {
   elif [ -d "$TOOLKIT_ROOT/.git" ]; then
     echo "  installed via: git clone"
     echo "  path: $TOOLKIT_ROOT"
-    echo "  commit: $(git -C "$TOOLKIT_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    echo "  commit: $(git -C "$TOOLKIT_ROOT" rev-parse --short HEAD 2>/dev/null)"
   fi
 
   # Show registered projects.
@@ -123,7 +123,10 @@ cmd_doctor() {
         name="$(basename "$project_dir")"
         # Compare against git SHA (clone) or VERSION (brew).
         local toolkit_id
-        toolkit_id="$(git -C "$TOOLKIT_ROOT" rev-parse --short HEAD 2>/dev/null || echo "")"
+        local toolkit_id=""
+        if [ -d "$TOOLKIT_ROOT/.git" ]; then
+          toolkit_id="$(git -C "$TOOLKIT_ROOT" rev-parse --short HEAD)"
+        fi
         if [ -z "$toolkit_id" ]; then
           # Brew install — compare version strings.
           local proj_full
