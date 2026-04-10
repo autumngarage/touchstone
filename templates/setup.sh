@@ -92,7 +92,10 @@ fi
 # 5. Sync toolkit files to latest
 # --------------------------------------------------------------------------
 info "Syncing toolkit files"
-if [ -f ".toolkit-version" ]; then
+# Skip update if this IS the toolkit repo (it's the source, not a downstream project).
+if [ -f "bin/toolkit" ] && [ -f "lib/auto-update.sh" ]; then
+  ok "this is the toolkit repo — skipping self-update"
+elif [ -f ".toolkit-version" ]; then
   toolkit update 2>&1 | grep -E "added|updated|Already" | head -5 | while read -r line; do
     ok "$line"
   done
