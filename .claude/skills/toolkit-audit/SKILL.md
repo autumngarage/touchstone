@@ -1,6 +1,6 @@
 ---
 name: toolkit-audit
-description: Audits the toolkit project at ~/Repos/toolkit for drift against its own engineering principles and against current Anthropic/Claude Code best practices. Evaluates principles, implementation, and process/workflow (git lifecycle, Codex review, release flow). Produces a dated markdown report in audits/ and never modifies toolkit files. Runs when the user asks to audit, review, health-check, or verify that the toolkit is up to date.
+description: Audits the toolkit project at ~/Repos/toolkit for drift against its own engineering principles and against current Anthropic/Claude Code best practices. Evaluates principles, implementation, and process/workflow (git lifecycle, Codex review, release flow). Produces a dated markdown report in audits/ and never modifies toolkit files. Runs only when the user explicitly asks to audit the toolkit, run a toolkit health check, or verify the toolkit is up to date against current best practices. Do not invoke for generic "review this code" or "review this PR" requests — those should use ad-hoc review, not this skill.
 ---
 
 # Toolkit Audit
