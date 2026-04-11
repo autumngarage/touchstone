@@ -32,6 +32,9 @@
 ## Testing
 
 ```bash
+# Reinstall dependencies without rerunning the full machine setup
+bash setup.sh --deps-only
+
 # Before any push — replace with your project's test command
 {{TEST_COMMAND — e.g., scripts/run-pytest-in-venv.sh tests/ -v --timeout=60 -x}}
 ```

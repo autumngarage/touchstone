@@ -142,6 +142,37 @@ assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^pytest$'
 assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^tests/unit$'
 assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^-x$'
 
+# setup.sh --deps-only should support uv projects at the repo root and in agent/.
+FAKE_BIN="$TEST_DIR/fake-bin"
+UV_LOG="$TEST_DIR/uv.log"
+mkdir -p "$FAKE_BIN" "$PROJECT/agent"
+cat > "$FAKE_BIN/uv" <<'FAKEUV'
+#!/usr/bin/env bash
+printf '%s|%s\n' "$PWD" "$*" >> "$UV_LOG"
+mkdir -p .venv/bin
+cat > .venv/bin/python <<'FAKEPY'
+#!/usr/bin/env bash
+exit 0
+FAKEPY
+chmod +x .venv/bin/python
+printf 'uv synced\n'
+FAKEUV
+chmod +x "$FAKE_BIN/uv"
+
+printf '[project]\nname = "root-project"\nversion = "0.0.0"\n' > "$PROJECT/pyproject.toml"
+touch "$PROJECT/uv.lock"
+printf '[project]\nname = "agent-project"\nversion = "0.0.0"\n' > "$PROJECT/agent/pyproject.toml"
+printf '3.11\n' > "$PROJECT/agent/.python-version"
+
+(cd "$PROJECT" && PATH="$FAKE_BIN:$PATH" UV_LOG="$UV_LOG" bash setup.sh --deps-only) >/dev/null
+assert_exists "$PROJECT/.venv/bin/python"
+assert_exists "$PROJECT/agent/.venv/bin/python"
+UV_SYNC_COUNT="$(grep -c '|sync$' "$UV_LOG" 2>/dev/null || true)"
+if [ "$UV_SYNC_COUNT" -ne 2 ]; then
+  echo "FAIL: expected setup.sh --deps-only to run uv sync twice, got $UV_SYNC_COUNT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo ""
 if [ "$ERRORS" -eq 0 ]; then
   echo "==> PASS: all assertions passed"

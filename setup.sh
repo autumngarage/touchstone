@@ -22,10 +22,25 @@ ok()    { printf "  ${GREEN}✓${RESET} %s\n" "$*"; }
 warn()  { printf "  ${YELLOW}!${RESET} %s\n" "$*"; }
 fail()  { printf "  ${RED}✗${RESET} %s\n" "$*"; }
 
+DEPS_ONLY=false
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --deps-only) DEPS_ONLY=true; shift ;;
+    -h|--help)
+      echo "Usage: bash setup.sh [--deps-only]"
+      exit 0
+      ;;
+    *) fail "Unknown argument: $1"; exit 1 ;;
+  esac
+done
+
 PROJECT_NAME="$(basename "$(pwd)")"
 echo ""
 printf "${BOLD}Setting up ${PROJECT_NAME}${RESET}\n"
 echo ""
+
+if [ "$DEPS_ONLY" = false ]; then
 
 # --------------------------------------------------------------------------
 # 1. Homebrew (required foundation)
@@ -131,6 +146,8 @@ else
   warn "gh not authenticated. Run: gh auth login"
 fi
 
+fi
+
 # --------------------------------------------------------------------------
 # 8. Project dependencies
 # --------------------------------------------------------------------------
@@ -196,6 +213,33 @@ install_python_requirements() {
   done
 }
 
+install_uv_if_missing() {
+  if command -v uv >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if command -v brew >/dev/null 2>&1; then
+    warn "Installing uv..."
+    brew install uv 2>/dev/null
+    ok "uv installed"
+    return 0
+  fi
+
+  warn "uv is required for uv.lock/pyproject.toml projects. Install uv first."
+  return 1
+}
+
+install_uv_project() {
+  local label="$1"
+  local project_dir="$2"
+
+  if install_uv_if_missing; then
+    (cd "$project_dir" && uv sync) 2>&1 | tail -1 | while read -r line; do
+      ok "$label dependencies synced: $line"
+    done
+  fi
+}
+
 DEPS_FOUND=false
 
 if [ -f "pnpm-lock.yaml" ]; then
@@ -223,12 +267,24 @@ elif [ -f "package.json" ]; then
   fi
 fi
 
-if [ -f "requirements.txt" ]; then
+if [ -f "uv.lock" ]; then
+  DEPS_FOUND=true
+  install_uv_project "Python" "."
+elif [ -f "pyproject.toml" ] && [ ! -f "requirements.txt" ]; then
+  DEPS_FOUND=true
+  install_uv_project "Python" "."
+elif [ -f "requirements.txt" ]; then
   DEPS_FOUND=true
   install_python_requirements "Python" "requirements.txt" ".venv"
 fi
 
-if [ -f "agent/requirements.txt" ]; then
+if [ -f "agent/uv.lock" ]; then
+  DEPS_FOUND=true
+  install_uv_project "agent Python" "agent"
+elif [ -f "agent/pyproject.toml" ] && [ ! -f "agent/requirements.txt" ]; then
+  DEPS_FOUND=true
+  install_uv_project "agent Python" "agent"
+elif [ -f "agent/requirements.txt" ]; then
   DEPS_FOUND=true
   install_python_requirements "agent Python" "agent/requirements.txt" "agent/.venv"
 fi

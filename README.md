@@ -28,6 +28,9 @@ pre-commit install --install-hooks
 
 # Set up Codex pre-push review (optional)
 npm install -g @openai/codex && codex login
+
+# Re-run dependency setup later without reinstalling hooks/tools
+bash setup.sh --deps-only
 ```
 
 ## Commands
@@ -63,6 +66,8 @@ When you run `toolkit new`, these files get copied into your project:
 - `scripts/merge-pr.sh` — Squash-merge + sync main
 - `scripts/cleanup-branches.sh` — Safe branch hygiene
 - `scripts/run-pytest-in-venv.sh` — Run pytest through `.venv` or `agent/.venv`
+
+`setup.sh` installs Python dependencies into project virtualenvs. It supports `requirements.txt`, `uv.lock`, and `pyproject.toml` at the repo root and under `agent/`.
 
 ### Keeping projects up to date
 
