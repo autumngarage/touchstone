@@ -4,6 +4,7 @@
 #
 # Usage:
 #   toolkit new <project-dir>          Create a new project with toolkit files
+#   toolkit init [--no-setup]          Add toolkit to the current project
 #   toolkit update                     Update current project to latest toolkit
 #   toolkit update --dry-run           Show what would change without applying
 #   toolkit sync                       Update all registered projects
@@ -71,16 +72,66 @@ escape_sed_replacement() {
 
 cmd_new() {
   if [ "$#" -lt 1 ]; then
-    echo "Usage: toolkit new <project-dir> [--no-register]" >&2
+    echo "Usage: toolkit new <project-dir> [--no-register] [--unsafe-paths path1,path2]" >&2
     exit 1
   fi
+  case "${1:-}" in
+    -h|--help)
+      echo "Usage: toolkit new <project-dir> [--no-register] [--unsafe-paths path1,path2]"
+      return 0
+      ;;
+  esac
   exec bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$@"
 }
 
 cmd_init() {
   # Init the current directory — bootstrap + setup in one command.
-  bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$(pwd)" "$@"
-  if [ -f "$(pwd)/setup.sh" ]; then
+  local run_setup=true
+  local setup_existed=false
+  local args=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --no-setup)
+        run_setup=false
+        shift
+        ;;
+      -h|--help)
+        echo "Usage: toolkit init [--no-setup] [--no-register] [--unsafe-paths path1,path2]"
+        return 0
+        ;;
+      --no-register)
+        args+=("$1")
+        shift
+        ;;
+      --unsafe-paths)
+        if [ "$#" -lt 2 ]; then
+          echo "ERROR: --unsafe-paths requires a comma-separated value" >&2
+          exit 1
+        fi
+        args+=("$1" "$2")
+        shift 2
+        ;;
+      *)
+        echo "ERROR: unknown argument '$1'" >&2
+        echo "Usage: toolkit init [--no-setup] [--no-register] [--unsafe-paths path1,path2]" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if [ -e "$(pwd)/setup.sh" ]; then
+    setup_existed=true
+  fi
+
+  bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$(pwd)" "${args[@]}"
+
+  if [ "$run_setup" = true ] && [ -f "$(pwd)/setup.sh" ]; then
+    if [ "$setup_existed" = true ]; then
+      tk_warn "setup.sh already existed, so toolkit left it in place and did not run it."
+      tk_dim "Run manually if desired: bash setup.sh"
+      return 0
+    fi
     echo ""
     bash "$(pwd)/setup.sh"
   fi
@@ -470,7 +521,7 @@ cmd_release() {
 cmd_help() {
   tk_header "toolkit — shared engineering toolkit"
   echo "  ${BOLD}Project commands:${RESET}"
-  printf "    ${BOLD}toolkit init${RESET}                   Add toolkit to the current project\n"
+  printf "    ${BOLD}toolkit init${RESET} [--no-setup]      Add toolkit to the current project\n"
   printf "    ${BOLD}toolkit new${RESET} <dir>              Bootstrap a new project from scratch\n"
   printf "    ${BOLD}toolkit update${RESET}                 Update current project to latest\n"
   printf "    ${BOLD}toolkit update${RESET} --dry-run       Preview what would change\n"

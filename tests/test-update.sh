@@ -27,6 +27,13 @@ assert_not_exists() {
   fi
 }
 
+assert_contains() {
+  if ! grep -q "$2" "$1" 2>/dev/null; then
+    echo "FAIL: expected $1 to contain '$2'" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+}
+
 PROJECT="$TEST_DIR/test-project"
 
 # --------------------------------------------------------------------------
@@ -73,6 +80,8 @@ echo "0000000000000000000000000000000000000000" > "$PROJECT/.toolkit-version"
 # Verify .bak was created.
 assert_exists "$PROJECT/principles/engineering-principles.md.bak"
 assert_exists "$PROJECT/scripts/run-pytest-in-venv.sh"
+assert_contains "$TEST_DIR/update-output-2.txt" 'toolkit diff'
+assert_contains "$TEST_DIR/update-output-2.txt" '.codex-review.toml'
 
 # Verify the current file matches the toolkit version (not the modified one).
 if diff -q "$TOOLKIT_ROOT/principles/engineering-principles.md" "$PROJECT/principles/engineering-principles.md" >/dev/null 2>&1; then

@@ -23,6 +23,10 @@ TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REGISTER=true
 INPUT_UNSAFE=""
 
+usage() {
+  echo "Usage: $0 <project-dir> [--no-register] [--unsafe-paths path1,path2]"
+}
+
 trim() {
   local value="$1"
   value="${value#"${value%%[![:space:]]*}"}"
@@ -102,15 +106,28 @@ next_backup_path() {
 }
 
 if [ "$#" -lt 1 ]; then
-  echo "Usage: $0 <project-dir> [--no-register] [--unsafe-paths path1,path2]" >&2
+  usage >&2
   exit 1
 fi
+
+case "$1" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  -*)
+    echo "ERROR: missing project-dir before option '$1'" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
 
 PROJECT_DIR="$1"
 shift
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    -h|--help) usage; exit 0 ;;
     --no-register) REGISTER=false; shift ;;
     --unsafe-paths)
       [ "$#" -ge 2 ] || { echo "ERROR: --unsafe-paths requires a comma-separated value" >&2; exit 1; }
