@@ -2,7 +2,7 @@
 #
 # lib/release.sh — automate the toolkit release cycle.
 #
-# Bumps VERSION, tags, creates GitHub release, computes SHA,
+# Bumps VERSION, commits, tags, pushes main, creates GitHub release, computes SHA,
 # clones the homebrew tap to a temp dir, updates the formula, pushes, cleans up.
 #
 set -euo pipefail
@@ -51,8 +51,8 @@ toolkit_release() {
   git -C "$TOOLKIT_ROOT" add VERSION
   git -C "$TOOLKIT_ROOT" commit --no-verify -m "v${new_version}"
   git -C "$TOOLKIT_ROOT" tag "v${new_version}"
-  git -C "$TOOLKIT_ROOT" push --no-verify --tags
-  tk_ok "Committed, tagged, pushed v${new_version}"
+  git -C "$TOOLKIT_ROOT" push --no-verify origin main "v${new_version}"
+  tk_ok "Committed, tagged, pushed main and v${new_version}"
 
   # Create GitHub release.
   gh release create "v${new_version}" \
