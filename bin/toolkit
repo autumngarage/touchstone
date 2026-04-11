@@ -19,9 +19,17 @@
 #
 set -euo pipefail
 
-# Resolve TOOLKIT_ROOT — works whether installed via brew or running from clone.
-REAL_PATH="$(python3 -c "import os; print(os.path.realpath('$0'))")"
-TOOLKIT_ROOT="$(cd "$(dirname "$REAL_PATH")/.." && pwd)"
+# Resolve TOOLKIT_ROOT — works whether installed via brew symlink or clone.
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+while [ -h "$SCRIPT_PATH" ]; do
+  SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+  LINK_TARGET="$(readlink "$SCRIPT_PATH")"
+  case "$LINK_TARGET" in
+    /*) SCRIPT_PATH="$LINK_TARGET" ;;
+    *) SCRIPT_PATH="$SCRIPT_DIR/$LINK_TARGET" ;;
+  esac
+done
+TOOLKIT_ROOT="$(cd -P "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 export TOOLKIT_ROOT
 
 # Source shared libraries.
@@ -51,6 +59,10 @@ toolkit_current_id_short() {
   else
     toolkit_version_str
   fi
+}
+
+escape_sed_replacement() {
+  printf '%s' "$1" | sed 's/[\\/&]/\\&/g'
 }
 
 # --------------------------------------------------------------------------
@@ -430,7 +442,8 @@ cmd_adr() {
       # Copy template and fill in.
       cp "$TOOLKIT_ROOT/templates/adr/0000-template.md" "$filename"
       sed -i '' "s/NNNN/$padded/g" "$filename"
-      sed -i '' "s/TITLE/$title/g" "$filename"
+      escaped_title="$(escape_sed_replacement "$title")"
+      sed -i '' "s/TITLE/$escaped_title/g" "$filename"
       sed -i '' "s/DATE/$today/g" "$filename"
 
       tk_ok "Created: $filename"

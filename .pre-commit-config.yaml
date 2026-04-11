@@ -31,7 +31,7 @@ repos:
     hooks:
       - id: self-tests
         name: Toolkit self-tests
-        entry: bash -c 'bash tests/test-bootstrap.sh && bash tests/test-update.sh'
+        entry: bash -c 'set -e; for test in tests/test-*.sh; do bash "$test"; done'
         language: system
         stages: [pre-push]
         always_run: true
