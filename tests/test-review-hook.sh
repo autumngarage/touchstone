@@ -25,6 +25,7 @@ unset PRE_COMMIT_FROM_REF PRE_COMMIT_TO_REF
 unset PRE_COMMIT_LOCAL_BRANCH PRE_COMMIT_REMOTE_BRANCH
 unset PRE_COMMIT_REMOTE_NAME PRE_COMMIT_REMOTE_URL
 unset CODEX_REVIEW_FORCE CODEX_REVIEW_NO_AUTOFIX CODEX_REVIEW_DISABLE_CACHE
+unset CODEX_REVIEW_IN_PROGRESS
 
 mkdir -p "$REPO_DIR" "$FAKE_BIN"
 git -C "$REPO_DIR" init >/dev/null 2>&1
@@ -129,8 +130,31 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: review hook skips nested Codex review subprocesses"
+: > "$CODEX_CALLS_FILE"
+
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
+    CODEX_REVIEW_IN_PROGRESS=1 \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$TEST_DIR/nested-review-output.txt" 2>&1
+)
+
+CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+if [ "$CODEX_CALL_COUNT" = "0" ] && grep -q 'skipping nested Codex review' "$TEST_DIR/nested-review-output.txt"; then
+  echo "==> PASS: nested Codex review skipped"
+else
+  echo "FAIL: expected nested Codex review to skip Codex" >&2
+  echo "codex call count: $CODEX_CALL_COUNT" >&2
+  cat "$TEST_DIR/nested-review-output.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: review hook caches exact clean reviews"
-rm -rf "$(cd "$REPO_DIR" && git rev-parse --git-path toolkit/codex-review-clean)"
+rm -rf "$(git -C "$REPO_DIR" rev-parse --absolute-git-dir)/toolkit/codex-review-clean"
 cat > "$FAKE_BIN/codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
