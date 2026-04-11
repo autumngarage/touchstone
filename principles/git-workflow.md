@@ -7,9 +7,9 @@ Every code change goes through a feature branch + PR + merge. No exceptions for 
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
 2. **Branch.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`.
 3. **Change + commit.** Make the code change, stage explicit file paths (not `git add -A`), commit with a concise message.
-4. **Push.** `git push -u origin HEAD` or use `scripts/open-pr.sh`. If a pre-push Codex review hook is configured, it runs automatically and may apply auto-fixes or block the push with findings.
+4. **Push.** `git push -u origin HEAD` or use `scripts/open-pr.sh`. Feature-branch pushes should stay fast; Codex review is reserved for merge/default-branch gates.
 5. **Open the PR.** `scripts/open-pr.sh` creates the PR with the project's PR template attached. Idempotent — rerunning on a branch that already has a PR just prints the URL.
-6. **Merge.** `scripts/merge-pr.sh <pr-number>` — sanity-checks mergeability, squash-merges, deletes the remote branch, pulls the updated default branch locally.
+6. **Merge.** `scripts/merge-pr.sh <pr-number>` — sanity-checks mergeability, runs Codex review, squash-merges, deletes the remote branch, pulls the updated default branch locally.
 7. **Clean up.** Delete the local feature branch. Run `scripts/cleanup-branches.sh` periodically for batch hygiene.
 
 ## Commit discipline
@@ -18,12 +18,12 @@ Every code change goes through a feature branch + PR + merge. No exceptions for 
 - Logically grouped changes. One concern per commit where practical.
 - Stage explicit file paths, not `git add -A` or `git add .` — this prevents accidentally staging sensitive files (.env, credentials) or large binaries.
 
-## Pre-push review (optional, recommended)
+## Codex merge review (optional, recommended)
 
-If the project has Codex review configured (see `hooks/codex-review.sh` and `.codex-review.toml`), the pre-push hook:
+If the project has Codex review configured (see `hooks/codex-review.sh` and `.codex-review.toml`), the merge/default-branch review gate:
 - Runs `codex exec --full-auto` against the diff vs the default branch
 - Auto-fixes safe findings (typos, missing error logging, etc.)
-- Blocks the push for unsafe findings (high-scrutiny paths)
+- Blocks the merge or direct default-branch push for unsafe findings (high-scrutiny paths)
 - Loops up to `max_iterations` times (default 3)
 - Gracefully skips if the Codex CLI isn't installed
 

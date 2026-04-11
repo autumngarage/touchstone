@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# hooks/codex-review.sh — non-interactive Codex review + auto-fix loop,
-# run as a pre-push hook. Wired into .pre-commit-config.yaml.
+# hooks/codex-review.sh — non-interactive Codex review + auto-fix loop.
+# Wired into merge-pr.sh and default-branch pre-push checks.
 #
 # Loop:
 #   1. Run `codex exec --full-auto` against the local diff vs the default branch
@@ -25,6 +25,8 @@
 #   CODEX_REVIEW_MAX_DIFF_LINES   — skip review if diff > this many lines (default: 5000)
 #   CODEX_REVIEW_CACHE_CLEAN      — cache exact-input clean reviews (default: true)
 #   CODEX_REVIEW_DISABLE_CACHE    — set to true/1 to force a fresh Codex review
+#   CODEX_REVIEW_FORCE            — set to true/1 to run even on non-default-branch pushes
+#   CODEX_REVIEW_NO_AUTOFIX       — set to true/1 for review-only mode
 #
 # To bypass entirely in an emergency: git push --no-verify
 #
@@ -47,6 +49,7 @@ SAFE_BY_DEFAULT=false
 MAX_ITERATIONS="${CODEX_REVIEW_MAX_ITERATIONS:-3}"
 MAX_DIFF_LINES="${CODEX_REVIEW_MAX_DIFF_LINES:-5000}"
 CACHE_CLEAN_REVIEWS="${CODEX_REVIEW_CACHE_CLEAN:-true}"
+NO_AUTOFIX="${CODEX_REVIEW_NO_AUTOFIX:-false}"
 UNSAFE_PATHS=""
 
 trim() {
@@ -218,6 +221,43 @@ resolve_default_branch() {
 
 DEFAULT_BRANCH="$(resolve_default_branch)"
 BASE="${CODEX_REVIEW_BASE:-origin/$DEFAULT_BRANCH}"
+NO_AUTOFIX="$(normalize_bool "$NO_AUTOFIX")"
+
+short_ref_name() {
+  local ref="$1"
+  ref="${ref#refs/heads/}"
+  ref="${ref#refs/remotes/origin/}"
+  printf '%s' "$ref"
+}
+
+is_truthy() {
+  case "$(normalize_bool "${1:-false}")" in
+    true) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_pre_push_hook() {
+  [ "${PRE_COMMIT:-}" = "1" ] && [ -n "${PRE_COMMIT_REMOTE_BRANCH:-}" ]
+}
+
+should_skip_pre_push_review() {
+  local remote_branch default_branch
+
+  is_pre_push_hook || return 1
+  is_truthy "${CODEX_REVIEW_FORCE:-false}" && return 1
+
+  remote_branch="$(short_ref_name "$PRE_COMMIT_REMOTE_BRANCH")"
+  default_branch="$(short_ref_name "$DEFAULT_BRANCH")"
+
+  if [ "$remote_branch" = "$default_branch" ]; then
+    return 1
+  fi
+
+  echo "==> Codex review runs on pushes to $default_branch only — skipping push to $remote_branch."
+  echo "    Force review with: CODEX_REVIEW_FORCE=1 git push"
+  return 0
+}
 
 # --------------------------------------------------------------------------
 # Build the auto-fix policy section of the prompt from config
@@ -225,6 +265,20 @@ BASE="${CODEX_REVIEW_BASE:-origin/$DEFAULT_BRANCH}"
 
 build_autofix_policy() {
   local policy=""
+
+  if [ "$NO_AUTOFIX" = "true" ]; then
+    cat <<'POLICY_EOF'
+Do not edit files in this run. Do not stage, commit, or modify anything.
+
+Review only:
+- If there are no blocking issues, emit CLEAN.
+- If any issue needs a code or documentation change, emit BLOCKED with findings.
+- Do not emit FIXED.
+
+When in doubt, STOP and emit BLOCKED.
+POLICY_EOF
+    return 0
+  fi
 
   if [ "$SAFE_BY_DEFAULT" = "true" ]; then
     policy="By default, all paths are SAFE to auto-fix unless listed as unsafe."
@@ -270,6 +324,12 @@ When in doubt, STOP and emit BLOCKED."
 # Pre-flight checks
 # --------------------------------------------------------------------------
 
+# Feature-branch pushes should stay fast. Manual invocations and direct pushes
+# to the default branch still run the review.
+if should_skip_pre_push_review; then
+  exit 0
+fi
+
 # Graceful skip if Codex CLI not installed.
 if ! command -v codex >/dev/null 2>&1; then
   echo "==> codex CLI not installed — skipping Codex review."
@@ -307,7 +367,7 @@ fi
 AUTOFIX_POLICY="$(build_autofix_policy)"
 
 read -r -d '' REVIEW_PROMPT <<PROMPT_EOF || true
-You are reviewing AND optionally auto-fixing a pull request before it is pushed.
+You are reviewing AND optionally auto-fixing a pull request before it reaches the default branch.
 
 Read AGENTS.md at the repo root for the full review rubric (if it exists).
 Read CLAUDE.md at the repo root for project context (if it exists).
@@ -324,7 +384,7 @@ $AUTOFIX_POLICY
 
 The LAST line of your output must be exactly one of these three sentinels (no extra characters, no trailing whitespace):
 
-- CODEX_REVIEW_CLEAN — no blocking issues found, push should proceed
+- CODEX_REVIEW_CLEAN — no blocking issues found, operation should proceed
 - CODEX_REVIEW_FIXED — you applied auto-fixes, script will commit and re-review
 - CODEX_REVIEW_BLOCKED — you found blocking issues you cannot/should not auto-fix
 
@@ -505,7 +565,7 @@ print_banner() {
 
   ╔══════════════════════════════════════╗
   ║         ⚡ TOOLKIT REVIEW ⚡        ║
-  ║      Codex pre-push code review      ║
+  ║        Codex merge code review       ║
   ╚══════════════════════════════════════╝
 
 BANNER
@@ -566,6 +626,13 @@ PASS
       ;;
 
     CODEX_REVIEW_FIXED)
+      if [ "$NO_AUTOFIX" = "true" ]; then
+        echo "==> Codex emitted FIXED during review-only mode."
+        echo "    Treating this as blocking because CODEX_REVIEW_NO_AUTOFIX=1 was set."
+        echo "    Inspect the working tree before continuing."
+        exit 1
+      fi
+
       AUTOFIX_CHANGED_PATHS="$(changed_paths)"
       if [ -z "$AUTOFIX_CHANGED_PATHS" ]; then
         echo "==> Codex emitted FIXED but no working-tree changes detected."

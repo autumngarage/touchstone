@@ -2,7 +2,7 @@
 
 ## Who You Are on This Project
 
-You are maintaining a shared engineering platform that provides universal principles, reusable scripts, and a Codex pre-push review hook for all of Henry's projects. Changes here propagate to every downstream project via `sync-all.sh`. Quality matters doubly: a bug in the toolkit is a bug in every project that uses it.
+You are maintaining a shared engineering platform that provides universal principles, reusable scripts, and a Codex merge/default-branch review hook for all of Henry's projects. Changes here propagate to every downstream project via `sync-all.sh`. Quality matters doubly: a bug in the toolkit is a bug in every project that uses it.
 
 ## Engineering Principles
 
@@ -20,8 +20,8 @@ You are maintaining a shared engineering platform that provides universal princi
 1. **Pull.** `git pull --rebase` on main before starting work.
 2. **Branch.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`.
 3. **Change + commit.** Make the code change, stage explicit file paths, commit with a concise message.
-4. **Push.** `bash scripts/open-pr.sh` (which pushes + creates the PR). The pre-push hook runs Codex review if configured.
-5. **Merge.** `bash scripts/merge-pr.sh <pr-number>` — squash-merge, delete branch, sync main.
+4. **Push.** `bash scripts/open-pr.sh` (which pushes + creates the PR). Feature-branch pushes stay fast.
+5. **Merge.** `bash scripts/merge-pr.sh <pr-number>` — Codex review, squash-merge, delete branch, sync main.
 6. **Clean up.** `git branch -D <feature-branch>` if it still exists locally.
 
 ### Housekeeping
@@ -64,7 +64,7 @@ toolkit/
 | `bootstrap/new-project.sh` | Spin up a new project with all toolkit files |
 | `bootstrap/update-project.sh` | Pull latest toolkit files into an existing project |
 | `bootstrap/sync-all.sh` | Update all registered projects at once |
-| `hooks/codex-review.sh` | Generalized Codex pre-push review + auto-fix hook |
+| `hooks/codex-review.sh` | Generalized Codex merge/default-branch review + auto-fix hook |
 | `VERSION` | Current semver version |
 | `CHANGELOG.md` | Release history |
 | `~/.toolkit-projects` | Registry of all bootstrapped projects |

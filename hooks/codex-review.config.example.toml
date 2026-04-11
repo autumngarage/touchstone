@@ -1,4 +1,4 @@
-# .codex-review.toml — per-project configuration for the Codex pre-push review hook.
+# .codex-review.toml — per-project configuration for the Codex review hook.
 #
 # Place this file at the repo root. The hook reads it automatically.
 # If this file is missing, the hook uses conservative defaults (all paths unsafe).

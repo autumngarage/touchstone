@@ -7,8 +7,9 @@
 #
 # What this does:
 #   1. Verifies the PR is open and mergeable.
-#   2. Squash-merges and deletes the remote branch.
-#   3. Checks out the default branch and pulls the updated state.
+#   2. Runs Codex review as a merge gate.
+#   3. Squash-merges and deletes the remote branch.
+#   4. Checks out the default branch and pulls the updated state.
 #
 # Exit codes:
 #   0 — merged cleanly
@@ -18,6 +19,9 @@
 set -euo pipefail
 
 PR_NUMBER="${1:-}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REVIEW_SCRIPT="$SCRIPT_DIR/codex-review.sh"
+REVIEWED_HEAD_OID=""
 
 if [ -z "$PR_NUMBER" ] || ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
   echo "Usage: bash scripts/merge-pr.sh <pr-number>" >&2
@@ -32,8 +36,88 @@ fi
 # Resolve the default branch.
 DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo main)"
 
+truthy() {
+  case "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" in
+    true|1|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+run_codex_merge_review() {
+  local current_branch default_base_ref local_head pr_head_branch pr_head_oid
+
+  if ! pr_head_branch="$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null)"; then
+    echo "ERROR: Failed to resolve PR #$PR_NUMBER head branch." >&2
+    exit 1
+  fi
+  if ! pr_head_oid="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null)"; then
+    echo "ERROR: Failed to resolve PR #$PR_NUMBER head commit." >&2
+    exit 1
+  fi
+  if [ -z "$pr_head_branch" ]; then
+    echo "ERROR: PR #$PR_NUMBER head branch is empty." >&2
+    exit 1
+  fi
+  if [ -z "$pr_head_oid" ]; then
+    echo "ERROR: PR #$PR_NUMBER head commit is empty." >&2
+    exit 1
+  fi
+
+  REVIEWED_HEAD_OID="$pr_head_oid"
+
+  if truthy "${SKIP_CODEX_REVIEW:-false}"; then
+    echo "==> Skipping Codex merge review because SKIP_CODEX_REVIEW is set."
+    return 0
+  fi
+
+  if [ ! -f "$REVIEW_SCRIPT" ]; then
+    echo "==> Codex review script not found at $REVIEW_SCRIPT — skipping review."
+    return 0
+  fi
+
+  default_base_ref="origin/$DEFAULT_BRANCH"
+  echo "==> Refreshing $default_base_ref for Codex review ..."
+  if ! git fetch origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"; then
+    echo "ERROR: Failed to refresh $default_base_ref before Codex review." >&2
+    exit 1
+  fi
+  if ! git rev-parse --verify --quiet "$default_base_ref^{commit}" >/dev/null; then
+    echo "ERROR: Could not verify $default_base_ref before Codex review." >&2
+    exit 1
+  fi
+
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "ERROR: Working tree has uncommitted changes; refusing to run Codex review against an ambiguous tree." >&2
+    exit 1
+  fi
+
+  current_branch="$(git rev-parse --abbrev-ref HEAD)"
+  local_head="$(git rev-parse HEAD)"
+  if [ "$current_branch" != "$pr_head_branch" ] || [ "$local_head" != "$pr_head_oid" ]; then
+    echo "==> Checking out PR #$PR_NUMBER head ($pr_head_branch) for Codex review ..."
+    gh pr checkout "$PR_NUMBER" --detach
+    local_head="$(git rev-parse HEAD)"
+  fi
+
+  if [ "$local_head" != "$pr_head_oid" ]; then
+    echo "ERROR: Local review checkout does not match PR #$PR_NUMBER head commit." >&2
+    echo "       expected: $pr_head_oid" >&2
+    echo "       actual:   $local_head" >&2
+    exit 1
+  fi
+
+  echo "==> Running Codex merge review ..."
+  CODEX_REVIEW_BASE="$default_base_ref" \
+    CODEX_REVIEW_FORCE=1 \
+    CODEX_REVIEW_NO_AUTOFIX=1 \
+    bash "$REVIEW_SCRIPT"
+}
+
 # 1. Sanity check the PR exists and is open.
-PR_STATE="$(gh pr view "$PR_NUMBER" --json state --jq '.state' 2>/dev/null || echo "")"
+if ! PR_STATE="$(gh pr view "$PR_NUMBER" --json state --jq '.state')"; then
+  echo "ERROR: Failed to inspect PR #$PR_NUMBER state with gh." >&2
+  exit 1
+fi
 if [ "$PR_STATE" != "OPEN" ]; then
   echo "ERROR: PR #$PR_NUMBER is not open (state: $PR_STATE)." >&2
   exit 1
@@ -67,11 +151,18 @@ if [ "$STATE" != "CLEAN" ] || [ "$MERGEABLE" != "MERGEABLE" ]; then
   exit 1
 fi
 
-# 3. Squash-merge and delete the branch.
-echo "==> Squash-merging PR #$PR_NUMBER ..."
-gh pr merge "$PR_NUMBER" --squash --delete-branch
+# 3. Run Codex as the merge gate.
+run_codex_merge_review
 
-# 4. Sync local default branch.
+# 4. Squash-merge and delete the branch.
+echo "==> Squash-merging PR #$PR_NUMBER ..."
+if [ -z "$REVIEWED_HEAD_OID" ]; then
+  echo "ERROR: Cannot merge PR #$PR_NUMBER because no reviewed head commit was recorded." >&2
+  exit 1
+fi
+gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID"
+
+# 5. Sync local default branch.
 echo "==> Merged. Updating local $DEFAULT_BRANCH ..."
 CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 if [ "$CURRENT_BRANCH" != "$DEFAULT_BRANCH" ]; then

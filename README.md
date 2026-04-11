@@ -1,6 +1,6 @@
 # toolkit
 
-Shared engineering toolkit — universal principles, reusable scripts, and a Codex pre-push review hook for all your projects.
+Shared engineering toolkit — universal principles, reusable scripts, and a Codex merge/default-branch review hook for all your projects.
 
 ## Install
 
@@ -25,7 +25,7 @@ $EDITOR ~/Repos/my-new-project/AGENTS.md
 cd ~/Repos/my-new-project
 bash setup.sh
 
-# Set up Codex login if you want pre-push AI review
+# Set up Codex login if you want AI review before merging to main
 npm install -g @openai/codex && codex login
 
 # Re-run dependency setup later without reinstalling hooks/tools
@@ -64,9 +64,9 @@ When you run `toolkit new`, these files get copied into your project:
 
 **Toolkit-owned** (auto-updated when you run `toolkit update` or `toolkit sync`):
 - `principles/*.md` — Universal engineering principles
-- `scripts/codex-review.sh` — Codex pre-push review + auto-fix loop
+- `scripts/codex-review.sh` — Codex merge/default-branch review + auto-fix loop
 - `scripts/open-pr.sh` — Push + create PR via `gh`
-- `scripts/merge-pr.sh` — Squash-merge + sync main
+- `scripts/merge-pr.sh` — Codex review + squash-merge + sync main
 - `scripts/cleanup-branches.sh` — Safe branch hygiene
 - `scripts/run-pytest-in-venv.sh` — Run pytest through `.venv` or `agent/.venv`
 
@@ -98,14 +98,15 @@ Universal engineering standards, extracted and battle-tested from production sys
 - **[pre-implementation-checklist.md](principles/pre-implementation-checklist.md)** — 4 questions to answer before writing any code
 - **[audit-weak-points.md](principles/audit-weak-points.md)** — Methodology: find one bug → audit the whole class → ranked fix → guardrail test
 - **[documentation-ownership.md](principles/documentation-ownership.md)** — Single canonical owner per volatile fact
-- **[git-workflow.md](principles/git-workflow.md)** — Feature branch → pre-push review → PR → squash merge
+- **[git-workflow.md](principles/git-workflow.md)** — Feature branch → PR → Codex merge review → squash merge
 
-### Codex pre-push hook
+### Codex Review Gate
 
-Automatically reviews your code before every `git push`:
+Automatically reviews code before it reaches the default branch:
 - Runs `codex exec --full-auto` against your diff
 - Auto-fixes safe issues (typos, missing error logging)
-- Blocks the push for unsafe findings (high-scrutiny paths you configure)
+- Blocks the merge or direct default-branch push for unsafe findings (high-scrutiny paths you configure)
+- Runs from `scripts/merge-pr.sh`, and from the pre-push hook only when pushing directly to the default branch
 - Loops up to N times, gracefully skips if Codex isn't installed
 
 Configure per-project behavior in `.codex-review.toml`. Write your review rubric in `AGENTS.md`. See [hooks/README.md](hooks/README.md) for details.
@@ -113,7 +114,7 @@ Configure per-project behavior in `.codex-review.toml`. Write your review rubric
 ### Helper scripts
 
 - **open-pr.sh** — `git push` + `gh pr create` with your PR template. Idempotent.
-- **merge-pr.sh** — Sanity-check mergeability + squash-merge + delete branch + sync main.
+- **merge-pr.sh** — Sanity-check mergeability + Codex review + squash-merge + delete branch + sync main.
 - **cleanup-branches.sh** — Dry-run by default. Never deletes unmerged work.
 
 ## Project structure
@@ -124,7 +125,7 @@ toolkit/
 ├── lib/             # shared libraries (auto-update)
 ├── principles/      # universal engineering docs
 ├── templates/       # starter files for new projects
-├── hooks/           # Codex pre-push hook
+├── hooks/           # Codex review hook
 ├── scripts/         # helper scripts (open-pr, merge-pr, cleanup)
 ├── bootstrap/       # new-project.sh, update-project.sh, sync-all.sh
 └── tests/           # self-tests
