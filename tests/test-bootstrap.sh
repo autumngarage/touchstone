@@ -39,6 +39,9 @@ assert_contains() {
 }
 
 PROJECT="$TEST_DIR/test-project"
+PROJECT_WITH_UNSAFE="$TEST_DIR/test-project-unsafe"
+PROJECT_EXISTING="$TEST_DIR/test-project-existing"
+PROJECT_EXISTING_CONFIG="$TEST_DIR/test-project-existing-config"
 
 # Git repo
 assert_exists "$PROJECT/.git"
@@ -75,6 +78,39 @@ assert_contains "$PROJECT/.toolkit-version" "[a-f0-9]"
 
 # Verify CLAUDE.md has principle imports
 assert_contains "$PROJECT/CLAUDE.md" "@principles/"
+
+# Bootstrap with explicit unsafe paths.
+bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$PROJECT_WITH_UNSAFE" --no-register --unsafe-paths "src/auth/,migrations/"
+assert_exists "$PROJECT_WITH_UNSAFE/.codex-review.toml"
+assert_contains "$PROJECT_WITH_UNSAFE/.codex-review.toml" '"src/auth/",'
+assert_contains "$PROJECT_WITH_UNSAFE/.codex-review.toml" '"migrations/",'
+assert_contains "$PROJECT_WITH_UNSAFE/.codex-review.toml" '^unsafe_paths = \[$'
+
+# Bootstrap into an existing directory should back up toolkit-owned files before replacing them.
+mkdir -p "$PROJECT_EXISTING/principles" "$PROJECT_EXISTING/scripts"
+printf 'custom principle\n' > "$PROJECT_EXISTING/principles/engineering-principles.md"
+printf 'custom script\n' > "$PROJECT_EXISTING/scripts/open-pr.sh"
+bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$PROJECT_EXISTING" --no-register
+assert_exists "$PROJECT_EXISTING/principles/engineering-principles.md.bak"
+assert_exists "$PROJECT_EXISTING/scripts/open-pr.sh.bak"
+assert_contains "$PROJECT_EXISTING/principles/engineering-principles.md.bak" 'custom principle'
+assert_contains "$PROJECT_EXISTING/scripts/open-pr.sh.bak" 'custom script'
+
+# Existing project-owned Codex config must not be rewritten by --unsafe-paths.
+mkdir -p "$PROJECT_EXISTING_CONFIG"
+{
+  printf '[codex_review]\n'
+  printf 'max_iterations = 9\n'
+  printf 'unsafe_paths = []\n'
+  printf 'safe_by_default = true\n'
+} > "$PROJECT_EXISTING_CONFIG/.codex-review.toml"
+bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$PROJECT_EXISTING_CONFIG" --no-register --unsafe-paths "src/auth/"
+assert_contains "$PROJECT_EXISTING_CONFIG/.codex-review.toml" '^unsafe_paths = \[\]$'
+assert_contains "$PROJECT_EXISTING_CONFIG/.codex-review.toml" '^safe_by_default = true$'
+if grep -q 'src/auth' "$PROJECT_EXISTING_CONFIG/.codex-review.toml"; then
+  echo "FAIL: expected existing .codex-review.toml unsafe_paths to remain unchanged" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 echo ""
 if [ "$ERRORS" -eq 0 ]; then

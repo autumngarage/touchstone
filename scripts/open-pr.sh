@@ -41,7 +41,9 @@ if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$UNTRACKED" ]; the
   echo "WARNING: working tree has uncommitted changes — they will NOT be included in this PR." >&2
   if [ -n "$UNTRACKED" ]; then
     echo "         Untracked files detected:" >&2
-    printf '           %s\n' $UNTRACKED >&2
+    while IFS= read -r untracked_file; do
+      printf '           %s\n' "$untracked_file" >&2
+    done <<< "$UNTRACKED"
   fi
   echo "         Commit them first if they should be part of the PR." >&2
   read -r -p "         Continue anyway? [y/N] " answer

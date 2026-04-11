@@ -44,9 +44,11 @@ echo "==> Checking merge state for PR #$PR_NUMBER ..."
 STATE=""
 MERGEABLE=""
 for attempt in 1 2 3 4 5; do
-  MERGE_STATE="$(gh pr view "$PR_NUMBER" --json mergeStateStatus,mergeable --jq '{state: .mergeStateStatus, mergeable: .mergeable}' 2>/dev/null || echo '{}')"
-  STATE="$(echo "$MERGE_STATE" | jq -r '.state // "UNKNOWN"' 2>/dev/null || echo UNKNOWN)"
-  MERGEABLE="$(echo "$MERGE_STATE" | jq -r '.mergeable // "UNKNOWN"' 2>/dev/null || echo UNKNOWN)"
+  MERGE_STATE="$(gh pr view "$PR_NUMBER" --json mergeStateStatus,mergeable --template '{{.mergeStateStatus}} {{.mergeable}}' 2>/dev/null || echo '')"
+  STATE="${MERGE_STATE%% *}"
+  MERGEABLE="${MERGE_STATE#* }"
+  [ -n "$STATE" ] || STATE="UNKNOWN"
+  [ -n "$MERGEABLE" ] || MERGEABLE="UNKNOWN"
   echo "    attempt $attempt: mergeStateStatus=$STATE mergeable=$MERGEABLE"
   if [ "$STATE" = "CLEAN" ] && [ "$MERGEABLE" = "MERGEABLE" ]; then
     break
