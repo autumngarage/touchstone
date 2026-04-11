@@ -14,7 +14,7 @@ The toolkit changes slowly but the ecosystem around it (Claude Code, Anthropic g
 - **Read + research + report only.** Do not edit `principles/`, `hooks/`, `lib/`, `scripts/`, `templates/`, `bin/`, `bootstrap/`, `completions/`, `tests/`, `CLAUDE.md`, `AGENTS.md`, `README.md`, `VERSION`, or `CHANGELOG.md`.
 - **Write exactly one output file**: `audits/YYYY-MM-DD-audit.md` (UTC date). If a file with that name already exists, append `-2`, `-3`, etc. No other file writes.
 - **No guessing.** If you are unsure whether a principle is still endorsed or whether a capability exists, say so in the report — don't invent a recommendation.
-- **Anthropic-official sources only.** Restrict research to `docs.claude.com`, `docs.anthropic.com`, and `anthropic.com`. No blogs, Medium, community repos, or third-party tutorials.
+- **Anthropic-official sources only.** Restrict research to `docs.claude.com`, `docs.anthropic.com`, `anthropic.com`, `code.claude.com` (Claude Code docs subdomain), and `platform.claude.com` (redirect target for some Claude platform docs). No blogs, Medium, community repos, or third-party tutorials.
 - **Scope is the toolkit repo.** Do not audit the downstream projects listed in `~/.toolkit-projects`.
 
 ## Execution plan
@@ -40,7 +40,7 @@ After reading, hold in working memory (do not write to a file):
 
 ### Phase 2 — Research current best practices
 
-Use `WebSearch` to discover current Anthropic-official guidance, then `WebFetch` the canonical pages. **Do not use a pinned URL list — URLs rot.** The search strategy is pinned; the destinations are rediscovered each run.
+Use `WebSearch` to discover current Anthropic-official guidance, then `WebFetch` the canonical pages. **Do not use a pinned URL list — URLs rot.** The search strategy is pinned; the destinations are rediscovered each run. When `WebSearch` is called with `allowed_domains`, pass the full allowlist from the Hard constraints section (`docs.claude.com`, `docs.anthropic.com`, `anthropic.com`, `code.claude.com`, `platform.claude.com`) so Claude Code and Claude Platform docs aren't filtered out.
 
 Search topics (run these as separate WebSearch queries, not one mega-query):
 
