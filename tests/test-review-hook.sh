@@ -15,6 +15,8 @@ REPO_UNSAFE="$TEST_DIR/repo-unsafe"
 FAKE_BIN="$TEST_DIR/bin"
 PROMPT_FILE="$TEST_DIR/review-prompt.txt"
 PROMPT_HASH_FILE="$TEST_DIR/review-prompt-hash.txt"
+CACHE_OUTPUT="$TEST_DIR/cache-output.txt"
+CODEX_CALLS_FILE="$TEST_DIR/codex-calls.txt"
 UNSAFE_OUTPUT="$TEST_DIR/unsafe-output.txt"
 ERRORS=0
 
@@ -53,6 +55,7 @@ chmod +x "$FAKE_BIN/gh" "$FAKE_BIN/codex"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     PROMPT_FILE="$PROMPT_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
     bash "$TOOLKIT_ROOT/hooks/codex-review.sh" >/dev/null
 )
 
@@ -67,7 +70,70 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: review hook caches exact clean reviews"
+rm -rf "$(cd "$REPO_DIR" && git rev-parse --git-path toolkit/codex-review-clean)"
+cat > "$FAKE_BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'called\n' >> "$CODEX_CALLS_FILE"
+printf 'CODEX_REVIEW_CLEAN\n'
+EOF
+chmod +x "$FAKE_BIN/codex"
+: > "$CODEX_CALLS_FILE"
+
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" >/dev/null
+)
+
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CACHE_OUTPUT" 2>&1
+)
+
+CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+if [ "$CODEX_CALL_COUNT" = "1" ] && grep -q 'previously passed for this exact diff' "$CACHE_OUTPUT"; then
+  echo "==> PASS: clean review cache skipped the repeated Codex call"
+else
+  echo "FAIL: expected clean review cache to skip the repeated Codex call" >&2
+  echo "codex call count: $CODEX_CALL_COUNT" >&2
+  cat "$CACHE_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" >/dev/null
+)
+
+CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+if [ "$CODEX_CALL_COUNT" = "2" ]; then
+  echo "==> PASS: CODEX_REVIEW_DISABLE_CACHE forces a fresh review"
+else
+  echo "FAIL: expected CODEX_REVIEW_DISABLE_CACHE to force a fresh review" >&2
+  echo "codex call count: $CODEX_CALL_COUNT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: review hook preserves # inside quoted unsafe_paths"
+cat > "$FAKE_BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="${@: -1}"
+printf '%s' "$prompt" > "$PROMPT_FILE"
+printf 'CODEX_REVIEW_CLEAN\n'
+EOF
+chmod +x "$FAKE_BIN/codex"
 {
   printf '[codex_review]\n'
   printf 'safe_by_default = true\n'
@@ -84,6 +150,7 @@ git -C "$REPO_DIR" commit -m "change again" >/dev/null 2>&1
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     PROMPT_FILE="$PROMPT_HASH_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
     bash "$TOOLKIT_ROOT/hooks/codex-review.sh" >/dev/null
 )
 

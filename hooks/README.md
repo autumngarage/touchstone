@@ -50,12 +50,13 @@ Fill in `AGENTS.md` at the repo root with your project-specific review prioritie
 On every `git push`, the pre-push hook:
 
 1. Computes the diff between your branch and the default branch
-2. Sends the diff to Codex with the review prompt + your AGENTS.md rubric
-3. Codex reviews and outputs one of three sentinels:
+2. Skips Codex if the exact same diff and review inputs already passed cleanly
+3. Sends the diff to Codex with the review prompt + your AGENTS.md rubric
+4. Codex reviews and outputs one of three sentinels:
    - `CODEX_REVIEW_CLEAN` — no issues, push proceeds
    - `CODEX_REVIEW_FIXED` — Codex applied auto-fixes, the hook commits them and re-reviews
    - `CODEX_REVIEW_BLOCKED` — Codex found issues it won't auto-fix, push is blocked
-4. The loop repeats up to `max_iterations` times (default 3)
+5. The loop repeats up to `max_iterations` times (default 3)
 
 ## Configuration reference
 
@@ -63,6 +64,7 @@ On every `git push`, the pre-push hook:
 |---------|---------|-------------|
 | `max_iterations` | 3 | Max review-fix-review loops before aborting |
 | `max_diff_lines` | 5000 | Skip review if diff exceeds this |
+| `cache_clean_reviews` | true | Cache exact-input clean reviews under `.git/` to avoid repeat Codex calls |
 | `safe_by_default` | false | Whether unlisted paths allow auto-fix |
 | `unsafe_paths` | [] | Paths where auto-fix is never allowed |
 
@@ -73,12 +75,15 @@ On every `git push`, the pre-push hook:
 | `CODEX_REVIEW_BASE` | Base ref to diff against (default: `origin/<default-branch>`) |
 | `CODEX_REVIEW_MAX_ITERATIONS` | Overrides config file's `max_iterations` |
 | `CODEX_REVIEW_MAX_DIFF_LINES` | Overrides config file's `max_diff_lines` |
+| `CODEX_REVIEW_CACHE_CLEAN` | Overrides `cache_clean_reviews` |
+| `CODEX_REVIEW_DISABLE_CACHE` | Set to `1`/`true` to force a fresh Codex review |
 
 ## Graceful behavior
 
 - If Codex CLI is not installed: skips review, push proceeds
 - If `codex exec` fails (network, auth, quota): skips review, push proceeds
 - If diff exceeds `max_diff_lines`: skips review, push proceeds
+- If the exact diff and review inputs already passed cleanly: skips repeat review, push proceeds
 - If Codex output doesn't match the sentinel contract: skips review, push proceeds
 - If `.codex-review.toml` is missing: all paths treated as unsafe (no auto-fix)
 

@@ -23,6 +23,8 @@
 #   CODEX_REVIEW_BASE             — base ref to diff against (default: origin/<default-branch>)
 #   CODEX_REVIEW_MAX_ITERATIONS   — fix loop cap (default: from config, or 3)
 #   CODEX_REVIEW_MAX_DIFF_LINES   — skip review if diff > this many lines (default: 5000)
+#   CODEX_REVIEW_CACHE_CLEAN      — cache exact-input clean reviews (default: true)
+#   CODEX_REVIEW_DISABLE_CACHE    — set to true/1 to force a fresh Codex review
 #
 # To bypass entirely in an emergency: git push --no-verify
 #
@@ -44,6 +46,7 @@ cd "$REPO_ROOT"
 SAFE_BY_DEFAULT=false
 MAX_ITERATIONS="${CODEX_REVIEW_MAX_ITERATIONS:-3}"
 MAX_DIFF_LINES="${CODEX_REVIEW_MAX_DIFF_LINES:-5000}"
+CACHE_CLEAN_REVIEWS="${CODEX_REVIEW_CACHE_CLEAN:-true}"
 UNSAFE_PATHS=""
 
 trim() {
@@ -133,6 +136,22 @@ append_unsafe_paths_csv() {
   done
 }
 
+normalize_bool() {
+  local value="$1"
+  value="$(trim "$value")"
+  value="${value%\"}"
+  value="${value#\"}"
+  value="${value%\'}"
+  value="${value#\'}"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+
+  case "$value" in
+    true|1|yes|on) printf 'true' ;;
+    false|0|no|off) printf 'false' ;;
+    *) printf '%s' "$value" ;;
+  esac
+}
+
 # Parse .codex-review.toml if it exists.
 # We do minimal TOML parsing in bash — just key = value pairs and string arrays.
 if [ -f "$CONFIG_FILE" ]; then
@@ -159,6 +178,9 @@ if [ -f "$CONFIG_FILE" ]; then
       max_diff_lines*=*)
         MAX_DIFF_LINES="${CODEX_REVIEW_MAX_DIFF_LINES:-$(trim "${line#*=}")}"
         ;;
+      cache_clean_reviews*=*)
+        CACHE_CLEAN_REVIEWS="${CODEX_REVIEW_CACHE_CLEAN:-$(normalize_bool "${line#*=}")}"
+        ;;
       safe_by_default*=*)
         val="$(trim "${line#*=}")"
         val="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')"
@@ -178,12 +200,23 @@ if [ -f "$CONFIG_FILE" ]; then
   done < "$CONFIG_FILE"
 fi
 
-# Resolve default branch
-if command -v gh >/dev/null 2>&1; then
-  DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo main)"
-else
-  DEFAULT_BRANCH="main"
-fi
+resolve_default_branch() {
+  local local_ref
+
+  local_ref="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [ -n "$local_ref" ]; then
+    printf '%s\n' "${local_ref#origin/}"
+    return 0
+  fi
+
+  if command -v gh >/dev/null 2>&1; then
+    gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo main
+  else
+    echo main
+  fi
+}
+
+DEFAULT_BRANCH="$(resolve_default_branch)"
 BASE="${CODEX_REVIEW_BASE:-origin/$DEFAULT_BRANCH}"
 
 # --------------------------------------------------------------------------
@@ -244,8 +277,11 @@ if ! command -v codex >/dev/null 2>&1; then
   exit 0
 fi
 
-# Fetch latest base ref (silent on failure — offline, rebasing, etc.)
-git fetch origin "$DEFAULT_BRANCH" --quiet 2>/dev/null || true
+# Fetch latest base ref for the default review target (silent on failure —
+# offline, rebasing, etc.). If CODEX_REVIEW_BASE is set, trust the caller.
+if [ -z "${CODEX_REVIEW_BASE:-}" ]; then
+  git fetch origin "$DEFAULT_BRANCH" --quiet 2>/dev/null || true
+fi
 
 # Find merge base so we review only this branch's commits.
 if ! MERGE_BASE="$(git merge-base "$BASE" HEAD 2>/dev/null)"; then
@@ -299,6 +335,88 @@ If you emit CODEX_REVIEW_FIXED, briefly describe what you fixed (one line per fi
 
 Do not invent new sentinels. Do not output anything after the sentinel line.
 PROMPT_EOF
+
+# --------------------------------------------------------------------------
+# Clean-review cache
+# --------------------------------------------------------------------------
+
+cache_enabled() {
+  case "$(normalize_bool "${CODEX_REVIEW_DISABLE_CACHE:-false}")" in
+    true) return 1 ;;
+  esac
+
+  case "$(normalize_bool "$CACHE_CLEAN_REVIEWS")" in
+    true) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+hash_stdin() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    cksum | awk '{print $1 "-" $2}'
+  fi
+}
+
+append_cache_file() {
+  local label="$1"
+  local path="$2"
+
+  printf '\n-- %s --\n' "$label"
+  if [ -f "$path" ]; then
+    cat "$path"
+  else
+    printf '<missing>\n'
+  fi
+}
+
+review_cache_key() {
+  {
+    printf 'toolkit-codex-review-cache-v1\n'
+    printf 'base=%s\n' "$BASE"
+    printf 'merge_base=%s\n' "$MERGE_BASE"
+    printf 'worktree_dirty_before_review=%s\n' "$WORKTREE_DIRTY_BEFORE_REVIEW"
+    printf '\n-- prompt --\n%s\n' "$REVIEW_PROMPT"
+    append_cache_file "AGENTS.md" "$REPO_ROOT/AGENTS.md"
+    append_cache_file "CLAUDE.md" "$REPO_ROOT/CLAUDE.md"
+    append_cache_file ".codex-review.toml" "$CONFIG_FILE"
+    append_cache_file "codex-review.sh" "$0"
+    printf '\n-- branch diff --\n'
+    git diff --binary "$MERGE_BASE"..HEAD
+  } | hash_stdin
+}
+
+clean_review_cache_dir() {
+  git rev-parse --git-path toolkit/codex-review-clean
+}
+
+clean_review_cache_file() {
+  local key="$1"
+  printf '%s/%s.clean' "$(clean_review_cache_dir)" "$key"
+}
+
+write_clean_review_cache() {
+  local key="$1"
+  local line_count="$2"
+  local cache_dir cache_file
+
+  [ -n "$key" ] || return 0
+  cache_dir="$(clean_review_cache_dir)"
+  cache_file="$(clean_review_cache_file "$key")"
+
+  mkdir -p "$cache_dir" 2>/dev/null || return 0
+  {
+    printf 'result=CODEX_REVIEW_CLEAN\n'
+    printf 'base=%s\n' "$BASE"
+    printf 'merge_base=%s\n' "$MERGE_BASE"
+    printf 'head=%s\n' "$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+    printf 'diff_lines=%s\n' "$line_count"
+    printf 'reviewed_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  } > "$cache_file" 2>/dev/null || true
+}
 
 changed_paths() {
   {
@@ -370,6 +488,7 @@ $path"
 # --------------------------------------------------------------------------
 
 FIX_COMMITS=0
+BANNER_PRINTED=false
 
 # Colors (respect NO_COLOR).
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -379,8 +498,10 @@ else
   C_DIM='' C_GREEN='' C_YELLOW='' C_RED='' C_CYAN='' C_RESET=''
 fi
 
-printf "${C_CYAN}"
-cat <<'BANNER'
+print_banner() {
+  [ "$BANNER_PRINTED" = false ] || return 0
+  printf "${C_CYAN}"
+  cat <<'BANNER'
 
   ╔══════════════════════════════════════╗
   ║         ⚡ TOOLKIT REVIEW ⚡        ║
@@ -388,7 +509,9 @@ cat <<'BANNER'
   ╚══════════════════════════════════════╝
 
 BANNER
-printf "${C_RESET}"
+  printf "${C_RESET}"
+  BANNER_PRINTED=true
+}
 
 for iter in $(seq 1 "$MAX_ITERATIONS"); do
   DIFF_LINE_COUNT="$(git diff "$MERGE_BASE"..HEAD | wc -l | tr -d ' ')"
@@ -398,6 +521,17 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
     exit 0
   fi
 
+  REVIEW_CACHE_KEY=""
+  if cache_enabled; then
+    REVIEW_CACHE_KEY="$(review_cache_key 2>/dev/null || true)"
+    if [ -n "$REVIEW_CACHE_KEY" ] && [ -f "$(clean_review_cache_file "$REVIEW_CACHE_KEY")" ]; then
+      echo "==> Codex review previously passed for this exact diff — skipping repeat review."
+      echo "    Force a fresh review with: CODEX_REVIEW_DISABLE_CACHE=1 git push"
+      exit 0
+    fi
+  fi
+
+  print_banner
   printf "  ${C_DIM}iteration ${iter}/${MAX_ITERATIONS} · ${DIFF_LINE_COUNT} lines vs ${BASE}${C_RESET}\n"
 
   set +e
@@ -427,6 +561,7 @@ PASS
         printf "  ${C_DIM}($FIX_COMMITS auto-fix commit(s) applied)${C_RESET}\n"
       fi
       echo ""
+      write_clean_review_cache "$REVIEW_CACHE_KEY" "$DIFF_LINE_COUNT"
       exit 0
       ;;
 
