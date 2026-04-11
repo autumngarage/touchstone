@@ -46,7 +46,10 @@ repos:
     hooks:
       - id: branch-naming
         name: Branch naming convention
-        entry: bash -c 'branch="$(git rev-parse --abbrev-ref HEAD)"; [[ "$branch" == "main" || "$branch" == "master" || "$branch" =~ ^(feat|fix|chore|refactor|docs)/ ]] || { echo "Branch name must match: feat/, fix/, chore/, refactor/, or docs/"; exit 1; }'
+        entry: >-
+          /usr/bin/env bash -c 'branch="$(git rev-parse --abbrev-ref HEAD)";
+          [[ "$branch" == "main" || "$branch" == "master" || "$branch" =~ ^(feat|fix|chore|refactor|docs)/ ]] ||
+          { echo "Branch name must match: feat/, fix/, chore/, refactor/, or docs/"; exit 1; }'
         language: system
         stages: [pre-push]
         always_run: true
@@ -57,7 +60,7 @@ repos:
     hooks:
       - id: codex-review
         name: Codex pre-push review
-        entry: bash scripts/codex-review.sh
+        entry: /usr/bin/env bash scripts/codex-review.sh
         language: system
         stages: [pre-push]
         always_run: true
@@ -79,7 +82,7 @@ repos:
   #   hooks:
   #     - id: tests
   #       name: Run tests
-  #       entry: bash -c 'YOUR_TEST_COMMAND_HERE'
+  #       entry: /usr/bin/env bash scripts/run-pytest-in-venv.sh tests/
   #       language: system
   #       stages: [pre-push]
   #       always_run: true

@@ -62,6 +62,7 @@ echo "--- Step 3: Modify a toolkit-owned file, then update ---"
 
 # Simulate local modification to a toolkit-owned file.
 echo "# locally modified" >> "$PROJECT/principles/engineering-principles.md"
+rm "$PROJECT/scripts/run-pytest-in-venv.sh"
 
 # Fake a new toolkit version by writing a different SHA so update thinks
 # there's something new. We write a fake old SHA to .toolkit-version.
@@ -71,6 +72,7 @@ echo "0000000000000000000000000000000000000000" > "$PROJECT/.toolkit-version"
 
 # Verify .bak was created.
 assert_exists "$PROJECT/principles/engineering-principles.md.bak"
+assert_exists "$PROJECT/scripts/run-pytest-in-venv.sh"
 
 # Verify the current file matches the toolkit version (not the modified one).
 if diff -q "$TOOLKIT_ROOT/principles/engineering-principles.md" "$PROJECT/principles/engineering-principles.md" >/dev/null 2>&1; then

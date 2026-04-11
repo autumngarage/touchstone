@@ -215,6 +215,7 @@ copy_file_force "$TOOLKIT_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/code
 copy_file_force "$TOOLKIT_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
 copy_file_force "$TOOLKIT_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
 copy_file_force "$TOOLKIT_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
+copy_file_force "$TOOLKIT_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
 chmod +x "$PROJECT_DIR/scripts/"*.sh
 
 # Write toolkit version.

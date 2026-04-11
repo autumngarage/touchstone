@@ -135,26 +135,114 @@ fi
 # 8. Project dependencies
 # --------------------------------------------------------------------------
 info "Installing project dependencies"
-if [ -f "pnpm-lock.yaml" ] && command -v pnpm >/dev/null 2>&1; then
-  pnpm install 2>&1 | tail -1 | while read -r line; do ok "$line"; done
-elif [ -f "package-lock.json" ] && command -v npm >/dev/null 2>&1; then
-  npm install 2>&1 | tail -1 | while read -r line; do ok "$line"; done
+
+select_python_for_venv() {
+  local python_dir="${1:-.}"
+  local pyenv_python
+
+  if [ -n "${PYTHON:-}" ]; then
+    if command -v "$PYTHON" >/dev/null 2>&1; then
+      command -v "$PYTHON"
+      return 0
+    fi
+    fail "PYTHON is set but not executable: $PYTHON"
+    return 1
+  fi
+
+  if command -v pyenv >/dev/null 2>&1; then
+    if [ -f "$python_dir/.python-version" ] || [ -f ".python-version" ]; then
+      pyenv_python="$(cd "$python_dir" && pyenv which python 2>/dev/null || true)"
+      if [ -n "$pyenv_python" ] && [ -x "$pyenv_python" ]; then
+        printf '%s\n' "$pyenv_python"
+        return 0
+      fi
+    fi
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3
+    return 0
+  fi
+  if command -v python >/dev/null 2>&1; then
+    command -v python
+    return 0
+  fi
+
+  fail "Python is required to create a virtualenv"
+  return 1
+}
+
+install_python_requirements() {
+  local label="$1"
+  local requirements_file="$2"
+  local venv_dir="$3"
+  local python_bin python_dir python_version
+  python_dir="$(dirname "$requirements_file")"
+
+  if [ ! -x "$venv_dir/bin/python" ]; then
+    python_bin="$(select_python_for_venv "$python_dir")"
+    python_version="$("$python_bin" --version 2>&1)"
+    if [ ! -f "$python_dir/.python-version" ] && [ ! -f ".python-version" ]; then
+      warn "No .python-version found — creating $venv_dir with $python_version"
+    else
+      ok "Using $python_version for $venv_dir"
+    fi
+    "$python_bin" -m venv "$venv_dir"
+    ok "$venv_dir created"
+  fi
+
+  "$venv_dir/bin/python" -m pip install -r "$requirements_file" 2>&1 | tail -1 | while read -r line; do
+    ok "$label dependencies installed: $line"
+  done
+}
+
+DEPS_FOUND=false
+
+if [ -f "pnpm-lock.yaml" ]; then
+  DEPS_FOUND=true
+  if command -v pnpm >/dev/null 2>&1; then
+    pnpm install 2>&1 | tail -1 | while read -r line; do ok "$line"; done
+  else
+    warn "pnpm-lock.yaml found, but pnpm is not installed. Run: brew install pnpm"
+  fi
+elif [ -f "package-lock.json" ]; then
+  DEPS_FOUND=true
+  if command -v npm >/dev/null 2>&1; then
+    npm install 2>&1 | tail -1 | while read -r line; do ok "$line"; done
+  else
+    warn "package-lock.json found, but npm is not installed. Install Node.js/npm first."
+  fi
 elif [ -f "package.json" ]; then
+  DEPS_FOUND=true
   if command -v pnpm >/dev/null 2>&1; then
     pnpm install 2>&1 | tail -1 | while read -r line; do ok "$line"; done
   elif command -v npm >/dev/null 2>&1; then
     npm install 2>&1 | tail -1 | while read -r line; do ok "$line"; done
+  else
+    warn "package.json found, but neither pnpm nor npm is installed."
   fi
-elif [ -f "requirements.txt" ]; then
-  pip install -r requirements.txt 2>&1 | tail -1 | while read -r line; do ok "$line"; done
-elif [ -f "Cargo.toml" ]; then
-  ok "Rust project — run: cargo build"
-elif [ -f "Package.swift" ]; then
-  ok "Swift project — run: swift build"
-elif [ -f "go.mod" ]; then
-  go mod download 2>&1 && ok "Go modules downloaded"
-else
-  ok "No recognized dependency file — skipping"
+fi
+
+if [ -f "requirements.txt" ]; then
+  DEPS_FOUND=true
+  install_python_requirements "Python" "requirements.txt" ".venv"
+fi
+
+if [ -f "agent/requirements.txt" ]; then
+  DEPS_FOUND=true
+  install_python_requirements "agent Python" "agent/requirements.txt" "agent/.venv"
+fi
+
+if [ "$DEPS_FOUND" = false ]; then
+  if [ -f "Cargo.toml" ]; then
+    ok "Rust project — run: cargo build"
+  elif [ -f "Package.swift" ]; then
+    ok "Swift project — run: swift build"
+  elif [ -f "go.mod" ]; then
+    go mod download 2>&1 && ok "Go modules downloaded"
+  else
+    ok "No recognized dependency file — skipping"
+  fi
 fi
 
 # --------------------------------------------------------------------------
