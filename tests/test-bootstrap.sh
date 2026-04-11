@@ -42,6 +42,7 @@ PROJECT="$TEST_DIR/test-project"
 PROJECT_WITH_UNSAFE="$TEST_DIR/test-project-unsafe"
 PROJECT_EXISTING="$TEST_DIR/test-project-existing"
 PROJECT_EXISTING_CONFIG="$TEST_DIR/test-project-existing-config"
+PROJECT_INIT_EXISTING_SETUP="$TEST_DIR/test-project-init-existing-setup"
 
 # Git repo
 assert_exists "$PROJECT/.git"
@@ -82,6 +83,25 @@ assert_contains "$PROJECT/.toolkit-version" "[a-f0-9]"
 # Verify CLAUDE.md has principle imports
 assert_contains "$PROJECT/CLAUDE.md" "@principles/"
 
+# Help flags should print usage instead of bootstrapping a project named --help.
+if (cd "$TEST_DIR" && bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" --help) >"$TEST_DIR/new-project-help.txt" 2>&1; then
+  assert_contains "$TEST_DIR/new-project-help.txt" 'unsafe-paths'
+else
+  echo "FAIL: expected new-project.sh --help to succeed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ -d "$TEST_DIR/--help" ]; then
+  echo "FAIL: new-project.sh --help created a project directory" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+if TOOLKIT_NO_AUTO_UPDATE=1 "$TOOLKIT_ROOT/bin/toolkit" init --help >"$TEST_DIR/toolkit-init-help.txt" 2>&1; then
+  assert_contains "$TEST_DIR/toolkit-init-help.txt" 'Usage: toolkit init'
+else
+  echo "FAIL: expected toolkit init --help to succeed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # Bootstrap with explicit unsafe paths.
 bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$PROJECT_WITH_UNSAFE" --no-register --unsafe-paths "src/auth/,migrations/"
 assert_exists "$PROJECT_WITH_UNSAFE/.codex-review.toml"
@@ -112,6 +132,26 @@ assert_contains "$PROJECT_EXISTING_CONFIG/.codex-review.toml" '^unsafe_paths = \
 assert_contains "$PROJECT_EXISTING_CONFIG/.codex-review.toml" '^safe_by_default = true$'
 if grep -q 'src/auth' "$PROJECT_EXISTING_CONFIG/.codex-review.toml"; then
   echo "FAIL: expected existing .codex-review.toml unsafe_paths to remain unchanged" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# toolkit init must not run a pre-existing project setup.sh after preserving it.
+mkdir -p "$PROJECT_INIT_EXISTING_SETUP"
+git -C "$PROJECT_INIT_EXISTING_SETUP" init >/dev/null
+{
+  printf '#!/usr/bin/env bash\n'
+  printf 'echo PROJECT_SETUP_RAN\n'
+  printf 'exit 42\n'
+} > "$PROJECT_INIT_EXISTING_SETUP/setup.sh"
+chmod +x "$PROJECT_INIT_EXISTING_SETUP/setup.sh"
+if (cd "$PROJECT_INIT_EXISTING_SETUP" && TOOLKIT_NO_AUTO_UPDATE=1 "$TOOLKIT_ROOT/bin/toolkit" init --no-register) >"$TEST_DIR/toolkit-init-existing-setup.txt" 2>&1; then
+  assert_contains "$TEST_DIR/toolkit-init-existing-setup.txt" 'setup.sh already existed'
+else
+  echo "FAIL: toolkit init should not fail because an existing setup.sh exits non-zero" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if grep -q 'PROJECT_SETUP_RAN' "$TEST_DIR/toolkit-init-existing-setup.txt"; then
+  echo "FAIL: toolkit init ran a pre-existing setup.sh" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
@@ -172,6 +212,47 @@ if [ "$UV_SYNC_COUNT" -ne 2 ]; then
   echo "FAIL: expected setup.sh --deps-only to run uv sync twice, got $UV_SYNC_COUNT" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+# setup.sh should display the toolkit version even though toolkit version output
+# starts with a blank header line.
+SETUP_VERSION_PROJECT="$TEST_DIR/setup-version-project"
+SETUP_VERSION_FAKE_BIN="$TEST_DIR/setup-version-fake-bin"
+mkdir -p "$SETUP_VERSION_FAKE_BIN"
+bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$SETUP_VERSION_PROJECT" --no-register >/dev/null
+cat > "$SETUP_VERSION_FAKE_BIN/toolkit" <<'FAKETOOLKIT'
+#!/usr/bin/env bash
+case "$1" in
+  version)
+    printf '\n'
+    printf 'toolkit v9.9.9\n'
+    exit 0
+    ;;
+  update)
+    printf '==> Already up to date.\n'
+    exit 0
+    ;;
+esac
+printf 'fake toolkit %s\n' "$*"
+FAKETOOLKIT
+cat > "$SETUP_VERSION_FAKE_BIN/brew" <<'FAKEBREW'
+#!/usr/bin/env bash
+exit 0
+FAKEBREW
+cat > "$SETUP_VERSION_FAKE_BIN/pre-commit" <<'FAKEPRECOMMIT'
+#!/usr/bin/env bash
+printf 'pre-commit installed\n'
+FAKEPRECOMMIT
+cat > "$SETUP_VERSION_FAKE_BIN/gh" <<'FAKEGH'
+#!/usr/bin/env bash
+printf 'Logged in to github.com\n'
+FAKEGH
+cat > "$SETUP_VERSION_FAKE_BIN/codex" <<'FAKECODEX'
+#!/usr/bin/env bash
+exit 0
+FAKECODEX
+chmod +x "$SETUP_VERSION_FAKE_BIN/"*
+(cd "$SETUP_VERSION_PROJECT" && PATH="$SETUP_VERSION_FAKE_BIN:$PATH" bash setup.sh) >"$TEST_DIR/setup-version-output.txt"
+assert_contains "$TEST_DIR/setup-version-output.txt" 'toolkit v9.9.9'
 
 echo ""
 if [ "$ERRORS" -eq 0 ]; then

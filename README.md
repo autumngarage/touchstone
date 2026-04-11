@@ -21,12 +21,11 @@ toolkit new ~/Repos/my-new-project
 $EDITOR ~/Repos/my-new-project/CLAUDE.md
 $EDITOR ~/Repos/my-new-project/AGENTS.md
 
-# Set up pre-commit hooks (optional but recommended)
+# Set up dev tools, hooks, and project dependencies
 cd ~/Repos/my-new-project
-brew install pre-commit
-pre-commit install --install-hooks
+bash setup.sh
 
-# Set up Codex pre-push review (optional)
+# Set up Codex login if you want pre-push AI review
 npm install -g @openai/codex && codex login
 
 # Re-run dependency setup later without reinstalling hooks/tools
@@ -37,11 +36,15 @@ bash setup.sh --deps-only
 
 | Command | What it does |
 |---------|-------------|
+| `toolkit init [--no-setup]` | Add toolkit to the current project |
 | `toolkit new <dir>` | Bootstrap a new project with principles, scripts, hooks, and templates |
 | `toolkit update` | Update the current project's toolkit-owned files to latest |
 | `toolkit update --dry-run` | Preview what would change |
 | `toolkit sync` | Update all registered projects at once |
 | `toolkit sync --pull-first` | Pull latest toolkit first, then sync all projects |
+| `toolkit diff` | Compare project-owned files against the latest templates |
+| `toolkit list` | Show registered projects |
+| `toolkit status` | Dashboard of registered project health |
 | `toolkit version` | Show installed version and install method |
 | `toolkit doctor` | Health check — version, tools, project staleness |
 

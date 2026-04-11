@@ -58,7 +58,8 @@ fi
 # --------------------------------------------------------------------------
 info "Checking toolkit"
 if command -v toolkit >/dev/null 2>&1; then
-  ok "toolkit $(toolkit version 2>&1 | head -1 | sed 's/toolkit //')"
+  TOOLKIT_VERSION_SUMMARY="$(toolkit version 2>&1 | awk 'NF { sub(/^toolkit /, ""); print; exit }')"
+  ok "toolkit ${TOOLKIT_VERSION_SUMMARY:-installed}"
 else
   warn "Installing toolkit..."
   brew tap henrymodisett/toolkit 2>/dev/null || true
