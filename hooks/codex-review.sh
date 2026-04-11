@@ -27,6 +27,7 @@
 #   CODEX_REVIEW_DISABLE_CACHE    — set to true/1 to force a fresh Codex review
 #   CODEX_REVIEW_FORCE            — set to true/1 to run even on non-default-branch pushes
 #   CODEX_REVIEW_NO_AUTOFIX       — set to true/1 for review-only mode
+#   CODEX_REVIEW_IN_PROGRESS      — internal guard to skip nested Codex hook runs
 #
 # To bypass entirely in an emergency: git push --no-verify
 #
@@ -326,6 +327,11 @@ When in doubt, STOP and emit BLOCKED."
 
 # Feature-branch pushes should stay fast. Manual invocations and direct pushes
 # to the default branch still run the review.
+if is_truthy "${CODEX_REVIEW_IN_PROGRESS:-false}"; then
+  echo "==> Codex review already in progress — skipping nested Codex review."
+  exit 0
+fi
+
 if should_skip_pre_push_review; then
   exit 0
 fi
@@ -595,7 +601,7 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
   printf "  ${C_DIM}iteration ${iter}/${MAX_ITERATIONS} · ${DIFF_LINE_COUNT} lines vs ${BASE}${C_RESET}\n"
 
   set +e
-  OUTPUT="$(codex exec --full-auto --ephemeral "$REVIEW_PROMPT" 2>/dev/null)"
+  OUTPUT="$(CODEX_REVIEW_IN_PROGRESS=1 codex exec --full-auto --ephemeral "$REVIEW_PROMPT" 2>/dev/null)"
   EXIT=$?
   set -e
 
