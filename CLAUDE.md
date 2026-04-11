@@ -33,17 +33,17 @@ You are maintaining a shared engineering platform that provides universal princi
 
 - **Changes propagate.** Every file in `principles/`, `hooks/`, and `scripts/` gets copied into downstream projects by `update-project.sh`. Test changes here before syncing.
 - **Templates are starting points.** Files in `templates/` are copied once at bootstrap time and then owned by the project. Changes to templates only affect *new* projects.
-- **Self-tests are mandatory.** Run `bash tests/test-bootstrap.sh && bash tests/test-update.sh` before pushing. These validate the bootstrap and update flows end-to-end.
-- **Version bump on meaningful changes.** Update `VERSION` and `CHANGELOG.md` when cutting a release. Tag with `git tag vX.Y.Z`.
+- **Self-tests are mandatory.** Run every `tests/test-*.sh` script before pushing. These validate the bootstrap, update, hook, merge, and helper flows end-to-end.
+- **Release completeness.** A toolkit release is not done until GitHub Releases, the Homebrew tap, `origin/main`, and the locally installed brew package all agree on the same version.
 
 ## Testing
 
 ```bash
 # Before any push
-bash tests/test-bootstrap.sh && bash tests/test-update.sh
+for test in tests/test-*.sh; do bash "$test"; done
 ```
 
-Both tests must pass. They exercise the full bootstrap and update flows against temp directories.
+All tests must pass. The bootstrap and update tests exercise the full propagation flow against temp directories.
 
 ## Architecture
 
@@ -65,10 +65,25 @@ toolkit/
 | `bootstrap/update-project.sh` | Pull latest toolkit files into an existing project |
 | `bootstrap/sync-all.sh` | Update all registered projects at once |
 | `hooks/codex-review.sh` | Generalized Codex merge/default-branch review + auto-fix hook |
+| `lib/release.sh` | Release automation for GitHub Releases and the Homebrew tap |
 | `VERSION` | Current semver version |
 | `CHANGELOG.md` | Release history |
 | `~/.toolkit-projects` | Registry of all bootstrapped projects |
 
-## Deployment
+## Release & Distribution
 
-No deployment — the toolkit is cloned to `~/Repos/toolkit` and used locally. Projects are updated via `sync-all.sh`. Future: Homebrew tap for `brew install toolkit`.
+Toolkit ships through GitHub Releases and the `henrymodisett/homebrew-toolkit` tap.
+
+Release flow:
+
+1. Merge code to `main`.
+2. Run `TOOLKIT_NO_AUTO_UPDATE=1 bin/toolkit release --patch` or `--minor` / `--major`.
+3. Verify the release helper pushed the release commit to `origin/main` and pushed the matching tag.
+4. Verify the shipped artifact:
+   - `git status --short --branch` is clean and not ahead of `origin/main`
+   - `gh release view vX.Y.Z`
+   - the Homebrew formula points at `vX.Y.Z` with the expected SHA
+   - `brew update && brew upgrade toolkit`
+   - `TOOLKIT_NO_AUTO_UPDATE=1 toolkit version` reports `toolkit vX.Y.Z`
+
+Do not call a toolkit release complete until GitHub Releases, the Homebrew formula, `origin/main`, and the local brew install all agree on the same version.

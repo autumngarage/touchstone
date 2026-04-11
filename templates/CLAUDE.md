@@ -41,6 +41,12 @@ bash setup.sh --deps-only
 
 Fix failing tests before pushing.
 
+## Release & Distribution
+
+{{RELEASE_AND_DISTRIBUTION — how is this project shipped? Include the release command, package registry or deployment target, required version bump, post-release verification, and rollback path. Examples: Homebrew tap, npm package, Docker image, Vercel/Railway deploy, app store build.}}
+
+After merging release-affecting changes, verify the shipped artifact or deployed environment matches the pushed code.
+
 ## Architecture
 
 {{ARCHITECTURE — describe key packages, their responsibilities, and how data flows between them. Keep it high-level.}}
@@ -54,10 +60,6 @@ Fix failing tests before pushing.
 ## State & Config
 
 {{STATE_AND_CONFIG — where does mutable state live? What's gitignored? Where's the config template?}}
-
-## Deployment
-
-{{DEPLOYMENT — how and where does this project deploy?}}
 
 ## Hard-Won Lessons
 
