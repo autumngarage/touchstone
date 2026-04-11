@@ -20,8 +20,8 @@
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
 2. **Branch.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`.
 3. **Change + commit.** Make the code change, stage explicit file paths, commit with a concise message.
-4. **Push.** `bash scripts/open-pr.sh` (which pushes + creates the PR). The pre-push hook runs Codex review if configured.
-5. **Merge.** `bash scripts/merge-pr.sh <pr-number>` — squash-merge, delete branch, sync default branch.
+4. **Push.** `bash scripts/open-pr.sh` (which pushes + creates the PR). Feature-branch pushes stay fast.
+5. **Merge.** `bash scripts/merge-pr.sh <pr-number>` — Codex review, squash-merge, delete branch, sync default branch.
 6. **Clean up.** `git branch -D <feature-branch>` if it still exists locally.
 
 ### Housekeeping

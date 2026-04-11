@@ -20,6 +20,12 @@ CODEX_CALLS_FILE="$TEST_DIR/codex-calls.txt"
 UNSAFE_OUTPUT="$TEST_DIR/unsafe-output.txt"
 ERRORS=0
 
+unset PRE_COMMIT
+unset PRE_COMMIT_FROM_REF PRE_COMMIT_TO_REF
+unset PRE_COMMIT_LOCAL_BRANCH PRE_COMMIT_REMOTE_BRANCH
+unset PRE_COMMIT_REMOTE_NAME PRE_COMMIT_REMOTE_URL
+unset CODEX_REVIEW_FORCE CODEX_REVIEW_NO_AUTOFIX CODEX_REVIEW_DISABLE_CACHE
+
 mkdir -p "$REPO_DIR" "$FAKE_BIN"
 git -C "$REPO_DIR" init >/dev/null 2>&1
 git -C "$REPO_DIR" config user.name "Toolkit Test"
@@ -67,6 +73,59 @@ if grep -q -- '- Anything in bootstrap/new-project.sh' "$PROMPT_FILE" \
 else
   echo "FAIL: expected multiline unsafe_paths to appear in the generated prompt" >&2
   sed -n '1,120p' "$PROMPT_FILE" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: review hook skips feature-branch pushes but runs default-branch pushes"
+cat > "$FAKE_BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'called\n' >> "$CODEX_CALLS_FILE"
+printf 'CODEX_REVIEW_CLEAN\n'
+EOF
+chmod +x "$FAKE_BIN/codex"
+: > "$CODEX_CALLS_FILE"
+
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
+    PRE_COMMIT=1 \
+    PRE_COMMIT_LOCAL_BRANCH="refs/heads/feature/test" \
+    PRE_COMMIT_REMOTE_BRANCH="refs/heads/feature/test" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$TEST_DIR/feature-push-output.txt" 2>&1
+)
+
+CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+if [ "$CODEX_CALL_COUNT" = "0" ] && grep -q 'skipping push to feature/test' "$TEST_DIR/feature-push-output.txt"; then
+  echo "==> PASS: feature-branch push skipped Codex"
+else
+  echo "FAIL: expected feature-branch push to skip Codex" >&2
+  echo "codex call count: $CODEX_CALL_COUNT" >&2
+  cat "$TEST_DIR/feature-push-output.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
+    PRE_COMMIT=1 \
+    PRE_COMMIT_LOCAL_BRANCH="refs/heads/main" \
+    PRE_COMMIT_REMOTE_BRANCH="refs/heads/main" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" >/dev/null
+)
+
+CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+if [ "$CODEX_CALL_COUNT" = "1" ]; then
+  echo "==> PASS: default-branch push ran Codex"
+else
+  echo "FAIL: expected default-branch push to run Codex" >&2
+  echo "codex call count: $CODEX_CALL_COUNT" >&2
   ERRORS=$((ERRORS + 1))
 fi
 

@@ -8,4 +8,4 @@ Universal engineering standards that apply to all projects. These are imported b
 | [pre-implementation-checklist.md](pre-implementation-checklist.md) | 4 questions to answer before writing any code |
 | [audit-weak-points.md](audit-weak-points.md) | Methodology for auditing structural bug patterns |
 | [documentation-ownership.md](documentation-ownership.md) | Single canonical owner per volatile fact |
-| [git-workflow.md](git-workflow.md) | Feature branch lifecycle with pre-push review |
+| [git-workflow.md](git-workflow.md) | Feature branch lifecycle with merge/default-branch review |
