@@ -23,7 +23,8 @@ $EDITOR ~/Repos/my-new-project/AGENTS.md
 
 # Set up pre-commit hooks (optional but recommended)
 cd ~/Repos/my-new-project
-pip install pre-commit && pre-commit install --install-hooks
+brew install pre-commit
+pre-commit install --install-hooks
 
 # Set up Codex pre-push review (optional)
 npm install -g @openai/codex && codex login
@@ -61,6 +62,7 @@ When you run `toolkit new`, these files get copied into your project:
 - `scripts/open-pr.sh` — Push + create PR via `gh`
 - `scripts/merge-pr.sh` — Squash-merge + sync main
 - `scripts/cleanup-branches.sh` — Safe branch hygiene
+- `scripts/run-pytest-in-venv.sh` — Run pytest through `.venv` or `agent/.venv`
 
 ### Keeping projects up to date
 

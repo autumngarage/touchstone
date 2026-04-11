@@ -20,7 +20,7 @@ repos:
     hooks:
       - id: codex-review
         name: Codex pre-push review
-        entry: bash hooks/codex-review.sh
+        entry: /usr/bin/env bash hooks/codex-review.sh
         language: system
         stages: [pre-push]
         always_run: true
@@ -31,7 +31,7 @@ repos:
     hooks:
       - id: self-tests
         name: Toolkit self-tests
-        entry: bash -c 'set -e; for test in tests/test-*.sh; do bash "$test"; done'
+        entry: /usr/bin/env bash -c 'set -e; for test in tests/test-*.sh; do /usr/bin/env bash "$test"; done'
         language: system
         stages: [pre-push]
         always_run: true

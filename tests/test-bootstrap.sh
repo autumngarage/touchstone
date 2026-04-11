@@ -67,10 +67,13 @@ assert_exists "$PROJECT/scripts/codex-review.sh"
 assert_exists "$PROJECT/scripts/open-pr.sh"
 assert_exists "$PROJECT/scripts/merge-pr.sh"
 assert_exists "$PROJECT/scripts/cleanup-branches.sh"
+assert_exists "$PROJECT/scripts/run-pytest-in-venv.sh"
 assert_executable "$PROJECT/scripts/codex-review.sh"
 assert_executable "$PROJECT/scripts/open-pr.sh"
 assert_executable "$PROJECT/scripts/merge-pr.sh"
 assert_executable "$PROJECT/scripts/cleanup-branches.sh"
+assert_executable "$PROJECT/scripts/run-pytest-in-venv.sh"
+assert_contains "$PROJECT/.pre-commit-config.yaml" 'run-pytest-in-venv.sh'
 
 # Toolkit version
 assert_exists "$PROJECT/.toolkit-version"
@@ -111,6 +114,33 @@ if grep -q 'src/auth' "$PROJECT_EXISTING_CONFIG/.codex-review.toml"; then
   echo "FAIL: expected existing .codex-review.toml unsafe_paths to remain unchanged" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+# Pytest wrapper should use project virtualenvs instead of system python.
+PYTEST_WRAPPER_PROJECT="$TEST_DIR/pytest-wrapper"
+mkdir -p "$PYTEST_WRAPPER_PROJECT"
+if (cd "$PYTEST_WRAPPER_PROJECT" && "$TOOLKIT_ROOT/scripts/run-pytest-in-venv.sh" tests) >"$TEST_DIR/pytest-missing-venv.txt" 2>&1; then
+  echo "FAIL: expected run-pytest-in-venv.sh to fail without a venv" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/pytest-missing-venv.txt" 'Run: bash setup.sh'
+fi
+
+mkdir -p "$PYTEST_WRAPPER_PROJECT/.venv/bin"
+cat > "$PYTEST_WRAPPER_PROJECT/.venv/bin/python" <<'FAKEPYTHON'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$PWD/pytest-args.txt"
+if [ "$1" = "-m" ] && [ "$2" = "pytest" ]; then
+  exit 0
+fi
+exit 1
+FAKEPYTHON
+chmod +x "$PYTEST_WRAPPER_PROJECT/.venv/bin/python"
+
+(cd "$PYTEST_WRAPPER_PROJECT" && "$TOOLKIT_ROOT/scripts/run-pytest-in-venv.sh" tests/unit -x)
+assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^-m$'
+assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^pytest$'
+assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^tests/unit$'
+assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^-x$'
 
 echo ""
 if [ "$ERRORS" -eq 0 ]; then

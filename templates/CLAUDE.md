@@ -33,7 +33,7 @@
 
 ```bash
 # Before any push — replace with your project's test command
-{{TEST_COMMAND — e.g., pytest tests/ -v --timeout=60 -x}}
+{{TEST_COMMAND — e.g., scripts/run-pytest-in-venv.sh tests/ -v --timeout=60 -x}}
 ```
 
 Fix failing tests before pushing.

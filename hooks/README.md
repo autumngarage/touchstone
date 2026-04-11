@@ -14,7 +14,8 @@ codex login
 ### 2. Install pre-commit
 
 ```bash
-pip install pre-commit   # or: brew install pre-commit
+brew install pre-commit
+# or: python3 -m pip install --user pre-commit
 ```
 
 ### 3. Wire the hook
@@ -23,6 +24,12 @@ The toolkit's `.pre-commit-config.yaml` template already includes the Codex hook
 
 ```bash
 pre-commit install --install-hooks
+```
+
+For Python test hooks, prefer the toolkit wrapper over `python3 -m pytest` so the hook uses the project's virtualenv:
+
+```yaml
+entry: /usr/bin/env bash scripts/run-pytest-in-venv.sh tests/
 ```
 
 ### 4. Configure per-project behavior
