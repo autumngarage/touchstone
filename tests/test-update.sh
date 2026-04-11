@@ -88,6 +88,22 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# Modify the same toolkit-owned file again. The second backup must not clobber
+# the first .bak from the earlier update.
+echo "# locally modified again" >> "$PROJECT/principles/engineering-principles.md"
+echo "0000000000000000000000000000000000000002" > "$PROJECT/.toolkit-version"
+(cd "$PROJECT" && bash "$TOOLKIT_ROOT/bootstrap/update-project.sh") 2>&1 | tee "$TEST_DIR/update-output-3.txt"
+
+assert_exists "$PROJECT/principles/engineering-principles.md.bak.1"
+
+if grep -q "locally modified" "$PROJECT/principles/engineering-principles.md.bak" \
+  && grep -q "locally modified again" "$PROJECT/principles/engineering-principles.md.bak.1"; then
+  echo "    PASS: repeated updates preserve existing .bak files"
+else
+  echo "    FAIL: repeated update clobbered or missed backup content" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # --------------------------------------------------------------------------
 # Test 3: project-owned files are NOT touched
 # --------------------------------------------------------------------------
@@ -100,7 +116,7 @@ CLAUDE_CHECKSUM="$(md5 -q "$PROJECT/CLAUDE.md" 2>/dev/null || md5sum "$PROJECT/C
 
 # Re-fake the version and run update again.
 echo "0000000000000000000000000000000000000001" > "$PROJECT/.toolkit-version"
-(cd "$PROJECT" && bash "$TOOLKIT_ROOT/bootstrap/update-project.sh") 2>&1 >/dev/null
+(cd "$PROJECT" && bash "$TOOLKIT_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
 
 CLAUDE_CHECKSUM_AFTER="$(md5 -q "$PROJECT/CLAUDE.md" 2>/dev/null || md5sum "$PROJECT/CLAUDE.md" | awk '{print $1}')"
 

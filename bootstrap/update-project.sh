@@ -72,10 +72,23 @@ ADDED=0
 UPDATED=0
 UNCHANGED=0
 
+next_backup_path() {
+  local dst="$1"
+  local backup="$dst.bak"
+  local i=1
+
+  while [ -e "$backup" ]; do
+    backup="$dst.bak.$i"
+    i=$((i + 1))
+  done
+
+  printf '%s' "$backup"
+}
+
 update_file() {
   local src="$1"
   local dst="$2"
-  local dst_dir
+  local backup_path dst_dir
   dst_dir="$(dirname "$dst")"
 
   if [ ! -f "$dst" ]; then
@@ -101,9 +114,10 @@ update_file() {
   if [ "$DRY_RUN" = true ]; then
     echo "    ! would update (with .bak): $dst"
   else
-    cp "$dst" "$dst.bak"
+    backup_path="$(next_backup_path "$dst")"
+    cp "$dst" "$backup_path"
     cp "$src" "$dst"
-    echo "    ! updated (backed up as .bak): $dst"
+    echo "    ! updated (backed up as $(basename "$backup_path")): $dst"
   fi
   UPDATED=$((UPDATED + 1))
 }

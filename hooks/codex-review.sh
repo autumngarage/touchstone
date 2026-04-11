@@ -34,6 +34,7 @@ set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 CONFIG_FILE="$REPO_ROOT/.codex-review.toml"
+cd "$REPO_ROOT"
 
 # --------------------------------------------------------------------------
 # Configuration loading
@@ -45,29 +46,133 @@ MAX_ITERATIONS="${CODEX_REVIEW_MAX_ITERATIONS:-3}"
 MAX_DIFF_LINES="${CODEX_REVIEW_MAX_DIFF_LINES:-5000}"
 UNSAFE_PATHS=""
 
+trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+strip_toml_comment() {
+  local line="$1"
+  local out=""
+  local char
+  local in_single=false
+  local in_double=false
+  local len="${#line}"
+  local i=0
+
+  while [ "$i" -lt "$len" ]; do
+    char="${line:$i:1}"
+
+    if [ "$in_double" = true ] && [ "$char" = "\\" ]; then
+      out="$out$char"
+      i=$((i + 1))
+      if [ "$i" -lt "$len" ]; then
+        char="${line:$i:1}"
+        out="$out$char"
+      fi
+      i=$((i + 1))
+      continue
+    fi
+
+    if [ "$char" = '"' ] && [ "$in_single" = false ]; then
+      if [ "$in_double" = true ]; then
+        in_double=false
+      else
+        in_double=true
+      fi
+    elif [ "$char" = "'" ] && [ "$in_double" = false ]; then
+      if [ "$in_single" = true ]; then
+        in_single=false
+      else
+        in_single=true
+      fi
+    elif [ "$char" = "#" ] && [ "$in_single" = false ] && [ "$in_double" = false ]; then
+      break
+    fi
+
+    out="$out$char"
+    i=$((i + 1))
+  done
+
+  printf '%s' "$out"
+}
+
+append_unsafe_path() {
+  local value="$1"
+  value="$(trim "$value")"
+  value="${value%,}"
+  value="$(trim "$value")"
+
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
+
+  [ -z "$value" ] && return
+
+  if [ -n "$UNSAFE_PATHS" ]; then
+    UNSAFE_PATHS="${UNSAFE_PATHS}
+$value"
+  else
+    UNSAFE_PATHS="$value"
+  fi
+}
+
+append_unsafe_paths_csv() {
+  local csv="$1"
+  local item
+  local -a items=()
+
+  [ -n "$csv" ] || return 0
+
+  IFS=',' read -r -a items <<< "$csv"
+  for item in "${items[@]}"; do
+    append_unsafe_path "$item"
+  done
+}
+
 # Parse .codex-review.toml if it exists.
-# We do minimal TOML parsing in bash — just key = value pairs, no nested tables.
-# For arrays, we handle the single-line [...] format.
+# We do minimal TOML parsing in bash — just key = value pairs and string arrays.
 if [ -f "$CONFIG_FILE" ]; then
-  while IFS= read -r line; do
+  IN_UNSAFE_PATHS=false
+  while IFS= read -r raw_line || [ -n "$raw_line" ]; do
     # Strip comments and trim whitespace
-    line="$(echo "$line" | sed 's/#.*//' | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')"
+    line="$(trim "$(strip_toml_comment "$raw_line")")"
     [ -z "$line" ] && continue
+
+    if [ "$IN_UNSAFE_PATHS" = true ]; then
+      if [[ "$line" == *"]"* ]]; then
+        append_unsafe_paths_csv "${line%%]*}"
+        IN_UNSAFE_PATHS=false
+      else
+        append_unsafe_path "$line"
+      fi
+      continue
+    fi
 
     case "$line" in
       max_iterations*=*)
-        MAX_ITERATIONS="${CODEX_REVIEW_MAX_ITERATIONS:-$(echo "$line" | sed 's/.*=[[:space:]]*//')}"
+        MAX_ITERATIONS="${CODEX_REVIEW_MAX_ITERATIONS:-$(trim "${line#*=}")}"
         ;;
       max_diff_lines*=*)
-        MAX_DIFF_LINES="${CODEX_REVIEW_MAX_DIFF_LINES:-$(echo "$line" | sed 's/.*=[[:space:]]*//')}"
+        MAX_DIFF_LINES="${CODEX_REVIEW_MAX_DIFF_LINES:-$(trim "${line#*=}")}"
         ;;
       safe_by_default*=*)
-        val="$(echo "$line" | sed 's/.*=[[:space:]]*//' | tr '[:upper:]' '[:lower:]')"
+        val="$(trim "${line#*=}")"
+        val="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')"
         SAFE_BY_DEFAULT="$val"
         ;;
       unsafe_paths*=*)
-        # Extract array contents: unsafe_paths = ["path1", "path2"]
-        UNSAFE_PATHS="$(echo "$line" | sed 's/.*\[//' | sed 's/\]//' | tr ',' '\n' | sed 's/[[:space:]]*"//g' | sed "s/[[:space:]]*'//g" | sed '/^$/d')"
+        array_value="$(trim "${line#*=}")"
+        array_value="${array_value#\[}"
+        if [[ "$array_value" == *"]"* ]]; then
+          append_unsafe_paths_csv "${array_value%%]*}"
+        else
+          append_unsafe_paths_csv "$array_value"
+          IN_UNSAFE_PATHS=true
+        fi
         ;;
     esac
   done < "$CONFIG_FILE"
@@ -99,6 +204,12 @@ build_autofix_policy() {
 
 NOT safe to auto-fix — STOP and emit BLOCKED instead:
 $(echo "$UNSAFE_PATHS" | while read -r p; do [ -n "$p" ] && echo "- Anything in $p"; done)"
+  fi
+
+  if [ "${WORKTREE_DIRTY_BEFORE_REVIEW:-false}" = true ]; then
+    policy="$policy
+
+The working tree already has uncommitted changes. Do not edit files in this run; emit BLOCKED for issues that need changes."
   fi
 
   policy="$policy
@@ -148,6 +259,11 @@ if git diff --quiet "$MERGE_BASE"..HEAD; then
   exit 0
 fi
 
+WORKTREE_DIRTY_BEFORE_REVIEW=false
+if [ -n "$(git status --porcelain)" ]; then
+  WORKTREE_DIRTY_BEFORE_REVIEW=true
+fi
+
 # --------------------------------------------------------------------------
 # Build the review prompt
 # --------------------------------------------------------------------------
@@ -184,6 +300,71 @@ If you emit CODEX_REVIEW_FIXED, briefly describe what you fixed (one line per fi
 Do not invent new sentinels. Do not output anything after the sentinel line.
 PROMPT_EOF
 
+changed_paths() {
+  {
+    git diff --name-only
+    git diff --cached --name-only
+    git ls-files --others --exclude-standard
+  } | sed '/^$/d' | sort -u
+}
+
+path_is_unsafe() {
+  local path="$1"
+  local unsafe_path
+
+  [ -n "$UNSAFE_PATHS" ] || return 1
+
+  while IFS= read -r unsafe_path; do
+    [ -z "$unsafe_path" ] && continue
+    case "$unsafe_path" in
+      */)
+        [[ "$path" == "$unsafe_path"* ]] && return 0
+        ;;
+      *)
+        if [ "$path" = "$unsafe_path" ] || [[ "$path" == "$unsafe_path/"* ]]; then
+          return 0
+        fi
+        ;;
+    esac
+  done <<< "$UNSAFE_PATHS"
+
+  return 1
+}
+
+path_allows_autofix() {
+  local path="$1"
+
+  if [ "$SAFE_BY_DEFAULT" != "true" ]; then
+    return 1
+  fi
+
+  if path_is_unsafe "$path"; then
+    return 1
+  fi
+
+  return 0
+}
+
+disallowed_autofix_paths() {
+  local changed="$1"
+  local path
+  local disallowed=""
+
+  while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    if ! path_allows_autofix "$path"; then
+      if [ -n "$disallowed" ]; then
+        disallowed="${disallowed}
+$path"
+      else
+        disallowed="$path"
+      fi
+    fi
+  done <<< "$changed"
+
+  printf '%s' "$disallowed"
+}
+
 # --------------------------------------------------------------------------
 # Review loop
 # --------------------------------------------------------------------------
@@ -192,10 +373,10 @@ FIX_COMMITS=0
 
 # Colors (respect NO_COLOR).
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-  C_BOLD='\033[1m' C_DIM='\033[2m' C_GREEN='\033[0;32m'
+  C_DIM='\033[2m' C_GREEN='\033[0;32m'
   C_YELLOW='\033[0;33m' C_RED='\033[0;31m' C_CYAN='\033[0;36m' C_RESET='\033[0m'
 else
-  C_BOLD='' C_DIM='' C_GREEN='' C_YELLOW='' C_RED='' C_CYAN='' C_RESET=''
+  C_DIM='' C_GREEN='' C_YELLOW='' C_RED='' C_CYAN='' C_RESET=''
 fi
 
 printf "${C_CYAN}"
@@ -250,10 +431,27 @@ PASS
       ;;
 
     CODEX_REVIEW_FIXED)
-      if [ -z "$(git status --porcelain)" ]; then
+      AUTOFIX_CHANGED_PATHS="$(changed_paths)"
+      if [ -z "$AUTOFIX_CHANGED_PATHS" ]; then
         echo "==> Codex emitted FIXED but no working-tree changes detected."
         echo "    Treating as ambiguous — not blocking push."
         exit 0
+      fi
+
+      if [ "$WORKTREE_DIRTY_BEFORE_REVIEW" = true ]; then
+        echo "==> Codex emitted FIXED, but the working tree was already dirty before review."
+        echo "    Refusing to auto-commit because that could include unrelated local changes."
+        echo "    Commit or stash local changes, then push again."
+        exit 1
+      fi
+
+      DISALLOWED_AUTOFIX_PATHS="$(disallowed_autofix_paths "$AUTOFIX_CHANGED_PATHS")"
+      if [ -n "$DISALLOWED_AUTOFIX_PATHS" ]; then
+        echo "==> Codex edited paths that are not allowed by .codex-review.toml."
+        echo "    Refusing to auto-commit. Review these changes manually:"
+        printf '%s\n' "$DISALLOWED_AUTOFIX_PATHS" | sed 's/^/    - /'
+        echo "    Inspect the working-tree diff before deciding whether to keep or discard them."
+        exit 1
       fi
 
       printf "\n  ${C_YELLOW}🔧 Auto-fixing...${C_RESET}\n\n"
@@ -262,6 +460,7 @@ PASS
 
       git add -A
       git commit -m "fix: address Codex review findings (auto, iter $iter)"
+      WORKTREE_DIRTY_BEFORE_REVIEW=false
       FIX_COMMITS=$((FIX_COMMITS + 1))
       echo "==> Created fix commit $(git rev-parse --short HEAD). Re-running review on new HEAD..."
       echo ""
