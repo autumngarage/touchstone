@@ -339,16 +339,20 @@ if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ] || [ -n 
   fi
 fi
 
-# Write .toolkit-config with project type.
-echo "project_type=$INPUT_TYPE" > "$PROJECT_DIR/.toolkit-config"
-echo "==> Wrote .toolkit-config: project_type=$INPUT_TYPE"
+# Write .toolkit-config with project type (skip if already exists).
+if [ ! -f "$PROJECT_DIR/.toolkit-config" ]; then
+  echo "project_type=$INPUT_TYPE" > "$PROJECT_DIR/.toolkit-config"
+  echo "==> Wrote .toolkit-config: project_type=$INPUT_TYPE"
+else
+  echo "==> .toolkit-config already exists; left unchanged."
+fi
 
 # Uncomment language-specific hooks in .pre-commit-config.yaml based on project type.
 if [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ]; then
   case "$INPUT_TYPE" in
     python)
       # Uncomment the Python (ruff) hooks block.
-      sed -i '' '/^  # Python:$/,/^  #$\|^  # [A-Z]/{
+      sed -i '' '/^  # Python (ruff):$/,/^  #$\|^  # [A-Z]/{
         s/^  # \(- repo: .*ruff.*\)/  \1/
         s/^  #   \(rev: .*\)/    \1/
         s/^  #     \(hooks:\)/      \1/

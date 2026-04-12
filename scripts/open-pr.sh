@@ -8,6 +8,7 @@
 #
 # Usage:
 #   bash scripts/open-pr.sh                # title from last commit
+#   bash scripts/open-pr.sh --auto-merge   # open + Codex review + squash-merge
 #   bash scripts/open-pr.sh --draft        # same, opened as draft
 #   bash scripts/open-pr.sh "Custom title" # explicit title
 #
@@ -71,10 +72,15 @@ fi
 
 # Build title + body.
 DRAFT_FLAG=""
-if [ "$#" -gt 0 ] && [ "$1" = "--draft" ]; then
-  DRAFT_FLAG="--draft"
-  shift
-fi
+AUTO_MERGE=false
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --draft) DRAFT_FLAG="--draft"; shift ;;
+    --auto-merge) AUTO_MERGE=true; shift ;;
+    *) break ;;
+  esac
+done
 
 if [ "$#" -gt 0 ]; then
   TITLE="$1"
@@ -108,4 +114,17 @@ echo "$PR_URL"
 
 if [ -n "$DRAFT_FLAG" ]; then
   echo "    Opened as draft. Mark ready on github.com when ready to merge."
+fi
+
+# Auto-merge: extract PR number and run merge-pr.sh.
+if [ "$AUTO_MERGE" = true ] && [ -z "$DRAFT_FLAG" ]; then
+  PR_NUMBER="$(basename "$PR_URL")"
+  MERGE_SCRIPT="$(dirname "$0")/merge-pr.sh"
+  if [ -f "$MERGE_SCRIPT" ]; then
+    echo ""
+    echo "==> Auto-merging PR #$PR_NUMBER ..."
+    exec bash "$MERGE_SCRIPT" "$PR_NUMBER"
+  else
+    echo "WARNING: merge-pr.sh not found at $MERGE_SCRIPT — skipping auto-merge." >&2
+  fi
 fi

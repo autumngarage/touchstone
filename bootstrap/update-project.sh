@@ -139,7 +139,7 @@ fi
 # Read project type (default: generic for backward compatibility).
 PROJECT_TYPE="generic"
 if [ -f "$PROJECT_DIR/.toolkit-config" ]; then
-  PROJECT_TYPE="$(grep '^project_type=' "$PROJECT_DIR/.toolkit-config" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
+  PROJECT_TYPE="$(grep '^project_type=' "$PROJECT_DIR/.toolkit-config" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)"
   PROJECT_TYPE="${PROJECT_TYPE:-generic}"
 fi
 
