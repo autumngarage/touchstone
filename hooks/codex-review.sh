@@ -41,6 +41,8 @@
 #   CODEX_REVIEW_MAX_ITERATIONS   — fix loop cap (default: from config, or 3)
 #   CODEX_REVIEW_MAX_DIFF_LINES   — skip review if diff > this many lines (default: 5000)
 #   CODEX_REVIEW_CACHE_CLEAN      — cache exact-input clean reviews (default: true)
+#   CODEX_REVIEW_TIMEOUT          — wall-clock timeout per invocation in seconds (default: 300, 0=none)
+#   CODEX_REVIEW_ON_ERROR         — fail-open (default) or fail-closed
 #   CODEX_REVIEW_DISABLE_CACHE    — set to true/1 to force a fresh review
 #   CODEX_REVIEW_FORCE            — set to true/1 to run even on non-default-branch pushes
 #   CODEX_REVIEW_NO_AUTOFIX       — set to true/1 for review-only mode (backward compat)
@@ -69,6 +71,8 @@ MAX_DIFF_LINES="${CODEX_REVIEW_MAX_DIFF_LINES:-5000}"
 CACHE_CLEAN_REVIEWS="${CODEX_REVIEW_CACHE_CLEAN:-true}"
 NO_AUTOFIX="${CODEX_REVIEW_NO_AUTOFIX:-false}"
 CONFIG_MODE=""
+REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-300}"
+ON_ERROR="${CODEX_REVIEW_ON_ERROR:-fail-open}"
 UNSAFE_PATHS=""
 REVIEWER_CASCADE=()
 
@@ -285,6 +289,15 @@ if [ -f "$CONFIG_FILE" ]; then
         val="${val%\"}"; val="${val#\"}"
         val="${val%\'}"; val="${val#\'}"
         CONFIG_MODE="$val"
+        ;;
+      timeout*=*)
+        REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-$(trim "${line#*=}")}"
+        ;;
+      on_error*=*)
+        val="$(trim "${line#*=}")"
+        val="${val%\"}"; val="${val#\"}"
+        val="${val%\'}"; val="${val#\'}"
+        ON_ERROR="${CODEX_REVIEW_ON_ERROR:-$val}"
         ;;
       unsafe_paths*=*)
         array_value="$(trim "${line#*=}")"
@@ -568,6 +581,61 @@ reviewer_label() {
 }
 
 # --------------------------------------------------------------------------
+# Timeout and error handling
+# --------------------------------------------------------------------------
+
+REVIEW_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/toolkit-review-output.XXXXXX")"
+trap 'rm -f "$REVIEW_OUTPUT_FILE"' EXIT
+
+# run_reviewer_with_timeout TIMEOUT_SECS
+#   Runs the reviewer, captures output to REVIEW_OUTPUT_FILE, returns exit code.
+#   Exit 124 = timeout. Works correctly with subshells (no $() capture needed).
+run_reviewer_with_timeout() {
+  local timeout_secs="$1"
+
+  # No timeout: run directly
+  if [ "$timeout_secs" -le 0 ] 2>/dev/null; then
+    run_reviewer "$REVIEW_PROMPT" > "$REVIEW_OUTPUT_FILE" 2>/dev/null
+    return $?
+  fi
+
+  # Run reviewer in background, kill if it exceeds timeout.
+  run_reviewer "$REVIEW_PROMPT" > "$REVIEW_OUTPUT_FILE" 2>/dev/null &
+  local pid=$!
+  (
+    sleep "$timeout_secs"
+    kill -TERM "$pid" 2>/dev/null
+    sleep 10
+    kill -KILL "$pid" 2>/dev/null
+  ) &
+  local watchdog=$!
+
+  wait "$pid" 2>/dev/null
+  local rc=$?
+  kill "$watchdog" 2>/dev/null
+  wait "$watchdog" 2>/dev/null 2>&1
+
+  # SIGTERM (128+15=143) means the watchdog killed it → normalize to 124
+  if [ "$rc" -eq 143 ]; then
+    return 124
+  fi
+  return "$rc"
+}
+
+handle_error() {
+  local reason="$1"
+
+  if [ "$ON_ERROR" = "fail-closed" ]; then
+    echo "==> ERROR ($reason) — blocking push (on_error=fail-closed)." >&2
+    exit 1
+  else
+    echo "==> ERROR ($reason) — not blocking push (on_error=fail-open)."
+    echo "    Set on_error = \"fail-closed\" in .codex-review.toml to block on errors."
+    exit 0
+  fi
+}
+
+# --------------------------------------------------------------------------
 # Pre-flight checks
 # --------------------------------------------------------------------------
 
@@ -633,6 +701,14 @@ Read AGENTS.md at the repo root for the full review rubric (if it exists).
 Read CLAUDE.md at the repo root for project context (if it exists).
 
 Do NOT flag: formatting, style, naming, missing docstrings, speculative refactors, "you could consider" observations without a concrete bug.
+
+## Goal and context
+
+The following commit messages describe the intent and strategy behind these changes.
+Use them to understand *why* the code was changed, not just *what* changed.
+Do not flag intentional design decisions that are explained in the commit messages.
+
+$(git log --reverse --format='### %s%n%n%b' "$MERGE_BASE"..HEAD 2>/dev/null | sed '/^$/N;/^\n$/d')
 
 Examine the diff vs $BASE using your tools.
 $(if [ "$REVIEW_MODE" = "diff-only" ]; then
@@ -859,14 +935,19 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
   printf "  ${C_DIM}iteration ${iter}/${MAX_ITERATIONS} · ${DIFF_LINE_COUNT} lines vs ${BASE}${C_RESET}\n"
 
   set +e
-  OUTPUT="$(run_reviewer "$REVIEW_PROMPT")"
+  run_reviewer_with_timeout "$REVIEW_TIMEOUT"
   EXIT=$?
   set -e
+  OUTPUT="$(cat "$REVIEW_OUTPUT_FILE" 2>/dev/null || true)"
+
+  if [ "$EXIT" -eq 124 ]; then
+    echo "==> $REVIEWER_LABEL timed out after ${REVIEW_TIMEOUT}s."
+    handle_error "timeout after ${REVIEW_TIMEOUT}s"
+  fi
 
   if [ $EXIT -ne 0 ]; then
-    echo "==> $REVIEWER_LABEL review failed with exit $EXIT — not blocking push."
-    echo "    If this keeps happening, check auth, API quota, and network."
-    exit 0
+    echo "==> $REVIEWER_LABEL review failed with exit $EXIT."
+    handle_error "reviewer exit $EXIT"
   fi
 
   LAST_LINE="$(printf '%s\n' "$OUTPUT" | tail -1 | tr -d '\r ')"
@@ -953,11 +1034,11 @@ PASS
       ;;
 
     *)
-      echo "==> $REVIEWER_LABEL output did not match the expected sentinel contract — not blocking push."
+      echo "==> $REVIEWER_LABEL output did not match the expected sentinel contract."
       echo "    Last line was: '$LAST_LINE'"
       echo "    Raw output (first 20 lines):"
       printf '%s\n' "$OUTPUT" | head -20 | sed 's/^/    /'
-      exit 0
+      handle_error "malformed sentinel"
       ;;
   esac
 done

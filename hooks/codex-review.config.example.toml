@@ -34,6 +34,15 @@ safe_by_default = false
 # Override for a single run with: CODEX_REVIEW_MODE=review-only git push
 # mode = "fix"
 
+# Wall-clock timeout per reviewer invocation, in seconds. 0 = no timeout.
+# If the reviewer doesn't finish in time, the hook exits per on_error policy.
+# timeout = 300
+
+# What to do when the reviewer fails (crash, timeout, malformed output).
+# "fail-open"   = exit 0, allow push (default — infrastructure errors don't block)
+# "fail-closed" = exit 1, block push (use in CI or for strict review gates)
+# on_error = "fail-open"
+
 # Paths where the reviewer must NEVER auto-fix — it reports findings but does not edit.
 # Use these for high-scrutiny areas where auto-fixes could cause damage.
 # Paths are matched as prefixes (e.g., "src/auth/" matches "src/auth/login.py").
