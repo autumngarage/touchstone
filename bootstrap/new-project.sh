@@ -351,14 +351,11 @@ fi
 if [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ]; then
   case "$INPUT_TYPE" in
     python)
-      # Uncomment the Python (ruff) hooks block.
-      sed -i '' '/^  # Python (ruff):$/,/^  #$\|^  # [A-Z]/{
-        s/^  # \(- repo: .*ruff.*\)/  \1/
-        s/^  #   \(rev: .*\)/    \1/
-        s/^  #     \(hooks:\)/      \1/
-        s/^  #       \(- id: ruff\)/        \1/
-        s/^  #         \(args: .*\)/          \1/
-        s/^  #       \(- id: ruff-format\)/        \1/
+      # Uncomment the Python (ruff) hooks block by stripping "# " after the base indent.
+      sed -i '' '/^  # Python (ruff):$/,/^  #$/{
+        /^  # Python (ruff):$/d
+        /^  #$/d
+        s/^  # /  /
       }' "$PROJECT_DIR/.pre-commit-config.yaml"
       ;;
   esac
