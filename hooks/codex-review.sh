@@ -735,6 +735,10 @@ fi)
 ## Auto-fix policy
 
 $AUTOFIX_POLICY
+$(if [ -n "$REVIEW_CONTEXT_FILE" ]; then
+printf '\n## Project review context\n\n'
+cat "$REVIEW_CONTEXT_FILE"
+fi)
 
 ## Output contract — strict
 
@@ -751,15 +755,6 @@ If you emit CODEX_REVIEW_FIXED, briefly describe what you fixed (one line per fi
 
 Do not invent new sentinels. Do not output anything after the sentinel line.
 PROMPT_EOF
-
-# Append repo-provided review context if present.
-if [ -n "$REVIEW_CONTEXT_FILE" ]; then
-  REVIEW_PROMPT="$REVIEW_PROMPT
-
-## Project review context
-
-$(cat "$REVIEW_CONTEXT_FILE")"
-fi
 
 # --------------------------------------------------------------------------
 # Clean-review cache
@@ -1046,11 +1041,14 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
   OUTPUT="$(cat "$REVIEW_OUTPUT_FILE" 2>/dev/null || true)"
 
   # Check worktree invariants in non-fix modes.
+  # This is a hard failure regardless of on_error policy — a reviewer that
+  # mutates the worktree in review-only mode is a safety violation.
   if ! mode_allows_fix; then
     if ! check_worktree_invariants; then
       REVIEW_EXIT_REASON="worktree-mutated"
       print_summary
-      handle_error "worktree mutated in $REVIEW_MODE mode"
+      echo "==> ERROR: Worktree was mutated in '$REVIEW_MODE' mode — blocking push." >&2
+      exit 1
     fi
   fi
 
