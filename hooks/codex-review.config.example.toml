@@ -24,7 +24,7 @@ cache_clean_reviews = true
 # For new projects, start with false and gradually opt in as you gain confidence.
 safe_by_default = false
 
-# Paths where Codex must NEVER auto-fix — it reports findings but does not edit.
+# Paths where the reviewer must NEVER auto-fix — it reports findings but does not edit.
 # Use these for high-scrutiny areas where auto-fixes could cause damage.
 # Paths are matched as prefixes (e.g., "src/auth/" matches "src/auth/login.py").
 unsafe_paths = [
@@ -33,3 +33,18 @@ unsafe_paths = [
   # "migrations/",
   # "src/core/config.py",
 ]
+
+# --------------------------------------------------------------------------
+# Reviewer cascade (optional)
+# --------------------------------------------------------------------------
+# The [review] section configures which AI reviewers to try and in what order.
+# The hook tries each reviewer in sequence; the first one that is installed
+# and authenticated runs the review.
+#
+# Valid reviewer IDs: "codex", "claude", "gemini"
+#
+# If this section is absent, the hook defaults to ["codex"] (backward compatible).
+# Override for a single run with: TOOLKIT_REVIEWER=claude git push
+
+# [review]
+# reviewers = ["claude", "codex", "gemini"]

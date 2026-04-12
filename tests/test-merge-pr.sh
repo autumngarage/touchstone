@@ -123,9 +123,9 @@ PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
   bash "$MERGE_SCRIPT_DIR/merge-pr.sh" 123 >"$OUTPUT_FILE" 2>&1
 
 if grep -q 'attempt 1: mergeStateStatus=CLEAN mergeable=MERGEABLE' "$OUTPUT_FILE" \
-  && grep -q '==> Refreshing origin/main for Codex review' "$OUTPUT_FILE" \
-  && grep -q '==> Checking out PR #123 head (feature/test) for Codex review' "$OUTPUT_FILE" \
-  && grep -q '==> Running Codex merge review' "$OUTPUT_FILE" \
+  && grep -q '==> Refreshing origin/main for merge review' "$OUTPUT_FILE" \
+  && grep -q '==> Checking out PR #123 head (feature/test) for merge review' "$OUTPUT_FILE" \
+  && grep -q '==> Running merge review' "$OUTPUT_FILE" \
   && grep -q '==> Done\.' "$OUTPUT_FILE" \
   && grep -q '^checked-out$' "$GH_CHECKOUT_FILE" \
   && grep -q '^pr-head-oid$' "$GH_MERGE_HEAD_FILE" \
