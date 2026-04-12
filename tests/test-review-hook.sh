@@ -889,24 +889,39 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Test: invalid mode exits 2"
-set +e
+echo "==> Test: invalid mode warns and falls back to fix"
+setup_mode_repo
+rm -rf "$MODE_BIN"
+mkdir -p "$MODE_BIN"
+cat > "$MODE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat > "$MODE_BIN/codex" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+printf '%s\n' "$*" > "$CODEX_ARGS_FILE"
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/codex"
+
 (
   cd "$MODE_REPO"
   PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MODE=invalid \
     bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
 )
-INVALID_MODE_EXIT=$?
-set -e
 
-if [ "$INVALID_MODE_EXIT" -eq 2 ] && grep -q "Invalid mode" "$MODE_OUTPUT"; then
-  echo "==> PASS: invalid mode exits 2"
+if grep -q "Invalid mode" "$MODE_OUTPUT" \
+  && grep -q -- '--sandbox workspace-write' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: invalid mode warned and fell back to fix (workspace-write)"
 else
-  echo "FAIL: expected exit 2 for invalid mode" >&2
-  echo "exit code: $INVALID_MODE_EXIT" >&2
+  echo "FAIL: expected invalid mode to warn and fall back to fix" >&2
   cat "$MODE_OUTPUT" >&2
+  cat "$CODEX_ARGS_FILE" >&2
   ERRORS=$((ERRORS + 1))
 fi
 

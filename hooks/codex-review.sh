@@ -353,8 +353,8 @@ resolve_mode() {
   case "$mode" in
     review-only|fix|diff-only|no-tests) ;;
     *)
-      echo "ERROR: Invalid mode '$mode'. Valid: review-only, fix, diff-only, no-tests" >&2
-      exit 2
+      echo "WARNING: Invalid mode '$mode' — falling back to 'fix'. Valid: review-only, fix, diff-only, no-tests" >&2
+      mode="fix"
       ;;
   esac
   printf '%s' "$mode"
@@ -432,6 +432,13 @@ $(echo "$UNSAFE_PATHS" | while read -r p; do [ -n "$p" ] && echo "- Anything in 
     policy="$policy
 
 The working tree already has uncommitted changes. Do not edit files in this run; emit BLOCKED for issues that need changes."
+  fi
+
+  if [ "$REVIEW_MODE" = "no-tests" ]; then
+    policy="$policy
+
+IMPORTANT: Mode is 'no-tests'. Do NOT run any shell commands, test suites, or build tools.
+Review by reading files only. You may edit files to fix issues."
   fi
 
   policy="$policy
@@ -630,7 +637,7 @@ Do NOT flag: formatting, style, naming, missing docstrings, speculative refactor
 Examine the diff vs $BASE using your tools.
 $(if [ "$REVIEW_MODE" = "diff-only" ]; then
 printf '\n## Diff (included because mode=diff-only restricts tool access)\n\n```\n'
-git diff "$MERGE_BASE"..HEAD 2>/dev/null | head -2000
+git diff "$MERGE_BASE"..HEAD 2>/dev/null
 printf '```\n'
 fi)
 
