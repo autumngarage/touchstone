@@ -11,7 +11,7 @@ The toolkit changes slowly but the ecosystem around it (Claude Code, Anthropic g
 
 ## Hard constraints
 
-- **Read + research + report only.** Do not edit `principles/`, `hooks/`, `lib/`, `scripts/`, `templates/`, `bin/`, `bootstrap/`, `completions/`, `tests/`, `CLAUDE.md`, `AGENTS.md`, `README.md`, `VERSION`, or `CHANGELOG.md`.
+- **Read + research + report only.** Do not edit `principles/`, `hooks/`, `lib/`, `scripts/`, `templates/`, `bin/`, `bootstrap/`, `completions/`, `tests/`, `CLAUDE.md`, `AGENTS.md`, `README.md`, or `VERSION`.
 - **Write exactly one output file**: `audits/YYYY-MM-DD-audit.md` (UTC date). If a file with that name already exists, append `-2`, `-3`, etc. No other file writes.
 - **No guessing.** If you are unsure whether a principle is still endorsed or whether a capability exists, say so in the report — don't invent a recommendation.
 - **Anthropic-official sources only.** Restrict research to `docs.claude.com`, `docs.anthropic.com`, `anthropic.com`, `code.claude.com` (Claude Code docs subdomain), and `platform.claude.com` (redirect target for some Claude platform docs). No blogs, Medium, community repos, or third-party tutorials.
@@ -28,7 +28,7 @@ Read in this order:
 1. `CLAUDE.md` — what the toolkit is, what propagates, release invariants.
 2. `AGENTS.md` — agent-facing conventions if present.
 3. Every file in `principles/` — the named rules you will grade against.
-4. `VERSION` and the last ~30 entries of `CHANGELOG.md`.
+4. `VERSION` and the last 30 entries from `gh release list` (the canonical release history — there is no CHANGELOG.md).
 5. Output of `git log --oneline -30` — recent direction of travel.
 6. Tree listings (names only, not contents) of `bin/`, `lib/`, `hooks/`, `scripts/`, `bootstrap/`, `templates/`, `tests/`, `completions/`.
 7. The most recent prior audit in `audits/` if one exists. Understand what was flagged, what was acted on (check git log), and what is still open.
@@ -78,7 +78,7 @@ Spot-check (do not exhaustively audit — that's a separate task) the implementa
 - **No silent failures** — do shell scripts swallow errors? Look for `|| true`, missing `set -euo pipefail`, ignored exit codes, `2>/dev/null` on operations that should surface errors.
 - **Derive, don't persist** — is any derived state cached in ways that can go stale? (e.g., `last-update-check` files, cached version strings.)
 - **One code path** — divergent code paths for test/prod, dev/ci, or interactive/non-interactive modes?
-- **Documentation ownership** — are volatile facts (version numbers, file lists, URLs, test counts) duplicated across `README.md`, `CLAUDE.md`, `AGENTS.md`, `CHANGELOG.md`?
+- **Documentation ownership** — are volatile facts (version numbers, file lists, URLs, test counts) duplicated across `README.md`, `CLAUDE.md`, and `AGENTS.md`?
 - **Every fix gets a test** — does every script in `bin/`, `lib/`, `scripts/`, `hooks/`, `bootstrap/` have at least one corresponding test in `tests/`?
 
 Only flag things you have direct evidence for (file path + line or pattern). If you'd need to read more code to confirm, list it as `needs-investigation`, not as a finding.
