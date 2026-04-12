@@ -466,9 +466,17 @@ When in doubt, STOP and emit BLOCKED."
 reviewer_codex_available() { command -v codex >/dev/null 2>&1; }
 reviewer_codex_auth_ok()   { codex login status >/dev/null 2>&1; }
 reviewer_codex_exec() {
+  # Codex sandbox: read-only (no file writes) or workspace-write (edits allowed).
+  # Codex cannot selectively disable command execution, so diff-only and no-tests
+  # degrade: diff-only → read-only sandbox, no-tests → workspace-write sandbox.
+  # The prompt still instructs the reviewer, but enforcement is filesystem-only.
   local sandbox="read-only"
-  if mode_allows_fix; then
+  if [ "$REVIEW_MODE" = "fix" ] || [ "$REVIEW_MODE" = "no-tests" ]; then
     sandbox="workspace-write"
+  fi
+  if [ "$REVIEW_MODE" = "diff-only" ] || [ "$REVIEW_MODE" = "no-tests" ]; then
+    printf "  ${C_DIM}(codex: '%s' enforced via sandbox=%s + prompt; command restriction is prompt-level only)${C_RESET}\n" \
+      "$REVIEW_MODE" "$sandbox" >&2
   fi
   CODEX_REVIEW_IN_PROGRESS=1 codex exec \
     --sandbox "$sandbox" --ephemeral "$1" 2>/dev/null
@@ -477,6 +485,7 @@ reviewer_codex_exec() {
 reviewer_claude_available() { command -v claude >/dev/null 2>&1; }
 reviewer_claude_auth_ok()   { claude auth status >/dev/null 2>&1; }
 reviewer_claude_exec() {
+  # Claude has fine-grained --allowedTools: all four modes are fully enforced.
   local tools
   case "$REVIEW_MODE" in
     diff-only)    tools="Read,Grep,Glob" ;;
@@ -496,9 +505,16 @@ reviewer_gemini_auth_ok() {
   command -v gcloud >/dev/null 2>&1 && gcloud auth print-access-token >/dev/null 2>&1
 }
 reviewer_gemini_exec() {
-  if mode_allows_fix; then
+  # Gemini: --yolo (full auto-approve) or not (no auto-approve).
+  # Only fix mode uses --yolo. diff-only, review-only, and no-tests all run
+  # without --yolo. no-tests cannot be fully enforced (edits without commands)
+  # since Gemini lacks granular tool control.
+  if [ "$REVIEW_MODE" = "fix" ]; then
     CODEX_REVIEW_IN_PROGRESS=1 gemini -p "$1" --yolo 2>/dev/null
   else
+    if [ "$REVIEW_MODE" = "no-tests" ]; then
+      printf "  ${C_DIM}(gemini: 'no-tests' mode degrades to review-only; gemini lacks granular tool control)${C_RESET}\n" >&2
+    fi
     CODEX_REVIEW_IN_PROGRESS=1 gemini -p "$1" 2>/dev/null
   fi
 }
@@ -612,6 +628,11 @@ Read CLAUDE.md at the repo root for project context (if it exists).
 Do NOT flag: formatting, style, naming, missing docstrings, speculative refactors, "you could consider" observations without a concrete bug.
 
 Examine the diff vs $BASE using your tools.
+$(if [ "$REVIEW_MODE" = "diff-only" ]; then
+printf '\n## Diff (included because mode=diff-only restricts tool access)\n\n```\n'
+git diff "$MERGE_BASE"..HEAD 2>/dev/null | head -2000
+printf '```\n'
+fi)
 
 ## Auto-fix policy
 
