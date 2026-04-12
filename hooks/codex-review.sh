@@ -412,7 +412,7 @@ When in doubt, STOP and emit BLOCKED."
 #   reviewer_<id>_exec PROMPT — run the review; stdout = output, exit code = success
 
 reviewer_codex_available() { command -v codex >/dev/null 2>&1; }
-reviewer_codex_auth_ok()   { return 0; }  # Codex checks auth at exec time
+reviewer_codex_auth_ok()   { codex login status >/dev/null 2>&1; }
 reviewer_codex_exec() {
   CODEX_REVIEW_IN_PROGRESS=1 codex exec --full-auto --ephemeral "$1" 2>/dev/null
 }
@@ -436,11 +436,11 @@ reviewer_gemini_auth_ok() {
   command -v gcloud >/dev/null 2>&1 && gcloud auth print-access-token >/dev/null 2>&1
 }
 reviewer_gemini_exec() {
-  local mode_flag="--non-interactive"
   if [ "$NO_AUTOFIX" != "true" ]; then
-    mode_flag="--yolo"
+    CODEX_REVIEW_IN_PROGRESS=1 gemini -p "$1" --yolo 2>/dev/null
+  else
+    CODEX_REVIEW_IN_PROGRESS=1 gemini -p "$1" 2>/dev/null
   fi
-  CODEX_REVIEW_IN_PROGRESS=1 gemini -p "$1" $mode_flag 2>/dev/null
 }
 
 # --------------------------------------------------------------------------
@@ -612,7 +612,8 @@ append_cache_file() {
 
 review_cache_key() {
   {
-    printf 'toolkit-codex-review-cache-v1\n'
+    printf 'toolkit-codex-review-cache-v2\n'
+    printf 'reviewer=%s\n' "$ACTIVE_REVIEWER"
     printf 'base=%s\n' "$BASE"
     printf 'merge_base=%s\n' "$MERGE_BASE"
     printf 'worktree_dirty_before_review=%s\n' "$WORKTREE_DIRTY_BEFORE_REVIEW"

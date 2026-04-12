@@ -50,6 +50,7 @@ EOF
 cat > "$FAKE_BIN/codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
 prompt="${@: -1}"
 printf '%s' "$prompt" > "$PROMPT_FILE"
 printf 'CODEX_REVIEW_CLEAN\n'
@@ -81,6 +82,7 @@ echo "==> Test: review hook skips feature-branch pushes but runs default-branch 
 cat > "$FAKE_BIN/codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
 printf 'called\n' >> "$CODEX_CALLS_FILE"
 printf 'CODEX_REVIEW_CLEAN\n'
 EOF
@@ -158,6 +160,7 @@ rm -rf "$(git -C "$REPO_DIR" rev-parse --absolute-git-dir)/toolkit/codex-review-
 cat > "$FAKE_BIN/codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
 printf 'called\n' >> "$CODEX_CALLS_FILE"
 printf 'CODEX_REVIEW_CLEAN\n'
 EOF
@@ -212,6 +215,7 @@ echo "==> Test: review hook preserves # inside quoted unsafe_paths"
 cat > "$FAKE_BIN/codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
 prompt="${@: -1}"
 printf '%s' "$prompt" > "$PROMPT_FILE"
 printf 'CODEX_REVIEW_CLEAN\n'
@@ -267,6 +271,7 @@ git -C "$REPO_UNSAFE" commit -m "change" >/dev/null 2>&1
 cat > "$FAKE_BIN/codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
 printf 'codex edit\n' >> bootstrap/new-project.sh
 printf 'fixed unsafe path\n'
 printf 'CODEX_REVIEW_FIXED\n'
@@ -342,6 +347,7 @@ printf 'CODEX_REVIEW_CLEAN\n'
 CLEOF
 cat > "$CASCADE_BIN/codex" <<'CXEOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
 printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
 printf 'CODEX_REVIEW_CLEAN\n'
 CXEOF
@@ -383,6 +389,7 @@ echo "main"
 EOF
 cat > "$CASCADE_BIN/codex" <<'CXEOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
 printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
 printf 'CODEX_REVIEW_CLEAN\n'
 CXEOF
@@ -431,6 +438,7 @@ printf 'CODEX_REVIEW_CLEAN\n'
 CLEOF
 cat > "$CASCADE_BIN/codex" <<'CXEOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
 printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
 printf 'CODEX_REVIEW_CLEAN\n'
 CXEOF
@@ -517,6 +525,7 @@ printf 'CODEX_REVIEW_CLEAN\n'
 CLEOF
 cat > "$CASCADE_BIN/codex" <<'CXEOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
 printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
 printf 'CODEX_REVIEW_CLEAN\n'
 CXEOF
@@ -596,6 +605,7 @@ echo "main"
 EOF
 cat > "$CASCADE_BIN/codex" <<'CXEOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
 printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
 printf 'CODEX_REVIEW_CLEAN\n'
 CXEOF
