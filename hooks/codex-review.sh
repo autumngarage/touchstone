@@ -408,6 +408,18 @@ should_skip_pre_push_review() {
 }
 
 # --------------------------------------------------------------------------
+# Repo-provided review context
+# --------------------------------------------------------------------------
+
+REVIEW_CONTEXT_FILE=""
+for _candidate in "$REPO_ROOT/.codex-review-context.md" "$REPO_ROOT/.github/codex-review-context.md"; do
+  if [ -f "$_candidate" ]; then
+    REVIEW_CONTEXT_FILE="$_candidate"
+    break
+  fi
+done
+
+# --------------------------------------------------------------------------
 # Build the auto-fix policy section of the prompt from config
 # --------------------------------------------------------------------------
 
@@ -664,6 +676,9 @@ if ! resolve_reviewer; then
 fi
 REVIEWER_LABEL="$(reviewer_label)"
 echo "==> Using reviewer: $REVIEWER_LABEL"
+if [ -n "$REVIEW_CONTEXT_FILE" ]; then
+  echo "==> Review context: $(basename "$REVIEW_CONTEXT_FILE")"
+fi
 
 # Fetch latest base ref for the default review target (silent on failure —
 # offline, rebasing, etc.). If CODEX_REVIEW_BASE is set, trust the caller.
@@ -720,6 +735,10 @@ fi)
 ## Auto-fix policy
 
 $AUTOFIX_POLICY
+$(if [ -n "$REVIEW_CONTEXT_FILE" ]; then
+printf '\n## Project review context\n\n'
+cat "$REVIEW_CONTEXT_FILE"
+fi)
 
 ## Output contract — strict
 
@@ -786,6 +805,9 @@ review_cache_key() {
     append_cache_file "CLAUDE.md" "$REPO_ROOT/CLAUDE.md"
     append_cache_file ".codex-review.toml" "$CONFIG_FILE"
     append_cache_file "codex-review.sh" "$0"
+    if [ -n "$REVIEW_CONTEXT_FILE" ]; then
+      append_cache_file "codex-review-context" "$REVIEW_CONTEXT_FILE"
+    fi
     printf '\n-- branch diff --\n'
     git diff --binary "$MERGE_BASE"..HEAD
   } | hash_stdin
@@ -891,6 +913,81 @@ $path"
 
 FIX_COMMITS=0
 BANNER_PRINTED=false
+REVIEW_START_TIME="$(date +%s)"
+REVIEW_FILES_INSPECTED="$(git diff --name-only "$MERGE_BASE"..HEAD | wc -l | tr -d ' ')"
+REVIEW_EXIT_REASON=""
+
+# --------------------------------------------------------------------------
+# Phase labels
+# --------------------------------------------------------------------------
+
+phase() {
+  printf "  ${C_DIM}[%s] %s${C_RESET}\n" "$(date +%H:%M:%S)" "$1"
+}
+
+# --------------------------------------------------------------------------
+# Worktree invariant checking
+# --------------------------------------------------------------------------
+
+WORKTREE_HEAD_BEFORE="$(git rev-parse HEAD)"
+WORKTREE_BRANCH_BEFORE="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'detached')"
+WORKTREE_STATUS_BEFORE="$(git status --porcelain)"
+
+check_worktree_invariants() {
+  local current_head current_branch current_status violations=""
+
+  current_head="$(git rev-parse HEAD)"
+  current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'detached')"
+  current_status="$(git status --porcelain)"
+
+  if [ "$current_head" != "$WORKTREE_HEAD_BEFORE" ]; then
+    violations="${violations}    HEAD changed: $WORKTREE_HEAD_BEFORE -> $current_head\n"
+  fi
+  if [ "$current_branch" != "$WORKTREE_BRANCH_BEFORE" ]; then
+    violations="${violations}    Branch changed: $WORKTREE_BRANCH_BEFORE -> $current_branch\n"
+  fi
+  if [ "$current_status" != "$WORKTREE_STATUS_BEFORE" ]; then
+    violations="${violations}    Working tree status changed\n"
+  fi
+
+  if [ -n "$violations" ]; then
+    printf "\n  ${C_RED}WARNING: Worktree mutated during '%s' review:${C_RESET}\n" "$REVIEW_MODE"
+    printf '%b' "$violations"
+    return 1
+  fi
+  return 0
+}
+
+# --------------------------------------------------------------------------
+# Structured summary
+# --------------------------------------------------------------------------
+
+print_summary() {
+  local elapsed mins secs findings
+  elapsed=$(( $(date +%s) - REVIEW_START_TIME ))
+  mins=$((elapsed / 60))
+  secs=$((elapsed % 60))
+  findings="${REVIEW_FINDINGS_COUNT:-0}"
+
+  printf "\n  ${C_DIM}─── review summary ────────────────────────${C_RESET}\n"
+  printf "  ${C_DIM}reviewer:       %s${C_RESET}\n" "$REVIEWER_LABEL"
+  printf "  ${C_DIM}mode:           %s${C_RESET}\n" "$REVIEW_MODE"
+  printf "  ${C_DIM}files:          %s${C_RESET}\n" "$REVIEW_FILES_INSPECTED"
+  printf "  ${C_DIM}diff lines:     %s${C_RESET}\n" "$DIFF_LINE_COUNT"
+  printf "  ${C_DIM}iterations:     %s/%s${C_RESET}\n" "${iter:-0}" "$MAX_ITERATIONS"
+  printf "  ${C_DIM}fix commits:    %s${C_RESET}\n" "$FIX_COMMITS"
+  printf "  ${C_DIM}findings:       %s${C_RESET}\n" "$findings"
+  printf "  ${C_DIM}exit reason:    %s${C_RESET}\n" "$REVIEW_EXIT_REASON"
+  printf "  ${C_DIM}elapsed:        %dm%ds${C_RESET}\n" "$mins" "$secs"
+  printf "  ${C_DIM}──────────────────────────────────────────${C_RESET}\n"
+
+  if [ -n "${CODEX_REVIEW_SUMMARY_FILE:-}" ]; then
+    printf '{"reviewer":"%s","mode":"%s","files":%d,"diff_lines":%d,"iterations":%d,"fix_commits":%d,"findings":%d,"exit_reason":"%s","elapsed_seconds":%d}\n' \
+      "$REVIEWER_LABEL" "$REVIEW_MODE" "$REVIEW_FILES_INSPECTED" "$DIFF_LINE_COUNT" \
+      "${iter:-0}" "$FIX_COMMITS" "$findings" "$REVIEW_EXIT_REASON" "$elapsed" \
+      > "$CODEX_REVIEW_SUMMARY_FILE" 2>/dev/null || true
+  fi
+}
 
 # Colors (respect NO_COLOR).
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -914,6 +1011,7 @@ print_banner() {
 }
 
 for iter in $(seq 1 "$MAX_ITERATIONS"); do
+  phase "loading diff"
   DIFF_LINE_COUNT="$(git diff "$MERGE_BASE"..HEAD | wc -l | tr -d ' ')"
   if [ "$DIFF_LINE_COUNT" -gt "$MAX_DIFF_LINES" ]; then
     echo "==> Diff is $DIFF_LINE_COUNT lines (> $MAX_DIFF_LINES cap) — skipping review."
@@ -921,6 +1019,7 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
     exit 0
   fi
 
+  phase "checking cache"
   REVIEW_CACHE_KEY=""
   if cache_enabled; then
     REVIEW_CACHE_KEY="$(review_cache_key 2>/dev/null || true)"
@@ -933,6 +1032,7 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
 
   print_banner
   printf "  ${C_DIM}iteration ${iter}/${MAX_ITERATIONS} · ${DIFF_LINE_COUNT} lines vs ${BASE}${C_RESET}\n"
+  phase "reviewing with $REVIEWER_LABEL"
 
   set +e
   run_reviewer_with_timeout "$REVIEW_TIMEOUT"
@@ -940,19 +1040,37 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
   set -e
   OUTPUT="$(cat "$REVIEW_OUTPUT_FILE" 2>/dev/null || true)"
 
+  # Check worktree invariants in non-fix modes.
+  # This is a hard failure regardless of on_error policy — a reviewer that
+  # mutates the worktree in review-only mode is a safety violation.
+  if ! mode_allows_fix; then
+    if ! check_worktree_invariants; then
+      REVIEW_EXIT_REASON="worktree-mutated"
+      print_summary
+      echo "==> ERROR: Worktree was mutated in '$REVIEW_MODE' mode — blocking push." >&2
+      exit 1
+    fi
+  fi
+
   if [ "$EXIT" -eq 124 ]; then
+    phase "timed out"
     echo "==> $REVIEWER_LABEL timed out after ${REVIEW_TIMEOUT}s."
+    REVIEW_EXIT_REASON="timeout"
+    print_summary
     handle_error "timeout after ${REVIEW_TIMEOUT}s"
   fi
 
   if [ $EXIT -ne 0 ]; then
     echo "==> $REVIEWER_LABEL review failed with exit $EXIT."
+    REVIEW_EXIT_REASON="error"
+    print_summary
     handle_error "reviewer exit $EXIT"
   fi
 
   LAST_LINE="$(printf '%s\n' "$OUTPUT" | tail -1 | tr -d '\r ')"
   case "$LAST_LINE" in
     CODEX_REVIEW_CLEAN)
+      phase "done — clean"
       echo ""
       printf "${C_GREEN}"
       cat <<'PASS'
@@ -965,7 +1083,8 @@ PASS
       if [ "$FIX_COMMITS" -gt 0 ]; then
         printf "  ${C_DIM}($FIX_COMMITS auto-fix commit(s) applied)${C_RESET}\n"
       fi
-      echo ""
+      REVIEW_EXIT_REASON="clean"
+      print_summary
       write_clean_review_cache "$REVIEW_CACHE_KEY" "$DIFF_LINE_COUNT"
       exit 0
       ;;
@@ -1001,6 +1120,7 @@ PASS
         exit 1
       fi
 
+      phase "applying fixes"
       printf "\n  ${C_YELLOW}🔧 Auto-fixing...${C_RESET}\n\n"
       git diff --stat
       echo ""
@@ -1015,6 +1135,8 @@ PASS
       ;;
 
     CODEX_REVIEW_BLOCKED)
+      phase "done — blocked"
+      REVIEW_FINDINGS_COUNT="$(printf '%s\n' "$OUTPUT" | grep -c '^- ' || true)"
       echo ""
       printf "${C_RED}"
       printf '  ╔══════════════════════════════════════╗\n'
@@ -1030,6 +1152,8 @@ PASS
         echo "    To undo them: git reset --hard HEAD~$FIX_COMMITS"
       fi
       echo "    Address findings and try again. Emergency override: git push --no-verify"
+      REVIEW_EXIT_REASON="blocked"
+      print_summary
       exit 1
       ;;
 
@@ -1038,6 +1162,8 @@ PASS
       echo "    Last line was: '$LAST_LINE'"
       echo "    Raw output (first 20 lines):"
       printf '%s\n' "$OUTPUT" | head -20 | sed 's/^/    /'
+      REVIEW_EXIT_REASON="malformed-sentinel"
+      print_summary
       handle_error "malformed sentinel"
       ;;
   esac
@@ -1052,4 +1178,6 @@ echo "      git diff HEAD~$FIX_COMMITS..HEAD"
 echo ""
 echo "    To undo all auto-fix commits: git reset --hard HEAD~$FIX_COMMITS"
 echo "    Emergency override: git push --no-verify"
+REVIEW_EXIT_REASON="max-iterations"
+print_summary
 exit 1
