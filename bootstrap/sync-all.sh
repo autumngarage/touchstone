@@ -21,11 +21,13 @@ UPDATE_SCRIPT="$TOOLKIT_ROOT/bootstrap/update-project.sh"
 PROJECTS_FILE="$HOME/.toolkit-projects"
 DRY_RUN=""
 PULL_FIRST=false
+CHECK_ONLY=false
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run|-n) DRY_RUN="--dry-run"; shift ;;
     --pull-first) PULL_FIRST=true; shift ;;
+    --check) CHECK_ONLY=true; shift ;;
     -h|--help)
       sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -45,6 +47,42 @@ if [ "$PULL_FIRST" = true ]; then
   echo "==> Pulling latest toolkit ..."
   git -C "$TOOLKIT_ROOT" pull --rebase
   echo ""
+fi
+
+# Check-only mode: report which projects need sync, then exit.
+if [ "$CHECK_ONLY" = true ]; then
+  CURRENT_ID="$(
+    if [ -d "$TOOLKIT_ROOT/.git" ]; then
+      git -C "$TOOLKIT_ROOT" rev-parse HEAD
+    else
+      cat "$TOOLKIT_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]'
+    fi
+  )"
+  BEHIND=0
+  TOTAL=0
+  while IFS= read -r project_dir; do
+    [ -z "$project_dir" ] && continue
+    [[ "$project_dir" == \#* ]] && continue
+    TOTAL=$((TOTAL + 1))
+    if [ ! -d "$project_dir" ]; then
+      echo "  ? $(basename "$project_dir") — directory not found"
+      continue
+    fi
+    proj_id="$(cat "$project_dir/.toolkit-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
+    if [ "$proj_id" = "$CURRENT_ID" ]; then
+      echo "  ✓ $(basename "$project_dir") — up to date"
+    else
+      echo "  ! $(basename "$project_dir") — needs sync"
+      BEHIND=$((BEHIND + 1))
+    fi
+  done < "$PROJECTS_FILE"
+  echo ""
+  if [ "$BEHIND" -eq 0 ]; then
+    echo "All $TOTAL projects are up to date."
+  else
+    echo "$BEHIND/$TOTAL projects need sync. Run: toolkit sync"
+  fi
+  exit 0
 fi
 
 TOTAL=0

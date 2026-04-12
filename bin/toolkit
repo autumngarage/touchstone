@@ -4,7 +4,8 @@
 #
 # Usage:
 #   toolkit new <project-dir>          Create a new project with toolkit files
-#   toolkit init [--no-setup]          Add toolkit to the current project
+#   toolkit init [--no-setup] [--type python|node|swift|generic]
+#                                      Add toolkit to the current project
 #   toolkit update                     Update current project to latest toolkit
 #   toolkit update --dry-run           Show what would change without applying
 #   toolkit sync                       Update all registered projects
@@ -66,6 +67,16 @@ escape_sed_replacement() {
   printf '%s' "$1" | sed 's/[\\/&]/\\&/g'
 }
 
+# Drift nudge: if cwd is a toolkit project that's behind, print a one-liner.
+if [ -f ".toolkit-version" ]; then
+  _proj_id="$(cat .toolkit-version 2>/dev/null | tr -d '[:space:]')"
+  _current_id="$(toolkit_current_id)"
+  if [ -n "$_proj_id" ] && [ -n "$_current_id" ] && [ "$_proj_id" != "$_current_id" ]; then
+    printf "${DIM}toolkit: this project needs sync (run: toolkit update)${RESET}\n" >&2
+  fi
+  unset _proj_id _current_id
+fi
+
 # --------------------------------------------------------------------------
 # Subcommands
 # --------------------------------------------------------------------------
@@ -97,8 +108,16 @@ cmd_init() {
         shift
         ;;
       -h|--help)
-        echo "Usage: toolkit init [--no-setup] [--no-register] [--unsafe-paths path1,path2]"
+        echo "Usage: toolkit init [--no-setup] [--type TYPE] [--no-register] [--unsafe-paths path1,path2]"
         return 0
+        ;;
+      --type)
+        if [ "$#" -lt 2 ]; then
+          echo "ERROR: --type requires a value (python, node, swift, generic)" >&2
+          exit 1
+        fi
+        args+=("$1" "$2")
+        shift 2
         ;;
       --no-register)
         args+=("$1")
@@ -502,6 +521,129 @@ cmd_adr() {
   esac
 }
 
+cmd_skills() {
+  local subcmd="${1:-list}"
+
+  case "$subcmd" in
+    list)
+      tk_header "Claude Code Skills"
+
+      local found=false
+
+      # Project-level skills.
+      if [ -d ".claude/skills" ]; then
+        for skill_dir in .claude/skills/*/; do
+          [ -d "$skill_dir" ] || continue
+          found=true
+          local name
+          name="$(basename "$skill_dir")"
+          local status=""
+          if [ -L "$skill_dir" ]; then
+            local target
+            target="$(readlink "$skill_dir")"
+            status="${DIM}symlink → $target${RESET}"
+          else
+            status="${DIM}local${RESET}"
+          fi
+          if [ -f "${skill_dir}SKILL.md" ]; then
+            printf "  ${GREEN}✓${RESET} ${BOLD}%-25s${RESET} project   %b\n" "$name" "$status"
+          else
+            printf "  ${RED}✗${RESET} ${BOLD}%-25s${RESET} project   %b ${RED}(missing SKILL.md)${RESET}\n" "$name" "$status"
+          fi
+        done
+      fi
+
+      # User-level skills.
+      if [ -d "$HOME/.claude/skills" ]; then
+        for skill_dir in "$HOME/.claude/skills"/*/; do
+          [ -d "$skill_dir" ] || continue
+          found=true
+          local name
+          name="$(basename "$skill_dir")"
+          local status=""
+          if [ -L "$skill_dir" ]; then
+            local target
+            target="$(readlink "$skill_dir")"
+            status="${DIM}symlink → $target${RESET}"
+          else
+            status="${DIM}standalone (no symlink)${RESET}"
+          fi
+          if [ -f "${skill_dir}SKILL.md" ]; then
+            printf "  ${GREEN}✓${RESET} ${BOLD}%-25s${RESET} user      %b\n" "$name" "$status"
+          else
+            printf "  ${RED}✗${RESET} ${BOLD}%-25s${RESET} user      %b ${RED}(missing SKILL.md)${RESET}\n" "$name" "$status"
+          fi
+        done
+      fi
+
+      if [ "$found" = false ]; then
+        tk_dim "No skills found."
+        tk_dim "Project skills:  .claude/skills/<name>/SKILL.md"
+        tk_dim "User skills:     ~/.claude/skills/<name>/SKILL.md"
+      fi
+      echo ""
+      ;;
+
+    check)
+      tk_header "Skill Validation"
+
+      local issues=0
+      local checked=0
+      local dirs=()
+
+      if [ -d ".claude/skills" ]; then
+        for d in .claude/skills/*/; do [ -d "$d" ] && dirs+=("$d"); done
+      fi
+      if [ -d "$HOME/.claude/skills" ]; then
+        for d in "$HOME/.claude/skills"/*/; do [ -d "$d" ] && dirs+=("$d"); done
+      fi
+
+      if [ "${#dirs[@]}" -eq 0 ]; then
+        tk_dim "No skills found."
+        echo ""
+        return
+      fi
+
+      for skill_dir in "${dirs[@]}"; do
+        checked=$((checked + 1))
+        local name
+        name="$(basename "$skill_dir")"
+        local skill_file="${skill_dir}SKILL.md"
+
+        if [ ! -f "$skill_file" ]; then
+          tk_fail "$name — missing SKILL.md"
+          issues=$((issues + 1))
+          continue
+        fi
+
+        # Check frontmatter exists.
+        if ! head -1 "$skill_file" | grep -q '^---$'; then
+          tk_fail "$name — SKILL.md missing frontmatter (no leading ---)"
+          issues=$((issues + 1))
+          continue
+        fi
+
+        tk_ok "$name — valid"
+      done
+
+      echo ""
+      if [ "$issues" -eq 0 ]; then
+        tk_ok "All $checked skills valid."
+      else
+        tk_warn "$issues/$checked skills have issues."
+      fi
+      echo ""
+      ;;
+
+    *)
+      echo "Usage:" >&2
+      echo "  toolkit skills           List all skills" >&2
+      echo "  toolkit skills check     Validate skill files" >&2
+      exit 1
+      ;;
+  esac
+}
+
 cmd_release() {
   source "$TOOLKIT_ROOT/lib/release.sh"
 
@@ -518,6 +660,23 @@ cmd_release() {
   toolkit_release "$bump_type"
 }
 
+cmd_changelog() {
+  local count="${1:-10}"
+  tk_header "Recent Releases"
+
+  if ! command -v gh >/dev/null 2>&1; then
+    tk_fail "gh CLI not installed. Run: brew install gh"
+    return 1
+  fi
+
+  gh release list --repo henrymodisett/toolkit --limit "$count" 2>/dev/null || {
+    tk_fail "Couldn't fetch releases (network issue or auth problem)."
+    tk_dim "Fallback — recent commits:"
+    git -C "$TOOLKIT_ROOT" log --oneline -"$count" 2>/dev/null || true
+  }
+  echo ""
+}
+
 cmd_help() {
   tk_header "toolkit — shared engineering toolkit"
   echo "  ${BOLD}Project commands:${RESET}"
@@ -526,6 +685,7 @@ cmd_help() {
   printf "    ${BOLD}toolkit update${RESET}                 Update current project to latest\n"
   printf "    ${BOLD}toolkit update${RESET} --dry-run       Preview what would change\n"
   printf "    ${BOLD}toolkit sync${RESET}                   Update all registered projects\n"
+  printf "    ${BOLD}toolkit sync${RESET} --check           Report which projects need sync\n"
   printf "    ${BOLD}toolkit sync${RESET} --pull-first      Pull latest toolkit first\n"
   printf "    ${BOLD}toolkit diff${RESET}                   Compare project files vs templates\n"
   printf "    ${BOLD}toolkit adr${RESET} \"Title\"            Create an Architecture Decision Record\n"
@@ -539,6 +699,9 @@ cmd_help() {
   echo "  ${BOLD}Toolkit commands:${RESET}"
   printf "    ${BOLD}toolkit doctor${RESET}                 Check installation health\n"
   printf "    ${BOLD}toolkit version${RESET}                Show installed version\n"
+  printf "    ${BOLD}toolkit changelog${RESET} [N]          Show last N releases (default 10)\n"
+  printf "    ${BOLD}toolkit skills${RESET}                 List Claude Code skills\n"
+  printf "    ${BOLD}toolkit skills${RESET} check           Validate skill files\n"
   printf "    ${BOLD}toolkit release${RESET} [--patch]      Cut a new toolkit release\n"
   printf "    ${BOLD}toolkit help${RESET}                   Show this help\n"
   echo ""
@@ -563,6 +726,8 @@ case "$COMMAND" in
   unregister)   cmd_unregister "$@" ;;
   diff)         cmd_diff ;;
   adr)          cmd_adr "$@" ;;
+  skills)       cmd_skills "$@" ;;
+  changelog)    cmd_changelog "$@" ;;
   release)      cmd_release "$@" ;;
   version)      cmd_version ;;
   doctor)       cmd_doctor ;;

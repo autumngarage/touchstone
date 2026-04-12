@@ -22,6 +22,7 @@ set -euo pipefail
 TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REGISTER=true
 INPUT_UNSAFE=""
+INPUT_TYPE=""
 
 usage() {
   echo "Usage: $0 <project-dir> [--no-register] [--unsafe-paths path1,path2]"
@@ -129,6 +130,11 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --no-register) REGISTER=false; shift ;;
+    --type)
+      [ "$#" -ge 2 ] || { echo "ERROR: --type requires a value (python, node, swift, generic)" >&2; exit 1; }
+      INPUT_TYPE="$2"
+      shift 2
+      ;;
     --unsafe-paths)
       [ "$#" -ge 2 ] || { echo "ERROR: --unsafe-paths requires a comma-separated value" >&2; exit 1; }
       INPUT_UNSAFE="$2"
@@ -279,10 +285,18 @@ if [ -t 0 ] && [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
 
   read -r -p "   Test command (e.g., pnpm build, pytest tests/): " INPUT_TEST
 
+  if [ -z "$INPUT_TYPE" ]; then
+    read -r -p "   Project type (python, node, swift, generic) [generic]: " INPUT_TYPE
+    INPUT_TYPE="${INPUT_TYPE:-generic}"
+  fi
+
   if [ -z "$INPUT_UNSAFE" ] && [ "$CODEX_REVIEW_CONFIG_CREATED" = true ]; then
     read -r -p "   High-scrutiny paths (comma-separated, e.g., src/auth/,migrations/): " INPUT_UNSAFE
   fi
 fi
+
+# Default project type if not set.
+INPUT_TYPE="${INPUT_TYPE:-generic}"
 
 if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ] || [ -n "$INPUT_UNSAFE" ]; then
   # Apply to CLAUDE.md / AGENTS.md.
@@ -323,6 +337,33 @@ if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ] || [ -n 
     echo ""
     echo "==> Placeholders filled! Review CLAUDE.md and AGENTS.md to add more detail."
   fi
+fi
+
+# Write .toolkit-config with project type (skip if already exists).
+if [ ! -f "$PROJECT_DIR/.toolkit-config" ]; then
+  echo "project_type=$INPUT_TYPE" > "$PROJECT_DIR/.toolkit-config"
+  echo "==> Wrote .toolkit-config: project_type=$INPUT_TYPE"
+else
+  echo "==> .toolkit-config already exists; left unchanged."
+fi
+
+# Uncomment language-specific hooks in .pre-commit-config.yaml based on project type.
+if [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ]; then
+  case "$INPUT_TYPE" in
+    python)
+      # Uncomment the Python (ruff) hooks block by stripping "# " after the base indent.
+      sed -i '' '/^  # Python (ruff):$/,/^  #$/{
+        /^  # Python (ruff):$/d
+        /^  #$/d
+        s/^  # /  /
+      }' "$PROJECT_DIR/.pre-commit-config.yaml"
+      ;;
+  esac
+fi
+
+# Remove run-pytest-in-venv.sh for non-Python projects.
+if [ "$INPUT_TYPE" != "python" ] && [ "$INPUT_TYPE" != "generic" ]; then
+  rm -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
 fi
 
 echo ""

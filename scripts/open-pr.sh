@@ -8,6 +8,7 @@
 #
 # Usage:
 #   bash scripts/open-pr.sh                # title from last commit
+#   bash scripts/open-pr.sh --auto-merge   # open + Codex review + squash-merge
 #   bash scripts/open-pr.sh --draft        # same, opened as draft
 #   bash scripts/open-pr.sh "Custom title" # explicit title
 #
@@ -53,6 +54,20 @@ if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$UNTRACKED" ]; the
   esac
 fi
 
+# Parse flags early (needed before the existing-PR check).
+DRAFT_FLAG=""
+AUTO_MERGE=false
+POSITIONAL=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --draft) DRAFT_FLAG="--draft"; shift ;;
+    --auto-merge) AUTO_MERGE=true; shift ;;
+    *) POSITIONAL+=("$1"); shift ;;
+  esac
+done
+set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
+
 # Push (set upstream on first push, plain push afterwards).
 if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
   echo "==> Pushing $CURRENT_BRANCH ..."
@@ -62,18 +77,20 @@ else
   git push -u origin "$CURRENT_BRANCH"
 fi
 
-# If a PR already exists for this branch, just print the URL.
+# If a PR already exists for this branch, just print the URL (and auto-merge if requested).
 EXISTING_PR_URL="$(gh pr list --head "$CURRENT_BRANCH" --author "@me" --state open --json url --jq '.[0].url // empty' 2>/dev/null || echo "")"
 if [ -n "$EXISTING_PR_URL" ]; then
   echo "==> PR already open for $CURRENT_BRANCH: $EXISTING_PR_URL"
+  if [ "$AUTO_MERGE" = true ]; then
+    PR_NUMBER="$(basename "$EXISTING_PR_URL")"
+    MERGE_SCRIPT="$(dirname "$0")/merge-pr.sh"
+    if [ -f "$MERGE_SCRIPT" ]; then
+      echo ""
+      echo "==> Auto-merging PR #$PR_NUMBER ..."
+      exec bash "$MERGE_SCRIPT" "$PR_NUMBER"
+    fi
+  fi
   exit 0
-fi
-
-# Build title + body.
-DRAFT_FLAG=""
-if [ "$#" -gt 0 ] && [ "$1" = "--draft" ]; then
-  DRAFT_FLAG="--draft"
-  shift
 fi
 
 if [ "$#" -gt 0 ]; then
@@ -108,4 +125,17 @@ echo "$PR_URL"
 
 if [ -n "$DRAFT_FLAG" ]; then
   echo "    Opened as draft. Mark ready on github.com when ready to merge."
+fi
+
+# Auto-merge: extract PR number and run merge-pr.sh.
+if [ "$AUTO_MERGE" = true ] && [ -z "$DRAFT_FLAG" ]; then
+  PR_NUMBER="$(basename "$PR_URL")"
+  MERGE_SCRIPT="$(dirname "$0")/merge-pr.sh"
+  if [ -f "$MERGE_SCRIPT" ]; then
+    echo ""
+    echo "==> Auto-merging PR #$PR_NUMBER ..."
+    exec bash "$MERGE_SCRIPT" "$PR_NUMBER"
+  else
+    echo "WARNING: merge-pr.sh not found at $MERGE_SCRIPT — skipping auto-merge." >&2
+  fi
 fi

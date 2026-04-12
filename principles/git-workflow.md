@@ -7,10 +7,8 @@ Every code change goes through a feature branch + PR + merge. No exceptions for 
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
 2. **Branch.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`.
 3. **Change + commit.** Make the code change, stage explicit file paths (not `git add -A`), commit with a concise message.
-4. **Push.** `git push -u origin HEAD` or use `scripts/open-pr.sh`. Feature-branch pushes should stay fast; Codex review is reserved for merge/default-branch gates.
-5. **Open the PR.** `scripts/open-pr.sh` creates the PR with the project's PR template attached. Idempotent — rerunning on a branch that already has a PR just prints the URL.
-6. **Merge.** `scripts/merge-pr.sh <pr-number>` — sanity-checks mergeability, runs Codex review, squash-merges, deletes the remote branch, pulls the updated default branch locally.
-7. **Clean up.** Delete the local feature branch. Run `scripts/cleanup-branches.sh` periodically for batch hygiene.
+4. **Ship.** `scripts/open-pr.sh --auto-merge` pushes, creates the PR, runs Codex review, squash-merges, deletes the remote branch, and pulls the updated default branch — all in one command. Use `scripts/open-pr.sh` (without `--auto-merge`) if you want to open the PR without merging.
+5. **Clean up.** Delete the local feature branch. Run `scripts/cleanup-branches.sh` periodically for batch hygiene.
 
 ## Commit discipline
 
@@ -20,10 +18,10 @@ Every code change goes through a feature branch + PR + merge. No exceptions for 
 
 ## Codex merge review (optional, recommended)
 
-If the project has Codex review configured (see `hooks/codex-review.sh` and `.codex-review.toml`), the merge/default-branch review gate:
+If the project has Codex review configured (see `hooks/codex-review.sh` and `.codex-review.toml`), a pre-push hook gates default-branch pushes (including squash-merges via `merge-pr.sh`). The mechanism is `stages: [pre-push]` in `.pre-commit-config.yaml`; it skips feature-branch pushes and only activates when the push target is the default branch. Behavior:
 - Runs `codex exec --full-auto` against the diff vs the default branch
 - Auto-fixes safe findings (typos, missing error logging, etc.)
-- Blocks the merge or direct default-branch push for unsafe findings (high-scrutiny paths)
+- Blocks the push for unsafe findings (high-scrutiny paths)
 - Loops up to `max_iterations` times (default 3)
 - Gracefully skips if the Codex CLI isn't installed
 

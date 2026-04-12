@@ -68,9 +68,10 @@ repos:
         pass_filenames: false
 
   # ── Project-specific hooks ─────────────────────────────────────────────
-  # Uncomment and customize for your project:
+  # Add language-specific linters and test runners below.
+  # `toolkit init` will uncomment relevant hooks for your project type.
   #
-  # Python:
+  # Python (ruff):
   # - repo: https://github.com/astral-sh/ruff-pre-commit
   #   rev: v0.8.6
   #   hooks:
@@ -83,7 +84,7 @@ repos:
   #   hooks:
   #     - id: tests
   #       name: Run tests
-  #       entry: /usr/bin/env bash scripts/run-pytest-in-venv.sh tests/
+  #       entry: /usr/bin/env bash -c 'your-test-command-here'
   #       language: system
   #       stages: [pre-push]
   #       always_run: true
