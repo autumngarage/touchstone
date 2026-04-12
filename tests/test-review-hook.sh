@@ -925,6 +925,158 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# ==========================================================================
+# Timeout and error policy tests
+# ==========================================================================
+
+TIMEOUT_REPO="$TEST_DIR/repo-timeout"
+TIMEOUT_OUTPUT="$TEST_DIR/timeout-output.txt"
+
+setup_timeout_repo() {
+  rm -rf "$TIMEOUT_REPO"
+  mkdir -p "$TIMEOUT_REPO"
+  git -C "$TIMEOUT_REPO" init >/dev/null 2>&1
+  git -C "$TIMEOUT_REPO" config user.name "Toolkit Test"
+  git -C "$TIMEOUT_REPO" config user.email "toolkit@example.com"
+  printf 'base\n' > "$TIMEOUT_REPO/example.txt"
+  git -C "$TIMEOUT_REPO" add example.txt
+  git -C "$TIMEOUT_REPO" commit -m "base" >/dev/null 2>&1
+  printf 'changed\n' >> "$TIMEOUT_REPO/example.txt"
+  git -C "$TIMEOUT_REPO" add example.txt
+  git -C "$TIMEOUT_REPO" commit -m "change" >/dev/null 2>&1
+}
+
+echo "==> Test: timeout kills reviewer and exits per on_error"
+setup_timeout_repo
+TIMEOUT_BIN="$TEST_DIR/timeout-bin"
+rm -rf "$TIMEOUT_BIN"
+mkdir -p "$TIMEOUT_BIN"
+cat > "$TIMEOUT_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat > "$TIMEOUT_BIN/codex" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+sleep 999
+CXEOF
+chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/codex"
+
+set +e
+(
+  cd "$TIMEOUT_REPO"
+  PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_TIMEOUT=2 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
+)
+TIMEOUT_EXIT=$?
+set -e
+
+if [ "$TIMEOUT_EXIT" -eq 0 ] && grep -q 'timed out after 2s' "$TIMEOUT_OUTPUT"; then
+  echo "==> PASS: timeout killed reviewer and exited 0 (fail-open default)"
+else
+  echo "FAIL: expected timeout to kill reviewer and exit 0" >&2
+  echo "exit code: $TIMEOUT_EXIT" >&2
+  cat "$TIMEOUT_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: on_error=fail-closed blocks push on reviewer crash"
+setup_timeout_repo
+rm -rf "$TIMEOUT_BIN"
+mkdir -p "$TIMEOUT_BIN"
+cat > "$TIMEOUT_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat > "$TIMEOUT_BIN/codex" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+exit 1
+CXEOF
+chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/codex"
+
+set +e
+(
+  cd "$TIMEOUT_REPO"
+  PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
+)
+CLOSED_EXIT=$?
+set -e
+
+if [ "$CLOSED_EXIT" -eq 1 ] && grep -q 'fail-closed' "$TIMEOUT_OUTPUT"; then
+  echo "==> PASS: on_error=fail-closed blocked push on reviewer crash"
+else
+  echo "FAIL: expected fail-closed to block push on reviewer crash" >&2
+  echo "exit code: $CLOSED_EXIT" >&2
+  cat "$TIMEOUT_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: on_error=fail-open allows push on reviewer crash (default)"
+setup_timeout_repo
+set +e
+(
+  cd "$TIMEOUT_REPO"
+  PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
+)
+OPEN_EXIT=$?
+set -e
+
+if [ "$OPEN_EXIT" -eq 0 ] && grep -q 'fail-open' "$TIMEOUT_OUTPUT"; then
+  echo "==> PASS: on_error=fail-open allowed push on reviewer crash"
+else
+  echo "FAIL: expected fail-open to allow push on reviewer crash" >&2
+  echo "exit code: $OPEN_EXIT" >&2
+  cat "$TIMEOUT_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: on_error=fail-closed blocks on malformed output"
+setup_timeout_repo
+rm -rf "$TIMEOUT_BIN"
+mkdir -p "$TIMEOUT_BIN"
+cat > "$TIMEOUT_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat > "$TIMEOUT_BIN/codex" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+echo "no sentinel here"
+CXEOF
+chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/codex"
+
+set +e
+(
+  cd "$TIMEOUT_REPO"
+  PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
+)
+MALFORMED_EXIT=$?
+set -e
+
+if [ "$MALFORMED_EXIT" -eq 1 ] && grep -q 'malformed sentinel' "$TIMEOUT_OUTPUT"; then
+  echo "==> PASS: on_error=fail-closed blocked on malformed output"
+else
+  echo "FAIL: expected fail-closed to block on malformed output" >&2
+  echo "exit code: $MALFORMED_EXIT" >&2
+  cat "$TIMEOUT_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 if [ "$ERRORS" -eq 0 ]; then
   echo "==> PASS: all review hook assertions passed"
   exit 0
