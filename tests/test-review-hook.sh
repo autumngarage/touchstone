@@ -1077,6 +1077,178 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# ==========================================================================
+# Repo-provided context tests
+# ==========================================================================
+
+CTX_REPO="$TEST_DIR/repo-ctx"
+CTX_OUTPUT="$TEST_DIR/ctx-output.txt"
+CTX_PROMPT="$TEST_DIR/ctx-prompt.txt"
+
+setup_ctx_repo() {
+  rm -rf "$CTX_REPO"
+  mkdir -p "$CTX_REPO"
+  git -C "$CTX_REPO" init >/dev/null 2>&1
+  git -C "$CTX_REPO" config user.name "Toolkit Test"
+  git -C "$CTX_REPO" config user.email "toolkit@example.com"
+  printf 'base\n' > "$CTX_REPO/example.txt"
+  git -C "$CTX_REPO" add example.txt
+  git -C "$CTX_REPO" commit -m "base" >/dev/null 2>&1
+  printf 'changed\n' >> "$CTX_REPO/example.txt"
+  git -C "$CTX_REPO" add example.txt
+  git -C "$CTX_REPO" commit -m "change" >/dev/null 2>&1
+}
+
+CTX_BIN="$TEST_DIR/ctx-bin"
+
+setup_ctx_bin() {
+  rm -rf "$CTX_BIN"
+  mkdir -p "$CTX_BIN"
+  cat > "$CTX_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+  cat > "$CTX_BIN/codex" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+prompt="${@: -1}"
+printf '%s' "$prompt" > "$CTX_PROMPT"
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+  chmod +x "$CTX_BIN/gh" "$CTX_BIN/codex"
+}
+
+echo "==> Test: context file at repo root is appended to prompt"
+setup_ctx_repo
+setup_ctx_bin
+printf 'UNIQUE_CTX_MARKER_12345\n' > "$CTX_REPO/.codex-review-context.md"
+git -C "$CTX_REPO" add .codex-review-context.md
+git -C "$CTX_REPO" commit -m "add context" >/dev/null 2>&1
+
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CTX_PROMPT="$CTX_PROMPT" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+)
+
+if grep -q 'UNIQUE_CTX_MARKER_12345' "$CTX_PROMPT" \
+  && grep -q 'Review context' "$CTX_OUTPUT"; then
+  echo "==> PASS: context file appended to prompt"
+else
+  echo "FAIL: expected context file content in prompt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: context file under .github/ is discovered"
+setup_ctx_repo
+setup_ctx_bin
+mkdir -p "$CTX_REPO/.github"
+printf 'GITHUB_CTX_MARKER_67890\n' > "$CTX_REPO/.github/codex-review-context.md"
+git -C "$CTX_REPO" add .github/codex-review-context.md
+git -C "$CTX_REPO" commit -m "add github context" >/dev/null 2>&1
+
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CTX_PROMPT="$CTX_PROMPT" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+)
+
+if grep -q 'GITHUB_CTX_MARKER_67890' "$CTX_PROMPT"; then
+  echo "==> PASS: .github/ context file discovered"
+else
+  echo "FAIL: expected .github/ context file in prompt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: no context file = no error"
+setup_ctx_repo
+setup_ctx_bin
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CTX_PROMPT="$CTX_PROMPT" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+)
+
+if ! grep -q 'Review context' "$CTX_OUTPUT" \
+  && ! grep -q 'Project review context' "$CTX_PROMPT"; then
+  echo "==> PASS: no context file, no error"
+else
+  echo "FAIL: expected no context section when file is missing" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ==========================================================================
+# Observability tests (phase labels, summary)
+# ==========================================================================
+
+echo "==> Test: phase labels appear in output"
+setup_ctx_repo
+setup_ctx_bin
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CTX_PROMPT="$CTX_PROMPT" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+)
+
+if grep -q 'loading diff' "$CTX_OUTPUT" \
+  && grep -q 'checking cache' "$CTX_OUTPUT" \
+  && grep -q 'reviewing with' "$CTX_OUTPUT" \
+  && grep -q 'done — clean' "$CTX_OUTPUT"; then
+  echo "==> PASS: phase labels appear in output"
+else
+  echo "FAIL: expected phase labels in output" >&2
+  cat "$CTX_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: summary block appears at end"
+if grep -q 'review summary' "$CTX_OUTPUT" \
+  && grep -q 'exit reason:.*clean' "$CTX_OUTPUT" \
+  && grep -q 'elapsed:' "$CTX_OUTPUT"; then
+  echo "==> PASS: summary block appears at end"
+else
+  echo "FAIL: expected summary block in output" >&2
+  cat "$CTX_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: JSON summary file written when env var set"
+setup_ctx_repo
+setup_ctx_bin
+JSON_SUMMARY="$TEST_DIR/review-summary.json"
+rm -f "$JSON_SUMMARY"
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CTX_PROMPT="$CTX_PROMPT" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_SUMMARY_FILE="$JSON_SUMMARY" \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+)
+
+if [ -f "$JSON_SUMMARY" ] \
+  && grep -q '"exit_reason":"clean"' "$JSON_SUMMARY" \
+  && grep -q '"reviewer":"Codex"' "$JSON_SUMMARY"; then
+  echo "==> PASS: JSON summary file written"
+else
+  echo "FAIL: expected JSON summary file" >&2
+  cat "$JSON_SUMMARY" 2>/dev/null >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 if [ "$ERRORS" -eq 0 ]; then
   echo "==> PASS: all review hook assertions passed"
   exit 0

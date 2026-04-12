@@ -67,3 +67,17 @@ unsafe_paths = [
 
 # [review]
 # reviewers = ["claude", "codex", "gemini"]
+
+# --------------------------------------------------------------------------
+# Repo-provided review context (optional)
+# --------------------------------------------------------------------------
+# Place a .codex-review-context.md at the repo root (or .github/) to provide
+# additional context to the reviewer. This is appended to the prompt automatically.
+#
+# Example content:
+#   - "CI already runs linting and type-checking; do not re-run them."
+#   - "The payments module is being migrated; ignore legacy patterns in src/payments/."
+#
+# File search order:
+#   1. .codex-review-context.md
+#   2. .github/codex-review-context.md
