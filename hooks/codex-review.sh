@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 #
-# hooks/codex-review.sh — non-interactive Codex review + auto-fix loop.
-# Wired into merge-pr.sh and default-branch pre-push checks.
+# hooks/codex-review.sh — non-interactive AI code review + auto-fix loop.
+# Supports multiple reviewers (Codex, Claude, Gemini) with a configurable
+# fallback cascade. Wired into merge-pr.sh and default-branch pre-push checks.
 #
 # Loop:
-#   1. Run `codex exec --full-auto` against the local diff vs the default branch
-#   2. If Codex says CODEX_REVIEW_CLEAN → push allowed.
-#   3. If Codex says CODEX_REVIEW_FIXED → it edited files. Stage + commit
+#   1. Run the selected reviewer against the local diff vs the default branch
+#   2. If reviewer says CODEX_REVIEW_CLEAN → push allowed.
+#   3. If reviewer says CODEX_REVIEW_FIXED → it edited files. Stage + commit
 #      the fixes (a new commit, NOT an amend) and loop back to step 1.
-#   4. If Codex says CODEX_REVIEW_BLOCKED → push aborts, findings printed.
+#   4. If reviewer says CODEX_REVIEW_BLOCKED → push aborts, findings printed.
 #   5. After max_iterations rounds without converging, push aborts.
+#
+# Reviewer cascade:
+#   The [review] section in .codex-review.toml lists reviewers to try in order.
+#   The first reviewer that is installed and authenticated wins.
+#   If no [review] section exists, defaults to ["codex"] (backward compatible).
 #
 # Configuration:
 #   Place a .codex-review.toml at the repo root to configure behavior.
@@ -20,14 +26,15 @@
 #   explicitly by listing safe paths or setting safe_by_default = true.
 #
 # Env overrides:
+#   TOOLKIT_REVIEWER              — force a specific reviewer (skips cascade, hard-fails if unavailable)
 #   CODEX_REVIEW_BASE             — base ref to diff against (default: origin/<default-branch>)
 #   CODEX_REVIEW_MAX_ITERATIONS   — fix loop cap (default: from config, or 3)
 #   CODEX_REVIEW_MAX_DIFF_LINES   — skip review if diff > this many lines (default: 5000)
 #   CODEX_REVIEW_CACHE_CLEAN      — cache exact-input clean reviews (default: true)
-#   CODEX_REVIEW_DISABLE_CACHE    — set to true/1 to force a fresh Codex review
+#   CODEX_REVIEW_DISABLE_CACHE    — set to true/1 to force a fresh review
 #   CODEX_REVIEW_FORCE            — set to true/1 to run even on non-default-branch pushes
 #   CODEX_REVIEW_NO_AUTOFIX       — set to true/1 for review-only mode
-#   CODEX_REVIEW_IN_PROGRESS      — internal guard to skip nested Codex hook runs
+#   CODEX_REVIEW_IN_PROGRESS      — internal guard to skip nested review runs
 #
 # To bypass entirely in an emergency: git push --no-verify
 #
@@ -52,6 +59,7 @@ MAX_DIFF_LINES="${CODEX_REVIEW_MAX_DIFF_LINES:-5000}"
 CACHE_CLEAN_REVIEWS="${CODEX_REVIEW_CACHE_CLEAN:-true}"
 NO_AUTOFIX="${CODEX_REVIEW_NO_AUTOFIX:-false}"
 UNSAFE_PATHS=""
+REVIEWER_CASCADE=()
 
 trim() {
   local value="$1"
@@ -140,6 +148,29 @@ append_unsafe_paths_csv() {
   done
 }
 
+append_reviewer() {
+  local value="$1"
+  value="$(trim "$value")"
+  value="${value%,}"
+  value="$(trim "$value")"
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
+  [ -z "$value" ] && return
+  REVIEWER_CASCADE+=("$value")
+}
+
+append_reviewers_csv() {
+  local csv="$1" item
+  local -a items=()
+  [ -n "$csv" ] || return 0
+  IFS=',' read -r -a items <<< "$csv"
+  for item in "${items[@]}"; do
+    append_reviewer "$item"
+  done
+}
+
 normalize_bool() {
   local value="$1"
   value="$(trim "$value")"
@@ -160,11 +191,24 @@ normalize_bool() {
 # We do minimal TOML parsing in bash — just key = value pairs and string arrays.
 if [ -f "$CONFIG_FILE" ]; then
   IN_UNSAFE_PATHS=false
+  IN_REVIEWERS=false
+  CURRENT_SECTION=""
   while IFS= read -r raw_line || [ -n "$raw_line" ]; do
     # Strip comments and trim whitespace
     line="$(trim "$(strip_toml_comment "$raw_line")")"
     [ -z "$line" ] && continue
 
+    # Track TOML section headers.
+    if [[ "$line" == "["*"]" ]]; then
+      IN_UNSAFE_PATHS=false
+      IN_REVIEWERS=false
+      CURRENT_SECTION="${line#\[}"
+      CURRENT_SECTION="${CURRENT_SECTION%\]}"
+      CURRENT_SECTION="$(trim "$CURRENT_SECTION")"
+      continue
+    fi
+
+    # Continue multiline arrays regardless of section.
     if [ "$IN_UNSAFE_PATHS" = true ]; then
       if [[ "$line" == *"]"* ]]; then
         append_unsafe_paths_csv "${line%%]*}"
@@ -174,7 +218,35 @@ if [ -f "$CONFIG_FILE" ]; then
       fi
       continue
     fi
+    if [ "$IN_REVIEWERS" = true ]; then
+      if [[ "$line" == *"]"* ]]; then
+        append_reviewers_csv "${line%%]*}"
+        IN_REVIEWERS=false
+      else
+        append_reviewer "$line"
+      fi
+      continue
+    fi
 
+    # Parse [review] section keys.
+    if [ "$CURRENT_SECTION" = "review" ]; then
+      case "$line" in
+        reviewers*=*)
+          array_value="$(trim "${line#*=}")"
+          array_value="${array_value#\[}"
+          if [[ "$array_value" == *"]"* ]]; then
+            append_reviewers_csv "${array_value%%]*}"
+          else
+            append_reviewers_csv "$array_value"
+            IN_REVIEWERS=true
+          fi
+          ;;
+      esac
+      continue
+    fi
+
+    # Parse [codex_review] section keys (also matches when no section header
+    # has been seen yet, for backward compatibility with existing configs).
     case "$line" in
       max_iterations*=*)
         MAX_ITERATIONS="${CODEX_REVIEW_MAX_ITERATIONS:-$(trim "${line#*=}")}"
@@ -224,6 +296,16 @@ DEFAULT_BRANCH="$(resolve_default_branch)"
 BASE="${CODEX_REVIEW_BASE:-origin/$DEFAULT_BRANCH}"
 NO_AUTOFIX="$(normalize_bool "$NO_AUTOFIX")"
 
+# Default reviewer cascade: codex-only (backward compat with existing configs).
+if [ "${#REVIEWER_CASCADE[@]}" -eq 0 ]; then
+  REVIEWER_CASCADE=("codex")
+fi
+
+# TOOLKIT_REVIEWER env var overrides the cascade with a single forced reviewer.
+if [ -n "${TOOLKIT_REVIEWER:-}" ]; then
+  REVIEWER_CASCADE=("$TOOLKIT_REVIEWER")
+fi
+
 short_ref_name() {
   local ref="$1"
   ref="${ref#refs/heads/}"
@@ -255,7 +337,7 @@ should_skip_pre_push_review() {
     return 1
   fi
 
-  echo "==> Codex review runs on pushes to $default_branch only — skipping push to $remote_branch."
+  echo "==> Review runs on pushes to $default_branch only — skipping push to $remote_branch."
   echo "    Force review with: CODEX_REVIEW_FORCE=1 git push"
   return 0
 }
@@ -322,13 +404,94 @@ When in doubt, STOP and emit BLOCKED."
 }
 
 # --------------------------------------------------------------------------
+# Reviewer adapters
+# --------------------------------------------------------------------------
+# Each reviewer exposes three functions:
+#   reviewer_<id>_available  — exit 0 if the CLI is installed
+#   reviewer_<id>_auth_ok    — exit 0 if auth is configured
+#   reviewer_<id>_exec PROMPT — run the review; stdout = output, exit code = success
+
+reviewer_codex_available() { command -v codex >/dev/null 2>&1; }
+reviewer_codex_auth_ok()   { codex login status >/dev/null 2>&1; }
+reviewer_codex_exec() {
+  CODEX_REVIEW_IN_PROGRESS=1 codex exec --full-auto --ephemeral "$1" 2>/dev/null
+}
+
+reviewer_claude_available() { command -v claude >/dev/null 2>&1; }
+reviewer_claude_auth_ok()   { claude auth status >/dev/null 2>&1; }
+reviewer_claude_exec() {
+  local tools="Read,Grep,Glob,Bash"
+  if [ "$NO_AUTOFIX" != "true" ]; then
+    tools="Read,Grep,Glob,Bash,Edit,Write"
+  fi
+  CODEX_REVIEW_IN_PROGRESS=1 claude -p \
+    --allowedTools "$tools" \
+    --output-format text \
+    "$1" 2>/dev/null
+}
+
+reviewer_gemini_available() { command -v gemini >/dev/null 2>&1; }
+reviewer_gemini_auth_ok() {
+  [ -n "${GEMINI_API_KEY:-}" ] && return 0
+  command -v gcloud >/dev/null 2>&1 && gcloud auth print-access-token >/dev/null 2>&1
+}
+reviewer_gemini_exec() {
+  if [ "$NO_AUTOFIX" != "true" ]; then
+    CODEX_REVIEW_IN_PROGRESS=1 gemini -p "$1" --yolo 2>/dev/null
+  else
+    CODEX_REVIEW_IN_PROGRESS=1 gemini -p "$1" 2>/dev/null
+  fi
+}
+
+# --------------------------------------------------------------------------
+# Reviewer cascade resolver
+# --------------------------------------------------------------------------
+
+ACTIVE_REVIEWER=""
+REVIEWER_STATUS=""
+
+resolve_reviewer() {
+  local reviewer
+  ACTIVE_REVIEWER=""
+  REVIEWER_STATUS=""
+
+  for reviewer in "${REVIEWER_CASCADE[@]}"; do
+    if ! "reviewer_${reviewer}_available"; then
+      REVIEWER_STATUS="${REVIEWER_STATUS}    ${reviewer}: CLI not installed\n"
+      continue
+    fi
+    if ! "reviewer_${reviewer}_auth_ok"; then
+      REVIEWER_STATUS="${REVIEWER_STATUS}    ${reviewer}: auth check failed\n"
+      continue
+    fi
+    ACTIVE_REVIEWER="$reviewer"
+    return 0
+  done
+
+  return 1
+}
+
+run_reviewer() {
+  "reviewer_${ACTIVE_REVIEWER}_exec" "$1"
+}
+
+reviewer_label() {
+  case "$ACTIVE_REVIEWER" in
+    codex)  printf 'Codex' ;;
+    claude) printf 'Claude' ;;
+    gemini) printf 'Gemini' ;;
+    *)      printf '%s' "$ACTIVE_REVIEWER" ;;
+  esac
+}
+
+# --------------------------------------------------------------------------
 # Pre-flight checks
 # --------------------------------------------------------------------------
 
 # Feature-branch pushes should stay fast. Manual invocations and direct pushes
 # to the default branch still run the review.
 if is_truthy "${CODEX_REVIEW_IN_PROGRESS:-false}"; then
-  echo "==> Codex review already in progress — skipping nested Codex review."
+  echo "==> Review already in progress — skipping nested review."
   exit 0
 fi
 
@@ -336,12 +499,20 @@ if should_skip_pre_push_review; then
   exit 0
 fi
 
-# Graceful skip if Codex CLI not installed.
-if ! command -v codex >/dev/null 2>&1; then
-  echo "==> codex CLI not installed — skipping Codex review."
-  echo "    Install with: npm install -g @openai/codex && codex login"
+# Resolve which reviewer to use from the cascade.
+if ! resolve_reviewer; then
+  if [ -n "${TOOLKIT_REVIEWER:-}" ]; then
+    echo "ERROR: TOOLKIT_REVIEWER=$TOOLKIT_REVIEWER but that reviewer is not available:" >&2
+    printf '%b' "$REVIEWER_STATUS" >&2
+    exit 1
+  fi
+  echo "==> No reviewer available — skipping review."
+  printf '%b' "$REVIEWER_STATUS"
+  echo "    Install at least one: codex, claude, or gemini CLI."
   exit 0
 fi
+REVIEWER_LABEL="$(reviewer_label)"
+echo "==> Using reviewer: $REVIEWER_LABEL"
 
 # Fetch latest base ref for the default review target (silent on failure —
 # offline, rebasing, etc.). If CODEX_REVIEW_BASE is set, trust the caller.
@@ -351,13 +522,13 @@ fi
 
 # Find merge base so we review only this branch's commits.
 if ! MERGE_BASE="$(git merge-base "$BASE" HEAD 2>/dev/null)"; then
-  echo "==> Couldn't find merge base with $BASE — skipping Codex review."
+  echo "==> Couldn't find merge base with $BASE — skipping review."
   exit 0
 fi
 
 # Skip if no changes vs base.
 if git diff --quiet "$MERGE_BASE"..HEAD; then
-  echo "==> No changes vs $BASE — skipping Codex review."
+  echo "==> No changes vs $BASE — skipping review."
   exit 0
 fi
 
@@ -441,7 +612,8 @@ append_cache_file() {
 
 review_cache_key() {
   {
-    printf 'toolkit-codex-review-cache-v1\n'
+    printf 'toolkit-codex-review-cache-v2\n'
+    printf 'reviewer=%s\n' "$ACTIVE_REVIEWER"
     printf 'base=%s\n' "$BASE"
     printf 'merge_base=%s\n' "$MERGE_BASE"
     printf 'worktree_dirty_before_review=%s\n' "$WORKTREE_DIRTY_BEFORE_REVIEW"
@@ -566,15 +738,13 @@ fi
 
 print_banner() {
   [ "$BANNER_PRINTED" = false ] || return 0
+  local label
+  label="$(reviewer_label)"
   printf "${C_CYAN}"
-  cat <<'BANNER'
-
-  ╔══════════════════════════════════════╗
-  ║         ⚡ TOOLKIT REVIEW ⚡        ║
-  ║        Codex merge code review       ║
-  ╚══════════════════════════════════════╝
-
-BANNER
+  printf '\n  ╔══════════════════════════════════════╗\n'
+  printf '  ║         ⚡ TOOLKIT REVIEW ⚡        ║\n'
+  printf '  ║     %s merge code review%s║\n' "$label" "$(printf '%*s' $((23 - ${#label})) '')"
+  printf '  ╚══════════════════════════════════════╝\n\n'
   printf "${C_RESET}"
   BANNER_PRINTED=true
 }
@@ -591,7 +761,7 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
   if cache_enabled; then
     REVIEW_CACHE_KEY="$(review_cache_key 2>/dev/null || true)"
     if [ -n "$REVIEW_CACHE_KEY" ] && [ -f "$(clean_review_cache_file "$REVIEW_CACHE_KEY")" ]; then
-      echo "==> Codex review previously passed for this exact diff — skipping repeat review."
+      echo "==> Review previously passed for this exact diff — skipping repeat review."
       echo "    Force a fresh review with: CODEX_REVIEW_DISABLE_CACHE=1 git push"
       exit 0
     fi
@@ -601,13 +771,13 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
   printf "  ${C_DIM}iteration ${iter}/${MAX_ITERATIONS} · ${DIFF_LINE_COUNT} lines vs ${BASE}${C_RESET}\n"
 
   set +e
-  OUTPUT="$(CODEX_REVIEW_IN_PROGRESS=1 codex exec --full-auto --ephemeral "$REVIEW_PROMPT" 2>/dev/null)"
+  OUTPUT="$(run_reviewer "$REVIEW_PROMPT")"
   EXIT=$?
   set -e
 
   if [ $EXIT -ne 0 ]; then
-    echo "==> codex exec failed with exit $EXIT — not blocking push."
-    echo "    If this keeps happening, check: codex login status, API quota, network."
+    echo "==> $REVIEWER_LABEL review failed with exit $EXIT — not blocking push."
+    echo "    If this keeps happening, check auth, API quota, and network."
     exit 0
   fi
 
@@ -633,7 +803,7 @@ PASS
 
     CODEX_REVIEW_FIXED)
       if [ "$NO_AUTOFIX" = "true" ]; then
-        echo "==> Codex emitted FIXED during review-only mode."
+        echo "==> $REVIEWER_LABEL emitted FIXED during review-only mode."
         echo "    Treating this as blocking because CODEX_REVIEW_NO_AUTOFIX=1 was set."
         echo "    Inspect the working tree before continuing."
         exit 1
@@ -641,13 +811,13 @@ PASS
 
       AUTOFIX_CHANGED_PATHS="$(changed_paths)"
       if [ -z "$AUTOFIX_CHANGED_PATHS" ]; then
-        echo "==> Codex emitted FIXED but no working-tree changes detected."
+        echo "==> $REVIEWER_LABEL emitted FIXED but no working-tree changes detected."
         echo "    Treating as ambiguous — not blocking push."
         exit 0
       fi
 
       if [ "$WORKTREE_DIRTY_BEFORE_REVIEW" = true ]; then
-        echo "==> Codex emitted FIXED, but the working tree was already dirty before review."
+        echo "==> $REVIEWER_LABEL emitted FIXED, but the working tree was already dirty before review."
         echo "    Refusing to auto-commit because that could include unrelated local changes."
         echo "    Commit or stash local changes, then push again."
         exit 1
@@ -655,7 +825,7 @@ PASS
 
       DISALLOWED_AUTOFIX_PATHS="$(disallowed_autofix_paths "$AUTOFIX_CHANGED_PATHS")"
       if [ -n "$DISALLOWED_AUTOFIX_PATHS" ]; then
-        echo "==> Codex edited paths that are not allowed by .codex-review.toml."
+        echo "==> $REVIEWER_LABEL edited paths that are not allowed by .codex-review.toml."
         echo "    Refusing to auto-commit. Review these changes manually:"
         printf '%s\n' "$DISALLOWED_AUTOFIX_PATHS" | sed 's/^/    - /'
         echo "    Inspect the working-tree diff before deciding whether to keep or discard them."
@@ -667,7 +837,7 @@ PASS
       echo ""
 
       git add -A
-      git commit -m "fix: address Codex review findings (auto, iter $iter)"
+      git commit -m "fix: address $REVIEWER_LABEL review findings (auto, iter $iter)"
       WORKTREE_DIRTY_BEFORE_REVIEW=false
       FIX_COMMITS=$((FIX_COMMITS + 1))
       echo "==> Created fix commit $(git rev-parse --short HEAD). Re-running review on new HEAD..."
@@ -678,18 +848,16 @@ PASS
     CODEX_REVIEW_BLOCKED)
       echo ""
       printf "${C_RED}"
-      cat <<'BLOCKED'
-  ╔══════════════════════════════════════╗
-  ║          🚫 PUSH BLOCKED           ║
-  ║    Codex found issues to address    ║
-  ╚══════════════════════════════════════╝
-BLOCKED
+      printf '  ╔══════════════════════════════════════╗\n'
+      printf '  ║          🚫 PUSH BLOCKED           ║\n'
+      printf '  ║  %s found issues to address%s║\n' "$REVIEWER_LABEL" "$(printf '%*s' $((25 - ${#REVIEWER_LABEL})) '')"
+      printf '  ╚══════════════════════════════════════╝\n'
       printf "${C_RESET}"
       echo ""
       printf '%s\n' "$OUTPUT" | sed 's/^/    /'
       echo ""
       if [ "$FIX_COMMITS" -gt 0 ]; then
-        echo "    Note: Codex made $FIX_COMMITS fix commit(s) earlier this run that are still in your local history."
+        echo "    Note: $REVIEWER_LABEL made $FIX_COMMITS fix commit(s) earlier this run that are still in your local history."
         echo "    To undo them: git reset --hard HEAD~$FIX_COMMITS"
       fi
       echo "    Address findings and try again. Emergency override: git push --no-verify"
@@ -697,7 +865,7 @@ BLOCKED
       ;;
 
     *)
-      echo "==> Codex output did not match the expected sentinel contract — not blocking push."
+      echo "==> $REVIEWER_LABEL output did not match the expected sentinel contract — not blocking push."
       echo "    Last line was: '$LAST_LINE'"
       echo "    Raw output (first 20 lines):"
       printf '%s\n' "$OUTPUT" | head -20 | sed 's/^/    /'
@@ -707,8 +875,8 @@ BLOCKED
 done
 
 echo ""
-echo "==> Codex review loop did not converge after $MAX_ITERATIONS iterations."
-echo "    Codex made $FIX_COMMITS fix commit(s) but kept finding new issues."
+echo "==> Review loop did not converge after $MAX_ITERATIONS iterations."
+echo "    $REVIEWER_LABEL made $FIX_COMMITS fix commit(s) but kept finding new issues."
 echo "    Push aborted. Investigate manually:"
 echo "      git log --oneline -$((MAX_ITERATIONS + 1))"
 echo "      git diff HEAD~$FIX_COMMITS..HEAD"

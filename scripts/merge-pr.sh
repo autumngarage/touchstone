@@ -7,7 +7,7 @@
 #
 # What this does:
 #   1. Verifies the PR is open and mergeable.
-#   2. Runs Codex review as a merge gate.
+#   2. Runs AI code review as a merge gate.
 #   3. Squash-merges and deletes the remote branch.
 #   4. Checks out the default branch and pulls the updated state.
 #
@@ -43,7 +43,7 @@ truthy() {
   esac
 }
 
-run_codex_merge_review() {
+run_merge_review() {
   local current_branch default_base_ref local_head pr_head_branch pr_head_oid
 
   if ! pr_head_branch="$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null)"; then
@@ -65,36 +65,36 @@ run_codex_merge_review() {
 
   REVIEWED_HEAD_OID="$pr_head_oid"
 
-  if truthy "${SKIP_CODEX_REVIEW:-false}"; then
-    echo "==> Skipping Codex merge review because SKIP_CODEX_REVIEW is set."
+  if truthy "${SKIP_REVIEW:-${SKIP_CODEX_REVIEW:-false}}"; then
+    echo "==> Skipping merge review because SKIP_REVIEW is set."
     return 0
   fi
 
   if [ ! -f "$REVIEW_SCRIPT" ]; then
-    echo "==> Codex review script not found at $REVIEW_SCRIPT — skipping review."
+    echo "==> Review script not found at $REVIEW_SCRIPT — skipping review."
     return 0
   fi
 
   default_base_ref="origin/$DEFAULT_BRANCH"
-  echo "==> Refreshing $default_base_ref for Codex review ..."
+  echo "==> Refreshing $default_base_ref for merge review ..."
   if ! git fetch origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"; then
-    echo "ERROR: Failed to refresh $default_base_ref before Codex review." >&2
+    echo "ERROR: Failed to refresh $default_base_ref before merge review." >&2
     exit 1
   fi
   if ! git rev-parse --verify --quiet "$default_base_ref^{commit}" >/dev/null; then
-    echo "ERROR: Could not verify $default_base_ref before Codex review." >&2
+    echo "ERROR: Could not verify $default_base_ref before merge review." >&2
     exit 1
   fi
 
   if [ -n "$(git status --porcelain)" ]; then
-    echo "ERROR: Working tree has uncommitted changes; refusing to run Codex review against an ambiguous tree." >&2
+    echo "ERROR: Working tree has uncommitted changes; refusing to run review against an ambiguous tree." >&2
     exit 1
   fi
 
   current_branch="$(git rev-parse --abbrev-ref HEAD)"
   local_head="$(git rev-parse HEAD)"
   if [ "$current_branch" != "$pr_head_branch" ] || [ "$local_head" != "$pr_head_oid" ]; then
-    echo "==> Checking out PR #$PR_NUMBER head ($pr_head_branch) for Codex review ..."
+    echo "==> Checking out PR #$PR_NUMBER head ($pr_head_branch) for merge review ..."
     gh pr checkout "$PR_NUMBER" --detach
     local_head="$(git rev-parse HEAD)"
   fi
@@ -106,7 +106,7 @@ run_codex_merge_review() {
     exit 1
   fi
 
-  echo "==> Running Codex merge review ..."
+  echo "==> Running merge review ..."
   CODEX_REVIEW_BASE="$default_base_ref" \
     CODEX_REVIEW_FORCE=1 \
     CODEX_REVIEW_NO_AUTOFIX=1 \
@@ -151,8 +151,8 @@ if [ "$STATE" != "CLEAN" ] || [ "$MERGEABLE" != "MERGEABLE" ]; then
   exit 1
 fi
 
-# 3. Run Codex as the merge gate.
-run_codex_merge_review
+# 3. Run AI review as the merge gate.
+run_merge_review
 
 # 4. Squash-merge and delete the branch.
 echo "==> Squash-merging PR #$PR_NUMBER ..."
