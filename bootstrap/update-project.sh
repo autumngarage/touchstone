@@ -54,13 +54,17 @@ if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
   exit 0
 fi
 
-# Show changelog between versions.
+# Show changes between versions.
 echo ""
 echo "==> Changes in toolkit since last update:"
 if git -C "$TOOLKIT_ROOT" log --oneline "$OLD_SHA..$CURRENT_SHA" 2>/dev/null; then
   echo ""
+elif command -v gh >/dev/null 2>&1; then
+  gh release list --repo henrymodisett/toolkit --limit 15 2>/dev/null | head -10 || true
+  echo ""
 else
-  echo "    (couldn't compute changelog — old SHA may have been garbage collected)"
+  echo "    (couldn't compute changes — old SHA may have been garbage collected)"
+  echo "    Run: toolkit changelog"
   echo ""
 fi
 
@@ -132,12 +136,22 @@ if [ -d "$TOOLKIT_ROOT/principles" ]; then
   done
 fi
 
+# Read project type (default: generic for backward compatibility).
+PROJECT_TYPE="generic"
+if [ -f "$PROJECT_DIR/.toolkit-config" ]; then
+  PROJECT_TYPE="$(grep '^project_type=' "$PROJECT_DIR/.toolkit-config" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')"
+  PROJECT_TYPE="${PROJECT_TYPE:-generic}"
+fi
+
 # Scripts
 update_file "$TOOLKIT_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
 update_file "$TOOLKIT_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
 update_file "$TOOLKIT_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
 update_file "$TOOLKIT_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
-update_file "$TOOLKIT_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
+
+if [ "$PROJECT_TYPE" = "python" ] || [ "$PROJECT_TYPE" = "generic" ]; then
+  update_file "$TOOLKIT_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
+fi
 
 # Ensure scripts are executable.
 if [ "$DRY_RUN" = false ] && [ -d "$PROJECT_DIR/scripts" ]; then

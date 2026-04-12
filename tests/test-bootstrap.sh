@@ -74,7 +74,7 @@ assert_executable "$PROJECT/scripts/open-pr.sh"
 assert_executable "$PROJECT/scripts/merge-pr.sh"
 assert_executable "$PROJECT/scripts/cleanup-branches.sh"
 assert_executable "$PROJECT/scripts/run-pytest-in-venv.sh"
-assert_contains "$PROJECT/.pre-commit-config.yaml" 'run-pytest-in-venv.sh'
+assert_contains "$PROJECT/.pre-commit-config.yaml" 'codex-review.sh'
 
 # Toolkit version
 assert_exists "$PROJECT/.toolkit-version"

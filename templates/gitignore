@@ -36,4 +36,5 @@ out/
 
 # Toolkit
 .toolkit-version
+.toolkit-config
 *.bak

@@ -20,10 +20,10 @@ Every code change goes through a feature branch + PR + merge. No exceptions for 
 
 ## Codex merge review (optional, recommended)
 
-If the project has Codex review configured (see `hooks/codex-review.sh` and `.codex-review.toml`), the merge/default-branch review gate:
+If the project has Codex review configured (see `hooks/codex-review.sh` and `.codex-review.toml`), a pre-push hook gates default-branch pushes (including squash-merges via `merge-pr.sh`). The mechanism is `stages: [pre-push]` in `.pre-commit-config.yaml`; it skips feature-branch pushes and only activates when the push target is the default branch. Behavior:
 - Runs `codex exec --full-auto` against the diff vs the default branch
 - Auto-fixes safe findings (typos, missing error logging, etc.)
-- Blocks the merge or direct default-branch push for unsafe findings (high-scrutiny paths)
+- Blocks the push for unsafe findings (high-scrutiny paths)
 - Loops up to `max_iterations` times (default 3)
 - Gracefully skips if the Codex CLI isn't installed
 
