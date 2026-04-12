@@ -63,10 +63,19 @@ else
   git push -u origin "$CURRENT_BRANCH"
 fi
 
-# If a PR already exists for this branch, just print the URL.
+# If a PR already exists for this branch, just print the URL (and auto-merge if requested).
 EXISTING_PR_URL="$(gh pr list --head "$CURRENT_BRANCH" --author "@me" --state open --json url --jq '.[0].url // empty' 2>/dev/null || echo "")"
 if [ -n "$EXISTING_PR_URL" ]; then
   echo "==> PR already open for $CURRENT_BRANCH: $EXISTING_PR_URL"
+  if [ "$AUTO_MERGE" = true ]; then
+    PR_NUMBER="$(basename "$EXISTING_PR_URL")"
+    MERGE_SCRIPT="$(dirname "$0")/merge-pr.sh"
+    if [ -f "$MERGE_SCRIPT" ]; then
+      echo ""
+      echo "==> Auto-merging PR #$PR_NUMBER ..."
+      exec bash "$MERGE_SCRIPT" "$PR_NUMBER"
+    fi
+  fi
   exit 0
 fi
 
