@@ -54,6 +54,20 @@ if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$UNTRACKED" ]; the
   esac
 fi
 
+# Parse flags early (needed before the existing-PR check).
+DRAFT_FLAG=""
+AUTO_MERGE=false
+POSITIONAL=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --draft) DRAFT_FLAG="--draft"; shift ;;
+    --auto-merge) AUTO_MERGE=true; shift ;;
+    *) POSITIONAL+=("$1"); shift ;;
+  esac
+done
+set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
+
 # Push (set upstream on first push, plain push afterwards).
 if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
   echo "==> Pushing $CURRENT_BRANCH ..."
@@ -78,18 +92,6 @@ if [ -n "$EXISTING_PR_URL" ]; then
   fi
   exit 0
 fi
-
-# Build title + body.
-DRAFT_FLAG=""
-AUTO_MERGE=false
-
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --draft) DRAFT_FLAG="--draft"; shift ;;
-    --auto-merge) AUTO_MERGE=true; shift ;;
-    *) break ;;
-  esac
-done
 
 if [ "$#" -gt 0 ]; then
   TITLE="$1"
