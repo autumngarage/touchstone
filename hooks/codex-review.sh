@@ -25,15 +25,25 @@
 #   (no auto-fix). This is the conservative default — opt in to auto-fix
 #   explicitly by listing safe paths or setting safe_by_default = true.
 #
+# Modes:
+#   review-only — reviewer can read + run commands, but cannot edit files or commit
+#   fix         — full access: reviewer can edit, stage, and commit auto-fixes
+#   diff-only   — read-only: reviewer can only read files, no commands or edits
+#   no-tests    — reviewer can edit and commit, but cannot run commands (no test execution)
+#
+#   Modes are enforced at the wrapper level (tool restrictions, sandboxes), not just
+#   in the prompt. Set via CODEX_REVIEW_MODE env var or `mode` in .codex-review.toml.
+#
 # Env overrides:
 #   TOOLKIT_REVIEWER              — force a specific reviewer (skips cascade, hard-fails if unavailable)
+#   CODEX_REVIEW_MODE             — review-only|fix|diff-only|no-tests (default: fix)
 #   CODEX_REVIEW_BASE             — base ref to diff against (default: origin/<default-branch>)
 #   CODEX_REVIEW_MAX_ITERATIONS   — fix loop cap (default: from config, or 3)
 #   CODEX_REVIEW_MAX_DIFF_LINES   — skip review if diff > this many lines (default: 5000)
 #   CODEX_REVIEW_CACHE_CLEAN      — cache exact-input clean reviews (default: true)
 #   CODEX_REVIEW_DISABLE_CACHE    — set to true/1 to force a fresh review
 #   CODEX_REVIEW_FORCE            — set to true/1 to run even on non-default-branch pushes
-#   CODEX_REVIEW_NO_AUTOFIX       — set to true/1 for review-only mode
+#   CODEX_REVIEW_NO_AUTOFIX       — set to true/1 for review-only mode (backward compat)
 #   CODEX_REVIEW_IN_PROGRESS      — internal guard to skip nested review runs
 #
 # To bypass entirely in an emergency: git push --no-verify
@@ -58,6 +68,7 @@ MAX_ITERATIONS="${CODEX_REVIEW_MAX_ITERATIONS:-3}"
 MAX_DIFF_LINES="${CODEX_REVIEW_MAX_DIFF_LINES:-5000}"
 CACHE_CLEAN_REVIEWS="${CODEX_REVIEW_CACHE_CLEAN:-true}"
 NO_AUTOFIX="${CODEX_REVIEW_NO_AUTOFIX:-false}"
+CONFIG_MODE=""
 UNSAFE_PATHS=""
 REVIEWER_CASCADE=()
 
@@ -187,6 +198,13 @@ normalize_bool() {
   esac
 }
 
+is_truthy() {
+  case "$(normalize_bool "${1:-false}")" in
+    true) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Parse .codex-review.toml if it exists.
 # We do minimal TOML parsing in bash — just key = value pairs and string arrays.
 if [ -f "$CONFIG_FILE" ]; then
@@ -262,6 +280,12 @@ if [ -f "$CONFIG_FILE" ]; then
         val="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')"
         SAFE_BY_DEFAULT="$val"
         ;;
+      mode*=*)
+        val="$(trim "${line#*=}")"
+        val="${val%\"}"; val="${val#\"}"
+        val="${val%\'}"; val="${val#\'}"
+        CONFIG_MODE="$val"
+        ;;
       unsafe_paths*=*)
         array_value="$(trim "${line#*=}")"
         array_value="${array_value#\[}"
@@ -306,18 +330,46 @@ if [ -n "${TOOLKIT_REVIEWER:-}" ]; then
   REVIEWER_CASCADE=("$TOOLKIT_REVIEWER")
 fi
 
+# --------------------------------------------------------------------------
+# Mode resolution
+# --------------------------------------------------------------------------
+# Modes: review-only, fix, diff-only, no-tests
+#   review-only — read + bash, no edits, no git ops (default for merge review)
+#   fix         — full access, auto-fix + commit (default for pre-push)
+#   diff-only   — read-only, no bash, no edits
+#   no-tests    — edit + commit, no bash (skip test execution)
+
+resolve_mode() {
+  local mode="${CODEX_REVIEW_MODE:-}"
+
+  # Backward compat: NO_AUTOFIX=true maps to review-only
+  if [ -z "$mode" ] && is_truthy "$NO_AUTOFIX"; then
+    mode="review-only"
+  fi
+
+  # Fall back to config, then default
+  [ -n "$mode" ] || mode="${CONFIG_MODE:-fix}"
+
+  case "$mode" in
+    review-only|fix|diff-only|no-tests) ;;
+    *)
+      echo "ERROR: Invalid mode '$mode'. Valid: review-only, fix, diff-only, no-tests" >&2
+      exit 2
+      ;;
+  esac
+  printf '%s' "$mode"
+}
+
+REVIEW_MODE="$(resolve_mode)"
+
+mode_allows_fix()  { [ "$REVIEW_MODE" = "fix" ] || [ "$REVIEW_MODE" = "no-tests" ]; }
+mode_allows_bash() { [ "$REVIEW_MODE" = "fix" ] || [ "$REVIEW_MODE" = "review-only" ]; }
+
 short_ref_name() {
   local ref="$1"
   ref="${ref#refs/heads/}"
   ref="${ref#refs/remotes/origin/}"
   printf '%s' "$ref"
-}
-
-is_truthy() {
-  case "$(normalize_bool "${1:-false}")" in
-    true) return 0 ;;
-    *) return 1 ;;
-  esac
 }
 
 is_pre_push_hook() {
@@ -349,9 +401,9 @@ should_skip_pre_push_review() {
 build_autofix_policy() {
   local policy=""
 
-  if [ "$NO_AUTOFIX" = "true" ]; then
-    cat <<'POLICY_EOF'
-Do not edit files in this run. Do not stage, commit, or modify anything.
+  if ! mode_allows_fix; then
+    cat <<POLICY_EOF
+Mode: $REVIEW_MODE — do not edit files. Do not stage, commit, or modify anything.
 
 Review only:
 - If there are no blocking issues, emit CLEAN.
@@ -414,16 +466,24 @@ When in doubt, STOP and emit BLOCKED."
 reviewer_codex_available() { command -v codex >/dev/null 2>&1; }
 reviewer_codex_auth_ok()   { codex login status >/dev/null 2>&1; }
 reviewer_codex_exec() {
-  CODEX_REVIEW_IN_PROGRESS=1 codex exec --full-auto --ephemeral "$1" 2>/dev/null
+  local sandbox="read-only"
+  if mode_allows_fix; then
+    sandbox="workspace-write"
+  fi
+  CODEX_REVIEW_IN_PROGRESS=1 codex exec \
+    --sandbox "$sandbox" --ephemeral "$1" 2>/dev/null
 }
 
 reviewer_claude_available() { command -v claude >/dev/null 2>&1; }
 reviewer_claude_auth_ok()   { claude auth status >/dev/null 2>&1; }
 reviewer_claude_exec() {
-  local tools="Read,Grep,Glob,Bash"
-  if [ "$NO_AUTOFIX" != "true" ]; then
-    tools="Read,Grep,Glob,Bash,Edit,Write"
-  fi
+  local tools
+  case "$REVIEW_MODE" in
+    diff-only)    tools="Read,Grep,Glob" ;;
+    review-only)  tools="Read,Grep,Glob,Bash" ;;
+    no-tests)     tools="Read,Grep,Glob,Edit,Write" ;;
+    fix)          tools="Read,Grep,Glob,Bash,Edit,Write" ;;
+  esac
   CODEX_REVIEW_IN_PROGRESS=1 claude -p \
     --allowedTools "$tools" \
     --output-format text \
@@ -436,7 +496,7 @@ reviewer_gemini_auth_ok() {
   command -v gcloud >/dev/null 2>&1 && gcloud auth print-access-token >/dev/null 2>&1
 }
 reviewer_gemini_exec() {
-  if [ "$NO_AUTOFIX" != "true" ]; then
+  if mode_allows_fix; then
     CODEX_REVIEW_IN_PROGRESS=1 gemini -p "$1" --yolo 2>/dev/null
   else
     CODEX_REVIEW_IN_PROGRESS=1 gemini -p "$1" 2>/dev/null
@@ -802,9 +862,9 @@ PASS
       ;;
 
     CODEX_REVIEW_FIXED)
-      if [ "$NO_AUTOFIX" = "true" ]; then
-        echo "==> $REVIEWER_LABEL emitted FIXED during review-only mode."
-        echo "    Treating this as blocking because CODEX_REVIEW_NO_AUTOFIX=1 was set."
+      if ! mode_allows_fix; then
+        echo "==> $REVIEWER_LABEL emitted FIXED in '$REVIEW_MODE' mode."
+        echo "    The reviewer was restricted from editing — this should not happen."
         echo "    Inspect the working tree before continuing."
         exit 1
       fi
@@ -837,7 +897,7 @@ PASS
       echo ""
 
       git add -A
-      git commit -m "fix: address $REVIEWER_LABEL review findings (auto, iter $iter)"
+      git commit -m "fix: address $REVIEWER_LABEL review findings (auto, $REVIEW_MODE, iter $iter)"
       WORKTREE_DIRTY_BEFORE_REVIEW=false
       FIX_COMMITS=$((FIX_COMMITS + 1))
       echo "==> Created fix commit $(git rev-parse --short HEAD). Re-running review on new HEAD..."

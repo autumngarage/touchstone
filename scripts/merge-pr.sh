@@ -109,7 +109,7 @@ run_merge_review() {
   echo "==> Running merge review ..."
   CODEX_REVIEW_BASE="$default_base_ref" \
     CODEX_REVIEW_FORCE=1 \
-    CODEX_REVIEW_NO_AUTOFIX=1 \
+    CODEX_REVIEW_MODE=review-only \
     bash "$REVIEW_SCRIPT"
 }
 
