@@ -20,7 +20,7 @@ set -euo pipefail
 {
   printf 'CODEX_REVIEW_BASE=%s\n' "${CODEX_REVIEW_BASE:-}"
   printf 'CODEX_REVIEW_FORCE=%s\n' "${CODEX_REVIEW_FORCE:-}"
-  printf 'CODEX_REVIEW_NO_AUTOFIX=%s\n' "${CODEX_REVIEW_NO_AUTOFIX:-}"
+  printf 'CODEX_REVIEW_MODE=%s\n' "${CODEX_REVIEW_MODE:-}"
 } > "$CODEX_REVIEW_LOG"
 EOF
 chmod +x "$MERGE_SCRIPT_DIR/merge-pr.sh" "$MERGE_SCRIPT_DIR/codex-review.sh"
@@ -131,7 +131,7 @@ if grep -q 'attempt 1: mergeStateStatus=CLEAN mergeable=MERGEABLE' "$OUTPUT_FILE
   && grep -q '^pr-head-oid$' "$GH_MERGE_HEAD_FILE" \
   && grep -q '^CODEX_REVIEW_BASE=origin/main$' "$CODEX_REVIEW_LOG" \
   && grep -q '^CODEX_REVIEW_FORCE=1$' "$CODEX_REVIEW_LOG" \
-  && grep -q '^CODEX_REVIEW_NO_AUTOFIX=1$' "$CODEX_REVIEW_LOG"; then
+  && grep -q '^CODEX_REVIEW_MODE=review-only$' "$CODEX_REVIEW_LOG"; then
   echo "==> PASS: merge-pr.sh completed without jq"
   exit 0
 fi

@@ -24,6 +24,16 @@ cache_clean_reviews = true
 # For new projects, start with false and gradually opt in as you gain confidence.
 safe_by_default = false
 
+# Review mode — controls what the reviewer is allowed to do.
+# Enforced at the wrapper level (tool restrictions, sandboxes), not just in the prompt.
+#   "fix"         — full access: read, run commands, edit files, commit fixes (default)
+#   "review-only" — read + run commands, no file edits or commits
+#   "diff-only"   — read-only: no commands, no edits
+#   "no-tests"    — read + edit + commit, no command execution (skip test runs)
+#
+# Override for a single run with: CODEX_REVIEW_MODE=review-only git push
+# mode = "fix"
+
 # Paths where the reviewer must NEVER auto-fix — it reports findings but does not edit.
 # Use these for high-scrutiny areas where auto-fixes could cause damage.
 # Paths are matched as prefixes (e.g., "src/auth/" matches "src/auth/login.py").

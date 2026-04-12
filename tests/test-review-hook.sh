@@ -661,14 +661,14 @@ chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/claude"
     CLAUDE_ARGS_FILE="$CLAUDE_ARGS_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    CODEX_REVIEW_NO_AUTOFIX=1 \
+    CODEX_REVIEW_MODE=review-only \
     bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
 )
 
 if grep -q 'Read,Grep,Glob,Bash' "$CLAUDE_ARGS_FILE" && ! grep -q 'Edit' "$CLAUDE_ARGS_FILE"; then
   echo "==> PASS: claude adapter used read-only tools in review-only mode"
 else
-  echo "FAIL: expected claude to use read-only tools when NO_AUTOFIX is set" >&2
+  echo "FAIL: expected claude to use read-only tools in review-only mode" >&2
   cat "$CLAUDE_ARGS_FILE" >&2
   ERRORS=$((ERRORS + 1))
 fi
@@ -688,6 +688,240 @@ if grep -q 'Edit,Write' "$CLAUDE_ARGS_FILE"; then
 else
   echo "FAIL: expected claude to include Edit,Write tools when autofix enabled" >&2
   cat "$CLAUDE_ARGS_FILE" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ==========================================================================
+# Mode enforcement tests
+# ==========================================================================
+
+MODE_REPO="$TEST_DIR/repo-mode"
+MODE_OUTPUT="$TEST_DIR/mode-output.txt"
+CODEX_ARGS_FILE="$TEST_DIR/codex-args.txt"
+
+setup_mode_repo() {
+  rm -rf "$MODE_REPO"
+  mkdir -p "$MODE_REPO"
+  git -C "$MODE_REPO" init >/dev/null 2>&1
+  git -C "$MODE_REPO" config user.name "Toolkit Test"
+  git -C "$MODE_REPO" config user.email "toolkit@example.com"
+  printf 'base\n' > "$MODE_REPO/example.txt"
+  git -C "$MODE_REPO" add example.txt
+  git -C "$MODE_REPO" commit -m "base" >/dev/null 2>&1
+  printf 'changed\n' >> "$MODE_REPO/example.txt"
+  git -C "$MODE_REPO" add example.txt
+  git -C "$MODE_REPO" commit -m "change" >/dev/null 2>&1
+}
+
+echo "==> Test: codex adapter uses --sandbox read-only in review-only mode"
+setup_mode_repo
+{
+  printf '[codex_review]\nsafe_by_default = true\n'
+} > "$MODE_REPO/.codex-review.toml"
+git -C "$MODE_REPO" add .codex-review.toml
+git -C "$MODE_REPO" commit -m "config" >/dev/null 2>&1
+
+MODE_BIN="$TEST_DIR/mode-bin"
+rm -rf "$MODE_BIN"
+mkdir -p "$MODE_BIN"
+cat > "$MODE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat > "$MODE_BIN/codex" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+printf '%s\n' "$*" > "$CODEX_ARGS_FILE"
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/codex"
+
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=review-only \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+)
+
+if grep -q -- '--sandbox read-only' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: codex used --sandbox read-only in review-only mode"
+else
+  echo "FAIL: expected codex to use --sandbox read-only in review-only mode" >&2
+  cat "$CODEX_ARGS_FILE" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: codex adapter uses --sandbox workspace-write in fix mode"
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=fix \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+)
+
+if grep -q -- '--sandbox workspace-write' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: codex used --sandbox workspace-write in fix mode"
+else
+  echo "FAIL: expected codex to use --sandbox workspace-write in fix mode" >&2
+  cat "$CODEX_ARGS_FILE" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: claude adapter restricts to Read,Grep,Glob in diff-only mode"
+rm -rf "$MODE_BIN"
+mkdir -p "$MODE_BIN"
+cat > "$MODE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat > "$MODE_BIN/claude" <<'CLEOF'
+#!/usr/bin/env bash
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi
+printf '%s\n' "$*" > "$CLAUDE_ARGS_FILE"
+printf 'CODEX_REVIEW_CLEAN\n'
+CLEOF
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/claude"
+
+{
+  printf '[codex_review]\nsafe_by_default = true\n'
+  printf '[review]\nreviewers = ["claude"]\n'
+} > "$MODE_REPO/.codex-review.toml"
+git -C "$MODE_REPO" add .codex-review.toml
+git -C "$MODE_REPO" commit -m "claude config" >/dev/null 2>&1
+
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CLAUDE_ARGS_FILE="$CLAUDE_ARGS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=diff-only \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+)
+
+if grep -q 'Read,Grep,Glob' "$CLAUDE_ARGS_FILE" \
+  && ! grep -q 'Bash' "$CLAUDE_ARGS_FILE" \
+  && ! grep -q 'Edit' "$CLAUDE_ARGS_FILE"; then
+  echo "==> PASS: claude restricted to Read,Grep,Glob in diff-only mode"
+else
+  echo "FAIL: expected claude to use only Read,Grep,Glob in diff-only mode" >&2
+  cat "$CLAUDE_ARGS_FILE" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: CODEX_REVIEW_NO_AUTOFIX backward compat maps to review-only"
+rm -rf "$MODE_BIN"
+mkdir -p "$MODE_BIN"
+cat > "$MODE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat > "$MODE_BIN/codex" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+printf '%s\n' "$*" > "$CODEX_ARGS_FILE"
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/codex"
+
+{
+  printf '[codex_review]\nsafe_by_default = true\n'
+} > "$MODE_REPO/.codex-review.toml"
+git -C "$MODE_REPO" add .codex-review.toml
+git -C "$MODE_REPO" commit -m "codex config" >/dev/null 2>&1
+
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_NO_AUTOFIX=1 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+)
+
+if grep -q -- '--sandbox read-only' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: CODEX_REVIEW_NO_AUTOFIX=1 mapped to review-only (read-only sandbox)"
+else
+  echo "FAIL: expected CODEX_REVIEW_NO_AUTOFIX to map to review-only mode" >&2
+  cat "$CODEX_ARGS_FILE" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: FIXED sentinel in review-only mode exits 1"
+rm -rf "$MODE_BIN"
+mkdir -p "$MODE_BIN"
+cat > "$MODE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat > "$MODE_BIN/codex" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+printf 'CODEX_REVIEW_FIXED\n'
+CXEOF
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/codex"
+
+set +e
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=review-only \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+)
+FIXED_RO_EXIT=$?
+set -e
+
+if [ "$FIXED_RO_EXIT" -eq 1 ] && grep -q "emitted FIXED in 'review-only' mode" "$MODE_OUTPUT"; then
+  echo "==> PASS: FIXED in review-only mode exits 1 with warning"
+else
+  echo "FAIL: expected exit 1 and warning when FIXED emitted in review-only mode" >&2
+  echo "exit code: $FIXED_RO_EXIT" >&2
+  cat "$MODE_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: invalid mode warns and falls back to fix"
+setup_mode_repo
+rm -rf "$MODE_BIN"
+mkdir -p "$MODE_BIN"
+cat > "$MODE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat > "$MODE_BIN/codex" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+printf '%s\n' "$*" > "$CODEX_ARGS_FILE"
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/codex"
+
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=invalid \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+)
+
+if grep -q "Invalid mode" "$MODE_OUTPUT" \
+  && grep -q -- '--sandbox workspace-write' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: invalid mode warned and fell back to fix (workspace-write)"
+else
+  echo "FAIL: expected invalid mode to warn and fall back to fix" >&2
+  cat "$MODE_OUTPUT" >&2
+  cat "$CODEX_ARGS_FILE" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
