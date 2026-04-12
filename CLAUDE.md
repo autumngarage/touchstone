@@ -67,8 +67,9 @@ toolkit/
 | `hooks/codex-review.sh` | Generalized Codex merge/default-branch review + auto-fix hook |
 | `lib/release.sh` | Release automation for GitHub Releases and the Homebrew tap |
 | `VERSION` | Current semver version |
-| `CHANGELOG.md` | Release history |
 | `~/.toolkit-projects` | Registry of all bootstrapped projects |
+
+Release history lives in `git log` and `gh release list` — there is no `CHANGELOG.md`. Duplicating release history in a markdown file was a documentation-ownership violation (per `principles/documentation-ownership.md`: "when in doubt, delete the duplicate"). Run `gh release list` or `git log --oneline` for the canonical list.
 
 ## Release & Distribution
 
