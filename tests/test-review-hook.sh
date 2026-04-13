@@ -25,6 +25,7 @@ unset PRE_COMMIT_FROM_REF PRE_COMMIT_TO_REF
 unset PRE_COMMIT_LOCAL_BRANCH PRE_COMMIT_REMOTE_BRANCH
 unset PRE_COMMIT_REMOTE_NAME PRE_COMMIT_REMOTE_URL
 unset CODEX_REVIEW_FORCE CODEX_REVIEW_NO_AUTOFIX CODEX_REVIEW_DISABLE_CACHE
+unset CODEX_REVIEW_ASSIST CODEX_REVIEW_ASSIST_TIMEOUT CODEX_REVIEW_ASSIST_MAX_ROUNDS
 unset CODEX_REVIEW_IN_PROGRESS
 
 mkdir -p "$REPO_DIR" "$FAKE_BIN"
@@ -625,6 +626,79 @@ if grep -q 'codex-called' "$CASCADE_CALLS" && grep -q 'Using reviewer: Codex' "$
   echo "==> PASS: missing [review] section defaulted to codex"
 else
   echo "FAIL: expected missing [review] to default to codex" >&2
+  cat "$CASCADE_CALLS" >&2
+  cat "$CASCADE_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: primary reviewer can request peer assistance"
+setup_cascade_repo
+{
+  printf '[codex_review]\nsafe_by_default = true\n'
+  printf '[review]\nreviewers = ["claude"]\n'
+  printf '[review.assist]\nenabled = true\nhelpers = ["codex"]\ntimeout = 5\nmax_rounds = 1\n'
+} > "$CASCADE_REPO/.codex-review.toml"
+git -C "$CASCADE_REPO" add .codex-review.toml
+git -C "$CASCADE_REPO" commit -m "assist config" >/dev/null 2>&1
+
+ASSIST_CODEX_PROMPT="$TEST_DIR/assist-codex-prompt.txt"
+ASSIST_CLAUDE_PROMPT="$TEST_DIR/assist-claude-prompt.txt"
+rm -rf "$CASCADE_BIN"
+mkdir -p "$CASCADE_BIN"
+cat > "$CASCADE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat > "$CASCADE_BIN/claude" <<'CLEOF'
+#!/usr/bin/env bash
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi
+printf '%s\n' "claude-called" >> "$CASCADE_CALLS"
+prompt="${@: -1}"
+printf '%s' "$prompt" > "$ASSIST_CLAUDE_PROMPT"
+if printf '%s' "$prompt" | grep -q 'Peer reviewer answer'; then
+  printf 'peer answer considered\n'
+  printf 'CODEX_REVIEW_CLEAN\n'
+else
+  printf 'TOOLKIT_HELP_REQUEST_BEGIN\n'
+  printf 'question: Is this larger shell change safe on macOS?\n'
+  printf 'context: focus on process cleanup and push hook behavior\n'
+  printf 'TOOLKIT_HELP_REQUEST_END\n'
+  printf 'CODEX_REVIEW_BLOCKED\n'
+fi
+CLEOF
+cat > "$CASCADE_BIN/codex" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
+prompt="${@: -1}"
+printf '%s' "$prompt" > "$ASSIST_CODEX_PROMPT"
+printf 'codex second opinion: no blocker found\n'
+CXEOF
+chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/claude" "$CASCADE_BIN/codex"
+: > "$CASCADE_CALLS"
+
+(
+  cd "$CASCADE_REPO"
+  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CASCADE_CALLS="$CASCADE_CALLS" \
+    ASSIST_CLAUDE_PROMPT="$ASSIST_CLAUDE_PROMPT" \
+    ASSIST_CODEX_PROMPT="$ASSIST_CODEX_PROMPT" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+)
+
+CLAUDE_ASSIST_CALLS="$(grep -c 'claude-called' "$CASCADE_CALLS" || true)"
+CODEX_ASSIST_CALLS="$(grep -c 'codex-called' "$CASCADE_CALLS" || true)"
+if [ "$CLAUDE_ASSIST_CALLS" = "2" ] \
+  && [ "$CODEX_ASSIST_CALLS" = "1" ] \
+  && grep -q 'Peer reviewer answer' "$ASSIST_CLAUDE_PROMPT" \
+  && grep -q 'Is this larger shell change safe on macOS' "$ASSIST_CODEX_PROMPT" \
+  && grep -q 'peer assists:   1' "$CASCADE_OUTPUT"; then
+  echo "==> PASS: primary reviewer requested and used peer assistance"
+else
+  echo "FAIL: expected peer assistance round between claude and codex" >&2
+  echo "calls:" >&2
   cat "$CASCADE_CALLS" >&2
   cat "$CASCADE_OUTPUT" >&2
   ERRORS=$((ERRORS + 1))

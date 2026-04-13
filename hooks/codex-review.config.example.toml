@@ -68,6 +68,17 @@ unsafe_paths = [
 # [review]
 # reviewers = ["claude", "codex", "gemini"]
 
+# Optional peer assistance for larger or high-risk changes. When enabled, the
+# primary reviewer can request one focused second opinion from another reviewer
+# by emitting a TOOLKIT_HELP_REQUEST block before its final decision.
+# The helper runs in read-only/diff-only mode and cannot edit files.
+#
+# [review.assist]
+# enabled = false
+# helpers = ["codex", "gemini"]
+# timeout = 60
+# max_rounds = 1
+
 # --------------------------------------------------------------------------
 # Repo-provided review context (optional)
 # --------------------------------------------------------------------------
