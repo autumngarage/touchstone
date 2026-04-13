@@ -24,6 +24,13 @@ assert_exists() {
   fi
 }
 
+assert_not_exists() {
+  if [ -e "$1" ]; then
+    echo "FAIL: expected $1 to NOT exist" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+}
+
 assert_executable() {
   if [ ! -x "$1" ]; then
     echo "FAIL: expected $1 to be executable" >&2
@@ -43,6 +50,8 @@ PROJECT_WITH_UNSAFE="$TEST_DIR/test-project-unsafe"
 PROJECT_EXISTING="$TEST_DIR/test-project-existing"
 PROJECT_EXISTING_CONFIG="$TEST_DIR/test-project-existing-config"
 PROJECT_INIT_EXISTING_SETUP="$TEST_DIR/test-project-init-existing-setup"
+PROJECT_NODE="$TEST_DIR/test-project-node"
+PROJECT_PYTHON="$TEST_DIR/test-project-python"
 
 # Git repo
 assert_exists "$PROJECT/.git"
@@ -65,16 +74,24 @@ assert_exists "$PROJECT/principles/README.md"
 
 # Scripts
 assert_exists "$PROJECT/scripts/codex-review.sh"
+assert_exists "$PROJECT/scripts/toolkit-run.sh"
 assert_exists "$PROJECT/scripts/open-pr.sh"
 assert_exists "$PROJECT/scripts/merge-pr.sh"
 assert_exists "$PROJECT/scripts/cleanup-branches.sh"
-assert_exists "$PROJECT/scripts/run-pytest-in-venv.sh"
+assert_not_exists "$PROJECT/scripts/run-pytest-in-venv.sh"
 assert_executable "$PROJECT/scripts/codex-review.sh"
+assert_executable "$PROJECT/scripts/toolkit-run.sh"
 assert_executable "$PROJECT/scripts/open-pr.sh"
 assert_executable "$PROJECT/scripts/merge-pr.sh"
 assert_executable "$PROJECT/scripts/cleanup-branches.sh"
-assert_executable "$PROJECT/scripts/run-pytest-in-venv.sh"
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'codex-review.sh'
+assert_contains "$PROJECT/.pre-commit-config.yaml" 'toolkit-run.sh validate'
+assert_contains "$PROJECT/.toolkit-config" '^project_type=generic$'
+assert_contains "$PROJECT/.toolkit-config" '^lint_command=$'
+if grep -q '^\.toolkit-config$' "$PROJECT/.gitignore"; then
+  echo "FAIL: expected .toolkit-config to be commit-friendly, not ignored" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 # Toolkit version
 assert_exists "$PROJECT/.toolkit-version"
@@ -86,6 +103,7 @@ assert_contains "$PROJECT/CLAUDE.md" "@principles/"
 # Help flags should print usage instead of bootstrapping a project named --help.
 if (cd "$TEST_DIR" && bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" --help) >"$TEST_DIR/new-project-help.txt" 2>&1; then
   assert_contains "$TEST_DIR/new-project-help.txt" 'unsafe-paths'
+  assert_contains "$TEST_DIR/new-project-help.txt" 'node|python|swift|rust|go|generic|auto'
 else
   echo "FAIL: expected new-project.sh --help to succeed" >&2
   ERRORS=$((ERRORS + 1))
@@ -97,6 +115,7 @@ fi
 
 if TOOLKIT_NO_AUTO_UPDATE=1 "$TOOLKIT_ROOT/bin/toolkit" init --help >"$TEST_DIR/toolkit-init-help.txt" 2>&1; then
   assert_contains "$TEST_DIR/toolkit-init-help.txt" 'Usage: toolkit init'
+  assert_contains "$TEST_DIR/toolkit-init-help.txt" 'node|python|swift|rust|go|generic|auto'
 else
   echo "FAIL: expected toolkit init --help to succeed" >&2
   ERRORS=$((ERRORS + 1))
@@ -108,6 +127,18 @@ assert_exists "$PROJECT_WITH_UNSAFE/.codex-review.toml"
 assert_contains "$PROJECT_WITH_UNSAFE/.codex-review.toml" '"src/auth/",'
 assert_contains "$PROJECT_WITH_UNSAFE/.codex-review.toml" '"migrations/",'
 assert_contains "$PROJECT_WITH_UNSAFE/.codex-review.toml" '^unsafe_paths = \[$'
+
+# Ecosystem profiles should configure shared runner behavior without making
+# Python the default for every project.
+bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$PROJECT_NODE" --no-register --type node
+assert_exists "$PROJECT_NODE/scripts/toolkit-run.sh"
+assert_not_exists "$PROJECT_NODE/scripts/run-pytest-in-venv.sh"
+assert_contains "$PROJECT_NODE/.toolkit-config" '^project_type=node$'
+
+bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$PROJECT_PYTHON" --no-register --type python
+assert_exists "$PROJECT_PYTHON/scripts/toolkit-run.sh"
+assert_exists "$PROJECT_PYTHON/scripts/run-pytest-in-venv.sh"
+assert_contains "$PROJECT_PYTHON/.toolkit-config" '^project_type=python$'
 
 # Bootstrap into an existing directory should back up toolkit-owned files before replacing them.
 mkdir -p "$PROJECT_EXISTING/principles" "$PROJECT_EXISTING/scripts"
@@ -253,6 +284,87 @@ FAKECODEX
 chmod +x "$SETUP_VERSION_FAKE_BIN/"*
 (cd "$SETUP_VERSION_PROJECT" && PATH="$SETUP_VERSION_FAKE_BIN:$PATH" bash setup.sh) >"$TEST_DIR/setup-version-output.txt"
 assert_contains "$TEST_DIR/setup-version-output.txt" 'toolkit v9.9.9'
+
+# toolkit-run.sh should provide ecosystem-neutral task dispatch.
+RUNNER_FAKE_BIN="$TEST_DIR/runner-fake-bin"
+RUNNER_LOG="$TEST_DIR/runner.log"
+mkdir -p "$RUNNER_FAKE_BIN"
+
+cat > "$RUNNER_FAKE_BIN/pnpm" <<'FAKEPNPM'
+#!/usr/bin/env bash
+printf 'pnpm|%s|%s\n' "$PWD" "$*" >> "$RUNNER_LOG"
+FAKEPNPM
+cat > "$RUNNER_FAKE_BIN/npm" <<'FAKENPM'
+#!/usr/bin/env bash
+printf 'npm|%s|%s\n' "$PWD" "$*" >> "$RUNNER_LOG"
+FAKENPM
+cat > "$RUNNER_FAKE_BIN/swift" <<'FAKESWIFT'
+#!/usr/bin/env bash
+printf 'swift|%s|%s\n' "$PWD" "$*" >> "$RUNNER_LOG"
+FAKESWIFT
+cat > "$RUNNER_FAKE_BIN/cargo" <<'FAKECARGO'
+#!/usr/bin/env bash
+printf 'cargo|%s|%s\n' "$PWD" "$*" >> "$RUNNER_LOG"
+FAKECARGO
+chmod +x "$RUNNER_FAKE_BIN/"*
+
+printf '{"packageManager":"pnpm@9.0.0","scripts":{"lint":"echo lint","typecheck":"echo typecheck","test":"echo test"}}\n' > "$PROJECT_NODE/package.json"
+: > "$RUNNER_LOG"
+(cd "$PROJECT_NODE" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash scripts/toolkit-run.sh validate) >/dev/null
+assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node|lint'
+assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node|typecheck'
+assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node|test'
+
+SWIFT_PROJECT="$TEST_DIR/swift-runner"
+mkdir -p "$SWIFT_PROJECT/scripts"
+cp "$TOOLKIT_ROOT/scripts/toolkit-run.sh" "$SWIFT_PROJECT/scripts/toolkit-run.sh"
+printf 'project_type=swift\n' > "$SWIFT_PROJECT/.toolkit-config"
+printf '// swift package\n' > "$SWIFT_PROJECT/Package.swift"
+: > "$RUNNER_LOG"
+(cd "$SWIFT_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash scripts/toolkit-run.sh validate) >/dev/null
+assert_contains "$RUNNER_LOG" 'swift|.*/swift-runner|build'
+assert_contains "$RUNNER_LOG" 'swift|.*/swift-runner|test'
+
+RUST_PROJECT="$TEST_DIR/rust-runner"
+mkdir -p "$RUST_PROJECT/scripts"
+cp "$TOOLKIT_ROOT/scripts/toolkit-run.sh" "$RUST_PROJECT/scripts/toolkit-run.sh"
+printf 'project_type=rust\n' > "$RUST_PROJECT/.toolkit-config"
+printf '[package]\nname = "demo"\nversion = "0.0.0"\n' > "$RUST_PROJECT/Cargo.toml"
+: > "$RUNNER_LOG"
+(cd "$RUST_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash scripts/toolkit-run.sh validate) >/dev/null
+assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|fmt -- --check'
+assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|clippy --all-targets --all-features -- -D warnings'
+assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|check --all-targets --all-features'
+assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|test --all'
+
+MONOREPO_PROJECT="$TEST_DIR/monorepo-runner"
+mkdir -p "$MONOREPO_PROJECT/scripts" "$MONOREPO_PROJECT/apps/web" "$MONOREPO_PROJECT/services/api"
+cp "$TOOLKIT_ROOT/scripts/toolkit-run.sh" "$MONOREPO_PROJECT/scripts/toolkit-run.sh"
+{
+  printf 'project_type=generic\n'
+  printf 'targets=web:apps/web:node,api:services/api:rust\n'
+} > "$MONOREPO_PROJECT/.toolkit-config"
+printf '{"scripts":{"test":"echo test"}}\n' > "$MONOREPO_PROJECT/apps/web/package.json"
+printf '[package]\nname = "api"\nversion = "0.0.0"\n' > "$MONOREPO_PROJECT/services/api/Cargo.toml"
+: > "$RUNNER_LOG"
+(cd "$MONOREPO_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash scripts/toolkit-run.sh test) >/dev/null
+assert_contains "$RUNNER_LOG" 'npm|.*/monorepo-runner/apps/web|run test'
+assert_contains "$RUNNER_LOG" 'cargo|.*/monorepo-runner/services/api|test --all'
+
+# setup.sh --deps-only should also use the project profile layer for non-Python ecosystems.
+: > "$RUNNER_LOG"
+(cd "$PROJECT_NODE" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash setup.sh --deps-only) >/dev/null
+assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node|install'
+
+cp "$TOOLKIT_ROOT/templates/setup.sh" "$SWIFT_PROJECT/setup.sh"
+: > "$RUNNER_LOG"
+(cd "$SWIFT_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash setup.sh --deps-only) >/dev/null
+assert_contains "$RUNNER_LOG" 'swift|.*/swift-runner|package resolve'
+
+cp "$TOOLKIT_ROOT/templates/setup.sh" "$RUST_PROJECT/setup.sh"
+: > "$RUNNER_LOG"
+(cd "$RUST_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash setup.sh --deps-only) >/dev/null
+assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|fetch'
 
 echo ""
 if [ "$ERRORS" -eq 0 ]; then

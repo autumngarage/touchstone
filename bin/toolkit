@@ -4,8 +4,9 @@
 #
 # Usage:
 #   toolkit new <project-dir>          Create a new project with toolkit files
-#   toolkit init [--no-setup] [--type python|node|swift|generic]
+#   toolkit init [--no-setup] [--type node|python|swift|rust|go|generic|auto]
 #                                      Add toolkit to the current project
+#   toolkit run <task>                  Run profile task: lint, test, build, typecheck, validate
 #   toolkit update                     Update current project to latest toolkit
 #   toolkit update --dry-run           Show what would change without applying
 #   toolkit sync                       Update all registered projects
@@ -83,12 +84,12 @@ fi
 
 cmd_new() {
   if [ "$#" -lt 1 ]; then
-    echo "Usage: toolkit new <project-dir> [--no-register] [--unsafe-paths path1,path2]" >&2
+    echo "Usage: toolkit new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2]" >&2
     exit 1
   fi
   case "${1:-}" in
     -h|--help)
-      echo "Usage: toolkit new <project-dir> [--no-register] [--unsafe-paths path1,path2]"
+      echo "Usage: toolkit new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2]"
       return 0
       ;;
   esac
@@ -108,12 +109,12 @@ cmd_init() {
         shift
         ;;
       -h|--help)
-        echo "Usage: toolkit init [--no-setup] [--type TYPE] [--no-register] [--unsafe-paths path1,path2]"
+        echo "Usage: toolkit init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2]"
         return 0
         ;;
       --type)
         if [ "$#" -lt 2 ]; then
-          echo "ERROR: --type requires a value (python, node, swift, generic)" >&2
+          echo "ERROR: --type requires a value (node, python, swift, rust, go, generic, auto)" >&2
           exit 1
         fi
         args+=("$1" "$2")
@@ -133,7 +134,7 @@ cmd_init() {
         ;;
       *)
         echo "ERROR: unknown argument '$1'" >&2
-        echo "Usage: toolkit init [--no-setup] [--no-register] [--unsafe-paths path1,path2]" >&2
+        echo "Usage: toolkit init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2]" >&2
         exit 1
         ;;
     esac
@@ -162,6 +163,14 @@ cmd_update() {
 
 cmd_sync() {
   exec bash "$TOOLKIT_ROOT/bootstrap/sync-all.sh" "$@"
+}
+
+cmd_run() {
+  exec bash "$TOOLKIT_ROOT/scripts/toolkit-run.sh" "$@"
+}
+
+cmd_detect() {
+  exec bash "$TOOLKIT_ROOT/scripts/toolkit-run.sh" detect
 }
 
 cmd_version() {
@@ -682,6 +691,8 @@ cmd_help() {
   echo "  ${BOLD}Project commands:${RESET}"
   printf "    ${BOLD}toolkit init${RESET} [--no-setup]      Add toolkit to the current project\n"
   printf "    ${BOLD}toolkit new${RESET} <dir>              Bootstrap a new project from scratch\n"
+  printf "    ${BOLD}toolkit detect${RESET}                 Show detected project profile\n"
+  printf "    ${BOLD}toolkit run${RESET} <task>             Run lint, typecheck, build, test, or validate\n"
   printf "    ${BOLD}toolkit update${RESET}                 Update current project to latest\n"
   printf "    ${BOLD}toolkit update${RESET} --dry-run       Preview what would change\n"
   printf "    ${BOLD}toolkit sync${RESET}                   Update all registered projects\n"
@@ -719,6 +730,8 @@ shift 2>/dev/null || true
 case "$COMMAND" in
   new)          cmd_new "$@" ;;
   init)         cmd_init "$@" ;;
+  run)          cmd_run "$@" ;;
+  detect)       cmd_detect ;;
   update)       cmd_update "$@" ;;
   sync)         cmd_sync "$@" ;;
   status)       cmd_status ;;

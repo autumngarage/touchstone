@@ -26,10 +26,10 @@ The toolkit's `.pre-commit-config.yaml` template already includes the Codex hook
 pre-commit install --install-hooks
 ```
 
-For Python test hooks, prefer the toolkit wrapper over `python3 -m pytest` so the hook uses the project's virtualenv:
+For project validation, prefer the toolkit runner so hooks use the repo's `.toolkit-config` profile instead of hardcoding an ecosystem command:
 
 ```yaml
-entry: /usr/bin/env bash scripts/run-pytest-in-venv.sh tests/
+entry: /usr/bin/env bash scripts/toolkit-run.sh validate
 ```
 
 ### 4. Configure per-project behavior

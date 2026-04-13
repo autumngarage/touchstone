@@ -5,6 +5,7 @@
 # Usage:
 #   new-project.sh <project-dir>
 #   new-project.sh <project-dir> --no-register   # skip adding to ~/.toolkit-projects
+#   new-project.sh <project-dir> --type node|python|swift|rust|go|generic|auto
 #   new-project.sh <project-dir> --unsafe-paths src/auth/,migrations/
 #
 # What this does:
@@ -25,7 +26,7 @@ INPUT_UNSAFE=""
 INPUT_TYPE=""
 
 usage() {
-  echo "Usage: $0 <project-dir> [--no-register] [--unsafe-paths path1,path2]"
+  echo "Usage: $0 <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2]"
 }
 
 trim() {
@@ -106,6 +107,105 @@ next_backup_path() {
   printf '%s' "$backup"
 }
 
+normalize_project_type() {
+  local value="$1"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+
+  case "$value" in
+    ""|auto) printf 'auto' ;;
+    node|js|javascript|ts|typescript) printf 'node' ;;
+    python|py) printf 'python' ;;
+    swift) printf 'swift' ;;
+    rust|rs) printf 'rust' ;;
+    go|golang) printf 'go' ;;
+    generic) printf 'generic' ;;
+    *)
+      echo "ERROR: unknown project type '$1' (expected node, python, swift, rust, go, generic, or auto)" >&2
+      return 1
+      ;;
+  esac
+}
+
+detect_node_package_manager() {
+  local dir="$1" package_manager
+
+  if [ -f "$dir/package.json" ]; then
+    package_manager="$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"\([^@"]*\)@.*/\1/p' "$dir/package.json" | head -1)"
+    if [ -z "$package_manager" ]; then
+      package_manager="$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$dir/package.json" | head -1)"
+    fi
+    if [ -n "$package_manager" ]; then
+      printf '%s\n' "$package_manager"
+      return 0
+    fi
+  fi
+
+  if [ -f "$dir/pnpm-lock.yaml" ] || [ -f "$dir/pnpm-workspace.yaml" ]; then
+    printf 'pnpm\n'
+  elif [ -f "$dir/yarn.lock" ]; then
+    printf 'yarn\n'
+  elif [ -f "$dir/bun.lock" ] || [ -f "$dir/bun.lockb" ]; then
+    printf 'bun\n'
+  elif [ -f "$dir/package.json" ]; then
+    printf 'npm\n'
+  else
+    printf '\n'
+  fi
+}
+
+detect_project_type() {
+  local dir="$1"
+
+  if [ -f "$dir/pnpm-workspace.yaml" ]; then
+    printf 'node\n'
+  elif [ -f "$dir/package.json" ] || [ -f "$dir/tsconfig.json" ]; then
+    printf 'node\n'
+  elif [ -f "$dir/Cargo.toml" ]; then
+    printf 'rust\n'
+  elif [ -f "$dir/Package.swift" ]; then
+    printf 'swift\n'
+  elif [ -f "$dir/go.mod" ]; then
+    printf 'go\n'
+  elif [ -f "$dir/uv.lock" ] || [ -f "$dir/pyproject.toml" ] || [ -f "$dir/requirements.txt" ]; then
+    printf 'python\n'
+  else
+    printf 'generic\n'
+  fi
+}
+
+detect_monorepo() {
+  local dir="$1"
+
+  if [ -f "$dir/pnpm-workspace.yaml" ]; then
+    printf 'true\n'
+  elif [ -f "$dir/Cargo.toml" ] && grep -q '^\[workspace\]' "$dir/Cargo.toml" 2>/dev/null; then
+    printf 'true\n'
+  elif [ -f "$dir/package.json" ] && grep -q '"workspaces"' "$dir/package.json" 2>/dev/null; then
+    printf 'true\n'
+  else
+    printf 'false\n'
+  fi
+}
+
+detect_targets() {
+  local root="$1" base target_dir profile targets=""
+
+  for base in apps packages services; do
+    [ -d "$root/$base" ] || continue
+    for target_dir in "$root/$base"/*; do
+      [ -d "$target_dir" ] || continue
+      profile="$(detect_project_type "$target_dir")"
+      [ "$profile" = "generic" ] && continue
+      if [ -n "$targets" ]; then
+        targets="${targets},"
+      fi
+      targets="${targets}$(basename "$target_dir"):$base/$(basename "$target_dir"):$profile"
+    done
+  done
+
+  printf '%s\n' "$targets"
+}
+
 if [ "$#" -lt 1 ]; then
   usage >&2
   exit 1
@@ -131,8 +231,8 @@ while [ "$#" -gt 0 ]; do
     -h|--help) usage; exit 0 ;;
     --no-register) REGISTER=false; shift ;;
     --type)
-      [ "$#" -ge 2 ] || { echo "ERROR: --type requires a value (python, node, swift, generic)" >&2; exit 1; }
-      INPUT_TYPE="$2"
+      [ "$#" -ge 2 ] || { echo "ERROR: --type requires a value (node, python, swift, rust, go, generic, auto)" >&2; exit 1; }
+      INPUT_TYPE="$(normalize_project_type "$2")"
       shift 2
       ;;
     --unsafe-paths)
@@ -235,10 +335,10 @@ echo ""
 echo "==> Copying scripts (toolkit-owned, will be auto-updated):"
 mkdir -p "$PROJECT_DIR/scripts"
 copy_file_force "$TOOLKIT_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
+copy_file_force "$TOOLKIT_ROOT/scripts/toolkit-run.sh" "$PROJECT_DIR/scripts/toolkit-run.sh"
 copy_file_force "$TOOLKIT_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
 copy_file_force "$TOOLKIT_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
 copy_file_force "$TOOLKIT_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
-copy_file_force "$TOOLKIT_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
 chmod +x "$PROJECT_DIR/scripts/"*.sh
 
 # Write toolkit version.
@@ -286,8 +386,10 @@ if [ -t 0 ] && [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
   read -r -p "   Test command (e.g., pnpm build, pytest tests/): " INPUT_TEST
 
   if [ -z "$INPUT_TYPE" ]; then
-    read -r -p "   Project type (python, node, swift, generic) [generic]: " INPUT_TYPE
-    INPUT_TYPE="${INPUT_TYPE:-generic}"
+    DETECTED_TYPE="$(detect_project_type "$PROJECT_DIR")"
+    read -r -p "   Project type (node, python, swift, rust, go, generic, auto) [$DETECTED_TYPE]: " INPUT_TYPE
+    INPUT_TYPE="${INPUT_TYPE:-$DETECTED_TYPE}"
+    INPUT_TYPE="$(normalize_project_type "$INPUT_TYPE")"
   fi
 
   if [ -z "$INPUT_UNSAFE" ] && [ "$CODEX_REVIEW_CONFIG_CREATED" = true ]; then
@@ -296,7 +398,15 @@ if [ -t 0 ] && [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
 fi
 
 # Default project type if not set.
-INPUT_TYPE="${INPUT_TYPE:-generic}"
+INPUT_TYPE="${INPUT_TYPE:-auto}"
+INPUT_TYPE="$(normalize_project_type "$INPUT_TYPE")"
+if [ "$INPUT_TYPE" = "auto" ]; then
+  INPUT_TYPE="$(detect_project_type "$PROJECT_DIR")"
+fi
+
+PACKAGE_MANAGER="$(detect_node_package_manager "$PROJECT_DIR")"
+MONOREPO="$(detect_monorepo "$PROJECT_DIR")"
+TARGETS="$(detect_targets "$PROJECT_DIR")"
 
 if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ] || [ -n "$INPUT_UNSAFE" ]; then
   # Apply to CLAUDE.md / AGENTS.md.
@@ -341,29 +451,34 @@ fi
 
 # Write .toolkit-config with project type (skip if already exists).
 if [ ! -f "$PROJECT_DIR/.toolkit-config" ]; then
-  echo "project_type=$INPUT_TYPE" > "$PROJECT_DIR/.toolkit-config"
+  {
+    printf '# toolkit project profile. Commit this file so all clones use the same commands.\n'
+    printf 'project_type=%s\n' "$INPUT_TYPE"
+    if [ -n "$PACKAGE_MANAGER" ]; then
+      printf 'package_manager=%s\n' "$PACKAGE_MANAGER"
+    else
+      printf 'package_manager=auto\n'
+    fi
+    printf 'monorepo=%s\n' "$MONOREPO"
+    printf 'targets=%s\n' "$TARGETS"
+    printf 'lint_command=\n'
+    printf 'typecheck_command=\n'
+    printf 'build_command=\n'
+    printf 'test_command=%s\n' "$INPUT_TEST"
+    printf 'validate_command=\n'
+  } > "$PROJECT_DIR/.toolkit-config"
   echo "==> Wrote .toolkit-config: project_type=$INPUT_TYPE"
 else
   echo "==> .toolkit-config already exists; left unchanged."
 fi
 
-# Uncomment language-specific hooks in .pre-commit-config.yaml based on project type.
-if [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ]; then
-  case "$INPUT_TYPE" in
-    python)
-      # Uncomment the Python (ruff) hooks block by stripping "# " after the base indent.
-      sed -i '' '/^  # Python (ruff):$/,/^  #$/{
-        /^  # Python (ruff):$/d
-        /^  #$/d
-        s/^  # /  /
-      }' "$PROJECT_DIR/.pre-commit-config.yaml"
-      ;;
-  esac
-fi
-
-# Remove run-pytest-in-venv.sh for non-Python projects.
-if [ "$INPUT_TYPE" != "python" ] && [ "$INPUT_TYPE" != "generic" ]; then
-  rm -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
+# Keep the legacy pytest helper only for Python projects. Generic ecosystem
+# tasks should go through scripts/toolkit-run.sh.
+if [ "$INPUT_TYPE" = "python" ]; then
+  echo ""
+  echo "==> Copying Python helper:"
+  copy_file_force "$TOOLKIT_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
+  chmod +x "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" 2>/dev/null || true
 fi
 
 echo ""
