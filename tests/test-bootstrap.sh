@@ -152,11 +152,14 @@ assert_contains "$PROJECT_PYTHON/.toolkit-manifest" '^scripts/run-pytest-in-venv
 mkdir -p "$PROJECT_EXISTING/principles" "$PROJECT_EXISTING/scripts"
 printf 'custom principle\n' > "$PROJECT_EXISTING/principles/engineering-principles.md"
 printf 'custom script\n' > "$PROJECT_EXISTING/scripts/open-pr.sh"
+printf 'custom manifest\n' > "$PROJECT_EXISTING/.toolkit-manifest"
 bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$PROJECT_EXISTING" --no-register
 assert_exists "$PROJECT_EXISTING/principles/engineering-principles.md.bak"
 assert_exists "$PROJECT_EXISTING/scripts/open-pr.sh.bak"
+assert_exists "$PROJECT_EXISTING/.toolkit-manifest.bak"
 assert_contains "$PROJECT_EXISTING/principles/engineering-principles.md.bak" 'custom principle'
 assert_contains "$PROJECT_EXISTING/scripts/open-pr.sh.bak" 'custom script'
+assert_contains "$PROJECT_EXISTING/.toolkit-manifest.bak" 'custom manifest'
 
 # Existing project-owned Codex config must not be rewritten by --unsafe-paths.
 mkdir -p "$PROJECT_EXISTING_CONFIG"

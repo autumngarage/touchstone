@@ -313,7 +313,8 @@ copy_file_force() {
 }
 
 write_toolkit_manifest() {
-  local manifest="$PROJECT_DIR/.toolkit-manifest"
+  local manifest_tmp
+  manifest_tmp="$(mktemp -t toolkit-manifest.XXXXXX)"
   {
     printf '# Managed by toolkit. These paths may be updated by `toolkit update`.\n'
     printf '.toolkit-manifest\n'
@@ -329,8 +330,13 @@ write_toolkit_manifest() {
     if [ "$INPUT_TYPE" = "python" ]; then
       printf 'scripts/run-pytest-in-venv.sh\n'
     fi
-  } > "$manifest"
-  echo "==> Wrote .toolkit-manifest"
+  } > "$manifest_tmp"
+  if copy_file_force "$manifest_tmp" "$PROJECT_DIR/.toolkit-manifest"; then
+    rm -f "$manifest_tmp"
+  else
+    rm -f "$manifest_tmp"
+    return 1
+  fi
 }
 
 echo ""
