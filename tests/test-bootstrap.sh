@@ -88,8 +88,15 @@ assert_contains "$PROJECT/.pre-commit-config.yaml" 'codex-review.sh'
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'toolkit-run.sh validate'
 assert_contains "$PROJECT/.toolkit-config" '^project_type=generic$'
 assert_contains "$PROJECT/.toolkit-config" '^lint_command=$'
+assert_exists "$PROJECT/.toolkit-manifest"
+assert_contains "$PROJECT/.toolkit-manifest" '^\.toolkit-version$'
+assert_contains "$PROJECT/.toolkit-manifest" '^scripts/open-pr.sh$'
 if grep -q '^\.toolkit-config$' "$PROJECT/.gitignore"; then
   echo "FAIL: expected .toolkit-config to be commit-friendly, not ignored" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if grep -q '^\.toolkit-version$' "$PROJECT/.gitignore"; then
+  echo "FAIL: expected .toolkit-version to be commit-friendly, not ignored" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
@@ -139,16 +146,20 @@ bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$PROJECT_PYTHON" --no-register --
 assert_exists "$PROJECT_PYTHON/scripts/toolkit-run.sh"
 assert_exists "$PROJECT_PYTHON/scripts/run-pytest-in-venv.sh"
 assert_contains "$PROJECT_PYTHON/.toolkit-config" '^project_type=python$'
+assert_contains "$PROJECT_PYTHON/.toolkit-manifest" '^scripts/run-pytest-in-venv.sh$'
 
 # Bootstrap into an existing directory should back up toolkit-owned files before replacing them.
 mkdir -p "$PROJECT_EXISTING/principles" "$PROJECT_EXISTING/scripts"
 printf 'custom principle\n' > "$PROJECT_EXISTING/principles/engineering-principles.md"
 printf 'custom script\n' > "$PROJECT_EXISTING/scripts/open-pr.sh"
+printf 'custom manifest\n' > "$PROJECT_EXISTING/.toolkit-manifest"
 bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$PROJECT_EXISTING" --no-register
 assert_exists "$PROJECT_EXISTING/principles/engineering-principles.md.bak"
 assert_exists "$PROJECT_EXISTING/scripts/open-pr.sh.bak"
+assert_exists "$PROJECT_EXISTING/.toolkit-manifest.bak"
 assert_contains "$PROJECT_EXISTING/principles/engineering-principles.md.bak" 'custom principle'
 assert_contains "$PROJECT_EXISTING/scripts/open-pr.sh.bak" 'custom script'
+assert_contains "$PROJECT_EXISTING/.toolkit-manifest.bak" 'custom manifest'
 
 # Existing project-owned Codex config must not be rewritten by --unsafe-paths.
 mkdir -p "$PROJECT_EXISTING_CONFIG"

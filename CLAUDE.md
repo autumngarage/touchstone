@@ -30,7 +30,7 @@ You are maintaining a shared engineering platform that provides universal princi
 
 ## Toolkit-Specific Principles
 
-- **Changes propagate.** Every file in `principles/`, `hooks/`, and `scripts/` gets copied into downstream projects by `update-project.sh`. Test changes here before syncing.
+- **Changes propagate.** Every file in `principles/`, `hooks/`, and `scripts/` gets copied into downstream projects by `update-project.sh`. Updates must happen on a clean git worktree and land as a `chore/toolkit-*` branch commit, not as orphaned dirty files. Test changes here before syncing.
 - **Templates are starting points.** Files in `templates/` are copied once at bootstrap time and then owned by the project. Changes to templates only affect *new* projects.
 - **Self-tests are mandatory.** Run every `tests/test-*.sh` script before pushing. These validate the bootstrap, update, hook, merge, and helper flows end-to-end.
 - **Release completeness.** A toolkit release is not done until GitHub Releases, the Homebrew tap, `origin/main`, and the locally installed brew package all agree on the same version.

@@ -13,7 +13,7 @@ _toolkit() {
       COMPREPLY=( $(compgen -d -- "$cur") )
       ;;
     update)
-      COMPREPLY=( $(compgen -W "--dry-run" -- "$cur") )
+      COMPREPLY=( $(compgen -W "--dry-run --check --branch" -- "$cur") )
       ;;
     sync)
       COMPREPLY=( $(compgen -W "--pull-first" -- "$cur") )

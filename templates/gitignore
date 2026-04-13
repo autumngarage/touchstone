@@ -35,5 +35,4 @@ build/
 out/
 
 # Toolkit
-.toolkit-version
 *.bak

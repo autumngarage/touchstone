@@ -43,12 +43,18 @@ toolkit_release() {
   local new_version="${major}.${minor}.${patch}"
   tk_info "New version: v${new_version}"
 
-  # Bump VERSION file.
+  # Bump VERSION file and toolkit's own dogfood stamp.
   echo "$new_version" > "$TOOLKIT_ROOT/VERSION"
+  if [ -f "$TOOLKIT_ROOT/.toolkit-version" ]; then
+    echo "$new_version" > "$TOOLKIT_ROOT/.toolkit-version"
+  fi
   tk_ok "Bumped VERSION to $new_version"
 
   # Commit, tag, push (--no-verify: release is a meta-action, not user code).
   git -C "$TOOLKIT_ROOT" add VERSION
+  if [ -f "$TOOLKIT_ROOT/.toolkit-version" ]; then
+    git -C "$TOOLKIT_ROOT" add .toolkit-version
+  fi
   git -C "$TOOLKIT_ROOT" commit --no-verify -m "v${new_version}"
   git -C "$TOOLKIT_ROOT" tag "v${new_version}"
   git -C "$TOOLKIT_ROOT" push --no-verify origin main "v${new_version}"
@@ -70,7 +76,10 @@ toolkit_release() {
   # Update homebrew formula — clone tap to temp dir, update, push, clean up.
   local tap_tmp
   tap_tmp="$(mktemp -d -t toolkit-tap.XXXXXX)"
-  trap "rm -rf '$tap_tmp'" EXIT
+  cleanup_tap_tmp() {
+    rm -rf "$tap_tmp"
+  }
+  trap cleanup_tap_tmp EXIT
 
   tk_dim "Cloning tap repo..."
   if gh repo clone henrymodisett/homebrew-toolkit "$tap_tmp" -- --depth=1 2>/dev/null; then

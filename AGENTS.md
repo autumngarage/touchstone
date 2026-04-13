@@ -6,7 +6,7 @@ You are reviewing pull requests for the **toolkit** repo — a shared engineerin
 
 ## What to prioritize (in order)
 
-1. **Bootstrap/update correctness.** `new-project.sh` and `update-project.sh` must never silently lose user data. File overwrites without `.bak` backups, incorrect copy paths, broken skip logic for project-owned files — these are critical bugs.
+1. **Bootstrap/update correctness.** `new-project.sh` and `update-project.sh` must never silently lose user data. For bootstrap, file overwrites without `.bak` backups are critical. For update, bypassing the clean-git branch/commit boundary, incorrect copy paths, or broken skip logic for project-owned files are critical bugs.
 2. **Script portability.** All scripts must work on macOS (zsh default) with standard tools (`bash`, `git`, `gh`, `sed`, `awk`). No Linux-only flags, no GNU-specific extensions without fallbacks.
 3. **Codex hook safety.** `hooks/codex-review.sh` runs during `git push`. A bug here can block or silently skip all pushes. The fail-open design (graceful skip on errors) must be preserved.
 4. **Config parsing correctness.** The TOML parser in `codex-review.sh` is minimal — it handles simple key=value and single-line arrays. Changes must not break on edge cases (quoted strings, comments, empty arrays).
@@ -25,14 +25,14 @@ Files: `bootstrap/new-project.sh`, `bootstrap/update-project.sh`, `hooks/codex-r
 
 Flag any of the following:
 
-- **Silent overwrites.** Any file copy without checking existence or creating a `.bak` backup. `copy_file_force` is for toolkit-owned files only. Project-owned files (CLAUDE.md, AGENTS.md, .codex-review.toml) must use `copy_file` (skip if exists).
+- **Silent overwrites.** `new-project.sh` may overwrite toolkit-owned files only through `copy_file_force`, which backs up existing content as `.bak`. `update-project.sh` must not create `.bak` files; instead it must require a clean git worktree, create a `chore/toolkit-*` branch, and commit the update as the review/recovery boundary. Project-owned files (CLAUDE.md, AGENTS.md, .codex-review.toml) must use `copy_file` (skip if exists) and must not be auto-updated.
 - **Missing error handling.** The bootstrap scripts use `set -euo pipefail`. New commands that can fail legitimately (network calls, optional tools) must be guarded with `|| true` or `set +e`.
 - **Path assumptions.** Never assume repo root is `~/Repos/toolkit`. Always derive paths from `$0` or `git rev-parse`.
 - **Registry corruption.** `~/.toolkit-projects` is append-only during bootstrap. Changes must not truncate it or write duplicate entries.
 
 ### Codex hook
 
-- The three-sentinel contract (CLEAN/FIXED/BLOCKED) is the API boundary. Any change to sentinel handling must be backwards-compatible.
+- The three final-marker contract (CLEAN/FIXED/BLOCKED) is the API boundary. Any change to marker handling must be backwards-compatible.
 - The hook must never block a push due to its own infrastructure failure (network, missing tool, parse error). It must block *only* on actual code review findings.
 - `.codex-review.toml` parsing must handle missing keys gracefully (use defaults).
 

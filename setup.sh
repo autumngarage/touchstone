@@ -112,10 +112,10 @@ info "Syncing toolkit files"
 if [ -f "bin/toolkit" ] && [ -f "lib/auto-update.sh" ]; then
   ok "this is the toolkit repo — skipping self-update"
 elif [ -f ".toolkit-version" ]; then
-  toolkit update 2>&1 | grep -E "added|updated|Already" | head -5 | while read -r line; do
+  toolkit update --check 2>&1 | grep -E "Already|Needs sync|Run: toolkit update" | head -5 | while read -r line; do
     ok "$line"
   done
-  ok "toolkit files up to date"
+  ok "toolkit sync status checked"
 else
   warn "No .toolkit-version found — this project hasn't been bootstrapped."
   warn "Run: toolkit new $(pwd)"
