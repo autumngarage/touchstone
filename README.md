@@ -33,8 +33,8 @@ $EDITOR ~/Repos/my-new-project/AGENTS.md
 cd ~/Repos/my-new-project
 bash setup.sh
 
-# Set up the default AI reviewer before merging to main
-npm install -g @openai/codex && codex login
+# Log in to the default AI reviewer before merging to main
+codex login
 
 # Re-run dependency setup later without reinstalling hooks/tools
 bash setup.sh --deps-only
@@ -55,7 +55,7 @@ bash setup.sh --deps-only
 | `toolkit sync` | Update all registered projects at once |
 | `toolkit sync --check` | Report which registered projects need sync |
 | `toolkit sync --pull-first` | Pull latest toolkit first, then sync all projects |
-| `toolkit diff` | Compare project-owned files against the latest templates |
+| `toolkit diff` | Compare core project-owned files against the latest templates |
 | `toolkit adr "Title"` | Create an Architecture Decision Record |
 | `toolkit adr list` | List project ADRs |
 | `toolkit list` | Show registered projects |
@@ -68,7 +68,7 @@ bash setup.sh --deps-only
 
 ### What you get in each project
 
-When you run `toolkit new`, these files get copied into your project:
+When you run `toolkit new`, these files get created in your project:
 
 **Project-owned** (yours to customize, never auto-updated):
 - `CLAUDE.md` — AI coding instructions with `{{PLACEHOLDERS}}` to fill in
@@ -78,6 +78,7 @@ When you run `toolkit new`, these files get copied into your project:
 - `.pre-commit-config.yaml` — Pre-commit hooks including the default-branch AI review gate
 - `.gitignore` — Sensible defaults
 - `.github/pull_request_template.md` — PR checklist
+- `setup.sh` — One-command setup for dev tools, hooks, and project dependencies
 
 **Toolkit-owned** (auto-updated when you run `toolkit update` or `toolkit sync`):
 - `.toolkit-version` — The toolkit revision this project has applied
@@ -100,13 +101,13 @@ When you improve the toolkit (add a principle, fix a script), run:
 toolkit sync
 ```
 
-This updates toolkit-owned files across registered projects by creating reviewable update branches and commits. For one project, run `toolkit update --dry-run` to preview, `toolkit update --check` to check staleness, and `toolkit update` to create a `chore/toolkit-*` branch with the update committed. Project-owned files are never touched — you get a hint to review them against the latest templates.
+This updates toolkit-owned files across registered projects by creating reviewable update branches and commits. For one project, run `toolkit update --dry-run` to preview, `toolkit update --check` to check staleness, and `toolkit update` from a clean git worktree to create a `chore/toolkit-*` branch with the update committed. Project-owned files are never touched by `toolkit update`; use `toolkit diff` to review the core project-owned files against the latest templates.
 
 Projects are auto-registered in `~/.toolkit-projects` when you bootstrap them.
 
 ### Auto-update
 
-The `toolkit` CLI checks for new versions hourly. When a newer release exists, it auto-upgrades via `brew upgrade toolkit` before running your command. Disable with `TOOLKIT_NO_AUTO_UPDATE=1`.
+The `toolkit` CLI checks for new versions hourly. When a newer release exists, it upgrades with `brew upgrade toolkit` for Homebrew installs or `git pull --rebase` for git-clone installs before running your command. Disable with `TOOLKIT_NO_AUTO_UPDATE=1`.
 
 ## What's included
 
@@ -126,7 +127,7 @@ Automatically reviews code before it reaches the default branch:
 - Uses the configured reviewer cascade: Codex by default, with optional Claude and Gemini reviewers
 - Auto-fixes safe issues when the review mode allows edits
 - Lets the primary reviewer request one focused peer second opinion when `[review.assist]` is enabled
-- Blocks the merge or direct default-branch push for unsafe findings (high-scrutiny paths you configure)
+- Blocks the merge or direct default-branch push for findings that should not be auto-fixed
 - Runs from `scripts/merge-pr.sh`, and from the pre-push hook only when pushing directly to the default branch
 - Loops up to N times, gracefully skips when no configured reviewer is available
 
@@ -143,7 +144,7 @@ Configure per-project behavior in `.codex-review.toml`. Write your review rubric
 ```
 toolkit/
 ├── bin/             # toolkit CLI entrypoint
-├── lib/             # shared libraries (auto-update)
+├── lib/             # shared libraries
 ├── principles/      # universal engineering docs
 ├── templates/       # starter files for new projects
 ├── hooks/           # AI review hook
