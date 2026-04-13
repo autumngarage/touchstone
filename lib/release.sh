@@ -10,6 +10,14 @@ set -euo pipefail
 source "${TOOLKIT_ROOT}/lib/colors.sh"
 
 TOOLKIT_ROOT="${TOOLKIT_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+TOOLKIT_RELEASE_TAP_TMP=""
+
+cleanup_tap_tmp() {
+  if [ -n "${TOOLKIT_RELEASE_TAP_TMP:-}" ]; then
+    rm -rf "$TOOLKIT_RELEASE_TAP_TMP"
+    TOOLKIT_RELEASE_TAP_TMP=""
+  fi
+}
 
 toolkit_release() {
   local bump_type="${1:-minor}"
@@ -75,10 +83,8 @@ toolkit_release() {
 
   # Update homebrew formula — clone tap to temp dir, update, push, clean up.
   local tap_tmp
-  tap_tmp="$(mktemp -d -t toolkit-tap.XXXXXX)"
-  cleanup_tap_tmp() {
-    rm -rf "$tap_tmp"
-  }
+  TOOLKIT_RELEASE_TAP_TMP="$(mktemp -d -t toolkit-tap.XXXXXX)"
+  tap_tmp="$TOOLKIT_RELEASE_TAP_TMP"
   trap cleanup_tap_tmp EXIT
 
   tk_dim "Cloning tap repo..."
@@ -107,4 +113,7 @@ toolkit_release() {
   tk_ok "Released v${new_version}"
   tk_dim "Users can upgrade with: brew update && brew upgrade toolkit"
   echo ""
+
+  cleanup_tap_tmp
+  trap - EXIT
 }
