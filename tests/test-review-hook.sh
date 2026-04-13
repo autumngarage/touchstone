@@ -931,6 +931,8 @@ fi
 
 TIMEOUT_REPO="$TEST_DIR/repo-timeout"
 TIMEOUT_OUTPUT="$TEST_DIR/timeout-output.txt"
+TIMEOUT_PID_FILE="$TEST_DIR/timeout-reviewer.pid"
+TIMEOUT_CHILD_PID_FILE="$TEST_DIR/timeout-reviewer-child.pid"
 
 setup_timeout_repo() {
   rm -rf "$TIMEOUT_REPO"
@@ -958,14 +960,21 @@ EOF
 cat > "$TIMEOUT_BIN/codex" <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
-sleep 999
+sleep 999 &
+child_pid=$!
+printf '%s\n' "$$" > "$TIMEOUT_PID_FILE"
+printf '%s\n' "$child_pid" > "$TIMEOUT_CHILD_PID_FILE"
+wait "$child_pid"
 CXEOF
 chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/codex"
+rm -f "$TIMEOUT_PID_FILE" "$TIMEOUT_CHILD_PID_FILE"
 
 set +e
 (
   cd "$TIMEOUT_REPO"
   PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    TIMEOUT_PID_FILE="$TIMEOUT_PID_FILE" \
+    TIMEOUT_CHILD_PID_FILE="$TIMEOUT_CHILD_PID_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_TIMEOUT=2 \
@@ -979,6 +988,25 @@ if [ "$TIMEOUT_EXIT" -eq 0 ] && grep -q 'timed out after 2s' "$TIMEOUT_OUTPUT"; 
 else
   echo "FAIL: expected timeout to kill reviewer and exit 0" >&2
   echo "exit code: $TIMEOUT_EXIT" >&2
+  cat "$TIMEOUT_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+process_still_active() {
+  local pid="$1"
+  local stat
+
+  stat="$(ps -p "$pid" -o stat= 2>/dev/null | awk '{print $1}' || true)"
+  [ -n "$stat" ] && [[ "$stat" != Z* ]]
+}
+
+if [ -s "$TIMEOUT_PID_FILE" ] \
+  && [ -s "$TIMEOUT_CHILD_PID_FILE" ] \
+  && ! process_still_active "$(cat "$TIMEOUT_PID_FILE")" \
+  && ! process_still_active "$(cat "$TIMEOUT_CHILD_PID_FILE")"; then
+  echo "==> PASS: timeout cleaned up reviewer process tree"
+else
+  echo "FAIL: expected timeout to clean up reviewer process tree" >&2
   cat "$TIMEOUT_OUTPUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
