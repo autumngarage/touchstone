@@ -8,33 +8,84 @@
 
 # toolkit
 
-Shared engineering toolkit — universal principles, project bootstrap, profile-aware commands, atomic updates, and AI review gates for every repo you care about.
+Toolkit is a command-line starter kit for AI-assisted projects. It helps you start a project folder, add the same useful project files every time, and keep those shared files updated later without copy-pasting between projects.
+
+It gives you:
+- starter instructions for Claude, Codex, and other AI coding tools
+- review rules so AI reviewers know what matters in your project
+- helper scripts for opening pull requests (PRs), merging PRs, cleaning branches, and running checks
+- a single setup command for dev tools, Git safety checks, and project dependencies
+- optional AI review before changes get merged into your main branch
+
+You do not need to understand the internals to use it. Install it, run `toolkit new` or `toolkit init`, then follow the next steps printed in your terminal.
 
 ## Install
+
+Run this once in Terminal. This uses Homebrew, the Mac package manager. If `brew` is not found, install Homebrew first from https://brew.sh.
 
 ```bash
 brew tap henrymodisett/toolkit
 brew install toolkit
 ```
 
-Requires `git` and `gh` (installed automatically as brew dependencies).
+Requires `git` and `gh`, the GitHub command-line tool. Homebrew installs them automatically as dependencies.
 
-## Quick start
+Check that it worked:
 
 ```bash
-# Create a new project with all the toolkit goodies
+toolkit version
+```
+
+## Start Here
+
+### Create a new project
+
+```bash
 toolkit new ~/Repos/my-new-project
-
-# Fill in the placeholders
-$EDITOR ~/Repos/my-new-project/CLAUDE.md
-$EDITOR ~/Repos/my-new-project/AGENTS.md
-
-# Set up dev tools, hooks, and project dependencies
 cd ~/Repos/my-new-project
 bash setup.sh
+```
 
-# Install and log in to the default AI reviewer before merging to main
+Then open `CLAUDE.md` and `AGENTS.md` in your editor and fill in the placeholders. These files tell AI coding tools what your project is, what matters, and what to be careful with.
+
+### Add toolkit to an existing project
+
+```bash
+cd ~/Repos/my-existing-project
+toolkit init
+```
+
+If you want setup to happen later:
+
+```bash
+toolkit init --no-setup
+bash setup.sh
+```
+
+### Turn on AI review
+
+If you want Codex to review code before you merge it:
+
+```bash
 npm install -g @openai/codex && codex login
+```
+
+You can keep using toolkit without this step. The review hook skips itself when no configured AI reviewer is available.
+
+## Everyday Commands
+
+```bash
+# Run the project's normal checks
+toolkit run validate
+
+# See whether this project needs newer toolkit files
+toolkit update --check
+
+# Create a branch + commit with the toolkit update
+toolkit update
+
+# See all registered projects
+toolkit status
 
 # Re-run dependency setup later without reinstalling hooks/tools
 bash setup.sh --deps-only
