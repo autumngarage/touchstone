@@ -52,11 +52,12 @@ When the review runs, the hook:
 1. Computes the diff between your branch and the default branch
 2. Skips Codex if the exact same diff and review inputs already passed cleanly
 3. Sends the diff to Codex with the review prompt + your AGENTS.md rubric
-4. Codex reviews and outputs one of three sentinels:
+4. If peer assistance is enabled and the primary reviewer asks for help on a larger change, the hook asks one helper reviewer for a read-only second opinion
+5. Codex reviews and outputs one of three sentinels:
    - `CODEX_REVIEW_CLEAN` — no issues, operation proceeds
    - `CODEX_REVIEW_FIXED` — Codex applied auto-fixes, the hook commits them and re-reviews
    - `CODEX_REVIEW_BLOCKED` — Codex found issues it won't auto-fix, push is blocked
-5. The loop repeats up to `max_iterations` times (default 3)
+6. The loop repeats up to `max_iterations` times (default 3)
 
 ## Configuration reference
 
@@ -67,6 +68,11 @@ When the review runs, the hook:
 | `cache_clean_reviews` | true | Cache exact-input clean reviews under `.git/` to avoid repeat Codex calls |
 | `safe_by_default` | false | Whether unlisted paths allow auto-fix |
 | `unsafe_paths` | [] | Paths where auto-fix is never allowed |
+| `[review].reviewers` | `["codex"]` | Reviewer cascade, e.g. `["claude", "codex", "gemini"]` |
+| `[review.assist].enabled` | false | Allow the primary reviewer to request one peer second opinion |
+| `[review.assist].helpers` | `["codex", "gemini", "claude"]` | Helper reviewers to try, skipping the active primary reviewer |
+| `[review.assist].timeout` | 60 | Timeout in seconds for the helper reviewer |
+| `[review.assist].max_rounds` | 1 | Max helper calls per review run |
 
 ## Environment overrides
 
@@ -79,6 +85,9 @@ When the review runs, the hook:
 | `CODEX_REVIEW_DISABLE_CACHE` | Set to `1`/`true` to force a fresh Codex review |
 | `CODEX_REVIEW_FORCE` | Set to `1`/`true` to run on non-default-branch pushes |
 | `CODEX_REVIEW_NO_AUTOFIX` | Set to `1`/`true` for review-only mode |
+| `CODEX_REVIEW_ASSIST` | Set to `1`/`true` to allow peer assistance for one run |
+| `CODEX_REVIEW_ASSIST_TIMEOUT` | Overrides helper reviewer timeout |
+| `CODEX_REVIEW_ASSIST_MAX_ROUNDS` | Overrides max helper calls per review run |
 
 ## Graceful behavior
 
