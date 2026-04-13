@@ -1,6 +1,14 @@
+```text
+   __              ____   _ __
+  / /_____  ____  / / /__(_) /_
+ / __/ __ \/ __ \/ / //_/ / __/
+/ /_/ /_/ / /_/ / / ,< / / /_
+\__/\____/\____/_/_/|_/_/\__/
+```
+
 # toolkit
 
-Shared engineering toolkit — universal principles, reusable scripts, and a Codex merge/default-branch review hook for all your projects.
+Shared engineering toolkit — universal principles, project bootstrap, profile-aware commands, atomic updates, and AI review gates for every repo you care about.
 
 ## Install
 
@@ -25,7 +33,7 @@ $EDITOR ~/Repos/my-new-project/AGENTS.md
 cd ~/Repos/my-new-project
 bash setup.sh
 
-# Set up Codex login if you want AI review before merging to main
+# Set up the default AI reviewer before merging to main
 npm install -g @openai/codex && codex login
 
 # Re-run dependency setup later without reinstalling hooks/tools
@@ -45,11 +53,15 @@ bash setup.sh --deps-only
 | `toolkit update --dry-run` | Preview what would change |
 | `toolkit update --check` | Report whether the current project needs an update |
 | `toolkit sync` | Update all registered projects at once |
+| `toolkit sync --check` | Report which registered projects need sync |
 | `toolkit sync --pull-first` | Pull latest toolkit first, then sync all projects |
 | `toolkit diff` | Compare project-owned files against the latest templates |
+| `toolkit adr "Title"` | Create an Architecture Decision Record |
+| `toolkit adr list` | List project ADRs |
 | `toolkit list` | Show registered projects |
 | `toolkit status` | Dashboard of registered project health |
 | `toolkit version` | Show installed version and install method |
+| `toolkit changelog [N]` | Show the last N GitHub releases |
 | `toolkit doctor` | Health check — version, tools, project staleness |
 
 ## How it works
@@ -61,9 +73,9 @@ When you run `toolkit new`, these files get copied into your project:
 **Project-owned** (yours to customize, never auto-updated):
 - `CLAUDE.md` — AI coding instructions with `{{PLACEHOLDERS}}` to fill in
 - `AGENTS.md` — AI reviewer rubric with project-specific priorities
-- `.codex-review.toml` — Codex hook config (safe/unsafe paths for auto-fix)
+- `.codex-review.toml` — AI review hook config (reviewers, modes, safe/unsafe paths)
 - `.toolkit-config` — Project profile and optional lint/test/build command overrides
-- `.pre-commit-config.yaml` — Pre-commit hooks including Codex review
+- `.pre-commit-config.yaml` — Pre-commit hooks including the default-branch AI review gate
 - `.gitignore` — Sensible defaults
 - `.github/pull_request_template.md` — PR checklist
 
@@ -71,10 +83,10 @@ When you run `toolkit new`, these files get copied into your project:
 - `.toolkit-version` — The toolkit revision this project has applied
 - `.toolkit-manifest` — The visible list of toolkit-managed paths
 - `principles/*.md` — Universal engineering principles
-- `scripts/codex-review.sh` — Codex merge/default-branch review + auto-fix loop
+- `scripts/codex-review.sh` — AI merge/default-branch review + auto-fix loop
 - `scripts/toolkit-run.sh` — Profile-aware runner for Node/TypeScript, Swift, Rust, Python, Go, and monorepos
 - `scripts/open-pr.sh` — Push + create PR via `gh`
-- `scripts/merge-pr.sh` — Codex review + squash-merge + sync main
+- `scripts/merge-pr.sh` — AI review + squash-merge + sync main
 - `scripts/cleanup-branches.sh` — Safe branch hygiene
 - `scripts/run-pytest-in-venv.sh` — Legacy Python helper copied for Python profiles
 
@@ -106,23 +118,24 @@ Universal engineering standards, extracted and battle-tested from production sys
 - **[pre-implementation-checklist.md](principles/pre-implementation-checklist.md)** — 4 questions to answer before writing any code
 - **[audit-weak-points.md](principles/audit-weak-points.md)** — Methodology: find one bug → audit the whole class → ranked fix → guardrail test
 - **[documentation-ownership.md](principles/documentation-ownership.md)** — Single canonical owner per volatile fact
-- **[git-workflow.md](principles/git-workflow.md)** — Feature branch → PR → Codex merge review → squash merge
+- **[git-workflow.md](principles/git-workflow.md)** — Feature branch → PR → AI merge review → squash merge
 
-### Codex Review Gate
+### AI Review Gate
 
 Automatically reviews code before it reaches the default branch:
-- Runs `codex exec --full-auto` against your diff
-- Auto-fixes safe issues (typos, missing error logging)
+- Uses the configured reviewer cascade: Codex by default, with optional Claude and Gemini reviewers
+- Auto-fixes safe issues when the review mode allows edits
+- Lets the primary reviewer request one focused peer second opinion when `[review.assist]` is enabled
 - Blocks the merge or direct default-branch push for unsafe findings (high-scrutiny paths you configure)
 - Runs from `scripts/merge-pr.sh`, and from the pre-push hook only when pushing directly to the default branch
-- Loops up to N times, gracefully skips if Codex isn't installed
+- Loops up to N times, gracefully skips when no configured reviewer is available
 
-Configure per-project behavior in `.codex-review.toml`. Write your review rubric in `AGENTS.md`. See [hooks/README.md](hooks/README.md) for details.
+Configure per-project behavior in `.codex-review.toml`. Write your review rubric in `AGENTS.md`. See [hooks/README.md](hooks/README.md) for reviewer modes, peer assistance, caching, and fail-open behavior.
 
 ### Helper scripts
 
 - **open-pr.sh** — `git push` + `gh pr create` with your PR template. Idempotent.
-- **merge-pr.sh** — Sanity-check mergeability + Codex review + squash-merge + delete branch + sync main.
+- **merge-pr.sh** — Sanity-check mergeability + AI review + squash-merge + delete branch + sync main.
 - **cleanup-branches.sh** — Dry-run by default. Never deletes unmerged work.
 
 ## Project structure
@@ -133,7 +146,7 @@ toolkit/
 ├── lib/             # shared libraries (auto-update)
 ├── principles/      # universal engineering docs
 ├── templates/       # starter files for new projects
-├── hooks/           # Codex review hook
+├── hooks/           # AI review hook
 ├── scripts/         # helper scripts (open-pr, merge-pr, cleanup)
 ├── bootstrap/       # new-project.sh, update-project.sh, sync-all.sh
 └── tests/           # self-tests
