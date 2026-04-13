@@ -651,7 +651,7 @@ run_reviewer_with_timeout() {
 
   wait "$pid" 2>/dev/null
   local rc=$?
-  kill "$watchdog" 2>/dev/null || true
+  kill_process_tree "$watchdog" TERM
   wait "$watchdog" >/dev/null 2>&1 || true
 
   # SIGTERM/SIGKILL from the watchdog means timeout; normalize to 124.
