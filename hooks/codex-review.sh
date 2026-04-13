@@ -599,6 +599,19 @@ reviewer_label() {
 REVIEW_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/toolkit-review-output.XXXXXX")"
 trap 'rm -f "$REVIEW_OUTPUT_FILE"' EXIT
 
+kill_process_tree() {
+  local pid="$1"
+  local signal="$2"
+  local children child
+
+  children="$(ps -axo pid=,ppid= 2>/dev/null | awk -v ppid="$pid" '$2 == ppid { print $1 }' || true)"
+  for child in $children; do
+    kill_process_tree "$child" "$signal"
+  done
+
+  kill "-$signal" "$pid" 2>/dev/null || true
+}
+
 # run_reviewer_with_timeout TIMEOUT_SECS
 #   Runs the reviewer, captures output to REVIEW_OUTPUT_FILE, returns exit code.
 #   Exit 124 = timeout. Works correctly with subshells (no $() capture needed).
@@ -612,23 +625,37 @@ run_reviewer_with_timeout() {
   fi
 
   # Run reviewer in background, kill if it exceeds timeout.
-  run_reviewer "$REVIEW_PROMPT" > "$REVIEW_OUTPUT_FILE" 2>/dev/null &
+  (
+    run_reviewer "$REVIEW_PROMPT" > "$REVIEW_OUTPUT_FILE" 2>/dev/null &
+    local reviewer_pid=$!
+
+    terminate_reviewer() {
+      kill_process_tree "$reviewer_pid" TERM
+      sleep 1
+      kill_process_tree "$reviewer_pid" KILL
+      wait "$reviewer_pid" >/dev/null 2>&1 || true
+      exit 143
+    }
+
+    trap terminate_reviewer TERM INT
+    wait "$reviewer_pid"
+  ) &
   local pid=$!
   (
     sleep "$timeout_secs"
-    kill -TERM "$pid" 2>/dev/null
+    kill_process_tree "$pid" TERM
     sleep 10
-    kill -KILL "$pid" 2>/dev/null
+    kill_process_tree "$pid" KILL
   ) &
   local watchdog=$!
 
   wait "$pid" 2>/dev/null
   local rc=$?
-  kill "$watchdog" 2>/dev/null
-  wait "$watchdog" 2>/dev/null 2>&1
+  kill_process_tree "$watchdog" TERM
+  wait "$watchdog" >/dev/null 2>&1 || true
 
-  # SIGTERM (128+15=143) means the watchdog killed it → normalize to 124
-  if [ "$rc" -eq 143 ]; then
+  # SIGTERM/SIGKILL from the watchdog means timeout; normalize to 124.
+  if [ "$rc" -eq 143 ] || [ "$rc" -eq 137 ]; then
     return 124
   fi
   return "$rc"

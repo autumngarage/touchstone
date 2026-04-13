@@ -38,6 +38,9 @@ bash setup.sh --deps-only
 |---------|-------------|
 | `toolkit init [--no-setup]` | Add toolkit to the current project |
 | `toolkit new <dir>` | Bootstrap a new project with principles, scripts, hooks, and templates |
+| `toolkit new <dir> --type node` | Bootstrap with an explicit Node/TypeScript, Swift, Rust, Go, Python, or generic profile |
+| `toolkit detect` | Show the detected project profile for the current repo |
+| `toolkit run <task>` | Run profile-aware `lint`, `typecheck`, `build`, `test`, or `validate` |
 | `toolkit update` | Update the current project's toolkit-owned files to latest |
 | `toolkit update --dry-run` | Preview what would change |
 | `toolkit sync` | Update all registered projects at once |
@@ -58,6 +61,7 @@ When you run `toolkit new`, these files get copied into your project:
 - `CLAUDE.md` — AI coding instructions with `{{PLACEHOLDERS}}` to fill in
 - `AGENTS.md` — AI reviewer rubric with project-specific priorities
 - `.codex-review.toml` — Codex hook config (safe/unsafe paths for auto-fix)
+- `.toolkit-config` — Project profile and optional lint/test/build command overrides
 - `.pre-commit-config.yaml` — Pre-commit hooks including Codex review
 - `.gitignore` — Sensible defaults
 - `.github/pull_request_template.md` — PR checklist
@@ -65,12 +69,13 @@ When you run `toolkit new`, these files get copied into your project:
 **Toolkit-owned** (auto-updated when you run `toolkit update` or `toolkit sync`):
 - `principles/*.md` — Universal engineering principles
 - `scripts/codex-review.sh` — Codex merge/default-branch review + auto-fix loop
+- `scripts/toolkit-run.sh` — Profile-aware runner for Node/TypeScript, Swift, Rust, Python, Go, and monorepos
 - `scripts/open-pr.sh` — Push + create PR via `gh`
 - `scripts/merge-pr.sh` — Codex review + squash-merge + sync main
 - `scripts/cleanup-branches.sh` — Safe branch hygiene
-- `scripts/run-pytest-in-venv.sh` — Run pytest through `.venv` or `agent/.venv`
+- `scripts/run-pytest-in-venv.sh` — Legacy Python helper copied for Python profiles
 
-`setup.sh` installs Python dependencies into project virtualenvs. It supports `requirements.txt`, `uv.lock`, and `pyproject.toml` at the repo root and under `agent/`.
+`setup.sh` installs dependencies for the detected project profile. It supports Node package managers, SwiftPM, Cargo, Go modules, and Python `requirements.txt`/`uv.lock`/`pyproject.toml` at the repo root and under `agent/`. `toolkit run validate` uses `.toolkit-config` to run profile-aware lint/typecheck/test commands.
 
 ### Keeping projects up to date
 

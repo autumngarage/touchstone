@@ -145,11 +145,12 @@ fi
 
 # Scripts
 update_file "$TOOLKIT_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
+update_file "$TOOLKIT_ROOT/scripts/toolkit-run.sh" "$PROJECT_DIR/scripts/toolkit-run.sh"
 update_file "$TOOLKIT_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
 update_file "$TOOLKIT_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
 update_file "$TOOLKIT_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
 
-if [ "$PROJECT_TYPE" = "python" ] || [ "$PROJECT_TYPE" = "generic" ]; then
+if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
   update_file "$TOOLKIT_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
 fi
 

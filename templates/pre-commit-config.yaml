@@ -67,25 +67,15 @@ repos:
         always_run: true
         pass_filenames: false
 
-  # ── Project-specific hooks ─────────────────────────────────────────────
-  # Add language-specific linters and test runners below.
-  # `toolkit init` will uncomment relevant hooks for your project type.
-  #
-  # Python (ruff):
-  # - repo: https://github.com/astral-sh/ruff-pre-commit
-  #   rev: v0.8.6
-  #   hooks:
-  #     - id: ruff
-  #       args: ['--fix']
-  #     - id: ruff-format
-  #
-  # Tests (pre-push):
-  # - repo: local
-  #   hooks:
-  #     - id: tests
-  #       name: Run tests
-  #       entry: /usr/bin/env bash -c 'your-test-command-here'
-  #       language: system
-  #       stages: [pre-push]
-  #       always_run: true
-  #       pass_filenames: false
+  # ── Project profile checks ─────────────────────────────────────────────
+  # scripts/toolkit-run.sh reads .toolkit-config and dispatches to the
+  # appropriate Node/TypeScript, Swift, Rust, Python, Go, or monorepo commands.
+  - repo: local
+    hooks:
+      - id: toolkit-validate
+        name: Toolkit project validation
+        entry: /usr/bin/env bash scripts/toolkit-run.sh validate
+        language: system
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false
