@@ -88,8 +88,15 @@ assert_contains "$PROJECT/.pre-commit-config.yaml" 'codex-review.sh'
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'toolkit-run.sh validate'
 assert_contains "$PROJECT/.toolkit-config" '^project_type=generic$'
 assert_contains "$PROJECT/.toolkit-config" '^lint_command=$'
+assert_exists "$PROJECT/.toolkit-manifest"
+assert_contains "$PROJECT/.toolkit-manifest" '^\.toolkit-version$'
+assert_contains "$PROJECT/.toolkit-manifest" '^scripts/open-pr.sh$'
 if grep -q '^\.toolkit-config$' "$PROJECT/.gitignore"; then
   echo "FAIL: expected .toolkit-config to be commit-friendly, not ignored" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if grep -q '^\.toolkit-version$' "$PROJECT/.gitignore"; then
+  echo "FAIL: expected .toolkit-version to be commit-friendly, not ignored" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
@@ -139,6 +146,7 @@ bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$PROJECT_PYTHON" --no-register --
 assert_exists "$PROJECT_PYTHON/scripts/toolkit-run.sh"
 assert_exists "$PROJECT_PYTHON/scripts/run-pytest-in-venv.sh"
 assert_contains "$PROJECT_PYTHON/.toolkit-config" '^project_type=python$'
+assert_contains "$PROJECT_PYTHON/.toolkit-manifest" '^scripts/run-pytest-in-venv.sh$'
 
 # Bootstrap into an existing directory should back up toolkit-owned files before replacing them.
 mkdir -p "$PROJECT_EXISTING/principles" "$PROJECT_EXISTING/scripts"

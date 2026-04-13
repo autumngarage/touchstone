@@ -41,8 +41,9 @@ bash setup.sh --deps-only
 | `toolkit new <dir> --type node` | Bootstrap with an explicit Node/TypeScript, Swift, Rust, Go, Python, or generic profile |
 | `toolkit detect` | Show the detected project profile for the current repo |
 | `toolkit run <task>` | Run profile-aware `lint`, `typecheck`, `build`, `test`, or `validate` |
-| `toolkit update` | Update the current project's toolkit-owned files to latest |
+| `toolkit update` | Create a branch and commit that updates the current project's toolkit-owned files |
 | `toolkit update --dry-run` | Preview what would change |
+| `toolkit update --check` | Report whether the current project needs an update |
 | `toolkit sync` | Update all registered projects at once |
 | `toolkit sync --pull-first` | Pull latest toolkit first, then sync all projects |
 | `toolkit diff` | Compare project-owned files against the latest templates |
@@ -67,6 +68,8 @@ When you run `toolkit new`, these files get copied into your project:
 - `.github/pull_request_template.md` — PR checklist
 
 **Toolkit-owned** (auto-updated when you run `toolkit update` or `toolkit sync`):
+- `.toolkit-version` — The toolkit revision this project has applied
+- `.toolkit-manifest` — The visible list of toolkit-managed paths
 - `principles/*.md` — Universal engineering principles
 - `scripts/codex-review.sh` — Codex merge/default-branch review + auto-fix loop
 - `scripts/toolkit-run.sh` — Profile-aware runner for Node/TypeScript, Swift, Rust, Python, Go, and monorepos
@@ -85,7 +88,7 @@ When you improve the toolkit (add a principle, fix a script), run:
 toolkit sync
 ```
 
-This updates all toolkit-owned files across every registered project. Project-owned files are never touched — you get a hint to review them against the latest templates.
+This updates toolkit-owned files across registered projects by creating reviewable update branches and commits. For one project, run `toolkit update --dry-run` to preview, `toolkit update --check` to check staleness, and `toolkit update` to create a `chore/toolkit-*` branch with the update committed. Project-owned files are never touched — you get a hint to review them against the latest templates.
 
 Projects are auto-registered in `~/.toolkit-projects` when you bootstrap them.
 

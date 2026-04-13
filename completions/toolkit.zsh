@@ -5,7 +5,7 @@ _toolkit() {
   commands=(
     'init:Add toolkit to the current project'
     'new:Bootstrap a new project from scratch'
-    'update:Update current project to latest toolkit'
+    'update:Create a branch and commit for toolkit updates'
     'sync:Update all registered projects'
     'status:Dashboard — health of all projects'
     'doctor:Check toolkit installation health'
@@ -32,7 +32,10 @@ _toolkit() {
           _arguments '1:project directory:_directories'
           ;;
         update)
-          _arguments '--dry-run[Preview changes without applying]'
+          _arguments \
+            '--dry-run[Preview changes without applying]' \
+            '--check[Report whether this project needs update]' \
+            '--branch[Use a specific update branch]:branch name:'
           ;;
         sync)
           _arguments '--pull-first[Pull latest toolkit before syncing]'

@@ -12,7 +12,7 @@
 #   1. Creates the directory if it doesn't exist, initializes git
 #   2. Copies templates, principles, hooks, and scripts into the project
 #   3. Makes scripts executable
-#   4. Writes .toolkit-version with the current toolkit commit SHA
+#   4. Writes .toolkit-version and .toolkit-manifest
 #   5. Registers the project in ~/.toolkit-projects (for sync-all.sh)
 #   6. Prints next steps
 #
@@ -312,6 +312,27 @@ copy_file_force() {
   echo "    + $(basename "$dst")"
 }
 
+write_toolkit_manifest() {
+  local manifest="$PROJECT_DIR/.toolkit-manifest"
+  {
+    printf '# Managed by toolkit. These paths may be updated by `toolkit update`.\n'
+    printf '.toolkit-manifest\n'
+    printf '.toolkit-version\n'
+    for f in "$TOOLKIT_ROOT/principles/"*.md; do
+      printf 'principles/%s\n' "$(basename "$f")"
+    done
+    printf 'scripts/codex-review.sh\n'
+    printf 'scripts/toolkit-run.sh\n'
+    printf 'scripts/open-pr.sh\n'
+    printf 'scripts/merge-pr.sh\n'
+    printf 'scripts/cleanup-branches.sh\n'
+    if [ "$INPUT_TYPE" = "python" ]; then
+      printf 'scripts/run-pytest-in-venv.sh\n'
+    fi
+  } > "$manifest"
+  echo "==> Wrote .toolkit-manifest"
+}
+
 echo ""
 echo "==> Copying templates (project-owned, won't be auto-updated):"
 copy_file "$TOOLKIT_ROOT/templates/CLAUDE.md" "$PROJECT_DIR/CLAUDE.md"
@@ -480,6 +501,8 @@ if [ "$INPUT_TYPE" = "python" ]; then
   copy_file_force "$TOOLKIT_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
   chmod +x "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" 2>/dev/null || true
 fi
+
+write_toolkit_manifest
 
 echo ""
 echo "==> Done! Next steps:"

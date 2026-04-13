@@ -9,6 +9,7 @@
 #   toolkit run <task>                  Run profile task: lint, test, build, typecheck, validate
 #   toolkit update                     Update current project to latest toolkit
 #   toolkit update --dry-run           Show what would change without applying
+#   toolkit update --check             Report whether current project needs update
 #   toolkit sync                       Update all registered projects
 #   toolkit sync --pull-first          Pull latest toolkit, then sync all projects
 #   toolkit status                     Dashboard — health of all registered projects
@@ -67,16 +68,6 @@ toolkit_current_id_short() {
 escape_sed_replacement() {
   printf '%s' "$1" | sed 's/[\\/&]/\\&/g'
 }
-
-# Drift nudge: if cwd is a toolkit project that's behind, print a one-liner.
-if [ -f ".toolkit-version" ]; then
-  _proj_id="$(cat .toolkit-version 2>/dev/null | tr -d '[:space:]')"
-  _current_id="$(toolkit_current_id)"
-  if [ -n "$_proj_id" ] && [ -n "$_current_id" ] && [ "$_proj_id" != "$_current_id" ]; then
-    printf "${DIM}toolkit: this project needs sync (run: toolkit update)${RESET}\n" >&2
-  fi
-  unset _proj_id _current_id
-fi
 
 # --------------------------------------------------------------------------
 # Subcommands
@@ -693,8 +684,9 @@ cmd_help() {
   printf "    ${BOLD}toolkit new${RESET} <dir>              Bootstrap a new project from scratch\n"
   printf "    ${BOLD}toolkit detect${RESET}                 Show detected project profile\n"
   printf "    ${BOLD}toolkit run${RESET} <task>             Run lint, typecheck, build, test, or validate\n"
-  printf "    ${BOLD}toolkit update${RESET}                 Update current project to latest\n"
+  printf "    ${BOLD}toolkit update${RESET}                 Create a branch + commit for toolkit updates\n"
   printf "    ${BOLD}toolkit update${RESET} --dry-run       Preview what would change\n"
+  printf "    ${BOLD}toolkit update${RESET} --check         Report whether this project needs update\n"
   printf "    ${BOLD}toolkit sync${RESET}                   Update all registered projects\n"
   printf "    ${BOLD}toolkit sync${RESET} --check           Report which projects need sync\n"
   printf "    ${BOLD}toolkit sync${RESET} --pull-first      Pull latest toolkit first\n"
