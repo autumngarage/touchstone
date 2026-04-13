@@ -33,8 +33,8 @@ $EDITOR ~/Repos/my-new-project/AGENTS.md
 cd ~/Repos/my-new-project
 bash setup.sh
 
-# Log in to the default AI reviewer before merging to main
-codex login
+# Install and log in to the default AI reviewer before merging to main
+npm install -g @openai/codex && codex login
 
 # Re-run dependency setup later without reinstalling hooks/tools
 bash setup.sh --deps-only
