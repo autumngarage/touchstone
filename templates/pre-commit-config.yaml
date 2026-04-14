@@ -3,7 +3,7 @@
 #
 # Hooks run at two stages:
 #   pre-commit: fast checks on every commit (formatting, secrets, file hygiene)
-#   pre-push:   fast branch checks; Codex review only runs for default-branch pushes
+#   pre-push:   fast branch checks; AI review only runs for default-branch pushes
 
 repos:
   # ── Standard file hygiene ──────────────────────────────────────────────
@@ -56,11 +56,11 @@ repos:
         always_run: true
         pass_filenames: false
 
-  # ── Codex default-branch push review ───────────────────────────────────
+  # ── AI default-branch push review ──────────────────────────────────────
   - repo: local
     hooks:
       - id: codex-review
-        name: Codex default-branch push review
+        name: AI default-branch push review
         entry: /usr/bin/env bash scripts/codex-review.sh
         language: system
         stages: [pre-push]

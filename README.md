@@ -64,13 +64,15 @@ bash setup.sh
 
 ### Turn on AI review
 
-If you want Codex to review code before you merge it:
+When you run `toolkit new` or `toolkit init`, Toolkit asks whether you want AI review and which reviewer to use. You can choose Codex, Claude, Gemini, a local command, or no AI review.
+
+If you choose Codex and it is not installed yet:
 
 ```bash
 npm install -g @openai/codex && codex login
 ```
 
-You can keep using toolkit without this step. The review hook skips itself when no configured AI reviewer is available.
+For local models, choose `local` and enter a command that reads the review prompt from stdin. You can keep using toolkit without any AI reviewer; the hook skips itself when review is disabled or no configured reviewer is available.
 
 ## Everyday Commands
 
@@ -176,6 +178,7 @@ Universal engineering standards, extracted and battle-tested from production sys
 
 Automatically reviews code before it reaches the default branch:
 - Uses the configured reviewer cascade: Codex by default, with optional Claude and Gemini reviewers
+- Can use a local model through `[review.local].command`
 - Auto-fixes safe issues when the review mode allows edits
 - Lets the primary reviewer request one focused peer second opinion when `[review.assist]` is enabled
 - Blocks the merge or direct default-branch push for findings that should not be auto-fixed

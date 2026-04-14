@@ -503,6 +503,93 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: review can be disabled by config"
+setup_cascade_repo
+{
+  printf '[review]\n'
+  printf 'enabled = false\n'
+  printf 'reviewers = ["codex"]\n'
+} > "$CASCADE_REPO/.codex-review.toml"
+git -C "$CASCADE_REPO" add .codex-review.toml
+git -C "$CASCADE_REPO" commit -m "review disabled" >/dev/null 2>&1
+
+rm -rf "$CASCADE_BIN"
+mkdir -p "$CASCADE_BIN"
+cat > "$CASCADE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat > "$CASCADE_BIN/codex" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/codex"
+: > "$CASCADE_CALLS"
+
+(
+  cd "$CASCADE_REPO"
+  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CASCADE_CALLS="$CASCADE_CALLS" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+)
+
+if [ ! -s "$CASCADE_CALLS" ] && grep -q 'AI review disabled' "$CASCADE_OUTPUT"; then
+  echo "==> PASS: review disabled by config skipped reviewer"
+else
+  echo "FAIL: expected enabled=false to skip reviewer" >&2
+  cat "$CASCADE_CALLS" >&2
+  cat "$CASCADE_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: local reviewer command reads prompt from stdin"
+setup_cascade_repo
+{
+  printf '[codex_review]\nsafe_by_default = true\n'
+  printf '[review]\nreviewers = ["local"]\n'
+  printf '[review.local]\ncommand = "local-reviewer"\n'
+} > "$CASCADE_REPO/.codex-review.toml"
+git -C "$CASCADE_REPO" add .codex-review.toml
+git -C "$CASCADE_REPO" commit -m "local reviewer config" >/dev/null 2>&1
+
+LOCAL_PROMPT_FILE="$TEST_DIR/local-review-prompt.txt"
+rm -rf "$CASCADE_BIN"
+mkdir -p "$CASCADE_BIN"
+cat > "$CASCADE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat > "$CASCADE_BIN/local-reviewer" <<'LREOF'
+#!/usr/bin/env bash
+cat > "$LOCAL_PROMPT_FILE"
+printf 'local clean\n'
+printf 'CODEX_REVIEW_CLEAN\n'
+LREOF
+chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/local-reviewer"
+
+(
+  cd "$CASCADE_REPO"
+  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    LOCAL_PROMPT_FILE="$LOCAL_PROMPT_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+)
+
+if grep -q 'Using reviewer: Local command' "$CASCADE_OUTPUT" \
+  && grep -q 'Output contract' "$LOCAL_PROMPT_FILE"; then
+  echo "==> PASS: local reviewer command received prompt on stdin"
+else
+  echo "FAIL: expected local reviewer to run with prompt on stdin" >&2
+  cat "$CASCADE_OUTPUT" >&2
+  sed -n '1,80p' "$LOCAL_PROMPT_FILE" >&2 || true
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: TOOLKIT_REVIEWER forces a specific reviewer"
 setup_cascade_repo
 {

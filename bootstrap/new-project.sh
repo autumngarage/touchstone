@@ -7,6 +7,7 @@
 #   new-project.sh <project-dir> --no-register   # skip adding to ~/.toolkit-projects
 #   new-project.sh <project-dir> --type node|python|swift|rust|go|generic|auto
 #   new-project.sh <project-dir> --unsafe-paths src/auth/,migrations/
+#   new-project.sh <project-dir> --reviewer codex|claude|gemini|local|auto|none
 #
 # What this does:
 #   1. Creates the directory if it doesn't exist, initializes git
@@ -24,9 +25,14 @@ TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REGISTER=true
 INPUT_UNSAFE=""
 INPUT_TYPE=""
+INPUT_REVIEWER=""
+INPUT_REVIEW_ASSIST=""
+INPUT_REVIEW_AUTOFIX=""
+INPUT_LOCAL_REVIEW_COMMAND=""
+REVIEW_CONFIG_REQUESTED=false
 
 usage() {
-  echo "Usage: $0 <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2]"
+  echo "Usage: $0 <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>]"
 }
 
 trim() {
@@ -124,6 +130,63 @@ normalize_project_type() {
       return 1
       ;;
   esac
+}
+
+normalize_reviewer() {
+  local value="$1"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+
+  case "$value" in
+    ""|auto) printf 'auto' ;;
+    codex|claude|gemini|local) printf '%s' "$value" ;;
+    none|no|off|disabled|false) printf 'none' ;;
+    *)
+      echo "ERROR: unknown reviewer '$1' (expected codex, claude, gemini, local, auto, or none)" >&2
+      return 1
+      ;;
+  esac
+}
+
+normalize_yes_no() {
+  local value="$1"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  case "$value" in
+    y|yes|true|1|on) printf 'true' ;;
+    n|no|false|0|off) printf 'false' ;;
+    *) printf '%s' "$value" ;;
+  esac
+}
+
+prompt_yes_no() {
+  local prompt="$1"
+  local default="$2"
+  local suffix answer
+
+  if [ "$default" = "true" ]; then
+    suffix="[Y/n]"
+  else
+    suffix="[y/N]"
+  fi
+
+  read -r -p "   $prompt $suffix: " answer
+  answer="$(trim "$answer")"
+  if [ -z "$answer" ]; then
+    printf '%s' "$default"
+  else
+    normalize_yes_no "$answer"
+  fi
+}
+
+default_reviewer() {
+  if command -v codex >/dev/null 2>&1; then
+    printf 'codex'
+  elif command -v claude >/dev/null 2>&1; then
+    printf 'claude'
+  elif command -v gemini >/dev/null 2>&1; then
+    printf 'gemini'
+  else
+    printf 'codex'
+  fi
 }
 
 detect_node_package_manager() {
@@ -240,6 +303,43 @@ while [ "$#" -gt 0 ]; do
       INPUT_UNSAFE="$2"
       shift 2
       ;;
+    --reviewer)
+      [ "$#" -ge 2 ] || { echo "ERROR: --reviewer requires a value (codex, claude, gemini, local, auto, none)" >&2; exit 1; }
+      INPUT_REVIEWER="$(normalize_reviewer "$2")"
+      REVIEW_CONFIG_REQUESTED=true
+      shift 2
+      ;;
+    --no-ai-review|--no-review)
+      INPUT_REVIEWER="none"
+      REVIEW_CONFIG_REQUESTED=true
+      shift
+      ;;
+    --review-assist)
+      INPUT_REVIEW_ASSIST=true
+      REVIEW_CONFIG_REQUESTED=true
+      shift
+      ;;
+    --no-review-assist)
+      INPUT_REVIEW_ASSIST=false
+      REVIEW_CONFIG_REQUESTED=true
+      shift
+      ;;
+    --review-autofix)
+      INPUT_REVIEW_AUTOFIX=true
+      REVIEW_CONFIG_REQUESTED=true
+      shift
+      ;;
+    --no-review-autofix)
+      INPUT_REVIEW_AUTOFIX=false
+      REVIEW_CONFIG_REQUESTED=true
+      shift
+      ;;
+    --local-review-command)
+      [ "$#" -ge 2 ] || { echo "ERROR: --local-review-command requires a command string" >&2; exit 1; }
+      INPUT_LOCAL_REVIEW_COMMAND="$2"
+      REVIEW_CONFIG_REQUESTED=true
+      shift 2
+      ;;
     *) echo "ERROR: unknown argument '$1'" >&2; exit 1 ;;
   esac
 done
@@ -339,6 +439,126 @@ write_toolkit_manifest() {
   fi
 }
 
+set_codex_review_key() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  local tmp_file
+  tmp_file="$(mktemp -t toolkit-codex-review-key.XXXXXX)"
+
+  awk -v key="$key" -v repl="$key = $value" '
+    BEGIN { in_section = 0; replaced = 0 }
+    /^\[codex_review\][[:space:]]*$/ {
+      in_section = 1
+      print
+      next
+    }
+    /^\[/ {
+      if (in_section && !replaced) {
+        print repl
+        replaced = 1
+      }
+      in_section = 0
+      print
+      next
+    }
+    in_section && !replaced {
+      pattern = "^[[:space:]#]*" key "[[:space:]]*="
+      if ($0 ~ pattern) {
+        print repl
+        replaced = 1
+        next
+      }
+    }
+    { print }
+    END {
+      if (in_section && !replaced) {
+        print repl
+      }
+    }
+  ' "$file" > "$tmp_file"
+  mv "$tmp_file" "$file"
+}
+
+write_review_onboarding_config() {
+  local file="$1"
+  local reviewer="${INPUT_REVIEWER:-auto}"
+  local assist="${INPUT_REVIEW_ASSIST:-false}"
+  local autofix="${INPUT_REVIEW_AUTOFIX:-false}"
+  local enabled=true
+  local reviewers_toml
+
+  if [ "$reviewer" = "none" ]; then
+    enabled=false
+    reviewers_toml='[]'
+  elif [ "$reviewer" = "auto" ]; then
+    reviewers_toml='["codex", "claude", "gemini"]'
+  else
+    reviewers_toml="[\"$reviewer\"]"
+  fi
+
+  if [ "$enabled" = true ] && [ "$autofix" = true ]; then
+    set_codex_review_key "$file" "mode" '"fix"'
+    set_codex_review_key "$file" "safe_by_default" "true"
+  else
+    set_codex_review_key "$file" "mode" '"review-only"'
+    set_codex_review_key "$file" "safe_by_default" "false"
+  fi
+
+  {
+    printf '\n# Toolkit onboarding choices. You can edit these later.\n'
+    printf '[review]\n'
+    printf 'enabled = %s\n' "$enabled"
+    printf 'reviewers = %s\n' "$reviewers_toml"
+    printf '\n[review.assist]\n'
+    printf 'enabled = %s\n' "$assist"
+    printf 'helpers = ["codex", "gemini", "claude", "local"]\n'
+    if [ "$reviewer" = "local" ]; then
+      printf '\n[review.local]\n'
+      printf '# The command receives the review prompt on stdin and must print CODEX_REVIEW_CLEAN, CODEX_REVIEW_FIXED, or CODEX_REVIEW_BLOCKED as its last line.\n'
+      printf 'command = "%s"\n' "$(escape_toml_basic_string "$INPUT_LOCAL_REVIEW_COMMAND")"
+    fi
+  } >> "$file"
+}
+
+print_review_setup_hint() {
+  local reviewer="${INPUT_REVIEWER:-auto}"
+  local enabled=true
+
+  [ "$reviewer" = "none" ] && enabled=false
+  if [ "$enabled" = false ]; then
+    echo "==> AI review disabled. You can enable it later in .codex-review.toml."
+    return
+  fi
+
+  echo "==> AI review configured: reviewer=$reviewer"
+  case "$reviewer" in
+    codex|auto)
+      if ! command -v codex >/dev/null 2>&1; then
+        echo "    Codex is not installed yet. setup.sh will try to install it if npm is available."
+        echo "    Manual install: npm install -g @openai/codex && codex login"
+      fi
+      ;;
+    claude)
+      if ! command -v claude >/dev/null 2>&1; then
+        echo "    Claude CLI is not installed yet. Install and authenticate Claude before relying on review."
+      fi
+      ;;
+    gemini)
+      if ! command -v gemini >/dev/null 2>&1; then
+        echo "    Gemini CLI is not installed yet. Install and authenticate Gemini before relying on review."
+      fi
+      ;;
+    local)
+      if [ -z "$INPUT_LOCAL_REVIEW_COMMAND" ]; then
+        echo "    Add [review.local].command in .codex-review.toml before local review can run."
+      else
+        echo "    Local reviewer command: $INPUT_LOCAL_REVIEW_COMMAND"
+      fi
+      ;;
+  esac
+}
+
 echo ""
 echo "==> Copying templates (project-owned, won't be auto-updated):"
 copy_file "$TOOLKIT_ROOT/templates/CLAUDE.md" "$PROJECT_DIR/CLAUDE.md"
@@ -419,8 +639,31 @@ if [ -t 0 ] && [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
     INPUT_TYPE="$(normalize_project_type "$INPUT_TYPE")"
   fi
 
-  if [ -z "$INPUT_UNSAFE" ] && [ "$CODEX_REVIEW_CONFIG_CREATED" = true ]; then
-    read -r -p "   High-scrutiny paths (comma-separated, e.g., src/auth/,migrations/): " INPUT_UNSAFE
+  if [ "$REVIEW_CONFIG_REQUESTED" = false ] && [ "$CODEX_REVIEW_CONFIG_CREATED" = true ]; then
+    echo ""
+    echo "==> Configure AI review (press Enter for the default):"
+    if [ "$(prompt_yes_no "Use AI review before code reaches main?" "true")" = "true" ]; then
+      local_default_reviewer="$(default_reviewer)"
+      read -r -p "   Reviewer (codex, claude, gemini, local, auto) [$local_default_reviewer]: " INPUT_REVIEWER
+      INPUT_REVIEWER="${INPUT_REVIEWER:-$local_default_reviewer}"
+      INPUT_REVIEWER="$(normalize_reviewer "$INPUT_REVIEWER")"
+
+      if [ "$INPUT_REVIEWER" = "local" ] && [ -z "$INPUT_LOCAL_REVIEW_COMMAND" ]; then
+        read -r -p "   Local reviewer command (reads prompt on stdin, e.g. 'ollama run MODEL'): " INPUT_LOCAL_REVIEW_COMMAND
+      fi
+
+      INPUT_REVIEW_AUTOFIX="$(prompt_yes_no "Let the AI auto-fix low-risk issues?" "false")"
+      INPUT_REVIEW_ASSIST="$(prompt_yes_no "Let the AI ask one peer reviewer for larger changes?" "false")"
+
+      if [ "$INPUT_REVIEW_AUTOFIX" = "true" ] && [ -z "$INPUT_UNSAFE" ]; then
+        read -r -p "   High-scrutiny paths the AI must never auto-fix (comma-separated, e.g., src/auth/,migrations/): " INPUT_UNSAFE
+      fi
+    else
+      INPUT_REVIEWER="none"
+      INPUT_REVIEW_AUTOFIX=false
+      INPUT_REVIEW_ASSIST=false
+    fi
+    REVIEW_CONFIG_REQUESTED=true
   fi
 fi
 
@@ -476,6 +719,15 @@ if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ] || [ -n 
   fi
 fi
 
+if [ "$REVIEW_CONFIG_REQUESTED" = true ]; then
+  if [ "$CODEX_REVIEW_CONFIG_CREATED" = true ]; then
+    write_review_onboarding_config "$PROJECT_DIR/.codex-review.toml"
+    print_review_setup_hint
+  else
+    echo "==> .codex-review.toml already exists; left AI review choices unchanged."
+  fi
+fi
+
 # Write .toolkit-config with project type (skip if already exists).
 if [ ! -f "$PROJECT_DIR/.toolkit-config" ]; then
   {
@@ -516,4 +768,5 @@ echo ""
 echo "   1. Review CLAUDE.md and AGENTS.md — add architecture, key files, hard-won lessons"
 echo "   2. Run setup.sh to install all dev tools:"
 echo "        cd $PROJECT_DIR && bash setup.sh"
+echo "   3. Review .codex-review.toml if you want to change AI reviewer behavior"
 echo ""

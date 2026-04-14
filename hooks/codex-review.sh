@@ -36,6 +36,9 @@
 #
 # Env overrides:
 #   TOOLKIT_REVIEWER              — force a specific reviewer (skips cascade, hard-fails if unavailable)
+#   TOOLKIT_LOCAL_REVIEWER_COMMAND — local reviewer command; reads prompt from stdin
+#   TOOLKIT_LOCAL_REVIEWER_AUTH_COMMAND — optional command that must pass before local review runs
+#   CODEX_REVIEW_ENABLED          — true/false override for the [review].enabled setting
 #   CODEX_REVIEW_MODE             — review-only|fix|diff-only|no-tests (default: fix)
 #   CODEX_REVIEW_BASE             — base ref to diff against (default: origin/<default-branch>)
 #   CODEX_REVIEW_MAX_ITERATIONS   — fix loop cap (default: from config, or 3)
@@ -74,10 +77,13 @@ MAX_DIFF_LINES="${CODEX_REVIEW_MAX_DIFF_LINES:-5000}"
 CACHE_CLEAN_REVIEWS="${CODEX_REVIEW_CACHE_CLEAN:-true}"
 NO_AUTOFIX="${CODEX_REVIEW_NO_AUTOFIX:-false}"
 CONFIG_MODE=""
+REVIEW_ENABLED="${CODEX_REVIEW_ENABLED:-true}"
 REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-300}"
 ON_ERROR="${CODEX_REVIEW_ON_ERROR:-fail-open}"
 UNSAFE_PATHS=""
 REVIEWER_CASCADE=()
+LOCAL_REVIEWER_COMMAND="${TOOLKIT_LOCAL_REVIEWER_COMMAND:-}"
+LOCAL_REVIEWER_AUTH_COMMAND="${TOOLKIT_LOCAL_REVIEWER_AUTH_COMMAND:-}"
 ASSIST_ENABLED="${CODEX_REVIEW_ASSIST:-false}"
 ASSIST_TIMEOUT="${CODEX_REVIEW_ASSIST_TIMEOUT:-60}"
 ASSIST_MAX_ROUNDS="${CODEX_REVIEW_ASSIST_MAX_ROUNDS:-1}"
@@ -232,6 +238,16 @@ normalize_bool() {
   esac
 }
 
+toml_string_value() {
+  local value="$1"
+  value="$(trim "$value")"
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
+  printf '%s' "$value"
+}
+
 is_truthy() {
   case "$(normalize_bool "${1:-false}")" in
     true) return 0 ;;
@@ -323,6 +339,9 @@ if [ -f "$CONFIG_FILE" ]; then
     # Parse [review] section keys.
     if [ "$CURRENT_SECTION" = "review" ]; then
       case "$line" in
+        enabled*=*)
+          REVIEW_ENABLED="${CODEX_REVIEW_ENABLED:-$(normalize_bool "${line#*=}")}"
+          ;;
         reviewers*=*)
           array_value="$(trim "${line#*=}")"
           array_value="${array_value#\[}"
@@ -331,6 +350,23 @@ if [ -f "$CONFIG_FILE" ]; then
           else
             append_reviewers_csv "$array_value"
             IN_REVIEWERS=true
+          fi
+          ;;
+      esac
+      continue
+    fi
+
+    # Parse [review.local] section keys.
+    if [ "$CURRENT_SECTION" = "review.local" ]; then
+      case "$line" in
+        command*=*)
+          if [ -z "${TOOLKIT_LOCAL_REVIEWER_COMMAND:-}" ]; then
+            LOCAL_REVIEWER_COMMAND="$(toml_string_value "${line#*=}")"
+          fi
+          ;;
+        auth_command*=*)
+          if [ -z "${TOOLKIT_LOCAL_REVIEWER_AUTH_COMMAND:-}" ]; then
+            LOCAL_REVIEWER_AUTH_COMMAND="$(toml_string_value "${line#*=}")"
           fi
           ;;
       esac
@@ -414,6 +450,7 @@ if [ "${#ASSIST_HELPERS[@]}" -eq 0 ]; then
   ASSIST_HELPERS=("codex" "gemini" "claude")
 fi
 ASSIST_ENABLED="$(normalize_bool "$ASSIST_ENABLED")"
+REVIEW_ENABLED="$(normalize_bool "$REVIEW_ENABLED")"
 
 # TOOLKIT_REVIEWER env var overrides the cascade with a single forced reviewer.
 if [ -n "${TOOLKIT_REVIEWER:-}" ]; then
@@ -653,6 +690,18 @@ reviewer_gemini_exec() {
   fi
 }
 
+reviewer_local_available() {
+  [ -n "$LOCAL_REVIEWER_COMMAND" ]
+}
+reviewer_local_auth_ok() {
+  [ -z "$LOCAL_REVIEWER_AUTH_COMMAND" ] && return 0
+  bash -c "$LOCAL_REVIEWER_AUTH_COMMAND" >/dev/null 2>&1
+}
+reviewer_local_exec() {
+  printf "  ${C_DIM}(local: running configured command; prompt is provided on stdin)${C_RESET}\n" >&2
+  CODEX_REVIEW_IN_PROGRESS=1 bash -c "$LOCAL_REVIEWER_COMMAND" <<< "$1"
+}
+
 # --------------------------------------------------------------------------
 # Reviewer cascade resolver
 # --------------------------------------------------------------------------
@@ -666,8 +715,16 @@ resolve_reviewer() {
   REVIEWER_STATUS=""
 
   for reviewer in "${REVIEWER_CASCADE[@]}"; do
+    if ! declare -F "reviewer_${reviewer}_available" >/dev/null; then
+      REVIEWER_STATUS="${REVIEWER_STATUS}    ${reviewer}: unknown reviewer\n"
+      continue
+    fi
     if ! "reviewer_${reviewer}_available"; then
-      REVIEWER_STATUS="${REVIEWER_STATUS}    ${reviewer}: CLI not installed\n"
+      if [ "$reviewer" = "local" ]; then
+        REVIEWER_STATUS="${REVIEWER_STATUS}    local: command not configured\n"
+      else
+        REVIEWER_STATUS="${REVIEWER_STATUS}    ${reviewer}: CLI not installed\n"
+      fi
       continue
     fi
     if ! "reviewer_${reviewer}_auth_ok"; then
@@ -722,6 +779,7 @@ reviewer_label_for() {
     codex)  printf 'Codex' ;;
     claude) printf 'Claude' ;;
     gemini) printf 'Gemini' ;;
+    local)  printf 'Local command' ;;
     *)      printf '%s' "$1" ;;
   esac
 }
@@ -830,6 +888,11 @@ if should_skip_pre_push_review; then
   exit 0
 fi
 
+if ! is_truthy "$REVIEW_ENABLED"; then
+  echo "==> AI review disabled by .codex-review.toml — skipping review."
+  exit 0
+fi
+
 # Resolve which reviewer to use from the cascade.
 if ! resolve_reviewer; then
   if [ -n "${TOOLKIT_REVIEWER:-}" ]; then
@@ -839,7 +902,7 @@ if ! resolve_reviewer; then
   fi
   echo "==> No reviewer available — skipping review."
   printf '%b' "$REVIEWER_STATUS"
-  echo "    Install at least one: codex, claude, or gemini CLI."
+  echo "    Install at least one: codex, claude, or gemini CLI; or configure [review.local].command."
   exit 0
 fi
 REVIEWER_LABEL="$(reviewer_label)"
@@ -966,6 +1029,8 @@ review_cache_key() {
   {
     printf 'toolkit-codex-review-cache-v2\n'
     printf 'reviewer=%s\n' "$ACTIVE_REVIEWER"
+    printf 'review_enabled=%s\n' "$REVIEW_ENABLED"
+    printf 'local_reviewer_command=%s\n' "$LOCAL_REVIEWER_COMMAND"
     printf 'base=%s\n' "$BASE"
     printf 'merge_base=%s\n' "$MERGE_BASE"
     printf 'worktree_dirty_before_review=%s\n' "$WORKTREE_DIRTY_BEFORE_REVIEW"

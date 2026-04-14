@@ -4,7 +4,7 @@
 #
 # Usage:
 #   toolkit new <project-dir>          Create a new project with toolkit files
-#   toolkit init [--no-setup] [--type node|python|swift|rust|go|generic|auto]
+#   toolkit init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--reviewer codex|claude|gemini|local|auto|none]
 #                                      Add toolkit to the current project
 #   toolkit run <task>                  Run profile task: lint, test, build, typecheck, validate
 #   toolkit update                     Update current project to latest toolkit
@@ -75,12 +75,12 @@ escape_sed_replacement() {
 
 cmd_new() {
   if [ "$#" -lt 1 ]; then
-    echo "Usage: toolkit new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2]" >&2
+    echo "Usage: toolkit new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none]" >&2
     exit 1
   fi
   case "${1:-}" in
     -h|--help)
-      echo "Usage: toolkit new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2]"
+      echo "Usage: toolkit new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none]"
       return 0
       ;;
   esac
@@ -100,7 +100,7 @@ cmd_init() {
         shift
         ;;
       -h|--help)
-        echo "Usage: toolkit init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2]"
+        echo "Usage: toolkit init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none]"
         return 0
         ;;
       --type)
@@ -123,9 +123,21 @@ cmd_init() {
         args+=("$1" "$2")
         shift 2
         ;;
+      --reviewer|--local-review-command)
+        if [ "$#" -lt 2 ]; then
+          echo "ERROR: $1 requires a value" >&2
+          exit 1
+        fi
+        args+=("$1" "$2")
+        shift 2
+        ;;
+      --no-ai-review|--no-review|--review-assist|--no-review-assist|--review-autofix|--no-review-autofix)
+        args+=("$1")
+        shift
+        ;;
       *)
         echo "ERROR: unknown argument '$1'" >&2
-        echo "Usage: toolkit init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2]" >&2
+        echo "Usage: toolkit init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none]" >&2
         exit 1
         ;;
     esac
@@ -681,6 +693,7 @@ cmd_help() {
   tk_header "toolkit — shared engineering toolkit"
   echo "  ${BOLD}Project commands:${RESET}"
   printf "    ${BOLD}toolkit init${RESET} [--no-setup]      Add toolkit to the current project\n"
+  printf "    ${BOLD}toolkit init${RESET} --reviewer local  Add toolkit with a local reviewer command prompt\n"
   printf "    ${BOLD}toolkit new${RESET} <dir>              Bootstrap a new project from scratch\n"
   printf "    ${BOLD}toolkit detect${RESET}                 Show detected project profile\n"
   printf "    ${BOLD}toolkit run${RESET} <task>             Run lint, typecheck, build, test, or validate\n"
