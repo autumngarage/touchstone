@@ -45,6 +45,13 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  if grep -q "$2" "$1" 2>/dev/null; then
+    echo "FAIL: expected $1 to NOT contain '$2'" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+}
+
 PROJECT="$TEST_DIR/test-project"
 PROJECT_WITH_UNSAFE="$TEST_DIR/test-project-unsafe"
 PROJECT_EXISTING="$TEST_DIR/test-project-existing"
@@ -282,12 +289,24 @@ SETUP_VERSION_PROJECT="$TEST_DIR/setup-version-project"
 SETUP_VERSION_FAKE_BIN="$TEST_DIR/setup-version-fake-bin"
 mkdir -p "$SETUP_VERSION_FAKE_BIN"
 bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$SETUP_VERSION_PROJECT" --no-register >/dev/null
+{
+  printf '\n[review]\n'
+  printf 'enabled = true\n'
+  printf 'reviewers = ["local"]\n'
+  printf '\n[review.local]\n'
+  printf 'command = "local-reviewer --model demo"\n'
+} >> "$SETUP_VERSION_PROJECT/.codex-review.toml"
 cat > "$SETUP_VERSION_FAKE_BIN/toolkit" <<'FAKETOOLKIT'
 #!/usr/bin/env bash
 case "$1" in
   version)
     printf '\n'
     printf 'toolkit v9.9.9\n'
+    i=1
+    while [ "$i" -le 3000 ]; do
+      printf 'extra version detail %s\n' "$i"
+      i=$((i + 1))
+    done
     exit 0
     ;;
   update)
@@ -316,6 +335,8 @@ FAKECODEX
 chmod +x "$SETUP_VERSION_FAKE_BIN/"*
 (cd "$SETUP_VERSION_PROJECT" && PATH="$SETUP_VERSION_FAKE_BIN:$PATH" bash setup.sh) >"$TEST_DIR/setup-version-output.txt"
 assert_contains "$TEST_DIR/setup-version-output.txt" 'toolkit v9.9.9'
+assert_contains "$TEST_DIR/setup-version-output.txt" 'local reviewer configured: local-reviewer --model demo'
+assert_not_contains "$TEST_DIR/setup-version-output.txt" "unknown AI reviewer"
 
 # toolkit-run.sh should provide ecosystem-neutral task dispatch.
 RUNNER_FAKE_BIN="$TEST_DIR/runner-fake-bin"

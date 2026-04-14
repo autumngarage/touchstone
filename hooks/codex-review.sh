@@ -697,9 +697,45 @@ reviewer_local_auth_ok() {
   [ -z "$LOCAL_REVIEWER_AUTH_COMMAND" ] && return 0
   bash -c "$LOCAL_REVIEWER_AUTH_COMMAND" >/dev/null 2>&1
 }
+append_local_context_file() {
+  local title="$1"
+  local file="$2"
+
+  [ -f "$file" ] || return 0
+  printf '\n## %s\n\n' "$title"
+  printf '```markdown\n'
+  cat "$file"
+  printf '\n```\n'
+}
+build_local_reviewer_prompt() {
+  local base_prompt="$1"
+
+  cat <<LOCAL_PROMPT_EOF
+$base_prompt
+
+## Local reviewer input
+
+You are running as a local command that receives only this stdin payload.
+Use the embedded project context and diff below; do not assume you can call
+repo-aware tools unless your wrapper command explicitly provides them.
+LOCAL_PROMPT_EOF
+
+  append_local_context_file "AGENTS.md" "$REPO_ROOT/AGENTS.md"
+  append_local_context_file "CLAUDE.md" "$REPO_ROOT/CLAUDE.md"
+  if [ -n "$REVIEW_CONTEXT_FILE" ]; then
+    append_local_context_file "$(basename "$REVIEW_CONTEXT_FILE")" "$REVIEW_CONTEXT_FILE"
+  fi
+
+  printf '\n## Diff\n\n'
+  printf '```diff\n'
+  git diff "$MERGE_BASE"..HEAD 2>/dev/null || true
+  printf '\n```\n'
+}
 reviewer_local_exec() {
+  local local_prompt
   printf "  ${C_DIM}(local: running configured command; prompt is provided on stdin)${C_RESET}\n" >&2
-  CODEX_REVIEW_IN_PROGRESS=1 bash -c "$LOCAL_REVIEWER_COMMAND" <<< "$1"
+  local_prompt="$(build_local_reviewer_prompt "$1")"
+  CODEX_REVIEW_IN_PROGRESS=1 bash -c "$LOCAL_REVIEWER_COMMAND" <<< "$local_prompt"
 }
 
 # --------------------------------------------------------------------------

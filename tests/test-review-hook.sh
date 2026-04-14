@@ -581,12 +581,14 @@ chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/local-reviewer"
 )
 
 if grep -q 'Using reviewer: Local command' "$CASCADE_OUTPUT" \
-  && grep -q 'Output contract' "$LOCAL_PROMPT_FILE"; then
-  echo "==> PASS: local reviewer command received prompt on stdin"
+  && grep -q 'Output contract' "$LOCAL_PROMPT_FILE" \
+  && grep -q '## Diff' "$LOCAL_PROMPT_FILE" \
+  && grep -q 'diff --git' "$LOCAL_PROMPT_FILE"; then
+  echo "==> PASS: local reviewer command received self-contained prompt on stdin"
 else
-  echo "FAIL: expected local reviewer to run with prompt on stdin" >&2
+  echo "FAIL: expected local reviewer to run with self-contained prompt on stdin" >&2
   cat "$CASCADE_OUTPUT" >&2
-  sed -n '1,80p' "$LOCAL_PROMPT_FILE" >&2 || true
+  sed -n '1,140p' "$LOCAL_PROMPT_FILE" >&2 || true
   ERRORS=$((ERRORS + 1))
 fi
 

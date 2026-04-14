@@ -58,7 +58,7 @@ fi
 # --------------------------------------------------------------------------
 info "Checking toolkit"
 if command -v toolkit >/dev/null 2>&1; then
-  TOOLKIT_VERSION_SUMMARY="$(toolkit version 2>&1 | awk 'NF { sub(/^toolkit /, ""); print; exit }')"
+  TOOLKIT_VERSION_SUMMARY="$(toolkit version 2>&1 | awk 'NF && !seen { sub(/^toolkit /, ""); print; seen = 1 }')"
   ok "toolkit ${TOOLKIT_VERSION_SUMMARY:-installed}"
 else
   warn "Installing toolkit..."
@@ -113,6 +113,7 @@ trim_review_value() {
 add_reviewers_from_csv() {
   local csv="$1" item
   local -a items=()
+  csv="$(trim_review_value "$csv")"
   csv="${csv#\[}"
   csv="${csv%\]}"
   IFS=',' read -r -a items <<< "$csv"
