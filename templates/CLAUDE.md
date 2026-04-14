@@ -28,6 +28,13 @@
 - Concise commit messages. Logically grouped changes.
 - Run `/compact` at ~50% context. Start fresh sessions for unrelated work.
 
+### Memory Hygiene
+
+- Treat Claude Code memory as cached guidance, not canonical truth. Before relying on a remembered command, flag, path, version, or workflow, verify it against this repo.
+- Do not write memory for facts that are cheap to derive from `README.md`, `CLAUDE.md`, `AGENTS.md`, `.toolkit-config`, release docs, or the code itself.
+- If you write memory that mentions a command, flag, file path, version, release process, or "current/primary" workflow, include the date (`YYYY-MM-DD`) and the canonical source checked.
+- If memory conflicts with the repo, follow the repo and ask to audit or update the stale memory.
+
 ## Testing
 
 ```bash

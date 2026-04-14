@@ -1,0 +1,4 @@
+interface:
+  display_name: "Memory Audit"
+  short_description: "Audit stale Claude memory"
+  default_prompt: "Run a memory audit and report stale or duplicate memory entries."
