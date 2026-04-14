@@ -28,8 +28,35 @@ _toolkit() {
       ;;
     args)
       case "$words[1]" in
+        init)
+          _arguments \
+            '--no-setup[Bootstrap files without running setup.sh]' \
+            '--no-register[Do not add the project to ~/.toolkit-projects]' \
+            '--type[Project type]:project type:(auto node python swift rust go generic)' \
+            '--unsafe-paths[Comma-separated high-scrutiny paths]:paths:' \
+            '--reviewer[AI reviewer]:reviewer:(auto codex claude gemini local none)' \
+            '--no-ai-review[Disable AI review]' \
+            '--no-review[Disable AI review]' \
+            '--review-assist[Allow one peer reviewer second opinion]' \
+            '--no-review-assist[Disable peer reviewer assistance]' \
+            '--review-autofix[Allow low-risk auto-fixes]' \
+            '--no-review-autofix[Disable auto-fixes]' \
+            '--local-review-command[Command that reads review prompt on stdin]:command:'
+          ;;
         new)
-          _arguments '1:project directory:_directories'
+          _arguments \
+            '1:project directory:_directories' \
+            '--no-register[Do not add the project to ~/.toolkit-projects]' \
+            '--type[Project type]:project type:(auto node python swift rust go generic)' \
+            '--unsafe-paths[Comma-separated high-scrutiny paths]:paths:' \
+            '--reviewer[AI reviewer]:reviewer:(auto codex claude gemini local none)' \
+            '--no-ai-review[Disable AI review]' \
+            '--no-review[Disable AI review]' \
+            '--review-assist[Allow one peer reviewer second opinion]' \
+            '--no-review-assist[Disable peer reviewer assistance]' \
+            '--review-autofix[Allow low-risk auto-fixes]' \
+            '--no-review-autofix[Disable auto-fixes]' \
+            '--local-review-command[Command that reads review prompt on stdin]:command:'
           ;;
         update)
           _arguments \
@@ -38,7 +65,10 @@ _toolkit() {
             '--branch[Use a specific update branch]:branch name:'
           ;;
         sync)
-          _arguments '--pull-first[Pull latest toolkit before syncing]'
+          _arguments \
+            '--pull-first[Pull latest toolkit before syncing]' \
+            '--check[Report which projects need sync]' \
+            '--dry-run[Preview updates without applying]'
           ;;
         unregister)
           # Complete from registered projects.

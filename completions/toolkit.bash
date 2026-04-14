@@ -9,14 +9,14 @@ _toolkit() {
     toolkit)
       COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
       ;;
-    new)
-      COMPREPLY=( $(compgen -d -- "$cur") )
+    init|new)
+      COMPREPLY=( $(compgen -W "--no-register --type --unsafe-paths --reviewer --no-ai-review --no-review --review-assist --no-review-assist --review-autofix --no-review-autofix --local-review-command" -- "$cur") )
       ;;
     update)
       COMPREPLY=( $(compgen -W "--dry-run --check --branch" -- "$cur") )
       ;;
     sync)
-      COMPREPLY=( $(compgen -W "--pull-first" -- "$cur") )
+      COMPREPLY=( $(compgen -W "--pull-first --check --dry-run" -- "$cur") )
       ;;
     unregister)
       if [ -f "$HOME/.toolkit-projects" ]; then

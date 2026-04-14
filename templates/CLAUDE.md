@@ -20,7 +20,7 @@
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
 2. **Branch.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`.
 3. **Change + commit.** Make the code change, stage explicit file paths, commit with a concise message.
-4. **Ship.** `bash scripts/open-pr.sh --auto-merge` — pushes, creates the PR, runs Codex review, squash-merges, and syncs the default branch in one step.
+4. **Ship.** `bash scripts/open-pr.sh --auto-merge` — pushes, creates the PR, runs AI review, squash-merges, and syncs the default branch in one step.
 5. **Clean up.** `git branch -D <feature-branch>` if it still exists locally.
 
 ### Housekeeping

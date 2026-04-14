@@ -92,16 +92,138 @@ brew_install_if_missing "shellcheck" "shellcheck"
 brew_install_if_missing "shfmt"      "shfmt"
 
 # --------------------------------------------------------------------------
-# 4. Codex CLI (npm, optional but recommended)
+# 4. AI reviewer CLI (optional)
 # --------------------------------------------------------------------------
-info "Checking Codex CLI"
-if command -v codex >/dev/null 2>&1; then
-  ok "codex installed"
-elif command -v npm >/dev/null 2>&1; then
-  warn "Installing codex CLI..."
-  npm install -g @openai/codex 2>/dev/null && ok "codex installed" || warn "codex install failed (optional — install manually: npm install -g @openai/codex)"
+info "Checking AI reviewer"
+
+AI_REVIEW_ENABLED=true
+AI_REVIEWERS=()
+AI_LOCAL_REVIEW_COMMAND=""
+
+trim_review_value() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  value="${value%,}"
+  value="${value#\"}"; value="${value%\"}"
+  value="${value#\'}"; value="${value%\'}"
+  printf '%s' "$value"
+}
+
+add_reviewers_from_csv() {
+  local csv="$1" item
+  local -a items=()
+  csv="${csv#\[}"
+  csv="${csv%\]}"
+  IFS=',' read -r -a items <<< "$csv"
+  for item in "${items[@]}"; do
+    item="$(trim_review_value "$item")"
+    [ -n "$item" ] && AI_REVIEWERS+=("$item")
+  done
+}
+
+load_ai_review_config() {
+  local section="" line key value
+
+  [ -f ".codex-review.toml" ] || {
+    AI_REVIEWERS=("codex")
+    return 0
+  }
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    line="$(trim_review_value "$line")"
+    [ -z "$line" ] && continue
+
+    case "$line" in
+      \[*\])
+        section="${line#\[}"
+        section="${section%\]}"
+        continue
+        ;;
+    esac
+
+    case "$line" in *=*) ;; *) continue ;; esac
+    key="$(trim_review_value "${line%%=*}")"
+    value="$(trim_review_value "${line#*=}")"
+
+    if [ "$section" = "review" ]; then
+      case "$key" in
+        enabled) AI_REVIEW_ENABLED="$value" ;;
+        reviewers) add_reviewers_from_csv "${line#*=}" ;;
+      esac
+    elif [ "$section" = "review.local" ]; then
+      case "$key" in
+        command) AI_LOCAL_REVIEW_COMMAND="$value" ;;
+      esac
+    fi
+  done < ".codex-review.toml"
+
+  if [ "${#AI_REVIEWERS[@]}" -eq 0 ] && [ "$AI_REVIEW_ENABLED" != "false" ]; then
+    AI_REVIEWERS=("codex")
+  fi
+}
+
+check_ai_reviewer() {
+  local reviewer="$1"
+
+  case "$reviewer" in
+    codex)
+      if command -v codex >/dev/null 2>&1; then
+        if codex login status >/dev/null 2>&1; then
+          ok "codex installed and authenticated"
+        else
+          warn "codex installed but not logged in. Run: codex login"
+        fi
+      elif command -v npm >/dev/null 2>&1; then
+        warn "Installing Codex CLI..."
+        npm install -g @openai/codex 2>/dev/null && ok "codex installed — run: codex login" || warn "codex install failed. Manual install: npm install -g @openai/codex"
+      else
+        warn "codex not installed. Install Node.js/npm first, then: npm install -g @openai/codex && codex login"
+      fi
+      ;;
+    claude)
+      if command -v claude >/dev/null 2>&1; then
+        if claude auth status >/dev/null 2>&1; then
+          ok "claude installed and authenticated"
+        else
+          warn "claude installed but auth check failed. Authenticate Claude before relying on review."
+        fi
+      else
+        warn "claude reviewer selected, but Claude CLI is not installed."
+      fi
+      ;;
+    gemini)
+      if command -v gemini >/dev/null 2>&1; then
+        if [ -n "${GEMINI_API_KEY:-}" ] || { command -v gcloud >/dev/null 2>&1 && gcloud auth print-access-token >/dev/null 2>&1; }; then
+          ok "gemini installed and authenticated"
+        else
+          warn "gemini installed but auth is not configured. Set GEMINI_API_KEY or authenticate gcloud."
+        fi
+      else
+        warn "gemini reviewer selected, but Gemini CLI is not installed."
+      fi
+      ;;
+    local)
+      if [ -n "$AI_LOCAL_REVIEW_COMMAND" ]; then
+        ok "local reviewer configured: $AI_LOCAL_REVIEW_COMMAND"
+      else
+        warn "local reviewer selected, but [review.local].command is empty in .codex-review.toml"
+      fi
+      ;;
+    *)
+      warn "unknown AI reviewer '$reviewer' in .codex-review.toml"
+      ;;
+  esac
+}
+
+load_ai_review_config
+if [ "$AI_REVIEW_ENABLED" = "false" ]; then
+  ok "AI review disabled in .codex-review.toml"
 else
-  warn "codex not installed (requires npm). Install Node.js first, then: npm install -g @openai/codex"
+  for reviewer in "${AI_REVIEWERS[@]}"; do
+    check_ai_reviewer "$reviewer"
+  done
 fi
 
 # --------------------------------------------------------------------------

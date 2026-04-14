@@ -52,6 +52,8 @@ PROJECT_EXISTING_CONFIG="$TEST_DIR/test-project-existing-config"
 PROJECT_INIT_EXISTING_SETUP="$TEST_DIR/test-project-init-existing-setup"
 PROJECT_NODE="$TEST_DIR/test-project-node"
 PROJECT_PYTHON="$TEST_DIR/test-project-python"
+PROJECT_REVIEW_NONE="$TEST_DIR/test-project-review-none"
+PROJECT_REVIEW_LOCAL="$TEST_DIR/test-project-review-local"
 
 # Git repo
 assert_exists "$PROJECT/.git"
@@ -110,6 +112,7 @@ assert_contains "$PROJECT/CLAUDE.md" "@principles/"
 # Help flags should print usage instead of bootstrapping a project named --help.
 if (cd "$TEST_DIR" && bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" --help) >"$TEST_DIR/new-project-help.txt" 2>&1; then
   assert_contains "$TEST_DIR/new-project-help.txt" 'unsafe-paths'
+  assert_contains "$TEST_DIR/new-project-help.txt" 'reviewer codex|claude|gemini|local|auto|none'
   assert_contains "$TEST_DIR/new-project-help.txt" 'node|python|swift|rust|go|generic|auto'
 else
   echo "FAIL: expected new-project.sh --help to succeed" >&2
@@ -122,6 +125,7 @@ fi
 
 if TOOLKIT_NO_AUTO_UPDATE=1 "$TOOLKIT_ROOT/bin/toolkit" init --help >"$TEST_DIR/toolkit-init-help.txt" 2>&1; then
   assert_contains "$TEST_DIR/toolkit-init-help.txt" 'Usage: toolkit init'
+  assert_contains "$TEST_DIR/toolkit-init-help.txt" 'reviewer codex|claude|gemini|local|auto|none'
   assert_contains "$TEST_DIR/toolkit-init-help.txt" 'node|python|swift|rust|go|generic|auto'
 else
   echo "FAIL: expected toolkit init --help to succeed" >&2
@@ -176,6 +180,23 @@ if grep -q 'src/auth' "$PROJECT_EXISTING_CONFIG/.codex-review.toml"; then
   echo "FAIL: expected existing .codex-review.toml unsafe_paths to remain unchanged" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+# Bootstrap should let users opt out of AI review explicitly.
+bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_NONE" --no-register --no-ai-review
+assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^mode = "review-only"$'
+assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^safe_by_default = false$'
+assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^enabled = false$'
+assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^reviewers = \[\]$'
+
+# Bootstrap should support local model reviewer commands.
+bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_LOCAL" --no-register --reviewer local --local-review-command "local-reviewer --model demo" --review-assist --review-autofix --unsafe-paths "src/auth/"
+assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^mode = "fix"$'
+assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^safe_by_default = true$'
+assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^enabled = true$'
+assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^reviewers = \["local"\]$'
+assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^\[review.local\]$'
+assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^command = "local-reviewer --model demo"$'
+assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '"src/auth/",'
 
 # toolkit init must not run a pre-existing project setup.sh after preserving it.
 mkdir -p "$PROJECT_INIT_EXISTING_SETUP"
