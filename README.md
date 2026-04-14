@@ -116,6 +116,7 @@ bash setup.sh --deps-only
 | `toolkit version` | Show installed version and install method |
 | `toolkit changelog [N]` | Show the last N GitHub releases |
 | `toolkit doctor` | Health check — version, tools, project staleness |
+| `toolkit skills` | List Claude Code skills visible to the current repo and user |
 
 ## How it works
 
@@ -187,6 +188,14 @@ Automatically reviews code before it reaches the default branch:
 
 Configure per-project behavior in `.codex-review.toml`. Write your review rubric in `AGENTS.md`. See [hooks/README.md](hooks/README.md) for reviewer modes, peer assistance, caching, and fail-open behavior.
 
+### Claude Code Skills
+
+Toolkit owns project-level Claude Code skills under `.claude/skills/` for Toolkit maintenance work:
+- `toolkit-audit` — audits Toolkit itself against its principles and current AI-tooling practices.
+- `memory-audit` — checks Claude Code memory for stale commands, dead paths, duplicate facts, and unsourced volatile guidance.
+
+Run `toolkit skills` to list visible project and user skills, and `toolkit skills check` to validate their frontmatter.
+
 ### Helper scripts
 
 - **open-pr.sh** — `git push` + `gh pr create` with your PR template. Idempotent.
@@ -197,6 +206,7 @@ Configure per-project behavior in `.codex-review.toml`. Write your review rubric
 
 ```
 toolkit/
+├── .claude/        # Claude Code project skills for Toolkit maintenance
 ├── bin/             # toolkit CLI entrypoint
 ├── lib/             # shared libraries
 ├── principles/      # universal engineering docs

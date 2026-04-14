@@ -28,6 +28,13 @@ You are maintaining a shared engineering platform that provides universal princi
 - Concise commit messages. Logically grouped changes.
 - Run `/compact` at ~50% context. Start fresh sessions for unrelated work.
 
+### Memory Hygiene
+
+- Treat Claude Code memory as cached guidance, not canonical truth. Before relying on a remembered command, flag, path, version, or workflow, verify it against this repo.
+- Do not write memory for facts that are cheap to derive from `README.md`, `CLAUDE.md`, `AGENTS.md`, `VERSION`, `bin/toolkit --help`, or the scripts themselves.
+- If you write memory that mentions a command, flag, file path, version, release process, or "current/primary" workflow, include the date (`YYYY-MM-DD`) and the canonical source checked.
+- If memory conflicts with the repo, follow the repo and ask to audit or update the stale memory. Use the `memory-audit` skill when the user asks to clean or verify Claude memory.
+
 ## Toolkit-Specific Principles
 
 - **Changes propagate.** Every file in `principles/`, `hooks/`, and `scripts/` gets copied into downstream projects by `update-project.sh`. Updates must happen on a clean git worktree and land as a `chore/toolkit-*` branch commit, not as orphaned dirty files. Test changes here before syncing.

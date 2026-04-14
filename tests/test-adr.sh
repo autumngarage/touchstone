@@ -8,6 +8,15 @@ TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t toolkit-test-adr.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
+ERRORS=0
+
+assert_contains() {
+  if ! grep -q "$2" "$1" 2>/dev/null; then
+    echo "FAIL: expected $1 to contain '$2'" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+}
+
 echo "==> Test: create ADR with slash in title"
 
 PROJECT_DIR="$TEST_DIR/project"
@@ -29,9 +38,37 @@ if grep -q '^# ADR-0001: Auth/API contract$' "$ADR_FILE" \
   && ! grep -q 'TITLE' "$ADR_FILE" \
   && ! grep -q '\*\*Date:\*\* DATE' "$ADR_FILE"; then
   echo "==> PASS: ADR placeholders were replaced correctly"
-  exit 0
+else
+  echo "FAIL: ADR file still contains unresolved placeholders or wrong title" >&2
+  sed -n '1,12p' "$ADR_FILE" >&2
+  ERRORS=$((ERRORS + 1))
 fi
 
-echo "FAIL: ADR file still contains unresolved placeholders or wrong title" >&2
-sed -n '1,12p' "$ADR_FILE" >&2
-exit 1
+echo "==> Test: project Claude skills are discoverable and valid"
+
+SKILLS_HOME="$TEST_DIR/home"
+mkdir -p "$SKILLS_HOME"
+
+(
+  cd "$TOOLKIT_ROOT"
+  HOME="$SKILLS_HOME" TOOLKIT_NO_AUTO_UPDATE=1 "$TOOLKIT_ROOT/bin/toolkit" skills
+) > "$TEST_DIR/skills-list.txt"
+
+assert_contains "$TEST_DIR/skills-list.txt" 'toolkit-audit'
+assert_contains "$TEST_DIR/skills-list.txt" 'memory-audit'
+
+(
+  cd "$TOOLKIT_ROOT"
+  HOME="$SKILLS_HOME" TOOLKIT_NO_AUTO_UPDATE=1 "$TOOLKIT_ROOT/bin/toolkit" skills check
+) > "$TEST_DIR/skills-check.txt"
+
+assert_contains "$TEST_DIR/skills-check.txt" 'All 2 skills valid'
+
+echo ""
+if [ "$ERRORS" -eq 0 ]; then
+  echo "==> PASS: all assertions passed"
+  exit 0
+else
+  echo "==> FAIL: $ERRORS assertion(s) failed"
+  exit 1
+fi
