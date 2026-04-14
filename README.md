@@ -72,7 +72,17 @@ If you choose Codex and it is not installed yet:
 npm install -g @openai/codex && codex login
 ```
 
-For local models, choose `local` and enter a command that reads the review prompt from stdin. You can keep using toolkit without any AI reviewer; the hook skips itself when review is disabled or no configured reviewer is available.
+For local models, choose `local` during the interactive setup and enter a command that reads the review prompt from stdin, such as an Ollama or LM Studio wrapper. For scripted setup, pass `--local-review-command '<command>'` with `--reviewer local`. You can keep using Toolkit without any AI reviewer; the hook skips itself when review is disabled or no configured reviewer is available.
+
+Useful shortcuts:
+
+```bash
+# Add Toolkit with AI review disabled
+toolkit init --no-ai-review
+
+# Add Toolkit and use a local reviewer command
+toolkit init --reviewer local --local-review-command 'ollama run MODEL'
+```
 
 ## Everyday Commands
 
@@ -98,8 +108,12 @@ bash setup.sh --deps-only
 | Command | What it does |
 |---------|-------------|
 | `toolkit init [--no-setup]` | Add toolkit to the current project |
+| `toolkit init --reviewer local --local-review-command '<command>'` | Add toolkit with a local reviewer command |
+| `toolkit init --no-ai-review` | Add toolkit with AI review disabled |
 | `toolkit new <dir>` | Bootstrap a new project with principles, scripts, hooks, and templates |
 | `toolkit new <dir> --type node` | Bootstrap with an explicit Node/TypeScript, Swift, Rust, Go, Python, or generic profile |
+| `toolkit new <dir> --reviewer local --local-review-command '<command>'` | Bootstrap a new project with a local reviewer command |
+| `toolkit new <dir> --no-ai-review` | Bootstrap a new project with AI review disabled |
 | `toolkit detect` | Show the detected project profile for the current repo |
 | `toolkit run <task>` | Run profile-aware `lint`, `typecheck`, `build`, `test`, or `validate` |
 | `toolkit update` | Create a branch and commit that updates the current project's toolkit-owned files |
@@ -112,11 +126,14 @@ bash setup.sh --deps-only
 | `toolkit adr "Title"` | Create an Architecture Decision Record |
 | `toolkit adr list` | List project ADRs |
 | `toolkit list` | Show registered projects |
+| `toolkit unregister <name>` | Remove a project from the registry |
 | `toolkit status` | Dashboard of registered project health |
 | `toolkit version` | Show installed version and install method |
 | `toolkit changelog [N]` | Show the last N GitHub releases |
 | `toolkit doctor` | Health check — version, tools, project staleness |
 | `toolkit skills` | List Claude Code skills visible to the current repo and user |
+| `toolkit skills check` | Validate Claude Code skill frontmatter |
+| `toolkit release [--patch]` | Cut a Toolkit release; maintainers only |
 
 ## How it works
 
@@ -190,7 +207,7 @@ Configure per-project behavior in `.codex-review.toml`. Write your review rubric
 
 ### Claude Code Skills
 
-Toolkit owns project-level Claude Code skills under `.claude/skills/` for Toolkit maintenance work:
+Toolkit owns Claude Code project skills under `.claude/skills/` for Toolkit maintenance work. These are part of this repo, not files that Toolkit copies into every downstream project:
 - `toolkit-audit` — audits Toolkit itself against its principles and current AI-tooling practices.
 - `memory-audit` — checks Claude Code memory for stale commands, dead paths, duplicate facts, and unsourced volatile guidance.
 
@@ -217,9 +234,9 @@ toolkit/
 └── tests/           # self-tests
 ```
 
-## For contributors / friends
+## Contributors
 
-Install, bootstrap a project, and start using the principles and scripts. If you have ideas for new principles or improvements to the scripts, PRs welcome.
+Install Toolkit, bootstrap a project, and open a PR for improvements to principles, templates, scripts, hooks, or skills.
 
 ## License
 
