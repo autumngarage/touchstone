@@ -14,7 +14,8 @@
 #
 # Reviewer cascade:
 #   The [review] section in .codex-review.toml lists reviewers to try in order.
-#   The first reviewer that is installed and authenticated wins.
+#   The optional [review.routing] section can choose a different reviewer list
+#   for small vs larger diffs. The first installed/authenticated reviewer wins.
 #   If no [review] section exists, defaults to ["codex"] (backward compatible).
 #
 # Configuration:
@@ -84,6 +85,11 @@ UNSAFE_PATHS=""
 REVIEWER_CASCADE=()
 LOCAL_REVIEWER_COMMAND="${TOOLKIT_LOCAL_REVIEWER_COMMAND:-}"
 LOCAL_REVIEWER_AUTH_COMMAND="${TOOLKIT_LOCAL_REVIEWER_AUTH_COMMAND:-}"
+ROUTING_ENABLED=false
+ROUTING_SMALL_MAX_DIFF_LINES=400
+ROUTING_SMALL_REVIEWERS=()
+ROUTING_LARGE_REVIEWERS=()
+ROUTING_DECISION="default"
 ASSIST_ENABLED="${CODEX_REVIEW_ASSIST:-false}"
 ASSIST_TIMEOUT="${CODEX_REVIEW_ASSIST_TIMEOUT:-60}"
 ASSIST_MAX_ROUNDS="${CODEX_REVIEW_ASSIST_MAX_ROUNDS:-1}"
@@ -199,6 +205,52 @@ append_reviewers_csv() {
   done
 }
 
+append_routing_small_reviewer() {
+  local value="$1"
+  value="$(trim "$value")"
+  value="${value%,}"
+  value="$(trim "$value")"
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
+  [ -z "$value" ] && return
+  ROUTING_SMALL_REVIEWERS+=("$value")
+}
+
+append_routing_small_reviewers_csv() {
+  local csv="$1" item
+  local -a items=()
+  [ -n "$csv" ] || return 0
+  IFS=',' read -r -a items <<< "$csv"
+  for item in "${items[@]}"; do
+    append_routing_small_reviewer "$item"
+  done
+}
+
+append_routing_large_reviewer() {
+  local value="$1"
+  value="$(trim "$value")"
+  value="${value%,}"
+  value="$(trim "$value")"
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
+  [ -z "$value" ] && return
+  ROUTING_LARGE_REVIEWERS+=("$value")
+}
+
+append_routing_large_reviewers_csv() {
+  local csv="$1" item
+  local -a items=()
+  [ -n "$csv" ] || return 0
+  IFS=',' read -r -a items <<< "$csv"
+  for item in "${items[@]}"; do
+    append_routing_large_reviewer "$item"
+  done
+}
+
 append_assist_helper() {
   local value="$1"
   value="$(trim "$value")"
@@ -260,6 +312,8 @@ is_truthy() {
 if [ -f "$CONFIG_FILE" ]; then
   IN_UNSAFE_PATHS=false
   IN_REVIEWERS=false
+  IN_ROUTING_SMALL_REVIEWERS=false
+  IN_ROUTING_LARGE_REVIEWERS=false
   IN_ASSIST_HELPERS=false
   CURRENT_SECTION=""
   while IFS= read -r raw_line || [ -n "$raw_line" ]; do
@@ -271,6 +325,8 @@ if [ -f "$CONFIG_FILE" ]; then
     if [[ "$line" == "["*"]" ]]; then
       IN_UNSAFE_PATHS=false
       IN_REVIEWERS=false
+      IN_ROUTING_SMALL_REVIEWERS=false
+      IN_ROUTING_LARGE_REVIEWERS=false
       IN_ASSIST_HELPERS=false
       CURRENT_SECTION="${line#\[}"
       CURRENT_SECTION="${CURRENT_SECTION%\]}"
@@ -297,6 +353,24 @@ if [ -f "$CONFIG_FILE" ]; then
       fi
       continue
     fi
+    if [ "$IN_ROUTING_SMALL_REVIEWERS" = true ]; then
+      if [[ "$line" == *"]"* ]]; then
+        append_routing_small_reviewers_csv "${line%%]*}"
+        IN_ROUTING_SMALL_REVIEWERS=false
+      else
+        append_routing_small_reviewer "$line"
+      fi
+      continue
+    fi
+    if [ "$IN_ROUTING_LARGE_REVIEWERS" = true ]; then
+      if [[ "$line" == *"]"* ]]; then
+        append_routing_large_reviewers_csv "${line%%]*}"
+        IN_ROUTING_LARGE_REVIEWERS=false
+      else
+        append_routing_large_reviewer "$line"
+      fi
+      continue
+    fi
     if [ "$IN_ASSIST_HELPERS" = true ]; then
       if [[ "$line" == *"]"* ]]; then
         append_assist_helpers_csv "${line%%]*}"
@@ -304,6 +378,39 @@ if [ -f "$CONFIG_FILE" ]; then
       else
         append_assist_helper "$line"
       fi
+      continue
+    fi
+
+    # Parse [review.routing] section keys.
+    if [ "$CURRENT_SECTION" = "review.routing" ]; then
+      case "$line" in
+        enabled*=*)
+          ROUTING_ENABLED="$(normalize_bool "${line#*=}")"
+          ;;
+        small_max_diff_lines*=*|small_diff_lines*=*)
+          ROUTING_SMALL_MAX_DIFF_LINES="$(trim "${line#*=}")"
+          ;;
+        small_reviewers*=*)
+          array_value="$(trim "${line#*=}")"
+          array_value="${array_value#\[}"
+          if [[ "$array_value" == *"]"* ]]; then
+            append_routing_small_reviewers_csv "${array_value%%]*}"
+          else
+            append_routing_small_reviewers_csv "$array_value"
+            IN_ROUTING_SMALL_REVIEWERS=true
+          fi
+          ;;
+        large_reviewers*=*)
+          array_value="$(trim "${line#*=}")"
+          array_value="${array_value#\[}"
+          if [[ "$array_value" == *"]"* ]]; then
+            append_routing_large_reviewers_csv "${array_value%%]*}"
+          else
+            append_routing_large_reviewers_csv "$array_value"
+            IN_ROUTING_LARGE_REVIEWERS=true
+          fi
+          ;;
+      esac
       continue
     fi
 
@@ -451,6 +558,7 @@ if [ "${#ASSIST_HELPERS[@]}" -eq 0 ]; then
 fi
 ASSIST_ENABLED="$(normalize_bool "$ASSIST_ENABLED")"
 REVIEW_ENABLED="$(normalize_bool "$REVIEW_ENABLED")"
+ROUTING_ENABLED="$(normalize_bool "$ROUTING_ENABLED")"
 
 # TOOLKIT_REVIEWER env var overrides the cascade with a single forced reviewer.
 if [ -n "${TOOLKIT_REVIEWER:-}" ]; then
@@ -806,6 +914,37 @@ resolve_assist_reviewer() {
   return 1
 }
 
+apply_review_routing() {
+  local diff_lines="$1"
+
+  is_truthy "$ROUTING_ENABLED" || return 0
+  [ -z "${TOOLKIT_REVIEWER:-}" ] || return 0
+
+  case "$ROUTING_SMALL_MAX_DIFF_LINES" in
+    ''|*[!0-9]*)
+      echo "WARNING: Invalid review.routing.small_max_diff_lines='$ROUTING_SMALL_MAX_DIFF_LINES' — ignoring routing." >&2
+      return 0
+      ;;
+  esac
+
+  if [ "${#ROUTING_SMALL_REVIEWERS[@]}" -eq 0 ]; then
+    ROUTING_SMALL_REVIEWERS=("local" "${REVIEWER_CASCADE[@]}")
+  fi
+  if [ "${#ROUTING_LARGE_REVIEWERS[@]}" -eq 0 ]; then
+    ROUTING_LARGE_REVIEWERS=("${REVIEWER_CASCADE[@]}")
+  fi
+
+  if [ "$diff_lines" -le "$ROUTING_SMALL_MAX_DIFF_LINES" ] 2>/dev/null; then
+    REVIEWER_CASCADE=("${ROUTING_SMALL_REVIEWERS[@]}")
+    ROUTING_DECISION="small"
+    echo "==> Review routing: small diff ($diff_lines <= $ROUTING_SMALL_MAX_DIFF_LINES) — trying: ${REVIEWER_CASCADE[*]}"
+  else
+    REVIEWER_CASCADE=("${ROUTING_LARGE_REVIEWERS[@]}")
+    ROUTING_DECISION="large"
+    echo "==> Review routing: larger diff ($diff_lines > $ROUTING_SMALL_MAX_DIFF_LINES) — trying: ${REVIEWER_CASCADE[*]}"
+  fi
+}
+
 run_reviewer() {
   "reviewer_${ACTIVE_REVIEWER}_exec" "$1"
 }
@@ -929,24 +1068,6 @@ if ! is_truthy "$REVIEW_ENABLED"; then
   exit 0
 fi
 
-# Resolve which reviewer to use from the cascade.
-if ! resolve_reviewer; then
-  if [ -n "${TOOLKIT_REVIEWER:-}" ]; then
-    echo "ERROR: TOOLKIT_REVIEWER=$TOOLKIT_REVIEWER but that reviewer is not available:" >&2
-    printf '%b' "$REVIEWER_STATUS" >&2
-    exit 1
-  fi
-  echo "==> No reviewer available — skipping review."
-  printf '%b' "$REVIEWER_STATUS"
-  echo "    Install at least one: codex, claude, or gemini CLI; or configure [review.local].command."
-  exit 0
-fi
-REVIEWER_LABEL="$(reviewer_label)"
-echo "==> Using reviewer: $REVIEWER_LABEL"
-if [ -n "$REVIEW_CONTEXT_FILE" ]; then
-  echo "==> Review context: $(basename "$REVIEW_CONTEXT_FILE")"
-fi
-
 # Fetch latest base ref for the default review target (silent on failure —
 # offline, rebasing, etc.). If CODEX_REVIEW_BASE is set, trust the caller.
 if [ -z "${CODEX_REVIEW_BASE:-}" ]; then
@@ -968,6 +1089,27 @@ fi
 WORKTREE_DIRTY_BEFORE_REVIEW=false
 if [ -n "$(git status --porcelain)" ]; then
   WORKTREE_DIRTY_BEFORE_REVIEW=true
+fi
+
+ROUTING_DIFF_LINE_COUNT="$(git diff "$MERGE_BASE"..HEAD | wc -l | tr -d ' ')"
+apply_review_routing "$ROUTING_DIFF_LINE_COUNT"
+
+# Resolve which reviewer to use from the cascade.
+if ! resolve_reviewer; then
+  if [ -n "${TOOLKIT_REVIEWER:-}" ]; then
+    echo "ERROR: TOOLKIT_REVIEWER=$TOOLKIT_REVIEWER but that reviewer is not available:" >&2
+    printf '%b' "$REVIEWER_STATUS" >&2
+    exit 1
+  fi
+  echo "==> No reviewer available — skipping review."
+  printf '%b' "$REVIEWER_STATUS"
+  echo "    Install at least one: codex, claude, or gemini CLI; or configure [review.local].command."
+  exit 0
+fi
+REVIEWER_LABEL="$(reviewer_label)"
+echo "==> Using reviewer: $REVIEWER_LABEL"
+if [ -n "$REVIEW_CONTEXT_FILE" ]; then
+  echo "==> Review context: $(basename "$REVIEW_CONTEXT_FILE")"
 fi
 
 # --------------------------------------------------------------------------
@@ -1065,6 +1207,7 @@ review_cache_key() {
   {
     printf 'toolkit-codex-review-cache-v2\n'
     printf 'reviewer=%s\n' "$ACTIVE_REVIEWER"
+    printf 'review_route=%s\n' "$ROUTING_DECISION"
     printf 'review_enabled=%s\n' "$REVIEW_ENABLED"
     printf 'local_reviewer_command=%s\n' "$LOCAL_REVIEWER_COMMAND"
     printf 'base=%s\n' "$BASE"
@@ -1370,6 +1513,9 @@ print_summary() {
 
   printf "\n  ${C_DIM}─── review summary ────────────────────────${C_RESET}\n"
   printf "  ${C_DIM}reviewer:       %s${C_RESET}\n" "$REVIEWER_LABEL"
+  if [ "$ROUTING_DECISION" != "default" ]; then
+    printf "  ${C_DIM}route:          %s${C_RESET}\n" "$ROUTING_DECISION"
+  fi
   printf "  ${C_DIM}mode:           %s${C_RESET}\n" "$REVIEW_MODE"
   printf "  ${C_DIM}files:          %s${C_RESET}\n" "$REVIEW_FILES_INSPECTED"
   printf "  ${C_DIM}diff lines:     %s${C_RESET}\n" "$DIFF_LINE_COUNT"
@@ -1382,8 +1528,8 @@ print_summary() {
   printf "  ${C_DIM}──────────────────────────────────────────${C_RESET}\n"
 
   if [ -n "${CODEX_REVIEW_SUMMARY_FILE:-}" ]; then
-    printf '{"reviewer":"%s","mode":"%s","files":%d,"diff_lines":%d,"iterations":%d,"fix_commits":%d,"peer_assists":%d,"findings":%d,"exit_reason":"%s","elapsed_seconds":%d}\n' \
-      "$REVIEWER_LABEL" "$REVIEW_MODE" "$REVIEW_FILES_INSPECTED" "$DIFF_LINE_COUNT" \
+    printf '{"reviewer":"%s","route":"%s","mode":"%s","files":%d,"diff_lines":%d,"iterations":%d,"fix_commits":%d,"peer_assists":%d,"findings":%d,"exit_reason":"%s","elapsed_seconds":%d}\n' \
+      "$REVIEWER_LABEL" "$ROUTING_DECISION" "$REVIEW_MODE" "$REVIEW_FILES_INSPECTED" "$DIFF_LINE_COUNT" \
       "${iter:-0}" "$FIX_COMMITS" "$ASSIST_ROUNDS" "$findings" "$REVIEW_EXIT_REASON" "$elapsed" \
       > "$CODEX_REVIEW_SUMMARY_FILE" 2>/dev/null || true
   fi

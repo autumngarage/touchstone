@@ -592,6 +592,110 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: review routing sends small diffs to local reviewer"
+setup_cascade_repo
+{
+  printf '[codex_review]\nsafe_by_default = true\n'
+  printf '[review]\nreviewers = ["codex"]\n'
+  printf '[review.routing]\nenabled = true\nsmall_max_diff_lines = 9999\n'
+  printf 'small_reviewers = ["local", "codex"]\nlarge_reviewers = ["codex"]\n'
+  printf '[review.local]\ncommand = "local-reviewer"\n'
+} > "$CASCADE_REPO/.codex-review.toml"
+git -C "$CASCADE_REPO" add .codex-review.toml
+git -C "$CASCADE_REPO" commit -m "routing config" >/dev/null 2>&1
+
+rm -rf "$CASCADE_BIN"
+mkdir -p "$CASCADE_BIN"
+cat > "$CASCADE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat > "$CASCADE_BIN/local-reviewer" <<'LREOF'
+#!/usr/bin/env bash
+printf '%s\n' "local-called" >> "$CASCADE_CALLS"
+printf 'CODEX_REVIEW_CLEAN\n'
+LREOF
+cat > "$CASCADE_BIN/codex" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/local-reviewer" "$CASCADE_BIN/codex"
+: > "$CASCADE_CALLS"
+
+(
+  cd "$CASCADE_REPO"
+  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CASCADE_CALLS="$CASCADE_CALLS" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+)
+
+if grep -q 'local-called' "$CASCADE_CALLS" \
+  && ! grep -q 'codex-called' "$CASCADE_CALLS" \
+  && grep -q 'Review routing: small diff' "$CASCADE_OUTPUT"; then
+  echo "==> PASS: review routing selected local reviewer for small diff"
+else
+  echo "FAIL: expected small diff routing to select local reviewer" >&2
+  cat "$CASCADE_CALLS" >&2
+  cat "$CASCADE_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: review routing sends larger diffs to hosted reviewer"
+setup_cascade_repo
+{
+  printf '[codex_review]\nsafe_by_default = true\n'
+  printf '[review]\nreviewers = ["local", "codex"]\n'
+  printf '[review.routing]\nenabled = true\nsmall_max_diff_lines = 1\n'
+  printf 'small_reviewers = ["local"]\nlarge_reviewers = ["codex"]\n'
+  printf '[review.local]\ncommand = "local-reviewer"\n'
+} > "$CASCADE_REPO/.codex-review.toml"
+git -C "$CASCADE_REPO" add .codex-review.toml
+git -C "$CASCADE_REPO" commit -m "routing config" >/dev/null 2>&1
+
+rm -rf "$CASCADE_BIN"
+mkdir -p "$CASCADE_BIN"
+cat > "$CASCADE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat > "$CASCADE_BIN/local-reviewer" <<'LREOF'
+#!/usr/bin/env bash
+printf '%s\n' "local-called" >> "$CASCADE_CALLS"
+printf 'CODEX_REVIEW_CLEAN\n'
+LREOF
+cat > "$CASCADE_BIN/codex" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/local-reviewer" "$CASCADE_BIN/codex"
+: > "$CASCADE_CALLS"
+
+(
+  cd "$CASCADE_REPO"
+  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CASCADE_CALLS="$CASCADE_CALLS" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+)
+
+if grep -q 'codex-called' "$CASCADE_CALLS" \
+  && ! grep -q 'local-called' "$CASCADE_CALLS" \
+  && grep -q 'Review routing: larger diff' "$CASCADE_OUTPUT"; then
+  echo "==> PASS: review routing selected hosted reviewer for larger diff"
+else
+  echo "FAIL: expected larger diff routing to select hosted reviewer" >&2
+  cat "$CASCADE_CALLS" >&2
+  cat "$CASCADE_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: TOOLKIT_REVIEWER forces a specific reviewer"
 setup_cascade_repo
 {

@@ -23,6 +23,8 @@ warn()  { printf "  ${YELLOW}!${RESET} %s\n" "$*"; }
 fail()  { printf "  ${RED}✗${RESET} %s\n" "$*"; }
 
 DEPS_ONLY=false
+GIT_WORKFLOW="git"
+GITBUTLER_MCP="false"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -35,12 +37,74 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+trim_config_value() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  value="${value%,}"
+  value="${value#\"}"; value="${value%\"}"
+  value="${value#\'}"; value="${value%\'}"
+  printf '%s' "$value"
+}
+
+truthy() {
+  case "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" in
+    true|1|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+prompt_yes_no() {
+  local prompt="$1"
+  local default="${2:-false}"
+  local suffix answer
+
+  if [ "$default" = "true" ]; then
+    suffix="[Y/n]"
+  else
+    suffix="[y/N]"
+  fi
+
+  read -r -p "   $prompt $suffix: " answer
+  answer="$(trim_config_value "$answer")"
+  if [ -z "$answer" ]; then
+    answer="$default"
+  fi
+
+  case "$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]')" in
+    y|yes|true|1|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+load_toolkit_config() {
+  local line key value
+
+  [ -f ".toolkit-config" ] || return 0
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="$(trim_config_value "$line")"
+    [ -z "$line" ] && continue
+    case "$line" in \#*) continue ;; esac
+    case "$line" in *=*) ;; *) continue ;; esac
+
+    key="$(trim_config_value "${line%%=*}")"
+    value="$(trim_config_value "${line#*=}")"
+
+    case "$key" in
+      git_workflow) GIT_WORKFLOW="$value" ;;
+      gitbutler_mcp) GITBUTLER_MCP="$value" ;;
+    esac
+  done < ".toolkit-config"
+}
+
 PROJECT_NAME="$(basename "$(pwd)")"
 echo ""
 printf "${BOLD}Setting up ${PROJECT_NAME}${RESET}\n"
 echo ""
 
 if [ "$DEPS_ONLY" = false ]; then
+load_toolkit_config
 
 # --------------------------------------------------------------------------
 # 1. Homebrew (required foundation)
@@ -98,7 +162,10 @@ info "Checking AI reviewer"
 
 AI_REVIEW_ENABLED=true
 AI_REVIEWERS=()
+AI_REVIEWERS_CHECKED=""
 AI_LOCAL_REVIEW_COMMAND=""
+AI_REVIEW_ROUTING_ENABLED=false
+AI_REVIEW_ROUTING_SMALL_MAX=400
 
 trim_review_value() {
   local value="$1"
@@ -153,6 +220,12 @@ load_ai_review_config() {
         enabled) AI_REVIEW_ENABLED="$value" ;;
         reviewers) add_reviewers_from_csv "${line#*=}" ;;
       esac
+    elif [ "$section" = "review.routing" ]; then
+      case "$key" in
+        enabled) AI_REVIEW_ROUTING_ENABLED="$value" ;;
+        small_max_diff_lines|small_diff_lines) AI_REVIEW_ROUTING_SMALL_MAX="$value" ;;
+        small_reviewers|large_reviewers) add_reviewers_from_csv "${line#*=}" ;;
+      esac
     elif [ "$section" = "review.local" ]; then
       case "$key" in
         command) AI_LOCAL_REVIEW_COMMAND="$value" ;;
@@ -167,6 +240,11 @@ load_ai_review_config() {
 
 check_ai_reviewer() {
   local reviewer="$1"
+
+  case " $AI_REVIEWERS_CHECKED " in
+    *" $reviewer "*) return 0 ;;
+  esac
+  AI_REVIEWERS_CHECKED="$AI_REVIEWERS_CHECKED $reviewer"
 
   case "$reviewer" in
     codex)
@@ -222,13 +300,97 @@ load_ai_review_config
 if [ "$AI_REVIEW_ENABLED" = "false" ]; then
   ok "AI review disabled in .codex-review.toml"
 else
+  if truthy "$AI_REVIEW_ROUTING_ENABLED"; then
+    ok "review routing enabled — local/small-diff routes can use <= ${AI_REVIEW_ROUTING_SMALL_MAX} diff lines"
+  fi
   for reviewer in "${AI_REVIEWERS[@]}"; do
     check_ai_reviewer "$reviewer"
   done
 fi
 
 # --------------------------------------------------------------------------
-# 5. Sync toolkit files to latest
+# 5. Git workflow helpers (optional)
+# --------------------------------------------------------------------------
+info "Checking Git workflow"
+
+install_gitbutler_cli() {
+  local installer install_status
+
+  if ! command -v curl >/dev/null 2>&1; then
+    warn "curl is required for the official GitButler installer."
+    return 1
+  fi
+
+  installer="$(mktemp -t gitbutler-install.XXXXXX)"
+  if curl -fsSL https://gitbutler.com/install.sh -o "$installer"; then
+    sh "$installer"
+    install_status=$?
+    rm -f "$installer"
+    return "$install_status"
+  else
+    rm -f "$installer"
+    return 1
+  fi
+}
+
+configure_gitbutler_mcp() {
+  if ! truthy "$GITBUTLER_MCP"; then
+    return 0
+  fi
+
+  if ! command -v claude >/dev/null 2>&1; then
+    warn "GitButler MCP requested, but Claude Code is not installed. Later: claude mcp add gitbutler but mcp"
+    return 0
+  fi
+
+  if claude mcp list 2>/dev/null | grep -q '^gitbutler:'; then
+    ok "GitButler MCP already configured for Claude Code"
+    return 0
+  fi
+
+  warn "GitButler MCP lets AI agents ask GitButler to record branches/savepoints."
+  if [ -t 0 ] && prompt_yes_no "Add GitButler MCP to Claude Code now?" "false"; then
+    claude mcp add gitbutler but mcp >/dev/null 2>&1 && ok "GitButler MCP added" || warn "GitButler MCP setup failed. Later: claude mcp add gitbutler but mcp"
+  else
+    warn "Later: claude mcp add gitbutler but mcp"
+  fi
+}
+
+if [ "$GIT_WORKFLOW" = "gitbutler" ]; then
+  ok "GitButler selected — useful for stacked branches, parallel work, undo history, and AI-agent savepoints"
+  if command -v but >/dev/null 2>&1; then
+    ok "but installed"
+    if [ "$(git config --get toolkit.gitbutlerSetup 2>/dev/null || true)" = "configured" ]; then
+      ok "GitButler setup already recorded for this clone"
+    elif [ -t 0 ]; then
+      warn "Run 'but setup' once to let GitButler manage this repo. Undo later with: but teardown"
+      if prompt_yes_no "Run 'but setup' now?" "false"; then
+        if but setup; then
+          git config toolkit.gitbutlerSetup configured
+          ok "GitButler repo setup complete"
+        else
+          warn "GitButler setup failed. Later: but setup"
+        fi
+      else
+        warn "Later: but setup"
+      fi
+    else
+      warn "GitButler selected. Run once when ready: but setup"
+    fi
+    configure_gitbutler_mcp
+  else
+    warn "GitButler selected, but 'but' CLI is not installed."
+    warn "GitButler CLI install: curl -fsSL https://gitbutler.com/install.sh | sh"
+    if [ -t 0 ] && prompt_yes_no "Run the official GitButler CLI installer now?" "false"; then
+      install_gitbutler_cli && ok "GitButler installer finished" || warn "GitButler install failed"
+    fi
+  fi
+else
+  ok "plain Git workflow selected"
+fi
+
+# --------------------------------------------------------------------------
+# 6. Sync toolkit files to latest
 # --------------------------------------------------------------------------
 info "Syncing toolkit files"
 # Skip update if this IS the toolkit repo (it's the source, not a downstream project).
@@ -245,7 +407,7 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 6. Pre-commit hooks
+# 7. Pre-commit hooks
 # --------------------------------------------------------------------------
 info "Setting up git hooks"
 if [ -f ".pre-commit-config.yaml" ]; then
@@ -261,7 +423,7 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 7. gh CLI auth check
+# 8. gh CLI auth check
 # --------------------------------------------------------------------------
 info "Checking GitHub auth"
 if gh auth status 2>&1 | grep -q "Logged in"; then
@@ -273,7 +435,7 @@ fi
 fi
 
 # --------------------------------------------------------------------------
-# 8. Project dependencies
+# 9. Project dependencies
 # --------------------------------------------------------------------------
 info "Installing project dependencies"
 

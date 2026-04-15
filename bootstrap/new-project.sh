@@ -8,6 +8,8 @@
 #   new-project.sh <project-dir> --type node|python|swift|rust|go|generic|auto
 #   new-project.sh <project-dir> --unsafe-paths src/auth/,migrations/
 #   new-project.sh <project-dir> --reviewer codex|claude|gemini|local|auto|none
+#   new-project.sh <project-dir> --review-routing all-hosted|all-local|small-local
+#   new-project.sh <project-dir> --gitbutler
 #
 # What this does:
 #   1. Creates the directory if it doesn't exist, initializes git
@@ -29,10 +31,15 @@ INPUT_REVIEWER=""
 INPUT_REVIEW_ASSIST=""
 INPUT_REVIEW_AUTOFIX=""
 INPUT_LOCAL_REVIEW_COMMAND=""
+INPUT_REVIEW_ROUTING=""
+INPUT_SMALL_REVIEW_LINES=""
+INPUT_GIT_WORKFLOW=""
+INPUT_GITBUTLER_MCP=""
 REVIEW_CONFIG_REQUESTED=false
+WORKFLOW_CONFIG_REQUESTED=false
 
 usage() {
-  echo "Usage: $0 <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>]"
+  echo "Usage: $0 <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp]"
 }
 
 trim() {
@@ -143,6 +150,53 @@ normalize_reviewer() {
     *)
       echo "ERROR: unknown reviewer '$1' (expected codex, claude, gemini, local, auto, or none)" >&2
       return 1
+      ;;
+  esac
+}
+
+normalize_review_routing() {
+  local value="$1"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+
+  case "$value" in
+    ""|hosted|all|all-hosted|cloud|remote) printf 'all-hosted' ;;
+    local|all-local) printf 'all-local' ;;
+    hybrid|small-local|local-small|small-local-large-hosted) printf 'small-local' ;;
+    none|off|disabled|false) printf 'none' ;;
+    *)
+      echo "ERROR: unknown review routing '$1' (expected all-hosted, all-local, or small-local)" >&2
+      return 1
+      ;;
+  esac
+}
+
+normalize_git_workflow() {
+  local value="$1"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+
+  case "$value" in
+    ""|git|plain|standard|classic) printf 'git' ;;
+    gitbutler|butler|but) printf 'gitbutler' ;;
+    *)
+      echo "ERROR: unknown git workflow '$1' (expected git or gitbutler)" >&2
+      return 1
+      ;;
+  esac
+}
+
+normalize_positive_int() {
+  local value="$1"
+  case "$value" in
+    ''|*[!0-9]*)
+      echo "ERROR: expected a positive integer, got '$1'" >&2
+      return 1
+      ;;
+    *)
+      if [ "$value" -le 0 ] 2>/dev/null; then
+        echo "ERROR: expected a positive integer, got '$1'" >&2
+        return 1
+      fi
+      printf '%s' "$value"
       ;;
   esac
 }
@@ -309,8 +363,21 @@ while [ "$#" -gt 0 ]; do
       REVIEW_CONFIG_REQUESTED=true
       shift 2
       ;;
+    --review-routing)
+      [ "$#" -ge 2 ] || { echo "ERROR: --review-routing requires a value (all-hosted, all-local, small-local)" >&2; exit 1; }
+      INPUT_REVIEW_ROUTING="$(normalize_review_routing "$2")"
+      REVIEW_CONFIG_REQUESTED=true
+      shift 2
+      ;;
+    --small-review-lines)
+      [ "$#" -ge 2 ] || { echo "ERROR: --small-review-lines requires a positive integer" >&2; exit 1; }
+      INPUT_SMALL_REVIEW_LINES="$(normalize_positive_int "$2")"
+      REVIEW_CONFIG_REQUESTED=true
+      shift 2
+      ;;
     --no-ai-review|--no-review)
       INPUT_REVIEWER="none"
+      INPUT_REVIEW_ROUTING="none"
       REVIEW_CONFIG_REQUESTED=true
       shift
       ;;
@@ -339,6 +406,33 @@ while [ "$#" -gt 0 ]; do
       INPUT_LOCAL_REVIEW_COMMAND="$2"
       REVIEW_CONFIG_REQUESTED=true
       shift 2
+      ;;
+    --git-workflow)
+      [ "$#" -ge 2 ] || { echo "ERROR: --git-workflow requires a value (git or gitbutler)" >&2; exit 1; }
+      INPUT_GIT_WORKFLOW="$(normalize_git_workflow "$2")"
+      WORKFLOW_CONFIG_REQUESTED=true
+      shift 2
+      ;;
+    --gitbutler)
+      INPUT_GIT_WORKFLOW="gitbutler"
+      WORKFLOW_CONFIG_REQUESTED=true
+      shift
+      ;;
+    --no-gitbutler)
+      INPUT_GIT_WORKFLOW="git"
+      INPUT_GITBUTLER_MCP=false
+      WORKFLOW_CONFIG_REQUESTED=true
+      shift
+      ;;
+    --gitbutler-mcp)
+      INPUT_GITBUTLER_MCP=true
+      WORKFLOW_CONFIG_REQUESTED=true
+      shift
+      ;;
+    --no-gitbutler-mcp)
+      INPUT_GITBUTLER_MCP=false
+      WORKFLOW_CONFIG_REQUESTED=true
+      shift
       ;;
     *) echo "ERROR: unknown argument '$1'" >&2; exit 1 ;;
   esac
@@ -480,22 +574,57 @@ set_codex_review_key() {
   mv "$tmp_file" "$file"
 }
 
+reviewers_toml_for() {
+  local reviewer="$1"
+  case "$reviewer" in
+    none) printf '[]' ;;
+    auto|"") printf '["codex", "claude", "gemini"]' ;;
+    *) printf '["%s"]' "$reviewer" ;;
+  esac
+}
+
+small_local_reviewers_toml_for() {
+  local reviewer="$1"
+  case "$reviewer" in
+    auto|"") printf '["local", "codex", "claude", "gemini"]' ;;
+    local|none) printf '["local", "codex"]' ;;
+    *) printf '["local", "%s"]' "$reviewer" ;;
+  esac
+}
+
 write_review_onboarding_config() {
   local file="$1"
   local reviewer="${INPUT_REVIEWER:-auto}"
+  local routing="${INPUT_REVIEW_ROUTING:-}"
   local assist="${INPUT_REVIEW_ASSIST:-false}"
   local autofix="${INPUT_REVIEW_AUTOFIX:-false}"
+  local small_review_lines="${INPUT_SMALL_REVIEW_LINES:-400}"
   local enabled=true
   local reviewers_toml
+  local large_reviewers_toml
+  local small_reviewers_toml
 
-  if [ "$reviewer" = "none" ]; then
-    enabled=false
-    reviewers_toml='[]'
-  elif [ "$reviewer" = "auto" ]; then
-    reviewers_toml='["codex", "claude", "gemini"]'
-  else
-    reviewers_toml="[\"$reviewer\"]"
+  if [ -z "$routing" ]; then
+    case "$reviewer" in
+      local) routing="all-local" ;;
+      none) routing="none" ;;
+      *) routing="all-hosted" ;;
+    esac
   fi
+
+  if [ "$routing" = "none" ] || [ "$reviewer" = "none" ]; then
+    enabled=false
+    routing="none"
+    reviewers_toml="$(reviewers_toml_for none)"
+  elif [ "$routing" = "all-local" ]; then
+    reviewer="local"
+    reviewers_toml="$(reviewers_toml_for local)"
+  else
+    reviewers_toml="$(reviewers_toml_for "$reviewer")"
+  fi
+
+  large_reviewers_toml="$(reviewers_toml_for "$reviewer")"
+  small_reviewers_toml="$(small_local_reviewers_toml_for "$reviewer")"
 
   if [ "$enabled" = true ] && [ "$autofix" = true ]; then
     set_codex_review_key "$file" "mode" '"fix"'
@@ -510,10 +639,17 @@ write_review_onboarding_config() {
     printf '[review]\n'
     printf 'enabled = %s\n' "$enabled"
     printf 'reviewers = %s\n' "$reviewers_toml"
+    if [ "$routing" = "small-local" ]; then
+      printf '\n[review.routing]\n'
+      printf 'enabled = true\n'
+      printf 'small_max_diff_lines = %s\n' "$small_review_lines"
+      printf 'small_reviewers = %s\n' "$small_reviewers_toml"
+      printf 'large_reviewers = %s\n' "$large_reviewers_toml"
+    fi
     printf '\n[review.assist]\n'
     printf 'enabled = %s\n' "$assist"
     printf 'helpers = ["codex", "gemini", "claude", "local"]\n'
-    if [ "$reviewer" = "local" ]; then
+    if [ "$reviewer" = "local" ] || [ "$routing" = "small-local" ]; then
       printf '\n[review.local]\n'
       printf '# The command receives the review prompt on stdin and must print CODEX_REVIEW_CLEAN, CODEX_REVIEW_FIXED, or CODEX_REVIEW_BLOCKED as its last line.\n'
       printf 'command = "%s"\n' "$(escape_toml_basic_string "$INPUT_LOCAL_REVIEW_COMMAND")"
@@ -523,15 +659,27 @@ write_review_onboarding_config() {
 
 print_review_setup_hint() {
   local reviewer="${INPUT_REVIEWER:-auto}"
+  local routing="${INPUT_REVIEW_ROUTING:-}"
   local enabled=true
 
-  [ "$reviewer" = "none" ] && enabled=false
+  if [ -z "$routing" ]; then
+    case "$reviewer" in
+      local) routing="all-local" ;;
+      none) routing="none" ;;
+      *) routing="all-hosted" ;;
+    esac
+  fi
+
+  { [ "$reviewer" = "none" ] || [ "$routing" = "none" ]; } && enabled=false
   if [ "$enabled" = false ]; then
     echo "==> AI review disabled. You can enable it later in .codex-review.toml."
     return
   fi
 
-  echo "==> AI review configured: reviewer=$reviewer"
+  echo "==> AI review configured: routing=$routing reviewer=$reviewer"
+  if [ "$routing" = "small-local" ]; then
+    echo "    Small diffs (<= ${INPUT_SMALL_REVIEW_LINES:-400} lines) try your local reviewer first; larger diffs use the hosted reviewer."
+  fi
   case "$reviewer" in
     codex|auto)
       if ! command -v codex >/dev/null 2>&1; then
@@ -557,6 +705,10 @@ print_review_setup_hint() {
       fi
       ;;
   esac
+
+  if [ "$routing" = "small-local" ] && [ -z "$INPUT_LOCAL_REVIEW_COMMAND" ]; then
+    echo "    Add [review.local].command in .codex-review.toml before local small-diff review can run."
+  fi
 }
 
 echo ""
@@ -642,15 +794,38 @@ if [ -t 0 ] && [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
   if [ "$REVIEW_CONFIG_REQUESTED" = false ] && [ "$CODEX_REVIEW_CONFIG_CREATED" = true ]; then
     echo ""
     echo "==> Configure AI review (press Enter for the default):"
+    echo "   Hosted review: strongest default reviewer for every change."
+    echo "   Local review: private and cheap, but quality depends on your local model."
+    echo "   Hybrid review: local handles small diffs; hosted review handles larger diffs."
     if [ "$(prompt_yes_no "Use AI review before code reaches main?" "true")" = "true" ]; then
       local_default_reviewer="$(default_reviewer)"
-      read -r -p "   Reviewer (codex, claude, gemini, local, auto) [$local_default_reviewer]: " INPUT_REVIEWER
-      INPUT_REVIEWER="${INPUT_REVIEWER:-$local_default_reviewer}"
-      INPUT_REVIEWER="$(normalize_reviewer "$INPUT_REVIEWER")"
+      local_review_style=""
+      read -r -p "   Review style (hosted, local, hybrid) [hosted]: " local_review_style
+      local_review_style="$(normalize_review_routing "${local_review_style:-hosted}")"
 
-      if [ "$INPUT_REVIEWER" = "local" ] && [ -z "$INPUT_LOCAL_REVIEW_COMMAND" ]; then
-        read -r -p "   Local reviewer command (reads prompt on stdin, e.g. 'ollama run MODEL'): " INPUT_LOCAL_REVIEW_COMMAND
-      fi
+      case "$local_review_style" in
+        all-hosted)
+          INPUT_REVIEW_ROUTING="all-hosted"
+          read -r -p "   Hosted reviewer (codex, claude, gemini, auto) [$local_default_reviewer]: " INPUT_REVIEWER
+          INPUT_REVIEWER="${INPUT_REVIEWER:-$local_default_reviewer}"
+          INPUT_REVIEWER="$(normalize_reviewer "$INPUT_REVIEWER")"
+          ;;
+        all-local)
+          INPUT_REVIEW_ROUTING="all-local"
+          INPUT_REVIEWER="local"
+          read -r -p "   Local reviewer command (reads prompt on stdin, e.g. 'ollama run MODEL'): " INPUT_LOCAL_REVIEW_COMMAND
+          ;;
+        small-local)
+          INPUT_REVIEW_ROUTING="small-local"
+          read -r -p "   Local reviewer command for small diffs (e.g. 'ollama run MODEL'): " INPUT_LOCAL_REVIEW_COMMAND
+          read -r -p "   Hosted reviewer for larger diffs (codex, claude, gemini, auto) [$local_default_reviewer]: " INPUT_REVIEWER
+          INPUT_REVIEWER="${INPUT_REVIEWER:-$local_default_reviewer}"
+          INPUT_REVIEWER="$(normalize_reviewer "$INPUT_REVIEWER")"
+          read -r -p "   Small-diff cutoff in changed diff lines [400]: " INPUT_SMALL_REVIEW_LINES
+          INPUT_SMALL_REVIEW_LINES="${INPUT_SMALL_REVIEW_LINES:-400}"
+          INPUT_SMALL_REVIEW_LINES="$(normalize_positive_int "$INPUT_SMALL_REVIEW_LINES")"
+          ;;
+      esac
 
       INPUT_REVIEW_AUTOFIX="$(prompt_yes_no "Let the AI auto-fix low-risk issues?" "false")"
       INPUT_REVIEW_ASSIST="$(prompt_yes_no "Let the AI ask one peer reviewer for larger changes?" "false")"
@@ -660,10 +835,26 @@ if [ -t 0 ] && [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
       fi
     else
       INPUT_REVIEWER="none"
+      INPUT_REVIEW_ROUTING="none"
       INPUT_REVIEW_AUTOFIX=false
       INPUT_REVIEW_ASSIST=false
     fi
     REVIEW_CONFIG_REQUESTED=true
+  fi
+
+  if [ "$WORKFLOW_CONFIG_REQUESTED" = false ]; then
+    echo ""
+    echo "==> Choose Git workflow helpers (press Enter for the default):"
+    echo "   Plain Git: simplest, lowest surprise; use Toolkit's branch/PR scripts."
+    echo "   GitButler: optional power workflow for stacked or parallel branches, undo history, and AI-agent branch management."
+    if [ "$(prompt_yes_no "Use GitButler for this project?" "false")" = "true" ]; then
+      INPUT_GIT_WORKFLOW="gitbutler"
+      INPUT_GITBUTLER_MCP="$(prompt_yes_no "Expose GitButler to AI agents through MCP when the CLI is installed?" "false")"
+    else
+      INPUT_GIT_WORKFLOW="git"
+      INPUT_GITBUTLER_MCP=false
+    fi
+    WORKFLOW_CONFIG_REQUESTED=true
   fi
 fi
 
@@ -673,6 +864,10 @@ INPUT_TYPE="$(normalize_project_type "$INPUT_TYPE")"
 if [ "$INPUT_TYPE" = "auto" ]; then
   INPUT_TYPE="$(detect_project_type "$PROJECT_DIR")"
 fi
+INPUT_GIT_WORKFLOW="${INPUT_GIT_WORKFLOW:-git}"
+INPUT_GIT_WORKFLOW="$(normalize_git_workflow "$INPUT_GIT_WORKFLOW")"
+INPUT_GITBUTLER_MCP="${INPUT_GITBUTLER_MCP:-false}"
+INPUT_GITBUTLER_MCP="$(normalize_yes_no "$INPUT_GITBUTLER_MCP")"
 
 PACKAGE_MANAGER="$(detect_node_package_manager "$PROJECT_DIR")"
 MONOREPO="$(detect_monorepo "$PROJECT_DIR")"
@@ -740,6 +935,8 @@ if [ ! -f "$PROJECT_DIR/.toolkit-config" ]; then
     fi
     printf 'monorepo=%s\n' "$MONOREPO"
     printf 'targets=%s\n' "$TARGETS"
+    printf 'git_workflow=%s\n' "$INPUT_GIT_WORKFLOW"
+    printf 'gitbutler_mcp=%s\n' "$INPUT_GITBUTLER_MCP"
     printf 'lint_command=\n'
     printf 'typecheck_command=\n'
     printf 'build_command=\n'

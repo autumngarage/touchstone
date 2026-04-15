@@ -7,11 +7,10 @@ Reviews your code with the configured AI reviewer before it reaches the default 
 ### 1. Pick a reviewer
 
 Run `toolkit new` or `toolkit init` interactively and answer the AI review prompts. You can choose:
-- `codex` — default, and `setup.sh` can install it if `npm` is available
-- `claude` — use an existing Claude CLI install
-- `gemini` — use an existing Gemini CLI install
-- `local` — use a local model or wrapper command that reads the review prompt from stdin
-- `none` — leave the review hook installed but disabled
+- hosted review — Codex, Claude, Gemini, or `auto` for every change
+- local review — a local model or wrapper command that reads the review prompt from stdin
+- hybrid review — small diffs try local first; larger diffs go to a hosted reviewer
+- no review — leave the hook installed but disabled
 
 Edit `.codex-review.toml` later if you change your mind.
 
@@ -74,6 +73,10 @@ When the review runs, the hook:
 | `unsafe_paths` | [] | Paths where auto-fix is never allowed |
 | `[review].enabled` | true | Set false to skip AI review without removing the hook |
 | `[review].reviewers` | `["codex"]` | Reviewer cascade, e.g. `["claude", "codex", "gemini", "local"]` |
+| `[review.routing].enabled` | false | Route reviews by diff size |
+| `[review.routing].small_max_diff_lines` | 400 | Diff-line cutoff for the small-reviewer route |
+| `[review.routing].small_reviewers` | unset | Reviewers to try for small diffs, e.g. `["local", "codex"]` |
+| `[review.routing].large_reviewers` | unset | Reviewers to try for larger diffs, e.g. `["codex"]` |
 | `[review.local].command` | empty | Local reviewer command; receives the prompt on stdin |
 | `[review.local].auth_command` | empty | Optional local command that must pass before review runs |
 | `[review.assist].enabled` | false | Allow the primary reviewer to request one peer second opinion |
