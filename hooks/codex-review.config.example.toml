@@ -70,6 +70,18 @@ unsafe_paths = [
 # enabled = true
 # reviewers = ["claude", "codex", "gemini"]
 #
+# Optional routing by diff size:
+# Use this when you want small changes reviewed by a local model first, but
+# larger changes reviewed by a stronger hosted model. The small reviewer list
+# can include a hosted fallback so review still runs if the local command is not
+# configured on a clone.
+#
+# [review.routing]
+# enabled = false
+# small_max_diff_lines = 400
+# small_reviewers = ["local", "codex"]
+# large_reviewers = ["codex"]
+#
 # Local reviewer support:
 # Use this when you want a local model or your own wrapper script to perform
 # review. The command receives the full review prompt on stdin and must print

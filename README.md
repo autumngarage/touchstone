@@ -64,7 +64,7 @@ bash setup.sh
 
 ### Turn on AI review
 
-When you run `toolkit new` or `toolkit init`, Toolkit asks whether you want AI review and which reviewer to use. You can choose Codex, Claude, Gemini, a local command, or no AI review.
+When you run `toolkit new` or `toolkit init`, Toolkit asks whether you want AI review and how it should be routed. You can choose a hosted reviewer for every change, a local model for every change, a hybrid setup where small diffs go local and larger diffs go to a hosted reviewer, or no AI review.
 
 If you choose Codex and it is not installed yet:
 
@@ -74,6 +74,8 @@ npm install -g @openai/codex && codex login
 
 For local models, choose `local` during the interactive setup and enter a command that reads the review prompt from stdin, such as an Ollama or LM Studio wrapper. For scripted setup, pass `--local-review-command '<command>'` with `--reviewer local`. You can keep using Toolkit without any AI reviewer; the hook skips itself when review is disabled or no configured reviewer is available.
 
+For a hybrid setup, use `small-local`: small changes try your local model first, with a hosted fallback; larger changes go straight to the hosted reviewer.
+
 Useful shortcuts:
 
 ```bash
@@ -82,7 +84,16 @@ toolkit init --no-ai-review
 
 # Add Toolkit and use a local reviewer command
 toolkit init --reviewer local --local-review-command 'ollama run MODEL'
+
+# Use local review for small changes and Codex for larger changes
+toolkit init --review-routing small-local --reviewer codex --local-review-command 'ollama run MODEL'
 ```
+
+### Choose a Git workflow
+
+Toolkit defaults to plain Git because it is the simplest path for new projects. During interactive setup, you can also choose GitButler if you want stacked branches, parallel work, undo history, and AI-agent savepoints.
+
+If you choose GitButler, `setup.sh` checks for the `but` CLI, shows the official installer command if it is missing, and asks before running `but setup` or adding the GitButler MCP server to Claude Code.
 
 ## Everyday Commands
 
@@ -109,11 +120,15 @@ bash setup.sh --deps-only
 |---------|-------------|
 | `toolkit init [--no-setup]` | Add toolkit to the current project |
 | `toolkit init --reviewer local --local-review-command '<command>'` | Add toolkit with a local reviewer command |
+| `toolkit init --review-routing small-local --reviewer codex --local-review-command '<command>'` | Use local review for small diffs and a hosted reviewer for larger diffs |
 | `toolkit init --no-ai-review` | Add toolkit with AI review disabled |
+| `toolkit init --gitbutler` | Add toolkit with optional GitButler workflow setup |
 | `toolkit new <dir>` | Bootstrap a new project with principles, scripts, hooks, and templates |
 | `toolkit new <dir> --type node` | Bootstrap with an explicit Node/TypeScript, Swift, Rust, Go, Python, or generic profile |
 | `toolkit new <dir> --reviewer local --local-review-command '<command>'` | Bootstrap a new project with a local reviewer command |
+| `toolkit new <dir> --review-routing small-local --reviewer codex --local-review-command '<command>'` | Bootstrap with hybrid local/hosted review routing |
 | `toolkit new <dir> --no-ai-review` | Bootstrap a new project with AI review disabled |
+| `toolkit new <dir> --gitbutler` | Bootstrap with optional GitButler workflow setup |
 | `toolkit detect` | Show the detected project profile for the current repo |
 | `toolkit run <task>` | Run profile-aware `lint`, `typecheck`, `build`, `test`, or `validate` |
 | `toolkit update` | Create a branch and commit that updates the current project's toolkit-owned files |
@@ -145,7 +160,7 @@ When you run `toolkit new`, these files get created in your project:
 - `CLAUDE.md` — AI coding instructions with `{{PLACEHOLDERS}}` to fill in
 - `AGENTS.md` — AI reviewer rubric with project-specific priorities
 - `.codex-review.toml` — AI review hook config (reviewers, modes, safe/unsafe paths)
-- `.toolkit-config` — Project profile and optional lint/test/build command overrides
+- `.toolkit-config` — Project profile, workflow choices, and optional lint/test/build command overrides
 - `.pre-commit-config.yaml` — Pre-commit hooks including the default-branch AI review gate
 - `.gitignore` — Sensible defaults
 - `.github/pull_request_template.md` — PR checklist
@@ -197,6 +212,7 @@ Universal engineering standards, extracted and battle-tested from production sys
 Automatically reviews code before it reaches the default branch:
 - Uses the configured reviewer cascade: Codex by default, with optional Claude and Gemini reviewers
 - Can use a local model through `[review.local].command`
+- Can route small diffs to a local model and larger diffs to a hosted reviewer through `[review.routing]`
 - Auto-fixes safe issues when the review mode allows edits
 - Lets the primary reviewer request one focused peer second opinion when `[review.assist]` is enabled
 - Blocks the merge or direct default-branch push for findings that should not be auto-fixed

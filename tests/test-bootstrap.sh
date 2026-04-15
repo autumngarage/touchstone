@@ -61,6 +61,8 @@ PROJECT_NODE="$TEST_DIR/test-project-node"
 PROJECT_PYTHON="$TEST_DIR/test-project-python"
 PROJECT_REVIEW_NONE="$TEST_DIR/test-project-review-none"
 PROJECT_REVIEW_LOCAL="$TEST_DIR/test-project-review-local"
+PROJECT_REVIEW_HYBRID="$TEST_DIR/test-project-review-hybrid"
+PROJECT_GITBUTLER="$TEST_DIR/test-project-gitbutler"
 
 # Git repo
 assert_exists "$PROJECT/.git"
@@ -97,6 +99,8 @@ assert_contains "$PROJECT/.pre-commit-config.yaml" 'codex-review.sh'
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'toolkit-run.sh validate'
 assert_contains "$PROJECT/.toolkit-config" '^project_type=generic$'
 assert_contains "$PROJECT/.toolkit-config" '^lint_command=$'
+assert_contains "$PROJECT/.toolkit-config" '^git_workflow=git$'
+assert_contains "$PROJECT/.toolkit-config" '^gitbutler_mcp=false$'
 assert_exists "$PROJECT/.toolkit-manifest"
 assert_contains "$PROJECT/.toolkit-manifest" '^\.toolkit-version$'
 assert_contains "$PROJECT/.toolkit-manifest" '^scripts/open-pr.sh$'
@@ -120,6 +124,8 @@ assert_contains "$PROJECT/CLAUDE.md" "@principles/"
 if (cd "$TEST_DIR" && bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" --help) >"$TEST_DIR/new-project-help.txt" 2>&1; then
   assert_contains "$TEST_DIR/new-project-help.txt" 'unsafe-paths'
   assert_contains "$TEST_DIR/new-project-help.txt" 'reviewer codex|claude|gemini|local|auto|none'
+  assert_contains "$TEST_DIR/new-project-help.txt" 'review-routing all-hosted|all-local|small-local'
+  assert_contains "$TEST_DIR/new-project-help.txt" 'gitbutler'
   assert_contains "$TEST_DIR/new-project-help.txt" 'node|python|swift|rust|go|generic|auto'
 else
   echo "FAIL: expected new-project.sh --help to succeed" >&2
@@ -133,6 +139,8 @@ fi
 if TOOLKIT_NO_AUTO_UPDATE=1 "$TOOLKIT_ROOT/bin/toolkit" init --help >"$TEST_DIR/toolkit-init-help.txt" 2>&1; then
   assert_contains "$TEST_DIR/toolkit-init-help.txt" 'Usage: toolkit init'
   assert_contains "$TEST_DIR/toolkit-init-help.txt" 'reviewer codex|claude|gemini|local|auto|none'
+  assert_contains "$TEST_DIR/toolkit-init-help.txt" 'review-routing all-hosted|all-local|small-local'
+  assert_contains "$TEST_DIR/toolkit-init-help.txt" 'gitbutler'
   assert_contains "$TEST_DIR/toolkit-init-help.txt" 'node|python|swift|rust|go|generic|auto'
 else
   echo "FAIL: expected toolkit init --help to succeed" >&2
@@ -204,6 +212,20 @@ assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^reviewers = \["loca
 assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^\[review.local\]$'
 assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^command = "local-reviewer --model demo"$'
 assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '"src/auth/",'
+
+# Bootstrap should support routing small reviews to local and larger reviews to hosted models.
+bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_HYBRID" --no-register --review-routing small-local --small-review-lines 123 --reviewer codex --local-review-command "local-reviewer --model demo"
+assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^\[review.routing\]$'
+assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^enabled = true$'
+assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^small_max_diff_lines = 123$'
+assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^small_reviewers = \["local", "codex"\]$'
+assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^large_reviewers = \["codex"\]$'
+assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^command = "local-reviewer --model demo"$'
+
+# Bootstrap should record the optional GitButler workflow choice without making it the default.
+bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$PROJECT_GITBUTLER" --no-register --gitbutler --gitbutler-mcp
+assert_contains "$PROJECT_GITBUTLER/.toolkit-config" '^git_workflow=gitbutler$'
+assert_contains "$PROJECT_GITBUTLER/.toolkit-config" '^gitbutler_mcp=true$'
 
 # toolkit init must not run a pre-existing project setup.sh after preserving it.
 mkdir -p "$PROJECT_INIT_EXISTING_SETUP"
@@ -293,9 +315,18 @@ bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$SETUP_VERSION_PROJECT" --no-regi
   printf '\n[review]\n'
   printf 'enabled = true\n'
   printf 'reviewers = ["local"]\n'
+  printf '\n[review.routing]\n'
+  printf 'enabled = true\n'
+  printf 'small_max_diff_lines = 123\n'
+  printf 'small_reviewers = ["local", "codex"]\n'
+  printf 'large_reviewers = ["codex"]\n'
   printf '\n[review.local]\n'
   printf 'command = "local-reviewer --model demo"\n'
 } >> "$SETUP_VERSION_PROJECT/.codex-review.toml"
+{
+  printf 'git_workflow=gitbutler\n'
+  printf 'gitbutler_mcp=false\n'
+} >> "$SETUP_VERSION_PROJECT/.toolkit-config"
 cat > "$SETUP_VERSION_FAKE_BIN/toolkit" <<'FAKETOOLKIT'
 #!/usr/bin/env bash
 case "$1" in
@@ -332,10 +363,17 @@ cat > "$SETUP_VERSION_FAKE_BIN/codex" <<'FAKECODEX'
 #!/usr/bin/env bash
 exit 0
 FAKECODEX
+cat > "$SETUP_VERSION_FAKE_BIN/but" <<'FAKEBUT'
+#!/usr/bin/env bash
+exit 0
+FAKEBUT
 chmod +x "$SETUP_VERSION_FAKE_BIN/"*
 (cd "$SETUP_VERSION_PROJECT" && PATH="$SETUP_VERSION_FAKE_BIN:$PATH" bash setup.sh) >"$TEST_DIR/setup-version-output.txt"
 assert_contains "$TEST_DIR/setup-version-output.txt" 'toolkit v9.9.9'
+assert_contains "$TEST_DIR/setup-version-output.txt" 'review routing enabled'
 assert_contains "$TEST_DIR/setup-version-output.txt" 'local reviewer configured: local-reviewer --model demo'
+assert_contains "$TEST_DIR/setup-version-output.txt" 'GitButler selected'
+assert_contains "$TEST_DIR/setup-version-output.txt" 'but installed'
 assert_not_contains "$TEST_DIR/setup-version-output.txt" "unknown AI reviewer"
 
 # toolkit-run.sh should provide ecosystem-neutral task dispatch.
