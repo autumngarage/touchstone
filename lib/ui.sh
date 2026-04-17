@@ -28,10 +28,16 @@ tk_color_enabled() {
 }
 
 # Internal: render the double-rail prefix "▌▌" in brand orange. Returns
-# plain "▌▌" when color/gum are unavailable.
+# plain "▌▌" when gum is missing, disabled, or fails. Callers may run
+# under `set -euo pipefail`; a silent gum failure would otherwise produce
+# empty strings in the verdict lines and hide the rail from the user.
 _tk_rail() {
+  local rendered=""
   if tk_color_enabled && tk_have_gum; then
-    gum style --foreground "$TK_BRAND_ORANGE" "▌▌"
+    rendered="$(gum style --foreground "$TK_BRAND_ORANGE" "▌▌" 2>/dev/null || true)"
+  fi
+  if [ -n "$rendered" ]; then
+    printf '%s' "$rendered"
   else
     printf '▌▌'
   fi
@@ -40,12 +46,16 @@ _tk_rail() {
 _tk_paint() {
   local color="$1"; shift
   local flag="$1"; shift
+  local rendered=""
   if tk_color_enabled && tk_have_gum; then
     if [ "$flag" = "bold" ]; then
-      gum style --foreground "$color" --bold "$*"
+      rendered="$(gum style --foreground "$color" --bold "$*" 2>/dev/null || true)"
     else
-      gum style --foreground "$color" "$*"
+      rendered="$(gum style --foreground "$color" "$*" 2>/dev/null || true)"
     fi
+  fi
+  if [ -n "$rendered" ]; then
+    printf '%s' "$rendered"
   else
     printf '%s' "$*"
   fi
@@ -104,17 +114,29 @@ tk_hero() {
   fi
 
   if tk_have_figlet && tk_have_gum && tk_color_enabled; then
-    local banner
+    local banner painted_banner painted_sub
     banner="$(figlet -f slant TOUCHSTONE 2>/dev/null || figlet TOUCHSTONE 2>/dev/null || true)"
     if [ -n "$banner" ]; then
-      gum style --foreground "$TK_BRAND_ORANGE" --margin "1 2" "$banner"
-      if [ -n "$subtitle" ]; then
-        gum style --foreground "$TK_BRAND_DIM" --margin "0 2" "$subtitle${version:+ · v$version}"
-      elif [ -n "$version" ]; then
-        gum style --foreground "$TK_BRAND_DIM" --margin "0 2" "shared engineering platform · v${version}"
+      painted_banner="$(gum style --foreground "$TK_BRAND_ORANGE" --margin "1 2" "$banner" 2>/dev/null || true)"
+      if [ -n "$painted_banner" ]; then
+        printf '%s\n' "$painted_banner"
+        local sub_text=""
+        if [ -n "$subtitle" ]; then
+          sub_text="$subtitle${version:+ · v$version}"
+        elif [ -n "$version" ]; then
+          sub_text="shared engineering platform · v${version}"
+        fi
+        if [ -n "$sub_text" ]; then
+          painted_sub="$(gum style --foreground "$TK_BRAND_DIM" --margin "0 2" "$sub_text" 2>/dev/null || true)"
+          if [ -n "$painted_sub" ]; then
+            printf '%s\n' "$painted_sub"
+          else
+            printf '  %s\n' "$sub_text"
+          fi
+        fi
+        printf '\n'
+        return 0
       fi
-      printf '\n'
-      return 0
     fi
   fi
 

@@ -1560,22 +1560,33 @@ tk_have_gum() { command -v gum >/dev/null 2>&1; }
 
 tk_paint() {
   # tk_paint <hex> <bold|plain> <text...>
+  # Falls back to plain text if gum is missing, disabled, or fails —
+  # the hook is running under `set -euo pipefail`, so silent gum failure
+  # would otherwise produce empty strings in the verdict lines.
   local color="$1"; shift
   local flag="$1"; shift
+  local rendered=""
   if [ "$C_TTY" = "1" ] && tk_have_gum; then
     if [ "$flag" = "bold" ]; then
-      gum style --foreground "$color" --bold "$*"
+      rendered="$(gum style --foreground "$color" --bold "$*" 2>/dev/null || true)"
     else
-      gum style --foreground "$color" "$*"
+      rendered="$(gum style --foreground "$color" "$*" 2>/dev/null || true)"
     fi
+  fi
+  if [ -n "$rendered" ]; then
+    printf '%s' "$rendered"
   else
     printf '%s' "$*"
   fi
 }
 
 tk_rail() {
+  local rendered=""
   if [ "$C_TTY" = "1" ] && tk_have_gum; then
-    gum style --foreground "$TK_BRAND_ORANGE" "▌▌"
+    rendered="$(gum style --foreground "$TK_BRAND_ORANGE" "▌▌" 2>/dev/null || true)"
+  fi
+  if [ -n "$rendered" ]; then
+    printf '%s' "$rendered"
   else
     printf '▌▌'
   fi
