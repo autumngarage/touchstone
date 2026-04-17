@@ -1,6 +1,6 @@
 # Git Workflow
 
-Every code change goes through a feature branch + PR + merge. No exceptions for "small" changes. This discipline catches bugs before they land on the default branch and creates an audit trail for every change.
+Normal code changes go through a feature branch + PR + merge. Emergency bypasses are allowed only through the documented emergency path below, and must be disclosed in the next recovery PR. This discipline catches bugs before they land on the default branch and creates an audit trail for every change, while leaving a legible escape hatch for production incidents.
 
 ## The lifecycle
 
@@ -20,10 +20,10 @@ Every code change goes through a feature branch + PR + merge. No exceptions for 
 
 If the project has Codex review configured (see `.codex-review.toml` for policy and the `codex-review` hook in `.pre-commit-config.yaml` for the entry point), a pre-push hook gates default-branch pushes (including squash-merges via `merge-pr.sh`). The mechanism is `stages: [pre-push]` in `.pre-commit-config.yaml`; it skips feature-branch pushes and only activates when the push target is the default branch. Behavior:
 - Runs `codex exec --full-auto` against the diff vs the default branch
-- Auto-fixes safe findings (typos, missing error logging, etc.)
+- Auto-fixes only mechanical or low-risk findings (typos, whitespace, trivial doc drift); behavior changes — including added logging, error handling, or retry logic — stay in the PR for human review
 - Blocks the push for unsafe findings (high-scrutiny paths)
 - Loops up to `max_iterations` times (default 3)
-- Gracefully skips if the Codex CLI isn't installed
+- Gracefully skips if the Codex CLI isn't installed, printing a visible "review skipped" line so the missing safety boundary isn't silent
 
 ## Periodic branch hygiene
 
