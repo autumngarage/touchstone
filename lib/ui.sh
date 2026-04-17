@@ -93,7 +93,7 @@ tk_verdict() {
 # tk_signature — the "touchstone vX.Y.Z" signature line (without rail).
 # The caller is responsible for placing it next to a rail when needed.
 tk_signature() {
-  local version
+  local version=""
   if [ -n "${TOUCHSTONE_ROOT:-}" ] && [ -f "$TOUCHSTONE_ROOT/VERSION" ]; then
     version="$(tr -d '[:space:]' < "$TOUCHSTONE_ROOT/VERSION" 2>/dev/null || true)"
   fi
