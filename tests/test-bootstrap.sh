@@ -557,7 +557,8 @@ assert_contains "$TEST_DIR/reinit-output.txt" 'Reconciling touchstone files'
 assert_contains "$TEST_DIR/reinit-output.txt" 'touchstone reconciled:'
 
 # touchstone doctor --project must exit clean on a fully-armed repo.
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR" --no-register >/dev/null
+# Use the fake pre-commit so hooks install regardless of what's on the tester's real PATH.
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR" --no-register >/dev/null
 if (cd "$PROJECT_DOCTOR" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-clean.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-clean.txt" 'Project is fully armed'
 else
@@ -593,12 +594,35 @@ else
   assert_contains "$TEST_DIR/doctor-legacy.txt" 'touchstone migrate-from-toolkit'
 fi
 
+# Both .toolkit-version and .touchstone-version is an in-flight migration conflict —
+# neither doctor nor init may report healthy in that state.
+PROJECT_MIGRATION_CONFLICT="$TEST_DIR/test-project-migration-conflict"
+mkdir -p "$PROJECT_MIGRATION_CONFLICT"
+echo "legacy-sha" > "$PROJECT_MIGRATION_CONFLICT/.toolkit-version"
+echo "touchstone-sha" > "$PROJECT_MIGRATION_CONFLICT/.touchstone-version"
+if (cd "$PROJECT_MIGRATION_CONFLICT" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-conflict.txt" 2>&1; then
+  echo "FAIL: doctor --project should exit nonzero when both .toolkit-version and .touchstone-version exist" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-conflict.txt" 'Migration conflict'
+fi
+if (cd "$PROJECT_MIGRATION_CONFLICT" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup --no-register) >"$TEST_DIR/init-conflict.txt" 2>&1; then
+  echo "FAIL: touchstone init should exit nonzero in the migration-conflict state" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/init-conflict.txt" 'Migration conflict'
+fi
+
 # touchstone init on an outdated project must delegate to the update flow (branch + commit),
 # not silently backup-and-replace files in place.
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_OUTDATED" --no-register >/dev/null
-(cd "$PROJECT_OUTDATED" && git add -A && git -c user.email=test@touchstone -c user.name=test commit --no-verify -m "initial" >/dev/null)
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_OUTDATED" --no-register >/dev/null
+# Configure the committer identity locally so the delegated update-project.sh commit
+# works on CI machines without a global Git identity.
+git -C "$PROJECT_OUTDATED" config user.email test@touchstone
+git -C "$PROJECT_OUTDATED" config user.name test-committer
+(cd "$PROJECT_OUTDATED" && git add -A && git commit --no-verify -m "initial" >/dev/null)
 echo "0000000000000000000000000000000000000001" > "$PROJECT_OUTDATED/.touchstone-version"
-(cd "$PROJECT_OUTDATED" && git -c user.email=test@touchstone -c user.name=test commit --no-verify -am "pin to old touchstone" >/dev/null)
+(cd "$PROJECT_OUTDATED" && git commit --no-verify -am "pin to old touchstone" >/dev/null)
 if (cd "$PROJECT_OUTDATED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup) >"$TEST_DIR/init-outdated.txt" 2>&1; then
   assert_contains "$TEST_DIR/init-outdated.txt" 'upgrading'
   UPDATE_BRANCH="$(git -C "$PROJECT_OUTDATED" branch --show-current)"

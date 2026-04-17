@@ -152,7 +152,11 @@ cmd_init() {
   local project_dir installed_id current_id init_state="fresh"
   project_dir="$(pwd)"
 
-  if [ -f "$project_dir/.toolkit-version" ] && [ ! -f "$project_dir/.touchstone-version" ]; then
+  if [ -f "$project_dir/.toolkit-version" ] && [ -f "$project_dir/.touchstone-version" ]; then
+    tk_fail "Migration conflict: both .toolkit-version and .touchstone-version are present in $project_dir"
+    tk_dim "  Fix: rm .toolkit-version   (touchstone has already been installed here)"
+    return 1
+  elif [ -f "$project_dir/.toolkit-version" ]; then
     init_state="legacy-toolkit"
   elif [ -f "$project_dir/.touchstone-version" ]; then
     installed_id="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "")"
@@ -311,7 +315,14 @@ cmd_doctor_project() {
 
   tk_header "Touchstone Project Doctor — $(basename "$project_dir")"
 
-  # 1. Is this a touchstone-managed project?
+  # 1. Is this a touchstone-managed project? Reject migration-conflict state first —
+  # a project with both files is mid-migration and must not be reported healthy.
+  if [ -f "$project_dir/.toolkit-version" ] && [ -f "$project_dir/.touchstone-version" ]; then
+    tk_fail "Migration conflict: both .toolkit-version and .touchstone-version present"
+    tk_dim "  Fix: rm .toolkit-version   (touchstone has already been installed)"
+    echo ""
+    return 1
+  fi
   if [ ! -f "$project_dir/.touchstone-version" ]; then
     if [ -f "$project_dir/.toolkit-version" ]; then
       tk_fail "Legacy .toolkit-version found"
