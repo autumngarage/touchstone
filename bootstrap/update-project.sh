@@ -18,6 +18,8 @@
 set -euo pipefail
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/install-hooks.sh
+source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
 PROJECT_DIR="$(pwd)"
 DRY_RUN=false
 CHECK_ONLY=false
@@ -349,22 +351,13 @@ fi
 echo ""
 echo "==> Summary: $ADDED added, $UPDATED updated, $UNCHANGED unchanged"
 
-# Auto-install pre-commit hooks if pre-commit is available and hooks are missing.
-if [ "$DRY_RUN" = false ] && [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ]; then
-  if command -v pre-commit >/dev/null 2>&1; then
-    if [ ! -f "$PROJECT_DIR/.git/hooks/pre-push" ] || [ ! -f "$PROJECT_DIR/.git/hooks/pre-commit" ]; then
-      echo ""
-      echo "==> Installing pre-commit hooks..."
-      # Clear core.hooksPath if set — it conflicts with pre-commit.
-      (cd "$PROJECT_DIR" && git config --unset-all core.hooksPath 2>/dev/null || true)
-      # Install shims only (not --install-hooks) to avoid python env issues.
-      # Environments install lazily on first commit/push.
-      (cd "$PROJECT_DIR" && pre-commit install 2>&1 | tail -1)
-      (cd "$PROJECT_DIR" && pre-commit install --hook-type pre-push 2>&1 | tail -1)
-      (cd "$PROJECT_DIR" && pre-commit install --hook-type commit-msg 2>&1 | tail -1)
-      echo "    Hooks installed (environments install on first run)."
-    fi
-  fi
+# Reinstall pre-commit hook shims so a drifted or empty .git/hooks/ gets repaired.
+# The helper is idempotent; it skips silently when there's nothing to do.
+if [ "$DRY_RUN" = false ] \
+   && [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ] \
+   && { [ ! -f "$PROJECT_DIR/.git/hooks/pre-commit" ] || [ ! -f "$PROJECT_DIR/.git/hooks/pre-push" ]; }; then
+  echo ""
+  touchstone_install_hooks "$PROJECT_DIR" || true
 fi
 
 if [ "$DRY_RUN" = false ]; then

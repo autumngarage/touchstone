@@ -24,6 +24,8 @@
 set -euo pipefail
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/install-hooks.sh
+source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
 REGISTER=true
 INPUT_UNSAFE=""
 INPUT_TYPE=""
@@ -959,9 +961,18 @@ fi
 
 write_touchstone_manifest
 
+# Install git hooks so the repo is actually gated, not just configured.
+# pre-commit install is idempotent — safe even if setup.sh re-runs it later.
+echo ""
+HOOK_INSTALL_STATUS=0
+touchstone_install_hooks "$PROJECT_DIR" || HOOK_INSTALL_STATUS=$?
+
 echo ""
 echo "==> Done! Next steps:"
 echo ""
+if [ "$HOOK_INSTALL_STATUS" -eq 2 ]; then
+  echo "   ! Git hooks are not installed — setup.sh will install pre-commit and rerun the install."
+fi
 echo "   1. Review CLAUDE.md and AGENTS.md — add architecture, key files, hard-won lessons"
 echo "   2. Run setup.sh to install all dev tools:"
 echo "        cd $PROJECT_DIR && bash setup.sh"
