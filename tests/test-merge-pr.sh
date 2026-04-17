@@ -4,8 +4,8 @@
 #
 set -euo pipefail
 
-TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TEST_DIR="$(mktemp -d -t toolkit-test-merge-pr.XXXXXX)"
+TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TEST_DIR="$(mktemp -d -t touchstone-test-merge-pr.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
 echo "==> Test: merge script works without jq in PATH"
@@ -13,7 +13,7 @@ echo "==> Test: merge script works without jq in PATH"
 FAKE_BIN="$TEST_DIR/bin"
 MERGE_SCRIPT_DIR="$TEST_DIR/scripts"
 mkdir -p "$FAKE_BIN" "$MERGE_SCRIPT_DIR"
-cp "$TOOLKIT_ROOT/scripts/merge-pr.sh" "$MERGE_SCRIPT_DIR/merge-pr.sh"
+cp "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$MERGE_SCRIPT_DIR/merge-pr.sh"
 cat > "$MERGE_SCRIPT_DIR/codex-review.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail

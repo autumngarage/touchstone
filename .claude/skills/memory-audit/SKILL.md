@@ -68,5 +68,5 @@ Edit only after explicit approval. When approved:
 For new memory entries:
 - Do not store facts that are cheap to derive from the repo.
 - Include `YYYY-MM-DD` for facts likely to rot.
-- Include the canonical source, such as `README.md`, `CLAUDE.md`, `bin/toolkit --help`, or a file path.
+- Include the canonical source, such as `README.md`, `CLAUDE.md`, `bin/touchstone --help`, or a file path.
 - Avoid unqualified words like "current", "primary", "always", or "never" unless paired with a date and source.

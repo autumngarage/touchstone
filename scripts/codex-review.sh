@@ -36,9 +36,9 @@
 #   in the prompt. Set via CODEX_REVIEW_MODE env var or `mode` in .codex-review.toml.
 #
 # Env overrides:
-#   TOOLKIT_REVIEWER              — force a specific reviewer (skips cascade, hard-fails if unavailable)
-#   TOOLKIT_LOCAL_REVIEWER_COMMAND — local reviewer command; reads prompt from stdin
-#   TOOLKIT_LOCAL_REVIEWER_AUTH_COMMAND — optional command that must pass before local review runs
+#   TOUCHSTONE_REVIEWER              — force a specific reviewer (skips cascade, hard-fails if unavailable)
+#   TOUCHSTONE_LOCAL_REVIEWER_COMMAND — local reviewer command; reads prompt from stdin
+#   TOUCHSTONE_LOCAL_REVIEWER_AUTH_COMMAND — optional command that must pass before local review runs
 #   CODEX_REVIEW_ENABLED          — true/false override for the [review].enabled setting
 #   CODEX_REVIEW_MODE             — review-only|fix|diff-only|no-tests (default: fix)
 #   CODEX_REVIEW_BASE             — base ref to diff against (default: origin/<default-branch>)
@@ -83,8 +83,8 @@ REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-300}"
 ON_ERROR="${CODEX_REVIEW_ON_ERROR:-fail-open}"
 UNSAFE_PATHS=""
 REVIEWER_CASCADE=()
-LOCAL_REVIEWER_COMMAND="${TOOLKIT_LOCAL_REVIEWER_COMMAND:-}"
-LOCAL_REVIEWER_AUTH_COMMAND="${TOOLKIT_LOCAL_REVIEWER_AUTH_COMMAND:-}"
+LOCAL_REVIEWER_COMMAND="${TOUCHSTONE_LOCAL_REVIEWER_COMMAND:-}"
+LOCAL_REVIEWER_AUTH_COMMAND="${TOUCHSTONE_LOCAL_REVIEWER_AUTH_COMMAND:-}"
 ROUTING_ENABLED=false
 ROUTING_SMALL_MAX_DIFF_LINES=400
 ROUTING_SMALL_REVIEWERS=()
@@ -467,12 +467,12 @@ if [ -f "$CONFIG_FILE" ]; then
     if [ "$CURRENT_SECTION" = "review.local" ]; then
       case "$line" in
         command*=*)
-          if [ -z "${TOOLKIT_LOCAL_REVIEWER_COMMAND:-}" ]; then
+          if [ -z "${TOUCHSTONE_LOCAL_REVIEWER_COMMAND:-}" ]; then
             LOCAL_REVIEWER_COMMAND="$(toml_string_value "${line#*=}")"
           fi
           ;;
         auth_command*=*)
-          if [ -z "${TOOLKIT_LOCAL_REVIEWER_AUTH_COMMAND:-}" ]; then
+          if [ -z "${TOUCHSTONE_LOCAL_REVIEWER_AUTH_COMMAND:-}" ]; then
             LOCAL_REVIEWER_AUTH_COMMAND="$(toml_string_value "${line#*=}")"
           fi
           ;;
@@ -560,9 +560,9 @@ ASSIST_ENABLED="$(normalize_bool "$ASSIST_ENABLED")"
 REVIEW_ENABLED="$(normalize_bool "$REVIEW_ENABLED")"
 ROUTING_ENABLED="$(normalize_bool "$ROUTING_ENABLED")"
 
-# TOOLKIT_REVIEWER env var overrides the cascade with a single forced reviewer.
-if [ -n "${TOOLKIT_REVIEWER:-}" ]; then
-  REVIEWER_CASCADE=("$TOOLKIT_REVIEWER")
+# TOUCHSTONE_REVIEWER env var overrides the cascade with a single forced reviewer.
+if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
+  REVIEWER_CASCADE=("$TOUCHSTONE_REVIEWER")
 fi
 
 # --------------------------------------------------------------------------
@@ -723,10 +723,10 @@ Use this only for a specific technical question where another reviewer could mat
 
 To request help, include exactly one block in your output and end with CODEX_REVIEW_BLOCKED:
 
-TOOLKIT_HELP_REQUEST_BEGIN
+TOUCHSTONE_HELP_REQUEST_BEGIN
 question: <one concrete question for the peer reviewer>
 context: <brief context; include files or risk areas if useful>
-TOOLKIT_HELP_REQUEST_END
+TOUCHSTONE_HELP_REQUEST_END
 CODEX_REVIEW_BLOCKED
 
 The hook will ask a peer reviewer in read-only mode, then call you once more with the peer answer.
@@ -918,7 +918,7 @@ apply_review_routing() {
   local diff_lines="$1"
 
   is_truthy "$ROUTING_ENABLED" || return 0
-  [ -z "${TOOLKIT_REVIEWER:-}" ] || return 0
+  [ -z "${TOUCHSTONE_REVIEWER:-}" ] || return 0
 
   case "$ROUTING_SMALL_MAX_DIFF_LINES" in
     ''|*[!0-9]*)
@@ -967,8 +967,8 @@ reviewer_label() {
 # Timeout and error handling
 # --------------------------------------------------------------------------
 
-REVIEW_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/toolkit-review-output.XXXXXX")"
-ASSIST_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/toolkit-review-assist-output.XXXXXX")"
+REVIEW_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-output.XXXXXX")"
+ASSIST_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-assist-output.XXXXXX")"
 trap 'rm -f "$REVIEW_OUTPUT_FILE" "$ASSIST_OUTPUT_FILE"' EXIT
 
 kill_process_tree() {
@@ -1096,8 +1096,8 @@ apply_review_routing "$ROUTING_DIFF_LINE_COUNT"
 
 # Resolve which reviewer to use from the cascade.
 if ! resolve_reviewer; then
-  if [ -n "${TOOLKIT_REVIEWER:-}" ]; then
-    echo "ERROR: TOOLKIT_REVIEWER=$TOOLKIT_REVIEWER but that reviewer is not available:" >&2
+  if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
+    echo "ERROR: TOUCHSTONE_REVIEWER=$TOUCHSTONE_REVIEWER but that reviewer is not available:" >&2
     printf '%b' "$REVIEWER_STATUS" >&2
     exit 1
   fi
@@ -1205,7 +1205,7 @@ append_cache_file() {
 
 review_cache_key() {
   {
-    printf 'toolkit-codex-review-cache-v2\n'
+    printf 'touchstone-codex-review-cache-v2\n'
     printf 'reviewer=%s\n' "$ACTIVE_REVIEWER"
     printf 'review_route=%s\n' "$ROUTING_DECISION"
     printf 'review_enabled=%s\n' "$REVIEW_ENABLED"
@@ -1231,7 +1231,7 @@ review_cache_key() {
 }
 
 clean_review_cache_dir() {
-  git rev-parse --git-path toolkit/codex-review-clean
+  git rev-parse --git-path touchstone/codex-review-clean
 }
 
 clean_review_cache_file() {
@@ -1326,8 +1326,8 @@ $path"
 
 extract_help_request() {
   awk '
-    /^TOOLKIT_HELP_REQUEST_BEGIN$/ { in_request = 1; next }
-    /^TOOLKIT_HELP_REQUEST_END$/ { exit }
+    /^TOUCHSTONE_HELP_REQUEST_BEGIN$/ { in_request = 1; next }
+    /^TOUCHSTONE_HELP_REQUEST_END$/ { exit }
     in_request { print }
   ' <<EOF
 $1
@@ -1549,7 +1549,7 @@ print_banner() {
   label="$(reviewer_label)"
   printf "${C_CYAN}"
   printf '\n  ╔══════════════════════════════════════╗\n'
-  printf '  ║         ⚡ TOOLKIT REVIEW ⚡        ║\n'
+  printf '  ║         ⚡ TOUCHSTONE REVIEW ⚡        ║\n'
   printf '  ║     %s merge code review%s║\n' "$label" "$(printf '%*s' $((23 - ${#label})) '')"
   printf '  ╚══════════════════════════════════════╝\n\n'
   printf "${C_RESET}"

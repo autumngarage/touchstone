@@ -1,20 +1,20 @@
-#compdef toolkit
+#compdef touchstone
 
-_toolkit() {
+_touchstone() {
   local -a commands
   commands=(
-    'init:Add toolkit to the current project'
+    'init:Add touchstone to the current project'
     'new:Bootstrap a new project from scratch'
-    'update:Create a branch and commit for toolkit updates'
+    'update:Create a branch and commit for touchstone updates'
     'sync:Update all registered projects'
     'status:Dashboard — health of all projects'
-    'doctor:Check toolkit installation health'
+    'doctor:Check touchstone installation health'
     'version:Show installed version'
     'list:Show registered projects'
     'unregister:Remove a project from the registry'
     'diff:Compare project files against latest templates'
     'adr:Create or list Architecture Decision Records'
-    'release:Cut a new toolkit release (maintainer)'
+    'release:Cut a new touchstone release (maintainer)'
     'help:Show help'
   )
 
@@ -24,14 +24,14 @@ _toolkit() {
 
   case "$state" in
     command)
-      _describe 'toolkit command' commands
+      _describe 'touchstone command' commands
       ;;
     args)
       case "$words[1]" in
         init)
           _arguments \
             '--no-setup[Bootstrap files without running setup.sh]' \
-            '--no-register[Do not add the project to ~/.toolkit-projects]' \
+            '--no-register[Do not add the project to ~/.touchstone-projects]' \
             '--type[Project type]:project type:(auto node python swift rust go generic)' \
             '--unsafe-paths[Comma-separated high-scrutiny paths]:paths:' \
             '--reviewer[AI reviewer]:reviewer:(auto codex claude gemini local none)' \
@@ -46,7 +46,7 @@ _toolkit() {
         new)
           _arguments \
             '1:project directory:_directories' \
-            '--no-register[Do not add the project to ~/.toolkit-projects]' \
+            '--no-register[Do not add the project to ~/.touchstone-projects]' \
             '--type[Project type]:project type:(auto node python swift rust go generic)' \
             '--unsafe-paths[Comma-separated high-scrutiny paths]:paths:' \
             '--reviewer[AI reviewer]:reviewer:(auto codex claude gemini local none)' \
@@ -66,15 +66,15 @@ _toolkit() {
           ;;
         sync)
           _arguments \
-            '--pull-first[Pull latest toolkit before syncing]' \
+            '--pull-first[Pull latest touchstone before syncing]' \
             '--check[Report which projects need sync]' \
             '--dry-run[Preview updates without applying]'
           ;;
         unregister)
           # Complete from registered projects.
           local -a projects
-          if [ -f "$HOME/.toolkit-projects" ]; then
-            projects=(${(f)"$(cat "$HOME/.toolkit-projects" 2>/dev/null)"})
+          if [ -f "$HOME/.touchstone-projects" ]; then
+            projects=(${(f)"$(cat "$HOME/.touchstone-projects" 2>/dev/null)"})
           fi
           _describe 'project' projects
           ;;
@@ -94,4 +94,4 @@ _toolkit() {
   esac
 }
 
-_toolkit "$@"
+_touchstone "$@"

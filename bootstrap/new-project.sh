@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# bootstrap/new-project.sh — spin up a new project with toolkit files.
+# bootstrap/new-project.sh — spin up a new project with touchstone files.
 #
 # Usage:
 #   new-project.sh <project-dir>
-#   new-project.sh <project-dir> --no-register   # skip adding to ~/.toolkit-projects
+#   new-project.sh <project-dir> --no-register   # skip adding to ~/.touchstone-projects
 #   new-project.sh <project-dir> --type node|python|swift|rust|go|generic|auto
 #   new-project.sh <project-dir> --unsafe-paths src/auth/,migrations/
 #   new-project.sh <project-dir> --reviewer codex|claude|gemini|local|auto|none
@@ -15,15 +15,15 @@
 #   1. Creates the directory if it doesn't exist, initializes git
 #   2. Copies templates, principles, hooks, and scripts into the project
 #   3. Makes scripts executable
-#   4. Writes .toolkit-version and .toolkit-manifest
-#   5. Registers the project in ~/.toolkit-projects (for sync-all.sh)
+#   4. Writes .touchstone-version and .touchstone-manifest
+#   5. Registers the project in ~/.touchstone-projects (for sync-all.sh)
 #   6. Prints next steps
 #
 # After running, fill in the {{PLACEHOLDERS}} in CLAUDE.md and AGENTS.md.
 #
 set -euo pipefail
 
-TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REGISTER=true
 INPUT_UNSAFE=""
 INPUT_TYPE=""
@@ -62,8 +62,8 @@ write_unsafe_paths_block() {
   shift
 
   local block_file tmp_file
-  block_file="$(mktemp -t toolkit-codex-review-block.XXXXXX)"
-  tmp_file="$(mktemp -t toolkit-codex-review.XXXXXX)"
+  block_file="$(mktemp -t touchstone-codex-review-block.XXXXXX)"
+  tmp_file="$(mktemp -t touchstone-codex-review.XXXXXX)"
 
   {
     printf 'unsafe_paths = [\n'
@@ -477,7 +477,7 @@ copy_file() {
   fi
 }
 
-# Helper: copy a toolkit-owned file, backing up existing local content first.
+# Helper: copy a Touchstone-owned file, backing up existing local content first.
 copy_file_force() {
   local src="$1"
   local dst="$2"
@@ -506,18 +506,18 @@ copy_file_force() {
   echo "    + $(basename "$dst")"
 }
 
-write_toolkit_manifest() {
+write_touchstone_manifest() {
   local manifest_tmp
-  manifest_tmp="$(mktemp -t toolkit-manifest.XXXXXX)"
+  manifest_tmp="$(mktemp -t touchstone-manifest.XXXXXX)"
   {
-    printf '# Managed by toolkit. These paths may be updated by `toolkit update`.\n'
-    printf '.toolkit-manifest\n'
-    printf '.toolkit-version\n'
-    for f in "$TOOLKIT_ROOT/principles/"*.md; do
+    printf '# Managed by touchstone. These paths may be updated by `touchstone update`.\n'
+    printf '.touchstone-manifest\n'
+    printf '.touchstone-version\n'
+    for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
       printf 'principles/%s\n' "$(basename "$f")"
     done
     printf 'scripts/codex-review.sh\n'
-    printf 'scripts/toolkit-run.sh\n'
+    printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
     printf 'scripts/cleanup-branches.sh\n'
@@ -525,7 +525,7 @@ write_toolkit_manifest() {
       printf 'scripts/run-pytest-in-venv.sh\n'
     fi
   } > "$manifest_tmp"
-  if copy_file_force "$manifest_tmp" "$PROJECT_DIR/.toolkit-manifest"; then
+  if copy_file_force "$manifest_tmp" "$PROJECT_DIR/.touchstone-manifest"; then
     rm -f "$manifest_tmp"
   else
     rm -f "$manifest_tmp"
@@ -538,7 +538,7 @@ set_codex_review_key() {
   local key="$2"
   local value="$3"
   local tmp_file
-  tmp_file="$(mktemp -t toolkit-codex-review-key.XXXXXX)"
+  tmp_file="$(mktemp -t touchstone-codex-review-key.XXXXXX)"
 
   awk -v key="$key" -v repl="$key = $value" '
     BEGIN { in_section = 0; replaced = 0 }
@@ -635,7 +635,7 @@ write_review_onboarding_config() {
   fi
 
   {
-    printf '\n# Toolkit onboarding choices. You can edit these later.\n'
+    printf '\n# Touchstone onboarding choices. You can edit these later.\n'
     printf '[review]\n'
     printf 'enabled = %s\n' "$enabled"
     printf 'reviewers = %s\n' "$reviewers_toml"
@@ -713,46 +713,46 @@ print_review_setup_hint() {
 
 echo ""
 echo "==> Copying templates (project-owned, won't be auto-updated):"
-copy_file "$TOOLKIT_ROOT/templates/CLAUDE.md" "$PROJECT_DIR/CLAUDE.md"
-copy_file "$TOOLKIT_ROOT/templates/AGENTS.md" "$PROJECT_DIR/AGENTS.md"
-copy_file "$TOOLKIT_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-commit-config.yaml"
-copy_file "$TOOLKIT_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
-copy_file "$TOOLKIT_ROOT/templates/pull_request_template.md" "$PROJECT_DIR/.github/pull_request_template.md"
-copy_file "$TOOLKIT_ROOT/hooks/codex-review.config.example.toml" "$PROJECT_DIR/.codex-review.toml"
+copy_file "$TOUCHSTONE_ROOT/templates/CLAUDE.md" "$PROJECT_DIR/CLAUDE.md"
+copy_file "$TOUCHSTONE_ROOT/templates/AGENTS.md" "$PROJECT_DIR/AGENTS.md"
+copy_file "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-commit-config.yaml"
+copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
+copy_file "$TOUCHSTONE_ROOT/templates/pull_request_template.md" "$PROJECT_DIR/.github/pull_request_template.md"
+copy_file "$TOUCHSTONE_ROOT/hooks/codex-review.config.example.toml" "$PROJECT_DIR/.codex-review.toml"
 CODEX_REVIEW_CONFIG_CREATED="$LAST_COPY_CREATED"
-copy_file "$TOOLKIT_ROOT/templates/setup.sh" "$PROJECT_DIR/setup.sh"
+copy_file "$TOUCHSTONE_ROOT/templates/setup.sh" "$PROJECT_DIR/setup.sh"
 chmod +x "$PROJECT_DIR/setup.sh" 2>/dev/null || true
 
 echo ""
-echo "==> Copying principles (toolkit-owned, will be auto-updated):"
+echo "==> Copying principles (touchstone-owned, will be auto-updated):"
 mkdir -p "$PROJECT_DIR/principles"
-for f in "$TOOLKIT_ROOT/principles/"*.md; do
+for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
   copy_file_force "$f" "$PROJECT_DIR/principles/$(basename "$f")"
 done
 
 echo ""
-echo "==> Copying scripts (toolkit-owned, will be auto-updated):"
+echo "==> Copying scripts (touchstone-owned, will be auto-updated):"
 mkdir -p "$PROJECT_DIR/scripts"
-copy_file_force "$TOOLKIT_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
-copy_file_force "$TOOLKIT_ROOT/scripts/toolkit-run.sh" "$PROJECT_DIR/scripts/toolkit-run.sh"
-copy_file_force "$TOOLKIT_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
-copy_file_force "$TOOLKIT_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
-copy_file_force "$TOOLKIT_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
+copy_file_force "$TOUCHSTONE_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
+copy_file_force "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_DIR/scripts/touchstone-run.sh"
+copy_file_force "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
+copy_file_force "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
+copy_file_force "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
 chmod +x "$PROJECT_DIR/scripts/"*.sh
 
-# Write toolkit version.
+# Write touchstone version.
 # Use git SHA if this is a git clone, otherwise use VERSION (brew install).
-if [ -d "$TOOLKIT_ROOT/.git" ]; then
-  TOOLKIT_SHA="$(git -C "$TOOLKIT_ROOT" rev-parse HEAD)"
+if [ -d "$TOUCHSTONE_ROOT/.git" ]; then
+  TOUCHSTONE_SHA="$(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD)"
 else
-  TOOLKIT_SHA="$(cat "$TOOLKIT_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")"
+  TOUCHSTONE_SHA="$(cat "$TOUCHSTONE_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")"
 fi
-echo "$TOOLKIT_SHA" > "$PROJECT_DIR/.toolkit-version"
+echo "$TOUCHSTONE_SHA" > "$PROJECT_DIR/.touchstone-version"
 echo ""
-echo "==> Wrote .toolkit-version: $TOOLKIT_SHA"
+echo "==> Wrote .touchstone-version: $TOUCHSTONE_SHA"
 
-# Register in ~/.toolkit-projects for sync-all.sh.
-PROJECTS_FILE="$HOME/.toolkit-projects"
+# Register in ~/.touchstone-projects for sync-all.sh.
+PROJECTS_FILE="$HOME/.touchstone-projects"
 if [ "$REGISTER" = true ]; then
   # Ensure file exists.
   touch "$PROJECTS_FILE"
@@ -845,7 +845,7 @@ if [ -t 0 ] && [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
   if [ "$WORKFLOW_CONFIG_REQUESTED" = false ]; then
     echo ""
     echo "==> Choose Git workflow helpers (press Enter for the default):"
-    echo "   Plain Git: simplest, lowest surprise; use Toolkit's branch/PR scripts."
+    echo "   Plain Git: simplest, lowest surprise; use Touchstone's branch/PR scripts."
     echo "   GitButler: optional power workflow for stacked or parallel branches, undo history, and AI-agent branch management."
     if [ "$(prompt_yes_no "Use GitButler for this project?" "false")" = "true" ]; then
       INPUT_GIT_WORKFLOW="gitbutler"
@@ -923,10 +923,10 @@ if [ "$REVIEW_CONFIG_REQUESTED" = true ]; then
   fi
 fi
 
-# Write .toolkit-config with project type (skip if already exists).
-if [ ! -f "$PROJECT_DIR/.toolkit-config" ]; then
+# Write .touchstone-config with project type (skip if already exists).
+if [ ! -f "$PROJECT_DIR/.touchstone-config" ]; then
   {
-    printf '# toolkit project profile. Commit this file so all clones use the same commands.\n'
+    printf '# touchstone project profile. Commit this file so all clones use the same commands.\n'
     printf 'project_type=%s\n' "$INPUT_TYPE"
     if [ -n "$PACKAGE_MANAGER" ]; then
       printf 'package_manager=%s\n' "$PACKAGE_MANAGER"
@@ -942,22 +942,22 @@ if [ ! -f "$PROJECT_DIR/.toolkit-config" ]; then
     printf 'build_command=\n'
     printf 'test_command=%s\n' "$INPUT_TEST"
     printf 'validate_command=\n'
-  } > "$PROJECT_DIR/.toolkit-config"
-  echo "==> Wrote .toolkit-config: project_type=$INPUT_TYPE"
+  } > "$PROJECT_DIR/.touchstone-config"
+  echo "==> Wrote .touchstone-config: project_type=$INPUT_TYPE"
 else
-  echo "==> .toolkit-config already exists; left unchanged."
+  echo "==> .touchstone-config already exists; left unchanged."
 fi
 
 # Keep the legacy pytest helper only for Python projects. Generic ecosystem
-# tasks should go through scripts/toolkit-run.sh.
+# tasks should go through scripts/touchstone-run.sh.
 if [ "$INPUT_TYPE" = "python" ]; then
   echo ""
   echo "==> Copying Python helper:"
-  copy_file_force "$TOOLKIT_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
+  copy_file_force "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
   chmod +x "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" 2>/dev/null || true
 fi
 
-write_toolkit_manifest
+write_touchstone_manifest
 
 echo ""
 echo "==> Done! Next steps:"

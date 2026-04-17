@@ -1,4 +1,4 @@
-# Pre-commit hooks for the toolkit itself (dogfooding).
+# Pre-commit hooks for the Touchstone itself (dogfooding).
 # Install: pre-commit install --install-hooks
 
 repos:
@@ -31,7 +31,7 @@ repos:
   - repo: local
     hooks:
       - id: self-tests
-        name: Toolkit self-tests
+        name: Touchstone self-tests
         entry: /usr/bin/env bash -c 'set -e; for test in tests/test-*.sh; do /usr/bin/env bash "$test"; done'
         language: system
         stages: [pre-push]

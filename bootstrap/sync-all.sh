@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
 #
-# bootstrap/sync-all.sh — update all registered projects to the latest toolkit.
+# bootstrap/sync-all.sh — update all registered projects to the latest touchstone.
 #
 # Usage:
-#   ~/Repos/toolkit/bootstrap/sync-all.sh              # update all projects
-#   ~/Repos/toolkit/bootstrap/sync-all.sh --dry-run     # show what would change
-#   ~/Repos/toolkit/bootstrap/sync-all.sh --pull-first  # git pull toolkit before syncing
+#   ~/Repos/touchstone/bootstrap/sync-all.sh              # update all projects
+#   ~/Repos/touchstone/bootstrap/sync-all.sh --dry-run     # show what would change
+#   ~/Repos/touchstone/bootstrap/sync-all.sh --pull-first  # git pull touchstone before syncing
 #
-# Reads project paths from ~/.toolkit-projects (one path per line, populated
+# Reads project paths from ~/.touchstone-projects (one path per line, populated
 # by new-project.sh). Runs update-project.sh in each one.
 #
 # For fully automated sync, add to cron:
 #   crontab -e
-#   0 9 * * 1  cd ~/Repos/toolkit && git pull && ~/Repos/toolkit/bootstrap/sync-all.sh
+#   0 9 * * 1  cd ~/Repos/touchstone && git pull && ~/Repos/touchstone/bootstrap/sync-all.sh
 #
 set -euo pipefail
 
-TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-UPDATE_SCRIPT="$TOOLKIT_ROOT/bootstrap/update-project.sh"
-PROJECTS_FILE="$HOME/.toolkit-projects"
+TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+UPDATE_SCRIPT="$TOUCHSTONE_ROOT/bootstrap/update-project.sh"
+PROJECTS_FILE="$HOME/.touchstone-projects"
 DRY_RUN=""
 PULL_FIRST=false
 CHECK_ONLY=false
@@ -38,24 +38,24 @@ done
 
 if [ ! -f "$PROJECTS_FILE" ]; then
   echo "No projects registered. Bootstrap a project first:"
-  echo "  $TOOLKIT_ROOT/bootstrap/new-project.sh <project-dir>"
+  echo "  $TOUCHSTONE_ROOT/bootstrap/new-project.sh <project-dir>"
   exit 0
 fi
 
-# Optionally update the toolkit itself first.
+# Optionally update the Touchstone itself first.
 if [ "$PULL_FIRST" = true ]; then
-  echo "==> Pulling latest toolkit ..."
-  git -C "$TOOLKIT_ROOT" pull --rebase
+  echo "==> Pulling latest touchstone ..."
+  git -C "$TOUCHSTONE_ROOT" pull --rebase
   echo ""
 fi
 
 # Check-only mode: report which projects need sync, then exit.
 if [ "$CHECK_ONLY" = true ]; then
   CURRENT_ID="$(
-    if [ -d "$TOOLKIT_ROOT/.git" ]; then
-      git -C "$TOOLKIT_ROOT" rev-parse HEAD
+    if [ -d "$TOUCHSTONE_ROOT/.git" ]; then
+      git -C "$TOUCHSTONE_ROOT" rev-parse HEAD
     else
-      cat "$TOOLKIT_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]'
+      cat "$TOUCHSTONE_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]'
     fi
   )"
   BEHIND=0
@@ -68,7 +68,7 @@ if [ "$CHECK_ONLY" = true ]; then
       echo "  ? $(basename "$project_dir") — directory not found"
       continue
     fi
-    proj_id="$(cat "$project_dir/.toolkit-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
+    proj_id="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
     if [ "$proj_id" = "$CURRENT_ID" ]; then
       echo "  ✓ $(basename "$project_dir") — up to date"
     else
@@ -80,7 +80,7 @@ if [ "$CHECK_ONLY" = true ]; then
   if [ "$BEHIND" -eq 0 ]; then
     echo "All $TOTAL projects are up to date."
   else
-    echo "$BEHIND/$TOTAL projects need sync. Run: toolkit sync"
+    echo "$BEHIND/$TOTAL projects need sync. Run: touchstone sync"
   fi
   exit 0
 fi

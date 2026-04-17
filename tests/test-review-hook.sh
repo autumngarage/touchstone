@@ -4,8 +4,8 @@
 #
 set -euo pipefail
 
-TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TEST_DIR="$(mktemp -d -t toolkit-test-review-hook.XXXXXX)"
+TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TEST_DIR="$(mktemp -d -t touchstone-test-review-hook.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
 echo "==> Test: review hook parses multiline unsafe_paths"
@@ -30,10 +30,10 @@ unset CODEX_REVIEW_IN_PROGRESS
 
 mkdir -p "$REPO_DIR" "$FAKE_BIN"
 git -C "$REPO_DIR" init >/dev/null 2>&1
-git -C "$REPO_DIR" config user.name "Toolkit Test"
-git -C "$REPO_DIR" config user.email "toolkit@example.com"
+git -C "$REPO_DIR" config user.name "Touchstone Test"
+git -C "$REPO_DIR" config user.email "touchstone@example.com"
 
-cp "$TOOLKIT_ROOT/.codex-review.toml" "$REPO_DIR/.codex-review.toml"
+cp "$TOUCHSTONE_ROOT/.codex-review.toml" "$REPO_DIR/.codex-review.toml"
 printf 'base\n' > "$REPO_DIR/example.txt"
 git -C "$REPO_DIR" add .codex-review.toml example.txt
 git -C "$REPO_DIR" commit -m "base" >/dev/null 2>&1
@@ -65,7 +65,7 @@ chmod +x "$FAKE_BIN/gh" "$FAKE_BIN/codex"
     PROMPT_FILE="$PROMPT_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" >/dev/null
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
 )
 
 if grep -q -- '- Anything in bootstrap/new-project.sh' "$PROMPT_FILE" \
@@ -99,7 +99,7 @@ chmod +x "$FAKE_BIN/codex"
     PRE_COMMIT_REMOTE_BRANCH="refs/heads/feature/test" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$TEST_DIR/feature-push-output.txt" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TEST_DIR/feature-push-output.txt" 2>&1
 )
 
 CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
@@ -121,7 +121,7 @@ fi
     PRE_COMMIT_REMOTE_BRANCH="refs/heads/main" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" >/dev/null
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
 )
 
 CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
@@ -143,7 +143,7 @@ echo "==> Test: review hook skips nested Codex review subprocesses"
     CODEX_REVIEW_IN_PROGRESS=1 \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$TEST_DIR/nested-review-output.txt" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TEST_DIR/nested-review-output.txt" 2>&1
 )
 
 CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
@@ -157,7 +157,7 @@ else
 fi
 
 echo "==> Test: review hook caches exact clean reviews"
-rm -rf "$(git -C "$REPO_DIR" rev-parse --absolute-git-dir)/toolkit/codex-review-clean"
+rm -rf "$(git -C "$REPO_DIR" rev-parse --absolute-git-dir)/touchstone/codex-review-clean"
 cat > "$FAKE_BIN/codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -173,7 +173,7 @@ chmod +x "$FAKE_BIN/codex"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" >/dev/null
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
 )
 
 (
@@ -181,7 +181,7 @@ chmod +x "$FAKE_BIN/codex"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CACHE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CACHE_OUTPUT" 2>&1
 )
 
 CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
@@ -200,7 +200,7 @@ fi
     CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" >/dev/null
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
 )
 
 CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
@@ -239,7 +239,7 @@ git -C "$REPO_DIR" commit -m "change again" >/dev/null 2>&1
     PROMPT_FILE="$PROMPT_HASH_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" >/dev/null
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
 )
 
 if grep -q -- '- Anything in src/#secret/' "$PROMPT_HASH_FILE" \
@@ -254,8 +254,8 @@ fi
 echo "==> Test: review hook refuses to auto-commit unsafe path fixes"
 mkdir -p "$REPO_UNSAFE/bootstrap"
 git -C "$REPO_UNSAFE" init >/dev/null 2>&1
-git -C "$REPO_UNSAFE" config user.name "Toolkit Test"
-git -C "$REPO_UNSAFE" config user.email "toolkit@example.com"
+git -C "$REPO_UNSAFE" config user.name "Touchstone Test"
+git -C "$REPO_UNSAFE" config user.email "touchstone@example.com"
 {
   printf '[codex_review]\n'
   printf 'safe_by_default = true\n'
@@ -285,7 +285,7 @@ set +e
   cd "$REPO_UNSAFE"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CODEX_REVIEW_BASE="HEAD~1" \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$UNSAFE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$UNSAFE_OUTPUT" 2>&1
 )
 UNSAFE_EXIT=$?
 set -e
@@ -314,8 +314,8 @@ setup_cascade_repo() {
   rm -rf "$CASCADE_REPO"
   mkdir -p "$CASCADE_REPO"
   git -C "$CASCADE_REPO" init >/dev/null 2>&1
-  git -C "$CASCADE_REPO" config user.name "Toolkit Test"
-  git -C "$CASCADE_REPO" config user.email "toolkit@example.com"
+  git -C "$CASCADE_REPO" config user.name "Touchstone Test"
+  git -C "$CASCADE_REPO" config user.email "touchstone@example.com"
   printf 'base\n' > "$CASCADE_REPO/example.txt"
   git -C "$CASCADE_REPO" add example.txt
   git -C "$CASCADE_REPO" commit -m "base" >/dev/null 2>&1
@@ -361,7 +361,7 @@ chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/claude" "$CASCADE_BIN/codex"
     CASCADE_CALLS="$CASCADE_CALLS" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
 )
 
 if grep -q 'claude-called' "$CASCADE_CALLS" && ! grep -q 'codex-called' "$CASCADE_CALLS"; then
@@ -403,7 +403,7 @@ chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/codex"
     CASCADE_CALLS="$CASCADE_CALLS" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
 )
 
 if grep -q 'codex-called' "$CASCADE_CALLS" && grep -q 'Using reviewer: Codex' "$CASCADE_OUTPUT"; then
@@ -452,7 +452,7 @@ chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/claude" "$CASCADE_BIN/codex"
     CASCADE_CALLS="$CASCADE_CALLS" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
 )
 
 if grep -q 'codex-called' "$CASCADE_CALLS" && ! grep -q 'claude-called' "$CASCADE_CALLS"; then
@@ -486,7 +486,7 @@ set +e
   cd "$CASCADE_REPO"
   PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CODEX_REVIEW_BASE="HEAD~1" \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
 )
 ALL_UNAVAIL_EXIT=$?
 set -e
@@ -534,7 +534,7 @@ chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/codex"
     CASCADE_CALLS="$CASCADE_CALLS" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
 )
 
 if [ ! -s "$CASCADE_CALLS" ] && grep -q 'AI review disabled' "$CASCADE_OUTPUT"; then
@@ -577,7 +577,7 @@ chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/local-reviewer"
     LOCAL_PROMPT_FILE="$LOCAL_PROMPT_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
 )
 
 if grep -q 'Using reviewer: Local command' "$CASCADE_OUTPUT" \
@@ -630,7 +630,7 @@ chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/local-reviewer" "$CASCADE_BIN/codex"
     CASCADE_CALLS="$CASCADE_CALLS" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
 )
 
 if grep -q 'local-called' "$CASCADE_CALLS" \
@@ -682,7 +682,7 @@ chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/local-reviewer" "$CASCADE_BIN/codex"
     CASCADE_CALLS="$CASCADE_CALLS" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
 )
 
 if grep -q 'codex-called' "$CASCADE_CALLS" \
@@ -696,7 +696,7 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Test: TOOLKIT_REVIEWER forces a specific reviewer"
+echo "==> Test: TOUCHSTONE_REVIEWER forces a specific reviewer"
 setup_cascade_repo
 {
   printf '[codex_review]\nsafe_by_default = true\n'
@@ -730,23 +730,23 @@ chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/claude" "$CASCADE_BIN/codex"
   cd "$CASCADE_REPO"
   PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CASCADE_CALLS="$CASCADE_CALLS" \
-    TOOLKIT_REVIEWER=codex \
+    TOUCHSTONE_REVIEWER=codex \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
 )
 
 if grep -q 'codex-called' "$CASCADE_CALLS" && ! grep -q 'claude-called' "$CASCADE_CALLS" \
   && grep -q 'Using reviewer: Codex' "$CASCADE_OUTPUT"; then
-  echo "==> PASS: TOOLKIT_REVIEWER=codex forced codex despite claude being first"
+  echo "==> PASS: TOUCHSTONE_REVIEWER=codex forced codex despite claude being first"
 else
-  echo "FAIL: expected TOOLKIT_REVIEWER to force codex" >&2
+  echo "FAIL: expected TOUCHSTONE_REVIEWER to force codex" >&2
   cat "$CASCADE_CALLS" >&2
   cat "$CASCADE_OUTPUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Test: TOOLKIT_REVIEWER hard-fails when reviewer unavailable"
+echo "==> Test: TOUCHSTONE_REVIEWER hard-fails when reviewer unavailable"
 setup_cascade_repo
 {
   printf '[codex_review]\nsafe_by_default = true\n'
@@ -766,18 +766,18 @@ set +e
 (
   cd "$CASCADE_REPO"
   PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    TOOLKIT_REVIEWER=claude \
+    TOUCHSTONE_REVIEWER=claude \
     CODEX_REVIEW_BASE="HEAD~1" \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
 )
 FORCED_UNAVAIL_EXIT=$?
 set -e
 
 if [ "$FORCED_UNAVAIL_EXIT" -eq 1 ] \
-  && grep -q 'TOOLKIT_REVIEWER=claude' "$CASCADE_OUTPUT"; then
-  echo "==> PASS: TOOLKIT_REVIEWER hard-failed when reviewer unavailable"
+  && grep -q 'TOUCHSTONE_REVIEWER=claude' "$CASCADE_OUTPUT"; then
+  echo "==> PASS: TOUCHSTONE_REVIEWER hard-failed when reviewer unavailable"
 else
-  echo "FAIL: expected exit 1 when TOOLKIT_REVIEWER names unavailable reviewer" >&2
+  echo "FAIL: expected exit 1 when TOUCHSTONE_REVIEWER names unavailable reviewer" >&2
   echo "exit code: $FORCED_UNAVAIL_EXIT" >&2
   cat "$CASCADE_OUTPUT" >&2
   ERRORS=$((ERRORS + 1))
@@ -812,7 +812,7 @@ chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/codex"
     CASCADE_CALLS="$CASCADE_CALLS" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
 )
 
 if grep -q 'codex-called' "$CASCADE_CALLS" && grep -q 'Using reviewer: Codex' "$CASCADE_OUTPUT"; then
@@ -852,10 +852,10 @@ if printf '%s' "$prompt" | grep -q 'Peer reviewer answer'; then
   printf 'peer answer considered\n'
   printf 'CODEX_REVIEW_CLEAN\n'
 else
-  printf 'TOOLKIT_HELP_REQUEST_BEGIN\n'
+  printf 'TOUCHSTONE_HELP_REQUEST_BEGIN\n'
   printf 'question: Is this larger shell change safe on macOS?\n'
   printf 'context: focus on process cleanup and push hook behavior\n'
-  printf 'TOOLKIT_HELP_REQUEST_END\n'
+  printf 'TOUCHSTONE_HELP_REQUEST_END\n'
   printf 'CODEX_REVIEW_BLOCKED\n'
 fi
 CLEOF
@@ -878,7 +878,7 @@ chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/claude" "$CASCADE_BIN/codex"
     ASSIST_CODEX_PROMPT="$ASSIST_CODEX_PROMPT" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
 )
 
 CLAUDE_ASSIST_CALLS="$(grep -c 'claude-called' "$CASCADE_CALLS" || true)"
@@ -929,7 +929,7 @@ chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/claude"
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MODE=review-only \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
 )
 
 if grep -q 'Read,Grep,Glob,Bash' "$CLAUDE_ARGS_FILE" && ! grep -q 'Edit' "$CLAUDE_ARGS_FILE"; then
@@ -947,7 +947,7 @@ fi
     CLAUDE_ARGS_FILE="$CLAUDE_ARGS_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
 )
 
 if grep -q 'Edit,Write' "$CLAUDE_ARGS_FILE"; then
@@ -970,8 +970,8 @@ setup_mode_repo() {
   rm -rf "$MODE_REPO"
   mkdir -p "$MODE_REPO"
   git -C "$MODE_REPO" init >/dev/null 2>&1
-  git -C "$MODE_REPO" config user.name "Toolkit Test"
-  git -C "$MODE_REPO" config user.email "toolkit@example.com"
+  git -C "$MODE_REPO" config user.name "Touchstone Test"
+  git -C "$MODE_REPO" config user.email "touchstone@example.com"
   printf 'base\n' > "$MODE_REPO/example.txt"
   git -C "$MODE_REPO" add example.txt
   git -C "$MODE_REPO" commit -m "base" >/dev/null 2>&1
@@ -1010,7 +1010,7 @@ chmod +x "$MODE_BIN/gh" "$MODE_BIN/codex"
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MODE=review-only \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
 )
 
 if grep -q -- '--sandbox read-only' "$CODEX_ARGS_FILE"; then
@@ -1029,7 +1029,7 @@ echo "==> Test: codex adapter uses --sandbox workspace-write in fix mode"
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MODE=fix \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
 )
 
 if grep -q -- '--sandbox workspace-write' "$CODEX_ARGS_FILE"; then
@@ -1069,7 +1069,7 @@ git -C "$MODE_REPO" commit -m "claude config" >/dev/null 2>&1
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MODE=diff-only \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
 )
 
 if grep -q 'Read,Grep,Glob' "$CLAUDE_ARGS_FILE" \
@@ -1110,7 +1110,7 @@ git -C "$MODE_REPO" commit -m "codex config" >/dev/null 2>&1
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_NO_AUTOFIX=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
 )
 
 if grep -q -- '--sandbox read-only' "$CODEX_ARGS_FILE"; then
@@ -1142,7 +1142,7 @@ set +e
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MODE=review-only \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
 )
 FIXED_RO_EXIT=$?
 set -e
@@ -1179,7 +1179,7 @@ chmod +x "$MODE_BIN/gh" "$MODE_BIN/codex"
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MODE=invalid \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
 )
 
 if grep -q "Invalid mode" "$MODE_OUTPUT" \
@@ -1205,8 +1205,8 @@ setup_timeout_repo() {
   rm -rf "$TIMEOUT_REPO"
   mkdir -p "$TIMEOUT_REPO"
   git -C "$TIMEOUT_REPO" init >/dev/null 2>&1
-  git -C "$TIMEOUT_REPO" config user.name "Toolkit Test"
-  git -C "$TIMEOUT_REPO" config user.email "toolkit@example.com"
+  git -C "$TIMEOUT_REPO" config user.name "Touchstone Test"
+  git -C "$TIMEOUT_REPO" config user.email "touchstone@example.com"
   printf 'base\n' > "$TIMEOUT_REPO/example.txt"
   git -C "$TIMEOUT_REPO" add example.txt
   git -C "$TIMEOUT_REPO" commit -m "base" >/dev/null 2>&1
@@ -1253,7 +1253,7 @@ set +e
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_TIMEOUT=13 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
 )
 CLEAN_TIMEOUT_EXIT=$?
 set -e
@@ -1297,7 +1297,7 @@ set +e
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_TIMEOUT=2 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
 )
 TIMEOUT_EXIT=$?
 set -e
@@ -1352,7 +1352,7 @@ set +e
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
 )
 CLOSED_EXIT=$?
 set -e
@@ -1374,7 +1374,7 @@ set +e
   PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
 )
 OPEN_EXIT=$?
 set -e
@@ -1410,7 +1410,7 @@ set +e
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
 )
 MALFORMED_EXIT=$?
 set -e
@@ -1436,8 +1436,8 @@ setup_ctx_repo() {
   rm -rf "$CTX_REPO"
   mkdir -p "$CTX_REPO"
   git -C "$CTX_REPO" init >/dev/null 2>&1
-  git -C "$CTX_REPO" config user.name "Toolkit Test"
-  git -C "$CTX_REPO" config user.email "toolkit@example.com"
+  git -C "$CTX_REPO" config user.name "Touchstone Test"
+  git -C "$CTX_REPO" config user.email "touchstone@example.com"
   printf 'base\n' > "$CTX_REPO/example.txt"
   git -C "$CTX_REPO" add example.txt
   git -C "$CTX_REPO" commit -m "base" >/dev/null 2>&1
@@ -1478,7 +1478,7 @@ git -C "$CTX_REPO" commit -m "add context" >/dev/null 2>&1
     CTX_PROMPT="$CTX_PROMPT" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
 )
 
 if grep -q 'UNIQUE_CTX_MARKER_12345' "$CTX_PROMPT" \
@@ -1503,7 +1503,7 @@ git -C "$CTX_REPO" commit -m "add github context" >/dev/null 2>&1
     CTX_PROMPT="$CTX_PROMPT" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
 )
 
 if grep -q 'GITHUB_CTX_MARKER_67890' "$CTX_PROMPT"; then
@@ -1522,7 +1522,7 @@ setup_ctx_bin
     CTX_PROMPT="$CTX_PROMPT" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
 )
 
 if ! grep -q 'Review context' "$CTX_OUTPUT" \
@@ -1546,7 +1546,7 @@ setup_ctx_bin
     CTX_PROMPT="$CTX_PROMPT" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
 )
 
 if grep -q 'loading diff' "$CTX_OUTPUT" \
@@ -1583,7 +1583,7 @@ rm -f "$JSON_SUMMARY"
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_SUMMARY_FILE="$JSON_SUMMARY" \
-    bash "$TOOLKIT_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
 )
 
 if [ -f "$JSON_SUMMARY" ] \

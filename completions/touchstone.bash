@@ -1,4 +1,4 @@
-_toolkit() {
+_touchstone() {
   local cur prev commands
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
@@ -6,7 +6,7 @@ _toolkit() {
   commands="init new update sync status doctor version list unregister diff adr release help"
 
   case "$prev" in
-    toolkit)
+    touchstone)
       COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
       ;;
     init|new)
@@ -19,8 +19,8 @@ _toolkit() {
       COMPREPLY=( $(compgen -W "--pull-first --check --dry-run" -- "$cur") )
       ;;
     unregister)
-      if [ -f "$HOME/.toolkit-projects" ]; then
-        COMPREPLY=( $(compgen -W "$(cat "$HOME/.toolkit-projects" 2>/dev/null)" -- "$cur") )
+      if [ -f "$HOME/.touchstone-projects" ]; then
+        COMPREPLY=( $(compgen -W "$(cat "$HOME/.touchstone-projects" 2>/dev/null)" -- "$cur") )
       fi
       ;;
     adr)
@@ -32,4 +32,4 @@ _toolkit() {
   esac
 }
 
-complete -F _toolkit toolkit
+complete -F _touchstone touchstone
