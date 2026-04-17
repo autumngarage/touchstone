@@ -104,15 +104,15 @@ is_fully_applied() {
   base="$(git merge-base "$upstream" "$branch" 2>/dev/null)" || return 1
   [ -z "$base" ] && return 1
 
-  local changed_files
-  changed_files="$(git diff --name-only "$base" "$branch" 2>/dev/null)" || return 1
-  [ -z "$changed_files" ] && return 0
-
+  # --no-renames disables git's rename heuristic, which would otherwise
+  # collapse "delete old, add new" into a single destination-path entry and
+  # hide the deletion from the tree check. -z makes the list NUL-delimited,
+  # safe for paths containing spaces, quotes, or newlines.
   local file
-  while IFS= read -r file; do
+  while IFS= read -r -d '' file; do
     [ -z "$file" ] && continue
     git diff --quiet "$upstream" "$branch" -- "$file" 2>/dev/null || return 1
-  done <<< "$changed_files"
+  done < <(git diff --name-only --no-renames -z "$base" "$branch" 2>/dev/null)
 
   return 0
 }

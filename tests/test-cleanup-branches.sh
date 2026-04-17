@@ -10,12 +10,16 @@
 #                             earlier revision of this tool missed)
 #   - rebase-merge           (N commits with matching patch-ids on upstream)
 #
-# Plus two branches that must survive cleanup:
+# Plus three branches that must survive cleanup:
 #   - a control with genuinely unique work
 #   - an add-then-revert case — the branch's patch-id still appears in
 #     upstream history, but the current tree no longer has the changes, so
 #     deleting would lose work. A history-based patch-id check would fail
 #     this; the tree-equivalence check passes it.
+#   - a rename-half case — branch renames source→dest; upstream added dest
+#     independently but kept source. Rename detection on the branch's file
+#     list would hide the unverified deletion of source; --no-renames
+#     exposes both paths so the tree check catches the half-apply.
 #
 set -euo pipefail
 
@@ -110,6 +114,22 @@ git checkout -q main
 git merge --squash feat/added-then-reverted >/dev/null
 git commit -qm "feat: add DEL (#4)"
 git revert --no-edit HEAD >/dev/null
+
+# --- (6) Rename-half: branch renames source→dest; main adds dest
+# independently but does not delete source. The branch's deletion of
+# source is not on main — must survive.
+echo "O" > source_to_rename.txt
+git add source_to_rename.txt
+git commit -qm "chore: seed source file for rename test"
+
+git checkout -q -b feat/rename-half
+git mv source_to_rename.txt dest_after_rename.txt
+git commit -qm "feat: rename source to dest"
+
+git checkout -q main
+echo "O" > dest_after_rename.txt
+git add dest_after_rename.txt
+git commit -qm "chore: add dest (source left in place)"
 git push -q origin main
 
 git checkout -q main
@@ -133,7 +153,7 @@ for deleted in feat/single-squash feat/multi-squash feat/rebase-merged; do
   fi
 done
 
-for preserved in feat/keep-me feat/added-then-reverted; do
+for preserved in feat/keep-me feat/added-then-reverted feat/rename-half; do
   if ! git rev-parse --verify --quiet "refs/heads/$preserved" >/dev/null; then
     fail "$preserved should have been preserved"
   fi
@@ -163,6 +183,6 @@ for required in "Default mode is DRY RUN" "Ancestor-merged" "Squash-merged" "Wor
   fi
 done
 
-echo "==> PASS: single-squash, multi-squash, and rebase-merged branches detected;"
-echo "         unmerged work and add-then-reverted branch preserved;"
+echo "==> PASS: squash, multi-squash, and rebase-merged branches force-deleted;"
+echo "         unique, add-then-reverted, and rename-half branches preserved;"
 echo "         --help covers full safety block"
