@@ -6,7 +6,7 @@ Reviews your code with the configured AI reviewer before it reaches the default 
 
 ### 1. Pick a reviewer
 
-Run `toolkit new` or `toolkit init` interactively and answer the AI review prompts. You can choose:
+Run `touchstone new` or `touchstone init` interactively and answer the AI review prompts. You can choose:
 - hosted review — Codex, Claude, Gemini, or `auto` for every change
 - local review — a local model or wrapper command that reads the review prompt from stdin
 - hybrid review — small diffs try local first; larger diffs go to a hosted reviewer
@@ -23,16 +23,16 @@ brew install pre-commit
 
 ### 3. Wire the hook
 
-The toolkit's `.pre-commit-config.yaml` template already includes the AI review hook. Just install the hooks:
+The touchstone's `.pre-commit-config.yaml` template already includes the AI review hook. Just install the hooks:
 
 ```bash
 pre-commit install --install-hooks
 ```
 
-For project validation, prefer the toolkit runner so hooks use the repo's `.toolkit-config` profile instead of hardcoding an ecosystem command:
+For project validation, prefer the Touchstone runner so hooks use the repo's `.touchstone-config` profile instead of hardcoding an ecosystem command:
 
 ```yaml
-entry: /usr/bin/env bash scripts/toolkit-run.sh validate
+entry: /usr/bin/env bash scripts/touchstone-run.sh validate
 ```
 
 ### 4. Configure per-project behavior
@@ -99,8 +99,8 @@ When the review runs, the hook:
 | `CODEX_REVIEW_ASSIST` | Set to `1`/`true` to allow peer assistance for one run |
 | `CODEX_REVIEW_ASSIST_TIMEOUT` | Overrides helper reviewer timeout |
 | `CODEX_REVIEW_ASSIST_MAX_ROUNDS` | Overrides max helper calls per review run |
-| `TOOLKIT_LOCAL_REVIEWER_COMMAND` | Overrides `[review.local].command` |
-| `TOOLKIT_LOCAL_REVIEWER_AUTH_COMMAND` | Overrides `[review.local].auth_command` |
+| `TOUCHSTONE_LOCAL_REVIEWER_COMMAND` | Overrides `[review.local].command` |
+| `TOUCHSTONE_LOCAL_REVIEWER_AUTH_COMMAND` | Overrides `[review.local].auth_command` |
 
 ## Graceful behavior
 

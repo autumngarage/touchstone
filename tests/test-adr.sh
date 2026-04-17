@@ -4,8 +4,8 @@
 #
 set -euo pipefail
 
-TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TEST_DIR="$(mktemp -d -t toolkit-test-adr.XXXXXX)"
+TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TEST_DIR="$(mktemp -d -t touchstone-test-adr.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
 ERRORS=0
@@ -24,7 +24,7 @@ mkdir -p "$PROJECT_DIR"
 
 (
   cd "$PROJECT_DIR"
-  TOOLKIT_NO_AUTO_UPDATE=1 "$TOOLKIT_ROOT/bin/toolkit" adr "Auth/API contract"
+  TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" adr "Auth/API contract"
 ) >/dev/null
 
 ADR_FILE="$(find "$PROJECT_DIR/docs/adr" -maxdepth 1 -type f -name '*.md' | head -1)"
@@ -50,16 +50,16 @@ SKILLS_HOME="$TEST_DIR/home"
 mkdir -p "$SKILLS_HOME"
 
 (
-  cd "$TOOLKIT_ROOT"
-  HOME="$SKILLS_HOME" TOOLKIT_NO_AUTO_UPDATE=1 "$TOOLKIT_ROOT/bin/toolkit" skills
+  cd "$TOUCHSTONE_ROOT"
+  HOME="$SKILLS_HOME" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" skills
 ) > "$TEST_DIR/skills-list.txt"
 
-assert_contains "$TEST_DIR/skills-list.txt" 'toolkit-audit'
+assert_contains "$TEST_DIR/skills-list.txt" 'touchstone-audit'
 assert_contains "$TEST_DIR/skills-list.txt" 'memory-audit'
 
 (
-  cd "$TOOLKIT_ROOT"
-  HOME="$SKILLS_HOME" TOOLKIT_NO_AUTO_UPDATE=1 "$TOOLKIT_ROOT/bin/toolkit" skills check
+  cd "$TOUCHSTONE_ROOT"
+  HOME="$SKILLS_HOME" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" skills check
 ) > "$TEST_DIR/skills-check.txt"
 
 assert_contains "$TEST_DIR/skills-check.txt" 'All 2 skills valid'

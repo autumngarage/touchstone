@@ -5,7 +5,7 @@
 # Run this after cloning the repo:
 #   bash setup.sh
 #
-# Installs all dev tools, syncs toolkit files, sets up hooks, and installs
+# Installs all dev tools, syncs touchstone files, sets up hooks, and installs
 # project dependencies. Idempotent — safe to re-run anytime.
 #
 set -euo pipefail
@@ -77,10 +77,10 @@ prompt_yes_no() {
   esac
 }
 
-load_toolkit_config() {
+load_touchstone_config() {
   local line key value
 
-  [ -f ".toolkit-config" ] || return 0
+  [ -f ".touchstone-config" ] || return 0
 
   while IFS= read -r line || [ -n "$line" ]; do
     line="$(trim_config_value "$line")"
@@ -95,7 +95,7 @@ load_toolkit_config() {
       git_workflow) GIT_WORKFLOW="$value" ;;
       gitbutler_mcp) GITBUTLER_MCP="$value" ;;
     esac
-  done < ".toolkit-config"
+  done < ".touchstone-config"
 }
 
 PROJECT_NAME="$(basename "$(pwd)")"
@@ -104,7 +104,7 @@ printf "${BOLD}Setting up ${PROJECT_NAME}${RESET}\n"
 echo ""
 
 if [ "$DEPS_ONLY" = false ]; then
-load_toolkit_config
+load_touchstone_config
 
 # --------------------------------------------------------------------------
 # 1. Homebrew (required foundation)
@@ -118,17 +118,17 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 2. Toolkit CLI
+# 2. Touchstone CLI
 # --------------------------------------------------------------------------
-info "Checking toolkit"
-if command -v toolkit >/dev/null 2>&1; then
-  TOOLKIT_VERSION_SUMMARY="$(toolkit version 2>&1 | awk 'NF && !seen { sub(/^toolkit /, ""); print; seen = 1 }')"
-  ok "toolkit ${TOOLKIT_VERSION_SUMMARY:-installed}"
+info "Checking touchstone"
+if command -v touchstone >/dev/null 2>&1; then
+  TOUCHSTONE_VERSION_SUMMARY="$(touchstone version 2>&1 | awk 'NF && !seen { sub(/^touchstone /, ""); print; seen = 1 }')"
+  ok "touchstone ${TOUCHSTONE_VERSION_SUMMARY:-installed}"
 else
-  warn "Installing toolkit..."
-  brew tap henrymodisett/toolkit 2>/dev/null || true
-  brew install toolkit
-  ok "toolkit installed"
+  warn "Installing touchstone..."
+  brew tap autumngarage/touchstone 2>/dev/null || true
+  brew install touchstone
+  ok "touchstone installed"
 fi
 
 # --------------------------------------------------------------------------
@@ -360,13 +360,13 @@ if [ "$GIT_WORKFLOW" = "gitbutler" ]; then
   ok "GitButler selected — useful for stacked branches, parallel work, undo history, and AI-agent savepoints"
   if command -v but >/dev/null 2>&1; then
     ok "but installed"
-    if [ "$(git config --get toolkit.gitbutlerSetup 2>/dev/null || true)" = "configured" ]; then
+    if [ "$(git config --get touchstone.gitbutlerSetup 2>/dev/null || true)" = "configured" ]; then
       ok "GitButler setup already recorded for this clone"
     elif [ -t 0 ]; then
       warn "Run 'but setup' once to let GitButler manage this repo. Undo later with: but teardown"
       if prompt_yes_no "Run 'but setup' now?" "false"; then
         if but setup; then
-          git config toolkit.gitbutlerSetup configured
+          git config touchstone.gitbutlerSetup configured
           ok "GitButler repo setup complete"
         else
           warn "GitButler setup failed. Later: but setup"
@@ -390,20 +390,20 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 6. Sync toolkit files to latest
+# 6. Sync touchstone files to latest
 # --------------------------------------------------------------------------
-info "Syncing toolkit files"
-# Skip update if this IS the toolkit repo (it's the source, not a downstream project).
-if [ -f "bin/toolkit" ] && [ -f "lib/auto-update.sh" ]; then
-  ok "this is the toolkit repo — skipping self-update"
-elif [ -f ".toolkit-version" ]; then
-  toolkit update --check 2>&1 | grep -E "Already|Needs sync|Run: toolkit update" | head -5 | while read -r line; do
+info "Syncing touchstone files"
+# Skip update if this IS the Touchstone repo (it's the source, not a downstream project).
+if [ -f "bin/touchstone" ] && [ -f "lib/auto-update.sh" ]; then
+  ok "this is the Touchstone repo — skipping self-update"
+elif [ -f ".touchstone-version" ]; then
+  touchstone update --check 2>&1 | grep -E "Already|Needs sync|Run: touchstone update" | head -5 | while read -r line; do
     ok "$line"
   done
-  ok "toolkit sync status checked"
+  ok "touchstone sync status checked"
 else
-  warn "No .toolkit-version found — this project hasn't been bootstrapped."
-  warn "Run: toolkit new $(pwd)"
+  warn "No .touchstone-version found — this project hasn't been bootstrapped."
+  warn "Run: touchstone new $(pwd)"
 fi
 
 # --------------------------------------------------------------------------
@@ -537,10 +537,10 @@ trim() {
   printf '%s' "$value"
 }
 
-load_toolkit_config() {
+load_touchstone_config() {
   local line key value
 
-  [ -f ".toolkit-config" ] || return 0
+  [ -f ".touchstone-config" ] || return 0
 
   while IFS= read -r line || [ -n "$line" ]; do
     line="$(trim "$line")"
@@ -555,7 +555,7 @@ load_toolkit_config() {
       package_manager) CONFIG_PACKAGE_MANAGER="$value" ;;
       targets) CONFIG_TARGETS="$value" ;;
     esac
-  done < ".toolkit-config"
+  done < ".touchstone-config"
 }
 
 detect_node_package_manager() {
@@ -728,7 +728,7 @@ install_profile_dependencies() {
     swift) install_swift_dependencies "$label" "$project_dir" ;;
     go) install_go_dependencies "$label" "$project_dir" ;;
     generic|"") return 1 ;;
-    *) warn "Unknown project_type '$profile' in .toolkit-config"; return 1 ;;
+    *) warn "Unknown project_type '$profile' in .touchstone-config"; return 1 ;;
   esac
 }
 
@@ -757,7 +757,7 @@ install_configured_targets() {
   done
 }
 
-load_toolkit_config
+load_touchstone_config
 
 DEPS_FOUND=false
 ROOT_PROFILE="${CONFIG_PROJECT_TYPE:-auto}"
@@ -787,6 +787,6 @@ fi
 echo ""
 info "Setup complete"
 echo ""
-printf "  Run ${BOLD}toolkit doctor${RESET} to verify everything.\n"
-printf "  Run ${BOLD}toolkit status${RESET} to see project health.\n"
+printf "  Run ${BOLD}touchstone doctor${RESET} to verify everything.\n"
+printf "  Run ${BOLD}touchstone status${RESET} to see project health.\n"
 echo ""

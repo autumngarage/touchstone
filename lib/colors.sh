@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# lib/colors.sh — colored output helpers for the toolkit CLI.
+# lib/colors.sh — colored output helpers for the Touchstone CLI.
 #
 
 # Disable colors if stdout isn't a terminal or NO_COLOR is set.

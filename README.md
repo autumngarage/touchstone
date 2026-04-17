@@ -1,14 +1,13 @@
 ```text
-   __              ____   _ __
-  / /_____  ____  / / /__(_) /_
- / __/ __ \/ __ \/ / //_/ / __/
-/ /_/ /_/ / /_/ / / ,< / / /_
-\__/\____/\____/_/_/|_/_/\__/
+ _               _       _
+| |_ ___ _  _ __| |_  __| |_ ___ _ _  ___
+|  _/ _ \ || / _| ' \(_-<  _/ _ \ ' \/ -_)
+ \__\___/\_,_\__|_||_/__/\__\___/_||_\___|
 ```
 
-# toolkit
+# Touchstone
 
-Toolkit is a command-line starter kit for AI-assisted projects. It helps you start a project folder, add the same useful project files every time, and keep those shared files updated later without copy-pasting between projects.
+Touchstone is a command-line starter kit for AI-assisted projects. It helps you start a project folder, add the same useful project files every time, and keep those shared files updated later without copy-pasting between projects.
 
 It gives you:
 - starter instructions for Claude, Codex, and other AI coding tools
@@ -17,15 +16,15 @@ It gives you:
 - a single setup command for dev tools, Git safety checks, and project dependencies
 - optional AI review before changes get merged into your main branch
 
-You do not need to understand the internals to use it. Install it, run `toolkit new` or `toolkit init`, then follow the next steps printed in your terminal.
+You do not need to understand the internals to use it. Install it, run `touchstone new` or `touchstone init`, then follow the next steps printed in your terminal.
 
 ## Install
 
 Run this once in Terminal. This uses Homebrew, the Mac package manager. If `brew` is not found, install Homebrew first from https://brew.sh.
 
 ```bash
-brew tap henrymodisett/toolkit
-brew install toolkit
+brew tap autumngarage/touchstone
+brew install touchstone
 ```
 
 Requires `git` and `gh`, the GitHub command-line tool. Homebrew installs them automatically as dependencies.
@@ -33,7 +32,7 @@ Requires `git` and `gh`, the GitHub command-line tool. Homebrew installs them au
 Check that it worked:
 
 ```bash
-toolkit version
+touchstone version
 ```
 
 ## Start Here
@@ -41,30 +40,30 @@ toolkit version
 ### Create a new project
 
 ```bash
-toolkit new ~/Repos/my-new-project
+touchstone new ~/Repos/my-new-project
 cd ~/Repos/my-new-project
 bash setup.sh
 ```
 
 Then open `CLAUDE.md` and `AGENTS.md` in your editor and fill in the placeholders. These files tell AI coding tools what your project is, what matters, and what to be careful with.
 
-### Add toolkit to an existing project
+### Add touchstone to an existing project
 
 ```bash
 cd ~/Repos/my-existing-project
-toolkit init
+touchstone init
 ```
 
 If you want setup to happen later:
 
 ```bash
-toolkit init --no-setup
+touchstone init --no-setup
 bash setup.sh
 ```
 
 ### Turn on AI review
 
-When you run `toolkit new` or `toolkit init`, Toolkit asks whether you want AI review and how it should be routed. You can choose a hosted reviewer for every change, a local model for every change, a hybrid setup where small diffs go local and larger diffs go to a hosted reviewer, or no AI review.
+When you run `touchstone new` or `touchstone init`, Touchstone asks whether you want AI review and how it should be routed. You can choose a hosted reviewer for every change, a local model for every change, a hybrid setup where small diffs go local and larger diffs go to a hosted reviewer, or no AI review.
 
 If you choose Codex and it is not installed yet:
 
@@ -72,26 +71,26 @@ If you choose Codex and it is not installed yet:
 npm install -g @openai/codex && codex login
 ```
 
-For local models, choose `local` during the interactive setup and enter a command that reads the review prompt from stdin, such as an Ollama or LM Studio wrapper. For scripted setup, pass `--local-review-command '<command>'` with `--reviewer local`. You can keep using Toolkit without any AI reviewer; the hook skips itself when review is disabled or no configured reviewer is available.
+For local models, choose `local` during the interactive setup and enter a command that reads the review prompt from stdin, such as an Ollama or LM Studio wrapper. For scripted setup, pass `--local-review-command '<command>'` with `--reviewer local`. You can keep using Touchstone without any AI reviewer; the hook skips itself when review is disabled or no configured reviewer is available.
 
 For a hybrid setup, use `small-local`: small changes try your local model first, with a hosted fallback; larger changes go straight to the hosted reviewer.
 
 Useful shortcuts:
 
 ```bash
-# Add Toolkit with AI review disabled
-toolkit init --no-ai-review
+# Add Touchstone with AI review disabled
+touchstone init --no-ai-review
 
-# Add Toolkit and use a local reviewer command
-toolkit init --reviewer local --local-review-command 'ollama run MODEL'
+# Add Touchstone and use a local reviewer command
+touchstone init --reviewer local --local-review-command 'ollama run MODEL'
 
 # Use local review for small changes and Codex for larger changes
-toolkit init --review-routing small-local --reviewer codex --local-review-command 'ollama run MODEL'
+touchstone init --review-routing small-local --reviewer codex --local-review-command 'ollama run MODEL'
 ```
 
 ### Choose a Git workflow
 
-Toolkit defaults to plain Git because it is the simplest path for new projects. During interactive setup, you can also choose GitButler if you want stacked branches, parallel work, undo history, and AI-agent savepoints.
+Touchstone defaults to plain Git because it is the simplest path for new projects. During interactive setup, you can also choose GitButler if you want stacked branches, parallel work, undo history, and AI-agent savepoints.
 
 If you choose GitButler, `setup.sh` checks for the `but` CLI, shows the official installer command if it is missing, and asks before running `but setup` or adding the GitButler MCP server to Claude Code.
 
@@ -99,16 +98,16 @@ If you choose GitButler, `setup.sh` checks for the `but` CLI, shows the official
 
 ```bash
 # Run the project's normal checks
-toolkit run validate
+touchstone run validate
 
-# See whether this project needs newer toolkit files
-toolkit update --check
+# See whether this project needs newer Touchstone files
+touchstone update --check
 
-# Create a branch + commit with the toolkit update
-toolkit update
+# Create a branch + commit with the Touchstone update
+touchstone update
 
 # See all registered projects
-toolkit status
+touchstone status
 
 # Re-run dependency setup later without reinstalling hooks/tools
 bash setup.sh --deps-only
@@ -118,82 +117,82 @@ bash setup.sh --deps-only
 
 | Command | What it does |
 |---------|-------------|
-| `toolkit init [--no-setup]` | Add toolkit to the current project |
-| `toolkit init --reviewer local --local-review-command '<command>'` | Add toolkit with a local reviewer command |
-| `toolkit init --review-routing small-local --reviewer codex --local-review-command '<command>'` | Use local review for small diffs and a hosted reviewer for larger diffs |
-| `toolkit init --no-ai-review` | Add toolkit with AI review disabled |
-| `toolkit init --gitbutler` | Add toolkit with optional GitButler workflow setup |
-| `toolkit new <dir>` | Bootstrap a new project with principles, scripts, hooks, and templates |
-| `toolkit new <dir> --type node` | Bootstrap with an explicit Node/TypeScript, Swift, Rust, Go, Python, or generic profile |
-| `toolkit new <dir> --reviewer local --local-review-command '<command>'` | Bootstrap a new project with a local reviewer command |
-| `toolkit new <dir> --review-routing small-local --reviewer codex --local-review-command '<command>'` | Bootstrap with hybrid local/hosted review routing |
-| `toolkit new <dir> --no-ai-review` | Bootstrap a new project with AI review disabled |
-| `toolkit new <dir> --gitbutler` | Bootstrap with optional GitButler workflow setup |
-| `toolkit detect` | Show the detected project profile for the current repo |
-| `toolkit run <task>` | Run profile-aware `lint`, `typecheck`, `build`, `test`, or `validate` |
-| `toolkit update` | Create a branch and commit that updates the current project's toolkit-owned files |
-| `toolkit update --dry-run` | Preview what would change |
-| `toolkit update --check` | Report whether the current project needs an update |
-| `toolkit sync` | Update all registered projects at once |
-| `toolkit sync --check` | Report which registered projects need sync |
-| `toolkit sync --pull-first` | Pull latest toolkit first, then sync all projects |
-| `toolkit diff` | Compare core project-owned files against the latest templates |
-| `toolkit adr "Title"` | Create an Architecture Decision Record |
-| `toolkit adr list` | List project ADRs |
-| `toolkit list` | Show registered projects |
-| `toolkit unregister <name>` | Remove a project from the registry |
-| `toolkit status` | Dashboard of registered project health |
-| `toolkit version` | Show installed version and install method |
-| `toolkit changelog [N]` | Show the last N GitHub releases |
-| `toolkit doctor` | Health check — version, tools, project staleness |
-| `toolkit skills` | List Claude Code skills visible to the current repo and user |
-| `toolkit skills check` | Validate Claude Code skill frontmatter |
-| `toolkit release [--patch]` | Cut a Toolkit release; maintainers only |
+| `touchstone init [--no-setup]` | Add touchstone to the current project |
+| `touchstone init --reviewer local --local-review-command '<command>'` | Add touchstone with a local reviewer command |
+| `touchstone init --review-routing small-local --reviewer codex --local-review-command '<command>'` | Use local review for small diffs and a hosted reviewer for larger diffs |
+| `touchstone init --no-ai-review` | Add touchstone with AI review disabled |
+| `touchstone init --gitbutler` | Add touchstone with optional GitButler workflow setup |
+| `touchstone new <dir>` | Bootstrap a new project with principles, scripts, hooks, and templates |
+| `touchstone new <dir> --type node` | Bootstrap with an explicit Node/TypeScript, Swift, Rust, Go, Python, or generic profile |
+| `touchstone new <dir> --reviewer local --local-review-command '<command>'` | Bootstrap a new project with a local reviewer command |
+| `touchstone new <dir> --review-routing small-local --reviewer codex --local-review-command '<command>'` | Bootstrap with hybrid local/hosted review routing |
+| `touchstone new <dir> --no-ai-review` | Bootstrap a new project with AI review disabled |
+| `touchstone new <dir> --gitbutler` | Bootstrap with optional GitButler workflow setup |
+| `touchstone detect` | Show the detected project profile for the current repo |
+| `touchstone run <task>` | Run profile-aware `lint`, `typecheck`, `build`, `test`, or `validate` |
+| `touchstone update` | Create a branch and commit that updates the current project's touchstone-owned files |
+| `touchstone update --dry-run` | Preview what would change |
+| `touchstone update --check` | Report whether the current project needs an update |
+| `touchstone sync` | Update all registered projects at once |
+| `touchstone sync --check` | Report which registered projects need sync |
+| `touchstone sync --pull-first` | Pull latest touchstone first, then sync all projects |
+| `touchstone diff` | Compare core project-owned files against the latest templates |
+| `touchstone adr "Title"` | Create an Architecture Decision Record |
+| `touchstone adr list` | List project ADRs |
+| `touchstone list` | Show registered projects |
+| `touchstone unregister <name>` | Remove a project from the registry |
+| `touchstone status` | Dashboard of registered project health |
+| `touchstone version` | Show installed version and install method |
+| `touchstone changelog [N]` | Show the last N GitHub releases |
+| `touchstone doctor` | Health check — version, tools, project staleness |
+| `touchstone skills` | List Claude Code skills visible to the current repo and user |
+| `touchstone skills check` | Validate Claude Code skill frontmatter |
+| `touchstone release [--patch]` | Cut a Touchstone release; maintainers only |
 
 ## How it works
 
 ### What you get in each project
 
-When you run `toolkit new`, these files get created in your project:
+When you run `touchstone new`, these files get created in your project:
 
 **Project-owned** (yours to customize, never auto-updated):
 - `CLAUDE.md` — AI coding instructions with `{{PLACEHOLDERS}}` to fill in
 - `AGENTS.md` — AI reviewer rubric with project-specific priorities
 - `.codex-review.toml` — AI review hook config (reviewers, modes, safe/unsafe paths)
-- `.toolkit-config` — Project profile, workflow choices, and optional lint/test/build command overrides
+- `.touchstone-config` — Project profile, workflow choices, and optional lint/test/build command overrides
 - `.pre-commit-config.yaml` — Pre-commit hooks including the default-branch AI review gate
 - `.gitignore` — Sensible defaults
 - `.github/pull_request_template.md` — PR checklist
 - `setup.sh` — One-command setup for dev tools, hooks, and project dependencies
 
-**Toolkit-owned** (auto-updated when you run `toolkit update` or `toolkit sync`):
-- `.toolkit-version` — The toolkit revision this project has applied
-- `.toolkit-manifest` — The visible list of toolkit-managed paths
+**Touchstone-owned** (auto-updated when you run `touchstone update` or `touchstone sync`):
+- `.touchstone-version` — The touchstone revision this project has applied
+- `.touchstone-manifest` — The visible list of touchstone-managed paths
 - `principles/*.md` — Universal engineering principles
 - `scripts/codex-review.sh` — AI merge/default-branch review + auto-fix loop
-- `scripts/toolkit-run.sh` — Profile-aware runner for Node/TypeScript, Swift, Rust, Python, Go, and monorepos
+- `scripts/touchstone-run.sh` — Profile-aware runner for Node/TypeScript, Swift, Rust, Python, Go, and monorepos
 - `scripts/open-pr.sh` — Push + create PR via `gh`
 - `scripts/merge-pr.sh` — AI review + squash-merge + sync main
 - `scripts/cleanup-branches.sh` — Safe branch hygiene
 - `scripts/run-pytest-in-venv.sh` — Legacy Python helper copied for Python profiles
 
-`setup.sh` installs dependencies for the detected project profile. It supports Node package managers, SwiftPM, Cargo, Go modules, and Python `requirements.txt`/`uv.lock`/`pyproject.toml` at the repo root and under `agent/`. `toolkit run validate` uses `.toolkit-config` to run profile-aware lint/typecheck/test commands.
+`setup.sh` installs dependencies for the detected project profile. It supports Node package managers, SwiftPM, Cargo, Go modules, and Python `requirements.txt`/`uv.lock`/`pyproject.toml` at the repo root and under `agent/`. `touchstone run validate` uses `.touchstone-config` to run profile-aware lint/typecheck/test commands.
 
 ### Keeping projects up to date
 
-When you improve the toolkit (add a principle, fix a script), run:
+When you improve Touchstone (add a principle, fix a script), run:
 
 ```bash
-toolkit sync
+touchstone sync
 ```
 
-This updates toolkit-owned files across registered projects by creating reviewable update branches and commits. For one project, run `toolkit update --dry-run` to preview, `toolkit update --check` to check staleness, and `toolkit update` from a clean git worktree to create a `chore/toolkit-*` branch with the update committed. Project-owned files are never touched by `toolkit update`; use `toolkit diff` to review the core project-owned files against the latest templates.
+This updates touchstone-owned files across registered projects by creating reviewable update branches and commits. For one project, run `touchstone update --dry-run` to preview, `touchstone update --check` to check staleness, and `touchstone update` from a clean git worktree to create a `chore/touchstone-*` branch with the update committed. Project-owned files are never touched by `touchstone update`; use `touchstone diff` to review the core project-owned files against the latest templates.
 
-Projects are auto-registered in `~/.toolkit-projects` when you bootstrap them.
+Projects are auto-registered in `~/.touchstone-projects` when you bootstrap them.
 
 ### Auto-update
 
-The `toolkit` CLI checks for new versions hourly. When a newer release exists, it upgrades with `brew upgrade toolkit` for Homebrew installs or `git pull --rebase` for git-clone installs before running your command. Disable with `TOOLKIT_NO_AUTO_UPDATE=1`.
+The `touchstone` CLI checks for new versions hourly. When a newer release exists, it upgrades with `brew upgrade touchstone` for Homebrew installs or `git pull --rebase` for git-clone installs before running your command. Disable with `TOUCHSTONE_NO_AUTO_UPDATE=1`.
 
 ## What's included
 
@@ -223,11 +222,11 @@ Configure per-project behavior in `.codex-review.toml`. Write your review rubric
 
 ### Claude Code Skills
 
-Toolkit owns Claude Code project skills under `.claude/skills/` for Toolkit maintenance work. These are part of this repo, not files that Toolkit copies into every downstream project:
-- `toolkit-audit` — audits Toolkit itself against its principles and current AI-tooling practices.
+Touchstone owns Claude Code project skills under `.claude/skills/` for Touchstone maintenance work. These are part of this repo, not files that Touchstone copies into every downstream project:
+- `touchstone-audit` — audits Touchstone itself against its principles and current AI-tooling practices.
 - `memory-audit` — checks Claude Code memory for stale commands, dead paths, duplicate facts, and unsourced volatile guidance.
 
-Run `toolkit skills` to list visible project and user skills, and `toolkit skills check` to validate their frontmatter.
+Run `touchstone skills` to list visible project and user skills, and `touchstone skills check` to validate their frontmatter.
 
 ### Helper scripts
 
@@ -238,9 +237,9 @@ Run `toolkit skills` to list visible project and user skills, and `toolkit skill
 ## Project structure
 
 ```
-toolkit/
-├── .claude/        # Claude Code project skills for Toolkit maintenance
-├── bin/             # toolkit CLI entrypoint
+touchstone/
+├── .claude/        # Claude Code project skills for Touchstone maintenance
+├── bin/             # touchstone CLI entrypoint
 ├── lib/             # shared libraries
 ├── principles/      # universal engineering docs
 ├── templates/       # starter files for new projects
@@ -252,7 +251,7 @@ toolkit/
 
 ## Contributors
 
-Install Toolkit, bootstrap a project, and open a PR for improvements to principles, templates, scripts, hooks, or skills.
+Install Touchstone, bootstrap a project, and open a PR for improvements to principles, templates, scripts, hooks, or skills.
 
 ## License
 

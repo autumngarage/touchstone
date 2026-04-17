@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 #
-# bootstrap/update-project.sh — update toolkit-owned files in a project.
+# bootstrap/update-project.sh — update touchstone-owned files in a project.
 #
 # Usage:
-#   ~/Repos/toolkit/bootstrap/update-project.sh
-#   ~/Repos/toolkit/bootstrap/update-project.sh --dry-run   # show what would change
-#   ~/Repos/toolkit/bootstrap/update-project.sh --check     # report whether update is needed
+#   ~/Repos/touchstone/bootstrap/update-project.sh
+#   ~/Repos/touchstone/bootstrap/update-project.sh --dry-run   # show what would change
+#   ~/Repos/touchstone/bootstrap/update-project.sh --check     # report whether update is needed
 #
 # What this does:
-#   1. Reads .toolkit-version from the project to know what toolkit is installed
-#   2. Creates a chore/toolkit-* branch from a clean worktree
-#   3. Updates toolkit-owned files without .bak backups; git is the backup
-#   4. Updates .toolkit-version and .toolkit-manifest
+#   1. Reads .touchstone-version from the project to know what touchstone is installed
+#   2. Creates a chore/touchstone-* branch from a clean worktree
+#   3. Updates touchstone-owned files without .bak backups; git is the backup
+#   4. Updates .touchstone-version and .touchstone-manifest
 #   5. Commits the update so it is reviewable and reversible as one unit
 #   6. Leaves project-owned files untouched and prints a review hint
 #
 set -euo pipefail
 
-TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT_DIR="$(pwd)"
 DRY_RUN=false
 CHECK_ONLY=false
@@ -44,21 +44,21 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-# Verify we're in a project with .toolkit-version.
-if [ ! -f "$PROJECT_DIR/.toolkit-version" ]; then
-  echo "ERROR: No .toolkit-version file found in $PROJECT_DIR" >&2
-  echo "       This project hasn't been bootstrapped with the toolkit." >&2
+# Verify we're in a project with .touchstone-version.
+if [ ! -f "$PROJECT_DIR/.touchstone-version" ]; then
+  echo "ERROR: No .touchstone-version file found in $PROJECT_DIR" >&2
+  echo "       This project hasn't been bootstrapped with the Touchstone." >&2
   echo "       Run: $(dirname "$0")/new-project.sh $PROJECT_DIR" >&2
   exit 1
 fi
 
-OLD_SHA="$(cat "$PROJECT_DIR/.toolkit-version" | tr -d '[:space:]')"
-CURRENT_VERSION="$(cat "$TOOLKIT_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
+OLD_SHA="$(cat "$PROJECT_DIR/.touchstone-version" | tr -d '[:space:]')"
+CURRENT_VERSION="$(cat "$TOUCHSTONE_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
 
 # Use git SHA if this is a git clone, otherwise use VERSION (brew install).
-if [ -d "$TOOLKIT_ROOT/.git" ]; then
-  CURRENT_SHA="$(git -C "$TOOLKIT_ROOT" rev-parse HEAD)"
-  CURRENT_SHORT="$(git -C "$TOOLKIT_ROOT" rev-parse --short HEAD)"
+if [ -d "$TOUCHSTONE_ROOT/.git" ]; then
+  CURRENT_SHA="$(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD)"
+  CURRENT_SHORT="$(git -C "$TOUCHSTONE_ROOT" rev-parse --short HEAD)"
   if [ -n "$CURRENT_VERSION" ]; then
     CURRENT_LABEL="${CURRENT_VERSION}-${CURRENT_SHORT}"
   else
@@ -71,7 +71,7 @@ else
 fi
 
 echo "==> Updating project: $PROJECT_DIR"
-echo "    Toolkit: $OLD_SHA -> $CURRENT_SHA"
+echo "    Touchstone: $OLD_SHA -> $CURRENT_SHA"
 
 if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
   echo "==> Already up to date."
@@ -80,7 +80,7 @@ fi
 
 if [ "$CHECK_ONLY" = true ]; then
   echo "==> Needs sync."
-  echo "    Run: toolkit update"
+  echo "    Run: touchstone update"
   exit 0
 fi
 
@@ -115,31 +115,31 @@ ORIGINAL_BRANCH=""
 UPDATE_BRANCH=""
 ROLLBACK_TMP_DIR=""
 
-snapshot_toolkit_metadata() {
-  ROLLBACK_TMP_DIR="$(mktemp -d -t toolkit-update-rollback.XXXXXX)"
-  cp "$PROJECT_DIR/.toolkit-version" "$ROLLBACK_TMP_DIR/.toolkit-version"
-  if [ -f "$PROJECT_DIR/.toolkit-manifest" ]; then
-    cp "$PROJECT_DIR/.toolkit-manifest" "$ROLLBACK_TMP_DIR/.toolkit-manifest"
-  elif [ -e "$PROJECT_DIR/.toolkit-manifest" ]; then
-    : > "$ROLLBACK_TMP_DIR/.toolkit-manifest.nonfile"
+snapshot_touchstone_metadata() {
+  ROLLBACK_TMP_DIR="$(mktemp -d -t touchstone-update-rollback.XXXXXX)"
+  cp "$PROJECT_DIR/.touchstone-version" "$ROLLBACK_TMP_DIR/.touchstone-version"
+  if [ -f "$PROJECT_DIR/.touchstone-manifest" ]; then
+    cp "$PROJECT_DIR/.touchstone-manifest" "$ROLLBACK_TMP_DIR/.touchstone-manifest"
+  elif [ -e "$PROJECT_DIR/.touchstone-manifest" ]; then
+    : > "$ROLLBACK_TMP_DIR/.touchstone-manifest.nonfile"
   else
-    : > "$ROLLBACK_TMP_DIR/.toolkit-manifest.missing"
+    : > "$ROLLBACK_TMP_DIR/.touchstone-manifest.missing"
   fi
 }
 
-restore_toolkit_metadata() {
+restore_touchstone_metadata() {
   [ -n "$ROLLBACK_TMP_DIR" ] || return
 
-  if [ -f "$ROLLBACK_TMP_DIR/.toolkit-version" ]; then
-    cp "$ROLLBACK_TMP_DIR/.toolkit-version" "$PROJECT_DIR/.toolkit-version"
+  if [ -f "$ROLLBACK_TMP_DIR/.touchstone-version" ]; then
+    cp "$ROLLBACK_TMP_DIR/.touchstone-version" "$PROJECT_DIR/.touchstone-version"
   fi
 
-  if [ -f "$ROLLBACK_TMP_DIR/.toolkit-manifest.missing" ]; then
-    if [ -f "$PROJECT_DIR/.toolkit-manifest" ]; then
-      rm -f "$PROJECT_DIR/.toolkit-manifest"
+  if [ -f "$ROLLBACK_TMP_DIR/.touchstone-manifest.missing" ]; then
+    if [ -f "$PROJECT_DIR/.touchstone-manifest" ]; then
+      rm -f "$PROJECT_DIR/.touchstone-manifest"
     fi
-  elif [ -f "$ROLLBACK_TMP_DIR/.toolkit-manifest" ]; then
-    cp "$ROLLBACK_TMP_DIR/.toolkit-manifest" "$PROJECT_DIR/.toolkit-manifest"
+  elif [ -f "$ROLLBACK_TMP_DIR/.touchstone-manifest" ]; then
+    cp "$ROLLBACK_TMP_DIR/.touchstone-manifest" "$PROJECT_DIR/.touchstone-manifest"
   fi
 }
 
@@ -156,7 +156,7 @@ rollback_failed_update() {
   echo "" >&2
   echo "==> Update failed; rolling back $UPDATE_BRANCH" >&2
   git -C "$PROJECT_DIR" restore --staged --worktree . >/dev/null 2>&1 || true
-  restore_toolkit_metadata
+  restore_touchstone_metadata
 
   local rel
   for rel in "${ADDED_PATHS[@]}"; do
@@ -177,28 +177,28 @@ trap rollback_failed_update EXIT
 
 require_clean_git_repo() {
   if ! git -C "$PROJECT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    echo "ERROR: toolkit update requires a git repository." >&2
-    echo "       Git is the backup and review boundary for toolkit updates." >&2
+    echo "ERROR: touchstone update requires a git repository." >&2
+    echo "       Git is the backup and review boundary for touchstone updates." >&2
     exit 1
   fi
 
   if ! git -C "$PROJECT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
-    echo "ERROR: toolkit update requires at least one existing commit." >&2
-    echo "       Commit the initial project state first, then run toolkit update." >&2
+    echo "ERROR: touchstone update requires at least one existing commit." >&2
+    echo "       Commit the initial project state first, then run touchstone update." >&2
     exit 1
   fi
 
   ORIGINAL_BRANCH="$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD)"
   if [ "$ORIGINAL_BRANCH" = "HEAD" ]; then
-    echo "ERROR: toolkit update cannot run from a detached HEAD." >&2
-    echo "       Check out a branch first, then run toolkit update." >&2
+    echo "ERROR: touchstone update cannot run from a detached HEAD." >&2
+    echo "       Check out a branch first, then run touchstone update." >&2
     exit 1
   fi
 
   if [ -n "$(git -C "$PROJECT_DIR" status --porcelain)" ]; then
-    echo "ERROR: Working tree is dirty. toolkit update needs a clean git boundary." >&2
-    echo "       Commit, stash, or revert local changes, then run toolkit update." >&2
-    echo "       Preview safely with: toolkit update --dry-run" >&2
+    echo "ERROR: Working tree is dirty. touchstone update needs a clean git boundary." >&2
+    echo "       Commit, stash, or revert local changes, then run touchstone update." >&2
+    echo "       Preview safely with: touchstone update --dry-run" >&2
     exit 1
   fi
 }
@@ -213,10 +213,10 @@ if [ "$DRY_RUN" = false ]; then
       exit 1
     fi
   else
-    UPDATE_BRANCH="$(unique_branch_name "chore/toolkit-$(sanitize_branch_component "$CURRENT_LABEL")")"
+    UPDATE_BRANCH="$(unique_branch_name "chore/touchstone-$(sanitize_branch_component "$CURRENT_LABEL")")"
   fi
 
-  snapshot_toolkit_metadata
+  snapshot_touchstone_metadata
   echo "==> Creating update branch: $UPDATE_BRANCH"
   git -C "$PROJECT_DIR" checkout -b "$UPDATE_BRANCH" >/dev/null
   BRANCH_CREATED=true
@@ -224,20 +224,20 @@ fi
 
 # Show changes between versions.
 echo ""
-echo "==> Changes in toolkit since last update:"
-if git -C "$TOOLKIT_ROOT" log --oneline "$OLD_SHA..$CURRENT_SHA" 2>/dev/null; then
+echo "==> Changes in touchstone since last update:"
+if git -C "$TOUCHSTONE_ROOT" log --oneline "$OLD_SHA..$CURRENT_SHA" 2>/dev/null; then
   echo ""
 elif command -v gh >/dev/null 2>&1; then
-  gh release list --repo henrymodisett/toolkit --limit 15 2>/dev/null | head -10 || true
+  gh release list --repo autumngarage/touchstone --limit 15 2>/dev/null | head -10 || true
   echo ""
 else
   echo "    (couldn't compute changes — old SHA may have been garbage collected)"
-  echo "    Run: toolkit changelog"
+  echo "    Run: touchstone changelog"
   echo ""
 fi
 
 # --------------------------------------------------------------------------
-# Toolkit-owned files
+# Touchstone-owned files
 # --------------------------------------------------------------------------
 
 ADDED=0
@@ -278,49 +278,49 @@ update_file() {
   UPDATED=$((UPDATED + 1))
 }
 
-echo "==> Updating toolkit-owned files:"
+echo "==> Updating touchstone-owned files:"
 
 # Principles
-if [ -d "$TOOLKIT_ROOT/principles" ]; then
+if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
   if [ "$DRY_RUN" = false ]; then
     mkdir -p "$PROJECT_DIR/principles"
   fi
-  for f in "$TOOLKIT_ROOT/principles/"*.md; do
+  for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
     update_file "$f" "$PROJECT_DIR/principles/$(basename "$f")"
   done
 fi
 
 # Read project type (default: generic for backward compatibility).
 PROJECT_TYPE="generic"
-if [ -f "$PROJECT_DIR/.toolkit-config" ]; then
-  PROJECT_TYPE="$(grep '^project_type=' "$PROJECT_DIR/.toolkit-config" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)"
+if [ -f "$PROJECT_DIR/.touchstone-config" ]; then
+  PROJECT_TYPE="$(grep '^project_type=' "$PROJECT_DIR/.touchstone-config" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)"
   PROJECT_TYPE="${PROJECT_TYPE:-generic}"
 fi
 
 # Scripts
-update_file "$TOOLKIT_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
-update_file "$TOOLKIT_ROOT/scripts/toolkit-run.sh" "$PROJECT_DIR/scripts/toolkit-run.sh"
-update_file "$TOOLKIT_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
-update_file "$TOOLKIT_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
-update_file "$TOOLKIT_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
+update_file "$TOUCHSTONE_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
+update_file "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_DIR/scripts/touchstone-run.sh"
+update_file "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
+update_file "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
+update_file "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
 
 if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
-  update_file "$TOOLKIT_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
+  update_file "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
 fi
 
-write_toolkit_manifest() {
-  local manifest="$PROJECT_DIR/.toolkit-manifest"
+write_touchstone_manifest() {
+  local manifest="$PROJECT_DIR/.touchstone-manifest"
   {
-    printf '# Managed by toolkit. These paths may be updated by `toolkit update`.\n'
-    printf '.toolkit-manifest\n'
-    printf '.toolkit-version\n'
-    if [ -d "$TOOLKIT_ROOT/principles" ]; then
-      for f in "$TOOLKIT_ROOT/principles/"*.md; do
+    printf '# Managed by touchstone. These paths may be updated by `touchstone update`.\n'
+    printf '.touchstone-manifest\n'
+    printf '.touchstone-version\n'
+    if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
+      for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
         printf 'principles/%s\n' "$(basename "$f")"
       done
     fi
     printf 'scripts/codex-review.sh\n'
-    printf 'scripts/toolkit-run.sh\n'
+    printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
     printf 'scripts/cleanup-branches.sh\n'
@@ -330,13 +330,13 @@ write_toolkit_manifest() {
   } > "$manifest"
 }
 
-# Ensure scripts are executable and write toolkit metadata.
+# Ensure scripts are executable and write touchstone metadata.
 if [ "$DRY_RUN" = false ]; then
   if [ -d "$PROJECT_DIR/scripts" ]; then
     chmod +x "$PROJECT_DIR/scripts/"*.sh 2>/dev/null || true
   fi
-  echo "$CURRENT_SHA" > "$PROJECT_DIR/.toolkit-version"
-  write_toolkit_manifest
+  echo "$CURRENT_SHA" > "$PROJECT_DIR/.touchstone-version"
+  write_touchstone_manifest
 fi
 
 echo ""
@@ -362,28 +362,28 @@ fi
 
 if [ "$DRY_RUN" = false ]; then
   echo ""
-  echo "==> Committing toolkit update..."
-  git -C "$PROJECT_DIR" add -A -- principles scripts .toolkit-manifest
-  git -C "$PROJECT_DIR" add -f -- .toolkit-version
+  echo "==> Committing touchstone update..."
+  git -C "$PROJECT_DIR" add -A -- principles scripts .touchstone-manifest
+  git -C "$PROJECT_DIR" add -f -- .touchstone-version
 
   if git -C "$PROJECT_DIR" diff --cached --quiet; then
     echo "    No file changes to commit."
   else
-    git -C "$PROJECT_DIR" commit --no-verify -m "chore: update toolkit to ${CURRENT_LABEL}" >/dev/null
+    git -C "$PROJECT_DIR" commit --no-verify -m "chore: update touchstone to ${CURRENT_LABEL}" >/dev/null
     COMMIT_CREATED=true
-    echo "    Committed: chore: update toolkit to ${CURRENT_LABEL}"
+    echo "    Committed: chore: update touchstone to ${CURRENT_LABEL}"
   fi
 fi
 
 # Hint about project-owned files.
 echo ""
 echo "==> Project-owned files (not auto-updated):"
-echo "    Consider reviewing these against the latest toolkit templates:"
-echo "      toolkit diff"
-echo "      diff $TOOLKIT_ROOT/templates/CLAUDE.md ./CLAUDE.md"
-echo "      diff $TOOLKIT_ROOT/templates/AGENTS.md ./AGENTS.md"
-echo "      diff $TOOLKIT_ROOT/templates/pre-commit-config.yaml ./.pre-commit-config.yaml"
-echo "      diff $TOOLKIT_ROOT/hooks/codex-review.config.example.toml ./.codex-review.toml"
+echo "    Consider reviewing these against the latest touchstone templates:"
+echo "      touchstone diff"
+echo "      diff $TOUCHSTONE_ROOT/templates/CLAUDE.md ./CLAUDE.md"
+echo "      diff $TOUCHSTONE_ROOT/templates/AGENTS.md ./AGENTS.md"
+echo "      diff $TOUCHSTONE_ROOT/templates/pre-commit-config.yaml ./.pre-commit-config.yaml"
+echo "      diff $TOUCHSTONE_ROOT/hooks/codex-review.config.example.toml ./.codex-review.toml"
 
 if [ "$DRY_RUN" = false ]; then
   echo ""
@@ -393,5 +393,5 @@ if [ "$DRY_RUN" = false ]; then
   echo "    bash scripts/open-pr.sh"
 else
   echo ""
-  echo "==> Dry run complete. Apply with: toolkit update"
+  echo "==> Dry run complete. Apply with: touchstone update"
 fi

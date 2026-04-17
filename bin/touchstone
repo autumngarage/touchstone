@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
 #
-# toolkit — CLI for the shared engineering toolkit.
+# touchstone — CLI for the shared engineering starter kit.
 #
 # Usage:
-#   toolkit new <project-dir>          Create a new project with toolkit files
-#   toolkit init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--reviewer codex|claude|gemini|local|auto|none]
-#                                      Add toolkit to the current project
-#   toolkit run <task>                  Run profile task: lint, test, build, typecheck, validate
-#   toolkit update                     Update current project to latest toolkit
-#   toolkit update --dry-run           Show what would change without applying
-#   toolkit update --check             Report whether current project needs update
-#   toolkit sync                       Update all registered projects
-#   toolkit sync --pull-first          Pull latest toolkit, then sync all projects
-#   toolkit status                     Dashboard — health of all registered projects
-#   toolkit version                    Show installed version
-#   toolkit doctor                     Check health of toolkit installation
-#   toolkit help                       Show this help
+#   touchstone new <project-dir>          Create a new project with touchstone files
+#   touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--reviewer codex|claude|gemini|local|auto|none]
+#                                      Add touchstone to the current project
+#   touchstone run <task>                  Run profile task: lint, test, build, typecheck, validate
+#   touchstone update                     Update current project to latest touchstone
+#   touchstone update --dry-run           Show what would change without applying
+#   touchstone update --check             Report whether current project needs update
+#   touchstone sync                       Update all registered projects
+#   touchstone sync --pull-first          Pull latest touchstone, then sync all projects
+#   touchstone status                     Dashboard — health of all registered projects
+#   touchstone version                    Show installed version
+#   touchstone doctor                     Check health of touchstone installation
+#   touchstone help                       Show this help
 #
 # Install:
-#   brew tap henrymodisett/toolkit
-#   brew install toolkit
+#   brew tap autumngarage/touchstone
+#   brew install touchstone
 #
 set -euo pipefail
 
-# Resolve TOOLKIT_ROOT — works whether installed via brew symlink or clone.
+# Resolve TOUCHSTONE_ROOT — works whether installed via brew symlink or clone.
 SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
 while [ -h "$SCRIPT_PATH" ]; do
   SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
@@ -33,35 +33,35 @@ while [ -h "$SCRIPT_PATH" ]; do
     *) SCRIPT_PATH="$SCRIPT_DIR/$LINK_TARGET" ;;
   esac
 done
-TOOLKIT_ROOT="$(cd -P "$(dirname "$SCRIPT_PATH")/.." && pwd)"
-export TOOLKIT_ROOT
+TOUCHSTONE_ROOT="$(cd -P "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+export TOUCHSTONE_ROOT
 
 # Source shared libraries.
-source "$TOOLKIT_ROOT/lib/auto-update.sh"
-source "$TOOLKIT_ROOT/lib/colors.sh"
+source "$TOUCHSTONE_ROOT/lib/auto-update.sh"
+source "$TOUCHSTONE_ROOT/lib/colors.sh"
 
 # Auto-update check (throttled, non-blocking on failure).
-toolkit_auto_update || true
+touchstone_auto_update || true
 
-# Helper: get toolkit version string.
-toolkit_version_str() {
-  cat "$TOOLKIT_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]'
+# Helper: get touchstone version string.
+touchstone_version_str() {
+  cat "$TOUCHSTONE_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]'
 }
 
-# Helper: get toolkit identifier for comparison (git SHA or version).
-toolkit_current_id() {
-  if [ -d "$TOOLKIT_ROOT/.git" ]; then
-    git -C "$TOOLKIT_ROOT" rev-parse HEAD
+# Helper: get touchstone identifier for comparison (git SHA or version).
+touchstone_current_id() {
+  if [ -d "$TOUCHSTONE_ROOT/.git" ]; then
+    git -C "$TOUCHSTONE_ROOT" rev-parse HEAD
   else
-    toolkit_version_str
+    touchstone_version_str
   fi
 }
 
-toolkit_current_id_short() {
-  if [ -d "$TOOLKIT_ROOT/.git" ]; then
-    git -C "$TOOLKIT_ROOT" rev-parse --short HEAD
+touchstone_current_id_short() {
+  if [ -d "$TOUCHSTONE_ROOT/.git" ]; then
+    git -C "$TOUCHSTONE_ROOT" rev-parse --short HEAD
   else
-    toolkit_version_str
+    touchstone_version_str
   fi
 }
 
@@ -75,16 +75,16 @@ escape_sed_replacement() {
 
 cmd_new() {
   if [ "$#" -lt 1 ]; then
-    echo "Usage: toolkit new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler]" >&2
+    echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler]" >&2
     exit 1
   fi
   case "${1:-}" in
     -h|--help)
-      echo "Usage: toolkit new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp]"
+      echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp]"
       return 0
       ;;
   esac
-  exec bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$@"
+  exec bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$@"
 }
 
 cmd_init() {
@@ -100,7 +100,7 @@ cmd_init() {
         shift
         ;;
       -h|--help)
-        echo "Usage: toolkit init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp]"
+        echo "Usage: touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp]"
         return 0
         ;;
       --type)
@@ -137,7 +137,7 @@ cmd_init() {
         ;;
       *)
         echo "ERROR: unknown argument '$1'" >&2
-        echo "Usage: toolkit init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler]" >&2
+        echo "Usage: touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler]" >&2
         exit 1
         ;;
     esac
@@ -147,11 +147,11 @@ cmd_init() {
     setup_existed=true
   fi
 
-  bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$(pwd)" "${args[@]}"
+  bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$(pwd)" "${args[@]}"
 
   if [ "$run_setup" = true ] && [ -f "$(pwd)/setup.sh" ]; then
     if [ "$setup_existed" = true ]; then
-      tk_warn "setup.sh already existed, so toolkit left it in place and did not run it."
+      tk_warn "setup.sh already existed, so touchstone left it in place and did not run it."
       tk_dim "Run manually if desired: bash setup.sh"
       return 0
     fi
@@ -161,36 +161,36 @@ cmd_init() {
 }
 
 cmd_update() {
-  exec bash "$TOOLKIT_ROOT/bootstrap/update-project.sh" "$@"
+  exec bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" "$@"
 }
 
 cmd_sync() {
-  exec bash "$TOOLKIT_ROOT/bootstrap/sync-all.sh" "$@"
+  exec bash "$TOUCHSTONE_ROOT/bootstrap/sync-all.sh" "$@"
 }
 
 cmd_run() {
-  exec bash "$TOOLKIT_ROOT/scripts/toolkit-run.sh" "$@"
+  exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$@"
 }
 
 cmd_detect() {
-  exec bash "$TOOLKIT_ROOT/scripts/toolkit-run.sh" detect
+  exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" detect
 }
 
 cmd_version() {
   local version
-  version="$(toolkit_version_str)"
-  tk_header "toolkit v${version:-unknown}"
+  version="$(touchstone_version_str)"
+  tk_header "touchstone v${version:-unknown}"
 
-  if command -v brew >/dev/null 2>&1 && brew list toolkit &>/dev/null; then
+  if command -v brew >/dev/null 2>&1 && brew list touchstone &>/dev/null; then
     tk_dim "installed via: brew"
-    tk_dim "prefix: $(brew --prefix toolkit 2>/dev/null || echo unknown)"
-  elif [ -d "$TOOLKIT_ROOT/.git" ]; then
+    tk_dim "prefix: $(brew --prefix touchstone 2>/dev/null || echo unknown)"
+  elif [ -d "$TOUCHSTONE_ROOT/.git" ]; then
     tk_dim "installed via: git clone"
-    tk_dim "path: $TOOLKIT_ROOT"
-    tk_dim "commit: $(git -C "$TOOLKIT_ROOT" rev-parse --short HEAD 2>/dev/null)"
+    tk_dim "path: $TOUCHSTONE_ROOT"
+    tk_dim "commit: $(git -C "$TOUCHSTONE_ROOT" rev-parse --short HEAD 2>/dev/null)"
   fi
 
-  local projects_file="$HOME/.toolkit-projects"
+  local projects_file="$HOME/.touchstone-projects"
   if [ -f "$projects_file" ]; then
     local count
     count="$(grep -c '[^[:space:]]' "$projects_file" 2>/dev/null || echo 0)"
@@ -200,15 +200,15 @@ cmd_version() {
 
 cmd_status() {
   local version
-  version="$(toolkit_version_str)"
+  version="$(touchstone_version_str)"
   local current_id
-  current_id="$(toolkit_current_id)"
+  current_id="$(touchstone_current_id)"
 
-  tk_header "Toolkit Status — v${version}"
+  tk_header "Touchstone Status — v${version}"
 
-  local projects_file="$HOME/.toolkit-projects"
+  local projects_file="$HOME/.touchstone-projects"
   if [ ! -f "$projects_file" ]; then
-    tk_warn "No projects registered. Run: toolkit new <dir>"
+    tk_warn "No projects registered. Run: touchstone new <dir>"
     return
   fi
 
@@ -226,7 +226,7 @@ cmd_status() {
 
     # Gather project state.
     local proj_version
-    proj_version="$(cat "$project_dir/.toolkit-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
+    proj_version="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
     local synced=""
     if [ "$proj_version" = "$current_id" ]; then
       synced="${GREEN}synced${RESET}"
@@ -269,10 +269,10 @@ cmd_status() {
 
 cmd_doctor() {
   local version
-  version="$(toolkit_version_str)"
+  version="$(touchstone_version_str)"
   local issues=0
 
-  tk_header "Toolkit Doctor"
+  tk_header "Touchstone Doctor"
 
   # Version.
   if [ -n "$version" ]; then
@@ -316,22 +316,22 @@ cmd_doctor() {
 
   # Registered projects.
   tk_info "Projects"
-  local projects_file="$HOME/.toolkit-projects"
+  local projects_file="$HOME/.touchstone-projects"
   local current_id
-  current_id="$(toolkit_current_id)"
+  current_id="$(touchstone_current_id)"
   if [ -f "$projects_file" ]; then
     while IFS= read -r project_dir; do
       [ -z "$project_dir" ] && continue
       [[ "$project_dir" == \#* ]] && continue
       if [ -d "$project_dir" ]; then
         local proj_version
-        proj_version="$(cat "$project_dir/.toolkit-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
+        proj_version="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
         local name
         name="$(basename "$project_dir")"
         if [ "$proj_version" = "$current_id" ]; then
           tk_ok "$name — up to date"
         else
-          tk_warn "$name — needs sync (run: toolkit sync)"
+          tk_warn "$name — needs sync (run: touchstone sync)"
           issues=$((issues + 1))
         fi
       else
@@ -347,13 +347,13 @@ cmd_doctor() {
   tk_info "Latest release"
   local latest
   latest="$(curl -fsSL --max-time 5 \
-    "https://api.github.com/repos/henrymodisett/toolkit/releases/latest" 2>/dev/null \
+    "https://api.github.com/repos/autumngarage/touchstone/releases/latest" 2>/dev/null \
     | grep '"tag_name"' | head -1 | sed 's/.*"v\([^"]*\)".*/\1/')" || latest=""
   if [ -n "$latest" ]; then
     if [ "$version" = "$latest" ]; then
       tk_ok "v${latest} — you're current"
     else
-      tk_warn "v${latest} available (you have v${version}). Run: brew upgrade toolkit"
+      tk_warn "v${latest} available (you have v${version}). Run: brew upgrade touchstone"
       issues=$((issues + 1))
     fi
   else
@@ -370,14 +370,14 @@ cmd_doctor() {
 }
 
 cmd_list() {
-  local projects_file="$HOME/.toolkit-projects"
+  local projects_file="$HOME/.touchstone-projects"
   local current_id
-  current_id="$(toolkit_current_id)"
+  current_id="$(touchstone_current_id)"
 
   tk_header "Registered Projects"
 
   if [ ! -f "$projects_file" ] || [ ! -s "$projects_file" ]; then
-    tk_dim "No projects registered. Run: toolkit new <dir>"
+    tk_dim "No projects registered. Run: touchstone new <dir>"
     return
   fi
 
@@ -388,7 +388,7 @@ cmd_list() {
     name="$(basename "$project_dir")"
     if [ -d "$project_dir" ]; then
       local proj_version
-      proj_version="$(cat "$project_dir/.toolkit-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
+      proj_version="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
       if [ "$proj_version" = "$current_id" ]; then
         tk_ok "$name  ${DIM}$project_dir${RESET}"
       else
@@ -404,11 +404,11 @@ cmd_list() {
 cmd_unregister() {
   local target="${1:-}"
   if [ -z "$target" ]; then
-    echo "Usage: toolkit unregister <project-path-or-name>" >&2
+    echo "Usage: touchstone unregister <project-path-or-name>" >&2
     exit 1
   fi
 
-  local projects_file="$HOME/.toolkit-projects"
+  local projects_file="$HOME/.touchstone-projects"
   if [ ! -f "$projects_file" ]; then
     tk_fail "No projects file found."
     return 1
@@ -437,7 +437,7 @@ cmd_unregister() {
 
 cmd_diff() {
   tk_header "Template Diff"
-  tk_dim "Comparing project files against latest toolkit templates"
+  tk_dim "Comparing project files against latest touchstone templates"
   echo ""
 
   local has_diff=false
@@ -451,7 +451,7 @@ cmd_diff() {
   for pair in "${pairs[@]}"; do
     local project_file="${pair%%:*}"
     local template_file="${pair##*:}"
-    local template_path="$TOOLKIT_ROOT/$template_file"
+    local template_path="$TOUCHSTONE_ROOT/$template_file"
 
     if [ ! -f "$project_file" ]; then
       tk_dim "$project_file — not found (skipped)"
@@ -466,7 +466,7 @@ cmd_diff() {
     else
       has_diff=true
       echo "${BOLD}--- $project_file (project)${RESET}"
-      echo "${BOLD}+++ $template_file (toolkit template)${RESET}"
+      echo "${BOLD}+++ $template_file (touchstone template)${RESET}"
       diff -u "$project_file" "$template_path" 2>/dev/null | tail -n +3 || true
       echo ""
     fi
@@ -493,14 +493,14 @@ cmd_adr() {
           printf "  ${BOLD}ADR-%s${RESET}: %s\n" "$num" "$title"
         done
       else
-        tk_dim "No ADRs found. Create one with: toolkit adr \"Title of decision\""
+        tk_dim "No ADRs found. Create one with: touchstone adr \"Title of decision\""
       fi
       echo ""
       ;;
     "")
       echo "Usage:" >&2
-      echo "  toolkit adr \"Title of decision\"    Create a new ADR" >&2
-      echo "  toolkit adr list                    List all ADRs" >&2
+      echo "  touchstone adr \"Title of decision\"    Create a new ADR" >&2
+      echo "  touchstone adr list                    List all ADRs" >&2
       exit 1
       ;;
     *)
@@ -527,7 +527,7 @@ cmd_adr() {
       today="$(date +%Y-%m-%d)"
 
       # Copy template and fill in.
-      cp "$TOOLKIT_ROOT/templates/adr/0000-template.md" "$filename"
+      cp "$TOUCHSTONE_ROOT/templates/adr/0000-template.md" "$filename"
       sed -i '' "s/NNNN/$padded/g" "$filename"
       escaped_title="$(escape_sed_replacement "$title")"
       sed -i '' "s/TITLE/$escaped_title/g" "$filename"
@@ -654,15 +654,15 @@ cmd_skills() {
 
     *)
       echo "Usage:" >&2
-      echo "  toolkit skills           List all skills" >&2
-      echo "  toolkit skills check     Validate skill files" >&2
+      echo "  touchstone skills           List all skills" >&2
+      echo "  touchstone skills check     Validate skill files" >&2
       exit 1
       ;;
   esac
 }
 
 cmd_release() {
-  source "$TOOLKIT_ROOT/lib/release.sh"
+  source "$TOUCHSTONE_ROOT/lib/release.sh"
 
   local bump_type="minor"
   while [ "$#" -gt 0 ]; do
@@ -670,11 +670,11 @@ cmd_release() {
       --major) bump_type="major"; shift ;;
       --minor) bump_type="minor"; shift ;;
       --patch) bump_type="patch"; shift ;;
-      *) echo "Usage: toolkit release [--major|--minor|--patch]" >&2; exit 1 ;;
+      *) echo "Usage: touchstone release [--major|--minor|--patch]" >&2; exit 1 ;;
     esac
   done
 
-  toolkit_release "$bump_type"
+  touchstone_release "$bump_type"
 }
 
 cmd_changelog() {
@@ -686,48 +686,48 @@ cmd_changelog() {
     return 1
   fi
 
-  gh release list --repo henrymodisett/toolkit --limit "$count" 2>/dev/null || {
+  gh release list --repo autumngarage/touchstone --limit "$count" 2>/dev/null || {
     tk_fail "Couldn't fetch releases (network issue or auth problem)."
     tk_dim "Fallback — recent commits:"
-    git -C "$TOOLKIT_ROOT" log --oneline -"$count" 2>/dev/null || true
+    git -C "$TOUCHSTONE_ROOT" log --oneline -"$count" 2>/dev/null || true
   }
   echo ""
 }
 
 cmd_help() {
-  tk_header "toolkit — shared engineering toolkit"
+  tk_header "touchstone — shared engineering starter kit"
   echo "  ${BOLD}Project commands:${RESET}"
-  printf "    ${BOLD}toolkit init${RESET} [--no-setup]      Add toolkit to the current project\n"
-  printf "    ${BOLD}toolkit init${RESET} --review-routing small-local  Use local review for small diffs\n"
-  printf "    ${BOLD}toolkit init${RESET} --gitbutler       Add optional GitButler workflow setup\n"
-  printf "    ${BOLD}toolkit new${RESET} <dir>              Bootstrap a new project from scratch\n"
-  printf "    ${BOLD}toolkit detect${RESET}                 Show detected project profile\n"
-  printf "    ${BOLD}toolkit run${RESET} <task>             Run lint, typecheck, build, test, or validate\n"
-  printf "    ${BOLD}toolkit update${RESET}                 Create a branch + commit for toolkit updates\n"
-  printf "    ${BOLD}toolkit update${RESET} --dry-run       Preview what would change\n"
-  printf "    ${BOLD}toolkit update${RESET} --check         Report whether this project needs update\n"
-  printf "    ${BOLD}toolkit sync${RESET}                   Update all registered projects\n"
-  printf "    ${BOLD}toolkit sync${RESET} --check           Report which projects need sync\n"
-  printf "    ${BOLD}toolkit sync${RESET} --pull-first      Pull latest toolkit first\n"
-  printf "    ${BOLD}toolkit diff${RESET}                   Compare project files vs templates\n"
-  printf "    ${BOLD}toolkit adr${RESET} \"Title\"            Create an Architecture Decision Record\n"
-  printf "    ${BOLD}toolkit adr${RESET} list               List all ADRs\n"
+  printf "    ${BOLD}touchstone init${RESET} [--no-setup]      Add touchstone to the current project\n"
+  printf "    ${BOLD}touchstone init${RESET} --review-routing small-local  Use local review for small diffs\n"
+  printf "    ${BOLD}touchstone init${RESET} --gitbutler       Add optional GitButler workflow setup\n"
+  printf "    ${BOLD}touchstone new${RESET} <dir>              Bootstrap a new project from scratch\n"
+  printf "    ${BOLD}touchstone detect${RESET}                 Show detected project profile\n"
+  printf "    ${BOLD}touchstone run${RESET} <task>             Run lint, typecheck, build, test, or validate\n"
+  printf "    ${BOLD}touchstone update${RESET}                 Create a branch + commit for touchstone updates\n"
+  printf "    ${BOLD}touchstone update${RESET} --dry-run       Preview what would change\n"
+  printf "    ${BOLD}touchstone update${RESET} --check         Report whether this project needs update\n"
+  printf "    ${BOLD}touchstone sync${RESET}                   Update all registered projects\n"
+  printf "    ${BOLD}touchstone sync${RESET} --check           Report which projects need sync\n"
+  printf "    ${BOLD}touchstone sync${RESET} --pull-first      Pull latest touchstone first\n"
+  printf "    ${BOLD}touchstone diff${RESET}                   Compare project files vs templates\n"
+  printf "    ${BOLD}touchstone adr${RESET} \"Title\"            Create an Architecture Decision Record\n"
+  printf "    ${BOLD}touchstone adr${RESET} list               List all ADRs\n"
   echo ""
   echo "  ${BOLD}Registry commands:${RESET}"
-  printf "    ${BOLD}toolkit list${RESET}                   Show registered projects\n"
-  printf "    ${BOLD}toolkit unregister${RESET} <name>      Remove a project from registry\n"
-  printf "    ${BOLD}toolkit status${RESET}                 Dashboard — all projects at a glance\n"
+  printf "    ${BOLD}touchstone list${RESET}                   Show registered projects\n"
+  printf "    ${BOLD}touchstone unregister${RESET} <name>      Remove a project from registry\n"
+  printf "    ${BOLD}touchstone status${RESET}                 Dashboard — all projects at a glance\n"
   echo ""
-  echo "  ${BOLD}Toolkit commands:${RESET}"
-  printf "    ${BOLD}toolkit doctor${RESET}                 Check installation health\n"
-  printf "    ${BOLD}toolkit version${RESET}                Show installed version\n"
-  printf "    ${BOLD}toolkit changelog${RESET} [N]          Show last N releases (default 10)\n"
-  printf "    ${BOLD}toolkit skills${RESET}                 List Claude Code skills\n"
-  printf "    ${BOLD}toolkit skills${RESET} check           Validate skill files\n"
-  printf "    ${BOLD}toolkit release${RESET} [--patch]      Cut a new toolkit release\n"
-  printf "    ${BOLD}toolkit help${RESET}                   Show this help\n"
+  echo "  ${BOLD}Touchstone commands:${RESET}"
+  printf "    ${BOLD}touchstone doctor${RESET}                 Check installation health\n"
+  printf "    ${BOLD}touchstone version${RESET}                Show installed version\n"
+  printf "    ${BOLD}touchstone changelog${RESET} [N]          Show last N releases (default 10)\n"
+  printf "    ${BOLD}touchstone skills${RESET}                 List Claude Code skills\n"
+  printf "    ${BOLD}touchstone skills${RESET} check           Validate skill files\n"
+  printf "    ${BOLD}touchstone release${RESET} [--patch]      Cut a new touchstone release\n"
+  printf "    ${BOLD}touchstone help${RESET}                   Show this help\n"
   echo ""
-  printf "  Install: ${DIM}brew tap henrymodisett/toolkit && brew install toolkit${RESET}\n"
+  printf "  Install: ${DIM}brew tap autumngarage/touchstone && brew install touchstone${RESET}\n"
   echo ""
 }
 
@@ -758,7 +758,7 @@ case "$COMMAND" in
   help|-h|--help) cmd_help ;;
   *)
     printf "${RED}Unknown command: $COMMAND${RESET}\n" >&2
-    echo "Run 'toolkit help' for usage." >&2
+    echo "Run 'touchstone help' for usage." >&2
     exit 1
     ;;
 esac

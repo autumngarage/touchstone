@@ -5,7 +5,7 @@
 # Run this after cloning the repo:
 #   bash setup.sh
 #
-# Installs all dev tools, syncs toolkit files, sets up hooks, and installs
+# Installs all dev tools, syncs touchstone files, sets up hooks, and installs
 # project dependencies. Idempotent — safe to re-run anytime.
 #
 set -euo pipefail
@@ -54,17 +54,17 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 2. Toolkit CLI
+# 2. Touchstone CLI
 # --------------------------------------------------------------------------
-info "Checking toolkit"
-if command -v toolkit >/dev/null 2>&1; then
-  TOOLKIT_VERSION_SUMMARY="$(toolkit version 2>&1 | awk 'NF && !seen { sub(/^toolkit /, ""); print; seen = 1 }')"
-  ok "toolkit ${TOOLKIT_VERSION_SUMMARY:-installed}"
+info "Checking touchstone"
+if command -v touchstone >/dev/null 2>&1; then
+  TOUCHSTONE_VERSION_SUMMARY="$(touchstone version 2>&1 | awk 'NF && !seen { sub(/^touchstone /, ""); print; seen = 1 }')"
+  ok "touchstone ${TOUCHSTONE_VERSION_SUMMARY:-installed}"
 else
-  warn "Installing toolkit..."
-  brew tap henrymodisett/toolkit 2>/dev/null || true
-  brew install toolkit
-  ok "toolkit installed"
+  warn "Installing touchstone..."
+  brew tap autumngarage/touchstone 2>/dev/null || true
+  brew install touchstone
+  ok "touchstone installed"
 fi
 
 # --------------------------------------------------------------------------
@@ -228,20 +228,20 @@ else
 fi
 
 # --------------------------------------------------------------------------
-# 5. Sync toolkit files to latest
+# 5. Sync touchstone files to latest
 # --------------------------------------------------------------------------
-info "Syncing toolkit files"
-# Skip update if this IS the toolkit repo (it's the source, not a downstream project).
-if [ -f "bin/toolkit" ] && [ -f "lib/auto-update.sh" ]; then
-  ok "this is the toolkit repo — skipping self-update"
-elif [ -f ".toolkit-version" ]; then
-  toolkit update --check 2>&1 | grep -E "Already|Needs sync|Run: toolkit update" | head -5 | while read -r line; do
+info "Syncing touchstone files"
+# Skip update if this IS the Touchstone repo (it's the source, not a downstream project).
+if [ -f "bin/touchstone" ] && [ -f "lib/auto-update.sh" ]; then
+  ok "this is the Touchstone repo — skipping self-update"
+elif [ -f ".touchstone-version" ]; then
+  touchstone update --check 2>&1 | grep -E "Already|Needs sync|Run: touchstone update" | head -5 | while read -r line; do
     ok "$line"
   done
-  ok "toolkit sync status checked"
+  ok "touchstone sync status checked"
 else
-  warn "No .toolkit-version found — this project hasn't been bootstrapped."
-  warn "Run: toolkit new $(pwd)"
+  warn "No .touchstone-version found — this project hasn't been bootstrapped."
+  warn "Run: touchstone new $(pwd)"
 fi
 
 # --------------------------------------------------------------------------
@@ -431,6 +431,6 @@ fi
 echo ""
 info "Setup complete"
 echo ""
-printf "  Run ${BOLD}toolkit doctor${RESET} to verify everything.\n"
-printf "  Run ${BOLD}toolkit status${RESET} to see project health.\n"
+printf "  Run ${BOLD}touchstone doctor${RESET} to verify everything.\n"
+printf "  Run ${BOLD}touchstone status${RESET} to see project health.\n"
 echo ""

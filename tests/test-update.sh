@@ -4,8 +4,8 @@
 #
 set -euo pipefail
 
-TOOLKIT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TEST_DIR="$(mktemp -d -t toolkit-test-update.XXXXXX)"
+TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TEST_DIR="$(mktemp -d -t touchstone-test-update.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
 echo "==> Test: update an existing project"
@@ -43,8 +43,8 @@ assert_not_contains() {
 
 configure_git() {
   local repo="$1"
-  git -C "$repo" config user.email "toolkit-test@example.com"
-  git -C "$repo" config user.name "Toolkit Test"
+  git -C "$repo" config user.email "touchstone-test@example.com"
+  git -C "$repo" config user.name "Touchstone Test"
 }
 
 commit_all() {
@@ -61,20 +61,20 @@ PROJECT="$TEST_DIR/test-project"
 # --------------------------------------------------------------------------
 echo ""
 echo "--- Step 1: Bootstrap ---"
-bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$PROJECT" --no-register
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT" --no-register
 configure_git "$PROJECT"
-commit_all "$PROJECT" "initial toolkit project"
+commit_all "$PROJECT" "initial touchstone project"
 
 BASE_BRANCH="$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD)"
-INITIAL_SHA="$(cat "$PROJECT/.toolkit-version" | tr -d '[:space:]')"
-echo "    Initial .toolkit-version: $INITIAL_SHA"
+INITIAL_SHA="$(cat "$PROJECT/.touchstone-version" | tr -d '[:space:]')"
+echo "    Initial .touchstone-version: $INITIAL_SHA"
 
 # --------------------------------------------------------------------------
-# Test 1: update with no toolkit changes -> "already up to date"
+# Test 1: update with no touchstone changes -> "already up to date"
 # --------------------------------------------------------------------------
 echo ""
 echo "--- Step 2: Update with no changes (should report up to date) ---"
-(cd "$PROJECT" && bash "$TOOLKIT_ROOT/bootstrap/update-project.sh") 2>&1 | tee "$TEST_DIR/update-output-1.txt"
+(cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") 2>&1 | tee "$TEST_DIR/update-output-1.txt"
 
 if grep -q "Already up to date" "$TEST_DIR/update-output-1.txt"; then
   echo "    PASS: correctly reported up to date"
@@ -89,29 +89,29 @@ if [ "$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD)" != "$BASE_BRANCH" ]; the
 fi
 
 # --------------------------------------------------------------------------
-# Test 2: committed local toolkit-owned changes update on a review branch.
+# Test 2: committed local touchstone-owned changes update on a review branch.
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Step 3: Modify a toolkit-owned file, then update ---"
+echo "--- Step 3: Modify a Touchstone-owned file, then update ---"
 
 echo "# locally modified" >> "$PROJECT/principles/engineering-principles.md"
-rm "$PROJECT/scripts/toolkit-run.sh"
-echo "0000000000000000000000000000000000000000" > "$PROJECT/.toolkit-version"
-commit_all "$PROJECT" "simulate old toolkit state"
+rm "$PROJECT/scripts/touchstone-run.sh"
+echo "0000000000000000000000000000000000000000" > "$PROJECT/.touchstone-version"
+commit_all "$PROJECT" "simulate old touchstone state"
 
-(cd "$PROJECT" && bash "$TOOLKIT_ROOT/bootstrap/update-project.sh") 2>&1 | tee "$TEST_DIR/update-output-2.txt"
+(cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") 2>&1 | tee "$TEST_DIR/update-output-2.txt"
 
 UPDATE_BRANCH="$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD)"
 if [ "$UPDATE_BRANCH" = "$BASE_BRANCH" ]; then
-  echo "FAIL: update did not switch to a chore/toolkit branch" >&2
+  echo "FAIL: update did not switch to a chore/touchstone branch" >&2
   ERRORS=$((ERRORS + 1))
 fi
-assert_contains "$TEST_DIR/update-output-2.txt" 'Creating update branch: chore/toolkit-'
-assert_contains "$TEST_DIR/update-output-2.txt" 'Committed: chore: update toolkit to'
+assert_contains "$TEST_DIR/update-output-2.txt" 'Creating update branch: chore/touchstone-'
+assert_contains "$TEST_DIR/update-output-2.txt" 'Committed: chore: update touchstone to'
 assert_contains "$TEST_DIR/update-output-2.txt" 'bash scripts/open-pr.sh'
-assert_exists "$PROJECT/scripts/toolkit-run.sh"
-assert_exists "$PROJECT/.toolkit-manifest"
-assert_contains "$PROJECT/.toolkit-manifest" '^scripts/toolkit-run.sh$'
+assert_exists "$PROJECT/scripts/touchstone-run.sh"
+assert_exists "$PROJECT/.touchstone-manifest"
+assert_contains "$PROJECT/.touchstone-manifest" '^scripts/touchstone-run.sh$'
 assert_not_exists "$PROJECT/principles/engineering-principles.md.bak"
 
 if find "$PROJECT" -name '*.bak' -print | grep -q .; then
@@ -121,10 +121,10 @@ else
   echo "    PASS: update did not create .bak files"
 fi
 
-if diff -q "$TOOLKIT_ROOT/principles/engineering-principles.md" "$PROJECT/principles/engineering-principles.md" >/dev/null 2>&1; then
-  echo "    PASS: file was updated to toolkit version"
+if diff -q "$TOUCHSTONE_ROOT/principles/engineering-principles.md" "$PROJECT/principles/engineering-principles.md" >/dev/null 2>&1; then
+  echo "    PASS: file was updated to touchstone version"
 else
-  echo "    FAIL: file does not match toolkit version" >&2
+  echo "    FAIL: file does not match touchstone version" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
@@ -141,10 +141,10 @@ if [ -n "$(git -C "$PROJECT" status --porcelain)" ]; then
   ERRORS=$((ERRORS + 1))
 fi
 
-if git -C "$PROJECT" ls-files --error-unmatch .toolkit-version >/dev/null 2>&1; then
-  echo "    PASS: .toolkit-version is tracked in the update commit"
+if git -C "$PROJECT" ls-files --error-unmatch .touchstone-version >/dev/null 2>&1; then
+  echo "    PASS: .touchstone-version is tracked in the update commit"
 else
-  echo "FAIL: expected .toolkit-version to be tracked" >&2
+  echo "FAIL: expected .touchstone-version to be tracked" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
@@ -155,11 +155,11 @@ echo ""
 echo "--- Step 4: Verify project-owned files are untouched ---"
 
 echo "# my project context" >> "$PROJECT/CLAUDE.md"
-echo "0000000000000000000000000000000000000001" > "$PROJECT/.toolkit-version"
+echo "0000000000000000000000000000000000000001" > "$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate project-owned customization"
 CLAUDE_CHECKSUM="$(md5 -q "$PROJECT/CLAUDE.md" 2>/dev/null || md5sum "$PROJECT/CLAUDE.md" | awk '{print $1}')"
 
-(cd "$PROJECT" && bash "$TOOLKIT_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
+(cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
 
 CLAUDE_CHECKSUM_AFTER="$(md5 -q "$PROJECT/CLAUDE.md" 2>/dev/null || md5sum "$PROJECT/CLAUDE.md" | awk '{print $1}')"
 
@@ -179,15 +179,15 @@ echo ""
 echo "--- Step 5: Dirty worktree is refused ---"
 
 DIRTY_PROJECT="$TEST_DIR/dirty-project"
-bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$DIRTY_PROJECT" --no-register >/dev/null
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$DIRTY_PROJECT" --no-register >/dev/null
 configure_git "$DIRTY_PROJECT"
 commit_all "$DIRTY_PROJECT" "initial dirty test project"
-echo "0000000000000000000000000000000000000002" > "$DIRTY_PROJECT/.toolkit-version"
+echo "0000000000000000000000000000000000000002" > "$DIRTY_PROJECT/.touchstone-version"
 commit_all "$DIRTY_PROJECT" "simulate old dirty test project"
 DIRTY_BRANCH="$(git -C "$DIRTY_PROJECT" rev-parse --abbrev-ref HEAD)"
 echo "# uncommitted change" >> "$DIRTY_PROJECT/scripts/open-pr.sh"
 
-if (cd "$DIRTY_PROJECT" && bash "$TOOLKIT_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/dirty-output.txt" 2>&1; then
+if (cd "$DIRTY_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/dirty-output.txt" 2>&1; then
   echo "FAIL: expected dirty update to fail" >&2
   ERRORS=$((ERRORS + 1))
 else
@@ -206,18 +206,18 @@ echo ""
 echo "--- Step 6: Failed update rolls back legacy metadata ---"
 
 ROLLBACK_PROJECT="$TEST_DIR/rollback-project"
-bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$ROLLBACK_PROJECT" --no-register >/dev/null
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$ROLLBACK_PROJECT" --no-register >/dev/null
 configure_git "$ROLLBACK_PROJECT"
 commit_all "$ROLLBACK_PROJECT" "initial rollback test project"
-printf '\n.toolkit-version\n.toolkit-manifest\n' >> "$ROLLBACK_PROJECT/.gitignore"
-git -C "$ROLLBACK_PROJECT" rm --cached .toolkit-version .toolkit-manifest >/dev/null
-commit_all "$ROLLBACK_PROJECT" "simulate legacy ignored toolkit metadata"
-echo "legacy-old-version" > "$ROLLBACK_PROJECT/.toolkit-version"
-rm "$ROLLBACK_PROJECT/.toolkit-manifest"
-mkdir "$ROLLBACK_PROJECT/.toolkit-manifest"
+printf '\n.touchstone-version\n.touchstone-manifest\n' >> "$ROLLBACK_PROJECT/.gitignore"
+git -C "$ROLLBACK_PROJECT" rm --cached .touchstone-version .touchstone-manifest >/dev/null
+commit_all "$ROLLBACK_PROJECT" "simulate legacy ignored touchstone metadata"
+echo "legacy-old-version" > "$ROLLBACK_PROJECT/.touchstone-version"
+rm "$ROLLBACK_PROJECT/.touchstone-manifest"
+mkdir "$ROLLBACK_PROJECT/.touchstone-manifest"
 ROLLBACK_BRANCH="$(git -C "$ROLLBACK_PROJECT" rev-parse --abbrev-ref HEAD)"
 
-if (cd "$ROLLBACK_PROJECT" && bash "$TOOLKIT_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/rollback-output.txt" 2>&1; then
+if (cd "$ROLLBACK_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/rollback-output.txt" 2>&1; then
   echo "FAIL: expected rollback update to fail on legacy manifest directory" >&2
   ERRORS=$((ERRORS + 1))
 else
@@ -229,14 +229,14 @@ if [ "$(git -C "$ROLLBACK_PROJECT" rev-parse --abbrev-ref HEAD)" != "$ROLLBACK_B
   ERRORS=$((ERRORS + 1))
 fi
 
-if [ "$(cat "$ROLLBACK_PROJECT/.toolkit-version")" = "legacy-old-version" ]; then
-  echo "    PASS: rollback restored ignored .toolkit-version"
+if [ "$(cat "$ROLLBACK_PROJECT/.touchstone-version")" = "legacy-old-version" ]; then
+  echo "    PASS: rollback restored ignored .touchstone-version"
 else
-  echo "FAIL: rollback did not restore ignored .toolkit-version" >&2
+  echo "FAIL: rollback did not restore ignored .touchstone-version" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
-if git -C "$ROLLBACK_PROJECT" branch --list 'chore/toolkit-*' | grep -q .; then
+if git -C "$ROLLBACK_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
   echo "FAIL: rollback should delete the failed update branch" >&2
   ERRORS=$((ERRORS + 1))
 fi
@@ -248,23 +248,23 @@ echo ""
 echo "--- Step 7: Check mode and no broad startup nag ---"
 
 CHECK_PROJECT="$TEST_DIR/check-project"
-bash "$TOOLKIT_ROOT/bootstrap/new-project.sh" "$CHECK_PROJECT" --no-register >/dev/null
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$CHECK_PROJECT" --no-register >/dev/null
 configure_git "$CHECK_PROJECT"
 commit_all "$CHECK_PROJECT" "initial check project"
-echo "0000000000000000000000000000000000000003" > "$CHECK_PROJECT/.toolkit-version"
+echo "0000000000000000000000000000000000000003" > "$CHECK_PROJECT/.touchstone-version"
 commit_all "$CHECK_PROJECT" "simulate old check project"
 CHECK_BRANCH="$(git -C "$CHECK_PROJECT" rev-parse --abbrev-ref HEAD)"
 
-(cd "$CHECK_PROJECT" && bash "$TOOLKIT_ROOT/bootstrap/update-project.sh" --check) >"$TEST_DIR/check-output.txt" 2>&1
+(cd "$CHECK_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) >"$TEST_DIR/check-output.txt" 2>&1
 assert_contains "$TEST_DIR/check-output.txt" 'Needs sync'
-assert_contains "$TEST_DIR/check-output.txt" 'Run: toolkit update'
+assert_contains "$TEST_DIR/check-output.txt" 'Run: touchstone update'
 
 if [ "$(git -C "$CHECK_PROJECT" rev-parse --abbrev-ref HEAD)" != "$CHECK_BRANCH" ]; then
   echo "FAIL: update --check should not switch branches" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
-(cd "$CHECK_PROJECT" && TOOLKIT_NO_AUTO_UPDATE=1 "$TOOLKIT_ROOT/bin/toolkit" detect) >"$TEST_DIR/detect-output.txt" 2>&1
+(cd "$CHECK_PROJECT" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" detect) >"$TEST_DIR/detect-output.txt" 2>&1
 assert_not_contains "$TEST_DIR/detect-output.txt" 'needs sync'
 
 # --------------------------------------------------------------------------
