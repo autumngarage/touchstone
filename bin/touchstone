@@ -39,6 +39,7 @@ export TOUCHSTONE_ROOT
 # Source shared libraries.
 source "$TOUCHSTONE_ROOT/lib/auto-update.sh"
 source "$TOUCHSTONE_ROOT/lib/colors.sh"
+source "$TOUCHSTONE_ROOT/lib/ui.sh"
 
 # Auto-update check (throttled, non-blocking on failure).
 touchstone_auto_update || true
@@ -199,6 +200,9 @@ cmd_init() {
       exec bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" "${update_args[@]}"
       ;;
   esac
+
+  # Fresh init: greet with the branded hero so setup feels like setup.
+  tk_hero "setting up this project"
 
   bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$project_dir" "${args[@]}"
 

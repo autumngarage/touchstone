@@ -1539,20 +1539,88 @@ print_summary() {
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   C_DIM='\033[2m' C_GREEN='\033[0;32m'
   C_YELLOW='\033[0;33m' C_RED='\033[0;31m' C_CYAN='\033[0;36m' C_RESET='\033[0m'
+  C_TTY=1
 else
   C_DIM='' C_GREEN='' C_YELLOW='' C_RED='' C_CYAN='' C_RESET=''
+  C_TTY=0
 fi
+
+# --------------------------------------------------------------------------
+# Branded UI — double-rail verdicts signed "touchstone".
+# Mirrors lib/ui.sh; kept inline so this hook stays self-contained when
+# synced into downstream projects as scripts/codex-review.sh.
+# --------------------------------------------------------------------------
+
+TK_BRAND_ORANGE="#FF6B35"
+TK_BRAND_LIME="#A3E635"
+TK_BRAND_RED="#EF4444"
+TK_BRAND_DIM="#6B7280"
+
+tk_have_gum() { command -v gum >/dev/null 2>&1; }
+
+tk_paint() {
+  # tk_paint <hex> <bold|plain> <text...>
+  local color="$1"; shift
+  local flag="$1"; shift
+  if [ "$C_TTY" = "1" ] && tk_have_gum; then
+    if [ "$flag" = "bold" ]; then
+      gum style --foreground "$color" --bold "$*"
+    else
+      gum style --foreground "$color" "$*"
+    fi
+  else
+    printf '%s' "$*"
+  fi
+}
+
+tk_rail() {
+  if [ "$C_TTY" = "1" ] && tk_have_gum; then
+    gum style --foreground "$TK_BRAND_ORANGE" "▌▌"
+  else
+    printf '▌▌'
+  fi
+}
+
+tk_signature_line() {
+  # Dim "touchstone vX.Y.Z" line; version resolved via TOUCHSTONE_ROOT when set.
+  local version=""
+  if [ -n "${TOUCHSTONE_ROOT:-}" ] && [ -f "$TOUCHSTONE_ROOT/VERSION" ]; then
+    version="$(tr -d '[:space:]' < "$TOUCHSTONE_ROOT/VERSION" 2>/dev/null || true)"
+  fi
+  if [ -n "$version" ]; then
+    tk_paint "$TK_BRAND_DIM" plain "touchstone v${version}"
+  else
+    tk_paint "$TK_BRAND_DIM" plain "touchstone"
+  fi
+}
+
+tk_verdict() {
+  # tk_verdict <ok|fail|info> <headline> [subtitle]
+  local state="$1" headline="$2" subtitle="${3:-}"
+  local rail mark painted_headline
+  rail="$(tk_rail)"
+
+  case "$state" in
+    ok)   mark="$(tk_paint "$TK_BRAND_LIME" plain "✓")"
+          painted_headline="$(tk_paint "$TK_BRAND_LIME" bold "$headline")" ;;
+    fail) mark="$(tk_paint "$TK_BRAND_RED"  plain "✗")"
+          painted_headline="$(tk_paint "$TK_BRAND_RED"  bold "$headline")" ;;
+    *)    mark="$(tk_paint "$TK_BRAND_DIM"  plain "•")"
+          painted_headline="$(tk_paint "$TK_BRAND_DIM"  bold "$headline")" ;;
+  esac
+
+  printf '\n  %s  %s  %s\n' "$rail" "$painted_headline" "$mark"
+  if [ -n "$subtitle" ]; then
+    printf '  %s  %s\n' "$rail" "$(tk_paint "$TK_BRAND_DIM" plain "$subtitle")"
+  fi
+  printf '  %s  %s\n\n' "$rail" "$(tk_signature_line)"
+}
 
 print_banner() {
   [ "$BANNER_PRINTED" = false ] || return 0
   local label
   label="$(reviewer_label)"
-  printf "${C_CYAN}"
-  printf '\n  ╔══════════════════════════════════════╗\n'
-  printf '  ║         ⚡ TOUCHSTONE REVIEW ⚡        ║\n'
-  printf '  ║     %s merge code review%s║\n' "$label" "$(printf '%*s' $((23 - ${#label})) '')"
-  printf '  ╚══════════════════════════════════════╝\n\n'
-  printf "${C_RESET}"
+  tk_verdict info "REVIEW STARTING" "${label} · merge code review"
   BANNER_PRINTED=true
 }
 
@@ -1660,18 +1728,11 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
   case "$LAST_LINE" in
     CODEX_REVIEW_CLEAN)
       phase "done — clean"
-      echo ""
-      printf "${C_GREEN}"
-      cat <<'PASS'
-  ╔══════════════════════════════════════╗
-  ║           ✅ ALL CLEAR              ║
-  ║         Push approved.              ║
-  ╚══════════════════════════════════════╝
-PASS
-      printf "${C_RESET}"
+      clean_subtitle="${REVIEWER_LABEL} · ${DIFF_LINE_COUNT} lines · push approved"
       if [ "$FIX_COMMITS" -gt 0 ]; then
-        printf "  ${C_DIM}($FIX_COMMITS auto-fix commit(s) applied)${C_RESET}\n"
+        clean_subtitle="${clean_subtitle} · ${FIX_COMMITS} auto-fix commit(s)"
       fi
+      tk_verdict ok "ALL CLEAR" "$clean_subtitle"
       REVIEW_EXIT_REASON="clean"
       print_summary
       write_clean_review_cache "$REVIEW_CACHE_KEY" "$DIFF_LINE_COUNT"
@@ -1726,14 +1787,8 @@ PASS
     CODEX_REVIEW_BLOCKED)
       phase "done — blocked"
       REVIEW_FINDINGS_COUNT="$(printf '%s\n' "$OUTPUT" | grep -c '^- ' || true)"
-      echo ""
-      printf "${C_RED}"
-      printf '  ╔══════════════════════════════════════╗\n'
-      printf '  ║          🚫 PUSH BLOCKED           ║\n'
-      printf '  ║  %s found issues to address%s║\n' "$REVIEWER_LABEL" "$(printf '%*s' $((25 - ${#REVIEWER_LABEL})) '')"
-      printf '  ╚══════════════════════════════════════╝\n'
-      printf "${C_RESET}"
-      echo ""
+      blocked_subtitle="${REVIEWER_LABEL} flagged issues to address · push refused"
+      tk_verdict fail "PUSH BLOCKED" "$blocked_subtitle"
       printf '%s\n' "$OUTPUT" | sed 's/^/    /'
       echo ""
       if [ "$FIX_COMMITS" -gt 0 ]; then
