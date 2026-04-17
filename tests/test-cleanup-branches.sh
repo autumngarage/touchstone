@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 #
-# tests/test-cleanup-branches.sh — verify cleanup detects squash-merged
-# branches (commits not ancestors of main, but patch-ids applied).
+# tests/test-cleanup-branches.sh — verify cleanup detects branches whose
+# changes are already on the default branch via patch-id equivalence.
 #
-# This is the common shape of branches left behind by
-# `scripts/open-pr.sh --auto-merge`. Ancestor-only detection would miss them
-# and leave the user with stale branches to clean up manually.
+# Covers three shapes of "already applied but SHA-divergent":
+#   - single-commit squash   (common with simple feature branches)
+#   - multi-commit squash    (what `gh pr merge --squash` actually produces
+#                             for N-commit feature branches — the case an
+#                             earlier revision of this tool missed)
+#   - rebase-merge           (N commits with matching patch-ids on upstream)
+#
+# Plus a control branch with genuinely unique work that must survive cleanup.
 #
 set -euo pipefail
 
@@ -13,14 +18,13 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-cleanup.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
-echo "==> Test: cleanup-branches.sh detects squash-merged branches"
+echo "==> Test: cleanup-branches.sh detects patch-id equivalent branches"
 
 FAKE_BIN="$TEST_DIR/bin"
 mkdir -p "$FAKE_BIN"
 
 cat > "$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
-# Minimal gh stub: resolve default branch; never reached for pr list in this test.
 case "$*" in
   "repo view --json defaultBranchRef --jq .defaultBranchRef.name")
     echo "main"
@@ -48,22 +52,46 @@ git add a.txt
 git commit -qm "initial"
 git push -q -u origin main
 
-# Feature branch with a single commit — the kind open-pr.sh --auto-merge would squash.
-git checkout -q -b feat/squash-me
-echo "B" > b.txt
-git add b.txt
-git commit -qm "feat: add B"
-
-# Simulate the squash-merge on main: identical tree change, new commit.
+# --- (1) Single-commit squash-merged branch.
+git checkout -q -b feat/single-squash
+echo "S" > s.txt
+git add s.txt
+git commit -qm "feat: single"
 git checkout -q main
-git merge --squash feat/squash-me >/dev/null
-git commit -qm "feat: add B (#1)"
+git merge --squash feat/single-squash >/dev/null
+git commit -qm "feat: single (#1)"
+
+# --- (2) Multi-commit squash-merged branch (the case the earlier tool missed).
+git checkout -q -b feat/multi-squash
+echo "M1" > m1.txt && git add m1.txt && git commit -qm "feat: M1"
+echo "M2" > m2.txt && git add m2.txt && git commit -qm "feat: M2"
+echo "M3" > m3.txt && git add m3.txt && git commit -qm "feat: M3"
+git checkout -q main
+git merge --squash feat/multi-squash >/dev/null
+git commit -qm "feat: multi (#2)"
+
+# --- (3) Rebase-merged branch (per-commit patch-id matches on upstream).
+git checkout -q -b feat/rebase-merged
+echo "R1" > r1.txt && git add r1.txt && git commit -qm "feat: R1"
+echo "R2" > r2.txt && git add r2.txt && git commit -qm "feat: R2"
+REBASE_FIRST="$(git rev-parse HEAD~1)"
+REBASE_SECOND="$(git rev-parse HEAD)"
+
+# An unrelated commit on main before the cherry-pick guarantees the picked
+# commits land on a different parent and get new SHAs. Without this, git
+# reuses the original SHAs (since parent + tree + metadata are identical),
+# which makes the branch ancestor-reachable and bypasses the patch-id path
+# we actually want to exercise.
+git checkout -q main
+echo "U" > u_unrelated.txt && git add u_unrelated.txt && git commit -qm "chore: unrelated"
+git cherry-pick "$REBASE_FIRST" "$REBASE_SECOND" >/dev/null
+
 git push -q origin main
 
-# Also create a branch with genuinely unique unmerged work — must survive cleanup.
+# --- (4) Control: branch with truly unique work that must be preserved.
 git checkout -q -b feat/keep-me
-echo "C" > c.txt
-git add c.txt
+echo "U" > u.txt
+git add u.txt
 git commit -qm "feat: unique work"
 
 git checkout -q main
@@ -71,34 +99,46 @@ git checkout -q main
 OUTPUT="$TEST_DIR/output.txt"
 PATH="$FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" --execute >"$OUTPUT" 2>&1
 
-if git rev-parse --verify --quiet refs/heads/feat/squash-me >/dev/null; then
-  echo "FAIL: feat/squash-me should have been force-deleted" >&2
+fail() {
+  echo "FAIL: $1" >&2
+  echo "---- script output ----" >&2
   cat "$OUTPUT" >&2
   exit 1
-fi
+}
+
+for deleted in feat/single-squash feat/multi-squash feat/rebase-merged; do
+  if git rev-parse --verify --quiet "refs/heads/$deleted" >/dev/null; then
+    fail "$deleted should have been force-deleted"
+  fi
+  if ! grep -q "force-deleted local (squash-merged): $deleted" "$OUTPUT"; then
+    fail "execute log should report force-deletion of $deleted"
+  fi
+done
 
 if ! git rev-parse --verify --quiet refs/heads/feat/keep-me >/dev/null; then
-  echo "FAIL: feat/keep-me should have been preserved" >&2
-  cat "$OUTPUT" >&2
-  exit 1
+  fail "feat/keep-me should have been preserved"
 fi
 
 if ! grep -q "Squash-merged into main" "$OUTPUT"; then
-  echo "FAIL: output should list feat/squash-me under 'Squash-merged into main'" >&2
-  cat "$OUTPUT" >&2
-  exit 1
-fi
-
-if ! grep -q "force-deleted local (squash-merged): feat/squash-me" "$OUTPUT"; then
-  echo "FAIL: execute log should report force-deletion of feat/squash-me" >&2
-  cat "$OUTPUT" >&2
-  exit 1
+  fail "output should list the patch-id-equivalent branches under 'Squash-merged into main'"
 fi
 
 if ! grep -q "feat/keep-me" "$OUTPUT" || ! grep -q "Has unique commits" "$OUTPUT"; then
-  echo "FAIL: feat/keep-me should be classified as 'Has unique commits'" >&2
-  cat "$OUTPUT" >&2
-  exit 1
+  fail "feat/keep-me should be classified as 'Has unique commits'"
 fi
 
-echo "==> PASS: squash-merged branch detected and force-deleted; unmerged work preserved"
+# --help output must include every safety bullet (regression guard for the
+# earlier hardcoded sed range that silently truncated as the header grew).
+HELP="$TEST_DIR/help.txt"
+PATH="$FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" --help >"$HELP" 2>&1
+for required in "Default mode is DRY RUN" "Ancestor-merged" "Squash-merged" "Worktree-checked-out"; do
+  if ! grep -q "$required" "$HELP"; then
+    echo "FAIL: --help output missing '$required'" >&2
+    echo "---- help output ----" >&2
+    cat "$HELP" >&2
+    exit 1
+  fi
+done
+
+echo "==> PASS: single-squash, multi-squash, and rebase-merged branches detected;"
+echo "         unmerged work preserved; --help covers full safety block"

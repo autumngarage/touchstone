@@ -12,8 +12,9 @@
 #   - The current branch is never deleted.
 #   - The default branch (main/master) is never deleted.
 #   - Ancestor-merged local branches use `git branch -d` (refuses unmerged work).
-#   - Squash-merged local branches use `git branch -D` — only after `git cherry`
-#     confirms every commit's patch-id is already present in the default branch.
+#   - Squash-merged local branches use `git branch -D` — only after patch-id
+#     equivalence confirms the branch's net changes are already on the default
+#     branch (handles `gh pr merge --squash` as well as rebase/cherry-pick).
 #   - Remote branches only deleted in --remote-too mode, only if no open PR and
 #     fully merged or squash-merged.
 #   - Worktree-checked-out branches are skipped.
@@ -38,7 +39,10 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     -h|--help)
-      sed -n '3,16p' "$0" | sed 's/^# \{0,1\}//'
+      # Print the header comment block (skip shebang + leading `#`), stopping
+      # at the first non-comment line. Derived instead of hardcoded so future
+      # header edits don't silently truncate the help output.
+      awk 'NR>2 && !/^#/ { exit } NR>2 { sub(/^# ?/, ""); print }' "$0"
       exit 0
       ;;
     *)
@@ -86,17 +90,38 @@ is_worktree_branch() {
   return 1
 }
 
-# Returns 0 if every commit unique to $branch has a patch-id already present in
-# $upstream. Detects squash-merged branches — git's ancestor check misses them
-# because the squash commit has a different SHA, but `git cherry` compares
-# patch-ids and marks applied commits with a leading `-`.
+# Returns 0 if the branch's net changes are already present on $upstream —
+# applied as a single squash commit, as a rebase-merge of the originals, or
+# as individually cherry-picked commits. Git's ancestor check misses all of
+# these because the commit SHAs diverge.
 is_fully_applied() {
   local upstream="$1"
   local branch="$2"
-  local cherry_output
-  cherry_output="$(git cherry "$upstream" "$branch" 2>/dev/null)" || return 1
-  [ -z "$cherry_output" ] && return 0
-  ! echo "$cherry_output" | grep -q '^+'
+  local base
+  base="$(git merge-base "$upstream" "$branch" 2>/dev/null)" || return 1
+  [ -z "$base" ] && return 1
+
+  # (1) Squash-merge detection. `gh pr merge --squash` collapses N branch
+  # commits into one commit on upstream whose diff equals the branch's
+  # combined diff against the merge-base. Compare the combined patch-id.
+  local branch_patch
+  branch_patch="$(git diff "$base" "$branch" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
+  if [ -n "$branch_patch" ]; then
+    local rev rev_patch
+    while IFS= read -r rev; do
+      [ -z "$rev" ] && continue
+      rev_patch="$(git show "$rev" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
+      [ "$rev_patch" = "$branch_patch" ] && return 0
+    done < <(git rev-list "$base..$upstream" 2>/dev/null)
+  fi
+
+  # (2) Rebase-merge or per-commit cherry-pick: every unique commit on the
+  # branch has an equivalent patch-id on upstream. `git cherry` flags these
+  # with a leading `-`; any `+` means genuinely unique work remains.
+  local cherry
+  cherry="$(git cherry "$upstream" "$branch" 2>/dev/null)" || return 1
+  [ -z "$cherry" ] && return 0
+  ! echo "$cherry" | grep -q '^+'
 }
 
 DEFAULT_REF="origin/$DEFAULT_BRANCH"
