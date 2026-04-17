@@ -46,8 +46,15 @@ done
 
 # Verify we're in a project with .touchstone-version.
 if [ ! -f "$PROJECT_DIR/.touchstone-version" ]; then
+  if [ -f "$PROJECT_DIR/.toolkit-version" ]; then
+    echo "ERROR: Legacy .toolkit-version found in $PROJECT_DIR" >&2
+    echo "       This project was bootstrapped before the toolkit -> touchstone rename." >&2
+    echo "       Run: touchstone migrate-from-toolkit" >&2
+    echo "       Then re-run: touchstone update" >&2
+    exit 1
+  fi
   echo "ERROR: No .touchstone-version file found in $PROJECT_DIR" >&2
-  echo "       This project hasn't been bootstrapped with the Touchstone." >&2
+  echo "       This project hasn't been bootstrapped with Touchstone." >&2
   echo "       Run: $(dirname "$0")/new-project.sh $PROJECT_DIR" >&2
   exit 1
 fi
