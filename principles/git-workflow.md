@@ -20,7 +20,7 @@ Normal code changes go through a feature branch + PR + merge. Emergency bypasses
 
 If the project has Codex review configured (see `.codex-review.toml` for policy and the `codex-review` hook in `.pre-commit-config.yaml` for the entry point), a pre-push hook gates default-branch pushes (including squash-merges via `merge-pr.sh`). The mechanism is `stages: [pre-push]` in `.pre-commit-config.yaml`; it skips feature-branch pushes and only activates when the push target is the default branch. Behavior:
 - Runs `codex exec --full-auto` against the diff vs the default branch
-- Auto-fixes only mechanical or low-risk findings (typos, whitespace, trivial doc drift); behavior changes — including added logging, error handling, or retry logic — stay in the PR for human review
+- Auto-fixes only low-risk findings (typos, missing imports, adding logging to empty exception handlers, named constants for unexplained magic numbers); anything that changes control flow, business logic, or retry/error-handling semantics stays in the PR for human review
 - Blocks the push for unsafe findings (high-scrutiny paths)
 - Loops up to `max_iterations` times (default 3)
 - Gracefully skips if the Codex CLI isn't installed, printing a visible "review skipped" line so the missing safety boundary isn't silent

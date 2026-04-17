@@ -38,7 +38,7 @@ Do not mix functional changes with broad renames, formatting sweeps, dependency 
 Any destructive or one-way operation must have a recovery path before it runs. Deletes, migrations, format rewrites, external side effects, and history rewrites need a dry run, backup, idempotency key, rollback plan, or forward-fix plan. A change is not safe because it passed once; it is safe when failure leaves the system in a known recoverable state.
 
 ## Preserve compatibility at boundaries
-Changes to public APIs, config files, schemas, CLIs, hooks, templates, and generated artifacts must include a compatibility or migration plan. Accept old and new formats during rollout when downstream projects may lag. Boundary breaks multiply: one local assumption becomes N downstream failures. This applies doubly to Touchstone itself, which ships files into every project that uses it.
+Changes to public APIs, config files, schemas, CLIs, hooks, templates, and generated artifacts must include a compatibility or migration plan. Accept old and new formats during rollout when downstream consumers may lag. Boundary breaks multiply: one local assumption becomes N downstream failures.
 
 ## Audit one weak-point class at a time
 When you find a structural bug, audit the whole class — not just the one you noticed. See [audit-weak-points.md](audit-weak-points.md) for the methodology. This discipline prevents re-auditing the same code twice and catches bugs before they compound.
