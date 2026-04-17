@@ -63,6 +63,9 @@ PROJECT_REVIEW_NONE="$TEST_DIR/test-project-review-none"
 PROJECT_REVIEW_LOCAL="$TEST_DIR/test-project-review-local"
 PROJECT_REVIEW_HYBRID="$TEST_DIR/test-project-review-hybrid"
 PROJECT_GITBUTLER="$TEST_DIR/test-project-gitbutler"
+PROJECT_HOOKS_WITH="$TEST_DIR/test-project-hooks-with"
+PROJECT_HOOKS_WITHOUT="$TEST_DIR/test-project-hooks-without"
+PROJECT_PYTEST_EMPTY="$TEST_DIR/test-project-pytest-empty"
 
 # Git repo
 assert_exists "$PROJECT/.git"
@@ -456,6 +459,96 @@ cp "$TOUCHSTONE_ROOT/templates/setup.sh" "$RUST_PROJECT/setup.sh"
 : > "$RUNNER_LOG"
 (cd "$RUST_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash setup.sh --deps-only) >/dev/null
 assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|fetch'
+
+# Bootstrap should install git hooks via pre-commit when pre-commit is available,
+# so a fresh repo is actually gated — not just configured.
+HOOKS_FAKE_BIN="$TEST_DIR/hooks-fake-bin"
+HOOKS_LOG="$TEST_DIR/hooks.log"
+mkdir -p "$HOOKS_FAKE_BIN"
+cat > "$HOOKS_FAKE_BIN/pre-commit" <<FAKEPRECOMMIT
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$HOOKS_LOG"
+case "\$*" in
+  "install --hook-type pre-commit")
+    mkdir -p .git/hooks && : > .git/hooks/pre-commit
+    printf 'pre-commit installed at .git/hooks/pre-commit\n'
+    ;;
+  "install --hook-type pre-push")
+    mkdir -p .git/hooks && : > .git/hooks/pre-push
+    printf 'pre-commit installed at .git/hooks/pre-push\n'
+    ;;
+  "install --hook-type commit-msg")
+    mkdir -p .git/hooks && : > .git/hooks/commit-msg
+    printf 'pre-commit installed at .git/hooks/commit-msg\n'
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+FAKEPRECOMMIT
+chmod +x "$HOOKS_FAKE_BIN/pre-commit"
+
+: > "$HOOKS_LOG"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_HOOKS_WITH" --no-register >/dev/null
+assert_contains "$HOOKS_LOG" '^install --hook-type pre-commit$'
+assert_contains "$HOOKS_LOG" '^install --hook-type pre-push$'
+assert_contains "$HOOKS_LOG" '^install --hook-type commit-msg$'
+assert_exists "$PROJECT_HOOKS_WITH/.git/hooks/pre-commit"
+assert_exists "$PROJECT_HOOKS_WITH/.git/hooks/pre-push"
+assert_exists "$PROJECT_HOOKS_WITH/.git/hooks/commit-msg"
+
+# Bootstrap without pre-commit on PATH must print the gap, succeed (no fatal error),
+# and leave hooks uninstalled — rather than silently "succeed" with an ungated repo.
+if PATH="/usr/bin:/bin" command -v pre-commit >/dev/null 2>&1; then
+  echo "SKIP: pre-commit is in /usr/bin:/bin; cannot test gap path on this machine" >&2
+else
+  if PATH="/usr/bin:/bin" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_HOOKS_WITHOUT" --no-register >"$TEST_DIR/hooks-without-output.txt" 2>&1; then
+    assert_contains "$TEST_DIR/hooks-without-output.txt" 'pre-commit CLI is not installed'
+    assert_not_exists "$PROJECT_HOOKS_WITHOUT/.git/hooks/pre-push"
+  else
+    echo "FAIL: bootstrap without pre-commit must not exit nonzero — it should print the gap and continue" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+fi
+
+# touchstone-run.sh test must treat pytest exit 5 (no tests collected) as graceful skip,
+# so pre-code repos and new scaffolds don't fail validate.
+PYTEST_FAKE_BIN="$TEST_DIR/pytest-fake-bin"
+mkdir -p "$PYTEST_FAKE_BIN"
+cat > "$PYTEST_FAKE_BIN/python3" <<'FAKEPY'
+#!/usr/bin/env bash
+if [ "$1" = "-m" ] && [ "$2" = "pytest" ]; then
+  printf 'collected 0 items\n'
+  exit 5
+fi
+exit 0
+FAKEPY
+chmod +x "$PYTEST_FAKE_BIN/python3"
+
+mkdir -p "$PROJECT_PYTEST_EMPTY/scripts"
+cp "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_PYTEST_EMPTY/scripts/touchstone-run.sh"
+printf 'project_type=python\n' > "$PROJECT_PYTEST_EMPTY/.touchstone-config"
+if (cd "$PROJECT_PYTEST_EMPTY" && PATH="$PYTEST_FAKE_BIN:$PATH" bash scripts/touchstone-run.sh test) >"$TEST_DIR/pytest-empty-output.txt" 2>&1; then
+  assert_contains "$TEST_DIR/pytest-empty-output.txt" 'pytest found no tests; skipped'
+else
+  echo "FAIL: pytest exit 5 must be a graceful skip, not a failure" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Any non-5 pytest failure must still propagate — we haven't accidentally swallowed real errors.
+cat > "$PYTEST_FAKE_BIN/python3" <<'FAKEPY'
+#!/usr/bin/env bash
+if [ "$1" = "-m" ] && [ "$2" = "pytest" ]; then
+  printf 'E   assert False\n'
+  exit 1
+fi
+exit 0
+FAKEPY
+chmod +x "$PYTEST_FAKE_BIN/python3"
+if (cd "$PROJECT_PYTEST_EMPTY" && PATH="$PYTEST_FAKE_BIN:$PATH" bash scripts/touchstone-run.sh test) >"$TEST_DIR/pytest-fail-output.txt" 2>&1; then
+  echo "FAIL: pytest exit 1 (real failure) must still propagate as nonzero" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 echo ""
 if [ "$ERRORS" -eq 0 ]; then
