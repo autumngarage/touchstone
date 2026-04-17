@@ -66,6 +66,11 @@ PROJECT_GITBUTLER="$TEST_DIR/test-project-gitbutler"
 PROJECT_HOOKS_WITH="$TEST_DIR/test-project-hooks-with"
 PROJECT_HOOKS_WITHOUT="$TEST_DIR/test-project-hooks-without"
 PROJECT_PYTEST_EMPTY="$TEST_DIR/test-project-pytest-empty"
+PROJECT_REINIT="$TEST_DIR/test-project-reinit"
+PROJECT_DOCTOR="$TEST_DIR/test-project-doctor"
+PROJECT_OUTDATED="$TEST_DIR/test-project-outdated"
+PROJECT_DOCTOR_FRESH="$TEST_DIR/test-project-doctor-fresh"
+PROJECT_DOCTOR_LEGACY="$TEST_DIR/test-project-doctor-legacy"
 
 # Git repo
 assert_exists "$PROJECT/.git"
@@ -532,6 +537,80 @@ if (cd "$PROJECT_PYTEST_EMPTY" && PATH="$PYTEST_FAKE_BIN:$PATH" bash scripts/tou
   assert_contains "$TEST_DIR/pytest-empty-output.txt" 'pytest found no tests; skipped'
 else
   echo "FAIL: pytest exit 5 must be a graceful skip, not a failure" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Re-running init on an already-touchstoned repo must reconcile (install missing hooks,
+# backfill deleted touchstone-owned files, re-register) without re-prompting — not silently
+# do nothing and not clobber project-owned content.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REINIT" --no-register >/dev/null
+# Simulate drift: delete an installed hook shim and a synced principle file.
+rm -f "$PROJECT_REINIT/.git/hooks/pre-push"
+rm -f "$PROJECT_REINIT/principles/engineering-principles.md"
+# Overwrite a project-owned file so we can verify reconciliation did NOT clobber user edits.
+echo "custom-user-content" > "$PROJECT_REINIT/CLAUDE.md"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REINIT" --no-register >"$TEST_DIR/reinit-output.txt" 2>&1
+assert_exists "$PROJECT_REINIT/.git/hooks/pre-push"
+assert_exists "$PROJECT_REINIT/principles/engineering-principles.md"
+assert_contains "$PROJECT_REINIT/CLAUDE.md" 'custom-user-content'
+assert_contains "$TEST_DIR/reinit-output.txt" 'Reconciling touchstone files'
+assert_contains "$TEST_DIR/reinit-output.txt" 'touchstone reconciled:'
+
+# touchstone doctor --project must exit clean on a fully-armed repo.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR" --no-register >/dev/null
+if (cd "$PROJECT_DOCTOR" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-clean.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-clean.txt" 'Project is fully armed'
+else
+  echo "FAIL: doctor --project should exit 0 on a fresh bootstrap" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Break hooks and rerun doctor — it must exit nonzero and flag the gap.
+rm -f "$PROJECT_DOCTOR/.git/hooks/pre-push"
+if (cd "$PROJECT_DOCTOR" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-broken.txt" 2>&1; then
+  echo "FAIL: doctor --project should exit nonzero when hooks are missing" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-broken.txt" 'git hooks NOT installed'
+fi
+
+# doctor --project outside a touchstoned repo must flag it, not claim health.
+mkdir -p "$PROJECT_DOCTOR_FRESH"
+if (cd "$PROJECT_DOCTOR_FRESH" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-fresh.txt" 2>&1; then
+  echo "FAIL: doctor --project should exit nonzero outside a touchstoned project" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-fresh.txt" 'Not a touchstone project'
+fi
+
+# doctor --project on a legacy .toolkit-version repo must point to the migration command.
+mkdir -p "$PROJECT_DOCTOR_LEGACY"
+echo "legacy-sha" > "$PROJECT_DOCTOR_LEGACY/.toolkit-version"
+if (cd "$PROJECT_DOCTOR_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-legacy.txt" 2>&1; then
+  echo "FAIL: doctor --project should exit nonzero on a legacy .toolkit-version repo" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-legacy.txt" 'touchstone migrate-from-toolkit'
+fi
+
+# touchstone init on an outdated project must delegate to the update flow (branch + commit),
+# not silently backup-and-replace files in place.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_OUTDATED" --no-register >/dev/null
+(cd "$PROJECT_OUTDATED" && git add -A && git -c user.email=test@touchstone -c user.name=test commit --no-verify -m "initial" >/dev/null)
+echo "0000000000000000000000000000000000000001" > "$PROJECT_OUTDATED/.touchstone-version"
+(cd "$PROJECT_OUTDATED" && git -c user.email=test@touchstone -c user.name=test commit --no-verify -am "pin to old touchstone" >/dev/null)
+if (cd "$PROJECT_OUTDATED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup) >"$TEST_DIR/init-outdated.txt" 2>&1; then
+  assert_contains "$TEST_DIR/init-outdated.txt" 'upgrading'
+  UPDATE_BRANCH="$(git -C "$PROJECT_OUTDATED" branch --show-current)"
+  case "$UPDATE_BRANCH" in
+    chore/touchstone-*) ;;
+    *)
+      echo "FAIL: init on outdated project should land on a chore/touchstone-* branch, got '$UPDATE_BRANCH'" >&2
+      ERRORS=$((ERRORS + 1))
+      ;;
+  esac
+else
+  echo "FAIL: init on outdated project should not exit nonzero (stdout: $(cat "$TEST_DIR/init-outdated.txt"))" >&2
   ERRORS=$((ERRORS + 1))
 fi
 

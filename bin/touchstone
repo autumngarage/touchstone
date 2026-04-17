@@ -147,16 +147,50 @@ cmd_init() {
     setup_existed=true
   fi
 
-  bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$(pwd)" "${args[@]}"
+  # State detection: fresh | current | outdated | legacy-toolkit. Determines
+  # whether init bootstraps, reconciles, or delegates to the update flow.
+  local project_dir installed_id current_id init_state="fresh"
+  project_dir="$(pwd)"
 
-  if [ "$run_setup" = true ] && [ -f "$(pwd)/setup.sh" ]; then
+  if [ -f "$project_dir/.toolkit-version" ] && [ ! -f "$project_dir/.touchstone-version" ]; then
+    init_state="legacy-toolkit"
+  elif [ -f "$project_dir/.touchstone-version" ]; then
+    installed_id="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "")"
+    current_id="$(touchstone_current_id)"
+    if [ "$installed_id" = "$current_id" ]; then
+      init_state="current"
+    else
+      init_state="outdated"
+    fi
+  fi
+
+  case "$init_state" in
+    legacy-toolkit)
+      tk_fail "Legacy .toolkit-version found in $project_dir"
+      tk_dim "Run: touchstone migrate-from-toolkit"
+      tk_dim "Then re-run: touchstone init"
+      return 1
+      ;;
+    outdated)
+      tk_header "Touchstone init — upgrading"
+      tk_dim "  installed: ${installed_id:0:12}"
+      tk_dim "  current:   ${current_id:0:12}"
+      tk_info "Delegating to 'touchstone update' (branch + commit so the upgrade is reviewable)"
+      echo ""
+      exec bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh"
+      ;;
+  esac
+
+  bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$project_dir" "${args[@]}"
+
+  if [ "$run_setup" = true ] && [ -f "$project_dir/setup.sh" ]; then
     if [ "$setup_existed" = true ]; then
       tk_warn "setup.sh already existed, so touchstone left it in place and did not run it."
       tk_dim "Run manually if desired: bash setup.sh"
       return 0
     fi
     echo ""
-    bash "$(pwd)/setup.sh"
+    bash "$project_dir/setup.sh"
   fi
 }
 
@@ -271,7 +305,147 @@ cmd_status() {
   echo ""
 }
 
+cmd_doctor_project() {
+  local project_dir issues=0
+  project_dir="$(pwd)"
+
+  tk_header "Touchstone Project Doctor — $(basename "$project_dir")"
+
+  # 1. Is this a touchstone-managed project?
+  if [ ! -f "$project_dir/.touchstone-version" ]; then
+    if [ -f "$project_dir/.toolkit-version" ]; then
+      tk_fail "Legacy .toolkit-version found"
+      tk_dim "  Fix: touchstone migrate-from-toolkit"
+      echo ""
+      return 1
+    fi
+    tk_fail "Not a touchstone project (no .touchstone-version)"
+    tk_dim "  Fix: touchstone init"
+    echo ""
+    return 1
+  fi
+
+  local installed_id current_id
+  installed_id="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "")"
+  current_id="$(touchstone_current_id)"
+  if [ "$installed_id" = "$current_id" ]; then
+    tk_ok "touchstone version matches: ${installed_id:0:12}"
+  else
+    tk_warn "touchstone out of date (installed ${installed_id:0:12}, current ${current_id:0:12})"
+    tk_dim "  Fix: touchstone update"
+    issues=$((issues + 1))
+  fi
+
+  # 2. Git hooks installed? This is the footgun that silently ungates a repo.
+  if [ ! -f "$project_dir/.pre-commit-config.yaml" ]; then
+    tk_warn ".pre-commit-config.yaml is missing"
+    tk_dim "  Fix: touchstone init  (reconciles missing templates)"
+    issues=$((issues + 1))
+  else
+    if [ -f "$project_dir/.git/hooks/pre-commit" ] && [ -f "$project_dir/.git/hooks/pre-push" ]; then
+      tk_ok "git hooks installed (.git/hooks/pre-commit, .git/hooks/pre-push)"
+    else
+      tk_fail "git hooks NOT installed — repo is ungated"
+      if command -v pre-commit >/dev/null 2>&1; then
+        tk_dim "  Fix: touchstone init   (idempotent — reinstalls missing hooks)"
+      else
+        tk_dim "  Fix: brew install pre-commit && touchstone init"
+      fi
+      issues=$((issues + 1))
+    fi
+  fi
+
+  # 3. Manifest files present?
+  if [ -f "$project_dir/.touchstone-manifest" ]; then
+    local missing=0 line
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line#"${line%%[![:space:]]*}"}"
+      line="${line%"${line##*[![:space:]]}"}"
+      [ -z "$line" ] && continue
+      case "$line" in \#*) continue ;; esac
+      if [ ! -e "$project_dir/$line" ]; then
+        tk_fail "manifest file missing: $line"
+        missing=$((missing + 1))
+      fi
+    done < "$project_dir/.touchstone-manifest"
+    if [ "$missing" -eq 0 ]; then
+      tk_ok "manifest files all present"
+    else
+      tk_dim "  Fix: touchstone init  (reconciles missing files)"
+      issues=$((issues + missing))
+    fi
+  else
+    tk_warn ".touchstone-manifest missing"
+    tk_dim "  Fix: touchstone init"
+    issues=$((issues + 1))
+  fi
+
+  # 4. Scripts executable?
+  if [ -d "$project_dir/scripts" ]; then
+    local not_executable=0 script
+    for script in "$project_dir/scripts/"*.sh; do
+      [ -f "$script" ] || continue
+      if [ ! -x "$script" ]; then
+        tk_fail "not executable: scripts/$(basename "$script")"
+        not_executable=$((not_executable + 1))
+      fi
+    done
+    if [ "$not_executable" -eq 0 ]; then
+      tk_ok "scripts are executable"
+    else
+      tk_dim "  Fix: chmod +x $project_dir/scripts/*.sh"
+      issues=$((issues + not_executable))
+    fi
+  fi
+
+  # 5. Registered in ~/.touchstone-projects?  Informational — 'touchstone sync'
+  # and 'touchstone list' depend on it, but the repo is still functionally gated.
+  local projects_file="$HOME/.touchstone-projects"
+  if [ -f "$projects_file" ] && grep -qxF "$project_dir" "$projects_file" 2>/dev/null; then
+    tk_ok "registered in ~/.touchstone-projects"
+  else
+    tk_dim "not in ~/.touchstone-projects (touchstone sync won't update this project)"
+    tk_dim "  Fix: echo \"$project_dir\" >> $projects_file"
+  fi
+
+  # 6. Optional — Codex review config present?
+  if [ -f "$project_dir/.codex-review.toml" ]; then
+    tk_ok ".codex-review.toml present"
+  else
+    tk_dim ".codex-review.toml not found (optional — configures AI review)"
+  fi
+
+  echo ""
+  if [ "$issues" -eq 0 ]; then
+    tk_ok "Project is fully armed."
+    echo ""
+    return 0
+  fi
+  tk_warn "$issues issue(s) found. See fixes above, or run: touchstone init"
+  echo ""
+  return 1
+}
+
 cmd_doctor() {
+  local project_mode=false
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --project) project_mode=true; shift ;;
+      -h|--help)
+        echo "Usage: touchstone doctor [--project]"
+        echo "  (no flag)   Check touchstone installation health (CLI, tools, projects)"
+        echo "  --project   Check per-project health (hooks, manifest, registry)"
+        return 0
+        ;;
+      *) echo "ERROR: unknown argument '$1'" >&2; exit 1 ;;
+    esac
+  done
+
+  if [ "$project_mode" = true ]; then
+    cmd_doctor_project
+    return $?
+  fi
+
   local version
   version="$(touchstone_version_str)"
   local issues=0
@@ -725,6 +899,7 @@ cmd_help() {
   echo ""
   echo "  ${BOLD}Touchstone commands:${RESET}"
   printf "    ${BOLD}touchstone doctor${RESET}                 Check installation health\n"
+  printf "    ${BOLD}touchstone doctor${RESET} --project       Check per-project health (hooks, manifest, registry)\n"
   printf "    ${BOLD}touchstone version${RESET}                Show installed version\n"
   printf "    ${BOLD}touchstone changelog${RESET} [N]          Show last N releases (default 10)\n"
   printf "    ${BOLD}touchstone skills${RESET}                 List Claude Code skills\n"
@@ -760,7 +935,7 @@ case "$COMMAND" in
   changelog)    cmd_changelog "$@" ;;
   release)      cmd_release "$@" ;;
   version)      cmd_version ;;
-  doctor)       cmd_doctor ;;
+  doctor)       cmd_doctor "$@" ;;
   help|-h|--help) cmd_help ;;
   *)
     printf "${RED}Unknown command: $COMMAND${RESET}\n" >&2

@@ -445,7 +445,21 @@ if [[ "$PROJECT_DIR" != /* ]]; then
   PROJECT_DIR="$(pwd)/$PROJECT_DIR"
 fi
 
-echo "==> Bootstrapping project at $PROJECT_DIR"
+# Detect re-init state early so prompts and summary adapt to the case.
+# Fresh = first touchstone bootstrap; reinit = repair/reconcile an already-touchstoned project.
+if [ -f "$PROJECT_DIR/.touchstone-version" ]; then
+  RE_INIT=true
+  echo "==> Reconciling touchstone files in $PROJECT_DIR"
+else
+  RE_INIT=false
+  echo "==> Bootstrapping project at $PROJECT_DIR"
+fi
+
+# Summary counters — populated by copy_file / copy_file_force, emitted at end.
+FILES_ADDED=0
+FILES_EXISTING=0
+FILES_UPDATED=0
+FILES_UNCHANGED=0
 
 # Create directory if needed.
 mkdir -p "$PROJECT_DIR"
@@ -472,10 +486,12 @@ copy_file() {
       return 1
     fi
     echo "    exists (skipped): $(basename "$dst")"
+    FILES_EXISTING=$((FILES_EXISTING + 1))
   else
     cp "$src" "$dst"
     LAST_COPY_CREATED=true
     echo "    + $(basename "$dst")"
+    FILES_ADDED=$((FILES_ADDED + 1))
   fi
 }
 
@@ -489,6 +505,7 @@ copy_file_force() {
 
   if [ -f "$dst" ] && diff -q "$src" "$dst" >/dev/null 2>&1; then
     echo "    same (skipped): $(basename "$dst")"
+    FILES_UNCHANGED=$((FILES_UNCHANGED + 1))
     return
   fi
 
@@ -501,11 +518,13 @@ copy_file_force() {
     cp "$dst" "$backup_path"
     cp "$src" "$dst"
     echo "    ! $(basename "$dst") (backed up as $(basename "$backup_path"))"
+    FILES_UPDATED=$((FILES_UPDATED + 1))
     return
   fi
 
   cp "$src" "$dst"
   echo "    + $(basename "$dst")"
+  FILES_ADDED=$((FILES_ADDED + 1))
 }
 
 write_touchstone_manifest() {
@@ -716,6 +735,7 @@ print_review_setup_hint() {
 echo ""
 echo "==> Copying templates (project-owned, won't be auto-updated):"
 copy_file "$TOUCHSTONE_ROOT/templates/CLAUDE.md" "$PROJECT_DIR/CLAUDE.md"
+CLAUDE_MD_CREATED="$LAST_COPY_CREATED"
 copy_file "$TOUCHSTONE_ROOT/templates/AGENTS.md" "$PROJECT_DIR/AGENTS.md"
 copy_file "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-commit-config.yaml"
 copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
@@ -774,7 +794,7 @@ INPUT_NAME=""
 INPUT_DESC=""
 INPUT_TEST=""
 
-if [ -t 0 ] && [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
+if [ -t 0 ] && [ "$CLAUDE_MD_CREATED" = true ]; then
   echo ""
   echo "==> Fill in project details (press Enter to skip any):"
   echo ""
@@ -967,14 +987,52 @@ echo ""
 HOOK_INSTALL_STATUS=0
 touchstone_install_hooks "$PROJECT_DIR" || HOOK_INSTALL_STATUS=$?
 
+# --------------------------------------------------------------------------
+# Summary block — every init exits with a checkable state, not silent success.
+# --------------------------------------------------------------------------
 echo ""
-echo "==> Done! Next steps:"
-echo ""
-if [ "$HOOK_INSTALL_STATUS" -eq 2 ]; then
-  echo "   ! Git hooks are not installed — setup.sh will install pre-commit and rerun the install."
+if [ "$RE_INIT" = true ]; then
+  echo "==> touchstone reconciled:"
+else
+  echo "==> touchstone bootstrapped:"
 fi
-echo "   1. Review CLAUDE.md and AGENTS.md — add architecture, key files, hard-won lessons"
-echo "   2. Run setup.sh to install all dev tools:"
-echo "        cd $PROJECT_DIR && bash setup.sh"
-echo "   3. Review .codex-review.toml if you want to change AI reviewer behavior"
+printf '    files:    %d added, %d unchanged' "$FILES_ADDED" "$FILES_UNCHANGED"
+if [ "$FILES_UPDATED" -gt 0 ]; then
+  printf ', %d updated (previous content backed up as .bak)' "$FILES_UPDATED"
+fi
+if [ "$FILES_EXISTING" -gt 0 ]; then
+  printf ', %d already present' "$FILES_EXISTING"
+fi
+printf '\n'
+printf '    version:  %s\n' "$TOUCHSTONE_SHA"
+
+case "$HOOK_INSTALL_STATUS" in
+  0) printf '    hooks:    installed (pre-commit, pre-push, commit-msg)\n' ;;
+  1) printf '    hooks:    SKIPPED — no .pre-commit-config.yaml (unexpected)\n' ;;
+  2) printf '    hooks:    NOT INSTALLED — pre-commit CLI missing\n' ;;
+  3) printf '    hooks:    PARTIAL — one or more installs failed (see above)\n' ;;
+esac
+
+if [ "$REGISTER" = true ]; then
+  printf '    registry: %s\n' "$PROJECTS_FILE"
+else
+  printf '    registry: skipped (--no-register)\n'
+fi
+
+echo ""
+echo "Next steps:"
+STEP_NUM=1
+if [ "$HOOK_INSTALL_STATUS" -eq 2 ]; then
+  printf '  %d. Install pre-commit to gate commits & pushes:\n' "$STEP_NUM"
+  printf '       brew install pre-commit   # or: pip install pre-commit\n'
+  printf '       Then rerun: touchstone init\n'
+  STEP_NUM=$((STEP_NUM + 1))
+fi
+if [ "$RE_INIT" = false ]; then
+  printf '  %d. Fill in CLAUDE.md and AGENTS.md (architecture, key files, hard-won lessons)\n' "$STEP_NUM"
+  STEP_NUM=$((STEP_NUM + 1))
+fi
+printf '  %d. Install dev tools and project deps: cd %s && bash setup.sh\n' "$STEP_NUM" "$PROJECT_DIR"
+STEP_NUM=$((STEP_NUM + 1))
+printf '  %d. Verify the install: touchstone doctor --project\n' "$STEP_NUM"
 echo ""
