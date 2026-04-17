@@ -32,7 +32,7 @@ scripts/cleanup-branches.sh              # dry-run first
 scripts/cleanup-branches.sh --execute    # actually delete merged branches
 ```
 
-The cleanup script never deletes the default branch, the current branch, branches checked out in worktrees, or branches with unique unmerged commits. It uses `git branch -d` (not `-D`) as defense in depth.
+The cleanup script never deletes the default branch, the current branch, branches checked out in worktrees, or branches with unique unmerged commits. Ancestor-merged branches are deleted with `git branch -d` as defense in depth (git refuses unmerged work). Squash-merged branches — the common case with `open-pr.sh --auto-merge`, where the commits on your feature branch aren't ancestors of the default branch but their patches are already applied — are detected via `git cherry` patch-id comparison and then force-deleted with `git branch -D` once patch-id equivalence is confirmed.
 
 ## Emergency path
 

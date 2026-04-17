@@ -11,8 +11,11 @@
 #   - Default mode is DRY RUN.
 #   - The current branch is never deleted.
 #   - The default branch (main/master) is never deleted.
-#   - Local branches use `git branch -d` (not `-D`), so unmerged work is safe.
-#   - Remote branches only deleted in --remote-too mode, only if no open PR and fully merged.
+#   - Ancestor-merged local branches use `git branch -d` (refuses unmerged work).
+#   - Squash-merged local branches use `git branch -D` — only after `git cherry`
+#     confirms every commit's patch-id is already present in the default branch.
+#   - Remote branches only deleted in --remote-too mode, only if no open PR and
+#     fully merged or squash-merged.
 #   - Worktree-checked-out branches are skipped.
 #
 set -euo pipefail
@@ -83,6 +86,19 @@ is_worktree_branch() {
   return 1
 }
 
+# Returns 0 if every commit unique to $branch has a patch-id already present in
+# $upstream. Detects squash-merged branches — git's ancestor check misses them
+# because the squash commit has a different SHA, but `git cherry` compares
+# patch-ids and marks applied commits with a leading `-`.
+is_fully_applied() {
+  local upstream="$1"
+  local branch="$2"
+  local cherry_output
+  cherry_output="$(git cherry "$upstream" "$branch" 2>/dev/null)" || return 1
+  [ -z "$cherry_output" ] && return 0
+  ! echo "$cherry_output" | grep -q '^+'
+}
+
 DEFAULT_REF="origin/$DEFAULT_BRANCH"
 
 echo ""
@@ -90,6 +106,7 @@ echo "==> LOCAL branches"
 
 LOCAL_BRANCHES="$(git for-each-ref --format='%(refname:short)' refs/heads/)"
 MERGED_LOCAL=()
+SQUASH_MERGED_LOCAL=()
 UNMERGED_LOCAL=()
 
 while IFS= read -r branch; do
@@ -97,6 +114,8 @@ while IFS= read -r branch; do
   is_protected "$branch" || [ "$branch" = "$CURRENT_BRANCH" ] || is_worktree_branch "$branch" && continue
   if git merge-base --is-ancestor "$branch" "$DEFAULT_REF" 2>/dev/null; then
     MERGED_LOCAL+=("$branch")
+  elif is_fully_applied "$DEFAULT_REF" "$branch"; then
+    SQUASH_MERGED_LOCAL+=("$branch")
   else
     UNMERGED_LOCAL+=("$branch")
   fi
@@ -106,6 +125,14 @@ if [ "${#MERGED_LOCAL[@]}" -gt 0 ]; then
   echo ""
   echo "  Fully merged into $DEFAULT_BRANCH (safe to delete locally):"
   for b in "${MERGED_LOCAL[@]}"; do
+    echo "    - $b"
+  done
+fi
+
+if [ "${#SQUASH_MERGED_LOCAL[@]}" -gt 0 ]; then
+  echo ""
+  echo "  Squash-merged into $DEFAULT_BRANCH (patches applied; safe to force-delete):"
+  for b in "${SQUASH_MERGED_LOCAL[@]}"; do
     echo "    - $b"
   done
 fi
@@ -123,7 +150,7 @@ if [ "${#UNMERGED_LOCAL[@]}" -gt 0 ]; then
   echo "    (b) git branch -D <name> manually if the work is abandoned"
 fi
 
-if [ "${#MERGED_LOCAL[@]}" -eq 0 ] && [ "${#UNMERGED_LOCAL[@]}" -eq 0 ]; then
+if [ "${#MERGED_LOCAL[@]}" -eq 0 ] && [ "${#SQUASH_MERGED_LOCAL[@]}" -eq 0 ] && [ "${#UNMERGED_LOCAL[@]}" -eq 0 ]; then
   echo "  (nothing to clean up)"
 fi
 
@@ -158,6 +185,8 @@ if [ "$REMOTE_TOO" -eq 1 ]; then
     fi
     if git merge-base --is-ancestor "origin/$remote_branch" "$DEFAULT_REF" 2>/dev/null; then
       REMOTE_DELETABLE+=("$remote_branch")
+    elif is_fully_applied "$DEFAULT_REF" "origin/$remote_branch"; then
+      REMOTE_DELETABLE+=("$remote_branch")
     else
       REMOTE_UNIQUE_NO_PR+=("$remote_branch")
     fi
@@ -165,7 +194,7 @@ if [ "$REMOTE_TOO" -eq 1 ]; then
 
   if [ "${#REMOTE_DELETABLE[@]}" -gt 0 ]; then
     echo ""
-    echo "  Fully merged + no open PR (safe to delete remotely):"
+    echo "  Fully merged or squash-merged + no open PR (safe to delete remotely):"
     for b in "${REMOTE_DELETABLE[@]}"; do
       echo "    - origin/$b"
     done
@@ -212,6 +241,18 @@ if [ "${#MERGED_LOCAL[@]}" -gt 0 ]; then
       echo "    deleted local: $b"
     else
       echo "    SKIPPED local (git refused — likely has unmerged commits): $b" >&2
+    fi
+  done
+fi
+
+if [ "${#SQUASH_MERGED_LOCAL[@]}" -gt 0 ]; then
+  # -d refuses these because squash-merge commits aren't ancestors; we verified
+  # patch-ids are applied via is_fully_applied above, so -D is safe here.
+  for b in "${SQUASH_MERGED_LOCAL[@]}"; do
+    if git branch -D "$b" 2>&1; then
+      echo "    force-deleted local (squash-merged): $b"
+    else
+      echo "    SKIPPED local (force-delete failed): $b" >&2
     fi
   done
 fi
