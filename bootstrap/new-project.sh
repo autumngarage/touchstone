@@ -794,7 +794,7 @@ INPUT_NAME=""
 INPUT_DESC=""
 INPUT_TEST=""
 
-if [ -t 0 ] && [ "$CLAUDE_MD_CREATED" = true ]; then
+if [ -t 0 ] && [ "$RE_INIT" = false ] && [ "$CLAUDE_MD_CREATED" = true ]; then
   echo ""
   echo "==> Fill in project details (press Enter to skip any):"
   echo ""

@@ -544,17 +544,41 @@ fi
 # backfill deleted touchstone-owned files, re-register) without re-prompting — not silently
 # do nothing and not clobber project-owned content.
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REINIT" --no-register >/dev/null
-# Simulate drift: delete an installed hook shim and a synced principle file.
+# Simulate drift: delete an installed hook shim, a synced principle file, and the
+# project-owned CLAUDE.md (worst case — reconcile must backfill it but MUST NOT prompt).
 rm -f "$PROJECT_REINIT/.git/hooks/pre-push"
 rm -f "$PROJECT_REINIT/principles/engineering-principles.md"
-# Overwrite a project-owned file so we can verify reconciliation did NOT clobber user edits.
-echo "custom-user-content" > "$PROJECT_REINIT/CLAUDE.md"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REINIT" --no-register >"$TEST_DIR/reinit-output.txt" 2>&1
+rm -f "$PROJECT_REINIT/CLAUDE.md"
+# Run from a non-TTY so interactive prompts would hang if the gating is wrong.
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REINIT" --no-register </dev/null >"$TEST_DIR/reinit-output.txt" 2>&1
 assert_exists "$PROJECT_REINIT/.git/hooks/pre-push"
 assert_exists "$PROJECT_REINIT/principles/engineering-principles.md"
-assert_contains "$PROJECT_REINIT/CLAUDE.md" 'custom-user-content'
+assert_exists "$PROJECT_REINIT/CLAUDE.md"
 assert_contains "$TEST_DIR/reinit-output.txt" 'Reconciling touchstone files'
 assert_contains "$TEST_DIR/reinit-output.txt" 'touchstone reconciled:'
+assert_not_contains "$TEST_DIR/reinit-output.txt" 'Fill in project details'
+
+# Reconcile in a repo where setup.sh was deleted must NOT re-run setup (no dev-tool installs
+# during a repair). Bootstrap, delete setup.sh, rerun init — verify backfill without invocation.
+PROJECT_REINIT_SETUP="$TEST_DIR/test-project-reinit-setup"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REINIT_SETUP" --no-register >/dev/null
+rm -f "$PROJECT_REINIT_SETUP/setup.sh"
+cat > "$PROJECT_REINIT_SETUP/setup.sh.marker" <<'MARKER'
+# Touchstone should never run setup.sh during reconcile; if it does, this test catches it.
+MARKER
+# Replace the template setup.sh with a marker-logging version via a wrapper PATH.
+REINIT_SETUP_LOG="$TEST_DIR/reinit-setup.log"
+: > "$REINIT_SETUP_LOG"
+REINIT_SETUP_FAKE_BIN="$TEST_DIR/reinit-setup-fake-bin"
+mkdir -p "$REINIT_SETUP_FAKE_BIN"
+cp "$HOOKS_FAKE_BIN/pre-commit" "$REINIT_SETUP_FAKE_BIN/pre-commit"
+(cd "$PROJECT_REINIT_SETUP" && PATH="$REINIT_SETUP_FAKE_BIN:$PATH" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-register) </dev/null >"$TEST_DIR/reinit-setup-output.txt" 2>&1
+assert_exists "$PROJECT_REINIT_SETUP/setup.sh"
+# Setup.sh itself would print 'Setting up' if it ran — we assert it did NOT.
+if grep -q 'Setting up' "$TEST_DIR/reinit-setup-output.txt" 2>/dev/null; then
+  echo "FAIL: init reconcile must not run setup.sh even if the file was backfilled" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 # touchstone doctor --project must exit clean on a fully-armed repo.
 # Use the fake pre-commit so hooks install regardless of what's on the tester's real PATH.

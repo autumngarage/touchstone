@@ -187,7 +187,10 @@ cmd_init() {
 
   bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$project_dir" "${args[@]}"
 
-  if [ "$run_setup" = true ] && [ -f "$project_dir/setup.sh" ]; then
+  # Only fresh init runs setup.sh automatically. Reconciling an existing repo
+  # must not re-trigger machine-wide dev-tool installs or interactive prompts
+  # just because the user happened to delete setup.sh before re-running init.
+  if [ "$init_state" = "fresh" ] && [ "$run_setup" = true ] && [ -f "$project_dir/setup.sh" ]; then
     if [ "$setup_existed" = true ]; then
       tk_warn "setup.sh already existed, so touchstone left it in place and did not run it."
       tk_dim "Run manually if desired: bash setup.sh"
