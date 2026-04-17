@@ -200,8 +200,8 @@ The `touchstone` CLI checks for new versions hourly. When a newer release exists
 
 Universal engineering standards, extracted and battle-tested from production systems:
 
-- **[engineering-principles.md](principles/engineering-principles.md)** — No band-aids, no silent failures, every fix gets a test, think in invariants, derive don't persist, one code path, audit weak-point classes
-- **[pre-implementation-checklist.md](principles/pre-implementation-checklist.md)** — 4 questions to answer before writing any code
+- **[engineering-principles.md](principles/engineering-principles.md)** — No band-aids, narrow interfaces, no silent failures, every fix gets a test, derive don't persist, one code path, version data boundaries, separate behavior from tidying, recoverable irreversibles, compatibility at boundaries, audit weak-point classes
+- **[pre-implementation-checklist.md](principles/pre-implementation-checklist.md)** — Pre-flight questions that route back to the canonical principles
 - **[audit-weak-points.md](principles/audit-weak-points.md)** — Methodology: find one bug → audit the whole class → ranked fix → guardrail test
 - **[documentation-ownership.md](principles/documentation-ownership.md)** — Single canonical owner per volatile fact
 - **[git-workflow.md](principles/git-workflow.md)** — Feature branch → PR → AI merge review → squash merge
