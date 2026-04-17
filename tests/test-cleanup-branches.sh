@@ -3,14 +3,19 @@
 # tests/test-cleanup-branches.sh — verify cleanup detects branches whose
 # changes are already on the default branch via patch-id equivalence.
 #
-# Covers three shapes of "already applied but SHA-divergent":
+# Covers four shapes of "already applied but SHA-divergent":
 #   - single-commit squash   (common with simple feature branches)
 #   - multi-commit squash    (what `gh pr merge --squash` actually produces
 #                             for N-commit feature branches — the case an
 #                             earlier revision of this tool missed)
 #   - rebase-merge           (N commits with matching patch-ids on upstream)
 #
-# Plus a control branch with genuinely unique work that must survive cleanup.
+# Plus two branches that must survive cleanup:
+#   - a control with genuinely unique work
+#   - an add-then-revert case — the branch's patch-id still appears in
+#     upstream history, but the current tree no longer has the changes, so
+#     deleting would lose work. A history-based patch-id check would fail
+#     this; the tree-equivalence check passes it.
 #
 set -euo pipefail
 
@@ -18,7 +23,7 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-cleanup.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
-echo "==> Test: cleanup-branches.sh detects patch-id equivalent branches"
+echo "==> Test: cleanup-branches.sh detects tree-equivalent branches"
 
 FAKE_BIN="$TEST_DIR/bin"
 mkdir -p "$FAKE_BIN"
@@ -94,6 +99,19 @@ echo "U" > u.txt
 git add u.txt
 git commit -qm "feat: unique work"
 
+# --- (5) Add-then-revert: patch-id appears in upstream history, but the
+# current upstream tree no longer has the branch's changes. Must survive.
+git checkout -q main
+git checkout -q -b feat/added-then-reverted
+echo "DEL" > to_be_reverted.txt
+git add to_be_reverted.txt
+git commit -qm "feat: add DEL"
+git checkout -q main
+git merge --squash feat/added-then-reverted >/dev/null
+git commit -qm "feat: add DEL (#4)"
+git revert --no-edit HEAD >/dev/null
+git push -q origin main
+
 git checkout -q main
 
 OUTPUT="$TEST_DIR/output.txt"
@@ -115,16 +133,21 @@ for deleted in feat/single-squash feat/multi-squash feat/rebase-merged; do
   fi
 done
 
-if ! git rev-parse --verify --quiet refs/heads/feat/keep-me >/dev/null; then
-  fail "feat/keep-me should have been preserved"
-fi
+for preserved in feat/keep-me feat/added-then-reverted; do
+  if ! git rev-parse --verify --quiet "refs/heads/$preserved" >/dev/null; then
+    fail "$preserved should have been preserved"
+  fi
+  if grep -q "force-deleted local (squash-merged): $preserved" "$OUTPUT"; then
+    fail "$preserved was incorrectly classified as squash-merged and force-deleted"
+  fi
+done
 
 if ! grep -q "Squash-merged into main" "$OUTPUT"; then
-  fail "output should list the patch-id-equivalent branches under 'Squash-merged into main'"
+  fail "output should list the tree-equivalent branches under 'Squash-merged into main'"
 fi
 
-if ! grep -q "feat/keep-me" "$OUTPUT" || ! grep -q "Has unique commits" "$OUTPUT"; then
-  fail "feat/keep-me should be classified as 'Has unique commits'"
+if ! grep -q "Has unique commits" "$OUTPUT"; then
+  fail "unmerged branches should be classified under 'Has unique commits'"
 fi
 
 # --help output must include every safety bullet (regression guard for the
@@ -141,4 +164,5 @@ for required in "Default mode is DRY RUN" "Ancestor-merged" "Squash-merged" "Wor
 done
 
 echo "==> PASS: single-squash, multi-squash, and rebase-merged branches detected;"
-echo "         unmerged work preserved; --help covers full safety block"
+echo "         unmerged work and add-then-reverted branch preserved;"
+echo "         --help covers full safety block"

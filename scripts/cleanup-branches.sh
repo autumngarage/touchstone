@@ -12,9 +12,10 @@
 #   - The current branch is never deleted.
 #   - The default branch (main/master) is never deleted.
 #   - Ancestor-merged local branches use `git branch -d` (refuses unmerged work).
-#   - Squash-merged local branches use `git branch -D` — only after patch-id
-#     equivalence confirms the branch's net changes are already on the default
-#     branch (handles `gh pr merge --squash` as well as rebase/cherry-pick).
+#   - Squash-merged local branches use `git branch -D` — only after tree
+#     equivalence confirms the current default-branch tree has the branch's
+#     content for every file it touched (handles `gh pr merge --squash`,
+#     rebase-merges, and cherry-picks; rejects add-then-revert).
 #   - Remote branches only deleted in --remote-too mode, only if no open PR and
 #     fully merged or squash-merged.
 #   - Worktree-checked-out branches are skipped.
@@ -90,10 +91,12 @@ is_worktree_branch() {
   return 1
 }
 
-# Returns 0 if the branch's net changes are already present on $upstream —
-# applied as a single squash commit, as a rebase-merge of the originals, or
-# as individually cherry-picked commits. Git's ancestor check misses all of
-# these because the commit SHAs diverge.
+# Returns 0 if every file the branch changed relative to the merge-base has
+# the branch's content on $upstream right now. This uniformly detects
+# squash-merges, rebase-merges, and cherry-picks (without caring how the
+# change got there) and correctly rejects the add-then-revert case — where
+# a patch-id lookup in upstream's history would false-positive on the add
+# commit even though the current upstream tree no longer has the change.
 is_fully_applied() {
   local upstream="$1"
   local branch="$2"
@@ -101,27 +104,17 @@ is_fully_applied() {
   base="$(git merge-base "$upstream" "$branch" 2>/dev/null)" || return 1
   [ -z "$base" ] && return 1
 
-  # (1) Squash-merge detection. `gh pr merge --squash` collapses N branch
-  # commits into one commit on upstream whose diff equals the branch's
-  # combined diff against the merge-base. Compare the combined patch-id.
-  local branch_patch
-  branch_patch="$(git diff "$base" "$branch" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
-  if [ -n "$branch_patch" ]; then
-    local rev rev_patch
-    while IFS= read -r rev; do
-      [ -z "$rev" ] && continue
-      rev_patch="$(git show "$rev" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
-      [ "$rev_patch" = "$branch_patch" ] && return 0
-    done < <(git rev-list "$base..$upstream" 2>/dev/null)
-  fi
+  local changed_files
+  changed_files="$(git diff --name-only "$base" "$branch" 2>/dev/null)" || return 1
+  [ -z "$changed_files" ] && return 0
 
-  # (2) Rebase-merge or per-commit cherry-pick: every unique commit on the
-  # branch has an equivalent patch-id on upstream. `git cherry` flags these
-  # with a leading `-`; any `+` means genuinely unique work remains.
-  local cherry
-  cherry="$(git cherry "$upstream" "$branch" 2>/dev/null)" || return 1
-  [ -z "$cherry" ] && return 0
-  ! echo "$cherry" | grep -q '^+'
+  local file
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    git diff --quiet "$upstream" "$branch" -- "$file" 2>/dev/null || return 1
+  done <<< "$changed_files"
+
+  return 0
 }
 
 DEFAULT_REF="origin/$DEFAULT_BRANCH"
