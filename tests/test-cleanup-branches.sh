@@ -183,6 +183,47 @@ for required in "Default mode is DRY RUN" "Ancestor-merged" "Squash-merged" "Wor
   fi
 done
 
+# --- Fail-closed: when `gh pr list` errors, --remote-too must skip remote
+# cleanup rather than treat the error as "no open PRs" and delete branches.
+FAIL_BIN="$TEST_DIR/fail-bin"
+mkdir -p "$FAIL_BIN"
+cat > "$FAIL_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  "repo view --json defaultBranchRef --jq .defaultBranchRef.name")
+    echo "main"
+    ;;
+  "repo view --json nameWithOwner --jq .nameWithOwner")
+    echo "fake/repo"
+    ;;
+  "pr list --state open --limit 200 --json headRefName --jq .[].headRefName")
+    echo "gh: simulated network failure" >&2
+    exit 4
+    ;;
+  *)
+    echo "unexpected gh args: $*" >&2
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "$FAIL_BIN/gh"
+
+FAIL_OUTPUT="$TEST_DIR/fail-output.txt"
+PATH="$FAIL_BIN:$PATH" bash "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" --remote-too --execute >"$FAIL_OUTPUT" 2>&1
+
+if ! grep -q "'gh pr list' failed" "$FAIL_OUTPUT"; then
+  echo "FAIL: remote cleanup should fail-closed with a visible error" >&2
+  cat "$FAIL_OUTPUT" >&2
+  exit 1
+fi
+
+if grep -q "deleted remote" "$FAIL_OUTPUT"; then
+  echo "FAIL: remote cleanup must not delete anything when gh pr list fails" >&2
+  cat "$FAIL_OUTPUT" >&2
+  exit 1
+fi
+
 echo "==> PASS: squash, multi-squash, and rebase-merged branches force-deleted;"
 echo "         unique, add-then-reverted, and rename-half branches preserved;"
-echo "         --help covers full safety block"
+echo "         --help covers full safety block;"
+echo "         remote cleanup fails closed when gh pr list errors"

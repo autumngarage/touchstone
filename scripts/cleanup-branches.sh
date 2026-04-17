@@ -177,12 +177,28 @@ REMOTE_DELETABLE=()
 REMOTE_HAS_PR=()
 REMOTE_UNIQUE_NO_PR=()
 
+REMOTE_SKIPPED=0
+
 if [ "$REMOTE_TOO" -eq 1 ]; then
   echo ""
   echo "==> REMOTE branches (--remote-too)"
 
   REMOTE_BRANCHES="$(git for-each-ref --format='%(refname:short)' refs/remotes/origin/ | sed 's@^origin/@@' | grep -v '^HEAD$' || true)"
-  OPEN_PR_BRANCHES="$(gh pr list --state open --limit 200 --json headRefName --jq '.[].headRefName' 2>/dev/null || echo "")"
+
+  # Fail closed: an errored `gh pr list` is indistinguishable from "no open
+  # PRs" if we swallow the error, and would mark every remote branch as
+  # deletable. Without a confirmed open-PR set we cannot safely classify.
+  GH_PR_ERR=""
+  if ! OPEN_PR_BRANCHES="$(gh pr list --state open --limit 200 --json headRefName --jq '.[].headRefName' 2>&1)"; then
+    GH_PR_ERR="$OPEN_PR_BRANCHES"
+    REMOTE_SKIPPED=1
+    echo ""
+    echo "  ERROR: 'gh pr list' failed — skipping remote cleanup to avoid unsafe deletion." >&2
+    echo "    $GH_PR_ERR" >&2
+  fi
+fi
+
+if [ "$REMOTE_TOO" -eq 1 ] && [ "$REMOTE_SKIPPED" -eq 0 ]; then
 
   has_open_pr() {
     local b="$1"
@@ -264,8 +280,9 @@ if [ "${#MERGED_LOCAL[@]}" -gt 0 ]; then
 fi
 
 if [ "${#SQUASH_MERGED_LOCAL[@]}" -gt 0 ]; then
-  # -d refuses these because squash-merge commits aren't ancestors; we verified
-  # patch-ids are applied via is_fully_applied above, so -D is safe here.
+  # -d refuses these because squash-merge commits aren't ancestors; is_fully_applied
+  # already confirmed tree equivalence against the current default branch, so -D
+  # here won't lose work that isn't reachable another way.
   for b in "${SQUASH_MERGED_LOCAL[@]}"; do
     if git branch -D "$b" 2>&1; then
       echo "    force-deleted local (squash-merged): $b"
