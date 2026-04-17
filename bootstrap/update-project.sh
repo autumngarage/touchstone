@@ -24,15 +24,18 @@ PROJECT_DIR="$(pwd)"
 DRY_RUN=false
 CHECK_ONLY=false
 REQUESTED_BRANCH=""
+SHIP=false
 
 usage() {
-  echo "Usage: $0 [--dry-run|-n] [--check] [--branch <name>]"
+  echo "Usage: $0 [--dry-run|-n] [--check] [--branch <name>] [--ship]"
 }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run|-n) DRY_RUN=true; shift ;;
     --check) CHECK_ONLY=true; shift ;;
+    --ship) SHIP=true; shift ;;
+    --no-ship) SHIP=false; shift ;;
     --branch)
       [ "$#" -ge 2 ] || { echo "ERROR: --branch requires a value" >&2; exit 1; }
       REQUESTED_BRANCH="$2"
@@ -386,11 +389,28 @@ echo "      diff $TOUCHSTONE_ROOT/templates/pre-commit-config.yaml ./.pre-commit
 echo "      diff $TOUCHSTONE_ROOT/hooks/codex-review.config.example.toml ./.codex-review.toml"
 
 if [ "$DRY_RUN" = false ]; then
-  echo ""
-  echo "==> Done. Review the update branch:"
-  echo "    branch: $UPDATE_BRANCH"
-  echo "    git diff ${ORIGINAL_BRANCH}...HEAD"
-  echo "    bash scripts/open-pr.sh"
+  if [ "$SHIP" = true ] && [ "${COMMIT_CREATED:-false}" = true ]; then
+    if [ ! -x "$PROJECT_DIR/scripts/open-pr.sh" ]; then
+      echo ""
+      echo "==> --ship requested but scripts/open-pr.sh is missing or not executable."
+      echo "    branch: $UPDATE_BRANCH (left for manual ship)"
+    else
+      echo ""
+      echo "==> Shipping update via scripts/open-pr.sh --auto-merge..."
+      if ! (cd "$PROJECT_DIR" && bash scripts/open-pr.sh --auto-merge); then
+        echo ""
+        echo "==> Ship failed (see errors above). The update commit is preserved on:"
+        echo "    branch: $UPDATE_BRANCH"
+        echo "    Re-ship when ready:  cd $PROJECT_DIR && bash scripts/open-pr.sh --auto-merge"
+      fi
+    fi
+  else
+    echo ""
+    echo "==> Done. Review the update branch:"
+    echo "    branch: $UPDATE_BRANCH"
+    echo "    git diff ${ORIGINAL_BRANCH}...HEAD"
+    echo "    bash scripts/open-pr.sh --auto-merge"
+  fi
 else
   echo ""
   echo "==> Dry run complete. Apply with: touchstone update"

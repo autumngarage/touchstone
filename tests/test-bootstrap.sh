@@ -647,7 +647,7 @@ git -C "$PROJECT_OUTDATED" config user.name test-committer
 (cd "$PROJECT_OUTDATED" && git add -A && git commit --no-verify -m "initial" >/dev/null)
 echo "0000000000000000000000000000000000000001" > "$PROJECT_OUTDATED/.touchstone-version"
 (cd "$PROJECT_OUTDATED" && git commit --no-verify -am "pin to old touchstone" >/dev/null)
-if (cd "$PROJECT_OUTDATED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup) >"$TEST_DIR/init-outdated.txt" 2>&1; then
+if (cd "$PROJECT_OUTDATED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup --no-ship) >"$TEST_DIR/init-outdated.txt" 2>&1; then
   assert_contains "$TEST_DIR/init-outdated.txt" 'upgrading'
   UPDATE_BRANCH="$(git -C "$PROJECT_OUTDATED" branch --show-current)"
   case "$UPDATE_BRANCH" in
@@ -659,6 +659,40 @@ if (cd "$PROJECT_OUTDATED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/
   esac
 else
   echo "FAIL: init on outdated project should not exit nonzero (stdout: $(cat "$TEST_DIR/init-outdated.txt"))" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# touchstone init on an outdated project defaults to --ship. With no reachable remote
+# the ship attempt must fail soft: branch preserved, exit 0, clear message.
+PROJECT_OUTDATED_SHIP="$TEST_DIR/outdated-ship-project"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_OUTDATED_SHIP" --no-register >/dev/null
+git -C "$PROJECT_OUTDATED_SHIP" config user.email test@touchstone
+git -C "$PROJECT_OUTDATED_SHIP" config user.name test-committer
+(cd "$PROJECT_OUTDATED_SHIP" && git add -A && git commit --no-verify -m "initial" >/dev/null)
+echo "0000000000000000000000000000000000000001" > "$PROJECT_OUTDATED_SHIP/.touchstone-version"
+(cd "$PROJECT_OUTDATED_SHIP" && git commit --no-verify -am "pin to old touchstone" >/dev/null)
+# Stub gh so open-pr.sh fails fast without real network.
+GH_STUB_BIN="$TEST_DIR/gh-stub-bin"
+mkdir -p "$GH_STUB_BIN"
+cat > "$GH_STUB_BIN/gh" <<'GHSTUB'
+#!/usr/bin/env bash
+echo "gh: stubbed failure" >&2
+exit 1
+GHSTUB
+chmod +x "$GH_STUB_BIN/gh"
+if (cd "$PROJECT_OUTDATED_SHIP" && PATH="$GH_STUB_BIN:$HOOKS_FAKE_BIN:$PATH" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup) >"$TEST_DIR/init-outdated-ship.txt" 2>&1; then
+  assert_contains "$TEST_DIR/init-outdated-ship.txt" 'Shipping update via scripts/open-pr.sh'
+  assert_contains "$TEST_DIR/init-outdated-ship.txt" 'Ship failed'
+  SHIP_BRANCH="$(git -C "$PROJECT_OUTDATED_SHIP" branch --show-current)"
+  case "$SHIP_BRANCH" in
+    chore/touchstone-*) ;;
+    *)
+      echo "FAIL: ship-failure path should preserve the chore/touchstone-* branch, got '$SHIP_BRANCH'" >&2
+      ERRORS=$((ERRORS + 1))
+      ;;
+  esac
+else
+  echo "FAIL: init --ship with failing gh should still exit 0 (branch preserved); stdout: $(cat "$TEST_DIR/init-outdated-ship.txt")" >&2
   ERRORS=$((ERRORS + 1))
 fi
 

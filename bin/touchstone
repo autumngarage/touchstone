@@ -4,7 +4,7 @@
 #
 # Usage:
 #   touchstone new <project-dir>          Create a new project with touchstone files
-#   touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--reviewer codex|claude|gemini|local|auto|none]
+#   touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--reviewer codex|claude|gemini|local|auto|none]
 #                                      Add touchstone to the current project
 #   touchstone run <task>                  Run profile task: lint, test, build, typecheck, validate
 #   touchstone update                     Update current project to latest touchstone
@@ -91,6 +91,7 @@ cmd_init() {
   # Init the current directory — bootstrap + setup in one command.
   local run_setup=true
   local setup_existed=false
+  local ship_upgrade=true
   local args=()
 
   while [ "$#" -gt 0 ]; do
@@ -99,8 +100,16 @@ cmd_init() {
         run_setup=false
         shift
         ;;
+      --ship)
+        ship_upgrade=true
+        shift
+        ;;
+      --no-ship)
+        ship_upgrade=false
+        shift
+        ;;
       -h|--help)
-        echo "Usage: touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp]"
+        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp]"
         return 0
         ;;
       --type)
@@ -137,7 +146,7 @@ cmd_init() {
         ;;
       *)
         echo "ERROR: unknown argument '$1'" >&2
-        echo "Usage: touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler]" >&2
+        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler]" >&2
         exit 1
         ;;
     esac
@@ -179,9 +188,15 @@ cmd_init() {
       tk_header "Touchstone init — upgrading"
       tk_dim "  installed: ${installed_id:0:12}"
       tk_dim "  current:   ${current_id:0:12}"
-      tk_info "Delegating to 'touchstone update' (branch + commit so the upgrade is reviewable)"
+      local update_args=()
+      if [ "$ship_upgrade" = true ]; then
+        tk_info "Delegating to 'touchstone update --ship' (branch + commit + auto-merge PR)"
+        update_args+=("--ship")
+      else
+        tk_info "Delegating to 'touchstone update' (branch + commit so the upgrade is reviewable)"
+      fi
       echo ""
-      exec bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh"
+      exec bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" "${update_args[@]}"
       ;;
   esac
 
