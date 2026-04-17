@@ -66,6 +66,11 @@ PROJECT_GITBUTLER="$TEST_DIR/test-project-gitbutler"
 PROJECT_HOOKS_WITH="$TEST_DIR/test-project-hooks-with"
 PROJECT_HOOKS_WITHOUT="$TEST_DIR/test-project-hooks-without"
 PROJECT_PYTEST_EMPTY="$TEST_DIR/test-project-pytest-empty"
+PROJECT_REINIT="$TEST_DIR/test-project-reinit"
+PROJECT_DOCTOR="$TEST_DIR/test-project-doctor"
+PROJECT_OUTDATED="$TEST_DIR/test-project-outdated"
+PROJECT_DOCTOR_FRESH="$TEST_DIR/test-project-doctor-fresh"
+PROJECT_DOCTOR_LEGACY="$TEST_DIR/test-project-doctor-legacy"
 
 # Git repo
 assert_exists "$PROJECT/.git"
@@ -532,6 +537,128 @@ if (cd "$PROJECT_PYTEST_EMPTY" && PATH="$PYTEST_FAKE_BIN:$PATH" bash scripts/tou
   assert_contains "$TEST_DIR/pytest-empty-output.txt" 'pytest found no tests; skipped'
 else
   echo "FAIL: pytest exit 5 must be a graceful skip, not a failure" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Re-running init on an already-touchstoned repo must reconcile (install missing hooks,
+# backfill deleted touchstone-owned files, re-register) without re-prompting — not silently
+# do nothing and not clobber project-owned content.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REINIT" --no-register >/dev/null
+# Simulate drift: delete an installed hook shim, a synced principle file, and the
+# project-owned CLAUDE.md (worst case — reconcile must backfill it but MUST NOT prompt).
+rm -f "$PROJECT_REINIT/.git/hooks/pre-push"
+rm -f "$PROJECT_REINIT/principles/engineering-principles.md"
+rm -f "$PROJECT_REINIT/CLAUDE.md"
+# Run from a non-TTY so interactive prompts would hang if the gating is wrong.
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REINIT" --no-register </dev/null >"$TEST_DIR/reinit-output.txt" 2>&1
+assert_exists "$PROJECT_REINIT/.git/hooks/pre-push"
+assert_exists "$PROJECT_REINIT/principles/engineering-principles.md"
+assert_exists "$PROJECT_REINIT/CLAUDE.md"
+assert_contains "$TEST_DIR/reinit-output.txt" 'Reconciling touchstone files'
+assert_contains "$TEST_DIR/reinit-output.txt" 'touchstone reconciled:'
+assert_not_contains "$TEST_DIR/reinit-output.txt" 'Fill in project details'
+
+# Reconcile in a repo where setup.sh was deleted must NOT re-run setup (no dev-tool installs
+# during a repair). Bootstrap, delete setup.sh, rerun init — verify backfill without invocation.
+PROJECT_REINIT_SETUP="$TEST_DIR/test-project-reinit-setup"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REINIT_SETUP" --no-register >/dev/null
+rm -f "$PROJECT_REINIT_SETUP/setup.sh"
+cat > "$PROJECT_REINIT_SETUP/setup.sh.marker" <<'MARKER'
+# Touchstone should never run setup.sh during reconcile; if it does, this test catches it.
+MARKER
+# Replace the template setup.sh with a marker-logging version via a wrapper PATH.
+REINIT_SETUP_LOG="$TEST_DIR/reinit-setup.log"
+: > "$REINIT_SETUP_LOG"
+REINIT_SETUP_FAKE_BIN="$TEST_DIR/reinit-setup-fake-bin"
+mkdir -p "$REINIT_SETUP_FAKE_BIN"
+cp "$HOOKS_FAKE_BIN/pre-commit" "$REINIT_SETUP_FAKE_BIN/pre-commit"
+(cd "$PROJECT_REINIT_SETUP" && PATH="$REINIT_SETUP_FAKE_BIN:$PATH" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-register) </dev/null >"$TEST_DIR/reinit-setup-output.txt" 2>&1
+assert_exists "$PROJECT_REINIT_SETUP/setup.sh"
+# Setup.sh itself would print 'Setting up' if it ran — we assert it did NOT.
+if grep -q 'Setting up' "$TEST_DIR/reinit-setup-output.txt" 2>/dev/null; then
+  echo "FAIL: init reconcile must not run setup.sh even if the file was backfilled" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# touchstone doctor --project must exit clean on a fully-armed repo.
+# Use the fake pre-commit so hooks install regardless of what's on the tester's real PATH.
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR" --no-register >/dev/null
+if (cd "$PROJECT_DOCTOR" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-clean.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-clean.txt" 'Project is fully armed'
+else
+  echo "FAIL: doctor --project should exit 0 on a fresh bootstrap" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Break hooks and rerun doctor — it must exit nonzero and flag the gap.
+rm -f "$PROJECT_DOCTOR/.git/hooks/pre-push"
+if (cd "$PROJECT_DOCTOR" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-broken.txt" 2>&1; then
+  echo "FAIL: doctor --project should exit nonzero when hooks are missing" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-broken.txt" 'git hooks NOT installed'
+fi
+
+# doctor --project outside a touchstoned repo must flag it, not claim health.
+mkdir -p "$PROJECT_DOCTOR_FRESH"
+if (cd "$PROJECT_DOCTOR_FRESH" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-fresh.txt" 2>&1; then
+  echo "FAIL: doctor --project should exit nonzero outside a touchstoned project" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-fresh.txt" 'Not a touchstone project'
+fi
+
+# doctor --project on a legacy .toolkit-version repo must point to the migration command.
+mkdir -p "$PROJECT_DOCTOR_LEGACY"
+echo "legacy-sha" > "$PROJECT_DOCTOR_LEGACY/.toolkit-version"
+if (cd "$PROJECT_DOCTOR_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-legacy.txt" 2>&1; then
+  echo "FAIL: doctor --project should exit nonzero on a legacy .toolkit-version repo" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-legacy.txt" 'touchstone migrate-from-toolkit'
+fi
+
+# Both .toolkit-version and .touchstone-version is an in-flight migration conflict —
+# neither doctor nor init may report healthy in that state.
+PROJECT_MIGRATION_CONFLICT="$TEST_DIR/test-project-migration-conflict"
+mkdir -p "$PROJECT_MIGRATION_CONFLICT"
+echo "legacy-sha" > "$PROJECT_MIGRATION_CONFLICT/.toolkit-version"
+echo "touchstone-sha" > "$PROJECT_MIGRATION_CONFLICT/.touchstone-version"
+if (cd "$PROJECT_MIGRATION_CONFLICT" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-conflict.txt" 2>&1; then
+  echo "FAIL: doctor --project should exit nonzero when both .toolkit-version and .touchstone-version exist" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-conflict.txt" 'Migration conflict'
+fi
+if (cd "$PROJECT_MIGRATION_CONFLICT" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup --no-register) >"$TEST_DIR/init-conflict.txt" 2>&1; then
+  echo "FAIL: touchstone init should exit nonzero in the migration-conflict state" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/init-conflict.txt" 'Migration conflict'
+fi
+
+# touchstone init on an outdated project must delegate to the update flow (branch + commit),
+# not silently backup-and-replace files in place.
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_OUTDATED" --no-register >/dev/null
+# Configure the committer identity locally so the delegated update-project.sh commit
+# works on CI machines without a global Git identity.
+git -C "$PROJECT_OUTDATED" config user.email test@touchstone
+git -C "$PROJECT_OUTDATED" config user.name test-committer
+(cd "$PROJECT_OUTDATED" && git add -A && git commit --no-verify -m "initial" >/dev/null)
+echo "0000000000000000000000000000000000000001" > "$PROJECT_OUTDATED/.touchstone-version"
+(cd "$PROJECT_OUTDATED" && git commit --no-verify -am "pin to old touchstone" >/dev/null)
+if (cd "$PROJECT_OUTDATED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup) >"$TEST_DIR/init-outdated.txt" 2>&1; then
+  assert_contains "$TEST_DIR/init-outdated.txt" 'upgrading'
+  UPDATE_BRANCH="$(git -C "$PROJECT_OUTDATED" branch --show-current)"
+  case "$UPDATE_BRANCH" in
+    chore/touchstone-*) ;;
+    *)
+      echo "FAIL: init on outdated project should land on a chore/touchstone-* branch, got '$UPDATE_BRANCH'" >&2
+      ERRORS=$((ERRORS + 1))
+      ;;
+  esac
+else
+  echo "FAIL: init on outdated project should not exit nonzero (stdout: $(cat "$TEST_DIR/init-outdated.txt"))" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
