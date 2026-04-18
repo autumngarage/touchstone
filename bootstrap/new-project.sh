@@ -53,6 +53,36 @@ trim() {
   printf '%s' "$value"
 }
 
+# Convert a directory basename to PascalCase for Swift targets.
+# Split on `-`, `_`, or whitespace; capitalize each word; strip everything else.
+# Examples:
+#   autumn-mail     -> AutumnMail
+#   my_cool_app     -> MyCoolApp
+#   autumn-mail-pro -> AutumnMailPro
+to_pascal_case() {
+  local raw="$1" word out=""
+  # Replace separators with spaces, then iterate words.
+  raw="$(printf '%s' "$raw" | tr '_-' '  ')"
+  for word in $raw; do
+    # Drop any character outside [A-Za-z0-9] so the result is a valid Swift identifier.
+    word="$(printf '%s' "$word" | tr -cd '[:alnum:]')"
+    [ -z "$word" ] && continue
+    local first rest
+    first="$(printf '%s' "$word" | cut -c1 | tr '[:lower:]' '[:upper:]')"
+    rest="$(printf '%s' "$word" | cut -c2-)"
+    out="${out}${first}${rest}"
+  done
+  # Fallback: if nothing survived (e.g., basename was all separators), use a safe default.
+  if [ -z "$out" ]; then
+    out="App"
+  fi
+  # Swift identifiers can't start with a digit; prefix with underscore if needed.
+  case "$out" in
+    [0-9]*) out="_$out" ;;
+  esac
+  printf '%s' "$out"
+}
+
 escape_sed_replacement() {
   printf '%s' "$1" | sed 's/[\\/&]/\\&/g'
 }
@@ -415,8 +445,14 @@ GOTEST
       echo "==> tests: skipped for rust (cargo init already scaffolds tests)"
       ;;
     swift)
-      # swift package init creates Tests/ — same reasoning as rust.
-      echo "==> tests: skipped for swift (swift package init already scaffolds Tests/)"
+      # Swift tests are scaffolded by scaffold_swift_package_boilerplate on fresh
+      # --type swift bootstraps. For re-inits with existing Swift content, leave
+      # whatever's there alone — users own their tests.
+      if _has_any_swift_sources "$project_dir"; then
+        echo "==> tests: swift sources already present; scaffold is a no-op"
+      else
+        echo "==> tests: swift tests scaffolded by boilerplate function"
+      fi
       ;;
     generic|"")
       echo "==> tests: profile is 'generic' — no default test layout to scaffold"
@@ -455,6 +491,145 @@ _profile_has_any_tests_go() {
   local dir="$1" matches
   matches="$(find "$dir" -maxdepth 4 -type f -name '*_test.go' -print -quit 2>/dev/null || true)"
   [ -n "$matches" ]
+}
+
+# Treat any pre-existing Package.swift, Sources/*.swift, or Tests/*.swift as
+# "already scaffolded" so re-running bootstrap on a real Swift project never
+# clobbers user code. Same intent as _profile_has_any_tests_* — presence of a
+# directory isn't enough; match actual content.
+_has_any_swift_sources() {
+  local dir="$1" matches
+  if [ -f "$dir/Package.swift" ]; then
+    return 0
+  fi
+  matches="$(find "$dir/Sources" "$dir/Tests" -maxdepth 4 -type f -name '*.swift' -print -quit 2>/dev/null || true)"
+  [ -n "$matches" ]
+}
+
+# Scaffold a minimal Swift Package for --type swift on a fresh bootstrap.
+# Writes Package.swift, Sources/<PascalName>/<PascalName>App.swift, and
+# Tests/<PascalName>Tests/SmokeTests.swift. Skips the whole scaffold if any
+# Swift content is already present, so re-running on a real project is a no-op.
+scaffold_swift_package_boilerplate() {
+  local project_dir="$1" pascal_name
+  pascal_name="$(to_pascal_case "$(basename "$project_dir")")"
+
+  if _has_any_swift_sources "$project_dir"; then
+    echo "==> swift: already present; skipping boilerplate scaffold"
+    return 0
+  fi
+
+  mkdir -p "$project_dir/Sources/$pascal_name" "$project_dir/Tests/${pascal_name}Tests"
+
+  cat > "$project_dir/Package.swift" <<SWIFTPKG
+// swift-tools-version: 5.10
+import PackageDescription
+
+let package = Package(
+    name: "${pascal_name}",
+    platforms: [.macOS(.v14)],
+    products: [
+        .executable(name: "${pascal_name}", targets: ["${pascal_name}"]),
+    ],
+    targets: [
+        .executableTarget(
+            name: "${pascal_name}",
+            path: "Sources/${pascal_name}"
+        ),
+        .testTarget(
+            name: "${pascal_name}Tests",
+            dependencies: ["${pascal_name}"],
+            path: "Tests/${pascal_name}Tests"
+        ),
+    ]
+)
+SWIFTPKG
+
+  cat > "$project_dir/Sources/$pascal_name/${pascal_name}App.swift" <<SWIFTAPP
+import SwiftUI
+
+@main
+struct ${pascal_name}App: App {
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+        }
+    }
+}
+
+struct ContentView: View {
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("${pascal_name}")
+                .font(.largeTitle)
+        }
+        .frame(minWidth: 480, minHeight: 320)
+        .padding()
+    }
+}
+SWIFTAPP
+
+  cat > "$project_dir/Tests/${pascal_name}Tests/SmokeTests.swift" <<SWIFTTEST
+import XCTest
+@testable import ${pascal_name}
+
+final class SmokeTests: XCTestCase {
+    func testPackageBuildsAndLinks() {
+        XCTAssertTrue(true, "If this test runs, the package builds and links.")
+    }
+}
+SWIFTTEST
+
+  echo "==> swift: scaffolded Package.swift, Sources/${pascal_name}/, Tests/${pascal_name}Tests/"
+}
+
+# Append per-profile entries to .gitignore after the base templates/gitignore copy.
+# Only runs on fresh scaffolds and is idempotent — only appends entries not already
+# present. Other profiles are no-ops for this PR.
+append_profile_gitignore_entries() {
+  local project_dir="$1" profile="$2"
+  local gitignore="$project_dir/.gitignore"
+
+  [ -f "$gitignore" ] || return 0
+
+  case "$profile" in
+    swift)
+      local entries=(
+        ".build/"
+        ".swiftpm/"
+        "*.xcodeproj/"
+        "DerivedData/"
+        "Package.resolved"
+      )
+      local header="# Swift / SPM"
+      local needs_append=false entry
+      for entry in "${entries[@]}"; do
+        if ! grep -qxF "$entry" "$gitignore" 2>/dev/null; then
+          needs_append=true
+          break
+        fi
+      done
+      if [ "$needs_append" = false ]; then
+        return 0
+      fi
+      {
+        # Ensure the previous line doesn't run into the new block.
+        if [ -s "$gitignore" ] && [ -n "$(tail -c1 "$gitignore")" ]; then
+          printf '\n'
+        fi
+        printf '\n%s\n' "$header"
+        for entry in "${entries[@]}"; do
+          if ! grep -qxF "$entry" "$gitignore" 2>/dev/null; then
+            printf '%s\n' "$entry"
+          fi
+        done
+      } >> "$gitignore"
+      echo "==> .gitignore: appended Swift / SPM entries"
+      ;;
+    *)
+      return 0
+      ;;
+  esac
 }
 
 # Resolve the project profile exactly like scripts/touchstone-run.sh:load_config
@@ -657,9 +832,14 @@ FILES_UNCHANGED=0
 mkdir -p "$PROJECT_DIR"
 
 # Init git if not already a repo.
+# Respect the user's git config init.defaultBranch so touchstone doesn't force
+# "master" on modern setups; fall back to "main" when the config is empty.
 if [ ! -d "$PROJECT_DIR/.git" ]; then
-  echo "==> Initializing git repo ..."
-  git -C "$PROJECT_DIR" init
+  default_branch="$(git config --get init.defaultBranch 2>/dev/null || true)"
+  default_branch="$(trim "$default_branch")"
+  default_branch="${default_branch:-main}"
+  echo "==> Initializing git repo (default branch: $default_branch) ..."
+  git -C "$PROJECT_DIR" init -b "$default_branch"
 fi
 
 # Helper: copy a project-owned file if it does not already exist.
@@ -1085,6 +1265,15 @@ if [ -t 0 ] && [ "$RE_INIT" = false ] && [ "$CLAUDE_MD_CREATED" = true ]; then
   fi
 fi
 
+# Non-TTY fresh scaffolds (agents, CI, `touchstone init` piped from a script)
+# never enter the interactive prompt block, so INPUT_NAME stays empty and the
+# substitution below no-ops — leaving {{PROJECT_NAME}} visible in CLAUDE.md and
+# AGENTS.md. Default to the project basename so the substitution always runs
+# and agents don't inherit a template with unresolved placeholders.
+if [ "$RE_INIT" = false ] && [ -z "$INPUT_NAME" ]; then
+  INPUT_NAME="$(basename "$PROJECT_DIR")"
+fi
+
 # Default project type if not set. Mirror the runner's resolution so a flag
 # like --scaffold-tests dispatches against the same profile that validate
 # and doctor see — otherwise a config like "project_type=generic\nprofile=python"
@@ -1191,6 +1380,19 @@ if [ "$INPUT_TYPE" = "python" ]; then
   chmod +x "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" 2>/dev/null || true
 fi
 
+# Swift profile on fresh bootstrap: scaffold Package.swift + Sources/ + Tests/
+# so `swift build` and `swift test` work immediately. Never overwrites — the
+# _has_any_swift_sources guard makes re-init on a real Swift project a no-op.
+if [ "$RE_INIT" = false ] && [ "$INPUT_TYPE" = "swift" ]; then
+  scaffold_swift_package_boilerplate "$PROJECT_DIR"
+fi
+
+# Append per-profile entries to .gitignore on fresh bootstrap only.
+# Idempotent (only appends entries not already present); other profiles no-op.
+if [ "$RE_INIT" = false ]; then
+  append_profile_gitignore_entries "$PROJECT_DIR" "$INPUT_TYPE"
+fi
+
 # Optional --scaffold-tests: write one smoke test per profile when no tests
 # exist, so a fresh repo has something for touchstone-run.sh test to find.
 # Off by default — project owners decide their test framework; we just prime
@@ -1200,6 +1402,35 @@ if [ "$INPUT_SCAFFOLD_TESTS" = true ]; then
 fi
 
 write_touchstone_manifest
+
+# Initial commit on fresh scaffold — before hooks are installed, so the
+# "no-commit-to-branch" / default-branch guards in the freshly-installed
+# hooks don't block the user's first commit. Resolves the bootstrap paradox:
+# to commit you need the hooks un-armed; once hooks are armed, you need a
+# commit on the branch to push anything. This ordering solves that.
+INITIAL_COMMIT_SHA=""
+if [ "$RE_INIT" = false ]; then
+  if ! git -C "$PROJECT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+    # Fall back to a local git identity when none is configured globally, so the
+    # commit succeeds on CI boxes and fresh dev machines. Global config, when
+    # present, wins because we only set the local keys if they resolve to empty.
+    if [ -z "$(git -C "$PROJECT_DIR" config --get user.email 2>/dev/null || true)" ]; then
+      git -C "$PROJECT_DIR" config user.email "touchstone@localhost"
+    fi
+    if [ -z "$(git -C "$PROJECT_DIR" config --get user.name 2>/dev/null || true)" ]; then
+      git -C "$PROJECT_DIR" config user.name "Touchstone Bootstrap"
+    fi
+    git -C "$PROJECT_DIR" add -A
+    # No --no-verify needed — hooks are installed after this commit on purpose.
+    if git -C "$PROJECT_DIR" commit -m "chore: initial touchstone scaffold
+
+Touchstone-Version: $TOUCHSTONE_SHA" >/dev/null 2>&1; then
+      INITIAL_COMMIT_SHA="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+    else
+      echo "==> Initial commit skipped (git commit failed; check git identity)"
+    fi
+  fi
+fi
 
 # Install git hooks so the repo is actually gated, not just configured.
 # pre-commit install is idempotent — safe even if setup.sh re-runs it later.
@@ -1232,6 +1463,10 @@ case "$HOOK_INSTALL_STATUS" in
   2) printf '    hooks:    NOT INSTALLED — pre-commit CLI missing\n' ;;
   3) printf '    hooks:    PARTIAL — one or more installs failed (see above)\n' ;;
 esac
+
+if [ -n "$INITIAL_COMMIT_SHA" ]; then
+  printf '    commit:   %s (initial touchstone scaffold)\n' "$INITIAL_COMMIT_SHA"
+fi
 
 if [ "$REGISTER" = true ]; then
   printf '    registry: %s\n' "$PROJECTS_FILE"

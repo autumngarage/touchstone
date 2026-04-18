@@ -136,6 +136,44 @@ assert_contains "$PROJECT/.touchstone-version" "[a-f0-9]"
 # Verify CLAUDE.md has principle imports
 assert_contains "$PROJECT/CLAUDE.md" "@principles/"
 
+# Fresh bootstrap must leave the project with exactly one initial commit that
+# says "initial touchstone scaffold", so the user's first branch+commit cycle
+# isn't blocked by the no-commit-to-branch guard on the freshly-installed hooks.
+COMMIT_COUNT="$(git -C "$PROJECT" rev-list --count HEAD 2>/dev/null || echo 0)"
+if [ "$COMMIT_COUNT" -ne 1 ]; then
+  echo "FAIL: expected exactly 1 commit after fresh bootstrap, got $COMMIT_COUNT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+LAST_COMMIT_MSG="$(git -C "$PROJECT" log -1 --pretty=%B 2>/dev/null || true)"
+case "$LAST_COMMIT_MSG" in
+  *"initial touchstone scaffold"*) ;;
+  *)
+    echo "FAIL: initial commit message missing 'initial touchstone scaffold', got: $LAST_COMMIT_MSG" >&2
+    ERRORS=$((ERRORS + 1))
+    ;;
+esac
+
+# Default branch must be 'main' (not 'master'), respecting init.defaultBranch
+# and falling back to main when the config is empty.
+DEFAULT_BRANCH="$(git -C "$PROJECT" branch --show-current 2>/dev/null || true)"
+if [ "$DEFAULT_BRANCH" != "main" ]; then
+  echo "FAIL: expected default branch 'main', got '$DEFAULT_BRANCH'" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# {{PROJECT_NAME}} must be substituted to the basename even on non-TTY bootstraps,
+# so agents and CI runs don't inherit a template with unresolved placeholders.
+if grep -q '{{PROJECT_NAME}}' "$PROJECT/CLAUDE.md" 2>/dev/null; then
+  echo "FAIL: {{PROJECT_NAME}} must be substituted in CLAUDE.md after fresh non-TTY bootstrap" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if grep -q '{{PROJECT_NAME}}' "$PROJECT/AGENTS.md" 2>/dev/null; then
+  echo "FAIL: {{PROJECT_NAME}} must be substituted in AGENTS.md after fresh non-TTY bootstrap" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$PROJECT/CLAUDE.md" "test-project"
+assert_contains "$PROJECT/AGENTS.md" "test-project"
+
 # Help flags should print usage instead of bootstrapping a project named --help.
 if (cd "$TEST_DIR" && bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" --help) >"$TEST_DIR/new-project-help.txt" 2>&1; then
   assert_contains "$TEST_DIR/new-project-help.txt" 'unsafe-paths'
@@ -182,6 +220,69 @@ assert_exists "$PROJECT_PYTHON/scripts/touchstone-run.sh"
 assert_exists "$PROJECT_PYTHON/scripts/run-pytest-in-venv.sh"
 assert_contains "$PROJECT_PYTHON/.touchstone-config" '^project_type=python$'
 assert_contains "$PROJECT_PYTHON/.touchstone-manifest" '^scripts/run-pytest-in-venv.sh$'
+
+# Swift profile on fresh bootstrap must scaffold a complete SPM package so
+# `swift build` / `swift test` work immediately without the user hand-writing
+# Package.swift. Test with a hyphenated name to exercise to_pascal_case.
+PROJECT_SWIFT="$TEST_DIR/autumn-mail-demo"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SWIFT" --no-register --type swift >/dev/null
+assert_contains "$PROJECT_SWIFT/.touchstone-config" '^project_type=swift$'
+assert_exists "$PROJECT_SWIFT/Package.swift"
+assert_exists "$PROJECT_SWIFT/Sources/AutumnMailDemo/AutumnMailDemoApp.swift"
+assert_exists "$PROJECT_SWIFT/Tests/AutumnMailDemoTests/SmokeTests.swift"
+assert_contains "$PROJECT_SWIFT/Package.swift" 'swift-tools-version: 5.10'
+assert_contains "$PROJECT_SWIFT/Package.swift" 'name: "AutumnMailDemo"'
+assert_contains "$PROJECT_SWIFT/Package.swift" '.macOS(.v14)'
+assert_contains "$PROJECT_SWIFT/Sources/AutumnMailDemo/AutumnMailDemoApp.swift" '@main'
+assert_contains "$PROJECT_SWIFT/Sources/AutumnMailDemo/AutumnMailDemoApp.swift" 'struct AutumnMailDemoApp: App'
+assert_contains "$PROJECT_SWIFT/Tests/AutumnMailDemoTests/SmokeTests.swift" 'final class SmokeTests: XCTestCase'
+# Swift-specific .gitignore entries must be appended on fresh --type swift.
+assert_contains "$PROJECT_SWIFT/.gitignore" '^\.build/$'
+assert_contains "$PROJECT_SWIFT/.gitignore" '^\.swiftpm/$'
+assert_contains "$PROJECT_SWIFT/.gitignore" '^Package\.resolved$'
+assert_contains "$PROJECT_SWIFT/.gitignore" '^DerivedData/$'
+assert_contains "$PROJECT_SWIFT/.gitignore" '^\*\.xcodeproj/$'
+
+# The swift scaffold must skip on a fresh bootstrap when Swift content already
+# exists — _has_any_swift_sources guards against overwriting user code. Simulate
+# the case: a pre-existing Swift project that has never been touchstoned.
+PROJECT_SWIFT_EXISTING="$TEST_DIR/existing-swift-repo"
+mkdir -p "$PROJECT_SWIFT_EXISTING"
+printf 'SENTINEL_PACKAGE\n' > "$PROJECT_SWIFT_EXISTING/Package.swift"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SWIFT_EXISTING" --no-register --type swift >/dev/null
+assert_contains "$PROJECT_SWIFT_EXISTING/Package.swift" '^SENTINEL_PACKAGE$'
+assert_not_exists "$PROJECT_SWIFT_EXISTING/Sources/ExistingSwiftRepo/ExistingSwiftRepoApp.swift"
+
+# Non-swift profiles must NOT pick up the Swift-specific .gitignore entries —
+# the append is per-profile and must not bleed across profiles.
+if grep -q '^\.swiftpm/$' "$PROJECT_NODE/.gitignore" 2>/dev/null; then
+  echo "FAIL: node profile .gitignore must not contain Swift entries" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if grep -q '^Package\.resolved$' "$PROJECT_PYTHON/.gitignore" 2>/dev/null; then
+  echo "FAIL: python profile .gitignore must not contain Swift entries" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Swift-specific .gitignore append must be idempotent — even if the entries
+# are already present, a fresh bootstrap must not duplicate them.
+PROJECT_SWIFT_IDEMPOTENT="$TEST_DIR/swift-gitignore-idempotent"
+mkdir -p "$PROJECT_SWIFT_IDEMPOTENT"
+{
+  printf '.build/\n'
+  printf '.swiftpm/\n'
+  printf '*.xcodeproj/\n'
+  printf 'DerivedData/\n'
+  printf 'Package.resolved\n'
+} > "$PROJECT_SWIFT_IDEMPOTENT/.gitignore"
+# Also give it existing Swift content so the boilerplate scaffold no-ops.
+printf 'SENTINEL_PACKAGE\n' > "$PROJECT_SWIFT_IDEMPOTENT/Package.swift"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SWIFT_IDEMPOTENT" --no-register --type swift >/dev/null
+SWIFT_BUILD_DUPES="$(grep -c '^\.build/$' "$PROJECT_SWIFT_IDEMPOTENT/.gitignore" 2>/dev/null || echo 0)"
+if [ "$SWIFT_BUILD_DUPES" -ne 1 ]; then
+  echo "FAIL: Swift .gitignore append must be idempotent (expected 1 '.build/', got $SWIFT_BUILD_DUPES)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 # Bootstrap into an existing directory should back up touchstone-owned files before replacing them.
 mkdir -p "$PROJECT_EXISTING/principles" "$PROJECT_EXISTING/scripts"
@@ -1089,10 +1190,10 @@ fi
 # not silently backup-and-replace files in place.
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_OUTDATED" --no-register >/dev/null
 # Configure the committer identity locally so the delegated update-project.sh commit
-# works on CI machines without a global Git identity.
+# works on CI machines without a global Git identity. Bootstrap already creates an
+# initial touchstone commit, so we don't need to seed one here.
 git -C "$PROJECT_OUTDATED" config user.email test@touchstone
 git -C "$PROJECT_OUTDATED" config user.name test-committer
-(cd "$PROJECT_OUTDATED" && git add -A && git commit --no-verify -m "initial" >/dev/null)
 echo "0000000000000000000000000000000000000001" > "$PROJECT_OUTDATED/.touchstone-version"
 (cd "$PROJECT_OUTDATED" && git commit --no-verify -am "pin to old touchstone" >/dev/null)
 if (cd "$PROJECT_OUTDATED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup --no-ship) >"$TEST_DIR/init-outdated.txt" 2>&1; then
@@ -1116,7 +1217,6 @@ PROJECT_OUTDATED_SHIP="$TEST_DIR/outdated-ship-project"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_OUTDATED_SHIP" --no-register >/dev/null
 git -C "$PROJECT_OUTDATED_SHIP" config user.email test@touchstone
 git -C "$PROJECT_OUTDATED_SHIP" config user.name test-committer
-(cd "$PROJECT_OUTDATED_SHIP" && git add -A && git commit --no-verify -m "initial" >/dev/null)
 echo "0000000000000000000000000000000000000001" > "$PROJECT_OUTDATED_SHIP/.touchstone-version"
 (cd "$PROJECT_OUTDATED_SHIP" && git commit --no-verify -am "pin to old touchstone" >/dev/null)
 # Stub gh so open-pr.sh fails fast without real network.

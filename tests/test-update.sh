@@ -51,7 +51,13 @@ commit_all() {
   local repo="$1"
   local message="$2"
   git -C "$repo" add -A
-  git -C "$repo" commit --no-verify -m "$message" >/dev/null
+  # Skip the commit when there's nothing staged — new-project.sh now creates an
+  # initial commit during bootstrap, so the test helper must not error out when
+  # the tree is already clean.
+  if [ -n "$(git -C "$repo" status --porcelain)" ] || \
+     ! git -C "$repo" rev-parse --verify HEAD >/dev/null 2>&1; then
+    git -C "$repo" commit --no-verify -m "$message" >/dev/null
+  fi
 }
 
 PROJECT="$TEST_DIR/test-project"
