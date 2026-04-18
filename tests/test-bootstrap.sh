@@ -413,6 +413,40 @@ printf '{"packageManager":"pnpm@9.0.0","scripts":{"lint":"echo lint","typecheck"
 assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node|lint'
 assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node|typecheck'
 assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node|test'
+# No "build" script declared — build_if_distinct must skip to avoid running a
+# nonexistent script. Regression guard for "validate runs build unconditionally".
+if grep -q 'pnpm|.*/test-project-node|build' "$RUNNER_LOG"; then
+  echo "FAIL: touchstone-run.sh validate must not run build when no build script is declared" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Node project with BOTH typecheck and build scripts — validate must run build
+# so bundler-level errors (import paths, env, CSS modules) get caught before a
+# default-branch push, in addition to typecheck.
+PROJECT_NODE_BUILD="$TEST_DIR/test-project-node-build"
+mkdir -p "$PROJECT_NODE_BUILD/scripts"
+cp "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_NODE_BUILD/scripts/touchstone-run.sh"
+printf 'project_type=node\n' > "$PROJECT_NODE_BUILD/.touchstone-config"
+printf '{"packageManager":"pnpm@9.0.0","scripts":{"lint":"echo lint","typecheck":"echo typecheck","build":"echo build","test":"echo test"}}\n' > "$PROJECT_NODE_BUILD/package.json"
+: > "$RUNNER_LOG"
+(cd "$PROJECT_NODE_BUILD" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash scripts/touchstone-run.sh validate) >/dev/null
+assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node-build|typecheck'
+assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node-build|build'
+assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node-build|test'
+
+# Node project with only build, no typecheck — "build: tsc" style where build
+# IS typecheck. validate must not double-run the same command.
+PROJECT_NODE_BUILD_ONLY="$TEST_DIR/test-project-node-build-only"
+mkdir -p "$PROJECT_NODE_BUILD_ONLY/scripts"
+cp "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_NODE_BUILD_ONLY/scripts/touchstone-run.sh"
+printf 'project_type=node\n' > "$PROJECT_NODE_BUILD_ONLY/.touchstone-config"
+printf '{"packageManager":"pnpm@9.0.0","scripts":{"lint":"echo lint","build":"tsc","test":"echo test"}}\n' > "$PROJECT_NODE_BUILD_ONLY/package.json"
+: > "$RUNNER_LOG"
+(cd "$PROJECT_NODE_BUILD_ONLY" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash scripts/touchstone-run.sh validate) >/dev/null
+if grep -q 'pnpm|.*/test-project-node-build-only|build' "$RUNNER_LOG"; then
+  echo "FAIL: build should not run during validate when typecheck is absent (build IS typecheck)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 SWIFT_PROJECT="$TEST_DIR/swift-runner"
 mkdir -p "$SWIFT_PROJECT/scripts"
