@@ -65,6 +65,12 @@ PROJECT_REVIEW_HYBRID="$TEST_DIR/test-project-review-hybrid"
 PROJECT_GITBUTLER="$TEST_DIR/test-project-gitbutler"
 PROJECT_CI_OFF="$TEST_DIR/test-project-ci-off"
 PROJECT_CI_GITHUB="$TEST_DIR/test-project-ci-github"
+PROJECT_SCAFFOLD_OFF="$TEST_DIR/test-project-scaffold-off"
+PROJECT_SCAFFOLD_PY="$TEST_DIR/test-project-scaffold-python"
+PROJECT_SCAFFOLD_NODE="$TEST_DIR/test-project-scaffold-node"
+PROJECT_SCAFFOLD_GO="$TEST_DIR/test-project-scaffold-go"
+PROJECT_SCAFFOLD_GENERIC="$TEST_DIR/test-project-scaffold-generic"
+PROJECT_SCAFFOLD_EXISTING="$TEST_DIR/test-project-scaffold-existing"
 PROJECT_HOOKS_WITH="$TEST_DIR/test-project-hooks-with"
 PROJECT_HOOKS_WITHOUT="$TEST_DIR/test-project-hooks-without"
 PROJECT_PYTEST_EMPTY="$TEST_DIR/test-project-pytest-empty"
@@ -255,6 +261,52 @@ if grep -q '^.github/workflows/validate\.yml$' "$PROJECT_CI_GITHUB/.touchstone-m
   echo "FAIL: .github/workflows/validate.yml must be project-owned, not tracked in the manifest" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+# Test scaffolding is opt-in. Default bootstrap must NOT create any test file —
+# project owners pick their test framework, and silently seeding tests would
+# force that opinion.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_OFF" --no-register --type python >/dev/null
+assert_not_exists "$PROJECT_SCAFFOLD_OFF/tests/test_smoke.py"
+assert_not_exists "$PROJECT_SCAFFOLD_OFF/tests/smoke.test.ts"
+assert_not_exists "$PROJECT_SCAFFOLD_OFF/smoke_test.go"
+
+# --scaffold-tests + Python: writes tests/test_smoke.py with a pytest-discoverable
+# function, plus tests/__init__.py. The smoke test must actually assert and pass.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_PY" --no-register --type python --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_PY/tests/test_smoke.py"
+assert_exists "$PROJECT_SCAFFOLD_PY/tests/__init__.py"
+assert_contains "$PROJECT_SCAFFOLD_PY/tests/test_smoke.py" 'def test_smoke'
+assert_contains "$PROJECT_SCAFFOLD_PY/tests/test_smoke.py" 'assert True'
+
+# --scaffold-tests + Node: writes tests/smoke.test.ts in a framework-agnostic
+# format (vitest/jest/bun test all accept it).
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_NODE" --no-register --type node --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_NODE/tests/smoke.test.ts"
+assert_contains "$PROJECT_SCAFFOLD_NODE/tests/smoke.test.ts" 'describe("smoke"'
+assert_contains "$PROJECT_SCAFFOLD_NODE/tests/smoke.test.ts" 'expect(true).toBe(true)'
+
+# --scaffold-tests + Go: writes smoke_test.go so go test ./... finds it.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GO" --no-register --type go --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_GO/smoke_test.go"
+assert_contains "$PROJECT_SCAFFOLD_GO/smoke_test.go" 'func TestSmoke(t \*testing.T)'
+
+# --scaffold-tests + generic: no test file written, but the output must tell the
+# user why so they know to set test_command= in .touchstone-config.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GENERIC" --no-register --type generic --scaffold-tests >"$TEST_DIR/scaffold-generic.txt" 2>&1
+if find "$PROJECT_SCAFFOLD_GENERIC" -maxdepth 3 -type f \( -name 'test_*.py' -o -name '*_test.go' -o -name 'smoke.test.*' \) | grep -q .; then
+  echo "FAIL: --scaffold-tests must not create a test file for generic profile" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/scaffold-generic.txt" "profile is 'generic'"
+
+# --scaffold-tests must not overwrite existing test files — re-running on a
+# project that already has tests is a no-op.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EXISTING" --no-register --type python >/dev/null
+mkdir -p "$PROJECT_SCAFFOLD_EXISTING/tests"
+printf 'def test_real():\n    assert 1 + 1 == 2\n' > "$PROJECT_SCAFFOLD_EXISTING/tests/test_real.py"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EXISTING" --no-register --scaffold-tests >/dev/null
+assert_not_exists "$PROJECT_SCAFFOLD_EXISTING/tests/test_smoke.py"
+assert_contains "$PROJECT_SCAFFOLD_EXISTING/tests/test_real.py" 'def test_real'
 
 # touchstone init must not run a pre-existing project setup.sh after preserving it.
 mkdir -p "$PROJECT_INIT_EXISTING_SETUP"

@@ -151,7 +151,7 @@ cmd_init() {
           shift
         fi
         ;;
-      --no-ai-review|--no-review|--review-assist|--no-review-assist|--review-autofix|--no-review-autofix|--gitbutler|--no-gitbutler|--gitbutler-mcp|--no-gitbutler-mcp|--no-ci)
+      --no-ai-review|--no-review|--review-assist|--no-review-assist|--review-autofix|--no-review-autofix|--gitbutler|--no-gitbutler|--gitbutler-mcp|--no-gitbutler-mcp|--no-ci|--scaffold-tests)
         args+=("$1")
         shift
         ;;
