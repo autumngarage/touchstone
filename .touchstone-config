@@ -1,0 +1,18 @@
+# touchstone project profile. Commit this file so all clones use the same commands.
+#
+# Touchstone dogfoods its own validate path: the pre-push hook runs
+# `scripts/touchstone-run.sh validate`, which reads this file and executes
+# validate_command below. That loops through every tests/test-*.sh script —
+# the same coverage as the previous bespoke self-tests pre-commit hook, but
+# routed through the shared entrypoint downstream projects use.
+project_type=generic
+package_manager=auto
+monorepo=false
+targets=
+git_workflow=git
+gitbutler_mcp=false
+lint_command=
+typecheck_command=
+build_command=
+test_command=
+validate_command=for t in tests/test-*.sh; do bash "$t" || exit 1; done

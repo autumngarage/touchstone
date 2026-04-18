@@ -27,12 +27,16 @@ repos:
         always_run: true
         pass_filenames: false
 
-  # Self-tests (run on pre-push alongside Codex review)
+  # Self-tests via the same touchstone-run.sh validate path downstream projects
+  # use. Touchstone's .touchstone-config sets validate_command to loop through
+  # tests/test-*.sh — this means any change to the validate dispatcher that
+  # breaks the downstream flow also breaks Touchstone's own pre-push, so the
+  # dogfood discipline catches regressions the templates would otherwise hide.
   - repo: local
     hooks:
-      - id: self-tests
-        name: Touchstone self-tests
-        entry: /usr/bin/env bash -c 'set -e; for test in tests/test-*.sh; do /usr/bin/env bash "$test"; done'
+      - id: touchstone-validate
+        name: Touchstone project validation
+        entry: /usr/bin/env bash scripts/touchstone-run.sh validate
         language: system
         stages: [pre-push]
         always_run: true
