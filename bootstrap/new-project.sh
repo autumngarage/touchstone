@@ -1227,6 +1227,11 @@ echo ""
 echo "==> Wrote .touchstone-version: $TOUCHSTONE_SHA"
 
 # Register in ~/.touchstone-projects for sync-all.sh.
+# The write is a silent side effect by default (opt-in stays default for
+# script-compat), so surface every registry outcome with an "==> " line:
+# the path we wrote to, the fact that we were already registered, or the
+# fact that registration was skipped. Always name the opt-out flag so the
+# next run doesn't need to grep for it.
 PROJECTS_FILE="$HOME/.touchstone-projects"
 if [ "$REGISTER" = true ]; then
   # Ensure file exists.
@@ -1234,10 +1239,12 @@ if [ "$REGISTER" = true ]; then
   # Add if not already registered.
   if ! grep -qxF "$PROJECT_DIR" "$PROJECTS_FILE" 2>/dev/null; then
     echo "$PROJECT_DIR" >> "$PROJECTS_FILE"
-    echo "==> Registered in $PROJECTS_FILE"
+    echo "==> Registered in $PROJECTS_FILE — opt out next time with --no-register"
   else
-    echo "==> Already registered in $PROJECTS_FILE"
+    echo "==> Already registered in $PROJECTS_FILE — opt out next time with --no-register"
   fi
+else
+  echo "==> Registry skipped (--no-register)"
 fi
 
 # --------------------------------------------------------------------------

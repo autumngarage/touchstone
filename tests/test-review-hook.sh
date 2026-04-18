@@ -133,6 +133,80 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: review hook skips first-push on fresh scaffold (HEAD = 1 commit)"
+# First-push exemption: reviewing AI-generated scaffold templates is near-zero
+# signal and wastes reviewer quota. A single-commit HEAD on the default branch
+# is the unambiguous "initial scaffold push" signal. This test creates a fresh
+# repo with exactly one commit and asserts the hook exits 0 without invoking
+# the reviewer. The 2+ commit case is already covered by the preceding test.
+FIRSTPUSH_REPO="$TEST_DIR/firstpush-repo"
+FIRSTPUSH_OUTPUT="$TEST_DIR/firstpush-output.txt"
+mkdir -p "$FIRSTPUSH_REPO"
+git -C "$FIRSTPUSH_REPO" init -b main >/dev/null 2>&1
+git -C "$FIRSTPUSH_REPO" config user.name "Touchstone Test"
+git -C "$FIRSTPUSH_REPO" config user.email "touchstone@example.com"
+cp "$TOUCHSTONE_ROOT/.codex-review.toml" "$FIRSTPUSH_REPO/.codex-review.toml"
+printf 'scaffold\n' > "$FIRSTPUSH_REPO/README.md"
+git -C "$FIRSTPUSH_REPO" add .codex-review.toml README.md
+git -C "$FIRSTPUSH_REPO" commit -m "initial scaffold" >/dev/null 2>&1
+
+: > "$CODEX_CALLS_FILE"
+(
+  cd "$FIRSTPUSH_REPO"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
+    PRE_COMMIT=1 \
+    PRE_COMMIT_LOCAL_BRANCH="refs/heads/main" \
+    PRE_COMMIT_REMOTE_BRANCH="refs/heads/main" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$FIRSTPUSH_OUTPUT" 2>&1
+)
+
+CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+if [ "$CODEX_CALL_COUNT" = "0" ] \
+  && grep -q 'first push on a fresh scaffold' "$FIRSTPUSH_OUTPUT" \
+  && grep -q 'HEAD is the initial commit' "$FIRSTPUSH_OUTPUT"; then
+  echo "==> PASS: first-push on fresh scaffold skipped review"
+else
+  echo "FAIL: expected first-push skip on fresh scaffold" >&2
+  echo "codex call count: $CODEX_CALL_COUNT" >&2
+  cat "$FIRSTPUSH_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: review hook does NOT skip when HEAD has 2+ commits on default branch"
+# Guard the boundary: once a second commit lands on top of the scaffold, the
+# first-push exemption must turn off — otherwise any push of only two commits
+# to the default branch would also skip review, which is the opposite of what
+# we want for a stacked hotfix flow.
+printf 'second\n' >> "$FIRSTPUSH_REPO/README.md"
+git -C "$FIRSTPUSH_REPO" add README.md
+git -C "$FIRSTPUSH_REPO" commit -m "second commit" >/dev/null 2>&1
+
+: > "$CODEX_CALLS_FILE"
+(
+  cd "$FIRSTPUSH_REPO"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
+    PRE_COMMIT=1 \
+    PRE_COMMIT_LOCAL_BRANCH="refs/heads/main" \
+    PRE_COMMIT_REMOTE_BRANCH="refs/heads/main" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TEST_DIR/firstpush-second-output.txt" 2>&1
+)
+
+CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+if [ "$CODEX_CALL_COUNT" = "1" ] \
+  && ! grep -q 'first push on a fresh scaffold' "$TEST_DIR/firstpush-second-output.txt"; then
+  echo "==> PASS: second-commit push on default branch ran review (first-push exemption did not misfire)"
+else
+  echo "FAIL: expected second-commit push to run review, not skip" >&2
+  echo "codex call count: $CODEX_CALL_COUNT" >&2
+  cat "$TEST_DIR/firstpush-second-output.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: review hook skips nested Codex review subprocesses"
 : > "$CODEX_CALLS_FILE"
 

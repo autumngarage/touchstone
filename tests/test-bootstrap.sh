@@ -1441,7 +1441,24 @@ HOME="$REGISTRY_TMP" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_
   </dev/null >"$TEST_DIR/register.txt" 2>&1
 assert_exists "$REGISTRY_TMP/.touchstone-projects"
 assert_contains "$REGISTRY_TMP/.touchstone-projects" "$PROJECT_REGISTER"
+# Registry write must be visible: a silent append to ~/.touchstone-projects
+# loses the audit trail that motivates opt-in being the default. The line must
+# also name the opt-out flag so the next run doesn't need to grep docs for it.
+assert_contains "$TEST_DIR/register.txt" '==> Registered in .*\.touchstone-projects'
+assert_contains "$TEST_DIR/register.txt" '--no-register'
 rm -rf "$REGISTRY_TMP"
+
+# --no-register must print the visible skip line so the opt-out is auditable.
+# The scaffold summary already includes "registry: skipped (--no-register)" in
+# its trailing block; this assertion pins the dedicated log line that fires at
+# the moment the registry decision is made.
+PROJECT_REGISTER_SKIP="$TEST_DIR/test-project-register-skip"
+REGISTRY_SKIP_TMP="$(mktemp -d -t touchstone-registry-skip.XXXXXX)"
+HOME="$REGISTRY_SKIP_TMP" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REGISTER_SKIP" --no-register \
+  </dev/null >"$TEST_DIR/register-skip.txt" 2>&1
+assert_not_exists "$REGISTRY_SKIP_TMP/.touchstone-projects"
+assert_contains "$TEST_DIR/register-skip.txt" '==> Registry skipped (--no-register)'
+rm -rf "$REGISTRY_SKIP_TMP"
 
 echo ""
 if [ "$ERRORS" -eq 0 ]; then
