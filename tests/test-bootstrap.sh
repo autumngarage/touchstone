@@ -336,6 +336,34 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EXISTING" --
 assert_not_exists "$PROJECT_SCAFFOLD_EXISTING/tests/test_smoke.py"
 assert_contains "$PROJECT_SCAFFOLD_EXISTING/tests/test_real.py" 'def test_real'
 
+# Directory-exists != tests-exist. A tests/ dir containing only __init__.py
+# or helpers must still trigger scaffolding — otherwise --scaffold-tests
+# silently no-ops on the exact setups it's meant to help.
+PROJECT_SCAFFOLD_EMPTY_PY="$TEST_DIR/test-project-scaffold-empty-python"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EMPTY_PY" --no-register --type python >/dev/null
+mkdir -p "$PROJECT_SCAFFOLD_EMPTY_PY/tests"
+: > "$PROJECT_SCAFFOLD_EMPTY_PY/tests/__init__.py"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EMPTY_PY" --no-register --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_EMPTY_PY/tests/test_smoke.py"
+
+# Same class bug for Node — an empty __tests__/tests/test directory must
+# not fool the scaffolder into thinking tests exist.
+PROJECT_SCAFFOLD_EMPTY_NODE="$TEST_DIR/test-project-scaffold-empty-node"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EMPTY_NODE" --no-register --type node >/dev/null
+mkdir -p "$PROJECT_SCAFFOLD_EMPTY_NODE/__tests__" "$PROJECT_SCAFFOLD_EMPTY_NODE/tests"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EMPTY_NODE" --no-register --type node --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_EMPTY_NODE/tests/smoke.test.ts"
+
+# Re-init: when .touchstone-config already has project_type=X, flags like
+# --scaffold-tests that dispatch per profile must use that X, not fall back to
+# manifest detection. Manifest detection returns "generic" when no toolchain
+# files are present, which would silently drop --scaffold-tests behavior.
+PROJECT_SCAFFOLD_REINIT_PY="$TEST_DIR/test-project-scaffold-reinit-python"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_REINIT_PY" --no-register --type python >/dev/null
+# No --type on the second call — must be resolved from .touchstone-config.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_REINIT_PY" --no-register --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_REINIT_PY/tests/test_smoke.py"
+
 # touchstone init must not run a pre-existing project setup.sh after preserving it.
 mkdir -p "$PROJECT_INIT_EXISTING_SETUP"
 git -C "$PROJECT_INIT_EXISTING_SETUP" init >/dev/null
@@ -740,6 +768,27 @@ if (cd "$PROJECT_DOCTOR" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/to
 else
   assert_contains "$TEST_DIR/doctor-broken.txt" 'git hooks NOT installed'
 fi
+
+# doctor shares the test-presence heuristic with --scaffold-tests — the same
+# "dir exists != tests exist" class bug applies. An empty tests/ directory
+# (or one with only __init__.py) must not be reported as "tests: found".
+PROJECT_DOCTOR_EMPTY_PY="$TEST_DIR/test-project-doctor-empty-python"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_EMPTY_PY" --no-register --type python >/dev/null
+mkdir -p "$PROJECT_DOCTOR_EMPTY_PY/tests"
+: > "$PROJECT_DOCTOR_EMPTY_PY/tests/__init__.py"
+RUFF_STUB_EMPTY_PY="$TEST_DIR/ruff-stub-empty-py"
+mkdir -p "$RUFF_STUB_EMPTY_PY"
+cat > "$RUFF_STUB_EMPTY_PY/ruff" <<'RUFFSTUBEMPTYPY'
+#!/usr/bin/env bash
+exit 0
+RUFFSTUBEMPTYPY
+chmod +x "$RUFF_STUB_EMPTY_PY/ruff"
+(cd "$PROJECT_DOCTOR_EMPTY_PY" && PATH="$RUFF_STUB_EMPTY_PY:$PATH" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-empty-py.txt" 2>&1 || true
+if grep -q "tests: found for profile 'python'" "$TEST_DIR/doctor-empty-py.txt"; then
+  echo "FAIL: doctor must not report 'tests: found' when only tests/__init__.py exists" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/doctor-empty-py.txt" "tests: not found for profile 'python'"
 
 # doctor must flag a pre-push hook whose content isn't the pre-commit-framework
 # shim — another framework silently replacing the file is the same class of

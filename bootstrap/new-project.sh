@@ -429,21 +429,19 @@ GOTEST
 }
 
 _profile_has_any_tests_python() {
-  local dir="$1"
-  [ -d "$dir/tests" ] && return 0
-  local matches
+  local dir="$1" matches
+  # Match discoverable test FILES, not merely a tests/ directory — an empty
+  # tests/ (or one with only __init__.py / helpers) doesn't satisfy the
+  # purpose of scaffolding and leaves the "validate silently skips" gap open.
   matches="$(find "$dir" -maxdepth 3 -type f \
     \( -name 'test_*.py' -o -name '*_test.py' \) -print -quit 2>/dev/null || true)"
   [ -n "$matches" ]
 }
 
 _profile_has_any_tests_node() {
-  local dir="$1"
-  if [ -d "$dir/__tests__" ] || [ -d "$dir/tests" ] || [ -d "$dir/test" ] \
-     || [ -d "$dir/src/__tests__" ]; then
-    return 0
-  fi
-  local matches
+  local dir="$1" matches
+  # Same reason as Python — treating any __tests__/tests/test directory as
+  # "tests present" lets empty scaffolds pass through silently.
   matches="$(find "$dir" -maxdepth 4 -type f \
     \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' -o -name '*.test.jsx' \
        -o -name '*.spec.ts' -o -name '*.spec.js' \) -print -quit 2>/dev/null || true)"
@@ -1045,7 +1043,13 @@ if [ -t 0 ] && [ "$RE_INIT" = false ] && [ "$CLAUDE_MD_CREATED" = true ]; then
   fi
 fi
 
-# Default project type if not set.
+# Default project type if not set. On re-init (.touchstone-config already
+# exists), read the profile from config before falling back to manifest
+# detection — otherwise per-profile flags like --scaffold-tests would dispatch
+# to the WRONG profile when the user doesn't re-pass --type on every call.
+if [ -z "$INPUT_TYPE" ] && [ -f "$PROJECT_DIR/.touchstone-config" ]; then
+  INPUT_TYPE="$(sed -n 's/^[[:space:]]*project_type[[:space:]]*=[[:space:]]*//p' "$PROJECT_DIR/.touchstone-config" | head -1)"
+fi
 INPUT_TYPE="${INPUT_TYPE:-auto}"
 INPUT_TYPE="$(normalize_project_type "$INPUT_TYPE")"
 if [ "$INPUT_TYPE" = "auto" ]; then
