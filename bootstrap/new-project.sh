@@ -37,11 +37,12 @@ INPUT_REVIEW_ROUTING=""
 INPUT_SMALL_REVIEW_LINES=""
 INPUT_GIT_WORKFLOW=""
 INPUT_GITBUTLER_MCP=""
+INPUT_CI=""
 REVIEW_CONFIG_REQUESTED=false
 WORKFLOW_CONFIG_REQUESTED=false
 
 usage() {
-  echo "Usage: $0 <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp]"
+  echo "Usage: $0 <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|none]"
 }
 
 trim() {
@@ -436,6 +437,23 @@ while [ "$#" -gt 0 ]; do
       WORKFLOW_CONFIG_REQUESTED=true
       shift
       ;;
+    --ci)
+      # Accept either `--ci` alone (defaults to github) or `--ci <provider>`
+      # for future providers (gitlab, circle). For now only github is shipped.
+      if [ "$#" -ge 2 ] && [[ "$2" != --* ]]; then
+        case "$2" in
+          github|none) INPUT_CI="$2"; shift 2 ;;
+          *) echo "ERROR: --ci value must be one of: github, none" >&2; exit 1 ;;
+        esac
+      else
+        INPUT_CI="github"
+        shift
+      fi
+      ;;
+    --no-ci)
+      INPUT_CI="none"
+      shift
+      ;;
     *) echo "ERROR: unknown argument '$1'" >&2; exit 1 ;;
   esac
 done
@@ -761,6 +779,19 @@ copy_file_force "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open
 copy_file_force "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
 chmod +x "$PROJECT_DIR/scripts/"*.sh
+
+# Optional CI workflow — opt-in via --ci. Not copied by default because not every
+# project uses GitHub Actions, and shipping a workflow file silently into every
+# bootstrap would force that opinion on GitLab/Bitbucket/self-hosted users.
+CI_WORKFLOW_CREATED=false
+if [ "$INPUT_CI" = "github" ]; then
+  echo ""
+  echo "==> Adding CI workflow (project-owned, won't be auto-updated):"
+  copy_file "$TOUCHSTONE_ROOT/templates/ci/github-validate.yml" "$PROJECT_DIR/.github/workflows/validate.yml"
+  if [ "$LAST_COPY_CREATED" = true ]; then
+    CI_WORKFLOW_CREATED=true
+  fi
+fi
 
 # Write touchstone version.
 # Use git SHA if this is a git clone, otherwise use VERSION (brew install).

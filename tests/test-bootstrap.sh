@@ -63,6 +63,8 @@ PROJECT_REVIEW_NONE="$TEST_DIR/test-project-review-none"
 PROJECT_REVIEW_LOCAL="$TEST_DIR/test-project-review-local"
 PROJECT_REVIEW_HYBRID="$TEST_DIR/test-project-review-hybrid"
 PROJECT_GITBUTLER="$TEST_DIR/test-project-gitbutler"
+PROJECT_CI_OFF="$TEST_DIR/test-project-ci-off"
+PROJECT_CI_GITHUB="$TEST_DIR/test-project-ci-github"
 PROJECT_HOOKS_WITH="$TEST_DIR/test-project-hooks-with"
 PROJECT_HOOKS_WITHOUT="$TEST_DIR/test-project-hooks-without"
 PROJECT_PYTEST_EMPTY="$TEST_DIR/test-project-pytest-empty"
@@ -234,6 +236,25 @@ assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^command = "local-r
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_GITBUTLER" --no-register --gitbutler --gitbutler-mcp
 assert_contains "$PROJECT_GITBUTLER/.touchstone-config" '^git_workflow=gitbutler$'
 assert_contains "$PROJECT_GITBUTLER/.touchstone-config" '^gitbutler_mcp=true$'
+
+# CI workflow is opt-in. Default bootstrap must NOT ship .github/workflows/validate.yml
+# — not every project uses GitHub Actions and silently adding a workflow would force
+# that opinion on GitLab/Bitbucket/self-hosted users.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_CI_OFF" --no-register >/dev/null
+assert_not_exists "$PROJECT_CI_OFF/.github/workflows/validate.yml"
+
+# --ci (github) adds the validate workflow and keeps it project-owned.
+# The workflow must call scripts/touchstone-run.sh validate so CI exercises
+# the same dispatch path local pre-push does.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_CI_GITHUB" --no-register --ci github >/dev/null
+assert_exists "$PROJECT_CI_GITHUB/.github/workflows/validate.yml"
+assert_contains "$PROJECT_CI_GITHUB/.github/workflows/validate.yml" 'scripts/touchstone-run.sh validate'
+# The workflow is project-owned — absent from the manifest so touchstone update
+# leaves the user's CI customizations alone.
+if grep -q '^.github/workflows/validate\.yml$' "$PROJECT_CI_GITHUB/.touchstone-manifest"; then
+  echo "FAIL: .github/workflows/validate.yml must be project-owned, not tracked in the manifest" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 # touchstone init must not run a pre-existing project setup.sh after preserving it.
 mkdir -p "$PROJECT_INIT_EXISTING_SETUP"
