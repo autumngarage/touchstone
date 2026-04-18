@@ -289,6 +289,34 @@ assert_contains "$PROJECT_SCAFFOLD_NODE/tests/smoke.test.ts" 'expect(true).toBe(
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GO" --no-register --type go --scaffold-tests >/dev/null
 assert_exists "$PROJECT_SCAFFOLD_GO/smoke_test.go"
 assert_contains "$PROJECT_SCAFFOLD_GO/smoke_test.go" 'func TestSmoke(t \*testing.T)'
+# Default package declaration must be a valid Go identifier — `main` for a
+# repo with no existing .go files.
+assert_contains "$PROJECT_SCAFFOLD_GO/smoke_test.go" '^package main$'
+
+# Go project with a real module path (e.g. module github.com/acme/widget)
+# must not let the module path leak into the package declaration — Go package
+# names are restricted identifiers, not domain paths. Regression guard for
+# "package github.com" which is invalid and breaks go test ./....
+PROJECT_SCAFFOLD_GO_MOD="$TEST_DIR/test-project-scaffold-go-mod"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GO_MOD" --no-register --type go >/dev/null
+printf 'module github.com/acme/widget\n\ngo 1.22\n' > "$PROJECT_SCAFFOLD_GO_MOD/go.mod"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GO_MOD" --no-register --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_GO_MOD/smoke_test.go"
+if grep -q '^package github' "$PROJECT_SCAFFOLD_GO_MOD/smoke_test.go"; then
+  echo "FAIL: Go scaffold must not use the module path as the package name" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$PROJECT_SCAFFOLD_GO_MOD/smoke_test.go" '^package main$'
+
+# When the repo already has .go files with a custom package, the scaffold must
+# match that package so go test ./... compiles (all files in a dir share one pkg).
+PROJECT_SCAFFOLD_GO_PKG="$TEST_DIR/test-project-scaffold-go-pkg"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GO_PKG" --no-register --type go >/dev/null
+printf 'module github.com/acme/widget\n\ngo 1.22\n' > "$PROJECT_SCAFFOLD_GO_PKG/go.mod"
+printf 'package widget\n\nfunc Hello() string { return "hi" }\n' > "$PROJECT_SCAFFOLD_GO_PKG/widget.go"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GO_PKG" --no-register --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_GO_PKG/smoke_test.go"
+assert_contains "$PROJECT_SCAFFOLD_GO_PKG/smoke_test.go" '^package widget$'
 
 # --scaffold-tests + generic: no test file written, but the output must tell the
 # user why so they know to set test_command= in .touchstone-config.

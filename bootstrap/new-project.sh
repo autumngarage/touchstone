@@ -379,13 +379,20 @@ NODETEST
         echo "==> tests: already present; skipping scaffold"
         return 0
       fi
-      # Use the module's declared package if go.mod exists, else main.
-      local package_name="main"
-      if [ -f "$project_dir/go.mod" ]; then
-        # go test ./... finds *_test.go in any package — keep it simple.
-        package_name="$(sed -n 's/^module \([^/]*\).*/\1/p' "$project_dir/go.mod" | head -1)"
-        package_name="${package_name:-main}"
+      # Determine the package declaration for smoke_test.go. Go packages are
+      # declared per-file and must match every other .go file in the same
+      # directory, but a Go *module* path (e.g. github.com/acme/widget) is
+      # not a valid package identifier — package names are restricted to
+      # [a-zA-Z_][a-zA-Z0-9_]*. Match an existing root-level .go file if one
+      # exists; otherwise default to `main` (safe and compilable even in a
+      # library-style module with no other .go files at root).
+      local package_name="" first_go
+      first_go="$(find "$project_dir" -maxdepth 1 -type f -name '*.go' \
+        -not -name '*_test.go' -print -quit 2>/dev/null || true)"
+      if [ -n "$first_go" ] && [ -f "$first_go" ]; then
+        package_name="$(sed -n 's/^package \([a-zA-Z_][a-zA-Z0-9_]*\).*/\1/p' "$first_go" | head -1)"
       fi
+      package_name="${package_name:-main}"
       cat > "$project_dir/smoke_test.go" <<GOTEST
 // Placeholder smoke test. Replace with real coverage as soon as there's
 // behavior worth testing — touchstone-run.sh test runs go test ./... over
@@ -400,7 +407,7 @@ func TestSmoke(t *testing.T) {
 	}
 }
 GOTEST
-      echo "==> tests: scaffolded smoke_test.go (go test)"
+      echo "==> tests: scaffolded smoke_test.go (go test, package ${package_name})"
       ;;
     rust)
       # cargo init already creates src/lib.rs with #[test] or tests/ — scaffolding
