@@ -468,74 +468,49 @@ cmd_doctor_project() {
   # 7. Profile-aware test-surface and tooling gap checks.
   # touchstone-run.sh validate silently skips when test files / linters are
   # absent (correct runtime UX). doctor is where those gaps become visible.
-  local profile=""
+  #
+  # For monorepos, touchstone-run.sh dispatches validate to per-target profiles
+  # (see run_targets_action in scripts/touchstone-run.sh). Doctor mirrors that:
+  # checks run per-target when targets are configured, per-root-profile otherwise.
+  local profile="" targets=""
   if [ -f "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" ]; then
-    profile="$(cd "$project_dir" && bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" detect 2>/dev/null \
-      | sed -n 's/^project_type=//p' | head -1)"
+    local detect_output
+    detect_output="$(cd "$project_dir" && bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" detect 2>/dev/null || true)"
+    profile="$(printf '%s\n' "$detect_output" | sed -n 's/^project_type=//p' | head -1)"
+    targets="$(printf '%s\n' "$detect_output" | sed -n 's/^targets=//p' | head -1)"
   fi
   profile="${profile:-generic}"
 
-  # 7a. Test presence — informational nudge, not a blocking issue. An override
-  # of test_command or validate_command means the project runs custom logic,
-  # so the profile heuristic would be misleading — skip it.
+  # Root-level overrides short-circuit the dispatcher entirely (configured_command_for_action
+  # in touchstone-run.sh), so neither per-root nor per-target profile defaults run.
+  local tests_overridden=false lint_overridden=false
   if _touchstone_config_has_override "$project_dir" test_command \
      || _touchstone_config_has_override "$project_dir" validate_command; then
-    tk_dim "tests: overridden via .touchstone-config"
-  elif _touchstone_profile_has_tests "$profile" "$project_dir"; then
-    tk_ok "tests: found for profile '$profile'"
-  elif [ "$profile" = "generic" ]; then
-    tk_dim "tests: profile is 'generic' — touchstone runs whatever test_command you set"
-  else
-    tk_dim "tests: not found for profile '$profile' (runner will skip, not fail)"
-    tk_dim "  See: touchstone run test  |  create one test to get real coverage"
+    tests_overridden=true
   fi
-
-  # 7b. Profile lint tool on PATH — a real gap because silent-skip at
-  # runtime means lint issues merge uncaught. Honor lint_command / validate_command
-  # overrides: when the project replaces the profile default, a missing profile
-  # linter isn't a gap, it's unused.
-  local lint_overridden=false
   if _touchstone_config_has_override "$project_dir" lint_command \
      || _touchstone_config_has_override "$project_dir" validate_command; then
     lint_overridden=true
   fi
-  case "$profile" in
-    python)
-      if [ "$lint_overridden" = true ]; then
-        tk_dim "lint: overridden via .touchstone-config"
-      elif command -v ruff >/dev/null 2>&1; then
-        tk_ok "ruff: on PATH"
-      else
-        tk_warn "ruff not on PATH — lint silently skips on every pre-push"
-        tk_dim "  Fix: brew install ruff   (or: uv tool install ruff)"
-        issues=$((issues + 1))
-      fi
-      ;;
-    node)
-      if [ "$lint_overridden" = true ]; then
-        tk_dim "lint: overridden via .touchstone-config"
-      elif [ -f "$project_dir/package.json" ] && grep -q '"lint"[[:space:]]*:' "$project_dir/package.json"; then
-        tk_ok "package.json: lint script configured"
-      else
-        tk_dim "package.json has no 'lint' script — lint silently skips on every pre-push"
-        tk_dim "  Fix: add a \"lint\" entry under \"scripts\" in package.json"
-      fi
-      ;;
-    swift)
-      if [ "$lint_overridden" = true ]; then
-        tk_dim "lint: overridden via .touchstone-config"
-      elif command -v swift-format >/dev/null 2>&1; then
-        tk_ok "swift-format: on PATH"
-      else
-        tk_warn "swift-format not on PATH — lint silently skips on every pre-push"
-        tk_dim "  Fix: brew install swift-format"
-        issues=$((issues + 1))
-      fi
-      ;;
-    rust|go|generic|*)
-      : # rust tools ship with rustup; go vet is built-in; generic has no default
-      ;;
-  esac
+
+  # 7a. Test presence — informational nudge, not a blocking issue.
+  if [ "$tests_overridden" = true ]; then
+    tk_dim "tests: overridden via .touchstone-config"
+  elif [ -n "$targets" ]; then
+    _touchstone_doctor_foreach_target "$project_dir" "$targets" _touchstone_doctor_check_tests
+  else
+    _touchstone_doctor_check_tests "$project_dir" "$profile" ""
+  fi
+
+  # 7b. Profile lint tool availability — a real gap when missing because the
+  # runtime graceful-skip means lint issues merge uncaught.
+  if [ "$lint_overridden" = true ]; then
+    tk_dim "lint: overridden via .touchstone-config"
+  elif [ -n "$targets" ]; then
+    _touchstone_doctor_foreach_target "$project_dir" "$targets" _touchstone_doctor_check_lint
+  else
+    _touchstone_doctor_check_lint "$project_dir" "$profile" ""
+  fi
 
   echo ""
   if [ "$issues" -eq 0 ]; then
@@ -557,6 +532,103 @@ _touchstone_config_has_override() {
   # Match "key = value" where value has at least one non-space character.
   # Skips commented-out lines ("# key=...") and empty assignments ("key=").
   grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[^[:space:]#]" "$dir/.touchstone-config"
+}
+
+# Iterate over targets (format: name:path:profile,name:path:profile,...) and
+# invoke the given check function for each. The check function is called with
+# (absolute_target_dir, target_profile, "target NAME: ").
+_touchstone_doctor_foreach_target() {
+  local project_dir="$1" targets_csv="$2" check_fn="$3"
+  local entry name rest target_path target_profile target_dir
+  local -a entries=()
+
+  IFS=',' read -r -a entries <<< "$targets_csv"
+  for entry in "${entries[@]}"; do
+    entry="${entry#"${entry%%[![:space:]]*}"}"
+    entry="${entry%"${entry##*[![:space:]]}"}"
+    [ -z "$entry" ] && continue
+    name="${entry%%:*}"
+    rest="${entry#*:}"
+    target_path="${rest%%:*}"
+    target_profile="${rest#*:}"
+    # Fallback when only two fields are present (no explicit profile).
+    [ "$target_profile" = "$target_path" ] && target_profile=""
+    target_profile="${target_profile:-generic}"
+
+    if [[ "$target_path" = /* ]]; then
+      target_dir="$target_path"
+    else
+      target_dir="$project_dir/$target_path"
+    fi
+
+    if [ ! -d "$target_dir" ]; then
+      tk_warn "target '$name' path not found: $target_path"
+      issues=$((issues + 1))
+      continue
+    fi
+
+    "$check_fn" "$target_dir" "$target_profile" "target ${name}: "
+  done
+}
+
+# Per-profile test-presence check. Writes one line to the doctor output.
+# Does not increment issues — missing tests are informational, not blocking.
+# Always returns 0 so set -e in the caller doesn't halt on the final guard.
+_touchstone_doctor_check_tests() {
+  local dir="$1" profile="$2" label="$3"
+  if _touchstone_profile_has_tests "$profile" "$dir"; then
+    tk_ok "${label}tests: found for profile '$profile'"
+  elif [ "$profile" = "generic" ]; then
+    tk_dim "${label}tests: profile is 'generic' — touchstone runs whatever test_command you set"
+  else
+    tk_dim "${label}tests: not found for profile '$profile' (runner will skip, not fail)"
+    if [ -z "$label" ]; then
+      tk_dim "  See: touchstone run test  |  create one test to get real coverage"
+    fi
+  fi
+  return 0
+}
+
+# Per-profile lint tool check. Increments caller's `issues` var when a real gap
+# is detected (relies on dynamic-scope inheritance of locals; the caller is
+# cmd_doctor_project which declares `local issues=0`).
+# Always returns 0 so set -e in the caller doesn't halt on the final guard.
+_touchstone_doctor_check_lint() {
+  local dir="$1" profile="$2" label="$3"
+  case "$profile" in
+    python)
+      if command -v ruff >/dev/null 2>&1; then
+        tk_ok "${label}ruff: on PATH"
+      else
+        tk_warn "${label}ruff not on PATH — lint silently skips on every pre-push"
+        tk_dim "  Fix: brew install ruff   (or: uv tool install ruff)"
+        issues=$((issues + 1))
+      fi
+      ;;
+    node)
+      if [ -f "$dir/package.json" ] && grep -q '"lint"[[:space:]]*:' "$dir/package.json"; then
+        tk_ok "${label}package.json: lint script configured"
+      else
+        tk_dim "${label}package.json has no 'lint' script — lint silently skips on every pre-push"
+        if [ -z "$label" ]; then
+          tk_dim "  Fix: add a \"lint\" entry under \"scripts\" in package.json"
+        fi
+      fi
+      ;;
+    swift)
+      if command -v swift-format >/dev/null 2>&1; then
+        tk_ok "${label}swift-format: on PATH"
+      else
+        tk_warn "${label}swift-format not on PATH — lint silently skips on every pre-push"
+        tk_dim "  Fix: brew install swift-format"
+        issues=$((issues + 1))
+      fi
+      ;;
+    rust|go|generic|*)
+      : # rust tools ship with rustup; go vet is built-in; generic has no default
+      ;;
+  esac
+  return 0
 }
 
 # Profile-aware test-presence heuristic. Matches typical layout conventions
