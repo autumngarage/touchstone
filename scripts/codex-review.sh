@@ -1063,6 +1063,24 @@ if should_skip_pre_push_review; then
   exit 0
 fi
 
+# First-push exemption: a pre-push to the default branch with a single commit
+# on HEAD is the initial scaffold push. Reviewing AI-generated template files
+# has near-zero signal and spends quota that belongs to real PRs. Skip with a
+# visible line so the absent safety boundary is not silent. Defensive: if
+# `git rev-list` fails for any reason (no commits, detached state, etc.), fall
+# through to the normal review path instead of silently skipping.
+if is_pre_push_hook && ! is_truthy "${CODEX_REVIEW_FORCE:-false}"; then
+  _firstpush_remote_branch="$(short_ref_name "${PRE_COMMIT_REMOTE_BRANCH:-}")"
+  _firstpush_default_branch="$(short_ref_name "$DEFAULT_BRANCH")"
+  if [ "$_firstpush_remote_branch" = "$_firstpush_default_branch" ]; then
+    if _firstpush_commit_count="$(git rev-list --count HEAD 2>/dev/null)" \
+      && [ "$_firstpush_commit_count" = "1" ]; then
+      echo "==> Codex review skipped — first push on a fresh scaffold (HEAD is the initial commit)."
+      exit 0
+    fi
+  fi
+fi
+
 if ! is_truthy "$REVIEW_ENABLED"; then
   echo "==> AI review disabled by .codex-review.toml — skipping review."
   exit 0

@@ -39,7 +39,7 @@ assert_executable() {
 }
 
 assert_contains() {
-  if ! grep -q "$2" "$1" 2>/dev/null; then
+  if ! grep -q -e "$2" "$1" 2>/dev/null; then
     echo "FAIL: expected $1 to contain '$2'" >&2
     ERRORS=$((ERRORS + 1))
   fi
@@ -888,6 +888,77 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# Autumn Garage siblings block must appear in doctor --project output on every
+# project, regardless of whether cortex/sentinel are installed. Absence is the
+# normal case for most users; missing-block would be an orientation regression.
+# Skip asserting exact version strings — those are machine-dependent. The
+# section header alone proves the code path ran.
+assert_contains "$TEST_DIR/doctor-clean.txt" 'Autumn Garage siblings'
+
+# Sibling detection must not error, warn-exit, or block when cortex/sentinel
+# are absent from PATH. Simulate a clean machine by pinning PATH to the
+# system dirs plus the fake pre-commit hook installer. Use an absolute path
+# to touchstone so the CLI is still reachable with the trimmed PATH.
+PROJECT_DOCTOR_NO_SIBLINGS="$TEST_DIR/test-project-doctor-no-siblings"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_NO_SIBLINGS" --no-register >/dev/null
+if (cd "$PROJECT_DOCTOR_NO_SIBLINGS" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-no-siblings.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-no-siblings.txt" 'Autumn Garage siblings'
+  assert_contains "$TEST_DIR/doctor-no-siblings.txt" 'cortex not installed'
+  assert_contains "$TEST_DIR/doctor-no-siblings.txt" 'sentinel not installed'
+else
+  echo "FAIL: doctor --project should exit 0 when Autumn Garage siblings are absent — absence is not a bug" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Mixed state — CLI absent but marker directory present — is unusual enough
+# that doctor warns and points at the install hint, but still never errors.
+# This is the class of failure where a user deleted a brew-installed CLI but
+# left its project state behind; a silent pass would hide the drift.
+PROJECT_DOCTOR_MARKER_ONLY="$TEST_DIR/test-project-doctor-marker-only"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_MARKER_ONLY" --no-register >/dev/null
+mkdir -p "$PROJECT_DOCTOR_MARKER_ONLY/.cortex"
+if (cd "$PROJECT_DOCTOR_MARKER_ONLY" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-marker-only.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-marker-only.txt" 'cortex CLI missing but .cortex/ present'
+else
+  echo "FAIL: doctor --project should exit 0 when a sibling CLI is missing but its marker dir is present — still non-blocking" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Installed case — a sibling CLI on PATH must be reported as "(installed)".
+# Use a stub script so the test is deterministic across machines. The stub
+# responds to both `version` and `--version` so the probe-fallback branch
+# doesn't accidentally pass on the wrong probe — either convention is valid.
+SIBLING_STUB_BIN="$TEST_DIR/sibling-stub-bin"
+mkdir -p "$SIBLING_STUB_BIN"
+cat > "$SIBLING_STUB_BIN/cortex" <<'CORTEXSTUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+  version|--version) echo "cortex 9.9.9"; exit 0 ;;
+  *) echo "stub cortex"; exit 0 ;;
+esac
+CORTEXSTUB
+chmod +x "$SIBLING_STUB_BIN/cortex"
+cat > "$SIBLING_STUB_BIN/sentinel" <<'SENTINELSTUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+  version) echo "Error: no such command" >&2; exit 2 ;;
+  --version) echo "sentinel, version 8.8.8"; exit 0 ;;
+  *) echo "stub sentinel"; exit 0 ;;
+esac
+SENTINELSTUB
+chmod +x "$SIBLING_STUB_BIN/sentinel"
+
+PROJECT_DOCTOR_SIBLINGS="$TEST_DIR/test-project-doctor-with-siblings"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_SIBLINGS" --no-register >/dev/null
+if (cd "$PROJECT_DOCTOR_SIBLINGS" && PATH="$SIBLING_STUB_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-with-siblings.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-with-siblings.txt" 'cortex 9.9.9 (installed)'
+  # Sentinel only responds to --version — asserts the probe-fallback works.
+  assert_contains "$TEST_DIR/doctor-with-siblings.txt" 'sentinel 8.8.8 (installed)'
+else
+  echo "FAIL: doctor --project should exit 0 when Autumn Garage siblings are installed and reply with a version" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # Break hooks and rerun doctor — it must exit nonzero and flag the gap.
 rm -f "$PROJECT_DOCTOR/.git/hooks/pre-push"
 if (cd "$PROJECT_DOCTOR" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-broken.txt" 2>&1; then
@@ -1258,6 +1329,136 @@ if (cd "$PROJECT_PYTEST_EMPTY" && PATH="$PYTEST_FAKE_BIN:$PATH" bash scripts/tou
   echo "FAIL: pytest exit 1 (real failure) must still propagate as nonzero" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+# ---------------------------------------------------------------------------
+# Doctrine 0002 — interactive wizard for `touchstone new`.
+# The wizard is additive: non-TTY invocations behave exactly as pre-R2 (modulo
+# new flags being available if passed). `--yes` accepts all defaults without
+# prompting. The "Equivalent to rerun:" block prints the flag-form so the user
+# can copy-paste to scaffold exactly the same project again.
+# ---------------------------------------------------------------------------
+
+PROJECT_WIZARD_YES="$TEST_DIR/test-project-wizard-yes"
+# Force cortex/sentinel off so the test doesn't depend on whether the sibling
+# CLIs are on PATH (they default to yes when detected).
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_WIZARD_YES" \
+  --yes --no-register --no-with-cortex --no-with-sentinel --no-github \
+  >"$TEST_DIR/wizard-yes.txt" 2>&1 || {
+    echo "FAIL: --yes bootstrap exited nonzero" >&2
+    ERRORS=$((ERRORS + 1))
+  }
+
+# --yes must print the "Equivalent to rerun" block so scripters learn flags.
+assert_contains "$TEST_DIR/wizard-yes.txt" 'Equivalent to rerun:'
+assert_contains "$TEST_DIR/wizard-yes.txt" '--no-register'
+assert_contains "$TEST_DIR/wizard-yes.txt" '--no-with-cortex'
+assert_contains "$TEST_DIR/wizard-yes.txt" '--no-with-sentinel'
+assert_contains "$TEST_DIR/wizard-yes.txt" '--initial-commit'
+assert_contains "$TEST_DIR/wizard-yes.txt" '--no-github'
+
+# --yes with --with-cortex / --with-sentinel / --github-public must be reflected
+# in the equivalent-to-rerun printout even when the underlying tool isn't present.
+PROJECT_WIZARD_YES_FLAGS="$TEST_DIR/test-project-wizard-yes-flags"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_WIZARD_YES_FLAGS" --yes --no-register \
+  --with-cortex --with-sentinel --github-public \
+  >"$TEST_DIR/wizard-yes-flags.txt" 2>&1 || true
+assert_contains "$TEST_DIR/wizard-yes-flags.txt" '--with-cortex'
+assert_contains "$TEST_DIR/wizard-yes-flags.txt" '--with-sentinel'
+assert_contains "$TEST_DIR/wizard-yes-flags.txt" '--github-public'
+
+# Non-TTY run (no --yes, no TTY) must not print the wizard block. Structure
+# must match pre-R2 behavior: .touchstone-version exists, registry skipped, etc.
+PROJECT_WIZARD_NON_TTY="$TEST_DIR/test-project-wizard-non-tty"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_WIZARD_NON_TTY" --no-register \
+  </dev/null >"$TEST_DIR/wizard-non-tty.txt" 2>&1 || {
+    echo "FAIL: non-TTY bootstrap exited nonzero" >&2
+    ERRORS=$((ERRORS + 1))
+  }
+if grep -q 'Equivalent to rerun:' "$TEST_DIR/wizard-non-tty.txt" 2>/dev/null; then
+  echo "FAIL: non-TTY bootstrap must not print the wizard 'Equivalent to rerun' block" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_exists "$PROJECT_WIZARD_NON_TTY/.touchstone-version"
+assert_exists "$PROJECT_WIZARD_NON_TTY/CLAUDE.md"
+# Non-TTY must still substitute {{PROJECT_NAME}} (pre-R2 invariant).
+if grep -q '{{PROJECT_NAME}}' "$PROJECT_WIZARD_NON_TTY/CLAUDE.md" 2>/dev/null; then
+  echo "FAIL: non-TTY wizard must still substitute {{PROJECT_NAME}}" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --yes with all defaults must produce the same filesystem shape as a
+# flag-driven invocation with the same choices (baseline parity check). We
+# force cortex/sentinel/github off in both runs so the test is deterministic
+# regardless of whether those sibling CLIs happen to be installed on the
+# host — presence of `cortex` or `sentinel` on PATH would otherwise side-effect
+# the tree and make the diff flap by environment.
+PROJECT_YES_BASELINE="$TEST_DIR/test-project-yes-baseline"
+PROJECT_FLAGS_BASELINE="$TEST_DIR/test-project-flags-baseline"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_YES_BASELINE" \
+  --yes --no-register --no-with-cortex --no-with-sentinel --no-github \
+  >"$TEST_DIR/yes-baseline.txt" 2>&1
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_FLAGS_BASELINE" \
+  --no-register --no-with-cortex --no-with-sentinel --no-github --initial-commit \
+  </dev/null >"$TEST_DIR/flags-baseline.txt" 2>&1
+# Diff the tree listings (filenames only, .git excluded) — same structure
+# expected. We compare sorted relative paths, which is stable across runs.
+( cd "$PROJECT_YES_BASELINE" && find . -type f -not -path './.git/*' | sort ) >"$TEST_DIR/yes-tree.txt"
+( cd "$PROJECT_FLAGS_BASELINE" && find . -type f -not -path './.git/*' | sort ) >"$TEST_DIR/flags-tree.txt"
+if ! diff -q "$TEST_DIR/yes-tree.txt" "$TEST_DIR/flags-tree.txt" >/dev/null 2>&1; then
+  echo "FAIL: --yes tree differs from equivalent flag-driven tree" >&2
+  diff "$TEST_DIR/yes-tree.txt" "$TEST_DIR/flags-tree.txt" >&2 || true
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --no-initial-commit must skip the initial commit so no HEAD exists.
+PROJECT_NO_COMMIT="$TEST_DIR/test-project-no-commit"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_NO_COMMIT" --no-register --no-initial-commit \
+  </dev/null >"$TEST_DIR/no-commit.txt" 2>&1
+if git -C "$PROJECT_NO_COMMIT" rev-parse --verify HEAD >/dev/null 2>&1; then
+  echo "FAIL: --no-initial-commit must skip the initial commit" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --skip-language-scaffold with --type swift must not write Package.swift.
+PROJECT_SKIP_LANG="$TEST_DIR/test-project-skip-lang"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SKIP_LANG" --no-register \
+  --type swift --skip-language-scaffold \
+  </dev/null >"$TEST_DIR/skip-lang.txt" 2>&1
+assert_not_exists "$PROJECT_SKIP_LANG/Package.swift"
+assert_not_exists "$PROJECT_SKIP_LANG/Sources"
+
+# Existing --type swift without the flag still scaffolds Package.swift (regression guard).
+PROJECT_SWIFT_DEFAULT="$TEST_DIR/test-project-swift-default"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SWIFT_DEFAULT" --no-register \
+  --type swift \
+  </dev/null >"$TEST_DIR/swift-default.txt" 2>&1
+assert_exists "$PROJECT_SWIFT_DEFAULT/Package.swift"
+
+# --register (explicit opt-in) must also be accepted and set up registry entry.
+PROJECT_REGISTER="$TEST_DIR/test-project-register-explicit"
+REGISTRY_TMP="$(mktemp -d -t touchstone-registry.XXXXXX)"
+HOME="$REGISTRY_TMP" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REGISTER" --register \
+  </dev/null >"$TEST_DIR/register.txt" 2>&1
+assert_exists "$REGISTRY_TMP/.touchstone-projects"
+assert_contains "$REGISTRY_TMP/.touchstone-projects" "$PROJECT_REGISTER"
+# Registry write must be visible: a silent append to ~/.touchstone-projects
+# loses the audit trail that motivates opt-in being the default. The line must
+# also name the opt-out flag so the next run doesn't need to grep docs for it.
+assert_contains "$TEST_DIR/register.txt" '==> Registered in .*\.touchstone-projects'
+assert_contains "$TEST_DIR/register.txt" '--no-register'
+rm -rf "$REGISTRY_TMP"
+
+# --no-register must print the visible skip line so the opt-out is auditable.
+# The scaffold summary already includes "registry: skipped (--no-register)" in
+# its trailing block; this assertion pins the dedicated log line that fires at
+# the moment the registry decision is made.
+PROJECT_REGISTER_SKIP="$TEST_DIR/test-project-register-skip"
+REGISTRY_SKIP_TMP="$(mktemp -d -t touchstone-registry-skip.XXXXXX)"
+HOME="$REGISTRY_SKIP_TMP" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REGISTER_SKIP" --no-register \
+  </dev/null >"$TEST_DIR/register-skip.txt" 2>&1
+assert_not_exists "$REGISTRY_SKIP_TMP/.touchstone-projects"
+assert_contains "$TEST_DIR/register-skip.txt" '==> Registry skipped (--no-register)'
+rm -rf "$REGISTRY_SKIP_TMP"
 
 echo ""
 if [ "$ERRORS" -eq 0 ]; then
