@@ -476,9 +476,11 @@ cmd_doctor_project() {
   # a doctor that trusts detect output would check per-target profiles the
   # runner never actually dispatches to.
   local profile="" targets=""
-  profile="$(_touchstone_config_get "$project_dir" project_type)"
-  [ -z "$profile" ] && profile="$(_touchstone_config_get "$project_dir" profile)"
-  targets="$(_touchstone_config_get "$project_dir" targets)"
+  # touchstone-run.sh:load_config treats project_type and profile as the same
+  # config slot with last-write-wins semantics — mirror that here so a config
+  # with both keys selects the same profile doctor and validate use.
+  profile="$(_touchstone_config_get "$project_dir" "project_type profile")"
+  targets="$(_touchstone_config_get "$project_dir" "targets")"
 
   # Match the runner's profile resolution precisely:
   #   empty/auto -> manifest detection
@@ -558,8 +560,13 @@ _touchstone_config_has_override() {
 # Read a raw value from .touchstone-config. Empty string when absent.
 # Trims whitespace around both key and value so "key = value" and "key=value"
 # both match, consistent with scripts/touchstone-run.sh:load_config.
+# Matches scripts/touchstone-run.sh:load_config semantics: when the same key
+# appears multiple times, the last non-empty assignment wins (for project_type
+# the runner treats project_type and profile as aliases — pass a space-
+# separated list of keys in "$2" to preserve that behavior).
 _touchstone_config_get() {
-  local dir="$1" key="$2" line value candidate
+  local dir="$1" keys="$2" line value candidate k
+  local result=""
   [ -f "$dir/.touchstone-config" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line#"${line%%[![:space:]]*}"}"
@@ -568,14 +575,17 @@ _touchstone_config_get() {
     candidate="${line%%=*}"
     candidate="${candidate#"${candidate%%[![:space:]]*}"}"
     candidate="${candidate%"${candidate##*[![:space:]]}"}"
-    if [ "$candidate" = "$key" ]; then
-      value="${line#*=}"
-      value="${value#"${value%%[![:space:]]*}"}"
-      value="${value%"${value##*[![:space:]]}"}"
-      printf '%s' "$value"
-      return 0
-    fi
+    for k in $keys; do
+      if [ "$candidate" = "$k" ]; then
+        value="${line#*=}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        result="$value"
+        break
+      fi
+    done
   done < "$dir/.touchstone-config"
+  printf '%s' "$result"
 }
 
 # Validate a profile name against the set scripts/touchstone-run.sh actually

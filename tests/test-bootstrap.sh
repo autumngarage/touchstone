@@ -706,6 +706,32 @@ else
   assert_contains "$TEST_DIR/doctor-monorepo.txt" "target autodetect: tests: not found for profile 'rust'"
 fi
 
+# touchstone-run.sh's load_config treats project_type and profile as the same
+# slot with last-write-wins semantics. Doctor must select the same profile
+# the runner would, so a config with both keys must resolve to the final one.
+PROJECT_DOCTOR_ALIAS_KEY="$TEST_DIR/test-project-doctor-alias-key"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_ALIAS_KEY" --no-register --type python >/dev/null
+# Prepend a stale project_type=generic and keep the real profile=python after it
+# to exercise the last-write-wins tie-breaker.
+sed -i '' 's|^project_type=.*|project_type=generic|' "$PROJECT_DOCTOR_ALIAS_KEY/.touchstone-config"
+printf 'profile=python\n' >> "$PROJECT_DOCTOR_ALIAS_KEY/.touchstone-config"
+if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
+  echo "SKIP: ruff on minimal PATH; cannot test project_type/profile last-wins doctor case on this machine" >&2
+else
+  if (cd "$PROJECT_DOCTOR_ALIAS_KEY" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-alias-key.txt" 2>&1; then
+    echo "FAIL: doctor --project on a Python-via-profile= project with no ruff should exit nonzero" >&2
+    ERRORS=$((ERRORS + 1))
+  else
+    # The later "profile=python" must win over "project_type=generic"; missing
+    # ruff should fire, not a generic-profile no-op.
+    assert_contains "$TEST_DIR/doctor-alias-key.txt" 'ruff not on PATH'
+    if grep -q "profile 'generic'" "$TEST_DIR/doctor-alias-key.txt"; then
+      echo "FAIL: doctor selected generic when last-write-wins should have selected python" >&2
+      ERRORS=$((ERRORS + 1))
+    fi
+  fi
+fi
+
 # Unknown root profile: touchstone-run.sh returns an error for project_type
 # values outside the dispatcher's accepted set. doctor must flag the same —
 # otherwise a typo like project_type=kotlin would silently pass doctor while
