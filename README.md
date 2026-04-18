@@ -125,7 +125,7 @@ bash setup.sh --deps-only
 | `touchstone init --no-ai-review` | Add touchstone with AI review disabled |
 | `touchstone init --gitbutler` | Add touchstone with optional GitButler workflow setup |
 | `touchstone init --ci github` | Add `.github/workflows/validate.yml` that runs the same checks as local pre-push |
-| `touchstone init --scaffold-tests` | Write one placeholder smoke test for the detected profile so the pre-push test gate has something to run |
+| `touchstone init --scaffold-tests` | Write one placeholder smoke test for Python, Node, or Go projects (Rust and Swift already ship scaffolds via `cargo init` / `swift package init`) |
 | `touchstone new <dir>` | Bootstrap a new project with principles, scripts, hooks, and templates |
 | `touchstone new <dir> --type node` | Bootstrap with an explicit Node/TypeScript, Swift, Rust, Go, Python, or generic profile |
 | `touchstone new <dir> --reviewer local --local-review-command '<command>'` | Bootstrap a new project with a local reviewer command |
@@ -133,7 +133,7 @@ bash setup.sh --deps-only
 | `touchstone new <dir> --no-ai-review` | Bootstrap a new project with AI review disabled |
 | `touchstone new <dir> --gitbutler` | Bootstrap with optional GitButler workflow setup |
 | `touchstone new <dir> --ci github` | Bootstrap with the opt-in GitHub Actions validate workflow |
-| `touchstone new <dir> --scaffold-tests` | Bootstrap with a placeholder smoke test for the detected profile |
+| `touchstone new <dir> --scaffold-tests` | Bootstrap with a placeholder smoke test for Python, Node, or Go projects |
 | `touchstone detect` | Show the detected project profile for the current repo |
 | `touchstone run <task>` | Run profile-aware `lint`, `typecheck`, `build`, `test`, or `validate` |
 | `touchstone update` | Create a branch and commit that updates the current project's touchstone-owned files |
@@ -188,7 +188,7 @@ When you run `touchstone new`, these files get created in your project:
 
 Touchstone enforces a test **runner**, not a test **suite**. The pre-push hook invokes `scripts/touchstone-run.sh validate`, which dispatches lint/typecheck/build/test per profile — but every profile silently skips when the underlying tool or test file is absent (correct runtime UX: a fresh scaffold shouldn't reject pushes just because the first test hasn't been written yet). Consequence: a repo with zero test files passes the gate.
 
-`touchstone doctor --project` is where those gaps become visible. It reports per-profile test presence, profile-specific linter availability (`ruff`, `swift-format`), pre-push hook integrity, and unknown profile values — in lock-step with the runner's dispatcher so doctor never claims more coverage than `validate` actually runs. Use `touchstone init --scaffold-tests` to seed a profile-appropriate placeholder test and `touchstone init --ci github` to add a GitHub Actions workflow that runs the same `validate` path CI-side.
+`touchstone doctor --project` is where those gaps become visible. It reports per-profile test presence, profile-specific linter availability (`ruff`, `swift-format`), pre-push hook integrity, and unknown profile values — in lock-step with the runner's dispatcher so doctor never claims more coverage than `validate` actually runs. Use `touchstone init --scaffold-tests` to seed a placeholder smoke test (Python, Node, and Go; Rust and Swift already get tests from `cargo init` / `swift package init`) and `touchstone init --ci github` to add a GitHub Actions workflow that runs the same `validate` path CI-side.
 
 ### Keeping projects up to date
 
