@@ -416,8 +416,7 @@ if [ -f ".pre-commit-config.yaml" ]; then
   # Install hook shims (environments install lazily on first run).
   pre-commit install 2>&1 | tail -1 | while read -r line; do ok "$line"; done
   pre-commit install --hook-type pre-push 2>&1 | tail -1 | while read -r line; do ok "$line"; done
-  pre-commit install --hook-type commit-msg 2>&1 | tail -1 | while read -r line; do ok "$line"; done
-  ok "pre-commit hooks installed (pre-commit, pre-push, commit-msg)"
+  ok "pre-commit hooks installed (pre-commit, pre-push)"
 else
   warn "No .pre-commit-config.yaml found — skipping hooks"
 fi
