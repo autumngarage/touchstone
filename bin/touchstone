@@ -534,6 +534,41 @@ _touchstone_config_has_override() {
   grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[^[:space:]#]" "$dir/.touchstone-config"
 }
 
+# Auto-detect a project profile from manifest files. Must stay in lock-step
+# with scripts/touchstone-run.sh:detect_profile so per-target doctor checks
+# mirror what the runner actually dispatches to at pre-push time.
+_touchstone_detect_profile_dir() {
+  local dir="$1"
+  if [ -f "$dir/pnpm-workspace.yaml" ]; then
+    printf 'node\n'
+  elif [ -f "$dir/package.json" ] || [ -f "$dir/tsconfig.json" ]; then
+    printf 'node\n'
+  elif [ -f "$dir/Cargo.toml" ]; then
+    printf 'rust\n'
+  elif [ -f "$dir/Package.swift" ]; then
+    printf 'swift\n'
+  elif [ -f "$dir/go.mod" ]; then
+    printf 'go\n'
+  elif [ -f "$dir/uv.lock" ] || [ -f "$dir/pyproject.toml" ] || [ -f "$dir/requirements.txt" ]; then
+    printf 'python\n'
+  else
+    printf 'generic\n'
+  fi
+}
+
+# Normalize profile aliases to the canonical names the doctor check helpers
+# switch on. Mirrors the set scripts/touchstone-run.sh:run_profile_action
+# accepts — typescript/ts map to node, py to python, rs to rust, golang to go.
+_touchstone_normalize_profile() {
+  case "$1" in
+    typescript|ts) printf 'node\n' ;;
+    py) printf 'python\n' ;;
+    rs) printf 'rust\n' ;;
+    golang) printf 'go\n' ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
 # Iterate over targets (format: name:path:profile,name:path:profile,...) and
 # invoke the given check function for each. The check function is called with
 # (absolute_target_dir, target_profile, "target NAME: ").
@@ -551,9 +586,9 @@ _touchstone_doctor_foreach_target() {
     rest="${entry#*:}"
     target_path="${rest%%:*}"
     target_profile="${rest#*:}"
-    # Fallback when only two fields are present (no explicit profile).
+    # When only two fields are present (no explicit profile), rest%%:* and
+    # rest#*: both return the same string — treat as empty so auto-detect fires.
     [ "$target_profile" = "$target_path" ] && target_profile=""
-    target_profile="${target_profile:-generic}"
 
     if [[ "$target_path" = /* ]]; then
       target_dir="$target_path"
@@ -566,6 +601,15 @@ _touchstone_doctor_foreach_target() {
       issues=$((issues + 1))
       continue
     fi
+
+    # Auto-detect + alias-normalize so targets like "web:apps/web:auto" or
+    # "web:apps/web:ts" are checked against the same profile touchstone-run.sh
+    # would dispatch to — otherwise doctor reports green on a target whose
+    # lint/test gaps the runner actually exercises.
+    if [ -z "$target_profile" ] || [ "$target_profile" = "auto" ]; then
+      target_profile="$(_touchstone_detect_profile_dir "$target_dir")"
+    fi
+    target_profile="$(_touchstone_normalize_profile "$target_profile")"
 
     "$check_fn" "$target_dir" "$target_profile" "target ${name}: "
   done

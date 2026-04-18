@@ -674,25 +674,36 @@ fi
 # Monorepo projects where targets drive validate: doctor must run test/lint
 # checks per target, not on the root profile. The root profile check would
 # miss gaps inside apps/services/packages that the runner actually dispatches
-# to at pre-push time.
+# to at pre-push time. Also exercise profile aliases (ts -> node, py -> python)
+# and empty/auto profiles that must be resolved by manifest detection so each
+# target hits the same dispatcher branch touchstone-run.sh would use.
 PROJECT_DOCTOR_MONO="$TEST_DIR/test-project-doctor-monorepo"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_MONO" --no-register >/dev/null
-mkdir -p "$PROJECT_DOCTOR_MONO/apps/web" "$PROJECT_DOCTOR_MONO/services/api"
+mkdir -p "$PROJECT_DOCTOR_MONO/apps/web" "$PROJECT_DOCTOR_MONO/services/api" "$PROJECT_DOCTOR_MONO/apps/tsapp" "$PROJECT_DOCTOR_MONO/packages/autodetect"
 printf '[package]\nname = "api"\nversion = "0.0.0"\n' > "$PROJECT_DOCTOR_MONO/services/api/Cargo.toml"
 printf '{"scripts":{"lint":"echo lint","test":"echo test"}}\n' > "$PROJECT_DOCTOR_MONO/apps/web/package.json"
-# Web target has a lint script but no test files; API target has Cargo.toml but no tests dir or #[test].
-sed -i '' 's|^targets=.*|targets=web:apps/web:node,api:services/api:rust|' "$PROJECT_DOCTOR_MONO/.touchstone-config"
+# tsapp declares "typescript" profile (alias for node) but has no lint script.
+printf '{}\n' > "$PROJECT_DOCTOR_MONO/apps/tsapp/package.json"
+# autodetect declares no explicit profile — must be detected from manifest (Cargo.toml).
+printf '[package]\nname = "autodetected"\nversion = "0.0.0"\n' > "$PROJECT_DOCTOR_MONO/packages/autodetect/Cargo.toml"
+sed -i '' 's|^targets=.*|targets=web:apps/web:node,api:services/api:rust,tsapp:apps/tsapp:typescript,autodetect:packages/autodetect|' "$PROJECT_DOCTOR_MONO/.touchstone-config"
 if (cd "$PROJECT_DOCTOR_MONO" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-monorepo.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-monorepo.txt" "target web:"
   assert_contains "$TEST_DIR/doctor-monorepo.txt" "target api:"
   assert_contains "$TEST_DIR/doctor-monorepo.txt" 'target web: package.json: lint script configured'
   assert_contains "$TEST_DIR/doctor-monorepo.txt" "target web: tests: not found for profile 'node'"
   assert_contains "$TEST_DIR/doctor-monorepo.txt" "target api: tests: not found for profile 'rust'"
+  # 'typescript' alias must resolve to node — the lint-script check is the
+  # node-profile branch, and tsapp has no lint script so the dim-line fires.
+  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target tsapp: package.json has no 'lint' script"
+  # Auto-detected profile from Cargo.toml must be rust.
+  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target autodetect: tests: not found for profile 'rust'"
 else
-  # A pass here is acceptable if tests are present somewhere; the key assertion
-  # is that per-target lines appear in the output either way.
+  # Per-target lines must appear even if doctor exits nonzero for other reasons.
   assert_contains "$TEST_DIR/doctor-monorepo.txt" "target web:"
   assert_contains "$TEST_DIR/doctor-monorepo.txt" "target api:"
+  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target tsapp: package.json has no 'lint' script"
+  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target autodetect: tests: not found for profile 'rust'"
 fi
 
 # Python project that overrides lint_command in .touchstone-config must NOT
