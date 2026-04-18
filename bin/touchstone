@@ -545,6 +545,14 @@ cmd_doctor_project() {
     _touchstone_doctor_check_lint "$project_dir" "$profile" ""
   fi
 
+  # 8. Autumn Garage siblings — orientation-only, never blocking.
+  # Autumn Garage Doctrine 0001 forbids code imports across the trio, so this
+  # check is file-contract only: shell out to the sibling CLI for a version
+  # string and look at the project-local marker directory. Absence is normal.
+  tk_info "Autumn Garage siblings"
+  _touchstone_doctor_check_sibling "$project_dir" cortex   ".cortex"            "brew install autumngarage/cortex/cortex"
+  _touchstone_doctor_check_sibling "$project_dir" sentinel ".sentinel"          "brew install autumngarage/sentinel/sentinel"
+
   echo ""
   if [ "$issues" -eq 0 ]; then
     tk_ok "Project is fully armed."
@@ -554,6 +562,63 @@ cmd_doctor_project() {
   tk_warn "$issues issue(s) found. See fixes above, or run: touchstone init"
   echo ""
   return 1
+}
+
+# Report presence + version of a sibling CLI in the Autumn Garage trio.
+# File-contract only — no code imports, no reading sibling config beyond a
+# presence check on the marker directory. `command -v` for the CLI; a 3s
+# timeout on the version subcommand so a hung sibling can't stall doctor.
+# Absence is never an issue (does not touch $issues in the caller); a CLI
+# that's missing while the marker directory is present is an unusual state
+# worth flagging (tk_warn), still non-blocking.
+#
+# Always returns 0 so `set -e` in the caller doesn't abort on a missing CLI.
+_touchstone_doctor_check_sibling() {
+  local project_dir="$1" name="$2" marker_rel="$3" install_hint="$4"
+  local marker_state="absent" marker_note
+  if [ -d "$project_dir/$marker_rel" ]; then
+    marker_state="present"
+  fi
+  marker_note="${marker_rel}/ ${marker_state}"
+
+  if command -v "$name" >/dev/null 2>&1; then
+    local version_raw="" version=""
+    # 3-second wall-clock cap per probe so a hung sibling can't stall doctor.
+    # `perl -e alarm` is portable across macOS + Linux without needing GNU timeout.
+    # Try `<cli> version` first (cortex convention, Touchstone convention);
+    # fall back to `<cli> --version` (Click / argparse default, Sentinel).
+    # Both stdout and stderr are captured because Click prints --version to stdout
+    # but unknown-subcommand errors to stderr — combining them keeps the regex
+    # hunt below from accidentally parsing "Error: No such command 'version'".
+    for probe in "version" "--version"; do
+      version_raw="$(perl -e 'alarm 3; exec @ARGV' "$name" "$probe" 2>/dev/null || true)"
+      # A semver-ish token in the output means we found a real version reply;
+      # otherwise try the next probe.
+      if printf '%s' "$version_raw" | grep -Eq '[0-9]+\.[0-9]+(\.[0-9]+)?'; then
+        break
+      fi
+      version_raw=""
+    done
+    # Extract the first semver-ish token so the output shape is stable even if
+    # the sibling's version output wraps the number with other text.
+    version="$(printf '%s' "$version_raw" | awk '
+      { for (i=1;i<=NF;i++) if (match($i, /[0-9]+\.[0-9]+(\.[0-9]+)?/)) {
+          print substr($i, RSTART, RLENGTH); exit
+        }
+      }
+    ')"
+    [ -z "$version" ] && version="?"
+    tk_ok "$name $version (installed) — $marker_note"
+    return 0
+  fi
+
+  if [ "$marker_state" = "present" ]; then
+    tk_warn "$name CLI missing but $marker_rel/ present — install: $install_hint"
+    return 0
+  fi
+
+  tk_dim "$name not installed"
+  return 0
 }
 
 # Report whether .touchstone-config assigns a non-empty value to the given key.

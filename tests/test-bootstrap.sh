@@ -888,6 +888,77 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# Autumn Garage siblings block must appear in doctor --project output on every
+# project, regardless of whether cortex/sentinel are installed. Absence is the
+# normal case for most users; missing-block would be an orientation regression.
+# Skip asserting exact version strings — those are machine-dependent. The
+# section header alone proves the code path ran.
+assert_contains "$TEST_DIR/doctor-clean.txt" 'Autumn Garage siblings'
+
+# Sibling detection must not error, warn-exit, or block when cortex/sentinel
+# are absent from PATH. Simulate a clean machine by pinning PATH to the
+# system dirs plus the fake pre-commit hook installer. Use an absolute path
+# to touchstone so the CLI is still reachable with the trimmed PATH.
+PROJECT_DOCTOR_NO_SIBLINGS="$TEST_DIR/test-project-doctor-no-siblings"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_NO_SIBLINGS" --no-register >/dev/null
+if (cd "$PROJECT_DOCTOR_NO_SIBLINGS" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-no-siblings.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-no-siblings.txt" 'Autumn Garage siblings'
+  assert_contains "$TEST_DIR/doctor-no-siblings.txt" 'cortex not installed'
+  assert_contains "$TEST_DIR/doctor-no-siblings.txt" 'sentinel not installed'
+else
+  echo "FAIL: doctor --project should exit 0 when Autumn Garage siblings are absent — absence is not a bug" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Mixed state — CLI absent but marker directory present — is unusual enough
+# that doctor warns and points at the install hint, but still never errors.
+# This is the class of failure where a user deleted a brew-installed CLI but
+# left its project state behind; a silent pass would hide the drift.
+PROJECT_DOCTOR_MARKER_ONLY="$TEST_DIR/test-project-doctor-marker-only"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_MARKER_ONLY" --no-register >/dev/null
+mkdir -p "$PROJECT_DOCTOR_MARKER_ONLY/.cortex"
+if (cd "$PROJECT_DOCTOR_MARKER_ONLY" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-marker-only.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-marker-only.txt" 'cortex CLI missing but .cortex/ present'
+else
+  echo "FAIL: doctor --project should exit 0 when a sibling CLI is missing but its marker dir is present — still non-blocking" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Installed case — a sibling CLI on PATH must be reported as "(installed)".
+# Use a stub script so the test is deterministic across machines. The stub
+# responds to both `version` and `--version` so the probe-fallback branch
+# doesn't accidentally pass on the wrong probe — either convention is valid.
+SIBLING_STUB_BIN="$TEST_DIR/sibling-stub-bin"
+mkdir -p "$SIBLING_STUB_BIN"
+cat > "$SIBLING_STUB_BIN/cortex" <<'CORTEXSTUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+  version|--version) echo "cortex 9.9.9"; exit 0 ;;
+  *) echo "stub cortex"; exit 0 ;;
+esac
+CORTEXSTUB
+chmod +x "$SIBLING_STUB_BIN/cortex"
+cat > "$SIBLING_STUB_BIN/sentinel" <<'SENTINELSTUB'
+#!/usr/bin/env bash
+case "${1:-}" in
+  version) echo "Error: no such command" >&2; exit 2 ;;
+  --version) echo "sentinel, version 8.8.8"; exit 0 ;;
+  *) echo "stub sentinel"; exit 0 ;;
+esac
+SENTINELSTUB
+chmod +x "$SIBLING_STUB_BIN/sentinel"
+
+PROJECT_DOCTOR_SIBLINGS="$TEST_DIR/test-project-doctor-with-siblings"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_SIBLINGS" --no-register >/dev/null
+if (cd "$PROJECT_DOCTOR_SIBLINGS" && PATH="$SIBLING_STUB_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-with-siblings.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-with-siblings.txt" 'cortex 9.9.9 (installed)'
+  # Sentinel only responds to --version — asserts the probe-fallback works.
+  assert_contains "$TEST_DIR/doctor-with-siblings.txt" 'sentinel 8.8.8 (installed)'
+else
+  echo "FAIL: doctor --project should exit 0 when Autumn Garage siblings are installed and reply with a version" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # Break hooks and rerun doctor — it must exit nonzero and flag the gap.
 rm -f "$PROJECT_DOCTOR/.git/hooks/pre-push"
 if (cd "$PROJECT_DOCTOR" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-broken.txt" 2>&1; then
