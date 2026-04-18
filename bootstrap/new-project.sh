@@ -457,6 +457,45 @@ _profile_has_any_tests_go() {
   [ -n "$matches" ]
 }
 
+# Resolve the project profile exactly like scripts/touchstone-run.sh:load_config
+# and bin/touchstone:cmd_doctor_project do, so per-profile flags here dispatch
+# against the same profile the runner and doctor would use:
+#   - project_type= and profile= are aliases for the same slot, last-write-wins
+#   - empty or "auto" -> detect from manifest files
+#   - "generic" with a detected non-generic profile -> upgrade to the detected
+resolve_project_type_from_config() {
+  local dir="$1" line value candidate result=""
+
+  if [ -f "$dir/.touchstone-config" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line#"${line%%[![:space:]]*}"}"
+      case "$line" in \#*|"") continue ;; esac
+      case "$line" in *=*) ;; *) continue ;; esac
+      candidate="${line%%=*}"
+      candidate="${candidate#"${candidate%%[![:space:]]*}"}"
+      candidate="${candidate%"${candidate##*[![:space:]]}"}"
+      case "$candidate" in
+        project_type|profile)
+          value="${line#*=}"
+          value="${value#"${value%%[![:space:]]*}"}"
+          value="${value%"${value##*[![:space:]]}"}"
+          result="$value"
+          ;;
+      esac
+    done < "$dir/.touchstone-config"
+  fi
+
+  if [ -z "$result" ] || [ "$result" = "auto" ]; then
+    result="$(detect_project_type "$dir")"
+  elif [ "$result" = "generic" ]; then
+    local detected
+    detected="$(detect_project_type "$dir")"
+    [ "$detected" != "generic" ] && result="$detected"
+  fi
+
+  printf '%s' "$result"
+}
+
 if [ "$#" -lt 1 ]; then
   usage >&2
   exit 1
@@ -1046,12 +1085,13 @@ if [ -t 0 ] && [ "$RE_INIT" = false ] && [ "$CLAUDE_MD_CREATED" = true ]; then
   fi
 fi
 
-# Default project type if not set. On re-init (.touchstone-config already
-# exists), read the profile from config before falling back to manifest
-# detection — otherwise per-profile flags like --scaffold-tests would dispatch
-# to the WRONG profile when the user doesn't re-pass --type on every call.
+# Default project type if not set. Mirror the runner's resolution so a flag
+# like --scaffold-tests dispatches against the same profile that validate
+# and doctor see — otherwise a config like "project_type=generic\nprofile=python"
+# or "project_type=generic" plus an added pyproject.toml would silently
+# demote the flag to generic while the rest of the stack runs Python.
 if [ -z "$INPUT_TYPE" ] && [ -f "$PROJECT_DIR/.touchstone-config" ]; then
-  INPUT_TYPE="$(sed -n 's/^[[:space:]]*project_type[[:space:]]*=[[:space:]]*//p' "$PROJECT_DIR/.touchstone-config" | head -1)"
+  INPUT_TYPE="$(resolve_project_type_from_config "$PROJECT_DIR")"
 fi
 INPUT_TYPE="${INPUT_TYPE:-auto}"
 INPUT_TYPE="$(normalize_project_type "$INPUT_TYPE")"

@@ -374,6 +374,23 @@ printf 'describe("Button", () => { it("renders", () => {}); });\n' > "$PROJECT_S
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_SPEC_TSX" --no-register --scaffold-tests >/dev/null
 assert_not_exists "$PROJECT_SCAFFOLD_SPEC_TSX/tests/smoke.test.ts"
 
+# Re-init profile resolution must match touchstone-run.sh:load_config semantics.
+# Two regression cases: (1) last-write-wins across project_type/profile aliases,
+# (2) generic promoted to the detected manifest profile.
+# (1) project_type=generic then profile=python ->  scaffolder runs python.
+PROJECT_SCAFFOLD_ALIAS="$TEST_DIR/test-project-scaffold-alias-lastwins"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_ALIAS" --no-register --type generic >/dev/null
+printf 'profile=python\n' >> "$PROJECT_SCAFFOLD_ALIAS/.touchstone-config"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_ALIAS" --no-register --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_ALIAS/tests/test_smoke.py"
+
+# (2) project_type=generic but pyproject.toml exists -> detect upgrades to python.
+PROJECT_SCAFFOLD_PROMOTE="$TEST_DIR/test-project-scaffold-generic-promoted"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_PROMOTE" --no-register --type generic >/dev/null
+printf '[project]\nname = "demo"\nversion = "0.0.0"\n' > "$PROJECT_SCAFFOLD_PROMOTE/pyproject.toml"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_PROMOTE" --no-register --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_PROMOTE/tests/test_smoke.py"
+
 # touchstone init must not run a pre-existing project setup.sh after preserving it.
 mkdir -p "$PROJECT_INIT_EXISTING_SETUP"
 git -C "$PROJECT_INIT_EXISTING_SETUP" init >/dev/null
