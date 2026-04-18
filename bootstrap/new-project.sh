@@ -27,8 +27,10 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../lib/install-hooks.sh
 source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
 REGISTER=true
+REGISTER_REQUESTED=false       # Doctrine 0002: track whether --register / --no-register was passed.
 INPUT_UNSAFE=""
 INPUT_TYPE=""
+INPUT_TYPE_REQUESTED=false     # Tracks explicit --type (not the auto-detect fall-through).
 INPUT_REVIEWER=""
 INPUT_REVIEW_ASSIST=""
 INPUT_REVIEW_AUTOFIX=""
@@ -42,8 +44,23 @@ INPUT_SCAFFOLD_TESTS=false
 REVIEW_CONFIG_REQUESTED=false
 WORKFLOW_CONFIG_REQUESTED=false
 
+# Doctrine 0002 wizard — new state. Each *_REQUESTED flag records whether the
+# user passed the flag-form, so the interactive block can skip prompts the
+# user has already answered via flags (flag precedence).
+YES_MODE=false
+SKIP_LANGUAGE_SCAFFOLD=false
+SKIP_LANGUAGE_SCAFFOLD_REQUESTED=false
+WITH_CORTEX=""                 # unset | true | false
+WITH_CORTEX_REQUESTED=false
+WITH_SENTINEL=""
+WITH_SENTINEL_REQUESTED=false
+INITIAL_COMMIT=true
+INITIAL_COMMIT_REQUESTED=false
+GITHUB_MODE=""                 # unset | private | public | none
+GITHUB_MODE_REQUESTED=false
+
 usage() {
-  echo "Usage: $0 <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|none] [--scaffold-tests]"
+  echo "Usage: $0 <project-dir> [--yes|-y] [--register|--no-register] [--type node|python|swift|rust|go|generic|auto] [--skip-language-scaffold] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|none] [--scaffold-tests] [--with-cortex|--no-with-cortex] [--with-sentinel|--no-with-sentinel] [--initial-commit|--no-initial-commit] [--github-private|--github-public|--no-github]"
 }
 
 trim() {
@@ -254,6 +271,12 @@ prompt_yes_no() {
     suffix="[Y/n]"
   else
     suffix="[y/N]"
+  fi
+
+  # Doctrine 0002: --yes accepts all defaults without prompting.
+  if [ "${YES_MODE:-false}" = "true" ]; then
+    printf '%s' "$default"
+    return 0
   fi
 
   read -r -p "   $prompt $suffix: " answer
@@ -694,10 +717,23 @@ shift
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
-    --no-register) REGISTER=false; shift ;;
+    -y|--yes) YES_MODE=true; shift ;;
+    --no-register) REGISTER=false; REGISTER_REQUESTED=true; shift ;;
+    --register) REGISTER=true; REGISTER_REQUESTED=true; shift ;;
+    --with-cortex) WITH_CORTEX=true; WITH_CORTEX_REQUESTED=true; shift ;;
+    --no-with-cortex) WITH_CORTEX=false; WITH_CORTEX_REQUESTED=true; shift ;;
+    --with-sentinel) WITH_SENTINEL=true; WITH_SENTINEL_REQUESTED=true; shift ;;
+    --no-with-sentinel) WITH_SENTINEL=false; WITH_SENTINEL_REQUESTED=true; shift ;;
+    --initial-commit) INITIAL_COMMIT=true; INITIAL_COMMIT_REQUESTED=true; shift ;;
+    --no-initial-commit) INITIAL_COMMIT=false; INITIAL_COMMIT_REQUESTED=true; shift ;;
+    --github-private) GITHUB_MODE=private; GITHUB_MODE_REQUESTED=true; shift ;;
+    --github-public) GITHUB_MODE=public; GITHUB_MODE_REQUESTED=true; shift ;;
+    --no-github) GITHUB_MODE=none; GITHUB_MODE_REQUESTED=true; shift ;;
+    --skip-language-scaffold) SKIP_LANGUAGE_SCAFFOLD=true; SKIP_LANGUAGE_SCAFFOLD_REQUESTED=true; shift ;;
     --type)
       [ "$#" -ge 2 ] || { echo "ERROR: --type requires a value (node, python, swift, rust, go, generic, auto)" >&2; exit 1; }
       INPUT_TYPE="$(normalize_project_type "$2")"
+      INPUT_TYPE_REQUESTED=true
       shift 2
       ;;
     --unsafe-paths)
@@ -821,6 +857,38 @@ else
   RE_INIT=false
   echo "==> Bootstrapping project at $PROJECT_DIR"
 fi
+
+# Doctrine 0002 — Ctrl-C during the wizard must not leave a half-scaffolded dir behind.
+# We only auto-remove the project dir on signal / unexpected exit if (a) we are the
+# ones who created it on this run (fresh bootstrap into a non-existent path) and (b)
+# the scaffold hasn't completed. A success flag cleared at the bottom of the script
+# suppresses cleanup on normal exit. Reinits never touch the filesystem on cleanup —
+# that would destroy a user's existing project.
+PROJECT_DIR_PREEXISTED=false
+if [ -e "$PROJECT_DIR" ]; then
+  PROJECT_DIR_PREEXISTED=true
+fi
+WIZARD_COMPLETE=false
+wizard_cleanup() {
+  local exit_code=$?
+  if [ "$WIZARD_COMPLETE" = true ]; then
+    return 0
+  fi
+  if [ "$RE_INIT" = true ] || [ "$PROJECT_DIR_PREEXISTED" = true ]; then
+    # Never remove a pre-existing dir — user might have files there.
+    return 0
+  fi
+  if [ -d "$PROJECT_DIR" ]; then
+    echo ""
+    echo "==> Cancelled — removing partial scaffold at $PROJECT_DIR" >&2
+    rm -rf "$PROJECT_DIR"
+  fi
+  if [ "$exit_code" -eq 0 ]; then
+    exit 130
+  fi
+}
+trap wizard_cleanup EXIT
+trap 'exit 130' INT TERM
 
 # Summary counters — populated by copy_file / copy_file_force, emitted at end.
 FILES_ADDED=0
@@ -1179,26 +1247,54 @@ INPUT_NAME=""
 INPUT_DESC=""
 INPUT_TEST=""
 
-if [ -t 0 ] && [ "$RE_INIT" = false ] && [ "$CLAUDE_MD_CREATED" = true ]; then
+# Interactive wizard (Doctrine 0002). Runs when stdin is a TTY OR --yes was
+# passed. Flags always take precedence — prompts skip any choice already made
+# via flag. Non-TTY without --yes falls back to existing flag-driven defaults.
+WIZARD_INTERACTIVE=false
+if [ "$RE_INIT" = false ] && [ "$CLAUDE_MD_CREATED" = true ] && { [ -t 0 ] || [ "$YES_MODE" = true ]; }; then
+  WIZARD_INTERACTIVE=true
+fi
+
+if [ "$WIZARD_INTERACTIVE" = true ]; then
   echo ""
-  echo "==> Fill in project details (press Enter to skip any):"
+  if [ "$YES_MODE" = true ]; then
+    echo "==> --yes: accepting defaults for all unspecified choices."
+  else
+    echo "==> Fill in project details (press Enter to skip any):"
+  fi
   echo ""
 
-  read -r -p "   Project name [$(basename "$PROJECT_DIR")]: " INPUT_NAME
-  INPUT_NAME="${INPUT_NAME:-$(basename "$PROJECT_DIR")}"
+  if [ "$YES_MODE" = true ]; then
+    INPUT_NAME="$(basename "$PROJECT_DIR")"
+  else
+    read -r -p "   Project name [$(basename "$PROJECT_DIR")]: " INPUT_NAME
+    INPUT_NAME="${INPUT_NAME:-$(basename "$PROJECT_DIR")}"
 
-  read -r -p "   One-line description: " INPUT_DESC
+    read -r -p "   One-line description: " INPUT_DESC
 
-  read -r -p "   Test command (e.g., pnpm build, pytest tests/): " INPUT_TEST
+    read -r -p "   Test command (e.g., pnpm build, pytest tests/): " INPUT_TEST
+  fi
 
   if [ -z "$INPUT_TYPE" ]; then
     DETECTED_TYPE="$(detect_project_type "$PROJECT_DIR")"
-    read -r -p "   Project type (node, python, swift, rust, go, generic, auto) [$DETECTED_TYPE]: " INPUT_TYPE
-    INPUT_TYPE="${INPUT_TYPE:-$DETECTED_TYPE}"
+    if [ "$YES_MODE" = true ]; then
+      INPUT_TYPE="$DETECTED_TYPE"
+    else
+      read -r -p "   Project type (node, python, swift, rust, go, generic, auto) [$DETECTED_TYPE]: " INPUT_TYPE
+      INPUT_TYPE="${INPUT_TYPE:-$DETECTED_TYPE}"
+    fi
     INPUT_TYPE="$(normalize_project_type "$INPUT_TYPE")"
   fi
 
   if [ "$REVIEW_CONFIG_REQUESTED" = false ] && [ "$CODEX_REVIEW_CONFIG_CREATED" = true ]; then
+    if [ "$YES_MODE" = true ]; then
+      # --yes: defaults are "AI review on, hosted routing, auto reviewer".
+      INPUT_REVIEW_ROUTING="all-hosted"
+      INPUT_REVIEWER="$(default_reviewer)"
+      INPUT_REVIEW_AUTOFIX=false
+      INPUT_REVIEW_ASSIST=false
+      REVIEW_CONFIG_REQUESTED=true
+    else
     echo ""
     echo "==> Configure AI review (press Enter for the default):"
     echo "   Hosted review: strongest default reviewer for every change."
@@ -1247,6 +1343,7 @@ if [ -t 0 ] && [ "$RE_INIT" = false ] && [ "$CLAUDE_MD_CREATED" = true ]; then
       INPUT_REVIEW_ASSIST=false
     fi
     REVIEW_CONFIG_REQUESTED=true
+    fi  # YES_MODE else
   fi
 
   if [ "$WORKFLOW_CONFIG_REQUESTED" = false ]; then
@@ -1263,6 +1360,89 @@ if [ -t 0 ] && [ "$RE_INIT" = false ] && [ "$CLAUDE_MD_CREATED" = true ]; then
     fi
     WORKFLOW_CONFIG_REQUESTED=true
   fi
+
+  # Doctrine 0002 — additional wizard prompts. Each prompt is gated on its
+  # corresponding _REQUESTED flag: if the user passed the flag-form on the
+  # command line, skip the prompt (flag precedence).
+
+  # 1. Language scaffold (swift only, for now).
+  if [ "$INPUT_TYPE" = "swift" ] && [ "$SKIP_LANGUAGE_SCAFFOLD_REQUESTED" = false ]; then
+    echo ""
+    if [ "$(prompt_yes_no "Scaffold Package.swift + Sources/ + Tests/?" "true")" = "true" ]; then
+      SKIP_LANGUAGE_SCAFFOLD=false
+    else
+      SKIP_LANGUAGE_SCAFFOLD=true
+    fi
+  fi
+
+  # 3. Initialize Cortex.
+  if [ "$WITH_CORTEX_REQUESTED" = false ]; then
+    echo ""
+    if [ "$(prompt_yes_no "Initialize Cortex (file-based project memory)?" "true")" = "true" ]; then
+      WITH_CORTEX=true
+    else
+      WITH_CORTEX=false
+    fi
+  fi
+
+  # 4. Initialize Sentinel.
+  if [ "$WITH_SENTINEL_REQUESTED" = false ]; then
+    echo ""
+    if [ "$(prompt_yes_no "Initialize Sentinel (autonomous agent loop)?" "true")" = "true" ]; then
+      WITH_SENTINEL=true
+    else
+      WITH_SENTINEL=false
+    fi
+  fi
+
+  # 5. Register in ~/.touchstone-projects.
+  if [ "$REGISTER_REQUESTED" = false ]; then
+    echo ""
+    if [ "$(prompt_yes_no "Register for touchstone sync (~/.touchstone-projects)?" "true")" = "true" ]; then
+      REGISTER=true
+    else
+      REGISTER=false
+    fi
+  fi
+
+  # 6. Initial commit.
+  if [ "$INITIAL_COMMIT_REQUESTED" = false ]; then
+    echo ""
+    if [ "$(prompt_yes_no "Create initial commit?" "true")" = "true" ]; then
+      INITIAL_COMMIT=true
+    else
+      INITIAL_COMMIT=false
+    fi
+  fi
+
+  # 7. Create GitHub repo. Only offer if gh is available AND authenticated.
+  # gh auth status exits non-zero when unauthenticated or when gh isn't installed.
+  if [ "$GITHUB_MODE_REQUESTED" = false ]; then
+    if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+      echo ""
+      if [ "$(prompt_yes_no "Create a private GitHub repo with gh?" "false")" = "true" ]; then
+        GITHUB_MODE="private"
+      else
+        GITHUB_MODE="none"
+      fi
+    else
+      GITHUB_MODE="none"
+    fi
+  fi
+fi
+
+# Non-interactive fallback defaults — Doctrine 0002: non-TTY without --yes and
+# without a flag means "no behavior change from pre-R2 wizard". Cortex/Sentinel
+# init, GitHub repo creation, and initial commit stay off unless asked for;
+# registry default remains opt-in (REGISTER=true) to preserve prior behavior.
+if [ -z "$WITH_CORTEX" ]; then
+  WITH_CORTEX=false
+fi
+if [ -z "$WITH_SENTINEL" ]; then
+  WITH_SENTINEL=false
+fi
+if [ -z "$GITHUB_MODE" ]; then
+  GITHUB_MODE="none"
 fi
 
 # Non-TTY fresh scaffolds (agents, CI, `touchstone init` piped from a script)
@@ -1383,8 +1563,12 @@ fi
 # Swift profile on fresh bootstrap: scaffold Package.swift + Sources/ + Tests/
 # so `swift build` and `swift test` work immediately. Never overwrites — the
 # _has_any_swift_sources guard makes re-init on a real Swift project a no-op.
-if [ "$RE_INIT" = false ] && [ "$INPUT_TYPE" = "swift" ]; then
+# Skippable via --skip-language-scaffold or a "no" answer to the wizard prompt,
+# for users who intend to author Package.swift themselves.
+if [ "$RE_INIT" = false ] && [ "$INPUT_TYPE" = "swift" ] && [ "$SKIP_LANGUAGE_SCAFFOLD" = false ]; then
   scaffold_swift_package_boilerplate "$PROJECT_DIR"
+elif [ "$RE_INIT" = false ] && [ "$INPUT_TYPE" = "swift" ] && [ "$SKIP_LANGUAGE_SCAFFOLD" = true ]; then
+  echo "==> swift: language scaffold skipped (--skip-language-scaffold)"
 fi
 
 # Append per-profile entries to .gitignore on fresh bootstrap only.
@@ -1409,7 +1593,7 @@ write_touchstone_manifest
 # to commit you need the hooks un-armed; once hooks are armed, you need a
 # commit on the branch to push anything. This ordering solves that.
 INITIAL_COMMIT_SHA=""
-if [ "$RE_INIT" = false ]; then
+if [ "$RE_INIT" = false ] && [ "$INITIAL_COMMIT" = true ]; then
   if ! git -C "$PROJECT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
     # Fall back to a local git identity when none is configured globally, so the
     # commit succeeds on CI boxes and fresh dev machines. Global config, when
@@ -1474,6 +1658,84 @@ else
   printf '    registry: skipped (--no-register)\n'
 fi
 
+# Doctrine 0002 — Cortex / Sentinel / GitHub integrations. These all run after
+# the touchstone scaffold is on disk so a failure in any one leaves the core
+# project usable. Each prints a one-line success or skip message.
+
+if [ "$WITH_CORTEX" = true ] && [ "$RE_INIT" = false ]; then
+  if command -v cortex >/dev/null 2>&1; then
+    echo ""
+    echo "==> Initializing Cortex ..."
+    if ( cd "$PROJECT_DIR" && cortex init ); then
+      :
+    else
+      echo "==> Cortex init failed (continuing)." >&2
+    fi
+  else
+    echo ""
+    echo "==> Cortex not on PATH — skipping cortex init."
+    echo "    Install: brew install autumngarage/cortex/cortex"
+  fi
+fi
+
+if [ "$WITH_SENTINEL" = true ] && [ "$RE_INIT" = false ]; then
+  if command -v sentinel >/dev/null 2>&1; then
+    echo ""
+    echo "==> Initializing Sentinel ..."
+    if ( cd "$PROJECT_DIR" && sentinel init ); then
+      :
+    else
+      echo "==> Sentinel init failed (continuing)." >&2
+    fi
+  else
+    echo ""
+    echo "==> Sentinel not on PATH — skipping sentinel init."
+    echo "    Install: brew install autumngarage/sentinel/sentinel"
+  fi
+fi
+
+if { [ "$GITHUB_MODE" = "private" ] || [ "$GITHUB_MODE" = "public" ]; } && [ "$RE_INIT" = false ]; then
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    echo ""
+    echo "==> Creating GitHub repo ($GITHUB_MODE) ..."
+    gh_visibility_flag="--${GITHUB_MODE}"
+    if ( cd "$PROJECT_DIR" && gh repo create "$(basename "$PROJECT_DIR")" "$gh_visibility_flag" --source . --push ); then
+      :
+    else
+      echo "==> gh repo create failed (continuing)." >&2
+    fi
+  else
+    echo ""
+    echo "==> gh not available or not authenticated — skipping GitHub repo creation."
+  fi
+fi
+
+# Doctrine 0002 — print the equivalent flag-form so scripters learn by doing.
+# Includes every wizard-settable choice so copy-paste reproduces the scaffold.
+if [ "$WIZARD_INTERACTIVE" = true ] || [ "$YES_MODE" = true ]; then
+  register_flag="--register"
+  [ "$REGISTER" = false ] && register_flag="--no-register"
+  cortex_flag="--no-with-cortex"
+  [ "$WITH_CORTEX" = true ] && cortex_flag="--with-cortex"
+  sentinel_flag="--no-with-sentinel"
+  [ "$WITH_SENTINEL" = true ] && sentinel_flag="--with-sentinel"
+  commit_flag="--initial-commit"
+  [ "$INITIAL_COMMIT" = false ] && commit_flag="--no-initial-commit"
+  case "$GITHUB_MODE" in
+    private) github_flag="--github-private" ;;
+    public) github_flag="--github-public" ;;
+    *) github_flag="--no-github" ;;
+  esac
+  scaffold_flag=""
+  [ "$SKIP_LANGUAGE_SCAFFOLD" = true ] && scaffold_flag=" --skip-language-scaffold"
+  echo ""
+  echo "==> Equivalent to rerun:"
+  printf "    touchstone new %s --type %s --reviewer %s%s \\\\\n" \
+    "$PROJECT_DIR" "$INPUT_TYPE" "${INPUT_REVIEWER:-auto}" "$scaffold_flag"
+  printf "      %s %s %s %s %s\n" \
+    "$register_flag" "$cortex_flag" "$sentinel_flag" "$commit_flag" "$github_flag"
+fi
+
 echo ""
 echo "Next steps:"
 STEP_NUM=1
@@ -1491,3 +1753,6 @@ printf '  %d. Install dev tools and project deps: cd %s && bash setup.sh\n' "$ST
 STEP_NUM=$((STEP_NUM + 1))
 printf '  %d. Verify the install: touchstone doctor --project\n' "$STEP_NUM"
 echo ""
+
+# Doctrine 0002 — mark success so the EXIT trap doesn't clean up.
+WIZARD_COMPLETE=true
