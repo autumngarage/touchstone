@@ -124,7 +124,7 @@ bash setup.sh --deps-only
 | `touchstone init --review-routing small-local --reviewer codex --local-review-command '<command>'` | Use local review for small diffs and a hosted reviewer for larger diffs |
 | `touchstone init --no-ai-review` | Add touchstone with AI review disabled |
 | `touchstone init --gitbutler` | Add touchstone with optional GitButler workflow setup |
-| `touchstone init --ci github` | Add `.github/workflows/validate.yml` that runs the same checks as local pre-push |
+| `touchstone init --ci github` | Add `.github/workflows/validate.yml` that runs pre-commit hygiene and `touchstone run validate` on every PR |
 | `touchstone init --scaffold-tests` | Write one placeholder smoke test for Python, Node, or Go projects (Rust and Swift already ship scaffolds via `cargo init` / `swift package init`) |
 | `touchstone new <dir>` | Bootstrap a new project with principles, scripts, hooks, and templates |
 | `touchstone new <dir> --type node` | Bootstrap with an explicit Node/TypeScript, Swift, Rust, Go, Python, or generic profile |
