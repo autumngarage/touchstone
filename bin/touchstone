@@ -480,6 +480,10 @@ cmd_doctor_project() {
     targets="$(printf '%s\n' "$detect_output" | sed -n 's/^targets=//p' | head -1)"
   fi
   profile="${profile:-generic}"
+  # Normalize the root profile the same way as targets — root configs like
+  # project_type=typescript follow touchstone-run.sh's node dispatcher, so
+  # doctor must check against the node profile, not a literal 'typescript'.
+  profile="$(_touchstone_normalize_profile "$profile")"
 
   # Root-level overrides short-circuit the dispatcher entirely (configured_command_for_action
   # in touchstone-run.sh), so neither per-root nor per-target profile defaults run.
@@ -558,13 +562,12 @@ _touchstone_detect_profile_dir() {
 
 # Normalize profile aliases to the canonical names the doctor check helpers
 # switch on. Mirrors the set scripts/touchstone-run.sh:run_profile_action
-# accepts — typescript/ts map to node, py to python, rs to rust, golang to go.
+# actually accepts — only typescript/ts map to node; run_profile_action
+# rejects py/rs/golang as unknown (those aliases only exist at the
+# new-project.sh input layer, never in a live .touchstone-config).
 _touchstone_normalize_profile() {
   case "$1" in
     typescript|ts) printf 'node\n' ;;
-    py) printf 'python\n' ;;
-    rs) printf 'rust\n' ;;
-    golang) printf 'go\n' ;;
     *) printf '%s\n' "$1" ;;
   esac
 }

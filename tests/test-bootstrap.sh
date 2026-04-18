@@ -706,6 +706,25 @@ else
   assert_contains "$TEST_DIR/doctor-monorepo.txt" "target autodetect: tests: not found for profile 'rust'"
 fi
 
+# Root profile aliases: touchstone-run.sh accepts project_type=typescript / ts
+# as equivalent to node, so doctor must normalize the same way — otherwise a
+# root config using the alias would silently skip the lint-script check.
+PROJECT_DOCTOR_ALIAS="$TEST_DIR/test-project-doctor-alias"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_ALIAS" --no-register >/dev/null
+printf '{}\n' > "$PROJECT_DOCTOR_ALIAS/package.json"
+sed -i '' 's|^project_type=.*|project_type=typescript|' "$PROJECT_DOCTOR_ALIAS/.touchstone-config"
+if (cd "$PROJECT_DOCTOR_ALIAS" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-alias.txt" 2>&1; then
+  # No lint script in package.json — the node-profile lint-script check must fire,
+  # not a literal 'typescript' profile branch that would no-op.
+  assert_contains "$TEST_DIR/doctor-alias.txt" "package.json has no 'lint' script"
+  if grep -q "profile 'typescript'" "$TEST_DIR/doctor-alias.txt"; then
+    echo "FAIL: doctor should normalize 'typescript' to 'node' before profile checks" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+else
+  assert_contains "$TEST_DIR/doctor-alias.txt" "package.json has no 'lint' script"
+fi
+
 # Python project that overrides lint_command in .touchstone-config must NOT
 # have a missing ruff counted as an issue — the project's custom lint never
 # invokes ruff, so ruff's absence isn't a gap.
