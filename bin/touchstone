@@ -76,12 +76,12 @@ escape_sed_replacement() {
 
 cmd_new() {
   if [ "$#" -lt 1 ]; then
-    echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci]" >&2
+    echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests]" >&2
     exit 1
   fi
   case "${1:-}" in
     -h|--help)
-      echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci]"
+      echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests]"
       return 0
       ;;
   esac
@@ -110,7 +110,7 @@ cmd_init() {
         shift
         ;;
       -h|--help)
-        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci]"
+        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests]"
         return 0
         ;;
       --type)
@@ -151,13 +151,13 @@ cmd_init() {
           shift
         fi
         ;;
-      --no-ai-review|--no-review|--review-assist|--no-review-assist|--review-autofix|--no-review-autofix|--gitbutler|--no-gitbutler|--gitbutler-mcp|--no-gitbutler-mcp|--no-ci)
+      --no-ai-review|--no-review|--review-assist|--no-review-assist|--review-autofix|--no-review-autofix|--gitbutler|--no-gitbutler|--gitbutler-mcp|--no-gitbutler-mcp|--no-ci|--scaffold-tests)
         args+=("$1")
         shift
         ;;
       *)
         echo "ERROR: unknown argument '$1'" >&2
-        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github]" >&2
+        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests]" >&2
         exit 1
         ;;
     esac
@@ -759,31 +759,38 @@ _touchstone_doctor_check_lint() {
 # Profile-aware test-presence heuristic. Matches typical layout conventions
 # without running the language's test discovery — speed matters here, and the
 # check is a nudge, not an authoritative answer.
+#
+# Every profile's check must look for test FILES, never just the convention
+# directory — an empty tests/ (or one with only helpers) is not tests.
+# Reporting an empty directory as "tests found" would preserve the silent-skip
+# gap this check exists to close.
 _touchstone_profile_has_tests() {
   local profile="$1" dir="$2" matches
   case "$profile" in
     python)
-      [ -d "$dir/tests" ] && return 0
       matches="$(find "$dir" -maxdepth 3 -type f \
         \( -name 'test_*.py' -o -name '*_test.py' \) -print -quit 2>/dev/null || true)"
       [ -n "$matches" ]
       ;;
     node)
-      if [ -d "$dir/__tests__" ] || [ -d "$dir/tests" ] || [ -d "$dir/test" ] \
-         || [ -d "$dir/src/__tests__" ]; then
-        return 0
-      fi
+      # Kept in sync with bootstrap/new-project.sh:_profile_has_any_tests_node.
+      # Covers .test.{ts,tsx,js,jsx} and .spec.{ts,tsx,js,jsx} — React/TS
+      # projects commonly declare "*.spec.tsx" files under src/.
       matches="$(find "$dir" -maxdepth 4 -type f \
         \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' -o -name '*.test.jsx' \
-           -o -name '*.spec.ts' -o -name '*.spec.js' \) -print -quit 2>/dev/null || true)"
+           -o -name '*.spec.ts' -o -name '*.spec.tsx' -o -name '*.spec.js' -o -name '*.spec.jsx' \) \
+        -print -quit 2>/dev/null || true)"
       [ -n "$matches" ]
       ;;
     rust)
-      [ -d "$dir/tests" ] && return 0
+      # Rust: tests/*.rs are integration tests; #[test] attributes live in src/.
+      matches="$(find "$dir/tests" -maxdepth 2 -type f -name '*.rs' -print -quit 2>/dev/null || true)"
+      [ -n "$matches" ] && return 0
       [ -d "$dir/src" ] && grep -rlq '#\[test\]' "$dir/src" 2>/dev/null
       ;;
     swift)
-      [ -d "$dir/Tests" ]
+      matches="$(find "$dir/Tests" -maxdepth 3 -type f -name '*.swift' -print -quit 2>/dev/null || true)"
+      [ -n "$matches" ]
       ;;
     go)
       matches="$(find "$dir" -maxdepth 4 -type f -name '*_test.go' -print -quit 2>/dev/null || true)"

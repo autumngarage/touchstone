@@ -65,6 +65,12 @@ PROJECT_REVIEW_HYBRID="$TEST_DIR/test-project-review-hybrid"
 PROJECT_GITBUTLER="$TEST_DIR/test-project-gitbutler"
 PROJECT_CI_OFF="$TEST_DIR/test-project-ci-off"
 PROJECT_CI_GITHUB="$TEST_DIR/test-project-ci-github"
+PROJECT_SCAFFOLD_OFF="$TEST_DIR/test-project-scaffold-off"
+PROJECT_SCAFFOLD_PY="$TEST_DIR/test-project-scaffold-python"
+PROJECT_SCAFFOLD_NODE="$TEST_DIR/test-project-scaffold-node"
+PROJECT_SCAFFOLD_GO="$TEST_DIR/test-project-scaffold-go"
+PROJECT_SCAFFOLD_GENERIC="$TEST_DIR/test-project-scaffold-generic"
+PROJECT_SCAFFOLD_EXISTING="$TEST_DIR/test-project-scaffold-existing"
 PROJECT_HOOKS_WITH="$TEST_DIR/test-project-hooks-with"
 PROJECT_HOOKS_WITHOUT="$TEST_DIR/test-project-hooks-without"
 PROJECT_PYTEST_EMPTY="$TEST_DIR/test-project-pytest-empty"
@@ -255,6 +261,135 @@ if grep -q '^.github/workflows/validate\.yml$' "$PROJECT_CI_GITHUB/.touchstone-m
   echo "FAIL: .github/workflows/validate.yml must be project-owned, not tracked in the manifest" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+# Test scaffolding is opt-in. Default bootstrap must NOT create any test file —
+# project owners pick their test framework, and silently seeding tests would
+# force that opinion.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_OFF" --no-register --type python >/dev/null
+assert_not_exists "$PROJECT_SCAFFOLD_OFF/tests/test_smoke.py"
+assert_not_exists "$PROJECT_SCAFFOLD_OFF/tests/smoke.test.ts"
+assert_not_exists "$PROJECT_SCAFFOLD_OFF/smoke_test.go"
+
+# --scaffold-tests + Python: writes tests/test_smoke.py with a pytest-discoverable
+# function, plus tests/__init__.py. The smoke test must actually assert and pass.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_PY" --no-register --type python --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_PY/tests/test_smoke.py"
+assert_exists "$PROJECT_SCAFFOLD_PY/tests/__init__.py"
+assert_contains "$PROJECT_SCAFFOLD_PY/tests/test_smoke.py" 'def test_smoke'
+assert_contains "$PROJECT_SCAFFOLD_PY/tests/test_smoke.py" 'assert True'
+
+# --scaffold-tests + Node: writes tests/smoke.test.ts in a framework-agnostic
+# format (vitest/jest/bun test all accept it).
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_NODE" --no-register --type node --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_NODE/tests/smoke.test.ts"
+assert_contains "$PROJECT_SCAFFOLD_NODE/tests/smoke.test.ts" 'describe("smoke"'
+assert_contains "$PROJECT_SCAFFOLD_NODE/tests/smoke.test.ts" 'expect(true).toBe(true)'
+
+# --scaffold-tests + Go: writes smoke_test.go so go test ./... finds it.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GO" --no-register --type go --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_GO/smoke_test.go"
+assert_contains "$PROJECT_SCAFFOLD_GO/smoke_test.go" 'func TestSmoke(t \*testing.T)'
+# Default package declaration must be a valid Go identifier — `main` for a
+# repo with no existing .go files.
+assert_contains "$PROJECT_SCAFFOLD_GO/smoke_test.go" '^package main$'
+
+# Go project with a real module path (e.g. module github.com/acme/widget)
+# must not let the module path leak into the package declaration — Go package
+# names are restricted identifiers, not domain paths. Regression guard for
+# "package github.com" which is invalid and breaks go test ./....
+PROJECT_SCAFFOLD_GO_MOD="$TEST_DIR/test-project-scaffold-go-mod"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GO_MOD" --no-register --type go >/dev/null
+printf 'module github.com/acme/widget\n\ngo 1.22\n' > "$PROJECT_SCAFFOLD_GO_MOD/go.mod"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GO_MOD" --no-register --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_GO_MOD/smoke_test.go"
+if grep -q '^package github' "$PROJECT_SCAFFOLD_GO_MOD/smoke_test.go"; then
+  echo "FAIL: Go scaffold must not use the module path as the package name" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$PROJECT_SCAFFOLD_GO_MOD/smoke_test.go" '^package main$'
+
+# When the repo already has .go files with a custom package, the scaffold must
+# match that package so go test ./... compiles (all files in a dir share one pkg).
+PROJECT_SCAFFOLD_GO_PKG="$TEST_DIR/test-project-scaffold-go-pkg"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GO_PKG" --no-register --type go >/dev/null
+printf 'module github.com/acme/widget\n\ngo 1.22\n' > "$PROJECT_SCAFFOLD_GO_PKG/go.mod"
+printf 'package widget\n\nfunc Hello() string { return "hi" }\n' > "$PROJECT_SCAFFOLD_GO_PKG/widget.go"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GO_PKG" --no-register --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_GO_PKG/smoke_test.go"
+assert_contains "$PROJECT_SCAFFOLD_GO_PKG/smoke_test.go" '^package widget$'
+
+# --scaffold-tests + generic: no test file written, but the output must tell the
+# user why so they know to set test_command= in .touchstone-config.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GENERIC" --no-register --type generic --scaffold-tests >"$TEST_DIR/scaffold-generic.txt" 2>&1
+if find "$PROJECT_SCAFFOLD_GENERIC" -maxdepth 3 -type f \( -name 'test_*.py' -o -name '*_test.go' -o -name 'smoke.test.*' \) | grep -q .; then
+  echo "FAIL: --scaffold-tests must not create a test file for generic profile" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/scaffold-generic.txt" "profile is 'generic'"
+
+# --scaffold-tests must not overwrite existing test files — re-running on a
+# project that already has tests is a no-op.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EXISTING" --no-register --type python >/dev/null
+mkdir -p "$PROJECT_SCAFFOLD_EXISTING/tests"
+printf 'def test_real():\n    assert 1 + 1 == 2\n' > "$PROJECT_SCAFFOLD_EXISTING/tests/test_real.py"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EXISTING" --no-register --scaffold-tests >/dev/null
+assert_not_exists "$PROJECT_SCAFFOLD_EXISTING/tests/test_smoke.py"
+assert_contains "$PROJECT_SCAFFOLD_EXISTING/tests/test_real.py" 'def test_real'
+
+# Directory-exists != tests-exist. A tests/ dir containing only __init__.py
+# or helpers must still trigger scaffolding — otherwise --scaffold-tests
+# silently no-ops on the exact setups it's meant to help.
+PROJECT_SCAFFOLD_EMPTY_PY="$TEST_DIR/test-project-scaffold-empty-python"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EMPTY_PY" --no-register --type python >/dev/null
+mkdir -p "$PROJECT_SCAFFOLD_EMPTY_PY/tests"
+: > "$PROJECT_SCAFFOLD_EMPTY_PY/tests/__init__.py"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EMPTY_PY" --no-register --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_EMPTY_PY/tests/test_smoke.py"
+
+# Same class bug for Node — an empty __tests__/tests/test directory must
+# not fool the scaffolder into thinking tests exist.
+PROJECT_SCAFFOLD_EMPTY_NODE="$TEST_DIR/test-project-scaffold-empty-node"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EMPTY_NODE" --no-register --type node >/dev/null
+mkdir -p "$PROJECT_SCAFFOLD_EMPTY_NODE/__tests__" "$PROJECT_SCAFFOLD_EMPTY_NODE/tests"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EMPTY_NODE" --no-register --type node --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_EMPTY_NODE/tests/smoke.test.ts"
+
+# Re-init: when .touchstone-config already has project_type=X, flags like
+# --scaffold-tests that dispatch per profile must use that X, not fall back to
+# manifest detection. Manifest detection returns "generic" when no toolchain
+# files are present, which would silently drop --scaffold-tests behavior.
+PROJECT_SCAFFOLD_REINIT_PY="$TEST_DIR/test-project-scaffold-reinit-python"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_REINIT_PY" --no-register --type python >/dev/null
+# No --type on the second call — must be resolved from .touchstone-config.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_REINIT_PY" --no-register --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_REINIT_PY/tests/test_smoke.py"
+
+# React/TS projects commonly name tests Component.spec.tsx — the node test
+# predicate must include .spec.tsx / .spec.jsx, otherwise --scaffold-tests
+# incorrectly ADDS a placeholder next to real tests.
+PROJECT_SCAFFOLD_SPEC_TSX="$TEST_DIR/test-project-scaffold-spec-tsx"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_SPEC_TSX" --no-register --type node >/dev/null
+mkdir -p "$PROJECT_SCAFFOLD_SPEC_TSX/src"
+printf 'describe("Button", () => { it("renders", () => {}); });\n' > "$PROJECT_SCAFFOLD_SPEC_TSX/src/Button.spec.tsx"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_SPEC_TSX" --no-register --scaffold-tests >/dev/null
+assert_not_exists "$PROJECT_SCAFFOLD_SPEC_TSX/tests/smoke.test.ts"
+
+# Re-init profile resolution must match touchstone-run.sh:load_config semantics.
+# Two regression cases: (1) last-write-wins across project_type/profile aliases,
+# (2) generic promoted to the detected manifest profile.
+# (1) project_type=generic then profile=python ->  scaffolder runs python.
+PROJECT_SCAFFOLD_ALIAS="$TEST_DIR/test-project-scaffold-alias-lastwins"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_ALIAS" --no-register --type generic >/dev/null
+printf 'profile=python\n' >> "$PROJECT_SCAFFOLD_ALIAS/.touchstone-config"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_ALIAS" --no-register --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_ALIAS/tests/test_smoke.py"
+
+# (2) project_type=generic but pyproject.toml exists -> detect upgrades to python.
+PROJECT_SCAFFOLD_PROMOTE="$TEST_DIR/test-project-scaffold-generic-promoted"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_PROMOTE" --no-register --type generic >/dev/null
+printf '[project]\nname = "demo"\nversion = "0.0.0"\n' > "$PROJECT_SCAFFOLD_PROMOTE/pyproject.toml"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_PROMOTE" --no-register --scaffold-tests >/dev/null
+assert_exists "$PROJECT_SCAFFOLD_PROMOTE/tests/test_smoke.py"
 
 # touchstone init must not run a pre-existing project setup.sh after preserving it.
 mkdir -p "$PROJECT_INIT_EXISTING_SETUP"
@@ -660,6 +795,27 @@ if (cd "$PROJECT_DOCTOR" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/to
 else
   assert_contains "$TEST_DIR/doctor-broken.txt" 'git hooks NOT installed'
 fi
+
+# doctor shares the test-presence heuristic with --scaffold-tests — the same
+# "dir exists != tests exist" class bug applies. An empty tests/ directory
+# (or one with only __init__.py) must not be reported as "tests: found".
+PROJECT_DOCTOR_EMPTY_PY="$TEST_DIR/test-project-doctor-empty-python"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_EMPTY_PY" --no-register --type python >/dev/null
+mkdir -p "$PROJECT_DOCTOR_EMPTY_PY/tests"
+: > "$PROJECT_DOCTOR_EMPTY_PY/tests/__init__.py"
+RUFF_STUB_EMPTY_PY="$TEST_DIR/ruff-stub-empty-py"
+mkdir -p "$RUFF_STUB_EMPTY_PY"
+cat > "$RUFF_STUB_EMPTY_PY/ruff" <<'RUFFSTUBEMPTYPY'
+#!/usr/bin/env bash
+exit 0
+RUFFSTUBEMPTYPY
+chmod +x "$RUFF_STUB_EMPTY_PY/ruff"
+(cd "$PROJECT_DOCTOR_EMPTY_PY" && PATH="$RUFF_STUB_EMPTY_PY:$PATH" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-empty-py.txt" 2>&1 || true
+if grep -q "tests: found for profile 'python'" "$TEST_DIR/doctor-empty-py.txt"; then
+  echo "FAIL: doctor must not report 'tests: found' when only tests/__init__.py exists" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/doctor-empty-py.txt" "tests: not found for profile 'python'"
 
 # doctor must flag a pre-push hook whose content isn't the pre-commit-framework
 # shim — another framework silently replacing the file is the same class of

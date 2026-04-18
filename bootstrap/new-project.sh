@@ -38,11 +38,12 @@ INPUT_SMALL_REVIEW_LINES=""
 INPUT_GIT_WORKFLOW=""
 INPUT_GITBUTLER_MCP=""
 INPUT_CI=""
+INPUT_SCAFFOLD_TESTS=false
 REVIEW_CONFIG_REQUESTED=false
 WORKFLOW_CONFIG_REQUESTED=false
 
 usage() {
-  echo "Usage: $0 <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|none]"
+  echo "Usage: $0 <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|none] [--scaffold-tests]"
 }
 
 trim() {
@@ -326,6 +327,175 @@ detect_targets() {
   printf '%s\n' "$targets"
 }
 
+# Profile-aware test scaffolder. Called only when --scaffold-tests is set.
+# Writes exactly one smoke test per profile when no tests already exist —
+# never overwrites, so re-running with the flag on a project that has real
+# tests is a no-op. Framework-agnostic filenames so whatever the project
+# adopts later (vitest/jest/bun test; pytest; go test; cargo test) discovers
+# these without config changes.
+scaffold_smoke_test_for_profile() {
+  local project_dir="$1" profile="$2"
+
+  case "$profile" in
+    python)
+      if _profile_has_any_tests_python "$project_dir"; then
+        echo "==> tests: already present; skipping scaffold"
+        return 0
+      fi
+      mkdir -p "$project_dir/tests"
+      if [ ! -f "$project_dir/tests/__init__.py" ]; then
+        : > "$project_dir/tests/__init__.py"
+      fi
+      cat > "$project_dir/tests/test_smoke.py" <<'PYTEST'
+# Placeholder smoke test. Replace with real coverage as soon as there's
+# behavior worth testing — touchstone-run.sh test runs whatever exists here.
+def test_smoke() -> None:
+    assert True
+PYTEST
+      echo "==> tests: scaffolded tests/test_smoke.py (pytest)"
+      ;;
+    node)
+      if _profile_has_any_tests_node "$project_dir"; then
+        echo "==> tests: already present; skipping scaffold"
+        return 0
+      fi
+      mkdir -p "$project_dir/tests"
+      # .test.ts works with vitest, jest, and bun test without framework config.
+      # describe/it globals are injected by all three.
+      cat > "$project_dir/tests/smoke.test.ts" <<'NODETEST'
+// Placeholder smoke test. Replace with real coverage as soon as there's
+// behavior worth testing — touchstone-run.sh test runs whatever "test" script
+// package.json declares. Works with vitest/jest/bun test out of the box.
+describe("smoke", () => {
+  it("passes", () => {
+    expect(true).toBe(true);
+  });
+});
+NODETEST
+      echo "==> tests: scaffolded tests/smoke.test.ts (vitest/jest/bun test)"
+      ;;
+    go)
+      if _profile_has_any_tests_go "$project_dir"; then
+        echo "==> tests: already present; skipping scaffold"
+        return 0
+      fi
+      # Determine the package declaration for smoke_test.go. Go packages are
+      # declared per-file and must match every other .go file in the same
+      # directory, but a Go *module* path (e.g. github.com/acme/widget) is
+      # not a valid package identifier — package names are restricted to
+      # [a-zA-Z_][a-zA-Z0-9_]*. Match an existing root-level .go file if one
+      # exists; otherwise default to `main` (safe and compilable even in a
+      # library-style module with no other .go files at root).
+      local package_name="" first_go
+      first_go="$(find "$project_dir" -maxdepth 1 -type f -name '*.go' \
+        -not -name '*_test.go' -print -quit 2>/dev/null || true)"
+      if [ -n "$first_go" ] && [ -f "$first_go" ]; then
+        package_name="$(sed -n 's/^package \([a-zA-Z_][a-zA-Z0-9_]*\).*/\1/p' "$first_go" | head -1)"
+      fi
+      package_name="${package_name:-main}"
+      cat > "$project_dir/smoke_test.go" <<GOTEST
+// Placeholder smoke test. Replace with real coverage as soon as there's
+// behavior worth testing — touchstone-run.sh test runs go test ./... over
+// every package in the module.
+package ${package_name}
+
+import "testing"
+
+func TestSmoke(t *testing.T) {
+	if false {
+		t.Fatal("unreachable")
+	}
+}
+GOTEST
+      echo "==> tests: scaffolded smoke_test.go (go test, package ${package_name})"
+      ;;
+    rust)
+      # cargo init already creates src/lib.rs with #[test] or tests/ — scaffolding
+      # would either conflict or duplicate. Skip with a note.
+      echo "==> tests: skipped for rust (cargo init already scaffolds tests)"
+      ;;
+    swift)
+      # swift package init creates Tests/ — same reasoning as rust.
+      echo "==> tests: skipped for swift (swift package init already scaffolds Tests/)"
+      ;;
+    generic|"")
+      echo "==> tests: profile is 'generic' — no default test layout to scaffold"
+      echo "          set test_command= in .touchstone-config for your stack"
+      ;;
+    *)
+      echo "==> tests: scaffold not implemented for profile '$profile'"
+      ;;
+  esac
+}
+
+_profile_has_any_tests_python() {
+  local dir="$1" matches
+  # Match discoverable test FILES, not merely a tests/ directory — an empty
+  # tests/ (or one with only __init__.py / helpers) doesn't satisfy the
+  # purpose of scaffolding and leaves the "validate silently skips" gap open.
+  matches="$(find "$dir" -maxdepth 3 -type f \
+    \( -name 'test_*.py' -o -name '*_test.py' \) -print -quit 2>/dev/null || true)"
+  [ -n "$matches" ]
+}
+
+_profile_has_any_tests_node() {
+  local dir="$1" matches
+  # Same reason as Python — treating any __tests__/tests/test directory as
+  # "tests present" lets empty scaffolds pass through silently. Covers all
+  # four extension pairs (.ts/.tsx/.js/.jsx) for both .test.* and .spec.*
+  # conventions — React/TS projects commonly use Button.spec.tsx.
+  matches="$(find "$dir" -maxdepth 4 -type f \
+    \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' -o -name '*.test.jsx' \
+       -o -name '*.spec.ts' -o -name '*.spec.tsx' -o -name '*.spec.js' -o -name '*.spec.jsx' \) \
+    -print -quit 2>/dev/null || true)"
+  [ -n "$matches" ]
+}
+
+_profile_has_any_tests_go() {
+  local dir="$1" matches
+  matches="$(find "$dir" -maxdepth 4 -type f -name '*_test.go' -print -quit 2>/dev/null || true)"
+  [ -n "$matches" ]
+}
+
+# Resolve the project profile exactly like scripts/touchstone-run.sh:load_config
+# and bin/touchstone:cmd_doctor_project do, so per-profile flags here dispatch
+# against the same profile the runner and doctor would use:
+#   - project_type= and profile= are aliases for the same slot, last-write-wins
+#   - empty or "auto" -> detect from manifest files
+#   - "generic" with a detected non-generic profile -> upgrade to the detected
+resolve_project_type_from_config() {
+  local dir="$1" line value candidate result=""
+
+  if [ -f "$dir/.touchstone-config" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line#"${line%%[![:space:]]*}"}"
+      case "$line" in \#*|"") continue ;; esac
+      case "$line" in *=*) ;; *) continue ;; esac
+      candidate="${line%%=*}"
+      candidate="${candidate#"${candidate%%[![:space:]]*}"}"
+      candidate="${candidate%"${candidate##*[![:space:]]}"}"
+      case "$candidate" in
+        project_type|profile)
+          value="${line#*=}"
+          value="${value#"${value%%[![:space:]]*}"}"
+          value="${value%"${value##*[![:space:]]}"}"
+          result="$value"
+          ;;
+      esac
+    done < "$dir/.touchstone-config"
+  fi
+
+  if [ -z "$result" ] || [ "$result" = "auto" ]; then
+    result="$(detect_project_type "$dir")"
+  elif [ "$result" = "generic" ]; then
+    local detected
+    detected="$(detect_project_type "$dir")"
+    [ "$detected" != "generic" ] && result="$detected"
+  fi
+
+  printf '%s' "$result"
+}
+
 if [ "$#" -lt 1 ]; then
   usage >&2
   exit 1
@@ -452,6 +622,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-ci)
       INPUT_CI="none"
+      shift
+      ;;
+    --scaffold-tests)
+      INPUT_SCAFFOLD_TESTS=true
       shift
       ;;
     *) echo "ERROR: unknown argument '$1'" >&2; exit 1 ;;
@@ -911,7 +1085,14 @@ if [ -t 0 ] && [ "$RE_INIT" = false ] && [ "$CLAUDE_MD_CREATED" = true ]; then
   fi
 fi
 
-# Default project type if not set.
+# Default project type if not set. Mirror the runner's resolution so a flag
+# like --scaffold-tests dispatches against the same profile that validate
+# and doctor see — otherwise a config like "project_type=generic\nprofile=python"
+# or "project_type=generic" plus an added pyproject.toml would silently
+# demote the flag to generic while the rest of the stack runs Python.
+if [ -z "$INPUT_TYPE" ] && [ -f "$PROJECT_DIR/.touchstone-config" ]; then
+  INPUT_TYPE="$(resolve_project_type_from_config "$PROJECT_DIR")"
+fi
 INPUT_TYPE="${INPUT_TYPE:-auto}"
 INPUT_TYPE="$(normalize_project_type "$INPUT_TYPE")"
 if [ "$INPUT_TYPE" = "auto" ]; then
@@ -1008,6 +1189,14 @@ if [ "$INPUT_TYPE" = "python" ]; then
   echo "==> Copying Python helper:"
   copy_file_force "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
   chmod +x "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" 2>/dev/null || true
+fi
+
+# Optional --scaffold-tests: write one smoke test per profile when no tests
+# exist, so a fresh repo has something for touchstone-run.sh test to find.
+# Off by default — project owners decide their test framework; we just prime
+# the runner with a minimal passing test that won't fight their choice.
+if [ "$INPUT_SCAFFOLD_TESTS" = true ]; then
+  scaffold_smoke_test_for_profile "$PROJECT_DIR" "$INPUT_TYPE"
 fi
 
 write_touchstone_manifest
