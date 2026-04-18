@@ -482,10 +482,6 @@ case "\$*" in
     mkdir -p .git/hooks && : > .git/hooks/pre-push
     printf 'pre-commit installed at .git/hooks/pre-push\n'
     ;;
-  "install --hook-type commit-msg")
-    mkdir -p .git/hooks && : > .git/hooks/commit-msg
-    printf 'pre-commit installed at .git/hooks/commit-msg\n'
-    ;;
   *)
     exit 0
     ;;
@@ -497,10 +493,14 @@ chmod +x "$HOOKS_FAKE_BIN/pre-commit"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_HOOKS_WITH" --no-register >/dev/null
 assert_contains "$HOOKS_LOG" '^install --hook-type pre-commit$'
 assert_contains "$HOOKS_LOG" '^install --hook-type pre-push$'
-assert_contains "$HOOKS_LOG" '^install --hook-type commit-msg$'
+# commit-msg install is intentionally NOT performed — no commit-msg hooks are configured.
+if grep -q '^install --hook-type commit-msg$' "$HOOKS_LOG"; then
+  echo "FAIL: commit-msg hook should not be installed — no commit-msg hooks are configured" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 assert_exists "$PROJECT_HOOKS_WITH/.git/hooks/pre-commit"
 assert_exists "$PROJECT_HOOKS_WITH/.git/hooks/pre-push"
-assert_exists "$PROJECT_HOOKS_WITH/.git/hooks/commit-msg"
+assert_not_exists "$PROJECT_HOOKS_WITH/.git/hooks/commit-msg"
 
 # Bootstrap without pre-commit on PATH must print the gap, succeed (no fatal error),
 # and leave hooks uninstalled — rather than silently "succeed" with an ungated repo.

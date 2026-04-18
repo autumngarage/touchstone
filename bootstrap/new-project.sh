@@ -1007,7 +1007,7 @@ printf '\n'
 printf '    version:  %s\n' "$TOUCHSTONE_SHA"
 
 case "$HOOK_INSTALL_STATUS" in
-  0) printf '    hooks:    installed (pre-commit, pre-push, commit-msg)\n' ;;
+  0) printf '    hooks:    installed (pre-commit, pre-push)\n' ;;
   1) printf '    hooks:    SKIPPED — no .pre-commit-config.yaml (unexpected)\n' ;;
   2) printf '    hooks:    NOT INSTALLED — pre-commit CLI missing\n' ;;
   3) printf '    hooks:    PARTIAL — one or more installs failed (see above)\n' ;;
