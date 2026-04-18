@@ -706,6 +706,54 @@ else
   assert_contains "$TEST_DIR/doctor-monorepo.txt" "target autodetect: tests: not found for profile 'rust'"
 fi
 
+# Unknown root profile: touchstone-run.sh returns an error for project_type
+# values outside the dispatcher's accepted set. doctor must flag the same —
+# otherwise a typo like project_type=kotlin would silently pass doctor while
+# pre-push failed for every dev on the team.
+PROJECT_DOCTOR_BAD_PROFILE="$TEST_DIR/test-project-doctor-bad-profile"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_BAD_PROFILE" --no-register >/dev/null
+sed -i '' 's|^project_type=.*|project_type=kotlin|' "$PROJECT_DOCTOR_BAD_PROFILE/.touchstone-config"
+if (cd "$PROJECT_DOCTOR_BAD_PROFILE" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-bad-profile.txt" 2>&1; then
+  echo "FAIL: doctor --project should exit nonzero when project_type is not a dispatcher-accepted profile" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-bad-profile.txt" "unknown project_type 'kotlin'"
+fi
+
+# Unknown target profile: same rule at the target level. touchstone-run.sh's
+# run_profile_action returns 1 on an unknown target profile, so doctor flags it.
+PROJECT_DOCTOR_BAD_TARGET="$TEST_DIR/test-project-doctor-bad-target"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_BAD_TARGET" --no-register >/dev/null
+mkdir -p "$PROJECT_DOCTOR_BAD_TARGET/apps/mobile"
+sed -i '' 's|^targets=.*|targets=mobile:apps/mobile:kotlin|' "$PROJECT_DOCTOR_BAD_TARGET/.touchstone-config"
+if (cd "$PROJECT_DOCTOR_BAD_TARGET" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-bad-target.txt" 2>&1; then
+  echo "FAIL: doctor --project should exit nonzero when a target profile is unknown" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-bad-target.txt" "target 'mobile': unknown profile 'kotlin'"
+fi
+
+# Auto-detected targets (apps/packages/services exist on disk but .touchstone-config
+# targets= is empty) must NOT cause per-target doctor checks — touchstone-run.sh's
+# run_targets_action requires config-loaded TARGETS to dispatch, so anything
+# doctor checks beyond the root profile would be gaps validate never exercises.
+PROJECT_DOCTOR_AUTO_TARGETS="$TEST_DIR/test-project-doctor-auto-targets"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_AUTO_TARGETS" --no-register >/dev/null
+mkdir -p "$PROJECT_DOCTOR_AUTO_TARGETS/apps/web" "$PROJECT_DOCTOR_AUTO_TARGETS/services/api"
+printf '{}\n' > "$PROJECT_DOCTOR_AUTO_TARGETS/apps/web/package.json"
+printf '[package]\nname = "api"\nversion = "0.0.0"\n' > "$PROJECT_DOCTOR_AUTO_TARGETS/services/api/Cargo.toml"
+# Leave targets= empty in .touchstone-config — new-project.sh only fills it when
+# the apps/services dirs exist at bootstrap time.
+if (cd "$PROJECT_DOCTOR_AUTO_TARGETS" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-auto-targets.txt" 2>&1; then
+  if grep -q 'target web:\|target api:' "$TEST_DIR/doctor-auto-targets.txt"; then
+    echo "FAIL: doctor must not emit per-target lines when .touchstone-config targets= is empty — runner won't dispatch those" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+else
+  echo "FAIL: doctor --project should exit 0 on a clean project even with auto-detected target dirs" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # Root profile aliases: touchstone-run.sh accepts project_type=typescript / ts
 # as equivalent to node, so doctor must normalize the same way — otherwise a
 # root config using the alias would silently skip the lint-script check.

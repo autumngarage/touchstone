@@ -469,21 +469,38 @@ cmd_doctor_project() {
   # touchstone-run.sh validate silently skips when test files / linters are
   # absent (correct runtime UX). doctor is where those gaps become visible.
   #
-  # For monorepos, touchstone-run.sh dispatches validate to per-target profiles
-  # (see run_targets_action in scripts/touchstone-run.sh). Doctor mirrors that:
-  # checks run per-target when targets are configured, per-root-profile otherwise.
+  # Read profile + targets from .touchstone-config directly rather than from
+  # `touchstone-run.sh detect`. detect() auto-populates targets by walking
+  # apps/packages/services when config has none, but the runner's
+  # run_targets_action bails unless config-loaded TARGETS is non-empty — so
+  # a doctor that trusts detect output would check per-target profiles the
+  # runner never actually dispatches to.
   local profile="" targets=""
-  if [ -f "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" ]; then
-    local detect_output
-    detect_output="$(cd "$project_dir" && bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" detect 2>/dev/null || true)"
-    profile="$(printf '%s\n' "$detect_output" | sed -n 's/^project_type=//p' | head -1)"
-    targets="$(printf '%s\n' "$detect_output" | sed -n 's/^targets=//p' | head -1)"
+  profile="$(_touchstone_config_get "$project_dir" project_type)"
+  [ -z "$profile" ] && profile="$(_touchstone_config_get "$project_dir" profile)"
+  targets="$(_touchstone_config_get "$project_dir" targets)"
+
+  # Match the runner's profile resolution precisely:
+  #   empty/auto -> manifest detection
+  #   literal "generic" but manifest detects a typed profile -> upgrade to detected
+  #   else -> use as-declared (to be normalized below)
+  if [ -z "$profile" ] || [ "$profile" = "auto" ]; then
+    profile="$(_touchstone_detect_profile_dir "$project_dir")"
+  elif [ "$profile" = "generic" ]; then
+    local detected
+    detected="$(_touchstone_detect_profile_dir "$project_dir")"
+    [ "$detected" != "generic" ] && profile="$detected"
   fi
-  profile="${profile:-generic}"
-  # Normalize the root profile the same way as targets — root configs like
-  # project_type=typescript follow touchstone-run.sh's node dispatcher, so
-  # doctor must check against the node profile, not a literal 'typescript'.
   profile="$(_touchstone_normalize_profile "$profile")"
+
+  # Any profile value outside the dispatcher's accepted set is an error the
+  # runner will surface at pre-push — flag it here so doctor doesn't report
+  # green on a config the runner will reject.
+  if ! _touchstone_profile_is_valid "$profile"; then
+    tk_warn "unknown project_type '$profile' in .touchstone-config — touchstone-run.sh will reject it"
+    tk_dim "  Valid profiles: node, python, rust, swift, go, generic, auto"
+    issues=$((issues + 1))
+  fi
 
   # Root-level overrides short-circuit the dispatcher entirely (configured_command_for_action
   # in touchstone-run.sh), so neither per-root nor per-target profile defaults run.
@@ -536,6 +553,39 @@ _touchstone_config_has_override() {
   # Match "key = value" where value has at least one non-space character.
   # Skips commented-out lines ("# key=...") and empty assignments ("key=").
   grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[^[:space:]#]" "$dir/.touchstone-config"
+}
+
+# Read a raw value from .touchstone-config. Empty string when absent.
+# Trims whitespace around both key and value so "key = value" and "key=value"
+# both match, consistent with scripts/touchstone-run.sh:load_config.
+_touchstone_config_get() {
+  local dir="$1" key="$2" line value candidate
+  [ -f "$dir/.touchstone-config" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    case "$line" in \#*|"") continue ;; esac
+    case "$line" in *=*) ;; *) continue ;; esac
+    candidate="${line%%=*}"
+    candidate="${candidate#"${candidate%%[![:space:]]*}"}"
+    candidate="${candidate%"${candidate##*[![:space:]]}"}"
+    if [ "$candidate" = "$key" ]; then
+      value="${line#*=}"
+      value="${value#"${value%%[![:space:]]*}"}"
+      value="${value%"${value##*[![:space:]]}"}"
+      printf '%s' "$value"
+      return 0
+    fi
+  done < "$dir/.touchstone-config"
+}
+
+# Validate a profile name against the set scripts/touchstone-run.sh actually
+# dispatches on. run_profile_action treats anything outside this set as an
+# "unknown project_type" error, so doctor must flag the same.
+_touchstone_profile_is_valid() {
+  case "$1" in
+    node|python|rust|swift|go|generic) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # Auto-detect a project profile from manifest files. Must stay in lock-step
@@ -613,6 +663,14 @@ _touchstone_doctor_foreach_target() {
       target_profile="$(_touchstone_detect_profile_dir "$target_dir")"
     fi
     target_profile="$(_touchstone_normalize_profile "$target_profile")"
+
+    # Same validity gate as the root profile — touchstone-run.sh warns and
+    # returns 1 on an unknown target profile, so doctor must flag it here.
+    if ! _touchstone_profile_is_valid "$target_profile"; then
+      tk_warn "target '$name': unknown profile '$target_profile' — touchstone-run.sh will reject it"
+      issues=$((issues + 1))
+      continue
+    fi
 
     "$check_fn" "$target_dir" "$target_profile" "target ${name}: "
   done
