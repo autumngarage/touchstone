@@ -441,10 +441,13 @@ _profile_has_any_tests_python() {
 _profile_has_any_tests_node() {
   local dir="$1" matches
   # Same reason as Python — treating any __tests__/tests/test directory as
-  # "tests present" lets empty scaffolds pass through silently.
+  # "tests present" lets empty scaffolds pass through silently. Covers all
+  # four extension pairs (.ts/.tsx/.js/.jsx) for both .test.* and .spec.*
+  # conventions — React/TS projects commonly use Button.spec.tsx.
   matches="$(find "$dir" -maxdepth 4 -type f \
     \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' -o -name '*.test.jsx' \
-       -o -name '*.spec.ts' -o -name '*.spec.js' \) -print -quit 2>/dev/null || true)"
+       -o -name '*.spec.ts' -o -name '*.spec.tsx' -o -name '*.spec.js' -o -name '*.spec.jsx' \) \
+    -print -quit 2>/dev/null || true)"
   [ -n "$matches" ]
 }
 

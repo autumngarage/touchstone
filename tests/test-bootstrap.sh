@@ -364,6 +364,16 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_REINIT_PY" -
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_REINIT_PY" --no-register --scaffold-tests >/dev/null
 assert_exists "$PROJECT_SCAFFOLD_REINIT_PY/tests/test_smoke.py"
 
+# React/TS projects commonly name tests Component.spec.tsx — the node test
+# predicate must include .spec.tsx / .spec.jsx, otherwise --scaffold-tests
+# incorrectly ADDS a placeholder next to real tests.
+PROJECT_SCAFFOLD_SPEC_TSX="$TEST_DIR/test-project-scaffold-spec-tsx"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_SPEC_TSX" --no-register --type node >/dev/null
+mkdir -p "$PROJECT_SCAFFOLD_SPEC_TSX/src"
+printf 'describe("Button", () => { it("renders", () => {}); });\n' > "$PROJECT_SCAFFOLD_SPEC_TSX/src/Button.spec.tsx"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_SPEC_TSX" --no-register --scaffold-tests >/dev/null
+assert_not_exists "$PROJECT_SCAFFOLD_SPEC_TSX/tests/smoke.test.ts"
+
 # touchstone init must not run a pre-existing project setup.sh after preserving it.
 mkdir -p "$PROJECT_INIT_EXISTING_SETUP"
 git -C "$PROJECT_INIT_EXISTING_SETUP" init >/dev/null
