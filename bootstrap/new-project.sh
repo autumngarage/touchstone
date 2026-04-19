@@ -1662,7 +1662,15 @@ fi
 # everything — integration artifacts plus scaffold — as one commit
 # with a single author/message, so `rev-list --count HEAD` equals 1.
 INITIAL_COMMIT_SHA=""
-if [ "$RE_INIT" = false ] && [ "$INITIAL_COMMIT" = true ]; then
+# Preserve the pre-R5 invariant exactly: the initial-commit path only
+# runs when NO HEAD existed before this scaffold. Bootstrapping into a
+# repo that already had user-authored commits must never rewrite history
+# or sweep unrelated staged changes into a "chore: initial touchstone
+# scaffold". Integrations may have just created HEAD mid-run — that's
+# still a fresh-scaffold case, which the PRE_INTEGRATION_HEAD guard
+# distinguishes from genuine pre-existing history.
+if [ "$RE_INIT" = false ] && [ "$INITIAL_COMMIT" = true ] \
+  && [ -z "$PRE_INTEGRATION_HEAD" ]; then
   # Fall back to a local git identity when none is configured globally, so the
   # commit succeeds on CI boxes and fresh dev machines. Global config, when
   # present, wins because we only set the local keys if they resolve to empty.
@@ -1675,27 +1683,24 @@ if [ "$RE_INIT" = false ] && [ "$INITIAL_COMMIT" = true ]; then
 
   # If an integration (e.g. sentinel init) created a commit DURING this
   # run, fold its changes back into the index so the touchstone initial
-  # commit is the sole commit on the branch. Guard with three conditions
-  # so we never rewrite user-authored history:
-  #   1. HEAD must not have existed before integrations ran.
-  #   2. HEAD must exist now (otherwise there's nothing to collapse).
-  #   3. HEAD must be a root commit (rev-list --count HEAD == 1).
-  # Any of these failing means the one commit on the branch pre-dates
-  # this scaffold; we leave it alone and add a follow-up commit instead.
-  if [ -z "$PRE_INTEGRATION_HEAD" ] \
-    && git -C "$PROJECT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+  # commit is the sole commit on the branch. Even inside this block
+  # (PRE_INTEGRATION_HEAD empty), we re-verify that HEAD is a root commit
+  # to be sure we're not about to delete a reference we didn't create.
+  if git -C "$PROJECT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
     commits_on_branch="$(git -C "$PROJECT_DIR" rev-list --count HEAD 2>/dev/null || echo 0)"
     if [ "$commits_on_branch" = "1" ]; then
-      # Safe to collapse: delete HEAD (leaves tree + staged files intact
-      # because `reset` below then matches the index to the (empty) tree
-      # at HEAD while preserving the working tree). The next
-      # `git add -A` + `git commit` lands everything as the sole commit.
+      # Delete HEAD — `git reset` below then matches the index to the
+      # now-empty tree at HEAD while preserving the working tree. The
+      # subsequent `git add -A` + `git commit` lands every scaffold file
+      # (integration-authored + base templates) as the sole commit.
       git -C "$PROJECT_DIR" update-ref -d HEAD >/dev/null 2>&1 || true
       git -C "$PROJECT_DIR" reset >/dev/null 2>&1 || true
     fi
   fi
 
   # Stage everything the integrations produced plus the base scaffold.
+  # `git add -A` is safe here because PRE_INTEGRATION_HEAD was empty —
+  # we know the entire working tree was authored by this scaffold run.
   git -C "$PROJECT_DIR" add -A
   if ! git -C "$PROJECT_DIR" diff --cached --quiet 2>/dev/null; then
     if git -C "$PROJECT_DIR" commit -m "chore: initial touchstone scaffold
@@ -1705,10 +1710,6 @@ Touchstone-Version: $TOUCHSTONE_SHA" >/dev/null 2>&1; then
     else
       echo "==> Initial commit skipped (git commit failed; check git identity)"
     fi
-  elif git -C "$PROJECT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
-    # Nothing staged and HEAD exists — empty tree edge case (RE_INIT path
-    # never reaches here). Record current HEAD for the summary.
-    INITIAL_COMMIT_SHA="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
   fi
 fi
 
