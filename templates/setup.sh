@@ -895,7 +895,15 @@ install_configured_target_devtools() {
 if [ "$SKIP_DEVTOOLS" = true ]; then
   info "Skipping per-profile dev tools (--skip-devtools / TOUCHSTONE_SKIP_DEVTOOLS=1)"
 else
-  install_profile_devtools "$ROOT_PROFILE"
+  # Resolve 'auto' / empty to a concrete profile the same way
+  # install_profile_dependencies does — otherwise a repo with
+  # project_type=auto or no .touchstone-config installs deps but silently
+  # skips the verifier tools.
+  ROOT_PROFILE_RESOLVED="$ROOT_PROFILE"
+  if [ "$ROOT_PROFILE_RESOLVED" = "auto" ] || [ -z "$ROOT_PROFILE_RESOLVED" ]; then
+    ROOT_PROFILE_RESOLVED="$(detect_profile ".")"
+  fi
+  install_profile_devtools "$ROOT_PROFILE_RESOLVED"
   # Monorepo targets declared in .touchstone-config also need their dev tools —
   # touchstone-run.sh / doctor validate them per-target, so missing tools would
   # re-create the same silent-skip failure mode this block is meant to close.

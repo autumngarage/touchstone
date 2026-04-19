@@ -801,18 +801,21 @@ assert_contains "$RUNNER_LOG" 'npm|.*/monorepo-runner/apps/web|run test'
 assert_contains "$RUNNER_LOG" 'cargo|.*/monorepo-runner/services/api|test --all'
 
 # setup.sh --deps-only should also use the project profile layer for non-Python ecosystems.
+# TOUCHSTONE_SKIP_DEVTOOLS=1 keeps these tests hermetic — we're exercising the
+# dependency dispatch, not the per-profile dev-tool install (which would call
+# real brew/go/rustup on macOS dev machines that have those binaries on PATH).
 : > "$RUNNER_LOG"
-(cd "$PROJECT_NODE" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash setup.sh --deps-only) >/dev/null
+(cd "$PROJECT_NODE" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" TOUCHSTONE_SKIP_DEVTOOLS=1 bash setup.sh --deps-only) >/dev/null
 assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node|install'
 
 cp "$TOUCHSTONE_ROOT/templates/setup.sh" "$SWIFT_PROJECT/setup.sh"
 : > "$RUNNER_LOG"
-(cd "$SWIFT_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash setup.sh --deps-only) >/dev/null
+(cd "$SWIFT_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" TOUCHSTONE_SKIP_DEVTOOLS=1 bash setup.sh --deps-only) >/dev/null
 assert_contains "$RUNNER_LOG" 'swift|.*/swift-runner|package resolve'
 
 cp "$TOUCHSTONE_ROOT/templates/setup.sh" "$RUST_PROJECT/setup.sh"
 : > "$RUNNER_LOG"
-(cd "$RUST_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash setup.sh --deps-only) >/dev/null
+(cd "$RUST_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" TOUCHSTONE_SKIP_DEVTOOLS=1 bash setup.sh --deps-only) >/dev/null
 assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|fetch'
 
 # Bootstrap should install git hooks via pre-commit when pre-commit is available,
