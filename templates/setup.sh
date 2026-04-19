@@ -784,8 +784,8 @@ fi
 # TOUCHSTONE_SKIP_DEVTOOLS=1 for CI / offline environments.
 install_swift_devtools() {
   if ! command -v brew >/dev/null 2>&1; then
-    warn "Homebrew not available — skipping swiftlint/swiftformat install."
-    warn "Manual install (once brew is present): brew install swiftlint swiftformat"
+    warn "Homebrew not available — skipping swiftlint/swift-format install."
+    warn "Manual install (once brew is present): brew install swiftlint swift-format"
     return 0
   fi
   if command -v swiftlint >/dev/null 2>&1; then
@@ -794,11 +794,13 @@ install_swift_devtools() {
     warn "Installing swiftlint..."
     brew install swiftlint 2>/dev/null && ok "swiftlint installed" || warn "swiftlint install failed"
   fi
-  if command -v swiftformat >/dev/null 2>&1; then
-    ok "swiftformat installed"
+  # Note: Apple's swift-format (matches touchstone-run.sh and `touchstone doctor`),
+  # NOT Nick Lockwood's swiftformat (different tool, different binary name).
+  if command -v swift-format >/dev/null 2>&1; then
+    ok "swift-format installed"
   else
-    warn "Installing swiftformat..."
-    brew install swiftformat 2>/dev/null && ok "swiftformat installed" || warn "swiftformat install failed"
+    warn "Installing swift-format..."
+    brew install swift-format 2>/dev/null && ok "swift-format installed" || warn "swift-format install failed"
   fi
 }
 
@@ -840,20 +842,20 @@ install_rust_devtools() {
   fi
 }
 
-if [ "$SKIP_DEVTOOLS" = true ]; then
-  info "Skipping per-profile dev tools (--skip-devtools / TOUCHSTONE_SKIP_DEVTOOLS=1)"
-else
-  case "$ROOT_PROFILE" in
+install_profile_devtools() {
+  local profile="$1"
+  local label="${2:-}"
+  case "$profile" in
     swift)
-      info "Checking Swift dev tools"
+      info "Checking Swift dev tools${label:+ ($label)}"
       install_swift_devtools
       ;;
     go)
-      info "Checking Go dev tools"
+      info "Checking Go dev tools${label:+ ($label)}"
       install_go_devtools
       ;;
     rust)
-      info "Checking Rust dev tools"
+      info "Checking Rust dev tools${label:+ ($label)}"
       install_rust_devtools
       ;;
     python|node|typescript|ts|generic|"")
@@ -863,6 +865,41 @@ else
       : # Unknown profile — let dependency install surface the warning.
       ;;
   esac
+}
+
+install_configured_target_devtools() {
+  local entry name path profile
+  local -a target_entries=()
+
+  [ -n "$CONFIG_TARGETS" ] || return 0
+
+  IFS=',' read -r -a target_entries <<< "$CONFIG_TARGETS"
+  for entry in "${target_entries[@]}"; do
+    entry="$(trim "$entry")"
+    [ -z "$entry" ] && continue
+    name="${entry%%:*}"
+    path="${entry#*:}"
+    profile="${path#*:}"
+    path="${path%%:*}"
+    if [ "$path" = "$profile" ]; then
+      profile="auto"
+    fi
+    [ -d "$path" ] || continue
+    if [ "$profile" = "auto" ] || [ -z "$profile" ]; then
+      profile="$(detect_profile "$path")"
+    fi
+    install_profile_devtools "$profile" "$name"
+  done
+}
+
+if [ "$SKIP_DEVTOOLS" = true ]; then
+  info "Skipping per-profile dev tools (--skip-devtools / TOUCHSTONE_SKIP_DEVTOOLS=1)"
+else
+  install_profile_devtools "$ROOT_PROFILE"
+  # Monorepo targets declared in .touchstone-config also need their dev tools —
+  # touchstone-run.sh / doctor validate them per-target, so missing tools would
+  # re-create the same silent-skip failure mode this block is meant to close.
+  install_configured_target_devtools
 fi
 
 if install_profile_dependencies "Project" "." "$ROOT_PROFILE"; then

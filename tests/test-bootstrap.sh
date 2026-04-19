@@ -299,7 +299,10 @@ assert_contains "$PROJECT_SWIFT/setup.sh" '\-\-skip-devtools'
 assert_contains "$PROJECT_SWIFT/setup.sh" 'TOUCHSTONE_SKIP_DEVTOOLS'
 assert_contains "$PROJECT_SWIFT/setup.sh" 'install_swift_devtools'
 assert_contains "$PROJECT_SWIFT/setup.sh" 'brew install swiftlint'
-assert_contains "$PROJECT_SWIFT/setup.sh" 'brew install swiftformat'
+# swift-format (Apple's tool, not Nick Lockwood's swiftformat) — must match
+# what scripts/touchstone-run.sh and `touchstone doctor --project` invoke.
+assert_contains "$PROJECT_SWIFT/setup.sh" 'brew install swift-format'
+assert_not_contains "$PROJECT_SWIFT/setup.sh" 'brew install swiftformat'
 assert_contains "$PROJECT_SWIFT/setup.sh" 'install_go_devtools'
 assert_contains "$PROJECT_SWIFT/setup.sh" 'golang.org/x/lint/golint@latest'
 assert_contains "$PROJECT_SWIFT/setup.sh" 'install_rust_devtools'
@@ -319,24 +322,17 @@ if ! bash -n "$PROJECT_SWIFT/setup.sh" 2>"$TEST_DIR/setup-syntax.txt"; then
   ERRORS=$((ERRORS + 1))
 fi
 
-# --skip-devtools / TOUCHSTONE_SKIP_DEVTOOLS=1 must short-circuit the install
-# block without touching brew/go/rustup. Invoke setup.sh in a hermetic harness:
-# PATH shimmed so brew/go/rustup/cargo are absent (would crash if reached), and
-# only the flag-parsing + dev-tools dispatch is exercised. Run a trimmed copy
-# that stops before the dep-install section (avoids needing git/gh/pre-commit).
-SKIP_HARNESS="$TEST_DIR/skip-devtools-harness"
-mkdir -p "$SKIP_HARNESS"
-# Extract just the flag-parse + per-profile devtools dispatch from the
-# scaffolded setup.sh. We synthesize a tiny shell driver that defines the
-# required functions and env, then sources the relevant slices. Simpler: just
-# run `bash setup.sh --skip-devtools` with TOUCHSTONE_SKIP_DEVTOOLS=1 and check
-# the short-circuit message appears in the output WITHOUT any brew/go/rustup
-# invocation. To avoid executing the full setup, we short-circuit by making
-# brew/git/gh/pre-commit absent — setup.sh will fail at the brew check, but
-# that check runs BEFORE the devtools block. So instead we grep for the
-# short-circuit branch textually: the flag must be wired into the gate.
+# --skip-devtools / TOUCHSTONE_SKIP_DEVTOOLS=1 must wire into the gate so
+# the install block short-circuits in CI / offline environments. We grep for
+# the gate text rather than invoking setup.sh — running it would call real
+# brew/go/rustup, which is out of scope for a hermetic test.
 assert_contains "$PROJECT_SWIFT/setup.sh" 'Skipping per-profile dev tools'
 assert_contains "$PROJECT_SWIFT/setup.sh" 'SKIP_DEVTOOLS=true'
+# Monorepo targets must also get their dev tools installed — a generic root
+# with Swift/Go/Rust targets would otherwise re-create the same silent-skip
+# gap this block closes.
+assert_contains "$PROJECT_SWIFT/setup.sh" 'install_configured_target_devtools'
+assert_contains "$PROJECT_SWIFT/setup.sh" 'install_profile_devtools'
 
 # Non-swift profile setup.sh must carry the same template (setup.sh is one
 # file per project, branch chosen at runtime by project_type). Sanity-check
