@@ -25,7 +25,14 @@ fi
 # coverage legible — if a new directory starts shipping .sh files, it has to
 # be added here explicitly, which is the prompt to think about downstream
 # propagation.
-mapfile -t SCRIPTS < <(
+#
+# Uses a portable while-read loop instead of `mapfile` because macOS ships
+# /bin/bash 3.2, where `mapfile` is a missing builtin. The find + sort + loop
+# combo works identically on macOS stock bash and Homebrew bash.
+SCRIPTS=()
+while IFS= read -r script; do
+  [ -n "$script" ] && SCRIPTS+=("$script")
+done < <(
   find \
     "$TOUCHSTONE_ROOT/hooks" \
     "$TOUCHSTONE_ROOT/scripts" \

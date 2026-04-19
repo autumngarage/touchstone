@@ -1647,12 +1647,14 @@ fi
 # bootstrap paradox: to commit you need the hooks un-armed; once hooks
 # are armed, you need a commit on the branch to push anything.
 #
-# Note on sentinel's internal gitignore commit: `sentinel init` attempts
-# to commit its own .gitignore edit when it detects a git repo. With the
-# new ordering, HEAD may not exist yet, so sentinel may create the very
-# first commit itself. That's fine — `git add -A` + `git commit` below
-# becomes a no-op if there's nothing left to commit, and $INITIAL_COMMIT_SHA
-# still reflects whatever HEAD points at.
+# Atomicity note: `sentinel init` may have already committed its own
+# .gitignore edit inside `_ensure_gitignore_entries` (it calls
+# `git commit -- .gitignore` when it detects a git repo). To keep the
+# scaffold a single atomic commit as promised, we detect any such
+# pre-existing HEAD and soft-reset it back into the index BEFORE
+# staging the rest of the tree. The final `git commit` then captures
+# everything — integration artifacts plus scaffold — as one commit
+# with a single author/message, so `rev-list --count HEAD` equals 1.
 INITIAL_COMMIT_SHA=""
 if [ "$RE_INIT" = false ] && [ "$INITIAL_COMMIT" = true ]; then
   # Fall back to a local git identity when none is configured globally, so the
@@ -1665,10 +1667,26 @@ if [ "$RE_INIT" = false ] && [ "$INITIAL_COMMIT" = true ]; then
     git -C "$PROJECT_DIR" config user.name "Touchstone Bootstrap"
   fi
 
+  # If an integration (e.g. sentinel init) already created the first
+  # commit on this branch, fold its changes back into the index so the
+  # touchstone initial commit is the sole commit on the branch. Only
+  # applies when HEAD has exactly one commit AND no parent — amending a
+  # user-authored history would be surprising, so we never touch a repo
+  # that already has >1 commit.
+  if git -C "$PROJECT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+    commits_on_branch="$(git -C "$PROJECT_DIR" rev-list --count HEAD 2>/dev/null || echo 0)"
+    if [ "$commits_on_branch" = "1" ]; then
+      # Safe to collapse: soft-reset to the empty tree preserves every
+      # file as staged. The next `git commit` below lands them as the
+      # sole commit.
+      git -C "$PROJECT_DIR" update-ref -d HEAD >/dev/null 2>&1 || true
+      git -C "$PROJECT_DIR" reset >/dev/null 2>&1 || true
+    fi
+  fi
+
   # Stage everything the integrations produced plus the base scaffold.
   git -C "$PROJECT_DIR" add -A
-  if ! git -C "$PROJECT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
-    # No HEAD yet — this is the repo's first commit.
+  if ! git -C "$PROJECT_DIR" diff --cached --quiet 2>/dev/null; then
     if git -C "$PROJECT_DIR" commit -m "chore: initial touchstone scaffold
 
 Touchstone-Version: $TOUCHSTONE_SHA" >/dev/null 2>&1; then
@@ -1676,22 +1694,10 @@ Touchstone-Version: $TOUCHSTONE_SHA" >/dev/null 2>&1; then
     else
       echo "==> Initial commit skipped (git commit failed; check git identity)"
     fi
-  else
-    # HEAD already exists (sentinel init may have created a gitignore
-    # commit). Amend-free follow-up commit if there's anything staged.
-    if ! git -C "$PROJECT_DIR" diff --cached --quiet 2>/dev/null; then
-      if git -C "$PROJECT_DIR" commit -m "chore: initial touchstone scaffold
-
-Touchstone-Version: $TOUCHSTONE_SHA" >/dev/null 2>&1; then
-        INITIAL_COMMIT_SHA="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
-      else
-        echo "==> Initial commit skipped (git commit failed; check git identity)"
-      fi
-    else
-      # Everything was already committed by an integration — record the
-      # current HEAD as the scaffold commit for the summary block.
-      INITIAL_COMMIT_SHA="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
-    fi
+  elif git -C "$PROJECT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+    # Nothing staged and HEAD exists — empty tree edge case (RE_INIT path
+    # never reaches here). Record current HEAD for the summary.
+    INITIAL_COMMIT_SHA="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
   fi
 fi
 

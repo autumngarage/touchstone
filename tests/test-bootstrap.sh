@@ -1501,10 +1501,12 @@ STUB
 chmod +x "$R5_STUBDIR/cortex"
 
 # Fake sentinel CLI: creates `.sentinel/` with a config + its own gitignore,
-# and appends a sentinel-artifacts block to the project's root .gitignore —
-# mirrors what real sentinel init does. Deliberately includes `.sentinel/` in
-# the block so the R5.2 assertion below fails if touchstone ever starts
-# writing that line itself (or if the stub drift-mirrors a broken upstream).
+# appends a `.claude/` entry to the project's root .gitignore (NOT `.sentinel/`
+# — that's R5.2), AND attempts its own `git commit -- .gitignore` when inside
+# a git repo. The real sentinel init does this to survive `sentinel work`'s
+# between-item `git reset --hard`; the stub mirrors it so the R5.1
+# atomicity assertion below properly exercises the "sentinel committed
+# first" code path in bootstrap/new-project.sh.
 cat > "$R5_STUBDIR/sentinel" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1519,6 +1521,16 @@ case "${1:-}" in
     # (sentinel does, in its own init), so the stub mirrors that split.
     if [ -f .gitignore ] && ! grep -q '^\.claude/$' .gitignore 2>/dev/null; then
       printf '\n# sentinel artifacts — generated per-run, not source\n.claude/\n' >> .gitignore
+      # Mirror real sentinel's `_commit_gitignore_if_in_repo` so the
+      # touchstone bootstrap is tested against the "integration already
+      # made a commit" shape, not just the "integration dirtied the
+      # working tree" shape.
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git add -- .gitignore >/dev/null 2>&1 || true
+        git -c user.email=sentinel@test -c user.name=sentinel \
+          commit -m "chore: gitignore sentinel artifacts (.claude/)" \
+          -- .gitignore >/dev/null 2>&1 || true
+      fi
     fi
     echo "sentinel init (stub): created .sentinel/"
     ;;
