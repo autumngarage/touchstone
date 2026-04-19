@@ -1606,6 +1606,12 @@ write_touchstone_manifest
 # journal/2026-04-18-r5-findings-from-fresh-scaffold.) GitHub repo
 # creation stays after hook install because `gh repo create --push`
 # needs the pre-push gate to exist.
+#
+# Capture pre-integration HEAD state so the post-integration commit logic
+# can safely distinguish an integration-authored commit (created just now,
+# safe to collapse) from a pre-existing user commit (touchstone must never
+# rewrite). Empty string = no HEAD existed before integrations ran.
+PRE_INTEGRATION_HEAD="$(git -C "$PROJECT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
 
 if [ "$WITH_CORTEX" = true ] && [ "$RE_INIT" = false ]; then
   if command -v cortex >/dev/null 2>&1; then
@@ -1667,18 +1673,23 @@ if [ "$RE_INIT" = false ] && [ "$INITIAL_COMMIT" = true ]; then
     git -C "$PROJECT_DIR" config user.name "Touchstone Bootstrap"
   fi
 
-  # If an integration (e.g. sentinel init) already created the first
-  # commit on this branch, fold its changes back into the index so the
-  # touchstone initial commit is the sole commit on the branch. Only
-  # applies when HEAD has exactly one commit AND no parent — amending a
-  # user-authored history would be surprising, so we never touch a repo
-  # that already has >1 commit.
-  if git -C "$PROJECT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+  # If an integration (e.g. sentinel init) created a commit DURING this
+  # run, fold its changes back into the index so the touchstone initial
+  # commit is the sole commit on the branch. Guard with three conditions
+  # so we never rewrite user-authored history:
+  #   1. HEAD must not have existed before integrations ran.
+  #   2. HEAD must exist now (otherwise there's nothing to collapse).
+  #   3. HEAD must be a root commit (rev-list --count HEAD == 1).
+  # Any of these failing means the one commit on the branch pre-dates
+  # this scaffold; we leave it alone and add a follow-up commit instead.
+  if [ -z "$PRE_INTEGRATION_HEAD" ] \
+    && git -C "$PROJECT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
     commits_on_branch="$(git -C "$PROJECT_DIR" rev-list --count HEAD 2>/dev/null || echo 0)"
     if [ "$commits_on_branch" = "1" ]; then
-      # Safe to collapse: soft-reset to the empty tree preserves every
-      # file as staged. The next `git commit` below lands them as the
-      # sole commit.
+      # Safe to collapse: delete HEAD (leaves tree + staged files intact
+      # because `reset` below then matches the index to the (empty) tree
+      # at HEAD while preserving the working tree). The next
+      # `git add -A` + `git commit` lands everything as the sole commit.
       git -C "$PROJECT_DIR" update-ref -d HEAD >/dev/null 2>&1 || true
       git -C "$PROJECT_DIR" reset >/dev/null 2>&1 || true
     fi

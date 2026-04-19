@@ -1577,6 +1577,42 @@ if [ -d "$PROJECT_R5/.git" ]; then
   fi
 fi
 
+# R5.1 regression guard: running the scaffold against a directory that
+# ALREADY has a git repo + user-authored commit must never rewrite that
+# commit. The collapse-to-one-commit path is scoped to integration-authored
+# commits only — if HEAD pre-dates this scaffold, touchstone appends
+# instead of collapsing, even under --with-sentinel.
+PROJECT_R5_EXISTING="$TEST_DIR/test-project-r5-existing-history"
+mkdir -p "$PROJECT_R5_EXISTING"
+( cd "$PROJECT_R5_EXISTING" \
+  && git init -q -b main \
+  && git config user.email "u@test" \
+  && git config user.name "User" \
+  && echo "# prior work" > README.md \
+  && git add README.md \
+  && git commit -q -m "feat: user's own initial commit" ) \
+  >/dev/null 2>&1
+USER_HEAD_BEFORE="$(git -C "$PROJECT_R5_EXISTING" rev-parse HEAD 2>/dev/null || echo missing)"
+USER_SUBJECT_BEFORE="$(git -C "$PROJECT_R5_EXISTING" log -1 --pretty=%s HEAD 2>/dev/null || echo missing)"
+
+PATH="$R5_STUBDIR:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
+  "$PROJECT_R5_EXISTING" --no-register --with-cortex --with-sentinel \
+  </dev/null >"$TEST_DIR/r5-existing-bootstrap.txt" 2>&1 \
+  || { echo "FAIL: bootstrap into existing git repo exited non-zero"; cat "$TEST_DIR/r5-existing-bootstrap.txt"; ERRORS=$((ERRORS+1)); }
+
+# The user's commit SHA must still be reachable (not rewritten).
+if ! git -C "$PROJECT_R5_EXISTING" cat-file -e "$USER_HEAD_BEFORE" 2>/dev/null; then
+  echo "FAIL: touchstone scaffold rewrote user's pre-existing commit $USER_HEAD_BEFORE" >&2
+  ERRORS=$((ERRORS+1))
+fi
+
+# The user's commit must still be the first commit on the branch.
+first_subject="$(git -C "$PROJECT_R5_EXISTING" log --reverse --pretty=%s 2>/dev/null | head -1)"
+if [ "$first_subject" != "$USER_SUBJECT_BEFORE" ]; then
+  echo "FAIL: first commit subject changed from '$USER_SUBJECT_BEFORE' to '$first_subject'" >&2
+  ERRORS=$((ERRORS+1))
+fi
+
 # R5.2 assertions: the root .gitignore must NOT blanket-ignore .sentinel/.
 # `.claude/` should still be present (the stub mirrors sentinel's real write).
 if [ -f "$PROJECT_R5/.gitignore" ]; then
