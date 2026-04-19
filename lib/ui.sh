@@ -66,7 +66,7 @@ _tk_paint() {
 # Renders the Option E double-rail verdict signed "touchstone".
 tk_verdict() {
   local state="$1" headline="$2" subtitle="${3:-}"
-  local rail mark version_line sig
+  local rail mark sig
   rail="$(_tk_rail)"
 
   case "$state" in

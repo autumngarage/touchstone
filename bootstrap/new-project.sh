@@ -30,6 +30,7 @@ REGISTER=true
 REGISTER_REQUESTED=false       # Doctrine 0002: track whether --register / --no-register was passed.
 INPUT_UNSAFE=""
 INPUT_TYPE=""
+# shellcheck disable=SC2034  # set below, read by future --type-aware branches.
 INPUT_TYPE_REQUESTED=false     # Tracks explicit --type (not the auto-detect fall-through).
 INPUT_REVIEWER=""
 INPUT_REVIEW_ASSIST=""
@@ -733,6 +734,7 @@ while [ "$#" -gt 0 ]; do
     --type)
       [ "$#" -ge 2 ] || { echo "ERROR: --type requires a value (node, python, swift, rust, go, generic, auto)" >&2; exit 1; }
       INPUT_TYPE="$(normalize_project_type "$2")"
+      # shellcheck disable=SC2034  # reserved for --type-aware branches.
       INPUT_TYPE_REQUESTED=true
       shift 2
       ;;
@@ -1205,12 +1207,14 @@ chmod +x "$PROJECT_DIR/scripts/"*.sh
 # Optional CI workflow — opt-in via --ci. Not copied by default because not every
 # project uses GitHub Actions, and shipping a workflow file silently into every
 # bootstrap would force that opinion on GitLab/Bitbucket/self-hosted users.
+# shellcheck disable=SC2034  # reserved for downstream summary printout.
 CI_WORKFLOW_CREATED=false
 if [ "$INPUT_CI" = "github" ]; then
   echo ""
   echo "==> Adding CI workflow (project-owned, won't be auto-updated):"
   copy_file "$TOUCHSTONE_ROOT/templates/ci/github-validate.yml" "$PROJECT_DIR/.github/workflows/validate.yml"
   if [ "$LAST_COPY_CREATED" = true ]; then
+    # shellcheck disable=SC2034  # reserved for downstream summary printout.
     CI_WORKFLOW_CREATED=true
   fi
 fi
@@ -1594,25 +1598,111 @@ fi
 
 write_touchstone_manifest
 
-# Initial commit on fresh scaffold — before hooks are installed, so the
-# "no-commit-to-branch" / default-branch guards in the freshly-installed
-# hooks don't block the user's first commit. Resolves the bootstrap paradox:
-# to commit you need the hooks un-armed; once hooks are armed, you need a
-# commit on the branch to push anything. This ordering solves that.
+# Doctrine 0002 — Cortex / Sentinel init run BEFORE the initial commit so
+# their scaffolded artifacts (.cortex/, .sentinel/, any .gitignore edits)
+# land in the same atom as the rest of the touchstone scaffold. Running
+# these after the commit used to leave the working tree half-committed
+# once hooks armed `no-commit-to-branch`. (R5.1 — see autumn-garage
+# journal/2026-04-18-r5-findings-from-fresh-scaffold.) GitHub repo
+# creation stays after hook install because `gh repo create --push`
+# needs the pre-push gate to exist.
+#
+# Capture pre-integration HEAD state so the post-integration commit logic
+# can safely distinguish an integration-authored commit (created just now,
+# safe to collapse) from a pre-existing user commit (touchstone must never
+# rewrite). Empty string = no HEAD existed before integrations ran.
+PRE_INTEGRATION_HEAD="$(git -C "$PROJECT_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
+
+if [ "$WITH_CORTEX" = true ] && [ "$RE_INIT" = false ]; then
+  if command -v cortex >/dev/null 2>&1; then
+    echo ""
+    echo "==> Initializing Cortex ..."
+    if ( cd "$PROJECT_DIR" && cortex init ); then
+      :
+    else
+      echo "==> Cortex init failed (continuing)." >&2
+    fi
+  else
+    echo ""
+    echo "==> Cortex not on PATH — skipping cortex init."
+    echo "    Install: brew install autumngarage/cortex/cortex"
+  fi
+fi
+
+if [ "$WITH_SENTINEL" = true ] && [ "$RE_INIT" = false ]; then
+  if command -v sentinel >/dev/null 2>&1; then
+    echo ""
+    echo "==> Initializing Sentinel ..."
+    if ( cd "$PROJECT_DIR" && sentinel init ); then
+      :
+    else
+      echo "==> Sentinel init failed (continuing)." >&2
+    fi
+  else
+    echo ""
+    echo "==> Sentinel not on PATH — skipping sentinel init."
+    echo "    Install: brew install autumngarage/sentinel/sentinel"
+  fi
+fi
+
+# Initial commit on fresh scaffold — runs AFTER the integration inits
+# (above) so .cortex/, .sentinel/, and any gitignore updates those tools
+# made are captured in one commit, and BEFORE `pre-commit install` below
+# so the "no-commit-to-branch" / default-branch guards in the freshly-
+# installed hooks don't block the user's first commit. Resolves the
+# bootstrap paradox: to commit you need the hooks un-armed; once hooks
+# are armed, you need a commit on the branch to push anything.
+#
+# Atomicity note: `sentinel init` may have already committed its own
+# .gitignore edit inside `_ensure_gitignore_entries` (it calls
+# `git commit -- .gitignore` when it detects a git repo). To keep the
+# scaffold a single atomic commit as promised, we detect any such
+# pre-existing HEAD and soft-reset it back into the index BEFORE
+# staging the rest of the tree. The final `git commit` then captures
+# everything — integration artifacts plus scaffold — as one commit
+# with a single author/message, so `rev-list --count HEAD` equals 1.
 INITIAL_COMMIT_SHA=""
-if [ "$RE_INIT" = false ] && [ "$INITIAL_COMMIT" = true ]; then
-  if ! git -C "$PROJECT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
-    # Fall back to a local git identity when none is configured globally, so the
-    # commit succeeds on CI boxes and fresh dev machines. Global config, when
-    # present, wins because we only set the local keys if they resolve to empty.
-    if [ -z "$(git -C "$PROJECT_DIR" config --get user.email 2>/dev/null || true)" ]; then
-      git -C "$PROJECT_DIR" config user.email "touchstone@localhost"
+# Preserve the pre-R5 invariant exactly: the initial-commit path only
+# runs when NO HEAD existed before this scaffold. Bootstrapping into a
+# repo that already had user-authored commits must never rewrite history
+# or sweep unrelated staged changes into a "chore: initial touchstone
+# scaffold". Integrations may have just created HEAD mid-run — that's
+# still a fresh-scaffold case, which the PRE_INTEGRATION_HEAD guard
+# distinguishes from genuine pre-existing history.
+if [ "$RE_INIT" = false ] && [ "$INITIAL_COMMIT" = true ] \
+  && [ -z "$PRE_INTEGRATION_HEAD" ]; then
+  # Fall back to a local git identity when none is configured globally, so the
+  # commit succeeds on CI boxes and fresh dev machines. Global config, when
+  # present, wins because we only set the local keys if they resolve to empty.
+  if [ -z "$(git -C "$PROJECT_DIR" config --get user.email 2>/dev/null || true)" ]; then
+    git -C "$PROJECT_DIR" config user.email "touchstone@localhost"
+  fi
+  if [ -z "$(git -C "$PROJECT_DIR" config --get user.name 2>/dev/null || true)" ]; then
+    git -C "$PROJECT_DIR" config user.name "Touchstone Bootstrap"
+  fi
+
+  # If an integration (e.g. sentinel init) created a commit DURING this
+  # run, fold its changes back into the index so the touchstone initial
+  # commit is the sole commit on the branch. Even inside this block
+  # (PRE_INTEGRATION_HEAD empty), we re-verify that HEAD is a root commit
+  # to be sure we're not about to delete a reference we didn't create.
+  if git -C "$PROJECT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+    commits_on_branch="$(git -C "$PROJECT_DIR" rev-list --count HEAD 2>/dev/null || echo 0)"
+    if [ "$commits_on_branch" = "1" ]; then
+      # Delete HEAD — `git reset` below then matches the index to the
+      # now-empty tree at HEAD while preserving the working tree. The
+      # subsequent `git add -A` + `git commit` lands every scaffold file
+      # (integration-authored + base templates) as the sole commit.
+      git -C "$PROJECT_DIR" update-ref -d HEAD >/dev/null 2>&1 || true
+      git -C "$PROJECT_DIR" reset >/dev/null 2>&1 || true
     fi
-    if [ -z "$(git -C "$PROJECT_DIR" config --get user.name 2>/dev/null || true)" ]; then
-      git -C "$PROJECT_DIR" config user.name "Touchstone Bootstrap"
-    fi
-    git -C "$PROJECT_DIR" add -A
-    # No --no-verify needed — hooks are installed after this commit on purpose.
+  fi
+
+  # Stage everything the integrations produced plus the base scaffold.
+  # `git add -A` is safe here because PRE_INTEGRATION_HEAD was empty —
+  # we know the entire working tree was authored by this scaffold run.
+  git -C "$PROJECT_DIR" add -A
+  if ! git -C "$PROJECT_DIR" diff --cached --quiet 2>/dev/null; then
     if git -C "$PROJECT_DIR" commit -m "chore: initial touchstone scaffold
 
 Touchstone-Version: $TOUCHSTONE_SHA" >/dev/null 2>&1; then
@@ -1665,41 +1755,10 @@ else
   printf '    registry: skipped (--no-register)\n'
 fi
 
-# Doctrine 0002 — Cortex / Sentinel / GitHub integrations. These all run after
-# the touchstone scaffold is on disk so a failure in any one leaves the core
-# project usable. Each prints a one-line success or skip message.
-
-if [ "$WITH_CORTEX" = true ] && [ "$RE_INIT" = false ]; then
-  if command -v cortex >/dev/null 2>&1; then
-    echo ""
-    echo "==> Initializing Cortex ..."
-    if ( cd "$PROJECT_DIR" && cortex init ); then
-      :
-    else
-      echo "==> Cortex init failed (continuing)." >&2
-    fi
-  else
-    echo ""
-    echo "==> Cortex not on PATH — skipping cortex init."
-    echo "    Install: brew install autumngarage/cortex/cortex"
-  fi
-fi
-
-if [ "$WITH_SENTINEL" = true ] && [ "$RE_INIT" = false ]; then
-  if command -v sentinel >/dev/null 2>&1; then
-    echo ""
-    echo "==> Initializing Sentinel ..."
-    if ( cd "$PROJECT_DIR" && sentinel init ); then
-      :
-    else
-      echo "==> Sentinel init failed (continuing)." >&2
-    fi
-  else
-    echo ""
-    echo "==> Sentinel not on PATH — skipping sentinel init."
-    echo "    Install: brew install autumngarage/sentinel/sentinel"
-  fi
-fi
+# Doctrine 0002 — GitHub repo creation runs after hook install so the
+# `gh repo create --push` goes through the pre-push gate. Cortex and
+# Sentinel init already ran above (before the initial commit) so their
+# artifacts are captured in the scaffold commit.
 
 if { [ "$GITHUB_MODE" = "private" ] || [ "$GITHUB_MODE" = "public" ]; } && [ "$RE_INIT" = false ]; then
   if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then

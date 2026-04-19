@@ -1460,6 +1460,196 @@ assert_not_exists "$REGISTRY_SKIP_TMP/.touchstone-projects"
 assert_contains "$TEST_DIR/register-skip.txt" '==> Registry skipped (--no-register)'
 rm -rf "$REGISTRY_SKIP_TMP"
 
+# --------------------------------------------------------------------------
+# R5.1 — `--with-cortex --with-sentinel` must fold integration artifacts
+# into the same initial commit as the base scaffold. Before R5.1, cortex
+# and sentinel init ran AFTER the initial commit, leaving .cortex/ and
+# .sentinel/ uncommitted and the user forced to make a second commit on
+# main (which `no-commit-to-branch` then blocks). This test stubs both
+# CLIs with deterministic behavior and asserts the resulting repo has
+# exactly ONE commit that captures every integration-authored file.
+#
+# R5.2 — the touchstone-shipped .gitignore must NOT blanket-ignore
+# .sentinel/ at the project root. Sentinel's own .sentinel/.gitignore
+# (written by `sentinel init`) handles the ephemeral state/ exclusion;
+# blanket-ignoring defeats that design. The test asserts `.claude/` is
+# still ignored (it's Claude Code's per-user cache).
+# --------------------------------------------------------------------------
+
+echo ""
+echo "==> R5.1/R5.2: --with-cortex --with-sentinel ordering + gitignore scope"
+
+PROJECT_R5="$TEST_DIR/test-project-r5"
+R5_STUBDIR="$(mktemp -d -t touchstone-r5-stubs.XXXXXX)"
+
+# Fake cortex CLI: creates `.cortex/` with a tracked marker file, exactly the
+# shape the R5.1 fix needs captured in the initial commit.
+cat > "$R5_STUBDIR/cortex" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  init)
+    mkdir -p .cortex/doctrine .cortex/plans .cortex/journal
+    : > .cortex/state.md
+    : > .cortex/README.md
+    echo "cortex init (stub): created .cortex/"
+    ;;
+  *)
+    echo "cortex stub: unrecognized arg '${1:-}'" >&2; exit 2 ;;
+esac
+STUB
+chmod +x "$R5_STUBDIR/cortex"
+
+# Fake sentinel CLI: creates `.sentinel/` with a config + its own gitignore,
+# appends a `.claude/` entry to the project's root .gitignore (NOT `.sentinel/`
+# — that's R5.2), AND attempts its own `git commit -- .gitignore` when inside
+# a git repo. The real sentinel init does this to survive `sentinel work`'s
+# between-item `git reset --hard`; the stub mirrors it so the R5.1
+# atomicity assertion below properly exercises the "sentinel committed
+# first" code path in bootstrap/new-project.sh.
+cat > "$R5_STUBDIR/sentinel" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  init)
+    mkdir -p .sentinel
+    : > .sentinel/config.toml
+    printf 'state/\n' > .sentinel/.gitignore
+    # Note: we intentionally do NOT append `.sentinel/` to the root
+    # .gitignore here — R5.2 says touchstone must not blanket-ignore
+    # .sentinel/ at the root. Touchstone itself never writes that block
+    # (sentinel does, in its own init), so the stub mirrors that split.
+    if [ -f .gitignore ] && ! grep -q '^\.claude/$' .gitignore 2>/dev/null; then
+      printf '\n# sentinel artifacts — generated per-run, not source\n.claude/\n' >> .gitignore
+      # Mirror real sentinel's `_commit_gitignore_if_in_repo` so the
+      # touchstone bootstrap is tested against the "integration already
+      # made a commit" shape, not just the "integration dirtied the
+      # working tree" shape.
+      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git add -- .gitignore >/dev/null 2>&1 || true
+        git -c user.email=sentinel@test -c user.name=sentinel \
+          commit -m "chore: gitignore sentinel artifacts (.claude/)" \
+          -- .gitignore >/dev/null 2>&1 || true
+      fi
+    fi
+    echo "sentinel init (stub): created .sentinel/"
+    ;;
+  *)
+    echo "sentinel stub: unrecognized arg '${1:-}'" >&2; exit 2 ;;
+esac
+STUB
+chmod +x "$R5_STUBDIR/sentinel"
+
+PATH="$R5_STUBDIR:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
+  "$PROJECT_R5" --no-register --with-cortex --with-sentinel \
+  </dev/null >"$TEST_DIR/r5-bootstrap.txt" 2>&1 \
+  || { echo "FAIL: bootstrap with --with-cortex --with-sentinel exited non-zero"; cat "$TEST_DIR/r5-bootstrap.txt"; ERRORS=$((ERRORS+1)); }
+
+# R5.1 assertions: the integration outputs and the scaffold land in one commit.
+assert_exists "$PROJECT_R5/.cortex"
+assert_exists "$PROJECT_R5/.sentinel"
+
+if [ -d "$PROJECT_R5/.git" ]; then
+  # Exactly one commit on the branch — no "half-committed" follow-up.
+  commit_count="$(git -C "$PROJECT_R5" rev-list --count HEAD 2>/dev/null || echo 0)"
+  if [ "$commit_count" != "1" ]; then
+    echo "FAIL: expected 1 commit after --with-cortex --with-sentinel scaffold, got $commit_count" >&2
+    git -C "$PROJECT_R5" log --oneline >&2 || true
+    ERRORS=$((ERRORS+1))
+  fi
+
+  # Every integration-authored file must be in the initial commit's tree.
+  # `git log --all --raw` on a one-commit repo shows every path touched.
+  tracked="$(git -C "$PROJECT_R5" log --all --name-only --pretty=format: 2>/dev/null | sort -u)"
+  for path in .cortex/state.md .cortex/README.md .sentinel/config.toml .sentinel/.gitignore .gitignore; do
+    if ! printf '%s\n' "$tracked" | grep -qxF "$path"; then
+      echo "FAIL: expected $path to be tracked in the initial commit; got:" >&2
+      printf '%s\n' "$tracked" >&2
+      ERRORS=$((ERRORS+1))
+    fi
+  done
+
+  # Working tree must be clean — no leftover untracked artifacts.
+  if [ -n "$(git -C "$PROJECT_R5" status --porcelain 2>/dev/null)" ]; then
+    echo "FAIL: working tree dirty after scaffold:" >&2
+    git -C "$PROJECT_R5" status --porcelain >&2
+    ERRORS=$((ERRORS+1))
+  fi
+fi
+
+# R5.1 regression guard: running the scaffold against a directory that
+# ALREADY has a git repo + user-authored commit must never rewrite that
+# commit, never sweep unrelated pending changes into a touchstone commit,
+# and never create a "chore: initial touchstone scaffold" commit at all.
+# The initial-commit path is scoped to fresh scaffolds — the
+# PRE_INTEGRATION_HEAD capture gates it, so an existing repo gets no
+# auto-commit from touchstone (same as pre-R5 behavior).
+PROJECT_R5_EXISTING="$TEST_DIR/test-project-r5-existing-history"
+mkdir -p "$PROJECT_R5_EXISTING"
+( cd "$PROJECT_R5_EXISTING" \
+  && git init -q -b main \
+  && git config user.email "u@test" \
+  && git config user.name "User" \
+  && echo "# prior work" > README.md \
+  && git add README.md \
+  && git commit -q -m "feat: user's own initial commit" \
+  && echo "dirty-unrelated" > WIP.txt ) \
+  >/dev/null 2>&1
+USER_HEAD_BEFORE="$(git -C "$PROJECT_R5_EXISTING" rev-parse HEAD 2>/dev/null || echo missing)"
+USER_SUBJECT_BEFORE="$(git -C "$PROJECT_R5_EXISTING" log -1 --pretty=%s HEAD 2>/dev/null || echo missing)"
+
+PATH="$R5_STUBDIR:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
+  "$PROJECT_R5_EXISTING" --no-register --with-cortex --with-sentinel \
+  </dev/null >"$TEST_DIR/r5-existing-bootstrap.txt" 2>&1 \
+  || { echo "FAIL: bootstrap into existing git repo exited non-zero"; cat "$TEST_DIR/r5-existing-bootstrap.txt"; ERRORS=$((ERRORS+1)); }
+
+# The user's commit SHA must still be reachable (not rewritten).
+if ! git -C "$PROJECT_R5_EXISTING" cat-file -e "$USER_HEAD_BEFORE" 2>/dev/null; then
+  echo "FAIL: touchstone scaffold rewrote user's pre-existing commit $USER_HEAD_BEFORE" >&2
+  ERRORS=$((ERRORS+1))
+fi
+
+# The user's commit must still be the first commit on the branch.
+first_subject="$(git -C "$PROJECT_R5_EXISTING" log --reverse --pretty=%s 2>/dev/null | head -1)"
+if [ "$first_subject" != "$USER_SUBJECT_BEFORE" ]; then
+  echo "FAIL: first commit subject changed from '$USER_SUBJECT_BEFORE' to '$first_subject'" >&2
+  ERRORS=$((ERRORS+1))
+fi
+
+# No "chore: initial touchstone scaffold" commit should exist — that message
+# is reserved for fresh scaffolds. Touchstone files are simply added to the
+# worktree; the user commits them when they're ready.
+if git -C "$PROJECT_R5_EXISTING" log --pretty=%s 2>/dev/null | grep -qxF 'chore: initial touchstone scaffold'; then
+  echo "FAIL: touchstone created an initial-scaffold commit on a pre-existing repo" >&2
+  git -C "$PROJECT_R5_EXISTING" log --oneline >&2 || true
+  ERRORS=$((ERRORS+1))
+fi
+
+# The user's pre-existing WIP file must still be untracked-and-unstaged —
+# i.e., touchstone must not have silently `git add -A`'d it into any index.
+# (Cortex/sentinel stubs may have made their own commits; that's their
+# contract. What touchstone itself must not do is sweep the user's tree.)
+wip_status="$(git -C "$PROJECT_R5_EXISTING" status --porcelain WIP.txt 2>/dev/null || true)"
+case "$wip_status" in
+  '?? WIP.txt') : ;;                         # correct — still untracked
+  *)
+    echo "FAIL: touchstone staged/committed user's WIP.txt (status: '$wip_status')" >&2
+    ERRORS=$((ERRORS+1))
+    ;;
+esac
+
+# R5.2 assertions: the root .gitignore must NOT blanket-ignore .sentinel/.
+# `.claude/` should still be present (the stub mirrors sentinel's real write).
+if [ -f "$PROJECT_R5/.gitignore" ]; then
+  if grep -qxF '.sentinel/' "$PROJECT_R5/.gitignore"; then
+    echo "FAIL: root .gitignore contains '.sentinel/' — R5.2 regression" >&2
+    ERRORS=$((ERRORS+1))
+  fi
+  assert_contains "$PROJECT_R5/.gitignore" '^\.claude/$'
+fi
+
+rm -rf "$R5_STUBDIR"
+
 echo ""
 if [ "$ERRORS" -eq 0 ]; then
   echo "==> PASS: all assertions passed"
