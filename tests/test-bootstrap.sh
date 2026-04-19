@@ -284,6 +284,65 @@ if [ "$SWIFT_BUILD_DUPES" -ne 1 ]; then
   ERRORS=$((ERRORS + 1))
 fi
 
+# setup.sh must install per-profile dev tools so sentinel's verifier and
+# touchstone-run's lint path find the tools they expect. Each profile's install
+# block is gated on project_type so non-matching profiles are no-ops, and each
+# check-before-install is idempotent.
+#
+# We grep the scaffolded setup.sh rather than executing it: running the install
+# block would invoke brew/go/rustup, which would fail in CI and on any
+# non-macOS dev machine. Grepping confirms the branches exist and the flag
+# plumbing is wired; the actual brew call is a thin wrapper that's hard to
+# break once the branch is reached.
+assert_exists "$PROJECT_SWIFT/setup.sh"
+assert_contains "$PROJECT_SWIFT/setup.sh" '\-\-skip-devtools'
+assert_contains "$PROJECT_SWIFT/setup.sh" 'TOUCHSTONE_SKIP_DEVTOOLS'
+assert_contains "$PROJECT_SWIFT/setup.sh" 'install_swift_devtools'
+assert_contains "$PROJECT_SWIFT/setup.sh" 'brew install swiftlint'
+# swift-format (Apple's tool, not Nick Lockwood's swiftformat) — must match
+# what scripts/touchstone-run.sh and `touchstone doctor --project` invoke.
+assert_contains "$PROJECT_SWIFT/setup.sh" 'brew install swift-format'
+assert_not_contains "$PROJECT_SWIFT/setup.sh" 'brew install swiftformat'
+assert_contains "$PROJECT_SWIFT/setup.sh" 'install_go_devtools'
+assert_contains "$PROJECT_SWIFT/setup.sh" 'golang.org/x/lint/golint@latest'
+assert_contains "$PROJECT_SWIFT/setup.sh" 'install_rust_devtools'
+assert_contains "$PROJECT_SWIFT/setup.sh" 'rustup component add clippy'
+assert_contains "$PROJECT_SWIFT/setup.sh" 'rustup component add rustfmt'
+# Brew guard — the swift install block must degrade gracefully when brew is
+# missing instead of exiting the whole setup.
+assert_contains "$PROJECT_SWIFT/setup.sh" 'Homebrew not available'
+# Go/Rust guards — same graceful degrade.
+assert_contains "$PROJECT_SWIFT/setup.sh" 'go not installed'
+assert_contains "$PROJECT_SWIFT/setup.sh" 'cargo not installed'
+# Syntax check the scaffolded setup.sh so malformed heredoc substitutions
+# don't ship silently.
+if ! bash -n "$PROJECT_SWIFT/setup.sh" 2>"$TEST_DIR/setup-syntax.txt"; then
+  echo "FAIL: scaffolded setup.sh has a syntax error:" >&2
+  cat "$TEST_DIR/setup-syntax.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --skip-devtools / TOUCHSTONE_SKIP_DEVTOOLS=1 must wire into the gate so
+# the install block short-circuits in CI / offline environments. We grep for
+# the gate text rather than invoking setup.sh — running it would call real
+# brew/go/rustup, which is out of scope for a hermetic test.
+assert_contains "$PROJECT_SWIFT/setup.sh" 'Skipping per-profile dev tools'
+assert_contains "$PROJECT_SWIFT/setup.sh" 'SKIP_DEVTOOLS=true'
+# Monorepo targets must also get their dev tools installed — a generic root
+# with Swift/Go/Rust targets would otherwise re-create the same silent-skip
+# gap this block closes.
+assert_contains "$PROJECT_SWIFT/setup.sh" 'install_configured_target_devtools'
+assert_contains "$PROJECT_SWIFT/setup.sh" 'install_profile_devtools'
+
+# Non-swift profile setup.sh must carry the same template (setup.sh is one
+# file per project, branch chosen at runtime by project_type). Sanity-check
+# that the node/python templates also include all branches so switching
+# project_type later works without re-bootstrap.
+assert_contains "$PROJECT_NODE/setup.sh" 'install_swift_devtools'
+assert_contains "$PROJECT_NODE/setup.sh" 'install_go_devtools'
+assert_contains "$PROJECT_NODE/setup.sh" 'install_rust_devtools'
+assert_contains "$PROJECT_PYTHON/setup.sh" 'install_swift_devtools'
+
 # Bootstrap into an existing directory should back up touchstone-owned files before replacing them.
 mkdir -p "$PROJECT_EXISTING/principles" "$PROJECT_EXISTING/scripts"
 printf 'custom principle\n' > "$PROJECT_EXISTING/principles/engineering-principles.md"
@@ -742,18 +801,21 @@ assert_contains "$RUNNER_LOG" 'npm|.*/monorepo-runner/apps/web|run test'
 assert_contains "$RUNNER_LOG" 'cargo|.*/monorepo-runner/services/api|test --all'
 
 # setup.sh --deps-only should also use the project profile layer for non-Python ecosystems.
+# TOUCHSTONE_SKIP_DEVTOOLS=1 keeps these tests hermetic — we're exercising the
+# dependency dispatch, not the per-profile dev-tool install (which would call
+# real brew/go/rustup on macOS dev machines that have those binaries on PATH).
 : > "$RUNNER_LOG"
-(cd "$PROJECT_NODE" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash setup.sh --deps-only) >/dev/null
+(cd "$PROJECT_NODE" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" TOUCHSTONE_SKIP_DEVTOOLS=1 bash setup.sh --deps-only) >/dev/null
 assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node|install'
 
 cp "$TOUCHSTONE_ROOT/templates/setup.sh" "$SWIFT_PROJECT/setup.sh"
 : > "$RUNNER_LOG"
-(cd "$SWIFT_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash setup.sh --deps-only) >/dev/null
+(cd "$SWIFT_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" TOUCHSTONE_SKIP_DEVTOOLS=1 bash setup.sh --deps-only) >/dev/null
 assert_contains "$RUNNER_LOG" 'swift|.*/swift-runner|package resolve'
 
 cp "$TOUCHSTONE_ROOT/templates/setup.sh" "$RUST_PROJECT/setup.sh"
 : > "$RUNNER_LOG"
-(cd "$RUST_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash setup.sh --deps-only) >/dev/null
+(cd "$RUST_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" TOUCHSTONE_SKIP_DEVTOOLS=1 bash setup.sh --deps-only) >/dev/null
 assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|fetch'
 
 # Bootstrap should install git hooks via pre-commit when pre-commit is available,

@@ -25,12 +25,21 @@ fail()  { printf "  ${RED}✗${RESET} %s\n" "$*"; }
 DEPS_ONLY=false
 GIT_WORKFLOW="git"
 GITBUTLER_MCP="false"
+SKIP_DEVTOOLS=false
+if [ "${TOUCHSTONE_SKIP_DEVTOOLS:-}" = "1" ] || [ "${TOUCHSTONE_SKIP_DEVTOOLS:-}" = "true" ]; then
+  SKIP_DEVTOOLS=true
+fi
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --deps-only) DEPS_ONLY=true; shift ;;
+    --skip-devtools) SKIP_DEVTOOLS=true; shift ;;
     -h|--help)
-      echo "Usage: bash setup.sh [--deps-only]"
+      echo "Usage: bash setup.sh [--deps-only] [--skip-devtools]"
+      echo ""
+      echo "  --deps-only       Reinstall project deps (also refreshes per-profile dev tools)"
+      echo "  --skip-devtools   Skip per-profile dev-tool install (for CI or offline environments)"
+      echo "                    Also honored via TOUCHSTONE_SKIP_DEVTOOLS=1"
       exit 0
       ;;
     *) fail "Unknown argument: $1"; exit 1 ;;
@@ -763,6 +772,144 @@ ROOT_PROFILE="${CONFIG_PROJECT_TYPE:-auto}"
 if [ "$ROOT_PROFILE" = "generic" ] && [ "$(detect_profile ".")" != "generic" ]; then
   ROOT_PROFILE="$(detect_profile ".")"
 fi
+
+# --------------------------------------------------------------------------
+# 8b. Per-profile dev tools
+# --------------------------------------------------------------------------
+# Language-specific linters/formatters that sentinel + touchstone-run expect.
+# Each block is idempotent (check-before-install) and guarded on the relevant
+# package manager being available — missing package managers print a hint and
+# skip rather than failing setup. Runs in both default and --deps-only modes
+# so tools stay fresh; skipped entirely by --skip-devtools or
+# TOUCHSTONE_SKIP_DEVTOOLS=1 for CI / offline environments.
+install_swift_devtools() {
+  if ! command -v brew >/dev/null 2>&1; then
+    warn "Homebrew not available — skipping swiftlint/swift-format install."
+    warn "Manual install (once brew is present): brew install swiftlint swift-format"
+    return 0
+  fi
+  if command -v swiftlint >/dev/null 2>&1; then
+    ok "swiftlint installed"
+  else
+    warn "Installing swiftlint..."
+    brew install swiftlint 2>/dev/null && ok "swiftlint installed" || warn "swiftlint install failed"
+  fi
+  # Note: Apple's swift-format (matches touchstone-run.sh and `touchstone doctor`),
+  # NOT Nick Lockwood's swiftformat (different tool, different binary name).
+  if command -v swift-format >/dev/null 2>&1; then
+    ok "swift-format installed"
+  else
+    warn "Installing swift-format..."
+    brew install swift-format 2>/dev/null && ok "swift-format installed" || warn "swift-format install failed"
+  fi
+}
+
+install_go_devtools() {
+  if ! command -v go >/dev/null 2>&1; then
+    warn "go not installed — skipping golint install."
+    warn "Manual install (once go is present): go install golang.org/x/lint/golint@latest"
+    return 0
+  fi
+  if command -v golint >/dev/null 2>&1; then
+    ok "golint installed"
+  else
+    warn "Installing golint..."
+    go install golang.org/x/lint/golint@latest 2>/dev/null && ok "golint installed" || warn "golint install failed"
+  fi
+}
+
+install_rust_devtools() {
+  if ! command -v cargo >/dev/null 2>&1; then
+    warn "cargo not installed — skipping clippy/rustfmt setup."
+    warn "Manual install (once rustup is present): rustup component add clippy rustfmt"
+    return 0
+  fi
+  if ! command -v rustup >/dev/null 2>&1; then
+    warn "rustup not installed — clippy/rustfmt component install unavailable. Verify your toolchain provides them."
+    return 0
+  fi
+  if cargo clippy --version >/dev/null 2>&1; then
+    ok "clippy installed"
+  else
+    warn "Installing clippy..."
+    rustup component add clippy 2>/dev/null && ok "clippy installed" || warn "clippy install failed"
+  fi
+  if cargo fmt --version >/dev/null 2>&1; then
+    ok "rustfmt installed"
+  else
+    warn "Installing rustfmt..."
+    rustup component add rustfmt 2>/dev/null && ok "rustfmt installed" || warn "rustfmt install failed"
+  fi
+}
+
+install_profile_devtools() {
+  local profile="$1"
+  local label="${2:-}"
+  case "$profile" in
+    swift)
+      info "Checking Swift dev tools${label:+ ($label)}"
+      install_swift_devtools
+      ;;
+    go)
+      info "Checking Go dev tools${label:+ ($label)}"
+      install_go_devtools
+      ;;
+    rust)
+      info "Checking Rust dev tools${label:+ ($label)}"
+      install_rust_devtools
+      ;;
+    python|node|typescript|ts|generic|"")
+      : # python/node own their ecosystems via requirements.txt / package.json; generic is a no-op.
+      ;;
+    *)
+      : # Unknown profile — let dependency install surface the warning.
+      ;;
+  esac
+}
+
+install_configured_target_devtools() {
+  local entry name path profile
+  local -a target_entries=()
+
+  [ -n "$CONFIG_TARGETS" ] || return 0
+
+  IFS=',' read -r -a target_entries <<< "$CONFIG_TARGETS"
+  for entry in "${target_entries[@]}"; do
+    entry="$(trim "$entry")"
+    [ -z "$entry" ] && continue
+    name="${entry%%:*}"
+    path="${entry#*:}"
+    profile="${path#*:}"
+    path="${path%%:*}"
+    if [ "$path" = "$profile" ]; then
+      profile="auto"
+    fi
+    [ -d "$path" ] || continue
+    if [ "$profile" = "auto" ] || [ -z "$profile" ]; then
+      profile="$(detect_profile "$path")"
+    fi
+    install_profile_devtools "$profile" "$name"
+  done
+}
+
+if [ "$SKIP_DEVTOOLS" = true ]; then
+  info "Skipping per-profile dev tools (--skip-devtools / TOUCHSTONE_SKIP_DEVTOOLS=1)"
+else
+  # Resolve 'auto' / empty to a concrete profile the same way
+  # install_profile_dependencies does — otherwise a repo with
+  # project_type=auto or no .touchstone-config installs deps but silently
+  # skips the verifier tools.
+  ROOT_PROFILE_RESOLVED="$ROOT_PROFILE"
+  if [ "$ROOT_PROFILE_RESOLVED" = "auto" ] || [ -z "$ROOT_PROFILE_RESOLVED" ]; then
+    ROOT_PROFILE_RESOLVED="$(detect_profile ".")"
+  fi
+  install_profile_devtools "$ROOT_PROFILE_RESOLVED"
+  # Monorepo targets declared in .touchstone-config also need their dev tools —
+  # touchstone-run.sh / doctor validate them per-target, so missing tools would
+  # re-create the same silent-skip failure mode this block is meant to close.
+  install_configured_target_devtools
+fi
+
 if install_profile_dependencies "Project" "." "$ROOT_PROFILE"; then
   DEPS_FOUND=true
 fi
