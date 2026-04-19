@@ -4,6 +4,8 @@
 #
 
 # Disable colors if stdout isn't a terminal or NO_COLOR is set.
+# shellcheck disable=SC2034  # BLUE kept for palette parity (exported to sourcing
+# callers); tk_* helpers below use RED/GREEN/YELLOW/BOLD/DIM/RESET directly.
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   RED='\033[0;31m'
   GREEN='\033[0;32m'

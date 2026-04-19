@@ -1554,6 +1554,8 @@ print_summary() {
 }
 
 # Colors (respect NO_COLOR).
+# shellcheck disable=SC2034  # C_GREEN / C_CYAN kept for palette parity;
+# other color vars are referenced in printf statements above and below.
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   C_DIM='\033[2m' C_GREEN='\033[0;32m'
   C_YELLOW='\033[0;33m' C_RED='\033[0;31m' C_CYAN='\033[0;36m' C_RESET='\033[0m'
