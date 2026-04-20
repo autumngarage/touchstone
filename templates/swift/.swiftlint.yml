@@ -10,6 +10,11 @@ excluded:
   - .git
   - node_modules
 
+# Trailing commas are common in modern Swift and the touchstone scaffolded
+# Package.swift uses them. Re-enable per-project if your style guide forbids.
+disabled_rules:
+  - trailing_comma
+
 # Sensible default severity. Tune per-project as needed.
 opt_in_rules:
   - empty_count
