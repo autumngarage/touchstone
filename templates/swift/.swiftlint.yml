@@ -1,0 +1,38 @@
+# Touchstone-managed default. Customize per-project; touchstone update
+# will not overwrite a hand-edited .swiftlint.yml.
+
+excluded:
+  - .build
+  - .swiftpm
+  - DerivedData
+  - Pods
+  - vendor
+  - .git
+  - node_modules
+
+# Sensible default severity. Tune per-project as needed.
+opt_in_rules:
+  - empty_count
+  - empty_string
+  - first_where
+  - last_where
+  - sorted_first_last
+
+# Allow common short identifier names (i, j, k for indices; x, y for coords)
+identifier_name:
+  min_length: 1
+  excluded:
+    - i
+    - j
+    - k
+    - x
+    - y
+    - z
+    - id
+    - to
+    - of
+
+# Generous line length (200 chars) — matches autumn-mail's historical practice
+line_length:
+  warning: 160
+  error: 200
