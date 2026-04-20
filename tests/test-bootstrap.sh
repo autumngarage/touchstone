@@ -243,6 +243,15 @@ assert_contains "$PROJECT_SWIFT/.gitignore" '^Package\.resolved$'
 assert_contains "$PROJECT_SWIFT/.gitignore" '^DerivedData/$'
 assert_contains "$PROJECT_SWIFT/.gitignore" '^\*\.xcodeproj/$'
 
+# Swift fresh bootstrap ships .swiftlint.yml with build-artifact excludes so
+# `swiftlint --strict` can run against a freshly-built project without choking
+# on SwiftPM-generated files in .build/. Project-owned: copied via copy_file,
+# preserved on re-init / update if the user has hand-edited it.
+assert_exists "$PROJECT_SWIFT/.swiftlint.yml"
+assert_contains "$PROJECT_SWIFT/.swiftlint.yml" '^  - \.build$'
+assert_contains "$PROJECT_SWIFT/.swiftlint.yml" '^  - \.swiftpm$'
+assert_contains "$PROJECT_SWIFT/.swiftlint.yml" '^  - DerivedData$'
+
 # The swift scaffold must skip on a fresh bootstrap when Swift content already
 # exists — _has_any_swift_sources guards against overwriting user code. Simulate
 # the case: a pre-existing Swift project that has never been touchstoned.
@@ -252,6 +261,17 @@ printf 'SENTINEL_PACKAGE\n' > "$PROJECT_SWIFT_EXISTING/Package.swift"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SWIFT_EXISTING" --no-register --type swift >/dev/null
 assert_contains "$PROJECT_SWIFT_EXISTING/Package.swift" '^SENTINEL_PACKAGE$'
 assert_not_exists "$PROJECT_SWIFT_EXISTING/Sources/ExistingSwiftRepo/ExistingSwiftRepoApp.swift"
+# Existing Swift project still gets the .swiftlint.yml when missing — the
+# template is project-owned and added when absent.
+assert_exists "$PROJECT_SWIFT_EXISTING/.swiftlint.yml"
+
+# A pre-existing hand-edited .swiftlint.yml must NOT be clobbered by --type swift
+# bootstrap. copy_file is the project-owned semantic: skip if exists.
+PROJECT_SWIFT_HAND_EDITED="$TEST_DIR/swift-hand-edited-config"
+mkdir -p "$PROJECT_SWIFT_HAND_EDITED"
+printf 'SENTINEL_HAND_EDITED_CONFIG\n' > "$PROJECT_SWIFT_HAND_EDITED/.swiftlint.yml"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SWIFT_HAND_EDITED" --no-register --type swift >/dev/null
+assert_contains "$PROJECT_SWIFT_HAND_EDITED/.swiftlint.yml" '^SENTINEL_HAND_EDITED_CONFIG$'
 
 # Non-swift profiles must NOT pick up the Swift-specific .gitignore entries —
 # the append is per-profile and must not bleed across profiles.
@@ -263,6 +283,11 @@ if grep -q '^Package\.resolved$' "$PROJECT_PYTHON/.gitignore" 2>/dev/null; then
   echo "FAIL: python profile .gitignore must not contain Swift entries" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+# Non-swift profiles must NOT receive .swiftlint.yml — copy_profile_templates
+# is per-profile gated.
+assert_not_exists "$PROJECT_NODE/.swiftlint.yml"
+assert_not_exists "$PROJECT_PYTHON/.swiftlint.yml"
 
 # Swift-specific .gitignore append must be idempotent — even if the entries
 # are already present, a fresh bootstrap must not duplicate them.
