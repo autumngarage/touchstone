@@ -248,6 +248,75 @@ if git -C "$ROLLBACK_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; th
 fi
 
 # --------------------------------------------------------------------------
+# Test 5b: swift profile gains .swiftlint.yml on update without clobbering
+# a hand-edited copy.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 5b: Swift project gains .swiftlint.yml on update ---"
+
+SWIFT_UPDATE_PROJECT="$TEST_DIR/swift-update-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SWIFT_UPDATE_PROJECT" --no-register --type swift >/dev/null
+configure_git "$SWIFT_UPDATE_PROJECT"
+commit_all "$SWIFT_UPDATE_PROJECT" "initial swift touchstone project"
+
+# Simulate a stale touchstone version + a project that pre-existed the swiftlint
+# template (so .swiftlint.yml was never created at bootstrap time).
+rm -f "$SWIFT_UPDATE_PROJECT/.swiftlint.yml"
+echo "0000000000000000000000000000000000000010" > "$SWIFT_UPDATE_PROJECT/.touchstone-version"
+commit_all "$SWIFT_UPDATE_PROJECT" "simulate pre-swiftlint-template swift project"
+
+(cd "$SWIFT_UPDATE_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/swift-update-output.txt" 2>&1
+
+assert_contains "$TEST_DIR/swift-update-output.txt" 'added (project-owned).*\.swiftlint\.yml'
+assert_exists "$SWIFT_UPDATE_PROJECT/.swiftlint.yml"
+assert_contains "$SWIFT_UPDATE_PROJECT/.swiftlint.yml" '^  - \.build$'
+
+# .swiftlint.yml stays out of .touchstone-manifest — it's project-owned, not
+# touchstone-owned. Future updates must not include it in the touchstone-owned
+# overwrite path.
+if grep -qxF '.swiftlint.yml' "$SWIFT_UPDATE_PROJECT/.touchstone-manifest"; then
+  echo "FAIL: .swiftlint.yml must NOT be in .touchstone-manifest (project-owned, not touchstone-owned)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# The newly added .swiftlint.yml must be staged in the update commit so
+# `--ship` does not leave it behind.
+if git -C "$SWIFT_UPDATE_PROJECT" log -1 --name-only --format='' | grep -qxF '.swiftlint.yml'; then
+  echo "    PASS: .swiftlint.yml committed as part of the update"
+else
+  echo "FAIL: .swiftlint.yml was not committed in the update commit" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Re-run on a swift project that already has a hand-edited .swiftlint.yml —
+# update must NOT clobber it. Use a sentinel string to verify the original
+# bytes survive.
+SWIFT_HAND_EDITED_PROJECT="$TEST_DIR/swift-hand-edited-update"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SWIFT_HAND_EDITED_PROJECT" --no-register --type swift >/dev/null
+configure_git "$SWIFT_HAND_EDITED_PROJECT"
+printf 'SENTINEL_HAND_EDITED_SWIFTLINT\n' > "$SWIFT_HAND_EDITED_PROJECT/.swiftlint.yml"
+commit_all "$SWIFT_HAND_EDITED_PROJECT" "initial swift project with hand-edited swiftlint"
+echo "0000000000000000000000000000000000000011" > "$SWIFT_HAND_EDITED_PROJECT/.touchstone-version"
+commit_all "$SWIFT_HAND_EDITED_PROJECT" "simulate stale touchstone state"
+
+(cd "$SWIFT_HAND_EDITED_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
+
+assert_contains "$SWIFT_HAND_EDITED_PROJECT/.swiftlint.yml" '^SENTINEL_HAND_EDITED_SWIFTLINT$'
+
+# Non-swift profiles must NOT receive .swiftlint.yml on update — the per-profile
+# gate keeps the swift template out of unrelated projects.
+NON_SWIFT_UPDATE_PROJECT="$TEST_DIR/non-swift-update-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$NON_SWIFT_UPDATE_PROJECT" --no-register --type python >/dev/null
+configure_git "$NON_SWIFT_UPDATE_PROJECT"
+commit_all "$NON_SWIFT_UPDATE_PROJECT" "initial python project"
+echo "0000000000000000000000000000000000000012" > "$NON_SWIFT_UPDATE_PROJECT/.touchstone-version"
+commit_all "$NON_SWIFT_UPDATE_PROJECT" "simulate stale python touchstone state"
+
+(cd "$NON_SWIFT_UPDATE_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
+
+assert_not_exists "$NON_SWIFT_UPDATE_PROJECT/.swiftlint.yml"
+
+# --------------------------------------------------------------------------
 # Test 6: check mode and ordinary commands do not print the old startup nag.
 # --------------------------------------------------------------------------
 echo ""

@@ -320,6 +320,41 @@ if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-ve
   update_file "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
 fi
 
+# Per-profile project-owned templates (e.g. swift's .swiftlint.yml). These are
+# NOT touchstone-owned: add when missing, never overwrite a hand-edited copy.
+# They stay out of .touchstone-manifest so future `touchstone update` runs do
+# not clobber project-owned customization.
+PROJECT_OWNED_ADDED_PATHS=()
+add_profile_project_template_if_missing() {
+  local src="$1" dst="$2"
+  local rel_path
+  rel_path="$(relative_project_path "$dst")"
+
+  if [ -f "$dst" ]; then
+    # Hand-edited or already-shipped — leave alone. update_file handles
+    # touchstone-owned files; this helper exists precisely so project-owned
+    # additions skip when present, even if the on-disk content differs.
+    return 0
+  fi
+
+  if [ "$DRY_RUN" = true ]; then
+    echo "    + would add (project-owned): $dst"
+    return 0
+  fi
+
+  mkdir -p "$(dirname "$dst")"
+  cp "$src" "$dst"
+  ADDED_PATHS+=("$rel_path")
+  PROJECT_OWNED_ADDED_PATHS+=("$rel_path")
+  echo "    + added (project-owned): $dst"
+}
+
+if [ "$PROJECT_TYPE" = "swift" ] && [ -f "$TOUCHSTONE_ROOT/templates/swift/.swiftlint.yml" ]; then
+  add_profile_project_template_if_missing \
+    "$TOUCHSTONE_ROOT/templates/swift/.swiftlint.yml" \
+    "$PROJECT_DIR/.swiftlint.yml"
+fi
+
 write_touchstone_manifest() {
   local manifest="$PROJECT_DIR/.touchstone-manifest"
   {
@@ -368,6 +403,14 @@ if [ "$DRY_RUN" = false ]; then
   echo "==> Committing touchstone update..."
   git -C "$PROJECT_DIR" add -A -- principles scripts .touchstone-manifest
   git -C "$PROJECT_DIR" add -f -- .touchstone-version
+  # Stage any per-profile project-owned templates added on this run (e.g.
+  # swift's .swiftlint.yml). These are project-owned, but the addition only
+  # makes sense bundled into the same review commit as the rest of the
+  # update — leaving them unstaged would make `touchstone update --ship`
+  # ship an incomplete change.
+  if [ "${#PROJECT_OWNED_ADDED_PATHS[@]}" -gt 0 ]; then
+    git -C "$PROJECT_DIR" add -f -- "${PROJECT_OWNED_ADDED_PATHS[@]}"
+  fi
 
   if git -C "$PROJECT_DIR" diff --cached --quiet; then
     echo "    No file changes to commit."
