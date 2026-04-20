@@ -1588,6 +1588,26 @@ if [ "$RE_INIT" = false ]; then
   append_profile_gitignore_entries "$PROJECT_DIR" "$INPUT_TYPE"
 fi
 
+# Per-profile project-owned templates (e.g. swift's .swiftlint.yml). copy_file
+# is the project-owned semantic — adds when missing, leaves any hand-edited
+# version untouched on re-init. Runs on both fresh and re-init so projects
+# bootstrapped before the swiftlint template existed pick it up the next time
+# they run `touchstone init`.
+copy_profile_templates() {
+  local project_dir="$1" profile="$2"
+  case "$profile" in
+    swift)
+      if [ -f "$TOUCHSTONE_ROOT/templates/swift/.swiftlint.yml" ]; then
+        copy_file "$TOUCHSTONE_ROOT/templates/swift/.swiftlint.yml" "$project_dir/.swiftlint.yml"
+      fi
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+copy_profile_templates "$PROJECT_DIR" "$INPUT_TYPE"
+
 # Optional --scaffold-tests: write one smoke test per profile when no tests
 # exist, so a fresh repo has something for touchstone-run.sh test to find.
 # Off by default — project owners decide their test framework; we just prime
