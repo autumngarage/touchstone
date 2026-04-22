@@ -48,16 +48,16 @@ set -euo pipefail
 echo "main"
 EOF
 
-cat > "$FAKE_BIN/codex" <<'EOF'
+cat > "$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
-prompt="${@: -1}"
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+prompt="$(cat)"
 printf '%s' "$prompt" > "$PROMPT_FILE"
 printf 'CODEX_REVIEW_CLEAN\n'
 EOF
 
-chmod +x "$FAKE_BIN/gh" "$FAKE_BIN/codex"
+chmod +x "$FAKE_BIN/gh" "$FAKE_BIN/conductor"
 
 (
   cd "$REPO_DIR"
@@ -80,14 +80,14 @@ else
 fi
 
 echo "==> Test: review hook skips feature-branch pushes but runs default-branch pushes"
-cat > "$FAKE_BIN/codex" <<'EOF'
+cat > "$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 printf 'called\n' >> "$CODEX_CALLS_FILE"
 printf 'CODEX_REVIEW_CLEAN\n'
 EOF
-chmod +x "$FAKE_BIN/codex"
+chmod +x "$FAKE_BIN/conductor"
 : > "$CODEX_CALLS_FILE"
 
 (
@@ -232,14 +232,14 @@ fi
 
 echo "==> Test: review hook caches exact clean reviews"
 rm -rf "$(git -C "$REPO_DIR" rev-parse --absolute-git-dir)/touchstone/codex-review-clean"
-cat > "$FAKE_BIN/codex" <<'EOF'
+cat > "$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 printf 'called\n' >> "$CODEX_CALLS_FILE"
 printf 'CODEX_REVIEW_CLEAN\n'
 EOF
-chmod +x "$FAKE_BIN/codex"
+chmod +x "$FAKE_BIN/conductor"
 : > "$CODEX_CALLS_FILE"
 
 (
@@ -287,15 +287,15 @@ else
 fi
 
 echo "==> Test: review hook preserves # inside quoted unsafe_paths"
-cat > "$FAKE_BIN/codex" <<'EOF'
+cat > "$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
-prompt="${@: -1}"
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+prompt="$(cat)"
 printf '%s' "$prompt" > "$PROMPT_FILE"
 printf 'CODEX_REVIEW_CLEAN\n'
 EOF
-chmod +x "$FAKE_BIN/codex"
+chmod +x "$FAKE_BIN/conductor"
 {
   printf '[codex_review]\n'
   printf 'safe_by_default = true\n'
@@ -343,15 +343,15 @@ printf 'changed\n' >> "$REPO_UNSAFE/example.txt"
 git -C "$REPO_UNSAFE" add example.txt
 git -C "$REPO_UNSAFE" commit -m "change" >/dev/null 2>&1
 
-cat > "$FAKE_BIN/codex" <<'EOF'
+cat > "$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 printf 'codex edit\n' >> bootstrap/new-project.sh
 printf 'fixed unsafe path\n'
 printf 'CODEX_REVIEW_FIXED\n'
 EOF
-chmod +x "$FAKE_BIN/codex"
+chmod +x "$FAKE_BIN/conductor"
 
 BEFORE_HEAD="$(git -C "$REPO_UNSAFE" rev-parse HEAD)"
 set +e
@@ -377,12 +377,24 @@ else
 fi
 
 # ==========================================================================
-# Reviewer cascade tests
+# Conductor reviewer tests (Touchstone 2.0+). The v1.x multi-reviewer
+# cascade tests were retired when the single `conductor` adapter shipped;
+# per-provider selection now lives inside Conductor's auto-router.
 # ==========================================================================
 
 CASCADE_REPO="$TEST_DIR/repo-cascade"
+CASCADE_BIN="$TEST_DIR/cascade-bin"
 CASCADE_CALLS="$TEST_DIR/cascade-calls.txt"
 CASCADE_OUTPUT="$TEST_DIR/cascade-output.txt"
+
+# Mode-specific fixtures — reused by the REVIEW_MODE + timeout + error
+# tests below. These tests capture conductor's argv so we can assert that
+# Touchstone translates REVIEW_MODE into the expected --tools / --sandbox
+# flags passed to conductor exec.
+MODE_REPO="$TEST_DIR/repo-mode"
+MODE_BIN="$TEST_DIR/mode-bin"
+MODE_OUTPUT="$TEST_DIR/mode-output.txt"
+CODEX_ARGS_FILE="$TEST_DIR/conductor-args.txt"
 
 setup_cascade_repo() {
   rm -rf "$CASCADE_REPO"
@@ -398,145 +410,19 @@ setup_cascade_repo() {
   git -C "$CASCADE_REPO" commit -m "change" >/dev/null 2>&1
 }
 
-echo "==> Test: cascade selects first available reviewer"
-setup_cascade_repo
-{
-  printf '[codex_review]\nsafe_by_default = true\n'
-  printf '[review]\nreviewers = ["claude", "codex"]\n'
-} > "$CASCADE_REPO/.codex-review.toml"
-git -C "$CASCADE_REPO" add .codex-review.toml
-git -C "$CASCADE_REPO" commit -m "config" >/dev/null 2>&1
-
-CASCADE_BIN="$TEST_DIR/cascade-bin"
-rm -rf "$CASCADE_BIN"
-mkdir -p "$CASCADE_BIN"
-cat > "$CASCADE_BIN/gh" <<'EOF'
-#!/usr/bin/env bash
-echo "main"
-EOF
-cat > "$CASCADE_BIN/claude" <<'CLEOF'
-#!/usr/bin/env bash
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi
-printf '%s\n' "claude-called" >> "$CASCADE_CALLS"
-printf 'CODEX_REVIEW_CLEAN\n'
-CLEOF
-cat > "$CASCADE_BIN/codex" <<'CXEOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
-printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
-printf 'CODEX_REVIEW_CLEAN\n'
-CXEOF
-chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/claude" "$CASCADE_BIN/codex"
-: > "$CASCADE_CALLS"
-
-(
-  cd "$CASCADE_REPO"
-  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    CASCADE_CALLS="$CASCADE_CALLS" \
-    CODEX_REVIEW_BASE="HEAD~1" \
-    CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
-)
-
-if grep -q 'claude-called' "$CASCADE_CALLS" && ! grep -q 'codex-called' "$CASCADE_CALLS"; then
-  echo "==> PASS: cascade selected claude (first available)"
-else
-  echo "FAIL: expected cascade to select claude as first reviewer" >&2
-  cat "$CASCADE_CALLS" >&2
-  cat "$CASCADE_OUTPUT" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
-echo "==> Test: cascade skips unavailable reviewer"
-setup_cascade_repo
-{
-  printf '[codex_review]\nsafe_by_default = true\n'
-  printf '[review]\nreviewers = ["claude", "codex"]\n'
-} > "$CASCADE_REPO/.codex-review.toml"
-git -C "$CASCADE_REPO" add .codex-review.toml
-git -C "$CASCADE_REPO" commit -m "config" >/dev/null 2>&1
-
-rm -rf "$CASCADE_BIN"
-mkdir -p "$CASCADE_BIN"
-cat > "$CASCADE_BIN/gh" <<'EOF'
-#!/usr/bin/env bash
-echo "main"
-EOF
-cat > "$CASCADE_BIN/codex" <<'CXEOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
-printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
-printf 'CODEX_REVIEW_CLEAN\n'
-CXEOF
-chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/codex"
-: > "$CASCADE_CALLS"
-
-(
-  cd "$CASCADE_REPO"
-  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    CASCADE_CALLS="$CASCADE_CALLS" \
-    CODEX_REVIEW_BASE="HEAD~1" \
-    CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
-)
-
-if grep -q 'codex-called' "$CASCADE_CALLS" && grep -q 'Using reviewer: Codex' "$CASCADE_OUTPUT"; then
-  echo "==> PASS: cascade skipped claude (unavailable), used codex"
-else
-  echo "FAIL: expected cascade to skip claude and use codex" >&2
-  cat "$CASCADE_CALLS" >&2
-  cat "$CASCADE_OUTPUT" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
-echo "==> Test: cascade skips auth-failed reviewer"
-setup_cascade_repo
-{
-  printf '[codex_review]\nsafe_by_default = true\n'
-  printf '[review]\nreviewers = ["claude", "codex"]\n'
-} > "$CASCADE_REPO/.codex-review.toml"
-git -C "$CASCADE_REPO" add .codex-review.toml
-git -C "$CASCADE_REPO" commit -m "config" >/dev/null 2>&1
-
-rm -rf "$CASCADE_BIN"
-mkdir -p "$CASCADE_BIN"
-cat > "$CASCADE_BIN/gh" <<'EOF'
-#!/usr/bin/env bash
-echo "main"
-EOF
-# claude is installed but auth fails
-cat > "$CASCADE_BIN/claude" <<'CLEOF'
-#!/usr/bin/env bash
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 1; fi
-printf '%s\n' "claude-called" >> "$CASCADE_CALLS"
-printf 'CODEX_REVIEW_CLEAN\n'
-CLEOF
-cat > "$CASCADE_BIN/codex" <<'CXEOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
-printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
-printf 'CODEX_REVIEW_CLEAN\n'
-CXEOF
-chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/claude" "$CASCADE_BIN/codex"
-: > "$CASCADE_CALLS"
-
-(
-  cd "$CASCADE_REPO"
-  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    CASCADE_CALLS="$CASCADE_CALLS" \
-    CODEX_REVIEW_BASE="HEAD~1" \
-    CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
-)
-
-if grep -q 'codex-called' "$CASCADE_CALLS" && ! grep -q 'claude-called' "$CASCADE_CALLS"; then
-  echo "==> PASS: cascade skipped claude (auth failed), used codex"
-else
-  echo "FAIL: expected cascade to skip auth-failed claude and use codex" >&2
-  cat "$CASCADE_CALLS" >&2
-  cat "$CASCADE_OUTPUT" >&2
-  ERRORS=$((ERRORS + 1))
-fi
+setup_mode_repo() {
+  rm -rf "$MODE_REPO"
+  mkdir -p "$MODE_REPO"
+  git -C "$MODE_REPO" init >/dev/null 2>&1
+  git -C "$MODE_REPO" config user.name "Touchstone Test"
+  git -C "$MODE_REPO" config user.email "touchstone@example.com"
+  printf 'base\n' > "$MODE_REPO/example.txt"
+  git -C "$MODE_REPO" add example.txt
+  git -C "$MODE_REPO" commit -m "base" >/dev/null 2>&1
+  printf 'changed\n' >> "$MODE_REPO/example.txt"
+  git -C "$MODE_REPO" add example.txt
+  git -C "$MODE_REPO" commit -m "change" >/dev/null 2>&1
+}
 
 echo "==> Test: all reviewers unavailable exits 0 with diagnostics"
 setup_cascade_repo
@@ -567,11 +453,11 @@ set -e
 
 if [ "$ALL_UNAVAIL_EXIT" -eq 0 ] \
   && grep -q 'No reviewer available' "$CASCADE_OUTPUT" \
-  && grep -q 'claude: CLI not installed' "$CASCADE_OUTPUT" \
-  && grep -q 'gemini: CLI not installed' "$CASCADE_OUTPUT"; then
-  echo "==> PASS: all reviewers unavailable — exited 0 with diagnostics"
+  && grep -q 'conductor: CLI not installed' "$CASCADE_OUTPUT" \
+  && grep -q 'conductor init' "$CASCADE_OUTPUT"; then
+  echo "==> PASS: reviewer unavailable — exited 0 with conductor install hint"
 else
-  echo "FAIL: expected exit 0 and diagnostics when all reviewers unavailable" >&2
+  echo "FAIL: expected exit 0 and conductor install diagnostics" >&2
   echo "exit code: $ALL_UNAVAIL_EXIT" >&2
   cat "$CASCADE_OUTPUT" >&2
   ERRORS=$((ERRORS + 1))
@@ -593,13 +479,13 @@ cat > "$CASCADE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$CASCADE_BIN/codex" <<'CXEOF'
+cat > "$CASCADE_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
 printf 'CODEX_REVIEW_CLEAN\n'
 CXEOF
-chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/codex"
+chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/conductor"
 : > "$CASCADE_CALLS"
 
 (
@@ -620,556 +506,21 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Test: local reviewer command reads prompt from stdin"
-setup_cascade_repo
-{
-  printf '[codex_review]\nsafe_by_default = true\n'
-  printf '[review]\nreviewers = ["local"]\n'
-  printf '[review.local]\ncommand = "local-reviewer"\n'
-} > "$CASCADE_REPO/.codex-review.toml"
-git -C "$CASCADE_REPO" add .codex-review.toml
-git -C "$CASCADE_REPO" commit -m "local reviewer config" >/dev/null 2>&1
-
-LOCAL_PROMPT_FILE="$TEST_DIR/local-review-prompt.txt"
-rm -rf "$CASCADE_BIN"
-mkdir -p "$CASCADE_BIN"
-cat > "$CASCADE_BIN/gh" <<'EOF'
-#!/usr/bin/env bash
-echo "main"
-EOF
-cat > "$CASCADE_BIN/local-reviewer" <<'LREOF'
-#!/usr/bin/env bash
-cat > "$LOCAL_PROMPT_FILE"
-printf 'local clean\n'
-printf 'CODEX_REVIEW_CLEAN\n'
-LREOF
-chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/local-reviewer"
-
-(
-  cd "$CASCADE_REPO"
-  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    LOCAL_PROMPT_FILE="$LOCAL_PROMPT_FILE" \
-    CODEX_REVIEW_BASE="HEAD~1" \
-    CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
-)
-
-if grep -q 'Using reviewer: Local command' "$CASCADE_OUTPUT" \
-  && grep -q 'Output contract' "$LOCAL_PROMPT_FILE" \
-  && grep -q '## Diff' "$LOCAL_PROMPT_FILE" \
-  && grep -q 'diff --git' "$LOCAL_PROMPT_FILE"; then
-  echo "==> PASS: local reviewer command received self-contained prompt on stdin"
-else
-  echo "FAIL: expected local reviewer to run with self-contained prompt on stdin" >&2
-  cat "$CASCADE_OUTPUT" >&2
-  sed -n '1,140p' "$LOCAL_PROMPT_FILE" >&2 || true
-  ERRORS=$((ERRORS + 1))
-fi
-
-echo "==> Test: review routing sends small diffs to local reviewer"
-setup_cascade_repo
-{
-  printf '[codex_review]\nsafe_by_default = true\n'
-  printf '[review]\nreviewers = ["codex"]\n'
-  printf '[review.routing]\nenabled = true\nsmall_max_diff_lines = 9999\n'
-  printf 'small_reviewers = ["local", "codex"]\nlarge_reviewers = ["codex"]\n'
-  printf '[review.local]\ncommand = "local-reviewer"\n'
-} > "$CASCADE_REPO/.codex-review.toml"
-git -C "$CASCADE_REPO" add .codex-review.toml
-git -C "$CASCADE_REPO" commit -m "routing config" >/dev/null 2>&1
-
-rm -rf "$CASCADE_BIN"
-mkdir -p "$CASCADE_BIN"
-cat > "$CASCADE_BIN/gh" <<'EOF'
-#!/usr/bin/env bash
-echo "main"
-EOF
-cat > "$CASCADE_BIN/local-reviewer" <<'LREOF'
-#!/usr/bin/env bash
-printf '%s\n' "local-called" >> "$CASCADE_CALLS"
-printf 'CODEX_REVIEW_CLEAN\n'
-LREOF
-cat > "$CASCADE_BIN/codex" <<'CXEOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
-printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
-printf 'CODEX_REVIEW_CLEAN\n'
-CXEOF
-chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/local-reviewer" "$CASCADE_BIN/codex"
-: > "$CASCADE_CALLS"
-
-(
-  cd "$CASCADE_REPO"
-  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    CASCADE_CALLS="$CASCADE_CALLS" \
-    CODEX_REVIEW_BASE="HEAD~1" \
-    CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
-)
-
-if grep -q 'local-called' "$CASCADE_CALLS" \
-  && ! grep -q 'codex-called' "$CASCADE_CALLS" \
-  && grep -q 'Review routing: small diff' "$CASCADE_OUTPUT"; then
-  echo "==> PASS: review routing selected local reviewer for small diff"
-else
-  echo "FAIL: expected small diff routing to select local reviewer" >&2
-  cat "$CASCADE_CALLS" >&2
-  cat "$CASCADE_OUTPUT" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
-echo "==> Test: review routing sends larger diffs to hosted reviewer"
-setup_cascade_repo
-{
-  printf '[codex_review]\nsafe_by_default = true\n'
-  printf '[review]\nreviewers = ["local", "codex"]\n'
-  printf '[review.routing]\nenabled = true\nsmall_max_diff_lines = 1\n'
-  printf 'small_reviewers = ["local"]\nlarge_reviewers = ["codex"]\n'
-  printf '[review.local]\ncommand = "local-reviewer"\n'
-} > "$CASCADE_REPO/.codex-review.toml"
-git -C "$CASCADE_REPO" add .codex-review.toml
-git -C "$CASCADE_REPO" commit -m "routing config" >/dev/null 2>&1
-
-rm -rf "$CASCADE_BIN"
-mkdir -p "$CASCADE_BIN"
-cat > "$CASCADE_BIN/gh" <<'EOF'
-#!/usr/bin/env bash
-echo "main"
-EOF
-cat > "$CASCADE_BIN/local-reviewer" <<'LREOF'
-#!/usr/bin/env bash
-printf '%s\n' "local-called" >> "$CASCADE_CALLS"
-printf 'CODEX_REVIEW_CLEAN\n'
-LREOF
-cat > "$CASCADE_BIN/codex" <<'CXEOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
-printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
-printf 'CODEX_REVIEW_CLEAN\n'
-CXEOF
-chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/local-reviewer" "$CASCADE_BIN/codex"
-: > "$CASCADE_CALLS"
-
-(
-  cd "$CASCADE_REPO"
-  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    CASCADE_CALLS="$CASCADE_CALLS" \
-    CODEX_REVIEW_BASE="HEAD~1" \
-    CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
-)
-
-if grep -q 'codex-called' "$CASCADE_CALLS" \
-  && ! grep -q 'local-called' "$CASCADE_CALLS" \
-  && grep -q 'Review routing: larger diff' "$CASCADE_OUTPUT"; then
-  echo "==> PASS: review routing selected hosted reviewer for larger diff"
-else
-  echo "FAIL: expected larger diff routing to select hosted reviewer" >&2
-  cat "$CASCADE_CALLS" >&2
-  cat "$CASCADE_OUTPUT" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
-echo "==> Test: TOUCHSTONE_REVIEWER forces a specific reviewer"
-setup_cascade_repo
-{
-  printf '[codex_review]\nsafe_by_default = true\n'
-  printf '[review]\nreviewers = ["claude", "codex"]\n'
-} > "$CASCADE_REPO/.codex-review.toml"
-git -C "$CASCADE_REPO" add .codex-review.toml
-git -C "$CASCADE_REPO" commit -m "config" >/dev/null 2>&1
-
-rm -rf "$CASCADE_BIN"
-mkdir -p "$CASCADE_BIN"
-cat > "$CASCADE_BIN/gh" <<'EOF'
-#!/usr/bin/env bash
-echo "main"
-EOF
-cat > "$CASCADE_BIN/claude" <<'CLEOF'
-#!/usr/bin/env bash
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi
-printf '%s\n' "claude-called" >> "$CASCADE_CALLS"
-printf 'CODEX_REVIEW_CLEAN\n'
-CLEOF
-cat > "$CASCADE_BIN/codex" <<'CXEOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
-printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
-printf 'CODEX_REVIEW_CLEAN\n'
-CXEOF
-chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/claude" "$CASCADE_BIN/codex"
-: > "$CASCADE_CALLS"
-
-(
-  cd "$CASCADE_REPO"
-  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    CASCADE_CALLS="$CASCADE_CALLS" \
-    TOUCHSTONE_REVIEWER=codex \
-    CODEX_REVIEW_BASE="HEAD~1" \
-    CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
-)
-
-if grep -q 'codex-called' "$CASCADE_CALLS" && ! grep -q 'claude-called' "$CASCADE_CALLS" \
-  && grep -q 'Using reviewer: Codex' "$CASCADE_OUTPUT"; then
-  echo "==> PASS: TOUCHSTONE_REVIEWER=codex forced codex despite claude being first"
-else
-  echo "FAIL: expected TOUCHSTONE_REVIEWER to force codex" >&2
-  cat "$CASCADE_CALLS" >&2
-  cat "$CASCADE_OUTPUT" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
-echo "==> Test: TOUCHSTONE_REVIEWER hard-fails when reviewer unavailable"
-setup_cascade_repo
-{
-  printf '[codex_review]\nsafe_by_default = true\n'
-} > "$CASCADE_REPO/.codex-review.toml"
-git -C "$CASCADE_REPO" add .codex-review.toml
-git -C "$CASCADE_REPO" commit -m "config" >/dev/null 2>&1
-
-rm -rf "$CASCADE_BIN"
-mkdir -p "$CASCADE_BIN"
-cat > "$CASCADE_BIN/gh" <<'EOF'
-#!/usr/bin/env bash
-echo "main"
-EOF
-chmod +x "$CASCADE_BIN/gh"
-
-set +e
-(
-  cd "$CASCADE_REPO"
-  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    TOUCHSTONE_REVIEWER=claude \
-    CODEX_REVIEW_BASE="HEAD~1" \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
-)
-FORCED_UNAVAIL_EXIT=$?
-set -e
-
-if [ "$FORCED_UNAVAIL_EXIT" -eq 1 ] \
-  && grep -q 'TOUCHSTONE_REVIEWER=claude' "$CASCADE_OUTPUT"; then
-  echo "==> PASS: TOUCHSTONE_REVIEWER hard-failed when reviewer unavailable"
-else
-  echo "FAIL: expected exit 1 when TOUCHSTONE_REVIEWER names unavailable reviewer" >&2
-  echo "exit code: $FORCED_UNAVAIL_EXIT" >&2
-  cat "$CASCADE_OUTPUT" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
-echo "==> Test: missing [review] section defaults to codex"
-setup_cascade_repo
-{
-  printf '[codex_review]\nsafe_by_default = true\n'
-} > "$CASCADE_REPO/.codex-review.toml"
-git -C "$CASCADE_REPO" add .codex-review.toml
-git -C "$CASCADE_REPO" commit -m "config" >/dev/null 2>&1
-
-rm -rf "$CASCADE_BIN"
-mkdir -p "$CASCADE_BIN"
-cat > "$CASCADE_BIN/gh" <<'EOF'
-#!/usr/bin/env bash
-echo "main"
-EOF
-cat > "$CASCADE_BIN/codex" <<'CXEOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
-printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
-printf 'CODEX_REVIEW_CLEAN\n'
-CXEOF
-chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/codex"
-: > "$CASCADE_CALLS"
-
-(
-  cd "$CASCADE_REPO"
-  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    CASCADE_CALLS="$CASCADE_CALLS" \
-    CODEX_REVIEW_BASE="HEAD~1" \
-    CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
-)
-
-if grep -q 'codex-called' "$CASCADE_CALLS" && grep -q 'Using reviewer: Codex' "$CASCADE_OUTPUT"; then
-  echo "==> PASS: missing [review] section defaulted to codex"
-else
-  echo "FAIL: expected missing [review] to default to codex" >&2
-  cat "$CASCADE_CALLS" >&2
-  cat "$CASCADE_OUTPUT" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
-echo "==> Test: primary reviewer can request peer assistance"
-setup_cascade_repo
-{
-  printf '[codex_review]\nsafe_by_default = true\n'
-  printf '[review]\nreviewers = ["claude"]\n'
-  printf '[review.assist]\nenabled = true\nhelpers = ["codex"]\ntimeout = 5\nmax_rounds = 1\n'
-} > "$CASCADE_REPO/.codex-review.toml"
-git -C "$CASCADE_REPO" add .codex-review.toml
-git -C "$CASCADE_REPO" commit -m "assist config" >/dev/null 2>&1
-
-ASSIST_CODEX_PROMPT="$TEST_DIR/assist-codex-prompt.txt"
-ASSIST_CLAUDE_PROMPT="$TEST_DIR/assist-claude-prompt.txt"
-rm -rf "$CASCADE_BIN"
-mkdir -p "$CASCADE_BIN"
-cat > "$CASCADE_BIN/gh" <<'EOF'
-#!/usr/bin/env bash
-echo "main"
-EOF
-cat > "$CASCADE_BIN/claude" <<'CLEOF'
-#!/usr/bin/env bash
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi
-printf '%s\n' "claude-called" >> "$CASCADE_CALLS"
-prompt="${@: -1}"
-printf '%s' "$prompt" > "$ASSIST_CLAUDE_PROMPT"
-if printf '%s' "$prompt" | grep -q 'Peer reviewer answer'; then
-  printf 'peer answer considered\n'
-  printf 'CODEX_REVIEW_CLEAN\n'
-else
-  printf 'TOUCHSTONE_HELP_REQUEST_BEGIN\n'
-  printf 'question: Is this larger shell change safe on macOS?\n'
-  printf 'context: focus on process cleanup and push hook behavior\n'
-  printf 'TOUCHSTONE_HELP_REQUEST_END\n'
-  printf 'CODEX_REVIEW_BLOCKED\n'
-fi
-CLEOF
-cat > "$CASCADE_BIN/codex" <<'CXEOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
-printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
-prompt="${@: -1}"
-printf '%s' "$prompt" > "$ASSIST_CODEX_PROMPT"
-printf 'codex second opinion: no blocker found\n'
-CXEOF
-chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/claude" "$CASCADE_BIN/codex"
-: > "$CASCADE_CALLS"
-
-(
-  cd "$CASCADE_REPO"
-  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    CASCADE_CALLS="$CASCADE_CALLS" \
-    ASSIST_CLAUDE_PROMPT="$ASSIST_CLAUDE_PROMPT" \
-    ASSIST_CODEX_PROMPT="$ASSIST_CODEX_PROMPT" \
-    CODEX_REVIEW_BASE="HEAD~1" \
-    CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
-)
-
-CLAUDE_ASSIST_CALLS="$(grep -c 'claude-called' "$CASCADE_CALLS" || true)"
-CODEX_ASSIST_CALLS="$(grep -c 'codex-called' "$CASCADE_CALLS" || true)"
-if [ "$CLAUDE_ASSIST_CALLS" = "2" ] \
-  && [ "$CODEX_ASSIST_CALLS" = "1" ] \
-  && grep -q 'Peer reviewer answer' "$ASSIST_CLAUDE_PROMPT" \
-  && grep -q 'Is this larger shell change safe on macOS' "$ASSIST_CODEX_PROMPT" \
-  && grep -q 'peer assists:   1' "$CASCADE_OUTPUT"; then
-  echo "==> PASS: primary reviewer requested and used peer assistance"
-else
-  echo "FAIL: expected peer assistance round between claude and codex" >&2
-  echo "calls:" >&2
-  cat "$CASCADE_CALLS" >&2
-  cat "$CASCADE_OUTPUT" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
-echo "==> Test: claude adapter restricts tools in review-only mode"
-setup_cascade_repo
-{
-  printf '[codex_review]\nsafe_by_default = true\n'
-  printf '[review]\nreviewers = ["claude"]\n'
-} > "$CASCADE_REPO/.codex-review.toml"
-git -C "$CASCADE_REPO" add .codex-review.toml
-git -C "$CASCADE_REPO" commit -m "config" >/dev/null 2>&1
-
-CLAUDE_ARGS_FILE="$TEST_DIR/claude-args.txt"
-rm -rf "$CASCADE_BIN"
-mkdir -p "$CASCADE_BIN"
-cat > "$CASCADE_BIN/gh" <<'EOF'
-#!/usr/bin/env bash
-echo "main"
-EOF
-cat > "$CASCADE_BIN/claude" <<'CLEOF'
-#!/usr/bin/env bash
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi
-printf '%s\n' "$*" > "$CLAUDE_ARGS_FILE"
-printf 'CODEX_REVIEW_CLEAN\n'
-CLEOF
-chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/claude"
-
-# Test review-only mode (no Edit/Write)
-(
-  cd "$CASCADE_REPO"
-  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    CLAUDE_ARGS_FILE="$CLAUDE_ARGS_FILE" \
-    CODEX_REVIEW_BASE="HEAD~1" \
-    CODEX_REVIEW_DISABLE_CACHE=1 \
-    CODEX_REVIEW_MODE=review-only \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
-)
-
-if grep -q 'Read,Grep,Glob,Bash' "$CLAUDE_ARGS_FILE" && ! grep -q 'Edit' "$CLAUDE_ARGS_FILE"; then
-  echo "==> PASS: claude adapter used read-only tools in review-only mode"
-else
-  echo "FAIL: expected claude to use read-only tools in review-only mode" >&2
-  cat "$CLAUDE_ARGS_FILE" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
-# Test auto-fix mode (includes Edit/Write)
-(
-  cd "$CASCADE_REPO"
-  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    CLAUDE_ARGS_FILE="$CLAUDE_ARGS_FILE" \
-    CODEX_REVIEW_BASE="HEAD~1" \
-    CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
-)
-
-if grep -q 'Edit,Write' "$CLAUDE_ARGS_FILE"; then
-  echo "==> PASS: claude adapter included Edit,Write tools in auto-fix mode"
-else
-  echo "FAIL: expected claude to include Edit,Write tools when autofix enabled" >&2
-  cat "$CLAUDE_ARGS_FILE" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
-# ==========================================================================
-# Mode enforcement tests
-# ==========================================================================
-
-MODE_REPO="$TEST_DIR/repo-mode"
-MODE_OUTPUT="$TEST_DIR/mode-output.txt"
-CODEX_ARGS_FILE="$TEST_DIR/codex-args.txt"
-
-setup_mode_repo() {
-  rm -rf "$MODE_REPO"
-  mkdir -p "$MODE_REPO"
-  git -C "$MODE_REPO" init >/dev/null 2>&1
-  git -C "$MODE_REPO" config user.name "Touchstone Test"
-  git -C "$MODE_REPO" config user.email "touchstone@example.com"
-  printf 'base\n' > "$MODE_REPO/example.txt"
-  git -C "$MODE_REPO" add example.txt
-  git -C "$MODE_REPO" commit -m "base" >/dev/null 2>&1
-  printf 'changed\n' >> "$MODE_REPO/example.txt"
-  git -C "$MODE_REPO" add example.txt
-  git -C "$MODE_REPO" commit -m "change" >/dev/null 2>&1
-}
-
-echo "==> Test: codex adapter uses --sandbox read-only in review-only mode"
-setup_mode_repo
-{
-  printf '[codex_review]\nsafe_by_default = true\n'
-} > "$MODE_REPO/.codex-review.toml"
-git -C "$MODE_REPO" add .codex-review.toml
-git -C "$MODE_REPO" commit -m "config" >/dev/null 2>&1
-
-MODE_BIN="$TEST_DIR/mode-bin"
-rm -rf "$MODE_BIN"
-mkdir -p "$MODE_BIN"
-cat > "$MODE_BIN/gh" <<'EOF'
-#!/usr/bin/env bash
-echo "main"
-EOF
-cat > "$MODE_BIN/codex" <<'CXEOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
-printf '%s\n' "$*" > "$CODEX_ARGS_FILE"
-printf 'CODEX_REVIEW_CLEAN\n'
-CXEOF
-chmod +x "$MODE_BIN/gh" "$MODE_BIN/codex"
-
-(
-  cd "$MODE_REPO"
-  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
-    CODEX_REVIEW_BASE="HEAD~1" \
-    CODEX_REVIEW_DISABLE_CACHE=1 \
-    CODEX_REVIEW_MODE=review-only \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
-)
-
-if grep -q -- '--sandbox read-only' "$CODEX_ARGS_FILE"; then
-  echo "==> PASS: codex used --sandbox read-only in review-only mode"
-else
-  echo "FAIL: expected codex to use --sandbox read-only in review-only mode" >&2
-  cat "$CODEX_ARGS_FILE" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
-echo "==> Test: codex adapter uses --sandbox workspace-write in fix mode"
-(
-  cd "$MODE_REPO"
-  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
-    CODEX_REVIEW_BASE="HEAD~1" \
-    CODEX_REVIEW_DISABLE_CACHE=1 \
-    CODEX_REVIEW_MODE=fix \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
-)
-
-if grep -q -- '--sandbox workspace-write' "$CODEX_ARGS_FILE"; then
-  echo "==> PASS: codex used --sandbox workspace-write in fix mode"
-else
-  echo "FAIL: expected codex to use --sandbox workspace-write in fix mode" >&2
-  cat "$CODEX_ARGS_FILE" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
-echo "==> Test: claude adapter restricts to Read,Grep,Glob in diff-only mode"
-rm -rf "$MODE_BIN"
-mkdir -p "$MODE_BIN"
-cat > "$MODE_BIN/gh" <<'EOF'
-#!/usr/bin/env bash
-echo "main"
-EOF
-cat > "$MODE_BIN/claude" <<'CLEOF'
-#!/usr/bin/env bash
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then exit 0; fi
-printf '%s\n' "$*" > "$CLAUDE_ARGS_FILE"
-printf 'CODEX_REVIEW_CLEAN\n'
-CLEOF
-chmod +x "$MODE_BIN/gh" "$MODE_BIN/claude"
-
-{
-  printf '[codex_review]\nsafe_by_default = true\n'
-  printf '[review]\nreviewers = ["claude"]\n'
-} > "$MODE_REPO/.codex-review.toml"
-git -C "$MODE_REPO" add .codex-review.toml
-git -C "$MODE_REPO" commit -m "claude config" >/dev/null 2>&1
-
-(
-  cd "$MODE_REPO"
-  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    CLAUDE_ARGS_FILE="$CLAUDE_ARGS_FILE" \
-    CODEX_REVIEW_BASE="HEAD~1" \
-    CODEX_REVIEW_DISABLE_CACHE=1 \
-    CODEX_REVIEW_MODE=diff-only \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
-)
-
-if grep -q 'Read,Grep,Glob' "$CLAUDE_ARGS_FILE" \
-  && ! grep -q 'Bash' "$CLAUDE_ARGS_FILE" \
-  && ! grep -q 'Edit' "$CLAUDE_ARGS_FILE"; then
-  echo "==> PASS: claude restricted to Read,Grep,Glob in diff-only mode"
-else
-  echo "FAIL: expected claude to use only Read,Grep,Glob in diff-only mode" >&2
-  cat "$CLAUDE_ARGS_FILE" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
 echo "==> Test: CODEX_REVIEW_NO_AUTOFIX backward compat maps to review-only"
+setup_mode_repo
 rm -rf "$MODE_BIN"
 mkdir -p "$MODE_BIN"
 cat > "$MODE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$MODE_BIN/codex" <<'CXEOF'
+cat > "$MODE_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 printf '%s\n' "$*" > "$CODEX_ARGS_FILE"
 printf 'CODEX_REVIEW_CLEAN\n'
 CXEOF
-chmod +x "$MODE_BIN/gh" "$MODE_BIN/codex"
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
 
 {
   printf '[codex_review]\nsafe_by_default = true\n'
@@ -1202,12 +553,12 @@ cat > "$MODE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$MODE_BIN/codex" <<'CXEOF'
+cat > "$MODE_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 printf 'CODEX_REVIEW_FIXED\n'
 CXEOF
-chmod +x "$MODE_BIN/gh" "$MODE_BIN/codex"
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
 
 set +e
 (
@@ -1238,13 +589,13 @@ cat > "$MODE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$MODE_BIN/codex" <<'CXEOF'
+cat > "$MODE_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 printf '%s\n' "$*" > "$CODEX_ARGS_FILE"
 printf 'CODEX_REVIEW_CLEAN\n'
 CXEOF
-chmod +x "$MODE_BIN/gh" "$MODE_BIN/codex"
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
 
 (
   cd "$MODE_REPO"
@@ -1313,12 +664,12 @@ cat > "$TIMEOUT_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$TIMEOUT_BIN/codex" <<'CXEOF'
+cat > "$TIMEOUT_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 printf 'CODEX_REVIEW_CLEAN\n'
 CXEOF
-chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/codex"
+chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/conductor"
 
 set +e
 (
@@ -1350,16 +701,16 @@ cat > "$TIMEOUT_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$TIMEOUT_BIN/codex" <<'CXEOF'
+cat > "$TIMEOUT_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 sleep 999 &
 child_pid=$!
 printf '%s\n' "$$" > "$TIMEOUT_PID_FILE"
 printf '%s\n' "$child_pid" > "$TIMEOUT_CHILD_PID_FILE"
 wait "$child_pid"
 CXEOF
-chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/codex"
+chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/conductor"
 rm -f "$TIMEOUT_PID_FILE" "$TIMEOUT_CHILD_PID_FILE"
 
 set +e
@@ -1412,12 +763,12 @@ cat > "$TIMEOUT_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$TIMEOUT_BIN/codex" <<'CXEOF'
+cat > "$TIMEOUT_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 exit 1
 CXEOF
-chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/codex"
+chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/conductor"
 
 set +e
 (
@@ -1470,12 +821,12 @@ cat > "$TIMEOUT_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$TIMEOUT_BIN/codex" <<'CXEOF'
+cat > "$TIMEOUT_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 echo "no sentinel here"
 CXEOF
-chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/codex"
+chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/conductor"
 
 set +e
 (
@@ -1529,14 +880,14 @@ setup_ctx_bin() {
 #!/usr/bin/env bash
 echo "main"
 EOF
-  cat > "$CTX_BIN/codex" <<'CXEOF'
+  cat > "$CTX_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
-if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then exit 0; fi
-prompt="${@: -1}"
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+prompt="$(cat)"
 printf '%s' "$prompt" > "$CTX_PROMPT"
 printf 'CODEX_REVIEW_CLEAN\n'
 CXEOF
-  chmod +x "$CTX_BIN/gh" "$CTX_BIN/codex"
+  chmod +x "$CTX_BIN/gh" "$CTX_BIN/conductor"
 }
 
 echo "==> Test: context file at repo root is appended to prompt"
@@ -1662,7 +1013,7 @@ rm -f "$JSON_SUMMARY"
 
 if [ -f "$JSON_SUMMARY" ] \
   && grep -q '"exit_reason":"clean"' "$JSON_SUMMARY" \
-  && grep -q '"reviewer":"Codex"' "$JSON_SUMMARY"; then
+  && grep -q '"reviewer":"Conductor"' "$JSON_SUMMARY"; then
   echo "==> PASS: JSON summary file written"
 else
   echo "FAIL: expected JSON summary file" >&2

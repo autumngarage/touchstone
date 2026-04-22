@@ -54,55 +54,73 @@ unsafe_paths = [
 ]
 
 # --------------------------------------------------------------------------
-# Reviewer cascade (optional)
+# Reviewer (Touchstone 2.0+)
 # --------------------------------------------------------------------------
-# The [review] section configures whether review is enabled and which AI
-# reviewers to try in what order.
-# The hook tries each reviewer in sequence; the first one that is installed
-# and authenticated runs the review.
+# Touchstone 2.0 ships a single reviewer: `conductor`, which wraps the
+# `conductor` CLI (autumn-garage/conductor). Conductor owns per-provider
+# model selection, auth, tool-access translation, route logging, and cost
+# reporting. Touchstone tells it *what it needs*; Conductor picks *how*.
 #
-# Valid reviewer IDs: "codex", "claude", "gemini", "local"
-#
-# If this section is absent, the hook defaults to ["codex"] (backward compatible).
-# Override for a single run with: TOUCHSTONE_REVIEWER=claude git push
+# For a fresh project, `reviewer = "conductor"` is the whole story.
 
 # [review]
 # enabled = true
-# reviewers = ["claude", "codex", "gemini"]
+# # reviewer = "conductor"   # single-valued in 2.0+; absent reviewers[]
+
+# --------------------------------------------------------------------------
+# Conductor routing (optional)
+# --------------------------------------------------------------------------
+# Fine-tune what Conductor picks and how hard it thinks. All four knobs have
+# sensible defaults for code review; only override when you need to.
+
+# [review.conductor]
+# # Which provider wins auto-routing. One of:
+# #   "best"     — highest-quality-tier (frontier > strong > standard > local)
+# #   "cheapest" — minimize $/tok (good for throwaway branches)
+# #   "fastest"  — minimize p50 latency
+# #   "balanced" — pure tag-overlap (Conductor v0.1 behavior)
+# # prefer = "best"
 #
-# Optional routing by diff size:
-# Use this when you want small changes reviewed by a local model first, but
-# larger changes reviewed by a stronger hosted model. The small reviewer list
-# can include a hosted fallback so review still runs if the local command is not
-# configured on a clone.
+# # How hard the chosen provider thinks before answering.
+# # Symbolic: "minimal" | "low" | "medium" | "high" | "max"
+# # Or an explicit integer thinking-token budget.
+# # effort = "max"
+#
+# # Capability tags passed to the router. Defaults cover code review well.
+# # tags = "code-review"
+#
+# # Pin a specific provider (bypasses auto-routing). Rarely needed.
+# # with = "claude"
+#
+# # Exclude providers from auto-routing (degraded, rate-limited, too expensive).
+# # exclude = "gemini"
+
+# --------------------------------------------------------------------------
+# Routing by diff size (optional)
+# --------------------------------------------------------------------------
+# Use this when you want cheap + shallow review for tiny diffs and max-effort
+# on large or risky changes. Touchstone-side override of Conductor's knobs
+# per size bucket.
 #
 # [review.routing]
 # enabled = false
-# small_max_diff_lines = 400
-# small_reviewers = ["local", "codex"]
-# large_reviewers = ["codex"]
-#
-# Local reviewer support:
-# Use this when you want a local model or your own wrapper script to perform
-# review. The command receives the full review prompt on stdin and must print
-# CODEX_REVIEW_CLEAN, CODEX_REVIEW_FIXED, or CODEX_REVIEW_BLOCKED as its last
-# line. Keep mode = "review-only" unless your local command is intentionally
-# allowed to edit files.
-#
-# [review.local]
-# command = "ollama run YOUR_MODEL"
-# auth_command = ""
+# small_max_diff_lines = 50
+# small_prefer = "cheapest"
+# small_effort = "minimal"
+# # Above small, below large: uses [review.conductor] defaults.
+# large_max_diff_lines = 1000
+# large_prefer = "best"
+# large_effort = "max"
+# large_tags = "code-review,long-context"
 
-# Optional peer assistance for larger or high-risk changes. When enabled, the
-# primary reviewer can request one focused second opinion from another reviewer
-# by emitting a TOUCHSTONE_HELP_REQUEST block before its final decision.
-# The helper runs in read-only/diff-only mode and cannot edit files.
-#
-# [review.assist]
-# enabled = false
-# helpers = ["codex", "gemini"]
-# timeout = 60
-# max_rounds = 1
+# --------------------------------------------------------------------------
+# Peer review — DISABLED IN 2.0.0
+# --------------------------------------------------------------------------
+# [review.assist] (second-opinion from a different model) is disabled in
+# Touchstone 2.0.0. It returns in v2.1 via `conductor call --exclude <primary>`
+# — once Conductor exposes a clean way to extract the primary's provider.
+# Until then, if `[review.assist].enabled = true` is set, Touchstone warns
+# and ignores the setting.
 
 # --------------------------------------------------------------------------
 # Repo-provided review context (optional)
