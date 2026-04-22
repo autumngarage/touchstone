@@ -177,7 +177,8 @@ assert_contains "$PROJECT/AGENTS.md" "test-project"
 # Help flags should print usage instead of bootstrapping a project named --help.
 if (cd "$TEST_DIR" && bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" --help) >"$TEST_DIR/new-project-help.txt" 2>&1; then
   assert_contains "$TEST_DIR/new-project-help.txt" 'unsafe-paths'
-  assert_contains "$TEST_DIR/new-project-help.txt" 'reviewer codex|claude|gemini|local|auto|none'
+  assert_contains "$TEST_DIR/new-project-help.txt" 'reviewer conductor|none'
+  assert_contains "$TEST_DIR/new-project-help.txt" 'legacy: codex|claude|gemini|local|auto'
   assert_contains "$TEST_DIR/new-project-help.txt" 'review-routing all-hosted|all-local|small-local'
   assert_contains "$TEST_DIR/new-project-help.txt" 'gitbutler'
   assert_contains "$TEST_DIR/new-project-help.txt" 'node|python|swift|rust|go|generic|auto'
@@ -192,7 +193,8 @@ fi
 
 if TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --help >"$TEST_DIR/touchstone-init-help.txt" 2>&1; then
   assert_contains "$TEST_DIR/touchstone-init-help.txt" 'Usage: touchstone init'
-  assert_contains "$TEST_DIR/touchstone-init-help.txt" 'reviewer codex|claude|gemini|local|auto|none'
+  assert_contains "$TEST_DIR/touchstone-init-help.txt" 'reviewer conductor|none'
+  assert_contains "$TEST_DIR/touchstone-init-help.txt" 'legacy: codex|claude|gemini|local|auto'
   assert_contains "$TEST_DIR/touchstone-init-help.txt" 'review-routing all-hosted|all-local|small-local'
   assert_contains "$TEST_DIR/touchstone-init-help.txt" 'gitbutler'
   assert_contains "$TEST_DIR/touchstone-init-help.txt" 'node|python|swift|rust|go|generic|auto'

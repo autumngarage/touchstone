@@ -1,25 +1,36 @@
 #!/usr/bin/env bash
 #
 # hooks/codex-review.sh — non-interactive AI code review + auto-fix loop.
-# Supports multiple reviewers (Codex, Claude, Gemini) with a configurable
-# fallback cascade. Wired into merge-pr.sh and default-branch pre-push checks.
+#
+# Touchstone 2.0+: the single reviewer is `conductor` (autumn-garage/conductor).
+# Conductor owns per-provider model selection, auth, tool/sandbox translation,
+# route logging, and cost reporting. This hook declares *what it needs* (review
+# mode → tools + sandbox) and lets Conductor's router pick *how* to run it.
+# Wired into merge-pr.sh and default-branch pre-push checks.
 #
 # Loop:
-#   1. Run the selected reviewer against the local diff vs the default branch
-#   2. If reviewer says CODEX_REVIEW_CLEAN → push allowed.
-#   3. If reviewer says CODEX_REVIEW_FIXED → it edited files. Stage + commit
-#      the fixes (a new commit, NOT an amend) and loop back to step 1.
-#   4. If reviewer says CODEX_REVIEW_BLOCKED → push aborts, findings printed.
+#   1. Run Conductor against the local diff vs the default branch
+#   2. If it says CODEX_REVIEW_CLEAN → push allowed.
+#   3. If it says CODEX_REVIEW_FIXED → it edited files. Stage + commit the
+#      fixes (a new commit, NOT an amend) and loop back to step 1.
+#   4. If it says CODEX_REVIEW_BLOCKED → push aborts, findings printed.
 #   5. After max_iterations rounds without converging, push aborts.
 #
-# Reviewer cascade:
-#   The [review] section in .codex-review.toml lists reviewers to try in order.
-#   The optional [review.routing] section can choose a different reviewer list
-#   for small vs larger diffs. The first installed/authenticated reviewer wins.
-#   If no [review] section exists, defaults to ["codex"] (backward compatible).
+# Reviewer selection:
+#   2.0 uses a single adapter (`reviewer_conductor_*`) — see the
+#   `reviewer_conductor_exec` block below. Legacy 1.x configs that set
+#   `[review].reviewers = ["codex", "claude", ...]` are auto-detected at
+#   startup and a one-time migration hint is printed; the values are
+#   translated to Conductor's auto-router.
 #
 # Configuration:
-#   Place a .codex-review.toml at the repo root to configure behavior.
+#   Place a .codex-review.toml at the repo root. Key knobs:
+#     [review].reviewer         = "conductor"  (only valid 2.0 value)
+#     [review.conductor].prefer = best|cheapest|fastest|balanced
+#     [review.conductor].effort = minimal|low|medium|high|max
+#     [review.conductor].tags   = "code-review,..."
+#     [review.conductor].with   = "<provider>"  (pins a specific provider)
+#     [review.conductor].exclude = "<p1>,<p2>"  (skips in auto-routing)
 #   See hooks/codex-review.config.example.toml for the full spec.
 #
 #   If no .codex-review.toml exists, ALL paths are treated as unsafe
@@ -27,39 +38,43 @@
 #   explicitly by listing safe paths or setting safe_by_default = true.
 #
 # Modes:
-#   review-only — reviewer can read + run commands, but cannot edit files or commit
-#   fix         — full access: reviewer can edit, stage, and commit auto-fixes
-#   diff-only   — read-only: reviewer can only read files, no commands or edits
-#   no-tests    — reviewer can edit and commit, but cannot run commands (no test execution)
+#   review-only — read + run commands, no file edits or commits
+#   fix         — full access: read, run commands, edit files, commit fixes
+#   diff-only   — read-only: diff embedded in the prompt, no tool use
+#   no-tests    — edit + commit, no command execution (skip test runs)
 #
-#   Modes are enforced at the wrapper level (tool restrictions, sandboxes), not just
-#   in the prompt. Set via CODEX_REVIEW_MODE env var or `mode` in .codex-review.toml.
+#   Modes are enforced at the Conductor boundary: Touchstone translates mode
+#   → (tools, sandbox) and passes those; Conductor maps them to each
+#   provider's native flag dialect.  Set via CODEX_REVIEW_MODE env var or
+#   `mode` in .codex-review.toml.
 #
 # Env overrides:
-#   TOUCHSTONE_REVIEWER              — force a specific reviewer (skips cascade, hard-fails if unavailable)
-#   TOUCHSTONE_LOCAL_REVIEWER_COMMAND — local reviewer command; reads prompt from stdin
-#   TOUCHSTONE_LOCAL_REVIEWER_AUTH_COMMAND — optional command that must pass before local review runs
-#   CODEX_REVIEW_ENABLED          — true/false override for the [review].enabled setting
-#   CODEX_REVIEW_MODE             — review-only|fix|diff-only|no-tests (default: fix)
-#   CODEX_REVIEW_BASE             — base ref to diff against (default: origin/<default-branch>)
-#   CODEX_REVIEW_MAX_ITERATIONS   — fix loop cap (default: from config, or 3)
-#   CODEX_REVIEW_MAX_DIFF_LINES   — skip review if diff > this many lines (default: 5000)
-#   CODEX_REVIEW_CACHE_CLEAN      — cache exact-input clean reviews (default: true)
-#   CODEX_REVIEW_TIMEOUT          — wall-clock timeout per invocation in seconds (default: 300, 0=none)
-#   CODEX_REVIEW_ASSIST           — enable peer reviewer help requests (default: false)
-#   CODEX_REVIEW_ASSIST_TIMEOUT   — timeout for peer reviewer helper calls (default: 60)
-#   CODEX_REVIEW_ASSIST_MAX_ROUNDS — max helper calls per review run (default: 1)
-#   CODEX_REVIEW_ON_ERROR         — fail-open (default) or fail-closed
-#   CODEX_REVIEW_DISABLE_CACHE    — set to true/1 to force a fresh review
-#   CODEX_REVIEW_FORCE            — set to true/1 to run even on non-default-branch pushes
-#   CODEX_REVIEW_NO_AUTOFIX       — set to true/1 for review-only mode (backward compat)
-#   CODEX_REVIEW_IN_PROGRESS      — internal guard to skip nested review runs
+#   TOUCHSTONE_REVIEWER               — DEPRECATED in 2.0.0; auto-translates to TOUCHSTONE_CONDUCTOR_WITH=<provider>
+#   TOUCHSTONE_CONDUCTOR_WITH         — pin a specific provider for auto-routing
+#   TOUCHSTONE_CONDUCTOR_PREFER       — best|cheapest|fastest|balanced (default: best)
+#   TOUCHSTONE_CONDUCTOR_EFFORT       — minimal|low|medium|high|max (default: max)
+#   TOUCHSTONE_CONDUCTOR_TAGS         — comma-separated tag hints (default: code-review)
+#   TOUCHSTONE_CONDUCTOR_EXCLUDE      — comma-separated providers to skip
+#   CODEX_REVIEW_SUPPRESS_LEGACY_WARNINGS — silence one-time migration hints
+#   CODEX_REVIEW_ENABLED              — true/false override for the [review].enabled setting
+#   CODEX_REVIEW_MODE                 — review-only|fix|diff-only|no-tests (default: fix)
+#   CODEX_REVIEW_BASE                 — base ref to diff against (default: origin/<default-branch>)
+#   CODEX_REVIEW_MAX_ITERATIONS       — fix loop cap (default: from config, or 3)
+#   CODEX_REVIEW_MAX_DIFF_LINES       — skip review if diff > this many lines (default: 5000)
+#   CODEX_REVIEW_CACHE_CLEAN          — cache exact-input clean reviews (default: true)
+#   CODEX_REVIEW_TIMEOUT              — wall-clock timeout per invocation in seconds (default: 300, 0=none)
+#   CODEX_REVIEW_ON_ERROR             — fail-open (default) or fail-closed
+#   CODEX_REVIEW_DISABLE_CACHE        — set to true/1 to force a fresh review
+#   CODEX_REVIEW_FORCE                — set to true/1 to run even on non-default-branch pushes
+#   CODEX_REVIEW_NO_AUTOFIX           — set to true/1 for review-only mode (backward compat)
+#   CODEX_REVIEW_IN_PROGRESS          — internal guard to skip nested review runs
+#   Legacy: TOUCHSTONE_LOCAL_REVIEWER_COMMAND, CODEX_REVIEW_ASSIST*  — parsed but inert in 2.0.
 #
 # To bypass entirely in an emergency: git push --no-verify
 #
 # Exit codes:
 #   0 — clean review (or graceful skip), push allowed
-#   1 — Codex flagged blocking issues OR fix loop did not converge, push aborted
+#   1 — reviewer flagged blocking issues OR fix loop did not converge, push aborted
 #
 set -euo pipefail
 

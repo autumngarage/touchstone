@@ -7,7 +7,7 @@
 #   new-project.sh <project-dir> --no-register   # skip adding to ~/.touchstone-projects
 #   new-project.sh <project-dir> --type node|python|swift|rust|go|generic|auto
 #   new-project.sh <project-dir> --unsafe-paths src/auth/,migrations/
-#   new-project.sh <project-dir> --reviewer codex|claude|gemini|local|auto|none
+#   new-project.sh <project-dir> --reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)
 #   new-project.sh <project-dir> --review-routing all-hosted|all-local|small-local
 #   new-project.sh <project-dir> --gitbutler
 #
@@ -61,7 +61,7 @@ GITHUB_MODE=""                 # unset | private | public | none
 GITHUB_MODE_REQUESTED=false
 
 usage() {
-  echo "Usage: $0 <project-dir> [--yes|-y] [--register|--no-register] [--type node|python|swift|rust|go|generic|auto] [--skip-language-scaffold] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|none] [--scaffold-tests] [--with-cortex|--no-with-cortex] [--with-sentinel|--no-with-sentinel] [--initial-commit|--no-initial-commit] [--github-private|--github-public|--no-github]"
+  echo "Usage: $0 <project-dir> [--yes|-y] [--register|--no-register] [--type node|python|swift|rust|go|generic|auto] [--skip-language-scaffold] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|none] [--scaffold-tests] [--with-cortex|--no-with-cortex] [--with-sentinel|--no-with-sentinel] [--initial-commit|--no-initial-commit] [--github-private|--github-public|--no-github]"
 }
 
 trim() {
@@ -192,15 +192,18 @@ normalize_project_type() {
 }
 
 normalize_reviewer() {
+  # 2.0: the only runtime reviewer is `conductor`. The legacy values
+  # (codex/claude/gemini/local/auto) are preserved for back-compat and auto-
+  # migrate at push-time; `conductor` is the new canonical value.
   local value="$1"
   value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
 
   case "$value" in
-    ""|auto) printf 'auto' ;;
+    ""|auto|conductor) printf 'auto' ;;
     codex|claude|gemini|local) printf '%s' "$value" ;;
     none|no|off|disabled|false) printf 'none' ;;
     *)
-      echo "ERROR: unknown reviewer '$1' (expected codex, claude, gemini, local, auto, or none)" >&2
+      echo "ERROR: unknown reviewer '$1' (expected conductor, none, or legacy: codex, claude, gemini, local, auto)" >&2
       return 1
       ;;
   esac
@@ -744,7 +747,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --reviewer)
-      [ "$#" -ge 2 ] || { echo "ERROR: --reviewer requires a value (codex, claude, gemini, local, auto, none)" >&2; exit 1; }
+      [ "$#" -ge 2 ] || { echo "ERROR: --reviewer requires a value (conductor, none, or legacy: codex, claude, gemini, local, auto)" >&2; exit 1; }
       INPUT_REVIEWER="$(normalize_reviewer "$2")"
       REVIEW_CONFIG_REQUESTED=true
       shift 2
