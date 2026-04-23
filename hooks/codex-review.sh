@@ -678,13 +678,7 @@ REVIEWER_CASCADE=("conductor")
 # v1.x peer-review (ASSIST_HELPERS) is disabled in 2.0.0 and returns in v2.1
 # via `conductor call --exclude <primary_provider>`. Users who had it enabled
 # get a warning; the setting is ignored rather than throwing.
-if is_truthy "${ASSIST_ENABLED:-false}"; then
-  echo "==> NOTE: [review.assist] is disabled in Touchstone 2.0.0." >&2
-  echo "    Peer review (second-opinion from a different model) returns in" >&2
-  echo "    v2.1 via 'conductor call --exclude <primary>'. Track in the plan." >&2
-fi
-ASSIST_ENABLED=false
-ASSIST_HELPERS=()
+ASSIST_HELPERS=()  # 1.x helpers field is ignored — Conductor picks the peer.
 
 REVIEW_ENABLED="$(normalize_bool "$REVIEW_ENABLED")"
 ROUTING_ENABLED="$(normalize_bool "$ROUTING_ENABLED")"
@@ -1705,6 +1699,89 @@ print_route_log() {
 }
 
 # --------------------------------------------------------------------------
+# Peer review ([review.assist], v2.1) — second-opinion pass via Conductor.
+# --------------------------------------------------------------------------
+
+# Parse the provider Conductor picked for the most recent primary call.
+# Reads the route-log line from REVIEW_STDERR_FILE. Returns the provider
+# name on stdout, or empty if not found. Tolerates both real conductor's
+# unicode arrow and ASCII-fallback shapes.
+parse_primary_provider() {
+  local stderr_file="${1:-$REVIEW_STDERR_FILE}"
+  [ -f "$stderr_file" ] || { printf ''; return; }
+  local line
+  line="$(grep -m1 '^\[conductor\]' "$stderr_file" 2>/dev/null || true)"
+  [ -n "$line" ] || { printf ''; return; }
+  # Extract the provider name following the arrow. Handles:
+  #   [conductor] auto (...) → claude (tier: ...)
+  #   [conductor] auto (...) -> claude (tier: ...)
+  # `sed -nE` treats `(a|b)` as ERE alternation.
+  printf '%s' "$line" | sed -nE 's/.*(→|-> ?)([a-zA-Z0-9_.-]+).*/\2/p' | head -1
+}
+
+# Run a peer review via Conductor, excluding the primary's provider.
+# Advisory — peer output appears in the transcript but does not gate the
+# merge. When the primary provider can't be identified (missing or
+# unparseable route-log), skip rather than invoke `conductor` without
+# --exclude (which could reuse the primary).
+run_peer_review() {
+  local primary_output="$1"
+  local primary_provider
+  primary_provider="$(parse_primary_provider)"
+
+  if [ -z "$primary_provider" ]; then
+    phase "peer review skipped — couldn't identify primary provider"
+    return 0
+  fi
+
+  phase "peer review — asking Conductor for a second opinion (excluding $primary_provider)"
+
+  local peer_prompt
+  peer_prompt="$(build_peer_review_prompt "$primary_output")"
+
+  # Peer is single-turn (no tools). `conductor call` sees the primary's
+  # findings + a framing prompt; the router picks a non-primary provider.
+  local peer_output
+  local peer_timeout="${ASSIST_TIMEOUT:-60}"
+  peer_output="$(printf '%s' "$peer_prompt" \
+    | conductor call --auto \
+        --exclude "$primary_provider" \
+        --tags code-review \
+        --effort medium \
+        --silent-route \
+        2>/dev/null || true)"
+
+  if [ -z "$peer_output" ]; then
+    phase "peer review produced no output (skipped)"
+    return 0
+  fi
+
+  printf "\n  ${C_DIM}── peer review (excluded %s) ──${C_RESET}\n" "$primary_provider"
+  printf '%s\n' "$peer_output" | sed 's/^/  /'
+  printf "\n"
+  ASSIST_ROUNDS_DONE=$((${ASSIST_ROUNDS_DONE:-0} + 1))
+}
+
+build_peer_review_prompt() {
+  local primary_output="$1"
+  cat <<EOF
+You are a peer code reviewer giving a second opinion on another AI reviewer's output.
+You are asked to be a QUICK second opinion, NOT to redo the review from scratch.
+
+The primary reviewer examined a code change and produced the output below. Your job:
+  1. Do you AGREE or DISAGREE with the primary's overall verdict (CLEAN / FIXED / BLOCKED)?
+  2. Anything the primary MISSED that you'd flag?
+  3. Anything the primary FLAGGED that you think is a false positive?
+
+Keep your response under 300 words. Lead with AGREE or DISAGREE on a line by itself.
+
+--- Primary reviewer output: ---
+$primary_output
+--- End primary output ---
+EOF
+}
+
+# --------------------------------------------------------------------------
 # Worktree invariant checking
 # --------------------------------------------------------------------------
 
@@ -1908,6 +1985,16 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
   # the reviewer isn't Conductor the filter matches nothing and this is a
   # no-op, so it's safe to call unconditionally.
   print_route_log
+
+  # Peer review (v2.1): when [review.assist].enabled=true, ask Conductor
+  # for a second opinion excluding the primary provider. Advisory — the
+  # peer's verdict does NOT gate the merge; the primary's sentinel wins.
+  # Fires once per iteration, respects ASSIST_MAX_ROUNDS.
+  if is_truthy "${ASSIST_ENABLED:-false}" \
+      && [ "${ASSIST_ROUNDS_DONE:-0}" -lt "${ASSIST_MAX_ROUNDS:-1}" ] \
+      && [ -n "$OUTPUT" ]; then
+    run_peer_review "$OUTPUT" || true
+  fi
 
   # Check worktree invariants in non-fix modes.
   # This is a hard failure regardless of on_error policy — a reviewer that
