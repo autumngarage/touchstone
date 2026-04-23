@@ -400,30 +400,36 @@ if grep -q 'src/auth' "$PROJECT_EXISTING_CONFIG/.codex-review.toml"; then
 fi
 
 # Bootstrap should let users opt out of AI review explicitly.
+# 2.0 shape: `reviewer = "conductor"` is always the reviewer (the field is
+# single-valued in 2.0); `enabled = false` is how opt-out is recorded.
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_NONE" --no-register --no-ai-review
 assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^mode = "review-only"$'
 assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^safe_by_default = false$'
 assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^enabled = false$'
-assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^reviewers = \[\]$'
+assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^reviewer = "conductor"$'
 
-# Bootstrap should support local model reviewer commands.
+# Bootstrap should support local model reviewer commands. In 2.0 the
+# `[review.local]` block is retired; local maps to ollama with a comment
+# preserving the user's --local-review-command for later custom-provider
+# registration (Conductor v0.3).
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_LOCAL" --no-register --reviewer local --local-review-command "local-reviewer --model demo" --review-assist --review-autofix --unsafe-paths "src/auth/"
 assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^mode = "fix"$'
 assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^safe_by_default = true$'
 assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^enabled = true$'
-assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^reviewers = \["local"\]$'
-assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^\[review.local\]$'
-assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^command = "local-reviewer --model demo"$'
+assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^reviewer = "conductor"$'
+assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^with = "ollama"$'
+assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" 'local-reviewer --model demo'
 assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '"src/auth/",'
 
 # Bootstrap should support routing small reviews to local and larger reviews to hosted models.
+# 2.0 shape: [review.routing] uses per-bucket CONDUCTOR_* overrides (small_with,
+# large_with, etc.) — the 1.x reviewer-cascade arrays are gone.
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_HYBRID" --no-register --review-routing small-local --small-review-lines 123 --reviewer codex --local-review-command "local-reviewer --model demo"
 assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^\[review.routing\]$'
 assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^enabled = true$'
 assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^small_max_diff_lines = 123$'
-assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^small_reviewers = \["local", "codex"\]$'
-assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^large_reviewers = \["codex"\]$'
-assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^command = "local-reviewer --model demo"$'
+assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^small_with = "ollama"'
+assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^large_with = "codex"$'
 
 # Bootstrap should record the optional GitButler workflow choice without making it the default.
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_GITBUTLER" --no-register --gitbutler --gitbutler-mcp

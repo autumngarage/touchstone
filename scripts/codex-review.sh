@@ -107,10 +107,26 @@ REVIEWER_CASCADE=()
 TOUCHSTONE_LOCAL_REVIEWER_COMMAND="${TOUCHSTONE_LOCAL_REVIEWER_COMMAND:-}"
 # shellcheck disable=SC2269
 TOUCHSTONE_LOCAL_REVIEWER_AUTH_COMMAND="${TOUCHSTONE_LOCAL_REVIEWER_AUTH_COMMAND:-}"
+# 2.0 conductor knobs — filled from [review.conductor] during TOML parse;
+# env vars (TOUCHSTONE_CONDUCTOR_*) override just before invocation.
+CONDUCTOR_WITH=""
+CONDUCTOR_PREFER=""
+CONDUCTOR_EFFORT=""
+CONDUCTOR_TAGS=""
+CONDUCTOR_EXCLUDE=""
 ROUTING_ENABLED=false
 ROUTING_SMALL_MAX_DIFF_LINES=400
-ROUTING_SMALL_REVIEWERS=()
-ROUTING_LARGE_REVIEWERS=()
+ROUTING_SMALL_REVIEWERS=()   # legacy 1.x shape; retained for back-compat parsing
+ROUTING_LARGE_REVIEWERS=()   # legacy 1.x shape; retained for back-compat parsing
+# 2.0 routing knobs — override CONDUCTOR_* for small vs large diffs.
+ROUTING_SMALL_WITH=""
+ROUTING_SMALL_PREFER=""
+ROUTING_SMALL_EFFORT=""
+ROUTING_SMALL_TAGS=""
+ROUTING_LARGE_WITH=""
+ROUTING_LARGE_PREFER=""
+ROUTING_LARGE_EFFORT=""
+ROUTING_LARGE_TAGS=""
 ROUTING_DECISION="default"
 ASSIST_ENABLED="${CODEX_REVIEW_ASSIST:-false}"
 ASSIST_TIMEOUT="${CODEX_REVIEW_ASSIST_TIMEOUT:-60}"
@@ -121,6 +137,19 @@ trim() {
   local value="$1"
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+strip_toml_string() {
+  # Trim whitespace and strip surrounding single/double quotes from a
+  # scalar TOML value. No attempt at full TOML-string semantics — just
+  # the quoted vs bare-word split that [review.conductor] keys use.
+  local value="$1"
+  value="$(trim "$value")"
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
   printf '%s' "$value"
 }
 
@@ -403,6 +432,21 @@ if [ -f "$CONFIG_FILE" ]; then
       continue
     fi
 
+    # Parse [review.conductor] section keys (2.0). These translate directly
+    # to the CONDUCTOR_* env-var contract the adapter uses at call-time.
+    # Env vars (TOUCHSTONE_CONDUCTOR_*) still take precedence; these supply
+    # the config-file default before env resolution at line ~650.
+    if [ "$CURRENT_SECTION" = "review.conductor" ]; then
+      case "$line" in
+        prefer*=*)  CONDUCTOR_PREFER="$(strip_toml_string "${line#*=}")" ;;
+        effort*=*)  CONDUCTOR_EFFORT="$(strip_toml_string "${line#*=}")" ;;
+        tags*=*)    CONDUCTOR_TAGS="$(strip_toml_string "${line#*=}")" ;;
+        with*=*)    CONDUCTOR_WITH="$(strip_toml_string "${line#*=}")" ;;
+        exclude*=*) CONDUCTOR_EXCLUDE="$(strip_toml_string "${line#*=}")" ;;
+      esac
+      continue
+    fi
+
     # Parse [review.routing] section keys.
     if [ "$CURRENT_SECTION" = "review.routing" ]; then
       case "$line" in
@@ -413,6 +457,7 @@ if [ -f "$CONFIG_FILE" ]; then
           ROUTING_SMALL_MAX_DIFF_LINES="$(trim "${line#*=}")"
           ;;
         small_reviewers*=*)
+          # Legacy 1.x shape — auto-migrated at push-time.
           array_value="$(trim "${line#*=}")"
           array_value="${array_value#\[}"
           if [[ "$array_value" == *"]"* ]]; then
@@ -423,6 +468,7 @@ if [ -f "$CONFIG_FILE" ]; then
           fi
           ;;
         large_reviewers*=*)
+          # Legacy 1.x shape — auto-migrated at push-time.
           array_value="$(trim "${line#*=}")"
           array_value="${array_value#\[}"
           if [[ "$array_value" == *"]"* ]]; then
@@ -432,6 +478,15 @@ if [ -f "$CONFIG_FILE" ]; then
             IN_ROUTING_LARGE_REVIEWERS=true
           fi
           ;;
+        # 2.0 routing knobs — override CONDUCTOR_* per size bucket.
+        small_with*=*)    ROUTING_SMALL_WITH="$(strip_toml_string "${line#*=}")" ;;
+        small_prefer*=*)  ROUTING_SMALL_PREFER="$(strip_toml_string "${line#*=}")" ;;
+        small_effort*=*)  ROUTING_SMALL_EFFORT="$(strip_toml_string "${line#*=}")" ;;
+        small_tags*=*)    ROUTING_SMALL_TAGS="$(strip_toml_string "${line#*=}")" ;;
+        large_with*=*)    ROUTING_LARGE_WITH="$(strip_toml_string "${line#*=}")" ;;
+        large_prefer*=*)  ROUTING_LARGE_PREFER="$(strip_toml_string "${line#*=}")" ;;
+        large_effort*=*)  ROUTING_LARGE_EFFORT="$(strip_toml_string "${line#*=}")" ;;
+        large_tags*=*)    ROUTING_LARGE_TAGS="$(strip_toml_string "${line#*=}")" ;;
       esac
       continue
     fi
@@ -639,12 +694,35 @@ ROUTING_ENABLED="$(normalize_bool "$ROUTING_ENABLED")"
 # valid reviewer is 'conductor' itself. Users who want to pin a specific
 # underlying provider should use TOUCHSTONE_CONDUCTOR_WITH=<provider>.
 if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
-  if [ "$TOUCHSTONE_REVIEWER" != "conductor" ]; then
-    echo "==> NOTE: TOUCHSTONE_REVIEWER=$TOUCHSTONE_REVIEWER is deprecated in 2.0.0." >&2
-    echo "    Pin an underlying provider with: TOUCHSTONE_CONDUCTOR_WITH=$TOUCHSTONE_REVIEWER" >&2
-    # Auto-translate as a convenience.
-    CONDUCTOR_WITH="${CONDUCTOR_WITH:-$TOUCHSTONE_REVIEWER}"
-  fi
+  case "$TOUCHSTONE_REVIEWER" in
+    conductor)
+      : # canonical — no translation needed
+      ;;
+    local)
+      # Touchstone 2.0 retired the `local` reviewer; Conductor has no
+      # provider by that name, so a raw translation (`--with local`) would
+      # fail with "unknown provider". The closest 2.0 analog is ollama.
+      # Warn and offer the migration; don't silently pin to something that
+      # crashes at call-time.
+      echo "==> NOTE: TOUCHSTONE_REVIEWER=local is deprecated in 2.0.0." >&2
+      echo "    The 1.x 'local' reviewer is retired; Conductor has no provider by that name." >&2
+      echo "    Migrating to: TOUCHSTONE_CONDUCTOR_WITH=ollama (the closest 2.0 analog)." >&2
+      echo "    If you had a custom local command, register it as a Conductor custom" >&2
+      echo "    provider when v0.3 ships: conductor providers add --name local --shell '<cmd>'" >&2
+      # TOUCHSTONE_REVIEWER is env-scoped, so it trumps the TOML `with=` pin.
+      CONDUCTOR_WITH="ollama"
+      ;;
+    codex|claude|gemini)
+      echo "==> NOTE: TOUCHSTONE_REVIEWER=$TOUCHSTONE_REVIEWER is deprecated in 2.0.0." >&2
+      echo "    Pin an underlying provider with: TOUCHSTONE_CONDUCTOR_WITH=$TOUCHSTONE_REVIEWER" >&2
+      CONDUCTOR_WITH="$TOUCHSTONE_REVIEWER"
+      ;;
+    *)
+      echo "==> WARNING: TOUCHSTONE_REVIEWER=$TOUCHSTONE_REVIEWER is not a known legacy value." >&2
+      echo "    Ignoring; Conductor will auto-route. To pin a provider, use" >&2
+      echo "    TOUCHSTONE_CONDUCTOR_WITH=<provider> directly." >&2
+      ;;
+  esac
   REVIEWER_CASCADE=("conductor")
 fi
 
@@ -930,15 +1008,32 @@ resolve_reviewer() {
       continue
     fi
     if ! "reviewer_${reviewer}_available"; then
-      if [ "$reviewer" = "local" ]; then
-        REVIEWER_STATUS="${REVIEWER_STATUS}    local: command not configured\n"
-      else
-        REVIEWER_STATUS="${REVIEWER_STATUS}    ${reviewer}: CLI not installed\n"
-      fi
+      case "$reviewer" in
+        conductor)
+          REVIEWER_STATUS="${REVIEWER_STATUS}    conductor: CLI not found on PATH\n"
+          REVIEWER_STATUS="${REVIEWER_STATUS}      → brew install autumngarage/conductor/conductor\n"
+          REVIEWER_STATUS="${REVIEWER_STATUS}      → conductor init   (configure providers interactively)\n"
+          ;;
+        local)
+          REVIEWER_STATUS="${REVIEWER_STATUS}    local: command not configured\n"
+          ;;
+        *)
+          REVIEWER_STATUS="${REVIEWER_STATUS}    ${reviewer}: CLI not installed\n"
+          ;;
+      esac
       continue
     fi
     if ! "reviewer_${reviewer}_auth_ok"; then
-      REVIEWER_STATUS="${REVIEWER_STATUS}    ${reviewer}: auth check failed\n"
+      case "$reviewer" in
+        conductor)
+          REVIEWER_STATUS="${REVIEWER_STATUS}    conductor: no provider is configured\n"
+          REVIEWER_STATUS="${REVIEWER_STATUS}      → conductor doctor    (diagnose what's missing)\n"
+          REVIEWER_STATUS="${REVIEWER_STATUS}      → conductor init      (guided provider setup)\n"
+          ;;
+        *)
+          REVIEWER_STATUS="${REVIEWER_STATUS}    ${reviewer}: auth check failed\n"
+          ;;
+      esac
       continue
     fi
     ACTIVE_REVIEWER="$reviewer"
@@ -993,8 +1088,12 @@ apply_review_routing() {
       ;;
   esac
 
+  # Legacy 1.x cascade arrays survive for back-compat; 2.0 routing lives in
+  # the per-bucket CONDUCTOR_* overrides. In 2.0 the cascade is always
+  # ("conductor") after migration, so the array swap is a no-op — the real
+  # routing choice is the CONDUCTOR_WITH / PREFER / EFFORT / TAGS swap.
   if [ "${#ROUTING_SMALL_REVIEWERS[@]}" -eq 0 ]; then
-    ROUTING_SMALL_REVIEWERS=("local" "${REVIEWER_CASCADE[@]}")
+    ROUTING_SMALL_REVIEWERS=("${REVIEWER_CASCADE[@]}")
   fi
   if [ "${#ROUTING_LARGE_REVIEWERS[@]}" -eq 0 ]; then
     ROUTING_LARGE_REVIEWERS=("${REVIEWER_CASCADE[@]}")
@@ -1003,11 +1102,22 @@ apply_review_routing() {
   if [ "$diff_lines" -le "$ROUTING_SMALL_MAX_DIFF_LINES" ] 2>/dev/null; then
     REVIEWER_CASCADE=("${ROUTING_SMALL_REVIEWERS[@]}")
     ROUTING_DECISION="small"
-    echo "==> Review routing: small diff ($diff_lines <= $ROUTING_SMALL_MAX_DIFF_LINES) — trying: ${REVIEWER_CASCADE[*]}"
+    # Apply 2.0 small-bucket overrides. Non-empty fields win; env still
+    # trumps via the earlier cascade (TOUCHSTONE_CONDUCTOR_* set on the
+    # command line or in the shell override the config-driven bucket).
+    [ -n "$ROUTING_SMALL_WITH" ]   && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_SMALL_WITH}"
+    [ -n "$ROUTING_SMALL_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_SMALL_PREFER}"
+    [ -n "$ROUTING_SMALL_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_SMALL_EFFORT}"
+    [ -n "$ROUTING_SMALL_TAGS" ]   && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_SMALL_TAGS}"
+    echo "==> Review routing: small diff ($diff_lines <= $ROUTING_SMALL_MAX_DIFF_LINES) — with=${CONDUCTOR_WITH:-auto} prefer=$CONDUCTOR_PREFER effort=$CONDUCTOR_EFFORT"
   else
     REVIEWER_CASCADE=("${ROUTING_LARGE_REVIEWERS[@]}")
     ROUTING_DECISION="large"
-    echo "==> Review routing: larger diff ($diff_lines > $ROUTING_SMALL_MAX_DIFF_LINES) — trying: ${REVIEWER_CASCADE[*]}"
+    [ -n "$ROUTING_LARGE_WITH" ]   && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_LARGE_WITH}"
+    [ -n "$ROUTING_LARGE_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_LARGE_PREFER}"
+    [ -n "$ROUTING_LARGE_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_LARGE_EFFORT}"
+    [ -n "$ROUTING_LARGE_TAGS" ]   && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_LARGE_TAGS}"
+    echo "==> Review routing: larger diff ($diff_lines > $ROUTING_SMALL_MAX_DIFF_LINES) — with=${CONDUCTOR_WITH:-auto} prefer=$CONDUCTOR_PREFER effort=$CONDUCTOR_EFFORT"
   fi
 }
 
@@ -1032,7 +1142,8 @@ reviewer_label() {
 
 REVIEW_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-output.XXXXXX")"
 ASSIST_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-assist-output.XXXXXX")"
-trap 'rm -f "$REVIEW_OUTPUT_FILE" "$ASSIST_OUTPUT_FILE"' EXIT
+REVIEW_STDERR_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-stderr.XXXXXX")"
+trap 'rm -f "$REVIEW_OUTPUT_FILE" "$ASSIST_OUTPUT_FILE" "$REVIEW_STDERR_FILE"' EXIT
 
 kill_process_tree() {
   local pid="$1"
@@ -1055,15 +1166,21 @@ run_reviewer_with_timeout() {
   local prompt="${2:-$REVIEW_PROMPT}"
   local output_file="${3:-$REVIEW_OUTPUT_FILE}"
 
+  # Capture stderr separately — conductor emits its route-log there, which
+  # we want to surface in the transcript. Pre-2.0 reviewers wrote noise to
+  # stderr, hence the historical /dev/null redirect; capturing instead is
+  # safe because non-[conductor] lines are filtered before display.
+  : > "$REVIEW_STDERR_FILE"
+
   # No timeout: run directly
   if [ "$timeout_secs" -le 0 ] 2>/dev/null; then
-    run_reviewer "$prompt" > "$output_file" 2>/dev/null
+    run_reviewer "$prompt" > "$output_file" 2>>"$REVIEW_STDERR_FILE"
     return $?
   fi
 
   # Run reviewer in background, kill if it exceeds timeout.
   (
-    run_reviewer "$prompt" > "$output_file" 2>/dev/null &
+    run_reviewer "$prompt" > "$output_file" 2>>"$REVIEW_STDERR_FILE" &
     local reviewer_pid=$!
 
     terminate_reviewer() {
@@ -1180,13 +1297,14 @@ if ! resolve_reviewer; then
   if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
     echo "ERROR: TOUCHSTONE_REVIEWER=$TOUCHSTONE_REVIEWER but that reviewer is not available:" >&2
     printf '%b' "$REVIEWER_STATUS" >&2
+    echo "  Set TOUCHSTONE_CONDUCTOR_WITH=<provider> to pin an underlying provider," >&2
+    echo "  or unset TOUCHSTONE_REVIEWER to let Conductor auto-route." >&2
     exit 1
   fi
-  echo "==> No reviewer available — skipping review."
+  echo "==> No reviewer available — push will proceed without AI review."
   printf '%b' "$REVIEWER_STATUS"
-  echo "    Install the conductor CLI + at least one provider:"
-  echo "      brew install autumngarage/conductor/conductor   # the reviewer wrapper"
-  echo "      conductor init                                  # configure providers interactively"
+  echo "    Touchstone 2.0 routes every review through the \`conductor\` CLI."
+  echo "    Fix above, then re-run \`git push\` to trigger review again."
   exit 0
 fi
 REVIEWER_LABEL="$(reviewer_label)"
@@ -1550,6 +1668,25 @@ phase() {
   printf "  ${C_DIM}[%s] %s${C_RESET}\n" "$(date +%H:%M:%S)" "$1"
 }
 
+# Extract Conductor's route-log lines from REVIEW_STDERR_FILE and print
+# them into the transcript. The log tells the user which provider was
+# picked, how hard it thought, how long it took, and what it cost —
+# the observability promise of the Conductor integration.
+print_route_log() {
+  local stderr_file="${1:-$REVIEW_STDERR_FILE}"
+  [ -f "$stderr_file" ] || return 0
+  # Conductor's route-log lines all start with `[conductor]`; subsequent
+  # wrapped lines (the cost/token summary) start with whitespace. Include
+  # both. Anything else on stderr is filtered out (tracebacks, warnings).
+  local log
+  log="$(awk '/^\[conductor\]/ { emit=1; print; next } /^[[:space:]]+·/ && emit { print; next } { emit=0 }' "$stderr_file")"
+  [ -n "$log" ] || return 0
+  # Indent to align with the other phase/banner lines.
+  printf '%s\n' "$log" | while IFS= read -r line; do
+    printf "  ${C_DIM}%s${C_RESET}\n" "$line"
+  done
+}
+
 # --------------------------------------------------------------------------
 # Worktree invariant checking
 # --------------------------------------------------------------------------
@@ -1749,6 +1886,11 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
   EXIT=$?
   set -e
   OUTPUT="$(cat "$REVIEW_OUTPUT_FILE" 2>/dev/null || true)"
+
+  # Surface Conductor's route-log (provider, cost, tokens, duration). If
+  # the reviewer isn't Conductor the filter matches nothing and this is a
+  # no-op, so it's safe to call unconditionally.
+  print_route_log
 
   # Check worktree invariants in non-fix modes.
   # This is a hard failure regardless of on_error policy — a reviewer that

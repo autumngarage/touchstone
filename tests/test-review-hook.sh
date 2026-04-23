@@ -453,7 +453,8 @@ set -e
 
 if [ "$ALL_UNAVAIL_EXIT" -eq 0 ] \
   && grep -q 'No reviewer available' "$CASCADE_OUTPUT" \
-  && grep -q 'conductor: CLI not installed' "$CASCADE_OUTPUT" \
+  && grep -q 'conductor: CLI not found on PATH' "$CASCADE_OUTPUT" \
+  && grep -q 'brew install autumngarage/conductor/conductor' "$CASCADE_OUTPUT" \
   && grep -q 'conductor init' "$CASCADE_OUTPUT"; then
   echo "==> PASS: reviewer unavailable — exited 0 with conductor install hint"
 else
@@ -992,6 +993,43 @@ if grep -q 'review summary' "$CTX_OUTPUT" \
   echo "==> PASS: summary block appears at end"
 else
   echo "FAIL: expected summary block in output" >&2
+  cat "$CTX_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: conductor route-log surfaces in transcript"
+# Mock conductor emits a route-log to stderr on call; transcript should
+# contain the `[conductor]` header line plus the wrapped cost/token line.
+cat > "$CTX_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+# Drain stdin (touchstone pipes the prompt here).
+cat >/dev/null
+# Two-line route log on stderr — matches conductor's --log-route format.
+printf '[conductor] auto (prefer=best, effort=max) -> claude (tier: frontier)\n' >&2
+printf '            . 4.2s . 1284 tok in . 420 tok out . sandbox=read-only\n' >&2
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$CTX_BIN/conductor"
+# Commit another change so we're not hitting the cache from the prior run.
+printf 'route log test\n' >> "$CTX_REPO/example.txt"
+git -C "$CTX_REPO" add example.txt
+git -C "$CTX_REPO" commit -m "route log" >/dev/null 2>&1
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CTX_PROMPT="$CTX_PROMPT" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+)
+
+if grep -q '\[conductor\] auto' "$CTX_OUTPUT" \
+  && grep -qE 'tier: frontier' "$CTX_OUTPUT" \
+  && grep -qE '4\.2s' "$CTX_OUTPUT"; then
+  echo "==> PASS: conductor route-log surfaces in transcript"
+else
+  echo "FAIL: expected conductor route-log in transcript" >&2
   cat "$CTX_OUTPUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
