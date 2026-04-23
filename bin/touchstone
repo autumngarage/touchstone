@@ -238,6 +238,10 @@ cmd_migrate_from_toolkit() {
   exec bash "$TOUCHSTONE_ROOT/bootstrap/migrate-from-toolkit.sh" "$@"
 }
 
+cmd_migrate_review_config() {
+  exec bash "$TOUCHSTONE_ROOT/bootstrap/migrate-review-config.sh" "$@"
+}
+
 cmd_sync() {
   exec bash "$TOUCHSTONE_ROOT/bootstrap/sync-all.sh" "$@"
 }
@@ -1326,6 +1330,7 @@ cmd_help() {
   printf "    ${BOLD}touchstone update${RESET} --dry-run       Preview what would change\n"
   printf "    ${BOLD}touchstone update${RESET} --check         Report whether this project needs update\n"
   printf "    ${BOLD}touchstone migrate-from-toolkit${RESET}   One-shot rename of legacy .toolkit-* files (pre-1.0.0 projects)\n"
+  printf "    ${BOLD}touchstone migrate-review-config${RESET}  Rewrite .codex-review.toml from 1.x → 2.0 shape (silences migration warnings on push)\n"
   printf "    ${BOLD}touchstone sync${RESET}                   Update all registered projects\n"
   printf "    ${BOLD}touchstone sync${RESET} --check           Report which projects need sync\n"
   printf "    ${BOLD}touchstone sync${RESET} --pull-first      Pull latest touchstone first\n"
@@ -1366,6 +1371,7 @@ case "$COMMAND" in
   detect)       cmd_detect ;;
   update)       cmd_update "$@" ;;
   migrate-from-toolkit) cmd_migrate_from_toolkit "$@" ;;
+  migrate-review-config) cmd_migrate_review_config "$@" ;;
   sync)         cmd_sync "$@" ;;
   status)       cmd_status ;;
   list|ls)      cmd_list ;;
