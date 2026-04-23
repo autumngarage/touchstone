@@ -1689,15 +1689,14 @@ phase() {
 # picked, how hard it thought, how long it took, and what it cost —
 # the observability promise of the Conductor integration.
 print_route_log() {
-  local stderr_file="${1:-$REVIEW_STDERR_FILE}"
-  [ -f "$stderr_file" ] || return 0
+  [ -f "$REVIEW_STDERR_FILE" ] || return 0
   # Conductor's route-log lines all start with `[conductor]`; subsequent
   # wrapped lines (the cost/token summary) start with whitespace. Continue
   # printing while indented continuation lines follow; reset on any other
   # line. Tolerates conductor's varied wrap-line punctuation (· vs · vs .)
   # and any traceback/warning text on stderr (those reset the state).
   local log
-  log="$(awk '/^\[conductor\]/ { emit=1; print; next } emit && /^[[:space:]]/ { print; next } { emit=0 }' "$stderr_file")"
+  log="$(awk '/^\[conductor\]/ { emit=1; print; next } emit && /^[[:space:]]/ { print; next } { emit=0 }' "$REVIEW_STDERR_FILE")"
   [ -n "$log" ] || return 0
   # Indent to align with the other phase/banner lines.
   printf '%s\n' "$log" | while IFS= read -r line; do
