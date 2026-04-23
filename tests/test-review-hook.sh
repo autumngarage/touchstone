@@ -286,6 +286,66 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: changing conductor knobs invalidates the cache"
+# After the prior runs the cache holds CLEAN keyed on (default) conductor
+# config. A push with TOUCHSTONE_CONDUCTOR_WITH=claude has a different
+# effective config and must NOT reuse that cache entry.
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    TOUCHSTONE_CONDUCTOR_WITH=claude \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
+)
+CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+if [ "$CODEX_CALL_COUNT" = "3" ]; then
+  echo "==> PASS: TOUCHSTONE_CONDUCTOR_WITH change invalidated cache"
+else
+  echo "FAIL: expected fresh review after TOUCHSTONE_CONDUCTOR_WITH change" >&2
+  echo "codex call count: $CODEX_CALL_COUNT (expected 3)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# A second push with the same TOUCHSTONE_CONDUCTOR_WITH=claude should hit
+# the new cache entry (so we know it's the env CHANGE that invalidates,
+# not just env presence).
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    TOUCHSTONE_CONDUCTOR_WITH=claude \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
+)
+CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+if [ "$CODEX_CALL_COUNT" = "3" ]; then
+  echo "==> PASS: same conductor knobs hit the new cache entry"
+else
+  echo "FAIL: expected cache hit on repeat with same env" >&2
+  echo "codex call count: $CODEX_CALL_COUNT (expected 3)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Changing prefer or effort should also invalidate.
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    TOUCHSTONE_CONDUCTOR_WITH=claude \
+    TOUCHSTONE_CONDUCTOR_EFFORT=low \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
+)
+CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+if [ "$CODEX_CALL_COUNT" = "4" ]; then
+  echo "==> PASS: TOUCHSTONE_CONDUCTOR_EFFORT change invalidated cache"
+else
+  echo "FAIL: expected fresh review after TOUCHSTONE_CONDUCTOR_EFFORT change" >&2
+  echo "codex call count: $CODEX_CALL_COUNT (expected 4)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: review hook preserves # inside quoted unsafe_paths"
 cat > "$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash

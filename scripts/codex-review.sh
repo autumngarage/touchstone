@@ -1405,29 +1405,45 @@ append_cache_file() {
 }
 
 review_cache_key() {
+  # Use the `${VAR:-}` default-to-empty form for every variable: with
+  # `set -u` active, an unset reference would abort the subshell partway
+  # through and silently truncate the cache-key input. (Pre-2.0 the
+  # function half-broke this way — only the first few fields contributed
+  # to the hash, so adding new fields had no effect on cache invalidation.
+  # Keep this defensive on every line.)
   {
-    printf 'touchstone-codex-review-cache-v2\n'
-    printf 'reviewer=%s\n' "$ACTIVE_REVIEWER"
-    printf 'review_route=%s\n' "$ROUTING_DECISION"
-    printf 'review_enabled=%s\n' "$REVIEW_ENABLED"
-    printf 'local_reviewer_command=%s\n' "$LOCAL_REVIEWER_COMMAND"
-    printf 'base=%s\n' "$BASE"
-    printf 'merge_base=%s\n' "$MERGE_BASE"
-    printf 'worktree_dirty_before_review=%s\n' "$WORKTREE_DIRTY_BEFORE_REVIEW"
-    printf 'assist_enabled=%s\n' "$ASSIST_ENABLED"
-    printf 'assist_timeout=%s\n' "$ASSIST_TIMEOUT"
-    printf 'assist_max_rounds=%s\n' "$ASSIST_MAX_ROUNDS"
-    printf 'assist_helpers=%s\n' "${ASSIST_HELPERS[*]}"
-    printf '\n-- prompt --\n%s\n' "$REVIEW_PROMPT"
-    append_cache_file "AGENTS.md" "$REPO_ROOT/AGENTS.md"
-    append_cache_file "CLAUDE.md" "$REPO_ROOT/CLAUDE.md"
-    append_cache_file ".codex-review.toml" "$CONFIG_FILE"
+    printf 'touchstone-codex-review-cache-v3\n'
+    printf 'reviewer=%s\n' "${ACTIVE_REVIEWER:-}"
+    printf 'review_mode=%s\n' "${REVIEW_MODE:-}"
+    printf 'review_route=%s\n' "${ROUTING_DECISION:-}"
+    printf 'review_enabled=%s\n' "${REVIEW_ENABLED:-}"
+    printf 'local_reviewer_command=%s\n' "${LOCAL_REVIEWER_COMMAND:-}"
+    printf 'base=%s\n' "${BASE:-}"
+    printf 'merge_base=%s\n' "${MERGE_BASE:-}"
+    printf 'worktree_dirty_before_review=%s\n' "${WORKTREE_DIRTY_BEFORE_REVIEW:-}"
+    printf 'assist_enabled=%s\n' "${ASSIST_ENABLED:-}"
+    printf 'assist_timeout=%s\n' "${ASSIST_TIMEOUT:-}"
+    printf 'assist_max_rounds=%s\n' "${ASSIST_MAX_ROUNDS:-}"
+    printf 'assist_helpers=%s\n' "${ASSIST_HELPERS[*]:-}"
+    # Conductor knobs (CLI-effective values, post env+config resolution).
+    # Without these, a review at prefer=cheapest/effort=minimal would
+    # silently satisfy a later push expecting prefer=best/effort=max
+    # because the diff hash matches.
+    printf 'conductor_with=%s\n' "${CONDUCTOR_WITH:-}"
+    printf 'conductor_prefer=%s\n' "${CONDUCTOR_PREFER:-}"
+    printf 'conductor_effort=%s\n' "${CONDUCTOR_EFFORT:-}"
+    printf 'conductor_tags=%s\n' "${CONDUCTOR_TAGS:-}"
+    printf 'conductor_exclude=%s\n' "${CONDUCTOR_EXCLUDE:-}"
+    printf '\n-- prompt --\n%s\n' "${REVIEW_PROMPT:-}"
+    append_cache_file "AGENTS.md" "${REPO_ROOT:-}/AGENTS.md"
+    append_cache_file "CLAUDE.md" "${REPO_ROOT:-}/CLAUDE.md"
+    append_cache_file ".codex-review.toml" "${CONFIG_FILE:-}"
     append_cache_file "codex-review.sh" "$0"
-    if [ -n "$REVIEW_CONTEXT_FILE" ]; then
+    if [ -n "${REVIEW_CONTEXT_FILE:-}" ]; then
       append_cache_file "codex-review-context" "$REVIEW_CONTEXT_FILE"
     fi
     printf '\n-- branch diff --\n'
-    git diff --binary "$MERGE_BASE"..HEAD
+    git diff --binary "${MERGE_BASE:-HEAD}"..HEAD
   } | hash_stdin
 }
 
