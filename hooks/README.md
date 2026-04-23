@@ -83,15 +83,17 @@ Conductor logs its route decision (provider, cost estimate, token count, wall-cl
 | `[review.conductor].with` | unset | Pin a specific provider (bypasses auto-routing) |
 | `[review.conductor].exclude` | unset | Exclude providers from auto-routing |
 | `[review.routing].enabled` | false | Route by diff size |
-| `[review.routing].small_max_diff_lines` | 50 | Diff cutoff for the small-diff bucket |
+| `[review.routing].small_max_diff_lines` | 400 | Diffs ≤ this use the `small_*` knobs; diffs above use the `large_*` knobs |
 | `[review.routing].small_prefer` | unset | e.g. `"cheapest"` for small diffs |
 | `[review.routing].small_effort` | unset | e.g. `"minimal"` for small diffs |
 | `[review.routing].small_with` | unset | Pin provider for small diffs |
-| `[review.routing].large_max_diff_lines` | 1000 | Diff cutoff for the large-diff bucket |
-| `[review.routing].large_prefer` | unset | e.g. `"best"` for large diffs |
-| `[review.routing].large_effort` | unset | e.g. `"max"` for large diffs |
-| `[review.routing].large_with` | unset | Pin provider for large diffs |
+| `[review.routing].small_tags` | unset | e.g. `"code-review"` for small diffs |
+| `[review.routing].large_prefer` | unset | e.g. `"best"` for larger diffs |
+| `[review.routing].large_effort` | unset | e.g. `"max"` for larger diffs |
+| `[review.routing].large_with` | unset | Pin provider for larger diffs |
 | `[review.routing].large_tags` | unset | e.g. `"code-review,long-context"` |
+
+Routing uses a single cutoff (`small_max_diff_lines`): diffs at or below it go through the `small_*` bucket, everything else through the `large_*` bucket. There is no separate `large_max_diff_lines`.
 
 ### Retired in 2.0
 
