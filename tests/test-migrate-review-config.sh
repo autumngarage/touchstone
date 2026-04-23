@@ -171,10 +171,17 @@ max_iterations = 3
 mode = "review-only"
 EOF
 sha_pre="$(shasum "$CLEAN" | awk '{print $1}')"
-bash "$MIGRATE" --file "$CLEAN" 2>&1 | grep -q "no recognizable 1.x markers" || {
+# Capture first, grep second. Piping directly into `grep -q` under `set -o
+# pipefail` occasionally races on SIGPIPE (grep exits on first match, the
+# upstream bash gets SIGPIPE, pipefail trips), which surfaced as an
+# intermittent "FAIL: expected 'no recognizable 1.x markers' message" even
+# though the script emitted the line correctly.
+cleanout="$(bash "$MIGRATE" --file "$CLEAN" 2>&1)"
+if ! printf '%s' "$cleanout" | grep -q "no recognizable 1.x markers"; then
   echo "FAIL: expected 'no recognizable 1.x markers' message" >&2
+  echo "  got: $cleanout" >&2
   ERRORS=$((ERRORS + 1))
-}
+fi
 sha_post="$(shasum "$CLEAN" | awk '{print $1}')"
 if [ "$sha_pre" != "$sha_post" ]; then
   echo "FAIL: no-op run modified the file" >&2
