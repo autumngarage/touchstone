@@ -156,6 +156,31 @@ if [ -f "$CONFIG_FILE" ]; then
   done < "$CONFIG_FILE"
 fi
 
+# TOUCHSTONE_REVIEWER is a v1.x-era env var that pinned the named *adapter*
+# (codex / claude / gemini / local). In 2.0 the only adapter is conductor;
+# the underlying provider pin is TOUCHSTONE_CONDUCTOR_WITH. Translate on the
+# fly so --dry-run matches what the pre-push hook will actually do. Mirrors
+# the translation block in hooks/codex-review.sh (keep in sync).
+if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
+  case "$TOUCHSTONE_REVIEWER" in
+    auto|conductor) ;;
+    local)
+      echo "==> NOTE: TOUCHSTONE_REVIEWER=local is deprecated in 2.0.0." >&2
+      echo "    Migrating to: TOUCHSTONE_CONDUCTOR_WITH=ollama (the closest 2.0 analog)." >&2
+      [ -z "${TOUCHSTONE_CONDUCTOR_WITH:-}" ] && export TOUCHSTONE_CONDUCTOR_WITH="ollama"
+      ;;
+    codex|claude|gemini|ollama)
+      echo "==> NOTE: TOUCHSTONE_REVIEWER=$TOUCHSTONE_REVIEWER is deprecated in 2.0.0." >&2
+      echo "    Pin an underlying provider with: TOUCHSTONE_CONDUCTOR_WITH=$TOUCHSTONE_REVIEWER" >&2
+      [ -z "${TOUCHSTONE_CONDUCTOR_WITH:-}" ] && export TOUCHSTONE_CONDUCTOR_WITH="$TOUCHSTONE_REVIEWER"
+      ;;
+    *)
+      echo "==> WARNING: TOUCHSTONE_REVIEWER=$TOUCHSTONE_REVIEWER is not a known legacy value." >&2
+      echo "    Ignoring. Pin an underlying provider with TOUCHSTONE_CONDUCTOR_WITH=<provider>." >&2
+      ;;
+  esac
+fi
+
 # Env overrides win.
 CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-${CONDUCTOR_WITH:-}}"
 CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-${CONDUCTOR_PREFER:-best}}"

@@ -930,10 +930,17 @@ cmd_doctor() {
   done
 
   # Optional tools.
-  if command -v codex >/dev/null 2>&1; then
-    tk_ok "codex: $(command -v codex)"
+  if command -v conductor >/dev/null 2>&1; then
+    # Touchstone 2.0 delegates all review to conductor; richer status
+    # lives in `conductor doctor`.
+    if conductor doctor --json 2>/dev/null | grep -q '"configured"[[:space:]]*:[[:space:]]*true'; then
+      tk_ok "conductor: $(command -v conductor) (at least one provider configured)"
+    else
+      tk_warn "conductor: $(command -v conductor) (no provider configured — run: conductor init)"
+      issues=$((issues + 1))
+    fi
   else
-    tk_dim "codex: not installed (optional — npm install -g @openai/codex)"
+    tk_dim "conductor: not installed (optional — brew install autumngarage/conductor/conductor)"
   fi
   if command -v but >/dev/null 2>&1; then
     tk_ok "but: $(command -v but)"
