@@ -1094,6 +1094,92 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: peer review fires when [review.assist].enabled = true"
+# Mock conductor responds differently to `exec` (primary) and `call`
+# (peer). The primary emits a route-log to stderr naming itself, which
+# touchstone parses out to set --exclude on the peer call. The peer
+# prints distinctive text so we can assert it surfaces in the transcript.
+cat > "$CTX_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+subcmd="$1"; shift
+# Record every invocation's argv so the test can inspect --exclude presence
+# independently of stdout assertions.
+printf '%s\n' "$subcmd $*" >> "$CONDUCTOR_ARGS_LOG"
+cat >/dev/null  # drain stdin
+case "$subcmd" in
+  exec)
+    printf '[conductor] auto -> claude (tier: frontier)\n' >&2
+    printf '            · 4.2s · 100 tok in · 20 tok out · sandbox=read-only\n' >&2
+    printf 'Primary review says nothing to change.\n'
+    printf 'CODEX_REVIEW_CLEAN\n'
+    ;;
+  call)
+    printf 'AGREE\n'
+    printf 'Peer has nothing additional to add — the primary reviewer covered it.\n'
+    ;;
+esac
+CXEOF
+chmod +x "$CTX_BIN/conductor"
+# New commit → defeats the cache, and lets us diff vs HEAD~1.
+printf 'peer-review test\n' >> "$CTX_REPO/example.txt"
+git -C "$CTX_REPO" add example.txt && git -C "$CTX_REPO" commit -m "peer review" >/dev/null 2>&1
+# Enable peer review in the project config.
+{
+  cat "$CTX_REPO/.codex-review.toml"
+  printf '\n[review.assist]\nenabled = true\nmax_rounds = 1\n'
+} > "$CTX_REPO/.codex-review.toml.tmp" && mv "$CTX_REPO/.codex-review.toml.tmp" "$CTX_REPO/.codex-review.toml"
+git -C "$CTX_REPO" add .codex-review.toml && git -C "$CTX_REPO" commit -m "enable assist" >/dev/null 2>&1
+
+CONDUCTOR_ARGS_LOG="$TEST_DIR/conductor-args.log"
+: > "$CONDUCTOR_ARGS_LOG"
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CONDUCTOR_ARGS_LOG="$CONDUCTOR_ARGS_LOG" \
+    CODEX_REVIEW_BASE="HEAD~2" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+)
+
+if grep -q 'peer review' "$CTX_OUTPUT" \
+  && grep -q 'AGREE' "$CTX_OUTPUT" \
+  && grep -q '^call .*--exclude claude' "$CONDUCTOR_ARGS_LOG"; then
+  echo "==> PASS: peer review fired with --exclude and surfaced in transcript"
+else
+  echo "FAIL: expected peer review block with AGREE and --exclude claude" >&2
+  echo "--- CTX_OUTPUT ---" >&2
+  cat "$CTX_OUTPUT" >&2
+  echo "--- conductor args log ---" >&2
+  cat "$CONDUCTOR_ARGS_LOG" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: peer review silent when [review.assist].enabled = false"
+# Reset config (strip the assist block) and rerun; peer should NOT fire.
+sed -i.bak '/\[review.assist\]/,$d' "$CTX_REPO/.codex-review.toml" && rm -f "$CTX_REPO/.codex-review.toml.bak"
+git -C "$CTX_REPO" add .codex-review.toml && git -C "$CTX_REPO" commit -m "disable assist" >/dev/null 2>&1
+printf 'another change\n' >> "$CTX_REPO/example.txt"
+git -C "$CTX_REPO" add example.txt && git -C "$CTX_REPO" commit -m "change" >/dev/null 2>&1
+
+: > "$CONDUCTOR_ARGS_LOG"
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CONDUCTOR_ARGS_LOG="$CONDUCTOR_ARGS_LOG" \
+    CODEX_REVIEW_BASE="HEAD~2" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+)
+
+if ! grep -q '^call ' "$CONDUCTOR_ARGS_LOG" && ! grep -q 'AGREE' "$CTX_OUTPUT"; then
+  echo "==> PASS: peer review does not fire when disabled"
+else
+  echo "FAIL: peer review fired when disabled" >&2
+  cat "$CTX_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: JSON summary file written when env var set"
 setup_ctx_repo
 setup_ctx_bin

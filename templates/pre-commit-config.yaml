@@ -7,11 +7,19 @@
 
 repos:
   # ── Standard file hygiene ──────────────────────────────────────────────
+  # Cortex append-only exclusions: `.cortex/journal/` is append-only and
+  # `.cortex/doctrine/` is immutable-with-supersede (see Cortex Protocol §4.1,
+  # §4.2). Pre-commit rewriting trailing whitespace or final newlines in
+  # those files violates the contract — the entries' content must not change
+  # after the original write. Excluding them here keeps the hook useful
+  # everywhere else while respecting the protocol.
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
+        exclude: ^\.cortex/(journal|doctrine)/
       - id: end-of-file-fixer
+        exclude: ^\.cortex/(journal|doctrine)/
       - id: check-yaml
       - id: check-json
         exclude: tsconfig.*\.json$

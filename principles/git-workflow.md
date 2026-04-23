@@ -58,6 +58,18 @@ scripts/cleanup-branches.sh --execute    # actually delete merged branches
 
 The cleanup script never deletes the default branch, the current branch, branches checked out in worktrees, or branches with unique unmerged commits. Ancestor-merged branches are deleted with `git branch -d` as defense in depth (git refuses unmerged work). Squash-merged branches — the common case with `open-pr.sh --auto-merge`, where the commits on your feature branch aren't ancestors of the default branch but their changes are already applied — are detected via tree equivalence: every file the branch changed relative to the merge-base must match the default branch's current content. This uniformly handles squash, rebase, and cherry-pick shapes, and correctly rejects the add-then-revert case (where history-based patch-id lookups would false-positive on the add commit). Once equivalence is confirmed, the branch is force-deleted with `git branch -D`.
 
+## Stacked PRs (and why they usually aren't worth it)
+
+A stacked PR is a PR whose base branch is another open PR's branch instead of the default branch. The goal: split a large change into a chain where each step is reviewable on its own, with the child's diff narrowed to "only the new commits on top of the parent." `open-pr.sh --base <parent-branch>` opens one.
+
+**The gotcha that orphans them.** `gh pr merge --squash` (the `--auto-merge` default) rewrites the parent's history into a single squash commit on the default branch — which means the child branch no longer traces to anything upstream. GitHub notices the orphan and **closes the child PR** instead of rebasing it onto the new default branch. The child's code is not lost (the branch still exists on remote), but the PR is marked closed-without-merge and any review discussion on it is effectively abandoned. You've seen this fire before (sentinel PRs #49/#50/#51 on 2026-04-16).
+
+**What to do.**
+
+- **First preference: bundle.** When the user says "ship it all," default to one PR with all the commits. Reviewers prefer one coherent story over a chain; mergers prefer one squash over orchestrating a chain in order.
+- **If you must stack:** drop `--auto-merge` on the whole chain. Merge each PR by hand in order, using **merge commit** or **rebase merge** (never squash) for the parent so the child's branch still traces to something on main. `open-pr.sh` will warn if you pass `--base <branch>` + `--auto-merge` together — take the warning seriously.
+- **Recover an orphaned child**: re-open the work as a fresh PR against current `main` (the lineage is lost but the diff usually still applies). If the parent's squashed content is already on main, the child's diff is just the child-only changes — which is usually what you wanted anyway.
+
 ## Emergency path
 
 If a production bug requires immediate action and can't wait for the PR cycle, push directly with `git push --no-verify`. The next PR must include an "Emergency-bypass disclosure" section explaining what was bypassed and why. The convention — not the tooling — is what keeps the discipline.
