@@ -118,13 +118,27 @@ unsafe_paths = [
 # large_tags = "code-review,long-context"
 
 # --------------------------------------------------------------------------
-# Peer review — DISABLED IN 2.0.0
+# Peer review (second opinion)
 # --------------------------------------------------------------------------
-# [review.assist] (second-opinion from a different model) is disabled in
-# Touchstone 2.0.0. It returns in v2.1 via `conductor call --exclude <primary>`
-# — once Conductor exposes a clean way to extract the primary's provider.
-# Until then, if `[review.assist].enabled = true` is set, Touchstone warns
-# and ignores the setting.
+# When enabled, after the primary review completes Touchstone asks
+# Conductor for a second opinion — routed to a DIFFERENT provider via
+# `conductor call --exclude <primary>`. Peer output appears in the
+# transcript as an advisory block; it does NOT gate the merge (the
+# primary's sentinel still wins).
+#
+# Useful when you want a cross-model sanity check on borderline or
+# important reviews. Costs extra — one additional LLM call per review.
+
+# [review.assist]
+# enabled = true
+#
+# # Max peer rounds per review iteration (default 1). Higher values
+# # only matter inside a fix loop where the primary re-reviews after
+# # edits; keep at 1 unless you specifically want per-iteration peer.
+# max_rounds = 1
+#
+# # Timeout for the peer call in seconds (default 60).
+# timeout = 60
 
 # --------------------------------------------------------------------------
 # Repo-provided review context (optional)

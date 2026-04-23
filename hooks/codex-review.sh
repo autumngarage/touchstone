@@ -1742,7 +1742,9 @@ run_peer_review() {
   # Peer is single-turn (no tools). `conductor call` sees the primary's
   # findings + a framing prompt; the router picks a non-primary provider.
   local peer_output
-  local peer_timeout="${ASSIST_TIMEOUT:-60}"
+  # ASSIST_TIMEOUT config applies via the outer run_reviewer_with_timeout
+  # wrapper when the primary timed out; peer call runs synchronously and
+  # relies on conductor's own per-provider timeout (currently 300s default).
   peer_output="$(printf '%s' "$peer_prompt" \
     | conductor call --auto \
         --exclude "$primary_provider" \
