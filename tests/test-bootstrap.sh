@@ -113,6 +113,10 @@ assert_executable "$PROJECT/scripts/merge-pr.sh"
 assert_executable "$PROJECT/scripts/cleanup-branches.sh"
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'codex-review.sh'
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'touchstone-run.sh validate'
+# Cortex append-only exclusions: trailing-whitespace and end-of-file-fixer
+# must skip .cortex/journal/ and .cortex/doctrine/ per Cortex Protocol §4.
+# Two assertions — one per hook — to catch accidental one-sided fixes.
+assert_contains "$PROJECT/.pre-commit-config.yaml" 'cortex/(journal|doctrine)'
 assert_contains "$PROJECT/.touchstone-config" '^project_type=generic$'
 assert_contains "$PROJECT/.touchstone-config" '^lint_command=$'
 assert_contains "$PROJECT/.touchstone-config" '^git_workflow=git$'

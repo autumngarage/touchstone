@@ -3,11 +3,18 @@
 
 repos:
   # Standard hooks
+  #
+  # Cortex append-only exclusions: `.cortex/journal/` is append-only and
+  # `.cortex/doctrine/` is immutable-with-supersede. Auto-fixing trailing
+  # whitespace or final newlines in those files violates the Cortex Protocol
+  # (§4.1, §4.2) — the entries' content must not change after original write.
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
+        exclude: ^\.cortex/(journal|doctrine)/
       - id: end-of-file-fixer
+        exclude: ^\.cortex/(journal|doctrine)/
       - id: check-yaml
       - id: check-added-large-files
         args: ['--maxkb=500']
