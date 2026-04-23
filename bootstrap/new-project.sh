@@ -7,7 +7,7 @@
 #   new-project.sh <project-dir> --no-register   # skip adding to ~/.touchstone-projects
 #   new-project.sh <project-dir> --type node|python|swift|rust|go|generic|auto
 #   new-project.sh <project-dir> --unsafe-paths src/auth/,migrations/
-#   new-project.sh <project-dir> --reviewer codex|claude|gemini|local|auto|none
+#   new-project.sh <project-dir> --reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)
 #   new-project.sh <project-dir> --review-routing all-hosted|all-local|small-local
 #   new-project.sh <project-dir> --gitbutler
 #
@@ -61,7 +61,7 @@ GITHUB_MODE=""                 # unset | private | public | none
 GITHUB_MODE_REQUESTED=false
 
 usage() {
-  echo "Usage: $0 <project-dir> [--yes|-y] [--register|--no-register] [--type node|python|swift|rust|go|generic|auto] [--skip-language-scaffold] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|none] [--scaffold-tests] [--with-cortex|--no-with-cortex] [--with-sentinel|--no-with-sentinel] [--initial-commit|--no-initial-commit] [--github-private|--github-public|--no-github]"
+  echo "Usage: $0 <project-dir> [--yes|-y] [--register|--no-register] [--type node|python|swift|rust|go|generic|auto] [--skip-language-scaffold] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|none] [--scaffold-tests] [--with-cortex|--no-with-cortex] [--with-sentinel|--no-with-sentinel] [--initial-commit|--no-initial-commit] [--github-private|--github-public|--no-github]"
 }
 
 trim() {
@@ -192,15 +192,18 @@ normalize_project_type() {
 }
 
 normalize_reviewer() {
+  # 2.0: the only runtime reviewer is `conductor`. The legacy values
+  # (codex/claude/gemini/local/auto) are preserved for back-compat and auto-
+  # migrate at push-time; `conductor` is the new canonical value.
   local value="$1"
   value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
 
   case "$value" in
-    ""|auto) printf 'auto' ;;
+    ""|auto|conductor) printf 'auto' ;;
     codex|claude|gemini|local) printf '%s' "$value" ;;
     none|no|off|disabled|false) printf 'none' ;;
     *)
-      echo "ERROR: unknown reviewer '$1' (expected codex, claude, gemini, local, auto, or none)" >&2
+      echo "ERROR: unknown reviewer '$1' (expected conductor, none, or legacy: codex, claude, gemini, local, auto)" >&2
       return 1
       ;;
   esac
@@ -744,7 +747,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --reviewer)
-      [ "$#" -ge 2 ] || { echo "ERROR: --reviewer requires a value (codex, claude, gemini, local, auto, none)" >&2; exit 1; }
+      [ "$#" -ge 2 ] || { echo "ERROR: --reviewer requires a value (conductor, none, or legacy: codex, claude, gemini, local, auto)" >&2; exit 1; }
       INPUT_REVIEWER="$(normalize_reviewer "$2")"
       REVIEW_CONFIG_REQUESTED=true
       shift 2
@@ -1037,21 +1040,16 @@ set_codex_review_key() {
   mv "$tmp_file" "$file"
 }
 
-reviewers_toml_for() {
+conductor_with_for() {
+  # Map a legacy --reviewer value to its 2.0 Conductor `with=` pin.
+  # auto/conductor/empty → no pin (router picks). codex/claude/gemini pin
+  # directly. local maps to ollama (closest 2.0 analog; warn below).
   local reviewer="$1"
   case "$reviewer" in
-    none) printf '[]' ;;
-    auto|"") printf '["codex", "claude", "gemini"]' ;;
-    *) printf '["%s"]' "$reviewer" ;;
-  esac
-}
-
-small_local_reviewers_toml_for() {
-  local reviewer="$1"
-  case "$reviewer" in
-    auto|"") printf '["local", "codex", "claude", "gemini"]' ;;
-    local|none) printf '["local", "codex"]' ;;
-    *) printf '["local", "%s"]' "$reviewer" ;;
+    auto|conductor|"") printf '' ;;
+    codex|claude|gemini) printf '%s' "$reviewer" ;;
+    local) printf 'ollama' ;;
+    *) printf '%s' "$reviewer" ;;
   esac
 }
 
@@ -1063,9 +1061,8 @@ write_review_onboarding_config() {
   local autofix="${INPUT_REVIEW_AUTOFIX:-false}"
   local small_review_lines="${INPUT_SMALL_REVIEW_LINES:-400}"
   local enabled=true
-  local reviewers_toml
-  local large_reviewers_toml
-  local small_reviewers_toml
+  local with_pin
+  local large_with_pin
 
   if [ -z "$routing" ]; then
     case "$reviewer" in
@@ -1078,16 +1075,18 @@ write_review_onboarding_config() {
   if [ "$routing" = "none" ] || [ "$reviewer" = "none" ]; then
     enabled=false
     routing="none"
-    reviewers_toml="$(reviewers_toml_for none)"
+    with_pin=""
   elif [ "$routing" = "all-local" ]; then
+    # All-local routing pins ollama for every diff.
     reviewer="local"
-    reviewers_toml="$(reviewers_toml_for local)"
+    with_pin="ollama"
   else
-    reviewers_toml="$(reviewers_toml_for "$reviewer")"
+    with_pin="$(conductor_with_for "$reviewer")"
   fi
 
-  large_reviewers_toml="$(reviewers_toml_for "$reviewer")"
-  small_reviewers_toml="$(small_local_reviewers_toml_for "$reviewer")"
+  # For size-based routing, large diffs keep the user's chosen reviewer;
+  # small diffs get pinned to ollama for fast/cheap iteration.
+  large_with_pin="$(conductor_with_for "$reviewer")"
 
   if [ "$enabled" = true ] && [ "$autofix" = true ]; then
     set_codex_review_key "$file" "mode" '"fix"'
@@ -1101,21 +1100,47 @@ write_review_onboarding_config() {
     printf '\n# Touchstone onboarding choices. You can edit these later.\n'
     printf '[review]\n'
     printf 'enabled = %s\n' "$enabled"
-    printf 'reviewers = %s\n' "$reviewers_toml"
-    if [ "$routing" = "small-local" ]; then
+    printf 'reviewer = "conductor"\n'
+    if [ "$enabled" = true ]; then
+      printf '\n[review.conductor]\n'
+      printf '# Which provider wins auto-routing: best|cheapest|fastest|balanced\n'
+      printf 'prefer = "best"\n'
+      printf '# Thinking depth: minimal|low|medium|high|max or an integer token budget\n'
+      printf 'effort = "max"\n'
+      printf '# Capability tags passed to the router\n'
+      printf 'tags = "code-review"\n'
+      if [ -n "$with_pin" ]; then
+        printf '# Pin a specific underlying provider (bypasses auto-routing)\n'
+        printf 'with = "%s"\n' "$with_pin"
+      else
+        printf '# Pin a specific underlying provider (bypasses auto-routing). Uncomment to use:\n'
+        printf '# with = "claude"\n'
+      fi
+      if [ "$reviewer" = "local" ] && [ -n "$INPUT_LOCAL_REVIEW_COMMAND" ]; then
+        printf '# NOTE: Touchstone 2.0 retired [review.local]. Your --local-review-command\n'
+        printf '#   was "%s"\n' "$(escape_toml_basic_string "$INPUT_LOCAL_REVIEW_COMMAND")"
+        printf '#   Register it as a Conductor custom provider when v0.3 ships:\n'
+        printf "#     conductor providers add --name local --shell '<cmd>' --tags code-review,offline\n"
+      fi
+    fi
+    if [ "$enabled" = true ] && [ "$routing" = "small-local" ]; then
       printf '\n[review.routing]\n'
       printf 'enabled = true\n'
       printf 'small_max_diff_lines = %s\n' "$small_review_lines"
-      printf 'small_reviewers = %s\n' "$small_reviewers_toml"
-      printf 'large_reviewers = %s\n' "$large_reviewers_toml"
+      printf 'small_with = "ollama"       # small diffs: fast local review\n'
+      printf 'small_effort = "minimal"\n'
+      if [ -n "$large_with_pin" ]; then
+        printf 'large_with = "%s"\n' "$large_with_pin"
+      fi
+      printf 'large_prefer = "best"\n'
+      printf 'large_effort = "max"\n'
     fi
-    printf '\n[review.assist]\n'
-    printf 'enabled = %s\n' "$assist"
-    printf 'helpers = ["codex", "gemini", "claude", "local"]\n'
-    if [ "$reviewer" = "local" ] || [ "$routing" = "small-local" ]; then
-      printf '\n[review.local]\n'
-      printf '# The command receives the review prompt on stdin and must print CODEX_REVIEW_CLEAN, CODEX_REVIEW_FIXED, or CODEX_REVIEW_BLOCKED as its last line.\n'
-      printf 'command = "%s"\n' "$(escape_toml_basic_string "$INPUT_LOCAL_REVIEW_COMMAND")"
+    if [ "$assist" = "true" ]; then
+      printf '\n# NOTE: --review-assist requested. Peer review is disabled in Touchstone 2.0.0;\n'
+      printf "# it returns in v2.1 via 'conductor call --exclude <primary>'. Your choice is\n"
+      printf '# preserved here as a comment so the intent is not lost:\n'
+      printf '# [review.assist]\n'
+      printf '# enabled = true\n'
     fi
   } >> "$file"
 }

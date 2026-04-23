@@ -63,17 +63,18 @@ bash setup.sh
 
 ### Turn on AI review
 
-When you run `touchstone new` or `touchstone init`, Touchstone asks whether you want AI review and how it should be routed. You can choose a hosted reviewer for every change, a local model for every change, a hybrid setup where small diffs go local and larger diffs go to a hosted reviewer, or no AI review.
-
-If you choose Codex and it is not installed yet:
+Touchstone 2.0 delegates all LLM access to the [Conductor CLI](https://github.com/autumngarage/conductor). Install Conductor once, run its concierge setup, and every Touchstone-protected repo works with one shared auth:
 
 ```bash
-npm install -g @openai/codex && codex login
+brew install autumngarage/conductor/conductor
+conductor init                    # walks through each provider, one at a time
 ```
 
-For local models, choose `local` during the interactive setup and enter a command that reads the review prompt from stdin, such as an Ollama or LM Studio wrapper. For scripted setup, pass `--local-review-command '<command>'` with `--reviewer local`. You can keep using Touchstone without any AI reviewer; the hook skips itself when review is disabled or no configured reviewer is available.
+Conductor supports Claude, OpenAI Codex, Google Gemini, Moonshot Kimi (via Cloudflare Workers AI), and local Ollama. Configure as many as you want; Conductor's auto-router picks the best one for each review based on quality tier, cost, and availability.
 
-For a hybrid setup, use `small-local`: small changes try your local model first, with a hosted fallback; larger changes go straight to the hosted reviewer.
+When you run `touchstone new` or `touchstone init`, Touchstone asks whether you want AI review. If you say yes, the scaffold adds a default `[review.conductor]` block with `prefer = "best"` and `effort = "max"` — frontier-tier review, maximum reasoning depth.
+
+You can keep using Touchstone without Conductor installed; the hook skips itself gracefully and prints install instructions.
 
 Useful shortcuts:
 
@@ -81,12 +82,14 @@ Useful shortcuts:
 # Add Touchstone with AI review disabled
 touchstone init --no-ai-review
 
-# Add Touchstone and use a local reviewer command
-touchstone init --reviewer local --local-review-command 'ollama run MODEL'
+# Pin a specific provider for one push (overrides auto-routing)
+TOUCHSTONE_CONDUCTOR_WITH=claude git push
 
-# Use local review for small changes and Codex for larger changes
-touchstone init --review-routing small-local --reviewer codex --local-review-command 'ollama run MODEL'
+# Use a cheaper preference for this push
+TOUCHSTONE_CONDUCTOR_PREFER=cheapest git push
 ```
+
+Full config reference: see `hooks/codex-review.config.example.toml`. Migrating from 1.x? See [CHANGELOG.md](CHANGELOG.md).
 
 ### Choose a Git workflow
 
@@ -220,17 +223,19 @@ Universal engineering standards, extracted and battle-tested from production sys
 
 ### AI Review Gate
 
-Automatically reviews code before it reaches the default branch:
-- Uses the configured reviewer cascade: Codex by default, with optional Claude and Gemini reviewers
-- Can use a local model through `[review.local].command`
-- Can route small diffs to a local model and larger diffs to a hosted reviewer through `[review.routing]`
+Automatically reviews code before it reaches the default branch. In Touchstone 2.0, all LLM access routes through the [Conductor CLI](https://github.com/autumngarage/conductor):
+
+- One reviewer — `conductor` — delegates per-provider selection to Conductor's auto-router (Claude, Codex, Gemini, Kimi, or local Ollama)
+- Quality-tier-aware routing (`prefer = "best"` picks the frontier-tier provider)
+- Per-push preference via env vars: `TOUCHSTONE_CONDUCTOR_WITH=<provider>`, `TOUCHSTONE_CONDUCTOR_PREFER=<mode>`, `TOUCHSTONE_CONDUCTOR_EFFORT=<level>`
+- Size-based routing — small diffs can use `prefer = "cheapest"` + minimal effort, large diffs use `prefer = "best"` + max effort — via `[review.routing]`
+- Graceful fallback: if the chosen provider returns 5xx / rate-limit / timeout, Conductor retries once with the next-ranked provider
 - Auto-fixes safe issues when the review mode allows edits
-- Lets the primary reviewer request one focused peer second opinion when `[review.assist]` is enabled
 - Blocks the merge or direct default-branch push for findings that should not be auto-fixed
 - Runs from `scripts/merge-pr.sh`, and from the pre-push hook only when pushing directly to the default branch
-- Loops up to N times, gracefully skips when no configured reviewer is available
+- Loops up to N times, gracefully skips when Conductor is not installed
 
-Configure per-project behavior in `.codex-review.toml`. Write your review rubric in `AGENTS.md`. See [hooks/README.md](hooks/README.md) for reviewer modes, peer assistance, caching, and fail-open behavior.
+Configure per-project behavior in `.codex-review.toml`. Write your review rubric in `AGENTS.md`. See [hooks/README.md](hooks/README.md) for reviewer modes, caching, and fail-open behavior. Peer review returns in 2.1 via `conductor call --exclude <primary>`.
 
 ### Claude Code Skills
 

@@ -6,21 +6,45 @@ Normal code changes go through a feature branch + PR + merge. Emergency bypasses
 
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
 2. **Branch.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`.
-3. **Change + commit.** Make the code change, stage explicit file paths (not `git add -A`), commit with a concise message.
+3. **Loop: change → commit → push.** Each meaningful sub-task gets its own commit and push. Stage explicit file paths (not `git add -A`), write a concise message, push to the open branch. Don't batch a session's worth of changes into one commit at the end — see the "Commit and push frequency" section below.
 4. **Ship.** `scripts/open-pr.sh --auto-merge` pushes, creates the PR, runs Codex review, squash-merges, deletes the remote branch, and pulls the updated default branch — all in one command. Use `scripts/open-pr.sh` (without `--auto-merge`) if you want to open the PR without merging.
 5. **Clean up.** Delete the local feature branch. Run `scripts/cleanup-branches.sh` periodically for batch hygiene.
 
 ## Commit discipline
 
-- Concise commit messages. Lead with what changed, not why (the PR description has the why).
-- Logically grouped changes. One concern per commit where practical.
-- Stage explicit file paths, not `git add -A` or `git add .` — this prevents accidentally staging sensitive files (.env, credentials) or large binaries.
+**One concern per commit.** A commit should describe a single logical change — a feature, a fix, a refactor, a doc update — not a multi-day grab bag. The diff might span many files, but it should be one coherent thought. This is the "atomic commit" principle: every commit is a self-contained unit of intent.
+
+**Why it matters.** Atomic commits pay back continuously: they make code review legible (a reviewer can hold one idea at a time), they make `git blame` and `git log` informative ("this line exists because of fix X" beats "this line exists because of giant-batch Y"), they make `git bisect` able to pin a regression to a single change, and they make `git revert` surgical (you can undo the broken thing without losing the four good things shipped alongside).
+
+**Concise commit messages.** Lead with *what* changed in the subject line. Use the body to explain *why* when the why isn't obvious from the diff. The PR description handles the broader narrative; commit messages are the per-step record.
+
+**Stage explicit file paths.** Avoid `git add -A` or `git add .` — they accidentally stage sensitive files (`.env`, credentials) or large binaries. Naming files makes intent visible at the staging step.
+
+## Commit and push frequency
+
+**Commit at every clear stopping point.** A sub-task is complete and its tests pass — that's a commit boundary. Don't wait until "the whole feature is done." Holding hours of work in an uncommitted working tree creates four problems: (1) reviewers eventually face one giant diff instead of a sequence they can read, (2) any single mistake can lose all of it, (3) other branches can't pull your in-flight work, and (4) you lose the per-step `git log` story that future-you will rely on when debugging months later.
+
+**Push after every commit.** Local commits are not durable. Pushing to the remote (or a personal fork) means your work survives a laptop dying or a `git reset --hard` finger-slip. On a PR branch, pushing also surfaces incremental progress to reviewers, who can comment on individual commits rather than waiting for a final blob.
+
+**Cadence guidance.** A useful rhythm for a focused work session is something like one commit per 30–60 minutes — about as often as you'd take a sip of water. If a session goes longer than that without a commit, ask whether you've passed a clean stopping point and didn't notice. If you can describe what you just finished in one sentence, that's a commit.
+
+**When *not* to commit.** Two cases: (1) a half-finished thought where the code is in a deliberately-broken intermediate state — squash that into a single sensible commit before pushing, or use `git stash` to set it aside; (2) actively-iterating exploration where commits would just be noise — fine to keep working, but reset the timer once you've found the right shape and start committing as you build out from there.
+
+**Why this needs to be a rule, not a vibe.** Without an explicit cadence, "I'll commit when there's something worth committing" reliably becomes "I'll commit at the end of the day," and end-of-day commits are the ones that ship as one fat unreviewable blob. The cadence is the discipline; the discipline is what produces the legible history.
+
+## Background reading
+
+- [Commit Often, Perfect Later, Publish Once — Git Best Practices](https://sethrobertson.github.io/GitBestPractices/) (Seth Robertson) — the canonical "commit early, commit often" essay.
+- [Trunk-Based Development](https://trunkbaseddevelopment.com/) — the practice that frequent small commits enable at scale (Google, Facebook, et al.).
+- The autumn-garage convention is closer to "tiny PRs to main" than "long-lived feature branches" — short branches, frequent commits, fast review.
 
 ## Codex merge review (optional, recommended)
 
-If the project has Codex review configured (see `.codex-review.toml` for policy and the `codex-review` hook in `.pre-commit-config.yaml` for the entry point), a pre-push hook gates default-branch pushes (including squash-merges via `merge-pr.sh`). The mechanism is `stages: [pre-push]` in `.pre-commit-config.yaml`; it skips feature-branch pushes and only activates when the push target is the default branch. Behavior:
+If the project has Codex review configured (see `.codex-review.toml` for policy and the `codex-review` hook in `.pre-commit-config.yaml` for the entry point), a pre-push hook gates default-branch pushes (including squash-merges via `merge-pr.sh`). The mechanism is `stages: [pre-push]` in `.pre-commit-config.yaml`; it skips feature-branch pushes and only activates when the push target is the default branch. **The reviewer is the merge gate** — `scripts/open-pr.sh --auto-merge` is the standard ship path: open PR → reviewer runs → squash-merge → branch deleted, all in one command, no extra approval step.
+
+Behavior:
 - Runs `codex exec --full-auto` against the diff vs the default branch
-- Auto-fixes only low-risk findings (typos, missing imports, missing null checks, adding logging to empty exception handlers, named constants for unexplained magic numbers); anything that changes business logic or retry/error-handling semantics stays in the PR for human review
+- Auto-fixes only low-risk findings (typos, missing imports, missing null checks, adding logging to empty exception handlers, named constants for unexplained magic numbers); anything that changes business logic or retry/error-handling semantics is reported as a finding for the author to address in another commit before merge
 - Blocks the push for unsafe findings (high-scrutiny paths)
 - Loops up to `max_iterations` times (default 3)
 - Gracefully skips if the Codex CLI isn't installed, printing a visible "review skipped" line so the missing safety boundary isn't silent

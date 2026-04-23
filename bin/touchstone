@@ -4,7 +4,7 @@
 #
 # Usage:
 #   touchstone new <project-dir>          Create a new project with touchstone files
-#   touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--reviewer codex|claude|gemini|local|auto|none]
+#   touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)]
 #                                      Add touchstone to the current project
 #   touchstone run <task>                  Run profile task: lint, test, build, typecheck, validate
 #   touchstone update                     Update current project to latest touchstone
@@ -76,12 +76,12 @@ escape_sed_replacement() {
 
 cmd_new() {
   if [ "$#" -lt 1 ]; then
-    echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests]" >&2
+    echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests]" >&2
     exit 1
   fi
   case "${1:-}" in
     -h|--help)
-      echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests]"
+      echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests]"
       return 0
       ;;
   esac
@@ -110,7 +110,7 @@ cmd_init() {
         shift
         ;;
       -h|--help)
-        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests]"
+        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests]"
         return 0
         ;;
       --type)
@@ -157,7 +157,7 @@ cmd_init() {
         ;;
       *)
         echo "ERROR: unknown argument '$1'" >&2
-        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer codex|claude|gemini|local|auto|none] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests]" >&2
+        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests]" >&2
         exit 1
         ;;
     esac
@@ -236,6 +236,14 @@ cmd_update() {
 
 cmd_migrate_from_toolkit() {
   exec bash "$TOUCHSTONE_ROOT/bootstrap/migrate-from-toolkit.sh" "$@"
+}
+
+cmd_migrate_review_config() {
+  exec bash "$TOUCHSTONE_ROOT/bootstrap/migrate-review-config.sh" "$@"
+}
+
+cmd_review() {
+  exec bash "$TOUCHSTONE_ROOT/bootstrap/review.sh" "$@"
 }
 
 cmd_sync() {
@@ -1326,6 +1334,8 @@ cmd_help() {
   printf "    ${BOLD}touchstone update${RESET} --dry-run       Preview what would change\n"
   printf "    ${BOLD}touchstone update${RESET} --check         Report whether this project needs update\n"
   printf "    ${BOLD}touchstone migrate-from-toolkit${RESET}   One-shot rename of legacy .toolkit-* files (pre-1.0.0 projects)\n"
+  printf "    ${BOLD}touchstone migrate-review-config${RESET}  Rewrite .codex-review.toml from 1.x → 2.0 shape (silences migration warnings on push)\n"
+  printf "    ${BOLD}touchstone review --dry-run${RESET}      Preview which provider would review the next push, no tokens spent\n"
   printf "    ${BOLD}touchstone sync${RESET}                   Update all registered projects\n"
   printf "    ${BOLD}touchstone sync${RESET} --check           Report which projects need sync\n"
   printf "    ${BOLD}touchstone sync${RESET} --pull-first      Pull latest touchstone first\n"
@@ -1366,6 +1376,8 @@ case "$COMMAND" in
   detect)       cmd_detect ;;
   update)       cmd_update "$@" ;;
   migrate-from-toolkit) cmd_migrate_from_toolkit "$@" ;;
+  migrate-review-config) cmd_migrate_review_config "$@" ;;
+  review)       cmd_review "$@" ;;
   sync)         cmd_sync "$@" ;;
   status)       cmd_status ;;
   list|ls)      cmd_list ;;
