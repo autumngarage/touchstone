@@ -123,16 +123,16 @@ bash setup.sh --deps-only
 | `touchstone init [--no-setup]` | Add touchstone to the current project |
 | `touchstone init --no-ship` | When init upgrades an outdated project, open a review branch instead of auto-merging the upgrade PR |
 | `touchstone migrate-from-toolkit` | Migrate a project from the legacy `.toolkit-*` files before re-running `touchstone init` |
-| `touchstone init --reviewer local --local-review-command '<command>'` | Add touchstone with a local reviewer command |
-| `touchstone init --review-routing small-local --reviewer codex --local-review-command '<command>'` | Use local review for small diffs and a hosted reviewer for larger diffs |
+| `touchstone init --review-routing small-local` | Route small diffs through local Ollama, larger diffs through Conductor's auto-router |
+| `touchstone init --reviewer claude` | Pin Conductor to a specific underlying provider (codex / claude / gemini / ollama) |
 | `touchstone init --no-ai-review` | Add touchstone with AI review disabled |
 | `touchstone init --gitbutler` | Add touchstone with optional GitButler workflow setup |
 | `touchstone init --ci github` | Add `.github/workflows/validate.yml` that runs pre-commit hygiene and `touchstone run validate` on every PR |
 | `touchstone init --scaffold-tests` | Write one placeholder smoke test for Python, Node, or Go projects (Rust and Swift already ship scaffolds via `cargo init` / `swift package init`) |
 | `touchstone new <dir>` | Bootstrap a new project with principles, scripts, hooks, and templates |
 | `touchstone new <dir> --type node` | Bootstrap with an explicit Node/TypeScript, Swift, Rust, Go, Python, or generic profile |
-| `touchstone new <dir> --reviewer local --local-review-command '<command>'` | Bootstrap a new project with a local reviewer command |
-| `touchstone new <dir> --review-routing small-local --reviewer codex --local-review-command '<command>'` | Bootstrap with hybrid local/hosted review routing |
+| `touchstone new <dir> --review-routing small-local` | Bootstrap with hybrid routing — small diffs to Ollama, larger to Conductor's auto-router |
+| `touchstone new <dir> --reviewer claude` | Bootstrap pinned to a specific underlying provider |
 | `touchstone new <dir> --no-ai-review` | Bootstrap a new project with AI review disabled |
 | `touchstone new <dir> --gitbutler` | Bootstrap with optional GitButler workflow setup |
 | `touchstone new <dir> --ci github` | Bootstrap with the opt-in GitHub Actions validate workflow |

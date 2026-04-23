@@ -102,13 +102,17 @@ unsafe_paths = [
 # on large or risky changes. Touchstone-side override of Conductor's knobs
 # per size bucket.
 #
+# Routing uses a single cutoff (small_max_diff_lines): diffs at or below it
+# go through the small_* bucket, everything above through the large_* bucket.
+# There is no separate large_max_diff_lines — setting one would be silently
+# ignored by the parser.
+#
 # [review.routing]
 # enabled = false
-# small_max_diff_lines = 50
+# small_max_diff_lines = 400
 # small_prefer = "cheapest"
 # small_effort = "minimal"
-# # Above small, below large: uses [review.conductor] defaults.
-# large_max_diff_lines = 1000
+# small_with = "ollama"
 # large_prefer = "best"
 # large_effort = "max"
 # large_tags = "code-review,long-context"
