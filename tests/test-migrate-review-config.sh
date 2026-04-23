@@ -94,10 +94,16 @@ echo "==> PASS: full legacy config migrated"
 # ----------------------------------------------------------------------------
 echo "==> Test: idempotent (already-migrated config is a no-op)"
 sha_before="$(shasum "$LEGACY" | awk '{print $1}')"
-bash "$MIGRATE" --file "$LEGACY" 2>&1 | grep -q "already in 2.0 shape" || {
+# Capture first, grep second (same SIGPIPE-under-pipefail race fix as the
+# clean-file assertion below — grep -q exits on first match, the upstream
+# bash process gets SIGPIPE, and pipefail trips the whole pipeline even
+# though the match succeeded).
+idempotent_out="$(bash "$MIGRATE" --file "$LEGACY" 2>&1)"
+if ! printf '%s' "$idempotent_out" | grep -q "already in 2.0 shape"; then
   echo "FAIL: expected 'already in 2.0 shape' on second run" >&2
+  echo "  got: $idempotent_out" >&2
   ERRORS=$((ERRORS + 1))
-}
+fi
 sha_after="$(shasum "$LEGACY" | awk '{print $1}')"
 if [ "$sha_before" != "$sha_after" ]; then
   echo "FAIL: idempotent run modified the file" >&2
