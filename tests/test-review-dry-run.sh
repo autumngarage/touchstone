@@ -185,6 +185,66 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+echo "==> Test: TOUCHSTONE_REVIEWER=<legacy> translates to --with pin + deprecation note"
+: > "$ARGS_FILE"
+set +e
+out="$(
+  cd "$REPO_AUTO"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    ARGS_FILE="$ARGS_FILE" \
+    TOUCHSTONE_REVIEWER=codex \
+    TOUCHSTONE_NO_AUTO_UPDATE=1 \
+    bash "$TOUCHSTONE_BIN" review --dry-run --base HEAD~1 2>&1
+)"
+set -e
+if echo "$out" | grep -q 'TOUCHSTONE_REVIEWER=codex is deprecated' \
+  && echo "$out" | grep -q 'pinned via --with=codex'; then
+  echo "==> PASS: TOUCHSTONE_REVIEWER=codex → deprecation note + --with=codex"
+else
+  echo "FAIL: legacy TOUCHSTONE_REVIEWER value was silently ignored (regression of bug #13)" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# TOUCHSTONE_REVIEWER=local must map to ollama, not crash or no-op.
+: > "$ARGS_FILE"
+out="$(
+  cd "$REPO_AUTO"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    ARGS_FILE="$ARGS_FILE" \
+    TOUCHSTONE_REVIEWER=local \
+    TOUCHSTONE_NO_AUTO_UPDATE=1 \
+    bash "$TOUCHSTONE_BIN" review --dry-run --base HEAD~1 2>&1
+)"
+if echo "$out" | grep -q 'TOUCHSTONE_REVIEWER=local is deprecated' \
+  && echo "$out" | grep -q 'pinned via --with=ollama'; then
+  echo "==> PASS: TOUCHSTONE_REVIEWER=local → ollama (closest 2.0 analog)"
+else
+  echo "FAIL: TOUCHSTONE_REVIEWER=local did not translate to --with=ollama" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Unknown value warns but does not pin (must not silently succeed with junk).
+: > "$ARGS_FILE"
+out="$(
+  cd "$REPO_AUTO"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    ARGS_FILE="$ARGS_FILE" \
+    TOUCHSTONE_REVIEWER=bogus \
+    TOUCHSTONE_NO_AUTO_UPDATE=1 \
+    bash "$TOUCHSTONE_BIN" review --dry-run --base HEAD~1 2>&1
+)"
+if echo "$out" | grep -q 'TOUCHSTONE_REVIEWER=bogus is not a known legacy value' \
+  && ! echo "$out" | grep -q 'pinned via --with=bogus'; then
+  echo "==> PASS: unknown TOUCHSTONE_REVIEWER value warns and auto-routes"
+else
+  echo "FAIL: unknown legacy value silently pinned or skipped warning" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ----------------------------------------------------------------------------
 if [ "$ERRORS" -gt 0 ]; then
   echo "==> FAIL: $ERRORS assertion(s) failed"
   exit 1

@@ -293,15 +293,12 @@ prompt_yes_no() {
 }
 
 default_reviewer() {
-  if command -v codex >/dev/null 2>&1; then
-    printf 'codex'
-  elif command -v claude >/dev/null 2>&1; then
-    printf 'claude'
-  elif command -v gemini >/dev/null 2>&1; then
-    printf 'gemini'
-  else
-    printf 'codex'
-  fi
+  # Touchstone 2.0: the single reviewer is `conductor`; the underlying
+  # provider is chosen by Conductor's router at runtime. "conductor"
+  # normalizes to "auto" (no pin) via normalize_reviewer — the right
+  # default for a fresh project. Users who want to pin a provider can
+  # pass --reviewer <name> or edit .codex-review.toml afterwards.
+  printf 'conductor'
 }
 
 detect_node_package_manager() {
@@ -1164,38 +1161,36 @@ print_review_setup_hint() {
     return
   fi
 
-  echo "==> AI review configured: routing=$routing reviewer=$reviewer"
-  if [ "$routing" = "small-local" ]; then
-    echo "    Small diffs (<= ${INPUT_SMALL_REVIEW_LINES:-400} lines) try your local reviewer first; larger diffs use the hosted reviewer."
-  fi
-  case "$reviewer" in
-    codex|auto)
-      if ! command -v codex >/dev/null 2>&1; then
-        echo "    Codex is not installed yet. setup.sh will try to install it if npm is available."
-        echo "    Manual install: npm install -g @openai/codex && codex login"
-      fi
-      ;;
-    claude)
-      if ! command -v claude >/dev/null 2>&1; then
-        echo "    Claude CLI is not installed yet. Install and authenticate Claude before relying on review."
-      fi
-      ;;
-    gemini)
-      if ! command -v gemini >/dev/null 2>&1; then
-        echo "    Gemini CLI is not installed yet. Install and authenticate Gemini before relying on review."
-      fi
-      ;;
-    local)
-      if [ -z "$INPUT_LOCAL_REVIEW_COMMAND" ]; then
-        echo "    Add [review.local].command in .codex-review.toml before local review can run."
-      else
-        echo "    Local reviewer command: $INPUT_LOCAL_REVIEW_COMMAND"
-      fi
-      ;;
-  esac
+  local pin
+  pin="$(conductor_with_for "$reviewer")"
 
-  if [ "$routing" = "small-local" ] && [ -z "$INPUT_LOCAL_REVIEW_COMMAND" ]; then
-    echo "    Add [review.local].command in .codex-review.toml before local small-diff review can run."
+  if [ -n "$pin" ]; then
+    echo "==> AI review configured: conductor (pinned to $pin) — routing=$routing"
+  else
+    echo "==> AI review configured: conductor (auto-routed) — routing=$routing"
+  fi
+
+  if [ "$routing" = "small-local" ]; then
+    echo "    Small diffs (<= ${INPUT_SMALL_REVIEW_LINES:-400} lines) route to ollama;"
+    echo "    larger diffs use your pinned/auto-routed provider."
+  fi
+
+  if ! command -v conductor >/dev/null 2>&1; then
+    echo "    Conductor is not installed yet. Review will skip until you install it."
+    echo "      brew install autumngarage/conductor/conductor"
+    echo "      conductor init"
+  elif ! conductor doctor --json 2>/dev/null | grep -q '"configured"[[:space:]]*:[[:space:]]*true'; then
+    echo "    Conductor is installed but no provider is configured yet."
+    echo "      conductor doctor    (diagnose what's missing)"
+    echo "      conductor init      (guided provider setup)"
+  elif [ -n "$pin" ]; then
+    echo "    Confirm \`$pin\` is ready: conductor list"
+  fi
+
+  if [ "$reviewer" = "local" ] && [ -n "$INPUT_LOCAL_REVIEW_COMMAND" ]; then
+    echo "    NOTE: --local-review-command \"$INPUT_LOCAL_REVIEW_COMMAND\" is recorded in"
+    echo "    .codex-review.toml as a comment. Touchstone 2.0 retired [review.local];"
+    echo "    register your command as a Conductor custom provider when v0.3 ships."
   fi
 }
 
@@ -1333,11 +1328,11 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
     else
     echo ""
     echo "==> Configure AI review (press Enter for the default):"
-    echo "   Hosted review: strongest default reviewer for every change."
-    echo "   Local review: private and cheap, but quality depends on your local model."
-    echo "   Hybrid review: local handles small diffs; hosted review handles larger diffs."
+    echo "   Touchstone 2.0 routes every review through Conductor."
+    echo "   Hosted: Conductor auto-picks the best configured provider for each diff."
+    echo "   Local: small diffs go to Ollama (fast/cheap); nothing hosted."
+    echo "   Hybrid: small diffs go to Ollama; larger diffs to Conductor's router."
     if [ "$(prompt_yes_no "Use AI review before code reaches main?" "true")" = "true" ]; then
-      local_default_reviewer="$(default_reviewer)"
       local_review_style=""
       read -r -p "   Review style (hosted, local, hybrid) [hosted]: " local_review_style
       local_review_style="$(normalize_review_routing "${local_review_style:-hosted}")"
@@ -1345,20 +1340,18 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
       case "$local_review_style" in
         all-hosted)
           INPUT_REVIEW_ROUTING="all-hosted"
-          read -r -p "   Hosted reviewer (codex, claude, gemini, auto) [$local_default_reviewer]: " INPUT_REVIEWER
-          INPUT_REVIEWER="${INPUT_REVIEWER:-$local_default_reviewer}"
+          read -r -p "   Pin a specific provider (e.g. claude, codex, gemini; Enter = Conductor auto-routes): " INPUT_REVIEWER
+          INPUT_REVIEWER="${INPUT_REVIEWER:-conductor}"
           INPUT_REVIEWER="$(normalize_reviewer "$INPUT_REVIEWER")"
           ;;
         all-local)
           INPUT_REVIEW_ROUTING="all-local"
           INPUT_REVIEWER="local"
-          read -r -p "   Local reviewer command (reads prompt on stdin, e.g. 'ollama run MODEL'): " INPUT_LOCAL_REVIEW_COMMAND
           ;;
         small-local)
           INPUT_REVIEW_ROUTING="small-local"
-          read -r -p "   Local reviewer command for small diffs (e.g. 'ollama run MODEL'): " INPUT_LOCAL_REVIEW_COMMAND
-          read -r -p "   Hosted reviewer for larger diffs (codex, claude, gemini, auto) [$local_default_reviewer]: " INPUT_REVIEWER
-          INPUT_REVIEWER="${INPUT_REVIEWER:-$local_default_reviewer}"
+          read -r -p "   Pin a provider for larger diffs (e.g. claude, codex, gemini; Enter = Conductor auto-routes): " INPUT_REVIEWER
+          INPUT_REVIEWER="${INPUT_REVIEWER:-conductor}"
           INPUT_REVIEWER="$(normalize_reviewer "$INPUT_REVIEWER")"
           read -r -p "   Small-diff cutoff in changed diff lines [400]: " INPUT_SMALL_REVIEW_LINES
           INPUT_SMALL_REVIEW_LINES="${INPUT_SMALL_REVIEW_LINES:-400}"
@@ -1367,7 +1360,8 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
       esac
 
       INPUT_REVIEW_AUTOFIX="$(prompt_yes_no "Let the AI auto-fix low-risk issues?" "false")"
-      INPUT_REVIEW_ASSIST="$(prompt_yes_no "Let the AI ask one peer reviewer for larger changes?" "false")"
+      # Peer review is retired in 2.0.0 — returns in 2.1 via `conductor call --exclude`.
+      INPUT_REVIEW_ASSIST=false
 
       if [ "$INPUT_REVIEW_AUTOFIX" = "true" ] && [ -z "$INPUT_UNSAFE" ]; then
         read -r -p "   High-scrutiny paths the AI must never auto-fix (comma-separated, e.g., src/auth/,migrations/): " INPUT_UNSAFE
