@@ -12,6 +12,14 @@ Normal code changes go through a feature branch + PR + merge. Emergency bypasses
 
 **If you've already pushed**, the standard ship path is broken. Don't try to rewrite history on the default branch. Disclose the slip in the next PR (see "Emergency path" below) and carry on — the commit is now part of history, and the audit trail captures what happened.
 
+**The mechanical guardrails** that back this rule (in touchstone and every bootstrapped project):
+
+- The `no-commit-to-branch` hook in `.pre-commit-config.yaml` is configured with `--branch main --branch master`. It runs at `pre-commit` stage and refuses the commit outright. `git commit --no-verify` bypasses it; that's the documented emergency path, not a daily shortcut.
+- GitHub branch protection on the default branch requires the change to go through a PR (`required_pull_request_reviews` with `required_approving_review_count: 0`; direct pushes to `main` are rejected by the server even if the local hook was bypassed). Admin enforcement is left off so the `--no-verify` emergency path remains usable; the audit trail is the backstop.
+- The Codex pre-push hook (when installed) is the last line of defense: it runs on default-branch pushes via `merge-pr.sh` and can block unsafe findings before they land.
+
+The three layers are complementary — the local hook catches the honest mistake before it becomes a commit, branch protection catches the deliberate or hook-bypassing push at the server, and the Codex review catches the class of content we explicitly don't want on main.
+
 ## The lifecycle
 
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
