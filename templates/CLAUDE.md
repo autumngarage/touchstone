@@ -15,10 +15,14 @@
 
 @principles/git-workflow.md
 
+### Never commit on the default branch
+
+Every change — including one-liners, doc tweaks, and version bumps — starts on a feature branch. Before your first `git commit` of a session, run `git branch --show-current`; if it reports the default branch (`main` or `master`), branch first. See the "Never commit on the default branch" section in `principles/git-workflow.md` for recovery steps if it happens anyway.
+
 ### The lifecycle (drive this automatically, do not ask the user for permission at each step)
 
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
-2. **Branch.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`.
+2. **Branch — before any edit that might become a commit.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`. Branching is step one, not cleanup.
 3. **Change + commit.** Make the code change, stage explicit file paths, commit with a concise message.
 4. **Ship.** `bash scripts/open-pr.sh --auto-merge` — pushes, creates the PR, runs AI review, squash-merges, and syncs the default branch in one step.
 5. **Clean up.** `git branch -D <feature-branch>` if it still exists locally.

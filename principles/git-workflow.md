@@ -2,10 +2,20 @@
 
 Normal code changes go through a feature branch + PR + merge. Emergency bypasses are allowed only through the documented emergency path below, and must be disclosed in the next recovery PR. This discipline catches bugs before they land on the default branch and creates an audit trail for every change, while leaving a legible escape hatch for production incidents.
 
+## Never commit on the default branch
+
+**This is the one rule that makes everything else work.** Every code change — including a one-line typo fix, a doc tweak, a version bump, a README edit — starts on a feature branch. Committing directly to `main` (or `master`) bypasses PR review, bypasses Codex review, bypasses the audit trail, and leaves you in a local state that's awkward to untangle without rewriting history someone else may already have pulled.
+
+**The concrete rule for any AI or human working here:** before the first `git commit` of a session, run `git branch --show-current`. If the output is `main` or `master`, stop and branch first. `git checkout -b <type>/<slug>` preserves your staged and unstaged changes, so there's no cost to branching late — but there's real cost to committing to main.
+
+**If you've already committed to main by accident**, don't push. Instead: `git branch <type>/<slug>` to save the work, then `git reset --hard origin/main` to restore the local default branch, then `git checkout <type>/<slug>` to continue. The commits are preserved on the new branch; main is restored to match the remote.
+
+**If you've already pushed**, the standard ship path is broken. Don't try to rewrite history on the default branch. Disclose the slip in the next PR (see "Emergency path" below) and carry on — the commit is now part of history, and the audit trail captures what happened.
+
 ## The lifecycle
 
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
-2. **Branch.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`.
+2. **Branch — before any edit that might become a commit.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`. Do this as step one of the work, not as a cleanup step later. If you didn't branch first, `git branch --show-current` before your first commit will catch it.
 3. **Loop: change → commit → push.** Each meaningful sub-task gets its own commit and push. Stage explicit file paths (not `git add -A`), write a concise message, push to the open branch. Don't batch a session's worth of changes into one commit at the end — see the "Commit and push frequency" section below.
 4. **Ship.** `scripts/open-pr.sh --auto-merge` pushes, creates the PR, runs Codex review, squash-merges, deletes the remote branch, and pulls the updated default branch — all in one command. Use `scripts/open-pr.sh` (without `--auto-merge`) if you want to open the PR without merging.
 5. **Clean up.** Delete the local feature branch. Run `scripts/cleanup-branches.sh` periodically for batch hygiene.
@@ -69,6 +79,28 @@ A stacked PR is a PR whose base branch is another open PR's branch instead of th
 - **First preference: bundle.** When the user says "ship it all," default to one PR with all the commits. Reviewers prefer one coherent story over a chain; mergers prefer one squash over orchestrating a chain in order.
 - **If you must stack:** drop `--auto-merge` on the whole chain. Merge each PR by hand in order, using **merge commit** or **rebase merge** (never squash) for the parent so the child's branch still traces to something on main. `open-pr.sh` will warn if you pass `--base <branch>` + `--auto-merge` together — take the warning seriously.
 - **Recover an orphaned child**: re-open the work as a fresh PR against current `main` (the lineage is lost but the diff usually still applies). If the parent's squashed content is already on main, the child's diff is just the child-only changes — which is usually what you wanted anyway.
+
+## Parallel work with worktrees
+
+The default is one branch at a time in the main checkout. When you have N genuinely independent tasks — changes that touch disjoint files and don't logically depend on each other — `git worktree` lets them run concurrently without stepping on each other. The common case is an AI assistant being asked to "do these three things in parallel"; the right move is three branches in three worktrees, not three half-done edits interleaved on one branch.
+
+**The primitive.** From the main checkout, `git worktree add ../<project>-<slug> -b <type>/<slug>` creates a second working tree on a new branch, sharing the same `.git`. Work in it the same way you'd work anywhere — the only difference is that the main checkout stays free to run tests, start another worktree, or keep serving the user's questions while the other tasks run.
+
+**For AI subagents.** When delegating to a subagent that supports worktree isolation (e.g. Claude Code's `Agent` tool with `isolation: "worktree"`), prefer it for any task that writes files. The subagent gets its own checkout, can't clobber siblings, and the worktree is discarded automatically if the agent made no changes. The parent session stays on the base checkout.
+
+**Rules that make it actually parallel.**
+
+- **Disjoint file sets.** If two concurrent tasks touch the same file, they're not parallel — they're a merge conflict delivered on two branches. Before launching, name the file surface each task owns; if they overlap, sequence them.
+- **No coordination in flight.** Each worktree ships via its own `scripts/open-pr.sh --auto-merge`. PRs are independent because their branches are independent. If task B needs something from task A's PR before it can merge, that's stacked work — see the stacked-PR section above and run them sequentially instead.
+- **Each agent burns its own budget.** Five parallel agents use roughly 5× the tokens and 5× the CPU of one. Start with 2–3 concurrent worktrees, observe, and scale from there. Practitioners report the comfortable cap without heavy orchestration is around 5–6.
+
+**Gotchas.**
+
+- **Untracked files don't follow.** `.env`, local config, and built artifacts live in the working tree, not in `.git`. If the task depends on any of them, copy them into the new worktree after `git worktree add` (or make the setup step recreate them from an example file).
+- **Shared `.git`.** Don't run destructive git ops (`git gc --prune=now`, `git worktree remove --force`) while a sibling worktree has uncommitted work — the shared object store is the same object store.
+- **Disk cost.** Each worktree is a full working tree. Not an issue for a small repo; matters for large monorepos with generated artifacts.
+
+**Cleanup.** After the PR merges, `git worktree remove <path>` from the main checkout to drop the directory. `scripts/cleanup-branches.sh` already refuses to delete branches currently checked out in worktrees, so it won't fight you — but it also won't remove the worktree directories themselves; that step is manual.
 
 ## Emergency path
 
