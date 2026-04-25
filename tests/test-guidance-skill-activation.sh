@@ -42,17 +42,6 @@ else
   echo "==> FAST mode: 1 × 5 phrasings + 5 negatives (~70s). Set TOUCHSTONE_FULL_SKILL_PROBES=1 for the 25-trial measurement."
 fi
 
-# ----------------------------------------------------------------------
-# touchstone-agent-swarms
-# ----------------------------------------------------------------------
-TRIGGERS=(
-  "I have three independent refactors across separate packages that I want to ship in parallel. How should I approach this?"
-  "Can you help me fan out this work to multiple Claude agents running concurrently?"
-  "I want to split this batch of unrelated tasks across parallel agent runs. What's the right shape?"
-  "Should I orchestrate multiple subagents for this set of file-disjoint changes?"
-  "I need to parallelize four independent investigations. Walk me through how to coordinate them."
-)
-
 NEGATIVES=(
   "What is 2 + 2?"
   "Show me the README of this project."
@@ -61,65 +50,102 @@ NEGATIVES=(
   "List the files in the principles directory."
 )
 
-# Activation signal — strong markers from the skill body that wouldn't
-# typically appear in a response that hadn't loaded the skill.
-ACTIVATION_REGEX='four.question gate|skeptical verifier|clean context|file.disjoint|disjoint file|concurrency cap|3.{0,3}5 agents|swarm pattern|swarm shape|files.not.to.touch|brief.quality'
-
-POSITIVE_PASS=0
-POSITIVE_TOTAL=0
-NEGATIVE_FALSE_POS=0
+OVERALL_FAIL=0
 
 run_trial() {
-  local prompt="$1"
+  local prompt="$1" regex="$2"
   local response
   response="$(claude -p "$prompt" 2>&1 || true)"
-  if printf '%s' "$response" | grep -qiE "$ACTIVATION_REGEX"; then
+  if printf '%s' "$response" | grep -qiE "$regex"; then
     return 0
   fi
   return 1
 }
 
-echo "==> Positive trials (touchstone-agent-swarms)"
-i=0
-for trigger in "${TRIGGERS[@]}"; do
-  i=$((i + 1))
-  for trial in $(seq 1 "$TRIALS_PER"); do
-    POSITIVE_TOTAL=$((POSITIVE_TOTAL + 1))
-    if run_trial "$trigger"; then
-      POSITIVE_PASS=$((POSITIVE_PASS + 1))
-      echo "  OK: phrasing $i trial $trial"
+# Run an activation suite for one skill: 5 trigger phrasings × $TRIALS_PER
+# trials each (positive) + the shared NEGATIVES list (must not match the
+# skill's activation regex). Pass requires ≥80% positive activation and
+# zero false positives. A failure for any skill flips OVERALL_FAIL to 1
+# but the function still runs its full positive/negative sweep so the
+# operator sees the complete picture per run.
+run_skill_suite() {
+  local skill_name="$1" activation_regex="$2"
+  shift 2
+  local triggers=("$@")
+  local positive_pass=0 positive_total=0 negative_fp=0
+
+  echo "==> Skill: $skill_name"
+  echo "  positive trials"
+  local i=0
+  for trigger in "${triggers[@]}"; do
+    i=$((i + 1))
+    for trial in $(seq 1 "$TRIALS_PER"); do
+      positive_total=$((positive_total + 1))
+      if run_trial "$trigger" "$activation_regex"; then
+        positive_pass=$((positive_pass + 1))
+        echo "    OK: phrasing $i trial $trial"
+      else
+        echo "    MISS: phrasing $i trial $trial"
+      fi
+    done
+  done
+
+  echo "  negative trials"
+  i=0
+  for benign in "${NEGATIVES[@]}"; do
+    i=$((i + 1))
+    if run_trial "$benign" "$activation_regex"; then
+      negative_fp=$((negative_fp + 1))
+      echo "    FALSE POSITIVE: negative $i"
     else
-      echo "  MISS: phrasing $i trial $trial"
+      echo "    OK: negative $i"
     fi
   done
-done
 
-echo "==> Negative trials"
-i=0
-for benign in "${NEGATIVES[@]}"; do
-  i=$((i + 1))
-  if run_trial "$benign"; then
-    NEGATIVE_FALSE_POS=$((NEGATIVE_FALSE_POS + 1))
-    echo "  FALSE POSITIVE: phrasing $i"
+  local threshold=$((positive_total * 80 / 100))
+  echo "  results: $positive_pass/$positive_total positive (need ≥$threshold), $negative_fp false positive(s)"
+
+  if [ "$positive_pass" -lt "$threshold" ]; then
+    echo "  FAIL: $skill_name activation below 80%" >&2
+    OVERALL_FAIL=1
+  elif [ "$negative_fp" -gt 0 ]; then
+    echo "  FAIL: $skill_name false-positive on benign prompt" >&2
+    OVERALL_FAIL=1
   else
-    echo "  OK: phrasing $i (no false positive)"
+    echo "  PASS"
   fi
-done
+  echo ""
+}
 
-THRESHOLD=$((POSITIVE_TOTAL * 80 / 100))
-echo ""
-echo "==> Results: $POSITIVE_PASS/$POSITIVE_TOTAL positive (need ≥$THRESHOLD), $NEGATIVE_FALSE_POS false positive(s)"
+# ----------------------------------------------------------------------
+# touchstone-agent-swarms
+# ----------------------------------------------------------------------
+SWARMS_TRIGGERS=(
+  "I have three independent refactors across separate packages that I want to ship in parallel. How should I approach this?"
+  "Can you help me fan out this work to multiple Claude agents running concurrently?"
+  "I want to split this batch of unrelated tasks across parallel agent runs. What's the right shape?"
+  "Should I orchestrate multiple subagents for this set of file-disjoint changes?"
+  "I need to parallelize four independent investigations. Walk me through how to coordinate them."
+)
+SWARMS_REGEX='four.question gate|skeptical verifier|clean context|file.disjoint|disjoint file|concurrency cap|3.{0,3}5 agents|swarm pattern|swarm shape|files.not.to.touch|brief.quality'
 
-FAIL=0
-if [ "$POSITIVE_PASS" -lt "$THRESHOLD" ]; then
-  echo "FAIL: activation rate below 80% — iterate the skill description and re-run" >&2
-  FAIL=1
-fi
-if [ "$NEGATIVE_FALSE_POS" -gt 0 ]; then
-  echo "FAIL: skill activated on benign prompts — description is too broad" >&2
-  FAIL=1
-fi
-if [ "$FAIL" -eq 1 ]; then
+run_skill_suite "touchstone-agent-swarms" "$SWARMS_REGEX" "${SWARMS_TRIGGERS[@]}"
+
+# ----------------------------------------------------------------------
+# touchstone-audit-weak-points
+# ----------------------------------------------------------------------
+AUDIT_TRIGGERS=(
+  "I just found a bug where a cache was returning stale data. Should I look for similar patterns elsewhere?"
+  "I noticed this same anti-pattern in three files. How do I systematically check the rest of the codebase?"
+  "Help me audit this class of bug across the project — I want to find every instance."
+  "Found a structural issue with how we handle null returns. What's the methodology to find and fix all of them?"
+  "There's a recurring bug shape we keep hitting. How do I do a comprehensive audit and stop it from coming back?"
+)
+AUDIT_REGEX='ranked punch.?list|production impact|reviewed and bounded|fix in tiers|audit \+ guardrail|every instance|systematic audit|class of bug|whole class|hand.write the guardrail|add a guardrail'
+
+run_skill_suite "touchstone-audit-weak-points" "$AUDIT_REGEX" "${AUDIT_TRIGGERS[@]}"
+
+if [ "$OVERALL_FAIL" -eq 1 ]; then
   exit 1
 fi
-echo "==> OK"
+echo "==> OK: all skill activation suites passed"
