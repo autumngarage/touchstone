@@ -4,13 +4,26 @@
 
 {{PROJECT_DESCRIPTION — describe the project's purpose, your role, and what "good" looks like for this codebase. Be specific about the domain.}}
 
-## Engineering Principles
+## Engineering Principles (HARD REQUIREMENTS)
 
-@principles/engineering-principles.md
+Non-negotiable. Every code change is reviewed against them. Full rationale, worked examples, and the *why* behind each rule live in `principles/engineering-principles.md` — read it once; this list is the daily reminder.
+
+- **No band-aids** — fix the root cause; if patching a symptom, say so explicitly and name the root cause.
+- **Keep interfaces narrow** — expose the smallest stable contract; don't leak storage shape, vendor SDKs, or workflow sequencing.
+- **Derive limits from domain** — thresholds and sizes come from input/config/named constants; test at small, typical, and large scales.
+- **Derive, don't persist** — compute from the source of truth; persist derived state only with documented invalidation + rebuild path.
+- **No silent failures** — every exception is re-raised or logged with debug context. No `except: pass`, no swallowed errors.
+- **Every fix gets a test** — bug fix includes a regression test that runs in CI and fails on the old code.
+- **Think in invariants** — name and assert at least one invariant for nontrivial logic.
+- **One code path** — share business logic across modes; confine mode-specific differences to adapters, config, or the I/O boundary.
+- **Version your data boundaries** — when a model/algorithm/source changes affects decisions, version the boundary; don't aggregate across.
+- **Separate behavior changes from tidying** — never mix functional changes with broad renames, formatting sweeps, or unrelated refactors.
+- **Make irreversible actions recoverable** — destructive operations need dry-run, backup, idempotency, rollback, or forward-fix plan before they run.
+- **Preserve compatibility at boundaries** — public API/config/schema/CLI/hook/template changes need a compatibility or migration plan.
+- **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill.
+
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
-
-The audit-weak-points methodology is delivered as the `touchstone-audit-weak-points` skill (activated when you find a structural bug). Full rationale: `principles/audit-weak-points.md`.
 
 ## Git Workflow
 
