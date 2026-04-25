@@ -34,5 +34,10 @@ build/
 .next/
 out/
 
+# Claude Code project-local overrides (settings.json is platform-owned and committed;
+# settings.local.json holds personal/host-specific customizations and is excluded by
+# default — a team may opt to commit it by removing this line).
+.claude/settings.local.json
+
 # Touchstone
 *.bak

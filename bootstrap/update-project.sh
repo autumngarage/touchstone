@@ -311,6 +311,8 @@ fi
 
 # Scripts
 update_file "$TOUCHSTONE_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
+update_file "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" "$PROJECT_DIR/scripts/branch-guard.sh"
+update_file "$TOUCHSTONE_ROOT/hooks/emergency-disclosure.sh" "$PROJECT_DIR/scripts/emergency-disclosure.sh"
 update_file "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_DIR/scripts/touchstone-run.sh"
 update_file "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
 update_file "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
@@ -319,6 +321,49 @@ update_file "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts
 if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
   update_file "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
 fi
+
+# Claude Code settings — wires the branch-guard and emergency-disclosure
+# PreToolUse hooks. The settings file is touchstone-owned (overwritten on
+# update); user-specific overrides belong in .claude/settings.local.json,
+# which Claude Code merges on top of this file. update_settings_file backs
+# up the previous contents before overwriting so an accidental hand-edit
+# can be recovered (Phase 2 of audits/2026-04-24-guidance-effectiveness-plan.md).
+update_settings_file() {
+  local src="$1" dst="$2"
+  local dst_dir
+  dst_dir="$(dirname "$dst")"
+
+  if [ ! -f "$dst" ]; then
+    if [ "$DRY_RUN" = true ]; then
+      echo "    + would add: $dst"
+    else
+      mkdir -p "$dst_dir"
+      cp "$src" "$dst"
+      ADDED_PATHS+=("$(relative_project_path "$dst")")
+      echo "    + added: $dst"
+    fi
+    ADDED=$((ADDED + 1))
+    return
+  fi
+
+  if diff -q "$src" "$dst" >/dev/null 2>&1; then
+    UNCHANGED=$((UNCHANGED + 1))
+    return
+  fi
+
+  local backup="${dst}.touchstone-pre-update.bak"
+  if [ "$DRY_RUN" = true ]; then
+    echo "    ! would update: $dst (current contents would be backed up to $backup)"
+  else
+    cp "$dst" "$backup"
+    cp "$src" "$dst"
+    echo "    ! updated: $dst"
+    echo "      previous contents backed up to: $backup"
+    echo "      put project-specific overrides in $(dirname "$dst")/settings.local.json"
+  fi
+  UPDATED=$((UPDATED + 1))
+}
+update_settings_file "$TOUCHSTONE_ROOT/templates/claude-settings.json" "$PROJECT_DIR/.claude/settings.json"
 
 # Per-profile project-owned templates (e.g. swift's .swiftlint.yml). These are
 # NOT touchstone-owned: add when missing, never overwrite a hand-edited copy.
@@ -367,6 +412,8 @@ write_touchstone_manifest() {
       done
     fi
     printf 'scripts/codex-review.sh\n'
+    printf 'scripts/branch-guard.sh\n'
+    printf 'scripts/emergency-disclosure.sh\n'
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
@@ -374,6 +421,7 @@ write_touchstone_manifest() {
     if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
       printf 'scripts/run-pytest-in-venv.sh\n'
     fi
+    printf '.claude/settings.json\n'
   } > "$manifest"
 }
 
@@ -403,6 +451,9 @@ if [ "$DRY_RUN" = false ]; then
   echo "==> Committing touchstone update..."
   git -C "$PROJECT_DIR" add -A -- principles scripts .touchstone-manifest
   git -C "$PROJECT_DIR" add -f -- .touchstone-version
+  if [ -f "$PROJECT_DIR/.claude/settings.json" ]; then
+    git -C "$PROJECT_DIR" add -f -- .claude/settings.json
+  fi
   # Stage any per-profile project-owned templates added on this run (e.g.
   # swift's .swiftlint.yml). These are project-owned, but the addition only
   # makes sense bundled into the same review commit as the rest of the

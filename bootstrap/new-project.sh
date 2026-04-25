@@ -1218,11 +1218,21 @@ echo ""
 echo "==> Copying scripts (touchstone-owned, will be auto-updated):"
 mkdir -p "$PROJECT_DIR/scripts"
 copy_file_force "$TOUCHSTONE_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
+copy_file_force "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" "$PROJECT_DIR/scripts/branch-guard.sh"
+copy_file_force "$TOUCHSTONE_ROOT/hooks/emergency-disclosure.sh" "$PROJECT_DIR/scripts/emergency-disclosure.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_DIR/scripts/touchstone-run.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
 chmod +x "$PROJECT_DIR/scripts/"*.sh
+
+# Claude Code settings — wires the branch-guard and emergency-disclosure
+# PreToolUse hooks shipped above. Touchstone-owned (overwritten on update);
+# project-specific overrides go in .claude/settings.local.json.
+echo ""
+echo "==> Copying Claude Code settings (touchstone-owned, will be auto-updated):"
+mkdir -p "$PROJECT_DIR/.claude"
+copy_file_force "$TOUCHSTONE_ROOT/templates/claude-settings.json" "$PROJECT_DIR/.claude/settings.json"
 
 # Optional CI workflow — opt-in via --ci. Not copied by default because not every
 # project uses GitHub Actions, and shipping a workflow file silently into every
