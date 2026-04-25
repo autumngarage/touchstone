@@ -102,13 +102,16 @@ Touchstone ships through GitHub Releases and the `autumngarage/homebrew-touchsto
 Release flow:
 
 1. Merge code to `main`.
-2. Run `TOUCHSTONE_NO_AUTO_UPDATE=1 bin/touchstone release --patch` or `--minor` / `--major`.
+2. Run `TOUCHSTONE_NO_AUTO_UPDATE=1 bin/touchstone release --patch` or `--minor` / `--major`. The helper bumps `VERSION`, commits, tags, pushes `main` and the tag, and runs `gh release create`.
 3. Verify the release helper pushed the release commit to `origin/main` and pushed the matching tag.
-4. Verify the shipped artifact:
+4. The release-published event triggers `.github/workflows/release.yml`, which calls the shared `homebrew-bump.yml` reusable workflow in `autumngarage/autumn-garage` (pinned `@v1`) to rewrite the tap formula's `url` + `sha256` and commit directly to the tap's `main` — no hand-editing, no local tap clone. Watch with `gh run list --workflow=release.yml --repo autumngarage/touchstone`. Manual escape hatch: `gh workflow run release.yml -f tag_name=vX.Y.Z` re-bumps for an existing tag.
+5. Verify the shipped artifact (after the workflow completes, ~30s):
    - `git status --short --branch` is clean and not ahead of `origin/main`
    - `gh release view vX.Y.Z`
    - the Homebrew formula points at `vX.Y.Z` with the expected SHA
    - `brew update && brew upgrade touchstone`
    - `TOUCHSTONE_NO_AUTO_UPDATE=1 touchstone version` reports `touchstone vX.Y.Z`
+
+Required repo secret: `HOMEBREW_TAP_PAT` (classic PAT with `repo` scope on the tap, or fine-grained with `contents:write` on `autumngarage/homebrew-touchstone`).
 
 Do not call a Touchstone release complete until GitHub Releases, the Homebrew formula, `origin/main`, and the local brew install all agree on the same version.

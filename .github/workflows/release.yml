@@ -1,0 +1,48 @@
+# Release workflow — auto-bumps the homebrew-touchstone tap Formula
+# whenever a GitHub Release is published in this repo.
+#
+# Two-step flow (machine handles only the deterministic half):
+#   1. Human runs `bin/touchstone release --patch | --minor | --major` on
+#      main, which bumps VERSION, commits, tags, pushes, and creates the
+#      GitHub Release.
+#   2. The `release.published` event below fires; the shared workflow in
+#      autumngarage/autumn-garage rewrites Formula/touchstone.rb's `url`
+#      + `sha256` and commits to the tap's main directly. Users running
+#      `brew upgrade touchstone` get the new version once the workflow
+#      completes (~30s after the release is published).
+#
+# Manual escape hatch: trigger via the GitHub UI's `Run workflow` button
+# (or `gh workflow run release.yml -f tag_name=vX.Y.Z`) to re-bump for a
+# tag whose original release event is gone or failed.
+#
+# Required secret on this repo: HOMEBREW_TAP_PAT — classic PAT with
+# `repo` scope on autumngarage/homebrew-touchstone (a fine-grained token
+# with contents:write on that one repo also works).
+
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Tag to bump the formula to (e.g. v2.1.2). Required for manual runs."
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  bump-tap:
+    # On the auto-trigger, skip prereleases — they shouldn't land in the
+    # tap. Manual dispatch always runs so we can re-bump on demand.
+    if: github.event_name == 'workflow_dispatch' || !github.event.release.prerelease
+    uses: autumngarage/autumn-garage/.github/workflows/homebrew-bump.yml@v1
+    with:
+      formula-name: touchstone
+      tap-repo: autumngarage/homebrew-touchstone
+      tag-name: ${{ inputs.tag_name || github.event.release.tag_name }}
+    secrets:
+      HOMEBREW_TAP_PAT: ${{ secrets.HOMEBREW_TAP_PAT }}

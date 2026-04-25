@@ -2,22 +2,16 @@
 #
 # lib/release.sh — automate the Touchstone release cycle.
 #
-# Bumps VERSION, commits, tags, pushes main, creates GitHub release, computes SHA,
-# clones the homebrew tap to a temp dir, updates the formula, pushes, cleans up.
+# Bumps VERSION, commits, tags, pushes main, creates the GitHub release.
+# The Homebrew tap formula is bumped asynchronously by
+# .github/workflows/release.yml (which calls the shared homebrew-bump
+# reusable workflow in autumngarage/autumn-garage) — no local tap clone.
 #
 set -euo pipefail
 
 source "${TOUCHSTONE_ROOT}/lib/colors.sh"
 
 TOUCHSTONE_ROOT="${TOUCHSTONE_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-TOUCHSTONE_RELEASE_TAP_TMP=""
-
-cleanup_tap_tmp() {
-  if [ -n "${TOUCHSTONE_RELEASE_TAP_TMP:-}" ]; then
-    rm -rf "$TOUCHSTONE_RELEASE_TAP_TMP"
-    TOUCHSTONE_RELEASE_TAP_TMP=""
-  fi
-}
 
 touchstone_release() {
   local bump_type="${1:-minor}"
@@ -68,52 +62,21 @@ touchstone_release() {
   git -C "$TOUCHSTONE_ROOT" push --no-verify origin main "v${new_version}"
   tk_ok "Committed, tagged, pushed main and v${new_version}"
 
-  # Create GitHub release.
+  # Create GitHub release. The release.published event triggers
+  # .github/workflows/release.yml, which calls the shared homebrew-bump
+  # reusable workflow in autumngarage/autumn-garage — the tap formula's
+  # `url` + `sha256` get rewritten and committed to the tap's `main`
+  # automatically (no local clone, no manual SHA computation).
   gh release create "v${new_version}" \
     --repo autumngarage/touchstone \
     --title "v${new_version}" \
     --generate-notes
   tk_ok "GitHub release created"
 
-  # Compute SHA256 of the release tarball.
-  local tarball_url="https://github.com/autumngarage/touchstone/archive/refs/tags/v${new_version}.tar.gz"
-  local sha256
-  sha256="$(curl -fsSL "$tarball_url" | shasum -a 256 | awk '{print $1}')"
-  tk_ok "SHA256: ${sha256}"
-
-  # Update homebrew formula — clone tap to temp dir, update, push, clean up.
-  local tap_tmp
-  TOUCHSTONE_RELEASE_TAP_TMP="$(mktemp -d -t touchstone-tap.XXXXXX)"
-  tap_tmp="$TOUCHSTONE_RELEASE_TAP_TMP"
-  trap cleanup_tap_tmp EXIT
-
-  tk_dim "Cloning tap repo..."
-  if gh repo clone autumngarage/homebrew-touchstone "$tap_tmp" -- --depth=1 2>/dev/null; then
-    local formula="$tap_tmp/Formula/touchstone.rb"
-    if [ -f "$formula" ]; then
-      sed -i '' "s|url \"https://github.com/autumngarage/touchstone/archive/refs/tags/v[^\"]*\.tar\.gz\"|url \"${tarball_url}\"|" "$formula"
-      sed -i '' "s|sha256 \"[a-f0-9]*\"|sha256 \"${sha256}\"|" "$formula"
-
-      git -C "$tap_tmp" add Formula/touchstone.rb
-      git -C "$tap_tmp" commit -m "Bump formula to v${new_version}"
-      git -C "$tap_tmp" push
-      tk_ok "Homebrew formula updated and pushed"
-    else
-      tk_warn "Formula not found — update manually"
-      tk_dim "  URL: $tarball_url"
-      tk_dim "  SHA: $sha256"
-    fi
-  else
-    tk_warn "Could not clone tap repo — update formula manually"
-    tk_dim "  URL: $tarball_url"
-    tk_dim "  SHA: $sha256"
-  fi
-
   echo ""
   tk_ok "Released v${new_version}"
-  tk_dim "Users can upgrade with: brew update && brew upgrade touchstone"
+  tk_dim "Tap formula bump is in flight via .github/workflows/release.yml"
+  tk_dim "  watch: gh run list --workflow=release.yml --repo autumngarage/touchstone"
+  tk_dim "Users can upgrade with: brew update && brew upgrade touchstone (after the workflow completes, ~30s)"
   echo ""
-
-  cleanup_tap_tmp
-  trap - EXIT
 }
