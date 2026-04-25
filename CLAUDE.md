@@ -8,8 +8,9 @@ You are maintaining a shared engineering platform that provides universal princi
 
 @principles/engineering-principles.md
 @principles/pre-implementation-checklist.md
-@principles/audit-weak-points.md
 @principles/documentation-ownership.md
+
+The audit-weak-points methodology has moved to the `touchstone-audit-weak-points` skill (activated when you find a structural bug). The full rationale lives at `principles/audit-weak-points.md`.
 
 ## Git Workflow
 

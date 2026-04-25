@@ -8,8 +8,9 @@
 
 @principles/engineering-principles.md
 @principles/pre-implementation-checklist.md
-@principles/audit-weak-points.md
 @principles/documentation-ownership.md
+
+The audit-weak-points methodology is delivered as the `touchstone-audit-weak-points` skill (activated when you find a structural bug). Full rationale: `principles/audit-weak-points.md`.
 
 ## Git Workflow
 
