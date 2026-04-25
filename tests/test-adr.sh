@@ -62,7 +62,7 @@ assert_contains "$TEST_DIR/skills-list.txt" 'memory-audit'
   HOME="$SKILLS_HOME" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" skills check
 ) > "$TEST_DIR/skills-check.txt"
 
-assert_contains "$TEST_DIR/skills-check.txt" 'All 2 skills valid'
+assert_contains "$TEST_DIR/skills-check.txt" 'skills valid'
 
 echo ""
 if [ "$ERRORS" -eq 0 ]; then

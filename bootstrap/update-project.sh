@@ -365,6 +365,25 @@ update_settings_file() {
 }
 update_settings_file "$TOUCHSTONE_ROOT/templates/claude-settings.json" "$PROJECT_DIR/.claude/settings.json"
 
+# Touchstone-shipped skills (touchstone-owned, prefixed with `touchstone-`
+# to keep them distinguishable from project-owned skills under .claude/skills/).
+# Each file inside a touchstone-* skill is overwritten on update; project-
+# owned skills (any name without the `touchstone-` prefix) are untouched.
+if [ -d "$TOUCHSTONE_ROOT/.claude/skills" ]; then
+  for skill_dir in "$TOUCHSTONE_ROOT/.claude/skills/"touchstone-*/; do
+    [ -d "$skill_dir" ] || continue
+    skill_name="$(basename "$skill_dir")"
+    project_skill_dir="$PROJECT_DIR/.claude/skills/$skill_name"
+    if [ "$DRY_RUN" = false ]; then
+      mkdir -p "$project_skill_dir"
+    fi
+    for f in "$skill_dir"*; do
+      [ -f "$f" ] || continue
+      update_file "$f" "$project_skill_dir/$(basename "$f")"
+    done
+  done
+fi
+
 # Per-profile project-owned templates (e.g. swift's .swiftlint.yml). These are
 # NOT touchstone-owned: add when missing, never overwrite a hand-edited copy.
 # They stay out of .touchstone-manifest so future `touchstone update` runs do
@@ -422,6 +441,16 @@ write_touchstone_manifest() {
       printf 'scripts/run-pytest-in-venv.sh\n'
     fi
     printf '.claude/settings.json\n'
+    if [ -d "$TOUCHSTONE_ROOT/.claude/skills" ]; then
+      for skill_dir in "$TOUCHSTONE_ROOT/.claude/skills/"touchstone-*/; do
+        [ -d "$skill_dir" ] || continue
+        skill_name="$(basename "$skill_dir")"
+        for f in "$skill_dir"*; do
+          [ -f "$f" ] || continue
+          printf '.claude/skills/%s/%s\n' "$skill_name" "$(basename "$f")"
+        done
+      done
+    fi
   } > "$manifest"
 }
 
@@ -453,6 +482,9 @@ if [ "$DRY_RUN" = false ]; then
   git -C "$PROJECT_DIR" add -f -- .touchstone-version
   if [ -f "$PROJECT_DIR/.claude/settings.json" ]; then
     git -C "$PROJECT_DIR" add -f -- .claude/settings.json
+  fi
+  if [ -d "$PROJECT_DIR/.claude/skills" ]; then
+    git -C "$PROJECT_DIR" add -f -- .claude/skills
   fi
   # Stage any per-profile project-owned templates added on this run (e.g.
   # swift's .swiftlint.yml). These are project-owned, but the addition only

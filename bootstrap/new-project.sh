@@ -1234,6 +1234,23 @@ echo "==> Copying Claude Code settings (touchstone-owned, will be auto-updated):
 mkdir -p "$PROJECT_DIR/.claude"
 copy_file_force "$TOUCHSTONE_ROOT/templates/claude-settings.json" "$PROJECT_DIR/.claude/settings.json"
 
+# Touchstone-shipped skills — namespaced with `touchstone-` prefix so they
+# don't collide with project-owned skills under .claude/skills/.
+if [ -d "$TOUCHSTONE_ROOT/.claude/skills" ]; then
+  echo ""
+  echo "==> Copying Touchstone-shipped skills (touchstone-owned, will be auto-updated):"
+  for skill_dir in "$TOUCHSTONE_ROOT/.claude/skills/"touchstone-*/; do
+    [ -d "$skill_dir" ] || continue
+    skill_name="$(basename "$skill_dir")"
+    project_skill_dir="$PROJECT_DIR/.claude/skills/$skill_name"
+    mkdir -p "$project_skill_dir"
+    for f in "$skill_dir"*; do
+      [ -f "$f" ] || continue
+      copy_file_force "$f" "$project_skill_dir/$(basename "$f")"
+    done
+  done
+fi
+
 # Optional CI workflow — opt-in via --ci. Not copied by default because not every
 # project uses GitHub Actions, and shipping a workflow file silently into every
 # bootstrap would force that opinion on GitLab/Bitbucket/self-hosted users.
