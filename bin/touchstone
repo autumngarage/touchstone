@@ -40,6 +40,7 @@ export TOUCHSTONE_ROOT
 source "$TOUCHSTONE_ROOT/lib/auto-update.sh"
 source "$TOUCHSTONE_ROOT/lib/colors.sh"
 source "$TOUCHSTONE_ROOT/lib/ui.sh"
+source "$TOUCHSTONE_ROOT/lib/claude-md-principles-ref.sh"
 
 # Auto-update check (throttled, non-blocking on failure).
 touchstone_auto_update || true
@@ -76,12 +77,12 @@ escape_sed_replacement() {
 
 cmd_new() {
   if [ "$#" -lt 1 ]; then
-    echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests]" >&2
+    echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests] [--claude-principles yes|no|prompt] [--no-claude-principles]" >&2
     exit 1
   fi
   case "${1:-}" in
     -h|--help)
-      echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests]"
+      echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests] [--claude-principles yes|no|prompt] [--no-claude-principles]"
       return 0
       ;;
   esac
@@ -93,6 +94,7 @@ cmd_init() {
   local run_setup=true
   local setup_existed=false
   local ship_upgrade=true
+  local claude_principles_mode="prompt"
   local args=()
 
   while [ "$#" -gt 0 ]; do
@@ -110,7 +112,7 @@ cmd_init() {
         shift
         ;;
       -h|--help)
-        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests]"
+        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests] [--claude-principles yes|no|prompt] [--no-claude-principles]"
         return 0
         ;;
       --type)
@@ -155,9 +157,27 @@ cmd_init() {
         args+=("$1")
         shift
         ;;
+      --claude-principles)
+        if [ "$#" -lt 2 ]; then
+          echo "ERROR: --claude-principles requires a value (yes, no, or prompt)" >&2
+          exit 1
+        fi
+        case "$2" in
+          yes|no|prompt) claude_principles_mode="$2" ;;
+          *)
+            echo "ERROR: --claude-principles must be 'yes', 'no', or 'prompt' (got '$2')" >&2
+            exit 1
+            ;;
+        esac
+        shift 2
+        ;;
+      --no-claude-principles)
+        claude_principles_mode="no"
+        shift
+        ;;
       *)
         echo "ERROR: unknown argument '$1'" >&2
-        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests]" >&2
+        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests] [--claude-principles yes|no|prompt] [--no-claude-principles]" >&2
         exit 1
         ;;
     esac
@@ -207,6 +227,11 @@ cmd_init() {
         tk_info "Delegating to 'touchstone update' (branch + commit so the upgrade is reviewable)"
       fi
       echo ""
+      # The CLAUDE.md connection check is intentionally skipped on the
+      # outdated path: update-project.sh requires a clean worktree, and
+      # injecting the imports here would dirty it before update runs.
+      # After the update completes (project moves to `current` state),
+      # the user can re-run `touchstone init` to migrate CLAUDE.md.
       exec bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" "${update_args[@]}"
       ;;
   esac
@@ -215,6 +240,13 @@ cmd_init() {
   tk_hero "setting up this project"
 
   bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$project_dir" "${args[@]}"
+
+  # Connect CLAUDE.md (or record that we already are). new-project.sh's
+  # template copy plants the imports on a fresh init, so this normally
+  # records `connected` without prompting. The interesting case is `current`
+  # state on a project whose user wrote their own CLAUDE.md without imports
+  # — then we prompt.
+  ensure_claude_principles_ref "$project_dir" "$claude_principles_mode"
 
   # Only fresh init runs setup.sh automatically. Reconciling an existing repo
   # must not re-trigger machine-wide dev-tool installs or interactive prompts
