@@ -77,12 +77,12 @@ escape_sed_replacement() {
 
 cmd_new() {
   if [ "$#" -lt 1 ]; then
-    echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests] [--claude-principles yes|no|prompt] [--no-claude-principles]" >&2
+    echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests]" >&2
     exit 1
   fi
   case "${1:-}" in
     -h|--help)
-      echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests] [--claude-principles yes|no|prompt] [--no-claude-principles]"
+      echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests]"
       return 0
       ;;
   esac
