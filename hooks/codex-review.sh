@@ -1706,6 +1706,8 @@ print_route_log() {
 # Reads the route-log line from REVIEW_STDERR_FILE. Returns the provider
 # name on stdout, or empty if not found. Tolerates both real conductor's
 # unicode arrow and ASCII-fallback shapes.
+#
+# shellcheck disable=SC2120  # $1 is intentionally optional with a default.
 parse_primary_provider() {
   local stderr_file="${1:-$REVIEW_STDERR_FILE}"
   [ -f "$stderr_file" ] || { printf ''; return; }
