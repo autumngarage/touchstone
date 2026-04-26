@@ -9,6 +9,14 @@ max_diff_lines = 5000
 # Auto-fix is safe for most touchstone code.
 safe_by_default = true
 
+# Block the push when the reviewer crashes, times out, or returns malformed
+# output. Touchstone PR #69 shipped a real blocking finding under fail-open
+# because the reviewer hit a malformed-sentinel error mid-output — the
+# finding was in the unparsed tail. Fail-closed errs toward "do not ship
+# what we couldn't read." Emergency path: `git push --no-verify`, disclosed
+# in the next PR per principles/git-workflow.md.
+on_error = "fail-closed"
+
 # Bootstrap and update scripts are high-scrutiny — a bug here propagates
 # to every downstream project.
 unsafe_paths = [
