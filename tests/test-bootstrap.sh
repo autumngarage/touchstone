@@ -199,6 +199,28 @@ if [ -d "$TEST_DIR/--help" ]; then
   ERRORS=$((ERRORS + 1))
 fi
 
+# `cmd_new` is a passthrough to new-project.sh, which doesn't accept the
+# init-only --claude-principles flags. Guard against drift between
+# cmd_new's usage string and the flags new-project.sh actually parses —
+# a regression here misleads users into typing flags that error.
+if (cd "$TEST_DIR" && "$TOUCHSTONE_ROOT/bin/touchstone" new --help) >"$TEST_DIR/touchstone-new-help.txt" 2>&1; then
+  if grep -qE -- '--claude-principles|--no-claude-principles' "$TEST_DIR/touchstone-new-help.txt"; then
+    echo "FAIL: 'touchstone new --help' must not advertise --claude-principles flags (cmd_init only)" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+else
+  echo "FAIL: 'touchstone new --help' must succeed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+# init must still advertise them, so the symmetric assertion guards the
+# other half of the boundary.
+if (cd "$TEST_DIR" && "$TOUCHSTONE_ROOT/bin/touchstone" init --help) >"$TEST_DIR/touchstone-init-help.txt" 2>&1; then
+  assert_contains "$TEST_DIR/touchstone-init-help.txt" 'claude-principles'
+else
+  echo "FAIL: 'touchstone init --help' must succeed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 if TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --help >"$TEST_DIR/touchstone-init-help.txt" 2>&1; then
   assert_contains "$TEST_DIR/touchstone-init-help.txt" 'Usage: touchstone init'
   assert_contains "$TEST_DIR/touchstone-init-help.txt" 'reviewer conductor|none'
