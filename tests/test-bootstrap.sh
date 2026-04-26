@@ -177,6 +177,10 @@ if grep -q '{{PROJECT_NAME}}' "$PROJECT/AGENTS.md" 2>/dev/null; then
 fi
 assert_contains "$PROJECT/CLAUDE.md" "test-project"
 assert_contains "$PROJECT/AGENTS.md" "test-project"
+# Shared engineering principles must reach non-Claude reviewers via AGENTS.md.
+assert_contains "$PROJECT/AGENTS.md" "touchstone:shared-principles:start"
+assert_contains "$PROJECT/AGENTS.md" "touchstone:shared-principles:end"
+assert_contains "$PROJECT/AGENTS.md" "No band-aids"
 
 # Help flags should print usage instead of bootstrapping a project named --help.
 if (cd "$TEST_DIR" && bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" --help) >"$TEST_DIR/new-project-help.txt" 2>&1; then

@@ -20,6 +20,8 @@ set -euo pipefail
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../lib/install-hooks.sh
 source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
+# shellcheck source=../lib/agents-principles-block.sh
+source "$TOUCHSTONE_ROOT/lib/agents-principles-block.sh"
 PROJECT_DIR="$(pwd)"
 DRY_RUN=false
 CHECK_ONLY=false
@@ -419,6 +421,21 @@ if [ "$PROJECT_TYPE" = "swift" ] && [ -f "$TOUCHSTONE_ROOT/templates/swift/.swif
     "$PROJECT_DIR/.swiftlint.yml"
 fi
 
+# Refresh the touchstone-managed shared-principles block inside AGENTS.md.
+# AGENTS.md itself is project-owned, but the sentinel-delimited block is
+# touchstone-owned so non-Claude reviewers (Codex/Gemini) get the engineering
+# principles that CLAUDE.md gets for free via @-imports.
+AGENTS_PRINCIPLES_TOUCHED=false
+if [ "$DRY_RUN" = false ] && [ -f "$PROJECT_DIR/AGENTS.md" ]; then
+  agents_md_before_sha="$(shasum -a 256 "$PROJECT_DIR/AGENTS.md" | awk '{print $1}')"
+  agents_principles_block_apply "$PROJECT_DIR/AGENTS.md" || true
+  agents_md_after_sha="$(shasum -a 256 "$PROJECT_DIR/AGENTS.md" | awk '{print $1}')"
+  if [ "$agents_md_before_sha" != "$agents_md_after_sha" ]; then
+    AGENTS_PRINCIPLES_TOUCHED=true
+    echo "    refreshed (project-owned, managed block): AGENTS.md"
+  fi
+fi
+
 write_touchstone_manifest() {
   local manifest="$PROJECT_DIR/.touchstone-manifest"
   {
@@ -493,6 +510,12 @@ if [ "$DRY_RUN" = false ]; then
   # ship an incomplete change.
   if [ "${#PROJECT_OWNED_ADDED_PATHS[@]}" -gt 0 ]; then
     git -C "$PROJECT_DIR" add -f -- "${PROJECT_OWNED_ADDED_PATHS[@]}"
+  fi
+  # The shared-principles block inside AGENTS.md is touchstone-managed even
+  # though the file is project-owned. Stage it so a refresh ships in this
+  # update commit rather than dangling as an unstaged diff.
+  if [ "$AGENTS_PRINCIPLES_TOUCHED" = true ] && [ -f "$PROJECT_DIR/AGENTS.md" ]; then
+    git -C "$PROJECT_DIR" add -f -- AGENTS.md
   fi
 
   if git -C "$PROJECT_DIR" diff --cached --quiet; then
