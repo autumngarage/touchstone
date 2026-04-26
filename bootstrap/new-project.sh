@@ -26,6 +26,8 @@ set -euo pipefail
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../lib/install-hooks.sh
 source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
+# shellcheck source=../lib/agents-principles-block.sh
+source "$TOUCHSTONE_ROOT/lib/agents-principles-block.sh"
 REGISTER=true
 REGISTER_REQUESTED=false       # Doctrine 0002: track whether --register / --no-register was passed.
 INPUT_UNSAFE=""
@@ -1199,6 +1201,11 @@ echo "==> Copying templates (project-owned, won't be auto-updated):"
 copy_file "$TOUCHSTONE_ROOT/templates/CLAUDE.md" "$PROJECT_DIR/CLAUDE.md"
 CLAUDE_MD_CREATED="$LAST_COPY_CREATED"
 copy_file "$TOUCHSTONE_ROOT/templates/AGENTS.md" "$PROJECT_DIR/AGENTS.md"
+# AGENTS.md is project-owned (copy_file skips when present), but the shared-
+# engineering-principles block inside it is touchstone-owned. Apply or refresh
+# the block so non-Claude reviewers (Codex/Gemini) see the principles too —
+# this is the only path that reaches an existing project-owned AGENTS.md.
+agents_principles_block_apply "$PROJECT_DIR/AGENTS.md" || true
 copy_file "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-commit-config.yaml"
 copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
 copy_file "$TOUCHSTONE_ROOT/templates/pull_request_template.md" "$PROJECT_DIR/.github/pull_request_template.md"

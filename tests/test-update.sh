@@ -179,6 +179,48 @@ fi
 assert_not_exists "$PROJECT/CLAUDE.md.bak"
 
 # --------------------------------------------------------------------------
+# Test 3b: pre-existing AGENTS.md without the shared-principles block gets
+# the touchstone-managed block injected on update. This is the migration
+# path for projects bootstrapped before the shared-principles block existed —
+# without it, non-Claude reviewers (Codex/Gemini) silently miss every
+# engineering principle.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 4b: AGENTS.md without principles block gets backfilled on update ---"
+
+cat > "$PROJECT/AGENTS.md" <<'EOF'
+# AGENTS.md — AI Reviewer Guide for Test Project
+
+You are reviewing PRs for Test Project.
+
+## Specific review rules
+
+- Project-specific rule that must survive the update.
+EOF
+echo "0000000000000000000000000000000000000002" > "$PROJECT/.touchstone-version"
+commit_all "$PROJECT" "simulate pre-block AGENTS.md state"
+
+(cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
+
+assert_contains "$PROJECT/AGENTS.md" "touchstone:shared-principles:start"
+assert_contains "$PROJECT/AGENTS.md" "touchstone:shared-principles:end"
+assert_contains "$PROJECT/AGENTS.md" "No band-aids"
+# Project-specific content must survive injection.
+assert_contains "$PROJECT/AGENTS.md" "Project-specific rule that must survive the update."
+# H1 must remain on line 1.
+first_line="$(head -n 1 "$PROJECT/AGENTS.md")"
+if [ "$first_line" != "# AGENTS.md — AI Reviewer Guide for Test Project" ]; then
+  echo "FAIL: AGENTS.md H1 not preserved on line 1: '$first_line'" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+# The update commit must include AGENTS.md (so the block ships in the same
+# review boundary as the rest of the touchstone update).
+if ! git -C "$PROJECT" log -1 --name-only --pretty=format: | grep -qx 'AGENTS.md'; then
+  echo "FAIL: update commit must include AGENTS.md when the block was refreshed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
 # Test 4: dirty worktrees fail before branching or patching.
 # --------------------------------------------------------------------------
 echo ""
