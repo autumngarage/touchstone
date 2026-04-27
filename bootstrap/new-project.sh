@@ -1562,7 +1562,7 @@ if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ] || [ -n 
     unsafe_paths_input=()
     local_unsafe_paths=()
     IFS=',' read -r -a unsafe_paths_input <<< "$INPUT_UNSAFE"
-    for unsafe_path in "${unsafe_paths_input[@]}"; do
+    for unsafe_path in "${unsafe_paths_input[@]}"; do  # empty-array-guard: safe — populated by IFS-split of non-empty INPUT_UNSAFE
       unsafe_path="$(trim "$unsafe_path")"
       [ -z "$unsafe_path" ] && continue
       local_unsafe_paths+=("$unsafe_path")

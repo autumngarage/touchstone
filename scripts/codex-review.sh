@@ -1045,7 +1045,7 @@ resolve_assist_reviewer() {
   ASSIST_REVIEWER=""
   ASSIST_REVIEWER_STATUS=""
 
-  for helper in "${ASSIST_HELPERS[@]}"; do
+  for helper in ${ASSIST_HELPERS[@]+"${ASSIST_HELPERS[@]}"}; do
     if [ "$helper" = "$ACTIVE_REVIEWER" ]; then
       ASSIST_REVIEWER_STATUS="${ASSIST_REVIEWER_STATUS}    ${helper}: skipped primary reviewer\n"
       continue

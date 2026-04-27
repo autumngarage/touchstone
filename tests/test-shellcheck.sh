@@ -39,11 +39,12 @@ done < <(
     "$TOUCHSTONE_ROOT/bootstrap" \
     "$TOUCHSTONE_ROOT/lib" \
     "$TOUCHSTONE_ROOT/tests" \
-    -maxdepth 1 -type f -name '*.sh' -print 2>/dev/null | sort
+    -maxdepth 1 -type f -name '*.sh' -print 2>/dev/null | sort;
+  find "$TOUCHSTONE_ROOT/bin" -maxdepth 1 -type f -print 2>/dev/null | sort
 )
 
 if [ "${#SCRIPTS[@]}" -eq 0 ]; then
-  echo "FAIL: no shell scripts found under hooks/, scripts/, bootstrap/, lib/, tests/" >&2
+  echo "FAIL: no shell scripts found under bin/, hooks/, scripts/, bootstrap/, lib/, tests/" >&2
   exit 1
 fi
 
