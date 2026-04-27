@@ -277,4 +277,4 @@ if [ -z "$json_flag" ]; then
 fi
 
 # Hand off to conductor for the actual routing decision + cost estimate.
-exec conductor route "${args[@]}"
+exec conductor route ${args[@]+"${args[@]}"}

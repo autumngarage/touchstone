@@ -173,7 +173,7 @@ rollback_failed_update() {
   restore_touchstone_metadata
 
   local rel
-  for rel in "${ADDED_PATHS[@]}"; do
+  for rel in ${ADDED_PATHS[@]+"${ADDED_PATHS[@]}"}; do
     rm -f "$PROJECT_DIR/$rel" 2>/dev/null || true
   done
 

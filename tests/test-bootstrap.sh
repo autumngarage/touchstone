@@ -1440,6 +1440,34 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# ---------------------------------------------------------------------------
+# Regression: bash 3.2 empty-array expansion guard.
+# Under bash 3.2 (macOS /bin/bash), "${arr[@]}" aborts with "unbound variable"
+# when arr=() is empty and set -u is active. bin/touchstone declares args=()
+# and expands it (unguarded) when touchstone init is run with no flags that
+# populate args. This test must FAIL on the unpatched code and PASS on the fix.
+# See: fix/init-empty-args-bash3
+# ---------------------------------------------------------------------------
+PROJECT_INIT_ZERO_ARGS="$TEST_DIR/test-project-init-zero-args"
+mkdir -p "$PROJECT_INIT_ZERO_ARGS"
+git -C "$PROJECT_INIT_ZERO_ARGS" init >/dev/null
+# Redirect HOME so ~/.touchstone-projects is written to a temp location that
+# gets cleaned up with $TEST_DIR, not the user's actual home directory.
+ZERO_ARGS_FAKE_HOME="$TEST_DIR/zero-args-fake-home"
+mkdir -p "$ZERO_ARGS_FAKE_HOME"
+# --no-setup skips running setup.sh but does NOT populate args[] — exactly
+# the zero-args path that triggered the bug. HOOKS_FAKE_BIN stubs pre-commit.
+if (cd "$PROJECT_INIT_ZERO_ARGS" && HOME="$ZERO_ARGS_FAKE_HOME" PATH="$HOOKS_FAKE_BIN:$PATH" \
+    TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup \
+    </dev/null) >"$TEST_DIR/init-zero-args.txt" 2>&1; then
+  assert_contains "$TEST_DIR/init-zero-args.txt" 'setting up this project'
+else
+  echo "FAIL: touchstone init --no-setup (zero args[] to new-project.sh) exited nonzero" >&2
+  echo "      This detects the bash 3.2 empty-array expansion bug at bin/touchstone:242." >&2
+  echo "      Output: $(cat "$TEST_DIR/init-zero-args.txt")" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # Any non-5 pytest failure must still propagate — we haven't accidentally swallowed real errors.
 cat > "$PYTEST_FAKE_BIN/python3" <<'FAKEPY'
 #!/usr/bin/env bash

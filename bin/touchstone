@@ -232,14 +232,14 @@ cmd_init() {
       # injecting the imports here would dirty it before update runs.
       # After the update completes (project moves to `current` state),
       # the user can re-run `touchstone init` to migrate CLAUDE.md.
-      exec bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" "${update_args[@]}"
+      exec bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" ${update_args[@]+"${update_args[@]}"}
       ;;
   esac
 
   # Fresh init: greet with the branded hero so setup feels like setup.
   tk_hero "setting up this project"
 
-  bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$project_dir" "${args[@]}"
+  bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$project_dir" ${args[@]+"${args[@]}"}
 
   # Connect CLAUDE.md (or record that we already are). new-project.sh's
   # template copy plants the imports on a fresh init, so this normally
