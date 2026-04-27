@@ -1316,8 +1316,9 @@ AUTOFIX_POLICY="$(build_autofix_policy)"
 read -r -d '' REVIEW_PROMPT <<PROMPT_EOF || true
 You are reviewing AND optionally auto-fixing a pull request before it reaches the default branch.
 
-Read AGENTS.md at the repo root for the full review rubric (if it exists).
-Read CLAUDE.md at the repo root for project context (if it exists).
+Read AGENTS.md at the repo root for project context and the review rubric (if it exists).
+If AGENTS.md has both authoring guidance and a review guide, use the review guide for findings.
+Read CLAUDE.md at the repo root for additional Claude-specific project context (if it exists).
 
 Do NOT flag: formatting, style, naming, missing docstrings, speculative refactors, "you could consider" observations without a concrete bug.
 
@@ -1555,8 +1556,9 @@ You are a peer reviewer giving a focused second opinion before a push.
 Do not edit files. Do not stage, commit, or modify anything. You are advisory only.
 Answer the primary reviewer concisely and directly. Do not emit CODEX_REVIEW_CLEAN, CODEX_REVIEW_FIXED, or CODEX_REVIEW_BLOCKED.
 
-Read AGENTS.md at the repo root for the review rubric if it exists.
-Read CLAUDE.md at the repo root for project context if it exists.
+Read AGENTS.md at the repo root for project context and the review rubric if it exists.
+If AGENTS.md has both authoring guidance and a review guide, use the review guide for findings.
+Read CLAUDE.md at the repo root for additional Claude-specific project context if it exists.
 
 ## Primary reviewer
 

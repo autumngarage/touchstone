@@ -173,6 +173,7 @@ AI_REVIEW_ENABLED=true
 AI_REVIEWERS=()
 AI_REVIEWERS_CHECKED=""
 AI_LOCAL_REVIEW_COMMAND=""
+AI_CONDUCTOR_WITH=""
 AI_REVIEW_ROUTING_ENABLED=false
 AI_REVIEW_ROUTING_SMALL_MAX=400
 
@@ -203,7 +204,7 @@ load_ai_review_config() {
   local section="" line key value
 
   [ -f ".codex-review.toml" ] || {
-    AI_REVIEWERS=("codex")
+    AI_REVIEWERS=("conductor")
     return 0
   }
 
@@ -227,7 +228,12 @@ load_ai_review_config() {
     if [ "$section" = "review" ]; then
       case "$key" in
         enabled) AI_REVIEW_ENABLED="$value" ;;
+        reviewer) [ -n "$value" ] && AI_REVIEWERS+=("$value") ;;
         reviewers) add_reviewers_from_csv "${line#*=}" ;;
+      esac
+    elif [ "$section" = "review.conductor" ]; then
+      case "$key" in
+        with) AI_CONDUCTOR_WITH="$value" ;;
       esac
     elif [ "$section" = "review.routing" ]; then
       case "$key" in
@@ -243,7 +249,7 @@ load_ai_review_config() {
   done < ".codex-review.toml"
 
   if [ "${#AI_REVIEWERS[@]}" -eq 0 ] && [ "$AI_REVIEW_ENABLED" != "false" ]; then
-    AI_REVIEWERS=("codex")
+    AI_REVIEWERS=("conductor")
   fi
 }
 
@@ -256,6 +262,21 @@ check_ai_reviewer() {
   AI_REVIEWERS_CHECKED="$AI_REVIEWERS_CHECKED $reviewer"
 
   case "$reviewer" in
+    conductor)
+      if command -v conductor >/dev/null 2>&1; then
+        if conductor doctor --json 2>/dev/null | grep -q '"configured"[[:space:]]*:[[:space:]]*true'; then
+          if [ -n "$AI_CONDUCTOR_WITH" ]; then
+            ok "conductor installed and configured (pinned provider: $AI_CONDUCTOR_WITH)"
+          else
+            ok "conductor installed and configured"
+          fi
+        else
+          warn "conductor installed but no provider is configured. Run: conductor init"
+        fi
+      else
+        warn "conductor reviewer selected, but Conductor CLI is not installed. Run: brew install autumngarage/conductor/conductor && conductor init"
+      fi
+      ;;
     codex)
       if command -v codex >/dev/null 2>&1; then
         if codex login status >/dev/null 2>&1; then

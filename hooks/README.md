@@ -49,7 +49,7 @@ tags   = "code-review"
 
 ### 5. Write your review rubric
 
-Fill in `AGENTS.md` at the repo root with your project-specific review priorities. The hook tells the reviewer to read this file as the rubric. See `templates/AGENTS.md` for the skeleton.
+Fill in `AGENTS.md` at the repo root with your project-specific coding-agent guidance and review priorities. The hook tells the reviewer to use the Review Guide section as the rubric. See `templates/AGENTS.md` for the skeleton.
 
 ## How it works
 
@@ -57,7 +57,7 @@ When the review runs, the hook:
 
 1. Computes the diff between your branch and the default branch
 2. Skips review if the exact same diff and review inputs already passed cleanly (cache key includes the Conductor knobs, so changing `prefer`/`effort`/`with` invalidates)
-3. Invokes Conductor with the review prompt + AGENTS.md rubric, the requested tool set, and the requested sandbox
+3. Invokes Conductor with the review prompt + AGENTS.md review guide, the requested tool set, and the requested sandbox
 4. Reads one of three sentinels from the reviewer's output:
    - `CODEX_REVIEW_CLEAN` — no issues, push proceeds
    - `CODEX_REVIEW_FIXED` — the reviewer applied auto-fixes; the hook commits them and re-reviews
