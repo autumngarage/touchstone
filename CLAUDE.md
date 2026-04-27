@@ -31,7 +31,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale, work
 
 ### Never commit on main
 
-Every change — including one-liners, doc tweaks, and version bumps — starts on a feature branch. Before your first `git commit` of a session, run `git branch --show-current`; if it reports `main`, branch first. See the "Never commit on the default branch" section in `principles/git-workflow.md` for recovery steps if it happens anyway.
+Every change — including one-liners, doc tweaks, and version bumps — starts on a feature branch. **Before your first edit of a tracked file in a session**, run `git branch --show-current`; if it reports `main` (or `master`), branch first with `git checkout -b <type>/<slug>` — your unstaged changes carry over, so there's no cost to switching now. The trigger is at *edit time*, not commit time, because the recurring failure mode is: agent edits six files on main, hits `no-commit-to-branch` at commit, then has to recover the work onto a branch. Branching first is one cheap command; recovering is several. See the "Never commit on the default branch" section in `principles/git-workflow.md` for recovery steps when it happens anyway.
 
 ### The lifecycle (drive this automatically, do not ask the user for permission at each step)
 
