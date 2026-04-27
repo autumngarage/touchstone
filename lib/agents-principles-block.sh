@@ -5,15 +5,12 @@
 #
 # Why this exists:
 #   AGENTS.md is project-owned: copied once at bootstrap and then maintained by
-#   the project's authors. CLAUDE.md imports the principles via @principles/...
-#   so every Claude Code session loads them. AGENTS.md historically did not —
-#   so a Codex / Gemini / non-Claude reviewer running on a touchstone repo had
-#   no exposure to the engineering principles. That's a silent failure of the
-#   merge gate itself: the reviewer can't flag a band-aid if nobody told it
-#   band-aids are flag-worthy.
+#   the project's authors. Claude Code gets these principles through
+#   CLAUDE.md's @principles/... imports; Codex and other AGENTS.md-native tools
+#   need them directly in AGENTS.md. Reviewers need the same principles too.
 #
 #   This helper inserts (and refreshes) a sentinel-delimited block at the top
-#   of AGENTS.md that lists the principles in a format any reviewer can read.
+#   of AGENTS.md that lists the principles in a format any agent can read.
 #   The block is touchstone-owned; everything outside the markers is project-
 #   owned and never touched.
 #
@@ -34,7 +31,7 @@ agents_principles_block_render() {
 <!-- touchstone:shared-principles:start -->
 ## Shared Engineering Principles (apply these first)
 
-These principles are touchstone-owned and shared across every project. Apply them as the **primary review criteria** before any project-specific rule below — a reviewer that lets a band-aid or a silent failure through has missed the point of this gate.
+These principles are touchstone-owned and shared across every project. Apply them as the **primary coding and review criteria** before any project-specific rule below — an agent that lets a band-aid or a silent failure through has missed the point of this gate.
 
 - **No band-aids** — fix the root cause; if patching a symptom, say so explicitly and name the root cause.
 - **Keep interfaces narrow** — expose the smallest stable contract; don't leak storage shape, vendor SDKs, or workflow sequencing.
@@ -57,7 +54,7 @@ Full rationale, worked examples, and the *why* behind each rule:
 - `principles/documentation-ownership.md`
 - `principles/git-workflow.md`
 
-This block is managed by `touchstone` and refreshes on `touchstone update` / `touchstone init`. Edit content **outside** the markers to add project-specific reviewer guidance — touchstone will not touch it.
+This block is managed by `touchstone` and refreshes on `touchstone update` / `touchstone init`. Edit content **outside** the markers to add project-specific agent guidance — touchstone will not touch it.
 <!-- touchstone:shared-principles:end -->
 BLOCK
 }

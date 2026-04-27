@@ -181,6 +181,9 @@ assert_contains "$PROJECT/AGENTS.md" "test-project"
 assert_contains "$PROJECT/AGENTS.md" "touchstone:shared-principles:start"
 assert_contains "$PROJECT/AGENTS.md" "touchstone:shared-principles:end"
 assert_contains "$PROJECT/AGENTS.md" "No band-aids"
+assert_contains "$PROJECT/AGENTS.md" "Authoring Guide"
+assert_contains "$PROJECT/AGENTS.md" "Codex and other AGENTS.md-native coding agents"
+assert_contains "$PROJECT/AGENTS.md" "Review Guide"
 
 # Help flags should print usage instead of bootstrapping a project named --help.
 if (cd "$TEST_DIR" && bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" --help) >"$TEST_DIR/new-project-help.txt" 2>&1; then
@@ -750,6 +753,16 @@ cat > "$SETUP_VERSION_FAKE_BIN/codex" <<'FAKECODEX'
 #!/usr/bin/env bash
 exit 0
 FAKECODEX
+cat > "$SETUP_VERSION_FAKE_BIN/conductor" <<'FAKECONDUCTOR'
+#!/usr/bin/env bash
+case "$1" in
+  doctor)
+    printf '{"configured": true}\n'
+    exit 0
+    ;;
+esac
+exit 0
+FAKECONDUCTOR
 cat > "$SETUP_VERSION_FAKE_BIN/but" <<'FAKEBUT'
 #!/usr/bin/env bash
 exit 0
@@ -762,6 +775,13 @@ assert_contains "$TEST_DIR/setup-version-output.txt" 'local reviewer configured:
 assert_contains "$TEST_DIR/setup-version-output.txt" 'GitButler selected'
 assert_contains "$TEST_DIR/setup-version-output.txt" 'but installed'
 assert_not_contains "$TEST_DIR/setup-version-output.txt" "unknown AI reviewer"
+
+SETUP_CONDUCTOR_PROJECT="$TEST_DIR/setup-conductor-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SETUP_CONDUCTOR_PROJECT" --no-register --reviewer codex >/dev/null
+(cd "$SETUP_CONDUCTOR_PROJECT" && PATH="$SETUP_VERSION_FAKE_BIN:$PATH" bash setup.sh) >"$TEST_DIR/setup-conductor-output.txt"
+assert_contains "$TEST_DIR/setup-conductor-output.txt" 'conductor installed and configured (pinned provider: codex)'
+assert_not_contains "$TEST_DIR/setup-conductor-output.txt" 'codex installed'
+assert_not_contains "$TEST_DIR/setup-conductor-output.txt" 'Installing Codex CLI'
 
 # touchstone-run.sh should provide ecosystem-neutral task dispatch.
 RUNNER_FAKE_BIN="$TEST_DIR/runner-fake-bin"

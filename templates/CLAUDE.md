@@ -4,6 +4,8 @@
 
 {{PROJECT_DESCRIPTION — describe the project's purpose, your role, and what "good" looks like for this codebase. Be specific about the domain.}}
 
+Codex and other AGENTS.md-native tools read `AGENTS.md`. Keep `CLAUDE.md` and `AGENTS.md` aligned when project workflow, architecture, or hard-won lessons change.
+
 ## Engineering Principles (HARD REQUIREMENTS)
 
 Non-negotiable. Every code change is reviewed against them. Full rationale, worked examples, and the *why* behind each rule live in `principles/engineering-principles.md` — read it once; this list is the daily reminder.

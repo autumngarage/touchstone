@@ -45,7 +45,7 @@ cd ~/Repos/my-new-project
 bash setup.sh
 ```
 
-Then open `CLAUDE.md` and `AGENTS.md` in your editor and fill in the placeholders. These files tell AI coding tools what your project is, what matters, and what to be careful with.
+Then open `CLAUDE.md` and `AGENTS.md` in your editor and fill in the placeholders. `CLAUDE.md` steers Claude Code. `AGENTS.md` steers Codex and other AGENTS.md-native tools, and also contains the AI review rubric.
 
 ### Add touchstone to an existing project
 
@@ -165,8 +165,8 @@ bash setup.sh --deps-only
 When you run `touchstone new`, these files get created in your project:
 
 **Project-owned** (yours to customize, never auto-updated):
-- `CLAUDE.md` — AI coding instructions with `{{PLACEHOLDERS}}` to fill in
-- `AGENTS.md` — AI reviewer rubric with project-specific priorities
+- `CLAUDE.md` — Claude Code instructions with `{{PLACEHOLDERS}}` to fill in
+- `AGENTS.md` — Codex/agent instructions plus the AI review rubric with project-specific priorities
 - `.codex-review.toml` — AI review hook config (reviewers, modes, safe/unsafe paths)
 - `.touchstone-config` — Project profile, workflow choices, and optional lint/test/build command overrides
 - `.pre-commit-config.yaml` — Pre-commit hooks including the default-branch AI review gate
@@ -235,7 +235,7 @@ Automatically reviews code before it reaches the default branch. In Touchstone 2
 - Runs from `scripts/merge-pr.sh`, and from the pre-push hook only when pushing directly to the default branch
 - Loops up to N times, gracefully skips when Conductor is not installed
 
-Configure per-project behavior in `.codex-review.toml`. Write your review rubric in `AGENTS.md`. See [hooks/README.md](hooks/README.md) for reviewer modes, caching, and fail-open behavior. Peer review returns in 2.1 via `conductor call --exclude <primary>`.
+Configure per-project behavior in `.codex-review.toml`. Write your coding-agent guidance and review rubric in `AGENTS.md`. See [hooks/README.md](hooks/README.md) for reviewer modes, caching, and fail-open behavior. Peer review returns in 2.1 via `conductor call --exclude <primary>`.
 
 ### Claude Code Skills
 

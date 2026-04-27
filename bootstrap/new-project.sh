@@ -20,6 +20,7 @@
 #   6. Prints next steps
 #
 # After running, fill in the {{PLACEHOLDERS}} in CLAUDE.md and AGENTS.md.
+# CLAUDE.md steers Claude Code; AGENTS.md steers Codex and other agents.
 #
 set -euo pipefail
 
@@ -1886,6 +1887,7 @@ if [ "$HOOK_INSTALL_STATUS" -eq 2 ]; then
 fi
 if [ "$RE_INIT" = false ]; then
   printf '  %d. Fill in CLAUDE.md and AGENTS.md (architecture, key files, hard-won lessons)\n' "$STEP_NUM"
+  printf '     CLAUDE.md steers Claude Code; AGENTS.md steers Codex and the review rubric.\n'
   STEP_NUM=$((STEP_NUM + 1))
 fi
 printf '  %d. Install dev tools and project deps: cd %s && bash setup.sh\n' "$STEP_NUM" "$PROJECT_DIR"

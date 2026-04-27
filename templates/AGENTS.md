@@ -1,13 +1,19 @@
-# AGENTS.md — AI Reviewer Guide for {{PROJECT_NAME}}
+# AGENTS.md — AI Agent Instructions for {{PROJECT_NAME}}
 
-You are reviewing pull requests for **{{PROJECT_NAME}}**. Optimize your review for catching the things that bite this repo, not generic style polish.
+This file steers Codex and other AGENTS.md-native coding agents. Claude Code also reads `CLAUDE.md`; keep the two files aligned when project-level workflow changes.
 
-This file is the source of truth for how AI reviewers (Codex, Claude, etc.) should think about a PR. The companion file `CLAUDE.md` is for the *author* writing the code; this file is for the *reviewer*.
+When coding, follow the authoring guide. When explicitly reviewing a PR or running the AI review hook, use the review guide.
+
+## Authoring Guide
+
+### Who You Are on This Project
+
+{{PROJECT_DESCRIPTION — describe the project's purpose, your role, and what "good" looks like for this codebase. Be specific about the domain.}}
 
 <!-- touchstone:shared-principles:start -->
 ## Shared Engineering Principles (apply these first)
 
-These principles are touchstone-owned and shared across every project. Apply them as the **primary review criteria** before any project-specific rule below — a reviewer that lets a band-aid or a silent failure through has missed the point of this gate.
+These principles are touchstone-owned and shared across every project. Apply them as the **primary coding and review criteria** before any project-specific rule below — an agent that lets a band-aid or a silent failure through has missed the point of this gate.
 
 - **No band-aids** — fix the root cause; if patching a symptom, say so explicitly and name the root cause.
 - **Keep interfaces narrow** — expose the smallest stable contract; don't leak storage shape, vendor SDKs, or workflow sequencing.
@@ -30,12 +36,64 @@ Full rationale, worked examples, and the *why* behind each rule:
 - `principles/documentation-ownership.md`
 - `principles/git-workflow.md`
 
-This block is managed by `touchstone` and refreshes on `touchstone update` / `touchstone init`. Edit content **outside** the markers to add project-specific reviewer guidance — touchstone will not touch it.
+This block is managed by `touchstone` and refreshes on `touchstone update` / `touchstone init`. Edit content **outside** the markers to add project-specific agent guidance — touchstone will not touch it.
 <!-- touchstone:shared-principles:end -->
+
+### Git Workflow
+
+Every change starts on a feature branch. Before editing tracked files, run `git branch --show-current`; if it reports the default branch (`main` or `master`), branch first with `git checkout -b <type>/<short-description>`.
+
+Use the normal lifecycle unless the user asks for a different flow:
+
+1. Pull/rebase the default branch.
+2. Branch before editing.
+3. Make the change, stage explicit file paths, and commit with a concise message.
+4. Ship with `bash scripts/open-pr.sh --auto-merge`.
+5. Clean up the feature branch if it still exists locally.
+
+### Testing
+
+```bash
+# Reinstall dependencies without rerunning the full machine setup
+bash setup.sh --deps-only
+
+# Before any push — uses .touchstone-config profile defaults and command overrides
+bash scripts/touchstone-run.sh validate
+```
+
+Fix failing tests before pushing.
+
+### Release & Distribution
+
+{{RELEASE_AND_DISTRIBUTION — how is this project shipped? Include the release command, package registry or deployment target, required version bump, post-release verification, and rollback path. Examples: Homebrew tap, npm package, Docker image, Vercel/Railway deploy, app store build.}}
+
+After merging release-affecting changes, verify the shipped artifact or deployed environment matches the pushed code.
+
+### Architecture
+
+{{ARCHITECTURE — describe key packages, their responsibilities, and how data flows between them. Keep it high-level.}}
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| {{key files and their purposes}} | |
+
+### State & Config
+
+{{STATE_AND_CONFIG — where does mutable state live? What's gitignored? Where's the config template?}}
+
+### Hard-Won Lessons
+
+{{HARD_WON_LESSONS — bugs that cost real time or money. Each should teach a generalizable lesson. Format: what happened, what was the root cause, what's the fix/guard now in place.}}
 
 ---
 
-## What to prioritize (in order)
+## Review Guide
+
+You are reviewing pull requests for **{{PROJECT_NAME}}**. Optimize your review for catching the things that bite this repo, not generic style polish.
+
+### What to prioritize (in order)
 
 {{PRIORITIES — list your project's review priorities in order of importance. Examples:
 
@@ -50,9 +108,9 @@ Style nits, formatting, and theoretical refactors are **out of scope** unless th
 
 ---
 
-## Specific review rules
+### Specific review rules
 
-### High-scrutiny paths
+#### High-scrutiny paths
 
 {{HIGH_SCRUTINY_PATHS — list the files/directories where mistakes are most expensive. Examples:
 
@@ -63,7 +121,7 @@ Flag any of the following:
 - (things that have gone wrong before)
 - (invariants that must hold)}}
 
-### Silent failures
+#### Silent failures
 
 Flag any of the following:
 
@@ -74,7 +132,7 @@ Flag any of the following:
 
 The rule: every exception is either re-raised or logged with enough context to debug from production logs alone.
 
-### Tests
+#### Tests
 
 - Bug fixes must include a test that reproduces the original failure mode.
 - Tests should use relative values (percentages, ratios) not absolute values where applicable.
@@ -82,7 +140,7 @@ The rule: every exception is either re-raised or logged with enough context to d
 
 ---
 
-## What NOT to flag
+### What NOT to flag
 
 - Formatting, whitespace, import order — pre-commit hooks handle these.
 - Type annotations on existing untyped code.
@@ -95,7 +153,7 @@ If you find yourself writing "consider" or "you might want to" without a concret
 
 ---
 
-## Output format
+### Output format
 
 1. **Summary** — one paragraph: what this PR does and your overall verdict (approve / request changes / comment).
 2. **Blocking issues** — bugs or risks that must be fixed before merge. Each item: file:line, what's wrong, why it matters, suggested fix.

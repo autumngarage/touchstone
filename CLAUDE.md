@@ -4,6 +4,8 @@
 
 You are maintaining a shared engineering platform that provides universal principles, reusable scripts, and a Codex merge/default-branch review hook for all of Henry's projects. Changes here propagate to every downstream project via `sync-all.sh`. Quality matters doubly: a bug in Touchstone is a bug in every project that uses it.
 
+Codex and other AGENTS.md-native tools read `AGENTS.md`. Keep `CLAUDE.md` and `AGENTS.md` aligned when Touchstone workflow, architecture, or hard-won lessons change.
+
 ## Engineering Principles (HARD REQUIREMENTS)
 
 Non-negotiable. Every code change is reviewed against them. Full rationale, worked examples, and the *why* behind each rule live in `principles/engineering-principles.md` — read it once; this list is the daily reminder.

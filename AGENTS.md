@@ -1,9 +1,11 @@
-# AGENTS.md — AI Reviewer Guide for Touchstone
+# Touchstone — AI Agent Instructions
+
+This file steers Codex and other AGENTS.md-native coding agents. Claude Code also reads `CLAUDE.md`; keep the two files aligned when project-level workflow changes. When you are coding, follow the authoring guidance first. When you are explicitly reviewing a PR or running the AI review hook, use the review guide below.
 
 <!-- touchstone:shared-principles:start -->
 ## Shared Engineering Principles (apply these first)
 
-These principles are touchstone-owned and shared across every project. Apply them as the **primary review criteria** before any project-specific rule below — a reviewer that lets a band-aid or a silent failure through has missed the point of this gate.
+These principles are touchstone-owned and shared across every project. Apply them as the **primary coding and review criteria** before any project-specific rule below — an agent that lets a band-aid or a silent failure through has missed the point of this gate.
 
 - **No band-aids** — fix the root cause; if patching a symptom, say so explicitly and name the root cause.
 - **Keep interfaces narrow** — expose the smallest stable contract; don't leak storage shape, vendor SDKs, or workflow sequencing.
@@ -26,9 +28,37 @@ Full rationale, worked examples, and the *why* behind each rule:
 - `principles/documentation-ownership.md`
 - `principles/git-workflow.md`
 
-This block is managed by `touchstone` and refreshes on `touchstone update` / `touchstone init`. Edit content **outside** the markers to add project-specific reviewer guidance — touchstone will not touch it.
+This block is managed by `touchstone` and refreshes on `touchstone update` / `touchstone init`. Edit content **outside** the markers to add project-specific agent guidance — touchstone will not touch it.
 <!-- touchstone:shared-principles:end -->
 
+## Authoring Guide
+
+You are maintaining a shared engineering platform that provides universal principles, reusable scripts, and a Conductor-backed AI merge/default-branch review hook for Henry's projects. Changes here propagate to downstream projects via `sync-all.sh`, so treat fixes here as platform changes, not isolated repo edits.
+
+### Git Workflow
+
+- Start each code change from a feature branch. Before editing tracked files, run `git branch --show-current`; if it reports `main` or `master`, branch with `git checkout -b <type>/<short-description>`.
+- Keep changes logically grouped. Stage explicit file paths, commit with a concise message, and avoid unrelated refactors.
+- To ship a completed branch, use `bash scripts/open-pr.sh --auto-merge`; it pushes, creates the PR, runs AI review, squash-merges, and syncs the default branch.
+
+### Touchstone-Specific Rules
+
+- Files in `principles/`, `hooks/`, and `scripts/` are touchstone-owned and copied into downstream projects by `update-project.sh`.
+- Files in `templates/` are copied once at bootstrap time and then project-owned; template changes affect new projects only.
+- `bootstrap/new-project.sh`, `bootstrap/update-project.sh`, and `hooks/codex-review.sh` are high-risk. Preserve backup, clean-worktree, branch/commit, skip, and fail-open behavior.
+- All shell must stay portable to macOS with standard tools: `bash`, `git`, `gh`, `sed`, and `awk`.
+
+### Testing
+
+Before pushing, run:
+
+```bash
+for test in tests/test-*.sh; do bash "$test"; done
+```
+
+For focused bootstrap/update changes, at minimum run `bash tests/test-bootstrap.sh` and `bash tests/test-update.sh`, then run the broader suite before shipping.
+
+## Review Guide
 
 You are reviewing pull requests for the **touchstone** repo — a shared engineering platform whose files propagate to all downstream projects. A bug here becomes a bug everywhere.
 
