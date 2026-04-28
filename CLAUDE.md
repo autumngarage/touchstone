@@ -78,9 +78,15 @@ All tests must pass. The bootstrap and update tests exercise the full propagatio
 touchstone/
 ├── principles/     # Universal docs (touchstone-owned, synced to all projects)
 ├── templates/      # Starter files (copied once at bootstrap, then project-owned)
-├── hooks/          # Reusable git hooks (touchstone-owned, synced)
+├── hooks/          # Reusable git hooks (touchstone-owned, synced as scripts/* in projects)
 ├── scripts/        # Helper scripts (touchstone-owned, synced)
 ├── bootstrap/      # new-project.sh, update-project.sh, sync-all.sh
+├── bin/            # The `touchstone` CLI entry point (installed via brew or PATH)
+├── lib/            # Shared bash modules sourced by bin/touchstone and bootstrap (release, install-hooks, ui, colors, auto-update, agents-principles-block, claude-md-principles-ref)
+├── completions/    # Shell completion scripts for the touchstone CLI (bash, zsh)
+├── audits/         # Dated drift/health reports produced by the touchstone-audit skill (never auto-modified)
+├── feedback/       # Dated dogfooding bug reports and usage notes from downstream projects
+├── prototypes/     # Throwaway design experiments (e.g. UI banners) — not shipped to projects
 └── tests/          # Self-tests for bootstrap and update flows
 ```
 
