@@ -421,6 +421,18 @@ if [ "$PROJECT_TYPE" = "swift" ] && [ -f "$TOUCHSTONE_ROOT/templates/swift/.swif
     "$PROJECT_DIR/.swiftlint.yml"
 fi
 
+if [ -f "$TOUCHSTONE_ROOT/templates/GEMINI.md" ]; then
+  gemini_md_was_present=false
+  [ -f "$PROJECT_DIR/GEMINI.md" ] && gemini_md_was_present=true
+  add_profile_project_template_if_missing \
+    "$TOUCHSTONE_ROOT/templates/GEMINI.md" \
+    "$PROJECT_DIR/GEMINI.md"
+  if [ "$DRY_RUN" = false ] && [ "$gemini_md_was_present" = false ] && [ -f "$PROJECT_DIR/GEMINI.md" ]; then
+    escaped_project_name="$(printf '%s' "$(basename "$PROJECT_DIR")" | sed 's/[\\/&]/\\&/g')"
+    sed -i '' "s/{{PROJECT_NAME}}/$escaped_project_name/g" "$PROJECT_DIR/GEMINI.md" 2>/dev/null || true
+  fi
+fi
+
 # Refresh the touchstone-managed shared-principles block inside AGENTS.md.
 # AGENTS.md itself is project-owned, but the sentinel-delimited block is
 # touchstone-owned so non-Claude reviewers (Codex/Gemini) get the engineering
@@ -534,6 +546,7 @@ echo "    Consider reviewing these against the latest touchstone templates:"
 echo "      touchstone diff"
 echo "      diff $TOUCHSTONE_ROOT/templates/CLAUDE.md ./CLAUDE.md"
 echo "      diff $TOUCHSTONE_ROOT/templates/AGENTS.md ./AGENTS.md"
+echo "      diff $TOUCHSTONE_ROOT/templates/GEMINI.md ./GEMINI.md"
 echo "      diff $TOUCHSTONE_ROOT/templates/pre-commit-config.yaml ./.pre-commit-config.yaml"
 echo "      diff $TOUCHSTONE_ROOT/hooks/codex-review.config.example.toml ./.codex-review.toml"
 

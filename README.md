@@ -45,7 +45,7 @@ cd ~/Repos/my-new-project
 bash setup.sh
 ```
 
-Then open `CLAUDE.md` and `AGENTS.md` in your editor and fill in the placeholders. `CLAUDE.md` steers Claude Code. `AGENTS.md` steers Codex and other AGENTS.md-native tools, and also contains the AI review rubric.
+Then open `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` in your editor and fill in the placeholders. `CLAUDE.md` steers Claude Code. `AGENTS.md` steers Codex and other AGENTS.md-native tools, and also contains the AI review rubric. `GEMINI.md` steers Gemini CLI back to the same workflow.
 
 ### Add touchstone to an existing project
 
@@ -167,6 +167,7 @@ When you run `touchstone new`, these files get created in your project:
 **Project-owned** (yours to customize, never auto-updated):
 - `CLAUDE.md` — Claude Code instructions with `{{PLACEHOLDERS}}` to fill in
 - `AGENTS.md` — Codex/agent instructions plus the AI review rubric with project-specific priorities
+- `GEMINI.md` — Gemini CLI instructions that point at the shared authoring/review workflow
 - `.codex-review.toml` — AI review hook config (reviewers, modes, safe/unsafe paths)
 - `.touchstone-config` — Project profile, workflow choices, and optional lint/test/build command overrides
 - `.pre-commit-config.yaml` — Pre-commit hooks including the default-branch AI review gate
