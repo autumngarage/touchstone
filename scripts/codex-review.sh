@@ -115,6 +115,100 @@ if [ "${CODEX_REVIEW_TEST_SENTINEL:-0}" = "1" ]; then
   exit 0
 fi
 
+# --------------------------------------------------------------------------
+# Sentinel-cycle journal detection helpers
+# --------------------------------------------------------------------------
+
+# Returns 0 (truthy) when .sentinel/runs/ contains at least one .md artifact.
+is_sentinel_authored_branch() {
+  [ -d .sentinel/runs ] && find .sentinel/runs -name '*.md' -type f -print -quit | grep -q .
+}
+
+# Prints the path of the most-recently-modified sentinel run artifact.
+find_latest_sentinel_run() {
+  # ls -t is the simplest portable mtime sort; filenames here are controlled.
+  # shellcheck disable=SC2012
+  ls -t .sentinel/runs/*.md 2>/dev/null | head -1
+}
+
+# Extracts the cycle-id frontmatter field from a sentinel run artifact.
+get_cycle_id_from_run() {
+  local run_file="$1"
+  awk '/^---$/{f=1-f; next} f && /^cycle-id:/{print $2; exit}' "$run_file"
+}
+
+# Returns the path of the journal entry whose filename contains cycle-id $1.
+find_journal_entry_by_cycle_id() {
+  local cycle_id="$1"
+  find .cortex/journal -maxdepth 1 -name "*sentinel-cycle-${cycle_id}.md" -type f 2>/dev/null \
+    | head -1
+}
+
+# Returns path to the most recent sentinel-cycle journal entry by mtime.
+find_latest_sentinel_journal_entry() {
+  # shellcheck disable=SC2012
+  ls -t .cortex/journal/*sentinel-cycle*.md 2>/dev/null | head -1
+}
+
+# Returns path to the best-matching sentinel cycle journal entry:
+#   1. If the latest run artifact has a cycle-id field, prefer the journal
+#      entry whose filename contains that id (per sentinel#97 convention).
+#   2. Fall back to the most recently modified sentinel-cycle journal entry.
+find_sentinel_journal_entry() {
+  local run_file cycle_id matched
+  run_file="$(find_latest_sentinel_run)"
+  if [ -n "$run_file" ]; then
+    cycle_id="$(get_cycle_id_from_run "$run_file")"
+    if [ -n "$cycle_id" ]; then
+      matched="$(find_journal_entry_by_cycle_id "$cycle_id")"
+      if [ -n "$matched" ]; then
+        echo "$matched"
+        return 0
+      fi
+    fi
+  fi
+  # Fallback: most recent journal entry by mtime.
+  find_latest_sentinel_journal_entry || true
+}
+
+# Prints the <sentinel-cycle-context> block to stdout when this branch is
+# sentinel-authored and a cycle journal entry can be resolved. Prints nothing
+# (and warns to stderr) when detection fails, the journal is missing, or the
+# journal cannot be read.
+build_sentinel_journal_context() {
+  if ! is_sentinel_authored_branch; then
+    return 0
+  fi
+  local journal_entry
+  journal_entry="$(find_sentinel_journal_entry)"
+  if [ -z "$journal_entry" ] || [ ! -f "$journal_entry" ]; then
+    echo "WARNING: sentinel branch detected but no cycle journal entry found in .cortex/journal/; reviewing without cycle context." >&2
+    return 0
+  fi
+  if [ ! -r "$journal_entry" ]; then
+    echo "WARNING: sentinel journal found at $journal_entry but could not be read; reviewing without cycle context." >&2
+    return 0
+  fi
+  local journal_content
+  if ! journal_content="$(cat "$journal_entry" 2>/dev/null)"; then
+    echo "WARNING: sentinel journal found at $journal_entry but could not be read; reviewing without cycle context." >&2
+    return 0
+  fi
+  printf '<sentinel-cycle-context>\n'
+  printf 'This diff was authored by an autonomous Sentinel cycle. The cycle'"'"'s journal entry follows; read it for the planner'"'"'s reasoning, the coder'"'"'s attempts, and any rejections handled mid-cycle. Review the diff against this context.\n\n'
+  printf '%s\n' "$journal_content"
+  printf '</sentinel-cycle-context>\n'
+}
+
+# Test entry-point for sentinel journal context helpers.
+# When CODEX_REVIEW_TEST_SENTINEL_CONTEXT=1, print the sentinel context block
+# to stdout (empty if detection fails) and exit without running the full
+# review pipeline.
+if [ "${CODEX_REVIEW_TEST_SENTINEL_CONTEXT:-0}" = "1" ]; then
+  build_sentinel_journal_context
+  exit 0
+fi
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 CONFIG_FILE="$REPO_ROOT/.codex-review.toml"
 cd "$REPO_ROOT"
@@ -1518,6 +1612,17 @@ If you emit CODEX_REVIEW_FIXED, briefly describe what you fixed (one line per fi
 
 Do not invent new sentinels. Do not output anything after the sentinel line.
 PROMPT_EOF
+
+# --------------------------------------------------------------------------
+# Inject sentinel-cycle journal context into the reviewer prompt (if any)
+# --------------------------------------------------------------------------
+SENTINEL_JOURNAL_CONTEXT="$(build_sentinel_journal_context)"
+if [ -n "$SENTINEL_JOURNAL_CONTEXT" ]; then
+  REVIEW_PROMPT="${SENTINEL_JOURNAL_CONTEXT}
+
+${REVIEW_PROMPT}"
+  echo "==> Sentinel cycle journal injected into reviewer context."
+fi
 
 # --------------------------------------------------------------------------
 # Clean-review cache
