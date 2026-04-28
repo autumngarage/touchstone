@@ -268,6 +268,11 @@ _status_iter_registry() {
   fi
   local line
   while IFS= read -r line || [ -n "$line" ]; do
+    # Trim leading + trailing whitespace before the empty/comment check —
+    # otherwise a "   " line in the registry falls through to the callback
+    # and renders as "(missing)" because $project_dir doesn't exist.
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
     [ -z "$line" ] && continue
     case "$line" in \#*) continue ;; esac
     "$cb" "$line"
@@ -275,24 +280,33 @@ _status_iter_registry() {
   return 0
 }
 
-# Truncate a string to N visible columns, appending "…" when cut. Keeps the
-# table readable in a 100-column terminal even when a project path is long.
+# Truncate a string to N visible columns, preserving the tail (most informative
+# for paths — the basename matters; the leading directory components don't).
+# Adds a leading "…" when cut. Keeps the table readable in a 100-column
+# terminal even when a project path is long, and keeps the basename visible
+# so tests and humans can both identify which project is which.
 _status_truncate() {
   local s="$1" max="$2"
   if [ "${#s}" -le "$max" ]; then
     printf '%s' "$s"
   else
-    # Reserve 1 column for the ellipsis.
-    printf '%s…' "${s:0:max-1}"
+    # Reserve 1 column for the ellipsis; keep the rightmost (max-1) chars.
+    local keep=$((max - 1))
+    printf '…%s' "${s: -keep}"
   fi
 }
 
-# Replace $HOME prefix with "~" for compact display.
+# Replace $HOME prefix with "~" for compact display. The literal "~" in the
+# printf format is intentional — we're rendering it as text, not asking the
+# shell to expand it (shellcheck SC2088 fires on the tilde-in-quotes pattern
+# precisely because most callers want expansion; here we don't).
 _status_tildefy() {
   local p="$1"
   if [ -n "${HOME:-}" ] && [ "${p#"$HOME"/}" != "$p" ]; then
+    # shellcheck disable=SC2088  # literal tilde for display, not expansion
     printf '~/%s' "${p#"$HOME"/}"
   elif [ "$p" = "$HOME" ]; then
+    # shellcheck disable=SC2088  # literal tilde for display, not expansion
     printf '~'
   else
     printf '%s' "$p"
