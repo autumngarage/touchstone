@@ -8,6 +8,13 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-review-hook.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
+# Prevent the hook's audit log from polluting the user's real
+# ~/.touchstone-review-log when tests run. /dev/null is the documented
+# disable target; per-test overrides (the skiplog-* assertions below)
+# still work because env-prefixed `bash $HOOK` invocations override the
+# exported default for that one subprocess.
+export TOUCHSTONE_REVIEW_LOG=/dev/null
+
 echo "==> Test: review hook parses multiline unsafe_paths"
 
 REPO_DIR="$TEST_DIR/repo"
@@ -1540,20 +1547,38 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-# Same invariant for empty string.
+# Same invariant for empty string. This test is the one that catches
+# the `${VAR:-default}` vs `${VAR-default}` bug: with `:-`, an empty
+# string gets replaced by the default path and the hook silently
+# pollutes whatever $HOME points at. With `-`, an empty string survives
+# and the early-return fires.
 echo "==> Test: TOUCHSTONE_REVIEW_LOG='' disables logging"
 SKIPLOG_REPO8="$TEST_DIR/skiplog-repo8"
 SKIPLOG_BIN8="$TEST_DIR/skiplog-bin8"
+SKIPLOG_FAKEHOME8="$TEST_DIR/skiplog-fakehome8"
+mkdir -p "$SKIPLOG_FAKEHOME8"
 setup_skiplog_repo "$SKIPLOG_REPO8" --with-config-toml
 make_skiplog_bin_with_conductor "$SKIPLOG_BIN8"
 
 run_skiplog_hook "$SKIPLOG_REPO8" "$TEST_DIR/skiplog-out8.txt" \
   env PATH="$SKIPLOG_BIN8:/usr/bin:/bin:/usr/sbin:/sbin" \
+      HOME="$SKIPLOG_FAKEHOME8" \
       TOUCHSTONE_REVIEW_LOG="" \
       CODEX_REVIEW_BASE="HEAD~1" \
       CODEX_REVIEW_DISABLE_CACHE=1 \
   || { echo "FAIL: hook exited non-zero with TOUCHSTONE_REVIEW_LOG=''" >&2; cat "$TEST_DIR/skiplog-out8.txt" >&2; ERRORS=$((ERRORS + 1)); }
-echo "==> PASS: TOUCHSTONE_REVIEW_LOG='' completed without error"
+
+# Negative invariant — no log file should exist anywhere under the
+# fake $HOME. The bug surfaces here: a `:-` expansion would substitute
+# $HOME/.touchstone-review-log for the empty string and write to it.
+if [ -e "$SKIPLOG_FAKEHOME8/.touchstone-review-log" ]; then
+  echo "FAIL: TOUCHSTONE_REVIEW_LOG='' wrote to \$HOME/.touchstone-review-log" >&2
+  echo "  (the \${VAR:-default} pattern silently re-defaults empty strings)" >&2
+  ls -la "$SKIPLOG_FAKEHOME8/" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  echo "==> PASS: TOUCHSTONE_REVIEW_LOG='' wrote nothing to \$HOME"
+fi
 
 if [ "$ERRORS" -eq 0 ]; then
   echo "==> PASS: all review hook assertions passed"

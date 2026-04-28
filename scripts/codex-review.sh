@@ -107,7 +107,12 @@ cd "$REPO_ROOT"
 #   dry-run                  (reserved — bin/touchstone review --dry-run path)
 #   other                    catch-all; detail field names the specific case
 
-TOUCHSTONE_REVIEW_LOG="${TOUCHSTONE_REVIEW_LOG:-$HOME/.touchstone-review-log}"
+# `${VAR-default}` (single dash) substitutes the default ONLY when VAR is
+# unset, NOT when it is an empty string. This preserves the documented
+# behavior that TOUCHSTONE_REVIEW_LOG="" disables logging entirely (the
+# `[ -z "$log_file" ] && return 0` guard below relies on the empty
+# string surviving expansion).
+TOUCHSTONE_REVIEW_LOG="${TOUCHSTONE_REVIEW_LOG-$HOME/.touchstone-review-log}"
 TOUCHSTONE_REVIEW_LOG_MAX_LINES=1000
 
 log_skip_event() {
