@@ -4,7 +4,7 @@
 
 {{PROJECT_DESCRIPTION — describe the project's purpose, your role, and what "good" looks like for this codebase. Be specific about the domain.}}
 
-Codex and other AGENTS.md-native tools read `AGENTS.md`. Keep `CLAUDE.md` and `AGENTS.md` aligned when project workflow, architecture, or hard-won lessons change.
+Codex and other AGENTS.md-native tools read `AGENTS.md`; Gemini CLI reads `GEMINI.md`. Keep `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` aligned when project workflow, architecture, or hard-won lessons change.
 
 ## Engineering Principles (HARD REQUIREMENTS)
 
@@ -40,8 +40,9 @@ Every change — including one-liners, doc tweaks, and version bumps — starts 
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
 2. **Branch — before any edit that might become a commit.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`. Branching is step one, not cleanup.
 3. **Change + commit.** Make the code change, stage explicit file paths, commit with a concise message.
-4. **Ship.** `bash scripts/open-pr.sh --auto-merge` — pushes, creates the PR, runs AI review, squash-merges, and syncs the default branch in one step.
-5. **Clean up.** `git branch -D <feature-branch>` if it still exists locally.
+4. **Conductor review + auto-fix.** From a clean worktree, run `CODEX_REVIEW_FORCE=1 bash scripts/codex-review.sh`. This asks Conductor for code review and safe auto-fixes before merge. If Conductor creates fix commits, let the loop finish; if it blocks, address findings, commit, and rerun until clean.
+5. **Ship.** `bash scripts/open-pr.sh --auto-merge` — pushes, creates the PR, runs the final read-only Conductor merge review, squash-merges, and syncs the default branch in one step.
+6. **Clean up.** `git branch -D <feature-branch>` if it still exists locally.
 
 ### Housekeeping
 

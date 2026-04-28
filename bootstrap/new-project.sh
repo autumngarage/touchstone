@@ -19,8 +19,8 @@
 #   5. Registers the project in ~/.touchstone-projects (for sync-all.sh)
 #   6. Prints next steps
 #
-# After running, fill in the {{PLACEHOLDERS}} in CLAUDE.md and AGENTS.md.
-# CLAUDE.md steers Claude Code; AGENTS.md steers Codex and other agents.
+# After running, fill in the {{PLACEHOLDERS}} in CLAUDE.md, AGENTS.md, and GEMINI.md.
+# CLAUDE.md steers Claude Code; AGENTS.md steers Codex and other agents; GEMINI.md steers Gemini CLI.
 #
 set -euo pipefail
 
@@ -1202,6 +1202,7 @@ echo "==> Copying templates (project-owned, won't be auto-updated):"
 copy_file "$TOUCHSTONE_ROOT/templates/CLAUDE.md" "$PROJECT_DIR/CLAUDE.md"
 CLAUDE_MD_CREATED="$LAST_COPY_CREATED"
 copy_file "$TOUCHSTONE_ROOT/templates/AGENTS.md" "$PROJECT_DIR/AGENTS.md"
+copy_file "$TOUCHSTONE_ROOT/templates/GEMINI.md" "$PROJECT_DIR/GEMINI.md"
 # AGENTS.md is project-owned (copy_file skips when present), but the shared-
 # engineering-principles block inside it is touchstone-owned. Apply or refresh
 # the block so non-Claude reviewers (Codex/Gemini) see the principles too —
@@ -1542,11 +1543,12 @@ MONOREPO="$(detect_monorepo "$PROJECT_DIR")"
 TARGETS="$(detect_targets "$PROJECT_DIR")"
 
 if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ] || [ -n "$INPUT_UNSAFE" ]; then
-  # Apply to CLAUDE.md / AGENTS.md.
+  # Apply to project-owned AI instruction files.
   if [ -n "$INPUT_NAME" ]; then
     ESCAPED_NAME="$(escape_sed_replacement "$INPUT_NAME")"
     sed -i '' "s/{{PROJECT_NAME}}/$ESCAPED_NAME/g" "$PROJECT_DIR/CLAUDE.md" 2>/dev/null || true
     sed -i '' "s/{{PROJECT_NAME}}/$ESCAPED_NAME/g" "$PROJECT_DIR/AGENTS.md" 2>/dev/null || true
+    sed -i '' "s/{{PROJECT_NAME}}/$ESCAPED_NAME/g" "$PROJECT_DIR/GEMINI.md" 2>/dev/null || true
   fi
 
   if [ -n "$INPUT_DESC" ]; then
@@ -1578,7 +1580,7 @@ if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ] || [ -n 
 
   if [ -t 0 ]; then
     echo ""
-    echo "==> Placeholders filled! Review CLAUDE.md and AGENTS.md to add more detail."
+    echo "==> Placeholders filled! Review CLAUDE.md, AGENTS.md, and GEMINI.md to add more detail."
   fi
 fi
 
@@ -1886,8 +1888,8 @@ if [ "$HOOK_INSTALL_STATUS" -eq 2 ]; then
   STEP_NUM=$((STEP_NUM + 1))
 fi
 if [ "$RE_INIT" = false ]; then
-  printf '  %d. Fill in CLAUDE.md and AGENTS.md (architecture, key files, hard-won lessons)\n' "$STEP_NUM"
-  printf '     CLAUDE.md steers Claude Code; AGENTS.md steers Codex and the review rubric.\n'
+  printf '  %d. Fill in CLAUDE.md, AGENTS.md, and GEMINI.md (architecture, key files, hard-won lessons)\n' "$STEP_NUM"
+  printf '     CLAUDE.md steers Claude Code; AGENTS.md steers Codex and the review rubric; GEMINI.md steers Gemini CLI.\n'
   STEP_NUM=$((STEP_NUM + 1))
 fi
 printf '  %d. Install dev tools and project deps: cd %s && bash setup.sh\n' "$STEP_NUM" "$PROJECT_DIR"

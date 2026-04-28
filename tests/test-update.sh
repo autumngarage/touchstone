@@ -178,6 +178,23 @@ fi
 
 assert_not_exists "$PROJECT/CLAUDE.md.bak"
 
+# Existing projects from before Gemini support should receive GEMINI.md once,
+# but the file remains project-owned after that.
+rm -f "$PROJECT/GEMINI.md"
+echo "0000000000000000000000000000000000000001" > "$PROJECT/.touchstone-version"
+commit_all "$PROJECT" "simulate pre-gemini project"
+
+(cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
+
+assert_exists "$PROJECT/GEMINI.md"
+assert_contains "$PROJECT/GEMINI.md" "Gemini CLI"
+assert_not_contains "$PROJECT/GEMINI.md" "{{PROJECT_NAME}}"
+assert_contains "$PROJECT/GEMINI.md" "test-project"
+if ! git -C "$PROJECT" log -1 --name-only --pretty=format: | grep -qx 'GEMINI.md'; then
+  echo "FAIL: update commit must include GEMINI.md when adding the project-owned Gemini instructions" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # --------------------------------------------------------------------------
 # Test 3b: pre-existing AGENTS.md without the shared-principles block gets
 # the touchstone-managed block injected on update. This is the migration

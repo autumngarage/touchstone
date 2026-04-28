@@ -1,6 +1,6 @@
 # AGENTS.md — AI Agent Instructions for {{PROJECT_NAME}}
 
-This file steers Codex and other AGENTS.md-native coding agents. Claude Code also reads `CLAUDE.md`; keep the two files aligned when project-level workflow changes.
+This file steers Codex and other AGENTS.md-native coding agents. Claude Code reads `CLAUDE.md`; Gemini CLI reads `GEMINI.md`. Keep these files aligned when project-level workflow changes.
 
 When coding, follow the authoring guide. When explicitly reviewing a PR or running the AI review hook, use the review guide.
 
@@ -48,8 +48,9 @@ Use the normal lifecycle unless the user asks for a different flow:
 1. Pull/rebase the default branch.
 2. Branch before editing.
 3. Make the change, stage explicit file paths, and commit with a concise message.
-4. Ship with `bash scripts/open-pr.sh --auto-merge`.
-5. Clean up the feature branch if it still exists locally.
+4. From a clean worktree, run `CODEX_REVIEW_FORCE=1 bash scripts/codex-review.sh` so Conductor can review and safely auto-fix before merge. If Conductor creates fix commits, let the loop finish; if it blocks, address findings, commit, and rerun until clean.
+5. Ship with `bash scripts/open-pr.sh --auto-merge`; it creates the PR, runs the final read-only Conductor merge review, squash-merges, and syncs the default branch.
+6. Clean up the feature branch if it still exists locally.
 
 ### Testing
 

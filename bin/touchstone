@@ -1110,6 +1110,7 @@ cmd_diff() {
   local pairs=(
     "CLAUDE.md:templates/CLAUDE.md"
     "AGENTS.md:templates/AGENTS.md"
+    "GEMINI.md:templates/GEMINI.md"
     ".pre-commit-config.yaml:templates/pre-commit-config.yaml"
     ".codex-review.toml:hooks/codex-review.config.example.toml"
   )

@@ -1,6 +1,6 @@
 # Touchstone — AI Agent Instructions
 
-This file steers Codex and other AGENTS.md-native coding agents. Claude Code also reads `CLAUDE.md`; keep the two files aligned when project-level workflow changes. When you are coding, follow the authoring guidance first. When you are explicitly reviewing a PR or running the AI review hook, use the review guide below.
+This file steers Codex and other AGENTS.md-native coding agents. Claude Code reads `CLAUDE.md`; Gemini CLI reads `GEMINI.md`. Keep these files aligned when project-level workflow changes. When you are coding, follow the authoring guidance first. When you are explicitly reviewing a PR or running the AI review hook, use the review guide below.
 
 <!-- touchstone:shared-principles:start -->
 ## Shared Engineering Principles (apply these first)
@@ -39,7 +39,8 @@ You are maintaining a shared engineering platform that provides universal princi
 
 - Start each code change from a feature branch. Before editing tracked files, run `git branch --show-current`; if it reports `main` or `master`, branch with `git checkout -b <type>/<short-description>`.
 - Keep changes logically grouped. Stage explicit file paths, commit with a concise message, and avoid unrelated refactors.
-- To ship a completed branch, use `bash scripts/open-pr.sh --auto-merge`; it pushes, creates the PR, runs AI review, squash-merges, and syncs the default branch.
+- Before shipping, run `CODEX_REVIEW_FORCE=1 bash scripts/codex-review.sh` from a clean worktree to ask Conductor for review and safe auto-fixes. If Conductor commits fixes, let the loop finish; if it blocks, address the findings, commit, and rerun until clean.
+- To ship a completed branch, use `bash scripts/open-pr.sh --auto-merge`; it pushes, creates the PR, runs the final read-only Conductor merge review, squash-merges, and syncs the default branch.
 
 ### Touchstone-Specific Rules
 

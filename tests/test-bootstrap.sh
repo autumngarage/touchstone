@@ -86,6 +86,7 @@ assert_exists "$PROJECT/.git"
 # Templates (project-owned)
 assert_exists "$PROJECT/CLAUDE.md"
 assert_exists "$PROJECT/AGENTS.md"
+assert_exists "$PROJECT/GEMINI.md"
 assert_exists "$PROJECT/.pre-commit-config.yaml"
 assert_exists "$PROJECT/.gitignore"
 assert_exists "$PROJECT/.github/pull_request_template.md"
@@ -175,8 +176,14 @@ if grep -q '{{PROJECT_NAME}}' "$PROJECT/AGENTS.md" 2>/dev/null; then
   echo "FAIL: {{PROJECT_NAME}} must be substituted in AGENTS.md after fresh non-TTY bootstrap" >&2
   ERRORS=$((ERRORS + 1))
 fi
+if grep -q '{{PROJECT_NAME}}' "$PROJECT/GEMINI.md" 2>/dev/null; then
+  echo "FAIL: {{PROJECT_NAME}} must be substituted in GEMINI.md after fresh non-TTY bootstrap" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 assert_contains "$PROJECT/CLAUDE.md" "test-project"
 assert_contains "$PROJECT/AGENTS.md" "test-project"
+assert_contains "$PROJECT/GEMINI.md" "test-project"
+assert_contains "$PROJECT/GEMINI.md" "Conductor"
 # Shared engineering principles must reach non-Claude reviewers via AGENTS.md.
 assert_contains "$PROJECT/AGENTS.md" "touchstone:shared-principles:start"
 assert_contains "$PROJECT/AGENTS.md" "touchstone:shared-principles:end"
