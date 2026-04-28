@@ -4,14 +4,18 @@
 # import-block helper and its end-to-end use through `touchstone init`.
 #
 # Covers:
-#   1. has_principles_ref detection (positive/negative)
+#   1. has_principles_ref detection (complete/partial/absent)
 #   2. inject_principles_block on a CLAUDE.md without imports
 #   3. inject is a no-op when imports already exist (returns 2)
-#   4. decision record/read round-trip via .touchstone-config
-#   5. end-to-end: --claude-principles=yes plants imports + records connected
-#   6. end-to-end: --no-claude-principles records skipped
-#   7. end-to-end: a prior recorded decision is respected (no re-prompt path)
-#   8. end-to-end: existing CLAUDE.md with @principles/ already records `connected`
+#   4. inject completes a partial legacy @principles/ set
+#   5. decision record/read round-trip via .touchstone-config
+#   6. end-to-end: --claude-principles=yes plants imports + records connected
+#   7. end-to-end: partial imports are completed + recorded connected
+#   8. end-to-end: --no-claude-principles records skipped
+#   9. end-to-end: a prior skipped decision is respected (no re-prompt path)
+#  10. end-to-end: prior connected partial imports are completed
+#  11. end-to-end: existing CLAUDE.md with full imports records `connected`
+#  12. end-to-end: prompt mode without a TTY warns but does not record
 #
 set -euo pipefail
 
@@ -41,7 +45,7 @@ assert_eq() {
   [ "$expected" = "$actual" ] || fail "$label: expected '$expected', got '$actual'"
 }
 
-# --- 1. Detection (positive/negative) ---------------------------------------
+# --- 1. Detection (complete/partial/absent) ---------------------------------
 echo "==> 1. has_principles_ref detection"
 mkdir -p "$TEST_DIR/case-detect"
 cat > "$TEST_DIR/case-detect/CLAUDE.md" <<'EOF'
@@ -49,8 +53,22 @@ cat > "$TEST_DIR/case-detect/CLAUDE.md" <<'EOF'
 
 @principles/git-workflow.md
 EOF
+if claude_md_has_principles_ref "$TEST_DIR/case-detect/CLAUDE.md"; then
+  fail "partial @principles/ set should not count as fully connected"
+fi
+if ! claude_md_has_any_principles_ref "$TEST_DIR/case-detect/CLAUDE.md"; then
+  fail "should detect any @principles/ import when present"
+fi
+cat > "$TEST_DIR/case-detect/CLAUDE.md" <<'EOF'
+# Project
+
+@principles/engineering-principles.md
+@principles/pre-implementation-checklist.md
+@principles/documentation-ownership.md
+@principles/git-workflow.md
+EOF
 if ! claude_md_has_principles_ref "$TEST_DIR/case-detect/CLAUDE.md"; then
-  fail "should detect @principles/ when present"
+  fail "should detect full required @principles/ import set"
 fi
 cat > "$TEST_DIR/case-detect/CLAUDE.md" <<'EOF'
 # Project
@@ -58,7 +76,10 @@ cat > "$TEST_DIR/case-detect/CLAUDE.md" <<'EOF'
 No imports here, just plain text.
 EOF
 if claude_md_has_principles_ref "$TEST_DIR/case-detect/CLAUDE.md"; then
-  fail "should NOT detect @principles/ when absent"
+  fail "should NOT detect full @principles/ import set when absent"
+fi
+if claude_md_has_any_principles_ref "$TEST_DIR/case-detect/CLAUDE.md"; then
+  fail "should NOT detect any @principles/ import when absent"
 fi
 
 # --- 2. Inject when imports missing -----------------------------------------
@@ -98,8 +119,32 @@ assert_eq "second-inject rc (already connected)" 2 "$rc"
 sha_after="$(shasum -a 256 "$TEST_DIR/case-inject/CLAUDE.md" | awk '{print $1}')"
 assert_eq "second-inject sha (untouched)" "$sha_before" "$sha_after"
 
-# --- 4. Decision record/read round-trip -------------------------------------
-echo "==> 4. .touchstone-config decision round-trip"
+# --- 4. Inject completes partial legacy imports -----------------------------
+echo "==> 4. inject completes partial legacy imports"
+mkdir -p "$TEST_DIR/case-partial"
+cat > "$TEST_DIR/case-partial/CLAUDE.md" <<'EOF'
+# My Project
+
+Some intro text.
+
+@principles/git-workflow.md
+
+## Existing Notes
+EOF
+claude_md_inject_principles_block "$TEST_DIR/case-partial/CLAUDE.md"
+rc=$?
+assert_eq "partial-inject rc" 0 "$rc"
+assert_contains "$TEST_DIR/case-partial/CLAUDE.md" "@principles/engineering-principles.md"
+assert_contains "$TEST_DIR/case-partial/CLAUDE.md" "@principles/pre-implementation-checklist.md"
+assert_contains "$TEST_DIR/case-partial/CLAUDE.md" "@principles/documentation-ownership.md"
+assert_contains "$TEST_DIR/case-partial/CLAUDE.md" "@principles/git-workflow.md"
+git_ref_count="$(grep -cF '@principles/git-workflow.md' "$TEST_DIR/case-partial/CLAUDE.md")"
+assert_eq "partial-inject does not duplicate existing ref" "1" "$git_ref_count"
+assert_contains "$TEST_DIR/case-partial/CLAUDE.md" "Some intro text."
+assert_contains "$TEST_DIR/case-partial/CLAUDE.md" "## Existing Notes"
+
+# --- 5. Decision record/read round-trip -------------------------------------
+echo "==> 5. .touchstone-config decision round-trip"
 DEC_DIR="$TEST_DIR/case-decision"
 mkdir -p "$DEC_DIR"
 # Empty config: read returns "".
@@ -129,6 +174,15 @@ setup_existing_repo() {
     cat > "$dir/CLAUDE.md" <<'EOF'
 # My Project
 
+@principles/engineering-principles.md
+@principles/pre-implementation-checklist.md
+@principles/documentation-ownership.md
+@principles/git-workflow.md
+EOF
+  elif [ "$with_imports" = partial ]; then
+    cat > "$dir/CLAUDE.md" <<'EOF'
+# My Project
+
 @principles/git-workflow.md
 EOF
   else
@@ -140,8 +194,8 @@ EOF
   fi
 }
 
-# --- 5. mode=yes injects + records connected -------------------------------
-echo "==> 5. ensure_claude_principles_ref yes plants imports"
+# --- 6. mode=yes injects + records connected -------------------------------
+echo "==> 6. ensure_claude_principles_ref yes plants imports"
 E5="$TEST_DIR/e2e-yes"
 setup_existing_repo "$E5" no
 ensure_claude_principles_ref "$E5" yes >/dev/null
@@ -149,16 +203,29 @@ assert_contains "$E5/CLAUDE.md" "@principles/engineering-principles.md"
 assert_contains "$E5/CLAUDE.md" "@principles/pre-implementation-checklist.md"
 assert_contains "$E5/.touchstone-config" "claude_principles_ref=connected"
 
-# --- 6. mode=no records skipped --------------------------------------------
-echo "==> 6. ensure_claude_principles_ref no records skipped"
+# --- 7. partial imports are completed + records connected -------------------
+echo "==> 7. ensure_claude_principles_ref completes partial imports"
+E6="$TEST_DIR/e2e-partial"
+setup_existing_repo "$E6" partial
+ensure_claude_principles_ref "$E6" yes >/dev/null
+assert_contains "$E6/CLAUDE.md" "@principles/engineering-principles.md"
+assert_contains "$E6/CLAUDE.md" "@principles/pre-implementation-checklist.md"
+assert_contains "$E6/CLAUDE.md" "@principles/documentation-ownership.md"
+assert_contains "$E6/CLAUDE.md" "@principles/git-workflow.md"
+git_ref_count="$(grep -cF '@principles/git-workflow.md' "$E6/CLAUDE.md")"
+assert_eq "e2e partial does not duplicate existing ref" "1" "$git_ref_count"
+assert_contains "$E6/.touchstone-config" "claude_principles_ref=connected"
+
+# --- 8. mode=no records skipped --------------------------------------------
+echo "==> 8. ensure_claude_principles_ref no records skipped"
 E6="$TEST_DIR/e2e-no"
 setup_existing_repo "$E6" no
 ensure_claude_principles_ref "$E6" no >/dev/null
 assert_not_contains "$E6/CLAUDE.md" "@principles/pre-implementation-checklist.md"
 assert_contains "$E6/.touchstone-config" "claude_principles_ref=skipped"
 
-# --- 7. prior recorded decision is respected --------------------------------
-echo "==> 7. prior recorded decision is respected"
+# --- 9. prior skipped decision is respected ---------------------------------
+echo "==> 9. prior skipped decision is respected"
 E7="$TEST_DIR/e2e-respect"
 setup_existing_repo "$E7" no
 # Pre-record a "skipped" decision before the helper runs.
@@ -170,8 +237,22 @@ ensure_claude_principles_ref "$E7" yes >/dev/null
 assert_not_contains "$E7/CLAUDE.md" "@principles/pre-implementation-checklist.md"
 assert_contains "$E7/.touchstone-config" "claude_principles_ref=skipped"
 
-# --- 8. existing @principles/ records connected without modification -------
-echo "==> 8. existing @principles/ records connected without modification"
+# --- 10. prior connected partial imports are completed ----------------------
+echo "==> 10. prior connected partial imports are completed"
+E10="$TEST_DIR/e2e-prior-connected-partial"
+setup_existing_repo "$E10" partial
+printf 'claude_principles_ref=connected\n' > "$E10/.touchstone-config"
+ensure_claude_principles_ref "$E10" prompt >/dev/null
+assert_contains "$E10/CLAUDE.md" "@principles/engineering-principles.md"
+assert_contains "$E10/CLAUDE.md" "@principles/pre-implementation-checklist.md"
+assert_contains "$E10/CLAUDE.md" "@principles/documentation-ownership.md"
+assert_contains "$E10/CLAUDE.md" "@principles/git-workflow.md"
+git_ref_count="$(grep -cF '@principles/git-workflow.md' "$E10/CLAUDE.md")"
+assert_eq "prior connected partial does not duplicate existing ref" "1" "$git_ref_count"
+assert_contains "$E10/.touchstone-config" "claude_principles_ref=connected"
+
+# --- 11. existing complete imports record connected without modification ----
+echo "==> 11. existing complete imports record connected without modification"
 E8="$TEST_DIR/e2e-already-connected"
 setup_existing_repo "$E8" yes
 sha_before="$(shasum -a 256 "$E8/CLAUDE.md" | awk '{print $1}')"
@@ -180,8 +261,8 @@ sha_after="$(shasum -a 256 "$E8/CLAUDE.md" | awk '{print $1}')"
 assert_eq "no modification when already connected" "$sha_before" "$sha_after"
 assert_contains "$E8/.touchstone-config" "claude_principles_ref=connected"
 
-# --- 9. mode=prompt with no TTY warns and does NOT record -------------------
-echo "==> 9. prompt mode in non-TTY does not record (allows later interactive)"
+# --- 12. mode=prompt with no TTY warns and does NOT record ------------------
+echo "==> 12. prompt mode in non-TTY does not record (allows later interactive)"
 E9="$TEST_DIR/e2e-prompt-noniteractive"
 setup_existing_repo "$E9" no
 # This script's stdin is non-TTY when run as part of the test suite, so
@@ -199,4 +280,4 @@ if [ "$ERRORS" -gt 0 ]; then
   exit 1
 fi
 echo ""
-echo "==> PASS: claude-md-principles-ref behaves correctly across 9 cases"
+echo "==> PASS: claude-md-principles-ref behaves correctly across 12 cases"

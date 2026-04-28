@@ -28,6 +28,9 @@ fi
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$TOUCHSTONE_ROOT"
 
+# shellcheck source=claude-probe-helper.sh
+source "$TOUCHSTONE_ROOT/tests/claude-probe-helper.sh"
+
 FAILURES=0
 PROBES_RUN=0
 
@@ -42,8 +45,18 @@ run_probe() {
   PROBES_RUN=$((PROBES_RUN + 1))
   echo "==> Probe: $name"
 
-  local response
-  if ! response="$(claude -p "$prompt" 2>&1)"; then
+  local response rc
+  set +e
+  response="$(run_claude_probe "$prompt")"
+  rc=$?
+  set -e
+  if [ "$rc" -eq 124 ]; then
+    echo "  FAIL: claude -p timed out after ${TOUCHSTONE_CLAUDE_PROBE_TIMEOUT:-90}s"
+    echo "$response" | head -20 | sed 's/^/    /'
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [ "$rc" -ne 0 ]; then
     echo "  FAIL: claude -p exited non-zero"
     echo "$response" | head -20 | sed 's/^/    /'
     FAILURES=$((FAILURES + 1))
@@ -75,8 +88,17 @@ run_negative() {
   PROBES_RUN=$((PROBES_RUN + 1))
   echo "==> Probe (negative): $name"
 
-  local response
-  if ! response="$(claude -p "$prompt" 2>&1)"; then
+  local response rc
+  set +e
+  response="$(run_claude_probe "$prompt")"
+  rc=$?
+  set -e
+  if [ "$rc" -eq 124 ]; then
+    echo "  FAIL: claude -p timed out after ${TOUCHSTONE_CLAUDE_PROBE_TIMEOUT:-90}s"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [ "$rc" -ne 0 ]; then
     echo "  FAIL: claude -p exited non-zero"
     FAILURES=$((FAILURES + 1))
     return

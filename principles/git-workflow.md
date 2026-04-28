@@ -67,7 +67,7 @@ Behavior:
 - Auto-fixes only low-risk findings (typos, missing imports, missing null checks, adding logging to empty exception handlers, named constants for unexplained magic numbers); anything that changes business logic or retry/error-handling semantics is reported as a finding for the author to address in another commit before merge
 - Blocks the push for unsafe findings (high-scrutiny paths)
 - Loops up to `max_iterations` times (default 3)
-- Gracefully skips if the Codex CLI isn't installed, printing a visible "review skipped" line so the missing safety boundary isn't silent
+- Gracefully skips if Conductor or the configured provider is unavailable, printing a visible "review skipped" line so the missing safety boundary isn't silent
 
 ## Periodic branch hygiene
 
