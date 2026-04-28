@@ -94,6 +94,7 @@ claude_md_render_principles_block() {
 These imports load every Claude Code session in this repo. The files behind
 them are touchstone-owned and refresh on every `touchstone update`.
 
+@principles/engineering-principles.md
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
 @principles/git-workflow.md
@@ -206,6 +207,7 @@ ensure_claude_principles_ref() {
       _epr_say "lets future touchstone updates ship principle changes automatically."
       echo ""
       echo "  Will inject after the H1:"
+      echo "    @principles/engineering-principles.md"
       echo "    @principles/pre-implementation-checklist.md"
       echo "    @principles/documentation-ownership.md"
       echo "    @principles/git-workflow.md"

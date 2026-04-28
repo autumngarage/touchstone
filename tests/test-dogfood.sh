@@ -10,6 +10,7 @@ set -euo pipefail
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PRE_COMMIT_CONFIG="$TOUCHSTONE_ROOT/.pre-commit-config.yaml"
 TOUCHSTONE_CONFIG="$TOUCHSTONE_ROOT/.touchstone-config"
+AGENT_STEERING_DOGFOOD="$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh"
 
 if [ ! -f "$PRE_COMMIT_CONFIG" ]; then
   echo "FAIL: $PRE_COMMIT_CONFIG is missing" >&2
@@ -54,6 +55,21 @@ fi
 if ! printf '%s' "$VALIDATE_LINE" | grep -q 'tests/test-\*\.sh'; then
   echo "FAIL: validate_command must exercise tests/test-*.sh to cover the full self-test surface" >&2
   echo "      Current value: $VALIDATE_LINE" >&2
+  exit 1
+fi
+
+if [ ! -x "$AGENT_STEERING_DOGFOOD" ]; then
+  echo "FAIL: $AGENT_STEERING_DOGFOOD must exist and be executable" >&2
+  exit 1
+fi
+
+if ! grep -q 'conductor exec' "$AGENT_STEERING_DOGFOOD"; then
+  echo "FAIL: agent steering dogfood must exercise Conductor-routed agents" >&2
+  exit 1
+fi
+
+if ! grep -q 'TOUCHSTONE_DOGFOOD_RESULT' "$AGENT_STEERING_DOGFOOD"; then
+  echo "FAIL: agent steering dogfood must include a machine-check result contract" >&2
   exit 1
 fi
 
