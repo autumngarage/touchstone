@@ -229,16 +229,69 @@ fi
 
 COMMIT_BODY="$(git log -1 --format=%b)"
 
+# ---------------------------------------------------------------------------
+# Sentinel-cycle PR body: when the current branch was authored by a sentinel
+# agent, pull the PR body from the cycle artifact's anchored region instead
+# of from commit messages.  Falls back to commit-message behavior silently if
+# no anchors are found or the run file is missing.
+# ---------------------------------------------------------------------------
+
+# Returns 0 (truthy) when .sentinel/runs/ contains at least one .md artifact.
+is_sentinel_authored_branch() {
+  [ -n "$(find .sentinel/runs -maxdepth 1 -name "*.md" 2>/dev/null | head -1)" ]
+}
+
+# Prints the path of the most-recently-modified sentinel run artifact.
+find_latest_sentinel_run() {
+  # ls -t is the simplest portable mtime sort; filenames here are controlled.
+  # shellcheck disable=SC2012
+  ls -t .sentinel/runs/*.md 2>/dev/null | head -1
+}
+
+# Reads the schema-version from the YAML frontmatter of a run artifact.
+get_schema_version() {
+  local run_file="$1"
+  awk '/^---$/{f=1-f; next} f && /^schema-version:/{print $2; exit}' "$run_file"
+}
+
+# Extracts lines between <!-- pr-body-start --> and <!-- pr-body-end -->.
+extract_pr_body_from_run() {
+  local run_file="$1"
+  awk '/<!-- pr-body-start -->/{flag=1; next} /<!-- pr-body-end -->/{flag=0} flag' "$run_file"
+}
+
+SENTINEL_BODY=""
+if is_sentinel_authored_branch; then
+  SENTINEL_RUN="$(find_latest_sentinel_run)"
+  if [ -n "$SENTINEL_RUN" ]; then
+    SCHEMA_VER="$(get_schema_version "$SENTINEL_RUN")"
+    if [ -n "$SCHEMA_VER" ]; then
+      major="${SCHEMA_VER%%.*}"
+      if [ "$major" -ge 2 ] 2>/dev/null; then
+        echo "WARNING: sentinel run schema-version $SCHEMA_VER not recognized; attempting 1.x extraction" >&2
+      fi
+    fi
+    SENTINEL_BODY="$(extract_pr_body_from_run "$SENTINEL_RUN")"
+    if [ -z "$SENTINEL_BODY" ]; then
+      echo "WARNING: sentinel cycle artifact found but PR-body anchors are empty — falling back to commit-message body" >&2
+    fi
+  fi
+fi
+
 # Build body from commit body + PR template (if present). The unified EXIT
 # trap installed above (`on_exit`) will rm the file regardless of how we exit.
 BODY_FILE="$(mktemp -t touchstone-pr-body.XXXXXX.md)"
 
 {
-  if [ -n "$COMMIT_BODY" ]; then
-    printf '%s\n\n---\n\n' "$COMMIT_BODY"
-  fi
-  if [ -f "$TEMPLATE_PATH" ]; then
-    cat "$TEMPLATE_PATH"
+  if [ -n "$SENTINEL_BODY" ]; then
+    printf '%s\n' "$SENTINEL_BODY"
+  else
+    if [ -n "$COMMIT_BODY" ]; then
+      printf '%s\n\n---\n\n' "$COMMIT_BODY"
+    fi
+    if [ -f "$TEMPLATE_PATH" ]; then
+      cat "$TEMPLATE_PATH"
+    fi
   fi
 } > "$BODY_FILE"
 
