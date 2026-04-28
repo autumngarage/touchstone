@@ -8,6 +8,13 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-review-hook.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
+# Prevent the hook's audit log from polluting the user's real
+# ~/.touchstone-review-log when tests run. /dev/null is the documented
+# disable target; per-test overrides (the skiplog-* assertions below)
+# still work because env-prefixed `bash $HOOK` invocations override the
+# exported default for that one subprocess.
+export TOUCHSTONE_REVIEW_LOG=/dev/null
+
 echo "==> Test: review hook parses multiline unsafe_paths"
 
 REPO_DIR="$TEST_DIR/repo"
@@ -1203,6 +1210,374 @@ else
   echo "FAIL: expected JSON summary file" >&2
   cat "$JSON_SUMMARY" 2>/dev/null >&2
   ERRORS=$((ERRORS + 1))
+fi
+
+# ==========================================================================
+# Skip-event audit log
+# ==========================================================================
+#
+# hooks/codex-review.sh writes one TSV line per skip path and per
+# successful run to ~/.touchstone-review-log (overridable via
+# TOUCHSTONE_REVIEW_LOG). The audit lets the user see how often the AI
+# review safety net falls open silently — see "No silent failures" in
+# principles/engineering-principles.md.
+#
+# Each assertion isolates the log file via TOUCHSTONE_REVIEW_LOG so the
+# tests never touch the real ~/.touchstone-review-log.
+
+setup_skiplog_repo() {
+  # setup_skiplog_repo <dir> [--with-config-toml]
+  local dir="$1"; shift || true
+  mkdir -p "$dir"
+  git -C "$dir" init -q
+  git -C "$dir" config user.email t@t
+  git -C "$dir" config user.name t
+  printf 'base\n' > "$dir/file.txt"
+  if [ "${1:-}" = "--with-config-toml" ]; then
+    cat > "$dir/.codex-review.toml" <<'EOF'
+[review]
+enabled = true
+reviewer = "conductor"
+[review.conductor]
+prefer = "best"
+effort = "max"
+EOF
+  fi
+  git -C "$dir" add . && git -C "$dir" commit -qm init
+  printf 'change\n' >> "$dir/file.txt"
+  git -C "$dir" add . && git -C "$dir" commit -qm change
+}
+
+make_skiplog_bin_with_conductor() {
+  local dir="$1"
+  mkdir -p "$dir"
+  cat > "$dir/gh" <<'EOF'
+#!/usr/bin/env bash
+echo main
+EOF
+  cat > "$dir/conductor" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "doctor" ]; then
+  printf '{"providers":[{"configured":true}]}\n'; exit 0
+fi
+printf 'CODEX_REVIEW_CLEAN\n'
+EOF
+  chmod +x "$dir/gh" "$dir/conductor"
+}
+
+make_skiplog_bin_without_conductor() {
+  local dir="$1"
+  mkdir -p "$dir"
+  cat > "$dir/gh" <<'EOF'
+#!/usr/bin/env bash
+echo main
+EOF
+  chmod +x "$dir/gh"
+}
+
+run_skiplog_hook() {
+  local repo="$1"; shift
+  local sink="$1"; shift
+  (
+    cd "$repo"
+    "$@" bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$sink" 2>&1
+  )
+}
+
+assert_skiplog_last_reason() {
+  local label="$1" log="$2" expected="$3"
+
+  if [ ! -s "$log" ]; then
+    echo "FAIL [$label]: log file empty or missing: $log" >&2
+    ERRORS=$((ERRORS + 1))
+    return
+  fi
+
+  local last
+  last="$(tail -n 1 "$log")"
+
+  local tab_count
+  tab_count="$(printf '%s' "$last" | tr -cd '\t' | wc -c | tr -d ' ')"
+  if [ "$tab_count" != "5" ]; then
+    echo "FAIL [$label]: expected 6 tab-separated fields (5 tabs), got $tab_count" >&2
+    echo "  line: $last" >&2
+    ERRORS=$((ERRORS + 1))
+    return
+  fi
+
+  local reason
+  reason="$(printf '%s' "$last" | awk -F'\t' '{print $5}')"
+  if [ "$reason" != "$expected" ]; then
+    echo "FAIL [$label]: expected reason '$expected', got '$reason'" >&2
+    echo "  line: $last" >&2
+    ERRORS=$((ERRORS + 1))
+    return
+  fi
+
+  echo "==> PASS [$label]: logged reason=$expected"
+}
+
+# ---------------------------------------------------------------------------
+# Test: conductor-missing — PATH stripped of `conductor`
+# ---------------------------------------------------------------------------
+echo "==> Test: conductor-missing skip path logs reason=conductor-missing"
+SKIPLOG_REPO1="$TEST_DIR/skiplog-repo1"
+SKIPLOG_BIN1="$TEST_DIR/skiplog-bin1"
+SKIPLOG_LOG1="$TEST_DIR/skiplog-log1.tsv"
+setup_skiplog_repo "$SKIPLOG_REPO1" --with-config-toml
+make_skiplog_bin_without_conductor "$SKIPLOG_BIN1"
+
+run_skiplog_hook "$SKIPLOG_REPO1" "$TEST_DIR/skiplog-out1.txt" \
+  env PATH="$SKIPLOG_BIN1:/usr/bin:/bin:/usr/sbin:/sbin" \
+      TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG1" \
+      CODEX_REVIEW_BASE="HEAD~1" \
+      CODEX_REVIEW_DISABLE_CACHE=1 \
+  || true
+assert_skiplog_last_reason "conductor-missing" "$SKIPLOG_LOG1" "conductor-missing"
+
+# ---------------------------------------------------------------------------
+# Test: config-disabled — [review].enabled=false in .codex-review.toml
+# ---------------------------------------------------------------------------
+echo "==> Test: config-disabled skip path logs reason=config-disabled"
+SKIPLOG_REPO2="$TEST_DIR/skiplog-repo2"
+SKIPLOG_BIN2="$TEST_DIR/skiplog-bin2"
+SKIPLOG_LOG2="$TEST_DIR/skiplog-log2.tsv"
+mkdir -p "$SKIPLOG_REPO2"
+git -C "$SKIPLOG_REPO2" init -q
+git -C "$SKIPLOG_REPO2" config user.email t@t
+git -C "$SKIPLOG_REPO2" config user.name t
+cat > "$SKIPLOG_REPO2/.codex-review.toml" <<'EOF'
+[review]
+enabled = false
+reviewer = "conductor"
+EOF
+printf 'a\n' > "$SKIPLOG_REPO2/f.txt"
+git -C "$SKIPLOG_REPO2" add . && git -C "$SKIPLOG_REPO2" commit -qm init
+printf 'b\n' >> "$SKIPLOG_REPO2/f.txt"
+git -C "$SKIPLOG_REPO2" add . && git -C "$SKIPLOG_REPO2" commit -qm change
+make_skiplog_bin_with_conductor "$SKIPLOG_BIN2"
+
+run_skiplog_hook "$SKIPLOG_REPO2" "$TEST_DIR/skiplog-out2.txt" \
+  env PATH="$SKIPLOG_BIN2:/usr/bin:/bin:/usr/sbin:/sbin" \
+      TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG2" \
+      CODEX_REVIEW_BASE="HEAD~1" \
+      CODEX_REVIEW_DISABLE_CACHE=1 \
+  || true
+assert_skiplog_last_reason "config-disabled" "$SKIPLOG_LOG2" "config-disabled"
+
+# ---------------------------------------------------------------------------
+# Test: review-disabled-by-user — CODEX_REVIEW_ENABLED=false at env layer
+#
+# CODEX_REVIEW_ENABLED is the canonical user-facing skip toggle today —
+# a per-push override that wins over the TOML setting.
+# ---------------------------------------------------------------------------
+echo "==> Test: CODEX_REVIEW_ENABLED=false logs reason=review-disabled-by-user"
+SKIPLOG_REPO3="$TEST_DIR/skiplog-repo3"
+SKIPLOG_BIN3="$TEST_DIR/skiplog-bin3"
+SKIPLOG_LOG3="$TEST_DIR/skiplog-log3.tsv"
+setup_skiplog_repo "$SKIPLOG_REPO3" --with-config-toml
+make_skiplog_bin_with_conductor "$SKIPLOG_BIN3"
+
+run_skiplog_hook "$SKIPLOG_REPO3" "$TEST_DIR/skiplog-out3.txt" \
+  env PATH="$SKIPLOG_BIN3:/usr/bin:/bin:/usr/sbin:/sbin" \
+      TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG3" \
+      CODEX_REVIEW_ENABLED=false \
+      CODEX_REVIEW_BASE="HEAD~1" \
+      CODEX_REVIEW_DISABLE_CACHE=1 \
+  || true
+assert_skiplog_last_reason "review-disabled-by-user" "$SKIPLOG_LOG3" "review-disabled-by-user"
+
+# ---------------------------------------------------------------------------
+# Test: ran — successful review with mock conductor returning CLEAN
+#
+# The denominator the audit needs: skip-rate = skips / (skips + ran).
+# ---------------------------------------------------------------------------
+echo "==> Test: successful review logs reason=ran (audit denominator)"
+SKIPLOG_REPO4="$TEST_DIR/skiplog-repo4"
+SKIPLOG_BIN4="$TEST_DIR/skiplog-bin4"
+SKIPLOG_LOG4="$TEST_DIR/skiplog-log4.tsv"
+setup_skiplog_repo "$SKIPLOG_REPO4" --with-config-toml
+make_skiplog_bin_with_conductor "$SKIPLOG_BIN4"
+
+run_skiplog_hook "$SKIPLOG_REPO4" "$TEST_DIR/skiplog-out4.txt" \
+  env PATH="$SKIPLOG_BIN4:/usr/bin:/bin:/usr/sbin:/sbin" \
+      TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG4" \
+      CODEX_REVIEW_BASE="HEAD~1" \
+      CODEX_REVIEW_DISABLE_CACHE=1 \
+  || { echo "FAIL: hook exited non-zero on a clean review" >&2; cat "$TEST_DIR/skiplog-out4.txt" >&2; ERRORS=$((ERRORS + 1)); }
+assert_skiplog_last_reason "ran" "$SKIPLOG_LOG4" "ran"
+
+# ---------------------------------------------------------------------------
+# Test: malformed .codex-review.toml does not break the hook
+#
+# Today's TOML parser is permissive — it skips lines it doesn't recognize.
+# The regression we care about is: a malformed TOML must still leave the
+# audit log in a consistent state — the hook reaches SOME log call rather
+# than crashing without writing anything.
+# ---------------------------------------------------------------------------
+echo "==> Test: malformed .codex-review.toml does not crash logging"
+SKIPLOG_REPO5="$TEST_DIR/skiplog-repo5"
+SKIPLOG_BIN5="$TEST_DIR/skiplog-bin5"
+SKIPLOG_LOG5="$TEST_DIR/skiplog-log5.tsv"
+mkdir -p "$SKIPLOG_REPO5"
+git -C "$SKIPLOG_REPO5" init -q
+git -C "$SKIPLOG_REPO5" config user.email t@t
+git -C "$SKIPLOG_REPO5" config user.name t
+cat > "$SKIPLOG_REPO5/.codex-review.toml" <<'EOF'
+[review
+this-is = not = valid =
+=== no key here ===
+EOF
+printf 'a\n' > "$SKIPLOG_REPO5/f.txt"
+git -C "$SKIPLOG_REPO5" add . && git -C "$SKIPLOG_REPO5" commit -qm init
+printf 'b\n' >> "$SKIPLOG_REPO5/f.txt"
+git -C "$SKIPLOG_REPO5" add . && git -C "$SKIPLOG_REPO5" commit -qm change
+make_skiplog_bin_with_conductor "$SKIPLOG_BIN5"
+
+run_skiplog_hook "$SKIPLOG_REPO5" "$TEST_DIR/skiplog-out5.txt" \
+  env PATH="$SKIPLOG_BIN5:/usr/bin:/bin:/usr/sbin:/sbin" \
+      TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG5" \
+      CODEX_REVIEW_BASE="HEAD~1" \
+      CODEX_REVIEW_DISABLE_CACHE=1 \
+  || true
+if [ -s "$SKIPLOG_LOG5" ]; then
+  echo "==> PASS: malformed TOML still produced a log entry"
+else
+  echo "FAIL: malformed TOML left log file empty" >&2
+  cat "$TEST_DIR/skiplog-out5.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Test: rollover at 1000 entries
+# ---------------------------------------------------------------------------
+echo "==> Test: log rollover caps the file at 1000 entries"
+SKIPLOG_REPO6="$TEST_DIR/skiplog-repo6"
+SKIPLOG_BIN6="$TEST_DIR/skiplog-bin6"
+SKIPLOG_LOG6="$TEST_DIR/skiplog-log6.tsv"
+setup_skiplog_repo "$SKIPLOG_REPO6" --with-config-toml
+make_skiplog_bin_with_conductor "$SKIPLOG_BIN6"
+
+: > "$SKIPLOG_LOG6"
+i=0
+while [ "$i" -lt 1000 ]; do
+  printf 'seed-ts\trepo\tbranch\tsha\tseed\trow-%s\n' "$i" >> "$SKIPLOG_LOG6"
+  i=$((i + 1))
+done
+
+seeded_count="$(wc -l < "$SKIPLOG_LOG6" | tr -d ' ')"
+if [ "$seeded_count" != "1000" ]; then
+  echo "FAIL: seeding sanity check — expected 1000 lines, got $seeded_count" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+run_skiplog_hook "$SKIPLOG_REPO6" "$TEST_DIR/skiplog-out6.txt" \
+  env PATH="$SKIPLOG_BIN6:/usr/bin:/bin:/usr/sbin:/sbin" \
+      TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG6" \
+      CODEX_REVIEW_BASE="HEAD~1" \
+      CODEX_REVIEW_DISABLE_CACHE=1 \
+  || { echo "FAIL: hook exited non-zero in rollover test" >&2; cat "$TEST_DIR/skiplog-out6.txt" >&2; ERRORS=$((ERRORS + 1)); }
+
+final_count="$(wc -l < "$SKIPLOG_LOG6" | tr -d ' ')"
+if [ "$final_count" = "1000" ]; then
+  echo "==> PASS: log capped at 1000 entries after rollover"
+else
+  echo "FAIL: expected 1000 lines after rollover, got $final_count" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+if grep -q '	row-0$' "$SKIPLOG_LOG6"; then
+  echo "FAIL: oldest entry (row-0) was not evicted on rollover" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+last_reason="$(tail -n 1 "$SKIPLOG_LOG6" | awk -F'\t' '{print $5}')"
+if [ "$last_reason" = "seed" ]; then
+  echo "FAIL: tail of log is still a seed entry — new event not appended" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Test: format invariant — every line is exactly 6 tab-separated fields
+# ---------------------------------------------------------------------------
+echo "==> Test: every log entry is exactly 6 tab-separated fields"
+SKIPLOG_FORMAT_OK=true
+for log in "$SKIPLOG_LOG1" "$SKIPLOG_LOG2" "$SKIPLOG_LOG3" "$SKIPLOG_LOG4" "$SKIPLOG_LOG6"; do
+  [ -s "$log" ] || continue
+  if ! awk -F'\t' 'NF != 6 { exit 1 }' "$log"; then
+    echo "FAIL: $log has lines that are not 6-field TSV" >&2
+    SKIPLOG_FORMAT_OK=false
+    ERRORS=$((ERRORS + 1))
+  fi
+done
+if [ "$SKIPLOG_FORMAT_OK" = true ]; then
+  echo "==> PASS: all logs are 6-field TSV"
+fi
+
+# ---------------------------------------------------------------------------
+# Test: TOUCHSTONE_REVIEW_LOG=/dev/null and ="" disable logging cleanly
+#
+# log_skip_event has two early-return paths: empty string and /dev/null.
+# Both must leave no trace and let the hook complete normally.
+# ---------------------------------------------------------------------------
+echo "==> Test: TOUCHSTONE_REVIEW_LOG=/dev/null disables logging"
+SKIPLOG_REPO7="$TEST_DIR/skiplog-repo7"
+SKIPLOG_BIN7="$TEST_DIR/skiplog-bin7"
+SKIPLOG_PROBE7="$TEST_DIR/skiplog-probe7"
+setup_skiplog_repo "$SKIPLOG_REPO7" --with-config-toml
+make_skiplog_bin_with_conductor "$SKIPLOG_BIN7"
+
+# Pre-create the would-be sentinel path. If the hook tried to log to a
+# non-/dev/null target by mistake, the file's mtime would advance.
+: > "$SKIPLOG_PROBE7"
+SKIPLOG_PROBE7_MTIME_BEFORE="$(stat -f %m "$SKIPLOG_PROBE7" 2>/dev/null || stat -c %Y "$SKIPLOG_PROBE7")"
+
+run_skiplog_hook "$SKIPLOG_REPO7" "$TEST_DIR/skiplog-out7.txt" \
+  env PATH="$SKIPLOG_BIN7:/usr/bin:/bin:/usr/sbin:/sbin" \
+      TOUCHSTONE_REVIEW_LOG=/dev/null \
+      CODEX_REVIEW_BASE="HEAD~1" \
+      CODEX_REVIEW_DISABLE_CACHE=1 \
+  || { echo "FAIL: hook exited non-zero with TOUCHSTONE_REVIEW_LOG=/dev/null" >&2; cat "$TEST_DIR/skiplog-out7.txt" >&2; ERRORS=$((ERRORS + 1)); }
+
+SKIPLOG_PROBE7_MTIME_AFTER="$(stat -f %m "$SKIPLOG_PROBE7" 2>/dev/null || stat -c %Y "$SKIPLOG_PROBE7")"
+if [ "$SKIPLOG_PROBE7_MTIME_BEFORE" = "$SKIPLOG_PROBE7_MTIME_AFTER" ]; then
+  echo "==> PASS: TOUCHSTONE_REVIEW_LOG=/dev/null wrote nothing detectable"
+else
+  echo "FAIL: probe file mtime changed despite /dev/null target" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Same invariant for empty string. This test is the one that catches
+# the `${VAR:-default}` vs `${VAR-default}` bug: with `:-`, an empty
+# string gets replaced by the default path and the hook silently
+# pollutes whatever $HOME points at. With `-`, an empty string survives
+# and the early-return fires.
+echo "==> Test: TOUCHSTONE_REVIEW_LOG='' disables logging"
+SKIPLOG_REPO8="$TEST_DIR/skiplog-repo8"
+SKIPLOG_BIN8="$TEST_DIR/skiplog-bin8"
+SKIPLOG_FAKEHOME8="$TEST_DIR/skiplog-fakehome8"
+mkdir -p "$SKIPLOG_FAKEHOME8"
+setup_skiplog_repo "$SKIPLOG_REPO8" --with-config-toml
+make_skiplog_bin_with_conductor "$SKIPLOG_BIN8"
+
+run_skiplog_hook "$SKIPLOG_REPO8" "$TEST_DIR/skiplog-out8.txt" \
+  env PATH="$SKIPLOG_BIN8:/usr/bin:/bin:/usr/sbin:/sbin" \
+      HOME="$SKIPLOG_FAKEHOME8" \
+      TOUCHSTONE_REVIEW_LOG="" \
+      CODEX_REVIEW_BASE="HEAD~1" \
+      CODEX_REVIEW_DISABLE_CACHE=1 \
+  || { echo "FAIL: hook exited non-zero with TOUCHSTONE_REVIEW_LOG=''" >&2; cat "$TEST_DIR/skiplog-out8.txt" >&2; ERRORS=$((ERRORS + 1)); }
+
+# Negative invariant — no log file should exist anywhere under the
+# fake $HOME. The bug surfaces here: a `:-` expansion would substitute
+# $HOME/.touchstone-review-log for the empty string and write to it.
+if [ -e "$SKIPLOG_FAKEHOME8/.touchstone-review-log" ]; then
+  echo "FAIL: TOUCHSTONE_REVIEW_LOG='' wrote to \$HOME/.touchstone-review-log" >&2
+  echo "  (the \${VAR:-default} pattern silently re-defaults empty strings)" >&2
+  ls -la "$SKIPLOG_FAKEHOME8/" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  echo "==> PASS: TOUCHSTONE_REVIEW_LOG='' wrote nothing to \$HOME"
 fi
 
 if [ "$ERRORS" -eq 0 ]; then
