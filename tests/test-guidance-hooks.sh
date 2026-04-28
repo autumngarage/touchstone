@@ -122,6 +122,34 @@ assert "TOUCHSTONE_EMERGENCY=1 allows commit on main" "0" "$EXIT_OVERRIDE"
 assert "does not match 'git commit-tree' (plumbing)" "0" \
   "$(run_hook "$BRANCH_GUARD" "$(mkjson "git commit-tree -p HEAD")")"
 
+# 7. worktree-aware: `git -C <worktree> commit` while the parent agent's
+#    cwd is on main but the worktree is on a feature branch — should be
+#    allowed. The previous version checked the parent cwd's branch and
+#    blocked, forcing operators to use `git -C <path>` as an exploit (the
+#    earlier regex didn't match `-C path` between `git` and `commit`,
+#    silently bypassing the guard). This test verifies the legitimate
+#    parse: the hook follows `-C <path>` to the right repo.
+WORKTREE="$(mktemp -d -t touchstone-hook-test-wt.XXXXXX)"
+trap 'rm -rf "$TMPDIR" "$WORKTREE"' EXIT
+git -C "$TMPDIR" branch --quiet feat/wt-test 2>/dev/null || true
+git -C "$TMPDIR" worktree add --quiet "$WORKTREE" feat/wt-test
+# Parent cwd is on main; commit targets the feat/wt-test worktree.
+git -C "$TMPDIR" checkout --quiet main
+WT_JSON="$(jq -nc \
+  --arg cmd "git -C $WORKTREE commit -m 'wip'" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "allows 'git -C <worktree>' commit when worktree is on a feature branch" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$WT_JSON")"
+
+# 8. lowercase -c (config override, not change-directory) must NOT bypass
+#    the guard. Regression-guard for case-sensitivity of the -C parsing —
+#    if someone writes the regex with [Cc] it will treat
+#    `git -c core.editor=foo commit` as "directed at a different repo"
+#    and silently allow on main.
+assert "lowercase -c (config flag) does not bypass the guard on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "git -c core.editor=foo commit -m 'wip'")")"
+
 # ----------------------------------------------------------------------
 # emergency-disclosure
 # ----------------------------------------------------------------------
