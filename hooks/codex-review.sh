@@ -155,7 +155,10 @@ log_skip_event() {
   # replacing. `wc -l` and `tail -n N` are POSIX-portable (no GNU-only
   # flags) so this works on BSD/macOS without coreutils.
   if [ -f "$log_file" ]; then
-    line_count="$(wc -l < "$log_file" 2>/dev/null | tr -d ' ')"
+    # Guard against `set -euo pipefail` propagating a failed pipeline up
+    # to the hook's exit code — log_skip_event must never block a push,
+    # even on an unreadable log file or a TOCTOU race against rotation.
+    line_count="$(wc -l < "$log_file" 2>/dev/null | tr -d ' ')" || line_count=0
     line_count="${line_count:-0}"
     if [ "$line_count" -ge "$TOUCHSTONE_REVIEW_LOG_MAX_LINES" ]; then
       keep_lines=$((TOUCHSTONE_REVIEW_LOG_MAX_LINES - 1))
