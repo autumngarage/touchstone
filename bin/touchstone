@@ -12,7 +12,8 @@
 #   touchstone update --check             Report whether current project needs update
 #   touchstone sync                       Update all registered projects
 #   touchstone sync --pull-first          Pull latest touchstone, then sync all projects
-#   touchstone status                     Dashboard — health of all registered projects
+#   touchstone status                     Show status of the current project
+#   touchstone status --all               Show version distribution across registered projects
 #   touchstone version                    Show installed version
 #   touchstone doctor                     Check health of touchstone installation
 #   touchstone help                       Show this help
@@ -41,6 +42,7 @@ source "$TOUCHSTONE_ROOT/lib/auto-update.sh"
 source "$TOUCHSTONE_ROOT/lib/colors.sh"
 source "$TOUCHSTONE_ROOT/lib/ui.sh"
 source "$TOUCHSTONE_ROOT/lib/claude-md-principles-ref.sh"
+source "$TOUCHSTONE_ROOT/lib/status.sh"
 
 # Auto-update check (throttled, non-blocking on failure).
 touchstone_auto_update || true
@@ -313,72 +315,35 @@ cmd_version() {
 }
 
 cmd_status() {
-  local version
-  version="$(touchstone_version_str)"
-  local current_id
-  current_id="$(touchstone_current_id)"
+  # Two views, one entrypoint:
+  #   touchstone status         -> single-project block for $(pwd)
+  #   touchstone status --all   -> registry walk with the version-distribution table
+  #
+  # This intentionally narrows the old `touchstone status` (which always
+  # walked the registry). The registry view moves to `--all` so the bare
+  # command is useful inside any one project — the more common ask. The
+  # old behavior remains reachable via `--all`; `touchstone list` is
+  # the registry-only listing without the version-distribution math.
+  local mode="project"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --all|-a) mode="all"; shift ;;
+      -h|--help)
+        echo "Usage: touchstone status [--all]"
+        echo "  (no flag)  Show status for the current working directory"
+        echo "  --all      Show version distribution across registered projects"
+        return 0
+        ;;
+      *) echo "ERROR: unknown argument '$1'" >&2; exit 1 ;;
+    esac
+  done
 
-  tk_header "Touchstone Status — v${version}"
-
-  local projects_file="$HOME/.touchstone-projects"
-  if [ ! -f "$projects_file" ]; then
-    tk_warn "No projects registered. Run: touchstone new <dir>"
-    return
+  if [ "$mode" = "all" ]; then
+    status_print_all
+    return $?
   fi
 
-  while IFS= read -r project_dir; do
-    [ -z "$project_dir" ] && continue
-    [[ "$project_dir" == \#* ]] && continue
-
-    local name
-    name="$(basename "$project_dir")"
-
-    if [ ! -d "$project_dir" ]; then
-      printf "  ${RED}✗${RESET} ${BOLD}%-20s${RESET} directory not found\n" "$name"
-      continue
-    fi
-
-    # Gather project state.
-    local proj_version
-    proj_version="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
-    local synced=""
-    if [ "$proj_version" = "$current_id" ]; then
-      synced="${GREEN}synced${RESET}"
-    else
-      synced="${YELLOW}needs sync${RESET}"
-    fi
-
-    # Git state.
-    local git_status=""
-    if [ -d "$project_dir/.git" ]; then
-      local dirty=""
-      local unpushed=""
-      local branch=""
-      branch="$(git -C "$project_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")"
-
-      if [ -n "$(git -C "$project_dir" status --porcelain 2>/dev/null)" ]; then
-        dirty="${YELLOW}dirty${RESET}"
-      else
-        dirty="${GREEN}clean${RESET}"
-      fi
-
-      local ahead
-      ahead="$(git -C "$project_dir" rev-list --count '@{u}..HEAD' 2>/dev/null || echo "?")"
-      if [ "$ahead" = "?" ] || [ "$ahead" = "0" ]; then
-        unpushed=""
-      else
-        unpushed=" ${YELLOW}${ahead} unpushed${RESET}"
-      fi
-
-      git_status="${dirty}${unpushed} ${DIM}(${branch})${RESET}"
-    else
-      git_status="${DIM}not a git repo${RESET}"
-    fi
-
-    printf "  ${GREEN}✓${RESET} ${BOLD}%-20s${RESET} %b  %b\n" "$name" "$synced" "$git_status"
-  done < "$projects_file"
-
-  echo ""
+  status_print_project "$(pwd)"
 }
 
 cmd_doctor_project() {
@@ -1386,7 +1351,8 @@ cmd_help() {
   echo "  ${BOLD}Registry commands:${RESET}"
   printf "    ${BOLD}touchstone list${RESET}                   Show registered projects\n"
   printf "    ${BOLD}touchstone unregister${RESET} <name>      Remove a project from registry\n"
-  printf "    ${BOLD}touchstone status${RESET}                 Dashboard — all projects at a glance\n"
+  printf "    ${BOLD}touchstone status${RESET}                 Show status of the current project\n"
+  printf "    ${BOLD}touchstone status${RESET} --all           Version distribution across registered projects\n"
   echo ""
   echo "  ${BOLD}Touchstone commands:${RESET}"
   printf "    ${BOLD}touchstone doctor${RESET}                 Check installation health\n"
@@ -1419,7 +1385,7 @@ case "$COMMAND" in
   migrate-review-config) cmd_migrate_review_config "$@" ;;
   review)       cmd_review "$@" ;;
   sync)         cmd_sync "$@" ;;
-  status)       cmd_status ;;
+  status)       cmd_status "$@" ;;
   list|ls)      cmd_list ;;
   unregister)   cmd_unregister "$@" ;;
   diff)         cmd_diff ;;
