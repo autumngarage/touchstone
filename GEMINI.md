@@ -4,6 +4,12 @@ Gemini CLI should follow the same project contract as Claude and Codex.
 
 Read `AGENTS.md` before coding. Follow its Authoring Guide for implementation work and its Review Guide when explicitly reviewing a PR or running the AI review hook. Claude-specific context may live in `CLAUDE.md`, but `AGENTS.md` is the shared source for agent workflow and review priorities.
 
+## Agent Roles And Fallbacks
+
+Gemini CLI is a **driving CLI** in this repo: it owns file edits, git state, tests, commits, PR creation, Conductor review invocation, and merge helper execution. Claude Code and Codex are equivalent fallback drivers because all three load the same managed principles and delivery workflow.
+
+Conductor is the **worker/reviewer router**. The driving CLI may invoke Conductor for code review or bounded model work, and Conductor can fall back across configured providers such as Claude, Codex, Gemini, or local models. Conductor provider fallback does not replace the driving CLI's responsibility for the branch → PR → review → automerge workflow.
+
 ## Delivery Lifecycle
 
 Drive this automatically unless the user asks for a different flow:

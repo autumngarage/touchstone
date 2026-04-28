@@ -238,6 +238,25 @@ Automatically reviews code before it reaches the default branch. In Touchstone 2
 
 Configure per-project behavior in `.codex-review.toml`. Write your coding-agent guidance and review rubric in `AGENTS.md`. See [hooks/README.md](hooks/README.md) for reviewer modes, caching, and fail-open behavior. Peer review returns in 2.1 via `conductor call --exclude <primary>`.
 
+### Agent Steering Dogfood
+
+Maintainers can test whether the generated Claude, Codex, and Gemini guidance actually steers agents to the required workflow:
+
+```bash
+scripts/dogfood-agent-steering.sh --providers auto
+scripts/dogfood-agent-steering.sh --providers auto,claude,codex,gemini --keep
+```
+
+The harness bootstraps a temporary Touchstone project, asks Conductor-routed agents to inspect the real steering files, and fails unless they infer the required branch-before-edit, PR creation, Conductor review, and `scripts/open-pr.sh --auto-merge` flow. It is not part of `tests/test-*.sh` because it can spend provider quota.
+
+The static contract tests still run in the normal self-test suite:
+
+```bash
+bash tests/test-agent-steering-contract.sh
+```
+
+That test guards the interpretability contract without spending model quota: Claude, Codex, and Gemini are interchangeable driving CLIs; Conductor is the worker/reviewer router with provider fallback; all drivers must converge on the same managed principles and branch → PR → review → automerge lifecycle.
+
 ### Claude Code Skills
 
 Touchstone owns Claude Code project skills under `.claude/skills/` for Touchstone maintenance work. These are part of this repo, not files that Touchstone copies into every downstream project:

@@ -76,6 +76,7 @@ EOF
 claude_md_inject_principles_block "$TEST_DIR/case-inject/CLAUDE.md"
 rc=$?
 assert_eq "inject rc" 0 "$rc"
+assert_contains "$TEST_DIR/case-inject/CLAUDE.md" "@principles/engineering-principles.md"
 assert_contains "$TEST_DIR/case-inject/CLAUDE.md" "@principles/pre-implementation-checklist.md"
 assert_contains "$TEST_DIR/case-inject/CLAUDE.md" "@principles/documentation-ownership.md"
 assert_contains "$TEST_DIR/case-inject/CLAUDE.md" "@principles/git-workflow.md"
@@ -144,6 +145,7 @@ echo "==> 5. ensure_claude_principles_ref yes plants imports"
 E5="$TEST_DIR/e2e-yes"
 setup_existing_repo "$E5" no
 ensure_claude_principles_ref "$E5" yes >/dev/null
+assert_contains "$E5/CLAUDE.md" "@principles/engineering-principles.md"
 assert_contains "$E5/CLAUDE.md" "@principles/pre-implementation-checklist.md"
 assert_contains "$E5/.touchstone-config" "claude_principles_ref=connected"
 

@@ -4,7 +4,7 @@ Normal code changes go through a feature branch + PR + merge. Emergency bypasses
 
 ## Never commit on the default branch
 
-**This is the one rule that makes everything else work.** Every code change — including a one-line typo fix, a doc tweak, a version bump, a README edit — starts on a feature branch. Committing directly to `main` (or `master`) bypasses PR review, bypasses Codex review, bypasses the audit trail, and leaves you in a local state that's awkward to untangle without rewriting history someone else may already have pulled.
+**This is the one rule that makes everything else work.** Every code change — including a one-line typo fix, a doc tweak, a version bump, a README edit — starts on a feature branch. Committing directly to `main` (or `master`) bypasses PR review, bypasses Conductor review, bypasses the audit trail, and leaves you in a local state that's awkward to untangle without rewriting history someone else may already have pulled.
 
 **The concrete rule for any AI or human working here:** before the first edit of a tracked file in a session — `Edit`, `Write`, or any tool that mutates a file under git — run `git branch --show-current`. If the output is `main` or `master`, stop and branch first. `git checkout -b <type>/<slug>` preserves your staged and unstaged changes, so there's no cost to branching late — but there's real cost to discovering the mistake at commit time after batching several files of work.
 
@@ -18,16 +18,16 @@ Normal code changes go through a feature branch + PR + merge. Emergency bypasses
 
 - The `no-commit-to-branch` hook in `.pre-commit-config.yaml` is configured with `--branch main --branch master`. It runs at `pre-commit` stage and refuses the commit outright. `git commit --no-verify` bypasses it; that's the documented emergency path, not a daily shortcut.
 - GitHub branch protection on the default branch requires the change to go through a PR (`required_pull_request_reviews` with `required_approving_review_count: 0`; direct pushes to `main` are rejected by the server even if the local hook was bypassed). Admin enforcement is left off so the `--no-verify` emergency path remains usable; the audit trail is the backstop.
-- The Codex pre-push hook (when installed) is the last line of defense: it runs on default-branch pushes via `merge-pr.sh` and can block unsafe findings before they land.
+- The Conductor-backed review hook (when installed) is the last line of defense: it runs on default-branch pushes via `merge-pr.sh` and can block unsafe findings before they land.
 
-The three layers are complementary — the local hook catches the honest mistake before it becomes a commit, branch protection catches the deliberate or hook-bypassing push at the server, and the Codex review catches the class of content we explicitly don't want on main.
+The three layers are complementary — the local hook catches the honest mistake before it becomes a commit, branch protection catches the deliberate or hook-bypassing push at the server, and the Conductor review catches the class of content we explicitly don't want on main.
 
 ## The lifecycle
 
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
 2. **Branch — before any edit that might become a commit.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`. Do this as step one of the work, not as a cleanup step later. The check is `git branch --show-current` *before your first edit* — see "Never commit on the default branch" above for why edit time and not commit time.
 3. **Loop: change → commit → push.** Each meaningful sub-task gets its own commit and push. Stage explicit file paths (not `git add -A`), write a concise message, push to the open branch. Don't batch a session's worth of changes into one commit at the end — see the "Commit and push frequency" section below.
-4. **Ship.** `scripts/open-pr.sh --auto-merge` pushes, creates the PR, runs Codex review, squash-merges, deletes the remote branch, and pulls the updated default branch — all in one command. Use `scripts/open-pr.sh` (without `--auto-merge`) if you want to open the PR without merging.
+4. **Ship.** `scripts/open-pr.sh --auto-merge` pushes, creates the PR, runs the final read-only Conductor merge review, squash-merges after a clean review, deletes the remote branch, and pulls the updated default branch — all in one command. Use `scripts/open-pr.sh` (without `--auto-merge`) if you want to open the PR without merging.
 5. **Clean up.** Delete the local feature branch. Run `scripts/cleanup-branches.sh` periodically for batch hygiene.
 
 ## Commit discipline
@@ -58,12 +58,12 @@ The three layers are complementary — the local hook catches the honest mistake
 - [Trunk-Based Development](https://trunkbaseddevelopment.com/) — the practice that frequent small commits enable at scale (Google, Facebook, et al.).
 - The autumn-garage convention is closer to "tiny PRs to main" than "long-lived feature branches" — short branches, frequent commits, fast review.
 
-## Codex merge review (optional, recommended)
+## Conductor merge review (optional, recommended)
 
-If the project has Codex review configured (see `.codex-review.toml` for policy and the `codex-review` hook in `.pre-commit-config.yaml` for the entry point), a pre-push hook gates default-branch pushes (including squash-merges via `merge-pr.sh`). The mechanism is `stages: [pre-push]` in `.pre-commit-config.yaml`; it skips feature-branch pushes and only activates when the push target is the default branch. **The reviewer is the merge gate** — `scripts/open-pr.sh --auto-merge` is the standard ship path: open PR → reviewer runs → squash-merge → branch deleted, all in one command, no extra approval step.
+If the project has AI review configured (see `.codex-review.toml` for policy and the `codex-review` hook in `.pre-commit-config.yaml` for the entry point), a pre-push hook gates default-branch pushes (including squash-merges via `merge-pr.sh`). The hook delegates model access to Conductor, so the reviewer may be Claude, Codex, Gemini, a local model, or another configured provider. The mechanism is `stages: [pre-push]` in `.pre-commit-config.yaml`; it skips feature-branch pushes and only activates when the push target is the default branch. **The reviewer is the merge gate** — `scripts/open-pr.sh --auto-merge` is the standard ship path: open PR → reviewer runs → squash-merge → branch deleted, all in one command, no extra approval step.
 
 Behavior:
-- Runs `codex exec --full-auto` against the diff vs the default branch
+- Runs `CODEX_REVIEW_FORCE=1 bash scripts/codex-review.sh`, which invokes `conductor exec` against the diff vs the default branch
 - Auto-fixes only low-risk findings (typos, missing imports, missing null checks, adding logging to empty exception handlers, named constants for unexplained magic numbers); anything that changes business logic or retry/error-handling semantics is reported as a finding for the author to address in another commit before merge
 - Blocks the push for unsafe findings (high-scrutiny paths)
 - Loops up to `max_iterations` times (default 3)

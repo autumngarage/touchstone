@@ -6,6 +6,12 @@
 
 Codex and other AGENTS.md-native tools read `AGENTS.md`; Gemini CLI reads `GEMINI.md`. Keep `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` aligned when project workflow, architecture, or hard-won lessons change.
 
+## Agent Roles And Fallbacks
+
+Claude Code is a **driving CLI** in this repo: it owns file edits, git state, tests, commits, PR creation, Conductor review invocation, and merge helper execution. Codex and Gemini CLI are equivalent fallback drivers because all three load the same managed principles and delivery workflow.
+
+Conductor is the **worker/reviewer router**. The driving CLI may invoke Conductor for code review or bounded model work, and Conductor can fall back across configured providers such as Claude, Codex, Gemini, or local models. Conductor provider fallback does not replace the driving CLI's responsibility for the branch → PR → review → automerge workflow.
+
 ## Engineering Principles (HARD REQUIREMENTS)
 
 Non-negotiable. Every code change is reviewed against them. Full rationale, worked examples, and the *why* behind each rule live in `principles/engineering-principles.md` — read it once; this list is the daily reminder.
@@ -24,6 +30,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale, work
 - **Preserve compatibility at boundaries** — public API/config/schema/CLI/hook/template changes need a compatibility or migration plan.
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill.
 
+@principles/engineering-principles.md
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
 
@@ -33,7 +40,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale, work
 
 ### Never commit on the default branch
 
-Every change — including one-liners, doc tweaks, and version bumps — starts on a feature branch. Before your first `git commit` of a session, run `git branch --show-current`; if it reports the default branch (`main` or `master`), branch first. See the "Never commit on the default branch" section in `principles/git-workflow.md` for recovery steps if it happens anyway.
+Every change — including one-liners, doc tweaks, and version bumps — starts on a feature branch. **Before your first edit of a tracked file in a session**, run `git branch --show-current`; if it reports the default branch (`main` or `master`), branch first with `git checkout -b <type>/<slug>`. See the "Never commit on the default branch" section in `principles/git-workflow.md` for recovery steps if it happens anyway.
 
 ### The lifecycle (drive this automatically, do not ask the user for permission at each step)
 
