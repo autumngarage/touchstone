@@ -161,7 +161,7 @@ Flag any of the following:
 
 If there are zero blocking issues: "LGTM."
 
-<!-- conductor:begin v0.8.1 -->
+<!-- conductor:begin v0.8.2 -->
 ## Conductor delegation
 
 This project has [conductor](https://github.com/autumngarage/conductor)
