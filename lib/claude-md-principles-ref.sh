@@ -15,18 +15,21 @@
 #   a small block of @-imports near the top of CLAUDE.md. Once planted, the
 #   *content* behind those imports flows automatically — every `touchstone
 #   update` refreshes principles/*.md, and every Claude session re-reads
-#   the imports. We never touch CLAUDE.md again after init.
+#   the imports. Later compatibility migrations may add missing required
+#   import lines to an already-connected import block, but they don't rewrite
+#   project-owned guidance.
 #
 # Public surface:
-#   claude_md_has_principles_ref <path>     — exit 0 if @principles/ is present
+#   claude_md_has_principles_ref <path>     — exit 0 if all required @principles/ imports are present
+#   claude_md_has_any_principles_ref <path> — exit 0 if any @principles/ import is present
 #   claude_md_render_principles_block       — print the block to stdout
 #   claude_md_inject_principles_block <path> — append/inject the block once
 #
 # Exit codes for claude_md_inject_principles_block:
-#   0 — block injected (or already present; idempotent)
+#   0 — block injected, or missing refs added to an existing partial block
 #   1 — file missing or write failed
-#   2 — file already has @principles/ references; no change made (caller's
-#       cue to skip the prompt entirely)
+#   2 — file already has the complete required @principles/ import set; no
+#       change made (caller's cue to skip the prompt entirely)
 
 # Marker is sourced into bin/touchstone and may be referenced by future
 # doctor / connection-status checks; export-shaped for that consumer.
@@ -83,7 +86,64 @@ claude_md_principles_ref_record() {
 claude_md_has_principles_ref() {
   local target="$1"
   [ -f "$target" ] || return 1
+  local ref
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    grep -qF "$ref" "$target" || return 1
+  done <<'EOF'
+@principles/engineering-principles.md
+@principles/pre-implementation-checklist.md
+@principles/documentation-ownership.md
+@principles/git-workflow.md
+EOF
+  return 0
+}
+
+claude_md_has_any_principles_ref() {
+  local target="$1"
+  [ -f "$target" ] || return 1
   grep -qE '^@principles/' "$target"
+}
+
+claude_md_insert_missing_principles_refs() {
+  local target="$1"
+  local missing_file out_file ref
+  missing_file="$(mktemp -t claude-md-missing-principles.XXXXXX)"
+  out_file="$(mktemp -t claude-md-principles-out.XXXXXX)"
+
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    if ! grep -qF "$ref" "$target"; then
+      printf '%s\n' "$ref" >> "$missing_file"
+    fi
+  done <<'EOF'
+@principles/engineering-principles.md
+@principles/pre-implementation-checklist.md
+@principles/documentation-ownership.md
+@principles/git-workflow.md
+EOF
+
+  if [ ! -s "$missing_file" ]; then
+    rm -f "$missing_file" "$out_file"
+    return 2
+  fi
+
+  local inserted=0 line
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$inserted" = 0 ] && printf '%s\n' "$line" | grep -qE '^@principles/'; then
+      cat "$missing_file" >> "$out_file"
+      inserted=1
+    fi
+    printf '%s\n' "$line" >> "$out_file"
+  done < "$target"
+
+  if [ "$inserted" = 0 ]; then
+    cat "$missing_file" >> "$out_file"
+  fi
+
+  cat "$out_file" > "$target"
+  rm -f "$missing_file" "$out_file"
+  return 0
 }
 
 claude_md_render_principles_block() {
@@ -112,6 +172,11 @@ claude_md_inject_principles_block() {
 
   if claude_md_has_principles_ref "$target"; then
     return 2
+  fi
+
+  if claude_md_has_any_principles_ref "$target"; then
+    claude_md_insert_missing_principles_refs "$target"
+    return $?
   fi
 
   local block_file out_file
@@ -163,12 +228,23 @@ ensure_claude_principles_ref() {
   _epr_warn() { if command -v tk_warn  >/dev/null 2>&1; then tk_warn  "$@"; else echo "WARN: $*" >&2; fi; }
   _epr_head() { if command -v tk_header >/dev/null 2>&1; then tk_header "$@"; else echo "==> $*"; fi; }
 
-  # Respect a prior decision. Once recorded, init never re-prompts —
-  # the user said yes (already injected) or no (skipped on purpose).
+  # Respect a prior decision. Once recorded, init never re-prompts. A prior
+  # `connected` decision is consent to keep a partial existing import block
+  # compatible with the current required ref set; `skipped` remains opt-out.
   local prior
   prior="$(claude_md_principles_ref_decision "$project_dir")"
   case "$prior" in
-    connected|skipped) return 0 ;;
+    skipped) return 0 ;;
+    connected)
+      if [ -f "$claude_md" ] \
+        && ! claude_md_has_principles_ref "$claude_md" \
+        && claude_md_has_any_principles_ref "$claude_md"; then
+        if claude_md_inject_principles_block "$claude_md"; then
+          _epr_ok "Added missing @principles/* imports to CLAUDE.md."
+        fi
+      fi
+      return 0
+      ;;
   esac
 
   # Nothing to connect to — no CLAUDE.md means new-project.sh will copy the
@@ -179,7 +255,8 @@ ensure_claude_principles_ref() {
   fi
 
   # Already connected via the template (fresh init) or a hand-written
-  # equivalent — record the state and move on. No prompt needed.
+  # equivalent with the full required import set — record the state and move
+  # on. No prompt needed.
   if claude_md_has_principles_ref "$claude_md"; then
     claude_md_principles_ref_record "$project_dir" connected
     return 0
@@ -197,12 +274,12 @@ ensure_claude_principles_ref() {
       ;;
     prompt|*)
       if [ ! -t 0 ] || [ ! -t 1 ]; then
-        _epr_warn "CLAUDE.md exists but does not import touchstone principles."
+        _epr_warn "CLAUDE.md exists but does not import all touchstone principles."
         _epr_say  "Re-run interactively, or pass --no-claude-principles to skip permanently."
         return 0
       fi
       _epr_head "Touchstone — connect CLAUDE.md to engineering principles"
-      _epr_say "Found CLAUDE.md without @principles/* imports. Adding them lets every"
+      _epr_say "Found CLAUDE.md without the full @principles/* import set. Adding it lets every"
       _epr_say "Claude Code session in this repo load the touchstone principles, and"
       _epr_say "lets future touchstone updates ship principle changes automatically."
       echo ""

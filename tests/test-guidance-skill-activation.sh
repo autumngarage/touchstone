@@ -34,6 +34,9 @@ fi
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$TOUCHSTONE_ROOT"
 
+# shellcheck source=claude-probe-helper.sh
+source "$TOUCHSTONE_ROOT/tests/claude-probe-helper.sh"
+
 if [ "${TOUCHSTONE_FULL_SKILL_PROBES:-0}" = "1" ]; then
   TRIALS_PER=5
   echo "==> FULL mode: 5 × 5 phrasings + 5 negatives (~3 min)"
@@ -54,8 +57,19 @@ OVERALL_FAIL=0
 
 run_trial() {
   local prompt="$1" regex="$2"
-  local response
-  response="$(claude -p "$prompt" 2>&1 || true)"
+  local response rc
+  set +e
+  response="$(run_claude_probe "$prompt")"
+  rc=$?
+  set -e
+  if [ "$rc" -eq 124 ]; then
+    echo "    TIMEOUT: claude -p exceeded ${TOUCHSTONE_CLAUDE_PROBE_TIMEOUT:-90}s" >&2
+    return 1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo "    ERROR: claude -p exited $rc" >&2
+    return 1
+  fi
   if printf '%s' "$response" | grep -qiE "$regex"; then
     return 0
   fi
@@ -137,7 +151,7 @@ run_skill_suite "touchstone-agent-swarms" "$SWARMS_REGEX" "${SWARMS_TRIGGERS[@]}
 AUDIT_TRIGGERS=(
   "I just found a bug where a cache was returning stale data. Should I look for similar patterns elsewhere?"
   "I noticed this same anti-pattern in three files. How do I systematically check the rest of the codebase?"
-  "Help me audit this class of bug across the project — I want to find every instance."
+  "I found a structural bug caused by swallowed exceptions. Help me audit every similar anti-pattern and add a guardrail."
   "Found a structural issue with how we handle null returns. What's the methodology to find and fix all of them?"
   "There's a recurring bug shape we keep hitting. How do I do a comprehensive audit and stop it from coming back?"
 )
