@@ -7,7 +7,7 @@ _touchstone() {
     'new:Bootstrap a new project from scratch'
     'update:Create a branch and commit for touchstone updates'
     'sync:Update all registered projects'
-    'status:Dashboard — health of all projects'
+    'status:Show project status (use --all for the registry view)'
     'doctor:Check touchstone installation health'
     'version:Show installed version'
     'list:Show registered projects'
@@ -69,6 +69,10 @@ _touchstone() {
             '--pull-first[Pull latest touchstone before syncing]' \
             '--check[Report which projects need sync]' \
             '--dry-run[Preview updates without applying]'
+          ;;
+        status)
+          _arguments \
+            '--all[Show version distribution across registered projects]'
           ;;
         unregister)
           # Complete from registered projects.

@@ -18,6 +18,9 @@ _touchstone() {
     sync)
       COMPREPLY=( $(compgen -W "--pull-first --check --dry-run" -- "$cur") )
       ;;
+    status)
+      COMPREPLY=( $(compgen -W "--all" -- "$cur") )
+      ;;
     unregister)
       if [ -f "$HOME/.touchstone-projects" ]; then
         COMPREPLY=( $(compgen -W "$(cat "$HOME/.touchstone-projects" 2>/dev/null)" -- "$cur") )
