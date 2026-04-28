@@ -98,6 +98,14 @@ extract_review_sentinel() {
       sentinel = line
       count++
     }
+    /^[[:space:]]*"response"[[:space:]]*:[[:space:]]*"CODEX_REVIEW_(CLEAN|FIXED|BLOCKED)(\\n)?"[[:space:]]*,?[[:space:]]*$/ {
+      line = $0
+      gsub(/\r/, "", line)
+      sub(/^[[:space:]]*"response"[[:space:]]*:[[:space:]]*"/, "", line)
+      sub(/(\\n)?"[[:space:]]*,?[[:space:]]*$/, "", line)
+      sentinel = line
+      count++
+    }
     END {
       if (count == 1) {
         print sentinel

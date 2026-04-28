@@ -702,6 +702,85 @@ if [ "$UV_SYNC_COUNT" -ne 2 ]; then
   ERRORS=$((ERRORS + 1))
 fi
 
+# setup.sh --deps-only is dependency-only: it must not run touchstone update or
+# switch away from the current feature branch.
+SETUP_BRANCH_PROJECT="$TEST_DIR/setup-deps-only-branch"
+SETUP_BRANCH_FAKE_BIN="$TEST_DIR/setup-deps-only-fake-bin"
+SETUP_BRANCH_LOG="$TEST_DIR/setup-deps-only-touchstone.log"
+mkdir -p "$SETUP_BRANCH_PROJECT" "$SETUP_BRANCH_FAKE_BIN"
+cp "$TOUCHSTONE_ROOT/templates/setup.sh" "$SETUP_BRANCH_PROJECT/setup.sh"
+cat > "$SETUP_BRANCH_FAKE_BIN/touchstone" <<'FAKETOUCHSTONE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SETUP_BRANCH_LOG"
+exit 64
+FAKETOUCHSTONE
+chmod +x "$SETUP_BRANCH_FAKE_BIN/touchstone"
+(cd "$SETUP_BRANCH_PROJECT" \
+  && git init -q -b main \
+  && git config user.email test@touchstone \
+  && git config user.name test-committer \
+  && git add setup.sh \
+  && git commit --no-verify -m "initial setup fixture" >/dev/null \
+  && git checkout -q -b feature/setup-deps)
+if (cd "$SETUP_BRANCH_PROJECT" && SETUP_BRANCH_LOG="$SETUP_BRANCH_LOG" PATH="$SETUP_BRANCH_FAKE_BIN:$PATH" bash setup.sh --deps-only --skip-devtools) >"$TEST_DIR/setup-deps-only-branch.txt" 2>&1; then
+  if [ "$(git -C "$SETUP_BRANCH_PROJECT" branch --show-current)" != "feature/setup-deps" ]; then
+    echo "FAIL: setup.sh --deps-only should not switch branches" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+  assert_not_exists "$SETUP_BRANCH_LOG"
+else
+  echo "FAIL: setup.sh --deps-only should not call touchstone update (stdout: $(cat "$TEST_DIR/setup-deps-only-branch.txt"))" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# setup.sh must fail explicitly when a requirements.txt venv cannot provide pip.
+SETUP_MISSING_PIP_PROJECT="$TEST_DIR/setup-missing-pip-project"
+SETUP_MISSING_PIP_BIN="$TEST_DIR/setup-missing-pip-bin"
+mkdir -p "$SETUP_MISSING_PIP_PROJECT" "$SETUP_MISSING_PIP_BIN"
+cp "$TOUCHSTONE_ROOT/templates/setup.sh" "$SETUP_MISSING_PIP_PROJECT/setup.sh"
+printf 'pytest\n' > "$SETUP_MISSING_PIP_PROJECT/requirements.txt"
+cat > "$SETUP_MISSING_PIP_BIN/python3" <<'FAKEPYTHON3'
+#!/usr/bin/env bash
+case "$1" in
+  --version)
+    printf 'Python 3.14.4\n'
+    exit 0
+    ;;
+esac
+if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+  venv_dir="$3"
+  mkdir -p "$venv_dir/bin"
+  cat > "$venv_dir/bin/python" <<'FAKEVENV'
+#!/usr/bin/env bash
+if [ "$1" = "-m" ] && [ "$2" = "pip" ] && [ "${3:-}" = "--version" ]; then
+  echo "No module named pip" >&2
+  exit 1
+fi
+if [ "$1" = "-m" ] && [ "$2" = "ensurepip" ]; then
+  echo "No module named ensurepip" >&2
+  exit 1
+fi
+if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then
+  echo "No module named pip" >&2
+  exit 1
+fi
+exit 0
+FAKEVENV
+  chmod +x "$venv_dir/bin/python"
+  exit 0
+fi
+echo "unexpected python3 invocation: $*" >&2
+exit 1
+FAKEPYTHON3
+chmod +x "$SETUP_MISSING_PIP_BIN/python3"
+if (cd "$SETUP_MISSING_PIP_PROJECT" && PATH="$SETUP_MISSING_PIP_BIN:$PATH" bash setup.sh --deps-only --skip-devtools) >"$TEST_DIR/setup-missing-pip.txt" 2>&1; then
+  echo "FAIL: setup.sh should fail when venv pip is unavailable" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/setup-missing-pip.txt" 'missing pip'
+  assert_not_contains "$TEST_DIR/setup-missing-pip.txt" 'dependencies installed'
+fi
+
 # setup.sh should display the Touchstone version even though touchstone version output
 # starts with a blank header line.
 SETUP_VERSION_PROJECT="$TEST_DIR/setup-version-project"
@@ -1409,40 +1488,40 @@ else
   assert_contains "$TEST_DIR/init-conflict.txt" 'Migration conflict'
 fi
 
-# touchstone init on an outdated project must delegate to the update flow (branch + commit),
-# not silently backup-and-replace files in place.
+# touchstone init on an outdated project reconciles in place instead of
+# delegating to the update flow. It must not switch branches, attempt shipping,
+# or refuse unrelated dirty files that are outside Touchstone's write set.
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_OUTDATED" --no-register >/dev/null
-# Configure the committer identity locally so the delegated update-project.sh commit
-# works on CI machines without a global Git identity. Bootstrap already creates an
-# initial touchstone commit, so we don't need to seed one here.
 git -C "$PROJECT_OUTDATED" config user.email test@touchstone
 git -C "$PROJECT_OUTDATED" config user.name test-committer
 echo "0000000000000000000000000000000000000001" > "$PROJECT_OUTDATED/.touchstone-version"
 (cd "$PROJECT_OUTDATED" && git commit --no-verify -am "pin to old touchstone" >/dev/null)
+OUTDATED_INIT_BRANCH="$(git -C "$PROJECT_OUTDATED" branch --show-current)"
+mkdir -p "$PROJECT_OUTDATED/.claude"
+printf 'lock\n' > "$PROJECT_OUTDATED/.claude/scheduled_tasks.lock"
 if (cd "$PROJECT_OUTDATED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup --no-ship) >"$TEST_DIR/init-outdated.txt" 2>&1; then
-  assert_contains "$TEST_DIR/init-outdated.txt" 'upgrading'
-  UPDATE_BRANCH="$(git -C "$PROJECT_OUTDATED" branch --show-current)"
-  case "$UPDATE_BRANCH" in
-    chore/touchstone-*) ;;
-    *)
-      echo "FAIL: init on outdated project should land on a chore/touchstone-* branch, got '$UPDATE_BRANCH'" >&2
-      ERRORS=$((ERRORS + 1))
-      ;;
-  esac
+  assert_contains "$TEST_DIR/init-outdated.txt" 'reconciling'
+  assert_contains "$TEST_DIR/init-outdated.txt" 'reconcile files in place'
+  assert_not_contains "$TEST_DIR/init-outdated.txt" "Delegating to 'touchstone update"
+  if [ "$(git -C "$PROJECT_OUTDATED" branch --show-current)" != "$OUTDATED_INIT_BRANCH" ]; then
+    echo "FAIL: init on outdated project should stay on $OUTDATED_INIT_BRANCH" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+  assert_exists "$PROJECT_OUTDATED/.claude/scheduled_tasks.lock"
 else
   echo "FAIL: init on outdated project should not exit nonzero (stdout: $(cat "$TEST_DIR/init-outdated.txt"))" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
-# touchstone init on an outdated project defaults to --ship. With no reachable remote
-# the ship attempt must fail soft: branch preserved, exit 0, clear message.
+# touchstone init on an outdated project must not default to shipping; stale
+# init is an in-place repair path and update --ship remains explicit.
 PROJECT_OUTDATED_SHIP="$TEST_DIR/outdated-ship-project"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_OUTDATED_SHIP" --no-register >/dev/null
 git -C "$PROJECT_OUTDATED_SHIP" config user.email test@touchstone
 git -C "$PROJECT_OUTDATED_SHIP" config user.name test-committer
 echo "0000000000000000000000000000000000000001" > "$PROJECT_OUTDATED_SHIP/.touchstone-version"
 (cd "$PROJECT_OUTDATED_SHIP" && git commit --no-verify -am "pin to old touchstone" >/dev/null)
-# Stub gh so open-pr.sh fails fast without real network.
+# Stub gh so any accidental shipping attempt fails fast without real network.
 GH_STUB_BIN="$TEST_DIR/gh-stub-bin"
 mkdir -p "$GH_STUB_BIN"
 cat > "$GH_STUB_BIN/gh" <<'GHSTUB'
@@ -1451,19 +1530,17 @@ echo "gh: stubbed failure" >&2
 exit 1
 GHSTUB
 chmod +x "$GH_STUB_BIN/gh"
+OUTDATED_SHIP_BRANCH="$(git -C "$PROJECT_OUTDATED_SHIP" branch --show-current)"
 if (cd "$PROJECT_OUTDATED_SHIP" && PATH="$GH_STUB_BIN:$HOOKS_FAKE_BIN:$PATH" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup) >"$TEST_DIR/init-outdated-ship.txt" 2>&1; then
-  assert_contains "$TEST_DIR/init-outdated-ship.txt" 'Shipping update via scripts/open-pr.sh'
-  assert_contains "$TEST_DIR/init-outdated-ship.txt" 'Ship failed'
-  SHIP_BRANCH="$(git -C "$PROJECT_OUTDATED_SHIP" branch --show-current)"
-  case "$SHIP_BRANCH" in
-    chore/touchstone-*) ;;
-    *)
-      echo "FAIL: ship-failure path should preserve the chore/touchstone-* branch, got '$SHIP_BRANCH'" >&2
-      ERRORS=$((ERRORS + 1))
-      ;;
-  esac
+  assert_contains "$TEST_DIR/init-outdated-ship.txt" 'reconciling'
+  assert_not_contains "$TEST_DIR/init-outdated-ship.txt" 'Shipping update via scripts/open-pr.sh'
+  assert_not_contains "$TEST_DIR/init-outdated-ship.txt" 'Ship failed'
+  if [ "$(git -C "$PROJECT_OUTDATED_SHIP" branch --show-current)" != "$OUTDATED_SHIP_BRANCH" ]; then
+    echo "FAIL: stale init should stay on $OUTDATED_SHIP_BRANCH" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
 else
-  echo "FAIL: init --ship with failing gh should still exit 0 (branch preserved); stdout: $(cat "$TEST_DIR/init-outdated-ship.txt")" >&2
+  echo "FAIL: stale init should still exit 0 without shipping; stdout: $(cat "$TEST_DIR/init-outdated-ship.txt")" >&2
   ERRORS=$((ERRORS + 1))
 fi
 

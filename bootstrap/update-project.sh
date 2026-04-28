@@ -4,12 +4,14 @@
 #
 # Usage:
 #   ~/Repos/touchstone/bootstrap/update-project.sh
+#   ~/Repos/touchstone/bootstrap/update-project.sh --in-place # commit on current branch
 #   ~/Repos/touchstone/bootstrap/update-project.sh --dry-run   # show what would change
 #   ~/Repos/touchstone/bootstrap/update-project.sh --check     # report whether update is needed
 #
 # What this does:
 #   1. Reads .touchstone-version from the project to know what touchstone is installed
-#   2. Creates a chore/touchstone-* branch from a clean worktree
+#   2. Creates a chore/touchstone-* branch from a clean worktree, unless
+#      --in-place/--no-branch is passed
 #   3. Updates touchstone-owned files without .bak backups; git is the backup
 #   4. Updates .touchstone-version and .touchstone-manifest
 #   5. Commits the update so it is reviewable and reversible as one unit
@@ -27,9 +29,10 @@ DRY_RUN=false
 CHECK_ONLY=false
 REQUESTED_BRANCH=""
 SHIP=false
+IN_PLACE=false
 
 usage() {
-  echo "Usage: $0 [--dry-run|-n] [--check] [--branch <name>] [--ship]"
+  echo "Usage: $0 [--dry-run|-n] [--check] [--branch <name>] [--in-place|--no-branch] [--ship]"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -38,6 +41,7 @@ while [ "$#" -gt 0 ]; do
     --check) CHECK_ONLY=true; shift ;;
     --ship) SHIP=true; shift ;;
     --no-ship) SHIP=false; shift ;;
+    --in-place|--no-branch) IN_PLACE=true; shift ;;
     --branch)
       [ "$#" -ge 2 ] || { echo "ERROR: --branch requires a value" >&2; exit 1; }
       REQUESTED_BRANCH="$2"
@@ -50,6 +54,11 @@ while [ "$#" -gt 0 ]; do
     *) echo "ERROR: unknown argument '$1'" >&2; usage >&2; exit 1 ;;
   esac
 done
+
+if [ "$IN_PLACE" = true ] && [ -n "$REQUESTED_BRANCH" ]; then
+  echo "ERROR: --branch cannot be combined with --in-place/--no-branch." >&2
+  exit 1
+fi
 
 # Verify we're in a project with .touchstone-version.
 if [ ! -f "$PROJECT_DIR/.touchstone-version" ]; then
@@ -126,6 +135,7 @@ ADDED_PATHS=()
 BRANCH_CREATED=false
 COMMIT_CREATED=false
 ORIGINAL_BRANCH=""
+ORIGINAL_HEAD=""
 UPDATE_BRANCH=""
 ROLLBACK_TMP_DIR=""
 
@@ -160,7 +170,14 @@ restore_touchstone_metadata() {
 rollback_failed_update() {
   local rc=$?
 
-  if [ "$rc" -eq 0 ] || [ "$BRANCH_CREATED" != true ] || [ "$COMMIT_CREATED" = true ]; then
+  if [ "$rc" -eq 0 ] || [ "$COMMIT_CREATED" = true ]; then
+    if [ -n "$ROLLBACK_TMP_DIR" ]; then
+      rm -rf "$ROLLBACK_TMP_DIR"
+    fi
+    return
+  fi
+
+  if [ "$BRANCH_CREATED" != true ] && [ "$IN_PLACE" != true ]; then
     if [ -n "$ROLLBACK_TMP_DIR" ]; then
       rm -rf "$ROLLBACK_TMP_DIR"
     fi
@@ -168,7 +185,11 @@ rollback_failed_update() {
   fi
 
   echo "" >&2
-  echo "==> Update failed; rolling back $UPDATE_BRANCH" >&2
+  if [ "$IN_PLACE" = true ]; then
+    echo "==> Update failed; rolling back in-place changes on $ORIGINAL_BRANCH" >&2
+  else
+    echo "==> Update failed; rolling back $UPDATE_BRANCH" >&2
+  fi
   git -C "$PROJECT_DIR" restore --staged --worktree . >/dev/null 2>&1 || true
   restore_touchstone_metadata
 
@@ -177,10 +198,10 @@ rollback_failed_update() {
     rm -f "$PROJECT_DIR/$rel" 2>/dev/null || true
   done
 
-  if [ -n "$ORIGINAL_BRANCH" ]; then
+  if [ "$IN_PLACE" != true ] && [ -n "$ORIGINAL_BRANCH" ]; then
     git -C "$PROJECT_DIR" checkout -f "$ORIGINAL_BRANCH" >/dev/null 2>&1 || true
   fi
-  if [ -n "$UPDATE_BRANCH" ]; then
+  if [ "$IN_PLACE" != true ] && [ -n "$UPDATE_BRANCH" ]; then
     git -C "$PROJECT_DIR" branch -D "$UPDATE_BRANCH" >/dev/null 2>&1 || true
   fi
   if [ -n "$ROLLBACK_TMP_DIR" ]; then
@@ -203,6 +224,7 @@ require_clean_git_repo() {
   fi
 
   ORIGINAL_BRANCH="$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD)"
+  ORIGINAL_HEAD="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
   if [ "$ORIGINAL_BRANCH" = "HEAD" ]; then
     echo "ERROR: touchstone update cannot run from a detached HEAD." >&2
     echo "       Check out a branch first, then run touchstone update." >&2
@@ -220,20 +242,25 @@ require_clean_git_repo() {
 if [ "$DRY_RUN" = false ]; then
   require_clean_git_repo
 
-  if [ -n "$REQUESTED_BRANCH" ]; then
-    UPDATE_BRANCH="$REQUESTED_BRANCH"
-    if git -C "$PROJECT_DIR" show-ref --verify --quiet "refs/heads/$UPDATE_BRANCH"; then
-      echo "ERROR: Branch already exists: $UPDATE_BRANCH" >&2
-      exit 1
-    fi
+  if [ "$IN_PLACE" = true ]; then
+    UPDATE_BRANCH="$ORIGINAL_BRANCH"
+    snapshot_touchstone_metadata
+    echo "==> Applying update on current branch: $UPDATE_BRANCH"
   else
-    UPDATE_BRANCH="$(unique_branch_name "chore/touchstone-$(sanitize_branch_component "$CURRENT_LABEL")")"
+    if [ -n "$REQUESTED_BRANCH" ]; then
+      UPDATE_BRANCH="$REQUESTED_BRANCH"
+      if git -C "$PROJECT_DIR" show-ref --verify --quiet "refs/heads/$UPDATE_BRANCH"; then
+        echo "ERROR: Branch already exists: $UPDATE_BRANCH" >&2
+        exit 1
+      fi
+    else
+      UPDATE_BRANCH="$(unique_branch_name "chore/touchstone-$(sanitize_branch_component "$CURRENT_LABEL")")"
+    fi
+    snapshot_touchstone_metadata
+    echo "==> Creating update branch: $UPDATE_BRANCH"
+    git -C "$PROJECT_DIR" checkout -b "$UPDATE_BRANCH" >/dev/null
+    BRANCH_CREATED=true
   fi
-
-  snapshot_touchstone_metadata
-  echo "==> Creating update branch: $UPDATE_BRANCH"
-  git -C "$PROJECT_DIR" checkout -b "$UPDATE_BRANCH" >/dev/null
-  BRANCH_CREATED=true
 fi
 
 # Show changes between versions.
@@ -353,14 +380,11 @@ update_settings_file() {
     return
   fi
 
-  local backup="${dst}.touchstone-pre-update.bak"
   if [ "$DRY_RUN" = true ]; then
-    echo "    ! would update: $dst (current contents would be backed up to $backup)"
+    echo "    ! would update: $dst"
   else
-    cp "$dst" "$backup"
     cp "$src" "$dst"
     echo "    ! updated: $dst"
-    echo "      previous contents backed up to: $backup"
     echo "      put project-specific overrides in $(dirname "$dst")/settings.local.json"
   fi
   UPDATED=$((UPDATED + 1))
@@ -568,9 +592,13 @@ if [ "$DRY_RUN" = false ]; then
     fi
   else
     echo ""
-    echo "==> Done. Review the update branch:"
+    if [ "$IN_PLACE" = true ]; then
+      echo "==> Done. Review the update commit on the current branch:"
+    else
+      echo "==> Done. Review the update branch:"
+    fi
     echo "    branch: $UPDATE_BRANCH"
-    echo "    git diff ${ORIGINAL_BRANCH}...HEAD"
+    echo "    git diff ${ORIGINAL_HEAD:-$ORIGINAL_BRANCH}...HEAD"
     echo "    bash scripts/open-pr.sh --auto-merge"
   fi
 else

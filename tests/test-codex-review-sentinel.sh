@@ -69,11 +69,29 @@ assert_detector \
   $'Summary\n  CODEX_REVIEW_FIXED\t\nextra note\n' \
   "CODEX_REVIEW_FIXED"
 
+# Conductor Gemini may wrap the provider response in JSON while preserving the
+# sentinel as the exact response value. Accept that narrow wrapper so fallbacks
+# remain usable without accepting arbitrary inline sentinel prose.
+assert_detector \
+  "JSON response wrapper with exact sentinel" \
+  $'{\n  "session_id": "demo",\n  "response": "CODEX_REVIEW_CLEAN\\n",\n  "stats": {}\n}\n' \
+  "CODEX_REVIEW_CLEAN"
+
+assert_detector \
+  "JSON response wrapper with exact sentinel and no newline" \
+  $'{\n  "session_id": "demo",\n  "response": "CODEX_REVIEW_CLEAN",\n  "stats": {}\n}\n' \
+  "CODEX_REVIEW_CLEAN"
+
 # Inline sentinels (text on the same line as other content) are NOT
 # accepted — the contract is "sentinel on its own line."
 assert_detector \
   "inline sentinel rejected" \
   $'Summary: CODEX_REVIEW_CLEAN\n' \
+  ""
+
+assert_detector \
+  "JSON response wrapper with prose rejected" \
+  $'{\n  "response": "Summary\\nCODEX_REVIEW_CLEAN\\n"\n}\n' \
   ""
 
 # Multiple sentinel lines are ambiguous — the reviewer either changed

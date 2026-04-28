@@ -74,7 +74,10 @@ Every change — including one-liners, doc tweaks, and version bumps — starts 
 
 ```bash
 # Before any push
-for test in tests/test-*.sh; do bash "$test"; done
+for test in tests/test-*.sh; do
+  echo "==> $test"
+  bash "$test" || exit 1
+done
 ```
 
 All tests must pass. The bootstrap and update tests exercise the full propagation flow against temp directories.
