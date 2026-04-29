@@ -119,6 +119,14 @@ guard_worktreeinclude_patterns() {
 
 DEFAULT_REF="$(resolve_default_ref)"
 
+# Validate .worktreeinclude before any external side effect (branch creation,
+# worktree directory) so a bad pattern doesn't leave behind half-spawned state
+# that blocks retry.
+INCLUDE_FILE="$REPO_ROOT/.worktreeinclude"
+if [ -f "$INCLUDE_FILE" ]; then
+  guard_worktreeinclude_patterns "$INCLUDE_FILE"
+fi
+
 echo "==> Creating worktree"
 echo "    branch: $BRANCH"
 echo "    path:   $WORKTREE_PATH"
@@ -126,11 +134,9 @@ echo "    base:   $DEFAULT_REF"
 git worktree add "$WORKTREE_PATH" -b "$BRANCH" "$DEFAULT_REF"
 
 COPIED=0
-INCLUDE_FILE="$REPO_ROOT/.worktreeinclude"
 if [ -f "$INCLUDE_FILE" ]; then
   echo ""
   echo "==> Copying ignored files from .worktreeinclude"
-  guard_worktreeinclude_patterns "$INCLUDE_FILE"
 
   # Pattern matching is delegated to git so .worktreeinclude follows real
   # gitignore semantics (e.g. `local/*.json` does not match `local/x/y.json`).

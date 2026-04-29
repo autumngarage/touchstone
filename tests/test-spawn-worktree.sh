@@ -91,6 +91,26 @@ if (cd "$REPO" && bash "$TOUCHSTONE_ROOT/scripts/spawn-worktree.sh" feat/exists 
 fi
 assert_contains "$TEST_DIR/exists-output.txt" 'worktree path already exists'
 
+# Negated .worktreeinclude must be rejected BEFORE the worktree is created,
+# so a corrected retry does not collide with a half-spawned branch/path.
+BAD_INCLUDE_REPO="$TEST_DIR/bad-include"
+BAD_WT="$TEST_DIR/bad-include-wt"
+git init -q -b main "$BAD_INCLUDE_REPO"
+git -C "$BAD_INCLUDE_REPO" config user.email "test@example.com"
+git -C "$BAD_INCLUDE_REPO" config user.name "Test"
+echo "tracked" > "$BAD_INCLUDE_REPO/tracked.txt"
+git -C "$BAD_INCLUDE_REPO" add tracked.txt
+git -C "$BAD_INCLUDE_REPO" commit -qm "initial"
+printf '!negated\n' > "$BAD_INCLUDE_REPO/.worktreeinclude"
+if (cd "$BAD_INCLUDE_REPO" && bash "$TOUCHSTONE_ROOT/scripts/spawn-worktree.sh" feat/will-fail "$BAD_WT") >"$TEST_DIR/bad-include-output.txt" 2>&1; then
+  fail "negated .worktreeinclude pattern should fail"
+fi
+assert_contains "$TEST_DIR/bad-include-output.txt" 'negated .worktreeinclude'
+assert_not_exists "$BAD_WT"
+if git -C "$BAD_INCLUDE_REPO" show-ref --verify --quiet refs/heads/feat/will-fail; then
+  fail "branch feat/will-fail should not exist after .worktreeinclude validation failure"
+fi
+
 (cd "$REPO" && bash "$TOUCHSTONE_ROOT/scripts/spawn-worktree.sh" feat/default-path "$DEFAULT_WORKTREE") >/dev/null 2>&1
 assert_exists "$DEFAULT_WORKTREE/.git"
 [ "$(git -C "$DEFAULT_WORKTREE" branch --show-current)" = "feat/default-path" ] || fail "default-path branch not created"
