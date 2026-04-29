@@ -5,6 +5,7 @@
 .claude/skills/touchstone-agent-swarms/SKILL.md
 .claude/skills/touchstone-audit-weak-points/SKILL.md
 .claude/skills/touchstone-audit/SKILL.md
+principles/agent-swarms.md
 principles/audit-weak-points.md
 principles/documentation-ownership.md
 principles/engineering-principles.md
@@ -13,9 +14,11 @@ principles/pre-implementation-checklist.md
 principles/README.md
 scripts/branch-guard.sh
 scripts/cleanup-branches.sh
+scripts/cleanup-worktrees.sh
 scripts/codex-review.sh
 scripts/emergency-disclosure.sh
 scripts/merge-pr.sh
 scripts/open-pr.sh
 scripts/run-pytest-in-venv.sh
+scripts/spawn-worktree.sh
 scripts/touchstone-run.sh
