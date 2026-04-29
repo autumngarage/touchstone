@@ -19,6 +19,8 @@ set -euo pipefail
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$TOUCHSTONE_ROOT/hooks/codex-review.sh"
+TEST_DIR="$(mktemp -d -t touchstone-test-codex-review-sentinel.XXXXXX)"
+trap 'rm -rf "$TEST_DIR"' EXIT
 
 if [ ! -x "$SCRIPT" ]; then
   echo "FAIL: $SCRIPT not found or not executable" >&2
@@ -90,8 +92,13 @@ assert_detector \
   ""
 
 assert_detector \
-  "JSON response wrapper with prose rejected" \
+  "JSON response wrapper with escaped-line sentinel" \
   $'{\n  "response": "Summary\\nCODEX_REVIEW_CLEAN\\n"\n}\n' \
+  "CODEX_REVIEW_CLEAN"
+
+assert_detector \
+  "JSON response wrapper with inline sentinel rejected" \
+  $'{\n  "response": "Summary CODEX_REVIEW_CLEAN"\n}\n' \
   ""
 
 # Multiple sentinel lines are ambiguous — the reviewer either changed
@@ -110,3 +117,103 @@ assert_detector \
   ""
 
 echo "==> OK: all sentinel tests passed"
+
+echo "==> codex-review malformed-sentinel gate behavior"
+
+REPO_DIR="$TEST_DIR/repo"
+FAKE_BIN="$TEST_DIR/bin"
+PROMPT_FILE="$TEST_DIR/review-prompt.txt"
+CLOSED_OUTPUT="$TEST_DIR/fail-closed-output.txt"
+OPEN_OUTPUT="$TEST_DIR/fail-open-output.txt"
+
+mkdir -p "$REPO_DIR" "$FAKE_BIN"
+git -C "$REPO_DIR" init >/dev/null 2>&1
+git -C "$REPO_DIR" config user.name "Touchstone Test"
+git -C "$REPO_DIR" config user.email "touchstone@example.com"
+printf 'base\n' > "$REPO_DIR/example.txt"
+git -C "$REPO_DIR" add example.txt
+git -C "$REPO_DIR" commit -m "base" >/dev/null 2>&1
+printf 'changed\n' >> "$REPO_DIR/example.txt"
+git -C "$REPO_DIR" add example.txt
+git -C "$REPO_DIR" commit -m "change" >/dev/null 2>&1
+
+cat > "$FAKE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "main"
+EOF
+
+cat > "$FAKE_BIN/conductor" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "doctor" ]; then
+  printf '{"providers":[{"configured":true}]}\n'
+  exit 0
+fi
+cat > "$PROMPT_FILE"
+printf '[conductor] auto (prefer=best, effort=max) -> codex (tier: frontier)\n' >&2
+printf 'No blocking issues were found in the diff.\n'
+printf 'The changes look safe to merge.\n'
+EOF
+chmod +x "$FAKE_BIN/gh" "$FAKE_BIN/conductor"
+
+set +e
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    PROMPT_FILE="$PROMPT_FILE" \
+    TOUCHSTONE_REVIEW_LOG=/dev/null \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
+    bash "$SCRIPT" > "$CLOSED_OUTPUT" 2>&1
+)
+CLOSED_EXIT=$?
+set -e
+
+if [ "$CLOSED_EXIT" -eq 1 ] \
+  && grep -q 'No unique standalone sentinel line was found.' "$CLOSED_OUTPUT" \
+  && grep -q 'Conductor selected provider: codex' "$CLOSED_OUTPUT" \
+  && grep -q "Conductor command invoked: $FAKE_BIN/conductor exec" "$CLOSED_OUTPUT"; then
+  printf '  OK: missing sentinel blocks under fail-closed policy with provider diagnostics\n'
+else
+  printf 'FAIL: missing sentinel should block with provider and command diagnostics\n' >&2
+  printf 'exit code: %s\n' "$CLOSED_EXIT" >&2
+  cat "$CLOSED_OUTPUT" >&2
+  exit 1
+fi
+
+set +e
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    PROMPT_FILE="$PROMPT_FILE" \
+    TOUCHSTONE_REVIEW_LOG=/dev/null \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_ON_ERROR=fail-open \
+    bash "$SCRIPT" > "$OPEN_OUTPUT" 2>&1
+)
+OPEN_EXIT=$?
+set -e
+
+if [ "$OPEN_EXIT" -eq 0 ] \
+  && grep -q 'No unique standalone sentinel line was found.' "$OPEN_OUTPUT" \
+  && grep -q '\[review:fail-open\] missing sentinel — policy permits merge but the review verdict is untrustworthy' "$OPEN_OUTPUT"; then
+  printf '  OK: missing sentinel fail-opens only with visible warning under fail-open policy\n'
+else
+  printf 'FAIL: missing sentinel should visibly warn under fail-open policy\n' >&2
+  printf 'exit code: %s\n' "$OPEN_EXIT" >&2
+  cat "$OPEN_OUTPUT" >&2
+  exit 1
+fi
+
+if grep -q 'very last physical line of the entire response must be exactly one sentinel token' "$PROMPT_FILE"; then
+  printf '  OK: reviewer prompt states the strict final-line sentinel contract\n'
+else
+  printf 'FAIL: prompt did not include strict final-line sentinel contract\n' >&2
+  sed -n '1,220p' "$PROMPT_FILE" >&2
+  exit 1
+fi
+
+echo "==> OK: malformed-sentinel gate behavior passed"

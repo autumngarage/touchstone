@@ -98,13 +98,18 @@ extract_review_sentinel() {
       sentinel = line
       count++
     }
-    /^[[:space:]]*"response"[[:space:]]*:[[:space:]]*"CODEX_REVIEW_(CLEAN|FIXED|BLOCKED)(\\n)?"[[:space:]]*,?[[:space:]]*$/ {
+    /^[[:space:]]*"response"[[:space:]]*:/ {
       line = $0
       gsub(/\r/, "", line)
       sub(/^[[:space:]]*"response"[[:space:]]*:[[:space:]]*"/, "", line)
-      sub(/(\\n)?"[[:space:]]*,?[[:space:]]*$/, "", line)
-      sentinel = line
-      count++
+      while (match(line, /(^|\\n)CODEX_REVIEW_(CLEAN|FIXED|BLOCKED)(\\n|")/)) {
+        candidate = substr(line, RSTART, RLENGTH)
+        sub(/^\\n/, "", candidate)
+        sub(/(\\n|")$/, "", candidate)
+        sentinel = candidate
+        count++
+        line = substr(line, RSTART + RLENGTH)
+      }
     }
     END {
       if (count == 1) {
@@ -1184,10 +1189,10 @@ reviewer_conductor_exec() {
   # REVIEW_MODE → subcommand + tools + sandbox. Conductor translates these
   # portable names into each provider's native flag dialect.
   local tools sandbox
+  subcommand="$(conductor_subcommand_for_mode)"
   case "$REVIEW_MODE" in
     diff-only)
       # Single-turn call — the diff is already embedded in the prompt.
-      subcommand="call"
       ;;
     review-only)
       subcommand="exec"
@@ -1222,6 +1227,13 @@ reviewer_conductor_exec() {
   CODEX_REVIEW_IN_PROGRESS=1 \
     printf '%s' "$prompt" \
     | conductor "$subcommand" "${args[@]}"
+}
+
+conductor_subcommand_for_mode() {
+  case "$REVIEW_MODE" in
+    diff-only) printf 'call' ;;
+    *)         printf 'exec' ;;
+  esac
 }
 
 # --------------------------------------------------------------------------
@@ -1460,6 +1472,9 @@ handle_error() {
     log_skip_event conductor-error "fail-closed:${reason}"
     exit 1
   else
+    if [ "$reason" = "malformed sentinel" ]; then
+      echo "[review:fail-open] missing sentinel — policy permits merge but the review verdict is untrustworthy" >&2
+    fi
     echo "==> ERROR ($reason) — not blocking push (on_error=fail-open)."
     echo "    Set on_error = \"fail-closed\" in .codex-review.toml to block on errors."
     log_skip_event conductor-error "fail-open:${reason}"
@@ -1619,6 +1634,7 @@ If you emit CODEX_REVIEW_BLOCKED, list each blocking issue on its own line in th
 If you emit CODEX_REVIEW_FIXED, briefly describe what you fixed (one line per fix).
 
 Do not invent new sentinels. Do not output anything after the sentinel line.
+This is a strict gate contract: the very last physical line of the entire response must be exactly one sentinel token and nothing else.
 PROMPT_EOF
 
 # --------------------------------------------------------------------------
@@ -1991,6 +2007,29 @@ parse_primary_provider() {
   #   [conductor] auto (...) -> claude (tier: ...)
   # `sed -nE` treats `(a|b)` as ERE alternation.
   printf '%s' "$line" | sed -nE 's/.*(→|-> ?)([a-zA-Z0-9_.-]+).*/\2/p' | head -1
+}
+
+conductor_invocation_label() {
+  local conductor_path subcommand
+  conductor_path="$(command -v conductor 2>/dev/null || printf 'conductor')"
+  subcommand="$(conductor_subcommand_for_mode)"
+  printf '%s %s' "$conductor_path" "$subcommand"
+}
+
+print_malformed_sentinel_diagnostics() {
+  if [ "$ACTIVE_REVIEWER" != "conductor" ]; then
+    return 0
+  fi
+
+  local selected_provider
+  selected_provider="$(parse_primary_provider)"
+  if [ -z "$selected_provider" ] && [ -n "${CONDUCTOR_WITH:-}" ]; then
+    selected_provider="$CONDUCTOR_WITH"
+  fi
+  [ -n "$selected_provider" ] || selected_provider="unknown"
+
+  echo "    Conductor selected provider: $selected_provider"
+  echo "    Conductor command invoked: $(conductor_invocation_label)"
 }
 
 # Run a peer review via Conductor, excluding the primary's provider.
@@ -2436,6 +2475,7 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
       else
         echo "    No unique standalone sentinel line was found."
       fi
+      print_malformed_sentinel_diagnostics
       echo "    Last non-blank line was: '$LAST_LINE'"
       echo "    Raw output (first 20 lines):"
       printf '%s\n' "$OUTPUT" | head -20 | sed 's/^/    /'
