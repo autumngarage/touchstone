@@ -346,6 +346,8 @@ update_file "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_DIR/scripts/t
 update_file "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
 update_file "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
 update_file "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
+update_file "$TOUCHSTONE_ROOT/scripts/spawn-worktree.sh" "$PROJECT_DIR/scripts/spawn-worktree.sh"
+update_file "$TOUCHSTONE_ROOT/scripts/cleanup-worktrees.sh" "$PROJECT_DIR/scripts/cleanup-worktrees.sh"
 
 if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
   update_file "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
@@ -490,6 +492,8 @@ write_touchstone_manifest() {
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
     printf 'scripts/cleanup-branches.sh\n'
+    printf 'scripts/spawn-worktree.sh\n'
+    printf 'scripts/cleanup-worktrees.sh\n'
     if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
       printf 'scripts/run-pytest-in-venv.sh\n'
     fi

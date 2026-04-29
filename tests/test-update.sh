@@ -117,8 +117,12 @@ assert_contains "$TEST_DIR/update-output-2.txt" 'Creating update branch: chore/t
 assert_contains "$TEST_DIR/update-output-2.txt" 'Committed: chore: update touchstone to'
 assert_contains "$TEST_DIR/update-output-2.txt" 'bash scripts/open-pr.sh'
 assert_exists "$PROJECT/scripts/touchstone-run.sh"
+assert_exists "$PROJECT/scripts/spawn-worktree.sh"
+assert_exists "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_exists "$PROJECT/.touchstone-manifest"
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/touchstone-run.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
 assert_not_exists "$PROJECT/principles/engineering-principles.md.bak"
 assert_not_exists "$PROJECT/.claude/settings.json.touchstone-pre-update.bak"
 

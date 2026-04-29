@@ -44,6 +44,7 @@ Full rationale, worked examples, and the *why* behind each rule:
 - `principles/pre-implementation-checklist.md`
 - `principles/documentation-ownership.md`
 - `principles/git-workflow.md`
+- `principles/agent-swarms.md`
 
 ## Required Delivery Workflow
 
@@ -72,6 +73,8 @@ Use the normal lifecycle unless the user asks for a different flow:
 4. From a clean worktree, run `CODEX_REVIEW_FORCE=1 bash scripts/codex-review.sh` so Conductor can review and safely auto-fix before merge. If Conductor creates fix commits, let the loop finish; if it blocks, address findings, commit, and rerun until clean.
 5. Ship with `bash scripts/open-pr.sh --auto-merge`; it creates the PR, runs the final read-only Conductor merge review, squash-merges, and syncs the default branch.
 6. Clean up the feature branch if it still exists locally.
+
+File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md` for slice manifests, file ownership, concurrency caps, and cleanup; use `scripts/spawn-worktree.sh` and `scripts/cleanup-worktrees.sh` for local setup and teardown.
 
 ### Testing
 

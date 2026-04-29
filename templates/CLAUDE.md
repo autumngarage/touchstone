@@ -29,10 +29,12 @@ Non-negotiable. Every code change is reviewed against them. Full rationale, work
 - **Make irreversible actions recoverable** — destructive operations need dry-run, backup, idempotency, rollback, or forward-fix plan before they run.
 - **Preserve compatibility at boundaries** — public API/config/schema/CLI/hook/template changes need a compatibility or migration plan.
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill.
+- **Isolate file-writing subagents** — parallel workers use dedicated worktrees, slice manifests, and disjoint file ownership by default.
 
 @principles/engineering-principles.md
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
+@principles/agent-swarms.md
 
 ## Git Workflow
 
@@ -54,6 +56,7 @@ Every change — including one-liners, doc tweaks, and version bumps — starts 
 ### Housekeeping
 
 - Concise commit messages. Logically grouped changes.
+- File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md`; use `scripts/spawn-worktree.sh` and `scripts/cleanup-worktrees.sh` for local setup and teardown.
 - Run `/compact` at ~50% context. Start fresh sessions for unrelated work.
 
 ### Memory Hygiene

@@ -36,6 +36,7 @@ Full rationale, worked examples, and the *why* behind each rule:
 - `principles/pre-implementation-checklist.md`
 - `principles/documentation-ownership.md`
 - `principles/git-workflow.md`
+- `principles/agent-swarms.md`
 
 ## Required Delivery Workflow
 
@@ -62,6 +63,7 @@ You are maintaining a shared engineering platform that provides universal princi
 - Keep changes logically grouped. Stage explicit file paths, commit with a concise message, and avoid unrelated refactors.
 - Before shipping, run `CODEX_REVIEW_FORCE=1 bash scripts/codex-review.sh` from a clean worktree to ask Conductor for review and safe auto-fixes. If Conductor commits fixes, let the loop finish; if it blocks, address the findings, commit, and rerun until clean.
 - To ship a completed branch, use `bash scripts/open-pr.sh --auto-merge`; it pushes, creates the PR, runs the final read-only Conductor merge review, squash-merges, and syncs the default branch.
+- File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md` for slice manifests, file ownership, concurrency caps, and cleanup; use `scripts/spawn-worktree.sh` and `scripts/cleanup-worktrees.sh` for local setup and teardown.
 
 ### Touchstone-Specific Rules
 
@@ -100,6 +102,13 @@ touchstone/
 ├── prototypes/     # Throwaway design experiments (e.g. UI banners) — not shipped to projects
 └── tests/          # Self-tests for bootstrap and update flows
 ```
+
+### Key Helper Scripts
+
+| File | Purpose |
+|------|---------|
+| `scripts/spawn-worktree.sh` | Create an isolated branch/worktree for parallel file-writing agent slices |
+| `scripts/cleanup-worktrees.sh` | Dry-run-first cleanup for clean merged-or-equivalent worktrees |
 
 ## Review Guide
 
