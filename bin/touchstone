@@ -4,12 +4,14 @@
 #
 # Usage:
 #   touchstone new <project-dir>          Create a new project with touchstone files
-#   touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)]
+#   touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)]
 #                                      Add touchstone to the current project
 #   touchstone run <task>                  Run profile task: lint, test, build, typecheck, validate
 #   touchstone update                     Update current project to latest touchstone
+#   touchstone update --in-place          Update on the current branch
 #   touchstone update --dry-run           Show what would change without applying
 #   touchstone update --check             Report whether current project needs update
+#   touchstone update --ship              Push, open PR, review, and auto-merge
 #   touchstone sync                       Update all registered projects
 #   touchstone sync --pull-first          Pull latest touchstone, then sync all projects
 #   touchstone status                     Show status of the current project
@@ -114,7 +116,7 @@ cmd_init() {
         shift
         ;;
       -h|--help)
-        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests] [--claude-principles yes|no|prompt] [--no-claude-principles]"
+        echo "Usage: touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests] [--claude-principles yes|no|prompt] [--no-claude-principles]"
         return 0
         ;;
       --type)
@@ -179,7 +181,7 @@ cmd_init() {
         ;;
       *)
         echo "ERROR: unknown argument '$1'" >&2
-        echo "Usage: touchstone init [--no-setup] [--no-ship] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests] [--claude-principles yes|no|prompt] [--no-claude-principles]" >&2
+        echo "Usage: touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests] [--claude-principles yes|no|prompt] [--no-claude-principles]" >&2
         exit 1
         ;;
     esac
@@ -190,7 +192,7 @@ cmd_init() {
   fi
 
   # State detection: fresh | current | outdated | legacy-toolkit. Determines
-  # whether init bootstraps, reconciles, or delegates to the update flow.
+  # whether init bootstraps or reconciles files in place.
   local project_dir installed_id current_id init_state="fresh"
   project_dir="$(pwd)"
 
@@ -218,23 +220,19 @@ cmd_init() {
       return 1
       ;;
     outdated)
-      tk_header "Touchstone init — upgrading"
+      tk_header "Touchstone init — reconciling"
       tk_dim "  installed: ${installed_id:0:12}"
       tk_dim "  current:   ${current_id:0:12}"
-      local update_args=()
+      tk_info "This repo is on an older Touchstone; init will reconcile files in place."
       if [ "$ship_upgrade" = true ]; then
-        tk_info "Delegating to 'touchstone update --ship' (branch + commit + auto-merge PR)"
-        update_args+=("--ship")
+        tk_dim "For a reviewable branch + PR instead, run: touchstone update --ship"
       else
-        tk_info "Delegating to 'touchstone update' (branch + commit so the upgrade is reviewable)"
+        tk_dim "For a reviewable branch + commit instead, run: touchstone update"
       fi
       echo ""
-      # The CLAUDE.md connection check is intentionally skipped on the
-      # outdated path: update-project.sh requires a clean worktree, and
-      # injecting the imports here would dirty it before update runs.
-      # After the update completes (project moves to `current` state),
-      # the user can re-run `touchstone init` to migrate CLAUDE.md.
-      exec bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" ${update_args[@]+"${update_args[@]}"}
+      # `init` is a repair/reconcile command, so it must not silently switch
+      # branches or create orphaned PRs when the project is stale. The
+      # reviewable update flow remains available as `touchstone update`.
       ;;
   esac
 
@@ -1336,8 +1334,10 @@ cmd_help() {
   printf "    ${BOLD}touchstone detect${RESET}                 Show detected project profile\n"
   printf "    ${BOLD}touchstone run${RESET} <task>             Run lint, typecheck, build, test, or validate\n"
   printf "    ${BOLD}touchstone update${RESET}                 Create a branch + commit for touchstone updates\n"
+  printf "    ${BOLD}touchstone update${RESET} --in-place      Commit touchstone updates on the current branch\n"
   printf "    ${BOLD}touchstone update${RESET} --dry-run       Preview what would change\n"
   printf "    ${BOLD}touchstone update${RESET} --check         Report whether this project needs update\n"
+  printf "    ${BOLD}touchstone update${RESET} --ship          Push, open PR, review, and auto-merge\n"
   printf "    ${BOLD}touchstone migrate-from-toolkit${RESET}   One-shot rename of legacy .toolkit-* files (pre-1.0.0 projects)\n"
   printf "    ${BOLD}touchstone migrate-review-config${RESET}  Rewrite .codex-review.toml from 1.x → 2.0 shape (silences migration warnings on push)\n"
   printf "    ${BOLD}touchstone review --dry-run${RESET}      Preview which provider would review the next push, no tokens spent\n"

@@ -109,6 +109,9 @@ touchstone update --check
 # Create a branch + commit with the Touchstone update
 touchstone update
 
+# Commit the Touchstone update on your current task branch
+touchstone update --in-place
+
 # See all registered projects
 touchstone status
 
@@ -121,7 +124,6 @@ bash setup.sh --deps-only
 | Command | What it does |
 |---------|-------------|
 | `touchstone init [--no-setup]` | Add touchstone to the current project |
-| `touchstone init --no-ship` | When init upgrades an outdated project, open a review branch instead of auto-merging the upgrade PR |
 | `touchstone migrate-from-toolkit` | Migrate a project from the legacy `.toolkit-*` files before re-running `touchstone init` |
 | `touchstone init --review-routing small-local` | Route small diffs through local Ollama, larger diffs through Conductor's auto-router |
 | `touchstone init --reviewer claude` | Pin Conductor to a specific underlying provider (codex / claude / gemini / ollama) |
@@ -140,8 +142,10 @@ bash setup.sh --deps-only
 | `touchstone detect` | Show the detected project profile for the current repo |
 | `touchstone run <task>` | Run profile-aware `lint`, `typecheck`, `build`, `test`, or `validate` |
 | `touchstone update` | Create a branch and commit that updates the current project's touchstone-owned files |
+| `touchstone update --in-place` | Commit the update on the current branch instead of creating a chore branch |
 | `touchstone update --dry-run` | Preview what would change |
 | `touchstone update --check` | Report whether the current project needs an update |
+| `touchstone update --ship` | Push, open a PR, run the final AI review, and auto-merge when clean |
 | `touchstone sync` | Update all registered projects at once |
 | `touchstone sync --check` | Report which registered projects need sync |
 | `touchstone sync --pull-first` | Pull latest touchstone first, then sync all projects |
@@ -202,7 +206,7 @@ When you improve Touchstone (add a principle, fix a script), run:
 touchstone sync
 ```
 
-This updates touchstone-owned files across registered projects by creating reviewable update branches and commits. For one project, run `touchstone update --dry-run` to preview, `touchstone update --check` to check staleness, and `touchstone update` from a clean git worktree to create a `chore/touchstone-*` branch with the update committed. Project-owned files are never touched by `touchstone update`; use `touchstone diff` to review the core project-owned files against the latest templates.
+This updates touchstone-owned files across registered projects by creating reviewable update branches and commits. For one project, run `touchstone update --dry-run` to preview, `touchstone update --check` to check staleness, and `touchstone update` from a clean git worktree to create a `chore/touchstone-*` branch with the update committed. If a driving CLI already created a task branch, use `touchstone update --in-place` to commit the Touchstone update there. Project-owned files are never touched by `touchstone update`; use `touchstone diff` to review the core project-owned files against the latest templates.
 
 Projects are auto-registered in `~/.touchstone-projects` when you bootstrap them.
 

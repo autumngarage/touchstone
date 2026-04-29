@@ -352,9 +352,22 @@ install_python_requirements() {
     ok "$venv_dir created"
   fi
 
-  "$venv_dir/bin/python" -m pip install -r "$requirements_file" 2>&1 | tail -1 | while read -r line; do
-    ok "$label dependencies installed: $line"
-  done
+  if ! "$venv_dir/bin/python" -m pip --version >/dev/null 2>&1; then
+    if "$venv_dir/bin/python" -m ensurepip --upgrade >/dev/null 2>&1; then
+      ok "$venv_dir pip bootstrapped"
+    else
+      fail "$venv_dir is missing pip. Run: $venv_dir/bin/python -m ensurepip --upgrade"
+      return 1
+    fi
+  fi
+
+  local pip_output
+  if pip_output="$("$venv_dir/bin/python" -m pip install -r "$requirements_file" 2>&1 | tail -1)"; then
+    ok "$label dependencies installed: $pip_output"
+  else
+    fail "$label dependency install failed: $pip_output"
+    return 1
+  fi
 }
 
 install_uv_if_missing() {
@@ -376,11 +389,17 @@ install_uv_if_missing() {
 install_uv_project() {
   local label="$1"
   local project_dir="$2"
+  local uv_output
 
-  if install_uv_if_missing; then
-    (cd "$project_dir" && uv sync) 2>&1 | tail -1 | while read -r line; do
-      ok "$label dependencies synced: $line"
-    done
+  if ! install_uv_if_missing; then
+    return 1
+  fi
+
+  if uv_output="$((cd "$project_dir" && uv sync) 2>&1 | tail -1)"; then
+    ok "$label dependencies synced: $uv_output"
+  else
+    fail "$label dependency sync failed: $uv_output"
+    return 1
   fi
 }
 

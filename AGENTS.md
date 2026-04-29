@@ -75,7 +75,10 @@ You are maintaining a shared engineering platform that provides universal princi
 Before pushing, run:
 
 ```bash
-for test in tests/test-*.sh; do bash "$test"; done
+for test in tests/test-*.sh; do
+  echo "==> $test"
+  bash "$test" || exit 1
+done
 ```
 
 For focused bootstrap/update changes, at minimum run `bash tests/test-bootstrap.sh` and `bash tests/test-update.sh`, then run the broader suite before shipping.

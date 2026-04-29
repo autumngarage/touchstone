@@ -26,7 +26,15 @@ run_claude_probe() {
   claude_pid=$!
 
   (
-    sleep "$timeout_secs"
+    elapsed=0
+    while [ "$elapsed" -lt "$timeout_secs" ]; do
+      sleep 1
+      if ! kill -0 "$claude_pid" 2>/dev/null; then
+        exit 0
+      fi
+      elapsed=$((elapsed + 1))
+    done
+
     if kill -0 "$claude_pid" 2>/dev/null; then
       printf 'timeout\n' > "$timed_out_file"
       kill "$claude_pid" 2>/dev/null || true

@@ -62,6 +62,10 @@ _touchstone() {
           _arguments \
             '--dry-run[Preview changes without applying]' \
             '--check[Report whether this project needs update]' \
+            '--in-place[Commit the update on the current branch]' \
+            '--no-branch[Alias for --in-place]' \
+            '--ship[Push, open PR, review, and auto-merge]' \
+            '--no-ship[Do not run the shipping flow]' \
             '--branch[Use a specific update branch]:branch name:'
           ;;
         sync)

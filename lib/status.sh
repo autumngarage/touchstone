@@ -68,6 +68,14 @@ _status_behind_count() {
     printf 'current'
     return 0
   fi
+  local current_version
+  current_version="$(touchstone_version_str 2>/dev/null || true)"
+  if [ -n "$current_version" ]; then
+    if [ "$recorded" = "$current_version" ] || [ "$recorded" = "v$current_version" ]; then
+      printf 'current'
+      return 0
+    fi
+  fi
   if [ ! -d "${TOUCHSTONE_ROOT:-/nonexistent}/.git" ]; then
     printf '?'
     return 0

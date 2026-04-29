@@ -523,9 +523,22 @@ install_python_requirements() {
     ok "$venv_dir created"
   fi
 
-  "$venv_dir/bin/python" -m pip install -r "$requirements_file" 2>&1 | tail -1 | while read -r line; do
-    ok "$label dependencies installed: $line"
-  done
+  if ! "$venv_dir/bin/python" -m pip --version >/dev/null 2>&1; then
+    if "$venv_dir/bin/python" -m ensurepip --upgrade >/dev/null 2>&1; then
+      ok "$venv_dir pip bootstrapped"
+    else
+      fail "$venv_dir is missing pip. Run: $venv_dir/bin/python -m ensurepip --upgrade"
+      return 1
+    fi
+  fi
+
+  local pip_output
+  if pip_output="$("$venv_dir/bin/python" -m pip install -r "$requirements_file" 2>&1 | tail -1)"; then
+    ok "$label dependencies installed: $pip_output"
+  else
+    fail "$label dependency install failed: $pip_output"
+    return 1
+  fi
 }
 
 install_uv_if_missing() {
@@ -547,11 +560,17 @@ install_uv_if_missing() {
 install_uv_project() {
   local label="$1"
   local project_dir="$2"
+  local uv_output
 
-  if install_uv_if_missing; then
-    (cd "$project_dir" && uv sync) 2>&1 | tail -1 | while read -r line; do
-      ok "$label dependencies synced: $line"
-    done
+  if ! install_uv_if_missing; then
+    return 2
+  fi
+
+  if uv_output="$((cd "$project_dir" && uv sync) 2>&1 | tail -1)"; then
+    ok "$label dependencies synced: $uv_output"
+  else
+    fail "$label dependency sync failed: $uv_output"
+    return 2
   fi
 }
 
@@ -686,14 +705,14 @@ install_python_dependencies() {
   local project_dir="$2"
 
   if [ -f "$project_dir/uv.lock" ]; then
-    install_uv_project "$label" "$project_dir"
+    install_uv_project "$label" "$project_dir" || return 2
   elif [ -f "$project_dir/pyproject.toml" ] && [ ! -f "$project_dir/requirements.txt" ]; then
-    install_uv_project "$label" "$project_dir"
+    install_uv_project "$label" "$project_dir" || return 2
   elif [ -f "$project_dir/requirements.txt" ]; then
     if [ "$project_dir" = "." ]; then
-      install_python_requirements "$label" "$project_dir/requirements.txt" ".venv"
+      install_python_requirements "$label" "$project_dir/requirements.txt" ".venv" || return 2
     else
-      install_python_requirements "$label" "$project_dir/requirements.txt" "$project_dir/.venv"
+      install_python_requirements "$label" "$project_dir/requirements.txt" "$project_dir/.venv" || return 2
     fi
   else
     return 1
@@ -762,8 +781,10 @@ install_profile_dependencies() {
 }
 
 install_configured_targets() {
-  local entry name path profile
+  local entry name path profile rc
   local -a target_entries=()
+  local found=false
+  local failed=false
 
   [ -n "$CONFIG_TARGETS" ] || return 1
 
@@ -782,17 +803,45 @@ install_configured_targets() {
       warn "target '$name' path not found: $path"
       continue
     fi
-    install_profile_dependencies "$name" "$path" "$profile" || true
+    if install_profile_dependencies "$name" "$path" "$profile"; then
+      found=true
+    else
+      rc=$?
+      if [ "$rc" -ne 1 ]; then
+        failed=true
+      fi
+    fi
   done
+
+  if [ "$failed" = true ]; then
+    return 2
+  fi
+  if [ "$found" = true ]; then
+    return 0
+  fi
+  return 1
 }
 
 load_touchstone_config
 
 DEPS_FOUND=false
+DEPS_FAILED=false
 ROOT_PROFILE="${CONFIG_PROJECT_TYPE:-auto}"
 if [ "$ROOT_PROFILE" = "generic" ] && [ "$(detect_profile ".")" != "generic" ]; then
   ROOT_PROFILE="$(detect_profile ".")"
 fi
+
+run_dependency_probe() {
+  local rc
+  if "$@"; then
+    DEPS_FOUND=true
+  else
+    rc=$?
+    if [ "$rc" -ne 1 ]; then
+      DEPS_FAILED=true
+    fi
+  fi
+}
 
 # --------------------------------------------------------------------------
 # 8b. Per-profile dev tools
@@ -931,17 +980,17 @@ else
   install_configured_target_devtools
 fi
 
-if install_profile_dependencies "Project" "." "$ROOT_PROFILE"; then
-  DEPS_FOUND=true
-fi
+run_dependency_probe install_profile_dependencies "Project" "." "$ROOT_PROFILE"
 
 # Backward-compatible nested Python agent support.
-if install_python_dependencies "agent Python" "agent"; then
-  DEPS_FOUND=true
+run_dependency_probe install_python_dependencies "agent Python" "agent"
+
+if [ "$DEPS_FOUND" = false ]; then
+  run_dependency_probe install_configured_targets
 fi
 
-if [ "$DEPS_FOUND" = false ] && install_configured_targets; then
-  DEPS_FOUND=true
+if [ "$DEPS_FAILED" = true ]; then
+  exit 1
 fi
 
 if [ "$DEPS_FOUND" = false ]; then

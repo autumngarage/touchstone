@@ -102,6 +102,7 @@ echo "--- Step 3: Modify a Touchstone-owned file, then update ---"
 
 echo "# locally modified" >> "$PROJECT/principles/engineering-principles.md"
 rm "$PROJECT/scripts/touchstone-run.sh"
+printf '{"custom": true}\n' > "$PROJECT/.claude/settings.json"
 echo "0000000000000000000000000000000000000000" > "$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate old touchstone state"
 
@@ -119,6 +120,7 @@ assert_exists "$PROJECT/scripts/touchstone-run.sh"
 assert_exists "$PROJECT/.touchstone-manifest"
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/touchstone-run.sh$'
 assert_not_exists "$PROJECT/principles/engineering-principles.md.bak"
+assert_not_exists "$PROJECT/.claude/settings.json.touchstone-pre-update.bak"
 
 if find "$PROJECT" -name '*.bak' -print | grep -q .; then
   echo "FAIL: update should not create .bak files" >&2
@@ -152,6 +154,60 @@ if git -C "$PROJECT" ls-files --error-unmatch .touchstone-version >/dev/null 2>&
 else
   echo "FAIL: expected .touchstone-version to be tracked" >&2
   ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
+# Test 2b: --in-place updates the current feature branch without creating a
+# chore/touchstone-* branch. This is the explicit escape hatch for drivers that
+# already created a task branch.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 3b: In-place update stays on the current branch ---"
+
+IN_PLACE_PROJECT="$TEST_DIR/in-place-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$IN_PLACE_PROJECT" --no-register >/dev/null
+configure_git "$IN_PLACE_PROJECT"
+commit_all "$IN_PLACE_PROJECT" "initial in-place test project"
+git -C "$IN_PLACE_PROJECT" checkout -q -b feature/in-place-update
+rm "$IN_PLACE_PROJECT/scripts/touchstone-run.sh"
+printf '{"custom": true}\n' > "$IN_PLACE_PROJECT/.claude/settings.json"
+echo "0000000000000000000000000000000000000004" > "$IN_PLACE_PROJECT/.touchstone-version"
+commit_all "$IN_PLACE_PROJECT" "simulate old in-place touchstone state"
+IN_PLACE_BASE="$(git -C "$IN_PLACE_PROJECT" rev-parse HEAD)"
+
+(cd "$IN_PLACE_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) 2>&1 | tee "$TEST_DIR/update-in-place-output.txt"
+
+if [ "$(git -C "$IN_PLACE_PROJECT" branch --show-current)" != "feature/in-place-update" ]; then
+  echo "FAIL: --in-place update should stay on the current feature branch" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/update-in-place-output.txt" 'Applying update on current branch: feature/in-place-update'
+assert_contains "$TEST_DIR/update-in-place-output.txt" 'Committed: chore: update touchstone to'
+assert_not_contains "$TEST_DIR/update-in-place-output.txt" 'Creating update branch: chore/touchstone-'
+assert_exists "$IN_PLACE_PROJECT/scripts/touchstone-run.sh"
+assert_not_exists "$IN_PLACE_PROJECT/.claude/settings.json.touchstone-pre-update.bak"
+
+if git -C "$IN_PLACE_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
+  echo "FAIL: --in-place update should not create a chore/touchstone-* branch" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+if [ "$(git -C "$IN_PLACE_PROJECT" rev-parse HEAD^)" != "$IN_PLACE_BASE" ]; then
+  echo "FAIL: --in-place update commit should be based on the pre-update feature branch HEAD" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+if [ -n "$(git -C "$IN_PLACE_PROJECT" status --porcelain)" ]; then
+  echo "FAIL: --in-place update should leave a clean worktree after committing" >&2
+  git -C "$IN_PLACE_PROJECT" status --short >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+if (cd "$IN_PLACE_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place --branch chore/custom) >"$TEST_DIR/update-in-place-branch-output.txt" 2>&1; then
+  echo "FAIL: --in-place and --branch should be rejected together" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/update-in-place-branch-output.txt" 'cannot be combined'
 fi
 
 # --------------------------------------------------------------------------
