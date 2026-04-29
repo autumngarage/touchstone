@@ -21,3 +21,7 @@ Drive this automatically unless the user asks for a different flow:
 5. If Conductor creates fix commits, let the loop finish. If it blocks, address findings, commit, and rerun until clean.
 6. Ship with `bash scripts/open-pr.sh --auto-merge`; this creates the PR, runs the final read-only Conductor merge review, squash-merges, and syncs the default branch.
 7. Clean up the feature branch if it still exists locally.
+
+## Parallel Agent Work
+
+File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md` for slice manifests, file ownership, concurrency caps, and parent orchestration. Use `scripts/spawn-worktree.sh` to create local branch/worktree slices and `scripts/cleanup-worktrees.sh` for dry-run-first teardown.

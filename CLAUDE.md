@@ -29,10 +29,12 @@ Non-negotiable. Every code change is reviewed against them. Full rationale, work
 - **Make irreversible actions recoverable** — destructive operations need dry-run, backup, idempotency, rollback, or forward-fix plan before they run.
 - **Preserve compatibility at boundaries** — public API/config/schema/CLI/hook/template changes need a compatibility or migration plan.
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill.
+- **Isolate file-writing subagents** — parallel workers use dedicated worktrees, slice manifests, and disjoint file ownership by default.
 
 @principles/engineering-principles.md
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
+@principles/agent-swarms.md
 
 ## Git Workflow
 
@@ -54,6 +56,7 @@ Every change — including one-liners, doc tweaks, and version bumps — starts 
 ### Housekeeping
 
 - Concise commit messages. Logically grouped changes.
+- File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md`; use `scripts/spawn-worktree.sh` and `scripts/cleanup-worktrees.sh` for local setup and teardown.
 - Run `/compact` at ~50% context. Start fresh sessions for unrelated work.
 
 ### Memory Hygiene
@@ -68,6 +71,7 @@ Every change — including one-liners, doc tweaks, and version bumps — starts 
 - **Changes propagate.** Every file in `principles/`, `hooks/`, and `scripts/` gets copied into downstream projects by `update-project.sh`. Updates must happen on a clean git worktree and land as a `chore/touchstone-*` branch commit, not as orphaned dirty files. Test changes here before syncing.
 - **Templates are starting points.** Files in `templates/` are copied once at bootstrap time and then owned by the project. Changes to templates only affect *new* projects.
 - **Self-tests are mandatory.** Run every `tests/test-*.sh` script before pushing. These validate the bootstrap, update, hook, merge, and helper flows end-to-end.
+- **Parallel agent work is isolated.** Use `principles/agent-swarms.md` for slice manifests and parent orchestration. Use `scripts/spawn-worktree.sh` to create branch/worktree slices and `scripts/cleanup-worktrees.sh` for dry-run-first teardown.
 - **Release completeness.** A touchstone release is not done until GitHub Releases, the Homebrew tap, `origin/main`, and the locally installed brew package all agree on the same version.
 
 ## Testing
@@ -108,6 +112,8 @@ touchstone/
 | `bootstrap/update-project.sh` | Pull latest touchstone files into an existing project |
 | `bootstrap/sync-all.sh` | Update all registered projects at once |
 | `hooks/codex-review.sh` | Conductor-backed AI merge/default-branch review + auto-fix hook |
+| `scripts/spawn-worktree.sh` | Create an isolated branch/worktree for parallel file-writing agent slices |
+| `scripts/cleanup-worktrees.sh` | Dry-run-first cleanup for clean merged-or-equivalent worktrees |
 | `lib/release.sh` | Release automation for GitHub Releases and the Homebrew tap |
 | `VERSION` | Current semver version |
 | `~/.touchstone-projects` | Registry of all bootstrapped projects |

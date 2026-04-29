@@ -62,6 +62,7 @@ Full rationale, worked examples, and the *why* behind each rule:
 - `principles/pre-implementation-checklist.md`
 - `principles/documentation-ownership.md`
 - `principles/git-workflow.md`
+- `principles/agent-swarms.md`
 
 ## Required Delivery Workflow
 

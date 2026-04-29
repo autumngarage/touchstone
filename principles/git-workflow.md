@@ -26,9 +26,10 @@ The three layers are complementary — the local hook catches the honest mistake
 
 1. **Pull.** `git pull --rebase` on the default branch before starting work.
 2. **Branch — before any edit that might become a commit.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`. Do this as step one of the work, not as a cleanup step later. The check is `git branch --show-current` *before your first edit* — see "Never commit on the default branch" above for why edit time and not commit time.
-3. **Loop: change → commit → push.** Each meaningful sub-task gets its own commit and push. Stage explicit file paths (not `git add -A`), write a concise message, push to the open branch. Don't batch a session's worth of changes into one commit at the end — see the "Commit and push frequency" section below.
-4. **Ship.** `scripts/open-pr.sh --auto-merge` pushes, creates the PR, runs the final read-only Conductor merge review, squash-merges after a clean review, deletes the remote branch, and pulls the updated default branch — all in one command. Use `scripts/open-pr.sh` (without `--auto-merge`) if you want to open the PR without merging.
-5. **Clean up.** Delete the local feature branch. Run `scripts/cleanup-branches.sh` periodically for batch hygiene.
+3. **Check the tree before changing it.** Run `git status --short` and `git branch --show-current` before starting implementation. If the tree is dirty with unrelated user changes, do not stash them and do not auto-commit on the user's behalf. Ask how to proceed, or branch around the changes when the file surfaces are disjoint. `git stash` is hidden multi-agent state, not a coordination mechanism.
+4. **Loop: change → commit → push.** Each meaningful sub-task gets its own commit and push. Stage explicit file paths (not `git add -A`), write a concise message, push to the open branch. Don't batch a session's worth of changes into one commit at the end — see the "Commit and push frequency" section below.
+5. **Ship.** `scripts/open-pr.sh --auto-merge` pushes, creates the PR, runs the final read-only Conductor merge review, squash-merges after a clean review, deletes the remote branch, and pulls the updated default branch — all in one command. Use `scripts/open-pr.sh` (without `--auto-merge`) if you want to open the PR without merging.
+6. **Clean up.** Delete the local feature branch. Run `scripts/cleanup-branches.sh` periodically for batch hygiene.
 
 ## Commit discipline
 
@@ -48,7 +49,9 @@ The three layers are complementary — the local hook catches the honest mistake
 
 **Cadence guidance.** A useful rhythm for a focused work session is something like one commit per 30–60 minutes — about as often as you'd take a sip of water. If a session goes longer than that without a commit, ask whether you've passed a clean stopping point and didn't notice. If you can describe what you just finished in one sentence, that's a commit.
 
-**When *not* to commit.** Two cases: (1) a half-finished thought where the code is in a deliberately-broken intermediate state — squash that into a single sensible commit before pushing, or use `git stash` to set it aside; (2) actively-iterating exploration where commits would just be noise — fine to keep working, but reset the timer once you've found the right shape and start committing as you build out from there.
+**When *not* to commit.** Two cases: (1) a half-finished thought where the code is in a deliberately-broken intermediate state — squash that into a single sensible commit before pushing; (2) actively-iterating exploration where commits would just be noise — fine to keep working, but reset the timer once you've found the right shape and start committing as you build out from there.
+
+**No checkpoint commits in review artifacts.** Local recovery commits are fine when they keep an experiment recoverable, but pushed `WIP:`, `checkpoint`, or deliberately broken commits do not belong on real review branches. If you use them locally, squash or fix them before opening the PR or marking it ready.
 
 **Why this needs to be a rule, not a vibe.** Without an explicit cadence, "I'll commit when there's something worth committing" reliably becomes "I'll commit at the end of the day," and end-of-day commits are the ones that ship as one fat unreviewable blob. The cadence is the discipline; the discipline is what produces the legible history.
 
@@ -68,6 +71,10 @@ Behavior:
 - Blocks the push for unsafe findings (high-scrutiny paths)
 - Loops up to `max_iterations` times (default 3)
 - Gracefully skips if Conductor or the configured provider is unavailable, printing a visible "review skipped" line so the missing safety boundary isn't silent
+
+Prefer a different model or provider for AI review than the one that authored the change, when Conductor has one available. Deterministic checks — format, lint, typecheck, tests, and project-specific validators — still run before AI review; model diversity complements those checks, it does not replace them.
+
+If the project enables GitHub merge queue, `open-pr.sh --auto-merge` should enqueue the reviewed PR instead of bypassing the queue. Never use `--admin` to skip required checks or queue policy. Treat queue removal or repeated queue failure as a blocker that needs diagnosis before retrying.
 
 ## Periodic branch hygiene
 
@@ -92,7 +99,11 @@ A stacked PR is a PR whose base branch is another open PR's branch instead of th
 
 ## Parallel work with worktrees
 
-The default is one branch at a time in the main checkout. When you have N genuinely independent tasks — changes that touch disjoint files and don't logically depend on each other — `git worktree` lets them run concurrently without stepping on each other. The common case is an AI assistant being asked to "do these three things in parallel"; the right move is three branches in three worktrees, not three half-done edits interleaved on one branch.
+File-writing subagents must use isolated worktrees unless explicitly waived. The default is isolation; flat shared-checkout fan-out is the exception.
+
+The default for a single driver is one branch at a time in the main checkout. When you have N genuinely independent tasks — changes that touch disjoint files and don't logically depend on each other — `git worktree` lets them run concurrently without stepping on each other. The common case is an AI assistant being asked to "do these three things in parallel"; the right move is three branches in three worktrees, not three half-done edits interleaved on one branch.
+
+For the full fan-out playbook — slice manifests, file ownership, parent orchestration, concurrency caps, `.worktreeinclude`, and cleanup rules — see [agent-swarms.md](agent-swarms.md). This section defines the git workflow default; the swarm guide defines the operating model.
 
 **The primitive.** From the main checkout, `git worktree add ../<project>-<slug> -b <type>/<slug>` creates a second working tree on a new branch, sharing the same `.git`. Work in it the same way you'd work anywhere — the only difference is that the main checkout stays free to run tests, start another worktree, or keep serving the user's questions while the other tasks run.
 
@@ -101,7 +112,7 @@ The default is one branch at a time in the main checkout. When you have N genuin
 **Rules that make it actually parallel.**
 
 - **Disjoint file sets.** If two concurrent tasks touch the same file, they're not parallel — they're a merge conflict delivered on two branches. Before launching, name the file surface each task owns; if they overlap, sequence them.
-- **No coordination in flight.** Each worktree ships via its own `scripts/open-pr.sh --auto-merge`. PRs are independent because their branches are independent. If task B needs something from task A's PR before it can merge, that's stacked work — see the stacked-PR section above and run them sequentially instead.
+- **No coordination in flight.** Each worktree ships via its own `scripts/open-pr.sh --auto-merge` when the slice is independently shippable, or reports back to a parent-owned aggregate PR when the feature only makes sense as a unit. If task B needs something from task A's PR before it can merge, that's stacked work — see the stacked-PR section above and run them sequentially instead.
 - **Each agent burns its own budget.** Five parallel agents use roughly 5× the tokens and 5× the CPU of one. Start with 2–3 concurrent worktrees, observe, and scale from there. Practitioners report the comfortable cap without heavy orchestration is around 5–6.
 
 **Gotchas.**
@@ -110,7 +121,7 @@ The default is one branch at a time in the main checkout. When you have N genuin
 - **Shared `.git`.** Don't run destructive git ops (`git gc --prune=now`, `git worktree remove --force`) while a sibling worktree has uncommitted work — the shared object store is the same object store.
 - **Disk cost.** Each worktree is a full working tree. Not an issue for a small repo; matters for large monorepos with generated artifacts.
 
-**Cleanup.** After the PR merges, `git worktree remove <path>` from the main checkout to drop the directory. `scripts/cleanup-branches.sh` already refuses to delete branches currently checked out in worktrees, so it won't fight you — but it also won't remove the worktree directories themselves; that step is manual.
+**Cleanup.** After the PR merges, use `scripts/cleanup-worktrees.sh` from the main checkout to preview and remove clean merged-or-equivalent worktrees. It is dry-run by default and refuses dirty worktrees unless explicitly forced. `scripts/cleanup-branches.sh` already refuses to delete branches currently checked out in worktrees, so it won't fight you — but it also won't remove the worktree directories themselves.
 
 ## Emergency path
 

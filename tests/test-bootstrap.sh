@@ -106,12 +106,16 @@ assert_exists "$PROJECT/scripts/touchstone-run.sh"
 assert_exists "$PROJECT/scripts/open-pr.sh"
 assert_exists "$PROJECT/scripts/merge-pr.sh"
 assert_exists "$PROJECT/scripts/cleanup-branches.sh"
+assert_exists "$PROJECT/scripts/spawn-worktree.sh"
+assert_exists "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_not_exists "$PROJECT/scripts/run-pytest-in-venv.sh"
 assert_executable "$PROJECT/scripts/codex-review.sh"
 assert_executable "$PROJECT/scripts/touchstone-run.sh"
 assert_executable "$PROJECT/scripts/open-pr.sh"
 assert_executable "$PROJECT/scripts/merge-pr.sh"
 assert_executable "$PROJECT/scripts/cleanup-branches.sh"
+assert_executable "$PROJECT/scripts/spawn-worktree.sh"
+assert_executable "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'codex-review.sh'
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'touchstone-run.sh validate'
 # Cortex append-only exclusions: trailing-whitespace and end-of-file-fixer
@@ -125,6 +129,8 @@ assert_contains "$PROJECT/.touchstone-config" '^gitbutler_mcp=false$'
 assert_exists "$PROJECT/.touchstone-manifest"
 assert_contains "$PROJECT/.touchstone-manifest" '^\.touchstone-version$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/open-pr.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
 if grep -q '^\.touchstone-config$' "$PROJECT/.gitignore"; then
   echo "FAIL: expected .touchstone-config to be commit-friendly, not ignored" >&2
   ERRORS=$((ERRORS + 1))
