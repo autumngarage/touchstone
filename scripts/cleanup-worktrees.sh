@@ -151,8 +151,17 @@ flush_worktree() {
     reason="missing; git worktree prune handles this"
   else
     if [ -z "$current_branch" ]; then
-      removable=1
-      reason="detached or branch gone"
+      if [ -z "$current_head" ] || [ "$current_head" = "unknown" ]; then
+        reason="detached HEAD missing; investigate manually"
+      elif git merge-base --is-ancestor "$current_head" "$DEFAULT_REF" 2>/dev/null; then
+        removable=1
+        reason="detached HEAD merged into default"
+      elif is_fully_applied "$DEFAULT_REF" "$current_head"; then
+        removable=1
+        reason="detached HEAD tree-equivalent to default"
+      else
+        reason="detached HEAD has unique work; use --force to remove"
+      fi
     else
       branch_name="${current_branch#refs/heads/}"
       if ! git show-ref --verify --quiet "refs/heads/$branch_name"; then
