@@ -100,38 +100,8 @@ resolve_default_ref() {
   return 1
 }
 
-# Glob matching against $pattern is intentional here — .worktreeinclude uses
-# gitignore-style globs, so we want shell pattern semantics, not literal compare.
-# shellcheck disable=SC2053
-matches_worktreeinclude_pattern() {
-  local path="$1" pattern="$2" basename_part segment
-
-  case "$pattern" in
-    */)
-      pattern="${pattern%/}"
-      [[ "$path" == "$pattern"/* || "$path" == */"$pattern"/* ]] && return 0
-      return 1
-      ;;
-  esac
-
-  if [[ "$pattern" == */* ]]; then
-    [[ "$path" == $pattern ]] && return 0
-    return 1
-  fi
-
-  basename_part="$(basename "$path")"
-  [[ "$basename_part" == $pattern ]] && return 0
-
-  IFS='/'
-  for segment in $path; do
-    [[ "$segment" == $pattern ]] && return 0
-  done
-  unset IFS
-  return 1
-}
-
-should_copy_ignored_file() {
-  local path="$1" include_file="$2" raw pattern
+guard_worktreeinclude_patterns() {
+  local include_file="$1" raw pattern
 
   while IFS= read -r raw || [ -n "$raw" ]; do
     pattern="${raw#"${raw%%[![:space:]]*}"}"
@@ -144,12 +114,7 @@ should_copy_ignored_file() {
         exit 1
         ;;
     esac
-    if matches_worktreeinclude_pattern "$path" "$pattern"; then
-      return 0
-    fi
   done < "$include_file"
-
-  return 1
 }
 
 DEFAULT_REF="$(resolve_default_ref)"
@@ -165,15 +130,30 @@ INCLUDE_FILE="$REPO_ROOT/.worktreeinclude"
 if [ -f "$INCLUDE_FILE" ]; then
   echo ""
   echo "==> Copying ignored files from .worktreeinclude"
-  while IFS= read -r -d '' ignored_file; do
+  guard_worktreeinclude_patterns "$INCLUDE_FILE"
+
+  # Pattern matching is delegated to git so .worktreeinclude follows real
+  # gitignore semantics (e.g. `local/*.json` does not match `local/x/y.json`).
+  # We intersect two ls-files queries: files matched by .worktreeinclude as an
+  # exclude-from, and files matched by the project's standard ignore set. The
+  # intersection is the set of explicitly allowlisted, gitignored files.
+  INCLUDE_LIST="$(mktemp)"
+  STANDARD_LIST="$(mktemp)"
+  trap 'rm -f "$INCLUDE_LIST" "$STANDARD_LIST"' EXIT
+  git ls-files --others --ignored --exclude-from="$INCLUDE_FILE" \
+    | LC_ALL=C sort > "$INCLUDE_LIST"
+  git ls-files --others --ignored --exclude-standard \
+    | LC_ALL=C sort > "$STANDARD_LIST"
+
+  while IFS= read -r ignored_file; do
+    [ -n "$ignored_file" ] || continue
     [ -f "$ignored_file" ] || continue
-    if should_copy_ignored_file "$ignored_file" "$INCLUDE_FILE"; then
-      mkdir -p "$WORKTREE_PATH/$(dirname "$ignored_file")"
-      cp -p "$ignored_file" "$WORKTREE_PATH/$ignored_file"
-      echo "    copied: $ignored_file"
-      COPIED=$((COPIED + 1))
-    fi
-  done < <(git ls-files --others --ignored --exclude-standard -z)
+    mkdir -p "$WORKTREE_PATH/$(dirname "$ignored_file")"
+    cp -p "$ignored_file" "$WORKTREE_PATH/$ignored_file"
+    echo "    copied: $ignored_file"
+    COPIED=$((COPIED + 1))
+  done < <(comm -12 "$INCLUDE_LIST" "$STANDARD_LIST")
+
   if [ "$COPIED" -eq 0 ]; then
     echo "    (no matching ignored files)"
   fi

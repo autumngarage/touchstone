@@ -51,8 +51,9 @@ git -C "$REPO" push -q -u origin main
 git -C "$REPO" remote set-head origin main
 
 printf 'TOKEN=fake\n' > "$REPO/.env.test"
-mkdir -p "$REPO/local" "$REPO/node_modules/pkg"
+mkdir -p "$REPO/local" "$REPO/local/secrets" "$REPO/node_modules/pkg"
 printf '{"debug":true}\n' > "$REPO/local/dev.json"
+printf '{"prod":true}\n' > "$REPO/local/secrets/prod.json"
 printf 'cached\n' > "$REPO/node_modules/pkg/cache.txt"
 printf 'not ignored\n' > "$REPO/not-ignored.txt"
 cat > "$REPO/.worktreeinclude" <<'EOF'
@@ -72,6 +73,7 @@ assert_exists "$WORKTREE/.env.test"
 assert_exists "$WORKTREE/local/dev.json"
 assert_exists "$WORKTREE/node_modules/pkg/cache.txt"
 assert_not_exists "$WORKTREE/not-ignored.txt"
+assert_not_exists "$WORKTREE/local/secrets/prod.json"
 assert_contains "$OUTPUT" 'branch: feat/local-slice'
 assert_contains "$OUTPUT" 'copied: .env.test'
 assert_contains "$OUTPUT" 'copied: local/dev.json'
