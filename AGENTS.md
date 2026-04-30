@@ -92,9 +92,11 @@ for test in tests/slow-*.sh; do
 done
 ```
 
-Run the slow tier when changing live guidance-probe behavior or before release-level confidence checks.
+Run the slow tier when changing live guidance-probe behavior or before release-level confidence checks. Fast tier is the "safe to push" gate; slow tier is the "safe to ship" gate.
 
 For focused bootstrap/update changes, at minimum run `bash tests/test-bootstrap.sh` and `bash tests/test-update.sh`, then run the broader suite before shipping.
+
+Lint is not part of the test suite. Shellcheck runs at pre-commit via `.pre-commit-config.yaml`. For an explicit full-repo lint pass: `pre-commit run shellcheck --all-files`.
 
 ### Architecture
 
