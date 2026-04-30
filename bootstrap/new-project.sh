@@ -1212,6 +1212,7 @@ copy_file "$TOUCHSTONE_ROOT/templates/GEMINI.md" "$PROJECT_DIR/GEMINI.md"
 agents_principles_block_apply "$PROJECT_DIR/AGENTS.md" || true
 copy_file "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-commit-config.yaml"
 copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
+copy_file "$TOUCHSTONE_ROOT/templates/.worktreeinclude.example" "$PROJECT_DIR/.worktreeinclude.example"
 copy_file "$TOUCHSTONE_ROOT/templates/pull_request_template.md" "$PROJECT_DIR/.github/pull_request_template.md"
 copy_file "$TOUCHSTONE_ROOT/hooks/codex-review.config.example.toml" "$PROJECT_DIR/.codex-review.toml"
 CODEX_REVIEW_CONFIG_CREATED="$LAST_COPY_CREATED"

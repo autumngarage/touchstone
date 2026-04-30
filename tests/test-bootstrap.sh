@@ -89,6 +89,7 @@ assert_exists "$PROJECT/AGENTS.md"
 assert_exists "$PROJECT/GEMINI.md"
 assert_exists "$PROJECT/.pre-commit-config.yaml"
 assert_exists "$PROJECT/.gitignore"
+assert_exists "$PROJECT/.worktreeinclude.example"
 assert_exists "$PROJECT/.github/pull_request_template.md"
 assert_exists "$PROJECT/.codex-review.toml"
 
@@ -118,6 +119,9 @@ assert_executable "$PROJECT/scripts/spawn-worktree.sh"
 assert_executable "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'codex-review.sh'
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'touchstone-run.sh validate'
+assert_contains "$PROJECT/.worktreeinclude.example" '^# Allowlist of gitignored files to copy into spawned worktrees\.$'
+assert_contains "$PROJECT/.worktreeinclude.example" '^# \.env\.local$'
+assert_contains "$PROJECT/.worktreeinclude.example" '^# \.vscode/settings\.json$'
 # Cortex append-only exclusions: trailing-whitespace and end-of-file-fixer
 # must skip .cortex/journal/ and .cortex/doctrine/ per Cortex Protocol §4.
 # Two assertions — one per hook — to catch accidental one-sided fixes.

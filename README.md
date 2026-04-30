@@ -176,6 +176,7 @@ When you run `touchstone new`, these files get created in your project:
 - `.touchstone-config` — Project profile, workflow choices, and optional lint/test/build command overrides
 - `.pre-commit-config.yaml` — Pre-commit hooks including the default-branch AI review gate
 - `.gitignore` — Sensible defaults
+- `.worktreeinclude.example` — Starter allowlist for ignored local files to copy into spawned worktrees
 - `.github/pull_request_template.md` — PR checklist
 - `setup.sh` — One-command setup for dev tools, hooks, and project dependencies
 
