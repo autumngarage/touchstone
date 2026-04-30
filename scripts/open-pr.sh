@@ -98,6 +98,52 @@ verify_pr_merged() {
   return 1
 }
 
+find_base_merge_commit() {
+  local base_branch="$1"
+  local ref
+  for ref in "origin/$base_branch" "$base_branch"; do
+    if git rev-parse --verify "$ref^{commit}" >/dev/null 2>&1; then
+      git merge-base HEAD "$ref"
+      return 0
+    fi
+  done
+  return 1
+}
+
+find_issue_closing_refs() {
+  local base_branch="$1"
+  local merge_base
+  if ! merge_base="$(find_base_merge_commit "$base_branch")"; then
+    echo "WARNING: could not find merge-base for $base_branch; skipping linked-issue detection" >&2
+    return 0
+  fi
+
+  # Invariant: only commits unique to this PR branch are scanned; base-branch
+  # history must not contribute stale issue references to new PR bodies.
+  git log "$merge_base..HEAD" --format='%b' | awk '
+    {
+      line = tolower($0)
+      should_scan = 0
+      if (line ~ /^[[:space:]]*(closes-issue|closes|fixes|refs):[[:space:]]*/) {
+        should_scan = 1
+      }
+      if (line ~ /(^|[^[:alnum:]_-])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+#[0-9]+/) {
+        should_scan = 1
+      }
+      if (should_scan) {
+        rest = line
+        while (match(rest, /#[0-9]+/)) {
+          issue = substr(rest, RSTART + 1, RLENGTH - 1)
+          if (!seen[issue]++) {
+            print issue
+          }
+          rest = substr(rest, RSTART + RLENGTH)
+        }
+      }
+    }
+  '
+}
+
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEMPLATE_PATH="$REPO_ROOT/.github/pull_request_template.md"
 
@@ -228,6 +274,7 @@ else
 fi
 
 COMMIT_BODY="$(git log -1 --format=%b)"
+LINKED_ISSUES="$(find_issue_closing_refs "$BASE_BRANCH")"
 
 # ---------------------------------------------------------------------------
 # Sentinel-cycle PR body: when the current branch was authored by a sentinel
@@ -283,6 +330,14 @@ fi
 BODY_FILE="$(mktemp -t touchstone-pr-body.XXXXXX.md)"
 
 {
+  if [ -n "$LINKED_ISSUES" ]; then
+    printf '## Linked Issues\n\n'
+    while IFS= read -r issue_number; do
+      [ -n "$issue_number" ] || continue
+      printf 'Closes #%s\n' "$issue_number"
+    done <<< "$LINKED_ISSUES"
+    printf '\n'
+  fi
   if [ -n "$SENTINEL_BODY" ]; then
     printf '%s\n' "$SENTINEL_BODY"
   else
