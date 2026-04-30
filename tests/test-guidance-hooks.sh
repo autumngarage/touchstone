@@ -150,6 +150,38 @@ assert "allows 'git -C <worktree>' commit when worktree is on a feature branch" 
 assert "lowercase -c (config flag) does not bypass the guard on main" "2" \
   "$(run_hook "$BRANCH_GUARD" "$(mkjson "git -c core.editor=foo commit -m 'wip'")")"
 
+# 9. cd <worktree> && git commit — same worktree-aware idea as case 7, but
+#    using `cd` instead of `git -C`. Operators and agents both write this
+#    shape more naturally. The hook should follow the cd target to the
+#    feature-branch worktree and allow the commit.
+CD_JSON="$(jq -nc \
+  --arg cmd "cd $WORKTREE && git commit -m 'wip'" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "allows 'cd <worktree> && git commit' when worktree is on a feature branch" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$CD_JSON")"
+
+# 10. cd AFTER the commit must NOT bypass the guard. `git commit; cd
+#     <feature-worktree>` is a commit on main followed by an unrelated
+#     cd; the cd doesn't affect the commit's cwd, so the guard must
+#     still block.
+POST_CD_JSON="$(jq -nc \
+  --arg cmd "git commit -m 'wip' ; cd $WORKTREE" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "blocks 'git commit; cd <feature>' on main (cd after commit is ignored)" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$POST_CD_JSON")"
+
+# 11. chained cd — last one before git commit wins (matches `-C` semantics).
+#     `cd /tmp && cd <worktree> && git commit` should resolve to the
+#     worktree's branch, not /tmp's.
+CHAIN_JSON="$(jq -nc \
+  --arg cmd "cd /tmp && cd $WORKTREE && git commit -m 'wip'" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "chained cd: last cd before commit wins (allows feature-branch commit)" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$CHAIN_JSON")"
+
 # ----------------------------------------------------------------------
 # emergency-disclosure
 # ----------------------------------------------------------------------
