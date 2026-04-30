@@ -1,165 +1,146 @@
 #!/usr/bin/env bash
 #
-# tests/test-guidance-skill-activation.sh — probe whether Touchstone-
-# shipped skills activate when given trigger phrases that match their
-# `description` field. Skill descriptions are the only handle Claude
-# Code has for deciding which skills to surface; if a description rots,
-# the skill silently stops firing. This test catches that regression.
+# tests/test-guidance-skill-activation.sh — verify Touchstone-shipped
+# skills have frontmatter descriptions shaped for Claude Code activation.
 #
-# Currently covers: touchstone-agent-swarms (Phase 3 of the plan).
-# When new skills ship, add a new case below.
-#
-# Modes:
-#   default (fast)   — 1 trial × 5 phrasings + 5 negatives = ~10 claude -p calls
-#   TOUCHSTONE_FULL_SKILL_PROBES=1 — 5 × 5 + 5 = 30 calls (the documented
-#                                     measurement; ~3 min)
-#   TOUCHSTONE_SKIP_SKILL_PROBES=1 — exit 0 immediately (iteration mode)
-#
-# Pass criteria:
-#   - positive trials ≥80% activation
-#   - 0 false-positive activations on benign prompts
+# Claude Code activates skills from the SKILL.md frontmatter description.
+# That makes this a structural contract: if a description loses the trigger
+# terms for the intended work shape, the skill silently stops surfacing.
 #
 set -euo pipefail
-
-if [ "${TOUCHSTONE_SKIP_SKILL_PROBES:-0}" = "1" ]; then
-  echo "==> SKIP: TOUCHSTONE_SKIP_SKILL_PROBES=1"
-  exit 0
-fi
-
-if ! command -v claude >/dev/null 2>&1; then
-  echo "==> SKIP: claude CLI not installed"
-  exit 0
-fi
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$TOUCHSTONE_ROOT"
 
-# shellcheck source=claude-probe-helper.sh
-source "$TOUCHSTONE_ROOT/tests/claude-probe-helper.sh"
-
-if [ "${TOUCHSTONE_FULL_SKILL_PROBES:-0}" = "1" ]; then
-  TRIALS_PER=5
-  echo "==> FULL mode: 5 × 5 phrasings + 5 negatives (~3 min)"
-else
-  TRIALS_PER=1
-  echo "==> FAST mode: 1 × 5 phrasings + 5 negatives (~70s). Set TOUCHSTONE_FULL_SKILL_PROBES=1 for the 25-trial measurement."
-fi
-
-NEGATIVES=(
-  "What is 2 + 2?"
-  "Show me the README of this project."
-  "How do I run the test suite?"
-  "What's the current git branch?"
-  "List the files in the principles directory."
-)
-
 OVERALL_FAIL=0
 
-run_trial() {
-  local prompt="$1" regex="$2"
-  local response rc
-  set +e
-  response="$(run_claude_probe "$prompt")"
-  rc=$?
-  set -e
-  if [ "$rc" -eq 124 ]; then
-    echo "    TIMEOUT: claude -p exceeded ${TOUCHSTONE_CLAUDE_PROBE_TIMEOUT:-90}s" >&2
-    return 1
-  fi
-  if [ "$rc" -ne 0 ]; then
-    echo "    ERROR: claude -p exited $rc" >&2
-    return 1
-  fi
-  if printf '%s' "$response" | grep -qiE "$regex"; then
-    return 0
-  fi
-  return 1
+frontmatter_value() {
+  local skill_file="$1" key="$2"
+
+  awk -v key="$key" '
+    NR == 1 {
+      if ($0 != "---") {
+        exit 2
+      }
+      in_frontmatter = 1
+      next
+    }
+    in_frontmatter && $0 == "---" {
+      exit 0
+    }
+    in_frontmatter && index($0, key ":") == 1 {
+      value = substr($0, length(key) + 2)
+      sub(/^[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      print value
+      found = 1
+      exit 0
+    }
+    END {
+      if (!found) {
+        exit 1
+      }
+    }
+  ' "$skill_file"
 }
 
-# Run an activation suite for one skill: 5 trigger phrasings × $TRIALS_PER
-# trials each (positive) + the shared NEGATIVES list (must not match the
-# skill's activation regex). Pass requires ≥80% positive activation and
-# zero false positives. A failure for any skill flips OVERALL_FAIL to 1
-# but the function still runs its full positive/negative sweep so the
-# operator sees the complete picture per run.
-run_skill_suite() {
-  local skill_name="$1" activation_regex="$2"
-  shift 2
-  local triggers=("$@")
-  local positive_pass=0 positive_total=0 negative_fp=0
+assert_description_contract() {
+  local skill_dir="$1" expected_name="$2" description_regex="$3"
+  shift 3
+  local required_terms=("$@")
+  local skill_file=".claude/skills/$skill_dir/SKILL.md"
+  local name description missing=0
 
-  echo "==> Skill: $skill_name"
-  echo "  positive trials"
-  local i=0
-  for trigger in "${triggers[@]}"; do
-    i=$((i + 1))
-    for trial in $(seq 1 "$TRIALS_PER"); do
-      positive_total=$((positive_total + 1))
-      if run_trial "$trigger" "$activation_regex"; then
-        positive_pass=$((positive_pass + 1))
-        echo "    OK: phrasing $i trial $trial"
-      else
-        echo "    MISS: phrasing $i trial $trial"
-      fi
-    done
-  done
+  echo "==> Skill: $skill_dir"
+  if [ ! -f "$skill_file" ]; then
+    echo "  FAIL: missing $skill_file" >&2
+    OVERALL_FAIL=1
+    return
+  fi
 
-  echo "  negative trials"
-  i=0
-  for benign in "${NEGATIVES[@]}"; do
-    i=$((i + 1))
-    if run_trial "$benign" "$activation_regex"; then
-      negative_fp=$((negative_fp + 1))
-      echo "    FALSE POSITIVE: negative $i"
+  name="$(frontmatter_value "$skill_file" "name" || true)"
+  description="$(frontmatter_value "$skill_file" "description" || true)"
+
+  if [ "$name" != "$expected_name" ]; then
+    echo "  FAIL: expected name '$expected_name', got '${name:-<missing>}'" >&2
+    OVERALL_FAIL=1
+  fi
+
+  if [ -z "$description" ]; then
+    echo "  FAIL: missing description frontmatter" >&2
+    OVERALL_FAIL=1
+    return
+  fi
+
+  if ! printf '%s\n' "$description" | grep -qiE '^Use (when|after) '; then
+    echo "  FAIL: description must start with an activation phrase such as 'Use when' or 'Use after'" >&2
+    OVERALL_FAIL=1
+  fi
+
+  if ! printf '%s\n' "$description" | grep -qiE "$description_regex"; then
+    echo "  FAIL: description does not match expected activation shape" >&2
+    echo "    description: $description" >&2
+    echo "    expected: $description_regex" >&2
+    OVERALL_FAIL=1
+  fi
+
+  for term in "${required_terms[@]}"; do
+    if printf '%s\n' "$description" | grep -qiE "$term"; then
+      echo "  OK: description includes trigger term /$term/"
     else
-      echo "    OK: negative $i"
+      echo "  FAIL: description missing trigger term /$term/" >&2
+      missing=$((missing + 1))
     fi
   done
 
-  local threshold=$((positive_total * 80 / 100))
-  echo "  results: $positive_pass/$positive_total positive (need ≥$threshold), $negative_fp false positive(s)"
-
-  if [ "$positive_pass" -lt "$threshold" ]; then
-    echo "  FAIL: $skill_name activation below 80%" >&2
+  if [ "$missing" -gt 0 ]; then
     OVERALL_FAIL=1
-  elif [ "$negative_fp" -gt 0 ]; then
-    echo "  FAIL: $skill_name false-positive on benign prompt" >&2
-    OVERALL_FAIL=1
-  else
-    echo "  PASS"
+    return
   fi
-  echo ""
+
+  echo "  PASS"
 }
 
 # ----------------------------------------------------------------------
 # touchstone-agent-swarms
 # ----------------------------------------------------------------------
-SWARMS_TRIGGERS=(
-  "I have three independent refactors across separate packages that I want to ship in parallel. How should I approach this?"
-  "Can you help me fan out this work to multiple Claude agents running concurrently?"
-  "I want to split this batch of unrelated tasks across parallel agent runs. What's the right shape?"
-  "Should I orchestrate multiple subagents for this set of file-disjoint changes?"
-  "I need to parallelize four independent investigations. Walk me through how to coordinate them."
+SWARMS_DESCRIPTION_REGEX='parallelizing work across multiple agents|fanning out'
+SWARMS_TERMS=(
+  'paralleliz'
+  'multiple agents'
+  'fanning out|fan out'
+  'clean context'
+  'different tools'
+  'skeptical verifier'
+  'parallel work'
 )
-SWARMS_REGEX='four.question gate|skeptical verifier|clean context|file.disjoint|disjoint file|concurrency cap|3.{0,3}5 agents|swarm pattern|swarm shape|files.not.to.touch|brief.quality'
 
-run_skill_suite "touchstone-agent-swarms" "$SWARMS_REGEX" "${SWARMS_TRIGGERS[@]}"
+assert_description_contract \
+  "touchstone-agent-swarms" \
+  "agent-swarms" \
+  "$SWARMS_DESCRIPTION_REGEX" \
+  "${SWARMS_TERMS[@]}"
 
 # ----------------------------------------------------------------------
 # touchstone-audit-weak-points
 # ----------------------------------------------------------------------
-AUDIT_TRIGGERS=(
-  "I just found a bug where a cache was returning stale data. Should I look for similar patterns elsewhere?"
-  "I noticed this same anti-pattern in three files. How do I systematically check the rest of the codebase?"
-  "I found a structural bug caused by swallowed exceptions. Help me audit every similar anti-pattern and add a guardrail."
-  "Found a structural issue with how we handle null returns. What's the methodology to find and fix all of them?"
-  "There's a recurring bug shape we keep hitting. How do I do a comprehensive audit and stop it from coming back?"
+AUDIT_DESCRIPTION_REGEX='structural bug|same anti-pattern|guardrail'
+AUDIT_TERMS=(
+  'structural bug'
+  'systematically audit|audit'
+  'same anti-pattern'
+  'fix instances'
+  'tier'
+  'guardrail'
 )
-AUDIT_REGEX='ranked punch.?list|production impact|reviewed and bounded|fix in tiers|audit \+ guardrail|every instance|systematic audit|class of bug|whole class|hand.write the guardrail|add a guardrail'
 
-run_skill_suite "touchstone-audit-weak-points" "$AUDIT_REGEX" "${AUDIT_TRIGGERS[@]}"
+assert_description_contract \
+  "touchstone-audit-weak-points" \
+  "audit-weak-points" \
+  "$AUDIT_DESCRIPTION_REGEX" \
+  "${AUDIT_TERMS[@]}"
 
 if [ "$OVERALL_FAIL" -eq 1 ]; then
   exit 1
 fi
-echo "==> OK: all skill activation suites passed"
+echo "==> OK: all skill activation frontmatter contracts passed"

@@ -26,6 +26,28 @@ Drive this automatically unless the user asks for a different flow:
 
 File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md` for slice manifests, file ownership, concurrency caps, and parent orchestration. Use `scripts/spawn-worktree.sh` to create local branch/worktree slices and `scripts/cleanup-worktrees.sh` for dry-run-first teardown.
 
+## Testing
+
+Before pushing, run the fast default tier:
+
+```bash
+for test in tests/test-*.sh; do
+  echo "==> $test"
+  bash "$test" || exit 1
+done
+```
+
+The fast tier must not spend live model/provider quota. Slow opt-in probes live under `tests/slow-*.sh`:
+
+```bash
+for test in tests/slow-*.sh; do
+  echo "==> $test"
+  bash "$test" || exit 1
+done
+```
+
+Run the slow tier when changing live guidance-probe behavior or before release-level confidence checks.
+
 <!-- conductor:begin v0.8.2 -->
 ## Conductor delegation
 
