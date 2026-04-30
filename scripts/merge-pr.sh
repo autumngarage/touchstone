@@ -103,6 +103,37 @@ marker_field() {
   awk -F= -v key="$field" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$marker"
 }
 
+worktree_path_for_branch() {
+  local branch="$1"
+  local current_path=""
+  local current_branch=""
+  local line key value
+
+  git worktree list --porcelain | while IFS= read -r line || [ -n "$line" ]; do
+    if [ -z "$line" ]; then
+      if [ "$current_branch" = "refs/heads/$branch" ]; then
+        printf '%s\n' "$current_path"
+        exit 0
+      fi
+      current_path=""
+      current_branch=""
+      continue
+    fi
+
+    key="${line%% *}"
+    value="${line#* }"
+    case "$key" in
+      worktree) current_path="$value" ;;
+      branch) current_branch="$value" ;;
+    esac
+  done
+
+  if [ "$current_branch" = "refs/heads/$branch" ]; then
+    printf '%s\n' "$current_path"
+  fi
+  return 0
+}
+
 branch_has_clean_review_marker() {
   local branch="$1"
   local head_oid="$2"
@@ -117,6 +148,34 @@ branch_has_clean_review_marker() {
   [ "$marker_branch" = "$branch" ] \
     && [ "$marker_head" = "$head_oid" ] \
     && [ "$marker_merge_base" = "$merge_base" ]
+}
+
+sync_default_branch_after_merge() {
+  local current_branch current_worktree default_worktree
+
+  echo "==> Merged. Updating local $DEFAULT_BRANCH ..."
+  current_branch="$(git rev-parse --abbrev-ref HEAD)"
+
+  if [ "$current_branch" = "$DEFAULT_BRANCH" ]; then
+    git pull --rebase
+    return 0
+  fi
+
+  current_worktree="$(git rev-parse --show-toplevel)"
+  default_worktree="$(worktree_path_for_branch "$DEFAULT_BRANCH" | head -n 1)"
+  if [ -n "$default_worktree" ] && [ "$default_worktree" != "$current_worktree" ]; then
+    echo "==> $DEFAULT_BRANCH is checked out in sibling worktree: $default_worktree"
+    echo "==> Fast-forwarding that worktree after remote merge ..."
+    if git -C "$default_worktree" pull --ff-only; then
+      return 0
+    fi
+    echo "WARNING: PR #$PR_NUMBER merged remotely, but sibling worktree '$default_worktree' could not fast-forward." >&2
+    echo "WARNING: Run this when convenient: git -C '$default_worktree' pull --ff-only" >&2
+    return 0
+  fi
+
+  git checkout "$DEFAULT_BRANCH"
+  git pull --rebase
 }
 
 print_bypass_banner() {
@@ -291,10 +350,5 @@ else
 fi
 
 # 5. Sync local default branch.
-echo "==> Merged. Updating local $DEFAULT_BRANCH ..."
-CURRENT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-if [ "$CURRENT_BRANCH" != "$DEFAULT_BRANCH" ]; then
-  git checkout "$DEFAULT_BRANCH"
-fi
-git pull --rebase
+sync_default_branch_after_merge
 echo "==> Done."

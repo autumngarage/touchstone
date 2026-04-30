@@ -84,6 +84,20 @@ cat > "$FAKE_BIN/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ "${1:-}" = "-C" ]; then
+  if [ "${3:-} ${4:-}" != "pull --ff-only" ]; then
+    echo "unexpected git -C args: $*" >&2
+    exit 1
+  fi
+  printf '%s\n' "$2" > "$GIT_SIBLING_PULL_FILE"
+  if [ "${GIT_SIBLING_PULL_FAIL:-false}" = "true" ]; then
+    echo "sibling pull failed" >&2
+    exit 1
+  fi
+  echo "Already up to date."
+  exit 0
+fi
+
 case "$*" in
   "rev-parse --abbrev-ref HEAD")
     if [ -f "$GH_CHECKOUT_FILE" ]; then
@@ -102,6 +116,9 @@ case "$*" in
   "rev-parse --git-path touchstone/reviewer-clean")
     printf '%s\n' "$GIT_PATH_ROOT/touchstone/reviewer-clean"
     ;;
+  "rev-parse --show-toplevel")
+    printf '%s\n' "${TEST_CURRENT_WORKTREE:-/tmp/touchstone-feature-worktree}"
+    ;;
   "cat-file -e pr-head-oid^{commit}")
     ;;
   "merge-base origin/main pr-head-oid")
@@ -115,7 +132,11 @@ case "$*" in
     ;;
   "status --porcelain")
     ;;
+  "worktree list --porcelain")
+    printf '%s' "${GIT_WORKTREE_LIST:-}"
+    ;;
   "checkout main")
+    echo "checkout main" > "$GIT_CHECKOUT_MAIN_FILE"
     echo "Switched to branch 'main'"
     ;;
   "pull --rebase")
@@ -134,9 +155,13 @@ reset_case_files() {
   rm -f "$TEST_DIR"/output*.txt "$TEST_DIR"/codex-review*.log \
     "$TEST_DIR"/gh-checkout* "$TEST_DIR"/gh-merge-head* \
     "$TEST_DIR"/gh-merge-args* "$TEST_DIR"/gh-merge-body* \
-    "$TEST_DIR"/gh-comment*
+    "$TEST_DIR"/gh-comment* "$TEST_DIR"/git-checkout-main* \
+    "$TEST_DIR"/git-sibling-pull*
   rm -rf "$GIT_PATH_ROOT"
   mkdir -p "$GIT_PATH_ROOT"
+  unset GIT_WORKTREE_LIST
+  unset GIT_SIBLING_PULL_FAIL
+  unset TEST_CURRENT_WORKTREE
 }
 
 run_merge_pr() {
@@ -150,6 +175,11 @@ run_merge_pr() {
     GH_MERGE_ARGS_FILE="$TEST_DIR/gh-merge-args" \
     GH_MERGE_BODY_FILE="$TEST_DIR/gh-merge-body" \
     GH_COMMENT_FILE="$TEST_DIR/gh-comment" \
+    GIT_CHECKOUT_MAIN_FILE="$TEST_DIR/git-checkout-main" \
+    GIT_SIBLING_PULL_FILE="$TEST_DIR/git-sibling-pull" \
+    GIT_WORKTREE_LIST="${GIT_WORKTREE_LIST:-}" \
+    GIT_SIBLING_PULL_FAIL="${GIT_SIBLING_PULL_FAIL:-false}" \
+    TEST_CURRENT_WORKTREE="${TEST_CURRENT_WORKTREE:-/tmp/touchstone-feature-worktree}" \
     bash "$MERGE_SCRIPT_DIR/merge-pr.sh" "$@" >"$output_file" 2>&1
 }
 
@@ -171,6 +201,34 @@ if grep -q 'attempt 1: mergeStateStatus=CLEAN mergeable=MERGEABLE' "$TEST_DIR/ou
 else
   echo "FAIL: merge-pr.sh output did not show a successful jq-free merge path" >&2
   cat "$TEST_DIR/output-normal.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: sibling worktree owning main is fast-forwarded without false merge failure"
+reset_case_files
+TEST_CURRENT_WORKTREE="/tmp/touchstone-feature-worktree"
+GIT_WORKTREE_LIST="$(cat <<'EOF'
+worktree /tmp/touchstone-main-worktree
+HEAD main-oid
+branch refs/heads/main
+
+worktree /tmp/touchstone-feature-worktree
+HEAD feature-oid
+branch refs/heads/feature/test
+
+EOF
+)"
+run_merge_pr "$TEST_DIR/output-sibling-worktree.txt" 123
+if grep -q '==> main is checked out in sibling worktree: /tmp/touchstone-main-worktree' "$TEST_DIR/output-sibling-worktree.txt" \
+  && grep -q '==> Fast-forwarding that worktree after remote merge' "$TEST_DIR/output-sibling-worktree.txt" \
+  && grep -q '==> Done\.' "$TEST_DIR/output-sibling-worktree.txt" \
+  && grep -q '^/tmp/touchstone-main-worktree$' "$TEST_DIR/git-sibling-pull" \
+  && [ ! -f "$TEST_DIR/git-checkout-main" ] \
+  && ! grep -q 'ERROR:' "$TEST_DIR/output-sibling-worktree.txt"; then
+  echo "==> PASS: sibling default worktree sync avoids false merge failure"
+else
+  echo "FAIL: sibling worktree sync did not avoid the checkout-main failure path" >&2
+  cat "$TEST_DIR/output-sibling-worktree.txt" >&2
   exit 1
 fi
 
