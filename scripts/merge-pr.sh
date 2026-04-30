@@ -342,11 +342,32 @@ if [ -z "$REVIEWED_HEAD_OID" ]; then
   echo "ERROR: Cannot merge PR #$PR_NUMBER because no reviewed head commit was recorded." >&2
   exit 1
 fi
+gh_merge_exit=0
 if [ "$BYPASS_REVIEW" = true ]; then
   gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID" \
-    --body "Reviewer-bypass: $BYPASS_REASON"
+    --body "Reviewer-bypass: $BYPASS_REASON" || gh_merge_exit=$?
 else
-  gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID"
+  gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID" \
+    || gh_merge_exit=$?
+fi
+
+# `gh pr merge --delete-branch` does the squash AND tries to delete the
+# local feature branch. The local-delete fails when the branch is checked
+# out in the current worktree (the common case for parallel-worktree work).
+# When that happens, the remote merge succeeded server-side — only the
+# local cleanup didn't. Verify by asking the API; if MERGED, treat as
+# success with a warning so the script doesn't claim the PR failed.
+if [ "$gh_merge_exit" -ne 0 ]; then
+  pr_state="$(gh pr view "$PR_NUMBER" --json state --jq '.state' 2>/dev/null || echo "")"
+  if [ "$pr_state" = "MERGED" ]; then
+    echo "WARNING: gh pr merge exited $gh_merge_exit, but PR #$PR_NUMBER is MERGED on GitHub."
+    echo "         Likely cause: local feature branch is checked out in the current worktree,"
+    echo "         which blocks --delete-branch's local-delete step. Remote branch is gone."
+    echo "         Run 'bash scripts/cleanup-worktrees.sh --execute' from $DEFAULT_BRANCH to tidy up."
+  else
+    echo "ERROR: gh pr merge exited $gh_merge_exit and PR #$PR_NUMBER is not MERGED." >&2
+    exit "$gh_merge_exit"
+  fi
 fi
 
 # 5. Sync local default branch.
