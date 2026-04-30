@@ -102,6 +102,11 @@ case "$*" in
   "rev-parse --git-path touchstone/reviewer-clean")
     printf '%s\n' "$GIT_PATH_ROOT/touchstone/reviewer-clean"
     ;;
+  "cat-file -e pr-head-oid^{commit}")
+    ;;
+  "merge-base origin/main pr-head-oid")
+    echo "base-oid"
+    ;;
   "fetch origin +refs/heads/main:refs/remotes/origin/main")
     echo "fetched main"
     ;;
@@ -191,7 +196,7 @@ if run_merge_pr "$TEST_DIR/output-fresh.txt" 123 --bypass-with-disclosure="revie
   echo "FAIL: bypass on fresh branch unexpectedly succeeded" >&2
   exit 1
 fi
-if grep -q "No prior clean review marker matches branch 'feature/test' at head 'pr-head-oid'" "$TEST_DIR/output-fresh.txt" \
+if grep -q "No prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-fresh.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ] \
   && [ ! -f "$TEST_DIR/gh-comment" ] \
   && [ ! -f "$TEST_DIR/codex-review.log" ]; then
@@ -205,7 +210,7 @@ fi
 echo "==> Test: bypass after clean marker records disclosure and trailer"
 reset_case_files
 mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
-printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=pr-head-oid\n' > "$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
+printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=pr-head-oid\nmerge_base=base-oid\n' > "$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
 run_merge_pr "$TEST_DIR/output-bypass.txt" 123 --bypass-with-disclosure="reviewer timed out after prior clean review"
 if grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-bypass.txt" \
   && grep -q 'reason: reviewer timed out after prior clean review' "$TEST_DIR/output-bypass.txt" \
@@ -228,13 +233,31 @@ if run_merge_pr "$TEST_DIR/output-stale.txt" 123 --bypass-with-disclosure="revie
   echo "FAIL: bypass with stale marker unexpectedly succeeded" >&2
   exit 1
 fi
-if grep -q "No prior clean review marker matches branch 'feature/test' at head 'pr-head-oid'" "$TEST_DIR/output-stale.txt" \
+if grep -q "No prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-stale.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ] \
   && [ ! -f "$TEST_DIR/gh-comment" ]; then
   echo "==> PASS: stale clean marker rejected"
+else
+  echo "FAIL: stale marker did not fail safely" >&2
+  cat "$TEST_DIR/output-stale.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: old-base clean marker is rejected"
+reset_case_files
+mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
+printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=pr-head-oid\nmerge_base=old-base\n' > "$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
+if run_merge_pr "$TEST_DIR/output-old-base.txt" 123 --bypass-with-disclosure="reviewer timed out"; then
+  echo "FAIL: bypass with old-base marker unexpectedly succeeded" >&2
+  exit 1
+fi
+if grep -q "No prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-old-base.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
+  && [ ! -f "$TEST_DIR/gh-comment" ]; then
+  echo "==> PASS: old-base clean marker rejected"
   exit 0
 fi
 
-echo "FAIL: stale marker did not fail safely" >&2
-cat "$TEST_DIR/output-stale.txt" >&2
+echo "FAIL: old-base marker did not fail safely" >&2
+cat "$TEST_DIR/output-old-base.txt" >&2
 exit 1

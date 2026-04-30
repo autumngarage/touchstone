@@ -106,13 +106,17 @@ marker_field() {
 branch_has_clean_review_marker() {
   local branch="$1"
   local head_oid="$2"
-  local marker marker_branch marker_head
+  local merge_base="$3"
+  local marker marker_branch marker_head marker_merge_base
   marker="$(review_clean_marker_file "$branch")"
   [ -f "$marker" ] || return 1
   grep -q '^result=CODEX_REVIEW_CLEAN$' "$marker" || return 1
   marker_branch="$(marker_field branch "$marker")"
   marker_head="$(marker_field head "$marker")"
-  [ "$marker_branch" = "$branch" ] && [ "$marker_head" = "$head_oid" ]
+  marker_merge_base="$(marker_field merge_base "$marker")"
+  [ "$marker_branch" = "$branch" ] \
+    && [ "$marker_head" = "$head_oid" ] \
+    && [ "$marker_merge_base" = "$merge_base" ]
 }
 
 print_bypass_banner() {
@@ -152,11 +156,30 @@ run_merge_review() {
   fi
 
   REVIEWED_HEAD_OID="$pr_head_oid"
+  default_base_ref="origin/$DEFAULT_BRANCH"
 
   if [ "$BYPASS_REVIEW" = true ]; then
-    if ! branch_has_clean_review_marker "$pr_head_branch" "$pr_head_oid"; then
+    echo "==> Refreshing $default_base_ref before reviewer bypass validation ..."
+    if ! git fetch origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"; then
+      echo "ERROR: Failed to refresh $default_base_ref before reviewer bypass validation." >&2
+      exit 1
+    fi
+    if ! git rev-parse --verify --quiet "$default_base_ref^{commit}" >/dev/null; then
+      echo "ERROR: Could not verify $default_base_ref before reviewer bypass validation." >&2
+      exit 1
+    fi
+    if ! git cat-file -e "$pr_head_oid^{commit}" 2>/dev/null; then
+      echo "==> Checking out PR #$PR_NUMBER head ($pr_head_branch) for reviewer bypass validation ..."
+      gh pr checkout "$PR_NUMBER" --detach
+    fi
+    local current_merge_base
+    if ! current_merge_base="$(git merge-base "$default_base_ref" "$pr_head_oid" 2>/dev/null)"; then
+      echo "ERROR: Could not compute merge base for PR #$PR_NUMBER head against $default_base_ref." >&2
+      exit 1
+    fi
+    if ! branch_has_clean_review_marker "$pr_head_branch" "$pr_head_oid" "$current_merge_base"; then
       echo "ERROR: Refusing reviewer bypass for PR #$PR_NUMBER." >&2
-      echo "       No prior clean review marker matches branch '$pr_head_branch' at head '$pr_head_oid'." >&2
+      echo "       No prior clean review marker matches branch '$pr_head_branch' at head '$pr_head_oid' and merge base '$current_merge_base'." >&2
       echo "       Run the reviewer cleanly once before using --bypass-with-disclosure." >&2
       exit 1
     fi
@@ -175,7 +198,6 @@ run_merge_review() {
     return 0
   fi
 
-  default_base_ref="origin/$DEFAULT_BRANCH"
   echo "==> Refreshing $default_base_ref for merge review ..."
   if ! git fetch origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"; then
     echo "ERROR: Failed to refresh $default_base_ref before merge review." >&2
