@@ -125,7 +125,12 @@ For the full fan-out playbook — slice manifests, file ownership, parent orches
 - **Shared `.git`.** Don't run destructive git ops (`git gc --prune=now`, `git worktree remove --force`) while a sibling worktree has uncommitted work — the shared object store is the same object store.
 - **Disk cost.** Each worktree is a full working tree. Not an issue for a small repo; matters for large monorepos with generated artifacts.
 
-**Cleanup.** After the PR merges, use `scripts/cleanup-worktrees.sh` from the main checkout to preview and remove clean merged-or-equivalent worktrees. It is dry-run by default and refuses dirty worktrees unless explicitly forced. `scripts/cleanup-branches.sh` already refuses to delete branches currently checked out in worktrees, so it won't fight you — but it also won't remove the worktree directories themselves.
+**Cleanup.** Two paths, pick whichever fits the moment:
+
+- **Inline (preferred for fire-and-forget).** Pass `--cleanup-worktree` alongside `--auto-merge` to `scripts/open-pr.sh`. After the PR squash-merges, the helper removes the current feature worktree itself by invoking `git worktree remove` from the default-branch worktree. The worktree is gone before the script returns, so there's nothing to come back to. Failures here are reported as warnings — the merge already happened, cleanup is best-effort.
+- **Deferred sweep.** From the main checkout, run `scripts/cleanup-worktrees.sh` (dry-run by default) to preview and `--execute` to remove clean merged-or-equivalent worktrees. Use this when several worktrees accumulated across sessions, or when the inline cleanup couldn't run (dirty tree, etc.).
+
+`scripts/cleanup-branches.sh` already refuses to delete branches currently checked out in worktrees, so it won't fight you — but it also won't remove the worktree directories themselves; that is what `cleanup-worktrees.sh` and the inline `--cleanup-worktree` flag are for.
 
 ## Emergency path
 
