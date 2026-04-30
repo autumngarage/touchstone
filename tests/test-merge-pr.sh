@@ -191,7 +191,7 @@ if run_merge_pr "$TEST_DIR/output-fresh.txt" 123 --bypass-with-disclosure="revie
   echo "FAIL: bypass on fresh branch unexpectedly succeeded" >&2
   exit 1
 fi
-if grep -q "No prior clean review marker exists for branch 'feature/test'" "$TEST_DIR/output-fresh.txt" \
+if grep -q "No prior clean review marker matches branch 'feature/test' at head 'pr-head-oid'" "$TEST_DIR/output-fresh.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ] \
   && [ ! -f "$TEST_DIR/gh-comment" ] \
   && [ ! -f "$TEST_DIR/codex-review.log" ]; then
@@ -205,7 +205,7 @@ fi
 echo "==> Test: bypass after clean marker records disclosure and trailer"
 reset_case_files
 mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
-printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\n' > "$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
+printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=pr-head-oid\n' > "$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
 run_merge_pr "$TEST_DIR/output-bypass.txt" 123 --bypass-with-disclosure="reviewer timed out after prior clean review"
 if grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-bypass.txt" \
   && grep -q 'reason: reviewer timed out after prior clean review' "$TEST_DIR/output-bypass.txt" \
@@ -214,9 +214,27 @@ if grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-bypass.txt" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
   && [ ! -f "$TEST_DIR/codex-review.log" ]; then
   echo "==> PASS: bypass is disclosed and merged with trailer"
+else
+  echo "FAIL: bypass path did not disclose and merge as expected" >&2
+  cat "$TEST_DIR/output-bypass.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: stale clean marker is rejected"
+reset_case_files
+mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
+printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=old-head\n' > "$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
+if run_merge_pr "$TEST_DIR/output-stale.txt" 123 --bypass-with-disclosure="reviewer timed out"; then
+  echo "FAIL: bypass with stale marker unexpectedly succeeded" >&2
+  exit 1
+fi
+if grep -q "No prior clean review marker matches branch 'feature/test' at head 'pr-head-oid'" "$TEST_DIR/output-stale.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
+  && [ ! -f "$TEST_DIR/gh-comment" ]; then
+  echo "==> PASS: stale clean marker rejected"
   exit 0
 fi
 
-echo "FAIL: bypass path did not disclose and merge as expected" >&2
-cat "$TEST_DIR/output-bypass.txt" >&2
+echo "FAIL: stale marker did not fail safely" >&2
+cat "$TEST_DIR/output-stale.txt" >&2
 exit 1

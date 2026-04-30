@@ -97,11 +97,22 @@ review_clean_marker_file() {
     "$(review_clean_marker_key "$branch")"
 }
 
+marker_field() {
+  local field="$1"
+  local marker="$2"
+  awk -F= -v key="$field" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$marker"
+}
+
 branch_has_clean_review_marker() {
   local branch="$1"
-  local marker
+  local head_oid="$2"
+  local marker marker_branch marker_head
   marker="$(review_clean_marker_file "$branch")"
-  [ -f "$marker" ] && grep -q '^result=CODEX_REVIEW_CLEAN$' "$marker"
+  [ -f "$marker" ] || return 1
+  grep -q '^result=CODEX_REVIEW_CLEAN$' "$marker" || return 1
+  marker_branch="$(marker_field branch "$marker")"
+  marker_head="$(marker_field head "$marker")"
+  [ "$marker_branch" = "$branch" ] && [ "$marker_head" = "$head_oid" ]
 }
 
 print_bypass_banner() {
@@ -143,9 +154,9 @@ run_merge_review() {
   REVIEWED_HEAD_OID="$pr_head_oid"
 
   if [ "$BYPASS_REVIEW" = true ]; then
-    if ! branch_has_clean_review_marker "$pr_head_branch"; then
+    if ! branch_has_clean_review_marker "$pr_head_branch" "$pr_head_oid"; then
       echo "ERROR: Refusing reviewer bypass for PR #$PR_NUMBER." >&2
-      echo "       No prior clean review marker exists for branch '$pr_head_branch'." >&2
+      echo "       No prior clean review marker matches branch '$pr_head_branch' at head '$pr_head_oid'." >&2
       echo "       Run the reviewer cleanly once before using --bypass-with-disclosure." >&2
       exit 1
     fi
