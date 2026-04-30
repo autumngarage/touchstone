@@ -1737,6 +1737,46 @@ clean_review_cache_file() {
   printf '%s/%s.clean' "$(clean_review_cache_dir)" "$key"
 }
 
+review_clean_marker_branch() {
+  local branch="${CODEX_REVIEW_BRANCH_NAME:-}"
+  if [ -z "$branch" ]; then
+    branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
+  fi
+  [ "$branch" != "HEAD" ] || branch=""
+  printf '%s' "$branch"
+}
+
+review_clean_marker_key() {
+  local branch="$1"
+  printf '%s' "$branch" | sed 's/[^A-Za-z0-9._-]/_/g'
+}
+
+review_clean_marker_dir() {
+  git rev-parse --git-path touchstone/reviewer-clean
+}
+
+write_clean_review_marker() {
+  local line_count="$1"
+  local branch marker_dir marker_file
+
+  branch="$(review_clean_marker_branch)"
+  [ -n "$branch" ] || return 0
+
+  marker_dir="$(review_clean_marker_dir)"
+  marker_file="$marker_dir/$(review_clean_marker_key "$branch").clean"
+
+  mkdir -p "$marker_dir" 2>/dev/null || return 0
+  {
+    printf 'result=CODEX_REVIEW_CLEAN\n'
+    printf 'branch=%s\n' "$branch"
+    printf 'base=%s\n' "$BASE"
+    printf 'merge_base=%s\n' "$MERGE_BASE"
+    printf 'head=%s\n' "$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+    printf 'diff_lines=%s\n' "$line_count"
+    printf 'reviewed_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  } > "$marker_file" 2>/dev/null || true
+}
+
 write_clean_review_cache() {
   local key="$1"
   local line_count="$2"
@@ -2395,6 +2435,7 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
       REVIEW_EXIT_REASON="clean"
       print_summary
       write_clean_review_cache "$REVIEW_CACHE_KEY" "$DIFF_LINE_COUNT"
+      write_clean_review_marker "$DIFF_LINE_COUNT"
       # The "ran" denominator: a successful review actually executed.
       # skip-rate = log_skip_count / (log_skip_count + log_ran_count).
       log_skip_event ran "clean:iter=${iter}:lines=${DIFF_LINE_COUNT}:fix-commits=${FIX_COMMITS}"
