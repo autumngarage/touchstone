@@ -35,7 +35,13 @@ case "${1:-} ${2:-}" in
     ;;
   "pr view")
     case "${5:-}" in
-      state) echo "OPEN" ;;
+      state)
+        if [ -f "${GH_MERGED_MARKER:-/dev/null/never}" ]; then
+          echo "MERGED"
+        else
+          echo "OPEN"
+        fi
+        ;;
       headRefName) echo "feature/test" ;;
       headRefOid) echo "pr-head-oid" ;;
       mergeStateStatus,mergeable) echo "CLEAN MERGEABLE" ;;
@@ -71,6 +77,13 @@ case "${1:-} ${2:-}" in
       printf '%s\n' "${9:-}" > "$GH_MERGE_BODY_FILE"
     fi
     echo "$7" > "$GH_MERGE_HEAD_FILE"
+    if [ -n "${GH_MERGED_MARKER:-}" ]; then
+      touch "$GH_MERGED_MARKER"
+    fi
+    if [ "${GH_PR_MERGE_FAIL_LOCAL:-false}" = "true" ]; then
+      echo "failed to delete local branch feature/test: failed to run git: error: cannot delete branch 'feature/test' used by worktree at '/tmp/touchstone-feature-worktree'" >&2
+      exit 1
+    fi
     echo "merged"
     ;;
   *)
@@ -156,12 +169,13 @@ reset_case_files() {
     "$TEST_DIR"/gh-checkout* "$TEST_DIR"/gh-merge-head* \
     "$TEST_DIR"/gh-merge-args* "$TEST_DIR"/gh-merge-body* \
     "$TEST_DIR"/gh-comment* "$TEST_DIR"/git-checkout-main* \
-    "$TEST_DIR"/git-sibling-pull*
+    "$TEST_DIR"/git-sibling-pull* "$TEST_DIR"/gh-merged-marker*
   rm -rf "$GIT_PATH_ROOT"
   mkdir -p "$GIT_PATH_ROOT"
   unset GIT_WORKTREE_LIST
   unset GIT_SIBLING_PULL_FAIL
   unset TEST_CURRENT_WORKTREE
+  unset GH_PR_MERGE_FAIL_LOCAL
 }
 
 run_merge_pr() {
@@ -175,6 +189,8 @@ run_merge_pr() {
     GH_MERGE_ARGS_FILE="$TEST_DIR/gh-merge-args" \
     GH_MERGE_BODY_FILE="$TEST_DIR/gh-merge-body" \
     GH_COMMENT_FILE="$TEST_DIR/gh-comment" \
+    GH_MERGED_MARKER="$TEST_DIR/gh-merged-marker" \
+    GH_PR_MERGE_FAIL_LOCAL="${GH_PR_MERGE_FAIL_LOCAL:-false}" \
     GIT_CHECKOUT_MAIN_FILE="$TEST_DIR/git-checkout-main" \
     GIT_SIBLING_PULL_FILE="$TEST_DIR/git-sibling-pull" \
     GIT_WORKTREE_LIST="${GIT_WORKTREE_LIST:-}" \
@@ -229,6 +245,35 @@ if grep -q '==> main is checked out in sibling worktree: /tmp/touchstone-main-wo
 else
   echo "FAIL: sibling worktree sync did not avoid the checkout-main failure path" >&2
   cat "$TEST_DIR/output-sibling-worktree.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: gh local-branch-delete failure on a MERGED PR is a warning, not an error"
+reset_case_files
+TEST_CURRENT_WORKTREE="/tmp/touchstone-feature-worktree"
+GIT_WORKTREE_LIST="$(cat <<'EOF'
+worktree /tmp/touchstone-main-worktree
+HEAD main-oid
+branch refs/heads/main
+
+worktree /tmp/touchstone-feature-worktree
+HEAD feature-oid
+branch refs/heads/feature/test
+
+EOF
+)"
+GH_PR_MERGE_FAIL_LOCAL=true \
+  run_merge_pr "$TEST_DIR/output-gh-local-fail.txt" 123
+rc=$?
+if [ "$rc" = "0" ] \
+  && grep -q 'WARNING: gh pr merge exited 1, but PR #123 is MERGED on GitHub.' "$TEST_DIR/output-gh-local-fail.txt" \
+  && grep -q '==> Done\.' "$TEST_DIR/output-gh-local-fail.txt" \
+  && ! grep -q '^ERROR:' "$TEST_DIR/output-gh-local-fail.txt"; then
+  echo "==> PASS: local-delete failure on MERGED PR degrades to warning"
+else
+  echo "FAIL: gh local-delete failure should warn, not error, when PR is MERGED" >&2
+  echo "    rc=$rc" >&2
+  cat "$TEST_DIR/output-gh-local-fail.txt" >&2
   exit 1
 fi
 
