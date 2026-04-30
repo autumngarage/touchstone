@@ -131,7 +131,10 @@ echo "==> Creating worktree"
 echo "    branch: $BRANCH"
 echo "    path:   $WORKTREE_PATH"
 echo "    base:   $DEFAULT_REF"
-git worktree add "$WORKTREE_PATH" -b "$BRANCH" "$DEFAULT_REF"
+git worktree add "$WORKTREE_PATH" --no-track -b "$BRANCH" "$DEFAULT_REF"
+# Keep first push ergonomic without wiring the new branch to origin/main.
+git -C "$WORKTREE_PATH" config extensions.worktreeConfig true
+git -C "$WORKTREE_PATH" config --worktree push.default current
 
 COPIED=0
 if [ -f "$INCLUDE_FILE" ]; then

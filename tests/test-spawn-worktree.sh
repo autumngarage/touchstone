@@ -80,6 +80,13 @@ assert_contains "$OUTPUT" 'copied: local/dev.json'
 
 BRANCH="$(git -C "$WORKTREE" branch --show-current)"
 [ "$BRANCH" = "feat/local-slice" ] || fail "expected spawned branch feat/local-slice, got $BRANCH"
+if git -C "$WORKTREE" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
+  fail "spawned branch should not track origin/main or any upstream before first push"
+fi
+git -C "$WORKTREE" push -q
+if ! git -C "$REPO" ls-remote --exit-code --heads origin feat/local-slice >/dev/null 2>&1; then
+  fail "first git push from spawned worktree should create origin/feat/local-slice"
+fi
 
 if (cd "$REPO" && bash "$TOUCHSTONE_ROOT/scripts/spawn-worktree.sh" invalid "$TEST_DIR/bad") >"$TEST_DIR/invalid-output.txt" 2>&1; then
   fail "invalid branch shape should fail"
