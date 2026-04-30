@@ -72,6 +72,8 @@ Behavior:
 - Loops up to `max_iterations` times (default 3)
 - Gracefully skips if Conductor or the configured provider is unavailable, printing a visible "review skipped" line so the missing safety boundary isn't silent
 
+If the reviewer itself wedges after the branch has already recorded a clean review iteration, use `scripts/merge-pr.sh <pr-number> --bypass-with-disclosure="<reason>"` instead of dropping to raw `gh pr merge`. The bypass refuses fresh branches, prints a visible warning, comments on the PR with the reason, and adds a `Reviewer-bypass: <reason>` trailer to the squash commit when GitHub accepts the supplied merge body. This is for a stalled reviewer gate on an already-reviewed branch, not for bypassing substantive findings.
+
 Prefer a different model or provider for AI review than the one that authored the change, when Conductor has one available. Deterministic checks — format, lint, typecheck, tests, and project-specific validators — still run before AI review; model diversity complements those checks, it does not replace them.
 
 If the project enables GitHub merge queue, `open-pr.sh --auto-merge` should enqueue the reviewed PR instead of bypassing the queue. Never use `--admin` to skip required checks or queue policy. Treat queue removal or repeated queue failure as a blocker that needs diagnosis before retrying.
@@ -126,3 +128,5 @@ For the full fan-out playbook — slice manifests, file ownership, parent orches
 ## Emergency path
 
 If a production bug requires immediate action and can't wait for the PR cycle, push directly with `git push --no-verify`. The next PR must include an "Emergency-bypass disclosure" section explaining what was bypassed and why. The convention — not the tooling — is what keeps the discipline.
+
+Do not use `git push --no-verify` for a wedged Conductor merge review when the PR path is otherwise healthy. Use `scripts/merge-pr.sh --bypass-with-disclosure="<reason>"` so the bypass remains in the PR and merge audit trail.
