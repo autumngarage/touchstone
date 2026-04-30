@@ -39,6 +39,8 @@ The three layers are complementary — the local hook catches the honest mistake
 
 **Concise commit messages.** Lead with *what* changed in the subject line. Use the body to explain *why* when the why isn't obvious from the diff. The PR description handles the broader narrative; commit messages are the per-step record.
 
+**Issue-closing trailers.** When a commit is meant to resolve a GitHub issue, add a body trailer such as `Closes-issue: #123` (or `Closes: #123`, `Fixes: #123`, `Refs: #123`). `scripts/open-pr.sh` scans commits unique to the branch and injects a `Closes #123` line into the PR body, so the issue auto-closes when the PR merges.
+
 **Stage explicit file paths.** Avoid `git add -A` or `git add .` — they accidentally stage sensitive files (`.env`, credentials) or large binaries. Naming files makes intent visible at the staging step.
 
 ## Commit and push frequency
