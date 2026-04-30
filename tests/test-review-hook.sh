@@ -78,7 +78,8 @@ chmod +x "$FAKE_BIN/gh" "$FAKE_BIN/conductor"
 if grep -q -- '- Anything in bootstrap/new-project.sh' "$PROMPT_FILE" \
   && grep -q -- '- Anything in bootstrap/update-project.sh' "$PROMPT_FILE" \
   && grep -q -- '- Anything in bootstrap/sync-all.sh' "$PROMPT_FILE" \
-  && grep -q -- '- Anything in hooks/codex-review.sh' "$PROMPT_FILE"; then
+  && grep -q -- '- Anything in hooks/codex-review.sh' "$PROMPT_FILE" \
+  && grep -q -- '- Anything in templates/' "$PROMPT_FILE"; then
   echo "==> PASS: multiline unsafe_paths were included in the Codex prompt"
 else
   echo "FAIL: expected multiline unsafe_paths to appear in the generated prompt" >&2
@@ -392,19 +393,19 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Test: review hook refuses to auto-commit unsafe path fixes"
-mkdir -p "$REPO_UNSAFE/bootstrap"
+echo "==> Test: review hook refuses to auto-commit unsafe directory fixes"
+mkdir -p "$REPO_UNSAFE/templates"
 git -C "$REPO_UNSAFE" init >/dev/null 2>&1
 git -C "$REPO_UNSAFE" config user.name "Touchstone Test"
 git -C "$REPO_UNSAFE" config user.email "touchstone@example.com"
 {
   printf '[codex_review]\n'
   printf 'safe_by_default = true\n'
-  printf 'unsafe_paths = ["bootstrap/"]\n'
+  printf 'unsafe_paths = ["templates/"]\n'
 } > "$REPO_UNSAFE/.codex-review.toml"
-printf 'base\n' > "$REPO_UNSAFE/bootstrap/new-project.sh"
+printf 'base\n' > "$REPO_UNSAFE/templates/AGENTS.md"
 printf 'base\n' > "$REPO_UNSAFE/example.txt"
-git -C "$REPO_UNSAFE" add .codex-review.toml bootstrap/new-project.sh example.txt
+git -C "$REPO_UNSAFE" add .codex-review.toml templates/AGENTS.md example.txt
 git -C "$REPO_UNSAFE" commit -m "base" >/dev/null 2>&1
 printf 'changed\n' >> "$REPO_UNSAFE/example.txt"
 git -C "$REPO_UNSAFE" add example.txt
@@ -414,7 +415,7 @@ cat > "$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
-printf 'codex edit\n' >> bootstrap/new-project.sh
+printf 'codex edit\n' >> templates/AGENTS.md
 printf 'fixed unsafe path\n'
 printf 'CODEX_REVIEW_FIXED\n'
 EOF
@@ -435,7 +436,7 @@ AFTER_HEAD="$(git -C "$REPO_UNSAFE" rev-parse HEAD)"
 if [ "$UNSAFE_EXIT" -eq 1 ] \
   && [ "$BEFORE_HEAD" = "$AFTER_HEAD" ] \
   && grep -q 'not allowed' "$UNSAFE_OUTPUT" \
-  && grep -q 'bootstrap/new-project.sh' "$UNSAFE_OUTPUT"; then
+  && grep -q 'templates/AGENTS.md' "$UNSAFE_OUTPUT"; then
   echo "==> PASS: unsafe auto-fix was blocked before commit"
 else
   echo "FAIL: expected unsafe auto-fix to be blocked without creating a commit" >&2
