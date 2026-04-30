@@ -24,4 +24,5 @@ unsafe_paths = [
   "bootstrap/update-project.sh",
   "bootstrap/sync-all.sh",
   "hooks/codex-review.sh",
+  "templates/",
 ]
