@@ -63,6 +63,7 @@ Full rationale, worked examples, and the *why* behind each rule:
 - `principles/documentation-ownership.md`
 - `principles/git-workflow.md`
 - `principles/agent-swarms.md`
+- `principles/file-upstream-bugs.md`
 
 ## Required Delivery Workflow
 

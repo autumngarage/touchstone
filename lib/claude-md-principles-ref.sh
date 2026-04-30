@@ -95,6 +95,7 @@ claude_md_has_principles_ref() {
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
 @principles/git-workflow.md
+@principles/file-upstream-bugs.md
 EOF
   return 0
 }
@@ -121,6 +122,7 @@ claude_md_insert_missing_principles_refs() {
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
 @principles/git-workflow.md
+@principles/file-upstream-bugs.md
 EOF
 
   if [ ! -s "$missing_file" ]; then
@@ -158,6 +160,7 @@ them are touchstone-owned and refresh on every `touchstone update`.
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
 @principles/git-workflow.md
+@principles/file-upstream-bugs.md
 
 ---
 BLOCK

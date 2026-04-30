@@ -66,6 +66,7 @@ cat > "$TEST_DIR/case-detect/CLAUDE.md" <<'EOF'
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
 @principles/git-workflow.md
+@principles/file-upstream-bugs.md
 EOF
 if ! claude_md_has_principles_ref "$TEST_DIR/case-detect/CLAUDE.md"; then
   fail "should detect full required @principles/ import set"
@@ -178,6 +179,7 @@ setup_existing_repo() {
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
 @principles/git-workflow.md
+@principles/file-upstream-bugs.md
 EOF
   elif [ "$with_imports" = partial ]; then
     cat > "$dir/CLAUDE.md" <<'EOF'
