@@ -35,6 +35,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale, work
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
 @principles/agent-swarms.md
+@principles/file-upstream-bugs.md
 
 ## Git Workflow
 
