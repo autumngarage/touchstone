@@ -262,6 +262,16 @@ bash tests/test-agent-steering-contract.sh
 
 That test guards the interpretability contract without spending model quota: Claude, Codex, and Gemini are interchangeable driving CLIs; Conductor is the worker/reviewer router with provider fallback; all drivers must converge on the same managed principles and branch → PR → review → automerge lifecycle.
 
+Maintainer self-tests are split into a fast default tier and a slow opt-in tier. The fast tier is the pre-push contract and must not call live model/provider CLIs:
+
+```bash
+for test in tests/test-*.sh; do
+  bash "$test" || exit 1
+done
+```
+
+Live guidance probes live under `tests/slow-*.sh` and are run explicitly when changing model-steering behavior or before release-level confidence checks.
+
 ### Claude Code Skills
 
 Touchstone owns Claude Code project skills under `.claude/skills/` for Touchstone maintenance work. These are part of this repo, not files that Touchstone copies into every downstream project:

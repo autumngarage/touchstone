@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# tests/test-guidance-probes.sh — probe whether engineering principles
+# tests/slow-guidance-probes.sh — probe whether engineering principles
 # actually shape Claude's responses, not just live in the repo.
 #
 # Each probe runs `claude -p` against a canned scenario and greps the
@@ -10,8 +10,10 @@
 # affecting the driving LLM as the file bloats or the wording decays.
 # The probes catch that drift.
 #
-# Skip with TOUCHSTONE_SKIP_GUIDANCE=1 during iteration. Gracefully
-# skips if `claude` is not on PATH (e.g. CI runners without the CLI).
+# This is intentionally outside tests/test-*.sh because it shells out to a
+# live Claude model and can spend provider quota or flake on provider latency.
+# Skip with TOUCHSTONE_SKIP_GUIDANCE=1 during iteration. Gracefully skips if
+# `claude` is not on PATH (e.g. CI runners without the CLI).
 #
 set -euo pipefail
 

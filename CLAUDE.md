@@ -70,7 +70,7 @@ Every change — including one-liners, doc tweaks, and version bumps — starts 
 
 - **Changes propagate.** Every file in `principles/`, `hooks/`, and `scripts/` gets copied into downstream projects by `update-project.sh`. Updates must happen on a clean git worktree and land as a `chore/touchstone-*` branch commit, not as orphaned dirty files. Test changes here before syncing.
 - **Templates are starting points.** Files in `templates/` are copied once at bootstrap time and then owned by the project. Changes to templates only affect *new* projects.
-- **Self-tests are mandatory.** Run every `tests/test-*.sh` script before pushing. These validate the bootstrap, update, hook, merge, and helper flows end-to-end.
+- **Self-tests are mandatory.** Run every `tests/test-*.sh` script before pushing. This is the fast default tier and must not spend live model/provider quota. Slow opt-in probes live under `tests/slow-*.sh` and are run explicitly when validating model-steering behavior.
 - **Parallel agent work is isolated.** Use `principles/agent-swarms.md` for slice manifests and parent orchestration. Use `scripts/spawn-worktree.sh` to create branch/worktree slices and `scripts/cleanup-worktrees.sh` for dry-run-first teardown.
 - **Release completeness.** A touchstone release is not done until GitHub Releases, the Homebrew tap, `origin/main`, and the locally installed brew package all agree on the same version.
 
@@ -82,9 +82,15 @@ for test in tests/test-*.sh; do
   echo "==> $test"
   bash "$test" || exit 1
 done
+
+# Opt-in slow tier for live model/provider probes
+for test in tests/slow-*.sh; do
+  echo "==> $test"
+  bash "$test" || exit 1
+done
 ```
 
-All tests must pass. The bootstrap and update tests exercise the full propagation flow against temp directories.
+The fast tier must pass before pushing. Run the slow tier when changing live guidance-probe behavior or before release-level confidence checks. The bootstrap and update tests exercise the full propagation flow against temp directories.
 
 ## Architecture
 

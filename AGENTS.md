@@ -83,6 +83,17 @@ for test in tests/test-*.sh; do
 done
 ```
 
+That is the fast default tier and must not spend live model/provider quota. Slow opt-in probes live under `tests/slow-*.sh`:
+
+```bash
+for test in tests/slow-*.sh; do
+  echo "==> $test"
+  bash "$test" || exit 1
+done
+```
+
+Run the slow tier when changing live guidance-probe behavior or before release-level confidence checks.
+
 For focused bootstrap/update changes, at minimum run `bash tests/test-bootstrap.sh` and `bash tests/test-update.sh`, then run the broader suite before shipping.
 
 ### Architecture
