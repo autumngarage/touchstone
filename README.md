@@ -1,9 +1,14 @@
 ```text
- _               _       _
-| |_ ___ _  _ __| |_  __| |_ ___ _ _  ___
-|  _/ _ \ || / _| ' \(_-<  _/ _ \ ' \/ -_)
- \__\___/\_,_\__|_||_/__/\__\___/_||_\___|
+ _____                _         _                   
+|_   _|__  _   _  ___| |__  ___| |_ ___  _ __   ___ 
+  | |/ _ \| | | |/ __| '_ \/ __| __/ _ \| '_ \ / _ \
+  | | (_) | |_| | (__| | | \__ \ || (_) | | | |  __/
+  |_|\___/ \__,_|\___|_| |_|___/\__\___/|_| |_|\___|
 ```
+
+> *Scaffolding + pre-push AI review for AI-assisted projects.*
+>
+> by **[Autumn Garage](https://github.com/autumngarage/autumn-garage)** · alongside [Cortex](https://github.com/autumngarage/cortex) · [Sentinel](https://github.com/autumngarage/sentinel) · [Conductor](https://github.com/autumngarage/conductor)
 
 # Touchstone
 
