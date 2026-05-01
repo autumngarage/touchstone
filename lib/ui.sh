@@ -2,9 +2,9 @@
 #
 # lib/ui.sh — Touchstone branded UI helpers.
 #
-# Provides the double-rail verdict style and the figlet/gum hero banner.
-# Gracefully degrades when gum or figlet are not installed: the rails turn
-# into ASCII bars, and the hero turns into a bold "TOUCHSTONE" header.
+# Provides the double-rail verdict style and the embedded wordmark/gum hero
+# banner. Gracefully degrades when gum is not installed: the rails turn into
+# ASCII bars, and the hero turns into a plain wordmark.
 #
 # Sourced by bin/touchstone. The codex-review hook carries its own inline
 # copy because it ships into downstream projects without lib/.
@@ -16,6 +16,8 @@ TK_UI_SOURCED=1
 # Brand palette. Orange is the Touchstone signature color; lime/red are the
 # state accents; dim is for supporting text.
 TK_BRAND_ORANGE="#FF6B35"
+TK_BRAND_PEACH="#ffaf87"
+TK_BRAND_WHEAT="#ffd7af"
 TK_BRAND_LIME="#A3E635"
 TK_BRAND_RED="#EF4444"
 TK_BRAND_DIM="#6B7280"
@@ -104,8 +106,18 @@ tk_signature() {
   fi
 }
 
-# tk_hero [subtitle] — figlet+gum hero banner for `touchstone init` /
-# `touchstone version`. Falls back to a bold header when figlet is missing.
+_tk_wordmark() {
+  cat <<'WORDMARK'
+ _____                _         _
+|_   _|__  _   _  ___| |__  ___| |_ ___  _ __   ___
+  | |/ _ \| | | |/ __| '_ \/ __| __/ _ \| '_ \ / _ \
+  | | (_) | |_| | (__| | | \__ \ || (_) | | | |  __/
+  |_|\___/ \__,_|\___|_| |_|___/\__\___/|_| |_|\___|
+WORDMARK
+}
+
+# tk_hero [subtitle] — embedded wordmark+gum hero banner for
+# `touchstone init` / `touchstone version`. Falls back to a plain wordmark.
 tk_hero() {
   local subtitle="${1:-}"
   local version=""
@@ -113,50 +125,69 @@ tk_hero() {
     version="$(tr -d '[:space:]' < "$TOUCHSTONE_ROOT/VERSION" 2>/dev/null || true)"
   fi
 
-  if tk_have_figlet && tk_have_gum && tk_color_enabled; then
-    local banner painted_banner painted_sub
-    banner="$(figlet -f slant TOUCHSTONE 2>/dev/null || figlet TOUCHSTONE 2>/dev/null || true)"
-    if [ -n "$banner" ]; then
-      painted_banner="$(gum style --foreground "$TK_BRAND_ORANGE" --margin "1 2" "$banner" 2>/dev/null || true)"
-      if [ -n "$painted_banner" ]; then
-        printf '%s\n' "$painted_banner"
-        local sub_text=""
-        if [ -n "$subtitle" ]; then
-          sub_text="$subtitle${version:+ · v$version}"
-        elif [ -n "$version" ]; then
-          sub_text="shared engineering platform · v${version}"
-        fi
-        if [ -n "$sub_text" ]; then
-          painted_sub="$(gum style --foreground "$TK_BRAND_DIM" --margin "0 2" "$sub_text" 2>/dev/null || true)"
-          if [ -n "$painted_sub" ]; then
-            printf '%s\n' "$painted_sub"
-          else
-            printf '  %s\n' "$sub_text"
-          fi
-        fi
-        printf '\n'
-        return 0
+  if tk_have_gum && tk_color_enabled; then
+    local banner painted_banner painted_sub painted_attr
+    banner="$(_tk_wordmark)"
+    painted_banner="$(gum style --foreground "$TK_BRAND_PEACH" --margin "1 2" "$banner" 2>/dev/null || true)"
+    if [ -n "$painted_banner" ]; then
+      printf '%s\n' "$painted_banner" >&2
+      local sub_text=""
+      if [ -n "$subtitle" ]; then
+        sub_text="$subtitle${version:+ · v$version}"
+      elif [ -n "$version" ]; then
+        sub_text="shared engineering platform · v${version}"
       fi
+      if [ -n "$sub_text" ]; then
+        painted_sub="$(gum style --foreground "$TK_BRAND_WHEAT" --margin "0 2" "$sub_text" 2>/dev/null || true)"
+        if [ -n "$painted_sub" ]; then
+          printf '%s\n' "$painted_sub" >&2
+        else
+          printf '  %s\n' "$sub_text" >&2
+        fi
+      fi
+      painted_attr="$(gum style --foreground "$TK_BRAND_WHEAT" --margin "0 2" "by Autumn Garage" 2>/dev/null || true)"
+      if [ -n "$painted_attr" ]; then
+        printf '%s\n' "$painted_attr" >&2
+      else
+        printf '  by Autumn Garage\n' >&2
+      fi
+      printf '\n' >&2
+      return 0
     fi
   fi
 
   # Plain fallback.
-  printf '\n'
+  printf '\n' >&2
   if tk_color_enabled; then
-    printf '  \033[1;38;5;208mTOUCHSTONE\033[0m'
+    while IFS= read -r line; do
+      printf '  \033[38;5;216m%s\033[0m\n' "$line" >&2
+    done <<WORDMARK
+$(_tk_wordmark)
+WORDMARK
   else
-    printf '  TOUCHSTONE'
+    while IFS= read -r line; do
+      printf '  %s\n' "$line" >&2
+    done <<WORDMARK
+$(_tk_wordmark)
+WORDMARK
   fi
-  if [ -n "$version" ]; then
-    printf '  v%s' "$version"
-  fi
-  printf '\n'
   if [ -n "$subtitle" ]; then
     if tk_color_enabled; then
-      printf '  \033[2m%s\033[0m\n' "$subtitle"
+      printf '  \033[38;5;223m%s\033[0m\n' "$subtitle${version:+ · v$version}" >&2
     else
-      printf '  %s\n' "$subtitle"
+      printf '  %s\n' "$subtitle${version:+ · v$version}" >&2
+    fi
+  elif [ -n "$version" ]; then
+    if tk_color_enabled; then
+      printf '  \033[38;5;223mshared engineering platform · v%s\033[0m\n' "$version" >&2
+    else
+      printf '  shared engineering platform · v%s\n' "$version" >&2
     fi
   fi
-  printf '\n'
+  if tk_color_enabled; then
+    printf '  \033[38;5;223mby Autumn Garage\033[0m\n' >&2
+  else
+    printf '  by Autumn Garage\n' >&2
+  fi
+  printf '\n' >&2
 }
