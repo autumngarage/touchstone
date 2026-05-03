@@ -395,7 +395,7 @@ install_uv_project() {
     return 1
   fi
 
-  if uv_output="$((cd "$project_dir" && uv sync) 2>&1 | tail -1)"; then
+  if uv_output="$( (cd "$project_dir" && uv sync) 2>&1 | tail -1)"; then
     ok "$label dependencies synced: $uv_output"
   else
     fail "$label dependency sync failed: $uv_output"
