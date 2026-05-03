@@ -342,6 +342,7 @@ fi
 update_file "$TOUCHSTONE_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
 update_file "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" "$PROJECT_DIR/scripts/branch-guard.sh"
 update_file "$TOUCHSTONE_ROOT/hooks/emergency-disclosure.sh" "$PROJECT_DIR/scripts/emergency-disclosure.sh"
+update_file "$TOUCHSTONE_ROOT/hooks/cortex-pr-merged-hook.sh" "$PROJECT_DIR/scripts/cortex-pr-merged-hook.sh"
 update_file "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_DIR/scripts/touchstone-run.sh"
 update_file "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
 update_file "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
@@ -488,6 +489,7 @@ write_touchstone_manifest() {
     printf 'scripts/codex-review.sh\n'
     printf 'scripts/branch-guard.sh\n'
     printf 'scripts/emergency-disclosure.sh\n'
+    printf 'scripts/cortex-pr-merged-hook.sh\n'
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
