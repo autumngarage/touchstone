@@ -37,6 +37,7 @@ Driver fallback is shared-contract fallback: Codex and other AGENTS.md-native to
 - **Make irreversible actions recoverable** — destructive operations need a dry-run, backup, idempotency, rollback, or forward-fix plan before they run.
 - **Preserve compatibility at boundaries** — public API/config/schema/CLI/hook/template changes need a compatibility or migration plan.
 - **Audit weak-point classes** — when a structural bug is found, audit the class and add a guardrail; don't fix only the one instance.
+- **File issues for bugs** — open a GitHub issue when you find a bug, in this project or in an autumngarage tool. Don't silently work around it.
 
 Full rationale, worked examples, and the *why* behind each rule:
 
