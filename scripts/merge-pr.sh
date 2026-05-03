@@ -372,4 +372,31 @@ fi
 
 # 5. Sync local default branch.
 sync_default_branch_after_merge
+
+# 6. Cortex post-merge hook (T1.9). Fires only when the project meets the
+# activation criteria documented in scripts/cortex-pr-merged-hook.sh.
+# Activation is the hook's job — we always invoke and let it self-gate.
+# The hook may produce a follow-up commit on the default branch; that
+# commit is created with --no-verify so it doesn't recurse through this
+# script's review gates. Failures inside the hook surface as visible
+# stderr; we don't fail the overall merge over a journal-write hiccup.
+CORTEX_HOOK_SCRIPT=""
+for candidate_hook in \
+  "$SCRIPT_DIR/cortex-pr-merged-hook.sh" \
+  "$(git rev-parse --show-toplevel 2>/dev/null)/scripts/cortex-pr-merged-hook.sh"; do
+  if [ -n "$candidate_hook" ] && [ -f "$candidate_hook" ]; then
+    CORTEX_HOOK_SCRIPT="$candidate_hook"
+    break
+  fi
+done
+
+if [ -n "$CORTEX_HOOK_SCRIPT" ]; then
+  hook_status=0
+  TOUCHSTONE_MERGED_PR="$PR_NUMBER" bash "$CORTEX_HOOK_SCRIPT" || hook_status=$?
+  if [ "$hook_status" -ne 0 ]; then
+    echo "WARNING: cortex-pr-merged-hook exited $hook_status (see above)." >&2
+    echo "         The PR merged cleanly; only the auto-draft journal step had a problem." >&2
+  fi
+fi
+
 echo "==> Done."
