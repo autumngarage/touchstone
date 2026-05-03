@@ -30,6 +30,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale, work
 - **Preserve compatibility at boundaries** — public API/config/schema/CLI/hook/template changes need a compatibility or migration plan.
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill.
 - **Isolate file-writing subagents** — parallel workers use dedicated worktrees, slice manifests, and disjoint file ownership by default.
+- **File issues for bugs** — open a GitHub issue when you find a bug, in this project or in an autumngarage tool. Don't silently work around it.
 
 @principles/engineering-principles.md
 @principles/pre-implementation-checklist.md
