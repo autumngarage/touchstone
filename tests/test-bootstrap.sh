@@ -5,6 +5,10 @@
 set -euo pipefail
 
 # Doctrine 0002: ensure all bootstrap calls run non-interactively.
+# We export YES_MODE=true to exercise the new non-interactive code paths
+# as requested by the merge review, but we also use exec </dev/null for
+# extra safety against hangs if the environment's [ -t 0 ] check is fuzzy.
+export YES_MODE=true
 exec </dev/null
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -1146,7 +1150,8 @@ assert_contains "$TEST_DIR/doctor-clean.txt" 'Autumn Garage siblings'
 # system dirs plus the fake pre-commit hook installer. Use an absolute path
 # to touchstone so the CLI is still reachable with the trimmed PATH.
 PROJECT_DOCTOR_NO_SIBLINGS="$TEST_DIR/test-project-doctor-no-siblings"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_NO_SIBLINGS" --no-register >/dev/null
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_NO_SIBLINGS" --no-register \
+  --no-with-cortex --no-with-sentinel >/dev/null
 if (cd "$PROJECT_DOCTOR_NO_SIBLINGS" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-no-siblings.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-no-siblings.txt" 'Autumn Garage siblings'
   assert_contains "$TEST_DIR/doctor-no-siblings.txt" 'cortex not installed'
@@ -1641,7 +1646,7 @@ assert_contains "$TEST_DIR/wizard-yes-flags.txt" '--github-public'
 # Non-TTY run (no --yes, no TTY) must not print the wizard block. Structure
 # must match pre-R2 behavior: .touchstone-version exists, registry skipped, etc.
 PROJECT_WIZARD_NON_TTY="$TEST_DIR/test-project-wizard-non-tty"
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_WIZARD_NON_TTY" --no-register \
+YES_MODE=false bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_WIZARD_NON_TTY" --no-register \
   </dev/null >"$TEST_DIR/wizard-non-tty.txt" 2>&1 || {
     echo "FAIL: non-TTY bootstrap exited nonzero" >&2
     ERRORS=$((ERRORS + 1))
@@ -1685,6 +1690,7 @@ fi
 # --no-initial-commit must skip the initial commit so no HEAD exists.
 PROJECT_NO_COMMIT="$TEST_DIR/test-project-no-commit"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_NO_COMMIT" --no-register --no-initial-commit \
+  --no-with-cortex --no-with-sentinel \
   </dev/null >"$TEST_DIR/no-commit.txt" 2>&1
 if git -C "$PROJECT_NO_COMMIT" rev-parse --verify HEAD >/dev/null 2>&1; then
   echo "FAIL: --no-initial-commit must skip the initial commit" >&2
