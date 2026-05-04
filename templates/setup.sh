@@ -17,6 +17,8 @@ YELLOW='\033[0;33m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
+YES_MODE="${YES_MODE:-false}"
+
 info()  { printf "${BOLD}==> %s${RESET}\n" "$*"; }
 ok()    { printf "  ${GREEN}✓${RESET} %s\n" "$*"; }
 warn()  { printf "  ${YELLOW}!${RESET} %s\n" "$*"; }
@@ -67,6 +69,10 @@ prompt_yes_no() {
   local prompt="$1"
   local default="${2:-false}"
   local suffix answer
+
+  if [ "${YES_MODE:-false}" = "true" ]; then
+    if [ "$default" = "true" ]; then return 0; else return 1; fi
+  fi
 
   if [ "$default" = "true" ]; then
     suffix="[Y/n]"

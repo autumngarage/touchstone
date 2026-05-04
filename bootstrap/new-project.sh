@@ -29,7 +29,9 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
 # shellcheck source=../lib/agents-principles-block.sh
 source "$TOUCHSTONE_ROOT/lib/agents-principles-block.sh"
+
 REGISTER=true
+
 REGISTER_REQUESTED=false       # Doctrine 0002: track whether --register / --no-register was passed.
 INPUT_UNSAFE=""
 INPUT_TYPE=""
@@ -51,7 +53,7 @@ WORKFLOW_CONFIG_REQUESTED=false
 # Doctrine 0002 wizard — new state. Each *_REQUESTED flag records whether the
 # user passed the flag-form, so the interactive block can skip prompts the
 # user has already answered via flags (flag precedence).
-YES_MODE=false
+YES_MODE="${YES_MODE:-false}"
 SKIP_LANGUAGE_SCAFFOLD=false
 SKIP_LANGUAGE_SCAFFOLD_REQUESTED=false
 WITH_CORTEX=""                 # unset | true | false
@@ -1704,7 +1706,9 @@ if [ "$WITH_CORTEX" = true ] && [ "$RE_INIT" = false ]; then
   if command -v cortex >/dev/null 2>&1; then
     echo ""
     echo "==> Initializing Cortex ..."
-    if ( cd "$PROJECT_DIR" && cortex init ); then
+    cortex_args=()
+    if [ "$YES_MODE" = true ]; then cortex_args+=("--yes"); fi
+    if ( cd "$PROJECT_DIR" && cortex init ${cortex_args[@]+"${cortex_args[@]}"} ); then
       :
     else
       echo "==> Cortex init failed (continuing)." >&2
@@ -1720,7 +1724,9 @@ if [ "$WITH_SENTINEL" = true ] && [ "$RE_INIT" = false ]; then
   if command -v sentinel >/dev/null 2>&1; then
     echo ""
     echo "==> Initializing Sentinel ..."
-    if ( cd "$PROJECT_DIR" && sentinel init ); then
+    sentinel_args=()
+    if [ "$YES_MODE" = true ]; then sentinel_args+=("--yes"); fi
+    if ( cd "$PROJECT_DIR" && sentinel init ${sentinel_args[@]+"${sentinel_args[@]}"} ); then
       :
     else
       echo "==> Sentinel init failed (continuing)." >&2

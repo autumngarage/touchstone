@@ -4,9 +4,6 @@
 #
 set -euo pipefail
 
-# Doctrine 0002: ensure all bootstrap calls run non-interactively.
-export YES_MODE=true
-
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-bootstrap.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
