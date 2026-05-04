@@ -50,7 +50,7 @@ Run the slow tier when changing live guidance-probe behavior or before release-l
 
 Lint is not part of the test suite. Shellcheck runs at pre-commit via `.pre-commit-config.yaml`. For an explicit full-repo lint pass: `pre-commit run shellcheck --all-files`.
 
-<!-- conductor:begin v0.8.2 -->
+<!-- conductor:begin v0.8.4 -->
 ## Conductor delegation
 
 This project has [conductor](https://github.com/autumngarage/conductor)

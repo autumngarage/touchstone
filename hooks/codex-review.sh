@@ -239,17 +239,28 @@ cd "$REPO_ROOT"
 # Format (6 tab-separated fields):
 #   <ISO8601 timestamp>\t<project_path>\t<branch>\t<short_sha>\t<reason>\t<detail>
 #
-# Reason codes (kebab-case):
-#   ran                      review actually executed (the denominator)
-#   conductor-missing        Conductor CLI not installed / no provider authed
-#   conductor-error          reviewer crashed, timed out, malformed sentinel
-#   network-error            (reserved — Conductor reports this via exit code)
-#   config-parse-error       (reserved — TOML parser is permissive today)
-#   config-disabled          [review].enabled=false in .codex-review.toml
-#   review-disabled-by-user  CODEX_REVIEW_ENABLED=false at the env layer
-#   force-skip               (reserved — no env var skips today; future use)
-#   dry-run                  (reserved — bin/touchstone review --dry-run path)
-#   other                    catch-all; detail field names the specific case
+# Reason codes:
+#   ran                        review actually executed (the denominator)
+#   conductor-missing          Conductor CLI not installed / no provider authed (legacy)
+#   conductor-error            reviewer crashed or returned non-zero (legacy catch-all)
+#   network-error              (reserved — Conductor reports this via exit code)
+#   config-parse-error         (reserved — TOML parser is permissive today)
+#   config-disabled            [review].enabled=false in .codex-review.toml
+#   review-disabled-by-user    CODEX_REVIEW_ENABLED=false at the env layer
+#   force-skip                 (reserved — no env var skips today; future use)
+#   dry-run                    (reserved — bin/touchstone review --dry-run path)
+#   other                      catch-all; detail field names the specific case
+#
+# Fail-open taxonomy (emitted when on_error=fail-open, the default):
+#   FAIL_OPEN_TIMEOUT           reviewer exceeded CODEX_REVIEW_TIMEOUT; push allowed
+#   FAIL_OPEN_PARSE_ERROR       no valid sentinel in reviewer output; push allowed
+#   FAIL_OPEN_DEPENDENCY_MISSING  Conductor CLI not found on PATH; push allowed
+#   FAIL_OPEN_PROVIDER_UNAVAILABLE  Conductor installed but no provider configured; push allowed
+#
+# Fail-open events are always visible: a stderr line formatted as
+#   [fail-open:<CODE>] <reason> — AI review bypassed, push proceeds
+# is emitted for each event so the absent safety boundary is never silent.
+# Set on_error="fail-closed" in .codex-review.toml to make these fatal.
 
 # `${VAR-default}` (single dash) substitutes the default ONLY when VAR is
 # unset, NOT when it is an empty string. This preserves the documented
@@ -1464,20 +1475,33 @@ run_reviewer_with_timeout() {
 handle_error() {
   local reason="$1"
 
+  # Map the raw reason to a specific fail-open taxonomy code so the audit
+  # log and console output are unambiguous about *why* the safety net opened.
+  local fail_open_code
+  case "$reason" in
+    timeout*)             fail_open_code="FAIL_OPEN_TIMEOUT" ;;
+    "malformed sentinel") fail_open_code="FAIL_OPEN_PARSE_ERROR" ;;
+    *)                    fail_open_code="conductor-error" ;;
+  esac
+
   if [ "$ON_ERROR" = "fail-closed" ]; then
     echo "==> ERROR ($reason) — blocking push (on_error=fail-closed)." >&2
     # Logged as a skip even though the push is blocked, because the
     # review still failed to produce a verdict — the audit cares about
     # "did the safety net actually run?" not "did the push proceed?".
-    log_skip_event conductor-error "fail-closed:${reason}"
+    log_skip_event "$fail_open_code" "fail-closed:${reason}"
     exit 1
   else
+    # Explicit stderr notice — the safety boundary being absent must never
+    # be invisible ("No silent failures" principle). The [fail-open:<code>]
+    # prefix is machine-parseable for log aggregators.
+    echo "[fail-open:${fail_open_code}] ${reason} — AI review bypassed, push proceeds" >&2
     if [ "$reason" = "malformed sentinel" ]; then
-      echo "[review:fail-open] missing sentinel — policy permits merge but the review verdict is untrustworthy" >&2
+      echo "[fail-open:${fail_open_code}] missing sentinel — review verdict is untrustworthy; push allowed by policy" >&2
     fi
     echo "==> ERROR ($reason) — not blocking push (on_error=fail-open)."
     echo "    Set on_error = \"fail-closed\" in .codex-review.toml to block on errors."
-    log_skip_event conductor-error "fail-open:${reason}"
+    log_skip_event "$fail_open_code" "fail-open:${reason}"
     exit 0
   fi
 }
@@ -1572,7 +1596,16 @@ if ! resolve_reviewer; then
   printf '%b' "$REVIEWER_STATUS"
   echo "    Touchstone 2.0 routes every review through the \`conductor\` CLI."
   echo "    Fix above, then re-run \`git push\` to trigger review again."
-  log_skip_event conductor-missing "no-reviewer-available"
+  # Distinguish: CLI not on PATH vs CLI present but no provider configured.
+  # Emit a visible [fail-open:<code>] line so the absent safety boundary
+  # is not silent ("No silent failures" principle).
+  if reviewer_conductor_available; then
+    echo "[fail-open:FAIL_OPEN_PROVIDER_UNAVAILABLE] conductor installed but no provider configured — AI review bypassed, push proceeds" >&2
+    log_skip_event FAIL_OPEN_PROVIDER_UNAVAILABLE "no-provider-configured"
+  else
+    echo "[fail-open:FAIL_OPEN_DEPENDENCY_MISSING] conductor CLI not found on PATH — AI review bypassed, push proceeds" >&2
+    log_skip_event FAIL_OPEN_DEPENDENCY_MISSING "conductor-not-on-path"
+  fi
   exit 0
 fi
 REVIEWER_LABEL="$(reviewer_label)"

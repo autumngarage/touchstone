@@ -67,12 +67,30 @@ The three layers are complementary — the local hook catches the honest mistake
 
 If the project has AI review configured (see `.codex-review.toml` for policy and the `codex-review` hook in `.pre-commit-config.yaml` for the entry point), a pre-push hook gates default-branch pushes (including squash-merges via `merge-pr.sh`). The hook delegates model access to Conductor, so the reviewer may be Claude, Codex, Gemini, a local model, or another configured provider. The mechanism is `stages: [pre-push]` in `.pre-commit-config.yaml`; it skips feature-branch pushes and only activates when the push target is the default branch. **The reviewer is the merge gate** — `scripts/open-pr.sh --auto-merge` is the standard ship path: open PR → reviewer runs → squash-merge → branch deleted, all in one command, no extra approval step.
 
+**AI review is advisory.** It does not replace deterministic checks (lint, tests, type checking). It catches semantic bugs and policy violations that automated tools miss; it does not guarantee correctness.
+
+**Fail-open by default.** When the review infrastructure fails — timeout, missing Conductor CLI, no provider configured, or unparseable reviewer output — the hook allows the push rather than blocking it. This is the correct trade-off: a Conductor outage during a critical week should not freeze all merges. The cost is that the AI safety net is absent during those events, so each fail-open event is made explicitly visible:
+
+- A `[fail-open:<code>]` line is written to stderr naming exactly why the safety net opened.
+- A structured entry is appended to `~/.touchstone-review-log` for audit and skip-rate monitoring.
+
+The four fail-open taxonomy codes are:
+
+| Code | Cause |
+|------|-------|
+| `FAIL_OPEN_TIMEOUT` | Reviewer exceeded `CODEX_REVIEW_TIMEOUT` (default 300 s) |
+| `FAIL_OPEN_PARSE_ERROR` | Reviewer output contained no valid sentinel line |
+| `FAIL_OPEN_DEPENDENCY_MISSING` | Conductor CLI not found on PATH |
+| `FAIL_OPEN_PROVIDER_UNAVAILABLE` | Conductor installed but no provider configured |
+
+To make infra failures fatal instead, set `on_error = "fail-closed"` in `.codex-review.toml`.
+
 Behavior:
 - Runs `CODEX_REVIEW_FORCE=1 bash scripts/codex-review.sh`, which invokes `conductor exec` against the diff vs the default branch
 - Auto-fixes only low-risk findings (typos, missing imports, missing null checks, adding logging to empty exception handlers, named constants for unexplained magic numbers); anything that changes business logic or retry/error-handling semantics is reported as a finding for the author to address in another commit before merge
 - Blocks the push for unsafe findings (high-scrutiny paths)
 - Loops up to `max_iterations` times (default 3)
-- Gracefully skips if Conductor or the configured provider is unavailable, printing a visible "review skipped" line so the missing safety boundary isn't silent
+- Fails open on infra errors with a visible `[fail-open:<code>]` stderr line and an audit log entry (see codes above)
 
 If the reviewer itself wedges after the branch has already recorded a clean review iteration, use `scripts/merge-pr.sh <pr-number> --bypass-with-disclosure="<reason>"` instead of dropping to raw `gh pr merge`. The bypass refuses fresh branches, prints a visible warning, comments on the PR with the reason, and adds a `Reviewer-bypass: <reason>` trailer to the squash commit when GitHub accepts the supplied merge body. This is for a stalled reviewer gate on an already-reviewed branch, not for bypassing substantive findings.
 
