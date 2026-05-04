@@ -256,6 +256,7 @@ cd "$REPO_ROOT"
 #   FAIL_OPEN_PARSE_ERROR       no valid sentinel in reviewer output; push allowed
 #   FAIL_OPEN_DEPENDENCY_MISSING  Conductor CLI not found on PATH; push allowed
 #   FAIL_OPEN_PROVIDER_UNAVAILABLE  Conductor installed but no provider configured; push allowed
+#   FAIL_OPEN_REVIEWER_ERROR    reviewer crashed or returned non-zero; push allowed
 #
 # Fail-open events are always visible: a stderr line formatted as
 #   [fail-open:<CODE>] <reason> — AI review bypassed, push proceeds
@@ -617,276 +618,114 @@ is_truthy() {
 # Parse .codex-review.toml if it exists.
 # We do minimal TOML parsing in bash — just key = value pairs and string arrays.
 if [ -f "$CONFIG_FILE" ]; then
-  IN_UNSAFE_PATHS=false
-  IN_REVIEWERS=false
-  IN_ROUTING_SMALL_REVIEWERS=false
-  IN_ROUTING_LARGE_REVIEWERS=false
-  IN_ASSIST_HELPERS=false
-  CURRENT_SECTION=""
-  while IFS= read -r raw_line || [ -n "$raw_line" ]; do
-    # Strip comments and trim whitespace
-    line="$(trim "$(strip_toml_comment "$raw_line")")"
-    [ -z "$line" ] && continue
+  # Source the TOML library
+  # shellcheck source=lib/toml.sh
+  source "$REPO_ROOT/lib/toml.sh"
 
-    # Track TOML section headers.
-    if [[ "$line" == "["*"]" ]]; then
-      IN_UNSAFE_PATHS=false
-      IN_REVIEWERS=false
-      IN_ROUTING_SMALL_REVIEWERS=false
-      IN_ROUTING_LARGE_REVIEWERS=false
-      IN_ASSIST_HELPERS=false
-      CURRENT_SECTION="${line#\[}"
-      CURRENT_SECTION="${CURRENT_SECTION%\]}"
-      CURRENT_SECTION="$(trim "$CURRENT_SECTION")"
-      continue
-    fi
+  toml_config_callback() {
+    local section="$1"
+    local key="$2"
+    local value="$3"
 
-    # Continue multiline arrays regardless of section.
-    if [ "$IN_UNSAFE_PATHS" = true ]; then
-      if [[ "$line" == *"]"* ]]; then
-        append_unsafe_paths_csv "${line%%]*}"
-        IN_UNSAFE_PATHS=false
-      else
-        append_unsafe_path "$line"
-      fi
-      continue
-    fi
-    if [ "$IN_REVIEWERS" = true ]; then
-      if [[ "$line" == *"]"* ]]; then
-        append_reviewers_csv "${line%%]*}"
-        IN_REVIEWERS=false
-      else
-        append_reviewer "$line"
-      fi
-      continue
-    fi
-    if [ "$IN_ROUTING_SMALL_REVIEWERS" = true ]; then
-      if [[ "$line" == *"]"* ]]; then
-        append_routing_small_reviewers_csv "${line%%]*}"
-        IN_ROUTING_SMALL_REVIEWERS=false
-      else
-        append_routing_small_reviewer "$line"
-      fi
-      continue
-    fi
-    if [ "$IN_ROUTING_LARGE_REVIEWERS" = true ]; then
-      if [[ "$line" == *"]"* ]]; then
-        append_routing_large_reviewers_csv "${line%%]*}"
-        IN_ROUTING_LARGE_REVIEWERS=false
-      else
-        append_routing_large_reviewer "$line"
-      fi
-      continue
-    fi
-    if [ "$IN_ASSIST_HELPERS" = true ]; then
-      if [[ "$line" == *"]"* ]]; then
-        append_assist_helpers_csv "${line%%]*}"
-        IN_ASSIST_HELPERS=false
-      else
-        append_assist_helper "$line"
-      fi
-      continue
-    fi
-
-    # Parse [review.conductor] section keys (2.0). These translate directly
-    # to the CONDUCTOR_* env-var contract the adapter uses at call-time.
-    # Env vars (TOUCHSTONE_CONDUCTOR_*) still take precedence; these supply
-    # the config-file default before env resolution at line ~650.
-    if [ "$CURRENT_SECTION" = "review.conductor" ]; then
-      case "$line" in
-        prefer*=*)  CONDUCTOR_PREFER="$(strip_toml_string "${line#*=}")" ;;
-        effort*=*)  CONDUCTOR_EFFORT="$(strip_toml_string "${line#*=}")" ;;
-        tags*=*)    CONDUCTOR_TAGS="$(strip_toml_string "${line#*=}")" ;;
-        with*=*)    CONDUCTOR_WITH="$(strip_toml_string "${line#*=}")" ;;
-        exclude*=*) CONDUCTOR_EXCLUDE="$(strip_toml_string "${line#*=}")" ;;
-      esac
-      continue
-    fi
-
-    # Parse [review.routing] section keys.
-    if [ "$CURRENT_SECTION" = "review.routing" ]; then
-      case "$line" in
-        enabled*=*)
-          ROUTING_ENABLED="$(normalize_bool "${line#*=}")"
-          ;;
-        small_max_diff_lines*=*|small_diff_lines*=*)
-          ROUTING_SMALL_MAX_DIFF_LINES="$(trim "${line#*=}")"
-          ;;
-        small_reviewers*=*)
-          # Legacy 1.x shape — auto-migrated at push-time.
-          array_value="$(trim "${line#*=}")"
-          array_value="${array_value#\[}"
-          if [[ "$array_value" == *"]"* ]]; then
-            append_routing_small_reviewers_csv "${array_value%%]*}"
-          else
-            append_routing_small_reviewers_csv "$array_value"
-            IN_ROUTING_SMALL_REVIEWERS=true
-          fi
-          ;;
-        large_reviewers*=*)
-          # Legacy 1.x shape — auto-migrated at push-time.
-          array_value="$(trim "${line#*=}")"
-          array_value="${array_value#\[}"
-          if [[ "$array_value" == *"]"* ]]; then
-            append_routing_large_reviewers_csv "${array_value%%]*}"
-          else
-            append_routing_large_reviewers_csv "$array_value"
-            IN_ROUTING_LARGE_REVIEWERS=true
-          fi
-          ;;
-        # 2.0 routing knobs — override CONDUCTOR_* per size bucket.
-        small_with*=*)    ROUTING_SMALL_WITH="$(strip_toml_string "${line#*=}")" ;;
-        small_prefer*=*)  ROUTING_SMALL_PREFER="$(strip_toml_string "${line#*=}")" ;;
-        small_effort*=*)  ROUTING_SMALL_EFFORT="$(strip_toml_string "${line#*=}")" ;;
-        small_tags*=*)    ROUTING_SMALL_TAGS="$(strip_toml_string "${line#*=}")" ;;
-        large_with*=*)    ROUTING_LARGE_WITH="$(strip_toml_string "${line#*=}")" ;;
-        large_prefer*=*)  ROUTING_LARGE_PREFER="$(strip_toml_string "${line#*=}")" ;;
-        large_effort*=*)  ROUTING_LARGE_EFFORT="$(strip_toml_string "${line#*=}")" ;;
-        large_tags*=*)    ROUTING_LARGE_TAGS="$(strip_toml_string "${line#*=}")" ;;
-      esac
-      continue
-    fi
-
-    # Parse [review.assist] section keys.
-    if [ "$CURRENT_SECTION" = "review.assist" ]; then
-      case "$line" in
-        enabled*=*)
-          ASSIST_ENABLED="${CODEX_REVIEW_ASSIST:-$(normalize_bool "${line#*=}")}"
-          ;;
-        helpers*=*)
-          array_value="$(trim "${line#*=}")"
-          array_value="${array_value#\[}"
-          if [[ "$array_value" == *"]"* ]]; then
-            append_assist_helpers_csv "${array_value%%]*}"
-          else
-            append_assist_helpers_csv "$array_value"
-            IN_ASSIST_HELPERS=true
-          fi
-          ;;
-        helper*=*)
-          append_assist_helper "${line#*=}"
-          ;;
-        timeout*=*)
-          ASSIST_TIMEOUT="${CODEX_REVIEW_ASSIST_TIMEOUT:-$(trim "${line#*=}")}"
-          ;;
-        max_rounds*=*)
-          ASSIST_MAX_ROUNDS="${CODEX_REVIEW_ASSIST_MAX_ROUNDS:-$(trim "${line#*=}")}"
-          ;;
-      esac
-      continue
-    fi
-
-    # Parse [review] section keys.
-    if [ "$CURRENT_SECTION" = "review" ]; then
-      case "$line" in
-        enabled*=*)
-          REVIEW_ENABLED="${CODEX_REVIEW_ENABLED:-$(normalize_bool "${line#*=}")}"
-          ;;
-        reviewers*=*)
-          array_value="$(trim "${line#*=}")"
-          array_value="${array_value#\[}"
-          if [[ "$array_value" == *"]"* ]]; then
-            append_reviewers_csv "${array_value%%]*}"
-          else
-            append_reviewers_csv "$array_value"
-            IN_REVIEWERS=true
-          fi
-          ;;
-      esac
-      continue
-    fi
-
-    # Parse [review.conductor] section keys (Touchstone 2.0+).
-    if [ "$CURRENT_SECTION" = "review.conductor" ]; then
-      case "$line" in
-        prefer*=*)
-          CONDUCTOR_PREFER="${CONDUCTOR_PREFER:-$(toml_string_value "${line#*=}")}"
-          ;;
-        effort*=*)
-          CONDUCTOR_EFFORT="${CONDUCTOR_EFFORT:-$(toml_string_value "${line#*=}")}"
-          ;;
-        tags*=*)
-          # Supports both "a,b,c" string and ["a","b","c"] array forms.
-          val="$(trim "${line#*=}")"
-          val="${val#\[}"; val="${val%\]}"
-          val="$(printf '%s' "$val" | tr -d '"' | tr -d "'" | tr -d ' ')"
-          CONDUCTOR_TAGS="${CONDUCTOR_TAGS:-$val}"
-          ;;
-        with*=*)
-          CONDUCTOR_WITH="${CONDUCTOR_WITH:-$(toml_string_value "${line#*=}")}"
-          ;;
-        exclude*=*)
-          val="$(trim "${line#*=}")"
-          val="${val#\[}"; val="${val%\]}"
-          val="$(printf '%s' "$val" | tr -d '"' | tr -d "'" | tr -d ' ')"
-          CONDUCTOR_EXCLUDE="${CONDUCTOR_EXCLUDE:-$val}"
-          ;;
-      esac
-      continue
-    fi
-
-    # [review.local] was the v1.x local-reviewer escape hatch. Touchstone 2.0
-    # retires it — users who want a custom model wire it in as a Conductor
-    # custom provider (see `conductor providers add`). Parser still consumes
-    # the section so old configs don't error; values are ignored.
-    if [ "$CURRENT_SECTION" = "review.local" ]; then
-      case "$line" in
-        command*=*|auth_command*=*)
-          if [ -z "${CODEX_REVIEW_SUPPRESS_LEGACY_WARNINGS:-}" ]; then
-            echo "==> NOTE: [review.local] is ignored in Touchstone 2.0.0." >&2
-            echo "    Register your command as a Conductor custom provider" >&2
-            echo "    (roadmap: v0.3). Silence with CODEX_REVIEW_SUPPRESS_LEGACY_WARNINGS=1." >&2
-            CODEX_REVIEW_SUPPRESS_LEGACY_WARNINGS=1
-          fi
-          ;;
-      esac
-      continue
-    fi
-
-    # Parse [codex_review] section keys (also matches when no section header
-    # has been seen yet, for backward compatibility with existing configs).
-    case "$line" in
-      max_iterations*=*)
-        MAX_ITERATIONS="${CODEX_REVIEW_MAX_ITERATIONS:-$(trim "${line#*=}")}"
+    case "$section" in
+      "review.conductor")
+        case "$key" in
+          prefer)  CONDUCTOR_PREFER="${CONDUCTOR_PREFER:-$(toml_unquote "$value")}" ;;
+          effort)  CONDUCTOR_EFFORT="${CONDUCTOR_EFFORT:-$(toml_unquote "$value")}" ;;
+          tags)    CONDUCTOR_TAGS="${CONDUCTOR_TAGS:-$(toml_normalize_array "$value")}" ;;
+          with)    CONDUCTOR_WITH="${CONDUCTOR_WITH:-$(toml_unquote "$value")}" ;;
+          exclude) CONDUCTOR_EXCLUDE="${CONDUCTOR_EXCLUDE:-$(toml_normalize_array "$value")}" ;;
+        esac
         ;;
-      max_diff_lines*=*)
-        MAX_DIFF_LINES="${CODEX_REVIEW_MAX_DIFF_LINES:-$(trim "${line#*=}")}"
+      "review.routing")
+        case "$key" in
+          enabled) ROUTING_ENABLED="$(normalize_bool "$value")" ;;
+          small_max_diff_lines|small_diff_lines) ROUTING_SMALL_MAX_DIFF_LINES="$value" ;;
+          small_with)   ROUTING_SMALL_WITH="$(toml_unquote "$value")" ;;
+          small_prefer) ROUTING_SMALL_PREFER="$(toml_unquote "$value")" ;;
+          small_effort) ROUTING_SMALL_EFFORT="$(toml_unquote "$value")" ;;
+          small_tags)   ROUTING_SMALL_TAGS="$(toml_unquote "$value")" ;;
+          large_with)   ROUTING_LARGE_WITH="$(toml_unquote "$value")" ;;
+          large_prefer) ROUTING_LARGE_PREFER="$(toml_unquote "$value")" ;;
+          large_effort) ROUTING_LARGE_EFFORT="$(toml_unquote "$value")" ;;
+          large_tags)   ROUTING_LARGE_TAGS="$(toml_unquote "$value")" ;;
+          small_reviewers)
+            if [[ "$value" == "["* ]]; then
+              append_routing_small_reviewers_csv "$(toml_normalize_array "$value")"
+            else
+              append_routing_small_reviewers_csv "$value"
+            fi
+            ;;
+          large_reviewers)
+            if [[ "$value" == "["* ]]; then
+              append_routing_large_reviewers_csv "$(toml_normalize_array "$value")"
+            else
+              append_routing_large_reviewers_csv "$value"
+            fi
+            ;;
+        esac
         ;;
-      cache_clean_reviews*=*)
-        CACHE_CLEAN_REVIEWS="${CODEX_REVIEW_CACHE_CLEAN:-$(normalize_bool "${line#*=}")}"
+      "review.assist")
+        case "$key" in
+          enabled) ASSIST_ENABLED="${CODEX_REVIEW_ASSIST:-$(normalize_bool "$value")}" ;;
+          helpers)
+            if [[ "$value" == "["* ]]; then
+              append_assist_helpers_csv "$(toml_normalize_array "$value")"
+            else
+              append_assist_helpers_csv "$value"
+            fi
+            ;;
+          helper) append_assist_helper "$value" ;;
+          timeout) ASSIST_TIMEOUT="${CODEX_REVIEW_ASSIST_TIMEOUT:-$value}" ;;
+          max_rounds) ASSIST_MAX_ROUNDS="${CODEX_REVIEW_ASSIST_MAX_ROUNDS:-$value}" ;;
+        esac
         ;;
-      safe_by_default*=*)
-        val="$(trim "${line#*=}")"
-        val="$(printf '%s' "$val" | tr '[:upper:]' '[:lower:]')"
-        SAFE_BY_DEFAULT="$val"
+      "review")
+        case "$key" in
+          enabled) REVIEW_ENABLED="${CODEX_REVIEW_ENABLED:-$(normalize_bool "$value")}" ;;
+          reviewers)
+            if [[ "$value" == "["* ]]; then
+              append_reviewers_csv "$(toml_normalize_array "$value")"
+            else
+              append_reviewers_csv "$value"
+            fi
+            ;;
+        esac
         ;;
-      mode*=*)
-        val="$(trim "${line#*=}")"
-        val="${val%\"}"; val="${val#\"}"
-        val="${val%\'}"; val="${val#\'}"
-        CONFIG_MODE="$val"
+      "review.local")
+        case "$key" in
+          command|auth_command)
+            if [ -z "${CODEX_REVIEW_SUPPRESS_LEGACY_WARNINGS:-}" ]; then
+              echo "==> NOTE: [review.local] is ignored in Touchstone 2.0.0." >&2
+              echo "    Register your command as a Conductor custom provider" >&2
+              echo "    (roadmap: v0.3). Silence with CODEX_REVIEW_SUPPRESS_LEGACY_WARNINGS=1." >&2
+              CODEX_REVIEW_SUPPRESS_LEGACY_WARNINGS=1
+            fi
+            ;;
+        esac
         ;;
-      timeout*=*)
-        REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-$(trim "${line#*=}")}"
-        ;;
-      on_error*=*)
-        val="$(trim "${line#*=}")"
-        val="${val%\"}"; val="${val#\"}"
-        val="${val%\'}"; val="${val#\'}"
-        ON_ERROR="${CODEX_REVIEW_ON_ERROR:-$val}"
-        ;;
-      unsafe_paths*=*)
-        array_value="$(trim "${line#*=}")"
-        array_value="${array_value#\[}"
-        if [[ "$array_value" == *"]"* ]]; then
-          append_unsafe_paths_csv "${array_value%%]*}"
-        else
-          append_unsafe_paths_csv "$array_value"
-          IN_UNSAFE_PATHS=true
-        fi
+      ""|"codex_review")
+        case "$key" in
+          max_iterations) MAX_ITERATIONS="${CODEX_REVIEW_MAX_ITERATIONS:-$value}" ;;
+          max_diff_lines) MAX_DIFF_LINES="${CODEX_REVIEW_MAX_DIFF_LINES:-$value}" ;;
+          cache_clean_reviews) CACHE_CLEAN_REVIEWS="${CODEX_REVIEW_CACHE_CLEAN:-$(normalize_bool "$value")}" ;;
+          safe_by_default) SAFE_BY_DEFAULT="$(printf "%s" "$value" | tr '[:upper:]' '[:lower:]')" ;;
+          mode) CONFIG_MODE="$(toml_unquote "$value")" ;;
+          timeout) REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-$value}" ;;
+          on_error) ON_ERROR="${CODEX_REVIEW_ON_ERROR:-$(toml_unquote "$value")}" ;;
+          unsafe_paths)
+            if [[ "$value" == "["* ]]; then
+              append_unsafe_paths_csv "$(toml_normalize_array "$value")"
+            else
+              append_unsafe_paths_csv "$value"
+            fi
+            ;;
+        esac
         ;;
     esac
-  done < "$CONFIG_FILE"
+  }
+
+  toml_parse "$CONFIG_FILE" toml_config_callback
 fi
 
 resolve_default_branch() {
@@ -1481,7 +1320,7 @@ handle_error() {
   case "$reason" in
     timeout*)             fail_open_code="FAIL_OPEN_TIMEOUT" ;;
     "malformed sentinel") fail_open_code="FAIL_OPEN_PARSE_ERROR" ;;
-    *)                    fail_open_code="conductor-error" ;;
+    *)                    fail_open_code="FAIL_OPEN_REVIEWER_ERROR" ;;
   esac
 
   if [ "$ON_ERROR" = "fail-closed" ]; then

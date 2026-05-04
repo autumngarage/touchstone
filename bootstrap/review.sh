@@ -103,57 +103,50 @@ strip_quotes() {
   printf '%s' "$v"
 }
 
-# Lightweight section-aware config parser. Just enough to read the
-# fields touchstone review --dry-run cares about. (The hook has a
-# fuller parser; duplicating here keeps the dry-run script standalone.)
+# Parse .codex-review.toml if it exists.
 if [ -f "$CONFIG_FILE" ]; then
-  section=""
-  while IFS= read -r raw || [ -n "$raw" ]; do
-    line="${raw%%#*}"
-    line="${line# }"; line="${line% }"
-    [ -z "$line" ] && continue
-    case "$line" in
-      \[*\])
-        section="${line#[}"
-        section="${section%]}"
-        section="${section# }"; section="${section% }"
-        continue
-        ;;
-    esac
-    key="${line%%=*}"; val="${line#*=}"
-    key="${key# }"; key="${key% }"
-    val="$(strip_quotes "$val")"
+  # Source the TOML library
+  # shellcheck source=lib/toml.sh
+  source "$TOUCHSTONE_ROOT/lib/toml.sh"
+
+  toml_review_callback() {
+    local section="$1"
+    local key="$2"
+    local value="$3"
+
     case "$section" in
-      codex_review)
+      "codex_review"|"")
         case "$key" in
-          mode) CONFIG_MODE="$val" ;;
+          mode) CONFIG_MODE="$(toml_unquote "$value")" ;;
         esac
         ;;
-      review.conductor)
+      "review.conductor")
         case "$key" in
-          prefer)  CONDUCTOR_PREFER="$val" ;;
-          effort)  CONDUCTOR_EFFORT="$val" ;;
-          tags)    CONDUCTOR_TAGS="$val" ;;
-          with)    CONDUCTOR_WITH="$val" ;;
-          exclude) CONDUCTOR_EXCLUDE="$val" ;;
+          prefer)  CONDUCTOR_PREFER="$(toml_unquote "$value")" ;;
+          effort)  CONDUCTOR_EFFORT="$(toml_unquote "$value")" ;;
+          tags)    CONDUCTOR_TAGS="$(toml_normalize_array "$value")" ;;
+          with)    CONDUCTOR_WITH="$(toml_unquote "$value")" ;;
+          exclude) CONDUCTOR_EXCLUDE="$(toml_normalize_array "$value")" ;;
         esac
         ;;
-      review.routing)
+      "review.routing")
         case "$key" in
-          enabled)              [ "$val" = "true" ] && ROUTING_ENABLED=true ;;
-          small_max_diff_lines) ROUTING_SMALL_MAX_DIFF_LINES="$val" ;;
-          small_with)    ROUTING_SMALL_WITH="$val" ;;
-          small_prefer)  ROUTING_SMALL_PREFER="$val" ;;
-          small_effort)  ROUTING_SMALL_EFFORT="$val" ;;
-          small_tags)    ROUTING_SMALL_TAGS="$val" ;;
-          large_with)    ROUTING_LARGE_WITH="$val" ;;
-          large_prefer)  ROUTING_LARGE_PREFER="$val" ;;
-          large_effort)  ROUTING_LARGE_EFFORT="$val" ;;
-          large_tags)    ROUTING_LARGE_TAGS="$val" ;;
+          enabled) [ "$(normalize_bool "$value")" = "true" ] && ROUTING_ENABLED=true ;;
+          small_max_diff_lines) ROUTING_SMALL_MAX_DIFF_LINES="$value" ;;
+          small_with)    ROUTING_SMALL_WITH="$(toml_unquote "$value")" ;;
+          small_prefer)  ROUTING_SMALL_PREFER="$(toml_unquote "$value")" ;;
+          small_effort)  ROUTING_SMALL_EFFORT="$(toml_unquote "$value")" ;;
+          small_tags)    ROUTING_SMALL_TAGS="$(toml_normalize_array "$value")" ;;
+          large_with)    ROUTING_LARGE_WITH="$(toml_unquote "$value")" ;;
+          large_prefer)  ROUTING_LARGE_PREFER="$(toml_unquote "$value")" ;;
+          large_effort)  ROUTING_LARGE_EFFORT="$(toml_unquote "$value")" ;;
+          large_tags)    ROUTING_LARGE_TAGS="$(toml_normalize_array "$value")" ;;
         esac
         ;;
     esac
-  done < "$CONFIG_FILE"
+  }
+
+  toml_parse "$CONFIG_FILE" toml_review_callback
 fi
 
 # TOUCHSTONE_REVIEWER is a v1.x-era env var that pinned the named *adapter*

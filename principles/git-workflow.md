@@ -74,7 +74,7 @@ If the project has AI review configured (see `.codex-review.toml` for policy and
 - A `[fail-open:<code>]` line is written to stderr naming exactly why the safety net opened.
 - A structured entry is appended to `~/.touchstone-review-log` for audit and skip-rate monitoring.
 
-The four fail-open taxonomy codes are:
+The fail-open taxonomy codes are:
 
 | Code | Cause |
 |------|-------|
@@ -82,6 +82,7 @@ The four fail-open taxonomy codes are:
 | `FAIL_OPEN_PARSE_ERROR` | Reviewer output contained no valid sentinel line |
 | `FAIL_OPEN_DEPENDENCY_MISSING` | Conductor CLI not found on PATH |
 | `FAIL_OPEN_PROVIDER_UNAVAILABLE` | Conductor installed but no provider configured |
+| `FAIL_OPEN_REVIEWER_ERROR` | Reviewer crashed or returned non-zero |
 
 To make infra failures fatal instead, set `on_error = "fail-closed"` in `.codex-review.toml`.
 
