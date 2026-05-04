@@ -989,6 +989,7 @@ write_touchstone_manifest() {
     printf 'scripts/cleanup-branches.sh\n'
     printf 'scripts/spawn-worktree.sh\n'
     printf 'scripts/cleanup-worktrees.sh\n'
+    printf 'lib/toml.sh\n'
     if [ "$INPUT_TYPE" = "python" ]; then
       printf 'scripts/run-pytest-in-venv.sh\n'
     fi
@@ -1239,6 +1240,11 @@ copy_file_force "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scr
 copy_file_force "$TOUCHSTONE_ROOT/scripts/spawn-worktree.sh" "$PROJECT_DIR/scripts/spawn-worktree.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/cleanup-worktrees.sh" "$PROJECT_DIR/scripts/cleanup-worktrees.sh"
 chmod +x "$PROJECT_DIR/scripts/"*.sh
+
+echo ""
+echo "==> Copying libraries (touchstone-owned, will be auto-updated):"
+mkdir -p "$PROJECT_DIR/lib"
+copy_file_force "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
 
 # Claude Code settings — wires the branch-guard and emergency-disclosure
 # PreToolUse hooks shipped above. Touchstone-owned (overwritten on update);

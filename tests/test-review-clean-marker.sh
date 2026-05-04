@@ -40,6 +40,8 @@ if (
   git init -q
   git config user.email test@example.com
   git config user.name "Touchstone Test"
+  mkdir -p lib
+  cp -r "$TOUCHSTONE_ROOT/lib/"* lib/
   printf '[review]\nreviewer = "conductor"\nmode = "review-only"\n' > .codex-review.toml
   printf 'base\n' > example.txt
   git add .codex-review.toml example.txt

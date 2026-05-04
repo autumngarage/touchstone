@@ -4,6 +4,9 @@
 #
 set -euo pipefail
 
+# Doctrine 0002: ensure all bootstrap calls run non-interactively.
+export YES_MODE=true
+
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-bootstrap.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
@@ -103,6 +106,7 @@ assert_exists "$PROJECT/principles/README.md"
 
 # Scripts
 assert_exists "$PROJECT/scripts/codex-review.sh"
+assert_exists "$PROJECT/lib/toml.sh"
 assert_exists "$PROJECT/scripts/touchstone-run.sh"
 assert_exists "$PROJECT/scripts/open-pr.sh"
 assert_exists "$PROJECT/scripts/merge-pr.sh"
@@ -135,6 +139,7 @@ assert_contains "$PROJECT/.touchstone-manifest" '^\.touchstone-version$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/open-pr.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/toml\.sh$'
 if grep -q '^\.touchstone-config$' "$PROJECT/.gitignore"; then
   echo "FAIL: expected .touchstone-config to be commit-friendly, not ignored" >&2
   ERRORS=$((ERRORS + 1))

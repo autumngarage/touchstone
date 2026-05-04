@@ -27,6 +27,16 @@ CODEX_CALLS_FILE="$TEST_DIR/codex-calls.txt"
 UNSAFE_OUTPUT="$TEST_DIR/unsafe-output.txt"
 ERRORS=0
 
+setup_test_repo() {
+  local dir="$1"
+  mkdir -p "$dir/lib"
+  git -C "$dir" init -q >/dev/null 2>&1
+  git -C "$dir" config user.name "Touchstone Test"
+  git -C "$dir" config user.email "touchstone@example.com"
+  cp -r "$TOUCHSTONE_ROOT/lib/"* "$dir/lib/"
+  git -C "$dir" add lib/
+}
+
 unset PRE_COMMIT
 unset PRE_COMMIT_FROM_REF PRE_COMMIT_TO_REF
 unset PRE_COMMIT_LOCAL_BRANCH PRE_COMMIT_REMOTE_BRANCH
@@ -35,10 +45,8 @@ unset CODEX_REVIEW_FORCE CODEX_REVIEW_NO_AUTOFIX CODEX_REVIEW_DISABLE_CACHE
 unset CODEX_REVIEW_ASSIST CODEX_REVIEW_ASSIST_TIMEOUT CODEX_REVIEW_ASSIST_MAX_ROUNDS
 unset CODEX_REVIEW_IN_PROGRESS
 
-mkdir -p "$REPO_DIR" "$FAKE_BIN"
-git -C "$REPO_DIR" init >/dev/null 2>&1
-git -C "$REPO_DIR" config user.name "Touchstone Test"
-git -C "$REPO_DIR" config user.email "touchstone@example.com"
+mkdir -p "$FAKE_BIN"
+setup_test_repo "$REPO_DIR"
 
 cp "$TOUCHSTONE_ROOT/.codex-review.toml" "$REPO_DIR/.codex-review.toml"
 printf 'base\n' > "$REPO_DIR/example.txt"
@@ -149,11 +157,12 @@ echo "==> Test: review hook skips first-push on fresh scaffold (HEAD = 1 commit)
 # the reviewer. The 2+ commit case is already covered by the preceding test.
 FIRSTPUSH_REPO="$TEST_DIR/firstpush-repo"
 FIRSTPUSH_OUTPUT="$TEST_DIR/firstpush-output.txt"
-mkdir -p "$FIRSTPUSH_REPO"
+mkdir -p "$FIRSTPUSH_REPO" "$FIRSTPUSH_REPO/lib"
 git -C "$FIRSTPUSH_REPO" init -b main >/dev/null 2>&1
 git -C "$FIRSTPUSH_REPO" config user.name "Touchstone Test"
 git -C "$FIRSTPUSH_REPO" config user.email "touchstone@example.com"
 cp "$TOUCHSTONE_ROOT/.codex-review.toml" "$FIRSTPUSH_REPO/.codex-review.toml"
+cp -r "$TOUCHSTONE_ROOT/lib/"* "$FIRSTPUSH_REPO/lib/"
 printf 'scaffold\n' > "$FIRSTPUSH_REPO/README.md"
 git -C "$FIRSTPUSH_REPO" add .codex-review.toml README.md
 git -C "$FIRSTPUSH_REPO" commit -m "initial scaffold" >/dev/null 2>&1
@@ -395,9 +404,7 @@ fi
 
 echo "==> Test: review hook refuses to auto-commit unsafe directory fixes"
 mkdir -p "$REPO_UNSAFE/templates"
-git -C "$REPO_UNSAFE" init >/dev/null 2>&1
-git -C "$REPO_UNSAFE" config user.name "Touchstone Test"
-git -C "$REPO_UNSAFE" config user.email "touchstone@example.com"
+setup_test_repo "$REPO_UNSAFE"
 {
   printf '[codex_review]\n'
   printf 'safe_by_default = true\n'
@@ -466,10 +473,7 @@ CODEX_ARGS_FILE="$TEST_DIR/conductor-args.txt"
 
 setup_cascade_repo() {
   rm -rf "$CASCADE_REPO"
-  mkdir -p "$CASCADE_REPO"
-  git -C "$CASCADE_REPO" init >/dev/null 2>&1
-  git -C "$CASCADE_REPO" config user.name "Touchstone Test"
-  git -C "$CASCADE_REPO" config user.email "touchstone@example.com"
+  setup_test_repo "$CASCADE_REPO"
   printf 'base\n' > "$CASCADE_REPO/example.txt"
   git -C "$CASCADE_REPO" add example.txt
   git -C "$CASCADE_REPO" commit -m "base" >/dev/null 2>&1
@@ -480,10 +484,7 @@ setup_cascade_repo() {
 
 setup_mode_repo() {
   rm -rf "$MODE_REPO"
-  mkdir -p "$MODE_REPO"
-  git -C "$MODE_REPO" init >/dev/null 2>&1
-  git -C "$MODE_REPO" config user.name "Touchstone Test"
-  git -C "$MODE_REPO" config user.email "touchstone@example.com"
+  setup_test_repo "$MODE_REPO"
   printf 'base\n' > "$MODE_REPO/example.txt"
   git -C "$MODE_REPO" add example.txt
   git -C "$MODE_REPO" commit -m "base" >/dev/null 2>&1
@@ -697,10 +698,7 @@ TIMEOUT_CHILD_PID_FILE="$TEST_DIR/timeout-reviewer-child.pid"
 
 setup_timeout_repo() {
   rm -rf "$TIMEOUT_REPO"
-  mkdir -p "$TIMEOUT_REPO"
-  git -C "$TIMEOUT_REPO" init >/dev/null 2>&1
-  git -C "$TIMEOUT_REPO" config user.name "Touchstone Test"
-  git -C "$TIMEOUT_REPO" config user.email "touchstone@example.com"
+  setup_test_repo "$TIMEOUT_REPO"
   printf 'base\n' > "$TIMEOUT_REPO/example.txt"
   git -C "$TIMEOUT_REPO" add example.txt
   git -C "$TIMEOUT_REPO" commit -m "base" >/dev/null 2>&1
@@ -873,7 +871,8 @@ set +e
 OPEN_EXIT=$?
 set -e
 
-if [ "$OPEN_EXIT" -eq 0 ] && grep -q 'fail-open' "$TIMEOUT_OUTPUT"; then
+if [ "$OPEN_EXIT" -eq 0 ] \
+  && grep -q '\[fail-open:FAIL_OPEN_REVIEWER_ERROR\]' "$TIMEOUT_OUTPUT"; then
   echo "==> PASS: on_error=fail-open allowed push on reviewer crash"
 else
   echo "FAIL: expected fail-open to allow push on reviewer crash" >&2
@@ -928,10 +927,7 @@ CTX_PROMPT="$TEST_DIR/ctx-prompt.txt"
 
 setup_ctx_repo() {
   rm -rf "$CTX_REPO"
-  mkdir -p "$CTX_REPO"
-  git -C "$CTX_REPO" init >/dev/null 2>&1
-  git -C "$CTX_REPO" config user.name "Touchstone Test"
-  git -C "$CTX_REPO" config user.email "touchstone@example.com"
+  setup_test_repo "$CTX_REPO"
   printf 'base\n' > "$CTX_REPO/example.txt"
   git -C "$CTX_REPO" add example.txt
   git -C "$CTX_REPO" commit -m "base" >/dev/null 2>&1
@@ -1229,10 +1225,8 @@ fi
 setup_skiplog_repo() {
   # setup_skiplog_repo <dir> [--with-config-toml]
   local dir="$1"; shift || true
-  mkdir -p "$dir"
-  git -C "$dir" init -q
-  git -C "$dir" config user.email t@t
-  git -C "$dir" config user.name t
+  rm -rf "$dir"
+  setup_test_repo "$dir"
   printf 'base\n' > "$dir/file.txt"
   if [ "${1:-}" = "--with-config-toml" ]; then
     cat > "$dir/.codex-review.toml" <<'EOF'
@@ -1334,7 +1328,7 @@ run_skiplog_hook "$SKIPLOG_REPO1" "$TEST_DIR/skiplog-out1.txt" \
       CODEX_REVIEW_BASE="HEAD~1" \
       CODEX_REVIEW_DISABLE_CACHE=1 \
   || true
-assert_skiplog_last_reason "conductor-missing" "$SKIPLOG_LOG1" "conductor-missing"
+assert_skiplog_last_reason "conductor-missing" "$SKIPLOG_LOG1" "FAIL_OPEN_DEPENDENCY_MISSING"
 
 # ---------------------------------------------------------------------------
 # Test: config-disabled — [review].enabled=false in .codex-review.toml
@@ -1343,10 +1337,8 @@ echo "==> Test: config-disabled skip path logs reason=config-disabled"
 SKIPLOG_REPO2="$TEST_DIR/skiplog-repo2"
 SKIPLOG_BIN2="$TEST_DIR/skiplog-bin2"
 SKIPLOG_LOG2="$TEST_DIR/skiplog-log2.tsv"
-mkdir -p "$SKIPLOG_REPO2"
-git -C "$SKIPLOG_REPO2" init -q
-git -C "$SKIPLOG_REPO2" config user.email t@t
-git -C "$SKIPLOG_REPO2" config user.name t
+rm -rf "$SKIPLOG_REPO2"
+setup_test_repo "$SKIPLOG_REPO2"
 cat > "$SKIPLOG_REPO2/.codex-review.toml" <<'EOF'
 [review]
 enabled = false
@@ -1420,10 +1412,8 @@ echo "==> Test: malformed .codex-review.toml does not crash logging"
 SKIPLOG_REPO5="$TEST_DIR/skiplog-repo5"
 SKIPLOG_BIN5="$TEST_DIR/skiplog-bin5"
 SKIPLOG_LOG5="$TEST_DIR/skiplog-log5.tsv"
-mkdir -p "$SKIPLOG_REPO5"
-git -C "$SKIPLOG_REPO5" init -q
-git -C "$SKIPLOG_REPO5" config user.email t@t
-git -C "$SKIPLOG_REPO5" config user.name t
+rm -rf "$SKIPLOG_REPO5"
+setup_test_repo "$SKIPLOG_REPO5"
 cat > "$SKIPLOG_REPO5/.codex-review.toml" <<'EOF'
 [review
 this-is = not = valid =

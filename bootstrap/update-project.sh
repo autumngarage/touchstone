@@ -350,6 +350,9 @@ update_file "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts
 update_file "$TOUCHSTONE_ROOT/scripts/spawn-worktree.sh" "$PROJECT_DIR/scripts/spawn-worktree.sh"
 update_file "$TOUCHSTONE_ROOT/scripts/cleanup-worktrees.sh" "$PROJECT_DIR/scripts/cleanup-worktrees.sh"
 
+# Libraries used by touchstone-owned scripts.
+update_file "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
+
 if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
   update_file "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
 fi
@@ -496,6 +499,7 @@ write_touchstone_manifest() {
     printf 'scripts/cleanup-branches.sh\n'
     printf 'scripts/spawn-worktree.sh\n'
     printf 'scripts/cleanup-worktrees.sh\n'
+    printf 'lib/toml.sh\n'
     if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
       printf 'scripts/run-pytest-in-venv.sh\n'
     fi
@@ -537,7 +541,7 @@ fi
 if [ "$DRY_RUN" = false ]; then
   echo ""
   echo "==> Committing touchstone update..."
-  git -C "$PROJECT_DIR" add -A -- principles scripts .touchstone-manifest
+  git -C "$PROJECT_DIR" add -A -- principles scripts lib .touchstone-manifest
   git -C "$PROJECT_DIR" add -f -- .touchstone-version
   if [ -f "$PROJECT_DIR/.claude/settings.json" ]; then
     git -C "$PROJECT_DIR" add -f -- .claude/settings.json

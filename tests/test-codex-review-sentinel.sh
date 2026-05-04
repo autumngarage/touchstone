@@ -199,7 +199,7 @@ set -e
 
 if [ "$OPEN_EXIT" -eq 0 ] \
   && grep -q 'No unique standalone sentinel line was found.' "$OPEN_OUTPUT" \
-  && grep -q '\[review:fail-open\] missing sentinel — policy permits merge but the review verdict is untrustworthy' "$OPEN_OUTPUT"; then
+  && grep -q '\[fail-open:FAIL_OPEN_PARSE_ERROR\] missing sentinel — review verdict is untrustworthy; push allowed by policy' "$OPEN_OUTPUT"; then
   printf '  OK: missing sentinel fail-opens only with visible warning under fail-open policy\n'
 else
   printf 'FAIL: missing sentinel should visibly warn under fail-open policy\n' >&2
