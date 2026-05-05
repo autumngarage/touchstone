@@ -8,6 +8,8 @@
 #   2. --cleanup-worktree with --auto-merge from a feature worktree → after
 #      successful merge, the feature worktree is removed by `git worktree
 #      remove`.
+#   3. The same cleanup also runs when --auto-merge attaches to an already
+#      open PR for the current branch.
 #
 set -euo pipefail
 
@@ -36,7 +38,13 @@ cat > "$FAKE_BIN/gh" <<'EOF'
 set -euo pipefail
 case "$1 $2" in
   "repo view") echo "main" ;;
-  "pr list") echo "" ;;
+  "pr list")
+    if [ "${GH_HAS_EXISTING_PR:-0}" = "1" ]; then
+      echo "https://example.test/touchstone/pull/9999"
+    else
+      echo ""
+    fi
+    ;;
   "pr create") echo "https://example.test/touchstone/pull/9999" ;;
   "pr view") echo "2026-04-30T05:00:00Z" ;;
   *) echo "unexpected gh args: $*" >&2; exit 1 ;;
@@ -102,6 +110,36 @@ else
   echo "    FAIL: expected exit 0, 'Worktree removed.' in output, and \$FEATURE_DIR gone" >&2
   echo "    rc=$RC" >&2
   echo "    feature dir exists? $([ -d "$FEATURE_DIR" ] && echo yes || echo no)" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Case 3 — existing PR path: cleanup still runs after verified merge
+echo "==> Case 3: existing PR --auto-merge --cleanup-worktree removes the feature worktree"
+EXISTING_FEATURE_DIR="$TEST_DIR/repo-feature-existing"
+git -C "$REPO_DIR" worktree add "$EXISTING_FEATURE_DIR" -b feat/cleanup-existing >/dev/null 2>&1
+printf 'existing\n' >> "$EXISTING_FEATURE_DIR/file.txt"
+git -C "$EXISTING_FEATURE_DIR" add file.txt
+git -C "$EXISTING_FEATURE_DIR" commit -m "test existing change" >/dev/null 2>&1
+
+RC=0
+OUT="$TEST_DIR/case3.out"
+(
+  cd "$EXISTING_FEATURE_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_HAS_EXISTING_PR=1 \
+    bash "$SCRIPT_DIR/open-pr.sh" --auto-merge --cleanup-worktree
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q '==> PR already open for feat/cleanup-existing' "$OUT" \
+  && grep -q '==> Worktree removed.' "$OUT" \
+  && [ ! -d "$EXISTING_FEATURE_DIR" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected existing-PR auto-merge cleanup to remove the worktree" >&2
+  echo "    rc=$RC" >&2
+  echo "    existing feature dir exists? $([ -d "$EXISTING_FEATURE_DIR" ] && echo yes || echo no)" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
