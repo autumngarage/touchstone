@@ -1654,6 +1654,8 @@ YES_MODE=false bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_WIZARD
 if grep -q 'Equivalent to rerun:' "$TEST_DIR/wizard-non-tty.txt" 2>/dev/null; then
   echo "FAIL: non-TTY bootstrap must not print the wizard 'Equivalent to rerun' block" >&2
   ERRORS=$((ERRORS + 1))
+else
+  echo "    PASS: non-TTY bootstrap correctly suppressed the wizard block"
 fi
 assert_exists "$PROJECT_WIZARD_NON_TTY/.touchstone-version"
 assert_exists "$PROJECT_WIZARD_NON_TTY/CLAUDE.md"
@@ -1661,6 +1663,8 @@ assert_exists "$PROJECT_WIZARD_NON_TTY/CLAUDE.md"
 if grep -q '{{PROJECT_NAME}}' "$PROJECT_WIZARD_NON_TTY/CLAUDE.md" 2>/dev/null; then
   echo "FAIL: non-TTY wizard must still substitute {{PROJECT_NAME}}" >&2
   ERRORS=$((ERRORS + 1))
+else
+  echo "    PASS: non-TTY wizard correctly substituted {{PROJECT_NAME}}"
 fi
 
 # --yes with all defaults must produce the same filesystem shape as a
