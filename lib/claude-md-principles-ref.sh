@@ -91,11 +91,9 @@ claude_md_has_principles_ref() {
     [ -n "$ref" ] || continue
     grep -qF "$ref" "$target" || return 1
   done <<'EOF'
-@principles/engineering-principles.md
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
 @principles/git-workflow.md
-@principles/file-upstream-bugs.md
 EOF
   return 0
 }
@@ -118,11 +116,9 @@ claude_md_insert_missing_principles_refs() {
       printf '%s\n' "$ref" >> "$missing_file"
     fi
   done <<'EOF'
-@principles/engineering-principles.md
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
 @principles/git-workflow.md
-@principles/file-upstream-bugs.md
 EOF
 
   if [ ! -s "$missing_file" ]; then
@@ -156,11 +152,9 @@ claude_md_render_principles_block() {
 These imports load every Claude Code session in this repo. The files behind
 them are touchstone-owned and refresh on every `touchstone update`.
 
-@principles/engineering-principles.md
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
 @principles/git-workflow.md
-@principles/file-upstream-bugs.md
 
 ---
 BLOCK
