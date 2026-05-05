@@ -14,7 +14,7 @@
 #   touchstone update --ship              Push, open PR, review, and auto-merge
 #   touchstone sync                       Update all registered projects
 #   touchstone sync --pull-first          Pull latest touchstone, then sync all projects
-#   touchstone status                     Show status of the current project
+#   touchstone status [--json]            Show status of the current project
 #   touchstone status --all               Show version distribution across registered projects
 #   touchstone version                    Show installed version
 #   touchstone doctor                     Check health of touchstone installation
@@ -56,7 +56,7 @@ touchstone_version_str() {
 
 # Helper: get touchstone identifier for comparison (git SHA or version).
 touchstone_current_id() {
-  if [ -d "$TOUCHSTONE_ROOT/.git" ]; then
+  if git -C "$TOUCHSTONE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git -C "$TOUCHSTONE_ROOT" rev-parse HEAD
   else
     touchstone_version_str
@@ -64,7 +64,7 @@ touchstone_current_id() {
 }
 
 touchstone_current_id_short() {
-  if [ -d "$TOUCHSTONE_ROOT/.git" ]; then
+  if git -C "$TOUCHSTONE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git -C "$TOUCHSTONE_ROOT" rev-parse --short HEAD
   else
     touchstone_version_str
@@ -205,7 +205,7 @@ cmd_init() {
   elif [ -f "$project_dir/.touchstone-version" ]; then
     installed_id="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "")"
     current_id="$(touchstone_current_id)"
-    if [ "$installed_id" = "$current_id" ]; then
+    if [ "$(_status_behind_count "$installed_id" "$current_id")" = "current" ]; then
       init_state="current"
     else
       init_state="outdated"
@@ -298,7 +298,7 @@ cmd_version() {
   if command -v brew >/dev/null 2>&1 && brew list touchstone &>/dev/null; then
     tk_dim "installed via: brew"
     tk_dim "prefix: $(brew --prefix touchstone 2>/dev/null || echo unknown)"
-  elif [ -d "$TOUCHSTONE_ROOT/.git" ]; then
+  elif git -C "$TOUCHSTONE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     tk_dim "installed via: git clone"
     tk_dim "path: $TOUCHSTONE_ROOT"
     tk_dim "commit: $(git -C "$TOUCHSTONE_ROOT" rev-parse --short HEAD 2>/dev/null)"
@@ -315,6 +315,7 @@ cmd_version() {
 cmd_status() {
   # Two views, one entrypoint:
   #   touchstone status         -> single-project block for $(pwd)
+  #   touchstone status --json  -> machine-readable single-project block
   #   touchstone status --all   -> registry walk with the version-distribution table
   #
   # This intentionally narrows the old `touchstone status` (which always
@@ -323,12 +324,15 @@ cmd_status() {
   # old behavior remains reachable via `--all`; `touchstone list` is
   # the registry-only listing without the version-distribution math.
   local mode="project"
+  local json=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --all|-a) mode="all"; shift ;;
+      --json) json=true; shift ;;
       -h|--help)
-        echo "Usage: touchstone status [--all]"
+        echo "Usage: touchstone status [--json|--all]"
         echo "  (no flag)  Show status for the current working directory"
+        echo "  --json     Show machine-readable status for the current working directory"
         echo "  --all      Show version distribution across registered projects"
         return 0
         ;;
@@ -337,7 +341,16 @@ cmd_status() {
   done
 
   if [ "$mode" = "all" ]; then
+    if [ "$json" = true ]; then
+      echo "ERROR: touchstone status --json is only supported for the current project, not --all" >&2
+      return 1
+    fi
     status_print_all
+    return $?
+  fi
+
+  if [ "$json" = true ]; then
+    status_print_project_json "$(pwd)"
     return $?
   fi
 
@@ -374,7 +387,7 @@ cmd_doctor_project() {
   local installed_id current_id
   installed_id="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "")"
   current_id="$(touchstone_current_id)"
-  if [ "$installed_id" = "$current_id" ]; then
+  if [ "$(_status_behind_count "$installed_id" "$current_id")" = "current" ]; then
     tk_ok "touchstone version matches: ${installed_id:0:12}"
   else
     tk_warn "touchstone out of date (installed ${installed_id:0:12}, current ${current_id:0:12})"
@@ -872,13 +885,25 @@ _touchstone_profile_has_tests() {
 
 cmd_doctor() {
   local project_mode=false
+  local required_capability=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --project) project_mode=true; shift ;;
+      --require-capability)
+        if [ "$#" -lt 2 ]; then
+          echo "ERROR: --require-capability requires a capability name" >&2
+          exit 1
+        fi
+        required_capability="$2"
+        project_mode=true
+        shift 2
+        ;;
       -h|--help)
-        echo "Usage: touchstone doctor [--project]"
+        echo "Usage: touchstone doctor [--project] [--require-capability <name>]"
         echo "  (no flag)   Check touchstone installation health (CLI, tools, projects)"
         echo "  --project   Check per-project health (hooks, manifest, registry)"
+        echo "  --require-capability <name>"
+        echo "              Require a project-local Touchstone workflow capability"
         return 0
         ;;
       *) echo "ERROR: unknown argument '$1'" >&2; exit 1 ;;
@@ -886,6 +911,10 @@ cmd_doctor() {
   done
 
   if [ "$project_mode" = true ]; then
+    if [ -n "$required_capability" ]; then
+      status_require_project_capability "$(pwd)" "$required_capability"
+      return $?
+    fi
     cmd_doctor_project
     return $?
   fi
@@ -957,7 +986,7 @@ cmd_doctor() {
         proj_version="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
         local name
         name="$(basename "$project_dir")"
-        if [ "$proj_version" = "$current_id" ]; then
+        if [ "$(_status_behind_count "$proj_version" "$current_id")" = "current" ]; then
           tk_ok "$name — up to date"
         else
           tk_warn "$name — needs sync (run: touchstone sync)"
@@ -1018,7 +1047,7 @@ cmd_list() {
     if [ -d "$project_dir" ]; then
       local proj_version
       proj_version="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
-      if [ "$proj_version" = "$current_id" ]; then
+      if [ "$(_status_behind_count "$proj_version" "$current_id")" = "current" ]; then
         tk_ok "$name  ${DIM}$project_dir${RESET}"
       else
         tk_warn "$name  ${DIM}$project_dir${RESET}  ${YELLOW}(needs sync)${RESET}"
