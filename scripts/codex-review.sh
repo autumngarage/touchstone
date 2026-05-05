@@ -31,6 +31,7 @@
 #     [review.conductor].tags   = "code-review,..."
 #     [review.conductor].with   = "<provider>"  (pins a specific provider)
 #     [review.conductor].exclude = "<p1>,<p2>"  (skips in auto-routing)
+#     [review.context].mode     = "auto"|"full"  (auto prunes simple diffs)
 #   See hooks/codex-review.config.example.toml for the full spec.
 #
 #   If no .codex-review.toml exists, ALL paths are treated as unsafe
@@ -64,6 +65,9 @@
 #   CODEX_REVIEW_CACHE_CLEAN          — cache exact-input clean reviews (default: true)
 #   CODEX_REVIEW_TIMEOUT              — wall-clock timeout per invocation in seconds (default: 300, 0=none)
 #   CODEX_REVIEW_ON_ERROR             — fail-open (default) or fail-closed
+#   CODEX_REVIEW_CONTEXT_MODE         — auto|full|bounded prompt context selection (default: auto)
+#   CODEX_REVIEW_CONTEXT_SMALL_MAX_DIFF_LINES — bounded-context diff line cap (default: 400)
+#   CODEX_REVIEW_CONTEXT_SMALL_MAX_FILES — bounded-context changed-file cap (default: 4)
 #   CODEX_REVIEW_DISABLE_CACHE        — set to true/1 to force a fresh review
 #   CODEX_REVIEW_FORCE                — set to true/1 to run even on non-default-branch pushes
 #   CODEX_REVIEW_NO_AUTOFIX           — set to true/1 for review-only mode (backward compat)
@@ -385,6 +389,26 @@ ROUTING_LARGE_PREFER=""
 ROUTING_LARGE_EFFORT=""
 ROUTING_LARGE_TAGS=""
 ROUTING_DECISION="default"
+PROMPT_CONTEXT_MODE="${CODEX_REVIEW_CONTEXT_MODE:-auto}"
+PROMPT_CONTEXT_SMALL_MAX_DIFF_LINES="${CODEX_REVIEW_CONTEXT_SMALL_MAX_DIFF_LINES:-400}"
+PROMPT_CONTEXT_SMALL_MAX_FILES="${CODEX_REVIEW_CONTEXT_SMALL_MAX_FILES:-4}"
+PROMPT_CONTEXT_FULL_PATHS=""
+PROMPT_CONTEXT_ARCHITECTURAL_PATHS="AGENTS.md
+CLAUDE.md
+GEMINI.md
+.codex-review.toml
+.codex-review-context.md
+.github/codex-review-context.md
+.github/workflows/
+hooks/codex-review.sh
+hooks/codex-review.config.example.toml
+scripts/codex-review.sh
+architecture/
+docs/architecture/
+principles/"
+PROMPT_CONTEXT_DECISION="full"
+PROMPT_CONTEXT_REASON="context mode not resolved"
+PROMPT_CONTEXT_CHANGED_FILES=0
 ASSIST_ENABLED="${CODEX_REVIEW_ASSIST:-false}"
 ASSIST_TIMEOUT="${CODEX_REVIEW_ASSIST_TIMEOUT:-60}"
 ASSIST_MAX_ROUNDS="${CODEX_REVIEW_ASSIST_MAX_ROUNDS:-1}"
@@ -487,6 +511,40 @@ append_unsafe_paths_csv() {
   IFS=',' read -r -a items <<< "$csv"
   for item in "${items[@]}"; do
     append_unsafe_path "$item"
+  done
+}
+
+append_prompt_context_path() {
+  local value="$1"
+  value="$(trim "$value")"
+  value="${value%,}"
+  value="$(trim "$value")"
+
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
+
+  [ -z "$value" ] && return
+
+  if [ -n "$PROMPT_CONTEXT_FULL_PATHS" ]; then
+    PROMPT_CONTEXT_FULL_PATHS="${PROMPT_CONTEXT_FULL_PATHS}
+$value"
+  else
+    PROMPT_CONTEXT_FULL_PATHS="$value"
+  fi
+}
+
+append_prompt_context_paths_csv() {
+  local csv="$1"
+  local item
+  local -a items=()
+
+  [ -n "$csv" ] || return 0
+
+  IFS=',' read -r -a items <<< "$csv"
+  for item in "${items[@]}"; do
+    append_prompt_context_path "$item"
   done
 }
 
@@ -678,6 +736,20 @@ if [ -f "$CONFIG_FILE" ]; then
           helper) append_assist_helper "$value" ;;
           timeout) ASSIST_TIMEOUT="${CODEX_REVIEW_ASSIST_TIMEOUT:-$value}" ;;
           max_rounds) ASSIST_MAX_ROUNDS="${CODEX_REVIEW_ASSIST_MAX_ROUNDS:-$value}" ;;
+        esac
+        ;;
+      "review.context")
+        case "$key" in
+          mode) PROMPT_CONTEXT_MODE="${CODEX_REVIEW_CONTEXT_MODE:-$(toml_unquote "$value")}" ;;
+          small_max_diff_lines|small_diff_lines) PROMPT_CONTEXT_SMALL_MAX_DIFF_LINES="${CODEX_REVIEW_CONTEXT_SMALL_MAX_DIFF_LINES:-$value}" ;;
+          small_max_files|max_files) PROMPT_CONTEXT_SMALL_MAX_FILES="${CODEX_REVIEW_CONTEXT_SMALL_MAX_FILES:-$value}" ;;
+          full_context_paths|full_context_patterns)
+            if [[ "$value" == "["* ]]; then
+              append_prompt_context_paths_csv "$(toml_normalize_array "$value")"
+            else
+              append_prompt_context_paths_csv "$value"
+            fi
+            ;;
         esac
         ;;
       "review")
@@ -897,6 +969,157 @@ for _candidate in "$REPO_ROOT/.codex-review-context.md" "$REPO_ROOT/.github/code
     break
   fi
 done
+
+path_matches_context_pattern() {
+  local path="$1"
+  local pattern="$2"
+
+  pattern="$(trim "$pattern")"
+  [ -n "$path" ] || return 1
+  [ -n "$pattern" ] || return 1
+
+  case "$pattern" in
+    */)
+      [[ "$path" == "$pattern"* ]] && return 0
+      ;;
+    *\**|*\?*|*\[*)
+      case "$path" in
+        $pattern) return 0 ;;
+      esac
+      ;;
+    *)
+      if [ "$path" = "$pattern" ] || [[ "$path" == "$pattern/"* ]]; then
+        return 0
+      fi
+      ;;
+  esac
+
+  return 1
+}
+
+find_path_matching_context_patterns() {
+  local paths="$1"
+  local patterns="$2"
+  local path pattern
+
+  [ -n "$paths" ] || return 1
+  [ -n "$patterns" ] || return 1
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    while IFS= read -r pattern; do
+      [ -n "$pattern" ] || continue
+      if path_matches_context_pattern "$path" "$pattern"; then
+        printf '%s (matched %s)' "$path" "$pattern"
+        return 0
+      fi
+    done <<< "$patterns"
+  done <<< "$paths"
+
+  return 1
+}
+
+select_prompt_context_mode() {
+  local diff_lines="$1"
+  local changed_paths="$2"
+  local requested match
+
+  PROMPT_CONTEXT_CHANGED_FILES="$(printf '%s\n' "$changed_paths" | sed '/^$/d' | wc -l | tr -d ' ')"
+  requested="$(printf '%s' "${PROMPT_CONTEXT_MODE:-auto}" | tr '[:upper:]' '[:lower:]')"
+
+  case "$requested" in
+    auto|bounded|full) ;;
+    *)
+      echo "WARNING: Invalid review.context.mode='$PROMPT_CONTEXT_MODE' — using auto." >&2
+      requested="auto"
+      ;;
+  esac
+
+  if [ "$requested" = "full" ]; then
+    PROMPT_CONTEXT_DECISION="full"
+    PROMPT_CONTEXT_REASON="review.context.mode is full"
+    return 0
+  fi
+
+  case "$PROMPT_CONTEXT_SMALL_MAX_DIFF_LINES" in
+    ''|*[!0-9]*)
+      PROMPT_CONTEXT_DECISION="full"
+      PROMPT_CONTEXT_REASON="invalid review.context.small_max_diff_lines='$PROMPT_CONTEXT_SMALL_MAX_DIFF_LINES'"
+      return 0
+      ;;
+  esac
+
+  case "$PROMPT_CONTEXT_SMALL_MAX_FILES" in
+    ''|*[!0-9]*)
+      PROMPT_CONTEXT_DECISION="full"
+      PROMPT_CONTEXT_REASON="invalid review.context.small_max_files='$PROMPT_CONTEXT_SMALL_MAX_FILES'"
+      return 0
+      ;;
+  esac
+
+  match="$(find_path_matching_context_patterns "$changed_paths" "$UNSAFE_PATHS" || true)"
+  if [ -n "$match" ]; then
+    PROMPT_CONTEXT_DECISION="full"
+    PROMPT_CONTEXT_REASON="high-risk path $match"
+    return 0
+  fi
+
+  match="$(find_path_matching_context_patterns "$changed_paths" "$PROMPT_CONTEXT_ARCHITECTURAL_PATHS" || true)"
+  if [ -n "$match" ]; then
+    PROMPT_CONTEXT_DECISION="full"
+    PROMPT_CONTEXT_REASON="architectural path $match"
+    return 0
+  fi
+
+  match="$(find_path_matching_context_patterns "$changed_paths" "$PROMPT_CONTEXT_FULL_PATHS" || true)"
+  if [ -n "$match" ]; then
+    PROMPT_CONTEXT_DECISION="full"
+    PROMPT_CONTEXT_REASON="configured full-context path $match"
+    return 0
+  fi
+
+  if [ "$diff_lines" -gt "$PROMPT_CONTEXT_SMALL_MAX_DIFF_LINES" ] 2>/dev/null; then
+    PROMPT_CONTEXT_DECISION="full"
+    PROMPT_CONTEXT_REASON="large diff ($diff_lines > $PROMPT_CONTEXT_SMALL_MAX_DIFF_LINES lines)"
+    return 0
+  fi
+
+  if [ "$PROMPT_CONTEXT_CHANGED_FILES" -gt "$PROMPT_CONTEXT_SMALL_MAX_FILES" ] 2>/dev/null; then
+    PROMPT_CONTEXT_DECISION="full"
+    PROMPT_CONTEXT_REASON="broad diff ($PROMPT_CONTEXT_CHANGED_FILES > $PROMPT_CONTEXT_SMALL_MAX_FILES files)"
+    return 0
+  fi
+
+  PROMPT_CONTEXT_DECISION="bounded"
+  PROMPT_CONTEXT_REASON="small/simple diff ($diff_lines <= $PROMPT_CONTEXT_SMALL_MAX_DIFF_LINES lines, $PROMPT_CONTEXT_CHANGED_FILES <= $PROMPT_CONTEXT_SMALL_MAX_FILES files) with no high-risk, architectural, or configured full-context path matches"
+}
+
+build_prompt_context_instructions() {
+  if [ "$PROMPT_CONTEXT_DECISION" = "bounded" ]; then
+    cat <<CONTEXT_EOF
+## Project context mode
+
+Full AGENTS.md and CLAUDE.md context was intentionally omitted because this is a $PROMPT_CONTEXT_REASON.
+Use the bounded project review context below. Do not spend context loading AGENTS.md or CLAUDE.md for this small/simple review.
+
+Bounded project review context:
+- Review only concrete correctness, safety, compatibility, and test-coverage risks in this diff.
+- Block silent failures, data loss, destructive operations without recovery, public boundary breaks, or missing regression tests for bug fixes.
+- Treat security, auth, payments, migrations, release/deploy, and generated-artifact changes as blocking unless the diff proves they are safe.
+- Do not flag formatting, naming, comments, speculative refactors, or broad design preferences without a specific failing behavior.
+CONTEXT_EOF
+    return 0
+  fi
+
+  cat <<CONTEXT_EOF
+## Project context mode
+
+Full project context is required because $PROMPT_CONTEXT_REASON.
+Read AGENTS.md at the repo root for project context and the review rubric (if it exists).
+If AGENTS.md has both authoring guidance and a review guide, use the review guide for findings.
+Read CLAUDE.md at the repo root for additional Claude-specific project context (if it exists).
+CONTEXT_EOF
+}
 
 # --------------------------------------------------------------------------
 # Build the auto-fix policy section of the prompt from config
@@ -1443,7 +1666,10 @@ if ! resolve_reviewer; then
   exit 0
 fi
 REVIEWER_LABEL="$(reviewer_label)"
+PROMPT_CONTEXT_CHANGED_PATHS="$(git diff --name-only "$MERGE_BASE"..HEAD 2>/dev/null || true)"
+select_prompt_context_mode "$ROUTING_DIFF_LINE_COUNT" "$PROMPT_CONTEXT_CHANGED_PATHS"
 echo "==> Using reviewer: $REVIEWER_LABEL"
+echo "==> Prompt context: $PROMPT_CONTEXT_DECISION ($PROMPT_CONTEXT_REASON)"
 if [ -n "$REVIEW_CONTEXT_FILE" ]; then
   echo "==> Review context: $(basename "$REVIEW_CONTEXT_FILE")"
 fi
@@ -1457,9 +1683,7 @@ AUTOFIX_POLICY="$(build_autofix_policy)"
 read -r -d '' REVIEW_PROMPT <<PROMPT_EOF || true
 You are reviewing AND optionally auto-fixing a pull request before it reaches the default branch.
 
-Read AGENTS.md at the repo root for project context and the review rubric (if it exists).
-If AGENTS.md has both authoring guidance and a review guide, use the review guide for findings.
-Read CLAUDE.md at the repo root for additional Claude-specific project context (if it exists).
+$(build_prompt_context_instructions)
 
 Do NOT flag: formatting, style, naming, missing docstrings, speculative refactors, "you could consider" observations without a concrete bug.
 
@@ -1564,6 +1788,8 @@ review_cache_key() {
     printf 'reviewer=%s\n' "${ACTIVE_REVIEWER:-}"
     printf 'review_mode=%s\n' "${REVIEW_MODE:-}"
     printf 'review_route=%s\n' "${ROUTING_DECISION:-}"
+    printf 'prompt_context_mode=%s\n' "${PROMPT_CONTEXT_DECISION:-}"
+    printf 'prompt_context_reason=%s\n' "${PROMPT_CONTEXT_REASON:-}"
     printf 'review_enabled=%s\n' "${REVIEW_ENABLED:-}"
     printf 'local_reviewer_command=%s\n' "${LOCAL_REVIEWER_COMMAND:-}"
     printf 'base=%s\n' "${BASE:-}"
@@ -1583,8 +1809,13 @@ review_cache_key() {
     printf 'conductor_tags=%s\n' "${CONDUCTOR_TAGS:-}"
     printf 'conductor_exclude=%s\n' "${CONDUCTOR_EXCLUDE:-}"
     printf '\n-- prompt --\n%s\n' "${REVIEW_PROMPT:-}"
-    append_cache_file "AGENTS.md" "${REPO_ROOT:-}/AGENTS.md"
-    append_cache_file "CLAUDE.md" "${REPO_ROOT:-}/CLAUDE.md"
+    if [ "${PROMPT_CONTEXT_DECISION:-full}" = "full" ]; then
+      append_cache_file "AGENTS.md" "${REPO_ROOT:-}/AGENTS.md"
+      append_cache_file "CLAUDE.md" "${REPO_ROOT:-}/CLAUDE.md"
+    else
+      printf '\n-- AGENTS.md --\n<omitted: prompt_context_mode=%s>\n' "${PROMPT_CONTEXT_DECISION:-}"
+      printf '\n-- CLAUDE.md --\n<omitted: prompt_context_mode=%s>\n' "${PROMPT_CONTEXT_DECISION:-}"
+    fi
     append_cache_file ".codex-review.toml" "${CONFIG_FILE:-}"
     append_cache_file "codex-review.sh" "$0"
     if [ -n "${REVIEW_CONTEXT_FILE:-}" ]; then
@@ -1749,9 +1980,7 @@ You are a peer reviewer giving a focused second opinion before a push.
 Do not edit files. Do not stage, commit, or modify anything. You are advisory only.
 Answer the primary reviewer concisely and directly. Do not emit CODEX_REVIEW_CLEAN, CODEX_REVIEW_FIXED, or CODEX_REVIEW_BLOCKED.
 
-Read AGENTS.md at the repo root for project context and the review rubric if it exists.
-If AGENTS.md has both authoring guidance and a review guide, use the review guide for findings.
-Read CLAUDE.md at the repo root for additional Claude-specific project context if it exists.
+$(build_prompt_context_instructions)
 
 ## Primary reviewer
 
@@ -2053,6 +2282,7 @@ print_summary() {
     printf "  ${C_DIM}route:          %s${C_RESET}\n" "$ROUTING_DECISION"
   fi
   printf "  ${C_DIM}mode:           %s${C_RESET}\n" "$REVIEW_MODE"
+  printf "  ${C_DIM}context:        %s${C_RESET}\n" "$PROMPT_CONTEXT_DECISION"
   printf "  ${C_DIM}files:          %s${C_RESET}\n" "$REVIEW_FILES_INSPECTED"
   printf "  ${C_DIM}diff lines:     %s${C_RESET}\n" "$DIFF_LINE_COUNT"
   printf "  ${C_DIM}iterations:     %s/%s${C_RESET}\n" "${iter:-0}" "$MAX_ITERATIONS"

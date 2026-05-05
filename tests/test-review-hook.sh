@@ -363,6 +363,41 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: changing prompt context mode invalidates the cache"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_CONTEXT_MODE=full \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
+)
+CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+if [ "$CODEX_CALL_COUNT" = "5" ]; then
+  echo "==> PASS: CODEX_REVIEW_CONTEXT_MODE=full invalidated bounded-context cache"
+else
+  echo "FAIL: expected fresh review after context mode changed to full" >&2
+  echo "codex call count: $CODEX_CALL_COUNT (expected 5)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_CONTEXT_MODE=full \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
+)
+CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+if [ "$CODEX_CALL_COUNT" = "5" ]; then
+  echo "==> PASS: repeated full-context review hit its own cache entry"
+else
+  echo "FAIL: expected repeated full-context review to hit cache" >&2
+  echo "codex call count: $CODEX_CALL_COUNT (expected 5)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: review hook preserves # inside quoted unsafe_paths"
 cat > "$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
@@ -1092,6 +1127,151 @@ if ! grep -q 'Review context' "$CTX_OUTPUT" \
   echo "==> PASS: no context file, no error"
 else
   echo "FAIL: expected no context section when file is missing" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: small/simple diffs use bounded prompt context"
+setup_ctx_repo
+setup_ctx_bin
+printf 'AGENTS_FULL_CONTEXT_MARKER\n' > "$CTX_REPO/AGENTS.md"
+printf 'CLAUDE_FULL_CONTEXT_MARKER\n' > "$CTX_REPO/CLAUDE.md"
+git -C "$CTX_REPO" add AGENTS.md CLAUDE.md
+git -C "$CTX_REPO" commit -m "add steering files" >/dev/null 2>&1
+printf 'small prompt context change\n' >> "$CTX_REPO/example.txt"
+git -C "$CTX_REPO" add example.txt
+git -C "$CTX_REPO" commit -m "small prompt context change" >/dev/null 2>&1
+
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CTX_PROMPT="$CTX_PROMPT" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+)
+
+if grep -q 'Full AGENTS.md and CLAUDE.md context was intentionally omitted' "$CTX_PROMPT" \
+  && grep -q 'Bounded project review context' "$CTX_PROMPT" \
+  && ! grep -q 'Read AGENTS.md at the repo root' "$CTX_PROMPT" \
+  && grep -q 'Prompt context: bounded' "$CTX_OUTPUT"; then
+  echo "==> PASS: small/simple diff used bounded prompt context"
+else
+  echo "FAIL: expected bounded prompt context for small/simple diff" >&2
+  sed -n '1,80p' "$CTX_PROMPT" >&2
+  cat "$CTX_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: large diffs keep full AGENTS/CLAUDE context"
+setup_ctx_repo
+setup_ctx_bin
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CTX_PROMPT="$CTX_PROMPT" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_CONTEXT_SMALL_MAX_DIFF_LINES=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+)
+
+if grep -q 'Full project context is required because large diff' "$CTX_PROMPT" \
+  && grep -q 'Read AGENTS.md at the repo root' "$CTX_PROMPT" \
+  && grep -q 'Prompt context: full' "$CTX_OUTPUT"; then
+  echo "==> PASS: large diff kept full prompt context"
+else
+  echo "FAIL: expected full prompt context for large diff" >&2
+  sed -n '1,80p' "$CTX_PROMPT" >&2
+  cat "$CTX_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: architectural files keep full AGENTS/CLAUDE context"
+setup_ctx_repo
+setup_ctx_bin
+printf 'architectural review guidance\n' > "$CTX_REPO/AGENTS.md"
+git -C "$CTX_REPO" add AGENTS.md
+git -C "$CTX_REPO" commit -m "touch agents" >/dev/null 2>&1
+
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CTX_PROMPT="$CTX_PROMPT" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+)
+
+if grep -q 'Full project context is required because architectural path AGENTS.md' "$CTX_PROMPT" \
+  && grep -q 'Read AGENTS.md at the repo root' "$CTX_PROMPT"; then
+  echo "==> PASS: architectural file kept full prompt context"
+else
+  echo "FAIL: expected full prompt context for architectural file" >&2
+  sed -n '1,80p' "$CTX_PROMPT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: unsafe paths keep full AGENTS/CLAUDE context"
+setup_ctx_repo
+setup_ctx_bin
+{
+  printf '[codex_review]\n'
+  printf 'unsafe_paths = ["sensitive/"]\n'
+} > "$CTX_REPO/.codex-review.toml"
+git -C "$CTX_REPO" add .codex-review.toml
+git -C "$CTX_REPO" commit -m "configure unsafe path" >/dev/null 2>&1
+mkdir -p "$CTX_REPO/sensitive"
+printf 'secret change\n' > "$CTX_REPO/sensitive/config.txt"
+git -C "$CTX_REPO" add sensitive/config.txt
+git -C "$CTX_REPO" commit -m "touch sensitive config" >/dev/null 2>&1
+
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CTX_PROMPT="$CTX_PROMPT" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+)
+
+if grep -q 'Full project context is required because high-risk path sensitive/config.txt' "$CTX_PROMPT" \
+  && grep -q 'Read AGENTS.md at the repo root' "$CTX_PROMPT"; then
+  echo "==> PASS: unsafe path kept full prompt context"
+else
+  echo "FAIL: expected full prompt context for unsafe path" >&2
+  sed -n '1,100p' "$CTX_PROMPT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: configured full-context patterns keep full AGENTS/CLAUDE context"
+setup_ctx_repo
+setup_ctx_bin
+{
+  printf '[review.context]\n'
+  printf 'full_context_paths = ["docs/"]\n'
+} > "$CTX_REPO/.codex-review.toml"
+git -C "$CTX_REPO" add .codex-review.toml
+git -C "$CTX_REPO" commit -m "configure full context path" >/dev/null 2>&1
+mkdir -p "$CTX_REPO/docs"
+printf 'doc change\n' > "$CTX_REPO/docs/note.md"
+git -C "$CTX_REPO" add docs/note.md
+git -C "$CTX_REPO" commit -m "touch docs" >/dev/null 2>&1
+
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CTX_PROMPT="$CTX_PROMPT" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+)
+
+if grep -q 'Full project context is required because configured full-context path docs/note.md' "$CTX_PROMPT" \
+  && grep -q 'Read AGENTS.md at the repo root' "$CTX_PROMPT"; then
+  echo "==> PASS: configured full-context path kept full prompt context"
+else
+  echo "FAIL: expected full prompt context for configured full-context path" >&2
+  sed -n '1,100p' "$CTX_PROMPT" >&2
   ERRORS=$((ERRORS + 1))
 fi
 

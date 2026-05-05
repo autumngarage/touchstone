@@ -56,13 +56,14 @@ Fill in `AGENTS.md` at the repo root with your project-specific coding-agent gui
 When the review runs, the hook:
 
 1. Computes the diff between your branch and the default branch
-2. Skips review if the exact same diff and review inputs already passed cleanly (cache key includes the Conductor knobs, so changing `prefer`/`effort`/`with` invalidates)
-3. Invokes Conductor with the review prompt + AGENTS.md review guide and the requested tool set
-4. Reads one of three sentinels from the reviewer's output:
+2. Chooses prompt context: small/simple diffs use a bounded rubric, while large, broad, high-risk, architectural, or configured paths keep full `AGENTS.md`/`CLAUDE.md` context
+3. Skips review if the exact same diff and review inputs already passed cleanly (cache key includes the Conductor knobs and prompt context mode, so changing `prefer`/`effort`/`with` or context mode invalidates)
+4. Invokes Conductor with the review prompt and requested tool set
+5. Reads one of three sentinels from the reviewer's output:
    - `CODEX_REVIEW_CLEAN` — no issues, push proceeds
    - `CODEX_REVIEW_FIXED` — the reviewer applied auto-fixes; the hook commits them and re-reviews
    - `CODEX_REVIEW_BLOCKED` — the reviewer found issues it won't auto-fix; push is blocked
-5. The loop repeats up to `max_iterations` times (default 3)
+6. The loop repeats up to `max_iterations` times (default 3)
 
 Conductor logs its route decision (provider, cost estimate, token count, wall-clock time) into the pre-push transcript.
 
@@ -92,8 +93,14 @@ Conductor logs its route decision (provider, cost estimate, token count, wall-cl
 | `[review.routing].large_effort` | unset | e.g. `"max"` for larger diffs |
 | `[review.routing].large_with` | unset | Pin provider for larger diffs |
 | `[review.routing].large_tags` | unset | e.g. `"code-review,long-context"` |
+| `[review.context].mode` | `"auto"` | `auto` prunes small/simple diffs; `full` always loads full project context |
+| `[review.context].small_max_diff_lines` | 400 | Max diff lines for bounded prompt context |
+| `[review.context].small_max_files` | 4 | Max changed files for bounded prompt context |
+| `[review.context].full_context_paths` | [] | Extra path patterns that always require full `AGENTS.md`/`CLAUDE.md` context |
 
 Routing uses a single cutoff (`small_max_diff_lines`): diffs at or below it go through the `small_*` bucket, everything else through the `large_*` bucket. There is no separate `large_max_diff_lines`.
+
+Prompt-context pruning is separate from provider routing. In `auto` mode, the hook uses bounded context only when the diff stays within both small limits and avoids `unsafe_paths`, built-in architectural files, and configured `full_context_paths`. The prompt states when full context was intentionally omitted and why.
 
 ### Retired in 2.0
 
@@ -114,6 +121,9 @@ Routing uses a single cutoff (`small_max_diff_lines`): diffs at or below it go t
 | `CODEX_REVIEW_NO_AUTOFIX` | `1` switches to `review-only` mode for one run |
 | `CODEX_REVIEW_ON_ERROR` | `fail-open` (default) \| `fail-closed` |
 | `CODEX_REVIEW_TIMEOUT` | Wall-clock timeout per reviewer invocation (seconds) |
+| `CODEX_REVIEW_CONTEXT_MODE` | Override prompt context mode: `auto` \| `full` \| `bounded` |
+| `CODEX_REVIEW_CONTEXT_SMALL_MAX_DIFF_LINES` | Override bounded-context diff line cap |
+| `CODEX_REVIEW_CONTEXT_SMALL_MAX_FILES` | Override bounded-context changed-file cap |
 | `CODEX_REVIEW_SUPPRESS_LEGACY_WARNINGS` | `1` silences the one-time 1.x → 2.0 migration hint |
 | `TOUCHSTONE_CONDUCTOR_WITH` | Pin Conductor to a specific provider |
 | `TOUCHSTONE_CONDUCTOR_PREFER` | Override `[review.conductor].prefer` |
