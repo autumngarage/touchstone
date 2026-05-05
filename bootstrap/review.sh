@@ -81,15 +81,15 @@ CONDUCTOR_PREFER=""
 CONDUCTOR_EFFORT=""
 CONDUCTOR_TAGS=""
 CONDUCTOR_EXCLUDE=""
-ROUTING_ENABLED=false
+ROUTING_ENABLED=true
 ROUTING_SMALL_MAX_DIFF_LINES=400
 ROUTING_SMALL_WITH=""
-ROUTING_SMALL_PREFER=""
-ROUTING_SMALL_EFFORT=""
+ROUTING_SMALL_PREFER="cheapest"
+ROUTING_SMALL_EFFORT="minimal"
 ROUTING_SMALL_TAGS=""
 ROUTING_LARGE_WITH=""
-ROUTING_LARGE_PREFER=""
-ROUTING_LARGE_EFFORT=""
+ROUTING_LARGE_PREFER="best"
+ROUTING_LARGE_EFFORT="max"
 ROUTING_LARGE_TAGS=""
 CONFIG_MODE=""
 
@@ -101,6 +101,18 @@ strip_quotes() {
     \'*\') v="${v#\'}"; v="${v%\'}" ;;
   esac
   printf '%s' "$v"
+}
+
+normalize_bool() {
+  local value
+  value="$(strip_quotes "$1")"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+
+  case "$value" in
+    true|1|yes|on) printf 'true' ;;
+    false|0|no|off) printf 'false' ;;
+    *) printf '%s' "$value" ;;
+  esac
 }
 
 # Parse .codex-review.toml if it exists.
@@ -131,8 +143,8 @@ if [ -f "$CONFIG_FILE" ]; then
         ;;
       "review.routing")
         case "$key" in
-          enabled) [ "$(normalize_bool "$value")" = "true" ] && ROUTING_ENABLED=true ;;
-          small_max_diff_lines) ROUTING_SMALL_MAX_DIFF_LINES="$value" ;;
+          enabled) ROUTING_ENABLED="$(normalize_bool "$value")" ;;
+          small_max_diff_lines|small_diff_lines) ROUTING_SMALL_MAX_DIFF_LINES="$value" ;;
           small_with)    ROUTING_SMALL_WITH="$(toml_unquote "$value")" ;;
           small_prefer)  ROUTING_SMALL_PREFER="$(toml_unquote "$value")" ;;
           small_effort)  ROUTING_SMALL_EFFORT="$(toml_unquote "$value")" ;;
@@ -195,25 +207,38 @@ BASE="${base_override:-${CODEX_REVIEW_BASE:-origin/$(default_branch)}}"
 # Try to compute diff line count for size-based routing. Best-effort:
 # if the base ref doesn't exist locally we skip the small/large bucket.
 DIFF_LINE_COUNT=0
+diff_line_count_available=false
 if git rev-parse --verify "$BASE" >/dev/null 2>&1; then
   DIFF_LINE_COUNT="$(git diff "$BASE"..HEAD 2>/dev/null | wc -l | tr -d ' ')"
+  diff_line_count_available=true
 fi
 
 routing_decision="default"
-if [ "$ROUTING_ENABLED" = true ] && [ "$DIFF_LINE_COUNT" -gt 0 ]; then
-  if [ "$DIFF_LINE_COUNT" -le "$ROUTING_SMALL_MAX_DIFF_LINES" ] 2>/dev/null; then
-    routing_decision="small"
-    [ -n "$ROUTING_SMALL_WITH" ]   && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_SMALL_WITH}"
-    [ -n "$ROUTING_SMALL_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_SMALL_PREFER}"
-    [ -n "$ROUTING_SMALL_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_SMALL_EFFORT}"
-    [ -n "$ROUTING_SMALL_TAGS" ]   && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_SMALL_TAGS}"
-  else
-    routing_decision="large"
-    [ -n "$ROUTING_LARGE_WITH" ]   && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_LARGE_WITH}"
-    [ -n "$ROUTING_LARGE_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_LARGE_PREFER}"
-    [ -n "$ROUTING_LARGE_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_LARGE_EFFORT}"
-    [ -n "$ROUTING_LARGE_TAGS" ]   && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_LARGE_TAGS}"
-  fi
+routing_reason="review.routing.enabled=false"
+if [ "$ROUTING_ENABLED" = true ]; then
+  routing_reason="diff line count unavailable for base $BASE"
+  case "$ROUTING_SMALL_MAX_DIFF_LINES" in
+    ''|*[!0-9]*)
+      routing_reason="invalid review.routing.small_max_diff_lines='$ROUTING_SMALL_MAX_DIFF_LINES'"
+      ;;
+    *)
+      if [ "$diff_line_count_available" = true ] && [ "$DIFF_LINE_COUNT" -le "$ROUTING_SMALL_MAX_DIFF_LINES" ] 2>/dev/null; then
+        routing_decision="small"
+        routing_reason="$DIFF_LINE_COUNT <= $ROUTING_SMALL_MAX_DIFF_LINES diff lines"
+        [ -n "$ROUTING_SMALL_WITH" ]   && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_SMALL_WITH}"
+        [ -n "$ROUTING_SMALL_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_SMALL_PREFER}"
+        [ -n "$ROUTING_SMALL_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_SMALL_EFFORT}"
+        [ -n "$ROUTING_SMALL_TAGS" ]   && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_SMALL_TAGS}"
+      elif [ "$diff_line_count_available" = true ]; then
+        routing_decision="large"
+        routing_reason="$DIFF_LINE_COUNT > $ROUTING_SMALL_MAX_DIFF_LINES diff lines"
+        [ -n "$ROUTING_LARGE_WITH" ]   && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_LARGE_WITH}"
+        [ -n "$ROUTING_LARGE_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_LARGE_PREFER}"
+        [ -n "$ROUTING_LARGE_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_LARGE_EFFORT}"
+        [ -n "$ROUTING_LARGE_TAGS" ]   && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_LARGE_TAGS}"
+      fi
+      ;;
+  esac
 fi
 
 # Mode → tools (mirror the adapter in hooks/codex-review.sh).
@@ -241,9 +266,10 @@ if [ -n "$CONDUCTOR_WITH" ]; then
   echo "    Effective config:"
   echo "      with     = $CONDUCTOR_WITH"
   echo "      effort   = $CONDUCTOR_EFFORT"
+  echo "      prefer   = $CONDUCTOR_PREFER"
   echo "      mode     = $REVIEW_MODE → tools=${tools:-<none>}"
   echo "      base     = $BASE  ($DIFF_LINE_COUNT diff lines)"
-  echo "      routing  = $routing_decision"
+  echo "      routing  = $routing_decision ($routing_reason)"
   echo ""
   echo "    To preview which provider auto-routing would pick, unset"
   echo "    TOUCHSTONE_CONDUCTOR_WITH and remove [review.conductor].with"
@@ -263,7 +289,7 @@ if [ -z "$json_flag" ]; then
   echo "    base ref:    $BASE"
   echo "    diff lines:  $DIFF_LINE_COUNT"
   echo "    review mode: $REVIEW_MODE → tools=${tools:-<none>}"
-  echo "    routing:     $routing_decision (small/large bucket detection)"
+  echo "    routing:     $routing_decision ($routing_reason)"
   echo ""
 fi
 

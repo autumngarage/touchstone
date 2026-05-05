@@ -70,8 +70,9 @@ unsafe_paths = [
 # --------------------------------------------------------------------------
 # Conductor routing (optional)
 # --------------------------------------------------------------------------
-# Fine-tune what Conductor picks and how hard it thinks. All four knobs have
-# sensible defaults for code review; only override when you need to.
+# Fine-tune what Conductor picks and how hard it thinks. By default,
+# Touchstone applies size-aware routing below; set these only when you want a
+# global fallback or a pinned provider.
 
 # [review.conductor]
 # # Which provider wins auto-routing. One of:
@@ -96,11 +97,11 @@ unsafe_paths = [
 # # exclude = "gemini"
 
 # --------------------------------------------------------------------------
-# Routing by diff size (optional)
+# Routing by diff size (default)
 # --------------------------------------------------------------------------
-# Use this when you want cheap + shallow review for tiny diffs and max-effort
-# on large or risky changes. Touchstone-side override of Conductor's knobs
-# per size bucket.
+# Touchstone defaults to cheap + shallow review for small diffs and max-effort
+# review for larger changes. Explicit TOUCHSTONE_CONDUCTOR_* env vars still
+# win at invocation time, and enabled = false opts out.
 #
 # Routing uses a single cutoff (small_max_diff_lines): diffs at or below it
 # go through the small_* bucket, everything above through the large_* bucket.
@@ -108,14 +109,15 @@ unsafe_paths = [
 # ignored by the parser.
 #
 # [review.routing]
-# enabled = false
+# enabled = true
 # small_max_diff_lines = 400
 # small_prefer = "cheapest"
 # small_effort = "minimal"
-# small_with = "ollama"
 # large_prefer = "best"
 # large_effort = "max"
-# large_tags = "code-review,long-context"
+# # Optional: pin or retag either bucket.
+# # small_with = "ollama"
+# # large_tags = "code-review,long-context"
 
 # --------------------------------------------------------------------------
 # Prompt context pruning (optional)
