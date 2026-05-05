@@ -139,16 +139,43 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-echo "==> Test: --mode override changes tools/sandbox flags"
-: > "$ARGS_FILE"
-out="$(run_review "$REPO_AUTO" --dry-run --mode review-only --base HEAD~1 2>&1)"
-if grep -q '\-\-tools Read,Grep,Glob,Bash' "$ARGS_FILE" \
-  && grep -q '\-\-sandbox read-only' "$ARGS_FILE"; then
-  echo "==> PASS: --mode review-only mapped to read-only sandbox + read tools"
-else
-  echo "FAIL: --mode override did not rewrite tools/sandbox" >&2
-  echo "args: $(cat "$ARGS_FILE")" >&2
-  ERRORS=$((ERRORS + 1))
+echo "==> Test: --mode override changes tools without sandbox flags"
+check_dry_run_mode() {
+  local mode="$1"
+  local expected_tools="$2"
+  : > "$ARGS_FILE"
+  out="$(run_review "$REPO_AUTO" --dry-run --mode "$mode" --base HEAD~1 2>&1)"
+
+  if [ -n "$expected_tools" ]; then
+    if ! grep -q -- "--tools $expected_tools" "$ARGS_FILE"; then
+      echo "FAIL: expected --mode $mode to pass --tools $expected_tools" >&2
+      echo "args: $(cat "$ARGS_FILE")" >&2
+      ERRORS=$((ERRORS + 1))
+      return
+    fi
+  elif grep -q -- '--tools' "$ARGS_FILE"; then
+    echo "FAIL: expected --mode $mode to omit --tools" >&2
+    echo "args: $(cat "$ARGS_FILE")" >&2
+    ERRORS=$((ERRORS + 1))
+    return
+  fi
+
+  if grep -q -- '--sandbox' "$ARGS_FILE" || echo "$out" | grep -q 'sandbox'; then
+    echo "FAIL: expected --mode $mode dry-run to omit sandbox contract" >&2
+    echo "args: $(cat "$ARGS_FILE")" >&2
+    echo "out: $out" >&2
+    ERRORS=$((ERRORS + 1))
+    return
+  fi
+}
+
+check_dry_run_mode "diff-only" ""
+check_dry_run_mode "review-only" "Read,Grep,Glob,Bash"
+check_dry_run_mode "no-tests" "Read,Grep,Glob,Edit,Write"
+check_dry_run_mode "fix" "Read,Grep,Glob,Bash,Edit,Write"
+
+if [ "$ERRORS" -eq 0 ]; then
+  echo "==> PASS: --mode overrides map to tools and omit sandbox"
 fi
 
 # ----------------------------------------------------------------------------

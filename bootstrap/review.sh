@@ -216,17 +216,16 @@ if [ "$ROUTING_ENABLED" = true ] && [ "$DIFF_LINE_COUNT" -gt 0 ]; then
   fi
 fi
 
-# Mode → tools / sandbox (mirror the adapter in hooks/codex-review.sh).
+# Mode → tools (mirror the adapter in hooks/codex-review.sh).
 tools=""
-sandbox=""
 case "$REVIEW_MODE" in
-  diff-only)   tools=""                              ; sandbox="" ;;
-  review-only) tools="Read,Grep,Glob,Bash"           ; sandbox="read-only" ;;
-  no-tests)    tools="Read,Grep,Glob,Edit,Write"     ; sandbox="workspace-write" ;;
-  fix)         tools="Read,Grep,Glob,Bash,Edit,Write"; sandbox="workspace-write" ;;
+  diff-only)   tools="" ;;
+  review-only) tools="Read,Grep,Glob,Bash" ;;
+  no-tests)    tools="Read,Grep,Glob,Edit,Write" ;;
+  fix)         tools="Read,Grep,Glob,Bash,Edit,Write" ;;
   *)
     echo "WARNING: unknown REVIEW_MODE='$REVIEW_MODE' — defaulting to review-only flags." >&2
-    tools="Read,Grep,Glob,Bash"; sandbox="read-only"
+    tools="Read,Grep,Glob,Bash"
     ;;
 esac
 
@@ -242,7 +241,7 @@ if [ -n "$CONDUCTOR_WITH" ]; then
   echo "    Effective config:"
   echo "      with     = $CONDUCTOR_WITH"
   echo "      effort   = $CONDUCTOR_EFFORT"
-  echo "      mode     = $REVIEW_MODE → tools=${tools:-<none>}, sandbox=${sandbox:-<none>}"
+  echo "      mode     = $REVIEW_MODE → tools=${tools:-<none>}"
   echo "      base     = $BASE  ($DIFF_LINE_COUNT diff lines)"
   echo "      routing  = $routing_decision"
   echo ""
@@ -257,14 +256,13 @@ fi
 [ -n "$CONDUCTOR_TAGS" ]    && args+=(--tags    "$CONDUCTOR_TAGS")
 [ -n "$CONDUCTOR_EXCLUDE" ] && args+=(--exclude "$CONDUCTOR_EXCLUDE")
 [ -n "$tools" ]             && args+=(--tools   "$tools")
-[ -n "$sandbox" ]           && args+=(--sandbox "$sandbox")
 [ -n "$json_flag" ]         && args+=("$json_flag")
 
 if [ -z "$json_flag" ]; then
   echo "==> touchstone review --dry-run"
   echo "    base ref:    $BASE"
   echo "    diff lines:  $DIFF_LINE_COUNT"
-  echo "    review mode: $REVIEW_MODE → tools=${tools:-<none>} sandbox=${sandbox:-<none>}"
+  echo "    review mode: $REVIEW_MODE → tools=${tools:-<none>}"
   echo "    routing:     $routing_decision (small/large bucket detection)"
   echo ""
 fi

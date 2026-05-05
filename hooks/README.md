@@ -2,7 +2,7 @@
 
 Reviews your code with an AI reviewer before it reaches the default branch. Normal feature-branch pushes stay fast; review runs from `scripts/merge-pr.sh` and from the pre-push hook only when pushing directly to the default branch.
 
-Touchstone 2.0 delegates all LLM access to [Conductor](https://github.com/autumngarage/conductor). The hook declares *what it needs* (review mode → tool access + sandbox, effort budget, routing preference) and Conductor picks *how* to satisfy it (provider, model, auth, cost tracking).
+Touchstone 2.0 delegates all LLM access to [Conductor](https://github.com/autumngarage/conductor). The hook declares *what it needs* (review mode → tool access, effort budget, routing preference) and Conductor picks *how* to satisfy it (provider, model, auth, cost tracking, provider permissions).
 
 ## Setup
 
@@ -57,7 +57,7 @@ When the review runs, the hook:
 
 1. Computes the diff between your branch and the default branch
 2. Skips review if the exact same diff and review inputs already passed cleanly (cache key includes the Conductor knobs, so changing `prefer`/`effort`/`with` invalidates)
-3. Invokes Conductor with the review prompt + AGENTS.md review guide, the requested tool set, and the requested sandbox
+3. Invokes Conductor with the review prompt + AGENTS.md review guide and the requested tool set
 4. Reads one of three sentinels from the reviewer's output:
    - `CODEX_REVIEW_CLEAN` — no issues, push proceeds
    - `CODEX_REVIEW_FIXED` — the reviewer applied auto-fixes; the hook commits them and re-reviews
@@ -128,7 +128,7 @@ Routing uses a single cutoff (`small_max_diff_lines`): diffs at or below it go t
 - If the `conductor` CLI is missing: prints `brew install …` + `conductor init` hints, skips review, push proceeds
 - If Conductor is installed but no provider is configured: prints `conductor doctor` + `conductor init` hints, skips review, push proceeds
 - If pushing a feature branch: skips review, push proceeds
-- If Conductor fails (network, quota, sandbox denial): skips review per `on_error = "fail-open"` (default); set `fail-closed` to block instead
+- If Conductor fails (network, quota, provider permission denial): skips review per `on_error = "fail-open"` (default); set `fail-closed` to block instead
 - If diff exceeds `max_diff_lines`: skips review, push proceeds
 - If the exact diff and review inputs already passed cleanly: skips repeat review, push proceeds
 - If reviewer output doesn't match the sentinel contract: skips review, push proceeds
@@ -142,7 +142,7 @@ The hook's default is fail-open on infrastructure errors and block on actual rev
 touchstone review --dry-run
 ```
 
-Shows which provider auto-routing would pick for the next push, the route ranking, tool set, and sandbox — no upstream calls made.
+Shows which provider auto-routing would pick for the next push, the route ranking, and tool set — no upstream calls made. Touchstone does not send Conductor a sandbox flag; Conductor derives provider permission behavior from the requested tools.
 
 ## Emergency bypass
 
