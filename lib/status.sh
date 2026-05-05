@@ -375,6 +375,8 @@ status_print_project() {
   printf 'touchstone:     %s\n' "$display_recorded"
   printf 'latest:         %s %s\n' "$latest_label" "$latest_suffix"
   printf 'last update:    %s\n' "$age_long"
+  printf 'workflow scripts: project-local copies from .touchstone-manifest\n'
+  printf 'script runner:  touchstone run-script (prototype for pinned shims)\n'
 
   if [ "$behind" != "current" ]; then
     if [ "$behind" = "?" ]; then
@@ -453,6 +455,14 @@ status_print_project_json() {
   printf '    "remediation_in_place": '
   _status_json_string "$remediation_in_place"
   printf '\n'
+  printf '  },\n'
+  printf '  "workflow_scripts": {\n'
+  printf '    "implementation": "project-local-copy",\n'
+  printf '    "source": ".touchstone-manifest",\n'
+  printf '    "installed_cli_root": '
+  _status_json_string "${TOUCHSTONE_ROOT:-}"
+  printf ',\n'
+  printf '    "pinned_shim_runner": "touchstone run-script"\n'
   printf '  },\n'
   printf '  "capabilities": [\n'
 

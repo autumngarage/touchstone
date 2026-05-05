@@ -7,6 +7,7 @@
 #   touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)]
 #                                      Add touchstone to the current project
 #   touchstone run <task>                  Run profile task: lint, test, build, typecheck, validate
+#   touchstone run-script <name>           Prototype runner for pinned project-local script shims
 #   touchstone update                     Update current project to latest touchstone
 #   touchstone update --in-place          Update on the current branch
 #   touchstone update --dry-run           Show what would change without applying
@@ -284,6 +285,198 @@ cmd_sync() {
 
 cmd_run() {
   exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$@"
+}
+
+run_script_usage() {
+  cat >&2 <<'EOF'
+Usage: touchstone run-script <script> [--project-version <id>] [--project <path>] [--require-capability <name>] [--] [args...]
+
+Prototype dispatcher for project-local shims. The caller declares the
+Touchstone script contract it was reviewed against; the installed CLI must
+satisfy that contract before the shared implementation runs.
+EOF
+}
+
+run_script_path() {
+  case "$1" in
+    cleanup-branches)   printf '%s/scripts/cleanup-branches.sh\n' "$TOUCHSTONE_ROOT" ;;
+    cleanup-worktrees)  printf '%s/scripts/cleanup-worktrees.sh\n' "$TOUCHSTONE_ROOT" ;;
+    touchstone-run|run) printf '%s/scripts/touchstone-run.sh\n' "$TOUCHSTONE_ROOT" ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+run_script_version_satisfies() {
+  local required="${1#v}" current="${2#v}"
+  awk -v required="$required" -v current="$current" '
+    function parse_version(version, parts, count, i) {
+      count = split(version, parts, ".")
+      if (count < 2 || count > 3) {
+        return 0
+      }
+      for (i = 1; i <= count; i++) {
+        if (parts[i] !~ /^[0-9]+$/) {
+          return 0
+        }
+        parts[i] += 0
+      }
+      for (i = count + 1; i <= 3; i++) {
+        parts[i] = 0
+      }
+      return 1
+    }
+
+    BEGIN {
+      if (!parse_version(required, req) || !parse_version(current, cur)) {
+        exit 1
+      }
+      for (i = 1; i <= 3; i++) {
+        if (cur[i] > req[i]) {
+          exit 0
+        }
+        if (cur[i] < req[i]) {
+          exit 1
+        }
+      }
+      exit 0
+    }'
+}
+
+run_script_installed_satisfies_version() {
+  local required="$1" current_id current_version
+  [ -n "$required" ] || return 0
+  current_id="$(touchstone_current_id)"
+  current_version="$(touchstone_version_str)"
+
+  [ "$required" = "$current_id" ] && return 0
+  [ -n "$current_version" ] \
+    && { [ "$required" = "$current_version" ] || [ "$required" = "v$current_version" ]; } \
+    && return 0
+  [ -n "$current_version" ] \
+    && run_script_version_satisfies "$required" "$current_version" \
+    && return 0
+
+  if git -C "$TOUCHSTONE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+     && git -C "$TOUCHSTONE_ROOT" rev-parse --verify "$required^{commit}" >/dev/null 2>&1 \
+     && git -C "$TOUCHSTONE_ROOT" rev-parse --verify "$current_id^{commit}" >/dev/null 2>&1; then
+    git -C "$TOUCHSTONE_ROOT" merge-base --is-ancestor "$required" "$current_id" >/dev/null 2>&1
+    return $?
+  fi
+
+  return 1
+}
+
+cmd_run_script() {
+  local script_name="${1:-}"
+  local project_dir="" project_version="" required_capability="" script_path=""
+  local requested_project_dir
+  local current_id current_version
+  local -a script_args=()
+
+  case "$script_name" in
+    "")
+      run_script_usage
+      return 2
+      ;;
+    -h|--help)
+      run_script_usage
+      return 0
+      ;;
+  esac
+  shift
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --project-version)
+        if [ "$#" -lt 2 ]; then
+          echo "ERROR: --project-version requires a Touchstone id or version." >&2
+          return 2
+        fi
+        project_version="$2"
+        shift 2
+        ;;
+      --project)
+        if [ "$#" -lt 2 ]; then
+          echo "ERROR: --project requires a path." >&2
+          return 2
+        fi
+        project_dir="$2"
+        shift 2
+        ;;
+      --require-capability)
+        if [ "$#" -lt 2 ]; then
+          echo "ERROR: --require-capability requires a capability name." >&2
+          return 2
+        fi
+        required_capability="$2"
+        shift 2
+        ;;
+      --)
+        shift
+        script_args=("$@")
+        break
+        ;;
+      --*)
+        echo "ERROR: unknown run-script option: $1" >&2
+        run_script_usage
+        return 2
+        ;;
+      *)
+        script_args+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  if ! script_path="$(run_script_path "$script_name")"; then
+    echo "ERROR: unknown Touchstone script '$script_name'." >&2
+    echo "Known scripts: cleanup-branches cleanup-worktrees touchstone-run" >&2
+    return 2
+  fi
+  if [ ! -f "$script_path" ]; then
+    echo "ERROR: Touchstone script implementation missing: $script_path" >&2
+    return 1
+  fi
+
+  if [ -z "$project_dir" ]; then
+    project_dir="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  fi
+  requested_project_dir="$project_dir"
+  if ! project_dir="$(cd "$requested_project_dir" 2>/dev/null && pwd)"; then
+    echo "ERROR: project directory not found: $requested_project_dir" >&2
+    return 1
+  fi
+  if [ -z "$project_version" ] && [ -f "$project_dir/.touchstone-version" ]; then
+    project_version="$(tr -d '[:space:]' < "$project_dir/.touchstone-version" 2>/dev/null || true)"
+  fi
+  if [ -z "$project_version" ]; then
+    echo "ERROR: run-script requires a project version contract." >&2
+    echo "  script:  $script_name" >&2
+    echo "  project: $project_dir" >&2
+    echo "  Fix: pass --project-version, or run from a project with .touchstone-version." >&2
+    return 1
+  fi
+
+  if ! run_script_installed_satisfies_version "$project_version"; then
+    current_id="$(touchstone_current_id)"
+    current_version="$(touchstone_version_str)"
+    echo "ERROR: installed Touchstone does not satisfy the project script contract." >&2
+    echo "  script:           $script_name" >&2
+    echo "  project requires: $(_status_display_id "$project_version")" >&2
+    echo "  installed id:     $(_status_display_id "$current_id")" >&2
+    [ -n "$current_version" ] && echo "  installed version: $current_version" >&2
+    echo "  Fix: touchstone update, or install a Touchstone version that satisfies the project contract." >&2
+    return 1
+  fi
+
+  if [ -n "$required_capability" ]; then
+    status_require_project_capability "$project_dir" "$required_capability" >&2 || return $?
+  fi
+
+  cd "$project_dir"
+  exec bash "$script_path" "${script_args[@]+"${script_args[@]}"}"
 }
 
 cmd_detect() {
@@ -1362,6 +1555,7 @@ cmd_help() {
   printf "    ${BOLD}touchstone new${RESET} <dir>              Bootstrap a new project from scratch\n"
   printf "    ${BOLD}touchstone detect${RESET}                 Show detected project profile\n"
   printf "    ${BOLD}touchstone run${RESET} <task>             Run lint, typecheck, build, test, or validate\n"
+  printf "    ${BOLD}touchstone run-script${RESET} <name>      Prototype runner for pinned script shims\n"
   printf "    ${BOLD}touchstone update${RESET}                 Create a branch + commit for touchstone updates\n"
   printf "    ${BOLD}touchstone update${RESET} --in-place      Commit touchstone updates on the current branch\n"
   printf "    ${BOLD}touchstone update${RESET} --dry-run       Preview what would change\n"
@@ -1408,6 +1602,7 @@ case "$COMMAND" in
   new)          cmd_new "$@" ;;
   init)         cmd_init "$@" ;;
   run)          cmd_run "$@" ;;
+  run-script)   cmd_run_script "$@" ;;
   detect)       cmd_detect ;;
   update)       cmd_update "$@" ;;
   migrate-from-toolkit) cmd_migrate_from_toolkit "$@" ;;

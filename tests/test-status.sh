@@ -138,6 +138,8 @@ assert_contains "$PROJECT_OUT" "^project: *${CURRENT_PROJECT}"
 assert_contains "$PROJECT_OUT" "^touchstone: *${CURRENT_VERSION}"
 assert_contains "$PROJECT_OUT" "^latest: *${CURRENT_VERSION} (current)"
 assert_contains "$PROJECT_OUT" "^last update: *"
+assert_contains "$PROJECT_OUT" "^workflow scripts: project-local copies from .touchstone-manifest"
+assert_contains "$PROJECT_OUT" "^script runner: *touchstone run-script"
 
 # --------------------------------------------------------------------------
 # Test 3: bare `touchstone status` in a non-touchstone dir exits nonzero
@@ -239,6 +241,9 @@ CURRENT_JSON_OUT="$TEST_DIR/current-json.out"
 assert_contains "$CURRENT_JSON_OUT" '"installed_touchstone"'
 assert_contains "$CURRENT_JSON_OUT" '"project_touchstone"'
 assert_contains "$CURRENT_JSON_OUT" '"drift"'
+assert_contains "$CURRENT_JSON_OUT" '"workflow_scripts"'
+assert_contains "$CURRENT_JSON_OUT" '"implementation": "project-local-copy"'
+assert_contains "$CURRENT_JSON_OUT" '"pinned_shim_runner": "touchstone run-script"'
 assert_contains "$CURRENT_JSON_OUT" '"state": "up_to_date"'
 assert_contains "$CURRENT_JSON_OUT" '"worktree-lifecycle"'
 assert_contains "$CURRENT_JSON_OUT" '"installed_state": "supported"'
