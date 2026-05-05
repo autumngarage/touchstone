@@ -300,9 +300,9 @@ fi
 if ! git -C "$PROJECT" log -1 --name-only --pretty=format: | grep -qx 'AGENTS.md'; then
   echo "FAIL: update commit must include AGENTS.md when the block was refreshed" >&2
   ERRORS=$((ERRORS + 1))
+else
+  echo "    PASS: AGENTS.md was backfilled with shared principles"
 fi
-
-echo "    PASS: AGENTS.md was backfilled with shared principles"
 
 # --------------------------------------------------------------------------
 # Test 4: dirty worktrees fail before branching or patching.
