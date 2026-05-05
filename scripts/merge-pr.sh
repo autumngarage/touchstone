@@ -164,6 +164,12 @@ sync_default_branch_after_merge() {
   current_worktree="$(git rev-parse --show-toplevel)"
   default_worktree="$(worktree_path_for_branch "$DEFAULT_BRANCH" | head -n 1)"
   if [ -n "$default_worktree" ] && [ "$default_worktree" != "$current_worktree" ]; then
+    if [ ! -d "$default_worktree" ]; then
+      echo "WARNING: $DEFAULT_BRANCH is recorded as checked out in a missing worktree: $default_worktree" >&2
+      echo "WARNING: This is stale git worktree metadata, usually from deleting the directory directly." >&2
+      echo "WARNING: Run 'git worktree prune' from a remaining checkout, then rerun local sync if needed." >&2
+      return 0
+    fi
     echo "==> $DEFAULT_BRANCH is checked out in sibling worktree: $default_worktree"
     echo "==> Fast-forwarding that worktree after remote merge ..."
     if git -C "$default_worktree" pull --ff-only; then
@@ -361,9 +367,10 @@ if [ "$gh_merge_exit" -ne 0 ]; then
   pr_state="$(gh pr view "$PR_NUMBER" --json state --jq '.state' 2>/dev/null || echo "")"
   if [ "$pr_state" = "MERGED" ]; then
     echo "WARNING: gh pr merge exited $gh_merge_exit, but PR #$PR_NUMBER is MERGED on GitHub."
-    echo "         Likely cause: local feature branch is checked out in the current worktree,"
-    echo "         which blocks --delete-branch's local-delete step. Remote branch is gone."
-    echo "         Run 'bash scripts/cleanup-worktrees.sh --execute' from $DEFAULT_BRANCH to tidy up."
+    echo "         Likely cause: local feature branch is checked out in a worktree,"
+    echo "         or stale worktree metadata still records it there. Remote branch is gone."
+    echo "         Use 'git worktree remove <path>' or 'bash scripts/cleanup-worktrees.sh --execute' for normal cleanup."
+    echo "         If the directory was deleted directly, run 'git worktree prune' from a remaining checkout."
   else
     echo "ERROR: gh pr merge exited $gh_merge_exit and PR #$PR_NUMBER is not MERGED." >&2
     exit "$gh_merge_exit"

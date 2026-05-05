@@ -160,6 +160,15 @@ copies explicitly allowlisted ignored local files from `.worktreeinclude`.
 checks dirty status, verifies merged-or-equivalent branches, previews
 `git worktree prune`, and removes only clean candidates when asked to execute.
 
+Deleting a worktree directory is not the same as `git worktree remove <path>`.
+`rm -rf ../app-slice` removes files but can leave stale records under Git's
+shared worktree metadata, so Git may still think a branch is checked out there
+and refuse later checkouts, branch deletes, or merges. For normal cleanup, use
+`git worktree remove <path>` or `bash scripts/cleanup-worktrees.sh --execute`.
+If someone already deleted the directory directly, run `git worktree prune`
+from a remaining checkout to remove metadata for missing paths, then rerun the
+failed checkout, merge, or cleanup command.
+
 Rules:
 
 - never `git worktree remove --force` another agent's tree

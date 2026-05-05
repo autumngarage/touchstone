@@ -222,29 +222,64 @@ fi
 
 echo "==> Test: sibling worktree owning main is fast-forwarded without false merge failure"
 reset_case_files
-TEST_CURRENT_WORKTREE="/tmp/touchstone-feature-worktree"
-GIT_WORKTREE_LIST="$(cat <<'EOF'
-worktree /tmp/touchstone-main-worktree
+MAIN_WORKTREE="$TEST_DIR/main-worktree"
+FEATURE_WORKTREE="$TEST_DIR/feature-worktree"
+mkdir -p "$MAIN_WORKTREE" "$FEATURE_WORKTREE"
+TEST_CURRENT_WORKTREE="$FEATURE_WORKTREE"
+GIT_WORKTREE_LIST="$(cat <<EOF
+worktree $MAIN_WORKTREE
 HEAD main-oid
 branch refs/heads/main
 
-worktree /tmp/touchstone-feature-worktree
+worktree $FEATURE_WORKTREE
 HEAD feature-oid
 branch refs/heads/feature/test
 
 EOF
 )"
 run_merge_pr "$TEST_DIR/output-sibling-worktree.txt" 123
-if grep -q '==> main is checked out in sibling worktree: /tmp/touchstone-main-worktree' "$TEST_DIR/output-sibling-worktree.txt" \
+if grep -q "==> main is checked out in sibling worktree: $MAIN_WORKTREE" "$TEST_DIR/output-sibling-worktree.txt" \
   && grep -q '==> Fast-forwarding that worktree after remote merge' "$TEST_DIR/output-sibling-worktree.txt" \
   && grep -q '==> Done\.' "$TEST_DIR/output-sibling-worktree.txt" \
-  && grep -q '^/tmp/touchstone-main-worktree$' "$TEST_DIR/git-sibling-pull" \
+  && grep -q "^$MAIN_WORKTREE$" "$TEST_DIR/git-sibling-pull" \
   && [ ! -f "$TEST_DIR/git-checkout-main" ] \
   && ! grep -q 'ERROR:' "$TEST_DIR/output-sibling-worktree.txt"; then
   echo "==> PASS: sibling default worktree sync avoids false merge failure"
 else
   echo "FAIL: sibling worktree sync did not avoid the checkout-main failure path" >&2
   cat "$TEST_DIR/output-sibling-worktree.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: stale default worktree metadata is diagnosed with prune recovery"
+reset_case_files
+STALE_MAIN_WORKTREE="$TEST_DIR/missing-main-worktree"
+FEATURE_WORKTREE="$TEST_DIR/feature-worktree"
+mkdir -p "$FEATURE_WORKTREE"
+TEST_CURRENT_WORKTREE="$FEATURE_WORKTREE"
+GIT_WORKTREE_LIST="$(cat <<EOF
+worktree $STALE_MAIN_WORKTREE
+HEAD main-oid
+branch refs/heads/main
+
+worktree $FEATURE_WORKTREE
+HEAD feature-oid
+branch refs/heads/feature/test
+
+EOF
+)"
+run_merge_pr "$TEST_DIR/output-stale-worktree.txt" 123
+if grep -q "WARNING: main is recorded as checked out in a missing worktree: $STALE_MAIN_WORKTREE" "$TEST_DIR/output-stale-worktree.txt" \
+  && grep -q "stale git worktree metadata" "$TEST_DIR/output-stale-worktree.txt" \
+  && grep -q "git worktree prune" "$TEST_DIR/output-stale-worktree.txt" \
+  && grep -q '==> Done\.' "$TEST_DIR/output-stale-worktree.txt" \
+  && [ ! -f "$TEST_DIR/git-sibling-pull" ] \
+  && [ ! -f "$TEST_DIR/git-checkout-main" ] \
+  && ! grep -q 'ERROR:' "$TEST_DIR/output-stale-worktree.txt"; then
+  echo "==> PASS: stale default worktree metadata points to git worktree prune"
+else
+  echo "FAIL: stale default worktree metadata was not diagnosed clearly" >&2
+  cat "$TEST_DIR/output-stale-worktree.txt" >&2
   exit 1
 fi
 
@@ -267,6 +302,8 @@ GH_PR_MERGE_FAIL_LOCAL=true \
 rc=$?
 if [ "$rc" = "0" ] \
   && grep -q 'WARNING: gh pr merge exited 1, but PR #123 is MERGED on GitHub.' "$TEST_DIR/output-gh-local-fail.txt" \
+  && grep -q 'git worktree remove <path>' "$TEST_DIR/output-gh-local-fail.txt" \
+  && grep -q 'git worktree prune' "$TEST_DIR/output-gh-local-fail.txt" \
   && grep -q '==> Done\.' "$TEST_DIR/output-gh-local-fail.txt" \
   && ! grep -q '^ERROR:' "$TEST_DIR/output-gh-local-fail.txt"; then
   echo "==> PASS: local-delete failure on MERGED PR degrades to warning"
