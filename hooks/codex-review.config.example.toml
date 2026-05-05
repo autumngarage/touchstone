@@ -118,6 +118,25 @@ unsafe_paths = [
 # large_tags = "code-review,long-context"
 
 # --------------------------------------------------------------------------
+# Prompt context pruning (optional)
+# --------------------------------------------------------------------------
+# By default, small/simple diffs use a bounded prompt context instead of asking
+# the reviewer to load full AGENTS.md and CLAUDE.md. Full context is still used
+# for large diffs, broad diffs, unsafe_paths, built-in architectural files
+# (AGENTS.md, CLAUDE.md, .codex-review.toml, .github/workflows/, etc.), and
+# any project patterns listed below.
+#
+# [review.context]
+# mode = "auto"                  # auto | full | bounded
+# small_max_diff_lines = 400
+# small_max_files = 4
+# full_context_paths = [
+#   # "src/auth/",
+#   # "migrations/",
+#   # "docs/adr/",
+# ]
+
+# --------------------------------------------------------------------------
 # Peer review (second opinion)
 # --------------------------------------------------------------------------
 # When enabled, after the primary review completes Touchstone asks
