@@ -1,0 +1,43 @@
+# Cortex scan patterns — taught by `cortex init`.
+# Each `[[pattern]]` entry teaches the scanner one new file shape.
+# Edit by hand or let init append more during interactive runs.
+
+[[pattern]]
+glob = "GEMINI.md"
+category = "map_ref"
+description = "(taught by user during cortex init on 2026-05-05)"
+
+[[pattern]]
+glob = "audits/2026-04-24-guidance-effectiveness-plan.md"
+category = "map_ref"
+description = "(taught by user during cortex init on 2026-05-05)"
+
+[[pattern]]
+glob = "feedback/2026-04-16-cortex.md"
+category = "map_ref"
+description = "(taught by user during cortex init on 2026-05-05)"
+
+[[pattern]]
+glob = "feedback/2026-04-25-vesper.md"
+category = "map_ref"
+description = "(taught by user during cortex init on 2026-05-05)"
+
+[[pattern]]
+glob = "feedback/2026-04-27-init-empty-args-bash3.md"
+category = "map_ref"
+description = "(taught by user during cortex init on 2026-05-05)"
+
+[[pattern]]
+glob = "templates/AGENTS.md"
+category = "map_ref"
+description = "(taught by user during cortex init on 2026-05-05)"
+
+[[pattern]]
+glob = "templates/CLAUDE.md"
+category = "map_ref"
+description = "(taught by user during cortex init on 2026-05-05)"
+
+[[pattern]]
+glob = "templates/GEMINI.md"
+category = "map_ref"
+description = "(taught by user during cortex init on 2026-05-05)"

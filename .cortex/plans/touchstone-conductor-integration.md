@@ -1,8 +1,8 @@
 ---
-Status: active
+Status: shipped
 Written: 2026-04-21
 Author: claude-code (ratified by human 2026-04-21 — "let's build it all. let it rip brother")
-Goal-hash: t5c0nd02
+Goal-hash: f65e3352
 Updated-by:
   - 2026-04-21T00:00 claude-code (created as additive v0.1 plan)
   - 2026-04-21T00:30 claude-code (rewritten as ideal-state plan per human direction — "I don't need a short-term version")
@@ -11,6 +11,7 @@ Updated-by:
   - 2026-04-21T01:30 claude-code (added effort axis C-wide per human "claude to use max effort", confirmed global not per-provider)
   - 2026-04-21T01:45 claude-code (added C9 configurability + C10 auto-mode reliability per human "configurable + make auto-mode actually work")
   - 2026-04-21T02:00 claude-code (Status proposed → active; human gave full green-light to implement across the roadmap)
+  - 2026-05-05T09:00 codex (marked shipped after Touchstone 2.0+ Conductor reviewer landed; retained as historical context for Cortex metadata cleanup)
 Cites: doctrine/0004-conductor-as-fourth-peer, doctrine/0003-llm-providers-compose-by-contract, plans/conductor-bootstrap, journal/2026-04-21-conductor-v0.1-shipped, journal/2026-04-21-touchstone-conductor-build-ratified
 ---
 
@@ -33,7 +34,13 @@ Every one of these leaks a provider's CLI into Touchstone's bash. When the next 
 
 This is precisely the duplication Doctrine 0004 committed to solving: **Conductor as the single owner of provider adapters, with a capability-contract interface**. v0.1 shipped that ownership for single-turn calls. The ideal end-state extends it to tool-using agent sessions and retires every downstream caller's per-provider code — starting with Touchstone, then Sentinel.
 
-Grounds-in: Doctrine 0003 (provider-contract composition), Doctrine 0004 (Conductor as fourth peer).
+Grounds-in: Doctrine 0003 (provider-contract composition), Doctrine 0004 (Conductor as fourth peer), and state.md § Shipped recently.
+
+## Approach
+
+Land the Conductor migration in staged releases: first expose Conductor execution and routing capabilities, then replace Touchstone's provider-specific review adapters with a single Conductor adapter, and finally preserve follow-up provider/tooling work in Conductor rather than Touchstone.
+
+Touchstone owns review orchestration and the final sentinel contract. Conductor owns provider authentication, routing, model invocation, route logging, and provider-specific command translation.
 
 ## End state — what Touchstone looks like
 
@@ -433,7 +440,7 @@ Ship C7 (streaming) and tighten C6 (real token counts for shell-outs via output 
 
 Sentinel migrates in parallel via its own plan (replaces `src/sentinel/providers/*.py` with `conductor exec` subprocess calls). Once both Touchstone and Sentinel are on Conductor, the garage has exactly one provider-owning codebase. That's the point.
 
-## Success criteria
+## Success Criteria
 
 1. **Touchstone has zero strings `--sandbox`, `--allowedTools`, `--yolo` in source.** Grep-verifiable.
 2. **Adding a new provider (e.g., mistral) requires changes to Conductor only.** Touchstone binary/config unchanged. Demonstrable by shipping a mistral adapter and having it work in Touchstone on first `conductor doctor` authenticate.
@@ -443,6 +450,13 @@ Sentinel migrates in parallel via its own plan (replaces `src/sentinel/providers
 6. **Cost-budget blocks correctly.** A mock `conductor exec` reporting `cost_usd=1.00` with `max_cost_usd=0.50` aborts the push.
 7. **Legacy config auto-migrates.** A `.codex-review.toml` with the pre-2.0 `[review].reviewers = ["codex","claude"]` produces a warning + clean translation, not a parse error.
 8. **Custom reviewer survives migration.** Users with `[review.local].command = "..."` get migrated via a `conductor providers add` one-liner, fully documented.
+
+## Work items
+
+- [x] Replace Touchstone's provider-specific review adapters with a single Conductor reviewer path.
+- [x] Document the Conductor-first review contract in Touchstone hook guidance.
+- [x] Preserve legacy-config migration behavior for existing users.
+- [x] Keep remaining provider/tooling improvements owned by Conductor rather than Touchstone.
 
 ## Risks & open questions
 
