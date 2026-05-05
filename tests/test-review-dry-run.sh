@@ -60,8 +60,35 @@ new_repo() {
   git -C "$dir" add . && git -C "$dir" commit -qm init
 }
 
+commit_new_file_with_diff_lines() {
+  local repo="$1"
+  local target_lines="$2"
+  local path="$3"
+  local content_lines=$((target_lines - 6))
+  local i=1
+
+  if [ "$content_lines" -lt 1 ]; then
+    echo "test setup error: target diff line count must be at least 7" >&2
+    exit 1
+  fi
+
+  : > "$repo/$path"
+  while [ "$i" -le "$content_lines" ]; do
+    printf 'line %03d\n' "$i" >> "$repo/$path"
+    i=$((i + 1))
+  done
+  git -C "$repo" add "$path" && git -C "$repo" commit -qm "change $target_lines lines"
+
+  local actual_lines
+  actual_lines="$(git -C "$repo" diff HEAD~1..HEAD | wc -l | tr -d ' ')"
+  if [ "$actual_lines" != "$target_lines" ]; then
+    echo "test setup error: expected $target_lines diff lines, got $actual_lines" >&2
+    exit 1
+  fi
+}
+
 # ----------------------------------------------------------------------------
-echo "==> Test: --dry-run with auto-routed config calls conductor route"
+echo "==> Test: small default route beats global conductor prefer/effort"
 REPO_AUTO="$TEST_DIR/repo-auto"
 new_repo "$REPO_AUTO"
 cat > "$REPO_AUTO/.codex-review.toml" <<'EOF'
@@ -80,14 +107,83 @@ echo c >> "$REPO_AUTO/README.md" && git -C "$REPO_AUTO" add . && git -C "$REPO_A
 out="$(run_review "$REPO_AUTO" --dry-run --base HEAD~1 2>&1)"
 
 if grep -q '^route' "$ARGS_FILE" \
-  && grep -q '\-\-prefer best' "$ARGS_FILE" \
-  && grep -q '\-\-effort max' "$ARGS_FILE" \
+  && grep -q '\-\-prefer cheapest' "$ARGS_FILE" \
+  && grep -q '\-\-effort minimal' "$ARGS_FILE" \
   && grep -q '\-\-tags code-review' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'routing:     small (.* <= 400 diff lines)' \
   && echo "$out" | grep -q 'would pick: claude'; then
-  echo "==> PASS: auto-routed --dry-run invoked conductor route with config flags"
+  echo "==> PASS: small default route used cheapest/minimal despite global best/max"
 else
-  echo "FAIL: dry-run did not invoke conductor route as expected" >&2
+  echo "FAIL: small default route did not invoke conductor route as expected" >&2
   echo "args file: $(cat "$ARGS_FILE")" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ----------------------------------------------------------------------------
+echo "==> Test: exact threshold stays in the small routing bucket"
+REPO_THRESHOLD="$TEST_DIR/repo-threshold"
+new_repo "$REPO_THRESHOLD"
+commit_new_file_with_diff_lines "$REPO_THRESHOLD" 400 threshold.txt
+
+: > "$ARGS_FILE"
+out="$(run_review "$REPO_THRESHOLD" --dry-run --base HEAD~1 2>&1)"
+
+if grep -q '\-\-prefer cheapest' "$ARGS_FILE" \
+  && grep -q '\-\-effort minimal' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'routing:     small (400 <= 400 diff lines)'; then
+  echo "==> PASS: 400-line diff used small cheapest/minimal bucket"
+else
+  echo "FAIL: exact threshold diff should use small routing bucket" >&2
+  echo "args: $(cat "$ARGS_FILE")" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ----------------------------------------------------------------------------
+echo "==> Test: large default route uses best/max"
+REPO_LARGE="$TEST_DIR/repo-large"
+new_repo "$REPO_LARGE"
+commit_new_file_with_diff_lines "$REPO_LARGE" 401 large.txt
+
+: > "$ARGS_FILE"
+out="$(run_review "$REPO_LARGE" --dry-run --base HEAD~1 2>&1)"
+
+if grep -q '\-\-prefer best' "$ARGS_FILE" \
+  && grep -q '\-\-effort max' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'routing:     large (401 > 400 diff lines)'; then
+  echo "==> PASS: 401-line diff used large best/max bucket"
+else
+  echo "FAIL: large diff should use large routing bucket" >&2
+  echo "args: $(cat "$ARGS_FILE")" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ----------------------------------------------------------------------------
+echo "==> Test: explicit routing opt-out preserves global conductor config"
+REPO_DISABLED="$TEST_DIR/repo-routing-disabled"
+new_repo "$REPO_DISABLED"
+cat > "$REPO_DISABLED/.codex-review.toml" <<'EOF'
+[review.conductor]
+prefer = "balanced"
+effort = "low"
+[review.routing]
+enabled = false
+EOF
+git -C "$REPO_DISABLED" add . && git -C "$REPO_DISABLED" commit -qm cfg
+echo c >> "$REPO_DISABLED/README.md" && git -C "$REPO_DISABLED" add . && git -C "$REPO_DISABLED" commit -qm change
+
+: > "$ARGS_FILE"
+out="$(run_review "$REPO_DISABLED" --dry-run --base HEAD~1 2>&1)"
+
+if grep -q '\-\-prefer balanced' "$ARGS_FILE" \
+  && grep -q '\-\-effort low' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'routing:     default (review.routing.enabled=false)'; then
+  echo "==> PASS: review.routing.enabled=false kept global conductor config"
+else
+  echo "FAIL: explicit routing opt-out should preserve global conductor config" >&2
+  echo "args: $(cat "$ARGS_FILE")" >&2
   echo "out: $out" >&2
   ERRORS=$((ERRORS + 1))
 fi
@@ -109,7 +205,9 @@ git -C "$REPO_PIN" add . && git -C "$REPO_PIN" commit -qm cfg
 : > "$ARGS_FILE"
 out="$(run_review "$REPO_PIN" --dry-run --base HEAD 2>&1)"
 
-if echo "$out" | grep -q 'pinned via --with=claude' && ! grep -q '^route' "$ARGS_FILE"; then
+if echo "$out" | grep -q 'pinned via --with=claude' \
+  && echo "$out" | grep -q 'routing  = small (0 <= 400 diff lines)' \
+  && ! grep -q '^route' "$ARGS_FILE"; then
   echo "==> PASS: pinned config explained, no route preview attempted"
 else
   echo "FAIL: pinned config should have explained, not called conductor route" >&2
@@ -119,21 +217,23 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-echo "==> Test: env override beats config (TOUCHSTONE_CONDUCTOR_PREFER=cheapest)"
+echo "==> Test: env override beats size bucket defaults"
 : > "$ARGS_FILE"
 out="$(
   cd "$REPO_AUTO"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     ARGS_FILE="$ARGS_FILE" \
-    TOUCHSTONE_CONDUCTOR_PREFER=cheapest \
+    TOUCHSTONE_CONDUCTOR_PREFER=fastest \
+    TOUCHSTONE_CONDUCTOR_EFFORT=high \
     TOUCHSTONE_NO_AUTO_UPDATE=1 \
     bash "$TOUCHSTONE_BIN" review --dry-run --base HEAD~1 2>&1
 )"
 
-if grep -q '\-\-prefer cheapest' "$ARGS_FILE"; then
-  echo "==> PASS: env override TOUCHSTONE_CONDUCTOR_PREFER took precedence"
+if grep -q '\-\-prefer fastest' "$ARGS_FILE" \
+  && grep -q '\-\-effort high' "$ARGS_FILE"; then
+  echo "==> PASS: TOUCHSTONE_CONDUCTOR_* env overrides took precedence"
 else
-  echo "FAIL: env override did not reach conductor route flags" >&2
+  echo "FAIL: env overrides did not reach conductor route flags" >&2
   echo "args: $(cat "$ARGS_FILE")" >&2
   ERRORS=$((ERRORS + 1))
 fi

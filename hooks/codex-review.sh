@@ -52,8 +52,8 @@
 # Env overrides:
 #   TOUCHSTONE_REVIEWER               — DEPRECATED in 2.0.0; auto-translates to TOUCHSTONE_CONDUCTOR_WITH=<provider>
 #   TOUCHSTONE_CONDUCTOR_WITH         — pin a specific provider for auto-routing
-#   TOUCHSTONE_CONDUCTOR_PREFER       — best|cheapest|fastest|balanced (default: best)
-#   TOUCHSTONE_CONDUCTOR_EFFORT       — minimal|low|medium|high|max (default: max)
+#   TOUCHSTONE_CONDUCTOR_PREFER       — best|cheapest|fastest|balanced (default: size-aware)
+#   TOUCHSTONE_CONDUCTOR_EFFORT       — minimal|low|medium|high|max (default: size-aware)
 #   TOUCHSTONE_CONDUCTOR_TAGS         — comma-separated tag hints (default: code-review)
 #   TOUCHSTONE_CONDUCTOR_EXCLUDE      — comma-separated providers to skip
 #   CODEX_REVIEW_SUPPRESS_LEGACY_WARNINGS — silence one-time migration hints
@@ -375,18 +375,18 @@ CONDUCTOR_PREFER=""
 CONDUCTOR_EFFORT=""
 CONDUCTOR_TAGS=""
 CONDUCTOR_EXCLUDE=""
-ROUTING_ENABLED=false
+ROUTING_ENABLED=true
 ROUTING_SMALL_MAX_DIFF_LINES=400
 ROUTING_SMALL_REVIEWERS=()   # legacy 1.x shape; retained for back-compat parsing
 ROUTING_LARGE_REVIEWERS=()   # legacy 1.x shape; retained for back-compat parsing
 # 2.0 routing knobs — override CONDUCTOR_* for small vs large diffs.
 ROUTING_SMALL_WITH=""
-ROUTING_SMALL_PREFER=""
-ROUTING_SMALL_EFFORT=""
+ROUTING_SMALL_PREFER="cheapest"
+ROUTING_SMALL_EFFORT="minimal"
 ROUTING_SMALL_TAGS=""
 ROUTING_LARGE_WITH=""
-ROUTING_LARGE_PREFER=""
-ROUTING_LARGE_EFFORT=""
+ROUTING_LARGE_PREFER="best"
+ROUTING_LARGE_EFFORT="max"
 ROUTING_LARGE_TAGS=""
 ROUTING_DECISION="default"
 PROMPT_CONTEXT_MODE="${CODEX_REVIEW_CONTEXT_MODE:-auto}"

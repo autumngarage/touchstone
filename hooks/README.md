@@ -78,19 +78,19 @@ Conductor logs its route decision (provider, cost estimate, token count, wall-cl
 | `unsafe_paths` | [] | Paths where auto-fix is never allowed |
 | `[review].enabled` | true | Set false to skip AI review without removing the hook |
 | `[review].reviewer` | `"conductor"` | The only supported value in 2.0 |
-| `[review.conductor].prefer` | `"best"` | `best` \| `cheapest` \| `fastest` \| `balanced` |
-| `[review.conductor].effort` | `"max"` | `minimal` \| `low` \| `medium` \| `high` \| `max` \| integer thinking-token budget |
+| `[review.conductor].prefer` | size-aware | `best` \| `cheapest` \| `fastest` \| `balanced`; used as a global fallback, but default size routing applies per bucket |
+| `[review.conductor].effort` | size-aware | `minimal` \| `low` \| `medium` \| `high` \| `max` \| integer thinking-token budget; used as a global fallback, but default size routing applies per bucket |
 | `[review.conductor].tags` | `"code-review"` | Capability tags passed to the router |
 | `[review.conductor].with` | unset | Pin a specific provider (bypasses auto-routing) |
 | `[review.conductor].exclude` | unset | Exclude providers from auto-routing |
-| `[review.routing].enabled` | false | Route by diff size |
+| `[review.routing].enabled` | true | Route by diff size |
 | `[review.routing].small_max_diff_lines` | 400 | Diffs ≤ this use the `small_*` knobs; diffs above use the `large_*` knobs |
-| `[review.routing].small_prefer` | unset | e.g. `"cheapest"` for small diffs |
-| `[review.routing].small_effort` | unset | e.g. `"minimal"` for small diffs |
+| `[review.routing].small_prefer` | `"cheapest"` | Routing preference for small diffs |
+| `[review.routing].small_effort` | `"minimal"` | Thinking effort for small diffs |
 | `[review.routing].small_with` | unset | Pin provider for small diffs |
 | `[review.routing].small_tags` | unset | e.g. `"code-review"` for small diffs |
-| `[review.routing].large_prefer` | unset | e.g. `"best"` for larger diffs |
-| `[review.routing].large_effort` | unset | e.g. `"max"` for larger diffs |
+| `[review.routing].large_prefer` | `"best"` | Routing preference for larger diffs |
+| `[review.routing].large_effort` | `"max"` | Thinking effort for larger diffs |
 | `[review.routing].large_with` | unset | Pin provider for larger diffs |
 | `[review.routing].large_tags` | unset | e.g. `"code-review,long-context"` |
 | `[review.context].mode` | `"auto"` | `auto` prunes small/simple diffs; `full` always loads full project context |
@@ -98,7 +98,7 @@ Conductor logs its route decision (provider, cost estimate, token count, wall-cl
 | `[review.context].small_max_files` | 4 | Max changed files for bounded prompt context |
 | `[review.context].full_context_paths` | [] | Extra path patterns that always require full `AGENTS.md`/`CLAUDE.md` context |
 
-Routing uses a single cutoff (`small_max_diff_lines`): diffs at or below it go through the `small_*` bucket, everything else through the `large_*` bucket. There is no separate `large_max_diff_lines`.
+Routing uses a single cutoff (`small_max_diff_lines`): diffs at or below it go through the `small_*` bucket, everything else through the `large_*` bucket. There is no separate `large_max_diff_lines`. The default route is `cheapest`/`minimal` for diffs up to 400 lines and `best`/`max` above that. Explicit `TOUCHSTONE_CONDUCTOR_*` environment variables still win over bucket defaults.
 
 Prompt-context pruning is separate from provider routing. In `auto` mode, the hook uses bounded context only when the diff stays within both small limits and avoids `unsafe_paths`, built-in architectural files, and configured `full_context_paths`. The prompt states when full context was intentionally omitted and why.
 
