@@ -8,9 +8,10 @@
 # installed, this hook fires from `merge-pr.sh` immediately after the
 # remote merge succeeds and the local default branch is synced. It shells
 # out to `cortex journal draft pr-merged --no-edit`, captures the new
-# entry's path on stdout, stages it, commits with `--no-verify` (so the
-# auto-commit doesn't recurse through any other default-branch hooks),
-# and pushes a single follow-up commit to the default branch.
+# entry's path on stdout, refreshes `.cortex/state.md`, stages both files
+# when present, commits with `--no-verify` (so the auto-commit doesn't
+# recurse through any other default-branch hooks), and pushes a single
+# follow-up commit to the default branch.
 #
 # Activation contract (ALL of these must hold; otherwise silent exit 0):
 #   1. Push target is the default branch (main or master). Resolved by
@@ -29,6 +30,9 @@
 #   - `cortex journal draft` exits non-zero: stderr surfaced, exit 1.
 #   - Empty stdout (no path returned): stderr message, exit 1.
 #   - Returned path doesn't exist after the call: stderr message, exit 1.
+#   - `cortex refresh-state` exits non-zero: stderr surfaced, explicit
+#     recovery command logged, and the hook continues when no partial
+#     state.md change was left behind.
 #   - `git commit` or `git push` failure: stderr message, exit 1.
 #
 # Inputs (env, all optional):
@@ -181,6 +185,29 @@ if [ ! -f "$candidate" ]; then
   exit 1
 fi
 
+# Refresh derived state so the journal entry and state snapshot land in
+# the same hook commit. This is best-effort because Cortex is an optional
+# integration; if an older CLI lacks the command, the merge follow-up
+# still records the journal entry and tells the operator how to repair it.
+refresh_status=0
+(cd "$PROJECT_DIR" && cortex refresh-state --path "$PROJECT_DIR") \
+  || refresh_status=$?
+if [ "$refresh_status" -ne 0 ]; then
+  log "cortex-pr-merged-hook: cortex refresh-state --path '$PROJECT_DIR' exited $refresh_status; .cortex/state.md was not refreshed for this hook commit."
+  log "  Run: cd '$PROJECT_DIR' && cortex refresh-state --path '$PROJECT_DIR' && git add .cortex/state.md && git commit -m 'docs(cortex): refresh state'"
+  if [ -n "$(git -C "$PROJECT_DIR" status --porcelain -- .cortex/state.md)" ]; then
+    log "cortex-pr-merged-hook: refresh-state left .cortex/state.md changed despite failing; refusing to auto-commit partial Cortex state."
+    exit 1
+  fi
+elif [ ! -f "$PROJECT_DIR/.cortex/state.md" ]; then
+  log "cortex-pr-merged-hook: cortex refresh-state succeeded but .cortex/state.md is absent; skipping state staging."
+  log "  Run: cd '$PROJECT_DIR' && cortex doctor"
+  if [ -n "$(git -C "$PROJECT_DIR" status --porcelain -- .cortex/state.md)" ]; then
+    log "cortex-pr-merged-hook: refresh-state removed tracked .cortex/state.md; refusing to auto-commit without a Cortex state snapshot."
+    exit 1
+  fi
+fi
+
 # 3. Stage + commit + push as a single follow-up commit on the default branch.
 rel_path="${candidate#"$PROJECT_DIR"/}"
 pr_suffix=""
@@ -192,6 +219,12 @@ commit_message="docs(journal): auto-draft pr-merged entry${pr_suffix}"
 if ! git -C "$PROJECT_DIR" add -- "$rel_path"; then
   log "cortex-pr-merged-hook: git add '$rel_path' failed."
   exit 1
+fi
+if [ -f "$PROJECT_DIR/.cortex/state.md" ]; then
+  if ! git -C "$PROJECT_DIR" add -- .cortex/state.md; then
+    log "cortex-pr-merged-hook: git add '.cortex/state.md' failed."
+    exit 1
+  fi
 fi
 
 # --no-verify is intentional. Other default-branch hooks (codex-review,
