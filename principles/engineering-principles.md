@@ -40,5 +40,5 @@ Any destructive or one-way operation must have a recovery path before it runs. D
 ## Preserve compatibility at boundaries
 Changes to public APIs, config files, schemas, CLIs, hooks, templates, and generated artifacts must include a compatibility or migration plan. Accept old and new formats during rollout when downstream consumers may lag. Boundary breaks multiply: one local assumption becomes N downstream failures.
 
-## Audit one weak-point class at a time
-When you find a structural bug, audit the whole class — not just the one you noticed. See [audit-weak-points.md](audit-weak-points.md) for the methodology. This discipline prevents re-auditing the same code twice and catches bugs before they compound.
+## Audit weak-point classes
+When you find a structural bug, audit the whole class — not just the one you noticed. Use the `touchstone-audit-weak-points` skill. This discipline prevents re-auditing the same code twice and catches bugs before they compound.

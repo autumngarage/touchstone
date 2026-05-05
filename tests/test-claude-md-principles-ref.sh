@@ -62,11 +62,9 @@ fi
 cat > "$TEST_DIR/case-detect/CLAUDE.md" <<'EOF'
 # Project
 
-@principles/engineering-principles.md
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
 @principles/git-workflow.md
-@principles/file-upstream-bugs.md
 EOF
 if ! claude_md_has_principles_ref "$TEST_DIR/case-detect/CLAUDE.md"; then
   fail "should detect full required @principles/ import set"
@@ -98,7 +96,6 @@ EOF
 claude_md_inject_principles_block "$TEST_DIR/case-inject/CLAUDE.md"
 rc=$?
 assert_eq "inject rc" 0 "$rc"
-assert_contains "$TEST_DIR/case-inject/CLAUDE.md" "@principles/engineering-principles.md"
 assert_contains "$TEST_DIR/case-inject/CLAUDE.md" "@principles/pre-implementation-checklist.md"
 assert_contains "$TEST_DIR/case-inject/CLAUDE.md" "@principles/documentation-ownership.md"
 assert_contains "$TEST_DIR/case-inject/CLAUDE.md" "@principles/git-workflow.md"
@@ -135,7 +132,6 @@ EOF
 claude_md_inject_principles_block "$TEST_DIR/case-partial/CLAUDE.md"
 rc=$?
 assert_eq "partial-inject rc" 0 "$rc"
-assert_contains "$TEST_DIR/case-partial/CLAUDE.md" "@principles/engineering-principles.md"
 assert_contains "$TEST_DIR/case-partial/CLAUDE.md" "@principles/pre-implementation-checklist.md"
 assert_contains "$TEST_DIR/case-partial/CLAUDE.md" "@principles/documentation-ownership.md"
 assert_contains "$TEST_DIR/case-partial/CLAUDE.md" "@principles/git-workflow.md"
@@ -175,11 +171,9 @@ setup_existing_repo() {
     cat > "$dir/CLAUDE.md" <<'EOF'
 # My Project
 
-@principles/engineering-principles.md
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
 @principles/git-workflow.md
-@principles/file-upstream-bugs.md
 EOF
   elif [ "$with_imports" = partial ]; then
     cat > "$dir/CLAUDE.md" <<'EOF'
@@ -201,7 +195,6 @@ echo "==> 6. ensure_claude_principles_ref yes plants imports"
 E5="$TEST_DIR/e2e-yes"
 setup_existing_repo "$E5" no
 ensure_claude_principles_ref "$E5" yes >/dev/null
-assert_contains "$E5/CLAUDE.md" "@principles/engineering-principles.md"
 assert_contains "$E5/CLAUDE.md" "@principles/pre-implementation-checklist.md"
 assert_contains "$E5/.touchstone-config" "claude_principles_ref=connected"
 
@@ -210,7 +203,6 @@ echo "==> 7. ensure_claude_principles_ref completes partial imports"
 E6="$TEST_DIR/e2e-partial"
 setup_existing_repo "$E6" partial
 ensure_claude_principles_ref "$E6" yes >/dev/null
-assert_contains "$E6/CLAUDE.md" "@principles/engineering-principles.md"
 assert_contains "$E6/CLAUDE.md" "@principles/pre-implementation-checklist.md"
 assert_contains "$E6/CLAUDE.md" "@principles/documentation-ownership.md"
 assert_contains "$E6/CLAUDE.md" "@principles/git-workflow.md"
@@ -245,7 +237,6 @@ E10="$TEST_DIR/e2e-prior-connected-partial"
 setup_existing_repo "$E10" partial
 printf 'claude_principles_ref=connected\n' > "$E10/.touchstone-config"
 ensure_claude_principles_ref "$E10" prompt >/dev/null
-assert_contains "$E10/CLAUDE.md" "@principles/engineering-principles.md"
 assert_contains "$E10/CLAUDE.md" "@principles/pre-implementation-checklist.md"
 assert_contains "$E10/CLAUDE.md" "@principles/documentation-ownership.md"
 assert_contains "$E10/CLAUDE.md" "@principles/git-workflow.md"

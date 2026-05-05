@@ -32,11 +32,8 @@ Non-negotiable. Every code change is reviewed against them. Full rationale, work
 - **Isolate file-writing subagents** — parallel workers use dedicated worktrees, slice manifests, and disjoint file ownership by default.
 - **File issues for bugs** — open a GitHub issue when you find a bug, in this project or in an autumngarage tool. Don't silently work around it.
 
-@principles/engineering-principles.md
 @principles/pre-implementation-checklist.md
 @principles/documentation-ownership.md
-@principles/agent-swarms.md
-@principles/file-upstream-bugs.md
 
 ## Git Workflow
 
