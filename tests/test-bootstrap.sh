@@ -13,7 +13,32 @@ exec </dev/null
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-bootstrap.XXXXXX)"
-trap 'rm -rf "$TEST_DIR"' EXIT
+
+REAL_HOME="${HOME:-}"
+REAL_REGISTRY_FILE=""
+if [ -n "$REAL_HOME" ]; then
+  REAL_REGISTRY_FILE="$REAL_HOME/.touchstone-projects"
+fi
+
+cleanup() {
+  local status=$?
+  local registry_changed=false
+
+  # This test may run on a shared machine, so assert the invariant we own:
+  # no project path from this isolated TEST_DIR may leak into the real registry.
+  if [ -n "$REAL_REGISTRY_FILE" ] && [ -f "$REAL_REGISTRY_FILE" ] && \
+     grep -F "$TEST_DIR" "$REAL_REGISTRY_FILE" >/dev/null 2>&1; then
+    echo "FAIL: test wrote isolated temp paths to real registry at $REAL_REGISTRY_FILE" >&2
+    registry_changed=true
+  fi
+
+  rm -rf "$TEST_DIR"
+  if [ "$registry_changed" = true ]; then
+    status=1
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
 
 echo "==> Test: bootstrap a new project"
 echo "    Test dir: $TEST_DIR/test-project"
@@ -1519,7 +1544,7 @@ echo "0000000000000000000000000000000000000001" > "$PROJECT_OUTDATED/.touchstone
 OUTDATED_INIT_BRANCH="$(git -C "$PROJECT_OUTDATED" branch --show-current)"
 mkdir -p "$PROJECT_OUTDATED/.claude"
 printf 'lock\n' > "$PROJECT_OUTDATED/.claude/scheduled_tasks.lock"
-if (cd "$PROJECT_OUTDATED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup --no-ship) >"$TEST_DIR/init-outdated.txt" 2>&1; then
+if (cd "$PROJECT_OUTDATED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup --no-ship --no-register) >"$TEST_DIR/init-outdated.txt" 2>&1; then
   assert_contains "$TEST_DIR/init-outdated.txt" 'reconciling'
   assert_contains "$TEST_DIR/init-outdated.txt" 'reconcile files in place'
   assert_not_contains "$TEST_DIR/init-outdated.txt" "Delegating to 'touchstone update"
@@ -1551,7 +1576,7 @@ exit 1
 GHSTUB
 chmod +x "$GH_STUB_BIN/gh"
 OUTDATED_SHIP_BRANCH="$(git -C "$PROJECT_OUTDATED_SHIP" branch --show-current)"
-if (cd "$PROJECT_OUTDATED_SHIP" && PATH="$GH_STUB_BIN:$HOOKS_FAKE_BIN:$PATH" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup) >"$TEST_DIR/init-outdated-ship.txt" 2>&1; then
+if (cd "$PROJECT_OUTDATED_SHIP" && PATH="$GH_STUB_BIN:$HOOKS_FAKE_BIN:$PATH" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup --no-register) >"$TEST_DIR/init-outdated-ship.txt" 2>&1; then
   assert_contains "$TEST_DIR/init-outdated-ship.txt" 'reconciling'
   assert_not_contains "$TEST_DIR/init-outdated-ship.txt" 'Shipping update via scripts/open-pr.sh'
   assert_not_contains "$TEST_DIR/init-outdated-ship.txt" 'Ship failed'

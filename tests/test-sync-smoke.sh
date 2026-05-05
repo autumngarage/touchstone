@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 #
 # tests/test-sync-smoke.sh — smoke-test `update-project.sh --dry-run` against
-# the user's actual registered projects.
+# registered projects.
 #
-# Synthetic tempdir tests (test-bootstrap.sh, test-update.sh) exercise the
-# code paths but cannot catch the canonical failure mode of a sync system —
-# "a touchstone change subtly breaks a real downstream project's specific
-# config." Real projects accumulate project-specific state that synthetic
-# fixtures do not have. This smoke test runs touchstone's update flow in
-# strict --dry-run mode against every project in ~/.touchstone-projects (or
-# whatever registry is pointed to by TOUCHSTONE_PROJECTS_FILE) and asserts:
+# By default this test creates a temporary project registry so the fast
+# `tests/test-*.sh` tier never depends on or mutates the user's real
+# ~/.touchstone-projects. To run the old downstream-project smoke explicitly,
+# set TOUCHSTONE_SYNC_SMOKE_USE_REAL_REGISTRY=1. To test a specific registry,
+# set TOUCHSTONE_PROJECTS_FILE.
+#
+# The test runs touchstone's update flow in strict --dry-run mode against every
+# project in the selected registry and asserts:
 #
 #   1. update-project.sh --dry-run exits 0
 #   2. its combined stdout/stderr contains no `^ERROR` line
@@ -27,11 +28,63 @@
 set -u
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REGISTRY_FILE="${TOUCHSTONE_PROJECTS_FILE:-$HOME/.touchstone-projects}"
+TEST_DIR="$(mktemp -d -t touchstone-sync-smoke.XXXXXX)"
+
+REAL_HOME="${HOME:-}"
+REAL_REGISTRY_FILE=""
+if [ -n "$REAL_HOME" ]; then
+  REAL_REGISTRY_FILE="$REAL_HOME/.touchstone-projects"
+fi
+
+cleanup() {
+  local status=$?
+  local registry_changed=false
+
+  # This test may run on a shared machine, so assert the invariant we own:
+  # no project path from this isolated TEST_DIR may leak into the real registry.
+  if [ -n "$REAL_REGISTRY_FILE" ] && [ -f "$REAL_REGISTRY_FILE" ] && \
+     grep -F "$TEST_DIR" "$REAL_REGISTRY_FILE" >/dev/null 2>&1; then
+    echo "FAIL: test wrote isolated temp paths to real registry at $REAL_REGISTRY_FILE" >&2
+    registry_changed=true
+  fi
+
+  rm -rf "$TEST_DIR"
+  if [ "$registry_changed" = true ]; then
+    status=1
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+
+REGISTRY_SOURCE="isolated temp registry"
+if [ "${TOUCHSTONE_PROJECTS_FILE+x}" = "x" ]; then
+  if [ -z "$TOUCHSTONE_PROJECTS_FILE" ]; then
+    echo "ERROR: TOUCHSTONE_PROJECTS_FILE is set but empty" >&2
+    exit 1
+  fi
+  REGISTRY_FILE="$TOUCHSTONE_PROJECTS_FILE"
+  REGISTRY_SOURCE="TOUCHSTONE_PROJECTS_FILE"
+elif [ "${TOUCHSTONE_SYNC_SMOKE_USE_REAL_REGISTRY:-}" = "1" ]; then
+  REGISTRY_FILE="$REAL_REGISTRY_FILE"
+  REGISTRY_SOURCE="real user registry (opt-in)"
+else
+  REGISTRY_FILE="$TEST_DIR/.touchstone-projects"
+  SMOKE_PROJECT="$TEST_DIR/smoke-project"
+  if bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SMOKE_PROJECT" \
+      --no-register --no-with-cortex --no-with-sentinel --no-github \
+      >"$TEST_DIR/bootstrap-smoke-project.txt" 2>&1; then
+    printf '%s\n' "$SMOKE_PROJECT" > "$REGISTRY_FILE"
+  else
+    echo "FAIL: could not bootstrap isolated smoke project" >&2
+    cat "$TEST_DIR/bootstrap-smoke-project.txt" >&2
+    exit 1
+  fi
+fi
 
 echo "==> Smoke test: dry-run sync against registered projects"
 echo "    TOUCHSTONE_ROOT: $TOUCHSTONE_ROOT"
 echo "    Registry file:   $REGISTRY_FILE"
+echo "    Registry source: $REGISTRY_SOURCE"
 
 if [ ! -f "$REGISTRY_FILE" ]; then
   echo "==> No registry file at $REGISTRY_FILE — no registered projects, skipping smoke test."
