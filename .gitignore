@@ -1,2 +1,5 @@
 homebrew-touchstone/
 *.bak
+.cortex/.index.json
+.cortex/.index/
+.cortex/pending/
