@@ -464,8 +464,8 @@ CASCADE_OUTPUT="$TEST_DIR/cascade-output.txt"
 
 # Mode-specific fixtures — reused by the REVIEW_MODE + timeout + error
 # tests below. These tests capture conductor's argv so we can assert that
-# Touchstone translates REVIEW_MODE into the expected --tools / --sandbox
-# flags passed to conductor exec.
+# Touchstone translates REVIEW_MODE into the expected Conductor subcommand
+# and --tools flags.
 MODE_REPO="$TEST_DIR/repo-mode"
 MODE_BIN="$TEST_DIR/mode-bin"
 MODE_OUTPUT="$TEST_DIR/mode-output.txt"
@@ -608,8 +608,9 @@ git -C "$MODE_REPO" commit -m "codex config" >/dev/null 2>&1
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
 )
 
-if grep -q -- '--sandbox read-only' "$CODEX_ARGS_FILE"; then
-  echo "==> PASS: CODEX_REVIEW_NO_AUTOFIX=1 mapped to review-only (read-only sandbox)"
+if grep -q -- '--tools Read,Grep,Glob,Bash' "$CODEX_ARGS_FILE" \
+  && ! grep -q -- '--sandbox' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: CODEX_REVIEW_NO_AUTOFIX=1 mapped to review-only tools without sandbox flag"
 else
   echo "FAIL: expected CODEX_REVIEW_NO_AUTOFIX to map to review-only mode" >&2
   cat "$CODEX_ARGS_FILE" >&2
@@ -678,13 +679,84 @@ chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
 )
 
 if grep -q "Invalid mode" "$MODE_OUTPUT" \
-  && grep -q -- '--sandbox workspace-write' "$CODEX_ARGS_FILE"; then
-  echo "==> PASS: invalid mode warned and fell back to fix (workspace-write)"
+  && grep -q -- '--tools Read,Grep,Glob,Bash,Edit,Write' "$CODEX_ARGS_FILE" \
+  && ! grep -q -- '--sandbox' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: invalid mode warned and fell back to fix tools without sandbox flag"
 else
   echo "FAIL: expected invalid mode to warn and fall back to fix" >&2
   cat "$MODE_OUTPUT" >&2
   cat "$CODEX_ARGS_FILE" >&2
   ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: review modes map to conductor argv/tools without sandbox flag"
+setup_mode_repo
+rm -rf "$MODE_BIN"
+mkdir -p "$MODE_BIN"
+cat > "$MODE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat > "$MODE_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+printf '%s\n' "$*" > "$CODEX_ARGS_FILE"
+cat >/dev/null
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
+
+check_mode_argv() {
+  local mode="$1"
+  local expected_subcommand="$2"
+  local expected_tools="$3"
+  : > "$CODEX_ARGS_FILE"
+  (
+    cd "$MODE_REPO"
+    PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+      CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
+      CODEX_REVIEW_BASE="HEAD~1" \
+      CODEX_REVIEW_DISABLE_CACHE=1 \
+      CODEX_REVIEW_MODE="$mode" \
+      bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+  )
+
+  if ! grep -q "^$expected_subcommand" "$CODEX_ARGS_FILE"; then
+    echo "FAIL: expected mode $mode to call conductor $expected_subcommand" >&2
+    cat "$CODEX_ARGS_FILE" >&2
+    ERRORS=$((ERRORS + 1))
+    return
+  fi
+
+  if [ -n "$expected_tools" ]; then
+    if ! grep -q -- "--tools $expected_tools" "$CODEX_ARGS_FILE"; then
+      echo "FAIL: expected mode $mode to pass --tools $expected_tools" >&2
+      cat "$CODEX_ARGS_FILE" >&2
+      ERRORS=$((ERRORS + 1))
+      return
+    fi
+  elif grep -q -- '--tools' "$CODEX_ARGS_FILE"; then
+    echo "FAIL: expected mode $mode to omit --tools" >&2
+    cat "$CODEX_ARGS_FILE" >&2
+    ERRORS=$((ERRORS + 1))
+    return
+  fi
+
+  if grep -q -- '--sandbox' "$CODEX_ARGS_FILE"; then
+    echo "FAIL: expected mode $mode to omit deprecated --sandbox" >&2
+    cat "$CODEX_ARGS_FILE" >&2
+    ERRORS=$((ERRORS + 1))
+    return
+  fi
+}
+
+check_mode_argv "diff-only" "call" ""
+check_mode_argv "review-only" "exec" "Read,Grep,Glob,Bash"
+check_mode_argv "no-tests" "exec" "Read,Grep,Glob,Edit,Write"
+check_mode_argv "fix" "exec" "Read,Grep,Glob,Bash,Edit,Write"
+
+if [ "$ERRORS" -eq 0 ]; then
+  echo "==> PASS: review modes preserve tools contract and omit sandbox flag"
 fi
 
 # ==========================================================================

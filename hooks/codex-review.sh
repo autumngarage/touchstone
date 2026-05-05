@@ -3,9 +3,9 @@
 # hooks/codex-review.sh — non-interactive AI code review + auto-fix loop.
 #
 # Touchstone 2.0+: the single reviewer is `conductor` (autumn-garage/conductor).
-# Conductor owns per-provider model selection, auth, tool/sandbox translation,
+# Conductor owns per-provider model selection, auth, permission translation,
 # route logging, and cost reporting. This hook declares *what it needs* (review
-# mode → tools + sandbox) and lets Conductor's router pick *how* to run it.
+# mode → tools) and lets Conductor's router pick *how* to run it.
 # Wired into merge-pr.sh and default-branch pre-push checks.
 #
 # Loop:
@@ -43,9 +43,9 @@
 #   diff-only   — read-only: diff embedded in the prompt, no tool use
 #   no-tests    — edit + commit, no command execution (skip test runs)
 #
-#   Modes are enforced at the Conductor boundary: Touchstone translates mode
-#   → (tools, sandbox) and passes those; Conductor maps them to each
-#   provider's native flag dialect.  Set via CODEX_REVIEW_MODE env var or
+#   Modes are declared at the Conductor boundary: Touchstone translates mode
+#   → tools and passes those; Conductor maps the tool list to each provider's
+#   native permission/sandbox contract. Set via CODEX_REVIEW_MODE env var or
 #   `mode` in .codex-review.toml.
 #
 # Env overrides:
@@ -1002,7 +1002,7 @@ ASSIST_EOF
 # Touchstone 2.0 ships a single reviewer, `conductor`, which wraps the
 # autumn-garage/conductor CLI. Conductor owns the per-provider translation
 # (`--sandbox`, `--allowedTools`, `--yolo`, etc. are entirely its concern);
-# Touchstone just declares capability-level intent (what tools, what sandbox)
+# Touchstone just declares capability-level intent through portable tool names
 # and lets the router pick.
 
 reviewer_conductor_available() {
@@ -1036,9 +1036,9 @@ reviewer_conductor_exec() {
   # Effort applies whether manual-provider or auto-routed.
   args+=(--effort "${CONDUCTOR_EFFORT:-max}")
 
-  # REVIEW_MODE → subcommand + tools + sandbox. Conductor translates these
-  # portable names into each provider's native flag dialect.
-  local tools sandbox
+  # REVIEW_MODE → subcommand + tools. Conductor translates these portable tool
+  # names into each provider's native permission/sandbox contract.
+  local tools=""
   subcommand="$(conductor_subcommand_for_mode)"
   case "$REVIEW_MODE" in
     diff-only)
@@ -1047,28 +1047,23 @@ reviewer_conductor_exec() {
     review-only)
       subcommand="exec"
       tools="Read,Grep,Glob,Bash"
-      sandbox="read-only"
       ;;
     no-tests)
       subcommand="exec"
       tools="Read,Grep,Glob,Edit,Write"
-      sandbox="workspace-write"
       ;;
     fix)
       subcommand="exec"
       tools="Read,Grep,Glob,Bash,Edit,Write"
-      sandbox="workspace-write"
       ;;
     *)
       subcommand="exec"
       tools="Read,Grep,Glob,Bash"
-      sandbox="read-only"
       ;;
   esac
 
   if [ "$subcommand" = "exec" ]; then
     args+=(--tools "$tools")
-    args+=(--sandbox "$sandbox")
     args+=(--timeout "${CODEX_REVIEW_TIMEOUT:-300}")
   fi
 
