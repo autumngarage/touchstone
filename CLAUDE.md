@@ -190,3 +190,11 @@ Full delegation guidance (when to delegate, when not to, error handling):
 
     ~/.conductor/delegation-guidance.md
 <!-- conductor:end -->
+
+## Current state (read this first)
+
+@.cortex/state.md
+
+## Cortex Protocol
+
+@.cortex/protocol.md
