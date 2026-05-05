@@ -528,6 +528,8 @@ fi
 
 echo ""
 echo "==> Summary: $ADDED added, $UPDATED updated, $UNCHANGED unchanged"
+echo "==> Workflow scripts: project-local copies from Touchstone-managed files"
+echo "    Prototype shim runner available for evaluation: touchstone run-script <script>"
 
 # Reinstall pre-commit hook shims so a drifted or empty .git/hooks/ gets repaired.
 # The helper is idempotent; it skips silently when there's nothing to do.
