@@ -22,6 +22,7 @@ set -euo pipefail
   printf 'CODEX_REVIEW_MODE=%s\n' "${CODEX_REVIEW_MODE:-}"
   printf 'CODEX_REVIEW_BRANCH_NAME=%s\n' "${CODEX_REVIEW_BRANCH_NAME:-}"
 } > "$CODEX_REVIEW_LOG"
+exit "${CODEX_REVIEW_EXIT:-0}"
 EOF
 chmod +x "$MERGE_SCRIPT_DIR/merge-pr.sh" "$MERGE_SCRIPT_DIR/codex-review.sh"
 
@@ -113,14 +114,22 @@ fi
 
 case "$*" in
   "rev-parse --abbrev-ref HEAD")
-    if [ -f "$GH_CHECKOUT_FILE" ]; then
+    if [ -f "$GIT_CHECKOUT_MAIN_FILE" ]; then
+      echo "main"
+    elif [ -f "$GIT_DETACHED_DEFAULT_FILE" ]; then
+      echo "HEAD"
+    elif [ -f "$GH_CHECKOUT_FILE" ]; then
       echo "HEAD"
     else
       echo "feature/test"
     fi
     ;;
   "rev-parse HEAD")
-    if [ -f "$GH_CHECKOUT_FILE" ]; then
+    if [ -f "$GIT_CHECKOUT_MAIN_FILE" ]; then
+      echo "main-oid"
+    elif [ -f "$GIT_DETACHED_DEFAULT_FILE" ]; then
+      echo "main-oid"
+    elif [ -f "$GH_CHECKOUT_FILE" ]; then
       echo "pr-head-oid"
     else
       echo "stale-local-oid"
@@ -131,6 +140,17 @@ case "$*" in
     ;;
   "rev-parse --show-toplevel")
     printf '%s\n' "${TEST_CURRENT_WORKTREE:-/tmp/touchstone-feature-worktree}"
+    ;;
+  "rev-parse feature/test")
+    if [ -f "$GIT_BRANCH_DELETED_FILE" ]; then
+      exit 1
+    fi
+    printf '%s\n' "${GIT_LOCAL_BRANCH_HEAD:-pr-head-oid}"
+    ;;
+  "show-ref --verify --quiet refs/heads/feature/test")
+    if [ -f "$GIT_BRANCH_DELETED_FILE" ]; then
+      exit 1
+    fi
     ;;
   "cat-file -e pr-head-oid^{commit}")
     ;;
@@ -152,8 +172,16 @@ case "$*" in
     echo "checkout main" > "$GIT_CHECKOUT_MAIN_FILE"
     echo "Switched to branch 'main'"
     ;;
+  "checkout --detach main")
+    echo "checkout --detach main" > "$GIT_DETACHED_DEFAULT_FILE"
+    echo "HEAD is now at main"
+    ;;
   "pull --rebase")
     echo "Already up to date."
+    ;;
+  "branch -D feature/test")
+    echo "deleted feature/test" > "$GIT_BRANCH_DELETED_FILE"
+    echo "Deleted branch feature/test (was pr-head-oid)."
     ;;
   *)
     echo "unexpected git args: $*" >&2
@@ -169,6 +197,7 @@ reset_case_files() {
     "$TEST_DIR"/gh-checkout* "$TEST_DIR"/gh-merge-head* \
     "$TEST_DIR"/gh-merge-args* "$TEST_DIR"/gh-merge-body* \
     "$TEST_DIR"/gh-comment* "$TEST_DIR"/git-checkout-main* \
+    "$TEST_DIR"/git-detached-default* "$TEST_DIR"/git-branch-deleted* \
     "$TEST_DIR"/git-sibling-pull* "$TEST_DIR"/gh-merged-marker*
   rm -rf "$GIT_PATH_ROOT"
   mkdir -p "$GIT_PATH_ROOT"
@@ -176,6 +205,8 @@ reset_case_files() {
   unset GIT_SIBLING_PULL_FAIL
   unset TEST_CURRENT_WORKTREE
   unset GH_PR_MERGE_FAIL_LOCAL
+  unset CODEX_REVIEW_EXIT
+  unset GIT_LOCAL_BRANCH_HEAD
 }
 
 run_merge_pr() {
@@ -192,9 +223,13 @@ run_merge_pr() {
     GH_MERGED_MARKER="$TEST_DIR/gh-merged-marker" \
     GH_PR_MERGE_FAIL_LOCAL="${GH_PR_MERGE_FAIL_LOCAL:-false}" \
     GIT_CHECKOUT_MAIN_FILE="$TEST_DIR/git-checkout-main" \
+    GIT_DETACHED_DEFAULT_FILE="$TEST_DIR/git-detached-default" \
+    GIT_BRANCH_DELETED_FILE="$TEST_DIR/git-branch-deleted" \
     GIT_SIBLING_PULL_FILE="$TEST_DIR/git-sibling-pull" \
     GIT_WORKTREE_LIST="${GIT_WORKTREE_LIST:-}" \
     GIT_SIBLING_PULL_FAIL="${GIT_SIBLING_PULL_FAIL:-false}" \
+    CODEX_REVIEW_EXIT="${CODEX_REVIEW_EXIT:-0}" \
+    GIT_LOCAL_BRANCH_HEAD="${GIT_LOCAL_BRANCH_HEAD:-pr-head-oid}" \
     TEST_CURRENT_WORKTREE="${TEST_CURRENT_WORKTREE:-/tmp/touchstone-feature-worktree}" \
     bash "$MERGE_SCRIPT_DIR/merge-pr.sh" "$@" >"$output_file" 2>&1
 }
@@ -212,11 +247,31 @@ if grep -q 'attempt 1: mergeStateStatus=CLEAN mergeable=MERGEABLE' "$TEST_DIR/ou
   && grep -q '^CODEX_REVIEW_BASE=origin/main$' "$TEST_DIR/codex-review.log" \
   && grep -q '^CODEX_REVIEW_FORCE=1$' "$TEST_DIR/codex-review.log" \
   && grep -q '^CODEX_REVIEW_MODE=review-only$' "$TEST_DIR/codex-review.log" \
-  && grep -q '^CODEX_REVIEW_BRANCH_NAME=feature/test$' "$TEST_DIR/codex-review.log"; then
+  && grep -q '^CODEX_REVIEW_BRANCH_NAME=feature/test$' "$TEST_DIR/codex-review.log" \
+  && grep -q "==> Deleting local branch 'feature/test' after verified squash merge of pr-head-oid" "$TEST_DIR/output-normal.txt" \
+  && grep -q '^deleted feature/test$' "$TEST_DIR/git-branch-deleted"; then
   echo "==> PASS: merge-pr.sh completed without jq"
 else
   echo "FAIL: merge-pr.sh output did not show a successful jq-free merge path" >&2
   cat "$TEST_DIR/output-normal.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: blocked review preserves the local feature branch"
+reset_case_files
+if CODEX_REVIEW_EXIT=1 run_merge_pr "$TEST_DIR/output-review-blocked.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly succeeded when review blocked" >&2
+  exit 1
+fi
+if grep -q '==> Running merge review' "$TEST_DIR/output-review-blocked.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
+  && [ ! -f "$TEST_DIR/git-checkout-main" ] \
+  && [ ! -f "$TEST_DIR/git-detached-default" ] \
+  && [ ! -f "$TEST_DIR/git-branch-deleted" ]; then
+  echo "==> PASS: blocked review leaves local branch intact"
+else
+  echo "FAIL: blocked review should not merge, sync, detach, or delete the branch" >&2
+  cat "$TEST_DIR/output-review-blocked.txt" >&2
   exit 1
 fi
 
@@ -242,12 +297,27 @@ if grep -q "==> main is checked out in sibling worktree: $MAIN_WORKTREE" "$TEST_
   && grep -q '==> Fast-forwarding that worktree after remote merge' "$TEST_DIR/output-sibling-worktree.txt" \
   && grep -q '==> Done\.' "$TEST_DIR/output-sibling-worktree.txt" \
   && grep -q "^$MAIN_WORKTREE$" "$TEST_DIR/git-sibling-pull" \
+  && grep -q '^checkout --detach main$' "$TEST_DIR/git-detached-default" \
+  && grep -q '^deleted feature/test$' "$TEST_DIR/git-branch-deleted" \
   && [ ! -f "$TEST_DIR/git-checkout-main" ] \
   && ! grep -q 'ERROR:' "$TEST_DIR/output-sibling-worktree.txt"; then
   echo "==> PASS: sibling default worktree sync avoids false merge failure"
 else
   echo "FAIL: sibling worktree sync did not avoid the checkout-main failure path" >&2
   cat "$TEST_DIR/output-sibling-worktree.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: local branch that moved after review is preserved"
+reset_case_files
+GIT_LOCAL_BRANCH_HEAD="new-local-oid" run_merge_pr "$TEST_DIR/output-moved-branch.txt" 123
+if grep -q "WARNING: Local branch 'feature/test' is at new-local-oid, not reviewed PR head pr-head-oid; leaving it intact." "$TEST_DIR/output-moved-branch.txt" \
+  && [ ! -f "$TEST_DIR/git-branch-deleted" ] \
+  && grep -q '==> Done\.' "$TEST_DIR/output-moved-branch.txt"; then
+  echo "==> PASS: moved local branch is not deleted"
+else
+  echo "FAIL: moved local branch should be preserved after merge" >&2
+  cat "$TEST_DIR/output-moved-branch.txt" >&2
   exit 1
 fi
 

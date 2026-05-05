@@ -314,6 +314,9 @@ if [ -n "$EXISTING_PR_URL" ]; then
       echo "ERROR: merge-pr.sh exited 0 but PR #$PR_NUMBER is not merged on GitHub." >&2
       exit 1
     fi
+    if [ "$CLEANUP_WORKTREE" = true ]; then
+      cleanup_feature_worktree
+    fi
     exit 0
   fi
   exit 0

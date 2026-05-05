@@ -10,7 +10,8 @@
 #   1. Verifies the PR is open and mergeable.
 #   2. Runs AI code review as a merge gate.
 #   3. Squash-merges and deletes the remote branch.
-#   4. Checks out the default branch and pulls the updated state.
+#   4. Checks out/syncs the default branch where the local topology permits.
+#   5. Deletes the verified-merged local feature branch when safe.
 #
 # Exit codes:
 #   0 — merged cleanly
@@ -24,6 +25,7 @@ BYPASS_REASON=""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REVIEW_SCRIPT="$SCRIPT_DIR/codex-review.sh"
 REVIEWED_HEAD_OID=""
+PR_HEAD_BRANCH=""
 BYPASS_REVIEW=false
 
 while [ "$#" -gt 0 ]; do
@@ -157,7 +159,10 @@ sync_default_branch_after_merge() {
   current_branch="$(git rev-parse --abbrev-ref HEAD)"
 
   if [ "$current_branch" = "$DEFAULT_BRANCH" ]; then
-    git pull --rebase
+    if ! git pull --rebase; then
+      echo "WARNING: PR #$PR_NUMBER merged remotely, but local $DEFAULT_BRANCH could not pull --rebase." >&2
+      echo "WARNING: Run this when convenient: git pull --rebase" >&2
+    fi
     return 0
   fi
 
@@ -180,8 +185,94 @@ sync_default_branch_after_merge() {
     return 0
   fi
 
-  git checkout "$DEFAULT_BRANCH"
-  git pull --rebase
+  if ! git checkout "$DEFAULT_BRANCH"; then
+    echo "WARNING: PR #$PR_NUMBER merged remotely, but this worktree could not check out $DEFAULT_BRANCH." >&2
+    echo "WARNING: Run this when convenient: git checkout '$DEFAULT_BRANCH' && git pull --rebase" >&2
+    return 0
+  fi
+  if ! git pull --rebase; then
+    echo "WARNING: PR #$PR_NUMBER merged remotely, but local $DEFAULT_BRANCH could not pull --rebase." >&2
+    echo "WARNING: Run this when convenient: git pull --rebase" >&2
+  fi
+}
+
+checkout_default_ref_for_cleanup() {
+  local branch="$1"
+  local reviewed_head="$2"
+  local current_branch current_head current_worktree default_worktree
+
+  current_branch="$(git rev-parse --abbrev-ref HEAD)"
+  current_head="$(git rev-parse HEAD 2>/dev/null || echo "")"
+  if [ "$current_branch" != "$branch" ]; then
+    if [ "$current_branch" != "HEAD" ] || [ "$current_head" != "$reviewed_head" ]; then
+      return 0
+    fi
+  fi
+
+  current_worktree="$(git rev-parse --show-toplevel)"
+  default_worktree="$(worktree_path_for_branch "$DEFAULT_BRANCH" | head -n 1)"
+  if [ -n "$default_worktree" ] && [ "$default_worktree" != "$current_worktree" ]; then
+    echo "==> $DEFAULT_BRANCH is checked out elsewhere; detaching this worktree at $DEFAULT_BRANCH before local branch cleanup ..."
+    if git checkout --detach "$DEFAULT_BRANCH"; then
+      return 0
+    fi
+    echo "WARNING: Could not detach this worktree at $DEFAULT_BRANCH; leaving local branch '$branch' intact." >&2
+    return 1
+  fi
+
+  if git checkout "$DEFAULT_BRANCH"; then
+    return 0
+  fi
+  if git checkout --detach "$DEFAULT_BRANCH"; then
+    echo "==> Detached this worktree at $DEFAULT_BRANCH before local branch cleanup."
+    return 0
+  fi
+  echo "WARNING: Could not move off local branch '$branch'; leaving it intact." >&2
+  return 1
+}
+
+cleanup_local_pr_branch_after_merge() {
+  local branch="$PR_HEAD_BRANCH"
+  local reviewed_head="$REVIEWED_HEAD_OID"
+  local local_head pr_state
+
+  if [ -z "$branch" ] || [ -z "$reviewed_head" ]; then
+    echo "WARNING: Missing reviewed PR head metadata; skipping local branch cleanup." >&2
+    return 0
+  fi
+  if [ "$branch" = "$DEFAULT_BRANCH" ] || [ "$branch" = "main" ] || [ "$branch" = "master" ]; then
+    echo "WARNING: Refusing to delete protected branch '$branch' after PR #$PR_NUMBER." >&2
+    return 0
+  fi
+  if ! git show-ref --verify --quiet "refs/heads/$branch"; then
+    echo "==> Local branch '$branch' is already absent."
+    return 0
+  fi
+  if ! local_head="$(git rev-parse "$branch" 2>/dev/null)"; then
+    echo "WARNING: Could not resolve local branch '$branch'; leaving it intact." >&2
+    return 0
+  fi
+  if [ "$local_head" != "$reviewed_head" ]; then
+    echo "WARNING: Local branch '$branch' is at $local_head, not reviewed PR head $reviewed_head; leaving it intact." >&2
+    return 0
+  fi
+  pr_state="$(gh pr view "$PR_NUMBER" --json state --jq '.state' 2>/dev/null || echo "")"
+  if [ "$pr_state" != "MERGED" ]; then
+    echo "WARNING: PR #$PR_NUMBER is not confirmed MERGED (state: ${pr_state:-unknown}); leaving local branch '$branch' intact." >&2
+    return 0
+  fi
+
+  if ! checkout_default_ref_for_cleanup "$branch" "$reviewed_head"; then
+    return 0
+  fi
+
+  echo "==> Deleting local branch '$branch' after verified squash merge of $reviewed_head ..."
+  if git branch -D "$branch"; then
+    echo "==> Local branch '$branch' deleted."
+  else
+    echo "WARNING: Could not delete local branch '$branch' after verified merge." >&2
+    echo "WARNING: Run this when convenient after moving off the branch: git branch -D '$branch'" >&2
+  fi
 }
 
 print_bypass_banner() {
@@ -220,6 +311,7 @@ run_merge_review() {
     exit 1
   fi
 
+  PR_HEAD_BRANCH="$pr_head_branch"
   REVIEWED_HEAD_OID="$pr_head_oid"
   default_base_ref="origin/$DEFAULT_BRANCH"
 
@@ -405,5 +497,7 @@ if [ -n "$CORTEX_HOOK_SCRIPT" ]; then
     echo "         The PR merged cleanly; only the auto-draft journal step had a problem." >&2
   fi
 fi
+
+cleanup_local_pr_branch_after_merge
 
 echo "==> Done."
