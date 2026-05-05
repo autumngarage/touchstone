@@ -228,6 +228,55 @@ assert_contains "$COMMENT_OUT" "1 projects total"
 assert_not_contains "$COMMENT_OUT" "leading comment"
 
 # --------------------------------------------------------------------------
+# Test 7: status --json exposes drift and capability state for callers
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Test 7: status --json project capability state ---"
+
+CURRENT_JSON_OUT="$TEST_DIR/current-json.out"
+( cd "$CURRENT_PROJECT" && run_touchstone "$FAKE_HOME" status --json ) >"$CURRENT_JSON_OUT" 2>&1
+
+assert_contains "$CURRENT_JSON_OUT" '"installed_touchstone"'
+assert_contains "$CURRENT_JSON_OUT" '"project_touchstone"'
+assert_contains "$CURRENT_JSON_OUT" '"drift"'
+assert_contains "$CURRENT_JSON_OUT" '"state": "up_to_date"'
+assert_contains "$CURRENT_JSON_OUT" '"worktree-lifecycle"'
+assert_contains "$CURRENT_JSON_OUT" '"installed_state": "supported"'
+assert_contains "$CURRENT_JSON_OUT" '"project_state": "available"'
+
+OLD_CAPABILITY_PROJECT="$TEST_DIR/proj-old-capability"
+mkdir -p "$OLD_CAPABILITY_PROJECT"
+OLD_WORKTREE_BOUNDARY_ID="$(git -C "$TOUCHSTONE_ROOT" rev-parse d596930^)"
+printf '%s\n' "$OLD_WORKTREE_BOUNDARY_ID" > "$OLD_CAPABILITY_PROJECT/.touchstone-version"
+
+OLD_JSON_OUT="$TEST_DIR/old-json.out"
+( cd "$OLD_CAPABILITY_PROJECT" && run_touchstone "$FAKE_HOME" status --json ) >"$OLD_JSON_OUT" 2>&1
+
+assert_contains "$OLD_JSON_OUT" '"state": "project_files_outdated"'
+assert_contains "$OLD_JSON_OUT" '"name": "worktree-lifecycle"'
+assert_contains "$OLD_JSON_OUT" '"project_state": "project_files_too_old"'
+assert_contains "$OLD_JSON_OUT" '"remediation": "touchstone update"'
+
+# --------------------------------------------------------------------------
+# Test 8: doctor --project --require-capability fails on project-file drift
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Test 8: doctor required capability gates old project files ---"
+
+REQUIRE_OUT="$TEST_DIR/require-capability.out"
+set +e
+( cd "$OLD_CAPABILITY_PROJECT" && run_touchstone "$FAKE_HOME" doctor --project --require-capability worktree-lifecycle ) >"$REQUIRE_OUT" 2>&1
+REQUIRE_EXIT=$?
+set -e
+
+if [ "$REQUIRE_EXIT" -eq 0 ]; then
+  echo "FAIL: required capability should fail when project files predate it" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$REQUIRE_OUT" "Project Touchstone files are too old for capability 'worktree-lifecycle'"
+assert_contains "$REQUIRE_OUT" "touchstone update"
+
+# --------------------------------------------------------------------------
 # Results
 # --------------------------------------------------------------------------
 echo ""

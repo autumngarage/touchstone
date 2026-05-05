@@ -76,7 +76,7 @@ _status_behind_count() {
       return 0
     fi
   fi
-  if [ ! -d "${TOUCHSTONE_ROOT:-/nonexistent}/.git" ]; then
+  if ! git -C "${TOUCHSTONE_ROOT:-/nonexistent}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     printf '?'
     return 0
   fi
@@ -201,6 +201,121 @@ _status_behind_color() {
   esac
 }
 
+# --- workflow capability boundaries -----------------------------------------
+# Project-local workflows depend on files copied into each downstream repo.
+# A caller may have a new Touchstone CLI while the project still has old
+# scripts/hooks. Capability checks make that boundary explicit.
+#
+# worktree-lifecycle was introduced by d596930f60f3b4e0716f0821568d4a9793f2e8b5
+# ("feat: agent-swarm worktree defaults + spawn/cleanup helpers (#101)"),
+# which added scripts/spawn-worktree.sh and scripts/cleanup-worktrees.sh.
+STATUS_CAP_WORKTREE_LIFECYCLE_MIN_ID="d596930f60f3b4e0716f0821568d4a9793f2e8b5"
+
+_status_known_capabilities() {
+  printf 'worktree-lifecycle\n'
+}
+
+_status_capability_min_id() {
+  case "$1" in
+    worktree-lifecycle) printf '%s' "$STATUS_CAP_WORKTREE_LIFECYCLE_MIN_ID" ;;
+    *) return 1 ;;
+  esac
+}
+
+_status_capability_description() {
+  case "$1" in
+    worktree-lifecycle) printf 'project-local worktree spawn and cleanup helpers' ;;
+    *) return 1 ;;
+  esac
+}
+
+_status_ref_contains_required() {
+  local required="$1" candidate="$2"
+  [ -n "$required" ] || return 1
+  [ -n "$candidate" ] || return 1
+  [ "$candidate" = "$required" ] && return 0
+
+  local current_version
+  current_version="$(touchstone_version_str 2>/dev/null || true)"
+  if [ -n "$current_version" ] \
+     && { [ "$candidate" = "$current_version" ] || [ "$candidate" = "v$current_version" ]; }; then
+    return 0
+  fi
+
+  if git -C "${TOUCHSTONE_ROOT:-/nonexistent}" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+     && git -C "$TOUCHSTONE_ROOT" rev-parse --verify "$required^{commit}" >/dev/null 2>&1 \
+     && git -C "$TOUCHSTONE_ROOT" rev-parse --verify "$candidate^{commit}" >/dev/null 2>&1; then
+    git -C "$TOUCHSTONE_ROOT" merge-base --is-ancestor "$required" "$candidate" >/dev/null 2>&1
+    return $?
+  fi
+
+  return 1
+}
+
+_status_capability_installed_state() {
+  local capability="$1" current_id="$2" min_id
+  min_id="$(_status_capability_min_id "$capability")" || {
+    printf 'unknown_capability'
+    return 0
+  }
+  if _status_ref_contains_required "$min_id" "$current_id"; then
+    printf 'supported'
+  else
+    printf 'installed_cli_too_old'
+  fi
+}
+
+_status_capability_project_state() {
+  local capability="$1" project_id="$2" min_id
+  min_id="$(_status_capability_min_id "$capability")" || {
+    printf 'unknown_capability'
+    return 0
+  }
+  if [ -z "$project_id" ]; then
+    printf 'not_touchstone_project'
+  elif _status_ref_contains_required "$min_id" "$project_id"; then
+    printf 'available'
+  else
+    printf 'project_files_too_old'
+  fi
+}
+
+_status_drift_state() {
+  local behind="$1"
+  case "$behind" in
+    current) printf 'up_to_date' ;;
+    \?)      printf 'unknown' ;;
+    *)       printf 'project_files_outdated' ;;
+  esac
+}
+
+_status_update_remediation() {
+  printf 'touchstone update'
+}
+
+_status_update_remediation_in_place() {
+  printf 'touchstone update --in-place'
+}
+
+_status_json_escape() {
+  awk '
+    BEGIN { ORS = "" }
+    {
+      gsub(/\\/, "\\\\")
+      gsub(/"/, "\\\"")
+      gsub(/\t/, "\\t")
+      if (NR > 1) printf "\\n"
+      printf "%s", $0
+    }
+  '
+}
+
+_status_json_string() {
+  printf '"'
+  printf '%s' "$1" | _status_json_escape
+  printf '"'
+}
+
 # Stale-age coloring for the AGE column in --all. Threshold is 30 days, named
 # here so future tweaks don't have to chase a magic number around the file.
 STATUS_STALE_AGE_DAYS=30
@@ -260,6 +375,172 @@ status_print_project() {
   printf 'touchstone:     %s\n' "$display_recorded"
   printf 'latest:         %s %s\n' "$latest_label" "$latest_suffix"
   printf 'last update:    %s\n' "$age_long"
+
+  if [ "$behind" != "current" ]; then
+    if [ "$behind" = "?" ]; then
+      tk_warn "Project Touchstone files do not match this installed CLI."
+    else
+      tk_warn "Project Touchstone files are ${behind} commit(s) behind this installed CLI."
+    fi
+    tk_dim "  Fix: $(_status_update_remediation)"
+    tk_dim "  Or update on this branch: $(_status_update_remediation_in_place)"
+  fi
+}
+
+status_print_project_json() {
+  local project_dir="$1"
+  local current_id current_version current_short version_file recorded recorded_short behind drift_state remediation remediation_in_place
+  current_id="$(touchstone_current_id)"
+  current_version="$(touchstone_version_str)"
+  current_short="$(_status_display_id "$current_id")"
+  version_file="$project_dir/.touchstone-version"
+  recorded=""
+  if [ -f "$version_file" ]; then
+    recorded="$(_status_read_project_version "$project_dir")"
+  fi
+  recorded_short="$(_status_display_id "$recorded")"
+  behind="$(_status_behind_count "$recorded" "$current_id")"
+  drift_state="$(_status_drift_state "$behind")"
+  if [ ! -f "$version_file" ]; then
+    drift_state="not_touchstone_project"
+  fi
+  remediation="$(_status_update_remediation)"
+  remediation_in_place="$(_status_update_remediation_in_place)"
+  if [ "$drift_state" = "not_touchstone_project" ]; then
+    remediation="touchstone init"
+    remediation_in_place=""
+  fi
+
+  printf '{\n'
+  printf '  "project": '
+  _status_json_string "$project_dir"
+  printf ',\n'
+  printf '  "installed_touchstone": {\n'
+  printf '    "id": '
+  _status_json_string "$current_id"
+  printf ',\n'
+  printf '    "id_short": '
+  _status_json_string "$current_short"
+  printf ',\n'
+  printf '    "version": '
+  _status_json_string "$current_version"
+  printf ',\n'
+  printf '    "root": '
+  _status_json_string "${TOUCHSTONE_ROOT:-}"
+  printf '\n'
+  printf '  },\n'
+  printf '  "project_touchstone": {\n'
+  printf '    "version_file": '
+  _status_json_string "$version_file"
+  printf ',\n'
+  printf '    "id": '
+  _status_json_string "$recorded"
+  printf ',\n'
+  printf '    "id_short": '
+  _status_json_string "$recorded_short"
+  printf '\n'
+  printf '  },\n'
+  printf '  "drift": {\n'
+  printf '    "state": '
+  _status_json_string "$drift_state"
+  printf ',\n'
+  printf '    "behind": '
+  _status_json_string "$behind"
+  printf ',\n'
+  printf '    "remediation": '
+  _status_json_string "$remediation"
+  printf ',\n'
+  printf '    "remediation_in_place": '
+  _status_json_string "$remediation_in_place"
+  printf '\n'
+  printf '  },\n'
+  printf '  "capabilities": [\n'
+
+  local capability first=true min_id description installed_state project_state capability_remediation
+  for capability in $(_status_known_capabilities); do
+    min_id="$(_status_capability_min_id "$capability")"
+    description="$(_status_capability_description "$capability")"
+    installed_state="$(_status_capability_installed_state "$capability" "$current_id")"
+    project_state="$(_status_capability_project_state "$capability" "$recorded")"
+    capability_remediation=""
+    if [ "$installed_state" = "installed_cli_too_old" ]; then
+      capability_remediation="brew upgrade touchstone"
+    elif [ "$project_state" = "project_files_too_old" ]; then
+      capability_remediation="$remediation"
+    elif [ "$project_state" = "not_touchstone_project" ]; then
+      capability_remediation="touchstone init"
+    fi
+
+    if [ "$first" = true ]; then
+      first=false
+    else
+      printf ',\n'
+    fi
+    printf '    {\n'
+    printf '      "name": '
+    _status_json_string "$capability"
+    printf ',\n'
+    printf '      "description": '
+    _status_json_string "$description"
+    printf ',\n'
+    printf '      "minimum_touchstone_id": '
+    _status_json_string "$min_id"
+    printf ',\n'
+    printf '      "installed_state": '
+    _status_json_string "$installed_state"
+    printf ',\n'
+    printf '      "project_state": '
+    _status_json_string "$project_state"
+    printf ',\n'
+    printf '      "remediation": '
+    _status_json_string "$capability_remediation"
+    printf '\n'
+    printf '    }'
+  done
+  printf '\n'
+  printf '  ]\n'
+  printf '}\n'
+}
+
+status_require_project_capability() {
+  local project_dir="$1" capability="$2" current_id recorded min_id installed_state project_state
+  if ! min_id="$(_status_capability_min_id "$capability")"; then
+    tk_fail "Unknown Touchstone capability: $capability"
+    tk_dim "  Known capabilities: $(_status_known_capabilities | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    return 2
+  fi
+
+  current_id="$(touchstone_current_id)"
+  installed_state="$(_status_capability_installed_state "$capability" "$current_id")"
+  if [ "$installed_state" = "installed_cli_too_old" ]; then
+    tk_fail "Installed Touchstone CLI is too old for capability '$capability'."
+    tk_dim "  installed: $(_status_display_id "$current_id")"
+    tk_dim "  requires:  $(_status_display_id "$min_id")"
+    tk_dim "  Fix: brew upgrade touchstone"
+    return 1
+  fi
+
+  if [ ! -f "$project_dir/.touchstone-version" ]; then
+    tk_fail "Not a touchstone project (no .touchstone-version)"
+    tk_dim "  Fix: touchstone init"
+    return 1
+  fi
+
+  recorded="$(_status_read_project_version "$project_dir")"
+  project_state="$(_status_capability_project_state "$capability" "$recorded")"
+  if [ "$project_state" = "available" ]; then
+    tk_ok "Capability '$capability' is available for this project."
+    tk_dim "  project: $(_status_display_id "$recorded")"
+    tk_dim "  requires: $(_status_display_id "$min_id")"
+    return 0
+  fi
+
+  tk_fail "Project Touchstone files are too old for capability '$capability'."
+  tk_dim "  project: $(_status_display_id "$recorded")"
+  tk_dim "  requires: $(_status_display_id "$min_id")"
+  tk_dim "  Fix: $(_status_update_remediation)"
+  tk_dim "  Or update on this branch: $(_status_update_remediation_in_place)"
+  return 1
 }
 
 # --- registry walker ---------------------------------------------------------
