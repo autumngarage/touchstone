@@ -149,6 +149,13 @@ For the full fan-out playbook — slice manifests, file ownership, parent orches
 - **Inline (preferred for fire-and-forget).** Pass `--cleanup-worktree` alongside `--auto-merge` to `scripts/open-pr.sh`. After the PR squash-merges, the helper removes the current feature worktree itself by invoking `git worktree remove` from the default-branch worktree. The worktree is gone before the script returns, so there's nothing to come back to. Failures here are reported as warnings — the merge already happened, cleanup is best-effort.
 - **Deferred sweep.** From the main checkout, run `scripts/cleanup-worktrees.sh` (dry-run by default) to preview and `--execute` to remove clean merged-or-equivalent worktrees. Use this when several worktrees accumulated across sessions, or when the inline cleanup couldn't run (dirty tree, etc.).
 
+Do not substitute `rm -rf <worktree-dir>` for `git worktree remove <path>`.
+Deleting only the directory can leave stale Git worktree metadata behind; Git
+may still treat the missing path as owning the branch and refuse later branch
+deletes, checkouts, or merge cleanup. If that already happened, run
+`git worktree prune` from a remaining checkout to drop records for missing
+paths, then retry the blocked command.
+
 `scripts/cleanup-branches.sh` already refuses to delete branches currently checked out in worktrees, so it won't fight you — but it also won't remove the worktree directories themselves; that is what `cleanup-worktrees.sh` and the inline `--cleanup-worktree` flag are for.
 
 ## Emergency path
