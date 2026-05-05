@@ -4,6 +4,9 @@
 #
 set -euo pipefail
 
+# Doctrine 0002: ensure all bootstrap/update calls run non-interactively.
+exec </dev/null
+
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-update.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
@@ -297,6 +300,8 @@ fi
 if ! git -C "$PROJECT" log -1 --name-only --pretty=format: | grep -qx 'AGENTS.md'; then
   echo "FAIL: update commit must include AGENTS.md when the block was refreshed" >&2
   ERRORS=$((ERRORS + 1))
+else
+  echo "    PASS: AGENTS.md was backfilled with shared principles"
 fi
 
 # --------------------------------------------------------------------------
