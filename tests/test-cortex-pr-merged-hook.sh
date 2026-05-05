@@ -161,4 +161,120 @@ if ! grep -q 'cortex-pr-merged-hook' "$TOUCHSTONE_ROOT/scripts/merge-pr.sh"; the
   exit 1
 fi
 
-echo "==> PASS: cortex-pr-merged-hook activation gates + graceful-degradation paths verified (A-G)"
+# Scenarios H/I use a fake cortex CLI so we can exercise the activated
+# path without depending on a developer machine's installed Cortex
+# version or writing real journal entries.
+FAKEBIN="$TMPROOT/fakebin"
+mkdir -p "$FAKEBIN"
+cat > "$FAKEBIN/cortex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "${1:-}" = "journal" ] && [ "${2:-}" = "draft" ] && [ "${3:-}" = "pr-merged" ]; then
+  mkdir -p .cortex/journal
+  entry="$(pwd)/.cortex/journal/pr-merged.md"
+  printf 'drafted journal\n' > "$entry"
+  printf '%s\n' "$entry"
+  exit 0
+fi
+
+if [ "${1:-}" = "refresh-state" ]; then
+  if [ "${FAKE_CORTEX_REFRESH_FAIL:-0}" = "1" ]; then
+    printf 'refresh-state unavailable in fake cortex\n' >&2
+    exit 64
+  fi
+  project_dir="$(pwd)"
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --path)
+        shift
+        project_dir="$1"
+        ;;
+    esac
+    shift || true
+  done
+  mkdir -p "$project_dir/.cortex"
+  printf 'refreshed state\n' > "$project_dir/.cortex/state.md"
+  exit 0
+fi
+
+printf 'unexpected fake cortex invocation: %s\n' "$*" >&2
+exit 2
+EOF
+chmod +x "$FAKEBIN/cortex"
+
+# Scenario H: activated hook drafts a journal entry, refreshes state.md,
+# and includes both files in the same local hook commit.
+H="$(mk_fixture H)"
+mkdir -p "$H/.cortex"
+printf 'stale state\n' > "$H/.cortex/state.md"
+(cd "$H" && git add .cortex/state.md && git commit -q -m "add cortex state")
+(
+  cd "$H"
+  PATH="$FAKEBIN:$PATH" \
+  TOUCHSTONE_DEFAULT_BRANCH=main \
+  TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+  TOUCHSTONE_MERGED_PR=131 \
+    bash "$HOOK"
+)
+H_CHANGED="$(git -C "$H" show --name-only --format= HEAD)"
+if ! printf '%s\n' "$H_CHANGED" | grep -qx '.cortex/journal/pr-merged.md'; then
+  echo "FAIL [H]: hook commit did not include drafted journal entry" >&2
+  printf '%s\n' "$H_CHANGED" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$H_CHANGED" | grep -qx '.cortex/state.md'; then
+  echo "FAIL [H]: hook commit did not include refreshed Cortex state" >&2
+  printf '%s\n' "$H_CHANGED" >&2
+  exit 1
+fi
+if [ "$(cat "$H/.cortex/state.md")" != "refreshed state" ]; then
+  echo "FAIL [H]: state.md content was not refreshed" >&2
+  cat "$H/.cortex/state.md" >&2
+  exit 1
+fi
+if [ "$(git -C "$H" status --porcelain)" != "" ]; then
+  echo "FAIL [H]: hook left working tree dirty after state refresh commit" >&2
+  git -C "$H" status --short >&2
+  exit 1
+fi
+
+# Scenario I: if refresh-state is unavailable/fails without changing
+# state.md, the hook remains fail-open for the optional refresh, commits
+# the journal entry, and emits an actionable recovery command.
+I="$(mk_fixture I)"
+mkdir -p "$I/.cortex"
+printf 'stale state\n' > "$I/.cortex/state.md"
+(cd "$I" && git add .cortex/state.md && git commit -q -m "add cortex state")
+I_STDERR="$TMPROOT/I-stderr"
+(
+  cd "$I"
+  PATH="$FAKEBIN:$PATH" \
+  FAKE_CORTEX_REFRESH_FAIL=1 \
+  TOUCHSTONE_DEFAULT_BRANCH=main \
+  TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+    bash "$HOOK"
+) 2> "$I_STDERR"
+I_CHANGED="$(git -C "$I" show --name-only --format= HEAD)"
+if ! printf '%s\n' "$I_CHANGED" | grep -qx '.cortex/journal/pr-merged.md'; then
+  echo "FAIL [I]: hook did not commit journal entry when refresh-state failed cleanly" >&2
+  printf '%s\n' "$I_CHANGED" >&2
+  exit 1
+fi
+if printf '%s\n' "$I_CHANGED" | grep -qx '.cortex/state.md'; then
+  echo "FAIL [I]: hook committed state.md after refresh-state failed" >&2
+  printf '%s\n' "$I_CHANGED" >&2
+  exit 1
+fi
+if [ "$(cat "$I/.cortex/state.md")" != "stale state" ]; then
+  echo "FAIL [I]: failed refresh-state unexpectedly changed state.md" >&2
+  cat "$I/.cortex/state.md" >&2
+  exit 1
+fi
+if ! grep -q "cortex refresh-state --path" "$I_STDERR" || ! grep -q "git commit -m 'docs(cortex): refresh state'" "$I_STDERR"; then
+  echo "FAIL [I]: refresh-state failure did not include actionable recovery instructions" >&2
+  cat "$I_STDERR" >&2
+  exit 1
+fi
+
+echo "==> PASS: cortex-pr-merged-hook activation gates + graceful-degradation paths verified (A-I)"
