@@ -365,9 +365,46 @@ run_merge_review() {
     exit 1
   fi
 
-  if [ -n "$(git status --porcelain)" ]; then
-    echo "ERROR: Working tree has uncommitted changes; refusing to run review against an ambiguous tree." >&2
-    exit 1
+  # The reviewer reads the committed diff against the default base; uncommitted
+  # changes in unrelated paths do not affect that view. Only refuse when at
+  # least one dirty path overlaps the PR's diff against the default base, which
+  # is the actual ambiguous-tree case. Refusing on any dirty path false-positives
+  # whenever the operator has unrelated WIP they aren't ready to commit.
+  local dirty_status diff_paths dirty_paths overlap
+  dirty_status="$(git status --porcelain)"
+  if [ -n "$dirty_status" ]; then
+    if ! diff_paths="$(git diff --name-only "$default_base_ref"...HEAD 2>/dev/null | sort -u)"; then
+      echo "ERROR: Could not compute diff against $default_base_ref to evaluate dirty-tree overlap." >&2
+      exit 1
+    fi
+    # Parse `git status --porcelain` robustly: rename entries have the form
+    # `R<space|index> old -> new`, others are `XY path`. We want the path that
+    # actually exists in the working tree, which is the post-rename path.
+    dirty_paths="$(printf '%s\n' "$dirty_status" \
+      | awk '{
+          line = substr($0, 4)
+          idx = index(line, " -> ")
+          if (idx > 0) {
+            print substr(line, idx + 4)
+          } else {
+            print line
+          }
+        }' \
+      | sort -u)"
+    if [ -n "$diff_paths" ] && [ -n "$dirty_paths" ]; then
+      overlap="$(comm -12 <(printf '%s\n' "$diff_paths") <(printf '%s\n' "$dirty_paths"))"
+    else
+      overlap=""
+    fi
+    if [ -n "$overlap" ]; then
+      echo "ERROR: Working tree has uncommitted changes that overlap PR #$PR_NUMBER's diff vs $default_base_ref;" >&2
+      echo "       refusing to run review against an ambiguous tree. Overlapping paths:" >&2
+      printf '%s\n' "$overlap" | sed 's/^/         /' >&2
+      exit 1
+    fi
+    if [ -n "$dirty_paths" ]; then
+      echo "==> Working tree has uncommitted changes outside PR #$PR_NUMBER's diff vs $default_base_ref; proceeding."
+    fi
   fi
 
   current_branch="$(git rev-parse --abbrev-ref HEAD)"
