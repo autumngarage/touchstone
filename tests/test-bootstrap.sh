@@ -725,7 +725,8 @@ if (cd "$PYTEST_WRAPPER_PROJECT" && "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv
   echo "FAIL: expected run-pytest-in-venv.sh to fail without a venv" >&2
   ERRORS=$((ERRORS + 1))
 else
-  assert_contains "$TEST_DIR/pytest-missing-venv.txt" 'Run: bash setup.sh'
+  assert_contains "$TEST_DIR/pytest-missing-venv.txt" 'no project virtualenv found'
+  assert_contains "$TEST_DIR/pytest-missing-venv.txt" 'bash setup.sh'
 fi
 
 mkdir -p "$PYTEST_WRAPPER_PROJECT/.venv/bin"
@@ -1138,7 +1139,7 @@ chmod +x "$PYTEST_FAKE_BIN/python3"
 mkdir -p "$PROJECT_PYTEST_EMPTY/scripts"
 cp "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_PYTEST_EMPTY/scripts/touchstone-run.sh"
 printf 'project_type=python\n' > "$PROJECT_PYTEST_EMPTY/.touchstone-config"
-if (cd "$PROJECT_PYTEST_EMPTY" && PATH="$PYTEST_FAKE_BIN:$PATH" bash scripts/touchstone-run.sh test) >"$TEST_DIR/pytest-empty-output.txt" 2>&1; then
+if (cd "$PROJECT_PYTEST_EMPTY" && PATH="$PYTEST_FAKE_BIN:$PATH" PYTEST_PYTHON=python3 bash scripts/touchstone-run.sh test) >"$TEST_DIR/pytest-empty-output.txt" 2>&1; then
   assert_contains "$TEST_DIR/pytest-empty-output.txt" 'pytest found no tests; skipped'
 else
   echo "FAIL: pytest exit 5 must be a graceful skip, not a failure" >&2
@@ -1652,6 +1653,10 @@ else
 fi
 
 # Any non-5 pytest failure must still propagate — we haven't accidentally swallowed real errors.
+# After #171, find_python_bin() no longer silently falls back to system
+# python3, so the fixture has to use PYTEST_PYTHON to point at the fake
+# interpreter explicitly. The intent of the assertion is unchanged: a
+# real (exit 1) test failure must propagate, not be swallowed.
 cat > "$PYTEST_FAKE_BIN/python3" <<'FAKEPY'
 #!/usr/bin/env bash
 if [ "$1" = "-m" ] && [ "$2" = "pytest" ]; then
@@ -1661,7 +1666,7 @@ fi
 exit 0
 FAKEPY
 chmod +x "$PYTEST_FAKE_BIN/python3"
-if (cd "$PROJECT_PYTEST_EMPTY" && PATH="$PYTEST_FAKE_BIN:$PATH" bash scripts/touchstone-run.sh test) >"$TEST_DIR/pytest-fail-output.txt" 2>&1; then
+if (cd "$PROJECT_PYTEST_EMPTY" && PATH="$PYTEST_FAKE_BIN:$PATH" PYTEST_PYTHON=python3 bash scripts/touchstone-run.sh test) >"$TEST_DIR/pytest-fail-output.txt" 2>&1; then
   echo "FAIL: pytest exit 1 (real failure) must still propagate as nonzero" >&2
   ERRORS=$((ERRORS + 1))
 fi
