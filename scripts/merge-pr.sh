@@ -490,11 +490,40 @@ run_merge_review() {
   fi
 
   echo "==> Running merge review ..."
+  local review_rc=0
   CODEX_REVIEW_BASE="$default_base_ref" \
     CODEX_REVIEW_BRANCH_NAME="$pr_head_branch" \
     CODEX_REVIEW_FORCE=1 \
     CODEX_REVIEW_MODE=review-only \
-    bash "$REVIEW_SCRIPT"
+    bash "$REVIEW_SCRIPT" || review_rc=$?
+
+  if [ "$review_rc" -eq 0 ]; then
+    return 0
+  fi
+
+  # Issue #182: when the merge-pr review fails (typically a routing-induced
+  # timeout — Ollama wedging on review-only on small diffs, etc.) AND the
+  # exact same HEAD already has a recorded clean review marker from a
+  # prior run, auto-promote to bypass-with-disclosure rather than refusing
+  # the merge. The marker proves the diff was reviewed cleanly; a failed
+  # second iteration is a stalled reviewer gate, exactly the case that
+  # principles/git-workflow.md documents `--bypass-with-disclosure` for.
+  # Without this auto-promotion, every operator hit by the routing bug
+  # has to invoke the bypass manually with a synthesized reason.
+  local current_merge_base
+  if current_merge_base="$(git merge-base "$default_base_ref" "$pr_head_oid" 2>/dev/null)" \
+    && branch_has_clean_review_marker "$pr_head_branch" "$pr_head_oid" "$current_merge_base"; then
+    echo "" >&2
+    echo "==> Merge review exited $review_rc, but a prior clean review marker is recorded for HEAD $pr_head_oid." >&2
+    echo "==> Auto-promoting to reviewer bypass with disclosure." >&2
+    BYPASS_REVIEW=true
+    BYPASS_REASON="merge-pr.sh final review iteration exited ${review_rc} (typically a routing-induced timeout); a prior clean review marker is recorded for HEAD ${pr_head_oid}, so this auto-bypass preserves the safety guarantee that the diff was reviewed cleanly at least once."
+    print_bypass_banner
+    record_bypass_comment
+    return 0
+  fi
+
+  return "$review_rc"
 }
 
 # 1. Sanity check the PR exists and is open.

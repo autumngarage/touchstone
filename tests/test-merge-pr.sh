@@ -275,6 +275,52 @@ else
   exit 1
 fi
 
+echo "==> Test: review failure with prior clean marker auto-promotes to bypass (#182)"
+reset_case_files
+# Synthesize a clean review marker for the same head/base the harness's fake
+# git resolves to (pr-head-oid + base-oid). The merge-pr.sh path treats this
+# as proof the diff was reviewed cleanly at least once; when the second
+# review iteration fails (typically a routing-induced timeout), it should
+# auto-promote to bypass-with-disclosure rather than refusing the merge.
+mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
+printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nbase=origin/main\nmerge_base=base-oid\nhead=pr-head-oid\n' \
+  > "$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
+if ! CODEX_REVIEW_EXIT=124 run_merge_pr "$TEST_DIR/output-auto-bypass.txt" 123; then
+  echo "FAIL: merge-pr.sh did not auto-promote to bypass when review failed and a clean marker exists" >&2
+  cat "$TEST_DIR/output-auto-bypass.txt" >&2
+  exit 1
+fi
+if grep -q 'Auto-promoting to reviewer bypass with disclosure' "$TEST_DIR/output-auto-bypass.txt" \
+  && grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-auto-bypass.txt" \
+  && [ -f "$TEST_DIR/gh-comment" ] \
+  && grep -q 'Reviewer bypassed via' "$TEST_DIR/gh-comment" \
+  && [ -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: review failure with prior clean marker auto-promoted to bypass and merged"
+else
+  echo "FAIL: auto-bypass path did not produce expected log/comment/merge artifacts" >&2
+  cat "$TEST_DIR/output-auto-bypass.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: review failure with NO prior clean marker still fails closed (#182 safety)"
+reset_case_files
+# No marker is created. The auto-promotion must NOT fire — without a marker
+# there is no proof the diff was ever reviewed cleanly, so failing the
+# review must still refuse the merge (preserves the safety guarantee).
+if CODEX_REVIEW_EXIT=124 run_merge_pr "$TEST_DIR/output-no-marker.txt" 123; then
+  echo "FAIL: merge-pr.sh auto-bypassed even without a clean marker" >&2
+  cat "$TEST_DIR/output-no-marker.txt" >&2
+  exit 1
+fi
+if [ ! -f "$TEST_DIR/gh-merge-head" ] \
+  && ! grep -q 'Auto-promoting to reviewer bypass' "$TEST_DIR/output-no-marker.txt"; then
+  echo "==> PASS: review failure without marker fails closed (no auto-bypass)"
+else
+  echo "FAIL: failure-without-marker case should not merge or auto-bypass" >&2
+  cat "$TEST_DIR/output-no-marker.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: sibling worktree owning main is fast-forwarded without false merge failure"
 reset_case_files
 MAIN_WORKTREE="$TEST_DIR/main-worktree"
