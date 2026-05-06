@@ -39,5 +39,8 @@ out/
 # default — a team may opt to commit it by removing this line).
 .claude/settings.local.json
 
+# Claude Code agent worktrees are transient local workspaces.
+.claude/worktrees/
+
 # Touchstone
 *.bak
