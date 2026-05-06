@@ -511,7 +511,8 @@ fi
 echo "==> Checking merge state for PR #$PR_NUMBER ..."
 STATE=""
 MERGEABLE=""
-for attempt in 1 2 3 4 5; do
+MERGE_STATE_RETRY_DELAYS=(1 2 5 10 30 30 30 30 30)
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
   MERGE_STATE="$(gh pr view "$PR_NUMBER" --json mergeStateStatus,mergeable --template '{{.mergeStateStatus}} {{.mergeable}}' 2>/dev/null || echo '')"
   STATE="${MERGE_STATE%% *}"
   MERGEABLE="${MERGE_STATE#* }"
@@ -521,12 +522,21 @@ for attempt in 1 2 3 4 5; do
   if [ "$STATE" = "CLEAN" ] && [ "$MERGEABLE" = "MERGEABLE" ]; then
     break
   fi
-  if [ "$STATE" = "DIRTY" ] || [ "$STATE" = "BEHIND" ]; then
+  if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$STATE" = "DIRTY" ] || [ "$STATE" = "BEHIND" ] || [ "$STATE" = "CONFLICTING" ]; then
     echo "ERROR: PR #$PR_NUMBER is $STATE — has conflicts or is out of date with base." >&2
+    echo "       Final merge state: mergeStateStatus=$STATE mergeable=$MERGEABLE." >&2
     echo "       Rebase or resolve conflicts on the PR branch before merging." >&2
     exit 1
   fi
-  sleep 3
+  if [ "$attempt" -lt 10 ]; then
+    sleep_seconds="${MERGE_STATE_RETRY_DELAYS[$((attempt - 1))]}"
+    # Tests may set MERGE_PR_SLEEP_OVERRIDE=0 to exercise retry behavior
+    # without waiting for the production backoff schedule.
+    if [ -n "${MERGE_PR_SLEEP_OVERRIDE+x}" ]; then
+      sleep_seconds="$MERGE_PR_SLEEP_OVERRIDE"
+    fi
+    sleep "$sleep_seconds"
+  fi
 done
 
 if [ "$STATE" != "CLEAN" ] || [ "$MERGEABLE" != "MERGEABLE" ]; then
