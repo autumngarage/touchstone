@@ -276,12 +276,24 @@ if [ -n "$BASE_OVERRIDE" ] && [ "$AUTO_MERGE" = true ]; then
   echo "         or drop --base (bundle into one PR on $DEFAULT_BRANCH)." >&2
 fi
 
-# Push (set upstream on first push, plain push afterwards).
-if git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+# Push. The "do I already have an upstream?" check is name-aware: a fresh
+# `git checkout -b <branch> origin/main` sets upstream to `origin/main`,
+# which makes `git push` (without `-u`) fail with "upstream does not match
+# the name of your current branch." Treat any upstream that doesn't point
+# at `origin/<current-branch>` the same as "no upstream yet" and rewrite
+# it on first push, so the workflow works regardless of how the branch
+# was created.
+EXISTING_UPSTREAM="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+EXPECTED_UPSTREAM="origin/$CURRENT_BRANCH"
+if [ -n "$EXISTING_UPSTREAM" ] && [ "$EXISTING_UPSTREAM" = "$EXPECTED_UPSTREAM" ]; then
   echo "==> Pushing $CURRENT_BRANCH ..."
   git push
 else
-  echo "==> Pushing $CURRENT_BRANCH (setting upstream) ..."
+  if [ -n "$EXISTING_UPSTREAM" ] && [ "$EXISTING_UPSTREAM" != "$EXPECTED_UPSTREAM" ]; then
+    echo "==> Existing upstream '$EXISTING_UPSTREAM' does not match '$EXPECTED_UPSTREAM'; resetting on first push." >&2
+  else
+    echo "==> Pushing $CURRENT_BRANCH (setting upstream) ..."
+  fi
   git push -u origin "$CURRENT_BRANCH"
 fi
 
