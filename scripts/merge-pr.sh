@@ -287,6 +287,73 @@ print_bypass_banner() {
 EOF
 }
 
+# Append a squash-merge record to .git/touchstone/squash-map.jsonl so
+# scripts/cleanup-branches.sh can recognize a branch as squash-merged even
+# after $DEFAULT_BRANCH evolves past it (later commits on the same files
+# break the tree-equivalence heuristic).
+#
+# The record carries:
+#   - branch       : the head ref name of the merged PR
+#   - pr           : PR number
+#   - branch_oid   : tip of the branch at merge time (so cleanup can detect
+#                    "branch picked up new commits after the squash" and
+#                    fall through to the existing tree check)
+#   - squash_commit: the squash commit on the default branch (best effort —
+#                    empty string if gh cannot resolve it yet)
+#   - ts           : UTC ISO timestamp
+#
+# I/O is best-effort. A failure to write must not fail the merge: the merge
+# already succeeded server-side, and the squash-map is an optimization for
+# later cleanup, not a correctness boundary. Any failure is logged to stderr.
+record_squash_merge() {
+  local branch="$1"
+  local pr="$2"
+  local branch_oid="$3"
+  local squash_commit="${4:-}"
+  local map_path map_dir ts
+
+  if [ -z "$branch" ] || [ -z "$pr" ] || [ -z "$branch_oid" ]; then
+    echo "WARNING: record_squash_merge: missing branch/pr/oid, skipping squash-map write." >&2
+    return 0
+  fi
+
+  if ! map_path="$(git rev-parse --git-path touchstone/squash-map.jsonl 2>/dev/null)" \
+      || [ -z "$map_path" ]; then
+    echo "WARNING: record_squash_merge: could not resolve squash-map path; skipping." >&2
+    return 0
+  fi
+  map_dir="$(dirname "$map_path")"
+  if ! mkdir -p "$map_dir" 2>/dev/null; then
+    echo "WARNING: record_squash_merge: could not create $map_dir; skipping squash-map write." >&2
+    return 0
+  fi
+
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
+
+  # JSON-encode each string field. Bash can produce safe JSON for these
+  # tightly constrained values (branch names exclude " and \, OIDs are hex,
+  # ts is ISO-8601) by simply quoting — no escaping needed in practice.
+  # Defense in depth: refuse to record if any field contains a quote or
+  # backslash, rather than emit malformed JSON.
+  local field
+  for field in "$branch" "$pr" "$branch_oid" "$squash_commit" "$ts"; do
+    case "$field" in
+      *\"*|*\\*)
+        echo "WARNING: record_squash_merge: field contains quote/backslash, skipping squash-map write." >&2
+        return 0
+        ;;
+    esac
+  done
+
+  local line
+  line="{\"branch\":\"$branch\",\"pr\":\"$pr\",\"branch_oid\":\"$branch_oid\",\"squash_commit\":\"$squash_commit\",\"ts\":\"$ts\"}"
+  if ! printf '%s\n' "$line" >> "$map_path" 2>/dev/null; then
+    echo "WARNING: record_squash_merge: could not append to $map_path; skipping squash-map write." >&2
+    return 0
+  fi
+  echo "==> Recorded squash-merge metadata for '$branch' -> $map_path"
+}
+
 record_bypass_comment() {
   gh pr comment "$PR_NUMBER" --body "Reviewer bypassed via \`--bypass-with-disclosure\`. Reason: $BYPASS_REASON"
 }
@@ -505,6 +572,11 @@ if [ "$gh_merge_exit" -ne 0 ]; then
     exit "$gh_merge_exit"
   fi
 fi
+
+# Record squash-merge metadata for cleanup-branches.sh. The merge has
+# succeeded on GitHub; this is best-effort persistence for later cleanup.
+SQUASH_COMMIT_OID="$(gh pr view "$PR_NUMBER" --json mergeCommit --jq '.mergeCommit.oid' 2>/dev/null || echo "")"
+record_squash_merge "$PR_HEAD_BRANCH" "$PR_NUMBER" "$REVIEWED_HEAD_OID" "$SQUASH_COMMIT_OID"
 
 # 5. Sync local default branch.
 sync_default_branch_after_merge
