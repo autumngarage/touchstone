@@ -96,9 +96,27 @@ fi
 echo "==> Updating project: $PROJECT_DIR"
 echo "    Touchstone: $OLD_SHA -> $CURRENT_SHA"
 
-if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
+# Issue #177: detect a v1.x .codex-review.toml so the "Already up to date"
+# early-exit below can fall through when a stale config still needs
+# migration. The actual rewrite happens later, after require_clean_git_repo,
+# so it never runs against an ambiguous tree. Read-only here.
+CODEX_REVIEW_TOML="$PROJECT_DIR/.codex-review.toml"
+NEEDS_CODEX_REVIEW_MIGRATION=false
+if [ "$DRY_RUN" = false ] && [ "$CHECK_ONLY" = false ] && [ -f "$CODEX_REVIEW_TOML" ]; then
+  if grep -qE '^[[:space:]]*reviewers[[:space:]]*=[[:space:]]*\[' "$CODEX_REVIEW_TOML" \
+    || grep -qE '^\[review\.local\]'   "$CODEX_REVIEW_TOML" \
+    || grep -qE '^\[review\.assist\]'  "$CODEX_REVIEW_TOML" \
+    || grep -qE '^[[:space:]]*(small|large)_reviewers[[:space:]]*=[[:space:]]*\[' "$CODEX_REVIEW_TOML"; then
+    NEEDS_CODEX_REVIEW_MIGRATION=true
+  fi
+fi
+
+if [ "$OLD_SHA" = "$CURRENT_SHA" ] && [ "$NEEDS_CODEX_REVIEW_MIGRATION" = false ]; then
   echo "==> Already up to date."
   exit 0
+fi
+if [ "$OLD_SHA" = "$CURRENT_SHA" ] && [ "$NEEDS_CODEX_REVIEW_MIGRATION" = true ]; then
+  echo "==> Touchstone version unchanged; running pending config migration."
 fi
 
 if [ "$CHECK_ONLY" = true ]; then
@@ -260,6 +278,27 @@ if [ "$DRY_RUN" = false ]; then
     echo "==> Creating update branch: $UPDATE_BRANCH"
     git -C "$PROJECT_DIR" checkout -b "$UPDATE_BRANCH" >/dev/null
     BRANCH_CREATED=true
+  fi
+fi
+
+# Issue #177: actually migrate .codex-review.toml from v1.x → v2.x. The
+# detection above already determined NEEDS_CODEX_REVIEW_MIGRATION; the
+# rewrite happens here, after require_clean_git_repo, so it never runs
+# against an ambiguous tree.
+if [ "$NEEDS_CODEX_REVIEW_MIGRATION" = true ]; then
+  echo ""
+  echo "==> Migrating .codex-review.toml from v1.x → v2.x shape..."
+  if (
+    cd "$PROJECT_DIR" \
+    && bash "$TOUCHSTONE_ROOT/bootstrap/migrate-review-config.sh" --no-backup
+  ) > "$PROJECT_DIR/.touchstone-migrate-codex-review.log" 2>&1; then
+    rm -f "$PROJECT_DIR/.touchstone-migrate-codex-review.log"
+    echo "    .codex-review.toml: rewrote v1.x reviewer cascade to v2.x conductor shape."
+    echo "    The migration warning in scripts/codex-review.sh will no longer fire on push."
+  else
+    echo "    WARNING: auto-migration failed — leaving .codex-review.toml unchanged." >&2
+    echo "             Inspect: $PROJECT_DIR/.touchstone-migrate-codex-review.log" >&2
+    echo "             Rerun manually: cd $PROJECT_DIR && touchstone migrate-review-config" >&2
   fi
 fi
 
@@ -545,6 +584,13 @@ if [ "$DRY_RUN" = false ]; then
   echo "==> Committing touchstone update..."
   git -C "$PROJECT_DIR" add -A -- principles scripts lib .touchstone-manifest
   git -C "$PROJECT_DIR" add -f -- .touchstone-version
+  # If the early auto-migration rewrote .codex-review.toml, stage it so
+  # the rewrite ships in the same update commit instead of dangling as
+  # an unstaged diff.
+  if [ -f "$PROJECT_DIR/.codex-review.toml" ] \
+    && [ -n "$(git -C "$PROJECT_DIR" status --porcelain -- .codex-review.toml 2>/dev/null)" ]; then
+    git -C "$PROJECT_DIR" add -f -- .codex-review.toml
+  fi
   if [ -f "$PROJECT_DIR/.claude/settings.json" ]; then
     git -C "$PROJECT_DIR" add -f -- .claude/settings.json
   fi
