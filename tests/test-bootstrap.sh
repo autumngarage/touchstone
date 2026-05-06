@@ -12,6 +12,18 @@ export YES_MODE=true
 exec </dev/null
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Issue #162: prepend deterministic stand-ins for `cortex` and `sentinel`
+# so the wizard's default-true Cortex/Sentinel init paths exercise the
+# Touchstone contract without spawning the real binaries (each real
+# `cortex init` / `sentinel init` adds banner output and seconds of
+# startup; the test issues 30+ default bootstraps). The slow tier
+# (tests/slow-bootstrap.sh) sets TOUCHSTONE_REAL_BOOTSTRAP=1 to skip
+# this override and exercise the real binaries against the same
+# assertions. See tests/fixtures/README.md.
+if [ -z "${TOUCHSTONE_REAL_BOOTSTRAP:-}" ]; then
+  export PATH="$TOUCHSTONE_ROOT/tests/fixtures:$PATH"
+fi
 TEST_DIR="$(mktemp -d -t touchstone-test-bootstrap.XXXXXX)"
 
 REAL_HOME="${HOME:-}"
@@ -40,7 +52,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "==> Test: bootstrap a new project"
+# Issue #162: bounded progress markers. Each `phase` line tells a watching
+# operator (or agent) what section is in flight and a wall-clock timestamp,
+# so a long pre-commit install or git operation is visibly progressing
+# instead of looking stuck.
+PHASE_START_EPOCH="$(date +%s)"
+phase() {
+  local now elapsed
+  now="$(date +%s)"
+  elapsed=$((now - PHASE_START_EPOCH))
+  printf '==> [+%3ds] %s\n' "$elapsed" "$*"
+}
+
+phase "bootstrap a new project"
 echo "    Test dir: $TEST_DIR/test-project"
 
 # Run bootstrap.
@@ -235,6 +259,8 @@ assert_contains "$PROJECT/AGENTS.md" "No band-aids"
 assert_contains "$PROJECT/AGENTS.md" "Authoring Guide"
 assert_contains "$PROJECT/AGENTS.md" "Codex and other AGENTS.md-native coding agents"
 assert_contains "$PROJECT/AGENTS.md" "Review Guide"
+
+phase "help flags + ecosystem profiles"
 
 # Help flags should print usage instead of bootstrapping a project named --help.
 if (cd "$TEST_DIR" && bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" --help) >"$TEST_DIR/new-project-help.txt" 2>&1; then
@@ -454,6 +480,8 @@ assert_contains "$PROJECT_NODE/setup.sh" 'install_go_devtools'
 assert_contains "$PROJECT_NODE/setup.sh" 'install_rust_devtools'
 assert_contains "$PROJECT_PYTHON/setup.sh" 'install_swift_devtools'
 
+phase "existing-dir + reviewer/CI/scaffold-tests opt-outs"
+
 # Bootstrap into an existing directory should back up touchstone-owned files before replacing them.
 mkdir -p "$PROJECT_EXISTING/principles" "$PROJECT_EXISTING/scripts"
 printf 'custom principle\n' > "$PROJECT_EXISTING/principles/engineering-principles.md"
@@ -667,6 +695,8 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_PROMOTE" --n
 printf '[project]\nname = "demo"\nversion = "0.0.0"\n' > "$PROJECT_SCAFFOLD_PROMOTE/pyproject.toml"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_PROMOTE" --no-register --scaffold-tests >/dev/null
 assert_exists "$PROJECT_SCAFFOLD_PROMOTE/tests/test_smoke.py"
+
+phase "touchstone-init reconcile + setup.sh runtime probes"
 
 # touchstone init must not run a pre-existing project setup.sh after preserving it.
 mkdir -p "$PROJECT_INIT_EXISTING_SETUP"
@@ -1031,6 +1061,8 @@ cp "$TOUCHSTONE_ROOT/templates/setup.sh" "$RUST_PROJECT/setup.sh"
 (cd "$RUST_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" TOUCHSTONE_SKIP_DEVTOOLS=1 bash setup.sh --deps-only) >/dev/null
 assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|fetch'
 
+phase "hook installation propagation"
+
 # Bootstrap should install git hooks via pre-commit when pre-commit is available,
 # so a fresh repo is actually gated — not just configured.
 HOOKS_FAKE_BIN="$TEST_DIR/hooks-fake-bin"
@@ -1152,6 +1184,8 @@ if grep -q 'Setting up' "$TEST_DIR/reinit-setup-output.txt" 2>/dev/null; then
   echo "FAIL: init reconcile must not run setup.sh even if the file was backfilled" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+phase "touchstone doctor + sibling detection"
 
 # touchstone doctor --project must exit clean on a fully-armed repo.
 # Use the fake pre-commit so hooks install regardless of what's on the tester's real PATH.
@@ -1632,6 +1666,8 @@ if (cd "$PROJECT_PYTEST_EMPTY" && PATH="$PYTEST_FAKE_BIN:$PATH" bash scripts/tou
   ERRORS=$((ERRORS + 1))
 fi
 
+phase "wizard / non-interactive defaults / --yes"
+
 # ---------------------------------------------------------------------------
 # Doctrine 0002 — interactive wizard for `touchstone new`.
 # The wizard is additive: non-TTY invocations behave exactly as pre-R2 (modulo
@@ -1784,7 +1820,7 @@ rm -rf "$REGISTRY_SKIP_TMP"
 # --------------------------------------------------------------------------
 
 echo ""
-echo "==> R5.1/R5.2: --with-cortex --with-sentinel ordering + gitignore scope"
+phase "R5.1/R5.2 — --with-cortex --with-sentinel ordering + gitignore scope"
 
 PROJECT_R5="$TEST_DIR/test-project-r5"
 R5_STUBDIR="$(mktemp -d -t touchstone-r5-stubs.XXXXXX)"

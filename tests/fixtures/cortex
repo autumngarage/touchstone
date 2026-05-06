@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+#
+# tests/fixtures/stub-cortex — deterministic Cortex stand-in for the fast
+# test tier. Mirrors the externally observable contract of `cortex init`
+# (creates .cortex/ with the files Touchstone scaffold tests rely on)
+# without paying the real binary's startup, banner, or model-detection
+# costs. The slow tier (tests/slow-bootstrap.sh) opts out of this stub
+# and exercises the real cortex binary instead.
+#
+set -euo pipefail
+
+case "${1:-}" in
+  version|--version|-V)
+    echo "cortex 0.0.0-stub"
+    exit 0
+    ;;
+  init)
+    mkdir -p .cortex/doctrine .cortex/plans .cortex/journal
+    : > .cortex/state.md
+    : > .cortex/README.md
+    : > .cortex/protocol.md
+    echo "0.5.0" > .cortex/SPEC_VERSION
+    echo "==> stub-cortex init: scaffolded .cortex/"
+    exit 0
+    ;;
+  doctor|refresh-state|state|journal|grep|retrieve|manifest)
+    exit 0
+    ;;
+  "")
+    echo "stub-cortex: missing subcommand" >&2
+    exit 2
+    ;;
+  *)
+    exit 0
+    ;;
+esac
