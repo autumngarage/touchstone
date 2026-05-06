@@ -1739,6 +1739,7 @@ ${REVIEW_PROMPT}"
   echo "==> Sentinel cycle journal injected into reviewer context."
 fi
 
+
 # --------------------------------------------------------------------------
 # Clean-review cache
 # --------------------------------------------------------------------------
@@ -1893,6 +1894,144 @@ write_clean_review_cache() {
     printf 'diff_lines=%s\n' "$line_count"
     printf 'reviewed_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   } > "$cache_file" 2>/dev/null || true
+}
+
+# --------------------------------------------------------------------------
+# Issue #163: persisted prior findings.
+#
+# When a review iteration ends in CODEX_REVIEW_BLOCKED, persist the findings
+# list under .git/touchstone/reviewer-findings/<branch>.findings so the next
+# push attempt on the same branch can prepend a "verification checkpoint" to
+# the reviewer's prompt: "verify each prior finding is closed; report NEW
+# blockers only." This converts the second review from a blind full audit
+# into a targeted delta scan.
+#
+# The state is operational (lives in .git/, never committed). Validation
+# rules: prior_head must be an ancestor of current HEAD (no force-push, no
+# branch reset). Any unreadable / unparseable / mismatched state is treated
+# as blank slate so the fail-open invariant on the reviewer is preserved.
+# --------------------------------------------------------------------------
+
+review_findings_dir() {
+  git rev-parse --git-path touchstone/reviewer-findings
+}
+
+review_findings_file() {
+  local branch="$1"
+  printf '%s/%s.findings' "$(review_findings_dir)" "$(review_clean_marker_key "$branch")"
+}
+
+# Strip trailing whitespace from each line and drop empty trailing lines.
+# Findings text comes from the reviewer's stdout, which can include shell
+# color codes or stray indentation; the gate only persists lines that start
+# with `- ` (the BLOCKED contract).
+extract_findings_block() {
+  printf '%s\n' "$1" | awk '/^- / { print } /^$/ { if (have_finding) exit }'
+}
+
+write_review_findings() {
+  local findings_text="$1"
+  local branch findings_dir findings_file findings_block
+
+  branch="$(review_clean_marker_branch)"
+  [ -n "$branch" ] || return 0
+
+  findings_block="$(extract_findings_block "$findings_text")"
+  if [ -z "$findings_block" ]; then
+    # BLOCKED with no parseable bullet lines: do not persist a stale or
+    # empty-looking checkpoint that would confuse the next iteration.
+    clear_review_findings
+    return 0
+  fi
+
+  findings_dir="$(review_findings_dir)"
+  findings_file="$(review_findings_file "$branch")"
+
+  mkdir -p "$findings_dir" 2>/dev/null || return 0
+  {
+    printf 'result=CODEX_REVIEW_BLOCKED\n'
+    printf 'branch=%s\n' "$branch"
+    printf 'base=%s\n' "$BASE"
+    printf 'merge_base=%s\n' "$MERGE_BASE"
+    printf 'head=%s\n' "$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+    printf 'reviewed_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf 'findings_count=%s\n' "$(printf '%s\n' "$findings_block" | grep -c '^- ' || true)"
+    printf -- '--- findings start ---\n'
+    printf '%s\n' "$findings_block"
+    printf -- '--- findings end ---\n'
+  } > "$findings_file" 2>/dev/null || true
+}
+
+clear_review_findings() {
+  local branch findings_file
+  branch="$(review_clean_marker_branch)"
+  [ -n "$branch" ] || return 0
+  findings_file="$(review_findings_file "$branch")"
+  [ -f "$findings_file" ] || return 0
+  rm -f "$findings_file" 2>/dev/null || true
+}
+
+# Build a "verification checkpoint" prompt prefix when a prior BLOCKED review
+# is recorded for this branch and the prior HEAD is a strict ancestor of the
+# current HEAD. Returns empty on any error or staleness so callers can treat
+# it as opt-in: a missing or invalid file simply produces no prefix and the
+# reviewer runs as a normal fresh audit.
+build_review_verification_checkpoint() {
+  local branch findings_file prior_head prior_reviewed_at findings_block current_head
+
+  branch="$(review_clean_marker_branch)"
+  [ -n "$branch" ] || return 0
+  findings_file="$(review_findings_file "$branch")"
+  [ -f "$findings_file" ] || return 0
+
+  prior_head="$(awk -F= '$1 == "head" { print $2; exit }' "$findings_file" 2>/dev/null)"
+  prior_reviewed_at="$(awk -F= '$1 == "reviewed_at" { print $2; exit }' "$findings_file" 2>/dev/null)"
+  [ -n "$prior_head" ] || return 0
+
+  if ! git rev-parse --verify --quiet "$prior_head^{commit}" >/dev/null 2>&1; then
+    # The recorded commit is not in this clone (force-push, gc, fresh
+    # clone). Drop the stale file and treat as blank slate.
+    clear_review_findings
+    return 0
+  fi
+
+  current_head="$(git rev-parse HEAD 2>/dev/null)"
+  if [ -z "$current_head" ]; then
+    return 0
+  fi
+
+  # Allow same-HEAD (re-running on the same commit) and strict-descendant
+  # (the operator amended or added commits). Reject everything else (the
+  # branch was reset or rebased onto unrelated history → prior findings no
+  # longer describe this code).
+  if [ "$current_head" != "$prior_head" ] \
+    && ! git merge-base --is-ancestor "$prior_head" "$current_head" 2>/dev/null; then
+    clear_review_findings
+    return 0
+  fi
+
+  findings_block="$(awk '
+    /^--- findings start ---$/ { in_block = 1; next }
+    /^--- findings end ---$/   { exit }
+    in_block { print }
+  ' "$findings_file" 2>/dev/null)"
+  [ -n "$findings_block" ] || return 0
+
+  cat <<CHECKPOINT_EOF
+## Prior review findings — verify, do not restart
+
+This branch was reviewed at HEAD ${prior_head} on ${prior_reviewed_at:-unknown}, and the reviewer flagged the following blockers:
+
+${findings_block}
+
+Directive for this iteration:
+
+1. For each finding above, check whether the current diff (HEAD vs ${BASE}) closes it. If a finding is fully addressed, do not re-flag it.
+2. After verifying prior findings, scan the commits since ${prior_head}..HEAD for any NEW blockers in the same weak-point classes (boundary checks, concurrency, fail-open semantics, version-contract bypasses, etc.). Group related new blockers together.
+3. Do not start fresh: prior findings that are already addressed must not appear in your output. Findings that are still open should be re-listed verbatim so the operator can confirm they are still open.
+4. If every prior finding is closed and you find no new blockers, emit CODEX_REVIEW_CLEAN.
+
+CHECKPOINT_EOF
 }
 
 changed_paths() {
@@ -2403,6 +2542,21 @@ print_banner() {
   BANNER_PRINTED=true
 }
 
+# --------------------------------------------------------------------------
+# Issue #163: prepend a verification checkpoint when this branch already
+# has a recorded BLOCKED review whose HEAD is an ancestor of current HEAD.
+# Empty string (no prior file, force-push, parse error) means a normal
+# fresh review, so this is fail-open by construction. Runs after all helper
+# definitions and right before the review loop.
+# --------------------------------------------------------------------------
+REVIEW_VERIFICATION_CHECKPOINT="$(build_review_verification_checkpoint)"
+if [ -n "$REVIEW_VERIFICATION_CHECKPOINT" ]; then
+  REVIEW_PROMPT="${REVIEW_VERIFICATION_CHECKPOINT}
+
+${REVIEW_PROMPT}"
+  echo "==> Prior review findings injected; reviewer will verify + delta-scan instead of restarting."
+fi
+
 for iter in $(seq 1 "$MAX_ITERATIONS"); do
   phase "loading diff"
   DIFF_LINE_COUNT="$(git diff "$MERGE_BASE"..HEAD | wc -l | tr -d ' ')"
@@ -2533,6 +2687,7 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
       print_summary
       write_clean_review_cache "$REVIEW_CACHE_KEY" "$DIFF_LINE_COUNT"
       write_clean_review_marker "$DIFF_LINE_COUNT"
+      clear_review_findings
       # The "ran" denominator: a successful review actually executed.
       # skip-rate = log_skip_count / (log_skip_count + log_ran_count).
       log_skip_event ran "clean:iter=${iter}:lines=${DIFF_LINE_COUNT}:fix-commits=${FIX_COMMITS}"
@@ -2599,6 +2754,10 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
       echo "    Address findings and try again. Emergency override: git push --no-verify"
       REVIEW_EXIT_REASON="blocked"
       print_summary
+      # Issue #163: persist the blocking findings so the next push attempt
+      # on a descendant HEAD prepends a verification checkpoint instead of
+      # auditing from scratch.
+      write_review_findings "$OUTPUT"
       # The reviewer actually ran and produced a verdict — counts as "ran"
       # for the skip-rate denominator even though the push is blocked.
       log_skip_event ran "blocked:iter=${iter}:findings=${REVIEW_FINDINGS_COUNT}"
