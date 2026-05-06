@@ -7,7 +7,17 @@ set -euo pipefail
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-cleanup-worktrees.XXXXXX)"
-trap 'rm -rf "$TEST_DIR"' EXIT
+LOCKED_ALIVE_PID=""
+
+cleanup() {
+  if [ -n "$LOCKED_ALIVE_PID" ]; then
+    kill "$LOCKED_ALIVE_PID" >/dev/null 2>&1 || true
+    wait "$LOCKED_ALIVE_PID" 2>/dev/null || true
+  fi
+  rm -rf "$TEST_DIR"
+}
+
+trap cleanup EXIT
 
 echo "==> Test: cleanup-worktrees.sh removes only safe worktree candidates"
 
@@ -103,7 +113,9 @@ git -C "$LOCKED_ALIVE_WT" add locked-alive.txt
 git -C "$LOCKED_ALIVE_WT" commit -qm "feat: locked alive"
 git -C "$REPO" checkout -q main
 git -C "$REPO" merge --no-ff -q feat/locked-alive -m "merge feat/locked-alive"
-git -C "$REPO" worktree lock --reason "agent pid $$" "$LOCKED_ALIVE_WT"
+sleep 120 &
+LOCKED_ALIVE_PID="$!"
+git -C "$REPO" worktree lock --reason "agent pid $LOCKED_ALIVE_PID" "$LOCKED_ALIVE_WT"
 
 git -C "$REPO" worktree add -q "$LOCKED_NOPID_WT" -b feat/locked-nopid main
 echo "locked no pid" > "$LOCKED_NOPID_WT/locked-nopid.txt"
@@ -133,7 +145,7 @@ assert_contains "$DRY_RUN_OUTPUT" "$SQUASH_WT"
 assert_contains "$DRY_RUN_OUTPUT" 'dirty; use --force to remove'
 assert_contains "$DRY_RUN_OUTPUT" 'detached HEAD has unique work'
 assert_contains "$DRY_RUN_OUTPUT" "lock: stale (pid $DEAD_PID dead)"
-assert_contains "$DRY_RUN_OUTPUT" "lock: alive (pid $$)"
+assert_contains "$DRY_RUN_OUTPUT" "lock: alive (pid $LOCKED_ALIVE_PID)"
 assert_contains "$DRY_RUN_OUTPUT" 'lock: present, no PID'
 assert_contains "$DRY_RUN_OUTPUT" 'pass --unlock-stale --execute to remove'
 assert_contains "$DRY_RUN_OUTPUT" 'locked by live process'
