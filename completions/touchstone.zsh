@@ -8,7 +8,7 @@ _touchstone() {
     'update:Create a branch and commit for touchstone updates'
     'sync:Update all registered projects'
     'status:Show project status (use --all for the registry view)'
-    'doctor:Check touchstone installation health'
+    'doctor:Report conductor-review fail-open trends'
     'version:Show installed version'
     'list:Show registered projects'
     'unregister:Remove a project from the registry'
@@ -77,6 +77,13 @@ _touchstone() {
         status)
           _arguments \
             '--all[Show version distribution across registered projects]'
+          ;;
+        doctor)
+          _arguments \
+            '--log-path[Read a fixture or alternate review log]:log path:_files' \
+            '--threshold[Warn when last-7d fail-open rate exceeds this percent]:percent:' \
+            '--project[Check per-project health]' \
+            '--installation[Check touchstone installation health]'
           ;;
         unregister)
           # Complete from registered projects.
