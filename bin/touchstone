@@ -19,6 +19,7 @@
 #   touchstone status [--json]            Show status of the current project
 #   touchstone status --all               Show version distribution across registered projects
 #   touchstone version                    Show installed version
+#   touchstone --version                  Show installed version
 #   touchstone doctor                     Report conductor-review fail-open trends
 #   touchstone help                       Show this help
 #
@@ -1615,6 +1616,10 @@ cmd_help() {
   printf "    ${BOLD}touchstone release${RESET} [--patch]      Cut a new touchstone release\n"
   printf "    ${BOLD}touchstone help${RESET}                   Show this help\n"
   echo ""
+  echo "  ${BOLD}Environment:${RESET}"
+  printf "    ${BOLD}TOUCHSTONE_NO_AUTO_UPDATE=1${RESET}        Disable CLI auto-update and project auto-sync\n"
+  printf "    ${BOLD}TOUCHSTONE_NO_AUTO_PROJECT_SYNC=1${RESET}  Disable project auto-sync only\n"
+  echo ""
   printf "  Install: ${DIM}brew tap autumngarage/touchstone && brew install touchstone${RESET}\n"
   echo ""
 }
@@ -1625,6 +1630,10 @@ cmd_help() {
 
 COMMAND="${1:-help}"
 shift 2>/dev/null || true
+
+# Auto-project-sync runs after command parsing so read-only commands can skip
+# it and before dispatch so write-capable commands see current Touchstone files.
+touchstone_auto_project_sync "$COMMAND" "$@" || true
 
 case "$COMMAND" in
   new)          cmd_new "$@" ;;
@@ -1646,7 +1655,7 @@ case "$COMMAND" in
   skills)       cmd_skills "$@" ;;
   changelog)    cmd_changelog "$@" ;;
   release)      cmd_release "$@" ;;
-  version)      cmd_version ;;
+  version|--version) cmd_version ;;
   doctor)       cmd_doctor "$@" ;;
   help|-h|--help) cmd_help ;;
   *)
