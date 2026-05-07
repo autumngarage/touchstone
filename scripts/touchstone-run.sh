@@ -14,6 +14,17 @@ set -euo pipefail
 
 ACTION="${1:-validate}"
 
+clear_git_hook_env() {
+  unset GIT_DIR
+  unset GIT_WORK_TREE
+  unset GIT_INDEX_FILE
+  unset GIT_OBJECT_DIRECTORY
+  unset GIT_COMMON_DIR
+  unset GIT_NAMESPACE
+  unset GIT_PREFIX
+  unset GIT_INTERNAL_GETTEXT_SH_SCHEME
+}
+
 # tests/test-find-python-bin.sh sources this script with
 # TOUCHSTONE_RUN_SOURCE_ONLY=1 to call helpers directly without running the
 # action dispatcher at the bottom. Tests pass TOUCHSTONE_RUN_TEST_REPO_ROOT
@@ -22,6 +33,7 @@ ACTION="${1:-validate}"
 if [ "${TOUCHSTONE_RUN_SOURCE_ONLY:-0}" = "1" ]; then
   REPO_ROOT="${TOUCHSTONE_RUN_TEST_REPO_ROOT:-$(pwd)}"
 else
+  clear_git_hook_env
   REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
   cd "$REPO_ROOT"
 fi
@@ -170,6 +182,8 @@ run_shell_command() {
   info "$command"
   env \
     -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+    -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR -u GIT_NAMESPACE \
+    -u GIT_PREFIX -u GIT_INTERNAL_GETTEXT_SH_SCHEME \
     -u PRE_COMMIT -u PRE_COMMIT_FROM_REF -u PRE_COMMIT_TO_REF \
     -u PRE_COMMIT_LOCAL_BRANCH -u PRE_COMMIT_REMOTE_BRANCH \
     -u PRE_COMMIT_REMOTE_NAME -u PRE_COMMIT_REMOTE_URL \

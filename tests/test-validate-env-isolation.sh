@@ -33,6 +33,7 @@ VALIDATE_PROJECT="$TEST_DIR/validate-project"
 mkdir -p "$OUTER_REPO" "$VALIDATE_PROJECT"
 git -C "$OUTER_REPO" init -q
 git -C "$VALIDATE_PROJECT" init -q
+VALIDATE_PROJECT_PWD="$(cd "$VALIDATE_PROJECT" && pwd -P)"
 
 cat >"$VALIDATE_PROJECT/.touchstone-config" <<EOF_CONFIG
 validate_command=bash validate.sh
@@ -63,7 +64,7 @@ VALIDATE_OUT="$TEST_DIR/validate.out"
 ) >"$VALIDATE_OUT" 2>&1
 
 assert_contains "$VALIDATE_OUT" 'validate.sh'
-assert_contains "$VALIDATE_OUT" "validate-project-pwd=$VALIDATE_PROJECT"
+assert_contains "$VALIDATE_OUT" "validate-project-pwd=$VALIDATE_PROJECT_PWD"
 assert_not_exists "$OUTER_REPO/nested"
 
 if [ "$ERRORS" -ne 0 ]; then
