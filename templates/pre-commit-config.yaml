@@ -53,6 +53,14 @@ repos:
         args: ['-i', '2', '-ci', '-bn']
         exclude: ^(completions/|prototypes/)
 
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.46.0
+    hooks:
+      - id: markdownlint
+        args: ['--config', '.markdownlint.json']
+        files: ^([^/]+\.md|principles/.*\.md|audits/.*\.md|feedback/.*\.md|templates/.*\.md)$
+        exclude: ^\.cortex/
+
   # ── Branch naming enforcement ──────────────────────────────────────────
   - repo: local
     hooks:
