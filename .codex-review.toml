@@ -34,3 +34,4 @@ exclude = ["ollama"]
 
 [review]
 preflight_required = true
+comment_on_clean = true
