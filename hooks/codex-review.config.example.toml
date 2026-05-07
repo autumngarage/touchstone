@@ -71,10 +71,18 @@ unsafe_paths = [
 # Conductor routing (optional)
 # --------------------------------------------------------------------------
 # Fine-tune what Conductor picks and how hard it thinks. By default,
-# Touchstone applies size-aware routing below; set these only when you want a
-# global fallback or a pinned provider.
+# Touchstone applies size-aware routing below and excludes ollama from review
+# auto-routing. Local ollama providers are useful for cheap background help,
+# but the merge gate needs predictable review output; during Wave 2 on
+# 2026-05-07, PRs #214, #215, and #216 all needed manual
+# TOUCHSTONE_CONDUCTOR_EXCLUDE=ollama or --with claude because the local
+# provider timed out or returned malformed review output on substantial diffs.
+#
+# Projects with a code-review-capable model loaded locally can re-enable
+# ollama with a one-line override:
+#   exclude = []
 
-# [review.conductor]
+[review.conductor]
 # # Which provider wins auto-routing. One of:
 # #   "best"     — highest-quality-tier (frontier > strong > standard > local)
 # #   "cheapest" — minimize $/tok (good for throwaway branches)
@@ -93,8 +101,8 @@ unsafe_paths = [
 # # Pin a specific provider (bypasses auto-routing). Rarely needed.
 # # with = "claude"
 #
-# # Exclude providers from auto-routing (degraded, rate-limited, too expensive).
-# # exclude = "gemini"
+# Exclude providers from auto-routing (degraded, rate-limited, too expensive).
+exclude = ["ollama"]
 
 # --------------------------------------------------------------------------
 # Routing by diff size (default)

@@ -190,6 +190,30 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+echo "==> Test: conductor exclude config reaches route preview"
+REPO_EXCLUDE="$TEST_DIR/repo-exclude"
+new_repo "$REPO_EXCLUDE"
+cat >"$REPO_EXCLUDE/.codex-review.toml" <<'EOF'
+[review.conductor]
+exclude = ["ollama"]
+EOF
+git -C "$REPO_EXCLUDE" add . && git -C "$REPO_EXCLUDE" commit -qm cfg
+echo c >>"$REPO_EXCLUDE/README.md" && git -C "$REPO_EXCLUDE" add . && git -C "$REPO_EXCLUDE" commit -qm change
+
+: >"$ARGS_FILE"
+out="$(run_review "$REPO_EXCLUDE" --dry-run --base HEAD~1 2>&1)"
+
+if grep -q '\-\-exclude ollama' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'would pick: claude'; then
+  echo "==> PASS: [review.conductor].exclude reached conductor route"
+else
+  echo "FAIL: conductor exclude config should pass --exclude to route preview" >&2
+  echo "args: $(cat "$ARGS_FILE")" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ----------------------------------------------------------------------------
 echo '==> Test: --dry-run with `with =` pinned config skips route preview'
 REPO_PIN="$TEST_DIR/repo-pin"
 new_repo "$REPO_PIN"
