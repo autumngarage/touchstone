@@ -22,6 +22,14 @@
 #
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$SCRIPT_DIR/../lib/events.sh" ]; then
+  # shellcheck source=../lib/events.sh
+  source "$SCRIPT_DIR/../lib/events.sh"
+else
+  touchstone_emit_event() { :; }
+fi
+
 DRY_RUN=1
 FORCE=0
 UNLOCK_STALE=0
@@ -334,16 +342,27 @@ fi
 echo ""
 echo "==> Removing worktrees"
 for path in "${CANDIDATE_PATHS[@]}"; do
+  touchstone_emit_event cleanup_started worktree_path="$path"
   if path_needs_stale_unlock "$path"; then
-    git worktree unlock "$path"
+    if ! git worktree unlock "$path"; then
+      touchstone_emit_event cleanup_done worktree_path="$path" result=failed
+      exit 1
+    fi
     echo "    unlocked stale lock: $path"
   fi
   if [ "$FORCE" -eq 1 ]; then
-    git worktree remove --force "$path"
+    if ! git worktree remove --force "$path"; then
+      touchstone_emit_event cleanup_done worktree_path="$path" result=failed
+      exit 1
+    fi
   else
-    git worktree remove "$path"
+    if ! git worktree remove "$path"; then
+      touchstone_emit_event cleanup_done worktree_path="$path" result=failed
+      exit 1
+    fi
   fi
   echo "    removed: $path"
+  touchstone_emit_event cleanup_done worktree_path="$path" result=removed
 done
 
 echo ""

@@ -391,6 +391,7 @@ update_file "$TOUCHSTONE_ROOT/scripts/cleanup-worktrees.sh" "$PROJECT_DIR/script
 
 # Libraries used by touchstone-owned scripts.
 update_file "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
+update_file "$TOUCHSTONE_ROOT/lib/events.sh" "$PROJECT_DIR/lib/events.sh"
 
 if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
   update_file "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
@@ -539,6 +540,7 @@ write_touchstone_manifest() {
     printf 'scripts/spawn-worktree.sh\n'
     printf 'scripts/cleanup-worktrees.sh\n'
     printf 'lib/toml.sh\n'
+    printf 'lib/events.sh\n'
     if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
       printf 'scripts/run-pytest-in-venv.sh\n'
     fi
