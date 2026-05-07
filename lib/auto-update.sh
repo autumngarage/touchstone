@@ -145,6 +145,13 @@ touchstone_auto_project_sync() {
     return 0
   fi
 
+  local project_realpath touchstone_realpath
+  project_realpath="$(cd "$project_dir" 2>/dev/null && pwd -P || true)"
+  touchstone_realpath="$(cd "$TOUCHSTONE_ROOT" 2>/dev/null && pwd -P || true)"
+  if [ -n "$project_realpath" ] && [ "$project_realpath" = "$touchstone_realpath" ]; then
+    return 0
+  fi
+
   local project_id installed_id
   project_id="$(tr -d '[:space:]' <"$project_dir/.touchstone-version" 2>/dev/null || true)"
   installed_id="$(touchstone_installed_id)"
