@@ -18,9 +18,9 @@ else
   RED='' GREEN='' YELLOW='' BLUE='' BOLD='' DIM='' RESET=''
 fi
 
-tk_info()    { printf "${BOLD}==> %s${RESET}\n" "$*"; }
-tk_ok()      { printf "  ${GREEN}✓${RESET} %s\n" "$*"; }
-tk_warn()    { printf "  ${YELLOW}!${RESET} %s\n" "$*"; }
-tk_fail()    { printf "  ${RED}✗${RESET} %s\n" "$*"; }
-tk_dim()     { printf "  ${DIM}%s${RESET}\n" "$*"; }
-tk_header()  { printf "\n${BOLD}%s${RESET}\n\n" "$*"; }
+tk_info() { printf "${BOLD}==> %s${RESET}\n" "$*"; }
+tk_ok() { printf "  ${GREEN}✓${RESET} %s\n" "$*"; }
+tk_warn() { printf "  ${YELLOW}!${RESET} %s\n" "$*"; }
+tk_fail() { printf "  ${RED}✗${RESET} %s\n" "$*"; }
+tk_dim() { printf "  ${DIM}%s${RESET}\n" "$*"; }
+tk_header() { printf "\n${BOLD}%s${RESET}\n\n" "$*"; }

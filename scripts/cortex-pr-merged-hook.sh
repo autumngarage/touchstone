@@ -72,7 +72,10 @@ truthy() {
 read_config_value() {
   local config_file="$1" key="$2"
   local line lhs rhs result=""
-  [ -f "$config_file" ] || { printf ''; return 0; }
+  [ -f "$config_file" ] || {
+    printf ''
+    return 0
+  }
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line#"${line%%[![:space:]]*}"}"
     case "$line" in '#'* | '') continue ;; esac
@@ -86,7 +89,7 @@ read_config_value() {
       rhs="${rhs%"${rhs##*[![:space:]]}"}"
       result="$rhs"
     fi
-  done < "$config_file"
+  done <"$config_file"
   printf '%s' "$result"
 }
 

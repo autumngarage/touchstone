@@ -68,7 +68,7 @@ load_config() {
     value="$(trim "${line#*=}")"
 
     case "$key" in
-      project_type|profile) PROJECT_TYPE="$value" ;;
+      project_type | profile) PROJECT_TYPE="$value" ;;
       package_manager) PACKAGE_MANAGER="$value" ;;
       monorepo) MONOREPO="$value" ;;
       targets) TARGETS="$value" ;;
@@ -78,7 +78,7 @@ load_config() {
       test_command) TEST_COMMAND="$value" ;;
       validate_command) VALIDATE_COMMAND="$value" ;;
     esac
-  done < "$CONFIG_FILE"
+  done <"$CONFIG_FILE"
 }
 
 detect_node_package_manager() {
@@ -168,7 +168,12 @@ has_package_script() {
 run_shell_command() {
   local command="$1"
   info "$command"
-  bash -c "$command"
+  env \
+    -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+    -u PRE_COMMIT -u PRE_COMMIT_FROM_REF -u PRE_COMMIT_TO_REF \
+    -u PRE_COMMIT_LOCAL_BRANCH -u PRE_COMMIT_REMOTE_BRANCH \
+    -u PRE_COMMIT_REMOTE_NAME -u PRE_COMMIT_REMOTE_URL \
+    bash -c "$command"
 }
 
 configured_command_for_action() {
@@ -196,7 +201,7 @@ run_node_script() {
     pnpm) command="pnpm $script" ;;
     yarn) command="yarn $script" ;;
     bun) command="bun run $script" ;;
-    npm|*) command="npm run $script" ;;
+    npm | *) command="npm run $script" ;;
   esac
 
   run_shell_command "$command"
@@ -265,7 +270,7 @@ find_worktree_parent_root() {
     return 1
   fi
 
-  IFS= read -r gitdir < "$git_file" || {
+  IFS= read -r gitdir <"$git_file" || {
     echo "       Worktree check failed: cannot read gitdir from $git_file" >&2
     return 1
   }
@@ -311,7 +316,7 @@ run_node_action() {
   local action="$1"
 
   case "$action" in
-    lint|typecheck|build|test)
+    lint | typecheck | build | test)
       if run_node_script "$action"; then
         return 0
       fi
@@ -430,7 +435,7 @@ run_swift_action() {
         ok "swift-format not installed; skipped"
       fi
       ;;
-    typecheck|build) run_shell_command "swift build" ;;
+    typecheck | build) run_shell_command "swift build" ;;
     test) run_shell_command "swift test" ;;
     build_if_distinct)
       : # swift typecheck IS swift build — running it again would repeat
@@ -452,7 +457,7 @@ run_go_action() {
 
   case "$action" in
     lint) run_shell_command "go vet ./..." ;;
-    typecheck|build) run_shell_command "go build ./..." ;;
+    typecheck | build) run_shell_command "go build ./..." ;;
     test) run_shell_command "go test ./..." ;;
     build_if_distinct)
       : # go typecheck IS go build — running it again would repeat
@@ -468,12 +473,12 @@ run_profile_action() {
   local profile="$1" action="$2"
 
   case "$profile" in
-    node|typescript|ts) run_node_action "$action" ;;
+    node | typescript | ts) run_node_action "$action" ;;
     python) run_python_action "$action" ;;
     rust) run_rust_action "$action" ;;
     swift) run_swift_action "$action" ;;
     go) run_go_action "$action" ;;
-    generic|"")
+    generic | "")
       # build_if_distinct is a validate-time extra — silently no-op for generic
       # so "touchstone run validate" doesn't print a scary "no default command"
       # line on every non-typed project.
@@ -495,7 +500,7 @@ run_targets_action() {
 
   [ -n "$TARGETS" ] || return 1
 
-  IFS=',' read -r -a target_entries <<< "$TARGETS"
+  IFS=',' read -r -a target_entries <<<"$TARGETS"
   for entry in "${target_entries[@]}"; do
     entry="$(trim "$entry")"
     [ -z "$entry" ] && continue
@@ -605,9 +610,9 @@ print_detection() {
 load_config
 
 case "$ACTION" in
-  -h|--help) usage ;;
+  -h | --help) usage ;;
   detect) print_detection ;;
-  lint|typecheck|build|test) run_action "$ACTION" ;;
+  lint | typecheck | build | test) run_action "$ACTION" ;;
   validate) run_validate ;;
   *)
     echo "ERROR: unknown touchstone-run action '$ACTION'" >&2

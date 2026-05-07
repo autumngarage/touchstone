@@ -32,7 +32,7 @@ echo "==> Test: cleanup-branches.sh consults squash-map for squash-merged-then-m
 FAKE_BIN="$TEST_DIR/bin"
 mkdir -p "$FAKE_BIN"
 
-cat > "$FAKE_BIN/gh" <<'EOF'
+cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   "repo view --json defaultBranchRef --jq .defaultBranchRef.name")
@@ -56,7 +56,7 @@ git config user.email "test@example.com"
 git config user.name "Test"
 git remote add origin "$REMOTE"
 
-echo "A" > shared.txt
+echo "A" >shared.txt
 git add shared.txt
 git commit -qm "initial"
 git push -q -u origin main
@@ -67,7 +67,7 @@ git push -q -u origin main
 # false. Without the squash-map record, this branch would land in the
 # "needs human decision" bucket and stay there forever — the issue.
 git checkout -q -b feat/squash-then-moved-past
-echo "BRANCH_CONTENT" > shared.txt
+echo "BRANCH_CONTENT" >shared.txt
 git add shared.txt
 git commit -qm "feat: change shared.txt"
 RECORDED_OID="$(git rev-parse HEAD)"
@@ -78,7 +78,7 @@ git commit -qm "feat: change shared.txt (#100)"
 
 # Main moves on — another commit edits the same file. This is what breaks
 # the tree-equivalence check on feat/squash-then-moved-past.
-echo "EVOLVED_PAST_BRANCH" > shared.txt
+echo "EVOLVED_PAST_BRANCH" >shared.txt
 git add shared.txt
 git commit -qm "chore: further edits"
 
@@ -87,7 +87,7 @@ git commit -qm "chore: further edits"
 # equality check must reject the map record and let is_fully_applied take
 # over (which will correctly classify this branch as not-yet-applied).
 git checkout -q -b feat/squash-then-new-commits-locally
-echo "INITIAL_WORK" > new_file.txt
+echo "INITIAL_WORK" >new_file.txt
 git add new_file.txt
 git commit -qm "feat: initial work"
 STALE_RECORDED_OID="$(git rev-parse HEAD)"
@@ -97,12 +97,12 @@ git merge --squash feat/squash-then-new-commits-locally >/dev/null
 git commit -qm "feat: initial work (#101)"
 
 # Main moves on, breaking tree equivalence for this branch too.
-echo "DRIFT" > new_file.txt
+echo "DRIFT" >new_file.txt
 git add new_file.txt
 git commit -qm "chore: drift"
 
 git checkout -q feat/squash-then-new-commits-locally
-echo "POST_MERGE_LOCAL_WORK" > local_only.txt
+echo "POST_MERGE_LOCAL_WORK" >local_only.txt
 git add local_only.txt
 git commit -qm "feat: post-merge local work (not yet on main)"
 
@@ -112,7 +112,7 @@ git push -q origin main
 # — must survive both classifiers and land in "Has unique commits".
 git checkout -q main
 git checkout -q -b feat/keep-me-unrelated
-echo "UNIQUE" > unique.txt
+echo "UNIQUE" >unique.txt
 git add unique.txt
 git commit -qm "feat: unique work no record"
 
@@ -123,7 +123,7 @@ git checkout -q main
 # does at runtime.
 MAP_PATH="$(git rev-parse --git-path touchstone/squash-map.jsonl)"
 mkdir -p "$(dirname "$MAP_PATH")"
-cat > "$MAP_PATH" <<EOF
+cat >"$MAP_PATH" <<EOF
 {"branch":"feat/squash-then-moved-past","pr":"100","branch_oid":"$RECORDED_OID","squash_commit":"deadbeef","ts":"2026-05-06T00:00:00Z"}
 {"branch":"feat/squash-then-new-commits-locally","pr":"101","branch_oid":"$STALE_RECORDED_OID","squash_commit":"deadbee2","ts":"2026-05-06T00:01:00Z"}
 EOF
@@ -171,7 +171,7 @@ fi
 echo "==> Sub-test: missing squash-map is fail-soft"
 rm -f "$MAP_PATH"
 git checkout -q -b feat/no-map-still-classified
-echo "X" > x.txt
+echo "X" >x.txt
 git add x.txt
 git commit -qm "feat: x"
 git checkout -q main
@@ -181,7 +181,11 @@ git push -q origin main
 
 OUT2="$TEST_DIR/output-no-map.txt"
 PATH="$FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" --execute >"$OUT2" 2>&1 \
-  || { echo "FAIL: cleanup must not fail when squash-map is missing"; cat "$OUT2" >&2; exit 1; }
+  || {
+    echo "FAIL: cleanup must not fail when squash-map is missing"
+    cat "$OUT2" >&2
+    exit 1
+  }
 # This branch should still be classified by the existing tree-equivalence
 # fallback (tree on main matches branch's changed files since main hasn't
 # moved past it on this file).
@@ -191,16 +195,20 @@ fi
 
 echo "==> Sub-test: corrupt squash-map is fail-soft (no records)"
 mkdir -p "$(dirname "$MAP_PATH")"
-printf '{not valid json at all\nsecond garbage line\n' > "$MAP_PATH"
+printf '{not valid json at all\nsecond garbage line\n' >"$MAP_PATH"
 git checkout -q main
 git checkout -q -b feat/corrupt-map-leaves-unique
-echo "Y" > y_unique.txt
+echo "Y" >y_unique.txt
 git add y_unique.txt
 git commit -qm "feat: y (still has unique work)"
 OUT3="$TEST_DIR/output-corrupt-map.txt"
 git checkout -q main
 PATH="$FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" --execute >"$OUT3" 2>&1 \
-  || { echo "FAIL: cleanup must not fail on corrupt squash-map"; cat "$OUT3" >&2; exit 1; }
+  || {
+    echo "FAIL: cleanup must not fail on corrupt squash-map"
+    cat "$OUT3" >&2
+    exit 1
+  }
 if ! git rev-parse --verify --quiet refs/heads/feat/corrupt-map-leaves-unique >/dev/null; then
   fail "feat/corrupt-map-leaves-unique should NOT be deleted; corrupt map must yield no records"
 fi

@@ -19,7 +19,7 @@ MERGE_SCRIPT_DIR="$TEST_DIR/scripts"
 GIT_PATH_ROOT="$TEST_DIR/git-path"
 mkdir -p "$FAKE_BIN" "$MERGE_SCRIPT_DIR" "$GIT_PATH_ROOT"
 cp "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$MERGE_SCRIPT_DIR/merge-pr.sh"
-cat > "$MERGE_SCRIPT_DIR/codex-review.sh" <<'EOF'
+cat >"$MERGE_SCRIPT_DIR/codex-review.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 {
@@ -34,7 +34,7 @@ chmod +x "$MERGE_SCRIPT_DIR/merge-pr.sh" "$MERGE_SCRIPT_DIR/codex-review.sh"
 
 # Fake `gh` — same shape as tests/test-merge-pr.sh, trimmed to what this test
 # exercises (PR view + merge + comment + checkout).
-cat > "$FAKE_BIN/gh" <<'EOF'
+cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -91,7 +91,7 @@ EOF
 #   GIT_DIRTY_STATUS  — value returned from `git status --porcelain`
 #   GIT_DIFF_PATHS    — newline-separated paths returned from
 #                       `git diff --name-only origin/main...HEAD`
-cat > "$FAKE_BIN/git" <<'EOF'
+cat >"$FAKE_BIN/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -203,7 +203,7 @@ echo "==> Test: dirty file outside PR diff lets review proceed"
 reset_case_files
 GIT_DIRTY_STATUS=" M bootstrap/new-project.sh
 " \
-GIT_DIFF_PATHS="scripts/merge-pr.sh
+  GIT_DIFF_PATHS="scripts/merge-pr.sh
 tests/test-merge-pr.sh" \
   run_merge_pr "$TEST_DIR/output-outside.txt" 123
 if grep -q '==> Working tree has uncommitted changes outside PR #123' "$TEST_DIR/output-outside.txt" \
@@ -226,7 +226,7 @@ echo "==> Test: dirty file inside PR diff still refuses the review"
 reset_case_files
 if GIT_DIRTY_STATUS=" M scripts/merge-pr.sh
 " \
-GIT_DIFF_PATHS="scripts/merge-pr.sh
+  GIT_DIFF_PATHS="scripts/merge-pr.sh
 tests/test-merge-pr.sh" \
   run_merge_pr "$TEST_DIR/output-inside.txt" 123; then
   echo "FAIL: dirty path inside PR diff should refuse the review" >&2
@@ -254,7 +254,7 @@ echo "==> Test: dirty rename outside PR diff is handled and lets review proceed"
 reset_case_files
 GIT_DIRTY_STATUS="R  bootstrap/old-name.sh -> bootstrap/new-name.sh
 " \
-GIT_DIFF_PATHS="scripts/merge-pr.sh" \
+  GIT_DIFF_PATHS="scripts/merge-pr.sh" \
   run_merge_pr "$TEST_DIR/output-rename-outside.txt" 123
 if grep -q '==> Running merge review' "$TEST_DIR/output-rename-outside.txt" \
   && grep -q '==> Done\.' "$TEST_DIR/output-rename-outside.txt" \
@@ -274,7 +274,7 @@ echo "==> Test: dirty rename inside PR diff refuses with post-rename path"
 reset_case_files
 if GIT_DIRTY_STATUS="R  scripts/old-name.sh -> scripts/merge-pr.sh
 " \
-GIT_DIFF_PATHS="scripts/merge-pr.sh" \
+  GIT_DIFF_PATHS="scripts/merge-pr.sh" \
   run_merge_pr "$TEST_DIR/output-rename-inside.txt" 123; then
   echo "FAIL: rename whose target is inside PR diff should refuse" >&2
   cat "$TEST_DIR/output-rename-inside.txt" >&2

@@ -14,7 +14,7 @@ MERGE_SCRIPT_DIR="$TEST_DIR/scripts"
 GIT_PATH_ROOT="$TEST_DIR/git-path"
 mkdir -p "$FAKE_BIN" "$MERGE_SCRIPT_DIR" "$GIT_PATH_ROOT"
 cp "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$MERGE_SCRIPT_DIR/merge-pr.sh"
-cat > "$MERGE_SCRIPT_DIR/codex-review.sh" <<'EOF'
+cat >"$MERGE_SCRIPT_DIR/codex-review.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 {
@@ -27,7 +27,7 @@ exit 0
 EOF
 chmod +x "$MERGE_SCRIPT_DIR/merge-pr.sh" "$MERGE_SCRIPT_DIR/codex-review.sh"
 
-cat > "$FAKE_BIN/gh" <<'EOF'
+cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -91,7 +91,7 @@ case "${1:-} ${2:-}" in
 esac
 EOF
 
-cat > "$FAKE_BIN/git" <<'EOF'
+cat >"$FAKE_BIN/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 

@@ -75,7 +75,7 @@ log_file="$log_dir/emergency-bypass.log"
 mkdir -p "$log_dir" 2>/dev/null || true
 {
   printf '%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$command"
-} >> "$log_file" 2>/dev/null || true
+} >>"$log_file" 2>/dev/null || true
 
 echo "emergency-disclosure: TOUCHSTONE_EMERGENCY=1 — push allowed; logged to ${log_file#"$cwd/"} for next-PR disclosure" >&2
 exit 0

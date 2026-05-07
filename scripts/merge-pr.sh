@@ -99,7 +99,7 @@ DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.n
 
 truthy() {
   case "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" in
-    true|1|yes|on) return 0 ;;
+    true | 1 | yes | on) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -335,7 +335,7 @@ record_squash_merge() {
   fi
 
   if ! map_path="$(git rev-parse --git-path touchstone/squash-map.jsonl 2>/dev/null)" \
-      || [ -z "$map_path" ]; then
+    || [ -z "$map_path" ]; then
     echo "WARNING: record_squash_merge: could not resolve squash-map path; skipping." >&2
     return 0
   fi
@@ -355,7 +355,7 @@ record_squash_merge() {
   local field
   for field in "$branch" "$pr" "$branch_oid" "$squash_commit" "$ts"; do
     case "$field" in
-      *\"*|*\\*)
+      *\"* | *\\*)
         echo "WARNING: record_squash_merge: field contains quote/backslash, skipping squash-map write." >&2
         return 0
         ;;
@@ -364,7 +364,7 @@ record_squash_merge() {
 
   local line
   line="{\"branch\":\"$branch\",\"pr\":\"$pr\",\"branch_oid\":\"$branch_oid\",\"squash_commit\":\"$squash_commit\",\"ts\":\"$ts\"}"
-  if ! printf '%s\n' "$line" >> "$map_path" 2>/dev/null; then
+  if ! printf '%s\n' "$line" >>"$map_path" 2>/dev/null; then
     echo "WARNING: record_squash_merge: could not append to $map_path; skipping squash-map write." >&2
     return 0
   fi

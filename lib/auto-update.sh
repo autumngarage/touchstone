@@ -39,7 +39,7 @@ touchstone_auto_update() {
   fi
 
   # Record that we're checking now (even if the check fails).
-  date +%s > "$LAST_CHECK_FILE"
+  date +%s >"$LAST_CHECK_FILE"
 
   # Get current version.
   local current_version

@@ -40,7 +40,7 @@ usage() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --execute|-x)
+    --execute | -x)
       DRY_RUN=0
       shift
       ;;
@@ -57,7 +57,7 @@ while [ "$#" -gt 0 ]; do
       DRY_RUN=1
       shift
       ;;
-    -h|--help)
+    -h | --help)
       usage
       exit 0
       ;;
@@ -214,7 +214,7 @@ flush_worktree() {
   printf '    head: %s\n' "${current_head:-unknown}"
   printf '    status: %s\n' "$dirty_label"
   if [ "$current_locked" -eq 1 ]; then
-    IFS='|' read -r lock_state lock_pid lock_label <<< "$(classify_lock "$current_lock_reason")"
+    IFS='|' read -r lock_state lock_pid lock_label <<<"$(classify_lock "$current_lock_reason")"
     printf '    lock: %s\n' "$lock_label"
   fi
 
@@ -314,7 +314,7 @@ while IFS= read -r line || [ -n "$line" ]; do
       current_lock_reason=""
       ;;
   esac
-done <<< "$WORKTREE_LIST"
+done <<<"$WORKTREE_LIST"
 flush_worktree
 
 echo ""

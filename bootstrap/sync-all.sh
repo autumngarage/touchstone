@@ -25,14 +25,26 @@ CHECK_ONLY=false
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --dry-run|-n) DRY_RUN="--dry-run"; shift ;;
-    --pull-first) PULL_FIRST=true; shift ;;
-    --check) CHECK_ONLY=true; shift ;;
-    -h|--help)
+    --dry-run | -n)
+      DRY_RUN="--dry-run"
+      shift
+      ;;
+    --pull-first)
+      PULL_FIRST=true
+      shift
+      ;;
+    --check)
+      CHECK_ONLY=true
+      shift
+      ;;
+    -h | --help)
       sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
-    *) echo "ERROR: unknown argument '$1'" >&2; exit 1 ;;
+    *)
+      echo "ERROR: unknown argument '$1'" >&2
+      exit 1
+      ;;
   esac
 done
 
@@ -75,7 +87,7 @@ if [ "$CHECK_ONLY" = true ]; then
       echo "  ! $(basename "$project_dir") — needs sync"
       BEHIND=$((BEHIND + 1))
     fi
-  done < "$PROJECTS_FILE"
+  done <"$PROJECTS_FILE"
   echo ""
   if [ "$BEHIND" -eq 0 ]; then
     echo "All $TOTAL projects are up to date."
@@ -114,7 +126,7 @@ while IFS= read -r project_dir; do
     echo "==> FAILED: $project_dir"
     FAILED=$((FAILED + 1))
   fi
-done < "$PROJECTS_FILE"
+done <"$PROJECTS_FILE"
 
 echo ""
 echo "================================================================"

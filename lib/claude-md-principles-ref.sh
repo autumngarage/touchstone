@@ -43,12 +43,15 @@ CLAUDE_MD_PRINCIPLES_MARKER='<!-- touchstone:claude-principles-ref -->'
 # missing config or unmatched grep.
 claude_md_principles_ref_decision() {
   local config="$1/.touchstone-config"
-  [ -f "$config" ] || { printf ''; return 0; }
+  [ -f "$config" ] || {
+    printf ''
+    return 0
+  }
   local val
   val="$(grep -E '^claude_principles_ref=' "$config" 2>/dev/null \
-         | tail -n1 \
-         | cut -d= -f2- \
-         | tr -d '[:space:]' || true)"
+    | tail -n1 \
+    | cut -d= -f2- \
+    | tr -d '[:space:]' || true)"
   printf '%s' "$val"
   return 0
 }
@@ -60,12 +63,12 @@ claude_md_principles_ref_record() {
   local value="$2"
   local config="$project_dir/.touchstone-config"
   case "$value" in
-    connected|skipped) ;;
+    connected | skipped) ;;
     *) return 1 ;;
   esac
 
   if [ ! -f "$config" ]; then
-    printf '# touchstone project profile.\nclaude_principles_ref=%s\n' "$value" > "$config"
+    printf '# touchstone project profile.\nclaude_principles_ref=%s\n' "$value" >"$config"
     return 0
   fi
 
@@ -75,11 +78,11 @@ claude_md_principles_ref_record() {
     awk -v v="$value" '
       /^claude_principles_ref=/ { print "claude_principles_ref=" v; next }
       { print }
-    ' "$config" > "$tmp"
-    cat "$tmp" > "$config"
+    ' "$config" >"$tmp"
+    cat "$tmp" >"$config"
     rm -f "$tmp"
   else
-    printf 'claude_principles_ref=%s\n' "$value" >> "$config"
+    printf 'claude_principles_ref=%s\n' "$value" >>"$config"
   fi
 }
 
@@ -113,7 +116,7 @@ claude_md_insert_missing_principles_refs() {
   while IFS= read -r ref; do
     [ -n "$ref" ] || continue
     if ! grep -qF "$ref" "$target"; then
-      printf '%s\n' "$ref" >> "$missing_file"
+      printf '%s\n' "$ref" >>"$missing_file"
     fi
   done <<'EOF'
 @principles/pre-implementation-checklist.md
@@ -129,17 +132,17 @@ EOF
   local inserted=0 line
   while IFS= read -r line || [ -n "$line" ]; do
     if [ "$inserted" = 0 ] && printf '%s\n' "$line" | grep -qE '^@principles/'; then
-      cat "$missing_file" >> "$out_file"
+      cat "$missing_file" >>"$out_file"
       inserted=1
     fi
-    printf '%s\n' "$line" >> "$out_file"
-  done < "$target"
+    printf '%s\n' "$line" >>"$out_file"
+  done <"$target"
 
   if [ "$inserted" = 0 ]; then
-    cat "$missing_file" >> "$out_file"
+    cat "$missing_file" >>"$out_file"
   fi
 
-  cat "$out_file" > "$target"
+  cat "$out_file" >"$target"
   rm -f "$missing_file" "$out_file"
   return 0
 }
@@ -179,23 +182,23 @@ claude_md_inject_principles_block() {
   local block_file out_file
   block_file="$(mktemp -t claude-md-principles.XXXXXX)"
   out_file="$(mktemp -t claude-md-principles-out.XXXXXX)"
-  claude_md_render_principles_block > "$block_file"
+  claude_md_render_principles_block >"$block_file"
 
   local first_line
   first_line="$(head -n 1 "$target" || true)"
   if [[ "$first_line" =~ ^\#\  ]]; then
-    printf '%s\n' "$first_line" >> "$out_file"
-    printf '\n' >> "$out_file"
-    cat "$block_file" >> "$out_file"
-    printf '\n' >> "$out_file"
-    tail -n +2 "$target" >> "$out_file"
+    printf '%s\n' "$first_line" >>"$out_file"
+    printf '\n' >>"$out_file"
+    cat "$block_file" >>"$out_file"
+    printf '\n' >>"$out_file"
+    tail -n +2 "$target" >>"$out_file"
   else
-    cat "$block_file" >> "$out_file"
-    printf '\n' >> "$out_file"
-    cat "$target" >> "$out_file"
+    cat "$block_file" >>"$out_file"
+    printf '\n' >>"$out_file"
+    cat "$target" >>"$out_file"
   fi
 
-  cat "$out_file" > "$target"
+  cat "$out_file" >"$target"
   rm -f "$block_file" "$out_file"
   return 0
 }
@@ -220,9 +223,9 @@ ensure_claude_principles_ref() {
   local mode="${2:-prompt}"
   local claude_md="$project_dir/CLAUDE.md"
 
-  _epr_say()  { if command -v tk_dim   >/dev/null 2>&1; then tk_dim   "$@"; else echo "$@";   fi; }
-  _epr_ok()   { if command -v tk_ok    >/dev/null 2>&1; then tk_ok    "$@"; else echo "OK: $*"; fi; }
-  _epr_warn() { if command -v tk_warn  >/dev/null 2>&1; then tk_warn  "$@"; else echo "WARN: $*" >&2; fi; }
+  _epr_say() { if command -v tk_dim >/dev/null 2>&1; then tk_dim "$@"; else echo "$@"; fi; }
+  _epr_ok() { if command -v tk_ok >/dev/null 2>&1; then tk_ok "$@"; else echo "OK: $*"; fi; }
+  _epr_warn() { if command -v tk_warn >/dev/null 2>&1; then tk_warn "$@"; else echo "WARN: $*" >&2; fi; }
   _epr_head() { if command -v tk_header >/dev/null 2>&1; then tk_header "$@"; else echo "==> $*"; fi; }
 
   # Respect a prior decision. Once recorded, init never re-prompts. A prior
@@ -269,10 +272,10 @@ ensure_claude_principles_ref() {
       claude_md_principles_ref_record "$project_dir" skipped
       _epr_say "Skipped Touchstone principles in CLAUDE.md (recorded in .touchstone-config)."
       ;;
-    prompt|*)
+    prompt | *)
       if [ ! -t 0 ] || [ ! -t 1 ]; then
         _epr_warn "CLAUDE.md exists but does not import all touchstone principles."
-        _epr_say  "Re-run interactively, or pass --no-claude-principles to skip permanently."
+        _epr_say "Re-run interactively, or pass --no-claude-principles to skip permanently."
         return 0
       fi
       _epr_head "Touchstone — connect CLAUDE.md to engineering principles"
@@ -290,7 +293,7 @@ ensure_claude_principles_ref() {
       printf "  Add the imports to CLAUDE.md? [Y/n] "
       read -r answer || answer=""
       case "$answer" in
-        n|N|no|NO|No)
+        n | N | no | NO | No)
           claude_md_principles_ref_record "$project_dir" skipped
           _epr_say "Skipped. Re-run touchstone init to opt in later."
           ;;

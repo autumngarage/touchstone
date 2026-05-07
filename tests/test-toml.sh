@@ -32,25 +32,25 @@ assert_eq() {
 }
 
 # Case 1: Simple keys
-printf 'a = 1\nb = "two"' > test.toml
+printf 'a = 1\nb = "two"' >test.toml
 test_results=""
 toml_parse test.toml test_callback
 assert_eq ":a=1|:b=two|" "$test_results" "Simple keys"
 
 # Case 2: Sections
-printf '[sec]\nkey = "val"' > test.toml
+printf '[sec]\nkey = "val"' >test.toml
 test_results=""
 toml_parse test.toml test_callback
 assert_eq "sec:key=val|" "$test_results" "Sections"
 
 # Case 3: Arrays
-printf 'arr = ["a", "b"]' > test.toml
+printf 'arr = ["a", "b"]' >test.toml
 test_results=""
 toml_parse test.toml test_callback
 assert_eq ":arr=a,b|" "$test_results" "Single-line array"
 
 # Case 4: Multiline arrays
-printf 'arr = [\n"a",\n"b"\n]' > test.toml
+printf 'arr = [\n"a",\n"b"\n]' >test.toml
 test_results=""
 toml_parse test.toml test_callback
 assert_eq ":arr=a,b|" "$test_results" "Multiline array"

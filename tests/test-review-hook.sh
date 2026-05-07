@@ -49,21 +49,21 @@ mkdir -p "$FAKE_BIN"
 setup_test_repo "$REPO_DIR"
 
 cp "$TOUCHSTONE_ROOT/.codex-review.toml" "$REPO_DIR/.codex-review.toml"
-printf 'base\n' > "$REPO_DIR/example.txt"
+printf 'base\n' >"$REPO_DIR/example.txt"
 git -C "$REPO_DIR" add .codex-review.toml example.txt
 git -C "$REPO_DIR" commit -m "base" >/dev/null 2>&1
 
-printf 'changed\n' >> "$REPO_DIR/example.txt"
+printf 'changed\n' >>"$REPO_DIR/example.txt"
 git -C "$REPO_DIR" add example.txt
 git -C "$REPO_DIR" commit -m "change" >/dev/null 2>&1
 
-cat > "$FAKE_BIN/gh" <<'EOF'
+cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 echo "main"
 EOF
 
-cat > "$FAKE_BIN/conductor" <<'EOF'
+cat >"$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
@@ -96,7 +96,7 @@ else
 fi
 
 echo "==> Test: review hook skips feature-branch pushes but runs default-branch pushes"
-cat > "$FAKE_BIN/conductor" <<'EOF'
+cat >"$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
@@ -104,7 +104,7 @@ printf 'called\n' >> "$CODEX_CALLS_FILE"
 printf 'CODEX_REVIEW_CLEAN\n'
 EOF
 chmod +x "$FAKE_BIN/conductor"
-: > "$CODEX_CALLS_FILE"
+: >"$CODEX_CALLS_FILE"
 
 (
   cd "$REPO_DIR"
@@ -115,10 +115,10 @@ chmod +x "$FAKE_BIN/conductor"
     PRE_COMMIT_REMOTE_BRANCH="refs/heads/feature/test" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TEST_DIR/feature-push-output.txt" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TEST_DIR/feature-push-output.txt" 2>&1
 )
 
-CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+CODEX_CALL_COUNT="$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
 if [ "$CODEX_CALL_COUNT" = "0" ] && grep -q 'skipping push to feature/test' "$TEST_DIR/feature-push-output.txt"; then
   echo "==> PASS: feature-branch push skipped review"
 else
@@ -140,7 +140,7 @@ fi
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
 )
 
-CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+CODEX_CALL_COUNT="$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
 if [ "$CODEX_CALL_COUNT" = "1" ]; then
   echo "==> PASS: default-branch push ran review"
 else
@@ -163,11 +163,11 @@ git -C "$FIRSTPUSH_REPO" config user.name "Touchstone Test"
 git -C "$FIRSTPUSH_REPO" config user.email "touchstone@example.com"
 cp "$TOUCHSTONE_ROOT/.codex-review.toml" "$FIRSTPUSH_REPO/.codex-review.toml"
 cp -r "$TOUCHSTONE_ROOT/lib/"* "$FIRSTPUSH_REPO/lib/"
-printf 'scaffold\n' > "$FIRSTPUSH_REPO/README.md"
+printf 'scaffold\n' >"$FIRSTPUSH_REPO/README.md"
 git -C "$FIRSTPUSH_REPO" add .codex-review.toml README.md
 git -C "$FIRSTPUSH_REPO" commit -m "initial scaffold" >/dev/null 2>&1
 
-: > "$CODEX_CALLS_FILE"
+: >"$CODEX_CALLS_FILE"
 (
   cd "$FIRSTPUSH_REPO"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
@@ -176,10 +176,10 @@ git -C "$FIRSTPUSH_REPO" commit -m "initial scaffold" >/dev/null 2>&1
     PRE_COMMIT_LOCAL_BRANCH="refs/heads/main" \
     PRE_COMMIT_REMOTE_BRANCH="refs/heads/main" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$FIRSTPUSH_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$FIRSTPUSH_OUTPUT" 2>&1
 )
 
-CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+CODEX_CALL_COUNT="$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
 if [ "$CODEX_CALL_COUNT" = "0" ] \
   && grep -q 'first push on a fresh scaffold' "$FIRSTPUSH_OUTPUT" \
   && grep -q 'HEAD is the initial commit' "$FIRSTPUSH_OUTPUT"; then
@@ -196,11 +196,11 @@ echo "==> Test: review hook does NOT skip when HEAD has 2+ commits on default br
 # first-push exemption must turn off — otherwise any push of only two commits
 # to the default branch would also skip review, which is the opposite of what
 # we want for a stacked hotfix flow.
-printf 'second\n' >> "$FIRSTPUSH_REPO/README.md"
+printf 'second\n' >>"$FIRSTPUSH_REPO/README.md"
 git -C "$FIRSTPUSH_REPO" add README.md
 git -C "$FIRSTPUSH_REPO" commit -m "second commit" >/dev/null 2>&1
 
-: > "$CODEX_CALLS_FILE"
+: >"$CODEX_CALLS_FILE"
 (
   cd "$FIRSTPUSH_REPO"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
@@ -210,10 +210,10 @@ git -C "$FIRSTPUSH_REPO" commit -m "second commit" >/dev/null 2>&1
     PRE_COMMIT_REMOTE_BRANCH="refs/heads/main" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TEST_DIR/firstpush-second-output.txt" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TEST_DIR/firstpush-second-output.txt" 2>&1
 )
 
-CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+CODEX_CALL_COUNT="$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
 if [ "$CODEX_CALL_COUNT" = "1" ] \
   && ! grep -q 'first push on a fresh scaffold' "$TEST_DIR/firstpush-second-output.txt"; then
   echo "==> PASS: second-commit push on default branch ran review (first-push exemption did not misfire)"
@@ -225,7 +225,7 @@ else
 fi
 
 echo "==> Test: review hook skips nested Codex review subprocesses"
-: > "$CODEX_CALLS_FILE"
+: >"$CODEX_CALLS_FILE"
 
 (
   cd "$REPO_DIR"
@@ -234,10 +234,10 @@ echo "==> Test: review hook skips nested Codex review subprocesses"
     CODEX_REVIEW_IN_PROGRESS=1 \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TEST_DIR/nested-review-output.txt" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TEST_DIR/nested-review-output.txt" 2>&1
 )
 
-CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+CODEX_CALL_COUNT="$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
 if [ "$CODEX_CALL_COUNT" = "0" ] && grep -q 'skipping nested review' "$TEST_DIR/nested-review-output.txt"; then
   echo "==> PASS: nested review skipped"
 else
@@ -249,7 +249,7 @@ fi
 
 echo "==> Test: review hook caches exact clean reviews"
 rm -rf "$(git -C "$REPO_DIR" rev-parse --absolute-git-dir)/touchstone/codex-review-clean"
-cat > "$FAKE_BIN/conductor" <<'EOF'
+cat >"$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
@@ -257,7 +257,7 @@ printf 'called\n' >> "$CODEX_CALLS_FILE"
 printf 'CODEX_REVIEW_CLEAN\n'
 EOF
 chmod +x "$FAKE_BIN/conductor"
-: > "$CODEX_CALLS_FILE"
+: >"$CODEX_CALLS_FILE"
 
 (
   cd "$REPO_DIR"
@@ -272,10 +272,10 @@ chmod +x "$FAKE_BIN/conductor"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CACHE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CACHE_OUTPUT" 2>&1
 )
 
-CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+CODEX_CALL_COUNT="$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
 if [ "$CODEX_CALL_COUNT" = "1" ] && grep -q 'previously passed for this exact diff' "$CACHE_OUTPUT"; then
   echo "==> PASS: clean review cache skipped the repeated review call"
 else
@@ -294,7 +294,7 @@ fi
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
 )
 
-CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+CODEX_CALL_COUNT="$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
 if [ "$CODEX_CALL_COUNT" = "2" ]; then
   echo "==> PASS: CODEX_REVIEW_DISABLE_CACHE forces a fresh review"
 else
@@ -315,7 +315,7 @@ echo "==> Test: changing conductor knobs invalidates the cache"
     TOUCHSTONE_CONDUCTOR_WITH=claude \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
 )
-CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+CODEX_CALL_COUNT="$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
 if [ "$CODEX_CALL_COUNT" = "3" ]; then
   echo "==> PASS: TOUCHSTONE_CONDUCTOR_WITH change invalidated cache"
 else
@@ -335,7 +335,7 @@ fi
     TOUCHSTONE_CONDUCTOR_WITH=claude \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
 )
-CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+CODEX_CALL_COUNT="$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
 if [ "$CODEX_CALL_COUNT" = "3" ]; then
   echo "==> PASS: same conductor knobs hit the new cache entry"
 else
@@ -354,7 +354,7 @@ fi
     TOUCHSTONE_CONDUCTOR_EFFORT=low \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
 )
-CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+CODEX_CALL_COUNT="$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
 if [ "$CODEX_CALL_COUNT" = "4" ]; then
   echo "==> PASS: TOUCHSTONE_CONDUCTOR_EFFORT change invalidated cache"
 else
@@ -372,7 +372,7 @@ echo "==> Test: changing prompt context mode invalidates the cache"
     CODEX_REVIEW_CONTEXT_MODE=full \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
 )
-CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+CODEX_CALL_COUNT="$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
 if [ "$CODEX_CALL_COUNT" = "5" ]; then
   echo "==> PASS: CODEX_REVIEW_CONTEXT_MODE=full invalidated bounded-context cache"
 else
@@ -389,7 +389,7 @@ fi
     CODEX_REVIEW_CONTEXT_MODE=full \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
 )
-CODEX_CALL_COUNT="$(wc -l < "$CODEX_CALLS_FILE" | tr -d ' ')"
+CODEX_CALL_COUNT="$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
 if [ "$CODEX_CALL_COUNT" = "5" ]; then
   echo "==> PASS: repeated full-context review hit its own cache entry"
 else
@@ -399,7 +399,7 @@ else
 fi
 
 echo "==> Test: review hook preserves # inside quoted unsafe_paths"
-cat > "$FAKE_BIN/conductor" <<'EOF'
+cat >"$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
@@ -412,10 +412,10 @@ chmod +x "$FAKE_BIN/conductor"
   printf '[codex_review]\n'
   printf 'safe_by_default = true\n'
   printf 'unsafe_paths = ["src/#secret/", "lib/ok/"] # trailing comment\n'
-} > "$REPO_DIR/.codex-review.toml"
+} >"$REPO_DIR/.codex-review.toml"
 git -C "$REPO_DIR" add .codex-review.toml
 git -C "$REPO_DIR" commit -m "quoted unsafe paths" >/dev/null 2>&1
-printf 'changed again\n' >> "$REPO_DIR/example.txt"
+printf 'changed again\n' >>"$REPO_DIR/example.txt"
 git -C "$REPO_DIR" add example.txt
 git -C "$REPO_DIR" commit -m "change again" >/dev/null 2>&1
 
@@ -444,16 +444,16 @@ setup_test_repo "$REPO_UNSAFE"
   printf '[codex_review]\n'
   printf 'safe_by_default = true\n'
   printf 'unsafe_paths = ["templates/"]\n'
-} > "$REPO_UNSAFE/.codex-review.toml"
-printf 'base\n' > "$REPO_UNSAFE/templates/AGENTS.md"
-printf 'base\n' > "$REPO_UNSAFE/example.txt"
+} >"$REPO_UNSAFE/.codex-review.toml"
+printf 'base\n' >"$REPO_UNSAFE/templates/AGENTS.md"
+printf 'base\n' >"$REPO_UNSAFE/example.txt"
 git -C "$REPO_UNSAFE" add .codex-review.toml templates/AGENTS.md example.txt
 git -C "$REPO_UNSAFE" commit -m "base" >/dev/null 2>&1
-printf 'changed\n' >> "$REPO_UNSAFE/example.txt"
+printf 'changed\n' >>"$REPO_UNSAFE/example.txt"
 git -C "$REPO_UNSAFE" add example.txt
 git -C "$REPO_UNSAFE" commit -m "change" >/dev/null 2>&1
 
-cat > "$FAKE_BIN/conductor" <<'EOF'
+cat >"$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
@@ -469,7 +469,7 @@ set +e
   cd "$REPO_UNSAFE"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CODEX_REVIEW_BASE="HEAD~1" \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$UNSAFE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$UNSAFE_OUTPUT" 2>&1
 )
 UNSAFE_EXIT=$?
 set -e
@@ -509,10 +509,10 @@ CODEX_ARGS_FILE="$TEST_DIR/conductor-args.txt"
 setup_cascade_repo() {
   rm -rf "$CASCADE_REPO"
   setup_test_repo "$CASCADE_REPO"
-  printf 'base\n' > "$CASCADE_REPO/example.txt"
+  printf 'base\n' >"$CASCADE_REPO/example.txt"
   git -C "$CASCADE_REPO" add example.txt
   git -C "$CASCADE_REPO" commit -m "base" >/dev/null 2>&1
-  printf 'changed\n' >> "$CASCADE_REPO/example.txt"
+  printf 'changed\n' >>"$CASCADE_REPO/example.txt"
   git -C "$CASCADE_REPO" add example.txt
   git -C "$CASCADE_REPO" commit -m "change" >/dev/null 2>&1
 }
@@ -520,10 +520,10 @@ setup_cascade_repo() {
 setup_mode_repo() {
   rm -rf "$MODE_REPO"
   setup_test_repo "$MODE_REPO"
-  printf 'base\n' > "$MODE_REPO/example.txt"
+  printf 'base\n' >"$MODE_REPO/example.txt"
   git -C "$MODE_REPO" add example.txt
   git -C "$MODE_REPO" commit -m "base" >/dev/null 2>&1
-  printf 'changed\n' >> "$MODE_REPO/example.txt"
+  printf 'changed\n' >>"$MODE_REPO/example.txt"
   git -C "$MODE_REPO" add example.txt
   git -C "$MODE_REPO" commit -m "change" >/dev/null 2>&1
 }
@@ -533,13 +533,13 @@ setup_cascade_repo
 {
   printf '[codex_review]\nsafe_by_default = true\n'
   printf '[review]\nreviewers = ["claude", "gemini"]\n'
-} > "$CASCADE_REPO/.codex-review.toml"
+} >"$CASCADE_REPO/.codex-review.toml"
 git -C "$CASCADE_REPO" add .codex-review.toml
 git -C "$CASCADE_REPO" commit -m "config" >/dev/null 2>&1
 
 rm -rf "$CASCADE_BIN"
 mkdir -p "$CASCADE_BIN"
-cat > "$CASCADE_BIN/gh" <<'EOF'
+cat >"$CASCADE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
@@ -550,7 +550,7 @@ set +e
   cd "$CASCADE_REPO"
   PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CODEX_REVIEW_BASE="HEAD~1" \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CASCADE_OUTPUT" 2>&1
 )
 ALL_UNAVAIL_EXIT=$?
 set -e
@@ -574,24 +574,24 @@ setup_cascade_repo
   printf '[review]\n'
   printf 'enabled = false\n'
   printf 'reviewers = ["codex"]\n'
-} > "$CASCADE_REPO/.codex-review.toml"
+} >"$CASCADE_REPO/.codex-review.toml"
 git -C "$CASCADE_REPO" add .codex-review.toml
 git -C "$CASCADE_REPO" commit -m "review disabled" >/dev/null 2>&1
 
 rm -rf "$CASCADE_BIN"
 mkdir -p "$CASCADE_BIN"
-cat > "$CASCADE_BIN/gh" <<'EOF'
+cat >"$CASCADE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$CASCADE_BIN/conductor" <<'CXEOF'
+cat >"$CASCADE_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 printf '%s\n' "codex-called" >> "$CASCADE_CALLS"
 printf 'CODEX_REVIEW_CLEAN\n'
 CXEOF
 chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/conductor"
-: > "$CASCADE_CALLS"
+: >"$CASCADE_CALLS"
 
 (
   cd "$CASCADE_REPO"
@@ -599,7 +599,7 @@ chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/conductor"
     CASCADE_CALLS="$CASCADE_CALLS" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CASCADE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CASCADE_OUTPUT" 2>&1
 )
 
 if [ ! -s "$CASCADE_CALLS" ] && grep -q 'AI review disabled' "$CASCADE_OUTPUT"; then
@@ -615,11 +615,11 @@ echo "==> Test: CODEX_REVIEW_NO_AUTOFIX backward compat maps to review-only"
 setup_mode_repo
 rm -rf "$MODE_BIN"
 mkdir -p "$MODE_BIN"
-cat > "$MODE_BIN/gh" <<'EOF'
+cat >"$MODE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$MODE_BIN/conductor" <<'CXEOF'
+cat >"$MODE_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 printf '%s\n' "$*" > "$CODEX_ARGS_FILE"
@@ -629,7 +629,7 @@ chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
 
 {
   printf '[codex_review]\nsafe_by_default = true\n'
-} > "$MODE_REPO/.codex-review.toml"
+} >"$MODE_REPO/.codex-review.toml"
 git -C "$MODE_REPO" add .codex-review.toml
 git -C "$MODE_REPO" commit -m "codex config" >/dev/null 2>&1
 
@@ -640,7 +640,7 @@ git -C "$MODE_REPO" commit -m "codex config" >/dev/null 2>&1
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_NO_AUTOFIX=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
 )
 
 if grep -q -- '--tools Read,Grep,Glob,Bash' "$CODEX_ARGS_FILE" \
@@ -655,11 +655,11 @@ fi
 echo "==> Test: FIXED sentinel in review-only mode exits 1"
 rm -rf "$MODE_BIN"
 mkdir -p "$MODE_BIN"
-cat > "$MODE_BIN/gh" <<'EOF'
+cat >"$MODE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$MODE_BIN/conductor" <<'CXEOF'
+cat >"$MODE_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 printf 'CODEX_REVIEW_FIXED\n'
@@ -673,7 +673,7 @@ set +e
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MODE=review-only \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
 )
 FIXED_RO_EXIT=$?
 set -e
@@ -691,11 +691,11 @@ echo "==> Test: invalid mode warns and falls back to fix"
 setup_mode_repo
 rm -rf "$MODE_BIN"
 mkdir -p "$MODE_BIN"
-cat > "$MODE_BIN/gh" <<'EOF'
+cat >"$MODE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$MODE_BIN/conductor" <<'CXEOF'
+cat >"$MODE_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 printf '%s\n' "$*" > "$CODEX_ARGS_FILE"
@@ -710,7 +710,7 @@ chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MODE=invalid \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
 )
 
 if grep -q "Invalid mode" "$MODE_OUTPUT" \
@@ -728,11 +728,11 @@ echo "==> Test: review modes map to conductor argv/tools without sandbox flag"
 setup_mode_repo
 rm -rf "$MODE_BIN"
 mkdir -p "$MODE_BIN"
-cat > "$MODE_BIN/gh" <<'EOF'
+cat >"$MODE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$MODE_BIN/conductor" <<'CXEOF'
+cat >"$MODE_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 printf '%s\n' "$*" > "$CODEX_ARGS_FILE"
@@ -745,7 +745,7 @@ check_mode_argv() {
   local mode="$1"
   local expected_subcommand="$2"
   local expected_tools="$3"
-  : > "$CODEX_ARGS_FILE"
+  : >"$CODEX_ARGS_FILE"
   (
     cd "$MODE_REPO"
     PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
@@ -753,7 +753,7 @@ check_mode_argv() {
       CODEX_REVIEW_BASE="HEAD~1" \
       CODEX_REVIEW_DISABLE_CACHE=1 \
       CODEX_REVIEW_MODE="$mode" \
-      bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$MODE_OUTPUT" 2>&1
+      bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
   )
 
   if ! grep -q "^$expected_subcommand" "$CODEX_ARGS_FILE"; then
@@ -806,10 +806,10 @@ TIMEOUT_CHILD_PID_FILE="$TEST_DIR/timeout-reviewer-child.pid"
 setup_timeout_repo() {
   rm -rf "$TIMEOUT_REPO"
   setup_test_repo "$TIMEOUT_REPO"
-  printf 'base\n' > "$TIMEOUT_REPO/example.txt"
+  printf 'base\n' >"$TIMEOUT_REPO/example.txt"
   git -C "$TIMEOUT_REPO" add example.txt
   git -C "$TIMEOUT_REPO" commit -m "base" >/dev/null 2>&1
-  printf 'changed\n' >> "$TIMEOUT_REPO/example.txt"
+  printf 'changed\n' >>"$TIMEOUT_REPO/example.txt"
   git -C "$TIMEOUT_REPO" add example.txt
   git -C "$TIMEOUT_REPO" commit -m "change" >/dev/null 2>&1
 }
@@ -834,11 +834,11 @@ setup_timeout_repo
 TIMEOUT_BIN="$TEST_DIR/timeout-bin"
 rm -rf "$TIMEOUT_BIN"
 mkdir -p "$TIMEOUT_BIN"
-cat > "$TIMEOUT_BIN/gh" <<'EOF'
+cat >"$TIMEOUT_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$TIMEOUT_BIN/conductor" <<'CXEOF'
+cat >"$TIMEOUT_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 printf 'CODEX_REVIEW_CLEAN\n'
@@ -852,7 +852,7 @@ set +e
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_TIMEOUT=13 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TIMEOUT_OUTPUT" 2>&1
 )
 CLEAN_TIMEOUT_EXIT=$?
 set -e
@@ -871,11 +871,11 @@ setup_timeout_repo
 TIMEOUT_BIN="$TEST_DIR/timeout-bin"
 rm -rf "$TIMEOUT_BIN"
 mkdir -p "$TIMEOUT_BIN"
-cat > "$TIMEOUT_BIN/gh" <<'EOF'
+cat >"$TIMEOUT_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$TIMEOUT_BIN/conductor" <<'CXEOF'
+cat >"$TIMEOUT_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 sleep 999 &
@@ -896,7 +896,7 @@ set +e
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_TIMEOUT=2 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TIMEOUT_OUTPUT" 2>&1
 )
 TIMEOUT_EXIT=$?
 set -e
@@ -933,11 +933,11 @@ echo "==> Test: on_error=fail-closed blocks push on reviewer crash"
 setup_timeout_repo
 rm -rf "$TIMEOUT_BIN"
 mkdir -p "$TIMEOUT_BIN"
-cat > "$TIMEOUT_BIN/gh" <<'EOF'
+cat >"$TIMEOUT_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$TIMEOUT_BIN/conductor" <<'CXEOF'
+cat >"$TIMEOUT_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 exit 1
@@ -951,7 +951,7 @@ set +e
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TIMEOUT_OUTPUT" 2>&1
 )
 CLOSED_EXIT=$?
 set -e
@@ -973,7 +973,7 @@ set +e
   PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TIMEOUT_OUTPUT" 2>&1
 )
 OPEN_EXIT=$?
 set -e
@@ -992,11 +992,11 @@ echo "==> Test: on_error=fail-closed blocks on malformed output"
 setup_timeout_repo
 rm -rf "$TIMEOUT_BIN"
 mkdir -p "$TIMEOUT_BIN"
-cat > "$TIMEOUT_BIN/gh" <<'EOF'
+cat >"$TIMEOUT_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-cat > "$TIMEOUT_BIN/conductor" <<'CXEOF'
+cat >"$TIMEOUT_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 echo "no sentinel here"
@@ -1010,7 +1010,7 @@ set +e
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$TIMEOUT_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TIMEOUT_OUTPUT" 2>&1
 )
 MALFORMED_EXIT=$?
 set -e
@@ -1035,10 +1035,10 @@ CTX_PROMPT="$TEST_DIR/ctx-prompt.txt"
 setup_ctx_repo() {
   rm -rf "$CTX_REPO"
   setup_test_repo "$CTX_REPO"
-  printf 'base\n' > "$CTX_REPO/example.txt"
+  printf 'base\n' >"$CTX_REPO/example.txt"
   git -C "$CTX_REPO" add example.txt
   git -C "$CTX_REPO" commit -m "base" >/dev/null 2>&1
-  printf 'changed\n' >> "$CTX_REPO/example.txt"
+  printf 'changed\n' >>"$CTX_REPO/example.txt"
   git -C "$CTX_REPO" add example.txt
   git -C "$CTX_REPO" commit -m "change" >/dev/null 2>&1
 }
@@ -1048,11 +1048,11 @@ CTX_BIN="$TEST_DIR/ctx-bin"
 setup_ctx_bin() {
   rm -rf "$CTX_BIN"
   mkdir -p "$CTX_BIN"
-  cat > "$CTX_BIN/gh" <<'EOF'
+  cat >"$CTX_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "main"
 EOF
-  cat > "$CTX_BIN/conductor" <<'CXEOF'
+  cat >"$CTX_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 prompt="$(cat)"
@@ -1065,7 +1065,7 @@ CXEOF
 echo "==> Test: context file at repo root is appended to prompt"
 setup_ctx_repo
 setup_ctx_bin
-printf 'UNIQUE_CTX_MARKER_12345\n' > "$CTX_REPO/.codex-review-context.md"
+printf 'UNIQUE_CTX_MARKER_12345\n' >"$CTX_REPO/.codex-review-context.md"
 git -C "$CTX_REPO" add .codex-review-context.md
 git -C "$CTX_REPO" commit -m "add context" >/dev/null 2>&1
 
@@ -1075,7 +1075,7 @@ git -C "$CTX_REPO" commit -m "add context" >/dev/null 2>&1
     CTX_PROMPT="$CTX_PROMPT" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
 if grep -q 'UNIQUE_CTX_MARKER_12345' "$CTX_PROMPT" \
@@ -1090,7 +1090,7 @@ echo "==> Test: context file under .github/ is discovered"
 setup_ctx_repo
 setup_ctx_bin
 mkdir -p "$CTX_REPO/.github"
-printf 'GITHUB_CTX_MARKER_67890\n' > "$CTX_REPO/.github/codex-review-context.md"
+printf 'GITHUB_CTX_MARKER_67890\n' >"$CTX_REPO/.github/codex-review-context.md"
 git -C "$CTX_REPO" add .github/codex-review-context.md
 git -C "$CTX_REPO" commit -m "add github context" >/dev/null 2>&1
 
@@ -1100,7 +1100,7 @@ git -C "$CTX_REPO" commit -m "add github context" >/dev/null 2>&1
     CTX_PROMPT="$CTX_PROMPT" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
 if grep -q 'GITHUB_CTX_MARKER_67890' "$CTX_PROMPT"; then
@@ -1119,7 +1119,7 @@ setup_ctx_bin
     CTX_PROMPT="$CTX_PROMPT" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
 if ! grep -q 'Review context' "$CTX_OUTPUT" \
@@ -1133,11 +1133,11 @@ fi
 echo "==> Test: small/simple diffs use bounded prompt context"
 setup_ctx_repo
 setup_ctx_bin
-printf 'AGENTS_FULL_CONTEXT_MARKER\n' > "$CTX_REPO/AGENTS.md"
-printf 'CLAUDE_FULL_CONTEXT_MARKER\n' > "$CTX_REPO/CLAUDE.md"
+printf 'AGENTS_FULL_CONTEXT_MARKER\n' >"$CTX_REPO/AGENTS.md"
+printf 'CLAUDE_FULL_CONTEXT_MARKER\n' >"$CTX_REPO/CLAUDE.md"
 git -C "$CTX_REPO" add AGENTS.md CLAUDE.md
 git -C "$CTX_REPO" commit -m "add steering files" >/dev/null 2>&1
-printf 'small prompt context change\n' >> "$CTX_REPO/example.txt"
+printf 'small prompt context change\n' >>"$CTX_REPO/example.txt"
 git -C "$CTX_REPO" add example.txt
 git -C "$CTX_REPO" commit -m "small prompt context change" >/dev/null 2>&1
 
@@ -1147,7 +1147,7 @@ git -C "$CTX_REPO" commit -m "small prompt context change" >/dev/null 2>&1
     CTX_PROMPT="$CTX_PROMPT" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
 if grep -q 'Full AGENTS.md and CLAUDE.md context was intentionally omitted' "$CTX_PROMPT" \
@@ -1172,7 +1172,7 @@ setup_ctx_bin
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_CONTEXT_SMALL_MAX_DIFF_LINES=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
 if grep -q 'Full project context is required because large diff' "$CTX_PROMPT" \
@@ -1189,7 +1189,7 @@ fi
 echo "==> Test: architectural files keep full AGENTS/CLAUDE context"
 setup_ctx_repo
 setup_ctx_bin
-printf 'architectural review guidance\n' > "$CTX_REPO/AGENTS.md"
+printf 'architectural review guidance\n' >"$CTX_REPO/AGENTS.md"
 git -C "$CTX_REPO" add AGENTS.md
 git -C "$CTX_REPO" commit -m "touch agents" >/dev/null 2>&1
 
@@ -1199,7 +1199,7 @@ git -C "$CTX_REPO" commit -m "touch agents" >/dev/null 2>&1
     CTX_PROMPT="$CTX_PROMPT" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
 if grep -q 'Full project context is required because architectural path AGENTS.md' "$CTX_PROMPT" \
@@ -1217,11 +1217,11 @@ setup_ctx_bin
 {
   printf '[codex_review]\n'
   printf 'unsafe_paths = ["sensitive/"]\n'
-} > "$CTX_REPO/.codex-review.toml"
+} >"$CTX_REPO/.codex-review.toml"
 git -C "$CTX_REPO" add .codex-review.toml
 git -C "$CTX_REPO" commit -m "configure unsafe path" >/dev/null 2>&1
 mkdir -p "$CTX_REPO/sensitive"
-printf 'secret change\n' > "$CTX_REPO/sensitive/config.txt"
+printf 'secret change\n' >"$CTX_REPO/sensitive/config.txt"
 git -C "$CTX_REPO" add sensitive/config.txt
 git -C "$CTX_REPO" commit -m "touch sensitive config" >/dev/null 2>&1
 
@@ -1231,7 +1231,7 @@ git -C "$CTX_REPO" commit -m "touch sensitive config" >/dev/null 2>&1
     CTX_PROMPT="$CTX_PROMPT" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
 if grep -q 'Full project context is required because high-risk path sensitive/config.txt' "$CTX_PROMPT" \
@@ -1249,11 +1249,11 @@ setup_ctx_bin
 {
   printf '[review.context]\n'
   printf 'full_context_paths = ["docs/"]\n'
-} > "$CTX_REPO/.codex-review.toml"
+} >"$CTX_REPO/.codex-review.toml"
 git -C "$CTX_REPO" add .codex-review.toml
 git -C "$CTX_REPO" commit -m "configure full context path" >/dev/null 2>&1
 mkdir -p "$CTX_REPO/docs"
-printf 'doc change\n' > "$CTX_REPO/docs/note.md"
+printf 'doc change\n' >"$CTX_REPO/docs/note.md"
 git -C "$CTX_REPO" add docs/note.md
 git -C "$CTX_REPO" commit -m "touch docs" >/dev/null 2>&1
 
@@ -1263,7 +1263,7 @@ git -C "$CTX_REPO" commit -m "touch docs" >/dev/null 2>&1
     CTX_PROMPT="$CTX_PROMPT" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
 if grep -q 'Full project context is required because configured full-context path docs/note.md' "$CTX_PROMPT" \
@@ -1288,7 +1288,7 @@ setup_ctx_bin
     CTX_PROMPT="$CTX_PROMPT" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
 if grep -q 'loading diff' "$CTX_OUTPUT" \
@@ -1318,7 +1318,7 @@ echo "==> Test: conductor route-log surfaces in transcript"
 # contain the `[conductor]` header line plus the wrapped cost/token line.
 # Uses ASCII (-> and .) intentionally — the print_route_log filter must
 # tolerate any wrap-line punctuation since it's whitespace-anchored.
-cat > "$CTX_BIN/conductor" <<'CXEOF'
+cat >"$CTX_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 cat >/dev/null
@@ -1327,7 +1327,7 @@ printf '            . 4.2s . 1284 tok in . 420 tok out . sandbox=read-only\n' >&
 printf 'CODEX_REVIEW_CLEAN\n'
 CXEOF
 chmod +x "$CTX_BIN/conductor"
-printf 'route log test\n' >> "$CTX_REPO/example.txt"
+printf 'route log test\n' >>"$CTX_REPO/example.txt"
 git -C "$CTX_REPO" add example.txt
 git -C "$CTX_REPO" commit -m "route log" >/dev/null 2>&1
 (
@@ -1336,7 +1336,7 @@ git -C "$CTX_REPO" commit -m "route log" >/dev/null 2>&1
     CTX_PROMPT="$CTX_PROMPT" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
 # Header line + the wrapped cost/token line must both reach the transcript.
@@ -1355,7 +1355,7 @@ echo "==> Test: peer review fires when [review.assist].enabled = true"
 # (peer). The primary emits a route-log to stderr naming itself, which
 # touchstone parses out to set --exclude on the peer call. The peer
 # prints distinctive text so we can assert it surfaces in the transcript.
-cat > "$CTX_BIN/conductor" <<'CXEOF'
+cat >"$CTX_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 subcmd="$1"; shift
@@ -1378,24 +1378,24 @@ esac
 CXEOF
 chmod +x "$CTX_BIN/conductor"
 # New commit → defeats the cache, and lets us diff vs HEAD~1.
-printf 'peer-review test\n' >> "$CTX_REPO/example.txt"
+printf 'peer-review test\n' >>"$CTX_REPO/example.txt"
 git -C "$CTX_REPO" add example.txt && git -C "$CTX_REPO" commit -m "peer review" >/dev/null 2>&1
 # Enable peer review in the project config.
 {
   cat "$CTX_REPO/.codex-review.toml"
   printf '\n[review.assist]\nenabled = true\nmax_rounds = 1\n'
-} > "$CTX_REPO/.codex-review.toml.tmp" && mv "$CTX_REPO/.codex-review.toml.tmp" "$CTX_REPO/.codex-review.toml"
+} >"$CTX_REPO/.codex-review.toml.tmp" && mv "$CTX_REPO/.codex-review.toml.tmp" "$CTX_REPO/.codex-review.toml"
 git -C "$CTX_REPO" add .codex-review.toml && git -C "$CTX_REPO" commit -m "enable assist" >/dev/null 2>&1
 
 CONDUCTOR_ARGS_LOG="$TEST_DIR/conductor-args.log"
-: > "$CONDUCTOR_ARGS_LOG"
+: >"$CONDUCTOR_ARGS_LOG"
 (
   cd "$CTX_REPO"
   PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CONDUCTOR_ARGS_LOG="$CONDUCTOR_ARGS_LOG" \
     CODEX_REVIEW_BASE="HEAD~2" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
 if grep -q 'peer review' "$CTX_OUTPUT" \
@@ -1415,17 +1415,17 @@ echo "==> Test: peer review silent when [review.assist].enabled = false"
 # Reset config (strip the assist block) and rerun; peer should NOT fire.
 sed -i.bak '/\[review.assist\]/,$d' "$CTX_REPO/.codex-review.toml" && rm -f "$CTX_REPO/.codex-review.toml.bak"
 git -C "$CTX_REPO" add .codex-review.toml && git -C "$CTX_REPO" commit -m "disable assist" >/dev/null 2>&1
-printf 'another change\n' >> "$CTX_REPO/example.txt"
+printf 'another change\n' >>"$CTX_REPO/example.txt"
 git -C "$CTX_REPO" add example.txt && git -C "$CTX_REPO" commit -m "change" >/dev/null 2>&1
 
-: > "$CONDUCTOR_ARGS_LOG"
+: >"$CONDUCTOR_ARGS_LOG"
 (
   cd "$CTX_REPO"
   PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CONDUCTOR_ARGS_LOG="$CONDUCTOR_ARGS_LOG" \
     CODEX_REVIEW_BASE="HEAD~2" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
 if ! grep -q '^call ' "$CONDUCTOR_ARGS_LOG" && ! grep -q 'AGREE' "$CTX_OUTPUT"; then
@@ -1448,7 +1448,7 @@ rm -f "$JSON_SUMMARY"
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_SUMMARY_FILE="$JSON_SUMMARY" \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$CTX_OUTPUT" 2>&1
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
 if [ -f "$JSON_SUMMARY" ] \
@@ -1476,12 +1476,13 @@ fi
 
 setup_skiplog_repo() {
   # setup_skiplog_repo <dir> [--with-config-toml]
-  local dir="$1"; shift || true
+  local dir="$1"
+  shift || true
   rm -rf "$dir"
   setup_test_repo "$dir"
-  printf 'base\n' > "$dir/file.txt"
+  printf 'base\n' >"$dir/file.txt"
   if [ "${1:-}" = "--with-config-toml" ]; then
-    cat > "$dir/.codex-review.toml" <<'EOF'
+    cat >"$dir/.codex-review.toml" <<'EOF'
 [review]
 enabled = true
 reviewer = "conductor"
@@ -1491,18 +1492,18 @@ effort = "max"
 EOF
   fi
   git -C "$dir" add . && git -C "$dir" commit -qm init
-  printf 'change\n' >> "$dir/file.txt"
+  printf 'change\n' >>"$dir/file.txt"
   git -C "$dir" add . && git -C "$dir" commit -qm change
 }
 
 make_skiplog_bin_with_conductor() {
   local dir="$1"
   mkdir -p "$dir"
-  cat > "$dir/gh" <<'EOF'
+  cat >"$dir/gh" <<'EOF'
 #!/usr/bin/env bash
 echo main
 EOF
-  cat > "$dir/conductor" <<'EOF'
+  cat >"$dir/conductor" <<'EOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then
   printf '{"providers":[{"configured":true}]}\n'; exit 0
@@ -1515,7 +1516,7 @@ EOF
 make_skiplog_bin_without_conductor() {
   local dir="$1"
   mkdir -p "$dir"
-  cat > "$dir/gh" <<'EOF'
+  cat >"$dir/gh" <<'EOF'
 #!/usr/bin/env bash
 echo main
 EOF
@@ -1523,11 +1524,13 @@ EOF
 }
 
 run_skiplog_hook() {
-  local repo="$1"; shift
-  local sink="$1"; shift
+  local repo="$1"
+  shift
+  local sink="$1"
+  shift
   (
     cd "$repo"
-    "$@" bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$sink" 2>&1
+    "$@" bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$sink" 2>&1
   )
 }
 
@@ -1576,9 +1579,9 @@ make_skiplog_bin_without_conductor "$SKIPLOG_BIN1"
 
 run_skiplog_hook "$SKIPLOG_REPO1" "$TEST_DIR/skiplog-out1.txt" \
   env PATH="$SKIPLOG_BIN1:/usr/bin:/bin:/usr/sbin:/sbin" \
-      TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG1" \
-      CODEX_REVIEW_BASE="HEAD~1" \
-      CODEX_REVIEW_DISABLE_CACHE=1 \
+  TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG1" \
+  CODEX_REVIEW_BASE="HEAD~1" \
+  CODEX_REVIEW_DISABLE_CACHE=1 \
   || true
 assert_skiplog_last_reason "conductor-missing" "$SKIPLOG_LOG1" "FAIL_OPEN_DEPENDENCY_MISSING"
 
@@ -1591,22 +1594,22 @@ SKIPLOG_BIN2="$TEST_DIR/skiplog-bin2"
 SKIPLOG_LOG2="$TEST_DIR/skiplog-log2.tsv"
 rm -rf "$SKIPLOG_REPO2"
 setup_test_repo "$SKIPLOG_REPO2"
-cat > "$SKIPLOG_REPO2/.codex-review.toml" <<'EOF'
+cat >"$SKIPLOG_REPO2/.codex-review.toml" <<'EOF'
 [review]
 enabled = false
 reviewer = "conductor"
 EOF
-printf 'a\n' > "$SKIPLOG_REPO2/f.txt"
+printf 'a\n' >"$SKIPLOG_REPO2/f.txt"
 git -C "$SKIPLOG_REPO2" add . && git -C "$SKIPLOG_REPO2" commit -qm init
-printf 'b\n' >> "$SKIPLOG_REPO2/f.txt"
+printf 'b\n' >>"$SKIPLOG_REPO2/f.txt"
 git -C "$SKIPLOG_REPO2" add . && git -C "$SKIPLOG_REPO2" commit -qm change
 make_skiplog_bin_with_conductor "$SKIPLOG_BIN2"
 
 run_skiplog_hook "$SKIPLOG_REPO2" "$TEST_DIR/skiplog-out2.txt" \
   env PATH="$SKIPLOG_BIN2:/usr/bin:/bin:/usr/sbin:/sbin" \
-      TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG2" \
-      CODEX_REVIEW_BASE="HEAD~1" \
-      CODEX_REVIEW_DISABLE_CACHE=1 \
+  TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG2" \
+  CODEX_REVIEW_BASE="HEAD~1" \
+  CODEX_REVIEW_DISABLE_CACHE=1 \
   || true
 assert_skiplog_last_reason "config-disabled" "$SKIPLOG_LOG2" "config-disabled"
 
@@ -1625,10 +1628,10 @@ make_skiplog_bin_with_conductor "$SKIPLOG_BIN3"
 
 run_skiplog_hook "$SKIPLOG_REPO3" "$TEST_DIR/skiplog-out3.txt" \
   env PATH="$SKIPLOG_BIN3:/usr/bin:/bin:/usr/sbin:/sbin" \
-      TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG3" \
-      CODEX_REVIEW_ENABLED=false \
-      CODEX_REVIEW_BASE="HEAD~1" \
-      CODEX_REVIEW_DISABLE_CACHE=1 \
+  TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG3" \
+  CODEX_REVIEW_ENABLED=false \
+  CODEX_REVIEW_BASE="HEAD~1" \
+  CODEX_REVIEW_DISABLE_CACHE=1 \
   || true
 assert_skiplog_last_reason "review-disabled-by-user" "$SKIPLOG_LOG3" "review-disabled-by-user"
 
@@ -1646,10 +1649,14 @@ make_skiplog_bin_with_conductor "$SKIPLOG_BIN4"
 
 run_skiplog_hook "$SKIPLOG_REPO4" "$TEST_DIR/skiplog-out4.txt" \
   env PATH="$SKIPLOG_BIN4:/usr/bin:/bin:/usr/sbin:/sbin" \
-      TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG4" \
-      CODEX_REVIEW_BASE="HEAD~1" \
-      CODEX_REVIEW_DISABLE_CACHE=1 \
-  || { echo "FAIL: hook exited non-zero on a clean review" >&2; cat "$TEST_DIR/skiplog-out4.txt" >&2; ERRORS=$((ERRORS + 1)); }
+  TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG4" \
+  CODEX_REVIEW_BASE="HEAD~1" \
+  CODEX_REVIEW_DISABLE_CACHE=1 \
+  || {
+    echo "FAIL: hook exited non-zero on a clean review" >&2
+    cat "$TEST_DIR/skiplog-out4.txt" >&2
+    ERRORS=$((ERRORS + 1))
+  }
 assert_skiplog_last_reason "ran" "$SKIPLOG_LOG4" "ran"
 
 # ---------------------------------------------------------------------------
@@ -1666,22 +1673,22 @@ SKIPLOG_BIN5="$TEST_DIR/skiplog-bin5"
 SKIPLOG_LOG5="$TEST_DIR/skiplog-log5.tsv"
 rm -rf "$SKIPLOG_REPO5"
 setup_test_repo "$SKIPLOG_REPO5"
-cat > "$SKIPLOG_REPO5/.codex-review.toml" <<'EOF'
+cat >"$SKIPLOG_REPO5/.codex-review.toml" <<'EOF'
 [review
 this-is = not = valid =
 === no key here ===
 EOF
-printf 'a\n' > "$SKIPLOG_REPO5/f.txt"
+printf 'a\n' >"$SKIPLOG_REPO5/f.txt"
 git -C "$SKIPLOG_REPO5" add . && git -C "$SKIPLOG_REPO5" commit -qm init
-printf 'b\n' >> "$SKIPLOG_REPO5/f.txt"
+printf 'b\n' >>"$SKIPLOG_REPO5/f.txt"
 git -C "$SKIPLOG_REPO5" add . && git -C "$SKIPLOG_REPO5" commit -qm change
 make_skiplog_bin_with_conductor "$SKIPLOG_BIN5"
 
 run_skiplog_hook "$SKIPLOG_REPO5" "$TEST_DIR/skiplog-out5.txt" \
   env PATH="$SKIPLOG_BIN5:/usr/bin:/bin:/usr/sbin:/sbin" \
-      TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG5" \
-      CODEX_REVIEW_BASE="HEAD~1" \
-      CODEX_REVIEW_DISABLE_CACHE=1 \
+  TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG5" \
+  CODEX_REVIEW_BASE="HEAD~1" \
+  CODEX_REVIEW_DISABLE_CACHE=1 \
   || true
 if [ -s "$SKIPLOG_LOG5" ]; then
   echo "==> PASS: malformed TOML still produced a log entry"
@@ -1701,14 +1708,14 @@ SKIPLOG_LOG6="$TEST_DIR/skiplog-log6.tsv"
 setup_skiplog_repo "$SKIPLOG_REPO6" --with-config-toml
 make_skiplog_bin_with_conductor "$SKIPLOG_BIN6"
 
-: > "$SKIPLOG_LOG6"
+: >"$SKIPLOG_LOG6"
 i=0
 while [ "$i" -lt 1000 ]; do
-  printf 'seed-ts\trepo\tbranch\tsha\tseed\trow-%s\n' "$i" >> "$SKIPLOG_LOG6"
+  printf 'seed-ts\trepo\tbranch\tsha\tseed\trow-%s\n' "$i" >>"$SKIPLOG_LOG6"
   i=$((i + 1))
 done
 
-seeded_count="$(wc -l < "$SKIPLOG_LOG6" | tr -d ' ')"
+seeded_count="$(wc -l <"$SKIPLOG_LOG6" | tr -d ' ')"
 if [ "$seeded_count" != "1000" ]; then
   echo "FAIL: seeding sanity check — expected 1000 lines, got $seeded_count" >&2
   ERRORS=$((ERRORS + 1))
@@ -1716,12 +1723,16 @@ fi
 
 run_skiplog_hook "$SKIPLOG_REPO6" "$TEST_DIR/skiplog-out6.txt" \
   env PATH="$SKIPLOG_BIN6:/usr/bin:/bin:/usr/sbin:/sbin" \
-      TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG6" \
-      CODEX_REVIEW_BASE="HEAD~1" \
-      CODEX_REVIEW_DISABLE_CACHE=1 \
-  || { echo "FAIL: hook exited non-zero in rollover test" >&2; cat "$TEST_DIR/skiplog-out6.txt" >&2; ERRORS=$((ERRORS + 1)); }
+  TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG6" \
+  CODEX_REVIEW_BASE="HEAD~1" \
+  CODEX_REVIEW_DISABLE_CACHE=1 \
+  || {
+    echo "FAIL: hook exited non-zero in rollover test" >&2
+    cat "$TEST_DIR/skiplog-out6.txt" >&2
+    ERRORS=$((ERRORS + 1))
+  }
 
-final_count="$(wc -l < "$SKIPLOG_LOG6" | tr -d ' ')"
+final_count="$(wc -l <"$SKIPLOG_LOG6" | tr -d ' ')"
 if [ "$final_count" = "1000" ]; then
   echo "==> PASS: log capped at 1000 entries after rollover"
 else
@@ -1772,15 +1783,19 @@ make_skiplog_bin_with_conductor "$SKIPLOG_BIN7"
 
 # Pre-create the would-be sentinel path. If the hook tried to log to a
 # non-/dev/null target by mistake, the file's mtime would advance.
-: > "$SKIPLOG_PROBE7"
+: >"$SKIPLOG_PROBE7"
 SKIPLOG_PROBE7_MTIME_BEFORE="$(stat -f %m "$SKIPLOG_PROBE7" 2>/dev/null || stat -c %Y "$SKIPLOG_PROBE7")"
 
 run_skiplog_hook "$SKIPLOG_REPO7" "$TEST_DIR/skiplog-out7.txt" \
   env PATH="$SKIPLOG_BIN7:/usr/bin:/bin:/usr/sbin:/sbin" \
-      TOUCHSTONE_REVIEW_LOG=/dev/null \
-      CODEX_REVIEW_BASE="HEAD~1" \
-      CODEX_REVIEW_DISABLE_CACHE=1 \
-  || { echo "FAIL: hook exited non-zero with TOUCHSTONE_REVIEW_LOG=/dev/null" >&2; cat "$TEST_DIR/skiplog-out7.txt" >&2; ERRORS=$((ERRORS + 1)); }
+  TOUCHSTONE_REVIEW_LOG=/dev/null \
+  CODEX_REVIEW_BASE="HEAD~1" \
+  CODEX_REVIEW_DISABLE_CACHE=1 \
+  || {
+    echo "FAIL: hook exited non-zero with TOUCHSTONE_REVIEW_LOG=/dev/null" >&2
+    cat "$TEST_DIR/skiplog-out7.txt" >&2
+    ERRORS=$((ERRORS + 1))
+  }
 
 SKIPLOG_PROBE7_MTIME_AFTER="$(stat -f %m "$SKIPLOG_PROBE7" 2>/dev/null || stat -c %Y "$SKIPLOG_PROBE7")"
 if [ "$SKIPLOG_PROBE7_MTIME_BEFORE" = "$SKIPLOG_PROBE7_MTIME_AFTER" ]; then
@@ -1805,11 +1820,15 @@ make_skiplog_bin_with_conductor "$SKIPLOG_BIN8"
 
 run_skiplog_hook "$SKIPLOG_REPO8" "$TEST_DIR/skiplog-out8.txt" \
   env PATH="$SKIPLOG_BIN8:/usr/bin:/bin:/usr/sbin:/sbin" \
-      HOME="$SKIPLOG_FAKEHOME8" \
-      TOUCHSTONE_REVIEW_LOG="" \
-      CODEX_REVIEW_BASE="HEAD~1" \
-      CODEX_REVIEW_DISABLE_CACHE=1 \
-  || { echo "FAIL: hook exited non-zero with TOUCHSTONE_REVIEW_LOG=''" >&2; cat "$TEST_DIR/skiplog-out8.txt" >&2; ERRORS=$((ERRORS + 1)); }
+  HOME="$SKIPLOG_FAKEHOME8" \
+  TOUCHSTONE_REVIEW_LOG="" \
+  CODEX_REVIEW_BASE="HEAD~1" \
+  CODEX_REVIEW_DISABLE_CACHE=1 \
+  || {
+    echo "FAIL: hook exited non-zero with TOUCHSTONE_REVIEW_LOG=''" >&2
+    cat "$TEST_DIR/skiplog-out8.txt" >&2
+    ERRORS=$((ERRORS + 1))
+  }
 
 # Negative invariant — no log file should exist anywhere under the
 # fake $HOME. The bug surfaces here: a `:-` expansion would substitute

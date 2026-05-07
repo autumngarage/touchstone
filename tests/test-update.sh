@@ -57,8 +57,8 @@ commit_all() {
   # Skip the commit when there's nothing staged — new-project.sh now creates an
   # initial commit during bootstrap, so the test helper must not error out when
   # the tree is already clean.
-  if [ -n "$(git -C "$repo" status --porcelain)" ] || \
-     ! git -C "$repo" rev-parse --verify HEAD >/dev/null 2>&1; then
+  if [ -n "$(git -C "$repo" status --porcelain)" ] \
+    || ! git -C "$repo" rev-parse --verify HEAD >/dev/null 2>&1; then
     git -C "$repo" commit --no-verify -m "$message" >/dev/null
   fi
 }
@@ -103,10 +103,10 @@ fi
 echo ""
 echo "--- Step 3: Modify a Touchstone-owned file, then update ---"
 
-echo "# locally modified" >> "$PROJECT/principles/engineering-principles.md"
+echo "# locally modified" >>"$PROJECT/principles/engineering-principles.md"
 rm "$PROJECT/scripts/touchstone-run.sh"
-printf '{"custom": true}\n' > "$PROJECT/.claude/settings.json"
-echo "0000000000000000000000000000000000000000" > "$PROJECT/.touchstone-version"
+printf '{"custom": true}\n' >"$PROJECT/.claude/settings.json"
+echo "0000000000000000000000000000000000000000" >"$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate old touchstone state"
 
 (cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") 2>&1 | tee "$TEST_DIR/update-output-2.txt"
@@ -181,8 +181,8 @@ configure_git "$IN_PLACE_PROJECT"
 commit_all "$IN_PLACE_PROJECT" "initial in-place test project"
 git -C "$IN_PLACE_PROJECT" checkout -q -b feature/in-place-update
 rm "$IN_PLACE_PROJECT/scripts/touchstone-run.sh"
-printf '{"custom": true}\n' > "$IN_PLACE_PROJECT/.claude/settings.json"
-echo "0000000000000000000000000000000000000004" > "$IN_PLACE_PROJECT/.touchstone-version"
+printf '{"custom": true}\n' >"$IN_PLACE_PROJECT/.claude/settings.json"
+echo "0000000000000000000000000000000000000004" >"$IN_PLACE_PROJECT/.touchstone-version"
 commit_all "$IN_PLACE_PROJECT" "simulate old in-place touchstone state"
 IN_PLACE_BASE="$(git -C "$IN_PLACE_PROJECT" rev-parse HEAD)"
 
@@ -227,8 +227,8 @@ fi
 echo ""
 echo "--- Step 4: Verify project-owned files are untouched ---"
 
-echo "# my project context" >> "$PROJECT/CLAUDE.md"
-echo "0000000000000000000000000000000000000001" > "$PROJECT/.touchstone-version"
+echo "# my project context" >>"$PROJECT/CLAUDE.md"
+echo "0000000000000000000000000000000000000001" >"$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate project-owned customization"
 CLAUDE_CHECKSUM="$(md5 -q "$PROJECT/CLAUDE.md" 2>/dev/null || md5sum "$PROJECT/CLAUDE.md" | awk '{print $1}')"
 
@@ -248,7 +248,7 @@ assert_not_exists "$PROJECT/CLAUDE.md.bak"
 # Existing projects from before Gemini support should receive GEMINI.md once,
 # but the file remains project-owned after that.
 rm -f "$PROJECT/GEMINI.md"
-echo "0000000000000000000000000000000000000001" > "$PROJECT/.touchstone-version"
+echo "0000000000000000000000000000000000000001" >"$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate pre-gemini project"
 
 (cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
@@ -272,7 +272,7 @@ fi
 echo ""
 echo "--- Step 4b: AGENTS.md without principles block gets backfilled on update ---"
 
-cat > "$PROJECT/AGENTS.md" <<'EOF'
+cat >"$PROJECT/AGENTS.md" <<'EOF'
 # AGENTS.md — AI Reviewer Guide for Test Project
 
 You are reviewing PRs for Test Project.
@@ -281,7 +281,7 @@ You are reviewing PRs for Test Project.
 
 - Project-specific rule that must survive the update.
 EOF
-echo "0000000000000000000000000000000000000002" > "$PROJECT/.touchstone-version"
+echo "0000000000000000000000000000000000000002" >"$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate pre-block AGENTS.md state"
 
 (cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
@@ -316,10 +316,10 @@ DIRTY_PROJECT="$TEST_DIR/dirty-project"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$DIRTY_PROJECT" --no-register >/dev/null
 configure_git "$DIRTY_PROJECT"
 commit_all "$DIRTY_PROJECT" "initial dirty test project"
-echo "0000000000000000000000000000000000000002" > "$DIRTY_PROJECT/.touchstone-version"
+echo "0000000000000000000000000000000000000002" >"$DIRTY_PROJECT/.touchstone-version"
 commit_all "$DIRTY_PROJECT" "simulate old dirty test project"
 DIRTY_BRANCH="$(git -C "$DIRTY_PROJECT" rev-parse --abbrev-ref HEAD)"
-echo "# uncommitted change" >> "$DIRTY_PROJECT/scripts/open-pr.sh"
+echo "# uncommitted change" >>"$DIRTY_PROJECT/scripts/open-pr.sh"
 
 if (cd "$DIRTY_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/dirty-output.txt" 2>&1; then
   echo "FAIL: expected dirty update to fail" >&2
@@ -343,10 +343,10 @@ ROLLBACK_PROJECT="$TEST_DIR/rollback-project"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$ROLLBACK_PROJECT" --no-register >/dev/null
 configure_git "$ROLLBACK_PROJECT"
 commit_all "$ROLLBACK_PROJECT" "initial rollback test project"
-printf '\n.touchstone-version\n.touchstone-manifest\n' >> "$ROLLBACK_PROJECT/.gitignore"
+printf '\n.touchstone-version\n.touchstone-manifest\n' >>"$ROLLBACK_PROJECT/.gitignore"
 git -C "$ROLLBACK_PROJECT" rm --cached .touchstone-version .touchstone-manifest >/dev/null
 commit_all "$ROLLBACK_PROJECT" "simulate legacy ignored touchstone metadata"
-echo "legacy-old-version" > "$ROLLBACK_PROJECT/.touchstone-version"
+echo "legacy-old-version" >"$ROLLBACK_PROJECT/.touchstone-version"
 rm "$ROLLBACK_PROJECT/.touchstone-manifest"
 mkdir "$ROLLBACK_PROJECT/.touchstone-manifest"
 ROLLBACK_BRANCH="$(git -C "$ROLLBACK_PROJECT" rev-parse --abbrev-ref HEAD)"
@@ -390,7 +390,7 @@ commit_all "$SWIFT_UPDATE_PROJECT" "initial swift touchstone project"
 # Simulate a stale touchstone version + a project that pre-existed the swiftlint
 # template (so .swiftlint.yml was never created at bootstrap time).
 rm -f "$SWIFT_UPDATE_PROJECT/.swiftlint.yml"
-echo "0000000000000000000000000000000000000010" > "$SWIFT_UPDATE_PROJECT/.touchstone-version"
+echo "0000000000000000000000000000000000000010" >"$SWIFT_UPDATE_PROJECT/.touchstone-version"
 commit_all "$SWIFT_UPDATE_PROJECT" "simulate pre-swiftlint-template swift project"
 
 (cd "$SWIFT_UPDATE_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/swift-update-output.txt" 2>&1
@@ -422,9 +422,9 @@ fi
 SWIFT_HAND_EDITED_PROJECT="$TEST_DIR/swift-hand-edited-update"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SWIFT_HAND_EDITED_PROJECT" --no-register --type swift >/dev/null
 configure_git "$SWIFT_HAND_EDITED_PROJECT"
-printf 'SENTINEL_HAND_EDITED_SWIFTLINT\n' > "$SWIFT_HAND_EDITED_PROJECT/.swiftlint.yml"
+printf 'SENTINEL_HAND_EDITED_SWIFTLINT\n' >"$SWIFT_HAND_EDITED_PROJECT/.swiftlint.yml"
 commit_all "$SWIFT_HAND_EDITED_PROJECT" "initial swift project with hand-edited swiftlint"
-echo "0000000000000000000000000000000000000011" > "$SWIFT_HAND_EDITED_PROJECT/.touchstone-version"
+echo "0000000000000000000000000000000000000011" >"$SWIFT_HAND_EDITED_PROJECT/.touchstone-version"
 commit_all "$SWIFT_HAND_EDITED_PROJECT" "simulate stale touchstone state"
 
 (cd "$SWIFT_HAND_EDITED_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
@@ -437,7 +437,7 @@ NON_SWIFT_UPDATE_PROJECT="$TEST_DIR/non-swift-update-project"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$NON_SWIFT_UPDATE_PROJECT" --no-register --type python >/dev/null
 configure_git "$NON_SWIFT_UPDATE_PROJECT"
 commit_all "$NON_SWIFT_UPDATE_PROJECT" "initial python project"
-echo "0000000000000000000000000000000000000012" > "$NON_SWIFT_UPDATE_PROJECT/.touchstone-version"
+echo "0000000000000000000000000000000000000012" >"$NON_SWIFT_UPDATE_PROJECT/.touchstone-version"
 commit_all "$NON_SWIFT_UPDATE_PROJECT" "simulate stale python touchstone state"
 
 (cd "$NON_SWIFT_UPDATE_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
@@ -454,7 +454,7 @@ CHECK_PROJECT="$TEST_DIR/check-project"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$CHECK_PROJECT" --no-register >/dev/null
 configure_git "$CHECK_PROJECT"
 commit_all "$CHECK_PROJECT" "initial check project"
-echo "0000000000000000000000000000000000000003" > "$CHECK_PROJECT/.touchstone-version"
+echo "0000000000000000000000000000000000000003" >"$CHECK_PROJECT/.touchstone-version"
 commit_all "$CHECK_PROJECT" "simulate old check project"
 CHECK_BRANCH="$(git -C "$CHECK_PROJECT" rev-parse --abbrev-ref HEAD)"
 

@@ -110,7 +110,7 @@ agents_principles_block_apply() {
   local block_file out_file
   block_file="$(mktemp -t agents-principles-block.XXXXXX)"
   out_file="$(mktemp -t agents-principles-out.XXXXXX)"
-  agents_principles_block_render > "$block_file"
+  agents_principles_block_render >"$block_file"
 
   if [ "$has_begin" = 1 ]; then
     # Refresh: copy lines, but when we hit the start marker, splice the current
@@ -125,28 +125,28 @@ agents_principles_block_apply() {
       fi
       if [ "$line" = "$AGENTS_PRINCIPLES_BLOCK_BEGIN" ]; then
         if [ "$spliced" = 0 ]; then
-          cat "$block_file" >> "$out_file"
+          cat "$block_file" >>"$out_file"
           spliced=1
         fi
         in_block=1
         continue
       fi
-      printf '%s\n' "$line" >> "$out_file"
-    done < "$target"
+      printf '%s\n' "$line" >>"$out_file"
+    done <"$target"
   else
     # Inject at top, after the first H1 if there is one — otherwise at line 1.
     local first_line
     first_line="$(head -n 1 "$target" || true)"
     if [[ "$first_line" =~ ^\#\  ]]; then
-      printf '%s\n' "$first_line" >> "$out_file"
-      printf '\n' >> "$out_file"
-      cat "$block_file" >> "$out_file"
-      printf '\n' >> "$out_file"
-      tail -n +2 "$target" >> "$out_file"
+      printf '%s\n' "$first_line" >>"$out_file"
+      printf '\n' >>"$out_file"
+      cat "$block_file" >>"$out_file"
+      printf '\n' >>"$out_file"
+      tail -n +2 "$target" >>"$out_file"
     else
-      cat "$block_file" >> "$out_file"
-      printf '\n' >> "$out_file"
-      cat "$target" >> "$out_file"
+      cat "$block_file" >>"$out_file"
+      printf '\n' >>"$out_file"
+      cat "$target" >>"$out_file"
     fi
   fi
 
@@ -156,7 +156,7 @@ agents_principles_block_apply() {
   fi
 
   # Atomic replace; preserve the file's permissions.
-  cat "$out_file" > "$target"
+  cat "$out_file" >"$target"
   rm -f "$block_file" "$out_file"
   return 0
 }

@@ -59,7 +59,7 @@ assert_eq "missing file rc" 2 "$rc"
 # --- 2. Inject into a file with an H1 --------------------------------------
 echo "==> inject block after H1"
 target="$TEST_DIR/case-h1.md"
-cat > "$target" <<'EOF'
+cat >"$target" <<'EOF'
 # AGENTS.md — AI Reviewer Guide for Foo
 
 You are reviewing pull requests for **Foo**.
@@ -85,7 +85,7 @@ assert_contains "$target" "1. Data integrity."
 # --- 3. Inject when no H1 ---------------------------------------------------
 echo "==> inject block when no H1"
 target="$TEST_DIR/case-no-h1.md"
-cat > "$target" <<'EOF'
+cat >"$target" <<'EOF'
 This file has no H1.
 
 Some body.
@@ -98,7 +98,7 @@ assert_contains "$target" "This file has no H1."
 # --- 4. Idempotent on a current file ----------------------------------------
 echo "==> idempotent on current block"
 target="$TEST_DIR/case-current.md"
-cat > "$target" <<'EOF'
+cat >"$target" <<'EOF'
 # AGENTS.md
 
 EOF
@@ -111,7 +111,7 @@ assert_eq "idempotent sha" "$sha_before" "$sha_after"
 # --- 5. Refresh a stale block ----------------------------------------------
 echo "==> refresh stale block"
 target="$TEST_DIR/case-stale.md"
-cat > "$target" <<EOF
+cat >"$target" <<EOF
 # AGENTS.md
 
 $AGENTS_PRINCIPLES_BLOCK_BEGIN
@@ -134,7 +134,7 @@ assert_contains "$target" "MUST survive a refresh"
 # --- 6. Orphaned sentinel → refuses, file untouched -------------------------
 echo "==> orphaned sentinel refuses"
 target="$TEST_DIR/case-orphan.md"
-cat > "$target" <<EOF
+cat >"$target" <<EOF
 # AGENTS.md
 
 $AGENTS_PRINCIPLES_BLOCK_BEGIN
@@ -154,7 +154,7 @@ assert_eq "orphan untouched" "$sha_before" "$sha_after"
 # --- 7. Block lands BEFORE existing project content (top-of-file priority) --
 echo "==> block lands at top, ahead of project content"
 target="$TEST_DIR/case-ordering.md"
-cat > "$target" <<'EOF'
+cat >"$target" <<'EOF'
 # AGENTS.md — AI Reviewer Guide for Foo
 
 Project-specific intro.

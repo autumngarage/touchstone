@@ -46,7 +46,7 @@ mk_fixture() {
     git init -q -b main
     git config user.email t@e.co
     git config user.name Test
-    : > .keep
+    : >.keep
     git add .keep
     git commit -q -m "init"
   )
@@ -66,7 +66,7 @@ fi
 # Scenario B: .cortex/ present + config explicitly `off` → silent skip.
 B="$(mk_fixture B)"
 mkdir -p "$B/.cortex"
-echo "cortex_pr_merged_hook=off" > "$B/.touchstone-config"
+echo "cortex_pr_merged_hook=off" >"$B/.touchstone-config"
 B_HEAD_BEFORE="$(git -C "$B" rev-parse HEAD)"
 (cd "$B" && TOUCHSTONE_DEFAULT_BRANCH=main bash "$HOOK")
 B_HEAD_AFTER="$(git -C "$B" rev-parse HEAD)"
@@ -84,7 +84,7 @@ C_HEAD_BEFORE="$(git -C "$C" rev-parse HEAD)"
 (
   cd "$C"
   PATH="/usr/bin:/bin" \
-  TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
     bash "$HOOK"
 )
 C_HEAD_AFTER="$(git -C "$C" rev-parse HEAD)"
@@ -112,12 +112,12 @@ fi
 # without firing the writer.
 E="$(mk_fixture E)"
 mkdir -p "$E/.cortex"
-echo "cortex_pr_merged_hook=on" > "$E/.touchstone-config"
+echo "cortex_pr_merged_hook=on" >"$E/.touchstone-config"
 E_HEAD_BEFORE="$(git -C "$E" rev-parse HEAD)"
 (
   cd "$E"
   TOUCHSTONE_DEFAULT_BRANCH=main \
-  TOUCHSTONE_CORTEX_HOOK_DISABLE=1 \
+    TOUCHSTONE_CORTEX_HOOK_DISABLE=1 \
     bash "$HOOK"
 )
 E_HEAD_AFTER="$(git -C "$E" rev-parse HEAD)"
@@ -131,10 +131,10 @@ fi
 # capturing stderr, but we can confirm exit 0 + no commit.
 F="$(mk_fixture F)"
 mkdir -p "$F/.cortex"
-echo "cortex_pr_merged_hook=maybe" > "$F/.touchstone-config"
+echo "cortex_pr_merged_hook=maybe" >"$F/.touchstone-config"
 F_HEAD_BEFORE="$(git -C "$F" rev-parse HEAD)"
 F_STDERR="$TMPROOT/F-stderr"
-(cd "$F" && TOUCHSTONE_DEFAULT_BRANCH=main bash "$HOOK") 2> "$F_STDERR"
+(cd "$F" && TOUCHSTONE_DEFAULT_BRANCH=main bash "$HOOK") 2>"$F_STDERR"
 F_HEAD_AFTER="$(git -C "$F" rev-parse HEAD)"
 if [ "$F_HEAD_BEFORE" != "$F_HEAD_AFTER" ]; then
   echo "FAIL [F]: hook fired on unknown config value 'maybe'" >&2
@@ -166,7 +166,7 @@ fi
 # version or writing real journal entries.
 FAKEBIN="$TMPROOT/fakebin"
 mkdir -p "$FAKEBIN"
-cat > "$FAKEBIN/cortex" <<'EOF'
+cat >"$FAKEBIN/cortex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -207,14 +207,14 @@ chmod +x "$FAKEBIN/cortex"
 # and includes both files in the same local hook commit.
 H="$(mk_fixture H)"
 mkdir -p "$H/.cortex"
-printf 'stale state\n' > "$H/.cortex/state.md"
+printf 'stale state\n' >"$H/.cortex/state.md"
 (cd "$H" && git add .cortex/state.md && git commit -q -m "add cortex state")
 (
   cd "$H"
   PATH="$FAKEBIN:$PATH" \
-  TOUCHSTONE_DEFAULT_BRANCH=main \
-  TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
-  TOUCHSTONE_MERGED_PR=131 \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+    TOUCHSTONE_MERGED_PR=131 \
     bash "$HOOK"
 )
 H_CHANGED="$(git -C "$H" show --name-only --format= HEAD)"
@@ -244,17 +244,17 @@ fi
 # the journal entry, and emits an actionable recovery command.
 I="$(mk_fixture I)"
 mkdir -p "$I/.cortex"
-printf 'stale state\n' > "$I/.cortex/state.md"
+printf 'stale state\n' >"$I/.cortex/state.md"
 (cd "$I" && git add .cortex/state.md && git commit -q -m "add cortex state")
 I_STDERR="$TMPROOT/I-stderr"
 (
   cd "$I"
   PATH="$FAKEBIN:$PATH" \
-  FAKE_CORTEX_REFRESH_FAIL=1 \
-  TOUCHSTONE_DEFAULT_BRANCH=main \
-  TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+    FAKE_CORTEX_REFRESH_FAIL=1 \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
     bash "$HOOK"
-) 2> "$I_STDERR"
+) 2>"$I_STDERR"
 I_CHANGED="$(git -C "$I" show --name-only --format= HEAD)"
 if ! printf '%s\n' "$I_CHANGED" | grep -qx '.cortex/journal/pr-merged.md'; then
   echo "FAIL [I]: hook did not commit journal entry when refresh-state failed cleanly" >&2

@@ -25,8 +25,14 @@ toml_unquote() {
   local val
   val="$(toml_trim "$1")"
   case "$val" in
-    \"*\") val="${val#\"}"; val="${val%\"}" ;;
-    \'*\') val="${val#\'}"; val="${val%\'}" ;;
+    \"*\")
+      val="${val#\"}"
+      val="${val%\"}"
+      ;;
+    \'*\')
+      val="${val#\'}"
+      val="${val%\'}"
+      ;;
   esac
   printf '%s' "$val"
 }
@@ -140,14 +146,15 @@ toml_parse() {
         "$callback" "$current_section" "$key" "$(toml_unquote "$val")"
       fi
     fi
-  done < "$config_file"
+  done <"$config_file"
 }
 
 # Helper to normalize arrays: strips brackets, quotes, and extra whitespace, returns CSV
 toml_normalize_array() {
   local val="$1"
   local item
-  val="${val#\[}"; val="${val%\]}"
+  val="${val#\[}"
+  val="${val%\]}"
   # Split by comma, unquote each, rejoin with comma
   local IFS=','
   local result=""

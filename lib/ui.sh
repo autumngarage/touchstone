@@ -22,7 +22,7 @@ TK_BRAND_LIME="#A3E635"
 TK_BRAND_RED="#EF4444"
 TK_BRAND_DIM="#6B7280"
 
-tk_have_gum()    { command -v gum    >/dev/null 2>&1; }
+tk_have_gum() { command -v gum >/dev/null 2>&1; }
 tk_have_figlet() { command -v figlet >/dev/null 2>&1; }
 
 tk_color_enabled() {
@@ -46,8 +46,10 @@ _tk_rail() {
 }
 
 _tk_paint() {
-  local color="$1"; shift
-  local flag="$1"; shift
+  local color="$1"
+  shift
+  local flag="$1"
+  shift
   local rendered=""
   if tk_color_enabled && tk_have_gum; then
     if [ "$flag" = "bold" ]; then
@@ -72,16 +74,16 @@ tk_verdict() {
   rail="$(_tk_rail)"
 
   case "$state" in
-    ok)   mark="$(_tk_paint "$TK_BRAND_LIME" plain "✓")" ;;
-    fail) mark="$(_tk_paint "$TK_BRAND_RED"  plain "✗")" ;;
-    info) mark="$(_tk_paint "$TK_BRAND_DIM"  plain "•")" ;;
-    *)    mark="$(_tk_paint "$TK_BRAND_DIM"  plain "·")" ;;
+    ok) mark="$(_tk_paint "$TK_BRAND_LIME" plain "✓")" ;;
+    fail) mark="$(_tk_paint "$TK_BRAND_RED" plain "✗")" ;;
+    info) mark="$(_tk_paint "$TK_BRAND_DIM" plain "•")" ;;
+    *) mark="$(_tk_paint "$TK_BRAND_DIM" plain "·")" ;;
   esac
 
   case "$state" in
-    ok)   headline="$(_tk_paint "$TK_BRAND_LIME" bold "$headline")" ;;
-    fail) headline="$(_tk_paint "$TK_BRAND_RED"  bold "$headline")" ;;
-    *)    headline="$(_tk_paint "$TK_BRAND_DIM"  bold "$headline")" ;;
+    ok) headline="$(_tk_paint "$TK_BRAND_LIME" bold "$headline")" ;;
+    fail) headline="$(_tk_paint "$TK_BRAND_RED" bold "$headline")" ;;
+    *) headline="$(_tk_paint "$TK_BRAND_DIM" bold "$headline")" ;;
   esac
 
   printf '\n  %s  %s  %s\n' "$rail" "$headline" "$mark"
@@ -97,7 +99,7 @@ tk_verdict() {
 tk_signature() {
   local version=""
   if [ -n "${TOUCHSTONE_ROOT:-}" ] && [ -f "$TOUCHSTONE_ROOT/VERSION" ]; then
-    version="$(tr -d '[:space:]' < "$TOUCHSTONE_ROOT/VERSION" 2>/dev/null || true)"
+    version="$(tr -d '[:space:]' <"$TOUCHSTONE_ROOT/VERSION" 2>/dev/null || true)"
   fi
   if [ -n "$version" ]; then
     _tk_paint "$TK_BRAND_DIM" plain "touchstone v${version}"
@@ -122,7 +124,7 @@ tk_hero() {
   local subtitle="${1:-}"
   local version=""
   if [ -n "${TOUCHSTONE_ROOT:-}" ] && [ -f "$TOUCHSTONE_ROOT/VERSION" ]; then
-    version="$(tr -d '[:space:]' < "$TOUCHSTONE_ROOT/VERSION" 2>/dev/null || true)"
+    version="$(tr -d '[:space:]' <"$TOUCHSTONE_ROOT/VERSION" 2>/dev/null || true)"
   fi
 
   if tk_have_gum && tk_color_enabled; then

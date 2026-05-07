@@ -32,7 +32,7 @@ echo "==> Test: cleanup-branches.sh detects tree-equivalent branches"
 FAKE_BIN="$TEST_DIR/bin"
 mkdir -p "$FAKE_BIN"
 
-cat > "$FAKE_BIN/gh" <<'EOF'
+cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   "repo view --json defaultBranchRef --jq .defaultBranchRef.name")
@@ -56,14 +56,14 @@ git config user.email "test@example.com"
 git config user.name "Test"
 git remote add origin "$REMOTE"
 
-echo "A" > a.txt
+echo "A" >a.txt
 git add a.txt
 git commit -qm "initial"
 git push -q -u origin main
 
 # --- (1) Single-commit squash-merged branch.
 git checkout -q -b feat/single-squash
-echo "S" > s.txt
+echo "S" >s.txt
 git add s.txt
 git commit -qm "feat: single"
 git checkout -q main
@@ -72,17 +72,17 @@ git commit -qm "feat: single (#1)"
 
 # --- (2) Multi-commit squash-merged branch (the case the earlier tool missed).
 git checkout -q -b feat/multi-squash
-echo "M1" > m1.txt && git add m1.txt && git commit -qm "feat: M1"
-echo "M2" > m2.txt && git add m2.txt && git commit -qm "feat: M2"
-echo "M3" > m3.txt && git add m3.txt && git commit -qm "feat: M3"
+echo "M1" >m1.txt && git add m1.txt && git commit -qm "feat: M1"
+echo "M2" >m2.txt && git add m2.txt && git commit -qm "feat: M2"
+echo "M3" >m3.txt && git add m3.txt && git commit -qm "feat: M3"
 git checkout -q main
 git merge --squash feat/multi-squash >/dev/null
 git commit -qm "feat: multi (#2)"
 
 # --- (3) Rebase-merged branch (per-commit patch-id matches on upstream).
 git checkout -q -b feat/rebase-merged
-echo "R1" > r1.txt && git add r1.txt && git commit -qm "feat: R1"
-echo "R2" > r2.txt && git add r2.txt && git commit -qm "feat: R2"
+echo "R1" >r1.txt && git add r1.txt && git commit -qm "feat: R1"
+echo "R2" >r2.txt && git add r2.txt && git commit -qm "feat: R2"
 REBASE_FIRST="$(git rev-parse HEAD~1)"
 REBASE_SECOND="$(git rev-parse HEAD)"
 
@@ -92,14 +92,14 @@ REBASE_SECOND="$(git rev-parse HEAD)"
 # which makes the branch ancestor-reachable and bypasses the patch-id path
 # we actually want to exercise.
 git checkout -q main
-echo "U" > u_unrelated.txt && git add u_unrelated.txt && git commit -qm "chore: unrelated"
+echo "U" >u_unrelated.txt && git add u_unrelated.txt && git commit -qm "chore: unrelated"
 git cherry-pick "$REBASE_FIRST" "$REBASE_SECOND" >/dev/null
 
 git push -q origin main
 
 # --- (4) Control: branch with truly unique work that must be preserved.
 git checkout -q -b feat/keep-me
-echo "U" > u.txt
+echo "U" >u.txt
 git add u.txt
 git commit -qm "feat: unique work"
 
@@ -107,7 +107,7 @@ git commit -qm "feat: unique work"
 # current upstream tree no longer has the branch's changes. Must survive.
 git checkout -q main
 git checkout -q -b feat/added-then-reverted
-echo "DEL" > to_be_reverted.txt
+echo "DEL" >to_be_reverted.txt
 git add to_be_reverted.txt
 git commit -qm "feat: add DEL"
 git checkout -q main
@@ -118,7 +118,7 @@ git revert --no-edit HEAD >/dev/null
 # --- (6) Rename-half: branch renames source→dest; main adds dest
 # independently but does not delete source. The branch's deletion of
 # source is not on main — must survive.
-echo "O" > source_to_rename.txt
+echo "O" >source_to_rename.txt
 git add source_to_rename.txt
 git commit -qm "chore: seed source file for rename test"
 
@@ -127,7 +127,7 @@ git mv source_to_rename.txt dest_after_rename.txt
 git commit -qm "feat: rename source to dest"
 
 git checkout -q main
-echo "O" > dest_after_rename.txt
+echo "O" >dest_after_rename.txt
 git add dest_after_rename.txt
 git commit -qm "chore: add dest (source left in place)"
 git push -q origin main
@@ -187,7 +187,7 @@ done
 # cleanup rather than treat the error as "no open PRs" and delete branches.
 FAIL_BIN="$TEST_DIR/fail-bin"
 mkdir -p "$FAIL_BIN"
-cat > "$FAIL_BIN/gh" <<'EOF'
+cat >"$FAIL_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
   "repo view --json defaultBranchRef --jq .defaultBranchRef.name")

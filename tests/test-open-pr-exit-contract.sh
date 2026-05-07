@@ -42,18 +42,18 @@ chmod +x "$SCRIPT_DIR/open-pr.sh"
 git -C "$REPO_DIR" init -b main >/dev/null 2>&1
 git -C "$REPO_DIR" config user.name "Touchstone Test"
 git -C "$REPO_DIR" config user.email "touchstone@example.com"
-printf 'base\n' > "$REPO_DIR/file.txt"
+printf 'base\n' >"$REPO_DIR/file.txt"
 git -C "$REPO_DIR" add file.txt
 git -C "$REPO_DIR" commit -m "base commit" >/dev/null 2>&1
 git -C "$REPO_DIR" checkout -b feat/test >/dev/null 2>&1
-printf 'change\n' >> "$REPO_DIR/file.txt"
+printf 'change\n' >>"$REPO_DIR/file.txt"
 git -C "$REPO_DIR" add file.txt
 git -C "$REPO_DIR" commit -m "test change" >/dev/null 2>&1
 
 # Mock gh — behaviour controlled by env vars so each scenario reuses one mock.
 # GH_MERGED_AT  — value returned for `gh pr view --json mergedAt --jq …`
 # GH_HAS_EXISTING_PR — if "1", `gh pr list` returns an existing PR URL
-cat > "$FAKE_BIN/gh" <<'EOF'
+cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$1 $2" in
@@ -88,7 +88,7 @@ chmod +x "$FAKE_BIN/gh"
 # Stub git push so the script doesn't try to talk to a real remote.
 # We wrap real git via $REAL_GIT for everything else.
 REAL_GIT="$(command -v git)"
-cat > "$FAKE_BIN/git" <<EOF
+cat >"$FAKE_BIN/git" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "\${1:-}" = "push" ]; then
@@ -101,7 +101,7 @@ chmod +x "$FAKE_BIN/git"
 
 # Stub merge-pr.sh — behaviour controlled by MERGE_PR_EXIT (default 0).
 # When nonzero, simulates "Conductor blocked" or similar review-failure.
-cat > "$SCRIPT_DIR/merge-pr.sh" <<'EOF'
+cat >"$SCRIPT_DIR/merge-pr.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "[mock merge-pr.sh] called for PR $1"
 exit "${MERGE_PR_EXIT:-0}"
@@ -128,7 +128,7 @@ echo "==> Case 1: happy path"
 OUT="$TEST_DIR/case1.out"
 RC=0
 GH_MERGED_AT="2026-04-28T12:00:00Z" GH_HAS_EXISTING_PR=0 MERGE_PR_EXIT=0 \
-  run_open_pr > "$OUT" 2>&1 || RC=$?
+  run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" = "0" ] \
   && grep -q '==> Verified: PR #123 merged at 2026-04-28T12:00:00Z' "$OUT" \
@@ -149,7 +149,7 @@ echo "==> Case 2: merge-pr.sh blocks (Conductor blocks review)"
 OUT="$TEST_DIR/case2.out"
 RC=0
 GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 MERGE_PR_EXIT=1 \
-  run_open_pr > "$OUT" 2>&1 || RC=$?
+  run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" != "0" ] \
   && grep -q 'ORPHAN RISK: PR opened but not merged' "$OUT" \
@@ -173,7 +173,7 @@ echo "==> Case 3: silent orphan — merge-pr.sh exits 0 but PR not actually merg
 OUT="$TEST_DIR/case3.out"
 RC=0
 GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 MERGE_PR_EXIT=0 \
-  run_open_pr > "$OUT" 2>&1 || RC=$?
+  run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" != "0" ] \
   && grep -q 'merge-pr.sh exited 0 but PR #123 is not merged on GitHub' "$OUT" \
@@ -197,7 +197,7 @@ OUT="$TEST_DIR/case4.out"
 RC=0
 mv "$SCRIPT_DIR/merge-pr.sh" "$SCRIPT_DIR/merge-pr.sh.hidden"
 GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 \
-  run_open_pr > "$OUT" 2>&1 || RC=$?
+  run_open_pr >"$OUT" 2>&1 || RC=$?
 mv "$SCRIPT_DIR/merge-pr.sh.hidden" "$SCRIPT_DIR/merge-pr.sh"
 
 if [ "$RC" != "0" ] \
@@ -223,7 +223,7 @@ echo "==> Case 5: existing-PR path with --auto-merge succeeds and verifies"
 OUT="$TEST_DIR/case5.out"
 RC=0
 GH_MERGED_AT="2026-04-28T13:00:00Z" GH_HAS_EXISTING_PR=1 MERGE_PR_EXIT=0 \
-  run_open_pr > "$OUT" 2>&1 || RC=$?
+  run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" = "0" ] \
   && grep -q 'PR already open' "$OUT" \

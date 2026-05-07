@@ -19,7 +19,7 @@ ERRORS=0
 FAKE_BIN="$TEST_DIR/bin"
 ARGS_FILE="$TEST_DIR/conductor-argv.log"
 mkdir -p "$FAKE_BIN"
-cat > "$FAKE_BIN/conductor" <<'CXEOF'
+cat >"$FAKE_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$ARGS_FILE"
 case "$1" in
@@ -40,7 +40,8 @@ CXEOF
 chmod +x "$FAKE_BIN/conductor"
 
 run_review() {
-  local repo="$1"; shift
+  local repo="$1"
+  shift
   (
     cd "$repo"
     PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
@@ -56,7 +57,7 @@ new_repo() {
   git -C "$dir" init -q
   git -C "$dir" config user.email t@t
   git -C "$dir" config user.name t
-  echo init > "$dir/README.md"
+  echo init >"$dir/README.md"
   git -C "$dir" add . && git -C "$dir" commit -qm init
 }
 
@@ -72,9 +73,9 @@ commit_new_file_with_diff_lines() {
     exit 1
   fi
 
-  : > "$repo/$path"
+  : >"$repo/$path"
   while [ "$i" -le "$content_lines" ]; do
-    printf 'line %03d\n' "$i" >> "$repo/$path"
+    printf 'line %03d\n' "$i" >>"$repo/$path"
     i=$((i + 1))
   done
   git -C "$repo" add "$path" && git -C "$repo" commit -qm "change $target_lines lines"
@@ -91,7 +92,7 @@ commit_new_file_with_diff_lines() {
 echo "==> Test: small default route beats global conductor prefer/effort"
 REPO_AUTO="$TEST_DIR/repo-auto"
 new_repo "$REPO_AUTO"
-cat > "$REPO_AUTO/.codex-review.toml" <<'EOF'
+cat >"$REPO_AUTO/.codex-review.toml" <<'EOF'
 [review]
 enabled = true
 reviewer = "conductor"
@@ -101,9 +102,9 @@ effort = "max"
 tags = "code-review"
 EOF
 git -C "$REPO_AUTO" add . && git -C "$REPO_AUTO" commit -qm cfg
-echo c >> "$REPO_AUTO/README.md" && git -C "$REPO_AUTO" add . && git -C "$REPO_AUTO" commit -qm change
+echo c >>"$REPO_AUTO/README.md" && git -C "$REPO_AUTO" add . && git -C "$REPO_AUTO" commit -qm change
 
-: > "$ARGS_FILE"
+: >"$ARGS_FILE"
 out="$(run_review "$REPO_AUTO" --dry-run --base HEAD~1 2>&1)"
 
 if grep -q '^route' "$ARGS_FILE" \
@@ -126,7 +127,7 @@ REPO_THRESHOLD="$TEST_DIR/repo-threshold"
 new_repo "$REPO_THRESHOLD"
 commit_new_file_with_diff_lines "$REPO_THRESHOLD" 400 threshold.txt
 
-: > "$ARGS_FILE"
+: >"$ARGS_FILE"
 out="$(run_review "$REPO_THRESHOLD" --dry-run --base HEAD~1 2>&1)"
 
 if grep -q '\-\-prefer cheapest' "$ARGS_FILE" \
@@ -146,7 +147,7 @@ REPO_LARGE="$TEST_DIR/repo-large"
 new_repo "$REPO_LARGE"
 commit_new_file_with_diff_lines "$REPO_LARGE" 401 large.txt
 
-: > "$ARGS_FILE"
+: >"$ARGS_FILE"
 out="$(run_review "$REPO_LARGE" --dry-run --base HEAD~1 2>&1)"
 
 if grep -q '\-\-prefer best' "$ARGS_FILE" \
@@ -164,7 +165,7 @@ fi
 echo "==> Test: explicit routing opt-out preserves global conductor config"
 REPO_DISABLED="$TEST_DIR/repo-routing-disabled"
 new_repo "$REPO_DISABLED"
-cat > "$REPO_DISABLED/.codex-review.toml" <<'EOF'
+cat >"$REPO_DISABLED/.codex-review.toml" <<'EOF'
 [review.conductor]
 prefer = "balanced"
 effort = "low"
@@ -172,9 +173,9 @@ effort = "low"
 enabled = false
 EOF
 git -C "$REPO_DISABLED" add . && git -C "$REPO_DISABLED" commit -qm cfg
-echo c >> "$REPO_DISABLED/README.md" && git -C "$REPO_DISABLED" add . && git -C "$REPO_DISABLED" commit -qm change
+echo c >>"$REPO_DISABLED/README.md" && git -C "$REPO_DISABLED" add . && git -C "$REPO_DISABLED" commit -qm change
 
-: > "$ARGS_FILE"
+: >"$ARGS_FILE"
 out="$(run_review "$REPO_DISABLED" --dry-run --base HEAD~1 2>&1)"
 
 if grep -q '\-\-prefer balanced' "$ARGS_FILE" \
@@ -192,7 +193,7 @@ fi
 echo '==> Test: --dry-run with `with =` pinned config skips route preview'
 REPO_PIN="$TEST_DIR/repo-pin"
 new_repo "$REPO_PIN"
-cat > "$REPO_PIN/.codex-review.toml" <<'EOF'
+cat >"$REPO_PIN/.codex-review.toml" <<'EOF'
 [review]
 reviewer = "conductor"
 [review.conductor]
@@ -202,7 +203,7 @@ effort = "max"
 EOF
 git -C "$REPO_PIN" add . && git -C "$REPO_PIN" commit -qm cfg
 
-: > "$ARGS_FILE"
+: >"$ARGS_FILE"
 out="$(run_review "$REPO_PIN" --dry-run --base HEAD 2>&1)"
 
 if echo "$out" | grep -q 'pinned via --with=claude' \
@@ -218,7 +219,7 @@ fi
 
 # ----------------------------------------------------------------------------
 echo "==> Test: env override beats size bucket defaults"
-: > "$ARGS_FILE"
+: >"$ARGS_FILE"
 out="$(
   cd "$REPO_AUTO"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
@@ -243,7 +244,7 @@ echo "==> Test: --mode override changes tools without sandbox flags"
 check_dry_run_mode() {
   local mode="$1"
   local expected_tools="$2"
-  : > "$ARGS_FILE"
+  : >"$ARGS_FILE"
   out="$(run_review "$REPO_AUTO" --dry-run --mode "$mode" --base HEAD~1 2>&1)"
 
   if [ -n "$expected_tools" ]; then
@@ -313,7 +314,7 @@ fi
 
 # ----------------------------------------------------------------------------
 echo "==> Test: TOUCHSTONE_REVIEWER=<legacy> translates to --with pin + deprecation note"
-: > "$ARGS_FILE"
+: >"$ARGS_FILE"
 set +e
 out="$(
   cd "$REPO_AUTO"
@@ -334,7 +335,7 @@ else
 fi
 
 # TOUCHSTONE_REVIEWER=local must map to ollama, not crash or no-op.
-: > "$ARGS_FILE"
+: >"$ARGS_FILE"
 out="$(
   cd "$REPO_AUTO"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
@@ -353,7 +354,7 @@ else
 fi
 
 # Unknown value warns but does not pin (must not silently succeed with junk).
-: > "$ARGS_FILE"
+: >"$ARGS_FILE"
 out="$(
   cd "$REPO_AUTO"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \

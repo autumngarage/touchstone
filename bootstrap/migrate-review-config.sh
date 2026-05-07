@@ -43,13 +43,31 @@ file=".codex-review.toml"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --dry-run) dry_run=true; shift ;;
-    --no-backup) no_backup=true; shift ;;
+    --dry-run)
+      dry_run=true
+      shift
+      ;;
+    --no-backup)
+      no_backup=true
+      shift
+      ;;
     --file)
-      [ "$#" -ge 2 ] || { echo "ERROR: --file requires a path" >&2; exit 1; }
-      file="$2"; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "ERROR: unknown argument '$1'" >&2; usage >&2; exit 1 ;;
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --file requires a path" >&2
+        exit 1
+      }
+      file="$2"
+      shift 2
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "ERROR: unknown argument '$1'" >&2
+      usage >&2
+      exit 1
+      ;;
   esac
 done
 
@@ -76,18 +94,18 @@ grep -qE '^\[review\.assist\]' "$file" && has_legacy_assist=true
 grep -qE '^[[:space:]]*(small|large)_reviewers[[:space:]]*=[[:space:]]*\[' "$file" && has_legacy_routing=true
 
 if [ "$already_migrated" = true ] \
-   && [ "$has_legacy_reviewers" = false ] \
-   && [ "$has_legacy_local" = false ] \
-   && [ "$has_legacy_assist" = false ] \
-   && [ "$has_legacy_routing" = false ]; then
+  && [ "$has_legacy_reviewers" = false ] \
+  && [ "$has_legacy_local" = false ] \
+  && [ "$has_legacy_assist" = false ] \
+  && [ "$has_legacy_routing" = false ]; then
   echo "==> $file is already in 2.0 shape — nothing to migrate."
   exit 0
 fi
 
 if [ "$has_legacy_reviewers" = false ] \
-   && [ "$has_legacy_local" = false ] \
-   && [ "$has_legacy_assist" = false ] \
-   && [ "$has_legacy_routing" = false ]; then
+  && [ "$has_legacy_local" = false ] \
+  && [ "$has_legacy_assist" = false ] \
+  && [ "$has_legacy_routing" = false ]; then
   echo "==> $file has no recognizable 1.x markers — nothing to migrate."
   echo "    (Looked for: reviewers=[...], [review.local], [review.assist], small_/large_reviewers=[...])"
   exit 0
@@ -95,9 +113,9 @@ fi
 
 echo "==> Migrating $file from 1.x → 2.0"
 [ "$has_legacy_reviewers" = true ] && echo "    - reviewers=[...] → reviewer=\"conductor\" + [review.conductor].with"
-[ "$has_legacy_local" = true ]     && echo "    - [review.local] → commented out (retired in 2.0)"
-[ "$has_legacy_assist" = true ]    && echo "    - [review.assist] → commented out (returns in 2.1)"
-[ "$has_legacy_routing" = true ]   && echo "    - small_/large_reviewers=[...] → small_/large_with=\"...\""
+[ "$has_legacy_local" = true ] && echo "    - [review.local] → commented out (retired in 2.0)"
+[ "$has_legacy_assist" = true ] && echo "    - [review.assist] → commented out (returns in 2.1)"
+[ "$has_legacy_routing" = true ] && echo "    - small_/large_reviewers=[...] → small_/large_with=\"...\""
 
 tmp="$(mktemp "${TMPDIR:-/tmp}/codex-review-migrate.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
@@ -237,7 +255,7 @@ END {
     }
   }
 }
-' "$file" > "$tmp"
+' "$file" >"$tmp"
 
 if [ "$dry_run" = true ]; then
   echo ""

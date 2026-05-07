@@ -35,27 +35,27 @@ mkdir -p "$PROJECT"
 git -C "$PROJECT" init -q
 
 CURRENT_ID="$(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD)"
-CURRENT_VERSION="$(tr -d '[:space:]' < "$TOUCHSTONE_ROOT/VERSION")"
-printf '%s\n' "$CURRENT_ID" > "$PROJECT/.touchstone-version"
+CURRENT_VERSION="$(tr -d '[:space:]' <"$TOUCHSTONE_ROOT/VERSION")"
+printf '%s\n' "$CURRENT_ID" >"$PROJECT/.touchstone-version"
 
 echo "==> Test: run-script accepts the reviewed current id"
 
 SUCCESS_OUT="$TEST_DIR/success.out"
-( cd "$PROJECT" && run_touchstone run-script touchstone-run --project-version "$CURRENT_ID" -- detect ) >"$SUCCESS_OUT" 2>&1
+(cd "$PROJECT" && run_touchstone run-script touchstone-run --project-version "$CURRENT_ID" -- detect) >"$SUCCESS_OUT" 2>&1
 assert_contains "$SUCCESS_OUT" '^project_type=generic$'
 assert_contains "$SUCCESS_OUT" '^monorepo=false$'
 
 echo "==> Test: run-script accepts the installed VERSION string"
 
 VERSION_OUT="$TEST_DIR/version.out"
-( cd "$PROJECT" && run_touchstone run-script touchstone-run --project-version "$CURRENT_VERSION" -- detect ) >"$VERSION_OUT" 2>&1
+(cd "$PROJECT" && run_touchstone run-script touchstone-run --project-version "$CURRENT_VERSION" -- detect) >"$VERSION_OUT" 2>&1
 assert_contains "$VERSION_OUT" '^project_type=generic$'
 
 echo "==> Test: run-script accepts an older release-version contract"
 
 OLDER_VERSION="v0.0.0"
 OLDER_VERSION_OUT="$TEST_DIR/older-version.out"
-( cd "$PROJECT" && run_touchstone run-script touchstone-run --project-version "$OLDER_VERSION" -- detect ) >"$OLDER_VERSION_OUT" 2>&1
+(cd "$PROJECT" && run_touchstone run-script touchstone-run --project-version "$OLDER_VERSION" -- detect) >"$OLDER_VERSION_OUT" 2>&1
 assert_contains "$OLDER_VERSION_OUT" '^project_type=generic$'
 
 echo "==> Test: run-script rejects a newer release-version contract"
@@ -63,7 +63,7 @@ echo "==> Test: run-script rejects a newer release-version contract"
 FUTURE_VERSION="$(printf '%s\n' "$CURRENT_VERSION" | awk -F. '{ printf "%d.0.0\n", $1 + 1 }')"
 FUTURE_VERSION_OUT="$TEST_DIR/future-version.out"
 set +e
-( cd "$PROJECT" && run_touchstone run-script touchstone-run --project-version "$FUTURE_VERSION" -- detect ) >"$FUTURE_VERSION_OUT" 2>&1
+(cd "$PROJECT" && run_touchstone run-script touchstone-run --project-version "$FUTURE_VERSION" -- detect) >"$FUTURE_VERSION_OUT" 2>&1
 FUTURE_VERSION_EXIT=$?
 set -e
 
@@ -98,8 +98,8 @@ echo "==> Test: --project controls the delegated script working directory"
 NODE_PROJECT="$TEST_DIR/node-project"
 mkdir -p "$NODE_PROJECT"
 git -C "$NODE_PROJECT" init -q
-printf '%s\n' "$CURRENT_ID" > "$NODE_PROJECT/.touchstone-version"
-printf '{"scripts":{},"packageManager":"pnpm@9.0.0"}\n' > "$NODE_PROJECT/package.json"
+printf '%s\n' "$CURRENT_ID" >"$NODE_PROJECT/.touchstone-version"
+printf '{"scripts":{},"packageManager":"pnpm@9.0.0"}\n' >"$NODE_PROJECT/package.json"
 PROJECT_CONTEXT_OUT="$TEST_DIR/project-context.out"
 (
   cd "$PROJECT"
@@ -107,6 +107,31 @@ PROJECT_CONTEXT_OUT="$TEST_DIR/project-context.out"
 ) >"$PROJECT_CONTEXT_OUT" 2>&1
 assert_contains "$PROJECT_CONTEXT_OUT" '^project_type=node$'
 assert_contains "$PROJECT_CONTEXT_OUT" '^package_manager=pnpm$'
+
+echo "==> Test: configured validate commands do not inherit hook Git env"
+
+VALIDATE_PROJECT="$TEST_DIR/validate-project"
+mkdir -p "$VALIDATE_PROJECT"
+git -C "$VALIDATE_PROJECT" init -q
+cat >"$VALIDATE_PROJECT/.touchstone-config" <<EOF_CONFIG
+validate_command=bash validate.sh
+EOF_CONFIG
+cat >"$VALIDATE_PROJECT/validate.sh" <<'EOF_VALIDATE'
+set -e
+git init nested >/dev/null
+test -d nested/.git
+test "$(git -C nested rev-parse --is-bare-repository)" = "false"
+EOF_VALIDATE
+VALIDATE_ENV_OUT="$TEST_DIR/validate-env.out"
+(
+  cd "$VALIDATE_PROJECT"
+  GIT_DIR="$VALIDATE_PROJECT/.git" \
+    GIT_WORK_TREE="$VALIDATE_PROJECT" \
+    PRE_COMMIT=1 \
+    PRE_COMMIT_REMOTE_BRANCH=refs/heads/feature/test \
+    bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" validate
+) >"$VALIDATE_ENV_OUT" 2>&1
+assert_contains "$VALIDATE_ENV_OUT" 'validate.sh'
 
 echo "==> Test: run-script rejects projects without a version contract"
 
@@ -131,7 +156,7 @@ echo "==> Test: run-script rejects a project version contract the CLI cannot sat
 
 MISMATCH_OUT="$TEST_DIR/mismatch.out"
 set +e
-( cd "$PROJECT" && run_touchstone run-script touchstone-run --project-version 0000000000000000000000000000000000000000 -- detect ) >"$MISMATCH_OUT" 2>&1
+(cd "$PROJECT" && run_touchstone run-script touchstone-run --project-version 0000000000000000000000000000000000000000 -- detect) >"$MISMATCH_OUT" 2>&1
 MISMATCH_EXIT=$?
 set -e
 
@@ -170,7 +195,7 @@ echo "==> Test: run-script rejects unknown script names"
 
 UNKNOWN_OUT="$TEST_DIR/unknown.out"
 set +e
-( cd "$PROJECT" && run_touchstone run-script not-a-script --project-version "$CURRENT_ID" ) >"$UNKNOWN_OUT" 2>&1
+(cd "$PROJECT" && run_touchstone run-script not-a-script --project-version "$CURRENT_ID") >"$UNKNOWN_OUT" 2>&1
 UNKNOWN_EXIT=$?
 set -e
 
@@ -185,7 +210,7 @@ echo "==> Test: run-script keeps high-risk PR scripts out of the prototype allow
 
 HIGH_RISK_OUT="$TEST_DIR/high-risk.out"
 set +e
-( cd "$PROJECT" && run_touchstone run-script open-pr --project-version "$CURRENT_ID" -- --help ) >"$HIGH_RISK_OUT" 2>&1
+(cd "$PROJECT" && run_touchstone run-script open-pr --project-version "$CURRENT_ID" -- --help) >"$HIGH_RISK_OUT" 2>&1
 HIGH_RISK_EXIT=$?
 set -e
 

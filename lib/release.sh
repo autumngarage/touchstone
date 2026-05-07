@@ -35,20 +35,30 @@ touchstone_release() {
 
   # Compute new version.
   local major minor patch
-  IFS='.' read -r major minor patch <<< "$current"
+  IFS='.' read -r major minor patch <<<"$current"
   case "$bump_type" in
-    major) major=$((major + 1)); minor=0; patch=0 ;;
-    minor) minor=$((minor + 1)); patch=0 ;;
+    major)
+      major=$((major + 1))
+      minor=0
+      patch=0
+      ;;
+    minor)
+      minor=$((minor + 1))
+      patch=0
+      ;;
     patch) patch=$((patch + 1)) ;;
-    *) tk_fail "Unknown bump type: $bump_type (use --major, --minor, or --patch)"; return 1 ;;
+    *)
+      tk_fail "Unknown bump type: $bump_type (use --major, --minor, or --patch)"
+      return 1
+      ;;
   esac
   local new_version="${major}.${minor}.${patch}"
   tk_info "New version: v${new_version}"
 
   # Bump VERSION file and touchstone's own dogfood stamp.
-  echo "$new_version" > "$TOUCHSTONE_ROOT/VERSION"
+  echo "$new_version" >"$TOUCHSTONE_ROOT/VERSION"
   if [ -f "$TOUCHSTONE_ROOT/.touchstone-version" ]; then
-    echo "$new_version" > "$TOUCHSTONE_ROOT/.touchstone-version"
+    echo "$new_version" >"$TOUCHSTONE_ROOT/.touchstone-version"
   fi
   tk_ok "Bumped VERSION to $new_version"
 

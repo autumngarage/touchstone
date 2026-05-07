@@ -54,7 +54,7 @@ new_repo() {
   git -C "$repo" init -q
   git -C "$repo" config user.email t@t
   git -C "$repo" config user.name t
-  printf 'init\n' > "$repo/README.md"
+  printf 'init\n' >"$repo/README.md"
   git -C "$repo" add README.md
   git -C "$repo" commit -qm init
 }
@@ -77,8 +77,8 @@ echo "==> Test: detects_and_injects_journal"
 REPO_DETECT="$TEST_DIR/repo-detect"
 new_repo "$REPO_DETECT"
 mkdir -p "$REPO_DETECT/.sentinel/runs" "$REPO_DETECT/.cortex/journal"
-printf -- '---\ncycle-id: foo\n---\n' > "$REPO_DETECT/.sentinel/runs/run.md"
-cat > "$REPO_DETECT/.cortex/journal/20260428-sentinel-cycle-foo.md" <<'EOF'
+printf -- '---\ncycle-id: foo\n---\n' >"$REPO_DETECT/.sentinel/runs/run.md"
+cat >"$REPO_DETECT/.cortex/journal/20260428-sentinel-cycle-foo.md" <<'EOF'
 ---
 title: Sentinel Cycle Foo
 ---
@@ -103,7 +103,7 @@ echo "==> Test: sentinel_but_no_cortex"
 REPO_NO_CORTEX="$TEST_DIR/repo-no-cortex"
 new_repo "$REPO_NO_CORTEX"
 mkdir -p "$REPO_NO_CORTEX/.sentinel/runs"
-printf 'sentinel run\n' > "$REPO_NO_CORTEX/.sentinel/runs/run.md"
+printf 'sentinel run\n' >"$REPO_NO_CORTEX/.sentinel/runs/run.md"
 run_context_helper "$REPO_NO_CORTEX"
 assert_empty "$CONTEXT_STDOUT" "sentinel_but_no_cortex stdout"
 assert_contains "$CONTEXT_STDERR" "no cycle journal entry found" "sentinel_but_no_cortex stderr"
@@ -112,9 +112,9 @@ echo "==> Test: cycle_id_match_preferred_over_recency"
 REPO_CYCLE="$TEST_DIR/repo-cycle"
 new_repo "$REPO_CYCLE"
 mkdir -p "$REPO_CYCLE/.sentinel/runs" "$REPO_CYCLE/.cortex/journal"
-printf -- '---\ncycle-id: B\n---\n' > "$REPO_CYCLE/.sentinel/runs/run.md"
-printf 'journal A newer\n' > "$REPO_CYCLE/.cortex/journal/20260428-sentinel-cycle-A.md"
-printf 'journal B matched\n' > "$REPO_CYCLE/.cortex/journal/20260427-sentinel-cycle-B.md"
+printf -- '---\ncycle-id: B\n---\n' >"$REPO_CYCLE/.sentinel/runs/run.md"
+printf 'journal A newer\n' >"$REPO_CYCLE/.cortex/journal/20260428-sentinel-cycle-A.md"
+printf 'journal B matched\n' >"$REPO_CYCLE/.cortex/journal/20260427-sentinel-cycle-B.md"
 touch -t 202604281200 "$REPO_CYCLE/.cortex/journal/20260428-sentinel-cycle-A.md"
 touch -t 202604271200 "$REPO_CYCLE/.cortex/journal/20260427-sentinel-cycle-B.md"
 run_context_helper "$REPO_CYCLE"
@@ -125,8 +125,8 @@ echo "==> Test: malformed_journal_falls_back"
 REPO_MALFORMED="$TEST_DIR/repo-malformed"
 new_repo "$REPO_MALFORMED"
 mkdir -p "$REPO_MALFORMED/.sentinel/runs" "$REPO_MALFORMED/.cortex/journal"
-printf 'sentinel run\n' > "$REPO_MALFORMED/.sentinel/runs/run.md"
-printf 'unreadable journal\n' > "$REPO_MALFORMED/.cortex/journal/20260428-sentinel-cycle-bad.md"
+printf 'sentinel run\n' >"$REPO_MALFORMED/.sentinel/runs/run.md"
+printf 'unreadable journal\n' >"$REPO_MALFORMED/.cortex/journal/20260428-sentinel-cycle-bad.md"
 chmod 000 "$REPO_MALFORMED/.cortex/journal/20260428-sentinel-cycle-bad.md"
 run_context_helper "$REPO_MALFORMED"
 chmod 644 "$REPO_MALFORMED/.cortex/journal/20260428-sentinel-cycle-bad.md"
@@ -137,13 +137,13 @@ echo "==> Test: smoke prompt sent to conductor includes sentinel context"
 REPO_SMOKE="$TEST_DIR/repo-smoke"
 new_repo "$REPO_SMOKE"
 mkdir -p "$REPO_SMOKE/.sentinel/runs" "$REPO_SMOKE/.cortex/journal" "$TEST_DIR/bin"
-printf -- '---\ncycle-id: smoke\n---\n' > "$REPO_SMOKE/.sentinel/runs/run.md"
-printf 'smoke journal context\n' > "$REPO_SMOKE/.cortex/journal/20260428-sentinel-cycle-smoke.md"
-printf 'change\n' >> "$REPO_SMOKE/README.md"
+printf -- '---\ncycle-id: smoke\n---\n' >"$REPO_SMOKE/.sentinel/runs/run.md"
+printf 'smoke journal context\n' >"$REPO_SMOKE/.cortex/journal/20260428-sentinel-cycle-smoke.md"
+printf 'change\n' >>"$REPO_SMOKE/README.md"
 git -C "$REPO_SMOKE" add README.md
 git -C "$REPO_SMOKE" commit -qm change
 PROMPT_CAPTURE="$TEST_DIR/prompt.capture"
-cat > "$TEST_DIR/bin/conductor" <<'EOF'
+cat >"$TEST_DIR/bin/conductor" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
   doctor)

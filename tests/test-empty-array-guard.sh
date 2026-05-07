@@ -36,7 +36,7 @@ check_file() {
     name="$(printf '%s' "$line" | sed 's/^[[:space:]]*//' | sed 's/^local[[:space:]][[:space:]]*//' | sed 's/=().*//')"
     # Ignore if name contains spaces or special chars (not a variable name).
     case "$name" in
-      *[[:space:]]*|*[!a-zA-Z0-9_]*) continue ;;
+      *[[:space:]]* | *[!a-zA-Z0-9_]*) continue ;;
     esac
     declared_arrays+=("$name")
   done < <(grep -E '^\s*(local\s+)?[a-zA-Z_][a-zA-Z0-9_]*=\(\)' "$file" 2>/dev/null || true)
@@ -50,13 +50,13 @@ check_file() {
   for name in ${declared_arrays[@]+"${declared_arrays[@]}"}; do
     # Look for "${name[@]}" — unguarded expansion (fixed-string search avoids
     # bracket-class ambiguity in ERE when name contains no special chars).
-    if grep -Fn '"${'"$name"'[@]}"' "$file" 2>/dev/null | \
-         grep -v 'empty-array-guard: safe' >/dev/null 2>&1; then
+    if grep -Fn '"${'"$name"'[@]}"' "$file" 2>/dev/null \
+      | grep -v 'empty-array-guard: safe' >/dev/null 2>&1; then
       # Treat the expansion as guarded if the file uses any of:
       #   ${name[@]+"${name[@]}"}  — the direct bash 3.2 idiom
       #   ${#name[@]}              — a length check guards the expansion site
-      if ! grep -qF '${'"$name"'[@]+' "$file" 2>/dev/null && \
-         ! grep -qF '${#'"$name"'[@]}' "$file" 2>/dev/null; then
+      if ! grep -qF '${'"$name"'[@]+' "$file" 2>/dev/null \
+        && ! grep -qF '${#'"$name"'[@]}' "$file" 2>/dev/null; then
         echo "  WARN: $file: '${name}' declared =() but expanded as \"\${${name}[@]}\" without guard" >&2
         echo "        Use: \${${name}[@]+\"\${${name}[@]}\"}" >&2
         grep -Fn '"${'"$name"'[@]}"' "$file" 2>/dev/null | head -5 >&2 || true

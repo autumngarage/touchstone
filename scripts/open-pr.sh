@@ -142,7 +142,7 @@ cleanup_feature_worktree() {
 
   echo "==> Removing feature worktree $current_path (from $default_path) ..."
   touchstone_emit_event cleanup_started worktree_path="$current_path"
-  if ( cd "$default_path" && git worktree remove "$current_path" ); then
+  if (cd "$default_path" && git worktree remove "$current_path"); then
     echo "==> Worktree removed."
     touchstone_emit_event cleanup_done worktree_path="$current_path" result=removed
   else
@@ -228,13 +228,16 @@ if ! git diff --quiet || ! git diff --cached --quiet || [ -n "$UNTRACKED" ]; the
     echo "         Untracked files detected:" >&2
     while IFS= read -r untracked_file; do
       printf '           %s\n' "$untracked_file" >&2
-    done <<< "$UNTRACKED"
+    done <<<"$UNTRACKED"
   fi
   echo "         Commit them first if they should be part of the PR." >&2
   read -r -p "         Continue anyway? [y/N] " answer
   case "$answer" in
-    y|Y|yes|YES) ;;
-    *) echo "Aborted."; exit 1 ;;
+    y | Y | yes | YES) ;;
+    *)
+      echo "Aborted."
+      exit 1
+      ;;
   esac
 fi
 
@@ -247,9 +250,18 @@ POSITIONAL=()
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --draft) DRAFT_FLAG="--draft"; shift ;;
-    --auto-merge) AUTO_MERGE=true; shift ;;
-    --cleanup-worktree) CLEANUP_WORKTREE=true; shift ;;
+    --draft)
+      DRAFT_FLAG="--draft"
+      shift
+      ;;
+    --auto-merge)
+      AUTO_MERGE=true
+      shift
+      ;;
+    --cleanup-worktree)
+      CLEANUP_WORKTREE=true
+      shift
+      ;;
     --base)
       if [ "$#" -lt 2 ]; then
         echo "ERROR: --base requires a branch name." >&2
@@ -258,7 +270,10 @@ while [ "$#" -gt 0 ]; do
       BASE_OVERRIDE="$2"
       shift 2
       ;;
-    *) POSITIONAL+=("$1"); shift ;;
+    *)
+      POSITIONAL+=("$1")
+      shift
+      ;;
   esac
 done
 set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
@@ -414,7 +429,7 @@ BODY_FILE="$(mktemp -t touchstone-pr-body.XXXXXX.md)"
     while IFS= read -r issue_number; do
       [ -n "$issue_number" ] || continue
       printf 'Closes #%s\n' "$issue_number"
-    done <<< "$LINKED_ISSUES"
+    done <<<"$LINKED_ISSUES"
     printf '\n'
   fi
   if [ -n "$SENTINEL_BODY" ]; then
@@ -427,7 +442,7 @@ BODY_FILE="$(mktemp -t touchstone-pr-body.XXXXXX.md)"
       cat "$TEMPLATE_PATH"
     fi
   fi
-} > "$BODY_FILE"
+} >"$BODY_FILE"
 
 echo "==> Opening PR against $BASE_BRANCH ..."
 if [ -n "$DRAFT_FLAG" ]; then

@@ -9,7 +9,7 @@ run_claude_probe() {
   local timeout_secs="${TOUCHSTONE_CLAUDE_PROBE_TIMEOUT:-90}"
 
   case "$timeout_secs" in
-    ''|*[!0-9]*) timeout_secs=90 ;;
+    '' | *[!0-9]*) timeout_secs=90 ;;
   esac
 
   if [ "$timeout_secs" -le 0 ] 2>/dev/null; then
@@ -36,7 +36,7 @@ run_claude_probe() {
     done
 
     if kill -0 "$claude_pid" 2>/dev/null; then
-      printf 'timeout\n' > "$timed_out_file"
+      printf 'timeout\n' >"$timed_out_file"
       kill "$claude_pid" 2>/dev/null || true
       sleep 2
       kill -9 "$claude_pid" 2>/dev/null || true

@@ -37,21 +37,43 @@ usage() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --dry-run|-n) DRY_RUN=true; shift ;;
-    --check) CHECK_ONLY=true; shift ;;
-    --ship) SHIP=true; shift ;;
-    --no-ship) SHIP=false; shift ;;
-    --in-place|--no-branch) IN_PLACE=true; shift ;;
+    --dry-run | -n)
+      DRY_RUN=true
+      shift
+      ;;
+    --check)
+      CHECK_ONLY=true
+      shift
+      ;;
+    --ship)
+      SHIP=true
+      shift
+      ;;
+    --no-ship)
+      SHIP=false
+      shift
+      ;;
+    --in-place | --no-branch)
+      IN_PLACE=true
+      shift
+      ;;
     --branch)
-      [ "$#" -ge 2 ] || { echo "ERROR: --branch requires a value" >&2; exit 1; }
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --branch requires a value" >&2
+        exit 1
+      }
       REQUESTED_BRANCH="$2"
       shift 2
       ;;
-    -h|--help)
+    -h | --help)
       usage
       exit 0
       ;;
-    *) echo "ERROR: unknown argument '$1'" >&2; usage >&2; exit 1 ;;
+    *)
+      echo "ERROR: unknown argument '$1'" >&2
+      usage >&2
+      exit 1
+      ;;
   esac
 done
 
@@ -104,8 +126,8 @@ CODEX_REVIEW_TOML="$PROJECT_DIR/.codex-review.toml"
 NEEDS_CODEX_REVIEW_MIGRATION=false
 if [ "$DRY_RUN" = false ] && [ "$CHECK_ONLY" = false ] && [ -f "$CODEX_REVIEW_TOML" ]; then
   if grep -qE '^[[:space:]]*reviewers[[:space:]]*=[[:space:]]*\[' "$CODEX_REVIEW_TOML" \
-    || grep -qE '^\[review\.local\]'   "$CODEX_REVIEW_TOML" \
-    || grep -qE '^\[review\.assist\]'  "$CODEX_REVIEW_TOML" \
+    || grep -qE '^\[review\.local\]' "$CODEX_REVIEW_TOML" \
+    || grep -qE '^\[review\.assist\]' "$CODEX_REVIEW_TOML" \
     || grep -qE '^[[:space:]]*(small|large)_reviewers[[:space:]]*=[[:space:]]*\[' "$CODEX_REVIEW_TOML"; then
     NEEDS_CODEX_REVIEW_MIGRATION=true
   fi
@@ -163,9 +185,9 @@ snapshot_touchstone_metadata() {
   if [ -f "$PROJECT_DIR/.touchstone-manifest" ]; then
     cp "$PROJECT_DIR/.touchstone-manifest" "$ROLLBACK_TMP_DIR/.touchstone-manifest"
   elif [ -e "$PROJECT_DIR/.touchstone-manifest" ]; then
-    : > "$ROLLBACK_TMP_DIR/.touchstone-manifest.nonfile"
+    : >"$ROLLBACK_TMP_DIR/.touchstone-manifest.nonfile"
   else
-    : > "$ROLLBACK_TMP_DIR/.touchstone-manifest.missing"
+    : >"$ROLLBACK_TMP_DIR/.touchstone-manifest.missing"
   fi
 }
 
@@ -290,8 +312,8 @@ if [ "$NEEDS_CODEX_REVIEW_MIGRATION" = true ]; then
   echo "==> Migrating .codex-review.toml from v1.x → v2.x shape..."
   if (
     cd "$PROJECT_DIR" \
-    && bash "$TOUCHSTONE_ROOT/bootstrap/migrate-review-config.sh" --no-backup
-  ) > "$PROJECT_DIR/.touchstone-migrate-codex-review.log" 2>&1; then
+      && bash "$TOUCHSTONE_ROOT/bootstrap/migrate-review-config.sh" --no-backup
+  ) >"$PROJECT_DIR/.touchstone-migrate-codex-review.log" 2>&1; then
     rm -f "$PROJECT_DIR/.touchstone-migrate-codex-review.log"
     echo "    .codex-review.toml: rewrote v1.x reviewer cascade to v2.x conductor shape."
     echo "    The migration warning in scripts/codex-review.sh will no longer fire on push."
@@ -559,7 +581,7 @@ write_touchstone_manifest() {
         done
       done
     fi
-  } > "$manifest"
+  } >"$manifest"
 }
 
 # Ensure scripts are executable and write touchstone metadata.
@@ -567,7 +589,7 @@ if [ "$DRY_RUN" = false ]; then
   if [ -d "$PROJECT_DIR/scripts" ]; then
     chmod +x "$PROJECT_DIR/scripts/"*.sh 2>/dev/null || true
   fi
-  echo "$CURRENT_SHA" > "$PROJECT_DIR/.touchstone-version"
+  echo "$CURRENT_SHA" >"$PROJECT_DIR/.touchstone-version"
   write_touchstone_manifest
 fi
 
@@ -579,8 +601,8 @@ echo "    Prototype shim runner available for evaluation: touchstone run-script 
 # Reinstall pre-commit hook shims so a drifted or empty .git/hooks/ gets repaired.
 # The helper is idempotent; it skips silently when there's nothing to do.
 if [ "$DRY_RUN" = false ] \
-   && [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ] \
-   && { [ ! -f "$PROJECT_DIR/.git/hooks/pre-commit" ] || [ ! -f "$PROJECT_DIR/.git/hooks/pre-push" ]; }; then
+  && [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ] \
+  && { [ ! -f "$PROJECT_DIR/.git/hooks/pre-commit" ] || [ ! -f "$PROJECT_DIR/.git/hooks/pre-push" ]; }; then
   echo ""
   touchstone_install_hooks "$PROJECT_DIR" || true
 fi

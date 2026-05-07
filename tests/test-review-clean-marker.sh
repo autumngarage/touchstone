@@ -14,7 +14,7 @@ REPO="$TEST_DIR/repo"
 FAKE_BIN="$TEST_DIR/bin"
 mkdir -p "$REPO" "$FAKE_BIN"
 
-cat > "$FAKE_BIN/conductor" <<'EOF'
+cat >"$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -42,11 +42,11 @@ if (
   git config user.name "Touchstone Test"
   mkdir -p lib
   cp -r "$TOUCHSTONE_ROOT/lib/"* lib/
-  printf '[review]\nreviewer = "conductor"\nmode = "review-only"\n' > .codex-review.toml
-  printf 'base\n' > example.txt
+  printf '[review]\nreviewer = "conductor"\nmode = "review-only"\n' >.codex-review.toml
+  printf 'base\n' >example.txt
   git add .codex-review.toml example.txt
   git commit -q -m "base"
-  printf 'change\n' >> example.txt
+  printf 'change\n' >>example.txt
   git add example.txt
   git commit -q -m "change"
 
@@ -55,7 +55,7 @@ if (
     CODEX_REVIEW_BRANCH_NAME="feature/clean-marker" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     TOUCHSTONE_REVIEW_LOG=/dev/null \
-    bash "$TOUCHSTONE_ROOT/scripts/codex-review.sh" > "$TEST_DIR/output.txt" 2>&1
+    bash "$TOUCHSTONE_ROOT/scripts/codex-review.sh" >"$TEST_DIR/output.txt" 2>&1
 
   MARKER="$(git rev-parse --git-path touchstone/reviewer-clean/feature_clean-marker.clean)"
   if [ -f "$MARKER" ] \

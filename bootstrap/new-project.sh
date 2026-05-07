@@ -32,11 +32,11 @@ source "$TOUCHSTONE_ROOT/lib/agents-principles-block.sh"
 
 REGISTER=true
 
-REGISTER_REQUESTED=false       # Doctrine 0002: track whether --register / --no-register was passed.
+REGISTER_REQUESTED=false # Doctrine 0002: track whether --register / --no-register was passed.
 INPUT_UNSAFE=""
 INPUT_TYPE=""
 # shellcheck disable=SC2034  # set below, read by future --type-aware branches.
-INPUT_TYPE_REQUESTED=false     # Tracks explicit --type (not the auto-detect fall-through).
+INPUT_TYPE_REQUESTED=false # Tracks explicit --type (not the auto-detect fall-through).
 INPUT_REVIEWER=""
 INPUT_REVIEW_ASSIST=""
 INPUT_REVIEW_AUTOFIX=""
@@ -56,13 +56,13 @@ WORKFLOW_CONFIG_REQUESTED=false
 YES_MODE="${YES_MODE:-false}"
 SKIP_LANGUAGE_SCAFFOLD=false
 SKIP_LANGUAGE_SCAFFOLD_REQUESTED=false
-WITH_CORTEX=""                 # unset | true | false
+WITH_CORTEX="" # unset | true | false
 WITH_CORTEX_REQUESTED=false
 WITH_SENTINEL=""
 WITH_SENTINEL_REQUESTED=false
 INITIAL_COMMIT=true
 INITIAL_COMMIT_REQUESTED=false
-GITHUB_MODE=""                 # unset | private | public | none
+GITHUB_MODE="" # unset | private | public | none
 GITHUB_MODE_REQUESTED=false
 
 usage() {
@@ -129,7 +129,7 @@ write_unsafe_paths_block() {
       printf '  "%s",\n' "$(escape_toml_basic_string "$path")"
     done
     printf ']\n'
-  } > "$block_file"
+  } >"$block_file"
 
   if awk -v block_file="$block_file" '
     BEGIN { replaced = 0; in_block = 0 }
@@ -154,7 +154,7 @@ write_unsafe_paths_block() {
         exit 1
       }
     }
-  ' "$file" > "$tmp_file"; then
+  ' "$file" >"$tmp_file"; then
     mv "$tmp_file" "$file"
   else
     rm -f "$block_file" "$tmp_file"
@@ -182,12 +182,12 @@ normalize_project_type() {
   value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
 
   case "$value" in
-    ""|auto) printf 'auto' ;;
-    node|js|javascript|ts|typescript) printf 'node' ;;
-    python|py) printf 'python' ;;
+    "" | auto) printf 'auto' ;;
+    node | js | javascript | ts | typescript) printf 'node' ;;
+    python | py) printf 'python' ;;
     swift) printf 'swift' ;;
-    rust|rs) printf 'rust' ;;
-    go|golang) printf 'go' ;;
+    rust | rs) printf 'rust' ;;
+    go | golang) printf 'go' ;;
     generic) printf 'generic' ;;
     *)
       echo "ERROR: unknown project type '$1' (expected node, python, swift, rust, go, generic, or auto)" >&2
@@ -204,9 +204,9 @@ normalize_reviewer() {
   value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
 
   case "$value" in
-    ""|auto|conductor) printf 'auto' ;;
-    codex|claude|gemini|local) printf '%s' "$value" ;;
-    none|no|off|disabled|false) printf 'none' ;;
+    "" | auto | conductor) printf 'auto' ;;
+    codex | claude | gemini | local) printf '%s' "$value" ;;
+    none | no | off | disabled | false) printf 'none' ;;
     *)
       echo "ERROR: unknown reviewer '$1' (expected conductor, none, or legacy: codex, claude, gemini, local, auto)" >&2
       return 1
@@ -219,10 +219,10 @@ normalize_review_routing() {
   value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
 
   case "$value" in
-    ""|hosted|all|all-hosted|cloud|remote) printf 'all-hosted' ;;
-    local|all-local) printf 'all-local' ;;
-    hybrid|small-local|local-small|small-local-large-hosted) printf 'small-local' ;;
-    none|off|disabled|false) printf 'none' ;;
+    "" | hosted | all | all-hosted | cloud | remote) printf 'all-hosted' ;;
+    local | all-local) printf 'all-local' ;;
+    hybrid | small-local | local-small | small-local-large-hosted) printf 'small-local' ;;
+    none | off | disabled | false) printf 'none' ;;
     *)
       echo "ERROR: unknown review routing '$1' (expected all-hosted, all-local, or small-local)" >&2
       return 1
@@ -235,8 +235,8 @@ normalize_git_workflow() {
   value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
 
   case "$value" in
-    ""|git|plain|standard|classic) printf 'git' ;;
-    gitbutler|butler|but) printf 'gitbutler' ;;
+    "" | git | plain | standard | classic) printf 'git' ;;
+    gitbutler | butler | but) printf 'gitbutler' ;;
     *)
       echo "ERROR: unknown git workflow '$1' (expected git or gitbutler)" >&2
       return 1
@@ -247,7 +247,7 @@ normalize_git_workflow() {
 normalize_positive_int() {
   local value="$1"
   case "$value" in
-    ''|*[!0-9]*)
+    '' | *[!0-9]*)
       echo "ERROR: expected a positive integer, got '$1'" >&2
       return 1
       ;;
@@ -265,8 +265,8 @@ normalize_yes_no() {
   local value="$1"
   value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
   case "$value" in
-    y|yes|true|1|on) printf 'true' ;;
-    n|no|false|0|off) printf 'false' ;;
+    y | yes | true | 1 | on) printf 'true' ;;
+    n | no | false | 0 | off) printf 'false' ;;
     *) printf '%s' "$value" ;;
   esac
 }
@@ -403,9 +403,9 @@ scaffold_smoke_test_for_profile() {
       fi
       mkdir -p "$project_dir/tests"
       if [ ! -f "$project_dir/tests/__init__.py" ]; then
-        : > "$project_dir/tests/__init__.py"
+        : >"$project_dir/tests/__init__.py"
       fi
-      cat > "$project_dir/tests/test_smoke.py" <<'PYTEST'
+      cat >"$project_dir/tests/test_smoke.py" <<'PYTEST'
 # Placeholder smoke test. Replace with real coverage as soon as there's
 # behavior worth testing — touchstone-run.sh test runs whatever exists here.
 def test_smoke() -> None:
@@ -421,7 +421,7 @@ PYTEST
       mkdir -p "$project_dir/tests"
       # .test.ts works with vitest, jest, and bun test without framework config.
       # describe/it globals are injected by all three.
-      cat > "$project_dir/tests/smoke.test.ts" <<'NODETEST'
+      cat >"$project_dir/tests/smoke.test.ts" <<'NODETEST'
 // Placeholder smoke test. Replace with real coverage as soon as there's
 // behavior worth testing — touchstone-run.sh test runs whatever "test" script
 // package.json declares. Works with vitest/jest/bun test out of the box.
@@ -452,7 +452,7 @@ NODETEST
         package_name="$(sed -n 's/^package \([a-zA-Z_][a-zA-Z0-9_]*\).*/\1/p' "$first_go" | head -1)"
       fi
       package_name="${package_name:-main}"
-      cat > "$project_dir/smoke_test.go" <<GOTEST
+      cat >"$project_dir/smoke_test.go" <<GOTEST
 // Placeholder smoke test. Replace with real coverage as soon as there's
 // behavior worth testing — touchstone-run.sh test runs go test ./... over
 // every package in the module.
@@ -483,7 +483,7 @@ GOTEST
         echo "==> tests: swift tests scaffolded by boilerplate function"
       fi
       ;;
-    generic|"")
+    generic | "")
       echo "==> tests: profile is 'generic' — no default test layout to scaffold"
       echo "          set test_command= in .touchstone-config for your stack"
       ;;
@@ -511,7 +511,7 @@ _profile_has_any_tests_node() {
   # conventions — React/TS projects commonly use Button.spec.tsx.
   matches="$(find "$dir" -maxdepth 4 -type f \
     \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' -o -name '*.test.jsx' \
-       -o -name '*.spec.ts' -o -name '*.spec.tsx' -o -name '*.spec.js' -o -name '*.spec.jsx' \) \
+    -o -name '*.spec.ts' -o -name '*.spec.tsx' -o -name '*.spec.js' -o -name '*.spec.jsx' \) \
     -print -quit 2>/dev/null || true)"
   [ -n "$matches" ]
 }
@@ -550,7 +550,7 @@ scaffold_swift_package_boilerplate() {
 
   mkdir -p "$project_dir/Sources/$pascal_name" "$project_dir/Tests/${pascal_name}Tests"
 
-  cat > "$project_dir/Package.swift" <<SWIFTPKG
+  cat >"$project_dir/Package.swift" <<SWIFTPKG
 // swift-tools-version: 5.10
 import PackageDescription
 
@@ -574,7 +574,7 @@ let package = Package(
 )
 SWIFTPKG
 
-  cat > "$project_dir/Sources/$pascal_name/${pascal_name}App.swift" <<SWIFTAPP
+  cat >"$project_dir/Sources/$pascal_name/${pascal_name}App.swift" <<SWIFTAPP
 import SwiftUI
 
 @main
@@ -598,7 +598,7 @@ struct ContentView: View {
 }
 SWIFTAPP
 
-  cat > "$project_dir/Tests/${pascal_name}Tests/SmokeTests.swift" <<SWIFTTEST
+  cat >"$project_dir/Tests/${pascal_name}Tests/SmokeTests.swift" <<SWIFTTEST
 import XCTest
 @testable import ${pascal_name}
 
@@ -652,7 +652,7 @@ append_profile_gitignore_entries() {
             printf '%s\n' "$entry"
           fi
         done
-      } >> "$gitignore"
+      } >>"$gitignore"
       echo "==> .gitignore: appended Swift / SPM entries"
       ;;
     *)
@@ -673,20 +673,20 @@ resolve_project_type_from_config() {
   if [ -f "$dir/.touchstone-config" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
       line="${line#"${line%%[![:space:]]*}"}"
-      case "$line" in \#*|"") continue ;; esac
+      case "$line" in \#* | "") continue ;; esac
       case "$line" in *=*) ;; *) continue ;; esac
       candidate="${line%%=*}"
       candidate="${candidate#"${candidate%%[![:space:]]*}"}"
       candidate="${candidate%"${candidate##*[![:space:]]}"}"
       case "$candidate" in
-        project_type|profile)
+        project_type | profile)
           value="${line#*=}"
           value="${value#"${value%%[![:space:]]*}"}"
           value="${value%"${value##*[![:space:]]}"}"
           result="$value"
           ;;
       esac
-    done < "$dir/.touchstone-config"
+    done <"$dir/.touchstone-config"
   fi
 
   if [ -z "$result" ] || [ "$result" = "auto" ]; then
@@ -706,7 +706,7 @@ if [ "$#" -lt 1 ]; then
 fi
 
 case "$1" in
-  -h|--help)
+  -h | --help)
     usage
     exit 0
     ;;
@@ -722,51 +722,120 @@ shift
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    -h|--help) usage; exit 0 ;;
-    -y|--yes) YES_MODE=true; shift ;;
-    --no-register) REGISTER=false; REGISTER_REQUESTED=true; shift ;;
-    --register) REGISTER=true; REGISTER_REQUESTED=true; shift ;;
-    --with-cortex) WITH_CORTEX=true; WITH_CORTEX_REQUESTED=true; shift ;;
-    --no-with-cortex) WITH_CORTEX=false; WITH_CORTEX_REQUESTED=true; shift ;;
-    --with-sentinel) WITH_SENTINEL=true; WITH_SENTINEL_REQUESTED=true; shift ;;
-    --no-with-sentinel) WITH_SENTINEL=false; WITH_SENTINEL_REQUESTED=true; shift ;;
-    --initial-commit) INITIAL_COMMIT=true; INITIAL_COMMIT_REQUESTED=true; shift ;;
-    --no-initial-commit) INITIAL_COMMIT=false; INITIAL_COMMIT_REQUESTED=true; shift ;;
-    --github-private) GITHUB_MODE=private; GITHUB_MODE_REQUESTED=true; shift ;;
-    --github-public) GITHUB_MODE=public; GITHUB_MODE_REQUESTED=true; shift ;;
-    --no-github) GITHUB_MODE=none; GITHUB_MODE_REQUESTED=true; shift ;;
-    --skip-language-scaffold) SKIP_LANGUAGE_SCAFFOLD=true; SKIP_LANGUAGE_SCAFFOLD_REQUESTED=true; shift ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    -y | --yes)
+      YES_MODE=true
+      shift
+      ;;
+    --no-register)
+      REGISTER=false
+      REGISTER_REQUESTED=true
+      shift
+      ;;
+    --register)
+      REGISTER=true
+      REGISTER_REQUESTED=true
+      shift
+      ;;
+    --with-cortex)
+      WITH_CORTEX=true
+      WITH_CORTEX_REQUESTED=true
+      shift
+      ;;
+    --no-with-cortex)
+      WITH_CORTEX=false
+      WITH_CORTEX_REQUESTED=true
+      shift
+      ;;
+    --with-sentinel)
+      WITH_SENTINEL=true
+      WITH_SENTINEL_REQUESTED=true
+      shift
+      ;;
+    --no-with-sentinel)
+      WITH_SENTINEL=false
+      WITH_SENTINEL_REQUESTED=true
+      shift
+      ;;
+    --initial-commit)
+      INITIAL_COMMIT=true
+      INITIAL_COMMIT_REQUESTED=true
+      shift
+      ;;
+    --no-initial-commit)
+      INITIAL_COMMIT=false
+      INITIAL_COMMIT_REQUESTED=true
+      shift
+      ;;
+    --github-private)
+      GITHUB_MODE=private
+      GITHUB_MODE_REQUESTED=true
+      shift
+      ;;
+    --github-public)
+      GITHUB_MODE=public
+      GITHUB_MODE_REQUESTED=true
+      shift
+      ;;
+    --no-github)
+      GITHUB_MODE=none
+      GITHUB_MODE_REQUESTED=true
+      shift
+      ;;
+    --skip-language-scaffold)
+      SKIP_LANGUAGE_SCAFFOLD=true
+      SKIP_LANGUAGE_SCAFFOLD_REQUESTED=true
+      shift
+      ;;
     --type)
-      [ "$#" -ge 2 ] || { echo "ERROR: --type requires a value (node, python, swift, rust, go, generic, auto)" >&2; exit 1; }
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --type requires a value (node, python, swift, rust, go, generic, auto)" >&2
+        exit 1
+      }
       INPUT_TYPE="$(normalize_project_type "$2")"
       # shellcheck disable=SC2034  # reserved for --type-aware branches.
       INPUT_TYPE_REQUESTED=true
       shift 2
       ;;
     --unsafe-paths)
-      [ "$#" -ge 2 ] || { echo "ERROR: --unsafe-paths requires a comma-separated value" >&2; exit 1; }
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --unsafe-paths requires a comma-separated value" >&2
+        exit 1
+      }
       INPUT_UNSAFE="$2"
       shift 2
       ;;
     --reviewer)
-      [ "$#" -ge 2 ] || { echo "ERROR: --reviewer requires a value (conductor, none, or legacy: codex, claude, gemini, local, auto)" >&2; exit 1; }
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --reviewer requires a value (conductor, none, or legacy: codex, claude, gemini, local, auto)" >&2
+        exit 1
+      }
       INPUT_REVIEWER="$(normalize_reviewer "$2")"
       REVIEW_CONFIG_REQUESTED=true
       shift 2
       ;;
     --review-routing)
-      [ "$#" -ge 2 ] || { echo "ERROR: --review-routing requires a value (all-hosted, all-local, small-local)" >&2; exit 1; }
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --review-routing requires a value (all-hosted, all-local, small-local)" >&2
+        exit 1
+      }
       INPUT_REVIEW_ROUTING="$(normalize_review_routing "$2")"
       REVIEW_CONFIG_REQUESTED=true
       shift 2
       ;;
     --small-review-lines)
-      [ "$#" -ge 2 ] || { echo "ERROR: --small-review-lines requires a positive integer" >&2; exit 1; }
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --small-review-lines requires a positive integer" >&2
+        exit 1
+      }
       INPUT_SMALL_REVIEW_LINES="$(normalize_positive_int "$2")"
       REVIEW_CONFIG_REQUESTED=true
       shift 2
       ;;
-    --no-ai-review|--no-review)
+    --no-ai-review | --no-review)
       INPUT_REVIEWER="none"
       INPUT_REVIEW_ROUTING="none"
       REVIEW_CONFIG_REQUESTED=true
@@ -793,13 +862,19 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --local-review-command)
-      [ "$#" -ge 2 ] || { echo "ERROR: --local-review-command requires a command string" >&2; exit 1; }
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --local-review-command requires a command string" >&2
+        exit 1
+      }
       INPUT_LOCAL_REVIEW_COMMAND="$2"
       REVIEW_CONFIG_REQUESTED=true
       shift 2
       ;;
     --git-workflow)
-      [ "$#" -ge 2 ] || { echo "ERROR: --git-workflow requires a value (git or gitbutler)" >&2; exit 1; }
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --git-workflow requires a value (git or gitbutler)" >&2
+        exit 1
+      }
       INPUT_GIT_WORKFLOW="$(normalize_git_workflow "$2")"
       WORKFLOW_CONFIG_REQUESTED=true
       shift 2
@@ -830,8 +905,14 @@ while [ "$#" -gt 0 ]; do
       # for future providers (gitlab, circle). For now only github is shipped.
       if [ "$#" -ge 2 ] && [[ "$2" != --* ]]; then
         case "$2" in
-          github|none) INPUT_CI="$2"; shift 2 ;;
-          *) echo "ERROR: --ci value must be one of: github, none" >&2; exit 1 ;;
+          github | none)
+            INPUT_CI="$2"
+            shift 2
+            ;;
+          *)
+            echo "ERROR: --ci value must be one of: github, none" >&2
+            exit 1
+            ;;
         esac
       else
         INPUT_CI="github"
@@ -846,7 +927,10 @@ while [ "$#" -gt 0 ]; do
       INPUT_SCAFFOLD_TESTS=true
       shift
       ;;
-    *) echo "ERROR: unknown argument '$1'" >&2; exit 1 ;;
+    *)
+      echo "ERROR: unknown argument '$1'" >&2
+      exit 1
+      ;;
   esac
 done
 
@@ -998,7 +1082,7 @@ write_touchstone_manifest() {
     if [ "$INPUT_TYPE" = "python" ]; then
       printf 'scripts/run-pytest-in-venv.sh\n'
     fi
-  } > "$manifest_tmp"
+  } >"$manifest_tmp"
   if copy_file_force "$manifest_tmp" "$PROJECT_DIR/.touchstone-manifest"; then
     rm -f "$manifest_tmp"
   else
@@ -1044,7 +1128,7 @@ set_codex_review_key() {
         print repl
       }
     }
-  ' "$file" > "$tmp_file"
+  ' "$file" >"$tmp_file"
   mv "$tmp_file" "$file"
 }
 
@@ -1054,8 +1138,8 @@ conductor_with_for() {
   # directly. local maps to ollama (closest 2.0 analog; warn below).
   local reviewer="$1"
   case "$reviewer" in
-    auto|conductor|"") printf '' ;;
-    codex|claude|gemini) printf '%s' "$reviewer" ;;
+    auto | conductor | "") printf '' ;;
+    codex | claude | gemini) printf '%s' "$reviewer" ;;
     local) printf 'ollama' ;;
     *) printf '%s' "$reviewer" ;;
   esac
@@ -1150,7 +1234,7 @@ write_review_onboarding_config() {
       printf '# [review.assist]\n'
       printf '# enabled = true\n'
     fi
-  } >> "$file"
+  } >>"$file"
 }
 
 print_review_setup_hint() {
@@ -1301,7 +1385,7 @@ if [ -d "$TOUCHSTONE_ROOT/.git" ]; then
 else
   TOUCHSTONE_SHA="$(cat "$TOUCHSTONE_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")"
 fi
-echo "$TOUCHSTONE_SHA" > "$PROJECT_DIR/.touchstone-version"
+echo "$TOUCHSTONE_SHA" >"$PROJECT_DIR/.touchstone-version"
 echo ""
 echo "==> Wrote .touchstone-version: $TOUCHSTONE_SHA"
 
@@ -1317,7 +1401,7 @@ if [ "$REGISTER" = true ]; then
   touch "$PROJECTS_FILE"
   # Add if not already registered.
   if ! grep -qxF "$PROJECT_DIR" "$PROJECTS_FILE" 2>/dev/null; then
-    echo "$PROJECT_DIR" >> "$PROJECTS_FILE"
+    echo "$PROJECT_DIR" >>"$PROJECTS_FILE"
     echo "==> Registered in $PROJECTS_FILE — opt out next time with --no-register"
   else
     echo "==> Already registered in $PROJECTS_FILE — opt out next time with --no-register"
@@ -1381,54 +1465,54 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
       INPUT_REVIEW_ASSIST=false
       REVIEW_CONFIG_REQUESTED=true
     else
-    echo ""
-    echo "==> Configure AI review (press Enter for the default):"
-    echo "   Touchstone 2.0 routes every review through Conductor."
-    echo "   Hosted: Conductor auto-picks the best configured provider for each diff."
-    echo "   Local: small diffs go to Ollama (fast/cheap); nothing hosted."
-    echo "   Hybrid: small diffs go to Ollama; larger diffs to Conductor's router."
-    if [ "$(prompt_yes_no "Use AI review before code reaches main?" "true")" = "true" ]; then
-      local_review_style=""
-      read -r -p "   Review style (hosted, local, hybrid) [hosted]: " local_review_style
-      local_review_style="$(normalize_review_routing "${local_review_style:-hosted}")"
+      echo ""
+      echo "==> Configure AI review (press Enter for the default):"
+      echo "   Touchstone 2.0 routes every review through Conductor."
+      echo "   Hosted: Conductor auto-picks the best configured provider for each diff."
+      echo "   Local: small diffs go to Ollama (fast/cheap); nothing hosted."
+      echo "   Hybrid: small diffs go to Ollama; larger diffs to Conductor's router."
+      if [ "$(prompt_yes_no "Use AI review before code reaches main?" "true")" = "true" ]; then
+        local_review_style=""
+        read -r -p "   Review style (hosted, local, hybrid) [hosted]: " local_review_style
+        local_review_style="$(normalize_review_routing "${local_review_style:-hosted}")"
 
-      case "$local_review_style" in
-        all-hosted)
-          INPUT_REVIEW_ROUTING="all-hosted"
-          read -r -p "   Pin a specific provider (e.g. claude, codex, gemini; Enter = Conductor auto-routes): " INPUT_REVIEWER
-          INPUT_REVIEWER="${INPUT_REVIEWER:-conductor}"
-          INPUT_REVIEWER="$(normalize_reviewer "$INPUT_REVIEWER")"
-          ;;
-        all-local)
-          INPUT_REVIEW_ROUTING="all-local"
-          INPUT_REVIEWER="local"
-          ;;
-        small-local)
-          INPUT_REVIEW_ROUTING="small-local"
-          read -r -p "   Pin a provider for larger diffs (e.g. claude, codex, gemini; Enter = Conductor auto-routes): " INPUT_REVIEWER
-          INPUT_REVIEWER="${INPUT_REVIEWER:-conductor}"
-          INPUT_REVIEWER="$(normalize_reviewer "$INPUT_REVIEWER")"
-          read -r -p "   Small-diff cutoff in changed diff lines [400]: " INPUT_SMALL_REVIEW_LINES
-          INPUT_SMALL_REVIEW_LINES="${INPUT_SMALL_REVIEW_LINES:-400}"
-          INPUT_SMALL_REVIEW_LINES="$(normalize_positive_int "$INPUT_SMALL_REVIEW_LINES")"
-          ;;
-      esac
+        case "$local_review_style" in
+          all-hosted)
+            INPUT_REVIEW_ROUTING="all-hosted"
+            read -r -p "   Pin a specific provider (e.g. claude, codex, gemini; Enter = Conductor auto-routes): " INPUT_REVIEWER
+            INPUT_REVIEWER="${INPUT_REVIEWER:-conductor}"
+            INPUT_REVIEWER="$(normalize_reviewer "$INPUT_REVIEWER")"
+            ;;
+          all-local)
+            INPUT_REVIEW_ROUTING="all-local"
+            INPUT_REVIEWER="local"
+            ;;
+          small-local)
+            INPUT_REVIEW_ROUTING="small-local"
+            read -r -p "   Pin a provider for larger diffs (e.g. claude, codex, gemini; Enter = Conductor auto-routes): " INPUT_REVIEWER
+            INPUT_REVIEWER="${INPUT_REVIEWER:-conductor}"
+            INPUT_REVIEWER="$(normalize_reviewer "$INPUT_REVIEWER")"
+            read -r -p "   Small-diff cutoff in changed diff lines [400]: " INPUT_SMALL_REVIEW_LINES
+            INPUT_SMALL_REVIEW_LINES="${INPUT_SMALL_REVIEW_LINES:-400}"
+            INPUT_SMALL_REVIEW_LINES="$(normalize_positive_int "$INPUT_SMALL_REVIEW_LINES")"
+            ;;
+        esac
 
-      INPUT_REVIEW_AUTOFIX="$(prompt_yes_no "Let the AI auto-fix low-risk issues?" "false")"
-      # Peer review is retired in 2.0.0 — returns in 2.1 via `conductor call --exclude`.
-      INPUT_REVIEW_ASSIST=false
+        INPUT_REVIEW_AUTOFIX="$(prompt_yes_no "Let the AI auto-fix low-risk issues?" "false")"
+        # Peer review is retired in 2.0.0 — returns in 2.1 via `conductor call --exclude`.
+        INPUT_REVIEW_ASSIST=false
 
-      if [ "$INPUT_REVIEW_AUTOFIX" = "true" ] && [ -z "$INPUT_UNSAFE" ]; then
-        read -r -p "   High-scrutiny paths the AI must never auto-fix (comma-separated, e.g., src/auth/,migrations/): " INPUT_UNSAFE
+        if [ "$INPUT_REVIEW_AUTOFIX" = "true" ] && [ -z "$INPUT_UNSAFE" ]; then
+          read -r -p "   High-scrutiny paths the AI must never auto-fix (comma-separated, e.g., src/auth/,migrations/): " INPUT_UNSAFE
+        fi
+      else
+        INPUT_REVIEWER="none"
+        INPUT_REVIEW_ROUTING="none"
+        INPUT_REVIEW_AUTOFIX=false
+        INPUT_REVIEW_ASSIST=false
       fi
-    else
-      INPUT_REVIEWER="none"
-      INPUT_REVIEW_ROUTING="none"
-      INPUT_REVIEW_AUTOFIX=false
-      INPUT_REVIEW_ASSIST=false
-    fi
-    REVIEW_CONFIG_REQUESTED=true
-    fi  # YES_MODE else
+      REVIEW_CONFIG_REQUESTED=true
+    fi # YES_MODE else
   fi
 
   if [ "$WORKFLOW_CONFIG_REQUESTED" = false ]; then
@@ -1583,8 +1667,8 @@ if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ] || [ -n 
   if [ -n "$INPUT_UNSAFE" ]; then
     unsafe_paths_input=()
     local_unsafe_paths=()
-    IFS=',' read -r -a unsafe_paths_input <<< "$INPUT_UNSAFE"
-    for unsafe_path in "${unsafe_paths_input[@]}"; do  # empty-array-guard: safe — populated by IFS-split of non-empty INPUT_UNSAFE
+    IFS=',' read -r -a unsafe_paths_input <<<"$INPUT_UNSAFE"
+    for unsafe_path in "${unsafe_paths_input[@]}"; do # empty-array-guard: safe — populated by IFS-split of non-empty INPUT_UNSAFE
       unsafe_path="$(trim "$unsafe_path")"
       [ -z "$unsafe_path" ] && continue
       local_unsafe_paths+=("$unsafe_path")
@@ -1631,7 +1715,7 @@ if [ ! -f "$PROJECT_DIR/.touchstone-config" ]; then
     printf 'build_command=\n'
     printf 'test_command=%s\n' "$INPUT_TEST"
     printf 'validate_command=\n'
-  } > "$PROJECT_DIR/.touchstone-config"
+  } >"$PROJECT_DIR/.touchstone-config"
   echo "==> Wrote .touchstone-config: project_type=$INPUT_TYPE"
 else
   echo "==> .touchstone-config already exists; left unchanged."
@@ -1714,7 +1798,7 @@ if [ "$WITH_CORTEX" = true ] && [ "$RE_INIT" = false ]; then
     echo "==> Initializing Cortex ..."
     cortex_args=()
     if [ "$YES_MODE" = true ]; then cortex_args+=("--yes"); fi
-    if ( cd "$PROJECT_DIR" && cortex init ${cortex_args[@]+"${cortex_args[@]}"} ); then
+    if (cd "$PROJECT_DIR" && cortex init ${cortex_args[@]+"${cortex_args[@]}"}); then
       :
     else
       echo "==> Cortex init failed (continuing)." >&2
@@ -1732,7 +1816,7 @@ if [ "$WITH_SENTINEL" = true ] && [ "$RE_INIT" = false ]; then
     echo "==> Initializing Sentinel ..."
     sentinel_args=()
     if [ "$YES_MODE" = true ]; then sentinel_args+=("--yes"); fi
-    if ( cd "$PROJECT_DIR" && sentinel init ${sentinel_args[@]+"${sentinel_args[@]}"} ); then
+    if (cd "$PROJECT_DIR" && sentinel init ${sentinel_args[@]+"${sentinel_args[@]}"}); then
       :
     else
       echo "==> Sentinel init failed (continuing)." >&2
@@ -1864,7 +1948,7 @@ if { [ "$GITHUB_MODE" = "private" ] || [ "$GITHUB_MODE" = "public" ]; } && [ "$R
     echo ""
     echo "==> Creating GitHub repo ($GITHUB_MODE) ..."
     gh_visibility_flag="--${GITHUB_MODE}"
-    if ( cd "$PROJECT_DIR" && gh repo create "$(basename "$PROJECT_DIR")" "$gh_visibility_flag" --source . --push ); then
+    if (cd "$PROJECT_DIR" && gh repo create "$(basename "$PROJECT_DIR")" "$gh_visibility_flag" --source . --push); then
       :
     else
       echo "==> gh repo create failed (continuing)." >&2
