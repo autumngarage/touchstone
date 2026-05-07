@@ -4,6 +4,7 @@
 #
 # Public interface:
 #   format_clean_review_comment <review-summary-json>
+#   format_advisory_findings_comment <review-summary-json> <review-output>
 #   post_pr_review_comment <pr-number> <comment-string>
 #   read_latest_review_event <jsonl-path>
 #
@@ -30,6 +31,10 @@ review_comment_clean_value() {
   printf '%s' "$value"
 }
 
+review_comment_findings_from_output() {
+  printf '%s\n' "$1" | awk '/^- / { print } /^$/ { if (found) exit } /^- / { found = 1 }'
+}
+
 format_clean_review_comment() {
   local json="$1"
   local reviewer provider model peer iterations mode findings
@@ -44,6 +49,30 @@ format_clean_review_comment() {
 
   printf '%s review clean - provider: %s, model: %s, peer: %s, iterations: %s, mode: %s, findings: %s' \
     "$reviewer" "$provider" "$model" "$peer" "$iterations" "$mode" "$findings"
+}
+
+format_advisory_findings_comment() {
+  local json="$1"
+  local output="$2"
+  local reviewer provider model iterations mode findings findings_block
+
+  reviewer="$(review_comment_clean_value "$(review_comment_json_field "$json" reviewer)")"
+  provider="$(review_comment_clean_value "$(review_comment_json_field "$json" provider)")"
+  model="$(review_comment_clean_value "$(review_comment_json_field "$json" model)")"
+  iterations="$(review_comment_clean_value "$(review_comment_json_number "$json" iterations)")"
+  mode="$(review_comment_clean_value "$(review_comment_json_field "$json" mode)")"
+  findings="$(review_comment_clean_value "$(review_comment_json_number "$json" findings)")"
+  findings_block="$(review_comment_findings_from_output "$output")"
+
+  {
+    printf '%s advisory review found %s finding(s) - provider: %s, model: %s, iterations: %s, mode: %s\n\n' \
+      "$reviewer" "$findings" "$provider" "$model" "$iterations" "$mode"
+    if [ -n "$findings_block" ]; then
+      printf '%s\n' "$findings_block"
+    else
+      printf 'Review exited with findings, but no bullet-form findings were parsed from reviewer output.\n'
+    fi
+  }
 }
 
 post_pr_review_comment() {

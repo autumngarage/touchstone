@@ -2659,6 +2659,9 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
     if [ -n "$REVIEW_CACHE_KEY" ] && [ -f "$(clean_review_cache_file "$REVIEW_CACHE_KEY")" ]; then
       echo "==> Review previously passed for this exact diff — skipping repeat review."
       echo "    Force a fresh review with: CODEX_REVIEW_DISABLE_CACHE=1 git push"
+      REVIEW_EXIT_REASON="cache-hit"
+      REVIEW_FINDINGS_COUNT=0
+      print_summary
       log_skip_event other "cache-hit:${REVIEW_CACHE_KEY}"
       exit 0
     fi
