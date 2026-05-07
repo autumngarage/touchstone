@@ -8,7 +8,7 @@ set -euo pipefail
 # real default-on behavior. Without this, `TOUCHSTONE_NO_AUTO_UPDATE=1` set
 # by an outer script (e.g., a pre-push hook caller) silently skips sync in
 # cases that expect it to fire, producing confusing per-context failures.
-unset TOUCHSTONE_NO_AUTO_UPDATE TOUCHSTONE_NO_AUTO_PROJECT_SYNC
+unset TOUCHSTONE_NO_AUTO_UPDATE TOUCHSTONE_NO_AUTO_PROJECT_SYNC TOUCHSTONE_FORCE_OVERLAP TOUCHSTONE_NO_DRIFT_WARNING
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TOUCHSTONE_BIN="$TOUCHSTONE_ROOT/bin/touchstone"
@@ -96,7 +96,7 @@ if ! git -C "$CLEAN_PROJECT" branch --show-current | grep -q '^chore/touchstone-
 fi
 
 echo ""
-echo "--- drift + dirty tree: warning, no sync, subcommand proceeds ---"
+echo "--- drift + unrelated dirty tree: sync proceeds, subcommand proceeds ---"
 DIRTY_HOME="$TEST_DIR/home-dirty"
 DIRTY_PROJECT="$TEST_DIR/project-dirty"
 DIRTY_OLD="0000000000000000000000000000000000000002"
@@ -104,9 +104,25 @@ make_project "$DIRTY_PROJECT" "$DIRTY_OLD"
 printf 'dirty\n' >>"$DIRTY_PROJECT/README.md"
 DIRTY_OUT="$TEST_DIR/dirty.out"
 (cd "$DIRTY_PROJECT" && run_touchstone "$DIRTY_HOME" run validate) >"$DIRTY_OUT" 2>&1
-assert_contains "$DIRTY_OUT" "WARNING: touchstone auto-sync skipped for $DIRTY_PROJECT (working tree is dirty)."
+assert_contains "$DIRTY_OUT" "Proceeding with sync past unrelated dirty paths: README.md"
+assert_contains "$DIRTY_OUT" "auto-synced touchstone $DIRTY_OLD -> $CURRENT_ID"
 assert_contains "$DIRTY_OUT" "generic project has no default 'lint' command"
-assert_version_equals "$DIRTY_PROJECT" "$DIRTY_OLD"
+assert_version_equals "$DIRTY_PROJECT" "$CURRENT_ID"
+
+echo ""
+echo "--- drift + overlapping dirty tree: warning, no sync, subcommand proceeds ---"
+OVERLAP_HOME="$TEST_DIR/home-overlap"
+OVERLAP_PROJECT="$TEST_DIR/project-overlap"
+OVERLAP_OLD="0000000000000000000000000000000000000007"
+make_project "$OVERLAP_PROJECT" "$OVERLAP_OLD"
+mkdir -p "$OVERLAP_PROJECT/scripts"
+printf 'dirty\n' >"$OVERLAP_PROJECT/scripts/touchstone-run.sh"
+OVERLAP_OUT="$TEST_DIR/overlap.out"
+(cd "$OVERLAP_PROJECT" && run_touchstone "$OVERLAP_HOME" run validate) >"$OVERLAP_OUT" 2>&1
+assert_contains "$OVERLAP_OUT" "WARNING: touchstone auto-sync skipped for $OVERLAP_PROJECT (dirty paths overlap planned touchstone writes)."
+assert_contains "$OVERLAP_OUT" "scripts/touchstone-run.sh"
+assert_contains "$OVERLAP_OUT" "generic project has no default 'lint' command"
+assert_version_equals "$OVERLAP_PROJECT" "$OVERLAP_OLD"
 
 echo ""
 echo "--- no drift: no-op, subcommand proceeds ---"

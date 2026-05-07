@@ -24,6 +24,8 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
 # shellcheck source=../lib/agents-principles-block.sh
 source "$TOUCHSTONE_ROOT/lib/agents-principles-block.sh"
+# shellcheck source=../lib/sync-discipline.sh
+source "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
 PROJECT_DIR="$(pwd)"
 DRY_RUN=false
 CHECK_ONLY=false
@@ -33,6 +35,7 @@ IN_PLACE=false
 
 usage() {
   echo "Usage: $0 [--dry-run|-n] [--check] [--branch <name>] [--in-place|--no-branch] [--ship]"
+  echo "Env: TOUCHSTONE_FORCE_OVERLAP=1 proceeds even when dirty paths overlap planned writes."
 }
 
 while [ "$#" -gt 0 ]; do
@@ -271,11 +274,25 @@ require_clean_git_repo() {
     exit 1
   fi
 
-  if [ -n "$(git -C "$PROJECT_DIR" status --porcelain)" ]; then
+  local dirty_paths overlap_paths
+  dirty_paths="$(touchstone_sync_dirty_paths "$PROJECT_DIR")"
+  overlap_paths="$(touchstone_sync_dirty_overlap_paths "$PROJECT_DIR" "$TOUCHSTONE_ROOT")"
+
+  if [ -n "$overlap_paths" ] && [ "${TOUCHSTONE_FORCE_OVERLAP:-}" != "1" ]; then
     echo "ERROR: Working tree is dirty. touchstone update needs a clean git boundary." >&2
+    echo "       Dirty paths overlap planned touchstone writes:" >&2
+    printf '%s\n' "$overlap_paths" | sed 's/^/         - /' >&2
     echo "       Commit, stash, or revert local changes, then run touchstone update." >&2
     echo "       Preview safely with: touchstone update --dry-run" >&2
     exit 1
+  fi
+
+  if [ -n "$overlap_paths" ]; then
+    echo "WARNING: TOUCHSTONE_FORCE_OVERLAP=1 set; proceeding despite dirty paths that overlap planned touchstone writes:" >&2
+    printf '%s\n' "$overlap_paths" | sed 's/^/         - /' >&2
+  elif [ -n "$dirty_paths" ]; then
+    printf '==> Proceeding with sync past unrelated dirty paths: '
+    printf '%s\n' "$dirty_paths" | touchstone_sync_format_path_list
   fi
 }
 

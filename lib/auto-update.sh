@@ -14,6 +14,9 @@
 #   TOUCHSTONE_UPDATE_INTERVAL   — seconds between checks (default: 3600 = 1 hour)
 #
 
+# shellcheck source=sync-discipline.sh
+source "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
+
 TOUCHSTONE_UPDATE_INTERVAL="${TOUCHSTONE_UPDATE_INTERVAL:-3600}"
 TOUCHSTONE_STATE_DIR="${TOUCHSTONE_STATE_DIR:-$HOME/.touchstone}"
 LAST_CHECK_FILE="$TOUCHSTONE_STATE_DIR/last-update-check"
@@ -167,9 +170,22 @@ touchstone_auto_project_sync() {
     return 0
   fi
 
-  if [ -n "$(git -C "$project_dir" status --porcelain)" ]; then
-    echo "WARNING: touchstone auto-sync skipped for $project_dir (working tree is dirty)." >&2
+  local dirty_paths overlap_paths
+  dirty_paths="$(touchstone_sync_dirty_paths "$project_dir")"
+  overlap_paths="$(touchstone_sync_dirty_overlap_paths "$project_dir" "$TOUCHSTONE_ROOT")"
+
+  if [ -n "$overlap_paths" ] && [ "${TOUCHSTONE_FORCE_OVERLAP:-}" != "1" ]; then
+    echo "WARNING: touchstone auto-sync skipped for $project_dir (dirty paths overlap planned touchstone writes)." >&2
+    printf '%s\n' "$overlap_paths" | sed 's/^/         - /' >&2
     return 0
+  fi
+
+  if [ -n "$overlap_paths" ]; then
+    echo "WARNING: TOUCHSTONE_FORCE_OVERLAP=1 set; auto-sync proceeding despite dirty paths that overlap planned touchstone writes:" >&2
+    printf '%s\n' "$overlap_paths" | sed 's/^/         - /' >&2
+  elif [ -n "$dirty_paths" ]; then
+    printf '==> Proceeding with sync past unrelated dirty paths: ' >&2
+    printf '%s\n' "$dirty_paths" | touchstone_sync_format_path_list >&2
   fi
 
   local log_file
