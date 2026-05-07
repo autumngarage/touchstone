@@ -321,6 +321,30 @@ else
   exit 1
 fi
 
+echo "==> Test: auto-bypass rejects clean marker when live branch HEAD advanced (#211)"
+reset_case_files
+# Reproduce the safety regression: the branch has a clean marker for the
+# earlier PR head, then the local branch advances before the final merge
+# review fails. The stale marker must not auto-promote that failed review
+# to a bypass, because the live branch HEAD has never reviewed cleanly.
+mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
+printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nbase=origin/main\nmerge_base=base-oid\nhead=pr-head-oid\n' \
+  >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
+if CODEX_REVIEW_EXIT=124 GIT_LOCAL_BRANCH_HEAD="advanced-head-oid" \
+  run_merge_pr "$TEST_DIR/output-advanced-head.txt" 123; then
+  echo "FAIL: merge-pr.sh auto-bypassed with a clean marker for an earlier HEAD" >&2
+  cat "$TEST_DIR/output-advanced-head.txt" >&2
+  exit 1
+fi
+if [ ! -f "$TEST_DIR/gh-merge-head" ] \
+  && ! grep -q 'Auto-promoting to reviewer bypass' "$TEST_DIR/output-advanced-head.txt"; then
+  echo "==> PASS: clean marker for earlier HEAD does not auto-bypass advanced branch"
+else
+  echo "FAIL: advanced-head case should not merge or auto-bypass" >&2
+  cat "$TEST_DIR/output-advanced-head.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: sibling worktree owning main is fast-forwarded without false merge failure"
 reset_case_files
 MAIN_WORKTREE="$TEST_DIR/main-worktree"
