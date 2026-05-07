@@ -227,7 +227,7 @@ DRIFT_PROJECT="$TEST_DIR/project-drift-warning"
 DRIFT_OLD="0000000000000000000000000000000000000008"
 make_project "$DRIFT_PROJECT" "$DRIFT_OLD"
 mkdir -p "$DRIFT_PROJECT/.git/touchstone"
-for i in 1 2 3 4; do
+for _ in 1 2 3 4; do
   printf '{"timestamp":"%s","from_version":"%s","to_version":"%s","reason":"dirty-overlap","overlapping_paths":["scripts/touchstone-run.sh"],"command":"touchstone run"}\n' \
     "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$DRIFT_OLD" "$CURRENT_ID" >>"$DRIFT_PROJECT/.git/touchstone/sync-skips.jsonl"
 done
