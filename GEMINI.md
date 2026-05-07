@@ -48,7 +48,7 @@ done
 
 Run the slow tier when changing live guidance-probe behavior or before release-level confidence checks. Fast tier is the "safe to push" gate; slow tier is the "safe to ship" gate.
 
-Lint is not part of the test suite. Shellcheck runs at pre-commit via `.pre-commit-config.yaml`. For an explicit full-repo lint pass: `pre-commit run shellcheck --all-files`.
+Lint is not part of the test suite. The full lint suite runs at pre-commit and via `pre-commit run --all-files`: `shellcheck`, `shfmt` for shell-script formatting, `markdownlint` for prose, and `actionlint` for `.github/workflows/`. `.pre-commit-config.yaml` and `.markdownlint.json` are the canonical config files; `actionlint` is repo-only and is not synced to downstream templates.
 
 <!-- conductor:begin v0.10.1 -->
 ## Conductor delegation
