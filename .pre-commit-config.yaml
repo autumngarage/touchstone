@@ -55,6 +55,12 @@ repos:
         files: ^([^/]+\.md|principles/.*\.md|audits/.*\.md|feedback/.*\.md|templates/.*\.md)$
         exclude: ^\.cortex/
 
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+        files: ^\.github/workflows/.*\.ya?ml$
+
   # Codex review for direct pushes to the default branch
   - repo: local
     hooks:
