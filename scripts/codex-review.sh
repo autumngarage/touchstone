@@ -230,6 +230,12 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 CONFIG_FILE="$REPO_ROOT/.codex-review.toml"
 cd "$REPO_ROOT"
 
+PREFLIGHT_SCRIPT="$REPO_ROOT/lib/preflight.sh"
+if [ -f "$PREFLIGHT_SCRIPT" ]; then
+  # shellcheck source=lib/preflight.sh
+  source "$PREFLIGHT_SCRIPT"
+fi
+
 # --------------------------------------------------------------------------
 # Skip-event audit log
 # --------------------------------------------------------------------------
@@ -358,6 +364,7 @@ CACHE_CLEAN_REVIEWS="${CODEX_REVIEW_CACHE_CLEAN:-true}"
 NO_AUTOFIX="${CODEX_REVIEW_NO_AUTOFIX:-false}"
 CONFIG_MODE=""
 REVIEW_ENABLED="${CODEX_REVIEW_ENABLED:-true}"
+PREFLIGHT_REQUIRED=true
 REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-300}"
 ON_ERROR="${CODEX_REVIEW_ON_ERROR:-fail-open}"
 UNSAFE_PATHS=""
@@ -806,6 +813,7 @@ if [ -f "$CONFIG_FILE" ]; then
       "review")
         case "$key" in
           enabled) REVIEW_ENABLED="${CODEX_REVIEW_ENABLED:-$(normalize_bool "$value")}" ;;
+          preflight_required) PREFLIGHT_REQUIRED="$(normalize_bool "$value")" ;;
           reviewers)
             if [[ "$value" == "["* ]]; then
               append_reviewers_csv "$(toml_normalize_array "$value")"
@@ -1681,6 +1689,36 @@ if git diff --quiet "$MERGE_BASE"..HEAD; then
   log_skip_event other "no-changes-vs:${BASE}"
   exit 0
 fi
+
+run_deterministic_preflight() {
+  if ! is_truthy "$PREFLIGHT_REQUIRED"; then
+    echo "==> Preflight disabled by [review].preflight_required=false."
+    return 0
+  fi
+  if is_truthy "${TOUCHSTONE_NO_PREFLIGHT:-false}"; then
+    echo "==> Skipping preflight because TOUCHSTONE_NO_PREFLIGHT=1."
+    return 0
+  fi
+  if is_truthy "${TOUCHSTONE_PREFLIGHT_ALREADY_RAN:-false}"; then
+    echo "==> Skipping preflight because this review was invoked after a clean preflight."
+    return 0
+  fi
+  if ! declare -F touchstone_preflight_main >/dev/null 2>&1; then
+    echo "==> Preflight helper not found at $PREFLIGHT_SCRIPT — skipping preflight."
+    return 0
+  fi
+
+  echo "==> Running deterministic preflight before AI review (diff vs $BASE) ..."
+  if touchstone_preflight_main --diff "$BASE" "$REPO_ROOT"; then
+    return 0
+  fi
+
+  echo "ERROR: Deterministic preflight failed; refusing to spend provider tokens on review." >&2
+  echo "       Fix the preflight failure or set TOUCHSTONE_NO_PREFLIGHT=1 for an emergency bypass." >&2
+  return 1
+}
+
+run_deterministic_preflight
 
 WORKTREE_DIRTY_BEFORE_REVIEW=false
 if [ -n "$(git status --porcelain)" ]; then

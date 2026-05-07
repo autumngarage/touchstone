@@ -103,6 +103,21 @@ Behavior:
 - Loops up to `max_iterations` times (default 3)
 - Fails open on infra errors with a visible `[fail-open:<code>]` stderr line and an audit log entry (see codes above)
 
+### Scope-aware preflight
+
+Merge and review gates run deterministic preflight in diff mode:
+`bash lib/preflight.sh --diff origin/<default-branch>`. The invariant is that
+preflight checks the files changed by the PR, not the whole project, unless
+`--all-files` is explicitly passed.
+
+In diff mode, shellcheck, shfmt, markdownlint, and actionlint receive only
+changed files with matching extensions or paths. Touchstone's own self-tests
+remain full-project because Touchstone changes propagate to downstream
+projects. In non-Touchstone projects, project-level validate commands are not
+run in diff mode unless changed `tests/test-*.sh` files can be executed
+directly; use `bash lib/preflight.sh --all-files` for repo-wide audits.
+`TOUCHSTONE_NO_PREFLIGHT=1` remains the emergency escape hatch.
+
 If the reviewer itself wedges after the branch has already recorded a clean review iteration, use `scripts/merge-pr.sh <pr-number> --bypass-with-disclosure="<reason>"` instead of dropping to raw `gh pr merge`. The bypass refuses fresh branches, prints a visible warning, comments on the PR with the reason, and adds a `Reviewer-bypass: <reason>` trailer to the squash commit when GitHub accepts the supplied merge body. This is for a stalled reviewer gate on an already-reviewed branch, not for bypassing substantive findings.
 
 Prefer a different model or provider for AI review than the one that authored the change, when Conductor has one available. Deterministic checks — format, lint, typecheck, tests, and project-specific validators — still run before AI review; model diversity complements those checks, it does not replace them.
