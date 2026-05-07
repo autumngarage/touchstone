@@ -21,6 +21,9 @@ _touchstone() {
     status)
       COMPREPLY=( $(compgen -W "--all" -- "$cur") )
       ;;
+    doctor)
+      COMPREPLY=( $(compgen -W "--log-path --threshold --project --installation" -- "$cur") )
+      ;;
     unregister)
       if [ -f "$HOME/.touchstone-projects" ]; then
         COMPREPLY=( $(compgen -W "$(cat "$HOME/.touchstone-projects" 2>/dev/null)" -- "$cur") )
