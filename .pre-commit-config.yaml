@@ -14,7 +14,7 @@ repos:
       - id: trailing-whitespace
         exclude: ^\.cortex/(journal|doctrine)/
       - id: end-of-file-fixer
-        exclude: ^\.cortex/(journal|doctrine)/
+        exclude: ^(\.cortex/(journal|doctrine)/|docs/adr/0001-hybrid-pinned-script-shims\.md$|prototypes/)
       - id: check-yaml
       - id: check-added-large-files
         args: ['--maxkb=500']
@@ -38,6 +38,29 @@ repos:
         args: ['--severity=warning']
         exclude: ^(completions/|prototypes/)
 
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.13.1-1
+    hooks:
+      - id: shfmt
+        # Match the repo's existing 2-space shell style while making case blocks
+        # and binary operators deterministic.
+        args: ['-i', '2', '-ci', '-bn']
+        exclude: ^(bin/touchstone$|completions/|prototypes/)
+
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.46.0
+    hooks:
+      - id: markdownlint
+        args: ['--config', '.markdownlint.json']
+        files: ^([^/]+\.md|principles/.*\.md|audits/.*\.md|feedback/.*\.md|templates/.*\.md)$
+        exclude: ^\.cortex/
+
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+        files: ^\.github/workflows/.*\.ya?ml$
+
   # Codex review for direct pushes to the default branch
   - repo: local
     hooks:
@@ -58,7 +81,7 @@ repos:
     hooks:
       - id: touchstone-validate
         name: Touchstone project validation
-        entry: /usr/bin/env bash scripts/touchstone-run.sh validate
+        entry: /usr/bin/env env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE bash scripts/touchstone-run.sh validate
         language: system
         stages: [pre-push]
         always_run: true
