@@ -173,7 +173,7 @@ run_advisory_review_at_pr_open() {
   if ! declare -F post_pr_review_comment >/dev/null 2>&1 \
     || ! declare -F format_clean_review_comment >/dev/null 2>&1 \
     || ! declare -F format_advisory_findings_comment >/dev/null 2>&1; then
-    echo "WARNING: review comment helper not found at $REVIEW_COMMENT_SCRIPT; skipping advisory PR comment." >&2
+    echo "==> Review comment helper not found at $REVIEW_COMMENT_SCRIPT; skipping advisory review."
     return 0
   fi
 
