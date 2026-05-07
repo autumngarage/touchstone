@@ -41,6 +41,14 @@
 #
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$SCRIPT_DIR/../lib/events.sh" ]; then
+  # shellcheck source=../lib/events.sh
+  source "$SCRIPT_DIR/../lib/events.sh"
+else
+  touchstone_emit_event() { :; }
+fi
+
 # orphan_warning is set to a PR URL once we know one — any nonzero exit after
 # that point prints recovery instructions as the script's last output, so the
 # user (or future agent) can see exactly which PR is stuck.
@@ -75,6 +83,7 @@ print_orphan_warning() {
     && [ -n "$(gh pr view "$ORPHAN_PR_NUMBER" --json mergedAt --jq '.mergedAt // empty' 2>/dev/null || true)" ]; then
     return 0
   fi
+  touchstone_emit_event failed phase=open-pr reason=orphan-risk pr_number="$ORPHAN_PR_NUMBER"
   {
     echo ""
     echo "==> ORPHAN RISK: PR opened but not merged. Resolve manually:"
@@ -132,11 +141,14 @@ cleanup_feature_worktree() {
   fi
 
   echo "==> Removing feature worktree $current_path (from $default_path) ..."
+  touchstone_emit_event cleanup_started worktree_path="$current_path"
   if ( cd "$default_path" && git worktree remove "$current_path" ); then
     echo "==> Worktree removed."
+    touchstone_emit_event cleanup_done worktree_path="$current_path" result=removed
   else
     echo "WARNING: git worktree remove failed for $current_path." >&2
     echo "         Run 'bash scripts/cleanup-worktrees.sh' from $default_path to inspect and clean up." >&2
+    touchstone_emit_event cleanup_done worktree_path="$current_path" result=failed
   fi
 }
 
@@ -310,7 +322,7 @@ if [ -n "$EXISTING_PR_URL" ]; then
     PR_NUMBER="$(basename "$EXISTING_PR_URL")"
     ORPHAN_PR_URL="$EXISTING_PR_URL"
     ORPHAN_PR_NUMBER="$PR_NUMBER"
-    MERGE_SCRIPT="$(dirname "$0")/merge-pr.sh"
+    MERGE_SCRIPT="$SCRIPT_DIR/merge-pr.sh"
     if [ ! -f "$MERGE_SCRIPT" ]; then
       echo "ERROR: merge-pr.sh not found at $MERGE_SCRIPT — cannot auto-merge." >&2
       exit 1
@@ -430,6 +442,13 @@ echo "$PR_URL"
 # from here on is a stuck-PR risk.
 ORPHAN_PR_URL="$PR_URL"
 ORPHAN_PR_NUMBER="$(basename "$PR_URL")"
+HEAD_SHA="$(git rev-parse HEAD)"
+touchstone_emit_event pr_opened \
+  pr_url="$PR_URL" \
+  pr_number="$ORPHAN_PR_NUMBER" \
+  branch="$CURRENT_BRANCH" \
+  base_branch="$BASE_BRANCH" \
+  head_sha="$HEAD_SHA"
 
 if [ -n "$DRAFT_FLAG" ]; then
   echo "    Opened as draft. Mark ready on github.com when ready to merge."
@@ -448,7 +467,7 @@ fi
 # the PR actually reached MERGED state on GitHub before claiming success.
 if [ "$AUTO_MERGE" = true ]; then
   PR_NUMBER="$(basename "$PR_URL")"
-  MERGE_SCRIPT="$(dirname "$0")/merge-pr.sh"
+  MERGE_SCRIPT="$SCRIPT_DIR/merge-pr.sh"
   if [ ! -f "$MERGE_SCRIPT" ]; then
     echo "ERROR: merge-pr.sh not found at $MERGE_SCRIPT — cannot auto-merge." >&2
     exit 1

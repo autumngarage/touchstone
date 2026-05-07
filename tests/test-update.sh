@@ -123,11 +123,13 @@ assert_exists "$PROJECT/scripts/touchstone-run.sh"
 assert_exists "$PROJECT/scripts/spawn-worktree.sh"
 assert_exists "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_exists "$PROJECT/lib/toml.sh"
+assert_exists "$PROJECT/lib/events.sh"
 assert_exists "$PROJECT/.touchstone-manifest"
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/touchstone-run.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/toml\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/events\.sh$'
 assert_not_exists "$PROJECT/principles/engineering-principles.md.bak"
 assert_not_exists "$PROJECT/.claude/settings.json.touchstone-pre-update.bak"
 

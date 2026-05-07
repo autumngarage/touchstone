@@ -24,9 +24,26 @@ PR_NUMBER=""
 BYPASS_REASON=""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REVIEW_SCRIPT="$SCRIPT_DIR/codex-review.sh"
+if [ -f "$SCRIPT_DIR/../lib/events.sh" ]; then
+  # shellcheck source=../lib/events.sh
+  source "$SCRIPT_DIR/../lib/events.sh"
+else
+  touchstone_emit_event() { :; }
+fi
 REVIEWED_HEAD_OID=""
 PR_HEAD_BRANCH=""
 BYPASS_REVIEW=false
+TOUCHSTONE_MERGE_FAILURE_REASON="nonzero-exit"
+
+on_merge_exit() {
+  local rc="$?"
+  if [ "$rc" -ne 0 ]; then
+    touchstone_emit_event failed phase=merge reason="$TOUCHSTONE_MERGE_FAILURE_REASON" pr_number="$PR_NUMBER"
+  fi
+  return "$rc"
+}
+
+trap on_merge_exit EXIT
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -491,6 +508,7 @@ run_merge_review() {
 
   echo "==> Running merge review ..."
   local review_rc=0
+  touchstone_emit_event review_started pr_number="$PR_NUMBER" mode=review-only
   CODEX_REVIEW_BASE="$default_base_ref" \
     CODEX_REVIEW_BRANCH_NAME="$pr_head_branch" \
     CODEX_REVIEW_FORCE=1 \
@@ -498,6 +516,7 @@ run_merge_review() {
     bash "$REVIEW_SCRIPT" || review_rc=$?
 
   if [ "$review_rc" -eq 0 ]; then
+    touchstone_emit_event review_clean pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
     return 0
   fi
 
@@ -518,21 +537,26 @@ run_merge_review() {
     echo "==> Auto-promoting to reviewer bypass with disclosure." >&2
     BYPASS_REVIEW=true
     BYPASS_REASON="merge-pr.sh final review iteration exited ${review_rc} (typically a routing-induced timeout); a prior clean review marker is recorded for HEAD ${pr_head_oid}, so this auto-bypass preserves the safety guarantee that the diff was reviewed cleanly at least once."
+    touchstone_emit_event review_bypass pr_number="$PR_NUMBER" head_sha="$pr_head_oid" reason="$BYPASS_REASON"
     print_bypass_banner
     record_bypass_comment
     return 0
   fi
 
+  touchstone_emit_event review_blocked pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+  TOUCHSTONE_MERGE_FAILURE_REASON="review-blocked"
   return "$review_rc"
 }
 
 # 1. Sanity check the PR exists and is open.
 if ! PR_STATE="$(gh pr view "$PR_NUMBER" --json state --jq '.state')"; then
   echo "ERROR: Failed to inspect PR #$PR_NUMBER state with gh." >&2
+  TOUCHSTONE_MERGE_FAILURE_REASON="pr-state"
   exit 1
 fi
 if [ "$PR_STATE" != "OPEN" ]; then
   echo "ERROR: PR #$PR_NUMBER is not open (state: $PR_STATE)." >&2
+  TOUCHSTONE_MERGE_FAILURE_REASON="pr-not-open"
   exit 1
 fi
 
@@ -555,6 +579,7 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
     echo "ERROR: PR #$PR_NUMBER is $STATE — has conflicts or is out of date with base." >&2
     echo "       Final merge state: mergeStateStatus=$STATE mergeable=$MERGEABLE." >&2
     echo "       Rebase or resolve conflicts on the PR branch before merging." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="not-mergeable"
     exit 1
   fi
   if [ "$attempt" -lt 10 ]; then
@@ -571,6 +596,7 @@ done
 if [ "$STATE" != "CLEAN" ] || [ "$MERGEABLE" != "MERGEABLE" ]; then
   echo "ERROR: PR #$PR_NUMBER is not cleanly mergeable (state=$STATE mergeable=$MERGEABLE)." >&2
   echo "       Inspect manually: gh pr view $PR_NUMBER --web" >&2
+  TOUCHSTONE_MERGE_FAILURE_REASON="not-mergeable"
   exit 1
 fi
 
@@ -581,6 +607,7 @@ run_merge_review
 echo "==> Squash-merging PR #$PR_NUMBER ..."
 if [ -z "$REVIEWED_HEAD_OID" ]; then
   echo "ERROR: Cannot merge PR #$PR_NUMBER because no reviewed head commit was recorded." >&2
+  TOUCHSTONE_MERGE_FAILURE_REASON="missing-reviewed-head"
   exit 1
 fi
 gh_merge_exit=0
@@ -608,9 +635,13 @@ if [ "$gh_merge_exit" -ne 0 ]; then
     echo "         If the directory was deleted directly, run 'git worktree prune' from a remaining checkout."
   else
     echo "ERROR: gh pr merge exited $gh_merge_exit and PR #$PR_NUMBER is not MERGED." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="gh-pr-merge"
     exit "$gh_merge_exit"
   fi
 fi
+
+MERGED_AT="$(gh pr view "$PR_NUMBER" --json mergedAt --jq '.mergedAt // empty' 2>/dev/null || echo "")"
+touchstone_emit_event merged pr_number="$PR_NUMBER" merged_at="$MERGED_AT" head_sha="$REVIEWED_HEAD_OID"
 
 # Record squash-merge metadata for cleanup-branches.sh. The merge has
 # succeeded on GitHub; this is best-effort persistence for later cleanup.
