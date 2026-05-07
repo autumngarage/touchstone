@@ -46,6 +46,7 @@ BYPASS_REVIEW=false
 TOUCHSTONE_MERGE_FAILURE_REASON="nonzero-exit"
 PREFLIGHT_REQUIRED=true
 COMMENT_ON_CLEAN=true
+COMMENT_FINDINGS_HISTORY=true
 REVIEW_SUMMARY_FILE=""
 
 on_merge_exit() {
@@ -143,6 +144,8 @@ load_merge_review_config() {
       PREFLIGHT_REQUIRED="$(normalize_bool "$value")"
     elif [ "$section" = "review" ] && [ "$key" = "comment_on_clean" ]; then
       COMMENT_ON_CLEAN="$(normalize_bool "$value")"
+    elif [ "$section" = "review" ] && [ "$key" = "comment_findings_history" ]; then
+      COMMENT_FINDINGS_HISTORY="$(normalize_bool "$value")"
     fi
   }
 
@@ -158,6 +161,13 @@ review_clean_marker_file() {
   local branch="$1"
   printf '%s/%s.clean' \
     "$(git rev-parse --git-path touchstone/reviewer-clean)" \
+    "$(review_clean_marker_key "$branch")"
+}
+
+review_findings_history_file() {
+  local branch="$1"
+  printf '%s/%s.jsonl' \
+    "$(git rev-parse --git-path touchstone/reviewer-findings-history)" \
     "$(review_clean_marker_key "$branch")"
 }
 
@@ -462,6 +472,42 @@ post_clean_review_comment() {
   fi
 
   echo "WARNING: failed to post clean-review PR comment for PR #$PR_NUMBER." >&2
+  return 0
+}
+
+post_findings_history_comment() {
+  local branch="$1"
+  local history_file comment
+
+  if ! truthy "$COMMENT_FINDINGS_HISTORY"; then
+    echo "==> Findings-history PR comment disabled by [review].comment_findings_history=false."
+    return 0
+  fi
+  if [ "$BYPASS_REVIEW" = true ]; then
+    return 0
+  fi
+  if ! declare -F format_findings_history_comment >/dev/null 2>&1 \
+    || ! declare -F post_pr_review_comment >/dev/null 2>&1; then
+    echo "WARNING: review comment helper not found at $REVIEW_COMMENT_SCRIPT; skipping findings-history comment." >&2
+    return 0
+  fi
+  if [ -z "$branch" ]; then
+    echo "WARNING: PR head branch missing; skipping findings-history comment." >&2
+    return 0
+  fi
+
+  history_file="$(review_findings_history_file "$branch")"
+  if ! comment="$(format_findings_history_comment "$history_file")"; then
+    echo "==> No actionable review findings history to comment."
+    return 0
+  fi
+
+  if post_pr_review_comment "$PR_NUMBER" "$comment"; then
+    echo "==> Posted findings-history PR comment."
+    return 0
+  fi
+
+  echo "WARNING: failed to post findings-history PR comment for PR #$PR_NUMBER." >&2
   return 0
 }
 
@@ -771,6 +817,7 @@ fi
 MERGED_AT="$(gh pr view "$PR_NUMBER" --json mergedAt --jq '.mergedAt // empty' 2>/dev/null || echo "")"
 touchstone_emit_event merged pr_number="$PR_NUMBER" merged_at="$MERGED_AT" head_sha="$REVIEWED_HEAD_OID"
 post_clean_review_comment "$REVIEW_SUMMARY_FILE"
+post_findings_history_comment "$PR_HEAD_BRANCH"
 
 # Record squash-merge metadata for cleanup-branches.sh. The merge has
 # succeeded on GitHub; this is best-effort persistence for later cleanup.

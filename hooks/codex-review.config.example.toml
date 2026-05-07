@@ -67,6 +67,8 @@ unsafe_paths = [
 # enabled = true
 # preflight_required = true  # Run deterministic lint/test preflight before merge review; skips missing local tools visibly.
 # comment_on_clean = true    # Leave a one-line PR audit trail after a clean merge review; set false for quiet repos.
+# advisory_at_pr_open = true       # Run non-blocking review after PR creation and post the result as a PR comment.
+# comment_findings_history = true  # After merge, post a collapsed history when the fix loop raised or auto-fixed findings.
 # # reviewer = "conductor"   # single-valued in 2.0+; absent reviewers[]
 
 # --------------------------------------------------------------------------

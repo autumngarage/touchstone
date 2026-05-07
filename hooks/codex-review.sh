@@ -1970,6 +1970,15 @@ review_findings_file() {
   printf '%s/%s.findings' "$(review_findings_dir)" "$(review_clean_marker_key "$branch")"
 }
 
+review_findings_history_dir() {
+  git rev-parse --git-path touchstone/reviewer-findings-history
+}
+
+review_findings_history_file() {
+  local branch="$1"
+  printf '%s/%s.jsonl' "$(review_findings_history_dir)" "$(review_clean_marker_key "$branch")"
+}
+
 # Strip trailing whitespace from each line and drop empty trailing lines.
 # Findings text comes from the reviewer's stdout, which can include shell
 # color codes or stray indentation; the gate only persists lines that start
@@ -2018,6 +2027,106 @@ clear_review_findings() {
   findings_file="$(review_findings_file "$branch")"
   [ -f "$findings_file" ] || return 0
   rm -f "$findings_file" 2>/dev/null || true
+}
+
+json_escape() {
+  awk '
+    {
+      gsub(/\\/, "\\\\")
+      gsub(/"/, "\\\"")
+      if (NR > 1) {
+        printf "\\n"
+      }
+      printf "%s", $0
+    }
+  '
+}
+
+review_history_path() {
+  local branch
+  if [ -n "${CODEX_REVIEW_FINDINGS_HISTORY_FILE:-}" ]; then
+    printf '%s' "$CODEX_REVIEW_FINDINGS_HISTORY_FILE"
+    return 0
+  fi
+  branch="$(review_clean_marker_branch)"
+  [ -n "$branch" ] || return 1
+  review_findings_history_file "$branch"
+}
+
+review_history_last_head() {
+  local history_file="$1"
+  [ -f "$history_file" ] || return 0
+  awk -F'"head":"' '
+    /"schema":"touchstone.review.findings_history.v1"/ && NF > 1 {
+      split($2, parts, "\"")
+      head = parts[1]
+    }
+    END { if (head != "") print head }
+  ' "$history_file" 2>/dev/null
+}
+
+review_history_commits_since_prior() {
+  local prior_head="$1"
+  local current_head="$2"
+  [ -n "$prior_head" ] || return 0
+  [ -n "$current_head" ] || return 0
+  [ "$prior_head" != "$current_head" ] || return 0
+  git rev-parse --verify --quiet "$prior_head^{commit}" >/dev/null 2>&1 || return 0
+  git merge-base --is-ancestor "$prior_head" "$current_head" 2>/dev/null || return 0
+  git log --format='%h %s' "$prior_head..$current_head" 2>/dev/null \
+    | awk 'NF { if (out != "") out = out "; "; out = out $0 } END { print out }'
+}
+
+extract_review_body_without_sentinel() {
+  printf '%s\n' "$1" | awk '
+    /^[[:space:]]*CODEX_REVIEW_(CLEAN|FIXED|BLOCKED)[[:space:]]*$/ { next }
+    { print }
+  ' | sed '/^[[:space:]]*$/d'
+}
+
+append_findings_history_event() {
+  local result="$1"
+  local iteration="$2"
+  local output="${3:-}"
+  local auto_fixed_count="${4:-0}"
+  local branch history_file history_dir timestamp head prior_head commits findings_block findings_count
+  local esc_branch esc_base esc_merge_base esc_head esc_commits esc_findings esc_mode
+
+  branch="$(review_clean_marker_branch)"
+  [ -n "$branch" ] || return 0
+  if ! history_file="$(review_history_path)"; then
+    return 0
+  fi
+  history_dir="$(dirname "$history_file")"
+  mkdir -p "$history_dir" 2>/dev/null || return 0
+
+  timestamp="$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || echo "")"
+  head="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+  prior_head="$(review_history_last_head "$history_file")"
+  commits="$(review_history_commits_since_prior "$prior_head" "$head")"
+
+  findings_block="$(extract_findings_block "$output")"
+  if [ -z "$findings_block" ] && [ "$result" = "CODEX_REVIEW_FIXED" ]; then
+    findings_block="$(extract_review_body_without_sentinel "$output")"
+  fi
+  findings_count="$(printf '%s\n' "$findings_block" | grep -c '^- ' || true)"
+  if [ "$result" = "CODEX_REVIEW_FIXED" ] && [ "$auto_fixed_count" -eq 0 ] && [ -n "$findings_block" ]; then
+    auto_fixed_count="$findings_count"
+    [ "$auto_fixed_count" -gt 0 ] || auto_fixed_count=1
+  fi
+
+  esc_branch="$(printf '%s' "$branch" | json_escape)"
+  esc_base="$(printf '%s' "$BASE" | json_escape)"
+  esc_merge_base="$(printf '%s' "$MERGE_BASE" | json_escape)"
+  esc_head="$(printf '%s' "$head" | json_escape)"
+  esc_commits="$(printf '%s' "$commits" | json_escape)"
+  esc_findings="$(printf '%s' "$findings_block" | json_escape)"
+  esc_mode="$(printf '%s' "$REVIEW_MODE" | json_escape)"
+
+  printf '{"schema":"touchstone.review.findings_history.v1","timestamp":"%s","branch":"%s","base":"%s","merge_base":"%s","head":"%s","iteration":%s,"result":"%s","mode":"%s","findings_count":%s,"auto_fixed_count":%s,"fix_commits":%s,"commits_since_prior":"%s","findings":"%s"}\n' \
+    "$timestamp" "$esc_branch" "$esc_base" "$esc_merge_base" "$esc_head" "$iteration" "$result" "$esc_mode" \
+    "${findings_count:-0}" "${auto_fixed_count:-0}" "$FIX_COMMITS" "$esc_commits" "$esc_findings" \
+    >>"$history_file" 2>/dev/null || true
 }
 
 # Build a "verification checkpoint" prompt prefix when a prior BLOCKED review
@@ -2659,6 +2768,9 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
     if [ -n "$REVIEW_CACHE_KEY" ] && [ -f "$(clean_review_cache_file "$REVIEW_CACHE_KEY")" ]; then
       echo "==> Review previously passed for this exact diff — skipping repeat review."
       echo "    Force a fresh review with: CODEX_REVIEW_DISABLE_CACHE=1 git push"
+      REVIEW_EXIT_REASON="cache-hit"
+      REVIEW_FINDINGS_COUNT=0
+      print_summary
       log_skip_event other "cache-hit:${REVIEW_CACHE_KEY}"
       exit 0
     fi
@@ -2773,6 +2885,7 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
       write_clean_review_cache "$REVIEW_CACHE_KEY" "$DIFF_LINE_COUNT"
       write_clean_review_marker "$DIFF_LINE_COUNT"
       clear_review_findings
+      append_findings_history_event "CODEX_REVIEW_CLEAN" "$iter" "$OUTPUT" 0
       # The "ran" denominator: a successful review actually executed.
       # skip-rate = log_skip_count / (log_skip_count + log_ran_count).
       log_skip_event ran "clean:iter=${iter}:lines=${DIFF_LINE_COUNT}:fix-commits=${FIX_COMMITS}"
@@ -2818,6 +2931,7 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
 
       git add -A
       git commit -m "fix: address $REVIEWER_LABEL review findings (auto, $REVIEW_MODE, iter $iter)"
+      append_findings_history_event "CODEX_REVIEW_FIXED" "$iter" "$OUTPUT" 0
       WORKTREE_DIRTY_BEFORE_REVIEW=false
       FIX_COMMITS=$((FIX_COMMITS + 1))
       echo "==> Created fix commit $(git rev-parse --short HEAD). Re-running review on new HEAD..."
@@ -2843,6 +2957,7 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
       # on a descendant HEAD prepends a verification checkpoint instead of
       # auditing from scratch.
       write_review_findings "$OUTPUT"
+      append_findings_history_event "CODEX_REVIEW_BLOCKED" "$iter" "$OUTPUT" 0
       # The reviewer actually ran and produced a verdict — counts as "ran"
       # for the skip-rate denominator even though the push is blocked.
       log_skip_event ran "blocked:iter=${iter}:findings=${REVIEW_FINDINGS_COUNT}"

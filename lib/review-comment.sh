@@ -4,6 +4,8 @@
 #
 # Public interface:
 #   format_clean_review_comment <review-summary-json>
+#   format_advisory_findings_comment <review-summary-json> <review-output>
+#   format_findings_history_comment <history-jsonl-path>
 #   post_pr_review_comment <pr-number> <comment-string>
 #   read_latest_review_event <jsonl-path>
 #
@@ -30,6 +32,10 @@ review_comment_clean_value() {
   printf '%s' "$value"
 }
 
+review_comment_findings_from_output() {
+  printf '%s\n' "$1" | awk '/^- / { print } /^$/ { if (found) exit } /^- / { found = 1 }'
+}
+
 format_clean_review_comment() {
   local json="$1"
   local reviewer provider model peer iterations mode findings
@@ -44,6 +50,93 @@ format_clean_review_comment() {
 
   printf '%s review clean - provider: %s, model: %s, peer: %s, iterations: %s, mode: %s, findings: %s' \
     "$reviewer" "$provider" "$model" "$peer" "$iterations" "$mode" "$findings"
+}
+
+format_advisory_findings_comment() {
+  local json="$1"
+  local output="$2"
+  local reviewer provider model iterations mode findings findings_block
+
+  reviewer="$(review_comment_clean_value "$(review_comment_json_field "$json" reviewer)")"
+  provider="$(review_comment_clean_value "$(review_comment_json_field "$json" provider)")"
+  model="$(review_comment_clean_value "$(review_comment_json_field "$json" model)")"
+  iterations="$(review_comment_clean_value "$(review_comment_json_number "$json" iterations)")"
+  mode="$(review_comment_clean_value "$(review_comment_json_field "$json" mode)")"
+  findings="$(review_comment_clean_value "$(review_comment_json_number "$json" findings)")"
+  findings_block="$(review_comment_findings_from_output "$output")"
+
+  {
+    printf '%s advisory review found %s finding(s) - provider: %s, model: %s, iterations: %s, mode: %s\n\n' \
+      "$reviewer" "$findings" "$provider" "$model" "$iterations" "$mode"
+    if [ -n "$findings_block" ]; then
+      printf '%s\n' "$findings_block"
+    else
+      printf 'Review exited with findings, but no bullet-form findings were parsed from reviewer output.\n'
+    fi
+  }
+}
+
+format_findings_history_comment() {
+  local history_path="$1"
+  local actionable_count total_count
+
+  [ -f "$history_path" ] || return 1
+  actionable_count="$(grep -E -c '"result":"CODEX_REVIEW_(BLOCKED|FIXED)"' "$history_path" 2>/dev/null || true)"
+  total_count="$(grep -c '"schema":"touchstone.review.findings_history.v1"' "$history_path" 2>/dev/null || true)"
+  [ "${actionable_count:-0}" -gt 0 ] || return 1
+
+  {
+    printf '<details>\n'
+    printf '<summary>Conductor review findings history (%s actionable iteration(s), %s total)</summary>\n\n' "$actionable_count" "$total_count"
+    awk '
+      function field(line, key, pattern, value) {
+        pattern = "\"" key "\":\"(([^\"\\\\]|\\\\.)*)\""
+        if (match(line, pattern)) {
+          value = substr(line, RSTART + length(key) + 4, RLENGTH - length(key) - 5)
+          gsub(/\\n/, "\n", value)
+          gsub(/\\"/, "\"", value)
+          gsub(/\\\\/, "\\", value)
+          return value
+        }
+        return ""
+      }
+      function number_field(line, key, pattern, value) {
+        pattern = "\"" key "\":[0-9]+"
+        if (match(line, pattern)) {
+          value = substr(line, RSTART + length(key) + 3, RLENGTH - length(key) - 3)
+          return value
+        }
+        return "0"
+      }
+      {
+        result = field($0, "result")
+        if (result == "") {
+          next
+        }
+        iteration = number_field($0, "iteration")
+        findings_count = number_field($0, "findings_count")
+        auto_fixed_count = number_field($0, "auto_fixed_count")
+        head = field($0, "head")
+        commits = field($0, "commits_since_prior")
+        findings = field($0, "findings")
+
+        printf "### Iteration %s: %s\n\n", iteration, result
+        printf "- Findings raised: %s\n", findings_count
+        printf "- Auto-fixed by reviewer: %s\n", auto_fixed_count
+        if (commits != "") {
+          printf "- Commits since prior finding: %s\n", commits
+        }
+        if (head != "") {
+          printf "- Reviewed HEAD: `%s`\n", head
+        }
+        if (findings != "") {
+          printf "\n%s\n", findings
+        }
+        printf "\n"
+      }
+    ' "$history_path"
+    printf '</details>\n'
+  }
 }
 
 post_pr_review_comment() {

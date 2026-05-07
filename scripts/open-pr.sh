@@ -42,11 +42,21 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PREFLIGHT_SCRIPT="$SCRIPT_DIR/../lib/preflight.sh"
+REVIEW_COMMENT_SCRIPT="$SCRIPT_DIR/../lib/review-comment.sh"
 if [ -f "$SCRIPT_DIR/../lib/events.sh" ]; then
   # shellcheck source=../lib/events.sh
   source "$SCRIPT_DIR/../lib/events.sh"
 else
   touchstone_emit_event() { :; }
+fi
+if [ -f "$PREFLIGHT_SCRIPT" ]; then
+  # shellcheck source=../lib/preflight.sh
+  source "$PREFLIGHT_SCRIPT"
+fi
+if [ -f "$REVIEW_COMMENT_SCRIPT" ]; then
+  # shellcheck source=../lib/review-comment.sh
+  source "$REVIEW_COMMENT_SCRIPT"
 fi
 
 # orphan_warning is set to a PR URL once we know one — any nonzero exit after
@@ -55,6 +65,8 @@ fi
 ORPHAN_PR_URL=""
 ORPHAN_PR_NUMBER=""
 BODY_FILE=""
+ADVISORY_AT_PR_OPEN=true
+PREFLIGHT_REQUIRED=true
 
 on_exit() {
   local rc="$?"
@@ -107,6 +119,120 @@ verify_pr_merged() {
     return 0
   fi
   return 1
+}
+
+truthy() {
+  case "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" in
+    true | 1 | yes | on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_bool() {
+  case "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" in
+    true | 1 | yes | on) printf 'true' ;;
+    false | 0 | no | off) printf 'false' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+load_open_pr_review_config() {
+  local config_file
+  config_file="$(git rev-parse --show-toplevel 2>/dev/null)/.codex-review.toml"
+  [ -f "$config_file" ] || return 0
+  [ -f "$SCRIPT_DIR/../lib/toml.sh" ] || return 0
+
+  # shellcheck source=../lib/toml.sh
+  source "$SCRIPT_DIR/../lib/toml.sh"
+
+  open_pr_toml_callback() {
+    local section="$1"
+    local key="$2"
+    local value="$3"
+
+    if [ "$section" = "review" ] && [ "$key" = "advisory_at_pr_open" ]; then
+      ADVISORY_AT_PR_OPEN="$(normalize_bool "$value")"
+    elif [ "$section" = "review" ] && [ "$key" = "preflight_required" ]; then
+      PREFLIGHT_REQUIRED="$(normalize_bool "$value")"
+    fi
+  }
+
+  toml_parse "$config_file" open_pr_toml_callback
+}
+
+run_advisory_review_at_pr_open() {
+  local pr_number="$1"
+  local base_branch="$2"
+  local review_script summary_file output_file review_rc summary_json comment
+
+  if ! truthy "$ADVISORY_AT_PR_OPEN"; then
+    echo "==> Advisory review at PR open disabled by [review].advisory_at_pr_open=false."
+    return 0
+  fi
+
+  if ! declare -F post_pr_review_comment >/dev/null 2>&1 \
+    || ! declare -F format_clean_review_comment >/dev/null 2>&1 \
+    || ! declare -F format_advisory_findings_comment >/dev/null 2>&1; then
+    echo "==> Review comment helper not found at $REVIEW_COMMENT_SCRIPT; skipping advisory review."
+    return 0
+  fi
+
+  if truthy "$PREFLIGHT_REQUIRED" && ! truthy "${TOUCHSTONE_NO_PREFLIGHT:-false}"; then
+    if declare -F touchstone_preflight_main >/dev/null 2>&1; then
+      echo "==> Running deterministic preflight before advisory review ..."
+      if ! TOUCHSTONE_PREFLIGHT_BASE="origin/$base_branch" touchstone_preflight_main "$(git rev-parse --show-toplevel)"; then
+        echo "WARNING: preflight failed; skipping non-blocking advisory review to avoid spending provider tokens." >&2
+        return 0
+      fi
+    else
+      echo "==> Preflight helper not found at $PREFLIGHT_SCRIPT — skipping preflight."
+    fi
+  else
+    echo "==> Preflight disabled before advisory review."
+  fi
+
+  review_script="$SCRIPT_DIR/codex-review.sh"
+  if [ ! -f "$review_script" ]; then
+    echo "WARNING: codex-review.sh not found at $review_script; skipping advisory review." >&2
+    return 0
+  fi
+
+  summary_file="$(git rev-parse --git-path "touchstone/review-summary-pr-${pr_number}-advisory.json" 2>/dev/null || echo "")"
+  output_file="$(mktemp -t touchstone-advisory-review.XXXXXX.txt)"
+  if [ -n "$summary_file" ]; then
+    mkdir -p "$(dirname "$summary_file")" 2>/dev/null || true
+    rm -f "$summary_file" 2>/dev/null || true
+  fi
+
+  echo "==> Running advisory conductor review for PR #$pr_number ..."
+  review_rc=0
+  CODEX_REVIEW_BASE="origin/$base_branch" \
+    CODEX_REVIEW_BRANCH_NAME="$CURRENT_BRANCH" \
+    CODEX_REVIEW_FORCE=1 \
+    CODEX_REVIEW_MODE=review-only \
+    CODEX_REVIEW_SUMMARY_FILE="$summary_file" \
+    bash "$review_script" >"$output_file" 2>&1 || review_rc=$?
+
+  summary_json="$(tail -n 1 "$summary_file" 2>/dev/null || true)"
+  if [ -z "$summary_json" ]; then
+    echo "WARNING: advisory review summary missing; skipping advisory PR comment." >&2
+    rm -f "$output_file"
+    return 0
+  fi
+
+  if [ "$review_rc" -eq 0 ]; then
+    comment="$(format_clean_review_comment "$summary_json")"
+  else
+    comment="$(format_advisory_findings_comment "$summary_json" "$(cat "$output_file" 2>/dev/null || true)")"
+  fi
+
+  if post_pr_review_comment "$pr_number" "$comment"; then
+    echo "==> Posted advisory review PR comment."
+  else
+    echo "WARNING: failed to post advisory review PR comment for PR #$pr_number." >&2
+  fi
+  rm -f "$output_file"
+  return 0
 }
 
 # Locate the worktree that has the default branch checked out, by parsing
@@ -200,6 +326,7 @@ find_issue_closing_refs() {
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEMPLATE_PATH="$REPO_ROOT/.github/pull_request_template.md"
+load_open_pr_review_config
 
 # Fail fast if gh is missing or unauthenticated.
 if ! command -v gh >/dev/null 2>&1; then
@@ -464,6 +591,8 @@ touchstone_emit_event pr_opened \
   branch="$CURRENT_BRANCH" \
   base_branch="$BASE_BRANCH" \
   head_sha="$HEAD_SHA"
+
+run_advisory_review_at_pr_open "$ORPHAN_PR_NUMBER" "$BASE_BRANCH"
 
 if [ -n "$DRAFT_FLAG" ]; then
   echo "    Opened as draft. Mark ready on github.com when ready to merge."
