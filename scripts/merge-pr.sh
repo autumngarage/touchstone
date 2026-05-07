@@ -157,15 +157,23 @@ branch_has_clean_review_marker() {
   local branch="$1"
   local head_oid="$2"
   local merge_base="$3"
-  local marker marker_branch marker_head marker_merge_base
+  local marker marker_branch marker_head marker_merge_base live_branch_head
   marker="$(review_clean_marker_file "$branch")"
   [ -f "$marker" ] || return 1
   grep -q '^result=CODEX_REVIEW_CLEAN$' "$marker" || return 1
   marker_branch="$(marker_field branch "$marker")"
   marker_head="$(marker_field head "$marker")"
   marker_merge_base="$(marker_field merge_base "$marker")"
+
+  if ! live_branch_head="$(git rev-parse "$branch" 2>/dev/null)"; then
+    live_branch_head="$(git rev-parse HEAD 2>/dev/null || echo "")"
+  fi
+
+  # Invariant: A clean-review marker is valid only when its `head` field equals the current branch HEAD.
   [ "$marker_branch" = "$branch" ] \
-    && [ "$marker_head" = "$head_oid" ] \
+    && [ -n "$live_branch_head" ] \
+    && [ "$live_branch_head" = "$head_oid" ] \
+    && [ "$marker_head" = "$live_branch_head" ] \
     && [ "$marker_merge_base" = "$merge_base" ]
 }
 
