@@ -127,6 +127,8 @@ VALIDATE_ENV_OUT="$TEST_DIR/validate-env.out"
   cd "$VALIDATE_PROJECT"
   GIT_DIR="$VALIDATE_PROJECT/.git" \
     GIT_WORK_TREE="$VALIDATE_PROJECT" \
+    PRE_COMMIT=1 \
+    PRE_COMMIT_REMOTE_BRANCH=refs/heads/feature/test \
     bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" validate
 ) >"$VALIDATE_ENV_OUT" 2>&1
 assert_contains "$VALIDATE_ENV_OUT" 'validate.sh'

@@ -168,7 +168,12 @@ has_package_script() {
 run_shell_command() {
   local command="$1"
   info "$command"
-  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE bash -c "$command"
+  env \
+    -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
+    -u PRE_COMMIT -u PRE_COMMIT_FROM_REF -u PRE_COMMIT_TO_REF \
+    -u PRE_COMMIT_LOCAL_BRANCH -u PRE_COMMIT_REMOTE_BRANCH \
+    -u PRE_COMMIT_REMOTE_NAME -u PRE_COMMIT_REMOTE_URL \
+    bash -c "$command"
 }
 
 configured_command_for_action() {
