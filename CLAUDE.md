@@ -91,7 +91,7 @@ done
 
 The fast tier must pass before pushing — it's the "is this safe to push" gate (deterministic, offline, ~100s). The slow tier is the "is this safe to ship" gate, run when changing live guidance-probe behavior or before release-level confidence checks. The bootstrap and update tests exercise the full propagation flow against temp directories.
 
-Lint is not part of the test suite. Shellcheck runs at pre-commit via `.pre-commit-config.yaml`. For an explicit full-repo lint pass: `pre-commit run shellcheck --all-files`.
+Lint is not part of the test suite. The full lint suite runs at pre-commit and via `pre-commit run --all-files`: `shellcheck`, `shfmt` for shell-script formatting, `markdownlint` for prose, and `actionlint` for `.github/workflows/`. `.pre-commit-config.yaml` and `.markdownlint.json` are the canonical config files; `actionlint` is repo-only and is not synced to downstream templates.
 
 ## Architecture
 
