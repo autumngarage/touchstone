@@ -4,6 +4,12 @@
 #
 set -euo pipefail
 
+# Hermeticity: clear inherited opt-out env vars so the test exercises the
+# real default-on behavior. Without this, `TOUCHSTONE_NO_AUTO_UPDATE=1` set
+# by an outer script (e.g., a pre-push hook caller) silently skips sync in
+# cases that expect it to fire, producing confusing per-context failures.
+unset TOUCHSTONE_NO_AUTO_UPDATE TOUCHSTONE_NO_AUTO_PROJECT_SYNC
+
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TOUCHSTONE_BIN="$TOUCHSTONE_ROOT/bin/touchstone"
 TEST_DIR="$(mktemp -d -t touchstone-test-auto-project-sync.XXXXXX)"
