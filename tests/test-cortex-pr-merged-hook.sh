@@ -170,6 +170,33 @@ cat >"$FAKEBIN/cortex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [ -n "${FAKE_CORTEX_LOG:-}" ]; then
+  printf '%s\n' "$*" >>"$FAKE_CORTEX_LOG"
+fi
+
+if [ "${FAKE_CORTEX_FAIL_ALL:-0}" = "1" ]; then
+  printf 'fake cortex must not have been invoked: %s\n' "$*" >&2
+  exit 99
+fi
+
+if [ "${1:-}" = "check-triggers" ]; then
+  if [ "${FAKE_CORTEX_CHECK_TRIGGERS_STATUS:-0}" != "0" ]; then
+    if [ -n "${FAKE_CORTEX_CHECK_TRIGGERS_STDERR:-}" ]; then
+      printf '%s' "$FAKE_CORTEX_CHECK_TRIGGERS_STDERR" >&2
+    fi
+    exit "$FAKE_CORTEX_CHECK_TRIGGERS_STATUS"
+  fi
+  if [ "${FAKE_CORTEX_CHECK_TRIGGERS_EMPTY:-0}" = "1" ]; then
+    exit 0
+  fi
+  if [ -n "${FAKE_CORTEX_CHECK_TRIGGERS_NDJSON:-}" ]; then
+    printf '%s\n' "$FAKE_CORTEX_CHECK_TRIGGERS_NDJSON"
+  else
+    printf '%s\n' '{"trigger":"T1.9","reason":"pull request merged","files":["src/example.py"]}'
+  fi
+  exit 0
+fi
+
 if [ "${1:-}" = "journal" ] && [ "${2:-}" = "draft" ] && [ "${3:-}" = "pr-merged" ]; then
   mkdir -p .cortex/journal
   entry="$(pwd)/.cortex/journal/pr-merged.md"
@@ -277,4 +304,195 @@ if ! grep -q "cortex refresh-state --path" "$I_STDERR" || ! grep -q "git commit 
   exit 1
 fi
 
-echo "==> PASS: cortex-pr-merged-hook activation gates + graceful-degradation paths verified (A-I)"
+# Scenario J: no fired triggers → silent skip, no journal draft, no commit.
+J="$(mk_fixture J)"
+mkdir -p "$J/.cortex"
+printf 'tracked state\n' >"$J/.cortex/state.md"
+(cd "$J" && git add .cortex/state.md && git commit -q -m "add cortex state")
+J_HEAD_BEFORE="$(git -C "$J" rev-parse HEAD)"
+J_LOG="$TMPROOT/J-cortex.log"
+(
+  cd "$J"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_CORTEX_LOG="$J_LOG" \
+    FAKE_CORTEX_CHECK_TRIGGERS_EMPTY=1 \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+    bash "$HOOK"
+)
+J_HEAD_AFTER="$(git -C "$J" rev-parse HEAD)"
+if [ "$J_HEAD_BEFORE" != "$J_HEAD_AFTER" ]; then
+  echo "FAIL [J]: hook created a commit when check-triggers returned empty" >&2
+  exit 1
+fi
+if [ -f "$J/.cortex/journal/pr-merged.md" ]; then
+  echo "FAIL [J]: hook drafted a journal entry when no triggers fired" >&2
+  exit 1
+fi
+if ! grep -q "check-triggers --since HEAD~1" "$J_LOG" || grep -q "journal draft" "$J_LOG"; then
+  echo "FAIL [J]: expected only check-triggers before silent skip" >&2
+  cat "$J_LOG" >&2
+  exit 1
+fi
+
+# Scenario K: T1.4 fired → journal entry includes trigger context.
+K="$(mk_fixture K)"
+mkdir -p "$K/.cortex"
+printf 'tracked state\n' >"$K/.cortex/state.md"
+(cd "$K" && git add .cortex/state.md && git commit -q -m "add cortex state")
+K_NDJSON='{"trigger":"T1.4","reason":"file deletion exceeds 100 lines (deleted 142 from src/foo.py)","files":["src/foo.py"]}'
+(
+  cd "$K"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_CORTEX_CHECK_TRIGGERS_NDJSON="$K_NDJSON" \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+    TOUCHSTONE_MERGED_PR=300 \
+    bash "$HOOK"
+)
+K_BODY="$(git -C "$K" show HEAD:.cortex/journal/pr-merged.md)"
+if ! printf '%s\n' "$K_BODY" | grep -q "## Triggers fired" \
+  || ! printf '%s\n' "$K_BODY" | grep -q "T1.4" \
+  || ! printf '%s\n' "$K_BODY" | grep -q "src/foo.py"; then
+  echo "FAIL [K]: T1.4 trigger context missing from journal entry" >&2
+  printf '%s\n' "$K_BODY" >&2
+  exit 1
+fi
+
+# Scenario L: T1.1 fired → journal entry includes trigger context.
+L="$(mk_fixture L)"
+mkdir -p "$L/.cortex"
+printf 'tracked state\n' >"$L/.cortex/state.md"
+(cd "$L" && git add .cortex/state.md && git commit -q -m "add cortex state")
+L_NDJSON='{"trigger":"T1.1","reason":"diff touches principles/","files":["principles/foo.md"]}'
+(
+  cd "$L"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_CORTEX_CHECK_TRIGGERS_NDJSON="$L_NDJSON" \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+    TOUCHSTONE_MERGED_PR=301 \
+    bash "$HOOK"
+)
+L_BODY="$(git -C "$L" show HEAD:.cortex/journal/pr-merged.md)"
+if ! printf '%s\n' "$L_BODY" | grep -q "## Triggers fired" \
+  || ! printf '%s\n' "$L_BODY" | grep -q "T1.1" \
+  || ! printf '%s\n' "$L_BODY" | grep -q "principles/foo.md"; then
+  echo "FAIL [L]: T1.1 trigger context missing from journal entry" >&2
+  printf '%s\n' "$L_BODY" >&2
+  exit 1
+fi
+
+# Scenario M: env force bypasses the gate and avoids check-triggers entirely.
+M="$(mk_fixture M)"
+mkdir -p "$M/.cortex"
+printf 'tracked state\n' >"$M/.cortex/state.md"
+(cd "$M" && git add .cortex/state.md && git commit -q -m "add cortex state")
+M_LOG="$TMPROOT/M-cortex.log"
+(
+  cd "$M"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_CORTEX_LOG="$M_LOG" \
+    FAKE_CORTEX_CHECK_TRIGGERS_EMPTY=1 \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_FORCE=1 \
+    TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+    TOUCHSTONE_MERGED_PR=400 \
+    bash "$HOOK"
+)
+if ! git -C "$M" show --name-only --format= HEAD | grep -qx '.cortex/journal/pr-merged.md'; then
+  echo "FAIL [M]: force env did not produce a journal entry" >&2
+  exit 1
+fi
+if grep -q "check-triggers" "$M_LOG"; then
+  echo "FAIL [M]: force env should bypass check-triggers" >&2
+  cat "$M_LOG" >&2
+  exit 1
+fi
+
+# Scenario N: config force has the same bypass behavior as the env knob.
+N="$(mk_fixture N)"
+mkdir -p "$N/.cortex"
+printf 'tracked state\n' >"$N/.cortex/state.md"
+printf 'cortex_pr_merged_hook=force\n' >"$N/.touchstone-config"
+(cd "$N" && git add .cortex/state.md .touchstone-config && git commit -q -m "add cortex state with force config")
+N_LOG="$TMPROOT/N-cortex.log"
+(
+  cd "$N"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_CORTEX_LOG="$N_LOG" \
+    FAKE_CORTEX_CHECK_TRIGGERS_EMPTY=1 \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+    TOUCHSTONE_MERGED_PR=401 \
+    bash "$HOOK"
+)
+if ! git -C "$N" show --name-only --format= HEAD | grep -qx '.cortex/journal/pr-merged.md'; then
+  echo "FAIL [N]: force config did not produce a journal entry" >&2
+  exit 1
+fi
+if grep -q "check-triggers" "$N_LOG"; then
+  echo "FAIL [N]: force config should bypass check-triggers" >&2
+  cat "$N_LOG" >&2
+  exit 1
+fi
+
+# Scenario O: missing/unavailable check-triggers logs and falls back.
+O="$(mk_fixture O)"
+mkdir -p "$O/.cortex"
+printf 'tracked state\n' >"$O/.cortex/state.md"
+(cd "$O" && git add .cortex/state.md && git commit -q -m "add cortex state")
+O_STDERR="$TMPROOT/O-stderr"
+(
+  cd "$O"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_CORTEX_CHECK_TRIGGERS_STATUS=2 \
+    FAKE_CORTEX_CHECK_TRIGGERS_STDERR="Error: No such command 'check-triggers'.\n" \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+    TOUCHSTONE_MERGED_PR=500 \
+    bash "$HOOK"
+) 2>"$O_STDERR"
+if ! git -C "$O" show --name-only --format= HEAD | grep -qx '.cortex/journal/pr-merged.md'; then
+  echo "FAIL [O]: check-triggers fallback did not produce a journal entry" >&2
+  exit 1
+fi
+if ! grep -q "cortex check-triggers unavailable; falling back to journal-every-merge" "$O_STDERR" \
+  || ! grep -q "No such command 'check-triggers'" "$O_STDERR"; then
+  echo "FAIL [O]: check-triggers fallback did not surface stderr context" >&2
+  cat "$O_STDERR" >&2
+  exit 1
+fi
+
+# Scenario P: recursion guard runs before check-triggers or any cortex call.
+P="$(mk_fixture P)"
+mkdir -p "$P/.cortex/journal"
+printf 'auto-draft\n' >"$P/.cortex/journal/auto-draft.md"
+(
+  cd "$P"
+  git add .cortex/journal/auto-draft.md
+  git commit -q -m "docs(journal): auto-draft pr-merged entry for #99"
+)
+P_HEAD_BEFORE="$(git -C "$P" rev-parse HEAD)"
+P_LOG="$TMPROOT/P-cortex.log"
+(
+  cd "$P"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_CORTEX_LOG="$P_LOG" \
+    FAKE_CORTEX_FAIL_ALL=1 \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+    bash "$HOOK"
+)
+P_HEAD_AFTER="$(git -C "$P" rev-parse HEAD)"
+if [ "$P_HEAD_BEFORE" != "$P_HEAD_AFTER" ]; then
+  echo "FAIL [P]: recursion guard changed HEAD" >&2
+  exit 1
+fi
+if [ -s "$P_LOG" ]; then
+  echo "FAIL [P]: recursion guard must run before any cortex invocation" >&2
+  cat "$P_LOG" >&2
+  exit 1
+fi
+
+echo "==> PASS: cortex-pr-merged-hook activation gates + graceful-degradation paths verified (A-P)"
