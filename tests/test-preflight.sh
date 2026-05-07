@@ -4,6 +4,8 @@
 #
 set -euo pipefail
 
+unset TOUCHSTONE_NO_PREFLIGHT TOUCHSTONE_NO_AUTO_UPDATE
+
 if [ "${TOUCHSTONE_PREFLIGHT_IN_PROGRESS:-0}" = "1" ]; then
   echo "==> SKIP: test-preflight avoids recursive touchstone preflight"
   exit 0
@@ -13,8 +15,19 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-preflight.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
+CLEAN_FAKE_BIN="$TEST_DIR/clean-bin"
+mkdir -p "$CLEAN_FAKE_BIN"
+for tool in shellcheck shfmt markdownlint actionlint; do
+  cat >"$CLEAN_FAKE_BIN/$tool" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+  chmod +x "$CLEAN_FAKE_BIN/$tool"
+done
+
 echo "==> Test: touchstone preflight exits clean on this tree"
-TOUCHSTONE_NO_AUTO_UPDATE=1 \
+PATH="$CLEAN_FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  TOUCHSTONE_NO_AUTO_UPDATE=1 \
   TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND=: \
   bash "$TOUCHSTONE_ROOT/bin/touchstone" preflight "$TOUCHSTONE_ROOT" >"$TEST_DIR/clean.txt" 2>&1
 if grep -q '==> preflight clean' "$TEST_DIR/clean.txt"; then
@@ -71,6 +84,7 @@ MERGE_DIR="$TEST_DIR/merge"
 mkdir -p "$MERGE_DIR/scripts" "$MERGE_DIR/lib" "$MERGE_DIR/bin" "$MERGE_DIR/repo"
 cp "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$MERGE_DIR/scripts/merge-pr.sh"
 cp "$TOUCHSTONE_ROOT/lib/preflight.sh" "$MERGE_DIR/lib/preflight.sh"
+cp "$TOUCHSTONE_ROOT/lib/preflight-scope.sh" "$MERGE_DIR/lib/preflight-scope.sh"
 cp "$TOUCHSTONE_ROOT/lib/toml.sh" "$MERGE_DIR/lib/toml.sh"
 cat >"$MERGE_DIR/scripts/codex-review.sh" <<'EOF'
 #!/usr/bin/env bash

@@ -512,6 +512,8 @@ post_findings_history_comment() {
 }
 
 run_preflight_gate() {
+  local base_ref="$1"
+
   if ! truthy "$PREFLIGHT_REQUIRED"; then
     echo "==> Preflight disabled by [review].preflight_required=false."
     return 0
@@ -525,9 +527,9 @@ run_preflight_gate() {
     return 0
   fi
 
-  echo "==> Running deterministic preflight before merge review ..."
+  echo "==> Running deterministic preflight before merge review (diff vs $base_ref) ..."
   touchstone_emit_event preflight_started pr_number="$PR_NUMBER" mode=merge
-  if touchstone_preflight_main "$(git rev-parse --show-toplevel)"; then
+  if touchstone_preflight_main --diff "$base_ref" "$(git rev-parse --show-toplevel)"; then
     touchstone_emit_event preflight_clean pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
     return 0
   fi
@@ -670,7 +672,7 @@ run_merge_review() {
     exit 1
   fi
 
-  run_preflight_gate || return $?
+  run_preflight_gate "$default_base_ref" || return $?
 
   echo "==> Running merge review ..."
   local review_rc=0
@@ -684,6 +686,7 @@ run_merge_review() {
     CODEX_REVIEW_BRANCH_NAME="$pr_head_branch" \
     CODEX_REVIEW_FORCE=1 \
     CODEX_REVIEW_MODE=review-only \
+    TOUCHSTONE_PREFLIGHT_ALREADY_RAN=1 \
     CODEX_REVIEW_SUMMARY_FILE="$REVIEW_SUMMARY_FILE" \
     bash "$REVIEW_SCRIPT" || review_rc=$?
 
