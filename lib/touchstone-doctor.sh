@@ -24,12 +24,15 @@ touchstone_doctor_usage() {
   cat <<'EOF'
 Usage: touchstone doctor [--log-path <path>] [--threshold <percent>]
        touchstone doctor --project
+       touchstone doctor --require-capability <name>
        touchstone doctor --installation
 
   (no flag)             Report conductor-review fail-open trends from ~/.touchstone-review-log
   --log-path <path>     Read a fixture or alternate review log (also: TOUCHSTONE_REVIEW_LOG)
   --threshold <percent> Warn when the last-7d fail-open rate exceeds this value (default 25)
   --project             Check per-project health (hooks, manifest, registry)
+  --require-capability <name>
+                        Require a project-local Touchstone workflow capability
   --installation        Check touchstone installation health (CLI, tools, projects)
 
 Exit codes:
