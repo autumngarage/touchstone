@@ -19,7 +19,7 @@
 #   touchstone status [--json]            Show status of the current project
 #   touchstone status --all               Show version distribution across registered projects
 #   touchstone version                    Show installed version
-#   touchstone doctor                     Check health of touchstone installation
+#   touchstone doctor                     Report conductor-review fail-open trends
 #   touchstone help                       Show this help
 #
 # Install:
@@ -47,6 +47,7 @@ source "$TOUCHSTONE_ROOT/lib/colors.sh"
 source "$TOUCHSTONE_ROOT/lib/ui.sh"
 source "$TOUCHSTONE_ROOT/lib/claude-md-principles-ref.sh"
 source "$TOUCHSTONE_ROOT/lib/status.sh"
+source "$TOUCHSTONE_ROOT/lib/touchstone-doctor.sh"
 
 # Auto-update check (throttled, non-blocking on failure).
 touchstone_auto_update || true
@@ -1083,10 +1084,25 @@ _touchstone_profile_has_tests() {
 
 cmd_doctor() {
   local project_mode=false
+  local installation_mode=false
   local required_capability=""
+
+  if [ "$#" -eq 0 ]; then
+    touchstone_doctor_review_log
+    return $?
+  fi
+
+  case "${1:-}" in
+    --log-path|--threshold)
+      touchstone_doctor_review_log "$@"
+      return $?
+      ;;
+  esac
+
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --project) project_mode=true; shift ;;
+      --installation) installation_mode=true; shift ;;
       --require-capability)
         if [ "$#" -lt 2 ]; then
           echo "ERROR: --require-capability requires a capability name" >&2
@@ -1097,11 +1113,7 @@ cmd_doctor() {
         shift 2
         ;;
       -h|--help)
-        echo "Usage: touchstone doctor [--project] [--require-capability <name>]"
-        echo "  (no flag)   Check touchstone installation health (CLI, tools, projects)"
-        echo "  --project   Check per-project health (hooks, manifest, registry)"
-        echo "  --require-capability <name>"
-        echo "              Require a project-local Touchstone workflow capability"
+        touchstone_doctor_usage
         return 0
         ;;
       *) echo "ERROR: unknown argument '$1'" >&2; exit 1 ;;
@@ -1114,6 +1126,11 @@ cmd_doctor() {
       return $?
     fi
     cmd_doctor_project
+    return $?
+  fi
+
+  if [ "$installation_mode" != true ]; then
+    touchstone_doctor_review_log
     return $?
   fi
 
@@ -1588,8 +1605,9 @@ cmd_help() {
   printf "    ${BOLD}touchstone status${RESET} --all           Version distribution across registered projects\n"
   echo ""
   echo "  ${BOLD}Touchstone commands:${RESET}"
-  printf "    ${BOLD}touchstone doctor${RESET}                 Check installation health\n"
+  printf "    ${BOLD}touchstone doctor${RESET}                 Report conductor-review fail-open trends\n"
   printf "    ${BOLD}touchstone doctor${RESET} --project       Check per-project health (hooks, manifest, registry)\n"
+  printf "    ${BOLD}touchstone doctor${RESET} --installation  Check installation health\n"
   printf "    ${BOLD}touchstone version${RESET}                Show installed version\n"
   printf "    ${BOLD}touchstone changelog${RESET} [N]          Show last N releases (default 10)\n"
   printf "    ${BOLD}touchstone skills${RESET}                 List Claude Code skills\n"
