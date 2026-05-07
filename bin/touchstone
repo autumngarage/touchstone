@@ -1625,6 +1625,8 @@ cmd_help() {
   echo "  ${BOLD}Environment:${RESET}"
   printf "    ${BOLD}TOUCHSTONE_NO_AUTO_UPDATE=1${RESET}        Disable CLI auto-update and project auto-sync\n"
   printf "    ${BOLD}TOUCHSTONE_NO_AUTO_PROJECT_SYNC=1${RESET}  Disable project auto-sync only\n"
+  printf "    ${BOLD}TOUCHSTONE_FORCE_OVERLAP=1${RESET}         Force project sync through dirty overlap\n"
+  printf "    ${BOLD}TOUCHSTONE_NO_DRIFT_WARNING=1${RESET}      Suppress skipped-sync drift warning\n"
   echo ""
   printf "  Install: ${DIM}brew tap autumngarage/touchstone && brew install touchstone${RESET}\n"
   echo ""
@@ -1639,6 +1641,9 @@ shift 2>/dev/null || true
 
 # Auto-project-sync runs after command parsing so read-only commands can skip
 # it and before dispatch so write-capable commands see current Touchstone files.
+if project_root_for_drift="$(touchstone_find_project_root 2>/dev/null)"; then
+  touchstone_sync_warn_if_drift_skipped "$project_root_for_drift" "$(touchstone_installed_id)" || true
+fi
 touchstone_auto_project_sync "$COMMAND" "$@" || true
 
 case "$COMMAND" in

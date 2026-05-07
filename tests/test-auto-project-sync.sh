@@ -8,7 +8,7 @@ set -euo pipefail
 # real default-on behavior. Without this, `TOUCHSTONE_NO_AUTO_UPDATE=1` set
 # by an outer script (e.g., a pre-push hook caller) silently skips sync in
 # cases that expect it to fire, producing confusing per-context failures.
-unset TOUCHSTONE_NO_AUTO_UPDATE TOUCHSTONE_NO_AUTO_PROJECT_SYNC
+unset TOUCHSTONE_NO_AUTO_UPDATE TOUCHSTONE_NO_AUTO_PROJECT_SYNC TOUCHSTONE_FORCE_OVERLAP TOUCHSTONE_NO_DRIFT_WARNING
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TOUCHSTONE_BIN="$TOUCHSTONE_ROOT/bin/touchstone"
@@ -96,7 +96,7 @@ if ! git -C "$CLEAN_PROJECT" branch --show-current | grep -q '^chore/touchstone-
 fi
 
 echo ""
-echo "--- drift + dirty tree: warning, no sync, subcommand proceeds ---"
+echo "--- drift + unrelated dirty tree: sync proceeds, subcommand proceeds ---"
 DIRTY_HOME="$TEST_DIR/home-dirty"
 DIRTY_PROJECT="$TEST_DIR/project-dirty"
 DIRTY_OLD="0000000000000000000000000000000000000002"
@@ -104,9 +104,28 @@ make_project "$DIRTY_PROJECT" "$DIRTY_OLD"
 printf 'dirty\n' >>"$DIRTY_PROJECT/README.md"
 DIRTY_OUT="$TEST_DIR/dirty.out"
 (cd "$DIRTY_PROJECT" && run_touchstone "$DIRTY_HOME" run validate) >"$DIRTY_OUT" 2>&1
-assert_contains "$DIRTY_OUT" "WARNING: touchstone auto-sync skipped for $DIRTY_PROJECT (working tree is dirty)."
+assert_contains "$DIRTY_OUT" "Proceeding with sync past unrelated dirty paths: README.md"
+assert_contains "$DIRTY_OUT" "auto-synced touchstone $DIRTY_OLD -> $CURRENT_ID"
 assert_contains "$DIRTY_OUT" "generic project has no default 'lint' command"
-assert_version_equals "$DIRTY_PROJECT" "$DIRTY_OLD"
+assert_version_equals "$DIRTY_PROJECT" "$CURRENT_ID"
+
+echo ""
+echo "--- drift + overlapping dirty tree: warning, no sync, subcommand proceeds ---"
+OVERLAP_HOME="$TEST_DIR/home-overlap"
+OVERLAP_PROJECT="$TEST_DIR/project-overlap"
+OVERLAP_OLD="0000000000000000000000000000000000000007"
+make_project "$OVERLAP_PROJECT" "$OVERLAP_OLD"
+mkdir -p "$OVERLAP_PROJECT/scripts"
+printf 'dirty\n' >"$OVERLAP_PROJECT/scripts/touchstone-run.sh"
+OVERLAP_OUT="$TEST_DIR/overlap.out"
+(cd "$OVERLAP_PROJECT" && run_touchstone "$OVERLAP_HOME" run validate) >"$OVERLAP_OUT" 2>&1
+assert_contains "$OVERLAP_OUT" "WARNING: touchstone auto-sync skipped for $OVERLAP_PROJECT (dirty paths overlap planned touchstone writes)."
+assert_contains "$OVERLAP_OUT" "scripts/touchstone-run.sh"
+assert_contains "$OVERLAP_OUT" "generic project has no default 'lint' command"
+assert_version_equals "$OVERLAP_PROJECT" "$OVERLAP_OLD"
+OVERLAP_SKIP_LOG="$OVERLAP_PROJECT/.git/touchstone/sync-skips.jsonl"
+assert_contains "$OVERLAP_SKIP_LOG" '"reason":"dirty-overlap"'
+assert_contains "$OVERLAP_SKIP_LOG" '"overlapping_paths":\["scripts/touchstone-run.sh"\]'
 
 echo ""
 echo "--- no drift: no-op, subcommand proceeds ---"
@@ -200,6 +219,42 @@ HELP_OUT="$TEST_DIR/help.out"
 assert_not_contains "$HELP_OUT" "auto-synced touchstone"
 assert_contains "$HELP_OUT" "TOUCHSTONE_NO_AUTO_PROJECT_SYNC"
 assert_version_equals "$VERSION_PROJECT" "$VERSION_OLD"
+
+echo ""
+echo "--- drift warning surfaces after repeated skips ---"
+DRIFT_HOME="$TEST_DIR/home-drift-warning"
+DRIFT_PROJECT="$TEST_DIR/project-drift-warning"
+DRIFT_OLD="0000000000000000000000000000000000000008"
+make_project "$DRIFT_PROJECT" "$DRIFT_OLD"
+mkdir -p "$DRIFT_PROJECT/.git/touchstone"
+for _ in 1 2 3 4; do
+  printf '{"timestamp":"%s","from_version":"%s","to_version":"%s","reason":"dirty-overlap","overlapping_paths":["scripts/touchstone-run.sh"],"command":"touchstone run"}\n' \
+    "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$DRIFT_OLD" "$CURRENT_ID" >>"$DRIFT_PROJECT/.git/touchstone/sync-skips.jsonl"
+done
+DRIFT_OUT="$TEST_DIR/drift-warning.out"
+(cd "$DRIFT_PROJECT" && run_touchstone "$DRIFT_HOME" version) >"$DRIFT_OUT" 2>&1
+assert_contains "$DRIFT_OUT" "\[touchstone drift\] project at $DRIFT_OLD, current is $CURRENT_ID"
+assert_contains "$DRIFT_OUT" "4 sync attempts skipped"
+assert_contains "$DRIFT_OUT" "dirty-overlap on scripts/touchstone-run.sh"
+
+echo ""
+echo "--- TOUCHSTONE_NO_DRIFT_WARNING=1 suppresses drift warning ---"
+NO_DRIFT_WARNING_HOME="$TEST_DIR/home-no-drift-warning"
+NO_DRIFT_WARNING_OUT="$TEST_DIR/no-drift-warning.out"
+(
+  cd "$DRIFT_PROJECT"
+  TOUCHSTONE_NO_DRIFT_WARNING=1 run_touchstone "$NO_DRIFT_WARNING_HOME" version
+) >"$NO_DRIFT_WARNING_OUT" 2>&1
+assert_not_contains "$NO_DRIFT_WARNING_OUT" "\[touchstone drift\]"
+
+echo ""
+echo "--- no drift and no skips: no drift warning ---"
+NO_WARNING_HOME="$TEST_DIR/home-no-warning"
+NO_WARNING_PROJECT="$TEST_DIR/project-no-warning"
+make_project "$NO_WARNING_PROJECT" "$CURRENT_ID"
+NO_WARNING_OUT="$TEST_DIR/no-warning.out"
+(cd "$NO_WARNING_PROJECT" && run_touchstone "$NO_WARNING_HOME" version) >"$NO_WARNING_OUT" 2>&1
+assert_not_contains "$NO_WARNING_OUT" "\[touchstone drift\]"
 
 if [ -e "$TEST_DIR/home-clean/.touchstone-projects" ] \
   || [ -e "$TEST_DIR/home-dirty/.touchstone-projects" ] \

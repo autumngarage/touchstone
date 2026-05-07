@@ -14,6 +14,14 @@
 #   TOUCHSTONE_UPDATE_INTERVAL   — seconds between checks (default: 3600 = 1 hour)
 #
 
+TOUCHSTONE_SYNC_DISCIPLINE_PATH="$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
+if [ ! -f "$TOUCHSTONE_SYNC_DISCIPLINE_PATH" ]; then
+  TOUCHSTONE_AUTO_UPDATE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  TOUCHSTONE_SYNC_DISCIPLINE_PATH="$TOUCHSTONE_AUTO_UPDATE_LIB_DIR/sync-discipline.sh"
+fi
+# shellcheck source=sync-discipline.sh
+source "$TOUCHSTONE_SYNC_DISCIPLINE_PATH"
+
 TOUCHSTONE_UPDATE_INTERVAL="${TOUCHSTONE_UPDATE_INTERVAL:-3600}"
 TOUCHSTONE_STATE_DIR="${TOUCHSTONE_STATE_DIR:-$HOME/.touchstone}"
 LAST_CHECK_FILE="$TOUCHSTONE_STATE_DIR/last-update-check"
@@ -113,13 +121,13 @@ touchstone_auto_project_sync_command_skips() {
   local command="${1:-}" subcommand="${2:-}"
 
   case "$command" in
-    ""|help|-h|--help|version|--version|status|list|ls|diff|changelog|doctor|detect|skills|update|sync|new|init|migrate-from-toolkit|migrate-review-config|release)
+    "" | help | -h | --help | version | --version | status | list | ls | diff | changelog | doctor | detect | skills | update | sync | new | init | migrate-from-toolkit | migrate-review-config | release)
       return 0
       ;;
   esac
 
   case "$command:$subcommand" in
-    adr:list|worker:status|worker:list|review:--dry-run|review:-n)
+    adr:list | worker:status | worker:list | review:--dry-run | review:-n)
       return 0
       ;;
   esac
@@ -167,9 +175,23 @@ touchstone_auto_project_sync() {
     return 0
   fi
 
-  if [ -n "$(git -C "$project_dir" status --porcelain)" ]; then
-    echo "WARNING: touchstone auto-sync skipped for $project_dir (working tree is dirty)." >&2
+  local dirty_paths overlap_paths
+  dirty_paths="$(touchstone_sync_dirty_paths "$project_dir")"
+  overlap_paths="$(touchstone_sync_dirty_overlap_paths "$project_dir" "$TOUCHSTONE_ROOT")"
+
+  if [ -n "$overlap_paths" ] && [ "${TOUCHSTONE_FORCE_OVERLAP:-}" != "1" ]; then
+    echo "WARNING: touchstone auto-sync skipped for $project_dir (dirty paths overlap planned touchstone writes)." >&2
+    printf '%s\n' "$overlap_paths" | sed 's/^/         - /' >&2
+    touchstone_sync_log_skip "$project_dir" "$project_id" "$installed_id" "dirty-overlap" "$overlap_paths" "touchstone $command"
     return 0
+  fi
+
+  if [ -n "$overlap_paths" ]; then
+    echo "WARNING: TOUCHSTONE_FORCE_OVERLAP=1 set; auto-sync proceeding despite dirty paths that overlap planned touchstone writes:" >&2
+    printf '%s\n' "$overlap_paths" | sed 's/^/         - /' >&2
+  elif [ -n "$dirty_paths" ]; then
+    printf '==> Proceeding with sync past unrelated dirty paths: ' >&2
+    printf '%s\n' "$dirty_paths" | touchstone_sync_format_path_list >&2
   fi
 
   local log_file
@@ -185,5 +207,6 @@ touchstone_auto_project_sync() {
   fi
 
   echo "WARNING: touchstone auto-sync failed for $project_dir; continuing. Log: $log_file" >&2
+  touchstone_sync_log_skip "$project_dir" "$project_id" "$installed_id" "auto-sync-failed" "" "touchstone $command"
   return 0
 }
