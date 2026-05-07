@@ -31,6 +31,14 @@ The three layers are complementary — the local hook catches the honest mistake
 5. **Ship.** `scripts/open-pr.sh --auto-merge` pushes, creates the PR, runs the final read-only Conductor merge review, squash-merges after a clean review, deletes the remote branch, and pulls the updated default branch — all in one command. Use `scripts/open-pr.sh` (without `--auto-merge`) if you want to open the PR without merging.
 6. **Clean up.** Delete the local feature branch. Run `scripts/cleanup-branches.sh` periodically for batch hygiene.
 
+### Touchstone CLI auto-sync
+
+When a brew-installed `touchstone` CLI runs a write-capable command inside a Touchstone-aware project, it compares the project's recorded `.touchstone-version` with the installed Touchstone version. If they differ and the project worktree is clean, the CLI runs the same `touchstone update` path before the requested command so `principles/`, `hooks/`, and `scripts/` stay current.
+
+If the project worktree is dirty, auto-sync prints a one-line warning and skips; the user's pending work is never stashed, overwritten, or committed. `touchstone version`, help, status, diff, doctor, list, changelog, and other read-only commands do not trigger auto-sync.
+
+Set `TOUCHSTONE_NO_AUTO_UPDATE=1` to disable both CLI self-update and project auto-sync. Set `TOUCHSTONE_NO_AUTO_PROJECT_SYNC=1` to keep CLI self-update enabled but disable only the per-project sync.
+
 ## Commit discipline
 
 **One concern per commit.** A commit should describe a single logical change — a feature, a fix, a refactor, a doc update — not a multi-day grab bag. The diff might span many files, but it should be one coherent thought. This is the "atomic commit" principle: every commit is a self-contained unit of intent.
