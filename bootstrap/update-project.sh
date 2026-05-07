@@ -284,6 +284,7 @@ require_clean_git_repo() {
     printf '%s\n' "$overlap_paths" | sed 's/^/         - /' >&2
     echo "       Commit, stash, or revert local changes, then run touchstone update." >&2
     echo "       Preview safely with: touchstone update --dry-run" >&2
+    touchstone_sync_log_skip "$PROJECT_DIR" "$OLD_SHA" "$CURRENT_SHA" "dirty-overlap" "$overlap_paths" "touchstone update"
     exit 1
   fi
 

@@ -93,6 +93,8 @@ fi
 assert_contains "$TEST_DIR/overlap.out" "Working tree is dirty"
 assert_contains "$TEST_DIR/overlap.out" "Dirty paths overlap planned touchstone writes"
 assert_contains "$TEST_DIR/overlap.out" "scripts/touchstone-run.sh"
+assert_contains "$OVERLAP_PROJECT/.git/touchstone/sync-skips.jsonl" '"reason":"dirty-overlap"'
+assert_contains "$OVERLAP_PROJECT/.git/touchstone/sync-skips.jsonl" '"command":"touchstone update"'
 
 echo ""
 echo "--- dirty path outside owned set: sync proceeds with notice ---"

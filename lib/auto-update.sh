@@ -14,8 +14,13 @@
 #   TOUCHSTONE_UPDATE_INTERVAL   — seconds between checks (default: 3600 = 1 hour)
 #
 
+TOUCHSTONE_SYNC_DISCIPLINE_PATH="$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
+if [ ! -f "$TOUCHSTONE_SYNC_DISCIPLINE_PATH" ]; then
+  TOUCHSTONE_AUTO_UPDATE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  TOUCHSTONE_SYNC_DISCIPLINE_PATH="$TOUCHSTONE_AUTO_UPDATE_LIB_DIR/sync-discipline.sh"
+fi
 # shellcheck source=sync-discipline.sh
-source "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
+source "$TOUCHSTONE_SYNC_DISCIPLINE_PATH"
 
 TOUCHSTONE_UPDATE_INTERVAL="${TOUCHSTONE_UPDATE_INTERVAL:-3600}"
 TOUCHSTONE_STATE_DIR="${TOUCHSTONE_STATE_DIR:-$HOME/.touchstone}"
@@ -177,6 +182,7 @@ touchstone_auto_project_sync() {
   if [ -n "$overlap_paths" ] && [ "${TOUCHSTONE_FORCE_OVERLAP:-}" != "1" ]; then
     echo "WARNING: touchstone auto-sync skipped for $project_dir (dirty paths overlap planned touchstone writes)." >&2
     printf '%s\n' "$overlap_paths" | sed 's/^/         - /' >&2
+    touchstone_sync_log_skip "$project_dir" "$project_id" "$installed_id" "dirty-overlap" "$overlap_paths" "touchstone $command"
     return 0
   fi
 
@@ -201,5 +207,6 @@ touchstone_auto_project_sync() {
   fi
 
   echo "WARNING: touchstone auto-sync failed for $project_dir; continuing. Log: $log_file" >&2
+  touchstone_sync_log_skip "$project_dir" "$project_id" "$installed_id" "auto-sync-failed" "" "touchstone $command"
   return 0
 }

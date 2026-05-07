@@ -33,11 +33,13 @@ The three layers are complementary — the local hook catches the honest mistake
 
 ### Touchstone CLI auto-sync
 
-When a brew-installed `touchstone` CLI runs a write-capable command inside a Touchstone-aware project, it compares the project's recorded `.touchstone-version` with the installed Touchstone version. If they differ and the project worktree is clean, the CLI runs the same `touchstone update` path before the requested command so `principles/`, `hooks/`, and `scripts/` stay current.
+When a brew-installed `touchstone` CLI runs a write-capable command inside a Touchstone-aware project, it compares the project's recorded `.touchstone-version` with the installed Touchstone version. If they differ and no dirty path overlaps planned Touchstone writes, the CLI runs the same `touchstone update` path before the requested command so `principles/`, `hooks/`, and `scripts/` stay current.
 
-If the project worktree is dirty, auto-sync prints a one-line warning and skips; the user's pending work is never stashed, overwritten, or committed. `touchstone version`, help, status, diff, doctor, list, changelog, and other read-only commands do not trigger auto-sync.
+If the project worktree is dirty, auto-sync compares dirty paths with the planned Touchstone write set and skips only when they overlap; unrelated dirty paths are reported in one line and sync proceeds. The user's pending work is never stashed, overwritten outside that planned write set, or committed separately. `touchstone version`, help, status, diff, doctor, list, changelog, and other read-only commands do not trigger auto-sync.
 
-Set `TOUCHSTONE_NO_AUTO_UPDATE=1` to disable both CLI self-update and project auto-sync. Set `TOUCHSTONE_NO_AUTO_PROJECT_SYNC=1` to keep CLI self-update enabled but disable only the per-project sync.
+When a sync attempt skips, Touchstone appends a project-local audit entry to `.git/touchstone/sync-skips.jsonl`. Later `touchstone <subcmd>` invocations warn when the project is still behind the installed Touchstone and the skip trail is persistent enough to indicate drift; the warning is informational and never blocks the subcommand.
+
+Set `TOUCHSTONE_NO_AUTO_UPDATE=1` to disable both CLI self-update and project auto-sync. Set `TOUCHSTONE_NO_AUTO_PROJECT_SYNC=1` to keep CLI self-update enabled but disable only the per-project sync. Set `TOUCHSTONE_FORCE_OVERLAP=1` to force project sync through dirty paths that overlap planned Touchstone writes. Set `TOUCHSTONE_NO_DRIFT_WARNING=1` to suppress skipped-sync drift warnings in scripted output.
 
 ## Commit discipline
 
