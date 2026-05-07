@@ -120,6 +120,42 @@ A stacked PR is a PR whose base branch is another open PR's branch instead of th
 - **If you must stack:** drop `--auto-merge` on the whole chain. Merge each PR by hand in order, using **merge commit** or **rebase merge** (never squash) for the parent so the child's branch still traces to something on main. `open-pr.sh` will warn if you pass `--base <branch>` + `--auto-merge` together — take the warning seriously.
 - **Recover an orphaned child**: re-open the work as a fresh PR against current `main` (the lineage is lost but the diff usually still applies). If the parent's squashed content is already on main, the child's diff is just the child-only changes — which is usually what you wanted anyway.
 
+## Claiming issues before agent dispatch
+
+Before spawning a coding agent — Claude Code subagent, Conductor `exec` worker, Codex CLI, or any other — to work on a GitHub issue, **claim it first**. Set the assignee, post a one-line dispatch comment, then spawn the agent. The cost is ten seconds per issue; the cost of skipping it is two agents picking up the same issue and shipping competing PRs.
+
+**The mechanical steps.**
+
+```bash
+gh issue edit <n> --add-assignee @me
+gh issue comment <n> --body "Wave N Lane X dispatched. Branch \`<branch>\`, worktree at \`<path>\`. <agent type> implementing. PR will land via \`open-pr.sh --auto-merge\`."
+```
+
+Then start the agent. Not after.
+
+**Why this is a rule.**
+
+Without it, three failure modes recur in agent-driven workflows:
+
+1. **Duplicate work.** Two agents (or two collaborators, or a future you in another session) pick up the same issue from the open queue and ship competing PRs. The first to merge wins; the second rebases into conflict or closes orphaned. Both burned budget.
+2. **No in-progress signal.** A reader scanning open issues can't tell which are actively being worked vs which are dormant. Triage decays — a two-week-old "open" issue might be thirty seconds from a PR or completely abandoned, with no way to tell from outside the thread.
+3. **Lost lineage on bypass.** If the PR that closes the issue ends up using `merge-pr.sh --bypass-with-disclosure` or hits review-tooling drama, the dispatch comment is the only record on the issue thread that ties the work back to a specific lane, agent, branch, and worktree. That breadcrumb matters when something goes wrong months later.
+
+The discipline is small. The recovery from skipping it is large.
+
+**When to unassign.**
+
+If you decide not to ship — the work turns out to be wrong, the approach pivots, the agent stalls and you stand it down — unassign with `gh issue edit <n> --remove-assignee @me` and post a "stood down — <reason>" comment. Leaving stale assignments is worse than no assignment at all; readers will assume the issue is being worked when it isn't.
+
+**When this rule does NOT apply.**
+
+- **Issues you're proposing or analyzing, not implementing.** You're researching whether something is even worth doing — no claim. Claim only when an agent (or you) is actively starting implementation.
+- **Drive-by fixes during unrelated work.** A one-line typo fix on the way to something else doesn't need a claim — but if it warrants its own commit, it warrants a `Closes-issue:` trailer at minimum.
+
+**For multi-issue bundles.**
+
+When one lane closes multiple issues (e.g., Wave 1's Lane A bundling shfmt + markdownlint + actionlint into one branch), claim and comment on all of them with the same lane / branch reference. The dispatch comment becomes the per-issue audit thread; the bundling is visible from any of them.
+
 ## Parallel work with worktrees
 
 File-writing subagents must use isolated worktrees unless explicitly waived. The default is isolation; flat shared-checkout fan-out is the exception.
