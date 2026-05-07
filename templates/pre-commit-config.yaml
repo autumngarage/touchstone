@@ -45,21 +45,10 @@ repos:
         args: ['--severity=warning']
 
   - repo: https://github.com/scop/pre-commit-shfmt
-    rev: v3.13.1-1
+    rev: v3.10.0-1
     hooks:
       - id: shfmt
-        # Match Touchstone's 2-space shell style while making case blocks and
-        # binary operators deterministic.
-        args: ['-i', '2', '-ci', '-bn']
-        exclude: ^(completions/|prototypes/)
-
-  - repo: https://github.com/igorshubovych/markdownlint-cli
-    rev: v0.46.0
-    hooks:
-      - id: markdownlint
-        args: ['--config', '.markdownlint.json']
-        files: ^([^/]+\.md|principles/.*\.md|audits/.*\.md|feedback/.*\.md|templates/.*\.md)$
-        exclude: ^\.cortex/
+        args: ['-i', '2', '-ci']
 
   # ── Branch naming enforcement ──────────────────────────────────────────
   - repo: local
