@@ -24,16 +24,29 @@ PR_NUMBER=""
 BYPASS_REASON=""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REVIEW_SCRIPT="$SCRIPT_DIR/codex-review.sh"
+PREFLIGHT_SCRIPT="$SCRIPT_DIR/../lib/preflight.sh"
+REVIEW_COMMENT_SCRIPT="$SCRIPT_DIR/../lib/review-comment.sh"
 if [ -f "$SCRIPT_DIR/../lib/events.sh" ]; then
   # shellcheck source=../lib/events.sh
   source "$SCRIPT_DIR/../lib/events.sh"
 else
   touchstone_emit_event() { :; }
 fi
+if [ -f "$PREFLIGHT_SCRIPT" ]; then
+  # shellcheck source=../lib/preflight.sh
+  source "$PREFLIGHT_SCRIPT"
+fi
+if [ -f "$REVIEW_COMMENT_SCRIPT" ]; then
+  # shellcheck source=../lib/review-comment.sh
+  source "$REVIEW_COMMENT_SCRIPT"
+fi
 REVIEWED_HEAD_OID=""
 PR_HEAD_BRANCH=""
 BYPASS_REVIEW=false
 TOUCHSTONE_MERGE_FAILURE_REASON="nonzero-exit"
+PREFLIGHT_REQUIRED=true
+COMMENT_ON_CLEAN=true
+REVIEW_SUMMARY_FILE=""
 
 on_merge_exit() {
   local rc="$?"
@@ -102,6 +115,38 @@ truthy() {
     true | 1 | yes | on) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+normalize_bool() {
+  case "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" in
+    true | 1 | yes | on) printf 'true' ;;
+    false | 0 | no | off) printf 'false' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+load_merge_review_config() {
+  local config_file
+  config_file="$(git rev-parse --show-toplevel 2>/dev/null)/.codex-review.toml"
+  [ -f "$config_file" ] || return 0
+  [ -f "$SCRIPT_DIR/../lib/toml.sh" ] || return 0
+
+  # shellcheck source=../lib/toml.sh
+  source "$SCRIPT_DIR/../lib/toml.sh"
+
+  merge_pr_toml_callback() {
+    local section="$1"
+    local key="$2"
+    local value="$3"
+
+    if [ "$section" = "review" ] && [ "$key" = "preflight_required" ]; then
+      PREFLIGHT_REQUIRED="$(normalize_bool "$value")"
+    elif [ "$section" = "review" ] && [ "$key" = "comment_on_clean" ]; then
+      COMMENT_ON_CLEAN="$(normalize_bool "$value")"
+    fi
+  }
+
+  toml_parse "$config_file" merge_pr_toml_callback
 }
 
 review_clean_marker_key() {
@@ -383,6 +428,71 @@ record_bypass_comment() {
   gh pr comment "$PR_NUMBER" --body "Reviewer bypassed via \`--bypass-with-disclosure\`. Reason: $BYPASS_REASON"
 }
 
+post_clean_review_comment() {
+  local summary_file="$1"
+  local summary_json comment
+
+  if ! truthy "$COMMENT_ON_CLEAN"; then
+    echo "==> Clean-review PR comment disabled by [review].comment_on_clean=false."
+    return 0
+  fi
+  if [ "$BYPASS_REVIEW" = true ]; then
+    return 0
+  fi
+  if ! declare -F format_clean_review_comment >/dev/null 2>&1 \
+    || ! declare -F post_pr_review_comment >/dev/null 2>&1; then
+    echo "WARNING: review comment helper not found at $REVIEW_COMMENT_SCRIPT; skipping clean-review comment." >&2
+    return 0
+  fi
+  if [ -z "$summary_file" ] || [ ! -f "$summary_file" ]; then
+    echo "WARNING: clean review summary file missing; skipping clean-review comment." >&2
+    return 0
+  fi
+
+  summary_json="$(tail -n 1 "$summary_file" 2>/dev/null || true)"
+  if [ -z "$summary_json" ]; then
+    echo "WARNING: clean review summary file is empty; skipping clean-review comment." >&2
+    return 0
+  fi
+
+  comment="$(format_clean_review_comment "$summary_json")"
+  if post_pr_review_comment "$PR_NUMBER" "$comment"; then
+    echo "==> Posted clean-review PR comment."
+    return 0
+  fi
+
+  echo "WARNING: failed to post clean-review PR comment for PR #$PR_NUMBER." >&2
+  return 0
+}
+
+run_preflight_gate() {
+  if ! truthy "$PREFLIGHT_REQUIRED"; then
+    echo "==> Preflight disabled by [review].preflight_required=false."
+    return 0
+  fi
+  if truthy "${TOUCHSTONE_NO_PREFLIGHT:-false}"; then
+    echo "==> Skipping preflight because TOUCHSTONE_NO_PREFLIGHT=1."
+    return 0
+  fi
+  if ! declare -F touchstone_preflight_main >/dev/null 2>&1; then
+    echo "==> Preflight helper not found at $PREFLIGHT_SCRIPT — skipping preflight."
+    return 0
+  fi
+
+  echo "==> Running deterministic preflight before merge review ..."
+  touchstone_emit_event preflight_started pr_number="$PR_NUMBER" mode=merge
+  if touchstone_preflight_main "$(git rev-parse --show-toplevel)"; then
+    touchstone_emit_event preflight_clean pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+    return 0
+  fi
+
+  echo "ERROR: Deterministic preflight failed; refusing to spend provider tokens on review." >&2
+  echo "       Fix the preflight failure or set TOUCHSTONE_NO_PREFLIGHT=1 for an emergency bypass." >&2
+  touchstone_emit_event preflight_blocked pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+  TOUCHSTONE_MERGE_FAILURE_REASON="preflight-blocked"
+  return 1
+}
+
 run_merge_review() {
   local current_branch default_base_ref local_head pr_head_branch pr_head_oid
 
@@ -514,13 +624,21 @@ run_merge_review() {
     exit 1
   fi
 
+  run_preflight_gate || return $?
+
   echo "==> Running merge review ..."
   local review_rc=0
+  REVIEW_SUMMARY_FILE="$(git rev-parse --git-path "touchstone/review-summary-pr-${PR_NUMBER}.json" 2>/dev/null || echo "")"
+  if [ -n "$REVIEW_SUMMARY_FILE" ]; then
+    mkdir -p "$(dirname "$REVIEW_SUMMARY_FILE")" 2>/dev/null || true
+    rm -f "$REVIEW_SUMMARY_FILE" 2>/dev/null || true
+  fi
   touchstone_emit_event review_started pr_number="$PR_NUMBER" mode=review-only
   CODEX_REVIEW_BASE="$default_base_ref" \
     CODEX_REVIEW_BRANCH_NAME="$pr_head_branch" \
     CODEX_REVIEW_FORCE=1 \
     CODEX_REVIEW_MODE=review-only \
+    CODEX_REVIEW_SUMMARY_FILE="$REVIEW_SUMMARY_FILE" \
     bash "$REVIEW_SCRIPT" || review_rc=$?
 
   if [ "$review_rc" -eq 0 ]; then
@@ -555,6 +673,8 @@ run_merge_review() {
   TOUCHSTONE_MERGE_FAILURE_REASON="review-blocked"
   return "$review_rc"
 }
+
+load_merge_review_config
 
 # 1. Sanity check the PR exists and is open.
 if ! PR_STATE="$(gh pr view "$PR_NUMBER" --json state --jq '.state')"; then
@@ -650,6 +770,7 @@ fi
 
 MERGED_AT="$(gh pr view "$PR_NUMBER" --json mergedAt --jq '.mergedAt // empty' 2>/dev/null || echo "")"
 touchstone_emit_event merged pr_number="$PR_NUMBER" merged_at="$MERGED_AT" head_sha="$REVIEWED_HEAD_OID"
+post_clean_review_comment "$REVIEW_SUMMARY_FILE"
 
 # Record squash-merge metadata for cleanup-branches.sh. The merge has
 # succeeded on GitHub; this is best-effort persistence for later cleanup.

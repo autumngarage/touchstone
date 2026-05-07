@@ -31,3 +31,7 @@ unsafe_paths = [
 # Local ollama providers frequently time out during merge-gate code review on
 # substantial diffs unless the machine has a review-capable model loaded.
 exclude = ["ollama"]
+
+[review]
+preflight_required = true
+comment_on_clean = true

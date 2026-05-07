@@ -160,6 +160,8 @@ assert_exists "$PROJECT/principles/README.md"
 # Scripts
 assert_exists "$PROJECT/scripts/codex-review.sh"
 assert_exists "$PROJECT/lib/toml.sh"
+assert_exists "$PROJECT/lib/preflight.sh"
+assert_exists "$PROJECT/lib/review-comment.sh"
 assert_exists "$PROJECT/scripts/touchstone-run.sh"
 assert_exists "$PROJECT/scripts/open-pr.sh"
 assert_exists "$PROJECT/scripts/merge-pr.sh"
@@ -193,6 +195,8 @@ assert_contains "$PROJECT/.touchstone-manifest" '^scripts/open-pr.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/toml\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/preflight\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/review-comment\.sh$'
 if grep -q '^\.touchstone-config$' "$PROJECT/.gitignore"; then
   echo "FAIL: expected .touchstone-config to be commit-friendly, not ignored" >&2
   ERRORS=$((ERRORS + 1))
