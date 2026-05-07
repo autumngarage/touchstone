@@ -65,6 +65,7 @@ unsafe_paths = [
 
 # [review]
 # enabled = true
+# preflight_required = true  # Run deterministic lint/test preflight before merge review; skips missing local tools visibly.
 # # reviewer = "conductor"   # single-valued in 2.0+; absent reviewers[]
 
 # --------------------------------------------------------------------------

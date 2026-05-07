@@ -9,6 +9,7 @@ _touchstone() {
     'sync:Update all registered projects'
     'status:Show project status (use --all for the registry view)'
     'doctor:Report conductor-review fail-open trends'
+    'preflight:Run deterministic review preflight checks'
     'version:Show installed version'
     'list:Show registered projects'
     'unregister:Remove a project from the registry'

@@ -24,16 +24,22 @@ PR_NUMBER=""
 BYPASS_REASON=""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REVIEW_SCRIPT="$SCRIPT_DIR/codex-review.sh"
+PREFLIGHT_SCRIPT="$SCRIPT_DIR/../lib/preflight.sh"
 if [ -f "$SCRIPT_DIR/../lib/events.sh" ]; then
   # shellcheck source=../lib/events.sh
   source "$SCRIPT_DIR/../lib/events.sh"
 else
   touchstone_emit_event() { :; }
 fi
+if [ -f "$PREFLIGHT_SCRIPT" ]; then
+  # shellcheck source=../lib/preflight.sh
+  source "$PREFLIGHT_SCRIPT"
+fi
 REVIEWED_HEAD_OID=""
 PR_HEAD_BRANCH=""
 BYPASS_REVIEW=false
 TOUCHSTONE_MERGE_FAILURE_REASON="nonzero-exit"
+PREFLIGHT_REQUIRED=true
 
 on_merge_exit() {
   local rc="$?"
@@ -102,6 +108,36 @@ truthy() {
     true | 1 | yes | on) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+normalize_bool() {
+  case "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" in
+    true | 1 | yes | on) printf 'true' ;;
+    false | 0 | no | off) printf 'false' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+load_merge_review_config() {
+  local config_file
+  config_file="$(git rev-parse --show-toplevel 2>/dev/null)/.codex-review.toml"
+  [ -f "$config_file" ] || return 0
+  [ -f "$SCRIPT_DIR/../lib/toml.sh" ] || return 0
+
+  # shellcheck source=../lib/toml.sh
+  source "$SCRIPT_DIR/../lib/toml.sh"
+
+  merge_pr_toml_callback() {
+    local section="$1"
+    local key="$2"
+    local value="$3"
+
+    if [ "$section" = "review" ] && [ "$key" = "preflight_required" ]; then
+      PREFLIGHT_REQUIRED="$(normalize_bool "$value")"
+    fi
+  }
+
+  toml_parse "$config_file" merge_pr_toml_callback
 }
 
 review_clean_marker_key() {
@@ -383,6 +419,34 @@ record_bypass_comment() {
   gh pr comment "$PR_NUMBER" --body "Reviewer bypassed via \`--bypass-with-disclosure\`. Reason: $BYPASS_REASON"
 }
 
+run_preflight_gate() {
+  if ! truthy "$PREFLIGHT_REQUIRED"; then
+    echo "==> Preflight disabled by [review].preflight_required=false."
+    return 0
+  fi
+  if truthy "${TOUCHSTONE_NO_PREFLIGHT:-false}"; then
+    echo "==> Skipping preflight because TOUCHSTONE_NO_PREFLIGHT=1."
+    return 0
+  fi
+  if ! declare -F touchstone_preflight_main >/dev/null 2>&1; then
+    echo "==> Preflight helper not found at $PREFLIGHT_SCRIPT — skipping preflight."
+    return 0
+  fi
+
+  echo "==> Running deterministic preflight before merge review ..."
+  touchstone_emit_event preflight_started pr_number="$PR_NUMBER" mode=merge
+  if touchstone_preflight_main "$(git rev-parse --show-toplevel)"; then
+    touchstone_emit_event preflight_clean pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+    return 0
+  fi
+
+  echo "ERROR: Deterministic preflight failed; refusing to spend provider tokens on review." >&2
+  echo "       Fix the preflight failure or set TOUCHSTONE_NO_PREFLIGHT=1 for an emergency bypass." >&2
+  touchstone_emit_event preflight_blocked pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+  TOUCHSTONE_MERGE_FAILURE_REASON="preflight-blocked"
+  return 1
+}
+
 run_merge_review() {
   local current_branch default_base_ref local_head pr_head_branch pr_head_oid
 
@@ -514,6 +578,8 @@ run_merge_review() {
     exit 1
   fi
 
+  run_preflight_gate || return $?
+
   echo "==> Running merge review ..."
   local review_rc=0
   touchstone_emit_event review_started pr_number="$PR_NUMBER" mode=review-only
@@ -555,6 +621,8 @@ run_merge_review() {
   TOUCHSTONE_MERGE_FAILURE_REASON="review-blocked"
   return "$review_rc"
 }
+
+load_merge_review_config
 
 # 1. Sanity check the PR exists and is open.
 if ! PR_STATE="$(gh pr view "$PR_NUMBER" --json state --jq '.state')"; then

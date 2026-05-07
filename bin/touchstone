@@ -7,6 +7,7 @@
 #   touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)]
 #                                      Add touchstone to the current project
 #   touchstone run <task>                  Run profile task: lint, test, build, typecheck, validate
+#   touchstone preflight                   Run deterministic review preflight checks
 #   touchstone run-script <name>           Prototype runner for pinned project-local script shims
 #   touchstone worker <command>            Manage worker worktree lifecycle
 #   touchstone update                     Update current project to latest touchstone
@@ -288,6 +289,10 @@ cmd_sync() {
 
 cmd_run() {
   exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$@"
+}
+
+cmd_preflight() {
+  exec bash "$TOUCHSTONE_ROOT/lib/preflight.sh" "$@"
 }
 
 cmd_worker() {
@@ -1578,6 +1583,7 @@ cmd_help() {
   printf "    ${BOLD}touchstone new${RESET} <dir>              Bootstrap a new project from scratch\n"
   printf "    ${BOLD}touchstone detect${RESET}                 Show detected project profile\n"
   printf "    ${BOLD}touchstone run${RESET} <task>             Run lint, typecheck, build, test, or validate\n"
+  printf "    ${BOLD}touchstone preflight${RESET}              Run deterministic review preflight checks\n"
   printf "    ${BOLD}touchstone run-script${RESET} <name>      Prototype runner for pinned script shims\n"
   printf "    ${BOLD}touchstone worker${RESET} spawn --task ... --type fix|feat|chore|refactor|docs\n"
   printf "    ${BOLD}touchstone worker${RESET} status --worktree <path> [--json]\n"
@@ -1639,6 +1645,7 @@ case "$COMMAND" in
   new)          cmd_new "$@" ;;
   init)         cmd_init "$@" ;;
   run)          cmd_run "$@" ;;
+  preflight)    cmd_preflight "$@" ;;
   run-script)   cmd_run_script "$@" ;;
   worker)      cmd_worker "$@" ;;
   detect)       cmd_detect ;;

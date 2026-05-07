@@ -3,7 +3,7 @@ _touchstone() {
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  commands="init new update sync status doctor version list unregister diff adr release help"
+  commands="init new update sync status doctor version list unregister diff adr release preflight help"
 
   case "$prev" in
     touchstone)
