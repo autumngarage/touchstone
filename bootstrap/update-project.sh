@@ -416,6 +416,8 @@ update_file "$TOUCHSTONE_ROOT/scripts/worker.sh" "$PROJECT_DIR/scripts/worker.sh
 update_file "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
 update_file "$TOUCHSTONE_ROOT/lib/events.sh" "$PROJECT_DIR/lib/events.sh"
 update_file "$TOUCHSTONE_ROOT/lib/worker-state.sh" "$PROJECT_DIR/lib/worker-state.sh"
+update_file "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PROJECT_DIR/lib/preflight.sh"
+update_file "$TOUCHSTONE_ROOT/lib/review-comment.sh" "$PROJECT_DIR/lib/review-comment.sh"
 
 if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
   update_file "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
@@ -567,6 +569,8 @@ write_touchstone_manifest() {
     printf 'lib/toml.sh\n'
     printf 'lib/events.sh\n'
     printf 'lib/worker-state.sh\n'
+    printf 'lib/preflight.sh\n'
+    printf 'lib/review-comment.sh\n'
     if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
       printf 'scripts/run-pytest-in-venv.sh\n'
     fi

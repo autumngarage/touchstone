@@ -2339,6 +2339,23 @@ parse_primary_provider() {
   printf '%s' "$line" | sed -nE 's/.*(→|-> ?)([a-zA-Z0-9_.-]+).*/\2/p' | head -1
 }
 
+parse_primary_model() {
+  local stderr_file="${1:-$REVIEW_STDERR_FILE}"
+  [ -f "$stderr_file" ] || {
+    printf ''
+    return
+  }
+  local line
+  line="$(grep -m1 '^\[conductor\]' "$stderr_file" 2>/dev/null || true)"
+  [ -n "$line" ] || {
+    printf ''
+    return
+  }
+  printf '%s' "$line" \
+    | sed -nE 's/.*(model|model_id|model-id)[=:][[:space:]]*([a-zA-Z0-9_.:/@-]+).*/\2/p' \
+    | head -1
+}
+
 conductor_invocation_label() {
   local conductor_path subcommand
   conductor_path="$(command -v conductor 2>/dev/null || printf 'conductor')"
@@ -2464,11 +2481,16 @@ check_worktree_invariants() {
 # --------------------------------------------------------------------------
 
 print_summary() {
-  local elapsed mins secs findings
+  local elapsed mins secs findings provider model peer_provider
   elapsed=$(($(date +%s) - REVIEW_START_TIME))
   mins=$((elapsed / 60))
   secs=$((elapsed % 60))
   findings="${REVIEW_FINDINGS_COUNT:-0}"
+  provider="$(parse_primary_provider)"
+  [ -n "$provider" ] || provider="${CONDUCTOR_WITH:-unknown}"
+  model="$(parse_primary_model)"
+  [ -n "$model" ] || model="unknown"
+  peer_provider="none"
 
   printf "\n  ${C_DIM}─── review summary ────────────────────────${C_RESET}\n"
   printf "  ${C_DIM}reviewer:       %s${C_RESET}\n" "$REVIEWER_LABEL"
@@ -2488,8 +2510,8 @@ print_summary() {
   printf "  ${C_DIM}──────────────────────────────────────────${C_RESET}\n"
 
   if [ -n "${CODEX_REVIEW_SUMMARY_FILE:-}" ]; then
-    printf '{"reviewer":"%s","route":"%s","mode":"%s","files":%d,"diff_lines":%d,"iterations":%d,"fix_commits":%d,"peer_assists":%d,"findings":%d,"exit_reason":"%s","elapsed_seconds":%d}\n' \
-      "$REVIEWER_LABEL" "$ROUTING_DECISION" "$REVIEW_MODE" "$REVIEW_FILES_INSPECTED" "$DIFF_LINE_COUNT" \
+    printf '{"reviewer":"%s","provider":"%s","model":"%s","peer_provider":"%s","route":"%s","mode":"%s","files":%d,"diff_lines":%d,"iterations":%d,"fix_commits":%d,"peer_assists":%d,"findings":%d,"exit_reason":"%s","elapsed_seconds":%d}\n' \
+      "$REVIEWER_LABEL" "$provider" "$model" "$peer_provider" "$ROUTING_DECISION" "$REVIEW_MODE" "$REVIEW_FILES_INSPECTED" "$DIFF_LINE_COUNT" \
       "${iter:-0}" "$FIX_COMMITS" "$ASSIST_ROUNDS" "$findings" "$REVIEW_EXIT_REASON" "$elapsed" \
       >"$CODEX_REVIEW_SUMMARY_FILE" 2>/dev/null || true
   fi
