@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 #
 # lib/events.sh — optional NDJSON lifecycle events for UI clients.
+#
+# Event schema:
+#   worktree_created: branch, worktree_path, base_branch, repo_root
+#   pr_opened: pr_url, pr_number, branch, base_branch, head_sha
+#   review_started: pr_number, mode
+#   review_clean: pr_number, head_sha
+#   review_blocked: pr_number, head_sha
+#   review_bypass: pr_number, reason
+#   merged: pr_number, merged_at, head_sha
+#   cleanup_started: worktree_path
+#   cleanup_done: worktree_path, result
+#   failed: phase, reason, pr_number
+#   worker_spawned: branch, worktree_path, task
+#   worker_state_changed: worktree_path, from, to
+#   worker_abandoned: worktree_path, branch
 
 touchstone_json_string() {
   local value="${1-}"

@@ -8,6 +8,7 @@
 #                                      Add touchstone to the current project
 #   touchstone run <task>                  Run profile task: lint, test, build, typecheck, validate
 #   touchstone run-script <name>           Prototype runner for pinned project-local script shims
+#   touchstone worker <command>            Manage worker worktree lifecycle
 #   touchstone update                     Update current project to latest touchstone
 #   touchstone update --in-place          Update on the current branch
 #   touchstone update --dry-run           Show what would change without applying
@@ -285,6 +286,10 @@ cmd_sync() {
 
 cmd_run() {
   exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$@"
+}
+
+cmd_worker() {
+  exec bash "$TOUCHSTONE_ROOT/scripts/worker.sh" "$@"
 }
 
 run_script_usage() {
@@ -1556,6 +1561,11 @@ cmd_help() {
   printf "    ${BOLD}touchstone detect${RESET}                 Show detected project profile\n"
   printf "    ${BOLD}touchstone run${RESET} <task>             Run lint, typecheck, build, test, or validate\n"
   printf "    ${BOLD}touchstone run-script${RESET} <name>      Prototype runner for pinned script shims\n"
+  printf "    ${BOLD}touchstone worker${RESET} spawn --task ... --type fix|feat|chore|refactor|docs\n"
+  printf "    ${BOLD}touchstone worker${RESET} status --worktree <path> [--json]\n"
+  printf "    ${BOLD}touchstone worker${RESET} ship --worktree <path> [--cleanup]\n"
+  printf "    ${BOLD}touchstone worker${RESET} abandon --worktree <path> [--dry-run|--force]\n"
+  printf "    ${BOLD}touchstone worker${RESET} list [--repo <path>] [--json]\n"
   printf "    ${BOLD}touchstone update${RESET}                 Create a branch + commit for touchstone updates\n"
   printf "    ${BOLD}touchstone update${RESET} --in-place      Commit touchstone updates on the current branch\n"
   printf "    ${BOLD}touchstone update${RESET} --dry-run       Preview what would change\n"
@@ -1603,6 +1613,7 @@ case "$COMMAND" in
   init)         cmd_init "$@" ;;
   run)          cmd_run "$@" ;;
   run-script)   cmd_run_script "$@" ;;
+  worker)      cmd_worker "$@" ;;
   detect)       cmd_detect ;;
   update)       cmd_update "$@" ;;
   migrate-from-toolkit) cmd_migrate_from_toolkit "$@" ;;
