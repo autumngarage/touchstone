@@ -153,6 +153,27 @@ assert_not_contains "$PLAIN_OUT" "auto-synced touchstone"
 assert_contains "$PLAIN_OUT" "generic project has no default 'lint' command"
 
 echo ""
+echo "--- touchstone source repo: self-sync is skipped ---"
+# Capture the real touchstone lib path BEFORE we override TOUCHSTONE_ROOT for
+# the subshell — `VAR=x bash -c '...' _ "$VAR/..."` would have the outer shell
+# expand the second $VAR before the assignment takes effect (SC2097/SC2098).
+REAL_TS_LIB="$TOUCHSTONE_ROOT/lib/auto-update.sh"
+SELF_SYNC_HOME="$TEST_DIR/home-self-sync"
+SELF_SYNC_PROJECT="$TEST_DIR/project-self-sync"
+make_project "$SELF_SYNC_PROJECT" "0000000000000000000000000000000000000006"
+printf '9.9.9\n' >"$SELF_SYNC_PROJECT/VERSION"
+SELF_SYNC_OUT="$TEST_DIR/self-sync.out"
+(
+  cd "$SELF_SYNC_PROJECT"
+  HOME="$SELF_SYNC_HOME" \
+    NO_COLOR=1 \
+    TOUCHSTONE_ROOT="$SELF_SYNC_PROJECT" \
+    bash -c 'source "$1"; touchstone_auto_project_sync run validate' _ "$REAL_TS_LIB"
+) >"$SELF_SYNC_OUT" 2>&1
+assert_not_contains "$SELF_SYNC_OUT" "auto-synced touchstone"
+assert_version_equals "$SELF_SYNC_PROJECT" "0000000000000000000000000000000000000006"
+
+echo ""
 echo "--- touchstone version/help: read-only commands do not sync ---"
 VERSION_HOME="$TEST_DIR/home-version"
 VERSION_PROJECT="$TEST_DIR/project-version"
