@@ -55,10 +55,26 @@ FAKE_HOME="$TEST_DIR/home"
 mkdir -p "$FAKE_HOME"
 
 # --------------------------------------------------------------------------
-# Test 1: missing log exits 0 with friendly message
+# Test 1: help preserves project capability option
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Test 1: missing log ---"
+echo "--- Test 1: help documents project capability option ---"
+
+HELP_OUT="$TEST_DIR/help.out"
+set +e
+run_doctor "$FAKE_HOME" --help >"$HELP_OUT" 2>&1
+HELP_EXIT=$?
+set -e
+
+assert_exit "$HELP_EXIT" 0 "help"
+assert_contains "$HELP_OUT" "touchstone doctor --require-capability <name>"
+assert_contains "$HELP_OUT" "Require a project-local Touchstone workflow capability"
+
+# --------------------------------------------------------------------------
+# Test 2: missing log exits 0 with friendly message
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Test 2: missing log ---"
 
 MISSING_OUT="$TEST_DIR/missing.out"
 set +e
@@ -70,10 +86,10 @@ assert_exit "$MISSING_EXIT" 0 "missing log"
 assert_contains "$MISSING_OUT" "no review log found; conductor review hasn't run on this machine yet"
 
 # --------------------------------------------------------------------------
-# Test 2: empty log exits 0 with the same friendly message
+# Test 3: empty log exits 0 with the same friendly message
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Test 2: empty log ---"
+echo "--- Test 3: empty log ---"
 
 EMPTY_LOG="$TEST_DIR/empty.log"
 : > "$EMPTY_LOG"
@@ -87,10 +103,10 @@ assert_exit "$EMPTY_EXIT" 0 "empty log"
 assert_contains "$EMPTY_OUT" "no review log found; conductor review hasn't run on this machine yet"
 
 # --------------------------------------------------------------------------
-# Test 3: no fail-opens reports zero rate and exits 0
+# Test 4: no fail-opens reports zero rate and exits 0
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Test 3: no fail-opens ---"
+echo "--- Test 4: no fail-opens ---"
 
 NOW="$(timestamp_now)"
 NO_FAIL_LOG="$TEST_DIR/no-fail.log"
@@ -111,10 +127,10 @@ assert_contains "$NO_FAIL_OUT" "FAIL_OPEN_TIMEOUT: 0"
 assert_contains "$NO_FAIL_OUT" "none recorded"
 
 # --------------------------------------------------------------------------
-# Test 4: mixed rows count fail-open codes and ignore disabled/skipped rows
+# Test 5: mixed rows count fail-open codes and ignore disabled/skipped rows
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Test 4: mixed events ---"
+echo "--- Test 5: mixed events ---"
 
 MIXED_LOG="$TEST_DIR/mixed.log"
 write_row "$MIXED_LOG" "2000-01-01T00:00:00+0000" "/tmp/old" "main" "0000000" "FAIL_OPEN_TIMEOUT" "too-old"
@@ -138,10 +154,10 @@ assert_contains "$MIXED_OUT" "repo: /tmp/repo-c"
 assert_contains "$MIXED_OUT" "detail: fail-open:malformed sentinel"
 
 # --------------------------------------------------------------------------
-# Test 5: threshold warning exits 2
+# Test 6: threshold warning exits 2
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Test 5: threshold warning ---"
+echo "--- Test 6: threshold warning ---"
 
 THRESHOLD_LOG="$TEST_DIR/threshold.log"
 write_row "$THRESHOLD_LOG" "$NOW" "/tmp/repo-a" "main" "aaaaaaa" "ran" "clean"
@@ -159,10 +175,10 @@ assert_contains "$THRESHOLD_OUT" "FAIL_OPEN_REVIEWER_ERROR: 1"
 assert_contains "$THRESHOLD_OUT" "exceeds 25%"
 
 # --------------------------------------------------------------------------
-# Test 6: TOUCHSTONE_REVIEW_LOG env override is honored and read-only
+# Test 7: TOUCHSTONE_REVIEW_LOG env override is honored and read-only
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Test 6: env override and read-only behavior ---"
+echo "--- Test 7: env override and read-only behavior ---"
 
 ENV_LOG="$TEST_DIR/env.log"
 write_row "$ENV_LOG" "$NOW" "/tmp/repo-env" "main" "eeeeeee" "ran" "clean"
