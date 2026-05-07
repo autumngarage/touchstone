@@ -25,7 +25,7 @@ mkdir -p "$REPO" "$FAKE_BIN"
 #    FAKE_CONDUCTOR_VERDICT (one of: BLOCKED, CLEAN). For BLOCKED it also
 #    emits two synthetic finding lines so write_review_findings has data
 #    to persist.
-cat > "$FAKE_BIN/conductor" <<'CONDUCTOR_EOF'
+cat >"$FAKE_BIN/conductor" <<'CONDUCTOR_EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -69,41 +69,45 @@ chmod +x "$FAKE_BIN/conductor"
   git config user.name "Touchstone Test"
   mkdir -p lib
   cp -r "$TOUCHSTONE_ROOT/lib/"* lib/
-  printf '[review]\nreviewer = "conductor"\nmode = "review-only"\n' > .codex-review.toml
-  printf 'base\n' > example.txt
+  printf '[review]\nreviewer = "conductor"\nmode = "review-only"\n' >.codex-review.toml
+  printf 'base\n' >example.txt
   git add .codex-review.toml example.txt
   git commit -q -m "base"
-  printf 'change 1\n' >> example.txt
+  printf 'change 1\n' >>example.txt
   git add example.txt
   git commit -q -m "change 1"
 )
 
 run_review() {
   local verdict="$1"
-  ( cd "$REPO" && \
-    PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-    PROMPT_LOG="$PROMPT_LOG" \
-    FAKE_CONDUCTOR_VERDICT="$verdict" \
-    CODEX_REVIEW_BASE=HEAD~1 \
-    CODEX_REVIEW_BRANCH_NAME="feature/findings-checkpoint" \
-    CODEX_REVIEW_DISABLE_CACHE=1 \
-    TOUCHSTONE_REVIEW_LOG=/dev/null \
-    bash "$TOUCHSTONE_ROOT/scripts/codex-review.sh" \
-    > "$TEST_DIR/run-$verdict.out" 2>&1 \
+  (
+    cd "$REPO" \
+      && PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+        PROMPT_LOG="$PROMPT_LOG" \
+        FAKE_CONDUCTOR_VERDICT="$verdict" \
+        CODEX_REVIEW_BASE=HEAD~1 \
+        CODEX_REVIEW_BRANCH_NAME="feature/findings-checkpoint" \
+        CODEX_REVIEW_DISABLE_CACHE=1 \
+        TOUCHSTONE_REVIEW_LOG=/dev/null \
+        bash "$TOUCHSTONE_ROOT/scripts/codex-review.sh" \
+        >"$TEST_DIR/run-$verdict.out" 2>&1
   ) || true
 }
 
 ERRORS=0
-fail() { echo "FAIL: $*" >&2; ERRORS=$((ERRORS + 1)); }
+fail() {
+  echo "FAIL: $*" >&2
+  ERRORS=$((ERRORS + 1))
+}
 
 findings_file() {
   # git rev-parse --git-path returns a path relative to the repo it ran
   # in; we resolve it against $REPO so the assertion can run from any cwd.
   local rel
-  rel="$( cd "$REPO" && git rev-parse --git-path touchstone/reviewer-findings/feature_findings-checkpoint.findings )"
+  rel="$(cd "$REPO" && git rev-parse --git-path touchstone/reviewer-findings/feature_findings-checkpoint.findings)"
   case "$rel" in
     /*) printf '%s' "$rel" ;;
-    *)  printf '%s/%s' "$REPO" "$rel" ;;
+    *) printf '%s/%s' "$REPO" "$rel" ;;
   esac
 }
 
@@ -111,7 +115,7 @@ findings_file() {
 # Step 1: a BLOCKED review must persist its findings.
 # ---------------------------------------------------------------------------
 echo "==> Step 1: BLOCKED review writes findings file"
-: > "$PROMPT_LOG"
+: >"$PROMPT_LOG"
 run_review BLOCKED
 
 FINDINGS_FILE="$(findings_file)"
@@ -136,9 +140,9 @@ fi
 # checkpoint in the prompt and refresh the findings file.
 # ---------------------------------------------------------------------------
 echo "==> Step 2: descendant HEAD prepends verification checkpoint"
-( cd "$REPO" && printf 'change 2\n' >> example.txt && git add example.txt && git commit -q -m "change 2" )
+(cd "$REPO" && printf 'change 2\n' >>example.txt && git add example.txt && git commit -q -m "change 2")
 
-: > "$PROMPT_LOG"
+: >"$PROMPT_LOG"
 run_review BLOCKED
 
 if ! grep -q 'Prior review findings — verify, do not restart' "$PROMPT_LOG"; then
@@ -158,9 +162,9 @@ fi
 # Step 3: a CLEAN review clears the findings file.
 # ---------------------------------------------------------------------------
 echo "==> Step 3: CLEAN review clears findings file"
-( cd "$REPO" && printf 'change 3\n' >> example.txt && git add example.txt && git commit -q -m "change 3" )
+(cd "$REPO" && printf 'change 3\n' >>example.txt && git add example.txt && git commit -q -m "change 3")
 
-: > "$PROMPT_LOG"
+: >"$PROMPT_LOG"
 run_review CLEAN
 if [ -f "$FINDINGS_FILE" ]; then
   fail "CLEAN review did not clear findings file at $FINDINGS_FILE"
@@ -174,7 +178,7 @@ echo "==> Step 4: orphaned prior HEAD is treated as blank slate"
 
 # Re-record findings, then force-reset the branch so prior_head is no
 # longer in the repo.
-: > "$PROMPT_LOG"
+: >"$PROMPT_LOG"
 run_review BLOCKED
 [ -f "$FINDINGS_FILE" ] || fail "could not re-create findings file for step 4"
 
@@ -184,7 +188,7 @@ run_review BLOCKED
   git gc --prune=now >/dev/null 2>&1 || true
 )
 
-: > "$PROMPT_LOG"
+: >"$PROMPT_LOG"
 run_review BLOCKED
 if grep -q 'Prior review findings — verify, do not restart' "$PROMPT_LOG"; then
   fail "blank-slate prompt unexpectedly contained a verification checkpoint after force-reset"

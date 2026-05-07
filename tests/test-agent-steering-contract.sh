@@ -34,8 +34,7 @@ echo "==> managed AGENTS block exposes the driver/reviewer contract"
 for file in \
   "$TOUCHSTONE_ROOT/AGENTS.md" \
   "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
-  "$TOUCHSTONE_ROOT/lib/agents-principles-block.sh"
-do
+  "$TOUCHSTONE_ROOT/lib/agents-principles-block.sh"; do
   assert_contains "$file" "Agent Roles And Fallbacks"
   assert_contains "$file" "Driving CLI"
   assert_contains "$file" "Conductor worker/reviewer"
@@ -50,8 +49,7 @@ for file in \
   "$TOUCHSTONE_ROOT/CLAUDE.md" \
   "$TOUCHSTONE_ROOT/templates/CLAUDE.md" \
   "$TOUCHSTONE_ROOT/GEMINI.md" \
-  "$TOUCHSTONE_ROOT/templates/GEMINI.md"
-do
+  "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
   assert_contains "$file" "Agent Roles And Fallbacks"
   assert_contains "$file" "driving CLI"
   assert_contains "$file" "worker/reviewer router"
@@ -67,7 +65,7 @@ assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "codex exec --
 
 echo "==> dogfood harness validates every machine-check field"
 GOOD_RESPONSE="$TEST_DIR/good-response.txt"
-cat > "$GOOD_RESPONSE" <<'EOF'
+cat >"$GOOD_RESPONSE" <<'EOF'
 TOUCHSTONE_DOGFOOD_RESULT: PASS
 BRANCH_BEFORE_EDIT: yes
 FEATURE_BRANCH_COMMAND: git checkout -b fix/log-swallowed-exception
@@ -85,7 +83,7 @@ EOF
 "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" --validate-response "$GOOD_RESPONSE" >/dev/null
 
 BAD_RESPONSE="$TEST_DIR/bad-response.txt"
-cat > "$BAD_RESPONSE" <<'EOF'
+cat >"$BAD_RESPONSE" <<'EOF'
 TOUCHSTONE_DOGFOOD_RESULT: PASS
 BRANCH_BEFORE_EDIT: yes
 FEATURE_BRANCH_COMMAND: git checkout -b fix/log-swallowed-exception

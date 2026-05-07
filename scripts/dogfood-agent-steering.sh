@@ -78,32 +78,50 @@ EOF
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --providers)
-      [ "$#" -ge 2 ] || { echo "ERROR: --providers requires a value" >&2; exit 1; }
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --providers requires a value" >&2
+        exit 1
+      }
       PROVIDERS="$2"
       shift 2
       ;;
     --personas)
-      [ "$#" -ge 2 ] || { echo "ERROR: --personas requires a value" >&2; exit 1; }
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --personas requires a value" >&2
+        exit 1
+      }
       PERSONAS="$2"
       shift 2
       ;;
     --prefer)
-      [ "$#" -ge 2 ] || { echo "ERROR: --prefer requires a value" >&2; exit 1; }
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --prefer requires a value" >&2
+        exit 1
+      }
       PREFER="$2"
       shift 2
       ;;
     --effort)
-      [ "$#" -ge 2 ] || { echo "ERROR: --effort requires a value" >&2; exit 1; }
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --effort requires a value" >&2
+        exit 1
+      }
       EFFORT="$2"
       shift 2
       ;;
     --tags)
-      [ "$#" -ge 2 ] || { echo "ERROR: --tags requires a value" >&2; exit 1; }
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --tags requires a value" >&2
+        exit 1
+      }
       TAGS="$2"
       shift 2
       ;;
     --timeout)
-      [ "$#" -ge 2 ] || { echo "ERROR: --timeout requires a value" >&2; exit 1; }
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --timeout requires a value" >&2
+        exit 1
+      }
       TIMEOUT="$2"
       shift 2
       ;;
@@ -112,11 +130,14 @@ while [ "$#" -gt 0 ]; do
       shift
       ;;
     --validate-response)
-      [ "$#" -ge 2 ] || { echo "ERROR: --validate-response requires a file" >&2; exit 1; }
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --validate-response requires a file" >&2
+        exit 1
+      }
       VALIDATE_RESPONSE_FILE="$2"
       shift 2
       ;;
-    -h|--help)
+    -h | --help)
       usage
       exit 0
       ;;
@@ -171,7 +192,7 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DIR" \
   --no-initial-commit >/dev/null
 
 mkdir -p "$PROJECT_DIR/src"
-cat > "$PROJECT_DIR/src/example.py" <<'EOF'
+cat >"$PROJECT_DIR/src/example.py" <<'EOF'
 def load_value(path):
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -245,7 +266,7 @@ worker/reviewer router whose provider fallback happens inside Conductor.
 After the machine-check block, add at most five concise bullets explaining the
 evidence you found in the docs.
 EOF
-  } > "$brief_file"
+  } >"$brief_file"
 }
 
 run_conductor() {
@@ -275,8 +296,8 @@ run_conductor() {
   fi
 }
 
-IFS=',' read -r -a provider_list <<< "$PROVIDERS"
-IFS=',' read -r -a persona_list <<< "$PERSONAS"
+IFS=',' read -r -a provider_list <<<"$PROVIDERS"
+IFS=',' read -r -a persona_list <<<"$PERSONAS"
 
 total=0
 failed=0

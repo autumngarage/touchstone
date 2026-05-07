@@ -21,7 +21,7 @@ if diff -u "$tmp_lib" lib/agents-principles-block.sh; then
 else
   echo "FAIL: principles have drifted. Run 'bash scripts/refresh-principles.sh' and commit the changes." >&2
   # Restore the old one so the worktree stays as it was if this is run in a check mode
-  cat "$tmp_lib" > lib/agents-principles-block.sh
+  cat "$tmp_lib" >lib/agents-principles-block.sh
   rm "$tmp_lib"
   exit 1
 fi

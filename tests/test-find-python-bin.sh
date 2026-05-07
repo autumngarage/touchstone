@@ -39,9 +39,9 @@ setup_worktree_fixture() {
   worktree="$root/foo"
 
   mkdir -p "$parent/.git/worktrees/foo" "$parent/.venv/bin" "$worktree"
-  printf '#!/usr/bin/env bash\n' > "$parent/.venv/bin/python"
+  printf '#!/usr/bin/env bash\n' >"$parent/.venv/bin/python"
   chmod +x "$parent/.venv/bin/python"
-  printf 'gitdir: %s\n' "$parent/.git/worktrees/foo" > "$worktree/.git"
+  printf 'gitdir: %s\n' "$parent/.git/worktrees/foo" >"$worktree/.git"
 }
 
 run_touchstone_lookup() {
@@ -95,10 +95,10 @@ assert_eq "pytest helper worktree parent venv" "$expected" "$actual"
 # ---------------------------------------------------------------------------
 echo "==> Case 2: worktree without parent venv errors clearly"
 mkdir -p "$tmp/no-venv/parent/.git/worktrees/foo" "$tmp/no-venv/foo"
-printf 'gitdir: %s\n' "$tmp/no-venv/parent/.git/worktrees/foo" > "$tmp/no-venv/foo/.git"
+printf 'gitdir: %s\n' "$tmp/no-venv/parent/.git/worktrees/foo" >"$tmp/no-venv/foo/.git"
 
 err_file="$tmp/touchstone.err"
-if run_touchstone_lookup "$tmp/no-venv/foo" > "$tmp/touchstone.out" 2> "$err_file"; then
+if run_touchstone_lookup "$tmp/no-venv/foo" >"$tmp/touchstone.out" 2>"$err_file"; then
   fail "touchstone lookup should fail without any project venv"
 fi
 err="$(cat "$err_file")"
@@ -107,7 +107,7 @@ assert_contains "touchstone checkout tried" "$err" "Tried: $tmp/no-venv/foo/.ven
 assert_contains "touchstone parent tried" "$err" "Tried: $tmp/no-venv/parent/.venv/bin/python (worktree parent)"
 
 err_file="$tmp/pytest.err"
-if run_pytest_lookup "$tmp/no-venv/foo" > "$tmp/pytest.out" 2> "$err_file"; then
+if run_pytest_lookup "$tmp/no-venv/foo" >"$tmp/pytest.out" 2>"$err_file"; then
   fail "pytest helper lookup should fail without any project venv"
 fi
 err="$(cat "$err_file")"
@@ -120,7 +120,7 @@ assert_contains "pytest parent tried" "$err" "Tried: $tmp/no-venv/parent/.venv/b
 # ---------------------------------------------------------------------------
 echo "==> Case 3: regular checkout with local .venv"
 mkdir -p "$tmp/local/.venv/bin"
-printf '#!/usr/bin/env bash\n' > "$tmp/local/.venv/bin/python"
+printf '#!/usr/bin/env bash\n' >"$tmp/local/.venv/bin/python"
 chmod +x "$tmp/local/.venv/bin/python"
 # Real .git directory marks this as a non-worktree checkout.
 mkdir -p "$tmp/local/.git"

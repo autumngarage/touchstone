@@ -13,7 +13,7 @@ MERGE_SCRIPT_DIR="$TEST_DIR/scripts"
 GIT_PATH_ROOT="$TEST_DIR/git-path"
 mkdir -p "$FAKE_BIN" "$MERGE_SCRIPT_DIR" "$GIT_PATH_ROOT"
 cp "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$MERGE_SCRIPT_DIR/merge-pr.sh"
-cat > "$MERGE_SCRIPT_DIR/codex-review.sh" <<'EOF'
+cat >"$MERGE_SCRIPT_DIR/codex-review.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 {
@@ -26,7 +26,7 @@ exit "${CODEX_REVIEW_EXIT:-0}"
 EOF
 chmod +x "$MERGE_SCRIPT_DIR/merge-pr.sh" "$MERGE_SCRIPT_DIR/codex-review.sh"
 
-cat > "$FAKE_BIN/gh" <<'EOF'
+cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -94,7 +94,7 @@ case "${1:-} ${2:-}" in
 esac
 EOF
 
-cat > "$FAKE_BIN/git" <<'EOF'
+cat >"$FAKE_BIN/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -284,7 +284,7 @@ reset_case_files
 # auto-promote to bypass-with-disclosure rather than refusing the merge.
 mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
 printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nbase=origin/main\nmerge_base=base-oid\nhead=pr-head-oid\n' \
-  > "$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
+  >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
 if ! CODEX_REVIEW_EXIT=124 run_merge_pr "$TEST_DIR/output-auto-bypass.txt" 123; then
   echo "FAIL: merge-pr.sh did not auto-promote to bypass when review failed and a clean marker exists" >&2
   cat "$TEST_DIR/output-auto-bypass.txt" >&2
@@ -327,7 +327,8 @@ MAIN_WORKTREE="$TEST_DIR/main-worktree"
 FEATURE_WORKTREE="$TEST_DIR/feature-worktree"
 mkdir -p "$MAIN_WORKTREE" "$FEATURE_WORKTREE"
 TEST_CURRENT_WORKTREE="$FEATURE_WORKTREE"
-GIT_WORKTREE_LIST="$(cat <<EOF
+GIT_WORKTREE_LIST="$(
+  cat <<EOF
 worktree $MAIN_WORKTREE
 HEAD main-oid
 branch refs/heads/main
@@ -373,7 +374,8 @@ STALE_MAIN_WORKTREE="$TEST_DIR/missing-main-worktree"
 FEATURE_WORKTREE="$TEST_DIR/feature-worktree"
 mkdir -p "$FEATURE_WORKTREE"
 TEST_CURRENT_WORKTREE="$FEATURE_WORKTREE"
-GIT_WORKTREE_LIST="$(cat <<EOF
+GIT_WORKTREE_LIST="$(
+  cat <<EOF
 worktree $STALE_MAIN_WORKTREE
 HEAD main-oid
 branch refs/heads/main
@@ -402,7 +404,8 @@ fi
 echo "==> Test: gh local-branch-delete failure on a MERGED PR is a warning, not an error"
 reset_case_files
 TEST_CURRENT_WORKTREE="/tmp/touchstone-feature-worktree"
-GIT_WORKTREE_LIST="$(cat <<'EOF'
+GIT_WORKTREE_LIST="$(
+  cat <<'EOF'
 worktree /tmp/touchstone-main-worktree
 HEAD main-oid
 branch refs/heads/main
@@ -466,7 +469,7 @@ fi
 echo "==> Test: bypass after clean marker records disclosure and trailer"
 reset_case_files
 mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
-printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=pr-head-oid\nmerge_base=base-oid\n' > "$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
+printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=pr-head-oid\nmerge_base=base-oid\n' >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
 run_merge_pr "$TEST_DIR/output-bypass.txt" 123 --bypass-with-disclosure="reviewer timed out after prior clean review"
 if grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-bypass.txt" \
   && grep -q 'reason: reviewer timed out after prior clean review' "$TEST_DIR/output-bypass.txt" \
@@ -484,7 +487,7 @@ fi
 echo "==> Test: stale clean marker is rejected"
 reset_case_files
 mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
-printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=old-head\n' > "$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
+printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=old-head\n' >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
 if run_merge_pr "$TEST_DIR/output-stale.txt" 123 --bypass-with-disclosure="reviewer timed out"; then
   echo "FAIL: bypass with stale marker unexpectedly succeeded" >&2
   exit 1
@@ -502,7 +505,7 @@ fi
 echo "==> Test: old-base clean marker is rejected"
 reset_case_files
 mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
-printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=pr-head-oid\nmerge_base=old-base\n' > "$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
+printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=pr-head-oid\nmerge_base=old-base\n' >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
 if run_merge_pr "$TEST_DIR/output-old-base.txt" 123 --bypass-with-disclosure="reviewer timed out"; then
   echo "FAIL: bypass with old-base marker unexpectedly succeeded" >&2
   exit 1

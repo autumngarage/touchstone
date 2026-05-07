@@ -89,7 +89,10 @@ derive_worker_state() {
 
     base="$(touchstone_worker_default_ref)"
     branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-    [ -n "$branch" ] && [ "$branch" != "HEAD" ] || { echo "abandoned"; exit 0; }
+    [ -n "$branch" ] && [ "$branch" != "HEAD" ] || {
+      echo "abandoned"
+      exit 0
+    }
 
     has_commits="$(git log "$base..HEAD" --oneline 2>/dev/null | head -1 || true)"
     has_uncommitted="$(git status --porcelain 2>/dev/null || true)"

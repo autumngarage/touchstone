@@ -68,7 +68,7 @@ sanitize_task_slug() {
 
 require_worker_type() {
   case "$1" in
-    fix|feat|chore|refactor|docs) return 0 ;;
+    fix | feat | chore | refactor | docs) return 0 ;;
     *)
       echo "ERROR: --type must be one of fix, feat, chore, refactor, docs." >&2
       return 1
@@ -152,19 +152,44 @@ cmd_spawn() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --task)
-        [ "$#" -ge 2 ] || { echo "ERROR: --task requires a value." >&2; return 2; }
-        task="$2"; shift 2 ;;
+        [ "$#" -ge 2 ] || {
+          echo "ERROR: --task requires a value." >&2
+          return 2
+        }
+        task="$2"
+        shift 2
+        ;;
       --type)
-        [ "$#" -ge 2 ] || { echo "ERROR: --type requires a value." >&2; return 2; }
-        type="$2"; shift 2 ;;
-      --json) json=true; shift ;;
-      -h|--help) usage; return 0 ;;
-      *) echo "ERROR: unknown worker spawn argument '$1'." >&2; return 2 ;;
+        [ "$#" -ge 2 ] || {
+          echo "ERROR: --type requires a value." >&2
+          return 2
+        }
+        type="$2"
+        shift 2
+        ;;
+      --json)
+        json=true
+        shift
+        ;;
+      -h | --help)
+        usage
+        return 0
+        ;;
+      *)
+        echo "ERROR: unknown worker spawn argument '$1'." >&2
+        return 2
+        ;;
     esac
   done
 
-  [ -n "$task" ] || { echo "ERROR: worker spawn requires --task." >&2; return 2; }
-  [ -n "$type" ] || { echo "ERROR: worker spawn requires --type." >&2; return 2; }
+  [ -n "$task" ] || {
+    echo "ERROR: worker spawn requires --task." >&2
+    return 2
+  }
+  [ -n "$type" ] || {
+    echo "ERROR: worker spawn requires --type." >&2
+    return 2
+  }
   require_worker_type "$type"
 
   repo_root="$(repo_root_or_die)"
@@ -200,15 +225,32 @@ cmd_status() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --worktree)
-        [ "$#" -ge 2 ] || { echo "ERROR: --worktree requires a path." >&2; return 2; }
-        worktree_path="$2"; shift 2 ;;
-      --json) json=true; shift ;;
-      -h|--help) usage; return 0 ;;
-      *) echo "ERROR: unknown worker status argument '$1'." >&2; return 2 ;;
+        [ "$#" -ge 2 ] || {
+          echo "ERROR: --worktree requires a path." >&2
+          return 2
+        }
+        worktree_path="$2"
+        shift 2
+        ;;
+      --json)
+        json=true
+        shift
+        ;;
+      -h | --help)
+        usage
+        return 0
+        ;;
+      *)
+        echo "ERROR: unknown worker status argument '$1'." >&2
+        return 2
+        ;;
     esac
   done
 
-  [ -n "$worktree_path" ] || { echo "ERROR: worker status requires --worktree." >&2; return 2; }
+  [ -n "$worktree_path" ] || {
+    echo "ERROR: worker status requires --worktree." >&2
+    return 2
+  }
 
   if [ "$json" = true ]; then
     worker_status_json "$worktree_path"
@@ -241,20 +283,45 @@ cmd_ship() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --worktree)
-        [ "$#" -ge 2 ] || { echo "ERROR: --worktree requires a path." >&2; return 2; }
-        worktree_path="$2"; shift 2 ;;
+        [ "$#" -ge 2 ] || {
+          echo "ERROR: --worktree requires a path." >&2
+          return 2
+        }
+        worktree_path="$2"
+        shift 2
+        ;;
       --auto-merge) shift ;;
-      --cleanup) cleanup=true; shift ;;
+      --cleanup)
+        cleanup=true
+        shift
+        ;;
       --events-json)
-        [ "$#" -ge 2 ] || { echo "ERROR: --events-json requires a path." >&2; return 2; }
-        events_json="$2"; shift 2 ;;
-      -h|--help) usage; return 0 ;;
-      *) echo "ERROR: unknown worker ship argument '$1'." >&2; return 2 ;;
+        [ "$#" -ge 2 ] || {
+          echo "ERROR: --events-json requires a path." >&2
+          return 2
+        }
+        events_json="$2"
+        shift 2
+        ;;
+      -h | --help)
+        usage
+        return 0
+        ;;
+      *)
+        echo "ERROR: unknown worker ship argument '$1'." >&2
+        return 2
+        ;;
     esac
   done
 
-  [ -n "$worktree_path" ] || { echo "ERROR: worker ship requires --worktree." >&2; return 2; }
-  [ -d "$worktree_path" ] || { echo "ERROR: worktree does not exist: $worktree_path" >&2; return 1; }
+  [ -n "$worktree_path" ] || {
+    echo "ERROR: worker ship requires --worktree." >&2
+    return 2
+  }
+  [ -d "$worktree_path" ] || {
+    echo "ERROR: worktree does not exist: $worktree_path" >&2
+    return 1
+  }
   if [ "$cleanup" = true ]; then
     args+=(--cleanup-worktree)
   fi
@@ -289,20 +356,46 @@ cmd_abandon() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --worktree)
-        [ "$#" -ge 2 ] || { echo "ERROR: --worktree requires a path." >&2; return 2; }
-        worktree_path="$2"; shift 2 ;;
-      --dry-run) dry_run=true; shift ;;
-      --force) force=true; shift ;;
-      -h|--help) usage; return 0 ;;
-      *) echo "ERROR: unknown worker abandon argument '$1'." >&2; return 2 ;;
+        [ "$#" -ge 2 ] || {
+          echo "ERROR: --worktree requires a path." >&2
+          return 2
+        }
+        worktree_path="$2"
+        shift 2
+        ;;
+      --dry-run)
+        dry_run=true
+        shift
+        ;;
+      --force)
+        force=true
+        shift
+        ;;
+      -h | --help)
+        usage
+        return 0
+        ;;
+      *)
+        echo "ERROR: unknown worker abandon argument '$1'." >&2
+        return 2
+        ;;
     esac
   done
 
-  [ -n "$worktree_path" ] || { echo "ERROR: worker abandon requires --worktree." >&2; return 2; }
-  [ -d "$worktree_path" ] || { echo "ERROR: worktree does not exist: $worktree_path" >&2; return 1; }
+  [ -n "$worktree_path" ] || {
+    echo "ERROR: worker abandon requires --worktree." >&2
+    return 2
+  }
+  [ -d "$worktree_path" ] || {
+    echo "ERROR: worktree does not exist: $worktree_path" >&2
+    return 1
+  }
 
   branch="$(worker_branch "$worktree_path")"
-  [ -n "$branch" ] && [ "$branch" != "HEAD" ] || { echo "ERROR: cannot abandon detached worktree." >&2; return 1; }
+  [ -n "$branch" ] && [ "$branch" != "HEAD" ] || {
+    echo "ERROR: cannot abandon detached worktree." >&2
+    return 1
+  }
   base="$(cd "$worktree_path" && touchstone_worker_default_ref)"
   unique_commits="$(git -C "$worktree_path" log "$base..HEAD" --oneline 2>/dev/null || true)"
 
@@ -323,7 +416,10 @@ cmd_abandon() {
   fi
 
   manager_path="$(worktree_manager_path "$worktree_path")"
-  [ -n "$manager_path" ] || { echo "ERROR: could not find a git worktree manager for $worktree_path" >&2; return 1; }
+  [ -n "$manager_path" ] || {
+    echo "ERROR: could not find a git worktree manager for $worktree_path" >&2
+    return 1
+  }
   git -C "$manager_path" worktree remove --force "$worktree_path"
   if branch_has_open_or_closed_pr "$branch"; then
     echo "Kept remote branch because a PR exists for: $branch"
@@ -339,11 +435,25 @@ cmd_list() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --repo)
-        [ "$#" -ge 2 ] || { echo "ERROR: --repo requires a path." >&2; return 2; }
-        repo_path="$2"; shift 2 ;;
-      --json) json=true; shift ;;
-      -h|--help) usage; return 0 ;;
-      *) echo "ERROR: unknown worker list argument '$1'." >&2; return 2 ;;
+        [ "$#" -ge 2 ] || {
+          echo "ERROR: --repo requires a path." >&2
+          return 2
+        }
+        repo_path="$2"
+        shift 2
+        ;;
+      --json)
+        json=true
+        shift
+        ;;
+      -h | --help)
+        usage
+        return 0
+        ;;
+      *)
+        echo "ERROR: unknown worker list argument '$1'." >&2
+        return 2
+        ;;
     esac
   done
 
@@ -363,7 +473,7 @@ cmd_list() {
       if [ -n "$path" ] && [ -n "$branch_ref" ]; then
         branch="${branch_ref#refs/heads/}"
         case "$branch" in
-          feat/*|fix/*|chore/*|refactor/*|docs/*)
+          feat/* | fix/* | chore/* | refactor/* | docs/*)
             if [ "$json" = true ]; then
               [ "$first" = true ] || printf ','
               worker_status_json "$path" | tr -d '\n'
@@ -382,12 +492,12 @@ cmd_list() {
       worktree\ *) path="${line#worktree }" ;;
       branch\ *) branch_ref="${line#branch }" ;;
     esac
-  done <<< "$list_output"
+  done <<<"$list_output"
 
   if [ -n "$path" ] && [ -n "$branch_ref" ]; then
     branch="${branch_ref#refs/heads/}"
     case "$branch" in
-      feat/*|fix/*|chore/*|refactor/*|docs/*)
+      feat/* | fix/* | chore/* | refactor/* | docs/*)
         if [ "$json" = true ]; then
           [ "$first" = true ] || printf ','
           worker_status_json "$path" | tr -d '\n'
@@ -412,7 +522,7 @@ case "$command" in
   ship) cmd_ship "$@" ;;
   abandon) cmd_abandon "$@" ;;
   list) cmd_list "$@" ;;
-  help|-h|--help) usage ;;
+  help | -h | --help) usage ;;
   *)
     echo "ERROR: unknown worker command '$command'." >&2
     usage >&2

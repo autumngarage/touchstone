@@ -29,7 +29,7 @@ JSON
     fi
     exit 0
     ;;
-  list|version|--version|-V|init|ask|call|exec|review|providers)
+  list | version | --version | -V | init | ask | call | exec | review | providers)
     exit 0
     ;;
   "")

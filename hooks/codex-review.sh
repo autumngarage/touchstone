@@ -323,21 +323,24 @@ log_skip_event() {
     # Guard against `set -euo pipefail` propagating a failed pipeline up
     # to the hook's exit code — log_skip_event must never block a push,
     # even on an unreadable log file or a TOCTOU race against rotation.
-    line_count="$(wc -l < "$log_file" 2>/dev/null | tr -d ' ')" || line_count=0
+    line_count="$(wc -l <"$log_file" 2>/dev/null | tr -d ' ')" || line_count=0
     line_count="${line_count:-0}"
     if [ "$line_count" -ge "$TOUCHSTONE_REVIEW_LOG_MAX_LINES" ]; then
       keep_lines=$((TOUCHSTONE_REVIEW_LOG_MAX_LINES - 1))
-      tail -n "$keep_lines" "$log_file" > "$tmp_file" 2>/dev/null || : > "$tmp_file"
+      tail -n "$keep_lines" "$log_file" >"$tmp_file" 2>/dev/null || : >"$tmp_file"
     else
-      cat "$log_file" > "$tmp_file" 2>/dev/null || : > "$tmp_file"
+      cat "$log_file" >"$tmp_file" 2>/dev/null || : >"$tmp_file"
     fi
   else
-    : > "$tmp_file"
+    : >"$tmp_file"
   fi
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$timestamp" "$REPO_ROOT" "$branch" "$sha" "$reason" "$detail" \
-    >> "$tmp_file" 2>/dev/null || { rm -f "$tmp_file" 2>/dev/null; return 0; }
+    >>"$tmp_file" 2>/dev/null || {
+    rm -f "$tmp_file" 2>/dev/null
+    return 0
+  }
 
   mv "$tmp_file" "$log_file" 2>/dev/null || rm -f "$tmp_file" 2>/dev/null
   return 0
@@ -377,8 +380,8 @@ CONDUCTOR_TAGS=""
 CONDUCTOR_EXCLUDE=""
 ROUTING_ENABLED=true
 ROUTING_SMALL_MAX_DIFF_LINES=400
-ROUTING_SMALL_REVIEWERS=()   # legacy 1.x shape; retained for back-compat parsing
-ROUTING_LARGE_REVIEWERS=()   # legacy 1.x shape; retained for back-compat parsing
+ROUTING_SMALL_REVIEWERS=() # legacy 1.x shape; retained for back-compat parsing
+ROUTING_LARGE_REVIEWERS=() # legacy 1.x shape; retained for back-compat parsing
 # 2.0 routing knobs — override CONDUCTOR_* for small vs large diffs.
 ROUTING_SMALL_WITH=""
 ROUTING_SMALL_PREFER="cheapest"
@@ -428,8 +431,14 @@ strip_toml_string() {
   local value="$1"
   value="$(trim "$value")"
   case "$value" in
-    \"*\") value="${value#\"}"; value="${value%\"}" ;;
-    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+    \"*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      ;;
+    \'*\')
+      value="${value#\'}"
+      value="${value%\'}"
+      ;;
   esac
   printf '%s' "$value"
 }
@@ -487,8 +496,14 @@ append_unsafe_path() {
   value="$(trim "$value")"
 
   case "$value" in
-    \"*\") value="${value#\"}"; value="${value%\"}" ;;
-    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+    \"*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      ;;
+    \'*\')
+      value="${value#\'}"
+      value="${value%\'}"
+      ;;
   esac
 
   [ -z "$value" ] && return
@@ -508,7 +523,7 @@ append_unsafe_paths_csv() {
 
   [ -n "$csv" ] || return 0
 
-  IFS=',' read -r -a items <<< "$csv"
+  IFS=',' read -r -a items <<<"$csv"
   for item in "${items[@]}"; do
     append_unsafe_path "$item"
   done
@@ -521,8 +536,14 @@ append_prompt_context_path() {
   value="$(trim "$value")"
 
   case "$value" in
-    \"*\") value="${value#\"}"; value="${value%\"}" ;;
-    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+    \"*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      ;;
+    \'*\')
+      value="${value#\'}"
+      value="${value%\'}"
+      ;;
   esac
 
   [ -z "$value" ] && return
@@ -542,7 +563,7 @@ append_prompt_context_paths_csv() {
 
   [ -n "$csv" ] || return 0
 
-  IFS=',' read -r -a items <<< "$csv"
+  IFS=',' read -r -a items <<<"$csv"
   for item in "${items[@]}"; do
     append_prompt_context_path "$item"
   done
@@ -554,8 +575,14 @@ append_reviewer() {
   value="${value%,}"
   value="$(trim "$value")"
   case "$value" in
-    \"*\") value="${value#\"}"; value="${value%\"}" ;;
-    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+    \"*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      ;;
+    \'*\')
+      value="${value#\'}"
+      value="${value%\'}"
+      ;;
   esac
   [ -z "$value" ] && return
   REVIEWER_CASCADE+=("$value")
@@ -565,7 +592,7 @@ append_reviewers_csv() {
   local csv="$1" item
   local -a items=()
   [ -n "$csv" ] || return 0
-  IFS=',' read -r -a items <<< "$csv"
+  IFS=',' read -r -a items <<<"$csv"
   for item in "${items[@]}"; do
     append_reviewer "$item"
   done
@@ -577,8 +604,14 @@ append_routing_small_reviewer() {
   value="${value%,}"
   value="$(trim "$value")"
   case "$value" in
-    \"*\") value="${value#\"}"; value="${value%\"}" ;;
-    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+    \"*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      ;;
+    \'*\')
+      value="${value#\'}"
+      value="${value%\'}"
+      ;;
   esac
   [ -z "$value" ] && return
   ROUTING_SMALL_REVIEWERS+=("$value")
@@ -588,7 +621,7 @@ append_routing_small_reviewers_csv() {
   local csv="$1" item
   local -a items=()
   [ -n "$csv" ] || return 0
-  IFS=',' read -r -a items <<< "$csv"
+  IFS=',' read -r -a items <<<"$csv"
   for item in "${items[@]}"; do
     append_routing_small_reviewer "$item"
   done
@@ -600,8 +633,14 @@ append_routing_large_reviewer() {
   value="${value%,}"
   value="$(trim "$value")"
   case "$value" in
-    \"*\") value="${value#\"}"; value="${value%\"}" ;;
-    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+    \"*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      ;;
+    \'*\')
+      value="${value#\'}"
+      value="${value%\'}"
+      ;;
   esac
   [ -z "$value" ] && return
   ROUTING_LARGE_REVIEWERS+=("$value")
@@ -611,7 +650,7 @@ append_routing_large_reviewers_csv() {
   local csv="$1" item
   local -a items=()
   [ -n "$csv" ] || return 0
-  IFS=',' read -r -a items <<< "$csv"
+  IFS=',' read -r -a items <<<"$csv"
   for item in "${items[@]}"; do
     append_routing_large_reviewer "$item"
   done
@@ -623,8 +662,14 @@ append_assist_helper() {
   value="${value%,}"
   value="$(trim "$value")"
   case "$value" in
-    \"*\") value="${value#\"}"; value="${value%\"}" ;;
-    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+    \"*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      ;;
+    \'*\')
+      value="${value#\'}"
+      value="${value%\'}"
+      ;;
   esac
   [ -z "$value" ] && return
   ASSIST_HELPERS+=("$value")
@@ -634,7 +679,7 @@ append_assist_helpers_csv() {
   local csv="$1" item
   local -a items=()
   [ -n "$csv" ] || return 0
-  IFS=',' read -r -a items <<< "$csv"
+  IFS=',' read -r -a items <<<"$csv"
   for item in "${items[@]}"; do
     append_assist_helper "$item"
   done
@@ -650,8 +695,8 @@ normalize_bool() {
   value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
 
   case "$value" in
-    true|1|yes|on) printf 'true' ;;
-    false|0|no|off) printf 'false' ;;
+    true | 1 | yes | on) printf 'true' ;;
+    false | 0 | no | off) printf 'false' ;;
     *) printf '%s' "$value" ;;
   esac
 }
@@ -660,8 +705,14 @@ toml_string_value() {
   local value="$1"
   value="$(trim "$value")"
   case "$value" in
-    \"*\") value="${value#\"}"; value="${value%\"}" ;;
-    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+    \"*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      ;;
+    \'*\')
+      value="${value#\'}"
+      value="${value%\'}"
+      ;;
   esac
   printf '%s' "$value"
 }
@@ -688,25 +739,25 @@ if [ -f "$CONFIG_FILE" ]; then
     case "$section" in
       "review.conductor")
         case "$key" in
-          prefer)  CONDUCTOR_PREFER="${CONDUCTOR_PREFER:-$(toml_unquote "$value")}" ;;
-          effort)  CONDUCTOR_EFFORT="${CONDUCTOR_EFFORT:-$(toml_unquote "$value")}" ;;
-          tags)    CONDUCTOR_TAGS="${CONDUCTOR_TAGS:-$(toml_normalize_array "$value")}" ;;
-          with)    CONDUCTOR_WITH="${CONDUCTOR_WITH:-$(toml_unquote "$value")}" ;;
+          prefer) CONDUCTOR_PREFER="${CONDUCTOR_PREFER:-$(toml_unquote "$value")}" ;;
+          effort) CONDUCTOR_EFFORT="${CONDUCTOR_EFFORT:-$(toml_unquote "$value")}" ;;
+          tags) CONDUCTOR_TAGS="${CONDUCTOR_TAGS:-$(toml_normalize_array "$value")}" ;;
+          with) CONDUCTOR_WITH="${CONDUCTOR_WITH:-$(toml_unquote "$value")}" ;;
           exclude) CONDUCTOR_EXCLUDE="${CONDUCTOR_EXCLUDE:-$(toml_normalize_array "$value")}" ;;
         esac
         ;;
       "review.routing")
         case "$key" in
           enabled) ROUTING_ENABLED="$(normalize_bool "$value")" ;;
-          small_max_diff_lines|small_diff_lines) ROUTING_SMALL_MAX_DIFF_LINES="$value" ;;
-          small_with)   ROUTING_SMALL_WITH="$(toml_unquote "$value")" ;;
+          small_max_diff_lines | small_diff_lines) ROUTING_SMALL_MAX_DIFF_LINES="$value" ;;
+          small_with) ROUTING_SMALL_WITH="$(toml_unquote "$value")" ;;
           small_prefer) ROUTING_SMALL_PREFER="$(toml_unquote "$value")" ;;
           small_effort) ROUTING_SMALL_EFFORT="$(toml_unquote "$value")" ;;
-          small_tags)   ROUTING_SMALL_TAGS="$(toml_unquote "$value")" ;;
-          large_with)   ROUTING_LARGE_WITH="$(toml_unquote "$value")" ;;
+          small_tags) ROUTING_SMALL_TAGS="$(toml_unquote "$value")" ;;
+          large_with) ROUTING_LARGE_WITH="$(toml_unquote "$value")" ;;
           large_prefer) ROUTING_LARGE_PREFER="$(toml_unquote "$value")" ;;
           large_effort) ROUTING_LARGE_EFFORT="$(toml_unquote "$value")" ;;
-          large_tags)   ROUTING_LARGE_TAGS="$(toml_unquote "$value")" ;;
+          large_tags) ROUTING_LARGE_TAGS="$(toml_unquote "$value")" ;;
           small_reviewers)
             if [[ "$value" == "["* ]]; then
               append_routing_small_reviewers_csv "$(toml_normalize_array "$value")"
@@ -741,9 +792,9 @@ if [ -f "$CONFIG_FILE" ]; then
       "review.context")
         case "$key" in
           mode) PROMPT_CONTEXT_MODE="${CODEX_REVIEW_CONTEXT_MODE:-$(toml_unquote "$value")}" ;;
-          small_max_diff_lines|small_diff_lines) PROMPT_CONTEXT_SMALL_MAX_DIFF_LINES="${CODEX_REVIEW_CONTEXT_SMALL_MAX_DIFF_LINES:-$value}" ;;
-          small_max_files|max_files) PROMPT_CONTEXT_SMALL_MAX_FILES="${CODEX_REVIEW_CONTEXT_SMALL_MAX_FILES:-$value}" ;;
-          full_context_paths|full_context_patterns)
+          small_max_diff_lines | small_diff_lines) PROMPT_CONTEXT_SMALL_MAX_DIFF_LINES="${CODEX_REVIEW_CONTEXT_SMALL_MAX_DIFF_LINES:-$value}" ;;
+          small_max_files | max_files) PROMPT_CONTEXT_SMALL_MAX_FILES="${CODEX_REVIEW_CONTEXT_SMALL_MAX_FILES:-$value}" ;;
+          full_context_paths | full_context_patterns)
             if [[ "$value" == "["* ]]; then
               append_prompt_context_paths_csv "$(toml_normalize_array "$value")"
             else
@@ -766,7 +817,7 @@ if [ -f "$CONFIG_FILE" ]; then
         ;;
       "review.local")
         case "$key" in
-          command|auth_command)
+          command | auth_command)
             if [ -z "${CODEX_REVIEW_SUPPRESS_LEGACY_WARNINGS:-}" ]; then
               echo "==> NOTE: [review.local] is ignored in Touchstone 2.0.0." >&2
               echo "    Register your command as a Conductor custom provider" >&2
@@ -776,7 +827,7 @@ if [ -f "$CONFIG_FILE" ]; then
             ;;
         esac
         ;;
-      ""|"codex_review")
+      "" | "codex_review")
         case "$key" in
           max_iterations) MAX_ITERATIONS="${CODEX_REVIEW_MAX_ITERATIONS:-$value}" ;;
           max_diff_lines) MAX_DIFF_LINES="${CODEX_REVIEW_MAX_DIFF_LINES:-$value}" ;;
@@ -845,7 +896,7 @@ REVIEWER_CASCADE=("conductor")
 # v1.x peer-review (ASSIST_HELPERS) is disabled in 2.0.0 and returns in v2.1
 # via `conductor call --exclude <primary_provider>`. Users who had it enabled
 # get a warning; the setting is ignored rather than throwing.
-ASSIST_HELPERS=()  # 1.x helpers field is ignored — Conductor picks the peer.
+ASSIST_HELPERS=() # 1.x helpers field is ignored — Conductor picks the peer.
 
 REVIEW_ENABLED="$(normalize_bool "$REVIEW_ENABLED")"
 ROUTING_ENABLED="$(normalize_bool "$ROUTING_ENABLED")"
@@ -873,7 +924,7 @@ if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
       # TOUCHSTONE_REVIEWER is env-scoped, so it trumps the TOML `with=` pin.
       CONDUCTOR_WITH="ollama"
       ;;
-    codex|claude|gemini)
+    codex | claude | gemini)
       echo "==> NOTE: TOUCHSTONE_REVIEWER=$TOUCHSTONE_REVIEWER is deprecated in 2.0.0." >&2
       echo "    Pin an underlying provider with: TOUCHSTONE_CONDUCTOR_WITH=$TOUCHSTONE_REVIEWER" >&2
       CONDUCTOR_WITH="$TOUCHSTONE_REVIEWER"
@@ -915,7 +966,7 @@ resolve_mode() {
   [ -n "$mode" ] || mode="${CONFIG_MODE:-fix}"
 
   case "$mode" in
-    review-only|fix|diff-only|no-tests) ;;
+    review-only | fix | diff-only | no-tests) ;;
     *)
       echo "WARNING: Invalid mode '$mode' — falling back to 'fix'. Valid: review-only, fix, diff-only, no-tests" >&2
       mode="fix"
@@ -926,7 +977,7 @@ resolve_mode() {
 
 REVIEW_MODE="$(resolve_mode)"
 
-mode_allows_fix()  { [ "$REVIEW_MODE" = "fix" ] || [ "$REVIEW_MODE" = "no-tests" ]; }
+mode_allows_fix() { [ "$REVIEW_MODE" = "fix" ] || [ "$REVIEW_MODE" = "no-tests" ]; }
 mode_allows_bash() { [ "$REVIEW_MODE" = "fix" ] || [ "$REVIEW_MODE" = "review-only" ]; }
 
 short_ref_name() {
@@ -982,10 +1033,9 @@ path_matches_context_pattern() {
     */)
       [[ "$path" == "$pattern"* ]] && return 0
       ;;
-    *\**|*\?*|*\[*)
-      case "$path" in
-        $pattern) return 0 ;;
-      esac
+    *\** | *\?* | *\[*)
+      # shellcheck disable=SC2053 # Configured context patterns intentionally use globs.
+      [[ "$path" == $pattern ]] && return 0
       ;;
     *)
       if [ "$path" = "$pattern" ] || [[ "$path" == "$pattern/"* ]]; then
@@ -1013,8 +1063,8 @@ find_path_matching_context_patterns() {
         printf '%s (matched %s)' "$path" "$pattern"
         return 0
       fi
-    done <<< "$patterns"
-  done <<< "$paths"
+    done <<<"$patterns"
+  done <<<"$paths"
 
   return 1
 }
@@ -1028,7 +1078,7 @@ select_prompt_context_mode() {
   requested="$(printf '%s' "${PROMPT_CONTEXT_MODE:-auto}" | tr '[:upper:]' '[:lower:]')"
 
   case "$requested" in
-    auto|bounded|full) ;;
+    auto | bounded | full) ;;
     *)
       echo "WARNING: Invalid review.context.mode='$PROMPT_CONTEXT_MODE' — using auto." >&2
       requested="auto"
@@ -1042,7 +1092,7 @@ select_prompt_context_mode() {
   fi
 
   case "$PROMPT_CONTEXT_SMALL_MAX_DIFF_LINES" in
-    ''|*[!0-9]*)
+    '' | *[!0-9]*)
       PROMPT_CONTEXT_DECISION="full"
       PROMPT_CONTEXT_REASON="invalid review.context.small_max_diff_lines='$PROMPT_CONTEXT_SMALL_MAX_DIFF_LINES'"
       return 0
@@ -1050,7 +1100,7 @@ select_prompt_context_mode() {
   esac
 
   case "$PROMPT_CONTEXT_SMALL_MAX_FILES" in
-    ''|*[!0-9]*)
+    '' | *[!0-9]*)
       PROMPT_CONTEXT_DECISION="full"
       PROMPT_CONTEXT_REASON="invalid review.context.small_max_files='$PROMPT_CONTEXT_SMALL_MAX_FILES'"
       return 0
@@ -1300,7 +1350,7 @@ reviewer_conductor_exec() {
 conductor_subcommand_for_mode() {
   case "$REVIEW_MODE" in
     diff-only) printf 'call' ;;
-    *)         printf 'exec' ;;
+    *) printf 'exec' ;;
   esac
 }
 
@@ -1396,7 +1446,7 @@ apply_review_routing() {
   [ -z "${TOUCHSTONE_REVIEWER:-}" ] || return 0
 
   case "$ROUTING_SMALL_MAX_DIFF_LINES" in
-    ''|*[!0-9]*)
+    '' | *[!0-9]*)
       echo "WARNING: Invalid review.routing.small_max_diff_lines='$ROUTING_SMALL_MAX_DIFF_LINES' — ignoring routing." >&2
       return 0
       ;;
@@ -1419,18 +1469,18 @@ apply_review_routing() {
     # Apply 2.0 small-bucket overrides. Non-empty fields win; env still
     # trumps via the earlier cascade (TOUCHSTONE_CONDUCTOR_* set on the
     # command line or in the shell override the config-driven bucket).
-    [ -n "$ROUTING_SMALL_WITH" ]   && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_SMALL_WITH}"
+    [ -n "$ROUTING_SMALL_WITH" ] && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_SMALL_WITH}"
     [ -n "$ROUTING_SMALL_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_SMALL_PREFER}"
     [ -n "$ROUTING_SMALL_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_SMALL_EFFORT}"
-    [ -n "$ROUTING_SMALL_TAGS" ]   && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_SMALL_TAGS}"
+    [ -n "$ROUTING_SMALL_TAGS" ] && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_SMALL_TAGS}"
     echo "==> Review routing: small diff ($diff_lines <= $ROUTING_SMALL_MAX_DIFF_LINES) — with=${CONDUCTOR_WITH:-auto} prefer=$CONDUCTOR_PREFER effort=$CONDUCTOR_EFFORT"
   else
     REVIEWER_CASCADE=("${ROUTING_LARGE_REVIEWERS[@]}")
     ROUTING_DECISION="large"
-    [ -n "$ROUTING_LARGE_WITH" ]   && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_LARGE_WITH}"
+    [ -n "$ROUTING_LARGE_WITH" ] && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_LARGE_WITH}"
     [ -n "$ROUTING_LARGE_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_LARGE_PREFER}"
     [ -n "$ROUTING_LARGE_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_LARGE_EFFORT}"
-    [ -n "$ROUTING_LARGE_TAGS" ]   && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_LARGE_TAGS}"
+    [ -n "$ROUTING_LARGE_TAGS" ] && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_LARGE_TAGS}"
     echo "==> Review routing: larger diff ($diff_lines > $ROUTING_SMALL_MAX_DIFF_LINES) — with=${CONDUCTOR_WITH:-auto} prefer=$CONDUCTOR_PREFER effort=$CONDUCTOR_EFFORT"
   fi
 }
@@ -1442,7 +1492,7 @@ run_reviewer() {
 reviewer_label_for() {
   case "$1" in
     conductor) printf 'Conductor' ;;
-    *)         printf '%s' "$1" ;;
+    *) printf '%s' "$1" ;;
   esac
 }
 
@@ -1484,17 +1534,17 @@ run_reviewer_with_timeout() {
   # we want to surface in the transcript. Pre-2.0 reviewers wrote noise to
   # stderr, hence the historical /dev/null redirect; capturing instead is
   # safe because non-[conductor] lines are filtered before display.
-  : > "$REVIEW_STDERR_FILE"
+  : >"$REVIEW_STDERR_FILE"
 
   # No timeout: run directly
   if [ "$timeout_secs" -le 0 ] 2>/dev/null; then
-    run_reviewer "$prompt" > "$output_file" 2>>"$REVIEW_STDERR_FILE"
+    run_reviewer "$prompt" >"$output_file" 2>>"$REVIEW_STDERR_FILE"
     return $?
   fi
 
   # Run reviewer in background, kill if it exceeds timeout.
   (
-    run_reviewer "$prompt" > "$output_file" 2>>"$REVIEW_STDERR_FILE" &
+    run_reviewer "$prompt" >"$output_file" 2>>"$REVIEW_STDERR_FILE" &
     local reviewer_pid=$!
 
     terminate_reviewer() {
@@ -1536,9 +1586,9 @@ handle_error() {
   # log and console output are unambiguous about *why* the safety net opened.
   local fail_open_code
   case "$reason" in
-    timeout*)             fail_open_code="FAIL_OPEN_TIMEOUT" ;;
+    timeout*) fail_open_code="FAIL_OPEN_TIMEOUT" ;;
     "malformed sentinel") fail_open_code="FAIL_OPEN_PARSE_ERROR" ;;
-    *)                    fail_open_code="FAIL_OPEN_REVIEWER_ERROR" ;;
+    *) fail_open_code="FAIL_OPEN_REVIEWER_ERROR" ;;
   esac
 
   if [ "$ON_ERROR" = "fail-closed" ]; then
@@ -1697,9 +1747,9 @@ $(git log --reverse --format='### %s%n%n%b' "$MERGE_BASE"..HEAD 2>/dev/null | se
 
 Examine the diff vs $BASE using your tools.
 $(if [ "$REVIEW_MODE" = "diff-only" ]; then
-printf '\n## Diff (included because mode=diff-only restricts tool access)\n\n```\n'
-git diff "$MERGE_BASE"..HEAD 2>/dev/null
-printf '```\n'
+  printf '\n## Diff (included because mode=diff-only restricts tool access)\n\n```\n'
+  git diff "$MERGE_BASE"..HEAD 2>/dev/null
+  printf '```\n'
 fi)
 
 ## Auto-fix policy
@@ -1707,8 +1757,8 @@ fi)
 $AUTOFIX_POLICY
 $(build_assist_policy)
 $(if [ -n "$REVIEW_CONTEXT_FILE" ]; then
-printf '\n## Project review context\n\n'
-cat "$REVIEW_CONTEXT_FILE"
+  printf '\n## Project review context\n\n'
+  cat "$REVIEW_CONTEXT_FILE"
 fi)
 
 ## Output contract — strict
@@ -1738,7 +1788,6 @@ if [ -n "$SENTINEL_JOURNAL_CONTEXT" ]; then
 ${REVIEW_PROMPT}"
   echo "==> Sentinel cycle journal injected into reviewer context."
 fi
-
 
 # --------------------------------------------------------------------------
 # Clean-review cache
@@ -1873,7 +1922,7 @@ write_clean_review_marker() {
     printf 'head=%s\n' "$(git rev-parse HEAD 2>/dev/null || echo unknown)"
     printf 'diff_lines=%s\n' "$line_count"
     printf 'reviewed_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  } > "$marker_file" 2>/dev/null || true
+  } >"$marker_file" 2>/dev/null || true
 }
 
 write_clean_review_cache() {
@@ -1893,7 +1942,7 @@ write_clean_review_cache() {
     printf 'head=%s\n' "$(git rev-parse HEAD 2>/dev/null || echo unknown)"
     printf 'diff_lines=%s\n' "$line_count"
     printf 'reviewed_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  } > "$cache_file" 2>/dev/null || true
+  } >"$cache_file" 2>/dev/null || true
 }
 
 # --------------------------------------------------------------------------
@@ -1959,7 +2008,7 @@ write_review_findings() {
     printf -- '--- findings start ---\n'
     printf '%s\n' "$findings_block"
     printf -- '--- findings end ---\n'
-  } > "$findings_file" 2>/dev/null || true
+  } >"$findings_file" 2>/dev/null || true
 }
 
 clear_review_findings() {
@@ -2060,7 +2109,7 @@ path_is_unsafe() {
         fi
         ;;
     esac
-  done <<< "$UNSAFE_PATHS"
+  done <<<"$UNSAFE_PATHS"
 
   return 1
 }
@@ -2094,7 +2143,7 @@ $path"
         disallowed="$path"
       fi
     fi
-  done <<< "$changed"
+  done <<<"$changed"
 
   printf '%s' "$disallowed"
 }
@@ -2136,9 +2185,9 @@ Commit messages:
 
 $(git log --reverse --format='### %s%n%n%b' "$MERGE_BASE"..HEAD 2>/dev/null | sed '/^$/N;/^\n$/d')
 $(if [ -n "$REVIEW_CONTEXT_FILE" ]; then
-printf '\n## Project review context\n\n'
-cat "$REVIEW_CONTEXT_FILE"
-fi)
+    printf '\n## Project review context\n\n'
+    cat "$REVIEW_CONTEXT_FILE"
+  fi)
 
 ## Diff
 
@@ -2273,10 +2322,16 @@ print_route_log() {
 # shellcheck disable=SC2120  # $1 is intentionally optional with a default.
 parse_primary_provider() {
   local stderr_file="${1:-$REVIEW_STDERR_FILE}"
-  [ -f "$stderr_file" ] || { printf ''; return; }
+  [ -f "$stderr_file" ] || {
+    printf ''
+    return
+  }
   local line
   line="$(grep -m1 '^\[conductor\]' "$stderr_file" 2>/dev/null || true)"
-  [ -n "$line" ] || { printf ''; return; }
+  [ -n "$line" ] || {
+    printf ''
+    return
+  }
   # Extract the provider name following the arrow. Handles:
   #   [conductor] auto (...) → claude (tier: ...)
   #   [conductor] auto (...) -> claude (tier: ...)
@@ -2335,11 +2390,11 @@ run_peer_review() {
   # relies on conductor's own per-provider timeout (currently 300s default).
   peer_output="$(printf '%s' "$peer_prompt" \
     | conductor call --auto \
-        --exclude "$primary_provider" \
-        --tags code-review \
-        --effort medium \
-        --silent-route \
-        2>/dev/null || true)"
+      --exclude "$primary_provider" \
+      --tags code-review \
+      --effort medium \
+      --silent-route \
+      2>/dev/null || true)"
 
   if [ -z "$peer_output" ]; then
     phase "peer review produced no output (skipped)"
@@ -2410,7 +2465,7 @@ check_worktree_invariants() {
 
 print_summary() {
   local elapsed mins secs findings
-  elapsed=$(( $(date +%s) - REVIEW_START_TIME ))
+  elapsed=$(($(date +%s) - REVIEW_START_TIME))
   mins=$((elapsed / 60))
   secs=$((elapsed % 60))
   findings="${REVIEW_FINDINGS_COUNT:-0}"
@@ -2436,7 +2491,7 @@ print_summary() {
     printf '{"reviewer":"%s","route":"%s","mode":"%s","files":%d,"diff_lines":%d,"iterations":%d,"fix_commits":%d,"peer_assists":%d,"findings":%d,"exit_reason":"%s","elapsed_seconds":%d}\n' \
       "$REVIEWER_LABEL" "$ROUTING_DECISION" "$REVIEW_MODE" "$REVIEW_FILES_INSPECTED" "$DIFF_LINE_COUNT" \
       "${iter:-0}" "$FIX_COMMITS" "$ASSIST_ROUNDS" "$findings" "$REVIEW_EXIT_REASON" "$elapsed" \
-      > "$CODEX_REVIEW_SUMMARY_FILE" 2>/dev/null || true
+      >"$CODEX_REVIEW_SUMMARY_FILE" 2>/dev/null || true
   fi
 }
 
@@ -2470,8 +2525,10 @@ tk_paint() {
   # Falls back to plain text if gum is missing, disabled, or fails —
   # the hook is running under `set -euo pipefail`, so silent gum failure
   # would otherwise produce empty strings in the verdict lines.
-  local color="$1"; shift
-  local flag="$1"; shift
+  local color="$1"
+  shift
+  local flag="$1"
+  shift
   local rendered=""
   if [ "$C_TTY" = "1" ] && tk_have_gum; then
     if [ "$flag" = "bold" ]; then
@@ -2503,7 +2560,7 @@ tk_signature_line() {
   # Dim "touchstone vX.Y.Z" line; version resolved via TOUCHSTONE_ROOT when set.
   local version=""
   if [ -n "${TOUCHSTONE_ROOT:-}" ] && [ -f "$TOUCHSTONE_ROOT/VERSION" ]; then
-    version="$(tr -d '[:space:]' < "$TOUCHSTONE_ROOT/VERSION" 2>/dev/null || true)"
+    version="$(tr -d '[:space:]' <"$TOUCHSTONE_ROOT/VERSION" 2>/dev/null || true)"
   fi
   if [ -n "$version" ]; then
     tk_paint "$TK_BRAND_DIM" plain "touchstone v${version}"
@@ -2519,12 +2576,18 @@ tk_verdict() {
   rail="$(tk_rail)"
 
   case "$state" in
-    ok)   mark="$(tk_paint "$TK_BRAND_LIME" plain "✓")"
-          painted_headline="$(tk_paint "$TK_BRAND_LIME" bold "$headline")" ;;
-    fail) mark="$(tk_paint "$TK_BRAND_RED"  plain "✗")"
-          painted_headline="$(tk_paint "$TK_BRAND_RED"  bold "$headline")" ;;
-    *)    mark="$(tk_paint "$TK_BRAND_DIM"  plain "•")"
-          painted_headline="$(tk_paint "$TK_BRAND_DIM"  bold "$headline")" ;;
+    ok)
+      mark="$(tk_paint "$TK_BRAND_LIME" plain "✓")"
+      painted_headline="$(tk_paint "$TK_BRAND_LIME" bold "$headline")"
+      ;;
+    fail)
+      mark="$(tk_paint "$TK_BRAND_RED" plain "✗")"
+      painted_headline="$(tk_paint "$TK_BRAND_RED" bold "$headline")"
+      ;;
+    *)
+      mark="$(tk_paint "$TK_BRAND_DIM" plain "•")"
+      painted_headline="$(tk_paint "$TK_BRAND_DIM" bold "$headline")"
+      ;;
   esac
 
   printf '\n  %s  %s  %s\n' "$rail" "$painted_headline" "$mark"
@@ -2599,8 +2662,8 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
   # peer's verdict does NOT gate the merge; the primary's sentinel wins.
   # Fires once per iteration, respects ASSIST_MAX_ROUNDS.
   if is_truthy "${ASSIST_ENABLED:-false}" \
-      && [ "${ASSIST_ROUNDS_DONE:-0}" -lt "${ASSIST_MAX_ROUNDS:-1}" ] \
-      && [ -n "$OUTPUT" ]; then
+    && [ "${ASSIST_ROUNDS_DONE:-0}" -lt "${ASSIST_MAX_ROUNDS:-1}" ] \
+    && [ -n "$OUTPUT" ]; then
     run_peer_review "$OUTPUT" || true
   fi
 

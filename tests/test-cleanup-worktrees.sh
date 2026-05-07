@@ -64,21 +64,21 @@ git -C "$REPO" config user.email "test@example.com"
 git -C "$REPO" config user.name "Test"
 git -C "$REPO" remote add origin "$REMOTE"
 
-echo "base" > "$REPO/base.txt"
+echo "base" >"$REPO/base.txt"
 git -C "$REPO" add base.txt
 git -C "$REPO" commit -qm "initial"
 git -C "$REPO" push -q -u origin main
 git -C "$REPO" remote set-head origin main
 
 git -C "$REPO" worktree add -q "$MERGED_WT" -b feat/merged main
-echo "merged" > "$MERGED_WT/merged.txt"
+echo "merged" >"$MERGED_WT/merged.txt"
 git -C "$MERGED_WT" add merged.txt
 git -C "$MERGED_WT" commit -qm "feat: merged"
 git -C "$REPO" checkout -q main
 git -C "$REPO" merge --no-ff -q feat/merged -m "merge feat/merged"
 
 git -C "$REPO" worktree add -q "$SQUASH_WT" -b feat/squash main
-echo "squash" > "$SQUASH_WT/squash.txt"
+echo "squash" >"$SQUASH_WT/squash.txt"
 git -C "$SQUASH_WT" add squash.txt
 git -C "$SQUASH_WT" commit -qm "feat: squash"
 git -C "$REPO" checkout -q main
@@ -86,20 +86,20 @@ git -C "$REPO" merge --squash feat/squash >/dev/null
 git -C "$REPO" commit -qm "feat: squash (#1)"
 
 git -C "$REPO" worktree add -q "$UNIQUE_WT" -b feat/unique main
-echo "unique" > "$UNIQUE_WT/unique.txt"
+echo "unique" >"$UNIQUE_WT/unique.txt"
 git -C "$UNIQUE_WT" add unique.txt
 git -C "$UNIQUE_WT" commit -qm "feat: unique"
 
 git -C "$REPO" worktree add -q "$DIRTY_WT" -b feat/dirty main
-echo "dirty" > "$DIRTY_WT/dirty.txt"
+echo "dirty" >"$DIRTY_WT/dirty.txt"
 git -C "$DIRTY_WT" add dirty.txt
 git -C "$DIRTY_WT" commit -qm "feat: dirty"
 git -C "$REPO" checkout -q main
 git -C "$REPO" merge --no-ff -q feat/dirty -m "merge feat/dirty"
-echo "uncommitted" >> "$DIRTY_WT/dirty.txt"
+echo "uncommitted" >>"$DIRTY_WT/dirty.txt"
 
 git -C "$REPO" worktree add -q "$LOCKED_STALE_WT" -b feat/locked-stale main
-echo "locked stale" > "$LOCKED_STALE_WT/locked-stale.txt"
+echo "locked stale" >"$LOCKED_STALE_WT/locked-stale.txt"
 git -C "$LOCKED_STALE_WT" add locked-stale.txt
 git -C "$LOCKED_STALE_WT" commit -qm "feat: locked stale"
 git -C "$REPO" checkout -q main
@@ -108,7 +108,7 @@ DEAD_PID="$(dead_pid)"
 git -C "$REPO" worktree lock --reason "agent pid $DEAD_PID" "$LOCKED_STALE_WT"
 
 git -C "$REPO" worktree add -q "$LOCKED_ALIVE_WT" -b feat/locked-alive main
-echo "locked alive" > "$LOCKED_ALIVE_WT/locked-alive.txt"
+echo "locked alive" >"$LOCKED_ALIVE_WT/locked-alive.txt"
 git -C "$LOCKED_ALIVE_WT" add locked-alive.txt
 git -C "$LOCKED_ALIVE_WT" commit -qm "feat: locked alive"
 git -C "$REPO" checkout -q main
@@ -118,7 +118,7 @@ LOCKED_ALIVE_PID="$!"
 git -C "$REPO" worktree lock --reason "agent pid $LOCKED_ALIVE_PID" "$LOCKED_ALIVE_WT"
 
 git -C "$REPO" worktree add -q "$LOCKED_NOPID_WT" -b feat/locked-nopid main
-echo "locked no pid" > "$LOCKED_NOPID_WT/locked-nopid.txt"
+echo "locked no pid" >"$LOCKED_NOPID_WT/locked-nopid.txt"
 git -C "$LOCKED_NOPID_WT" add locked-nopid.txt
 git -C "$REPO" checkout -q main
 git -C "$LOCKED_NOPID_WT" commit -qm "feat: locked no pid"
@@ -126,7 +126,7 @@ git -C "$REPO" merge --no-ff -q feat/locked-nopid -m "merge feat/locked-nopid"
 git -C "$REPO" worktree lock --reason "manual inspection" "$LOCKED_NOPID_WT"
 
 git -C "$REPO" worktree add -q -b feat/detached-source "$TEST_DIR/demo-detached-source" main
-echo "detached-unique" > "$TEST_DIR/demo-detached-source/detached.txt"
+echo "detached-unique" >"$TEST_DIR/demo-detached-source/detached.txt"
 git -C "$TEST_DIR/demo-detached-source" add detached.txt
 git -C "$TEST_DIR/demo-detached-source" commit -qm "feat: detached unique work"
 DETACHED_SHA="$(git -C "$TEST_DIR/demo-detached-source" rev-parse HEAD)"

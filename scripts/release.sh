@@ -18,8 +18,11 @@ cd "$REPO_ROOT"
 
 bump="${1:---patch}"
 case "$bump" in
-  --major|--minor|--patch) ;;
-  *) echo "ERROR: unknown bump arg: $bump (use --major, --minor, --patch)" >&2; exit 1 ;;
+  --major | --minor | --patch) ;;
+  *)
+    echo "ERROR: unknown bump arg: $bump (use --major, --minor, --patch)" >&2
+    exit 1
+    ;;
 esac
 
 TOUCHSTONE_NO_AUTO_UPDATE=1 exec bin/touchstone release "$bump"

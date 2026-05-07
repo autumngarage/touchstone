@@ -39,8 +39,8 @@ git -C "$REPO" config user.email "test@example.com"
 git -C "$REPO" config user.name "Test"
 git -C "$REPO" remote add origin "$REMOTE"
 
-echo "tracked" > "$REPO/tracked.txt"
-cat > "$REPO/.gitignore" <<'EOF'
+echo "tracked" >"$REPO/tracked.txt"
+cat >"$REPO/.gitignore" <<'EOF'
 .env.test
 local/*.json
 node_modules/
@@ -50,13 +50,13 @@ git -C "$REPO" commit -qm "initial"
 git -C "$REPO" push -q -u origin main
 git -C "$REPO" remote set-head origin main
 
-printf 'TOKEN=fake\n' > "$REPO/.env.test"
+printf 'TOKEN=fake\n' >"$REPO/.env.test"
 mkdir -p "$REPO/local" "$REPO/local/secrets" "$REPO/node_modules/pkg"
-printf '{"debug":true}\n' > "$REPO/local/dev.json"
-printf '{"prod":true}\n' > "$REPO/local/secrets/prod.json"
-printf 'cached\n' > "$REPO/node_modules/pkg/cache.txt"
-printf 'not ignored\n' > "$REPO/not-ignored.txt"
-cat > "$REPO/.worktreeinclude" <<'EOF'
+printf '{"debug":true}\n' >"$REPO/local/dev.json"
+printf '{"prod":true}\n' >"$REPO/local/secrets/prod.json"
+printf 'cached\n' >"$REPO/node_modules/pkg/cache.txt"
+printf 'not ignored\n' >"$REPO/not-ignored.txt"
+cat >"$REPO/.worktreeinclude" <<'EOF'
 # explicit local test config
 .env.test
 local/*.json
@@ -105,10 +105,10 @@ BAD_WT="$TEST_DIR/bad-include-wt"
 git init -q -b main "$BAD_INCLUDE_REPO"
 git -C "$BAD_INCLUDE_REPO" config user.email "test@example.com"
 git -C "$BAD_INCLUDE_REPO" config user.name "Test"
-echo "tracked" > "$BAD_INCLUDE_REPO/tracked.txt"
+echo "tracked" >"$BAD_INCLUDE_REPO/tracked.txt"
 git -C "$BAD_INCLUDE_REPO" add tracked.txt
 git -C "$BAD_INCLUDE_REPO" commit -qm "initial"
-printf '!negated\n' > "$BAD_INCLUDE_REPO/.worktreeinclude"
+printf '!negated\n' >"$BAD_INCLUDE_REPO/.worktreeinclude"
 if (cd "$BAD_INCLUDE_REPO" && bash "$TOUCHSTONE_ROOT/scripts/spawn-worktree.sh" feat/will-fail "$BAD_WT") >"$TEST_DIR/bad-include-output.txt" 2>&1; then
   fail "negated .worktreeinclude pattern should fail"
 fi

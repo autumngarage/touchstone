@@ -27,7 +27,7 @@ REMOTE_TOO=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --execute|-x)
+    --execute | -x)
       DRY_RUN=0
       shift
       ;;
@@ -39,7 +39,7 @@ while [ "$#" -gt 0 ]; do
       DRY_RUN=1
       shift
       ;;
-    -h|--help)
+    -h | --help)
       # Print the header comment block (skip shebang + leading `#`), stopping
       # at the first non-comment line. Derived instead of hardcoded so future
       # header edits don't silently truncate the help output.
@@ -87,7 +87,7 @@ is_worktree_branch() {
   while IFS= read -r wb; do
     [ -z "$wb" ] && continue
     [ "$b" = "$wb" ] && return 0
-  done <<< "$WORKTREE_BRANCHES"
+  done <<<"$WORKTREE_BRANCHES"
   return 1
 }
 
@@ -134,7 +134,7 @@ is_recorded_squash() {
         return 0
         ;;
     esac
-  done < "$SQUASH_MAP_PATH" 2>/dev/null
+  done <"$SQUASH_MAP_PATH" 2>/dev/null
   return 1
 }
 
@@ -187,7 +187,7 @@ while IFS= read -r branch; do
   else
     UNMERGED_LOCAL+=("$branch")
   fi
-done <<< "$LOCAL_BRANCHES"
+done <<<"$LOCAL_BRANCHES"
 
 if [ "${#MERGED_LOCAL[@]}" -gt 0 ]; then
   echo ""
@@ -256,7 +256,7 @@ if [ "$REMOTE_TOO" -eq 1 ] && [ "$REMOTE_SKIPPED" -eq 0 ]; then
     while IFS= read -r pr_branch; do
       [ -z "$pr_branch" ] && continue
       [ "$b" = "$pr_branch" ] && return 0
-    done <<< "$OPEN_PR_BRANCHES"
+    done <<<"$OPEN_PR_BRANCHES"
     return 1
   }
 
@@ -277,7 +277,7 @@ if [ "$REMOTE_TOO" -eq 1 ] && [ "$REMOTE_SKIPPED" -eq 0 ]; then
     else
       REMOTE_UNIQUE_NO_PR+=("$remote_branch")
     fi
-  done <<< "$REMOTE_BRANCHES"
+  done <<<"$REMOTE_BRANCHES"
 
   if [ "${#REMOTE_DELETABLE[@]}" -gt 0 ]; then
     echo ""

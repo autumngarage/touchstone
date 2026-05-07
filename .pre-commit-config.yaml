@@ -38,6 +38,15 @@ repos:
         args: ['--severity=warning']
         exclude: ^(completions/|prototypes/)
 
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.13.1-1
+    hooks:
+      - id: shfmt
+        # Match the repo's existing 2-space shell style while making case blocks
+        # and binary operators deterministic.
+        args: ['-i', '2', '-ci', '-bn']
+        exclude: ^(bin/touchstone$|completions/|prototypes/)
+
   # Codex review for direct pushes to the default branch
   - repo: local
     hooks:

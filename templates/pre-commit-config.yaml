@@ -45,10 +45,13 @@ repos:
         args: ['--severity=warning']
 
   - repo: https://github.com/scop/pre-commit-shfmt
-    rev: v3.10.0-1
+    rev: v3.13.1-1
     hooks:
       - id: shfmt
-        args: ['-i', '2', '-ci']
+        # Match Touchstone's 2-space shell style while making case blocks and
+        # binary operators deterministic.
+        args: ['-i', '2', '-ci', '-bn']
+        exclude: ^(completions/|prototypes/)
 
   # ── Branch naming enforcement ──────────────────────────────────────────
   - repo: local

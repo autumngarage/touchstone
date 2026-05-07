@@ -79,7 +79,7 @@ This block is managed by \`touchstone\` and refreshes on \`touchstone update\` /
 
 # Generate the full block
 tmp_block="$(mktemp)"
-printf "%s\n%s\n%s" "$BLOCK_HEADER" "$(render_principles)" "$BLOCK_FOOTER" > "$tmp_block"
+printf "%s\n%s\n%s" "$BLOCK_HEADER" "$(render_principles)" "$BLOCK_FOOTER" >"$tmp_block"
 
 # Update lib/agents-principles-block.sh
 # We use a sed-like approach to replace the block inside agents_principles_block_render()
@@ -98,9 +98,9 @@ awk '
   in_render && /^BLOCK/ { in_render = 0; print; next }
   in_render && replaced { next }
   { print }
-' "$OUTPUT_LIB" "$tmp_block" > "$tmp_lib"
+' "$OUTPUT_LIB" "$tmp_block" >"$tmp_lib"
 
-cat "$tmp_lib" > "$OUTPUT_LIB"
+cat "$tmp_lib" >"$OUTPUT_LIB"
 rm "$tmp_lib" "$tmp_block"
 
 echo "Successfully refreshed $OUTPUT_LIB from $PRINCIPLES_DIR"

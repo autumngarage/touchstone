@@ -130,20 +130,20 @@ mkdir -p "$REPO_DIR" "$FAKE_BIN"
 git -C "$REPO_DIR" init >/dev/null 2>&1
 git -C "$REPO_DIR" config user.name "Touchstone Test"
 git -C "$REPO_DIR" config user.email "touchstone@example.com"
-printf 'base\n' > "$REPO_DIR/example.txt"
+printf 'base\n' >"$REPO_DIR/example.txt"
 git -C "$REPO_DIR" add example.txt
 git -C "$REPO_DIR" commit -m "base" >/dev/null 2>&1
-printf 'changed\n' >> "$REPO_DIR/example.txt"
+printf 'changed\n' >>"$REPO_DIR/example.txt"
 git -C "$REPO_DIR" add example.txt
 git -C "$REPO_DIR" commit -m "change" >/dev/null 2>&1
 
-cat > "$FAKE_BIN/gh" <<'EOF'
+cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 echo "main"
 EOF
 
-cat > "$FAKE_BIN/conductor" <<'EOF'
+cat >"$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "doctor" ]; then
@@ -166,7 +166,7 @@ set +e
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
-    bash "$SCRIPT" > "$CLOSED_OUTPUT" 2>&1
+    bash "$SCRIPT" >"$CLOSED_OUTPUT" 2>&1
 )
 CLOSED_EXIT=$?
 set -e
@@ -192,7 +192,7 @@ set +e
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-open \
-    bash "$SCRIPT" > "$OPEN_OUTPUT" 2>&1
+    bash "$SCRIPT" >"$OPEN_OUTPUT" 2>&1
 )
 OPEN_EXIT=$?
 set -e

@@ -32,7 +32,7 @@ chmod +x "$SCRIPT_DIR/open-pr.sh"
 # Fake gh: captures the --body-file content so tests can assert on it.
 # GH_HAS_EXISTING_PR — unused here (always 0 / no existing PR).
 # ---------------------------------------------------------------------------
-cat > "$FAKE_BIN/gh" <<'GHEOF'
+cat >"$FAKE_BIN/gh" <<'GHEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$1 $2" in
@@ -67,7 +67,7 @@ chmod +x "$FAKE_BIN/gh"
 
 # Stub git push so the script never talks to a real remote.
 REAL_GIT="$(command -v git)"
-cat > "$FAKE_BIN/git" <<EOF
+cat >"$FAKE_BIN/git" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "\${1:-}" = "push" ]; then
@@ -90,11 +90,11 @@ make_repo() {
   git -C "$repo" init -b main >/dev/null 2>&1
   git -C "$repo" config user.name "Touchstone Test"
   git -C "$repo" config user.email "touchstone@example.com"
-  printf 'base\n' > "$repo/file.txt"
+  printf 'base\n' >"$repo/file.txt"
   git -C "$repo" add file.txt
   git -C "$repo" commit -m "base commit" >/dev/null 2>&1
   git -C "$repo" checkout -b feat/test >/dev/null 2>&1
-  printf 'change\n' >> "$repo/file.txt"
+  printf 'change\n' >>"$repo/file.txt"
   git -C "$repo" add file.txt
   git -C "$repo" commit -m "test commit subject
 
@@ -122,7 +122,7 @@ REPO1="$TEST_DIR/repo1"
 make_repo "$REPO1" "Commit body: should NOT appear"
 
 mkdir -p "$REPO1/.sentinel/runs"
-cat > "$REPO1/.sentinel/runs/2026-04-28-run.md" <<'RUNEOF'
+cat >"$REPO1/.sentinel/runs/2026-04-28-run.md" <<'RUNEOF'
 ---
 schema-version: 1.0
 ---
@@ -143,7 +143,7 @@ git -C "$REPO1" add .sentinel && git -C "$REPO1" commit -m "chore: add sentinel 
 
 OUT1="$TEST_DIR/case1.out"
 RC1=0
-run_open_pr "$REPO1" > "$OUT1" 2>&1 || RC1=$?
+run_open_pr "$REPO1" >"$OUT1" 2>&1 || RC1=$?
 
 if [ "$RC1" = "0" ] \
   && grep -q "Sentinel authored this PR" "$OUT1" \
@@ -168,7 +168,7 @@ make_repo "$REPO2" "Commit body: expected in PR"
 
 OUT2="$TEST_DIR/case2.out"
 RC2=0
-run_open_pr "$REPO2" > "$OUT2" 2>&1 || RC2=$?
+run_open_pr "$REPO2" >"$OUT2" 2>&1 || RC2=$?
 
 if [ "$RC2" = "0" ] \
   && grep -q "Commit body: expected in PR" "$OUT2" \
@@ -190,7 +190,7 @@ REPO3="$TEST_DIR/repo3"
 make_repo "$REPO3" "Commit body: fallback expected"
 
 mkdir -p "$REPO3/.sentinel/runs"
-cat > "$REPO3/.sentinel/runs/2026-04-28-run.md" <<'RUNEOF'
+cat >"$REPO3/.sentinel/runs/2026-04-28-run.md" <<'RUNEOF'
 ---
 schema-version: 1.0
 ---
@@ -205,7 +205,7 @@ Commit body: fallback expected" >/dev/null 2>&1
 
 OUT3="$TEST_DIR/case3.out"
 RC3=0
-run_open_pr "$REPO3" > "$OUT3" 2>&1 || RC3=$?
+run_open_pr "$REPO3" >"$OUT3" 2>&1 || RC3=$?
 
 if [ "$RC3" = "0" ] \
   && grep -q "Commit body: fallback expected" "$OUT3" \
@@ -227,7 +227,7 @@ REPO4="$TEST_DIR/repo4"
 make_repo "$REPO4" "Commit body: should NOT appear in v2"
 
 mkdir -p "$REPO4/.sentinel/runs"
-cat > "$REPO4/.sentinel/runs/2026-04-28-run.md" <<'RUNEOF'
+cat >"$REPO4/.sentinel/runs/2026-04-28-run.md" <<'RUNEOF'
 ---
 schema-version: 2.0
 ---
@@ -240,7 +240,7 @@ git -C "$REPO4" add .sentinel && git -C "$REPO4" commit -m "chore: add sentinel 
 
 OUT4="$TEST_DIR/case4.out"
 RC4=0
-run_open_pr "$REPO4" > "$OUT4" 2>&1 || RC4=$?
+run_open_pr "$REPO4" >"$OUT4" 2>&1 || RC4=$?
 
 if [ "$RC4" = "0" ] \
   && grep -q "Schema v2 body content" "$OUT4" \
@@ -263,7 +263,7 @@ REPO5="$TEST_DIR/repo5"
 make_repo "$REPO5" "Commit body: malformed fallback"
 
 mkdir -p "$REPO5/.sentinel/runs"
-cat > "$REPO5/.sentinel/runs/2026-04-28-run.md" <<'RUNEOF'
+cat >"$REPO5/.sentinel/runs/2026-04-28-run.md" <<'RUNEOF'
 ---
 schema-version: 1.0
 ---
@@ -278,7 +278,7 @@ Commit body: malformed fallback" >/dev/null 2>&1
 
 OUT5="$TEST_DIR/case5.out"
 RC5=0
-run_open_pr "$REPO5" > "$OUT5" 2>&1 || RC5=$?
+run_open_pr "$REPO5" >"$OUT5" 2>&1 || RC5=$?
 
 if [ "$RC5" = "0" ] \
   && grep -q "Commit body: malformed fallback" "$OUT5" \

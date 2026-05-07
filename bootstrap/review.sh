@@ -43,16 +43,39 @@ json_flag=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --dry-run) dry_run=true; shift ;;
+    --dry-run)
+      dry_run=true
+      shift
+      ;;
     --mode)
-      [ "$#" -ge 2 ] || { echo "ERROR: --mode requires a value" >&2; exit 1; }
-      mode_override="$2"; shift 2 ;;
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --mode requires a value" >&2
+        exit 1
+      }
+      mode_override="$2"
+      shift 2
+      ;;
     --base)
-      [ "$#" -ge 2 ] || { echo "ERROR: --base requires a ref" >&2; exit 1; }
-      base_override="$2"; shift 2 ;;
-    --json) json_flag="--json"; shift ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "ERROR: unknown argument '$1'" >&2; usage >&2; exit 1 ;;
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --base requires a ref" >&2
+        exit 1
+      }
+      base_override="$2"
+      shift 2
+      ;;
+    --json)
+      json_flag="--json"
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "ERROR: unknown argument '$1'" >&2
+      usage >&2
+      exit 1
+      ;;
   esac
 done
 
@@ -71,7 +94,10 @@ if ! command -v conductor >/dev/null 2>&1; then
 fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-[ -n "$REPO_ROOT" ] || { echo "ERROR: not inside a git repository." >&2; exit 1; }
+[ -n "$REPO_ROOT" ] || {
+  echo "ERROR: not inside a git repository." >&2
+  exit 1
+}
 
 CONFIG_FILE="$REPO_ROOT/.codex-review.toml"
 
@@ -95,10 +121,17 @@ CONFIG_MODE=""
 
 strip_quotes() {
   local v="$1"
-  v="${v# }"; v="${v% }"
+  v="${v# }"
+  v="${v% }"
   case "$v" in
-    \"*\") v="${v#\"}"; v="${v%\"}" ;;
-    \'*\') v="${v#\'}"; v="${v%\'}" ;;
+    \"*\")
+      v="${v#\"}"
+      v="${v%\"}"
+      ;;
+    \'*\')
+      v="${v#\'}"
+      v="${v%\'}"
+      ;;
   esac
   printf '%s' "$v"
 }
@@ -109,8 +142,8 @@ normalize_bool() {
   value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
 
   case "$value" in
-    true|1|yes|on) printf 'true' ;;
-    false|0|no|off) printf 'false' ;;
+    true | 1 | yes | on) printf 'true' ;;
+    false | 0 | no | off) printf 'false' ;;
     *) printf '%s' "$value" ;;
   esac
 }
@@ -127,32 +160,32 @@ if [ -f "$CONFIG_FILE" ]; then
     local value="$3"
 
     case "$section" in
-      "codex_review"|"")
+      "codex_review" | "")
         case "$key" in
           mode) CONFIG_MODE="$(toml_unquote "$value")" ;;
         esac
         ;;
       "review.conductor")
         case "$key" in
-          prefer)  CONDUCTOR_PREFER="$(toml_unquote "$value")" ;;
-          effort)  CONDUCTOR_EFFORT="$(toml_unquote "$value")" ;;
-          tags)    CONDUCTOR_TAGS="$(toml_normalize_array "$value")" ;;
-          with)    CONDUCTOR_WITH="$(toml_unquote "$value")" ;;
+          prefer) CONDUCTOR_PREFER="$(toml_unquote "$value")" ;;
+          effort) CONDUCTOR_EFFORT="$(toml_unquote "$value")" ;;
+          tags) CONDUCTOR_TAGS="$(toml_normalize_array "$value")" ;;
+          with) CONDUCTOR_WITH="$(toml_unquote "$value")" ;;
           exclude) CONDUCTOR_EXCLUDE="$(toml_normalize_array "$value")" ;;
         esac
         ;;
       "review.routing")
         case "$key" in
           enabled) ROUTING_ENABLED="$(normalize_bool "$value")" ;;
-          small_max_diff_lines|small_diff_lines) ROUTING_SMALL_MAX_DIFF_LINES="$value" ;;
-          small_with)    ROUTING_SMALL_WITH="$(toml_unquote "$value")" ;;
-          small_prefer)  ROUTING_SMALL_PREFER="$(toml_unquote "$value")" ;;
-          small_effort)  ROUTING_SMALL_EFFORT="$(toml_unquote "$value")" ;;
-          small_tags)    ROUTING_SMALL_TAGS="$(toml_normalize_array "$value")" ;;
-          large_with)    ROUTING_LARGE_WITH="$(toml_unquote "$value")" ;;
-          large_prefer)  ROUTING_LARGE_PREFER="$(toml_unquote "$value")" ;;
-          large_effort)  ROUTING_LARGE_EFFORT="$(toml_unquote "$value")" ;;
-          large_tags)    ROUTING_LARGE_TAGS="$(toml_normalize_array "$value")" ;;
+          small_max_diff_lines | small_diff_lines) ROUTING_SMALL_MAX_DIFF_LINES="$value" ;;
+          small_with) ROUTING_SMALL_WITH="$(toml_unquote "$value")" ;;
+          small_prefer) ROUTING_SMALL_PREFER="$(toml_unquote "$value")" ;;
+          small_effort) ROUTING_SMALL_EFFORT="$(toml_unquote "$value")" ;;
+          small_tags) ROUTING_SMALL_TAGS="$(toml_normalize_array "$value")" ;;
+          large_with) ROUTING_LARGE_WITH="$(toml_unquote "$value")" ;;
+          large_prefer) ROUTING_LARGE_PREFER="$(toml_unquote "$value")" ;;
+          large_effort) ROUTING_LARGE_EFFORT="$(toml_unquote "$value")" ;;
+          large_tags) ROUTING_LARGE_TAGS="$(toml_normalize_array "$value")" ;;
         esac
         ;;
     esac
@@ -168,13 +201,13 @@ fi
 # the translation block in hooks/codex-review.sh (keep in sync).
 if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
   case "$TOUCHSTONE_REVIEWER" in
-    auto|conductor) ;;
+    auto | conductor) ;;
     local)
       echo "==> NOTE: TOUCHSTONE_REVIEWER=local is deprecated in 2.0.0." >&2
       echo "    Migrating to: TOUCHSTONE_CONDUCTOR_WITH=ollama (the closest 2.0 analog)." >&2
       [ -z "${TOUCHSTONE_CONDUCTOR_WITH:-}" ] && export TOUCHSTONE_CONDUCTOR_WITH="ollama"
       ;;
-    codex|claude|gemini|ollama)
+    codex | claude | gemini | ollama)
       echo "==> NOTE: TOUCHSTONE_REVIEWER=$TOUCHSTONE_REVIEWER is deprecated in 2.0.0." >&2
       echo "    Pin an underlying provider with: TOUCHSTONE_CONDUCTOR_WITH=$TOUCHSTONE_REVIEWER" >&2
       [ -z "${TOUCHSTONE_CONDUCTOR_WITH:-}" ] && export TOUCHSTONE_CONDUCTOR_WITH="$TOUCHSTONE_REVIEWER"
@@ -218,24 +251,24 @@ routing_reason="review.routing.enabled=false"
 if [ "$ROUTING_ENABLED" = true ]; then
   routing_reason="diff line count unavailable for base $BASE"
   case "$ROUTING_SMALL_MAX_DIFF_LINES" in
-    ''|*[!0-9]*)
+    '' | *[!0-9]*)
       routing_reason="invalid review.routing.small_max_diff_lines='$ROUTING_SMALL_MAX_DIFF_LINES'"
       ;;
     *)
       if [ "$diff_line_count_available" = true ] && [ "$DIFF_LINE_COUNT" -le "$ROUTING_SMALL_MAX_DIFF_LINES" ] 2>/dev/null; then
         routing_decision="small"
         routing_reason="$DIFF_LINE_COUNT <= $ROUTING_SMALL_MAX_DIFF_LINES diff lines"
-        [ -n "$ROUTING_SMALL_WITH" ]   && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_SMALL_WITH}"
+        [ -n "$ROUTING_SMALL_WITH" ] && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_SMALL_WITH}"
         [ -n "$ROUTING_SMALL_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_SMALL_PREFER}"
         [ -n "$ROUTING_SMALL_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_SMALL_EFFORT}"
-        [ -n "$ROUTING_SMALL_TAGS" ]   && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_SMALL_TAGS}"
+        [ -n "$ROUTING_SMALL_TAGS" ] && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_SMALL_TAGS}"
       elif [ "$diff_line_count_available" = true ]; then
         routing_decision="large"
         routing_reason="$DIFF_LINE_COUNT > $ROUTING_SMALL_MAX_DIFF_LINES diff lines"
-        [ -n "$ROUTING_LARGE_WITH" ]   && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_LARGE_WITH}"
+        [ -n "$ROUTING_LARGE_WITH" ] && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_LARGE_WITH}"
         [ -n "$ROUTING_LARGE_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_LARGE_PREFER}"
         [ -n "$ROUTING_LARGE_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_LARGE_EFFORT}"
-        [ -n "$ROUTING_LARGE_TAGS" ]   && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_LARGE_TAGS}"
+        [ -n "$ROUTING_LARGE_TAGS" ] && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_LARGE_TAGS}"
       fi
       ;;
   esac
@@ -244,10 +277,10 @@ fi
 # Mode → tools (mirror the adapter in hooks/codex-review.sh).
 tools=""
 case "$REVIEW_MODE" in
-  diff-only)   tools="" ;;
+  diff-only) tools="" ;;
   review-only) tools="Read,Grep,Glob,Bash" ;;
-  no-tests)    tools="Read,Grep,Glob,Edit,Write" ;;
-  fix)         tools="Read,Grep,Glob,Bash,Edit,Write" ;;
+  no-tests) tools="Read,Grep,Glob,Edit,Write" ;;
+  fix) tools="Read,Grep,Glob,Bash,Edit,Write" ;;
   *)
     echo "WARNING: unknown REVIEW_MODE='$REVIEW_MODE' — defaulting to review-only flags." >&2
     tools="Read,Grep,Glob,Bash"
@@ -277,12 +310,12 @@ if [ -n "$CONDUCTOR_WITH" ]; then
   exit 0
 fi
 
-[ -n "$CONDUCTOR_PREFER" ]  && args+=(--prefer  "$CONDUCTOR_PREFER")
-[ -n "$CONDUCTOR_EFFORT" ]  && args+=(--effort  "$CONDUCTOR_EFFORT")
-[ -n "$CONDUCTOR_TAGS" ]    && args+=(--tags    "$CONDUCTOR_TAGS")
+[ -n "$CONDUCTOR_PREFER" ] && args+=(--prefer "$CONDUCTOR_PREFER")
+[ -n "$CONDUCTOR_EFFORT" ] && args+=(--effort "$CONDUCTOR_EFFORT")
+[ -n "$CONDUCTOR_TAGS" ] && args+=(--tags "$CONDUCTOR_TAGS")
 [ -n "$CONDUCTOR_EXCLUDE" ] && args+=(--exclude "$CONDUCTOR_EXCLUDE")
-[ -n "$tools" ]             && args+=(--tools   "$tools")
-[ -n "$json_flag" ]         && args+=("$json_flag")
+[ -n "$tools" ] && args+=(--tools "$tools")
+[ -n "$json_flag" ] && args+=("$json_flag")
 
 if [ -z "$json_flag" ]; then
   echo "==> touchstone review --dry-run"

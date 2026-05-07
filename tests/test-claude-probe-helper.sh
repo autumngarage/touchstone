@@ -24,7 +24,7 @@ assert_contains_text() {
 
 FAKE_BIN="$TEST_DIR/fake-bin"
 mkdir -p "$FAKE_BIN"
-cat > "$FAKE_BIN/claude" <<'FAKECLAUDE'
+cat >"$FAKE_BIN/claude" <<'FAKECLAUDE'
 #!/usr/bin/env bash
 printf 'fast response for: %s\n' "$*"
 FAKECLAUDE

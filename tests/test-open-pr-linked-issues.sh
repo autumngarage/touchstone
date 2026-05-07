@@ -27,7 +27,7 @@ chmod +x "$SCRIPT_DIR/open-pr.sh"
 # Fake gh: captures --body-file content so this test can assert on the exact
 # PR body that would be sent to GitHub. Git push still talks to a real local
 # bare remote so branch/upstream behavior stays realistic.
-cat > "$FAKE_BIN/gh" <<'GHEOF'
+cat >"$FAKE_BIN/gh" <<'GHEOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$1 $2" in
@@ -67,7 +67,7 @@ git -C "$REPO_DIR" config user.name "Touchstone Test"
 git -C "$REPO_DIR" config user.email "touchstone@example.com"
 mkdir -p "$REPO_DIR/.github"
 cp "$TOUCHSTONE_ROOT/templates/pull_request_template.md" "$REPO_DIR/.github/pull_request_template.md"
-printf 'base\n' > "$REPO_DIR/file.txt"
+printf 'base\n' >"$REPO_DIR/file.txt"
 git -C "$REPO_DIR" add .github/pull_request_template.md file.txt
 git -C "$REPO_DIR" commit -m "base commit
 
@@ -75,14 +75,14 @@ Closes #99" >/dev/null 2>&1
 git -C "$REPO_DIR" push -u origin main >/dev/null 2>&1
 
 git -C "$REPO_DIR" switch -c feat/issue-close-test >/dev/null 2>&1
-printf 'change\n' >> "$REPO_DIR/file.txt"
+printf 'change\n' >>"$REPO_DIR/file.txt"
 git -C "$REPO_DIR" add file.txt
 git -C "$REPO_DIR" commit -m "test change
 
 Exercise linked issue detection.
 
 Closes #42" >/dev/null 2>&1
-printf 'second change\n' >> "$REPO_DIR/file.txt"
+printf 'second change\n' >>"$REPO_DIR/file.txt"
 git -C "$REPO_DIR" add file.txt
 git -C "$REPO_DIR" commit -m "test trailer
 
@@ -98,7 +98,7 @@ RC=0
   cd "$REPO_DIR"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     bash "$SCRIPT_DIR/open-pr.sh"
-) > "$OUT" 2>&1 || RC=$?
+) >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" = "0" ] \
   && grep -q '^## Linked Issues$' "$OUT" \

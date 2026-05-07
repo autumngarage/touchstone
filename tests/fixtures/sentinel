@@ -11,21 +11,21 @@
 set -euo pipefail
 
 case "${1:-}" in
-  version|--version|-V)
+  version | --version | -V)
     echo "sentinel, version 0.0.0-stub"
     exit 0
     ;;
   init)
     mkdir -p .sentinel
-    : > .sentinel/config.toml
-    printf 'state/\n' > .sentinel/.gitignore
+    : >.sentinel/config.toml
+    printf 'state/\n' >.sentinel/.gitignore
 
     # Note: the root .gitignore gets a `.claude/` block, NOT `.sentinel/`.
     # Real sentinel keeps `.sentinel/` source-tracked and only ignores the
     # ephemeral `state/` subdir via .sentinel/.gitignore. The R5.2
     # regression check enforces that distinction.
     if [ ! -f .gitignore ] || ! grep -qF '.claude/' .gitignore; then
-      printf '\n# sentinel artifacts — generated per-run, not source\n.claude/\n' >> .gitignore
+      printf '\n# sentinel artifacts — generated per-run, not source\n.claude/\n' >>.gitignore
       # Mirror real sentinel's _commit_gitignore_if_in_repo: when running
       # inside a git repo with HEAD, commit the gitignore so a later
       # `sentinel work --reset` does not throw away the ignore rules.
@@ -33,16 +33,16 @@ case "${1:-}" in
         && git rev-parse --verify HEAD >/dev/null 2>&1; then
         git add .gitignore >/dev/null 2>&1 || true
         git -c user.email=sentinel-stub@touchstone.test \
-            -c user.name=sentinel-stub \
-            commit -m "chore: gitignore sentinel artifacts (.claude/)" \
-            --quiet -- .gitignore >/dev/null 2>&1 || true
+          -c user.name=sentinel-stub \
+          commit -m "chore: gitignore sentinel artifacts (.claude/)" \
+          --quiet -- .gitignore >/dev/null 2>&1 || true
       fi
     fi
 
     echo "==> stub-sentinel init: scaffolded .sentinel/"
     exit 0
     ;;
-  work|run|doctor|status)
+  work | run | doctor | status)
     exit 0
     ;;
   "")

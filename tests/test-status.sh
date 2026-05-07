@@ -41,14 +41,15 @@ assert_not_contains() {
 # Run touchstone with HOME pointed at a tempdir registry. NO_COLOR keeps the
 # output ANSI-free so grep assertions don't trip over escapes.
 run_touchstone() {
-  local fake_home="$1"; shift
+  local fake_home="$1"
+  shift
   HOME="$fake_home" \
     NO_COLOR=1 \
     TOUCHSTONE_NO_AUTO_UPDATE=1 \
     bash "$TOUCHSTONE_BIN" "$@"
 }
 
-CURRENT_VERSION="$(tr -d '[:space:]' < "$TOUCHSTONE_ROOT/VERSION")"
+CURRENT_VERSION="$(tr -d '[:space:]' <"$TOUCHSTONE_ROOT/VERSION")"
 
 echo "==> Test: touchstone status / status --all"
 echo "    Test dir: $TEST_DIR"
@@ -63,18 +64,18 @@ mkdir -p "$FAKE_HOME"
 CURRENT_PROJECT="$TEST_DIR/proj-current"
 BEHIND_PROJECT="$TEST_DIR/proj-behind"
 NO_MANIFEST_PROJECT="$TEST_DIR/proj-no-manifest"
-MISSING_PROJECT="$TEST_DIR/proj-missing"  # never created
+MISSING_PROJECT="$TEST_DIR/proj-missing" # never created
 
 mkdir -p "$CURRENT_PROJECT" "$BEHIND_PROJECT" "$NO_MANIFEST_PROJECT"
 
 # proj-current: version matches the touchstone HEAD (VERSION string, since
 # the brew-install path uses that as the id when there's no .git directory —
 # which is also the worktree path we're running from).
-printf '%s\n' "$CURRENT_VERSION" > "$CURRENT_PROJECT/.touchstone-version"
+printf '%s\n' "$CURRENT_VERSION" >"$CURRENT_PROJECT/.touchstone-version"
 
 # proj-behind: arbitrary GC'd-style id that isn't reachable in touchstone's
 # git history. The behind computation must report "?" rather than crash.
-printf '%s\n' "0000000000000000000000000000000000000abc" > "$BEHIND_PROJECT/.touchstone-version"
+printf '%s\n' "0000000000000000000000000000000000000abc" >"$BEHIND_PROJECT/.touchstone-version"
 
 # proj-no-manifest: directory exists but has no .touchstone-version. The
 # table must render "(no manifest)" without aborting the walk.
@@ -86,7 +87,7 @@ printf '%s\n' "0000000000000000000000000000000000000abc" > "$BEHIND_PROJECT/.tou
   printf '%s\n' "$BEHIND_PROJECT"
   printf '%s\n' "$NO_MANIFEST_PROJECT"
   printf '%s\n' "$MISSING_PROJECT"
-} > "$FAKE_HOME/.touchstone-projects"
+} >"$FAKE_HOME/.touchstone-projects"
 
 # --------------------------------------------------------------------------
 # Test 1: `touchstone status --all` renders a row per registry entry
@@ -132,7 +133,7 @@ echo ""
 echo "--- Test 2: status from inside a project ---"
 
 PROJECT_OUT="$TEST_DIR/project.out"
-( cd "$CURRENT_PROJECT" && run_touchstone "$FAKE_HOME" status ) >"$PROJECT_OUT" 2>&1
+(cd "$CURRENT_PROJECT" && run_touchstone "$FAKE_HOME" status) >"$PROJECT_OUT" 2>&1
 
 assert_contains "$PROJECT_OUT" "^project: *${CURRENT_PROJECT}"
 assert_contains "$PROJECT_OUT" "^touchstone: *${CURRENT_VERSION}"
@@ -152,7 +153,7 @@ mkdir -p "$NON_PROJECT"
 NOT_OUT="$TEST_DIR/not.out"
 
 set +e
-( cd "$NON_PROJECT" && run_touchstone "$FAKE_HOME" status ) >"$NOT_OUT" 2>&1
+(cd "$NON_PROJECT" && run_touchstone "$FAKE_HOME" status) >"$NOT_OUT" 2>&1
 NOT_EXIT=$?
 set -e
 
@@ -192,7 +193,7 @@ echo "--- Test 5: status --all with zero-byte registry ---"
 
 EMPTY_FILE_HOME="$TEST_DIR/empty-file-home"
 mkdir -p "$EMPTY_FILE_HOME"
-: > "$EMPTY_FILE_HOME/.touchstone-projects"
+: >"$EMPTY_FILE_HOME/.touchstone-projects"
 
 EMPTY_FILE_OUT="$TEST_DIR/empty-file.out"
 set +e
@@ -220,7 +221,7 @@ mkdir -p "$COMMENT_HOME"
   printf '%s\n' "$CURRENT_PROJECT"
   printf '   \n'
   printf '# trailing comment\n'
-} > "$COMMENT_HOME/.touchstone-projects"
+} >"$COMMENT_HOME/.touchstone-projects"
 
 COMMENT_OUT="$TEST_DIR/comment.out"
 run_touchstone "$COMMENT_HOME" status --all >"$COMMENT_OUT" 2>&1
@@ -236,7 +237,7 @@ echo ""
 echo "--- Test 7: status --json project capability state ---"
 
 CURRENT_JSON_OUT="$TEST_DIR/current-json.out"
-( cd "$CURRENT_PROJECT" && run_touchstone "$FAKE_HOME" status --json ) >"$CURRENT_JSON_OUT" 2>&1
+(cd "$CURRENT_PROJECT" && run_touchstone "$FAKE_HOME" status --json) >"$CURRENT_JSON_OUT" 2>&1
 
 assert_contains "$CURRENT_JSON_OUT" '"installed_touchstone"'
 assert_contains "$CURRENT_JSON_OUT" '"project_touchstone"'
@@ -252,10 +253,10 @@ assert_contains "$CURRENT_JSON_OUT" '"project_state": "available"'
 OLD_CAPABILITY_PROJECT="$TEST_DIR/proj-old-capability"
 mkdir -p "$OLD_CAPABILITY_PROJECT"
 OLD_WORKTREE_BOUNDARY_ID="$(git -C "$TOUCHSTONE_ROOT" rev-parse d596930^)"
-printf '%s\n' "$OLD_WORKTREE_BOUNDARY_ID" > "$OLD_CAPABILITY_PROJECT/.touchstone-version"
+printf '%s\n' "$OLD_WORKTREE_BOUNDARY_ID" >"$OLD_CAPABILITY_PROJECT/.touchstone-version"
 
 OLD_JSON_OUT="$TEST_DIR/old-json.out"
-( cd "$OLD_CAPABILITY_PROJECT" && run_touchstone "$FAKE_HOME" status --json ) >"$OLD_JSON_OUT" 2>&1
+(cd "$OLD_CAPABILITY_PROJECT" && run_touchstone "$FAKE_HOME" status --json) >"$OLD_JSON_OUT" 2>&1
 
 assert_contains "$OLD_JSON_OUT" '"state": "project_files_outdated"'
 assert_contains "$OLD_JSON_OUT" '"name": "worktree-lifecycle"'
@@ -270,7 +271,7 @@ echo "--- Test 8: doctor required capability gates old project files ---"
 
 REQUIRE_OUT="$TEST_DIR/require-capability.out"
 set +e
-( cd "$OLD_CAPABILITY_PROJECT" && run_touchstone "$FAKE_HOME" doctor --project --require-capability worktree-lifecycle ) >"$REQUIRE_OUT" 2>&1
+(cd "$OLD_CAPABILITY_PROJECT" && run_touchstone "$FAKE_HOME" doctor --project --require-capability worktree-lifecycle) >"$REQUIRE_OUT" 2>&1
 REQUIRE_EXIT=$?
 set -e
 

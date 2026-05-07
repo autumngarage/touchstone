@@ -25,7 +25,7 @@ make_project() {
     git init -q -b main
     git config user.email "test@example.com"
     git config user.name "Test"
-    echo "placeholder" > README.md
+    echo "placeholder" >README.md
     git add README.md
     git commit -q -m "initial"
   )
@@ -35,14 +35,14 @@ write_legacy_state() {
   local project_dir="$1"
   (
     cd "$project_dir"
-    printf 'abc123\n' > .toolkit-version
-    cat > .toolkit-manifest <<'EOF'
+    printf 'abc123\n' >.toolkit-version
+    cat >.toolkit-manifest <<'EOF'
 # Managed by toolkit. These paths may be updated by `toolkit update`.
 .toolkit-manifest
 .toolkit-version
 scripts/toolkit-run.sh
 EOF
-    printf 'project_type=python\n' > .toolkit-config
+    printf 'project_type=python\n' >.toolkit-config
     git add .toolkit-version .toolkit-manifest .toolkit-config
     git commit -q -m "add legacy toolkit files"
   )
@@ -111,7 +111,7 @@ echo "==> Test 3: refuses when working tree is dirty"
 PROJECT_DIR2="$TEST_DIR/project2"
 make_project "$PROJECT_DIR2"
 write_legacy_state "$PROJECT_DIR2"
-echo "dirty" > "$PROJECT_DIR2/uncommitted.txt"
+echo "dirty" >"$PROJECT_DIR2/uncommitted.txt"
 
 set +e
 run_migrate "$PROJECT_DIR2" 2>/dev/null
@@ -134,8 +134,8 @@ PROJECT_DIR3="$TEST_DIR/project3"
 make_project "$PROJECT_DIR3"
 (
   cd "$PROJECT_DIR3"
-  printf 'legacy\n' > .toolkit-version
-  printf 'newer\n'  > .touchstone-version
+  printf 'legacy\n' >.toolkit-version
+  printf 'newer\n' >.touchstone-version
   git add .toolkit-version .touchstone-version
   git commit -q -m "conflicting state"
 )
@@ -167,7 +167,7 @@ set -e
 if [ "$RC" -eq 0 ]; then
   fail "expected update to fail on legacy project"
 fi
-if ! grep -q 'migrate-from-toolkit' <<< "$UPDATE_OUT"; then
+if ! grep -q 'migrate-from-toolkit' <<<"$UPDATE_OUT"; then
   fail "expected update error to mention 'migrate-from-toolkit', got:\n$UPDATE_OUT"
 fi
 

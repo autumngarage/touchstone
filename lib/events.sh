@@ -30,7 +30,7 @@ touchstone_json_string() {
 touchstone_event_value() {
   local value="${1-}"
   case "$value" in
-    ''|*[!0-9]*)
+    '' | *[!0-9]*)
       touchstone_json_string "$value"
       ;;
     *)
@@ -61,7 +61,7 @@ touchstone_emit_event() {
   done
   line="${line}}"
 
-  if ! printf '%s\n' "$line" >> "$events_file" 2>/dev/null; then
+  if ! printf '%s\n' "$line" >>"$events_file" 2>/dev/null; then
     printf 'WARNING: [events] could not append to %s\n' "$events_file" >&2
   fi
 }

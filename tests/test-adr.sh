@@ -52,7 +52,7 @@ mkdir -p "$SKILLS_HOME"
 (
   cd "$TOUCHSTONE_ROOT"
   HOME="$SKILLS_HOME" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" skills
-) > "$TEST_DIR/skills-list.txt"
+) >"$TEST_DIR/skills-list.txt"
 
 assert_contains "$TEST_DIR/skills-list.txt" 'touchstone-audit'
 assert_contains "$TEST_DIR/skills-list.txt" 'memory-audit'
@@ -60,7 +60,7 @@ assert_contains "$TEST_DIR/skills-list.txt" 'memory-audit'
 (
   cd "$TOUCHSTONE_ROOT"
   HOME="$SKILLS_HOME" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" skills check
-) > "$TEST_DIR/skills-check.txt"
+) >"$TEST_DIR/skills-check.txt"
 
 assert_contains "$TEST_DIR/skills-check.txt" 'skills valid'
 

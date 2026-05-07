@@ -26,14 +26,14 @@ mkdir -p "$SCRIPT_DIR" "$FAKE_BIN"
 
 cp "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$SCRIPT_DIR/open-pr.sh"
 # merge-pr.sh is invoked by open-pr.sh on --auto-merge; stub it.
-cat > "$SCRIPT_DIR/merge-pr.sh" <<'EOF'
+cat >"$SCRIPT_DIR/merge-pr.sh" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
 chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/merge-pr.sh"
 
 # Mock gh: returns a stable PR URL on create, claims mergedAt is non-empty.
-cat > "$FAKE_BIN/gh" <<'EOF'
+cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$1 $2" in
@@ -61,15 +61,15 @@ git -C "$REPO_DIR" switch -c main >/dev/null 2>&1
 git -C "$REPO_DIR" config user.name "Touchstone Test"
 git -C "$REPO_DIR" config user.email "touchstone@example.com"
 mkdir -p "$REPO_DIR/.github"
-printf '## Summary\n' > "$REPO_DIR/.github/pull_request_template.md"
-printf 'base\n' > "$REPO_DIR/file.txt"
+printf '## Summary\n' >"$REPO_DIR/.github/pull_request_template.md"
+printf 'base\n' >"$REPO_DIR/file.txt"
 git -C "$REPO_DIR" add .github/pull_request_template.md file.txt
 git -C "$REPO_DIR" commit -m "base" >/dev/null 2>&1
 git -C "$REPO_DIR" push -u origin main >/dev/null 2>&1
 
 FEATURE_DIR="$TEST_DIR/repo-feature"
 git -C "$REPO_DIR" worktree add "$FEATURE_DIR" -b feat/cleanup-test >/dev/null 2>&1
-printf 'change\n' >> "$FEATURE_DIR/file.txt"
+printf 'change\n' >>"$FEATURE_DIR/file.txt"
 git -C "$FEATURE_DIR" add file.txt
 git -C "$FEATURE_DIR" commit -m "test change" >/dev/null 2>&1
 
@@ -118,7 +118,7 @@ fi
 echo "==> Case 3: existing PR --auto-merge --cleanup-worktree removes the feature worktree"
 EXISTING_FEATURE_DIR="$TEST_DIR/repo-feature-existing"
 git -C "$REPO_DIR" worktree add "$EXISTING_FEATURE_DIR" -b feat/cleanup-existing >/dev/null 2>&1
-printf 'existing\n' >> "$EXISTING_FEATURE_DIR/file.txt"
+printf 'existing\n' >>"$EXISTING_FEATURE_DIR/file.txt"
 git -C "$EXISTING_FEATURE_DIR" add file.txt
 git -C "$EXISTING_FEATURE_DIR" commit -m "test existing change" >/dev/null 2>&1
 

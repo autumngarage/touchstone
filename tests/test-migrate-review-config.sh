@@ -39,7 +39,7 @@ assert_file_lacks() {
 # ----------------------------------------------------------------------------
 echo "==> Test: full legacy config migrates to 2.0 shape"
 LEGACY="$TEST_DIR/full.toml"
-cat > "$LEGACY" <<'EOF'
+cat >"$LEGACY" <<'EOF'
 [codex_review]
 max_iterations = 3
 
@@ -62,22 +62,22 @@ EOF
 bash "$MIGRATE" --file "$LEGACY" >/dev/null
 
 # 2.0 shape present
-assert_file_contains "$LEGACY" '^reviewer = "conductor"$'              "[review].reviewer scalar"
-assert_file_contains "$LEGACY" '^\[review\.conductor\]$'                "[review.conductor] section appended"
-assert_file_contains "$LEGACY" '^prefer = "best"$'                      "[review.conductor].prefer = best"
-assert_file_contains "$LEGACY" '^effort = "max"$'                       "[review.conductor].effort = max"
-assert_file_contains "$LEGACY" '^tags = "code-review"$'                 "[review.conductor].tags"
-assert_file_contains "$LEGACY" '^with = "claude"$'                      "[review.conductor].with pinned to first reviewer"
+assert_file_contains "$LEGACY" '^reviewer = "conductor"$' "[review].reviewer scalar"
+assert_file_contains "$LEGACY" '^\[review\.conductor\]$' "[review.conductor] section appended"
+assert_file_contains "$LEGACY" '^prefer = "best"$' "[review.conductor].prefer = best"
+assert_file_contains "$LEGACY" '^effort = "max"$' "[review.conductor].effort = max"
+assert_file_contains "$LEGACY" '^tags = "code-review"$' "[review.conductor].tags"
+assert_file_contains "$LEGACY" '^with = "claude"$' "[review.conductor].with pinned to first reviewer"
 assert_file_contains "$LEGACY" '# Original 1.x cascade was: claude, codex, gemini' "fallback chain preserved as comment"
-assert_file_contains "$LEGACY" '^small_with = "ollama"$'                "small_reviewers=local → small_with=ollama"
-assert_file_contains "$LEGACY" '^large_with = "claude"$'                "large_reviewers=claude → large_with=claude"
+assert_file_contains "$LEGACY" '^small_with = "ollama"$' "small_reviewers=local → small_with=ollama"
+assert_file_contains "$LEGACY" '^large_with = "claude"$' "large_reviewers=claude → large_with=claude"
 
 # 1.x markers gone (or commented out)
-assert_file_lacks "$LEGACY" '^reviewers[[:space:]]*=[[:space:]]*\['     "1.x reviewers array removed"
+assert_file_lacks "$LEGACY" '^reviewers[[:space:]]*=[[:space:]]*\[' "1.x reviewers array removed"
 assert_file_lacks "$LEGACY" '^small_reviewers[[:space:]]*=[[:space:]]*\[' "1.x small_reviewers removed"
 assert_file_lacks "$LEGACY" '^large_reviewers[[:space:]]*=[[:space:]]*\[' "1.x large_reviewers removed"
-assert_file_lacks "$LEGACY" '^\[review\.local\][[:space:]]*$'           "[review.local] header commented out"
-assert_file_lacks "$LEGACY" '^\[review\.assist\][[:space:]]*$'          "[review.assist] header commented out"
+assert_file_lacks "$LEGACY" '^\[review\.local\][[:space:]]*$' "[review.local] header commented out"
+assert_file_lacks "$LEGACY" '^\[review\.assist\][[:space:]]*$' "[review.assist] header commented out"
 assert_file_lacks "$LEGACY" '^command[[:space:]]*=[[:space:]]*"my-custom-reviewer' "[review.local].command commented out"
 
 # Backup written
@@ -116,7 +116,7 @@ echo "==> PASS: idempotent"
 # ----------------------------------------------------------------------------
 echo "==> Test: --dry-run leaves file untouched"
 DRY="$TEST_DIR/dry.toml"
-cat > "$DRY" <<'EOF'
+cat >"$DRY" <<'EOF'
 [review]
 reviewers = ["codex"]
 EOF
@@ -138,7 +138,7 @@ echo "==> PASS: --dry-run is read-only"
 # ----------------------------------------------------------------------------
 echo "==> Test: --no-backup skips backup file"
 NB="$TEST_DIR/nobak.toml"
-cat > "$NB" <<'EOF'
+cat >"$NB" <<'EOF'
 [review]
 reviewers = ["claude"]
 EOF
@@ -154,7 +154,7 @@ echo "==> PASS: --no-backup honored"
 # ----------------------------------------------------------------------------
 echo "==> Test: 'local' reviewer maps to 'ollama'"
 LOC="$TEST_DIR/local-reviewer.toml"
-cat > "$LOC" <<'EOF'
+cat >"$LOC" <<'EOF'
 [review]
 reviewers = ["local", "codex"]
 
@@ -171,7 +171,7 @@ echo "==> PASS: local maps to ollama"
 # ----------------------------------------------------------------------------
 echo "==> Test: file with no 1.x markers is a no-op"
 CLEAN="$TEST_DIR/clean.toml"
-cat > "$CLEAN" <<'EOF'
+cat >"$CLEAN" <<'EOF'
 [codex_review]
 max_iterations = 3
 mode = "review-only"
@@ -221,13 +221,13 @@ echo "==> Test: migrated config does not fire migration warnings"
 SCRATCH="$TEST_DIR/scratch-repo"
 mkdir -p "$SCRATCH" && cd "$SCRATCH"
 git init -q && git config user.email t@t && git config user.name t
-echo init > README.md && git add . && git commit -qm i
+echo init >README.md && git add . && git commit -qm i
 cp "$LEGACY" .codex-review.toml
 git add . && git commit -qm cfg
 
 # Mock conductor
 mkdir fakebin
-cat > fakebin/conductor <<'CXEOF'
+cat >fakebin/conductor <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 cat >/dev/null
@@ -237,12 +237,12 @@ chmod +x fakebin/conductor
 
 # Make a tracked change so there's something to review
 git checkout -qb feat/m
-echo c >> README.md && git add . && git commit -qm change
+echo c >>README.md && git add . && git commit -qm change
 
 PUSH_OUT="$TEST_DIR/push-out.txt"
 PATH="$SCRATCH/fakebin:/usr/bin:/bin" CODEX_REVIEW_BASE=HEAD~1 CODEX_REVIEW_MODE=review-only \
   CODEX_REVIEW_DISABLE_CACHE=1 \
-  bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" > "$PUSH_OUT" 2>&1 || true
+  bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$PUSH_OUT" 2>&1 || true
 
 # These migration-warning lines should NOT appear
 if grep -qE 'is a v1\.x config|is ignored in Touchstone 2\.0|is disabled in Touchstone 2\.0' "$PUSH_OUT"; then

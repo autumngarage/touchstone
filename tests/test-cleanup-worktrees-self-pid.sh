@@ -38,14 +38,14 @@ git -C "$REPO" config user.email "test@example.com"
 git -C "$REPO" config user.name "Test"
 git -C "$REPO" remote add origin "$REMOTE"
 
-echo "base" > "$REPO/base.txt"
+echo "base" >"$REPO/base.txt"
 git -C "$REPO" add base.txt
 git -C "$REPO" commit -qm "initial"
 git -C "$REPO" push -q -u origin main
 git -C "$REPO" remote set-head origin main
 
 git -C "$REPO" worktree add -q "$SELF_PID_WT" -b feat/self-pid main
-echo "self pid" > "$SELF_PID_WT/self-pid.txt"
+echo "self pid" >"$SELF_PID_WT/self-pid.txt"
 git -C "$SELF_PID_WT" add self-pid.txt
 git -C "$SELF_PID_WT" commit -qm "feat: self pid"
 git -C "$REPO" checkout -q main

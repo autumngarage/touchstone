@@ -38,8 +38,8 @@ cleanup() {
 
   # This test may run on a shared machine, so assert the invariant we own:
   # no project path from this isolated TEST_DIR may leak into the real registry.
-  if [ -n "$REAL_REGISTRY_FILE" ] && [ -f "$REAL_REGISTRY_FILE" ] && \
-     grep -F "$TEST_DIR" "$REAL_REGISTRY_FILE" >/dev/null 2>&1; then
+  if [ -n "$REAL_REGISTRY_FILE" ] && [ -f "$REAL_REGISTRY_FILE" ] \
+    && grep -F "$TEST_DIR" "$REAL_REGISTRY_FILE" >/dev/null 2>&1; then
     echo "FAIL: test wrote isolated temp paths to real registry at $REAL_REGISTRY_FILE" >&2
     registry_changed=true
   fi
@@ -369,7 +369,7 @@ assert_contains "$PROJECT_SWIFT/.swiftlint.yml" '^  - DerivedData$'
 # the case: a pre-existing Swift project that has never been touchstoned.
 PROJECT_SWIFT_EXISTING="$TEST_DIR/existing-swift-repo"
 mkdir -p "$PROJECT_SWIFT_EXISTING"
-printf 'SENTINEL_PACKAGE\n' > "$PROJECT_SWIFT_EXISTING/Package.swift"
+printf 'SENTINEL_PACKAGE\n' >"$PROJECT_SWIFT_EXISTING/Package.swift"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SWIFT_EXISTING" --no-register --type swift >/dev/null
 assert_contains "$PROJECT_SWIFT_EXISTING/Package.swift" '^SENTINEL_PACKAGE$'
 assert_not_exists "$PROJECT_SWIFT_EXISTING/Sources/ExistingSwiftRepo/ExistingSwiftRepoApp.swift"
@@ -381,7 +381,7 @@ assert_exists "$PROJECT_SWIFT_EXISTING/.swiftlint.yml"
 # bootstrap. copy_file is the project-owned semantic: skip if exists.
 PROJECT_SWIFT_HAND_EDITED="$TEST_DIR/swift-hand-edited-config"
 mkdir -p "$PROJECT_SWIFT_HAND_EDITED"
-printf 'SENTINEL_HAND_EDITED_CONFIG\n' > "$PROJECT_SWIFT_HAND_EDITED/.swiftlint.yml"
+printf 'SENTINEL_HAND_EDITED_CONFIG\n' >"$PROJECT_SWIFT_HAND_EDITED/.swiftlint.yml"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SWIFT_HAND_EDITED" --no-register --type swift >/dev/null
 assert_contains "$PROJECT_SWIFT_HAND_EDITED/.swiftlint.yml" '^SENTINEL_HAND_EDITED_CONFIG$'
 
@@ -411,9 +411,9 @@ mkdir -p "$PROJECT_SWIFT_IDEMPOTENT"
   printf '*.xcodeproj/\n'
   printf 'DerivedData/\n'
   printf 'Package.resolved\n'
-} > "$PROJECT_SWIFT_IDEMPOTENT/.gitignore"
+} >"$PROJECT_SWIFT_IDEMPOTENT/.gitignore"
 # Also give it existing Swift content so the boilerplate scaffold no-ops.
-printf 'SENTINEL_PACKAGE\n' > "$PROJECT_SWIFT_IDEMPOTENT/Package.swift"
+printf 'SENTINEL_PACKAGE\n' >"$PROJECT_SWIFT_IDEMPOTENT/Package.swift"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SWIFT_IDEMPOTENT" --no-register --type swift >/dev/null
 SWIFT_BUILD_DUPES="$(grep -c '^\.build/$' "$PROJECT_SWIFT_IDEMPOTENT/.gitignore" 2>/dev/null || echo 0)"
 if [ "$SWIFT_BUILD_DUPES" -ne 1 ]; then
@@ -484,9 +484,9 @@ phase "existing-dir + reviewer/CI/scaffold-tests opt-outs"
 
 # Bootstrap into an existing directory should back up touchstone-owned files before replacing them.
 mkdir -p "$PROJECT_EXISTING/principles" "$PROJECT_EXISTING/scripts"
-printf 'custom principle\n' > "$PROJECT_EXISTING/principles/engineering-principles.md"
-printf 'custom script\n' > "$PROJECT_EXISTING/scripts/open-pr.sh"
-printf 'custom manifest\n' > "$PROJECT_EXISTING/.touchstone-manifest"
+printf 'custom principle\n' >"$PROJECT_EXISTING/principles/engineering-principles.md"
+printf 'custom script\n' >"$PROJECT_EXISTING/scripts/open-pr.sh"
+printf 'custom manifest\n' >"$PROJECT_EXISTING/.touchstone-manifest"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_EXISTING" --no-register
 assert_exists "$PROJECT_EXISTING/principles/engineering-principles.md.bak"
 assert_exists "$PROJECT_EXISTING/scripts/open-pr.sh.bak"
@@ -502,7 +502,7 @@ mkdir -p "$PROJECT_EXISTING_CONFIG"
   printf 'max_iterations = 9\n'
   printf 'unsafe_paths = []\n'
   printf 'safe_by_default = true\n'
-} > "$PROJECT_EXISTING_CONFIG/.codex-review.toml"
+} >"$PROJECT_EXISTING_CONFIG/.codex-review.toml"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_EXISTING_CONFIG" --no-register --unsafe-paths "src/auth/"
 assert_contains "$PROJECT_EXISTING_CONFIG/.codex-review.toml" '^unsafe_paths = \[\]$'
 assert_contains "$PROJECT_EXISTING_CONFIG/.codex-review.toml" '^safe_by_default = true$'
@@ -604,7 +604,7 @@ assert_contains "$PROJECT_SCAFFOLD_GO/smoke_test.go" '^package main$'
 # "package github.com" which is invalid and breaks go test ./....
 PROJECT_SCAFFOLD_GO_MOD="$TEST_DIR/test-project-scaffold-go-mod"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GO_MOD" --no-register --type go >/dev/null
-printf 'module github.com/acme/widget\n\ngo 1.22\n' > "$PROJECT_SCAFFOLD_GO_MOD/go.mod"
+printf 'module github.com/acme/widget\n\ngo 1.22\n' >"$PROJECT_SCAFFOLD_GO_MOD/go.mod"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GO_MOD" --no-register --scaffold-tests >/dev/null
 assert_exists "$PROJECT_SCAFFOLD_GO_MOD/smoke_test.go"
 if grep -q '^package github' "$PROJECT_SCAFFOLD_GO_MOD/smoke_test.go"; then
@@ -617,8 +617,8 @@ assert_contains "$PROJECT_SCAFFOLD_GO_MOD/smoke_test.go" '^package main$'
 # match that package so go test ./... compiles (all files in a dir share one pkg).
 PROJECT_SCAFFOLD_GO_PKG="$TEST_DIR/test-project-scaffold-go-pkg"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GO_PKG" --no-register --type go >/dev/null
-printf 'module github.com/acme/widget\n\ngo 1.22\n' > "$PROJECT_SCAFFOLD_GO_PKG/go.mod"
-printf 'package widget\n\nfunc Hello() string { return "hi" }\n' > "$PROJECT_SCAFFOLD_GO_PKG/widget.go"
+printf 'module github.com/acme/widget\n\ngo 1.22\n' >"$PROJECT_SCAFFOLD_GO_PKG/go.mod"
+printf 'package widget\n\nfunc Hello() string { return "hi" }\n' >"$PROJECT_SCAFFOLD_GO_PKG/widget.go"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_GO_PKG" --no-register --scaffold-tests >/dev/null
 assert_exists "$PROJECT_SCAFFOLD_GO_PKG/smoke_test.go"
 assert_contains "$PROJECT_SCAFFOLD_GO_PKG/smoke_test.go" '^package widget$'
@@ -636,7 +636,7 @@ assert_contains "$TEST_DIR/scaffold-generic.txt" "profile is 'generic'"
 # project that already has tests is a no-op.
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EXISTING" --no-register --type python >/dev/null
 mkdir -p "$PROJECT_SCAFFOLD_EXISTING/tests"
-printf 'def test_real():\n    assert 1 + 1 == 2\n' > "$PROJECT_SCAFFOLD_EXISTING/tests/test_real.py"
+printf 'def test_real():\n    assert 1 + 1 == 2\n' >"$PROJECT_SCAFFOLD_EXISTING/tests/test_real.py"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EXISTING" --no-register --scaffold-tests >/dev/null
 assert_not_exists "$PROJECT_SCAFFOLD_EXISTING/tests/test_smoke.py"
 assert_contains "$PROJECT_SCAFFOLD_EXISTING/tests/test_real.py" 'def test_real'
@@ -647,7 +647,7 @@ assert_contains "$PROJECT_SCAFFOLD_EXISTING/tests/test_real.py" 'def test_real'
 PROJECT_SCAFFOLD_EMPTY_PY="$TEST_DIR/test-project-scaffold-empty-python"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EMPTY_PY" --no-register --type python >/dev/null
 mkdir -p "$PROJECT_SCAFFOLD_EMPTY_PY/tests"
-: > "$PROJECT_SCAFFOLD_EMPTY_PY/tests/__init__.py"
+: >"$PROJECT_SCAFFOLD_EMPTY_PY/tests/__init__.py"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_EMPTY_PY" --no-register --scaffold-tests >/dev/null
 assert_exists "$PROJECT_SCAFFOLD_EMPTY_PY/tests/test_smoke.py"
 
@@ -675,7 +675,7 @@ assert_exists "$PROJECT_SCAFFOLD_REINIT_PY/tests/test_smoke.py"
 PROJECT_SCAFFOLD_SPEC_TSX="$TEST_DIR/test-project-scaffold-spec-tsx"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_SPEC_TSX" --no-register --type node >/dev/null
 mkdir -p "$PROJECT_SCAFFOLD_SPEC_TSX/src"
-printf 'describe("Button", () => { it("renders", () => {}); });\n' > "$PROJECT_SCAFFOLD_SPEC_TSX/src/Button.spec.tsx"
+printf 'describe("Button", () => { it("renders", () => {}); });\n' >"$PROJECT_SCAFFOLD_SPEC_TSX/src/Button.spec.tsx"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_SPEC_TSX" --no-register --scaffold-tests >/dev/null
 assert_not_exists "$PROJECT_SCAFFOLD_SPEC_TSX/tests/smoke.test.ts"
 
@@ -685,14 +685,14 @@ assert_not_exists "$PROJECT_SCAFFOLD_SPEC_TSX/tests/smoke.test.ts"
 # (1) project_type=generic then profile=python ->  scaffolder runs python.
 PROJECT_SCAFFOLD_ALIAS="$TEST_DIR/test-project-scaffold-alias-lastwins"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_ALIAS" --no-register --type generic >/dev/null
-printf 'profile=python\n' >> "$PROJECT_SCAFFOLD_ALIAS/.touchstone-config"
+printf 'profile=python\n' >>"$PROJECT_SCAFFOLD_ALIAS/.touchstone-config"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_ALIAS" --no-register --scaffold-tests >/dev/null
 assert_exists "$PROJECT_SCAFFOLD_ALIAS/tests/test_smoke.py"
 
 # (2) project_type=generic but pyproject.toml exists -> detect upgrades to python.
 PROJECT_SCAFFOLD_PROMOTE="$TEST_DIR/test-project-scaffold-generic-promoted"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_PROMOTE" --no-register --type generic >/dev/null
-printf '[project]\nname = "demo"\nversion = "0.0.0"\n' > "$PROJECT_SCAFFOLD_PROMOTE/pyproject.toml"
+printf '[project]\nname = "demo"\nversion = "0.0.0"\n' >"$PROJECT_SCAFFOLD_PROMOTE/pyproject.toml"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_SCAFFOLD_PROMOTE" --no-register --scaffold-tests >/dev/null
 assert_exists "$PROJECT_SCAFFOLD_PROMOTE/tests/test_smoke.py"
 
@@ -705,7 +705,7 @@ git -C "$PROJECT_INIT_EXISTING_SETUP" init >/dev/null
   printf '#!/usr/bin/env bash\n'
   printf 'echo PROJECT_SETUP_RAN\n'
   printf 'exit 42\n'
-} > "$PROJECT_INIT_EXISTING_SETUP/setup.sh"
+} >"$PROJECT_INIT_EXISTING_SETUP/setup.sh"
 chmod +x "$PROJECT_INIT_EXISTING_SETUP/setup.sh"
 if (cd "$PROJECT_INIT_EXISTING_SETUP" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-register) >"$TEST_DIR/touchstone-init-existing-setup.txt" 2>&1; then
   assert_contains "$TEST_DIR/touchstone-init-existing-setup.txt" 'setup.sh already existed'
@@ -730,7 +730,7 @@ else
 fi
 
 mkdir -p "$PYTEST_WRAPPER_PROJECT/.venv/bin"
-cat > "$PYTEST_WRAPPER_PROJECT/.venv/bin/python" <<'FAKEPYTHON'
+cat >"$PYTEST_WRAPPER_PROJECT/.venv/bin/python" <<'FAKEPYTHON'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$PWD/pytest-args.txt"
 if [ "$1" = "-m" ] && [ "$2" = "pytest" ]; then
@@ -750,7 +750,7 @@ assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^-x$'
 FAKE_BIN="$TEST_DIR/fake-bin"
 UV_LOG="$TEST_DIR/uv.log"
 mkdir -p "$FAKE_BIN" "$PROJECT/agent"
-cat > "$FAKE_BIN/uv" <<'FAKEUV'
+cat >"$FAKE_BIN/uv" <<'FAKEUV'
 #!/usr/bin/env bash
 printf '%s|%s\n' "$PWD" "$*" >> "$UV_LOG"
 mkdir -p .venv/bin
@@ -763,10 +763,10 @@ printf 'uv synced\n'
 FAKEUV
 chmod +x "$FAKE_BIN/uv"
 
-printf '[project]\nname = "root-project"\nversion = "0.0.0"\n' > "$PROJECT/pyproject.toml"
+printf '[project]\nname = "root-project"\nversion = "0.0.0"\n' >"$PROJECT/pyproject.toml"
 touch "$PROJECT/uv.lock"
-printf '[project]\nname = "agent-project"\nversion = "0.0.0"\n' > "$PROJECT/agent/pyproject.toml"
-printf '3.11\n' > "$PROJECT/agent/.python-version"
+printf '[project]\nname = "agent-project"\nversion = "0.0.0"\n' >"$PROJECT/agent/pyproject.toml"
+printf '3.11\n' >"$PROJECT/agent/.python-version"
 
 (cd "$PROJECT" && PATH="$FAKE_BIN:$PATH" UV_LOG="$UV_LOG" bash setup.sh --deps-only) >/dev/null
 assert_exists "$PROJECT/.venv/bin/python"
@@ -784,7 +784,7 @@ SETUP_BRANCH_FAKE_BIN="$TEST_DIR/setup-deps-only-fake-bin"
 SETUP_BRANCH_LOG="$TEST_DIR/setup-deps-only-touchstone.log"
 mkdir -p "$SETUP_BRANCH_PROJECT" "$SETUP_BRANCH_FAKE_BIN"
 cp "$TOUCHSTONE_ROOT/templates/setup.sh" "$SETUP_BRANCH_PROJECT/setup.sh"
-cat > "$SETUP_BRANCH_FAKE_BIN/touchstone" <<'FAKETOUCHSTONE'
+cat >"$SETUP_BRANCH_FAKE_BIN/touchstone" <<'FAKETOUCHSTONE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$SETUP_BRANCH_LOG"
 exit 64
@@ -813,8 +813,8 @@ SETUP_MISSING_PIP_PROJECT="$TEST_DIR/setup-missing-pip-project"
 SETUP_MISSING_PIP_BIN="$TEST_DIR/setup-missing-pip-bin"
 mkdir -p "$SETUP_MISSING_PIP_PROJECT" "$SETUP_MISSING_PIP_BIN"
 cp "$TOUCHSTONE_ROOT/templates/setup.sh" "$SETUP_MISSING_PIP_PROJECT/setup.sh"
-printf 'pytest\n' > "$SETUP_MISSING_PIP_PROJECT/requirements.txt"
-cat > "$SETUP_MISSING_PIP_BIN/python3" <<'FAKEPYTHON3'
+printf 'pytest\n' >"$SETUP_MISSING_PIP_PROJECT/requirements.txt"
+cat >"$SETUP_MISSING_PIP_BIN/python3" <<'FAKEPYTHON3'
 #!/usr/bin/env bash
 case "$1" in
   --version)
@@ -873,12 +873,12 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SETUP_VERSION_PROJECT" --no-r
   printf 'large_reviewers = ["codex"]\n'
   printf '\n[review.local]\n'
   printf 'command = "local-reviewer --model demo"\n'
-} >> "$SETUP_VERSION_PROJECT/.codex-review.toml"
+} >>"$SETUP_VERSION_PROJECT/.codex-review.toml"
 {
   printf 'git_workflow=gitbutler\n'
   printf 'gitbutler_mcp=false\n'
-} >> "$SETUP_VERSION_PROJECT/.touchstone-config"
-cat > "$SETUP_VERSION_FAKE_BIN/touchstone" <<'FAKETOUCHSTONE'
+} >>"$SETUP_VERSION_PROJECT/.touchstone-config"
+cat >"$SETUP_VERSION_FAKE_BIN/touchstone" <<'FAKETOUCHSTONE'
 #!/usr/bin/env bash
 case "$1" in
   version)
@@ -898,23 +898,23 @@ case "$1" in
 esac
 printf 'fake touchstone %s\n' "$*"
 FAKETOUCHSTONE
-cat > "$SETUP_VERSION_FAKE_BIN/brew" <<'FAKEBREW'
+cat >"$SETUP_VERSION_FAKE_BIN/brew" <<'FAKEBREW'
 #!/usr/bin/env bash
 exit 0
 FAKEBREW
-cat > "$SETUP_VERSION_FAKE_BIN/pre-commit" <<'FAKEPRECOMMIT'
+cat >"$SETUP_VERSION_FAKE_BIN/pre-commit" <<'FAKEPRECOMMIT'
 #!/usr/bin/env bash
 printf 'pre-commit installed\n'
 FAKEPRECOMMIT
-cat > "$SETUP_VERSION_FAKE_BIN/gh" <<'FAKEGH'
+cat >"$SETUP_VERSION_FAKE_BIN/gh" <<'FAKEGH'
 #!/usr/bin/env bash
 printf 'Logged in to github.com\n'
 FAKEGH
-cat > "$SETUP_VERSION_FAKE_BIN/codex" <<'FAKECODEX'
+cat >"$SETUP_VERSION_FAKE_BIN/codex" <<'FAKECODEX'
 #!/usr/bin/env bash
 exit 0
 FAKECODEX
-cat > "$SETUP_VERSION_FAKE_BIN/conductor" <<'FAKECONDUCTOR'
+cat >"$SETUP_VERSION_FAKE_BIN/conductor" <<'FAKECONDUCTOR'
 #!/usr/bin/env bash
 case "$1" in
   doctor)
@@ -924,7 +924,7 @@ case "$1" in
 esac
 exit 0
 FAKECONDUCTOR
-cat > "$SETUP_VERSION_FAKE_BIN/but" <<'FAKEBUT'
+cat >"$SETUP_VERSION_FAKE_BIN/but" <<'FAKEBUT'
 #!/usr/bin/env bash
 exit 0
 FAKEBUT
@@ -949,26 +949,26 @@ RUNNER_FAKE_BIN="$TEST_DIR/runner-fake-bin"
 RUNNER_LOG="$TEST_DIR/runner.log"
 mkdir -p "$RUNNER_FAKE_BIN"
 
-cat > "$RUNNER_FAKE_BIN/pnpm" <<'FAKEPNPM'
+cat >"$RUNNER_FAKE_BIN/pnpm" <<'FAKEPNPM'
 #!/usr/bin/env bash
 printf 'pnpm|%s|%s\n' "$PWD" "$*" >> "$RUNNER_LOG"
 FAKEPNPM
-cat > "$RUNNER_FAKE_BIN/npm" <<'FAKENPM'
+cat >"$RUNNER_FAKE_BIN/npm" <<'FAKENPM'
 #!/usr/bin/env bash
 printf 'npm|%s|%s\n' "$PWD" "$*" >> "$RUNNER_LOG"
 FAKENPM
-cat > "$RUNNER_FAKE_BIN/swift" <<'FAKESWIFT'
+cat >"$RUNNER_FAKE_BIN/swift" <<'FAKESWIFT'
 #!/usr/bin/env bash
 printf 'swift|%s|%s\n' "$PWD" "$*" >> "$RUNNER_LOG"
 FAKESWIFT
-cat > "$RUNNER_FAKE_BIN/cargo" <<'FAKECARGO'
+cat >"$RUNNER_FAKE_BIN/cargo" <<'FAKECARGO'
 #!/usr/bin/env bash
 printf 'cargo|%s|%s\n' "$PWD" "$*" >> "$RUNNER_LOG"
 FAKECARGO
 chmod +x "$RUNNER_FAKE_BIN/"*
 
-printf '{"packageManager":"pnpm@9.0.0","scripts":{"lint":"echo lint","typecheck":"echo typecheck","test":"echo test"}}\n' > "$PROJECT_NODE/package.json"
-: > "$RUNNER_LOG"
+printf '{"packageManager":"pnpm@9.0.0","scripts":{"lint":"echo lint","typecheck":"echo typecheck","test":"echo test"}}\n' >"$PROJECT_NODE/package.json"
+: >"$RUNNER_LOG"
 (cd "$PROJECT_NODE" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash scripts/touchstone-run.sh validate) >/dev/null
 assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node|lint'
 assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node|typecheck'
@@ -986,9 +986,9 @@ fi
 PROJECT_NODE_BUILD="$TEST_DIR/test-project-node-build"
 mkdir -p "$PROJECT_NODE_BUILD/scripts"
 cp "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_NODE_BUILD/scripts/touchstone-run.sh"
-printf 'project_type=node\n' > "$PROJECT_NODE_BUILD/.touchstone-config"
-printf '{"packageManager":"pnpm@9.0.0","scripts":{"lint":"echo lint","typecheck":"echo typecheck","build":"echo build","test":"echo test"}}\n' > "$PROJECT_NODE_BUILD/package.json"
-: > "$RUNNER_LOG"
+printf 'project_type=node\n' >"$PROJECT_NODE_BUILD/.touchstone-config"
+printf '{"packageManager":"pnpm@9.0.0","scripts":{"lint":"echo lint","typecheck":"echo typecheck","build":"echo build","test":"echo test"}}\n' >"$PROJECT_NODE_BUILD/package.json"
+: >"$RUNNER_LOG"
 (cd "$PROJECT_NODE_BUILD" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash scripts/touchstone-run.sh validate) >/dev/null
 assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node-build|typecheck'
 assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node-build|build'
@@ -999,9 +999,9 @@ assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node-build|test'
 PROJECT_NODE_BUILD_ONLY="$TEST_DIR/test-project-node-build-only"
 mkdir -p "$PROJECT_NODE_BUILD_ONLY/scripts"
 cp "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_NODE_BUILD_ONLY/scripts/touchstone-run.sh"
-printf 'project_type=node\n' > "$PROJECT_NODE_BUILD_ONLY/.touchstone-config"
-printf '{"packageManager":"pnpm@9.0.0","scripts":{"lint":"echo lint","build":"tsc","test":"echo test"}}\n' > "$PROJECT_NODE_BUILD_ONLY/package.json"
-: > "$RUNNER_LOG"
+printf 'project_type=node\n' >"$PROJECT_NODE_BUILD_ONLY/.touchstone-config"
+printf '{"packageManager":"pnpm@9.0.0","scripts":{"lint":"echo lint","build":"tsc","test":"echo test"}}\n' >"$PROJECT_NODE_BUILD_ONLY/package.json"
+: >"$RUNNER_LOG"
 (cd "$PROJECT_NODE_BUILD_ONLY" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash scripts/touchstone-run.sh validate) >/dev/null
 if grep -q 'pnpm|.*/test-project-node-build-only|build' "$RUNNER_LOG"; then
   echo "FAIL: build should not run during validate when typecheck is absent (build IS typecheck)" >&2
@@ -1011,9 +1011,9 @@ fi
 SWIFT_PROJECT="$TEST_DIR/swift-runner"
 mkdir -p "$SWIFT_PROJECT/scripts"
 cp "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$SWIFT_PROJECT/scripts/touchstone-run.sh"
-printf 'project_type=swift\n' > "$SWIFT_PROJECT/.touchstone-config"
-printf '// swift package\n' > "$SWIFT_PROJECT/Package.swift"
-: > "$RUNNER_LOG"
+printf 'project_type=swift\n' >"$SWIFT_PROJECT/.touchstone-config"
+printf '// swift package\n' >"$SWIFT_PROJECT/Package.swift"
+: >"$RUNNER_LOG"
 (cd "$SWIFT_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash scripts/touchstone-run.sh validate) >/dev/null
 assert_contains "$RUNNER_LOG" 'swift|.*/swift-runner|build'
 assert_contains "$RUNNER_LOG" 'swift|.*/swift-runner|test'
@@ -1021,9 +1021,9 @@ assert_contains "$RUNNER_LOG" 'swift|.*/swift-runner|test'
 RUST_PROJECT="$TEST_DIR/rust-runner"
 mkdir -p "$RUST_PROJECT/scripts"
 cp "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$RUST_PROJECT/scripts/touchstone-run.sh"
-printf 'project_type=rust\n' > "$RUST_PROJECT/.touchstone-config"
-printf '[package]\nname = "demo"\nversion = "0.0.0"\n' > "$RUST_PROJECT/Cargo.toml"
-: > "$RUNNER_LOG"
+printf 'project_type=rust\n' >"$RUST_PROJECT/.touchstone-config"
+printf '[package]\nname = "demo"\nversion = "0.0.0"\n' >"$RUST_PROJECT/Cargo.toml"
+: >"$RUNNER_LOG"
 (cd "$RUST_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash scripts/touchstone-run.sh validate) >/dev/null
 assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|fmt -- --check'
 assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|clippy --all-targets --all-features -- -D warnings'
@@ -1036,10 +1036,10 @@ cp "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$MONOREPO_PROJECT/scripts/touch
 {
   printf 'project_type=generic\n'
   printf 'targets=web:apps/web:node,api:services/api:rust\n'
-} > "$MONOREPO_PROJECT/.touchstone-config"
-printf '{"scripts":{"test":"echo test"}}\n' > "$MONOREPO_PROJECT/apps/web/package.json"
-printf '[package]\nname = "api"\nversion = "0.0.0"\n' > "$MONOREPO_PROJECT/services/api/Cargo.toml"
-: > "$RUNNER_LOG"
+} >"$MONOREPO_PROJECT/.touchstone-config"
+printf '{"scripts":{"test":"echo test"}}\n' >"$MONOREPO_PROJECT/apps/web/package.json"
+printf '[package]\nname = "api"\nversion = "0.0.0"\n' >"$MONOREPO_PROJECT/services/api/Cargo.toml"
+: >"$RUNNER_LOG"
 (cd "$MONOREPO_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash scripts/touchstone-run.sh test) >/dev/null
 assert_contains "$RUNNER_LOG" 'npm|.*/monorepo-runner/apps/web|run test'
 assert_contains "$RUNNER_LOG" 'cargo|.*/monorepo-runner/services/api|test --all'
@@ -1048,17 +1048,17 @@ assert_contains "$RUNNER_LOG" 'cargo|.*/monorepo-runner/services/api|test --all'
 # TOUCHSTONE_SKIP_DEVTOOLS=1 keeps these tests hermetic — we're exercising the
 # dependency dispatch, not the per-profile dev-tool install (which would call
 # real brew/go/rustup on macOS dev machines that have those binaries on PATH).
-: > "$RUNNER_LOG"
+: >"$RUNNER_LOG"
 (cd "$PROJECT_NODE" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" TOUCHSTONE_SKIP_DEVTOOLS=1 bash setup.sh --deps-only) >/dev/null
 assert_contains "$RUNNER_LOG" 'pnpm|.*/test-project-node|install'
 
 cp "$TOUCHSTONE_ROOT/templates/setup.sh" "$SWIFT_PROJECT/setup.sh"
-: > "$RUNNER_LOG"
+: >"$RUNNER_LOG"
 (cd "$SWIFT_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" TOUCHSTONE_SKIP_DEVTOOLS=1 bash setup.sh --deps-only) >/dev/null
 assert_contains "$RUNNER_LOG" 'swift|.*/swift-runner|package resolve'
 
 cp "$TOUCHSTONE_ROOT/templates/setup.sh" "$RUST_PROJECT/setup.sh"
-: > "$RUNNER_LOG"
+: >"$RUNNER_LOG"
 (cd "$RUST_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" TOUCHSTONE_SKIP_DEVTOOLS=1 bash setup.sh --deps-only) >/dev/null
 assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|fetch'
 
@@ -1069,7 +1069,7 @@ phase "hook installation propagation"
 HOOKS_FAKE_BIN="$TEST_DIR/hooks-fake-bin"
 HOOKS_LOG="$TEST_DIR/hooks.log"
 mkdir -p "$HOOKS_FAKE_BIN"
-cat > "$HOOKS_FAKE_BIN/pre-commit" <<FAKEPRECOMMIT
+cat >"$HOOKS_FAKE_BIN/pre-commit" <<FAKEPRECOMMIT
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$HOOKS_LOG"
 # Write the pre-commit-framework marker and chmod +x so touchstone doctor
@@ -1095,7 +1095,7 @@ esac
 FAKEPRECOMMIT
 chmod +x "$HOOKS_FAKE_BIN/pre-commit"
 
-: > "$HOOKS_LOG"
+: >"$HOOKS_LOG"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_HOOKS_WITH" --no-register >/dev/null
 assert_contains "$HOOKS_LOG" '^install --hook-type pre-commit$'
 assert_contains "$HOOKS_LOG" '^install --hook-type pre-push$'
@@ -1126,7 +1126,7 @@ fi
 # so pre-code repos and new scaffolds don't fail validate.
 PYTEST_FAKE_BIN="$TEST_DIR/pytest-fake-bin"
 mkdir -p "$PYTEST_FAKE_BIN"
-cat > "$PYTEST_FAKE_BIN/python3" <<'FAKEPY'
+cat >"$PYTEST_FAKE_BIN/python3" <<'FAKEPY'
 #!/usr/bin/env bash
 if [ "$1" = "-m" ] && [ "$2" = "pytest" ]; then
   printf 'collected 0 items\n'
@@ -1138,7 +1138,7 @@ chmod +x "$PYTEST_FAKE_BIN/python3"
 
 mkdir -p "$PROJECT_PYTEST_EMPTY/scripts"
 cp "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_PYTEST_EMPTY/scripts/touchstone-run.sh"
-printf 'project_type=python\n' > "$PROJECT_PYTEST_EMPTY/.touchstone-config"
+printf 'project_type=python\n' >"$PROJECT_PYTEST_EMPTY/.touchstone-config"
 if (cd "$PROJECT_PYTEST_EMPTY" && PATH="$PYTEST_FAKE_BIN:$PATH" PYTEST_PYTHON=python3 bash scripts/touchstone-run.sh test) >"$TEST_DIR/pytest-empty-output.txt" 2>&1; then
   assert_contains "$TEST_DIR/pytest-empty-output.txt" 'pytest found no tests; skipped'
 else
@@ -1169,12 +1169,12 @@ assert_not_contains "$TEST_DIR/reinit-output.txt" 'Fill in project details'
 PROJECT_REINIT_SETUP="$TEST_DIR/test-project-reinit-setup"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REINIT_SETUP" --no-register >/dev/null
 rm -f "$PROJECT_REINIT_SETUP/setup.sh"
-cat > "$PROJECT_REINIT_SETUP/setup.sh.marker" <<'MARKER'
+cat >"$PROJECT_REINIT_SETUP/setup.sh.marker" <<'MARKER'
 # Touchstone should never run setup.sh during reconcile; if it does, this test catches it.
 MARKER
 # Replace the template setup.sh with a marker-logging version via a wrapper PATH.
 REINIT_SETUP_LOG="$TEST_DIR/reinit-setup.log"
-: > "$REINIT_SETUP_LOG"
+: >"$REINIT_SETUP_LOG"
 REINIT_SETUP_FAKE_BIN="$TEST_DIR/reinit-setup-fake-bin"
 mkdir -p "$REINIT_SETUP_FAKE_BIN"
 cp "$HOOKS_FAKE_BIN/pre-commit" "$REINIT_SETUP_FAKE_BIN/pre-commit"
@@ -1241,7 +1241,7 @@ fi
 # doesn't accidentally pass on the wrong probe — either convention is valid.
 SIBLING_STUB_BIN="$TEST_DIR/sibling-stub-bin"
 mkdir -p "$SIBLING_STUB_BIN"
-cat > "$SIBLING_STUB_BIN/cortex" <<'CORTEXSTUB'
+cat >"$SIBLING_STUB_BIN/cortex" <<'CORTEXSTUB'
 #!/usr/bin/env bash
 case "${1:-}" in
   version|--version) echo "cortex 9.9.9"; exit 0 ;;
@@ -1249,7 +1249,7 @@ case "${1:-}" in
 esac
 CORTEXSTUB
 chmod +x "$SIBLING_STUB_BIN/cortex"
-cat > "$SIBLING_STUB_BIN/sentinel" <<'SENTINELSTUB'
+cat >"$SIBLING_STUB_BIN/sentinel" <<'SENTINELSTUB'
 #!/usr/bin/env bash
 case "${1:-}" in
   version) echo "Error: no such command" >&2; exit 2 ;;
@@ -1285,10 +1285,10 @@ fi
 PROJECT_DOCTOR_EMPTY_PY="$TEST_DIR/test-project-doctor-empty-python"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_EMPTY_PY" --no-register --type python >/dev/null
 mkdir -p "$PROJECT_DOCTOR_EMPTY_PY/tests"
-: > "$PROJECT_DOCTOR_EMPTY_PY/tests/__init__.py"
+: >"$PROJECT_DOCTOR_EMPTY_PY/tests/__init__.py"
 RUFF_STUB_EMPTY_PY="$TEST_DIR/ruff-stub-empty-py"
 mkdir -p "$RUFF_STUB_EMPTY_PY"
-cat > "$RUFF_STUB_EMPTY_PY/ruff" <<'RUFFSTUBEMPTYPY'
+cat >"$RUFF_STUB_EMPTY_PY/ruff" <<'RUFFSTUBEMPTYPY'
 #!/usr/bin/env bash
 exit 0
 RUFFSTUBEMPTYPY
@@ -1306,7 +1306,7 @@ assert_contains "$TEST_DIR/doctor-empty-py.txt" "tests: not found for profile 'p
 # so the content check (not the executability check) is the one exercised.
 PROJECT_DOCTOR_HOOK_DRIFT="$TEST_DIR/test-project-doctor-hook-drift"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_HOOK_DRIFT" --no-register >/dev/null
-printf '#!/usr/bin/env bash\necho some other framework\n' > "$PROJECT_DOCTOR_HOOK_DRIFT/.git/hooks/pre-push"
+printf '#!/usr/bin/env bash\necho some other framework\n' >"$PROJECT_DOCTOR_HOOK_DRIFT/.git/hooks/pre-push"
 chmod +x "$PROJECT_DOCTOR_HOOK_DRIFT/.git/hooks/pre-push"
 if (cd "$PROJECT_DOCTOR_HOOK_DRIFT" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-hook-drift.txt" 2>&1; then
   echo "FAIL: doctor --project should exit nonzero when pre-push is not the pre-commit-framework shim" >&2
@@ -1332,10 +1332,10 @@ fi
 PROJECT_DOCTOR_PY_WITH="$TEST_DIR/test-project-doctor-python-with"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_PY_WITH" --no-register --type python >/dev/null
 mkdir -p "$PROJECT_DOCTOR_PY_WITH/tests"
-printf 'def test_smoke():\n    assert True\n' > "$PROJECT_DOCTOR_PY_WITH/tests/test_smoke.py"
+printf 'def test_smoke():\n    assert True\n' >"$PROJECT_DOCTOR_PY_WITH/tests/test_smoke.py"
 RUFF_STUB_BIN="$TEST_DIR/ruff-stub-bin"
 mkdir -p "$RUFF_STUB_BIN"
-cat > "$RUFF_STUB_BIN/ruff" <<'RUFFSTUB'
+cat >"$RUFF_STUB_BIN/ruff" <<'RUFFSTUB'
 #!/usr/bin/env bash
 exit 0
 RUFFSTUB
@@ -1374,12 +1374,12 @@ fi
 PROJECT_DOCTOR_MONO="$TEST_DIR/test-project-doctor-monorepo"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_MONO" --no-register >/dev/null
 mkdir -p "$PROJECT_DOCTOR_MONO/apps/web" "$PROJECT_DOCTOR_MONO/services/api" "$PROJECT_DOCTOR_MONO/apps/tsapp" "$PROJECT_DOCTOR_MONO/packages/autodetect"
-printf '[package]\nname = "api"\nversion = "0.0.0"\n' > "$PROJECT_DOCTOR_MONO/services/api/Cargo.toml"
-printf '{"scripts":{"lint":"echo lint","test":"echo test"}}\n' > "$PROJECT_DOCTOR_MONO/apps/web/package.json"
+printf '[package]\nname = "api"\nversion = "0.0.0"\n' >"$PROJECT_DOCTOR_MONO/services/api/Cargo.toml"
+printf '{"scripts":{"lint":"echo lint","test":"echo test"}}\n' >"$PROJECT_DOCTOR_MONO/apps/web/package.json"
 # tsapp declares "typescript" profile (alias for node) but has no lint script.
-printf '{}\n' > "$PROJECT_DOCTOR_MONO/apps/tsapp/package.json"
+printf '{}\n' >"$PROJECT_DOCTOR_MONO/apps/tsapp/package.json"
 # autodetect declares no explicit profile — must be detected from manifest (Cargo.toml).
-printf '[package]\nname = "autodetected"\nversion = "0.0.0"\n' > "$PROJECT_DOCTOR_MONO/packages/autodetect/Cargo.toml"
+printf '[package]\nname = "autodetected"\nversion = "0.0.0"\n' >"$PROJECT_DOCTOR_MONO/packages/autodetect/Cargo.toml"
 sed -i '' 's|^targets=.*|targets=web:apps/web:node,api:services/api:rust,tsapp:apps/tsapp:typescript,autodetect:packages/autodetect|' "$PROJECT_DOCTOR_MONO/.touchstone-config"
 if (cd "$PROJECT_DOCTOR_MONO" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-monorepo.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-monorepo.txt" "target web:"
@@ -1408,7 +1408,7 @@ PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$
 # Prepend a stale project_type=generic and keep the real profile=python after it
 # to exercise the last-write-wins tie-breaker.
 sed -i '' 's|^project_type=.*|project_type=generic|' "$PROJECT_DOCTOR_ALIAS_KEY/.touchstone-config"
-printf 'profile=python\n' >> "$PROJECT_DOCTOR_ALIAS_KEY/.touchstone-config"
+printf 'profile=python\n' >>"$PROJECT_DOCTOR_ALIAS_KEY/.touchstone-config"
 if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
   echo "SKIP: ruff on minimal PATH; cannot test project_type/profile last-wins doctor case on this machine" >&2
 else
@@ -1460,8 +1460,8 @@ fi
 PROJECT_DOCTOR_AUTO_TARGETS="$TEST_DIR/test-project-doctor-auto-targets"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_AUTO_TARGETS" --no-register >/dev/null
 mkdir -p "$PROJECT_DOCTOR_AUTO_TARGETS/apps/web" "$PROJECT_DOCTOR_AUTO_TARGETS/services/api"
-printf '{}\n' > "$PROJECT_DOCTOR_AUTO_TARGETS/apps/web/package.json"
-printf '[package]\nname = "api"\nversion = "0.0.0"\n' > "$PROJECT_DOCTOR_AUTO_TARGETS/services/api/Cargo.toml"
+printf '{}\n' >"$PROJECT_DOCTOR_AUTO_TARGETS/apps/web/package.json"
+printf '[package]\nname = "api"\nversion = "0.0.0"\n' >"$PROJECT_DOCTOR_AUTO_TARGETS/services/api/Cargo.toml"
 # Leave targets= empty in .touchstone-config — new-project.sh only fills it when
 # the apps/services dirs exist at bootstrap time.
 if (cd "$PROJECT_DOCTOR_AUTO_TARGETS" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-auto-targets.txt" 2>&1; then
@@ -1479,7 +1479,7 @@ fi
 # root config using the alias would silently skip the lint-script check.
 PROJECT_DOCTOR_ALIAS="$TEST_DIR/test-project-doctor-alias"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_ALIAS" --no-register >/dev/null
-printf '{}\n' > "$PROJECT_DOCTOR_ALIAS/package.json"
+printf '{}\n' >"$PROJECT_DOCTOR_ALIAS/package.json"
 sed -i '' 's|^project_type=.*|project_type=typescript|' "$PROJECT_DOCTOR_ALIAS/.touchstone-config"
 if (cd "$PROJECT_DOCTOR_ALIAS" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-alias.txt" 2>&1; then
   # No lint script in package.json — the node-profile lint-script check must fire,
@@ -1521,7 +1521,7 @@ fi
 # Generic profile doctor must NOT count missing tests as an issue — a fresh
 # generic project with no test_command configured stays fully armed.
 # (Reuses the PROJECT_DOCTOR repo which was bootstrapped clean above.)
-if (cd "$PROJECT_DOCTOR_HOOK_DRIFT" && printf '#!/usr/bin/env bash\n# File generated by pre-commit: https://pre-commit.com\n' > .git/hooks/pre-push) ; then : ; fi
+if (cd "$PROJECT_DOCTOR_HOOK_DRIFT" && printf '#!/usr/bin/env bash\n# File generated by pre-commit: https://pre-commit.com\n' >.git/hooks/pre-push); then :; fi
 if (cd "$PROJECT_DOCTOR_HOOK_DRIFT" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-generic.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-generic.txt" 'Project is fully armed'
   assert_contains "$TEST_DIR/doctor-generic.txt" "tests: profile is 'generic'"
@@ -1541,7 +1541,7 @@ fi
 
 # doctor --project on a legacy .toolkit-version repo must point to the migration command.
 mkdir -p "$PROJECT_DOCTOR_LEGACY"
-echo "legacy-sha" > "$PROJECT_DOCTOR_LEGACY/.toolkit-version"
+echo "legacy-sha" >"$PROJECT_DOCTOR_LEGACY/.toolkit-version"
 if (cd "$PROJECT_DOCTOR_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-legacy.txt" 2>&1; then
   echo "FAIL: doctor --project should exit nonzero on a legacy .toolkit-version repo" >&2
   ERRORS=$((ERRORS + 1))
@@ -1553,8 +1553,8 @@ fi
 # neither doctor nor init may report healthy in that state.
 PROJECT_MIGRATION_CONFLICT="$TEST_DIR/test-project-migration-conflict"
 mkdir -p "$PROJECT_MIGRATION_CONFLICT"
-echo "legacy-sha" > "$PROJECT_MIGRATION_CONFLICT/.toolkit-version"
-echo "touchstone-sha" > "$PROJECT_MIGRATION_CONFLICT/.touchstone-version"
+echo "legacy-sha" >"$PROJECT_MIGRATION_CONFLICT/.toolkit-version"
+echo "touchstone-sha" >"$PROJECT_MIGRATION_CONFLICT/.touchstone-version"
 if (cd "$PROJECT_MIGRATION_CONFLICT" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-conflict.txt" 2>&1; then
   echo "FAIL: doctor --project should exit nonzero when both .toolkit-version and .touchstone-version exist" >&2
   ERRORS=$((ERRORS + 1))
@@ -1574,11 +1574,11 @@ fi
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_OUTDATED" --no-register >/dev/null
 git -C "$PROJECT_OUTDATED" config user.email test@touchstone
 git -C "$PROJECT_OUTDATED" config user.name test-committer
-echo "0000000000000000000000000000000000000001" > "$PROJECT_OUTDATED/.touchstone-version"
+echo "0000000000000000000000000000000000000001" >"$PROJECT_OUTDATED/.touchstone-version"
 (cd "$PROJECT_OUTDATED" && git commit --no-verify -am "pin to old touchstone" >/dev/null)
 OUTDATED_INIT_BRANCH="$(git -C "$PROJECT_OUTDATED" branch --show-current)"
 mkdir -p "$PROJECT_OUTDATED/.claude"
-printf 'lock\n' > "$PROJECT_OUTDATED/.claude/scheduled_tasks.lock"
+printf 'lock\n' >"$PROJECT_OUTDATED/.claude/scheduled_tasks.lock"
 if (cd "$PROJECT_OUTDATED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup --no-ship --no-register) >"$TEST_DIR/init-outdated.txt" 2>&1; then
   assert_contains "$TEST_DIR/init-outdated.txt" 'reconciling'
   assert_contains "$TEST_DIR/init-outdated.txt" 'reconcile files in place'
@@ -1599,12 +1599,12 @@ PROJECT_OUTDATED_SHIP="$TEST_DIR/outdated-ship-project"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_OUTDATED_SHIP" --no-register >/dev/null
 git -C "$PROJECT_OUTDATED_SHIP" config user.email test@touchstone
 git -C "$PROJECT_OUTDATED_SHIP" config user.name test-committer
-echo "0000000000000000000000000000000000000001" > "$PROJECT_OUTDATED_SHIP/.touchstone-version"
+echo "0000000000000000000000000000000000000001" >"$PROJECT_OUTDATED_SHIP/.touchstone-version"
 (cd "$PROJECT_OUTDATED_SHIP" && git commit --no-verify -am "pin to old touchstone" >/dev/null)
 # Stub gh so any accidental shipping attempt fails fast without real network.
 GH_STUB_BIN="$TEST_DIR/gh-stub-bin"
 mkdir -p "$GH_STUB_BIN"
-cat > "$GH_STUB_BIN/gh" <<'GHSTUB'
+cat >"$GH_STUB_BIN/gh" <<'GHSTUB'
 #!/usr/bin/env bash
 echo "gh: stubbed failure" >&2
 exit 1
@@ -1642,8 +1642,8 @@ mkdir -p "$ZERO_ARGS_FAKE_HOME"
 # --no-setup skips running setup.sh but does NOT populate args[] — exactly
 # the zero-args path that triggered the bug. HOOKS_FAKE_BIN stubs pre-commit.
 if (cd "$PROJECT_INIT_ZERO_ARGS" && HOME="$ZERO_ARGS_FAKE_HOME" PATH="$HOOKS_FAKE_BIN:$PATH" \
-    TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup \
-    </dev/null) >"$TEST_DIR/init-zero-args.txt" 2>&1; then
+  TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup \
+  </dev/null) >"$TEST_DIR/init-zero-args.txt" 2>&1; then
   assert_contains "$TEST_DIR/init-zero-args.txt" 'setting up this project'
 else
   echo "FAIL: touchstone init --no-setup (zero args[] to new-project.sh) exited nonzero" >&2
@@ -1657,7 +1657,7 @@ fi
 # python3, so the fixture has to use PYTEST_PYTHON to point at the fake
 # interpreter explicitly. The intent of the assertion is unchanged: a
 # real (exit 1) test failure must propagate, not be swallowed.
-cat > "$PYTEST_FAKE_BIN/python3" <<'FAKEPY'
+cat >"$PYTEST_FAKE_BIN/python3" <<'FAKEPY'
 #!/usr/bin/env bash
 if [ "$1" = "-m" ] && [ "$2" = "pytest" ]; then
   printf 'E   assert False\n'
@@ -1687,9 +1687,9 @@ PROJECT_WIZARD_YES="$TEST_DIR/test-project-wizard-yes"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_WIZARD_YES" \
   --yes --no-register --no-with-cortex --no-with-sentinel --no-github \
   >"$TEST_DIR/wizard-yes.txt" 2>&1 || {
-    echo "FAIL: --yes bootstrap exited nonzero" >&2
-    ERRORS=$((ERRORS + 1))
-  }
+  echo "FAIL: --yes bootstrap exited nonzero" >&2
+  ERRORS=$((ERRORS + 1))
+}
 
 # --yes must print the "Equivalent to rerun" block so scripters learn flags.
 assert_contains "$TEST_DIR/wizard-yes.txt" 'Equivalent to rerun:'
@@ -1714,9 +1714,9 @@ assert_contains "$TEST_DIR/wizard-yes-flags.txt" '--github-public'
 PROJECT_WIZARD_NON_TTY="$TEST_DIR/test-project-wizard-non-tty"
 YES_MODE=false bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_WIZARD_NON_TTY" --no-register \
   </dev/null >"$TEST_DIR/wizard-non-tty.txt" 2>&1 || {
-    echo "FAIL: non-TTY bootstrap exited nonzero" >&2
-    ERRORS=$((ERRORS + 1))
-  }
+  echo "FAIL: non-TTY bootstrap exited nonzero" >&2
+  ERRORS=$((ERRORS + 1))
+}
 if grep -q 'Equivalent to rerun:' "$TEST_DIR/wizard-non-tty.txt" 2>/dev/null; then
   echo "FAIL: non-TTY bootstrap must not print the wizard 'Equivalent to rerun' block" >&2
   ERRORS=$((ERRORS + 1))
@@ -1749,8 +1749,8 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_FLAGS_BASELINE" \
   </dev/null >"$TEST_DIR/flags-baseline.txt" 2>&1
 # Diff the tree listings (filenames only, .git excluded) — same structure
 # expected. We compare sorted relative paths, which is stable across runs.
-( cd "$PROJECT_YES_BASELINE" && find . -type f -not -path './.git/*' | sort ) >"$TEST_DIR/yes-tree.txt"
-( cd "$PROJECT_FLAGS_BASELINE" && find . -type f -not -path './.git/*' | sort ) >"$TEST_DIR/flags-tree.txt"
+(cd "$PROJECT_YES_BASELINE" && find . -type f -not -path './.git/*' | sort) >"$TEST_DIR/yes-tree.txt"
+(cd "$PROJECT_FLAGS_BASELINE" && find . -type f -not -path './.git/*' | sort) >"$TEST_DIR/flags-tree.txt"
 if ! diff -q "$TEST_DIR/yes-tree.txt" "$TEST_DIR/flags-tree.txt" >/dev/null 2>&1; then
   echo "FAIL: --yes tree differs from equivalent flag-driven tree" >&2
   diff "$TEST_DIR/yes-tree.txt" "$TEST_DIR/flags-tree.txt" >&2 || true
@@ -1832,7 +1832,7 @@ R5_STUBDIR="$(mktemp -d -t touchstone-r5-stubs.XXXXXX)"
 
 # Fake cortex CLI: creates `.cortex/` with a tracked marker file, exactly the
 # shape the R5.1 fix needs captured in the initial commit.
-cat > "$R5_STUBDIR/cortex" <<'STUB'
+cat >"$R5_STUBDIR/cortex" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
@@ -1855,7 +1855,7 @@ chmod +x "$R5_STUBDIR/cortex"
 # between-item `git reset --hard`; the stub mirrors it so the R5.1
 # atomicity assertion below properly exercises the "sentinel committed
 # first" code path in bootstrap/new-project.sh.
-cat > "$R5_STUBDIR/sentinel" <<'STUB'
+cat >"$R5_STUBDIR/sentinel" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-}" in
@@ -1891,7 +1891,11 @@ chmod +x "$R5_STUBDIR/sentinel"
 PATH="$R5_STUBDIR:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
   "$PROJECT_R5" --no-register --with-cortex --with-sentinel \
   </dev/null >"$TEST_DIR/r5-bootstrap.txt" 2>&1 \
-  || { echo "FAIL: bootstrap with --with-cortex --with-sentinel exited non-zero"; cat "$TEST_DIR/r5-bootstrap.txt"; ERRORS=$((ERRORS+1)); }
+  || {
+    echo "FAIL: bootstrap with --with-cortex --with-sentinel exited non-zero"
+    cat "$TEST_DIR/r5-bootstrap.txt"
+    ERRORS=$((ERRORS + 1))
+  }
 
 # R5.1 assertions: the integration outputs and the scaffold land in one commit.
 assert_exists "$PROJECT_R5/.cortex"
@@ -1903,7 +1907,7 @@ if [ -d "$PROJECT_R5/.git" ]; then
   if [ "$commit_count" != "1" ]; then
     echo "FAIL: expected 1 commit after --with-cortex --with-sentinel scaffold, got $commit_count" >&2
     git -C "$PROJECT_R5" log --oneline >&2 || true
-    ERRORS=$((ERRORS+1))
+    ERRORS=$((ERRORS + 1))
   fi
 
   # Every integration-authored file must be in the initial commit's tree.
@@ -1913,7 +1917,7 @@ if [ -d "$PROJECT_R5/.git" ]; then
     if ! printf '%s\n' "$tracked" | grep -qxF "$path"; then
       echo "FAIL: expected $path to be tracked in the initial commit; got:" >&2
       printf '%s\n' "$tracked" >&2
-      ERRORS=$((ERRORS+1))
+      ERRORS=$((ERRORS + 1))
     fi
   done
 
@@ -1921,7 +1925,7 @@ if [ -d "$PROJECT_R5/.git" ]; then
   if [ -n "$(git -C "$PROJECT_R5" status --porcelain 2>/dev/null)" ]; then
     echo "FAIL: working tree dirty after scaffold:" >&2
     git -C "$PROJECT_R5" status --porcelain >&2
-    ERRORS=$((ERRORS+1))
+    ERRORS=$((ERRORS + 1))
   fi
 fi
 
@@ -1934,14 +1938,14 @@ fi
 # auto-commit from touchstone (same as pre-R5 behavior).
 PROJECT_R5_EXISTING="$TEST_DIR/test-project-r5-existing-history"
 mkdir -p "$PROJECT_R5_EXISTING"
-( cd "$PROJECT_R5_EXISTING" \
+(cd "$PROJECT_R5_EXISTING" \
   && git init -q -b main \
   && git config user.email "u@test" \
   && git config user.name "User" \
-  && echo "# prior work" > README.md \
+  && echo "# prior work" >README.md \
   && git add README.md \
   && git commit -q -m "feat: user's own initial commit" \
-  && echo "dirty-unrelated" > WIP.txt ) \
+  && echo "dirty-unrelated" >WIP.txt) \
   >/dev/null 2>&1
 USER_HEAD_BEFORE="$(git -C "$PROJECT_R5_EXISTING" rev-parse HEAD 2>/dev/null || echo missing)"
 USER_SUBJECT_BEFORE="$(git -C "$PROJECT_R5_EXISTING" log -1 --pretty=%s HEAD 2>/dev/null || echo missing)"
@@ -1949,19 +1953,23 @@ USER_SUBJECT_BEFORE="$(git -C "$PROJECT_R5_EXISTING" log -1 --pretty=%s HEAD 2>/
 PATH="$R5_STUBDIR:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
   "$PROJECT_R5_EXISTING" --no-register --with-cortex --with-sentinel \
   </dev/null >"$TEST_DIR/r5-existing-bootstrap.txt" 2>&1 \
-  || { echo "FAIL: bootstrap into existing git repo exited non-zero"; cat "$TEST_DIR/r5-existing-bootstrap.txt"; ERRORS=$((ERRORS+1)); }
+  || {
+    echo "FAIL: bootstrap into existing git repo exited non-zero"
+    cat "$TEST_DIR/r5-existing-bootstrap.txt"
+    ERRORS=$((ERRORS + 1))
+  }
 
 # The user's commit SHA must still be reachable (not rewritten).
 if ! git -C "$PROJECT_R5_EXISTING" cat-file -e "$USER_HEAD_BEFORE" 2>/dev/null; then
   echo "FAIL: touchstone scaffold rewrote user's pre-existing commit $USER_HEAD_BEFORE" >&2
-  ERRORS=$((ERRORS+1))
+  ERRORS=$((ERRORS + 1))
 fi
 
 # The user's commit must still be the first commit on the branch.
 first_subject="$(git -C "$PROJECT_R5_EXISTING" log --reverse --pretty=%s 2>/dev/null | head -1)"
 if [ "$first_subject" != "$USER_SUBJECT_BEFORE" ]; then
   echo "FAIL: first commit subject changed from '$USER_SUBJECT_BEFORE' to '$first_subject'" >&2
-  ERRORS=$((ERRORS+1))
+  ERRORS=$((ERRORS + 1))
 fi
 
 # No "chore: initial touchstone scaffold" commit should exist — that message
@@ -1970,7 +1978,7 @@ fi
 if git -C "$PROJECT_R5_EXISTING" log --pretty=%s 2>/dev/null | grep -qxF 'chore: initial touchstone scaffold'; then
   echo "FAIL: touchstone created an initial-scaffold commit on a pre-existing repo" >&2
   git -C "$PROJECT_R5_EXISTING" log --oneline >&2 || true
-  ERRORS=$((ERRORS+1))
+  ERRORS=$((ERRORS + 1))
 fi
 
 # The user's pre-existing WIP file must still be untracked-and-unstaged —
@@ -1979,10 +1987,10 @@ fi
 # contract. What touchstone itself must not do is sweep the user's tree.)
 wip_status="$(git -C "$PROJECT_R5_EXISTING" status --porcelain WIP.txt 2>/dev/null || true)"
 case "$wip_status" in
-  '?? WIP.txt') : ;;                         # correct — still untracked
+  '?? WIP.txt') : ;; # correct — still untracked
   *)
     echo "FAIL: touchstone staged/committed user's WIP.txt (status: '$wip_status')" >&2
-    ERRORS=$((ERRORS+1))
+    ERRORS=$((ERRORS + 1))
     ;;
 esac
 
@@ -1991,7 +1999,7 @@ esac
 if [ -f "$PROJECT_R5/.gitignore" ]; then
   if grep -qxF '.sentinel/' "$PROJECT_R5/.gitignore"; then
     echo "FAIL: root .gitignore contains '.sentinel/' — R5.2 regression" >&2
-    ERRORS=$((ERRORS+1))
+    ERRORS=$((ERRORS + 1))
   fi
   assert_contains "$PROJECT_R5/.gitignore" '^\.claude/$'
 fi

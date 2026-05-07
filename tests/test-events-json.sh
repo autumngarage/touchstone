@@ -69,7 +69,7 @@ setup_git_repo() {
   git -C "$repo" init -b main >/dev/null 2>&1
   git -C "$repo" config user.name "Touchstone Test"
   git -C "$repo" config user.email "touchstone@example.com"
-  printf 'base\n' > "$repo/file.txt"
+  printf 'base\n' >"$repo/file.txt"
   git -C "$repo" add file.txt
   git -C "$repo" commit -m "base commit" >/dev/null 2>&1
 }
@@ -95,7 +95,7 @@ assert_contains "$SPAWN_EVENTS" "\"repo_root\":\"$SPAWN_REPO_REAL\""
 echo "==> Case b/e: open-pr happy-path events and unset no-op"
 OPEN_FIXTURE="$TEST_DIR/open-fixture"
 copy_event_scripts "$OPEN_FIXTURE"
-cat > "$OPEN_FIXTURE/scripts/merge-pr.sh" <<'EOF'
+cat >"$OPEN_FIXTURE/scripts/merge-pr.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -110,14 +110,14 @@ OPEN_REPO="$TEST_DIR/open-repo"
 setup_git_repo "$OPEN_REPO"
 OPEN_REPO_REAL="$(cd "$OPEN_REPO" && pwd -P)"
 git -C "$OPEN_REPO" checkout -b feat/open-events >/dev/null 2>&1
-printf 'change\n' >> "$OPEN_REPO/file.txt"
+printf 'change\n' >>"$OPEN_REPO/file.txt"
 git -C "$OPEN_REPO" add file.txt
 git -C "$OPEN_REPO" commit -m "open events" >/dev/null 2>&1
 
 OPEN_BIN="$TEST_DIR/open-bin"
 mkdir -p "$OPEN_BIN"
 REAL_GIT="$(command -v git)"
-cat > "$OPEN_BIN/git" <<EOF
+cat >"$OPEN_BIN/git" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "\${1:-}" = "push" ]; then
@@ -135,7 +135,7 @@ fi
 exec "$REAL_GIT" "\$@"
 EOF
 chmod +x "$OPEN_BIN/git"
-cat > "$OPEN_BIN/gh" <<'EOF'
+cat >"$OPEN_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-} ${2:-}" in
@@ -179,7 +179,7 @@ assert_not_contains "$TEST_DIR/open-no-events.out" '\[events\]'
 echo "==> Cases c/d: merge-pr review blocked and auto-bypass events"
 MERGE_FIXTURE="$TEST_DIR/merge-fixture"
 copy_event_scripts "$MERGE_FIXTURE"
-cat > "$MERGE_FIXTURE/scripts/codex-review.sh" <<'EOF'
+cat >"$MERGE_FIXTURE/scripts/codex-review.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 exit "${CODEX_REVIEW_EXIT:-0}"
@@ -189,7 +189,7 @@ chmod +x "$MERGE_FIXTURE/scripts/codex-review.sh"
 MERGE_BIN="$TEST_DIR/merge-bin"
 GIT_PATH_ROOT="$TEST_DIR/git-path"
 mkdir -p "$MERGE_BIN" "$GIT_PATH_ROOT"
-cat > "$MERGE_BIN/gh" <<'EOF'
+cat >"$MERGE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-} ${2:-}" in
@@ -212,7 +212,7 @@ case "${1:-} ${2:-}" in
 esac
 EOF
 chmod +x "$MERGE_BIN/gh"
-cat > "$MERGE_BIN/git" <<'EOF'
+cat >"$MERGE_BIN/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
@@ -239,18 +239,18 @@ chmod +x "$MERGE_BIN/git"
 
 BLOCKED_EVENTS="$TEST_DIR/blocked-events.ndjson"
 GH_CHECKOUT_FILE="$TEST_DIR/gh-checkout-blocked" \
-GH_MERGED_MARKER="$TEST_DIR/gh-merged-blocked" \
-GIT_PATH_ROOT="$GIT_PATH_ROOT" \
-PATH="$MERGE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-TOUCHSTONE_EVENTS_FILE="$BLOCKED_EVENTS" \
-CODEX_REVIEW_EXIT=1 \
+  GH_MERGED_MARKER="$TEST_DIR/gh-merged-blocked" \
+  GIT_PATH_ROOT="$GIT_PATH_ROOT" \
+  PATH="$MERGE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  TOUCHSTONE_EVENTS_FILE="$BLOCKED_EVENTS" \
+  CODEX_REVIEW_EXIT=1 \
   bash "$MERGE_FIXTURE/scripts/merge-pr.sh" 123 >"$TEST_DIR/blocked.out" 2>&1 && fail "blocked merge unexpectedly exited 0"
 assert_json_lines "$BLOCKED_EVENTS"
 assert_event_order "$BLOCKED_EVENTS" review_started review_blocked failed
 assert_not_contains "$BLOCKED_EVENTS" '"event":"merged"'
 
 mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
-cat > "$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean" <<'EOF'
+cat >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean" <<'EOF'
 result=CODEX_REVIEW_CLEAN
 branch=feature/test
 head=pr-head-oid
@@ -259,11 +259,11 @@ EOF
 BYPASS_EVENTS="$TEST_DIR/bypass-events.ndjson"
 rm -f "$TEST_DIR/gh-checkout-bypass" "$TEST_DIR/gh-merged-bypass"
 GH_CHECKOUT_FILE="$TEST_DIR/gh-checkout-bypass" \
-GH_MERGED_MARKER="$TEST_DIR/gh-merged-bypass" \
-GIT_PATH_ROOT="$GIT_PATH_ROOT" \
-PATH="$MERGE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-TOUCHSTONE_EVENTS_FILE="$BYPASS_EVENTS" \
-CODEX_REVIEW_EXIT=1 \
+  GH_MERGED_MARKER="$TEST_DIR/gh-merged-bypass" \
+  GIT_PATH_ROOT="$GIT_PATH_ROOT" \
+  PATH="$MERGE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  TOUCHSTONE_EVENTS_FILE="$BYPASS_EVENTS" \
+  CODEX_REVIEW_EXIT=1 \
   bash "$MERGE_FIXTURE/scripts/merge-pr.sh" 123 >"$TEST_DIR/bypass.out" 2>&1
 assert_json_lines "$BYPASS_EVENTS"
 assert_event_order "$BYPASS_EVENTS" review_started review_bypass merged

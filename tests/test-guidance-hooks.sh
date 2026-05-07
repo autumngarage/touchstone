@@ -51,7 +51,7 @@ trap 'rm -rf "$TMPDIR"' EXIT
 git -C "$TMPDIR" init --quiet --initial-branch=main
 git -C "$TMPDIR" config user.email "test@touchstone.test"
 git -C "$TMPDIR" config user.name "Touchstone Test"
-echo "seed" > "$TMPDIR/seed.txt"
+echo "seed" >"$TMPDIR/seed.txt"
 git -C "$TMPDIR" add seed.txt
 git -C "$TMPDIR" commit --quiet -m "seed"
 

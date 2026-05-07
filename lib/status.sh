@@ -33,7 +33,7 @@ _status_projects_file() {
 _status_read_project_version() {
   local project_dir="$1"
   [ -f "$project_dir/.touchstone-version" ] || return 0
-  tr -d '[:space:]' < "$project_dir/.touchstone-version" 2>/dev/null || true
+  tr -d '[:space:]' <"$project_dir/.touchstone-version" 2>/dev/null || true
 }
 
 # Render a recorded id for display. Long SHAs become short SHAs; semver-ish
@@ -168,8 +168,8 @@ _status_age_long() {
   fi
   # `date -r` (BSD/macOS) takes an epoch; `date -d @epoch` is GNU. Try both.
   stamp="$(date -r "$mtime" '+%Y-%m-%d %H:%M' 2>/dev/null \
-        || date -d "@$mtime" '+%Y-%m-%d %H:%M' 2>/dev/null \
-        || echo '')"
+    || date -d "@$mtime" '+%Y-%m-%d %H:%M' 2>/dev/null \
+    || echo '')"
   if [ -n "$stamp" ]; then
     printf '%s (%s)' "$human" "$stamp"
   else
@@ -189,7 +189,7 @@ _status_behind_color() {
   local behind="$1"
   case "$behind" in
     current) printf '%s' "$GREEN" ;;
-    \?)      printf '%s' "$RED" ;;
+    \?) printf '%s' "$RED" ;;
     *)
       # Numeric: 1..3 yellow, 4+ red.
       if [ "$behind" -ge 4 ] 2>/dev/null; then
@@ -238,13 +238,13 @@ _status_ref_contains_required() {
   local current_version
   current_version="$(touchstone_version_str 2>/dev/null || true)"
   if [ -n "$current_version" ] \
-     && { [ "$candidate" = "$current_version" ] || [ "$candidate" = "v$current_version" ]; }; then
+    && { [ "$candidate" = "$current_version" ] || [ "$candidate" = "v$current_version" ]; }; then
     return 0
   fi
 
   if git -C "${TOUCHSTONE_ROOT:-/nonexistent}" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-     && git -C "$TOUCHSTONE_ROOT" rev-parse --verify "$required^{commit}" >/dev/null 2>&1 \
-     && git -C "$TOUCHSTONE_ROOT" rev-parse --verify "$candidate^{commit}" >/dev/null 2>&1; then
+    && git -C "$TOUCHSTONE_ROOT" rev-parse --verify "$required^{commit}" >/dev/null 2>&1 \
+    && git -C "$TOUCHSTONE_ROOT" rev-parse --verify "$candidate^{commit}" >/dev/null 2>&1; then
     git -C "$TOUCHSTONE_ROOT" merge-base --is-ancestor "$required" "$candidate" >/dev/null 2>&1
     return $?
   fi
@@ -284,8 +284,8 @@ _status_drift_state() {
   local behind="$1"
   case "$behind" in
     current) printf 'up_to_date' ;;
-    \?)      printf 'unknown' ;;
-    *)       printf 'project_files_outdated' ;;
+    \?) printf 'unknown' ;;
+    *) printf 'project_files_outdated' ;;
   esac
 }
 
@@ -362,8 +362,8 @@ status_print_project() {
   local latest_suffix
   case "$behind" in
     current) latest_suffix='(current)' ;;
-    \?)      latest_suffix='(unknown — recorded id not in touchstone history)' ;;
-    *)       latest_suffix="(${behind} commits behind)" ;;
+    \?) latest_suffix='(unknown — recorded id not in touchstone history)' ;;
+    *) latest_suffix="(${behind} commits behind)" ;;
   esac
 
   # Prefer the human-readable VERSION ("2.3.4") for the "latest" label when
@@ -575,7 +575,7 @@ _status_iter_registry() {
     [ -z "$line" ] && continue
     case "$line" in \#*) continue ;; esac
     "$cb" "$line"
-  done < "$projects_file"
+  done <"$projects_file"
   return 0
 }
 

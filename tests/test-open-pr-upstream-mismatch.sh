@@ -29,7 +29,7 @@ cp "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$SCRIPT_DIR/open-pr.sh"
 chmod +x "$SCRIPT_DIR/open-pr.sh"
 
 # Mock gh — open-pr.sh queries the default branch and creates the PR.
-cat > "$FAKE_BIN/gh" <<'EOF'
+cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$1 $2" in
@@ -48,7 +48,7 @@ git clone "$REMOTE_DIR" "$REPO_DIR" >/dev/null 2>&1
 git -C "$REPO_DIR" switch -c main >/dev/null 2>&1
 git -C "$REPO_DIR" config user.name "Touchstone Test"
 git -C "$REPO_DIR" config user.email "touchstone@example.com"
-printf 'base\n' > "$REPO_DIR/file.txt"
+printf 'base\n' >"$REPO_DIR/file.txt"
 git -C "$REPO_DIR" add file.txt
 git -C "$REPO_DIR" commit -m "base" >/dev/null 2>&1
 git -C "$REPO_DIR" push -u origin main >/dev/null 2>&1
@@ -57,7 +57,7 @@ git -C "$REPO_DIR" push -u origin main >/dev/null 2>&1
 # canonical "branch from remote ref" form. Git points the new branch's
 # upstream at origin/main, which is what triggers issue #169 on push.
 git -C "$REPO_DIR" checkout -b chore/upstream-mismatch-test origin/main >/dev/null 2>&1
-printf 'change\n' >> "$REPO_DIR/file.txt"
+printf 'change\n' >>"$REPO_DIR/file.txt"
 git -C "$REPO_DIR" add file.txt
 git -C "$REPO_DIR" commit -m "test change" >/dev/null 2>&1
 
@@ -78,7 +78,7 @@ RC=0
   cd "$REPO_DIR"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     bash "$SCRIPT_DIR/open-pr.sh" "test PR" 2>&1
-) > "$OUT" || RC=$?
+) >"$OUT" || RC=$?
 
 if [ "$RC" -ne 0 ]; then
   echo "FAIL: open-pr.sh exited $RC; expected 0" >&2
@@ -101,7 +101,7 @@ fi
 
 # And the remote should actually have the branch.
 if ! git -C "$REPO_DIR" ls-remote --heads origin chore/upstream-mismatch-test \
-    | grep -q chore/upstream-mismatch-test; then
+  | grep -q chore/upstream-mismatch-test; then
   echo "FAIL: remote does not have the expected branch" >&2
   exit 1
 fi

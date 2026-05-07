@@ -30,7 +30,7 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
 fi
 
 case "$1" in
-  -h|--help)
+  -h | --help)
     usage
     exit 0
     ;;
@@ -122,7 +122,7 @@ guard_worktreeinclude_patterns() {
         exit 1
         ;;
     esac
-  done < "$include_file"
+  done <"$include_file"
 }
 
 DEFAULT_REF="$(resolve_default_ref)"
@@ -164,9 +164,9 @@ if [ -f "$INCLUDE_FILE" ]; then
   STANDARD_LIST="$(mktemp)"
   trap 'rm -f "$INCLUDE_LIST" "$STANDARD_LIST"' EXIT
   git ls-files --others --ignored --exclude-from="$INCLUDE_FILE" \
-    | LC_ALL=C sort > "$INCLUDE_LIST"
+    | LC_ALL=C sort >"$INCLUDE_LIST"
   git ls-files --others --ignored --exclude-standard \
-    | LC_ALL=C sort > "$STANDARD_LIST"
+    | LC_ALL=C sort >"$STANDARD_LIST"
 
   while IFS= read -r ignored_file; do
     [ -n "$ignored_file" ] || continue

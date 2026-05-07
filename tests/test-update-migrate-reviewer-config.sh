@@ -26,7 +26,10 @@ TEST_DIR="$(mktemp -d -t touchstone-test-update-migrate.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
 ERRORS=0
-fail() { echo "FAIL: $*" >&2; ERRORS=$((ERRORS + 1)); }
+fail() {
+  echo "FAIL: $*" >&2
+  ERRORS=$((ERRORS + 1))
+}
 
 bootstrap_project() {
   local dir="$1"
@@ -44,9 +47,9 @@ commit_file() {
 
 run_update() {
   local dir="$1"
-  ( cd "$dir" \
+  (cd "$dir" \
     && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place \
-       </dev/null ) >"$TEST_DIR/update.out" 2>&1
+      </dev/null) >"$TEST_DIR/update.out" 2>&1
 }
 
 # ---------------------------------------------------------------------------
@@ -55,7 +58,7 @@ run_update() {
 echo "==> Case 1: v1.x reviewers cascade migrates to v2.x conductor shape"
 P1="$TEST_DIR/p1"
 bootstrap_project "$P1"
-cat > "$P1/.codex-review.toml" <<'EOF'
+cat >"$P1/.codex-review.toml" <<'EOF'
 [review]
 enabled = true
 reviewers = ["codex", "claude"]
@@ -94,7 +97,7 @@ fi
 echo "==> Case 2: [review.local] block triggers migration"
 P2="$TEST_DIR/p2"
 bootstrap_project "$P2"
-cat > "$P2/.codex-review.toml" <<'EOF'
+cat >"$P2/.codex-review.toml" <<'EOF'
 [review]
 enabled = true
 reviewer = "conductor"
@@ -121,7 +124,7 @@ fi
 echo "==> Case 3: already-v2.x config is unchanged"
 P3="$TEST_DIR/p3"
 bootstrap_project "$P3"
-cat > "$P3/.codex-review.toml" <<'EOF'
+cat >"$P3/.codex-review.toml" <<'EOF'
 [review]
 enabled = true
 reviewer = "conductor"

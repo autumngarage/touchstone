@@ -27,7 +27,10 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 source "$TOUCHSTONE_ROOT/lib/claude-md-principles-ref.sh"
 
 ERRORS=0
-fail() { echo "FAIL: $*" >&2; ERRORS=$((ERRORS + 1)); }
+fail() {
+  echo "FAIL: $*" >&2
+  ERRORS=$((ERRORS + 1))
+}
 assert_contains() {
   local file="$1" needle="$2"
   if ! grep -qF "$needle" "$file"; then
@@ -48,7 +51,7 @@ assert_eq() {
 # --- 1. Detection (complete/partial/absent) ---------------------------------
 echo "==> 1. has_principles_ref detection"
 mkdir -p "$TEST_DIR/case-detect"
-cat > "$TEST_DIR/case-detect/CLAUDE.md" <<'EOF'
+cat >"$TEST_DIR/case-detect/CLAUDE.md" <<'EOF'
 # Project
 
 @principles/git-workflow.md
@@ -59,7 +62,7 @@ fi
 if ! claude_md_has_any_principles_ref "$TEST_DIR/case-detect/CLAUDE.md"; then
   fail "should detect any @principles/ import when present"
 fi
-cat > "$TEST_DIR/case-detect/CLAUDE.md" <<'EOF'
+cat >"$TEST_DIR/case-detect/CLAUDE.md" <<'EOF'
 # Project
 
 @principles/pre-implementation-checklist.md
@@ -69,7 +72,7 @@ EOF
 if ! claude_md_has_principles_ref "$TEST_DIR/case-detect/CLAUDE.md"; then
   fail "should detect full required @principles/ import set"
 fi
-cat > "$TEST_DIR/case-detect/CLAUDE.md" <<'EOF'
+cat >"$TEST_DIR/case-detect/CLAUDE.md" <<'EOF'
 # Project
 
 No imports here, just plain text.
@@ -84,7 +87,7 @@ fi
 # --- 2. Inject when imports missing -----------------------------------------
 echo "==> 2. inject after H1 when imports missing"
 mkdir -p "$TEST_DIR/case-inject"
-cat > "$TEST_DIR/case-inject/CLAUDE.md" <<'EOF'
+cat >"$TEST_DIR/case-inject/CLAUDE.md" <<'EOF'
 # My Project
 
 Some intro text.
@@ -120,7 +123,7 @@ assert_eq "second-inject sha (untouched)" "$sha_before" "$sha_after"
 # --- 4. Inject completes partial legacy imports -----------------------------
 echo "==> 4. inject completes partial legacy imports"
 mkdir -p "$TEST_DIR/case-partial"
-cat > "$TEST_DIR/case-partial/CLAUDE.md" <<'EOF'
+cat >"$TEST_DIR/case-partial/CLAUDE.md" <<'EOF'
 # My Project
 
 Some intro text.
@@ -168,7 +171,7 @@ setup_existing_repo() {
   local dir="$1" with_imports="${2:-no}"
   mkdir -p "$dir"
   if [ "$with_imports" = yes ]; then
-    cat > "$dir/CLAUDE.md" <<'EOF'
+    cat >"$dir/CLAUDE.md" <<'EOF'
 # My Project
 
 @principles/pre-implementation-checklist.md
@@ -176,13 +179,13 @@ setup_existing_repo() {
 @principles/git-workflow.md
 EOF
   elif [ "$with_imports" = partial ]; then
-    cat > "$dir/CLAUDE.md" <<'EOF'
+    cat >"$dir/CLAUDE.md" <<'EOF'
 # My Project
 
 @principles/git-workflow.md
 EOF
   else
-    cat > "$dir/CLAUDE.md" <<'EOF'
+    cat >"$dir/CLAUDE.md" <<'EOF'
 # My Project
 
 Some intro text. No imports.
@@ -223,7 +226,7 @@ echo "==> 9. prior skipped decision is respected"
 E7="$TEST_DIR/e2e-respect"
 setup_existing_repo "$E7" no
 # Pre-record a "skipped" decision before the helper runs.
-printf 'claude_principles_ref=skipped\n' > "$E7/.touchstone-config"
+printf 'claude_principles_ref=skipped\n' >"$E7/.touchstone-config"
 # Caller passes mode=yes, but the prior `skipped` decision wins — the user
 # already opted out and the helper must not re-prompt or silently flip the
 # answer.
@@ -235,7 +238,7 @@ assert_contains "$E7/.touchstone-config" "claude_principles_ref=skipped"
 echo "==> 10. prior connected partial imports are completed"
 E10="$TEST_DIR/e2e-prior-connected-partial"
 setup_existing_repo "$E10" partial
-printf 'claude_principles_ref=connected\n' > "$E10/.touchstone-config"
+printf 'claude_principles_ref=connected\n' >"$E10/.touchstone-config"
 ensure_claude_principles_ref "$E10" prompt >/dev/null
 assert_contains "$E10/CLAUDE.md" "@principles/pre-implementation-checklist.md"
 assert_contains "$E10/CLAUDE.md" "@principles/documentation-ownership.md"

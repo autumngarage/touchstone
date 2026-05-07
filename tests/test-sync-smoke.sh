@@ -42,8 +42,8 @@ cleanup() {
 
   # This test may run on a shared machine, so assert the invariant we own:
   # no project path from this isolated TEST_DIR may leak into the real registry.
-  if [ -n "$REAL_REGISTRY_FILE" ] && [ -f "$REAL_REGISTRY_FILE" ] && \
-     grep -F "$TEST_DIR" "$REAL_REGISTRY_FILE" >/dev/null 2>&1; then
+  if [ -n "$REAL_REGISTRY_FILE" ] && [ -f "$REAL_REGISTRY_FILE" ] \
+    && grep -F "$TEST_DIR" "$REAL_REGISTRY_FILE" >/dev/null 2>&1; then
     echo "FAIL: test wrote isolated temp paths to real registry at $REAL_REGISTRY_FILE" >&2
     registry_changed=true
   fi
@@ -71,9 +71,9 @@ else
   REGISTRY_FILE="$TEST_DIR/.touchstone-projects"
   SMOKE_PROJECT="$TEST_DIR/smoke-project"
   if bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SMOKE_PROJECT" \
-      --no-register --no-with-cortex --no-with-sentinel --no-github \
-      >"$TEST_DIR/bootstrap-smoke-project.txt" 2>&1; then
-    printf '%s\n' "$SMOKE_PROJECT" > "$REGISTRY_FILE"
+    --no-register --no-with-cortex --no-with-sentinel --no-github \
+    >"$TEST_DIR/bootstrap-smoke-project.txt" 2>&1; then
+    printf '%s\n' "$SMOKE_PROJECT" >"$REGISTRY_FILE"
   else
     echo "FAIL: could not bootstrap isolated smoke project" >&2
     cat "$TEST_DIR/bootstrap-smoke-project.txt" >&2
@@ -101,7 +101,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     \#*) continue ;;
   esac
   PROJECTS+=("$trimmed")
-done < "$REGISTRY_FILE"
+done <"$REGISTRY_FILE"
 
 if [ "${#PROJECTS[@]}" -eq 0 ]; then
   echo "==> Registry is empty, skipping smoke test."
@@ -141,8 +141,8 @@ for project in "${PROJECTS[@]}"; do
   # Run --dry-run and capture combined stdout+stderr and exit code.
   output_file="$(mktemp -t touchstone-smoke.XXXXXX)"
   set +e
-  ( cd "$project" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --dry-run ) \
-    > "$output_file" 2>&1
+  (cd "$project" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --dry-run) \
+    >"$output_file" 2>&1
   rc=$?
   set -e
 

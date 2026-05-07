@@ -79,7 +79,7 @@ find_worktree_parent_root() {
     return 1
   fi
 
-  IFS= read -r gitdir < "$git_file" || {
+  IFS= read -r gitdir <"$git_file" || {
     echo "       Worktree check failed: cannot read gitdir from $git_file" >&2
     return 1
   }
