@@ -1450,6 +1450,23 @@ cmd_skills() {
         done
       fi
 
+      # Bundle source — Touchstone-owned, propagated to user scope by `touchstone update`.
+      # Only the Touchstone source repo has this directory.
+      if [ -d "skills" ]; then
+        for skill_dir in skills/*/; do
+          [ -d "$skill_dir" ] || continue
+          found=true
+          local name
+          name="$(basename "$skill_dir")"
+          local status="${DIM}bundle source${RESET}"
+          if [ -f "${skill_dir}SKILL.md" ]; then
+            printf "  ${GREEN}✓${RESET} ${BOLD}%-25s${RESET} bundle    %b\n" "$name" "$status"
+          else
+            printf "  ${RED}✗${RESET} ${BOLD}%-25s${RESET} bundle    %b ${RED}(missing SKILL.md)${RESET}\n" "$name" "$status"
+          fi
+        done
+      fi
+
       # User-level skills.
       if [ -d "$HOME/.claude/skills" ]; then
         for skill_dir in "$HOME/.claude/skills"/*/; do
@@ -1476,6 +1493,7 @@ cmd_skills() {
       if [ "$found" = false ]; then
         tk_dim "No skills found."
         tk_dim "Project skills:  .claude/skills/<name>/SKILL.md"
+        tk_dim "Bundle source:   skills/<name>/SKILL.md (Touchstone source repo)"
         tk_dim "User skills:     ~/.claude/skills/<name>/SKILL.md"
       fi
       echo ""
@@ -1490,6 +1508,9 @@ cmd_skills() {
 
       if [ -d ".claude/skills" ]; then
         for d in .claude/skills/*/; do [ -d "$d" ] && dirs+=("$d"); done
+      fi
+      if [ -d "skills" ]; then
+        for d in skills/*/; do [ -d "$d" ] && dirs+=("$d"); done
       fi
       if [ -d "$HOME/.claude/skills" ]; then
         for d in "$HOME/.claude/skills"/*/; do [ -d "$d" ] && dirs+=("$d"); done
