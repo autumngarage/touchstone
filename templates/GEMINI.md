@@ -1,27 +1,85 @@
 # {{PROJECT_NAME}} — Gemini CLI Instructions
 
-Gemini CLI should follow the same project contract as Claude and Codex.
+<!-- touchstone:steering:start -->
 
-Read `AGENTS.md` before coding. Follow its Authoring Guide for implementation work and its Review Guide when explicitly reviewing a PR or running the AI review hook. Claude-specific context may live in `CLAUDE.md`, but `AGENTS.md` is the shared source for agent workflow and review priorities.
+<!-- This block is generated from TOUCHSTONE.md. `touchstone update` refreshes it.
+     Edit content OUTSIDE the markers; touchstone will not touch project-owned content. -->
+
+## Touchstone — Shared Agent Steering
+
+You are an AI agent (Claude Code, Codex, or another driving CLI) working in a Touchstone-bootstrapped project. This block is the universal contract: rules that apply on every turn, plus a routing table to deeper docs you should consult when specific triggers fire. Project-specific guidance lives outside this block in your driver's steering doc (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`).
 
 ## Agent Roles And Fallbacks
 
-Gemini CLI is a **driving CLI** in this repo: it owns file edits, git state, tests, commits, PR creation, Conductor review invocation, and merge helper execution. Claude Code and Codex are equivalent fallback drivers because all three load the same managed principles and delivery workflow.
+- **Driving CLI** — Claude Code, Codex, or Gemini CLI. Owns file edits, git state, tests, commits, PR creation, Conductor review invocation, and merge. Drivers are interchangeable; driver fallback is shared-contract fallback — if one is unavailable, another reads the same files and continues.
+- **Conductor worker/reviewer router** — the model router used by the driving CLI for review and bounded model work. Conductor can route to Claude, Codex, Gemini, Kimi, Ollama, or other providers, and provider fallback runs across configured backends, but Conductor does not replace the driver's responsibility for the branch → PR → review → automerge workflow.
 
-Conductor is the **worker/reviewer router**. The driving CLI may invoke Conductor for code review or bounded model work, and Conductor can fall back across configured providers such as Claude, Codex, Gemini, or local models. Conductor provider fallback does not replace the driving CLI's responsibility for the branch → PR → review → automerge workflow.
+## Engineering principles (always in mind)
 
-## Delivery Lifecycle
+Non-negotiable. Every code change is reviewed against them. Full rationale lives in `principles/engineering-principles.md`.
 
-Drive this automatically unless the user asks for a different flow:
+- **No band-aids** — fix the root cause; if patching a symptom, say so explicitly and name the root cause.
+- **Keep interfaces narrow** — expose the smallest stable contract; don't leak storage shape, vendor SDKs, or workflow sequencing.
+- **Derive limits from domain** — thresholds and sizes come from input/config/named constants; test at small, typical, and large scales.
+- **Derive, don't persist** — compute from the source of truth; persist derived state only with documented invalidation + rebuild path.
+- **No silent failures** — every exception is re-raised or logged with debug context. No `except: pass`, no swallowed errors.
+- **Every fix gets a test** — bug fix includes a regression test that runs in CI and fails on the old code.
+- **Think in invariants** — name and assert at least one invariant for nontrivial logic.
+- **One code path** — share business logic across modes; confine mode-specific differences to adapters, config, or the I/O boundary.
+- **Version your data boundaries** — when a model/algorithm/source change affects decisions, version the boundary; don't aggregate across.
+- **Separate behavior changes from tidying** — never mix functional changes with broad renames, formatting sweeps, or unrelated refactors.
+- **Make irreversible actions recoverable** — destructive operations need dry-run, backup, idempotency, rollback, or forward-fix plan before they run.
+- **Preserve compatibility at boundaries** — public API/config/schema/CLI/hook/template changes need a compatibility or migration plan.
+- **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers).
+- **Isolate file-writing subagents** — parallel workers use dedicated worktrees, slice manifests, and disjoint file ownership by default.
+- **File issues for bugs** — open a GitHub issue when you find a bug, in this project or in an autumngarage tool. Don't silently work around it.
 
-1. Pull/rebase the default branch.
-2. Create a feature branch before editing tracked files.
-3. Make the change, stage explicit file paths, and commit with a concise message.
-4. From a clean worktree, run `CODEX_REVIEW_FORCE=1 bash scripts/codex-review.sh` so Conductor can review and safely auto-fix before merge.
-5. If Conductor creates fix commits, let the loop finish. If it blocks, address findings, commit, and rerun until clean.
-6. Ship with `bash scripts/open-pr.sh --auto-merge`; this creates the PR, runs the final read-only Conductor merge review, squash-merges, and syncs the default branch.
-7. Clean up the feature branch if it still exists locally.
+## Never commit on the default branch
 
-## Parallel Agent Work
+Before the first edit of a tracked file in a session, run `git branch --show-current`. If it reports the default branch (`main` or `master`), branch first with `git checkout -b <type>/<slug>` where `<type>` is `feat | fix | chore | refactor | docs`. Your unstaged changes carry over — there's no cost to switching now and a real cost to discovering at commit time. Recovery steps when it happens anyway live in `principles/git-workflow.md`.
 
-File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md` for slice manifests, file ownership, concurrency caps, and parent orchestration. Use `scripts/spawn-worktree.sh` to create local branch/worktree slices and `scripts/cleanup-worktrees.sh` for dry-run-first teardown.
+## Required Delivery Workflow
+
+Drive this lifecycle automatically; do not ask the user for permission at each step.
+
+1. **Pull.** `git pull --rebase` on the default branch.
+2. **Branch.** Before any edit that might become a commit.
+3. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
+4. **Conductor review + auto-fix.** From a clean worktree: `CODEX_REVIEW_FORCE=1 bash scripts/codex-review.sh`. If Conductor creates fix commits, let the loop finish; if it blocks, address findings and rerun.
+5. **Ship.** `bash scripts/open-pr.sh --auto-merge` — pushes, opens the PR, runs the final read-only Conductor merge review, squash-merges, and syncs the default branch.
+6. **Clean up.** Delete the local branch if it persists.
+
+Do not bypass the PR/review/merge path with a direct default-branch push except through the documented emergency path in `principles/git-workflow.md`.
+
+## Memory hygiene
+
+- Treat AI-agent memory as cached guidance, not canonical truth. Verify a remembered command, flag, path, or version against this repo before relying on it.
+- Don't write memory for facts that are cheap to derive from `README.md`, the steering files, `VERSION`, `bin/touchstone --help`, or the scripts.
+- If memory mentions a command, flag, file path, version, or workflow, include the date (`YYYY-MM-DD`) and the canonical source checked.
+- If memory conflicts with the repo, follow the repo and propose updating the stale memory.
+
+## Routing table — read these when the trigger fires
+
+| When you're about to... | Read |
+|---|---|
+| commit, branch, open a PR, run review, merge, recover from `no-commit-to-branch`, work with stacked PRs, or fan out worktrees | `principles/git-workflow.md` |
+| start a non-trivial code change | `principles/pre-implementation-checklist.md` |
+| understand the *why* of a daily-reminder rule | `principles/engineering-principles.md` |
+| edit, write, or audit documentation | `principles/documentation-ownership.md` |
+| coordinate parallel agents (subagents, worktrees, conductor swarm) | `principles/agent-swarms.md` |
+| audit a structural bug class after fixing one instance | `principles/audit-weak-points.md` |
+| hit a bug in an upstream tool (don't silently work around it) | `principles/file-upstream-bugs.md` |
+| write a `.cortex/` artifact or see a Tier-1 trigger fire | `.cortex/protocol.md` |
+| delegate to Conductor — pick a provider, write a brief, choose `--kind` / `--effort` | `~/.conductor/delegation-guidance.md` |
+
+Claude Code agents: the Touchstone-bundled user-scoped skills (`touchstone-git-workflow`, `touchstone-pre-impl`, `cortex-protocol`, `conductor-delegation`, `touchstone-audit-weak-points`, `touchstone-agent-swarms`, `memory-audit`) provide the same routing surface as this table, with descriptions in your session header. Trust whichever surface fires first.
+
+## Orientation
+
+If `.cortex/state.md` exists in the project, read it at session start for the current state of in-flight work.
+
+<!-- touchstone:steering:end -->
+
+The shared steering above (agent roles, lifecycle, principles, routing table) is the universal contract — same content as Claude reads via `@TOUCHSTONE.md` in `CLAUDE.md` and Codex reads via the same managed block in `AGENTS.md`. Gemini CLI is a peer driving CLI; Claude Code and Codex are equivalent fallback drivers.
+
+For deep references on specific topics, read `principles/*.md` files via the routing table in the block above. For project-specific authoring rules and the AI Review Guide, also read `AGENTS.md`.

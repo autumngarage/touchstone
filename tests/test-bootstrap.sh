@@ -218,8 +218,12 @@ fi
 assert_exists "$PROJECT/.touchstone-version"
 assert_contains "$PROJECT/.touchstone-version" "[a-f0-9]"
 
-# Verify CLAUDE.md has principle imports
-assert_contains "$PROJECT/CLAUDE.md" "@principles/"
+# Verify CLAUDE.md imports the canonical TOUCHSTONE.md router (which itself
+# routes to principles/* via the routing table; @principles/* @-imports were
+# replaced by skill-routed loading to keep auto-loaded context lean).
+assert_contains "$PROJECT/CLAUDE.md" "@TOUCHSTONE.md"
+assert_exists "$PROJECT/TOUCHSTONE.md"
+assert_contains "$PROJECT/TOUCHSTONE.md" "No band-aids"
 
 # Fresh bootstrap must leave the project with exactly one initial commit that
 # says "initial touchstone scaffold", so the user's first branch+commit cycle

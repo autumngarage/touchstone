@@ -47,7 +47,7 @@ export TOUCHSTONE_ROOT
 source "$TOUCHSTONE_ROOT/lib/auto-update.sh"
 source "$TOUCHSTONE_ROOT/lib/colors.sh"
 source "$TOUCHSTONE_ROOT/lib/ui.sh"
-source "$TOUCHSTONE_ROOT/lib/claude-md-principles-ref.sh"
+source "$TOUCHSTONE_ROOT/lib/claude-md-touchstone-ref.sh"
 source "$TOUCHSTONE_ROOT/lib/status.sh"
 source "$TOUCHSTONE_ROOT/lib/touchstone-doctor.sh"
 
@@ -251,7 +251,7 @@ cmd_init() {
   # records `connected` without prompting. The interesting case is `current`
   # state on a project whose user wrote their own CLAUDE.md without imports
   # — then we prompt.
-  ensure_claude_principles_ref "$project_dir" "$claude_principles_mode"
+  ensure_claude_touchstone_ref "$project_dir" "$claude_principles_mode"
 
   # Only fresh init runs setup.sh automatically. Reconciling an existing repo
   # must not re-trigger machine-wide dev-tool installs or interactive prompts

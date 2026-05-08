@@ -1,6 +1,6 @@
-# Touchstone — Shared Agent Steering
+## Touchstone — Shared Agent Steering
 
-You are an AI agent (Claude Code, Codex, or another driving CLI) working in a Touchstone-bootstrapped project. This file is the universal contract: rules that apply on every turn, plus a routing table to deeper docs you should consult when specific triggers fire. Project-specific guidance lives outside this file in your driver's steering doc (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`).
+You are an AI agent (Claude Code, Codex, or another driving CLI) working in a Touchstone-bootstrapped project. This block is the universal contract: rules that apply on every turn, plus a routing table to deeper docs you should consult when specific triggers fire. Project-specific guidance lives outside this block in your driver's steering doc (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`).
 
 ## Agent Roles And Fallbacks
 

@@ -46,15 +46,26 @@ for file in \
   assert_contains "$file" "bash scripts/open-pr.sh --auto-merge"
 done
 
-echo "==> Claude and Gemini entry files name the driving CLI role"
+echo "==> Claude entry files import the TOUCHSTONE.md steering router"
+# CLAUDE.md uses @TOUCHSTONE.md (Claude Code resolves @-imports transitively),
+# so the contract phrases are inlined into agent context via TOUCHSTONE.md
+# rather than literally appearing in CLAUDE.md. Asserting the import is the
+# verification contract.
 for file in \
   "$TOUCHSTONE_ROOT/CLAUDE.md" \
-  "$TOUCHSTONE_ROOT/templates/CLAUDE.md" \
+  "$TOUCHSTONE_ROOT/templates/CLAUDE.md"; do
+  assert_contains "$file" "@TOUCHSTONE.md"
+done
+
+echo "==> Gemini entry files name the driving CLI role inline"
+# GEMINI.md (and templates/GEMINI.md) carry the managed steering block inlined
+# via lib/touchstone-block.sh, so the contract phrases must appear directly.
+for file in \
   "$TOUCHSTONE_ROOT/GEMINI.md" \
   "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
   assert_contains "$file" "Agent Roles And Fallbacks"
-  assert_contains "$file" "driving CLI"
-  assert_contains "$file" "worker/reviewer router"
+  assert_contains "$file" "Driving CLI"
+  assert_contains "$file" "Conductor worker/reviewer router"
   assert_contains "$file" "branch → PR → review → automerge workflow"
 done
 

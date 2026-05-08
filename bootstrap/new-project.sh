@@ -1067,6 +1067,7 @@ write_touchstone_manifest() {
     printf '# Managed by touchstone. These paths may be updated by `touchstone update`.\n'
     printf '.touchstone-manifest\n'
     printf '.touchstone-version\n'
+    printf 'TOUCHSTONE.md\n'
     for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
       printf 'principles/%s\n' "$(basename "$f")"
     done
@@ -1320,6 +1321,11 @@ mkdir -p "$PROJECT_DIR/principles"
 for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
   copy_file_force "$f" "$PROJECT_DIR/principles/$(basename "$f")"
 done
+
+# TOUCHSTONE.md is the canonical lean-router steering doc imported by
+# CLAUDE.md (@TOUCHSTONE.md) and inlined into AGENTS.md/GEMINI.md by
+# touchstone_block_apply. Copy at the project root so the @-import resolves.
+copy_file_force "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$PROJECT_DIR/TOUCHSTONE.md"
 
 echo ""
 echo "==> Copying scripts (touchstone-owned, will be auto-updated):"
