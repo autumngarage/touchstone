@@ -1518,7 +1518,7 @@ reviewer_label() {
 REVIEW_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-output.XXXXXX")"
 ASSIST_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-assist-output.XXXXXX")"
 REVIEW_STDERR_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-stderr.XXXXXX")"
-REVIEW_CONDUCTOR_LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-conductor.XXXXXX.ndjson")"
+REVIEW_CONDUCTOR_LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-conductor.XXXXXX")"
 PEER_CONDUCTOR_LOG_FILE=""
 trap 'rm -f "$REVIEW_OUTPUT_FILE" "$ASSIST_OUTPUT_FILE" "$REVIEW_STDERR_FILE" "$REVIEW_CONDUCTOR_LOG_FILE"' EXIT
 
