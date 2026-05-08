@@ -1346,6 +1346,9 @@ reviewer_conductor_exec() {
   if [ "$subcommand" = "exec" ]; then
     args+=(--tools "$tools")
     args+=(--timeout "${CODEX_REVIEW_TIMEOUT:-300}")
+    if [ -n "${REVIEW_CONDUCTOR_LOG_FILE:-}" ]; then
+      args+=(--log-file "$REVIEW_CONDUCTOR_LOG_FILE")
+    fi
   fi
 
   # Pass the prompt via stdin. Avoids argv length limits on large diffs and
@@ -1515,7 +1518,9 @@ reviewer_label() {
 REVIEW_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-output.XXXXXX")"
 ASSIST_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-assist-output.XXXXXX")"
 REVIEW_STDERR_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-stderr.XXXXXX")"
-trap 'rm -f "$REVIEW_OUTPUT_FILE" "$ASSIST_OUTPUT_FILE" "$REVIEW_STDERR_FILE"' EXIT
+REVIEW_CONDUCTOR_LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-conductor.XXXXXX")"
+PEER_CONDUCTOR_LOG_FILE=""
+trap 'rm -f "$REVIEW_OUTPUT_FILE" "$ASSIST_OUTPUT_FILE" "$REVIEW_STDERR_FILE" "$REVIEW_CONDUCTOR_LOG_FILE"' EXIT
 
 kill_process_tree() {
   local pid="$1"
@@ -1543,6 +1548,9 @@ run_reviewer_with_timeout() {
   # stderr, hence the historical /dev/null redirect; capturing instead is
   # safe because non-[conductor] lines are filtered before display.
   : >"$REVIEW_STDERR_FILE"
+  if [ "${ACTIVE_REVIEWER:-}" = "conductor" ] && [ -n "${REVIEW_CONDUCTOR_LOG_FILE:-}" ]; then
+    : >"$REVIEW_CONDUCTOR_LOG_FILE"
+  fi
 
   # No timeout: run directly
   if [ "$timeout_secs" -le 0 ] 2>/dev/null; then
@@ -2457,6 +2465,41 @@ print_route_log() {
   done
 }
 
+latest_conductor_session_log() {
+  local session_dir="${CONDUCTOR_SESSION_DIR:-${HOME:-}/.cache/conductor/sessions}"
+  [ -n "$session_dir" ] || return 0
+  [ -d "$session_dir" ] || return 0
+  ls -t "$session_dir"/*.ndjson 2>/dev/null | head -1
+}
+
+conductor_log_event_line() {
+  local log_file="$1"
+  local event="$2"
+  [ -f "$log_file" ] || return 0
+  awk -v event="$event" '
+    index($0, "\"event\": \"" event "\"") || index($0, "\"event\":\"" event "\"") {
+      line = $0
+    }
+    END {
+      if (line != "") {
+        print line
+      }
+    }
+  ' "$log_file" 2>/dev/null || true
+}
+
+conductor_log_string_field() {
+  local log_file="$1"
+  local event="$2"
+  local key="$3"
+  local line
+  line="$(conductor_log_event_line "$log_file" "$event")"
+  [ -n "$line" ] || return 0
+  printf '%s\n' "$line" \
+    | sed -nE 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' \
+    | head -1
+}
+
 # --------------------------------------------------------------------------
 # Peer review ([review.assist], v2.1) — second-opinion pass via Conductor.
 # --------------------------------------------------------------------------
@@ -2468,6 +2511,13 @@ print_route_log() {
 #
 # shellcheck disable=SC2120  # $1 is intentionally optional with a default.
 parse_primary_provider() {
+  local provider
+  provider="$(conductor_log_string_field "${REVIEW_CONDUCTOR_LOG_FILE:-}" provider_finished provider)"
+  if [ -n "$provider" ]; then
+    printf '%s' "$provider"
+    return
+  fi
+
   local stderr_file="${1:-$REVIEW_STDERR_FILE}"
   [ -f "$stderr_file" ] || {
     printf ''
@@ -2487,6 +2537,13 @@ parse_primary_provider() {
 }
 
 parse_primary_model() {
+  local model
+  model="$(conductor_log_string_field "${REVIEW_CONDUCTOR_LOG_FILE:-}" provider_finished model)"
+  if [ -n "$model" ]; then
+    printf '%s' "$model"
+    return
+  fi
+
   local stderr_file="${1:-$REVIEW_STDERR_FILE}"
   [ -f "$stderr_file" ] || {
     printf ''
@@ -2501,6 +2558,20 @@ parse_primary_model() {
   printf '%s' "$line" \
     | sed -nE 's/.*(model|model_id|model-id)[=:][[:space:]]*([a-zA-Z0-9_.:/@-]+).*/\2/p' \
     | head -1
+}
+
+parse_peer_provider() {
+  local provider
+  provider="$(conductor_log_string_field "${PEER_CONDUCTOR_LOG_FILE:-}" provider_finished provider)"
+  if [ -n "$provider" ]; then
+    printf '%s' "$provider"
+    return
+  fi
+  if [ "${ASSIST_ROUNDS_DONE:-0}" -gt 0 ]; then
+    printf 'unknown'
+  else
+    printf 'none'
+  fi
 }
 
 conductor_invocation_label() {
@@ -2548,10 +2619,12 @@ run_peer_review() {
 
   # Peer is single-turn (no tools). `conductor call` sees the primary's
   # findings + a framing prompt; the router picks a non-primary provider.
-  local peer_output
+  local peer_output peer_log_before peer_log_after
   # ASSIST_TIMEOUT config applies via the outer run_reviewer_with_timeout
   # wrapper when the primary timed out; peer call runs synchronously and
   # relies on conductor's own per-provider timeout (currently 300s default).
+  PEER_CONDUCTOR_LOG_FILE=""
+  peer_log_before="$(latest_conductor_session_log)"
   peer_output="$(printf '%s' "$peer_prompt" \
     | conductor call --auto \
       --exclude "$primary_provider" \
@@ -2559,6 +2632,10 @@ run_peer_review() {
       --effort medium \
       --silent-route \
       2>/dev/null || true)"
+  peer_log_after="$(latest_conductor_session_log)"
+  if [ -n "$peer_log_after" ] && [ "$peer_log_after" != "$peer_log_before" ]; then
+    PEER_CONDUCTOR_LOG_FILE="$peer_log_after"
+  fi
 
   if [ -z "$peer_output" ]; then
     phase "peer review produced no output (skipped)"
@@ -2637,7 +2714,8 @@ print_summary() {
   [ -n "$provider" ] || provider="${CONDUCTOR_WITH:-unknown}"
   model="$(parse_primary_model)"
   [ -n "$model" ] || model="unknown"
-  peer_provider="none"
+  peer_provider="$(parse_peer_provider)"
+  [ -n "$peer_provider" ] || peer_provider="none"
 
   printf "\n  ${C_DIM}─── review summary ────────────────────────${C_RESET}\n"
   printf "  ${C_DIM}reviewer:       %s${C_RESET}\n" "$REVIEWER_LABEL"

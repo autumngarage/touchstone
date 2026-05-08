@@ -44,6 +44,7 @@ unset PRE_COMMIT_REMOTE_NAME PRE_COMMIT_REMOTE_URL
 unset CODEX_REVIEW_FORCE CODEX_REVIEW_NO_AUTOFIX CODEX_REVIEW_DISABLE_CACHE
 unset CODEX_REVIEW_ASSIST CODEX_REVIEW_ASSIST_TIMEOUT CODEX_REVIEW_ASSIST_MAX_ROUNDS
 unset CODEX_REVIEW_IN_PROGRESS
+unset TOUCHSTONE_NO_PREFLIGHT TOUCHSTONE_NO_AUTO_UPDATE
 
 mkdir -p "$FAKE_BIN"
 setup_test_repo "$REPO_DIR"
@@ -1382,7 +1383,7 @@ printf 'peer-review test\n' >>"$CTX_REPO/example.txt"
 git -C "$CTX_REPO" add example.txt && git -C "$CTX_REPO" commit -m "peer review" >/dev/null 2>&1
 # Enable peer review in the project config.
 {
-  cat "$CTX_REPO/.codex-review.toml"
+  cat "$CTX_REPO/.codex-review.toml" 2>/dev/null || true
   printf '\n[review.assist]\nenabled = true\nmax_rounds = 1\n'
 } >"$CTX_REPO/.codex-review.toml.tmp" && mv "$CTX_REPO/.codex-review.toml.tmp" "$CTX_REPO/.codex-review.toml"
 git -C "$CTX_REPO" add .codex-review.toml && git -C "$CTX_REPO" commit -m "enable assist" >/dev/null 2>&1
@@ -1458,6 +1459,155 @@ if [ -f "$JSON_SUMMARY" ] \
 else
   echo "FAIL: expected JSON summary file" >&2
   cat "$JSON_SUMMARY" 2>/dev/null >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: JSON summary extracts provider/model from Conductor session log"
+setup_ctx_repo
+setup_ctx_bin
+cat >"$CTX_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+log_file=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --log-file)
+      log_file="${2:-}"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+cat >/dev/null
+if [ -n "$log_file" ]; then
+  printf '{"event":"route_decision","data":{"provider":"gemini"}}\n' >"$log_file"
+  printf '{"event":"provider_finished","data":{"provider":"claude","model":"sonnet","duration_ms":1234,"session_id":"primary-fixture"}}\n' >>"$log_file"
+fi
+printf '[conductor] auto -> claude (tier: frontier)\n' >&2
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$CTX_BIN/conductor"
+JSON_SUMMARY="$TEST_DIR/review-summary-provider.json"
+rm -f "$JSON_SUMMARY"
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_SUMMARY_FILE="$JSON_SUMMARY" \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
+)
+
+if grep -q '"provider":"claude"' "$JSON_SUMMARY" \
+  && grep -q '"model":"sonnet"' "$JSON_SUMMARY" \
+  && grep -q '"peer_provider":"none"' "$JSON_SUMMARY"; then
+  echo "==> PASS: summary used structured Conductor provider/model"
+else
+  echo "FAIL: expected structured provider/model in JSON summary" >&2
+  cat "$JSON_SUMMARY" 2>/dev/null >&2
+  cat "$CTX_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: missing Conductor session log keeps provider/model unknown"
+setup_ctx_repo
+setup_ctx_bin
+cat >"$CTX_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+cat >/dev/null
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$CTX_BIN/conductor"
+JSON_SUMMARY="$TEST_DIR/review-summary-missing-log.json"
+rm -f "$JSON_SUMMARY"
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_SUMMARY_FILE="$JSON_SUMMARY" \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
+)
+
+if grep -q '"provider":"unknown"' "$JSON_SUMMARY" \
+  && grep -q '"model":"unknown"' "$JSON_SUMMARY" \
+  && grep -q '"peer_provider":"none"' "$JSON_SUMMARY"; then
+  echo "==> PASS: missing session log falls back without blocking"
+else
+  echo "FAIL: expected unknown provider/model fallback" >&2
+  cat "$JSON_SUMMARY" 2>/dev/null >&2
+  cat "$CTX_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: peer review provider is extracted when peer session exists"
+setup_ctx_repo
+setup_ctx_bin
+cat >"$CTX_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+subcmd="${1:-}"; shift || true
+log_file=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --log-file)
+      log_file="${2:-}"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+cat >/dev/null
+case "$subcmd" in
+  exec)
+    if [ -n "$log_file" ]; then
+      printf '{"event":"provider_finished","data":{"provider":"claude","model":"sonnet","duration_ms":1234,"session_id":"primary-fixture"}}\n' >"$log_file"
+    fi
+    printf '[conductor] auto -> claude (tier: frontier)\n' >&2
+    printf 'CODEX_REVIEW_CLEAN\n'
+    ;;
+  call)
+    session_dir="$HOME/.cache/conductor/sessions"
+    mkdir -p "$session_dir"
+    printf '{"event":"provider_finished","data":{"provider":"gemini","model":"gemini-2.5-pro","duration_ms":4321,"session_id":"peer-fixture"}}\n' >"$session_dir/peer-fixture.ndjson"
+    printf 'AGREE\n'
+    ;;
+esac
+CXEOF
+chmod +x "$CTX_BIN/conductor"
+{
+  cat "$CTX_REPO/.codex-review.toml" 2>/dev/null || true
+  printf '\n[review.assist]\nenabled = true\nmax_rounds = 1\n'
+} >"$CTX_REPO/.codex-review.toml.tmp" && mv "$CTX_REPO/.codex-review.toml.tmp" "$CTX_REPO/.codex-review.toml"
+git -C "$CTX_REPO" add .codex-review.toml && git -C "$CTX_REPO" commit -m "enable assist summary" >/dev/null 2>&1
+JSON_SUMMARY="$TEST_DIR/review-summary-peer.json"
+PEER_HOME="$TEST_DIR/peer-home"
+rm -rf "$PEER_HOME"
+mkdir -p "$PEER_HOME"
+rm -f "$JSON_SUMMARY"
+(
+  cd "$CTX_REPO"
+  HOME="$PEER_HOME" \
+    PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_REVIEW_BASE="HEAD~2" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_SUMMARY_FILE="$JSON_SUMMARY" \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
+)
+
+if grep -q '"provider":"claude"' "$JSON_SUMMARY" \
+  && grep -q '"model":"sonnet"' "$JSON_SUMMARY" \
+  && grep -q '"peer_provider":"gemini"' "$JSON_SUMMARY"; then
+  echo "==> PASS: peer provider surfaced in summary"
+else
+  echo "FAIL: expected peer provider in JSON summary" >&2
+  cat "$JSON_SUMMARY" 2>/dev/null >&2
+  cat "$CTX_OUTPUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
