@@ -32,6 +32,14 @@ if [ -n "$REAL_HOME" ]; then
   REAL_REGISTRY_FILE="$REAL_HOME/.touchstone-projects"
 fi
 
+# Hermeticity: redirect HOME to a test-owned dir so the user-scoped skills
+# install (lib/install-skills.sh) writes to the test sandbox and never
+# touches the developer's real ~/.claude/skills/. Specific subtests below
+# override HOME further when they need a known-empty registry.
+TEST_FAKE_HOME="$TEST_DIR/fake-home"
+mkdir -p "$TEST_FAKE_HOME"
+export HOME="$TEST_FAKE_HOME"
+
 cleanup() {
   local status=$?
   local registry_changed=false
@@ -256,9 +264,9 @@ assert_contains "$PROJECT/CLAUDE.md" "test-project"
 assert_contains "$PROJECT/AGENTS.md" "test-project"
 assert_contains "$PROJECT/GEMINI.md" "test-project"
 assert_contains "$PROJECT/GEMINI.md" "Conductor"
-# Shared engineering principles must reach non-Claude reviewers via AGENTS.md.
-assert_contains "$PROJECT/AGENTS.md" "touchstone:shared-principles:start"
-assert_contains "$PROJECT/AGENTS.md" "touchstone:shared-principles:end"
+# Touchstone steering content must reach non-Claude reviewers via AGENTS.md.
+assert_contains "$PROJECT/AGENTS.md" "touchstone:steering:start"
+assert_contains "$PROJECT/AGENTS.md" "touchstone:steering:end"
 assert_contains "$PROJECT/AGENTS.md" "No band-aids"
 assert_contains "$PROJECT/AGENTS.md" "Authoring Guide"
 assert_contains "$PROJECT/AGENTS.md" "Codex and other AGENTS.md-native coding agents"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# tests/test-agents-principles-block.sh — verify the shared-principles block
-# helper for AGENTS.md.
+# tests/test-touchstone-block.sh — verify the touchstone steering block helper
+# for AGENTS.md / GEMINI.md.
 #
 # Covers:
 #   1. No file → returns 2 (caller decides).
@@ -11,15 +11,20 @@
 #   5. File with stale block → block refreshed in place.
 #   6. File with project-specific content after the block → preserved verbatim.
 #   7. Orphaned start sentinel without end → returns 1, file untouched.
+#   8. Legacy sentinel (touchstone:shared-principles:*) is migrated on apply
+#      to the new sentinel (touchstone:steering:*) without losing project
+#      content outside the block.
+#   9. The rendered block content matches TOUCHSTONE.md (single source of
+#      truth — the lib never bakes content into bash heredoc).
 #
 set -euo pipefail
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TEST_DIR="$(mktemp -d -t touchstone-test-agents-principles.XXXXXX)"
+TEST_DIR="$(mktemp -d -t touchstone-test-block.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
-# shellcheck source=../lib/agents-principles-block.sh
-source "$TOUCHSTONE_ROOT/lib/agents-principles-block.sh"
+# shellcheck source=../lib/touchstone-block.sh
+source "$TOUCHSTONE_ROOT/lib/touchstone-block.sh"
 
 ERRORS=0
 fail() {
@@ -51,7 +56,7 @@ assert_eq() {
 # --- 1. Missing file → exit 2 ----------------------------------------------
 echo "==> missing file returns 2"
 set +e
-agents_principles_block_apply "$TEST_DIR/does-not-exist.md"
+touchstone_block_apply "$TEST_DIR/does-not-exist.md" "$TOUCHSTONE_ROOT"
 rc=$?
 set -e
 assert_eq "missing file rc" 2 "$rc"
@@ -68,13 +73,11 @@ You are reviewing pull requests for **Foo**.
 
 1. Data integrity.
 EOF
-agents_principles_block_apply "$target"
-assert_contains "$target" "$AGENTS_PRINCIPLES_BLOCK_BEGIN"
-assert_contains "$target" "$AGENTS_PRINCIPLES_BLOCK_END"
-assert_contains "$target" "Shared Engineering Principles"
+touchstone_block_apply "$target" "$TOUCHSTONE_ROOT"
+assert_contains "$target" "$TOUCHSTONE_BLOCK_BEGIN"
+assert_contains "$target" "$TOUCHSTONE_BLOCK_END"
+assert_contains "$target" "Touchstone — Shared Agent Steering"
 assert_contains "$target" "No band-aids"
-assert_contains "$target" "Required Delivery Workflow"
-assert_contains "$target" "Before the first edit"
 assert_contains "$target" "scripts/open-pr.sh --auto-merge"
 # H1 must remain on line 1.
 first_line="$(head -n 1 "$target")"
@@ -90,9 +93,9 @@ This file has no H1.
 
 Some body.
 EOF
-agents_principles_block_apply "$target"
+touchstone_block_apply "$target" "$TOUCHSTONE_ROOT"
 first_line="$(head -n 1 "$target")"
-assert_eq "no-h1 first line" "$AGENTS_PRINCIPLES_BLOCK_BEGIN" "$first_line"
+assert_eq "no-h1 first line" "$TOUCHSTONE_BLOCK_BEGIN" "$first_line"
 assert_contains "$target" "This file has no H1."
 
 # --- 4. Idempotent on a current file ----------------------------------------
@@ -102,30 +105,30 @@ cat >"$target" <<'EOF'
 # AGENTS.md
 
 EOF
-agents_principles_block_apply "$target"
+touchstone_block_apply "$target" "$TOUCHSTONE_ROOT"
 sha_before="$(shasum -a 256 "$target" | awk '{print $1}')"
-agents_principles_block_apply "$target"
+touchstone_block_apply "$target" "$TOUCHSTONE_ROOT"
 sha_after="$(shasum -a 256 "$target" | awk '{print $1}')"
 assert_eq "idempotent sha" "$sha_before" "$sha_after"
 
-# --- 5. Refresh a stale block ----------------------------------------------
-echo "==> refresh stale block"
+# --- 5. Refresh a stale block (current sentinel) ----------------------------
+echo "==> refresh stale block (current sentinel)"
 target="$TEST_DIR/case-stale.md"
 cat >"$target" <<EOF
 # AGENTS.md
 
-$AGENTS_PRINCIPLES_BLOCK_BEGIN
-## Old Principles
+$TOUCHSTONE_BLOCK_BEGIN
+## Old Steering
 - This is a stale block from an older touchstone version.
 - It should be replaced wholesale.
-$AGENTS_PRINCIPLES_BLOCK_END
+$TOUCHSTONE_BLOCK_END
 
 ## Project-specific section
 The project-specific guidance below MUST survive a refresh.
 EOF
-agents_principles_block_apply "$target"
+touchstone_block_apply "$target" "$TOUCHSTONE_ROOT"
 assert_contains "$target" "No band-aids"
-assert_not_contains "$target" "Old Principles"
+assert_not_contains "$target" "Old Steering"
 assert_not_contains "$target" "stale block from an older"
 # The project-specific content after the block must survive.
 assert_contains "$target" "## Project-specific section"
@@ -137,14 +140,14 @@ target="$TEST_DIR/case-orphan.md"
 cat >"$target" <<EOF
 # AGENTS.md
 
-$AGENTS_PRINCIPLES_BLOCK_BEGIN
+$TOUCHSTONE_BLOCK_BEGIN
 Someone deleted the end marker by accident.
 
 ## Project content still here.
 EOF
 sha_before="$(shasum -a 256 "$target" | awk '{print $1}')"
 set +e
-agents_principles_block_apply "$target" 2>/dev/null
+touchstone_block_apply "$target" "$TOUCHSTONE_ROOT" 2>/dev/null
 rc=$?
 set -e
 assert_eq "orphan rc" 1 "$rc"
@@ -161,13 +164,51 @@ Project-specific intro.
 
 ## Priorities
 EOF
-agents_principles_block_apply "$target"
-# Line numbers: H1 is line 1, blank line 2, BEGIN sentinel on line 3.
-sentinel_line="$(grep -nF "$AGENTS_PRINCIPLES_BLOCK_BEGIN" "$target" | head -1 | cut -d: -f1)"
+touchstone_block_apply "$target" "$TOUCHSTONE_ROOT"
+sentinel_line="$(grep -nF "$TOUCHSTONE_BLOCK_BEGIN" "$target" | head -1 | cut -d: -f1)"
 project_line="$(grep -nF 'Project-specific intro.' "$target" | head -1 | cut -d: -f1)"
 if [ "$sentinel_line" -ge "$project_line" ]; then
   fail "block (line $sentinel_line) must precede project content (line $project_line)"
 fi
+
+# --- 8. Legacy sentinel migrates on apply ----------------------------------
+echo "==> legacy sentinel (shared-principles) migrates to steering on apply"
+target="$TEST_DIR/case-legacy.md"
+cat >"$target" <<EOF
+# AGENTS.md
+
+$TOUCHSTONE_BLOCK_BEGIN_LEGACY
+## Old shared-principles block
+- old content
+$TOUCHSTONE_BLOCK_END_LEGACY
+
+## Project section
+project line that must survive.
+EOF
+touchstone_block_apply "$target" "$TOUCHSTONE_ROOT"
+# Legacy sentinels are gone; new sentinels are present.
+assert_not_contains "$target" "$TOUCHSTONE_BLOCK_BEGIN_LEGACY"
+assert_not_contains "$target" "$TOUCHSTONE_BLOCK_END_LEGACY"
+assert_contains "$target" "$TOUCHSTONE_BLOCK_BEGIN"
+assert_contains "$target" "$TOUCHSTONE_BLOCK_END"
+# Old block content is gone, new content is in.
+assert_not_contains "$target" "Old shared-principles block"
+assert_not_contains "$target" "old content"
+assert_contains "$target" "No band-aids"
+# Project content outside the legacy block survives.
+assert_contains "$target" "## Project section"
+assert_contains "$target" "project line that must survive."
+
+# --- 9. Rendered block tracks TOUCHSTONE.md (single source of truth) -------
+echo "==> rendered block content tracks TOUCHSTONE.md"
+rendered="$(touchstone_block_render "$TOUCHSTONE_ROOT")"
+# Key phrases from TOUCHSTONE.md must appear in rendered output.
+echo "$rendered" | grep -qF "Touchstone — Shared Agent Steering" \
+  || fail "rendered block missing TOUCHSTONE.md H1"
+echo "$rendered" | grep -qF "No band-aids" \
+  || fail "rendered block missing daily-reminder bullets"
+echo "$rendered" | grep -qF "scripts/open-pr.sh --auto-merge" \
+  || fail "rendered block missing lifecycle commands"
 
 # --- Done -------------------------------------------------------------------
 if [ "$ERRORS" -gt 0 ]; then
@@ -176,4 +217,4 @@ if [ "$ERRORS" -gt 0 ]; then
   exit 1
 fi
 echo ""
-echo "==> PASS: agents-principles-block helper behaves correctly across 7 cases"
+echo "==> PASS: touchstone-block helper behaves correctly across 9 cases"

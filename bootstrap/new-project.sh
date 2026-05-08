@@ -27,8 +27,10 @@ set -euo pipefail
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../lib/install-hooks.sh
 source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
-# shellcheck source=../lib/agents-principles-block.sh
-source "$TOUCHSTONE_ROOT/lib/agents-principles-block.sh"
+# shellcheck source=../lib/touchstone-block.sh
+source "$TOUCHSTONE_ROOT/lib/touchstone-block.sh"
+# shellcheck source=../lib/install-skills.sh
+source "$TOUCHSTONE_ROOT/lib/install-skills.sh"
 
 REGISTER=true
 
@@ -1298,11 +1300,11 @@ copy_file "$TOUCHSTONE_ROOT/templates/CLAUDE.md" "$PROJECT_DIR/CLAUDE.md"
 CLAUDE_MD_CREATED="$LAST_COPY_CREATED"
 copy_file "$TOUCHSTONE_ROOT/templates/AGENTS.md" "$PROJECT_DIR/AGENTS.md"
 copy_file "$TOUCHSTONE_ROOT/templates/GEMINI.md" "$PROJECT_DIR/GEMINI.md"
-# AGENTS.md is project-owned (copy_file skips when present), but the shared-
-# engineering-principles block inside it is touchstone-owned. Apply or refresh
-# the block so non-Claude reviewers (Codex/Gemini) see the principles too —
-# this is the only path that reaches an existing project-owned AGENTS.md.
-agents_principles_block_apply "$PROJECT_DIR/AGENTS.md" || true
+# AGENTS.md is project-owned (copy_file skips when present), but the touchstone
+# steering block inside it is touchstone-owned. Apply or refresh the block so
+# non-Claude reviewers (Codex/Gemini) see the steering content directly — they
+# don't resolve the @-imports CLAUDE.md uses to pull in TOUCHSTONE.md.
+touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT" || true
 copy_file "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-commit-config.yaml"
 copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
 copy_file "$TOUCHSTONE_ROOT/templates/.worktreeinclude.example" "$PROJECT_DIR/.worktreeinclude.example"
@@ -1352,21 +1354,15 @@ echo "==> Copying Claude Code settings (touchstone-owned, will be auto-updated):
 mkdir -p "$PROJECT_DIR/.claude"
 copy_file_force "$TOUCHSTONE_ROOT/templates/claude-settings.json" "$PROJECT_DIR/.claude/settings.json"
 
-# Touchstone-shipped skills — namespaced with `touchstone-` prefix so they
-# don't collide with project-owned skills under .claude/skills/.
-if [ -d "$TOUCHSTONE_ROOT/.claude/skills" ]; then
+# Touchstone-shipped skills — installed to USER scope (~/.claude/skills/) so
+# the bundled engineering/git/cortex/conductor skills are available in every
+# project the user opens, not duplicated into each project. Project-scoped
+# skills (anything under <project>/.claude/skills/ that the user adds) remain
+# project-owned and untouched.
+if [ -d "$TOUCHSTONE_ROOT/skills" ]; then
   echo ""
-  echo "==> Copying Touchstone-shipped skills (touchstone-owned, will be auto-updated):"
-  for skill_dir in "$TOUCHSTONE_ROOT/.claude/skills/"touchstone-*/; do
-    [ -d "$skill_dir" ] || continue
-    skill_name="$(basename "$skill_dir")"
-    project_skill_dir="$PROJECT_DIR/.claude/skills/$skill_name"
-    mkdir -p "$project_skill_dir"
-    for f in "$skill_dir"*; do
-      [ -f "$f" ] || continue
-      copy_file_force "$f" "$project_skill_dir/$(basename "$f")"
-    done
-  done
+  echo "==> Installing Touchstone-bundled skills to ~/.claude/skills (user scope):"
+  touchstone_install_skills "$TOUCHSTONE_ROOT" || true
 fi
 
 # Optional CI workflow — opt-in via --ci. Not copied by default because not every

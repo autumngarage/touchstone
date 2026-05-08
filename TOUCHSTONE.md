@@ -2,10 +2,10 @@
 
 You are an AI agent (Claude Code, Codex, or another driving CLI) working in a Touchstone-bootstrapped project. This file is the universal contract: rules that apply on every turn, plus a routing table to deeper docs you should consult when specific triggers fire. Project-specific guidance lives outside this file in your driver's steering doc (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`).
 
-## Agent roles
+## Agent Roles And Fallbacks
 
-- **Driving CLI** — Claude Code, Codex, or Gemini CLI. Owns file edits, git state, tests, commits, PR creation, Conductor review invocation, and merge. Drivers are interchangeable; if one is unavailable, another reads the same files and continues.
-- **Conductor worker/reviewer** — the model router used by the driving CLI for review and bounded model work. Conductor can route to Claude, Codex, Gemini, Kimi, Ollama, or other providers, but it does not replace the driver's responsibility for the branch → PR → review → automerge workflow.
+- **Driving CLI** — Claude Code, Codex, or Gemini CLI. Owns file edits, git state, tests, commits, PR creation, Conductor review invocation, and merge. Drivers are interchangeable; driver fallback is shared-contract fallback — if one is unavailable, another reads the same files and continues.
+- **Conductor worker/reviewer router** — the model router used by the driving CLI for review and bounded model work. Conductor can route to Claude, Codex, Gemini, Kimi, Ollama, or other providers, and provider fallback runs across configured backends, but Conductor does not replace the driver's responsibility for the branch → PR → review → automerge workflow.
 
 ## Engineering principles (always in mind)
 
@@ -29,9 +29,11 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 
 ## Never commit on the default branch
 
-Before your first edit of a tracked file in a session, run `git branch --show-current`. If it reports the default branch (`main` or `master`), branch first with `git checkout -b <type>/<slug>` where `<type>` is `feat | fix | chore | refactor | docs`. Your unstaged changes carry over — there's no cost to switching now and a real cost to discovering at commit time. Recovery steps when it happens anyway live in `principles/git-workflow.md`.
+Before the first edit of a tracked file in a session, run `git branch --show-current`. If it reports the default branch (`main` or `master`), branch first with `git checkout -b <type>/<slug>` where `<type>` is `feat | fix | chore | refactor | docs`. Your unstaged changes carry over — there's no cost to switching now and a real cost to discovering at commit time. Recovery steps when it happens anyway live in `principles/git-workflow.md`.
 
-## Lifecycle (drive automatically, don't ask permission at each step)
+## Required Delivery Workflow
+
+Drive this lifecycle automatically; do not ask the user for permission at each step.
 
 1. **Pull.** `git pull --rebase` on the default branch.
 2. **Branch.** Before any edit that might become a commit.

@@ -30,11 +30,13 @@ assert_not_contains() {
   fi
 }
 
-echo "==> managed AGENTS block exposes the driver/reviewer contract"
+echo "==> TOUCHSTONE.md and managed AGENTS blocks expose the driver/reviewer contract"
+# TOUCHSTONE.md is the single source of truth. AGENTS.md and templates/AGENTS.md
+# inline its content via lib/touchstone-block.sh after `touchstone update`.
 for file in \
+  "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
   "$TOUCHSTONE_ROOT/AGENTS.md" \
-  "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
-  "$TOUCHSTONE_ROOT/lib/agents-principles-block.sh"; do
+  "$TOUCHSTONE_ROOT/templates/AGENTS.md"; do
   assert_contains "$file" "Agent Roles And Fallbacks"
   assert_contains "$file" "Driving CLI"
   assert_contains "$file" "Conductor worker/reviewer"
