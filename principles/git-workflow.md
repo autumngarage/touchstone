@@ -152,6 +152,12 @@ Before spawning a coding agent — Claude Code subagent, Conductor `exec` worker
 **The mechanical steps.**
 
 ```bash
+bash scripts/claim-issue.sh <n>
+```
+
+Under the hood this uses the same GitHub API flow (claim + dispatch comment), equivalent to:
+
+```bash
 gh issue edit <n> --add-assignee @me
 gh issue comment <n> --body "Wave N Lane X dispatched. Branch \`<branch>\`, worktree at \`<path>\`. <agent type> implementing. PR will land via \`open-pr.sh --auto-merge\`."
 ```
@@ -180,6 +186,19 @@ If you decide not to ship — the work turns out to be wrong, the approach pivot
 **For multi-issue bundles.**
 
 When one lane closes multiple issues (e.g., Wave 1's Lane A bundling shfmt + markdownlint + actionlint into one branch), claim and comment on all of them with the same lane / branch reference. The dispatch comment becomes the per-issue audit thread; the bundling is visible from any of them.
+
+**Deterministic enforcement.**
+
+Two layers back the convention so a missed claim doesn't reach merge silently:
+
+- **`scripts/claim-issue.sh`** is the canonical claim path. It does the claim + dispatch comment in one step, and detects races (another assignee appeared between the API read and write — back off, exit non-zero so the dispatching agent knows not to spawn a worker). Use it instead of raw `gh issue edit` when an agent is about to start work.
+- **`.github/workflows/issue-claim-check.yml`** runs on every `pull_request` open/edit/synchronize. It parses `Closes #N` / `Fixes #N` / `Resolves #N` / `Closes-issue: #N` from the PR body, fetches each open referenced issue, and fails the check if the PR author is not in the issue's assignees. The failure posts a comment on the PR explaining what to fix.
+
+The CI check is the hard backstop: even if an agent skips the dispatch-time claim, a PR that tries to close an unclaimed issue fails its checks and won't auto-merge.
+
+**Bypass token: `[skip-claim-check]`.**
+
+For documented exemptions (drive-by typo fix, true emergency, sandbox PR you don't intend to merge), put the literal token `[skip-claim-check]` somewhere in the PR body. The CI check sees the token and skips with a workflow-run note, leaving an audit trail. Like other bypasses (`git push --no-verify`, `merge-pr.sh --bypass-with-disclosure`), this is a documented escape hatch — not a daily shortcut.
 
 ## Parallel work with worktrees
 
