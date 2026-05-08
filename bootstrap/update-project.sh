@@ -22,8 +22,10 @@ set -euo pipefail
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../lib/install-hooks.sh
 source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
-# shellcheck source=../lib/agents-principles-block.sh
-source "$TOUCHSTONE_ROOT/lib/agents-principles-block.sh"
+# shellcheck source=../lib/touchstone-block.sh
+source "$TOUCHSTONE_ROOT/lib/touchstone-block.sh"
+# shellcheck source=../lib/install-skills.sh
+source "$TOUCHSTONE_ROOT/lib/install-skills.sh"
 # shellcheck source=../lib/sync-discipline.sh
 source "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
 PROJECT_DIR="$(pwd)"
@@ -410,6 +412,12 @@ if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
   done
 fi
 
+# TOUCHSTONE.md — canonical lean-router steering doc, imported by CLAUDE.md
+# (@TOUCHSTONE.md) and inlined into AGENTS.md/GEMINI.md by touchstone_block_apply.
+if [ -f "$TOUCHSTONE_ROOT/TOUCHSTONE.md" ]; then
+  update_file "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$PROJECT_DIR/TOUCHSTONE.md"
+fi
+
 # Read project type (default: generic for backward compatibility).
 PROJECT_TYPE="generic"
 if [ -f "$PROJECT_DIR/.touchstone-config" ]; then
@@ -482,23 +490,14 @@ update_settings_file() {
 }
 update_settings_file "$TOUCHSTONE_ROOT/templates/claude-settings.json" "$PROJECT_DIR/.claude/settings.json"
 
-# Touchstone-shipped skills (touchstone-owned, prefixed with `touchstone-`
-# to keep them distinguishable from project-owned skills under .claude/skills/).
-# Each file inside a touchstone-* skill is overwritten on update; project-
-# owned skills (any name without the `touchstone-` prefix) are untouched.
-if [ -d "$TOUCHSTONE_ROOT/.claude/skills" ]; then
-  for skill_dir in "$TOUCHSTONE_ROOT/.claude/skills/"touchstone-*/; do
-    [ -d "$skill_dir" ] || continue
-    skill_name="$(basename "$skill_dir")"
-    project_skill_dir="$PROJECT_DIR/.claude/skills/$skill_name"
-    if [ "$DRY_RUN" = false ]; then
-      mkdir -p "$project_skill_dir"
-    fi
-    for f in "$skill_dir"*; do
-      [ -f "$f" ] || continue
-      update_file "$f" "$project_skill_dir/$(basename "$f")"
-    done
-  done
+# Touchstone-shipped skills are installed user-scope at ~/.claude/skills/
+# rather than mirrored into each project's .claude/skills/. This keeps a
+# single source of truth across all projects the user opens. The migration
+# below removes any leftover project-scoped touchstone-* skill directories
+# from the previous project-scoped install pattern.
+if [ -d "$TOUCHSTONE_ROOT/skills" ] && [ "$DRY_RUN" = false ]; then
+  touchstone_install_skills "$TOUCHSTONE_ROOT" || true
+  touchstone_uninstall_legacy_project_skills "$PROJECT_DIR" || true
 fi
 
 # Per-profile project-owned templates (e.g. swift's .swiftlint.yml). These are
@@ -550,12 +549,12 @@ fi
 
 # Refresh the touchstone-managed shared-principles block inside AGENTS.md.
 # AGENTS.md itself is project-owned, but the sentinel-delimited block is
-# touchstone-owned so non-Claude reviewers (Codex/Gemini) get the engineering
-# principles that CLAUDE.md gets for free via @-imports.
+# touchstone-owned so non-Claude reviewers (Codex/Gemini) get the steering
+# content that CLAUDE.md gets for free via @-imports.
 AGENTS_PRINCIPLES_TOUCHED=false
 if [ "$DRY_RUN" = false ] && [ -f "$PROJECT_DIR/AGENTS.md" ]; then
   agents_md_before_sha="$(shasum -a 256 "$PROJECT_DIR/AGENTS.md" | awk '{print $1}')"
-  agents_principles_block_apply "$PROJECT_DIR/AGENTS.md" || true
+  touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT" || true
   agents_md_after_sha="$(shasum -a 256 "$PROJECT_DIR/AGENTS.md" | awk '{print $1}')"
   if [ "$agents_md_before_sha" != "$agents_md_after_sha" ]; then
     AGENTS_PRINCIPLES_TOUCHED=true
@@ -569,6 +568,7 @@ write_touchstone_manifest() {
     printf '# Managed by touchstone. These paths may be updated by `touchstone update`.\n'
     printf '.touchstone-manifest\n'
     printf '.touchstone-version\n'
+    printf 'TOUCHSTONE.md\n'
     if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
       for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
         printf 'principles/%s\n' "$(basename "$f")"

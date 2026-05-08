@@ -12,58 +12,13 @@ Claude Code is a **driving CLI** in this repo: it owns file edits, git state, te
 
 Conductor is the **worker/reviewer router**. The driving CLI may invoke Conductor for code review or bounded model work, and Conductor can fall back across configured providers such as Claude, Codex, Gemini, or local models. Conductor provider fallback does not replace the driving CLI's responsibility for the branch → PR → review → automerge workflow.
 
-## Engineering Principles (HARD REQUIREMENTS)
+## Universal steering
 
-Non-negotiable. Every code change is reviewed against them. Full rationale, worked examples, and the *why* behind each rule live in `principles/engineering-principles.md` — read it once; this list is the daily reminder.
+@TOUCHSTONE.md
 
-- **No band-aids** — fix the root cause; if patching a symptom, say so explicitly and name the root cause.
-- **Keep interfaces narrow** — expose the smallest stable contract; don't leak storage shape, vendor SDKs, or workflow sequencing.
-- **Derive limits from domain** — thresholds and sizes come from input/config/named constants; test at small, typical, and large scales.
-- **Derive, don't persist** — compute from the source of truth; persist derived state only with documented invalidation + rebuild path.
-- **No silent failures** — every exception is re-raised or logged with debug context. No `except: pass`, no swallowed errors.
-- **Every fix gets a test** — bug fix includes a regression test that runs in CI and fails on the old code.
-- **Think in invariants** — name and assert at least one invariant for nontrivial logic.
-- **One code path** — share business logic across modes; confine mode-specific differences to adapters, config, or the I/O boundary.
-- **Version your data boundaries** — when a model/algorithm/source changes affects decisions, version the boundary; don't aggregate across.
-- **Separate behavior changes from tidying** — never mix functional changes with broad renames, formatting sweeps, or unrelated refactors.
-- **Make irreversible actions recoverable** — destructive operations need dry-run, backup, idempotency, rollback, or forward-fix plan before they run.
-- **Preserve compatibility at boundaries** — public API/config/schema/CLI/hook/template changes need a compatibility or migration plan.
-- **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill.
-- **Isolate file-writing subagents** — parallel workers use dedicated worktrees, slice manifests, and disjoint file ownership by default.
-- **File issues for bugs** — open a GitHub issue when you find a bug, in this project or in an autumngarage tool. Don't silently work around it.
+The block above is the canonical universal contract: agent roles, the 14 daily-reminder engineering principles, the never-commit-on-main rule, the required delivery workflow, memory hygiene, and a routing table to deeper docs (`principles/git-workflow.md`, `principles/pre-implementation-checklist.md`, `.cortex/protocol.md`, etc.). Codex and Gemini agents read the same content via the `<!-- touchstone:steering -->` managed block in `AGENTS.md` / `GEMINI.md`.
 
-@principles/pre-implementation-checklist.md
-@principles/documentation-ownership.md
-
-## Git Workflow
-
-@principles/git-workflow.md
-
-### Never commit on the default branch
-
-Every change — including one-liners, doc tweaks, and version bumps — starts on a feature branch. **Before your first edit of a tracked file in a session**, run `git branch --show-current`; if it reports the default branch (`main` or `master`), branch first with `git checkout -b <type>/<slug>`. See the "Never commit on the default branch" section in `principles/git-workflow.md` for recovery steps if it happens anyway.
-
-### The lifecycle (drive this automatically, do not ask the user for permission at each step)
-
-1. **Pull.** `git pull --rebase` on the default branch before starting work.
-2. **Branch — before any edit that might become a commit.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`. Branching is step one, not cleanup.
-3. **Change + commit.** Make the code change, stage explicit file paths, commit with a concise message.
-4. **Conductor review + auto-fix.** From a clean worktree, run `CODEX_REVIEW_FORCE=1 bash scripts/codex-review.sh`. This asks Conductor for code review and safe auto-fixes before merge. If Conductor creates fix commits, let the loop finish; if it blocks, address findings, commit, and rerun until clean.
-5. **Ship.** `bash scripts/open-pr.sh --auto-merge` — pushes, creates the PR, runs the final read-only Conductor merge review, squash-merges, and syncs the default branch in one step.
-6. **Clean up.** `git branch -D <feature-branch>` if it still exists locally.
-
-### Housekeeping
-
-- Concise commit messages. Logically grouped changes.
-- File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md`; use `scripts/spawn-worktree.sh` and `scripts/cleanup-worktrees.sh` for local setup and teardown.
-- Run `/compact` at ~50% context. Start fresh sessions for unrelated work.
-
-### Memory Hygiene
-
-- Treat Claude Code memory as cached guidance, not canonical truth. Before relying on a remembered command, flag, path, version, or workflow, verify it against this repo.
-- Do not write memory for facts that are cheap to derive from `README.md`, `CLAUDE.md`, `AGENTS.md`, `.touchstone-config`, release docs, or the code itself.
-- If you write memory that mentions a command, flag, file path, version, release process, or "current/primary" workflow, include the date (`YYYY-MM-DD`) and the canonical source checked.
-- If memory conflicts with the repo, follow the repo and ask to audit or update the stale memory.
+The `~/.claude/skills/touchstone-*` skills (installed by `touchstone init`) provide the same routing surface as the table above, with descriptions in your session header.
 
 ## Testing
 

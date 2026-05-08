@@ -48,7 +48,7 @@ assert_description_contract() {
   local skill_dir="$1" expected_name="$2" description_regex="$3"
   shift 3
   local required_terms=("$@")
-  local skill_file=".claude/skills/$skill_dir/SKILL.md"
+  local skill_file="skills/$skill_dir/SKILL.md"
   local name description missing=0
 
   echo "==> Skill: $skill_dir"

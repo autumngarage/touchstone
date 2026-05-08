@@ -11,6 +11,12 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-update.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
+# Hermeticity: redirect HOME so user-scoped skill install (lib/install-skills.sh)
+# writes to the test sandbox, not the developer's real ~/.claude/skills/.
+TEST_FAKE_HOME="$TEST_DIR/fake-home"
+mkdir -p "$TEST_FAKE_HOME"
+export HOME="$TEST_FAKE_HOME"
+
 echo "==> Test: update an existing project"
 echo "    Test dir: $TEST_DIR/test-project"
 
@@ -267,11 +273,10 @@ if ! git -C "$PROJECT" log -1 --name-only --pretty=format: | grep -qx 'GEMINI.md
 fi
 
 # --------------------------------------------------------------------------
-# Test 3b: pre-existing AGENTS.md without the shared-principles block gets
-# the touchstone-managed block injected on update. This is the migration
-# path for projects bootstrapped before the shared-principles block existed —
-# without it, non-Claude reviewers (Codex/Gemini) silently miss every
-# engineering principle.
+# Test 3b: pre-existing AGENTS.md without the steering block gets the
+# touchstone-managed block injected on update. This is the migration path
+# for projects bootstrapped before the block existed — without it, non-
+# Claude reviewers (Codex/Gemini) silently miss every engineering principle.
 # --------------------------------------------------------------------------
 echo ""
 echo "--- Step 4b: AGENTS.md without principles block gets backfilled on update ---"
@@ -290,8 +295,8 @@ commit_all "$PROJECT" "simulate pre-block AGENTS.md state"
 
 (cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
 
-assert_contains "$PROJECT/AGENTS.md" "touchstone:shared-principles:start"
-assert_contains "$PROJECT/AGENTS.md" "touchstone:shared-principles:end"
+assert_contains "$PROJECT/AGENTS.md" "touchstone:steering:start"
+assert_contains "$PROJECT/AGENTS.md" "touchstone:steering:end"
 assert_contains "$PROJECT/AGENTS.md" "No band-aids"
 # Project-specific content must survive injection.
 assert_contains "$PROJECT/AGENTS.md" "Project-specific rule that must survive the update."
