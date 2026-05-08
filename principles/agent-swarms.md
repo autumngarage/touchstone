@@ -113,7 +113,8 @@ Workers own only their slice:
 
 Default to one PR per worker when slices are independently shippable. Use an
 aggregate PR when the feature only makes sense as a unit, when shared files
-must be updated centrally, or when reviewers need one coherent story.
+must be updated centrally, or when the change only makes sense reviewed as
+a whole.
 
 ## Concurrency Cap
 

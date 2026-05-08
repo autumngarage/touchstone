@@ -45,7 +45,7 @@ Set `TOUCHSTONE_NO_AUTO_UPDATE=1` to disable both CLI self-update and project au
 
 **One concern per commit.** A commit should describe a single logical change — a feature, a fix, a refactor, a doc update — not a multi-day grab bag. The diff might span many files, but it should be one coherent thought. This is the "atomic commit" principle: every commit is a self-contained unit of intent.
 
-**Why it matters.** Atomic commits pay back continuously: they make code review legible (a reviewer can hold one idea at a time), they make `git blame` and `git log` informative ("this line exists because of fix X" beats "this line exists because of giant-batch Y"), they make `git bisect` able to pin a regression to a single change, and they make `git revert` surgical (you can undo the broken thing without losing the four good things shipped alongside).
+**Why it matters.** Atomic commits pay back continuously: they make `git blame` and `git log` informative ("this line exists because of fix X" beats "this line exists because of giant-batch Y"), they make `git bisect` able to pin a regression to a single change, they make `git revert` surgical (you can undo the broken thing without losing the four good things shipped alongside), and they let the Conductor merge review reason about one semantic change at a time instead of a tangle.
 
 **Concise commit messages.** Lead with *what* changed in the subject line. Use the body to explain *why* when the why isn't obvious from the diff. The PR description handles the broader narrative; commit messages are the per-step record.
 
@@ -55,9 +55,9 @@ Set `TOUCHSTONE_NO_AUTO_UPDATE=1` to disable both CLI self-update and project au
 
 ## Commit and push frequency
 
-**Commit at every clear stopping point.** A sub-task is complete and its tests pass — that's a commit boundary. Don't wait until "the whole feature is done." Holding hours of work in an uncommitted working tree creates four problems: (1) reviewers eventually face one giant diff instead of a sequence they can read, (2) any single mistake can lose all of it, (3) other branches can't pull your in-flight work, and (4) you lose the per-step `git log` story that future-you will rely on when debugging months later.
+**Commit at every clear stopping point.** A sub-task is complete and its tests pass — that's a commit boundary. Don't wait until "the whole feature is done." Holding hours of work in an uncommitted working tree creates four problems: (1) the Conductor merge review faces one giant diff instead of a legible sequence, (2) any single mistake can lose all of it, (3) other branches can't pull your in-flight work, and (4) you lose the per-step `git log` story that future-you will rely on when debugging months later.
 
-**Push after every commit.** Local commits are not durable. Pushing to the remote (or a personal fork) means your work survives a laptop dying or a `git reset --hard` finger-slip. On a PR branch, pushing also surfaces incremental progress to reviewers, who can comment on individual commits rather than waiting for a final blob.
+**Push after every commit.** Local commits are not durable. Pushing to the remote (or a personal fork) means your work survives a laptop dying or a `git reset --hard` finger-slip. On a PR branch, pushing also makes incremental work visible from another worktree or session, so a fallback agent (or future-you in a new shell) can pick up the in-flight state without rebuilding it.
 
 **Cadence guidance.** A useful rhythm for a focused work session is something like one commit per 30–60 minutes — about as often as you'd take a sip of water. If a session goes longer than that without a commit, ask whether you've passed a clean stopping point and didn't notice. If you can describe what you just finished in one sentence, that's a commit.
 
@@ -141,7 +141,7 @@ A stacked PR is a PR whose base branch is another open PR's branch instead of th
 
 **What to do.**
 
-- **First preference: bundle.** When the user says "ship it all," default to one PR with all the commits. Reviewers prefer one coherent story over a chain; mergers prefer one squash over orchestrating a chain in order.
+- **First preference: bundle.** When the user says "ship it all," default to one PR with all the commits. The Conductor merge review reasons more cleanly about one coherent story than a chain; mergers prefer one squash over orchestrating a chain in order.
 - **If you must stack:** drop `--auto-merge` on the whole chain. Merge each PR by hand in order, using **merge commit** or **rebase merge** (never squash) for the parent so the child's branch still traces to something on main. `open-pr.sh` will warn if you pass `--base <branch>` + `--auto-merge` together — take the warning seriously.
 - **Recover an orphaned child**: re-open the work as a fresh PR against current `main` (the lineage is lost but the diff usually still applies). If the parent's squashed content is already on main, the child's diff is just the child-only changes — which is usually what you wanted anyway.
 
