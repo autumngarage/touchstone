@@ -3,3 +3,4 @@ homebrew-touchstone/
 .cortex/.index.json
 .cortex/.index/
 .cortex/pending/
+.cortex/.last-cli-version
