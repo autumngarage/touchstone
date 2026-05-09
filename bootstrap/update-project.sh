@@ -634,7 +634,7 @@ fi
 if [ "$DRY_RUN" = false ]; then
   echo ""
   echo "==> Committing touchstone update..."
-  git -C "$PROJECT_DIR" add -A -- principles scripts lib .touchstone-manifest
+  git -C "$PROJECT_DIR" add -A -- TOUCHSTONE.md principles scripts lib .touchstone-manifest
   git -C "$PROJECT_DIR" add -f -- .touchstone-version
   # If the early auto-migration rewrote .codex-review.toml, stage it so
   # the rewrite ships in the same update commit instead of dangling as
