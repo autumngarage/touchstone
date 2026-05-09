@@ -529,7 +529,7 @@ run_preflight_gate() {
 
   echo "==> Running deterministic preflight before merge review (diff vs $base_ref) ..."
   touchstone_emit_event preflight_started pr_number="$PR_NUMBER" mode=merge
-  if touchstone_preflight_main --diff "$base_ref" "$(git rev-parse --show-toplevel)"; then
+  if touchstone_preflight_main_sanitized --diff "$base_ref" "$(git rev-parse --show-toplevel)"; then
     touchstone_emit_event preflight_clean pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
     return 0
   fi

@@ -88,10 +88,12 @@ if grep -q -- '- Anything in bootstrap/new-project.sh' "$PROMPT_FILE" \
   && grep -q -- '- Anything in bootstrap/update-project.sh' "$PROMPT_FILE" \
   && grep -q -- '- Anything in bootstrap/sync-all.sh' "$PROMPT_FILE" \
   && grep -q -- '- Anything in hooks/codex-review.sh' "$PROMPT_FILE" \
-  && grep -q -- '- Anything in templates/' "$PROMPT_FILE"; then
+  && grep -q -- '- Anything in templates/' "$PROMPT_FILE" \
+  && grep -q -- 'Deterministic preflight already passed for this diff before the live review' "$PROMPT_FILE" \
+  && grep -q -- 'Do not rerun the full preflight' "$PROMPT_FILE"; then
   echo "==> PASS: multiline unsafe_paths were included in the Codex prompt"
 else
-  echo "FAIL: expected multiline unsafe_paths to appear in the generated prompt" >&2
+  echo "FAIL: expected unsafe_paths and preflight guidance to appear in the generated prompt" >&2
   sed -n '1,120p' "$PROMPT_FILE" >&2
   ERRORS=$((ERRORS + 1))
 fi
@@ -308,6 +310,79 @@ else
   cat "$TEST_DIR/conductor-env-output.txt" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+echo "==> Test: review hook serializes duplicate top-level review gates"
+cat >"$FAKE_BIN/conductor" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+cat >/dev/null
+printf 'called\n' >>"$CODEX_CALLS_FILE"
+printf 'CODEX_REVIEW_CLEAN\n'
+EOF
+chmod +x "$FAKE_BIN/conductor"
+LOCK_DIR="$(git -C "$REPO_DIR" rev-parse --absolute-git-dir)/touchstone/codex-review.lock"
+rm -rf "$LOCK_DIR"
+mkdir -p "$LOCK_DIR"
+{
+  printf 'pid=%s\n' "$$"
+  printf 'started_at_epoch=%s\n' "$(date +%s)"
+  printf 'branch=main\n'
+  printf 'base=HEAD~1\n'
+  printf 'head=%s\n' "$(git -C "$REPO_DIR" rev-parse HEAD)"
+} >"$LOCK_DIR/metadata"
+: >"$CODEX_CALLS_FILE"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_LOCK_WAIT_SECONDS=0 \
+    CODEX_REVIEW_ON_ERROR=fail-open \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TEST_DIR/lock-busy-output.txt" 2>&1
+)
+CODEX_CALL_COUNT="$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
+if [ "$CODEX_CALL_COUNT" = "0" ] \
+  && grep -q 'Another Touchstone review gate is already running' "$TEST_DIR/lock-busy-output.txt" \
+  && grep -q 'review lock busy' "$TEST_DIR/lock-busy-output.txt"; then
+  echo "==> PASS: active review lock prevented duplicate review work"
+else
+  echo "FAIL: active review lock should prevent duplicate review work" >&2
+  echo "codex call count: $CODEX_CALL_COUNT" >&2
+  cat "$TEST_DIR/lock-busy-output.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+rm -rf "$LOCK_DIR"
+mkdir -p "$LOCK_DIR"
+{
+  printf 'pid=999999\n'
+  printf 'started_at_epoch=%s\n' "$(date +%s)"
+  printf 'branch=main\n'
+  printf 'base=HEAD~1\n'
+  printf 'head=%s\n' "$(git -C "$REPO_DIR" rev-parse HEAD)"
+} >"$LOCK_DIR/metadata"
+: >"$CODEX_CALLS_FILE"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_CALLS_FILE="$CODEX_CALLS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TEST_DIR/lock-stale-output.txt" 2>&1
+)
+CODEX_CALL_COUNT="$(wc -l <"$CODEX_CALLS_FILE" | tr -d ' ')"
+if [ "$CODEX_CALL_COUNT" = "1" ] \
+  && grep -q 'Removing stale review lock' "$TEST_DIR/lock-stale-output.txt"; then
+  echo "==> PASS: stale review lock was removed and review proceeded"
+else
+  echo "FAIL: stale review lock should be removed before reviewing" >&2
+  echo "codex call count: $CODEX_CALL_COUNT" >&2
+  cat "$TEST_DIR/lock-stale-output.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+rm -rf "$LOCK_DIR"
 
 echo "==> Test: review hook caches exact clean reviews"
 rm -rf "$(git -C "$REPO_DIR" rev-parse --absolute-git-dir)/touchstone/codex-review-clean"

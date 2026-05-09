@@ -1259,6 +1259,21 @@ When in doubt, STOP and emit BLOCKED."
   echo "$policy"
 }
 
+build_preflight_review_policy() {
+  case "${DETERMINISTIC_PREFLIGHT_RESULT:-not-run}" in
+    passed*)
+      cat <<POLICY_EOF
+## Deterministic preflight
+
+Deterministic preflight already passed for this diff before the live review.
+Do not rerun the full preflight, the full \`tests/test-*.sh\` suite, or broad lint/build sweeps.
+Run focused commands only when needed to verify a specific suspected blocker that the preflight did not already cover.
+POLICY_EOF
+      ;;
+    *) ;;
+  esac
+}
+
 build_assist_policy() {
   if ! is_truthy "$ASSIST_ENABLED" || [ "${ASSIST_MAX_ROUNDS:-0}" -le 0 ] 2>/dev/null; then
     return 0
@@ -1531,7 +1546,20 @@ ASSIST_OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-assist-output.XX
 REVIEW_STDERR_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-stderr.XXXXXX")"
 REVIEW_CONDUCTOR_LOG_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-conductor.XXXXXX")"
 PEER_CONDUCTOR_LOG_FILE=""
-trap 'rm -f "$REVIEW_OUTPUT_FILE" "$ASSIST_OUTPUT_FILE" "$REVIEW_STDERR_FILE" "$REVIEW_CONDUCTOR_LOG_FILE"' EXIT
+REVIEW_LOCK_DIR=""
+REVIEW_LOCK_ACQUIRED=false
+REVIEW_LOCK_TOKEN=""
+
+cleanup_review_process() {
+  rm -f "$REVIEW_OUTPUT_FILE" "$ASSIST_OUTPUT_FILE" "$REVIEW_STDERR_FILE" "$REVIEW_CONDUCTOR_LOG_FILE"
+  if [ "$REVIEW_LOCK_ACQUIRED" = true ] && [ -n "$REVIEW_LOCK_DIR" ]; then
+    if [ "$(review_lock_metadata_value token 2>/dev/null || true)" = "$REVIEW_LOCK_TOKEN" ]; then
+      rm -rf "$REVIEW_LOCK_DIR" 2>/dev/null || true
+    fi
+  fi
+}
+
+trap cleanup_review_process EXIT
 
 kill_process_tree() {
   local pid="$1"
@@ -1640,6 +1668,100 @@ handle_error() {
   fi
 }
 
+review_lock_metadata_value() {
+  local key="$1"
+  local file="${2:-$REVIEW_LOCK_DIR/metadata}"
+
+  [ -f "$file" ] || return 0
+  awk -F= -v wanted="$key" '$1 == wanted { sub(/^[^=]*=/, ""); print; exit }' "$file" 2>/dev/null || true
+}
+
+review_lock_pid_is_alive() {
+  local pid="$1"
+  [ -n "$pid" ] || return 1
+  case "$pid" in
+    *[!0-9]*) return 1 ;;
+  esac
+  kill -0 "$pid" 2>/dev/null
+}
+
+review_lock_branch_name() {
+  local branch="${CODEX_REVIEW_BRANCH_NAME:-}"
+  if [ -z "$branch" ]; then
+    branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+  fi
+  printf '%s' "$branch"
+}
+
+write_review_lock_metadata() {
+  local metadata_file="$REVIEW_LOCK_DIR/metadata"
+
+  {
+    printf 'token=%s\n' "$REVIEW_LOCK_TOKEN"
+    printf 'pid=%s\n' "$$"
+    printf 'started_at_epoch=%s\n' "$(date +%s)"
+    printf 'branch=%s\n' "$(review_lock_branch_name)"
+    printf 'base=%s\n' "$BASE"
+    printf 'merge_base=%s\n' "$MERGE_BASE"
+    printf 'head=%s\n' "$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+    printf 'cwd=%s\n' "$(pwd -P)"
+    printf 'command=%s\n' "$0"
+  } >"$metadata_file" 2>/dev/null || true
+}
+
+acquire_review_lock() {
+  local wait_seconds="${CODEX_REVIEW_LOCK_WAIT_SECONDS:-600}"
+  local stale_seconds="${CODEX_REVIEW_LOCK_STALE_SECONDS:-7200}"
+  local start_epoch now_epoch elapsed lock_pid lock_started lock_age announced=false
+
+  if is_truthy "${CODEX_REVIEW_DISABLE_LOCK:-false}"; then
+    return 0
+  fi
+
+  REVIEW_LOCK_DIR="$(git rev-parse --git-path touchstone/codex-review.lock)"
+  mkdir -p "$(dirname "$REVIEW_LOCK_DIR")" 2>/dev/null || true
+  start_epoch="$(date +%s)"
+  REVIEW_LOCK_TOKEN="$$:$start_epoch"
+
+  while ! mkdir "$REVIEW_LOCK_DIR" 2>/dev/null; do
+    now_epoch="$(date +%s)"
+    lock_pid="$(review_lock_metadata_value pid)"
+    lock_started="$(review_lock_metadata_value started_at_epoch)"
+
+    if ! review_lock_pid_is_alive "$lock_pid"; then
+      echo "==> Removing stale review lock at $REVIEW_LOCK_DIR (pid ${lock_pid:-unknown} is not running)."
+      rm -rf "$REVIEW_LOCK_DIR" 2>/dev/null || true
+      continue
+    fi
+
+    if [ -n "$lock_started" ] && [ "$lock_started" -le "$now_epoch" ] 2>/dev/null; then
+      lock_age=$((now_epoch - lock_started))
+      if [ "$stale_seconds" -ge 0 ] 2>/dev/null && [ "$lock_age" -gt "$stale_seconds" ]; then
+        echo "==> Removing stale review lock at $REVIEW_LOCK_DIR (age ${lock_age}s > ${stale_seconds}s)."
+        rm -rf "$REVIEW_LOCK_DIR" 2>/dev/null || true
+        continue
+      fi
+    fi
+
+    if [ "$announced" = false ]; then
+      echo "==> Another Touchstone review gate is already running for this checkout; waiting for the lock."
+      echo "    lock: $REVIEW_LOCK_DIR"
+      echo "    pid:  ${lock_pid:-unknown}"
+      echo "    head: $(review_lock_metadata_value head)"
+      announced=true
+    fi
+
+    elapsed=$((now_epoch - start_epoch))
+    if [ "$wait_seconds" -ge 0 ] 2>/dev/null && [ "$elapsed" -ge "$wait_seconds" ]; then
+      handle_error "review lock busy"
+    fi
+    sleep 2
+  done
+
+  REVIEW_LOCK_ACQUIRED=true
+  write_review_lock_metadata
+}
+
 # --------------------------------------------------------------------------
 # Pre-flight checks
 # --------------------------------------------------------------------------
@@ -1709,26 +1831,35 @@ if git diff --quiet "$MERGE_BASE"..HEAD; then
   exit 0
 fi
 
+acquire_review_lock
+
+DETERMINISTIC_PREFLIGHT_RESULT="not-run"
+
 run_deterministic_preflight() {
   if ! is_truthy "$PREFLIGHT_REQUIRED"; then
     echo "==> Preflight disabled by [review].preflight_required=false."
+    DETERMINISTIC_PREFLIGHT_RESULT="skipped: disabled by config"
     return 0
   fi
   if is_truthy "${TOUCHSTONE_NO_PREFLIGHT:-false}"; then
     echo "==> Skipping preflight because TOUCHSTONE_NO_PREFLIGHT=1."
+    DETERMINISTIC_PREFLIGHT_RESULT="skipped: TOUCHSTONE_NO_PREFLIGHT=1"
     return 0
   fi
   if is_truthy "${TOUCHSTONE_PREFLIGHT_ALREADY_RAN:-false}"; then
     echo "==> Skipping preflight because this review was invoked after a clean preflight."
+    DETERMINISTIC_PREFLIGHT_RESULT="passed before this review"
     return 0
   fi
   if ! declare -F touchstone_preflight_main >/dev/null 2>&1; then
     echo "==> Preflight helper not found at $PREFLIGHT_SCRIPT — skipping preflight."
+    DETERMINISTIC_PREFLIGHT_RESULT="skipped: helper missing"
     return 0
   fi
 
   echo "==> Running deterministic preflight before AI review (diff vs $BASE) ..."
-  if touchstone_preflight_main --diff "$BASE" "$REPO_ROOT"; then
+  if touchstone_preflight_main_sanitized --diff "$BASE" "$REPO_ROOT"; then
+    DETERMINISTIC_PREFLIGHT_RESULT="passed before this review"
     return 0
   fi
 
@@ -1812,6 +1943,7 @@ fi)
 ## Auto-fix policy
 
 $AUTOFIX_POLICY
+$(build_preflight_review_policy)
 $(build_assist_policy)
 $(if [ -n "$REVIEW_CONTEXT_FILE" ]; then
   printf '\n## Project review context\n\n'

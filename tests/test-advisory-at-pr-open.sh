@@ -17,12 +17,17 @@ mkdir -p "$RUN_DIR/scripts" "$RUN_DIR/lib" "$REPO_DIR" "$FAKE_BIN"
 cp "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$RUN_DIR/scripts/open-pr.sh"
 cp "$TOUCHSTONE_ROOT/lib/review-comment.sh" "$RUN_DIR/lib/review-comment.sh"
 cp "$TOUCHSTONE_ROOT/lib/preflight.sh" "$RUN_DIR/lib/preflight.sh"
+cp "$TOUCHSTONE_ROOT/lib/preflight-scope.sh" "$RUN_DIR/lib/preflight-scope.sh"
 cp "$TOUCHSTONE_ROOT/lib/toml.sh" "$RUN_DIR/lib/toml.sh"
 chmod +x "$RUN_DIR/scripts/open-pr.sh"
 
 cat >"$RUN_DIR/scripts/codex-review.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+{
+  printf 'TOUCHSTONE_PREFLIGHT_ALREADY_RAN=%s\n' "${TOUCHSTONE_PREFLIGHT_ALREADY_RAN:-}"
+  printf 'TOUCHSTONE_CONDUCTOR_WITH=%s\n' "${TOUCHSTONE_CONDUCTOR_WITH:-}"
+} >"$CODEX_REVIEW_STUB_ENV_LOG"
 printf '{"reviewer":"Conductor","provider":"claude","model":"claude-opus-4-1","peer_provider":"none","iterations":1,"mode":"%s","findings":%s,"exit_reason":"%s"}\n' \
   "${CODEX_REVIEW_MODE:-unknown}" "${CODEX_REVIEW_STUB_FINDINGS:-0}" "${CODEX_REVIEW_STUB_REASON:-clean}" > "$CODEX_REVIEW_SUMMARY_FILE"
 if [ "${CODEX_REVIEW_STUB_EXIT:-0}" != "0" ]; then
@@ -94,12 +99,13 @@ run_open_pr() {
       CODEX_REVIEW_STUB_EXIT="${CODEX_REVIEW_STUB_EXIT:-0}" \
       CODEX_REVIEW_STUB_FINDINGS="${CODEX_REVIEW_STUB_FINDINGS:-0}" \
       CODEX_REVIEW_STUB_REASON="${CODEX_REVIEW_STUB_REASON:-clean}" \
+      CODEX_REVIEW_STUB_ENV_LOG="$TEST_DIR/review-env" \
       bash "$RUN_DIR/scripts/open-pr.sh"
   ) >"$output_file" 2>&1
 }
 
 reset_case() {
-  rm -f "$TEST_DIR/comments"
+  rm -f "$TEST_DIR/comments" "$TEST_DIR/review-env"
 }
 
 echo "==> Case 1: clean advisory review posts clean summary"
@@ -146,6 +152,27 @@ else
   echo "    FAIL: disabled advisory review still posted a comment" >&2
   cat "$OUT" >&2
   [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 4: clean advisory preflight is passed through to review"
+reset_case
+git -C "$REPO_DIR" update-ref refs/remotes/origin/main main
+printf '[review]\npreflight_required = true\nadvisory_at_pr_open = true\n' >"$REPO_DIR/.codex-review.toml"
+git -C "$REPO_DIR" add .codex-review.toml
+git -C "$REPO_DIR" commit -m "enable advisory preflight" >/dev/null 2>&1
+OUT="$TEST_DIR/preflight.out"
+(
+  export TOUCHSTONE_CONDUCTOR_WITH="deepseek-reasoner"
+  CODEX_REVIEW_STUB_EXIT=0 CODEX_REVIEW_STUB_FINDINGS=0 CODEX_REVIEW_STUB_REASON=clean run_open_pr "$OUT"
+)
+if grep -q '^TOUCHSTONE_PREFLIGHT_ALREADY_RAN=true$' "$TEST_DIR/review-env" \
+  && grep -q '^TOUCHSTONE_CONDUCTOR_WITH=deepseek-reasoner$' "$TEST_DIR/review-env"; then
+  echo "    PASS"
+else
+  echo "    FAIL: advisory review should know clean preflight already ran" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/review-env" ] && cat "$TEST_DIR/review-env" >&2
   ERRORS=$((ERRORS + 1))
 fi
 

@@ -42,9 +42,15 @@ EOF_CONFIG
 cat >"$VALIDATE_PROJECT/validate.sh" <<'EOF_VALIDATE'
 set -e
 printf 'validate-project-pwd=%s\n' "$PWD"
+printf 'review-with=%s\n' "${TOUCHSTONE_CONDUCTOR_WITH:-}"
+printf 'review-mode=%s\n' "${CODEX_REVIEW_MODE:-}"
+printf 'review-timeout=%s\n' "${CODEX_REVIEW_TIMEOUT:-}"
 git init nested >/dev/null
 test -d nested/.git
 test "$(git -C nested rev-parse --is-bare-repository)" = "false"
+test -z "${TOUCHSTONE_CONDUCTOR_WITH:-}"
+test -z "${CODEX_REVIEW_MODE:-}"
+test -z "${CODEX_REVIEW_TIMEOUT:-}"
 EOF_VALIDATE
 
 echo "==> Test: validate ignores Git hook environment from another repo"
@@ -60,15 +66,21 @@ VALIDATE_OUT="$TEST_DIR/validate.out"
     GIT_NAMESPACE=touchstone-test \
     GIT_PREFIX=from-hook/ \
     GIT_INTERNAL_GETTEXT_SH_SCHEME=fallthrough \
+    TOUCHSTONE_CONDUCTOR_WITH=deepseek-reasoner \
+    CODEX_REVIEW_MODE=diff-only \
+    CODEX_REVIEW_TIMEOUT=7 \
     bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" validate
 ) >"$VALIDATE_OUT" 2>&1
 
 assert_contains "$VALIDATE_OUT" 'validate.sh'
 assert_contains "$VALIDATE_OUT" "validate-project-pwd=$VALIDATE_PROJECT_PWD"
+assert_contains "$VALIDATE_OUT" 'review-with=$'
+assert_contains "$VALIDATE_OUT" 'review-mode=$'
+assert_contains "$VALIDATE_OUT" 'review-timeout=$'
 assert_not_exists "$OUTER_REPO/nested"
 
 if [ "$ERRORS" -ne 0 ]; then
   exit 1
 fi
 
-echo "PASS: validate clears hook Git environment before dispatch"
+echo "PASS: validate clears hook Git and review environment before dispatch"

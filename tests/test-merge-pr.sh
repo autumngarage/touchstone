@@ -21,6 +21,7 @@ set -euo pipefail
   printf 'CODEX_REVIEW_FORCE=%s\n' "${CODEX_REVIEW_FORCE:-}"
   printf 'CODEX_REVIEW_MODE=%s\n' "${CODEX_REVIEW_MODE:-}"
   printf 'CODEX_REVIEW_BRANCH_NAME=%s\n' "${CODEX_REVIEW_BRANCH_NAME:-}"
+  printf 'TOUCHSTONE_CONDUCTOR_WITH=%s\n' "${TOUCHSTONE_CONDUCTOR_WITH:-}"
 } > "$CODEX_REVIEW_LOG"
 exit "${CODEX_REVIEW_EXIT:-0}"
 EOF
@@ -233,6 +234,58 @@ run_merge_pr() {
     TEST_CURRENT_WORKTREE="${TEST_CURRENT_WORKTREE:-/tmp/touchstone-feature-worktree}" \
     bash "$MERGE_SCRIPT_DIR/merge-pr.sh" "$@" >"$output_file" 2>&1
 }
+
+echo "==> Test: merge preflight sanitizes reviewer routing env"
+mkdir -p "$TEST_DIR/lib"
+cat >"$TEST_DIR/lib/preflight.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+touchstone_preflight_main() {
+  {
+    printf 'TOUCHSTONE_CONDUCTOR_WITH=%s\n' "${TOUCHSTONE_CONDUCTOR_WITH:-}"
+    printf 'TOUCHSTONE_CONDUCTOR_EFFORT=%s\n' "${TOUCHSTONE_CONDUCTOR_EFFORT:-}"
+    printf 'CODEX_REVIEW_MODE=%s\n' "${CODEX_REVIEW_MODE:-}"
+    printf 'CODEX_REVIEW_TIMEOUT=%s\n' "${CODEX_REVIEW_TIMEOUT:-}"
+  } >"$PREFLIGHT_ENV_LOG"
+}
+
+touchstone_preflight_main_sanitized() {
+  (
+    unset TOUCHSTONE_CONDUCTOR_WITH
+    unset TOUCHSTONE_CONDUCTOR_EFFORT
+    unset CODEX_REVIEW_MODE
+    unset CODEX_REVIEW_TIMEOUT
+    touchstone_preflight_main "$@"
+  )
+}
+EOF
+reset_case_files
+(
+  export PREFLIGHT_ENV_LOG="$TEST_DIR/preflight-env.log"
+  export TOUCHSTONE_CONDUCTOR_WITH="deepseek-reasoner"
+  export TOUCHSTONE_CONDUCTOR_EFFORT="high"
+  export CODEX_REVIEW_MODE="diff-only"
+  export CODEX_REVIEW_TIMEOUT="7"
+  run_merge_pr "$TEST_DIR/output-preflight-env.txt" 123
+)
+rm -rf "${TEST_DIR:?}/lib"
+if grep -q '^TOUCHSTONE_CONDUCTOR_WITH=$' "$TEST_DIR/preflight-env.log" \
+  && grep -q '^TOUCHSTONE_CONDUCTOR_EFFORT=$' "$TEST_DIR/preflight-env.log" \
+  && grep -q '^CODEX_REVIEW_MODE=$' "$TEST_DIR/preflight-env.log" \
+  && grep -q '^CODEX_REVIEW_TIMEOUT=$' "$TEST_DIR/preflight-env.log" \
+  && grep -q '^TOUCHSTONE_CONDUCTOR_WITH=deepseek-reasoner$' "$TEST_DIR/codex-review.log"; then
+  echo "==> PASS: merge preflight saw sanitized env while live review kept provider pin"
+else
+  echo "FAIL: merge preflight should not inherit reviewer routing env" >&2
+  echo "--- preflight env ---" >&2
+  cat "$TEST_DIR/preflight-env.log" >&2
+  echo "--- review env ---" >&2
+  cat "$TEST_DIR/codex-review.log" >&2
+  echo "--- output ---" >&2
+  cat "$TEST_DIR/output-preflight-env.txt" >&2
+  exit 1
+fi
 
 echo "==> Test: merge script works without jq in PATH"
 reset_case_files
