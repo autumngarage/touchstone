@@ -295,14 +295,20 @@ Run `touchstone skills` to list visible project and user skills, and `touchstone
 
 ```
 touchstone/
-├── .claude/        # Claude Code project skills for Touchstone maintenance
-├── bin/             # touchstone CLI entrypoint
-├── lib/             # shared libraries
+├── .claude/         # Claude Code project skills for Touchstone maintenance
 ├── principles/      # universal engineering docs
+├── skills/          # Claude Code skill definitions
 ├── templates/       # starter files for new projects
 ├── hooks/           # AI review hook
 ├── scripts/         # helper scripts (open-pr, merge-pr, cleanup)
 ├── bootstrap/       # new-project.sh, update-project.sh, sync-all.sh
+├── bin/             # touchstone CLI entry point
+├── lib/             # shared bash helpers (toml.sh, preflight.sh, etc.)
+├── completions/     # shell completion scripts
+├── docs/            # design docs and ADRs
+├── audits/          # periodic codebase audits
+├── feedback/        # operator-captured incident notes
+├── prototypes/      # speculative scripts not yet promoted to scripts/
 └── tests/           # self-tests
 ```
 
