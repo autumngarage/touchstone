@@ -176,7 +176,7 @@ if [ -e "$NO_EVENT_FILE" ]; then
 fi
 assert_not_contains "$TEST_DIR/open-no-events.out" '\[events\]'
 
-echo "==> Cases c/d: merge-pr review blocked and auto-bypass events"
+echo "==> Cases c/d: merge-pr review blocked, fail-closed, and explicit bypass events"
 MERGE_FIXTURE="$TEST_DIR/merge-fixture"
 copy_event_scripts "$MERGE_FIXTURE"
 cat >"$MERGE_FIXTURE/scripts/codex-review.sh" <<'EOF'
@@ -264,10 +264,24 @@ GH_CHECKOUT_FILE="$TEST_DIR/gh-checkout-bypass" \
   PATH="$MERGE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
   TOUCHSTONE_EVENTS_FILE="$BYPASS_EVENTS" \
   CODEX_REVIEW_EXIT=1 \
-  bash "$MERGE_FIXTURE/scripts/merge-pr.sh" 123 >"$TEST_DIR/bypass.out" 2>&1
+  bash "$MERGE_FIXTURE/scripts/merge-pr.sh" 123 >"$TEST_DIR/bypass.out" 2>&1 && fail "prior clean marker unexpectedly auto-bypassed review failure"
 assert_json_lines "$BYPASS_EVENTS"
-assert_event_order "$BYPASS_EVENTS" review_started review_bypass merged
-assert_contains "$BYPASS_EVENTS" '"reason":"merge-pr.sh final review iteration exited 1'
+assert_event_order "$BYPASS_EVENTS" review_started review_blocked failed
+assert_not_contains "$BYPASS_EVENTS" '"event":"merged"'
+assert_not_contains "$BYPASS_EVENTS" '"event":"review_bypass"'
+
+EXPLICIT_BYPASS_EVENTS="$TEST_DIR/explicit-bypass-events.ndjson"
+rm -f "$TEST_DIR/gh-checkout-explicit-bypass" "$TEST_DIR/gh-merged-explicit-bypass"
+GH_CHECKOUT_FILE="$TEST_DIR/gh-checkout-explicit-bypass" \
+  GH_MERGED_MARKER="$TEST_DIR/gh-merged-explicit-bypass" \
+  GIT_PATH_ROOT="$GIT_PATH_ROOT" \
+  PATH="$MERGE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  TOUCHSTONE_EVENTS_FILE="$EXPLICIT_BYPASS_EVENTS" \
+  CODEX_REVIEW_EXIT=1 \
+  bash "$MERGE_FIXTURE/scripts/merge-pr.sh" 123 --bypass-with-disclosure="reviewer infrastructure unavailable after clean marker" >"$TEST_DIR/explicit-bypass.out" 2>&1
+assert_json_lines "$EXPLICIT_BYPASS_EVENTS"
+assert_event_order "$EXPLICIT_BYPASS_EVENTS" review_bypass merged
+assert_contains "$EXPLICIT_BYPASS_EVENTS" '"reason":"reviewer infrastructure unavailable after clean marker"'
 
 if [ "$ERRORS" -eq 0 ]; then
   echo "==> PASS: lifecycle event stream is opt-in, ordered, and machine-readable"
