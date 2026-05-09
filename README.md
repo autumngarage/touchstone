@@ -244,6 +244,7 @@ Automatically reviews code before it reaches the default branch. In Touchstone 2
 - Quality-tier-aware routing (`prefer = "best"` picks the frontier-tier provider)
 - Per-push preference via env vars: `TOUCHSTONE_CONDUCTOR_WITH=<provider>`, `TOUCHSTONE_CONDUCTOR_PREFER=<mode>`, `TOUCHSTONE_CONDUCTOR_EFFORT=<level>`
 - Size-based routing — small diffs can use `prefer = "cheapest"` + minimal effort, large diffs use `prefer = "best"` + max effort — via `[review.routing]`
+- Local Ollama providers are excluded from auto-routed merge gates by default; set `[review.conductor].exclude = []` to opt them back in
 - Graceful fallback: if the chosen provider returns 5xx / rate-limit / timeout, Conductor retries once with the next-ranked provider
 - Auto-fixes safe issues when the review mode allows edits
 - Blocks the merge or direct default-branch push for findings that should not be auto-fixed

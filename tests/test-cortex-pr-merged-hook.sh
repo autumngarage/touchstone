@@ -229,6 +229,18 @@ printf 'unexpected fake cortex invocation: %s\n' "$*" >&2
 exit 2
 EOF
 chmod +x "$FAKEBIN/cortex"
+cat >"$FAKEBIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "create" ]; then
+  printf 'https://example.test/cortex-journal-pr\n'
+  exit 0
+fi
+printf 'unexpected fake gh invocation: %s\n' "$*" >&2
+exit 2
+EOF
+chmod +x "$FAKEBIN/gh"
 
 # Scenario H: activated hook drafts a journal entry, refreshes state.md,
 # and includes both files in the same local hook commit.
@@ -495,4 +507,64 @@ if [ -s "$P_LOG" ]; then
   exit 1
 fi
 
-echo "==> PASS: cortex-pr-merged-hook activation gates + graceful-degradation paths verified (A-P)"
+# Scenario Q: default publish mode keeps local main clean by committing on
+# a follow-up branch, pushing it, and opening a PR instead of pushing main.
+Q="$(mk_fixture Q)"
+Q_REMOTE="$TMPROOT/Q-remote.git"
+Q_BRANCH="docs/cortex-pr-merged-test"
+Q_GH_LOG="$TMPROOT/Q-gh.log"
+git init -q --bare "$Q_REMOTE"
+git -C "$Q" remote add origin "$Q_REMOTE"
+git -C "$Q" push -q -u origin main
+mkdir -p "$Q/.cortex"
+printf 'tracked state\n' >"$Q/.cortex/state.md"
+(cd "$Q" && git add .cortex/state.md && git commit -q -m "add cortex state" && git push -q origin main)
+Q_HEAD_BEFORE="$(git -C "$Q" rev-parse HEAD)"
+(
+  cd "$Q"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_GH_LOG="$Q_GH_LOG" \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_BRANCH="$Q_BRANCH" \
+    TOUCHSTONE_MERGED_PR=777 \
+    bash "$HOOK"
+)
+Q_HEAD_AFTER="$(git -C "$Q" rev-parse HEAD)"
+if [ "$Q_HEAD_BEFORE" != "$Q_HEAD_AFTER" ]; then
+  echo "FAIL [Q]: default branch moved after journal PR publish" >&2
+  git -C "$Q" log --oneline --decorate -3 >&2
+  exit 1
+fi
+if [ "$(git -C "$Q" branch --show-current)" != "main" ]; then
+  echo "FAIL [Q]: hook did not restore local main after journal PR publish" >&2
+  git -C "$Q" branch --show-current >&2
+  exit 1
+fi
+if [ -n "$(git -C "$Q" status --porcelain)" ]; then
+  echo "FAIL [Q]: hook left local main dirty" >&2
+  git -C "$Q" status --short >&2
+  exit 1
+fi
+if git -C "$Q" show-ref --verify --quiet "refs/heads/$Q_BRANCH"; then
+  echo "FAIL [Q]: local journal branch should be cleaned after push + PR create" >&2
+  git -C "$Q" branch >&2
+  exit 1
+fi
+if ! git -C "$Q" ls-remote --exit-code --heads origin "$Q_BRANCH" >/dev/null 2>&1; then
+  echo "FAIL [Q]: journal branch was not pushed to origin" >&2
+  exit 1
+fi
+git -C "$Q" fetch -q origin "$Q_BRANCH:$Q_BRANCH-check"
+if ! git -C "$Q" show "$Q_BRANCH-check:.cortex/journal/pr-merged.md" >/dev/null 2>&1 \
+  || ! git -C "$Q" show "$Q_BRANCH-check:.cortex/state.md" >/dev/null 2>&1; then
+  echo "FAIL [Q]: pushed journal branch missing Cortex artifacts" >&2
+  git -C "$Q" show --name-only --format= "$Q_BRANCH-check" >&2
+  exit 1
+fi
+if ! grep -q "pr create --base main --head $Q_BRANCH --title docs(journal): auto-draft pr-merged entry for #777" "$Q_GH_LOG"; then
+  echo "FAIL [Q]: hook did not open a PR for the journal branch" >&2
+  cat "$Q_GH_LOG" >&2
+  exit 1
+fi
+
+echo "==> PASS: cortex-pr-merged-hook activation gates + graceful-degradation paths verified (A-Q)"

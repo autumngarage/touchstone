@@ -111,9 +111,10 @@ if grep -q '^route' "$ARGS_FILE" \
   && grep -q '\-\-prefer cheapest' "$ARGS_FILE" \
   && grep -q '\-\-effort minimal' "$ARGS_FILE" \
   && grep -q '\-\-tags code-review' "$ARGS_FILE" \
+  && grep -q '\-\-exclude ollama' "$ARGS_FILE" \
   && echo "$out" | grep -q 'routing:     small (.* <= 400 diff lines)' \
   && echo "$out" | grep -q 'would pick: claude'; then
-  echo "==> PASS: small default route used cheapest/minimal despite global best/max"
+  echo "==> PASS: small default route used cheapest/minimal and excluded ollama"
 else
   echo "FAIL: small default route did not invoke conductor route as expected" >&2
   echo "args file: $(cat "$ARGS_FILE")" >&2
@@ -208,6 +209,30 @@ if grep -q '\-\-exclude ollama' "$ARGS_FILE" \
   echo "==> PASS: [review.conductor].exclude reached conductor route"
 else
   echo "FAIL: conductor exclude config should pass --exclude to route preview" >&2
+  echo "args: $(cat "$ARGS_FILE")" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ----------------------------------------------------------------------------
+echo "==> Test: explicit empty conductor exclude re-enables local providers"
+REPO_EXCLUDE_EMPTY="$TEST_DIR/repo-exclude-empty"
+new_repo "$REPO_EXCLUDE_EMPTY"
+cat >"$REPO_EXCLUDE_EMPTY/.codex-review.toml" <<'EOF'
+[review.conductor]
+exclude = []
+EOF
+git -C "$REPO_EXCLUDE_EMPTY" add . && git -C "$REPO_EXCLUDE_EMPTY" commit -qm cfg
+echo c >>"$REPO_EXCLUDE_EMPTY/README.md" && git -C "$REPO_EXCLUDE_EMPTY" add . && git -C "$REPO_EXCLUDE_EMPTY" commit -qm change
+
+: >"$ARGS_FILE"
+out="$(run_review "$REPO_EXCLUDE_EMPTY" --dry-run --base HEAD~1 2>&1)"
+
+if ! grep -q '\-\-exclude' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'would pick: claude'; then
+  echo "==> PASS: exclude=[] suppressed the default ollama exclusion"
+else
+  echo "FAIL: explicit empty exclude should avoid passing --exclude" >&2
   echo "args: $(cat "$ARGS_FILE")" >&2
   echo "out: $out" >&2
   ERRORS=$((ERRORS + 1))

@@ -96,6 +96,37 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: review hook sources helper libraries from script install path"
+NO_LIB_REPO="$TEST_DIR/no-lib-repo"
+NO_LIB_OUTPUT="$TEST_DIR/no-lib-output.txt"
+mkdir -p "$NO_LIB_REPO"
+git -C "$NO_LIB_REPO" init -q >/dev/null 2>&1
+git -C "$NO_LIB_REPO" config user.name "Touchstone Test"
+git -C "$NO_LIB_REPO" config user.email "touchstone@example.com"
+cat >"$NO_LIB_REPO/.codex-review.toml" <<'EOF'
+[review]
+enabled = false
+EOF
+printf 'base\n' >"$NO_LIB_REPO/example.txt"
+git -C "$NO_LIB_REPO" add .codex-review.toml example.txt
+git -C "$NO_LIB_REPO" commit -m "base" >/dev/null 2>&1
+printf 'changed\n' >>"$NO_LIB_REPO/example.txt"
+git -C "$NO_LIB_REPO" add example.txt
+git -C "$NO_LIB_REPO" commit -m "change" >/dev/null 2>&1
+
+if (
+  cd "$NO_LIB_REPO"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$NO_LIB_OUTPUT" 2>&1
+) && grep -q 'AI review disabled' "$NO_LIB_OUTPUT"; then
+  echo "==> PASS: hook parsed config without repo-local lib/toml.sh"
+else
+  echo "FAIL: hook should source lib/toml.sh relative to its install path" >&2
+  cat "$NO_LIB_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: review hook skips feature-branch pushes but runs default-branch pushes"
 cat >"$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash

@@ -107,6 +107,7 @@ CONDUCTOR_PREFER=""
 CONDUCTOR_EFFORT=""
 CONDUCTOR_TAGS=""
 CONDUCTOR_EXCLUDE=""
+CONDUCTOR_EXCLUDE_CONFIGURED=false
 ROUTING_ENABLED=true
 ROUTING_SMALL_MAX_DIFF_LINES=400
 ROUTING_SMALL_WITH=""
@@ -171,7 +172,10 @@ if [ -f "$CONFIG_FILE" ]; then
           effort) CONDUCTOR_EFFORT="$(toml_unquote "$value")" ;;
           tags) CONDUCTOR_TAGS="$(toml_normalize_array "$value")" ;;
           with) CONDUCTOR_WITH="$(toml_unquote "$value")" ;;
-          exclude) CONDUCTOR_EXCLUDE="$(toml_normalize_array "$value")" ;;
+          exclude)
+            CONDUCTOR_EXCLUDE="$(toml_normalize_array "$value")"
+            CONDUCTOR_EXCLUDE_CONFIGURED=true
+            ;;
         esac
         ;;
       "review.routing")
@@ -224,7 +228,13 @@ CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-${CONDUCTOR_WITH:-}}"
 CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-${CONDUCTOR_PREFER:-best}}"
 CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-${CONDUCTOR_EFFORT:-max}}"
 CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-${CONDUCTOR_TAGS:-code-review}}"
-CONDUCTOR_EXCLUDE="${TOUCHSTONE_CONDUCTOR_EXCLUDE:-${CONDUCTOR_EXCLUDE:-}}"
+if [ -n "${TOUCHSTONE_CONDUCTOR_EXCLUDE+x}" ]; then
+  CONDUCTOR_EXCLUDE="$TOUCHSTONE_CONDUCTOR_EXCLUDE"
+elif [ "$CONDUCTOR_EXCLUDE_CONFIGURED" = true ]; then
+  CONDUCTOR_EXCLUDE="${CONDUCTOR_EXCLUDE:-}"
+else
+  CONDUCTOR_EXCLUDE="ollama"
+fi
 
 # Resolve REVIEW_MODE: CLI flag > env > config > default.
 REVIEW_MODE="${mode_override:-${CODEX_REVIEW_MODE:-${CONFIG_MODE:-fix}}}"

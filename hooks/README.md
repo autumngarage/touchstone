@@ -44,7 +44,7 @@ prefer = "best"             # best | cheapest | fastest | balanced
 effort = "max"              # minimal | low | medium | high | max | <int tokens>
 tags   = "code-review"
 # with = "claude"           # pin a specific provider (bypasses auto-routing)
-# exclude = "gemini"        # exclude providers from auto-routing
+exclude = ["ollama"]        # default: keep local providers out of merge gates
 ```
 
 ### 5. Write your review rubric
@@ -82,7 +82,7 @@ Conductor logs its route decision (provider, cost estimate, token count, wall-cl
 | `[review.conductor].effort` | size-aware | `minimal` \| `low` \| `medium` \| `high` \| `max` \| integer thinking-token budget; used as a global fallback, but default size routing applies per bucket |
 | `[review.conductor].tags` | `"code-review"` | Capability tags passed to the router |
 | `[review.conductor].with` | unset | Pin a specific provider (bypasses auto-routing) |
-| `[review.conductor].exclude` | unset | Exclude providers from auto-routing |
+| `[review.conductor].exclude` | `["ollama"]` | Exclude providers from auto-routing; set `exclude = []` to opt local providers back in |
 | `[review.routing].enabled` | true | Route by diff size |
 | `[review.routing].small_max_diff_lines` | 400 | Diffs ≤ this use the `small_*` knobs; diffs above use the `large_*` knobs |
 | `[review.routing].small_prefer` | `"cheapest"` | Routing preference for small diffs |

@@ -226,13 +226,15 @@ if [ "${CODEX_REVIEW_TEST_SENTINEL_CONTEXT:-0}" = "1" ]; then
   exit 0
 fi
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TOUCHSTONE_ROOT="${TOUCHSTONE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 CONFIG_FILE="$REPO_ROOT/.codex-review.toml"
 cd "$REPO_ROOT"
 
-PREFLIGHT_SCRIPT="$REPO_ROOT/lib/preflight.sh"
+PREFLIGHT_SCRIPT="$TOUCHSTONE_ROOT/lib/preflight.sh"
 if [ -f "$PREFLIGHT_SCRIPT" ]; then
-  # shellcheck source=lib/preflight.sh
+  # shellcheck source=../lib/preflight.sh
   source "$PREFLIGHT_SCRIPT"
 fi
 
@@ -385,6 +387,7 @@ CONDUCTOR_PREFER=""
 CONDUCTOR_EFFORT=""
 CONDUCTOR_TAGS=""
 CONDUCTOR_EXCLUDE=""
+CONDUCTOR_EXCLUDE_CONFIGURED=false
 ROUTING_ENABLED=true
 ROUTING_SMALL_MAX_DIFF_LINES=400
 ROUTING_SMALL_REVIEWERS=() # legacy 1.x shape; retained for back-compat parsing
@@ -735,8 +738,8 @@ is_truthy() {
 # We do minimal TOML parsing in bash — just key = value pairs and string arrays.
 if [ -f "$CONFIG_FILE" ]; then
   # Source the TOML library
-  # shellcheck source=lib/toml.sh
-  source "$REPO_ROOT/lib/toml.sh"
+  # shellcheck source=../lib/toml.sh
+  source "$TOUCHSTONE_ROOT/lib/toml.sh"
 
   toml_config_callback() {
     local section="$1"
@@ -750,7 +753,10 @@ if [ -f "$CONFIG_FILE" ]; then
           effort) CONDUCTOR_EFFORT="${CONDUCTOR_EFFORT:-$(toml_unquote "$value")}" ;;
           tags) CONDUCTOR_TAGS="${CONDUCTOR_TAGS:-$(toml_normalize_array "$value")}" ;;
           with) CONDUCTOR_WITH="${CONDUCTOR_WITH:-$(toml_unquote "$value")}" ;;
-          exclude) CONDUCTOR_EXCLUDE="${CONDUCTOR_EXCLUDE:-$(toml_normalize_array "$value")}" ;;
+          exclude)
+            CONDUCTOR_EXCLUDE="${CONDUCTOR_EXCLUDE:-$(toml_normalize_array "$value")}"
+            CONDUCTOR_EXCLUDE_CONFIGURED=true
+            ;;
         esac
         ;;
       "review.routing")
@@ -951,7 +957,13 @@ CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-${CONDUCTOR_WITH:-}}"
 CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-${CONDUCTOR_PREFER:-best}}"
 CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-${CONDUCTOR_EFFORT:-max}}"
 CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-${CONDUCTOR_TAGS:-code-review}}"
-CONDUCTOR_EXCLUDE="${TOUCHSTONE_CONDUCTOR_EXCLUDE:-${CONDUCTOR_EXCLUDE:-}}"
+if [ -n "${TOUCHSTONE_CONDUCTOR_EXCLUDE+x}" ]; then
+  CONDUCTOR_EXCLUDE="$TOUCHSTONE_CONDUCTOR_EXCLUDE"
+elif [ "$CONDUCTOR_EXCLUDE_CONFIGURED" = true ]; then
+  CONDUCTOR_EXCLUDE="${CONDUCTOR_EXCLUDE:-}"
+else
+  CONDUCTOR_EXCLUDE="ollama"
+fi
 
 # --------------------------------------------------------------------------
 # Mode resolution
