@@ -20,6 +20,7 @@ set -euo pipefail
   printf 'CODEX_REVIEW_BASE=%s\n' "${CODEX_REVIEW_BASE:-}"
   printf 'CODEX_REVIEW_FORCE=%s\n' "${CODEX_REVIEW_FORCE:-}"
   printf 'CODEX_REVIEW_MODE=%s\n' "${CODEX_REVIEW_MODE:-}"
+  printf 'CODEX_REVIEW_ON_ERROR=%s\n' "${CODEX_REVIEW_ON_ERROR:-}"
   printf 'CODEX_REVIEW_BRANCH_NAME=%s\n' "${CODEX_REVIEW_BRANCH_NAME:-}"
   printf 'TOUCHSTONE_CONDUCTOR_WITH=%s\n' "${TOUCHSTONE_CONDUCTOR_WITH:-}"
 } > "$CODEX_REVIEW_LOG"
@@ -317,6 +318,7 @@ if grep -q 'attempt 1: mergeStateStatus=CLEAN mergeable=MERGEABLE' "$TEST_DIR/ou
   && grep -q '^CODEX_REVIEW_BASE=origin/main$' "$TEST_DIR/codex-review.log" \
   && grep -q '^CODEX_REVIEW_FORCE=1$' "$TEST_DIR/codex-review.log" \
   && grep -q '^CODEX_REVIEW_MODE=review-only$' "$TEST_DIR/codex-review.log" \
+  && grep -q '^CODEX_REVIEW_ON_ERROR=fail-closed$' "$TEST_DIR/codex-review.log" \
   && grep -q '^CODEX_REVIEW_BRANCH_NAME=feature/test$' "$TEST_DIR/codex-review.log" \
   && grep -q "==> Deleting local branch 'feature/test' after verified squash merge of pr-head-oid" "$TEST_DIR/output-normal.txt" \
   && grep -q '^deleted feature/test$' "$TEST_DIR/git-branch-deleted"; then
@@ -364,34 +366,33 @@ else
   exit 1
 fi
 
-echo "==> Test: review failure with prior clean marker auto-promotes to bypass (#182)"
+echo "==> Test: review infrastructure failure with prior clean marker fails closed"
 reset_case_files
 # Synthesize a clean review marker for the same head/base the harness's fake
-# git resolves to (pr-head-oid + base-oid). The merge-pr.sh path treats this
-# as proof the diff was reviewed cleanly at least once; when the second
-# review iteration fails (typically a routing-induced timeout), it should
-# auto-promote to bypass-with-disclosure rather than refusing the merge.
+# git resolves to (pr-head-oid + base-oid). The marker permits an explicit
+# --bypass-with-disclosure path, but an unrequested merge-gate reviewer
+# infrastructure failure must fail closed rather than auto-bypass.
 mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
 printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nbase=origin/main\nmerge_base=base-oid\nhead=pr-head-oid\n' \
   >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
-if ! CODEX_REVIEW_EXIT=124 run_merge_pr "$TEST_DIR/output-auto-bypass.txt" 123; then
-  echo "FAIL: merge-pr.sh did not auto-promote to bypass when review failed and a clean marker exists" >&2
+if CODEX_REVIEW_EXIT=124 run_merge_pr "$TEST_DIR/output-auto-bypass.txt" 123; then
+  echo "FAIL: merge-pr.sh auto-bypassed a merge-gate reviewer failure" >&2
   cat "$TEST_DIR/output-auto-bypass.txt" >&2
   exit 1
 fi
-if grep -q 'Auto-promoting to reviewer bypass with disclosure' "$TEST_DIR/output-auto-bypass.txt" \
-  && grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-auto-bypass.txt" \
-  && [ -f "$TEST_DIR/gh-comment" ] \
-  && grep -q 'Reviewer bypassed via' "$TEST_DIR/gh-comment" \
-  && [ -f "$TEST_DIR/gh-merge-head" ]; then
-  echo "==> PASS: review failure with prior clean marker auto-promoted to bypass and merged"
+if grep -q 'merge-gate review fails closed' "$TEST_DIR/output-auto-bypass.txt" \
+  && grep -q 'Emergency bypass requires an explicit --bypass-with-disclosure reason' "$TEST_DIR/output-auto-bypass.txt" \
+  && [ ! -f "$TEST_DIR/gh-comment" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
+  && ! grep -q 'Auto-promoting to reviewer bypass' "$TEST_DIR/output-auto-bypass.txt"; then
+  echo "==> PASS: review infrastructure failure with prior clean marker fails closed"
 else
-  echo "FAIL: auto-bypass path did not produce expected log/comment/merge artifacts" >&2
+  echo "FAIL: merge-gate reviewer failure should require explicit bypass" >&2
   cat "$TEST_DIR/output-auto-bypass.txt" >&2
   exit 1
 fi
 
-echo "==> Test: prior clean marker does not auto-bypass concrete review findings (#269)"
+echo "==> Test: prior clean marker does not bypass concrete review findings"
 reset_case_files
 mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
 printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nbase=origin/main\nmerge_base=base-oid\nhead=pr-head-oid\n' \
@@ -402,12 +403,12 @@ if CODEX_REVIEW_EXIT=1 CODEX_REVIEW_STUB_OUTPUT=$'Conductor review found 1 findi
   cat "$TEST_DIR/output-blocked-with-marker.txt" >&2
   exit 1
 fi
-if grep -q 'refusing to auto-bypass with a prior clean marker' "$TEST_DIR/output-blocked-with-marker.txt" \
+if grep -q 'merge-gate review fails closed' "$TEST_DIR/output-blocked-with-marker.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ] \
   && ! grep -q 'Auto-promoting to reviewer bypass' "$TEST_DIR/output-blocked-with-marker.txt"; then
-  echo "==> PASS: concrete findings block auto-bypass even with prior clean marker"
+  echo "==> PASS: concrete findings block merge even with prior clean marker"
 else
-  echo "FAIL: concrete findings should not auto-bypass" >&2
+  echo "FAIL: concrete findings should not merge without explicit bypass" >&2
   cat "$TEST_DIR/output-blocked-with-marker.txt" >&2
   exit 1
 fi
