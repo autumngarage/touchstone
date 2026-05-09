@@ -27,6 +27,9 @@ set -euo pipefail
 if [ -n "${CODEX_REVIEW_STUB_OUTPUT:-}" ]; then
   printf '%s\n' "$CODEX_REVIEW_STUB_OUTPUT"
 fi
+if [ -n "${CODEX_REVIEW_MUTATE_HEAD:-}" ]; then
+  printf '%s\n' "$CODEX_REVIEW_MUTATE_HEAD" > "$GIT_REVIEW_HEAD_FILE"
+fi
 exit "${CODEX_REVIEW_EXIT:-0}"
 EOF
 chmod +x "$MERGE_SCRIPT_DIR/merge-pr.sh" "$MERGE_SCRIPT_DIR/codex-review.sh"
@@ -49,7 +52,13 @@ case "${1:-} ${2:-}" in
         fi
         ;;
       headRefName) echo "feature/test" ;;
-      headRefOid) echo "pr-head-oid" ;;
+      headRefOid)
+        if [ -f "${GH_HEAD_REF_FILE:-/dev/null/never}" ]; then
+          cat "$GH_HEAD_REF_FILE"
+        else
+          echo "pr-head-oid"
+        fi
+        ;;
       mergeStateStatus,mergeable) echo "${GH_MERGE_STATE:-CLEAN MERGEABLE}" ;;
       *)
         echo "unexpected gh pr view args: $*" >&2
@@ -83,7 +92,8 @@ case "${1:-} ${2:-}" in
     ;;
   "pr merge")
     printf '%s\n' "$*" > "$GH_MERGE_ARGS_FILE"
-    if [ "${4:-} ${5:-} ${6:-} ${7:-}" != "--squash --delete-branch --match-head-commit pr-head-oid" ]; then
+    expected_head="${GH_EXPECT_MERGE_HEAD:-pr-head-oid}"
+    if [ "${4:-} ${5:-} ${6:-} ${7:-}" != "--squash --delete-branch --match-head-commit $expected_head" ]; then
       echo "unexpected gh pr merge args: $*" >&2
       exit 1
     fi
@@ -142,6 +152,8 @@ case "$*" in
       echo "main-oid"
     elif [ -f "$GIT_DETACHED_DEFAULT_FILE" ]; then
       echo "main-oid"
+    elif [ -f "$GIT_REVIEW_HEAD_FILE" ]; then
+      cat "$GIT_REVIEW_HEAD_FILE"
     elif [ -f "$GH_CHECKOUT_FILE" ]; then
       echo "pr-head-oid"
     else
@@ -192,6 +204,11 @@ case "$*" in
   "pull --rebase")
     echo "Already up to date."
     ;;
+  "push origin HEAD:refs/heads/feature/test")
+    git rev-parse HEAD > "$GIT_PUSH_HEAD_FILE"
+    cp "$GIT_PUSH_HEAD_FILE" "$GH_HEAD_REF_FILE"
+    echo "pushed"
+    ;;
   "branch -D feature/test")
     echo "deleted feature/test" > "$GIT_BRANCH_DELETED_FILE"
     echo "Deleted branch feature/test (was pr-head-oid)."
@@ -211,7 +228,9 @@ reset_case_files() {
     "$TEST_DIR"/gh-merge-args* "$TEST_DIR"/gh-merge-body* \
     "$TEST_DIR"/gh-comment* "$TEST_DIR"/git-checkout-main* \
     "$TEST_DIR"/git-detached-default* "$TEST_DIR"/git-branch-deleted* \
-    "$TEST_DIR"/git-sibling-pull* "$TEST_DIR"/gh-merged-marker*
+    "$TEST_DIR"/git-sibling-pull* "$TEST_DIR"/gh-merged-marker* \
+    "$TEST_DIR"/git-review-head* "$TEST_DIR"/git-push-head* \
+    "$TEST_DIR"/gh-head-ref* "$TEST_DIR"/preflight-calls*
   rm -rf "$GIT_PATH_ROOT"
   mkdir -p "$GIT_PATH_ROOT"
   unset GIT_WORKTREE_LIST
@@ -222,7 +241,9 @@ reset_case_files() {
   unset GH_FAILED_CHECKS
   unset CODEX_REVIEW_EXIT
   unset CODEX_REVIEW_STUB_OUTPUT
+  unset CODEX_REVIEW_MUTATE_HEAD
   unset GIT_LOCAL_BRANCH_HEAD
+  unset GH_EXPECT_MERGE_HEAD
 }
 
 run_merge_pr() {
@@ -236,7 +257,9 @@ run_merge_pr() {
     GH_MERGE_ARGS_FILE="$TEST_DIR/gh-merge-args" \
     GH_MERGE_BODY_FILE="$TEST_DIR/gh-merge-body" \
     GH_COMMENT_FILE="$TEST_DIR/gh-comment" \
+    GH_HEAD_REF_FILE="$TEST_DIR/gh-head-ref" \
     GH_MERGED_MARKER="$TEST_DIR/gh-merged-marker" \
+    GH_EXPECT_MERGE_HEAD="${GH_EXPECT_MERGE_HEAD:-pr-head-oid}" \
     GH_PR_MERGE_FAIL_LOCAL="${GH_PR_MERGE_FAIL_LOCAL:-false}" \
     GH_MERGE_STATE="${GH_MERGE_STATE:-CLEAN MERGEABLE}" \
     GH_FAILED_CHECKS="${GH_FAILED_CHECKS:-}" \
@@ -244,11 +267,15 @@ run_merge_pr() {
     GIT_DETACHED_DEFAULT_FILE="$TEST_DIR/git-detached-default" \
     GIT_BRANCH_DELETED_FILE="$TEST_DIR/git-branch-deleted" \
     GIT_SIBLING_PULL_FILE="$TEST_DIR/git-sibling-pull" \
+    GIT_REVIEW_HEAD_FILE="$TEST_DIR/git-review-head" \
+    GIT_PUSH_HEAD_FILE="$TEST_DIR/git-push-head" \
     GIT_WORKTREE_LIST="${GIT_WORKTREE_LIST:-}" \
     GIT_SIBLING_PULL_FAIL="${GIT_SIBLING_PULL_FAIL:-false}" \
     CODEX_REVIEW_EXIT="${CODEX_REVIEW_EXIT:-0}" \
     CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
+    CODEX_REVIEW_MUTATE_HEAD="${CODEX_REVIEW_MUTATE_HEAD:-}" \
     GIT_LOCAL_BRANCH_HEAD="${GIT_LOCAL_BRANCH_HEAD:-pr-head-oid}" \
+    PREFLIGHT_CALLS_FILE="${PREFLIGHT_CALLS_FILE:-}" \
     TEST_CURRENT_WORKTREE="${TEST_CURRENT_WORKTREE:-/tmp/touchstone-feature-worktree}" \
     bash "$MERGE_SCRIPT_DIR/merge-pr.sh" "$@" >"$output_file" 2>&1
 }
@@ -317,7 +344,7 @@ if grep -q 'attempt 1: mergeStateStatus=CLEAN mergeable=MERGEABLE' "$TEST_DIR/ou
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
   && grep -q '^CODEX_REVIEW_BASE=origin/main$' "$TEST_DIR/codex-review.log" \
   && grep -q '^CODEX_REVIEW_FORCE=1$' "$TEST_DIR/codex-review.log" \
-  && grep -q '^CODEX_REVIEW_MODE=review-only$' "$TEST_DIR/codex-review.log" \
+  && grep -q '^CODEX_REVIEW_MODE=fix$' "$TEST_DIR/codex-review.log" \
   && grep -q '^CODEX_REVIEW_ON_ERROR=fail-closed$' "$TEST_DIR/codex-review.log" \
   && grep -q '^CODEX_REVIEW_BRANCH_NAME=feature/test$' "$TEST_DIR/codex-review.log" \
   && grep -q "==> Deleting local branch 'feature/test' after verified squash merge of pr-head-oid" "$TEST_DIR/output-normal.txt" \
@@ -326,6 +353,40 @@ if grep -q 'attempt 1: mergeStateStatus=CLEAN mergeable=MERGEABLE' "$TEST_DIR/ou
 else
   echo "FAIL: merge-pr.sh output did not show a successful jq-free merge path" >&2
   cat "$TEST_DIR/output-normal.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: review fix commits are postflighted, pushed, and merged by exact head"
+reset_case_files
+mkdir -p "$TEST_DIR/lib"
+cat >"$TEST_DIR/lib/preflight.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+touchstone_preflight_main_sanitized() {
+  printf '%s\n' "$*" >> "$PREFLIGHT_CALLS_FILE"
+}
+
+touchstone_preflight_main() {
+  touchstone_preflight_main_sanitized "$@"
+}
+EOF
+CODEX_REVIEW_MUTATE_HEAD="review-fixed-head" \
+  GH_EXPECT_MERGE_HEAD="review-fixed-head" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-review-fix.txt" 123
+rm -rf "${TEST_DIR:?}/lib"
+if grep -q '==> Merge review changed HEAD:' "$TEST_DIR/output-review-fix.txt" \
+  && grep -q '==> Running deterministic postflight after review fixes' "$TEST_DIR/output-review-fix.txt" \
+  && grep -q '==> Pushing review fix commit(s) to PR branch feature/test' "$TEST_DIR/output-review-fix.txt" \
+  && grep -q '^review-fixed-head$' "$TEST_DIR/git-push-head" \
+  && grep -q '^review-fixed-head$' "$TEST_DIR/gh-merge-head" \
+  && [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "2" ]; then
+  echo "==> PASS: review fix loop pushes the postflighted head before merge"
+else
+  echo "FAIL: review fix commits were not postflighted/pushed/merged correctly" >&2
+  cat "$TEST_DIR/output-review-fix.txt" >&2
+  [ ! -f "$TEST_DIR/preflight-calls" ] || cat "$TEST_DIR/preflight-calls" >&2
   exit 1
 fi
 

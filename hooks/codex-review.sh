@@ -978,8 +978,8 @@ fi
 # Mode resolution
 # --------------------------------------------------------------------------
 # Modes: review-only, fix, diff-only, no-tests
-#   review-only — read + bash, no edits, no git ops (default for merge review)
-#   fix         — full access, auto-fix + commit (default for pre-push)
+#   review-only — read + bash, no edits, no git ops
+#   fix         — full access, auto-fix + commit (default)
 #   diff-only   — read-only, no bash, no edits
 #   no-tests    — edit + commit, no bash (skip test execution)
 
