@@ -1365,9 +1365,8 @@ reviewer_conductor_exec() {
 
   # Pass the prompt via stdin. Avoids argv length limits on large diffs and
   # matches Conductor's established stdin-fallback path.
-  CODEX_REVIEW_IN_PROGRESS=1 \
-    printf '%s' "$prompt" \
-    | conductor "$subcommand" "${args[@]}"
+  printf '%s' "$prompt" \
+    | CODEX_REVIEW_IN_PROGRESS=1 conductor "$subcommand" "${args[@]}"
 }
 
 conductor_subcommand_for_mode() {

@@ -279,6 +279,36 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: Conductor reviewer inherits nested review guard"
+CONDUCTOR_ENV_FILE="$TEST_DIR/conductor-env.txt"
+cat >"$FAKE_BIN/conductor" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+cat >/dev/null
+printf '%s\n' "${CODEX_REVIEW_IN_PROGRESS:-}" >"$CONDUCTOR_ENV_FILE"
+printf 'CODEX_REVIEW_CLEAN\n'
+EOF
+chmod +x "$FAKE_BIN/conductor"
+rm -f "$CONDUCTOR_ENV_FILE"
+
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CONDUCTOR_ENV_FILE="$CONDUCTOR_ENV_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TEST_DIR/conductor-env-output.txt" 2>&1
+)
+
+if [ "$(cat "$CONDUCTOR_ENV_FILE" 2>/dev/null || true)" = "1" ]; then
+  echo "==> PASS: Conductor receives CODEX_REVIEW_IN_PROGRESS=1"
+else
+  echo "FAIL: expected Conductor to inherit CODEX_REVIEW_IN_PROGRESS=1" >&2
+  cat "$TEST_DIR/conductor-env-output.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: review hook caches exact clean reviews"
 rm -rf "$(git -C "$REPO_DIR" rev-parse --absolute-git-dir)/touchstone/codex-review-clean"
 cat >"$FAKE_BIN/conductor" <<'EOF'
