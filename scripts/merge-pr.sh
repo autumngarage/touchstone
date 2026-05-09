@@ -537,8 +537,78 @@ print_failed_checks_and_exit() {
   exit 1
 }
 
+wait_for_clean_merge_state() {
+  local sleep_seconds
+
+  echo "==> Checking merge state for PR #$PR_NUMBER ..."
+  STATE=""
+  MERGEABLE=""
+  MERGE_STATE_RETRY_DELAYS=(1 2 5 10 30 30 30 30 30)
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    MERGE_STATE="$(gh pr view "$PR_NUMBER" --json mergeStateStatus,mergeable --template '{{.mergeStateStatus}} {{.mergeable}}' 2>/dev/null || echo '')"
+    STATE="${MERGE_STATE%% *}"
+    MERGEABLE="${MERGE_STATE#* }"
+    [ -n "$STATE" ] || STATE="UNKNOWN"
+    [ -n "$MERGEABLE" ] || MERGEABLE="UNKNOWN"
+    echo "    attempt $attempt: mergeStateStatus=$STATE mergeable=$MERGEABLE"
+    if [ "$STATE" = "CLEAN" ] && [ "$MERGEABLE" = "MERGEABLE" ]; then
+      return 0
+    fi
+    FAILED_CHECKS="$(failed_checks)"
+    if [ -n "$FAILED_CHECKS" ]; then
+      print_failed_checks_and_exit "$FAILED_CHECKS"
+    fi
+    if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$STATE" = "DIRTY" ] || [ "$STATE" = "BEHIND" ] || [ "$STATE" = "CONFLICTING" ]; then
+      echo "ERROR: PR #$PR_NUMBER is $STATE — has conflicts or is out of date with base." >&2
+      echo "       Final merge state: mergeStateStatus=$STATE mergeable=$MERGEABLE." >&2
+      echo "       Rebase or resolve conflicts on the PR branch before merging." >&2
+      TOUCHSTONE_MERGE_FAILURE_REASON="not-mergeable"
+      exit 1
+    fi
+    if [ "$attempt" -lt 10 ]; then
+      sleep_seconds="${MERGE_STATE_RETRY_DELAYS[$((attempt - 1))]}"
+      # Tests may set MERGE_PR_SLEEP_OVERRIDE=0 to exercise retry behavior
+      # without waiting for the production backoff schedule.
+      if [ -n "${MERGE_PR_SLEEP_OVERRIDE+x}" ]; then
+        sleep_seconds="$MERGE_PR_SLEEP_OVERRIDE"
+      fi
+      sleep "$sleep_seconds"
+    fi
+  done
+
+  echo "ERROR: PR #$PR_NUMBER is not cleanly mergeable (state=$STATE mergeable=$MERGEABLE)." >&2
+  echo "       Inspect manually: gh pr view $PR_NUMBER --web" >&2
+  TOUCHSTONE_MERGE_FAILURE_REASON="not-mergeable"
+  exit 1
+}
+
+wait_for_pr_head() {
+  local expected_head="$1"
+  local actual_head sleep_seconds
+
+  for attempt in 1 2 3 4 5; do
+    actual_head="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")"
+    if [ "$actual_head" = "$expected_head" ]; then
+      return 0
+    fi
+    echo "    waiting for PR head update (attempt $attempt): ${actual_head:-unknown}"
+    if [ "$attempt" -lt 5 ]; then
+      sleep_seconds="${MERGE_PR_SLEEP_OVERRIDE:-2}"
+      sleep "$sleep_seconds"
+    fi
+  done
+
+  echo "ERROR: PR #$PR_NUMBER head did not update to reviewed commit $expected_head." >&2
+  echo "       Last observed head: ${actual_head:-unknown}" >&2
+  TOUCHSTONE_MERGE_FAILURE_REASON="head-not-updated"
+  exit 1
+}
+
 run_preflight_gate() {
   local base_ref="$1"
+  local label="${2:-before merge review}"
+  local event_mode="${3:-merge}"
+  local head_sha
 
   if ! truthy "$PREFLIGHT_REQUIRED"; then
     echo "==> Preflight disabled by [review].preflight_required=false."
@@ -553,16 +623,18 @@ run_preflight_gate() {
     return 0
   fi
 
-  echo "==> Running deterministic preflight before merge review (diff vs $base_ref) ..."
-  touchstone_emit_event preflight_started pr_number="$PR_NUMBER" mode=merge
+  echo "==> Running deterministic preflight $label (diff vs $base_ref) ..."
+  touchstone_emit_event preflight_started pr_number="$PR_NUMBER" mode="$event_mode"
   if touchstone_preflight_main_sanitized --diff "$base_ref" "$(git rev-parse --show-toplevel)"; then
-    touchstone_emit_event preflight_clean pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+    head_sha="$(git rev-parse HEAD 2>/dev/null || echo "")"
+    touchstone_emit_event preflight_clean pr_number="$PR_NUMBER" head_sha="$head_sha"
     return 0
   fi
 
   echo "ERROR: Deterministic preflight failed; refusing to spend provider tokens on review." >&2
   echo "       Fix the preflight failure or set TOUCHSTONE_NO_PREFLIGHT=1 for an emergency bypass." >&2
-  touchstone_emit_event preflight_blocked pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+  head_sha="$(git rev-parse HEAD 2>/dev/null || echo "")"
+  touchstone_emit_event preflight_blocked pr_number="$PR_NUMBER" head_sha="$head_sha"
   TOUCHSTONE_MERGE_FAILURE_REASON="preflight-blocked"
   return 1
 }
@@ -699,23 +771,24 @@ run_merge_review() {
     exit 1
   fi
 
-  run_preflight_gate "$default_base_ref" || return $?
+  run_preflight_gate "$default_base_ref" "before merge review" "merge" || return $?
 
   echo "==> Running merge review ..."
   local review_rc=0
   local review_output_file
+  local reviewed_head_after
   review_output_file="$(mktemp -t touchstone-merge-review.XXXXXX.txt)"
   REVIEW_SUMMARY_FILE="$(git rev-parse --git-path "touchstone/review-summary-pr-${PR_NUMBER}.json" 2>/dev/null || echo "")"
   if [ -n "$REVIEW_SUMMARY_FILE" ]; then
     mkdir -p "$(dirname "$REVIEW_SUMMARY_FILE")" 2>/dev/null || true
     rm -f "$REVIEW_SUMMARY_FILE" 2>/dev/null || true
   fi
-  touchstone_emit_event review_started pr_number="$PR_NUMBER" mode=review-only
+  touchstone_emit_event review_started pr_number="$PR_NUMBER" mode=fix
   set +e
   CODEX_REVIEW_BASE="$default_base_ref" \
     CODEX_REVIEW_BRANCH_NAME="$pr_head_branch" \
     CODEX_REVIEW_FORCE=1 \
-    CODEX_REVIEW_MODE=review-only \
+    CODEX_REVIEW_MODE=fix \
     CODEX_REVIEW_ON_ERROR=fail-closed \
     TOUCHSTONE_PREFLIGHT_ALREADY_RAN=1 \
     CODEX_REVIEW_SUMMARY_FILE="$REVIEW_SUMMARY_FILE" \
@@ -725,7 +798,29 @@ run_merge_review() {
 
   if [ "$review_rc" -eq 0 ]; then
     rm -f "$review_output_file"
-    touchstone_emit_event review_clean pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+    reviewed_head_after="$(git rev-parse HEAD 2>/dev/null || echo "")"
+    if [ -z "$reviewed_head_after" ]; then
+      echo "ERROR: Could not resolve reviewed HEAD after merge review." >&2
+      TOUCHSTONE_MERGE_FAILURE_REASON="missing-reviewed-head"
+      return 1
+    fi
+    REVIEWED_HEAD_OID="$reviewed_head_after"
+    if [ "$reviewed_head_after" != "$pr_head_oid" ]; then
+      echo "==> Merge review changed HEAD:"
+      echo "    before: $pr_head_oid"
+      echo "    after:  $reviewed_head_after"
+      echo "==> Running deterministic postflight after review fixes ..."
+      run_preflight_gate "$default_base_ref" "after review fixes" "post-review" || return $?
+      echo "==> Pushing review fix commit(s) to PR branch $pr_head_branch ..."
+      if ! git push origin "HEAD:refs/heads/$pr_head_branch"; then
+        echo "ERROR: Failed to push review fix commit(s) to PR branch $pr_head_branch." >&2
+        TOUCHSTONE_MERGE_FAILURE_REASON="push-review-fixes"
+        return 1
+      fi
+      wait_for_pr_head "$reviewed_head_after"
+      wait_for_clean_merge_state
+    fi
+    touchstone_emit_event review_clean pr_number="$PR_NUMBER" head_sha="$reviewed_head_after"
     return 0
   fi
 
@@ -755,48 +850,7 @@ if [ "$PR_STATE" != "OPEN" ]; then
 fi
 
 # 2. Check mergeability with retries (GitHub's status can lag after a push).
-echo "==> Checking merge state for PR #$PR_NUMBER ..."
-STATE=""
-MERGEABLE=""
-MERGE_STATE_RETRY_DELAYS=(1 2 5 10 30 30 30 30 30)
-for attempt in 1 2 3 4 5 6 7 8 9 10; do
-  MERGE_STATE="$(gh pr view "$PR_NUMBER" --json mergeStateStatus,mergeable --template '{{.mergeStateStatus}} {{.mergeable}}' 2>/dev/null || echo '')"
-  STATE="${MERGE_STATE%% *}"
-  MERGEABLE="${MERGE_STATE#* }"
-  [ -n "$STATE" ] || STATE="UNKNOWN"
-  [ -n "$MERGEABLE" ] || MERGEABLE="UNKNOWN"
-  echo "    attempt $attempt: mergeStateStatus=$STATE mergeable=$MERGEABLE"
-  if [ "$STATE" = "CLEAN" ] && [ "$MERGEABLE" = "MERGEABLE" ]; then
-    break
-  fi
-  FAILED_CHECKS="$(failed_checks)"
-  if [ -n "$FAILED_CHECKS" ]; then
-    print_failed_checks_and_exit "$FAILED_CHECKS"
-  fi
-  if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$STATE" = "DIRTY" ] || [ "$STATE" = "BEHIND" ] || [ "$STATE" = "CONFLICTING" ]; then
-    echo "ERROR: PR #$PR_NUMBER is $STATE — has conflicts or is out of date with base." >&2
-    echo "       Final merge state: mergeStateStatus=$STATE mergeable=$MERGEABLE." >&2
-    echo "       Rebase or resolve conflicts on the PR branch before merging." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="not-mergeable"
-    exit 1
-  fi
-  if [ "$attempt" -lt 10 ]; then
-    sleep_seconds="${MERGE_STATE_RETRY_DELAYS[$((attempt - 1))]}"
-    # Tests may set MERGE_PR_SLEEP_OVERRIDE=0 to exercise retry behavior
-    # without waiting for the production backoff schedule.
-    if [ -n "${MERGE_PR_SLEEP_OVERRIDE+x}" ]; then
-      sleep_seconds="$MERGE_PR_SLEEP_OVERRIDE"
-    fi
-    sleep "$sleep_seconds"
-  fi
-done
-
-if [ "$STATE" != "CLEAN" ] || [ "$MERGEABLE" != "MERGEABLE" ]; then
-  echo "ERROR: PR #$PR_NUMBER is not cleanly mergeable (state=$STATE mergeable=$MERGEABLE)." >&2
-  echo "       Inspect manually: gh pr view $PR_NUMBER --web" >&2
-  TOUCHSTONE_MERGE_FAILURE_REASON="not-mergeable"
-  exit 1
-fi
+wait_for_clean_merge_state
 
 # 3. Run AI review as the merge gate.
 run_merge_review

@@ -209,7 +209,7 @@ tests/test-merge-pr.sh" \
 if grep -q '==> Working tree has uncommitted changes outside PR #123' "$TEST_DIR/output-outside.txt" \
   && grep -q '==> Running merge review' "$TEST_DIR/output-outside.txt" \
   && grep -q '^CODEX_REVIEW_BASE=origin/main$' "$TEST_DIR/codex-review.log" \
-  && grep -q '^CODEX_REVIEW_MODE=review-only$' "$TEST_DIR/codex-review.log" \
+  && grep -q '^CODEX_REVIEW_MODE=fix$' "$TEST_DIR/codex-review.log" \
   && grep -q '==> Done\.' "$TEST_DIR/output-outside.txt" \
   && ! grep -q 'refusing to run review' "$TEST_DIR/output-outside.txt"; then
   echo "==> PASS: unrelated dirty path does not block the review"

@@ -92,6 +92,7 @@ case "$*" in
   "rev-parse feature/test") echo "pr-head-oid" ;;
   "rev-parse --verify --quiet origin/main^{commit}") echo "base-oid" ;;
   "rev-parse --git-path touchstone/reviewer-clean") printf '%s\n' "$TEST_REPO_ROOT/.git/touchstone/reviewer-clean" ;;
+  "rev-parse --git-path touchstone/reviewer-findings-history") printf '%s\n' "$TEST_REPO_ROOT/.git/touchstone/reviewer-findings-history" ;;
   "rev-parse --git-path touchstone/squash-map.jsonl") printf '%s\n' "$TEST_REPO_ROOT/.git/touchstone/squash-map.jsonl" ;;
   rev-parse\ --git-path\ touchstone/review-summary-pr-123.json) printf '%s\n' "$TEST_REPO_ROOT/.git/touchstone/review-summary-pr-123.json" ;;
   "fetch origin +refs/heads/main:refs/remotes/origin/main") echo fetched ;;
@@ -139,7 +140,7 @@ echo "==> Test: clean merge review posts a one-line PR comment"
 reset_fixture
 printf '[review]\ncomment_on_clean = true\n' >"$MERGE_DIR/repo/.codex-review.toml"
 run_merge "$TEST_DIR/merge-clean.txt" 123
-if grep -q '^Conductor review clean - provider: claude, model: claude-opus-4-1, peer: none, iterations: 1, mode: review-only, findings: 0$' "$TEST_DIR/comments" \
+if grep -q '^Conductor review clean - provider: claude, model: claude-opus-4-1, peer: none, iterations: 1, mode: fix, findings: 0$' "$TEST_DIR/comments" \
   && grep -q '==> Posted clean-review PR comment\.' "$TEST_DIR/merge-clean.txt"; then
   echo "==> PASS: clean review comment posted"
 else
