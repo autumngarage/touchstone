@@ -56,12 +56,21 @@ new_fixture_repo() {
     git init -q
     git config user.email test@example.com
     git config user.name "Touchstone Test"
-    mkdir -p docs .github/workflows app
+    mkdir -p docs .github/workflows app scripts
     printf '#!/usr/bin/env bash\nset -euo pipefail\necho clean\n' >unchanged-bad.sh
+    cat >scripts/touchstone-run.sh <<'EOF_TOUCHSTONE_RUN'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'validate:%s\n' "$*" >>"$PREFLIGHT_TOOL_LOG"
+if [ "${PREFLIGHT_VALIDATE_FAIL:-}" = "1" ]; then
+  exit 42
+fi
+EOF_TOUCHSTONE_RUN
+    chmod +x scripts/touchstone-run.sh
     printf '# Baseline\n' >docs/unchanged.md
     printf 'name: baseline\non: push\njobs: {}\n' >.github/workflows/baseline.yml
     printf 'broken = True\n' >app/preexisting_type_debt.py
-    git add unchanged-bad.sh docs/unchanged.md .github/workflows/baseline.yml app/preexisting_type_debt.py
+    git add unchanged-bad.sh scripts/touchstone-run.sh docs/unchanged.md .github/workflows/baseline.yml app/preexisting_type_debt.py
     git commit -q -m "baseline debt"
     git update-ref refs/remotes/origin/main HEAD
     git checkout -q -b feature/scope-test
@@ -178,6 +187,42 @@ assert_log_contains "$LOG" 'markdownlint:.*docs/mixed.md'
 assert_log_contains "$LOG" 'actionlint:.*.github/workflows/mixed.yml'
 assert_log_not_contains "$LOG" 'unchanged-bad.sh'
 echo "==> PASS: mixed change runs each scoped file list"
+
+echo "==> Test: diff mode still runs full project validate"
+REPO="$TEST_DIR/repo-validate"
+LOG="$TEST_DIR/validate.log"
+OUT="$TEST_DIR/validate.out"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  printf 'changed = True\n' >app/feature.py
+  git add app/feature.py
+  git commit -q -m "change app code"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^validate:validate$'
+echo "==> PASS: diff mode runs full project validate"
+
+echo "==> Test: full project validate failure blocks diff mode"
+REPO="$TEST_DIR/repo-validate-fail"
+LOG="$TEST_DIR/validate-fail.log"
+OUT="$TEST_DIR/validate-fail.out"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  printf 'changed = True\n' >app/feature.py
+  git add app/feature.py
+  git commit -q -m "change app code"
+)
+: >"$LOG"
+if PREFLIGHT_VALIDATE_FAIL=1 run_preflight "$REPO" "$OUT" "$LOG"; then
+  echo "FAIL: failing project validate unexpectedly passed" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+assert_log_contains "$LOG" '^validate:validate$'
+echo "==> PASS: diff mode blocks on full project validate failure"
 
 echo "==> Test: --all-files restores full-project behavior"
 REPO="$TEST_DIR/repo-all-files"

@@ -265,6 +265,16 @@ touchstone_preflight_validate() {
       return 1
     fi
 
+    if [ -f "$validate_script" ]; then
+      touchstone_preflight_info "tests (touchstone-run validate)"
+      if TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash "$validate_script" validate; then
+        touchstone_preflight_ok "tests"
+        return 0
+      fi
+      touchstone_preflight_fail "tests"
+      return 1
+    fi
+
     while IFS= read -r test_file; do
       [ -n "$test_file" ] || continue
       test_files+=("$test_file")
