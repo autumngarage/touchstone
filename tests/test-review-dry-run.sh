@@ -143,7 +143,7 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-echo "==> Test: large default route uses best/high"
+echo "==> Test: low-risk large default route uses best/medium"
 REPO_LARGE="$TEST_DIR/repo-large"
 new_repo "$REPO_LARGE"
 commit_new_file_with_diff_lines "$REPO_LARGE" 401 large.txt
@@ -152,11 +152,88 @@ commit_new_file_with_diff_lines "$REPO_LARGE" 401 large.txt
 out="$(run_review "$REPO_LARGE" --dry-run --base HEAD~1 2>&1)"
 
 if grep -q '\-\-prefer best' "$ARGS_FILE" \
-  && grep -q '\-\-effort high' "$ARGS_FILE" \
-  && echo "$out" | grep -q 'routing:     large (401 > 400 diff lines)'; then
-  echo "==> PASS: 401-line diff used large best/high bucket"
+  && grep -q '\-\-effort medium' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'routing:     large-low-risk (401 > 400 diff lines; no high-risk paths)'; then
+  echo "==> PASS: 401-line low-risk diff used large best/medium bucket"
 else
-  echo "FAIL: large diff should use large routing bucket" >&2
+  echo "FAIL: low-risk large diff should use bounded large routing bucket" >&2
+  echo "args: $(cat "$ARGS_FILE")" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ----------------------------------------------------------------------------
+echo "==> Test: high-risk large default route keeps best/high"
+REPO_HIGH_RISK="$TEST_DIR/repo-high-risk-large"
+new_repo "$REPO_HIGH_RISK"
+cat >"$REPO_HIGH_RISK/.codex-review.toml" <<'EOF'
+[codex_review]
+unsafe_paths = ["critical/"]
+EOF
+git -C "$REPO_HIGH_RISK" add .codex-review.toml
+git -C "$REPO_HIGH_RISK" commit -qm cfg
+mkdir -p "$REPO_HIGH_RISK/critical"
+commit_new_file_with_diff_lines "$REPO_HIGH_RISK" 401 critical/large.txt
+
+: >"$ARGS_FILE"
+out="$(run_review "$REPO_HIGH_RISK" --dry-run --base HEAD~1 2>&1)"
+
+if grep -q '\-\-prefer best' "$ARGS_FILE" \
+  && grep -q '\-\-effort high' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'routing:     high-risk (high-risk path critical/large.txt'; then
+  echo "==> PASS: 401-line high-risk diff kept best/high bucket"
+else
+  echo "FAIL: high-risk large diff should use high-risk routing bucket" >&2
+  echo "args: $(cat "$ARGS_FILE")" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ----------------------------------------------------------------------------
+echo "==> Test: built-in bootstrap path keeps best/high"
+REPO_BOOTSTRAP="$TEST_DIR/repo-bootstrap-risk"
+new_repo "$REPO_BOOTSTRAP"
+mkdir -p "$REPO_BOOTSTRAP/bootstrap"
+commit_new_file_with_diff_lines "$REPO_BOOTSTRAP" 401 bootstrap/new-project.sh
+
+: >"$ARGS_FILE"
+out="$(run_review "$REPO_BOOTSTRAP" --dry-run --base HEAD~1 2>&1)"
+
+if grep -q '\-\-prefer best' "$ARGS_FILE" \
+  && grep -q '\-\-effort high' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'routing:     high-risk (architectural path bootstrap/new-project.sh'; then
+  echo "==> PASS: built-in bootstrap path kept best/high bucket"
+else
+  echo "FAIL: built-in bootstrap path should use high-risk routing bucket" >&2
+  echo "args: $(cat "$ARGS_FILE")" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ----------------------------------------------------------------------------
+echo "==> Test: configured full-context path keeps best/high"
+REPO_FULL_CONTEXT="$TEST_DIR/repo-full-context-risk"
+new_repo "$REPO_FULL_CONTEXT"
+cat >"$REPO_FULL_CONTEXT/.codex-review.toml" <<'EOF'
+[review.context]
+full_context_paths = ["docs/"]
+EOF
+git -C "$REPO_FULL_CONTEXT" add .codex-review.toml
+git -C "$REPO_FULL_CONTEXT" commit -qm cfg
+mkdir -p "$REPO_FULL_CONTEXT/docs"
+printf 'doc change\n' >"$REPO_FULL_CONTEXT/docs/note.md"
+git -C "$REPO_FULL_CONTEXT" add docs/note.md
+git -C "$REPO_FULL_CONTEXT" commit -qm "touch docs"
+
+: >"$ARGS_FILE"
+out="$(run_review "$REPO_FULL_CONTEXT" --dry-run --base HEAD~1 2>&1)"
+
+if grep -q '\-\-prefer best' "$ARGS_FILE" \
+  && grep -q '\-\-effort high' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'routing:     high-risk (configured full-context path docs/note.md'; then
+  echo "==> PASS: configured full-context path kept best/high bucket"
+else
+  echo "FAIL: configured full-context path should use high-risk routing bucket" >&2
   echo "args: $(cat "$ARGS_FILE")" >&2
   echo "out: $out" >&2
   ERRORS=$((ERRORS + 1))

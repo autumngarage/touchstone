@@ -1333,9 +1333,16 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Test: large diffs keep full AGENTS/CLAUDE context"
+echo "==> Test: low-risk large diffs use bounded prompt context"
 setup_ctx_repo
 setup_ctx_bin
+printf 'AGENTS_FULL_CONTEXT_MARKER\n' >"$CTX_REPO/AGENTS.md"
+printf 'CLAUDE_FULL_CONTEXT_MARKER\n' >"$CTX_REPO/CLAUDE.md"
+git -C "$CTX_REPO" add AGENTS.md CLAUDE.md
+git -C "$CTX_REPO" commit -m "add steering before large diff" >/dev/null 2>&1
+printf 'large prompt context change\n' >>"$CTX_REPO/example.txt"
+git -C "$CTX_REPO" add example.txt
+git -C "$CTX_REPO" commit -m "large prompt context change" >/dev/null 2>&1
 (
   cd "$CTX_REPO"
   PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
@@ -1346,12 +1353,13 @@ setup_ctx_bin
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
-if grep -q 'Full project context is required because large diff' "$CTX_PROMPT" \
-  && grep -q 'Read AGENTS.md at the repo root' "$CTX_PROMPT" \
-  && grep -q 'Prompt context: full' "$CTX_OUTPUT"; then
-  echo "==> PASS: large diff kept full prompt context"
+if grep -q 'low-risk large diff' "$CTX_PROMPT" \
+  && grep -q 'Bounded project review context' "$CTX_PROMPT" \
+  && ! grep -q 'Read AGENTS.md at the repo root' "$CTX_PROMPT" \
+  && grep -q 'Prompt context: bounded' "$CTX_OUTPUT"; then
+  echo "==> PASS: low-risk large diff used bounded prompt context"
 else
-  echo "FAIL: expected full prompt context for large diff" >&2
+  echo "FAIL: expected bounded prompt context for low-risk large diff" >&2
   sed -n '1,80p' "$CTX_PROMPT" >&2
   cat "$CTX_OUTPUT" >&2
   ERRORS=$((ERRORS + 1))
@@ -1379,6 +1387,38 @@ if grep -q 'Full project context is required because architectural path AGENTS.m
 else
   echo "FAIL: expected full prompt context for architectural file" >&2
   sed -n '1,80p' "$CTX_PROMPT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: bootstrap scripts keep full AGENTS/CLAUDE context"
+setup_ctx_repo
+setup_ctx_bin
+mkdir -p "$CTX_REPO/bootstrap"
+cat >"$CTX_REPO/bootstrap/new-project.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'bootstrap review guidance\n'
+EOF
+git -C "$CTX_REPO" add bootstrap/new-project.sh
+git -C "$CTX_REPO" commit -m "touch bootstrap script" >/dev/null 2>&1
+
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CTX_PROMPT="$CTX_PROMPT" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    TOUCHSTONE_NO_PREFLIGHT=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
+)
+
+if grep -q 'Full project context is required because architectural path bootstrap/new-project.sh' "$CTX_PROMPT" \
+  && grep -q 'Prompt context: full' "$CTX_OUTPUT"; then
+  echo "==> PASS: bootstrap script kept full prompt context"
+else
+  echo "FAIL: expected full prompt context for bootstrap script" >&2
+  sed -n '1,80p' "$CTX_PROMPT" >&2
+  cat "$CTX_OUTPUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
