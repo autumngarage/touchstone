@@ -65,7 +65,7 @@ bash "$MIGRATE" --file "$LEGACY" >/dev/null
 assert_file_contains "$LEGACY" '^reviewer = "conductor"$' "[review].reviewer scalar"
 assert_file_contains "$LEGACY" '^\[review\.conductor\]$' "[review.conductor] section appended"
 assert_file_contains "$LEGACY" '^prefer = "best"$' "[review.conductor].prefer = best"
-assert_file_contains "$LEGACY" '^effort = "max"$' "[review.conductor].effort = max"
+assert_file_contains "$LEGACY" '^effort = "high"$' "[review.conductor].effort = high"
 assert_file_contains "$LEGACY" '^tags = "code-review"$' "[review.conductor].tags"
 assert_file_contains "$LEGACY" '^with = "claude"$' "[review.conductor].with pinned to first reviewer"
 assert_file_contains "$LEGACY" '# Original 1.x cascade was: claude, codex, gemini' "fallback chain preserved as comment"

@@ -42,7 +42,8 @@ for file in \
   assert_contains "$file" "Conductor worker/reviewer"
   assert_contains "$file" "Required Delivery Workflow"
   assert_contains "$file" "Before the first edit"
-  assert_contains "$file" "CODEX_REVIEW_FORCE=1 bash scripts/codex-review.sh"
+  assert_contains "$file" "principles/ai-delivery-architecture.md"
+  assert_contains "$file" "Conductor LLM review/fix loop"
   assert_contains "$file" "bash scripts/open-pr.sh --auto-merge"
 done
 
@@ -66,15 +67,21 @@ for file in \
   assert_contains "$file" "Agent Roles And Fallbacks"
   assert_contains "$file" "Driving CLI"
   assert_contains "$file" "Conductor worker/reviewer router"
-  assert_contains "$file" "branch → PR → review → automerge workflow"
+  assert_contains "$file" "branch → PR → merge-gate review → automerge workflow"
 done
 
 echo "==> canonical git workflow describes Conductor as the merge gate"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Conductor merge review"
-assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "conductor exec"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "required LLM review belongs to the merge gate"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "scripts/open-pr.sh --auto-merge"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Codex merge review"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "codex exec --full-auto"
+
+echo "==> canonical AI delivery architecture describes the streamlined gate"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Conductor LLM Review / Fix Loop"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "PR creation is not the expensive gate"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Merge is the expensive gate"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Parallel file-writing agents use worktrees by default"
 
 echo "==> dogfood harness validates every machine-check field"
 GOOD_RESPONSE="$TEST_DIR/good-response.txt"
@@ -83,7 +90,7 @@ TOUCHSTONE_DOGFOOD_RESULT: PASS
 BRANCH_BEFORE_EDIT: yes
 FEATURE_BRANCH_COMMAND: git checkout -b fix/log-swallowed-exception
 PR_CREATED: yes
-CONDUCTOR_REVIEW_BEFORE_MERGE: yes
+CONDUCTOR_REVIEW_AT_MERGE_GATE: yes
 AUTO_MERGE_COMMAND: bash scripts/open-pr.sh --auto-merge
 PRINCIPLES_APPLIED: yes
 NO_SILENT_FAILURES_TESTED: yes
@@ -101,7 +108,7 @@ TOUCHSTONE_DOGFOOD_RESULT: PASS
 BRANCH_BEFORE_EDIT: yes
 FEATURE_BRANCH_COMMAND: git checkout -b fix/log-swallowed-exception
 PR_CREATED: yes
-CONDUCTOR_REVIEW_BEFORE_MERGE: yes
+CONDUCTOR_REVIEW_AT_MERGE_GATE: yes
 AUTO_MERGE_COMMAND: bash scripts/open-pr.sh --auto-merge
 PRINCIPLES_APPLIED: yes
 NO_SILENT_FAILURES_TESTED: yes

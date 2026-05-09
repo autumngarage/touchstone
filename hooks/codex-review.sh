@@ -63,7 +63,7 @@
 #   CODEX_REVIEW_MAX_ITERATIONS       — fix loop cap (default: from config, or 3)
 #   CODEX_REVIEW_MAX_DIFF_LINES       — skip review if diff > this many lines (default: 5000)
 #   CODEX_REVIEW_CACHE_CLEAN          — cache exact-input clean reviews (default: true)
-#   CODEX_REVIEW_TIMEOUT              — wall-clock timeout per invocation in seconds (default: 300, 0=none)
+#   CODEX_REVIEW_TIMEOUT              — optional wall-clock timeout per invocation in seconds (default: 0, no Touchstone wrapper timeout)
 #   CODEX_REVIEW_ON_ERROR             — fail-open (default) or fail-closed
 #   CODEX_REVIEW_CONTEXT_MODE         — auto|full|bounded prompt context selection (default: auto)
 #   CODEX_REVIEW_CONTEXT_SMALL_MAX_DIFF_LINES — bounded-context diff line cap (default: 400)
@@ -367,7 +367,7 @@ NO_AUTOFIX="${CODEX_REVIEW_NO_AUTOFIX:-false}"
 CONFIG_MODE=""
 REVIEW_ENABLED="${CODEX_REVIEW_ENABLED:-true}"
 PREFLIGHT_REQUIRED=true
-REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-300}"
+REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-0}"
 ON_ERROR="${CODEX_REVIEW_ON_ERROR:-fail-open}"
 UNSAFE_PATHS=""
 REVIEWER_CASCADE=()
@@ -399,7 +399,7 @@ ROUTING_SMALL_EFFORT="minimal"
 ROUTING_SMALL_TAGS=""
 ROUTING_LARGE_WITH=""
 ROUTING_LARGE_PREFER="best"
-ROUTING_LARGE_EFFORT="max"
+ROUTING_LARGE_EFFORT="high"
 ROUTING_LARGE_TAGS=""
 ROUTING_DECISION="default"
 PROMPT_CONTEXT_MODE="${CODEX_REVIEW_CONTEXT_MODE:-auto}"
@@ -899,7 +899,7 @@ if [ "${#REVIEWER_CASCADE[@]}" -gt 0 ]; then
     echo "        reviewer = \"conductor\"" >&2
     echo "        [review.conductor]" >&2
     echo "          prefer = \"best\"" >&2
-    echo "          effort = \"max\"" >&2
+    echo "          effort = \"high\"" >&2
     echo "    Update .codex-review.toml at your convenience. See CHANGELOG for details." >&2
   fi
 fi
@@ -955,7 +955,7 @@ fi
 # Env overrides for the conductor adapter (take precedence over .codex-review.toml).
 CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-${CONDUCTOR_WITH:-}}"
 CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-${CONDUCTOR_PREFER:-best}}"
-CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-${CONDUCTOR_EFFORT:-max}}"
+CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-${CONDUCTOR_EFFORT:-high}}"
 CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-${CONDUCTOR_TAGS:-code-review}}"
 if [ -n "${TOUCHSTONE_CONDUCTOR_EXCLUDE+x}" ]; then
   CONDUCTOR_EXCLUDE="$TOUCHSTONE_CONDUCTOR_EXCLUDE"
@@ -1342,7 +1342,7 @@ reviewer_conductor_exec() {
   fi
 
   # Effort applies whether manual-provider or auto-routed.
-  args+=(--effort "${CONDUCTOR_EFFORT:-max}")
+  args+=(--effort "${CONDUCTOR_EFFORT:-high}")
 
   # REVIEW_MODE → subcommand + tools. Conductor translates these portable tool
   # names into each provider's native permission/sandbox contract.
@@ -1372,7 +1372,9 @@ reviewer_conductor_exec() {
 
   if [ "$subcommand" = "exec" ]; then
     args+=(--tools "$tools")
-    args+=(--timeout "${CODEX_REVIEW_TIMEOUT:-300}")
+    if [ "${REVIEW_TIMEOUT:-0}" -gt 0 ] 2>/dev/null; then
+      args+=(--timeout "$REVIEW_TIMEOUT")
+    fi
     if [ -n "${REVIEW_CONDUCTOR_LOG_FILE:-}" ]; then
       args+=(--log-file "$REVIEW_CONDUCTOR_LOG_FILE")
     fi
@@ -1791,7 +1793,7 @@ if is_pre_push_hook && ! is_truthy "${CODEX_REVIEW_FORCE:-false}"; then
   if [ "$_firstpush_remote_branch" = "$_firstpush_default_branch" ]; then
     if _firstpush_commit_count="$(git rev-list --count HEAD 2>/dev/null)" \
       && [ "$_firstpush_commit_count" = "1" ]; then
-      echo "==> Codex review skipped — first push on a fresh scaffold (HEAD is the initial commit)."
+      echo "==> Conductor review skipped — first push on a fresh scaffold (HEAD is the initial commit)."
       log_skip_event other fresh-scaffold-first-push
       exit 0
     fi
@@ -2040,7 +2042,7 @@ review_cache_key() {
     printf 'assist_helpers=%s\n' "${ASSIST_HELPERS[*]:-}"
     # Conductor knobs (CLI-effective values, post env+config resolution).
     # Without these, a review at prefer=cheapest/effort=minimal would
-    # silently satisfy a later push expecting prefer=best/effort=max
+    # silently satisfy a later push expecting prefer=best/effort=high
     # because the diff hash matches.
     printf 'conductor_with=%s\n' "${CONDUCTOR_WITH:-}"
     printf 'conductor_prefer=%s\n' "${CONDUCTOR_PREFER:-}"
@@ -2763,9 +2765,8 @@ run_peer_review() {
   # Peer is single-turn (no tools). `conductor call` sees the primary's
   # findings + a framing prompt; the router picks a non-primary provider.
   local peer_output peer_log_before peer_log_after
-  # ASSIST_TIMEOUT config applies via the outer run_reviewer_with_timeout
-  # wrapper when the primary timed out; peer call runs synchronously and
-  # relies on conductor's own per-provider timeout (currently 300s default).
+  # Peer call runs synchronously and relies on Conductor's own provider/stall
+  # handling; ASSIST_TIMEOUT still applies to explicit assistant loops.
   PEER_CONDUCTOR_LOG_FILE=""
   peer_log_before="$(latest_conductor_session_log)"
   peer_output="$(printf '%s' "$peer_prompt" \

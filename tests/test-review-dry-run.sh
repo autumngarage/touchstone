@@ -143,7 +143,7 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-echo "==> Test: large default route uses best/max"
+echo "==> Test: large default route uses best/high"
 REPO_LARGE="$TEST_DIR/repo-large"
 new_repo "$REPO_LARGE"
 commit_new_file_with_diff_lines "$REPO_LARGE" 401 large.txt
@@ -152,9 +152,9 @@ commit_new_file_with_diff_lines "$REPO_LARGE" 401 large.txt
 out="$(run_review "$REPO_LARGE" --dry-run --base HEAD~1 2>&1)"
 
 if grep -q '\-\-prefer best' "$ARGS_FILE" \
-  && grep -q '\-\-effort max' "$ARGS_FILE" \
+  && grep -q '\-\-effort high' "$ARGS_FILE" \
   && echo "$out" | grep -q 'routing:     large (401 > 400 diff lines)'; then
-  echo "==> PASS: 401-line diff used large best/max bucket"
+  echo "==> PASS: 401-line diff used large best/high bucket"
 else
   echo "FAIL: large diff should use large routing bucket" >&2
   echo "args: $(cat "$ARGS_FILE")" >&2

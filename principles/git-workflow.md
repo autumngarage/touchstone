@@ -28,7 +28,7 @@ The three layers are complementary — the local hook catches the honest mistake
 2. **Branch — before any edit that might become a commit.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`. Do this as step one of the work, not as a cleanup step later. The check is `git branch --show-current` *before your first edit* — see "Never commit on the default branch" above for why edit time and not commit time.
 3. **Check the tree before changing it.** Run `git status --short` and `git branch --show-current` before starting implementation. If the tree is dirty with unrelated user changes, do not stash them and do not auto-commit on the user's behalf. Ask how to proceed, or branch around the changes when the file surfaces are disjoint. `git stash` is hidden multi-agent state, not a coordination mechanism.
 4. **Loop: change → commit → push.** Each meaningful sub-task gets its own commit and push. Stage explicit file paths (not `git add -A`), write a concise message, push to the open branch. Don't batch a session's worth of changes into one commit at the end — see the "Commit and push frequency" section below.
-5. **Ship.** `scripts/open-pr.sh --auto-merge` pushes, creates the PR, runs the final read-only Conductor merge review, squash-merges after a clean review, deletes the remote branch, and pulls the updated default branch — all in one command. Use `scripts/open-pr.sh` (without `--auto-merge`) if you want to open the PR without merging.
+5. **Ship.** `scripts/open-pr.sh --auto-merge` pushes, creates the PR, runs the merge-gate pipeline, squash-merges after the gate is clean, deletes the remote branch, and pulls the updated default branch — all in one command. Use `scripts/open-pr.sh` (without `--auto-merge`) if you want to open the PR without merging. The canonical architecture is [AI Delivery Architecture](ai-delivery-architecture.md): deterministic preflight, Conductor LLM review/fix, and deterministic postflight only when the review loop changed HEAD.
 6. **Clean up.** Delete the local feature branch. Run `scripts/cleanup-branches.sh` periodically for batch hygiene.
 
 ### Touchstone CLI auto-sync
@@ -75,7 +75,7 @@ Set `TOUCHSTONE_NO_AUTO_UPDATE=1` to disable both CLI self-update and project au
 
 ## Conductor merge review (optional, recommended)
 
-If the project has AI review configured (see `.codex-review.toml` for policy and the `codex-review` hook in `.pre-commit-config.yaml` for the entry point), a pre-push hook gates default-branch pushes (including squash-merges via `merge-pr.sh`). The hook delegates model access to Conductor, so the reviewer may be Claude, Codex, Gemini, a local model, or another configured provider. The mechanism is `stages: [pre-push]` in `.pre-commit-config.yaml`; it skips feature-branch pushes and only activates when the push target is the default branch. **The reviewer is the merge gate** — `scripts/open-pr.sh --auto-merge` is the standard ship path: open PR → reviewer runs → squash-merge → branch deleted, all in one command, no extra approval step.
+If the project has AI review configured (see `.codex-review.toml` for policy and the `codex-review` hook in `.pre-commit-config.yaml` for the entry point), the required LLM review belongs to the merge gate. The hook delegates model access to Conductor, so the reviewer may be Claude, Codex, Gemini, a local model, or another configured provider. Feature-branch pushes should stay cheap; the expensive path is `scripts/open-pr.sh --auto-merge`: open PR → deterministic preflight → Conductor review/fix loop → deterministic postflight when needed → squash-merge → branch deleted. There is no separate required PR-open advisory review in the core architecture.
 
 **AI review is advisory.** It does not replace deterministic checks (lint, tests, type checking). It catches semantic bugs and policy violations that automated tools miss; it does not guarantee correctness.
 
@@ -88,7 +88,7 @@ The fail-open taxonomy codes are:
 
 | Code | Cause |
 |------|-------|
-| `FAIL_OPEN_TIMEOUT` | Reviewer exceeded `CODEX_REVIEW_TIMEOUT` (default 300 s) |
+| `FAIL_OPEN_TIMEOUT` | Reviewer exceeded an explicit `CODEX_REVIEW_TIMEOUT` / `timeout` budget |
 | `FAIL_OPEN_PARSE_ERROR` | Reviewer output contained no valid sentinel line |
 | `FAIL_OPEN_DEPENDENCY_MISSING` | Conductor CLI not found on PATH |
 | `FAIL_OPEN_PROVIDER_UNAVAILABLE` | Conductor installed but no provider configured |
@@ -97,15 +97,15 @@ The fail-open taxonomy codes are:
 To make infra failures fatal instead, set `on_error = "fail-closed"` in `.codex-review.toml`.
 
 Behavior:
-- Runs `CODEX_REVIEW_FORCE=1 bash scripts/codex-review.sh`, which invokes `conductor exec` against the diff vs the default branch
-- Auto-fixes only low-risk findings (typos, missing imports, missing null checks, adding logging to empty exception handlers, named constants for unexplained magic numbers); anything that changes business logic or retry/error-handling semantics is reported as a finding for the author to address in another commit before merge
-- Blocks the push for unsafe findings (high-scrutiny paths)
+- `merge-pr.sh` invokes `scripts/codex-review.sh`, which routes LLM review through Conductor against the diff vs the default branch
+- Auto-fixes only low-risk findings (typos, missing imports, missing null checks, adding logging to empty exception handlers, named constants for unexplained magic numbers); anything that changes business logic or retry/error-handling semantics is reported as a finding for the author to address before merge
+- Blocks merge for unsafe findings (high-scrutiny paths)
 - Loops up to `max_iterations` times (default 3)
-- Fails open on infra errors with a visible `[fail-open:<code>]` stderr line and an audit log entry (see codes above)
+- Fails open on infra errors with a visible `[fail-open:<code>]` stderr line and an audit log entry (see codes above), unless the project config sets `on_error = "fail-closed"`
 
 ### Scope-aware preflight
 
-Merge and review gates run deterministic preflight in diff mode:
+Merge gates run deterministic preflight in diff mode:
 `bash lib/preflight.sh --diff origin/<default-branch>`. The invariant is that
 preflight checks the files changed by the PR, not the whole project, unless
 `--all-files` is explicitly passed.

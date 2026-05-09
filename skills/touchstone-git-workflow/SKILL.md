@@ -35,9 +35,8 @@ Your unstaged changes carry over. The trigger is *edit time*, not commit time �
 1. `git pull --rebase` on the default branch
 2. Branch (before any edit)
 3. Commit (explicit file paths, concise message, one concern per commit)
-4. `CODEX_REVIEW_FORCE=1 bash scripts/codex-review.sh` from a clean worktree
-5. `bash scripts/open-pr.sh --auto-merge` — pushes, opens PR, runs review, squash-merges, syncs default
-6. Local cleanup (`git branch -D <feature>` if it persists)
+4. `bash scripts/open-pr.sh --auto-merge` — pushes, opens PR, runs the merge-gate pipeline, squash-merges, syncs default
+5. Local cleanup (`git branch -D <feature>` if it persists)
 
 ## Quick rules
 

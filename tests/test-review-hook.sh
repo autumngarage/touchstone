@@ -41,9 +41,15 @@ unset PRE_COMMIT
 unset PRE_COMMIT_FROM_REF PRE_COMMIT_TO_REF
 unset PRE_COMMIT_LOCAL_BRANCH PRE_COMMIT_REMOTE_BRANCH
 unset PRE_COMMIT_REMOTE_NAME PRE_COMMIT_REMOTE_URL
-unset CODEX_REVIEW_FORCE CODEX_REVIEW_NO_AUTOFIX CODEX_REVIEW_DISABLE_CACHE
+unset CODEX_REVIEW_BASE CODEX_REVIEW_ENABLED CODEX_REVIEW_FORCE
+unset CODEX_REVIEW_MODE CODEX_REVIEW_NO_AUTOFIX CODEX_REVIEW_DISABLE_CACHE
+unset CODEX_REVIEW_TIMEOUT CODEX_REVIEW_CONTEXT_MODE
+unset CODEX_REVIEW_CONTEXT_SMALL_MAX_DIFF_LINES CODEX_REVIEW_CONTEXT_SMALL_MAX_FILES
 unset CODEX_REVIEW_ASSIST CODEX_REVIEW_ASSIST_TIMEOUT CODEX_REVIEW_ASSIST_MAX_ROUNDS
 unset CODEX_REVIEW_IN_PROGRESS
+unset TOUCHSTONE_CONDUCTOR_WITH TOUCHSTONE_CONDUCTOR_PREFER
+unset TOUCHSTONE_CONDUCTOR_EFFORT TOUCHSTONE_CONDUCTOR_TAGS TOUCHSTONE_CONDUCTOR_EXCLUDE
+unset TOUCHSTONE_PREFLIGHT_ALREADY_RAN TOUCHSTONE_REVIEWER
 unset TOUCHSTONE_NO_PREFLIGHT TOUCHSTONE_NO_AUTO_UPDATE
 
 mkdir -p "$FAKE_BIN"
@@ -258,7 +264,7 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Test: review hook skips nested Codex review subprocesses"
+echo "==> Test: review hook skips nested Conductor review subprocesses"
 : >"$CODEX_CALLS_FILE"
 
 (
@@ -920,6 +926,13 @@ check_mode_argv() {
     ERRORS=$((ERRORS + 1))
     return
   fi
+
+  if grep -q -- '--timeout' "$CODEX_ARGS_FILE"; then
+    echo "FAIL: expected mode $mode to omit Touchstone wrapper --timeout by default" >&2
+    cat "$CODEX_ARGS_FILE" >&2
+    ERRORS=$((ERRORS + 1))
+    return
+  fi
 }
 
 check_mode_argv "diff-only" "call" ""
@@ -928,7 +941,28 @@ check_mode_argv "no-tests" "exec" "Read,Grep,Glob,Edit,Write"
 check_mode_argv "fix" "exec" "Read,Grep,Glob,Bash,Edit,Write"
 
 if [ "$ERRORS" -eq 0 ]; then
-  echo "==> PASS: review modes preserve tools contract and omit sandbox flag"
+  echo "==> PASS: review modes preserve tools contract and omit sandbox/timeout defaults"
+fi
+
+echo "==> Test: explicit CODEX_REVIEW_TIMEOUT reaches conductor exec"
+: >"$CODEX_ARGS_FILE"
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=review-only \
+    CODEX_REVIEW_TIMEOUT=17 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
+)
+
+if grep -q -- '--timeout 17' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: explicit timeout is still forwarded to Conductor"
+else
+  echo "FAIL: expected explicit CODEX_REVIEW_TIMEOUT to become --timeout 17" >&2
+  cat "$CODEX_ARGS_FILE" >&2
+  ERRORS=$((ERRORS + 1))
 fi
 
 # ==========================================================================

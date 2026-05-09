@@ -6,7 +6,7 @@
   |_|\___/ \__,_|\___|_| |_|___/\__\___/|_| |_|\___|
 ```
 
-> *Scaffolding + pre-push AI review for AI-assisted projects.*
+> *Scaffolding + merge-gate AI review for AI-assisted projects.*
 >
 > by **[Autumn Garage](https://github.com/autumngarage/autumn-garage)** · alongside [Cortex](https://github.com/autumngarage/cortex) · [Sentinel](https://github.com/autumngarage/sentinel) · [Conductor](https://github.com/autumngarage/conductor) · [Alchemist](https://github.com/autumngarage/alchemist) — issue-driven transmuter — open issue in, reviewed PR out.
 
@@ -77,7 +77,7 @@ conductor init                    # walks through each provider, one at a time
 
 Conductor supports Claude, OpenAI Codex, Google Gemini, Moonshot Kimi (via Cloudflare Workers AI), and local Ollama. Configure as many as you want; Conductor's auto-router picks the best one for each review based on quality tier, cost, and availability.
 
-When you run `touchstone new` or `touchstone init`, Touchstone asks whether you want AI review. If you say yes, the scaffold adds a default `[review.conductor]` block with `prefer = "best"` and `effort = "max"` — frontier-tier review, maximum reasoning depth.
+When you run `touchstone new` or `touchstone init`, Touchstone asks whether you want AI review. If you say yes, the scaffold adds a default `[review.conductor]` block with `prefer = "best"` and `effort = "high"` — frontier-tier review with a bounded reasoning budget. Use `TOUCHSTONE_CONDUCTOR_EFFORT=max` when release-level scrutiny is worth the extra latency.
 
 You can keep using Touchstone without Conductor installed; the hook skips itself gracefully and prints install instructions.
 
@@ -181,7 +181,7 @@ When you run `touchstone new`, these files get created in your project:
 - `GEMINI.md` — Gemini CLI instructions that point at the shared authoring/review workflow
 - `.codex-review.toml` — AI review hook config (reviewers, modes, safe/unsafe paths)
 - `.touchstone-config` — Project profile, workflow choices, and optional lint/test/build command overrides
-- `.pre-commit-config.yaml` — Pre-commit hooks including the default-branch AI review gate
+- `.pre-commit-config.yaml` — Pre-commit hooks including fast branch checks and direct default-branch guardrails
 - `.gitignore` — Sensible defaults
 - `.worktreeinclude.example` — Starter allowlist for ignored local files to copy into spawned worktrees
 - `.github/pull_request_template.md` — PR checklist
@@ -234,7 +234,8 @@ Universal engineering standards, extracted and battle-tested from production sys
 - **[pre-implementation-checklist.md](principles/pre-implementation-checklist.md)** — Pre-flight questions that route back to the canonical principles
 - **[audit-weak-points.md](principles/audit-weak-points.md)** — Methodology: find one bug → audit the whole class → ranked fix → guardrail test
 - **[documentation-ownership.md](principles/documentation-ownership.md)** — Single canonical owner per volatile fact
-- **[git-workflow.md](principles/git-workflow.md)** — Feature branch → PR → AI merge review → squash merge
+- **[ai-delivery-architecture.md](principles/ai-delivery-architecture.md)** — Human request → driver AI → PR → deterministic checks → Conductor review/fix → merge
+- **[git-workflow.md](principles/git-workflow.md)** — Feature branch → PR → merge gate → squash merge
 
 ### AI Review Gate
 
@@ -270,7 +271,7 @@ The static contract tests still run in the normal self-test suite:
 bash tests/test-agent-steering-contract.sh
 ```
 
-That test guards the interpretability contract without spending model quota: Claude, Codex, and Gemini are interchangeable driving CLIs; Conductor is the worker/reviewer router with provider fallback; all drivers must converge on the same managed principles and branch → PR → review → automerge lifecycle.
+That test guards the interpretability contract without spending model quota: Claude, Codex, and Gemini are interchangeable driving CLIs; Conductor is the worker/reviewer router with provider fallback; all drivers must converge on the same managed principles and branch → PR → merge-gate review → automerge lifecycle.
 
 Maintainer self-tests are split into a fast default tier and a slow opt-in tier. The fast tier is the pre-push contract and must not call live model/provider CLIs:
 

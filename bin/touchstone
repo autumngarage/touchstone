@@ -612,7 +612,7 @@ cmd_doctor_project() {
   #   - file absent → hook never runs
   #   - file present but not executable → Git skips it (same effect as absent)
   #   - file executable but not the pre-commit-framework shim → another hook
-  #     framework replaced it; pushes proceed without Codex review / validate.
+  #     framework replaced it; pushes proceed without Conductor review / validate.
   if [ ! -f "$project_dir/.pre-commit-config.yaml" ]; then
     tk_warn ".pre-commit-config.yaml is missing"
     tk_dim "  Fix: touchstone init  (reconciles missing templates)"
@@ -696,7 +696,7 @@ cmd_doctor_project() {
     tk_dim "  Fix: echo \"$project_dir\" >> $projects_file"
   fi
 
-  # 6. Optional — Codex review config present?
+  # 6. Optional — Conductor review config present?
   if [ -f "$project_dir/.codex-review.toml" ]; then
     tk_ok ".codex-review.toml present"
     if grep -qE '^[[:space:]]*reviewers[[:space:]]*=[[:space:]]*\[' "$project_dir/.codex-review.toml" \

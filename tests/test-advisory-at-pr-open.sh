@@ -124,8 +124,28 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Case 1b: advisory review is disabled by default"
+reset_case
+printf '[review]\npreflight_required = false\n' >"$REPO_DIR/.codex-review.toml"
+git -C "$REPO_DIR" add .codex-review.toml
+git -C "$REPO_DIR" commit -m "remove advisory setting" >/dev/null 2>&1
+OUT="$TEST_DIR/default-disabled.out"
+CODEX_REVIEW_STUB_EXIT=0 CODEX_REVIEW_STUB_FINDINGS=0 CODEX_REVIEW_STUB_REASON=clean run_open_pr "$OUT"
+if grep -q 'Advisory review at PR open disabled; merge-gate review still runs during auto-merge.' "$OUT" \
+  && [ ! -f "$TEST_DIR/comments" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: default advisory review should be disabled" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 2: findings advisory review is non-blocking and posts findings"
 reset_case
+printf '[review]\npreflight_required = false\nadvisory_at_pr_open = true\n' >"$REPO_DIR/.codex-review.toml"
+git -C "$REPO_DIR" add .codex-review.toml
+git -C "$REPO_DIR" commit -m "re-enable advisory review" >/dev/null 2>&1
 OUT="$TEST_DIR/findings.out"
 CODEX_REVIEW_STUB_EXIT=1 CODEX_REVIEW_STUB_FINDINGS=1 CODEX_REVIEW_STUB_REASON=blocked run_open_pr "$OUT"
 if grep -q 'advisory review found 1 finding(s)' "$TEST_DIR/comments" \
@@ -146,7 +166,8 @@ git -C "$REPO_DIR" add .codex-review.toml
 git -C "$REPO_DIR" commit -m "disable advisory review" >/dev/null 2>&1
 OUT="$TEST_DIR/disabled.out"
 CODEX_REVIEW_STUB_EXIT=0 CODEX_REVIEW_STUB_FINDINGS=0 CODEX_REVIEW_STUB_REASON=clean run_open_pr "$OUT"
-if grep -q 'Advisory review at PR open disabled' "$OUT" && [ ! -f "$TEST_DIR/comments" ]; then
+if grep -q 'Advisory review at PR open disabled; merge-gate review still runs during auto-merge.' "$OUT" \
+  && [ ! -f "$TEST_DIR/comments" ]; then
   echo "    PASS"
 else
   echo "    FAIL: disabled advisory review still posted a comment" >&2

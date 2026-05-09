@@ -1,6 +1,6 @@
 ---
 name: touchstone-audit
-description: Audits the Touchstone project at ~/Repos/touchstone for drift against its own engineering principles and against current Anthropic/Claude Code best practices. Evaluates principles, implementation, and process/workflow (git lifecycle, Codex review, release flow). Produces a dated markdown report in audits/ and never modifies touchstone files. Runs only when the user explicitly asks to audit the Touchstone, run a Touchstone health check, or verify the Touchstone is up to date against current best practices. Do not invoke for generic "review this code" or "review this PR" requests — those should use ad-hoc review, not this skill.
+description: Audits the Touchstone project at ~/Repos/touchstone for drift against its own engineering principles and against current Anthropic/Claude Code best practices. Evaluates principles, implementation, and process/workflow (git lifecycle, Conductor review, release flow). Produces a dated markdown report in audits/ and never modifies touchstone files. Runs only when the user explicitly asks to audit the Touchstone, run a Touchstone health check, or verify the Touchstone is up to date against current best practices. Do not invoke for generic "review this code" or "review this PR" requests — those should use ad-hoc review, not this skill.
 ---
 
 # Touchstone Audit
@@ -90,7 +90,7 @@ This pass evaluates the *workflows* the Touchstone enforces, not just the code. 
 Workflows to evaluate:
 
 - **Git lifecycle** (`principles/git-workflow.md` + `scripts/open-pr.sh` + `scripts/merge-pr.sh` + `scripts/cleanup-branches.sh`) — branch naming, PR creation, merge flow, branch hygiene. Does current Claude Code / agent guidance suggest refinements?
-- **Codex review hook** (`hooks/codex-review.sh` + `hooks/codex-review.config.example.toml`) — the merge/default-branch review gate. Is the auto-fix loop shape still right? Are there new Codex CLI features worth adopting? Is the high-scrutiny-paths concept aligned with current thinking on AI code review?
+- **Conductor review hook** (`hooks/codex-review.sh` + `hooks/codex-review.config.example.toml`) — the merge/default-branch review gate. Is the auto-fix loop shape still right? Are there new Conductor capabilities worth adopting? Is the high-scrutiny-paths concept aligned with current thinking on AI code review?
 - **Release flow** (`lib/release.sh` + `bin/touchstone release` + Homebrew tap in `homebrew-touchstone/`) — the four-way agreement invariant (GitHub Releases, Homebrew, `origin/main`, local brew install). Anything new to add here? Any steps that are now redundant?
 - **Bootstrap & propagation** (`bootstrap/new-project.sh`, `bootstrap/update-project.sh`, `bootstrap/sync-all.sh`) — the mechanism by which touchstone changes reach downstream projects. Are there Claude Code–native mechanisms (plugins, skills, hooks) that should replace or augment file-copy propagation?
 - **Auto-update check** (`lib/auto-update.sh` and `~/.touchstone/last-update-check`) — is file-based update polling still the right pattern?

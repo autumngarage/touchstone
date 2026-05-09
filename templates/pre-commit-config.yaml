@@ -3,7 +3,7 @@
 #
 # Hooks run at two stages:
 #   pre-commit: fast checks on every commit (formatting, secrets, file hygiene)
-#   pre-push:   fast branch checks; AI review only runs for default-branch pushes
+#   pre-push:   fast branch checks; Conductor review only runs for direct default-branch pushes
 
 repos:
   # ── Standard file hygiene ──────────────────────────────────────────────
@@ -75,11 +75,11 @@ repos:
         always_run: true
         pass_filenames: false
 
-  # ── AI default-branch push review ──────────────────────────────────────
+  # ── Conductor default-branch push review ───────────────────────────────
   - repo: local
     hooks:
       - id: codex-review
-        name: AI default-branch push review
+        name: Conductor default-branch push review
         entry: /usr/bin/env bash scripts/codex-review.sh
         language: system
         stages: [pre-push]
@@ -96,9 +96,7 @@ repos:
         entry: >-
           /usr/bin/env env
           -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE
-          -u PRE_COMMIT -u PRE_COMMIT_FROM_REF -u PRE_COMMIT_TO_REF
-          -u PRE_COMMIT_LOCAL_BRANCH -u PRE_COMMIT_REMOTE_BRANCH
-          -u PRE_COMMIT_REMOTE_NAME -u PRE_COMMIT_REMOTE_URL
+          TOUCHSTONE_VALIDATE_SKIP_FEATURE_PUSH=1
           bash scripts/touchstone-run.sh validate
         language: system
         stages: [pre-push]

@@ -23,6 +23,9 @@ set -euo pipefail
   printf 'CODEX_REVIEW_BRANCH_NAME=%s\n' "${CODEX_REVIEW_BRANCH_NAME:-}"
   printf 'TOUCHSTONE_CONDUCTOR_WITH=%s\n' "${TOUCHSTONE_CONDUCTOR_WITH:-}"
 } > "$CODEX_REVIEW_LOG"
+if [ -n "${CODEX_REVIEW_STUB_OUTPUT:-}" ]; then
+  printf '%s\n' "$CODEX_REVIEW_STUB_OUTPUT"
+fi
 exit "${CODEX_REVIEW_EXIT:-0}"
 EOF
 chmod +x "$MERGE_SCRIPT_DIR/merge-pr.sh" "$MERGE_SCRIPT_DIR/codex-review.sh"
@@ -46,12 +49,20 @@ case "${1:-} ${2:-}" in
         ;;
       headRefName) echo "feature/test" ;;
       headRefOid) echo "pr-head-oid" ;;
-      mergeStateStatus,mergeable) echo "CLEAN MERGEABLE" ;;
+      mergeStateStatus,mergeable) echo "${GH_MERGE_STATE:-CLEAN MERGEABLE}" ;;
       *)
         echo "unexpected gh pr view args: $*" >&2
         exit 1
         ;;
     esac
+    ;;
+  "pr checks")
+    if [ -n "${GH_FAILED_CHECKS:-}" ]; then
+      printf '%s\n' "$GH_FAILED_CHECKS"
+    else
+      echo "no failed checks reported on the branch" >&2
+      exit 1
+    fi
     ;;
   "pr checkout")
     if [ "${4:-}" != "--detach" ]; then
@@ -206,7 +217,10 @@ reset_case_files() {
   unset GIT_SIBLING_PULL_FAIL
   unset TEST_CURRENT_WORKTREE
   unset GH_PR_MERGE_FAIL_LOCAL
+  unset GH_MERGE_STATE
+  unset GH_FAILED_CHECKS
   unset CODEX_REVIEW_EXIT
+  unset CODEX_REVIEW_STUB_OUTPUT
   unset GIT_LOCAL_BRANCH_HEAD
 }
 
@@ -223,6 +237,8 @@ run_merge_pr() {
     GH_COMMENT_FILE="$TEST_DIR/gh-comment" \
     GH_MERGED_MARKER="$TEST_DIR/gh-merged-marker" \
     GH_PR_MERGE_FAIL_LOCAL="${GH_PR_MERGE_FAIL_LOCAL:-false}" \
+    GH_MERGE_STATE="${GH_MERGE_STATE:-CLEAN MERGEABLE}" \
+    GH_FAILED_CHECKS="${GH_FAILED_CHECKS:-}" \
     GIT_CHECKOUT_MAIN_FILE="$TEST_DIR/git-checkout-main" \
     GIT_DETACHED_DEFAULT_FILE="$TEST_DIR/git-detached-default" \
     GIT_BRANCH_DELETED_FILE="$TEST_DIR/git-branch-deleted" \
@@ -230,6 +246,7 @@ run_merge_pr() {
     GIT_WORKTREE_LIST="${GIT_WORKTREE_LIST:-}" \
     GIT_SIBLING_PULL_FAIL="${GIT_SIBLING_PULL_FAIL:-false}" \
     CODEX_REVIEW_EXIT="${CODEX_REVIEW_EXIT:-0}" \
+    CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
     GIT_LOCAL_BRANCH_HEAD="${GIT_LOCAL_BRANCH_HEAD:-pr-head-oid}" \
     TEST_CURRENT_WORKTREE="${TEST_CURRENT_WORKTREE:-/tmp/touchstone-feature-worktree}" \
     bash "$MERGE_SCRIPT_DIR/merge-pr.sh" "$@" >"$output_file" 2>&1
@@ -328,6 +345,25 @@ else
   exit 1
 fi
 
+echo "==> Test: failed checks stop merge polling before review"
+reset_case_files
+if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
+  GH_FAILED_CHECKS=$'Issue claim check\tFAILURE\thttps://example.test/checks/claim-check' \
+  run_merge_pr "$TEST_DIR/output-check-failed.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly succeeded with a failed check" >&2
+  exit 1
+fi
+if grep -q 'has failed check(s); stopping automerge' "$TEST_DIR/output-check-failed.txt" \
+  && grep -q 'Issue claim check (FAILURE): https://example.test/checks/claim-check' "$TEST_DIR/output-check-failed.txt" \
+  && [ ! -f "$TEST_DIR/codex-review.log" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: failed checks fail fast before review"
+else
+  echo "FAIL: failed checks should stop before review/merge" >&2
+  cat "$TEST_DIR/output-check-failed.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: review failure with prior clean marker auto-promotes to bypass (#182)"
 reset_case_files
 # Synthesize a clean review marker for the same head/base the harness's fake
@@ -352,6 +388,27 @@ if grep -q 'Auto-promoting to reviewer bypass with disclosure' "$TEST_DIR/output
 else
   echo "FAIL: auto-bypass path did not produce expected log/comment/merge artifacts" >&2
   cat "$TEST_DIR/output-auto-bypass.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: prior clean marker does not auto-bypass concrete review findings (#269)"
+reset_case_files
+mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
+printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nbase=origin/main\nmerge_base=base-oid\nhead=pr-head-oid\n' \
+  >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
+if CODEX_REVIEW_EXIT=1 CODEX_REVIEW_STUB_OUTPUT=$'Conductor review found 1 finding(s)\n- blocking finding\nCODEX_REVIEW_BLOCKED' \
+  run_merge_pr "$TEST_DIR/output-blocked-with-marker.txt" 123; then
+  echo "FAIL: merge-pr.sh auto-bypassed concrete findings despite prior clean marker" >&2
+  cat "$TEST_DIR/output-blocked-with-marker.txt" >&2
+  exit 1
+fi
+if grep -q 'refusing to auto-bypass with a prior clean marker' "$TEST_DIR/output-blocked-with-marker.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
+  && ! grep -q 'Auto-promoting to reviewer bypass' "$TEST_DIR/output-blocked-with-marker.txt"; then
+  echo "==> PASS: concrete findings block auto-bypass even with prior clean marker"
+else
+  echo "FAIL: concrete findings should not auto-bypass" >&2
+  cat "$TEST_DIR/output-blocked-with-marker.txt" >&2
   exit 1
 fi
 

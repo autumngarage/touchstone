@@ -242,7 +242,7 @@ END {
     print "[review.conductor]"
     print "# Conductor routing knobs. See touchstone CHANGELOG for the 2.0 contract."
     print "prefer = \"best\""
-    print "effort = \"max\""
+    print "effort = \"high\""
     print "tags = \"code-review\""
     if (pending_with != "") {
       print "with = \"" pending_with "\""

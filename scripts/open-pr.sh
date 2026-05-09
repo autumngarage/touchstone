@@ -8,7 +8,7 @@
 #
 # Usage:
 #   bash scripts/open-pr.sh                          # title from last commit; base = default branch
-#   bash scripts/open-pr.sh --auto-merge             # open + Codex review + squash-merge
+#   bash scripts/open-pr.sh --auto-merge             # open + merge-gate review + squash-merge
 #   bash scripts/open-pr.sh --auto-merge \
 #                            --cleanup-worktree       # auto-merge, then remove this feature worktree
 #   bash scripts/open-pr.sh --draft                  # same, opened as draft
@@ -65,7 +65,7 @@ fi
 ORPHAN_PR_URL=""
 ORPHAN_PR_NUMBER=""
 BODY_FILE=""
-ADVISORY_AT_PR_OPEN=true
+ADVISORY_AT_PR_OPEN=false
 PREFLIGHT_REQUIRED=true
 
 on_exit() {
@@ -167,7 +167,7 @@ run_advisory_review_at_pr_open() {
   local advisory_preflight_passed=false
 
   if ! truthy "$ADVISORY_AT_PR_OPEN"; then
-    echo "==> Advisory review at PR open disabled by [review].advisory_at_pr_open=false."
+    echo "==> Advisory review at PR open disabled; merge-gate review still runs during auto-merge."
     return 0
   fi
 

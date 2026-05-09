@@ -34,9 +34,11 @@ safe_by_default = false
 # Override for a single run with: CODEX_REVIEW_MODE=review-only git push
 # mode = "fix"
 
-# Wall-clock timeout per reviewer invocation, in seconds. 0 = no timeout.
-# If the reviewer doesn't finish in time, the hook exits per on_error policy.
-# timeout = 300
+# Optional Touchstone wrapper wall-clock timeout per reviewer invocation, in
+# seconds. 0 = no wrapper timeout. By default Touchstone lets Conductor own
+# provider fallback and stall handling; set this only for CI/unattended runs
+# that need a hard total budget.
+# timeout = 0
 
 # What to do when the reviewer fails (crash, timeout, malformed output).
 # "fail-open"   = exit 0, allow push (default — infrastructure errors don't block)
@@ -67,7 +69,7 @@ unsafe_paths = [
 # enabled = true
 # preflight_required = true  # Run deterministic lint/test preflight before merge review; skips missing local tools visibly.
 # comment_on_clean = true    # Leave a one-line PR audit trail after a clean merge review; set false for quiet repos.
-# advisory_at_pr_open = true       # Run non-blocking review after PR creation and post the result as a PR comment.
+# advisory_at_pr_open = false      # Optional, non-blocking PR-open comment; required review belongs to the merge gate.
 # comment_findings_history = true  # After merge, post a collapsed history when the fix loop raised or auto-fixed findings.
 # # reviewer = "conductor"   # single-valued in 2.0+; absent reviewers[]
 
@@ -97,7 +99,7 @@ unsafe_paths = [
 # # How hard the chosen provider thinks before answering.
 # # Symbolic: "minimal" | "low" | "medium" | "high" | "max"
 # # Or an explicit integer thinking-token budget.
-# # effort = "max"
+# # effort = "high"
 #
 # # Capability tags passed to the router. Defaults cover code review well.
 # # tags = "code-review"
@@ -111,9 +113,11 @@ exclude = ["ollama"]
 # --------------------------------------------------------------------------
 # Routing by diff size (default)
 # --------------------------------------------------------------------------
-# Touchstone defaults to cheap + shallow review for small diffs and max-effort
-# review for larger changes. Explicit TOUCHSTONE_CONDUCTOR_* env vars still
-# win at invocation time, and enabled = false opts out.
+# Touchstone defaults to cheap + shallow review for small diffs and high-effort
+# review for larger changes. Use TOUCHSTONE_CONDUCTOR_EFFORT=max for
+# release-level scrutiny when the extra latency is intentional. Explicit
+# TOUCHSTONE_CONDUCTOR_* env vars still win at invocation time, and enabled =
+# false opts out.
 #
 # Routing uses a single cutoff (small_max_diff_lines): diffs at or below it
 # go through the small_* bucket, everything above through the large_* bucket.
@@ -126,7 +130,7 @@ exclude = ["ollama"]
 # small_prefer = "cheapest"
 # small_effort = "minimal"
 # large_prefer = "best"
-# large_effort = "max"
+# large_effort = "high"
 # # Optional: pin or retag either bucket.
 # # small_with = "ollama"
 # # large_tags = "code-review,long-context"
