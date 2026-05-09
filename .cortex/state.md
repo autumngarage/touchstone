@@ -1,15 +1,15 @@
 ---
-Generated: 2026-05-07T12:00:16-04:00
-Generator: cortex refresh-state v1.2.0
+Generated: 2026-05-09T09:35:21-04:00
+Generator: cortex refresh-state v1.5.1
 Sources:
-  - HEAD sha: bb919cf7fe30e27b68447a64cfb1787b618a1350
+  - HEAD sha: 64d808fb63aa8802dea1498136974c4d91b6bec4
   - .cortex/plans/*.md (2 files)
-  - .cortex/journal/*.md (7 entries, 2026-05-05..2026-05-07)
+  - .cortex/journal/*.md (9 entries, 2026-05-05..2026-05-09)
   - .cortex/doctrine/*.md (1 entries)
   - .cortex/templates/**/*.md (12 templates)
   - docs/case-studies/*.md (0 case studies)
   - SPEC version: 0.5.0
-  - (no project manifest detected) + cortex package version: 1.2.0
+  - (no project manifest detected) + cortex package version: 1.5.1
 Sources-hash:
   .cortex/doctrine/0001-touchstone-owns-shared-agent-workflow.md: 349b627cedf003e60838d1d1d660284f80644086ed387b79a58ff3fe1e7e0b46
   .cortex/journal/2026-05-05-cortex-install-baseline.md: dcc1ddd566c02c618277309b6daebf1334d477994b154a0f87a615642bd32829
@@ -19,6 +19,8 @@ Sources-hash:
   .cortex/journal/2026-05-07-pr-merged-0800.md: fdf9fef7f599f5eca8519509f9c4035a43597aa4c450a907a7fb2be213c72420
   .cortex/journal/2026-05-07-pr-merged-0920.md: 8dc020f990b6cf2f8a1ac38c4aea3d4e0b999145d962b0de6a188ba09aa3a9a7
   .cortex/journal/2026-05-07-pr-merged-1200.md: 17075ff917c34b7bbaeb7916ef2e638dde1685db6527e269687dc6f76d6fb99c
+  .cortex/journal/2026-05-09-alchemist-252.md: 542fc4a9fb6647ec141b85ae9665318bf8bee9161cd888de545eaf3d051ff6f8
+  .cortex/journal/2026-05-09-pr-merged-0935.md: c999d2a23a78b78f5bcb855cb52966a88f005296ba905b037c6c04972509e12f
   .cortex/plans/touchstone-conductor-integration.md: be3f8211b7c19e32e0c4c858c35678c1d85418fe12c5d22b29cc0a7831f8a54c
   .cortex/plans/touchstone-cortex-metadata.md: 0e23c4e06b91c1e8da358b3928750798975eed88815502fb8e7ddfbdbd0187f5
   .cortex/templates/README.md: 695aa2e623bd7f4e698dae471bded0cde354da0c1d8589266660ceb1be8efad1
@@ -33,7 +35,7 @@ Sources-hash:
   .cortex/templates/journal/release.md: 9a6bc59219156e48b419fb170c7c50ff557767def8672ef20568df3e14eadbd0
   .cortex/templates/journal/sentinel-cycle.md: 2945e2d94af4ec9848584b4b3e9cea7060d2968dd42e78faf21fb6f859137476
   .cortex/templates/plans/template.md: d8156cfa3b86acd2a1fbb36cff07cae37d99f3adee7f72b14b7b16e645c51b44
-Corpus: 7 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
+Corpus: 9 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
 Omitted:
   []
 Incomplete:
@@ -56,6 +58,7 @@ Spec: 0.5.0
 - **2026-05-07** — PR #217 merged — docs(workflow): require claiming issues before agent dispatch (`.cortex/journal/2026-05-07-pr-merged-0800.md`, Type: pr-merged)
 - **2026-05-07** — PR #226 merged — test(auto-update): make auto-project-sync test hermetic against outer env (`.cortex/journal/2026-05-07-pr-merged-0920.md`, Type: pr-merged)
 - **2026-05-07** — PR #230 merged — feat(review): surface fix-loop findings history as PR-visible audit artifact (`.cortex/journal/2026-05-07-pr-merged-1200.md`, Type: pr-merged)
+- **2026-05-09** — PR #258 merged — feat(cli): adopt update-all and structural doctor (`.cortex/journal/2026-05-09-pr-merged-0935.md`, Type: pr-merged)
 
 ## Stale-now / handle-later
 

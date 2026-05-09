@@ -96,6 +96,37 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: review hook sources helper libraries from script install path"
+NO_LIB_REPO="$TEST_DIR/no-lib-repo"
+NO_LIB_OUTPUT="$TEST_DIR/no-lib-output.txt"
+mkdir -p "$NO_LIB_REPO"
+git -C "$NO_LIB_REPO" init -q >/dev/null 2>&1
+git -C "$NO_LIB_REPO" config user.name "Touchstone Test"
+git -C "$NO_LIB_REPO" config user.email "touchstone@example.com"
+cat >"$NO_LIB_REPO/.codex-review.toml" <<'EOF'
+[review]
+enabled = false
+EOF
+printf 'base\n' >"$NO_LIB_REPO/example.txt"
+git -C "$NO_LIB_REPO" add .codex-review.toml example.txt
+git -C "$NO_LIB_REPO" commit -m "base" >/dev/null 2>&1
+printf 'changed\n' >>"$NO_LIB_REPO/example.txt"
+git -C "$NO_LIB_REPO" add example.txt
+git -C "$NO_LIB_REPO" commit -m "change" >/dev/null 2>&1
+
+if (
+  cd "$NO_LIB_REPO"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$NO_LIB_OUTPUT" 2>&1
+) && grep -q 'AI review disabled' "$NO_LIB_OUTPUT"; then
+  echo "==> PASS: hook parsed config without repo-local lib/toml.sh"
+else
+  echo "FAIL: hook should source lib/toml.sh relative to its install path" >&2
+  cat "$NO_LIB_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: review hook skips feature-branch pushes but runs default-branch pushes"
 cat >"$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
@@ -245,6 +276,36 @@ else
   echo "FAIL: expected nested review to be skipped" >&2
   echo "codex call count: $CODEX_CALL_COUNT" >&2
   cat "$TEST_DIR/nested-review-output.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: Conductor reviewer inherits nested review guard"
+CONDUCTOR_ENV_FILE="$TEST_DIR/conductor-env.txt"
+cat >"$FAKE_BIN/conductor" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+cat >/dev/null
+printf '%s\n' "${CODEX_REVIEW_IN_PROGRESS:-}" >"$CONDUCTOR_ENV_FILE"
+printf 'CODEX_REVIEW_CLEAN\n'
+EOF
+chmod +x "$FAKE_BIN/conductor"
+rm -f "$CONDUCTOR_ENV_FILE"
+
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CONDUCTOR_ENV_FILE="$CONDUCTOR_ENV_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TEST_DIR/conductor-env-output.txt" 2>&1
+)
+
+if [ "$(cat "$CONDUCTOR_ENV_FILE" 2>/dev/null || true)" = "1" ]; then
+  echo "==> PASS: Conductor receives CODEX_REVIEW_IN_PROGRESS=1"
+else
+  echo "FAIL: expected Conductor to inherit CODEX_REVIEW_IN_PROGRESS=1" >&2
+  cat "$TEST_DIR/conductor-env-output.txt" >&2
   ERRORS=$((ERRORS + 1))
 fi
 

@@ -833,10 +833,10 @@ sync_default_branch_after_merge
 # 6. Cortex post-merge hook (T1.9). Fires only when the project meets the
 # activation criteria documented in scripts/cortex-pr-merged-hook.sh.
 # Activation is the hook's job — we always invoke and let it self-gate.
-# The hook may produce a follow-up commit on the default branch; that
-# commit is created with --no-verify so it doesn't recurse through this
-# script's review gates. Failures inside the hook surface as visible
-# stderr; we don't fail the overall merge over a journal-write hiccup.
+# The hook may produce a follow-up journal branch/PR; the journal commit
+# is created with --no-verify so it doesn't recurse through this script's
+# review gates. Failures inside the hook surface as visible stderr; we
+# don't fail the overall merge over a journal-write hiccup.
 CORTEX_HOOK_SCRIPT=""
 for candidate_hook in \
   "$SCRIPT_DIR/cortex-pr-merged-hook.sh" \
