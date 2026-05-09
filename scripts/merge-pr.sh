@@ -511,21 +511,20 @@ post_findings_history_comment() {
   return 0
 }
 
-failed_required_checks() {
+failed_checks() {
   gh pr checks "$PR_NUMBER" \
-    --required \
     --json name,bucket,state,link \
     --template '{{range .}}{{if eq .bucket "fail"}}{{.name}}{{"\t"}}{{.state}}{{"\t"}}{{.link}}{{"\n"}}{{end}}{{end}}' \
     2>/dev/null || true
 }
 
-print_failed_required_checks_and_exit() {
+print_failed_checks_and_exit() {
   local failed_checks="$1"
   local name state link
 
   [ -n "$failed_checks" ] || return 1
 
-  echo "ERROR: PR #$PR_NUMBER has failed required check(s); stopping automerge." >&2
+  echo "ERROR: PR #$PR_NUMBER has failed check(s); stopping automerge." >&2
   while IFS="$(printf '\t')" read -r name state link || [ -n "$name" ]; do
     [ -n "$name" ] || continue
     if [ -n "$link" ]; then
@@ -534,7 +533,7 @@ print_failed_required_checks_and_exit() {
       echo "       - $name (${state:-failed})" >&2
     fi
   done <<<"$failed_checks"
-  TOUCHSTONE_MERGE_FAILURE_REASON="required-check-failed"
+  TOUCHSTONE_MERGE_FAILURE_REASON="check-failed"
   exit 1
 }
 
@@ -803,9 +802,9 @@ for attempt in 1 2 3 4 5 6 7 8 9 10; do
   if [ "$STATE" = "CLEAN" ] && [ "$MERGEABLE" = "MERGEABLE" ]; then
     break
   fi
-  FAILED_REQUIRED_CHECKS="$(failed_required_checks)"
-  if [ -n "$FAILED_REQUIRED_CHECKS" ]; then
-    print_failed_required_checks_and_exit "$FAILED_REQUIRED_CHECKS"
+  FAILED_CHECKS="$(failed_checks)"
+  if [ -n "$FAILED_CHECKS" ]; then
+    print_failed_checks_and_exit "$FAILED_CHECKS"
   fi
   if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$STATE" = "DIRTY" ] || [ "$STATE" = "BEHIND" ] || [ "$STATE" = "CONFLICTING" ]; then
     echo "ERROR: PR #$PR_NUMBER is $STATE — has conflicts or is out of date with base." >&2

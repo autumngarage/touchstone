@@ -57,10 +57,10 @@ case "${1:-} ${2:-}" in
     esac
     ;;
   "pr checks")
-    if [ -n "${GH_FAILED_REQUIRED_CHECKS:-}" ]; then
-      printf '%s\n' "$GH_FAILED_REQUIRED_CHECKS"
+    if [ -n "${GH_FAILED_CHECKS:-}" ]; then
+      printf '%s\n' "$GH_FAILED_CHECKS"
     else
-      echo "no required checks reported on the branch" >&2
+      echo "no failed checks reported on the branch" >&2
       exit 1
     fi
     ;;
@@ -218,7 +218,7 @@ reset_case_files() {
   unset TEST_CURRENT_WORKTREE
   unset GH_PR_MERGE_FAIL_LOCAL
   unset GH_MERGE_STATE
-  unset GH_FAILED_REQUIRED_CHECKS
+  unset GH_FAILED_CHECKS
   unset CODEX_REVIEW_EXIT
   unset CODEX_REVIEW_STUB_OUTPUT
   unset GIT_LOCAL_BRANCH_HEAD
@@ -238,7 +238,7 @@ run_merge_pr() {
     GH_MERGED_MARKER="$TEST_DIR/gh-merged-marker" \
     GH_PR_MERGE_FAIL_LOCAL="${GH_PR_MERGE_FAIL_LOCAL:-false}" \
     GH_MERGE_STATE="${GH_MERGE_STATE:-CLEAN MERGEABLE}" \
-    GH_FAILED_REQUIRED_CHECKS="${GH_FAILED_REQUIRED_CHECKS:-}" \
+    GH_FAILED_CHECKS="${GH_FAILED_CHECKS:-}" \
     GIT_CHECKOUT_MAIN_FILE="$TEST_DIR/git-checkout-main" \
     GIT_DETACHED_DEFAULT_FILE="$TEST_DIR/git-detached-default" \
     GIT_BRANCH_DELETED_FILE="$TEST_DIR/git-branch-deleted" \
@@ -345,22 +345,22 @@ else
   exit 1
 fi
 
-echo "==> Test: failed required checks stop merge polling before review"
+echo "==> Test: failed checks stop merge polling before review"
 reset_case_files
 if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
-  GH_FAILED_REQUIRED_CHECKS=$'API boundary protocol\tFAILURE\thttps://example.test/checks/api-boundary' \
-  run_merge_pr "$TEST_DIR/output-required-check-failed.txt" 123; then
-  echo "FAIL: merge-pr.sh unexpectedly succeeded with a failed required check" >&2
+  GH_FAILED_CHECKS=$'Issue claim check\tFAILURE\thttps://example.test/checks/claim-check' \
+  run_merge_pr "$TEST_DIR/output-check-failed.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly succeeded with a failed check" >&2
   exit 1
 fi
-if grep -q 'has failed required check(s); stopping automerge' "$TEST_DIR/output-required-check-failed.txt" \
-  && grep -q 'API boundary protocol (FAILURE): https://example.test/checks/api-boundary' "$TEST_DIR/output-required-check-failed.txt" \
+if grep -q 'has failed check(s); stopping automerge' "$TEST_DIR/output-check-failed.txt" \
+  && grep -q 'Issue claim check (FAILURE): https://example.test/checks/claim-check' "$TEST_DIR/output-check-failed.txt" \
   && [ ! -f "$TEST_DIR/codex-review.log" ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
-  echo "==> PASS: failed required checks fail fast before review"
+  echo "==> PASS: failed checks fail fast before review"
 else
-  echo "FAIL: failed required checks should stop before review/merge" >&2
-  cat "$TEST_DIR/output-required-check-failed.txt" >&2
+  echo "FAIL: failed checks should stop before review/merge" >&2
+  cat "$TEST_DIR/output-check-failed.txt" >&2
   exit 1
 fi
 
