@@ -133,6 +133,38 @@ VALIDATE_ENV_OUT="$TEST_DIR/validate-env.out"
 ) >"$VALIDATE_ENV_OUT" 2>&1
 assert_contains "$VALIDATE_ENV_OUT" 'validate.sh'
 
+echo "==> Test: feature-branch pre-push validate is cheap"
+
+FEATURE_PUSH_OUT="$TEST_DIR/feature-push-validate.out"
+FEATURE_PUSH_SENTINEL="$VALIDATE_PROJECT/nested"
+rm -rf "$FEATURE_PUSH_SENTINEL"
+(
+  cd "$VALIDATE_PROJECT"
+  TOUCHSTONE_VALIDATE_SKIP_FEATURE_PUSH=1 \
+    PRE_COMMIT=1 \
+    PRE_COMMIT_REMOTE_NAME=origin \
+    PRE_COMMIT_REMOTE_BRANCH=refs/heads/feature/test \
+    bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" validate
+) >"$FEATURE_PUSH_OUT" 2>&1
+assert_contains "$FEATURE_PUSH_OUT" 'feature-branch pre-push validate skipped'
+if [ -d "$FEATURE_PUSH_SENTINEL" ]; then
+  echo "FAIL: feature-branch pre-push validate should not run configured validate command" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: default-branch pre-push validate still runs"
+
+DEFAULT_PUSH_OUT="$TEST_DIR/default-push-validate.out"
+(
+  cd "$VALIDATE_PROJECT"
+  TOUCHSTONE_VALIDATE_SKIP_FEATURE_PUSH=1 \
+    PRE_COMMIT=1 \
+    PRE_COMMIT_REMOTE_NAME=origin \
+    PRE_COMMIT_REMOTE_BRANCH=refs/heads/main \
+    bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" validate
+) >"$DEFAULT_PUSH_OUT" 2>&1
+assert_contains "$DEFAULT_PUSH_OUT" 'validate.sh'
+
 echo "==> Test: run-script rejects projects without a version contract"
 
 UNVERSIONED_PROJECT="$TEST_DIR/unversioned-project"

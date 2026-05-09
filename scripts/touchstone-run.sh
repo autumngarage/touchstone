@@ -13,6 +13,8 @@
 set -euo pipefail
 
 ACTION="${1:-validate}"
+HOOK_PRE_COMMIT_REMOTE_BRANCH="${PRE_COMMIT_REMOTE_BRANCH:-}"
+HOOK_PRE_COMMIT_REMOTE_NAME="${PRE_COMMIT_REMOTE_NAME:-origin}"
 
 clear_git_hook_env() {
   unset GIT_DIR
@@ -23,6 +25,13 @@ clear_git_hook_env() {
   unset GIT_NAMESPACE
   unset GIT_PREFIX
   unset GIT_INTERNAL_GETTEXT_SH_SCHEME
+  unset PRE_COMMIT
+  unset PRE_COMMIT_FROM_REF
+  unset PRE_COMMIT_TO_REF
+  unset PRE_COMMIT_LOCAL_BRANCH
+  unset PRE_COMMIT_REMOTE_BRANCH
+  unset PRE_COMMIT_REMOTE_NAME
+  unset PRE_COMMIT_REMOTE_URL
 }
 
 clear_review_env() {
@@ -104,6 +113,54 @@ trim() {
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   printf '%s' "$value"
+}
+
+truthy() {
+  case "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" in
+    true | 1 | yes | on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+short_ref_name() {
+  local ref="$1"
+  local remote="${2:-origin}"
+
+  case "$ref" in
+    refs/heads/*) ref="${ref#refs/heads/}" ;;
+    refs/remotes/"$remote"/*) ref="${ref#refs/remotes/$remote/}" ;;
+    "$remote"/*) ref="${ref#"$remote/"}" ;;
+  esac
+  printf '%s' "$ref"
+}
+
+default_branch_for_remote() {
+  local remote="${1:-origin}"
+  local ref
+
+  ref="$(git symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)"
+  if [ -n "$ref" ]; then
+    printf '%s\n' "${ref#"$remote/"}"
+    return 0
+  fi
+
+  printf 'main\n'
+}
+
+should_skip_feature_push_validate() {
+  local remote_branch default_branch
+
+  truthy "${TOUCHSTONE_VALIDATE_SKIP_FEATURE_PUSH:-false}" || return 1
+  [ "$ACTION" = "validate" ] || return 1
+  [ -n "$HOOK_PRE_COMMIT_REMOTE_BRANCH" ] || return 1
+
+  remote_branch="$(short_ref_name "$HOOK_PRE_COMMIT_REMOTE_BRANCH" "$HOOK_PRE_COMMIT_REMOTE_NAME")"
+  [ -n "$remote_branch" ] || return 1
+  default_branch="$(default_branch_for_remote "$HOOK_PRE_COMMIT_REMOTE_NAME")"
+
+  [ "$remote_branch" != "$default_branch" ] \
+    && [ "$remote_branch" != "main" ] \
+    && [ "$remote_branch" != "master" ]
 }
 
 load_config() {
@@ -626,6 +683,11 @@ run_action() {
 
 run_validate() {
   local configured
+
+  if should_skip_feature_push_validate; then
+    ok "feature-branch pre-push validate skipped; merge gate runs full validation"
+    return 0
+  fi
 
   configured="$(configured_command_for_action validate)"
   if [ -n "$configured" ]; then
