@@ -608,6 +608,25 @@ write_touchstone_manifest() {
   } >"$manifest"
 }
 
+stage_touchstone_manifest_paths() {
+  local manifest="$PROJECT_DIR/.touchstone-manifest"
+  local rel_path
+
+  if [ ! -f "$manifest" ]; then
+    echo "ERROR: expected .touchstone-manifest before staging update" >&2
+    return 1
+  fi
+
+  while IFS= read -r rel_path; do
+    case "$rel_path" in
+      "" | \#*) continue ;;
+    esac
+    if [ -e "$PROJECT_DIR/$rel_path" ] || [ -L "$PROJECT_DIR/$rel_path" ]; then
+      git -C "$PROJECT_DIR" add -f -- "$rel_path"
+    fi
+  done <"$manifest"
+}
+
 # Ensure scripts are executable and write touchstone metadata.
 if [ "$DRY_RUN" = false ]; then
   if [ -d "$PROJECT_DIR/scripts" ]; then
@@ -634,8 +653,7 @@ fi
 if [ "$DRY_RUN" = false ]; then
   echo ""
   echo "==> Committing touchstone update..."
-  git -C "$PROJECT_DIR" add -A -- TOUCHSTONE.md principles scripts lib .touchstone-manifest
-  git -C "$PROJECT_DIR" add -f -- .touchstone-version
+  stage_touchstone_manifest_paths
   # If the early auto-migration rewrote .codex-review.toml, stage it so
   # the rewrite ships in the same update commit instead of dangling as
   # an unstaged diff.

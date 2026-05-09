@@ -242,6 +242,40 @@ else
 fi
 
 # --------------------------------------------------------------------------
+# Test 2c: project .gitignore rules must not prevent Touchstone-owned files
+# from being staged. Downstream repos may legitimately ignore generic names
+# like lib/ for their own build artifacts; managed Touchstone files still need
+# to ship as exact manifest entries.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 3c: Ignored Touchstone-owned paths are force-staged ---"
+
+IGNORED_MANAGED_PROJECT="$TEST_DIR/ignored-managed-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$IGNORED_MANAGED_PROJECT" --no-register >/dev/null
+configure_git "$IGNORED_MANAGED_PROJECT"
+commit_all "$IGNORED_MANAGED_PROJECT" "initial ignored-managed test project"
+printf '\nlib/\n' >>"$IGNORED_MANAGED_PROJECT/.gitignore"
+git -C "$IGNORED_MANAGED_PROJECT" rm --cached -r lib >/dev/null
+echo "0000000000000000000000000000000000000005" >"$IGNORED_MANAGED_PROJECT/.touchstone-version"
+commit_all "$IGNORED_MANAGED_PROJECT" "simulate repo ignoring Touchstone lib files"
+
+(cd "$IGNORED_MANAGED_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/update-ignored-managed-output.txt" 2>&1
+
+assert_contains "$TEST_DIR/update-ignored-managed-output.txt" 'Committed: chore: update touchstone to'
+if git -C "$IGNORED_MANAGED_PROJECT" ls-files --error-unmatch lib/preflight.sh >/dev/null 2>&1; then
+  echo "    PASS: ignored managed lib/preflight.sh was force-staged"
+else
+  echo "FAIL: ignored managed lib/preflight.sh was not tracked by update commit" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+if [ -n "$(git -C "$IGNORED_MANAGED_PROJECT" status --porcelain)" ]; then
+  echo "FAIL: ignored managed update should leave a clean worktree after committing" >&2
+  git -C "$IGNORED_MANAGED_PROJECT" status --short >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
 # Test 3: project-owned files are NOT touched.
 # --------------------------------------------------------------------------
 echo ""
