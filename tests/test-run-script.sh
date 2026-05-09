@@ -138,6 +138,7 @@ echo "==> Test: feature-branch pre-push validate is cheap"
 FEATURE_PUSH_OUT="$TEST_DIR/feature-push-validate.out"
 FEATURE_PUSH_SENTINEL="$VALIDATE_PROJECT/nested"
 rm -rf "$FEATURE_PUSH_SENTINEL"
+git -C "$VALIDATE_PROJECT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
 (
   cd "$VALIDATE_PROJECT"
   TOUCHSTONE_VALIDATE_SKIP_FEATURE_PUSH=1 \
@@ -164,6 +165,21 @@ DEFAULT_PUSH_OUT="$TEST_DIR/default-push-validate.out"
     bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" validate
 ) >"$DEFAULT_PUSH_OUT" 2>&1
 assert_contains "$DEFAULT_PUSH_OUT" 'validate.sh'
+
+echo "==> Test: unknown remote default keeps validation conservative"
+
+UNKNOWN_DEFAULT_OUT="$TEST_DIR/unknown-default-validate.out"
+rm -rf "$FEATURE_PUSH_SENTINEL"
+git -C "$VALIDATE_PROJECT" symbolic-ref --delete refs/remotes/origin/HEAD 2>/dev/null || true
+(
+  cd "$VALIDATE_PROJECT"
+  TOUCHSTONE_VALIDATE_SKIP_FEATURE_PUSH=1 \
+    PRE_COMMIT=1 \
+    PRE_COMMIT_REMOTE_NAME=origin \
+    PRE_COMMIT_REMOTE_BRANCH=refs/heads/trunk \
+    bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" validate
+) >"$UNKNOWN_DEFAULT_OUT" 2>&1
+assert_contains "$UNKNOWN_DEFAULT_OUT" 'validate.sh'
 
 echo "==> Test: run-script rejects projects without a version contract"
 

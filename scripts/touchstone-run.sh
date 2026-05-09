@@ -144,7 +144,7 @@ default_branch_for_remote() {
     return 0
   fi
 
-  printf 'main\n'
+  return 1
 }
 
 should_skip_feature_push_validate() {
@@ -156,7 +156,8 @@ should_skip_feature_push_validate() {
 
   remote_branch="$(short_ref_name "$HOOK_PRE_COMMIT_REMOTE_BRANCH" "$HOOK_PRE_COMMIT_REMOTE_NAME")"
   [ -n "$remote_branch" ] || return 1
-  default_branch="$(default_branch_for_remote "$HOOK_PRE_COMMIT_REMOTE_NAME")"
+  default_branch="$(default_branch_for_remote "$HOOK_PRE_COMMIT_REMOTE_NAME" || true)"
+  [ -n "$default_branch" ] || return 1
 
   [ "$remote_branch" != "$default_branch" ] \
     && [ "$remote_branch" != "main" ] \
