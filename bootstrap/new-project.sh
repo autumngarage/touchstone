@@ -16,7 +16,7 @@
 #   2. Copies templates, principles, hooks, and scripts into the project
 #   3. Makes scripts executable
 #   4. Writes .touchstone-version and .touchstone-manifest
-#   5. Registers the project in ~/.touchstone-projects (for sync-all.sh)
+#   5. Registers the project in ~/.touchstone-projects (for update-all)
 #   6. Prints next steps
 #
 # After running, fill in the {{PLACEHOLDERS}} in CLAUDE.md, AGENTS.md, and GEMINI.md.
@@ -1397,7 +1397,7 @@ echo "$TOUCHSTONE_SHA" >"$PROJECT_DIR/.touchstone-version"
 echo ""
 echo "==> Wrote .touchstone-version: $TOUCHSTONE_SHA"
 
-# Register in ~/.touchstone-projects for sync-all.sh.
+# Register in ~/.touchstone-projects for update-all.
 # The write is a silent side effect by default (opt-in stays default for
 # script-compat), so surface every registry outcome with an "==> " line:
 # the path we wrote to, the fact that we were already registered, or the
@@ -1575,7 +1575,7 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
   # 5. Register in ~/.touchstone-projects.
   if [ "$REGISTER_REQUESTED" = false ]; then
     echo ""
-    if [ "$(prompt_yes_no "Register for touchstone sync (~/.touchstone-projects)?" "true")" = "true" ]; then
+    if [ "$(prompt_yes_no "Register for touchstone update-all (~/.touchstone-projects)?" "true")" = "true" ]; then
       REGISTER=true
     else
       REGISTER=false

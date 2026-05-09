@@ -147,7 +147,7 @@ if [ "$OLD_SHA" = "$CURRENT_SHA" ] && [ "$NEEDS_CODEX_REVIEW_MIGRATION" = true ]
 fi
 
 if [ "$CHECK_ONLY" = true ]; then
-  echo "==> Needs sync."
+  echo "==> Needs update."
   echo "    Run: touchstone update"
   exit 0
 fi

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# tests/test-doctor.sh — fixture tests for conductor-review fail-open trends.
+# tests/test-doctor.sh — fixture tests for doctor semantics and review stats.
 #
 set -euo pipefail
 
@@ -30,13 +30,25 @@ assert_exit() {
   fi
 }
 
-run_doctor() {
+run_touchstone() {
   local fake_home="$1"
   shift
   HOME="$fake_home" \
     NO_COLOR=1 \
     TOUCHSTONE_NO_AUTO_UPDATE=1 \
-    bash "$TOUCHSTONE_BIN" doctor "$@"
+    bash "$TOUCHSTONE_BIN" "$@"
+}
+
+run_review_stats() {
+  local fake_home="$1"
+  shift
+  run_touchstone "$fake_home" review-stats "$@"
+}
+
+run_doctor() {
+  local fake_home="$1"
+  shift
+  run_touchstone "$fake_home" doctor "$@"
 }
 
 timestamp_now() {
@@ -45,20 +57,20 @@ timestamp_now() {
 
 write_row() {
   local file="$1" timestamp="$2" repo="$3" branch="$4" sha="$5" reason="$6" detail="$7"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$timestamp" "$repo" "$branch" "$sha" "$reason" "$detail" >> "$file"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$timestamp" "$repo" "$branch" "$sha" "$reason" "$detail" >>"$file"
 }
 
-echo "==> Test: touchstone doctor review-log aggregation"
+echo "==> Test: touchstone doctor and review-stats"
 echo "    Test dir: $TEST_DIR"
 
 FAKE_HOME="$TEST_DIR/home"
 mkdir -p "$FAKE_HOME"
 
 # --------------------------------------------------------------------------
-# Test 1: help preserves project capability option
+# Test 1: doctor help preserves project capability option and omits metrics
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Test 1: help documents project capability option ---"
+echo "--- Test 1: doctor help is structural ---"
 
 HELP_OUT="$TEST_DIR/help.out"
 set +e
@@ -69,16 +81,35 @@ set -e
 assert_exit "$HELP_EXIT" 0 "help"
 assert_contains "$HELP_OUT" "touchstone doctor --require-capability <name>"
 assert_contains "$HELP_OUT" "Require a project-local Touchstone workflow capability"
+if grep -Eq -- "fail-open trends|--log-path|--threshold" "$HELP_OUT"; then
+  echo "FAIL: doctor help should not expose review metrics" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 # --------------------------------------------------------------------------
-# Test 2: missing log exits 0 with friendly message
+# Test 2: doctor rejects old metrics flags
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Test 2: missing log ---"
+echo "--- Test 2: doctor metrics moved to review-stats ---"
+
+DOCTOR_METRICS_OUT="$TEST_DIR/doctor-metrics.out"
+set +e
+run_doctor "$FAKE_HOME" --log-path "$TEST_DIR/no-such-log" >"$DOCTOR_METRICS_OUT" 2>&1
+DOCTOR_METRICS_EXIT=$?
+set -e
+
+assert_exit "$DOCTOR_METRICS_EXIT" 2 "doctor metrics flags"
+assert_contains "$DOCTOR_METRICS_OUT" "review metrics moved to: touchstone review-stats"
+
+# --------------------------------------------------------------------------
+# Test 3: review-stats missing log exits 0 with friendly message
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Test 3: review-stats missing log ---"
 
 MISSING_OUT="$TEST_DIR/missing.out"
 set +e
-run_doctor "$FAKE_HOME" --log-path "$TEST_DIR/no-such-log" >"$MISSING_OUT" 2>&1
+run_review_stats "$FAKE_HOME" --log-path "$TEST_DIR/no-such-log" >"$MISSING_OUT" 2>&1
 MISSING_EXIT=$?
 set -e
 
@@ -86,16 +117,16 @@ assert_exit "$MISSING_EXIT" 0 "missing log"
 assert_contains "$MISSING_OUT" "no review log found; conductor review hasn't run on this machine yet"
 
 # --------------------------------------------------------------------------
-# Test 3: empty log exits 0 with the same friendly message
+# Test 4: empty log exits 0 with the same friendly message
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Test 3: empty log ---"
+echo "--- Test 4: review-stats empty log ---"
 
 EMPTY_LOG="$TEST_DIR/empty.log"
-: > "$EMPTY_LOG"
+: >"$EMPTY_LOG"
 EMPTY_OUT="$TEST_DIR/empty.out"
 set +e
-run_doctor "$FAKE_HOME" --log-path "$EMPTY_LOG" >"$EMPTY_OUT" 2>&1
+run_review_stats "$FAKE_HOME" --log-path "$EMPTY_LOG" >"$EMPTY_OUT" 2>&1
 EMPTY_EXIT=$?
 set -e
 
@@ -103,10 +134,10 @@ assert_exit "$EMPTY_EXIT" 0 "empty log"
 assert_contains "$EMPTY_OUT" "no review log found; conductor review hasn't run on this machine yet"
 
 # --------------------------------------------------------------------------
-# Test 4: no fail-opens reports zero rate and exits 0
+# Test 5: no fail-opens reports zero rate and exits 0
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Test 4: no fail-opens ---"
+echo "--- Test 5: review-stats no fail-opens ---"
 
 NOW="$(timestamp_now)"
 NO_FAIL_LOG="$TEST_DIR/no-fail.log"
@@ -115,7 +146,7 @@ write_row "$NO_FAIL_LOG" "$NOW" "/tmp/repo-b" "feat/x" "def5678" "ran" "clean"
 
 NO_FAIL_OUT="$TEST_DIR/no-fail.out"
 set +e
-run_doctor "$FAKE_HOME" --log-path "$NO_FAIL_LOG" >"$NO_FAIL_OUT" 2>&1
+run_review_stats "$FAKE_HOME" --log-path "$NO_FAIL_LOG" >"$NO_FAIL_OUT" 2>&1
 NO_FAIL_EXIT=$?
 set -e
 
@@ -127,10 +158,10 @@ assert_contains "$NO_FAIL_OUT" "FAIL_OPEN_TIMEOUT: 0"
 assert_contains "$NO_FAIL_OUT" "none recorded"
 
 # --------------------------------------------------------------------------
-# Test 5: mixed rows count fail-open codes and ignore disabled/skipped rows
+# Test 6: mixed rows count fail-open codes and ignore disabled/skipped rows
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Test 5: mixed events ---"
+echo "--- Test 6: review-stats mixed events ---"
 
 MIXED_LOG="$TEST_DIR/mixed.log"
 write_row "$MIXED_LOG" "2000-01-01T00:00:00+0000" "/tmp/old" "main" "0000000" "FAIL_OPEN_TIMEOUT" "too-old"
@@ -141,7 +172,7 @@ write_row "$MIXED_LOG" "$NOW" "/tmp/repo-d" "feat/c" "4444444" "config-disabled"
 
 MIXED_OUT="$TEST_DIR/mixed.out"
 set +e
-run_doctor "$FAKE_HOME" --log-path "$MIXED_LOG" --threshold 80 >"$MIXED_OUT" 2>&1
+run_review_stats "$FAKE_HOME" --log-path "$MIXED_LOG" --threshold 80 >"$MIXED_OUT" 2>&1
 MIXED_EXIT=$?
 set -e
 
@@ -154,10 +185,10 @@ assert_contains "$MIXED_OUT" "repo: /tmp/repo-c"
 assert_contains "$MIXED_OUT" "detail: fail-open:malformed sentinel"
 
 # --------------------------------------------------------------------------
-# Test 6: threshold warning exits 2
+# Test 7: threshold warning exits 2
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Test 6: threshold warning ---"
+echo "--- Test 7: review-stats threshold warning ---"
 
 THRESHOLD_LOG="$TEST_DIR/threshold.log"
 write_row "$THRESHOLD_LOG" "$NOW" "/tmp/repo-a" "main" "aaaaaaa" "ran" "clean"
@@ -165,7 +196,7 @@ write_row "$THRESHOLD_LOG" "$NOW" "/tmp/repo-b" "feat/a" "bbbbbbb" "FAIL_OPEN_RE
 
 THRESHOLD_OUT="$TEST_DIR/threshold.out"
 set +e
-run_doctor "$FAKE_HOME" --log-path "$THRESHOLD_LOG" >"$THRESHOLD_OUT" 2>&1
+run_review_stats "$FAKE_HOME" --log-path "$THRESHOLD_LOG" >"$THRESHOLD_OUT" 2>&1
 THRESHOLD_EXIT=$?
 set -e
 
@@ -175,10 +206,10 @@ assert_contains "$THRESHOLD_OUT" "FAIL_OPEN_REVIEWER_ERROR: 1"
 assert_contains "$THRESHOLD_OUT" "exceeds 25%"
 
 # --------------------------------------------------------------------------
-# Test 7: TOUCHSTONE_REVIEW_LOG env override is honored and read-only
+# Test 8: TOUCHSTONE_REVIEW_LOG env override is honored and read-only
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Test 7: env override and read-only behavior ---"
+echo "--- Test 8: review-stats env override and read-only behavior ---"
 
 ENV_LOG="$TEST_DIR/env.log"
 write_row "$ENV_LOG" "$NOW" "/tmp/repo-env" "main" "eeeeeee" "ran" "clean"
@@ -186,7 +217,7 @@ BEFORE_SUM="$(cksum "$ENV_LOG")"
 
 ENV_OUT="$TEST_DIR/env.out"
 set +e
-TOUCHSTONE_REVIEW_LOG="$ENV_LOG" run_doctor "$FAKE_HOME" >"$ENV_OUT" 2>&1
+TOUCHSTONE_REVIEW_LOG="$ENV_LOG" run_review_stats "$FAKE_HOME" >"$ENV_OUT" 2>&1
 ENV_EXIT=$?
 set -e
 AFTER_SUM="$(cksum "$ENV_LOG")"
@@ -197,6 +228,110 @@ if [ "$BEFORE_SUM" != "$AFTER_SUM" ]; then
   echo "FAIL: doctor modified the review log fixture" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+# --------------------------------------------------------------------------
+# Test 9: --require-capability implies project mode
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Test 9: doctor --require-capability implies project mode ---"
+
+CAPABILITY_PROJECT="$TEST_DIR/capability-project"
+mkdir -p "$CAPABILITY_PROJECT"
+git -C "$TOUCHSTONE_ROOT" rev-parse HEAD >"$CAPABILITY_PROJECT/.touchstone-version"
+
+CAPABILITY_OUT="$TEST_DIR/capability-doctor.out"
+set +e
+(cd "$CAPABILITY_PROJECT" && run_doctor "$FAKE_HOME" --require-capability worktree-lifecycle) >"$CAPABILITY_OUT" 2>&1
+CAPABILITY_EXIT=$?
+set -e
+
+assert_exit "$CAPABILITY_EXIT" 0 "doctor --require-capability"
+assert_contains "$CAPABILITY_OUT" "Capability 'worktree-lifecycle' is available"
+if grep -q -- "Touchstone Doctor" "$CAPABILITY_OUT"; then
+  echo "FAIL: --require-capability should not fall through to installation doctor" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
+# Test 10: bare doctor checks structural project state, not installation state
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Test 10: bare doctor recognizes modern project marker ---"
+
+MODERN_PROJECT="$TEST_DIR/modern-project"
+mkdir -p "$MODERN_PROJECT"
+git -C "$TOUCHSTONE_ROOT" rev-parse HEAD >"$MODERN_PROJECT/.touchstone-version"
+
+MODERN_DOCTOR_OUT="$TEST_DIR/modern-doctor.out"
+set +e
+(cd "$MODERN_PROJECT" && run_doctor "$FAKE_HOME") >"$MODERN_DOCTOR_OUT" 2>&1
+MODERN_DOCTOR_EXIT=$?
+set -e
+
+if [ "$MODERN_DOCTOR_EXIT" -eq 0 ]; then
+  echo "FAIL: incomplete project doctor should report missing structural pieces" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$MODERN_DOCTOR_OUT" "Touchstone Project Doctor"
+assert_contains "$MODERN_DOCTOR_OUT" ".pre-commit-config.yaml is missing"
+assert_contains "$MODERN_DOCTOR_OUT" ".touchstone-manifest missing"
+
+# --------------------------------------------------------------------------
+# Test 11: bare doctor checks structural project state, not metrics
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Test 11: bare doctor surfaces migration debt ---"
+
+LEGACY_PROJECT="$TEST_DIR/legacy-project"
+mkdir -p "$LEGACY_PROJECT"
+printf 'legacy-sha\n' >"$LEGACY_PROJECT/.toolkit-version"
+LEGACY_DOCTOR_OUT="$TEST_DIR/legacy-doctor.out"
+set +e
+(cd "$LEGACY_PROJECT" && run_doctor "$FAKE_HOME") >"$LEGACY_DOCTOR_OUT" 2>&1
+LEGACY_DOCTOR_EXIT=$?
+set -e
+
+if [ "$LEGACY_DOCTOR_EXIT" -eq 0 ]; then
+  echo "FAIL: bare doctor should fail on migration debt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$LEGACY_DOCTOR_OUT" "Legacy .toolkit-version found"
+assert_contains "$LEGACY_DOCTOR_OUT" "touchstone migrate-from-toolkit"
+if grep -Eq -- "fail-open|review log" "$LEGACY_DOCTOR_OUT"; then
+  echo "FAIL: bare doctor should not print review metrics" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
+# Test 12: doctor surfaces review config migration debt
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Test 12: doctor surfaces review config migration debt ---"
+
+REVIEW_SCHEMA_PROJECT="$TEST_DIR/review-schema-project"
+mkdir -p "$REVIEW_SCHEMA_PROJECT"
+git -C "$REVIEW_SCHEMA_PROJECT" init -q
+git -C "$REVIEW_SCHEMA_PROJECT" config user.email test@example.com
+git -C "$REVIEW_SCHEMA_PROJECT" config user.name "Touchstone Test"
+git -C "$REVIEW_SCHEMA_PROJECT" commit --allow-empty -q -m "initial"
+git -C "$TOUCHSTONE_ROOT" rev-parse HEAD >"$REVIEW_SCHEMA_PROJECT/.touchstone-version"
+cat >"$REVIEW_SCHEMA_PROJECT/.codex-review.toml" <<'EOF_REVIEW_SCHEMA'
+[review]
+reviewers = ["codex", "claude"]
+EOF_REVIEW_SCHEMA
+
+REVIEW_SCHEMA_OUT="$TEST_DIR/review-schema-doctor.out"
+set +e
+(cd "$REVIEW_SCHEMA_PROJECT" && run_doctor "$FAKE_HOME") >"$REVIEW_SCHEMA_OUT" 2>&1
+REVIEW_SCHEMA_EXIT=$?
+set -e
+
+if [ "$REVIEW_SCHEMA_EXIT" -eq 0 ]; then
+  echo "FAIL: doctor should fail on review config migration debt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$REVIEW_SCHEMA_OUT" ".codex-review.toml uses legacy 1.x review schema"
+assert_contains "$REVIEW_SCHEMA_OUT" "touchstone migrate-review-config"
 
 if [ "$ERRORS" -ne 0 ]; then
   echo ""

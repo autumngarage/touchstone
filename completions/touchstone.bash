@@ -3,7 +3,7 @@ _touchstone() {
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
-  commands="init new update sync status doctor version list unregister diff adr release preflight help"
+  commands="init new update update-all sync status doctor review-stats version list unregister diff adr release preflight help"
 
   case "$prev" in
     touchstone)
@@ -15,14 +15,17 @@ _touchstone() {
     update)
       COMPREPLY=( $(compgen -W "--dry-run --check --branch" -- "$cur") )
       ;;
-    sync)
+    update-all|sync)
       COMPREPLY=( $(compgen -W "--pull-first --check --dry-run" -- "$cur") )
       ;;
     status)
       COMPREPLY=( $(compgen -W "--all" -- "$cur") )
       ;;
     doctor)
-      COMPREPLY=( $(compgen -W "--log-path --threshold --project --installation" -- "$cur") )
+      COMPREPLY=( $(compgen -W "--project --installation --require-capability" -- "$cur") )
+      ;;
+    review-stats)
+      COMPREPLY=( $(compgen -W "--log-path --threshold" -- "$cur") )
       ;;
     unregister)
       if [ -f "$HOME/.touchstone-projects" ]; then
