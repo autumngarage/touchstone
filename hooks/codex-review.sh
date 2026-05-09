@@ -63,7 +63,7 @@
 #   CODEX_REVIEW_MAX_ITERATIONS       — fix loop cap (default: from config, or 3)
 #   CODEX_REVIEW_MAX_DIFF_LINES       — skip review if diff > this many lines (default: 5000)
 #   CODEX_REVIEW_CACHE_CLEAN          — cache exact-input clean reviews (default: true)
-#   CODEX_REVIEW_TIMEOUT              — wall-clock timeout per invocation in seconds (default: 300, 0=none)
+#   CODEX_REVIEW_TIMEOUT              — optional wall-clock timeout per invocation in seconds (default: 0, no Touchstone wrapper timeout)
 #   CODEX_REVIEW_ON_ERROR             — fail-open (default) or fail-closed
 #   CODEX_REVIEW_CONTEXT_MODE         — auto|full|bounded prompt context selection (default: auto)
 #   CODEX_REVIEW_CONTEXT_SMALL_MAX_DIFF_LINES — bounded-context diff line cap (default: 400)
@@ -367,7 +367,7 @@ NO_AUTOFIX="${CODEX_REVIEW_NO_AUTOFIX:-false}"
 CONFIG_MODE=""
 REVIEW_ENABLED="${CODEX_REVIEW_ENABLED:-true}"
 PREFLIGHT_REQUIRED=true
-REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-300}"
+REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-0}"
 ON_ERROR="${CODEX_REVIEW_ON_ERROR:-fail-open}"
 UNSAFE_PATHS=""
 REVIEWER_CASCADE=()
@@ -1372,7 +1372,9 @@ reviewer_conductor_exec() {
 
   if [ "$subcommand" = "exec" ]; then
     args+=(--tools "$tools")
-    args+=(--timeout "${CODEX_REVIEW_TIMEOUT:-300}")
+    if [ "${REVIEW_TIMEOUT:-0}" -gt 0 ] 2>/dev/null; then
+      args+=(--timeout "$REVIEW_TIMEOUT")
+    fi
     if [ -n "${REVIEW_CONDUCTOR_LOG_FILE:-}" ]; then
       args+=(--log-file "$REVIEW_CONDUCTOR_LOG_FILE")
     fi
@@ -2763,9 +2765,8 @@ run_peer_review() {
   # Peer is single-turn (no tools). `conductor call` sees the primary's
   # findings + a framing prompt; the router picks a non-primary provider.
   local peer_output peer_log_before peer_log_after
-  # ASSIST_TIMEOUT config applies via the outer run_reviewer_with_timeout
-  # wrapper when the primary timed out; peer call runs synchronously and
-  # relies on conductor's own per-provider timeout (currently 300s default).
+  # Peer call runs synchronously and relies on Conductor's own provider/stall
+  # handling; ASSIST_TIMEOUT still applies to explicit assistant loops.
   PEER_CONDUCTOR_LOG_FILE=""
   peer_log_before="$(latest_conductor_session_log)"
   peer_output="$(printf '%s' "$peer_prompt" \

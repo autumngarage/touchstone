@@ -920,6 +920,13 @@ check_mode_argv() {
     ERRORS=$((ERRORS + 1))
     return
   fi
+
+  if grep -q -- '--timeout' "$CODEX_ARGS_FILE"; then
+    echo "FAIL: expected mode $mode to omit Touchstone wrapper --timeout by default" >&2
+    cat "$CODEX_ARGS_FILE" >&2
+    ERRORS=$((ERRORS + 1))
+    return
+  fi
 }
 
 check_mode_argv "diff-only" "call" ""
@@ -928,7 +935,28 @@ check_mode_argv "no-tests" "exec" "Read,Grep,Glob,Edit,Write"
 check_mode_argv "fix" "exec" "Read,Grep,Glob,Bash,Edit,Write"
 
 if [ "$ERRORS" -eq 0 ]; then
-  echo "==> PASS: review modes preserve tools contract and omit sandbox flag"
+  echo "==> PASS: review modes preserve tools contract and omit sandbox/timeout defaults"
+fi
+
+echo "==> Test: explicit CODEX_REVIEW_TIMEOUT reaches conductor exec"
+: >"$CODEX_ARGS_FILE"
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=review-only \
+    CODEX_REVIEW_TIMEOUT=17 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
+)
+
+if grep -q -- '--timeout 17' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: explicit timeout is still forwarded to Conductor"
+else
+  echo "FAIL: expected explicit CODEX_REVIEW_TIMEOUT to become --timeout 17" >&2
+  cat "$CODEX_ARGS_FILE" >&2
+  ERRORS=$((ERRORS + 1))
 fi
 
 # ==========================================================================

@@ -34,9 +34,11 @@ safe_by_default = false
 # Override for a single run with: CODEX_REVIEW_MODE=review-only git push
 # mode = "fix"
 
-# Wall-clock timeout per reviewer invocation, in seconds. 0 = no timeout.
-# If the reviewer doesn't finish in time, the hook exits per on_error policy.
-# timeout = 300
+# Optional Touchstone wrapper wall-clock timeout per reviewer invocation, in
+# seconds. 0 = no wrapper timeout. By default Touchstone lets Conductor own
+# provider fallback and stall handling; set this only for CI/unattended runs
+# that need a hard total budget.
+# timeout = 0
 
 # What to do when the reviewer fails (crash, timeout, malformed output).
 # "fail-open"   = exit 0, allow push (default — infrastructure errors don't block)

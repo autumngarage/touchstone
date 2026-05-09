@@ -88,7 +88,7 @@ The fail-open taxonomy codes are:
 
 | Code | Cause |
 |------|-------|
-| `FAIL_OPEN_TIMEOUT` | Reviewer exceeded `CODEX_REVIEW_TIMEOUT` (default 300 s) |
+| `FAIL_OPEN_TIMEOUT` | Reviewer exceeded an explicit `CODEX_REVIEW_TIMEOUT` / `timeout` budget |
 | `FAIL_OPEN_PARSE_ERROR` | Reviewer output contained no valid sentinel line |
 | `FAIL_OPEN_DEPENDENCY_MISSING` | Conductor CLI not found on PATH |
 | `FAIL_OPEN_PROVIDER_UNAVAILABLE` | Conductor installed but no provider configured |
