@@ -26,6 +26,42 @@ touchstone_preflight_ok() { printf '  OK %s\n' "$*"; }
 touchstone_preflight_skip() { printf '  SKIP %s\n' "$*"; }
 touchstone_preflight_fail() { printf '  FAIL %s\n' "$*" >&2; }
 
+touchstone_preflight_unset_review_env() {
+  unset TOUCHSTONE_CONDUCTOR_WITH
+  unset TOUCHSTONE_CONDUCTOR_PREFER
+  unset TOUCHSTONE_CONDUCTOR_EFFORT
+  unset TOUCHSTONE_CONDUCTOR_TAGS
+  unset TOUCHSTONE_CONDUCTOR_EXCLUDE
+  unset TOUCHSTONE_REVIEWER
+  unset CODEX_REVIEW_ASSIST
+  unset CODEX_REVIEW_ASSIST_TIMEOUT
+  unset CODEX_REVIEW_ASSIST_MAX_ROUNDS
+  unset CODEX_REVIEW_BASE
+  unset CODEX_REVIEW_BRANCH_NAME
+  unset CODEX_REVIEW_CACHE_CLEAN
+  unset CODEX_REVIEW_CONTEXT_MODE
+  unset CODEX_REVIEW_CONTEXT_SMALL_MAX_DIFF_LINES
+  unset CODEX_REVIEW_CONTEXT_SMALL_MAX_FILES
+  unset CODEX_REVIEW_DISABLE_CACHE
+  unset CODEX_REVIEW_ENABLED
+  unset CODEX_REVIEW_FINDINGS_HISTORY_FILE
+  unset CODEX_REVIEW_FORCE
+  unset CODEX_REVIEW_MAX_DIFF_LINES
+  unset CODEX_REVIEW_MAX_ITERATIONS
+  unset CODEX_REVIEW_MODE
+  unset CODEX_REVIEW_NO_AUTOFIX
+  unset CODEX_REVIEW_ON_ERROR
+  unset CODEX_REVIEW_SUMMARY_FILE
+  unset CODEX_REVIEW_TIMEOUT
+}
+
+touchstone_preflight_main_sanitized() {
+  (
+    touchstone_preflight_unset_review_env
+    touchstone_preflight_main "$@"
+  )
+}
+
 touchstone_preflight_repo_root() {
   local requested="${1:-}"
   if [ -n "$requested" ]; then
