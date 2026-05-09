@@ -116,8 +116,26 @@ ROUTING_SMALL_EFFORT="minimal"
 ROUTING_SMALL_TAGS=""
 ROUTING_LARGE_WITH=""
 ROUTING_LARGE_PREFER="best"
-ROUTING_LARGE_EFFORT="high"
+ROUTING_LARGE_EFFORT="medium"
 ROUTING_LARGE_TAGS=""
+ROUTING_HIGH_RISK_WITH=""
+ROUTING_HIGH_RISK_PREFER="best"
+ROUTING_HIGH_RISK_EFFORT="high"
+ROUTING_HIGH_RISK_TAGS=""
+UNSAFE_PATHS=""
+ARCHITECTURAL_PATHS="AGENTS.md
+CLAUDE.md
+GEMINI.md
+.codex-review.toml
+.codex-review-context.md
+.github/codex-review-context.md
+.github/workflows/
+hooks/codex-review.sh
+hooks/codex-review.config.example.toml
+scripts/codex-review.sh
+architecture/
+docs/architecture/
+principles/"
 CONFIG_MODE=""
 
 strip_quotes() {
@@ -164,6 +182,7 @@ if [ -f "$CONFIG_FILE" ]; then
       "codex_review" | "")
         case "$key" in
           mode) CONFIG_MODE="$(toml_unquote "$value")" ;;
+          unsafe_paths) UNSAFE_PATHS="$(toml_normalize_array "$value" | tr ',' '\n')" ;;
         esac
         ;;
       "review.conductor")
@@ -190,6 +209,10 @@ if [ -f "$CONFIG_FILE" ]; then
           large_prefer) ROUTING_LARGE_PREFER="$(toml_unquote "$value")" ;;
           large_effort) ROUTING_LARGE_EFFORT="$(toml_unquote "$value")" ;;
           large_tags) ROUTING_LARGE_TAGS="$(toml_normalize_array "$value")" ;;
+          high_risk_with) ROUTING_HIGH_RISK_WITH="$(toml_unquote "$value")" ;;
+          high_risk_prefer) ROUTING_HIGH_RISK_PREFER="$(toml_unquote "$value")" ;;
+          high_risk_effort) ROUTING_HIGH_RISK_EFFORT="$(toml_unquote "$value")" ;;
+          high_risk_tags) ROUTING_HIGH_RISK_TAGS="$(toml_normalize_array "$value")" ;;
         esac
         ;;
     esac
@@ -255,17 +278,91 @@ if git rev-parse --verify "$BASE" >/dev/null 2>&1; then
   DIFF_LINE_COUNT="$(git diff "$BASE"..HEAD 2>/dev/null | wc -l | tr -d ' ')"
   diff_line_count_available=true
 fi
+CHANGED_PATHS="$(git diff --name-only "$BASE"..HEAD 2>/dev/null || true)"
+
+path_matches_pattern() {
+  local path="$1"
+  local pattern="$2"
+
+  [ -n "$path" ] || return 1
+  [ -n "$pattern" ] || return 1
+
+  case "$pattern" in
+    */)
+      [[ "$path" == "$pattern"* ]] && return 0
+      ;;
+    *\** | *\?* | *\[*)
+      # shellcheck disable=SC2053 # Configured patterns intentionally use globs.
+      [[ "$path" == $pattern ]] && return 0
+      ;;
+    *)
+      if [ "$path" = "$pattern" ] || [[ "$path" == "$pattern/"* ]]; then
+        return 0
+      fi
+      ;;
+  esac
+
+  return 1
+}
+
+find_path_matching_patterns() {
+  local paths="$1"
+  local patterns="$2"
+  local path pattern
+
+  [ -n "$paths" ] || return 1
+  [ -n "$patterns" ] || return 1
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    while IFS= read -r pattern; do
+      [ -n "$pattern" ] || continue
+      if path_matches_pattern "$path" "$pattern"; then
+        printf '%s (matched %s)' "$path" "$pattern"
+        return 0
+      fi
+    done <<<"$patterns"
+  done <<<"$paths"
+
+  return 1
+}
+
+find_high_risk_reason() {
+  local match
+
+  match="$(find_path_matching_patterns "$CHANGED_PATHS" "$UNSAFE_PATHS" || true)"
+  if [ -n "$match" ]; then
+    printf 'high-risk path %s' "$match"
+    return 0
+  fi
+
+  match="$(find_path_matching_patterns "$CHANGED_PATHS" "$ARCHITECTURAL_PATHS" || true)"
+  if [ -n "$match" ]; then
+    printf 'architectural path %s' "$match"
+    return 0
+  fi
+
+  return 1
+}
 
 routing_decision="default"
 routing_reason="review.routing.enabled=false"
 if [ "$ROUTING_ENABLED" = true ]; then
   routing_reason="diff line count unavailable for base $BASE"
+  risk_reason="$(find_high_risk_reason || true)"
   case "$ROUTING_SMALL_MAX_DIFF_LINES" in
     '' | *[!0-9]*)
       routing_reason="invalid review.routing.small_max_diff_lines='$ROUTING_SMALL_MAX_DIFF_LINES'"
       ;;
     *)
-      if [ "$diff_line_count_available" = true ] && [ "$DIFF_LINE_COUNT" -le "$ROUTING_SMALL_MAX_DIFF_LINES" ] 2>/dev/null; then
+      if [ "$diff_line_count_available" = true ] && [ -n "$risk_reason" ]; then
+        routing_decision="high-risk"
+        routing_reason="$risk_reason; $DIFF_LINE_COUNT diff lines"
+        [ -n "$ROUTING_HIGH_RISK_WITH" ] && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_HIGH_RISK_WITH}"
+        [ -n "$ROUTING_HIGH_RISK_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_HIGH_RISK_PREFER}"
+        [ -n "$ROUTING_HIGH_RISK_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_HIGH_RISK_EFFORT}"
+        [ -n "$ROUTING_HIGH_RISK_TAGS" ] && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_HIGH_RISK_TAGS}"
+      elif [ "$diff_line_count_available" = true ] && [ "$DIFF_LINE_COUNT" -le "$ROUTING_SMALL_MAX_DIFF_LINES" ] 2>/dev/null; then
         routing_decision="small"
         routing_reason="$DIFF_LINE_COUNT <= $ROUTING_SMALL_MAX_DIFF_LINES diff lines"
         [ -n "$ROUTING_SMALL_WITH" ] && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_SMALL_WITH}"
@@ -273,8 +370,8 @@ if [ "$ROUTING_ENABLED" = true ]; then
         [ -n "$ROUTING_SMALL_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_SMALL_EFFORT}"
         [ -n "$ROUTING_SMALL_TAGS" ] && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_SMALL_TAGS}"
       elif [ "$diff_line_count_available" = true ]; then
-        routing_decision="large"
-        routing_reason="$DIFF_LINE_COUNT > $ROUTING_SMALL_MAX_DIFF_LINES diff lines"
+        routing_decision="large-low-risk"
+        routing_reason="$DIFF_LINE_COUNT > $ROUTING_SMALL_MAX_DIFF_LINES diff lines; no high-risk paths"
         [ -n "$ROUTING_LARGE_WITH" ] && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_LARGE_WITH}"
         [ -n "$ROUTING_LARGE_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_LARGE_PREFER}"
         [ -n "$ROUTING_LARGE_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_LARGE_EFFORT}"

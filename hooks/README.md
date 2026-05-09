@@ -89,11 +89,13 @@ Conductor logs its route decision (provider, cost estimate, token count, wall-cl
 | `[review.routing].small_effort` | `"minimal"` | Thinking effort for small diffs |
 | `[review.routing].small_with` | unset | Pin provider for small diffs |
 | `[review.routing].small_tags` | unset | e.g. `"code-review"` for small diffs |
-| `[review.routing].large_prefer` | `"best"` | Routing preference for larger diffs |
-| `[review.routing].large_effort` | `"high"` | Thinking effort for larger diffs |
+| `[review.routing].large_prefer` | `"best"` | Routing preference for larger low-risk diffs |
+| `[review.routing].large_effort` | `"medium"` | Thinking effort for larger low-risk diffs |
+| `[review.routing].high_risk_prefer` | `"best"` | Routing preference when unsafe or architectural paths are touched |
+| `[review.routing].high_risk_effort` | `"high"` | Thinking effort when unsafe or architectural paths are touched |
 | `[review.routing].large_with` | unset | Pin provider for larger diffs |
 | `[review.routing].large_tags` | unset | e.g. `"code-review,long-context"` |
-| `[review.context].mode` | `"auto"` | `auto` prunes small/simple diffs; `full` always loads full project context |
+| `[review.context].mode` | `"auto"` | `auto` prunes low-risk diffs; `full` always loads full project context |
 | `[review.context].small_max_diff_lines` | 400 | Max diff lines for bounded prompt context |
 | `[review.context].small_max_files` | 4 | Max changed files for bounded prompt context |
 | `[review.context].full_context_paths` | [] | Extra path patterns that always require full `AGENTS.md`/`CLAUDE.md` context |

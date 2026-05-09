@@ -113,16 +113,17 @@ exclude = ["ollama"]
 # --------------------------------------------------------------------------
 # Routing by diff size (default)
 # --------------------------------------------------------------------------
-# Touchstone defaults to cheap + shallow review for small diffs and high-effort
-# review for larger changes. Use TOUCHSTONE_CONDUCTOR_EFFORT=max for
-# release-level scrutiny when the extra latency is intentional. Explicit
+# Touchstone defaults to cheap + shallow review for small diffs, bounded
+# medium-effort review for low-risk large diffs, and high-effort review when
+# high-risk or architectural paths are touched. Use TOUCHSTONE_CONDUCTOR_EFFORT=max
+# for release-level scrutiny when the extra latency is intentional. Explicit
 # TOUCHSTONE_CONDUCTOR_* env vars still win at invocation time, and enabled =
 # false opts out.
 #
-# Routing uses a single cutoff (small_max_diff_lines): diffs at or below it
-# go through the small_* bucket, everything above through the large_* bucket.
-# There is no separate large_max_diff_lines — setting one would be silently
-# ignored by the parser.
+# Routing uses a single cutoff (small_max_diff_lines): diffs at or below it go
+# through the small_* bucket. Any diff touching unsafe paths, built-in
+# architectural paths, or configured full-context paths uses high_risk_*.
+# Larger low-risk diffs use large_*.
 #
 # [review.routing]
 # enabled = true
@@ -130,19 +131,21 @@ exclude = ["ollama"]
 # small_prefer = "cheapest"
 # small_effort = "minimal"
 # large_prefer = "best"
-# large_effort = "high"
+# large_effort = "medium"
+# high_risk_prefer = "best"
+# high_risk_effort = "high"
 # # Optional: pin or retag either bucket.
 # # small_with = "ollama"
-# # large_tags = "code-review,long-context"
+# # high_risk_tags = "code-review,long-context"
 
 # --------------------------------------------------------------------------
 # Prompt context pruning (optional)
 # --------------------------------------------------------------------------
-# By default, small/simple diffs use a bounded prompt context instead of asking
-# the reviewer to load full AGENTS.md and CLAUDE.md. Full context is still used
-# for large diffs, broad diffs, unsafe_paths, built-in architectural files
-# (AGENTS.md, CLAUDE.md, .codex-review.toml, .github/workflows/, etc.), and
-# any project patterns listed below.
+# By default, low-risk diffs use a bounded prompt context instead of asking the
+# reviewer to load full AGENTS.md and CLAUDE.md, even when the diff is large or
+# broad. Full context is still used for unsafe_paths, built-in architectural
+# files (AGENTS.md, CLAUDE.md, .codex-review.toml, .github/workflows/, etc.),
+# and any project patterns listed below.
 #
 # [review.context]
 # mode = "auto"                  # auto | full | bounded

@@ -143,7 +143,7 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-echo "==> Test: large default route uses best/high"
+echo "==> Test: low-risk large default route uses best/medium"
 REPO_LARGE="$TEST_DIR/repo-large"
 new_repo "$REPO_LARGE"
 commit_new_file_with_diff_lines "$REPO_LARGE" 401 large.txt
@@ -152,11 +152,38 @@ commit_new_file_with_diff_lines "$REPO_LARGE" 401 large.txt
 out="$(run_review "$REPO_LARGE" --dry-run --base HEAD~1 2>&1)"
 
 if grep -q '\-\-prefer best' "$ARGS_FILE" \
-  && grep -q '\-\-effort high' "$ARGS_FILE" \
-  && echo "$out" | grep -q 'routing:     large (401 > 400 diff lines)'; then
-  echo "==> PASS: 401-line diff used large best/high bucket"
+  && grep -q '\-\-effort medium' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'routing:     large-low-risk (401 > 400 diff lines; no high-risk paths)'; then
+  echo "==> PASS: 401-line low-risk diff used large best/medium bucket"
 else
-  echo "FAIL: large diff should use large routing bucket" >&2
+  echo "FAIL: low-risk large diff should use bounded large routing bucket" >&2
+  echo "args: $(cat "$ARGS_FILE")" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ----------------------------------------------------------------------------
+echo "==> Test: high-risk large default route keeps best/high"
+REPO_HIGH_RISK="$TEST_DIR/repo-high-risk-large"
+new_repo "$REPO_HIGH_RISK"
+cat >"$REPO_HIGH_RISK/.codex-review.toml" <<'EOF'
+[codex_review]
+unsafe_paths = ["critical/"]
+EOF
+git -C "$REPO_HIGH_RISK" add .codex-review.toml
+git -C "$REPO_HIGH_RISK" commit -qm cfg
+mkdir -p "$REPO_HIGH_RISK/critical"
+commit_new_file_with_diff_lines "$REPO_HIGH_RISK" 401 critical/large.txt
+
+: >"$ARGS_FILE"
+out="$(run_review "$REPO_HIGH_RISK" --dry-run --base HEAD~1 2>&1)"
+
+if grep -q '\-\-prefer best' "$ARGS_FILE" \
+  && grep -q '\-\-effort high' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'routing:     high-risk (high-risk path critical/large.txt'; then
+  echo "==> PASS: 401-line high-risk diff kept best/high bucket"
+else
+  echo "FAIL: high-risk large diff should use high-risk routing bucket" >&2
   echo "args: $(cat "$ARGS_FILE")" >&2
   echo "out: $out" >&2
   ERRORS=$((ERRORS + 1))
