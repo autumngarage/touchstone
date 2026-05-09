@@ -6,9 +6,11 @@ _touchstone() {
     'init:Add touchstone to the current project'
     'new:Bootstrap a new project from scratch'
     'update:Create a branch and commit for touchstone updates'
-    'sync:Update all registered projects'
+    'update-all:Update all registered projects'
+    'sync:Deprecated alias for update-all'
     'status:Show project status (use --all for the registry view)'
-    'doctor:Report conductor-review fail-open trends'
+    'doctor:Check project or installation health'
+    'review-stats:Report conductor-review fail-open trends'
     'preflight:Run deterministic review preflight checks'
     'version:Show installed version'
     'list:Show registered projects'
@@ -69,10 +71,10 @@ _touchstone() {
             '--no-ship[Do not run the shipping flow]' \
             '--branch[Use a specific update branch]:branch name:'
           ;;
-        sync)
+        update-all|sync)
           _arguments \
-            '--pull-first[Pull latest touchstone before syncing]' \
-            '--check[Report which projects need sync]' \
+            '--pull-first[Pull latest touchstone before updating projects]' \
+            '--check[Report which projects need update]' \
             '--dry-run[Preview updates without applying]'
           ;;
         status)
@@ -81,10 +83,14 @@ _touchstone() {
           ;;
         doctor)
           _arguments \
-            '--log-path[Read a fixture or alternate review log]:log path:_files' \
-            '--threshold[Warn when last-7d fail-open rate exceeds this percent]:percent:' \
             '--project[Check per-project health]' \
+            '--require-capability[Require a project-local workflow capability]:capability:' \
             '--installation[Check touchstone installation health]'
+          ;;
+        review-stats)
+          _arguments \
+            '--log-path[Read a fixture or alternate review log]:log path:_files' \
+            '--threshold[Warn when last-7d fail-open rate exceeds this percent]:percent:'
           ;;
         unregister)
           # Complete from registered projects.

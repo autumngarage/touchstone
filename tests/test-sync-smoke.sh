@@ -29,6 +29,7 @@ set -u
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-sync-smoke.XXXXXX)"
+TOUCHSTONE_BIN="$TOUCHSTONE_ROOT/bin/touchstone"
 
 REAL_HOME="${HOME:-}"
 REAL_REGISTRY_FILE=""
@@ -55,6 +56,24 @@ cleanup() {
   exit "$status"
 }
 trap cleanup EXIT
+
+assert_contains() {
+  local file="$1" needle="$2"
+  if ! grep -q -- "$needle" "$file"; then
+    echo "FAIL: expected $file to contain '$needle'" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
+
+assert_not_contains() {
+  local file="$1" needle="$2"
+  if grep -q -- "$needle" "$file"; then
+    echo "FAIL: expected $file not to contain '$needle'" >&2
+    cat "$file" >&2
+    exit 1
+  fi
+}
 
 REGISTRY_SOURCE="isolated temp registry"
 if [ "${TOUCHSTONE_PROJECTS_FILE+x}" = "x" ]; then
@@ -107,6 +126,20 @@ if [ "${#PROJECTS[@]}" -eq 0 ]; then
   echo "==> Registry is empty, skipping smoke test."
   exit 0
 fi
+
+CLI_HOME="$TEST_DIR/cli-home"
+mkdir -p "$CLI_HOME"
+cp "$REGISTRY_FILE" "$CLI_HOME/.touchstone-projects"
+
+UPDATE_ALL_CHECK_OUT="$TEST_DIR/update-all-check.out"
+HOME="$CLI_HOME" NO_COLOR=1 TOUCHSTONE_NO_AUTO_UPDATE=1 \
+  bash "$TOUCHSTONE_BIN" update-all --check >"$UPDATE_ALL_CHECK_OUT" 2>&1
+assert_not_contains "$UPDATE_ALL_CHECK_OUT" "DEPRECATED"
+
+SYNC_ALIAS_CHECK_OUT="$TEST_DIR/sync-alias-check.out"
+HOME="$CLI_HOME" NO_COLOR=1 TOUCHSTONE_NO_AUTO_UPDATE=1 \
+  bash "$TOUCHSTONE_BIN" sync --check >"$SYNC_ALIAS_CHECK_OUT" 2>&1
+assert_contains "$SYNC_ALIAS_CHECK_OUT" "DEPRECATED: touchstone sync is deprecated; use touchstone update-all."
 
 TESTED=0
 WARNINGS=0

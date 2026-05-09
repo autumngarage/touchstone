@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# lib/touchstone-doctor.sh — review-log health reporting for `touchstone doctor`.
+# lib/touchstone-doctor.sh — review-log reporting for `touchstone review-stats`.
 #
 # Exit-code contract:
 #   0  report completed and the 7-day fail-open rate is within threshold
@@ -22,18 +22,29 @@ TOUCHSTONE_DOCTOR_FAIL_OPEN_CODES="FAIL_OPEN_TIMEOUT FAIL_OPEN_PARSE_ERROR FAIL_
 
 touchstone_doctor_usage() {
   cat <<'EOF'
-Usage: touchstone doctor [--log-path <path>] [--threshold <percent>]
-       touchstone doctor --project
+Usage: touchstone doctor [--project|--installation]
        touchstone doctor --require-capability <name>
-       touchstone doctor --installation
 
-  (no flag)             Report conductor-review fail-open trends from ~/.touchstone-review-log
-  --log-path <path>     Read a fixture or alternate review log (also: TOUCHSTONE_REVIEW_LOG)
-  --threshold <percent> Warn when the last-7d fail-open rate exceeds this value (default 25)
+  (no flag)             Check the current Touchstone project, or installation health outside a project
   --project             Check per-project health (hooks, manifest, registry)
   --require-capability <name>
                         Require a project-local Touchstone workflow capability
   --installation        Check touchstone installation health (CLI, tools, projects)
+
+Exit codes:
+  0  structural checks passed
+  1  broken or incomplete state
+  2  invalid arguments
+EOF
+}
+
+touchstone_review_stats_usage() {
+  cat <<'EOF'
+Usage: touchstone review-stats [--log-path <path>] [--threshold <percent>]
+
+  (no flag)             Report conductor-review fail-open trends from ~/.touchstone-review-log
+  --log-path <path>     Read a fixture or alternate review log (also: TOUCHSTONE_REVIEW_LOG)
+  --threshold <percent> Warn when the last-7d fail-open rate exceeds this value (default 25)
 
 Exit codes:
   0  report completed and no fail-open warning fired
@@ -64,20 +75,20 @@ touchstone_doctor_review_log() {
         threshold="$2"
         shift 2
         ;;
-      -h|--help)
-        touchstone_doctor_usage
+      -h | --help)
+        touchstone_review_stats_usage
         return 0
         ;;
       *)
-        echo "ERROR: unknown doctor argument '$1'" >&2
-        touchstone_doctor_usage >&2
+        echo "ERROR: unknown review-stats argument '$1'" >&2
+        touchstone_review_stats_usage >&2
         return 1
         ;;
     esac
   done
 
   case "$threshold" in
-    ''|*[!0-9]*)
+    '' | *[!0-9]*)
       echo "ERROR: --threshold must be an integer percentage (got '$threshold')" >&2
       return 1
       ;;
@@ -146,7 +157,7 @@ touchstone_doctor_parse_epoch() {
 
 touchstone_doctor_is_fail_open_code() {
   case "$1" in
-    FAIL_OPEN_TIMEOUT|FAIL_OPEN_PARSE_ERROR|FAIL_OPEN_DEPENDENCY_MISSING|FAIL_OPEN_PROVIDER_UNAVAILABLE|FAIL_OPEN_REVIEWER_ERROR)
+    FAIL_OPEN_TIMEOUT | FAIL_OPEN_PARSE_ERROR | FAIL_OPEN_DEPENDENCY_MISSING | FAIL_OPEN_PROVIDER_UNAVAILABLE | FAIL_OPEN_REVIEWER_ERROR)
       return 0
       ;;
     *)
@@ -208,7 +219,7 @@ EOF
       [ "$epoch" -ge "$cutoff_7" ] && total_7=$((total_7 + 1))
       [ "$epoch" -ge "$cutoff_30" ] && total_30=$((total_30 + 1))
     fi
-  done < "$log_path"
+  done <"$log_path"
 
   {
     if touchstone_doctor_rate_exceeds "$fail_7" "$total_7" "$threshold"; then
@@ -221,7 +232,7 @@ EOF
       "$total_7" "$fail_7" "$total_30" "$fail_30" \
       "$recent_timestamp" "$recent_code" "$recent_repo" "$recent_branch" "$recent_sha" "$recent_detail" \
       "$malformed"
-  } > "$report_file"
+  } >"$report_file"
 }
 
 touchstone_doctor_rate_exceeds() {

@@ -5,7 +5,7 @@
 # Run this after cloning the repo:
 #   bash setup.sh
 #
-# Installs all dev tools, syncs touchstone files, sets up hooks, and installs
+# Installs all dev tools, checks touchstone files, sets up hooks, and installs
 # project dependencies. Idempotent — safe to re-run anytime.
 #
 set -euo pipefail
@@ -17,21 +17,27 @@ YELLOW='\033[0;33m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
-info()  { printf "${BOLD}==> %s${RESET}\n" "$*"; }
-ok()    { printf "  ${GREEN}✓${RESET} %s\n" "$*"; }
-warn()  { printf "  ${YELLOW}!${RESET} %s\n" "$*"; }
-fail()  { printf "  ${RED}✗${RESET} %s\n" "$*"; }
+info() { printf "${BOLD}==> %s${RESET}\n" "$*"; }
+ok() { printf "  ${GREEN}✓${RESET} %s\n" "$*"; }
+warn() { printf "  ${YELLOW}!${RESET} %s\n" "$*"; }
+fail() { printf "  ${RED}✗${RESET} %s\n" "$*"; }
 
 DEPS_ONLY=false
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --deps-only) DEPS_ONLY=true; shift ;;
-    -h|--help)
+    --deps-only)
+      DEPS_ONLY=true
+      shift
+      ;;
+    -h | --help)
       echo "Usage: bash setup.sh [--deps-only]"
       exit 0
       ;;
-    *) fail "Unknown argument: $1"; exit 1 ;;
+    *)
+      fail "Unknown argument: $1"
+      exit 1
+      ;;
   esac
 done
 
@@ -42,253 +48,255 @@ echo ""
 
 if [ "$DEPS_ONLY" = false ]; then
 
-# --------------------------------------------------------------------------
-# 1. Homebrew (required foundation)
-# --------------------------------------------------------------------------
-info "Checking Homebrew"
-if command -v brew >/dev/null 2>&1; then
-  ok "brew installed"
-else
-  fail "Homebrew is required. Install from https://brew.sh"
-  exit 1
-fi
-
-# --------------------------------------------------------------------------
-# 2. Touchstone CLI
-# --------------------------------------------------------------------------
-info "Checking touchstone"
-if command -v touchstone >/dev/null 2>&1; then
-  TOUCHSTONE_VERSION_SUMMARY="$(touchstone version 2>&1 | awk 'NF && !seen { sub(/^touchstone /, ""); print; seen = 1 }')"
-  ok "touchstone ${TOUCHSTONE_VERSION_SUMMARY:-installed}"
-else
-  warn "Installing touchstone..."
-  brew tap autumngarage/touchstone 2>/dev/null || true
-  brew install touchstone
-  ok "touchstone installed"
-fi
-
-# --------------------------------------------------------------------------
-# 3. Dev tools (brew)
-# --------------------------------------------------------------------------
-info "Checking dev tools"
-
-brew_install_if_missing() {
-  local cmd="$1"
-  local formula="${2:-$1}"
-  if command -v "$cmd" >/dev/null 2>&1; then
-    ok "$cmd installed"
+  # --------------------------------------------------------------------------
+  # 1. Homebrew (required foundation)
+  # --------------------------------------------------------------------------
+  info "Checking Homebrew"
+  if command -v brew >/dev/null 2>&1; then
+    ok "brew installed"
   else
-    warn "Installing $formula..."
-    brew install "$formula" 2>/dev/null
-    ok "$cmd installed"
+    fail "Homebrew is required. Install from https://brew.sh"
+    exit 1
   fi
-}
 
-brew_install_if_missing "git"        "git"
-brew_install_if_missing "gh"         "gh"
-brew_install_if_missing "pre-commit" "pre-commit"
-brew_install_if_missing "gitleaks"   "gitleaks"
-brew_install_if_missing "shellcheck" "shellcheck"
-brew_install_if_missing "shfmt"      "shfmt"
+  # --------------------------------------------------------------------------
+  # 2. Touchstone CLI
+  # --------------------------------------------------------------------------
+  info "Checking touchstone"
+  if command -v touchstone >/dev/null 2>&1; then
+    TOUCHSTONE_VERSION_SUMMARY="$(touchstone version 2>&1 | awk 'NF && !seen { sub(/^touchstone /, ""); print; seen = 1 }')"
+    ok "touchstone ${TOUCHSTONE_VERSION_SUMMARY:-installed}"
+  else
+    warn "Installing touchstone..."
+    brew tap autumngarage/touchstone 2>/dev/null || true
+    brew install touchstone
+    ok "touchstone installed"
+  fi
 
-# --------------------------------------------------------------------------
-# 4. AI reviewer CLI (optional)
-# --------------------------------------------------------------------------
-info "Checking AI reviewer"
+  # --------------------------------------------------------------------------
+  # 3. Dev tools (brew)
+  # --------------------------------------------------------------------------
+  info "Checking dev tools"
 
-AI_REVIEW_ENABLED=true
-AI_REVIEWERS=()
-AI_LOCAL_REVIEW_COMMAND=""
-AI_CONDUCTOR_WITH=""
-
-trim_review_value() {
-  local value="$1"
-  value="${value#"${value%%[![:space:]]*}"}"
-  value="${value%"${value##*[![:space:]]}"}"
-  value="${value%,}"
-  value="${value#\"}"; value="${value%\"}"
-  value="${value#\'}"; value="${value%\'}"
-  printf '%s' "$value"
-}
-
-add_reviewers_from_csv() {
-  local csv="$1" item
-  local -a items=()
-  csv="$(trim_review_value "$csv")"
-  csv="${csv#\[}"
-  csv="${csv%\]}"
-  IFS=',' read -r -a items <<< "$csv"
-  for item in "${items[@]}"; do
-    item="$(trim_review_value "$item")"
-    [ -n "$item" ] && AI_REVIEWERS+=("$item")
-  done
-}
-
-load_ai_review_config() {
-  local section="" line key value
-
-  [ -f ".codex-review.toml" ] || {
-    AI_REVIEWERS=("conductor")
-    return 0
+  brew_install_if_missing() {
+    local cmd="$1"
+    local formula="${2:-$1}"
+    if command -v "$cmd" >/dev/null 2>&1; then
+      ok "$cmd installed"
+    else
+      warn "Installing $formula..."
+      brew install "$formula" 2>/dev/null
+      ok "$cmd installed"
+    fi
   }
 
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%%#*}"
-    line="$(trim_review_value "$line")"
-    [ -z "$line" ] && continue
+  brew_install_if_missing "git" "git"
+  brew_install_if_missing "gh" "gh"
+  brew_install_if_missing "pre-commit" "pre-commit"
+  brew_install_if_missing "gitleaks" "gitleaks"
+  brew_install_if_missing "shellcheck" "shellcheck"
+  brew_install_if_missing "shfmt" "shfmt"
 
-    case "$line" in
-      \[*\])
-        section="${line#\[}"
-        section="${section%\]}"
-        continue
-        ;;
-    esac
+  # --------------------------------------------------------------------------
+  # 4. AI reviewer CLI (optional)
+  # --------------------------------------------------------------------------
+  info "Checking AI reviewer"
 
-    case "$line" in *=*) ;; *) continue ;; esac
-    key="$(trim_review_value "${line%%=*}")"
-    value="$(trim_review_value "${line#*=}")"
+  AI_REVIEW_ENABLED=true
+  AI_REVIEWERS=()
+  AI_LOCAL_REVIEW_COMMAND=""
+  AI_CONDUCTOR_WITH=""
 
-    if [ "$section" = "review" ]; then
-      case "$key" in
-        enabled) AI_REVIEW_ENABLED="$value" ;;
-        reviewer) [ -n "$value" ] && AI_REVIEWERS+=("$value") ;;
-        reviewers) add_reviewers_from_csv "${line#*=}" ;;
+  trim_review_value() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    value="${value%,}"
+    value="${value#\"}"
+    value="${value%\"}"
+    value="${value#\'}"
+    value="${value%\'}"
+    printf '%s' "$value"
+  }
+
+  add_reviewers_from_csv() {
+    local csv="$1" item
+    local -a items=()
+    csv="$(trim_review_value "$csv")"
+    csv="${csv#\[}"
+    csv="${csv%\]}"
+    IFS=',' read -r -a items <<<"$csv"
+    for item in "${items[@]}"; do
+      item="$(trim_review_value "$item")"
+      [ -n "$item" ] && AI_REVIEWERS+=("$item")
+    done
+  }
+
+  load_ai_review_config() {
+    local section="" line key value
+
+    [ -f ".codex-review.toml" ] || {
+      AI_REVIEWERS=("conductor")
+      return 0
+    }
+
+    while IFS= read -r line || [ -n "$line" ]; do
+      line="${line%%#*}"
+      line="$(trim_review_value "$line")"
+      [ -z "$line" ] && continue
+
+      case "$line" in
+        \[*\])
+          section="${line#\[}"
+          section="${section%\]}"
+          continue
+          ;;
       esac
-    elif [ "$section" = "review.conductor" ]; then
-      case "$key" in
-        with) AI_CONDUCTOR_WITH="$value" ;;
-      esac
-    elif [ "$section" = "review.local" ]; then
-      case "$key" in
-        command) AI_LOCAL_REVIEW_COMMAND="$value" ;;
-      esac
+
+      case "$line" in *=*) ;; *) continue ;; esac
+      key="$(trim_review_value "${line%%=*}")"
+      value="$(trim_review_value "${line#*=}")"
+
+      if [ "$section" = "review" ]; then
+        case "$key" in
+          enabled) AI_REVIEW_ENABLED="$value" ;;
+          reviewer) [ -n "$value" ] && AI_REVIEWERS+=("$value") ;;
+          reviewers) add_reviewers_from_csv "${line#*=}" ;;
+        esac
+      elif [ "$section" = "review.conductor" ]; then
+        case "$key" in
+          with) AI_CONDUCTOR_WITH="$value" ;;
+        esac
+      elif [ "$section" = "review.local" ]; then
+        case "$key" in
+          command) AI_LOCAL_REVIEW_COMMAND="$value" ;;
+        esac
+      fi
+    done <".codex-review.toml"
+
+    if [ "${#AI_REVIEWERS[@]}" -eq 0 ] && [ "$AI_REVIEW_ENABLED" != "false" ]; then
+      AI_REVIEWERS=("conductor")
     fi
-  done < ".codex-review.toml"
+  }
 
-  if [ "${#AI_REVIEWERS[@]}" -eq 0 ] && [ "$AI_REVIEW_ENABLED" != "false" ]; then
-    AI_REVIEWERS=("conductor")
-  fi
-}
+  check_ai_reviewer() {
+    local reviewer="$1"
 
-check_ai_reviewer() {
-  local reviewer="$1"
-
-  case "$reviewer" in
-    conductor)
-      if command -v conductor >/dev/null 2>&1; then
-        if conductor doctor --json 2>/dev/null | grep -q '"configured"[[:space:]]*:[[:space:]]*true'; then
-          if [ -n "$AI_CONDUCTOR_WITH" ]; then
-            ok "conductor installed and configured (pinned provider: $AI_CONDUCTOR_WITH)"
+    case "$reviewer" in
+      conductor)
+        if command -v conductor >/dev/null 2>&1; then
+          if conductor doctor --json 2>/dev/null | grep -q '"configured"[[:space:]]*:[[:space:]]*true'; then
+            if [ -n "$AI_CONDUCTOR_WITH" ]; then
+              ok "conductor installed and configured (pinned provider: $AI_CONDUCTOR_WITH)"
+            else
+              ok "conductor installed and configured"
+            fi
           else
-            ok "conductor installed and configured"
+            warn "conductor installed but no provider is configured. Run: conductor init"
           fi
         else
-          warn "conductor installed but no provider is configured. Run: conductor init"
+          warn "conductor reviewer selected, but Conductor CLI is not installed. Run: brew install autumngarage/conductor/conductor && conductor init"
         fi
-      else
-        warn "conductor reviewer selected, but Conductor CLI is not installed. Run: brew install autumngarage/conductor/conductor && conductor init"
-      fi
-      ;;
-    codex)
-      if command -v codex >/dev/null 2>&1; then
-        if codex login status >/dev/null 2>&1; then
-          ok "codex installed and authenticated"
+        ;;
+      codex)
+        if command -v codex >/dev/null 2>&1; then
+          if codex login status >/dev/null 2>&1; then
+            ok "codex installed and authenticated"
+          else
+            warn "codex installed but not logged in. Run: codex login"
+          fi
+        elif command -v npm >/dev/null 2>&1; then
+          warn "Installing Codex CLI..."
+          npm install -g @openai/codex 2>/dev/null && ok "codex installed — run: codex login" || warn "codex install failed. Manual install: npm install -g @openai/codex"
         else
-          warn "codex installed but not logged in. Run: codex login"
+          warn "codex not installed. Install Node.js/npm first, then: npm install -g @openai/codex && codex login"
         fi
-      elif command -v npm >/dev/null 2>&1; then
-        warn "Installing Codex CLI..."
-        npm install -g @openai/codex 2>/dev/null && ok "codex installed — run: codex login" || warn "codex install failed. Manual install: npm install -g @openai/codex"
-      else
-        warn "codex not installed. Install Node.js/npm first, then: npm install -g @openai/codex && codex login"
-      fi
-      ;;
-    claude)
-      if command -v claude >/dev/null 2>&1; then
-        if claude auth status >/dev/null 2>&1; then
-          ok "claude installed and authenticated"
+        ;;
+      claude)
+        if command -v claude >/dev/null 2>&1; then
+          if claude auth status >/dev/null 2>&1; then
+            ok "claude installed and authenticated"
+          else
+            warn "claude installed but auth check failed. Authenticate Claude before relying on review."
+          fi
         else
-          warn "claude installed but auth check failed. Authenticate Claude before relying on review."
+          warn "claude reviewer selected, but Claude CLI is not installed."
         fi
-      else
-        warn "claude reviewer selected, but Claude CLI is not installed."
-      fi
-      ;;
-    gemini)
-      if command -v gemini >/dev/null 2>&1; then
-        if [ -n "${GEMINI_API_KEY:-}" ] || { command -v gcloud >/dev/null 2>&1 && gcloud auth print-access-token >/dev/null 2>&1; }; then
-          ok "gemini installed and authenticated"
+        ;;
+      gemini)
+        if command -v gemini >/dev/null 2>&1; then
+          if [ -n "${GEMINI_API_KEY:-}" ] || { command -v gcloud >/dev/null 2>&1 && gcloud auth print-access-token >/dev/null 2>&1; }; then
+            ok "gemini installed and authenticated"
+          else
+            warn "gemini installed but auth is not configured. Set GEMINI_API_KEY or authenticate gcloud."
+          fi
         else
-          warn "gemini installed but auth is not configured. Set GEMINI_API_KEY or authenticate gcloud."
+          warn "gemini reviewer selected, but Gemini CLI is not installed."
         fi
-      else
-        warn "gemini reviewer selected, but Gemini CLI is not installed."
-      fi
-      ;;
-    local)
-      if [ -n "$AI_LOCAL_REVIEW_COMMAND" ]; then
-        ok "local reviewer configured: $AI_LOCAL_REVIEW_COMMAND"
-      else
-        warn "local reviewer selected, but [review.local].command is empty in .codex-review.toml"
-      fi
-      ;;
-    *)
-      warn "unknown AI reviewer '$reviewer' in .codex-review.toml"
-      ;;
-  esac
-}
+        ;;
+      local)
+        if [ -n "$AI_LOCAL_REVIEW_COMMAND" ]; then
+          ok "local reviewer configured: $AI_LOCAL_REVIEW_COMMAND"
+        else
+          warn "local reviewer selected, but [review.local].command is empty in .codex-review.toml"
+        fi
+        ;;
+      *)
+        warn "unknown AI reviewer '$reviewer' in .codex-review.toml"
+        ;;
+    esac
+  }
 
-load_ai_review_config
-if [ "$AI_REVIEW_ENABLED" = "false" ]; then
-  ok "AI review disabled in .codex-review.toml"
-else
-  for reviewer in "${AI_REVIEWERS[@]}"; do
-    check_ai_reviewer "$reviewer"
-  done
-fi
+  load_ai_review_config
+  if [ "$AI_REVIEW_ENABLED" = "false" ]; then
+    ok "AI review disabled in .codex-review.toml"
+  else
+    for reviewer in "${AI_REVIEWERS[@]}"; do
+      check_ai_reviewer "$reviewer"
+    done
+  fi
 
-# --------------------------------------------------------------------------
-# 5. Sync touchstone files to latest
-# --------------------------------------------------------------------------
-info "Syncing touchstone files"
-# Skip update if this IS the Touchstone repo (it's the source, not a downstream project).
-if [ -f "bin/touchstone" ] && [ -f "lib/auto-update.sh" ]; then
-  ok "this is the Touchstone repo — skipping self-update"
-elif [ -f ".touchstone-version" ]; then
-  touchstone update --check 2>&1 | grep -E "Already|Needs sync|Run: touchstone update" | head -5 | while read -r line; do
-    ok "$line"
-  done
-  ok "touchstone sync status checked"
-else
-  warn "No .touchstone-version found — this project hasn't been bootstrapped."
-  warn "Run: touchstone new $(pwd)"
-fi
+  # --------------------------------------------------------------------------
+  # 5. Sync touchstone files to latest
+  # --------------------------------------------------------------------------
+  info "Checking touchstone files"
+  # Skip update if this IS the Touchstone repo (it's the source, not a downstream project).
+  if [ -f "bin/touchstone" ] && [ -f "lib/auto-update.sh" ]; then
+    ok "this is the Touchstone repo — skipping self-update"
+  elif [ -f ".touchstone-version" ]; then
+    touchstone update --check 2>&1 | grep -E "Already|Needs update|Run: touchstone update" | head -5 | while read -r line; do
+      ok "$line"
+    done
+    ok "touchstone update status checked"
+  else
+    warn "No .touchstone-version found — this project hasn't been bootstrapped."
+    warn "Run: touchstone new $(pwd)"
+  fi
 
-# --------------------------------------------------------------------------
-# 6. Pre-commit hooks
-# --------------------------------------------------------------------------
-info "Setting up git hooks"
-if [ -f ".pre-commit-config.yaml" ]; then
-  # Clear core.hooksPath if set — it conflicts with pre-commit.
-  git config --unset-all core.hooksPath 2>/dev/null || true
-  # Install hook shims (environments install lazily on first run).
-  pre-commit install 2>&1 | tail -1 | while read -r line; do ok "$line"; done
-  pre-commit install --hook-type pre-push 2>&1 | tail -1 | while read -r line; do ok "$line"; done
-  ok "pre-commit hooks installed (pre-commit, pre-push)"
-else
-  warn "No .pre-commit-config.yaml found — skipping hooks"
-fi
+  # --------------------------------------------------------------------------
+  # 6. Pre-commit hooks
+  # --------------------------------------------------------------------------
+  info "Setting up git hooks"
+  if [ -f ".pre-commit-config.yaml" ]; then
+    # Clear core.hooksPath if set — it conflicts with pre-commit.
+    git config --unset-all core.hooksPath 2>/dev/null || true
+    # Install hook shims (environments install lazily on first run).
+    pre-commit install 2>&1 | tail -1 | while read -r line; do ok "$line"; done
+    pre-commit install --hook-type pre-push 2>&1 | tail -1 | while read -r line; do ok "$line"; done
+    ok "pre-commit hooks installed (pre-commit, pre-push)"
+  else
+    warn "No .pre-commit-config.yaml found — skipping hooks"
+  fi
 
-# --------------------------------------------------------------------------
-# 7. gh CLI auth check
-# --------------------------------------------------------------------------
-info "Checking GitHub auth"
-if gh auth status 2>&1 | grep -q "Logged in"; then
-  ok "gh authenticated"
-else
-  warn "gh not authenticated. Run: gh auth login"
-fi
+  # --------------------------------------------------------------------------
+  # 7. gh CLI auth check
+  # --------------------------------------------------------------------------
+  info "Checking GitHub auth"
+  if gh auth status 2>&1 | grep -q "Logged in"; then
+    ok "gh authenticated"
+  else
+    warn "gh not authenticated. Run: gh auth login"
+  fi
 
 fi
 

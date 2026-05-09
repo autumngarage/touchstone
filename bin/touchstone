@@ -15,13 +15,15 @@
 #   touchstone update --dry-run           Show what would change without applying
 #   touchstone update --check             Report whether current project needs update
 #   touchstone update --ship              Push, open PR, review, and auto-merge
-#   touchstone sync                       Update all registered projects
-#   touchstone sync --pull-first          Pull latest touchstone, then sync all projects
+#   touchstone update-all                 Update all registered projects
+#   touchstone update-all --pull-first    Pull latest touchstone, then update all projects
+#   touchstone sync                       Deprecated alias for update-all
 #   touchstone status [--json]            Show status of the current project
 #   touchstone status --all               Show version distribution across registered projects
 #   touchstone version                    Show installed version
 #   touchstone --version                  Show installed version
-#   touchstone doctor                     Report conductor-review fail-open trends
+#   touchstone doctor                     Check project or installation health
+#   touchstone review-stats               Report conductor-review fail-open trends
 #   touchstone help                       Show this help
 #
 # Install:
@@ -271,6 +273,10 @@ cmd_update() {
   exec bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" "$@"
 }
 
+cmd_update_all() {
+  exec bash "$TOUCHSTONE_ROOT/bootstrap/sync-all.sh" "$@"
+}
+
 cmd_migrate_from_toolkit() {
   exec bash "$TOUCHSTONE_ROOT/bootstrap/migrate-from-toolkit.sh" "$@"
 }
@@ -284,7 +290,8 @@ cmd_review() {
 }
 
 cmd_sync() {
-  exec bash "$TOUCHSTONE_ROOT/bootstrap/sync-all.sh" "$@"
+  echo "DEPRECATED: touchstone sync is deprecated; use touchstone update-all." >&2
+  cmd_update_all "$@"
 }
 
 cmd_run() {
@@ -564,7 +571,7 @@ cmd_status() {
 
 cmd_doctor_project() {
   local project_dir issues=0
-  project_dir="$(pwd)"
+  project_dir="$(touchstone_find_project_root 2>/dev/null || pwd)"
 
   tk_header "Touchstone Project Doctor — $(basename "$project_dir")"
 
@@ -679,19 +686,26 @@ cmd_doctor_project() {
     fi
   fi
 
-  # 5. Registered in ~/.touchstone-projects?  Informational — 'touchstone sync'
+  # 5. Registered in ~/.touchstone-projects?  Informational — 'touchstone update-all'
   # and 'touchstone list' depend on it, but the repo is still functionally gated.
   local projects_file="$HOME/.touchstone-projects"
   if [ -f "$projects_file" ] && grep -qxF "$project_dir" "$projects_file" 2>/dev/null; then
     tk_ok "registered in ~/.touchstone-projects"
   else
-    tk_dim "not in ~/.touchstone-projects (touchstone sync won't update this project)"
+    tk_dim "not in ~/.touchstone-projects (touchstone update-all won't update this project)"
     tk_dim "  Fix: echo \"$project_dir\" >> $projects_file"
   fi
 
   # 6. Optional — Codex review config present?
   if [ -f "$project_dir/.codex-review.toml" ]; then
     tk_ok ".codex-review.toml present"
+    if grep -qE '^[[:space:]]*reviewers[[:space:]]*=[[:space:]]*\[' "$project_dir/.codex-review.toml" \
+       || grep -qE '^\[review\.(local|assist)\]' "$project_dir/.codex-review.toml" \
+       || grep -qE '^[[:space:]]*(small|large)_reviewers[[:space:]]*=[[:space:]]*\[' "$project_dir/.codex-review.toml"; then
+      tk_warn ".codex-review.toml uses legacy 1.x review schema"
+      tk_dim "  Fix: touchstone migrate-review-config"
+      issues=$((issues + 1))
+    fi
   else
     tk_dim ".codex-review.toml not found (optional — configures AI review)"
   fi
@@ -1094,14 +1108,17 @@ cmd_doctor() {
   local required_capability=""
 
   if [ "$#" -eq 0 ]; then
-    touchstone_doctor_review_log
-    return $?
+    if touchstone_find_project_root >/dev/null 2>&1 || [ -f "$(pwd)/.touchstone-version" ] || [ -f "$(pwd)/.toolkit-version" ]; then
+      project_mode=true
+    else
+      installation_mode=true
+    fi
   fi
 
   case "${1:-}" in
     --log-path|--threshold)
-      touchstone_doctor_review_log "$@"
-      return $?
+      echo "ERROR: review metrics moved to: touchstone review-stats" >&2
+      return 2
       ;;
   esac
 
@@ -1126,17 +1143,17 @@ cmd_doctor() {
     esac
   done
 
+  if [ "$project_mode" = true ] && [ "$installation_mode" = true ]; then
+    echo "ERROR: use only one of --project or --installation" >&2
+    return 2
+  fi
+
   if [ "$project_mode" = true ]; then
     if [ -n "$required_capability" ]; then
-      status_require_project_capability "$(pwd)" "$required_capability"
+      status_require_project_capability "$(touchstone_find_project_root 2>/dev/null || pwd)" "$required_capability"
       return $?
     fi
     cmd_doctor_project
-    return $?
-  fi
-
-  if [ "$installation_mode" != true ]; then
-    touchstone_doctor_review_log
     return $?
   fi
 
@@ -1210,7 +1227,7 @@ cmd_doctor() {
         if [ "$(_status_behind_count "$proj_version" "$current_id")" = "current" ]; then
           tk_ok "$name — up to date"
         else
-          tk_warn "$name — needs sync (run: touchstone sync)"
+          tk_warn "$name — needs update (run: touchstone update-all)"
           issues=$((issues + 1))
         fi
       else
@@ -1242,10 +1259,17 @@ cmd_doctor() {
   echo ""
   if [ "$issues" -eq 0 ]; then
     tk_ok "All good."
+    echo ""
+    return 0
   else
     tk_warn "$issues issue(s) found."
+    echo ""
+    return 1
   fi
-  echo ""
+}
+
+cmd_review_stats() {
+  touchstone_doctor_review_log "$@"
 }
 
 cmd_list() {
@@ -1271,7 +1295,7 @@ cmd_list() {
       if [ "$(_status_behind_count "$proj_version" "$current_id")" = "current" ]; then
         tk_ok "$name  ${DIM}$project_dir${RESET}"
       else
-        tk_warn "$name  ${DIM}$project_dir${RESET}  ${YELLOW}(needs sync)${RESET}"
+        tk_warn "$name  ${DIM}$project_dir${RESET}  ${YELLOW}(needs update)${RESET}"
       fi
     else
       tk_fail "$name  ${DIM}$project_dir${RESET}  ${RED}(not found)${RESET}"
@@ -1619,9 +1643,10 @@ cmd_help() {
   printf "    ${BOLD}touchstone migrate-from-toolkit${RESET}   One-shot rename of legacy .toolkit-* files (pre-1.0.0 projects)\n"
   printf "    ${BOLD}touchstone migrate-review-config${RESET}  Rewrite .codex-review.toml from 1.x → 2.0 shape (silences migration warnings on push)\n"
   printf "    ${BOLD}touchstone review --dry-run${RESET}      Preview which provider would review the next push, no tokens spent\n"
-  printf "    ${BOLD}touchstone sync${RESET}                   Update all registered projects\n"
-  printf "    ${BOLD}touchstone sync${RESET} --check           Report which projects need sync\n"
-  printf "    ${BOLD}touchstone sync${RESET} --pull-first      Pull latest touchstone first\n"
+  printf "    ${BOLD}touchstone update-all${RESET}             Update all registered projects\n"
+  printf "    ${BOLD}touchstone update-all${RESET} --check     Report which projects need update\n"
+  printf "    ${BOLD}touchstone update-all${RESET} --pull-first Pull latest touchstone first\n"
+  printf "    ${BOLD}touchstone sync${RESET}                   Deprecated alias for update-all\n"
   printf "    ${BOLD}touchstone diff${RESET}                   Compare project files vs templates\n"
   printf "    ${BOLD}touchstone adr${RESET} \"Title\"            Create an Architecture Decision Record\n"
   printf "    ${BOLD}touchstone adr${RESET} list               List all ADRs\n"
@@ -1633,9 +1658,10 @@ cmd_help() {
   printf "    ${BOLD}touchstone status${RESET} --all           Version distribution across registered projects\n"
   echo ""
   echo "  ${BOLD}Touchstone commands:${RESET}"
-  printf "    ${BOLD}touchstone doctor${RESET}                 Report conductor-review fail-open trends\n"
+  printf "    ${BOLD}touchstone doctor${RESET}                 Check project or installation health\n"
   printf "    ${BOLD}touchstone doctor${RESET} --project       Check per-project health (hooks, manifest, registry)\n"
   printf "    ${BOLD}touchstone doctor${RESET} --installation  Check installation health\n"
+  printf "    ${BOLD}touchstone review-stats${RESET}           Report conductor-review fail-open trends\n"
   printf "    ${BOLD}touchstone version${RESET}                Show installed version\n"
   printf "    ${BOLD}touchstone changelog${RESET} [N]          Show last N releases (default 10)\n"
   printf "    ${BOLD}touchstone skills${RESET}                 List Claude Code skills\n"
@@ -1676,6 +1702,7 @@ case "$COMMAND" in
   worker)      cmd_worker "$@" ;;
   detect)       cmd_detect ;;
   update)       cmd_update "$@" ;;
+  update-all)   cmd_update_all "$@" ;;
   migrate-from-toolkit) cmd_migrate_from_toolkit "$@" ;;
   migrate-review-config) cmd_migrate_review_config "$@" ;;
   review)       cmd_review "$@" ;;
@@ -1690,6 +1717,7 @@ case "$COMMAND" in
   release)      cmd_release "$@" ;;
   version|--version) cmd_version ;;
   doctor)       cmd_doctor "$@" ;;
+  review-stats) cmd_review_stats "$@" ;;
   help|-h|--help) cmd_help ;;
   *)
     printf "${RED}Unknown command: $COMMAND${RESET}\n" >&2

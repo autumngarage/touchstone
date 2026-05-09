@@ -468,7 +468,7 @@ commit_all "$CHECK_PROJECT" "simulate old check project"
 CHECK_BRANCH="$(git -C "$CHECK_PROJECT" rev-parse --abbrev-ref HEAD)"
 
 (cd "$CHECK_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) >"$TEST_DIR/check-output.txt" 2>&1
-assert_contains "$TEST_DIR/check-output.txt" 'Needs sync'
+assert_contains "$TEST_DIR/check-output.txt" 'Needs update'
 assert_contains "$TEST_DIR/check-output.txt" 'Run: touchstone update'
 
 if [ "$(git -C "$CHECK_PROJECT" rev-parse --abbrev-ref HEAD)" != "$CHECK_BRANCH" ]; then
@@ -477,7 +477,7 @@ if [ "$(git -C "$CHECK_PROJECT" rev-parse --abbrev-ref HEAD)" != "$CHECK_BRANCH"
 fi
 
 (cd "$CHECK_PROJECT" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" detect) >"$TEST_DIR/detect-output.txt" 2>&1
-assert_not_contains "$TEST_DIR/detect-output.txt" 'needs sync'
+assert_not_contains "$TEST_DIR/detect-output.txt" 'Needs update'
 
 # --------------------------------------------------------------------------
 # Results

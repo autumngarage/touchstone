@@ -121,7 +121,7 @@ touchstone_auto_project_sync_command_skips() {
   local command="${1:-}" subcommand="${2:-}"
 
   case "$command" in
-    "" | help | -h | --help | version | --version | status | list | ls | diff | changelog | doctor | detect | skills | update | sync | new | init | migrate-from-toolkit | migrate-review-config | release)
+    "" | help | -h | --help | version | --version | status | list | ls | diff | changelog | doctor | review-stats | detect | skills | update | update-all | sync | new | init | migrate-from-toolkit | migrate-review-config | release)
       return 0
       ;;
   esac

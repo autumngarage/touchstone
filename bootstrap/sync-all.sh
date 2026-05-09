@@ -3,16 +3,16 @@
 # bootstrap/sync-all.sh — update all registered projects to the latest touchstone.
 #
 # Usage:
-#   ~/Repos/touchstone/bootstrap/sync-all.sh              # update all projects
-#   ~/Repos/touchstone/bootstrap/sync-all.sh --dry-run     # show what would change
-#   ~/Repos/touchstone/bootstrap/sync-all.sh --pull-first  # git pull touchstone before syncing
+#   touchstone update-all              # update all projects
+#   touchstone update-all --dry-run    # show what would change
+#   touchstone update-all --pull-first # git pull touchstone before updating projects
 #
 # Reads project paths from ~/.touchstone-projects (one path per line, populated
 # by new-project.sh). Runs update-project.sh in each one.
 #
-# For fully automated sync, add to cron:
+# For fully automated updates, add to cron:
 #   crontab -e
-#   0 9 * * 1  cd ~/Repos/touchstone && git pull && ~/Repos/touchstone/bootstrap/sync-all.sh
+#   0 9 * * 1  touchstone update-all --pull-first
 #
 set -euo pipefail
 
@@ -61,7 +61,7 @@ if [ "$PULL_FIRST" = true ]; then
   echo ""
 fi
 
-# Check-only mode: report which projects need sync, then exit.
+# Check-only mode: report which projects need update, then exit.
 if [ "$CHECK_ONLY" = true ]; then
   CURRENT_ID="$(
     if [ -d "$TOUCHSTONE_ROOT/.git" ]; then
@@ -84,7 +84,7 @@ if [ "$CHECK_ONLY" = true ]; then
     if [ "$proj_id" = "$CURRENT_ID" ]; then
       echo "  ✓ $(basename "$project_dir") — up to date"
     else
-      echo "  ! $(basename "$project_dir") — needs sync"
+      echo "  ! $(basename "$project_dir") — needs update"
       BEHIND=$((BEHIND + 1))
     fi
   done <"$PROJECTS_FILE"
@@ -92,7 +92,7 @@ if [ "$CHECK_ONLY" = true ]; then
   if [ "$BEHIND" -eq 0 ]; then
     echo "All $TOTAL projects are up to date."
   else
-    echo "$BEHIND/$TOTAL projects need sync. Run: touchstone sync"
+    echo "$BEHIND/$TOTAL projects need update. Run: touchstone update-all"
   fi
   exit 0
 fi
@@ -117,7 +117,7 @@ while IFS= read -r project_dir; do
 
   echo ""
   echo "================================================================"
-  echo "==> Syncing: $project_dir"
+  echo "==> Updating: $project_dir"
   echo "================================================================"
 
   if (cd "$project_dir" && bash "$UPDATE_SCRIPT" $DRY_RUN); then
@@ -130,7 +130,7 @@ done <"$PROJECTS_FILE"
 
 echo ""
 echo "================================================================"
-echo "==> Sync complete: $SUCCESS/$TOTAL succeeded, $SKIPPED skipped, $FAILED failed"
+echo "==> Update-all complete: $SUCCESS/$TOTAL succeeded, $SKIPPED skipped, $FAILED failed"
 echo "================================================================"
 
 if [ "$FAILED" -gt 0 ]; then
