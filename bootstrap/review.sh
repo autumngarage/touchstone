@@ -130,6 +130,7 @@ GEMINI.md
 .codex-review-context.md
 .github/codex-review-context.md
 .github/workflows/
+bootstrap/
 hooks/codex-review.sh
 hooks/codex-review.config.example.toml
 scripts/codex-review.sh

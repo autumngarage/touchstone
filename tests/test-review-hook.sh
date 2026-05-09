@@ -1390,6 +1390,38 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: bootstrap scripts keep full AGENTS/CLAUDE context"
+setup_ctx_repo
+setup_ctx_bin
+mkdir -p "$CTX_REPO/bootstrap"
+cat >"$CTX_REPO/bootstrap/new-project.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'bootstrap review guidance\n'
+EOF
+git -C "$CTX_REPO" add bootstrap/new-project.sh
+git -C "$CTX_REPO" commit -m "touch bootstrap script" >/dev/null 2>&1
+
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CTX_PROMPT="$CTX_PROMPT" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    TOUCHSTONE_NO_PREFLIGHT=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
+)
+
+if grep -q 'Full project context is required because architectural path bootstrap/new-project.sh' "$CTX_PROMPT" \
+  && grep -q 'Prompt context: full' "$CTX_OUTPUT"; then
+  echo "==> PASS: bootstrap script kept full prompt context"
+else
+  echo "FAIL: expected full prompt context for bootstrap script" >&2
+  sed -n '1,80p' "$CTX_PROMPT" >&2
+  cat "$CTX_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: unsafe paths keep full AGENTS/CLAUDE context"
 setup_ctx_repo
 setup_ctx_bin

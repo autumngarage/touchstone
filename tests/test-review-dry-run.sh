@@ -190,6 +190,27 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+echo "==> Test: built-in bootstrap path keeps best/high"
+REPO_BOOTSTRAP="$TEST_DIR/repo-bootstrap-risk"
+new_repo "$REPO_BOOTSTRAP"
+mkdir -p "$REPO_BOOTSTRAP/bootstrap"
+commit_new_file_with_diff_lines "$REPO_BOOTSTRAP" 401 bootstrap/new-project.sh
+
+: >"$ARGS_FILE"
+out="$(run_review "$REPO_BOOTSTRAP" --dry-run --base HEAD~1 2>&1)"
+
+if grep -q '\-\-prefer best' "$ARGS_FILE" \
+  && grep -q '\-\-effort high' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'routing:     high-risk (architectural path bootstrap/new-project.sh'; then
+  echo "==> PASS: built-in bootstrap path kept best/high bucket"
+else
+  echo "FAIL: built-in bootstrap path should use high-risk routing bucket" >&2
+  echo "args: $(cat "$ARGS_FILE")" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ----------------------------------------------------------------------------
 echo "==> Test: explicit routing opt-out preserves global conductor config"
 REPO_DISABLED="$TEST_DIR/repo-routing-disabled"
 new_repo "$REPO_DISABLED"
