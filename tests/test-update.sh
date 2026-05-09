@@ -110,6 +110,7 @@ echo ""
 echo "--- Step 3: Modify a Touchstone-owned file, then update ---"
 
 echo "# locally modified" >>"$PROJECT/principles/engineering-principles.md"
+rm "$PROJECT/TOUCHSTONE.md"
 rm "$PROJECT/scripts/touchstone-run.sh"
 printf '{"custom": true}\n' >"$PROJECT/.claude/settings.json"
 echo "0000000000000000000000000000000000000000" >"$PROJECT/.touchstone-version"
@@ -125,6 +126,7 @@ fi
 assert_contains "$TEST_DIR/update-output-2.txt" 'Creating update branch: chore/touchstone-'
 assert_contains "$TEST_DIR/update-output-2.txt" 'Committed: chore: update touchstone to'
 assert_contains "$TEST_DIR/update-output-2.txt" 'bash scripts/open-pr.sh'
+assert_exists "$PROJECT/TOUCHSTONE.md"
 assert_exists "$PROJECT/scripts/touchstone-run.sh"
 assert_exists "$PROJECT/scripts/spawn-worktree.sh"
 assert_exists "$PROJECT/scripts/cleanup-worktrees.sh"
@@ -133,6 +135,7 @@ assert_exists "$PROJECT/lib/events.sh"
 assert_exists "$PROJECT/lib/preflight.sh"
 assert_exists "$PROJECT/lib/review-comment.sh"
 assert_exists "$PROJECT/.touchstone-manifest"
+assert_contains "$PROJECT/.touchstone-manifest" '^TOUCHSTONE.md$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/touchstone-run.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
@@ -174,6 +177,13 @@ if git -C "$PROJECT" ls-files --error-unmatch .touchstone-version >/dev/null 2>&
   echo "    PASS: .touchstone-version is tracked in the update commit"
 else
   echo "FAIL: expected .touchstone-version to be tracked" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+if git -C "$PROJECT" ls-files --error-unmatch TOUCHSTONE.md >/dev/null 2>&1; then
+  echo "    PASS: TOUCHSTONE.md is tracked in the update commit"
+else
+  echo "FAIL: expected TOUCHSTONE.md to be tracked" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
