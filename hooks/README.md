@@ -65,7 +65,7 @@ When the review runs, the hook:
    - `CODEX_REVIEW_BLOCKED` — the reviewer found issues it won't auto-fix; push is blocked
 6. The loop repeats up to `max_iterations` times (default 3)
 
-Conductor logs its route decision (provider, cost estimate, token count, wall-clock time) into the pre-push transcript.
+Conductor logs its route decision (provider, cost estimate, token count, wall-clock time) into the review transcript.
 
 ## Configuration reference
 

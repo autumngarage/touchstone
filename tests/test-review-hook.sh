@@ -258,7 +258,7 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Test: review hook skips nested Codex review subprocesses"
+echo "==> Test: review hook skips nested Conductor review subprocesses"
 : >"$CODEX_CALLS_FILE"
 
 (

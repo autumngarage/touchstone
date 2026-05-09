@@ -1791,7 +1791,7 @@ if is_pre_push_hook && ! is_truthy "${CODEX_REVIEW_FORCE:-false}"; then
   if [ "$_firstpush_remote_branch" = "$_firstpush_default_branch" ]; then
     if _firstpush_commit_count="$(git rev-list --count HEAD 2>/dev/null)" \
       && [ "$_firstpush_commit_count" = "1" ]; then
-      echo "==> Codex review skipped — first push on a fresh scaffold (HEAD is the initial commit)."
+      echo "==> Conductor review skipped — first push on a fresh scaffold (HEAD is the initial commit)."
       log_skip_event other fresh-scaffold-first-push
       exit 0
     fi

@@ -35,7 +35,7 @@ validate_response() {
   require_pattern "$file" 'BRANCH_BEFORE_EDIT:[[:space:]]*yes' "branch-before-edit yes" || failures=$((failures + 1))
   require_pattern "$file" 'FEATURE_BRANCH_COMMAND:.*git[[:space:]]+(checkout[[:space:]]+-b|switch[[:space:]]+-c)' "feature branch command" || failures=$((failures + 1))
   require_pattern "$file" 'PR_CREATED:[[:space:]]*yes' "PR_CREATED yes" || failures=$((failures + 1))
-  require_pattern "$file" 'CONDUCTOR_REVIEW_BEFORE_MERGE:[[:space:]]*yes' "Conductor review before merge" || failures=$((failures + 1))
+  require_pattern "$file" 'CONDUCTOR_REVIEW_AT_MERGE_GATE:[[:space:]]*yes' "Conductor review at merge gate" || failures=$((failures + 1))
   require_pattern "$file" 'AUTO_MERGE_COMMAND:.*scripts/open-pr\.sh[[:space:]]+--auto-merge' "open-pr auto-merge command" || failures=$((failures + 1))
   require_pattern "$file" 'PRINCIPLES_APPLIED:[[:space:]]*yes' "principles applied" || failures=$((failures + 1))
   require_pattern "$file" 'NO_SILENT_FAILURES_TESTED:[[:space:]]*yes' "no silent failures tested" || failures=$((failures + 1))
@@ -246,7 +246,7 @@ TOUCHSTONE_DOGFOOD_RESULT: PASS|FAIL
 BRANCH_BEFORE_EDIT: yes|no
 FEATURE_BRANCH_COMMAND: <the git command you would use>
 PR_CREATED: yes|no
-CONDUCTOR_REVIEW_BEFORE_MERGE: yes|no
+CONDUCTOR_REVIEW_AT_MERGE_GATE: yes|no
 AUTO_MERGE_COMMAND: <the command you would use>
 PRINCIPLES_APPLIED: yes|no
 NO_SILENT_FAILURES_TESTED: yes|no

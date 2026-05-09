@@ -1,6 +1,6 @@
-# .codex-review.toml — Codex pre-push review config for the Touchstone itself.
+# .codex-review.toml — Conductor merge-review config for Touchstone itself.
 #
-# The touchstone dogfoods its own Codex hook.
+# Touchstone dogfoods its own Conductor review hook.
 
 [codex_review]
 max_iterations = 3
@@ -35,5 +35,5 @@ exclude = ["ollama"]
 [review]
 preflight_required = true
 comment_on_clean = true
-advisory_at_pr_open = true
+advisory_at_pr_open = false
 comment_findings_history = true

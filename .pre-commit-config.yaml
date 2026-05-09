@@ -61,11 +61,11 @@ repos:
       - id: actionlint
         files: ^\.github/workflows/.*\.ya?ml$
 
-  # Codex review for direct pushes to the default branch
+  # Conductor review for direct pushes to the default branch
   - repo: local
     hooks:
       - id: codex-review
-        name: Codex default-branch push review
+        name: Conductor default-branch push review
         entry: /usr/bin/env bash hooks/codex-review.sh
         language: system
         stages: [pre-push]
