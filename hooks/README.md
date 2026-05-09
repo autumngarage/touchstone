@@ -84,25 +84,27 @@ Conductor logs its route decision (provider, cost estimate, token count, wall-cl
 | `[review.conductor].with` | unset | Pin a specific provider (bypasses auto-routing) |
 | `[review.conductor].exclude` | `["ollama"]` | Exclude providers from auto-routing; set `exclude = []` to opt local providers back in |
 | `[review.routing].enabled` | true | Route by diff size |
-| `[review.routing].small_max_diff_lines` | 400 | Diffs ≤ this use the `small_*` knobs; diffs above use the `large_*` knobs |
+| `[review.routing].small_max_diff_lines` | 400 | Diffs ≤ this use the `small_*` knobs unless high-risk paths are touched |
 | `[review.routing].small_prefer` | `"cheapest"` | Routing preference for small diffs |
 | `[review.routing].small_effort` | `"minimal"` | Thinking effort for small diffs |
 | `[review.routing].small_with` | unset | Pin provider for small diffs |
 | `[review.routing].small_tags` | unset | e.g. `"code-review"` for small diffs |
 | `[review.routing].large_prefer` | `"best"` | Routing preference for larger low-risk diffs |
 | `[review.routing].large_effort` | `"medium"` | Thinking effort for larger low-risk diffs |
+| `[review.routing].large_with` | unset | Pin provider for larger low-risk diffs |
+| `[review.routing].large_tags` | unset | e.g. `"code-review,long-context"` for larger low-risk diffs |
 | `[review.routing].high_risk_prefer` | `"best"` | Routing preference when unsafe or architectural paths are touched |
 | `[review.routing].high_risk_effort` | `"high"` | Thinking effort when unsafe or architectural paths are touched |
-| `[review.routing].large_with` | unset | Pin provider for larger diffs |
-| `[review.routing].large_tags` | unset | e.g. `"code-review,long-context"` |
+| `[review.routing].high_risk_with` | unset | Pin provider when unsafe, architectural, or configured full-context paths are touched |
+| `[review.routing].high_risk_tags` | unset | e.g. `"code-review,long-context"` for high-risk diffs |
 | `[review.context].mode` | `"auto"` | `auto` prunes low-risk diffs; `full` always loads full project context |
 | `[review.context].small_max_diff_lines` | 400 | Max diff lines for bounded prompt context |
 | `[review.context].small_max_files` | 4 | Max changed files for bounded prompt context |
 | `[review.context].full_context_paths` | [] | Extra path patterns that always require full `AGENTS.md`/`CLAUDE.md` context |
 
-Routing uses a single cutoff (`small_max_diff_lines`): diffs at or below it go through the `small_*` bucket, everything else through the `large_*` bucket. There is no separate `large_max_diff_lines`. The default route is `cheapest`/`minimal` for diffs up to 400 lines and `best`/`high` above that. Use `TOUCHSTONE_CONDUCTOR_EFFORT=max` when release-level scrutiny is worth the extra latency. Explicit `TOUCHSTONE_CONDUCTOR_*` environment variables still win over bucket defaults.
+Routing uses a single cutoff (`small_max_diff_lines`) plus path risk. Diffs at or below the cutoff use the `small_*` bucket unless they touch `unsafe_paths`, built-in architectural paths, or configured `full_context_paths`; those use `high_risk_*`. Diffs above the cutoff use `large_*` only when they are low-risk. The default route is `cheapest`/`minimal` for small low-risk diffs, `best`/`medium` for larger low-risk diffs, and `best`/`high` for high-risk diffs. There is no separate `large_max_diff_lines`. Use `TOUCHSTONE_CONDUCTOR_EFFORT=max` when release-level scrutiny is worth the extra latency. Explicit `TOUCHSTONE_CONDUCTOR_*` environment variables still win over bucket defaults.
 
-Prompt-context pruning is separate from provider routing. In `auto` mode, the hook uses bounded context only when the diff stays within both small limits and avoids `unsafe_paths`, built-in architectural files, and configured `full_context_paths`. The prompt states when full context was intentionally omitted and why.
+Prompt-context pruning is separate from provider routing, but uses the same path-risk checks. In `auto` mode, the hook uses bounded context for low-risk diffs, including large or broad diffs, and uses full context for `unsafe_paths`, built-in architectural files, and configured `full_context_paths`. The prompt states when full context was intentionally omitted and why.
 
 ### Retired in 2.0
 

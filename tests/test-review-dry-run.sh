@@ -211,6 +211,35 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+echo "==> Test: configured full-context path keeps best/high"
+REPO_FULL_CONTEXT="$TEST_DIR/repo-full-context-risk"
+new_repo "$REPO_FULL_CONTEXT"
+cat >"$REPO_FULL_CONTEXT/.codex-review.toml" <<'EOF'
+[review.context]
+full_context_paths = ["docs/"]
+EOF
+git -C "$REPO_FULL_CONTEXT" add .codex-review.toml
+git -C "$REPO_FULL_CONTEXT" commit -qm cfg
+mkdir -p "$REPO_FULL_CONTEXT/docs"
+printf 'doc change\n' >"$REPO_FULL_CONTEXT/docs/note.md"
+git -C "$REPO_FULL_CONTEXT" add docs/note.md
+git -C "$REPO_FULL_CONTEXT" commit -qm "touch docs"
+
+: >"$ARGS_FILE"
+out="$(run_review "$REPO_FULL_CONTEXT" --dry-run --base HEAD~1 2>&1)"
+
+if grep -q '\-\-prefer best' "$ARGS_FILE" \
+  && grep -q '\-\-effort high' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'routing:     high-risk (configured full-context path docs/note.md'; then
+  echo "==> PASS: configured full-context path kept best/high bucket"
+else
+  echo "FAIL: configured full-context path should use high-risk routing bucket" >&2
+  echo "args: $(cat "$ARGS_FILE")" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ----------------------------------------------------------------------------
 echo "==> Test: explicit routing opt-out preserves global conductor config"
 REPO_DISABLED="$TEST_DIR/repo-routing-disabled"
 new_repo "$REPO_DISABLED"

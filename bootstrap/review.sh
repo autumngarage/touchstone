@@ -137,6 +137,7 @@ scripts/codex-review.sh
 architecture/
 docs/architecture/
 principles/"
+FULL_CONTEXT_PATHS=""
 CONFIG_MODE=""
 
 strip_quotes() {
@@ -214,6 +215,11 @@ if [ -f "$CONFIG_FILE" ]; then
           high_risk_prefer) ROUTING_HIGH_RISK_PREFER="$(toml_unquote "$value")" ;;
           high_risk_effort) ROUTING_HIGH_RISK_EFFORT="$(toml_unquote "$value")" ;;
           high_risk_tags) ROUTING_HIGH_RISK_TAGS="$(toml_normalize_array "$value")" ;;
+        esac
+        ;;
+      "review.context")
+        case "$key" in
+          full_context_paths | full_context_patterns) FULL_CONTEXT_PATHS="$(toml_normalize_array "$value" | tr ',' '\n')" ;;
         esac
         ;;
     esac
@@ -340,6 +346,12 @@ find_high_risk_reason() {
   match="$(find_path_matching_patterns "$CHANGED_PATHS" "$ARCHITECTURAL_PATHS" || true)"
   if [ -n "$match" ]; then
     printf 'architectural path %s' "$match"
+    return 0
+  fi
+
+  match="$(find_path_matching_patterns "$CHANGED_PATHS" "$FULL_CONTEXT_PATHS" || true)"
+  if [ -n "$match" ]; then
+    printf 'configured full-context path %s' "$match"
     return 0
   fi
 
