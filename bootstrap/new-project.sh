@@ -1204,7 +1204,7 @@ write_review_onboarding_config() {
       printf '# Which provider wins auto-routing: best|cheapest|fastest|balanced\n'
       printf 'prefer = "best"\n'
       printf '# Thinking depth: minimal|low|medium|high|max or an integer token budget\n'
-      printf 'effort = "max"\n'
+      printf 'effort = "high"\n'
       printf '# Capability tags passed to the router\n'
       printf 'tags = "code-review"\n'
       if [ -n "$with_pin" ]; then
@@ -1231,7 +1231,7 @@ write_review_onboarding_config() {
         printf 'large_with = "%s"\n' "$large_with_pin"
       fi
       printf 'large_prefer = "best"\n'
-      printf 'large_effort = "max"\n'
+      printf 'large_effort = "high"\n'
     fi
     if [ "$assist" = "true" ]; then
       printf '\n# NOTE: --review-assist requested. Peer review is disabled in Touchstone 2.0.0;\n'

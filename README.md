@@ -77,7 +77,7 @@ conductor init                    # walks through each provider, one at a time
 
 Conductor supports Claude, OpenAI Codex, Google Gemini, Moonshot Kimi (via Cloudflare Workers AI), and local Ollama. Configure as many as you want; Conductor's auto-router picks the best one for each review based on quality tier, cost, and availability.
 
-When you run `touchstone new` or `touchstone init`, Touchstone asks whether you want AI review. If you say yes, the scaffold adds a default `[review.conductor]` block with `prefer = "best"` and `effort = "max"` — frontier-tier review, maximum reasoning depth.
+When you run `touchstone new` or `touchstone init`, Touchstone asks whether you want AI review. If you say yes, the scaffold adds a default `[review.conductor]` block with `prefer = "best"` and `effort = "high"` — frontier-tier review with a bounded reasoning budget. Use `TOUCHSTONE_CONDUCTOR_EFFORT=max` when release-level scrutiny is worth the extra latency.
 
 You can keep using Touchstone without Conductor installed; the hook skips itself gracefully and prints install instructions.
 

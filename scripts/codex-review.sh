@@ -399,7 +399,7 @@ ROUTING_SMALL_EFFORT="minimal"
 ROUTING_SMALL_TAGS=""
 ROUTING_LARGE_WITH=""
 ROUTING_LARGE_PREFER="best"
-ROUTING_LARGE_EFFORT="max"
+ROUTING_LARGE_EFFORT="high"
 ROUTING_LARGE_TAGS=""
 ROUTING_DECISION="default"
 PROMPT_CONTEXT_MODE="${CODEX_REVIEW_CONTEXT_MODE:-auto}"
@@ -899,7 +899,7 @@ if [ "${#REVIEWER_CASCADE[@]}" -gt 0 ]; then
     echo "        reviewer = \"conductor\"" >&2
     echo "        [review.conductor]" >&2
     echo "          prefer = \"best\"" >&2
-    echo "          effort = \"max\"" >&2
+    echo "          effort = \"high\"" >&2
     echo "    Update .codex-review.toml at your convenience. See CHANGELOG for details." >&2
   fi
 fi
@@ -955,7 +955,7 @@ fi
 # Env overrides for the conductor adapter (take precedence over .codex-review.toml).
 CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-${CONDUCTOR_WITH:-}}"
 CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-${CONDUCTOR_PREFER:-best}}"
-CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-${CONDUCTOR_EFFORT:-max}}"
+CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-${CONDUCTOR_EFFORT:-high}}"
 CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-${CONDUCTOR_TAGS:-code-review}}"
 if [ -n "${TOUCHSTONE_CONDUCTOR_EXCLUDE+x}" ]; then
   CONDUCTOR_EXCLUDE="$TOUCHSTONE_CONDUCTOR_EXCLUDE"
@@ -1342,7 +1342,7 @@ reviewer_conductor_exec() {
   fi
 
   # Effort applies whether manual-provider or auto-routed.
-  args+=(--effort "${CONDUCTOR_EFFORT:-max}")
+  args+=(--effort "${CONDUCTOR_EFFORT:-high}")
 
   # REVIEW_MODE → subcommand + tools. Conductor translates these portable tool
   # names into each provider's native permission/sandbox contract.
@@ -2042,7 +2042,7 @@ review_cache_key() {
     printf 'assist_helpers=%s\n' "${ASSIST_HELPERS[*]:-}"
     # Conductor knobs (CLI-effective values, post env+config resolution).
     # Without these, a review at prefer=cheapest/effort=minimal would
-    # silently satisfy a later push expecting prefer=best/effort=max
+    # silently satisfy a later push expecting prefer=best/effort=high
     # because the diff hash matches.
     printf 'conductor_with=%s\n' "${CONDUCTOR_WITH:-}"
     printf 'conductor_prefer=%s\n' "${CONDUCTOR_PREFER:-}"

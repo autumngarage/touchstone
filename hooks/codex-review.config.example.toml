@@ -99,7 +99,7 @@ unsafe_paths = [
 # # How hard the chosen provider thinks before answering.
 # # Symbolic: "minimal" | "low" | "medium" | "high" | "max"
 # # Or an explicit integer thinking-token budget.
-# # effort = "max"
+# # effort = "high"
 #
 # # Capability tags passed to the router. Defaults cover code review well.
 # # tags = "code-review"
@@ -113,9 +113,11 @@ exclude = ["ollama"]
 # --------------------------------------------------------------------------
 # Routing by diff size (default)
 # --------------------------------------------------------------------------
-# Touchstone defaults to cheap + shallow review for small diffs and max-effort
-# review for larger changes. Explicit TOUCHSTONE_CONDUCTOR_* env vars still
-# win at invocation time, and enabled = false opts out.
+# Touchstone defaults to cheap + shallow review for small diffs and high-effort
+# review for larger changes. Use TOUCHSTONE_CONDUCTOR_EFFORT=max for
+# release-level scrutiny when the extra latency is intentional. Explicit
+# TOUCHSTONE_CONDUCTOR_* env vars still win at invocation time, and enabled =
+# false opts out.
 #
 # Routing uses a single cutoff (small_max_diff_lines): diffs at or below it
 # go through the small_* bucket, everything above through the large_* bucket.
@@ -128,7 +130,7 @@ exclude = ["ollama"]
 # small_prefer = "cheapest"
 # small_effort = "minimal"
 # large_prefer = "best"
-# large_effort = "max"
+# large_effort = "high"
 # # Optional: pin or retag either bucket.
 # # small_with = "ollama"
 # # large_tags = "code-review,long-context"
