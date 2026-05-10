@@ -59,6 +59,7 @@ copy_event_scripts() {
   mkdir -p "$dst/scripts" "$dst/lib"
   cp "$TOUCHSTONE_ROOT/lib/events.sh" "$dst/lib/events.sh"
   cp "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$dst/scripts/open-pr.sh"
+  cp "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$dst/scripts/issue-claim-check.sh"
   cp "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$dst/scripts/merge-pr.sh"
   chmod +x "$dst/scripts/"*.sh
 }

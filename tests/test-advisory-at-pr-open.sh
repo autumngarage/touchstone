@@ -15,11 +15,12 @@ FAKE_BIN="$TEST_DIR/bin"
 mkdir -p "$RUN_DIR/scripts" "$RUN_DIR/lib" "$REPO_DIR" "$FAKE_BIN"
 
 cp "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$RUN_DIR/scripts/open-pr.sh"
+cp "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$RUN_DIR/scripts/issue-claim-check.sh"
 cp "$TOUCHSTONE_ROOT/lib/review-comment.sh" "$RUN_DIR/lib/review-comment.sh"
 cp "$TOUCHSTONE_ROOT/lib/preflight.sh" "$RUN_DIR/lib/preflight.sh"
 cp "$TOUCHSTONE_ROOT/lib/preflight-scope.sh" "$RUN_DIR/lib/preflight-scope.sh"
 cp "$TOUCHSTONE_ROOT/lib/toml.sh" "$RUN_DIR/lib/toml.sh"
-chmod +x "$RUN_DIR/scripts/open-pr.sh"
+chmod +x "$RUN_DIR/scripts/open-pr.sh" "$RUN_DIR/scripts/issue-claim-check.sh"
 
 cat >"$RUN_DIR/scripts/codex-review.sh" <<'EOF'
 #!/usr/bin/env bash

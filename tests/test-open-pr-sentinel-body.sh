@@ -26,7 +26,8 @@ FAKE_BIN="$TEST_DIR/bin"
 mkdir -p "$SCRIPT_DIR" "$FAKE_BIN"
 
 cp "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$SCRIPT_DIR/open-pr.sh"
-chmod +x "$SCRIPT_DIR/open-pr.sh"
+cp "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$SCRIPT_DIR/issue-claim-check.sh"
+chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/issue-claim-check.sh"
 
 # ---------------------------------------------------------------------------
 # Fake gh: captures the --body-file content so tests can assert on it.

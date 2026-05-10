@@ -25,12 +25,13 @@ FAKE_BIN="$TEST_DIR/bin"
 mkdir -p "$SCRIPT_DIR" "$FAKE_BIN"
 
 cp "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$SCRIPT_DIR/open-pr.sh"
+cp "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$SCRIPT_DIR/issue-claim-check.sh"
 # merge-pr.sh is invoked by open-pr.sh on --auto-merge; stub it.
 cat >"$SCRIPT_DIR/merge-pr.sh" <<'EOF'
 #!/usr/bin/env bash
 exit 0
 EOF
-chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/merge-pr.sh"
+chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/issue-claim-check.sh" "$SCRIPT_DIR/merge-pr.sh"
 
 # Mock gh: returns a stable PR URL on create, claims mergedAt is non-empty.
 cat >"$FAKE_BIN/gh" <<'EOF'

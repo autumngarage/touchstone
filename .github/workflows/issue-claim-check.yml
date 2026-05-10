@@ -13,107 +13,26 @@ jobs:
   claim-check:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout trusted claim-check helper
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .touchstone-claim-base
+
+      - name: Checkout PR helper fallback
+        uses: actions/checkout@v4
+        with:
+          path: .touchstone-claim-head
+
       - name: Enforce claim-before-dispatch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
-          #!/usr/bin/env bash
-          set -euo pipefail
-
-          echo "==> Loading PR #$PR_NUMBER body"
-          PR_BODY="$(gh pr view "$PR_NUMBER" --json body --jq '.body // ""')"
-
-          if printf '%s' "$PR_BODY" | grep -Eqi '\[skip-claim-check\]'; then
-            echo "[skip-claim-check] token found in PR body; bypassing issue claim check."
-            exit 0
+          helper=".touchstone-claim-base/scripts/issue-claim-check.sh"
+          if [ ! -f "$helper" ]; then
+            echo "Trusted base helper is unavailable; using PR helper for this transition run."
+            helper=".touchstone-claim-head/scripts/issue-claim-check.sh"
           fi
-
-          issue_refs_file="$(mktemp)"
-          failures_file="$(mktemp)"
-          trap 'rm -f "$issue_refs_file" "$failures_file"' EXIT
-
-          # Pattern 1: same-repo numeric refs including closes-issue.
-          while IFS= read -r match; do
-            issue_number="$(printf '%s' "$match" | sed -E 's/.*#([0-9]+).*/\1/')"
-            if [ -n "$issue_number" ]; then
-              printf '%s\n' "$issue_number" >>"$issue_refs_file"
-            fi
-          done < <(printf '%s' "$PR_BODY" | grep -Eoi '\b(closes|fixes|resolves|closes-issue):?[[:space:]]*#[0-9]+\b' || true)
-
-          # Pattern 2: closes/fixes/resolves with optional owner/repo prefix.
-          while IFS= read -r match; do
-            normalized="$(printf '%s' "$match" | tr '[:upper:]' '[:lower:]')"
-            if printf '%s' "$normalized" | grep -Eq 'autumngarage/[a-z0-9_-]+#'; then
-              echo "==> Skipping cross-repo reference: $match"
-              continue
-            fi
-            issue_number="$(printf '%s' "$match" | sed -E 's/.*#([0-9]+).*/\1/')"
-            if [ -n "$issue_number" ]; then
-              printf '%s\n' "$issue_number" >>"$issue_refs_file"
-            fi
-          done < <(printf '%s' "$PR_BODY" | grep -Eoi '\b(closes|fixes|resolves):?[[:space:]]*(autumngarage/[[:alnum:]_-]+)?#[0-9]+\b' || true)
-
-          if [ ! -s "$issue_refs_file" ]; then
-            echo "No closing issue references found in PR body; nothing to enforce."
-            exit 0
-          fi
-
-          unique_issues="$(sort -u "$issue_refs_file")"
-          echo "==> Checking issue ownership for PR author @$PR_AUTHOR"
-
-          while IFS= read -r issue_number; do
-            [ -n "$issue_number" ] || continue
-            echo "==> Checking issue #$issue_number"
-
-            issue_state="$(gh issue view "$issue_number" --json state --jq '.state')"
-            if [ "$issue_state" = "CLOSED" ]; then
-              echo "    issue is closed; skipping"
-              continue
-            fi
-
-            assignees="$(gh issue view "$issue_number" --json assignees --jq '.assignees | map(.login) | join("\n")')"
-            if printf '%s\n' "$assignees" | grep -Fxq "$PR_AUTHOR"; then
-              echo "    pass: @$PR_AUTHOR is assigned"
-              continue
-            fi
-
-            assignee_label="(none)"
-            if [ -n "$assignees" ]; then
-              assignee_label="$(printf '%s' "$assignees" | paste -sd ', ' -)"
-            fi
-            printf '%s|%s\n' "$issue_number" "$assignee_label" >>"$failures_file"
-          done <<<"$unique_issues"
-
-          if [ ! -s "$failures_file" ]; then
-            echo "✓ All referenced issues are claimed by the PR author."
-            exit 0
-          fi
-
-          comment_file="$(mktemp)"
-          trap 'rm -f "$issue_refs_file" "$failures_file" "$comment_file"' EXIT
-          {
-            echo "❌ **Issue claim check failed**"
-            echo ""
-            echo "This PR references issue(s) with closing keywords, but the PR author (@$PR_AUTHOR) is not assigned to all open referenced issues:"
-            echo ""
-            while IFS='|' read -r issue_number assignees; do
-              [ -n "$issue_number" ] || continue
-              echo "- #$issue_number — current assignees: $assignees"
-            done <"$failures_file"
-            echo ""
-            echo "### Remediation"
-            echo "1. Claim each open referenced issue before dispatch:"
-            # shellcheck disable=SC2016  # backticks are intentional Markdown, not subshell.
-            echo '   - `bash scripts/claim-issue.sh <issue-number>`'
-            echo "2. Keep the closing keyword in this PR body once claimed, then push any update if needed."
-            echo ""
-            # shellcheck disable=SC2016  # backticks are intentional Markdown, not subshell.
-            echo 'If this is a legitimate exception (drive-by fix, emergency PR), add `[skip-claim-check]` to the PR body as a documented bypass.'
-          } >"$comment_file"
-
-          gh pr comment "$PR_NUMBER" --body-file "$comment_file"
-          echo "Issue claim check failed; remediation comment posted to PR #$PR_NUMBER."
-          exit 1
+          bash "$helper" --pr-number "$PR_NUMBER" --comment-pr

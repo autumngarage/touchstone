@@ -22,7 +22,8 @@ REPO_DIR="$TEST_DIR/repo"
 mkdir -p "$SCRIPT_DIR" "$FAKE_BIN"
 
 cp "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$SCRIPT_DIR/open-pr.sh"
-chmod +x "$SCRIPT_DIR/open-pr.sh"
+cp "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$SCRIPT_DIR/issue-claim-check.sh"
+chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/issue-claim-check.sh"
 
 # Fake gh: captures --body-file content so this test can assert on the exact
 # PR body that would be sent to GitHub. Git push still talks to a real local
@@ -30,7 +31,13 @@ chmod +x "$SCRIPT_DIR/open-pr.sh"
 cat >"$FAKE_BIN/gh" <<'GHEOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ -n "${GH_CALL_LOG:-}" ]; then
+  printf '%s\n' "$*" >>"$GH_CALL_LOG"
+fi
 case "$1 $2" in
+  "api user")
+    echo "alice"
+    ;;
   "repo view")
     echo "main"
     ;;
@@ -51,6 +58,34 @@ case "$1 $2" in
     ;;
   "pr view")
     echo ""
+    ;;
+  "issue view")
+    issue_number="$3"
+    json_fields=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--json" ]; then
+        json_fields="$arg"
+      fi
+      prev="$arg"
+    done
+    if [ "$json_fields" = "state" ]; then
+      case "$issue_number" in
+        51) echo "CLOSED" ;;
+        *) echo "OPEN" ;;
+      esac
+      exit 0
+    fi
+    if [ "$json_fields" = "assignees" ]; then
+      case "$issue_number" in
+        42 | 43 | 52) echo "alice" ;;
+        53) echo "bob" ;;
+        *) : ;;
+      esac
+      exit 0
+    fi
+    echo "unexpected gh issue view args: $*" >&2
+    exit 1
     ;;
   *)
     echo "unexpected gh args: $*" >&2
@@ -94,9 +129,11 @@ Fixes: #42" >/dev/null 2>&1
 echo "==> Case 1: commit bodies with closing keywords inject Linked Issues section"
 OUT="$TEST_DIR/linked.out"
 RC=0
+: >"$TEST_DIR/gh-calls.log"
 (
   cd "$REPO_DIR"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
     bash "$SCRIPT_DIR/open-pr.sh"
 ) >"$OUT" 2>&1 || RC=$?
 
@@ -106,7 +143,8 @@ if [ "$RC" = "0" ] \
   && grep -q '^Closes #43$' "$OUT" \
   && ! grep -q '^Closes #99$' "$OUT" \
   && [ "$(grep -c '^Closes #42$' "$OUT")" = "1" ] \
-  && grep -q '^## Summary$' "$OUT"; then
+  && grep -q '^## Summary$' "$OUT" \
+  && grep -q 'pass: @alice is assigned' "$OUT"; then
   echo "    PASS"
 else
   echo "    FAIL: expected exit 0 + Linked Issues section with Closes #42" >&2
@@ -115,8 +153,119 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+make_case_branch() {
+  local branch="$1"
+  local body="$2"
+  git -C "$REPO_DIR" switch main >/dev/null 2>&1
+  git -C "$REPO_DIR" switch -c "$branch" >/dev/null 2>&1
+  printf '%s\n' "$branch" >>"$REPO_DIR/file.txt"
+  git -C "$REPO_DIR" add file.txt
+  git -C "$REPO_DIR" commit -m "test $branch
+
+$body" >/dev/null 2>&1
+}
+
+echo "==> Case 2: unassigned open issue blocks before PR creation"
+make_case_branch feat/unassigned-claim-check "Closes #50"
+OUT="$TEST_DIR/unassigned.out"
+RC=0
+: >"$TEST_DIR/gh-calls.log"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+    bash "$SCRIPT_DIR/open-pr.sh"
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'Issue claim check failed' "$OUT" \
+  && grep -q 'bash scripts/claim-issue.sh 50' "$OUT" \
+  && ! grep -q '^pr create' "$TEST_DIR/gh-calls.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected unassigned issue to block before gh pr create" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 3: [skip-claim-check] bypasses local claim preflight"
+make_case_branch feat/skip-claim-check "Closes #50
+
+[skip-claim-check]"
+OUT="$TEST_DIR/skip.out"
+RC=0
+: >"$TEST_DIR/gh-calls.log"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+    bash "$SCRIPT_DIR/open-pr.sh"
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q '\[skip-claim-check\] token found' "$OUT" \
+  && grep -q '^pr create' "$TEST_DIR/gh-calls.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected skip token to allow PR creation" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 4: closed issue passes local claim preflight"
+make_case_branch feat/closed-claim-check "Closes #51"
+OUT="$TEST_DIR/closed.out"
+RC=0
+: >"$TEST_DIR/gh-calls.log"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+    bash "$SCRIPT_DIR/open-pr.sh"
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'issue is closed; skipping' "$OUT" \
+  && grep -q '^pr create' "$TEST_DIR/gh-calls.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected closed issue to allow PR creation" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 5: assigned open issue passes local claim preflight"
+make_case_branch feat/assigned-claim-check "Closes #52"
+OUT="$TEST_DIR/assigned.out"
+RC=0
+: >"$TEST_DIR/gh-calls.log"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+    bash "$SCRIPT_DIR/open-pr.sh"
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'pass: @alice is assigned' "$OUT" \
+  && grep -q '^pr create' "$TEST_DIR/gh-calls.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected assigned issue to allow PR creation" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 if [ "$ERRORS" = "0" ]; then
-  echo "==> PASS: open-pr.sh injects issue-closing keywords from branch commits"
+  echo "==> PASS: open-pr.sh injects issue-closing keywords and preflights claim ownership"
   exit 0
 fi
 echo "==> FAIL: $ERRORS case(s) regressed" >&2

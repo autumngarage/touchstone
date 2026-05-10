@@ -128,6 +128,8 @@ assert_contains "$TEST_DIR/update-output-2.txt" 'Committed: chore: update touchs
 assert_contains "$TEST_DIR/update-output-2.txt" 'bash scripts/open-pr.sh'
 assert_exists "$PROJECT/TOUCHSTONE.md"
 assert_exists "$PROJECT/scripts/touchstone-run.sh"
+assert_exists "$PROJECT/scripts/claim-issue.sh"
+assert_exists "$PROJECT/scripts/issue-claim-check.sh"
 assert_exists "$PROJECT/scripts/spawn-worktree.sh"
 assert_exists "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_exists "$PROJECT/lib/toml.sh"
@@ -137,6 +139,8 @@ assert_exists "$PROJECT/lib/review-comment.sh"
 assert_exists "$PROJECT/.touchstone-manifest"
 assert_contains "$PROJECT/.touchstone-manifest" '^TOUCHSTONE.md$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/touchstone-run.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^scripts/claim-issue.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^scripts/issue-claim-check.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/toml\.sh$'
@@ -216,6 +220,8 @@ assert_contains "$TEST_DIR/update-in-place-output.txt" 'Applying update on curre
 assert_contains "$TEST_DIR/update-in-place-output.txt" 'Committed: chore: update touchstone to'
 assert_not_contains "$TEST_DIR/update-in-place-output.txt" 'Creating update branch: chore/touchstone-'
 assert_exists "$IN_PLACE_PROJECT/scripts/touchstone-run.sh"
+assert_exists "$IN_PLACE_PROJECT/scripts/claim-issue.sh"
+assert_exists "$IN_PLACE_PROJECT/scripts/issue-claim-check.sh"
 assert_not_exists "$IN_PLACE_PROJECT/.claude/settings.json.touchstone-pre-update.bak"
 
 if git -C "$IN_PLACE_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then

@@ -35,7 +35,8 @@ FAKE_BIN="$TEST_DIR/bin"
 mkdir -p "$REPO_DIR" "$SCRIPT_DIR" "$FAKE_BIN"
 
 cp "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$SCRIPT_DIR/open-pr.sh"
-chmod +x "$SCRIPT_DIR/open-pr.sh"
+cp "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$SCRIPT_DIR/issue-claim-check.sh"
+chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/issue-claim-check.sh"
 
 # Real git inside a fresh repo with a feature branch checked out, so the
 # branch-name and uncommitted-tree checks all use real behaviour.
@@ -53,6 +54,8 @@ git -C "$REPO_DIR" commit -m "test change" >/dev/null 2>&1
 # Mock gh — behaviour controlled by env vars so each scenario reuses one mock.
 # GH_MERGED_AT  — value returned for `gh pr view --json mergedAt --jq …`
 # GH_HAS_EXISTING_PR — if "1", `gh pr list` returns an existing PR URL
+# GH_PR_BODY — value returned for existing PR claim-preflight body reads
+# GH_PR_AUTHOR — value returned for existing PR claim-preflight author reads
 cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -72,10 +75,53 @@ case "$1 $2" in
     echo "https://example.test/touchstone/pull/123"
     ;;
   "pr view")
-    # Calls of interest:
-    #   gh pr view <n> --json mergedAt --jq '.mergedAt // empty'
-    # Return GH_MERGED_AT (may be empty string).
+    json_fields=""
+    jq_expr=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--json" ]; then
+        json_fields="$arg"
+      elif [ "$prev" = "--jq" ]; then
+        jq_expr="$arg"
+      fi
+      prev="$arg"
+    done
+    if [ "$json_fields" = "body,author" ]; then
+      case "$jq_expr" in
+        ".body // \"\"") echo "${GH_PR_BODY:-}" ;;
+        ".author.login // empty") echo "${GH_PR_AUTHOR:-alice}" ;;
+        *) echo "unexpected gh pr view jq: $jq_expr" >&2; exit 1 ;;
+      esac
+      exit 0
+    fi
     echo "${GH_MERGED_AT:-}"
+    ;;
+  "api user")
+    echo "${GH_PR_AUTHOR:-alice}"
+    ;;
+  "issue view")
+    issue_number="$3"
+    json_fields=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--json" ]; then
+        json_fields="$arg"
+      fi
+      prev="$arg"
+    done
+    if [ "$json_fields" = "state" ]; then
+      echo "OPEN"
+      exit 0
+    fi
+    if [ "$json_fields" = "assignees" ]; then
+      case "$issue_number" in
+        52) echo "alice" ;;
+        *) : ;;
+      esac
+      exit 0
+    fi
+    echo "unexpected gh issue view args: $*" >&2
+    exit 1
     ;;
   *)
     echo "unexpected gh args: $*" >&2
@@ -116,6 +162,8 @@ run_open_pr() {
     PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
       GH_MERGED_AT="${GH_MERGED_AT:-}" \
       GH_HAS_EXISTING_PR="${GH_HAS_EXISTING_PR:-0}" \
+      GH_PR_BODY="${GH_PR_BODY:-}" \
+      GH_PR_AUTHOR="${GH_PR_AUTHOR:-alice}" \
       MERGE_PR_EXIT="${MERGE_PR_EXIT:-0}" \
       bash "$SCRIPT_DIR/open-pr.sh" --auto-merge
   )
@@ -222,16 +270,39 @@ fi
 echo "==> Case 5: existing-PR path with --auto-merge succeeds and verifies"
 OUT="$TEST_DIR/case5.out"
 RC=0
-GH_MERGED_AT="2026-04-28T13:00:00Z" GH_HAS_EXISTING_PR=1 MERGE_PR_EXIT=0 \
+GH_MERGED_AT="2026-04-28T13:00:00Z" GH_HAS_EXISTING_PR=1 GH_PR_BODY="Closes #52" MERGE_PR_EXIT=0 \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" = "0" ] \
   && grep -q 'PR already open' "$OUT" \
+  && grep -q 'pass: @alice is assigned' "$OUT" \
   && grep -q '==> Verified: PR #777 merged at 2026-04-28T13:00:00Z' "$OUT" \
   && ! grep -q 'ORPHAN RISK' "$OUT"; then
   echo "    PASS"
 else
   echo "    FAIL: expected exit 0 + verified-merge for existing-PR path" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 6: existing PR path claim-preflights before merge-pr.sh.
+# Expect: nonzero exit, claim-check remediation, and merge-pr.sh not called.
+# ---------------------------------------------------------------------------
+echo "==> Case 6: existing-PR path blocks unassigned issue before merge-pr.sh"
+OUT="$TEST_DIR/case6.out"
+RC=0
+GH_MERGED_AT="" GH_HAS_EXISTING_PR=1 GH_PR_BODY="Closes #50" MERGE_PR_EXIT=0 \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'Issue claim check failed' "$OUT" \
+  && grep -q 'bash scripts/claim-issue.sh 50' "$OUT" \
+  && ! grep -q '\[mock merge-pr.sh\] called' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected claim preflight to block before merge-pr.sh on existing PR" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))

@@ -44,6 +44,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PREFLIGHT_SCRIPT="$SCRIPT_DIR/../lib/preflight.sh"
 REVIEW_COMMENT_SCRIPT="$SCRIPT_DIR/../lib/review-comment.sh"
+ISSUE_CLAIM_CHECK_SCRIPT="$SCRIPT_DIR/issue-claim-check.sh"
 if [ -f "$SCRIPT_DIR/../lib/events.sh" ]; then
   # shellcheck source=../lib/events.sh
   source "$SCRIPT_DIR/../lib/events.sh"
@@ -119,6 +120,20 @@ verify_pr_merged() {
     return 0
   fi
   return 1
+}
+
+run_issue_claim_preflight() {
+  local label="$1"
+  shift
+
+  if [ ! -f "$ISSUE_CLAIM_CHECK_SCRIPT" ]; then
+    echo "ERROR: issue-claim-check.sh not found at $ISSUE_CLAIM_CHECK_SCRIPT." >&2
+    echo "       Run touchstone update so scripts/open-pr.sh and its helpers stay in sync." >&2
+    exit 2
+  fi
+
+  echo "==> Running local issue claim preflight ($label) ..."
+  bash "$ISSUE_CLAIM_CHECK_SCRIPT" "$@"
 }
 
 truthy() {
@@ -467,6 +482,7 @@ if [ -n "$EXISTING_PR_URL" ]; then
     PR_NUMBER="$(basename "$EXISTING_PR_URL")"
     ORPHAN_PR_URL="$EXISTING_PR_URL"
     ORPHAN_PR_NUMBER="$PR_NUMBER"
+    run_issue_claim_preflight "existing PR #$PR_NUMBER" --pr-number "$PR_NUMBER"
     MERGE_SCRIPT="$SCRIPT_DIR/merge-pr.sh"
     if [ ! -f "$MERGE_SCRIPT" ]; then
       echo "ERROR: merge-pr.sh not found at $MERGE_SCRIPT — cannot auto-merge." >&2
@@ -573,6 +589,8 @@ BODY_FILE="$(mktemp -t touchstone-pr-body.XXXXXX.md)"
     fi
   fi
 } >"$BODY_FILE"
+
+run_issue_claim_preflight "new PR body" --body-file "$BODY_FILE"
 
 echo "==> Opening PR against $BASE_BRANCH ..."
 if [ -n "$DRAFT_FLAG" ]; then
