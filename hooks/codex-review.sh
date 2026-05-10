@@ -1011,8 +1011,20 @@ resolve_mode() {
 }
 
 REVIEW_MODE="$(resolve_mode)"
+SCOPED_LARGE_DIFF_REVIEW=false
+SCOPED_LARGE_DIFF_SYNC_ONLY=false
+SCOPED_LARGE_DIFF_ORIGINAL_LINES=""
+SCOPED_LARGE_DIFF_LINES=""
+SCOPED_LARGE_DIFF_INCLUDED_COUNT=0
+SCOPED_LARGE_DIFF_EXCLUDED_COUNT=0
+SCOPED_LARGE_DIFF_FILE=""
+SCOPED_LARGE_DIFF_INCLUDED_PATHS_FILE=""
+SCOPED_LARGE_DIFF_EXCLUDED_PATHS_FILE=""
 
-mode_allows_fix() { [ "$REVIEW_MODE" = "fix" ] || [ "$REVIEW_MODE" = "no-tests" ]; }
+mode_allows_fix() {
+  is_truthy "${SCOPED_LARGE_DIFF_REVIEW:-false}" && return 1
+  [ "$REVIEW_MODE" = "fix" ] || [ "$REVIEW_MODE" = "no-tests" ]
+}
 mode_allows_bash() { [ "$REVIEW_MODE" = "fix" ] || [ "$REVIEW_MODE" = "review-only" ]; }
 
 short_ref_name() {
@@ -1190,6 +1202,22 @@ select_prompt_context_mode() {
 }
 
 build_prompt_context_instructions() {
+  if is_truthy "${SCOPED_LARGE_DIFF_REVIEW:-false}"; then
+    cat <<CONTEXT_EOF
+## Project context mode
+
+Large-diff scoped review boundary:
+- Total branch diff: $SCOPED_LARGE_DIFF_ORIGINAL_LINES lines (> $MAX_DIFF_LINES cap).
+- Scoped project-owned diff: $SCOPED_LARGE_DIFF_LINES lines across $SCOPED_LARGE_DIFF_INCLUDED_COUNT file(s).
+- Excluded paths: $SCOPED_LARGE_DIFF_EXCLUDED_COUNT trusted Touchstone-managed file(s) that appeared in both base and HEAD .touchstone-manifest.
+- .touchstone-manifest and mixed-ownership steering/config files are never excluded.
+
+Review only the embedded scoped diff below. Do not inspect or reason about excluded managed paths unless they are shown in the scoped diff.
+Do not edit files. Do not stage, commit, or modify anything. Do not emit CODEX_REVIEW_FIXED.
+CONTEXT_EOF
+    return 0
+  fi
+
   if [ "$PROMPT_CONTEXT_DECISION" = "bounded" ]; then
     cat <<CONTEXT_EOF
 ## Project context mode
@@ -1214,6 +1242,157 @@ Read AGENTS.md at the repo root for project context and the review rubric (if it
 If AGENTS.md has both authoring guidance and a review guide, use the review guide for findings.
 Read CLAUDE.md at the repo root for additional Claude-specific project context (if it exists).
 CONTEXT_EOF
+}
+
+# --------------------------------------------------------------------------
+# Large-diff Touchstone sync slicing
+# --------------------------------------------------------------------------
+
+is_touchstone_source_repo() {
+  local repo_root_physical touchstone_root_physical
+
+  repo_root_physical="$(cd "$REPO_ROOT" 2>/dev/null && pwd -P)" || return 1
+  touchstone_root_physical="$(cd "$TOUCHSTONE_ROOT" 2>/dev/null && pwd -P)" || return 1
+  [ "$repo_root_physical" = "$touchstone_root_physical" ]
+}
+
+manifest_paths_at_ref() {
+  local ref="$1"
+
+  git show "$ref:.touchstone-manifest" 2>/dev/null | awk '
+    {
+      sub(/\r$/, "")
+      sub(/^[[:space:]]+/, "")
+      sub(/[[:space:]]+$/, "")
+    }
+    $0 == "" { next }
+    $0 ~ /^#/ { next }
+    {
+      sub(/^\.\//, "")
+      print
+    }
+  '
+}
+
+path_is_mixed_ownership() {
+  case "$1" in
+    .touchstone-manifest | AGENTS.md | CLAUDE.md | GEMINI.md | .codex-review.toml) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+trusted_touchstone_managed_paths() {
+  local base_ref="$1"
+  local head_ref="$2"
+  local base_paths head_paths
+
+  base_paths="$(mktemp "${TMPDIR:-/tmp}/touchstone-base-manifest.XXXXXX")"
+  head_paths="$(mktemp "${TMPDIR:-/tmp}/touchstone-head-manifest.XXXXXX")"
+
+  manifest_paths_at_ref "$base_ref" | LC_ALL=C sort -u >"$base_paths"
+  manifest_paths_at_ref "$head_ref" | LC_ALL=C sort -u >"$head_paths"
+
+  if [ ! -s "$base_paths" ] || [ ! -s "$head_paths" ]; then
+    rm -f "$base_paths" "$head_paths"
+    return 1
+  fi
+
+  comm -12 "$base_paths" "$head_paths" | while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    path_is_mixed_ownership "$path" && continue
+    printf '%s\n' "$path"
+  done
+  rm -f "$base_paths" "$head_paths"
+}
+
+path_is_trusted_touchstone_managed() {
+  local changed_path="$1"
+  local trusted_paths_file="$2"
+  local managed_path
+
+  [ -f "$trusted_paths_file" ] || return 1
+  while IFS= read -r managed_path; do
+    [ -n "$managed_path" ] || continue
+    if [ "$changed_path" = "$managed_path" ]; then
+      return 0
+    fi
+    case "$managed_path" in
+      */)
+        case "$changed_path" in
+          "$managed_path"*) return 0 ;;
+        esac
+        ;;
+    esac
+  done <"$trusted_paths_file"
+
+  return 1
+}
+
+prepare_large_diff_scoped_review() {
+  local total_lines="$1"
+  local trusted_paths_file changed_path
+  local -a scoped_paths=()
+
+  case "$MAX_DIFF_LINES" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  [ "$total_lines" -gt "$MAX_DIFF_LINES" ] 2>/dev/null || return 0
+  is_touchstone_source_repo && return 1
+
+  trusted_paths_file="$(mktemp "${TMPDIR:-/tmp}/touchstone-trusted-manifest.XXXXXX")"
+  if ! trusted_touchstone_managed_paths "$MERGE_BASE" HEAD >"$trusted_paths_file"; then
+    rm -f "$trusted_paths_file"
+    return 1
+  fi
+  if [ ! -s "$trusted_paths_file" ]; then
+    rm -f "$trusted_paths_file"
+    return 1
+  fi
+
+  SCOPED_LARGE_DIFF_INCLUDED_PATHS_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-scoped-included.XXXXXX")"
+  SCOPED_LARGE_DIFF_EXCLUDED_PATHS_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-scoped-excluded.XXXXXX")"
+  : >"$SCOPED_LARGE_DIFF_INCLUDED_PATHS_FILE"
+  : >"$SCOPED_LARGE_DIFF_EXCLUDED_PATHS_FILE"
+
+  while IFS= read -r -d '' changed_path; do
+    [ -n "$changed_path" ] || continue
+    if path_is_trusted_touchstone_managed "$changed_path" "$trusted_paths_file"; then
+      printf '%s\n' "$changed_path" >>"$SCOPED_LARGE_DIFF_EXCLUDED_PATHS_FILE"
+    else
+      printf '%s\n' "$changed_path" >>"$SCOPED_LARGE_DIFF_INCLUDED_PATHS_FILE"
+    fi
+  done < <(git diff --name-only -z "$MERGE_BASE"..HEAD)
+  rm -f "$trusted_paths_file"
+
+  SCOPED_LARGE_DIFF_EXCLUDED_COUNT="$(sed '/^$/d' "$SCOPED_LARGE_DIFF_EXCLUDED_PATHS_FILE" | wc -l | tr -d ' ')"
+  SCOPED_LARGE_DIFF_INCLUDED_COUNT="$(sed '/^$/d' "$SCOPED_LARGE_DIFF_INCLUDED_PATHS_FILE" | wc -l | tr -d ' ')"
+  [ "$SCOPED_LARGE_DIFF_EXCLUDED_COUNT" -gt 0 ] 2>/dev/null || return 1
+
+  if [ "$SCOPED_LARGE_DIFF_INCLUDED_COUNT" -eq 0 ] 2>/dev/null; then
+    SCOPED_LARGE_DIFF_SYNC_ONLY=true
+    SCOPED_LARGE_DIFF_ORIGINAL_LINES="$total_lines"
+    return 0
+  fi
+
+  while IFS= read -r changed_path; do
+    [ -n "$changed_path" ] || continue
+    scoped_paths+=("$changed_path")
+  done <"$SCOPED_LARGE_DIFF_INCLUDED_PATHS_FILE"
+
+  SCOPED_LARGE_DIFF_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-scoped-diff.XXXXXX")"
+  git diff "$MERGE_BASE"..HEAD -- "${scoped_paths[@]}" >"$SCOPED_LARGE_DIFF_FILE"
+  SCOPED_LARGE_DIFF_LINES="$(wc -l <"$SCOPED_LARGE_DIFF_FILE" | tr -d ' ')"
+  SCOPED_LARGE_DIFF_ORIGINAL_LINES="$total_lines"
+
+  if [ "$SCOPED_LARGE_DIFF_LINES" -gt "$MAX_DIFF_LINES" ] 2>/dev/null; then
+    SCOPED_LARGE_DIFF_REVIEW=false
+    return 1
+  fi
+
+  SCOPED_LARGE_DIFF_REVIEW=true
+  PROMPT_CONTEXT_DECISION="scoped"
+  PROMPT_CONTEXT_REASON="large Touchstone-managed diff sliced to project-owned files"
+  return 0
 }
 
 # --------------------------------------------------------------------------
@@ -1504,7 +1683,9 @@ conductor_subcommand_for_mode() {
   case "$phase:$REVIEW_MODE" in
     review:diff-only) printf 'call' ;;
     review:*)
-      if conductor_should_use_semantic_review; then
+      if is_truthy "${SCOPED_LARGE_DIFF_REVIEW:-false}"; then
+        printf 'call'
+      elif conductor_should_use_semantic_review; then
         printf 'review'
       else
         printf 'exec'
@@ -1701,6 +1882,11 @@ REVIEW_LOCK_TOKEN=""
 
 cleanup_review_process() {
   rm -f "$REVIEW_OUTPUT_FILE" "$ASSIST_OUTPUT_FILE" "$REVIEW_STDERR_FILE" "$REVIEW_CONDUCTOR_LOG_FILE"
+  rm -f \
+    "${SCOPED_LARGE_DIFF_FILE:-}" \
+    "${SCOPED_LARGE_DIFF_INCLUDED_PATHS_FILE:-}" \
+    "${SCOPED_LARGE_DIFF_EXCLUDED_PATHS_FILE:-}" \
+    2>/dev/null || true
   if [ "$REVIEW_LOCK_ACQUIRED" = true ] && [ -n "$REVIEW_LOCK_DIR" ]; then
     if [ "$(review_lock_metadata_value token 2>/dev/null || true)" = "$REVIEW_LOCK_TOKEN" ]; then
       rm -rf "$REVIEW_LOCK_DIR" 2>/dev/null || true
@@ -2055,8 +2241,13 @@ if ! resolve_reviewer; then
 fi
 REVIEWER_LABEL="$(reviewer_label)"
 select_prompt_context_mode "$ROUTING_DIFF_LINE_COUNT" "$PROMPT_CONTEXT_CHANGED_PATHS"
+prepare_large_diff_scoped_review "$ROUTING_DIFF_LINE_COUNT" || true
 echo "==> Using reviewer: $REVIEWER_LABEL"
-echo "==> Prompt context: $PROMPT_CONTEXT_DECISION ($PROMPT_CONTEXT_REASON)"
+if is_truthy "${SCOPED_LARGE_DIFF_REVIEW:-false}"; then
+  echo "==> Prompt context: scoped large-diff review (${SCOPED_LARGE_DIFF_LINES}/${SCOPED_LARGE_DIFF_ORIGINAL_LINES} lines reviewed)"
+else
+  echo "==> Prompt context: $PROMPT_CONTEXT_DECISION ($PROMPT_CONTEXT_REASON)"
+fi
 if [ -n "$REVIEW_CONTEXT_FILE" ]; then
   echo "==> Review context: $(basename "$REVIEW_CONTEXT_FILE")"
 fi
@@ -2082,9 +2273,17 @@ Do not flag intentional design decisions that are explained in the commit messag
 
 $(git log --reverse --format='### %s%n%n%b' "$MERGE_BASE"..HEAD 2>/dev/null | sed '/^$/N;/^\n$/d')
 
-Examine the diff vs $BASE using your tools.
-$(if [ "$REVIEW_MODE" = "diff-only" ]; then
-  printf '\n## Diff (included because mode=diff-only restricts tool access)\n\n```\n'
+$(if is_truthy "${SCOPED_LARGE_DIFF_REVIEW:-false}"; then
+  printf 'Examine only the embedded scoped project-owned diff below. Do not review excluded Touchstone-managed sync files.\n'
+else
+  printf 'Examine the diff vs %s using your tools.\n' "$BASE"
+fi)
+$(if is_truthy "${SCOPED_LARGE_DIFF_REVIEW:-false}"; then
+  printf '\n## Diff (scoped project-owned slice)\n\n```diff\n'
+  cat "$SCOPED_LARGE_DIFF_FILE"
+  printf '```\n'
+elif [ "$REVIEW_MODE" = "diff-only" ]; then
+  printf '\n## Diff (included because mode=diff-only restricts tool access)\n\n```diff\n'
   git diff "$MERGE_BASE"..HEAD 2>/dev/null
   printf '```\n'
 fi)
@@ -3366,10 +3565,25 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
   phase "loading diff"
   DIFF_LINE_COUNT="$(git diff "$MERGE_BASE"..HEAD | wc -l | tr -d ' ')"
   if [ "$DIFF_LINE_COUNT" -gt "$MAX_DIFF_LINES" ]; then
-    echo "==> Diff is $DIFF_LINE_COUNT lines (> $MAX_DIFF_LINES cap) — skipping review."
-    echo "    Override with: CODEX_REVIEW_MAX_DIFF_LINES=100000 git push"
-    log_skip_event other "diff-too-large:${DIFF_LINE_COUNT}>${MAX_DIFF_LINES}"
-    exit 0
+    if is_truthy "${SCOPED_LARGE_DIFF_REVIEW:-false}"; then
+      echo "==> Diff is $DIFF_LINE_COUNT lines (> $MAX_DIFF_LINES cap)."
+      echo "==> Running scoped project-owned review: $SCOPED_LARGE_DIFF_LINES lines across $SCOPED_LARGE_DIFF_INCLUDED_COUNT file(s); excluded $SCOPED_LARGE_DIFF_EXCLUDED_COUNT trusted Touchstone-managed file(s)."
+      DIFF_LINE_COUNT="$SCOPED_LARGE_DIFF_LINES"
+    elif is_truthy "${SCOPED_LARGE_DIFF_SYNC_ONLY:-false}"; then
+      echo "==> Diff is $DIFF_LINE_COUNT lines (> $MAX_DIFF_LINES cap), but all changed paths are trusted Touchstone-managed sync files."
+      echo "==> Skipping AI review for managed sync-only diff."
+      log_skip_event other "diff-too-large-managed-sync-only:${DIFF_LINE_COUNT}>${MAX_DIFF_LINES}"
+      exit 0
+    else
+      echo "==> Diff is $DIFF_LINE_COUNT lines (> $MAX_DIFF_LINES cap) — skipping review."
+      echo "    Override with: CODEX_REVIEW_MAX_DIFF_LINES=100000 git push"
+      if [ "$ON_ERROR" = "fail-closed" ]; then
+        REVIEW_EXIT_REASON="error"
+        handle_error "diff too large:${DIFF_LINE_COUNT}>${MAX_DIFF_LINES}"
+      fi
+      log_skip_event other "diff-too-large:${DIFF_LINE_COUNT}>${MAX_DIFF_LINES}"
+      exit 0
+    fi
   fi
 
   phase "checking cache"

@@ -2538,6 +2538,144 @@ else
   echo "==> PASS: TOUCHSTONE_REVIEW_LOG='' wrote nothing to \$HOME"
 fi
 
+echo "==> Test: large Touchstone-managed diffs run scoped project-owned review"
+SCOPED_REPO="$TEST_DIR/scoped-large-repo"
+SCOPED_BIN="$TEST_DIR/scoped-large-bin"
+SCOPED_PROMPT="$TEST_DIR/scoped-large-prompt.txt"
+SCOPED_OUTPUT="$TEST_DIR/scoped-large-output.txt"
+SCOPED_SUBCOMMAND="$TEST_DIR/scoped-large-subcommand.txt"
+mkdir -p "$SCOPED_REPO/managed" "$SCOPED_BIN"
+git -C "$SCOPED_REPO" init -q >/dev/null 2>&1
+git -C "$SCOPED_REPO" config user.name "Touchstone Test"
+git -C "$SCOPED_REPO" config user.email "touchstone@example.com"
+cp "$TOUCHSTONE_ROOT/.codex-review.toml" "$SCOPED_REPO/.codex-review.toml"
+cat >"$SCOPED_REPO/.touchstone-manifest" <<'EOF'
+# Managed by touchstone.
+.touchstone-manifest
+managed/generated.txt
+EOF
+printf 'base\n' >"$SCOPED_REPO/app.txt"
+printf 'one\n' >"$SCOPED_REPO/managed/generated.txt"
+git -C "$SCOPED_REPO" add .codex-review.toml .touchstone-manifest app.txt managed/generated.txt
+git -C "$SCOPED_REPO" commit -m "base" >/dev/null 2>&1
+for i in $(seq 1 80); do
+  printf 'managed line %s\n' "$i"
+done >"$SCOPED_REPO/managed/generated.txt"
+printf 'app change\n' >>"$SCOPED_REPO/app.txt"
+git -C "$SCOPED_REPO" add app.txt managed/generated.txt
+git -C "$SCOPED_REPO" commit -m "large managed sync plus app change" >/dev/null 2>&1
+
+cat >"$SCOPED_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "main"
+EOF
+
+cat >"$SCOPED_BIN/conductor" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+printf '%s\n' "${1:-}" >"$SCOPED_SUBCOMMAND"
+cat >"$SCOPED_PROMPT"
+printf 'CODEX_REVIEW_CLEAN\n'
+EOF
+chmod +x "$SCOPED_BIN/gh" "$SCOPED_BIN/conductor"
+
+if (
+  cd "$SCOPED_REPO"
+  PATH="$SCOPED_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    SCOPED_PROMPT="$SCOPED_PROMPT" \
+    SCOPED_SUBCOMMAND="$SCOPED_SUBCOMMAND" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MAX_DIFF_LINES=20 \
+    TOUCHSTONE_NO_PREFLIGHT=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$SCOPED_OUTPUT" 2>&1
+); then
+  if [ "$(cat "$SCOPED_SUBCOMMAND" 2>/dev/null || true)" = "call" ] \
+    && grep -q 'Large-diff scoped review boundary' "$SCOPED_PROMPT" \
+    && grep -q 'Diff (scoped project-owned slice)' "$SCOPED_PROMPT" \
+    && grep -q 'app.txt' "$SCOPED_PROMPT" \
+    && ! grep -q 'managed/generated.txt' "$SCOPED_PROMPT" \
+    && grep -q 'Running scoped project-owned review' "$SCOPED_OUTPUT"; then
+    echo "==> PASS: large managed diff reviewed only the project-owned slice via Conductor call"
+  else
+    echo "FAIL: expected scoped project-owned review via Conductor call" >&2
+    echo "subcommand: $(cat "$SCOPED_SUBCOMMAND" 2>/dev/null || true)" >&2
+    sed -n '1,160p' "$SCOPED_PROMPT" >&2
+    cat "$SCOPED_OUTPUT" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+else
+  echo "FAIL: scoped large-diff review should exit cleanly" >&2
+  cat "$SCOPED_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: unsliceable large diffs fail closed at merge gate"
+UNSCOPED_REPO="$TEST_DIR/unscoped-large-repo"
+UNSCOPED_BIN="$TEST_DIR/unscoped-large-bin"
+UNSCOPED_OUTPUT="$TEST_DIR/unscoped-large-output.txt"
+UNSCOPED_CALLS="$TEST_DIR/unscoped-large-calls.txt"
+mkdir -p "$UNSCOPED_REPO" "$UNSCOPED_BIN"
+git -C "$UNSCOPED_REPO" init -q >/dev/null 2>&1
+git -C "$UNSCOPED_REPO" config user.name "Touchstone Test"
+git -C "$UNSCOPED_REPO" config user.email "touchstone@example.com"
+cp "$TOUCHSTONE_ROOT/.codex-review.toml" "$UNSCOPED_REPO/.codex-review.toml"
+printf 'base\n' >"$UNSCOPED_REPO/app.txt"
+git -C "$UNSCOPED_REPO" add .codex-review.toml app.txt
+git -C "$UNSCOPED_REPO" commit -m "base" >/dev/null 2>&1
+for i in $(seq 1 80); do
+  printf 'app line %s\n' "$i"
+done >"$UNSCOPED_REPO/app.txt"
+git -C "$UNSCOPED_REPO" add app.txt
+git -C "$UNSCOPED_REPO" commit -m "large app change" >/dev/null 2>&1
+
+cat >"$UNSCOPED_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "main"
+EOF
+
+cat >"$UNSCOPED_BIN/conductor" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+printf 'called\n' >>"$UNSCOPED_CALLS"
+cat >/dev/null
+printf 'CODEX_REVIEW_CLEAN\n'
+EOF
+chmod +x "$UNSCOPED_BIN/gh" "$UNSCOPED_BIN/conductor"
+: >"$UNSCOPED_CALLS"
+
+set +e
+(
+  cd "$UNSCOPED_REPO"
+  PATH="$UNSCOPED_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    UNSCOPED_CALLS="$UNSCOPED_CALLS" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MAX_DIFF_LINES=20 \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
+    TOUCHSTONE_NO_PREFLIGHT=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$UNSCOPED_OUTPUT" 2>&1
+)
+UNSCOPED_EXIT=$?
+set -e
+UNSCOPED_CALL_COUNT="$(wc -l <"$UNSCOPED_CALLS" | tr -d ' ')"
+if [ "$UNSCOPED_EXIT" -eq 1 ] \
+  && [ "$UNSCOPED_CALL_COUNT" = "0" ] \
+  && grep -q 'diff too large' "$UNSCOPED_OUTPUT" \
+  && grep -q 'on_error=fail-closed' "$UNSCOPED_OUTPUT"; then
+  echo "==> PASS: unsliceable large diff blocks under fail-closed policy without spending review tokens"
+else
+  echo "FAIL: unsliceable large diff should block under fail-closed without invoking Conductor" >&2
+  echo "exit code: $UNSCOPED_EXIT" >&2
+  echo "conductor calls: $UNSCOPED_CALL_COUNT" >&2
+  cat "$UNSCOPED_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 if [ "$ERRORS" -eq 0 ]; then
   echo "==> PASS: all review hook assertions passed"
   exit 0
