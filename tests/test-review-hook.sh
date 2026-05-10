@@ -1897,6 +1897,45 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: conductor review strips tool-use tag"
+setup_ctx_repo
+setup_ctx_bin
+cat >"$CTX_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+subcmd="$1"; shift
+printf '%s\n' "$subcmd $*" >> "$CONDUCTOR_ARGS_LOG"
+cat >/dev/null
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$CTX_BIN/conductor"
+CONDUCTOR_ARGS_LOG="$TEST_DIR/conductor-review-tags.log"
+: >"$CONDUCTOR_ARGS_LOG"
+printf 'tag sanitizer test\n' >>"$CTX_REPO/example.txt"
+git -C "$CTX_REPO" add example.txt
+git -C "$CTX_REPO" commit -m "tag sanitizer" >/dev/null 2>&1
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CONDUCTOR_ARGS_LOG="$CONDUCTOR_ARGS_LOG" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    TOUCHSTONE_CONDUCTOR_TAGS="code-review,tool-use,long-context" \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
+)
+
+if grep -q '^review .*--tags code-review,long-context' "$CONDUCTOR_ARGS_LOG" \
+  && ! grep -q '^review .*tool-use' "$CONDUCTOR_ARGS_LOG"; then
+  echo "==> PASS: conductor review strips tool-use tag"
+else
+  echo "FAIL: conductor review should strip tool-use tag" >&2
+  echo "--- CTX_OUTPUT ---" >&2
+  cat "$CTX_OUTPUT" >&2
+  echo "--- conductor args log ---" >&2
+  cat "$CONDUCTOR_ARGS_LOG" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: peer review fires when [review.assist].enabled = true"
 # Mock conductor responds differently to `review` (primary) and `call`
 # (peer). The primary emits a route-log to stderr naming itself, which

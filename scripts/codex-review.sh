@@ -721,6 +721,38 @@ normalize_bool() {
   esac
 }
 
+normalize_conductor_review_tags() {
+  printf '%s\n' "${1:-code-review}" \
+    | awk -F',' '
+      {
+        for (i = 1; i <= NF; i++) {
+          tag = $i
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", tag)
+          if (tag == "" || tag == "tool-use") {
+            continue
+          }
+          if (!(tag in seen)) {
+            seen[tag] = 1
+            order[++count] = tag
+          }
+        }
+      }
+      END {
+        out = ""
+        if (!("code-review" in seen)) {
+          out = "code-review"
+        }
+        for (i = 1; i <= count; i++) {
+          if (out != "") {
+            out = out ","
+          }
+          out = out order[i]
+        }
+        print out
+      }
+    '
+}
+
 toml_string_value() {
   local value="$1"
   value="$(trim "$value")"
@@ -1598,10 +1630,12 @@ reviewer_conductor_exec() {
   tools="$(conductor_tools_for_mode "$phase")"
 
   if [ "$subcommand" = "review" ]; then
+    local review_tags
+    review_tags="$(normalize_conductor_review_tags "${CONDUCTOR_TAGS:-}")"
     [ -n "${CONDUCTOR_WITH:-}" ] && args+=(--with "$CONDUCTOR_WITH")
     if [ -z "${CONDUCTOR_WITH:-}" ]; then
       args+=(--prefer "${CONDUCTOR_PREFER:-best}")
-      [ -n "${CONDUCTOR_TAGS:-}" ] && args+=(--tags "$CONDUCTOR_TAGS")
+      [ -n "$review_tags" ] && args+=(--tags "$review_tags")
     fi
     args+=(--effort "${CONDUCTOR_EFFORT:-high}")
     if [ -n "${CONDUCTOR_EXCLUDE:-}" ] && [ "$CONDUCTOR_EXCLUDE" != "ollama" ]; then

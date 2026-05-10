@@ -123,6 +123,31 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+echo "==> Test: dry-run review routing strips tool-use tag"
+REPO_TAGS="$TEST_DIR/repo-tags"
+new_repo "$REPO_TAGS"
+cat >"$REPO_TAGS/.codex-review.toml" <<'EOF'
+[review.conductor]
+tags = "code-review,tool-use,long-context"
+EOF
+git -C "$REPO_TAGS" add . && git -C "$REPO_TAGS" commit -qm cfg
+echo c >>"$REPO_TAGS/README.md" && git -C "$REPO_TAGS" add . && git -C "$REPO_TAGS" commit -qm change
+
+: >"$ARGS_FILE"
+out="$(run_review "$REPO_TAGS" --dry-run --base HEAD~1 2>&1)"
+
+if grep -q '\-\-tags code-review,long-context' "$ARGS_FILE" \
+  && ! grep -q 'tool-use' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'would pick: claude'; then
+  echo "==> PASS: dry-run review routing strips tool-use tag"
+else
+  echo "FAIL: dry-run review routing should strip tool-use from tags" >&2
+  echo "args file: $(cat "$ARGS_FILE")" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ----------------------------------------------------------------------------
 echo "==> Test: exact threshold stays in the small routing bucket"
 REPO_THRESHOLD="$TEST_DIR/repo-threshold"
 new_repo "$REPO_THRESHOLD"
