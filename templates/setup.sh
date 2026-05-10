@@ -350,7 +350,7 @@ if [ "$DEPS_ONLY" = false ]; then
     ok "AI review disabled in .codex-review.toml"
   else
     if truthy "$AI_REVIEW_ROUTING_ENABLED"; then
-      ok "review routing enabled — local/small-diff routes can use <= ${AI_REVIEW_ROUTING_SMALL_MAX} diff lines"
+      ok "review routing enabled — size-aware hosted routes can use <= ${AI_REVIEW_ROUTING_SMALL_MAX} diff lines"
     fi
     for reviewer in "${AI_REVIEWERS[@]}"; do
       check_ai_reviewer "$reviewer"

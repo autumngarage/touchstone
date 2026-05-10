@@ -7,8 +7,8 @@
 #   new-project.sh <project-dir> --no-register   # skip adding to ~/.touchstone-projects
 #   new-project.sh <project-dir> --type node|python|swift|rust|go|generic|auto
 #   new-project.sh <project-dir> --unsafe-paths src/auth/,migrations/
-#   new-project.sh <project-dir> --reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)
-#   new-project.sh <project-dir> --review-routing all-hosted|all-local|small-local
+#   new-project.sh <project-dir> --reviewer conductor|openrouter|none (or legacy: codex|claude|gemini|local|auto)
+#   new-project.sh <project-dir> --review-routing all-hosted|all-local
 #   new-project.sh <project-dir> --gitbutler
 #
 # What this does:
@@ -44,7 +44,6 @@ INPUT_REVIEW_ASSIST=""
 INPUT_REVIEW_AUTOFIX=""
 INPUT_LOCAL_REVIEW_COMMAND=""
 INPUT_REVIEW_ROUTING=""
-INPUT_SMALL_REVIEW_LINES=""
 INPUT_GIT_WORKFLOW=""
 INPUT_GITBUTLER_MCP=""
 INPUT_CI=""
@@ -68,7 +67,7 @@ GITHUB_MODE="" # unset | private | public | none
 GITHUB_MODE_REQUESTED=false
 
 usage() {
-  echo "Usage: $0 <project-dir> [--yes|-y] [--register|--no-register] [--type node|python|swift|rust|go|generic|auto] [--skip-language-scaffold] [--unsafe-paths path1,path2] [--reviewer conductor|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local|small-local] [--small-review-lines N] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|none] [--scaffold-tests] [--with-cortex|--no-with-cortex] [--with-sentinel|--no-with-sentinel] [--initial-commit|--no-initial-commit] [--github-private|--github-public|--no-github]"
+  echo "Usage: $0 <project-dir> [--yes|-y] [--register|--no-register] [--type node|python|swift|rust|go|generic|auto] [--skip-language-scaffold] [--unsafe-paths path1,path2] [--reviewer conductor|openrouter|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|none] [--scaffold-tests] [--with-cortex|--no-with-cortex] [--with-sentinel|--no-with-sentinel] [--initial-commit|--no-initial-commit] [--github-private|--github-public|--no-github]"
 }
 
 trim() {
@@ -207,10 +206,10 @@ normalize_reviewer() {
 
   case "$value" in
     "" | auto | conductor) printf 'auto' ;;
-    codex | claude | gemini | local) printf '%s' "$value" ;;
+    openrouter | codex | claude | gemini | local) printf '%s' "$value" ;;
     none | no | off | disabled | false) printf 'none' ;;
     *)
-      echo "ERROR: unknown reviewer '$1' (expected conductor, none, or legacy: codex, claude, gemini, local, auto)" >&2
+      echo "ERROR: unknown reviewer '$1' (expected conductor, openrouter, none, or legacy: codex, claude, gemini, local, auto)" >&2
       return 1
       ;;
   esac
@@ -222,11 +221,14 @@ normalize_review_routing() {
 
   case "$value" in
     "" | hosted | all | all-hosted | cloud | remote) printf 'all-hosted' ;;
-    local | all-local) printf 'all-local' ;;
-    hybrid | small-local | local-small | small-local-large-hosted) printf 'small-local' ;;
+    local | all-local | offline | offline-local) printf 'all-local' ;;
+    hybrid | small-local | local-small | small-local-large-hosted)
+      echo "WARNING: review routing '$1' is retired for live review; use all-hosted/openrouter or all-local for explicit offline review. Treating as all-hosted." >&2
+      printf 'all-hosted'
+      ;;
     none | off | disabled | false) printf 'none' ;;
     *)
-      echo "ERROR: unknown review routing '$1' (expected all-hosted, all-local, or small-local)" >&2
+      echo "ERROR: unknown review routing '$1' (expected all-hosted or all-local)" >&2
       return 1
       ;;
   esac
@@ -301,11 +303,12 @@ prompt_yes_no() {
 
 default_reviewer() {
   # Touchstone 2.0: the single reviewer is `conductor`; the underlying
-  # provider is chosen by Conductor's router at runtime. "conductor"
-  # normalizes to "auto" (no pin) via normalize_reviewer — the right
-  # default for a fresh project. Users who want to pin a provider can
+  # provider is chosen by Conductor at runtime. New projects pin live review
+  # to OpenRouter by default; "conductor" still normalizes to "auto" for users
+  # who want Conductor's provider router instead. Users who want another
+  # specific provider can
   # pass --reviewer <name> or edit .codex-review.toml afterwards.
-  printf 'conductor'
+  printf 'openrouter'
 }
 
 detect_node_package_manager() {
@@ -812,7 +815,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --reviewer)
       [ "$#" -ge 2 ] || {
-        echo "ERROR: --reviewer requires a value (conductor, none, or legacy: codex, claude, gemini, local, auto)" >&2
+        echo "ERROR: --reviewer requires a value (conductor, openrouter, none, or legacy: codex, claude, gemini, local, auto)" >&2
         exit 1
       }
       INPUT_REVIEWER="$(normalize_reviewer "$2")"
@@ -821,7 +824,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --review-routing)
       [ "$#" -ge 2 ] || {
-        echo "ERROR: --review-routing requires a value (all-hosted, all-local, small-local)" >&2
+        echo "ERROR: --review-routing requires a value (all-hosted, all-local)" >&2
         exit 1
       }
       INPUT_REVIEW_ROUTING="$(normalize_review_routing "$2")"
@@ -833,7 +836,7 @@ while [ "$#" -gt 0 ]; do
         echo "ERROR: --small-review-lines requires a positive integer" >&2
         exit 1
       }
-      INPUT_SMALL_REVIEW_LINES="$(normalize_positive_int "$2")"
+      normalize_positive_int "$2" >/dev/null
       REVIEW_CONFIG_REQUESTED=true
       shift 2
       ;;
@@ -1143,12 +1146,12 @@ set_codex_review_key() {
 
 conductor_with_for() {
   # Map a legacy --reviewer value to its 2.0 Conductor `with=` pin.
-  # auto/conductor/empty → no pin (router picks). codex/claude/gemini pin
-  # directly. local maps to ollama (closest 2.0 analog; warn below).
+  # auto/conductor/empty -> no pin (router picks). Hosted providers pin
+  # directly. local maps to ollama for explicit offline review.
   local reviewer="$1"
   case "$reviewer" in
     auto | conductor | "") printf '' ;;
-    codex | claude | gemini) printf '%s' "$reviewer" ;;
+    openrouter | codex | claude | gemini) printf '%s' "$reviewer" ;;
     local) printf 'ollama' ;;
     *) printf '%s' "$reviewer" ;;
   esac
@@ -1160,10 +1163,8 @@ write_review_onboarding_config() {
   local routing="${INPUT_REVIEW_ROUTING:-}"
   local assist="${INPUT_REVIEW_ASSIST:-false}"
   local autofix="${INPUT_REVIEW_AUTOFIX:-false}"
-  local small_review_lines="${INPUT_SMALL_REVIEW_LINES:-400}"
   local enabled=true
   local with_pin
-  local large_with_pin
 
   if [ -z "$routing" ]; then
     case "$reviewer" in
@@ -1178,16 +1179,12 @@ write_review_onboarding_config() {
     routing="none"
     with_pin=""
   elif [ "$routing" = "all-local" ]; then
-    # All-local routing pins ollama for every diff.
+    # All-local routing is the explicit offline path and pins ollama for every diff.
     reviewer="local"
     with_pin="ollama"
   else
     with_pin="$(conductor_with_for "$reviewer")"
   fi
-
-  # For size-based routing, large diffs keep the user's chosen reviewer;
-  # small diffs get pinned to ollama for fast/cheap iteration.
-  large_with_pin="$(conductor_with_for "$reviewer")"
 
   if [ "$enabled" = true ] && [ "$autofix" = true ]; then
     set_codex_review_key "$file" "mode" '"fix"'
@@ -1215,7 +1212,7 @@ write_review_onboarding_config() {
         printf 'with = "%s"\n' "$with_pin"
       else
         printf '# Pin a specific underlying provider (bypasses auto-routing). Uncomment to use:\n'
-        printf '# with = "claude"\n'
+        printf '# with = "openrouter"\n'
       fi
       if [ "$reviewer" = "local" ] && [ -n "$INPUT_LOCAL_REVIEW_COMMAND" ]; then
         printf '# NOTE: Touchstone 2.0 retired [review.local]. Your --local-review-command\n'
@@ -1223,20 +1220,6 @@ write_review_onboarding_config() {
         printf '#   Register it as a Conductor custom provider when v0.3 ships:\n'
         printf "#     conductor providers add --name local --shell '<cmd>' --tags code-review,offline\n"
       fi
-    fi
-    if [ "$enabled" = true ] && [ "$routing" = "small-local" ]; then
-      printf '\n[review.routing]\n'
-      printf 'enabled = true\n'
-      printf 'small_max_diff_lines = %s\n' "$small_review_lines"
-      printf 'small_with = "ollama"       # small diffs: fast local review\n'
-      printf 'small_effort = "minimal"\n'
-      if [ -n "$large_with_pin" ]; then
-        printf 'large_with = "%s"\n' "$large_with_pin"
-      fi
-      printf 'large_prefer = "best"\n'
-      printf 'large_effort = "medium"\n'
-      printf 'high_risk_prefer = "best"\n'
-      printf 'high_risk_effort = "high"\n'
     fi
     if [ "$assist" = "true" ]; then
       printf '\n# NOTE: --review-assist requested. Peer review is disabled in Touchstone 2.0.0;\n'
@@ -1262,6 +1245,9 @@ print_review_setup_hint() {
   fi
 
   { [ "$reviewer" = "none" ] || [ "$routing" = "none" ]; } && enabled=false
+  if [ "$enabled" = true ] && [ "$routing" = "all-local" ]; then
+    reviewer="local"
+  fi
   if [ "$enabled" = false ]; then
     echo "==> AI review disabled. You can enable it later in .codex-review.toml."
     return
@@ -1276,9 +1262,8 @@ print_review_setup_hint() {
     echo "==> AI review configured: conductor (auto-routed) — routing=$routing"
   fi
 
-  if [ "$routing" = "small-local" ]; then
-    echo "    Small diffs (<= ${INPUT_SMALL_REVIEW_LINES:-400} lines) route to ollama;"
-    echo "    larger diffs use your pinned/auto-routed provider."
+  if [ "$routing" = "all-local" ]; then
+    echo "    Offline mode: all review routes to ollama and no hosted provider is used."
   fi
 
   if ! command -v conductor >/dev/null 2>&1; then
@@ -1477,7 +1462,7 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
 
   if [ "$REVIEW_CONFIG_REQUESTED" = false ] && [ "$CODEX_REVIEW_CONFIG_CREATED" = true ]; then
     if [ "$YES_MODE" = true ]; then
-      # --yes: defaults are "AI review on, hosted routing, auto reviewer".
+      # --yes: defaults are "AI review on, hosted routing, OpenRouter reviewer".
       INPUT_REVIEW_ROUTING="all-hosted"
       INPUT_REVIEWER="$(default_reviewer)"
       INPUT_REVIEW_AUTOFIX=false
@@ -1487,33 +1472,23 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
       echo ""
       echo "==> Configure AI review (press Enter for the default):"
       echo "   Touchstone 2.0 routes every review through Conductor."
-      echo "   Hosted: Conductor auto-picks the best configured provider for each diff."
-      echo "   Local: small diffs go to Ollama (fast/cheap); nothing hosted."
-      echo "   Hybrid: small diffs go to Ollama; larger diffs to Conductor's router."
+      echo "   Hosted: OpenRouter handles live review by default."
+      echo "   Offline local: all review goes to Ollama; use only when hosted review is unavailable."
       if [ "$(prompt_yes_no "Use AI review before code reaches main?" "true")" = "true" ]; then
         local_review_style=""
-        read -r -p "   Review style (hosted, local, hybrid) [hosted]: " local_review_style
+        read -r -p "   Review style (hosted, offline-local) [hosted]: " local_review_style
         local_review_style="$(normalize_review_routing "${local_review_style:-hosted}")"
 
         case "$local_review_style" in
           all-hosted)
             INPUT_REVIEW_ROUTING="all-hosted"
-            read -r -p "   Pin a specific provider (e.g. claude, codex, gemini; Enter = Conductor auto-routes): " INPUT_REVIEWER
-            INPUT_REVIEWER="${INPUT_REVIEWER:-conductor}"
+            read -r -p "   Pin a specific provider (e.g. openrouter, claude, codex, gemini; Enter = OpenRouter): " INPUT_REVIEWER
+            INPUT_REVIEWER="${INPUT_REVIEWER:-$(default_reviewer)}"
             INPUT_REVIEWER="$(normalize_reviewer "$INPUT_REVIEWER")"
             ;;
           all-local)
             INPUT_REVIEW_ROUTING="all-local"
             INPUT_REVIEWER="local"
-            ;;
-          small-local)
-            INPUT_REVIEW_ROUTING="small-local"
-            read -r -p "   Pin a provider for larger diffs (e.g. claude, codex, gemini; Enter = Conductor auto-routes): " INPUT_REVIEWER
-            INPUT_REVIEWER="${INPUT_REVIEWER:-conductor}"
-            INPUT_REVIEWER="$(normalize_reviewer "$INPUT_REVIEWER")"
-            read -r -p "   Small-diff cutoff in changed diff lines [400]: " INPUT_SMALL_REVIEW_LINES
-            INPUT_SMALL_REVIEW_LINES="${INPUT_SMALL_REVIEW_LINES:-400}"
-            INPUT_SMALL_REVIEW_LINES="$(normalize_positive_int "$INPUT_SMALL_REVIEW_LINES")"
             ;;
         esac
 
@@ -1617,6 +1592,17 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
       GITHUB_MODE="none"
     fi
   fi
+fi
+
+# Fresh non-interactive scaffolds skip the wizard, but they still need the same
+# live-review default as --yes. Only do this when the Codex review config was
+# newly copied; pre-existing project-owned review choices remain untouched.
+if [ "$REVIEW_CONFIG_REQUESTED" = false ] && [ "$CODEX_REVIEW_CONFIG_CREATED" = true ]; then
+  INPUT_REVIEW_ROUTING="all-hosted"
+  INPUT_REVIEWER="$(default_reviewer)"
+  INPUT_REVIEW_AUTOFIX=false
+  INPUT_REVIEW_ASSIST=false
+  REVIEW_CONFIG_REQUESTED=true
 fi
 
 # Non-interactive fallback defaults — Doctrine 0002: non-TTY without --yes and

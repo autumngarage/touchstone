@@ -16,8 +16,8 @@
 #   [review.routing].small_reviewers = ["X"] → small_with = "X"
 #                  .large_reviewers = ["Y"] → large_with = "Y"
 #
-# `local` as a reviewer name maps to `ollama` (the closest 2.0 analog
-# for "run on this machine").
+# `local` as a reviewer name maps to `ollama` for explicit offline/local
+# compatibility.
 #
 # Safe by default: writes a .bak before changing anything; idempotent
 # (detects already-migrated configs and exits 0); --dry-run shows the

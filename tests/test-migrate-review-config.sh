@@ -69,7 +69,7 @@ assert_file_contains "$LEGACY" '^effort = "high"$' "[review.conductor].effort = 
 assert_file_contains "$LEGACY" '^tags = "code-review"$' "[review.conductor].tags"
 assert_file_contains "$LEGACY" '^with = "claude"$' "[review.conductor].with pinned to first reviewer"
 assert_file_contains "$LEGACY" '# Original 1.x cascade was: claude, codex, gemini' "fallback chain preserved as comment"
-assert_file_contains "$LEGACY" '^small_with = "ollama"$' "small_reviewers=local → small_with=ollama"
+assert_file_contains "$LEGACY" '^small_with = "ollama"$' "small_reviewers=local → offline small_with=ollama"
 assert_file_contains "$LEGACY" '^large_with = "claude"$' "large_reviewers=claude → large_with=claude"
 
 # 1.x markers gone (or commented out)
@@ -150,9 +150,9 @@ bash "$MIGRATE" --no-backup --file "$NB" >/dev/null
 echo "==> PASS: --no-backup honored"
 
 # ----------------------------------------------------------------------------
-# Test: `local` reviewer maps to `ollama` with retired-section comment
+# Test: `local` reviewer maps to offline `ollama` with retired-section comment
 # ----------------------------------------------------------------------------
-echo "==> Test: 'local' reviewer maps to 'ollama'"
+echo "==> Test: 'local' reviewer maps to offline 'ollama'"
 LOC="$TEST_DIR/local-reviewer.toml"
 cat >"$LOC" <<'EOF'
 [review]
@@ -162,9 +162,9 @@ reviewers = ["local", "codex"]
 command = "my-script"
 EOF
 bash "$MIGRATE" --no-backup --file "$LOC" >/dev/null
-assert_file_contains "$LOC" '^with = "ollama"$' "local → ollama in [review.conductor]"
+assert_file_contains "$LOC" '^with = "ollama"$' "local → offline ollama in [review.conductor]"
 assert_file_contains "$LOC" '# command = "my-script"' "local command preserved as comment"
-echo "==> PASS: local maps to ollama"
+echo "==> PASS: local maps to offline ollama"
 
 # ----------------------------------------------------------------------------
 # Test: file with no 1.x markers exits cleanly without changes
