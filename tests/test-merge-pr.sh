@@ -56,7 +56,7 @@ case "${1:-} ${2:-}" in
         if [ -f "${GH_HEAD_REF_FILE:-/dev/null/never}" ]; then
           cat "$GH_HEAD_REF_FILE"
         else
-          echo "pr-head-oid"
+          echo "${GH_PR_HEAD_OID:-pr-head-oid}"
         fi
         ;;
       mergeStateStatus,mergeable) echo "${GH_MERGE_STATE:-CLEAN MERGEABLE}" ;;
@@ -155,7 +155,7 @@ case "$*" in
     elif [ -f "$GIT_REVIEW_HEAD_FILE" ]; then
       cat "$GIT_REVIEW_HEAD_FILE"
     elif [ -f "$GH_CHECKOUT_FILE" ]; then
-      echo "pr-head-oid"
+      echo "${GH_PR_HEAD_OID:-pr-head-oid}"
     else
       echo "stale-local-oid"
     fi
@@ -163,8 +163,17 @@ case "$*" in
   "rev-parse --git-path touchstone/reviewer-clean")
     printf '%s\n' "$GIT_PATH_ROOT/touchstone/reviewer-clean"
     ;;
+  "rev-parse --git-path touchstone/preflight-clean")
+    printf '%s\n' "$GIT_PATH_ROOT/touchstone/preflight-clean"
+    ;;
   "rev-parse --show-toplevel")
     printf '%s\n' "${TEST_CURRENT_WORKTREE:-/tmp/touchstone-feature-worktree}"
+    ;;
+  "rev-parse --verify origin/main^{commit}")
+    printf '%s\n' "${GIT_BASE_OID:-base-oid}"
+    ;;
+  "rev-parse --verify --quiet origin/main^{commit}")
+    printf '%s\n' "${GIT_BASE_OID:-base-oid}"
     ;;
   "rev-parse feature/test")
     if [ -f "$GIT_BRANCH_DELETED_FILE" ]; then
@@ -177,18 +186,24 @@ case "$*" in
       exit 1
     fi
     ;;
-  "cat-file -e pr-head-oid^{commit}")
+  cat-file\ -e\ *^\{commit\})
     ;;
-  "merge-base origin/main pr-head-oid")
-    echo "base-oid"
+  merge-base\ origin/main\ *)
+    printf '%s\n' "${GIT_MERGE_BASE_OID:-base-oid}"
     ;;
   "fetch origin +refs/heads/main:refs/remotes/origin/main")
     echo "fetched main"
     ;;
-  "rev-parse --verify --quiet origin/main^{commit}")
-    echo "base-oid"
-    ;;
   "status --porcelain")
+    ;;
+  "diff --name-only origin/main...HEAD")
+    printf '%s\n' "${GIT_CHANGED_PATHS:-example.txt}"
+    ;;
+  "diff --binary")
+    printf '%s' "${GIT_WORKTREE_DIFF:-}"
+    ;;
+  "diff --cached --binary")
+    printf '%s' "${GIT_INDEX_DIFF:-}"
     ;;
   "worktree list --porcelain")
     printf '%s' "${GIT_WORKTREE_LIST:-}"
@@ -244,6 +259,12 @@ reset_case_files() {
   unset CODEX_REVIEW_MUTATE_HEAD
   unset GIT_LOCAL_BRANCH_HEAD
   unset GH_EXPECT_MERGE_HEAD
+  unset GH_PR_HEAD_OID
+  unset GIT_BASE_OID
+  unset GIT_MERGE_BASE_OID
+  unset GIT_CHANGED_PATHS
+  unset GIT_WORKTREE_DIFF
+  unset GIT_INDEX_DIFF
 }
 
 run_merge_pr() {
@@ -258,6 +279,7 @@ run_merge_pr() {
     GH_MERGE_BODY_FILE="$TEST_DIR/gh-merge-body" \
     GH_COMMENT_FILE="$TEST_DIR/gh-comment" \
     GH_HEAD_REF_FILE="$TEST_DIR/gh-head-ref" \
+    GH_PR_HEAD_OID="${GH_PR_HEAD_OID:-pr-head-oid}" \
     GH_MERGED_MARKER="$TEST_DIR/gh-merged-marker" \
     GH_EXPECT_MERGE_HEAD="${GH_EXPECT_MERGE_HEAD:-pr-head-oid}" \
     GH_PR_MERGE_FAIL_LOCAL="${GH_PR_MERGE_FAIL_LOCAL:-false}" \
@@ -271,6 +293,11 @@ run_merge_pr() {
     GIT_PUSH_HEAD_FILE="$TEST_DIR/git-push-head" \
     GIT_WORKTREE_LIST="${GIT_WORKTREE_LIST:-}" \
     GIT_SIBLING_PULL_FAIL="${GIT_SIBLING_PULL_FAIL:-false}" \
+    GIT_BASE_OID="${GIT_BASE_OID:-base-oid}" \
+    GIT_MERGE_BASE_OID="${GIT_MERGE_BASE_OID:-base-oid}" \
+    GIT_CHANGED_PATHS="${GIT_CHANGED_PATHS:-example.txt}" \
+    GIT_WORKTREE_DIFF="${GIT_WORKTREE_DIFF:-}" \
+    GIT_INDEX_DIFF="${GIT_INDEX_DIFF:-}" \
     CODEX_REVIEW_EXIT="${CODEX_REVIEW_EXIT:-0}" \
     CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
     CODEX_REVIEW_MUTATE_HEAD="${CODEX_REVIEW_MUTATE_HEAD:-}" \
@@ -278,6 +305,22 @@ run_merge_pr() {
     PREFLIGHT_CALLS_FILE="${PREFLIGHT_CALLS_FILE:-}" \
     TEST_CURRENT_WORKTREE="${TEST_CURRENT_WORKTREE:-/tmp/touchstone-feature-worktree}" \
     bash "$MERGE_SCRIPT_DIR/merge-pr.sh" "$@" >"$output_file" 2>&1
+}
+
+install_preflight_counter_fixture() {
+  mkdir -p "$TEST_DIR/lib"
+  cat >"$TEST_DIR/lib/preflight.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+touchstone_preflight_main_sanitized() {
+  printf '%s\n' "$*" >> "$PREFLIGHT_CALLS_FILE"
+}
+
+touchstone_preflight_main() {
+  touchstone_preflight_main_sanitized "$@"
+}
+EOF
 }
 
 echo "==> Test: merge preflight sanitizes reviewer routing env"
@@ -329,6 +372,144 @@ else
   cat "$TEST_DIR/codex-review.log" >&2
   echo "--- output ---" >&2
   cat "$TEST_DIR/output-preflight-env.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: clean preflight marker reuses exact merge-gate inputs"
+install_preflight_counter_fixture
+reset_case_files
+: >"$TEST_DIR/preflight-calls"
+if CODEX_REVIEW_EXIT=1 \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-first.txt" 123; then
+  echo "FAIL: first cache fixture run should stop at review failure" >&2
+  exit 1
+fi
+if CODEX_REVIEW_EXIT=1 \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-second.txt" 123; then
+  echo "FAIL: second cache fixture run should stop at review failure" >&2
+  exit 1
+fi
+rm -rf "${TEST_DIR:?}/lib"
+if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "1" ] \
+  && grep -q 'Deterministic preflight clean (cached=false' "$TEST_DIR/output-preflight-cache-first.txt" \
+  && grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-second.txt"; then
+  echo "==> PASS: exact preflight inputs reused clean marker"
+else
+  echo "FAIL: exact preflight inputs should reuse the clean marker" >&2
+  cat "$TEST_DIR/preflight-calls" >&2
+  cat "$TEST_DIR/output-preflight-cache-first.txt" >&2
+  cat "$TEST_DIR/output-preflight-cache-second.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: preflight cache reruns when PR head changes"
+install_preflight_counter_fixture
+reset_case_files
+: >"$TEST_DIR/preflight-calls"
+if CODEX_REVIEW_EXIT=1 \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-head-first.txt" 123; then
+  echo "FAIL: first head-mismatch fixture run should stop at review failure" >&2
+  exit 1
+fi
+if CODEX_REVIEW_EXIT=1 \
+  GH_PR_HEAD_OID="next-head-oid" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-head-second.txt" 123; then
+  echo "FAIL: second head-mismatch fixture run should stop at review failure" >&2
+  exit 1
+fi
+rm -rf "${TEST_DIR:?}/lib"
+if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "2" ] \
+  && grep -q 'Deterministic preflight clean (cached=false' "$TEST_DIR/output-preflight-cache-head-second.txt" \
+  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-head-second.txt"; then
+  echo "==> PASS: changed PR head forced preflight rerun"
+else
+  echo "FAIL: changed PR head should force preflight rerun" >&2
+  cat "$TEST_DIR/preflight-calls" >&2
+  cat "$TEST_DIR/output-preflight-cache-head-second.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: preflight cache reruns when base or merge-base changes"
+install_preflight_counter_fixture
+reset_case_files
+: >"$TEST_DIR/preflight-calls"
+if CODEX_REVIEW_EXIT=1 \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-base-first.txt" 123; then
+  echo "FAIL: first base-mismatch fixture run should stop at review failure" >&2
+  exit 1
+fi
+if CODEX_REVIEW_EXIT=1 \
+  GIT_BASE_OID="new-base-oid" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-base-second.txt" 123; then
+  echo "FAIL: second base-mismatch fixture run should stop at review failure" >&2
+  exit 1
+fi
+if CODEX_REVIEW_EXIT=1 \
+  GIT_MERGE_BASE_OID="new-merge-base-oid" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-merge-base.txt" 123; then
+  echo "FAIL: merge-base-mismatch fixture run should stop at review failure" >&2
+  exit 1
+fi
+rm -rf "${TEST_DIR:?}/lib"
+if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "3" ] \
+  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-base-second.txt" \
+  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-merge-base.txt"; then
+  echo "==> PASS: base and merge-base changes forced preflight reruns"
+else
+  echo "FAIL: base or merge-base changes should force preflight reruns" >&2
+  cat "$TEST_DIR/preflight-calls" >&2
+  cat "$TEST_DIR/output-preflight-cache-base-second.txt" >&2
+  cat "$TEST_DIR/output-preflight-cache-merge-base.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: preflight cache reruns when checker or config hashes change"
+install_preflight_counter_fixture
+reset_case_files
+CACHE_WORKTREE="$TEST_DIR/cache-worktree"
+mkdir -p "$CACHE_WORKTREE"
+printf '[review]\npreflight_required = true\n' >"$CACHE_WORKTREE/.codex-review.toml"
+: >"$TEST_DIR/preflight-calls"
+if CODEX_REVIEW_EXIT=1 \
+  TEST_CURRENT_WORKTREE="$CACHE_WORKTREE" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-hash-first.txt" 123; then
+  echo "FAIL: first hash-mismatch fixture run should stop at review failure" >&2
+  exit 1
+fi
+printf '\n# checker hash changed\n' >>"$TEST_DIR/lib/preflight.sh"
+if CODEX_REVIEW_EXIT=1 \
+  TEST_CURRENT_WORKTREE="$CACHE_WORKTREE" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-checker-second.txt" 123; then
+  echo "FAIL: checker-mismatch fixture run should stop at review failure" >&2
+  exit 1
+fi
+printf 'comment_on_clean = false\n' >>"$CACHE_WORKTREE/.codex-review.toml"
+if CODEX_REVIEW_EXIT=1 \
+  TEST_CURRENT_WORKTREE="$CACHE_WORKTREE" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-config-third.txt" 123; then
+  echo "FAIL: config-mismatch fixture run should stop at review failure" >&2
+  exit 1
+fi
+rm -rf "${TEST_DIR:?}/lib"
+if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "3" ] \
+  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-checker-second.txt" \
+  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-config-third.txt"; then
+  echo "==> PASS: checker and config changes forced preflight reruns"
+else
+  echo "FAIL: checker or config changes should force preflight reruns" >&2
+  cat "$TEST_DIR/preflight-calls" >&2
+  cat "$TEST_DIR/output-preflight-cache-checker-second.txt" >&2
+  cat "$TEST_DIR/output-preflight-cache-config-third.txt" >&2
   exit 1
 fi
 

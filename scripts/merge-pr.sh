@@ -48,6 +48,9 @@ PREFLIGHT_REQUIRED=true
 COMMENT_ON_CLEAN=true
 COMMENT_FINDINGS_HISTORY=true
 REVIEW_SUMMARY_FILE=""
+PREFLIGHT_CACHE_KEY=""
+PREFLIGHT_CACHE_FILE=""
+PREFLIGHT_CACHE_INPUTS=""
 
 on_merge_exit() {
   local rc="$?"
@@ -175,6 +178,155 @@ marker_field() {
   local field="$1"
   local marker="$2"
   awk -F= -v key="$field" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$marker"
+}
+
+preflight_hash_stream() {
+  shasum -a 256 | awk '{ print $1 }'
+}
+
+preflight_hash_file() {
+  local path="$1"
+
+  if [ -f "$path" ]; then
+    shasum -a 256 "$path" | awk '{ print $1 }'
+  else
+    printf 'missing'
+  fi
+}
+
+preflight_hash_paths() {
+  local repo_root="$1"
+  shift
+  local rel path
+
+  for rel in "$@"; do
+    path="$repo_root/$rel"
+    printf '%s\t%s\n' "$rel" "$(preflight_hash_file "$path")"
+  done | preflight_hash_stream
+}
+
+preflight_hash_file_list() {
+  local label path
+
+  while [ "$#" -gt 0 ]; do
+    label="$1"
+    path="$2"
+    shift 2
+    printf '%s\t%s\n' "$label" "$(preflight_hash_file "$path")"
+  done | preflight_hash_stream
+}
+
+preflight_worktree_hash() {
+  {
+    git status --porcelain
+    printf '\n-- worktree diff --\n'
+    git diff --binary
+    printf '\n-- index diff --\n'
+    git diff --cached --binary
+  } 2>/dev/null | preflight_hash_stream
+}
+
+preflight_changed_paths_hash() {
+  local base_ref="$1"
+
+  git diff --name-only "$base_ref"...HEAD 2>/dev/null \
+    | sort -u \
+    | preflight_hash_stream
+}
+
+preflight_cache_inputs() {
+  local base_ref="$1"
+  local event_mode="$2"
+  local repo_root head_sha base_sha merge_base changed_paths_hash
+  local checker_hash config_hash worktree_hash
+
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  head_sha="$(git rev-parse HEAD 2>/dev/null)" || return 1
+  base_sha="$(git rev-parse --verify "$base_ref^{commit}" 2>/dev/null)" || return 1
+  merge_base="$(git merge-base "$base_ref" "$head_sha" 2>/dev/null)" || return 1
+  changed_paths_hash="$(preflight_changed_paths_hash "$base_ref")" || return 1
+  checker_hash="$(preflight_hash_file_list \
+    "lib/preflight.sh" "$PREFLIGHT_SCRIPT" \
+    "lib/preflight-scope.sh" "$(dirname "$PREFLIGHT_SCRIPT")/preflight-scope.sh" \
+    "scripts/touchstone-run.sh" "$SCRIPT_DIR/touchstone-run.sh")"
+  config_hash="$(preflight_hash_paths "$repo_root" \
+    ".codex-review.toml" \
+    ".touchstone-config" \
+    ".touchstone-version" \
+    ".pre-commit-config.yaml" \
+    ".markdownlint.json")"
+  worktree_hash="$(preflight_worktree_hash)" || return 1
+
+  printf 'version=1\n'
+  printf 'repo_root=%s\n' "$repo_root"
+  printf 'scope=diff\n'
+  printf 'event_mode=%s\n' "$event_mode"
+  printf 'base_ref=%s\n' "$base_ref"
+  printf 'base_sha=%s\n' "$base_sha"
+  printf 'head_sha=%s\n' "$head_sha"
+  printf 'merge_base=%s\n' "$merge_base"
+  printf 'changed_paths_hash=%s\n' "$changed_paths_hash"
+  printf 'checker_hash=%s\n' "$checker_hash"
+  printf 'config_hash=%s\n' "$config_hash"
+  printf 'worktree_hash=%s\n' "$worktree_hash"
+}
+
+preflight_cache_prepare() {
+  local base_ref="$1"
+  local event_mode="$2"
+  local cache_dir
+
+  PREFLIGHT_CACHE_KEY=""
+  PREFLIGHT_CACHE_FILE=""
+  PREFLIGHT_CACHE_INPUTS=""
+
+  if truthy "${TOUCHSTONE_PREFLIGHT_DISABLE_CACHE:-false}"; then
+    return 1
+  fi
+
+  PREFLIGHT_CACHE_INPUTS="$(preflight_cache_inputs "$base_ref" "$event_mode")" || return 1
+  PREFLIGHT_CACHE_KEY="$(printf '%s\n' "$PREFLIGHT_CACHE_INPUTS" | preflight_hash_stream)"
+  cache_dir="$(git rev-parse --git-path touchstone/preflight-clean 2>/dev/null)" || return 1
+  PREFLIGHT_CACHE_FILE="$cache_dir/$PREFLIGHT_CACHE_KEY.clean"
+}
+
+preflight_cache_short_key() {
+  printf '%s' "${PREFLIGHT_CACHE_KEY:0:12}"
+}
+
+preflight_cache_hit() {
+  local marker_inputs
+
+  [ -n "$PREFLIGHT_CACHE_FILE" ] || return 1
+  [ -f "$PREFLIGHT_CACHE_FILE" ] || return 1
+  grep -q '^result=preflight_clean$' "$PREFLIGHT_CACHE_FILE" || return 1
+  marker_inputs="$(sed '1,2d' "$PREFLIGHT_CACHE_FILE")"
+  [ "$marker_inputs" = "$PREFLIGHT_CACHE_INPUTS" ]
+}
+
+write_preflight_clean_cache() {
+  local cache_dir tmp
+
+  [ -n "$PREFLIGHT_CACHE_FILE" ] || return 0
+  [ -n "$PREFLIGHT_CACHE_INPUTS" ] || return 0
+  cache_dir="$(dirname "$PREFLIGHT_CACHE_FILE")"
+  if ! mkdir -p "$cache_dir" 2>/dev/null; then
+    echo "WARNING: could not create preflight cache directory $cache_dir; continuing without cache." >&2
+    return 0
+  fi
+
+  tmp="$PREFLIGHT_CACHE_FILE.$$"
+  if {
+    printf 'result=preflight_clean\n'
+    printf 'created_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
+    printf '%s\n' "$PREFLIGHT_CACHE_INPUTS"
+  } >"$tmp" 2>/dev/null && mv "$tmp" "$PREFLIGHT_CACHE_FILE" 2>/dev/null; then
+    return 0
+  fi
+
+  rm -f "$tmp" 2>/dev/null || true
+  echo "WARNING: could not write preflight cache marker $PREFLIGHT_CACHE_FILE; continuing without cache." >&2
+  return 0
 }
 
 worktree_path_for_branch() {
@@ -608,7 +760,7 @@ run_preflight_gate() {
   local base_ref="$1"
   local label="${2:-before merge review}"
   local event_mode="${3:-merge}"
-  local head_sha
+  local head_sha cache_key_short
 
   if ! truthy "$PREFLIGHT_REQUIRED"; then
     echo "==> Preflight disabled by [review].preflight_required=false."
@@ -623,11 +775,27 @@ run_preflight_gate() {
     return 0
   fi
 
+  head_sha="$(git rev-parse HEAD 2>/dev/null || echo "")"
+  if preflight_cache_prepare "$base_ref" "$event_mode" && preflight_cache_hit; then
+    cache_key_short="$(preflight_cache_short_key)"
+    echo "==> Deterministic preflight clean (cached=true, key=$cache_key_short; $label, diff vs $base_ref)."
+    touchstone_emit_event preflight_clean pr_number="$PR_NUMBER" head_sha="$head_sha" cached=true cache_key="$PREFLIGHT_CACHE_KEY"
+    return 0
+  fi
+
   echo "==> Running deterministic preflight $label (diff vs $base_ref) ..."
-  touchstone_emit_event preflight_started pr_number="$PR_NUMBER" mode="$event_mode"
+  touchstone_emit_event preflight_started pr_number="$PR_NUMBER" mode="$event_mode" cached=false
   if touchstone_preflight_main_sanitized --diff "$base_ref" "$(git rev-parse --show-toplevel)"; then
     head_sha="$(git rev-parse HEAD 2>/dev/null || echo "")"
-    touchstone_emit_event preflight_clean pr_number="$PR_NUMBER" head_sha="$head_sha"
+    write_preflight_clean_cache
+    if [ -n "$PREFLIGHT_CACHE_KEY" ]; then
+      cache_key_short="$(preflight_cache_short_key)"
+      echo "==> Deterministic preflight clean (cached=false, key=$cache_key_short)."
+      touchstone_emit_event preflight_clean pr_number="$PR_NUMBER" head_sha="$head_sha" cached=false cache_key="$PREFLIGHT_CACHE_KEY"
+    else
+      echo "==> Deterministic preflight clean (cached=false)."
+      touchstone_emit_event preflight_clean pr_number="$PR_NUMBER" head_sha="$head_sha" cached=false
+    fi
     return 0
   fi
 
