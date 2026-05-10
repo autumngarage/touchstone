@@ -43,7 +43,7 @@ unset PRE_COMMIT_LOCAL_BRANCH PRE_COMMIT_REMOTE_BRANCH
 unset PRE_COMMIT_REMOTE_NAME PRE_COMMIT_REMOTE_URL
 unset CODEX_REVIEW_BASE CODEX_REVIEW_ENABLED CODEX_REVIEW_FORCE
 unset CODEX_REVIEW_MODE CODEX_REVIEW_NO_AUTOFIX CODEX_REVIEW_DISABLE_CACHE
-unset CODEX_REVIEW_TIMEOUT CODEX_REVIEW_CONTEXT_MODE
+unset CODEX_REVIEW_TIMEOUT CODEX_REVIEW_ON_ERROR CODEX_REVIEW_CONTEXT_MODE
 unset CODEX_REVIEW_CONTEXT_SMALL_MAX_DIFF_LINES CODEX_REVIEW_CONTEXT_SMALL_MAX_FILES
 unset CODEX_REVIEW_ASSIST CODEX_REVIEW_ASSIST_TIMEOUT CODEX_REVIEW_ASSIST_MAX_ROUNDS
 unset CODEX_REVIEW_IN_PROGRESS
@@ -1191,6 +1191,251 @@ if [ "$MALFORMED_EXIT" -eq 1 ] && grep -q 'malformed sentinel' "$TIMEOUT_OUTPUT"
 else
   echo "FAIL: expected fail-closed to block on malformed output" >&2
   echo "exit code: $MALFORMED_EXIT" >&2
+  cat "$TIMEOUT_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: reviewer crash retries once through Conductor fallback"
+setup_timeout_repo
+rm -rf "$TIMEOUT_BIN"
+mkdir -p "$TIMEOUT_BIN"
+FALLBACK_ARGS_FILE="$TEST_DIR/fallback-crash-args.txt"
+cat >"$TIMEOUT_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat >"$TIMEOUT_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+printf '%s\n' "$*" >> "$FALLBACK_ARGS_FILE"
+call_count="$(wc -l < "$FALLBACK_ARGS_FILE" | tr -d ' ')"
+provider="openrouter"
+log_file=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --with)
+      provider="$2"
+      shift 2
+      ;;
+    --log-file)
+      log_file="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+cat >/dev/null
+if [ -n "$log_file" ]; then
+  printf '{"event":"provider_started","data":{"provider":"%s"}}\n' "$provider" > "$log_file"
+  if [ "$call_count" = "1" ]; then
+    printf '{"event":"provider_failed","data":{"provider":"%s"}}\n' "$provider" >> "$log_file"
+  else
+    printf '{"event":"provider_finished","data":{"provider":"%s","model":"fixture"}}\n' "$provider" >> "$log_file"
+  fi
+fi
+if [ "$call_count" = "1" ]; then
+  exit 42
+fi
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/conductor"
+: >"$FALLBACK_ARGS_FILE"
+
+(
+  cd "$TIMEOUT_REPO"
+  PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    FALLBACK_ARGS_FILE="$FALLBACK_ARGS_FILE" \
+    TOUCHSTONE_CONDUCTOR_WITH=gemini \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TIMEOUT_OUTPUT" 2>&1
+)
+
+if [ "$(wc -l <"$FALLBACK_ARGS_FILE" | tr -d ' ')" = "2" ] \
+  && sed -n '1p' "$FALLBACK_ARGS_FILE" | grep -q -- '--with gemini' \
+  && sed -n '2p' "$FALLBACK_ARGS_FILE" | grep -q -- '--auto' \
+  && sed -n '2p' "$FALLBACK_ARGS_FILE" | grep -q -- '--exclude ollama,gemini' \
+  && grep -q 'fallback:       gemini -> openrouter (reviewer exit 42)' "$TIMEOUT_OUTPUT"; then
+  echo "==> PASS: reviewer crash retried through auto-routing with failed provider excluded"
+else
+  echo "FAIL: expected reviewer crash to retry once through fallback provider" >&2
+  cat "$FALLBACK_ARGS_FILE" >&2
+  cat "$TIMEOUT_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: malformed sentinel retries once through Conductor fallback"
+setup_timeout_repo
+: >"$FALLBACK_ARGS_FILE"
+cat >"$TIMEOUT_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+printf '%s\n' "$*" >> "$FALLBACK_ARGS_FILE"
+call_count="$(wc -l < "$FALLBACK_ARGS_FILE" | tr -d ' ')"
+provider="openrouter"
+log_file=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --with)
+      provider="$2"
+      shift 2
+      ;;
+    --log-file)
+      log_file="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+cat >/dev/null
+if [ -n "$log_file" ]; then
+  printf '{"event":"provider_started","data":{"provider":"%s"}}\n' "$provider" > "$log_file"
+  printf '{"event":"provider_finished","data":{"provider":"%s","model":"fixture"}}\n' "$provider" >> "$log_file"
+fi
+if [ "$call_count" = "1" ]; then
+  printf 'looks clean but forgot the marker\n'
+else
+  printf 'CODEX_REVIEW_CLEAN\n'
+fi
+CXEOF
+chmod +x "$TIMEOUT_BIN/conductor"
+
+(
+  cd "$TIMEOUT_REPO"
+  PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    FALLBACK_ARGS_FILE="$FALLBACK_ARGS_FILE" \
+    TOUCHSTONE_CONDUCTOR_WITH=gemini \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TIMEOUT_OUTPUT" 2>&1
+)
+
+if [ "$(wc -l <"$FALLBACK_ARGS_FILE" | tr -d ' ')" = "2" ] \
+  && grep -q 'fallback:       gemini -> openrouter (malformed sentinel)' "$TIMEOUT_OUTPUT"; then
+  echo "==> PASS: malformed sentinel retried through fallback provider"
+else
+  echo "FAIL: expected malformed sentinel to retry once through fallback provider" >&2
+  cat "$FALLBACK_ARGS_FILE" >&2
+  cat "$TIMEOUT_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: concrete CODEX_REVIEW_BLOCKED findings are not retried"
+setup_timeout_repo
+: >"$FALLBACK_ARGS_FILE"
+cat >"$TIMEOUT_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+printf '%s\n' "$*" >> "$FALLBACK_ARGS_FILE"
+cat >/dev/null
+printf '%s\n' '- example.txt:1 - concrete blocker'
+printf 'CODEX_REVIEW_BLOCKED\n'
+CXEOF
+chmod +x "$TIMEOUT_BIN/conductor"
+
+set +e
+(
+  cd "$TIMEOUT_REPO"
+  PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    FALLBACK_ARGS_FILE="$FALLBACK_ARGS_FILE" \
+    TOUCHSTONE_CONDUCTOR_WITH=gemini \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TIMEOUT_OUTPUT" 2>&1
+)
+BLOCKED_RETRY_EXIT=$?
+set -e
+
+if [ "$BLOCKED_RETRY_EXIT" -eq 1 ] \
+  && [ "$(wc -l <"$FALLBACK_ARGS_FILE" | tr -d ' ')" = "1" ] \
+  && grep -q 'CODEX_REVIEW_BLOCKED' "$TIMEOUT_OUTPUT"; then
+  echo "==> PASS: concrete blocked findings did not trigger fallback retry"
+else
+  echo "FAIL: expected concrete findings to block without fallback retry" >&2
+  echo "exit code: $BLOCKED_RETRY_EXIT" >&2
+  cat "$FALLBACK_ARGS_FILE" >&2
+  cat "$TIMEOUT_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: fallback retry cannot mutate worktree in review-only mode"
+setup_timeout_repo
+: >"$FALLBACK_ARGS_FILE"
+FALLBACK_MUTATION_FILE="$TIMEOUT_REPO/fallback-mutated.txt"
+cat >"$TIMEOUT_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+printf '%s\n' "$*" >> "$FALLBACK_ARGS_FILE"
+call_count="$(wc -l < "$FALLBACK_ARGS_FILE" | tr -d ' ')"
+provider="openrouter"
+log_file=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --with)
+      provider="$2"
+      shift 2
+      ;;
+    --log-file)
+      log_file="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+cat >/dev/null
+if [ -n "$log_file" ]; then
+  printf '{"event":"provider_started","data":{"provider":"%s"}}\n' "$provider" > "$log_file"
+  if [ "$call_count" = "1" ]; then
+    printf '{"event":"provider_failed","data":{"provider":"%s"}}\n' "$provider" >> "$log_file"
+  else
+    printf '{"event":"provider_finished","data":{"provider":"%s","model":"fixture"}}\n' "$provider" >> "$log_file"
+  fi
+fi
+if [ "$call_count" = "1" ]; then
+  exit 42
+fi
+printf 'mutated by fallback\n' > "$FALLBACK_MUTATION_FILE"
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$TIMEOUT_BIN/conductor"
+
+set +e
+(
+  cd "$TIMEOUT_REPO"
+  PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    FALLBACK_ARGS_FILE="$FALLBACK_ARGS_FILE" \
+    FALLBACK_MUTATION_FILE="$FALLBACK_MUTATION_FILE" \
+    TOUCHSTONE_CONDUCTOR_WITH=gemini \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=review-only \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TIMEOUT_OUTPUT" 2>&1
+)
+FALLBACK_MUTATION_EXIT=$?
+set -e
+
+if [ "$FALLBACK_MUTATION_EXIT" -eq 1 ] \
+  && [ "$(wc -l <"$FALLBACK_ARGS_FILE" | tr -d ' ')" = "2" ] \
+  && grep -q "Worktree was mutated in 'review-only' mode" "$TIMEOUT_OUTPUT"; then
+  echo "==> PASS: fallback mutation blocked in review-only mode"
+else
+  echo "FAIL: expected fallback mutation to block in review-only mode" >&2
+  echo "exit code: $FALLBACK_MUTATION_EXIT" >&2
+  cat "$FALLBACK_ARGS_FILE" >&2
   cat "$TIMEOUT_OUTPUT" >&2
   ERRORS=$((ERRORS + 1))
 fi

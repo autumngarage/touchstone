@@ -56,6 +56,7 @@
 #   TOUCHSTONE_CONDUCTOR_EFFORT       — minimal|low|medium|high|max (default: size-aware)
 #   TOUCHSTONE_CONDUCTOR_TAGS         — comma-separated tag hints (default: code-review)
 #   TOUCHSTONE_CONDUCTOR_EXCLUDE      — comma-separated providers to skip
+#   TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY — true/false; retry infra/sentinel failures through auto-routing once
 #   CODEX_REVIEW_SUPPRESS_LEGACY_WARNINGS — silence one-time migration hints
 #   CODEX_REVIEW_ENABLED              — true/false override for the [review].enabled setting
 #   CODEX_REVIEW_MODE                 — review-only|fix|diff-only|no-tests (default: fix)
@@ -966,6 +967,7 @@ CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-${CONDUCTOR_WITH:-}}"
 CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-${CONDUCTOR_PREFER:-best}}"
 CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-${CONDUCTOR_EFFORT:-high}}"
 CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-${CONDUCTOR_TAGS:-code-review}}"
+CONDUCTOR_FALLBACK_RETRY="${TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY:-true}"
 if [ -n "${TOUCHSTONE_CONDUCTOR_EXCLUDE+x}" ]; then
   CONDUCTOR_EXCLUDE="$TOUCHSTONE_CONDUCTOR_EXCLUDE"
 elif [ "$CONDUCTOR_EXCLUDE_CONFIGURED" = true ]; then
@@ -2612,6 +2614,11 @@ BANNER_PRINTED=false
 REVIEW_START_TIME="$(date +%s)"
 REVIEW_FILES_INSPECTED="$(git diff --name-only "$MERGE_BASE"..HEAD | wc -l | tr -d ' ')"
 REVIEW_EXIT_REASON=""
+REVIEW_FALLBACK_ATTEMPTED=false
+REVIEW_FALLBACK_PRIMARY_PROVIDER=""
+REVIEW_FALLBACK_RETRY_PROVIDER=""
+REVIEW_FALLBACK_REASON=""
+FALLBACK_REVIEW_EXIT=0
 
 # --------------------------------------------------------------------------
 # Phase labels
@@ -2693,6 +2700,16 @@ parse_primary_provider() {
     printf '%s' "$provider"
     return
   fi
+  provider="$(conductor_log_string_field "${REVIEW_CONDUCTOR_LOG_FILE:-}" provider_failed provider)"
+  if [ -n "$provider" ]; then
+    printf '%s' "$provider"
+    return
+  fi
+  provider="$(conductor_log_string_field "${REVIEW_CONDUCTOR_LOG_FILE:-}" provider_started provider)"
+  if [ -n "$provider" ]; then
+    printf '%s' "$provider"
+    return
+  fi
 
   local stderr_file="${1:-$REVIEW_STDERR_FILE}"
   [ -f "$stderr_file" ] || {
@@ -2700,7 +2717,7 @@ parse_primary_provider() {
     return
   }
   local line
-  line="$(grep -m1 '^\[conductor\]' "$stderr_file" 2>/dev/null || true)"
+  line="$(grep -m1 -E '(^\[conductor\]|Conductor).*(→|->)' "$stderr_file" 2>/dev/null || true)"
   [ -n "$line" ] || {
     printf ''
     return
@@ -2771,6 +2788,99 @@ print_malformed_sentinel_diagnostics() {
 
   echo "    Conductor selected provider: $selected_provider"
   echo "    Conductor command invoked: $(conductor_invocation_label)"
+}
+
+exclude_provider_once() {
+  local existing="$1"
+  local provider="$2"
+  local item
+  local -a existing_items
+
+  [ -n "$provider" ] || {
+    printf '%s' "$existing"
+    return 0
+  }
+
+  IFS=',' read -r -a existing_items <<<"$existing"
+  for item in "${existing_items[@]}"; do
+    item="$(trim "$item")"
+    if [ "$item" = "$provider" ]; then
+      printf '%s' "$existing"
+      return 0
+    fi
+  done
+
+  if [ -n "$existing" ]; then
+    printf '%s,%s' "$existing" "$provider"
+  else
+    printf '%s' "$provider"
+  fi
+}
+
+review_attempt_worktree_unchanged() {
+  local head_before="$1"
+  local status_before="$2"
+  local head_after status_after
+
+  head_after="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+  status_after="$(git status --porcelain)"
+
+  [ "$head_after" = "$head_before" ] && [ "$status_after" = "$status_before" ]
+}
+
+try_review_fallback_retry() {
+  local reason="$1"
+  local head_before="$2"
+  local status_before="$3"
+  local prompt="${4:-$REVIEW_PROMPT}"
+  local output_file="${5:-$REVIEW_OUTPUT_FILE}"
+  local failed_provider previous_with previous_exclude fallback_exclude
+
+  [ "${ACTIVE_REVIEWER:-}" = "conductor" ] || return 1
+  is_truthy "$CONDUCTOR_FALLBACK_RETRY" || return 1
+  [ "$REVIEW_FALLBACK_ATTEMPTED" = false ] || return 1
+
+  if ! review_attempt_worktree_unchanged "$head_before" "$status_before"; then
+    echo "==> Review fallback skipped: failed attempt changed the worktree."
+    return 1
+  fi
+
+  failed_provider="$(parse_primary_provider)"
+  [ -n "$failed_provider" ] || failed_provider="${CONDUCTOR_WITH:-}"
+  if [ -z "$failed_provider" ] || [ "$failed_provider" = "unknown" ]; then
+    echo "==> Review fallback skipped: could not identify the failed Conductor provider."
+    return 1
+  fi
+
+  REVIEW_FALLBACK_ATTEMPTED=true
+  REVIEW_FALLBACK_PRIMARY_PROVIDER="$failed_provider"
+  REVIEW_FALLBACK_REASON="$reason"
+
+  previous_with="$CONDUCTOR_WITH"
+  previous_exclude="$CONDUCTOR_EXCLUDE"
+  fallback_exclude="$(exclude_provider_once "$CONDUCTOR_EXCLUDE" "$failed_provider")"
+
+  phase "retrying with Conductor fallback (excluding $failed_provider)"
+  echo "==> Review infrastructure/noncompliance failure: $reason"
+  echo "==> Retrying once with auto-routing; excluded provider(s): ${fallback_exclude:-<none>}"
+
+  CONDUCTOR_WITH=""
+  CONDUCTOR_EXCLUDE="$fallback_exclude"
+  set +e
+  run_reviewer_with_timeout "$REVIEW_TIMEOUT" "$prompt" "$output_file"
+  FALLBACK_REVIEW_EXIT=$?
+  set -e
+  REVIEW_FALLBACK_RETRY_PROVIDER="$(parse_primary_provider)"
+  [ -n "$REVIEW_FALLBACK_RETRY_PROVIDER" ] || REVIEW_FALLBACK_RETRY_PROVIDER="unknown"
+
+  CONDUCTOR_WITH="$previous_with"
+  CONDUCTOR_EXCLUDE="$previous_exclude"
+
+  # The clean-review cache key was computed for the primary route. A fallback
+  # clean result is valid for this run, but should not satisfy a later exact
+  # cache lookup for the primary provider.
+  REVIEW_CACHE_KEY=""
+  return 0
 }
 
 # Run a peer review via Conductor, excluding the primary's provider.
@@ -2875,6 +2985,21 @@ check_worktree_invariants() {
   return 0
 }
 
+block_if_worktree_mutated_in_review_mode() {
+  if mode_allows_fix; then
+    return 0
+  fi
+
+  if check_worktree_invariants; then
+    return 0
+  fi
+
+  REVIEW_EXIT_REASON="worktree-mutated"
+  print_summary
+  echo "==> ERROR: Worktree was mutated in '$REVIEW_MODE' mode — blocking push." >&2
+  exit 1
+}
+
 # --------------------------------------------------------------------------
 # Structured summary
 # --------------------------------------------------------------------------
@@ -2906,14 +3031,24 @@ print_summary() {
   printf "  ${C_DIM}fix commits:    %s${C_RESET}\n" "$FIX_COMMITS"
   printf "  ${C_DIM}peer assists:   %s${C_RESET}\n" "$ASSIST_ROUNDS"
   printf "  ${C_DIM}findings:       %s${C_RESET}\n" "$findings"
+  if [ "$REVIEW_FALLBACK_ATTEMPTED" = true ]; then
+    printf "  ${C_DIM}fallback:       %s -> %s (%s)${C_RESET}\n" \
+      "${REVIEW_FALLBACK_PRIMARY_PROVIDER:-unknown}" \
+      "${REVIEW_FALLBACK_RETRY_PROVIDER:-unknown}" \
+      "${REVIEW_FALLBACK_REASON:-unknown}"
+  fi
   printf "  ${C_DIM}exit reason:    %s${C_RESET}\n" "$REVIEW_EXIT_REASON"
   printf "  ${C_DIM}elapsed:        %dm%ds${C_RESET}\n" "$mins" "$secs"
   printf "  ${C_DIM}──────────────────────────────────────────${C_RESET}\n"
 
   if [ -n "${CODEX_REVIEW_SUMMARY_FILE:-}" ]; then
-    printf '{"reviewer":"%s","provider":"%s","model":"%s","peer_provider":"%s","route":"%s","mode":"%s","context":"%s","prefer":"%s","effort":"%s","files":%d,"diff_lines":%d,"iterations":%d,"fix_commits":%d,"peer_assists":%d,"findings":%d,"exit_reason":"%s","elapsed_seconds":%d}\n' \
+    printf '{"reviewer":"%s","provider":"%s","model":"%s","peer_provider":"%s","route":"%s","mode":"%s","context":"%s","prefer":"%s","effort":"%s","files":%d,"diff_lines":%d,"iterations":%d,"fix_commits":%d,"peer_assists":%d,"findings":%d,"fallback_attempted":%s,"fallback_primary_provider":"%s","fallback_retry_provider":"%s","fallback_reason":"%s","exit_reason":"%s","elapsed_seconds":%d}\n' \
       "$REVIEWER_LABEL" "$provider" "$model" "$peer_provider" "$ROUTING_DECISION" "$REVIEW_MODE" "$PROMPT_CONTEXT_DECISION" "${CONDUCTOR_PREFER:-auto}" "${CONDUCTOR_EFFORT:-default}" "$REVIEW_FILES_INSPECTED" "$DIFF_LINE_COUNT" \
-      "${iter:-0}" "$FIX_COMMITS" "$ASSIST_ROUNDS" "$findings" "$REVIEW_EXIT_REASON" "$elapsed" \
+      "${iter:-0}" "$FIX_COMMITS" "$ASSIST_ROUNDS" "$findings" "$REVIEW_FALLBACK_ATTEMPTED" \
+      "$(printf '%s' "${REVIEW_FALLBACK_PRIMARY_PROVIDER:-}" | json_escape)" \
+      "$(printf '%s' "${REVIEW_FALLBACK_RETRY_PROVIDER:-}" | json_escape)" \
+      "$(printf '%s' "${REVIEW_FALLBACK_REASON:-}" | json_escape)" \
+      "$REVIEW_EXIT_REASON" "$elapsed" \
       >"$CODEX_REVIEW_SUMMARY_FILE" 2>/dev/null || true
   fi
 }
@@ -3072,6 +3207,8 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
   printf "  ${C_DIM}iteration ${iter}/${MAX_ITERATIONS} · ${DIFF_LINE_COUNT} lines vs ${BASE}${C_RESET}\n"
   phase "reviewing with $REVIEWER_LABEL"
 
+  REVIEW_ATTEMPT_HEAD_BEFORE="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+  REVIEW_ATTEMPT_STATUS_BEFORE="$(git status --porcelain)"
   set +e
   run_reviewer_with_timeout "$REVIEW_TIMEOUT"
   EXIT=$?
@@ -3096,12 +3233,14 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
   # Check worktree invariants in non-fix modes.
   # This is a hard failure regardless of on_error policy — a reviewer that
   # mutates the worktree in review-only mode is a safety violation.
-  if ! mode_allows_fix; then
-    if ! check_worktree_invariants; then
-      REVIEW_EXIT_REASON="worktree-mutated"
-      print_summary
-      echo "==> ERROR: Worktree was mutated in '$REVIEW_MODE' mode — blocking push." >&2
-      exit 1
+  block_if_worktree_mutated_in_review_mode
+
+  if [ "$EXIT" -eq 124 ]; then
+    if try_review_fallback_retry "timeout after ${REVIEW_TIMEOUT}s" "$REVIEW_ATTEMPT_HEAD_BEFORE" "$REVIEW_ATTEMPT_STATUS_BEFORE"; then
+      EXIT="$FALLBACK_REVIEW_EXIT"
+      OUTPUT="$(cat "$REVIEW_OUTPUT_FILE" 2>/dev/null || true)"
+      print_route_log
+      block_if_worktree_mutated_in_review_mode
     fi
   fi
 
@@ -3111,6 +3250,15 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
     REVIEW_EXIT_REASON="timeout"
     print_summary
     handle_error "timeout after ${REVIEW_TIMEOUT}s"
+  fi
+
+  if [ $EXIT -ne 0 ]; then
+    if try_review_fallback_retry "reviewer exit $EXIT" "$REVIEW_ATTEMPT_HEAD_BEFORE" "$REVIEW_ATTEMPT_STATUS_BEFORE"; then
+      EXIT="$FALLBACK_REVIEW_EXIT"
+      OUTPUT="$(cat "$REVIEW_OUTPUT_FILE" 2>/dev/null || true)"
+      print_route_log
+      block_if_worktree_mutated_in_review_mode
+    fi
   fi
 
   if [ $EXIT -ne 0 ]; then
@@ -3134,14 +3282,7 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
         EXIT="$ASSIST_EXIT"
         OUTPUT="$(cat "$REVIEW_OUTPUT_FILE" 2>/dev/null || true)"
 
-        if ! mode_allows_fix; then
-          if ! check_worktree_invariants; then
-            REVIEW_EXIT_REASON="worktree-mutated"
-            print_summary
-            echo "==> ERROR: Worktree was mutated in '$REVIEW_MODE' mode — blocking push." >&2
-            exit 1
-          fi
-        fi
+        block_if_worktree_mutated_in_review_mode
 
         if [ "$EXIT" -eq 124 ]; then
           phase "timed out"
@@ -3163,7 +3304,38 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
     fi
   fi
 
-  LAST_SENTINEL="$(printf '%s\n' "$OUTPUT" | extract_review_sentinel)"
+  while :; do
+    LAST_SENTINEL="$(printf '%s\n' "$OUTPUT" | extract_review_sentinel)"
+    case "$LAST_SENTINEL" in
+      CODEX_REVIEW_CLEAN | CODEX_REVIEW_FIXED | CODEX_REVIEW_BLOCKED) break ;;
+    esac
+
+    LAST_LINE="$(printf '%s\n' "$OUTPUT" | awk 'NF { line = $0 } END { print line }' | tr -d '\r')"
+    if try_review_fallback_retry "malformed sentinel" "$REVIEW_ATTEMPT_HEAD_BEFORE" "$REVIEW_ATTEMPT_STATUS_BEFORE"; then
+      EXIT="$FALLBACK_REVIEW_EXIT"
+      OUTPUT="$(cat "$REVIEW_OUTPUT_FILE" 2>/dev/null || true)"
+      print_route_log
+      block_if_worktree_mutated_in_review_mode
+
+      if [ "$EXIT" -eq 124 ]; then
+        phase "timed out"
+        echo "==> $REVIEWER_LABEL timed out after ${REVIEW_TIMEOUT}s during fallback retry."
+        REVIEW_EXIT_REASON="timeout"
+        print_summary
+        handle_error "timeout after ${REVIEW_TIMEOUT}s during fallback retry"
+      fi
+
+      if [ "$EXIT" -ne 0 ]; then
+        echo "==> $REVIEWER_LABEL fallback review failed with exit $EXIT."
+        REVIEW_EXIT_REASON="error"
+        print_summary
+        handle_error "reviewer exit $EXIT during fallback retry"
+      fi
+      continue
+    fi
+    break
+  done
+
   case "$LAST_SENTINEL" in
     CODEX_REVIEW_CLEAN)
       phase "done — clean"
