@@ -43,8 +43,8 @@ reviewer = "conductor"      # the only supported value in 2.0
 prefer = "best"             # best | cheapest | fastest | balanced
 effort = "high"             # minimal | low | medium | high | max | <int tokens>
 tags   = "code-review"
-with = "openrouter"         # hosted default for live review
-exclude = ["ollama"]        # keep local providers out of hosted merge gates
+# with = "openrouter"       # optional provider pin; omit for Conductor's review route
+exclude = ["ollama"]        # keep local providers for explicit offline review
 ```
 
 ### 5. Write your review rubric
@@ -58,7 +58,7 @@ When the review runs, the hook:
 1. Computes the diff between your branch and the default branch
 2. Chooses prompt context: small/simple diffs use a bounded rubric, while large, broad, high-risk, architectural, or configured paths keep full `AGENTS.md`/`CLAUDE.md` context
 3. Skips review if the exact same diff and review inputs already passed cleanly (cache key includes the Conductor knobs and prompt context mode, so changing `prefer`/`effort`/`with` or context mode invalidates)
-4. Invokes Conductor with the review prompt and requested tool set
+4. Invokes Conductor with the review prompt. Read-only review uses `conductor review --base ... --brief-file -`; edit-capable fix phases use Conductor with the requested tool set.
 5. Reads one of three sentinels from the reviewer's output:
    - `CODEX_REVIEW_CLEAN` — no issues, push proceeds
    - `CODEX_REVIEW_FIXED` — the reviewer applied auto-fixes; the hook commits them and re-reviews
@@ -81,8 +81,8 @@ Conductor logs its route decision (provider, cost estimate, token count, wall-cl
 | `[review.conductor].prefer` | size-aware | `best` \| `cheapest` \| `fastest` \| `balanced`; used as a global fallback, but default size routing applies per bucket |
 | `[review.conductor].effort` | size-aware | `minimal` \| `low` \| `medium` \| `high` \| `max` \| integer thinking-token budget; used as a global fallback, but default size routing applies per bucket |
 | `[review.conductor].tags` | `"code-review"` | Capability tags passed to the router |
-| `[review.conductor].with` | `"openrouter"` in newly bootstrapped projects; unset otherwise | Pin a specific provider (bypasses auto-routing) |
-| `[review.conductor].exclude` | `["ollama"]` | Exclude providers from hosted auto-routing; use explicit all-local/offline review for Ollama |
+| `[review.conductor].with` | unset | Pin a specific provider. Omit it for Conductor's semantic review route. |
+| `[review.conductor].exclude` | `["ollama"]` | Exclude providers from hosted auto-routing in nonsemantic modes; use explicit all-local/offline review for Ollama. |
 | `[review.routing].enabled` | true | Route by diff size |
 | `[review.routing].small_max_diff_lines` | 400 | Diffs ≤ this use the `small_*` knobs unless high-risk paths are touched |
 | `[review.routing].small_prefer` | `"cheapest"` | Routing preference for small diffs |

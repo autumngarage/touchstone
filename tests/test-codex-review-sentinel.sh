@@ -174,7 +174,7 @@ set -e
 if [ "$CLOSED_EXIT" -eq 1 ] \
   && grep -q 'No unique standalone sentinel line was found.' "$CLOSED_OUTPUT" \
   && grep -q 'Conductor selected provider: codex' "$CLOSED_OUTPUT" \
-  && grep -q "Conductor command invoked: $FAKE_BIN/conductor exec" "$CLOSED_OUTPUT"; then
+  && grep -q "Conductor command invoked: $FAKE_BIN/conductor review" "$CLOSED_OUTPUT"; then
   printf '  OK: missing sentinel blocks under fail-closed policy with provider diagnostics\n'
 else
   printf 'FAIL: missing sentinel should block with provider and command diagnostics\n' >&2

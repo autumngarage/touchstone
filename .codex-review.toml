@@ -6,8 +6,10 @@
 max_iterations = 3
 max_diff_lines = 5000
 
-# Auto-fix is safe for most touchstone code.
-safe_by_default = true
+# Touchstone dogfoods the read-only merge gate. Explicit local/dev runs can
+# opt into autofix with CODEX_REVIEW_MODE=fix.
+mode = "review-only"
+safe_by_default = false
 
 # Block the push when the reviewer crashes, times out, or returns malformed
 # output. Touchstone PR #69 shipped a real blocking finding under fail-open
@@ -28,9 +30,9 @@ unsafe_paths = [
 ]
 
 [review.conductor]
-# Live merge-gate review goes through OpenRouter. Ollama remains excluded from
-# auto-routing and is reserved for explicit offline/local review only.
-with = "openrouter"
+# Live merge-gate review goes through Conductor's semantic review route:
+# codex review first, hosted fallback via Conductor. Ollama is reserved for
+# explicit offline/local review only.
 exclude = ["ollama"]
 
 [review]

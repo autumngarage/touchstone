@@ -4,24 +4,27 @@
 #
 # Touchstone 2.0+: the single reviewer is `conductor` (autumn-garage/conductor).
 # Conductor owns per-provider model selection, auth, permission translation,
-# route logging, and cost reporting. This hook declares *what it needs* (review
-# mode → tools) and lets Conductor's router pick *how* to run it.
+# route logging, and cost reporting. This hook uses Conductor's semantic review
+# interface for read-only review, then asks for edit-capable execution only when
+# fix mode has review findings to address.
 # Wired into merge-pr.sh and default-branch pre-push checks.
 #
 # Loop:
-#   1. Run Conductor against the local diff vs the default branch
+#   1. Run Conductor read-only review against the local diff vs the default branch
 #   2. If it says CODEX_REVIEW_CLEAN → push allowed.
-#   3. If it says CODEX_REVIEW_FIXED → it edited files. Stage + commit the
+#   3. If it says CODEX_REVIEW_BLOCKED and mode allows edits → run one
+#      edit-capable fix pass for safe findings.
+#   4. If it says CODEX_REVIEW_FIXED → it edited files. Stage + commit the
 #      fixes (a new commit, NOT an amend) and loop back to step 1.
-#   4. If it says CODEX_REVIEW_BLOCKED → push aborts, findings printed.
-#   5. After max_iterations rounds without converging, push aborts.
+#   5. If it says CODEX_REVIEW_BLOCKED → push aborts, findings printed.
+#   6. After max_iterations rounds without converging, push aborts.
 #
 # Reviewer selection:
 #   2.0 uses a single adapter (`reviewer_conductor_*`) — see the
 #   `reviewer_conductor_exec` block below. Legacy 1.x configs that set
 #   `[review].reviewers = ["codex", "claude", ...]` are auto-detected at
 #   startup and a one-time migration hint is printed; the values are
-#   translated to Conductor's auto-router.
+#   translated to Conductor provider pins.
 #
 # Configuration:
 #   Place a .codex-review.toml at the repo root. Key knobs:
@@ -39,15 +42,16 @@
 #   explicitly by listing safe paths or setting safe_by_default = true.
 #
 # Modes:
-#   review-only — read + run commands, no file edits or commits
+#   review-only — Conductor semantic code review, no file edits or commits
 #   fix         — full access: read, run commands, edit files, commit fixes
 #   diff-only   — read-only: diff embedded in the prompt, no tool use
 #   no-tests    — edit + commit, no command execution (skip test runs)
 #
-#   Modes are declared at the Conductor boundary: Touchstone translates mode
-#   → tools and passes those; Conductor maps the tool list to each provider's
-#   native permission/sandbox contract. Set via CODEX_REVIEW_MODE env var or
-#   `mode` in .codex-review.toml.
+#   Modes are declared at the Conductor boundary: Touchstone translates
+#   read-only review to `conductor review --base ... --brief-file -`;
+#   edit-capable phases pass tool sets and Conductor maps them to each
+#   provider's native contract. Set via CODEX_REVIEW_MODE env var or `mode`
+#   in .codex-review.toml.
 #
 # Env overrides:
 #   TOUCHSTONE_REVIEWER               — DEPRECATED in 2.0.0; auto-translates to TOUCHSTONE_CONDUCTOR_WITH=<provider>
@@ -856,7 +860,7 @@ if [ -f "$CONFIG_FILE" ]; then
           max_iterations) MAX_ITERATIONS="${CODEX_REVIEW_MAX_ITERATIONS:-$value}" ;;
           max_diff_lines) MAX_DIFF_LINES="${CODEX_REVIEW_MAX_DIFF_LINES:-$value}" ;;
           cache_clean_reviews) CACHE_CLEAN_REVIEWS="${CODEX_REVIEW_CACHE_CLEAN:-$(normalize_bool "$value")}" ;;
-          safe_by_default) SAFE_BY_DEFAULT="$(printf "%s" "$value" | tr '[:upper:]' '[:lower:]')" ;;
+          safe_by_default) SAFE_BY_DEFAULT="$(normalize_bool "$value")" ;;
           mode) CONFIG_MODE="$(toml_unquote "$value")" ;;
           timeout) REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-$value}" ;;
           on_error) ON_ERROR="${CODEX_REVIEW_ON_ERROR:-$(toml_unquote "$value")}" ;;
@@ -980,7 +984,7 @@ fi
 # Mode resolution
 # --------------------------------------------------------------------------
 # Modes: review-only, fix, diff-only, no-tests
-#   review-only — read + bash, no edits, no git ops
+#   review-only — semantic read-only review, no edits, no git ops
 #   fix         — full access, auto-fix + commit (default)
 #   diff-only   — read-only, no bash, no edits
 #   no-tests    — edit + commit, no bash (skip test execution)
@@ -1219,13 +1223,28 @@ CONTEXT_EOF
 build_autofix_policy() {
   local policy=""
 
-  if ! mode_allows_fix; then
+  if ! mode_allows_fix || [ "${REVIEW_PHASE:-review}" != "fix" ]; then
+    if [ "$SAFE_BY_DEFAULT" = "true" ]; then
+      policy="By default, all paths are SAFE to auto-fix unless listed as unsafe."
+    else
+      policy="By default, all paths are NOT safe to auto-fix. Only paths explicitly marked as safe are fixable."
+    fi
+    if [ -n "$UNSAFE_PATHS" ]; then
+      policy="$policy
+
+NOT safe to auto-fix:
+$(echo "$UNSAFE_PATHS" | while read -r p; do [ -n "$p" ] && echo "- Anything in $p"; done)"
+    fi
     cat <<POLICY_EOF
-Mode: $REVIEW_MODE — do not edit files. Do not stage, commit, or modify anything.
+Mode: $REVIEW_MODE, phase: read-only review — do not edit files. Do not stage, commit, or modify anything.
+
+Auto-fix classification context:
+$policy
 
 Review only:
 - If there are no blocking issues, emit CLEAN.
 - If any issue needs a code or documentation change, emit BLOCKED with findings.
+- If a finding appears safely auto-fixable under the project policy, mark that line with [fixable].
 - Do not emit FIXED.
 
 When in doubt, STOP and emit BLOCKED.
@@ -1278,6 +1297,39 @@ NOT safe to auto-fix regardless of path (STOP and emit BLOCKED):
 When in doubt, STOP and emit BLOCKED."
 
   echo "$policy"
+}
+
+build_fix_prompt() {
+  local review_output="$1"
+  local fix_policy
+  fix_policy="$(REVIEW_PHASE=fix build_autofix_policy)"
+
+  cat <<FIX_PROMPT_EOF
+You are applying safe fixes after a read-only Touchstone review.
+
+The read-only reviewer found these blockers:
+
+$review_output
+
+$(build_prompt_context_instructions)
+
+Examine the diff vs $BASE using your tools, then apply fixes only for the
+review findings below.
+
+## Fix policy
+
+$fix_policy
+
+Apply only the smallest safe changes needed for findings you can confidently fix.
+Do not broaden the diff, do not weaken tests, and do not fix findings outside the safe path policy.
+
+Output contract — strict:
+- Emit CODEX_REVIEW_FIXED if you changed files.
+- Emit CODEX_REVIEW_BLOCKED if any blocker remains unsafe or unclear to fix.
+- Do not emit CODEX_REVIEW_CLEAN from the fix phase.
+
+The LAST line of your output must be exactly CODEX_REVIEW_FIXED or CODEX_REVIEW_BLOCKED.
+FIX_PROMPT_EOF
 }
 
 build_preflight_review_policy() {
@@ -1348,11 +1400,38 @@ reviewer_conductor_auth_ok() {
 
 reviewer_conductor_exec() {
   local prompt="$1"
+  local phase="${REVIEW_PHASE:-review}"
   local -a args=()
   local subcommand
+  local tools
 
-  # Provider selection: --with <id> pins a specific provider; otherwise --auto
-  # lets the router pick based on prefer + effort + tags.
+  # REVIEW_MODE + REVIEW_PHASE → Conductor job shape. The default phase uses
+  # Conductor's semantic review command and lets Conductor own routing policy.
+  # Edit-capable work is a separate phase after a BLOCKED read-only review.
+  subcommand="$(conductor_subcommand_for_mode "$phase")"
+  tools="$(conductor_tools_for_mode "$phase")"
+
+  if [ "$subcommand" = "review" ]; then
+    [ -n "${CONDUCTOR_WITH:-}" ] && args+=(--with "$CONDUCTOR_WITH")
+    if [ -z "${CONDUCTOR_WITH:-}" ]; then
+      args+=(--prefer "${CONDUCTOR_PREFER:-best}")
+      [ -n "${CONDUCTOR_TAGS:-}" ] && args+=(--tags "$CONDUCTOR_TAGS")
+    fi
+    args+=(--effort "${CONDUCTOR_EFFORT:-high}")
+    if [ -n "${CONDUCTOR_EXCLUDE:-}" ] && [ "$CONDUCTOR_EXCLUDE" != "ollama" ]; then
+      args+=(--exclude "$CONDUCTOR_EXCLUDE")
+    fi
+    args+=(--base "$BASE" --brief-file -)
+    if [ "${REVIEW_TIMEOUT:-0}" -gt 0 ] 2>/dev/null; then
+      args+=(--timeout "$REVIEW_TIMEOUT")
+    fi
+    printf '%s' "$prompt" \
+      | CODEX_REVIEW_IN_PROGRESS=1 conductor review "${args[@]}"
+    return
+  fi
+
+  # Provider selection for exec/call paths: --with <id> pins a provider;
+  # otherwise --auto lets the router pick based on prefer + effort + tags.
   if [ -n "${CONDUCTOR_WITH:-}" ]; then
     args+=(--with "$CONDUCTOR_WITH")
   else
@@ -1361,35 +1440,7 @@ reviewer_conductor_exec() {
     [ -n "${CONDUCTOR_TAGS:-}" ] && args+=(--tags "$CONDUCTOR_TAGS")
     [ -n "${CONDUCTOR_EXCLUDE:-}" ] && args+=(--exclude "$CONDUCTOR_EXCLUDE")
   fi
-
-  # Effort applies whether manual-provider or auto-routed.
   args+=(--effort "${CONDUCTOR_EFFORT:-high}")
-
-  # REVIEW_MODE → subcommand + tools. Conductor translates these portable tool
-  # names into each provider's native permission/sandbox contract.
-  local tools=""
-  subcommand="$(conductor_subcommand_for_mode)"
-  case "$REVIEW_MODE" in
-    diff-only)
-      # Single-turn call — the diff is already embedded in the prompt.
-      ;;
-    review-only)
-      subcommand="exec"
-      tools="Read,Grep,Glob,Bash"
-      ;;
-    no-tests)
-      subcommand="exec"
-      tools="Read,Grep,Glob,Edit,Write"
-      ;;
-    fix)
-      subcommand="exec"
-      tools="Read,Grep,Glob,Bash,Edit,Write"
-      ;;
-    *)
-      subcommand="exec"
-      tools="Read,Grep,Glob,Bash"
-      ;;
-  esac
 
   if [ "$subcommand" = "exec" ]; then
     args+=(--tools "$tools")
@@ -1407,10 +1458,73 @@ reviewer_conductor_exec() {
     | CODEX_REVIEW_IN_PROGRESS=1 conductor "$subcommand" "${args[@]}"
 }
 
+conductor_csv_empty_or_only_ollama() {
+  local raw="${1:-}"
+  local item
+  local -a items
+
+  [ -n "$raw" ] || return 0
+  IFS=',' read -r -a items <<<"$raw"
+  for item in "${items[@]}"; do
+    item="$(trim "$item")"
+    [ -z "$item" ] && continue
+    [ "$item" = "ollama" ] || return 1
+  done
+  return 0
+}
+
+conductor_should_use_semantic_review() {
+  [ "${CONDUCTOR_WITH:-}" != "ollama" ] || return 1
+  return 0
+}
+
+conductor_native_review_provider() {
+  case "$1" in
+    codex | claude | gemini) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+conductor_review_pin_exclude() {
+  local pinned="$1"
+  local existing="$2"
+  local provider
+  local exclude="$existing"
+
+  for provider in claude codex deepseek-chat deepseek-reasoner gemini kimi ollama openrouter; do
+    [ "$provider" = "$pinned" ] && continue
+    exclude="$(exclude_provider_once "$exclude" "$provider")"
+  done
+  printf '%s' "$exclude"
+}
+
 conductor_subcommand_for_mode() {
-  case "$REVIEW_MODE" in
-    diff-only) printf 'call' ;;
+  local phase="${1:-review}"
+
+  case "$phase:$REVIEW_MODE" in
+    review:diff-only) printf 'call' ;;
+    review:*)
+      if conductor_should_use_semantic_review; then
+        printf 'review'
+      else
+        printf 'exec'
+      fi
+      ;;
+    fix:*) printf 'exec' ;;
     *) printf 'exec' ;;
+  esac
+}
+
+conductor_tools_for_mode() {
+  local phase="${1:-review}"
+
+  case "$phase:$REVIEW_MODE" in
+    review:diff-only) printf '' ;;
+    review:no-tests) printf 'Read,Grep,Glob' ;;
+    review:*) printf 'Read,Grep,Glob,Bash' ;;
+    fix:no-tests) printf 'Read,Grep,Glob,Edit,Write' ;;
+    fix:*) printf 'Read,Grep,Glob,Bash,Edit,Write' ;;
+    *) printf 'Read,Grep,Glob,Bash' ;;
   esac
 }
 
@@ -2609,6 +2723,7 @@ run_assist_review() {
 # --------------------------------------------------------------------------
 
 FIX_COMMITS=0
+REVIEW_PHASE="review"
 ASSIST_ROUNDS=0
 BANNER_PRINTED=false
 REVIEW_START_TIME="$(date +%s)"
@@ -2986,7 +3101,7 @@ check_worktree_invariants() {
 }
 
 block_if_worktree_mutated_in_review_mode() {
-  if mode_allows_fix; then
+  if mode_allows_fix && [ "${REVIEW_PHASE:-review}" != "review" ]; then
     return 0
   fi
 
@@ -2996,8 +3111,76 @@ block_if_worktree_mutated_in_review_mode() {
 
   REVIEW_EXIT_REASON="worktree-mutated"
   print_summary
-  echo "==> ERROR: Worktree was mutated in '$REVIEW_MODE' mode — blocking push." >&2
+  if mode_allows_fix; then
+    echo "==> ERROR: Worktree was mutated during the read-only review phase in '$REVIEW_MODE' mode — blocking push." >&2
+  else
+    echo "==> ERROR: Worktree was mutated in '$REVIEW_MODE' mode — blocking push." >&2
+  fi
   exit 1
+}
+
+run_fix_phase_for_blocked_review() {
+  local review_output="$1"
+  local fix_prompt fix_exit fix_output fix_sentinel
+
+  mode_allows_fix || return 1
+  [ "${REVIEW_FIX_ATTEMPTED:-false}" = false ] || return 1
+
+  if [ "$WORKTREE_DIRTY_BEFORE_REVIEW" = true ]; then
+    echo "==> Skipping auto-fix: working tree was already dirty before review."
+    return 1
+  fi
+
+  REVIEW_FIX_ATTEMPTED=true
+  fix_prompt="$(build_fix_prompt "$review_output")"
+
+  phase "fixing review findings with $REVIEWER_LABEL"
+  set +e
+  REVIEW_PHASE=fix run_reviewer_with_timeout "$REVIEW_TIMEOUT" "$fix_prompt" "$REVIEW_OUTPUT_FILE"
+  fix_exit=$?
+  set -e
+  fix_output="$(cat "$REVIEW_OUTPUT_FILE" 2>/dev/null || true)"
+  print_route_log
+
+  if [ "$fix_exit" -eq 124 ]; then
+    echo "==> $REVIEWER_LABEL fix phase timed out after ${REVIEW_TIMEOUT}s; blocking on the read-only findings."
+    OUTPUT="$review_output"
+    LAST_SENTINEL="CODEX_REVIEW_BLOCKED"
+    return 0
+  fi
+
+  if [ "$fix_exit" -ne 0 ]; then
+    echo "==> $REVIEWER_LABEL fix phase failed with exit $fix_exit; blocking on the read-only findings."
+    OUTPUT="$review_output"
+    LAST_SENTINEL="CODEX_REVIEW_BLOCKED"
+    return 0
+  fi
+
+  fix_sentinel="$(printf '%s\n' "$fix_output" | extract_review_sentinel)"
+  case "$fix_sentinel" in
+    CODEX_REVIEW_FIXED)
+      OUTPUT="$fix_output"
+      LAST_SENTINEL="CODEX_REVIEW_FIXED"
+      return 0
+      ;;
+    CODEX_REVIEW_BLOCKED)
+      OUTPUT="${review_output}
+
+Fix phase output:
+${fix_output}"
+      LAST_SENTINEL="CODEX_REVIEW_BLOCKED"
+      return 0
+      ;;
+    *)
+      echo "==> $REVIEWER_LABEL fix phase output did not match the sentinel contract; blocking on the read-only findings."
+      OUTPUT="${review_output}
+
+Malformed fix phase output:
+${fix_output}"
+      LAST_SENTINEL="CODEX_REVIEW_BLOCKED"
+      return 0
+      ;;
+  esac
 }
 
 # --------------------------------------------------------------------------
@@ -3179,6 +3362,7 @@ ${REVIEW_PROMPT}"
 fi
 
 for iter in $(seq 1 "$MAX_ITERATIONS"); do
+  REVIEW_FIX_ATTEMPTED=false
   phase "loading diff"
   DIFF_LINE_COUNT="$(git diff "$MERGE_BASE"..HEAD | wc -l | tr -d ' ')"
   if [ "$DIFF_LINE_COUNT" -gt "$MAX_DIFF_LINES" ]; then
@@ -3336,6 +3520,10 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
     break
   done
 
+  if [ "$LAST_SENTINEL" = "CODEX_REVIEW_BLOCKED" ] && mode_allows_fix; then
+    run_fix_phase_for_blocked_review "$OUTPUT" || true
+  fi
+
   case "$LAST_SENTINEL" in
     CODEX_REVIEW_CLEAN)
       phase "done — clean"
@@ -3397,6 +3585,9 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
       git commit -m "fix: address $REVIEWER_LABEL review findings (auto, $REVIEW_MODE, iter $iter)"
       append_findings_history_event "CODEX_REVIEW_FIXED" "$iter" "$OUTPUT" 0
       WORKTREE_DIRTY_BEFORE_REVIEW=false
+      WORKTREE_HEAD_BEFORE="$(git rev-parse HEAD)"
+      WORKTREE_BRANCH_BEFORE="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo 'detached')"
+      WORKTREE_STATUS_BEFORE="$(git status --porcelain)"
       FIX_COMMITS=$((FIX_COMMITS + 1))
       echo "==> Created fix commit $(git rev-parse --short HEAD). Re-running review on new HEAD..."
       echo ""

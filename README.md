@@ -75,7 +75,7 @@ brew install autumngarage/conductor/conductor
 conductor init                    # walks through each provider, one at a time
 ```
 
-Conductor supports Claude, OpenAI Codex, Google Gemini, Moonshot Kimi (via Cloudflare Workers AI), and local Ollama. Configure as many as you want; Conductor's auto-router picks the best one for each review based on quality tier, cost, and availability.
+Conductor supports native reviewers such as OpenAI Codex, Claude, and Gemini, plus hosted OpenRouter fallback and explicit local Ollama. Configure as many as you want; Conductor owns the provider policy for each job.
 
 When you run `touchstone new` or `touchstone init`, Touchstone asks whether you want AI review. If you say yes, the scaffold adds a default `[review.conductor]` block with `prefer = "best"` and `effort = "high"` — frontier-tier review with a bounded reasoning budget. Use `TOUCHSTONE_CONDUCTOR_EFFORT=max` when release-level scrutiny is worth the extra latency.
 
@@ -130,15 +130,15 @@ bash setup.sh --deps-only
 |---------|-------------|
 | `touchstone init [--no-setup]` | Add touchstone to the current project |
 | `touchstone migrate-from-toolkit` | Migrate a project from the legacy `.toolkit-*` files before re-running `touchstone init` |
-| `touchstone init --review-routing small-local` | Route small diffs through local Ollama, larger diffs through Conductor's auto-router |
-| `touchstone init --reviewer claude` | Pin Conductor to a specific underlying provider (codex / claude / gemini / ollama) |
+| `touchstone init --review-routing all-local` | Use explicit offline Ollama review instead of hosted Conductor review |
+| `touchstone init --reviewer claude` | Pin Conductor to a specific underlying provider (codex / claude / gemini / openrouter / local) |
 | `touchstone init --no-ai-review` | Add touchstone with AI review disabled |
 | `touchstone init --gitbutler` | Add touchstone with optional GitButler workflow setup |
 | `touchstone init --ci github` | Add `.github/workflows/validate.yml` that runs pre-commit hygiene and `touchstone run validate` on every PR |
 | `touchstone init --scaffold-tests` | Write one placeholder smoke test for Python, Node, or Go projects (Rust and Swift already ship scaffolds via `cargo init` / `swift package init`) |
 | `touchstone new <dir>` | Bootstrap a new project with principles, scripts, hooks, and templates |
 | `touchstone new <dir> --type node` | Bootstrap with an explicit Node/TypeScript, Swift, Rust, Go, Python, or generic profile |
-| `touchstone new <dir> --review-routing small-local` | Bootstrap with hybrid routing — small diffs to Ollama, larger to Conductor's auto-router |
+| `touchstone new <dir> --review-routing all-local` | Bootstrap with explicit offline Ollama review instead of hosted Conductor review |
 | `touchstone new <dir> --reviewer claude` | Bootstrap pinned to a specific underlying provider |
 | `touchstone new <dir> --no-ai-review` | Bootstrap a new project with AI review disabled |
 | `touchstone new <dir> --gitbutler` | Bootstrap with optional GitButler workflow setup |
@@ -241,13 +241,13 @@ Universal engineering standards, extracted and battle-tested from production sys
 
 Automatically reviews code before it reaches the default branch. In Touchstone 2.0, all LLM access routes through the [Conductor CLI](https://github.com/autumngarage/conductor):
 
-- One reviewer — `conductor` — delegates per-provider selection to Conductor's auto-router (Claude, Codex, Gemini, Kimi, or local Ollama)
-- Quality-tier-aware routing (`prefer = "best"` picks the frontier-tier provider)
+- One reviewer — `conductor` — uses Conductor's semantic review path for read-only review (Codex review first, hosted fallback through Conductor)
+- Quality-tier-aware routing for provider-pinned and edit-capable modes (`prefer = "best"` picks the frontier-tier provider)
 - Per-push preference via env vars: `TOUCHSTONE_CONDUCTOR_WITH=<provider>`, `TOUCHSTONE_CONDUCTOR_PREFER=<mode>`, `TOUCHSTONE_CONDUCTOR_EFFORT=<level>`
 - Size-based routing — small diffs can use `prefer = "cheapest"` + minimal effort, large diffs use `prefer = "best"` + max effort — via `[review.routing]`
-- Local Ollama providers are excluded from auto-routed merge gates by default; set `[review.conductor].exclude = []` to opt them back in
-- Graceful fallback: if the chosen provider returns 5xx / rate-limit / timeout, Conductor retries once with the next-ranked provider
-- Auto-fixes safe issues when the review mode allows edits
+- Local Ollama providers are reserved for explicit offline review (`--review-routing all-local` or `--reviewer local`)
+- Graceful fallback: if the chosen hosted review provider returns 5xx / rate-limit / timeout, Conductor tries the next code-review provider
+- Auto-fixes safe issues through a second edit-capable pass after read-only review
 - Blocks the merge or direct default-branch push for findings that should not be auto-fixed
 - Runs from `scripts/merge-pr.sh`, and from the pre-push hook only when pushing directly to the default branch
 - Loops up to N times, gracefully skips when Conductor is not installed
