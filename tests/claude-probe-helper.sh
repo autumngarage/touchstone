@@ -4,6 +4,13 @@
 # real provider quota and depend on local auth, so they must fail visibly but
 # never hang the whole test suite indefinitely.
 
+claude_probe_provider_unavailable() {
+  local output="$1"
+
+  printf '%s\n' "$output" | grep -qiE \
+    "hit your limit|rate.?limit|quota|too many requests|429|usage limit|provider unavailable|auth(entication)? (failed|required|expired)|not authenticated|not logged in|login required"
+}
+
 run_claude_probe() {
   local prompt="$1"
   local timeout_secs="${TOUCHSTONE_CLAUDE_PROBE_TIMEOUT:-90}"
@@ -13,8 +20,16 @@ run_claude_probe() {
   esac
 
   if [ "$timeout_secs" -le 0 ] 2>/dev/null; then
-    claude -p "$prompt"
-    return $?
+    local direct_output direct_rc
+    set +e
+    direct_output="$(claude -p "$prompt" 2>&1)"
+    direct_rc=$?
+    set -e
+    printf '%s\n' "$direct_output"
+    if [ "$direct_rc" -ne 0 ] && claude_probe_provider_unavailable "$direct_output"; then
+      return 125
+    fi
+    return "$direct_rc"
   fi
 
   local out_file timed_out_file claude_pid watchdog_pid rc
@@ -56,6 +71,11 @@ run_claude_probe() {
   if [ -f "$timed_out_file" ]; then
     rm -f "$out_file" "$timed_out_file"
     return 124
+  fi
+
+  if [ "$rc" -ne 0 ] && claude_probe_provider_unavailable "$(cat "$out_file")"; then
+    rm -f "$out_file" "$timed_out_file"
+    return 125
   fi
 
   rm -f "$out_file" "$timed_out_file"
