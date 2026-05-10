@@ -13,7 +13,9 @@
 # This is intentionally outside tests/test-*.sh because it shells out to a
 # live Claude model and can spend provider quota or flake on provider latency.
 # Skip with TOUCHSTONE_SKIP_GUIDANCE=1 during iteration. Gracefully skips if
-# `claude` is not on PATH (e.g. CI runners without the CLI).
+# `claude` is not on PATH, or if Claude reports provider quota/rate-limit/auth
+# unavailability. Set TOUCHSTONE_REQUIRE_GUIDANCE=1 to make provider
+# unavailability a single hard failure instead of a skip.
 #
 set -euo pipefail
 
@@ -30,11 +32,33 @@ fi
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$TOUCHSTONE_ROOT"
 
-# shellcheck source=claude-probe-helper.sh
+# shellcheck source=tests/claude-probe-helper.sh
 source "$TOUCHSTONE_ROOT/tests/claude-probe-helper.sh"
 
 FAILURES=0
 PROBES_RUN=0
+
+handle_provider_unavailable() {
+  local response="$1"
+
+  if [ "$FAILURES" -gt 0 ]; then
+    echo "==> FAIL: Claude provider unavailable after $FAILURES prior guidance probe failure(s)"
+    echo "    Provider unavailability cannot mask earlier guidance drift."
+    echo "$response" | head -20 | sed 's/^/    /'
+    exit 1
+  fi
+
+  if [ "${TOUCHSTONE_REQUIRE_GUIDANCE:-0}" = "1" ]; then
+    echo "==> FAIL: Claude provider unavailable for live guidance probes"
+    echo "    TOUCHSTONE_REQUIRE_GUIDANCE=1 requires these probes to run."
+    echo "$response" | head -20 | sed 's/^/    /'
+    exit 1
+  fi
+
+  echo "==> SKIP: Claude provider unavailable for live guidance probes"
+  echo "$response" | head -20 | sed 's/^/    /'
+  exit 0
+}
 
 # A probe is: a name, a prompt, and an extended-regex of patterns ANY of
 # which counts as evidence the rule fired. Matching is case-insensitive.
@@ -57,6 +81,9 @@ run_probe() {
     echo "$response" | head -20 | sed 's/^/    /'
     FAILURES=$((FAILURES + 1))
     return
+  fi
+  if [ "$rc" -eq 125 ]; then
+    handle_provider_unavailable "$response"
   fi
   if [ "$rc" -ne 0 ]; then
     echo "  FAIL: claude -p exited non-zero"
@@ -99,6 +126,9 @@ run_negative() {
     echo "  FAIL: claude -p timed out after ${TOUCHSTONE_CLAUDE_PROBE_TIMEOUT:-90}s"
     FAILURES=$((FAILURES + 1))
     return
+  fi
+  if [ "$rc" -eq 125 ]; then
+    handle_provider_unavailable "$response"
   fi
   if [ "$rc" -ne 0 ]; then
     echo "  FAIL: claude -p exited non-zero"
