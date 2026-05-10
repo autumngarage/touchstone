@@ -2852,7 +2852,7 @@ parse_primary_model() {
     return
   fi
 
-  local stderr_file="${1:-$REVIEW_STDERR_FILE}"
+  local stderr_file="$REVIEW_STDERR_FILE"
   [ -f "$stderr_file" ] || {
     printf ''
     return
