@@ -80,7 +80,7 @@ Conductor logs its route decision (provider, cost estimate, token count, wall-cl
 | `[review].reviewer` | `"conductor"` | The only supported value in 2.0 |
 | `[review.conductor].prefer` | size-aware | `best` \| `cheapest` \| `fastest` \| `balanced`; used as a global fallback, but default size routing applies per bucket |
 | `[review.conductor].effort` | size-aware | `minimal` \| `low` \| `medium` \| `high` \| `max` \| integer thinking-token budget; used as a global fallback, but default size routing applies per bucket |
-| `[review.conductor].tags` | `"code-review"` | Capability tags passed to the router |
+| `[review.conductor].tags` | `"code-review"` | Capability tags passed to the review router; `tool-use` is ignored for read-only review |
 | `[review.conductor].with` | unset | Pin a specific provider. Omit it for Conductor's semantic review route. |
 | `[review.conductor].exclude` | `["ollama"]` | Exclude providers from hosted auto-routing in nonsemantic modes; use explicit all-local/offline review for Ollama. |
 | `[review.routing].enabled` | true | Route by diff size |
@@ -132,7 +132,7 @@ Prompt-context pruning is separate from provider routing, but uses the same path
 | `TOUCHSTONE_CONDUCTOR_WITH` | Pin Conductor to a specific provider |
 | `TOUCHSTONE_CONDUCTOR_PREFER` | Override `[review.conductor].prefer` |
 | `TOUCHSTONE_CONDUCTOR_EFFORT` | Override `[review.conductor].effort` |
-| `TOUCHSTONE_CONDUCTOR_TAGS` | Override `[review.conductor].tags` |
+| `TOUCHSTONE_CONDUCTOR_TAGS` | Override `[review.conductor].tags`; `tool-use` is ignored for read-only review |
 | `TOUCHSTONE_CONDUCTOR_EXCLUDE` | Override `[review.conductor].exclude` |
 | `TOUCHSTONE_REVIEWER` | Deprecated in 2.0 — auto-translates to `TOUCHSTONE_CONDUCTOR_WITH=<provider>` with a one-time hint |
 

@@ -98,7 +98,8 @@ unsafe_paths = [
 # # Or an explicit integer thinking-token budget.
 # # effort = "high"
 #
-# # Capability tags passed to the router. Defaults cover code review well.
+# # Capability tags passed to the review router. `tool-use` is ignored for
+# # read-only review because Conductor embeds the diff directly.
 # # tags = "code-review"
 #
 # # Pin a specific provider (bypasses auto-routing). Omit for Conductor's

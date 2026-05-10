@@ -169,6 +169,38 @@ normalize_bool() {
   esac
 }
 
+normalize_conductor_review_tags() {
+  printf '%s\n' "${1:-code-review}" \
+    | awk -F',' '
+      {
+        for (i = 1; i <= NF; i++) {
+          tag = $i
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", tag)
+          if (tag == "" || tag == "tool-use") {
+            continue
+          }
+          if (!(tag in seen)) {
+            seen[tag] = 1
+            order[++count] = tag
+          }
+        }
+      }
+      END {
+        out = ""
+        if (!("code-review" in seen)) {
+          out = "code-review"
+        }
+        for (i = 1; i <= count; i++) {
+          if (out != "") {
+            out = out ","
+          }
+          out = out order[i]
+        }
+        print out
+      }
+    '
+}
+
 # Parse .codex-review.toml if it exists.
 if [ -f "$CONFIG_FILE" ]; then
   # Source the TOML library
@@ -432,7 +464,8 @@ fi
 
 [ -n "$CONDUCTOR_PREFER" ] && args+=(--prefer "$CONDUCTOR_PREFER")
 [ -n "$CONDUCTOR_EFFORT" ] && args+=(--effort "$CONDUCTOR_EFFORT")
-[ -n "$CONDUCTOR_TAGS" ] && args+=(--tags "$CONDUCTOR_TAGS")
+review_tags="$(normalize_conductor_review_tags "$CONDUCTOR_TAGS")"
+[ -n "$review_tags" ] && args+=(--tags "$review_tags")
 [ -n "$CONDUCTOR_EXCLUDE" ] && args+=(--exclude "$CONDUCTOR_EXCLUDE")
 [ -n "$tools" ] && args+=(--tools "$tools")
 [ -n "$json_flag" ] && args+=("$json_flag")
