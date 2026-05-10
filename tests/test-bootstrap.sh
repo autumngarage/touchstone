@@ -173,6 +173,8 @@ assert_exists "$PROJECT/lib/review-comment.sh"
 assert_exists "$PROJECT/scripts/touchstone-run.sh"
 assert_exists "$PROJECT/scripts/open-pr.sh"
 assert_exists "$PROJECT/scripts/merge-pr.sh"
+assert_exists "$PROJECT/scripts/claim-issue.sh"
+assert_exists "$PROJECT/scripts/issue-claim-check.sh"
 assert_exists "$PROJECT/scripts/cleanup-branches.sh"
 assert_exists "$PROJECT/scripts/spawn-worktree.sh"
 assert_exists "$PROJECT/scripts/cleanup-worktrees.sh"
@@ -181,6 +183,8 @@ assert_executable "$PROJECT/scripts/codex-review.sh"
 assert_executable "$PROJECT/scripts/touchstone-run.sh"
 assert_executable "$PROJECT/scripts/open-pr.sh"
 assert_executable "$PROJECT/scripts/merge-pr.sh"
+assert_executable "$PROJECT/scripts/claim-issue.sh"
+assert_executable "$PROJECT/scripts/issue-claim-check.sh"
 assert_executable "$PROJECT/scripts/cleanup-branches.sh"
 assert_executable "$PROJECT/scripts/spawn-worktree.sh"
 assert_executable "$PROJECT/scripts/cleanup-worktrees.sh"
@@ -200,6 +204,8 @@ assert_contains "$PROJECT/.touchstone-config" '^gitbutler_mcp=false$'
 assert_exists "$PROJECT/.touchstone-manifest"
 assert_contains "$PROJECT/.touchstone-manifest" '^\.touchstone-version$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/open-pr.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^scripts/claim-issue.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^scripts/issue-claim-check.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/toml\.sh$'

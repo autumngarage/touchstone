@@ -11,7 +11,8 @@ TEST_DIR="$(mktemp -d -t touchstone-test-preflight-scope.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
 FAKE_BIN="$TEST_DIR/bin"
-mkdir -p "$FAKE_BIN"
+NO_ACTIONLINT_BIN="$TEST_DIR/bin-no-actionlint"
+mkdir -p "$FAKE_BIN" "$NO_ACTIONLINT_BIN"
 
 cat >"$FAKE_BIN/shellcheck" <<'EOF'
 #!/usr/bin/env bash
@@ -46,6 +47,9 @@ printf 'actionlint:%s\n' "$*" >>"$PREFLIGHT_TOOL_LOG"
 EOF
 
 chmod +x "$FAKE_BIN/shellcheck" "$FAKE_BIN/shfmt" "$FAKE_BIN/markdownlint" "$FAKE_BIN/actionlint"
+ln -s "$FAKE_BIN/shellcheck" "$NO_ACTIONLINT_BIN/shellcheck"
+ln -s "$FAKE_BIN/shfmt" "$NO_ACTIONLINT_BIN/shfmt"
+ln -s "$FAKE_BIN/markdownlint" "$NO_ACTIONLINT_BIN/markdownlint"
 
 new_fixture_repo() {
   local repo="$1"
@@ -89,6 +93,13 @@ run_preflight_all_files() {
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     PREFLIGHT_TOOL_LOG="$log" \
     bash "$TOUCHSTONE_ROOT/lib/preflight.sh" --all-files "$repo" >"$output" 2>&1
+}
+
+run_preflight_without_actionlint() {
+  local repo="$1" output="$2" log="$3"
+  PATH="$NO_ACTIONLINT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    PREFLIGHT_TOOL_LOG="$log" \
+    bash "$TOUCHSTONE_ROOT/lib/preflight.sh" --diff origin/main "$repo" >"$output" 2>&1
 }
 
 assert_log_contains() {
@@ -187,6 +198,27 @@ assert_log_contains "$LOG" 'markdownlint:.*docs/mixed.md'
 assert_log_contains "$LOG" 'actionlint:.*.github/workflows/mixed.yml'
 assert_log_not_contains "$LOG" 'unchanged-bad.sh'
 echo "==> PASS: mixed change runs each scoped file list"
+
+echo "==> Test: missing actionlint skips without pipefail failure"
+REPO="$TEST_DIR/repo-missing-actionlint"
+LOG="$TEST_DIR/missing-actionlint.log"
+OUT="$TEST_DIR/missing-actionlint.out"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  printf 'name: missing-actionlint\non: push\njobs: {}\n' >.github/workflows/missing-actionlint.yml
+  git add .github/workflows/missing-actionlint.yml
+  git commit -q -m "change workflow without local actionlint"
+)
+: >"$LOG"
+run_preflight_without_actionlint "$REPO" "$OUT" "$LOG"
+if ! grep -q 'SKIP actionlint (actionlint not installed)' "$OUT"; then
+  echo "FAIL: missing actionlint did not produce expected skip line" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+assert_log_not_contains "$LOG" '^actionlint:'
+echo "==> PASS: missing actionlint remains a skip for workflow-only changes"
 
 echo "==> Test: diff mode still runs full project validate"
 REPO="$TEST_DIR/repo-validate"
