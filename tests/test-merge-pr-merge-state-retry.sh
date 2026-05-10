@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # tests/test-merge-pr-merge-state-retry.sh — verify merge-pr.sh waits through
-# transient UNKNOWN mergeability while fast-failing definite conflict states.
+# transient/pending mergeability while fast-failing definite conflict states.
 #
 set -euo pipefail
 
@@ -52,6 +52,8 @@ case "${1:-} ${2:-}" in
         printf '%s\n' "$attempt" > "$GH_MERGE_ATTEMPTS_FILE"
         if [ -n "${GH_MERGE_STATE_IMMEDIATE:-}" ]; then
           echo "$GH_MERGE_STATE_IMMEDIATE"
+        elif [ "$attempt" -le "${GH_MERGE_STATE_PENDING_ATTEMPTS:-0}" ]; then
+          echo "${GH_MERGE_STATE_PENDING_VALUE:-UNSTABLE MERGEABLE}"
         elif [ "$attempt" -le "${GH_MERGE_STATE_UNKNOWN_ATTEMPTS:-0}" ]; then
           echo "UNKNOWN UNKNOWN"
         else
@@ -178,6 +180,8 @@ reset_case_files() {
   rm -rf "$GIT_PATH_ROOT"
   mkdir -p "$GIT_PATH_ROOT"
   unset GH_MERGE_STATE_UNKNOWN_ATTEMPTS
+  unset GH_MERGE_STATE_PENDING_ATTEMPTS
+  unset GH_MERGE_STATE_PENDING_VALUE
   unset GH_MERGE_STATE_IMMEDIATE
 }
 
@@ -194,6 +198,8 @@ run_merge_pr() {
     GH_MERGED_MARKER="$TEST_DIR/gh-merged-marker" \
     GH_MERGE_ATTEMPTS_FILE="$TEST_DIR/merge-attempts" \
     GH_MERGE_STATE_UNKNOWN_ATTEMPTS="${GH_MERGE_STATE_UNKNOWN_ATTEMPTS:-0}" \
+    GH_MERGE_STATE_PENDING_ATTEMPTS="${GH_MERGE_STATE_PENDING_ATTEMPTS:-0}" \
+    GH_MERGE_STATE_PENDING_VALUE="${GH_MERGE_STATE_PENDING_VALUE:-}" \
     GH_MERGE_STATE_IMMEDIATE="${GH_MERGE_STATE_IMMEDIATE:-}" \
     GIT_CHECKOUT_MAIN_FILE="$TEST_DIR/git-checkout-main" \
     GIT_BRANCH_DELETED_FILE="$TEST_DIR/git-branch-deleted" \
@@ -214,6 +220,22 @@ if [ "$attempt_count" -eq 7 ] \
 else
   echo "FAIL: UNKNOWN state did not retry past the old five-attempt budget" >&2
   cat "$TEST_DIR/output-unknown-then-clean.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: pending CI UNSTABLE state waits past the old short budget"
+reset_case_files
+GH_MERGE_STATE_PENDING_ATTEMPTS=12 run_merge_pr "$TEST_DIR/output-unstable-then-clean.txt" 123
+attempt_count="$(grep -c 'attempt [0-9][0-9]*: mergeStateStatus=' "$TEST_DIR/output-unstable-then-clean.txt")"
+if [ "$attempt_count" -eq 13 ] \
+  && grep -q 'attempt 10: mergeStateStatus=UNSTABLE mergeable=MERGEABLE' "$TEST_DIR/output-unstable-then-clean.txt" \
+  && grep -q 'attempt 13: mergeStateStatus=CLEAN mergeable=MERGEABLE' "$TEST_DIR/output-unstable-then-clean.txt" \
+  && grep -q '==> Done\.' "$TEST_DIR/output-unstable-then-clean.txt" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: pending CI state waits long enough to merge when checks go clean"
+else
+  echo "FAIL: pending CI state timed out before checks became clean" >&2
+  cat "$TEST_DIR/output-unstable-then-clean.txt" >&2
   exit 1
 fi
 

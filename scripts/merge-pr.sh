@@ -690,13 +690,18 @@ print_failed_checks_and_exit() {
 }
 
 wait_for_clean_merge_state() {
-  local sleep_seconds
+  local attempt max_attempts sleep_seconds
 
   echo "==> Checking merge state for PR #$PR_NUMBER ..."
   STATE=""
   MERGEABLE=""
   MERGE_STATE_RETRY_DELAYS=(1 2 5 10 30 30 30 30 30)
-  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  max_attempts="${MERGE_PR_STATE_MAX_ATTEMPTS:-30}"
+  if ! [[ "$max_attempts" =~ ^[0-9]+$ ]] || [ "$max_attempts" -lt 1 ]; then
+    max_attempts=30
+  fi
+  attempt=1
+  while [ "$attempt" -le "$max_attempts" ]; do
     MERGE_STATE="$(gh pr view "$PR_NUMBER" --json mergeStateStatus,mergeable --template '{{.mergeStateStatus}} {{.mergeable}}' 2>/dev/null || echo '')"
     STATE="${MERGE_STATE%% *}"
     MERGEABLE="${MERGE_STATE#* }"
@@ -717,8 +722,8 @@ wait_for_clean_merge_state() {
       TOUCHSTONE_MERGE_FAILURE_REASON="not-mergeable"
       exit 1
     fi
-    if [ "$attempt" -lt 10 ]; then
-      sleep_seconds="${MERGE_STATE_RETRY_DELAYS[$((attempt - 1))]}"
+    if [ "$attempt" -lt "$max_attempts" ]; then
+      sleep_seconds="${MERGE_STATE_RETRY_DELAYS[$((attempt - 1))]:-30}"
       # Tests may set MERGE_PR_SLEEP_OVERRIDE=0 to exercise retry behavior
       # without waiting for the production backoff schedule.
       if [ -n "${MERGE_PR_SLEEP_OVERRIDE+x}" ]; then
@@ -726,9 +731,11 @@ wait_for_clean_merge_state() {
       fi
       sleep "$sleep_seconds"
     fi
+    attempt=$((attempt + 1))
   done
 
   echo "ERROR: PR #$PR_NUMBER is not cleanly mergeable (state=$STATE mergeable=$MERGEABLE)." >&2
+  echo "       Required checks may still be pending; waited $max_attempts merge-state attempts." >&2
   echo "       Inspect manually: gh pr view $PR_NUMBER --web" >&2
   TOUCHSTONE_MERGE_FAILURE_REASON="not-mergeable"
   exit 1
