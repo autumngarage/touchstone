@@ -189,12 +189,13 @@ When one lane closes multiple issues (e.g., Wave 1's Lane A bundling shfmt + mar
 
 **Deterministic enforcement.**
 
-Two layers back the convention so a missed claim doesn't reach merge silently:
+Three layers back the convention so a missed claim doesn't reach merge silently:
 
 - **`scripts/claim-issue.sh`** is the canonical claim path. It does the claim + dispatch comment in one step, and detects races (another assignee appeared between the API read and write — back off, exit non-zero so the dispatching agent knows not to spawn a worker). Use it instead of raw `gh issue edit` when an agent is about to start work.
+- **`scripts/open-pr.sh`** runs `scripts/issue-claim-check.sh` locally before creating a new PR and before auto-merging an existing PR. If the PR body closes an open issue that is not assigned to the PR author, it fails before spending merge-gate review time.
 - **`.github/workflows/issue-claim-check.yml`** runs on every `pull_request` open/edit/synchronize. It parses `Closes #N` / `Fixes #N` / `Resolves #N` / `Closes-issue: #N` from the PR body, fetches each open referenced issue, and fails the check if the PR author is not in the issue's assignees. The failure posts a comment on the PR explaining what to fix.
 
-The CI check is the hard backstop: even if an agent skips the dispatch-time claim, a PR that tries to close an unclaimed issue fails its checks and won't auto-merge.
+The local check is the fast path: it stops the common mistake before a PR exists or before merge review runs. The CI check is the hard backstop: even if an agent bypasses the local script, a PR that tries to close an unclaimed issue fails its checks and won't auto-merge.
 
 **Bypass token: `[skip-claim-check]`.**
 

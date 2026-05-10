@@ -418,6 +418,11 @@ if [ -f "$TOUCHSTONE_ROOT/TOUCHSTONE.md" ]; then
   update_file "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$PROJECT_DIR/TOUCHSTONE.md"
 fi
 
+# Required deterministic backstop for the issue-claim workflow. General CI
+# validate.yml remains opt-in and project-owned; this workflow is part of the
+# documented Touchstone delivery contract.
+update_file "$TOUCHSTONE_ROOT/templates/ci/issue-claim-check.yml" "$PROJECT_DIR/.github/workflows/issue-claim-check.yml"
+
 # Read project type (default: generic for backward compatibility).
 PROJECT_TYPE="generic"
 if [ -f "$PROJECT_DIR/.touchstone-config" ]; then
@@ -571,6 +576,7 @@ write_touchstone_manifest() {
     printf '.touchstone-manifest\n'
     printf '.touchstone-version\n'
     printf 'TOUCHSTONE.md\n'
+    printf '.github/workflows/issue-claim-check.yml\n'
     if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
       for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
         printf 'principles/%s\n' "$(basename "$f")"
