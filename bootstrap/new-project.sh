@@ -1068,6 +1068,7 @@ write_touchstone_manifest() {
     printf '.touchstone-manifest\n'
     printf '.touchstone-version\n'
     printf 'TOUCHSTONE.md\n'
+    printf '.github/workflows/issue-claim-check.yml\n'
     for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
       printf 'principles/%s\n' "$(basename "$f")"
     done
@@ -1330,6 +1331,10 @@ done
 # CLAUDE.md (@TOUCHSTONE.md) and inlined into AGENTS.md/GEMINI.md by
 # touchstone_block_apply. Copy at the project root so the @-import resolves.
 copy_file_force "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$PROJECT_DIR/TOUCHSTONE.md"
+
+echo ""
+echo "==> Copying GitHub workflows (touchstone-owned, will be auto-updated):"
+copy_file_force "$TOUCHSTONE_ROOT/templates/ci/issue-claim-check.yml" "$PROJECT_DIR/.github/workflows/issue-claim-check.yml"
 
 echo ""
 echo "==> Copying scripts (touchstone-owned, will be auto-updated):"

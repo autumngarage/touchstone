@@ -155,7 +155,16 @@ assert_exists "$PROJECT/.pre-commit-config.yaml"
 assert_exists "$PROJECT/.gitignore"
 assert_exists "$PROJECT/.worktreeinclude.example"
 assert_exists "$PROJECT/.github/pull_request_template.md"
+assert_exists "$PROJECT/.github/workflows/issue-claim-check.yml"
 assert_exists "$PROJECT/.codex-review.toml"
+if ! diff -q "$TOUCHSTONE_ROOT/templates/ci/issue-claim-check.yml" "$TOUCHSTONE_ROOT/.github/workflows/issue-claim-check.yml" >/dev/null; then
+  echo "FAIL: source issue-claim workflow must match installable template" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if ! diff -q "$TOUCHSTONE_ROOT/templates/ci/issue-claim-check.yml" "$PROJECT/.github/workflows/issue-claim-check.yml" >/dev/null; then
+  echo "FAIL: bootstrapped issue-claim workflow must match installable template" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 # Principles
 assert_exists "$PROJECT/principles/engineering-principles.md"
@@ -203,6 +212,7 @@ assert_contains "$PROJECT/.touchstone-config" '^git_workflow=git$'
 assert_contains "$PROJECT/.touchstone-config" '^gitbutler_mcp=false$'
 assert_exists "$PROJECT/.touchstone-manifest"
 assert_contains "$PROJECT/.touchstone-manifest" '^\.touchstone-version$'
+assert_contains "$PROJECT/.touchstone-manifest" '^\.github/workflows/issue-claim-check\.yml$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/open-pr.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/claim-issue.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/issue-claim-check.sh$'
@@ -570,10 +580,11 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_GITBUTLER" --no-regis
 assert_contains "$PROJECT_GITBUTLER/.touchstone-config" '^git_workflow=gitbutler$'
 assert_contains "$PROJECT_GITBUTLER/.touchstone-config" '^gitbutler_mcp=true$'
 
-# CI workflow is opt-in. Default bootstrap must NOT ship .github/workflows/validate.yml
-# — not every project uses GitHub Actions and silently adding a workflow would force
-# that opinion on GitLab/Bitbucket/self-hosted users.
+# General validate CI is opt-in. The issue-claim backstop is part of the
+# required Touchstone delivery flow, but default bootstrap must NOT ship
+# .github/workflows/validate.yml.
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_CI_OFF" --no-register >/dev/null
+assert_exists "$PROJECT_CI_OFF/.github/workflows/issue-claim-check.yml"
 assert_not_exists "$PROJECT_CI_OFF/.github/workflows/validate.yml"
 
 # --ci (github) adds the validate workflow and keeps it project-owned.

@@ -111,7 +111,10 @@ echo "--- Step 3: Modify a Touchstone-owned file, then update ---"
 
 echo "# locally modified" >>"$PROJECT/principles/engineering-principles.md"
 rm "$PROJECT/TOUCHSTONE.md"
+rm "$PROJECT/.github/workflows/issue-claim-check.yml"
 rm "$PROJECT/scripts/touchstone-run.sh"
+rm "$PROJECT/scripts/claim-issue.sh"
+rm "$PROJECT/scripts/issue-claim-check.sh"
 printf '{"custom": true}\n' >"$PROJECT/.claude/settings.json"
 echo "0000000000000000000000000000000000000000" >"$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate old touchstone state"
@@ -127,6 +130,7 @@ assert_contains "$TEST_DIR/update-output-2.txt" 'Creating update branch: chore/t
 assert_contains "$TEST_DIR/update-output-2.txt" 'Committed: chore: update touchstone to'
 assert_contains "$TEST_DIR/update-output-2.txt" 'bash scripts/open-pr.sh'
 assert_exists "$PROJECT/TOUCHSTONE.md"
+assert_exists "$PROJECT/.github/workflows/issue-claim-check.yml"
 assert_exists "$PROJECT/scripts/touchstone-run.sh"
 assert_exists "$PROJECT/scripts/claim-issue.sh"
 assert_exists "$PROJECT/scripts/issue-claim-check.sh"
@@ -138,6 +142,7 @@ assert_exists "$PROJECT/lib/preflight.sh"
 assert_exists "$PROJECT/lib/review-comment.sh"
 assert_exists "$PROJECT/.touchstone-manifest"
 assert_contains "$PROJECT/.touchstone-manifest" '^TOUCHSTONE.md$'
+assert_contains "$PROJECT/.touchstone-manifest" '^\.github/workflows/issue-claim-check\.yml$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/touchstone-run.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/claim-issue.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/issue-claim-check.sh$'
@@ -191,6 +196,13 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+if git -C "$PROJECT" ls-files --error-unmatch .github/workflows/issue-claim-check.yml >/dev/null 2>&1; then
+  echo "    PASS: issue-claim workflow is tracked in the update commit"
+else
+  echo "FAIL: expected .github/workflows/issue-claim-check.yml to be tracked" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # --------------------------------------------------------------------------
 # Test 2b: --in-place updates the current feature branch without creating a
 # chore/touchstone-* branch. This is the explicit escape hatch for drivers that
@@ -204,7 +216,10 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$IN_PLACE_PROJECT" --no-regist
 configure_git "$IN_PLACE_PROJECT"
 commit_all "$IN_PLACE_PROJECT" "initial in-place test project"
 git -C "$IN_PLACE_PROJECT" checkout -q -b feature/in-place-update
+rm "$IN_PLACE_PROJECT/.github/workflows/issue-claim-check.yml"
 rm "$IN_PLACE_PROJECT/scripts/touchstone-run.sh"
+rm "$IN_PLACE_PROJECT/scripts/claim-issue.sh"
+rm "$IN_PLACE_PROJECT/scripts/issue-claim-check.sh"
 printf '{"custom": true}\n' >"$IN_PLACE_PROJECT/.claude/settings.json"
 echo "0000000000000000000000000000000000000004" >"$IN_PLACE_PROJECT/.touchstone-version"
 commit_all "$IN_PLACE_PROJECT" "simulate old in-place touchstone state"
@@ -219,6 +234,7 @@ fi
 assert_contains "$TEST_DIR/update-in-place-output.txt" 'Applying update on current branch: feature/in-place-update'
 assert_contains "$TEST_DIR/update-in-place-output.txt" 'Committed: chore: update touchstone to'
 assert_not_contains "$TEST_DIR/update-in-place-output.txt" 'Creating update branch: chore/touchstone-'
+assert_exists "$IN_PLACE_PROJECT/.github/workflows/issue-claim-check.yml"
 assert_exists "$IN_PLACE_PROJECT/scripts/touchstone-run.sh"
 assert_exists "$IN_PLACE_PROJECT/scripts/claim-issue.sh"
 assert_exists "$IN_PLACE_PROJECT/scripts/issue-claim-check.sh"

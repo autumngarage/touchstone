@@ -9,6 +9,8 @@ exec </dev/null
 unset TOUCHSTONE_NO_AUTO_UPDATE TOUCHSTONE_NO_AUTO_PROJECT_SYNC TOUCHSTONE_FORCE_OVERLAP TOUCHSTONE_NO_DRIFT_WARNING
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/sync-discipline.sh
+source "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
 TEST_DIR="$(mktemp -d -t touchstone-test-sync-scope.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
@@ -80,6 +82,12 @@ make_stale_project "$CLEAN_PROJECT" "0000000000000000000000000000000000000101"
 assert_contains "$TEST_DIR/clean.out" "Committed: chore: update touchstone to"
 assert_not_contains "$TEST_DIR/clean.out" "Proceeding with sync past unrelated dirty paths"
 assert_version_current "$CLEAN_PROJECT"
+touchstone_sync_planned_write_paths "$CLEAN_PROJECT" "$TOUCHSTONE_ROOT" >"$TEST_DIR/planned.out"
+assert_contains "$TEST_DIR/planned.out" "TOUCHSTONE.md"
+assert_contains "$TEST_DIR/planned.out" ".github/workflows/issue-claim-check.yml"
+assert_contains "$TEST_DIR/planned.out" "scripts/claim-issue.sh"
+assert_contains "$TEST_DIR/planned.out" "scripts/issue-claim-check.sh"
+assert_contains "$TEST_DIR/planned.out" "lib/preflight-scope.sh"
 
 echo ""
 echo "--- dirty path inside owned set: sync refuses with overlap list ---"
@@ -95,6 +103,18 @@ assert_contains "$TEST_DIR/overlap.out" "Dirty paths overlap planned touchstone 
 assert_contains "$TEST_DIR/overlap.out" "scripts/touchstone-run.sh"
 assert_contains "$OVERLAP_PROJECT/.git/touchstone/sync-skips.jsonl" '"reason":"dirty-overlap"'
 assert_contains "$OVERLAP_PROJECT/.git/touchstone/sync-skips.jsonl" '"command":"touchstone update"'
+
+echo ""
+echo "--- dirty issue-claim workflow refuses sync ---"
+WORKFLOW_OVERLAP_PROJECT="$TEST_DIR/workflow-overlap-project"
+make_stale_project "$WORKFLOW_OVERLAP_PROJECT" "0000000000000000000000000000000000000106"
+printf '\n# dirty workflow overlap\n' >>"$WORKFLOW_OVERLAP_PROJECT/.github/workflows/issue-claim-check.yml"
+if (cd "$WORKFLOW_OVERLAP_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/workflow-overlap.out" 2>&1; then
+  echo "FAIL: expected dirty workflow overlap to refuse sync" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/workflow-overlap.out" "Dirty paths overlap planned touchstone writes"
+assert_contains "$TEST_DIR/workflow-overlap.out" ".github/workflows/issue-claim-check.yml"
 
 echo ""
 echo "--- dirty path outside owned set: sync proceeds with notice ---"

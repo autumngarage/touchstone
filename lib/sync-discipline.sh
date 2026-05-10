@@ -21,6 +21,8 @@ touchstone_sync_planned_write_paths() {
   {
     printf '.touchstone-manifest\n'
     printf '.touchstone-version\n'
+    printf 'TOUCHSTONE.md\n'
+    printf '.github/workflows/issue-claim-check.yml\n'
     printf '.claude/settings.json\n'
     printf 'principles/\n'
     printf 'scripts/codex-review.sh\n'
@@ -30,6 +32,8 @@ touchstone_sync_planned_write_paths() {
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
+    printf 'scripts/claim-issue.sh\n'
+    printf 'scripts/issue-claim-check.sh\n'
     printf 'scripts/cleanup-branches.sh\n'
     printf 'scripts/spawn-worktree.sh\n'
     printf 'scripts/cleanup-worktrees.sh\n'
@@ -38,6 +42,7 @@ touchstone_sync_planned_write_paths() {
     printf 'lib/events.sh\n'
     printf 'lib/worker-state.sh\n'
     printf 'lib/preflight.sh\n'
+    printf 'lib/preflight-scope.sh\n'
     printf 'lib/review-comment.sh\n'
 
     if [ "$project_type" = "python" ] || [ -f "$project_dir/scripts/run-pytest-in-venv.sh" ]; then
