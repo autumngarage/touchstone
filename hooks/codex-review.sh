@@ -1253,7 +1253,14 @@ is_touchstone_source_repo() {
 
   repo_root_physical="$(cd "$REPO_ROOT" 2>/dev/null && pwd -P)" || return 1
   touchstone_root_physical="$(cd "$TOUCHSTONE_ROOT" 2>/dev/null && pwd -P)" || return 1
-  [ "$repo_root_physical" = "$touchstone_root_physical" ]
+  [ "$repo_root_physical" = "$touchstone_root_physical" ] || return 1
+
+  # In downstream projects the installed hook runs from scripts/codex-review.sh,
+  # so TOUCHSTONE_ROOT intentionally resolves to the project root. Only disable
+  # sync-slice elision in the actual Touchstone source checkout.
+  [ -f "$repo_root_physical/bootstrap/update-project.sh" ] \
+    && [ -f "$repo_root_physical/hooks/codex-review.sh" ] \
+    && [ -f "$repo_root_physical/bin/touchstone" ]
 }
 
 manifest_paths_at_ref() {

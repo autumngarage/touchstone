@@ -2544,11 +2544,13 @@ SCOPED_BIN="$TEST_DIR/scoped-large-bin"
 SCOPED_PROMPT="$TEST_DIR/scoped-large-prompt.txt"
 SCOPED_OUTPUT="$TEST_DIR/scoped-large-output.txt"
 SCOPED_SUBCOMMAND="$TEST_DIR/scoped-large-subcommand.txt"
-mkdir -p "$SCOPED_REPO/managed" "$SCOPED_BIN"
+mkdir -p "$SCOPED_REPO/managed" "$SCOPED_REPO/scripts" "$SCOPED_REPO/lib" "$SCOPED_BIN"
 git -C "$SCOPED_REPO" init -q >/dev/null 2>&1
 git -C "$SCOPED_REPO" config user.name "Touchstone Test"
 git -C "$SCOPED_REPO" config user.email "touchstone@example.com"
 cp "$TOUCHSTONE_ROOT/.codex-review.toml" "$SCOPED_REPO/.codex-review.toml"
+cp "$TOUCHSTONE_ROOT/scripts/codex-review.sh" "$SCOPED_REPO/scripts/codex-review.sh"
+cp -r "$TOUCHSTONE_ROOT/lib/"* "$SCOPED_REPO/lib/"
 cat >"$SCOPED_REPO/.touchstone-manifest" <<'EOF'
 # Managed by touchstone.
 .touchstone-manifest
@@ -2590,7 +2592,7 @@ if (
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MAX_DIFF_LINES=20 \
     TOUCHSTONE_NO_PREFLIGHT=1 \
-    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$SCOPED_OUTPUT" 2>&1
+    bash "$SCOPED_REPO/scripts/codex-review.sh" >"$SCOPED_OUTPUT" 2>&1
 ); then
   if [ "$(cat "$SCOPED_SUBCOMMAND" 2>/dev/null || true)" = "call" ] \
     && grep -q 'Large-diff scoped review boundary' "$SCOPED_PROMPT" \
