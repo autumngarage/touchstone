@@ -5,7 +5,7 @@
 #
 # Today the only supported subcommand is `--dry-run`: resolves the
 # project's conductor configuration the same way the pre-push hook
-# does, then invokes `conductor route --dry-run` so the user sees
+# does, then invokes `conductor route` so the user sees
 # which provider would be picked, what it'd cost, how hard it'd
 # think — without spending tokens or money.
 #
@@ -394,11 +394,11 @@ if [ "$ROUTING_ENABLED" = true ]; then
   esac
 fi
 
-# Mode → tools (mirror the adapter in hooks/codex-review.sh).
+# Mode → dry-run shape (mirror the adapter in hooks/codex-review.sh).
 tools=""
 case "$REVIEW_MODE" in
   diff-only) tools="" ;;
-  review-only) tools="Read,Grep,Glob,Bash" ;;
+  review-only) tools="" ;;
   no-tests) tools="Read,Grep,Glob,Edit,Write" ;;
   fix) tools="Read,Grep,Glob,Bash,Edit,Write" ;;
   *)
@@ -442,6 +442,12 @@ if [ -z "$json_flag" ]; then
   echo "    base ref:    $BASE"
   echo "    diff lines:  $DIFF_LINE_COUNT"
   echo "    review mode: $REVIEW_MODE → tools=${tools:-<none>}"
+  if [ "$REVIEW_MODE" != "diff-only" ] && [ -z "$CONDUCTOR_WITH" ]; then
+    echo "    review cmd:  conductor review --base $BASE --brief-file -"
+  fi
+  if [ "$REVIEW_MODE" = "fix" ] || [ "$REVIEW_MODE" = "no-tests" ]; then
+    echo "    fix tools:   ${tools:-<none>}"
+  fi
   echo "    routing:     $routing_decision ($routing_reason)"
   echo ""
 fi

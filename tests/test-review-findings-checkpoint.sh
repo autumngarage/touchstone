@@ -20,7 +20,7 @@ mkdir -p "$REPO" "$FAKE_BIN"
 
 # Fake conductor that:
 #  - responds to `doctor` with the configured-true payload bootstrap expects
-#  - on `exec`/`call`: appends the input prompt (read from stdin) to
+#  - on `review`/`exec`/`call`: appends the input prompt (read from stdin) to
 #    PROMPT_LOG, then emits the verdict named by the env var
 #    FAKE_CONDUCTOR_VERDICT (one of: BLOCKED, CLEAN). For BLOCKED it also
 #    emits two synthetic finding lines so write_review_findings has data
@@ -33,7 +33,7 @@ case "${1:-}" in
   doctor)
     printf '{"configured": true}\n'
     ;;
-  exec|call)
+  review|exec|call)
     cat >> "$PROMPT_LOG"
     printf -- '--- end of prompt ---\n' >> "$PROMPT_LOG"
     case "${FAKE_CONDUCTOR_VERDICT:-BLOCKED}" in

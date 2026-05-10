@@ -86,7 +86,9 @@ chmod +x "$FAKE_BIN/gh" "$FAKE_BIN/conductor"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     PROMPT_FILE="$PROMPT_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_CONTEXT_MODE=full \
     CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=fix \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >/dev/null
 )
 
@@ -596,13 +598,24 @@ printf 'changed\n' >>"$REPO_UNSAFE/example.txt"
 git -C "$REPO_UNSAFE" add example.txt
 git -C "$REPO_UNSAFE" commit -m "change" >/dev/null 2>&1
 
+UNSAFE_FIX_STATE="$TEST_DIR/unsafe-fix-state"
+rm -f "$UNSAFE_FIX_STATE"
 cat >"$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
-printf 'codex edit\n' >> templates/AGENTS.md
-printf 'fixed unsafe path\n'
-printf 'CODEX_REVIEW_FIXED\n'
+case "${1:-}" in
+  review)
+    printf -- '- templates/AGENTS.md:1 — [fixable] unsafe path edit requested\n'
+    printf 'CODEX_REVIEW_BLOCKED\n'
+    ;;
+  exec)
+    printf 'codex edit\n' >> templates/AGENTS.md
+    touch "$UNSAFE_FIX_STATE"
+    printf 'fixed unsafe path\n'
+    printf 'CODEX_REVIEW_FIXED\n'
+    ;;
+esac
 EOF
 chmod +x "$FAKE_BIN/conductor"
 
@@ -611,6 +624,7 @@ set +e
 (
   cd "$REPO_UNSAFE"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    UNSAFE_FIX_STATE="$UNSAFE_FIX_STATE" \
     CODEX_REVIEW_BASE="HEAD~1" \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$UNSAFE_OUTPUT" 2>&1
 )
@@ -786,9 +800,12 @@ git -C "$MODE_REPO" commit -m "codex config" >/dev/null 2>&1
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
 )
 
-if grep -q -- '--tools Read,Grep,Glob,Bash' "$CODEX_ARGS_FILE" \
+if grep -q '^review ' "$CODEX_ARGS_FILE" \
+  && grep -q -- '--base HEAD~1' "$CODEX_ARGS_FILE" \
+  && grep -q -- '--brief-file -' "$CODEX_ARGS_FILE" \
+  && ! grep -q -- '--tools' "$CODEX_ARGS_FILE" \
   && ! grep -q -- '--sandbox' "$CODEX_ARGS_FILE"; then
-  echo "==> PASS: CODEX_REVIEW_NO_AUTOFIX=1 mapped to review-only tools without sandbox flag"
+  echo "==> PASS: CODEX_REVIEW_NO_AUTOFIX=1 mapped to Conductor semantic review without sandbox flag"
 else
   echo "FAIL: expected CODEX_REVIEW_NO_AUTOFIX to map to review-only mode" >&2
   cat "$CODEX_ARGS_FILE" >&2
@@ -857,9 +874,11 @@ chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
 )
 
 if grep -q "Invalid mode" "$MODE_OUTPUT" \
-  && grep -q -- '--tools Read,Grep,Glob,Bash,Edit,Write' "$CODEX_ARGS_FILE" \
+  && grep -q '^review ' "$CODEX_ARGS_FILE" \
+  && grep -q -- '--base HEAD~1' "$CODEX_ARGS_FILE" \
+  && ! grep -q -- '--tools' "$CODEX_ARGS_FILE" \
   && ! grep -q -- '--sandbox' "$CODEX_ARGS_FILE"; then
-  echo "==> PASS: invalid mode warned and fell back to fix tools without sandbox flag"
+  echo "==> PASS: invalid mode warned and fell back to fix/read-only review without sandbox flag"
 else
   echo "FAIL: expected invalid mode to warn and fall back to fix" >&2
   cat "$MODE_OUTPUT" >&2
@@ -867,7 +886,7 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Test: review modes map to conductor argv/tools without sandbox flag"
+echo "==> Test: review modes map to conductor job shape without sandbox flag"
 setup_mode_repo
 rm -rf "$MODE_BIN"
 mkdir -p "$MODE_BIN"
@@ -884,7 +903,7 @@ printf 'CODEX_REVIEW_CLEAN\n'
 CXEOF
 chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
 
-check_mode_argv() {
+run_mode_check() {
   local mode="$1"
   local expected_subcommand="$2"
   local expected_tools="$3"
@@ -935,16 +954,86 @@ check_mode_argv() {
   fi
 }
 
-check_mode_argv "diff-only" "call" ""
-check_mode_argv "review-only" "exec" "Read,Grep,Glob,Bash"
-check_mode_argv "no-tests" "exec" "Read,Grep,Glob,Edit,Write"
-check_mode_argv "fix" "exec" "Read,Grep,Glob,Bash,Edit,Write"
+run_mode_check "diff-only" "call" ""
+run_mode_check "review-only" "review" ""
+run_mode_check "no-tests" "review" ""
+run_mode_check "fix" "review" ""
 
 if [ "$ERRORS" -eq 0 ]; then
-  echo "==> PASS: review modes preserve tools contract and omit sandbox/timeout defaults"
+  echo "==> PASS: review modes preserve Conductor contract and omit sandbox/timeout defaults"
 fi
 
-echo "==> Test: explicit CODEX_REVIEW_TIMEOUT reaches conductor exec"
+echo "==> Test: fix mode reviews read-only before edit-capable fix pass"
+setup_mode_repo
+{
+  printf '[codex_review]\nsafe_by_default = true\n'
+} >"$MODE_REPO/.codex-review.toml"
+git -C "$MODE_REPO" add .codex-review.toml
+git -C "$MODE_REPO" commit -m "codex config" >/dev/null 2>&1
+rm -rf "$MODE_BIN"
+mkdir -p "$MODE_BIN"
+FIX_STATE="$TEST_DIR/fix-phase-state"
+rm -f "$FIX_STATE"
+cat >"$MODE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat >"$MODE_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+printf '%s\n' "$*" >> "$CODEX_ARGS_FILE"
+case "${1:-}" in
+  review)
+    if grep -q 'fixed by conductor' example.txt 2>/dev/null; then
+      printf 'CODEX_REVIEW_CLEAN\n'
+    else
+      printf -- '- example.txt:2 — [fixable] missing review fix marker\n'
+      printf 'CODEX_REVIEW_BLOCKED\n'
+    fi
+    ;;
+  exec)
+    printf 'fixed by conductor\n' >> example.txt
+    printf -- '- example.txt:2 — added review fix marker\n'
+    printf 'CODEX_REVIEW_FIXED\n'
+    ;;
+  *)
+    printf 'unexpected subcommand: %s\n' "${1:-}" >&2
+    exit 2
+    ;;
+esac
+CXEOF
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
+: >"$CODEX_ARGS_FILE"
+set +e
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=fix \
+    FIX_STATE="$FIX_STATE" \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
+)
+FIX_PHASE_EXIT=$?
+set -e
+
+if [ "$FIX_PHASE_EXIT" -eq 0 ] \
+  && sed -n '1p' "$CODEX_ARGS_FILE" | grep -q '^review ' \
+  && sed -n '2p' "$CODEX_ARGS_FILE" | grep -q '^exec ' \
+  && sed -n '2p' "$CODEX_ARGS_FILE" | grep -q -- '--tools Read,Grep,Glob,Bash,Edit,Write' \
+  && sed -n '3p' "$CODEX_ARGS_FILE" | grep -q '^review ' \
+  && git -C "$MODE_REPO" log -1 --format=%s | grep -q 'fix: address Conductor review findings'; then
+  echo "==> PASS: fix mode uses read-only review, then edit-capable fix, then re-review"
+else
+  echo "FAIL: expected fix mode to run review -> exec fix -> review" >&2
+  echo "exit code: $FIX_PHASE_EXIT" >&2
+  cat "$CODEX_ARGS_FILE" >&2
+  cat "$MODE_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: explicit CODEX_REVIEW_TIMEOUT reaches Conductor semantic review"
 : >"$CODEX_ARGS_FILE"
 (
   cd "$MODE_REPO"
@@ -953,6 +1042,7 @@ echo "==> Test: explicit CODEX_REVIEW_TIMEOUT reaches conductor exec"
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MODE=review-only \
+    FIX_STATE="$FIX_STATE" \
     CODEX_REVIEW_TIMEOUT=17 \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
 )
@@ -1257,9 +1347,9 @@ chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/conductor"
 
 if [ "$(wc -l <"$FALLBACK_ARGS_FILE" | tr -d ' ')" = "2" ] \
   && sed -n '1p' "$FALLBACK_ARGS_FILE" | grep -q -- '--with gemini' \
-  && sed -n '2p' "$FALLBACK_ARGS_FILE" | grep -q -- '--auto' \
+  && sed -n '2p' "$FALLBACK_ARGS_FILE" | grep -q '^review ' \
   && sed -n '2p' "$FALLBACK_ARGS_FILE" | grep -q -- '--exclude ollama,gemini' \
-  && grep -q 'fallback:       gemini -> openrouter (reviewer exit 42)' "$TIMEOUT_OUTPUT"; then
+  && grep -q 'fallback:       gemini -> unknown (reviewer exit 42)' "$TIMEOUT_OUTPUT"; then
   echo "==> PASS: reviewer crash retried through auto-routing with failed provider excluded"
 else
   echo "FAIL: expected reviewer crash to retry once through fallback provider" >&2
@@ -1319,7 +1409,7 @@ chmod +x "$TIMEOUT_BIN/conductor"
 )
 
 if [ "$(wc -l <"$FALLBACK_ARGS_FILE" | tr -d ' ')" = "2" ] \
-  && grep -q 'fallback:       gemini -> openrouter (malformed sentinel)' "$TIMEOUT_OUTPUT"; then
+  && grep -q 'fallback:       gemini -> unknown (malformed sentinel)' "$TIMEOUT_OUTPUT"; then
   echo "==> PASS: malformed sentinel retried through fallback provider"
 else
   echo "FAIL: expected malformed sentinel to retry once through fallback provider" >&2
@@ -1350,6 +1440,7 @@ set +e
     TOUCHSTONE_CONDUCTOR_WITH=gemini \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=review-only \
     CODEX_REVIEW_ON_ERROR=fail-closed \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TIMEOUT_OUTPUT" 2>&1
 )
@@ -1807,7 +1898,7 @@ else
 fi
 
 echo "==> Test: peer review fires when [review.assist].enabled = true"
-# Mock conductor responds differently to `exec` (primary) and `call`
+# Mock conductor responds differently to `review` (primary) and `call`
 # (peer). The primary emits a route-log to stderr naming itself, which
 # touchstone parses out to set --exclude on the peer call. The peer
 # prints distinctive text so we can assert it surfaces in the transcript.
@@ -1820,8 +1911,8 @@ subcmd="$1"; shift
 printf '%s\n' "$subcmd $*" >> "$CONDUCTOR_ARGS_LOG"
 cat >/dev/null  # drain stdin
 case "$subcmd" in
-  exec)
-    printf '[conductor] auto -> claude (tier: frontier)\n' >&2
+  review | exec)
+    printf '[conductor] auto -> claude (tier: frontier, model=sonnet)\n' >&2
     printf '            · 4.2s · 100 tok in · 20 tok out · sandbox=read-only\n' >&2
     printf 'Primary review says nothing to change.\n'
     printf 'CODEX_REVIEW_CLEAN\n'
@@ -1940,7 +2031,7 @@ if [ -n "$log_file" ]; then
   printf '{"event":"route_decision","data":{"provider":"gemini"}}\n' >"$log_file"
   printf '{"event":"provider_finished","data":{"provider":"claude","model":"sonnet","duration_ms":1234,"session_id":"primary-fixture"}}\n' >>"$log_file"
 fi
-printf '[conductor] auto -> claude (tier: frontier)\n' >&2
+printf '[conductor] auto -> claude (tier: frontier, model=sonnet)\n' >&2
 printf 'CODEX_REVIEW_CLEAN\n'
 CXEOF
 chmod +x "$CTX_BIN/conductor"
@@ -2019,11 +2110,11 @@ while [ "$#" -gt 0 ]; do
 done
 cat >/dev/null
 case "$subcmd" in
-  exec)
+  review | exec)
     if [ -n "$log_file" ]; then
       printf '{"event":"provider_finished","data":{"provider":"claude","model":"sonnet","duration_ms":1234,"session_id":"primary-fixture"}}\n' >"$log_file"
     fi
-    printf '[conductor] auto -> claude (tier: frontier)\n' >&2
+    printf '[conductor] auto -> claude (tier: frontier, model=sonnet)\n' >&2
     printf 'CODEX_REVIEW_CLEAN\n'
     ;;
   call)

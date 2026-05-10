@@ -397,7 +397,7 @@ check_dry_run_mode() {
 }
 
 check_dry_run_mode "diff-only" ""
-check_dry_run_mode "review-only" "Read,Grep,Glob,Bash"
+check_dry_run_mode "review-only" ""
 check_dry_run_mode "no-tests" "Read,Grep,Glob,Edit,Write"
 check_dry_run_mode "fix" "Read,Grep,Glob,Bash,Edit,Write"
 

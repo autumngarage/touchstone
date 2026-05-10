@@ -223,7 +223,7 @@ normalize_review_routing() {
     "" | hosted | all | all-hosted | cloud | remote) printf 'all-hosted' ;;
     local | all-local | offline | offline-local) printf 'all-local' ;;
     hybrid | small-local | local-small | small-local-large-hosted)
-      echo "WARNING: review routing '$1' is retired for live review; use all-hosted/openrouter or all-local for explicit offline review. Treating as all-hosted." >&2
+      echo "WARNING: review routing '$1' is retired for live review; use all-hosted or all-local for explicit offline review. Treating as all-hosted." >&2
       printf 'all-hosted'
       ;;
     none | off | disabled | false) printf 'none' ;;
@@ -303,12 +303,11 @@ prompt_yes_no() {
 
 default_reviewer() {
   # Touchstone 2.0: the single reviewer is `conductor`; the underlying
-  # provider is chosen by Conductor at runtime. New projects pin live review
-  # to OpenRouter by default; "conductor" still normalizes to "auto" for users
-  # who want Conductor's provider router instead. Users who want another
-  # specific provider can
-  # pass --reviewer <name> or edit .codex-review.toml afterwards.
-  printf 'openrouter'
+  # provider is chosen by Conductor at runtime. Hosted review defaults to
+  # Conductor's semantic review route (codex review first, hosted fallback).
+  # Users who want a specific provider can pass --reviewer <name> or edit
+  # .codex-review.toml afterwards.
+  printf 'conductor'
 }
 
 detect_node_package_manager() {
@@ -1211,8 +1210,12 @@ write_review_onboarding_config() {
         printf '# Pin a specific underlying provider (bypasses auto-routing)\n'
         printf 'with = "%s"\n' "$with_pin"
       else
-        printf '# Pin a specific underlying provider (bypasses auto-routing). Uncomment to use:\n'
+        printf '# Conductor owns hosted code-review routing; uncomment only to pin a provider:\n'
         printf '# with = "openrouter"\n'
+      fi
+      if [ "$with_pin" != "ollama" ]; then
+        printf '# Ollama is reserved for explicit offline/local review only.\n'
+        printf 'exclude = ["ollama"]\n'
       fi
       if [ "$reviewer" = "local" ] && [ -n "$INPUT_LOCAL_REVIEW_COMMAND" ]; then
         printf '# NOTE: Touchstone 2.0 retired [review.local]. Your --local-review-command\n'
@@ -1462,7 +1465,7 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
 
   if [ "$REVIEW_CONFIG_REQUESTED" = false ] && [ "$CODEX_REVIEW_CONFIG_CREATED" = true ]; then
     if [ "$YES_MODE" = true ]; then
-      # --yes: defaults are "AI review on, hosted routing, OpenRouter reviewer".
+      # --yes: defaults are "AI review on, hosted Conductor review routing".
       INPUT_REVIEW_ROUTING="all-hosted"
       INPUT_REVIEWER="$(default_reviewer)"
       INPUT_REVIEW_AUTOFIX=false
@@ -1472,7 +1475,7 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
       echo ""
       echo "==> Configure AI review (press Enter for the default):"
       echo "   Touchstone 2.0 routes every review through Conductor."
-      echo "   Hosted: OpenRouter handles live review by default."
+      echo "   Hosted: Conductor uses semantic code-review routing; Codex first, hosted fallback."
       echo "   Offline local: all review goes to Ollama; use only when hosted review is unavailable."
       if [ "$(prompt_yes_no "Use AI review before code reaches main?" "true")" = "true" ]; then
         local_review_style=""
@@ -1482,7 +1485,7 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
         case "$local_review_style" in
           all-hosted)
             INPUT_REVIEW_ROUTING="all-hosted"
-            read -r -p "   Pin a specific provider (e.g. openrouter, claude, codex, gemini; Enter = OpenRouter): " INPUT_REVIEWER
+            read -r -p "   Pin a specific provider (e.g. openrouter, claude, codex, gemini; Enter = Conductor auto-route): " INPUT_REVIEWER
             INPUT_REVIEWER="${INPUT_REVIEWER:-$(default_reviewer)}"
             INPUT_REVIEWER="$(normalize_reviewer "$INPUT_REVIEWER")"
             ;;

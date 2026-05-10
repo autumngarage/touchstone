@@ -90,7 +90,7 @@ else
   REGISTRY_FILE="$TEST_DIR/.touchstone-projects"
   SMOKE_PROJECT="$TEST_DIR/smoke-project"
   if bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SMOKE_PROJECT" \
-    --no-register --no-with-cortex --no-with-sentinel --no-github \
+    --yes --no-register --no-with-cortex --no-with-sentinel --no-github \
     >"$TEST_DIR/bootstrap-smoke-project.txt" 2>&1; then
     printf '%s\n' "$SMOKE_PROJECT" >"$REGISTRY_FILE"
   else

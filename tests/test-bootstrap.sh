@@ -569,19 +569,21 @@ assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^with = "ollama"$'
 assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" 'local-reviewer --model demo'
 assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '"src/auth/",'
 
-# Bootstrap should default hosted review to OpenRouter.
+# Bootstrap should still support an explicit OpenRouter provider pin.
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_OPENROUTER" --no-register --reviewer openrouter
 assert_contains "$PROJECT_REVIEW_OPENROUTER/.codex-review.toml" '^enabled = true$'
 assert_contains "$PROJECT_REVIEW_OPENROUTER/.codex-review.toml" '^reviewer = "conductor"$'
 assert_contains "$PROJECT_REVIEW_OPENROUTER/.codex-review.toml" '^with = "openrouter"$'
+assert_contains "$PROJECT_REVIEW_OPENROUTER/.codex-review.toml" '^exclude = \["ollama"\]$'
 assert_not_contains "$PROJECT_REVIEW_OPENROUTER/.codex-review.toml" '^small_with = "ollama"'
 
 # Fresh non-interactive bootstrap without --yes must use the same live-review
-# default instead of leaving the template unpinned.
+# default instead of pinning a provider.
 YES_MODE=false bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_DEFAULT_NONTTY" --no-register
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.codex-review.toml" '^enabled = true$'
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.codex-review.toml" '^reviewer = "conductor"$'
-assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.codex-review.toml" '^with = "openrouter"$'
+assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.codex-review.toml" '^exclude = \["ollama"\]$'
+assert_not_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.codex-review.toml" '^with = "openrouter"$'
 assert_not_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.codex-review.toml" '^small_with = "ollama"'
 
 # Retired small-local live routing remains accepted for compatibility, but it

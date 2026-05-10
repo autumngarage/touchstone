@@ -22,7 +22,7 @@ case "${1:-}" in
   doctor)
     printf '{"configured": true}\n'
     ;;
-  exec|call)
+  review|exec|call)
     cat >/dev/null
     printf 'No blocking issues found.\n'
     printf 'CODEX_REVIEW_CLEAN\n'

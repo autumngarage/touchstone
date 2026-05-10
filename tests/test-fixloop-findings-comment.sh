@@ -43,7 +43,18 @@ case "${1:-}" in
   doctor)
     printf '{"configured":true}\n'
     ;;
+  review)
+    cat >/dev/null
+    printf '[conductor] auto (prefer=best, effort=max) -> codex (tier: frontier)\n' >&2
+    if grep -q 'auto-fixed missing review artifact' file.txt; then
+      printf 'CODEX_REVIEW_CLEAN\n'
+    else
+      printf -- '- missing review artifact for auto-fixed finding\n'
+      printf 'CODEX_REVIEW_BLOCKED\n'
+    fi
+    ;;
   exec)
+    cat >/dev/null
     count_file="$CONDUCTOR_COUNT_FILE"
     count=0
     [ -f "$count_file" ] && count="$(cat "$count_file")"

@@ -26,10 +26,10 @@ safe_by_default = false
 
 # Review mode — controls what the reviewer is allowed to do.
 # Enforced at the wrapper level (tool restrictions, sandboxes), not just in the prompt.
-#   "fix"         — full access: read, run commands, edit files, commit fixes (default)
-#   "review-only" — read + run commands, no file edits or commits
+#   "fix"         — read-only review first, then a separate edit-capable fix pass
+#   "review-only" — Conductor semantic read-only review, no file edits or commits
 #   "diff-only"   — read-only: no commands, no edits
-#   "no-tests"    — read + edit + commit, no command execution (skip test runs)
+#   "no-tests"    — read-only review first, then edit + commit with no command execution
 #
 # Override for a single run with: CODEX_REVIEW_MODE=review-only git push
 # mode = "fix"
@@ -76,18 +76,14 @@ unsafe_paths = [
 # --------------------------------------------------------------------------
 # Conductor routing (optional)
 # --------------------------------------------------------------------------
-# Fine-tune what Conductor picks and how hard it thinks. New projects pin live
-# hosted review to OpenRouter during onboarding, while this base template keeps
-# the provider pin commented so existing projects can choose their host.
-# Touchstone always excludes ollama from hosted auto-routing. Local ollama
-# providers are useful for explicit offline review only; during Wave 2 on
-# 2026-05-07, PRs #214, #215, and #216 all needed manual
-# TOUCHSTONE_CONDUCTOR_EXCLUDE=ollama or --with claude because the local
-# provider timed out or returned malformed review output on substantial diffs.
+# Fine-tune what Conductor picks and how hard it thinks. Normal read-only
+# review uses Conductor's semantic review route (codex review first, hosted
+# fallback through Conductor). This base template keeps provider pins commented
+# so Conductor owns hosted review policy.
 #
-# Projects with a code-review-capable model loaded locally can re-enable
-# ollama with a one-line override:
-#   exclude = []
+# Touchstone excludes ollama from hosted auto-routing by default. Local ollama
+# is useful for explicit offline review only; use `--review-routing all-local`
+# or `--reviewer local` when that is the desired mode.
 
 [review.conductor]
 # # Which provider wins auto-routing. One of:
@@ -105,10 +101,11 @@ unsafe_paths = [
 # # Capability tags passed to the router. Defaults cover code review well.
 # # tags = "code-review"
 #
-# # Pin a specific provider (bypasses auto-routing). New projects default to:
+# # Pin a specific provider (bypasses auto-routing). Omit for Conductor's
+# # semantic review route. Example:
 # # with = "openrouter"
 #
-# Exclude providers from auto-routing (degraded, rate-limited, too expensive).
+# Exclude providers from hosted auto-routing (degraded, rate-limited, offline-only).
 exclude = ["ollama"]
 
 # --------------------------------------------------------------------------
