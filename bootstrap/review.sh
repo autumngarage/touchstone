@@ -238,10 +238,10 @@ if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
     auto | conductor) ;;
     local)
       echo "==> NOTE: TOUCHSTONE_REVIEWER=local is deprecated in 2.0.0." >&2
-      echo "    Migrating to: TOUCHSTONE_CONDUCTOR_WITH=ollama (the closest 2.0 analog)." >&2
+      echo "    Migrating to explicit offline review: TOUCHSTONE_CONDUCTOR_WITH=ollama." >&2
       [ -z "${TOUCHSTONE_CONDUCTOR_WITH:-}" ] && export TOUCHSTONE_CONDUCTOR_WITH="ollama"
       ;;
-    codex | claude | gemini | ollama)
+    openrouter | codex | claude | gemini | ollama)
       echo "==> NOTE: TOUCHSTONE_REVIEWER=$TOUCHSTONE_REVIEWER is deprecated in 2.0.0." >&2
       echo "    Pin an underlying provider with: TOUCHSTONE_CONDUCTOR_WITH=$TOUCHSTONE_REVIEWER" >&2
       [ -z "${TOUCHSTONE_CONDUCTOR_WITH:-}" ] && export TOUCHSTONE_CONDUCTOR_WITH="$TOUCHSTONE_REVIEWER"

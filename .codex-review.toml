@@ -28,8 +28,9 @@ unsafe_paths = [
 ]
 
 [review.conductor]
-# Local ollama providers frequently time out during merge-gate code review on
-# substantial diffs unless the machine has a review-capable model loaded.
+# Live merge-gate review goes through OpenRouter. Ollama remains excluded from
+# auto-routing and is reserved for explicit offline/local review only.
+with = "openrouter"
 exclude = ["ollama"]
 
 [review]

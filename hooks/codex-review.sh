@@ -937,18 +937,18 @@ if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
     local)
       # Touchstone 2.0 retired the `local` reviewer; Conductor has no
       # provider by that name, so a raw translation (`--with local`) would
-      # fail with "unknown provider". The closest 2.0 analog is ollama.
-      # Warn and offer the migration; don't silently pin to something that
-      # crashes at call-time.
+      # fail with "unknown provider". The explicit offline/local analog is
+      # ollama. Warn and offer the migration; don't silently pin to something
+      # that crashes at call-time.
       echo "==> NOTE: TOUCHSTONE_REVIEWER=local is deprecated in 2.0.0." >&2
       echo "    The 1.x 'local' reviewer is retired; Conductor has no provider by that name." >&2
-      echo "    Migrating to: TOUCHSTONE_CONDUCTOR_WITH=ollama (the closest 2.0 analog)." >&2
+      echo "    Migrating to explicit offline review: TOUCHSTONE_CONDUCTOR_WITH=ollama." >&2
       echo "    If you had a custom local command, register it as a Conductor custom" >&2
       echo "    provider when v0.3 ships: conductor providers add --name local --shell '<cmd>'" >&2
       # TOUCHSTONE_REVIEWER is env-scoped, so it trumps the TOML `with=` pin.
       CONDUCTOR_WITH="ollama"
       ;;
-    codex | claude | gemini)
+    openrouter | codex | claude | gemini)
       echo "==> NOTE: TOUCHSTONE_REVIEWER=$TOUCHSTONE_REVIEWER is deprecated in 2.0.0." >&2
       echo "    Pin an underlying provider with: TOUCHSTONE_CONDUCTOR_WITH=$TOUCHSTONE_REVIEWER" >&2
       CONDUCTOR_WITH="$TOUCHSTONE_REVIEWER"

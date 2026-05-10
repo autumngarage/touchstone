@@ -460,7 +460,27 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-# TOUCHSTONE_REVIEWER=local must map to ollama, not crash or no-op.
+# TOUCHSTONE_REVIEWER=openrouter is a supported provider pin for the hosted path.
+: >"$ARGS_FILE"
+out="$(
+  cd "$REPO_AUTO"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    ARGS_FILE="$ARGS_FILE" \
+    TOUCHSTONE_REVIEWER=openrouter \
+    TOUCHSTONE_NO_AUTO_UPDATE=1 \
+    bash "$TOUCHSTONE_BIN" review --dry-run --base HEAD~1 2>&1
+)"
+if echo "$out" | grep -q 'TOUCHSTONE_REVIEWER=openrouter is deprecated' \
+  && echo "$out" | grep -q 'pinned via --with=openrouter'; then
+  echo "==> PASS: TOUCHSTONE_REVIEWER=openrouter → deprecation note + --with=openrouter"
+else
+  echo "FAIL: TOUCHSTONE_REVIEWER=openrouter did not translate to --with=openrouter" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# TOUCHSTONE_REVIEWER=local is an explicit offline/local compatibility path and
+# must map to ollama, not crash or no-op.
 : >"$ARGS_FILE"
 out="$(
   cd "$REPO_AUTO"
@@ -472,7 +492,7 @@ out="$(
 )"
 if echo "$out" | grep -q 'TOUCHSTONE_REVIEWER=local is deprecated' \
   && echo "$out" | grep -q 'pinned via --with=ollama'; then
-  echo "==> PASS: TOUCHSTONE_REVIEWER=local → ollama (closest 2.0 analog)"
+  echo "==> PASS: TOUCHSTONE_REVIEWER=local → ollama (offline compatibility)"
 else
   echo "FAIL: TOUCHSTONE_REVIEWER=local did not translate to --with=ollama" >&2
   echo "out: $out" >&2

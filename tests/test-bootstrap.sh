@@ -125,7 +125,9 @@ PROJECT_NODE="$TEST_DIR/test-project-node"
 PROJECT_PYTHON="$TEST_DIR/test-project-python"
 PROJECT_REVIEW_NONE="$TEST_DIR/test-project-review-none"
 PROJECT_REVIEW_LOCAL="$TEST_DIR/test-project-review-local"
-PROJECT_REVIEW_HYBRID="$TEST_DIR/test-project-review-hybrid"
+PROJECT_REVIEW_OPENROUTER="$TEST_DIR/test-project-review-openrouter"
+PROJECT_REVIEW_DEFAULT_NONTTY="$TEST_DIR/test-project-review-default-nontty"
+PROJECT_REVIEW_RETIRED_SMALL_LOCAL="$TEST_DIR/test-project-review-retired-small-local"
 PROJECT_GITBUTLER="$TEST_DIR/test-project-gitbutler"
 PROJECT_CI_OFF="$TEST_DIR/test-project-ci-off"
 PROJECT_CI_GITHUB="$TEST_DIR/test-project-ci-github"
@@ -297,9 +299,10 @@ phase "help flags + ecosystem profiles"
 # Help flags should print usage instead of bootstrapping a project named --help.
 if (cd "$TEST_DIR" && bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" --help) >"$TEST_DIR/new-project-help.txt" 2>&1; then
   assert_contains "$TEST_DIR/new-project-help.txt" 'unsafe-paths'
-  assert_contains "$TEST_DIR/new-project-help.txt" 'reviewer conductor|none'
+  assert_contains "$TEST_DIR/new-project-help.txt" 'reviewer conductor|openrouter|none'
   assert_contains "$TEST_DIR/new-project-help.txt" 'legacy: codex|claude|gemini|local|auto'
-  assert_contains "$TEST_DIR/new-project-help.txt" 'review-routing all-hosted|all-local|small-local'
+  assert_contains "$TEST_DIR/new-project-help.txt" 'review-routing all-hosted|all-local'
+  assert_not_contains "$TEST_DIR/new-project-help.txt" 'review-routing all-hosted|all-local|small-local'
   assert_contains "$TEST_DIR/new-project-help.txt" 'gitbutler'
   assert_contains "$TEST_DIR/new-project-help.txt" 'node|python|swift|rust|go|generic|auto'
 else
@@ -335,9 +338,10 @@ fi
 
 if TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --help >"$TEST_DIR/touchstone-init-help.txt" 2>&1; then
   assert_contains "$TEST_DIR/touchstone-init-help.txt" 'Usage: touchstone init'
-  assert_contains "$TEST_DIR/touchstone-init-help.txt" 'reviewer conductor|none'
+  assert_contains "$TEST_DIR/touchstone-init-help.txt" 'reviewer conductor|openrouter|none'
   assert_contains "$TEST_DIR/touchstone-init-help.txt" 'legacy: codex|claude|gemini|local|auto'
-  assert_contains "$TEST_DIR/touchstone-init-help.txt" 'review-routing all-hosted|all-local|small-local'
+  assert_contains "$TEST_DIR/touchstone-init-help.txt" 'review-routing all-hosted|all-local'
+  assert_not_contains "$TEST_DIR/touchstone-init-help.txt" 'review-routing all-hosted|all-local|small-local'
   assert_contains "$TEST_DIR/touchstone-init-help.txt" 'gitbutler'
   assert_contains "$TEST_DIR/touchstone-init-help.txt" 'node|python|swift|rust|go|generic|auto'
 else
@@ -552,8 +556,8 @@ assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^safe_by_default = fa
 assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^enabled = false$'
 assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^reviewer = "conductor"$'
 
-# Bootstrap should support local model reviewer commands. In 2.0 the
-# `[review.local]` block is retired; local maps to ollama with a comment
+# Bootstrap should support explicit offline local model reviewer commands. In
+# 2.0 the `[review.local]` block is retired; local maps to ollama with a comment
 # preserving the user's --local-review-command for later custom-provider
 # registration (Conductor v0.3).
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_LOCAL" --no-register --reviewer local --local-review-command "local-reviewer --model demo" --review-assist --review-autofix --unsafe-paths "src/auth/"
@@ -565,15 +569,27 @@ assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^with = "ollama"$'
 assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" 'local-reviewer --model demo'
 assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '"src/auth/",'
 
-# Bootstrap should support routing small reviews to local and larger reviews to hosted models.
-# 2.0 shape: [review.routing] uses per-bucket CONDUCTOR_* overrides (small_with,
-# large_with, etc.) — the 1.x reviewer-cascade arrays are gone.
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_HYBRID" --no-register --review-routing small-local --small-review-lines 123 --reviewer codex --local-review-command "local-reviewer --model demo"
-assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^\[review.routing\]$'
-assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^enabled = true$'
-assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^small_max_diff_lines = 123$'
-assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^small_with = "ollama"'
-assert_contains "$PROJECT_REVIEW_HYBRID/.codex-review.toml" '^large_with = "codex"$'
+# Bootstrap should default hosted review to OpenRouter.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_OPENROUTER" --no-register --reviewer openrouter
+assert_contains "$PROJECT_REVIEW_OPENROUTER/.codex-review.toml" '^enabled = true$'
+assert_contains "$PROJECT_REVIEW_OPENROUTER/.codex-review.toml" '^reviewer = "conductor"$'
+assert_contains "$PROJECT_REVIEW_OPENROUTER/.codex-review.toml" '^with = "openrouter"$'
+assert_not_contains "$PROJECT_REVIEW_OPENROUTER/.codex-review.toml" '^small_with = "ollama"'
+
+# Fresh non-interactive bootstrap without --yes must use the same live-review
+# default instead of leaving the template unpinned.
+YES_MODE=false bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_DEFAULT_NONTTY" --no-register
+assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.codex-review.toml" '^enabled = true$'
+assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.codex-review.toml" '^reviewer = "conductor"$'
+assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.codex-review.toml" '^with = "openrouter"$'
+assert_not_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.codex-review.toml" '^small_with = "ollama"'
+
+# Retired small-local live routing remains accepted for compatibility, but it
+# degrades to hosted routing instead of sending small diffs to Ollama.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_RETIRED_SMALL_LOCAL" --no-register --review-routing small-local --small-review-lines 123 --reviewer codex --local-review-command "local-reviewer --model demo"
+assert_contains "$PROJECT_REVIEW_RETIRED_SMALL_LOCAL/.codex-review.toml" '^with = "codex"$'
+assert_not_contains "$PROJECT_REVIEW_RETIRED_SMALL_LOCAL/.codex-review.toml" '^small_with = "ollama"'
+assert_not_contains "$PROJECT_REVIEW_RETIRED_SMALL_LOCAL/.codex-review.toml" '^\[review.routing\]$'
 
 # Bootstrap should record the optional GitButler workflow choice without making it the default.
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_GITBUTLER" --no-register --gitbutler --gitbutler-mcp

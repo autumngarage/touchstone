@@ -76,10 +76,11 @@ unsafe_paths = [
 # --------------------------------------------------------------------------
 # Conductor routing (optional)
 # --------------------------------------------------------------------------
-# Fine-tune what Conductor picks and how hard it thinks. By default,
-# Touchstone applies size-aware routing below and excludes ollama from review
-# auto-routing. Local ollama providers are useful for cheap background help,
-# but the merge gate needs predictable review output; during Wave 2 on
+# Fine-tune what Conductor picks and how hard it thinks. New projects pin live
+# hosted review to OpenRouter during onboarding, while this base template keeps
+# the provider pin commented so existing projects can choose their host.
+# Touchstone always excludes ollama from hosted auto-routing. Local ollama
+# providers are useful for explicit offline review only; during Wave 2 on
 # 2026-05-07, PRs #214, #215, and #216 all needed manual
 # TOUCHSTONE_CONDUCTOR_EXCLUDE=ollama or --with claude because the local
 # provider timed out or returned malformed review output on substantial diffs.
@@ -104,8 +105,8 @@ unsafe_paths = [
 # # Capability tags passed to the router. Defaults cover code review well.
 # # tags = "code-review"
 #
-# # Pin a specific provider (bypasses auto-routing). Rarely needed.
-# # with = "claude"
+# # Pin a specific provider (bypasses auto-routing). New projects default to:
+# # with = "openrouter"
 #
 # Exclude providers from auto-routing (degraded, rate-limited, too expensive).
 exclude = ["ollama"]
@@ -135,7 +136,7 @@ exclude = ["ollama"]
 # high_risk_prefer = "best"
 # high_risk_effort = "high"
 # # Optional: pin or retag either bucket.
-# # small_with = "ollama"
+# # small_with = "openrouter"
 # # high_risk_tags = "code-review,long-context"
 
 # --------------------------------------------------------------------------

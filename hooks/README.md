@@ -43,8 +43,8 @@ reviewer = "conductor"      # the only supported value in 2.0
 prefer = "best"             # best | cheapest | fastest | balanced
 effort = "high"             # minimal | low | medium | high | max | <int tokens>
 tags   = "code-review"
-# with = "claude"           # pin a specific provider (bypasses auto-routing)
-exclude = ["ollama"]        # default: keep local providers out of merge gates
+with = "openrouter"         # hosted default for live review
+exclude = ["ollama"]        # keep local providers out of hosted merge gates
 ```
 
 ### 5. Write your review rubric
@@ -81,8 +81,8 @@ Conductor logs its route decision (provider, cost estimate, token count, wall-cl
 | `[review.conductor].prefer` | size-aware | `best` \| `cheapest` \| `fastest` \| `balanced`; used as a global fallback, but default size routing applies per bucket |
 | `[review.conductor].effort` | size-aware | `minimal` \| `low` \| `medium` \| `high` \| `max` \| integer thinking-token budget; used as a global fallback, but default size routing applies per bucket |
 | `[review.conductor].tags` | `"code-review"` | Capability tags passed to the router |
-| `[review.conductor].with` | unset | Pin a specific provider (bypasses auto-routing) |
-| `[review.conductor].exclude` | `["ollama"]` | Exclude providers from auto-routing; set `exclude = []` to opt local providers back in |
+| `[review.conductor].with` | `"openrouter"` in newly bootstrapped projects; unset otherwise | Pin a specific provider (bypasses auto-routing) |
+| `[review.conductor].exclude` | `["ollama"]` | Exclude providers from hosted auto-routing; use explicit all-local/offline review for Ollama |
 | `[review.routing].enabled` | true | Route by diff size |
 | `[review.routing].small_max_diff_lines` | 400 | Diffs ≤ this use the `small_*` knobs unless high-risk paths are touched |
 | `[review.routing].small_prefer` | `"cheapest"` | Routing preference for small diffs |
