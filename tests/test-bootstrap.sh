@@ -1016,6 +1016,14 @@ cat >"$RUNNER_FAKE_BIN/cargo" <<'FAKECARGO'
 #!/usr/bin/env bash
 printf 'cargo|%s|%s\n' "$PWD" "$*" >> "$RUNNER_LOG"
 FAKECARGO
+cat >"$RUNNER_FAKE_BIN/pyright" <<'FAKEPYRIGHT'
+#!/usr/bin/env bash
+printf 'pyright|%s|%s\n' "$PWD" "$*" >> "$RUNNER_LOG"
+FAKEPYRIGHT
+cat >"$RUNNER_FAKE_BIN/mypy" <<'FAKEMYPY'
+#!/usr/bin/env bash
+printf 'mypy|%s|%s\n' "$PWD" "$*" >> "$RUNNER_LOG"
+FAKEMYPY
 chmod +x "$RUNNER_FAKE_BIN/"*
 
 printf '{"packageManager":"pnpm@9.0.0","scripts":{"lint":"echo lint","typecheck":"echo typecheck","test":"echo test"}}\n' >"$PROJECT_NODE/package.json"
@@ -1080,6 +1088,28 @@ assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|fmt -- --check'
 assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|clippy --all-targets --all-features -- -D warnings'
 assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|check --all-targets --all-features'
 assert_contains "$RUNNER_LOG" 'cargo|.*/rust-runner|test --all'
+
+PYTHON_PARTIAL_PROJECT="$TEST_DIR/python-partial-runner"
+mkdir -p "$PYTHON_PARTIAL_PROJECT/scripts"
+cp "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PYTHON_PARTIAL_PROJECT/scripts/touchstone-run.sh"
+printf 'project_type=python\n' >"$PYTHON_PARTIAL_PROJECT/.touchstone-config"
+printf '[project]\nname = "partial"\nversion = "0.0.0"\n' >"$PYTHON_PARTIAL_PROJECT/pyproject.toml"
+: >"$RUNNER_LOG"
+(cd "$PYTHON_PARTIAL_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash scripts/touchstone-run.sh typecheck) >"$TEST_DIR/python-partial-typecheck.out"
+assert_contains "$TEST_DIR/python-partial-typecheck.out" 'no Python typecheck_command configured; skipped'
+if grep -qE '^(pyright|mypy)\|' "$RUNNER_LOG"; then
+  echo "FAIL: Python typecheck must not default to whole-project pyright/mypy without typecheck_command" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+PYTHON_AUTO_TYPECHECK_PROJECT="$TEST_DIR/python-auto-typecheck-runner"
+mkdir -p "$PYTHON_AUTO_TYPECHECK_PROJECT/scripts"
+cp "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PYTHON_AUTO_TYPECHECK_PROJECT/scripts/touchstone-run.sh"
+printf 'project_type=python\ntypecheck_command=auto\n' >"$PYTHON_AUTO_TYPECHECK_PROJECT/.touchstone-config"
+printf '[project]\nname = "auto-typecheck"\nversion = "0.0.0"\n' >"$PYTHON_AUTO_TYPECHECK_PROJECT/pyproject.toml"
+: >"$RUNNER_LOG"
+(cd "$PYTHON_AUTO_TYPECHECK_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash scripts/touchstone-run.sh typecheck) >/dev/null
+assert_contains "$RUNNER_LOG" 'pyright|.*/python-auto-typecheck-runner|'
 
 MONOREPO_PROJECT="$TEST_DIR/monorepo-runner"
 mkdir -p "$MONOREPO_PROJECT/scripts" "$MONOREPO_PROJECT/apps/web" "$MONOREPO_PROJECT/services/api"

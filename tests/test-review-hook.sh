@@ -1925,10 +1925,11 @@ git -C "$CTX_REPO" commit -m "tag sanitizer" >/dev/null 2>&1
 )
 
 if grep -q '^review .*--tags code-review,long-context' "$CONDUCTOR_ARGS_LOG" \
+  && grep -q '^review .*--exclude ollama' "$CONDUCTOR_ARGS_LOG" \
   && ! grep -q '^review .*tool-use' "$CONDUCTOR_ARGS_LOG"; then
-  echo "==> PASS: conductor review strips tool-use tag"
+  echo "==> PASS: conductor review strips tool-use tag and excludes offline provider"
 else
-  echo "FAIL: conductor review should strip tool-use tag" >&2
+  echo "FAIL: conductor review should strip tool-use tag and pass ollama exclusion" >&2
   echo "--- CTX_OUTPUT ---" >&2
   cat "$CTX_OUTPUT" >&2
   echo "--- conductor args log ---" >&2
