@@ -40,3 +40,12 @@ preflight_required = true
 comment_on_clean = true
 advisory_at_pr_open = false
 comment_findings_history = true
+high_scrutiny_mode = "peer"
+high_scrutiny_paths = [
+  "principles/",
+  "hooks/",
+  "lib/release.sh",
+  "scripts/codex-review.sh",
+  "bootstrap/",
+  "templates/",
+]

@@ -375,6 +375,10 @@ PREFLIGHT_REQUIRED=true
 REVIEW_TIMEOUT="${CODEX_REVIEW_TIMEOUT:-0}"
 ON_ERROR="${CODEX_REVIEW_ON_ERROR:-fail-open}"
 UNSAFE_PATHS=""
+HIGH_SCRUTINY_PATHS=""
+HIGH_SCRUTINY_MODE="peer"
+HIGH_SCRUTINY_TRIGGERED=false
+HIGH_SCRUTINY_REASON=""
 REVIEWER_CASCADE=()
 # Legacy local-reviewer env vars — no longer drive behavior in 2.0+, but
 # we still declare them so users with these set in their shell don't get
@@ -546,6 +550,46 @@ append_unsafe_paths_csv() {
   IFS=',' read -r -a items <<<"$csv"
   for item in "${items[@]}"; do
     append_unsafe_path "$item"
+  done
+}
+
+append_high_scrutiny_path() {
+  local value="$1"
+  value="$(trim "$value")"
+  value="${value%,}"
+  value="$(trim "$value")"
+
+  case "$value" in
+    \"*\")
+      value="${value#\"}"
+      value="${value%\"}"
+      ;;
+    \'*\')
+      value="${value#\'}"
+      value="${value%\'}"
+      ;;
+  esac
+
+  [ -z "$value" ] && return
+
+  if [ -n "$HIGH_SCRUTINY_PATHS" ]; then
+    HIGH_SCRUTINY_PATHS="${HIGH_SCRUTINY_PATHS}
+$value"
+  else
+    HIGH_SCRUTINY_PATHS="$value"
+  fi
+}
+
+append_high_scrutiny_paths_csv() {
+  local csv="$1"
+  local item
+  local -a items=()
+
+  [ -n "$csv" ] || return 0
+
+  IFS=',' read -r -a items <<<"$csv"
+  for item in "${items[@]}"; do
+    append_high_scrutiny_path "$item"
   done
 }
 
@@ -866,6 +910,14 @@ if [ -f "$CONFIG_FILE" ]; then
         case "$key" in
           enabled) REVIEW_ENABLED="${CODEX_REVIEW_ENABLED:-$(normalize_bool "$value")}" ;;
           preflight_required) PREFLIGHT_REQUIRED="$(normalize_bool "$value")" ;;
+          high_scrutiny_mode) HIGH_SCRUTINY_MODE="$(toml_unquote "$value")" ;;
+          high_scrutiny_paths | high_scrutiny_patterns)
+            if [[ "$value" == "["* ]]; then
+              append_high_scrutiny_paths_csv "$(toml_normalize_array "$value")"
+            else
+              append_high_scrutiny_paths_csv "$value"
+            fi
+            ;;
           reviewers)
             if [[ "$value" == "["* ]]; then
               append_reviewers_csv "$(toml_normalize_array "$value")"
@@ -1161,6 +1213,12 @@ find_full_context_reason() {
   match="$(find_path_matching_context_patterns "$changed_paths" "$PROMPT_CONTEXT_ARCHITECTURAL_PATHS" || true)"
   if [ -n "$match" ]; then
     printf 'architectural path %s' "$match"
+    return 0
+  fi
+
+  match="$(find_path_matching_context_patterns "$changed_paths" "$HIGH_SCRUTINY_PATHS" || true)"
+  if [ -n "$match" ]; then
+    printf 'configured high-scrutiny path %s' "$match"
     return 0
   fi
 
@@ -1893,6 +1951,40 @@ apply_review_routing() {
   fi
 }
 
+apply_high_scrutiny_policy() {
+  local changed_paths="${1:-}"
+  local mode match
+
+  HIGH_SCRUTINY_TRIGGERED=false
+  HIGH_SCRUTINY_REASON=""
+
+  [ -n "$changed_paths" ] || return 0
+  match="$(find_path_matching_context_patterns "$changed_paths" "$HIGH_SCRUTINY_PATHS" || true)"
+  [ -n "$match" ] || return 0
+
+  mode="$(printf '%s' "${HIGH_SCRUTINY_MODE:-peer}" | tr '[:upper:]' '[:lower:]')"
+  case "$mode" in
+    peer | council) ;;
+    off | none | false | disabled)
+      return 0
+      ;;
+    *)
+      echo "WARNING: Invalid review.high_scrutiny_mode='$HIGH_SCRUTINY_MODE' — using peer." >&2
+      mode="peer"
+      ;;
+  esac
+
+  HIGH_SCRUTINY_TRIGGERED=true
+  HIGH_SCRUTINY_MODE="$mode"
+  HIGH_SCRUTINY_REASON="configured high-scrutiny path $match"
+
+  if [ -z "${CODEX_REVIEW_ASSIST+x}" ]; then
+    ASSIST_ENABLED=true
+  fi
+
+  echo "==> High-scrutiny review: $HIGH_SCRUTINY_REASON — ${HIGH_SCRUTINY_MODE} second opinion enabled"
+}
+
 run_reviewer() {
   "reviewer_${ACTIVE_REVIEWER}_exec" "$1"
 }
@@ -2253,6 +2345,7 @@ fi
 
 ROUTING_DIFF_LINE_COUNT="$(git diff "$MERGE_BASE"..HEAD | wc -l | tr -d ' ')"
 PROMPT_CONTEXT_CHANGED_PATHS="$(git diff --name-only "$MERGE_BASE"..HEAD 2>/dev/null || true)"
+apply_high_scrutiny_policy "$PROMPT_CONTEXT_CHANGED_PATHS"
 apply_review_routing "$ROUTING_DIFF_LINE_COUNT" "$PROMPT_CONTEXT_CHANGED_PATHS"
 
 # Resolve which reviewer to use from the cascade.
@@ -2427,6 +2520,9 @@ review_cache_key() {
     printf 'assist_timeout=%s\n' "${ASSIST_TIMEOUT:-}"
     printf 'assist_max_rounds=%s\n' "${ASSIST_MAX_ROUNDS:-}"
     printf 'assist_helpers=%s\n' "${ASSIST_HELPERS[*]:-}"
+    printf 'high_scrutiny_triggered=%s\n' "${HIGH_SCRUTINY_TRIGGERED:-false}"
+    printf 'high_scrutiny_mode=%s\n' "${HIGH_SCRUTINY_MODE:-peer}"
+    printf 'high_scrutiny_reason=%s\n' "${HIGH_SCRUTINY_REASON:-}"
     # Conductor knobs (CLI-effective values, post env+config resolution).
     # Without these, a review at prefer=cheapest/effort=minimal would
     # silently satisfy a later push expecting prefer=best/effort=high
@@ -3238,22 +3334,30 @@ try_review_fallback_retry() {
   return 0
 }
 
-# Run a peer review via Conductor, excluding the primary's provider.
-# Advisory — peer output appears in the transcript but does not gate the
-# merge. When the primary provider can't be identified (missing or
-# unparseable route-log), skip rather than invoke `conductor` without
-# --exclude (which could reuse the primary).
+# Run a peer/council review via Conductor. Peer mode excludes the primary's
+# provider. Council mode asks Conductor for a multi-model synthesis.
+# Advisory — second-opinion output appears in the transcript but does not gate
+# the merge. When peer mode can't identify the primary provider, skip rather
+# than invoke `conductor` without --exclude (which could reuse the primary).
 run_peer_review() {
   local primary_output="$1"
-  local primary_provider
+  local primary_provider mode
   primary_provider="$(parse_primary_provider)"
+  mode="peer"
+  if [ "${HIGH_SCRUTINY_TRIGGERED:-false}" = true ]; then
+    mode="${HIGH_SCRUTINY_MODE:-peer}"
+  fi
 
-  if [ -z "$primary_provider" ]; then
+  if [ "$mode" = "peer" ] && [ -z "$primary_provider" ]; then
     phase "peer review skipped — couldn't identify primary provider"
     return 0
   fi
 
-  phase "peer review — asking Conductor for a second opinion (excluding $primary_provider)"
+  if [ "$mode" = "council" ]; then
+    phase "council review — asking Conductor for high-scrutiny synthesis"
+  else
+    phase "peer review — asking Conductor for a second opinion (excluding $primary_provider)"
+  fi
 
   local peer_prompt
   peer_prompt="$(build_peer_review_prompt "$primary_output")"
@@ -3265,13 +3369,21 @@ run_peer_review() {
   # handling; ASSIST_TIMEOUT still applies to explicit assistant loops.
   PEER_CONDUCTOR_LOG_FILE=""
   peer_log_before="$(latest_conductor_session_log)"
-  peer_output="$(printf '%s' "$peer_prompt" \
-    | conductor call --auto \
-      --exclude "$primary_provider" \
-      --tags code-review \
-      --effort medium \
-      --silent-route \
-      2>/dev/null || true)"
+  if [ "$mode" = "council" ]; then
+    local brief_file
+    brief_file="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-council.XXXXXX.md")"
+    printf '%s\n' "$peer_prompt" >"$brief_file"
+    peer_output="$(conductor ask --kind council --effort medium --brief-file "$brief_file" 2>/dev/null || true)"
+    rm -f "$brief_file"
+  else
+    peer_output="$(printf '%s' "$peer_prompt" \
+      | conductor call --auto \
+        --exclude "$primary_provider" \
+        --tags code-review \
+        --effort medium \
+        --silent-route \
+        2>/dev/null || true)"
+  fi
   peer_log_after="$(latest_conductor_session_log)"
   if [ -n "$peer_log_after" ] && [ "$peer_log_after" != "$peer_log_before" ]; then
     PEER_CONDUCTOR_LOG_FILE="$peer_log_after"
@@ -3282,9 +3394,14 @@ run_peer_review() {
     return 0
   fi
 
-  printf "\n  ${C_DIM}── peer review (excluded %s) ──${C_RESET}\n" "$primary_provider"
+  if [ "$mode" = "council" ]; then
+    printf "\n  ${C_DIM}── council review (%s) ──${C_RESET}\n" "${HIGH_SCRUTINY_REASON:-high-scrutiny}"
+  else
+    printf "\n  ${C_DIM}── peer review (excluded %s) ──${C_RESET}\n" "$primary_provider"
+  fi
   printf '%s\n' "$peer_output" | sed 's/^/  /'
   printf "\n"
+  ASSIST_ROUNDS=$((ASSIST_ROUNDS + 1))
   ASSIST_ROUNDS_DONE=$((${ASSIST_ROUNDS_DONE:-0} + 1))
 }
 
@@ -3453,6 +3570,9 @@ print_summary() {
   printf "  ${C_DIM}iterations:     %s/%s${C_RESET}\n" "${iter:-0}" "$MAX_ITERATIONS"
   printf "  ${C_DIM}fix commits:    %s${C_RESET}\n" "$FIX_COMMITS"
   printf "  ${C_DIM}peer assists:   %s${C_RESET}\n" "$ASSIST_ROUNDS"
+  if [ "${HIGH_SCRUTINY_TRIGGERED:-false}" = true ]; then
+    printf "  ${C_DIM}high scrutiny:  %s (%s)${C_RESET}\n" "$HIGH_SCRUTINY_MODE" "$HIGH_SCRUTINY_REASON"
+  fi
   printf "  ${C_DIM}findings:       %s${C_RESET}\n" "$findings"
   if [ "$REVIEW_FALLBACK_ATTEMPTED" = true ]; then
     printf "  ${C_DIM}fallback:       %s -> %s (%s)${C_RESET}\n" \
@@ -3465,9 +3585,12 @@ print_summary() {
   printf "  ${C_DIM}──────────────────────────────────────────${C_RESET}\n"
 
   if [ -n "${CODEX_REVIEW_SUMMARY_FILE:-}" ]; then
-    printf '{"reviewer":"%s","provider":"%s","model":"%s","peer_provider":"%s","route":"%s","mode":"%s","context":"%s","prefer":"%s","effort":"%s","files":%d,"diff_lines":%d,"iterations":%d,"fix_commits":%d,"peer_assists":%d,"findings":%d,"fallback_attempted":%s,"fallback_primary_provider":"%s","fallback_retry_provider":"%s","fallback_reason":"%s","exit_reason":"%s","elapsed_seconds":%d}\n' \
+    printf '{"reviewer":"%s","provider":"%s","model":"%s","peer_provider":"%s","route":"%s","mode":"%s","context":"%s","prefer":"%s","effort":"%s","files":%d,"diff_lines":%d,"iterations":%d,"fix_commits":%d,"peer_assists":%d,"high_scrutiny_triggered":%s,"high_scrutiny_mode":"%s","high_scrutiny_reason":"%s","findings":%d,"fallback_attempted":%s,"fallback_primary_provider":"%s","fallback_retry_provider":"%s","fallback_reason":"%s","exit_reason":"%s","elapsed_seconds":%d}\n' \
       "$REVIEWER_LABEL" "$provider" "$model" "$peer_provider" "$ROUTING_DECISION" "$REVIEW_MODE" "$PROMPT_CONTEXT_DECISION" "${CONDUCTOR_PREFER:-auto}" "${CONDUCTOR_EFFORT:-default}" "$REVIEW_FILES_INSPECTED" "$DIFF_LINE_COUNT" \
-      "${iter:-0}" "$FIX_COMMITS" "$ASSIST_ROUNDS" "$findings" "$REVIEW_FALLBACK_ATTEMPTED" \
+      "${iter:-0}" "$FIX_COMMITS" "$ASSIST_ROUNDS" "${HIGH_SCRUTINY_TRIGGERED:-false}" \
+      "$(printf '%s' "${HIGH_SCRUTINY_MODE:-peer}" | json_escape)" \
+      "$(printf '%s' "${HIGH_SCRUTINY_REASON:-}" | json_escape)" \
+      "$findings" "$REVIEW_FALLBACK_ATTEMPTED" \
       "$(printf '%s' "${REVIEW_FALLBACK_PRIMARY_PROVIDER:-}" | json_escape)" \
       "$(printf '%s' "${REVIEW_FALLBACK_RETRY_PROVIDER:-}" | json_escape)" \
       "$(printf '%s' "${REVIEW_FALLBACK_REASON:-}" | json_escape)" \

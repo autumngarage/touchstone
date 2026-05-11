@@ -101,10 +101,12 @@ Conductor logs its route decision (provider, cost estimate, token count, wall-cl
 | `[review.context].small_max_diff_lines` | 400 | Max diff lines for bounded prompt context |
 | `[review.context].small_max_files` | 4 | Max changed files for bounded prompt context |
 | `[review.context].full_context_paths` | [] | Extra path patterns that always require full `AGENTS.md`/`CLAUDE.md` context |
+| `[review].high_scrutiny_paths` | [] | Extra path patterns that require high-risk routing, full context, and automatic second opinion |
+| `[review].high_scrutiny_mode` | `"peer"` | `peer`, `council`, or `off` for high-scrutiny second opinions |
 
-Routing uses a single cutoff (`small_max_diff_lines`) plus path risk. Diffs at or below the cutoff use the `small_*` bucket unless they touch `unsafe_paths`, built-in architectural paths, or configured `full_context_paths`; those use `high_risk_*`. Diffs above the cutoff use `large_*` only when they are low-risk. The default route is `cheapest`/`minimal` for small low-risk diffs, `best`/`medium` for larger low-risk diffs, and `best`/`high` for high-risk diffs. There is no separate `large_max_diff_lines`. Use `TOUCHSTONE_CONDUCTOR_EFFORT=max` when release-level scrutiny is worth the extra latency. Explicit `TOUCHSTONE_CONDUCTOR_*` environment variables still win over bucket defaults.
+Routing uses a single cutoff (`small_max_diff_lines`) plus path risk. Diffs at or below the cutoff use the `small_*` bucket unless they touch `unsafe_paths`, built-in architectural paths, configured `high_scrutiny_paths`, or configured `full_context_paths`; those use `high_risk_*`. Diffs above the cutoff use `large_*` only when they are low-risk. The default route is `cheapest`/`minimal` for small low-risk diffs, `best`/`medium` for larger low-risk diffs, and `best`/`high` for high-risk diffs. There is no separate `large_max_diff_lines`. Use `TOUCHSTONE_CONDUCTOR_EFFORT=max` when release-level scrutiny is worth the extra latency. Explicit `TOUCHSTONE_CONDUCTOR_*` environment variables still win over bucket defaults.
 
-Prompt-context pruning is separate from provider routing, but uses the same path-risk checks. In `auto` mode, the hook uses bounded context for low-risk diffs, including large or broad diffs, and uses full context for `unsafe_paths`, built-in architectural files, and configured `full_context_paths`. The prompt states when full context was intentionally omitted and why.
+Prompt-context pruning is separate from provider routing, but uses the same path-risk checks. In `auto` mode, the hook uses bounded context for low-risk diffs, including large or broad diffs, and uses full context for `unsafe_paths`, built-in architectural files, configured `high_scrutiny_paths`, and configured `full_context_paths`. The prompt states when full context was intentionally omitted and why.
 
 ### Retired in 2.0
 
