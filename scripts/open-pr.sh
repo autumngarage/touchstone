@@ -136,6 +136,52 @@ run_issue_claim_preflight() {
   bash "$ISSUE_CLAIM_CHECK_SCRIPT" "$@"
 }
 
+find_pr_body_protocol_checker() {
+  local rel
+
+  for rel in scripts/check-api-boundary-protocol.py scripts/check-pr-body-protocol.py; do
+    if [ -f "$REPO_ROOT/$rel" ]; then
+      printf '%s\n' "$REPO_ROOT/$rel"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+run_pr_body_protocol_preflight() {
+  local label="$1" pr_number="$2"
+  local checker body checker_rel rc
+
+  checker="$(find_pr_body_protocol_checker)" || return 0
+  checker_rel="${checker#"$REPO_ROOT/"}"
+
+  if ! body="$(gh pr view "$pr_number" --json body --jq '.body // ""' 2>/dev/null)"; then
+    echo "ERROR: failed to read PR #$pr_number body for protocol preflight." >&2
+    exit 1
+  fi
+
+  echo "==> Running PR body protocol preflight ($label): $checker_rel"
+  rc=0
+  if [ -x "$checker" ]; then
+    API_BOUNDARY_PR_BODY="$body" PR_BODY="$body" "$checker" || rc=$?
+  elif [ "${checker##*.}" = "py" ]; then
+    if ! command -v python3 >/dev/null 2>&1; then
+      echo "ERROR: $checker_rel requires python3, but python3 was not found." >&2
+      exit 1
+    fi
+    API_BOUNDARY_PR_BODY="$body" PR_BODY="$body" python3 "$checker" || rc=$?
+  else
+    API_BOUNDARY_PR_BODY="$body" PR_BODY="$body" bash "$checker" || rc=$?
+  fi
+
+  if [ "$rc" -ne 0 ]; then
+    echo "ERROR: PR body protocol preflight failed for PR #$pr_number." >&2
+    echo "       Edit the PR body, then rerun: bash scripts/open-pr.sh --auto-merge" >&2
+    exit "$rc"
+  fi
+}
+
 truthy() {
   case "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" in
     true | 1 | yes | on) return 0 ;;
@@ -483,6 +529,7 @@ if [ -n "$EXISTING_PR_URL" ]; then
     ORPHAN_PR_URL="$EXISTING_PR_URL"
     ORPHAN_PR_NUMBER="$PR_NUMBER"
     run_issue_claim_preflight "existing PR #$PR_NUMBER" --pr-number "$PR_NUMBER"
+    run_pr_body_protocol_preflight "existing PR #$PR_NUMBER" "$PR_NUMBER"
     MERGE_SCRIPT="$SCRIPT_DIR/merge-pr.sh"
     if [ ! -f "$MERGE_SCRIPT" ]; then
       echo "ERROR: merge-pr.sh not found at $MERGE_SCRIPT — cannot auto-merge." >&2
@@ -613,6 +660,7 @@ touchstone_emit_event pr_opened \
   base_branch="$BASE_BRANCH" \
   head_sha="$HEAD_SHA"
 
+run_pr_body_protocol_preflight "new PR #$ORPHAN_PR_NUMBER" "$ORPHAN_PR_NUMBER"
 run_advisory_review_at_pr_open "$ORPHAN_PR_NUMBER" "$BASE_BRANCH"
 
 if [ -n "$DRAFT_FLAG" ]; then
