@@ -86,6 +86,13 @@ case "$1 $2" in
       fi
       prev="$arg"
     done
+    if [ "$json_fields" = "body" ]; then
+      case "$jq_expr" in
+        ".body // \"\"") echo "${GH_PR_BODY:-}" ;;
+        *) echo "unexpected gh pr view jq: $jq_expr" >&2; exit 1 ;;
+      esac
+      exit 0
+    fi
     if [ "$json_fields" = "body,author" ]; then
       case "$jq_expr" in
         ".body // \"\"") echo "${GH_PR_BODY:-}" ;;
@@ -303,6 +310,59 @@ if [ "$RC" != "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: expected claim preflight to block before merge-pr.sh on existing PR" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 7: project-local PR body protocol check blocks before merge review.
+# ---------------------------------------------------------------------------
+echo "==> Case 7: PR body protocol preflight blocks before merge-pr.sh"
+mkdir -p "$REPO_DIR/scripts"
+cat >"$REPO_DIR/scripts/check-api-boundary-protocol.py" <<'EOF'
+#!/usr/bin/env bash
+case "${API_BOUNDARY_PR_BODY:-}" in
+  *"Protocol: yes"*) exit 0 ;;
+  *) echo "missing Protocol: yes" >&2; exit 42 ;;
+esac
+EOF
+chmod +x "$REPO_DIR/scripts/check-api-boundary-protocol.py"
+git -C "$REPO_DIR" add scripts/check-api-boundary-protocol.py
+git -C "$REPO_DIR" commit -m "add body protocol checker" >/dev/null 2>&1
+
+OUT="$TEST_DIR/case7.out"
+RC=0
+GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 GH_PR_BODY="Missing protocol" MERGE_PR_EXIT=0 \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'Running PR body protocol preflight (new PR #123)' "$OUT" \
+  && grep -q 'PR body protocol preflight failed for PR #123' "$OUT" \
+  && ! grep -q '\[mock merge-pr.sh\] called' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected PR body protocol preflight to block before merge-pr.sh" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 8: existing PR path uses the edited GitHub body and proceeds when fixed.
+# ---------------------------------------------------------------------------
+echo "==> Case 8: existing-PR protocol preflight uses edited body"
+OUT="$TEST_DIR/case8.out"
+RC=0
+GH_MERGED_AT="2026-04-28T14:00:00Z" GH_HAS_EXISTING_PR=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' MERGE_PR_EXIT=0 \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'Running PR body protocol preflight (existing PR #777)' "$OUT" \
+  && grep -q '==> Verified: PR #777 merged at 2026-04-28T14:00:00Z' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected existing-PR edited body to pass protocol preflight and merge" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
