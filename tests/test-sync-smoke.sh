@@ -136,6 +136,16 @@ HOME="$CLI_HOME" NO_COLOR=1 TOUCHSTONE_NO_AUTO_UPDATE=1 \
   bash "$TOUCHSTONE_BIN" update-all --check >"$UPDATE_ALL_CHECK_OUT" 2>&1
 assert_not_contains "$UPDATE_ALL_CHECK_OUT" "DEPRECATED"
 
+UPDATE_ALL_SHIP_CHECK_OUT="$TEST_DIR/update-all-ship-check.out"
+HOME="$CLI_HOME" NO_COLOR=1 TOUCHSTONE_NO_AUTO_UPDATE=1 \
+  bash "$TOUCHSTONE_BIN" update-all --ship --check >"$UPDATE_ALL_SHIP_CHECK_OUT" 2>&1
+assert_not_contains "$UPDATE_ALL_SHIP_CHECK_OUT" "unknown argument"
+
+UPDATE_ALL_HELP_OUT="$TEST_DIR/update-all-help.out"
+HOME="$CLI_HOME" NO_COLOR=1 TOUCHSTONE_NO_AUTO_UPDATE=1 \
+  bash "$TOUCHSTONE_BIN" update-all --help >"$UPDATE_ALL_HELP_OUT" 2>&1
+assert_contains "$UPDATE_ALL_HELP_OUT" "touchstone update-all --ship"
+
 SYNC_ALIAS_CHECK_OUT="$TEST_DIR/sync-alias-check.out"
 HOME="$CLI_HOME" NO_COLOR=1 TOUCHSTONE_NO_AUTO_UPDATE=1 \
   bash "$TOUCHSTONE_BIN" sync --check >"$SYNC_ALIAS_CHECK_OUT" 2>&1

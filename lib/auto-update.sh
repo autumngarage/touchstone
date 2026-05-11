@@ -25,10 +25,12 @@ source "$TOUCHSTONE_SYNC_DISCIPLINE_PATH"
 TOUCHSTONE_UPDATE_INTERVAL="${TOUCHSTONE_UPDATE_INTERVAL:-3600}"
 TOUCHSTONE_STATE_DIR="${TOUCHSTONE_STATE_DIR:-$HOME/.touchstone}"
 LAST_CHECK_FILE="$TOUCHSTONE_STATE_DIR/last-update-check"
+TOUCHSTONE_AUTO_UPDATE_REEXEC_EXIT=75
 
 touchstone_auto_update() {
   # Skip if disabled.
-  if [ "${TOUCHSTONE_NO_AUTO_UPDATE:-}" = "1" ]; then
+  if [ "${TOUCHSTONE_NO_AUTO_UPDATE:-}" = "1" ] \
+    || [ "${TOUCHSTONE_AUTO_UPDATE_REEXECED:-}" = "1" ]; then
     return 0
   fi
 
@@ -77,12 +79,22 @@ touchstone_auto_update() {
 
   if command -v brew >/dev/null 2>&1 && brew list touchstone &>/dev/null; then
     # Installed via brew — upgrade that way.
-    brew upgrade touchstone 2>&1 | sed 's/^/    /' >&2
-    echo "==> Updated to v${latest_version} via brew." >&2
+    if brew upgrade touchstone 2>&1 | sed 's/^/    /' >&2; then
+      echo "==> Updated to v${latest_version} via brew." >&2
+      TOUCHSTONE_AUTO_UPDATE_REEXEC_PATH="$(command -v touchstone 2>/dev/null || true)"
+      export TOUCHSTONE_AUTO_UPDATE_REEXEC_PATH
+      return "$TOUCHSTONE_AUTO_UPDATE_REEXEC_EXIT"
+    fi
+    echo "WARNING: touchstone auto-update via brew failed; continuing with current version." >&2
   elif [ -d "$TOUCHSTONE_ROOT/.git" ]; then
     # Running from a git clone — pull.
-    git -C "$TOUCHSTONE_ROOT" pull --rebase 2>&1 | sed 's/^/    /' >&2
-    echo "==> Updated to latest via git pull." >&2
+    if git -C "$TOUCHSTONE_ROOT" pull --rebase 2>&1 | sed 's/^/    /' >&2; then
+      echo "==> Updated to latest via git pull." >&2
+      TOUCHSTONE_AUTO_UPDATE_REEXEC_PATH="$TOUCHSTONE_ROOT/bin/touchstone"
+      export TOUCHSTONE_AUTO_UPDATE_REEXEC_PATH
+      return "$TOUCHSTONE_AUTO_UPDATE_REEXEC_EXIT"
+    fi
+    echo "WARNING: touchstone auto-update via git pull failed; continuing with current version." >&2
   else
     echo "==> Update available: v${latest_version}. Run: brew upgrade touchstone" >&2
   fi
