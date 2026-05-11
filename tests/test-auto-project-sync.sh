@@ -22,6 +22,9 @@ else
   CURRENT_ID="$(tr -d '[:space:]' <"$TOUCHSTONE_ROOT/VERSION")"
 fi
 
+# shellcheck source=lib/auto-update.sh
+source "$TOUCHSTONE_ROOT/lib/auto-update.sh"
+
 assert_contains() {
   local file="$1" needle="$2"
   if ! grep -q -- "$needle" "$file" 2>/dev/null; then
@@ -165,6 +168,64 @@ NO_AUTO_UPDATE_OUT="$TEST_DIR/no-auto-update.out"
 ) >"$NO_AUTO_UPDATE_OUT" 2>&1
 assert_not_contains "$NO_AUTO_UPDATE_OUT" "auto-synced touchstone"
 assert_version_equals "$NO_AUTO_UPDATE_PROJECT" "$NO_AUTO_UPDATE_OLD"
+
+echo ""
+echo "--- --no-auto-sync: no-op on drift ---"
+NO_AUTO_SYNC_FLAG_HOME="$TEST_DIR/home-no-auto-sync-flag"
+NO_AUTO_SYNC_FLAG_PROJECT="$TEST_DIR/project-no-auto-sync-flag"
+NO_AUTO_SYNC_FLAG_OLD="0000000000000000000000000000000000000009"
+make_project "$NO_AUTO_SYNC_FLAG_PROJECT" "$NO_AUTO_SYNC_FLAG_OLD"
+NO_AUTO_SYNC_FLAG_OUT="$TEST_DIR/no-auto-sync-flag.out"
+(cd "$NO_AUTO_SYNC_FLAG_PROJECT" && run_touchstone "$NO_AUTO_SYNC_FLAG_HOME" --no-auto-sync run validate) >"$NO_AUTO_SYNC_FLAG_OUT" 2>&1
+assert_not_contains "$NO_AUTO_SYNC_FLAG_OUT" "auto-synced touchstone"
+assert_contains "$NO_AUTO_SYNC_FLAG_OUT" "generic project has no default 'lint' command"
+assert_version_equals "$NO_AUTO_SYNC_FLAG_PROJECT" "$NO_AUTO_SYNC_FLAG_OLD"
+
+echo ""
+echo "--- .touchstone-config sync_auto=false: no-op on drift ---"
+CONFIG_OFF_HOME="$TEST_DIR/home-config-off"
+CONFIG_OFF_PROJECT="$TEST_DIR/project-config-off"
+CONFIG_OFF_OLD="0000000000000000000000000000000000000010"
+make_project "$CONFIG_OFF_PROJECT" "$CONFIG_OFF_OLD"
+printf 'sync_auto=false\n' >"$CONFIG_OFF_PROJECT/.touchstone-config"
+git -C "$CONFIG_OFF_PROJECT" add .touchstone-config && git -C "$CONFIG_OFF_PROJECT" commit -q -m "disable auto sync"
+CONFIG_OFF_OUT="$TEST_DIR/config-off.out"
+(cd "$CONFIG_OFF_PROJECT" && run_touchstone "$CONFIG_OFF_HOME" run validate) >"$CONFIG_OFF_OUT" 2>&1
+assert_not_contains "$CONFIG_OFF_OUT" "auto-synced touchstone"
+assert_contains "$CONFIG_OFF_OUT" "generic project has no default 'lint' command"
+assert_version_equals "$CONFIG_OFF_PROJECT" "$CONFIG_OFF_OLD"
+
+echo ""
+echo "--- [sync] auto=false: no-op on drift ---"
+CONFIG_SECTION_OFF_HOME="$TEST_DIR/home-config-section-off"
+CONFIG_SECTION_OFF_PROJECT="$TEST_DIR/project-config-section-off"
+CONFIG_SECTION_OFF_OLD="0000000000000000000000000000000000000011"
+make_project "$CONFIG_SECTION_OFF_PROJECT" "$CONFIG_SECTION_OFF_OLD"
+{
+  printf '[sync]\n'
+  printf 'auto = false\n'
+} >"$CONFIG_SECTION_OFF_PROJECT/.touchstone-config"
+git -C "$CONFIG_SECTION_OFF_PROJECT" add .touchstone-config && git -C "$CONFIG_SECTION_OFF_PROJECT" commit -q -m "disable auto sync"
+CONFIG_SECTION_OFF_OUT="$TEST_DIR/config-section-off.out"
+(cd "$CONFIG_SECTION_OFF_PROJECT" && run_touchstone "$CONFIG_SECTION_OFF_HOME" run validate) >"$CONFIG_SECTION_OFF_OUT" 2>&1
+assert_not_contains "$CONFIG_SECTION_OFF_OUT" "auto-synced touchstone"
+assert_contains "$CONFIG_SECTION_OFF_OUT" "generic project has no default 'lint' command"
+assert_version_equals "$CONFIG_SECTION_OFF_PROJECT" "$CONFIG_SECTION_OFF_OLD"
+
+echo ""
+echo "--- semver patch drift does not auto-sync, minor drift does ---"
+if touchstone_auto_project_sync_should_sync "2.11.9" "2.11.10"; then
+  echo "FAIL: patch-only semver drift should not auto-sync" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if ! touchstone_auto_project_sync_should_sync "2.10.9" "2.11.0"; then
+  echo "FAIL: minor semver drift should auto-sync" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if ! touchstone_auto_project_sync_should_sync "0000000000000000000000000000000000000012" "$CURRENT_ID"; then
+  echo "FAIL: non-semver source-checkout drift should auto-sync" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 echo ""
 echo "--- non-touchstone project: no-op ---"

@@ -212,6 +212,7 @@ assert_contains "$PROJECT/.touchstone-config" '^project_type=generic$'
 assert_contains "$PROJECT/.touchstone-config" '^lint_command=$'
 assert_contains "$PROJECT/.touchstone-config" '^git_workflow=git$'
 assert_contains "$PROJECT/.touchstone-config" '^gitbutler_mcp=false$'
+assert_contains "$PROJECT/.touchstone-config" '^sync_auto=true$'
 assert_exists "$PROJECT/.touchstone-manifest"
 assert_contains "$PROJECT/.touchstone-manifest" '^\.touchstone-version$'
 assert_contains "$PROJECT/.touchstone-manifest" '^\.github/workflows/issue-claim-check\.yml$'

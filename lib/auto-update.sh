@@ -129,6 +129,91 @@ touchstone_find_project_root() {
   return 1
 }
 
+touchstone_auto_project_sync_config_enabled() {
+  local project_dir="$1" config value
+  config="$project_dir/.touchstone-config"
+  [ -f "$config" ] || return 0
+
+  value="$(awk '
+    function trim(s) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      return s
+    }
+    function unquote(s) {
+      s = trim(s)
+      if ((s ~ /^".*"$/) || (s ~ /^\047.*\047$/)) {
+        s = substr(s, 2, length(s) - 2)
+      }
+      return s
+    }
+    {
+      line = $0
+      sub(/[[:space:]]+#.*$/, "", line)
+      line = trim(line)
+      if (line == "") {
+        next
+      }
+      if (line ~ /^\[[^]]+\]$/) {
+        section = substr(line, 2, length(line) - 2)
+        next
+      }
+      eq = index(line, "=")
+      if (eq == 0) {
+        next
+      }
+      key = trim(substr(line, 1, eq - 1))
+      val = unquote(substr(line, eq + 1))
+      if (key == "sync_auto" || key == "auto_sync" || key == "auto_project_sync") {
+        print val
+      } else if (section == "sync" && key == "auto") {
+        print val
+      }
+    }
+  ' "$config" 2>/dev/null | tail -1)"
+
+  case "$value" in
+    false | False | FALSE | 0 | no | No | NO | off | Off | OFF)
+      return 1
+      ;;
+  esac
+
+  return 0
+}
+
+touchstone_semver_major_minor() {
+  local version="$1"
+
+  case "$version" in
+    v*) version="${version#v}" ;;
+  esac
+
+  if [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)([-+].*)?$ ]]; then
+    printf '%s.%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    return 0
+  fi
+
+  return 1
+}
+
+touchstone_auto_project_sync_should_sync() {
+  local project_id="$1" installed_id="$2"
+  local project_mm installed_mm
+
+  [ -n "$project_id" ] || return 1
+  [ -n "$installed_id" ] || return 1
+  [ "$project_id" != "$installed_id" ] || return 1
+
+  if project_mm="$(touchstone_semver_major_minor "$project_id")" \
+    && installed_mm="$(touchstone_semver_major_minor "$installed_id")"; then
+    [ "$project_mm" != "$installed_mm" ]
+    return
+  fi
+
+  # Source checkouts record git SHAs instead of semver. Any SHA drift means the
+  # managed project files may differ, so keep the existing sync-on-drift rule.
+  return 0
+}
+
 touchstone_auto_project_sync_command_skips() {
   local command="${1:-}" subcommand="${2:-}"
 
@@ -156,6 +241,10 @@ touchstone_auto_project_sync() {
     return 0
   fi
 
+  case " $command $* " in
+    *" --no-auto-sync "*) return 0 ;;
+  esac
+
   if touchstone_auto_project_sync_command_skips "$command" "$@"; then
     return 0
   fi
@@ -172,13 +261,17 @@ touchstone_auto_project_sync() {
     return 0
   fi
 
+  if ! touchstone_auto_project_sync_config_enabled "$project_dir"; then
+    return 0
+  fi
+
   local project_id installed_id
   project_id="$(tr -d '[:space:]' <"$project_dir/.touchstone-version" 2>/dev/null || true)"
   installed_id="$(touchstone_installed_id)"
   [ -n "$project_id" ] || return 0
   [ -n "$installed_id" ] || return 0
 
-  if [ "$project_id" = "$installed_id" ]; then
+  if ! touchstone_auto_project_sync_should_sync "$project_id" "$installed_id"; then
     return 0
   fi
 
