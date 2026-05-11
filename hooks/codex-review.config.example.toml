@@ -71,6 +71,11 @@ unsafe_paths = [
 # comment_on_clean = true    # Leave a one-line PR audit trail after a clean merge review; set false for quiet repos.
 # advisory_at_pr_open = false      # Optional, non-blocking PR-open comment; required review belongs to the merge gate.
 # comment_findings_history = true  # After merge, post a collapsed history when the fix loop raised or auto-fixed findings.
+# high_scrutiny_mode = "peer"      # peer | council | off; auto second opinion when high_scrutiny_paths are touched.
+# high_scrutiny_paths = [
+#   # "src/auth/",
+#   # "migrations/",
+# ]
 # # reviewer = "conductor"   # single-valued in 2.0+; absent reviewers[]
 
 # --------------------------------------------------------------------------
@@ -164,6 +169,11 @@ exclude = ["ollama"]
 # `conductor call --exclude <primary>`. Peer output appears in the
 # transcript as an advisory block; it does NOT gate the merge (the
 # primary's sentinel still wins).
+#
+# `[review].high_scrutiny_paths` can enable this automatically for critical
+# files without turning peer review on for every diff. Set
+# `high_scrutiny_mode = "council"` to ask Conductor's council route for the
+# high-scrutiny second opinion instead of a single peer.
 #
 # Useful when you want a cross-model sanity check on borderline or
 # important reviews. Costs extra — one additional LLM call per review.
