@@ -1783,8 +1783,11 @@ assert_contains "$TEST_DIR/wizard-yes.txt" '--no-github'
 
 # --yes with --with-cortex / --with-sentinel / --github-public must be reflected
 # in the equivalent-to-rerun printout even when the underlying tool isn't present.
+# PATH=/usr/bin:/bin hides gh/cortex/sentinel from the bootstrap so the
+# gh-repo-create branch self-skips — without it the test creates a real
+# public GitHub repo on whoever's authenticated account.
 PROJECT_WIZARD_YES_FLAGS="$TEST_DIR/test-project-wizard-yes-flags"
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_WIZARD_YES_FLAGS" --yes --no-register \
+PATH="/usr/bin:/bin" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_WIZARD_YES_FLAGS" --yes --no-register \
   --with-cortex --with-sentinel --github-public \
   >"$TEST_DIR/wizard-yes-flags.txt" 2>&1 || true
 assert_contains "$TEST_DIR/wizard-yes-flags.txt" '--with-cortex'
