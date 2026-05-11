@@ -5,6 +5,7 @@
 # Usage:
 #   touchstone update-all              # update all projects
 #   touchstone update-all --dry-run    # show what would change
+#   touchstone update-all --ship       # ship project updates through PRs
 #   touchstone update-all --pull-first # git pull touchstone before updating projects
 #
 # Reads project paths from ~/.touchstone-projects (one path per line, populated
@@ -20,8 +21,10 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 UPDATE_SCRIPT="$TOUCHSTONE_ROOT/bootstrap/update-project.sh"
 PROJECTS_FILE="$HOME/.touchstone-projects"
 DRY_RUN=""
+SHIP=""
 PULL_FIRST=false
 CHECK_ONLY=false
+ORIGINAL_ARGS=("$@")
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -31,6 +34,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --pull-first)
       PULL_FIRST=true
+      shift
+      ;;
+    --ship)
+      SHIP="--ship"
       shift
       ;;
     --check)
@@ -56,9 +63,32 @@ fi
 
 # Optionally update the Touchstone itself first.
 if [ "$PULL_FIRST" = true ]; then
-  echo "==> Pulling latest touchstone ..."
-  git -C "$TOUCHSTONE_ROOT" pull --rebase
-  echo ""
+  if [ "${TOUCHSTONE_UPDATE_ALL_REEXECED:-}" = "1" ]; then
+    echo "==> Touchstone was refreshed before re-exec."
+  else
+    echo "==> Pulling latest touchstone ..."
+    if [ -d "$TOUCHSTONE_ROOT/.git" ]; then
+      git -C "$TOUCHSTONE_ROOT" pull --rebase
+    elif command -v brew >/dev/null 2>&1 && brew list touchstone >/dev/null 2>&1; then
+      brew update
+      if ! brew upgrade touchstone; then
+        echo "WARNING: brew upgrade touchstone failed; continuing with current install." >&2
+      fi
+    else
+      echo "WARNING: cannot update Touchstone first; install is neither a git checkout nor a Homebrew package." >&2
+    fi
+    echo ""
+
+    reexec_path=""
+    if [ -d "$TOUCHSTONE_ROOT/.git" ] && [ -x "$TOUCHSTONE_ROOT/bin/touchstone" ]; then
+      reexec_path="$TOUCHSTONE_ROOT/bin/touchstone"
+    else
+      reexec_path="$(command -v touchstone 2>/dev/null || true)"
+    fi
+    if [ -n "$reexec_path" ] && [ -x "$reexec_path" ]; then
+      TOUCHSTONE_UPDATE_ALL_REEXECED=1 exec "$reexec_path" update-all ${ORIGINAL_ARGS[@]+"${ORIGINAL_ARGS[@]}"}
+    fi
+  fi
 fi
 
 # Check-only mode: report which projects need update, then exit.
@@ -120,7 +150,10 @@ while IFS= read -r project_dir; do
   echo "==> Updating: $project_dir"
   echo "================================================================"
 
-  if (cd "$project_dir" && bash "$UPDATE_SCRIPT" $DRY_RUN); then
+  update_args=()
+  [ -z "$DRY_RUN" ] || update_args+=("$DRY_RUN")
+  [ -z "$SHIP" ] || update_args+=("$SHIP")
+  if (cd "$project_dir" && bash "$UPDATE_SCRIPT" ${update_args[@]+"${update_args[@]}"}); then
     SUCCESS=$((SUCCESS + 1))
   else
     echo "==> FAILED: $project_dir"

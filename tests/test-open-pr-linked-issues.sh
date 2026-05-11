@@ -140,7 +140,7 @@ RC=0
 if [ "$RC" = "0" ] \
   && grep -q '^## Linked Issues$' "$OUT" \
   && grep -q '^Closes #42$' "$OUT" \
-  && grep -q '^Closes #43$' "$OUT" \
+  && ! grep -q '^Closes #43$' "$OUT" \
   && ! grep -q '^Closes #99$' "$OUT" \
   && [ "$(grep -c '^Closes #42$' "$OUT")" = "1" ] \
   && grep -q '^## Summary$' "$OUT" \

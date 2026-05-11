@@ -322,7 +322,7 @@ find_issue_closing_refs() {
     {
       line = tolower($0)
       should_scan = 0
-      if (line ~ /^[[:space:]]*(closes-issue|closes|fixes|refs):[[:space:]]*/) {
+      if (line ~ /^[[:space:]]*(closes-issue|closes|fixes|resolves):[[:space:]]*/) {
         should_scan = 1
       }
       if (line ~ /(^|[^[:alnum:]_-])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+#[0-9]+/) {
