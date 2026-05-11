@@ -520,6 +520,47 @@ commit_all "$NON_SWIFT_UPDATE_PROJECT" "simulate stale python touchstone state"
 assert_not_exists "$NON_SWIFT_UPDATE_PROJECT/.swiftlint.yml"
 
 # --------------------------------------------------------------------------
+# Test 5c: --ship failure preserves the update branch but exits nonzero.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 5c: --ship failure exits nonzero ---"
+
+SHIP_FAIL_PROJECT="$TEST_DIR/ship-fail-project"
+SHIP_FAIL_BIN="$TEST_DIR/ship-fail-bin"
+mkdir -p "$SHIP_FAIL_BIN"
+cat >"$SHIP_FAIL_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+echo "fake gh failure" >&2
+exit 1
+GHEOF
+chmod +x "$SHIP_FAIL_BIN/gh"
+
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SHIP_FAIL_PROJECT" --no-register --type generic >/dev/null
+configure_git "$SHIP_FAIL_PROJECT"
+commit_all "$SHIP_FAIL_PROJECT" "initial ship-fail project"
+echo "0000000000000000000000000000000000000013" >"$SHIP_FAIL_PROJECT/.touchstone-version"
+commit_all "$SHIP_FAIL_PROJECT" "simulate stale ship-fail state"
+
+SHIP_FAIL_OUT="$TEST_DIR/ship-fail-output.txt"
+SHIP_FAIL_RC=0
+(
+  cd "$SHIP_FAIL_PROJECT"
+  PATH="$SHIP_FAIL_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --ship
+) >"$SHIP_FAIL_OUT" 2>&1 || SHIP_FAIL_RC=$?
+
+if [ "$SHIP_FAIL_RC" != "0" ] \
+  && grep -q 'Ship failed' "$SHIP_FAIL_OUT" \
+  && git -C "$SHIP_FAIL_PROJECT" branch --show-current | grep -q '^chore/touchstone-'; then
+  echo "    PASS: --ship failure preserved branch and returned nonzero"
+else
+  echo "FAIL: --ship failure should preserve branch and exit nonzero" >&2
+  echo "    rc=$SHIP_FAIL_RC" >&2
+  cat "$SHIP_FAIL_OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
 # Test 6: check mode and ordinary commands do not print the old startup nag.
 # --------------------------------------------------------------------------
 echo ""

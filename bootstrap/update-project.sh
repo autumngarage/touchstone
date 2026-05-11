@@ -718,6 +718,7 @@ if [ "$DRY_RUN" = false ]; then
       echo ""
       echo "==> --ship requested but scripts/open-pr.sh is missing or not executable."
       echo "    branch: $UPDATE_BRANCH (left for manual ship)"
+      exit 1
     else
       echo ""
       echo "==> Shipping update via scripts/open-pr.sh --auto-merge..."
@@ -726,6 +727,7 @@ if [ "$DRY_RUN" = false ]; then
         echo "==> Ship failed (see errors above). The update commit is preserved on:"
         echo "    branch: $UPDATE_BRANCH"
         echo "    Re-ship when ready:  cd $PROJECT_DIR && bash scripts/open-pr.sh --auto-merge"
+        exit 1
       fi
     fi
   else
