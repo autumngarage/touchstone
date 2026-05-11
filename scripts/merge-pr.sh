@@ -858,7 +858,7 @@ run_preflight_gate() {
 }
 
 run_merge_review() {
-  local current_branch default_base_ref local_head pr_head_branch pr_head_oid
+  local current_branch current_worktree default_base_ref default_worktree local_head pr_head_branch pr_head_oid
 
   if ! pr_head_branch="$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null)"; then
     echo "ERROR: Failed to resolve PR #$PR_NUMBER head branch." >&2
@@ -881,7 +881,11 @@ run_merge_review() {
   REVIEWED_HEAD_OID="$pr_head_oid"
   current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
   if [ "$current_branch" = "$PR_HEAD_BRANCH" ]; then
-    PR_WORKTREE_PATH="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
+    current_worktree="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
+    default_worktree="$(worktree_path_for_branch "$DEFAULT_BRANCH" | head -n 1)"
+    if [ -n "$current_worktree" ] && [ -n "$default_worktree" ] && [ "$current_worktree" != "$default_worktree" ]; then
+      PR_WORKTREE_PATH="$current_worktree"
+    fi
   else
     PR_WORKTREE_PATH="$(worktree_path_for_branch "$PR_HEAD_BRANCH" | head -n 1)"
   fi

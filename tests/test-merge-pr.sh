@@ -833,6 +833,23 @@ else
   exit 1
 fi
 
+echo "==> Test: primary checkout is not treated as removable feature worktree"
+reset_case_files
+PRIMARY_WORKTREE="$TEST_DIR/primary-checkout"
+mkdir -p "$PRIMARY_WORKTREE"
+TEST_CURRENT_WORKTREE="$PRIMARY_WORKTREE"
+run_merge_pr "$TEST_DIR/output-primary-checkout.txt" 123
+if grep -q "==> Local branch 'feature/test' deleted." "$TEST_DIR/output-primary-checkout.txt" \
+  && ! grep -q "No separate default-branch worktree is available" "$TEST_DIR/output-primary-checkout.txt" \
+  && ! grep -q "Removing merged PR worktree" "$TEST_DIR/output-primary-checkout.txt" \
+  && [ ! -f "$TEST_DIR/git-worktree-remove" ]; then
+  echo "==> PASS: primary checkout was left in place without worktree cleanup warning"
+else
+  echo "FAIL: primary checkout should not be treated as removable feature worktree" >&2
+  cat "$TEST_DIR/output-primary-checkout.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: merged feature worktree is removed from sibling default worktree"
 reset_case_files
 MERGE_MAIN_WORKTREE="$TEST_DIR/merge-main-worktree"
