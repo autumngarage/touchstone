@@ -122,17 +122,34 @@ cat >"$FAKE_BIN/git" <<'EOF'
 set -euo pipefail
 
 if [ "${1:-}" = "-C" ]; then
-  if [ "${3:-} ${4:-}" != "pull --ff-only" ]; then
-    echo "unexpected git -C args: $*" >&2
-    exit 1
-  fi
-  printf '%s\n' "$2" > "$GIT_SIBLING_PULL_FILE"
-  if [ "${GIT_SIBLING_PULL_FAIL:-false}" = "true" ]; then
-    echo "sibling pull failed" >&2
-    exit 1
-  fi
-  echo "Already up to date."
-  exit 0
+  case "${3:-} ${4:-}" in
+    "pull --ff-only")
+      printf '%s\n' "$2" > "$GIT_SIBLING_PULL_FILE"
+      if [ "${GIT_SIBLING_PULL_FAIL:-false}" = "true" ]; then
+        echo "sibling pull failed" >&2
+        exit 1
+      fi
+      echo "Already up to date."
+      exit 0
+      ;;
+    "status --porcelain")
+      printf '%s' "${GIT_WORKTREE_STATUS:-}"
+      exit 0
+      ;;
+    "worktree remove")
+      printf '%s\n' "${5:-}" > "$GIT_WORKTREE_REMOVE_FILE"
+      if [ "${GIT_WORKTREE_REMOVE_FAIL:-false}" = "true" ]; then
+        echo "worktree remove failed" >&2
+        exit 1
+      fi
+      echo "removed ${5:-}"
+      exit 0
+      ;;
+    *)
+      echo "unexpected git -C args: $*" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 case "$*" in
@@ -245,7 +262,8 @@ reset_case_files() {
     "$TEST_DIR"/git-detached-default* "$TEST_DIR"/git-branch-deleted* \
     "$TEST_DIR"/git-sibling-pull* "$TEST_DIR"/gh-merged-marker* \
     "$TEST_DIR"/git-review-head* "$TEST_DIR"/git-push-head* \
-    "$TEST_DIR"/gh-head-ref* "$TEST_DIR"/preflight-calls*
+    "$TEST_DIR"/gh-head-ref* "$TEST_DIR"/preflight-calls* \
+    "$TEST_DIR"/git-worktree-remove*
   rm -rf "$GIT_PATH_ROOT"
   mkdir -p "$GIT_PATH_ROOT"
   unset GIT_WORKTREE_LIST
@@ -265,6 +283,8 @@ reset_case_files() {
   unset GIT_CHANGED_PATHS
   unset GIT_WORKTREE_DIFF
   unset GIT_INDEX_DIFF
+  unset GIT_WORKTREE_STATUS
+  unset GIT_WORKTREE_REMOVE_FAIL
 }
 
 run_merge_pr() {
@@ -289,6 +309,7 @@ run_merge_pr() {
     GIT_DETACHED_DEFAULT_FILE="$TEST_DIR/git-detached-default" \
     GIT_BRANCH_DELETED_FILE="$TEST_DIR/git-branch-deleted" \
     GIT_SIBLING_PULL_FILE="$TEST_DIR/git-sibling-pull" \
+    GIT_WORKTREE_REMOVE_FILE="$TEST_DIR/git-worktree-remove" \
     GIT_REVIEW_HEAD_FILE="$TEST_DIR/git-review-head" \
     GIT_PUSH_HEAD_FILE="$TEST_DIR/git-push-head" \
     GIT_WORKTREE_LIST="${GIT_WORKTREE_LIST:-}" \
@@ -298,6 +319,8 @@ run_merge_pr() {
     GIT_CHANGED_PATHS="${GIT_CHANGED_PATHS:-example.txt}" \
     GIT_WORKTREE_DIFF="${GIT_WORKTREE_DIFF:-}" \
     GIT_INDEX_DIFF="${GIT_INDEX_DIFF:-}" \
+    GIT_WORKTREE_STATUS="${GIT_WORKTREE_STATUS:-}" \
+    GIT_WORKTREE_REMOVE_FAIL="${GIT_WORKTREE_REMOVE_FAIL:-false}" \
     CODEX_REVIEW_EXIT="${CODEX_REVIEW_EXIT:-0}" \
     CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
     CODEX_REVIEW_MUTATE_HEAD="${CODEX_REVIEW_MUTATE_HEAD:-}" \
@@ -807,6 +830,65 @@ else
   echo "FAIL: gh local-delete failure should warn, not error, when PR is MERGED" >&2
   echo "    rc=$rc" >&2
   cat "$TEST_DIR/output-gh-local-fail.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: merged feature worktree is removed from sibling default worktree"
+reset_case_files
+MERGE_MAIN_WORKTREE="$TEST_DIR/merge-main-worktree"
+MERGE_FEATURE_WORKTREE="$TEST_DIR/merge-feature-worktree"
+mkdir -p "$MERGE_MAIN_WORKTREE" "$MERGE_FEATURE_WORKTREE"
+TEST_CURRENT_WORKTREE="$MERGE_FEATURE_WORKTREE"
+GIT_WORKTREE_LIST="$(
+  cat <<EOF
+worktree $MERGE_MAIN_WORKTREE
+HEAD main-oid
+branch refs/heads/main
+
+worktree $MERGE_FEATURE_WORKTREE
+HEAD feature-oid
+branch refs/heads/feature/test
+
+EOF
+)"
+run_merge_pr "$TEST_DIR/output-worktree-remove.txt" 123
+if grep -q "==> Removing merged PR worktree '$MERGE_FEATURE_WORKTREE'" "$TEST_DIR/output-worktree-remove.txt" \
+  && grep -q "==> Merged PR worktree removed." "$TEST_DIR/output-worktree-remove.txt" \
+  && [ "$(cat "$TEST_DIR/git-worktree-remove")" = "$MERGE_FEATURE_WORKTREE" ]; then
+  echo "==> PASS: merged feature worktree removed after verified merge"
+else
+  echo "FAIL: merged feature worktree should be removed from sibling default worktree" >&2
+  cat "$TEST_DIR/output-worktree-remove.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: dirty merged feature worktree is preserved with warning"
+reset_case_files
+DIRTY_MAIN_WORKTREE="$TEST_DIR/dirty-main-worktree"
+DIRTY_FEATURE_WORKTREE="$TEST_DIR/dirty-feature-worktree"
+mkdir -p "$DIRTY_MAIN_WORKTREE" "$DIRTY_FEATURE_WORKTREE"
+TEST_CURRENT_WORKTREE="$DIRTY_FEATURE_WORKTREE"
+GIT_WORKTREE_STATUS=' M scratch.txt'
+GIT_WORKTREE_LIST="$(
+  cat <<EOF
+worktree $DIRTY_MAIN_WORKTREE
+HEAD main-oid
+branch refs/heads/main
+
+worktree $DIRTY_FEATURE_WORKTREE
+HEAD feature-oid
+branch refs/heads/feature/test
+
+EOF
+)"
+run_merge_pr "$TEST_DIR/output-worktree-dirty.txt" 123
+if grep -q "WARNING: Merged PR worktree '$DIRTY_FEATURE_WORKTREE' has uncommitted changes; leaving it in place." "$TEST_DIR/output-worktree-dirty.txt" \
+  && grep -q "cleanup-worktrees.sh --execute" "$TEST_DIR/output-worktree-dirty.txt" \
+  && [ ! -f "$TEST_DIR/git-worktree-remove" ]; then
+  echo "==> PASS: dirty merged feature worktree was preserved"
+else
+  echo "FAIL: dirty merged feature worktree should be preserved with cleanup guidance" >&2
+  cat "$TEST_DIR/output-worktree-dirty.txt" >&2
   exit 1
 fi
 
