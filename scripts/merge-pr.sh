@@ -12,6 +12,7 @@
 #   3. Squash-merges and deletes the remote branch.
 #   4. Checks out/syncs the default branch where the local topology permits.
 #   5. Deletes the verified-merged local feature branch when safe.
+#   6. Removes the merged feature worktree when safe.
 #
 # Exit codes:
 #   0 — merged cleanly
@@ -51,6 +52,7 @@ REVIEW_SUMMARY_FILE=""
 PREFLIGHT_CACHE_KEY=""
 PREFLIGHT_CACHE_FILE=""
 PREFLIGHT_CACHE_INPUTS=""
+PR_WORKTREE_PATH=""
 
 on_merge_exit() {
   local rc="$?"
@@ -488,6 +490,7 @@ cleanup_local_pr_branch_after_merge() {
     echo "WARNING: Local branch '$branch' is at $local_head, not reviewed PR head $reviewed_head; leaving it intact." >&2
     return 0
   fi
+  [ -n "$PR_WORKTREE_PATH" ] || PR_WORKTREE_PATH="$(worktree_path_for_branch "$branch" | head -n 1)"
   pr_state="$(gh pr view "$PR_NUMBER" --json state --jq '.state' 2>/dev/null || echo "")"
   if [ "$pr_state" != "MERGED" ]; then
     echo "WARNING: PR #$PR_NUMBER is not confirmed MERGED (state: ${pr_state:-unknown}); leaving local branch '$branch' intact." >&2
@@ -504,6 +507,46 @@ cleanup_local_pr_branch_after_merge() {
   else
     echo "WARNING: Could not delete local branch '$branch' after verified merge." >&2
     echo "WARNING: Run this when convenient after moving off the branch: git branch -D '$branch'" >&2
+  fi
+}
+
+cleanup_pr_worktree_after_merge() {
+  local pr_worktree="$PR_WORKTREE_PATH"
+  local current_worktree default_worktree dirty_status
+
+  [ -n "$pr_worktree" ] || return 0
+  if [ ! -d "$pr_worktree" ]; then
+    echo "WARNING: Merged PR worktree '$pr_worktree' is missing; run 'git worktree prune' if Git still records it." >&2
+    return 0
+  fi
+
+  current_worktree="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
+  default_worktree="$(worktree_path_for_branch "$DEFAULT_BRANCH" | head -n 1)"
+  if [ -z "$default_worktree" ] || [ ! -d "$default_worktree" ]; then
+    default_worktree="$current_worktree"
+  fi
+  if [ -z "$default_worktree" ] || [ "$default_worktree" = "$pr_worktree" ]; then
+    echo "WARNING: No separate default-branch worktree is available to remove merged PR worktree '$pr_worktree'." >&2
+    echo "         Run 'bash scripts/cleanup-worktrees.sh --execute' after moving to a different worktree." >&2
+    return 0
+  fi
+
+  dirty_status="$(git -C "$pr_worktree" status --porcelain 2>/dev/null || printf 'status-failed\n')"
+  if [ -n "$dirty_status" ]; then
+    echo "WARNING: Merged PR worktree '$pr_worktree' has uncommitted changes; leaving it in place." >&2
+    echo "         Inspect it, then run 'bash scripts/cleanup-worktrees.sh --execute' when it is clean." >&2
+    return 0
+  fi
+
+  echo "==> Removing merged PR worktree '$pr_worktree' ..."
+  touchstone_emit_event cleanup_started worktree_path="$pr_worktree"
+  if git -C "$default_worktree" worktree remove "$pr_worktree"; then
+    echo "==> Merged PR worktree removed."
+    touchstone_emit_event cleanup_done worktree_path="$pr_worktree" result=removed
+  else
+    echo "WARNING: Could not remove merged PR worktree '$pr_worktree'." >&2
+    echo "         Run 'bash scripts/cleanup-worktrees.sh --execute' from $default_worktree to inspect and clean up." >&2
+    touchstone_emit_event cleanup_done worktree_path="$pr_worktree" result=failed
   fi
 }
 
@@ -836,6 +879,12 @@ run_merge_review() {
 
   PR_HEAD_BRANCH="$pr_head_branch"
   REVIEWED_HEAD_OID="$pr_head_oid"
+  current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+  if [ "$current_branch" = "$PR_HEAD_BRANCH" ]; then
+    PR_WORKTREE_PATH="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
+  else
+    PR_WORKTREE_PATH="$(worktree_path_for_branch "$PR_HEAD_BRANCH" | head -n 1)"
+  fi
   default_base_ref="origin/$DEFAULT_BRANCH"
 
   if [ "$BYPASS_REVIEW" = true ]; then
@@ -1107,5 +1156,6 @@ if [ -n "$CORTEX_HOOK_SCRIPT" ]; then
 fi
 
 cleanup_local_pr_branch_after_merge
+cleanup_pr_worktree_after_merge
 
 echo "==> Done."
