@@ -1652,7 +1652,7 @@ cmd_help() {
   printf "    ${BOLD}touchstone update${RESET} --ship          Push, open PR, review, and auto-merge\n"
   printf "    ${BOLD}touchstone migrate-from-toolkit${RESET}   One-shot rename of legacy .toolkit-* files (pre-1.0.0 projects)\n"
   printf "    ${BOLD}touchstone migrate-review-config${RESET}  Rewrite .codex-review.toml from 1.x → 2.0 shape (silences migration warnings on push)\n"
-  printf "    ${BOLD}touchstone review --dry-run${RESET}      Preview which provider would review the next push, no tokens spent\n"
+  printf "    ${BOLD}touchstone review${RESET}                Run the conductor review without pushing (--dry-run previews routing)\n"
   printf "    ${BOLD}touchstone update-all${RESET}             Update all registered projects\n"
   printf "    ${BOLD}touchstone update-all${RESET} --ship      Ship registered project updates through PRs\n"
   printf "    ${BOLD}touchstone update-all${RESET} --check     Report which projects need update\n"
