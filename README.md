@@ -94,7 +94,7 @@ TOUCHSTONE_CONDUCTOR_WITH=claude git push
 TOUCHSTONE_CONDUCTOR_PREFER=cheapest git push
 ```
 
-Full config reference: see `hooks/codex-review.config.example.toml`. Migrating from 1.x? See the [v2.0.0 release notes](https://github.com/autumngarage/touchstone/releases/tag/v2.0.0) (or run `gh release view v2.0.0`).
+Full config reference: see `hooks/codex-review.config.example.toml`. Migrating from 1.x? See the historical 2.0 migration notes in [GitHub Releases](https://github.com/autumngarage/touchstone/releases).
 
 ### Choose a Git workflow
 

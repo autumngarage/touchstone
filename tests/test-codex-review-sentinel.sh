@@ -161,9 +161,12 @@ set +e
 (
   cd "$REPO_DIR"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    PRE_COMMIT=0 \
+    PRE_COMMIT_REMOTE_BRANCH=fix/anything \
     PROMPT_FILE="$PROMPT_FILE" \
     TOUCHSTONE_REVIEW_LOG=/dev/null \
     CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_FORCE=1 \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
     bash "$SCRIPT" >"$CLOSED_OUTPUT" 2>&1
@@ -187,9 +190,12 @@ set +e
 (
   cd "$REPO_DIR"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    PRE_COMMIT=0 \
+    PRE_COMMIT_REMOTE_BRANCH=fix/anything \
     PROMPT_FILE="$PROMPT_FILE" \
     TOUCHSTONE_REVIEW_LOG=/dev/null \
     CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_FORCE=1 \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-open \
     bash "$SCRIPT" >"$OPEN_OUTPUT" 2>&1
