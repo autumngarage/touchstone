@@ -1681,6 +1681,7 @@ cmd_help() {
   printf "    ${BOLD}touchstone help${RESET}                   Show this help\n"
   echo ""
   echo "  ${BOLD}Environment:${RESET}"
+  printf "    ${BOLD}--no-auto-sync${RESET}                    Disable project auto-sync for this invocation\n"
   printf "    ${BOLD}TOUCHSTONE_NO_AUTO_UPDATE=1${RESET}        Disable CLI auto-update and project auto-sync\n"
   printf "    ${BOLD}TOUCHSTONE_NO_AUTO_PROJECT_SYNC=1${RESET}  Disable project auto-sync only\n"
   printf "    ${BOLD}TOUCHSTONE_FORCE_OVERLAP=1${RESET}         Force project sync through dirty overlap\n"
@@ -1694,13 +1695,33 @@ cmd_help() {
 # Dispatch
 # --------------------------------------------------------------------------
 
+touchstone_filtered_args=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --no-auto-sync)
+      TOUCHSTONE_NO_AUTO_PROJECT_SYNC=1
+      export TOUCHSTONE_NO_AUTO_PROJECT_SYNC
+      shift
+      ;;
+    *)
+      touchstone_filtered_args+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- ${touchstone_filtered_args[@]+"${touchstone_filtered_args[@]}"}
+
 COMMAND="${1:-help}"
 shift 2>/dev/null || true
 
 # Auto-project-sync runs after command parsing so read-only commands can skip
 # it and before dispatch so write-capable commands see current Touchstone files.
 if project_root_for_drift="$(touchstone_find_project_root 2>/dev/null)"; then
-  touchstone_sync_warn_if_drift_skipped "$project_root_for_drift" "$(touchstone_installed_id)" || true
+  project_id_for_drift="$(tr -d '[:space:]' <"$project_root_for_drift/.touchstone-version" 2>/dev/null || true)"
+  installed_id_for_drift="$(touchstone_installed_id)"
+  if touchstone_auto_project_sync_should_sync "$project_id_for_drift" "$installed_id_for_drift"; then
+    touchstone_sync_warn_if_drift_skipped "$project_root_for_drift" "$installed_id_for_drift" || true
+  fi
 fi
 touchstone_auto_project_sync "$COMMAND" "$@" || true
 
