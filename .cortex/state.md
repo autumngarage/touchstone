@@ -1,10 +1,10 @@
 ---
-Generated: 2026-05-11T10:31:36-04:00
+Generated: 2026-05-11T11:24:29-04:00
 Generator: cortex refresh-state v1.6.2
 Sources:
-  - HEAD sha: af42fcaec6664bc6ae47284ec863a72adf169b7c
+  - HEAD sha: 291dbb57c3161e5cc448c3a44aa255fe5da138d9
   - .cortex/plans/*.md (2 files)
-  - .cortex/journal/*.md (11 entries, 2026-05-05..2026-05-09)
+  - .cortex/journal/*.md (12 entries, 2026-05-05..2026-05-11)
   - .cortex/doctrine/*.md (1 entries)
   - .cortex/templates/**/*.md (12 templates)
   - docs/case-studies/*.md (0 case studies)
@@ -23,6 +23,7 @@ Sources-hash:
   .cortex/journal/2026-05-09-pr-merged-0935.md: c999d2a23a78b78f5bcb855cb52966a88f005296ba905b037c6c04972509e12f
   .cortex/journal/2026-05-09-pr-merged-2241.md: 5b44c532e9f80447a002290c6caade6c90229499f12309511ce8b2276ab02ef5
   .cortex/journal/2026-05-09-release-v2-11-3.md: 706c80c263efd3d6f55d688ff32f27695485c041317267d9da9e83cdb599d6cf
+  .cortex/journal/2026-05-11-pr-merged-1124.md: d1d50e2bff02a0cbd2ed6529f54fe8a238c5eff4566a6d6d4e9d3b2bacbc7e74
   .cortex/plans/touchstone-conductor-integration.md: be3f8211b7c19e32e0c4c858c35678c1d85418fe12c5d22b29cc0a7831f8a54c
   .cortex/plans/touchstone-cortex-metadata.md: 0e23c4e06b91c1e8da358b3928750798975eed88815502fb8e7ddfbdbd0187f5
   .cortex/templates/README.md: 695aa2e623bd7f4e698dae471bded0cde354da0c1d8589266660ceb1be8efad1
@@ -37,7 +38,7 @@ Sources-hash:
   .cortex/templates/journal/release.md: 9a6bc59219156e48b419fb170c7c50ff557767def8672ef20568df3e14eadbd0
   .cortex/templates/journal/sentinel-cycle.md: 2945e2d94af4ec9848584b4b3e9cea7060d2968dd42e78faf21fb6f859137476
   .cortex/templates/plans/template.md: d8156cfa3b86acd2a1fbb36cff07cae37d99f3adee7f72b14b7b16e645c51b44
-Corpus: 11 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
+Corpus: 12 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
 Omitted:
   []
 Incomplete:
@@ -63,6 +64,7 @@ Spec: 0.5.0
 - **2026-05-09** — PR #258 merged — feat(cli): adopt update-all and structural doctor (`.cortex/journal/2026-05-09-pr-merged-0935.md`, Type: pr-merged)
 - **2026-05-09** — PR #295 merged — fix(update): install issue claim workflow (`.cortex/journal/2026-05-09-pr-merged-2241.md`, Type: pr-merged)
 - **2026-05-09** — Release v2.11.3 — merge gate fix loop (`.cortex/journal/2026-05-09-release-v2-11-3.md`, Type: release)
+- **2026-05-11** — PR #321 merged — docs: steer agents to file delivery friction (`.cortex/journal/2026-05-11-pr-merged-1124.md`, Type: pr-merged)
 
 ## Stale-now / handle-later
 
