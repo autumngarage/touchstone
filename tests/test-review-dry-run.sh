@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Tests for `touchstone review --dry-run` — preview which provider
-# would be picked for the next push, without spending tokens.
+# Tests for `touchstone review`: live manual review plus `--dry-run`
+# provider preview, both without spending real model tokens.
 
 set -euo pipefail
 
@@ -14,8 +14,8 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 ERRORS=0
 
 # Mock conductor that records its argv to a file so the test can assert
-# which flags were passed. `route` echoes a synthetic preview; `doctor`
-# returns a configured marker.
+# which flags were passed. `route` echoes a synthetic preview; `review`
+# emits a clean marker; `doctor` returns a configured marker.
 FAKE_BIN="$TEST_DIR/bin"
 ARGS_FILE="$TEST_DIR/conductor-argv.log"
 mkdir -p "$FAKE_BIN"
@@ -34,6 +34,11 @@ case "$1" in
 mocked dry-run for: $*
 EOF
     ;;
+  review)
+    cat >/dev/null
+    printf 'Mock clean review\n'
+    printf 'CODEX_REVIEW_CLEAN\n'
+    ;;
   *) echo "mock conductor: unsupported subcommand $1" >&2; exit 2 ;;
 esac
 CXEOF
@@ -46,6 +51,7 @@ run_review() {
     cd "$repo"
     PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
       ARGS_FILE="$ARGS_FILE" \
+      CODEX_REVIEW_DISABLE_CACHE="${CODEX_REVIEW_DISABLE_CACHE:-}" \
       TOUCHSTONE_NO_AUTO_UPDATE=1 \
       bash "$TOUCHSTONE_BIN" review "$@"
   )
@@ -431,16 +437,44 @@ if [ "$ERRORS" -eq 0 ]; then
 fi
 
 # ----------------------------------------------------------------------------
-echo "==> Test: missing --dry-run errors with usage hint"
+echo "==> Test: bare touchstone review runs the same review path"
+: >"$ARGS_FILE"
 set +e
-out="$(run_review "$REPO_AUTO" 2>&1)"
+out="$(run_review "$REPO_AUTO" --base HEAD~1 2>&1)"
 rc=$?
 set -e
-if [ "$rc" -ne 0 ] && echo "$out" | grep -q 'only --dry-run is supported'; then
-  echo '==> PASS: bare `touchstone review` rejects with helpful message'
+if [ "$rc" -eq 0 ] \
+  && grep -q '^review ' "$ARGS_FILE" \
+  && grep -q -- '--base HEAD~1' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'exit reason:    clean'; then
+  echo '==> PASS: bare `touchstone review` ran the live review path'
 else
-  echo "FAIL: expected non-zero exit + 'only --dry-run is supported' message" >&2
+  echo "FAIL: expected bare touchstone review to invoke conductor review and exit clean" >&2
+  echo "args=$(cat "$ARGS_FILE")" >&2
   echo "rc=$rc out=$out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ----------------------------------------------------------------------------
+echo "==> Test: live review --json emits summary JSON on stdout"
+: >"$ARGS_FILE"
+JSON_OUT="$TEST_DIR/live-review.json"
+JSON_ERR="$TEST_DIR/live-review.err"
+set +e
+CODEX_REVIEW_DISABLE_CACHE=1 run_review "$REPO_AUTO" --base HEAD~1 --json >"$JSON_OUT" 2>"$JSON_ERR"
+rc=$?
+set -e
+if [ "$rc" -eq 0 ] \
+  && grep -q '^review ' "$ARGS_FILE" \
+  && grep -q '"exit_reason":"clean"' "$JSON_OUT" \
+  && ! grep -q 'CODEX_REVIEW_CLEAN' "$JSON_OUT" \
+  && grep -q 'exit reason:    clean' "$JSON_ERR"; then
+  echo "==> PASS: live review --json preserved machine-readable stdout"
+else
+  echo "FAIL: live review --json should emit summary JSON to stdout and logs to stderr" >&2
+  echo "args=$(cat "$ARGS_FILE")" >&2
+  echo "rc=$rc json=$(cat "$JSON_OUT" 2>/dev/null || true)" >&2
+  echo "err=$(cat "$JSON_ERR" 2>/dev/null || true)" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
@@ -548,4 +582,4 @@ if [ "$ERRORS" -gt 0 ]; then
   echo "==> FAIL: $ERRORS assertion(s) failed"
   exit 1
 fi
-echo "==> PASS: all touchstone review --dry-run assertions passed"
+echo "==> PASS: all touchstone review assertions passed"

@@ -3,28 +3,25 @@
 # bootstrap/review.sh — preview or run a review of the current diff
 # without (or before) pushing.
 #
-# Today the only supported subcommand is `--dry-run`: resolves the
-# project's conductor configuration the same way the pre-push hook
-# does, then invokes `conductor route` so the user sees
-# which provider would be picked, what it'd cost, how hard it'd
-# think — without spending tokens or money.
-#
-# Future: a `touchstone review` (no flag) variant could run the
-# real review without pushing. Out of scope for v2.0.
+# `--dry-run` resolves the project's conductor configuration the same
+# way the pre-push hook does, then invokes `conductor route` so the user
+# sees which provider would be picked without spending tokens or money.
+# Without `--dry-run`, this command runs the same review hook used by the
+# push/merge workflow.
 
 set -euo pipefail
 
 usage() {
   cat <<EOF
-Usage: touchstone review --dry-run [--mode MODE] [--base REF] [--json]
+Usage: touchstone review [--dry-run] [--mode MODE] [--base REF] [--json]
 
 Options:
-  --dry-run        Required for now. Print the routing decision without
-                   spending tokens.
+  --dry-run        Print the routing decision without spending tokens.
   --mode MODE      Override REVIEW_MODE: review-only|fix|diff-only|no-tests
                    (default: from .codex-review.toml or "fix").
   --base REF       Diff base. Default: origin/<default-branch>.
-  --json           Emit conductor's JSON output instead of the human-readable form.
+  --json           With --dry-run, emit conductor's route JSON. Without
+                   --dry-run, emit the review summary JSON on stdout.
   -h, --help       Show this help.
 
 Environment overrides take precedence over .codex-review.toml:
@@ -78,13 +75,6 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
-
-if [ "$dry_run" = false ]; then
-  echo "ERROR: only --dry-run is supported in v2.0." >&2
-  echo "" >&2
-  usage >&2
-  exit 1
-fi
 
 if ! command -v conductor >/dev/null 2>&1; then
   echo "ERROR: \`conductor\` CLI not found on PATH." >&2
@@ -308,6 +298,35 @@ default_branch() {
     || echo "main"
 }
 BASE="${base_override:-${CODEX_REVIEW_BASE:-origin/$(default_branch)}}"
+
+if [ "$dry_run" = false ]; then
+  if [ -n "$json_flag" ]; then
+    summary_file="$(mktemp "${TMPDIR:-/tmp}/touchstone-review-summary.XXXXXX")"
+    set +e
+    NO_COLOR=1 \
+      CODEX_REVIEW_FORCE=1 \
+      CODEX_REVIEW_BASE="$BASE" \
+      CODEX_REVIEW_MODE="$REVIEW_MODE" \
+      CODEX_REVIEW_SUMMARY_FILE="$summary_file" \
+      bash "$TOUCHSTONE_ROOT/scripts/codex-review.sh" >&2
+    status=$?
+    set -e
+
+    if [ -s "$summary_file" ]; then
+      cat "$summary_file"
+    else
+      printf '{"exit_reason":"summary_unavailable","exit_code":%d}\n' "$status"
+    fi
+    rm -f "$summary_file"
+    exit "$status"
+  fi
+
+  exec env \
+    CODEX_REVIEW_FORCE=1 \
+    CODEX_REVIEW_BASE="$BASE" \
+    CODEX_REVIEW_MODE="$REVIEW_MODE" \
+    bash "$TOUCHSTONE_ROOT/scripts/codex-review.sh"
+fi
 
 # Try to compute diff line count for size-based routing. Best-effort:
 # if the base ref doesn't exist locally we skip the small/large bucket.

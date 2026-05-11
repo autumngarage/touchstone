@@ -164,6 +164,7 @@ bash setup.sh --deps-only
 | `touchstone version` | Show installed version and install method |
 | `touchstone changelog [N]` | Show the last N GitHub releases |
 | `touchstone doctor` | Health check — version, tools, project staleness |
+| `touchstone review [--dry-run]` | Run the conductor review without pushing, or preview routing with `--dry-run` |
 | `touchstone review-stats` | Report conductor-review fail-open trends from the local review log |
 | `touchstone skills` | List Claude Code skills visible to the current repo and user |
 | `touchstone skills check` | Validate Claude Code skill frontmatter |
