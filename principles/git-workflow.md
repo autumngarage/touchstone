@@ -51,6 +51,8 @@ Set `TOUCHSTONE_NO_AUTO_UPDATE=1` to disable both CLI self-update and project au
 
 **Issue-closing trailers.** When a commit is meant to resolve a GitHub issue, add a body trailer such as `Closes-issue: #123` (or `Closes: #123`, `Fixes: #123`, `Refs: #123`). `scripts/open-pr.sh` scans commits unique to the branch and injects a `Closes #123` line into the PR body, so the issue auto-closes when the PR merges.
 
+**Issue reconciliation before PR.** Treat issue state as part of delivery, not cleanup after the fact. Before opening the PR, make a short ledger of every issue you touched: fixed, partially fixed, made stale, or investigated and left open. Fixed issues must be represented by closing trailers or explicit `Closes #N` lines in the PR body. Partial fixes get `Refs #N` plus an issue comment that names what landed and what remains. Stale issues get a comment with the commit/test evidence before closing. The invariant is simple: after a merge, a reader scanning GitHub issues should not have to infer whether a shipped fix was forgotten, partial, or unrelated.
+
 **Stage explicit file paths.** Avoid `git add -A` or `git add .` — they accidentally stage sensitive files (`.env`, credentials) or large binaries. Naming files makes intent visible at the staging step.
 
 ## Commit and push frequency

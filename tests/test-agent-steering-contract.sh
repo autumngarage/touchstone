@@ -45,6 +45,10 @@ for file in \
   assert_contains "$file" "principles/ai-delivery-architecture.md"
   assert_contains "$file" "Conductor LLM review/fix loop"
   assert_contains "$file" "bash scripts/open-pr.sh --auto-merge"
+  assert_contains "$file" "Claim issues before implementation"
+  assert_contains "$file" "bash scripts/claim-issue.sh <n>"
+  assert_contains "$file" "Reconcile issues"
+  assert_contains "$file" "Do not leave fixed issues open silently"
 done
 
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"

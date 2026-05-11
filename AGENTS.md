@@ -46,9 +46,11 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 
 1. **Pull.** `git pull --rebase` on the default branch.
 2. **Branch.** Before any edit that might become a commit.
-3. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
-4. **Open PR + ship through the merge gate.** `bash scripts/open-pr.sh --auto-merge` pushes, opens the PR, runs the merge-gate pipeline, squash-merges, and syncs the default branch. The required expensive gates happen at merge time: deterministic checks, Conductor LLM review/fix loop, then deterministic checks again only if Conductor changed the PR head.
-5. **Clean up.** Delete the local branch if it persists.
+3. **Claim issues before implementation.** If the work starts from a GitHub issue, claim it before editing or dispatching an agent: `bash scripts/claim-issue.sh <n>`. Claim every issue in a multi-issue bundle so two agents do not ship competing fixes.
+4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
+5. **Reconcile issues.** Before opening the PR, list every GitHub issue found, claimed, fixed, partially fixed, or made stale by the work. Fully fixed issues get closing trailers (`Closes-issue: #123` or `Closes #123`) so merge auto-closes them; partial/stale issues get a comment explaining the evidence or remaining gap. Do not leave fixed issues open silently.
+6. **Open PR + ship through the merge gate.** `bash scripts/open-pr.sh --auto-merge` pushes, opens the PR, runs the merge-gate pipeline, squash-merges, and syncs the default branch. The required expensive gates happen at merge time: deterministic checks, Conductor LLM review/fix loop, then deterministic checks again only if Conductor changed the PR head.
+7. **Clean up.** Delete the local branch if it persists.
 
 Do not bypass the PR/review/merge path with a direct default-branch push except through the documented emergency path in `principles/git-workflow.md`.
 
@@ -89,7 +91,9 @@ You are maintaining a shared engineering platform that provides universal princi
 ### Git Workflow
 
 - Start each code change from a feature branch. Before editing tracked files, run `git branch --show-current`; if it reports `main` or `master`, branch with `git checkout -b <type>/<short-description>`.
+- Claim every GitHub issue you are actively implementing with `bash scripts/claim-issue.sh <n>` before editing or dispatching an agent.
 - Keep changes logically grouped. Stage explicit file paths, commit with a concise message, and avoid unrelated refactors.
+- Reconcile issue state before opening the PR: fixed issues get closing trailers/PR body lines; partial or stale issues get an issue comment with evidence and remaining gaps.
 - To ship a completed branch, use `bash scripts/open-pr.sh --auto-merge`; it pushes, creates the PR, runs the merge-gate pipeline, squash-merges, and syncs the default branch.
 - Do not run a separate required LLM review before opening the PR. The required LLM review happens through Conductor at the merge gate; local development may use focused checks before commit.
 - File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md` for slice manifests, file ownership, concurrency caps, and cleanup; use `scripts/spawn-worktree.sh` and `scripts/cleanup-worktrees.sh` for local setup and teardown.
