@@ -1638,7 +1638,7 @@ reviewer_conductor_exec() {
       [ -n "$review_tags" ] && args+=(--tags "$review_tags")
     fi
     args+=(--effort "${CONDUCTOR_EFFORT:-high}")
-    if [ -n "${CONDUCTOR_EXCLUDE:-}" ] && [ "$CONDUCTOR_EXCLUDE" != "ollama" ]; then
+    if [ -n "${CONDUCTOR_EXCLUDE:-}" ]; then
       args+=(--exclude "$CONDUCTOR_EXCLUDE")
     fi
     args+=(--base "$BASE" --brief-file -)
