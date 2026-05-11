@@ -3134,6 +3134,49 @@ conductor_log_string_field() {
     | head -1
 }
 
+conductor_stderr_success_provider() {
+  local stderr_file="${1:-$REVIEW_STDERR_FILE}"
+  [ -f "$stderr_file" ] || return 0
+  awk '
+    /review tried providers:/ { line = $0 }
+    END {
+      if (line == "") {
+        exit
+      }
+      sub(/^.*review tried providers:[[:space:]]*/, "", line)
+      n = split(line, parts, ",")
+      for (i = 1; i <= n; i++) {
+        part = parts[i]
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", part)
+        if (part ~ /\(success\)/) {
+          split(part, fields, /[[:space:]]+/)
+          print fields[1]
+          exit
+        }
+      }
+    }
+  ' "$stderr_file" 2>/dev/null || true
+}
+
+conductor_stderr_first_tried_provider() {
+  local stderr_file="${1:-$REVIEW_STDERR_FILE}"
+  [ -f "$stderr_file" ] || return 0
+  awk '
+    /review tried providers:/ { line = $0 }
+    END {
+      if (line == "") {
+        exit
+      }
+      sub(/^.*review tried providers:[[:space:]]*/, "", line)
+      split(line, parts, ",")
+      part = parts[1]
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", part)
+      split(part, fields, /[[:space:]]+/)
+      print fields[1]
+    }
+  ' "$stderr_file" 2>/dev/null || true
+}
+
 # --------------------------------------------------------------------------
 # Peer review ([review.assist], v2.1) — second-opinion pass via Conductor.
 # --------------------------------------------------------------------------
@@ -3151,12 +3194,22 @@ parse_primary_provider() {
     printf '%s' "$provider"
     return
   fi
+  provider="$(conductor_stderr_success_provider)"
+  if [ -n "$provider" ]; then
+    printf '%s' "$provider"
+    return
+  fi
   provider="$(conductor_log_string_field "${REVIEW_CONDUCTOR_LOG_FILE:-}" provider_failed provider)"
   if [ -n "$provider" ]; then
     printf '%s' "$provider"
     return
   fi
   provider="$(conductor_log_string_field "${REVIEW_CONDUCTOR_LOG_FILE:-}" provider_started provider)"
+  if [ -n "$provider" ]; then
+    printf '%s' "$provider"
+    return
+  fi
+  provider="$(conductor_stderr_first_tried_provider)"
   if [ -n "$provider" ]; then
     printf '%s' "$provider"
     return
