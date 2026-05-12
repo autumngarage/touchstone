@@ -25,6 +25,7 @@ touchstone_sync_planned_write_paths() {
     printf '.github/workflows/issue-claim-check.yml\n'
     printf '.claude/settings.json\n'
     printf 'principles/\n'
+    printf 'scripts/conductor-review.sh\n'
     printf 'scripts/codex-review.sh\n'
     printf 'scripts/branch-guard.sh\n'
     printf 'scripts/emergency-disclosure.sh\n'

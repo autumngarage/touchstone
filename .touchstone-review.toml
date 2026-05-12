@@ -1,4 +1,4 @@
-# .codex-review.toml — Conductor merge-review config for Touchstone itself.
+# .touchstone-review.toml — Conductor merge-review config for Touchstone itself.
 #
 # Touchstone dogfoods its own Conductor review hook.
 
@@ -25,13 +25,15 @@ unsafe_paths = [
   "bootstrap/new-project.sh",
   "bootstrap/update-project.sh",
   "bootstrap/sync-all.sh",
+  "hooks/conductor-review.sh",
   "hooks/codex-review.sh",
   "templates/",
 ]
 
 [review.conductor]
 # Live merge-gate review goes through Conductor's semantic review route:
-# codex review first, hosted fallback via Conductor. Ollama is reserved for
+# Conductor's semantic review route, with hosted fallback via Conductor.
+# Ollama is reserved for
 # explicit offline/local review only.
 exclude = ["ollama"]
 
@@ -45,6 +47,7 @@ high_scrutiny_paths = [
   "principles/",
   "hooks/",
   "lib/release.sh",
+  "scripts/conductor-review.sh",
   "scripts/codex-review.sh",
   "bootstrap/",
   "templates/",

@@ -199,7 +199,14 @@ normalize_bool() {
 
 load_open_pr_review_config() {
   local config_file
-  config_file="$(git rev-parse --show-toplevel 2>/dev/null)/.codex-review.toml"
+  local repo_root
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$repo_root" ] || return 0
+  if [ -f "$repo_root/.touchstone-review.toml" ]; then
+    config_file="$repo_root/.touchstone-review.toml"
+  else
+    config_file="$repo_root/.codex-review.toml"
+  fi
   [ -f "$config_file" ] || return 0
   [ -f "$SCRIPT_DIR/../lib/toml.sh" ] || return 0
 
@@ -254,10 +261,13 @@ run_advisory_review_at_pr_open() {
     echo "==> Preflight disabled before advisory review."
   fi
 
-  review_script="$SCRIPT_DIR/codex-review.sh"
+  review_script="$SCRIPT_DIR/conductor-review.sh"
   if [ ! -f "$review_script" ]; then
-    echo "WARNING: codex-review.sh not found at $review_script; skipping advisory review." >&2
-    return 0
+    review_script="$SCRIPT_DIR/codex-review.sh"
+    if [ ! -f "$review_script" ]; then
+      echo "WARNING: conductor review script not found at $SCRIPT_DIR/conductor-review.sh or $SCRIPT_DIR/codex-review.sh; skipping advisory review." >&2
+      return 0
+    fi
   fi
 
   summary_file="$(git rev-parse --git-path "touchstone/review-summary-pr-${pr_number}-advisory.json" 2>/dev/null || echo "")"

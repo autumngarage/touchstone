@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 #
-# hooks/codex-review.sh — non-interactive AI code review + auto-fix loop.
+# hooks/codex-review.sh — legacy-compatible Conductor review + auto-fix loop.
+#
+# Preferred human-facing entry points are hooks/conductor-review.sh,
+# scripts/conductor-review.sh, and `touchstone review`. This file keeps the
+# historical codex-review protocol names working for existing projects.
 #
 # Touchstone 2.0+: the single reviewer is `conductor` (autumn-garage/conductor).
 # Conductor owns per-provider model selection, auth, permission translation,
@@ -27,7 +31,8 @@
 #   translated to Conductor provider pins.
 #
 # Configuration:
-#   Place a .codex-review.toml at the repo root. Key knobs:
+#   Place .touchstone-review.toml at the repo root. Legacy .codex-review.toml
+#   is still read when the Touchstone-named config is absent. Key knobs:
 #     [review].reviewer         = "conductor"  (only valid 2.0 value)
 #     [review.conductor].prefer = best|cheapest|fastest|balanced
 #     [review.conductor].effort = minimal|low|medium|high|max
@@ -35,9 +40,9 @@
 #     [review.conductor].with   = "<provider>"  (pins a specific provider)
 #     [review.conductor].exclude = "<p1>,<p2>"  (skips in auto-routing)
 #     [review.context].mode     = "auto"|"full"  (auto prunes simple diffs)
-#   See hooks/codex-review.config.example.toml for the full spec.
+#   See hooks/conductor-review.config.example.toml for the full spec.
 #
-#   If no .codex-review.toml exists, ALL paths are treated as unsafe
+#   If no review config exists, ALL paths are treated as unsafe
 #   (no auto-fix). This is the conservative default — opt in to auto-fix
 #   explicitly by listing safe paths or setting safe_by_default = true.
 #
@@ -51,7 +56,7 @@
 #   read-only review to `conductor review --base ... --brief-file -`;
 #   edit-capable phases pass tool sets and Conductor maps them to each
 #   provider's native contract. Set via CODEX_REVIEW_MODE env var or `mode`
-#   in .codex-review.toml.
+#   in .touchstone-review.toml.
 #
 # Env overrides:
 #   TOUCHSTONE_REVIEWER               — DEPRECATED in 2.0.0; auto-translates to TOUCHSTONE_CONDUCTOR_WITH=<provider>
@@ -234,7 +239,20 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOUCHSTONE_ROOT="${TOUCHSTONE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-CONFIG_FILE="$REPO_ROOT/.codex-review.toml"
+
+resolve_review_config_file() {
+  local repo_root="$1"
+  if [ -f "$repo_root/.touchstone-review.toml" ]; then
+    printf '%s\n' "$repo_root/.touchstone-review.toml"
+  elif [ -f "$repo_root/.codex-review.toml" ]; then
+    printf '%s\n' "$repo_root/.codex-review.toml"
+  else
+    printf '%s\n' "$repo_root/.touchstone-review.toml"
+  fi
+}
+
+CONFIG_FILE="$(resolve_review_config_file "$REPO_ROOT")"
+CONFIG_DISPLAY_NAME="$(basename "$CONFIG_FILE")"
 cd "$REPO_ROOT"
 
 PREFLIGHT_SCRIPT="$TOUCHSTONE_ROOT/lib/preflight.sh"
@@ -262,7 +280,7 @@ fi
 #   conductor-error            reviewer crashed or returned non-zero (legacy catch-all)
 #   network-error              (reserved — Conductor reports this via exit code)
 #   config-parse-error         (reserved — TOML parser is permissive today)
-#   config-disabled            [review].enabled=false in .codex-review.toml
+#   config-disabled            [review].enabled=false in the review config
 #   review-disabled-by-user    CODEX_REVIEW_ENABLED=false at the env layer
 #   force-skip                 (reserved — no env var skips today; future use)
 #   dry-run                    (reserved — bin/touchstone review --dry-run path)
@@ -278,7 +296,7 @@ fi
 # Fail-open events are always visible: a stderr line formatted as
 #   [fail-open:<CODE>] <reason> — AI review bypassed, push proceeds
 # is emitted for each event so the absent safety boundary is never silent.
-# Set on_error="fail-closed" in .codex-review.toml to make these fatal.
+# Set on_error="fail-closed" in the review config to make these fatal.
 
 # `${VAR-default}` (single dash) substitutes the default ONLY when VAR is
 # unset, NOT when it is an empty string. This preserves the documented
@@ -422,13 +440,17 @@ PROMPT_CONTEXT_FULL_PATHS=""
 PROMPT_CONTEXT_ARCHITECTURAL_PATHS="AGENTS.md
 CLAUDE.md
 GEMINI.md
+.touchstone-review.toml
 .codex-review.toml
 .codex-review-context.md
 .github/codex-review-context.md
 .github/workflows/
 bootstrap/
+hooks/conductor-review.sh
+hooks/conductor-review.config.example.toml
 hooks/codex-review.sh
 hooks/codex-review.config.example.toml
+scripts/conductor-review.sh
 scripts/codex-review.sh
 architecture/
 docs/architecture/
@@ -820,7 +842,7 @@ is_truthy() {
   esac
 }
 
-# Parse .codex-review.toml if it exists.
+# Parse the review config if it exists.
 # We do minimal TOML parsing in bash — just key = value pairs and string arrays.
 if [ -f "$CONFIG_FILE" ]; then
   # Source the TOML library
@@ -998,7 +1020,7 @@ if [ "${#REVIEWER_CASCADE[@]}" -gt 0 ]; then
     echo "        [review.conductor]" >&2
     echo "          prefer = \"best\"" >&2
     echo "          effort = \"high\"" >&2
-    echo "    Update .codex-review.toml at your convenience. See CHANGELOG for details." >&2
+    echo "    Update ${CONFIG_DISPLAY_NAME:-.touchstone-review.toml} at your convenience. See CHANGELOG for details." >&2
   fi
 fi
 
@@ -1050,7 +1072,7 @@ if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
   REVIEWER_CASCADE=("conductor")
 fi
 
-# Env overrides for the conductor adapter (take precedence over .codex-review.toml).
+# Env overrides for the conductor adapter (take precedence over the review config).
 CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-${CONDUCTOR_WITH:-}}"
 CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-${CONDUCTOR_PREFER:-best}}"
 CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-${CONDUCTOR_EFFORT:-high}}"
@@ -1345,7 +1367,8 @@ is_touchstone_source_repo() {
   touchstone_root_physical="$(cd "$TOUCHSTONE_ROOT" 2>/dev/null && pwd -P)" || return 1
   [ "$repo_root_physical" = "$touchstone_root_physical" ] || return 1
 
-  # In downstream projects the installed hook runs from scripts/codex-review.sh,
+  # In downstream projects the installed hook runs from scripts/conductor-review.sh
+  # or the legacy scripts/codex-review.sh compatibility path,
   # so TOUCHSTONE_ROOT intentionally resolves to the project root. Only disable
   # sync-slice elision in the actual Touchstone source checkout.
   [ -f "$repo_root_physical/bootstrap/update-project.sh" ] \
@@ -1373,7 +1396,7 @@ manifest_paths_at_ref() {
 
 path_is_mixed_ownership() {
   case "$1" in
-    .touchstone-manifest | AGENTS.md | CLAUDE.md | GEMINI.md | .codex-review.toml) return 0 ;;
+    .touchstone-manifest | AGENTS.md | CLAUDE.md | GEMINI.md | .touchstone-review.toml | .codex-review.toml) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -2130,7 +2153,7 @@ handle_error() {
       echo "[fail-open:${fail_open_code}] missing sentinel — review verdict is untrustworthy; push allowed by policy" >&2
     fi
     echo "==> ERROR ($reason) — not blocking push (on_error=fail-open)."
-    echo "    Set on_error = \"fail-closed\" in .codex-review.toml to block on errors."
+    echo "    Set on_error = \"fail-closed\" in ${CONFIG_DISPLAY_NAME:-.touchstone-review.toml} to block on errors."
     log_skip_event "$fail_open_code" "fail-open:${reason}"
     exit 0
   fi
@@ -2267,9 +2290,9 @@ if is_pre_push_hook && ! is_truthy "${CODEX_REVIEW_FORCE:-false}"; then
 fi
 
 if ! is_truthy "$REVIEW_ENABLED"; then
-  echo "==> AI review disabled by .codex-review.toml — skipping review."
+  echo "==> AI review disabled by ${CONFIG_DISPLAY_NAME:-.touchstone-review.toml} — skipping review."
   # Distinguish "user set CODEX_REVIEW_ENABLED=false in their env" from
-  # "the project's .codex-review.toml has enabled=false" — the env var
+  # "the project's review config has enabled=false" — the env var
   # always wins, so its presence is the signal.
   if [ -n "${CODEX_REVIEW_ENABLED:-}" ] && ! is_truthy "${CODEX_REVIEW_ENABLED}"; then
     log_skip_event review-disabled-by-user "CODEX_REVIEW_ENABLED=${CODEX_REVIEW_ENABLED}"
@@ -2540,8 +2563,8 @@ review_cache_key() {
       printf '\n-- AGENTS.md --\n<omitted: prompt_context_mode=%s>\n' "${PROMPT_CONTEXT_DECISION:-}"
       printf '\n-- CLAUDE.md --\n<omitted: prompt_context_mode=%s>\n' "${PROMPT_CONTEXT_DECISION:-}"
     fi
-    append_cache_file ".codex-review.toml" "${CONFIG_FILE:-}"
-    append_cache_file "codex-review.sh" "$0"
+    append_cache_file "review-config" "${CONFIG_FILE:-}"
+    append_cache_file "conductor-review.sh" "$0"
     if [ -n "${REVIEW_CONTEXT_FILE:-}" ]; then
       append_cache_file "codex-review-context" "$REVIEW_CONTEXT_FILE"
     fi
@@ -3667,7 +3690,8 @@ fi
 # --------------------------------------------------------------------------
 # Branded UI — double-rail verdicts signed "touchstone".
 # Mirrors lib/ui.sh; kept inline so this hook stays self-contained when
-# synced into downstream projects as scripts/codex-review.sh.
+# synced into downstream projects as scripts/conductor-review.sh, with
+# scripts/codex-review.sh retained as the legacy compatibility path.
 # --------------------------------------------------------------------------
 
 TK_BRAND_ORANGE="#FF6B35"
@@ -4000,7 +4024,7 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
 
       DISALLOWED_AUTOFIX_PATHS="$(disallowed_autofix_paths "$AUTOFIX_CHANGED_PATHS")"
       if [ -n "$DISALLOWED_AUTOFIX_PATHS" ]; then
-        echo "==> $REVIEWER_LABEL edited paths that are not allowed by .codex-review.toml."
+        echo "==> $REVIEWER_LABEL edited paths that are not allowed by ${CONFIG_DISPLAY_NAME:-.touchstone-review.toml}."
         echo "    Refusing to auto-commit. Review these changes manually:"
         printf '%s\n' "$DISALLOWED_AUTOFIX_PATHS" | sed 's/^/    - /'
         echo "    Inspect the working-tree diff before deciding whether to keep or discard them."

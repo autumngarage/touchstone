@@ -102,7 +102,7 @@ You are maintaining a shared engineering platform that provides universal princi
 
 - Files in `principles/`, `hooks/`, and `scripts/` are touchstone-owned and copied into downstream projects by `update-project.sh`.
 - Files in `templates/` are copied once at bootstrap time and then project-owned; template changes affect new projects only.
-- `bootstrap/new-project.sh`, `bootstrap/update-project.sh`, and `hooks/codex-review.sh` are high-risk. Preserve backup, clean-worktree, branch/commit, skip, and fail-open behavior.
+- `bootstrap/new-project.sh`, `bootstrap/update-project.sh`, and `hooks/conductor-review.sh` are high-risk. `hooks/codex-review.sh` remains the legacy compatibility path. Preserve backup, clean-worktree, branch/commit, skip, and fail-open behavior.
 - All shell must stay portable to macOS with standard tools: `bash`, `git`, `gh`, `sed`, and `awk`.
 
 ### Testing
@@ -166,8 +166,8 @@ You are reviewing pull requests for the **touchstone** repo — a shared enginee
 
 1. **Bootstrap/update correctness.** `new-project.sh` and `update-project.sh` must never silently lose user data. For bootstrap, file overwrites without `.bak` backups are critical. For update, bypassing the clean-git branch/commit boundary, incorrect copy paths, or broken skip logic for project-owned files are critical bugs.
 2. **Script portability.** All scripts must work on macOS (zsh default) with standard tools (`bash`, `git`, `gh`, `sed`, `awk`). No Linux-only flags, no GNU-specific extensions without fallbacks.
-3. **Codex hook safety.** `hooks/codex-review.sh` runs during `git push`. A bug here can block or silently skip all pushes. The fail-open design (graceful skip on errors) must be preserved. **AI review is advisory** — it does not replace deterministic checks (lint, tests, type checking). The hook fails open by default (`on_error=fail-open`): infra errors (timeout, missing provider, malformed output, reviewer crash) allow the push rather than blocking it. Each fail-open event emits a visible `[fail-open:<code>]` line to stderr and writes a structured entry to `~/.touchstone-review-log`; taxonomy codes include `FAIL_OPEN_TIMEOUT`, `FAIL_OPEN_PARSE_ERROR`, `FAIL_OPEN_DEPENDENCY_MISSING`, `FAIL_OPEN_PROVIDER_UNAVAILABLE`, and `FAIL_OPEN_REVIEWER_ERROR`. The trade-off is explicit: a Conductor outage during a critical week will not block pushes, but the AI safety net will be visibly absent rather than silently bypassed.
-4. **Config parsing correctness.** The TOML parser in `codex-review.sh` is minimal — it handles simple key=value and single-line arrays. Changes must not break on edge cases (quoted strings, comments, empty arrays).
+3. **Conductor hook safety.** `hooks/conductor-review.sh` runs during `git push` (`hooks/codex-review.sh` remains a legacy compatibility entry point). A bug here can block or silently skip all pushes. The fail-open design (graceful skip on errors) must be preserved. **AI review is advisory** — it does not replace deterministic checks (lint, tests, type checking). The hook fails open by default (`on_error=fail-open`): infra errors (timeout, missing provider, malformed output, reviewer crash) allow the push rather than blocking it. Each fail-open event emits a visible `[fail-open:<code>]` line to stderr and writes a structured entry to `~/.touchstone-review-log`; taxonomy codes include `FAIL_OPEN_TIMEOUT`, `FAIL_OPEN_PARSE_ERROR`, `FAIL_OPEN_DEPENDENCY_MISSING`, `FAIL_OPEN_PROVIDER_UNAVAILABLE`, and `FAIL_OPEN_REVIEWER_ERROR`. The trade-off is explicit: a Conductor outage during a critical week will not block pushes, but the AI safety net will be visibly absent rather than silently bypassed.
+4. **Config parsing correctness.** The TOML parser in the Conductor review hook is minimal — it handles simple key=value and single-line arrays. Changes must not break on edge cases (quoted strings, comments, empty arrays).
 5. **Principle accuracy.** Changes to `principles/*.md` should reflect genuinely universal engineering standards. Project-specific advice doesn't belong here.
 6. **Template quality.** `templates/` should have clear `{{PLACEHOLDER}}` markers and be immediately useful after bootstrap. No placeholder that requires understanding Touchstone's internals to fill in.
 
@@ -179,11 +179,11 @@ Style nits and theoretical refactors are **out of scope**.
 
 ### High-scrutiny paths
 
-Files: `bootstrap/new-project.sh`, `bootstrap/update-project.sh`, `hooks/codex-review.sh`
+Files: `bootstrap/new-project.sh`, `bootstrap/update-project.sh`, `hooks/conductor-review.sh`, `hooks/codex-review.sh`
 
 Flag any of the following:
 
-- **Silent overwrites.** `new-project.sh` may overwrite touchstone-owned files only through `copy_file_force`, which backs up existing content as `.bak`. `update-project.sh` must not create `.bak` files; instead it must require a clean git worktree, create a `chore/touchstone-*` branch, and commit the update as the review/recovery boundary. Project-owned files (CLAUDE.md, AGENTS.md, .codex-review.toml) must use `copy_file` (skip if exists) and must not be auto-updated.
+- **Silent overwrites.** `new-project.sh` may overwrite touchstone-owned files only through `copy_file_force`, which backs up existing content as `.bak`. `update-project.sh` must not create `.bak` files; instead it must require a clean git worktree, create a `chore/touchstone-*` branch, and commit the update as the review/recovery boundary. Project-owned files (CLAUDE.md, AGENTS.md, .touchstone-review.toml, legacy .codex-review.toml) must use `copy_file` (skip if exists) and must not be auto-updated.
 - **Missing error handling.** The bootstrap scripts use `set -euo pipefail`. New commands that can fail legitimately (network calls, optional tools) must be guarded with `|| true` or `set +e`.
 - **Path assumptions.** Never assume repo root is `~/Repos/touchstone`. Always derive paths from `$0` or `git rev-parse`.
 - **Registry corruption.** `~/.touchstone-projects` is append-only during bootstrap. Changes must not truncate it or write duplicate entries.
@@ -192,7 +192,7 @@ Flag any of the following:
 
 - The three final-marker contract (CLEAN/FIXED/BLOCKED) is the API boundary. Any change to marker handling must be backwards-compatible.
 - The hook must never block a push due to its own infrastructure failure (network, missing tool, parse error). It must block *only* on actual code review findings.
-- `.codex-review.toml` parsing must handle missing keys gracefully (use defaults).
+- `.touchstone-review.toml` and legacy `.codex-review.toml` parsing must handle missing keys gracefully (use defaults).
 
 ### Self-tests
 

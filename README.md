@@ -94,7 +94,7 @@ TOUCHSTONE_CONDUCTOR_WITH=claude git push
 TOUCHSTONE_CONDUCTOR_PREFER=cheapest git push
 ```
 
-Full config reference: see `hooks/codex-review.config.example.toml`. Migrating from 1.x? See the historical 2.0 migration notes in [GitHub Releases](https://github.com/autumngarage/touchstone/releases).
+Full config reference: see `hooks/conductor-review.config.example.toml`. Legacy `.codex-review.toml` files still work; new projects use `.touchstone-review.toml`. Migrating from 1.x? See the historical 2.0 migration notes in [GitHub Releases](https://github.com/autumngarage/touchstone/releases).
 
 ### Choose a Git workflow
 
@@ -180,7 +180,7 @@ When you run `touchstone new`, these files get created in your project:
 - `CLAUDE.md` — Claude Code instructions with `{{PLACEHOLDERS}}` to fill in
 - `AGENTS.md` — Codex/agent instructions plus the AI review rubric with project-specific priorities
 - `GEMINI.md` — Gemini CLI instructions that point at the shared authoring/review workflow
-- `.codex-review.toml` — AI review hook config (reviewers, modes, safe/unsafe paths)
+- `.touchstone-review.toml` — Conductor review config (reviewers, modes, safe/unsafe paths)
 - `.touchstone-config` — Project profile, workflow choices, and optional lint/test/build command overrides
 - `.pre-commit-config.yaml` — Pre-commit hooks including fast branch checks and direct default-branch guardrails
 - `.gitignore` — Sensible defaults
@@ -192,7 +192,8 @@ When you run `touchstone new`, these files get created in your project:
 - `.touchstone-version` — The touchstone revision this project has applied
 - `.touchstone-manifest` — The visible list of touchstone-managed paths
 - `principles/*.md` — Universal engineering principles
-- `scripts/codex-review.sh` — AI merge/default-branch review + auto-fix loop
+- `scripts/conductor-review.sh` — AI merge/default-branch review + auto-fix loop
+- `scripts/codex-review.sh` — legacy compatibility entry point for existing integrations
 - `scripts/touchstone-run.sh` — Profile-aware runner for Node/TypeScript, Swift, Rust, Python, Go, and monorepos
 - `scripts/open-pr.sh` — Push + create PR via `gh`
 - `scripts/merge-pr.sh` — AI review + squash-merge + sync main
@@ -242,7 +243,7 @@ Universal engineering standards, extracted and battle-tested from production sys
 
 Automatically reviews code before it reaches the default branch. In Touchstone 2.0, all LLM access routes through the [Conductor CLI](https://github.com/autumngarage/conductor):
 
-- One reviewer — `conductor` — uses Conductor's semantic review path for read-only review (Codex review first, hosted fallback through Conductor)
+- One reviewer — `conductor` — uses Conductor's semantic review path for read-only review with hosted fallback
 - Quality-tier-aware routing for provider-pinned and edit-capable modes (`prefer = "best"` picks the frontier-tier provider)
 - Per-push preference via env vars: `TOUCHSTONE_CONDUCTOR_WITH=<provider>`, `TOUCHSTONE_CONDUCTOR_PREFER=<mode>`, `TOUCHSTONE_CONDUCTOR_EFFORT=<level>`
 - Size-based routing — small diffs can use `prefer = "cheapest"` + minimal effort, large diffs use `prefer = "best"` + max effort — via `[review.routing]`
@@ -253,7 +254,7 @@ Automatically reviews code before it reaches the default branch. In Touchstone 2
 - Runs from `scripts/merge-pr.sh`, and from the pre-push hook only when pushing directly to the default branch
 - Loops up to N times, gracefully skips when Conductor is not installed
 
-Configure per-project behavior in `.codex-review.toml`. Write your coding-agent guidance and review rubric in `AGENTS.md`. See [hooks/README.md](hooks/README.md) for reviewer modes, caching, and fail-open behavior. Peer review returns in 2.1 via `conductor call --exclude <primary>`.
+Configure per-project behavior in `.touchstone-review.toml` (`.codex-review.toml` remains a legacy compatibility name). Write your coding-agent guidance and review rubric in `AGENTS.md`. See [hooks/README.md](hooks/README.md) for reviewer modes, caching, and fail-open behavior. Peer review returns in 2.1 via `conductor call --exclude <primary>`.
 
 ### Agent Steering Dogfood
 

@@ -18,13 +18,14 @@ Usage: touchstone review [--dry-run] [--mode MODE] [--base REF] [--json]
 Options:
   --dry-run        Print the routing decision without spending tokens.
   --mode MODE      Override REVIEW_MODE: review-only|fix|diff-only|no-tests
-                   (default: from .codex-review.toml or "fix").
+                   (default: from .touchstone-review.toml, legacy
+                   .codex-review.toml, or "fix").
   --base REF       Diff base. Default: origin/<default-branch>.
   --json           With --dry-run, emit conductor's route JSON. Without
                    --dry-run, emit the review summary JSON on stdout.
   -h, --help       Show this help.
 
-Environment overrides take precedence over .codex-review.toml:
+Environment overrides take precedence over the review config:
   TOUCHSTONE_CONDUCTOR_WITH    pin to a specific provider
   TOUCHSTONE_CONDUCTOR_PREFER  best | cheapest | fastest | balanced
   TOUCHSTONE_CONDUCTOR_EFFORT  minimal | low | medium | high | max
@@ -89,9 +90,24 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   exit 1
 }
 
-CONFIG_FILE="$REPO_ROOT/.codex-review.toml"
+resolve_review_config_file() {
+  local repo_root="$1"
+  if [ -f "$repo_root/.touchstone-review.toml" ]; then
+    printf '%s\n' "$repo_root/.touchstone-review.toml"
+  elif [ -f "$repo_root/.codex-review.toml" ]; then
+    printf '%s\n' "$repo_root/.codex-review.toml"
+  else
+    printf '%s\n' "$repo_root/.touchstone-review.toml"
+  fi
+}
 
-# Defaults (mirror the runtime cascade in hooks/codex-review.sh).
+CONFIG_FILE="$(resolve_review_config_file "$REPO_ROOT")"
+REVIEW_SCRIPT="$TOUCHSTONE_ROOT/scripts/conductor-review.sh"
+if [ ! -f "$REVIEW_SCRIPT" ]; then
+  REVIEW_SCRIPT="$TOUCHSTONE_ROOT/scripts/codex-review.sh"
+fi
+
+# Defaults (mirror the runtime cascade in hooks/conductor-review.sh).
 CONDUCTOR_WITH=""
 CONDUCTOR_PREFER=""
 CONDUCTOR_EFFORT=""
@@ -116,13 +132,17 @@ UNSAFE_PATHS=""
 ARCHITECTURAL_PATHS="AGENTS.md
 CLAUDE.md
 GEMINI.md
+.touchstone-review.toml
 .codex-review.toml
 .codex-review-context.md
 .github/codex-review-context.md
 .github/workflows/
 bootstrap/
+hooks/conductor-review.sh
+hooks/conductor-review.config.example.toml
 hooks/codex-review.sh
 hooks/codex-review.config.example.toml
+scripts/conductor-review.sh
 scripts/codex-review.sh
 architecture/
 docs/architecture/
@@ -191,7 +211,7 @@ normalize_conductor_review_tags() {
     '
 }
 
-# Parse .codex-review.toml if it exists.
+# Parse the review config if it exists.
 if [ -f "$CONFIG_FILE" ]; then
   # Source the TOML library
   # shellcheck source=lib/toml.sh
@@ -254,7 +274,7 @@ fi
 # (codex / claude / gemini / local). In 2.0 the only adapter is conductor;
 # the underlying provider pin is TOUCHSTONE_CONDUCTOR_WITH. Translate on the
 # fly so --dry-run matches what the pre-push hook will actually do. Mirrors
-# the translation block in hooks/codex-review.sh (keep in sync).
+# the translation block in hooks/conductor-review.sh (keep in sync).
 if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
   case "$TOUCHSTONE_REVIEWER" in
     auto | conductor) ;;
@@ -308,7 +328,7 @@ if [ "$dry_run" = false ]; then
       CODEX_REVIEW_BASE="$BASE" \
       CODEX_REVIEW_MODE="$REVIEW_MODE" \
       CODEX_REVIEW_SUMMARY_FILE="$summary_file" \
-      bash "$TOUCHSTONE_ROOT/scripts/codex-review.sh" >&2
+      bash "$REVIEW_SCRIPT" >&2
     status=$?
     set -e
 
@@ -325,7 +345,7 @@ if [ "$dry_run" = false ]; then
     CODEX_REVIEW_FORCE=1 \
     CODEX_REVIEW_BASE="$BASE" \
     CODEX_REVIEW_MODE="$REVIEW_MODE" \
-    bash "$TOUCHSTONE_ROOT/scripts/codex-review.sh"
+    bash "$REVIEW_SCRIPT"
 fi
 
 # Try to compute diff line count for size-based routing. Best-effort:
@@ -445,7 +465,7 @@ if [ "$ROUTING_ENABLED" = true ]; then
   esac
 fi
 
-# Mode → dry-run shape (mirror the adapter in hooks/codex-review.sh).
+# Mode → dry-run shape (mirror the adapter in hooks/conductor-review.sh).
 tools=""
 case "$REVIEW_MODE" in
   diff-only) tools="" ;;
@@ -477,7 +497,7 @@ if [ -n "$CONDUCTOR_WITH" ]; then
   echo ""
   echo "    To preview which provider auto-routing would pick, unset"
   echo "    TOUCHSTONE_CONDUCTOR_WITH and remove [review.conductor].with"
-  echo "    from .codex-review.toml, then re-run."
+  echo "    from .touchstone-review.toml, then re-run."
   exit 0
 fi
 

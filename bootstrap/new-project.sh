@@ -304,9 +304,9 @@ prompt_yes_no() {
 default_reviewer() {
   # Touchstone 2.0: the single reviewer is `conductor`; the underlying
   # provider is chosen by Conductor at runtime. Hosted review defaults to
-  # Conductor's semantic review route (codex review first, hosted fallback).
+  # Conductor's semantic review route with hosted fallback.
   # Users who want a specific provider can pass --reviewer <name> or edit
-  # .codex-review.toml afterwards.
+  # .touchstone-review.toml afterwards.
   printf 'conductor'
 }
 
@@ -1074,6 +1074,7 @@ write_touchstone_manifest() {
     for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
       printf 'principles/%s\n' "$(basename "$f")"
     done
+    printf 'scripts/conductor-review.sh\n'
     printf 'scripts/codex-review.sh\n'
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
@@ -1102,7 +1103,7 @@ write_touchstone_manifest() {
   fi
 }
 
-set_codex_review_key() {
+set_review_config_key() {
   local file="$1"
   local key="$2"
   local value="$3"
@@ -1186,11 +1187,11 @@ write_review_onboarding_config() {
   fi
 
   if [ "$enabled" = true ] && [ "$autofix" = true ]; then
-    set_codex_review_key "$file" "mode" '"fix"'
-    set_codex_review_key "$file" "safe_by_default" "true"
+    set_review_config_key "$file" "mode" '"fix"'
+    set_review_config_key "$file" "safe_by_default" "true"
   else
-    set_codex_review_key "$file" "mode" '"review-only"'
-    set_codex_review_key "$file" "safe_by_default" "false"
+    set_review_config_key "$file" "mode" '"review-only"'
+    set_review_config_key "$file" "safe_by_default" "false"
   fi
 
   {
@@ -1252,7 +1253,7 @@ print_review_setup_hint() {
     reviewer="local"
   fi
   if [ "$enabled" = false ]; then
-    echo "==> AI review disabled. You can enable it later in .codex-review.toml."
+    echo "==> AI review disabled. You can enable it later in .touchstone-review.toml."
     return
   fi
 
@@ -1283,7 +1284,7 @@ print_review_setup_hint() {
 
   if [ "$reviewer" = "local" ] && [ -n "$INPUT_LOCAL_REVIEW_COMMAND" ]; then
     echo "    NOTE: --local-review-command \"$INPUT_LOCAL_REVIEW_COMMAND\" is recorded in"
-    echo "    .codex-review.toml as a comment. Touchstone 2.0 retired [review.local];"
+    echo "    .touchstone-review.toml as a comment. Touchstone 2.0 retired [review.local];"
     echo "    register your command as a Conductor custom provider when v0.3 ships."
   fi
 }
@@ -1303,8 +1304,13 @@ copy_file "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre
 copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
 copy_file "$TOUCHSTONE_ROOT/templates/.worktreeinclude.example" "$PROJECT_DIR/.worktreeinclude.example"
 copy_file "$TOUCHSTONE_ROOT/templates/pull_request_template.md" "$PROJECT_DIR/.github/pull_request_template.md"
-copy_file "$TOUCHSTONE_ROOT/hooks/codex-review.config.example.toml" "$PROJECT_DIR/.codex-review.toml"
-CODEX_REVIEW_CONFIG_CREATED="$LAST_COPY_CREATED"
+if [ -f "$PROJECT_DIR/.codex-review.toml" ] && [ ! -f "$PROJECT_DIR/.touchstone-review.toml" ]; then
+  echo "    exists (legacy, skipped): .codex-review.toml"
+  TOUCHSTONE_REVIEW_CONFIG_CREATED=false
+else
+  copy_file "$TOUCHSTONE_ROOT/hooks/conductor-review.config.example.toml" "$PROJECT_DIR/.touchstone-review.toml"
+  TOUCHSTONE_REVIEW_CONFIG_CREATED="$LAST_COPY_CREATED"
+fi
 copy_file "$TOUCHSTONE_ROOT/templates/setup.sh" "$PROJECT_DIR/setup.sh"
 chmod +x "$PROJECT_DIR/setup.sh" 2>/dev/null || true
 
@@ -1327,6 +1333,7 @@ copy_file_force "$TOUCHSTONE_ROOT/templates/ci/issue-claim-check.yml" "$PROJECT_
 echo ""
 echo "==> Copying scripts (touchstone-owned, will be auto-updated):"
 mkdir -p "$PROJECT_DIR/scripts"
+copy_file_force "$TOUCHSTONE_ROOT/hooks/conductor-review.sh" "$PROJECT_DIR/scripts/conductor-review.sh"
 copy_file_force "$TOUCHSTONE_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
 copy_file_force "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" "$PROJECT_DIR/scripts/branch-guard.sh"
 copy_file_force "$TOUCHSTONE_ROOT/hooks/emergency-disclosure.sh" "$PROJECT_DIR/scripts/emergency-disclosure.sh"
@@ -1463,7 +1470,7 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
     INPUT_TYPE="$(normalize_project_type "$INPUT_TYPE")"
   fi
 
-  if [ "$REVIEW_CONFIG_REQUESTED" = false ] && [ "$CODEX_REVIEW_CONFIG_CREATED" = true ]; then
+  if [ "$REVIEW_CONFIG_REQUESTED" = false ] && [ "$TOUCHSTONE_REVIEW_CONFIG_CREATED" = true ]; then
     if [ "$YES_MODE" = true ]; then
       # --yes: defaults are "AI review on, hosted Conductor review routing".
       INPUT_REVIEW_ROUTING="all-hosted"
@@ -1475,7 +1482,7 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
       echo ""
       echo "==> Configure AI review (press Enter for the default):"
       echo "   Touchstone 2.0 routes every review through Conductor."
-      echo "   Hosted: Conductor uses semantic code-review routing; Codex first, hosted fallback."
+      echo "   Hosted: Conductor uses semantic code-review routing with hosted fallback."
       echo "   Offline local: all review goes to Ollama; use only when hosted review is unavailable."
       if [ "$(prompt_yes_no "Use AI review before code reaches main?" "true")" = "true" ]; then
         local_review_style=""
@@ -1598,9 +1605,9 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
 fi
 
 # Fresh non-interactive scaffolds skip the wizard, but they still need the same
-# live-review default as --yes. Only do this when the Codex review config was
+# live-review default as --yes. Only do this when the Touchstone review config was
 # newly copied; pre-existing project-owned review choices remain untouched.
-if [ "$REVIEW_CONFIG_REQUESTED" = false ] && [ "$CODEX_REVIEW_CONFIG_CREATED" = true ]; then
+if [ "$REVIEW_CONFIG_REQUESTED" = false ] && [ "$TOUCHSTONE_REVIEW_CONFIG_CREATED" = true ]; then
   INPUT_REVIEW_ROUTING="all-hosted"
   INPUT_REVIEWER="$(default_reviewer)"
   INPUT_REVIEW_AUTOFIX=false
@@ -1682,10 +1689,10 @@ if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ] || [ -n 
       local_unsafe_paths+=("$unsafe_path")
     done
 
-    if [ "${#local_unsafe_paths[@]}" -gt 0 ] && [ "$CODEX_REVIEW_CONFIG_CREATED" = true ]; then
-      write_unsafe_paths_block "$PROJECT_DIR/.codex-review.toml" "${local_unsafe_paths[@]}"
+    if [ "${#local_unsafe_paths[@]}" -gt 0 ] && [ "$TOUCHSTONE_REVIEW_CONFIG_CREATED" = true ]; then
+      write_unsafe_paths_block "$PROJECT_DIR/.touchstone-review.toml" "${local_unsafe_paths[@]}"
     elif [ "${#local_unsafe_paths[@]}" -gt 0 ]; then
-      echo "==> .codex-review.toml already exists; left unsafe_paths unchanged."
+      echo "==> Review config already exists; left unsafe_paths unchanged."
     fi
   fi
 
@@ -1696,11 +1703,11 @@ if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ] || [ -n 
 fi
 
 if [ "$REVIEW_CONFIG_REQUESTED" = true ]; then
-  if [ "$CODEX_REVIEW_CONFIG_CREATED" = true ]; then
-    write_review_onboarding_config "$PROJECT_DIR/.codex-review.toml"
+  if [ "$TOUCHSTONE_REVIEW_CONFIG_CREATED" = true ]; then
+    write_review_onboarding_config "$PROJECT_DIR/.touchstone-review.toml"
     print_review_setup_hint
   else
-    echo "==> .codex-review.toml already exists; left AI review choices unchanged."
+    echo "==> Review config already exists; left AI review choices unchanged."
   fi
 fi
 

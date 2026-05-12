@@ -1,7 +1,7 @@
-# .codex-review.toml — legacy per-project configuration filename for the
-# Conductor review hook. Prefer .touchstone-review.toml for new projects.
+# .touchstone-review.toml — per-project configuration for the Conductor review hook.
 #
 # Place this file at the repo root. The hook reads it automatically.
+# Legacy .codex-review.toml remains supported when this file is absent.
 # If this file is missing, the hook uses conservative defaults (all paths unsafe).
 
 [codex_review]
@@ -13,9 +13,10 @@ max_iterations = 3
 # Very large diffs take too long and produce noisy reviews.
 max_diff_lines = 5000
 
-# Cache exact-input CODEX_REVIEW_CLEAN results locally under .git/.
+# Cache exact-input clean-review results locally under .git/.
 # This skips repeated reviewer calls when you push the same branch diff again.
-# Set CODEX_REVIEW_DISABLE_CACHE=1 to force a fresh review for one push.
+# Set CODEX_REVIEW_DISABLE_CACHE=1 to force a fresh review for one push
+# (legacy protocol env names remain supported).
 cache_clean_reviews = true
 
 # Default auto-fix policy for paths not listed in unsafe_paths.
@@ -33,6 +34,7 @@ safe_by_default = false
 #   "no-tests"    — read-only review first, then edit + commit with no command execution
 #
 # Override for a single run with: CODEX_REVIEW_MODE=review-only git push
+# (legacy protocol env names remain supported).
 # mode = "fix"
 
 # Optional Touchstone wrapper wall-clock timeout per reviewer invocation, in
@@ -149,7 +151,7 @@ exclude = ["ollama"]
 # By default, low-risk diffs use a bounded prompt context instead of asking the
 # reviewer to load full AGENTS.md and CLAUDE.md, even when the diff is large or
 # broad. Full context is still used for unsafe_paths, built-in architectural
-# files (AGENTS.md, CLAUDE.md, .codex-review.toml, .github/workflows/, etc.),
+# files (AGENTS.md, CLAUDE.md, .touchstone-review.toml, .github/workflows/, etc.),
 # and any project patterns listed below.
 #
 # [review.context]
@@ -194,7 +196,9 @@ exclude = ["ollama"]
 # Repo-provided review context (optional)
 # --------------------------------------------------------------------------
 # Place a .codex-review-context.md at the repo root (or .github/) to provide
-# additional context to the reviewer. This is appended to the prompt automatically.
+# additional context to the reviewer. These context filenames are legacy
+# protocol names retained for compatibility; they are appended to the prompt
+# automatically.
 #
 # Example content:
 #   - "CI already runs linting and type-checking; do not re-run them."
