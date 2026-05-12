@@ -98,7 +98,7 @@ commit_new_file_with_diff_lines() {
 echo "==> Test: small default route beats global conductor prefer/effort"
 REPO_AUTO="$TEST_DIR/repo-auto"
 new_repo "$REPO_AUTO"
-cat >"$REPO_AUTO/.codex-review.toml" <<'EOF'
+cat >"$REPO_AUTO/.touchstone-review.toml" <<'EOF'
 [review]
 enabled = true
 reviewer = "conductor"

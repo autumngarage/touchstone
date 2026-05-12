@@ -64,9 +64,9 @@ repos:
   # Conductor review for direct pushes to the default branch
   - repo: local
     hooks:
-      - id: codex-review
+      - id: conductor-review
         name: Conductor default-branch push review
-        entry: /usr/bin/env bash hooks/codex-review.sh
+        entry: /usr/bin/env bash hooks/conductor-review.sh
         language: system
         stages: [pre-push]
         always_run: true

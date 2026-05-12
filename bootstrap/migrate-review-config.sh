@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 #
-# bootstrap/migrate-review-config.sh — rewrite a 1.x .codex-review.toml
-# to the 2.0 shape so projects stop firing migration warnings on every
-# push.
+# bootstrap/migrate-review-config.sh — rewrite a 1.x review config to the
+# 2.0 shape so projects stop firing migration warnings on every push.
 #
 # 1.x → 2.0 transformations:
 #   [review] reviewers = ["X", "Y"] → [review] reviewer = "conductor"
@@ -31,15 +30,16 @@ Usage: touchstone migrate-review-config [--dry-run] [--no-backup] [--file PATH]
 
 Options:
   --dry-run      Show what would change without writing.
-  --no-backup    Don't write .codex-review.toml.bak before rewriting.
-  --file PATH    Path to the config file (default: ./.codex-review.toml).
+  --no-backup    Don't write <config>.bak before rewriting.
+  --file PATH    Path to the config file (default: ./.touchstone-review.toml
+                 if present, else ./.codex-review.toml).
   -h, --help     Show this help.
 EOF
 }
 
 dry_run=false
 no_backup=false
-file=".codex-review.toml"
+file=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -70,6 +70,14 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ -z "$file" ]; then
+  if [ -f ".touchstone-review.toml" ]; then
+    file=".touchstone-review.toml"
+  else
+    file=".codex-review.toml"
+  fi
+fi
 
 if [ ! -f "$file" ]; then
   echo "ERROR: $file not found." >&2

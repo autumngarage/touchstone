@@ -55,7 +55,7 @@ unset TOUCHSTONE_NO_PREFLIGHT TOUCHSTONE_NO_AUTO_UPDATE
 mkdir -p "$FAKE_BIN"
 setup_test_repo "$REPO_DIR"
 
-cp "$TOUCHSTONE_ROOT/.codex-review.toml" "$REPO_DIR/.codex-review.toml"
+cp "$TOUCHSTONE_ROOT/.touchstone-review.toml" "$REPO_DIR/.codex-review.toml"
 printf 'base\n' >"$REPO_DIR/example.txt"
 git -C "$REPO_DIR" add .codex-review.toml example.txt
 git -C "$REPO_DIR" commit -m "base" >/dev/null 2>&1
@@ -203,10 +203,10 @@ mkdir -p "$FIRSTPUSH_REPO" "$FIRSTPUSH_REPO/lib"
 git -C "$FIRSTPUSH_REPO" init -b main >/dev/null 2>&1
 git -C "$FIRSTPUSH_REPO" config user.name "Touchstone Test"
 git -C "$FIRSTPUSH_REPO" config user.email "touchstone@example.com"
-cp "$TOUCHSTONE_ROOT/.codex-review.toml" "$FIRSTPUSH_REPO/.codex-review.toml"
+cp "$TOUCHSTONE_ROOT/.touchstone-review.toml" "$FIRSTPUSH_REPO/.touchstone-review.toml"
 cp -r "$TOUCHSTONE_ROOT/lib/"* "$FIRSTPUSH_REPO/lib/"
 printf 'scaffold\n' >"$FIRSTPUSH_REPO/README.md"
-git -C "$FIRSTPUSH_REPO" add .codex-review.toml README.md
+git -C "$FIRSTPUSH_REPO" add .touchstone-review.toml README.md
 git -C "$FIRSTPUSH_REPO" commit -m "initial scaffold" >/dev/null 2>&1
 
 : >"$CODEX_CALLS_FILE"
@@ -2751,7 +2751,7 @@ mkdir -p "$SCOPED_REPO/managed" "$SCOPED_REPO/scripts" "$SCOPED_REPO/lib" "$SCOP
 git -C "$SCOPED_REPO" init -q >/dev/null 2>&1
 git -C "$SCOPED_REPO" config user.name "Touchstone Test"
 git -C "$SCOPED_REPO" config user.email "touchstone@example.com"
-cp "$TOUCHSTONE_ROOT/.codex-review.toml" "$SCOPED_REPO/.codex-review.toml"
+cp "$TOUCHSTONE_ROOT/.touchstone-review.toml" "$SCOPED_REPO/.touchstone-review.toml"
 cp "$TOUCHSTONE_ROOT/scripts/codex-review.sh" "$SCOPED_REPO/scripts/codex-review.sh"
 cp -r "$TOUCHSTONE_ROOT/lib/"* "$SCOPED_REPO/lib/"
 cat >"$SCOPED_REPO/.touchstone-manifest" <<'EOF'
@@ -2761,7 +2761,7 @@ managed/generated.txt
 EOF
 printf 'base\n' >"$SCOPED_REPO/app.txt"
 printf 'one\n' >"$SCOPED_REPO/managed/generated.txt"
-git -C "$SCOPED_REPO" add .codex-review.toml .touchstone-manifest app.txt managed/generated.txt
+git -C "$SCOPED_REPO" add .touchstone-review.toml .touchstone-manifest app.txt managed/generated.txt
 git -C "$SCOPED_REPO" commit -m "base" >/dev/null 2>&1
 for i in $(seq 1 80); do
   printf 'managed line %s\n' "$i"
@@ -2826,9 +2826,9 @@ mkdir -p "$UNSCOPED_REPO" "$UNSCOPED_BIN"
 git -C "$UNSCOPED_REPO" init -q >/dev/null 2>&1
 git -C "$UNSCOPED_REPO" config user.name "Touchstone Test"
 git -C "$UNSCOPED_REPO" config user.email "touchstone@example.com"
-cp "$TOUCHSTONE_ROOT/.codex-review.toml" "$UNSCOPED_REPO/.codex-review.toml"
+cp "$TOUCHSTONE_ROOT/.touchstone-review.toml" "$UNSCOPED_REPO/.touchstone-review.toml"
 printf 'base\n' >"$UNSCOPED_REPO/app.txt"
-git -C "$UNSCOPED_REPO" add .codex-review.toml app.txt
+git -C "$UNSCOPED_REPO" add .touchstone-review.toml app.txt
 git -C "$UNSCOPED_REPO" commit -m "base" >/dev/null 2>&1
 for i in $(seq 1 80); do
   printf 'app line %s\n' "$i"

@@ -78,9 +78,9 @@ repos:
   # ── Conductor default-branch push review ───────────────────────────────
   - repo: local
     hooks:
-      - id: codex-review
+      - id: conductor-review
         name: Conductor default-branch push review
-        entry: /usr/bin/env bash scripts/codex-review.sh
+        entry: /usr/bin/env bash scripts/conductor-review.sh
         language: system
         stages: [pre-push]
         always_run: true

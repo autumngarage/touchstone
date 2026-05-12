@@ -33,7 +33,7 @@ pre-commit install --install-hooks
 
 ### 4. Configure per-project behavior (optional)
 
-The defaults in `.codex-review.toml` (written by `touchstone init`) work for most projects:
+The defaults in `.touchstone-review.toml` (written by `touchstone init`) work for most projects. Legacy `.codex-review.toml` files are still read when the Touchstone-named config is absent:
 
 ```toml
 [review]
@@ -59,7 +59,7 @@ When the review runs, the hook:
 2. Chooses prompt context: small/simple diffs use a bounded rubric, while large, broad, high-risk, architectural, or configured paths keep full `AGENTS.md`/`CLAUDE.md` context
 3. Skips review if the exact same diff and review inputs already passed cleanly (cache key includes the Conductor knobs and prompt context mode, so changing `prefer`/`effort`/`with` or context mode invalidates)
 4. Invokes Conductor with the review prompt. Read-only review uses `conductor review --base ... --brief-file -`; edit-capable fix phases use Conductor with the requested tool set.
-5. Reads one of three sentinels from the reviewer's output:
+5. Reads one of three legacy protocol sentinels from the reviewer's output:
    - `CODEX_REVIEW_CLEAN` — no issues, push proceeds
    - `CODEX_REVIEW_FIXED` — the reviewer applied auto-fixes; the hook commits them and re-reviews
    - `CODEX_REVIEW_BLOCKED` — the reviewer found issues it won't auto-fix; push is blocked
@@ -114,6 +114,8 @@ Prompt-context pruning is separate from provider routing, but uses the same path
 
 ## Environment overrides
 
+The `CODEX_REVIEW_*` names are retained as the stable legacy hook protocol so existing projects and tests keep working. Human-facing documentation and new entry points use Conductor review naming.
+
 | Variable | Description |
 |----------|-------------|
 | `CODEX_REVIEW_ENABLED` | Overrides `[review].enabled` |
@@ -148,7 +150,7 @@ Prompt-context pruning is separate from provider routing, but uses the same path
 - If diff exceeds `max_diff_lines`: skips review, push proceeds
 - If the exact diff and review inputs already passed cleanly: skips repeat review, push proceeds
 - If reviewer output doesn't match the sentinel contract: skips review, push proceeds
-- If `.codex-review.toml` is missing: all paths treated as unsafe (no auto-fix)
+- If no review config is present: all paths treated as unsafe (no auto-fix)
 
 The hook's default is fail-open on infrastructure errors and block on actual review findings. Flip to `fail-closed` in CI or for strict review gates.
 
@@ -164,7 +166,9 @@ Shows which provider auto-routing would pick for the next push, the route rankin
 
 ```bash
 git push --no-verify
-SKIP_CODEX_REVIEW=1 bash scripts/merge-pr.sh <pr-number>
+SKIP_REVIEW=1 bash scripts/merge-pr.sh <pr-number>
 ```
+
+`SKIP_CODEX_REVIEW=1` remains accepted as a legacy alias.
 
 The next PR should include an "Emergency-bypass disclosure" section.

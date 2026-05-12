@@ -707,17 +707,25 @@ cmd_doctor_project() {
   fi
 
   # 6. Optional — Conductor review config present?
-  if [ -f "$project_dir/.codex-review.toml" ]; then
-    tk_ok ".codex-review.toml present"
-    if grep -qE '^[[:space:]]*reviewers[[:space:]]*=[[:space:]]*\[' "$project_dir/.codex-review.toml" \
-       || grep -qE '^\[review\.(local|assist)\]' "$project_dir/.codex-review.toml" \
-       || grep -qE '^[[:space:]]*(small|large)_reviewers[[:space:]]*=[[:space:]]*\[' "$project_dir/.codex-review.toml"; then
-      tk_warn ".codex-review.toml uses legacy 1.x review schema"
+  local review_config=""
+  if [ -f "$project_dir/.touchstone-review.toml" ]; then
+    review_config=".touchstone-review.toml"
+    tk_ok ".touchstone-review.toml present"
+  elif [ -f "$project_dir/.codex-review.toml" ]; then
+    review_config=".codex-review.toml"
+    tk_ok ".codex-review.toml present (legacy name)"
+    tk_dim "  Preferred name for new projects: .touchstone-review.toml"
+  fi
+  if [ -n "$review_config" ]; then
+    if grep -qE '^[[:space:]]*reviewers[[:space:]]*=[[:space:]]*\[' "$project_dir/$review_config" \
+       || grep -qE '^\[review\.(local|assist)\]' "$project_dir/$review_config" \
+       || grep -qE '^[[:space:]]*(small|large)_reviewers[[:space:]]*=[[:space:]]*\[' "$project_dir/$review_config"; then
+      tk_warn "$review_config uses legacy 1.x review schema"
       tk_dim "  Fix: touchstone migrate-review-config"
       issues=$((issues + 1))
     fi
   else
-    tk_dim ".codex-review.toml not found (optional — configures AI review)"
+    tk_dim ".touchstone-review.toml not found (optional — configures AI review)"
   fi
 
   # 7. Profile-aware test-surface and tooling gap checks.
@@ -1359,6 +1367,7 @@ cmd_diff() {
     "AGENTS.md:templates/AGENTS.md"
     "GEMINI.md:templates/GEMINI.md"
     ".pre-commit-config.yaml:templates/pre-commit-config.yaml"
+    ".touchstone-review.toml:hooks/conductor-review.config.example.toml"
     ".codex-review.toml:hooks/codex-review.config.example.toml"
   )
 
@@ -1651,7 +1660,7 @@ cmd_help() {
   printf "    ${BOLD}touchstone update${RESET} --check         Report whether this project needs update\n"
   printf "    ${BOLD}touchstone update${RESET} --ship          Push, open PR, review, and auto-merge\n"
   printf "    ${BOLD}touchstone migrate-from-toolkit${RESET}   One-shot rename of legacy .toolkit-* files (pre-1.0.0 projects)\n"
-  printf "    ${BOLD}touchstone migrate-review-config${RESET}  Rewrite .codex-review.toml from 1.x → 2.0 shape (silences migration warnings on push)\n"
+  printf "    ${BOLD}touchstone migrate-review-config${RESET}  Rewrite legacy review config from 1.x → 2.0 shape (silences migration warnings on push)\n"
   printf "    ${BOLD}touchstone review${RESET}                Run the conductor review without pushing (--dry-run previews routing)\n"
   printf "    ${BOLD}touchstone update-all${RESET}             Update all registered projects\n"
   printf "    ${BOLD}touchstone update-all${RESET} --ship      Ship registered project updates through PRs\n"

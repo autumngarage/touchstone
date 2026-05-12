@@ -332,11 +332,11 @@ if [ "$NEEDS_CODEX_REVIEW_MIGRATION" = true ]; then
   echo "==> Migrating .codex-review.toml from v1.x → v2.x shape..."
   if (
     cd "$PROJECT_DIR" \
-      && bash "$TOUCHSTONE_ROOT/bootstrap/migrate-review-config.sh" --no-backup
+      && bash "$TOUCHSTONE_ROOT/bootstrap/migrate-review-config.sh" --no-backup --file "$CODEX_REVIEW_TOML"
   ) >"$PROJECT_DIR/.touchstone-migrate-codex-review.log" 2>&1; then
     rm -f "$PROJECT_DIR/.touchstone-migrate-codex-review.log"
     echo "    .codex-review.toml: rewrote v1.x reviewer cascade to v2.x conductor shape."
-    echo "    The migration warning in scripts/codex-review.sh will no longer fire on push."
+    echo "    The migration warning in the Conductor review hook will no longer fire on push."
   else
     echo "    WARNING: auto-migration failed — leaving .codex-review.toml unchanged." >&2
     echo "             Inspect: $PROJECT_DIR/.touchstone-migrate-codex-review.log" >&2
@@ -431,6 +431,7 @@ if [ -f "$PROJECT_DIR/.touchstone-config" ]; then
 fi
 
 # Scripts
+update_file "$TOUCHSTONE_ROOT/hooks/conductor-review.sh" "$PROJECT_DIR/scripts/conductor-review.sh"
 update_file "$TOUCHSTONE_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
 update_file "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" "$PROJECT_DIR/scripts/branch-guard.sh"
 update_file "$TOUCHSTONE_ROOT/hooks/emergency-disclosure.sh" "$PROJECT_DIR/scripts/emergency-disclosure.sh"
@@ -582,6 +583,7 @@ write_touchstone_manifest() {
         printf 'principles/%s\n' "$(basename "$f")"
       done
     fi
+    printf 'scripts/conductor-review.sh\n'
     printf 'scripts/codex-review.sh\n'
     printf 'scripts/branch-guard.sh\n'
     printf 'scripts/emergency-disclosure.sh\n'
@@ -710,7 +712,7 @@ echo "      diff $TOUCHSTONE_ROOT/templates/CLAUDE.md ./CLAUDE.md"
 echo "      diff $TOUCHSTONE_ROOT/templates/AGENTS.md ./AGENTS.md"
 echo "      diff $TOUCHSTONE_ROOT/templates/GEMINI.md ./GEMINI.md"
 echo "      diff $TOUCHSTONE_ROOT/templates/pre-commit-config.yaml ./.pre-commit-config.yaml"
-echo "      diff $TOUCHSTONE_ROOT/hooks/codex-review.config.example.toml ./.codex-review.toml"
+echo "      diff $TOUCHSTONE_ROOT/hooks/conductor-review.config.example.toml ./.touchstone-review.toml"
 
 if [ "$DRY_RUN" = false ]; then
   if [ "$SHIP" = true ] && [ "${COMMIT_CREATED:-false}" = true ]; then

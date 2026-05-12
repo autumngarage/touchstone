@@ -77,7 +77,7 @@ Use `touchstone --no-auto-sync <subcommand>` to disable project auto-sync for on
 
 ## Conductor merge review (optional, recommended)
 
-If the project has AI review configured (see `.codex-review.toml` for policy and the `codex-review` hook in `.pre-commit-config.yaml` for the entry point), the required LLM review belongs to the merge gate. The hook delegates model access to Conductor, so the reviewer may be Claude, Codex, Gemini, a local model, or another configured provider. Feature-branch pushes should stay cheap; the expensive path is `scripts/open-pr.sh --auto-merge`: open PR → deterministic preflight → Conductor review/fix loop → deterministic postflight when needed → squash-merge → branch deleted. There is no separate required PR-open advisory review in the core architecture.
+If the project has AI review configured (see `.touchstone-review.toml` for policy and the `conductor-review` hook in `.pre-commit-config.yaml` for the entry point), the required LLM review belongs to the merge gate. Legacy `.codex-review.toml` configs and `codex-review` hooks still work as compatibility names. The hook delegates model access to Conductor, so the reviewer may be Claude, Codex, Gemini, a local model, or another configured provider. Feature-branch pushes should stay cheap; the expensive path is `scripts/open-pr.sh --auto-merge`: open PR → deterministic preflight → Conductor review/fix loop → deterministic postflight when needed → squash-merge → branch deleted. There is no separate required PR-open advisory review in the core architecture.
 
 **AI review is advisory.** It does not replace deterministic checks (lint, tests, type checking). It catches semantic bugs and policy violations that automated tools miss; it does not guarantee correctness.
 
@@ -96,10 +96,10 @@ The fail-open taxonomy codes are:
 | `FAIL_OPEN_PROVIDER_UNAVAILABLE` | Conductor installed but no provider configured |
 | `FAIL_OPEN_REVIEWER_ERROR` | Reviewer crashed or returned non-zero |
 
-To make infra failures fatal instead, set `on_error = "fail-closed"` in `.codex-review.toml`.
+To make infra failures fatal instead, set `on_error = "fail-closed"` in `.touchstone-review.toml`.
 
 Behavior:
-- `merge-pr.sh` invokes `scripts/codex-review.sh`, which routes LLM review through Conductor against the diff vs the default branch
+- `merge-pr.sh` invokes `scripts/conductor-review.sh`, which routes LLM review through Conductor against the diff vs the default branch
 - Auto-fixes only low-risk findings (typos, missing imports, missing null checks, adding logging to empty exception handlers, named constants for unexplained magic numbers); anything that changes business logic or retry/error-handling semantics is reported as a finding for the author to address before merge
 - Blocks merge for unsafe findings (high-scrutiny paths)
 - Loops up to `max_iterations` times (default 3)

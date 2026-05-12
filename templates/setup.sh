@@ -219,10 +219,21 @@ if [ "$DEPS_ONLY" = false ]; then
     done
   }
 
+  resolve_ai_review_config() {
+    if [ -f ".touchstone-review.toml" ]; then
+      printf '%s\n' ".touchstone-review.toml"
+    elif [ -f ".codex-review.toml" ]; then
+      printf '%s\n' ".codex-review.toml"
+    else
+      printf '%s\n' ""
+    fi
+  }
+
   load_ai_review_config() {
     local section="" line key value
+    AI_REVIEW_CONFIG_FILE="$(resolve_ai_review_config)"
 
-    [ -f ".codex-review.toml" ] || {
+    [ -n "$AI_REVIEW_CONFIG_FILE" ] || {
       AI_REVIEWERS=("conductor")
       return 0
     }
@@ -265,7 +276,7 @@ if [ "$DEPS_ONLY" = false ]; then
           command) AI_LOCAL_REVIEW_COMMAND="$value" ;;
         esac
       fi
-    done <".codex-review.toml"
+    done <"$AI_REVIEW_CONFIG_FILE"
 
     if [ "${#AI_REVIEWERS[@]}" -eq 0 ] && [ "$AI_REVIEW_ENABLED" != "false" ]; then
       AI_REVIEWERS=("conductor")
@@ -336,18 +347,18 @@ if [ "$DEPS_ONLY" = false ]; then
         if [ -n "$AI_LOCAL_REVIEW_COMMAND" ]; then
           ok "local reviewer configured: $AI_LOCAL_REVIEW_COMMAND"
         else
-          warn "local reviewer selected, but [review.local].command is empty in .codex-review.toml"
+          warn "local reviewer selected, but [review.local].command is empty in $AI_REVIEW_CONFIG_FILE"
         fi
         ;;
       *)
-        warn "unknown AI reviewer '$reviewer' in .codex-review.toml"
+        warn "unknown AI reviewer '$reviewer' in $AI_REVIEW_CONFIG_FILE"
         ;;
     esac
   }
 
   load_ai_review_config
   if [ "$AI_REVIEW_ENABLED" = "false" ]; then
-    ok "AI review disabled in .codex-review.toml"
+    ok "AI review disabled in ${AI_REVIEW_CONFIG_FILE:-review config}"
   else
     if truthy "$AI_REVIEW_ROUTING_ENABLED"; then
       ok "review routing enabled — size-aware hosted routes can use <= ${AI_REVIEW_ROUTING_SMALL_MAX} diff lines"

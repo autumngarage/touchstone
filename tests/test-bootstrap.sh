@@ -158,7 +158,7 @@ assert_exists "$PROJECT/.gitignore"
 assert_exists "$PROJECT/.worktreeinclude.example"
 assert_exists "$PROJECT/.github/pull_request_template.md"
 assert_exists "$PROJECT/.github/workflows/issue-claim-check.yml"
-assert_exists "$PROJECT/.codex-review.toml"
+assert_exists "$PROJECT/.touchstone-review.toml"
 if ! diff -q "$TOUCHSTONE_ROOT/templates/ci/issue-claim-check.yml" "$TOUCHSTONE_ROOT/.github/workflows/issue-claim-check.yml" >/dev/null; then
   echo "FAIL: source issue-claim workflow must match installable template" >&2
   ERRORS=$((ERRORS + 1))
@@ -177,6 +177,7 @@ assert_exists "$PROJECT/principles/git-workflow.md"
 assert_exists "$PROJECT/principles/README.md"
 
 # Scripts
+assert_exists "$PROJECT/scripts/conductor-review.sh"
 assert_exists "$PROJECT/scripts/codex-review.sh"
 assert_exists "$PROJECT/lib/toml.sh"
 assert_exists "$PROJECT/lib/preflight.sh"
@@ -190,6 +191,7 @@ assert_exists "$PROJECT/scripts/cleanup-branches.sh"
 assert_exists "$PROJECT/scripts/spawn-worktree.sh"
 assert_exists "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_not_exists "$PROJECT/scripts/run-pytest-in-venv.sh"
+assert_executable "$PROJECT/scripts/conductor-review.sh"
 assert_executable "$PROJECT/scripts/codex-review.sh"
 assert_executable "$PROJECT/scripts/touchstone-run.sh"
 assert_executable "$PROJECT/scripts/open-pr.sh"
@@ -199,7 +201,7 @@ assert_executable "$PROJECT/scripts/issue-claim-check.sh"
 assert_executable "$PROJECT/scripts/cleanup-branches.sh"
 assert_executable "$PROJECT/scripts/spawn-worktree.sh"
 assert_executable "$PROJECT/scripts/cleanup-worktrees.sh"
-assert_contains "$PROJECT/.pre-commit-config.yaml" 'codex-review.sh'
+assert_contains "$PROJECT/.pre-commit-config.yaml" 'conductor-review.sh'
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'touchstone-run.sh validate'
 assert_contains "$PROJECT/.worktreeinclude.example" '^# Allowlist of gitignored files to copy into spawned worktrees\.$'
 assert_contains "$PROJECT/.worktreeinclude.example" '^# \.env\.local$'
@@ -352,10 +354,10 @@ fi
 
 # Bootstrap with explicit unsafe paths.
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_WITH_UNSAFE" --no-register --unsafe-paths "src/auth/,migrations/"
-assert_exists "$PROJECT_WITH_UNSAFE/.codex-review.toml"
-assert_contains "$PROJECT_WITH_UNSAFE/.codex-review.toml" '"src/auth/",'
-assert_contains "$PROJECT_WITH_UNSAFE/.codex-review.toml" '"migrations/",'
-assert_contains "$PROJECT_WITH_UNSAFE/.codex-review.toml" '^unsafe_paths = \[$'
+assert_exists "$PROJECT_WITH_UNSAFE/.touchstone-review.toml"
+assert_contains "$PROJECT_WITH_UNSAFE/.touchstone-review.toml" '"src/auth/",'
+assert_contains "$PROJECT_WITH_UNSAFE/.touchstone-review.toml" '"migrations/",'
+assert_contains "$PROJECT_WITH_UNSAFE/.touchstone-review.toml" '^unsafe_paths = \[$'
 
 # Ecosystem profiles should configure shared runner behavior without making
 # Python the default for every project.
@@ -532,7 +534,7 @@ assert_contains "$PROJECT_EXISTING/principles/engineering-principles.md.bak" 'cu
 assert_contains "$PROJECT_EXISTING/scripts/open-pr.sh.bak" 'custom script'
 assert_contains "$PROJECT_EXISTING/.touchstone-manifest.bak" 'custom manifest'
 
-# Existing project-owned Codex config must not be rewritten by --unsafe-paths.
+# Existing project-owned legacy review config must not be rewritten by --unsafe-paths.
 mkdir -p "$PROJECT_EXISTING_CONFIG"
 {
   printf '[codex_review]\n'
@@ -543,8 +545,9 @@ mkdir -p "$PROJECT_EXISTING_CONFIG"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_EXISTING_CONFIG" --no-register --unsafe-paths "src/auth/"
 assert_contains "$PROJECT_EXISTING_CONFIG/.codex-review.toml" '^unsafe_paths = \[\]$'
 assert_contains "$PROJECT_EXISTING_CONFIG/.codex-review.toml" '^safe_by_default = true$'
+assert_not_exists "$PROJECT_EXISTING_CONFIG/.touchstone-review.toml"
 if grep -q 'src/auth' "$PROJECT_EXISTING_CONFIG/.codex-review.toml"; then
-  echo "FAIL: expected existing .codex-review.toml unsafe_paths to remain unchanged" >&2
+  echo "FAIL: expected existing legacy review config unsafe_paths to remain unchanged" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
@@ -552,47 +555,47 @@ fi
 # 2.0 shape: `reviewer = "conductor"` is always the reviewer (the field is
 # single-valued in 2.0); `enabled = false` is how opt-out is recorded.
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_NONE" --no-register --no-ai-review
-assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^mode = "review-only"$'
-assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^safe_by_default = false$'
-assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^enabled = false$'
-assert_contains "$PROJECT_REVIEW_NONE/.codex-review.toml" '^reviewer = "conductor"$'
+assert_contains "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^mode = "review-only"$'
+assert_contains "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^safe_by_default = false$'
+assert_contains "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^enabled = false$'
+assert_contains "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^reviewer = "conductor"$'
 
 # Bootstrap should support explicit offline local model reviewer commands. In
 # 2.0 the `[review.local]` block is retired; local maps to ollama with a comment
 # preserving the user's --local-review-command for later custom-provider
 # registration (Conductor v0.3).
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_LOCAL" --no-register --reviewer local --local-review-command "local-reviewer --model demo" --review-assist --review-autofix --unsafe-paths "src/auth/"
-assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^mode = "fix"$'
-assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^safe_by_default = true$'
-assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^enabled = true$'
-assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^reviewer = "conductor"$'
-assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '^with = "ollama"$'
-assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" 'local-reviewer --model demo'
-assert_contains "$PROJECT_REVIEW_LOCAL/.codex-review.toml" '"src/auth/",'
+assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^mode = "fix"$'
+assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^safe_by_default = true$'
+assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^enabled = true$'
+assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^reviewer = "conductor"$'
+assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^with = "ollama"$'
+assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" 'local-reviewer --model demo'
+assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '"src/auth/",'
 
 # Bootstrap should still support an explicit OpenRouter provider pin.
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_OPENROUTER" --no-register --reviewer openrouter
-assert_contains "$PROJECT_REVIEW_OPENROUTER/.codex-review.toml" '^enabled = true$'
-assert_contains "$PROJECT_REVIEW_OPENROUTER/.codex-review.toml" '^reviewer = "conductor"$'
-assert_contains "$PROJECT_REVIEW_OPENROUTER/.codex-review.toml" '^with = "openrouter"$'
-assert_contains "$PROJECT_REVIEW_OPENROUTER/.codex-review.toml" '^exclude = \["ollama"\]$'
-assert_not_contains "$PROJECT_REVIEW_OPENROUTER/.codex-review.toml" '^small_with = "ollama"'
+assert_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^enabled = true$'
+assert_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^reviewer = "conductor"$'
+assert_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^with = "openrouter"$'
+assert_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^exclude = \["ollama"\]$'
+assert_not_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^small_with = "ollama"'
 
 # Fresh non-interactive bootstrap without --yes must use the same live-review
 # default instead of pinning a provider.
 YES_MODE=false bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_DEFAULT_NONTTY" --no-register
-assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.codex-review.toml" '^enabled = true$'
-assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.codex-review.toml" '^reviewer = "conductor"$'
-assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.codex-review.toml" '^exclude = \["ollama"\]$'
-assert_not_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.codex-review.toml" '^with = "openrouter"$'
-assert_not_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.codex-review.toml" '^small_with = "ollama"'
+assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^enabled = true$'
+assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^reviewer = "conductor"$'
+assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^exclude = \["ollama"\]$'
+assert_not_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^with = "openrouter"$'
+assert_not_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^small_with = "ollama"'
 
 # Retired small-local live routing remains accepted for compatibility, but it
 # degrades to hosted routing instead of sending small diffs to Ollama.
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_RETIRED_SMALL_LOCAL" --no-register --review-routing small-local --small-review-lines 123 --reviewer codex --local-review-command "local-reviewer --model demo"
-assert_contains "$PROJECT_REVIEW_RETIRED_SMALL_LOCAL/.codex-review.toml" '^with = "codex"$'
-assert_not_contains "$PROJECT_REVIEW_RETIRED_SMALL_LOCAL/.codex-review.toml" '^small_with = "ollama"'
-assert_not_contains "$PROJECT_REVIEW_RETIRED_SMALL_LOCAL/.codex-review.toml" '^\[review.routing\]$'
+assert_contains "$PROJECT_REVIEW_RETIRED_SMALL_LOCAL/.touchstone-review.toml" '^with = "codex"$'
+assert_not_contains "$PROJECT_REVIEW_RETIRED_SMALL_LOCAL/.touchstone-review.toml" '^small_with = "ollama"'
+assert_not_contains "$PROJECT_REVIEW_RETIRED_SMALL_LOCAL/.touchstone-review.toml" '^\[review.routing\]$'
 
 # Bootstrap should record the optional GitButler workflow choice without making it the default.
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_GITBUTLER" --no-register --gitbutler --gitbutler-mcp
@@ -925,7 +928,7 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SETUP_VERSION_PROJECT" --no-r
   printf 'large_reviewers = ["codex"]\n'
   printf '\n[review.local]\n'
   printf 'command = "local-reviewer --model demo"\n'
-} >>"$SETUP_VERSION_PROJECT/.codex-review.toml"
+} >>"$SETUP_VERSION_PROJECT/.touchstone-review.toml"
 {
   printf 'git_workflow=gitbutler\n'
   printf 'gitbutler_mcp=false\n'

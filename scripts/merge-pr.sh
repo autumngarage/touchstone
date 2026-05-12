@@ -24,7 +24,10 @@ set -euo pipefail
 PR_NUMBER=""
 BYPASS_REASON=""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REVIEW_SCRIPT="$SCRIPT_DIR/codex-review.sh"
+REVIEW_SCRIPT="$SCRIPT_DIR/conductor-review.sh"
+if [ ! -f "$REVIEW_SCRIPT" ]; then
+  REVIEW_SCRIPT="$SCRIPT_DIR/codex-review.sh"
+fi
 PREFLIGHT_SCRIPT="$SCRIPT_DIR/../lib/preflight.sh"
 REVIEW_COMMENT_SCRIPT="$SCRIPT_DIR/../lib/review-comment.sh"
 if [ -f "$SCRIPT_DIR/../lib/events.sh" ]; then
@@ -133,7 +136,14 @@ normalize_bool() {
 
 load_merge_review_config() {
   local config_file
-  config_file="$(git rev-parse --show-toplevel 2>/dev/null)/.codex-review.toml"
+  local repo_root
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$repo_root" ] || return 0
+  if [ -f "$repo_root/.touchstone-review.toml" ]; then
+    config_file="$repo_root/.touchstone-review.toml"
+  else
+    config_file="$repo_root/.codex-review.toml"
+  fi
   [ -f "$config_file" ] || return 0
   [ -f "$SCRIPT_DIR/../lib/toml.sh" ] || return 0
 
@@ -252,6 +262,7 @@ preflight_cache_inputs() {
     "lib/preflight-scope.sh" "$(dirname "$PREFLIGHT_SCRIPT")/preflight-scope.sh" \
     "scripts/touchstone-run.sh" "$SCRIPT_DIR/touchstone-run.sh")"
   config_hash="$(preflight_hash_paths "$repo_root" \
+    ".touchstone-review.toml" \
     ".codex-review.toml" \
     ".touchstone-config" \
     ".touchstone-version" \
