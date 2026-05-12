@@ -567,4 +567,46 @@ if ! grep -q "pr create --base main --head $Q_BRANCH --title docs(journal): auto
   exit 1
 fi
 
-echo "==> PASS: cortex-pr-merged-hook activation gates + graceful-degradation paths verified (A-Q)"
+# Scenario R: explicit legacy direct-push mode bypasses pre-push hooks for
+# the deterministic auto-journal commit. This preserves the compatibility
+# path without letting local default-branch guards block post-merge cleanup.
+R="$(mk_fixture R)"
+R_REMOTE="$TMPROOT/R-remote.git"
+R_PRE_PUSH_LOG="$TMPROOT/R-pre-push.log"
+git init -q --bare "$R_REMOTE"
+git -C "$R" remote add origin "$R_REMOTE"
+git -C "$R" push -q -u origin main
+mkdir -p "$R/.cortex"
+printf 'tracked state\n' >"$R/.cortex/state.md"
+(cd "$R" && git add .cortex/state.md && git commit -q -m "add cortex state" && git push -q origin main)
+cat >"$R/.git/hooks/pre-push" <<EOF
+#!/usr/bin/env bash
+printf 'pre-push hook unexpectedly ran\n' >"$R_PRE_PUSH_LOG"
+exit 79
+EOF
+chmod +x "$R/.git/hooks/pre-push"
+(
+  cd "$R"
+  PATH="$FAKEBIN:$PATH" \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_DIRECT_PUSH=1 \
+    TOUCHSTONE_MERGED_PR=778 \
+    bash "$HOOK"
+)
+if [ -f "$R_PRE_PUSH_LOG" ]; then
+  echo "FAIL [R]: direct-push mode invoked pre-push hooks" >&2
+  cat "$R_PRE_PUSH_LOG" >&2
+  exit 1
+fi
+if [ "$(git -C "$R" rev-parse HEAD)" != "$(git -C "$R" rev-parse origin/main)" ]; then
+  echo "FAIL [R]: direct-push mode did not publish the generated commit to origin/main" >&2
+  git -C "$R" log --oneline --decorate -3 >&2
+  exit 1
+fi
+if ! git -C "$R" show --name-only --format= HEAD | grep -qx '.cortex/journal/pr-merged.md'; then
+  echo "FAIL [R]: direct-push commit missing drafted journal entry" >&2
+  git -C "$R" show --name-only --format= HEAD >&2
+  exit 1
+fi
+
+echo "==> PASS: cortex-pr-merged-hook activation gates + graceful-degradation paths verified (A-R)"
