@@ -27,6 +27,9 @@ set -euo pipefail
 if [ -n "${CODEX_REVIEW_STUB_OUTPUT:-}" ]; then
   printf '%s\n' "$CODEX_REVIEW_STUB_OUTPUT"
 fi
+if [ -n "${CODEX_REVIEW_STUB_SUMMARY:-}" ] && [ -n "${CODEX_REVIEW_SUMMARY_FILE:-}" ]; then
+  printf '%s\n' "$CODEX_REVIEW_STUB_SUMMARY" > "$CODEX_REVIEW_SUMMARY_FILE"
+fi
 if [ -n "${CODEX_REVIEW_MUTATE_HEAD:-}" ]; then
   printf '%s\n' "$CODEX_REVIEW_MUTATE_HEAD" > "$GIT_REVIEW_HEAD_FILE"
 fi
@@ -183,6 +186,9 @@ case "$*" in
   "rev-parse --git-path touchstone/preflight-clean")
     printf '%s\n' "$GIT_PATH_ROOT/touchstone/preflight-clean"
     ;;
+  rev-parse\ --git-path\ touchstone/review-summary-pr-*.json)
+    printf '%s\n' "$GIT_PATH_ROOT/${3:-touchstone/review-summary-pr-unknown.json}"
+    ;;
   "rev-parse --show-toplevel")
     printf '%s\n' "${TEST_CURRENT_WORKTREE:-/tmp/touchstone-feature-worktree}"
     ;;
@@ -274,6 +280,7 @@ reset_case_files() {
   unset GH_FAILED_CHECKS
   unset CODEX_REVIEW_EXIT
   unset CODEX_REVIEW_STUB_OUTPUT
+  unset CODEX_REVIEW_STUB_SUMMARY
   unset CODEX_REVIEW_MUTATE_HEAD
   unset GIT_LOCAL_BRANCH_HEAD
   unset GH_EXPECT_MERGE_HEAD
@@ -323,6 +330,7 @@ run_merge_pr() {
     GIT_WORKTREE_REMOVE_FAIL="${GIT_WORKTREE_REMOVE_FAIL:-false}" \
     CODEX_REVIEW_EXIT="${CODEX_REVIEW_EXIT:-0}" \
     CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
+    CODEX_REVIEW_STUB_SUMMARY="${CODEX_REVIEW_STUB_SUMMARY:-}" \
     CODEX_REVIEW_MUTATE_HEAD="${CODEX_REVIEW_MUTATE_HEAD:-}" \
     GIT_LOCAL_BRANCH_HEAD="${GIT_LOCAL_BRANCH_HEAD:-pr-head-oid}" \
     PREFLIGHT_CALLS_FILE="${PREFLIGHT_CALLS_FILE:-}" \
@@ -628,6 +636,31 @@ if grep -q 'has failed check(s); stopping automerge' "$TEST_DIR/output-check-fai
 else
   echo "FAIL: failed checks should stop before review/merge" >&2
   cat "$TEST_DIR/output-check-failed.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: provider outage review failure prints exact retry command"
+install_preflight_counter_fixture
+reset_case_files
+: >"$TEST_DIR/preflight-calls"
+if CODEX_REVIEW_EXIT=1 \
+  CODEX_REVIEW_STUB_SUMMARY='{"reviewer":"Conductor","provider":"gemini","findings":0,"fallback_attempted":true,"fallback_primary_provider":"gemini","fallback_retry_provider":"","fallback_excluded_providers":"gemini","fallback_reason":"timeout after 60s","exit_reason":"timeout"}' \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-provider-outage.txt" 123; then
+  echo "FAIL: provider outage fixture should fail closed" >&2
+  exit 1
+fi
+rm -rf "${TEST_DIR:?}/lib"
+if grep -q 'No concrete review findings were reported; this is a provider/infrastructure outage path' "$TEST_DIR/output-provider-outage.txt" \
+  && grep -q 'concrete findings: 0' "$TEST_DIR/output-provider-outage.txt" \
+  && grep -q 'failed/stalled provider(s): gemini' "$TEST_DIR/output-provider-outage.txt" \
+  && grep -q 'retry command: TOUCHSTONE_CONDUCTOR_WITH=openrouter bash scripts/merge-pr.sh 123' "$TEST_DIR/output-provider-outage.txt" \
+  && grep -q 'alternate route: TOUCHSTONE_CONDUCTOR_WITH=<configured-hosted-provider> bash scripts/merge-pr.sh 123' "$TEST_DIR/output-provider-outage.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: provider outage path printed exact retry guidance"
+else
+  echo "FAIL: expected provider outage retry guidance" >&2
+  cat "$TEST_DIR/output-provider-outage.txt" >&2
   exit 1
 fi
 

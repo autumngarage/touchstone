@@ -106,6 +106,147 @@ trim() {
   printf '%s' "$value"
 }
 
+csv_contains() {
+  local csv="$1"
+  local wanted="$2"
+  local item
+  local -a csv_items
+
+  if [ -n "$csv" ]; then
+    IFS=',' read -r -a csv_items <<<"$csv"
+    for item in "${csv_items[@]}"; do
+      item="$(trim "$item")"
+      if [ "$item" = "$wanted" ]; then
+        return 0
+      fi
+    done
+  fi
+  return 1
+}
+
+csv_add_unique() {
+  local csv="$1"
+  local value="$2"
+
+  value="$(trim "$value")"
+  [ -n "$value" ] || {
+    printf '%s' "$csv"
+    return 0
+  }
+  [ "$value" != "unknown" ] || {
+    printf '%s' "$csv"
+    return 0
+  }
+  [ "$value" != "none" ] || {
+    printf '%s' "$csv"
+    return 0
+  }
+  if csv_contains "$csv" "$value"; then
+    printf '%s' "$csv"
+  elif [ -n "$csv" ]; then
+    printf '%s,%s' "$csv" "$value"
+  else
+    printf '%s' "$value"
+  fi
+}
+
+summary_string_field() {
+  local field="$1"
+  [ -n "$REVIEW_SUMMARY_FILE" ] || return 0
+  [ -f "$REVIEW_SUMMARY_FILE" ] || return 0
+  sed -nE 's/.*"'"$field"'"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' "$REVIEW_SUMMARY_FILE" 2>/dev/null | head -1
+}
+
+summary_number_field() {
+  local field="$1"
+  [ -n "$REVIEW_SUMMARY_FILE" ] || return 0
+  [ -f "$REVIEW_SUMMARY_FILE" ] || return 0
+  sed -nE 's/.*"'"$field"'"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$REVIEW_SUMMARY_FILE" 2>/dev/null | head -1
+}
+
+review_output_has_concrete_findings() {
+  local output_file="$1"
+  [ -f "$output_file" ] || return 1
+  grep -Eq 'CODEX_REVIEW_BLOCKED|^- ' "$output_file"
+}
+
+review_failure_is_infra() {
+  local review_rc="$1"
+  local output_file="$2"
+  local findings exit_reason
+
+  review_output_has_concrete_findings "$output_file" && return 1
+
+  findings="$(summary_number_field findings)"
+  if [ -n "$findings" ] && [ "$findings" != "0" ]; then
+    return 1
+  fi
+
+  exit_reason="$(summary_string_field exit_reason)"
+  case "$exit_reason" in
+    timeout | error | provider-unavailable | dependency-missing | malformed-sentinel) return 0 ;;
+    blocked | worktree-mutated | max-iterations) return 1 ;;
+  esac
+
+  [ "$review_rc" -eq 124 ] && return 0
+  return 1
+}
+
+review_failed_provider_csv() {
+  local csv field value item
+  local -a provider_items
+
+  csv=""
+  for field in provider fallback_primary_provider fallback_retry_provider fallback_excluded_providers; do
+    value="$(summary_string_field "$field")"
+    if [ -n "$value" ]; then
+      IFS=',' read -r -a provider_items <<<"$value"
+      for item in "${provider_items[@]}"; do
+        csv="$(csv_add_unique "$csv" "$item")"
+      done
+    fi
+  done
+  printf '%s' "$csv"
+}
+
+recommended_retry_provider() {
+  local failed_csv="$1"
+  local provider
+
+  for provider in openrouter claude codex gemini kimi deepseek-chat deepseek-reasoner; do
+    if ! csv_contains "$failed_csv" "$provider"; then
+      printf '%s' "$provider"
+      return 0
+    fi
+  done
+  printf 'openrouter'
+}
+
+print_review_infra_retry_guidance() {
+  local failed_csv retry_provider exit_reason fallback_reason retry_command
+
+  failed_csv="$(review_failed_provider_csv)"
+  retry_provider="$(recommended_retry_provider "$failed_csv")"
+  exit_reason="$(summary_string_field exit_reason)"
+  fallback_reason="$(summary_string_field fallback_reason)"
+  [ -n "$exit_reason" ] || exit_reason="reviewer-infrastructure"
+  retry_command="TOUCHSTONE_CONDUCTOR_WITH=$retry_provider bash scripts/merge-pr.sh $PR_NUMBER"
+
+  echo "" >&2
+  echo "Provider/infrastructure outage details:" >&2
+  echo "  deterministic preflight: clean" >&2
+  echo "  concrete findings: 0" >&2
+  echo "  review exit reason: $exit_reason" >&2
+  if [ -n "$fallback_reason" ]; then
+    echo "  fallback reason: $fallback_reason" >&2
+  fi
+  if [ -n "$failed_csv" ]; then
+    echo "  failed/stalled provider(s): $failed_csv" >&2
+  fi
+  echo "  retry command: $retry_command" >&2
+  echo "  alternate route: TOUCHSTONE_CONDUCTOR_WITH=<configured-hosted-provider> bash scripts/merge-pr.sh $PR_NUMBER" >&2
+}
+
 BYPASS_REASON="$(trim "$(printf '%s' "$BYPASS_REASON" | tr '\r\n\t' '   ')")"
 
 if [ -z "$PR_NUMBER" ] || ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
@@ -1032,6 +1173,7 @@ run_merge_review() {
   set +e
   CODEX_REVIEW_BASE="$default_base_ref" \
     CODEX_REVIEW_BRANCH_NAME="$pr_head_branch" \
+    CODEX_REVIEW_PR_NUMBER="$PR_NUMBER" \
     CODEX_REVIEW_FORCE=1 \
     CODEX_REVIEW_MODE=fix \
     CODEX_REVIEW_ON_ERROR=fail-closed \
@@ -1071,7 +1213,12 @@ run_merge_review() {
 
   echo "" >&2
   echo "ERROR: Merge review exited $review_rc; merge-gate review fails closed." >&2
-  echo "       Fix review findings or rerun after reviewer infrastructure recovers." >&2
+  if review_failure_is_infra "$review_rc" "$review_output_file"; then
+    echo "       No concrete review findings were reported; this is a provider/infrastructure outage path." >&2
+    print_review_infra_retry_guidance
+  else
+    echo "       Concrete review findings were reported; fix the findings, then rerun the merge gate." >&2
+  fi
   echo "       Emergency bypass requires an explicit --bypass-with-disclosure reason and a matching prior clean review marker." >&2
 
   rm -f "$review_output_file"
