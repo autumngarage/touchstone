@@ -277,12 +277,13 @@ fi
 
 echo "==> Case 6: fully-qualified same-repo issue is enforced"
 BODY="$TEST_DIR/same-repo-qualified.md"
-printf 'Closes autumngarage/touchstone#50\n' >"$BODY"
+printf 'Closes outriderintel/outrider#50\n' >"$BODY"
 OUT="$TEST_DIR/same-repo-qualified.out"
 RC=0
 (
   cd "$REPO_DIR"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_REPO="outriderintel/outrider" \
     bash "$SCRIPT_DIR/issue-claim-check.sh" --body-file "$BODY" --author alice
 ) >"$OUT" 2>&1 || RC=$?
 
@@ -299,12 +300,13 @@ fi
 
 echo "==> Case 7: fully-qualified cross-repo issue is skipped"
 BODY="$TEST_DIR/cross-repo-qualified.md"
-printf 'Closes autumngarage/other-project#50\n' >"$BODY"
+printf 'Closes another-org/other-project#50\n' >"$BODY"
 OUT="$TEST_DIR/cross-repo-qualified.out"
 RC=0
 (
   cd "$REPO_DIR"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_REPO="outriderintel/outrider" \
     bash "$SCRIPT_DIR/issue-claim-check.sh" --body-file "$BODY" --author alice
 ) >"$OUT" 2>&1 || RC=$?
 
