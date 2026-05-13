@@ -1278,6 +1278,18 @@ fi
 
 phase "touchstone doctor + sibling detection"
 
+DOCTOR_CONDUCTOR_BIN="$TEST_DIR/doctor-conductor-bin"
+mkdir -p "$DOCTOR_CONDUCTOR_BIN"
+cat >"$DOCTOR_CONDUCTOR_BIN/conductor" <<'CONDUCTORSTUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = "doctor" ] && [ "${2:-}" = "--json" ]; then
+  printf '{"providers":[{"configured":true}]}\n'
+  exit 0
+fi
+exit 0
+CONDUCTORSTUB
+chmod +x "$DOCTOR_CONDUCTOR_BIN/conductor"
+
 # touchstone doctor --project must exit clean on a fully-armed repo.
 # Use the fake pre-commit so hooks install regardless of what's on the tester's real PATH.
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR" --no-register >/dev/null
@@ -1302,7 +1314,7 @@ assert_contains "$TEST_DIR/doctor-clean.txt" 'Autumn Garage siblings'
 PROJECT_DOCTOR_NO_SIBLINGS="$TEST_DIR/test-project-doctor-no-siblings"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_NO_SIBLINGS" --no-register \
   --no-with-cortex --no-with-sentinel >/dev/null
-if (cd "$PROJECT_DOCTOR_NO_SIBLINGS" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-no-siblings.txt" 2>&1; then
+if (cd "$PROJECT_DOCTOR_NO_SIBLINGS" && PATH="$DOCTOR_CONDUCTOR_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-no-siblings.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-no-siblings.txt" 'Autumn Garage siblings'
   assert_contains "$TEST_DIR/doctor-no-siblings.txt" 'cortex not installed'
   assert_contains "$TEST_DIR/doctor-no-siblings.txt" 'sentinel not installed'
@@ -1318,7 +1330,7 @@ fi
 PROJECT_DOCTOR_MARKER_ONLY="$TEST_DIR/test-project-doctor-marker-only"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_MARKER_ONLY" --no-register >/dev/null
 mkdir -p "$PROJECT_DOCTOR_MARKER_ONLY/.cortex"
-if (cd "$PROJECT_DOCTOR_MARKER_ONLY" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-marker-only.txt" 2>&1; then
+if (cd "$PROJECT_DOCTOR_MARKER_ONLY" && PATH="$DOCTOR_CONDUCTOR_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-marker-only.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-marker-only.txt" 'cortex CLI missing but .cortex/ present'
 else
   echo "FAIL: doctor --project should exit 0 when a sibling CLI is missing but its marker dir is present — still non-blocking" >&2
@@ -1351,7 +1363,7 @@ chmod +x "$SIBLING_STUB_BIN/sentinel"
 
 PROJECT_DOCTOR_SIBLINGS="$TEST_DIR/test-project-doctor-with-siblings"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_SIBLINGS" --no-register >/dev/null
-if (cd "$PROJECT_DOCTOR_SIBLINGS" && PATH="$SIBLING_STUB_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-with-siblings.txt" 2>&1; then
+if (cd "$PROJECT_DOCTOR_SIBLINGS" && PATH="$SIBLING_STUB_BIN:$DOCTOR_CONDUCTOR_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-with-siblings.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-with-siblings.txt" 'cortex 9.9.9 (installed)'
   # Sentinel only responds to --version — asserts the probe-fallback works.
   assert_contains "$TEST_DIR/doctor-with-siblings.txt" 'sentinel 8.8.8 (installed)'
@@ -1502,7 +1514,7 @@ printf 'profile=python\n' >>"$PROJECT_DOCTOR_ALIAS_KEY/.touchstone-config"
 if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
   echo "SKIP: ruff on minimal PATH; cannot test project_type/profile last-wins doctor case on this machine" >&2
 else
-  if (cd "$PROJECT_DOCTOR_ALIAS_KEY" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-alias-key.txt" 2>&1; then
+  if (cd "$PROJECT_DOCTOR_ALIAS_KEY" && PATH="$DOCTOR_CONDUCTOR_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-alias-key.txt" 2>&1; then
     echo "FAIL: doctor --project on a Python-via-profile= project with no ruff should exit nonzero" >&2
     ERRORS=$((ERRORS + 1))
   else
@@ -1594,7 +1606,7 @@ sed -i '' 's|^test_command=.*|test_command=echo "custom test"|' "$PROJECT_DOCTOR
 if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
   echo "SKIP: ruff on minimal PATH; cannot test override-suppresses-ruff-check on this machine" >&2
 else
-  if (cd "$PROJECT_DOCTOR_PY_OVERRIDE" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-py-override.txt" 2>&1; then
+  if (cd "$PROJECT_DOCTOR_PY_OVERRIDE" && PATH="$DOCTOR_CONDUCTOR_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-py-override.txt" 2>&1; then
     assert_contains "$TEST_DIR/doctor-py-override.txt" 'Project is fully armed'
     assert_contains "$TEST_DIR/doctor-py-override.txt" 'lint: overridden via .touchstone-config'
     assert_contains "$TEST_DIR/doctor-py-override.txt" 'tests: overridden via .touchstone-config'

@@ -715,7 +715,7 @@ cmd_doctor_project() {
     tk_dim "  Fix: echo \"$project_dir\" >> $projects_file"
   fi
 
-  # 6. Optional — Conductor review config present?
+  # 6. Conductor review config and required reviewer peer.
   local review_config=""
   if [ -f "$project_dir/.touchstone-review.toml" ]; then
     review_config=".touchstone-review.toml"
@@ -735,6 +735,13 @@ cmd_doctor_project() {
     fi
   else
     tk_dim ".touchstone-review.toml not found (optional — configures AI review)"
+  fi
+  if _touchstone_doctor_review_enabled "$project_dir/$review_config"; then
+    if ! _touchstone_doctor_check_conductor_peer; then
+      issues=$((issues + 1))
+    fi
+  else
+    tk_dim "conductor: not required ([review] enabled = false)"
   fi
 
   # 7. Profile-aware test-surface and tooling gap checks.
@@ -823,6 +830,62 @@ cmd_doctor_project() {
   fi
   tk_warn "$issues issue(s) found. See fixes above, or run: touchstone init"
   echo ""
+  return 1
+}
+
+_touchstone_doctor_review_enabled() {
+  local config_path="$1"
+  [ -f "$config_path" ] || return 0
+
+  awk '
+    function trim(s) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      return s
+    }
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    /^[[:space:]]*\[/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\].*$/, "", section)
+      section = trim(section)
+      next
+    }
+    section == "review" {
+      line = $0
+      sub(/[[:space:]]+#.*$/, "", line)
+      if (line ~ /^[[:space:]]*enabled[[:space:]]*=/) {
+        sub(/^[^=]*=/, "", line)
+        value = trim(line)
+        gsub(/^"|"$/, "", value)
+        if (value == "false") {
+          disabled = 1
+        }
+      }
+    }
+    END {
+      exit disabled ? 0 : 1
+    }
+  ' "$config_path" && return 1
+
+  return 0
+}
+
+_touchstone_doctor_check_conductor_peer() {
+  if command -v conductor >/dev/null 2>&1; then
+    # Touchstone 2.0 delegates all review to conductor; richer status
+    # lives in `conductor doctor`.
+    if conductor doctor --json 2>/dev/null | grep -q '"configured"[[:space:]]*:[[:space:]]*true'; then
+      tk_ok "conductor: $(command -v conductor) (at least one provider configured)"
+      return 0
+    fi
+    tk_warn "conductor: $(command -v conductor) (no provider configured — run: conductor init)"
+    return 1
+  fi
+
+  tk_fail "conductor: MISSING — the pre-push review hook will not run without conductor"
+  tk_dim "  Install: brew install autumngarage/conductor/conductor"
+  tk_dim "  Configure: conductor init"
+  tk_dim "  Required by autumn-garage doctrine 0009"
   return 1
 }
 
@@ -1207,6 +1270,9 @@ cmd_doctor() {
       issues=$((issues + 1))
     fi
   done
+  if ! _touchstone_doctor_check_conductor_peer; then
+    issues=$((issues + 1))
+  fi
 
   # Recommended tools.
   for tool in pre-commit gitleaks shellcheck shfmt; do
@@ -1219,18 +1285,6 @@ cmd_doctor() {
   done
 
   # Optional tools.
-  if command -v conductor >/dev/null 2>&1; then
-    # Touchstone 2.0 delegates all review to conductor; richer status
-    # lives in `conductor doctor`.
-    if conductor doctor --json 2>/dev/null | grep -q '"configured"[[:space:]]*:[[:space:]]*true'; then
-      tk_ok "conductor: $(command -v conductor) (at least one provider configured)"
-    else
-      tk_warn "conductor: $(command -v conductor) (no provider configured — run: conductor init)"
-      issues=$((issues + 1))
-    fi
-  else
-    tk_dim "conductor: not installed (optional — brew install autumngarage/conductor/conductor)"
-  fi
   if command -v but >/dev/null 2>&1; then
     tk_ok "but: $(command -v but)"
   else

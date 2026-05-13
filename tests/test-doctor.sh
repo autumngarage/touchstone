@@ -51,6 +51,35 @@ run_doctor() {
   run_touchstone "$fake_home" doctor "$@"
 }
 
+write_fake_install_tools() {
+  local dir="$1" conductor_mode="$2" version
+  version="$(tr -d '[:space:]' <"$TOUCHSTONE_ROOT/VERSION")"
+  mkdir -p "$dir"
+  for tool in gh pre-commit gitleaks shellcheck shfmt; do
+    cat >"$dir/$tool" <<'EOF_FAKE_TOOL'
+#!/usr/bin/env bash
+exit 0
+EOF_FAKE_TOOL
+    chmod +x "$dir/$tool"
+  done
+  cat >"$dir/curl" <<EOF_FAKE_CURL
+#!/usr/bin/env bash
+printf '{"tag_name":"v%s"}\n' "$version"
+EOF_FAKE_CURL
+  chmod +x "$dir/curl"
+  if [ "$conductor_mode" = "present" ]; then
+    cat >"$dir/conductor" <<'EOF_FAKE_CONDUCTOR'
+#!/usr/bin/env bash
+if [ "${1:-}" = "doctor" ] && [ "${2:-}" = "--json" ]; then
+  printf '{"providers":[{"configured":true}]}\n'
+  exit 0
+fi
+exit 0
+EOF_FAKE_CONDUCTOR
+    chmod +x "$dir/conductor"
+  fi
+}
+
 timestamp_now() {
   date '+%Y-%m-%dT%H:%M:%S%z'
 }
@@ -100,6 +129,42 @@ set -e
 
 assert_exit "$DOCTOR_METRICS_EXIT" 2 "doctor metrics flags"
 assert_contains "$DOCTOR_METRICS_OUT" "review metrics moved to: touchstone review-stats"
+
+# --------------------------------------------------------------------------
+# Test 2b: installation doctor fails hard when Conductor is missing
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Test 2b: installation doctor requires conductor peer ---"
+
+MISSING_CONDUCTOR_BIN="$TEST_DIR/missing-conductor-bin"
+write_fake_install_tools "$MISSING_CONDUCTOR_BIN" "missing"
+MISSING_CONDUCTOR_OUT="$TEST_DIR/missing-conductor.out"
+set +e
+PATH="$MISSING_CONDUCTOR_BIN:/usr/bin:/bin" run_doctor "$FAKE_HOME" --installation >"$MISSING_CONDUCTOR_OUT" 2>&1
+MISSING_CONDUCTOR_EXIT=$?
+set -e
+
+assert_exit "$MISSING_CONDUCTOR_EXIT" 1 "missing conductor peer"
+assert_contains "$MISSING_CONDUCTOR_OUT" "the pre-push review hook will not run without conductor"
+assert_contains "$MISSING_CONDUCTOR_OUT" "brew install autumngarage/conductor/conductor"
+assert_contains "$MISSING_CONDUCTOR_OUT" "autumn-garage doctrine 0009"
+
+# --------------------------------------------------------------------------
+# Test 2c: installation doctor exits zero when Conductor is present
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Test 2c: installation doctor accepts conductor peer ---"
+
+PRESENT_CONDUCTOR_BIN="$TEST_DIR/present-conductor-bin"
+write_fake_install_tools "$PRESENT_CONDUCTOR_BIN" "present"
+PRESENT_CONDUCTOR_OUT="$TEST_DIR/present-conductor.out"
+set +e
+PATH="$PRESENT_CONDUCTOR_BIN:/usr/bin:/bin" run_doctor "$FAKE_HOME" --installation >"$PRESENT_CONDUCTOR_OUT" 2>&1
+PRESENT_CONDUCTOR_EXIT=$?
+set -e
+
+assert_exit "$PRESENT_CONDUCTOR_EXIT" 0 "present conductor peer"
+assert_contains "$PRESENT_CONDUCTOR_OUT" "conductor: $PRESENT_CONDUCTOR_BIN/conductor (at least one provider configured)"
 
 # --------------------------------------------------------------------------
 # Test 3: review-stats missing log exits 0 with friendly message
@@ -332,6 +397,38 @@ if [ "$REVIEW_SCHEMA_EXIT" -eq 0 ]; then
 fi
 assert_contains "$REVIEW_SCHEMA_OUT" ".codex-review.toml uses legacy 1.x review schema"
 assert_contains "$REVIEW_SCHEMA_OUT" "touchstone migrate-review-config"
+
+# --------------------------------------------------------------------------
+# Test 13: project doctor fails hard when review is enabled but Conductor is missing
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Test 13: project doctor requires conductor peer for review ---"
+
+PROJECT_PEER="$TEST_DIR/project-peer"
+mkdir -p "$PROJECT_PEER"
+git -C "$PROJECT_PEER" init -q
+git -C "$PROJECT_PEER" config user.email test@example.com
+git -C "$PROJECT_PEER" config user.name "Touchstone Test"
+git -C "$PROJECT_PEER" commit --allow-empty -q -m "initial"
+git -C "$TOUCHSTONE_ROOT" rev-parse HEAD >"$PROJECT_PEER/.touchstone-version"
+cat >"$PROJECT_PEER/.touchstone-review.toml" <<'EOF_PROJECT_PEER'
+[review]
+enabled = true
+reviewer = "conductor"
+EOF_PROJECT_PEER
+
+PROJECT_PEER_OUT="$TEST_DIR/project-peer.out"
+set +e
+(cd "$PROJECT_PEER" && PATH="$MISSING_CONDUCTOR_BIN:/usr/bin:/bin" run_doctor "$FAKE_HOME") >"$PROJECT_PEER_OUT" 2>&1
+PROJECT_PEER_EXIT=$?
+set -e
+
+if [ "$PROJECT_PEER_EXIT" -eq 0 ]; then
+  echo "FAIL: project doctor should fail when review is enabled and conductor is missing" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$PROJECT_PEER_OUT" "the pre-push review hook will not run without conductor"
+assert_contains "$PROJECT_PEER_OUT" "brew install autumngarage/conductor/conductor"
 
 if [ "$ERRORS" -ne 0 ]; then
   echo ""
