@@ -180,6 +180,7 @@ assert_exists "$PROJECT/principles/README.md"
 assert_exists "$PROJECT/scripts/conductor-review.sh"
 assert_exists "$PROJECT/scripts/codex-review.sh"
 assert_exists "$PROJECT/lib/toml.sh"
+assert_exists "$PROJECT/lib/script-sync-guard.sh"
 assert_exists "$PROJECT/lib/preflight.sh"
 assert_exists "$PROJECT/lib/review-comment.sh"
 assert_exists "$PROJECT/scripts/touchstone-run.sh"
@@ -224,6 +225,7 @@ assert_contains "$PROJECT/.touchstone-manifest" '^scripts/issue-claim-check.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/toml\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/script-sync-guard\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/preflight\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/review-comment\.sh$'
 if grep -q '^\.touchstone-config$' "$PROJECT/.gitignore"; then

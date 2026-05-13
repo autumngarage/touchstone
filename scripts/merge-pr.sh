@@ -24,6 +24,12 @@ set -euo pipefail
 PR_NUMBER=""
 BYPASS_REASON=""
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_SYNC_GUARD="$SCRIPT_DIR/../lib/script-sync-guard.sh"
+if [ -f "$SCRIPT_SYNC_GUARD" ]; then
+  # shellcheck source=../lib/script-sync-guard.sh
+  source "$SCRIPT_SYNC_GUARD"
+  touchstone_script_sync_guard "$0" "$@"
+fi
 REVIEW_SCRIPT="$SCRIPT_DIR/conductor-review.sh"
 if [ ! -f "$REVIEW_SCRIPT" ]; then
   REVIEW_SCRIPT="$SCRIPT_DIR/codex-review.sh"

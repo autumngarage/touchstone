@@ -42,6 +42,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_SYNC_GUARD="$SCRIPT_DIR/../lib/script-sync-guard.sh"
+if [ -f "$SCRIPT_SYNC_GUARD" ]; then
+  # shellcheck source=../lib/script-sync-guard.sh
+  source "$SCRIPT_SYNC_GUARD"
+  touchstone_script_sync_guard "$0" "$@"
+fi
 PREFLIGHT_SCRIPT="$SCRIPT_DIR/../lib/preflight.sh"
 REVIEW_COMMENT_SCRIPT="$SCRIPT_DIR/../lib/review-comment.sh"
 ISSUE_CLAIM_CHECK_SCRIPT="$SCRIPT_DIR/issue-claim-check.sh"

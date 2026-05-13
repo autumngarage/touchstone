@@ -138,6 +138,7 @@ assert_exists "$PROJECT/scripts/spawn-worktree.sh"
 assert_exists "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_exists "$PROJECT/lib/toml.sh"
 assert_exists "$PROJECT/lib/events.sh"
+assert_exists "$PROJECT/lib/script-sync-guard.sh"
 assert_exists "$PROJECT/lib/preflight.sh"
 assert_exists "$PROJECT/lib/review-comment.sh"
 assert_exists "$PROJECT/.touchstone-manifest"
@@ -150,6 +151,7 @@ assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/toml\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/events\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/script-sync-guard\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/preflight\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/review-comment\.sh$'
 assert_not_exists "$PROJECT/principles/engineering-principles.md.bak"
@@ -238,6 +240,7 @@ assert_exists "$IN_PLACE_PROJECT/.github/workflows/issue-claim-check.yml"
 assert_exists "$IN_PLACE_PROJECT/scripts/touchstone-run.sh"
 assert_exists "$IN_PLACE_PROJECT/scripts/claim-issue.sh"
 assert_exists "$IN_PLACE_PROJECT/scripts/issue-claim-check.sh"
+assert_exists "$IN_PLACE_PROJECT/lib/script-sync-guard.sh"
 assert_not_exists "$IN_PLACE_PROJECT/.claude/settings.json.touchstone-pre-update.bak"
 
 if git -C "$IN_PLACE_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
@@ -294,6 +297,80 @@ fi
 if [ -n "$(git -C "$IGNORED_MANAGED_PROJECT" status --porcelain)" ]; then
   echo "FAIL: ignored managed update should leave a clean worktree after committing" >&2
   git -C "$IGNORED_MANAGED_PROJECT" status --short >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
+# Test 2d: direct project-local PR scripts self-update before running.
+# This covers the raw `bash scripts/merge-pr.sh` path, which bypasses the
+# touchstone CLI's normal auto-project-sync hook.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 3d: Direct workflow scripts update stale Touchstone files ---"
+
+SCRIPT_SYNC_PROJECT="$TEST_DIR/script-sync-project"
+SCRIPT_SYNC_BIN="$TEST_DIR/script-sync-bin"
+mkdir -p "$SCRIPT_SYNC_BIN"
+cat >"$SCRIPT_SYNC_BIN/touchstone" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$TOUCHSTONE_SCRIPT_SYNC_FAKE_LOG"
+TOUCHSTONE_NO_AUTO_UPDATE=1 exec "$TOUCHSTONE_BIN" "$@"
+EOF
+chmod +x "$SCRIPT_SYNC_BIN/touchstone"
+
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SCRIPT_SYNC_PROJECT" --no-register >/dev/null
+configure_git "$SCRIPT_SYNC_PROJECT"
+commit_all "$SCRIPT_SYNC_PROJECT" "initial script sync test project"
+git -C "$SCRIPT_SYNC_PROJECT" checkout -q -b feature/script-sync-guard
+echo "0000000000000000000000000000000000000014" >"$SCRIPT_SYNC_PROJECT/.touchstone-version"
+commit_all "$SCRIPT_SYNC_PROJECT" "simulate stale script sync touchstone state"
+
+SCRIPT_SYNC_OUT="$TEST_DIR/script-sync-output.txt"
+SCRIPT_SYNC_LOG="$TEST_DIR/script-sync-touchstone.log"
+SCRIPT_SYNC_RC=0
+(
+  cd "$SCRIPT_SYNC_PROJECT"
+  PATH="$SCRIPT_SYNC_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    TOUCHSTONE_BIN="$TOUCHSTONE_ROOT/bin/touchstone" \
+    TOUCHSTONE_SCRIPT_SYNC_FAKE_LOG="$SCRIPT_SYNC_LOG" \
+    bash scripts/merge-pr.sh not-a-pr
+) >"$SCRIPT_SYNC_OUT" 2>&1 || SCRIPT_SYNC_RC=$?
+
+if [ "$SCRIPT_SYNC_RC" != "2" ]; then
+  echo "FAIL: guarded merge-pr invalid-argument run should exit 2 after sync" >&2
+  echo "    rc=$SCRIPT_SYNC_RC" >&2
+  cat "$SCRIPT_SYNC_OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$SCRIPT_SYNC_OUT" 'Touchstone script sync: project-local workflow files are stale'
+assert_contains "$SCRIPT_SYNC_OUT" 'Touchstone script sync: restarting'
+assert_contains "$SCRIPT_SYNC_OUT" 'Usage: bash scripts/merge-pr.sh <pr-number>'
+assert_contains "$SCRIPT_SYNC_LOG" '^update --check$'
+assert_contains "$SCRIPT_SYNC_LOG" '^update --in-place$'
+
+if [ "$(cat "$SCRIPT_SYNC_PROJECT/.touchstone-version" | tr -d '[:space:]')" = "$INITIAL_SHA" ]; then
+  echo "    PASS: direct script sync refreshed .touchstone-version"
+else
+  echo "FAIL: direct script sync did not refresh .touchstone-version" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+if git -C "$SCRIPT_SYNC_PROJECT" log -1 --format=%s | grep -q '^chore: update touchstone to '; then
+  echo "    PASS: direct script sync committed the update on the feature branch"
+else
+  echo "FAIL: direct script sync did not create a Touchstone update commit" >&2
+  git -C "$SCRIPT_SYNC_PROJECT" log -1 --format=%s >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+if [ "$(git -C "$SCRIPT_SYNC_PROJECT" branch --show-current)" != "feature/script-sync-guard" ]; then
+  echo "FAIL: direct script sync should stay on the current feature branch" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+if [ -n "$(git -C "$SCRIPT_SYNC_PROJECT" status --porcelain)" ]; then
+  echo "FAIL: direct script sync should leave a clean worktree after committing" >&2
+  git -C "$SCRIPT_SYNC_PROJECT" status --short >&2
   ERRORS=$((ERRORS + 1))
 fi
 
