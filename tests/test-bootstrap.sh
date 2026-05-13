@@ -789,6 +789,9 @@ fi
 mkdir -p "$PYTEST_WRAPPER_PROJECT/.venv/bin"
 cat >"$PYTEST_WRAPPER_PROJECT/.venv/bin/python" <<'FAKEPYTHON'
 #!/usr/bin/env bash
+if [ "$1" = "-c" ] && [[ "$2" == *"sys.version_info"* ]]; then
+  exit 0
+fi
 printf '%s\n' "$@" > "$PWD/pytest-args.txt"
 if [ "$1" = "-m" ] && [ "$2" = "pytest" ]; then
   exit 0
