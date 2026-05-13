@@ -27,6 +27,42 @@ TOUCHSTONE_STATE_DIR="${TOUCHSTONE_STATE_DIR:-$HOME/.touchstone}"
 LAST_CHECK_FILE="$TOUCHSTONE_STATE_DIR/last-update-check"
 TOUCHSTONE_AUTO_UPDATE_REEXEC_EXIT=75
 
+touchstone_auto_update_version_gte() {
+  local current="${1#v}" latest="${2#v}"
+  awk -v current="$current" -v latest="$latest" '
+    function parse_version(version, parts, count, i) {
+      count = split(version, parts, ".")
+      if (count < 2 || count > 3) {
+        return 0
+      }
+      for (i = 1; i <= count; i++) {
+        if (parts[i] !~ /^[0-9]+$/) {
+          return 0
+        }
+        parts[i] += 0
+      }
+      for (i = count + 1; i <= 3; i++) {
+        parts[i] = 0
+      }
+      return 1
+    }
+
+    BEGIN {
+      if (!parse_version(current, cur) || !parse_version(latest, lat)) {
+        exit 1
+      }
+      for (i = 1; i <= 3; i++) {
+        if (cur[i] > lat[i]) {
+          exit 0
+        }
+        if (cur[i] < lat[i]) {
+          exit 1
+        }
+      }
+      exit 0
+    }'
+}
+
 touchstone_auto_update() {
   # Skip if disabled.
   if [ "${TOUCHSTONE_NO_AUTO_UPDATE:-}" = "1" ] \
@@ -69,12 +105,12 @@ touchstone_auto_update() {
     return 0
   fi
 
-  # Compare versions (simple string compare — works for semver if we don't skip versions).
-  if [ "$current_version" = "$latest_version" ]; then
+  # Only upgrade when the published latest release is newer than this install.
+  if touchstone_auto_update_version_gte "$current_version" "$latest_version"; then
     return 0
   fi
 
-  # Version differs — try to upgrade.
+  # Installed version is older — try to upgrade.
   echo "==> touchstone v${current_version} is outdated (latest: v${latest_version}). Updating..." >&2
 
   if command -v brew >/dev/null 2>&1 && brew list touchstone &>/dev/null; then

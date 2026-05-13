@@ -59,3 +59,24 @@ else
   cat "$OUT" >&2
   exit 1
 fi
+
+cat >"$FAKE_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '{"tag_name":"v0.0.1"}\n'
+EOF
+chmod +x "$FAKE_BIN/curl"
+
+OUT_CURRENT="$TEST_DIR/current-newer.out"
+PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  TOUCHSTONE_UPDATE_INTERVAL=0 \
+  TOUCHSTONE_STATE_DIR="$STATE_DIR" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" version >"$OUT_CURRENT" 2>&1
+
+if grep -q 'fake brew upgraded touchstone' "$OUT_CURRENT" \
+  || grep -q '^REEXECED:1:version$' "$OUT_CURRENT"; then
+  echo "FAIL: installed version newer than latest release must not trigger auto-update" >&2
+  cat "$OUT_CURRENT" >&2
+  exit 1
+fi
+
+echo "PASS: touchstone auto-update ignores stale older latest release"
