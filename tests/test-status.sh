@@ -250,6 +250,32 @@ assert_contains "$CURRENT_JSON_OUT" '"worktree-lifecycle"'
 assert_contains "$CURRENT_JSON_OUT" '"installed_state": "supported"'
 assert_contains "$CURRENT_JSON_OUT" '"project_state": "available"'
 
+PARENT_GIT_INSTALL_ROOT="$TEST_DIR/homebrew/Cellar/touchstone/$CURRENT_VERSION/libexec"
+mkdir -p "$PARENT_GIT_INSTALL_ROOT"
+git -C "$TEST_DIR/homebrew" init >/dev/null 2>&1
+git -C "$TEST_DIR/homebrew" config user.name "Touchstone Test"
+git -C "$TEST_DIR/homebrew" config user.email "touchstone@example.com"
+printf 'parent git repo\n' >"$TEST_DIR/homebrew/README.md"
+git -C "$TEST_DIR/homebrew" add README.md
+git -C "$TEST_DIR/homebrew" commit -m "parent repo" >/dev/null 2>&1
+cp -R "$TOUCHSTONE_ROOT/bin" "$PARENT_GIT_INSTALL_ROOT/bin"
+cp -R "$TOUCHSTONE_ROOT/lib" "$PARENT_GIT_INSTALL_ROOT/lib"
+cp "$TOUCHSTONE_ROOT/VERSION" "$PARENT_GIT_INSTALL_ROOT/VERSION"
+
+PARENT_GIT_JSON_OUT="$TEST_DIR/parent-git-json.out"
+(
+  cd "$CURRENT_PROJECT"
+  HOME="$FAKE_HOME" \
+    NO_COLOR=1 \
+    TOUCHSTONE_NO_AUTO_UPDATE=1 \
+    bash "$PARENT_GIT_INSTALL_ROOT/bin/touchstone" status --json
+) >"$PARENT_GIT_JSON_OUT" 2>&1
+
+assert_contains "$PARENT_GIT_JSON_OUT" "\"id\": \"$CURRENT_VERSION\""
+assert_contains "$PARENT_GIT_JSON_OUT" '"state": "up_to_date"'
+assert_contains "$PARENT_GIT_JSON_OUT" '"installed_state": "supported"'
+assert_not_contains "$PARENT_GIT_JSON_OUT" "installed_cli_too_old"
+
 OLD_CAPABILITY_PROJECT="$TEST_DIR/proj-old-capability"
 mkdir -p "$OLD_CAPABILITY_PROJECT"
 OLD_WORKTREE_BOUNDARY_ID="$(git -C "$TOUCHSTONE_ROOT" rev-parse d596930^)"

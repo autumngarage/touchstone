@@ -76,7 +76,7 @@ _status_behind_count() {
       return 0
     fi
   fi
-  if ! git -C "${TOUCHSTONE_ROOT:-/nonexistent}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if ! touchstone_root_is_checkout; then
     printf '?'
     return 0
   fi
@@ -242,7 +242,7 @@ _status_ref_contains_required() {
     return 0
   fi
 
-  if git -C "${TOUCHSTONE_ROOT:-/nonexistent}" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+  if touchstone_root_is_checkout \
     && git -C "$TOUCHSTONE_ROOT" rev-parse --verify "$required^{commit}" >/dev/null 2>&1 \
     && git -C "$TOUCHSTONE_ROOT" rev-parse --verify "$candidate^{commit}" >/dev/null 2>&1; then
     git -C "$TOUCHSTONE_ROOT" merge-base --is-ancestor "$required" "$candidate" >/dev/null 2>&1
