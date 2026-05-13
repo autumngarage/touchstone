@@ -725,6 +725,53 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: provider unavailable fails closed with zero-findings status"
+setup_cascade_repo
+NO_PROVIDER_SUMMARY="$TEST_DIR/no-provider-summary.json"
+rm -rf "$CASCADE_BIN"
+mkdir -p "$CASCADE_BIN"
+cat >"$CASCADE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat >"$CASCADE_BIN/conductor" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "doctor" ]; then
+  printf '{"providers":[{"configured":false}]}\n'
+  exit 0
+fi
+printf 'unexpected invocation\n' >&2
+exit 99
+EOF
+chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/conductor"
+
+set +e
+(
+  cd "$CASCADE_REPO"
+  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
+    CODEX_REVIEW_SUMMARY_FILE="$NO_PROVIDER_SUMMARY" \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CASCADE_OUTPUT" 2>&1
+)
+NO_PROVIDER_EXIT=$?
+set -e
+
+if [ "$NO_PROVIDER_EXIT" -eq 1 ] \
+  && grep -q 'provider/infrastructure unavailable; findings=0; exit_reason=provider-unavailable' "$CASCADE_OUTPUT" \
+  && grep -q '\[fail-closed:FAIL_OPEN_PROVIDER_UNAVAILABLE\]' "$CASCADE_OUTPUT" \
+  && grep -q '"findings":0' "$NO_PROVIDER_SUMMARY" \
+  && grep -q '"exit_reason":"provider-unavailable"' "$NO_PROVIDER_SUMMARY"; then
+  echo "==> PASS: provider unavailable failed closed with explicit zero-findings status"
+else
+  echo "FAIL: expected provider-unavailable fail-closed status and summary" >&2
+  echo "exit code: $NO_PROVIDER_EXIT" >&2
+  cat "$CASCADE_OUTPUT" >&2
+  [ -f "$NO_PROVIDER_SUMMARY" ] && cat "$NO_PROVIDER_SUMMARY" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: review can be disabled by config"
 setup_cascade_repo
 {
@@ -1190,6 +1237,52 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: timeout fail-closed reports zero findings and retryable status"
+setup_timeout_repo
+rm -rf "$TIMEOUT_BIN"
+mkdir -p "$TIMEOUT_BIN"
+TIMEOUT_FAILCLOSED_SUMMARY="$TEST_DIR/timeout-failclosed-summary.json"
+cat >"$TIMEOUT_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat >"$TIMEOUT_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+sleep 999
+CXEOF
+chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/conductor"
+
+set +e
+(
+  cd "$TIMEOUT_REPO"
+  PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_TIMEOUT=1 \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
+    TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY=false \
+    CODEX_REVIEW_SUMMARY_FILE="$TIMEOUT_FAILCLOSED_SUMMARY" \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TIMEOUT_OUTPUT" 2>&1
+)
+TIMEOUT_FAILCLOSED_EXIT=$?
+set -e
+
+if [ "$TIMEOUT_FAILCLOSED_EXIT" -eq 1 ] \
+  && grep -q 'timed out after 1s' "$TIMEOUT_OUTPUT" \
+  && grep -q 'findings:       0' "$TIMEOUT_OUTPUT" \
+  && grep -q 'exit reason:    timeout' "$TIMEOUT_OUTPUT" \
+  && grep -q '"findings":0' "$TIMEOUT_FAILCLOSED_SUMMARY" \
+  && grep -q '"exit_reason":"timeout"' "$TIMEOUT_FAILCLOSED_SUMMARY"; then
+  echo "==> PASS: timeout fail-closed surfaced zero-findings infra status"
+else
+  echo "FAIL: expected timeout fail-closed zero-findings status" >&2
+  echo "exit code: $TIMEOUT_FAILCLOSED_EXIT" >&2
+  cat "$TIMEOUT_OUTPUT" >&2
+  [ -f "$TIMEOUT_FAILCLOSED_SUMMARY" ] && cat "$TIMEOUT_FAILCLOSED_SUMMARY" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: on_error=fail-closed blocks push on reviewer crash"
 setup_timeout_repo
 rm -rf "$TIMEOUT_BIN"
@@ -1353,6 +1446,45 @@ if [ "$(wc -l <"$FALLBACK_ARGS_FILE" | tr -d ' ')" = "2" ] \
   echo "==> PASS: reviewer crash retried through auto-routing with failed provider excluded"
 else
   echo "FAIL: expected reviewer crash to retry once through fallback provider" >&2
+  cat "$FALLBACK_ARGS_FILE" >&2
+  cat "$TIMEOUT_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: fallback retry excludes every provider Conductor already tried"
+setup_timeout_repo
+: >"$FALLBACK_ARGS_FILE"
+cat >"$TIMEOUT_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+printf '%s\n' "$*" >> "$FALLBACK_ARGS_FILE"
+call_count="$(wc -l < "$FALLBACK_ARGS_FILE" | tr -d ' ')"
+cat >/dev/null
+if [ "$call_count" = "1" ]; then
+  printf '[conductor] review tried providers: claude (timeout), gemini (provider unavailable)\n' >&2
+  exit 42
+fi
+printf 'CODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$TIMEOUT_BIN/conductor"
+
+(
+  cd "$TIMEOUT_REPO"
+  PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    FALLBACK_ARGS_FILE="$FALLBACK_ARGS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TIMEOUT_OUTPUT" 2>&1
+)
+
+if [ "$(wc -l <"$FALLBACK_ARGS_FILE" | tr -d ' ')" = "2" ] \
+  && sed -n '2p' "$FALLBACK_ARGS_FILE" | grep -q -- '--exclude ollama,claude,gemini' \
+  && grep -q 'fallback skip:  claude,gemini' "$TIMEOUT_OUTPUT"; then
+  echo "==> PASS: fallback retry skipped all providers from the failed route"
+else
+  echo "FAIL: expected fallback retry to exclude all already-tried providers" >&2
   cat "$FALLBACK_ARGS_FILE" >&2
   cat "$TIMEOUT_OUTPUT" >&2
   ERRORS=$((ERRORS + 1))

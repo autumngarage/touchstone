@@ -2373,6 +2373,15 @@ apply_review_routing "$ROUTING_DIFF_LINE_COUNT" "$PROMPT_CONTEXT_CHANGED_PATHS"
 
 # Resolve which reviewer to use from the cascade.
 if ! resolve_reviewer; then
+  unavailable_code="FAIL_OPEN_DEPENDENCY_MISSING"
+  unavailable_reason="dependency-missing"
+  unavailable_message="conductor CLI not found on PATH"
+  if reviewer_conductor_available; then
+    unavailable_code="FAIL_OPEN_PROVIDER_UNAVAILABLE"
+    unavailable_reason="provider-unavailable"
+    unavailable_message="conductor installed but no provider configured"
+  fi
+
   if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
     echo "ERROR: TOUCHSTONE_REVIEWER=$TOUCHSTONE_REVIEWER but that reviewer is not available:" >&2
     printf '%b' "$REVIEWER_STATUS" >&2
@@ -2380,20 +2389,33 @@ if ! resolve_reviewer; then
     echo "  or unset TOUCHSTONE_REVIEWER to let Conductor auto-route." >&2
     exit 1
   fi
-  echo "==> No reviewer available — push will proceed without AI review."
+  if [ "$ON_ERROR" = "fail-closed" ]; then
+    echo "==> No reviewer available — AI review cannot run."
+  else
+    echo "==> No reviewer available — push will proceed without AI review."
+  fi
   printf '%b' "$REVIEWER_STATUS"
   echo "    Touchstone 2.0 routes every review through the \`conductor\` CLI."
   echo "    Fix above, then re-run \`git push\` to trigger review again."
+  echo "==> Review status: provider/infrastructure unavailable; findings=0; exit_reason=$unavailable_reason"
+  if [ -n "${CODEX_REVIEW_SUMMARY_FILE:-}" ]; then
+    printf '{"reviewer":"Conductor","provider":"unknown","model":"unknown","peer_provider":"none","route":"%s","mode":"%s","context":"%s","prefer":"%s","effort":"%s","files":%d,"diff_lines":%d,"iterations":0,"fix_commits":0,"peer_assists":0,"high_scrutiny_triggered":%s,"high_scrutiny_mode":"%s","high_scrutiny_reason":"","findings":0,"fallback_attempted":false,"fallback_primary_provider":"","fallback_retry_provider":"","fallback_excluded_providers":"","fallback_reason":"","exit_reason":"%s","elapsed_seconds":0}\n' \
+      "$ROUTING_DECISION" "$REVIEW_MODE" "$PROMPT_CONTEXT_DECISION" "${CONDUCTOR_PREFER:-auto}" "${CONDUCTOR_EFFORT:-default}" \
+      "$(git diff --name-only "$MERGE_BASE"..HEAD 2>/dev/null | wc -l | tr -d ' ')" "$ROUTING_DIFF_LINE_COUNT" \
+      "${HIGH_SCRUTINY_TRIGGERED:-false}" "${HIGH_SCRUTINY_MODE:-peer}" "$unavailable_reason" \
+      >"$CODEX_REVIEW_SUMMARY_FILE" 2>/dev/null || true
+  fi
   # Distinguish: CLI not on PATH vs CLI present but no provider configured.
   # Emit a visible [fail-open:<code>] line so the absent safety boundary
   # is not silent ("No silent failures" principle).
-  if reviewer_conductor_available; then
-    echo "[fail-open:FAIL_OPEN_PROVIDER_UNAVAILABLE] conductor installed but no provider configured — AI review bypassed, push proceeds" >&2
-    log_skip_event FAIL_OPEN_PROVIDER_UNAVAILABLE "no-provider-configured"
-  else
-    echo "[fail-open:FAIL_OPEN_DEPENDENCY_MISSING] conductor CLI not found on PATH — AI review bypassed, push proceeds" >&2
-    log_skip_event FAIL_OPEN_DEPENDENCY_MISSING "conductor-not-on-path"
+  if [ "$ON_ERROR" = "fail-closed" ]; then
+    echo "[fail-closed:${unavailable_code}] ${unavailable_message} — AI review unavailable, push blocked" >&2
+    echo "==> ERROR ($unavailable_reason) — blocking push (on_error=fail-closed)." >&2
+    log_skip_event "$unavailable_code" "fail-closed:${unavailable_reason}"
+    exit 1
   fi
+  echo "[fail-open:${unavailable_code}] ${unavailable_message} — AI review bypassed, push proceeds" >&2
+  log_skip_event "$unavailable_code" "fail-open:${unavailable_reason}"
   exit 0
 fi
 REVIEWER_LABEL="$(reviewer_label)"
@@ -3091,6 +3113,7 @@ REVIEW_EXIT_REASON=""
 REVIEW_FALLBACK_ATTEMPTED=false
 REVIEW_FALLBACK_PRIMARY_PROVIDER=""
 REVIEW_FALLBACK_RETRY_PROVIDER=""
+REVIEW_FALLBACK_EXCLUDED_PROVIDERS=""
 REVIEW_FALLBACK_REASON=""
 FALLBACK_REVIEW_EXIT=0
 
@@ -3328,20 +3351,88 @@ exclude_provider_once() {
     return 0
   }
 
-  IFS=',' read -r -a existing_items <<<"$existing"
-  for item in "${existing_items[@]}"; do
-    item="$(trim "$item")"
-    if [ "$item" = "$provider" ]; then
-      printf '%s' "$existing"
-      return 0
-    fi
-  done
+  if [ -n "$existing" ]; then
+    IFS=',' read -r -a existing_items <<<"$existing"
+    for item in "${existing_items[@]}"; do
+      item="$(trim "$item")"
+      if [ "$item" = "$provider" ]; then
+        printf '%s' "$existing"
+        return 0
+      fi
+    done
+  fi
 
   if [ -n "$existing" ]; then
     printf '%s,%s' "$existing" "$provider"
   else
     printf '%s' "$provider"
   fi
+}
+
+exclude_provider_csv() {
+  local existing="$1"
+  local providers="$2"
+  local item result
+  local -a provider_items
+
+  result="$existing"
+  if [ -n "$providers" ]; then
+    IFS=',' read -r -a provider_items <<<"$providers"
+    for item in "${provider_items[@]}"; do
+      item="$(trim "$item")"
+      [ -n "$item" ] || continue
+      result="$(exclude_provider_once "$result" "$item")"
+    done
+  fi
+  printf '%s' "$result"
+}
+
+conductor_failed_provider_csv() {
+  local csv="" provider
+
+  while IFS= read -r provider; do
+    provider="$(trim "$provider")"
+    [ -n "$provider" ] || continue
+    csv="$(exclude_provider_once "$csv" "$provider")"
+  done < <(
+    if [ -f "${REVIEW_CONDUCTOR_LOG_FILE:-}" ]; then
+      awk '
+        /"event"[[:space:]]*:[[:space:]]*"provider_failed"/ {
+          line = $0
+          sub(/^.*"provider"[[:space:]]*:[[:space:]]*"/, "", line)
+          sub(/".*$/, "", line)
+          if (line != "") {
+            print line
+          }
+        }
+      ' "$REVIEW_CONDUCTOR_LOG_FILE" 2>/dev/null || true
+    fi
+    if [ -f "${REVIEW_STDERR_FILE:-}" ]; then
+      awk '
+        /review tried providers:/ { line = $0 }
+        END {
+          if (line == "") {
+            exit
+          }
+          sub(/^.*review tried providers:[[:space:]]*/, "", line)
+          n = split(line, parts, ",")
+          for (i = 1; i <= n; i++) {
+            part = parts[i]
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", part)
+            if (part == "" || part ~ /\(success\)/) {
+              continue
+            }
+            split(part, fields, /[[:space:]]+/)
+            if (fields[1] != "") {
+              print fields[1]
+            }
+          }
+        }
+      ' "$REVIEW_STDERR_FILE" 2>/dev/null || true
+    fi
+  )
+
+  printf '%s' "$csv"
 }
 
 review_attempt_worktree_unchanged() {
@@ -3361,7 +3452,7 @@ try_review_fallback_retry() {
   local status_before="$3"
   local prompt="${4:-$REVIEW_PROMPT}"
   local output_file="${5:-$REVIEW_OUTPUT_FILE}"
-  local failed_provider previous_with previous_exclude fallback_exclude
+  local failed_provider failed_providers previous_with previous_exclude fallback_exclude
 
   [ "${ACTIVE_REVIEWER:-}" = "conductor" ] || return 1
   is_truthy "$CONDUCTOR_FALLBACK_RETRY" || return 1
@@ -3374,20 +3465,26 @@ try_review_fallback_retry() {
 
   failed_provider="$(parse_primary_provider)"
   [ -n "$failed_provider" ] || failed_provider="${CONDUCTOR_WITH:-}"
+  failed_providers="$(conductor_failed_provider_csv)"
+  if [ -n "$failed_provider" ] && [ "$failed_provider" != "unknown" ]; then
+    failed_providers="$(exclude_provider_once "$failed_providers" "$failed_provider")"
+  fi
   if [ -z "$failed_provider" ] || [ "$failed_provider" = "unknown" ]; then
     echo "==> Review fallback skipped: could not identify the failed Conductor provider."
     return 1
   fi
+  [ -n "$failed_providers" ] || failed_providers="$failed_provider"
 
   REVIEW_FALLBACK_ATTEMPTED=true
   REVIEW_FALLBACK_PRIMARY_PROVIDER="$failed_provider"
+  REVIEW_FALLBACK_EXCLUDED_PROVIDERS="$failed_providers"
   REVIEW_FALLBACK_REASON="$reason"
 
   previous_with="$CONDUCTOR_WITH"
   previous_exclude="$CONDUCTOR_EXCLUDE"
-  fallback_exclude="$(exclude_provider_once "$CONDUCTOR_EXCLUDE" "$failed_provider")"
+  fallback_exclude="$(exclude_provider_csv "$CONDUCTOR_EXCLUDE" "$failed_providers")"
 
-  phase "retrying with Conductor fallback (excluding $failed_provider)"
+  phase "retrying with Conductor fallback (excluding $failed_providers)"
   echo "==> Review infrastructure/noncompliance failure: $reason"
   echo "==> Retrying once with auto-routing; excluded provider(s): ${fallback_exclude:-<none>}"
 
@@ -3655,13 +3752,16 @@ print_summary() {
       "${REVIEW_FALLBACK_PRIMARY_PROVIDER:-unknown}" \
       "${REVIEW_FALLBACK_RETRY_PROVIDER:-unknown}" \
       "${REVIEW_FALLBACK_REASON:-unknown}"
+    if [ -n "${REVIEW_FALLBACK_EXCLUDED_PROVIDERS:-}" ]; then
+      printf "  ${C_DIM}fallback skip:  %s${C_RESET}\n" "${REVIEW_FALLBACK_EXCLUDED_PROVIDERS:-unknown}"
+    fi
   fi
   printf "  ${C_DIM}exit reason:    %s${C_RESET}\n" "$REVIEW_EXIT_REASON"
   printf "  ${C_DIM}elapsed:        %dm%ds${C_RESET}\n" "$mins" "$secs"
   printf "  ${C_DIM}──────────────────────────────────────────${C_RESET}\n"
 
   if [ -n "${CODEX_REVIEW_SUMMARY_FILE:-}" ]; then
-    printf '{"reviewer":"%s","provider":"%s","model":"%s","peer_provider":"%s","route":"%s","mode":"%s","context":"%s","prefer":"%s","effort":"%s","files":%d,"diff_lines":%d,"iterations":%d,"fix_commits":%d,"peer_assists":%d,"high_scrutiny_triggered":%s,"high_scrutiny_mode":"%s","high_scrutiny_reason":"%s","findings":%d,"fallback_attempted":%s,"fallback_primary_provider":"%s","fallback_retry_provider":"%s","fallback_reason":"%s","exit_reason":"%s","elapsed_seconds":%d}\n' \
+    printf '{"reviewer":"%s","provider":"%s","model":"%s","peer_provider":"%s","route":"%s","mode":"%s","context":"%s","prefer":"%s","effort":"%s","files":%d,"diff_lines":%d,"iterations":%d,"fix_commits":%d,"peer_assists":%d,"high_scrutiny_triggered":%s,"high_scrutiny_mode":"%s","high_scrutiny_reason":"%s","findings":%d,"fallback_attempted":%s,"fallback_primary_provider":"%s","fallback_retry_provider":"%s","fallback_excluded_providers":"%s","fallback_reason":"%s","exit_reason":"%s","elapsed_seconds":%d}\n' \
       "$REVIEWER_LABEL" "$provider" "$model" "$peer_provider" "$ROUTING_DECISION" "$REVIEW_MODE" "$PROMPT_CONTEXT_DECISION" "${CONDUCTOR_PREFER:-auto}" "${CONDUCTOR_EFFORT:-default}" "$REVIEW_FILES_INSPECTED" "$DIFF_LINE_COUNT" \
       "${iter:-0}" "$FIX_COMMITS" "$ASSIST_ROUNDS" "${HIGH_SCRUTINY_TRIGGERED:-false}" \
       "$(printf '%s' "${HIGH_SCRUTINY_MODE:-peer}" | json_escape)" \
@@ -3669,6 +3769,7 @@ print_summary() {
       "$findings" "$REVIEW_FALLBACK_ATTEMPTED" \
       "$(printf '%s' "${REVIEW_FALLBACK_PRIMARY_PROVIDER:-}" | json_escape)" \
       "$(printf '%s' "${REVIEW_FALLBACK_RETRY_PROVIDER:-}" | json_escape)" \
+      "$(printf '%s' "${REVIEW_FALLBACK_EXCLUDED_PROVIDERS:-}" | json_escape)" \
       "$(printf '%s' "${REVIEW_FALLBACK_REASON:-}" | json_escape)" \
       "$REVIEW_EXIT_REASON" "$elapsed" \
       >"$CODEX_REVIEW_SUMMARY_FILE" 2>/dev/null || true
