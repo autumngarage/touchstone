@@ -87,6 +87,7 @@ assert_contains "$TEST_DIR/planned.out" "TOUCHSTONE.md"
 assert_contains "$TEST_DIR/planned.out" ".github/workflows/issue-claim-check.yml"
 assert_contains "$TEST_DIR/planned.out" "scripts/claim-issue.sh"
 assert_contains "$TEST_DIR/planned.out" "scripts/issue-claim-check.sh"
+assert_contains "$TEST_DIR/planned.out" "lib/script-sync-guard.sh"
 assert_contains "$TEST_DIR/planned.out" "lib/preflight-scope.sh"
 
 echo ""

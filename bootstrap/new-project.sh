@@ -1088,6 +1088,7 @@ write_touchstone_manifest() {
     printf 'lib/toml.sh\n'
     printf 'lib/events.sh\n'
     printf 'lib/worker-state.sh\n'
+    printf 'lib/script-sync-guard.sh\n'
     printf 'lib/preflight.sh\n'
     printf 'lib/preflight-scope.sh\n'
     printf 'lib/review-comment.sh\n'
@@ -1354,6 +1355,7 @@ mkdir -p "$PROJECT_DIR/lib"
 copy_file_force "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/events.sh" "$PROJECT_DIR/lib/events.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/worker-state.sh" "$PROJECT_DIR/lib/worker-state.sh"
+copy_file_force "$TOUCHSTONE_ROOT/lib/script-sync-guard.sh" "$PROJECT_DIR/lib/script-sync-guard.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PROJECT_DIR/lib/preflight.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/preflight-scope.sh" "$PROJECT_DIR/lib/preflight-scope.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/review-comment.sh" "$PROJECT_DIR/lib/review-comment.sh"
