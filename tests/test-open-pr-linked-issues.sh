@@ -39,7 +39,18 @@ case "$1 $2" in
     echo "alice"
     ;;
   "repo view")
-    echo "main"
+    json_fields=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--json" ]; then
+        json_fields="$arg"
+      fi
+      prev="$arg"
+    done
+    case "$json_fields" in
+      nameWithOwner) echo "autumngarage/touchstone" ;;
+      *) echo "main" ;;
+    esac
     ;;
   "pr list")
     echo ""
@@ -261,6 +272,50 @@ else
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 6: fully-qualified same-repo issue is enforced"
+BODY="$TEST_DIR/same-repo-qualified.md"
+printf 'Closes autumngarage/touchstone#50\n' >"$BODY"
+OUT="$TEST_DIR/same-repo-qualified.out"
+RC=0
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    bash "$SCRIPT_DIR/issue-claim-check.sh" --body-file "$BODY" --author alice
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'Issue claim check failed' "$OUT" \
+  && grep -q 'bash scripts/claim-issue.sh 50' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected fully-qualified same-repo issue to be enforced" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 7: fully-qualified cross-repo issue is skipped"
+BODY="$TEST_DIR/cross-repo-qualified.md"
+printf 'Closes autumngarage/other-project#50\n' >"$BODY"
+OUT="$TEST_DIR/cross-repo-qualified.out"
+RC=0
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    bash "$SCRIPT_DIR/issue-claim-check.sh" --body-file "$BODY" --author alice
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'Skipping cross-repo reference' "$OUT" \
+  && grep -q 'No closing issue references found' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected fully-qualified cross-repo issue to be skipped" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
