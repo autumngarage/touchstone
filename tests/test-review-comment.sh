@@ -31,9 +31,16 @@ cp "$TOUCHSTONE_ROOT/lib/toml.sh" "$MERGE_DIR/lib/toml.sh"
 cat >"$MERGE_DIR/scripts/codex-review.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '{"reviewer":"Conductor","provider":"claude","model":"claude-opus-4-1","peer_provider":"none","iterations":1,"mode":"%s","findings":0,"exit_reason":"clean"}\n' "${CODEX_REVIEW_MODE:-unknown}" > "$CODEX_REVIEW_SUMMARY_FILE"
+summary="${CODEX_REVIEW_STUB_SUMMARY:-}"
+if [ -z "$summary" ]; then
+  summary="$(printf '{"reviewer":"Conductor","provider":"claude","model":"claude-opus-4-1","peer_provider":"none","iterations":1,"mode":"%s","findings":0,"exit_reason":"clean"}' "${CODEX_REVIEW_MODE:-unknown}")"
+fi
+printf '%s\n' "$summary" > "$CODEX_REVIEW_SUMMARY_FILE"
 printf 'review invoked\n' > "$CODEX_REVIEW_LOG"
-exit 0
+if [ -n "${CODEX_REVIEW_STUB_OUTPUT:-}" ]; then
+  printf '%s\n' "$CODEX_REVIEW_STUB_OUTPUT"
+fi
+exit "${CODEX_REVIEW_STUB_EXIT:-0}"
 EOF
 chmod +x "$MERGE_DIR/scripts/merge-pr.sh" "$MERGE_DIR/scripts/codex-review.sh"
 
@@ -118,6 +125,7 @@ reset_fixture() {
     "$TEST_DIR"/review.log "$TEST_DIR"/merged "$TEST_DIR"/checkout "$TEST_DIR"/git-checkout-main
   rm -rf "$MERGE_DIR/repo/.git"
   mkdir -p "$MERGE_DIR/repo/.git"
+  unset CODEX_REVIEW_STUB_EXIT CODEX_REVIEW_STUB_OUTPUT CODEX_REVIEW_STUB_SUMMARY
 }
 
 run_merge() {
@@ -132,6 +140,9 @@ run_merge() {
     GH_CHECKOUT_FILE="$TEST_DIR/checkout" \
     GIT_CHECKOUT_MAIN_FILE="$TEST_DIR/git-checkout-main" \
     CODEX_REVIEW_LOG="$TEST_DIR/review.log" \
+    CODEX_REVIEW_STUB_EXIT="${CODEX_REVIEW_STUB_EXIT:-0}" \
+    CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
+    CODEX_REVIEW_STUB_SUMMARY="${CODEX_REVIEW_STUB_SUMMARY:-}" \
     TOUCHSTONE_NO_PREFLIGHT=1 \
     bash "$MERGE_DIR/scripts/merge-pr.sh" "$@" >"$output_file" 2>&1
 }
@@ -146,6 +157,47 @@ if grep -q '^Conductor review clean - provider: claude, model: claude-opus-4-1, 
 else
   echo "FAIL: clean review comment was not posted as expected" >&2
   cat "$TEST_DIR/merge-clean.txt" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  exit 1
+fi
+
+echo "==> Test: non-clean summary never posts clean-review comment"
+reset_fixture
+printf '[review]\ncomment_on_clean = true\n' >"$MERGE_DIR/repo/.codex-review.toml"
+CODEX_REVIEW_STUB_EXIT=0 \
+  CODEX_REVIEW_STUB_SUMMARY='{"reviewer":"Conductor","provider":"unknown","model":"unknown","peer_provider":"none","iterations":1,"mode":"fix","findings":0,"exit_reason":"timeout"}' \
+  run_merge "$TEST_DIR/merge-non-clean-summary.txt" 123
+if grep -q 'merge review failed before a trusted clean verdict' "$TEST_DIR/comments" \
+  && grep -q 'exit: timeout' "$TEST_DIR/comments" \
+  && ! grep -q 'review clean' "$TEST_DIR/comments"; then
+  echo "==> PASS: non-clean summary posted failure comment instead of clean"
+else
+  echo "FAIL: non-clean summary should not post clean-review comment" >&2
+  cat "$TEST_DIR/merge-non-clean-summary.txt" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  exit 1
+fi
+
+echo "==> Test: failed merge review posts provider failure comment"
+reset_fixture
+printf '[review]\ncomment_on_clean = true\n' >"$MERGE_DIR/repo/.codex-review.toml"
+set +e
+CODEX_REVIEW_STUB_EXIT=1 \
+  CODEX_REVIEW_STUB_OUTPUT=$'provider timed out\nno sentinel emitted' \
+  CODEX_REVIEW_STUB_SUMMARY='{"reviewer":"Conductor","provider":"gemini","model":"unknown","peer_provider":"none","iterations":1,"mode":"fix","findings":0,"fallback_attempted":true,"fallback_primary_provider":"gemini","fallback_retry_provider":"unknown","fallback_excluded_providers":"gemini","fallback_reason":"timeout after 60s","exit_reason":"timeout"}' \
+  run_merge "$TEST_DIR/merge-provider-failure.txt" 123
+FAILURE_COMMENT_EXIT=$?
+set -e
+if [ "$FAILURE_COMMENT_EXIT" -ne 0 ] \
+  && grep -q 'merge review failed before a trusted clean verdict' "$TEST_DIR/comments" \
+  && grep -q 'Failed/stalled provider(s): `gemini`' "$TEST_DIR/comments" \
+  && grep -q 'Retry: `TOUCHSTONE_CONDUCTOR_WITH=openrouter bash scripts/merge-pr.sh 123`' "$TEST_DIR/comments" \
+  && ! grep -q 'review clean' "$TEST_DIR/comments"; then
+  echo "==> PASS: provider failure comment posted with retry guidance"
+else
+  echo "FAIL: provider failure should post durable retry guidance" >&2
+  echo "exit code: $FAILURE_COMMENT_EXIT" >&2
+  cat "$TEST_DIR/merge-provider-failure.txt" >&2
   [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
   exit 1
 fi

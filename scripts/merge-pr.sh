@@ -222,15 +222,22 @@ recommended_retry_provider() {
   printf 'openrouter'
 }
 
-print_review_infra_retry_guidance() {
-  local failed_csv retry_provider exit_reason fallback_reason retry_command
+review_infra_retry_command() {
+  local failed_csv retry_provider
 
   failed_csv="$(review_failed_provider_csv)"
   retry_provider="$(recommended_retry_provider "$failed_csv")"
+  printf 'TOUCHSTONE_CONDUCTOR_WITH=%s bash scripts/merge-pr.sh %s' "$retry_provider" "$PR_NUMBER"
+}
+
+print_review_infra_retry_guidance() {
+  local failed_csv exit_reason fallback_reason retry_command
+
+  failed_csv="$(review_failed_provider_csv)"
   exit_reason="$(summary_string_field exit_reason)"
   fallback_reason="$(summary_string_field fallback_reason)"
   [ -n "$exit_reason" ] || exit_reason="reviewer-infrastructure"
-  retry_command="TOUCHSTONE_CONDUCTOR_WITH=$retry_provider bash scripts/merge-pr.sh $PR_NUMBER"
+  retry_command="$(review_infra_retry_command)"
 
   echo "" >&2
   echo "Provider/infrastructure outage details:" >&2
@@ -793,7 +800,7 @@ record_bypass_comment() {
 
 post_clean_review_comment() {
   local summary_file="$1"
-  local summary_json comment
+  local summary_json comment exit_reason
 
   if ! truthy "$COMMENT_ON_CLEAN"; then
     echo "==> Clean-review PR comment disabled by [review].comment_on_clean=false."
@@ -818,6 +825,21 @@ post_clean_review_comment() {
     return 0
   fi
 
+  exit_reason="$(review_comment_json_field "$summary_json" exit_reason 2>/dev/null || true)"
+  if [ -n "$exit_reason" ] && [ "$exit_reason" != "clean" ]; then
+    if declare -F format_review_failure_comment >/dev/null 2>&1; then
+      comment="$(format_review_failure_comment "$summary_json" "" "" "")"
+      if post_pr_review_comment "$PR_NUMBER" "$comment"; then
+        echo "==> Posted non-clean review summary PR comment (exit_reason=$exit_reason)."
+        return 0
+      fi
+      echo "WARNING: failed to post non-clean review summary comment for PR #$PR_NUMBER." >&2
+    else
+      echo "WARNING: review summary exit_reason=$exit_reason; skipping clean-review comment." >&2
+    fi
+    return 0
+  fi
+
   comment="$(format_clean_review_comment "$summary_json")"
   if post_pr_review_comment "$PR_NUMBER" "$comment"; then
     echo "==> Posted clean-review PR comment."
@@ -825,6 +847,45 @@ post_clean_review_comment() {
   fi
 
   echo "WARNING: failed to post clean-review PR comment for PR #$PR_NUMBER." >&2
+  return 0
+}
+
+post_review_failure_comment() {
+  local review_output_file="$1"
+  local infra_failure="$2"
+  local summary_json output comment retry_command failed_csv
+
+  if [ "$BYPASS_REVIEW" = true ]; then
+    return 0
+  fi
+  if ! declare -F format_review_failure_comment >/dev/null 2>&1 \
+    || ! declare -F post_pr_review_comment >/dev/null 2>&1; then
+    echo "WARNING: review comment helper not found at $REVIEW_COMMENT_SCRIPT; skipping review-failure comment." >&2
+    return 0
+  fi
+
+  if [ -n "$REVIEW_SUMMARY_FILE" ] && [ -f "$REVIEW_SUMMARY_FILE" ]; then
+    summary_json="$(tail -n 1 "$REVIEW_SUMMARY_FILE" 2>/dev/null || true)"
+  else
+    summary_json='{"reviewer":"Conductor","provider":"unknown","model":"unknown","peer_provider":"none","iterations":0,"mode":"fix","findings":0,"exit_reason":"reviewer-infrastructure"}'
+  fi
+  [ -n "$summary_json" ] || summary_json='{"reviewer":"Conductor","provider":"unknown","model":"unknown","peer_provider":"none","iterations":0,"mode":"fix","findings":0,"exit_reason":"reviewer-infrastructure"}'
+
+  output="$(cat "$review_output_file" 2>/dev/null || true)"
+  retry_command=""
+  failed_csv=""
+  if [ "$infra_failure" = true ]; then
+    retry_command="$(review_infra_retry_command)"
+    failed_csv="$(review_failed_provider_csv)"
+  fi
+
+  comment="$(format_review_failure_comment "$summary_json" "$output" "$retry_command" "$failed_csv")"
+  if post_pr_review_comment "$PR_NUMBER" "$comment"; then
+    echo "==> Posted review-failure PR comment."
+    return 0
+  fi
+
+  echo "WARNING: failed to post review-failure PR comment for PR #$PR_NUMBER." >&2
   return 0
 }
 
@@ -1162,6 +1223,7 @@ run_merge_review() {
   echo "==> Running merge review ..."
   local review_rc=0
   local review_output_file
+  local review_infra_failure
   local reviewed_head_after
   review_output_file="$(mktemp -t touchstone-merge-review.XXXXXX.txt)"
   REVIEW_SUMMARY_FILE="$(git rev-parse --git-path "touchstone/review-summary-pr-${PR_NUMBER}.json" 2>/dev/null || echo "")"
@@ -1213,13 +1275,16 @@ run_merge_review() {
 
   echo "" >&2
   echo "ERROR: Merge review exited $review_rc; merge-gate review fails closed." >&2
+  review_infra_failure=false
   if review_failure_is_infra "$review_rc" "$review_output_file"; then
+    review_infra_failure=true
     echo "       No concrete review findings were reported; this is a provider/infrastructure outage path." >&2
     print_review_infra_retry_guidance
   else
     echo "       Concrete review findings were reported; fix the findings, then rerun the merge gate." >&2
   fi
   echo "       Emergency bypass requires an explicit --bypass-with-disclosure reason and a matching prior clean review marker." >&2
+  post_review_failure_comment "$review_output_file" "$review_infra_failure"
 
   rm -f "$review_output_file"
   touchstone_emit_event review_blocked pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
