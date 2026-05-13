@@ -13,6 +13,18 @@ source "${TOUCHSTONE_ROOT}/lib/colors.sh"
 
 TOUCHSTONE_ROOT="${TOUCHSTONE_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 
+touchstone_release_preflight_github_release_auth() {
+  if ! command -v gh >/dev/null 2>&1; then
+    tk_fail "GitHub CLI is required to create the release. Install gh and try again."
+    return 1
+  fi
+
+  if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+    tk_fail "GitHub CLI is not authenticated. Run: gh auth login"
+    return 1
+  fi
+}
+
 touchstone_release() {
   local bump_type="${1:-minor}"
 
@@ -54,6 +66,10 @@ touchstone_release() {
   esac
   local new_version="${major}.${minor}.${patch}"
   tk_info "New version: v${new_version}"
+
+  # Fail before mutating the repo; otherwise a local auth problem can leave a
+  # pushed tag without the GitHub Release object that drives release workflows.
+  touchstone_release_preflight_github_release_auth || return 1
 
   # Bump VERSION file and touchstone's own dogfood stamp.
   echo "$new_version" >"$TOUCHSTONE_ROOT/VERSION"
