@@ -23,10 +23,21 @@ require_gh() {
   fi
 }
 
+resolve_current_repo() {
+  if [ -n "${GH_REPO:-}" ]; then
+    printf '%s\n' "$GH_REPO"
+    return 0
+  fi
+
+  gh repo view --json nameWithOwner --jq '.nameWithOwner // empty' 2>/dev/null || true
+}
+
 extract_issue_refs() {
   local body_file="$1"
   local refs_file="$2"
-  local match normalized issue_number
+  local match normalized issue_number target_repo current_repo
+
+  current_repo="$(resolve_current_repo | tr '[:upper:]' '[:lower:]')"
 
   # Pattern 1: same-repo numeric refs including closes-issue.
   while IFS= read -r match; do
@@ -39,7 +50,8 @@ extract_issue_refs() {
   # Pattern 2: closes/fixes/resolves with optional owner/repo prefix.
   while IFS= read -r match; do
     normalized="$(printf '%s' "$match" | tr '[:upper:]' '[:lower:]')"
-    if printf '%s' "$normalized" | grep -Eq 'autumngarage/[a-z0-9_-]+#'; then
+    target_repo="$(printf '%s' "$normalized" | sed -nE 's/.*(autumngarage\/[[:alnum:]_-]+)#.*/\1/p')"
+    if [ -n "$target_repo" ] && [ -n "$current_repo" ] && [ "$target_repo" != "$current_repo" ]; then
       echo "==> Skipping cross-repo reference: $match"
       continue
     fi
