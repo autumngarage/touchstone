@@ -2,8 +2,8 @@
 #
 # lib/auto-update.sh — auto-update check for the Touchstone CLI.
 #
-# Checks if a newer version is available on GitHub. If yes, upgrades
-# via brew (if installed that way) or git pull (if running from clone).
+# Checks if a newer version is available. Brew installs use Homebrew's formula
+# state; source checkouts use GitHub Releases before pulling.
 #
 # Called on every `touchstone` invocation. Throttled to check at most
 # once per hour to avoid slowing down every command.
@@ -63,6 +63,33 @@ touchstone_auto_update_version_gte() {
     }'
 }
 
+touchstone_auto_update_installed_via_brew() {
+  command -v brew >/dev/null 2>&1 && brew list touchstone &>/dev/null
+}
+
+touchstone_auto_update_brew_outdated() {
+  local outdated
+
+  outdated="$(brew outdated --quiet touchstone 2>/dev/null)" || return 2
+  if printf '%s\n' "$outdated" | grep -Eq '(^|/)touchstone$'; then
+    return 0
+  fi
+
+  return 1
+}
+
+touchstone_auto_update_brew_upgrade() {
+  if brew upgrade touchstone 2>&1 | sed 's/^/    /' >&2; then
+    echo "==> Updated touchstone via brew." >&2
+    TOUCHSTONE_AUTO_UPDATE_REEXEC_PATH="$(command -v touchstone 2>/dev/null || true)"
+    export TOUCHSTONE_AUTO_UPDATE_REEXEC_PATH
+    return "$TOUCHSTONE_AUTO_UPDATE_REEXEC_EXIT"
+  fi
+
+  echo "WARNING: touchstone auto-update via brew failed; continuing with current version." >&2
+  return 0
+}
+
 touchstone_auto_update() {
   # Skip if disabled.
   if [ "${TOUCHSTONE_NO_AUTO_UPDATE:-}" = "1" ] \
@@ -95,6 +122,26 @@ touchstone_auto_update() {
     return 0
   fi
 
+  local installed_via_brew=false
+  if touchstone_auto_update_installed_via_brew; then
+    installed_via_brew=true
+    local brew_outdated_status=0
+    touchstone_auto_update_brew_outdated || brew_outdated_status=$?
+    case "$brew_outdated_status" in
+      0)
+        echo "==> touchstone v${current_version} is outdated according to Homebrew. Updating..." >&2
+        touchstone_auto_update_brew_upgrade
+        return $?
+        ;;
+      1)
+        return 0
+        ;;
+      *)
+        echo "WARNING: touchstone auto-update could not check Homebrew formula freshness; falling back to GitHub release metadata." >&2
+        ;;
+    esac
+  fi
+
   # Fetch latest release version from GitHub (non-blocking, timeout 5s).
   local latest_version
   latest_version="$(curl -fsSL --max-time 5 \
@@ -113,15 +160,9 @@ touchstone_auto_update() {
   # Installed version is older — try to upgrade.
   echo "==> touchstone v${current_version} is outdated (latest: v${latest_version}). Updating..." >&2
 
-  if command -v brew >/dev/null 2>&1 && brew list touchstone &>/dev/null; then
-    # Installed via brew — upgrade that way.
-    if brew upgrade touchstone 2>&1 | sed 's/^/    /' >&2; then
-      echo "==> Updated to v${latest_version} via brew." >&2
-      TOUCHSTONE_AUTO_UPDATE_REEXEC_PATH="$(command -v touchstone 2>/dev/null || true)"
-      export TOUCHSTONE_AUTO_UPDATE_REEXEC_PATH
-      return "$TOUCHSTONE_AUTO_UPDATE_REEXEC_EXIT"
-    fi
-    echo "WARNING: touchstone auto-update via brew failed; continuing with current version." >&2
+  if [ "$installed_via_brew" = true ]; then
+    touchstone_auto_update_brew_upgrade
+    return $?
   elif [ -d "$TOUCHSTONE_ROOT/.git" ]; then
     # Running from a git clone — pull.
     if git -C "$TOUCHSTONE_ROOT" pull --rebase 2>&1 | sed 's/^/    /' >&2; then
