@@ -46,6 +46,15 @@ done
 TOUCHSTONE_ROOT="$(cd -P "$(dirname "$SCRIPT_PATH")/.." && pwd)"
 export TOUCHSTONE_ROOT
 
+touchstone_root_is_checkout() {
+  local root top
+  root="$(cd "$TOUCHSTONE_ROOT" 2>/dev/null && pwd -P)" || return 1
+  top="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$top" ] || return 1
+  top="$(cd "$top" 2>/dev/null && pwd -P)" || return 1
+  [ "$top" = "$root" ]
+}
+
 # Source shared libraries.
 source "$TOUCHSTONE_ROOT/lib/auto-update.sh"
 source "$TOUCHSTONE_ROOT/lib/colors.sh"
@@ -73,7 +82,7 @@ touchstone_version_str() {
 
 # Helper: get touchstone identifier for comparison (git SHA or version).
 touchstone_current_id() {
-  if git -C "$TOUCHSTONE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if touchstone_root_is_checkout; then
     git -C "$TOUCHSTONE_ROOT" rev-parse HEAD
   else
     touchstone_version_str
@@ -81,7 +90,7 @@ touchstone_current_id() {
 }
 
 touchstone_current_id_short() {
-  if git -C "$TOUCHSTONE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if touchstone_root_is_checkout; then
     git -C "$TOUCHSTONE_ROOT" rev-parse --short HEAD
   else
     touchstone_version_str
