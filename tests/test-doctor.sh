@@ -52,8 +52,9 @@ run_doctor() {
 }
 
 write_fake_install_tools() {
-  local dir="$1" conductor_mode="$2" version
+  local dir="$1" conductor_mode="$2" latest_version="${3:-}" version
   version="$(tr -d '[:space:]' <"$TOUCHSTONE_ROOT/VERSION")"
+  [ -n "$latest_version" ] || latest_version="$version"
   mkdir -p "$dir"
   for tool in gh pre-commit gitleaks shellcheck shfmt; do
     cat >"$dir/$tool" <<'EOF_FAKE_TOOL'
@@ -64,7 +65,7 @@ EOF_FAKE_TOOL
   done
   cat >"$dir/curl" <<EOF_FAKE_CURL
 #!/usr/bin/env bash
-printf '{"tag_name":"v%s"}\n' "$version"
+printf '{"tag_name":"v%s"}\n' "$latest_version"
 EOF_FAKE_CURL
   chmod +x "$dir/curl"
   if [ "$conductor_mode" = "present" ]; then
@@ -165,6 +166,27 @@ set -e
 
 assert_exit "$PRESENT_CONDUCTOR_EXIT" 0 "present conductor peer"
 assert_contains "$PRESENT_CONDUCTOR_OUT" "conductor: $PRESENT_CONDUCTOR_BIN/conductor (at least one provider configured)"
+
+# --------------------------------------------------------------------------
+# Test 2d: installation doctor ignores stale older latest-release metadata
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Test 2d: installation doctor accepts installed version newer than latest release ---"
+
+STALE_LATEST_BIN="$TEST_DIR/stale-latest-bin"
+write_fake_install_tools "$STALE_LATEST_BIN" "present" "0.0.1"
+STALE_LATEST_OUT="$TEST_DIR/stale-latest.out"
+set +e
+PATH="$STALE_LATEST_BIN:/usr/bin:/bin" run_doctor "$FAKE_HOME" --installation >"$STALE_LATEST_OUT" 2>&1
+STALE_LATEST_EXIT=$?
+set -e
+
+assert_exit "$STALE_LATEST_EXIT" 0 "stale latest release"
+assert_contains "$STALE_LATEST_OUT" "newer than latest GitHub release v0.0.1"
+if grep -q "available (you have" "$STALE_LATEST_OUT"; then
+  echo "FAIL: stale older latest release should not be reported as an available upgrade" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 # --------------------------------------------------------------------------
 # Test 3: review-stats missing log exits 0 with friendly message

@@ -1329,6 +1329,8 @@ cmd_doctor() {
   if [ -n "$latest" ]; then
     if [ "$version" = "$latest" ]; then
       tk_ok "v${latest} — you're current"
+    elif run_script_version_satisfies "$latest" "$version"; then
+      tk_ok "v${version} — newer than latest GitHub release v${latest}"
     else
       tk_warn "v${latest} available (you have v${version}). Run: brew upgrade touchstone"
       issues=$((issues + 1))
