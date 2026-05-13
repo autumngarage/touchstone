@@ -1831,6 +1831,160 @@ conductor_tools_for_mode() {
   esac
 }
 
+conductor_route_json_string_field() {
+  local json="$1"
+  local field="$2"
+  printf '%s\n' "$json" \
+    | sed -nE 's/.*"'"$field"'"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' \
+    | head -1
+}
+
+conductor_csv_contains() {
+  local csv="$1"
+  local wanted="$2"
+  local item
+  local -a items
+
+  [ -n "$csv" ] || return 1
+  IFS=',' read -r -a items <<<"$csv"
+  for item in "${items[@]}"; do
+    item="$(trim "$item")"
+    if [ "$item" = "$wanted" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+conductor_semantic_review_provider() {
+  case "$1" in
+    claude | codex | gemini | openrouter) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+conductor_semantic_review_exclude() {
+  local existing="$1"
+  local provider
+  local exclude="$existing"
+
+  for provider in deepseek-chat deepseek-reasoner kimi ollama; do
+    exclude="$(exclude_provider_once "$exclude" "$provider")"
+  done
+  printf '%s' "$exclude"
+}
+
+conductor_route_preflight_for_phase() {
+  local phase="$1"
+  local subcommand="$2"
+  local tools="$3"
+  local route_tags route_exclude route_stderr route_json route_rc provider error
+  local estimated_input_tokens
+  local -a args
+
+  route_tags="$(normalize_conductor_review_tags "${CONDUCTOR_TAGS:-}")"
+  route_exclude="${CONDUCTOR_EXCLUDE:-}"
+
+  if [ "$subcommand" = "review" ]; then
+    if [ -n "${CONDUCTOR_WITH:-}" ] && ! conductor_semantic_review_provider "$CONDUCTOR_WITH"; then
+      echo "ERROR: Review route preflight failed before invoking reviewer." >&2
+      echo "       phase: $phase (subcommand=$subcommand, tools=${tools:-none})" >&2
+      echo "       requested provider: $CONDUCTOR_WITH" >&2
+      echo "       missing capability: pinned provider cannot satisfy semantic conductor review" >&2
+      echo "       next action: use claude, codex, gemini, openrouter, or unset TOUCHSTONE_CONDUCTOR_WITH for auto-routing." >&2
+      return 1
+    fi
+    route_exclude="$(conductor_semantic_review_exclude "$route_exclude")"
+  fi
+
+  if [ -n "${CONDUCTOR_WITH:-}" ]; then
+    if conductor_csv_contains "$route_exclude" "$CONDUCTOR_WITH"; then
+      echo "ERROR: Review route preflight failed before invoking reviewer." >&2
+      echo "       phase: $phase (subcommand=$subcommand, tools=${tools:-none})" >&2
+      echo "       requested provider: $CONDUCTOR_WITH" >&2
+      echo "       missing capability: pinned provider is excluded by TOUCHSTONE_CONDUCTOR_EXCLUDE/[review.conductor].exclude" >&2
+      echo "       next action: remove $CONDUCTOR_WITH from the exclusion list, unset TOUCHSTONE_CONDUCTOR_WITH, or pin a viable provider such as openrouter." >&2
+      return 1
+    fi
+    route_exclude="$(conductor_review_pin_exclude "$CONDUCTOR_WITH" "$route_exclude")"
+  fi
+
+  estimated_input_tokens=$((ROUTING_DIFF_LINE_COUNT * 20 + 1000))
+  args=(route --json --prefer "${CONDUCTOR_PREFER:-best}" --effort "${CONDUCTOR_EFFORT:-high}"
+    --estimated-input-tokens "$estimated_input_tokens" --estimated-output-tokens 500)
+  [ -n "$route_tags" ] && args+=(--tags "$route_tags")
+  [ -n "$tools" ] && args+=(--tools "$tools")
+  [ -n "$route_exclude" ] && args+=(--exclude "$route_exclude")
+
+  route_stderr="$(mktemp "${TMPDIR:-/tmp}/touchstone-route-preflight.XXXXXX")"
+  set +e
+  route_json="$(conductor "${args[@]}" 2>"$route_stderr")"
+  route_rc=$?
+  set -e
+
+  provider="$(conductor_route_json_string_field "$route_json" provider)"
+  error="$(conductor_route_json_string_field "$route_json" error)"
+  if [ -z "$error" ] && [ -s "$route_stderr" ]; then
+    error="$(tr '\n' ' ' <"$route_stderr" | sed 's/[[:space:]][[:space:]]*/ /g')"
+  fi
+  rm -f "$route_stderr"
+
+  if [ "$route_rc" -ne 0 ] || [ -z "$provider" ]; then
+    [ -n "$error" ] || error="no provider satisfies this route"
+    echo "ERROR: Review route preflight failed before invoking reviewer." >&2
+    echo "       phase: $phase (subcommand=$subcommand, tools=${tools:-none})" >&2
+    echo "       requested provider: ${CONDUCTOR_WITH:-auto}" >&2
+    echo "       provider exclusions: ${CONDUCTOR_EXCLUDE:-none}" >&2
+    case "$error" in
+      *"does not support tools"*) echo "       missing capability: $error" >&2 ;;
+      *) echo "       reason: $error" >&2 ;;
+    esac
+    echo "       next action: set TOUCHSTONE_CONDUCTOR_WITH=openrouter, remove over-broad exclusions, or run conductor doctor." >&2
+    return 1
+  fi
+
+  if [ -n "${CONDUCTOR_WITH:-}" ] && [ "$provider" != "$CONDUCTOR_WITH" ]; then
+    echo "ERROR: Review route preflight selected '$provider' while '$CONDUCTOR_WITH' was pinned." >&2
+    echo "       next action: unset TOUCHSTONE_CONDUCTOR_WITH or pin the selected viable provider." >&2
+    return 1
+  fi
+
+  echo "==> Review route preflight: $phase route viable via $provider (subcommand=$subcommand, tools=${tools:-none})"
+  return 0
+}
+
+run_conductor_route_preflight() {
+  local review_subcommand review_tools fix_tools
+
+  [ "${ACTIVE_REVIEWER:-}" = "conductor" ] || return 0
+
+  # Keep the extra subprocess out of ordinary feature-branch pre-push hooks;
+  # the merge gate sets CODEX_REVIEW_PR_NUMBER and is where route viability
+  # must fail closed before provider wall-clock time is spent.
+  if [ -z "${CODEX_REVIEW_PR_NUMBER:-}" ] && ! is_truthy "${TOUCHSTONE_REVIEW_ROUTE_PREFLIGHT:-false}"; then
+    return 0
+  fi
+
+  if ! conductor route --help >/dev/null 2>&1; then
+    echo "WARNING: conductor route preflight is unavailable; continuing without route viability validation." >&2
+    return 0
+  fi
+
+  echo "==> Review route preflight: mode=$REVIEW_MODE with=${CONDUCTOR_WITH:-auto} prefer=${CONDUCTOR_PREFER:-best} effort=${CONDUCTOR_EFFORT:-high} exclude=${CONDUCTOR_EXCLUDE:-none}"
+
+  review_subcommand="$(conductor_subcommand_for_mode review)"
+  review_tools=""
+  if [ "$review_subcommand" = "exec" ]; then
+    review_tools="$(conductor_tools_for_mode review)"
+  fi
+  conductor_route_preflight_for_phase review "$review_subcommand" "$review_tools" || return 1
+
+  if mode_allows_fix; then
+    fix_tools="$(conductor_tools_for_mode fix)"
+    conductor_route_preflight_for_phase fix exec "$fix_tools" || return 1
+  fi
+}
+
 # --------------------------------------------------------------------------
 # Reviewer cascade resolver
 # --------------------------------------------------------------------------
@@ -2134,6 +2288,7 @@ handle_error() {
   case "$reason" in
     timeout*) fail_open_code="FAIL_OPEN_TIMEOUT" ;;
     "malformed sentinel") fail_open_code="FAIL_OPEN_PARSE_ERROR" ;;
+    "provider unavailable:"*) fail_open_code="FAIL_OPEN_PROVIDER_UNAVAILABLE" ;;
     *) fail_open_code="FAIL_OPEN_REVIEWER_ERROR" ;;
   esac
 
@@ -3886,6 +4041,14 @@ print_banner() {
   tk_verdict info "REVIEW STARTING" "${label} · merge code review"
   BANNER_PRINTED=true
 }
+
+if ! run_conductor_route_preflight; then
+  REVIEW_EXIT_REASON="provider-unavailable"
+  REVIEW_FINDINGS_COUNT=0
+  DIFF_LINE_COUNT="$ROUTING_DIFF_LINE_COUNT"
+  print_summary
+  handle_error "provider unavailable: route preflight"
+fi
 
 # --------------------------------------------------------------------------
 # Issue #163: prepend a verification checkpoint when this branch already
