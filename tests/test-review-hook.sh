@@ -772,6 +772,207 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: merge review route preflight accepts viable auto route"
+setup_cascade_repo
+rm -f "$CASCADE_CALLS"
+rm -rf "$CASCADE_BIN"
+mkdir -p "$CASCADE_BIN"
+cat >"$CASCADE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat >"$CASCADE_BIN/conductor" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  doctor)
+    printf '{"providers":[{"configured":true}]}\n'
+    ;;
+  route)
+    if [ "${2:-}" = "--help" ]; then
+      exit 0
+    fi
+    printf 'route %s\n' "$*" >>"$CASCADE_CALLS"
+    printf '{"provider":"openrouter"}\n'
+    ;;
+  review)
+    printf 'review %s\n' "$*" >>"$CASCADE_CALLS"
+    cat >/dev/null
+    printf 'CODEX_REVIEW_CLEAN\n'
+    ;;
+  *)
+    printf 'unexpected conductor command: %s\n' "$*" >&2
+    exit 99
+    ;;
+esac
+EOF
+chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/conductor"
+
+set +e
+(
+  cd "$CASCADE_REPO"
+  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CASCADE_CALLS="$CASCADE_CALLS" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
+    CODEX_REVIEW_PR_NUMBER=123 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CASCADE_OUTPUT" 2>&1
+)
+ROUTE_VIABLE_EXIT=$?
+set -e
+
+if [ "$ROUTE_VIABLE_EXIT" -eq 0 ] \
+  && grep -q 'Review route preflight: mode=fix' "$CASCADE_OUTPUT" \
+  && grep -q 'review route viable via openrouter' "$CASCADE_OUTPUT" \
+  && grep -q 'fix route viable via openrouter' "$CASCADE_OUTPUT" \
+  && grep -q '^review ' "$CASCADE_CALLS"; then
+  echo "==> PASS: merge route preflight allowed viable auto route"
+else
+  echo "FAIL: expected viable route preflight before review" >&2
+  echo "exit code: $ROUTE_VIABLE_EXIT" >&2
+  cat "$CASCADE_OUTPUT" >&2
+  [ -f "$CASCADE_CALLS" ] && cat "$CASCADE_CALLS" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: merge review route preflight fails when exclusions leave no provider"
+setup_cascade_repo
+rm -f "$CASCADE_CALLS"
+rm -rf "$CASCADE_BIN"
+mkdir -p "$CASCADE_BIN"
+cat >"$CASCADE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat >"$CASCADE_BIN/conductor" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  doctor)
+    printf '{"providers":[{"configured":true}]}\n'
+    ;;
+  route)
+    if [ "${2:-}" = "--help" ]; then
+      exit 0
+    fi
+    printf 'route %s\n' "$*" >>"$CASCADE_CALLS"
+    printf '{"error":"no provider satisfies the routing request after planning exclusions"}\n'
+    exit 2
+    ;;
+  review)
+    printf 'review should not run\n' >>"$CASCADE_CALLS"
+    exit 99
+    ;;
+  *)
+    printf 'unexpected conductor command: %s\n' "$*" >&2
+    exit 99
+    ;;
+esac
+EOF
+chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/conductor"
+
+set +e
+(
+  cd "$CASCADE_REPO"
+  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CASCADE_CALLS="$CASCADE_CALLS" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
+    CODEX_REVIEW_PR_NUMBER=123 \
+    TOUCHSTONE_CONDUCTOR_EXCLUDE="claude,codex,gemini,openrouter,kimi,deepseek-chat,deepseek-reasoner,ollama" \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CASCADE_OUTPUT" 2>&1
+)
+ROUTE_EXCLUDED_EXIT=$?
+set -e
+
+if [ "$ROUTE_EXCLUDED_EXIT" -eq 1 ] \
+  && grep -q 'Review route preflight failed before invoking reviewer' "$CASCADE_OUTPUT" \
+  && grep -q 'provider exclusions: claude,codex,gemini,openrouter,kimi,deepseek-chat,deepseek-reasoner,ollama' "$CASCADE_OUTPUT" \
+  && grep -q 'exit reason:.*provider-unavailable' "$CASCADE_OUTPUT" \
+  && ! grep -q 'review should not run' "$CASCADE_CALLS"; then
+  echo "==> PASS: all-excluded route failed before review"
+else
+  echo "FAIL: expected all-excluded route to fail before review" >&2
+  echo "exit code: $ROUTE_EXCLUDED_EXIT" >&2
+  cat "$CASCADE_OUTPUT" >&2
+  [ -f "$CASCADE_CALLS" ] && cat "$CASCADE_CALLS" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: merge review route preflight names pinned provider missing tools"
+setup_cascade_repo
+rm -f "$CASCADE_CALLS"
+rm -rf "$CASCADE_BIN"
+mkdir -p "$CASCADE_BIN"
+cat >"$CASCADE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat >"$CASCADE_BIN/conductor" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  doctor)
+    printf '{"providers":[{"configured":true}]}\n'
+    ;;
+  route)
+    if [ "${2:-}" = "--help" ]; then
+      exit 0
+    fi
+    printf 'route %s\n' "$*" >>"$CASCADE_CALLS"
+    case " $* " in
+      *" --tools Read,Grep,Glob,Bash,Edit,Write "*)
+        printf '{"error":"no provider satisfies the routing request. Skipped: claude does not support tools: [Read, Grep, Glob, Bash, Edit, Write]"}\n'
+        exit 2
+        ;;
+      *)
+        printf '{"provider":"claude"}\n'
+        ;;
+    esac
+    ;;
+  review)
+    printf 'review should not run\n' >>"$CASCADE_CALLS"
+    exit 99
+    ;;
+  *)
+    printf 'unexpected conductor command: %s\n' "$*" >&2
+    exit 99
+    ;;
+esac
+EOF
+chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/conductor"
+
+set +e
+(
+  cd "$CASCADE_REPO"
+  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CASCADE_CALLS="$CASCADE_CALLS" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
+    CODEX_REVIEW_PR_NUMBER=123 \
+    TOUCHSTONE_CONDUCTOR_WITH=claude \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CASCADE_OUTPUT" 2>&1
+)
+ROUTE_PINNED_EXIT=$?
+set -e
+
+if [ "$ROUTE_PINNED_EXIT" -eq 1 ] \
+  && grep -q 'requested provider: claude' "$CASCADE_OUTPUT" \
+  && grep -q 'missing capability: .*does not support tools' "$CASCADE_OUTPUT" \
+  && grep -q -- '--tools Read,Grep,Glob,Bash,Edit,Write' "$CASCADE_CALLS" \
+  && ! grep -q 'review should not run' "$CASCADE_CALLS"; then
+  echo "==> PASS: pinned nonviable provider failed with missing capability"
+else
+  echo "FAIL: expected pinned provider missing tools to fail before review" >&2
+  echo "exit code: $ROUTE_PINNED_EXIT" >&2
+  cat "$CASCADE_OUTPUT" >&2
+  [ -f "$CASCADE_CALLS" ] && cat "$CASCADE_CALLS" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: review can be disabled by config"
 setup_cascade_repo
 {
