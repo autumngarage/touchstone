@@ -276,7 +276,7 @@ reset_case_files() {
     "$TEST_DIR"/git-sibling-pull* "$TEST_DIR"/gh-merged-marker* \
     "$TEST_DIR"/git-review-head* "$TEST_DIR"/git-push-head* \
     "$TEST_DIR"/gh-head-ref* "$TEST_DIR"/preflight-calls* \
-    "$TEST_DIR"/git-worktree-remove*
+    "$TEST_DIR"/git-worktree-remove* "$TEST_DIR"/touchstone-review-log*
   rm -rf "$GIT_PATH_ROOT"
   mkdir -p "$GIT_PATH_ROOT"
   unset GIT_WORKTREE_LIST
@@ -302,6 +302,7 @@ reset_case_files() {
   unset GIT_WORKTREE_STATUS
   unset GIT_WORKTREE_REMOVE_FAIL
   unset SHELLCHECK_VERSION_LINE
+  unset TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS
 }
 
 run_merge_pr() {
@@ -348,7 +349,24 @@ run_merge_pr() {
     GIT_LOCAL_BRANCH_HEAD="${GIT_LOCAL_BRANCH_HEAD:-pr-head-oid}" \
     PREFLIGHT_CALLS_FILE="${PREFLIGHT_CALLS_FILE:-}" \
     TEST_CURRENT_WORKTREE="${TEST_CURRENT_WORKTREE:-$DEFAULT_FAKE_WORKTREE}" \
+    TOUCHSTONE_REVIEW_LOG="$TEST_DIR/touchstone-review-log" \
+    TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS="${TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS:-24}" \
     bash "$MERGE_SCRIPT_DIR/merge-pr.sh" "$@" >"$output_file" 2>&1
+}
+
+write_fail_open_review_log() {
+  local branch="${1:-feature/test}"
+  local sha="${2:-pr-head-oid}"
+  local reason="${3:-FAIL_OPEN_TIMEOUT}"
+  local detail="${4:-fail-open:timeout waiting for hosted reviewer}"
+  local timestamp="${5:-}"
+
+  if [ -z "$timestamp" ]; then
+    timestamp="$(date '+%Y-%m-%dT%H:%M:%S%z')"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$timestamp" "$DEFAULT_FAKE_WORKTREE" "$branch" "$sha" "$reason" "$detail" \
+    >"$TEST_DIR/touchstone-review-log"
 }
 
 install_preflight_counter_fixture() {
@@ -1104,15 +1122,94 @@ else
   exit 1
 fi
 
+echo "==> Test: fail-open marker bypass requires explicit allow flag"
+reset_case_files
+write_fail_open_review_log
+if run_merge_pr "$TEST_DIR/output-fail-open-no-flag.txt" 123 --bypass-with-disclosure="fail-open reviewer timeout"; then
+  echo "FAIL: fail-open marker bypass without allow flag unexpectedly succeeded" >&2
+  exit 1
+fi
+if grep -q "No prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-fail-open-no-flag.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
+  && [ ! -f "$TEST_DIR/gh-comment" ] \
+  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
+  echo "==> PASS: fail-open marker is ignored unless explicitly allowed"
+else
+  echo "FAIL: fail-open marker without allow flag did not fail safely" >&2
+  cat "$TEST_DIR/output-fail-open-no-flag.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: fail-open marker bypass requires outage disclosure"
+reset_case_files
+write_fail_open_review_log
+if run_merge_pr "$TEST_DIR/output-fail-open-vague.txt" 123 --bypass-with-disclosure="manual override" --allow-fail-open-marker; then
+  echo "FAIL: fail-open marker bypass with vague disclosure unexpectedly succeeded" >&2
+  exit 1
+fi
+if grep -q -- '--allow-fail-open-marker requires a disclosure reason' "$TEST_DIR/output-fail-open-vague.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
+  && [ ! -f "$TEST_DIR/gh-comment" ] \
+  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
+  echo "==> PASS: fail-open marker bypass rejects vague disclosure"
+else
+  echo "FAIL: vague fail-open disclosure did not fail safely" >&2
+  cat "$TEST_DIR/output-fail-open-vague.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: fail-open marker bypass requires matching current head"
+reset_case_files
+write_fail_open_review_log feature/test old-head
+if run_merge_pr "$TEST_DIR/output-fail-open-stale.txt" 123 --bypass-with-disclosure="fail-open reviewer infrastructure outage" --allow-fail-open-marker; then
+  echo "FAIL: fail-open marker bypass with stale head unexpectedly succeeded" >&2
+  exit 1
+fi
+if grep -q "No recent fail-open review-log marker matches branch 'feature/test' at head 'pr-head-oid'" "$TEST_DIR/output-fail-open-stale.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
+  && [ ! -f "$TEST_DIR/gh-comment" ] \
+  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
+  echo "==> PASS: stale fail-open marker rejected"
+else
+  echo "FAIL: stale fail-open marker did not fail safely" >&2
+  cat "$TEST_DIR/output-fail-open-stale.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: fail-open marker bypass records evidence and audit log"
+reset_case_files
+write_fail_open_review_log
+run_merge_pr "$TEST_DIR/output-fail-open-bypass.txt" 123 --bypass-with-disclosure="fail-open reviewer infrastructure outage; deterministic checks clean" --allow-fail-open-marker
+if grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-fail-open-bypass.txt" \
+  && grep -q 'marker: fail-open' "$TEST_DIR/output-fail-open-bypass.txt" \
+  && grep -q 'reason: fail-open reviewer infrastructure outage; deterministic checks clean' "$TEST_DIR/output-fail-open-bypass.txt" \
+  && grep -q 'Reviewer bypassed via `--bypass-with-disclosure`. Marker: fail-open. Reason: fail-open reviewer infrastructure outage; deterministic checks clean' "$TEST_DIR/gh-comment" \
+  && grep -q 'Fail-open evidence: timestamp=' "$TEST_DIR/gh-comment" \
+  && grep -q 'reason=FAIL_OPEN_TIMEOUT' "$TEST_DIR/gh-comment" \
+  && grep -q '^Reviewer-bypass: fail-open reviewer infrastructure outage; deterministic checks clean$' "$TEST_DIR/gh-merge-body" \
+  && grep -q $'\treview-bypass\t' "$TEST_DIR/touchstone-review-log" \
+  && grep -q 'marker=fail-open' "$TEST_DIR/touchstone-review-log" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
+  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
+  echo "==> PASS: fail-open bypass is disclosed, audited, and merged"
+else
+  echo "FAIL: fail-open bypass path did not disclose and merge as expected" >&2
+  cat "$TEST_DIR/output-fail-open-bypass.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: bypass after clean marker records disclosure and trailer"
 reset_case_files
 mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
 printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=pr-head-oid\nmerge_base=base-oid\n' >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
 run_merge_pr "$TEST_DIR/output-bypass.txt" 123 --bypass-with-disclosure="reviewer timed out after prior clean review"
 if grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-bypass.txt" \
+  && grep -q 'marker: clean-review' "$TEST_DIR/output-bypass.txt" \
   && grep -q 'reason: reviewer timed out after prior clean review' "$TEST_DIR/output-bypass.txt" \
-  && grep -q 'Reviewer bypassed via `--bypass-with-disclosure`. Reason: reviewer timed out after prior clean review' "$TEST_DIR/gh-comment" \
+  && grep -q 'Reviewer bypassed via `--bypass-with-disclosure`. Marker: clean-review. Reason: reviewer timed out after prior clean review' "$TEST_DIR/gh-comment" \
   && grep -q '^Reviewer-bypass: reviewer timed out after prior clean review$' "$TEST_DIR/gh-merge-body" \
+  && grep -q $'\treview-bypass\t' "$TEST_DIR/touchstone-review-log" \
+  && grep -q 'marker=clean-review' "$TEST_DIR/touchstone-review-log" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
   && [ ! -f "$TEST_DIR/codex-review.log" ]; then
   echo "==> PASS: bypass is disclosed and merged with trailer"
