@@ -1727,8 +1727,10 @@ if [ ! -f "$PROJECT_DIR/.touchstone-config" ]; then
     printf 'targets=%s\n' "$TARGETS"
     printf 'git_workflow=%s\n' "$INPUT_GIT_WORKFLOW"
     printf 'gitbutler_mcp=%s\n' "$INPUT_GITBUTLER_MCP"
-    printf '# Set sync_auto=false to opt out of automatic touchstone update branches.\n'
+    printf '# Set sync_auto=false to opt out of automatic touchstone updates.\n'
     printf 'sync_auto=true\n'
+    printf '# Set sync_ship=false to create local update branches without auto-shipping PRs.\n'
+    printf 'sync_ship=true\n'
     printf 'lint_command=\n'
     printf 'typecheck_command=\n'
     printf 'build_command=\n'

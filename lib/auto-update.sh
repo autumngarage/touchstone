@@ -11,6 +11,7 @@
 # Env overrides:
 #   TOUCHSTONE_NO_AUTO_UPDATE=1  — disable auto-update and auto-project-sync entirely
 #   TOUCHSTONE_NO_AUTO_PROJECT_SYNC=1 — disable per-project file sync only
+#   TOUCHSTONE_NO_AUTO_PROJECT_SHIP=1 — sync locally but do not auto-ship the update PR
 #   TOUCHSTONE_UPDATE_INTERVAL   — seconds between checks (default: 3600 = 1 hour)
 #
 
@@ -257,6 +258,113 @@ touchstone_auto_project_sync_config_enabled() {
   return 0
 }
 
+touchstone_auto_project_ship_config_enabled() {
+  local project_dir="$1" config value
+  config="$project_dir/.touchstone-config"
+  [ -f "$config" ] || return 0
+
+  value="$(awk '
+    function trim(s) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
+      return s
+    }
+    function unquote(s) {
+      s = trim(s)
+      if ((s ~ /^".*"$/) || (s ~ /^\047.*\047$/)) {
+        s = substr(s, 2, length(s) - 2)
+      }
+      return s
+    }
+    {
+      line = $0
+      sub(/[[:space:]]+#.*$/, "", line)
+      line = trim(line)
+      if (line == "") {
+        next
+      }
+      if (line ~ /^\[[^]]+\]$/) {
+        section = substr(line, 2, length(line) - 2)
+        next
+      }
+      eq = index(line, "=")
+      if (eq == 0) {
+        next
+      }
+      key = trim(substr(line, 1, eq - 1))
+      val = unquote(substr(line, eq + 1))
+      if (key == "sync_ship" || key == "auto_sync_ship" || key == "auto_project_sync_ship") {
+        print val
+      } else if (section == "sync" && (key == "ship" || key == "auto_ship")) {
+        print val
+      }
+    }
+  ' "$config" 2>/dev/null | tail -1)"
+
+  case "$value" in
+    false | False | FALSE | 0 | no | No | NO | off | Off | OFF)
+      return 1
+      ;;
+  esac
+
+  return 0
+}
+
+touchstone_auto_project_ship_enabled() {
+  local project_dir="$1"
+
+  [ "${TOUCHSTONE_NO_AUTO_PROJECT_SHIP:-}" != "1" ] || return 1
+  touchstone_auto_project_ship_config_enabled "$project_dir"
+}
+
+touchstone_auto_project_ship_preflight() {
+  local project_dir="$1"
+  local current_branch default_branch
+
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "WARNING: touchstone auto-ship unavailable for $project_dir (gh CLI not installed)." >&2
+    echo "         Install GitHub CLI, then run: cd \"$project_dir\" && touchstone update --ship" >&2
+    return 1
+  fi
+  if ! gh auth status >/dev/null 2>&1; then
+    echo "WARNING: touchstone auto-ship unavailable for $project_dir (gh is not authenticated)." >&2
+    echo "         Authenticate, then run: cd \"$project_dir\" && touchstone update --ship" >&2
+    return 1
+  fi
+  if ! git -C "$project_dir" remote get-url origin >/dev/null 2>&1; then
+    echo "WARNING: touchstone auto-ship unavailable for $project_dir (no git remote named origin)." >&2
+    echo "         Add a GitHub remote, then run: cd \"$project_dir\" && touchstone update --ship" >&2
+    return 1
+  fi
+
+  current_branch="$(git -C "$project_dir" branch --show-current 2>/dev/null || true)"
+  default_branch="$(git -C "$project_dir" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null \
+    | sed 's#^origin/##' || true)"
+  if [ -z "$default_branch" ]; then
+    if git -C "$project_dir" show-ref --verify --quiet refs/heads/main; then
+      default_branch="main"
+    elif git -C "$project_dir" show-ref --verify --quiet refs/heads/master; then
+      default_branch="master"
+    fi
+  fi
+  if [ -z "$current_branch" ]; then
+    echo "WARNING: touchstone auto-ship unavailable for $project_dir (detached HEAD)." >&2
+    echo "         Check out the default branch, then run: cd \"$project_dir\" && touchstone update --ship" >&2
+    return 1
+  fi
+  if [ -n "$default_branch" ] && [ "$current_branch" != "$default_branch" ]; then
+    echo "WARNING: touchstone auto-ship deferred for $project_dir (current branch '$current_branch' is not '$default_branch')." >&2
+    echo "         To avoid mixing app work into the Touchstone update PR, run: cd \"$project_dir\" && git switch $default_branch && touchstone update --ship" >&2
+    return 1
+  fi
+  if [ -z "$default_branch" ] && [ "$current_branch" != "main" ] && [ "$current_branch" != "master" ]; then
+    echo "WARNING: touchstone auto-ship deferred for $project_dir (could not identify the default branch from '$current_branch')." >&2
+    echo "         Run from the default branch: cd \"$project_dir\" && touchstone update --ship" >&2
+    return 1
+  fi
+
+  return 0
+}
+
 touchstone_semver_major_minor() {
   local version="$1"
 
@@ -364,6 +472,7 @@ touchstone_auto_project_sync() {
   if [ -n "$overlap_paths" ] && [ "${TOUCHSTONE_FORCE_OVERLAP:-}" != "1" ]; then
     echo "WARNING: touchstone auto-sync skipped for $project_dir (dirty paths overlap planned touchstone writes)." >&2
     printf '%s\n' "$overlap_paths" | sed 's/^/         - /' >&2
+    echo "         Resolve those paths, then run: cd \"$project_dir\" && touchstone update --ship" >&2
     touchstone_sync_log_skip "$project_dir" "$project_id" "$installed_id" "dirty-overlap" "$overlap_paths" "touchstone $command"
     return 0
   fi
@@ -378,17 +487,35 @@ touchstone_auto_project_sync() {
 
   local log_file
   log_file="$(mktemp -t touchstone-auto-project-sync.XXXXXX)"
+  local ship_update=false
+  local -a update_args=()
+
+  if touchstone_auto_project_ship_enabled "$project_dir" \
+    && touchstone_auto_project_ship_preflight "$project_dir"; then
+    ship_update=true
+    update_args+=("--ship")
+  elif touchstone_auto_project_ship_enabled "$project_dir"; then
+    echo "==> touchstone auto-sync will create a local update branch only." >&2
+    echo "    Ship it later with: cd \"$project_dir\" && bash scripts/open-pr.sh --auto-merge" >&2
+  fi
 
   # Invariant: after any non-readonly `touchstone <subcmd>` in a
   # touchstone-aware project, the project's principles/hooks/scripts match the
   # installed Touchstone id, or the user opted out, or the tree was dirty.
-  if (cd "$project_dir" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$log_file" 2>&1; then
+  if (cd "$project_dir" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" ${update_args[@]+"${update_args[@]}"}) >"$log_file" 2>&1; then
     rm -f "$log_file"
-    echo "==> auto-synced touchstone $project_id -> $installed_id" >&2
+    if [ "$ship_update" = true ]; then
+      echo "==> auto-shipped touchstone $project_id -> $installed_id" >&2
+    else
+      echo "==> auto-synced touchstone $project_id -> $installed_id" >&2
+      echo "    Ship the update with: cd \"$project_dir\" && bash scripts/open-pr.sh --auto-merge" >&2
+    fi
     return 0
   fi
 
   echo "WARNING: touchstone auto-sync failed for $project_dir; continuing. Log: $log_file" >&2
+  echo "         Retry: cd \"$project_dir\" && touchstone update --ship" >&2
+  echo "         If an update branch was created, ship it with: cd \"$project_dir\" && bash scripts/open-pr.sh --auto-merge" >&2
   touchstone_sync_log_skip "$project_dir" "$project_id" "$installed_id" "auto-sync-failed" "" "touchstone $command"
   return 0
 }

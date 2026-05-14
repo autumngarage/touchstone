@@ -1758,6 +1758,7 @@ cmd_help() {
   printf "    ${BOLD}--no-auto-sync${RESET}                    Disable project auto-sync for this invocation\n"
   printf "    ${BOLD}TOUCHSTONE_NO_AUTO_UPDATE=1${RESET}        Disable CLI auto-update and project auto-sync\n"
   printf "    ${BOLD}TOUCHSTONE_NO_AUTO_PROJECT_SYNC=1${RESET}  Disable project auto-sync only\n"
+  printf "    ${BOLD}TOUCHSTONE_NO_AUTO_PROJECT_SHIP=1${RESET}  Create local sync branches without auto-shipping PRs\n"
   printf "    ${BOLD}TOUCHSTONE_FORCE_OVERLAP=1${RESET}         Force project sync through dirty overlap\n"
   printf "    ${BOLD}TOUCHSTONE_NO_DRIFT_WARNING=1${RESET}      Suppress skipped-sync drift warning\n"
   echo ""
