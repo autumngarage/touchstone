@@ -1736,6 +1736,11 @@ if [ ! -f "$PROJECT_DIR/.touchstone-config" ]; then
     printf 'build_command=\n'
     printf 'test_command=%s\n' "$INPUT_TEST"
     printf 'validate_command=\n'
+    printf '# validate_lane=auto chooses affected/smoke only when safely configured; otherwise full.\n'
+    printf 'validate_lane=auto\n'
+    printf 'validate_affected_command=\n'
+    printf 'validate_smoke_command=\n'
+    printf 'validate_full_command=\n'
   } >"$PROJECT_DIR/.touchstone-config"
   echo "==> Wrote .touchstone-config: project_type=$INPUT_TYPE"
 else
