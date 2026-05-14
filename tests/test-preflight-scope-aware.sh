@@ -256,6 +256,75 @@ fi
 assert_log_contains "$LOG" '^validate:validate$'
 echo "==> PASS: diff mode blocks on full project validate failure"
 
+echo "==> Test: delivery-only Touchstone-managed diff skips project validate"
+REPO="$TEST_DIR/repo-delivery-only"
+LOG="$TEST_DIR/delivery-only.log"
+OUT="$TEST_DIR/delivery-only.out"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  mkdir -p lib scripts principles .claude/skills/touchstone-git-workflow
+  printf '2.99.0\n' >.touchstone-version
+  printf '# touchstone managed\n' >lib/preflight.sh
+  printf '#!/usr/bin/env bash\nset -euo pipefail\necho managed\n' >scripts/merge-pr.sh
+  printf '# Principle\n' >principles/git-workflow.md
+  printf '# Skill\n' >.claude/skills/touchstone-git-workflow/SKILL.md
+  git add .touchstone-version lib/preflight.sh scripts/merge-pr.sh principles/git-workflow.md .claude/skills/touchstone-git-workflow/SKILL.md
+  git commit -q -m "touchstone delivery-only bump"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" 'shellcheck:.*scripts/merge-pr.sh'
+assert_log_contains "$LOG" 'shfmt:.*scripts/merge-pr.sh'
+assert_log_not_contains "$LOG" '^validate:validate$'
+if ! grep -q 'SKIP tests (delivery-only Touchstone-managed diff; project validate not required)' "$OUT"; then
+  echo "FAIL: delivery-only diff did not report the project validate skip" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "==> PASS: delivery-only sync diff skips app validation while keeping file checks"
+
+echo "==> Test: mixed delivery and app diff keeps project validate"
+REPO="$TEST_DIR/repo-delivery-mixed"
+LOG="$TEST_DIR/delivery-mixed.log"
+OUT="$TEST_DIR/delivery-mixed.out"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  mkdir -p scripts
+  printf '#!/usr/bin/env bash\nset -euo pipefail\necho managed\n' >scripts/merge-pr.sh
+  printf 'changed = True\n' >app/feature.py
+  git add scripts/merge-pr.sh app/feature.py
+  git commit -q -m "touchstone bump plus app change"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" 'shellcheck:.*scripts/merge-pr.sh'
+assert_log_contains "$LOG" '^validate:validate$'
+echo "==> PASS: app-impacting mixed diff still runs project validate"
+
+echo "==> Test: explicit validate command overrides delivery-only skip"
+REPO="$TEST_DIR/repo-delivery-explicit-validate"
+LOG="$TEST_DIR/delivery-explicit-validate.log"
+OUT="$TEST_DIR/delivery-explicit-validate.out"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  mkdir -p scripts
+  printf '#!/usr/bin/env bash\nset -euo pipefail\necho managed\n' >scripts/merge-pr.sh
+  git add scripts/merge-pr.sh
+  git commit -q -m "touchstone managed script"
+)
+: >"$LOG"
+if ! TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND='printf "custom-validate\n" >>"$PREFLIGHT_TOOL_LOG"' run_preflight "$REPO" "$OUT" "$LOG"; then
+  echo "FAIL: explicit validate command failed unexpectedly" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+assert_log_contains "$LOG" '^custom-validate$'
+assert_log_not_contains "$LOG" '^validate:validate$'
+echo "==> PASS: explicit validate command remains authoritative"
+
 echo "==> Test: --all-files restores full-project behavior"
 REPO="$TEST_DIR/repo-all-files"
 LOG="$TEST_DIR/all-files.log"
@@ -283,17 +352,23 @@ OUT="$TEST_DIR/touchstone-bump.out"
 new_fixture_repo "$REPO"
 (
   cd "$REPO"
-  mkdir -p lib scripts hooks principles .claude/skills/example
+  mkdir -p lib scripts hooks principles .claude/skills/touchstone-example
   printf '# touchstone managed\n' >lib/preflight.sh
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho managed\n' >scripts/merge-pr.sh
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho managed\n' >hooks/codex-review.sh
   printf '# Principle\n' >principles/git-workflow.md
-  printf '# Skill\n' >.claude/skills/example/SKILL.md
-  git add lib/preflight.sh scripts/merge-pr.sh hooks/codex-review.sh principles/git-workflow.md .claude/skills/example/SKILL.md
+  printf '# Skill\n' >.claude/skills/touchstone-example/SKILL.md
+  git add lib/preflight.sh scripts/merge-pr.sh hooks/codex-review.sh principles/git-workflow.md .claude/skills/touchstone-example/SKILL.md
   git commit -q -m "touchstone bump"
 )
 : >"$LOG"
 run_preflight "$REPO" "$OUT" "$LOG"
 assert_log_not_contains "$LOG" 'app/preexisting_type_debt.py'
 assert_log_not_contains "$LOG" 'unchanged-bad.sh'
+assert_log_not_contains "$LOG" '^validate:validate$'
+if ! grep -q 'SKIP tests (delivery-only Touchstone-managed diff; project validate not required)' "$OUT"; then
+  echo "FAIL: touchstone-bump diff did not report the project validate skip" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
 echo "==> PASS: pre-existing debt outside a touchstone-bump diff does not block"
