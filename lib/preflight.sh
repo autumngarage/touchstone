@@ -347,6 +347,73 @@ touchstone_preflight_test_files() {
     done
 }
 
+touchstone_preflight_delivery_only_path() {
+  local path="$1"
+
+  case "$path" in
+    .touchstone-version | .touchstone-manifest | TOUCHSTONE.md | AGENTS.md | GEMINI.md)
+      return 0
+      ;;
+    .touchstone-review.toml | .codex-review.toml)
+      return 0
+      ;;
+    .github/workflows/issue-claim-check.yml)
+      return 0
+      ;;
+    .claude/settings.json | .claude/skills/touchstone-*/*)
+      return 0
+      ;;
+    principles/*)
+      return 0
+      ;;
+    scripts/conductor-review.sh | scripts/codex-review.sh | scripts/branch-guard.sh)
+      return 0
+      ;;
+    scripts/emergency-disclosure.sh | scripts/cortex-pr-merged-hook.sh)
+      return 0
+      ;;
+    scripts/touchstone-run.sh | scripts/open-pr.sh | scripts/merge-pr.sh)
+      return 0
+      ;;
+    scripts/claim-issue.sh | scripts/issue-claim-check.sh)
+      return 0
+      ;;
+    scripts/cleanup-branches.sh | scripts/spawn-worktree.sh)
+      return 0
+      ;;
+    scripts/cleanup-worktrees.sh | scripts/worker.sh | scripts/run-pytest-in-venv.sh)
+      return 0
+      ;;
+    lib/toml.sh | lib/events.sh | lib/worker-state.sh | lib/script-sync-guard.sh)
+      return 0
+      ;;
+    lib/preflight.sh | lib/preflight-scope.sh | lib/review-comment.sh)
+      return 0
+      ;;
+    hooks/conductor-review.sh | hooks/codex-review.sh)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+touchstone_preflight_delivery_only_diff() {
+  local path saw_path=false
+
+  [ "$TOUCHSTONE_PREFLIGHT_SCOPE_MODE" = "diff" ] || return 1
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    saw_path=true
+    if ! touchstone_preflight_delivery_only_path "$path"; then
+      return 1
+    fi
+  done < <(touchstone_preflight_changed_files)
+
+  [ "$saw_path" = true ]
+}
+
 touchstone_preflight_is_touchstone_repo() {
   [ -f VERSION ] \
     && [ -f bootstrap/new-project.sh ] \
@@ -463,6 +530,11 @@ touchstone_preflight_validate() {
       fi
       touchstone_preflight_fail "tests"
       return 1
+    fi
+
+    if touchstone_preflight_delivery_only_diff; then
+      touchstone_preflight_skip "tests (delivery-only Touchstone-managed diff; project validate not required)"
+      return 0
     fi
 
     if [ -f "$validate_script" ]; then
@@ -582,7 +654,8 @@ the changed file set versus the base ref, not the whole project, unless
 --all-files is explicitly passed.
 
 Scoped checks: shellcheck, shfmt, markdownlint, actionlint.
-Full-project check: the project validate command remains full-project.
+Full-project check: the project validate command remains full-project, except
+delivery-only Touchstone-managed sync diffs skip app validation.
 EOF
         return 0
         ;;
