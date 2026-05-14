@@ -256,6 +256,130 @@ fi
 assert_log_contains "$LOG" '^validate:validate$'
 echo "==> PASS: diff mode blocks on full project validate failure"
 
+echo "==> Test: affected lane runs only for safely target-scoped diffs"
+REPO="$TEST_DIR/repo-affected-lane"
+LOG="$TEST_DIR/affected-lane.log"
+OUT="$TEST_DIR/affected-lane.out"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  git checkout -q -B main
+  cat >.touchstone-config <<'EOF_CONFIG'
+validate_affected_command=printf "affected:%s\n" "$TOUCHSTONE_PREFLIGHT_VALIDATE_LANE" >>"$PREFLIGHT_TOOL_LOG"
+EOF_CONFIG
+  git add .touchstone-config
+  git commit -q -m "configure affected lane"
+  git update-ref refs/remotes/origin/main HEAD
+  git checkout -q -B feature/scope-test
+  mkdir -p apps/web/src
+  printf 'export const changed = true;\n' >apps/web/src/feature.ts
+  git add apps/web/src/feature.ts
+  git commit -q -m "change target-scoped app file"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^affected:affected$'
+assert_log_not_contains "$LOG" '^validate:validate$'
+if ! grep -q 'tests lane: affected' "$OUT"; then
+  echo "FAIL: affected lane was not reported" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "==> PASS: target-scoped diff used affected validation"
+
+echo "==> Test: smoke lane runs for docs-only diffs when configured"
+REPO="$TEST_DIR/repo-smoke-lane"
+LOG="$TEST_DIR/smoke-lane.log"
+OUT="$TEST_DIR/smoke-lane.out"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  git checkout -q -B main
+  cat >.touchstone-config <<'EOF_CONFIG'
+validate_smoke_command=printf "smoke:%s\n" "$TOUCHSTONE_PREFLIGHT_VALIDATE_LANE" >>"$PREFLIGHT_TOOL_LOG"
+EOF_CONFIG
+  git add .touchstone-config
+  git commit -q -m "configure smoke lane"
+  git update-ref refs/remotes/origin/main HEAD
+  git checkout -q -B feature/scope-test
+  printf '# Smoke lane\n' >docs/smoke.md
+  git add docs/smoke.md
+  git commit -q -m "change docs with smoke lane"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^markdownlint:.*docs/smoke.md'
+assert_log_contains "$LOG" '^smoke:smoke$'
+assert_log_not_contains "$LOG" '^validate:validate$'
+if ! grep -q 'tests lane: smoke' "$OUT"; then
+  echo "FAIL: smoke lane was not reported" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "==> PASS: docs-only diff used smoke validation"
+
+echo "==> Test: high-risk paths force full validation despite affected lane config"
+REPO="$TEST_DIR/repo-high-risk-full"
+LOG="$TEST_DIR/high-risk-full.log"
+OUT="$TEST_DIR/high-risk-full.out"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  git checkout -q -B main
+  cat >.touchstone-config <<'EOF_CONFIG'
+validate_affected_command=printf "affected:%s\n" "$TOUCHSTONE_PREFLIGHT_VALIDATE_LANE" >>"$PREFLIGHT_TOOL_LOG"
+EOF_CONFIG
+  git add .touchstone-config
+  git commit -q -m "configure affected lane"
+  git update-ref refs/remotes/origin/main HEAD
+  git checkout -q -B feature/scope-test
+  mkdir -p apps/web
+  printf '{"scripts":{"test":"node test.js"}}\n' >apps/web/package.json
+  git add apps/web/package.json
+  git commit -q -m "change target dependency manifest"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^validate:validate$'
+assert_log_not_contains "$LOG" '^affected:affected$'
+if ! grep -q 'tests lane: full (dependency manifest or lockfile changed: apps/web/package.json)' "$OUT"; then
+  echo "FAIL: high-risk path did not report full-validation reason" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "==> PASS: high-risk target diff used full validation"
+
+echo "==> Test: nested container config forces full validation"
+REPO="$TEST_DIR/repo-nested-container-full"
+LOG="$TEST_DIR/nested-container-full.log"
+OUT="$TEST_DIR/nested-container-full.out"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  git checkout -q -B main
+  cat >.touchstone-config <<'EOF_CONFIG'
+validate_affected_command=printf "affected:%s\n" "$TOUCHSTONE_PREFLIGHT_VALIDATE_LANE" >>"$PREFLIGHT_TOOL_LOG"
+EOF_CONFIG
+  git add .touchstone-config
+  git commit -q -m "configure affected lane"
+  git update-ref refs/remotes/origin/main HEAD
+  git checkout -q -B feature/scope-test
+  mkdir -p apps/web
+  printf 'FROM node:22-alpine\n' >apps/web/Dockerfile
+  git add apps/web/Dockerfile
+  git commit -q -m "change nested container config"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^validate:validate$'
+assert_log_not_contains "$LOG" '^affected:affected$'
+if ! grep -q 'tests lane: full (deployment container config changed: apps/web/Dockerfile)' "$OUT"; then
+  echo "FAIL: nested container config did not report full-validation reason" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "==> PASS: nested container config used full validation"
+
 echo "==> Test: delivery-only Touchstone-managed diff skips project validate"
 REPO="$TEST_DIR/repo-delivery-only"
 LOG="$TEST_DIR/delivery-only.log"
@@ -372,3 +496,36 @@ if ! grep -q 'SKIP tests (delivery-only Touchstone-managed diff; project validat
   exit 1
 fi
 echo "==> PASS: pre-existing debt outside a touchstone-bump diff does not block"
+
+echo "==> Test: preflight cache inputs hash changed file contents"
+REPO="$TEST_DIR/repo-cache-inputs"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  mkdir -p apps/web/src
+  printf 'export const value = 1;\n' >apps/web/src/cache.ts
+  git add apps/web/src/cache.ts
+  git commit -q -m "change cached file"
+)
+CACHE_HASH_BEFORE="$(
+  cd "$REPO"
+  # shellcheck source=../lib/preflight.sh
+  source "$TOUCHSTONE_ROOT/lib/preflight.sh"
+  touchstone_preflight_cache_inputs origin/main | sed -n 's/^changed_files_hash=//p'
+)"
+(
+  cd "$REPO"
+  printf 'export const value = 2;\n' >apps/web/src/cache.ts
+)
+CACHE_HASH_AFTER="$(
+  cd "$REPO"
+  # shellcheck source=../lib/preflight.sh
+  source "$TOUCHSTONE_ROOT/lib/preflight.sh"
+  touchstone_preflight_cache_inputs origin/main | sed -n 's/^changed_files_hash=//p'
+)"
+if [ -z "$CACHE_HASH_BEFORE" ] || [ -z "$CACHE_HASH_AFTER" ] || [ "$CACHE_HASH_BEFORE" = "$CACHE_HASH_AFTER" ]; then
+  echo "FAIL: changed file content did not affect changed_files_hash" >&2
+  printf 'before=%s\nafter=%s\n' "$CACHE_HASH_BEFORE" "$CACHE_HASH_AFTER" >&2
+  exit 1
+fi
+echo "==> PASS: cache inputs include changed file content hashes"

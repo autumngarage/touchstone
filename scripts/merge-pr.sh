@@ -371,6 +371,22 @@ preflight_hash_paths() {
   done | preflight_hash_stream
 }
 
+preflight_hash_changed_paths() {
+  local repo_root="$1"
+  shift
+  local rel path
+
+  for rel in "$@"; do
+    [ -n "$rel" ] || continue
+    path="$repo_root/$rel"
+    if [ -f "$path" ]; then
+      printf '%s\t%s\n' "$rel" "$(preflight_hash_file "$path")"
+    else
+      printf '%s\tmissing\n' "$rel"
+    fi
+  done | preflight_hash_stream
+}
+
 preflight_hash_file_list() {
   local label path
 
@@ -407,10 +423,15 @@ preflight_worktree_hash() {
 preflight_changed_paths_hash() {
   local repo_root="$1"
   local base_ref="$2"
+  local -a paths=()
+  local path
 
-  (cd "$repo_root" && git diff --name-only "$base_ref"...HEAD) 2>/dev/null \
-    | sort -u \
-    | preflight_hash_stream
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    paths+=("$path")
+  done < <((cd "$repo_root" && git diff --name-only "$base_ref"...HEAD) 2>/dev/null | sort -u)
+
+  preflight_hash_changed_paths "$repo_root" "${paths[@]}"
 }
 
 preflight_tool_fingerprint() {
@@ -431,6 +452,10 @@ preflight_env_fingerprint() {
   {
     printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_SCRIPT=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_SCRIPT:-}"
     printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND:-}"
+    printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_LANE=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_LANE:-}"
+    printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_AFFECTED_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_AFFECTED_COMMAND:-}"
+    printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_SMOKE_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_SMOKE_COMMAND:-}"
+    printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_FULL_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_FULL_COMMAND:-}"
   } | preflight_hash_stream
 }
 
@@ -460,14 +485,14 @@ preflight_cache_inputs() {
   tool_hash="$(preflight_tool_fingerprint)"
   env_hash="$(preflight_env_fingerprint)"
 
-  printf 'version=2\n'
+  printf 'version=3\n'
   printf 'repo_root=%s\n' "$repo_root"
   printf 'scope=diff\n'
   printf 'base_ref=%s\n' "$base_ref"
   printf 'base_sha=%s\n' "$base_sha"
   printf 'head_sha=%s\n' "$head_sha"
   printf 'merge_base=%s\n' "$merge_base"
-  printf 'changed_paths_hash=%s\n' "$changed_paths_hash"
+  printf 'changed_files_hash=%s\n' "$changed_paths_hash"
   printf 'checker_hash=%s\n' "$checker_hash"
   printf 'config_hash=%s\n' "$config_hash"
   printf 'worktree_hash=%s\n' "$worktree_hash"
