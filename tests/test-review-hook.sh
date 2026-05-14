@@ -826,11 +826,83 @@ if [ "$ROUTE_VIABLE_EXIT" -eq 0 ] \
   && grep -q 'Review route preflight: mode=fix' "$CASCADE_OUTPUT" \
   && grep -q 'review route viable via openrouter' "$CASCADE_OUTPUT" \
   && grep -q 'fix route viable via openrouter' "$CASCADE_OUTPUT" \
-  && grep -q '^review ' "$CASCADE_CALLS"; then
-  echo "==> PASS: merge route preflight allowed viable auto route"
+  && grep -q '^review .*--with openrouter' "$CASCADE_CALLS"; then
+  echo "==> PASS: merge route preflight pinned the viable auto route"
 else
-  echo "FAIL: expected viable route preflight before review" >&2
+  echo "FAIL: expected viable route preflight to pin the live review provider" >&2
   echo "exit code: $ROUTE_VIABLE_EXIT" >&2
+  cat "$CASCADE_OUTPUT" >&2
+  [ -f "$CASCADE_CALLS" ] && cat "$CASCADE_CALLS" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: merge review fallback clears preflight provider pin"
+setup_cascade_repo
+rm -f "$CASCADE_CALLS"
+rm -rf "$CASCADE_BIN"
+mkdir -p "$CASCADE_BIN"
+cat >"$CASCADE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat >"$CASCADE_BIN/conductor" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  doctor)
+    printf '{"providers":[{"configured":true}]}\n'
+    ;;
+  route)
+    if [ "${2:-}" = "--help" ]; then
+      exit 0
+    fi
+    printf 'route %s\n' "$*" >>"$CASCADE_CALLS"
+    printf '{"provider":"claude"}\n'
+    ;;
+  review)
+    printf 'review %s\n' "$*" >>"$CASCADE_CALLS"
+    review_count="$(grep -c '^review ' "$CASCADE_CALLS" 2>/dev/null | tr -d ' ')"
+    cat >/dev/null
+    if [ "$review_count" = "1" ]; then
+      printf '[conductor] review tried providers: claude (provider unavailable)\n' >&2
+      exit 42
+    fi
+    printf '[conductor] review tried providers: openrouter (success)\n' >&2
+    printf 'CODEX_REVIEW_CLEAN\n'
+    ;;
+  *)
+    printf 'unexpected conductor command: %s\n' "$*" >&2
+    exit 99
+    ;;
+esac
+EOF
+chmod +x "$CASCADE_BIN/gh" "$CASCADE_BIN/conductor"
+
+set +e
+(
+  cd "$CASCADE_REPO"
+  PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CASCADE_CALLS="$CASCADE_CALLS" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
+    CODEX_REVIEW_PR_NUMBER=123 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CASCADE_OUTPUT" 2>&1
+)
+ROUTE_FALLBACK_EXIT=$?
+set -e
+
+ROUTE_FALLBACK_FIRST_REVIEW="$(grep '^review ' "$CASCADE_CALLS" | sed -n '1p')"
+ROUTE_FALLBACK_SECOND_REVIEW="$(grep '^review ' "$CASCADE_CALLS" | sed -n '2p')"
+if [ "$ROUTE_FALLBACK_EXIT" -eq 0 ] \
+  && printf '%s\n' "$ROUTE_FALLBACK_FIRST_REVIEW" | grep -q -- '--with claude' \
+  && ! printf '%s\n' "$ROUTE_FALLBACK_SECOND_REVIEW" | grep -q -- '--with claude' \
+  && printf '%s\n' "$ROUTE_FALLBACK_SECOND_REVIEW" | grep -q -- '--exclude ollama,claude' \
+  && grep -q 'fallback:       claude -> openrouter (reviewer exit 42)' "$CASCADE_OUTPUT"; then
+  echo "==> PASS: fallback cleared the preflight provider pin"
+else
+  echo "FAIL: expected fallback retry to escape the preflight-pinned provider" >&2
+  echo "exit code: $ROUTE_FALLBACK_EXIT" >&2
   cat "$CASCADE_OUTPUT" >&2
   [ -f "$CASCADE_CALLS" ] && cat "$CASCADE_CALLS" >&2
   ERRORS=$((ERRORS + 1))
@@ -2589,6 +2661,67 @@ if grep -q '"provider":"claude"' "$JSON_SUMMARY" \
 else
   echo "FAIL: expected structured provider/model in JSON summary" >&2
   cat "$JSON_SUMMARY" 2>/dev/null >&2
+  cat "$CTX_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: fallback persists failed attempt diagnostics"
+setup_ctx_repo
+setup_ctx_bin
+CONDUCTOR_COUNT_FILE="$TEST_DIR/conductor-fallback-count"
+DIAGNOSTICS_FILE="$TEST_DIR/review-diagnostics.jsonl"
+JSON_SUMMARY="$TEST_DIR/review-summary-diagnostics.json"
+rm -f "$CONDUCTOR_COUNT_FILE" "$DIAGNOSTICS_FILE" "$JSON_SUMMARY"
+cat >"$CTX_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+count="$(cat "$CONDUCTOR_COUNT_FILE" 2>/dev/null || printf '0')"
+next=$((count + 1))
+printf '%s\n' "$next" >"$CONDUCTOR_COUNT_FILE"
+cat >/dev/null
+if [ "$count" = "0" ]; then
+  printf '[conductor] pinned -> codex (tier: frontier, model=codex-test)\n' >&2
+  printf 'first\tattempt missing sentinel\n'
+  exit 1
+fi
+printf '[conductor] auto -> openrouter (tier: frontier, model=openrouter-test)\n' >&2
+printf 'LGTM\nCODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$CTX_BIN/conductor"
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CONDUCTOR_COUNT_FILE="$CONDUCTOR_COUNT_FILE" \
+    TOUCHSTONE_CONDUCTOR_WITH=codex \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_SUMMARY_FILE="$JSON_SUMMARY" \
+    CODEX_REVIEW_DIAGNOSTICS_FILE="$DIAGNOSTICS_FILE" \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
+)
+
+if [ -f "$DIAGNOSTICS_FILE" ] \
+  && [ "$(wc -l <"$DIAGNOSTICS_FILE" | tr -d ' ')" = "1" ] \
+  && grep -q '"event":"fallback-trigger"' "$DIAGNOSTICS_FILE" \
+  && grep -q '"provider":"codex"' "$DIAGNOSTICS_FILE" \
+  && grep -q '"reason":"reviewer exit 1"' "$DIAGNOSTICS_FILE" \
+  && grep -q 'first\\tattempt missing sentinel' "$DIAGNOSTICS_FILE" \
+  && ! grep -q "$(printf '\t')" "$DIAGNOSTICS_FILE" \
+  && grep -q '"fallback_attempted":true' "$JSON_SUMMARY" \
+  && grep -q '"fallback_retry_provider":"openrouter"' "$JSON_SUMMARY" \
+  && grep -q '"diagnostics_events":1' "$JSON_SUMMARY" \
+  && grep -Fq "\"diagnostics_file\":\"$DIAGNOSTICS_FILE\"" "$JSON_SUMMARY" \
+  && grep -q 'Review diagnostics:' "$CTX_OUTPUT" \
+  && grep -q 'diagnostics:' "$CTX_OUTPUT"; then
+  echo "==> PASS: fallback diagnostics persisted and summarized"
+else
+  echo "FAIL: expected fallback diagnostics artifact and summary fields" >&2
+  echo "--- diagnostics ---" >&2
+  cat "$DIAGNOSTICS_FILE" 2>/dev/null >&2
+  echo "--- summary ---" >&2
+  cat "$JSON_SUMMARY" 2>/dev/null >&2
+  echo "--- output ---" >&2
   cat "$CTX_OUTPUT" >&2
   ERRORS=$((ERRORS + 1))
 fi

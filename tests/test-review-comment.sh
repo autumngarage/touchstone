@@ -21,6 +21,18 @@ else
   exit 1
 fi
 
+echo "==> Test: format_clean_review_comment surfaces fallback diagnostics"
+COMMENT="$(format_clean_review_comment '{"reviewer":"Conductor","provider":"openrouter","model":"gpt-5.1","peer_provider":"none","iterations":1,"mode":"fix","findings":0,"fallback_attempted":true,"fallback_primary_provider":"codex","fallback_retry_provider":"openrouter","fallback_excluded_providers":"codex","fallback_reason":"reviewer exit 1","diagnostics_file":"/tmp/review-diagnostics.jsonl","diagnostics_events":1}')"
+if printf '%s\n' "$COMMENT" | grep -q 'Fallback: `codex` -> `openrouter` (reviewer exit 1)' \
+  && printf '%s\n' "$COMMENT" | grep -q 'Fallback excluded: `codex`' \
+  && printf '%s\n' "$COMMENT" | grep -q 'Diagnostics: `/tmp/review-diagnostics.jsonl` (1 event(s))'; then
+  echo "==> PASS: formatter includes fallback diagnostics"
+else
+  echo "FAIL: expected fallback diagnostics in clean review comment" >&2
+  printf '%s\n' "$COMMENT" >&2
+  exit 1
+fi
+
 MERGE_DIR="$TEST_DIR/merge"
 FAKE_BIN="$MERGE_DIR/bin"
 mkdir -p "$MERGE_DIR/scripts" "$MERGE_DIR/lib" "$MERGE_DIR/repo" "$FAKE_BIN"
@@ -184,13 +196,14 @@ printf '[review]\ncomment_on_clean = true\n' >"$MERGE_DIR/repo/.codex-review.tom
 set +e
 CODEX_REVIEW_STUB_EXIT=1 \
   CODEX_REVIEW_STUB_OUTPUT=$'provider timed out\nno sentinel emitted' \
-  CODEX_REVIEW_STUB_SUMMARY='{"reviewer":"Conductor","provider":"gemini","model":"unknown","peer_provider":"none","iterations":1,"mode":"fix","findings":0,"fallback_attempted":true,"fallback_primary_provider":"gemini","fallback_retry_provider":"unknown","fallback_excluded_providers":"gemini","fallback_reason":"timeout after 60s","exit_reason":"timeout"}' \
+  CODEX_REVIEW_STUB_SUMMARY='{"reviewer":"Conductor","provider":"gemini","model":"unknown","peer_provider":"none","iterations":1,"mode":"fix","findings":0,"fallback_attempted":true,"fallback_primary_provider":"gemini","fallback_retry_provider":"unknown","fallback_excluded_providers":"gemini","fallback_reason":"timeout after 60s","diagnostics_file":"/tmp/review-diagnostics.jsonl","diagnostics_events":2,"exit_reason":"timeout"}' \
   run_merge "$TEST_DIR/merge-provider-failure.txt" 123
 FAILURE_COMMENT_EXIT=$?
 set -e
 if [ "$FAILURE_COMMENT_EXIT" -ne 0 ] \
   && grep -q 'merge review failed before a trusted clean verdict' "$TEST_DIR/comments" \
   && grep -q 'Failed/stalled provider(s): `gemini`' "$TEST_DIR/comments" \
+  && grep -q 'Diagnostics: `/tmp/review-diagnostics.jsonl` (2 event(s))' "$TEST_DIR/comments" \
   && grep -q 'Retry: `TOUCHSTONE_CONDUCTOR_WITH=openrouter bash scripts/merge-pr.sh 123`' "$TEST_DIR/comments" \
   && ! grep -q 'review clean' "$TEST_DIR/comments"; then
   echo "==> PASS: provider failure comment posted with retry guidance"
