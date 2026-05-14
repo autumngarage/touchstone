@@ -65,6 +65,7 @@ run_touchstone() {
   HOME="$fake_home" \
     NO_COLOR=1 \
     TOUCHSTONE_STATE_DIR="$fake_home/.touchstone-state" \
+    TOUCHSTONE_NO_AUTO_PROJECT_SHIP=1 \
     bash "$TOUCHSTONE_BIN" "$@"
 }
 
@@ -82,6 +83,77 @@ make_project() {
 
 echo "==> Test: auto-project-sync"
 echo "    Test dir: $TEST_DIR"
+
+echo ""
+echo "--- default auto-project-sync ships when preconditions are satisfied ---"
+SHIP_HOME="$TEST_DIR/home-ship"
+SHIP_PROJECT="$TEST_DIR/project-ship"
+SHIP_ROOT="$TEST_DIR/fake-touchstone-root"
+SHIP_LOG="$TEST_DIR/ship.log"
+SHIP_OUT="$TEST_DIR/ship.out"
+SHIP_AUTO_UPDATE_LIB="$TOUCHSTONE_ROOT/lib/auto-update.sh"
+make_project "$SHIP_PROJECT" "2.10.0"
+git -C "$SHIP_PROJECT" remote add origin "git@example.invalid:owner/repo.git"
+mkdir -p "$SHIP_ROOT/bootstrap" "$SHIP_ROOT/lib" "$SHIP_ROOT/bin"
+cp "$TOUCHSTONE_ROOT/lib/sync-discipline.sh" "$SHIP_ROOT/lib/sync-discipline.sh"
+printf '2.11.0\n' >"$SHIP_ROOT/VERSION"
+cat >"$SHIP_ROOT/bootstrap/update-project.sh" <<'EOF_UPDATE_PROJECT'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'update-project:%s\n' "$*" >>"$TOUCHSTONE_AUTO_PROJECT_SYNC_SHIP_LOG"
+printf '2.11.0\n' >.touchstone-version
+git add .touchstone-version
+git commit -q -m "chore: update touchstone to 2.11.0"
+EOF_UPDATE_PROJECT
+chmod +x "$SHIP_ROOT/bootstrap/update-project.sh"
+cat >"$SHIP_ROOT/bin/gh" <<'EOF_GH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  auth)
+    if [ "${2:-}" = "status" ]; then
+      exit 0
+    fi
+    ;;
+esac
+exit 0
+EOF_GH
+chmod +x "$SHIP_ROOT/bin/gh"
+(
+  cd "$SHIP_PROJECT"
+  HOME="$SHIP_HOME" \
+    PATH="$SHIP_ROOT/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    TOUCHSTONE_ROOT="$SHIP_ROOT" \
+    TOUCHSTONE_AUTO_PROJECT_SYNC_SHIP_LOG="$SHIP_LOG" \
+    bash -c 'source "$1"; touchstone_auto_project_sync run validate' _ "$SHIP_AUTO_UPDATE_LIB"
+) >"$SHIP_OUT" 2>&1
+assert_contains "$SHIP_LOG" '^update-project:--ship$'
+assert_contains "$SHIP_OUT" "auto-shipped touchstone 2.10.0 -> 2.11.0"
+assert_version_equals "$SHIP_PROJECT" "2.11.0"
+
+echo ""
+echo "--- auto-project-sync defers auto-ship on feature branches ---"
+SHIP_FEATURE_PROJECT="$TEST_DIR/project-ship-feature"
+SHIP_FEATURE_LOG="$TEST_DIR/ship-feature.log"
+SHIP_FEATURE_OUT="$TEST_DIR/ship-feature.out"
+make_project "$SHIP_FEATURE_PROJECT" "2.10.0"
+git -C "$SHIP_FEATURE_PROJECT" remote add origin "git@example.invalid:owner/repo.git"
+SHIP_FEATURE_DEFAULT_BRANCH="$(git -C "$SHIP_FEATURE_PROJECT" branch --show-current)"
+git -C "$SHIP_FEATURE_PROJECT" checkout -q -b feature/app-work
+(
+  cd "$SHIP_FEATURE_PROJECT"
+  HOME="$SHIP_HOME" \
+    PATH="$SHIP_ROOT/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+    TOUCHSTONE_ROOT="$SHIP_ROOT" \
+    TOUCHSTONE_AUTO_PROJECT_SYNC_SHIP_LOG="$SHIP_FEATURE_LOG" \
+    bash -c 'source "$1"; touchstone_auto_project_sync run validate' _ "$SHIP_AUTO_UPDATE_LIB"
+) >"$SHIP_FEATURE_OUT" 2>&1
+assert_contains "$SHIP_FEATURE_LOG" '^update-project:$'
+assert_not_contains "$SHIP_FEATURE_LOG" '^update-project:--ship$'
+assert_contains "$SHIP_FEATURE_OUT" "auto-ship deferred"
+assert_contains "$SHIP_FEATURE_OUT" "git switch $SHIP_FEATURE_DEFAULT_BRANCH && touchstone update --ship"
+assert_contains "$SHIP_FEATURE_OUT" "auto-synced touchstone 2.10.0 -> 2.11.0"
+assert_version_equals "$SHIP_FEATURE_PROJECT" "2.11.0"
 
 echo ""
 echo "--- drift + clean tree: sync runs, then subcommand proceeds ---"
@@ -124,6 +196,7 @@ OVERLAP_OUT="$TEST_DIR/overlap.out"
 (cd "$OVERLAP_PROJECT" && run_touchstone "$OVERLAP_HOME" run validate) >"$OVERLAP_OUT" 2>&1
 assert_contains "$OVERLAP_OUT" "WARNING: touchstone auto-sync skipped for $OVERLAP_PROJECT (dirty paths overlap planned touchstone writes)."
 assert_contains "$OVERLAP_OUT" "scripts/touchstone-run.sh"
+assert_contains "$OVERLAP_OUT" "touchstone update --ship"
 assert_contains "$OVERLAP_OUT" "generic project has no default 'lint' command"
 assert_version_equals "$OVERLAP_PROJECT" "$OVERLAP_OLD"
 OVERLAP_SKIP_LOG="$OVERLAP_PROJECT/.git/touchstone/sync-skips.jsonl"
@@ -279,6 +352,7 @@ HELP_OUT="$TEST_DIR/help.out"
 (cd "$VERSION_PROJECT" && run_touchstone "$VERSION_HOME" --help) >"$HELP_OUT" 2>&1
 assert_not_contains "$HELP_OUT" "auto-synced touchstone"
 assert_contains "$HELP_OUT" "TOUCHSTONE_NO_AUTO_PROJECT_SYNC"
+assert_contains "$HELP_OUT" "TOUCHSTONE_NO_AUTO_PROJECT_SHIP"
 assert_version_equals "$VERSION_PROJECT" "$VERSION_OLD"
 
 echo ""

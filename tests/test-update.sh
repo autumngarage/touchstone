@@ -374,6 +374,56 @@ if [ -n "$(git -C "$SCRIPT_SYNC_PROJECT" status --porcelain)" ]; then
   ERRORS=$((ERRORS + 1))
 fi
 
+SCRIPT_SYNC_SHIP_PROJECT="$TEST_DIR/script-sync-ship-project"
+SCRIPT_SYNC_SHIP_BIN="$TEST_DIR/script-sync-ship-bin"
+SCRIPT_SYNC_SHIP_LOG="$TEST_DIR/script-sync-ship-touchstone.log"
+mkdir -p "$SCRIPT_SYNC_SHIP_BIN"
+cat >"$SCRIPT_SYNC_SHIP_BIN/touchstone" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$TOUCHSTONE_SCRIPT_SYNC_FAKE_LOG"
+case "$*" in
+  "update --check")
+    echo "==> Needs update."
+    exit 0
+    ;;
+  "update --ship")
+    echo "fake update shipped"
+    exit 0
+    ;;
+esac
+echo "unexpected touchstone command: $*" >&2
+exit 9
+EOF
+chmod +x "$SCRIPT_SYNC_SHIP_BIN/touchstone"
+
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SCRIPT_SYNC_SHIP_PROJECT" --no-register >/dev/null
+configure_git "$SCRIPT_SYNC_SHIP_PROJECT"
+commit_all "$SCRIPT_SYNC_SHIP_PROJECT" "initial script sync ship project"
+echo "0000000000000000000000000000000000000015" >"$SCRIPT_SYNC_SHIP_PROJECT/.touchstone-version"
+commit_all "$SCRIPT_SYNC_SHIP_PROJECT" "simulate stale default-branch script sync state"
+
+SCRIPT_SYNC_SHIP_OUT="$TEST_DIR/script-sync-ship-output.txt"
+SCRIPT_SYNC_SHIP_RC=0
+(
+  cd "$SCRIPT_SYNC_SHIP_PROJECT"
+  PATH="$SCRIPT_SYNC_SHIP_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    TOUCHSTONE_SCRIPT_SYNC_FAKE_LOG="$SCRIPT_SYNC_SHIP_LOG" \
+    bash scripts/merge-pr.sh not-a-pr
+) >"$SCRIPT_SYNC_SHIP_OUT" 2>&1 || SCRIPT_SYNC_SHIP_RC=$?
+
+if [ "$SCRIPT_SYNC_SHIP_RC" != "2" ]; then
+  echo "FAIL: guarded default-branch merge-pr invalid-argument run should exit 2 after ship" >&2
+  echo "    rc=$SCRIPT_SYNC_SHIP_RC" >&2
+  cat "$SCRIPT_SYNC_SHIP_OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$SCRIPT_SYNC_SHIP_OUT" 'shipping a Touchstone update PR before continuing'
+assert_contains "$SCRIPT_SYNC_SHIP_OUT" 'Touchstone script sync: restarting'
+assert_contains "$SCRIPT_SYNC_SHIP_OUT" 'Usage: bash scripts/merge-pr.sh <pr-number>'
+assert_contains "$SCRIPT_SYNC_SHIP_LOG" '^update --check$'
+assert_contains "$SCRIPT_SYNC_SHIP_LOG" '^update --ship$'
+assert_not_contains "$SCRIPT_SYNC_SHIP_LOG" '^update --in-place$'
+
 # --------------------------------------------------------------------------
 # Test 3: project-owned files are NOT touched.
 # --------------------------------------------------------------------------
