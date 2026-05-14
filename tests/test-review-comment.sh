@@ -160,7 +160,8 @@ chmod +x "$FAKE_BIN/gh" "$FAKE_BIN/git"
 
 reset_fixture() {
   rm -f "$TEST_DIR"/comments "$TEST_DIR"/merge-head "$TEST_DIR"/merge-body \
-    "$TEST_DIR"/review.log "$TEST_DIR"/merged "$TEST_DIR"/checkout "$TEST_DIR"/git-checkout-main
+    "$TEST_DIR"/review.log "$TEST_DIR"/review-audit.log "$TEST_DIR"/merged \
+    "$TEST_DIR"/checkout "$TEST_DIR"/git-checkout-main
   rm -rf "$MERGE_DIR/repo/.git"
   mkdir -p "$MERGE_DIR/repo/.git"
   unset CODEX_REVIEW_STUB_EXIT CODEX_REVIEW_STUB_OUTPUT CODEX_REVIEW_STUB_SUMMARY
@@ -181,6 +182,7 @@ run_merge() {
     CODEX_REVIEW_STUB_EXIT="${CODEX_REVIEW_STUB_EXIT:-0}" \
     CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
     CODEX_REVIEW_STUB_SUMMARY="${CODEX_REVIEW_STUB_SUMMARY:-}" \
+    TOUCHSTONE_REVIEW_LOG="$TEST_DIR/review-audit.log" \
     TOUCHSTONE_NO_PREFLIGHT=1 \
     bash "$MERGE_DIR/scripts/merge-pr.sh" "$@" >"$output_file" 2>&1
 }
@@ -255,15 +257,17 @@ else
   exit 1
 fi
 
-echo "==> Test: bypass path still posts only existing disclosure"
+echo "==> Test: bypass path posts audited disclosure without clean comment"
 reset_fixture
 printf '[review]\ncomment_on_clean = true\n' >"$MERGE_DIR/repo/.codex-review.toml"
 mkdir -p "$MERGE_DIR/repo/.git/touchstone/reviewer-clean"
 printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=pr-head-oid\nmerge_base=base-oid\n' >"$MERGE_DIR/repo/.git/touchstone/reviewer-clean/feature_test.clean"
 run_merge "$TEST_DIR/merge-bypass.txt" 123 --bypass-with-disclosure="reviewer wedged after clean marker"
-if grep -q 'Reviewer bypassed via `--bypass-with-disclosure`. Reason: reviewer wedged after clean marker' "$TEST_DIR/comments" \
+if grep -q 'Reviewer bypassed via `--bypass-with-disclosure`. Marker: clean-review. Reason: reviewer wedged after clean marker' "$TEST_DIR/comments" \
+  && grep -q $'\treview-bypass\t' "$TEST_DIR/review-audit.log" \
+  && grep -q 'marker=clean-review' "$TEST_DIR/review-audit.log" \
   && ! grep -q 'review clean' "$TEST_DIR/comments"; then
-  echo "==> PASS: bypass disclosure unchanged and no clean comment posted"
+  echo "==> PASS: bypass disclosure audited and no clean comment posted"
 else
   echo "FAIL: bypass disclosure path regressed" >&2
   cat "$TEST_DIR/merge-bypass.txt" >&2
