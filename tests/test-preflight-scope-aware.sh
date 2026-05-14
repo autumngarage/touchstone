@@ -81,6 +81,51 @@ EOF_TOUCHSTONE_RUN
   )
 }
 
+new_touchstone_fixture_repo() {
+  local repo="$1"
+  rm -rf "$repo"
+  mkdir -p "$repo"
+  (
+    cd "$repo"
+    git init -q
+    git config user.email test@example.com
+    git config user.name "Touchstone Test"
+    mkdir -p bootstrap scripts tests docs lib
+    printf '2.99.0\n' >VERSION
+    printf '#!/usr/bin/env bash\nset -euo pipefail\n' >bootstrap/new-project.sh
+    chmod +x bootstrap/new-project.sh
+    cat >scripts/touchstone-run.sh <<'EOF_TOUCHSTONE_RUN'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'validate:%s\n' "$*" >>"$PREFLIGHT_TOOL_LOG"
+EOF_TOUCHSTONE_RUN
+    cat >tests/test-alpha.sh <<'EOF_TEST_ALPHA'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'selftest:alpha\n' >>"$PREFLIGHT_TOOL_LOG"
+if [ "${SELFTEST_FAIL_ALPHA:-0}" = "1" ]; then
+  exit 41
+fi
+EOF_TEST_ALPHA
+    cat >tests/test-beta.sh <<'EOF_TEST_BETA'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'selftest:beta\n' >>"$PREFLIGHT_TOOL_LOG"
+if [ "${SELFTEST_FAIL_BETA:-0}" = "1" ]; then
+  exit 42
+fi
+EOF_TEST_BETA
+    printf '# Touchstone fixture\n' >CLAUDE.md
+    printf '# Guidance\n' >docs/guide.md
+    printf '#!/usr/bin/env bash\nset -euo pipefail\necho core\n' >lib/core.sh
+    chmod +x scripts/touchstone-run.sh tests/test-alpha.sh tests/test-beta.sh lib/core.sh
+    git add VERSION bootstrap/new-project.sh scripts/touchstone-run.sh tests/test-alpha.sh tests/test-beta.sh CLAUDE.md docs/guide.md lib/core.sh
+    git commit -q -m "baseline touchstone fixture"
+    git update-ref refs/remotes/origin/main HEAD
+    git checkout -q -b feature/scope-test
+  )
+}
+
 run_preflight() {
   local repo="$1" output="$2" log="$3"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
@@ -496,6 +541,103 @@ if ! grep -q 'SKIP tests (delivery-only Touchstone-managed diff; project validat
   exit 1
 fi
 echo "==> PASS: pre-existing debt outside a touchstone-bump diff does not block"
+
+echo "==> Test: touchstone self-preflight runs only changed self-test for test-only diff"
+REPO="$TEST_DIR/repo-touchstone-self-test-only"
+LOG="$TEST_DIR/touchstone-self-test-only.log"
+OUT="$TEST_DIR/touchstone-self-test-only.out"
+new_touchstone_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\nprintf "selftest:alpha-changed\\n" >>"$PREFLIGHT_TOOL_LOG"\n' >tests/test-alpha.sh
+  chmod +x tests/test-alpha.sh
+  git add tests/test-alpha.sh
+  git commit -q -m "change one self-test"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^selftest:alpha-changed$'
+assert_log_not_contains "$LOG" '^selftest:beta$'
+assert_log_not_contains "$LOG" '^validate:validate$'
+if ! grep -q 'tests lane: touchstone-test-only (changed tests only)' "$OUT"; then
+  echo "FAIL: touchstone test-only lane was not reported" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "==> PASS: touchstone test-only diff runs only changed self-tests"
+
+echo "==> Test: touchstone guidance diff skips full self-test suite"
+REPO="$TEST_DIR/repo-touchstone-guidance-only"
+LOG="$TEST_DIR/touchstone-guidance-only.log"
+OUT="$TEST_DIR/touchstone-guidance-only.out"
+new_touchstone_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  printf '# Guidance update\n' >docs/guide.md
+  printf '# Touchstone fixture updated\n' >CLAUDE.md
+  git add docs/guide.md CLAUDE.md
+  git commit -q -m "guidance-only touchstone diff"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_not_contains "$LOG" '^selftest:alpha$'
+assert_log_not_contains "$LOG" '^selftest:beta$'
+assert_log_not_contains "$LOG" '^validate:validate$'
+if ! grep -q 'SKIP tests (touchstone self-preflight: guidance/delivery-only diff; full self-tests not required)' "$OUT"; then
+  echo "FAIL: touchstone guidance-only diff did not report self-test skip" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "==> PASS: touchstone guidance-only diff skips full self-tests"
+
+echo "==> Test: touchstone delivery-only diff skips full self-test suite"
+REPO="$TEST_DIR/repo-touchstone-delivery-only"
+LOG="$TEST_DIR/touchstone-delivery-only.log"
+OUT="$TEST_DIR/touchstone-delivery-only.out"
+new_touchstone_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\necho managed\n' >scripts/merge-pr.sh
+  chmod +x scripts/merge-pr.sh
+  git add scripts/merge-pr.sh
+  git commit -q -m "delivery-only touchstone diff"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" 'shellcheck:.*scripts/merge-pr.sh'
+assert_log_contains "$LOG" 'shfmt:.*scripts/merge-pr.sh'
+assert_log_not_contains "$LOG" '^selftest:alpha$'
+assert_log_not_contains "$LOG" '^selftest:beta$'
+if ! grep -q 'SKIP tests (touchstone self-preflight: guidance/delivery-only diff; full self-tests not required)' "$OUT"; then
+  echo "FAIL: touchstone delivery-only diff did not report self-test skip" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "==> PASS: touchstone delivery-only diff skips full self-tests"
+
+echo "==> Test: touchstone core diff keeps full self-test suite"
+REPO="$TEST_DIR/repo-touchstone-core-diff"
+LOG="$TEST_DIR/touchstone-core-diff.log"
+OUT="$TEST_DIR/touchstone-core-diff.out"
+new_touchstone_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\necho core changed\n' >lib/core.sh
+  chmod +x lib/core.sh
+  git add lib/core.sh
+  git commit -q -m "touchstone core change"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^selftest:alpha$'
+assert_log_contains "$LOG" '^selftest:beta$'
+assert_log_not_contains "$LOG" '^validate:validate$'
+if ! grep -q 'tests lane: touchstone-full (core/risky or mixed diff)' "$OUT"; then
+  echo "FAIL: touchstone full lane was not reported for core diff" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "==> PASS: touchstone core diff runs full self-test suite"
 
 echo "==> Test: preflight cache inputs hash changed file contents"
 REPO="$TEST_DIR/repo-cache-inputs"

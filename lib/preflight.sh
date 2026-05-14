@@ -372,6 +372,35 @@ touchstone_preflight_test_files() {
     done
 }
 
+touchstone_preflight_touchstone_self_test_path() {
+  local path="$1"
+
+  case "$path" in
+    tests/test-*.sh)
+      [ -f "$path" ]
+      return $?
+      ;;
+  esac
+
+  return 1
+}
+
+touchstone_preflight_touchstone_guidance_path() {
+  case "$1" in
+    .touchstone-version | .touchstone-manifest | TOUCHSTONE.md | CLAUDE.md | AGENTS.md | GEMINI.md | README.md)
+      return 0
+      ;;
+    docs/* | principles/*)
+      return 0
+      ;;
+    .claude/settings.json | .claude/skills/touchstone-*/*)
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
 touchstone_preflight_delivery_only_path() {
   local path="$1"
 
@@ -434,6 +463,42 @@ touchstone_preflight_delivery_only_diff() {
     if ! touchstone_preflight_delivery_only_path "$path"; then
       return 1
     fi
+  done < <(touchstone_preflight_changed_files)
+
+  [ "$saw_path" = true ]
+}
+
+touchstone_preflight_touchstone_test_only_diff() {
+  local path saw_path=false
+
+  [ "$TOUCHSTONE_PREFLIGHT_SCOPE_MODE" = "diff" ] || return 1
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    saw_path=true
+    if ! touchstone_preflight_touchstone_self_test_path "$path"; then
+      return 1
+    fi
+  done < <(touchstone_preflight_changed_files)
+
+  [ "$saw_path" = true ]
+}
+
+touchstone_preflight_touchstone_guidance_or_delivery_diff() {
+  local path saw_path=false
+
+  [ "$TOUCHSTONE_PREFLIGHT_SCOPE_MODE" = "diff" ] || return 1
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    saw_path=true
+    if touchstone_preflight_delivery_only_path "$path"; then
+      continue
+    fi
+    if touchstone_preflight_touchstone_guidance_path "$path"; then
+      continue
+    fi
+    return 1
   done < <(touchstone_preflight_changed_files)
 
   [ "$saw_path" = true ]
@@ -820,6 +885,40 @@ touchstone_preflight_validate() {
     local test_file failures=0
 
     if touchstone_preflight_is_touchstone_repo; then
+      if touchstone_preflight_touchstone_test_only_diff; then
+        touchstone_preflight_info "tests lane: touchstone-test-only (changed tests only)"
+        while IFS= read -r test_file; do
+          [ -n "$test_file" ] || continue
+          test_files+=("$test_file")
+        done < <(touchstone_preflight_test_files)
+
+        if [ "${#test_files[@]}" -eq 0 ]; then
+          touchstone_preflight_skip "tests (touchstone test-only diff but no changed tests found)"
+          return 0
+        fi
+
+        touchstone_preflight_info "tests (touchstone changed self-tests)"
+        for test_file in "${test_files[@]}"; do
+          if TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash "$test_file"; then
+            :
+          else
+            failures=$((failures + 1))
+          fi
+        done
+        if [ "$failures" -eq 0 ]; then
+          touchstone_preflight_ok "tests"
+          return 0
+        fi
+        touchstone_preflight_fail "tests"
+        return 1
+      fi
+
+      if touchstone_preflight_touchstone_guidance_or_delivery_diff; then
+        touchstone_preflight_skip "tests (touchstone self-preflight: guidance/delivery-only diff; full self-tests not required)"
+        return 0
+      fi
+
+      touchstone_preflight_info "tests lane: touchstone-full (core/risky or mixed diff)"
       touchstone_preflight_info "tests (touchstone self-tests)"
       for test_file in tests/test-*.sh; do
         [ -f "$test_file" ] || continue
