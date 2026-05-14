@@ -2593,6 +2593,66 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: fallback persists failed attempt diagnostics"
+setup_ctx_repo
+setup_ctx_bin
+CONDUCTOR_COUNT_FILE="$TEST_DIR/conductor-fallback-count"
+DIAGNOSTICS_FILE="$TEST_DIR/review-diagnostics.jsonl"
+JSON_SUMMARY="$TEST_DIR/review-summary-diagnostics.json"
+rm -f "$CONDUCTOR_COUNT_FILE" "$DIAGNOSTICS_FILE" "$JSON_SUMMARY"
+cat >"$CTX_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+count="$(cat "$CONDUCTOR_COUNT_FILE" 2>/dev/null || printf '0')"
+next=$((count + 1))
+printf '%s\n' "$next" >"$CONDUCTOR_COUNT_FILE"
+cat >/dev/null
+if [ "$count" = "0" ]; then
+  printf '[conductor] pinned -> codex (tier: frontier, model=codex-test)\n' >&2
+  printf 'first attempt missing sentinel\n'
+  exit 1
+fi
+printf '[conductor] auto -> openrouter (tier: frontier, model=openrouter-test)\n' >&2
+printf 'LGTM\nCODEX_REVIEW_CLEAN\n'
+CXEOF
+chmod +x "$CTX_BIN/conductor"
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CONDUCTOR_COUNT_FILE="$CONDUCTOR_COUNT_FILE" \
+    TOUCHSTONE_CONDUCTOR_WITH=codex \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_SUMMARY_FILE="$JSON_SUMMARY" \
+    CODEX_REVIEW_DIAGNOSTICS_FILE="$DIAGNOSTICS_FILE" \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
+)
+
+if [ -f "$DIAGNOSTICS_FILE" ] \
+  && [ "$(wc -l <"$DIAGNOSTICS_FILE" | tr -d ' ')" = "1" ] \
+  && grep -q '"event":"fallback-trigger"' "$DIAGNOSTICS_FILE" \
+  && grep -q '"provider":"codex"' "$DIAGNOSTICS_FILE" \
+  && grep -q '"reason":"reviewer exit 1"' "$DIAGNOSTICS_FILE" \
+  && grep -q 'first attempt missing sentinel' "$DIAGNOSTICS_FILE" \
+  && grep -q '"fallback_attempted":true' "$JSON_SUMMARY" \
+  && grep -q '"fallback_retry_provider":"openrouter"' "$JSON_SUMMARY" \
+  && grep -q '"diagnostics_events":1' "$JSON_SUMMARY" \
+  && grep -Fq "\"diagnostics_file\":\"$DIAGNOSTICS_FILE\"" "$JSON_SUMMARY" \
+  && grep -q 'Review diagnostics:' "$CTX_OUTPUT" \
+  && grep -q 'diagnostics:' "$CTX_OUTPUT"; then
+  echo "==> PASS: fallback diagnostics persisted and summarized"
+else
+  echo "FAIL: expected fallback diagnostics artifact and summary fields" >&2
+  echo "--- diagnostics ---" >&2
+  cat "$DIAGNOSTICS_FILE" 2>/dev/null >&2
+  echo "--- summary ---" >&2
+  cat "$JSON_SUMMARY" 2>/dev/null >&2
+  echo "--- output ---" >&2
+  cat "$CTX_OUTPUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: missing Conductor session log keeps provider/model unknown"
 setup_ctx_repo
 setup_ctx_bin
