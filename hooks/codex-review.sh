@@ -3915,21 +3915,56 @@ run_peer_review() {
 }
 
 build_peer_review_prompt() {
-  local primary_output="$1"
+  local primary_output="$1" changed_paths
+  changed_paths="${PROMPT_CONTEXT_CHANGED_PATHS:-$(git diff --name-only "$MERGE_BASE"..HEAD 2>/dev/null || true)}"
   cat <<EOF
 You are a peer code reviewer giving a second opinion on another AI reviewer's output.
-You are asked to be a QUICK second opinion, NOT to redo the review from scratch.
+You are asked to be a QUICK second opinion, NOT a full independent review.
 
-The primary reviewer examined a code change and produced the output below. Your job:
+Use the branch context and diff below to verify whether the primary reviewer's verdict is credible.
+Do not complain that you cannot see the diff; it is embedded in this prompt.
+
+Your job:
   1. Do you AGREE or DISAGREE with the primary's overall verdict (CLEAN / FIXED / BLOCKED)?
   2. Anything the primary MISSED that you'd flag?
   3. Anything the primary FLAGGED that you think is a false positive?
 
 Keep your response under 300 words. Lead with AGREE or DISAGREE on a line by itself.
 
---- Primary reviewer output: ---
+## Branch context
+
+Base: $BASE
+Merge base: $MERGE_BASE
+High scrutiny: ${HIGH_SCRUTINY_REASON:-none}
+
+Changed files:
+$(if [ -n "$changed_paths" ]; then
+    printf '%s\n' "$changed_paths" | sed '/^$/d; s/^/- /'
+  else
+    printf '(none)\n'
+  fi)
+
+Commit messages:
+
+$(git log --reverse --format='### %s%n%n%b' "$MERGE_BASE"..HEAD 2>/dev/null | sed '/^$/N;/^\n$/d')
+$(if [ -n "$REVIEW_CONTEXT_FILE" ]; then
+    printf '\n## Project review context\n\n'
+    cat "$REVIEW_CONTEXT_FILE"
+  fi)
+
+## Diff
+
+\`\`\`diff
+$(if is_truthy "${SCOPED_LARGE_DIFF_REVIEW:-false}" && [ -n "${SCOPED_LARGE_DIFF_FILE:-}" ]; then
+    cat "$SCOPED_LARGE_DIFF_FILE"
+  else
+    git diff "$MERGE_BASE"..HEAD 2>/dev/null
+  fi)
+\`\`\`
+
+## Primary reviewer output
+
 $primary_output
---- End primary output ---
 EOF
 }
 
