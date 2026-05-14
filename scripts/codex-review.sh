@@ -261,6 +261,11 @@ if [ -f "$PREFLIGHT_SCRIPT" ]; then
   # shellcheck source=../lib/preflight.sh
   source "$PREFLIGHT_SCRIPT"
 fi
+REVIEW_COMMENT_SCRIPT="$TOUCHSTONE_ROOT/lib/review-comment.sh"
+if [ -f "$REVIEW_COMMENT_SCRIPT" ]; then
+  # shellcheck source=../lib/review-comment.sh
+  source "$REVIEW_COMMENT_SCRIPT"
+fi
 
 # --------------------------------------------------------------------------
 # Skip-event audit log
@@ -2882,12 +2887,17 @@ review_findings_history_file() {
   printf '%s/%s.jsonl' "$(review_findings_history_dir)" "$(review_clean_marker_key "$branch")"
 }
 
-# Strip trailing whitespace from each line and drop empty trailing lines.
-# Findings text comes from the reviewer's stdout, which can include shell
-# color codes or stray indentation; the gate only persists lines that start
-# with `- ` (the BLOCKED contract).
+# Extract and normalize actionable findings from reviewer stdout. The prompt
+# asks for `- path:line` bullets, but hosted reviewers sometimes return
+# numbered lists, Markdown finding headings, or `Issue:` prefixes. Normalize
+# those shapes back to `- ...` so operators see the findings instead of a
+# parser failure.
 extract_findings_block() {
-  printf '%s\n' "$1" | awk '/^- / { print } /^$/ { if (have_finding) exit }'
+  if declare -F review_comment_findings_from_output >/dev/null 2>&1; then
+    review_comment_findings_from_output "$1"
+    return 0
+  fi
+  printf '%s\n' "$1" | awk '/^- / { print; found = 1 } /^$/ { if (found) exit }'
 }
 
 write_review_findings() {
@@ -4487,7 +4497,7 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
 
     CODEX_REVIEW_BLOCKED)
       phase "done — blocked"
-      REVIEW_FINDINGS_COUNT="$(printf '%s\n' "$OUTPUT" | grep -c '^- ' || true)"
+      REVIEW_FINDINGS_COUNT="$(extract_findings_block "$OUTPUT" | grep -c '^- ' || true)"
       blocked_subtitle="${REVIEWER_LABEL} flagged issues to address · push refused"
       tk_verdict fail "PUSH BLOCKED" "$blocked_subtitle"
       printf '%s\n' "$OUTPUT" | sed 's/^/    /'

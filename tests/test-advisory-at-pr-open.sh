@@ -32,7 +32,11 @@ set -euo pipefail
 printf '{"reviewer":"Conductor","provider":"claude","model":"claude-opus-4-1","peer_provider":"none","iterations":1,"mode":"%s","findings":%s,"exit_reason":"%s"}\n' \
   "${CODEX_REVIEW_MODE:-unknown}" "${CODEX_REVIEW_STUB_FINDINGS:-0}" "${CODEX_REVIEW_STUB_REASON:-clean}" > "$CODEX_REVIEW_SUMMARY_FILE"
 if [ "${CODEX_REVIEW_STUB_EXIT:-0}" != "0" ]; then
-  printf -- '- blocking advisory finding\n'
+  if [ -n "${CODEX_REVIEW_STUB_OUTPUT:-}" ]; then
+    printf '%s\n' "$CODEX_REVIEW_STUB_OUTPUT"
+  else
+    printf -- '- blocking advisory finding\n'
+  fi
   printf 'CODEX_REVIEW_BLOCKED\n'
   exit "$CODEX_REVIEW_STUB_EXIT"
 fi
@@ -100,6 +104,7 @@ run_open_pr() {
       CODEX_REVIEW_STUB_EXIT="${CODEX_REVIEW_STUB_EXIT:-0}" \
       CODEX_REVIEW_STUB_FINDINGS="${CODEX_REVIEW_STUB_FINDINGS:-0}" \
       CODEX_REVIEW_STUB_REASON="${CODEX_REVIEW_STUB_REASON:-clean}" \
+      CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
       CODEX_REVIEW_STUB_ENV_LOG="$TEST_DIR/review-env" \
       bash "$RUN_DIR/scripts/open-pr.sh"
   ) >"$output_file" 2>&1
@@ -107,6 +112,7 @@ run_open_pr() {
 
 reset_case() {
   rm -f "$TEST_DIR/comments" "$TEST_DIR/review-env"
+  unset CODEX_REVIEW_STUB_OUTPUT
 }
 
 echo "==> Case 1: clean advisory review posts clean summary"
@@ -155,6 +161,29 @@ if grep -q 'advisory review found 1 finding(s)' "$TEST_DIR/comments" \
   echo "    PASS"
 else
   echo "    FAIL: findings advisory comment missing or PR open blocked" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 2b: unparseable advisory findings expose raw reviewer output"
+reset_case
+printf '[review]\npreflight_required = false\nadvisory_at_pr_open = true\n# parser fallback case\n' >"$REPO_DIR/.codex-review.toml"
+git -C "$REPO_DIR" add .codex-review.toml
+git -C "$REPO_DIR" commit -m "exercise unparseable advisory" >/dev/null 2>&1
+OUT="$TEST_DIR/unparseable-findings.out"
+CODEX_REVIEW_STUB_EXIT=1 \
+  CODEX_REVIEW_STUB_FINDINGS=1 \
+  CODEX_REVIEW_STUB_REASON=blocked \
+  CODEX_REVIEW_STUB_OUTPUT=$'Reviewer wrote prose only about a real blocker.' \
+  run_open_pr "$OUT"
+if grep -q 'advisory review found 1 finding(s)' "$TEST_DIR/comments" \
+  && grep -q 'Review transcript excerpt' "$TEST_DIR/comments" \
+  && grep -q 'Reviewer wrote prose only about a real blocker' "$TEST_DIR/comments" \
+  && grep -q '^https://example.test/touchstone/pull/456$' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: unparseable advisory findings should expose raw reviewer output" >&2
   cat "$OUT" >&2
   [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
   ERRORS=$((ERRORS + 1))

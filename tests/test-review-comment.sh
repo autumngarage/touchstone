@@ -11,6 +11,32 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 echo "==> Test: format_clean_review_comment produces one-line audit text"
 # shellcheck source=../lib/review-comment.sh
 source "$TOUCHSTONE_ROOT/lib/review-comment.sh"
+
+echo "==> Test: review comment parser accepts alternate finding formats"
+PARSER_OUTPUT=$'1. app/main.py:12 - numbered finding\n### Finding 2: lib/review.sh:44 - heading finding\nIssue: missing operator-visible fallback\n### Finding 4\nmulti-line heading detail\nCODEX_REVIEW_BLOCKED'
+PARSER_FINDINGS="$(review_comment_findings_from_output "$PARSER_OUTPUT")"
+EXPECTED_FINDINGS=$'- app/main.py:12 - numbered finding\n- Finding 2: lib/review.sh:44 - heading finding\n- Issue: missing operator-visible fallback\n- Finding 4 - multi-line heading detail'
+if [ "$PARSER_FINDINGS" = "$EXPECTED_FINDINGS" ]; then
+  echo "==> PASS: alternate finding formats normalize to canonical bullets"
+else
+  echo "FAIL: alternate finding parser output mismatch" >&2
+  printf 'expected:\n%s\nactual:\n%s\n' "$EXPECTED_FINDINGS" "$PARSER_FINDINGS" >&2
+  exit 1
+fi
+
+echo "==> Test: unparseable nonzero findings include raw transcript excerpt"
+UNPARSEABLE_OUTPUT=$'Reviewer saw a problem but wrote prose only.\nCODEX_REVIEW_BLOCKED'
+COMMENT="$(format_advisory_findings_comment '{"reviewer":"Conductor","provider":"openrouter","model":"gpt-5.3-codex","peer_provider":"none","iterations":1,"mode":"review-only","findings":1}' "$UNPARSEABLE_OUTPUT")"
+if printf '%s\n' "$COMMENT" | grep -q 'no supported findings format was parsed' \
+  && printf '%s\n' "$COMMENT" | grep -q 'Review transcript excerpt' \
+  && printf '%s\n' "$COMMENT" | grep -q 'Reviewer saw a problem but wrote prose only'; then
+  echo "==> PASS: advisory comment exposes raw unparseable reviewer output"
+else
+  echo "FAIL: unparseable advisory findings should include a raw transcript excerpt" >&2
+  printf '%s\n' "$COMMENT" >&2
+  exit 1
+fi
+
 COMMENT="$(format_clean_review_comment '{"reviewer":"Conductor","provider":"gemini","model":"gemini-2.5-pro","peer_provider":"none","iterations":1,"mode":"review-only","findings":0}')"
 EXPECTED='Conductor review clean - provider: gemini, model: gemini-2.5-pro, peer: none, iterations: 1, mode: review-only, findings: 0'
 if [ "$COMMENT" = "$EXPECTED" ]; then
