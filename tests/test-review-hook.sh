@@ -2586,14 +2586,14 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Test: high-scrutiny paths auto-enable peer review"
+echo "==> Test: high-scrutiny paths auto-enable peer review with diff context"
 setup_ctx_repo
 cat >"$CTX_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
 subcmd="$1"; shift
 printf '%s\n' "$subcmd $*" >> "$CONDUCTOR_ARGS_LOG"
-cat >/dev/null
+input="$(cat)"
 case "$subcmd" in
   review | exec)
     printf '[conductor] auto -> claude (tier: frontier, model=sonnet)\n' >&2
@@ -2601,6 +2601,9 @@ case "$subcmd" in
     printf 'CODEX_REVIEW_CLEAN\n'
     ;;
   call)
+    if [ -n "${PEER_PROMPT_LOG:-}" ]; then
+      printf '%s\n' "$input" >"$PEER_PROMPT_LOG"
+    fi
     printf 'AGREE\n'
     printf 'Peer agrees on the high-scrutiny diff.\n'
     ;;
@@ -2616,11 +2619,14 @@ mkdir -p "$CTX_REPO/critical"
 printf 'important\n' >"$CTX_REPO/critical/file.txt"
 git -C "$CTX_REPO" add critical/file.txt && git -C "$CTX_REPO" commit -m "touch critical path" >/dev/null 2>&1
 
+PEER_PROMPT_LOG="$TEST_DIR/high-scrutiny-peer-prompt.log"
+: >"$PEER_PROMPT_LOG"
 : >"$CONDUCTOR_ARGS_LOG"
 (
   cd "$CTX_REPO"
   PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CONDUCTOR_ARGS_LOG="$CONDUCTOR_ARGS_LOG" \
+    PEER_PROMPT_LOG="$PEER_PROMPT_LOG" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
@@ -2629,14 +2635,21 @@ git -C "$CTX_REPO" add critical/file.txt && git -C "$CTX_REPO" commit -m "touch 
 if grep -q 'High-scrutiny review: configured high-scrutiny path critical/file.txt' "$CTX_OUTPUT" \
   && grep -q 'Review routing: high-risk diff (configured high-scrutiny path critical/file.txt' "$CTX_OUTPUT" \
   && grep -q 'peer review' "$CTX_OUTPUT" \
-  && grep -q '^call .*--exclude claude' "$CONDUCTOR_ARGS_LOG"; then
-  echo "==> PASS: high-scrutiny path triggered peer review"
+  && grep -q '^call .*--exclude claude' "$CONDUCTOR_ARGS_LOG" \
+  && grep -q '## Branch context' "$PEER_PROMPT_LOG" \
+  && grep -q 'High scrutiny: configured high-scrutiny path critical/file.txt' "$PEER_PROMPT_LOG" \
+  && grep -q '## Diff' "$PEER_PROMPT_LOG" \
+  && grep -q '^+important' "$PEER_PROMPT_LOG" \
+  && grep -q '## Primary reviewer output' "$PEER_PROMPT_LOG"; then
+  echo "==> PASS: high-scrutiny path triggered peer review with diff context"
 else
-  echo "FAIL: high-scrutiny path should trigger peer review" >&2
+  echo "FAIL: high-scrutiny path should trigger peer review with diff context" >&2
   echo "--- CTX_OUTPUT ---" >&2
   cat "$CTX_OUTPUT" >&2
   echo "--- conductor args log ---" >&2
   cat "$CONDUCTOR_ARGS_LOG" >&2
+  echo "--- peer prompt ---" >&2
+  cat "$PEER_PROMPT_LOG" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
