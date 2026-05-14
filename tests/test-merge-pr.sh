@@ -11,7 +11,8 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 FAKE_BIN="$TEST_DIR/bin"
 MERGE_SCRIPT_DIR="$TEST_DIR/scripts"
 GIT_PATH_ROOT="$TEST_DIR/git-path"
-mkdir -p "$FAKE_BIN" "$MERGE_SCRIPT_DIR" "$GIT_PATH_ROOT"
+DEFAULT_FAKE_WORKTREE="$TEST_DIR/default-feature-worktree"
+mkdir -p "$FAKE_BIN" "$MERGE_SCRIPT_DIR" "$GIT_PATH_ROOT" "$DEFAULT_FAKE_WORKTREE"
 cp "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$MERGE_SCRIPT_DIR/merge-pr.sh"
 cat >"$MERGE_SCRIPT_DIR/codex-review.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -125,9 +126,12 @@ cat >"$FAKE_BIN/git" <<'EOF'
 set -euo pipefail
 
 if [ "${1:-}" = "-C" ]; then
-  case "${3:-} ${4:-}" in
+  git_c_target="$2"
+  cd "$git_c_target"
+  shift 2
+  case "${1:-} ${2:-}" in
     "pull --ff-only")
-      printf '%s\n' "$2" > "$GIT_SIBLING_PULL_FILE"
+      printf '%s\n' "$git_c_target" > "$GIT_SIBLING_PULL_FILE"
       if [ "${GIT_SIBLING_PULL_FAIL:-false}" = "true" ]; then
         echo "sibling pull failed" >&2
         exit 1
@@ -140,17 +144,14 @@ if [ "${1:-}" = "-C" ]; then
       exit 0
       ;;
     "worktree remove")
-      printf '%s\n' "${5:-}" > "$GIT_WORKTREE_REMOVE_FILE"
+      remove_target="${4:-${3:-}}"
+      printf '%s\n' "$remove_target" > "$GIT_WORKTREE_REMOVE_FILE"
       if [ "${GIT_WORKTREE_REMOVE_FAIL:-false}" = "true" ]; then
         echo "worktree remove failed" >&2
         exit 1
       fi
-      echo "removed ${5:-}"
+      echo "removed $remove_target"
       exit 0
-      ;;
-    *)
-      echo "unexpected git -C args: $*" >&2
-      exit 1
       ;;
   esac
 fi
@@ -217,7 +218,13 @@ case "$*" in
   "fetch origin +refs/heads/main:refs/remotes/origin/main")
     echo "fetched main"
     ;;
-  "status --porcelain")
+  "status --porcelain" | "status --porcelain --untracked-files=all")
+    ;;
+  "ls-files --others --exclude-standard -z")
+    if [ -n "${GIT_UNTRACKED_PATH:-}" ] \
+      && { [ "${GIT_REQUIRE_ROOT_FOR_UNTRACKED:-false}" != "true" ] || [ "$PWD" = "${TEST_CURRENT_WORKTREE:-}" ]; }; then
+      printf '%s\0' "$GIT_UNTRACKED_PATH"
+    fi
     ;;
   "diff --name-only origin/main...HEAD")
     printf '%s\n' "${GIT_CHANGED_PATHS:-example.txt}"
@@ -290,8 +297,11 @@ reset_case_files() {
   unset GIT_CHANGED_PATHS
   unset GIT_WORKTREE_DIFF
   unset GIT_INDEX_DIFF
+  unset GIT_UNTRACKED_PATH
+  unset GIT_REQUIRE_ROOT_FOR_UNTRACKED
   unset GIT_WORKTREE_STATUS
   unset GIT_WORKTREE_REMOVE_FAIL
+  unset SHELLCHECK_VERSION_LINE
 }
 
 run_merge_pr() {
@@ -326,15 +336,18 @@ run_merge_pr() {
     GIT_CHANGED_PATHS="${GIT_CHANGED_PATHS:-example.txt}" \
     GIT_WORKTREE_DIFF="${GIT_WORKTREE_DIFF:-}" \
     GIT_INDEX_DIFF="${GIT_INDEX_DIFF:-}" \
+    GIT_UNTRACKED_PATH="${GIT_UNTRACKED_PATH:-}" \
+    GIT_REQUIRE_ROOT_FOR_UNTRACKED="${GIT_REQUIRE_ROOT_FOR_UNTRACKED:-false}" \
     GIT_WORKTREE_STATUS="${GIT_WORKTREE_STATUS:-}" \
     GIT_WORKTREE_REMOVE_FAIL="${GIT_WORKTREE_REMOVE_FAIL:-false}" \
+    SHELLCHECK_VERSION_LINE="${SHELLCHECK_VERSION_LINE:-}" \
     CODEX_REVIEW_EXIT="${CODEX_REVIEW_EXIT:-0}" \
     CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
     CODEX_REVIEW_STUB_SUMMARY="${CODEX_REVIEW_STUB_SUMMARY:-}" \
     CODEX_REVIEW_MUTATE_HEAD="${CODEX_REVIEW_MUTATE_HEAD:-}" \
     GIT_LOCAL_BRANCH_HEAD="${GIT_LOCAL_BRANCH_HEAD:-pr-head-oid}" \
     PREFLIGHT_CALLS_FILE="${PREFLIGHT_CALLS_FILE:-}" \
-    TEST_CURRENT_WORKTREE="${TEST_CURRENT_WORKTREE:-/tmp/touchstone-feature-worktree}" \
+    TEST_CURRENT_WORKTREE="${TEST_CURRENT_WORKTREE:-$DEFAULT_FAKE_WORKTREE}" \
     bash "$MERGE_SCRIPT_DIR/merge-pr.sh" "$@" >"$output_file" 2>&1
 }
 
@@ -541,6 +554,119 @@ else
   cat "$TEST_DIR/preflight-calls" >&2
   cat "$TEST_DIR/output-preflight-cache-checker-second.txt" >&2
   cat "$TEST_DIR/output-preflight-cache-config-third.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: preflight cache reruns when untracked file contents change"
+install_preflight_counter_fixture
+reset_case_files
+UNTRACKED_FILE="$TEST_DIR/untracked-local-test.sh"
+printf 'echo pass\n' >"$UNTRACKED_FILE"
+: >"$TEST_DIR/preflight-calls"
+if CODEX_REVIEW_EXIT=1 \
+  GIT_UNTRACKED_PATH="$UNTRACKED_FILE" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-untracked-first.txt" 123; then
+  echo "FAIL: first untracked-content fixture run should stop at review failure" >&2
+  exit 1
+fi
+printf 'echo fail\n' >"$UNTRACKED_FILE"
+if CODEX_REVIEW_EXIT=1 \
+  GIT_UNTRACKED_PATH="$UNTRACKED_FILE" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-untracked-second.txt" 123; then
+  echo "FAIL: second untracked-content fixture run should stop at review failure" >&2
+  exit 1
+fi
+rm -rf "${TEST_DIR:?}/lib"
+if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "2" ] \
+  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-untracked-second.txt"; then
+  echo "==> PASS: changed untracked file contents forced preflight rerun"
+else
+  echo "FAIL: changed untracked file contents should force preflight rerun" >&2
+  cat "$TEST_DIR/preflight-calls" >&2
+  cat "$TEST_DIR/output-preflight-cache-untracked-second.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: preflight cache hashes root worktree state from subdirs"
+install_preflight_counter_fixture
+reset_case_files
+ROOT_HASH_WORKTREE="$TEST_DIR/root-hash-worktree"
+mkdir -p "$ROOT_HASH_WORKTREE/nested"
+printf 'root one\n' >"$ROOT_HASH_WORKTREE/root-only.log"
+: >"$TEST_DIR/preflight-calls"
+if CODEX_REVIEW_EXIT=1 \
+  TEST_CURRENT_WORKTREE="$ROOT_HASH_WORKTREE" \
+  GIT_UNTRACKED_PATH="root-only.log" \
+  GIT_REQUIRE_ROOT_FOR_UNTRACKED=true \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-root-first.txt" 123; then
+  echo "FAIL: first root-state fixture run should stop at review failure" >&2
+  exit 1
+fi
+printf 'root two\n' >"$ROOT_HASH_WORKTREE/root-only.log"
+(
+  cd "$ROOT_HASH_WORKTREE/nested"
+  if CODEX_REVIEW_EXIT=1 \
+    TEST_CURRENT_WORKTREE="$ROOT_HASH_WORKTREE" \
+    GIT_UNTRACKED_PATH="root-only.log" \
+    GIT_REQUIRE_ROOT_FOR_UNTRACKED=true \
+    PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+    run_merge_pr "$TEST_DIR/output-preflight-cache-root-second.txt" 123; then
+    echo "FAIL: second root-state fixture run should stop at review failure" >&2
+    exit 1
+  fi
+)
+rm -rf "${TEST_DIR:?}/lib"
+if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "2" ] \
+  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-root-second.txt"; then
+  echo "==> PASS: subdir launch still hashes root worktree state"
+else
+  echo "FAIL: subdir launch should not reuse stale root worktree cache" >&2
+  cat "$TEST_DIR/preflight-calls" >&2
+  cat "$TEST_DIR/output-preflight-cache-root-second.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: preflight cache reruns when full tool version output changes"
+install_preflight_counter_fixture
+reset_case_files
+cat >"$FAKE_BIN/shellcheck" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "--version" ]; then
+  printf 'ShellCheck - shell script analysis tool\n'
+  printf 'version: %s\n' "${SHELLCHECK_VERSION_LINE:-0.10.0}"
+  exit 0
+fi
+exit 0
+EOF
+chmod +x "$FAKE_BIN/shellcheck"
+: >"$TEST_DIR/preflight-calls"
+if CODEX_REVIEW_EXIT=1 \
+  SHELLCHECK_VERSION_LINE="0.10.0" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-tool-first.txt" 123; then
+  echo "FAIL: first tool-version fixture run should stop at review failure" >&2
+  exit 1
+fi
+if CODEX_REVIEW_EXIT=1 \
+  SHELLCHECK_VERSION_LINE="0.11.0" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-tool-second.txt" 123; then
+  echo "FAIL: second tool-version fixture run should stop at review failure" >&2
+  exit 1
+fi
+rm -f "$FAKE_BIN/shellcheck"
+rm -rf "${TEST_DIR:?}/lib"
+if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "2" ] \
+  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-tool-second.txt"; then
+  echo "==> PASS: full tool version output change forced preflight rerun"
+else
+  echo "FAIL: full tool version output change should force preflight rerun" >&2
+  cat "$TEST_DIR/preflight-calls" >&2
+  cat "$TEST_DIR/output-preflight-cache-tool-second.txt" >&2
   exit 1
 fi
 
@@ -836,14 +962,17 @@ fi
 
 echo "==> Test: gh local-branch-delete failure on a MERGED PR is a warning, not an error"
 reset_case_files
-TEST_CURRENT_WORKTREE="/tmp/touchstone-feature-worktree"
+LOCAL_DELETE_MAIN_WORKTREE="$TEST_DIR/touchstone-main-worktree"
+LOCAL_DELETE_FEATURE_WORKTREE="$TEST_DIR/touchstone-feature-worktree"
+mkdir -p "$LOCAL_DELETE_MAIN_WORKTREE" "$LOCAL_DELETE_FEATURE_WORKTREE"
+TEST_CURRENT_WORKTREE="$LOCAL_DELETE_FEATURE_WORKTREE"
 GIT_WORKTREE_LIST="$(
-  cat <<'EOF'
-worktree /tmp/touchstone-main-worktree
+  cat <<EOF
+worktree $LOCAL_DELETE_MAIN_WORKTREE
 HEAD main-oid
 branch refs/heads/main
 
-worktree /tmp/touchstone-feature-worktree
+worktree $LOCAL_DELETE_FEATURE_WORKTREE
 HEAD feature-oid
 branch refs/heads/feature/test
 

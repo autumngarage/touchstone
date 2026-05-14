@@ -94,7 +94,7 @@ git -C "$REPO_DIR" commit -m "test advisory" >/dev/null 2>&1
 run_open_pr() {
   local output_file="$1"
   (
-    cd "$REPO_DIR"
+    cd "${OPEN_PR_WORKDIR:-$REPO_DIR}"
     PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
       GH_COMMENT_FILE="$TEST_DIR/comments" \
       CODEX_REVIEW_STUB_EXIT="${CODEX_REVIEW_STUB_EXIT:-0}" \
@@ -189,12 +189,57 @@ OUT="$TEST_DIR/preflight.out"
   CODEX_REVIEW_STUB_EXIT=0 CODEX_REVIEW_STUB_FINDINGS=0 CODEX_REVIEW_STUB_REASON=clean run_open_pr "$OUT"
 )
 if grep -q '^TOUCHSTONE_PREFLIGHT_ALREADY_RAN=true$' "$TEST_DIR/review-env" \
-  && grep -q '^TOUCHSTONE_CONDUCTOR_WITH=deepseek-reasoner$' "$TEST_DIR/review-env"; then
+  && grep -q '^TOUCHSTONE_CONDUCTOR_WITH=deepseek-reasoner$' "$TEST_DIR/review-env" \
+  && grep -q 'Deterministic preflight clean (cached=false' "$OUT"; then
   echo "    PASS"
 else
   echo "    FAIL: advisory review should know clean preflight already ran" >&2
   cat "$OUT" >&2
   [ -f "$TEST_DIR/review-env" ] && cat "$TEST_DIR/review-env" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 5: repeated advisory preflight reuses the exact clean marker"
+reset_case
+OUT="$TEST_DIR/preflight-cached.out"
+(
+  export TOUCHSTONE_CONDUCTOR_WITH="deepseek-reasoner"
+  CODEX_REVIEW_STUB_EXIT=0 CODEX_REVIEW_STUB_FINDINGS=0 CODEX_REVIEW_STUB_REASON=clean run_open_pr "$OUT"
+)
+if grep -q 'Deterministic preflight clean (cached=true' "$OUT" \
+  && grep -q '^TOUCHSTONE_PREFLIGHT_ALREADY_RAN=true$' "$TEST_DIR/review-env"; then
+  echo "    PASS"
+else
+  echo "    FAIL: repeated advisory preflight should reuse the clean marker" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/review-env" ] && cat "$TEST_DIR/review-env" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 6: advisory preflight cache hashes root worktree state from subdirs"
+reset_case
+mkdir -p "$REPO_DIR/nested"
+printf 'root one\n' >"$REPO_DIR/root-untracked.txt"
+OUT="$TEST_DIR/preflight-subdir-first.out"
+(
+  export OPEN_PR_WORKDIR="$REPO_DIR/nested"
+  CODEX_REVIEW_STUB_EXIT=0 CODEX_REVIEW_STUB_FINDINGS=0 CODEX_REVIEW_STUB_REASON=clean run_open_pr "$OUT"
+)
+printf 'root two\n' >"$REPO_DIR/root-untracked.txt"
+OUT2="$TEST_DIR/preflight-subdir-second.out"
+(
+  export OPEN_PR_WORKDIR="$REPO_DIR/nested"
+  CODEX_REVIEW_STUB_EXIT=0 CODEX_REVIEW_STUB_FINDINGS=0 CODEX_REVIEW_STUB_REASON=clean run_open_pr "$OUT2"
+)
+rm -f "$REPO_DIR/root-untracked.txt"
+if grep -q 'Deterministic preflight clean (cached=false' "$OUT" \
+  && grep -q 'Deterministic preflight clean (cached=false' "$OUT2" \
+  && ! grep -q 'Deterministic preflight clean (cached=true' "$OUT2"; then
+  echo "    PASS"
+else
+  echo "    FAIL: subdir-launched advisory preflight missed root worktree state" >&2
+  cat "$OUT" >&2
+  cat "$OUT2" >&2
   ERRORS=$((ERRORS + 1))
 fi
 

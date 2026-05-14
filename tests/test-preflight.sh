@@ -118,6 +118,12 @@ EOF
 cat >"$MERGE_DIR/bin/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
+if [ "${1:-}" = "-C" ]; then
+  cd "$2"
+  shift 2
+fi
+
 case "$*" in
   "rev-parse --show-toplevel") printf '%s\n' "$TEST_REPO_ROOT" ;;
   "rev-parse --abbrev-ref HEAD")
@@ -133,11 +139,12 @@ case "$*" in
   "fetch origin +refs/heads/main:refs/remotes/origin/main") echo fetched ;;
   "cat-file -e pr-head-oid^{commit}") ;;
   "merge-base origin/main pr-head-oid") echo "base-oid" ;;
-  "status --porcelain") ;;
+  "status --porcelain" | "status --porcelain --untracked-files=all") ;;
   "diff --name-only origin/main...HEAD") echo "broken.sh" ;;
   "diff --name-only --cached") ;;
   "diff --name-only") ;;
   "ls-files") echo "broken.sh" ;;
+  "ls-files --others --exclude-standard -z") ;;
   "worktree list --porcelain") ;;
   *) echo "unexpected git args: $*" >&2; exit 1 ;;
 esac
