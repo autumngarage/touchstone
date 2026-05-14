@@ -3629,6 +3629,24 @@ parse_peer_provider() {
   fi
 }
 
+primary_provider_for_peer_review() {
+  local provider
+  provider="$(parse_primary_provider)"
+  if [ -n "$provider" ]; then
+    printf '%s' "$provider"
+    return 0
+  fi
+
+  # If Conductor did not emit parseable provider telemetry, a pinned provider
+  # (or merge-gate route preflight provider) is still a trustworthy exclusion.
+  # Leave truly unknown auto-routed cases empty so peer review skips rather than
+  # risk asking the same provider for a second opinion.
+  provider="$(conductor_effective_with_for_phase review)"
+  if [ -n "$provider" ]; then
+    printf '%s' "$provider"
+  fi
+}
+
 conductor_invocation_label() {
   local conductor_path subcommand
   conductor_path="$(command -v conductor 2>/dev/null || printf 'conductor')"
@@ -3833,7 +3851,7 @@ try_review_fallback_retry() {
 run_peer_review() {
   local primary_output="$1"
   local primary_provider mode
-  primary_provider="$(parse_primary_provider)"
+  primary_provider="$(primary_provider_for_peer_review)"
   mode="peer"
   if [ "${HIGH_SCRUTINY_TRIGGERED:-false}" = true ]; then
     mode="${HIGH_SCRUTINY_MODE:-peer}"
