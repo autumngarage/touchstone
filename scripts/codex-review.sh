@@ -3939,27 +3939,27 @@ High scrutiny: ${HIGH_SCRUTINY_REASON:-none}
 
 Changed files:
 $(if [ -n "$changed_paths" ]; then
-  printf '%s\n' "$changed_paths" | sed '/^$/d; s/^/- /'
-else
-  printf '(none)\n'
-fi)
+    printf '%s\n' "$changed_paths" | sed '/^$/d; s/^/- /'
+  else
+    printf '(none)\n'
+  fi)
 
 Commit messages:
 
 $(git log --reverse --format='### %s%n%n%b' "$MERGE_BASE"..HEAD 2>/dev/null | sed '/^$/N;/^\n$/d')
 $(if [ -n "$REVIEW_CONTEXT_FILE" ]; then
-  printf '\n## Project review context\n\n'
-  cat "$REVIEW_CONTEXT_FILE"
-fi)
+    printf '\n## Project review context\n\n'
+    cat "$REVIEW_CONTEXT_FILE"
+  fi)
 
 ## Diff
 
 \`\`\`diff
 $(if is_truthy "${SCOPED_LARGE_DIFF_REVIEW:-false}" && [ -n "${SCOPED_LARGE_DIFF_FILE:-}" ]; then
-  cat "$SCOPED_LARGE_DIFF_FILE"
-else
-  git diff "$MERGE_BASE"..HEAD 2>/dev/null
-fi)
+    cat "$SCOPED_LARGE_DIFF_FILE"
+  else
+    git diff "$MERGE_BASE"..HEAD 2>/dev/null
+  fi)
 \`\`\`
 
 ## Primary reviewer output
