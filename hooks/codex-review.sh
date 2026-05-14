@@ -416,6 +416,8 @@ CONDUCTOR_EFFORT=""
 CONDUCTOR_TAGS=""
 CONDUCTOR_EXCLUDE=""
 CONDUCTOR_EXCLUDE_CONFIGURED=false
+CONDUCTOR_PREFLIGHT_REVIEW_PROVIDER=""
+CONDUCTOR_PREFLIGHT_FIX_PROVIDER=""
 ROUTING_ENABLED=true
 ROUTING_SMALL_MAX_DIFF_LINES=400
 ROUTING_SMALL_REVIEWERS=() # legacy 1.x shape; retained for back-compat parsing
@@ -1704,18 +1706,20 @@ reviewer_conductor_exec() {
   local -a args=()
   local subcommand
   local tools
+  local effective_with
 
   # REVIEW_MODE + REVIEW_PHASE → Conductor job shape. The default phase uses
   # Conductor's semantic review command and lets Conductor own routing policy.
   # Edit-capable work is a separate phase after a BLOCKED read-only review.
   subcommand="$(conductor_subcommand_for_mode "$phase")"
   tools="$(conductor_tools_for_mode "$phase")"
+  effective_with="$(conductor_effective_with_for_phase "$phase")"
 
   if [ "$subcommand" = "review" ]; then
     local review_tags
     review_tags="$(normalize_conductor_review_tags "${CONDUCTOR_TAGS:-}")"
-    [ -n "${CONDUCTOR_WITH:-}" ] && args+=(--with "$CONDUCTOR_WITH")
-    if [ -z "${CONDUCTOR_WITH:-}" ]; then
+    [ -n "$effective_with" ] && args+=(--with "$effective_with")
+    if [ -z "$effective_with" ]; then
       args+=(--prefer "${CONDUCTOR_PREFER:-best}")
       [ -n "$review_tags" ] && args+=(--tags "$review_tags")
     fi
@@ -1734,8 +1738,8 @@ reviewer_conductor_exec() {
 
   # Provider selection for exec/call paths: --with <id> pins a provider;
   # otherwise --auto lets the router pick based on prefer + effort + tags.
-  if [ -n "${CONDUCTOR_WITH:-}" ]; then
-    args+=(--with "$CONDUCTOR_WITH")
+  if [ -n "$effective_with" ]; then
+    args+=(--with "$effective_with")
   else
     args+=(--auto)
     args+=(--prefer "${CONDUCTOR_PREFER:-best}")
@@ -1778,6 +1782,20 @@ conductor_csv_empty_or_only_ollama() {
 conductor_should_use_semantic_review() {
   [ "${CONDUCTOR_WITH:-}" != "ollama" ] || return 1
   return 0
+}
+
+conductor_effective_with_for_phase() {
+  local phase="${1:-review}"
+
+  if [ -n "${CONDUCTOR_WITH:-}" ]; then
+    printf '%s' "$CONDUCTOR_WITH"
+    return 0
+  fi
+
+  case "$phase" in
+    review) printf '%s' "${CONDUCTOR_PREFLIGHT_REVIEW_PROVIDER:-}" ;;
+    fix) printf '%s' "${CONDUCTOR_PREFLIGHT_FIX_PROVIDER:-}" ;;
+  esac
 }
 
 conductor_native_review_provider() {
@@ -1950,6 +1968,11 @@ conductor_route_preflight_for_phase() {
     return 1
   fi
 
+  case "$phase" in
+    review) CONDUCTOR_PREFLIGHT_REVIEW_PROVIDER="$provider" ;;
+    fix) CONDUCTOR_PREFLIGHT_FIX_PROVIDER="$provider" ;;
+  esac
+
   echo "==> Review route preflight: $phase route viable via $provider (subcommand=$subcommand, tools=${tools:-none})"
   return 0
 }
@@ -1970,6 +1993,9 @@ run_conductor_route_preflight() {
     echo "WARNING: conductor route preflight is unavailable; continuing without route viability validation." >&2
     return 0
   fi
+
+  CONDUCTOR_PREFLIGHT_REVIEW_PROVIDER=""
+  CONDUCTOR_PREFLIGHT_FIX_PROVIDER=""
 
   echo "==> Review route preflight: mode=$REVIEW_MODE with=${CONDUCTOR_WITH:-auto} prefer=${CONDUCTOR_PREFER:-best} effort=${CONDUCTOR_EFFORT:-high} exclude=${CONDUCTOR_EXCLUDE:-none}"
 
@@ -2729,6 +2755,8 @@ review_cache_key() {
     # silently satisfy a later push expecting prefer=best/effort=high
     # because the diff hash matches.
     printf 'conductor_with=%s\n' "${CONDUCTOR_WITH:-}"
+    printf 'conductor_preflight_review_provider=%s\n' "${CONDUCTOR_PREFLIGHT_REVIEW_PROVIDER:-}"
+    printf 'conductor_preflight_fix_provider=%s\n' "${CONDUCTOR_PREFLIGHT_FIX_PROVIDER:-}"
     printf 'conductor_prefer=%s\n' "${CONDUCTOR_PREFER:-}"
     printf 'conductor_effort=%s\n' "${CONDUCTOR_EFFORT:-}"
     printf 'conductor_tags=%s\n' "${CONDUCTOR_TAGS:-}"
@@ -2906,9 +2934,16 @@ clear_review_findings() {
 
 json_escape() {
   awk '
+    BEGIN {
+      tab = sprintf("%c", 9)
+      cr = sprintf("%c", 13)
+    }
     {
       gsub(/\\/, "\\\\")
       gsub(/"/, "\\\"")
+      gsub(tab, "\\t")
+      gsub(cr, "\\r")
+      gsub(/[[:cntrl:]]/, "?")
       if (NR > 1) {
         printf "\\n"
       }
@@ -2985,7 +3020,7 @@ append_review_diagnostic_event() {
   [ -n "$branch" ] || branch="unknown"
   head="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
   provider="$(parse_primary_provider)"
-  [ -n "$provider" ] || provider="${CONDUCTOR_WITH:-unknown}"
+  [ -n "$provider" ] || provider="$(conductor_effective_with_for_phase review)"
   [ -n "$provider" ] || provider="unknown"
   model="$(parse_primary_model)"
   [ -n "$model" ] || model="unknown"
@@ -3598,9 +3633,7 @@ print_malformed_sentinel_diagnostics() {
 
   local selected_provider
   selected_provider="$(parse_primary_provider)"
-  if [ -z "$selected_provider" ] && [ -n "${CONDUCTOR_WITH:-}" ]; then
-    selected_provider="$CONDUCTOR_WITH"
-  fi
+  [ -n "$selected_provider" ] || selected_provider="$(conductor_effective_with_for_phase review)"
   [ -n "$selected_provider" ] || selected_provider="unknown"
 
   echo "    Conductor selected provider: $selected_provider"
@@ -3719,7 +3752,8 @@ try_review_fallback_retry() {
   local status_before="$3"
   local prompt="${4:-$REVIEW_PROMPT}"
   local output_file="${5:-$REVIEW_OUTPUT_FILE}"
-  local failed_provider failed_providers previous_with previous_exclude fallback_exclude
+  local failed_provider failed_providers previous_with previous_exclude
+  local previous_preflight_review_provider previous_preflight_fix_provider fallback_exclude
 
   [ "${ACTIVE_REVIEWER:-}" = "conductor" ] || return 1
   is_truthy "$CONDUCTOR_FALLBACK_RETRY" || return 1
@@ -3731,7 +3765,7 @@ try_review_fallback_retry() {
   fi
 
   failed_provider="$(parse_primary_provider)"
-  [ -n "$failed_provider" ] || failed_provider="${CONDUCTOR_WITH:-}"
+  [ -n "$failed_provider" ] || failed_provider="$(conductor_effective_with_for_phase review)"
   failed_providers="$(conductor_failed_provider_csv)"
   if [ -n "$failed_provider" ] && [ "$failed_provider" != "unknown" ]; then
     failed_providers="$(exclude_provider_once "$failed_providers" "$failed_provider")"
@@ -3750,6 +3784,8 @@ try_review_fallback_retry() {
 
   previous_with="$CONDUCTOR_WITH"
   previous_exclude="$CONDUCTOR_EXCLUDE"
+  previous_preflight_review_provider="$CONDUCTOR_PREFLIGHT_REVIEW_PROVIDER"
+  previous_preflight_fix_provider="$CONDUCTOR_PREFLIGHT_FIX_PROVIDER"
   fallback_exclude="$(exclude_provider_csv "$CONDUCTOR_EXCLUDE" "$failed_providers")"
 
   phase "retrying with Conductor fallback (excluding $failed_providers)"
@@ -3758,6 +3794,8 @@ try_review_fallback_retry() {
 
   CONDUCTOR_WITH=""
   CONDUCTOR_EXCLUDE="$fallback_exclude"
+  CONDUCTOR_PREFLIGHT_REVIEW_PROVIDER=""
+  CONDUCTOR_PREFLIGHT_FIX_PROVIDER=""
   set +e
   run_reviewer_with_timeout "$REVIEW_TIMEOUT" "$prompt" "$output_file"
   FALLBACK_REVIEW_EXIT=$?
@@ -3767,6 +3805,8 @@ try_review_fallback_retry() {
 
   CONDUCTOR_WITH="$previous_with"
   CONDUCTOR_EXCLUDE="$previous_exclude"
+  CONDUCTOR_PREFLIGHT_REVIEW_PROVIDER="$previous_preflight_review_provider"
+  CONDUCTOR_PREFLIGHT_FIX_PROVIDER="$previous_preflight_fix_provider"
 
   # The clean-review cache key was computed for the primary route. A fallback
   # clean result is valid for this run, but should not satisfy a later exact
@@ -3992,7 +4032,8 @@ print_summary() {
   secs=$((elapsed % 60))
   findings="${REVIEW_FINDINGS_COUNT:-0}"
   provider="$(parse_primary_provider)"
-  [ -n "$provider" ] || provider="${CONDUCTOR_WITH:-unknown}"
+  [ -n "$provider" ] || provider="$(conductor_effective_with_for_phase review)"
+  [ -n "$provider" ] || provider="unknown"
   model="$(parse_primary_model)"
   [ -n "$model" ] || model="unknown"
   peer_provider="$(parse_peer_provider)"
