@@ -45,12 +45,12 @@ extract_issue_refs() {
     if [ -n "$issue_number" ]; then
       printf '%s\n' "$issue_number" >>"$refs_file"
     fi
-  done < <(grep -Eoi '\b(closes|fixes|resolves|closes-issue):?[[:space:]]*#[0-9]+\b' "$body_file" || true)
+  done < <(grep -Eoi '\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved|closes-issue):?[[:space:]]*#[0-9]+\b' "$body_file" || true)
 
-  # Pattern 2: closes/fixes/resolves with optional owner/repo prefix.
+  # Pattern 2: GitHub closing keywords with optional owner/repo prefix.
   while IFS= read -r match; do
     normalized="$(printf '%s' "$match" | tr '[:upper:]' '[:lower:]')"
-    target_repo="$(printf '%s' "$normalized" | sed -nE 's/^(closes|fixes|resolves):?[[:space:]]*([[:alnum:]_.-]+\/[[:alnum:]_.-]+)#[0-9]+$/\2/p')"
+    target_repo="$(printf '%s' "$normalized" | sed -nE 's/^(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?[[:space:]]*([[:alnum:]_.-]+\/[[:alnum:]_.-]+)#[0-9]+$/\2/p')"
     if [ -n "$target_repo" ] && [ -n "$current_repo" ] && [ "$target_repo" != "$current_repo" ]; then
       echo "==> Skipping cross-repo reference: $match"
       continue
@@ -59,7 +59,7 @@ extract_issue_refs() {
     if [ -n "$issue_number" ]; then
       printf '%s\n' "$issue_number" >>"$refs_file"
     fi
-  done < <(grep -Eoi '\b(closes|fixes|resolves):?[[:space:]]*([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+\b' "$body_file" || true)
+  done < <(grep -Eoi '\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?[[:space:]]*([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+\b' "$body_file" || true)
 }
 
 format_assignee_label() {

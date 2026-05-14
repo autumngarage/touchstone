@@ -321,6 +321,51 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Case 8: all GitHub closing verb forms are recognized"
+for verb in close closes closed fix fixes fixed resolve resolves resolved; do
+  BODY="$TEST_DIR/verb-$verb.md"
+  printf '%s #52\n' "$verb" >"$BODY"
+  OUT="$TEST_DIR/verb-$verb.out"
+  RC=0
+  (
+    cd "$REPO_DIR"
+    PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+      GH_REPO="outriderintel/outrider" \
+      bash "$SCRIPT_DIR/issue-claim-check.sh" --body-file "$BODY" --author alice
+  ) >"$OUT" 2>&1 || RC=$?
+
+  if [ "$RC" = "0" ] \
+    && grep -q 'pass: @alice is assigned' "$OUT"; then
+    :
+  else
+    echo "    FAIL: expected '$verb #52' to be recognized" >&2
+    echo "    rc=$RC" >&2
+    cat "$OUT" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+done
+
+BODY="$TEST_DIR/verb-closes-issue.md"
+printf 'closes-issue: #52\n' >"$BODY"
+OUT="$TEST_DIR/verb-closes-issue.out"
+RC=0
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_REPO="outriderintel/outrider" \
+    bash "$SCRIPT_DIR/issue-claim-check.sh" --body-file "$BODY" --author alice
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'pass: @alice is assigned' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected closes-issue trailer to stay recognized" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 if [ "$ERRORS" = "0" ]; then
   echo "==> PASS: open-pr.sh injects issue-closing keywords and preflights claim ownership"
   exit 0
