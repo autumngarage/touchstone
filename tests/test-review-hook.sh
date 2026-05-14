@@ -2460,6 +2460,56 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: peer review uses pinned provider when telemetry is missing"
+setup_ctx_repo
+cat >"$CTX_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+subcmd="$1"; shift
+printf '%s\n' "$subcmd $*" >> "$CONDUCTOR_ARGS_LOG"
+cat >/dev/null
+case "$subcmd" in
+  review | exec)
+    printf 'Primary review emitted no provider telemetry.\n'
+    printf 'CODEX_REVIEW_CLEAN\n'
+    ;;
+  call)
+    printf 'AGREE\n'
+    printf 'Peer ran with the pinned primary excluded.\n'
+    ;;
+esac
+CXEOF
+chmod +x "$CTX_BIN/conductor"
+{
+  cat "$CTX_REPO/.codex-review.toml" 2>/dev/null || true
+  printf '\n[review.assist]\nenabled = true\nmax_rounds = 1\n'
+} >"$CTX_REPO/.codex-review.toml.tmp" && mv "$CTX_REPO/.codex-review.toml.tmp" "$CTX_REPO/.codex-review.toml"
+git -C "$CTX_REPO" add .codex-review.toml && git -C "$CTX_REPO" commit -m "enable pinned assist" >/dev/null 2>&1
+
+: >"$CONDUCTOR_ARGS_LOG"
+(
+  cd "$CTX_REPO"
+  PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CONDUCTOR_ARGS_LOG="$CONDUCTOR_ARGS_LOG" \
+    CODEX_REVIEW_BASE="HEAD~2" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    TOUCHSTONE_CONDUCTOR_WITH=openrouter \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
+)
+
+if grep -q 'peer review' "$CTX_OUTPUT" \
+  && ! grep -q "couldn't identify primary provider" "$CTX_OUTPUT" \
+  && grep -q '^call .*--exclude openrouter' "$CONDUCTOR_ARGS_LOG"; then
+  echo "==> PASS: peer review excluded pinned provider without telemetry"
+else
+  echo "FAIL: peer review should use pinned provider as telemetry fallback" >&2
+  echo "--- CTX_OUTPUT ---" >&2
+  cat "$CTX_OUTPUT" >&2
+  echo "--- conductor args log ---" >&2
+  cat "$CONDUCTOR_ARGS_LOG" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: peer review excludes successful fallback provider"
 setup_ctx_repo
 cat >"$CTX_BIN/conductor" <<'CXEOF'
