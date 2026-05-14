@@ -90,6 +90,7 @@ case "$1 $2" in
     if [ "$json_fields" = "assignees" ]; then
       case "$issue_number" in
         42 | 43 | 52) echo "alice" ;;
+        6[0-9]) echo "alice" ;;
         53) echo "bob" ;;
         *) : ;;
       esac
@@ -316,6 +317,51 @@ if [ "$RC" = "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: expected fully-qualified cross-repo issue to be skipped" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 8: all GitHub closing verbs plus closes-issue are enforced"
+BODY="$TEST_DIR/all-closing-verbs.md"
+cat >"$BODY" <<'EOF_BODY'
+Close #60
+Closes #61
+Closed #62
+Fix #63
+Fixes #64
+Fixed #65
+Resolve #66
+Resolves #67
+Resolved #68
+Closes-issue: #69
+EOF_BODY
+OUT="$TEST_DIR/all-closing-verbs.out"
+RC=0
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_REPO="autumngarage/touchstone" \
+    bash "$SCRIPT_DIR/issue-claim-check.sh" --body-file "$BODY" --author alice
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'All referenced issues are claimed by the PR author.' "$OUT"; then
+  missing_issue=false
+  for issue in 60 61 62 63 64 65 66 67 68 69; do
+    if ! grep -q "==> Checking issue #$issue" "$OUT"; then
+      missing_issue=true
+    fi
+  done
+  if [ "$missing_issue" = false ]; then
+    echo "    PASS"
+  else
+    echo "    FAIL: expected all closing verbs to produce issue checks" >&2
+    cat "$OUT" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+else
+  echo "    FAIL: expected all closing verbs to pass when assigned" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
