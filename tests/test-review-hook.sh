@@ -819,6 +819,7 @@ if [ "$NO_PROVIDER_EXIT" -eq 1 ] \
   && grep -q 'provider/infrastructure unavailable; findings=0; exit_reason=provider-unavailable' "$CASCADE_OUTPUT" \
   && grep -q '\[fail-closed:FAIL_OPEN_PROVIDER_UNAVAILABLE\]' "$CASCADE_OUTPUT" \
   && grep -q '"findings":0' "$NO_PROVIDER_SUMMARY" \
+  && grep -q '"review_status":"review_not_completed"' "$NO_PROVIDER_SUMMARY" \
   && grep -q '"exit_reason":"provider-unavailable"' "$NO_PROVIDER_SUMMARY"; then
   echo "==> PASS: provider unavailable failed closed with explicit zero-findings status"
 else
@@ -1432,6 +1433,28 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: large explicit CODEX_REVIEW_TIMEOUT leaves diagnostic grace for Conductor"
+: >"$CODEX_ARGS_FILE"
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=review-only \
+    FIX_STATE="$FIX_STATE" \
+    CODEX_REVIEW_TIMEOUT=300 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
+)
+
+if grep -q -- '--timeout 270' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: large wrapper timeout forwards a shorter Conductor timeout"
+else
+  echo "FAIL: expected CODEX_REVIEW_TIMEOUT=300 to become Conductor --timeout 270" >&2
+  cat "$CODEX_ARGS_FILE" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # ==========================================================================
 # Timeout and error policy tests
 # ==========================================================================
@@ -1534,15 +1557,18 @@ set +e
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_TIMEOUT=2 \
+    TOUCHSTONE_REVIEW_HEARTBEAT_SEC=1 \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$TIMEOUT_OUTPUT" 2>&1
 )
 TIMEOUT_EXIT=$?
 set -e
 
-if [ "$TIMEOUT_EXIT" -eq 0 ] && grep -q 'timed out after 2s' "$TIMEOUT_OUTPUT"; then
-  echo "==> PASS: timeout killed reviewer and exited 0 (fail-open default)"
+if [ "$TIMEOUT_EXIT" -eq 0 ] \
+  && grep -q 'Review still running (1s/2s)' "$TIMEOUT_OUTPUT" \
+  && grep -q 'timed out after 2s' "$TIMEOUT_OUTPUT"; then
+  echo "==> PASS: timeout emitted heartbeat, killed reviewer, and exited 0 (fail-open default)"
 else
-  echo "FAIL: expected timeout to kill reviewer and exit 0" >&2
+  echo "FAIL: expected timeout to heartbeat, kill reviewer, and exit 0" >&2
   echo "exit code: $TIMEOUT_EXIT" >&2
   cat "$TIMEOUT_OUTPUT" >&2
   ERRORS=$((ERRORS + 1))
@@ -1601,12 +1627,15 @@ set -e
 if [ "$TIMEOUT_FAILCLOSED_EXIT" -eq 1 ] \
   && grep -q 'timed out after 1s' "$TIMEOUT_OUTPUT" \
   && grep -q 'findings:       0' "$TIMEOUT_OUTPUT" \
+  && grep -q 'review status:  review_not_completed' "$TIMEOUT_OUTPUT" \
+  && grep -q 'Review did not complete' "$TIMEOUT_OUTPUT" \
   && grep -q 'exit reason:    timeout' "$TIMEOUT_OUTPUT" \
   && grep -q '"findings":0' "$TIMEOUT_FAILCLOSED_SUMMARY" \
+  && grep -q '"review_status":"review_not_completed"' "$TIMEOUT_FAILCLOSED_SUMMARY" \
   && grep -q '"exit_reason":"timeout"' "$TIMEOUT_FAILCLOSED_SUMMARY"; then
-  echo "==> PASS: timeout fail-closed surfaced zero-findings infra status"
+  echo "==> PASS: timeout fail-closed surfaced incomplete zero-findings infra status"
 else
-  echo "FAIL: expected timeout fail-closed zero-findings status" >&2
+  echo "FAIL: expected timeout fail-closed incomplete zero-findings status" >&2
   echo "exit code: $TIMEOUT_FAILCLOSED_EXIT" >&2
   cat "$TIMEOUT_OUTPUT" >&2
   [ -f "$TIMEOUT_FAILCLOSED_SUMMARY" ] && cat "$TIMEOUT_FAILCLOSED_SUMMARY" >&2
