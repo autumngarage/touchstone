@@ -643,6 +643,63 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: blocked review persists alternate finding formats"
+PARSER_REPO="$TEST_DIR/repo-parser"
+PARSER_BIN="$TEST_DIR/parser-bin"
+PARSER_OUTPUT="$TEST_DIR/parser-output.txt"
+rm -rf "$PARSER_BIN"
+mkdir -p "$PARSER_BIN"
+setup_test_repo "$PARSER_REPO"
+printf 'base\n' >"$PARSER_REPO/example.txt"
+git -C "$PARSER_REPO" add example.txt
+git -C "$PARSER_REPO" commit -m "base" >/dev/null 2>&1
+printf 'changed\n' >>"$PARSER_REPO/example.txt"
+git -C "$PARSER_REPO" add example.txt
+git -C "$PARSER_REPO" commit -m "change" >/dev/null 2>&1
+cat >"$PARSER_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat >"$PARSER_BIN/conductor" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+printf '1. example.txt:2 - numbered failure\n'
+printf '### Finding 2\n'
+printf 'heading-only detail survived\n'
+printf 'CODEX_REVIEW_BLOCKED\n'
+EOF
+chmod +x "$PARSER_BIN/gh" "$PARSER_BIN/conductor"
+
+set +e
+(
+  cd "$PARSER_REPO"
+  PATH="$PARSER_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_BRANCH_NAME="feature/parser" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=review-only \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$PARSER_OUTPUT" 2>&1
+)
+PARSER_EXIT=$?
+set -e
+PARSER_FINDINGS_FILE="$PARSER_REPO/.git/touchstone/reviewer-findings/feature_parser.findings"
+PARSER_HISTORY_FILE="$PARSER_REPO/.git/touchstone/reviewer-findings-history/feature_parser.jsonl"
+if [ "$PARSER_EXIT" -eq 1 ] \
+  && grep -q 'findings:       2' "$PARSER_OUTPUT" \
+  && grep -q -- '- example.txt:2 - numbered failure' "$PARSER_FINDINGS_FILE" \
+  && grep -q -- '- Finding 2 - heading-only detail survived' "$PARSER_FINDINGS_FILE" \
+  && grep -q '"findings_count":2' "$PARSER_HISTORY_FILE"; then
+  echo "==> PASS: alternate finding formats were normalized and persisted"
+else
+  echo "FAIL: expected alternate finding formats to be actionable" >&2
+  echo "exit code: $PARSER_EXIT" >&2
+  cat "$PARSER_OUTPUT" >&2
+  [ -f "$PARSER_FINDINGS_FILE" ] && cat "$PARSER_FINDINGS_FILE" >&2
+  [ -f "$PARSER_HISTORY_FILE" ] && cat "$PARSER_HISTORY_FILE" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # ==========================================================================
 # Conductor reviewer tests (Touchstone 2.0+). The v1.x multi-reviewer
 # cascade tests were retired when the single `conductor` adapter shipped;
