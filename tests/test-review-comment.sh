@@ -33,6 +33,35 @@ else
   exit 1
 fi
 
+echo "==> Test: format_advisory_findings_comment parses common non-bullet finding styles"
+COMMENT="$(format_advisory_findings_comment \
+  '{"reviewer":"Conductor","provider":"openrouter","model":"gpt-5.3","iterations":1,"mode":"review-only","findings":3}' \
+  $'1. scripts/merge-pr.sh:120 - guard bypass path\nIssue: scripts/open-pr.sh:88 - missing check\n### Finding 3\nlib/review-comment.sh:22 - parser too strict\nCODEX_REVIEW_BLOCKED')"
+if printf '%s\n' "$COMMENT" | grep -q 'advisory review found 3 finding(s)' \
+  && printf '%s\n' "$COMMENT" | grep -q '^- scripts/merge-pr.sh:120 - guard bypass path$' \
+  && printf '%s\n' "$COMMENT" | grep -q '^- scripts/open-pr.sh:88 - missing check$' \
+  && printf '%s\n' "$COMMENT" | grep -q '^- lib/review-comment.sh:22 - parser too strict$'; then
+  echo "==> PASS: advisory formatter normalizes non-bullet findings"
+else
+  echo "FAIL: advisory formatter did not normalize alternate finding styles" >&2
+  printf '%s\n' "$COMMENT" >&2
+  exit 1
+fi
+
+echo "==> Test: advisory findings parse failure includes raw reviewer output excerpt"
+COMMENT="$(format_advisory_findings_comment \
+  '{"reviewer":"Conductor","provider":"openrouter","model":"gpt-5.3","iterations":1,"mode":"review-only","findings":1}' \
+  $'The parser should surface this raw concern when findings are non-zero.\nCODEX_REVIEW_BLOCKED')"
+if printf '%s\n' "$COMMENT" | grep -q 'no bullet-form findings were parsed' \
+  && printf '%s\n' "$COMMENT" | grep -q 'Raw reviewer output excerpt' \
+  && printf '%s\n' "$COMMENT" | grep -q 'The parser should surface this raw concern'; then
+  echo "==> PASS: advisory formatter includes raw output excerpt on parse failure"
+else
+  echo "FAIL: expected raw output excerpt when findings are unparseable" >&2
+  printf '%s\n' "$COMMENT" >&2
+  exit 1
+fi
+
 MERGE_DIR="$TEST_DIR/merge"
 FAKE_BIN="$MERGE_DIR/bin"
 mkdir -p "$MERGE_DIR/scripts" "$MERGE_DIR/lib" "$MERGE_DIR/repo" "$FAKE_BIN"

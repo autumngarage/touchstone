@@ -34,7 +34,71 @@ review_comment_clean_value() {
 }
 
 review_comment_findings_from_output() {
-  printf '%s\n' "$1" | awk '/^- / { print } /^$/ { if (found) exit } /^- / { found = 1 }'
+  printf '%s\n' "$1" | awk '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+
+    function emit(value) {
+      value = trim(value)
+      if (value == "") {
+        return
+      }
+      print "- " value
+      pending = 0
+    }
+
+    {
+      line = $0
+      gsub(/\r/, "", line)
+      line = trim(line)
+      if (line == "") {
+        pending = 0
+        next
+      }
+      if (line ~ /^CODEX_REVIEW_(CLEAN|FIXED|BLOCKED)$/) {
+        pending = 0
+        next
+      }
+
+      if (match(line, /^(-|\*|\+)[[:space:]]+/)) {
+        emit(substr(line, RLENGTH + 1))
+        next
+      }
+      if (match(line, /^(\(?[0-9]+\)|[0-9]+[.)]|#[0-9]+[.)])[[:space:]]+/)) {
+        emit(substr(line, RLENGTH + 1))
+        next
+      }
+
+      lower = tolower(line)
+      if (match(lower, /^#{1,6}[[:space:]]*(finding|issue|blocker|risk)([[:space:]]*[0-9]+)?([[:space:]]*[:.-][[:space:]]*|[[:space:]]+)/)) {
+        remainder = trim(substr(line, RLENGTH + 1))
+        if (remainder != "" && remainder !~ /^[0-9]+$/) {
+          emit(remainder)
+        } else {
+          pending = 1
+        }
+        next
+      }
+      if (match(lower, /^(finding([[:space:]]*[0-9]+)?|issue|blocker|risk)[[:space:]]*[:.-][[:space:]]*/)) {
+        emit(substr(line, RLENGTH + 1))
+        next
+      }
+
+      if (pending == 1) {
+        emit(line)
+      }
+    }
+  '
+}
+
+review_comment_output_excerpt() {
+  local output="$1"
+  local max_chars="${2:-2000}"
+
+  printf '%s' "${output:0:max_chars}"
 }
 
 format_clean_review_comment() {
@@ -132,7 +196,7 @@ format_review_failure_comment() {
 format_advisory_findings_comment() {
   local json="$1"
   local output="$2"
-  local reviewer provider model iterations mode findings findings_block
+  local reviewer provider model iterations mode findings findings_block output_excerpt
 
   reviewer="$(review_comment_clean_value "$(review_comment_json_field "$json" reviewer)")"
   provider="$(review_comment_clean_value "$(review_comment_json_field "$json" provider)")"
@@ -141,12 +205,16 @@ format_advisory_findings_comment() {
   mode="$(review_comment_clean_value "$(review_comment_json_field "$json" mode)")"
   findings="$(review_comment_clean_value "$(review_comment_json_number "$json" findings)")"
   findings_block="$(review_comment_findings_from_output "$output")"
+  output_excerpt="$(review_comment_output_excerpt "$output" 2000)"
 
   {
     printf '%s advisory review found %s finding(s) - provider: %s, model: %s, iterations: %s, mode: %s\n\n' \
       "$reviewer" "$findings" "$provider" "$model" "$iterations" "$mode"
     if [ -n "$findings_block" ]; then
       printf '%s\n' "$findings_block"
+    elif [ "${findings:-0}" != "0" ] && [ -n "$output_excerpt" ]; then
+      printf 'Review exited with findings, but no bullet-form findings were parsed from reviewer output. Raw reviewer output excerpt:\n\n'
+      printf '<details>\n<summary>Raw reviewer output excerpt (truncated)</summary>\n\n```text\n%s\n```\n</details>\n' "$output_excerpt"
     else
       printf 'Review exited with findings, but no bullet-form findings were parsed from reviewer output.\n'
     fi
