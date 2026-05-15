@@ -884,6 +884,8 @@ if [ "$ROUTE_VIABLE_EXIT" -eq 0 ] \
   && grep -q 'Review route preflight: mode=fix' "$CASCADE_OUTPUT" \
   && grep -q 'review route viable via openrouter' "$CASCADE_OUTPUT" \
   && grep -q 'fix route viable via openrouter' "$CASCADE_OUTPUT" \
+  && grep -q '^route .*--kind review' "$CASCADE_CALLS" \
+  && grep -q '^route .*--kind exec' "$CASCADE_CALLS" \
   && grep -q '^review .*--with openrouter' "$CASCADE_CALLS"; then
   echo "==> PASS: merge route preflight pinned the viable auto route"
 else
