@@ -690,7 +690,7 @@ touchstone_preflight_affected_path() {
 
 touchstone_preflight_smoke_path() {
   case "$1" in
-    README.md | CHANGELOG.md | docs/* | *.md)
+    README.md | CHANGELOG.md | docs/* | *.md | .cortex/.index.json)
       return 0
       ;;
   esac
@@ -754,7 +754,7 @@ touchstone_preflight_validation_lane() {
       ;;
     auto | "")
       if [ -n "$smoke_command" ] && touchstone_preflight_all_changed_paths_match touchstone_preflight_smoke_path; then
-        printf 'smoke\tdocs-only diff with validate_smoke_command configured\n'
+        printf 'smoke\tdocs-only or Cortex metadata-only diff with validate_smoke_command configured\n'
       elif [ -n "$affected_command" ] && touchstone_preflight_all_changed_paths_match touchstone_preflight_affected_path; then
         printf 'affected\tall changed paths are target-scoped and validate_affected_command is configured\n'
       else
@@ -1118,8 +1118,9 @@ the changed file set versus the base ref, not the whole project, unless
 Scoped checks: shellcheck, shfmt, markdownlint, actionlint.
 Validation lane: explicit commands win; delivery-only Touchstone-managed sync
 diffs skip app validation; high-risk or unknown paths run full validation;
-target-scoped diffs can use validate_affected_command; docs-only diffs can use
-validate_smoke_command. Full validation is the fallback.
+target-scoped diffs can use validate_affected_command; docs-only and Cortex
+metadata-only diffs can use validate_smoke_command. Full validation is the
+fallback.
 EOF
         return 0
         ;;

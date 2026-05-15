@@ -375,6 +375,38 @@ if ! grep -q 'tests lane: smoke' "$OUT"; then
 fi
 echo "==> PASS: docs-only diff used smoke validation"
 
+echo "==> Test: smoke lane runs for Cortex metadata-only diffs when configured"
+REPO="$TEST_DIR/repo-smoke-lane-cortex-metadata"
+LOG="$TEST_DIR/smoke-lane-cortex-metadata.log"
+OUT="$TEST_DIR/smoke-lane-cortex-metadata.out"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  git checkout -q -B main
+  cat >.touchstone-config <<'EOF_CONFIG'
+validate_smoke_command=printf "smoke:%s\n" "$TOUCHSTONE_PREFLIGHT_VALIDATE_LANE" >>"$PREFLIGHT_TOOL_LOG"
+EOF_CONFIG
+  git add .touchstone-config
+  git commit -q -m "configure smoke lane"
+  git update-ref refs/remotes/origin/main HEAD
+  git checkout -q -B feature/scope-test
+  mkdir -p .cortex
+  printf '{"updated":true}\n' >.cortex/.index.json
+  printf '# Cortex state\n' >.cortex/state.md
+  git add .cortex/.index.json .cortex/state.md
+  git commit -q -m "change Cortex metadata"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^smoke:smoke$'
+assert_log_not_contains "$LOG" '^validate:validate$'
+if ! grep -q 'tests lane: smoke' "$OUT"; then
+  echo "FAIL: Cortex metadata-only diff did not use smoke lane" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "==> PASS: Cortex metadata-only diff used smoke validation"
+
 echo "==> Test: high-risk paths force full validation despite affected lane config"
 REPO="$TEST_DIR/repo-high-risk-full"
 LOG="$TEST_DIR/high-risk-full.log"
