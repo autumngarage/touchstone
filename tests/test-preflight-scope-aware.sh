@@ -141,6 +141,17 @@ run_preflight_all_files() {
     bash "$TOUCHSTONE_ROOT/lib/preflight.sh" --all-files "$repo" >"$output" 2>&1
 }
 
+cache_input_field() {
+  local repo="$1" field="$2"
+
+  (
+    cd "$repo"
+    # shellcheck source=../lib/preflight.sh
+    source "$TOUCHSTONE_ROOT/lib/preflight.sh"
+    touchstone_preflight_cache_inputs origin/main | sed -n "s/^${field}=//p"
+  )
+}
+
 run_preflight_without_actionlint() {
   local repo="$1" output="$2" log="$3"
   PATH="$NO_ACTIONLINT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
@@ -638,25 +649,74 @@ new_fixture_repo "$REPO"
   git add apps/web/src/cache.ts
   git commit -q -m "change cached file"
 )
-CACHE_HASH_BEFORE="$(
-  cd "$REPO"
-  # shellcheck source=../lib/preflight.sh
-  source "$TOUCHSTONE_ROOT/lib/preflight.sh"
-  touchstone_preflight_cache_inputs origin/main | sed -n 's/^changed_files_hash=//p'
-)"
+CACHE_HASH_BEFORE="$(cache_input_field "$REPO" changed_files_hash)"
 (
   cd "$REPO"
   printf 'export const value = 2;\n' >apps/web/src/cache.ts
 )
-CACHE_HASH_AFTER="$(
-  cd "$REPO"
-  # shellcheck source=../lib/preflight.sh
-  source "$TOUCHSTONE_ROOT/lib/preflight.sh"
-  touchstone_preflight_cache_inputs origin/main | sed -n 's/^changed_files_hash=//p'
-)"
+CACHE_HASH_AFTER="$(cache_input_field "$REPO" changed_files_hash)"
 if [ -z "$CACHE_HASH_BEFORE" ] || [ -z "$CACHE_HASH_AFTER" ] || [ "$CACHE_HASH_BEFORE" = "$CACHE_HASH_AFTER" ]; then
   echo "FAIL: changed file content did not affect changed_files_hash" >&2
   printf 'before=%s\nafter=%s\n' "$CACHE_HASH_BEFORE" "$CACHE_HASH_AFTER" >&2
   exit 1
 fi
 echo "==> PASS: cache inputs include changed file content hashes"
+
+echo "==> Test: preflight cache worktree hash ignores unrelated untracked files"
+REPO="$TEST_DIR/repo-cache-unrelated-untracked"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  mkdir -p apps/web/src
+  printf 'export const value = 1;\n' >apps/web/src/cache.ts
+  git add apps/web/src/cache.ts
+  git commit -q -m "change cached file"
+)
+WORKTREE_HASH_BEFORE="$(cache_input_field "$REPO" worktree_hash)"
+printf 'local scratch\n' >"$REPO/local-scratch.log"
+WORKTREE_HASH_AFTER="$(cache_input_field "$REPO" worktree_hash)"
+if [ -z "$WORKTREE_HASH_BEFORE" ] || [ -z "$WORKTREE_HASH_AFTER" ] || [ "$WORKTREE_HASH_BEFORE" != "$WORKTREE_HASH_AFTER" ]; then
+  echo "FAIL: unrelated untracked file changed worktree_hash" >&2
+  printf 'before=%s\nafter=%s\n' "$WORKTREE_HASH_BEFORE" "$WORKTREE_HASH_AFTER" >&2
+  exit 1
+fi
+echo "==> PASS: unrelated untracked file does not affect worktree_hash"
+
+echo "==> Test: preflight cache worktree hash includes dirty changed paths"
+REPO="$TEST_DIR/repo-cache-dirty-changed-path"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  mkdir -p apps/web/src
+  printf 'export const value = 1;\n' >apps/web/src/cache.ts
+  git add apps/web/src/cache.ts
+  git commit -q -m "change cached file"
+)
+WORKTREE_HASH_BEFORE="$(cache_input_field "$REPO" worktree_hash)"
+printf 'export const value = 2;\n' >"$REPO/apps/web/src/cache.ts"
+WORKTREE_HASH_AFTER="$(cache_input_field "$REPO" worktree_hash)"
+if [ -z "$WORKTREE_HASH_BEFORE" ] || [ -z "$WORKTREE_HASH_AFTER" ] || [ "$WORKTREE_HASH_BEFORE" = "$WORKTREE_HASH_AFTER" ]; then
+  echo "FAIL: dirty changed path did not affect worktree_hash" >&2
+  printf 'before=%s\nafter=%s\n' "$WORKTREE_HASH_BEFORE" "$WORKTREE_HASH_AFTER" >&2
+  exit 1
+fi
+echo "==> PASS: dirty changed path affects worktree_hash"
+
+echo "==> Test: preflight cache worktree hash includes untracked replacements for changed paths"
+REPO="$TEST_DIR/repo-cache-untracked-replacement"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  git rm -q docs/unchanged.md
+  git commit -q -m "delete docs file"
+)
+WORKTREE_HASH_BEFORE="$(cache_input_field "$REPO" worktree_hash)"
+mkdir -p "$REPO/docs"
+printf '# Local replacement\n' >"$REPO/docs/unchanged.md"
+WORKTREE_HASH_AFTER="$(cache_input_field "$REPO" worktree_hash)"
+if [ -z "$WORKTREE_HASH_BEFORE" ] || [ -z "$WORKTREE_HASH_AFTER" ] || [ "$WORKTREE_HASH_BEFORE" = "$WORKTREE_HASH_AFTER" ]; then
+  echo "FAIL: untracked replacement for changed path did not affect worktree_hash" >&2
+  printf 'before=%s\nafter=%s\n' "$WORKTREE_HASH_BEFORE" "$WORKTREE_HASH_AFTER" >&2
+  exit 1
+fi
+echo "==> PASS: untracked changed-path replacement affects worktree_hash"
