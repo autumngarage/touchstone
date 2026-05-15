@@ -179,6 +179,10 @@ if [ "${FAKE_CORTEX_FAIL_ALL:-0}" = "1" ]; then
   exit 99
 fi
 
+if [ "${1:-}" = "--no-auto-sync" ]; then
+  shift
+fi
+
 if [ "${1:-}" = "check-triggers" ]; then
   if [ "${FAKE_CORTEX_CHECK_TRIGGERS_STATUS:-0}" != "0" ]; then
     if [ -n "${FAKE_CORTEX_CHECK_TRIGGERS_STDERR:-}" ]; then
@@ -234,7 +238,10 @@ cat >"$FAKEBIN/gh" <<'EOF'
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_GH_LOG"
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "create" ]; then
-  printf 'https://example.test/cortex-journal-pr\n'
+  printf 'https://example.test/cortex-journal-pr/777\n'
+  exit 0
+fi
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ]; then
   exit 0
 fi
 printf 'unexpected fake gh invocation: %s\n' "$*" >&2
@@ -246,8 +253,10 @@ chmod +x "$FAKEBIN/gh"
 # and includes both files in the same local hook commit.
 H="$(mk_fixture H)"
 mkdir -p "$H/.cortex"
+printf '0.5.0\n' >"$H/.cortex/SPEC_VERSION"
 printf 'stale state\n' >"$H/.cortex/state.md"
-(cd "$H" && git add .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$H" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
+H_MAIN_BEFORE="$(git -C "$H" rev-parse main)"
 (
   cd "$H"
   PATH="$FAKEBIN:$PATH" \
@@ -256,6 +265,16 @@ printf 'stale state\n' >"$H/.cortex/state.md"
     TOUCHSTONE_MERGED_PR=131 \
     bash "$HOOK"
 )
+if [ "$(git -C "$H" rev-parse main)" != "$H_MAIN_BEFORE" ]; then
+  echo "FAIL [H]: SKIP_PUSH moved default branch instead of isolating the journal commit" >&2
+  git -C "$H" log --oneline --decorate -3 >&2
+  exit 1
+fi
+if [ "$(git -C "$H" branch --show-current)" != "docs/journal-pr-131" ]; then
+  echo "FAIL [H]: SKIP_PUSH did not leave worktree on docs/journal-pr-131" >&2
+  git -C "$H" branch --show-current >&2
+  exit 1
+fi
 H_CHANGED="$(git -C "$H" show --name-only --format= HEAD)"
 if ! printf '%s\n' "$H_CHANGED" | grep -qx '.cortex/journal/pr-merged.md'; then
   echo "FAIL [H]: hook commit did not include drafted journal entry" >&2
@@ -278,13 +297,44 @@ if [ "$(git -C "$H" status --porcelain)" != "" ]; then
   exit 1
 fi
 
+# Scenario H2: .cortex/ without SPEC_VERSION is not initialized for
+# writer paths. The hook must skip before invoking cortex.
+H2="$(mk_fixture H2)"
+mkdir -p "$H2/.cortex"
+H2_LOG="$TMPROOT/H2-cortex.log"
+H2_STDERR="$TMPROOT/H2-stderr"
+H2_HEAD_BEFORE="$(git -C "$H2" rev-parse HEAD)"
+(
+  cd "$H2"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_CORTEX_LOG="$H2_LOG" \
+    FAKE_CORTEX_FAIL_ALL=1 \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    bash "$HOOK"
+) 2>"$H2_STDERR"
+if [ "$(git -C "$H2" rev-parse HEAD)" != "$H2_HEAD_BEFORE" ]; then
+  echo "FAIL [H2]: missing SPEC_VERSION hook path changed HEAD" >&2
+  exit 1
+fi
+if ! grep -q "SPEC_VERSION missing" "$H2_STDERR"; then
+  echo "FAIL [H2]: missing SPEC_VERSION skip did not explain itself" >&2
+  cat "$H2_STDERR" >&2
+  exit 1
+fi
+if [ -s "$H2_LOG" ]; then
+  echo "FAIL [H2]: cortex was invoked before SPEC_VERSION gate" >&2
+  cat "$H2_LOG" >&2
+  exit 1
+fi
+
 # Scenario I: if refresh-state is unavailable/fails without changing
 # state.md, the hook remains fail-open for the optional refresh, commits
 # the journal entry, and emits an actionable recovery command.
 I="$(mk_fixture I)"
 mkdir -p "$I/.cortex"
+printf '0.5.0\n' >"$I/.cortex/SPEC_VERSION"
 printf 'stale state\n' >"$I/.cortex/state.md"
-(cd "$I" && git add .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$I" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
 I_STDERR="$TMPROOT/I-stderr"
 (
   cd "$I"
@@ -319,8 +369,9 @@ fi
 # Scenario J: no fired triggers → silent skip, no journal draft, no commit.
 J="$(mk_fixture J)"
 mkdir -p "$J/.cortex"
+printf '0.5.0\n' >"$J/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$J/.cortex/state.md"
-(cd "$J" && git add .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$J" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
 J_HEAD_BEFORE="$(git -C "$J" rev-parse HEAD)"
 J_LOG="$TMPROOT/J-cortex.log"
 (
@@ -350,8 +401,9 @@ fi
 # Scenario K: T1.4 fired → journal entry includes trigger context.
 K="$(mk_fixture K)"
 mkdir -p "$K/.cortex"
+printf '0.5.0\n' >"$K/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$K/.cortex/state.md"
-(cd "$K" && git add .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$K" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
 K_NDJSON='{"trigger":"T1.4","reason":"file deletion exceeds 100 lines (deleted 142 from src/foo.py)","files":["src/foo.py"]}'
 (
   cd "$K"
@@ -374,8 +426,9 @@ fi
 # Scenario L: T1.1 fired → journal entry includes trigger context.
 L="$(mk_fixture L)"
 mkdir -p "$L/.cortex"
+printf '0.5.0\n' >"$L/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$L/.cortex/state.md"
-(cd "$L" && git add .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$L" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
 L_NDJSON='{"trigger":"T1.1","reason":"diff touches principles/","files":["principles/foo.md"]}'
 (
   cd "$L"
@@ -398,8 +451,9 @@ fi
 # Scenario M: env force bypasses the gate and avoids check-triggers entirely.
 M="$(mk_fixture M)"
 mkdir -p "$M/.cortex"
+printf '0.5.0\n' >"$M/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$M/.cortex/state.md"
-(cd "$M" && git add .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$M" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
 M_LOG="$TMPROOT/M-cortex.log"
 (
   cd "$M"
@@ -425,9 +479,10 @@ fi
 # Scenario N: config force has the same bypass behavior as the env knob.
 N="$(mk_fixture N)"
 mkdir -p "$N/.cortex"
+printf '0.5.0\n' >"$N/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$N/.cortex/state.md"
 printf 'cortex_pr_merged_hook=force\n' >"$N/.touchstone-config"
-(cd "$N" && git add .cortex/state.md .touchstone-config && git commit -q -m "add cortex state with force config")
+(cd "$N" && git add .cortex/SPEC_VERSION .cortex/state.md .touchstone-config && git commit -q -m "add cortex state with force config")
 N_LOG="$TMPROOT/N-cortex.log"
 (
   cd "$N"
@@ -452,8 +507,9 @@ fi
 # Scenario O: missing/unavailable check-triggers logs and falls back.
 O="$(mk_fixture O)"
 mkdir -p "$O/.cortex"
+printf '0.5.0\n' >"$O/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$O/.cortex/state.md"
-(cd "$O" && git add .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$O" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
 O_STDERR="$TMPROOT/O-stderr"
 (
   cd "$O"
@@ -517,8 +573,9 @@ git init -q --bare "$Q_REMOTE"
 git -C "$Q" remote add origin "$Q_REMOTE"
 git -C "$Q" push -q -u origin main
 mkdir -p "$Q/.cortex"
+printf '0.5.0\n' >"$Q/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$Q/.cortex/state.md"
-(cd "$Q" && git add .cortex/state.md && git commit -q -m "add cortex state" && git push -q origin main)
+(cd "$Q" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state" && git push -q origin main)
 Q_HEAD_BEFORE="$(git -C "$Q" rev-parse HEAD)"
 (
   cd "$Q"
@@ -545,8 +602,8 @@ if [ -n "$(git -C "$Q" status --porcelain)" ]; then
   git -C "$Q" status --short >&2
   exit 1
 fi
-if git -C "$Q" show-ref --verify --quiet "refs/heads/$Q_BRANCH"; then
-  echo "FAIL [Q]: local journal branch should be cleaned after push + PR create" >&2
+if ! git -C "$Q" show-ref --verify --quiet "refs/heads/$Q_BRANCH"; then
+  echo "FAIL [Q]: local journal branch should be preserved as a recovery branch" >&2
   git -C "$Q" branch >&2
   exit 1
 fi
@@ -561,8 +618,16 @@ if ! git -C "$Q" show "$Q_BRANCH-check:.cortex/journal/pr-merged.md" >/dev/null 
   git -C "$Q" show --name-only --format= "$Q_BRANCH-check" >&2
   exit 1
 fi
-if ! grep -q "pr create --base main --head $Q_BRANCH --title docs(journal): auto-draft pr-merged entry for #777" "$Q_GH_LOG"; then
+if ! grep -q "pr create" "$Q_GH_LOG" \
+  || ! grep -q -- "--head $Q_BRANCH" "$Q_GH_LOG" \
+  || ! grep -q -- "--base main" "$Q_GH_LOG" \
+  || ! grep -q -- "--title docs(journal): auto-draft pr-merged entry for #777" "$Q_GH_LOG"; then
   echo "FAIL [Q]: hook did not open a PR for the journal branch" >&2
+  cat "$Q_GH_LOG" >&2
+  exit 1
+fi
+if ! grep -q "pr merge 777 --squash --delete-branch --auto" "$Q_GH_LOG"; then
+  echo "FAIL [Q]: hook did not queue journal PR auto-merge" >&2
   cat "$Q_GH_LOG" >&2
   exit 1
 fi
@@ -577,8 +642,9 @@ git init -q --bare "$R_REMOTE"
 git -C "$R" remote add origin "$R_REMOTE"
 git -C "$R" push -q -u origin main
 mkdir -p "$R/.cortex"
+printf '0.5.0\n' >"$R/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$R/.cortex/state.md"
-(cd "$R" && git add .cortex/state.md && git commit -q -m "add cortex state" && git push -q origin main)
+(cd "$R" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state" && git push -q origin main)
 cat >"$R/.git/hooks/pre-push" <<EOF
 #!/usr/bin/env bash
 printf 'pre-push hook unexpectedly ran\n' >"$R_PRE_PUSH_LOG"
