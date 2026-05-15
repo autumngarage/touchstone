@@ -884,6 +884,8 @@ if [ "$ROUTE_VIABLE_EXIT" -eq 0 ] \
   && grep -q 'Review route preflight: mode=fix' "$CASCADE_OUTPUT" \
   && grep -q 'review route viable via openrouter' "$CASCADE_OUTPUT" \
   && grep -q 'fix route viable via openrouter' "$CASCADE_OUTPUT" \
+  && grep -q '^route .*--kind review' "$CASCADE_CALLS" \
+  && grep -q '^route .*--kind exec' "$CASCADE_CALLS" \
   && grep -q '^review .*--with openrouter' "$CASCADE_CALLS"; then
   echo "==> PASS: merge route preflight pinned the viable auto route"
 else
@@ -1020,6 +1022,7 @@ set -e
 if [ "$ROUTE_EXCLUDED_EXIT" -eq 1 ] \
   && grep -q 'Review route preflight failed before invoking reviewer' "$CASCADE_OUTPUT" \
   && grep -q 'provider exclusions: claude,codex,gemini,openrouter,kimi,deepseek-chat,deepseek-reasoner,ollama' "$CASCADE_OUTPUT" \
+  && grep -q '^route .*--kind review' "$CASCADE_CALLS" \
   && grep -q 'exit reason:.*provider-unavailable' "$CASCADE_OUTPUT" \
   && ! grep -q 'review should not run' "$CASCADE_CALLS"; then
   echo "==> PASS: all-excluded route failed before review"
