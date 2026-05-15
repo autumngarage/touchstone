@@ -61,6 +61,13 @@ if [ ! -f "$PROJECTS_FILE" ]; then
   exit 0
 fi
 
+PROJECTS=()
+while IFS= read -r project_dir || [ -n "$project_dir" ]; do
+  [ -z "$project_dir" ] && continue
+  [[ "$project_dir" == \#* ]] && continue
+  PROJECTS+=("$project_dir")
+done <"$PROJECTS_FILE"
+
 # Optionally update the Touchstone itself first.
 if [ "$PULL_FIRST" = true ]; then
   if [ "${TOUCHSTONE_UPDATE_ALL_REEXECED:-}" = "1" ]; then
@@ -102,9 +109,7 @@ if [ "$CHECK_ONLY" = true ]; then
   )"
   BEHIND=0
   TOTAL=0
-  while IFS= read -r project_dir; do
-    [ -z "$project_dir" ] && continue
-    [[ "$project_dir" == \#* ]] && continue
+  for project_dir in ${PROJECTS[@]+"${PROJECTS[@]}"}; do
     TOTAL=$((TOTAL + 1))
     if [ ! -d "$project_dir" ]; then
       echo "  ? $(basename "$project_dir") — directory not found"
@@ -117,7 +122,7 @@ if [ "$CHECK_ONLY" = true ]; then
       echo "  ! $(basename "$project_dir") — needs update"
       BEHIND=$((BEHIND + 1))
     fi
-  done <"$PROJECTS_FILE"
+  done
   echo ""
   if [ "$BEHIND" -eq 0 ]; then
     echo "All $TOTAL projects are up to date."
@@ -132,11 +137,7 @@ SUCCESS=0
 SKIPPED=0
 FAILED=0
 
-while IFS= read -r project_dir; do
-  # Skip empty lines and comments.
-  [ -z "$project_dir" ] && continue
-  [[ "$project_dir" == \#* ]] && continue
-
+for project_dir in ${PROJECTS[@]+"${PROJECTS[@]}"}; do
   TOTAL=$((TOTAL + 1))
 
   if [ ! -d "$project_dir" ]; then
@@ -153,13 +154,13 @@ while IFS= read -r project_dir; do
   update_args=()
   [ -z "$DRY_RUN" ] || update_args+=("$DRY_RUN")
   [ -z "$SHIP" ] || update_args+=("$SHIP")
-  if (cd "$project_dir" && bash "$UPDATE_SCRIPT" ${update_args[@]+"${update_args[@]}"}); then
+  if (cd "$project_dir" && bash "$UPDATE_SCRIPT" ${update_args[@]+"${update_args[@]}"} </dev/null); then
     SUCCESS=$((SUCCESS + 1))
   else
     echo "==> FAILED: $project_dir"
     FAILED=$((FAILED + 1))
   fi
-done <"$PROJECTS_FILE"
+done
 
 echo ""
 echo "================================================================"

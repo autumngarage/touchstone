@@ -151,6 +151,34 @@ HOME="$CLI_HOME" NO_COLOR=1 TOUCHSTONE_NO_AUTO_UPDATE=1 \
   bash "$TOUCHSTONE_BIN" sync --check >"$SYNC_ALIAS_CHECK_OUT" 2>&1
 assert_contains "$SYNC_ALIAS_CHECK_OUT" "DEPRECATED: touchstone sync is deprecated; use touchstone update-all."
 
+STDIN_ROOT="$TEST_DIR/stdin-root"
+STDIN_HOME="$TEST_DIR/stdin-home"
+STDIN_PROJECT_A="$TEST_DIR/stdin-project-a"
+STDIN_PROJECT_B="$TEST_DIR/stdin-project-b"
+STDIN_LOG="$TEST_DIR/stdin-update.log"
+STDIN_OUT="$TEST_DIR/stdin-update-all.out"
+mkdir -p "$STDIN_ROOT/bootstrap" "$STDIN_HOME" "$STDIN_PROJECT_A" "$STDIN_PROJECT_B"
+cp "$TOUCHSTONE_ROOT/bootstrap/sync-all.sh" "$STDIN_ROOT/bootstrap/sync-all.sh"
+cat >"$STDIN_ROOT/bootstrap/update-project.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+while IFS= read -r _line; do
+  :
+done
+printf '%s\n' "$PWD" >>"$TOUCHSTONE_STDIN_LOG"
+EOF
+chmod +x "$STDIN_ROOT/bootstrap/update-project.sh"
+printf '%s\n%s\n' "$STDIN_PROJECT_A" "$STDIN_PROJECT_B" >"$STDIN_HOME/.touchstone-projects"
+HOME="$STDIN_HOME" TOUCHSTONE_STDIN_LOG="$STDIN_LOG" \
+  bash "$STDIN_ROOT/bootstrap/sync-all.sh" --ship >"$STDIN_OUT" 2>&1
+STDIN_RUNS="$(wc -l <"$STDIN_LOG" | tr -d '[:space:]')"
+if [ "$STDIN_RUNS" != "2" ]; then
+  echo "FAIL: update-all processed $STDIN_RUNS projects when child drained stdin" >&2
+  cat "$STDIN_OUT" >&2
+  exit 1
+fi
+assert_contains "$STDIN_OUT" "Update-all complete: 2/2 succeeded"
+
 TESTED=0
 WARNINGS=0
 FAILURES=0
