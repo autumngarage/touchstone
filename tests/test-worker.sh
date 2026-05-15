@@ -215,6 +215,15 @@ SAFE_EVENTS="$TEST_DIR/safe-events.ndjson"
     --json >"$SAFE_JSON"
 )
 SAFE_WORKTREE="$(sed -n 's/.*"worktree_path":"\([^"]*\)".*/\1/p' "$SAFE_JSON")"
+printf 'dirty\n' >"$SAFE_WORKTREE/uncommitted.txt"
+if "$TOUCHSTONE_ROOT/bin/touchstone" worker abandon --worktree "$SAFE_WORKTREE" >"$TEST_DIR/abandon-dirty.out" 2>&1; then
+  fail "worker abandon should refuse dirty worktrees without --force"
+fi
+assert_contains "$TEST_DIR/abandon-dirty.out" 'worktree has uncommitted changes'
+if [ ! -d "$SAFE_WORKTREE" ]; then
+  fail "worker abandon removed dirty worktree without --force"
+fi
+rm "$SAFE_WORKTREE/uncommitted.txt"
 ABANDON_EVENTS="$TEST_DIR/abandon-events.ndjson"
 TOUCHSTONE_EVENTS_FILE="$ABANDON_EVENTS" \
   "$TOUCHSTONE_ROOT/bin/touchstone" worker abandon --worktree "$SAFE_WORKTREE" >"$TEST_DIR/abandon.out" 2>&1

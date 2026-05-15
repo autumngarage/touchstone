@@ -167,6 +167,8 @@ if ! diff -q "$TOUCHSTONE_ROOT/templates/ci/issue-claim-check.yml" "$PROJECT/.gi
   echo "FAIL: bootstrapped issue-claim workflow must match installable template" >&2
   ERRORS=$((ERRORS + 1))
 fi
+assert_not_contains "$PROJECT/.github/workflows/issue-claim-check.yml" '.touchstone-claim-head'
+assert_contains "$PROJECT/.github/workflows/issue-claim-check.yml" 'skipping transition run instead of executing PR-controlled code'
 
 # Principles
 assert_exists "$PROJECT/principles/engineering-principles.md"
