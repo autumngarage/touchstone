@@ -252,7 +252,29 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Case 6: advisory preflight cache hashes relevant root worktree state from subdirs"
+echo "==> Case 6: nested open-pr warning lists root untracked files"
+reset_case
+mkdir -p "$REPO_DIR/nested"
+printf 'root scratch\n' >"$REPO_DIR/root-untracked.txt"
+OUT="$TEST_DIR/preflight-subdir-untracked-warning.out"
+(
+  export OPEN_PR_WORKDIR="$REPO_DIR/nested"
+  export OPEN_PR_CONFIRM_DIRTY="y"
+  CODEX_REVIEW_STUB_EXIT=0 CODEX_REVIEW_STUB_FINDINGS=0 CODEX_REVIEW_STUB_REASON=clean run_open_pr "$OUT"
+)
+rm -f "$REPO_DIR/root-untracked.txt"
+if grep -q 'WARNING: working tree has uncommitted changes' "$OUT" \
+  && grep -q 'Untracked files detected:' "$OUT" \
+  && grep -q 'root-untracked.txt' "$OUT" \
+  && grep -q '^https://example.test/touchstone/pull/456$' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: nested open-pr warning should list root-level untracked files" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 7: advisory preflight cache hashes relevant root worktree state from subdirs"
 reset_case
 mkdir -p "$REPO_DIR/nested"
 printf 'change\nroot dirty one\n' >"$REPO_DIR/file.txt"
