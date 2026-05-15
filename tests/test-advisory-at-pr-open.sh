@@ -99,14 +99,21 @@ run_open_pr() {
   local output_file="$1"
   (
     cd "${OPEN_PR_WORKDIR:-$REPO_DIR}"
-    PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-      GH_COMMENT_FILE="$TEST_DIR/comments" \
-      CODEX_REVIEW_STUB_EXIT="${CODEX_REVIEW_STUB_EXIT:-0}" \
-      CODEX_REVIEW_STUB_FINDINGS="${CODEX_REVIEW_STUB_FINDINGS:-0}" \
-      CODEX_REVIEW_STUB_REASON="${CODEX_REVIEW_STUB_REASON:-clean}" \
-      CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
-      CODEX_REVIEW_STUB_ENV_LOG="$TEST_DIR/review-env" \
-      bash "$RUN_DIR/scripts/open-pr.sh"
+    invoke_open_pr() {
+      PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+        GH_COMMENT_FILE="$TEST_DIR/comments" \
+        CODEX_REVIEW_STUB_EXIT="${CODEX_REVIEW_STUB_EXIT:-0}" \
+        CODEX_REVIEW_STUB_FINDINGS="${CODEX_REVIEW_STUB_FINDINGS:-0}" \
+        CODEX_REVIEW_STUB_REASON="${CODEX_REVIEW_STUB_REASON:-clean}" \
+        CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
+        CODEX_REVIEW_STUB_ENV_LOG="$TEST_DIR/review-env" \
+        bash "$RUN_DIR/scripts/open-pr.sh"
+    }
+    if [ -n "${OPEN_PR_CONFIRM_DIRTY:-}" ]; then
+      printf '%s\n' "$OPEN_PR_CONFIRM_DIRTY" | invoke_open_pr
+    else
+      invoke_open_pr
+    fi
   ) >"$output_file" 2>&1
 }
 
@@ -245,22 +252,23 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Case 6: advisory preflight cache hashes root worktree state from subdirs"
+echo "==> Case 6: advisory preflight cache hashes relevant root worktree state from subdirs"
 reset_case
 mkdir -p "$REPO_DIR/nested"
-printf 'root one\n' >"$REPO_DIR/root-untracked.txt"
+printf 'change\nroot dirty one\n' >"$REPO_DIR/file.txt"
 OUT="$TEST_DIR/preflight-subdir-first.out"
 (
   export OPEN_PR_WORKDIR="$REPO_DIR/nested"
+  export OPEN_PR_CONFIRM_DIRTY="y"
   CODEX_REVIEW_STUB_EXIT=0 CODEX_REVIEW_STUB_FINDINGS=0 CODEX_REVIEW_STUB_REASON=clean run_open_pr "$OUT"
 )
-printf 'root two\n' >"$REPO_DIR/root-untracked.txt"
+printf 'change\nroot dirty two\n' >"$REPO_DIR/file.txt"
 OUT2="$TEST_DIR/preflight-subdir-second.out"
 (
   export OPEN_PR_WORKDIR="$REPO_DIR/nested"
+  export OPEN_PR_CONFIRM_DIRTY="y"
   CODEX_REVIEW_STUB_EXIT=0 CODEX_REVIEW_STUB_FINDINGS=0 CODEX_REVIEW_STUB_REASON=clean run_open_pr "$OUT2"
 )
-rm -f "$REPO_DIR/root-untracked.txt"
 if grep -q 'Deterministic preflight clean (cached=false' "$OUT" \
   && grep -q 'Deterministic preflight clean (cached=false' "$OUT2" \
   && ! grep -q 'Deterministic preflight clean (cached=true' "$OUT2"; then

@@ -125,6 +125,44 @@ cat >"$FAKE_BIN/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+untracked_path_for_hash() {
+  local target="${GIT_UNTRACKED_PATH:-}"
+  local root="${TEST_CURRENT_WORKTREE:-}"
+
+  if [ -n "$root" ]; then
+    case "$target" in
+      "$root"/*) target="${target#"$root/"}" ;;
+    esac
+  fi
+  printf '%s' "$target"
+}
+
+pathspec_matches_untracked() {
+  local target arg seen_pathspec=false
+
+  target="$(untracked_path_for_hash)"
+  [ -n "$target" ] || return 1
+
+  for arg in "$@"; do
+    if [ "$seen_pathspec" = true ]; then
+      [ "$arg" = "$target" ] && return 0
+    elif [ "$arg" = "--" ]; then
+      seen_pathspec=true
+    fi
+  done
+
+  [ "$seen_pathspec" = false ]
+}
+
+emit_untracked_path() {
+  [ -n "${GIT_UNTRACKED_PATH:-}" ] || return 0
+  if [ "${GIT_REQUIRE_ROOT_FOR_UNTRACKED:-false}" = "true" ] && [ "$PWD" != "${TEST_CURRENT_WORKTREE:-}" ]; then
+    return 0
+  fi
+  pathspec_matches_untracked "$@" || return 0
+  printf '%s\0' "$(untracked_path_for_hash)"
+}
+
 if [ "${1:-}" = "-C" ]; then
   git_c_target="$2"
   cd "$git_c_target"
@@ -218,19 +256,28 @@ case "$*" in
   "fetch origin +refs/heads/main:refs/remotes/origin/main")
     echo "fetched main"
     ;;
+  status\ --porcelain\ --untracked-files=all\ --*)
+    printf '%s' "${GIT_WORKTREE_STATUS:-}"
+    ;;
   "status --porcelain" | "status --porcelain --untracked-files=all")
     ;;
   "ls-files --others --exclude-standard -z")
-    if [ -n "${GIT_UNTRACKED_PATH:-}" ] \
-      && { [ "${GIT_REQUIRE_ROOT_FOR_UNTRACKED:-false}" != "true" ] || [ "$PWD" = "${TEST_CURRENT_WORKTREE:-}" ]; }; then
-      printf '%s\0' "$GIT_UNTRACKED_PATH"
-    fi
+    emit_untracked_path "$@"
+    ;;
+  ls-files\ --others\ --exclude-standard\ -z\ --*)
+    emit_untracked_path "$@"
     ;;
   "diff --name-only origin/main...HEAD")
     printf '%s\n' "${GIT_CHANGED_PATHS:-example.txt}"
     ;;
+  diff\ --binary\ --*)
+    printf '%s' "${GIT_WORKTREE_DIFF:-}"
+    ;;
   "diff --binary")
     printf '%s' "${GIT_WORKTREE_DIFF:-}"
+    ;;
+  diff\ --cached\ --binary\ --*)
+    printf '%s' "${GIT_INDEX_DIFF:-}"
     ;;
   "diff --cached --binary")
     printf '%s' "${GIT_INDEX_DIFF:-}"
@@ -278,7 +325,9 @@ reset_case_files() {
     "$TEST_DIR"/gh-head-ref* "$TEST_DIR"/preflight-calls* \
     "$TEST_DIR"/git-worktree-remove* "$TEST_DIR"/touchstone-review-log*
   rm -rf "$GIT_PATH_ROOT"
+  rm -rf "$DEFAULT_FAKE_WORKTREE"
   mkdir -p "$GIT_PATH_ROOT"
+  mkdir -p "$DEFAULT_FAKE_WORKTREE"
   unset GIT_WORKTREE_LIST
   unset GIT_SIBLING_PULL_FAIL
   unset TEST_CURRENT_WORKTREE
@@ -575,7 +624,7 @@ else
   exit 1
 fi
 
-echo "==> Test: preflight cache reruns when untracked file contents change"
+echo "==> Test: preflight cache ignores unrelated untracked file contents"
 install_preflight_counter_fixture
 reset_case_files
 UNTRACKED_FILE="$TEST_DIR/untracked-local-test.sh"
@@ -593,17 +642,48 @@ if CODEX_REVIEW_EXIT=1 \
   GIT_UNTRACKED_PATH="$UNTRACKED_FILE" \
   PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
   run_merge_pr "$TEST_DIR/output-preflight-cache-untracked-second.txt" 123; then
-  echo "FAIL: second untracked-content fixture run should stop at review failure" >&2
+  echo "FAIL: second unrelated-untracked fixture run should stop at review failure" >&2
+  exit 1
+fi
+rm -rf "${TEST_DIR:?}/lib"
+if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "1" ] \
+  && grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-untracked-second.txt"; then
+  echo "==> PASS: unrelated untracked file contents did not force preflight rerun"
+else
+  echo "FAIL: unrelated untracked file contents should reuse the preflight cache" >&2
+  cat "$TEST_DIR/preflight-calls" >&2
+  cat "$TEST_DIR/output-preflight-cache-untracked-second.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: preflight cache reruns when changed-path untracked file contents change"
+install_preflight_counter_fixture
+reset_case_files
+printf 'echo pass\n' >"$DEFAULT_FAKE_WORKTREE/example.txt"
+: >"$TEST_DIR/preflight-calls"
+if CODEX_REVIEW_EXIT=1 \
+  GIT_UNTRACKED_PATH="example.txt" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-relevant-untracked-first.txt" 123; then
+  echo "FAIL: first relevant-untracked fixture run should stop at review failure" >&2
+  exit 1
+fi
+printf 'echo fail\n' >"$DEFAULT_FAKE_WORKTREE/example.txt"
+if CODEX_REVIEW_EXIT=1 \
+  GIT_UNTRACKED_PATH="example.txt" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-preflight-cache-relevant-untracked-second.txt" 123; then
+  echo "FAIL: second relevant-untracked fixture run should stop at review failure" >&2
   exit 1
 fi
 rm -rf "${TEST_DIR:?}/lib"
 if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "2" ] \
-  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-untracked-second.txt"; then
-  echo "==> PASS: changed untracked file contents forced preflight rerun"
+  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-relevant-untracked-second.txt"; then
+  echo "==> PASS: changed-path untracked file contents forced preflight rerun"
 else
-  echo "FAIL: changed untracked file contents should force preflight rerun" >&2
+  echo "FAIL: changed-path untracked file contents should force preflight rerun" >&2
   cat "$TEST_DIR/preflight-calls" >&2
-  cat "$TEST_DIR/output-preflight-cache-untracked-second.txt" >&2
+  cat "$TEST_DIR/output-preflight-cache-relevant-untracked-second.txt" >&2
   exit 1
 fi
 
@@ -616,6 +696,7 @@ printf 'root one\n' >"$ROOT_HASH_WORKTREE/root-only.log"
 : >"$TEST_DIR/preflight-calls"
 if CODEX_REVIEW_EXIT=1 \
   TEST_CURRENT_WORKTREE="$ROOT_HASH_WORKTREE" \
+  GIT_CHANGED_PATHS="root-only.log" \
   GIT_UNTRACKED_PATH="root-only.log" \
   GIT_REQUIRE_ROOT_FOR_UNTRACKED=true \
   PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
@@ -628,6 +709,7 @@ printf 'root two\n' >"$ROOT_HASH_WORKTREE/root-only.log"
   cd "$ROOT_HASH_WORKTREE/nested"
   if CODEX_REVIEW_EXIT=1 \
     TEST_CURRENT_WORKTREE="$ROOT_HASH_WORKTREE" \
+    GIT_CHANGED_PATHS="root-only.log" \
     GIT_UNTRACKED_PATH="root-only.log" \
     GIT_REQUIRE_ROOT_FOR_UNTRACKED=true \
     PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
