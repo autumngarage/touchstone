@@ -374,6 +374,45 @@ if [ -n "$(git -C "$SCRIPT_SYNC_PROJECT" status --porcelain)" ]; then
   ERRORS=$((ERRORS + 1))
 fi
 
+SCRIPT_SYNC_DONE_PROJECT="$TEST_DIR/script-sync-done-project"
+SCRIPT_SYNC_DONE_BIN="$TEST_DIR/script-sync-done-bin"
+SCRIPT_SYNC_DONE_LOG="$TEST_DIR/script-sync-done-touchstone.log"
+mkdir -p "$SCRIPT_SYNC_DONE_BIN"
+cat >"$SCRIPT_SYNC_DONE_BIN/touchstone" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$TOUCHSTONE_SCRIPT_SYNC_FAKE_LOG"
+case "$*" in
+  "update --check")
+    echo "Already up to date."
+    exit 0
+    ;;
+esac
+echo "unexpected touchstone command: $*" >&2
+exit 9
+EOF
+chmod +x "$SCRIPT_SYNC_DONE_BIN/touchstone"
+
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SCRIPT_SYNC_DONE_PROJECT" --no-register >/dev/null
+configure_git "$SCRIPT_SYNC_DONE_PROJECT"
+commit_all "$SCRIPT_SYNC_DONE_PROJECT" "initial script sync done project"
+
+(
+  cd "$SCRIPT_SYNC_DONE_PROJECT"
+  PATH="$SCRIPT_SYNC_DONE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    TOUCHSTONE_SCRIPT_SYNC_FAKE_LOG="$SCRIPT_SYNC_DONE_LOG" \
+    bash -c '. ./lib/script-sync-guard.sh
+      touchstone_script_sync_guard scripts/open-pr.sh --auto-merge
+      touchstone_script_sync_guard scripts/merge-pr.sh 123'
+)
+
+if [ "$(grep -c '^update --check$' "$SCRIPT_SYNC_DONE_LOG")" = "1" ]; then
+  echo "    PASS: script sync guard reuses checked marker in one execution chain"
+else
+  echo "FAIL: script sync guard should not repeat update --check after a verified check" >&2
+  cat "$SCRIPT_SYNC_DONE_LOG" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 SCRIPT_SYNC_SHIP_PROJECT="$TEST_DIR/script-sync-ship-project"
 SCRIPT_SYNC_SHIP_BIN="$TEST_DIR/script-sync-ship-bin"
 SCRIPT_SYNC_SHIP_LOG="$TEST_DIR/script-sync-ship-touchstone.log"
