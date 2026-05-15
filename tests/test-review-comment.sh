@@ -201,6 +201,21 @@ else
   exit 1
 fi
 
+echo "==> Test: cached clean merge review posts a clean PR comment"
+reset_fixture
+printf '[review]\ncomment_on_clean = true\n' >"$MERGE_DIR/repo/.codex-review.toml"
+CODEX_REVIEW_STUB_SUMMARY='{"reviewer":"Conductor","provider":"claude","model":"claude-opus-4-1","peer_provider":"none","iterations":1,"mode":"fix","findings":0,"exit_reason":"cache-hit"}' \
+  run_merge "$TEST_DIR/merge-cache-hit.txt" 123
+if grep -q '^Conductor review clean - provider: claude, model: claude-opus-4-1, peer: none, iterations: 1, mode: fix, findings: 0$' "$TEST_DIR/comments" \
+  && grep -q '==> Posted clean-review PR comment\.' "$TEST_DIR/merge-cache-hit.txt"; then
+  echo "==> PASS: cached clean review comment posted"
+else
+  echo "FAIL: cached clean review comment was not posted as expected" >&2
+  cat "$TEST_DIR/merge-cache-hit.txt" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  exit 1
+fi
+
 echo "==> Test: non-clean summary never posts clean-review comment"
 reset_fixture
 printf '[review]\ncomment_on_clean = true\n' >"$MERGE_DIR/repo/.codex-review.toml"
