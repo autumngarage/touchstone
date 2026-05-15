@@ -81,6 +81,52 @@ EOF_TOUCHSTONE_RUN
   )
 }
 
+new_touchstone_self_repo() {
+  local repo="$1" test_name
+  rm -rf "$repo"
+  mkdir -p "$repo"
+  (
+    cd "$repo"
+    git init -q
+    git config user.email test@example.com
+    git config user.name "Touchstone Test"
+    mkdir -p bootstrap scripts tests principles .claude/skills/touchstone-git-workflow docs templates
+    printf '9.99.0\n' >VERSION
+    printf '#!/usr/bin/env bash\nset -euo pipefail\n' >bootstrap/new-project.sh
+    printf '#!/usr/bin/env bash\nset -euo pipefail\n' >scripts/touchstone-run.sh
+    chmod +x bootstrap/new-project.sh scripts/touchstone-run.sh
+    for test_name in \
+      test-agent-steering-contract \
+      test-dogfood \
+      test-steering-size-caps \
+      test-touchstone-block \
+      test-other \
+      test-target; do
+      cat >"tests/${test_name}.sh" <<'EOF_SELF_TEST'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'self:%s\n' "$(basename "$0")" >>"$PREFLIGHT_TOOL_LOG"
+if [ "${SELF_TEST_FAIL:-}" = "$(basename "$0")" ]; then
+  exit 1
+fi
+EOF_SELF_TEST
+      chmod +x "tests/${test_name}.sh"
+    done
+    printf '# Agent steering\n' >AGENTS.md
+    printf '# Claude steering\n@TOUCHSTONE.md\n' >CLAUDE.md
+    printf '# Workflow\n' >principles/git-workflow.md
+    printf '# Skill\n' >.claude/skills/touchstone-git-workflow/SKILL.md
+    printf '# Template agent steering\n' >templates/AGENTS.md
+    printf '# Template Claude steering\n@TOUCHSTONE.md\n' >templates/CLAUDE.md
+    printf '# Template Gemini steering\n' >templates/GEMINI.md
+    printf '# Docs\n' >docs/overview.md
+    git add VERSION bootstrap/new-project.sh scripts/touchstone-run.sh tests AGENTS.md CLAUDE.md principles/git-workflow.md .claude/skills/touchstone-git-workflow/SKILL.md docs/overview.md templates
+    git commit -q -m "baseline touchstone fixture"
+    git update-ref refs/remotes/origin/main HEAD
+    git checkout -q -b feature/scope-test
+  )
+}
+
 run_preflight() {
   local repo="$1" output="$2" log="$3"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
@@ -496,6 +542,91 @@ if ! grep -q 'SKIP tests (delivery-only Touchstone-managed diff; project validat
   exit 1
 fi
 echo "==> PASS: pre-existing debt outside a touchstone-bump diff does not block"
+
+echo "==> Test: Touchstone self preflight scopes changed test-only diffs"
+REPO="$TEST_DIR/repo-touchstone-self-test-only"
+LOG="$TEST_DIR/touchstone-self-test-only.log"
+OUT="$TEST_DIR/touchstone-self-test-only.out"
+new_touchstone_self_repo "$REPO"
+(
+  cd "$REPO"
+  printf '\n# changed target test\n' >>tests/test-target.sh
+  git add tests/test-target.sh
+  git commit -q -m "change one self-test"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^self:test-target.sh$'
+assert_log_not_contains "$LOG" '^self:test-other.sh$'
+if ! grep -q 'tests (touchstone scoped self-tests)' "$OUT"; then
+  echo "FAIL: Touchstone test-only diff did not report scoped self-tests" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "==> PASS: Touchstone test-only diff runs only changed self-tests"
+
+echo "==> Test: Touchstone steering diffs run steering sentinel tests"
+REPO="$TEST_DIR/repo-touchstone-steering"
+LOG="$TEST_DIR/touchstone-steering.log"
+OUT="$TEST_DIR/touchstone-steering.out"
+new_touchstone_self_repo "$REPO"
+(
+  cd "$REPO"
+  printf '\n# updated guidance\n' >>AGENTS.md
+  git add AGENTS.md
+  git commit -q -m "change steering guidance"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^self:test-agent-steering-contract.sh$'
+assert_log_contains "$LOG" '^self:test-dogfood.sh$'
+assert_log_contains "$LOG" '^self:test-steering-size-caps.sh$'
+assert_log_contains "$LOG" '^self:test-touchstone-block.sh$'
+assert_log_not_contains "$LOG" '^self:test-other.sh$'
+echo "==> PASS: Touchstone steering diff runs focused sentinel self-tests"
+
+echo "==> Test: Touchstone Claude/template steering diffs run steering sentinel tests"
+REPO="$TEST_DIR/repo-touchstone-template-steering"
+LOG="$TEST_DIR/touchstone-template-steering.log"
+OUT="$TEST_DIR/touchstone-template-steering.out"
+new_touchstone_self_repo "$REPO"
+(
+  cd "$REPO"
+  printf '\n# updated Claude guidance\n' >>CLAUDE.md
+  printf '\n# updated template guidance\n' >>templates/AGENTS.md
+  git add CLAUDE.md templates/AGENTS.md
+  git commit -q -m "change Claude and template steering"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^self:test-agent-steering-contract.sh$'
+assert_log_contains "$LOG" '^self:test-dogfood.sh$'
+assert_log_contains "$LOG" '^self:test-steering-size-caps.sh$'
+assert_log_contains "$LOG" '^self:test-touchstone-block.sh$'
+assert_log_not_contains "$LOG" '^self:test-other.sh$'
+echo "==> PASS: Touchstone Claude/template steering diff runs focused sentinel self-tests"
+
+echo "==> Test: Touchstone unknown diffs keep full self-test fallback"
+REPO="$TEST_DIR/repo-touchstone-full-fallback"
+LOG="$TEST_DIR/touchstone-full-fallback.log"
+OUT="$TEST_DIR/touchstone-full-fallback.out"
+new_touchstone_self_repo "$REPO"
+(
+  cd "$REPO"
+  printf 'updated\n' >unexpected-runtime-file.txt
+  git add unexpected-runtime-file.txt
+  git commit -q -m "change unknown runtime file"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^self:test-target.sh$'
+assert_log_contains "$LOG" '^self:test-other.sh$'
+if ! grep -q 'tests (touchstone self-tests)' "$OUT"; then
+  echo "FAIL: Touchstone unknown diff did not report full self-tests" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "==> PASS: Touchstone unknown diff falls back to full self-tests"
 
 echo "==> Test: preflight cache inputs hash changed file contents"
 REPO="$TEST_DIR/repo-cache-inputs"

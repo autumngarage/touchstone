@@ -372,6 +372,63 @@ touchstone_preflight_test_files() {
     done
 }
 
+touchstone_preflight_add_existing_self_tests() {
+  local output_file="$1"
+  shift
+  local test_file
+
+  for test_file in "$@"; do
+    [ -f "$test_file" ] || continue
+    printf '%s\n' "$test_file" >>"$output_file"
+  done
+}
+
+touchstone_preflight_touchstone_scoped_self_test_files() {
+  local output_file="$1"
+  local unique_file="${output_file}.unique"
+  local path saw_path=false
+
+  : >"$output_file"
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    saw_path=true
+    case "$path" in
+      tests/test-*.sh)
+        [ -f "$path" ] || return 1
+        touchstone_preflight_add_existing_self_tests "$output_file" "$path"
+        ;;
+      CLAUDE.md | AGENTS.md | GEMINI.md | TOUCHSTONE.md | principles/*)
+        touchstone_preflight_add_existing_self_tests "$output_file" \
+          tests/test-agent-steering-contract.sh \
+          tests/test-dogfood.sh \
+          tests/test-steering-size-caps.sh \
+          tests/test-touchstone-block.sh
+        ;;
+      templates/CLAUDE.md | templates/AGENTS.md | templates/GEMINI.md | .claude/skills/touchstone-*/*)
+        touchstone_preflight_add_existing_self_tests "$output_file" \
+          tests/test-agent-steering-contract.sh \
+          tests/test-dogfood.sh \
+          tests/test-steering-size-caps.sh \
+          tests/test-touchstone-block.sh
+        ;;
+      README.md | CHANGELOG.md | docs/* | audits/* | feedback/*)
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done < <(touchstone_preflight_changed_files)
+
+  [ "$saw_path" = true ] || return 1
+
+  if [ -s "$output_file" ]; then
+    awk '!seen[$0]++' "$output_file" >"$unique_file"
+    mv "$unique_file" "$output_file"
+  fi
+  return 0
+}
+
 touchstone_preflight_delivery_only_path() {
   local path="$1"
 
@@ -724,6 +781,59 @@ touchstone_preflight_is_touchstone_repo() {
     && [ -d tests ]
 }
 
+touchstone_preflight_run_touchstone_self_tests() {
+  local -a test_files=()
+  local test_file failures=0 scoped_tests_file=""
+
+  if [ "$TOUCHSTONE_PREFLIGHT_SCOPE_MODE" = "diff" ]; then
+    scoped_tests_file="$(mktemp -t touchstone-self-tests.XXXXXX)"
+    if touchstone_preflight_touchstone_scoped_self_test_files "$scoped_tests_file"; then
+      while IFS= read -r test_file; do
+        [ -n "$test_file" ] || continue
+        test_files+=("$test_file")
+      done <"$scoped_tests_file"
+      rm -f "$scoped_tests_file"
+
+      if [ "${#test_files[@]}" -eq 0 ]; then
+        touchstone_preflight_skip "tests (touchstone scoped self-tests: no matching test targets)"
+        return 0
+      fi
+
+      touchstone_preflight_info "tests (touchstone scoped self-tests)"
+      for test_file in "${test_files[@]}"; do
+        if TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash "$test_file"; then
+          :
+        else
+          failures=$((failures + 1))
+        fi
+      done
+      if [ "$failures" -eq 0 ]; then
+        touchstone_preflight_ok "tests"
+        return 0
+      fi
+      touchstone_preflight_fail "tests"
+      return 1
+    fi
+    rm -f "$scoped_tests_file"
+  fi
+
+  touchstone_preflight_info "tests (touchstone self-tests)"
+  for test_file in tests/test-*.sh; do
+    [ -f "$test_file" ] || continue
+    if TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash "$test_file"; then
+      :
+    else
+      failures=$((failures + 1))
+    fi
+  done
+  if [ "$failures" -eq 0 ]; then
+    touchstone_preflight_ok "tests"
+    return 0
+  fi
+  touchstone_preflight_fail "tests"
+  return 1
+}
+
 touchstone_preflight_run_list() {
   local label="$1"
   local command_name="$2"
@@ -820,21 +930,8 @@ touchstone_preflight_validate() {
     local test_file failures=0
 
     if touchstone_preflight_is_touchstone_repo; then
-      touchstone_preflight_info "tests (touchstone self-tests)"
-      for test_file in tests/test-*.sh; do
-        [ -f "$test_file" ] || continue
-        if TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash "$test_file"; then
-          :
-        else
-          failures=$((failures + 1))
-        fi
-      done
-      if [ "$failures" -eq 0 ]; then
-        touchstone_preflight_ok "tests"
-        return 0
-      fi
-      touchstone_preflight_fail "tests"
-      return 1
+      touchstone_preflight_run_touchstone_self_tests
+      return $?
     fi
 
     if touchstone_preflight_delivery_only_diff; then
