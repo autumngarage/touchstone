@@ -18,15 +18,17 @@
 #   1. Push target is the default branch (main or master). Resolved by
 #      asking `gh repo view`.
 #   2. The repo has a `.cortex/` directory at the same level as `.git/`.
-#   3. The `cortex` CLI is on $PATH.
-#   4. `.touchstone-config` has `cortex_pr_merged_hook=auto`, `=on`, or
+#   3. The repo has `.cortex/SPEC_VERSION` (skip before writer invocation
+#      when Cortex metadata is incomplete).
+#   4. The `cortex` CLI is on $PATH.
+#   5. `.touchstone-config` has `cortex_pr_merged_hook=auto`, `=on`, or
 #      `=force`. Default for newly-bootstrapped projects: `auto`. Value
 #      `off` disables. Missing key is treated as `auto` (so projects that
 #      haven't migrated yet still benefit when the other gates pass).
 #      Value `force` skips the substantive-merge gate and always journals.
-#   5. The most recent commit is not this hook's own previous output
+#   6. The most recent commit is not this hook's own previous output
 #      (recursion guard, cortex#193).
-#   6. After the recursion guard, `cortex check-triggers --since HEAD~1`
+#   7. After the recursion guard, `cortex check-triggers --since HEAD~1`
 #      reports at least one fired trigger, unless force mode is enabled
 #      or the check-trigger gate is unavailable.
 #
@@ -113,7 +115,7 @@ read_config_value() {
 }
 
 AUTO_DRAFT_SUBJECT_PREFIX='docs(journal): auto-draft pr-merged entry'
-AUTO_DRAFT_BRANCH_PREFIX='docs/cortex-pr-merged'
+AUTO_DRAFT_BRANCH_PREFIX='docs/journal-pr'
 
 sanitize_branch_component() {
   printf '%s' "$1" \
@@ -129,7 +131,7 @@ resolve_journal_branch() {
 
   local suffix timestamp
   if [ -n "${TOUCHSTONE_MERGED_PR:-}" ]; then
-    suffix="pr-${TOUCHSTONE_MERGED_PR}"
+    suffix="${TOUCHSTONE_MERGED_PR}"
   else
     suffix="manual"
   fi
@@ -208,6 +210,10 @@ if ! command -v cortex >/dev/null 2>&1; then
   # Detection passed (`.cortex/` exists, config is auto/on) but the CLI
   # is missing. The brief calls this a graceful-degrade case — don't
   # fail the merge over a missing optional tool.
+  exit 0
+fi
+
+if [ ! -f "$PROJECT_DIR/.cortex/SPEC_VERSION" ]; then
   exit 0
 fi
 
@@ -341,8 +347,7 @@ commit_message="${AUTO_DRAFT_SUBJECT_PREFIX}${pr_suffix}"
 publish_direct=false
 journal_branch=""
 
-if truthy "${TOUCHSTONE_CORTEX_HOOK_DIRECT_PUSH:-0}" \
-  || truthy "${TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH:-0}"; then
+if truthy "${TOUCHSTONE_CORTEX_HOOK_DIRECT_PUSH:-0}"; then
   publish_direct=true
 else
   journal_branch="$(resolve_journal_branch)"
@@ -410,7 +415,8 @@ fi
 if ! command -v gh >/dev/null 2>&1; then
   git -C "$PROJECT_DIR" checkout "$default_branch" >/dev/null 2>&1 || true
   log "cortex-pr-merged-hook: gh CLI not found after pushing '$journal_branch'; open a PR for that branch manually."
-  exit 1
+  log "  Branch was preserved locally and on origin for recovery."
+  exit 0
 fi
 
 pr_body="$(mktemp -t cortex-pr-merged-pr.XXXXXX 2>/dev/null || mktemp)"
@@ -434,7 +440,7 @@ if ! pr_url="$(cd "$PROJECT_DIR" \
   git -C "$PROJECT_DIR" checkout "$default_branch" >/dev/null 2>&1 || true
   log "cortex-pr-merged-hook: failed to open PR for journal branch '$journal_branch'."
   log "  Branch was pushed; open a PR manually when ready."
-  exit 1
+  exit 0
 fi
 rm -f "$pr_body"
 
