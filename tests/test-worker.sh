@@ -198,11 +198,30 @@ if ! grep -q "$TEST_DIR/ship-events.ndjson" "$TEST_DIR/ship-events-env"; then
   fail "worker ship did not forward TOUCHSTONE_EVENTS_FILE"
 fi
 
-echo "==> Case e: worker abandon refuses unique work and removes spawned worktrees"
+echo "==> Case e: worker abandon refuses unique or dirty work and removes clean/forced worktrees"
 if "$TOUCHSTONE_ROOT/bin/touchstone" worker abandon --worktree "$WORKTREE_PATH" >"$TEST_DIR/abandon-refuse.out" 2>&1; then
   fail "worker abandon should refuse unique commits without --force"
 fi
 assert_contains "$TEST_DIR/abandon-refuse.out" 'refusing to abandon'
+
+DIRTY_JSON="$TEST_DIR/dirty-spawn.json"
+(
+  cd "$REPO"
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker spawn \
+    --task "Docs dirty" \
+    --type docs \
+    --json >"$DIRTY_JSON"
+)
+DIRTY_WORKTREE="$(sed -n 's/.*"worktree_path":"\([^"]*\)".*/\1/p' "$DIRTY_JSON")"
+printf 'dirty\n' >>"$DIRTY_WORKTREE/file.txt"
+if "$TOUCHSTONE_ROOT/bin/touchstone" worker abandon --worktree "$DIRTY_WORKTREE" >"$TEST_DIR/abandon-dirty-refuse.out" 2>&1; then
+  fail "worker abandon should refuse dirty worktrees without --force"
+fi
+assert_contains "$TEST_DIR/abandon-dirty-refuse.out" 'has uncommitted changes'
+"$TOUCHSTONE_ROOT/bin/touchstone" worker abandon --worktree "$DIRTY_WORKTREE" --force >"$TEST_DIR/abandon-dirty-force.out" 2>&1
+if [ -d "$DIRTY_WORKTREE" ]; then
+  fail "worker abandon --force did not remove dirty worktree"
+fi
 
 SAFE_JSON="$TEST_DIR/safe-spawn.json"
 SAFE_EVENTS="$TEST_DIR/safe-events.ndjson"

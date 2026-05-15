@@ -351,7 +351,8 @@ worktree_manager_path() {
 }
 
 cmd_abandon() {
-  local worktree_path="" dry_run=false force=false branch base unique_commits manager_path
+  local worktree_path="" dry_run=false force=false branch base unique_commits dirty_changes manager_path
+  local remove_args=()
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -405,6 +406,13 @@ cmd_abandon() {
     return 1
   fi
 
+  dirty_changes="$(worker_has_uncommitted "$worktree_path")"
+  if [ -n "$dirty_changes" ] && [ "$force" != true ]; then
+    echo "ERROR: refusing to abandon $worktree_path; worktree has uncommitted changes." >&2
+    echo "       Use --force only after confirming local edits are disposable." >&2
+    return 1
+  fi
+
   if [ "$dry_run" = true ]; then
     echo "Would remove worktree: $worktree_path"
     if branch_has_open_or_closed_pr "$branch"; then
@@ -420,7 +428,10 @@ cmd_abandon() {
     echo "ERROR: could not find a git worktree manager for $worktree_path" >&2
     return 1
   }
-  git -C "$manager_path" worktree remove --force "$worktree_path"
+  if [ "$force" = true ]; then
+    remove_args=(--force)
+  fi
+  git -C "$manager_path" worktree remove "${remove_args[@]}" "$worktree_path"
   if branch_has_open_or_closed_pr "$branch"; then
     echo "Kept remote branch because a PR exists for: $branch"
   elif remote_branch_exists "$manager_path" "$branch"; then
