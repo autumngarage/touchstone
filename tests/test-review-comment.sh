@@ -201,6 +201,23 @@ else
   exit 1
 fi
 
+echo "==> Test: cache-hit summary posts clean-review comment"
+reset_fixture
+printf '[review]\ncomment_on_clean = true\n' >"$MERGE_DIR/repo/.codex-review.toml"
+CODEX_REVIEW_STUB_EXIT=0 \
+  CODEX_REVIEW_STUB_SUMMARY='{"reviewer":"Conductor","provider":"claude","model":"claude-opus-4-1","peer_provider":"none","iterations":1,"mode":"fix","findings":0,"exit_reason":"cache-hit"}' \
+  run_merge "$TEST_DIR/merge-cache-hit-summary.txt" 123
+if grep -q '^Conductor review clean - provider: claude, model: claude-opus-4-1, peer: none, iterations: 1, mode: fix, findings: 0$' "$TEST_DIR/comments" \
+  && grep -q '==> Posted clean-review PR comment\.' "$TEST_DIR/merge-cache-hit-summary.txt" \
+  && ! grep -q 'trusted clean verdict' "$TEST_DIR/comments"; then
+  echo "==> PASS: cache-hit summary is treated as clean"
+else
+  echo "FAIL: cache-hit summary should post clean-review comment" >&2
+  cat "$TEST_DIR/merge-cache-hit-summary.txt" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  exit 1
+fi
+
 echo "==> Test: non-clean summary never posts clean-review comment"
 reset_fixture
 printf '[review]\ncomment_on_clean = true\n' >"$MERGE_DIR/repo/.codex-review.toml"

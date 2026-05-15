@@ -1085,19 +1085,22 @@ post_clean_review_comment() {
   fi
 
   exit_reason="$(review_comment_json_field "$summary_json" exit_reason 2>/dev/null || true)"
-  if [ -n "$exit_reason" ] && [ "$exit_reason" != "clean" ]; then
-    if declare -F format_review_failure_comment >/dev/null 2>&1; then
-      comment="$(format_review_failure_comment "$summary_json" "" "" "")"
-      if post_pr_review_comment "$PR_NUMBER" "$comment"; then
-        echo "==> Posted non-clean review summary PR comment (exit_reason=$exit_reason)."
-        return 0
+  case "$exit_reason" in
+    "" | clean | cache-hit) ;;
+    *)
+      if declare -F format_review_failure_comment >/dev/null 2>&1; then
+        comment="$(format_review_failure_comment "$summary_json" "" "" "")"
+        if post_pr_review_comment "$PR_NUMBER" "$comment"; then
+          echo "==> Posted non-clean review summary PR comment (exit_reason=$exit_reason)."
+          return 0
+        fi
+        echo "WARNING: failed to post non-clean review summary comment for PR #$PR_NUMBER." >&2
+      else
+        echo "WARNING: review summary exit_reason=$exit_reason; skipping clean-review comment." >&2
       fi
-      echo "WARNING: failed to post non-clean review summary comment for PR #$PR_NUMBER." >&2
-    else
-      echo "WARNING: review summary exit_reason=$exit_reason; skipping clean-review comment." >&2
-    fi
-    return 0
-  fi
+      return 0
+      ;;
+  esac
 
   comment="$(format_clean_review_comment "$summary_json")"
   if post_pr_review_comment "$PR_NUMBER" "$comment"; then
