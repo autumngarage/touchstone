@@ -7,7 +7,7 @@
 # Always uses the project's PR template if one exists.
 #
 # Usage:
-#   bash scripts/open-pr.sh                          # title from last commit; base = default branch
+#   bash scripts/open-pr.sh                          # title from first non-generated commit; base = default branch
 #   bash scripts/open-pr.sh --auto-merge             # open + merge-gate review + squash-merge
 #   bash scripts/open-pr.sh --auto-merge \
 #                            --cleanup-worktree       # auto-merge, then remove this feature worktree
@@ -401,6 +401,52 @@ find_base_merge_commit() {
   return 1
 }
 
+is_conductor_refresh_generated_path() {
+  case "$1" in
+    AGENTS.md | GEMINI.md | .cursor/rules/conductor-delegation.mdc) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+commit_is_conductor_refresh_only() {
+  local commit="$1"
+  local path
+  local saw_paths=false
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    saw_paths=true
+    if ! is_conductor_refresh_generated_path "$path"; then
+      return 1
+    fi
+  done < <(git show --pretty='' --name-only "$commit")
+
+  [ "$saw_paths" = true ]
+}
+
+choose_default_pr_title() {
+  local base_branch="$1"
+  local merge_base commit
+  local fallback_title
+
+  fallback_title="$(git log -1 --format=%s)"
+  if ! merge_base="$(find_base_merge_commit "$base_branch")"; then
+    printf '%s\n' "$fallback_title"
+    return 0
+  fi
+
+  while IFS= read -r commit; do
+    [ -n "$commit" ] || continue
+    if commit_is_conductor_refresh_only "$commit"; then
+      continue
+    fi
+    git log -1 --format=%s "$commit"
+    return 0
+  done < <(git rev-list --reverse "$merge_base..HEAD")
+
+  printf '%s\n' "$fallback_title"
+}
+
 find_issue_closing_refs() {
   local base_branch="$1"
   local merge_base
@@ -604,7 +650,7 @@ fi
 if [ "$#" -gt 0 ]; then
   TITLE="$1"
 else
-  TITLE="$(git log -1 --format=%s)"
+  TITLE="$(choose_default_pr_title "$BASE_BRANCH")"
 fi
 
 COMMIT_BODY="$(git log -1 --format=%b)"
