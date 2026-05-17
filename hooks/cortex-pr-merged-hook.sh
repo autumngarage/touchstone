@@ -10,9 +10,12 @@
 # out to `cortex journal draft pr-merged --no-edit`, captures the new
 # entry's path on stdout, refreshes `.cortex/state.md`, stages both files
 # when present, commits with `--no-verify` on a follow-up branch, pushes
-# that branch, and opens a normal PR for the journal commit. The direct
-# default-branch push path is retained only as an explicit compatibility
-# opt-in because it conflicts with Touchstone's no-commit-to-branch policy.
+# that branch, and opens a normal PR for the journal commit. Landing uses
+# repo-capability detection: queue `gh pr merge --auto` when auto-merge is
+# enabled for the repo, otherwise wait for required checks and merge
+# synchronously. The direct default-branch push path is retained only as
+# an explicit compatibility opt-in because it conflicts with Touchstone's
+# no-commit-to-branch policy.
 #
 # Activation contract (ALL of these must hold; otherwise silent exit 0):
 #   1. Push target is the default branch (main or master). Resolved by
@@ -155,6 +158,123 @@ resolve_default_branch() {
     resolved="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)"
   fi
   printf '%s' "${resolved:-main}"
+}
+
+failed_checks() {
+  local pr_number="$1"
+  gh pr checks "$pr_number" \
+    --json name,bucket,state,link \
+    --template '{{range .}}{{if eq .bucket "fail"}}{{.name}}{{"\t"}}{{.state}}{{"\t"}}{{.link}}{{"\n"}}{{end}}{{end}}' \
+    2>/dev/null || true
+}
+
+log_failed_checks() {
+  local failed_checks="$1"
+  local name state link
+
+  [ -n "$failed_checks" ] || return 0
+
+  log "cortex-pr-merged-hook: journal PR has failed check(s); cannot auto-land."
+  while IFS="$(printf '\t')" read -r name state link || [ -n "$name" ]; do
+    [ -n "$name" ] || continue
+    if [ -n "$link" ]; then
+      log "  - $name (${state:-failed}): $link"
+    else
+      log "  - $name (${state:-failed})"
+    fi
+  done <<<"$failed_checks"
+}
+
+wait_for_clean_merge_state() {
+  local pr_number="$1"
+  local attempt=1
+  local max_attempts
+  local sleep_seconds
+  local merge_state
+  local state
+  local mergeable
+  local failed
+  local -a merge_state_retry_delays=(1 2 5 10 30 30 30 30 30)
+
+  max_attempts="${MERGE_PR_STATE_MAX_ATTEMPTS:-30}"
+  if ! [[ "$max_attempts" =~ ^[0-9]+$ ]] || [ "$max_attempts" -lt 1 ]; then
+    max_attempts=30
+  fi
+
+  while [ "$attempt" -le "$max_attempts" ]; do
+    merge_state="$(cd "$PROJECT_DIR" && gh pr view "$pr_number" --json mergeStateStatus,mergeable --template '{{.mergeStateStatus}} {{.mergeable}}' 2>/dev/null || echo '')"
+    state="${merge_state%% *}"
+    mergeable="${merge_state#* }"
+    [ -n "$state" ] || state="UNKNOWN"
+    [ -n "$mergeable" ] || mergeable="UNKNOWN"
+
+    if [ "$state" = "CLEAN" ] && [ "$mergeable" = "MERGEABLE" ]; then
+      return 0
+    fi
+
+    failed="$(failed_checks "$pr_number")"
+    if [ -n "$failed" ]; then
+      log_failed_checks "$failed"
+      return 1
+    fi
+
+    if [ "$mergeable" = "CONFLICTING" ] || [ "$state" = "DIRTY" ] || [ "$state" = "BEHIND" ] || [ "$state" = "CONFLICTING" ]; then
+      log "cortex-pr-merged-hook: journal PR #${pr_number} is not mergeable (mergeStateStatus=${state} mergeable=${mergeable})."
+      return 1
+    fi
+
+    if [ "$attempt" -lt "$max_attempts" ]; then
+      sleep_seconds="${merge_state_retry_delays[$((attempt - 1))]:-30}"
+      if [ -n "${MERGE_PR_SLEEP_OVERRIDE+x}" ]; then
+        sleep_seconds="$MERGE_PR_SLEEP_OVERRIDE"
+      fi
+      sleep "$sleep_seconds"
+    fi
+
+    attempt=$((attempt + 1))
+  done
+
+  log "cortex-pr-merged-hook: journal PR #${pr_number} did not reach CLEAN/MERGEABLE after ${max_attempts} attempts."
+  return 1
+}
+
+resolve_repo_slug() {
+  local resolved=""
+  local origin_url=""
+
+  if command -v gh >/dev/null 2>&1; then
+    resolved="$(cd "$PROJECT_DIR" && gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)"
+    if [ -n "$resolved" ]; then
+      printf '%s' "$resolved"
+      return 0
+    fi
+  fi
+
+  origin_url="$(git -C "$PROJECT_DIR" remote get-url origin 2>/dev/null || true)"
+  case "$origin_url" in
+    git@github.com:*) resolved="${origin_url#git@github.com:}" ;;
+    https://github.com/*) resolved="${origin_url#https://github.com/}" ;;
+    ssh://git@github.com/*) resolved="${origin_url#ssh://git@github.com/}" ;;
+    *) resolved="" ;;
+  esac
+  resolved="${resolved%.git}"
+  printf '%s' "$resolved"
+}
+
+detect_allow_auto_merge() {
+  local repo_slug="$1"
+  local allow_auto_merge=""
+
+  [ -n "$repo_slug" ] || {
+    printf 'unknown'
+    return 0
+  }
+
+  allow_auto_merge="$(cd "$PROJECT_DIR" && gh api "repos/${repo_slug}" --jq '.allow_auto_merge' 2>/dev/null || true)"
+  case "$allow_auto_merge" in
+    true | false) printf '%s' "$allow_auto_merge" ;;
+    *) printf 'unknown' ;;
+  esac
 }
 
 # 1. Detection — silent skip if any precondition fails.
@@ -470,14 +590,55 @@ if [ -z "$pr_number" ]; then
   exit 0
 fi
 
+repo_slug="$(resolve_repo_slug)"
+allow_auto_merge="$(detect_allow_auto_merge "$repo_slug")"
+
 merge_status=0
-(cd "$PROJECT_DIR" && gh pr merge "$pr_number" --squash --delete-branch --auto >/dev/null 2>&1) \
-  || merge_status=$?
-if [ "$merge_status" -ne 0 ]; then
-  git -C "$PROJECT_DIR" checkout "$default_branch" >/dev/null 2>&1 || true
-  log "cortex-pr-merged-hook: 'gh pr merge --auto' on #${pr_number} returned ${merge_status}."
-  log "  PR opened at ${pr_url} but auto-merge could not be queued. Merge it manually."
-  exit 0
+if [ "$allow_auto_merge" = "true" ]; then
+  (cd "$PROJECT_DIR" && gh pr merge "$pr_number" --squash --delete-branch --auto >/dev/null 2>&1) \
+    || merge_status=$?
+  if [ "$merge_status" -ne 0 ]; then
+    git -C "$PROJECT_DIR" checkout "$default_branch" >/dev/null 2>&1 || true
+    log "cortex-pr-merged-hook: 'gh pr merge --auto' on #${pr_number} returned ${merge_status}."
+    log "  Repo '${repo_slug:-unknown}' reported allow_auto_merge=true, but auto-merge could not be queued."
+    log "  PR opened at ${pr_url}. Merge it manually."
+    exit 0
+  fi
+else
+  if [ "$allow_auto_merge" = "false" ]; then
+    log "cortex-pr-merged-hook: auto-merge is disabled on '${repo_slug:-unknown}'; waiting for required checks, then merging journal PR synchronously."
+  else
+    log "cortex-pr-merged-hook: could not determine allow_auto_merge for '${repo_slug:-unknown}'; using synchronous journal PR merge path."
+  fi
+
+  if ! wait_for_clean_merge_state "$pr_number"; then
+    git -C "$PROJECT_DIR" checkout "$default_branch" >/dev/null 2>&1 || true
+    if [ "$allow_auto_merge" = "false" ] && [ -n "$repo_slug" ]; then
+      log "  Diagnostic: gh api repos/${repo_slug} --jq '.allow_auto_merge' returned false."
+      log "  Enable auto-merge in repo settings to restore queue-based merging, or merge PR #${pr_number} manually once checks pass."
+    fi
+    log "  PR opened at ${pr_url} but it did not become cleanly mergeable in time."
+    exit 0
+  fi
+
+  (cd "$PROJECT_DIR" && gh pr merge "$pr_number" --squash --delete-branch >/dev/null 2>&1) \
+    || merge_status=$?
+  if [ "$merge_status" -ne 0 ]; then
+    pr_state="$(cd "$PROJECT_DIR" && gh pr view "$pr_number" --json state --jq '.state' 2>/dev/null || echo '')"
+    if [ "$pr_state" = "MERGED" ]; then
+      log "cortex-pr-merged-hook: gh pr merge exited ${merge_status}, but journal PR #${pr_number} is MERGED on GitHub."
+      log "  Likely cause: local branch deletion could not complete while '${journal_branch}' was checked out."
+    else
+      git -C "$PROJECT_DIR" checkout "$default_branch" >/dev/null 2>&1 || true
+      log "cortex-pr-merged-hook: 'gh pr merge' on #${pr_number} returned ${merge_status}."
+      if [ "$allow_auto_merge" = "false" ] && [ -n "$repo_slug" ]; then
+        log "  Diagnostic: gh api repos/${repo_slug} --jq '.allow_auto_merge' returned false."
+        log "  Enable auto-merge in repo settings to restore queue-based merging, or merge PR #${pr_number} manually once checks pass."
+      fi
+      log "  PR opened at ${pr_url}. Merge it manually."
+      exit 0
+    fi
+  fi
 fi
 
 if ! git -C "$PROJECT_DIR" checkout "$default_branch" >/dev/null; then

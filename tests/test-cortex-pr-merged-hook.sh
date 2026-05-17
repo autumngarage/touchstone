@@ -237,13 +237,60 @@ cat >"$FAKEBIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+
+if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then
+  if [ "${3:-}" = "--json" ] && [ "${4:-}" = "defaultBranchRef" ]; then
+    printf 'main\n'
+    exit 0
+  fi
+  if [ "${3:-}" = "--json" ] && [ "${4:-}" = "nameWithOwner" ]; then
+    printf '%s\n' "${FAKE_GH_REPO_SLUG:-autumngarage/touchstone}"
+    exit 0
+  fi
+fi
+
+if [ "${1:-}" = "api" ] && [ "${2:-}" = "repos/${FAKE_GH_REPO_SLUG:-autumngarage/touchstone}" ]; then
+  allow_auto_merge="${FAKE_ALLOW_AUTO_MERGE:-true}"
+  case "$allow_auto_merge" in
+    true | false) printf '%s\n' "$allow_auto_merge" ;;
+    *) printf 'null\n' ;;
+  esac
+  exit 0
+fi
+
+if [ "${1:-}" = "label" ] && [ "${2:-}" = "list" ]; then
+  exit 0
+fi
+
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "create" ]; then
-  printf 'https://example.test/cortex-journal-pr/777\n'
+  printf '%s\n' "${FAKE_GH_PR_URL:-https://example.test/cortex-journal-pr/777}"
   exit 0
 fi
+
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ "${4:-}" = "--json" ] && [ "${5:-}" = "mergeStateStatus,mergeable" ]; then
+  printf '%s\n' "${FAKE_GH_MERGE_STATE:-CLEAN MERGEABLE}"
+  exit 0
+fi
+
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ "${4:-}" = "--json" ] && [ "${5:-}" = "state" ]; then
+  printf '%s\n' "${FAKE_GH_PR_STATE:-MERGED}"
+  exit 0
+fi
+
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "checks" ]; then
+  if [ -n "${FAKE_GH_FAILED_CHECKS:-}" ]; then
+    printf '%s\n' "${FAKE_GH_FAILED_CHECKS}"
+  fi
+  exit 0
+fi
+
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ]; then
+  if [ "${FAKE_GH_PR_MERGE_FAIL:-0}" = "1" ]; then
+    exit "${FAKE_GH_PR_MERGE_EXIT_CODE:-1}"
+  fi
   exit 0
 fi
+
 printf 'unexpected fake gh invocation: %s\n' "$*" >&2
 exit 2
 EOF
@@ -675,4 +722,103 @@ if ! git -C "$R" show --name-only --format= HEAD | grep -qx '.cortex/journal/pr-
   exit 1
 fi
 
-echo "==> PASS: cortex-pr-merged-hook activation gates + graceful-degradation paths verified (A-R)"
+# Scenario S: when repo allow_auto_merge=false, hook waits for CLEAN and
+# merges synchronously (no --auto queue request).
+S="$(mk_fixture S)"
+S_REMOTE="$TMPROOT/S-remote.git"
+S_BRANCH="docs/cortex-pr-merged-sync-merge"
+S_GH_LOG="$TMPROOT/S-gh.log"
+git init -q --bare "$S_REMOTE"
+git -C "$S" remote add origin "$S_REMOTE"
+git -C "$S" push -q -u origin main
+mkdir -p "$S/.cortex"
+printf '0.5.0\n' >"$S/.cortex/SPEC_VERSION"
+printf 'tracked state\n' >"$S/.cortex/state.md"
+(cd "$S" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state" && git push -q origin main)
+S_HEAD_BEFORE="$(git -C "$S" rev-parse HEAD)"
+(
+  cd "$S"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_GH_LOG="$S_GH_LOG" \
+    FAKE_ALLOW_AUTO_MERGE=false \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_BRANCH="$S_BRANCH" \
+    TOUCHSTONE_MERGED_PR=779 \
+    bash "$HOOK"
+)
+S_HEAD_AFTER="$(git -C "$S" rev-parse HEAD)"
+if [ "$S_HEAD_BEFORE" != "$S_HEAD_AFTER" ]; then
+  echo "FAIL [S]: default branch moved during synchronous journal PR merge path" >&2
+  git -C "$S" log --oneline --decorate -3 >&2
+  exit 1
+fi
+if [ "$(git -C "$S" branch --show-current)" != "main" ]; then
+  echo "FAIL [S]: hook did not restore local main after synchronous merge path" >&2
+  git -C "$S" branch --show-current >&2
+  exit 1
+fi
+if ! grep -q "api repos/autumngarage/touchstone --jq .allow_auto_merge" "$S_GH_LOG"; then
+  echo "FAIL [S]: hook did not query repo allow_auto_merge capability" >&2
+  cat "$S_GH_LOG" >&2
+  exit 1
+fi
+if ! grep -q "pr merge 777 --squash --delete-branch" "$S_GH_LOG"; then
+  echo "FAIL [S]: hook did not perform synchronous gh pr merge" >&2
+  cat "$S_GH_LOG" >&2
+  exit 1
+fi
+if grep -q "pr merge 777 --squash --delete-branch --auto" "$S_GH_LOG"; then
+  echo "FAIL [S]: synchronous path unexpectedly requested --auto" >&2
+  cat "$S_GH_LOG" >&2
+  exit 1
+fi
+
+# Scenario T: allow_auto_merge=false + PR never becomes CLEAN emits
+# actionable diagnostics and exits 0 without merging.
+T="$(mk_fixture T)"
+T_REMOTE="$TMPROOT/T-remote.git"
+T_BRANCH="docs/cortex-pr-merged-not-clean"
+T_GH_LOG="$TMPROOT/T-gh.log"
+T_STDERR="$TMPROOT/T-stderr"
+git init -q --bare "$T_REMOTE"
+git -C "$T" remote add origin "$T_REMOTE"
+git -C "$T" push -q -u origin main
+mkdir -p "$T/.cortex"
+printf '0.5.0\n' >"$T/.cortex/SPEC_VERSION"
+printf 'tracked state\n' >"$T/.cortex/state.md"
+(cd "$T" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state" && git push -q origin main)
+(
+  cd "$T"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_GH_LOG="$T_GH_LOG" \
+    FAKE_ALLOW_AUTO_MERGE=false \
+    FAKE_GH_MERGE_STATE="UNKNOWN UNKNOWN" \
+    MERGE_PR_STATE_MAX_ATTEMPTS=2 \
+    MERGE_PR_SLEEP_OVERRIDE=0 \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_BRANCH="$T_BRANCH" \
+    TOUCHSTONE_MERGED_PR=780 \
+    bash "$HOOK"
+) 2>"$T_STDERR"
+if grep -q "pr merge 777 --squash --delete-branch" "$T_GH_LOG"; then
+  echo "FAIL [T]: hook attempted merge even though PR never became CLEAN" >&2
+  cat "$T_GH_LOG" >&2
+  exit 1
+fi
+if ! grep -q "Diagnostic: gh api repos/autumngarage/touchstone --jq '.allow_auto_merge' returned false." "$T_STDERR"; then
+  echo "FAIL [T]: missing allow_auto_merge diagnostic when sync path timed out" >&2
+  cat "$T_STDERR" >&2
+  exit 1
+fi
+if ! grep -q "Enable auto-merge in repo settings to restore queue-based merging, or merge PR #777 manually once checks pass." "$T_STDERR"; then
+  echo "FAIL [T]: missing actionable remediation guidance for timed-out sync path" >&2
+  cat "$T_STDERR" >&2
+  exit 1
+fi
+if ! grep -q "did not become cleanly mergeable in time" "$T_STDERR"; then
+  echo "FAIL [T]: timed-out sync path did not explain terminal condition" >&2
+  cat "$T_STDERR" >&2
+  exit 1
+fi
+
+echo "==> PASS: cortex-pr-merged-hook activation gates + graceful-degradation paths verified (A-T)"
