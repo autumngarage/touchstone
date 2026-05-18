@@ -61,7 +61,25 @@ cat >"$FAKE_BIN/gh" <<'EOF'
 set -euo pipefail
 case "$1 $2" in
   "repo view")
-    echo "main"
+    json_fields=""
+    jq_expr=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--json" ]; then
+        json_fields="$arg"
+      elif [ "$prev" = "--jq" ]; then
+        jq_expr="$arg"
+      fi
+      prev="$arg"
+    done
+    if [ "$json_fields" = "defaultBranchRef" ]; then
+      echo "main"
+    elif [ "$json_fields" = "nameWithOwner" ]; then
+      echo "autumngarage/touchstone"
+    else
+      echo "unexpected gh repo view json: $json_fields jq: $jq_expr" >&2
+      exit 1
+    fi
     ;;
   "pr list")
     if [ "${GH_HAS_EXISTING_PR:-0}" = "1" ]; then
@@ -77,12 +95,15 @@ case "$1 $2" in
   "pr view")
     json_fields=""
     jq_expr=""
+    repo_arg=""
     prev=""
     for arg in "$@"; do
       if [ "$prev" = "--json" ]; then
         json_fields="$arg"
       elif [ "$prev" = "--jq" ]; then
         jq_expr="$arg"
+      elif [ "$prev" = "--repo" ]; then
+        repo_arg="$arg"
       fi
       prev="$arg"
     done
@@ -100,6 +121,12 @@ case "$1 $2" in
         *) echo "unexpected gh pr view jq: $jq_expr" >&2; exit 1 ;;
       esac
       exit 0
+    fi
+    if [ "$json_fields" = "mergedAt" ] \
+      && [ "${GH_REQUIRE_REPO_FOR_MERGED_AT:-0}" = "1" ] \
+      && [ -z "$repo_arg" ]; then
+      echo "repository required after worktree cleanup" >&2
+      exit 1
     fi
     echo "${GH_MERGED_AT:-}"
     ;;
@@ -171,6 +198,7 @@ run_open_pr() {
       GH_HAS_EXISTING_PR="${GH_HAS_EXISTING_PR:-0}" \
       GH_PR_BODY="${GH_PR_BODY:-}" \
       GH_PR_AUTHOR="${GH_PR_AUTHOR:-alice}" \
+      GH_REQUIRE_REPO_FOR_MERGED_AT="${GH_REQUIRE_REPO_FOR_MERGED_AT:-0}" \
       MERGE_PR_EXIT="${MERGE_PR_EXIT:-0}" \
       bash "$SCRIPT_DIR/open-pr.sh" --auto-merge
   )
@@ -363,6 +391,29 @@ if [ "$RC" = "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: expected existing-PR edited body to pass protocol preflight and merge" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 9: post-merge verification still works after merge-pr.sh has removed
+# the current worktree. The real failure mode is that gh can no longer infer
+# the repository from cwd; the fix is to use the captured --repo explicitly.
+# ---------------------------------------------------------------------------
+echo "==> Case 9: post-merge verification uses captured repo context"
+OUT="$TEST_DIR/case9.out"
+RC=0
+GH_MERGED_AT="2026-05-17T17:10:41Z" GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" GH_REQUIRE_REPO_FOR_MERGED_AT=1 MERGE_PR_EXIT=0 \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q '==> Verified: PR #123 merged at 2026-05-17T17:10:41Z' "$OUT" \
+  && ! grep -q 'merge-pr.sh exited 0 but PR #123 is not merged on GitHub' "$OUT" \
+  && ! grep -q 'ORPHAN RISK' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected verified merge using captured --repo context" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
