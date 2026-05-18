@@ -86,7 +86,7 @@ The shared steering above (agent roles, lifecycle, principles, routing table) is
 
 For deep references on specific topics, read `principles/*.md` files via the routing table in the block above. For project-specific authoring rules and the AI Review Guide, also read `AGENTS.md`.
 
-<!-- conductor:begin v0.10.28 -->
+<!-- conductor:begin v0.10.29 -->
 ## Conductor delegation
 
 This project has [conductor](https://github.com/autumngarage/conductor)
