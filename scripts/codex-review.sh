@@ -4619,6 +4619,9 @@ for iter in $(seq 1 "$MAX_ITERATIONS"); do
       if [ -z "$AUTOFIX_CHANGED_PATHS" ]; then
         echo "==> $REVIEWER_LABEL emitted FIXED but no working-tree changes detected."
         echo "    Treating as ambiguous — not blocking push."
+        REVIEW_EXIT_REASON="ambiguous-fixed-no-changes"
+        print_summary
+        append_findings_history_event "CODEX_REVIEW_FIXED" "$iter" "$OUTPUT" 0
         log_skip_event other "ambiguous-fixed-no-changes:iter=${iter}"
         exit 0
       fi

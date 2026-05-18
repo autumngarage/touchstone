@@ -1291,6 +1291,49 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: FIXED with no edits writes summary before allowing push"
+setup_mode_repo
+rm -rf "$MODE_BIN"
+mkdir -p "$MODE_BIN"
+cat >"$MODE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat >"$MODE_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+printf 'CODEX_REVIEW_FIXED\n'
+CXEOF
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
+AMBIGUOUS_SUMMARY="$TEST_DIR/ambiguous-fixed-summary.json"
+rm -f "$AMBIGUOUS_SUMMARY"
+
+set +e
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=fix \
+    CODEX_REVIEW_SUMMARY_FILE="$AMBIGUOUS_SUMMARY" \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
+)
+AMBIGUOUS_EXIT=$?
+set -e
+
+if [ "$AMBIGUOUS_EXIT" -eq 0 ] \
+  && [ -s "$AMBIGUOUS_SUMMARY" ] \
+  && grep -q '"exit_reason":"ambiguous-fixed-no-changes"' "$AMBIGUOUS_SUMMARY" \
+  && grep -q 'FIXED but no working-tree changes detected' "$MODE_OUTPUT"; then
+  echo "==> PASS: ambiguous FIXED path writes a non-clean summary"
+else
+  echo "FAIL: expected FIXED-without-edits path to write summary and exit 0" >&2
+  echo "exit code: $AMBIGUOUS_EXIT" >&2
+  cat "$MODE_OUTPUT" >&2
+  [ ! -f "$AMBIGUOUS_SUMMARY" ] || cat "$AMBIGUOUS_SUMMARY" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: invalid mode warns and falls back to fix"
 setup_mode_repo
 rm -rf "$MODE_BIN"
