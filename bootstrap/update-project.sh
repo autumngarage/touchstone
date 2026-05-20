@@ -538,6 +538,12 @@ add_profile_project_template_if_missing() {
   echo "    + added (project-owned): $dst"
 }
 
+if [ -f "$TOUCHSTONE_ROOT/templates/.gitleaks.toml" ]; then
+  add_profile_project_template_if_missing \
+    "$TOUCHSTONE_ROOT/templates/.gitleaks.toml" \
+    "$PROJECT_DIR/.gitleaks.toml"
+fi
+
 if [ "$PROJECT_TYPE" = "swift" ] && [ -f "$TOUCHSTONE_ROOT/templates/swift/.swiftlint.yml" ]; then
   add_profile_project_template_if_missing \
     "$TOUCHSTONE_ROOT/templates/swift/.swiftlint.yml" \

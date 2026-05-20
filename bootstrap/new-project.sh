@@ -1302,6 +1302,7 @@ copy_file "$TOUCHSTONE_ROOT/templates/GEMINI.md" "$PROJECT_DIR/GEMINI.md"
 # don't resolve the @-imports CLAUDE.md uses to pull in TOUCHSTONE.md.
 touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT" || true
 copy_file "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-commit-config.yaml"
+copy_file "$TOUCHSTONE_ROOT/templates/.gitleaks.toml" "$PROJECT_DIR/.gitleaks.toml"
 copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
 copy_file "$TOUCHSTONE_ROOT/templates/.worktreeinclude.example" "$PROJECT_DIR/.worktreeinclude.example"
 copy_file "$TOUCHSTONE_ROOT/templates/pull_request_template.md" "$PROJECT_DIR/.github/pull_request_template.md"

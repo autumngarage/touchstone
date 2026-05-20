@@ -1,0 +1,28 @@
+title = "Touchstone gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "db-uri-with-embedded-password"
+description = "Database URI with embedded credential"
+regex = '''(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis)://[^:\s'"@]+:([^@\s'"$]{8,})@[^\s'"\n]+'''
+
+[[rules.allowlists]]
+description = "Placeholder and template DB URI values"
+regexes = [
+  '''(?i)://[^:\s'"@]+:(?:\$\{[^}]+\}|\$[A-Z_][A-Z0-9_]*|\{\{[^}]+\}\}|<[^>]+>|\*{3,}|(?:changeme|password|example|placeholder|template|your[_-]?password|testpass))@''',
+  '''(?i)(?:\$\{\{[^}]*railway[^}]*\}\}|\{\{[^}]*railway[^}]*\}\}|\$\{RAILWAY_[A-Z0-9_]+\}|RAILWAY_[A-Z0-9_]+)''',
+]
+
+[[rules]]
+id = "pgpassword-inline-secret"
+description = "PGPASSWORD inline assignment"
+regex = '''(?i)\bPGPASSWORD\s*=\s*['"]?([^'"\s$]{8,})'''
+
+[[rules.allowlists]]
+description = "Placeholder and template PGPASSWORD values"
+regexes = [
+  '''(?i)\bPGPASSWORD\s*=\s*['"]?(?:\$\{[^}]+\}|\$[A-Z_][A-Z0-9_]*|\{\{[^}]+\}\}|<[^>]+>|\*{3,}|(?:changeme|password|example|placeholder|template|your[_-]?password|testpass))['"]?''',
+  '''(?i)(?:\$\{\{[^}]*railway[^}]*\}\}|\{\{[^}]*railway[^}]*\}\}|\$\{RAILWAY_[A-Z0-9_]+\}|RAILWAY_[A-Z0-9_]+)''',
+]
