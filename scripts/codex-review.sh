@@ -297,10 +297,24 @@ resolve_trusted_review_file() {
 
 CONFIG_FILE="$(resolve_trusted_review_file .touchstone-review.toml .codex-review.toml)"
 CONFIG_DISPLAY_NAME="$(basename "${RESOLVED_REVIEW_FILE_LABEL:-.touchstone-review.toml}")"
-# No config in the trusted source -> point at a non-existent path so the parser
-# falls through to built-in (safe) defaults rather than the PR head's file.
-if [ -z "$CONFIG_FILE" ]; then
+# No config in the trusted source. Outside the merge gate the working tree IS the
+# source of truth, so fall back to it (an absent file then leaves CONFIG_FILE
+# pointing at a non-existent path, and the `[ -f "$CONFIG_FILE" ]` guard below
+# falls through to built-in safe defaults). Under the merge gate the working tree
+# is the attacker PR head, which may ADD a config that is absent on the base ref;
+# do NOT fall back to it — leave CONFIG_FILE empty so parsing is skipped and the
+# built-in safe defaults apply. (The working-tree fallback here was a bypass: a
+# PR that introduced a brand-new weakened config would have had it honored.)
+if [ -z "$CONFIG_FILE" ] && [ -z "${CODEX_REVIEW_PR_NUMBER:-}" ]; then
   CONFIG_FILE="$REPO_ROOT/.touchstone-review.toml"
+fi
+
+# Test hook: print the resolved config path/name and exit, so regression tests
+# can assert the gate never resolves config from the attacker PR head.
+if [ "${CODEX_REVIEW_TEST_PRINT_CONFIG:-0}" = "1" ]; then
+  printf 'CONFIG_FILE=%s\n' "$CONFIG_FILE"
+  printf 'CONFIG_DISPLAY_NAME=%s\n' "$CONFIG_DISPLAY_NAME"
+  exit 0
 fi
 cd "$REPO_ROOT"
 
