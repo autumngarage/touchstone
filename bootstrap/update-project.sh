@@ -37,7 +37,7 @@ IN_PLACE=false
 
 usage() {
   echo "Usage: $0 [--dry-run|-n] [--check] [--branch <name>] [--in-place|--no-branch] [--ship]"
-  echo "Env: TOUCHSTONE_FORCE_OVERLAP=1 proceeds even when dirty paths overlap planned writes."
+  echo "Env: TOUCHSTONE_FORCE_OVERLAP=1 proceeds even when dirty paths overlap planned writes (explicit update only; ignored by background auto-sync)."
 }
 
 while [ "$#" -gt 0 ]; do
@@ -373,6 +373,18 @@ update_file() {
   dst_dir="$(dirname "$dst")"
   rel_path="$(relative_project_path "$dst")"
 
+  # Never write through a symlink at a managed path. `cp` follows symlinks, so a
+  # symlink (including a dangling one) planted in the target tree would make us
+  # clobber or create its target — potentially outside the project. Managed
+  # files are always regular files, so replace an unexpected symlink with the
+  # real file; git tracks the change, so it stays recoverable.
+  if [ -L "$dst" ]; then
+    echo "    ! replacing unexpected symlink with managed file: $dst" >&2
+    if [ "$DRY_RUN" = false ]; then
+      rm -f "$dst"
+    fi
+  fi
+
   if [ ! -f "$dst" ]; then
     if [ "$DRY_RUN" = true ]; then
       echo "    + would add: $dst"
@@ -644,7 +656,10 @@ stage_touchstone_manifest_paths() {
 # Ensure scripts are executable and write touchstone metadata.
 if [ "$DRY_RUN" = false ]; then
   if [ -d "$PROJECT_DIR/scripts" ]; then
-    chmod +x "$PROJECT_DIR/scripts/"*.sh 2>/dev/null || true
+    # -type f (find does not follow symlinks here) so we only chmod real files;
+    # a glob would follow a planted symlink and flip perms on its target.
+    find "$PROJECT_DIR/scripts" -maxdepth 1 -type f -name '*.sh' \
+      -exec chmod +x {} + 2>/dev/null || true
   fi
   echo "$CURRENT_SHA" >"$PROJECT_DIR/.touchstone-version"
   write_touchstone_manifest
