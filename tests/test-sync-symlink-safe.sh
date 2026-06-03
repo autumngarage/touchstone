@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 #
-# tests/test-sync-symlink-safe.sh — regression guard against symlink-through
-# writes during sync. `cp` follows symlinks, so a symlink planted at a managed
-# path (by a hostile/cloned project tree) would make update_file clobber or
-# CREATE the link target — possibly outside the project. update_file must
-# replace an unexpected symlink with the real managed file instead. The
-# executable-bit pass must likewise skip symlinks.
+# tests/test-sync-symlink-safe.sh — regression guard against symlink-traversal
+# writes during sync. cp/mkdir/redirects all follow symlinks, so a symlink at a
+# managed path — OR at any ancestor directory of one — could make a write land
+# outside the project. Every project-write site routes through ensure_safe_dest,
+# which replaces a final-component symlink with the real file and hard-refuses a
+# symlinked ancestor directory.
 #
-# We extract update_file() from the real updater and exercise it directly.
+# We extract ensure_safe_dest() and update_file() from the real updater and
+# exercise them directly.
 #
-# DRY_RUN/ADDED/UPDATED/UNCHANGED/ADDED_PATHS are consumed by the eval'd
-# update_file; shellcheck cannot see through eval (file-scoped directive).
+# DRY_RUN/ADDED/UPDATED/UNCHANGED/ADDED_PATHS/SKIPPED_UNSAFE/PROJECT_DIR are
+# consumed by the eval'd functions; shellcheck can't see through eval.
 # shellcheck disable=SC2034
 set -euo pipefail
 
@@ -29,70 +30,79 @@ extract_fn() {
   awk -v fn="$1" '$0 ~ "^"fn"\\(\\) \\{"{f=1} f{print} f&&/^}/{exit}' "$SRC"
 }
 
-# Load the real update_file with a minimal stub for its one helper + globals.
 relative_project_path() { printf '%s' "$1"; }
 DRY_RUN=false
 ADDED=0
 UPDATED=0
 UNCHANGED=0
+SKIPPED_UNSAFE=0
 ADDED_PATHS=()
+eval "$(extract_fn ensure_safe_dest)"
 eval "$(extract_fn update_file)"
 
-PROJ="$TEST_DIR/project"
 OUTSIDE="$TEST_DIR/outside"
-mkdir -p "$PROJ/scripts" "$OUTSIDE"
-
-# Managed source content we expect to land in the project (and nowhere else).
+mkdir -p "$OUTSIDE"
 MANAGED_SRC="$TEST_DIR/managed-source.sh"
 printf 'MANAGED_CONTENT\n' >"$MANAGED_SRC"
 
-# === Case 1: managed path is a symlink to an EXISTING file outside the project ===
-printf 'PROTECTED_SECRET\n' >"$OUTSIDE/secret"
-ln -s "$OUTSIDE/secret" "$PROJ/scripts/managed-a.sh"
-update_file "$MANAGED_SRC" "$PROJ/scripts/managed-a.sh" >/dev/null 2>&1 || true
-if [ "$(cat "$OUTSIDE/secret")" != "PROTECTED_SECRET" ]; then
-  fail "write through symlink clobbered an outside file (Case 1)"
-fi
-if [ -L "$PROJ/scripts/managed-a.sh" ]; then
-  fail "managed path still a symlink after update (Case 1)"
-fi
-if [ "$(cat "$PROJ/scripts/managed-a.sh" 2>/dev/null)" != "MANAGED_CONTENT" ]; then
-  fail "managed file not written with managed content (Case 1)"
-fi
+# Each scenario gets a fresh PROJECT_DIR (ensure_safe_dest walks up to it).
+fresh_project() {
+  PROJECT_DIR="$TEST_DIR/proj-$1"
+  mkdir -p "$PROJECT_DIR/scripts"
+}
 
-# === Case 2: managed path is a DANGLING symlink pointing outside the project ===
-ln -s "$OUTSIDE/created-by-attack" "$PROJ/scripts/managed-b.sh"
-update_file "$MANAGED_SRC" "$PROJ/scripts/managed-b.sh" >/dev/null 2>&1 || true
-if [ -e "$OUTSIDE/created-by-attack" ]; then
-  fail "write through dangling symlink CREATED a file outside the project (Case 2)"
-fi
-if [ -L "$PROJ/scripts/managed-b.sh" ]; then
-  fail "managed path still a symlink after update (Case 2)"
-fi
-if [ "$(cat "$PROJ/scripts/managed-b.sh" 2>/dev/null)" != "MANAGED_CONTENT" ]; then
-  fail "managed file not written with managed content (Case 2)"
-fi
+# === Case 1: managed path is a symlink to an EXISTING outside file ===
+fresh_project c1
+printf 'PROTECTED\n' >"$OUTSIDE/secret1"
+ln -s "$OUTSIDE/secret1" "$PROJECT_DIR/scripts/a.sh"
+update_file "$MANAGED_SRC" "$PROJECT_DIR/scripts/a.sh" >/dev/null 2>&1 || true
+[ "$(cat "$OUTSIDE/secret1")" = "PROTECTED" ] || fail "C1: write-through clobbered outside file"
+[ ! -L "$PROJECT_DIR/scripts/a.sh" ] || fail "C1: managed path still a symlink"
+[ "$(cat "$PROJECT_DIR/scripts/a.sh" 2>/dev/null)" = "MANAGED_CONTENT" ] || fail "C1: managed file not written"
 
-# === Case 3: ordinary managed file still updates normally ===
-printf 'OLD\n' >"$PROJ/scripts/managed-c.sh"
-update_file "$MANAGED_SRC" "$PROJ/scripts/managed-c.sh" >/dev/null 2>&1 || true
-if [ "$(cat "$PROJ/scripts/managed-c.sh")" != "MANAGED_CONTENT" ]; then
-  fail "ordinary managed file failed to update (Case 3)"
-fi
+# === Case 2: DANGLING symlink at the managed path ===
+fresh_project c2
+ln -s "$OUTSIDE/created2" "$PROJECT_DIR/scripts/b.sh"
+update_file "$MANAGED_SRC" "$PROJECT_DIR/scripts/b.sh" >/dev/null 2>&1 || true
+[ ! -e "$OUTSIDE/created2" ] || fail "C2: write-through dangling symlink created outside file"
+[ "$(cat "$PROJECT_DIR/scripts/b.sh" 2>/dev/null)" = "MANAGED_CONTENT" ] || fail "C2: managed file not written"
 
-# === Case 4: chmod pass must not follow a symlink onto an outside target ===
-printf 'OUTSIDE_EXEC_TARGET\n' >"$OUTSIDE/exec-target"
-chmod 600 "$OUTSIDE/exec-target"
-ln -s "$OUTSIDE/exec-target" "$PROJ/scripts/link.sh"
-# Exact command shipped by update-project.sh:
-find "$PROJ/scripts" -maxdepth 1 -type f -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
-perms="$(ls -l "$OUTSIDE/exec-target" | cut -c1-10)"
-case "$perms" in
-  *x*) fail "chmod followed a symlink and made an outside file executable (perms=$perms)" ;;
+# === Case 3 (the new finding): a managed ANCESTOR DIRECTORY is a symlink ===
+# `scripts` itself points outside the project. A write to scripts/c.sh must be
+# refused, not redirected through the symlinked dir.
+fresh_project c3
+rm -rf "${PROJECT_DIR:?}/scripts"
+mkdir -p "$OUTSIDE/evil-scripts"
+ln -s "$OUTSIDE/evil-scripts" "$PROJECT_DIR/scripts"
+before_unsafe="$SKIPPED_UNSAFE"
+update_file "$MANAGED_SRC" "$PROJECT_DIR/scripts/c.sh" >/dev/null 2>&1 || true
+[ ! -e "$OUTSIDE/evil-scripts/c.sh" ] || fail "C3: wrote through symlinked ancestor directory"
+[ "$SKIPPED_UNSAFE" -gt "$before_unsafe" ] || fail "C3: skipped-unsafe counter did not increment"
+
+# === Case 4: nested ancestor symlink (.claude -> outside), deeper dst ===
+fresh_project c4
+mkdir -p "$OUTSIDE/evil-claude"
+ln -s "$OUTSIDE/evil-claude" "$PROJECT_DIR/.claude"
+update_file "$MANAGED_SRC" "$PROJECT_DIR/.claude/skills/x/y.md" >/dev/null 2>&1 || true
+[ ! -e "$OUTSIDE/evil-claude/skills" ] || fail "C4: mkdir/cp traversed nested symlinked ancestor"
+
+# === Case 5: ensure_safe_dest accepts a legitimate real path ===
+fresh_project c5
+mkdir -p "$PROJECT_DIR/principles"
+ensure_safe_dest "$PROJECT_DIR/principles/ok.md" || fail "C5: refused a legitimate real path"
+
+# === Case 6: chmod pass must not follow a symlink onto an outside target ===
+fresh_project c6
+printf 'X\n' >"$OUTSIDE/exec6"
+chmod 600 "$OUTSIDE/exec6"
+ln -s "$OUTSIDE/exec6" "$PROJECT_DIR/scripts/link.sh"
+find "$PROJECT_DIR/scripts" -maxdepth 1 -type f -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
+case "$(ls -l "$OUTSIDE/exec6" | cut -c1-10)" in
+  *x*) fail "C6: chmod followed a symlink onto an outside file" ;;
 esac
 
 if [ "$ERRORS" -eq 0 ]; then
-  echo "==> PASS: sync never writes through or chmods through symlinks"
+  echo "==> PASS: sync never writes/chmods through a symlink at the final path or any ancestor dir"
 else
   echo "==> FAILED with $ERRORS error(s)" >&2
   exit 1
