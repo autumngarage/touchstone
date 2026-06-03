@@ -4,3 +4,12 @@ homebrew-touchstone/
 .cortex/.index/
 .cortex/pending/
 .cortex/.last-cli-version
+
+# Credentials — never commit secrets while testing providers locally
+.env
+.env.*
+!.env.example
+credentials.json
+*.pem
+*.key
+*.p12
