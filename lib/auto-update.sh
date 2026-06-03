@@ -165,14 +165,23 @@ touchstone_auto_update() {
     touchstone_auto_update_brew_upgrade
     return $?
   elif [ -d "$TOUCHSTONE_ROOT/.git" ]; then
-    # Running from a git clone — pull.
-    if git -C "$TOUCHSTONE_ROOT" pull --rebase 2>&1 | sed 's/^/    /' >&2; then
-      echo "==> Updated to latest via git pull." >&2
-      TOUCHSTONE_AUTO_UPDATE_REEXEC_PATH="$TOUCHSTONE_ROOT/bin/touchstone"
-      export TOUCHSTONE_AUTO_UPDATE_REEXEC_PATH
-      return "$TOUCHSTONE_AUTO_UPDATE_REEXEC_EXIT"
+    # Running from a git clone. Auto-pulling an unpinned tracking branch and
+    # re-exec'ing it runs whatever the remote HEAD points at *now*, with no
+    # integrity check — a compromised remote would execute on every machine on
+    # the next command. Default to notify-only so fetched code is never run
+    # without an explicit user action. Auto-pull+re-exec is opt-in.
+    if [ "${TOUCHSTONE_AUTO_UPDATE_GIT_PULL:-}" = "1" ]; then
+      if git -C "$TOUCHSTONE_ROOT" pull --rebase 2>&1 | sed 's/^/    /' >&2; then
+        echo "==> Updated to latest via git pull." >&2
+        TOUCHSTONE_AUTO_UPDATE_REEXEC_PATH="$TOUCHSTONE_ROOT/bin/touchstone"
+        export TOUCHSTONE_AUTO_UPDATE_REEXEC_PATH
+        return "$TOUCHSTONE_AUTO_UPDATE_REEXEC_EXIT"
+      fi
+      echo "WARNING: touchstone auto-update via git pull failed; continuing with current version." >&2
+    else
+      echo "==> Update available: v${latest_version}. Run: git -C \"$TOUCHSTONE_ROOT\" pull --rebase" >&2
+      echo "    (set TOUCHSTONE_AUTO_UPDATE_GIT_PULL=1 to auto-pull git-clone installs)" >&2
     fi
-    echo "WARNING: touchstone auto-update via git pull failed; continuing with current version." >&2
   else
     echo "==> Update available: v${latest_version}. Run: brew upgrade touchstone" >&2
   fi
@@ -469,7 +478,11 @@ touchstone_auto_project_sync() {
   dirty_paths="$(touchstone_sync_dirty_paths "$project_dir")"
   overlap_paths="$(touchstone_sync_dirty_overlap_paths "$project_dir" "$TOUCHSTONE_ROOT")"
 
-  if [ -n "$overlap_paths" ] && [ "${TOUCHSTONE_FORCE_OVERLAP:-}" != "1" ]; then
+  # Always skip background auto-sync when dirty paths overlap planned writes.
+  # Unlike an explicit `touchstone update`, auto-sync must never honor
+  # TOUCHSTONE_FORCE_OVERLAP: silently overwriting uncommitted work from an
+  # ambient env var is unrecoverable (managed files are not backed up).
+  if [ -n "$overlap_paths" ]; then
     echo "WARNING: touchstone auto-sync skipped for $project_dir (dirty paths overlap planned touchstone writes)." >&2
     printf '%s\n' "$overlap_paths" | sed 's/^/         - /' >&2
     echo "         Resolve those paths, then run: cd \"$project_dir\" && touchstone update --ship" >&2
@@ -477,10 +490,7 @@ touchstone_auto_project_sync() {
     return 0
   fi
 
-  if [ -n "$overlap_paths" ]; then
-    echo "WARNING: TOUCHSTONE_FORCE_OVERLAP=1 set; auto-sync proceeding despite dirty paths that overlap planned touchstone writes:" >&2
-    printf '%s\n' "$overlap_paths" | sed 's/^/         - /' >&2
-  elif [ -n "$dirty_paths" ]; then
+  if [ -n "$dirty_paths" ]; then
     printf '==> Proceeding with sync past unrelated dirty paths: ' >&2
     printf '%s\n' "$dirty_paths" | touchstone_sync_format_path_list >&2
   fi
