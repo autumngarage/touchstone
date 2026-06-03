@@ -1119,8 +1119,8 @@ case "${1:-}" in
     fi
     printf 'route %s\n' "$*" >>"$CASCADE_CALLS"
     case " $* " in
-      *" --tools Read,Grep,Glob,Bash,Edit,Write "*)
-        printf '{"error":"no provider satisfies the routing request. Skipped: claude does not support tools: [Read, Grep, Glob, Bash, Edit, Write]"}\n'
+      *" --tools Read,Grep,Glob,Edit,Write "*)
+        printf '{"error":"no provider satisfies the routing request. Skipped: claude does not support tools: [Read, Grep, Glob, Edit, Write]"}\n'
         exit 2
         ;;
       *)
@@ -1158,7 +1158,7 @@ set -e
 if [ "$ROUTE_PINNED_EXIT" -eq 1 ] \
   && grep -q 'requested provider: claude' "$CASCADE_OUTPUT" \
   && grep -q 'missing capability: .*does not support tools' "$CASCADE_OUTPUT" \
-  && grep -q -- '--tools Read,Grep,Glob,Bash,Edit,Write' "$CASCADE_CALLS" \
+  && grep -q -- '--tools Read,Grep,Glob,Edit,Write' "$CASCADE_CALLS" \
   && ! grep -q 'review should not run' "$CASCADE_CALLS"; then
   echo "==> PASS: pinned nonviable provider failed with missing capability"
 else
