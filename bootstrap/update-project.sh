@@ -20,6 +20,8 @@
 set -euo pipefail
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/safe-write.sh
+source "$TOUCHSTONE_ROOT/lib/safe-write.sh"
 # shellcheck source=../lib/install-hooks.sh
 source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
 # shellcheck source=../lib/touchstone-block.sh
@@ -37,7 +39,7 @@ IN_PLACE=false
 
 usage() {
   echo "Usage: $0 [--dry-run|-n] [--check] [--branch <name>] [--in-place|--no-branch] [--ship]"
-  echo "Env: TOUCHSTONE_FORCE_OVERLAP=1 proceeds even when dirty paths overlap planned writes."
+  echo "Env: TOUCHSTONE_FORCE_OVERLAP=1 proceeds even when dirty paths overlap planned writes (explicit update only; ignored by background auto-sync)."
 }
 
 while [ "$#" -gt 0 ]; do
@@ -174,6 +176,15 @@ unique_branch_name() {
 relative_project_path() {
   local path="$1"
   printf '%s' "${path#"$PROJECT_DIR"/}"
+}
+
+# Thin wrapper over the shared symlink-safe write guard (lib/safe-write.sh),
+# bound to this run's PROJECT_DIR / DRY_RUN. See touchstone_ensure_safe_dest for
+# the full rationale. Call BEFORE any mkdir/cp/redirect into the project.
+ensure_safe_dest() {
+  local dry=false
+  [ "$DRY_RUN" = true ] && dry=true
+  touchstone_ensure_safe_dest "$1" "$PROJECT_DIR" "$dry"
 }
 
 ADDED_PATHS=()
@@ -330,6 +341,7 @@ fi
 if [ "$NEEDS_CODEX_REVIEW_MIGRATION" = true ]; then
   echo ""
   echo "==> Migrating .codex-review.toml from v1.x → v2.x shape..."
+  ensure_safe_dest "$PROJECT_DIR/.touchstone-migrate-codex-review.log" || true
   if (
     cd "$PROJECT_DIR" \
       && bash "$TOUCHSTONE_ROOT/bootstrap/migrate-review-config.sh" --no-backup --file "$CODEX_REVIEW_TOML"
@@ -365,6 +377,7 @@ fi
 ADDED=0
 UPDATED=0
 UNCHANGED=0
+SKIPPED_UNSAFE=0
 
 update_file() {
   local src="$1"
@@ -372,6 +385,13 @@ update_file() {
   local dst_dir rel_path
   dst_dir="$(dirname "$dst")"
   rel_path="$(relative_project_path "$dst")"
+
+  # Guard against symlink traversal (final component AND ancestor dirs) before
+  # any mkdir/cp below. See ensure_safe_dest.
+  if ! ensure_safe_dest "$dst"; then
+    SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1))
+    return
+  fi
 
   if [ ! -f "$dst" ]; then
     if [ "$DRY_RUN" = true ]; then
@@ -470,6 +490,11 @@ update_settings_file() {
   local dst_dir
   dst_dir="$(dirname "$dst")"
 
+  if ! ensure_safe_dest "$dst"; then
+    SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1))
+    return
+  fi
+
   if [ ! -f "$dst" ]; then
     if [ "$DRY_RUN" = true ]; then
       echo "    + would add: $dst"
@@ -518,6 +543,11 @@ add_profile_project_template_if_missing() {
   local src="$1" dst="$2"
   local rel_path
   rel_path="$(relative_project_path "$dst")"
+
+  if ! ensure_safe_dest "$dst"; then
+    SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1))
+    return 0
+  fi
 
   if [ -f "$dst" ]; then
     # Hand-edited or already-shipped — leave alone. update_file handles
@@ -573,6 +603,7 @@ fi
 
 write_touchstone_manifest() {
   local manifest="$PROJECT_DIR/.touchstone-manifest"
+  ensure_safe_dest "$manifest" || true
   {
     printf '# Managed by touchstone. These paths may be updated by `touchstone update`.\n'
     printf '.touchstone-manifest\n'
@@ -644,14 +675,21 @@ stage_touchstone_manifest_paths() {
 # Ensure scripts are executable and write touchstone metadata.
 if [ "$DRY_RUN" = false ]; then
   if [ -d "$PROJECT_DIR/scripts" ]; then
-    chmod +x "$PROJECT_DIR/scripts/"*.sh 2>/dev/null || true
+    # -type f (find does not follow symlinks here) so we only chmod real files;
+    # a glob would follow a planted symlink and flip perms on its target.
+    find "$PROJECT_DIR/scripts" -maxdepth 1 -type f -name '*.sh' \
+      -exec chmod +x {} + 2>/dev/null || true
   fi
+  ensure_safe_dest "$PROJECT_DIR/.touchstone-version" || true
   echo "$CURRENT_SHA" >"$PROJECT_DIR/.touchstone-version"
   write_touchstone_manifest
 fi
 
 echo ""
 echo "==> Summary: $ADDED added, $UPDATED updated, $UNCHANGED unchanged"
+if [ "$SKIPPED_UNSAFE" -gt 0 ]; then
+  echo "==> WARNING: $SKIPPED_UNSAFE managed path(s) skipped — destination traverses a symlink (see warnings above)." >&2
+fi
 echo "==> Workflow scripts: project-local copies from Touchstone-managed files"
 echo "    Prototype shim runner available for evaluation: touchstone run-script <script>"
 

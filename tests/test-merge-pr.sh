@@ -301,7 +301,7 @@ case "$*" in
     cp "$GIT_PUSH_HEAD_FILE" "$GH_HEAD_REF_FILE"
     echo "pushed"
     ;;
-  "branch -D feature/test")
+  "branch -D -- feature/test")
     echo "deleted feature/test" > "$GIT_BRANCH_DELETED_FILE"
     echo "Deleted branch feature/test (was pr-head-oid)."
     ;;

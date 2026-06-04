@@ -33,6 +33,13 @@
 #   0 — all requested operations succeeded (no-op counts as success)
 #   1 — source dir missing, target dir not writable, or copy failed
 
+# Shared symlink-safe write guard. Source defensively so this lib works
+# standalone; a no-op when the caller already sourced it.
+if ! command -v touchstone_ensure_safe_dest >/dev/null 2>&1; then
+  # shellcheck source=safe-write.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/safe-write.sh"
+fi
+
 # Skills considered touchstone-owned for the legacy-skill cleanup. Listed
 # explicitly rather than by glob so a hand-added skill that happens to
 # start with "touchstone-" (project's own) is not deleted.
@@ -73,6 +80,11 @@ touchstone_install_skills() {
     [ -d "$skill_dir" ] || continue
     name="$(basename "$skill_dir")"
     target="$user_skills_dir/$name"
+
+    # Never write through a symlink at the skill target (cp -R would follow it
+    # and escape ~/.claude/skills). Replaces a final-component symlink; skips on
+    # a symlinked ancestor.
+    touchstone_ensure_safe_dest "$target" "$user_skills_dir" false || continue
 
     if [ ! -d "$target" ]; then
       cp -R "$skill_dir" "$target"

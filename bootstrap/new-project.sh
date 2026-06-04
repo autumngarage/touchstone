@@ -25,6 +25,8 @@
 set -euo pipefail
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/safe-write.sh
+source "$TOUCHSTONE_ROOT/lib/safe-write.sh"
 # shellcheck source=../lib/install-hooks.sh
 source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
 # shellcheck source=../lib/touchstone-block.sh
@@ -1012,6 +1014,13 @@ copy_file() {
   local dst="$2"
   local dst_dir
   dst_dir="$(dirname "$dst")"
+
+  # Guard against symlink traversal (final component + ancestor dirs) before the
+  # mkdir/cp below; see touchstone_ensure_safe_dest.
+  if ! touchstone_ensure_safe_dest "$dst" "$PROJECT_DIR" false; then
+    LAST_COPY_CREATED=false
+    return 1
+  fi
   mkdir -p "$dst_dir"
 
   if [ -e "$dst" ]; then
@@ -1036,6 +1045,11 @@ copy_file_force() {
   local dst="$2"
   local backup_path dst_dir
   dst_dir="$(dirname "$dst")"
+
+  # Guard against symlink traversal before any mkdir/cp/backup below.
+  if ! touchstone_ensure_safe_dest "$dst" "$PROJECT_DIR" false; then
+    return 1
+  fi
   mkdir -p "$dst_dir"
 
   if [ -f "$dst" ] && diff -q "$src" "$dst" >/dev/null 2>&1; then
@@ -1401,6 +1415,7 @@ if [ -d "$TOUCHSTONE_ROOT/.git" ]; then
 else
   TOUCHSTONE_SHA="$(cat "$TOUCHSTONE_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]' || echo "unknown")"
 fi
+touchstone_ensure_safe_dest "$PROJECT_DIR/.touchstone-version" "$PROJECT_DIR" false || true
 echo "$TOUCHSTONE_SHA" >"$PROJECT_DIR/.touchstone-version"
 echo ""
 echo "==> Wrote .touchstone-version: $TOUCHSTONE_SHA"
@@ -1715,6 +1730,7 @@ fi
 
 # Write .touchstone-config with project type (skip if already exists).
 if [ ! -f "$PROJECT_DIR/.touchstone-config" ]; then
+  touchstone_ensure_safe_dest "$PROJECT_DIR/.touchstone-config" "$PROJECT_DIR" false || true
   {
     printf '# touchstone project profile. Commit this file so all clones use the same commands.\n'
     printf 'project_type=%s\n' "$INPUT_TYPE"
