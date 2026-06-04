@@ -20,6 +20,8 @@
 set -euo pipefail
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=../lib/safe-write.sh
+source "$TOUCHSTONE_ROOT/lib/safe-write.sh"
 # shellcheck source=../lib/install-hooks.sh
 source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
 # shellcheck source=../lib/touchstone-block.sh
@@ -176,35 +178,13 @@ relative_project_path() {
   printf '%s' "${path#"$PROJECT_DIR"/}"
 }
 
-# Symlink-safe destination guard for every write into the project. cp, mkdir -p,
-# and redirects all follow symlinks, so a symlink planted at a managed path — or
-# at any ANCESTOR directory of one (e.g. a managed dir replaced by a symlink to
-# somewhere outside the project) — could redirect the write outside the project.
-# Managed paths are always regular files inside real directories, so:
-#   * a symlinked ANCESTOR directory (between dst and PROJECT_DIR) is hostile and
-#     cannot be safely auto-removed -> refuse the write (return 1);
-#   * a symlink at the FINAL component is replaced with the real file (git tracks
-#     the change, so it stays recoverable).
-# Call this BEFORE any mkdir/cp/redirect so the ancestor check also protects the
-# directory creation. Returns 0 when "$dst" is safe to write, 1 to skip it.
+# Thin wrapper over the shared symlink-safe write guard (lib/safe-write.sh),
+# bound to this run's PROJECT_DIR / DRY_RUN. See touchstone_ensure_safe_dest for
+# the full rationale. Call BEFORE any mkdir/cp/redirect into the project.
 ensure_safe_dest() {
-  local dst="$1"
-  local parent next
-  parent="$(dirname "$dst")"
-  while [ "$parent" != "$PROJECT_DIR" ] && [ "$parent" != "/" ] && [ "$parent" != "." ]; do
-    if [ -L "$parent" ]; then
-      echo "    ! refusing to write through symlinked directory: $parent" >&2
-      return 1
-    fi
-    next="$(dirname "$parent")"
-    [ "$next" = "$parent" ] && break
-    parent="$next"
-  done
-  if [ -L "$dst" ]; then
-    echo "    ! replacing unexpected symlink with managed file: $dst" >&2
-    [ "$DRY_RUN" = false ] && rm -f "$dst"
-  fi
-  return 0
+  local dry=false
+  [ "$DRY_RUN" = true ] && dry=true
+  touchstone_ensure_safe_dest "$1" "$PROJECT_DIR" "$dry"
 }
 
 ADDED_PATHS=()

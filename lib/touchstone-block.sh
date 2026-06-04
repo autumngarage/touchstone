@@ -80,6 +80,15 @@ touchstone_block_apply() {
     return 2
   fi
 
+  # Refuse a symlinked target. This function reads $target and rewrites it in
+  # place; if $target is a symlink it would read AND clobber the link's target,
+  # potentially outside the project. AGENTS.md/GEMINI.md are regular project
+  # files, so a symlink here is anomalous — skip rather than follow it.
+  if [ -L "$target" ]; then
+    echo "ERROR: $target is a symlink — refusing to write the touchstone block through it." >&2
+    return 1
+  fi
+
   # Detect either sentinel pair. Both must be paired (begin AND end), or refuse.
   local has_new_begin=0 has_new_end=0
   grep -qF "$TOUCHSTONE_BLOCK_BEGIN" "$target" && has_new_begin=1

@@ -37,6 +37,9 @@ UPDATED=0
 UNCHANGED=0
 SKIPPED_UNSAFE=0
 ADDED_PATHS=()
+# update_file's ensure_safe_dest wrapper delegates to the shared guard.
+# shellcheck source=../lib/safe-write.sh
+source "$TOUCHSTONE_ROOT/lib/safe-write.sh"
 eval "$(extract_fn ensure_safe_dest)"
 eval "$(extract_fn update_file)"
 
@@ -100,6 +103,38 @@ find "$PROJECT_DIR/scripts" -maxdepth 1 -type f -name '*.sh' -exec chmod +x {} +
 case "$(ls -l "$OUTSIDE/exec6" | cut -c1-10)" in
   *x*) fail "C6: chmod followed a symlink onto an outside file" ;;
 esac
+
+# === Case 7: shared guard touchstone_ensure_safe_dest directly ===
+fresh_project c7
+# final-component symlink -> replaced (returns 0)
+ln -s "$OUTSIDE/secret7" "$PROJECT_DIR/scripts/final.sh"
+printf 'KEEP\n' >"$OUTSIDE/secret7"
+touchstone_ensure_safe_dest "$PROJECT_DIR/scripts/final.sh" "$PROJECT_DIR" false || fail "C7: rejected a final-component symlink instead of replacing"
+[ ! -L "$PROJECT_DIR/scripts/final.sh" ] || fail "C7: final-component symlink not removed"
+[ "$(cat "$OUTSIDE/secret7")" = "KEEP" ] || fail "C7: removing final symlink touched its target"
+# symlinked ancestor -> hard refuse (returns 1)
+rm -rf "${PROJECT_DIR:?}/scripts"
+ln -s "$OUTSIDE" "$PROJECT_DIR/scripts"
+if touchstone_ensure_safe_dest "$PROJECT_DIR/scripts/x.sh" "$PROJECT_DIR" false; then
+  fail "C7: accepted a write through a symlinked ancestor"
+fi
+# legitimate real path -> accept
+fresh_project c7b
+mkdir -p "$PROJECT_DIR/lib"
+touchstone_ensure_safe_dest "$PROJECT_DIR/lib/real.sh" "$PROJECT_DIR" false || fail "C7: refused a legitimate real path"
+
+# === Case 8: touchstone_block_apply refuses a symlinked AGENTS.md/GEMINI.md ===
+# shellcheck source=../lib/touchstone-block.sh
+source "$TOUCHSTONE_ROOT/lib/touchstone-block.sh"
+fresh_project c8
+printf 'OUTSIDE_AGENTS\n' >"$OUTSIDE/real-agents.md"
+ln -s "$OUTSIDE/real-agents.md" "$PROJECT_DIR/AGENTS.md"
+set +e
+touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT" >/dev/null 2>&1
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "C8: touchstone_block_apply did not refuse a symlinked target"
+[ "$(cat "$OUTSIDE/real-agents.md")" = "OUTSIDE_AGENTS" ] || fail "C8: block_apply wrote through the symlink to the outside file"
 
 if [ "$ERRORS" -eq 0 ]; then
   echo "==> PASS: sync never writes/chmods through a symlink at the final path or any ancestor dir"
