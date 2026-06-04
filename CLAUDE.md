@@ -101,7 +101,7 @@ Required repo secret: `HOMEBREW_TAP_PAT` (classic PAT with `repo` scope on the t
 
 Do not call a Touchstone release complete until GitHub Releases, the Homebrew formula, `origin/main`, and the local brew install all agree on the same version.
 
-<!-- conductor:begin v0.10.33 -->
+<!-- conductor:begin v0.10.34 -->
 @~/.conductor/delegation-guidance.md
 <!-- conductor:end -->
 
