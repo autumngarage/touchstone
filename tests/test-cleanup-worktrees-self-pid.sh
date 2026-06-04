@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# tests/test-cleanup-worktrees-self-pid.sh — verify cleanup-worktrees treats
-# a lock held by the invoking shell's parent PID as stale.
+# tests/test-cleanup-worktrees-self-pid.sh — verify cleanup-worktrees preserves
+# a lock held by the invoking shell's parent PID as alive.
 #
 set -euo pipefail
 
@@ -9,7 +9,7 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-cleanup-self-pid.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
-echo "==> Test: cleanup-worktrees.sh unlocks self-parent PID locks only with --unlock-stale"
+echo "==> Test: cleanup-worktrees.sh preserves live self-parent PID locks"
 
 fail() {
   echo "FAIL: $1" >&2
@@ -18,10 +18,6 @@ fail() {
 
 assert_exists() {
   [ -e "$1" ] || fail "expected $1 to exist"
-}
-
-assert_not_exists() {
-  [ ! -e "$1" ] || fail "expected $1 to NOT exist"
 }
 
 assert_contains() {
@@ -60,16 +56,16 @@ bash "$TOUCHSTONE_ROOT/scripts/cleanup-worktrees.sh" >"$DRY_RUN_OUTPUT" 2>&1
 popd >/dev/null
 
 assert_exists "$SELF_PID_WT"
-assert_contains "$DRY_RUN_OUTPUT" "lock: stale (pid $$ is current shell parent)"
-assert_contains "$DRY_RUN_OUTPUT" 'pass --unlock-stale --execute to remove'
+assert_contains "$DRY_RUN_OUTPUT" "lock: alive (pid $$)"
+assert_contains "$DRY_RUN_OUTPUT" 'locked by live process'
 
 UNLOCK_OUTPUT="$TEST_DIR/unlock-output.txt"
 pushd "$REPO" >/dev/null
 bash "$TOUCHSTONE_ROOT/scripts/cleanup-worktrees.sh" --unlock-stale --execute >"$UNLOCK_OUTPUT" 2>&1
 popd >/dev/null
 
-assert_not_exists "$SELF_PID_WT"
-assert_contains "$UNLOCK_OUTPUT" 'unlocked stale lock:'
-assert_contains "$UNLOCK_OUTPUT" 'removed:'
+assert_exists "$SELF_PID_WT"
+assert_contains "$UNLOCK_OUTPUT" "lock: alive (pid $$)"
+assert_contains "$UNLOCK_OUTPUT" 'locked by live process'
 
-echo "==> PASS: cleanup-worktrees removes self-parent PID locks only after explicit stale unlock"
+echo "==> PASS: cleanup-worktrees preserves live self-parent PID locks"
