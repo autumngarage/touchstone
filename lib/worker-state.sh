@@ -33,7 +33,7 @@ touchstone_worker_default_ref() {
     fi
   done
 
-  printf 'origin/main\n'
+  return 1
 }
 
 touchstone_worker_review_marker_key() {
@@ -87,15 +87,24 @@ derive_worker_state() {
   (
     cd "$worktree_path" || exit 0
 
-    base="$(touchstone_worker_default_ref)"
+    if ! base="$(touchstone_worker_default_ref)"; then
+      echo "unknown"
+      exit 0
+    fi
     branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
     [ -n "$branch" ] && [ "$branch" != "HEAD" ] || {
       echo "abandoned"
       exit 0
     }
 
-    has_commits="$(git log "$base..HEAD" --oneline 2>/dev/null | head -1 || true)"
-    has_uncommitted="$(git status --porcelain 2>/dev/null || true)"
+    if ! has_commits="$(git log "$base..HEAD" --oneline --max-count=1 2>/dev/null)"; then
+      echo "unknown"
+      exit 0
+    fi
+    if ! has_uncommitted="$(git status --porcelain 2>/dev/null)"; then
+      echo "unknown"
+      exit 0
+    fi
 
     if [ -z "$has_commits" ]; then
       echo "spawned"
