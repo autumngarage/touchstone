@@ -79,6 +79,27 @@ EOF
   chmod +x "$bin_dir/gh"
 }
 
+make_failing_gh() {
+  local bin_dir="$1"
+  mkdir -p "$bin_dir"
+  cat >"$bin_dir/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-} ${2:-}" in
+  "pr list")
+    echo "simulated gh pr list failure" >&2
+    exit 42
+    ;;
+  *)
+    echo "unexpected gh args: $*" >&2
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "$bin_dir/gh"
+}
+
 echo "==> Case a: worker spawn creates a worktree, JSON, and event"
 REPO="$TEST_DIR/repo"
 ORIGIN="$TEST_DIR/origin.git"
@@ -129,6 +150,8 @@ git -C "$WORKTREE_PATH" checkout -- file.txt
 
 FAKE_GH="$TEST_DIR/fake-gh"
 make_fake_gh "$FAKE_GH"
+ORIGIN_URL="$(git -C "$REPO" remote get-url origin)"
+git -C "$REPO" remote set-url origin https://github.com/autumngarage/touchstone-test.git
 PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
   GH_PR_NUMBER=138 \
   GH_PR_URL="https://example.test/autumngarage/touchstone/pull/138" \
@@ -173,6 +196,7 @@ PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
   GH_PR_STATE=OPEN \
   "$TOUCHSTONE_ROOT/bin/touchstone" worker list --repo "$REPO" --json >"$LIST_JSON"
 assert_contains "$LIST_JSON" '"branch":"fix/fix-worker-lifecycle"'
+git -C "$REPO" remote set-url origin "$ORIGIN_URL"
 
 echo "==> Case d: worker ship delegates to project-local open-pr with cleanup and events env"
 SHIP_WT="$TEST_DIR/ship-worktree"
@@ -230,6 +254,45 @@ assert_contains "$TEST_DIR/abandon-no-default.out" 'could not resolve a default 
 if [ ! -d "$NO_DEFAULT_WT" ]; then
   fail "worker abandon removed worktree when default ref resolution failed"
 fi
+
+FAILING_GH="$TEST_DIR/failing-gh"
+make_failing_gh "$FAILING_GH"
+GITHUBISH_ORIGIN="$TEST_DIR/github.com/origin.git"
+PR_LOOKUP_FAIL_WT="$TEST_DIR/pr-lookup-fail-worktree"
+mkdir -p "$(dirname "$GITHUBISH_ORIGIN")"
+ln -s "$ORIGIN" "$GITHUBISH_ORIGIN"
+git -C "$REPO" branch fix/pr-lookup-fail main
+git -C "$REPO" push origin fix/pr-lookup-fail >/dev/null 2>&1
+git -C "$REPO" worktree add -q "$PR_LOOKUP_FAIL_WT" fix/pr-lookup-fail
+git -C "$REPO" remote set-url origin "$GITHUBISH_ORIGIN"
+
+PR_LOOKUP_FAIL_STATUS="$TEST_DIR/pr-lookup-fail-status.json"
+PATH="$FAILING_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker status --worktree "$WORKTREE_PATH" --json >"$PR_LOOKUP_FAIL_STATUS" 2>"$TEST_DIR/pr-lookup-fail-status.err"
+assert_json_value "$PR_LOOKUP_FAIL_STATUS" state "unknown"
+
+if PATH="$FAILING_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker abandon --worktree "$PR_LOOKUP_FAIL_WT" >"$TEST_DIR/abandon-pr-lookup-fail.out" 2>&1; then
+  fail "worker abandon should refuse when PR lookup fails before remote branch deletion"
+fi
+assert_contains "$TEST_DIR/abandon-pr-lookup-fail.out" 'could not inspect PRs before deleting origin/fix/pr-lookup-fail'
+if [ ! -d "$PR_LOOKUP_FAIL_WT" ]; then
+  fail "worker abandon removed worktree when PR lookup failed"
+fi
+if ! git -C "$REPO" ls-remote --exit-code --heads origin fix/pr-lookup-fail >/dev/null 2>&1; then
+  fail "worker abandon deleted remote branch when PR lookup failed"
+fi
+
+PATH="$FAILING_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker abandon --worktree "$PR_LOOKUP_FAIL_WT" --force >"$TEST_DIR/abandon-pr-lookup-force.out" 2>&1
+assert_contains "$TEST_DIR/abandon-pr-lookup-force.out" 'Kept remote branch because PR state could not be inspected for: fix/pr-lookup-fail'
+if [ -d "$PR_LOOKUP_FAIL_WT" ]; then
+  fail "worker abandon --force preserved worktree when PR lookup failed"
+fi
+if ! git -C "$REPO" ls-remote --exit-code --heads origin fix/pr-lookup-fail >/dev/null 2>&1; then
+  fail "worker abandon --force deleted remote branch when PR lookup failed"
+fi
+git -C "$REPO" remote set-url origin "$ORIGIN_URL"
 
 SAFE_JSON="$TEST_DIR/safe-spawn.json"
 SAFE_EVENTS="$TEST_DIR/safe-events.ndjson"
