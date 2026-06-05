@@ -195,7 +195,10 @@ cmd_spawn() {
   repo_root="$(repo_root_or_die)"
   slug="$(sanitize_task_slug "$task")"
   branch="$type/$slug"
-  base_ref="$(cd "$repo_root" && touchstone_worker_default_ref)"
+  if ! base_ref="$(cd "$repo_root" && touchstone_worker_default_ref)"; then
+    echo "ERROR: could not resolve a default branch ref for worker spawn." >&2
+    return 1
+  fi
   base_branch="${base_ref#origin/}"
 
   output="$(cd "$repo_root" && bash "$TOUCHSTONE_ROOT/scripts/spawn-worktree.sh" "$branch")"
@@ -396,9 +399,30 @@ cmd_abandon() {
     echo "ERROR: cannot abandon detached worktree." >&2
     return 1
   }
-  base="$(cd "$worktree_path" && touchstone_worker_default_ref)"
-  unique_commits="$(git -C "$worktree_path" log "$base..HEAD" --oneline 2>/dev/null || true)"
-  dirty_status="$(git -C "$worktree_path" status --porcelain 2>/dev/null || true)"
+  if ! base="$(cd "$worktree_path" && touchstone_worker_default_ref)"; then
+    if [ "$force" != true ]; then
+      echo "ERROR: refusing to abandon $worktree_path; could not resolve a default branch ref." >&2
+      echo "       Use --force only after confirming the work is disposable." >&2
+      return 1
+    fi
+    base=""
+    unique_commits=""
+  elif ! unique_commits="$(git -C "$worktree_path" log "$base..HEAD" --oneline --max-count=1 2>/dev/null)"; then
+    if [ "$force" != true ]; then
+      echo "ERROR: refusing to abandon $worktree_path; could not compare branch '$branch' against $base." >&2
+      echo "       Use --force only after confirming the work is disposable." >&2
+      return 1
+    fi
+    unique_commits=""
+  fi
+  if ! dirty_status="$(git -C "$worktree_path" status --porcelain 2>/dev/null)"; then
+    if [ "$force" != true ]; then
+      echo "ERROR: refusing to abandon $worktree_path; could not inspect uncommitted changes." >&2
+      echo "       Use --force only after confirming the dirty worktree is disposable." >&2
+      return 1
+    fi
+    dirty_status=""
+  fi
 
   if [ -n "$unique_commits" ] && [ "$force" != true ]; then
     echo "ERROR: refusing to abandon $worktree_path; branch '$branch' has commits not merged into $base." >&2

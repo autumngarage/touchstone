@@ -204,6 +204,33 @@ if "$TOUCHSTONE_ROOT/bin/touchstone" worker abandon --worktree "$WORKTREE_PATH" 
 fi
 assert_contains "$TEST_DIR/abandon-refuse.out" 'refusing to abandon'
 
+NO_DEFAULT_REPO="$TEST_DIR/no-default-repo"
+NO_DEFAULT_WT="$TEST_DIR/no-default-worktree"
+git init -q -b trunk "$NO_DEFAULT_REPO"
+git -C "$NO_DEFAULT_REPO" config user.name "Touchstone Test"
+git -C "$NO_DEFAULT_REPO" config user.email "touchstone@example.com"
+# Force default-ref discovery to try a configured branch that does not exist,
+# then main/master. This repo intentionally has only trunk plus the worker branch.
+git -C "$NO_DEFAULT_REPO" config init.defaultBranch missing-default
+printf 'base\n' >"$NO_DEFAULT_REPO/file.txt"
+git -C "$NO_DEFAULT_REPO" add file.txt
+git -C "$NO_DEFAULT_REPO" commit -qm "base commit"
+git -C "$NO_DEFAULT_REPO" worktree add -q "$NO_DEFAULT_WT" -b fix/no-default trunk
+printf 'unique\n' >"$NO_DEFAULT_WT/unique.txt"
+git -C "$NO_DEFAULT_WT" add unique.txt
+git -C "$NO_DEFAULT_WT" commit -qm "unique worker work"
+
+NO_DEFAULT_STATUS="$TEST_DIR/no-default-status.json"
+"$TOUCHSTONE_ROOT/bin/touchstone" worker status --worktree "$NO_DEFAULT_WT" --json >"$NO_DEFAULT_STATUS"
+assert_json_value "$NO_DEFAULT_STATUS" state "unknown"
+if "$TOUCHSTONE_ROOT/bin/touchstone" worker abandon --worktree "$NO_DEFAULT_WT" >"$TEST_DIR/abandon-no-default.out" 2>&1; then
+  fail "worker abandon should refuse when default ref cannot be resolved"
+fi
+assert_contains "$TEST_DIR/abandon-no-default.out" 'could not resolve a default branch ref'
+if [ ! -d "$NO_DEFAULT_WT" ]; then
+  fail "worker abandon removed worktree when default ref resolution failed"
+fi
+
 SAFE_JSON="$TEST_DIR/safe-spawn.json"
 SAFE_EVENTS="$TEST_DIR/safe-events.ndjson"
 (
