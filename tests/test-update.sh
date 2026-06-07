@@ -452,6 +452,51 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+SCRIPT_SYNC_HELP_PROJECT="$TEST_DIR/script-sync-help-project"
+SCRIPT_SYNC_HELP_BIN="$TEST_DIR/script-sync-help-bin"
+SCRIPT_SYNC_HELP_LOG="$TEST_DIR/script-sync-help-touchstone.log"
+SCRIPT_SYNC_HELP_OUT="$TEST_DIR/script-sync-help-output.txt"
+mkdir -p "$SCRIPT_SYNC_HELP_BIN"
+cat >"$SCRIPT_SYNC_HELP_BIN/touchstone" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$TOUCHSTONE_SCRIPT_SYNC_FAKE_LOG"
+case "$*" in
+  "update --check")
+    echo "==> Needs update."
+    exit 0
+    ;;
+esac
+echo "unexpected touchstone command: $*" >&2
+exit 9
+EOF
+chmod +x "$SCRIPT_SYNC_HELP_BIN/touchstone"
+
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SCRIPT_SYNC_HELP_PROJECT" --no-register >/dev/null
+configure_git "$SCRIPT_SYNC_HELP_PROJECT"
+commit_all "$SCRIPT_SYNC_HELP_PROJECT" "initial script sync help project"
+echo "0000000000000000000000000000000000000016" >"$SCRIPT_SYNC_HELP_PROJECT/.touchstone-version"
+commit_all "$SCRIPT_SYNC_HELP_PROJECT" "simulate stale help script sync state"
+
+SCRIPT_SYNC_HELP_RC=0
+(
+  cd "$SCRIPT_SYNC_HELP_PROJECT"
+  PATH="$SCRIPT_SYNC_HELP_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    TOUCHSTONE_SCRIPT_SYNC_FAKE_LOG="$SCRIPT_SYNC_HELP_LOG" \
+    bash scripts/open-pr.sh --help
+) >"$SCRIPT_SYNC_HELP_OUT" 2>&1 || SCRIPT_SYNC_HELP_RC=$?
+
+if [ "$SCRIPT_SYNC_HELP_RC" = "0" ] \
+  && grep -q 'Usage: bash scripts/open-pr.sh' "$SCRIPT_SYNC_HELP_OUT" \
+  && [ ! -e "$SCRIPT_SYNC_HELP_LOG" ]; then
+  echo "    PASS: open-pr --help skipped script sync and printed usage"
+else
+  echo "FAIL: open-pr --help should not run touchstone update --check or mutate generated files" >&2
+  echo "    rc=$SCRIPT_SYNC_HELP_RC" >&2
+  cat "$SCRIPT_SYNC_HELP_OUT" >&2
+  [ ! -f "$SCRIPT_SYNC_HELP_LOG" ] || cat "$SCRIPT_SYNC_HELP_LOG" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 SCRIPT_SYNC_SHIP_PROJECT="$TEST_DIR/script-sync-ship-project"
 SCRIPT_SYNC_SHIP_BIN="$TEST_DIR/script-sync-ship-bin"
 SCRIPT_SYNC_SHIP_LOG="$TEST_DIR/script-sync-ship-touchstone.log"

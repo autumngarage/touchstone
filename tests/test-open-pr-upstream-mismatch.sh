@@ -37,7 +37,22 @@ case "$1 $2" in
   "repo view") echo "main" ;;
   "pr list") echo "" ;;
   "pr create") echo "https://example.test/touchstone/pull/9999" ;;
-  "pr view") echo "2026-05-06T18:00:00Z" ;;
+  "pr view")
+    json_fields=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--json" ]; then
+        json_fields="$arg"
+      fi
+      prev="$arg"
+    done
+    case "$json_fields" in
+      state,mergedAt) printf '{"state":"MERGED","mergedAt":"2026-05-06T18:00:00Z"}\n' ;;
+      mergedAt) echo "2026-05-06T18:00:00Z" ;;
+      "") echo "" ;;
+      *) echo "unexpected gh pr view json: $json_fields" >&2; exit 1 ;;
+    esac
+    ;;
   *) echo "unexpected gh args: $*" >&2; exit 1 ;;
 esac
 EOF

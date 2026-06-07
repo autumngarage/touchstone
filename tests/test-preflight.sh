@@ -38,6 +38,64 @@ else
   exit 1
 fi
 
+echo "==> Test: optional dogfood smoke runs when configured"
+DOGFOOD_REPO="$TEST_DIR/dogfood-repo"
+DOGFOOD_LOG="$TEST_DIR/dogfood.log"
+mkdir -p "$DOGFOOD_REPO"
+(
+  cd "$DOGFOOD_REPO"
+  git init -q
+  git config user.email test@example.com
+  git config user.name "Touchstone Test"
+  printf 'ok\n' >README.md
+  git add README.md
+  git commit -q -m "dogfood fixture"
+)
+PATH="$CLEAN_FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  TOUCHSTONE_NO_AUTO_UPDATE=1 \
+  TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND=: \
+  TOUCHSTONE_PREFLIGHT_DOGFOOD_COMMAND='printf "dogfood\n" >>"$DOGFOOD_LOG"' \
+  DOGFOOD_LOG="$DOGFOOD_LOG" \
+  bash "$TOUCHSTONE_ROOT/bin/touchstone" preflight "$DOGFOOD_REPO" >"$TEST_DIR/dogfood.txt" 2>&1
+if grep -q '^dogfood$' "$DOGFOOD_LOG" \
+  && grep -q '==> dogfood smoke' "$TEST_DIR/dogfood.txt" \
+  && grep -q 'OK dogfood smoke' "$TEST_DIR/dogfood.txt"; then
+  echo "==> PASS: optional dogfood smoke ran through preflight"
+else
+  echo "FAIL: dogfood smoke did not run as expected" >&2
+  cat "$TEST_DIR/dogfood.txt" >&2
+  [ ! -f "$DOGFOOD_LOG" ] || cat "$DOGFOOD_LOG" >&2
+  exit 1
+fi
+
+echo "==> Test: auto dogfood command participates in the cache fingerprint"
+# shellcheck source=../lib/preflight.sh
+source "$TOUCHSTONE_ROOT/lib/preflight.sh"
+DOGFOOD_FINGERPRINT_REPO="$TEST_DIR/dogfood-fingerprint-repo"
+DOGFOOD_FAKE_BIN="$TEST_DIR/dogfood-fingerprint-bin"
+mkdir -p "$DOGFOOD_FINGERPRINT_REPO/scripts" "$DOGFOOD_FAKE_BIN"
+printf 'print("ok")\n' >"$DOGFOOD_FINGERPRINT_REPO/scripts/conductor-dogfood-smoke.py"
+cat >"$DOGFOOD_FAKE_BIN/uv" <<'EOF'
+#!/usr/bin/env bash
+printf 'uv 0.0.0-test\n'
+EOF
+chmod +x "$DOGFOOD_FAKE_BIN/uv"
+(
+  cd "$DOGFOOD_FINGERPRINT_REPO"
+  no_uv_fingerprint="$(PATH="/usr/bin:/bin:/usr/sbin:/sbin" touchstone_preflight_env_fingerprint)"
+  with_uv_fingerprint="$(PATH="$DOGFOOD_FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" touchstone_preflight_env_fingerprint)"
+  resolved_command="$(PATH="$DOGFOOD_FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" touchstone_preflight_dogfood_command)"
+  if [ "$no_uv_fingerprint" != "$with_uv_fingerprint" ] \
+    && [ "$resolved_command" = "uv run python scripts/conductor-dogfood-smoke.py" ]; then
+    echo "==> PASS: auto dogfood availability changes the cache fingerprint"
+  else
+    echo "FAIL: auto dogfood command did not affect the cache fingerprint" >&2
+    printf 'without uv: %s\nwith uv:    %s\nresolved:   %s\n' \
+      "$no_uv_fingerprint" "$with_uv_fingerprint" "$resolved_command" >&2
+    exit 1
+  fi
+)
+
 echo "==> Test: broken shell fixture fails with a clear failure line"
 FIXTURE_REPO="$TEST_DIR/fixture-repo"
 FAKE_BIN="$TEST_DIR/bin"

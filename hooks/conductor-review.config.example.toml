@@ -43,6 +43,11 @@ safe_by_default = false
 # that need a hard total budget.
 # timeout = 0
 
+# Optional Conductor stall watchdog for semantic review calls. This is passed
+# through to `conductor review`; use it when a provider can stay alive but stop
+# producing useful progress.
+# max_stall_sec = 300
+
 # What to do when the reviewer fails (crash, timeout, malformed output).
 # "fail-open"   = exit 0, allow push (default — infrastructure errors don't block)
 # "fail-closed" = exit 1, block push (use in CI or for strict review gates)
@@ -113,6 +118,10 @@ unsafe_paths = [
 # # Pin a specific provider (bypasses auto-routing). Omit for Conductor's
 # # semantic review route. Example:
 # # with = "openrouter"
+#
+# # Fail closed when a project requires a Conductor release with a known
+# # semantic-route or review-gate fix.
+# # minimum_version = "0.10.29"
 #
 # Exclude providers from hosted auto-routing (degraded, rate-limited, offline-only).
 exclude = ["ollama"]

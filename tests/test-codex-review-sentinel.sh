@@ -116,6 +116,25 @@ assert_detector \
   $'just some prose\nno verdict\n' \
   ""
 
+# Regression: CONDUCTOR_BIN must be tokenized into CONDUCTOR_BIN_ARGV so that
+# multi-word values (for example CONDUCTOR_BIN="uv run conductor") work in
+# command-availability checks and command invocations. The only legitimate
+# single-token read of CONDUCTOR_BIN is the tokenization line itself.
+bad_uses="$(grep -nE '"\$CONDUCTOR_BIN"' "$SCRIPT" | grep -v 'read -ra' || true)"
+if [ -n "$bad_uses" ]; then
+  printf 'FAIL: CONDUCTOR_BIN must use ${CONDUCTOR_BIN_ARGV[@]} for invocation; found single-token use:\n%s\n' "$bad_uses" >&2
+  exit 1
+fi
+
+route_auth_args="$(grep -n 'args=(route --json' "$SCRIPT" | head -1)"
+case "$route_auth_args" in
+  *'--kind "$subcommand"'*) ;;
+  *)
+    printf 'FAIL: route auth/preflight must pass --kind "$subcommand" so auth and dispatch use the same routing semantics.\n%s\n' "$route_auth_args" >&2
+    exit 1
+    ;;
+esac
+
 echo "==> OK: all sentinel tests passed"
 
 echo "==> codex-review malformed-sentinel gate behavior"
@@ -177,7 +196,7 @@ set -e
 if [ "$CLOSED_EXIT" -eq 1 ] \
   && grep -q 'No unique standalone sentinel line was found.' "$CLOSED_OUTPUT" \
   && grep -q 'Conductor selected provider: codex' "$CLOSED_OUTPUT" \
-  && grep -q "Conductor command invoked: $FAKE_BIN/conductor review" "$CLOSED_OUTPUT"; then
+  && grep -q 'Conductor command invoked: conductor review' "$CLOSED_OUTPUT"; then
   printf '  OK: missing sentinel blocks under fail-closed policy with provider diagnostics\n'
 else
   printf 'FAIL: missing sentinel should block with provider and command diagnostics\n' >&2

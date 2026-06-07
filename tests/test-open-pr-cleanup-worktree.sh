@@ -33,7 +33,7 @@ exit 0
 EOF
 chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/issue-claim-check.sh" "$SCRIPT_DIR/merge-pr.sh"
 
-# Mock gh: returns a stable PR URL on create, claims mergedAt is non-empty.
+# Mock gh: returns a stable PR URL on create, claims the PR is merged.
 cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -47,7 +47,32 @@ case "$1 $2" in
     fi
     ;;
   "pr create") echo "https://example.test/touchstone/pull/9999" ;;
-  "pr view") echo "2026-04-30T05:00:00Z" ;;
+  "pr view")
+    json_fields=""
+    jq_expr=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--json" ]; then
+        json_fields="$arg"
+      elif [ "$prev" = "--jq" ]; then
+        jq_expr="$arg"
+      fi
+      prev="$arg"
+    done
+    case "$json_fields" in
+      body) echo "" ;;
+      body,author)
+        case "${jq_expr:-}" in
+          ".body // \"\"") echo "" ;;
+          ".author.login // empty") echo "alice" ;;
+          *) echo "unexpected gh pr view jq: ${jq_expr:-}" >&2; exit 1 ;;
+        esac
+        ;;
+      state,mergedAt) printf '{"state":"MERGED","mergedAt":"2026-04-30T05:00:00Z"}\n' ;;
+      mergedAt) echo "2026-04-30T05:00:00Z" ;;
+      *) echo "unexpected gh pr view json: $json_fields" >&2; exit 1 ;;
+    esac
+    ;;
   *) echo "unexpected gh args: $*" >&2; exit 1 ;;
 esac
 EOF
