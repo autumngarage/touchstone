@@ -763,6 +763,7 @@ set +e
 (
   cd "$CASCADE_REPO"
   PATH="$CASCADE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CONDUCTOR_BIN=missing-conductor \
     CODEX_REVIEW_BASE="HEAD~1" \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CASCADE_OUTPUT" 2>&1
 )
@@ -1212,6 +1213,243 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: conductor source checkout uses uv run conductor"
+setup_mode_repo
+mkdir -p "$MODE_REPO/src/conductor"
+printf '[project]\nname = "conductor"\n' >"$MODE_REPO/pyproject.toml"
+printf '# source checkout\n' >"$MODE_REPO/src/conductor/cli.py"
+git -C "$MODE_REPO" add pyproject.toml src/conductor/cli.py
+git -C "$MODE_REPO" commit -m "source checkout marker" >/dev/null 2>&1
+rm -rf "$MODE_BIN"
+mkdir -p "$MODE_BIN"
+cat >"$MODE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat >"$MODE_BIN/uv" <<'UVEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$CODEX_ARGS_FILE"
+if [ "${1:-}" = "run" ] && [ "${2:-}" = "conductor" ]; then
+  shift 2
+else
+  exit 9
+fi
+case "${1:-}" in
+  doctor)
+    printf '{"configured": true}\n'
+    ;;
+  review | exec)
+    cat >/dev/null
+    printf 'CODEX_REVIEW_CLEAN\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+UVEOF
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/uv"
+: >"$CODEX_ARGS_FILE"
+
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=review-only \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
+)
+
+if grep -q '^run conductor doctor --json$' "$CODEX_ARGS_FILE" \
+  && grep -q '^run conductor review ' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: source checkout preferred uv run conductor"
+else
+  echo "FAIL: expected source checkout to invoke uv run conductor" >&2
+  cat "$MODE_OUTPUT" >&2
+  cat "$CODEX_ARGS_FILE" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: configured max_stall_sec reaches Conductor semantic review"
+setup_mode_repo
+rm -rf "$MODE_BIN"
+mkdir -p "$MODE_BIN"
+cat >"$MODE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat >"$MODE_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  doctor)
+    printf '{"configured": true}\n'
+    ;;
+  review | exec)
+    printf '%s\n' "$*" > "$CODEX_ARGS_FILE"
+    cat >/dev/null
+    printf 'CODEX_REVIEW_CLEAN\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+CXEOF
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
+{
+  printf '[codex_review]\n'
+  printf 'safe_by_default = true\n'
+  printf 'max_stall_sec = 300\n'
+} >"$MODE_REPO/.codex-review.toml"
+git -C "$MODE_REPO" add .codex-review.toml
+git -C "$MODE_REPO" commit -m "max stall config" >/dev/null 2>&1
+: >"$CODEX_ARGS_FILE"
+
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
+)
+
+if grep -q -- '--max-stall-seconds 300' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: max_stall_sec was forwarded to Conductor"
+else
+  echo "FAIL: expected --max-stall-seconds 300 in Conductor args" >&2
+  cat "$MODE_OUTPUT" >&2
+  cat "$CODEX_ARGS_FILE" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: configured minimum Conductor version blocks old binaries"
+setup_mode_repo
+rm -rf "$MODE_BIN"
+mkdir -p "$MODE_BIN"
+cat >"$MODE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat >"$MODE_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version)
+    printf 'conductor, version 0.10.29\n'
+    ;;
+  doctor)
+    printf '{"configured": true}\n'
+    ;;
+  review | exec)
+    printf 'review should not run\n' >> "$CODEX_ARGS_FILE"
+    cat >/dev/null
+    printf 'CODEX_REVIEW_CLEAN\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+CXEOF
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
+{
+  printf '[review.conductor]\n'
+  printf 'minimum_version = "99.0.0"\n'
+} >"$MODE_REPO/.codex-review.toml"
+git -C "$MODE_REPO" add .codex-review.toml
+git -C "$MODE_REPO" commit -m "minimum conductor version" >/dev/null 2>&1
+: >"$CODEX_ARGS_FILE"
+
+set +e
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
+)
+MIN_VERSION_EXIT=$?
+set -e
+
+if [ "$MIN_VERSION_EXIT" -eq 1 ] \
+  && grep -q 'requires conductor >= 99.0.0' "$MODE_OUTPUT" \
+  && grep -q 'installed: 0.10.29' "$MODE_OUTPUT" \
+  && ! grep -q 'review should not run' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: too-old Conductor binary blocked before review"
+else
+  echo "FAIL: expected minimum-version guard to block before review" >&2
+  echo "exit code: $MIN_VERSION_EXIT" >&2
+  cat "$MODE_OUTPUT" >&2
+  cat "$CODEX_ARGS_FILE" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Test: minimum Conductor version fails closed before provider fallback"
+setup_mode_repo
+rm -rf "$MODE_BIN"
+mkdir -p "$MODE_BIN"
+cat >"$MODE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat >"$MODE_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version)
+    printf 'conductor, version 0.10.29\n'
+    ;;
+  doctor)
+    printf 'old conductor doctor failure\n' >&2
+    exit 2
+    ;;
+  route)
+    printf 'old conductor route failure\n' >&2
+    exit 2
+    ;;
+  review | exec)
+    printf 'review should not run\n' >> "$CODEX_ARGS_FILE"
+    cat >/dev/null
+    printf 'CODEX_REVIEW_CLEAN\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+CXEOF
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
+{
+  printf '[review.conductor]\n'
+  printf 'minimum_version = "99.0.0"\n'
+} >"$MODE_REPO/.codex-review.toml"
+git -C "$MODE_REPO" add .codex-review.toml
+git -C "$MODE_REPO" commit -m "minimum conductor version" >/dev/null 2>&1
+: >"$CODEX_ARGS_FILE"
+
+set +e
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
+)
+MIN_VERSION_FALLBACK_EXIT=$?
+set -e
+
+if [ "$MIN_VERSION_FALLBACK_EXIT" -eq 1 ] \
+  && grep -q 'requires conductor >= 99.0.0' "$MODE_OUTPUT" \
+  && grep -q 'installed: 0.10.29' "$MODE_OUTPUT" \
+  && ! grep -q '\[fail-open:FAIL_OPEN_PROVIDER_UNAVAILABLE\]' "$MODE_OUTPUT" \
+  && ! grep -q 'review should not run' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: too-old Conductor binary did not fall open as provider-unavailable"
+else
+  echo "FAIL: expected minimum-version guard to run before provider fallback" >&2
+  echo "exit code: $MIN_VERSION_FALLBACK_EXIT" >&2
+  cat "$MODE_OUTPUT" >&2
+  cat "$CODEX_ARGS_FILE" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: CODEX_REVIEW_NO_AUTOFIX backward compat maps to review-only"
 setup_mode_repo
 rm -rf "$MODE_BIN"
@@ -1291,7 +1529,7 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Test: FIXED with no edits writes summary before allowing push"
+echo "==> Test: FIXED with no edits blocks as ambiguous"
 setup_mode_repo
 rm -rf "$MODE_BIN"
 mkdir -p "$MODE_BIN"
@@ -1302,10 +1540,12 @@ EOF
 cat >"$MODE_BIN/conductor" <<'CXEOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = "doctor" ]; then printf '{"providers":[{"configured":true}]}\n'; exit 0; fi
+printf 'Potential concern: freshness canary no longer covers the new source.\n'
 printf 'CODEX_REVIEW_FIXED\n'
 CXEOF
 chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
 AMBIGUOUS_SUMMARY="$TEST_DIR/ambiguous-fixed-summary.json"
+AMBIGUOUS_HISTORY_FILE="$MODE_REPO/.git/touchstone/reviewer-findings-history/feature_ambiguous.jsonl"
 rm -f "$AMBIGUOUS_SUMMARY"
 
 set +e
@@ -1313,6 +1553,7 @@ set +e
   cd "$MODE_REPO"
   PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_BRANCH_NAME="feature/ambiguous" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MODE=fix \
     CODEX_REVIEW_SUMMARY_FILE="$AMBIGUOUS_SUMMARY" \
@@ -1321,16 +1562,23 @@ set +e
 AMBIGUOUS_EXIT=$?
 set -e
 
-if [ "$AMBIGUOUS_EXIT" -eq 0 ] \
+if [ "$AMBIGUOUS_EXIT" -eq 1 ] \
   && [ -s "$AMBIGUOUS_SUMMARY" ] \
   && grep -q '"exit_reason":"ambiguous-fixed-no-changes"' "$AMBIGUOUS_SUMMARY" \
-  && grep -q 'FIXED but no working-tree changes detected' "$MODE_OUTPUT"; then
-  echo "==> PASS: ambiguous FIXED path writes a non-clean summary"
+  && grep -q '"findings":1' "$AMBIGUOUS_SUMMARY" \
+  && grep -q 'FIXED but no working-tree changes detected' "$MODE_OUTPUT" \
+  && grep -q 'Treating as ambiguous — blocking push' "$MODE_OUTPUT" \
+  && grep -q 'Potential concern: freshness canary' "$MODE_OUTPUT" \
+  && grep -q '"result":"CODEX_REVIEW_BLOCKED"' "$AMBIGUOUS_HISTORY_FILE" \
+  && grep -q '"findings_count":1' "$AMBIGUOUS_HISTORY_FILE" \
+  && grep -q 'Potential concern: freshness canary' "$AMBIGUOUS_HISTORY_FILE"; then
+  echo "==> PASS: ambiguous FIXED path blocks and writes a non-clean summary"
 else
-  echo "FAIL: expected FIXED-without-edits path to write summary and exit 0" >&2
+  echo "FAIL: expected FIXED-without-edits path to block and write summary" >&2
   echo "exit code: $AMBIGUOUS_EXIT" >&2
   cat "$MODE_OUTPUT" >&2
   [ ! -f "$AMBIGUOUS_SUMMARY" ] || cat "$AMBIGUOUS_SUMMARY" >&2
+  [ ! -f "$AMBIGUOUS_HISTORY_FILE" ] || cat "$AMBIGUOUS_HISTORY_FILE" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
@@ -3202,6 +3450,7 @@ make_skiplog_bin_without_conductor "$SKIPLOG_BIN1"
 
 run_skiplog_hook "$SKIPLOG_REPO1" "$TEST_DIR/skiplog-out1.txt" \
   env PATH="$SKIPLOG_BIN1:/usr/bin:/bin:/usr/sbin:/sbin" \
+  CONDUCTOR_BIN=missing-conductor \
   TOUCHSTONE_REVIEW_LOG="$SKIPLOG_LOG1" \
   CODEX_REVIEW_BASE="HEAD~1" \
   CODEX_REVIEW_DISABLE_CACHE=1 \

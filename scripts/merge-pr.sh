@@ -484,6 +484,11 @@ preflight_tool_fingerprint() {
 }
 
 preflight_env_fingerprint() {
+  local dogfood_resolved_command=""
+
+  if declare -F touchstone_preflight_dogfood_command >/dev/null 2>&1; then
+    dogfood_resolved_command="$(touchstone_preflight_dogfood_command || true)"
+  fi
   {
     printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_SCRIPT=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_SCRIPT:-}"
     printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND:-}"
@@ -491,6 +496,9 @@ preflight_env_fingerprint() {
     printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_AFFECTED_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_AFFECTED_COMMAND:-}"
     printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_SMOKE_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_SMOKE_COMMAND:-}"
     printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_FULL_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_FULL_COMMAND:-}"
+    printf 'TOUCHSTONE_PREFLIGHT_DOGFOOD_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_DOGFOOD_COMMAND:-}"
+    printf 'TOUCHSTONE_PREFLIGHT_DOGFOOD_RESOLVED_COMMAND=%s\n' "$dogfood_resolved_command"
+    printf 'TOUCHSTONE_PREFLIGHT_SKIP_DOGFOOD=%s\n' "${TOUCHSTONE_PREFLIGHT_SKIP_DOGFOOD:-}"
   } | preflight_hash_stream
 }
 
@@ -508,7 +516,8 @@ preflight_cache_inputs() {
   checker_hash="$(preflight_hash_file_list \
     "lib/preflight.sh" "$PREFLIGHT_SCRIPT" \
     "lib/preflight-scope.sh" "$(dirname "$PREFLIGHT_SCRIPT")/preflight-scope.sh" \
-    "scripts/touchstone-run.sh" "$SCRIPT_DIR/touchstone-run.sh")"
+    "scripts/touchstone-run.sh" "$SCRIPT_DIR/touchstone-run.sh" \
+    "scripts/conductor-dogfood-smoke.py" "$SCRIPT_DIR/conductor-dogfood-smoke.py")"
   config_hash="$(preflight_hash_paths "$repo_root" \
     ".touchstone-review.toml" \
     ".codex-review.toml" \

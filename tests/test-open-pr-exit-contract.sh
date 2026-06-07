@@ -10,7 +10,7 @@
 # (or the next agent) can see what's stuck.
 #
 # Cases covered:
-#   1. Happy path — PR opens, merge-pr.sh succeeds, mergedAt non-null → exit 0.
+#   1. Happy path — PR opens, merge-pr.sh succeeds, state MERGED → exit 0.
 #   2. merge-pr.sh fails (review blocks, conflict, etc.) → nonzero + URL printed.
 #   3. merge-pr.sh exits 0 but PR is NOT actually merged (the silent-orphan
 #      class — gh API hiccup post-review) → nonzero + URL printed.
@@ -52,7 +52,8 @@ git -C "$REPO_DIR" add file.txt
 git -C "$REPO_DIR" commit -m "test change" >/dev/null 2>&1
 
 # Mock gh — behaviour controlled by env vars so each scenario reuses one mock.
-# GH_MERGED_AT  — value returned for `gh pr view --json mergedAt --jq …`
+# GH_PR_STATE   — value returned for `gh pr view --json state,mergedAt`
+# GH_MERGED_AT  — mergedAt value returned for `gh pr view --json state,mergedAt`
 # GH_HAS_EXISTING_PR — if "1", `gh pr list` returns an existing PR URL
 # GH_PR_BODY — value returned for existing PR claim-preflight body reads
 # GH_PR_AUTHOR — value returned for existing PR claim-preflight author reads
@@ -122,13 +123,22 @@ case "$1 $2" in
       esac
       exit 0
     fi
-    if [ "$json_fields" = "mergedAt" ] \
+    if [ "$json_fields" = "state,mergedAt" ] \
       && [ "${GH_REQUIRE_REPO_FOR_MERGED_AT:-0}" = "1" ] \
       && [ -z "$repo_arg" ]; then
       echo "repository required after worktree cleanup" >&2
       exit 1
     fi
-    echo "${GH_MERGED_AT:-}"
+    if [ "$json_fields" = "state,mergedAt" ]; then
+      printf '{"state":"%s","mergedAt":"%s"}\n' "${GH_PR_STATE:-OPEN}" "${GH_MERGED_AT:-}"
+      exit 0
+    fi
+    if [ "$json_fields" = "mergedAt" ]; then
+      echo "${GH_MERGED_AT:-}"
+      exit 0
+    fi
+    echo "unexpected gh pr view json: $json_fields jq: $jq_expr" >&2
+    exit 1
     ;;
   "api user")
     echo "${GH_PR_AUTHOR:-alice}"
@@ -195,6 +205,7 @@ run_open_pr() {
     cd "$REPO_DIR"
     PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
       GH_MERGED_AT="${GH_MERGED_AT:-}" \
+      GH_PR_STATE="${GH_PR_STATE:-OPEN}" \
       GH_HAS_EXISTING_PR="${GH_HAS_EXISTING_PR:-0}" \
       GH_PR_BODY="${GH_PR_BODY:-}" \
       GH_PR_AUTHOR="${GH_PR_AUTHOR:-alice}" \
@@ -210,7 +221,7 @@ run_open_pr() {
 echo "==> Case 1: happy path"
 OUT="$TEST_DIR/case1.out"
 RC=0
-GH_MERGED_AT="2026-04-28T12:00:00Z" GH_HAS_EXISTING_PR=0 MERGE_PR_EXIT=0 \
+GH_PR_STATE="MERGED" GH_MERGED_AT="2026-04-28T12:00:00Z" GH_HAS_EXISTING_PR=0 MERGE_PR_EXIT=0 \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" = "0" ] \
@@ -231,7 +242,7 @@ fi
 echo "==> Case 2: merge-pr.sh blocks (Conductor blocks review)"
 OUT="$TEST_DIR/case2.out"
 RC=0
-GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 MERGE_PR_EXIT=1 \
+GH_PR_STATE="OPEN" GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 MERGE_PR_EXIT=1 \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" != "0" ] \
@@ -255,7 +266,7 @@ fi
 echo "==> Case 3: silent orphan — merge-pr.sh exits 0 but PR not actually merged"
 OUT="$TEST_DIR/case3.out"
 RC=0
-GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 MERGE_PR_EXIT=0 \
+GH_PR_STATE="OPEN" GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 MERGE_PR_EXIT=0 \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" != "0" ] \
@@ -279,7 +290,7 @@ echo "==> Case 4: merge-pr.sh missing on disk"
 OUT="$TEST_DIR/case4.out"
 RC=0
 mv "$SCRIPT_DIR/merge-pr.sh" "$SCRIPT_DIR/merge-pr.sh.hidden"
-GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 \
+GH_PR_STATE="OPEN" GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 mv "$SCRIPT_DIR/merge-pr.sh.hidden" "$SCRIPT_DIR/merge-pr.sh"
 
@@ -305,7 +316,7 @@ fi
 echo "==> Case 5: existing-PR path with --auto-merge succeeds and verifies"
 OUT="$TEST_DIR/case5.out"
 RC=0
-GH_MERGED_AT="2026-04-28T13:00:00Z" GH_HAS_EXISTING_PR=1 GH_PR_BODY="Closes #52" MERGE_PR_EXIT=0 \
+GH_PR_STATE="MERGED" GH_MERGED_AT="2026-04-28T13:00:00Z" GH_HAS_EXISTING_PR=1 GH_PR_BODY="Closes #52" MERGE_PR_EXIT=0 \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" = "0" ] \
@@ -328,7 +339,7 @@ fi
 echo "==> Case 6: existing-PR path blocks unassigned issue before merge-pr.sh"
 OUT="$TEST_DIR/case6.out"
 RC=0
-GH_MERGED_AT="" GH_HAS_EXISTING_PR=1 GH_PR_BODY="Closes #50" MERGE_PR_EXIT=0 \
+GH_PR_STATE="OPEN" GH_MERGED_AT="" GH_HAS_EXISTING_PR=1 GH_PR_BODY="Closes #50" MERGE_PR_EXIT=0 \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" != "0" ] \
@@ -361,7 +372,7 @@ git -C "$REPO_DIR" commit -m "add body protocol checker" >/dev/null 2>&1
 
 OUT="$TEST_DIR/case7.out"
 RC=0
-GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 GH_PR_BODY="Missing protocol" MERGE_PR_EXIT=0 \
+GH_PR_STATE="OPEN" GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 GH_PR_BODY="Missing protocol" MERGE_PR_EXIT=0 \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" != "0" ] \
@@ -382,7 +393,7 @@ fi
 echo "==> Case 8: existing-PR protocol preflight uses edited body"
 OUT="$TEST_DIR/case8.out"
 RC=0
-GH_MERGED_AT="2026-04-28T14:00:00Z" GH_HAS_EXISTING_PR=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' MERGE_PR_EXIT=0 \
+GH_PR_STATE="MERGED" GH_MERGED_AT="2026-04-28T14:00:00Z" GH_HAS_EXISTING_PR=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' MERGE_PR_EXIT=0 \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" = "0" ] \
@@ -404,7 +415,7 @@ fi
 echo "==> Case 9: post-merge verification uses captured repo context"
 OUT="$TEST_DIR/case9.out"
 RC=0
-GH_MERGED_AT="2026-05-17T17:10:41Z" GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" GH_REQUIRE_REPO_FOR_MERGED_AT=1 MERGE_PR_EXIT=0 \
+GH_PR_STATE="MERGED" GH_MERGED_AT="2026-05-17T17:10:41Z" GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" GH_REQUIRE_REPO_FOR_MERGED_AT=1 MERGE_PR_EXIT=0 \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" = "0" ] \
@@ -416,6 +427,48 @@ else
   echo "    FAIL: expected verified merge using captured --repo context" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 10: verify_pr_merged stays sourceable by itself and treats state=MERGED
+# as authoritative when mergedAt is briefly empty.
+# ---------------------------------------------------------------------------
+echo "==> Case 10: extracted verify_pr_merged handles state=MERGED without helpers"
+VERIFY_FUNCTIONS="$TEST_DIR/verify-functions.sh"
+VERIFY_COUNTER="$TEST_DIR/verify-calls"
+VERIFY_PAYLOAD_DIR="$TEST_DIR/verify-payloads"
+mkdir -p "$VERIFY_PAYLOAD_DIR"
+awk '/^verify_pr_merged\(\)/,/^}$/' "$SCRIPT_DIR/open-pr.sh" >"$VERIFY_FUNCTIONS"
+cat >>"$VERIFY_FUNCTIONS" <<'STUB'
+gh() {
+  if [ "$1" != "pr" ] || [ "$2" != "view" ]; then
+    printf 'unexpected gh call: %s\n' "$*" >&2
+    return 1
+  fi
+  local n
+  n="$(cat "$VERIFY_COUNTER" 2>/dev/null || echo 0)"
+  n=$((n + 1))
+  printf '%s\n' "$n" >"$VERIFY_COUNTER"
+  if [ -f "$VERIFY_PAYLOAD_DIR/$n" ]; then
+    cat "$VERIFY_PAYLOAD_DIR/$n"
+    return 0
+  fi
+  return 1
+}
+STUB
+# shellcheck source=/dev/null
+source "$VERIFY_FUNCTIONS"
+printf '0\n' >"$VERIFY_COUNTER"
+printf '{"state":"MERGED","mergedAt":""}\n' >"$VERIFY_PAYLOAD_DIR/1"
+if out="$(VERIFY_PR_MERGED_BACKOFF_SEC=0 verify_pr_merged 900 2>&1)" \
+  && grep -q 'state=MERGED' <<<"$out" \
+  && [ "$(cat "$VERIFY_COUNTER")" = "1" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected extracted verify_pr_merged to accept MERGED state with empty mergedAt" >&2
+  printf 'output: %s\n' "$out" >&2
+  printf 'calls: %s\n' "$(cat "$VERIFY_COUNTER" 2>/dev/null || echo 0)" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
