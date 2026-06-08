@@ -1322,6 +1322,69 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Test: configured max_stall_sec reaches Conductor fix-phase exec"
+setup_mode_repo
+rm -rf "$MODE_BIN"
+mkdir -p "$MODE_BIN"
+cat >"$MODE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "main"
+EOF
+cat >"$MODE_BIN/conductor" <<'CXEOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  doctor)
+    printf '{"configured": true}\n'
+    ;;
+  review)
+    printf 'review: %s\n' "$*" >> "$CODEX_ARGS_FILE"
+    cat >/dev/null
+    printf 'CODEX_REVIEW_BLOCKED\n'
+    ;;
+  exec)
+    printf 'exec: %s\n' "$*" >> "$CODEX_ARGS_FILE"
+    cat >/dev/null
+    printf 'CODEX_REVIEW_BLOCKED\n'
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+CXEOF
+chmod +x "$MODE_BIN/gh" "$MODE_BIN/conductor"
+{
+  printf '[codex_review]\n'
+  printf 'safe_by_default = true\n'
+  printf 'max_stall_sec = 300\n'
+} >"$MODE_REPO/.codex-review.toml"
+git -C "$MODE_REPO" add .codex-review.toml
+git -C "$MODE_REPO" commit -m "max stall fix exec config" >/dev/null 2>&1
+: >"$CODEX_ARGS_FILE"
+
+set +e
+(
+  cd "$MODE_REPO"
+  PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
+    CODEX_REVIEW_BASE="HEAD~1" \
+    CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=fix \
+    bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
+)
+MODE_FIX_EXIT=$?
+set -e
+
+if [ "$MODE_FIX_EXIT" -eq 1 ] \
+  && grep -q -- '^exec: .*--max-stall-seconds 300' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: max_stall_sec was forwarded to Conductor exec in fix phase"
+else
+  echo "FAIL: expected fix-phase exec invocation to include --max-stall-seconds 300" >&2
+  echo "exit code: $MODE_FIX_EXIT" >&2
+  cat "$MODE_OUTPUT" >&2
+  cat "$CODEX_ARGS_FILE" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Test: configured minimum Conductor version blocks old binaries"
 setup_mode_repo
 rm -rf "$MODE_BIN"
