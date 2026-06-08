@@ -135,6 +135,21 @@ case "$route_auth_args" in
     ;;
 esac
 
+preflight_function_body="$(awk '
+  /^conductor_route_preflight_for_phase\(\)[[:space:]]*\{/ { in_fn=1 }
+  in_fn { print }
+  in_fn && /^\}/ { exit }
+' "$SCRIPT")"
+case "$preflight_function_body" in
+  *'args+=(--with "$CONDUCTOR_WITH")'*)
+    printf '  OK: route preflight passes --with "$CONDUCTOR_WITH" when pinned\n'
+    ;;
+  *)
+    printf 'FAIL: conductor_route_preflight_for_phase must pass --with "$CONDUCTOR_WITH" to conductor route when pinned\n' >&2
+    exit 1
+    ;;
+esac
+
 echo "==> OK: all sentinel tests passed"
 
 echo "==> codex-review malformed-sentinel gate behavior"
