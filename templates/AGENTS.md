@@ -21,8 +21,8 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 ## Agent Roles And Fallbacks
 
-- **Driving CLI** — Claude Code, Codex, or Gemini CLI. Owns file edits, git state, tests, commits, PR creation, Conductor review invocation, and merge. Drivers are interchangeable; driver fallback is shared-contract fallback — if one is unavailable, another reads the same files and continues.
-- **Conductor worker/reviewer router** — the model router used by the driving CLI for review and bounded model work. Conductor can route to Claude, Codex, Gemini, Kimi, Ollama, or other providers, and provider fallback runs across configured backends, but Conductor does not replace the driver's responsibility for the branch → PR → merge-gate review → automerge workflow.
+- **Driving CLI** — Claude Code, Codex, or Gemini CLI. Owns file edits, git state, tests, commits, PR creation, PR comment triage, fix commits, approval tracking, and merge. Drivers are interchangeable; driver fallback is shared-contract fallback — if one is unavailable, another reads the same files and continues.
+- **Conductor worker/reviewer router** — the model router used by the driving CLI for review and bounded model work. Conductor can route to Claude, Codex, Gemini, Kimi, Ollama, or other providers, and provider fallback runs across configured backends, but Conductor does not replace the driver's responsibility for the branch → PR → agentic review loop → approved merge workflow.
 
 ## Engineering principles (always in mind)
 
@@ -43,6 +43,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers).
 - **Isolate file-writing subagents** — parallel workers use dedicated worktrees, slice manifests, and disjoint file ownership by default.
 - **File issues for bugs** — open a GitHub issue when you find a bug, in this project or in an autumngarage tool. Don't silently work around it.
+- **Escalate delivery friction upstream** — if Conductor or Touchstone causes workflow drag (excessive token burn, weak parallelization, unclear delegation ergonomics, brittle review/merge behavior, or other agent-delivery inefficiency), file an actionable upstream issue with repro steps and impact instead of normalizing the pain.
 
 ## Never commit on the default branch
 
@@ -57,7 +58,7 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 3. **Claim issues before implementation.** If the work starts from a GitHub issue, claim it before editing or dispatching an agent: `bash scripts/claim-issue.sh <n>`. Claim every issue in a multi-issue bundle so two agents do not ship competing fixes.
 4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
 5. **Reconcile issues.** Before opening the PR, list every GitHub issue found, claimed, fixed, partially fixed, or made stale by the work. Fully fixed issues get closing trailers (`Closes-issue: #123` or `Closes #123`) so merge auto-closes them; partial/stale issues get a comment explaining the evidence or remaining gap. Do not leave fixed issues open silently.
-6. **Open PR + ship through the merge gate.** `bash scripts/open-pr.sh --auto-merge` pushes, opens the PR, runs the merge-gate pipeline, squash-merges, and syncs the default branch. The required expensive gates happen at merge time: deterministic checks, Conductor LLM review/fix loop, then deterministic checks again only if Conductor changed the PR head.
+6. **Open PR + watch the review loop.** `bash scripts/open-pr.sh --auto-merge` pushes, opens or updates the PR, and drives shipping. Treat the PR as the review/check surface: watch comments/status, commit fixes for actionable feedback, rerun as needed, and merge only after required reviews/checks approve. If no PR-visible agentic review is configured, continue with final verification instead of waiting.
 7. **Clean up.** Delete the local branch if it persists.
 
 Do not bypass the PR/review/merge path with a direct default-branch push except through the documented emergency path in `principles/git-workflow.md`.
@@ -74,7 +75,7 @@ Do not bypass the PR/review/merge path with a direct default-branch push except 
 | When you're about to... | Read |
 |---|---|
 | commit, branch, open a PR, run review, merge, recover from `no-commit-to-branch`, work with stacked PRs, or fan out worktrees | `principles/git-workflow.md` |
-| understand the AI-authored change lifecycle, merge-gate review architecture, or where Conductor fits | `principles/ai-delivery-architecture.md` |
+| understand the AI-authored change lifecycle, PR review loop architecture, or where Conductor fits | `principles/ai-delivery-architecture.md` |
 | start a non-trivial code change | `principles/pre-implementation-checklist.md` |
 | understand the *why* of a daily-reminder rule | `principles/engineering-principles.md` |
 | edit, write, or audit documentation | `principles/documentation-ownership.md` |
@@ -103,8 +104,8 @@ Use the normal lifecycle unless the user asks for a different flow:
 3. Claim every GitHub issue you are actively implementing with `bash scripts/claim-issue.sh <n>` before editing or dispatching an agent.
 4. Make the change, stage explicit file paths, and commit with a concise message.
 5. Reconcile issue state before opening the PR: fixed issues get closing trailers/PR body lines; partial or stale issues get an issue comment with evidence and remaining gaps.
-6. Ship with `bash scripts/open-pr.sh --auto-merge`; it creates the PR, runs the merge-gate pipeline, squash-merges, and syncs the default branch.
-7. Do not run a separate required LLM review before opening the PR. The required LLM review happens through Conductor at the merge gate; local development may use focused checks before commit.
+6. Ship with `bash scripts/open-pr.sh --auto-merge`; it creates or updates the PR. Then watch the review/check loop, address actionable feedback, and continue until the PR is approved and merged.
+7. The PR is the review surface. Do not treat PR creation as completion; watch comments, checks, and requested changes until the PR is approved and merged.
 8. Clean up the feature branch if it still exists locally.
 
 File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md` for slice manifests, file ownership, concurrency caps, and cleanup; use `scripts/spawn-worktree.sh` and `scripts/cleanup-worktrees.sh` for local setup and teardown.

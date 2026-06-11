@@ -1,17 +1,17 @@
 ---
 name: touchstone-git-workflow
-description: Use when committing, branching, opening a PR, running Conductor review, merging, recovering from no-commit-to-branch, or coordinating worktrees — covers the Touchstone branch → PR → review → merge lifecycle.
+description: Use when committing, branching, opening a PR, watching PR reviews/comments, merging, recovering from no-commit-to-branch, or coordinating worktrees — covers the Touchstone branch → PR → agentic review → merge lifecycle.
 ---
 
 # Touchstone Git Workflow
 
-Every change goes through a feature branch + PR + Conductor review + squash-merge. Direct pushes to the default branch are blocked at three layers (pre-commit hook, GitHub branch protection, Conductor merge review). Bypassing all three is the documented emergency path, not a daily shortcut.
+Every change goes through a feature branch + PR + PR-visible review loop where configured + squash-merge. Direct pushes to the default branch are blocked at three layers (pre-commit hook, GitHub branch protection, AI review/backstop where configured). Bypassing all three is the documented emergency path, not a daily shortcut.
 
 ## When to invoke
 
 - About to make a tracked-file edit, commit, or push
 - Opening a PR via `scripts/open-pr.sh`
-- Running Conductor review via `scripts/codex-review.sh` or hitting reviewer errors
+- Watching PR comments, requested changes, checks, or reviewer errors
 - Hitting `no-commit-to-branch` and need to recover work onto a branch
 - Stacked PRs (`--base <branch>`) — there's a gotcha that orphans children on squash-merge
 - Fanning out parallel work across worktrees
@@ -35,7 +35,7 @@ Your unstaged changes carry over. The trigger is *edit time*, not commit time �
 1. `git pull --rebase` on the default branch
 2. Branch (before any edit)
 3. Commit (explicit file paths, concise message, one concern per commit)
-4. `bash scripts/open-pr.sh --auto-merge` — pushes, opens PR, runs the merge-gate pipeline, squash-merges, syncs default
+4. `bash scripts/open-pr.sh --auto-merge` — pushes, opens PR, posts advisory conductor review comment (if configured), runs the local merge-gate pipeline, squash-merges, and syncs default; the driver owns watching PR comments and committing fixes between PR open and this merge step
 5. Local cleanup (`git branch -D <feature>` if it persists)
 
 ## Quick rules

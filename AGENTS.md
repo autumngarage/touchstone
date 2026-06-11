@@ -13,8 +13,8 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 ## Agent Roles And Fallbacks
 
-- **Driving CLI** — Claude Code, Codex, or Gemini CLI. Owns file edits, git state, tests, commits, PR creation, Conductor review invocation, and merge. Drivers are interchangeable; driver fallback is shared-contract fallback — if one is unavailable, another reads the same files and continues.
-- **Conductor worker/reviewer router** — the model router used by the driving CLI for review and bounded model work. Conductor can route to Claude, Codex, Gemini, Kimi, Ollama, or other providers, and provider fallback runs across configured backends, but Conductor does not replace the driver's responsibility for the branch → PR → merge-gate review → automerge workflow.
+- **Driving CLI** — Claude Code, Codex, or Gemini CLI. Owns file edits, git state, tests, commits, PR creation, PR comment triage, fix commits, approval tracking, and merge. Drivers are interchangeable; driver fallback is shared-contract fallback — if one is unavailable, another reads the same files and continues.
+- **Conductor worker/reviewer router** — the model router used by the driving CLI for review and bounded model work. Conductor can route to Claude, Codex, Gemini, Kimi, Ollama, or other providers, and provider fallback runs across configured backends, but Conductor does not replace the driver's responsibility for the branch → PR → agentic review loop → approved merge workflow.
 
 ## Engineering principles (always in mind)
 
@@ -35,6 +35,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers).
 - **Isolate file-writing subagents** — parallel workers use dedicated worktrees, slice manifests, and disjoint file ownership by default.
 - **File issues for bugs** — open a GitHub issue when you find a bug, in this project or in an autumngarage tool. Don't silently work around it.
+- **Escalate delivery friction upstream** — if Conductor or Touchstone causes workflow drag (excessive token burn, weak parallelization, unclear delegation ergonomics, brittle review/merge behavior, or other agent-delivery inefficiency), file an actionable upstream issue with repro steps and impact instead of normalizing the pain.
 
 ## Never commit on the default branch
 
@@ -49,7 +50,7 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 3. **Claim issues before implementation.** If the work starts from a GitHub issue, claim it before editing or dispatching an agent: `bash scripts/claim-issue.sh <n>`. Claim every issue in a multi-issue bundle so two agents do not ship competing fixes.
 4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
 5. **Reconcile issues.** Before opening the PR, list every GitHub issue found, claimed, fixed, partially fixed, or made stale by the work. Fully fixed issues get closing trailers (`Closes-issue: #123` or `Closes #123`) so merge auto-closes them; partial/stale issues get a comment explaining the evidence or remaining gap. Do not leave fixed issues open silently.
-6. **Open PR + ship through the merge gate.** `bash scripts/open-pr.sh --auto-merge` pushes, opens the PR, runs the merge-gate pipeline, squash-merges, and syncs the default branch. The required expensive gates happen at merge time: deterministic checks, Conductor LLM review/fix loop, then deterministic checks again only if Conductor changed the PR head.
+6. **Open PR + watch the review loop.** `bash scripts/open-pr.sh --auto-merge` pushes, opens or updates the PR, and drives shipping. Treat the PR as the review/check surface: watch comments/status, commit fixes for actionable feedback, rerun as needed, and merge only after required reviews/checks approve. If no PR-visible agentic review is configured, continue with final verification instead of waiting.
 7. **Clean up.** Delete the local branch if it persists.
 
 Do not bypass the PR/review/merge path with a direct default-branch push except through the documented emergency path in `principles/git-workflow.md`.
@@ -66,7 +67,7 @@ Do not bypass the PR/review/merge path with a direct default-branch push except 
 | When you're about to... | Read |
 |---|---|
 | commit, branch, open a PR, run review, merge, recover from `no-commit-to-branch`, work with stacked PRs, or fan out worktrees | `principles/git-workflow.md` |
-| understand the AI-authored change lifecycle, merge-gate review architecture, or where Conductor fits | `principles/ai-delivery-architecture.md` |
+| understand the AI-authored change lifecycle, PR review loop architecture, or where Conductor fits | `principles/ai-delivery-architecture.md` |
 | start a non-trivial code change | `principles/pre-implementation-checklist.md` |
 | understand the *why* of a daily-reminder rule | `principles/engineering-principles.md` |
 | edit, write, or audit documentation | `principles/documentation-ownership.md` |
@@ -86,7 +87,7 @@ If `.cortex/state.md` exists in the project, read it at session start for the cu
 
 ## Authoring Guide
 
-You are maintaining a shared engineering platform that provides universal principles, reusable scripts, and a Conductor-backed AI merge/default-branch review hook for Henry's projects. Changes here propagate to downstream projects via `sync-all.sh`, so treat fixes here as platform changes, not isolated repo edits.
+You are maintaining a shared engineering platform that provides universal principles, reusable scripts, and a Conductor-backed AI review workflow for Henry's projects. Changes here propagate to downstream projects via `sync-all.sh`, so treat fixes here as platform changes, not isolated repo edits.
 
 ### Git Workflow
 
@@ -94,8 +95,8 @@ You are maintaining a shared engineering platform that provides universal princi
 - Claim every GitHub issue you are actively implementing with `bash scripts/claim-issue.sh <n>` before editing or dispatching an agent.
 - Keep changes logically grouped. Stage explicit file paths, commit with a concise message, and avoid unrelated refactors.
 - Reconcile issue state before opening the PR: fixed issues get closing trailers/PR body lines; partial or stale issues get an issue comment with evidence and remaining gaps.
-- To ship a completed branch, use `bash scripts/open-pr.sh --auto-merge`; it pushes, creates the PR, runs the merge-gate pipeline, squash-merges, and syncs the default branch.
-- Do not run a separate required LLM review before opening the PR. The required LLM review happens through Conductor at the merge gate; local development may use focused checks before commit.
+- To ship a completed branch, run `bash scripts/open-pr.sh --auto-merge` to push and create or update the PR; then watch the review/check loop yourself, commit fixes for any actionable feedback, and continue until the PR is approved and merged.
+- The PR is the review surface. Do not treat PR creation as completion; watch comments, checks, and requested changes until the PR is approved and merged.
 - File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md` for slice manifests, file ownership, concurrency caps, and cleanup; use `scripts/spawn-worktree.sh` and `scripts/cleanup-worktrees.sh` for local setup and teardown.
 
 ### Touchstone-Specific Rules
@@ -219,25 +220,28 @@ Flag any of the following:
 
 If there are zero blocking issues: "LGTM."
 
-<!-- conductor:begin v0.10.34 -->
+<!-- conductor:begin v0.10.38 -->
 ## Conductor delegation
 
 This project has [conductor](https://github.com/autumngarage/conductor)
 available for delegating tasks to other LLMs from inside an agent loop.
 You can shell out to it instead of trying to do everything yourself.
 
-Quick reference:
+Pick the job type first; do not pick a provider unless the user explicitly
+asks for one:
 
 - Quick factual/background ask:
   `conductor ask --kind research --effort minimal --brief-file /tmp/brief.md`.
 - Deeper synthesis/research:
   `conductor ask --kind research --effort medium --brief-file /tmp/brief.md`.
+- Text/prose/docs/instructions review:
+  `conductor ask --kind text-review --effort medium --brief-file /tmp/brief.md`.
 - Code explanation or small coding judgment:
   `conductor ask --kind code --effort low --brief-file /tmp/brief.md`.
 - Repo-changing implementation/debugging:
   `conductor ask --kind code --effort high --brief-file /tmp/brief.md`.
 - Merge/PR/diff review:
-  `conductor ask --kind review --base <ref> --brief-file /tmp/review.md`.
+  `conductor ask --kind review --effort medium --base <ref> --brief-file /tmp/review.md`.
 - Architecture/product judgment needing multiple views:
   `conductor ask --kind council --effort medium --brief-file /tmp/brief.md`.
 - `conductor list` — show configured providers and their tags.
@@ -248,14 +252,14 @@ output, and validation; use `--brief-file` for nontrivial `exec` tasks.
 Default to `conductor ask`; use provider-specific `call` / `exec` only
 when the user explicitly asks for a provider or the semantic API does not
 fit.
+Do not attach `--with` or `--model` to `conductor ask`; provider/model
+overrides belong to lower-level commands, for example:
 
-Providers commonly worth delegating to:
+    conductor call --with openrouter --brief-file /tmp/brief.md
 
-- `kimi` — long-context summarization, cheap second opinions.
-- `gemini` — web search, multimodal.
-- `claude` / `codex` — strongest reasoning / coding agent loops.
-- `ollama` — local, offline, privacy-sensitive.
-- `council` kind — OpenRouter-only multi-model deliberation and synthesis.
+Default routing is flat-rate-first when the job contract allows it, then
+OpenRouter as metered overflow. `review` means code diff/PR review;
+`text-review` means prose/docs/prompt review without diff tooling.
 
 Full delegation guidance (when to delegate, when not to, error handling):
 
