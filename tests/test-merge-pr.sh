@@ -44,9 +44,20 @@ set -euo pipefail
 
 case "${1:-} ${2:-}" in
   "repo view")
-    echo "main"
+    case "${4:-}" in
+      defaultBranchRef) echo "main" ;;
+      nameWithOwner) echo "${GH_REPO_FULL_NAME:-autumngarage/touchstone}" ;;
+      *)
+        echo "unexpected gh repo view args: $*" >&2
+        exit 1
+        ;;
+    esac
     ;;
   "pr view")
+    if [ -n "${GH_PR_VIEW_FAIL_FIELD:-}" ] && [ "${5:-}" = "$GH_PR_VIEW_FAIL_FIELD" ]; then
+      echo "gh pr view ${5:-} unavailable" >&2
+      exit 1
+    fi
     case "${5:-}" in
       state)
         if [ -f "${GH_MERGED_MARKER:-/dev/null/never}" ]; then
@@ -57,12 +68,26 @@ case "${1:-} ${2:-}" in
         ;;
       headRefName) echo "feature/test" ;;
       headRefOid)
+        head_ref_call_count=1
+        if [ -n "${GH_HEAD_REF_CALLS_FILE:-}" ]; then
+          if [ -f "$GH_HEAD_REF_CALLS_FILE" ]; then
+            head_ref_call_count="$(cat "$GH_HEAD_REF_CALLS_FILE" 2>/dev/null || echo 0)"
+            head_ref_call_count=$((head_ref_call_count + 1))
+          fi
+          printf '%s\n' "$head_ref_call_count" >"$GH_HEAD_REF_CALLS_FILE"
+        fi
+        if [ -n "${GH_HEAD_REF_FAIL_AFTER:-}" ] && [ "$head_ref_call_count" -ge "$GH_HEAD_REF_FAIL_AFTER" ]; then
+          echo "gh pr view headRefOid unavailable" >&2
+          exit 1
+        fi
         if [ -f "${GH_HEAD_REF_FILE:-/dev/null/never}" ]; then
           cat "$GH_HEAD_REF_FILE"
         else
           echo "${GH_PR_HEAD_OID:-pr-head-oid}"
         fi
         ;;
+      isDraft) echo "${GH_IS_DRAFT:-false}" ;;
+      reviewDecision) echo "${GH_REVIEW_DECISION:-}" ;;
       mergeStateStatus,mergeable) echo "${GH_MERGE_STATE:-CLEAN MERGEABLE}" ;;
       *)
         echo "unexpected gh pr view args: $*" >&2
@@ -113,6 +138,25 @@ case "${1:-} ${2:-}" in
       exit 1
     fi
     echo "merged"
+    ;;
+  "api graphql")
+    if [ "${GH_GRAPHQL_FAIL:-false}" = "true" ]; then
+      echo "graphql unavailable" >&2
+      exit 1
+    fi
+    graphql_call_count=1
+    if [ -n "${GH_GRAPHQL_CALLS_FILE:-}" ]; then
+      if [ -f "$GH_GRAPHQL_CALLS_FILE" ]; then
+        graphql_call_count="$(cat "$GH_GRAPHQL_CALLS_FILE" 2>/dev/null || echo 0)"
+        graphql_call_count=$((graphql_call_count + 1))
+      fi
+      printf '%s\n' "$graphql_call_count" >"$GH_GRAPHQL_CALLS_FILE"
+    fi
+    if [ "$graphql_call_count" -ge 2 ] && [ -n "${GH_UNRESOLVED_THREADS_SECOND:-}" ]; then
+      printf '%s' "$GH_UNRESOLVED_THREADS_SECOND"
+    else
+      printf '%s' "${GH_UNRESOLVED_THREADS:-}"
+    fi
     ;;
   *)
     echo "unexpected gh args: $*" >&2
@@ -323,7 +367,8 @@ reset_case_files() {
     "$TEST_DIR"/git-sibling-pull* "$TEST_DIR"/gh-merged-marker* \
     "$TEST_DIR"/git-review-head* "$TEST_DIR"/git-push-head* \
     "$TEST_DIR"/gh-head-ref* "$TEST_DIR"/preflight-calls* \
-    "$TEST_DIR"/git-worktree-remove* "$TEST_DIR"/touchstone-review-log*
+    "$TEST_DIR"/git-worktree-remove* "$TEST_DIR"/touchstone-review-log* \
+    "$TEST_DIR"/gh-graphql-calls* "$TEST_DIR"/gh-head-ref-calls*
   rm -rf "$GIT_PATH_ROOT"
   rm -rf "$DEFAULT_FAKE_WORKTREE"
   mkdir -p "$GIT_PATH_ROOT"
@@ -334,6 +379,14 @@ reset_case_files() {
   unset GH_PR_MERGE_FAIL_LOCAL
   unset GH_MERGE_STATE
   unset GH_FAILED_CHECKS
+  unset GH_REPO_FULL_NAME
+  unset GH_PR_VIEW_FAIL_FIELD
+  unset GH_HEAD_REF_FAIL_AFTER
+  unset GH_IS_DRAFT
+  unset GH_REVIEW_DECISION
+  unset GH_UNRESOLVED_THREADS
+  unset GH_UNRESOLVED_THREADS_SECOND
+  unset GH_GRAPHQL_FAIL
   unset CODEX_REVIEW_EXIT
   unset CODEX_REVIEW_STUB_OUTPUT
   unset CODEX_REVIEW_STUB_SUMMARY
@@ -372,6 +425,16 @@ run_merge_pr() {
     GH_PR_MERGE_FAIL_LOCAL="${GH_PR_MERGE_FAIL_LOCAL:-false}" \
     GH_MERGE_STATE="${GH_MERGE_STATE:-CLEAN MERGEABLE}" \
     GH_FAILED_CHECKS="${GH_FAILED_CHECKS:-}" \
+    GH_REPO_FULL_NAME="${GH_REPO_FULL_NAME:-autumngarage/touchstone}" \
+    GH_PR_VIEW_FAIL_FIELD="${GH_PR_VIEW_FAIL_FIELD:-}" \
+    GH_HEAD_REF_FAIL_AFTER="${GH_HEAD_REF_FAIL_AFTER:-}" \
+    GH_HEAD_REF_CALLS_FILE="$TEST_DIR/gh-head-ref-calls" \
+    GH_IS_DRAFT="${GH_IS_DRAFT:-false}" \
+    GH_REVIEW_DECISION="${GH_REVIEW_DECISION:-}" \
+    GH_UNRESOLVED_THREADS="${GH_UNRESOLVED_THREADS:-}" \
+    GH_UNRESOLVED_THREADS_SECOND="${GH_UNRESOLVED_THREADS_SECOND:-}" \
+    GH_GRAPHQL_FAIL="${GH_GRAPHQL_FAIL:-false}" \
+    GH_GRAPHQL_CALLS_FILE="$TEST_DIR/gh-graphql-calls" \
     GIT_CHECKOUT_MAIN_FILE="$TEST_DIR/git-checkout-main" \
     GIT_DETACHED_DEFAULT_FILE="$TEST_DIR/git-detached-default" \
     GIT_BRANCH_DELETED_FILE="$TEST_DIR/git-branch-deleted" \
@@ -862,6 +925,149 @@ if grep -q 'has failed check(s); stopping automerge' "$TEST_DIR/output-check-fai
 else
   echo "FAIL: failed checks should stop before review/merge" >&2
   cat "$TEST_DIR/output-check-failed.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: draft PR blocks before review"
+reset_case_files
+if GH_IS_DRAFT=true run_merge_pr "$TEST_DIR/output-draft-feedback.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly merged a draft PR" >&2
+  exit 1
+fi
+if grep -q 'is still a draft; refusing to merge' "$TEST_DIR/output-draft-feedback.txt" \
+  && grep -q 'Mark it ready for review' "$TEST_DIR/output-draft-feedback.txt" \
+  && [ ! -f "$TEST_DIR/codex-review.log" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: draft PR blocks before review"
+else
+  echo "FAIL: draft PR should stop before review/merge" >&2
+  cat "$TEST_DIR/output-draft-feedback.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: draft-state inspection failure fails closed before review"
+reset_case_files
+if GH_PR_VIEW_FAIL_FIELD=isDraft run_merge_pr "$TEST_DIR/output-draft-state-fail.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly merged when draft-state inspection failed" >&2
+  exit 1
+fi
+if grep -q 'Could not inspect draft state for PR #123' "$TEST_DIR/output-draft-state-fail.txt" \
+  && grep -q 'Refusing to merge without draft-state confirmation' "$TEST_DIR/output-draft-state-fail.txt" \
+  && [ ! -f "$TEST_DIR/codex-review.log" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: draft-state inspection failure fails closed before review"
+else
+  echo "FAIL: draft-state inspection failure should stop before review/merge" >&2
+  cat "$TEST_DIR/output-draft-state-fail.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: requested-changes review decision blocks before review"
+reset_case_files
+if GH_REVIEW_DECISION=CHANGES_REQUESTED run_merge_pr "$TEST_DIR/output-requested-changes.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly merged with requested changes" >&2
+  exit 1
+fi
+if grep -q 'active CHANGES_REQUESTED review decision' "$TEST_DIR/output-requested-changes.txt" \
+  && grep -q 'Address the requested changes' "$TEST_DIR/output-requested-changes.txt" \
+  && [ ! -f "$TEST_DIR/codex-review.log" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: requested-changes review decision blocks before review"
+else
+  echo "FAIL: requested changes should stop before review/merge" >&2
+  cat "$TEST_DIR/output-requested-changes.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: review-decision inspection failure fails closed before review"
+reset_case_files
+if GH_PR_VIEW_FAIL_FIELD=reviewDecision run_merge_pr "$TEST_DIR/output-review-decision-fail.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly merged when review-decision inspection failed" >&2
+  exit 1
+fi
+if grep -q 'Could not inspect review decision for PR #123' "$TEST_DIR/output-review-decision-fail.txt" \
+  && grep -q 'Refusing to merge without review-decision confirmation' "$TEST_DIR/output-review-decision-fail.txt" \
+  && [ ! -f "$TEST_DIR/codex-review.log" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: review-decision inspection failure fails closed before review"
+else
+  echo "FAIL: review-decision inspection failure should stop before review/merge" >&2
+  cat "$TEST_DIR/output-review-decision-fail.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: unresolved review threads block before review"
+reset_case_files
+if GH_UNRESOLVED_THREADS=$'thread-1\tscripts/merge-pr.sh\t123\tfalse\treviewer\thttps://example.test/thread/1\tPlease fix the PR feedback gate.' \
+  run_merge_pr "$TEST_DIR/output-unresolved-thread.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly merged with unresolved review threads" >&2
+  exit 1
+fi
+if grep -q 'has unresolved review thread(s)' "$TEST_DIR/output-unresolved-thread.txt" \
+  && grep -q 'scripts/merge-pr.sh:123 by @reviewer' "$TEST_DIR/output-unresolved-thread.txt" \
+  && grep -q 'https://example.test/thread/1' "$TEST_DIR/output-unresolved-thread.txt" \
+  && grep -q 'Resolve or explicitly answer every actionable thread' "$TEST_DIR/output-unresolved-thread.txt" \
+  && [ ! -f "$TEST_DIR/codex-review.log" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: unresolved review threads block before review"
+else
+  echo "FAIL: unresolved review threads should stop before review/merge" >&2
+  cat "$TEST_DIR/output-unresolved-thread.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: PR feedback thread inspection failure fails closed"
+reset_case_files
+if GH_GRAPHQL_FAIL=true run_merge_pr "$TEST_DIR/output-graphql-fail.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly merged when review thread inspection failed" >&2
+  exit 1
+fi
+if grep -q 'Could not inspect PR #123 review threads via GitHub GraphQL' "$TEST_DIR/output-graphql-fail.txt" \
+  && grep -q 'Refusing to merge without thread-level review state' "$TEST_DIR/output-graphql-fail.txt" \
+  && [ ! -f "$TEST_DIR/codex-review.log" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: PR feedback inspection failure fails closed"
+else
+  echo "FAIL: GraphQL inspection failure should stop before review/merge" >&2
+  cat "$TEST_DIR/output-graphql-fail.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: post-review head inspection failure fails closed before merge"
+reset_case_files
+if GH_HEAD_REF_FAIL_AFTER=2 run_merge_pr "$TEST_DIR/output-post-review-head-fail.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly merged when post-review head inspection failed" >&2
+  exit 1
+fi
+if grep -q 'Checking PR-visible review feedback for PR #123 (after merge review)' "$TEST_DIR/output-post-review-head-fail.txt" \
+  && grep -q 'Could not inspect PR #123 head commit' "$TEST_DIR/output-post-review-head-fail.txt" \
+  && grep -q 'Refusing to merge without exact-head confirmation' "$TEST_DIR/output-post-review-head-fail.txt" \
+  && [ -f "$TEST_DIR/codex-review.log" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: post-review head inspection failure fails closed before merge"
+else
+  echo "FAIL: post-review head inspection failure should stop after review but before merge" >&2
+  cat "$TEST_DIR/output-post-review-head-fail.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: post-review unresolved thread blocks exact-head merge"
+reset_case_files
+if GH_UNRESOLVED_THREADS_SECOND=$'thread-2\tREADME.md\t44\tfalse\treviewer\thttps://example.test/thread/2\tNew feedback after review.' \
+  run_merge_pr "$TEST_DIR/output-post-review-thread.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly merged after post-review thread appeared" >&2
+  exit 1
+fi
+if grep -q 'Checking PR-visible review feedback for PR #123 (before merge review)' "$TEST_DIR/output-post-review-thread.txt" \
+  && grep -q 'Checking PR-visible review feedback for PR #123 (after merge review)' "$TEST_DIR/output-post-review-thread.txt" \
+  && grep -q 'README.md:44 by @reviewer' "$TEST_DIR/output-post-review-thread.txt" \
+  && grep -q 'New feedback after review' "$TEST_DIR/output-post-review-thread.txt" \
+  && [ -f "$TEST_DIR/codex-review.log" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: post-review unresolved thread blocks exact-head merge"
+else
+  echo "FAIL: post-review unresolved thread should stop after review but before merge" >&2
+  cat "$TEST_DIR/output-post-review-thread.txt" >&2
   exit 1
 fi
 

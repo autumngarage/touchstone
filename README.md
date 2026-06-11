@@ -196,7 +196,7 @@ When you run `touchstone new`, these files get created in your project:
 - `scripts/codex-review.sh` — legacy compatibility entry point for existing integrations
 - `scripts/touchstone-run.sh` — Profile-aware runner for Node/TypeScript, Swift, Rust, Python, Go, and monorepos
 - `scripts/open-pr.sh` — Push + create PR via `gh`
-- `scripts/merge-pr.sh` — AI review + squash-merge + sync main
+- `scripts/merge-pr.sh` — PR feedback gate + AI review + squash-merge + sync main
 - `scripts/cleanup-branches.sh` — Safe branch hygiene
 - `scripts/run-pytest-in-venv.sh` — Legacy Python helper copied for Python profiles
 
@@ -296,7 +296,7 @@ Run `touchstone skills` to list visible project and user skills, and `touchstone
 ### Helper scripts
 
 - **open-pr.sh** — `git push` + `gh pr create` with your PR template. Idempotent.
-- **merge-pr.sh** — Sanity-check mergeability + AI review + squash-merge + delete branch + sync main.
+- **merge-pr.sh** — Sanity-check mergeability, block unresolved PR feedback, run AI review, squash-merge, delete branch, and sync main.
 - **cleanup-branches.sh** — Dry-run by default. Never deletes unmerged work.
 
 ## Project structure

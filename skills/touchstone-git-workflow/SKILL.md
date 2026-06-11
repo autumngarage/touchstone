@@ -35,7 +35,7 @@ Your unstaged changes carry over. The trigger is *edit time*, not commit time �
 1. `git pull --rebase` on the default branch
 2. Branch (before any edit)
 3. Commit (explicit file paths, concise message, one concern per commit)
-4. `bash scripts/open-pr.sh --auto-merge` — pushes, opens PR, posts advisory conductor review comment (if configured), runs the local merge-gate pipeline, squash-merges, and syncs default; the driver owns watching PR comments and committing fixes between PR open and this merge step
+4. `bash scripts/open-pr.sh --auto-merge` — pushes, opens PR, posts advisory conductor review comment (if configured), runs the local merge-gate pipeline, blocks unresolved PR feedback, squash-merges, and syncs default; the driver owns watching PR comments and committing fixes between PR open and this merge step
 5. Local cleanup (`git branch -D <feature>` if it persists)
 
 ## Quick rules

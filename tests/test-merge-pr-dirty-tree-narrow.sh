@@ -40,7 +40,14 @@ set -euo pipefail
 
 case "${1:-} ${2:-}" in
   "repo view")
-    echo "main"
+    case "${4:-}" in
+      defaultBranchRef) echo "main" ;;
+      nameWithOwner) echo "autumngarage/touchstone" ;;
+      *)
+        echo "unexpected gh repo view args: $*" >&2
+        exit 1
+        ;;
+    esac
     ;;
   "pr view")
     case "${5:-}" in
@@ -53,6 +60,8 @@ case "${1:-} ${2:-}" in
         ;;
       headRefName) echo "feature/test" ;;
       headRefOid) echo "pr-head-oid" ;;
+      isDraft) echo "false" ;;
+      reviewDecision) echo "" ;;
       mergeStateStatus,mergeable) echo "CLEAN MERGEABLE" ;;
       *)
         echo "unexpected gh pr view args: $*" >&2
@@ -79,6 +88,8 @@ case "${1:-} ${2:-}" in
       touch "$GH_MERGED_MARKER"
     fi
     echo "merged"
+    ;;
+  "api graphql")
     ;;
   *)
     echo "unexpected gh args: $*" >&2
