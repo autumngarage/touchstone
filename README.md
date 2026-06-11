@@ -150,7 +150,7 @@ bash setup.sh --deps-only
 | `touchstone update --in-place` | Commit the update on the current branch instead of creating a chore branch |
 | `touchstone update --dry-run` | Preview what would change |
 | `touchstone update --check` | Report whether the current project needs an update |
-| `touchstone update --ship` | Push, open a PR, watch agentic review, and merge when clean |
+| `touchstone update --ship` | Push, open a PR, run the merge automation, and merge when clean |
 | `touchstone update-all` | Update all registered projects at once |
 | `touchstone update-all --check` | Report which registered projects need update |
 | `touchstone update-all --pull-first` | Pull latest touchstone first, then update all projects |
