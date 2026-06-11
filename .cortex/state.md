@@ -1,10 +1,10 @@
 ---
-Generated: 2026-06-11T15:00:46-04:00
+Generated: 2026-06-11T16:32:24-04:00
 Generator: cortex refresh-state v1.6.4
 Sources:
-  - HEAD sha: cb1a75c38f741c358e376caaf7eb9faa8bc9a51f
+  - HEAD sha: 04bbbbca1c3170d7f9a3662d114db92cbcaef3b5
   - .cortex/plans/*.md (2 files)
-  - .cortex/journal/*.md (18 entries, 2026-05-05..2026-06-11)
+  - .cortex/journal/*.md (19 entries, 2026-05-05..2026-06-11)
   - .cortex/doctrine/*.md (1 entries)
   - .cortex/templates/**/*.md (12 templates)
   - docs/case-studies/*.md (0 case studies)
@@ -30,6 +30,7 @@ Sources-hash:
   .cortex/journal/2026-06-11-pr-feedback-merge-gate.md: a7ee217fdc845d91e72f9f629c81be401f4b43a5eb0a1c79a0b02a01848e21d1
   .cortex/journal/2026-06-11-pr-merged-1313.md: aad94d757185a4044fa071b9a5d715c8017714762d434278b745b71c03466d7a
   .cortex/journal/2026-06-11-pr-merged-1449.md: 1111578acc1346b5bb2c7f0d87b1ec7fe078b0aa30bd11c21af0a836d44eca72
+  .cortex/journal/2026-06-11-release-v2-11-45.md: a533cd4a77d6a9d2c15526de61899457f1934ed9f4354ac28b9b1250df1cc4b4
   .cortex/plans/touchstone-conductor-integration.md: be3f8211b7c19e32e0c4c858c35678c1d85418fe12c5d22b29cc0a7831f8a54c
   .cortex/plans/touchstone-cortex-metadata.md: 0e23c4e06b91c1e8da358b3928750798975eed88815502fb8e7ddfbdbd0187f5
   .cortex/templates/README.md: 695aa2e623bd7f4e698dae471bded0cde354da0c1d8589266660ceb1be8efad1
@@ -44,7 +45,7 @@ Sources-hash:
   .cortex/templates/journal/release.md: 9a6bc59219156e48b419fb170c7c50ff557767def8672ef20568df3e14eadbd0
   .cortex/templates/journal/sentinel-cycle.md: 2945e2d94af4ec9848584b4b3e9cea7060d2968dd42e78faf21fb6f859137476
   .cortex/templates/plans/template.md: d8156cfa3b86acd2a1fbb36cff07cae37d99f3adee7f72b14b7b16e645c51b44
-Corpus: 18 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
+Corpus: 19 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
 Omitted:
   []
 Incomplete:
@@ -75,6 +76,7 @@ Spec: 0.5.0
 - **2026-05-11** — PR #328 merged — fix(sync): tighten auto project sync policy (`.cortex/journal/2026-05-11-pr-merged-1321.md`, Type: pr-merged)
 - **2026-06-11** — PR #456 merged — docs(workflow): steer PR agentic review loop (`.cortex/journal/2026-06-11-pr-merged-1313.md`, Type: pr-merged)
 - **2026-06-11** — PR #459 merged — feat(merge): gate on PR review feedback (`.cortex/journal/2026-06-11-pr-merged-1449.md`, Type: pr-merged)
+- **2026-06-11** — Release v2.11.45 — PR-visible review gate (`.cortex/journal/2026-06-11-release-v2-11-45.md`, Type: release)
 
 ## Stale-now / handle-later
 
