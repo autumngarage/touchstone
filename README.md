@@ -6,7 +6,7 @@
   |_|\___/ \__,_|\___|_| |_|___/\__\___/|_| |_|\___|
 ```
 
-> *Scaffolding + merge-gate AI review for AI-assisted projects.*
+> *Scaffolding + PR-triggered agentic review for AI-assisted projects.*
 >
 > by **[Autumn Garage](https://github.com/autumngarage/autumn-garage)** · alongside [Cortex](https://github.com/autumngarage/cortex) · [Sentinel](https://github.com/autumngarage/sentinel) · [Conductor](https://github.com/autumngarage/conductor) · [Alchemist](https://github.com/autumngarage/alchemist) — issue-driven transmuter — open issue in, reviewed PR out.
 
@@ -150,7 +150,7 @@ bash setup.sh --deps-only
 | `touchstone update --in-place` | Commit the update on the current branch instead of creating a chore branch |
 | `touchstone update --dry-run` | Preview what would change |
 | `touchstone update --check` | Report whether the current project needs an update |
-| `touchstone update --ship` | Push, open a PR, run the final AI review, and auto-merge when clean |
+| `touchstone update --ship` | Push, open a PR, watch agentic review, and merge when clean |
 | `touchstone update-all` | Update all registered projects at once |
 | `touchstone update-all --check` | Report which registered projects need update |
 | `touchstone update-all --pull-first` | Pull latest touchstone first, then update all projects |
@@ -192,7 +192,7 @@ When you run `touchstone new`, these files get created in your project:
 - `.touchstone-version` — The touchstone revision this project has applied
 - `.touchstone-manifest` — The visible list of touchstone-managed paths
 - `principles/*.md` — Universal engineering principles
-- `scripts/conductor-review.sh` — AI merge/default-branch review + auto-fix loop
+- `scripts/conductor-review.sh` — AI review + auto-fix loop
 - `scripts/codex-review.sh` — legacy compatibility entry point for existing integrations
 - `scripts/touchstone-run.sh` — Profile-aware runner for Node/TypeScript, Swift, Rust, Python, Go, and monorepos
 - `scripts/open-pr.sh` — Push + create PR via `gh`
@@ -236,12 +236,12 @@ Universal engineering standards, extracted and battle-tested from production sys
 - **[pre-implementation-checklist.md](principles/pre-implementation-checklist.md)** — Pre-flight questions that route back to the canonical principles
 - **[audit-weak-points.md](principles/audit-weak-points.md)** — Methodology: find one bug → audit the whole class → ranked fix → guardrail test
 - **[documentation-ownership.md](principles/documentation-ownership.md)** — Single canonical owner per volatile fact
-- **[ai-delivery-architecture.md](principles/ai-delivery-architecture.md)** — Human request → driver AI → PR → deterministic checks → Conductor review/fix → merge
-- **[git-workflow.md](principles/git-workflow.md)** — Feature branch → PR → merge gate → squash merge
+- **[ai-delivery-architecture.md](principles/ai-delivery-architecture.md)** — Human request → driver AI → PR → agentic review loop → approved merge
+- **[git-workflow.md](principles/git-workflow.md)** — Feature branch → PR → review comments/checks → squash merge
 
 ### AI Review Gate
 
-Automatically reviews code before it reaches the default branch. In Touchstone 2.0, all LLM access routes through the [Conductor CLI](https://github.com/autumngarage/conductor):
+Automatically reviews code on PRs before it reaches the default branch. In Touchstone 2.0, Touchstone-managed LLM access routes through the [Conductor CLI](https://github.com/autumngarage/conductor):
 
 - One reviewer — `conductor` — uses Conductor's semantic review path for read-only review with hosted fallback
 - Quality-tier-aware routing for provider-pinned and edit-capable modes (`prefer = "best"` picks the frontier-tier provider)
@@ -265,7 +265,7 @@ scripts/dogfood-agent-steering.sh --providers auto
 scripts/dogfood-agent-steering.sh --providers auto,claude,codex,gemini --keep
 ```
 
-The harness bootstraps a temporary Touchstone project, asks Conductor-routed agents to inspect the real steering files, and fails unless they infer the required branch-before-edit, PR creation, Conductor review, and `scripts/open-pr.sh --auto-merge` flow. It is not part of `tests/test-*.sh` because it can spend provider quota.
+The harness bootstraps a temporary Touchstone project, asks Conductor-routed agents to inspect the real steering files, and fails unless they infer the required branch-before-edit, PR creation, PR-triggered agentic review loop, and `scripts/open-pr.sh --auto-merge` flow. It is not part of `tests/test-*.sh` because it can spend provider quota.
 
 The static contract tests still run in the normal self-test suite:
 
@@ -273,7 +273,7 @@ The static contract tests still run in the normal self-test suite:
 bash tests/test-agent-steering-contract.sh
 ```
 
-That test guards the interpretability contract without spending model quota: Claude, Codex, and Gemini are interchangeable driving CLIs; Conductor is the worker/reviewer router with provider fallback; all drivers must converge on the same managed principles and branch → PR → merge-gate review → automerge lifecycle.
+That test guards the interpretability contract without spending model quota: Claude, Codex, and Gemini are interchangeable driving CLIs; Conductor is the worker/reviewer router with provider fallback; all drivers must converge on the same managed principles and branch → PR → agentic review loop → approved merge lifecycle.
 
 Maintainer self-tests are split into a fast default tier and a slow opt-in tier. The fast tier is the pre-push contract and must not call live model/provider CLIs:
 
