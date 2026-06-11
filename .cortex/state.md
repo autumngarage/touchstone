@@ -1,10 +1,10 @@
 ---
-Generated: 2026-06-11T13:13:42-04:00
+Generated: 2026-06-11T14:49:38-04:00
 Generator: cortex refresh-state v1.6.4
 Sources:
-  - HEAD sha: 8b9044bf06f077a97958e4ceaa9df535759aa596
+  - HEAD sha: 2f7c09a1af8e3665b53605d6517ab6e2abef4dbb
   - .cortex/plans/*.md (2 files)
-  - .cortex/journal/*.md (16 entries, 2026-05-05..2026-06-11)
+  - .cortex/journal/*.md (18 entries, 2026-05-05..2026-06-11)
   - .cortex/doctrine/*.md (1 entries)
   - .cortex/templates/**/*.md (12 templates)
   - docs/case-studies/*.md (0 case studies)
@@ -27,7 +27,9 @@ Sources-hash:
   .cortex/journal/2026-05-11-pr-merged-1124.md: d1d50e2bff02a0cbd2ed6529f54fe8a238c5eff4566a6d6d4e9d3b2bacbc7e74
   .cortex/journal/2026-05-11-pr-merged-1321.md: 5180c6a3d1a5c9aa66d1f3651ca6560fd65f2b6c6912ff79532f6ac74d300f1d
   .cortex/journal/2026-06-11-pr-agentic-review-guidance.md: 01b0b72ed0144a32ea9053a5800ddad44f722fb7d635f8e2f472a9f803ca26f5
+  .cortex/journal/2026-06-11-pr-feedback-merge-gate.md: a7ee217fdc845d91e72f9f629c81be401f4b43a5eb0a1c79a0b02a01848e21d1
   .cortex/journal/2026-06-11-pr-merged-1313.md: aad94d757185a4044fa071b9a5d715c8017714762d434278b745b71c03466d7a
+  .cortex/journal/2026-06-11-pr-merged-1449.md: 7a7be4180b562713fa7c35952b1b7b8d946331b96e0331b66b30608574caa020
   .cortex/plans/touchstone-conductor-integration.md: be3f8211b7c19e32e0c4c858c35678c1d85418fe12c5d22b29cc0a7831f8a54c
   .cortex/plans/touchstone-cortex-metadata.md: 0e23c4e06b91c1e8da358b3928750798975eed88815502fb8e7ddfbdbd0187f5
   .cortex/templates/README.md: 695aa2e623bd7f4e698dae471bded0cde354da0c1d8589266660ceb1be8efad1
@@ -42,7 +44,7 @@ Sources-hash:
   .cortex/templates/journal/release.md: 9a6bc59219156e48b419fb170c7c50ff557767def8672ef20568df3e14eadbd0
   .cortex/templates/journal/sentinel-cycle.md: 2945e2d94af4ec9848584b4b3e9cea7060d2968dd42e78faf21fb6f859137476
   .cortex/templates/plans/template.md: d8156cfa3b86acd2a1fbb36cff07cae37d99f3adee7f72b14b7b16e645c51b44
-Corpus: 16 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
+Corpus: 18 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
 Omitted:
   []
 Incomplete:
@@ -72,6 +74,7 @@ Spec: 0.5.0
 - **2026-05-11** — PR #321 merged — docs: steer agents to file delivery friction (`.cortex/journal/2026-05-11-pr-merged-1124.md`, Type: pr-merged)
 - **2026-05-11** — PR #328 merged — fix(sync): tighten auto project sync policy (`.cortex/journal/2026-05-11-pr-merged-1321.md`, Type: pr-merged)
 - **2026-06-11** — PR #456 merged — docs(workflow): steer PR agentic review loop (`.cortex/journal/2026-06-11-pr-merged-1313.md`, Type: pr-merged)
+- **2026-06-11** — PR #459 merged — feat(merge): gate on PR review feedback (`.cortex/journal/2026-06-11-pr-merged-1449.md`, Type: pr-merged)
 
 ## Stale-now / handle-later
 
