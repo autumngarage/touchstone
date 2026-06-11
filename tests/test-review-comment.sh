@@ -87,7 +87,19 @@ cat >"$FAKE_BIN/gh" <<'EOF'
 set -euo pipefail
 case "${1:-} ${2:-}" in
   "repo view")
-    echo "main"
+    json_fields=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--json" ]; then
+        json_fields="$arg"
+      fi
+      prev="$arg"
+    done
+    case "$json_fields" in
+      defaultBranchRef) echo "main" ;;
+      nameWithOwner) echo "example/touchstone" ;;
+      *) echo "unexpected gh repo view json: $json_fields" >&2; exit 1 ;;
+    esac
     ;;
   "pr view")
     case "${5:-}" in
@@ -96,11 +108,16 @@ case "${1:-} ${2:-}" in
         ;;
       headRefName) echo "feature/test" ;;
       headRefOid) echo "pr-head-oid" ;;
+      isDraft) echo "false" ;;
+      reviewDecision) echo "" ;;
       mergeStateStatus,mergeable) echo "CLEAN MERGEABLE" ;;
       mergedAt) echo "2026-05-07T15:00:00Z" ;;
       mergeCommit) echo "squash-oid" ;;
       *) echo "unexpected gh pr view args: $*" >&2; exit 1 ;;
     esac
+    ;;
+  "api graphql")
+    echo ""
     ;;
   "pr checkout")
     echo checked-out > "$GH_CHECKOUT_FILE"

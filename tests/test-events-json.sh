@@ -208,18 +208,35 @@ cat >"$MERGE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "${1:-} ${2:-}" in
-  "repo view") echo "main" ;;
+  "repo view")
+    json_fields=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--json" ]; then
+        json_fields="$arg"
+      fi
+      prev="$arg"
+    done
+    case "$json_fields" in
+      defaultBranchRef) echo "main" ;;
+      nameWithOwner) echo "example/touchstone" ;;
+      *) echo "unexpected gh repo view json: $json_fields" >&2; exit 1 ;;
+    esac
+    ;;
   "pr view")
     case "${5:-}" in
       state) [ -f "${GH_MERGED_MARKER:-/dev/null/never}" ] && echo "MERGED" || echo "OPEN" ;;
       headRefName) echo "feature/test" ;;
       headRefOid) echo "pr-head-oid" ;;
+      isDraft) echo "false" ;;
+      reviewDecision) echo "" ;;
       mergeStateStatus,mergeable) echo "CLEAN MERGEABLE" ;;
       mergedAt) echo "2026-05-06T12:34:56Z" ;;
       mergeCommit) echo "squash-oid" ;;
       *) echo "unexpected gh pr view args: $*" >&2; exit 1 ;;
     esac
     ;;
+  "api graphql") echo "" ;;
   "pr checkout") touch "$GH_CHECKOUT_FILE"; echo "checked out PR $3" ;;
   "pr comment") echo "commented" ;;
   "pr merge") touch "$GH_MERGED_MARKER"; echo "merged" ;;
