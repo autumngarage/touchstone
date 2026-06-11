@@ -1283,7 +1283,18 @@ require_pr_feedback_clear() {
 
   echo "==> Checking PR-visible review feedback for PR #$PR_NUMBER ($phase) ..."
 
-  is_draft="$(gh pr view "$PR_NUMBER" --json isDraft --jq '.isDraft' 2>/dev/null || echo "")"
+  if ! is_draft="$(gh pr view "$PR_NUMBER" --json isDraft --jq '.isDraft' 2>&1)"; then
+    echo "ERROR: Could not inspect draft state for PR #$PR_NUMBER: $is_draft" >&2
+    echo "       Refusing to merge without draft-state confirmation." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-state"
+    exit 1
+  fi
+  if [ -z "$is_draft" ]; then
+    echo "ERROR: GitHub returned an empty draft state for PR #$PR_NUMBER." >&2
+    echo "       Refusing to merge without draft-state confirmation." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-state"
+    exit 1
+  fi
   if [ "$is_draft" = "true" ]; then
     echo "ERROR: PR #$PR_NUMBER is still a draft; refusing to merge." >&2
     echo "       Mark it ready for review, then rerun: bash scripts/open-pr.sh --auto-merge" >&2
@@ -1291,17 +1302,35 @@ require_pr_feedback_clear() {
     exit 1
   fi
 
-  observed_head="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")"
-  if [ -n "$expected_head" ] && [ -n "$observed_head" ] && [ "$observed_head" != "$expected_head" ]; then
-    echo "ERROR: PR #$PR_NUMBER head changed while checking review feedback." >&2
-    echo "       expected: $expected_head" >&2
-    echo "       actual:   $observed_head" >&2
-    echo "       Rerun the merge gate on the current head." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="head-not-updated"
-    exit 1
+  if [ -n "$expected_head" ]; then
+    if ! observed_head="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>&1)"; then
+      echo "ERROR: Could not inspect PR #$PR_NUMBER head commit: $observed_head" >&2
+      echo "       Refusing to merge without exact-head confirmation." >&2
+      TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-state"
+      exit 1
+    fi
+    if [ -z "$observed_head" ]; then
+      echo "ERROR: GitHub returned an empty head commit for PR #$PR_NUMBER." >&2
+      echo "       Refusing to merge without exact-head confirmation." >&2
+      TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-state"
+      exit 1
+    fi
+    if [ "$observed_head" != "$expected_head" ]; then
+      echo "ERROR: PR #$PR_NUMBER head changed while checking review feedback." >&2
+      echo "       expected: $expected_head" >&2
+      echo "       actual:   $observed_head" >&2
+      echo "       Rerun the merge gate on the current head." >&2
+      TOUCHSTONE_MERGE_FAILURE_REASON="head-not-updated"
+      exit 1
+    fi
   fi
 
-  review_decision="$(gh pr view "$PR_NUMBER" --json reviewDecision --jq '.reviewDecision // empty' 2>/dev/null || echo "")"
+  if ! review_decision="$(gh pr view "$PR_NUMBER" --json reviewDecision --jq '.reviewDecision // empty' 2>&1)"; then
+    echo "ERROR: Could not inspect review decision for PR #$PR_NUMBER: $review_decision" >&2
+    echo "       Refusing to merge without review-decision confirmation." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-state"
+    exit 1
+  fi
   if [ "$review_decision" = "CHANGES_REQUESTED" ]; then
     echo "ERROR: PR #$PR_NUMBER has an active CHANGES_REQUESTED review decision." >&2
     echo "       Address the requested changes, push fixes, and rerun: bash scripts/open-pr.sh --auto-merge" >&2
