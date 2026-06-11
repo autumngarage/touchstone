@@ -6,7 +6,7 @@
   |_|\___/ \__,_|\___|_| |_|___/\__\___/|_| |_|\___|
 ```
 
-> *Scaffolding + PR-triggered agentic review for AI-assisted projects.*
+> *Scaffolding + PR-visible agentic review for AI-assisted projects.*
 >
 > by **[Autumn Garage](https://github.com/autumngarage/autumn-garage)** · alongside [Cortex](https://github.com/autumngarage/cortex) · [Sentinel](https://github.com/autumngarage/sentinel) · [Conductor](https://github.com/autumngarage/conductor) · [Alchemist](https://github.com/autumngarage/alchemist) — issue-driven transmuter — open issue in, reviewed PR out.
 
@@ -265,7 +265,7 @@ scripts/dogfood-agent-steering.sh --providers auto
 scripts/dogfood-agent-steering.sh --providers auto,claude,codex,gemini --keep
 ```
 
-The harness bootstraps a temporary Touchstone project, asks Conductor-routed agents to inspect the real steering files, and fails unless they infer the required branch-before-edit, PR creation, PR-triggered agentic review loop, and `scripts/open-pr.sh --auto-merge` flow. It is not part of `tests/test-*.sh` because it can spend provider quota.
+The harness bootstraps a temporary Touchstone project, asks Conductor-routed agents to inspect the real steering files, and fails unless they infer the required branch-before-edit, PR creation, PR-visible review loop, and `scripts/open-pr.sh --auto-merge` flow. It is not part of `tests/test-*.sh` because it can spend provider quota.
 
 The static contract tests still run in the normal self-test suite:
 

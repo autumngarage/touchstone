@@ -32,7 +32,7 @@ Open PR
   |
   | push feature branch
   | create GitHub PR
-  | creating/updating the PR triggers configured checks/reviews
+  | configured checks/reviews attach to the PR when enabled
   v
 Agentic PR Review Loop
   |
@@ -73,7 +73,7 @@ Human user
 - The exact commit merged has passed deterministic checks after its last mutation.
 - The exact commit merged has no unresolved blocking review comments, requested changes, or failing required checks.
 - Touchstone-managed LLM review uses Conductor as the only model access path. Driver CLIs do not call provider-specific review commands directly.
-- PR creation is the review trigger and coordination surface. It should happen early enough for agentic reviewers and CI to work against visible PR state.
+- PR creation is the review coordination surface. It should happen early enough for CI and any PR-visible agentic reviewers to work against visible PR state.
 - Feature-branch push is not the expensive gate. It should preserve cheap local guardrails without running full test suites or LLM review by default.
 - Merge is allowed only after PR-visible review and check approval. A final local merge helper may still run deterministic checks and Conductor review as a backstop.
 - A deterministic check result may be reused only when the cache key includes the base ref, head commit, relevant config, and checker version/input boundary.
@@ -143,7 +143,7 @@ Rules:
 The next build should make the scripts match this architecture:
 
 1. `open-pr.sh` creates or updates the PR and is the default driver entry point for shipping.
-2. Creating or updating the PR should trigger the configured agentic reviewers and required checks.
+2. Creating or updating the PR should expose configured checks and, when enabled, PR-visible agentic reviewers.
 3. The driver watches PR comments, review decisions, and checks after each push; actionable feedback becomes commits on the PR branch.
 4. `merge-pr.sh` remains the final verification/backstop surface where projects still run local deterministic preflight and Conductor review before squash merge.
 5. Review and preflight markers should key on base/head/config so repeated operations reuse valid results without hiding stale state.

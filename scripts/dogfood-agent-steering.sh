@@ -35,7 +35,7 @@ validate_response() {
   require_pattern "$file" 'BRANCH_BEFORE_EDIT:[[:space:]]*yes' "branch-before-edit yes" || failures=$((failures + 1))
   require_pattern "$file" 'FEATURE_BRANCH_COMMAND:.*git[[:space:]]+(checkout[[:space:]]+-b|switch[[:space:]]+-c)' "feature branch command" || failures=$((failures + 1))
   require_pattern "$file" 'PR_CREATED:[[:space:]]*yes' "PR_CREATED yes" || failures=$((failures + 1))
-  require_pattern "$file" 'AGENTIC_REVIEW_TRIGGERED_BY_PR:[[:space:]]*yes' "agentic review triggered by PR" || failures=$((failures + 1))
+  require_pattern "$file" 'PR_REVIEW_SURFACE_USED:[[:space:]]*yes' "PR review surface used" || failures=$((failures + 1))
   require_pattern "$file" 'DRIVER_WATCHES_PR_COMMENTS:[[:space:]]*yes' "driver watches PR comments" || failures=$((failures + 1))
   require_pattern "$file" 'MERGE_AFTER_APPROVAL:[[:space:]]*yes' "merge after approval" || failures=$((failures + 1))
   require_pattern "$file" 'AUTO_MERGE_COMMAND:.*scripts/open-pr\.sh[[:space:]]+--auto-merge' "open-pr auto-merge command" || failures=$((failures + 1))
@@ -248,7 +248,7 @@ TOUCHSTONE_DOGFOOD_RESULT: PASS|FAIL
 BRANCH_BEFORE_EDIT: yes|no
 FEATURE_BRANCH_COMMAND: <the git command you would use>
 PR_CREATED: yes|no
-AGENTIC_REVIEW_TRIGGERED_BY_PR: yes|no
+PR_REVIEW_SURFACE_USED: yes|no
 DRIVER_WATCHES_PR_COMMENTS: yes|no
 MERGE_AFTER_APPROVAL: yes|no
 AUTO_MERGE_COMMAND: <the command you would use>
@@ -261,7 +261,7 @@ DRIVER_FALLBACK_SHARED_CONTRACT: yes|no
 CONDUCTOR_PROVIDER_FALLBACK: yes|no
 
 Mark PASS only if the docs tell you to branch before editing, apply the shared
-engineering principles, create a PR that triggers agentic review, watch PR
+engineering principles, create a PR as the review/check surface, watch PR
 comments/checks, address actionable feedback with commits, and merge only after
 required reviews/checks approve. Also mark PASS only if you distinguish the
 driving CLI from Conductor: Claude/Codex/Gemini own the repo workflow as
