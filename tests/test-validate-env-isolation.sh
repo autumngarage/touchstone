@@ -60,7 +60,7 @@ echo "==> Test: validate ignores Git hook environment from another repo"
 VALIDATE_OUT="$TEST_DIR/validate.out"
 (
   cd "$VALIDATE_PROJECT"
-    GIT_DIR="$OUTER_REPO/.git" \
+  GIT_DIR="$OUTER_REPO/.git" \
     GIT_WORK_TREE="$OUTER_REPO" \
     GIT_INDEX_FILE="$OUTER_REPO/.git/index" \
     GIT_ALTERNATE_OBJECT_DIRECTORIES="$OUTER_REPO/.git/objects" \
