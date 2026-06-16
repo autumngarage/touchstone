@@ -83,7 +83,13 @@ repos:
         name: Touchstone project validation
         entry: >-
           /usr/bin/env env
-          -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE
+          -u GIT_ALTERNATE_OBJECT_DIRECTORIES
+          -u GIT_CONFIG -u GIT_CONFIG_PARAMETERS -u GIT_CONFIG_COUNT
+          -u GIT_OBJECT_DIRECTORY -u GIT_DIR -u GIT_WORK_TREE
+          -u GIT_IMPLICIT_WORK_TREE -u GIT_GRAFT_FILE -u GIT_INDEX_FILE
+          -u GIT_NO_REPLACE_OBJECTS -u GIT_REPLACE_REF_BASE
+          -u GIT_PREFIX -u GIT_SHALLOW_FILE -u GIT_COMMON_DIR
+          -u GIT_NAMESPACE -u GIT_INTERNAL_GETTEXT_SH_SCHEME
           TOUCHSTONE_VALIDATE_SKIP_FEATURE_PUSH=1
           bash scripts/touchstone-run.sh validate
         language: system

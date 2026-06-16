@@ -142,6 +142,20 @@ WT_JSON="$(jq -nc \
 assert "allows 'git -C <worktree>' commit when worktree is on a feature branch" "0" \
   "$(run_hook "$BRANCH_GUARD" "$WT_JSON")"
 
+PRE_COMMIT_C_JSON="$(jq -nc \
+  --arg cmd "git -C $WORKTREE status && git commit -m 'wip'" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "blocks 'git -C <feature> status && git commit' on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$PRE_COMMIT_C_JSON")"
+
+POST_COMMIT_C_JSON="$(jq -nc \
+  --arg cmd "git commit -m 'wip' ; git -C $WORKTREE status" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "blocks 'git commit; git -C <feature> status' on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$POST_COMMIT_C_JSON")"
+
 # 8. lowercase -c (config override, not change-directory) must NOT bypass
 #    the guard. Regression-guard for case-sensitivity of the -C parsing —
 #    if someone writes the regex with [Cc] it will treat
@@ -181,6 +195,39 @@ CHAIN_JSON="$(jq -nc \
   '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
 assert "chained cd: last cd before commit wins (allows feature-branch commit)" "0" \
   "$(run_hook "$BRANCH_GUARD" "$CHAIN_JSON")"
+
+BRANCH_FIRST_COMMIT_JSON="$(mkjson "git checkout -b fix/branch-first-commit && git commit -m 'wip'")"
+assert "allows branch-first compound before git commit on main" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_COMMIT_JSON")"
+
+BRANCH_FIRST_SWITCH_BACK_JSON="$(mkjson "git checkout -b fix/branch-first-switch-back && git switch main && git commit --no-verify -m 'wip'")"
+assert "blocks branch-first compound when later switch returns to main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_SWITCH_BACK_JSON")"
+
+BRANCH_FIRST_C_SWITCH_BACK_JSON="$(mkjson "git checkout -b fix/branch-first-c-switch-back && git -C . switch main && git commit --no-verify -m 'wip'")"
+assert "blocks branch-first compound when later git -C switch returns to main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_C_SWITCH_BACK_JSON")"
+
+BRANCH_FIRST_HEREDOC_JSON="$(mkjson "git checkout -b docs/pe0-walkthrough && cat > /tmp/touchstone-branch-guard-test <<'EOF'
+body
+EOF")"
+assert "allows branch-first compound with heredoc outside repo on main" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_HEREDOC_JSON")"
+
+MAIN_TARGET="$(mktemp -d -t touchstone-hook-test-main-target.XXXXXX)"
+trap 'rm -rf "$TMPDIR" "$WORKTREE" "$MAIN_TARGET"' EXIT
+git -C "$MAIN_TARGET" init --quiet --initial-branch=main
+git -C "$MAIN_TARGET" config user.email "test@touchstone.test"
+git -C "$MAIN_TARGET" config user.name "Touchstone Test"
+echo "seed" >"$MAIN_TARGET/seed.txt"
+git -C "$MAIN_TARGET" add seed.txt
+git -C "$MAIN_TARGET" commit --quiet -m "seed"
+BRANCH_FIRST_OTHER_CWD_JSON="$(jq -nc \
+  --arg cmd "git checkout -b fix/local-first && git -C $MAIN_TARGET commit -m 'wip'" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "blocks branch-first compound when later commit targets another repo on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_OTHER_CWD_JSON")"
 
 # ----------------------------------------------------------------------
 # emergency-disclosure

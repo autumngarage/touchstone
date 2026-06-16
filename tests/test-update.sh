@@ -301,12 +301,12 @@ if [ -n "$(git -C "$IGNORED_MANAGED_PROJECT" status --porcelain)" ]; then
 fi
 
 # --------------------------------------------------------------------------
-# Test 2d: direct project-local PR scripts self-update before running.
+# Test 2d: direct project-local PR scripts refuse feature-branch auto-update.
 # This covers the raw `bash scripts/merge-pr.sh` path, which bypasses the
 # touchstone CLI's normal auto-project-sync hook.
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Step 3d: Direct workflow scripts update stale Touchstone files ---"
+echo "--- Step 3d: Direct workflow scripts refuse feature-branch Touchstone churn ---"
 
 SCRIPT_SYNC_PROJECT="$TEST_DIR/script-sync-project"
 SCRIPT_SYNC_BIN="$TEST_DIR/script-sync-bin"
@@ -337,28 +337,28 @@ SCRIPT_SYNC_RC=0
 ) >"$SCRIPT_SYNC_OUT" 2>&1 || SCRIPT_SYNC_RC=$?
 
 if [ "$SCRIPT_SYNC_RC" != "2" ]; then
-  echo "FAIL: guarded merge-pr invalid-argument run should exit 2 after sync" >&2
+  echo "FAIL: guarded merge-pr run should exit 2 when feature-branch script sync is refused" >&2
   echo "    rc=$SCRIPT_SYNC_RC" >&2
   cat "$SCRIPT_SYNC_OUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
 assert_contains "$SCRIPT_SYNC_OUT" 'Touchstone script sync: project-local workflow files are stale'
-assert_contains "$SCRIPT_SYNC_OUT" 'Touchstone script sync: restarting'
-assert_contains "$SCRIPT_SYNC_OUT" 'Usage: bash scripts/merge-pr.sh <pr-number>'
+assert_contains "$SCRIPT_SYNC_OUT" "Refusing to auto-commit Touchstone updates onto in-flight branch work"
+assert_contains "$SCRIPT_SYNC_OUT" "TOUCHSTONE_SCRIPT_SYNC_ALLOW_FEATURE_UPDATE=1"
 assert_contains "$SCRIPT_SYNC_LOG" '^update --check$'
-assert_contains "$SCRIPT_SYNC_LOG" '^update --in-place$'
+assert_not_contains "$SCRIPT_SYNC_LOG" '^update --in-place$'
 
-if [ "$(cat "$SCRIPT_SYNC_PROJECT/.touchstone-version" | tr -d '[:space:]')" = "$INITIAL_SHA" ]; then
-  echo "    PASS: direct script sync refreshed .touchstone-version"
+if [ "$(cat "$SCRIPT_SYNC_PROJECT/.touchstone-version" | tr -d '[:space:]')" = "0000000000000000000000000000000000000014" ]; then
+  echo "    PASS: direct script sync left stale feature branch untouched"
 else
-  echo "FAIL: direct script sync did not refresh .touchstone-version" >&2
+  echo "FAIL: direct script sync should not refresh .touchstone-version without opt-in" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
-if git -C "$SCRIPT_SYNC_PROJECT" log -1 --format=%s | grep -q '^chore: update touchstone to '; then
-  echo "    PASS: direct script sync committed the update on the feature branch"
+if git -C "$SCRIPT_SYNC_PROJECT" log -1 --format=%s | grep -q '^simulate stale script sync touchstone state$'; then
+  echo "    PASS: direct script sync did not commit an update on the feature branch"
 else
-  echo "FAIL: direct script sync did not create a Touchstone update commit" >&2
+  echo "FAIL: direct script sync should not create a Touchstone update commit without opt-in" >&2
   git -C "$SCRIPT_SYNC_PROJECT" log -1 --format=%s >&2
   ERRORS=$((ERRORS + 1))
 fi
@@ -369,8 +369,47 @@ if [ "$(git -C "$SCRIPT_SYNC_PROJECT" branch --show-current)" != "feature/script
 fi
 
 if [ -n "$(git -C "$SCRIPT_SYNC_PROJECT" status --porcelain)" ]; then
-  echo "FAIL: direct script sync should leave a clean worktree after committing" >&2
+  echo "FAIL: direct script sync refusal should leave a clean worktree" >&2
   git -C "$SCRIPT_SYNC_PROJECT" status --short >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+rm -f "$SCRIPT_SYNC_LOG"
+SCRIPT_SYNC_OPT_IN_OUT="$TEST_DIR/script-sync-opt-in-output.txt"
+SCRIPT_SYNC_OPT_IN_RC=0
+(
+  cd "$SCRIPT_SYNC_PROJECT"
+  PATH="$SCRIPT_SYNC_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    TOUCHSTONE_BIN="$TOUCHSTONE_ROOT/bin/touchstone" \
+    TOUCHSTONE_SCRIPT_SYNC_FAKE_LOG="$SCRIPT_SYNC_LOG" \
+    TOUCHSTONE_SCRIPT_SYNC_ALLOW_FEATURE_UPDATE=1 \
+    bash scripts/merge-pr.sh not-a-pr
+) >"$SCRIPT_SYNC_OPT_IN_OUT" 2>&1 || SCRIPT_SYNC_OPT_IN_RC=$?
+
+if [ "$SCRIPT_SYNC_OPT_IN_RC" != "2" ]; then
+  echo "FAIL: opted-in guarded merge-pr invalid-argument run should exit 2 after sync" >&2
+  echo "    rc=$SCRIPT_SYNC_OPT_IN_RC" >&2
+  cat "$SCRIPT_SYNC_OPT_IN_OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$SCRIPT_SYNC_OPT_IN_OUT" 'Touchstone script sync: project-local workflow files are stale'
+assert_contains "$SCRIPT_SYNC_OPT_IN_OUT" 'Touchstone script sync: restarting'
+assert_contains "$SCRIPT_SYNC_OPT_IN_OUT" 'Usage: bash scripts/merge-pr.sh <pr-number>'
+assert_contains "$SCRIPT_SYNC_LOG" '^update --check$'
+assert_contains "$SCRIPT_SYNC_LOG" '^update --in-place$'
+
+if [ "$(cat "$SCRIPT_SYNC_PROJECT/.touchstone-version" | tr -d '[:space:]')" = "$INITIAL_SHA" ]; then
+  echo "    PASS: opted-in direct script sync refreshed .touchstone-version"
+else
+  echo "FAIL: opted-in direct script sync did not refresh .touchstone-version" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+if git -C "$SCRIPT_SYNC_PROJECT" log -1 --format=%s | grep -q '^chore: update touchstone to '; then
+  echo "    PASS: opted-in direct script sync committed the update on the feature branch"
+else
+  echo "FAIL: opted-in direct script sync did not create a Touchstone update commit" >&2
+  git -C "$SCRIPT_SYNC_PROJECT" log -1 --format=%s >&2
   ERRORS=$((ERRORS + 1))
 fi
 

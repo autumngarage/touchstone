@@ -53,13 +53,30 @@ if ! printf '%s' "$command" | grep -qE '\bgit([[:space:]]+-c[[:space:]]+[^[:spac
   exit 0
 fi
 
+branch_first_compound=false
+branch_first_changes_branch_before_commit=false
+if printf '%s' "$command" | grep -qE '^[[:space:]]*git([[:space:]]+-c[[:space:]]+[^[:space:]]+)*[[:space:]]+(checkout[[:space:]]+-b|switch[[:space:]]+-c)[[:space:]]+(feat|fix|docs|chore|refactor)/[^[:space:];&|]+[[:space:]]*&&'; then
+  branch_first_compound=true
+  branch_first_post_create="$(printf '%s' "$command" | sed -E 's/^[[:space:]]*git([[:space:]]+-c[[:space:]]+[^[:space:]]+)*[[:space:]]+(checkout[[:space:]]+-b|switch[[:space:]]+-c)[[:space:]]+(feat|fix|docs|chore|refactor)\/[^[:space:];&|]+[[:space:]]*&&[[:space:]]*//')"
+  while IFS= read -r segment; do
+    trimmed="$(printf '%s' "$segment" | sed -E 's/^[[:space:]]+//')"
+    if printf '%s' "$trimmed" | grep -qE '^git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
+      break
+    fi
+    if printf '%s' "$trimmed" | grep -qE '^git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+(checkout|switch)([[:space:]]|$)'; then
+      branch_first_changes_branch_before_commit=true
+      break
+    fi
+  done < <(printf '%s\n' "$branch_first_post_create" | tr '&;|' '\n')
+fi
+
 # Worktree-aware: when commit targets a different repo via `-C <path>` OR
 # the operator wrote `cd <path> && git commit`, check that branch instead.
 # The previous version saw `main` as the current branch even when the commit
 # was being directed at a feature worktree, blocking legitimate work.
 # Lowercase `-c` (the config-override flag) does not change directory
 # and so does NOT trigger this override.
-target_cwd_from_C="$(printf '%s' "$command" | grep -oE '\-C[[:space:]]+[^[:space:]]+' | sed -E 's/^-C[[:space:]]+//' | tail -1 || true)"
+target_cwd_from_C=""
 
 # `cd <path> && git commit` shape: walk shell-statement boundaries (&&, ||,
 # ;) and remember the last `cd <path>` from segments BEFORE the segment
@@ -67,20 +84,36 @@ target_cwd_from_C="$(printf '%s' "$command" | grep -oE '\-C[[:space:]]+[^[:space
 # elsewhere`) don't affect the commit's cwd and must be ignored — otherwise
 # they'd silently bypass the guard on main.
 target_cwd_from_cd=""
+commit_segment=""
 while IFS= read -r segment; do
   trimmed="$(printf '%s' "$segment" | sed -E 's/^[[:space:]]+//')"
   if printf '%s' "$trimmed" | grep -qE '^git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
+    commit_segment="$trimmed"
     break
   fi
   cd_target="$(printf '%s' "$trimmed" | grep -oE '^cd[[:space:]]+[^[:space:]]+' | sed -E 's/^cd[[:space:]]+//' || true)"
   if [ -n "$cd_target" ]; then
     target_cwd_from_cd="$cd_target"
   fi
-done < <(printf '%s' "$command" | tr '&;|' '\n')
+done < <(printf '%s\n' "$command" | tr '&;|' '\n')
+if [ -n "$commit_segment" ]; then
+  target_cwd_from_C="$(printf '%s' "$commit_segment" | grep -oE '\-C[[:space:]]+[^[:space:]]+' | sed -E 's/^-C[[:space:]]+//' | tail -1 || true)"
+fi
 
 # `-C` is the more explicit form; prefer it. Fall back to the last `cd`
 # target seen before the commit.
 target_cwd="${target_cwd_from_C:-$target_cwd_from_cd}"
+
+# A compound that starts by creating a standard Touchstone feature branch with
+# `&&` will run a same-cwd later commit after leaving the default branch. Allow
+# that exact remedy shape instead of blocking before checkout can happen. Do
+# not allow `;`: if checkout fails, the later commit would still run. If a later
+# commit targets another cwd via `git -C` or `cd`, keep checking that target.
+if [ "$branch_first_compound" = "true" ] \
+  && [ "$branch_first_changes_branch_before_commit" = "false" ] \
+  && [ -z "$target_cwd" ]; then
+  exit 0
+fi
 
 if [ -n "$target_cwd" ]; then
   if [ -n "$cwd" ] && [ -d "$cwd/$target_cwd" ]; then
