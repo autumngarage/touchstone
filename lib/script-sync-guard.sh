@@ -5,7 +5,8 @@
 # This guard is sourced by high-risk project-local scripts before they do PR
 # work. If the project was bootstrapped from an older Touchstone install, it
 # ships a dedicated Touchstone update PR from the default branch when that is
-# safe, or updates the current feature branch and re-execs the script.
+# safe. On feature branches it refuses to auto-commit workflow churn unless the
+# operator explicitly opts into updating the current branch.
 
 touchstone_script_sync_guard_truthy() {
   case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
@@ -169,6 +170,22 @@ touchstone_script_sync_guard() {
   if [ -z "$current_branch" ]; then
     echo "ERROR: Touchstone project files are stale, but $resolved_script is running from a detached HEAD." >&2
     echo "       Check out a feature branch, run touchstone update --in-place, then rerun this command." >&2
+    exit 2
+  fi
+
+  if ! touchstone_script_sync_guard_truthy "${TOUCHSTONE_SCRIPT_SYNC_ALLOW_FEATURE_UPDATE:-}"; then
+    echo "==> Touchstone script sync: project-local workflow files are stale." >&2
+    echo "ERROR: Touchstone project files are stale on feature branch '$current_branch'." >&2
+    echo "       Refusing to auto-commit Touchstone updates onto in-flight branch work." >&2
+    if [ -n "$default_branch" ]; then
+      echo "       Recommended: git switch $default_branch && touchstone update --ship" >&2
+    else
+      echo "       Recommended: run touchstone update --ship from the default branch" >&2
+    fi
+    echo "       After the Touchstone update lands, rebase this branch and rerun $resolved_script." >&2
+    echo "       If this branch is intentionally a Touchstone update branch, rerun with:" >&2
+    echo "         TOUCHSTONE_SCRIPT_SYNC_ALLOW_FEATURE_UPDATE=1" >&2
+    echo "       Emergency stale-script bypass: TOUCHSTONE_NO_SCRIPT_SYNC=1" >&2
     exit 2
   fi
 
