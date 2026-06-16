@@ -204,6 +204,10 @@ BRANCH_FIRST_SWITCH_BACK_JSON="$(mkjson "git checkout -b fix/branch-first-switch
 assert "blocks branch-first compound when later switch returns to main" "2" \
   "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_SWITCH_BACK_JSON")"
 
+BRANCH_FIRST_C_SWITCH_BACK_JSON="$(mkjson "git checkout -b fix/branch-first-c-switch-back && git -C . switch main && git commit --no-verify -m 'wip'")"
+assert "blocks branch-first compound when later git -C switch returns to main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_C_SWITCH_BACK_JSON")"
+
 BRANCH_FIRST_HEREDOC_JSON="$(mkjson "git checkout -b docs/pe0-walkthrough && cat > /tmp/touchstone-branch-guard-test <<'EOF'
 body
 EOF")"
