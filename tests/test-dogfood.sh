@@ -9,6 +9,7 @@ set -euo pipefail
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PRE_COMMIT_CONFIG="$TOUCHSTONE_ROOT/.pre-commit-config.yaml"
+TEMPLATE_PRE_COMMIT_CONFIG="$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml"
 TOUCHSTONE_CONFIG="$TOUCHSTONE_ROOT/.touchstone-config"
 AGENT_STEERING_DOGFOOD="$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh"
 
@@ -30,6 +31,34 @@ if ! grep -q 'scripts/touchstone-run.sh validate' "$PRE_COMMIT_CONFIG"; then
   echo "FAIL: touchstone-validate hook must invoke scripts/touchstone-run.sh validate" >&2
   exit 1
 fi
+
+for git_env in \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES \
+  GIT_CONFIG \
+  GIT_CONFIG_PARAMETERS \
+  GIT_CONFIG_COUNT \
+  GIT_OBJECT_DIRECTORY \
+  GIT_DIR \
+  GIT_WORK_TREE \
+  GIT_IMPLICIT_WORK_TREE \
+  GIT_GRAFT_FILE \
+  GIT_INDEX_FILE \
+  GIT_NO_REPLACE_OBJECTS \
+  GIT_REPLACE_REF_BASE \
+  GIT_PREFIX \
+  GIT_SHALLOW_FILE \
+  GIT_COMMON_DIR \
+  GIT_NAMESPACE \
+  GIT_INTERNAL_GETTEXT_SH_SCHEME; do
+  if ! grep -Eq -- "-u[[:space:]]+$git_env([[:space:]]|$)" "$PRE_COMMIT_CONFIG"; then
+    echo "FAIL: touchstone-validate hook must clear $git_env before validation" >&2
+    exit 1
+  fi
+  if ! grep -Eq -- "-u[[:space:]]+$git_env([[:space:]]|$)" "$TEMPLATE_PRE_COMMIT_CONFIG"; then
+    echo "FAIL: template touchstone-validate hook must clear $git_env before validation" >&2
+    exit 1
+  fi
+done
 
 # The bespoke self-tests hook was retired in favor of routing through the shared
 # validate entrypoint. Re-adding it would break the dogfood loop.

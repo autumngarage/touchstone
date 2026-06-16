@@ -60,13 +60,24 @@ echo "==> Test: validate ignores Git hook environment from another repo"
 VALIDATE_OUT="$TEST_DIR/validate.out"
 (
   cd "$VALIDATE_PROJECT"
-  GIT_DIR="$OUTER_REPO/.git" \
+    GIT_DIR="$OUTER_REPO/.git" \
     GIT_WORK_TREE="$OUTER_REPO" \
     GIT_INDEX_FILE="$OUTER_REPO/.git/index" \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES="$OUTER_REPO/.git/objects" \
+    GIT_CONFIG="$OUTER_REPO/.git/config" \
+    GIT_CONFIG_PARAMETERS="'core.bare'='true'" \
+    GIT_CONFIG_COUNT=1 \
+    GIT_CONFIG_KEY_0=core.bare \
+    GIT_CONFIG_VALUE_0=true \
     GIT_OBJECT_DIRECTORY="$OUTER_REPO/.git/objects" \
     GIT_COMMON_DIR="$OUTER_REPO/.git" \
     GIT_NAMESPACE=touchstone-test \
+    GIT_IMPLICIT_WORK_TREE=0 \
+    GIT_GRAFT_FILE="$OUTER_REPO/.git/info/grafts" \
+    GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_REPLACE_REF_BASE=refs/replace-test \
     GIT_PREFIX=from-hook/ \
+    GIT_SHALLOW_FILE="$OUTER_REPO/.git/shallow" \
     GIT_INTERNAL_GETTEXT_SH_SCHEME=fallthrough \
     TOUCHSTONE_CONDUCTOR_WITH=deepseek-reasoner \
     CODEX_REVIEW_MODE=diff-only \
