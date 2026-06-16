@@ -182,6 +182,31 @@ CHAIN_JSON="$(jq -nc \
 assert "chained cd: last cd before commit wins (allows feature-branch commit)" "0" \
   "$(run_hook "$BRANCH_GUARD" "$CHAIN_JSON")"
 
+BRANCH_FIRST_COMMIT_JSON="$(mkjson "git checkout -b fix/branch-first-commit && git commit -m 'wip'")"
+assert "allows branch-first compound before git commit on main" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_COMMIT_JSON")"
+
+BRANCH_FIRST_HEREDOC_JSON="$(mkjson "git checkout -b docs/pe0-walkthrough && cat > /tmp/touchstone-branch-guard-test <<'EOF'
+body
+EOF")"
+assert "allows branch-first compound with heredoc outside repo on main" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_HEREDOC_JSON")"
+
+MAIN_TARGET="$(mktemp -d -t touchstone-hook-test-main-target.XXXXXX)"
+trap 'rm -rf "$TMPDIR" "$WORKTREE" "$MAIN_TARGET"' EXIT
+git -C "$MAIN_TARGET" init --quiet --initial-branch=main
+git -C "$MAIN_TARGET" config user.email "test@touchstone.test"
+git -C "$MAIN_TARGET" config user.name "Touchstone Test"
+echo "seed" >"$MAIN_TARGET/seed.txt"
+git -C "$MAIN_TARGET" add seed.txt
+git -C "$MAIN_TARGET" commit --quiet -m "seed"
+BRANCH_FIRST_OTHER_CWD_JSON="$(jq -nc \
+  --arg cmd "git checkout -b fix/local-first && git -C $MAIN_TARGET commit -m 'wip'" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "blocks branch-first compound when later commit targets another repo on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_OTHER_CWD_JSON")"
+
 # ----------------------------------------------------------------------
 # emergency-disclosure
 # ----------------------------------------------------------------------
