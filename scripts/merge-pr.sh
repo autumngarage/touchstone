@@ -1435,6 +1435,39 @@ fresh_pr_reaction_signal() {
   return 1
 }
 
+trusted_pr_clean_comment_signal() {
+  local expected_head="$1"
+  local not_before="$2"
+  local comments author created_at url body expected_head_short
+
+  [ -n "$REPO_OWNER" ] || return 1
+  [ -n "$REPO_NAME" ] || return 1
+
+  expected_head_short="$(printf '%.10s' "$expected_head")"
+  if ! comments="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments" \
+    --jq '.[] | [(.user.login // ""), (.created_at // ""), (.html_url // ""), ((.body // "") | gsub("[\r\n\t]"; " "))] | @tsv' 2>/dev/null)"; then
+    return 1
+  fi
+
+  while IFS="$(printf '\t')" read -r author created_at url body || [ -n "$author" ]; do
+    [ -n "$author" ] || continue
+    csv_contains "$PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS" "$author" || continue
+    [ -n "$created_at" ] || continue
+    if [[ "$created_at" < "$not_before" ]]; then
+      continue
+    fi
+    case "$body" in
+      *"Codex Review:"*"major issues"*"Reviewed commit:"*"\`$expected_head_short"*) ;;
+      *) continue ;;
+    esac
+    PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="clean Codex review comment by @$author at $created_at"
+    [ -n "$url" ] && PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL: $url"
+    return 0
+  done <<<"$comments"
+
+  return 1
+}
+
 wait_for_pr_triggered_review() {
   local expected_head="$1"
   local phase="$2"
@@ -1478,7 +1511,9 @@ wait_for_pr_triggered_review() {
     fi
 
     if [ "$observed_head" = "$expected_head" ]; then
-      if trusted_pr_review_signal "$expected_head" || fresh_pr_reaction_signal "$not_before"; then
+      if trusted_pr_review_signal "$expected_head" \
+        || trusted_pr_clean_comment_signal "$expected_head" "$not_before" \
+        || fresh_pr_reaction_signal "$not_before"; then
         PR_TRIGGERED_REVIEWED_HEAD_OID="$expected_head"
         echo "==> Trusted PR-visible AI review found for PR #$PR_NUMBER head $expected_head."
         [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"

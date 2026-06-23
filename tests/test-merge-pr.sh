@@ -214,12 +214,24 @@ case "${1:-} ${2:-}" in
     fi
     ;;
   "api --paginate")
-    reactions_call_count="$(increment_counter_file "${GH_REACTIONS_CALLS_FILE:-}")"
-    if [ "$reactions_call_count" -ge 2 ] && [ -n "${GH_REACTIONS_SECOND:-}" ]; then
-      printf '%s' "$GH_REACTIONS_SECOND"
-    else
-      printf '%s' "${GH_REACTIONS:-}"
-    fi
+    case "${3:-}" in
+      */comments)
+        comments_call_count="$(increment_counter_file "${GH_COMMENTS_CALLS_FILE:-}")"
+        if [ "$comments_call_count" -ge 2 ] && [ -n "${GH_ISSUE_COMMENTS_SECOND:-}" ]; then
+          printf '%s' "$GH_ISSUE_COMMENTS_SECOND"
+        else
+          printf '%s' "${GH_ISSUE_COMMENTS:-}"
+        fi
+        ;;
+      *)
+        reactions_call_count="$(increment_counter_file "${GH_REACTIONS_CALLS_FILE:-}")"
+        if [ "$reactions_call_count" -ge 2 ] && [ -n "${GH_REACTIONS_SECOND:-}" ]; then
+          printf '%s' "$GH_REACTIONS_SECOND"
+        else
+          printf '%s' "${GH_REACTIONS:-}"
+        fi
+        ;;
+    esac
     ;;
   *)
     echo "unexpected gh args: $*" >&2
@@ -459,7 +471,8 @@ reset_case_files() {
     "$TEST_DIR"/gh-head-ref* "$TEST_DIR"/preflight-calls* \
     "$TEST_DIR"/git-worktree-remove* "$TEST_DIR"/touchstone-review-log* \
     "$TEST_DIR"/gh-graphql-calls* "$TEST_DIR"/gh-head-ref-calls* \
-    "$TEST_DIR"/gh-reviews-graphql-calls* "$TEST_DIR"/gh-reactions-calls*
+    "$TEST_DIR"/gh-reviews-graphql-calls* "$TEST_DIR"/gh-reactions-calls* \
+    "$TEST_DIR"/gh-comments-calls*
   rm -rf "$GIT_PATH_ROOT"
   rm -rf "$DEFAULT_FAKE_WORKTREE"
   mkdir -p "$GIT_PATH_ROOT"
@@ -486,6 +499,8 @@ reset_case_files() {
   unset GH_REVIEWS_GRAPHQL_FAIL_FIRST
   unset GH_REACTIONS
   unset GH_REACTIONS_SECOND
+  unset GH_ISSUE_COMMENTS
+  unset GH_ISSUE_COMMENTS_SECOND
   unset MERGE_PR_SLEEP_OVERRIDE
   unset CODEX_REVIEW_EXIT
   unset CODEX_REVIEW_STUB_OUTPUT
@@ -547,6 +562,9 @@ run_merge_pr() {
     GH_REACTIONS="${GH_REACTIONS:-}" \
     GH_REACTIONS_SECOND="${GH_REACTIONS_SECOND:-}" \
     GH_REACTIONS_CALLS_FILE="$TEST_DIR/gh-reactions-calls" \
+    GH_ISSUE_COMMENTS="${GH_ISSUE_COMMENTS:-}" \
+    GH_ISSUE_COMMENTS_SECOND="${GH_ISSUE_COMMENTS_SECOND:-}" \
+    GH_COMMENTS_CALLS_FILE="$TEST_DIR/gh-comments-calls" \
     MERGE_PR_SLEEP_OVERRIDE="${MERGE_PR_SLEEP_OVERRIDE:-}" \
     GIT_CHECKOUT_MAIN_FILE="$TEST_DIR/git-checkout-main" \
     GIT_DETACHED_DEFAULT_FILE="$TEST_DIR/git-detached-default" \
@@ -1125,6 +1143,21 @@ if grep -q 'fresh +1 reaction by @chatgpt-codex-connector\[bot\]' "$TEST_DIR/out
 else
   echo "FAIL: fresh PR-triggered reaction should satisfy the merge gate" >&2
   cat "$TEST_DIR/output-pr-triggered-fresh-reaction.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: clean PR-triggered Codex issue comment is accepted"
+reset_case_files
+write_pr_triggered_config true 0 0
+GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t9999-01-01T00:00:00Z\thttps://example.test/comment/1\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-clean-comment.txt" 123
+if grep -q 'clean Codex review comment by @chatgpt-codex-connector' "$TEST_DIR/output-pr-triggered-clean-comment.txt" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
+  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
+  echo "==> PASS: clean Codex issue comment can satisfy the merge gate"
+else
+  echo "FAIL: clean Codex issue comment should satisfy the merge gate" >&2
+  cat "$TEST_DIR/output-pr-triggered-clean-comment.txt" >&2
   exit 1
 fi
 
