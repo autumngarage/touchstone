@@ -270,6 +270,17 @@ emit_untracked_path() {
   printf '%s\0' "$(untracked_path_for_hash)"
 }
 
+trusted_touchstone_config_file() {
+  if [ -n "${GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE:-}" ] \
+    && [ -n "${GIT_FETCH_MAIN_FILE:-}" ] \
+    && [ -f "$GIT_FETCH_MAIN_FILE" ]; then
+    printf '%s' "$GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE"
+    return 0
+  fi
+
+  printf '%s' "${GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE:-${TEST_CURRENT_WORKTREE:-}/.touchstone-review.toml}"
+}
+
 if [ "${1:-}" = "-C" ]; then
   git_c_target="$2"
   cd "$git_c_target"
@@ -351,7 +362,7 @@ case "$*" in
     printf '%s\n' "${GIT_LOCAL_BRANCH_HEAD:-pr-head-oid}"
     ;;
   "cat-file -e origin/main:.touchstone-review.toml")
-    [ -f "${GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE:-${TEST_CURRENT_WORKTREE:-}/.touchstone-review.toml}" ] || exit 1
+    [ -f "$(trusted_touchstone_config_file)" ] || exit 1
     ;;
   "cat-file -e origin/main:.codex-review.toml")
     [ -f "${TEST_CURRENT_WORKTREE:-}/.codex-review.toml" ] || exit 1
@@ -362,7 +373,7 @@ case "$*" in
     fi
     ;;
   "show origin/main:.touchstone-review.toml")
-    cat "${GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE:-${TEST_CURRENT_WORKTREE:-}/.touchstone-review.toml}"
+    cat "$(trusted_touchstone_config_file)"
     ;;
   "show origin/main:.codex-review.toml")
     cat "${TEST_CURRENT_WORKTREE:-}/.codex-review.toml"
@@ -373,6 +384,9 @@ case "$*" in
     printf '%s\n' "${GIT_MERGE_BASE_OID:-base-oid}"
     ;;
   "fetch origin +refs/heads/main:refs/remotes/origin/main")
+    if [ -n "${GIT_FETCH_MAIN_FILE:-}" ]; then
+      printf 'fetch\n' >>"$GIT_FETCH_MAIN_FILE"
+    fi
     echo "fetched main"
     ;;
   status\ --porcelain\ --untracked-files=all\ --*)
@@ -441,6 +455,7 @@ reset_case_files() {
     "$TEST_DIR"/git-detached-default* "$TEST_DIR"/git-branch-deleted* \
     "$TEST_DIR"/git-sibling-pull* "$TEST_DIR"/gh-merged-marker* \
     "$TEST_DIR"/git-review-head* "$TEST_DIR"/git-push-head* \
+    "$TEST_DIR"/git-fetch-main* \
     "$TEST_DIR"/gh-head-ref* "$TEST_DIR"/preflight-calls* \
     "$TEST_DIR"/git-worktree-remove* "$TEST_DIR"/touchstone-review-log* \
     "$TEST_DIR"/gh-graphql-calls* "$TEST_DIR"/gh-head-ref-calls* \
@@ -489,6 +504,7 @@ reset_case_files() {
   unset GIT_WORKTREE_STATUS
   unset GIT_WORKTREE_REMOVE_FAIL
   unset GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE
+  unset GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE
   unset SHELLCHECK_VERSION_LINE
   unset TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS
 }
@@ -539,6 +555,7 @@ run_merge_pr() {
     GIT_WORKTREE_REMOVE_FILE="$TEST_DIR/git-worktree-remove" \
     GIT_REVIEW_HEAD_FILE="$TEST_DIR/git-review-head" \
     GIT_PUSH_HEAD_FILE="$TEST_DIR/git-push-head" \
+    GIT_FETCH_MAIN_FILE="$TEST_DIR/git-fetch-main" \
     GIT_WORKTREE_LIST="${GIT_WORKTREE_LIST:-}" \
     GIT_SIBLING_PULL_FAIL="${GIT_SIBLING_PULL_FAIL:-false}" \
     GIT_BASE_OID="${GIT_BASE_OID:-base-oid}" \
@@ -551,6 +568,7 @@ run_merge_pr() {
     GIT_WORKTREE_STATUS="${GIT_WORKTREE_STATUS:-}" \
     GIT_WORKTREE_REMOVE_FAIL="${GIT_WORKTREE_REMOVE_FAIL:-false}" \
     GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE="${GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE:-}" \
+    GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE="${GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE:-}" \
     SHELLCHECK_VERSION_LINE="${SHELLCHECK_VERSION_LINE:-}" \
     CODEX_REVIEW_EXIT="${CODEX_REVIEW_EXIT:-0}" \
     CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
@@ -1022,10 +1040,14 @@ else
   exit 1
 fi
 
-echo "==> Test: PR-triggered review policy is read from trusted base config"
+echo "==> Test: PR-triggered review policy is read from refreshed trusted base config"
 reset_case_files
 install_toml_parser_fixture
-cat >"$TEST_DIR/trusted-base-review.toml" <<'EOF'
+cat >"$TEST_DIR/stale-trusted-base-review.toml" <<'EOF'
+[review.pr_triggered]
+required = false
+EOF
+cat >"$TEST_DIR/fresh-trusted-base-review.toml" <<'EOF'
 [review.pr_triggered]
 required = true
 provider = "github-codex"
@@ -1039,18 +1061,19 @@ cat >"$DEFAULT_FAKE_WORKTREE/.touchstone-review.toml" <<'EOF'
 [review.pr_triggered]
 required = false
 EOF
-if GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE="$TEST_DIR/trusted-base-review.toml" \
+if GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE="$TEST_DIR/stale-trusted-base-review.toml" \
+  GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE="$TEST_DIR/fresh-trusted-base-review.toml" \
   run_merge_pr "$TEST_DIR/output-pr-triggered-trusted-base.txt" 123; then
-  echo "FAIL: merge-pr.sh honored PR worktree config instead of trusted base config" >&2
+  echo "FAIL: merge-pr.sh honored stale trusted config instead of refreshed trusted base config" >&2
   exit 1
 fi
 rm -rf "${TEST_DIR:?}/lib"
 if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-trusted-base.txt" \
   && [ ! -f "$TEST_DIR/codex-review.log" ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
-  echo "==> PASS: PR-triggered policy is loaded from trusted base config"
+  echo "==> PASS: PR-triggered policy is loaded from refreshed trusted base config"
 else
-  echo "FAIL: trusted base config should control PR-triggered policy" >&2
+  echo "FAIL: refreshed trusted base config should control PR-triggered policy" >&2
   cat "$TEST_DIR/output-pr-triggered-trusted-base.txt" >&2
   exit 1
 fi

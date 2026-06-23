@@ -398,6 +398,27 @@ resolve_merge_review_config_file() {
   return 0
 }
 
+refresh_trusted_merge_review_config_base() {
+  local trusted_base
+
+  if [ -z "$PR_NUMBER" ] || [ -z "${DEFAULT_BRANCH:-}" ]; then
+    return 0
+  fi
+
+  trusted_base="${MERGE_PR_TRUSTED_CONFIG_BASE:-origin/$DEFAULT_BRANCH}"
+  if [ "$trusted_base" = "origin/$DEFAULT_BRANCH" ]; then
+    echo "==> Refreshing $trusted_base before loading merge review config ..."
+    if ! git fetch origin "+refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"; then
+      echo "ERROR: Failed to refresh $trusted_base before loading merge review config." >&2
+      exit 1
+    fi
+  fi
+  if ! git rev-parse --verify --quiet "$trusted_base^{commit}" >/dev/null; then
+    echo "ERROR: Could not verify trusted merge review config base $trusted_base." >&2
+    exit 1
+  fi
+}
+
 review_clean_marker_key() {
   local branch="$1"
   printf '%s' "$branch" | sed 's/[^A-Za-z0-9._-]/_/g'
@@ -2004,6 +2025,7 @@ run_merge_review() {
   return "$review_rc"
 }
 
+refresh_trusted_merge_review_config_base
 load_merge_review_config
 
 # 1. Sanity check the PR exists and is open.
