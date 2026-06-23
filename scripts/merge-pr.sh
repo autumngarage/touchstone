@@ -1437,7 +1437,6 @@ fresh_pr_reaction_signal() {
 
 trusted_pr_clean_comment_signal() {
   local expected_head="$1"
-  local not_before="$2"
   local comments author created_at url body expected_head_short
 
   [ -n "$REPO_OWNER" ] || return 1
@@ -1453,9 +1452,6 @@ trusted_pr_clean_comment_signal() {
     [ -n "$author" ] || continue
     csv_contains "$PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS" "$author" || continue
     [ -n "$created_at" ] || continue
-    if [[ "$created_at" < "$not_before" ]]; then
-      continue
-    fi
     case "$body" in
       *"Codex Review:"*"major issues"*"Reviewed commit:"*"\`$expected_head_short"*) ;;
       *) continue ;;
@@ -1512,7 +1508,7 @@ wait_for_pr_triggered_review() {
 
     if [ "$observed_head" = "$expected_head" ]; then
       if trusted_pr_review_signal "$expected_head" \
-        || trusted_pr_clean_comment_signal "$expected_head" "$not_before" \
+        || trusted_pr_clean_comment_signal "$expected_head" \
         || fresh_pr_reaction_signal "$not_before"; then
         PR_TRIGGERED_REVIEWED_HEAD_OID="$expected_head"
         echo "==> Trusted PR-visible AI review found for PR #$PR_NUMBER head $expected_head."

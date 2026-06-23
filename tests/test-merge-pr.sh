@@ -1146,17 +1146,17 @@ else
   exit 1
 fi
 
-echo "==> Test: clean PR-triggered Codex issue comment is accepted"
+echo "==> Test: prior clean PR-triggered Codex issue comment is accepted"
 reset_case_files
 write_pr_triggered_config true 0 0
-GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t9999-01-01T00:00:00Z\thttps://example.test/comment/1\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
+GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/1\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
   run_merge_pr "$TEST_DIR/output-pr-triggered-clean-comment.txt" 123
 if grep -q 'clean Codex review comment by @chatgpt-codex-connector' "$TEST_DIR/output-pr-triggered-clean-comment.txt" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
   && [ ! -f "$TEST_DIR/codex-review.log" ]; then
-  echo "==> PASS: clean Codex issue comment can satisfy the merge gate"
+  echo "==> PASS: prior clean Codex issue comment can satisfy the merge gate"
 else
-  echo "FAIL: clean Codex issue comment should satisfy the merge gate" >&2
+  echo "FAIL: prior clean Codex issue comment should satisfy the merge gate" >&2
   cat "$TEST_DIR/output-pr-triggered-clean-comment.txt" >&2
   exit 1
 fi
