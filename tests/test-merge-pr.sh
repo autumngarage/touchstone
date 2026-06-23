@@ -1161,6 +1161,23 @@ else
   exit 1
 fi
 
+echo "==> Test: non-clean PR-triggered Codex issue comment is rejected"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/2\tCodex Review: Found major issues. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-non-clean-comment.txt" 123; then
+  echo "FAIL: non-clean Codex issue comment unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-non-clean-comment.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: non-clean Codex issue comment does not satisfy the merge gate"
+else
+  echo "FAIL: non-clean Codex issue comment should not satisfy the merge gate" >&2
+  cat "$TEST_DIR/output-pr-triggered-non-clean-comment.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: delayed PR-triggered review is polled before merge"
 reset_case_files
 write_pr_triggered_config true 2 1

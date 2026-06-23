@@ -1453,7 +1453,7 @@ trusted_pr_clean_comment_signal() {
     csv_contains "$PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS" "$author" || continue
     [ -n "$created_at" ] || continue
     case "$body" in
-      *"Codex Review:"*"major issues"*"Reviewed commit:"*"\`$expected_head_short"*) ;;
+      *"Codex Review:"*"Didn't find any major issues"*"Reviewed commit:"*"\`$expected_head_short"* | *"Codex Review:"*"No major issues"*"Reviewed commit:"*"\`$expected_head_short"*) ;;
       *) continue ;;
     esac
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="clean Codex review comment by @$author at $created_at"
