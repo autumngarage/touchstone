@@ -212,6 +212,10 @@ case "$*" in
   "rev-parse feature/test") echo "pr-head-oid" ;;
   "rev-parse --verify --quiet origin/main^{commit}") echo "base-oid" ;;
   "fetch origin +refs/heads/main:refs/remotes/origin/main") echo fetched ;;
+  "cat-file -e origin/main:.touchstone-review.toml") [ -f "$TEST_REPO_ROOT/.touchstone-review.toml" ] || exit 1 ;;
+  "cat-file -e origin/main:.codex-review.toml") [ -f "$TEST_REPO_ROOT/.codex-review.toml" ] || exit 1 ;;
+  "show origin/main:.touchstone-review.toml") cat "$TEST_REPO_ROOT/.touchstone-review.toml" ;;
+  "show origin/main:.codex-review.toml") cat "$TEST_REPO_ROOT/.codex-review.toml" ;;
   "cat-file -e pr-head-oid^{commit}") ;;
   "merge-base origin/main pr-head-oid") echo "base-oid" ;;
   "status --porcelain" | "status --porcelain --untracked-files=all") ;;

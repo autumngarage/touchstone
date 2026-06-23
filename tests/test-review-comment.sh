@@ -158,6 +158,10 @@ case "$*" in
   "rev-parse --git-path touchstone/squash-map.jsonl") printf '%s\n' "$TEST_REPO_ROOT/.git/touchstone/squash-map.jsonl" ;;
   rev-parse\ --git-path\ touchstone/review-summary-pr-123.json) printf '%s\n' "$TEST_REPO_ROOT/.git/touchstone/review-summary-pr-123.json" ;;
   "fetch origin +refs/heads/main:refs/remotes/origin/main") echo fetched ;;
+  "cat-file -e origin/main:.touchstone-review.toml") [ -f "$TEST_REPO_ROOT/.touchstone-review.toml" ] || exit 1 ;;
+  "cat-file -e origin/main:.codex-review.toml") [ -f "$TEST_REPO_ROOT/.codex-review.toml" ] || exit 1 ;;
+  "show origin/main:.touchstone-review.toml") cat "$TEST_REPO_ROOT/.touchstone-review.toml" ;;
+  "show origin/main:.codex-review.toml") cat "$TEST_REPO_ROOT/.codex-review.toml" ;;
   "cat-file -e pr-head-oid^{commit}") ;;
   "merge-base origin/main pr-head-oid") echo "base-oid" ;;
   "status --porcelain") ;;

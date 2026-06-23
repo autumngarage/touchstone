@@ -42,6 +42,51 @@ cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+gh_query_arg() {
+  local previous=""
+  local arg
+
+  for arg in "$@"; do
+    if [ "$previous" = "-f" ]; then
+      case "$arg" in
+        query=*)
+          printf '%s' "${arg#query=}"
+          return 0
+          ;;
+      esac
+    fi
+    previous="$arg"
+  done
+  return 0
+}
+
+reject_unbalanced_graphql_query() {
+  local query="$1"
+  local opens closes
+
+  [ "${GH_REJECT_UNBALANCED_GRAPHQL:-false}" = "true" ] || return 0
+  opens="$(printf '%s' "$query" | tr -cd '{' | wc -c | tr -d ' ')"
+  closes="$(printf '%s' "$query" | tr -cd '}' | wc -c | tr -d ' ')"
+  if [ "$opens" != "$closes" ]; then
+    echo 'Expected one of: <EOF>, actual: RCURLY ("}")' >&2
+    exit 1
+  fi
+}
+
+increment_counter_file() {
+  local counter_file="$1"
+  local count=1
+
+  if [ -n "$counter_file" ]; then
+    if [ -f "$counter_file" ]; then
+      count="$(cat "$counter_file" 2>/dev/null || echo 0)"
+      count=$((count + 1))
+    fi
+    printf '%s\n' "$count" >"$counter_file"
+  fi
+  printf '%s' "$count"
+}
+
 case "${1:-} ${2:-}" in
   "repo view")
     case "${4:-}" in
@@ -80,7 +125,9 @@ case "${1:-} ${2:-}" in
           echo "gh pr view headRefOid unavailable" >&2
           exit 1
         fi
-        if [ -f "${GH_HEAD_REF_FILE:-/dev/null/never}" ]; then
+        if [ -n "${GH_HEAD_REF_CHANGE_AFTER:-}" ] && [ "$head_ref_call_count" -ge "$GH_HEAD_REF_CHANGE_AFTER" ]; then
+          echo "${GH_HEAD_REF_CHANGED_OID:-changed-pr-head}"
+        elif [ -f "${GH_HEAD_REF_FILE:-/dev/null/never}" ]; then
           cat "$GH_HEAD_REF_FILE"
         else
           echo "${GH_PR_HEAD_OID:-pr-head-oid}"
@@ -140,22 +187,38 @@ case "${1:-} ${2:-}" in
     echo "merged"
     ;;
   "api graphql")
+    query="$(gh_query_arg "$@")"
+    reject_unbalanced_graphql_query "$query"
     if [ "${GH_GRAPHQL_FAIL:-false}" = "true" ]; then
       echo "graphql unavailable" >&2
       exit 1
     fi
-    graphql_call_count=1
-    if [ -n "${GH_GRAPHQL_CALLS_FILE:-}" ]; then
-      if [ -f "$GH_GRAPHQL_CALLS_FILE" ]; then
-        graphql_call_count="$(cat "$GH_GRAPHQL_CALLS_FILE" 2>/dev/null || echo 0)"
-        graphql_call_count=$((graphql_call_count + 1))
+    if printf '%s' "$query" | grep -q 'reviews(first:'; then
+      reviews_graphql_call_count="$(increment_counter_file "${GH_REVIEWS_GRAPHQL_CALLS_FILE:-}")"
+      if [ "${GH_REVIEWS_GRAPHQL_FAIL_FIRST:-false}" = "true" ] && [ "$reviews_graphql_call_count" = "1" ]; then
+        echo "reviews graphql unavailable" >&2
+        exit 1
       fi
-      printf '%s\n' "$graphql_call_count" >"$GH_GRAPHQL_CALLS_FILE"
+      if [ "$reviews_graphql_call_count" -ge 2 ] && [ -n "${GH_TRUSTED_REVIEWS_SECOND:-}" ]; then
+        printf '%s' "$GH_TRUSTED_REVIEWS_SECOND"
+      else
+        printf '%s' "${GH_TRUSTED_REVIEWS:-}"
+      fi
+      exit 0
     fi
+    graphql_call_count="$(increment_counter_file "${GH_GRAPHQL_CALLS_FILE:-}")"
     if [ "$graphql_call_count" -ge 2 ] && [ -n "${GH_UNRESOLVED_THREADS_SECOND:-}" ]; then
       printf '%s' "$GH_UNRESOLVED_THREADS_SECOND"
     else
       printf '%s' "${GH_UNRESOLVED_THREADS:-}"
+    fi
+    ;;
+  "api --paginate")
+    reactions_call_count="$(increment_counter_file "${GH_REACTIONS_CALLS_FILE:-}")"
+    if [ "$reactions_call_count" -ge 2 ] && [ -n "${GH_REACTIONS_SECOND:-}" ]; then
+      printf '%s' "$GH_REACTIONS_SECOND"
+    else
+      printf '%s' "${GH_REACTIONS:-}"
     fi
     ;;
   *)
@@ -287,10 +350,22 @@ case "$*" in
     fi
     printf '%s\n' "${GIT_LOCAL_BRANCH_HEAD:-pr-head-oid}"
     ;;
+  "cat-file -e origin/main:.touchstone-review.toml")
+    [ -f "${GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE:-${TEST_CURRENT_WORKTREE:-}/.touchstone-review.toml}" ] || exit 1
+    ;;
+  "cat-file -e origin/main:.codex-review.toml")
+    [ -f "${TEST_CURRENT_WORKTREE:-}/.codex-review.toml" ] || exit 1
+    ;;
   "show-ref --verify --quiet refs/heads/feature/test")
     if [ -f "$GIT_BRANCH_DELETED_FILE" ]; then
       exit 1
     fi
+    ;;
+  "show origin/main:.touchstone-review.toml")
+    cat "${GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE:-${TEST_CURRENT_WORKTREE:-}/.touchstone-review.toml}"
+    ;;
+  "show origin/main:.codex-review.toml")
+    cat "${TEST_CURRENT_WORKTREE:-}/.codex-review.toml"
     ;;
   cat-file\ -e\ *^\{commit\})
     ;;
@@ -368,7 +443,8 @@ reset_case_files() {
     "$TEST_DIR"/git-review-head* "$TEST_DIR"/git-push-head* \
     "$TEST_DIR"/gh-head-ref* "$TEST_DIR"/preflight-calls* \
     "$TEST_DIR"/git-worktree-remove* "$TEST_DIR"/touchstone-review-log* \
-    "$TEST_DIR"/gh-graphql-calls* "$TEST_DIR"/gh-head-ref-calls*
+    "$TEST_DIR"/gh-graphql-calls* "$TEST_DIR"/gh-head-ref-calls* \
+    "$TEST_DIR"/gh-reviews-graphql-calls* "$TEST_DIR"/gh-reactions-calls*
   rm -rf "$GIT_PATH_ROOT"
   rm -rf "$DEFAULT_FAKE_WORKTREE"
   mkdir -p "$GIT_PATH_ROOT"
@@ -382,11 +458,20 @@ reset_case_files() {
   unset GH_REPO_FULL_NAME
   unset GH_PR_VIEW_FAIL_FIELD
   unset GH_HEAD_REF_FAIL_AFTER
+  unset GH_HEAD_REF_CHANGE_AFTER
+  unset GH_HEAD_REF_CHANGED_OID
   unset GH_IS_DRAFT
   unset GH_REVIEW_DECISION
   unset GH_UNRESOLVED_THREADS
   unset GH_UNRESOLVED_THREADS_SECOND
   unset GH_GRAPHQL_FAIL
+  unset GH_REJECT_UNBALANCED_GRAPHQL
+  unset GH_TRUSTED_REVIEWS
+  unset GH_TRUSTED_REVIEWS_SECOND
+  unset GH_REVIEWS_GRAPHQL_FAIL_FIRST
+  unset GH_REACTIONS
+  unset GH_REACTIONS_SECOND
+  unset MERGE_PR_SLEEP_OVERRIDE
   unset CODEX_REVIEW_EXIT
   unset CODEX_REVIEW_STUB_OUTPUT
   unset CODEX_REVIEW_STUB_SUMMARY
@@ -403,6 +488,7 @@ reset_case_files() {
   unset GIT_REQUIRE_ROOT_FOR_UNTRACKED
   unset GIT_WORKTREE_STATUS
   unset GIT_WORKTREE_REMOVE_FAIL
+  unset GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE
   unset SHELLCHECK_VERSION_LINE
   unset TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS
 }
@@ -428,13 +514,24 @@ run_merge_pr() {
     GH_REPO_FULL_NAME="${GH_REPO_FULL_NAME:-autumngarage/touchstone}" \
     GH_PR_VIEW_FAIL_FIELD="${GH_PR_VIEW_FAIL_FIELD:-}" \
     GH_HEAD_REF_FAIL_AFTER="${GH_HEAD_REF_FAIL_AFTER:-}" \
+    GH_HEAD_REF_CHANGE_AFTER="${GH_HEAD_REF_CHANGE_AFTER:-}" \
+    GH_HEAD_REF_CHANGED_OID="${GH_HEAD_REF_CHANGED_OID:-changed-pr-head}" \
     GH_HEAD_REF_CALLS_FILE="$TEST_DIR/gh-head-ref-calls" \
     GH_IS_DRAFT="${GH_IS_DRAFT:-false}" \
     GH_REVIEW_DECISION="${GH_REVIEW_DECISION:-}" \
     GH_UNRESOLVED_THREADS="${GH_UNRESOLVED_THREADS:-}" \
     GH_UNRESOLVED_THREADS_SECOND="${GH_UNRESOLVED_THREADS_SECOND:-}" \
     GH_GRAPHQL_FAIL="${GH_GRAPHQL_FAIL:-false}" \
+    GH_REJECT_UNBALANCED_GRAPHQL="${GH_REJECT_UNBALANCED_GRAPHQL:-false}" \
     GH_GRAPHQL_CALLS_FILE="$TEST_DIR/gh-graphql-calls" \
+    GH_TRUSTED_REVIEWS="${GH_TRUSTED_REVIEWS:-}" \
+    GH_TRUSTED_REVIEWS_SECOND="${GH_TRUSTED_REVIEWS_SECOND:-}" \
+    GH_REVIEWS_GRAPHQL_CALLS_FILE="$TEST_DIR/gh-reviews-graphql-calls" \
+    GH_REVIEWS_GRAPHQL_FAIL_FIRST="${GH_REVIEWS_GRAPHQL_FAIL_FIRST:-false}" \
+    GH_REACTIONS="${GH_REACTIONS:-}" \
+    GH_REACTIONS_SECOND="${GH_REACTIONS_SECOND:-}" \
+    GH_REACTIONS_CALLS_FILE="$TEST_DIR/gh-reactions-calls" \
+    MERGE_PR_SLEEP_OVERRIDE="${MERGE_PR_SLEEP_OVERRIDE:-}" \
     GIT_CHECKOUT_MAIN_FILE="$TEST_DIR/git-checkout-main" \
     GIT_DETACHED_DEFAULT_FILE="$TEST_DIR/git-detached-default" \
     GIT_BRANCH_DELETED_FILE="$TEST_DIR/git-branch-deleted" \
@@ -453,6 +550,7 @@ run_merge_pr() {
     GIT_REQUIRE_ROOT_FOR_UNTRACKED="${GIT_REQUIRE_ROOT_FOR_UNTRACKED:-false}" \
     GIT_WORKTREE_STATUS="${GIT_WORKTREE_STATUS:-}" \
     GIT_WORKTREE_REMOVE_FAIL="${GIT_WORKTREE_REMOVE_FAIL:-false}" \
+    GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE="${GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE:-}" \
     SHELLCHECK_VERSION_LINE="${SHELLCHECK_VERSION_LINE:-}" \
     CODEX_REVIEW_EXIT="${CODEX_REVIEW_EXIT:-0}" \
     CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
@@ -494,6 +592,30 @@ touchstone_preflight_main_sanitized() {
 touchstone_preflight_main() {
   touchstone_preflight_main_sanitized "$@"
 }
+EOF
+}
+
+install_toml_parser_fixture() {
+  mkdir -p "$TEST_DIR/lib"
+  cp "$TOUCHSTONE_ROOT/lib/toml.sh" "$TEST_DIR/lib/toml.sh"
+}
+
+write_pr_triggered_config() {
+  local skip_merge_review="${1:-true}"
+  local timeout_sec="${2:-0}"
+  local poll_sec="${3:-0}"
+
+  install_toml_parser_fixture
+  mkdir -p "$DEFAULT_FAKE_WORKTREE"
+  cat >"$DEFAULT_FAKE_WORKTREE/.touchstone-review.toml" <<EOF
+[review.pr_triggered]
+required = true
+provider = "github-codex"
+timeout_sec = $timeout_sec
+poll_sec = $poll_sec
+trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]
+trusted_reaction_author = "chatgpt-codex-connector[bot]"
+skip_merge_review = $skip_merge_review
 EOF
 }
 
@@ -854,6 +976,195 @@ if grep -q 'attempt 1: mergeStateStatus=CLEAN mergeable=MERGEABLE' "$TEST_DIR/ou
 else
   echo "FAIL: merge-pr.sh output did not show a successful jq-free merge path" >&2
   cat "$TEST_DIR/output-normal.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: PR-triggered review skips duplicate merge review after deterministic preflight"
+reset_case_files
+install_preflight_counter_fixture
+write_pr_triggered_config true 0 0
+GH_REJECT_UNBALANCED_GRAPHQL=true \
+  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/1' \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-skip.txt" 123
+rm -rf "${TEST_DIR:?}/lib"
+if grep -q '==> Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-skip.txt" \
+  && grep -q '==> Skipping merge review because \[review.pr_triggered\]\.required=true' "$TEST_DIR/output-pr-triggered-skip.txt" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
+  && [ ! -f "$TEST_DIR/codex-review.log" ] \
+  && [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "1" ]; then
+  echo "==> PASS: PR-triggered review can satisfy the merge gate without duplicate LLM review"
+else
+  echo "FAIL: PR-triggered review did not skip duplicate merge review after preflight" >&2
+  cat "$TEST_DIR/output-pr-triggered-skip.txt" >&2
+  [ ! -f "$TEST_DIR/preflight-calls" ] || cat "$TEST_DIR/preflight-calls" >&2
+  exit 1
+fi
+
+echo "==> Test: PR-triggered review rejects a head change after the trusted signal"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/1' \
+  GH_HEAD_REF_CHANGE_AFTER=4 \
+  GH_HEAD_REF_CHANGED_OID="new-pr-head" \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-head-changed.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly accepted a head change after PR-triggered review" >&2
+  exit 1
+fi
+if grep -q 'head changed after the trusted PR-triggered AI review signal' "$TEST_DIR/output-pr-triggered-head-changed.txt" \
+  && grep -q 'reviewed head: pr-head-oid' "$TEST_DIR/output-pr-triggered-head-changed.txt" \
+  && grep -q 'current head:  new-pr-head' "$TEST_DIR/output-pr-triggered-head-changed.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: head changes after PR-triggered review force a rerun"
+else
+  echo "FAIL: head change after PR-triggered review should fail closed" >&2
+  cat "$TEST_DIR/output-pr-triggered-head-changed.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: PR-triggered review policy is read from trusted base config"
+reset_case_files
+install_toml_parser_fixture
+cat >"$TEST_DIR/trusted-base-review.toml" <<'EOF'
+[review.pr_triggered]
+required = true
+provider = "github-codex"
+timeout_sec = 0
+poll_sec = 0
+trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]
+trusted_reaction_author = "chatgpt-codex-connector[bot]"
+skip_merge_review = true
+EOF
+cat >"$DEFAULT_FAKE_WORKTREE/.touchstone-review.toml" <<'EOF'
+[review.pr_triggered]
+required = false
+EOF
+if GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE="$TEST_DIR/trusted-base-review.toml" \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-trusted-base.txt" 123; then
+  echo "FAIL: merge-pr.sh honored PR worktree config instead of trusted base config" >&2
+  exit 1
+fi
+rm -rf "${TEST_DIR:?}/lib"
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-trusted-base.txt" \
+  && [ ! -f "$TEST_DIR/codex-review.log" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: PR-triggered policy is loaded from trusted base config"
+else
+  echo "FAIL: trusted base config should control PR-triggered policy" >&2
+  cat "$TEST_DIR/output-pr-triggered-trusted-base.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: PR-triggered review timeout fails closed before merge review"
+reset_case_files
+write_pr_triggered_config true 0 0
+if run_merge_pr "$TEST_DIR/output-pr-triggered-timeout.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly succeeded without a trusted PR-triggered review" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-timeout.txt" \
+  && grep -q "@codex review" "$TEST_DIR/output-pr-triggered-timeout.txt" \
+  && [ ! -f "$TEST_DIR/codex-review.log" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: missing PR-triggered review fails closed with actionable guidance"
+else
+  echo "FAIL: missing PR-triggered review should fail before local review or merge" >&2
+  cat "$TEST_DIR/output-pr-triggered-timeout.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: stale PR-triggered +1 reaction is ignored"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_REACTIONS=$'chatgpt-codex-connector[bot]\t+1\t1970-01-01T00:00:00Z' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-stale-reaction.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly accepted a stale PR-triggered reaction" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-stale-reaction.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: stale PR-triggered reaction does not satisfy the merge gate"
+else
+  echo "FAIL: stale PR-triggered reaction should not satisfy the merge gate" >&2
+  cat "$TEST_DIR/output-pr-triggered-stale-reaction.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: fresh PR-triggered +1 reaction is accepted"
+reset_case_files
+write_pr_triggered_config true 0 0
+GH_REACTIONS=$'chatgpt-codex-connector[bot]\t+1\t9999-01-01T00:00:00Z' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-fresh-reaction.txt" 123
+if grep -q 'fresh +1 reaction by @chatgpt-codex-connector\[bot\]' "$TEST_DIR/output-pr-triggered-fresh-reaction.txt" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
+  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
+  echo "==> PASS: fresh PR-triggered reaction can satisfy the merge gate"
+else
+  echo "FAIL: fresh PR-triggered reaction should satisfy the merge gate" >&2
+  cat "$TEST_DIR/output-pr-triggered-fresh-reaction.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: delayed PR-triggered review is polled before merge"
+reset_case_files
+write_pr_triggered_config true 2 1
+GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/2' \
+  MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-delayed.txt" 123
+if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-delayed.txt" \
+  && [ "$(cat "$TEST_DIR/gh-reviews-graphql-calls" 2>/dev/null || echo 0)" -ge 2 ] \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: delayed PR-triggered review is polled until available"
+else
+  echo "FAIL: delayed PR-triggered review should be polled and accepted" >&2
+  cat "$TEST_DIR/output-pr-triggered-delayed.txt" >&2
+  [ ! -f "$TEST_DIR/gh-reviews-graphql-calls" ] || cat "$TEST_DIR/gh-reviews-graphql-calls" >&2
+  exit 1
+fi
+
+echo "==> Test: transient PR-triggered review lookup failure does not abort polling"
+reset_case_files
+write_pr_triggered_config true 2 1
+GH_REVIEWS_GRAPHQL_FAIL_FIRST=true \
+  GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/3' \
+  MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-transient.txt" 123
+if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-transient.txt" \
+  && [ "$(cat "$TEST_DIR/gh-reviews-graphql-calls" 2>/dev/null || echo 0)" -ge 2 ] \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: transient review lookup failure is retried within the wait window"
+else
+  echo "FAIL: transient review lookup failure should not abort polling" >&2
+  cat "$TEST_DIR/output-pr-triggered-transient.txt" >&2
+  [ ! -f "$TEST_DIR/gh-reviews-graphql-calls" ] || cat "$TEST_DIR/gh-reviews-graphql-calls" >&2
+  exit 1
+fi
+
+echo "==> Test: review-fix push requires a fresh PR-triggered review on the new head"
+reset_case_files
+install_preflight_counter_fixture
+write_pr_triggered_config false 2 1
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/4' \
+  GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\treview-fixed-head\tCOMMENTED\t2026-06-23T00:01:00Z\thttps://example.test/review/5' \
+  CODEX_REVIEW_MUTATE_HEAD="review-fixed-head" \
+  GH_EXPECT_MERGE_HEAD="review-fixed-head" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-review-fix.txt" 123
+rm -rf "${TEST_DIR:?}/lib"
+if grep -q '==> Merge review changed HEAD:' "$TEST_DIR/output-pr-triggered-review-fix.txt" \
+  && grep -q '==> Waiting for trusted PR-visible AI review for PR #123 (after review fixes)' "$TEST_DIR/output-pr-triggered-review-fix.txt" \
+  && grep -q '^review-fixed-head$' "$TEST_DIR/gh-merge-head" \
+  && grep -q '^review-fixed-head$' "$TEST_DIR/git-push-head" \
+  && grep -q '^CODEX_REVIEW_MODE=fix$' "$TEST_DIR/codex-review.log" \
+  && [ "$(cat "$TEST_DIR/gh-reviews-graphql-calls" 2>/dev/null || echo 0)" -ge 2 ] \
+  && [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "2" ]; then
+  echo "==> PASS: review-fix commits require a PR-visible re-review before merge"
+else
+  echo "FAIL: review-fix commit should require PR-triggered re-review on the new head" >&2
+  cat "$TEST_DIR/output-pr-triggered-review-fix.txt" >&2
+  [ ! -f "$TEST_DIR/preflight-calls" ] || cat "$TEST_DIR/preflight-calls" >&2
+  [ ! -f "$TEST_DIR/gh-reviews-graphql-calls" ] || cat "$TEST_DIR/gh-reviews-graphql-calls" >&2
   exit 1
 fi
 

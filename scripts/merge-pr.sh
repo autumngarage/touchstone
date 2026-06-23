@@ -10,7 +10,7 @@
 # What this does:
 #   1. Verifies the PR is open and mergeable.
 #   2. Verifies PR-visible feedback has no blocking review state.
-#   3. Runs AI code review as a merge gate.
+#   3. Waits for configured PR-triggered AI review, or runs AI code review as a merge gate.
 #   4. Re-checks PR-visible feedback on the reviewed head.
 #   5. Squash-merges and deletes the remote branch.
 #   6. Checks out/syncs the default branch where the local topology permits.
@@ -63,6 +63,14 @@ TOUCHSTONE_MERGE_FAILURE_REASON="nonzero-exit"
 PREFLIGHT_REQUIRED=true
 COMMENT_ON_CLEAN=true
 COMMENT_FINDINGS_HISTORY=true
+PR_TRIGGERED_REVIEW_REQUIRED=false
+PR_TRIGGERED_REVIEW_PROVIDER="github-codex"
+PR_TRIGGERED_REVIEW_TIMEOUT_SEC=1800
+PR_TRIGGERED_REVIEW_POLL_SEC=10
+PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS="chatgpt-codex-connector,chatgpt-codex-connector[bot]"
+PR_TRIGGERED_REVIEW_TRUSTED_REACTION_AUTHOR="chatgpt-codex-connector[bot]"
+PR_TRIGGERED_REVIEW_SKIP_MERGE_REVIEW=true
+PR_TRIGGERED_REVIEWED_HEAD_OID=""
 REVIEW_SUMMARY_FILE=""
 PREFLIGHT_CACHE_KEY=""
 PREFLIGHT_CACHE_FILE=""
@@ -71,12 +79,19 @@ PR_WORKTREE_PATH=""
 REPO_FULL_NAME=""
 REPO_OWNER=""
 REPO_NAME=""
+MERGE_REVIEW_CONFIG_TMP_FILES=()
 TOUCHSTONE_REVIEW_LOG="${TOUCHSTONE_REVIEW_LOG-${HOME:-}/.touchstone-review-log}"
 TOUCHSTONE_REVIEW_LOG_MAX_LINES="${TOUCHSTONE_REVIEW_LOG_MAX_LINES:-1000}"
 TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS="${TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS:-24}"
 
 on_merge_exit() {
   local rc="$?"
+  local tmp_file
+  if [ "${#MERGE_REVIEW_CONFIG_TMP_FILES[@]}" -gt 0 ]; then
+    for tmp_file in "${MERGE_REVIEW_CONFIG_TMP_FILES[@]}"; do
+      rm -f "$tmp_file" 2>/dev/null || true
+    done
+  fi
   if [ "$rc" -ne 0 ]; then
     touchstone_emit_event failed phase=merge reason="$TOUCHSTONE_MERGE_FAILURE_REASON" pr_number="$PR_NUMBER"
   fi
@@ -315,14 +330,7 @@ normalize_bool() {
 
 load_merge_review_config() {
   local config_file
-  local repo_root
-  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  [ -n "$repo_root" ] || return 0
-  if [ -f "$repo_root/.touchstone-review.toml" ]; then
-    config_file="$repo_root/.touchstone-review.toml"
-  else
-    config_file="$repo_root/.codex-review.toml"
-  fi
+  config_file="$(resolve_merge_review_config_file)"
   [ -f "$config_file" ] || return 0
   [ -f "$SCRIPT_DIR/../lib/toml.sh" ] || return 0
 
@@ -340,10 +348,54 @@ load_merge_review_config() {
       COMMENT_ON_CLEAN="$(normalize_bool "$value")"
     elif [ "$section" = "review" ] && [ "$key" = "comment_findings_history" ]; then
       COMMENT_FINDINGS_HISTORY="$(normalize_bool "$value")"
+    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "required" ]; then
+      PR_TRIGGERED_REVIEW_REQUIRED="$(normalize_bool "$value")"
+    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "provider" ]; then
+      PR_TRIGGERED_REVIEW_PROVIDER="$value"
+    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "timeout_sec" ]; then
+      PR_TRIGGERED_REVIEW_TIMEOUT_SEC="$value"
+    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "poll_sec" ]; then
+      PR_TRIGGERED_REVIEW_POLL_SEC="$value"
+    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "trusted_review_authors" ]; then
+      PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS="$(toml_normalize_array "$value")"
+    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "trusted_reaction_author" ]; then
+      PR_TRIGGERED_REVIEW_TRUSTED_REACTION_AUTHOR="$value"
+    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "skip_merge_review" ]; then
+      PR_TRIGGERED_REVIEW_SKIP_MERGE_REVIEW="$(normalize_bool "$value")"
     fi
   }
 
   toml_parse "$config_file" merge_pr_toml_callback
+}
+
+resolve_merge_review_config_file() {
+  local rel repo_root tmp trusted_base
+
+  if [ -n "$PR_NUMBER" ] && [ -n "${DEFAULT_BRANCH:-}" ]; then
+    trusted_base="${MERGE_PR_TRUSTED_CONFIG_BASE:-origin/$DEFAULT_BRANCH}"
+    for rel in .touchstone-review.toml .codex-review.toml; do
+      if git cat-file -e "$trusted_base:$rel" 2>/dev/null; then
+        tmp="$(mktemp -t touchstone-merge-review-config.XXXXXX)" || return 0
+        if git show "$trusted_base:$rel" >"$tmp" 2>/dev/null; then
+          MERGE_REVIEW_CONFIG_TMP_FILES+=("$tmp")
+          printf '%s' "$tmp"
+          return 0
+        fi
+        rm -f "$tmp"
+      fi
+    done
+    return 0
+  fi
+
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$repo_root" ] || return 0
+  for rel in .touchstone-review.toml .codex-review.toml; do
+    if [ -f "$repo_root/$rel" ]; then
+      printf '%s' "$repo_root/$rel"
+      return 0
+    fi
+  done
+  return 0
 }
 
 review_clean_marker_key() {
@@ -670,6 +722,13 @@ is_positive_integer() {
   case "${1:-}" in
     "" | *[!0-9]*) return 1 ;;
     *) [ "$1" -gt 0 ] ;;
+  esac
+}
+
+is_nonnegative_integer() {
+  case "${1:-}" in
+    "" | *[!0-9]*) return 1 ;;
+    *) [ "$1" -ge 0 ] ;;
   esac
 }
 
@@ -1253,6 +1312,181 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | [.id, .path, ((.line // .startLine // "") | tostring), (.isOutdated | tostring), (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // ""), ((.comments.nodes[0].body // "") | gsub("[\r\n\t]"; " ") | .[0:240])] | @tsv'
 }
 
+current_pr_head_or_die() {
+  local phase="$1"
+  local observed_head
+
+  if ! observed_head="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>&1)"; then
+    echo "ERROR: Could not inspect PR #$PR_NUMBER head commit ($phase): $observed_head" >&2
+    echo "       Refusing to merge without exact-head confirmation." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="head-not-updated"
+    exit 1
+  fi
+  if [ -z "$observed_head" ]; then
+    echo "ERROR: GitHub returned an empty head commit for PR #$PR_NUMBER ($phase)." >&2
+    echo "       Refusing to merge without exact-head confirmation." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="head-not-updated"
+    exit 1
+  fi
+  printf '%s' "$observed_head"
+}
+
+trusted_pr_review_signal() {
+  local expected_head="$1"
+  local query reviews author commit_oid state submitted_at url
+
+  [ -n "$REPO_OWNER" ] || return 1
+  [ -n "$REPO_NAME" ] || return 1
+
+  query='
+query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviews(first: 100, after: $endCursor) {
+        nodes {
+          author { login }
+          state
+          submittedAt
+          url
+          commit { oid }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+  }
+}'
+
+  if ! reviews="$(gh api graphql --paginate \
+    -F owner="$REPO_OWNER" \
+    -F name="$REPO_NAME" \
+    -F number="$PR_NUMBER" \
+    -f query="$query" \
+    --jq '.data.repository.pullRequest.reviews.nodes[] | [(.author.login // ""), (.commit.oid // ""), (.state // ""), (.submittedAt // ""), (.url // "")] | @tsv' 2>/dev/null)"; then
+    return 1
+  fi
+
+  while IFS="$(printf '\t')" read -r author commit_oid state submitted_at url || [ -n "$author" ]; do
+    [ -n "$author" ] || continue
+    csv_contains "$PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS" "$author" || continue
+    [ "$commit_oid" = "$expected_head" ] || continue
+    case "$state" in
+      "" | DISMISSED | PENDING) continue ;;
+    esac
+    PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="formal review by @$author"
+    [ -n "$state" ] && PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL ($state)"
+    [ -n "$submitted_at" ] && PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL at $submitted_at"
+    [ -n "$url" ] && PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL: $url"
+    return 0
+  done <<<"$reviews"
+
+  return 1
+}
+
+fresh_pr_reaction_signal() {
+  local not_before="$1"
+  local reactions author content created_at
+
+  [ -n "$REPO_OWNER" ] || return 1
+  [ -n "$REPO_NAME" ] || return 1
+  [ -n "$PR_TRIGGERED_REVIEW_TRUSTED_REACTION_AUTHOR" ] || return 1
+
+  if ! reactions="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/reactions" \
+    -H "Accept: application/vnd.github+json" \
+    --jq '.[] | [(.user.login // ""), (.content // ""), (.created_at // "")] | @tsv' 2>/dev/null)"; then
+    return 1
+  fi
+
+  while IFS="$(printf '\t')" read -r author content created_at || [ -n "$author" ]; do
+    [ -n "$author" ] || continue
+    [ "$author" = "$PR_TRIGGERED_REVIEW_TRUSTED_REACTION_AUTHOR" ] || continue
+    [ "$content" = "+1" ] || continue
+    [ -n "$created_at" ] || continue
+    if [[ "$created_at" < "$not_before" ]]; then
+      continue
+    fi
+    PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="fresh +1 reaction by @$author at $created_at"
+    return 0
+  done <<<"$reactions"
+
+  return 1
+}
+
+wait_for_pr_triggered_review() {
+  local expected_head="$1"
+  local phase="$2"
+  local timeout_sec poll_sec start_epoch now_epoch elapsed observed_head sleep_seconds not_before
+
+  if [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then
+    echo "ERROR: Unsupported [review.pr_triggered].provider: $PR_TRIGGERED_REVIEW_PROVIDER" >&2
+    echo "       Supported provider: github-codex" >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
+    exit 1
+  fi
+  if ! is_nonnegative_integer "$PR_TRIGGERED_REVIEW_TIMEOUT_SEC"; then
+    echo "ERROR: [review.pr_triggered].timeout_sec must be a non-negative integer." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
+    exit 2
+  fi
+  if ! is_nonnegative_integer "$PR_TRIGGERED_REVIEW_POLL_SEC"; then
+    echo "ERROR: [review.pr_triggered].poll_sec must be a non-negative integer." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
+    exit 2
+  fi
+
+  timeout_sec="$PR_TRIGGERED_REVIEW_TIMEOUT_SEC"
+  poll_sec="$PR_TRIGGERED_REVIEW_POLL_SEC"
+  start_epoch="$(date +%s)"
+  not_before="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  PR_TRIGGERED_REVIEW_SIGNAL_DETAIL=""
+
+  echo "==> Waiting for trusted PR-visible AI review for PR #$PR_NUMBER ($phase) ..."
+  echo "    provider=$PR_TRIGGERED_REVIEW_PROVIDER expected_head=$expected_head timeout=${timeout_sec}s"
+
+  while true; do
+    observed_head="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")"
+    if [ -n "$observed_head" ] && [ "$observed_head" != "$expected_head" ]; then
+      echo "ERROR: PR #$PR_NUMBER head changed while waiting for PR-triggered AI review." >&2
+      echo "       expected: $expected_head" >&2
+      echo "       actual:   $observed_head" >&2
+      echo "       Rerun the merge gate on the current head." >&2
+      TOUCHSTONE_MERGE_FAILURE_REASON="head-not-updated"
+      exit 1
+    fi
+
+    if [ "$observed_head" = "$expected_head" ]; then
+      if trusted_pr_review_signal "$expected_head" || fresh_pr_reaction_signal "$not_before"; then
+        PR_TRIGGERED_REVIEWED_HEAD_OID="$expected_head"
+        echo "==> Trusted PR-visible AI review found for PR #$PR_NUMBER head $expected_head."
+        [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
+        return 0
+      fi
+    fi
+
+    now_epoch="$(date +%s)"
+    elapsed=$((now_epoch - start_epoch))
+    if [ "$elapsed" -ge "$timeout_sec" ]; then
+      break
+    fi
+    sleep_seconds="$poll_sec"
+    if [ -n "${MERGE_PR_SLEEP_OVERRIDE+x}" ]; then
+      sleep_seconds="$MERGE_PR_SLEEP_OVERRIDE"
+    fi
+    sleep "$sleep_seconds"
+  done
+
+  echo "ERROR: Timed out waiting for trusted PR-visible AI review for PR #$PR_NUMBER." >&2
+  echo "       phase: $phase" >&2
+  echo "       expected head: $expected_head" >&2
+  echo "       provider: $PR_TRIGGERED_REVIEW_PROVIDER" >&2
+  echo "       Confirm GitHub Codex automatic reviews are enabled, or comment '@codex review' on the PR." >&2
+  echo "       Then rerun: bash scripts/open-pr.sh --auto-merge" >&2
+  TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-timeout"
+  exit 1
+}
+
 print_unresolved_review_threads() {
   local threads="$1"
   local count=0
@@ -1529,6 +1763,16 @@ run_merge_review() {
 
   PR_HEAD_BRANCH="$pr_head_branch"
   REVIEWED_HEAD_OID="$pr_head_oid"
+  if truthy "$PR_TRIGGERED_REVIEW_REQUIRED" \
+    && [ -n "$PR_TRIGGERED_REVIEWED_HEAD_OID" ] \
+    && [ "$pr_head_oid" != "$PR_TRIGGERED_REVIEWED_HEAD_OID" ]; then
+    echo "ERROR: PR #$PR_NUMBER head changed after the trusted PR-triggered AI review signal." >&2
+    echo "       reviewed head: $PR_TRIGGERED_REVIEWED_HEAD_OID" >&2
+    echo "       current head:  $pr_head_oid" >&2
+    echo "       Rerun the merge gate on the current head." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="head-not-updated"
+    exit 1
+  fi
   current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
   if [ "$current_branch" = "$PR_HEAD_BRANCH" ]; then
     current_worktree="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
@@ -1600,7 +1844,7 @@ run_merge_review() {
     return 0
   fi
 
-  if [ ! -f "$REVIEW_SCRIPT" ]; then
+  if [ ! -f "$REVIEW_SCRIPT" ] && ! truthy "$PR_TRIGGERED_REVIEW_REQUIRED"; then
     echo "==> Review script not found at $REVIEW_SCRIPT — skipping review."
     return 0
   fi
@@ -1674,6 +1918,16 @@ run_merge_review() {
 
   run_preflight_gate "$default_base_ref" "before merge review" "merge" || return $?
 
+  if truthy "$PR_TRIGGERED_REVIEW_REQUIRED" && truthy "$PR_TRIGGERED_REVIEW_SKIP_MERGE_REVIEW"; then
+    echo "==> Skipping merge review because [review.pr_triggered].required=true and current-head PR-visible AI review is trusted."
+    return 0
+  fi
+
+  if [ ! -f "$REVIEW_SCRIPT" ]; then
+    echo "==> Review script not found at $REVIEW_SCRIPT — skipping review."
+    return 0
+  fi
+
   echo "==> Running merge review ..."
   local review_rc=0
   local review_output_file
@@ -1722,6 +1976,10 @@ run_merge_review() {
       fi
       wait_for_pr_head "$reviewed_head_after"
       wait_for_clean_merge_state
+      if truthy "$PR_TRIGGERED_REVIEW_REQUIRED"; then
+        wait_for_pr_triggered_review "$reviewed_head_after" "after review fixes"
+        require_pr_feedback_clear "after PR-triggered AI review on review fixes" "$reviewed_head_after"
+      fi
     fi
     touchstone_emit_event review_clean pr_number="$PR_NUMBER" head_sha="$reviewed_head_after"
     return 0
@@ -1763,9 +2021,17 @@ fi
 # 2. Check mergeability with retries (GitHub's status can lag after a push).
 wait_for_clean_merge_state
 
-# 3. Block on PR-visible requested changes or unresolved review threads before
-# spending model-review tokens.
-require_pr_feedback_clear "before merge review"
+# 3. If configured, block until the current PR head has a trusted PR-visible
+# AI review signal before spending local model-review tokens.
+if truthy "$PR_TRIGGERED_REVIEW_REQUIRED"; then
+  PR_TRIGGERED_HEAD_OID="$(current_pr_head_or_die "before PR-triggered AI review")"
+  wait_for_pr_triggered_review "$PR_TRIGGERED_HEAD_OID" "before merge review"
+  require_pr_feedback_clear "after PR-triggered AI review" "$PR_TRIGGERED_HEAD_OID"
+else
+  # Block on PR-visible requested changes or unresolved review threads before
+  # spending model-review tokens.
+  require_pr_feedback_clear "before merge review"
+fi
 
 # 4. Run AI review as the merge gate.
 run_merge_review
