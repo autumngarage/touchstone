@@ -1841,6 +1841,27 @@ else
   exit 1
 fi
 
+echo "==> Test: bypass skips unavailable PR-triggered reviewer with clean marker"
+reset_case_files
+write_pr_triggered_config true 0 0
+mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
+printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=pr-head-oid\nmerge_base=base-oid\n' >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
+run_merge_pr "$TEST_DIR/output-bypass-pr-triggered.txt" 123 --bypass-with-disclosure="reviewer unavailable after prior clean review"
+if grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-bypass-pr-triggered.txt" \
+  && grep -q 'marker: clean-review' "$TEST_DIR/output-bypass-pr-triggered.txt" \
+  && grep -q 'reason: reviewer unavailable after prior clean review' "$TEST_DIR/output-bypass-pr-triggered.txt" \
+  && grep -q 'Reviewer bypassed via `--bypass-with-disclosure`. Marker: clean-review. Reason: reviewer unavailable after prior clean review' "$TEST_DIR/gh-comment" \
+  && grep -q '^Reviewer-bypass: reviewer unavailable after prior clean review$' "$TEST_DIR/gh-merge-body" \
+  && ! grep -q 'Timed out waiting for trusted PR-visible AI review' "$TEST_DIR/output-bypass-pr-triggered.txt" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
+  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
+  echo "==> PASS: bypass can skip unavailable PR-triggered reviewer after clean marker"
+else
+  echo "FAIL: bypass should not wait on unavailable PR-triggered reviewer" >&2
+  cat "$TEST_DIR/output-bypass-pr-triggered.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: stale clean marker is rejected"
 reset_case_files
 mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"

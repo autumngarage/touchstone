@@ -2045,13 +2045,14 @@ wait_for_clean_merge_state
 
 # 3. If configured, block until the current PR head has a trusted PR-visible
 # AI review signal before spending local model-review tokens.
-if truthy "$PR_TRIGGERED_REVIEW_REQUIRED"; then
+if truthy "$PR_TRIGGERED_REVIEW_REQUIRED" && [ "$BYPASS_REVIEW" != true ]; then
   PR_TRIGGERED_HEAD_OID="$(current_pr_head_or_die "before PR-triggered AI review")"
   wait_for_pr_triggered_review "$PR_TRIGGERED_HEAD_OID" "before merge review"
   require_pr_feedback_clear "after PR-triggered AI review" "$PR_TRIGGERED_HEAD_OID"
 else
   # Block on PR-visible requested changes or unresolved review threads before
-  # spending model-review tokens.
+  # spending model-review tokens. Audited bypasses also come through here so
+  # the bypass path can still work when the PR-triggered reviewer is unavailable.
   require_pr_feedback_clear "before merge review"
 fi
 
