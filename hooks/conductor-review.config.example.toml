@@ -97,7 +97,6 @@ unsafe_paths = [
 # timeout_sec = 1800
 # poll_sec = 10
 # trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]
-# trusted_reaction_author = "chatgpt-codex-connector[bot]"
 # skip_merge_review = true
 
 # --------------------------------------------------------------------------

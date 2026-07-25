@@ -650,7 +650,6 @@ provider = "github-codex"
 timeout_sec = $timeout_sec
 poll_sec = $poll_sec
 trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]
-trusted_reaction_author = "chatgpt-codex-connector[bot]"
 skip_merge_review = $skip_merge_review
 EOF
 }
@@ -1072,7 +1071,6 @@ provider = "github-codex"
 timeout_sec = 0
 poll_sec = 0
 trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]
-trusted_reaction_author = "chatgpt-codex-connector[bot]"
 skip_merge_review = true
 EOF
 cat >"$DEFAULT_FAKE_WORKTREE/.touchstone-review.toml" <<'EOF'
@@ -1114,42 +1112,27 @@ else
   exit 1
 fi
 
-echo "==> Test: stale PR-triggered +1 reaction is ignored"
+echo "==> Test: PR-triggered +1 reaction is ignored"
 reset_case_files
 write_pr_triggered_config true 0 0
-if GH_REACTIONS=$'chatgpt-codex-connector[bot]\t+1\t1970-01-01T00:00:00Z' \
+if GH_REACTIONS=$'chatgpt-codex-connector[bot]\t+1\t9999-01-01T00:00:00Z' \
   run_merge_pr "$TEST_DIR/output-pr-triggered-stale-reaction.txt" 123; then
-  echo "FAIL: merge-pr.sh unexpectedly accepted a stale PR-triggered reaction" >&2
+  echo "FAIL: merge-pr.sh unexpectedly accepted a PR-triggered reaction" >&2
   exit 1
 fi
 if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-stale-reaction.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
-  echo "==> PASS: stale PR-triggered reaction does not satisfy the merge gate"
+  echo "==> PASS: PR-triggered reaction does not satisfy the merge gate"
 else
-  echo "FAIL: stale PR-triggered reaction should not satisfy the merge gate" >&2
+  echo "FAIL: PR-triggered reaction should not satisfy the merge gate" >&2
   cat "$TEST_DIR/output-pr-triggered-stale-reaction.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: fresh PR-triggered +1 reaction is accepted"
-reset_case_files
-write_pr_triggered_config true 0 0
-GH_REACTIONS=$'chatgpt-codex-connector[bot]\t+1\t9999-01-01T00:00:00Z' \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-fresh-reaction.txt" 123
-if grep -q 'fresh +1 reaction by @chatgpt-codex-connector\[bot\]' "$TEST_DIR/output-pr-triggered-fresh-reaction.txt" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
-  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
-  echo "==> PASS: fresh PR-triggered reaction can satisfy the merge gate"
-else
-  echo "FAIL: fresh PR-triggered reaction should satisfy the merge gate" >&2
-  cat "$TEST_DIR/output-pr-triggered-fresh-reaction.txt" >&2
   exit 1
 fi
 
 echo "==> Test: prior clean PR-triggered Codex issue comment is accepted"
 reset_case_files
 write_pr_triggered_config true 0 0
-GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/1\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
+GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/1\tCodex Review: Didn'\''t find any major issues. Another round soon, please! **Reviewed commit:** `pr-head-oi`' \
   run_merge_pr "$TEST_DIR/output-pr-triggered-clean-comment.txt" 123
 if grep -q 'clean Codex review comment by @chatgpt-codex-connector' "$TEST_DIR/output-pr-triggered-clean-comment.txt" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
@@ -1158,6 +1141,57 @@ if grep -q 'clean Codex review comment by @chatgpt-codex-connector' "$TEST_DIR/o
 else
   echo "FAIL: prior clean Codex issue comment should satisfy the merge gate" >&2
   cat "$TEST_DIR/output-pr-triggered-clean-comment.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: stale-head clean Codex issue comment is rejected"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/stale\tCodex Review: Didn'\''t find any major issues. Another round soon, please! **Reviewed commit:** `old-head-0`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-stale-clean-comment.txt" 123; then
+  echo "FAIL: stale-head clean Codex issue comment unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-stale-clean-comment.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: stale-head clean Codex issue comment does not satisfy the merge gate"
+else
+  echo "FAIL: stale-head clean Codex issue comment should not satisfy the merge gate" >&2
+  cat "$TEST_DIR/output-pr-triggered-stale-clean-comment.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: malformed reviewed-commit token is rejected"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/malformed\tCodex Review: Didn'\''t find any major issues. Another round soon, please! **Reviewed commit:** `pr-head-oid-extra`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-malformed-clean-comment.txt" 123; then
+  echo "FAIL: malformed reviewed-commit token unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-malformed-clean-comment.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: malformed reviewed-commit token does not satisfy the merge gate"
+else
+  echo "FAIL: malformed reviewed-commit token should not satisfy the merge gate" >&2
+  cat "$TEST_DIR/output-pr-triggered-malformed-clean-comment.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: untrusted-author clean Codex issue comment is rejected"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_ISSUE_COMMENTS=$'untrusted-reviewer\t1970-01-01T00:00:00Z\thttps://example.test/comment/spoof\tCodex Review: Didn'\''t find any major issues. Another round soon, please! **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-untrusted-clean-comment.txt" 123; then
+  echo "FAIL: untrusted-author clean Codex issue comment unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-untrusted-clean-comment.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: untrusted-author clean Codex issue comment does not satisfy the merge gate"
+else
+  echo "FAIL: untrusted-author clean Codex issue comment should not satisfy the merge gate" >&2
+  cat "$TEST_DIR/output-pr-triggered-untrusted-clean-comment.txt" >&2
   exit 1
 fi
 

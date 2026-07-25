@@ -68,7 +68,6 @@ PR_TRIGGERED_REVIEW_PROVIDER="github-codex"
 PR_TRIGGERED_REVIEW_TIMEOUT_SEC=1800
 PR_TRIGGERED_REVIEW_POLL_SEC=10
 PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS="chatgpt-codex-connector,chatgpt-codex-connector[bot]"
-PR_TRIGGERED_REVIEW_TRUSTED_REACTION_AUTHOR="chatgpt-codex-connector[bot]"
 PR_TRIGGERED_REVIEW_SKIP_MERGE_REVIEW=true
 PR_TRIGGERED_REVIEWED_HEAD_OID=""
 REVIEW_SUMMARY_FILE=""
@@ -358,8 +357,6 @@ load_merge_review_config() {
       PR_TRIGGERED_REVIEW_POLL_SEC="$value"
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "trusted_review_authors" ]; then
       PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS="$(toml_normalize_array "$value")"
-    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "trusted_reaction_author" ]; then
-      PR_TRIGGERED_REVIEW_TRUSTED_REACTION_AUTHOR="$value"
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "skip_merge_review" ]; then
       PR_TRIGGERED_REVIEW_SKIP_MERGE_REVIEW="$(normalize_bool "$value")"
     fi
@@ -1406,35 +1403,6 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   return 1
 }
 
-fresh_pr_reaction_signal() {
-  local not_before="$1"
-  local reactions author content created_at
-
-  [ -n "$REPO_OWNER" ] || return 1
-  [ -n "$REPO_NAME" ] || return 1
-  [ -n "$PR_TRIGGERED_REVIEW_TRUSTED_REACTION_AUTHOR" ] || return 1
-
-  if ! reactions="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/reactions" \
-    -H "Accept: application/vnd.github+json" \
-    --jq '.[] | [(.user.login // ""), (.content // ""), (.created_at // "")] | @tsv' 2>/dev/null)"; then
-    return 1
-  fi
-
-  while IFS="$(printf '\t')" read -r author content created_at || [ -n "$author" ]; do
-    [ -n "$author" ] || continue
-    [ "$author" = "$PR_TRIGGERED_REVIEW_TRUSTED_REACTION_AUTHOR" ] || continue
-    [ "$content" = "+1" ] || continue
-    [ -n "$created_at" ] || continue
-    if [[ "$created_at" < "$not_before" ]]; then
-      continue
-    fi
-    PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="fresh +1 reaction by @$author at $created_at"
-    return 0
-  done <<<"$reactions"
-
-  return 1
-}
-
 trusted_pr_clean_comment_signal() {
   local expected_head="$1"
   local comments author created_at url body expected_head_short
@@ -1453,7 +1421,7 @@ trusted_pr_clean_comment_signal() {
     csv_contains "$PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS" "$author" || continue
     [ -n "$created_at" ] || continue
     case "$body" in
-      *"Codex Review:"*"Didn't find any major issues"*"Reviewed commit:"*"\`$expected_head_short"* | *"Codex Review:"*"No major issues"*"Reviewed commit:"*"\`$expected_head_short"*) ;;
+      *"Codex Review:"*"Didn't find any major issues"*"Reviewed commit:"*"\`$expected_head_short\`"* | *"Codex Review:"*"No major issues"*"Reviewed commit:"*"\`$expected_head_short\`"*) ;;
       *) continue ;;
     esac
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="clean Codex review comment by @$author at $created_at"
@@ -1467,7 +1435,7 @@ trusted_pr_clean_comment_signal() {
 wait_for_pr_triggered_review() {
   local expected_head="$1"
   local phase="$2"
-  local timeout_sec poll_sec start_epoch now_epoch elapsed observed_head sleep_seconds not_before
+  local timeout_sec poll_sec start_epoch now_epoch elapsed observed_head sleep_seconds
 
   if [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then
     echo "ERROR: Unsupported [review.pr_triggered].provider: $PR_TRIGGERED_REVIEW_PROVIDER" >&2
@@ -1489,7 +1457,6 @@ wait_for_pr_triggered_review() {
   timeout_sec="$PR_TRIGGERED_REVIEW_TIMEOUT_SEC"
   poll_sec="$PR_TRIGGERED_REVIEW_POLL_SEC"
   start_epoch="$(date +%s)"
-  not_before="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   PR_TRIGGERED_REVIEW_SIGNAL_DETAIL=""
 
   echo "==> Waiting for trusted PR-visible AI review for PR #$PR_NUMBER ($phase) ..."
@@ -1508,8 +1475,7 @@ wait_for_pr_triggered_review() {
 
     if [ "$observed_head" = "$expected_head" ]; then
       if trusted_pr_review_signal "$expected_head" \
-        || trusted_pr_clean_comment_signal "$expected_head" \
-        || fresh_pr_reaction_signal "$not_before"; then
+        || trusted_pr_clean_comment_signal "$expected_head"; then
         PR_TRIGGERED_REVIEWED_HEAD_OID="$expected_head"
         echo "==> Trusted PR-visible AI review found for PR #$PR_NUMBER head $expected_head."
         [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
