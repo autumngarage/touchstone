@@ -692,6 +692,21 @@ skip_merge_review = $skip_merge_review
 EOF
 }
 
+write_established_boolean_alias_config() {
+  install_toml_parser_fixture
+  mkdir -p "$DEFAULT_FAKE_WORKTREE"
+  cat >"$DEFAULT_FAKE_WORKTREE/.touchstone-review.toml" <<'EOF'
+[review]
+preflight_required = on
+comment_on_clean = off
+comment_findings_history = 1
+
+[review.pr_triggered]
+required = false
+skip_merge_review = true
+EOF
+}
+
 echo "==> Test: merge preflight sanitizes reviewer routing env"
 mkdir -p "$TEST_DIR/lib"
 cat >"$TEST_DIR/lib/preflight.sh" <<'EOF'
@@ -1217,6 +1232,19 @@ if grep -q 'Invalid trusted review config: \[review.pr_triggered\].required must
 else
   echo "FAIL: malformed required value should abort before review or merge" >&2
   cat "$TEST_DIR/output-pr-triggered-invalid-required.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: established review boolean aliases remain compatible"
+reset_case_files
+write_established_boolean_alias_config
+run_merge_pr "$TEST_DIR/output-established-boolean-aliases.txt" 123
+if grep -q '^CODEX_REVIEW_MODE=fix$' "$TEST_DIR/codex-review.log" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: established review boolean aliases remain compatible"
+else
+  echo "FAIL: established review boolean aliases should continue to normalize" >&2
+  cat "$TEST_DIR/output-established-boolean-aliases.txt" >&2
   exit 1
 fi
 

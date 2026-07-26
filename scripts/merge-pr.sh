@@ -324,6 +324,14 @@ truthy() {
   esac
 }
 
+normalize_bool() {
+  case "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" in
+    true | 1 | yes | on) printf 'true' ;;
+    false | 0 | no | off) printf 'false' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 load_merge_review_config() {
   local config_file config_error=""
   resolve_merge_review_config_file || return $?
@@ -338,20 +346,24 @@ load_merge_review_config() {
     local section="$1"
     local key="$2"
     local value="$3"
+    local normalized
 
     if [ "$section" = "review" ] && [ "$key" = "preflight_required" ]; then
-      case "$value" in
-        true | false) PREFLIGHT_REQUIRED="$value" ;;
+      normalized="$(normalize_bool "$value")"
+      case "$normalized" in
+        true | false) PREFLIGHT_REQUIRED="$normalized" ;;
         *) config_error="[review].preflight_required must be true or false; got: $value" ;;
       esac
     elif [ "$section" = "review" ] && [ "$key" = "comment_on_clean" ]; then
-      case "$value" in
-        true | false) COMMENT_ON_CLEAN="$value" ;;
+      normalized="$(normalize_bool "$value")"
+      case "$normalized" in
+        true | false) COMMENT_ON_CLEAN="$normalized" ;;
         *) config_error="[review].comment_on_clean must be true or false; got: $value" ;;
       esac
     elif [ "$section" = "review" ] && [ "$key" = "comment_findings_history" ]; then
-      case "$value" in
-        true | false) COMMENT_FINDINGS_HISTORY="$value" ;;
+      normalized="$(normalize_bool "$value")"
+      case "$normalized" in
+        true | false) COMMENT_FINDINGS_HISTORY="$normalized" ;;
         *) config_error="[review].comment_findings_history must be true or false; got: $value" ;;
       esac
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "required" ]; then
