@@ -1453,7 +1453,8 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
 
 latest_trusted_pr_comment_result() {
   local expected_head="$1"
-  local comments author created_at url body expected_head_short
+  local comments author created_at url body expected_head_short resolved_comment_commit=""
+  local comment_commit_resolved=false
   local candidate_clean candidate_detail result_label
   local latest_created_at="" latest_clean=false latest_detail=""
 
@@ -1477,6 +1478,15 @@ latest_trusted_pr_comment_result() {
       *"Reviewed commit:"*"\`$expected_head_short\`"*) ;;
       *) continue ;;
     esac
+    if [ "$comment_commit_resolved" = false ]; then
+      if ! resolved_comment_commit="$(gh api "repos/$REPO_OWNER/$REPO_NAME/commits/$expected_head_short" \
+        --jq '.sha' 2>&1)"; then
+        PR_TRIGGERED_REVIEW_INSPECTION_ERROR="reviewed commit resolution: $resolved_comment_commit"
+        return 2
+      fi
+      comment_commit_resolved=true
+    fi
+    [ "$resolved_comment_commit" = "$expected_head" ] || continue
     candidate_clean=false
     result_label="non-clean"
     case "$body" in
@@ -1554,27 +1564,29 @@ trusted_pr_clean_signal() {
   if [ "$review_found" = true ] && [ "$comment_found" = true ]; then
     if [[ "$review_timestamp" > "$comment_timestamp" ]]; then
       PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail"
-      [ "$review_clean" = true ]
-      return
+      [ "$review_clean" = true ] && return 0
+      return 3
     fi
     if [[ "$comment_timestamp" > "$review_timestamp" ]]; then
       PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$comment_detail"
-      [ "$comment_clean" = true ]
-      return
+      [ "$comment_clean" = true ] && return 0
+      return 3
     fi
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail; $comment_detail"
-    [ "$review_clean" = true ] && [ "$comment_clean" = true ]
-    return
+    if [ "$review_clean" = true ] && [ "$comment_clean" = true ]; then
+      return 0
+    fi
+    return 3
   fi
   if [ "$review_found" = true ]; then
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail"
-    [ "$review_clean" = true ]
-    return
+    [ "$review_clean" = true ] && return 0
+    return 3
   fi
   if [ "$comment_found" = true ]; then
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$comment_detail"
-    [ "$comment_clean" = true ]
-    return
+    [ "$comment_clean" = true ] && return 0
+    return 3
   fi
   return 1
 }
@@ -1641,6 +1653,12 @@ wait_for_pr_triggered_review() {
         signal_status=$?
         if [ "$signal_status" -eq 2 ]; then
           last_review_inspection_error="$PR_TRIGGERED_REVIEW_INSPECTION_ERROR"
+        elif [ "$signal_status" -eq 3 ]; then
+          echo "ERROR: Trusted PR-visible AI review is not clean for PR #$PR_NUMBER head $expected_head." >&2
+          [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2
+          echo "       Address the findings, push the fix, and request a fresh exact-head review." >&2
+          TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-findings"
+          exit 1
         else
           last_review_inspection_error=""
         fi

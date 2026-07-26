@@ -186,6 +186,21 @@ case "${1:-} ${2:-}" in
     fi
     echo "merged"
     ;;
+  "api repos/"*)
+    case "${2:-}" in
+      */commits/*)
+        if [ "${GH_COMMENT_COMMIT_RESOLUTION_FAIL:-false}" = "true" ]; then
+          echo "reviewed commit is ambiguous or unavailable" >&2
+          exit 1
+        fi
+        echo "${GH_RESOLVED_COMMENT_COMMIT:-${GH_PR_HEAD_OID:-pr-head-oid}}"
+        ;;
+      *)
+        echo "unexpected gh api args: $*" >&2
+        exit 1
+        ;;
+    esac
+    ;;
   "api graphql")
     query="$(gh_query_arg "$@")"
     reject_unbalanced_graphql_query "$query"
@@ -515,6 +530,8 @@ reset_case_files() {
   unset GH_ISSUE_COMMENTS
   unset GH_ISSUE_COMMENTS_SECOND
   unset GH_COMMENTS_FAIL
+  unset GH_COMMENT_COMMIT_RESOLUTION_FAIL
+  unset GH_RESOLVED_COMMENT_COMMIT
   unset MERGE_PR_SLEEP_OVERRIDE
   unset CODEX_REVIEW_EXIT
   unset CODEX_REVIEW_STUB_OUTPUT
@@ -581,6 +598,8 @@ run_merge_pr() {
     GH_ISSUE_COMMENTS="${GH_ISSUE_COMMENTS:-}" \
     GH_ISSUE_COMMENTS_SECOND="${GH_ISSUE_COMMENTS_SECOND:-}" \
     GH_COMMENTS_FAIL="${GH_COMMENTS_FAIL:-false}" \
+    GH_COMMENT_COMMIT_RESOLUTION_FAIL="${GH_COMMENT_COMMIT_RESOLUTION_FAIL:-false}" \
+    GH_RESOLVED_COMMENT_COMMIT="${GH_RESOLVED_COMMENT_COMMIT:-}" \
     GH_COMMENTS_CALLS_FILE="$TEST_DIR/gh-comments-calls" \
     MERGE_PR_SLEEP_OVERRIDE="${MERGE_PR_SLEEP_OVERRIDE:-}" \
     GIT_CHECKOUT_MAIN_FILE="$TEST_DIR/git-checkout-main" \
@@ -1158,7 +1177,7 @@ if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t20
   echo "FAIL: COMMENTED formal review unexpectedly satisfied the merge gate" >&2
   exit 1
 fi
-if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-commented-review.txt" \
+if grep -q 'Trusted PR-visible AI review is not clean for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-commented-review.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: COMMENTED formal review does not count as clean approval"
 else
@@ -1286,6 +1305,24 @@ else
   exit 1
 fi
 
+echo "==> Test: colliding short marker must resolve to the full current head"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_RESOLVED_COMMENT_COMMIT=old-reviewed-head \
+  GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/collision\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-colliding-marker.txt" 123; then
+  echo "FAIL: colliding short marker unexpectedly satisfied the exact-head gate" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-colliding-marker.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: short marker must resolve to the full current head"
+else
+  echo "FAIL: unresolved full commit mismatch should reject the clean comment" >&2
+  cat "$TEST_DIR/output-pr-triggered-colliding-marker.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: malformed reviewed-commit token is rejected"
 reset_case_files
 write_pr_triggered_config true 0 0
@@ -1328,7 +1365,7 @@ if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://ex
   echo "FAIL: non-clean Codex issue comment unexpectedly satisfied the merge gate" >&2
   exit 1
 fi
-if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-non-clean-comment.txt" \
+if grep -q 'Trusted PR-visible AI review is not clean for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-non-clean-comment.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: non-clean Codex issue comment does not satisfy the merge gate"
 else
@@ -1345,7 +1382,7 @@ if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://ex
   echo "FAIL: clean phrase inside findings details unexpectedly satisfied the merge gate" >&2
   exit 1
 fi
-if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-mixed-comment.txt" \
+if grep -q 'Trusted PR-visible AI review is not clean for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-mixed-comment.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: clean phrase inside findings details remains non-clean"
 else
@@ -1362,7 +1399,7 @@ if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://ex
   echo "FAIL: historical clean comment overrode a later non-clean Codex result" >&2
   exit 1
 fi
-if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-later-non-clean-comment.txt" \
+if grep -q 'Trusted PR-visible AI review is not clean for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-later-non-clean-comment.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: latest Codex comment controls the exact-head result"
 else
@@ -1379,7 +1416,7 @@ if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t202
   echo "FAIL: historical formal approval overrode a later COMMENTED review" >&2
   exit 1
 fi
-if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-later-commented-review.txt" \
+if grep -q 'Trusted PR-visible AI review is not clean for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-later-commented-review.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: latest formal review controls the exact-head result"
 else
@@ -1396,7 +1433,7 @@ if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t20
   echo "FAIL: API order allowed tied formal approval to hide blocking review" >&2
   exit 1
 fi
-if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-same-time-reviews.txt" \
+if grep -q 'Trusted PR-visible AI review is not clean for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-same-time-reviews.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: conflicting same-time formal reviews fail closed"
 else
@@ -1413,7 +1450,7 @@ if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://ex
   echo "FAIL: API order allowed tied clean comment to hide findings" >&2
   exit 1
 fi
-if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-same-time-comments.txt" \
+if grep -q 'Trusted PR-visible AI review is not clean for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-same-time-comments.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: conflicting same-time review comments fail closed"
 else
@@ -1431,7 +1468,7 @@ if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t202
   echo "FAIL: older formal approval overrode a newer findings comment" >&2
   exit 1
 fi
-if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-comment-overrides-approval.txt" \
+if grep -q 'Trusted PR-visible AI review is not clean for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-comment-overrides-approval.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: globally latest findings comment overrides older formal approval"
 else
@@ -1449,7 +1486,7 @@ if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://ex
   echo "FAIL: older clean comment overrode a newer COMMENTED formal review" >&2
   exit 1
 fi
-if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-review-overrides-clean-comment.txt" \
+if grep -q 'Trusted PR-visible AI review is not clean for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-review-overrides-clean-comment.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: globally latest COMMENTED review overrides older clean comment"
 else
@@ -1482,7 +1519,7 @@ if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t202
   echo "FAIL: conflicting same-time trusted results unexpectedly satisfied the merge gate" >&2
   exit 1
 fi
-if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-conflicting-same-time.txt" \
+if grep -q 'Trusted PR-visible AI review is not clean for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-conflicting-same-time.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: conflicting same-time trusted results fail closed"
 else
