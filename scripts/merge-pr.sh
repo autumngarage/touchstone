@@ -1355,6 +1355,7 @@ current_pr_head_or_die() {
 trusted_pr_review_signal() {
   local expected_head="$1"
   local query reviews author commit_oid state submitted_at url
+  local latest_state="" latest_submitted_at="" latest_url="" latest_author=""
 
   [ -n "$REPO_OWNER" ] || return 1
   [ -n "$REPO_NAME" ] || return 1
@@ -1393,20 +1394,26 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     [ -n "$author" ] || continue
     csv_contains "$PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS" "$author" || continue
     [ "$commit_oid" = "$expected_head" ] || continue
-    [ "$state" = "APPROVED" ] || continue
-    PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="formal review by @$author"
-    [ -n "$state" ] && PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL ($state)"
-    [ -n "$submitted_at" ] && PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL at $submitted_at"
-    [ -n "$url" ] && PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL: $url"
-    return 0
+    [ -n "$submitted_at" ] || continue
+    if [ -n "$latest_submitted_at" ] && [[ "$submitted_at" < "$latest_submitted_at" ]]; then
+      continue
+    fi
+    latest_state="$state"
+    latest_submitted_at="$submitted_at"
+    latest_url="$url"
+    latest_author="$author"
   done <<<"$reviews"
 
-  return 1
+  [ "$latest_state" = "APPROVED" ] || return 1
+  PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="formal review by @$latest_author ($latest_state) at $latest_submitted_at"
+  [ -n "$latest_url" ] && PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL: $latest_url"
+  return 0
 }
 
 trusted_pr_clean_comment_signal() {
   local expected_head="$1"
   local comments author created_at url body expected_head_short
+  local latest_author="" latest_created_at="" latest_url="" latest_body=""
 
   [ -n "$REPO_OWNER" ] || return 1
   [ -n "$REPO_NAME" ] || return 1
@@ -1422,15 +1429,25 @@ trusted_pr_clean_comment_signal() {
     csv_contains "$PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS" "$author" || continue
     [ -n "$created_at" ] || continue
     case "$body" in
-      *"Codex Review:"*"Didn't find any major issues"*"Reviewed commit:"*"\`$expected_head_short\`"* | *"Codex Review:"*"No major issues"*"Reviewed commit:"*"\`$expected_head_short\`"*) ;;
+      *"Reviewed commit:"*"\`$expected_head_short\`"*) ;;
       *) continue ;;
     esac
-    PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="clean Codex review comment by @$author at $created_at"
-    [ -n "$url" ] && PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL: $url"
-    return 0
+    if [ -n "$latest_created_at" ] && [[ "$created_at" < "$latest_created_at" ]]; then
+      continue
+    fi
+    latest_author="$author"
+    latest_created_at="$created_at"
+    latest_url="$url"
+    latest_body="$body"
   done <<<"$comments"
 
-  return 1
+  case "$latest_body" in
+    *"Codex Review:"*"Didn't find any major issues"* | *"Codex Review:"*"No major issues"*) ;;
+    *) return 1 ;;
+  esac
+  PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="clean Codex review comment by @$latest_author at $latest_created_at"
+  [ -n "$latest_url" ] && PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL: $latest_url"
+  return 0
 }
 
 wait_for_pr_triggered_review() {

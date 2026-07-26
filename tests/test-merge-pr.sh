@@ -1282,6 +1282,40 @@ else
   exit 1
 fi
 
+echo "==> Test: later non-clean Codex comment overrides clean result for the same head"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/clean\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`\nchatgpt-codex-connector\t2026-06-23T00:01:00Z\thttps://example.test/comment/findings\tCodex Review: Found a blocking issue. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-later-non-clean-comment.txt" 123; then
+  echo "FAIL: historical clean comment overrode a later non-clean Codex result" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-later-non-clean-comment.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: latest Codex comment controls the exact-head result"
+else
+  echo "FAIL: latest non-clean Codex comment should block historical clean evidence" >&2
+  cat "$TEST_DIR/output-pr-triggered-later-non-clean-comment.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: later COMMENTED formal review overrides earlier approval for the same head"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/approved\nchatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:01:00Z\thttps://example.test/review/findings' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-later-commented-review.txt" 123; then
+  echo "FAIL: historical formal approval overrode a later COMMENTED review" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-later-commented-review.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: latest formal review controls the exact-head result"
+else
+  echo "FAIL: latest COMMENTED formal review should block historical approval" >&2
+  cat "$TEST_DIR/output-pr-triggered-later-commented-review.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: delayed PR-triggered review is polled before merge"
 reset_case_files
 write_pr_triggered_config true 2 1
