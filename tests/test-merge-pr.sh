@@ -658,12 +658,13 @@ write_pr_triggered_config() {
   local skip_merge_review="${1:-true}"
   local timeout_sec="${2:-0}"
   local poll_sec="${3:-0}"
+  local required="${4:-true}"
 
   install_toml_parser_fixture
   mkdir -p "$DEFAULT_FAKE_WORKTREE"
   cat >"$DEFAULT_FAKE_WORKTREE/.touchstone-review.toml" <<EOF
 [review.pr_triggered]
-required = true
+required = $required
 provider = "github-codex"
 timeout_sec = $timeout_sec
 poll_sec = $poll_sec
@@ -1180,6 +1181,23 @@ if grep -q 'poll_sec must be positive when timeout_sec is positive' "$TEST_DIR/o
 else
   echo "FAIL: positive timeout should reject a zero poll interval before polling" >&2
   cat "$TEST_DIR/output-pr-triggered-zero-poll.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: malformed required value fails closed during trusted config loading"
+reset_case_files
+write_pr_triggered_config true 0 0 ture
+if run_merge_pr "$TEST_DIR/output-pr-triggered-invalid-required.txt" 123; then
+  echo "FAIL: merge-pr.sh treated malformed required value as disabled" >&2
+  exit 1
+fi
+if grep -q 'Invalid trusted review config: \[review.pr_triggered\].required must be true or false; got: ture' "$TEST_DIR/output-pr-triggered-invalid-required.txt" \
+  && [ ! -f "$TEST_DIR/gh-reviews-graphql-calls" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: malformed required value fails closed during trusted config loading"
+else
+  echo "FAIL: malformed required value should abort before review or merge" >&2
+  cat "$TEST_DIR/output-pr-triggered-invalid-required.txt" >&2
   exit 1
 fi
 

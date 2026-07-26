@@ -324,16 +324,8 @@ truthy() {
   esac
 }
 
-normalize_bool() {
-  case "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" in
-    true | 1 | yes | on) printf 'true' ;;
-    false | 0 | no | off) printf 'false' ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
-
 load_merge_review_config() {
-  local config_file
+  local config_file config_error=""
   resolve_merge_review_config_file || return $?
   config_file="$MERGE_REVIEW_CONFIG_FILE"
   [ -f "$config_file" ] || return 0
@@ -348,13 +340,25 @@ load_merge_review_config() {
     local value="$3"
 
     if [ "$section" = "review" ] && [ "$key" = "preflight_required" ]; then
-      PREFLIGHT_REQUIRED="$(normalize_bool "$value")"
+      case "$value" in
+        true | false) PREFLIGHT_REQUIRED="$value" ;;
+        *) config_error="[review].preflight_required must be true or false; got: $value" ;;
+      esac
     elif [ "$section" = "review" ] && [ "$key" = "comment_on_clean" ]; then
-      COMMENT_ON_CLEAN="$(normalize_bool "$value")"
+      case "$value" in
+        true | false) COMMENT_ON_CLEAN="$value" ;;
+        *) config_error="[review].comment_on_clean must be true or false; got: $value" ;;
+      esac
     elif [ "$section" = "review" ] && [ "$key" = "comment_findings_history" ]; then
-      COMMENT_FINDINGS_HISTORY="$(normalize_bool "$value")"
+      case "$value" in
+        true | false) COMMENT_FINDINGS_HISTORY="$value" ;;
+        *) config_error="[review].comment_findings_history must be true or false; got: $value" ;;
+      esac
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "required" ]; then
-      PR_TRIGGERED_REVIEW_REQUIRED="$(normalize_bool "$value")"
+      case "$value" in
+        true | false) PR_TRIGGERED_REVIEW_REQUIRED="$value" ;;
+        *) config_error="[review.pr_triggered].required must be true or false; got: $value" ;;
+      esac
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "provider" ]; then
       PR_TRIGGERED_REVIEW_PROVIDER="$value"
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "timeout_sec" ]; then
@@ -364,11 +368,20 @@ load_merge_review_config() {
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "trusted_review_authors" ]; then
       PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS="$(toml_normalize_array "$value")"
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "skip_merge_review" ]; then
-      PR_TRIGGERED_REVIEW_SKIP_MERGE_REVIEW="$(normalize_bool "$value")"
+      case "$value" in
+        true | false) PR_TRIGGERED_REVIEW_SKIP_MERGE_REVIEW="$value" ;;
+        *) config_error="[review.pr_triggered].skip_merge_review must be true or false; got: $value" ;;
+      esac
     fi
   }
 
   toml_parse "$config_file" merge_pr_toml_callback
+  if [ -n "$config_error" ]; then
+    echo "ERROR: Invalid trusted review config: $config_error" >&2
+    echo "       source: $config_file" >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="trusted-review-config"
+    return 1
+  fi
 }
 
 resolve_merge_review_config_file() {
