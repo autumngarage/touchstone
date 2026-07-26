@@ -1468,7 +1468,7 @@ latest_trusted_pr_comment_result() {
   PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP="$latest_created_at"
   PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN=false
   case "$latest_body" in
-    *"Codex Review:"*"Didn't find any major issues"* | *"Codex Review:"*"No major issues"*)
+    "Codex Review: Didn't find any major issues."* | "Codex Review: No major issues."*)
       PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN=true
       result_label="clean"
       ;;

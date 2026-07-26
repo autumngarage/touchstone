@@ -1319,6 +1319,23 @@ else
   exit 1
 fi
 
+echo "==> Test: clean phrase inside findings details does not count as a clean result"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/mixed\tCodex Review: Found a blocking issue. Quoted context: No major issues. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-mixed-comment.txt" 123; then
+  echo "FAIL: clean phrase inside findings details unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-mixed-comment.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: clean phrase inside findings details remains non-clean"
+else
+  echo "FAIL: only the canonical clean-result prefix should satisfy the merge gate" >&2
+  cat "$TEST_DIR/output-pr-triggered-mixed-comment.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: later non-clean Codex comment overrides clean result for the same head"
 reset_case_files
 write_pr_triggered_config true 0 0
