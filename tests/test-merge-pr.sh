@@ -1112,6 +1112,59 @@ else
   exit 1
 fi
 
+echo "==> Test: PR-triggered review checks blocking feedback before waiting"
+reset_case_files
+write_pr_triggered_config true 1800 10
+if GH_UNRESOLVED_THREADS=$'thread-before-wait\tscripts/example.sh\t12\tfalse\treviewer\thttps://example.test/thread-before-wait\tFix this before review' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-feedback-before-wait.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly waited despite existing blocking feedback" >&2
+  exit 1
+fi
+if grep -q 'has unresolved review thread(s)' "$TEST_DIR/output-pr-triggered-feedback-before-wait.txt" \
+  && ! grep -q 'Waiting for trusted PR-visible AI review' "$TEST_DIR/output-pr-triggered-feedback-before-wait.txt" \
+  && [ ! -f "$TEST_DIR/gh-reviews-graphql-calls" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: blocking feedback fails before the PR-triggered review wait"
+else
+  echo "FAIL: blocking feedback should fail before the PR-triggered review wait" >&2
+  cat "$TEST_DIR/output-pr-triggered-feedback-before-wait.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: positive PR-triggered timeout rejects zero poll interval"
+reset_case_files
+write_pr_triggered_config true 1 0
+if run_merge_pr "$TEST_DIR/output-pr-triggered-zero-poll.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly accepted zero polling with a positive timeout" >&2
+  exit 1
+fi
+if grep -q 'poll_sec must be positive when timeout_sec is positive' "$TEST_DIR/output-pr-triggered-zero-poll.txt" \
+  && [ ! -f "$TEST_DIR/gh-reviews-graphql-calls" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: positive timeout requires a positive poll interval"
+else
+  echo "FAIL: positive timeout should reject a zero poll interval before polling" >&2
+  cat "$TEST_DIR/output-pr-triggered-zero-poll.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: extracted trusted review config is removed on exit"
+reset_case_files
+write_pr_triggered_config true 0 0
+config_tmp_dir="$TEST_DIR/config-tmp"
+mkdir -p "$config_tmp_dir"
+if TMPDIR="$config_tmp_dir" run_merge_pr "$TEST_DIR/output-pr-triggered-config-cleanup.txt" 123; then
+  echo "FAIL: merge-pr.sh unexpectedly succeeded without a trusted review" >&2
+  exit 1
+fi
+if ! find "$config_tmp_dir" -name 'touchstone-merge-review-config.*' -print -quit | grep -q .; then
+  echo "==> PASS: extracted trusted review config is removed on exit"
+else
+  echo "FAIL: extracted trusted review config leaked after merge-pr.sh exited" >&2
+  find "$config_tmp_dir" -name 'touchstone-merge-review-config.*' -print >&2
+  exit 1
+fi
+
 echo "==> Test: PR-triggered +1 reaction is ignored"
 reset_case_files
 write_pr_triggered_config true 0 0

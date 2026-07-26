@@ -79,6 +79,7 @@ REPO_FULL_NAME=""
 REPO_OWNER=""
 REPO_NAME=""
 MERGE_REVIEW_CONFIG_TMP_FILES=()
+MERGE_REVIEW_CONFIG_FILE=""
 TOUCHSTONE_REVIEW_LOG="${TOUCHSTONE_REVIEW_LOG-${HOME:-}/.touchstone-review-log}"
 TOUCHSTONE_REVIEW_LOG_MAX_LINES="${TOUCHSTONE_REVIEW_LOG_MAX_LINES:-1000}"
 TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS="${TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS:-24}"
@@ -329,7 +330,8 @@ normalize_bool() {
 
 load_merge_review_config() {
   local config_file
-  config_file="$(resolve_merge_review_config_file)"
+  resolve_merge_review_config_file
+  config_file="$MERGE_REVIEW_CONFIG_FILE"
   [ -f "$config_file" ] || return 0
   [ -f "$SCRIPT_DIR/../lib/toml.sh" ] || return 0
 
@@ -368,6 +370,7 @@ load_merge_review_config() {
 resolve_merge_review_config_file() {
   local rel repo_root tmp trusted_base
 
+  MERGE_REVIEW_CONFIG_FILE=""
   if [ -n "$PR_NUMBER" ] && [ -n "${DEFAULT_BRANCH:-}" ]; then
     trusted_base="${MERGE_PR_TRUSTED_CONFIG_BASE:-origin/$DEFAULT_BRANCH}"
     for rel in .touchstone-review.toml .codex-review.toml; do
@@ -375,7 +378,7 @@ resolve_merge_review_config_file() {
         tmp="$(mktemp -t touchstone-merge-review-config.XXXXXX)" || return 0
         if git show "$trusted_base:$rel" >"$tmp" 2>/dev/null; then
           MERGE_REVIEW_CONFIG_TMP_FILES+=("$tmp")
-          printf '%s' "$tmp"
+          MERGE_REVIEW_CONFIG_FILE="$tmp"
           return 0
         fi
         rm -f "$tmp"
@@ -388,7 +391,7 @@ resolve_merge_review_config_file() {
   [ -n "$repo_root" ] || return 0
   for rel in .touchstone-review.toml .codex-review.toml; do
     if [ -f "$repo_root/$rel" ]; then
-      printf '%s' "$repo_root/$rel"
+      MERGE_REVIEW_CONFIG_FILE="$repo_root/$rel"
       return 0
     fi
   done
@@ -1453,6 +1456,11 @@ wait_for_pr_triggered_review() {
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
     exit 2
   fi
+  if [ "$PR_TRIGGERED_REVIEW_TIMEOUT_SEC" -gt 0 ] && [ "$PR_TRIGGERED_REVIEW_POLL_SEC" -eq 0 ]; then
+    echo "ERROR: [review.pr_triggered].poll_sec must be positive when timeout_sec is positive." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
+    exit 2
+  fi
 
   timeout_sec="$PR_TRIGGERED_REVIEW_TIMEOUT_SEC"
   poll_sec="$PR_TRIGGERED_REVIEW_POLL_SEC"
@@ -2043,6 +2051,7 @@ wait_for_clean_merge_state
 # 3. If configured, block until the current PR head has a trusted PR-visible
 # AI review signal before spending local model-review tokens.
 if truthy "$PR_TRIGGERED_REVIEW_REQUIRED" && [ "$BYPASS_REVIEW" != true ]; then
+  require_pr_feedback_clear "before PR-triggered AI review"
   PR_TRIGGERED_HEAD_OID="$(current_pr_head_or_die "before PR-triggered AI review")"
   wait_for_pr_triggered_review "$PR_TRIGGERED_HEAD_OID" "before merge review"
   require_pr_feedback_clear "after PR-triggered AI review" "$PR_TRIGGERED_HEAD_OID"
