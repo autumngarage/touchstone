@@ -89,7 +89,7 @@ unsafe_paths = [
 # Optional merge gate for PR-triggered GitHub Codex review. When required,
 # scripts/merge-pr.sh waits for a trusted review signal on the exact PR head,
 # runs deterministic preflight, and skips the duplicate local merge LLM review
-# by default. PR feedback checks and exact-head merge protection still apply.
+# only while the exact head and captured base revision remain unchanged.
 #
 # [review.pr_triggered]
 # required = true

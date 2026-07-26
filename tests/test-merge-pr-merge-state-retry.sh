@@ -53,6 +53,7 @@ case "${1:-} ${2:-}" in
         ;;
       headRefName) echo "feature/test" ;;
       headRefOid) echo "pr-head-oid" ;;
+      baseRefOid) echo "base-oid" ;;
       isDraft) echo "false" ;;
       reviewDecision) echo "" ;;
       mergeStateStatus,mergeable)
@@ -153,6 +154,9 @@ case "$*" in
     echo "fetched main"
     ;;
   "rev-parse --verify --quiet origin/main^{commit}")
+    echo "base-oid"
+    ;;
+  "rev-parse --verify origin/main^{commit}")
     echo "base-oid"
     ;;
   "status --porcelain")

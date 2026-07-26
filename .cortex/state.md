@@ -1,8 +1,8 @@
 ---
-Generated: 2026-07-26T18:39:51-04:00
+Generated: 2026-07-26T19:03:27-04:00
 Generator: cortex refresh-state v1.6.3
 Sources:
-  - HEAD sha: 777ce02f9fea4274ddcfadcf983ac31f4971686e
+  - HEAD sha: fefddd884beed3a18615b3a0655b0863749bd343
   - .cortex/plans/*.md (2 files)
   - .cortex/journal/*.md (21 entries, 2026-05-05..2026-07-26)
   - .cortex/doctrine/*.md (1 entries)
@@ -32,7 +32,7 @@ Sources-hash:
   .cortex/journal/2026-06-11-pr-merged-1449.md: 1111578acc1346b5bb2c7f0d87b1ec7fe078b0aa30bd11c21af0a836d44eca72
   .cortex/journal/2026-06-11-release-v2-11-45.md: a533cd4a77d6a9d2c15526de61899457f1934ed9f4354ac28b9b1250df1cc4b4
   .cortex/journal/2026-06-16-pr-merged-1254.md: dffacf84e097889da140ca98d8781557720d6d26ea2fe0188db21a038efa3718
-  .cortex/journal/2026-07-26-exact-head-pr-review-gate.md: 9f7fe0e5b0dfb6fdbe34a8a5d3d93a76bedd6a62acff056a35560370e974c7ae
+  .cortex/journal/2026-07-26-exact-head-pr-review-gate.md: 2e0b63762c8be16cb5330ad1240544147cdc008d7fce7a6308852dfbe4d4df8f
   .cortex/plans/touchstone-conductor-integration.md: be3f8211b7c19e32e0c4c858c35678c1d85418fe12c5d22b29cc0a7831f8a54c
   .cortex/plans/touchstone-cortex-metadata.md: 0e23c4e06b91c1e8da358b3928750798975eed88815502fb8e7ddfbdbd0187f5
   .cortex/templates/README.md: 695aa2e623bd7f4e698dae471bded0cde354da0c1d8589266660ceb1be8efad1

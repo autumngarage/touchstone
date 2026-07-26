@@ -228,6 +228,7 @@ case "${1:-} ${2:-}" in
       state) [ -f "${GH_MERGED_MARKER:-/dev/null/never}" ] && echo "MERGED" || echo "OPEN" ;;
       headRefName) echo "feature/test" ;;
       headRefOid) echo "pr-head-oid" ;;
+      baseRefOid) echo "base-oid" ;;
       isDraft) echo "false" ;;
       reviewDecision) echo "" ;;
       mergeStateStatus,mergeable) echo "CLEAN MERGEABLE" ;;
@@ -257,6 +258,7 @@ case "$*" in
   "cat-file -e pr-head-oid^{commit}") ;;
   "merge-base origin/main pr-head-oid") echo "base-oid" ;;
   "fetch origin +refs/heads/main:refs/remotes/origin/main") echo "fetched main" ;;
+  "rev-parse --verify origin/main^{commit}") echo "base-oid" ;;
   "rev-parse --verify --quiet origin/main^{commit}") echo "base-oid" ;;
   "status --porcelain") ;;
   "worktree list --porcelain") ;;

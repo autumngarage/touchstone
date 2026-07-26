@@ -165,6 +165,7 @@ case "${1:-} ${2:-}" in
         ;;
       headRefName) echo "feature/test" ;;
       headRefOid) echo "pr-head-oid" ;;
+      baseRefOid) echo "base-oid" ;;
       isDraft) echo "false" ;;
       reviewDecision) echo "" ;;
       mergeStateStatus,mergeable) echo "CLEAN MERGEABLE" ;;
@@ -209,6 +210,7 @@ case "$*" in
     ;;
   "rev-parse feature/test") echo "pr-head-oid" ;;
   "rev-parse --verify --quiet origin/main^{commit}") echo "base-oid" ;;
+  "rev-parse --verify origin/main^{commit}") echo "base-oid" ;;
   "rev-parse --git-path touchstone/reviewer-clean") printf '%s\n' "$TEST_REPO_ROOT/.git/touchstone/reviewer-clean" ;;
   "rev-parse --git-path touchstone/reviewer-findings-history") printf '%s\n' "$TEST_REPO_ROOT/.git/touchstone/reviewer-findings-history" ;;
   "rev-parse --git-path touchstone/squash-map.jsonl") printf '%s\n' "$TEST_REPO_ROOT/.git/touchstone/squash-map.jsonl" ;;
