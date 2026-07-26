@@ -142,6 +142,33 @@ WT_JSON="$(jq -nc \
 assert "allows 'git -C <worktree>' commit when worktree is on a feature branch" "0" \
   "$(run_hook "$BRANCH_GUARD" "$WT_JSON")"
 
+# The command runner's explicit workdir is the execution context. It must
+# override the driver session cwd in both directions so the guard neither
+# blocks a feature-branch commit nor permits a default-branch commit.
+TOOL_WORKDIR_FEATURE_JSON="$(jq -nc \
+  --arg cmd "git commit -m 'wip'" \
+  --arg workdir "$WORKTREE" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd, workdir: $workdir}, cwd: $cwd}')"
+assert "allows tool workdir commit on feature branch when session cwd is on main" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$TOOL_WORKDIR_FEATURE_JSON")"
+
+TOOL_WORKDIR_MAIN_JSON="$(jq -nc \
+  --arg cmd "git commit -m 'wip'" \
+  --arg workdir "$TMPDIR" \
+  --arg cwd "$WORKTREE" \
+  '{tool_name: "Bash", tool_input: {command: $cmd, workdir: $workdir}, cwd: $cwd}')"
+assert "blocks tool workdir commit on main when session cwd is on feature branch" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$TOOL_WORKDIR_MAIN_JSON")"
+
+TOOL_WORKDIR_RELATIVE_JSON="$(jq -nc \
+  --arg cmd "git commit -m 'wip'" \
+  --arg workdir "$(basename "$WORKTREE")" \
+  --arg cwd "$(dirname "$WORKTREE")" \
+  '{tool_name: "Bash", tool_input: {command: $cmd, workdir: $workdir}, cwd: $cwd}')"
+assert "resolves relative tool workdir from the session cwd" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$TOOL_WORKDIR_RELATIVE_JSON")"
+
 PRE_COMMIT_C_JSON="$(jq -nc \
   --arg cmd "git -C $WORKTREE status && git commit -m 'wip'" \
   --arg cwd "$TMPDIR" \
