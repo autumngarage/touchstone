@@ -97,6 +97,9 @@ case "${1:-} ${2:-}" in
     ;;
   "api graphql")
     ;;
+  "api repos/"*)
+    echo "base-oid"
+    ;;
   *)
     echo "unexpected gh args: $*" >&2
     exit 1
@@ -153,6 +156,9 @@ case "$*" in
     echo "fetched main"
     ;;
   "rev-parse --verify --quiet origin/main^{commit}")
+    echo "base-oid"
+    ;;
+  "rev-parse --verify origin/main^{commit}")
     echo "base-oid"
     ;;
   "status --porcelain")

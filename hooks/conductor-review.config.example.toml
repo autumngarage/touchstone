@@ -86,6 +86,19 @@ unsafe_paths = [
 # ]
 # # reviewer = "conductor"   # single-valued in 2.0+; absent reviewers[]
 
+# Optional merge gate for PR-triggered GitHub Codex review. When required,
+# scripts/merge-pr.sh waits for a trusted review signal on the exact PR head,
+# runs deterministic preflight, and skips the duplicate local merge LLM review
+# only while the exact head and captured base revision remain unchanged.
+#
+# [review.pr_triggered]
+# required = true
+# provider = "github-codex"
+# timeout_sec = 1800
+# poll_sec = 10
+# trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]
+# skip_merge_review = true
+
 # --------------------------------------------------------------------------
 # Conductor routing (optional)
 # --------------------------------------------------------------------------

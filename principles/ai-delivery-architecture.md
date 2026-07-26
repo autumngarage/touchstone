@@ -75,7 +75,7 @@ Human user
 - Touchstone-managed LLM review uses Conductor as the only model access path. Driver CLIs do not call provider-specific review commands directly.
 - PR creation is the review coordination surface. It should happen early enough for CI and any PR-visible agentic reviewers to work against visible PR state.
 - Feature-branch push is not the expensive gate. It should preserve cheap local guardrails without running full test suites or LLM review by default.
-- Merge is allowed only after PR-visible review and check approval. The local merge helper gates on requested-changes review decisions and unresolved review threads before and after Conductor review, then runs deterministic checks and Conductor review as a backstop.
+- Merge is allowed only after PR-visible review and check approval. The local merge helper gates on requested-changes review decisions and unresolved review threads before and after review, runs deterministic checks, and uses a trusted current-head PR-visible GitHub Codex signal or Conductor review as the model-review backstop.
 - A deterministic check result may be reused only when the cache key includes the base ref, head commit, relevant config, and checker version/input boundary.
 
 ## Driver AI Responsibilities
@@ -146,5 +146,6 @@ The scripts now enforce the core merge-time parts of this architecture:
 2. Creating or updating the PR should expose configured checks and, when enabled, PR-visible agentic reviewers.
 3. The driver watches PR comments, review decisions, and checks after each push; actionable feedback becomes commits on the PR branch.
 4. `merge-pr.sh` blocks draft PRs, active requested-changes decisions, unresolved review threads, and thread-state inspection failures before the final squash merge.
-5. Review and preflight markers should key on base/head/config so repeated operations reuse valid results without hiding stale state.
-6. Docs, templates, tests, and issue guidance should describe the PR-visible review loop consistently.
+5. When configured for PR-triggered GitHub Codex review, `merge-pr.sh` binds the trusted signal to the exact current head and base. It skips duplicate local semantic review only when the PR head already contains that base, repeats the wait after any review-fix push, and rejects base or merge-base movement before merging with `--match-head-commit`.
+6. Review and preflight markers should key on base/head/config so repeated operations reuse valid results without hiding stale state.
+7. Docs, templates, tests, and issue guidance should describe the PR-visible review loop consistently.

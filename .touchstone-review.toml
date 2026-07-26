@@ -52,3 +52,11 @@ high_scrutiny_paths = [
   "bootstrap/",
   "templates/",
 ]
+
+[review.pr_triggered]
+required = true
+provider = "github-codex"
+timeout_sec = 1800
+poll_sec = 10
+trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]
+skip_merge_review = true

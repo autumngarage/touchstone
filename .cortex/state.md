@@ -1,15 +1,15 @@
 ---
-Generated: 2026-06-16T12:54:24-04:00
-Generator: cortex refresh-state v1.6.4
+Generated: 2026-07-26T19:37:33-04:00
+Generator: cortex refresh-state v1.6.3
 Sources:
-  - HEAD sha: 955014b371d51cb67b11a9ff613ba8033c3f4f03
+  - HEAD sha: 64934be081ead67cb21483bcd9ae231f4dbe0f25
   - .cortex/plans/*.md (2 files)
-  - .cortex/journal/*.md (20 entries, 2026-05-05..2026-06-16)
+  - .cortex/journal/*.md (21 entries, 2026-05-05..2026-07-26)
   - .cortex/doctrine/*.md (1 entries)
   - .cortex/templates/**/*.md (12 templates)
   - docs/case-studies/*.md (0 case studies)
   - SPEC version: 0.5.0
-  - (no project manifest detected) + cortex package version: 1.6.4
+  - (no project manifest detected) + cortex package version: 1.6.3
 Sources-hash:
   .cortex/doctrine/0001-touchstone-owns-shared-agent-workflow.md: 349b627cedf003e60838d1d1d660284f80644086ed387b79a58ff3fe1e7e0b46
   .cortex/journal/2026-05-05-cortex-install-baseline.md: dcc1ddd566c02c618277309b6daebf1334d477994b154a0f87a615642bd32829
@@ -32,6 +32,7 @@ Sources-hash:
   .cortex/journal/2026-06-11-pr-merged-1449.md: 1111578acc1346b5bb2c7f0d87b1ec7fe078b0aa30bd11c21af0a836d44eca72
   .cortex/journal/2026-06-11-release-v2-11-45.md: a533cd4a77d6a9d2c15526de61899457f1934ed9f4354ac28b9b1250df1cc4b4
   .cortex/journal/2026-06-16-pr-merged-1254.md: dffacf84e097889da140ca98d8781557720d6d26ea2fe0188db21a038efa3718
+  .cortex/journal/2026-07-26-exact-head-pr-review-gate.md: 88ca144ea23766871784465fc27ae20fb2e8b78938a89e766c4903432d817ab2
   .cortex/plans/touchstone-conductor-integration.md: be3f8211b7c19e32e0c4c858c35678c1d85418fe12c5d22b29cc0a7831f8a54c
   .cortex/plans/touchstone-cortex-metadata.md: 0e23c4e06b91c1e8da358b3928750798975eed88815502fb8e7ddfbdbd0187f5
   .cortex/templates/README.md: 695aa2e623bd7f4e698dae471bded0cde354da0c1d8589266660ceb1be8efad1
@@ -46,7 +47,7 @@ Sources-hash:
   .cortex/templates/journal/release.md: 9a6bc59219156e48b419fb170c7c50ff557767def8672ef20568df3e14eadbd0
   .cortex/templates/journal/sentinel-cycle.md: 2945e2d94af4ec9848584b4b3e9cea7060d2968dd42e78faf21fb6f859137476
   .cortex/templates/plans/template.md: d8156cfa3b86acd2a1fbb36cff07cae37d99f3adee7f72b14b7b16e645c51b44
-Corpus: 20 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
+Corpus: 21 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
 Omitted:
   []
 Incomplete:

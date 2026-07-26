@@ -237,6 +237,7 @@ case "${1:-} ${2:-}" in
     esac
     ;;
   "api graphql") echo "" ;;
+  "api repos/"*) echo "base-oid" ;;
   "pr checkout") touch "$GH_CHECKOUT_FILE"; echo "checked out PR $3" ;;
   "pr comment") echo "commented" ;;
   "pr merge") touch "$GH_MERGED_MARKER"; echo "merged" ;;
@@ -257,6 +258,7 @@ case "$*" in
   "cat-file -e pr-head-oid^{commit}") ;;
   "merge-base origin/main pr-head-oid") echo "base-oid" ;;
   "fetch origin +refs/heads/main:refs/remotes/origin/main") echo "fetched main" ;;
+  "rev-parse --verify origin/main^{commit}") echo "base-oid" ;;
   "rev-parse --verify --quiet origin/main^{commit}") echo "base-oid" ;;
   "status --porcelain") ;;
   "worktree list --porcelain") ;;
