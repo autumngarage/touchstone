@@ -1906,8 +1906,7 @@ run_merge_review() {
     BYPASS_MARKER_EVIDENCE=""
     if branch_has_clean_review_marker "$pr_head_branch" "$pr_head_oid" "$current_merge_base"; then
       BYPASS_MARKER_SOURCE="clean-review"
-    elif truthy "$PR_TRIGGERED_REVIEW_REQUIRED" \
-      && trusted_pr_clean_signal "$pr_head_oid"; then
+    elif trusted_pr_clean_signal "$pr_head_oid"; then
       BYPASS_MARKER_SOURCE="pr-triggered-review"
     elif [ "$ALLOW_FAIL_OPEN_MARKER" = true ]; then
       if ! bypass_reason_mentions_fail_open; then

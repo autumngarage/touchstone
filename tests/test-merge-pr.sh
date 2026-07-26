@@ -2117,10 +2117,10 @@ else
   exit 1
 fi
 
-echo "==> Test: bypass derives eligibility from prior PR-triggered review"
+echo "==> Test: rollout bypass derives eligibility from prior PR-triggered review"
 reset_case_files
-write_pr_triggered_config true 0 0
-GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/bypass' \
+write_pr_triggered_config false 0 0
+GH_ISSUE_COMMENTS=$'chatgpt-codex-connector[bot]\t2026-06-23T00:00:00Z\thttps://example.test/comment/bypass\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
   run_merge_pr "$TEST_DIR/output-bypass-pr-triggered.txt" 123 --bypass-with-disclosure="reviewer unavailable after prior clean review"
 if grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-bypass-pr-triggered.txt" \
   && grep -q 'marker: pr-triggered-review' "$TEST_DIR/output-bypass-pr-triggered.txt" \
@@ -2130,9 +2130,9 @@ if grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-bypass-pr-triggered.txt" 
   && ! grep -q 'Timed out waiting for trusted PR-visible AI review' "$TEST_DIR/output-bypass-pr-triggered.txt" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
   && [ ! -f "$TEST_DIR/codex-review.log" ]; then
-  echo "==> PASS: bypass derives eligibility from the prior exact-head PR review"
+  echo "==> PASS: rollout bypass derives eligibility from the prior exact-head PR review"
 else
-  echo "FAIL: bypass should accept the prior exact-head PR review without a local marker" >&2
+  echo "FAIL: rollout bypass should accept the prior exact-head PR review without a local marker" >&2
   cat "$TEST_DIR/output-bypass-pr-triggered.txt" >&2
   exit 1
 fi
