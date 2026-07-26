@@ -133,25 +133,6 @@ case "${1:-} ${2:-}" in
           echo "${GH_PR_HEAD_OID:-pr-head-oid}"
         fi
         ;;
-      baseRefOid)
-        base_ref_call_count=1
-        if [ -n "${GH_BASE_REF_CALLS_FILE:-}" ]; then
-          if [ -f "$GH_BASE_REF_CALLS_FILE" ]; then
-            base_ref_call_count="$(cat "$GH_BASE_REF_CALLS_FILE" 2>/dev/null || echo 0)"
-            base_ref_call_count=$((base_ref_call_count + 1))
-          fi
-          printf '%s\n' "$base_ref_call_count" >"$GH_BASE_REF_CALLS_FILE"
-        fi
-        if [ -n "${GH_BASE_REF_FAIL_AFTER:-}" ] && [ "$base_ref_call_count" -ge "$GH_BASE_REF_FAIL_AFTER" ]; then
-          echo "gh pr view baseRefOid unavailable" >&2
-          exit 1
-        fi
-        if [ -n "${GH_BASE_REF_CHANGE_AFTER:-}" ] && [ "$base_ref_call_count" -ge "$GH_BASE_REF_CHANGE_AFTER" ]; then
-          echo "${GH_BASE_REF_CHANGED_OID:-changed-base-oid}"
-        else
-          echo "${GH_BASE_REF_OID:-base-oid}"
-        fi
-        ;;
       isDraft) echo "${GH_IS_DRAFT:-false}" ;;
       reviewDecision) echo "${GH_REVIEW_DECISION:-}" ;;
       mergeStateStatus,mergeable) echo "${GH_MERGE_STATE:-CLEAN MERGEABLE}" ;;
@@ -207,6 +188,25 @@ case "${1:-} ${2:-}" in
     ;;
   "api repos/"*)
     case "${2:-}" in
+      */pulls/*)
+        base_ref_call_count=1
+        if [ -n "${GH_BASE_REF_CALLS_FILE:-}" ]; then
+          if [ -f "$GH_BASE_REF_CALLS_FILE" ]; then
+            base_ref_call_count="$(cat "$GH_BASE_REF_CALLS_FILE" 2>/dev/null || echo 0)"
+            base_ref_call_count=$((base_ref_call_count + 1))
+          fi
+          printf '%s\n' "$base_ref_call_count" >"$GH_BASE_REF_CALLS_FILE"
+        fi
+        if [ -n "${GH_BASE_REF_FAIL_AFTER:-}" ] && [ "$base_ref_call_count" -ge "$GH_BASE_REF_FAIL_AFTER" ]; then
+          echo "pull request base unavailable" >&2
+          exit 1
+        fi
+        if [ -n "${GH_BASE_REF_CHANGE_AFTER:-}" ] && [ "$base_ref_call_count" -ge "$GH_BASE_REF_CHANGE_AFTER" ]; then
+          echo "${GH_BASE_REF_CHANGED_OID:-changed-base-oid}"
+        else
+          echo "${GH_BASE_REF_OID:-base-oid}"
+        fi
+        ;;
       */commits/*)
         if [ "${GH_COMMENT_COMMIT_RESOLUTION_FAIL:-false}" = "true" ]; then
           echo "reviewed commit is ambiguous or unavailable" >&2
@@ -1739,7 +1739,7 @@ if GH_BASE_REF_FAIL_AFTER=1 \
   exit 1
 fi
 if grep -q 'Failed to inspect PR #123 head or base revision while waiting for PR-triggered AI review' "$TEST_DIR/output-pr-triggered-base-inspection-fail.txt" \
-  && grep -q 'last gh error: gh pr view baseRefOid unavailable' "$TEST_DIR/output-pr-triggered-base-inspection-fail.txt" \
+  && grep -q 'last gh error: pull request base unavailable' "$TEST_DIR/output-pr-triggered-base-inspection-fail.txt" \
   && ! grep -q 'Timed out waiting for trusted PR-visible AI review' "$TEST_DIR/output-pr-triggered-base-inspection-fail.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: persistent PR base inspection failure reports the GitHub error"

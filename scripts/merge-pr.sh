@@ -1395,6 +1395,15 @@ current_pr_head_or_die() {
   printf '%s' "$observed_head"
 }
 
+current_pr_base_oid() {
+  if [ -z "$REPO_OWNER" ] || [ -z "$REPO_NAME" ]; then
+    echo "repository identity is unavailable" >&2
+    return 1
+  fi
+
+  gh api "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER" --jq '.base.sha'
+}
+
 inspect_review_revision() {
   local expected_head="$1"
   local base_ref="$2"
@@ -1404,7 +1413,7 @@ inspect_review_revision() {
   CURRENT_REVIEW_BASE_OID=""
   CURRENT_REVIEW_MERGE_BASE_OID=""
 
-  if ! github_base="$(gh pr view "$PR_NUMBER" --json baseRefOid --jq '.baseRefOid' 2>&1)"; then
+  if ! github_base="$(current_pr_base_oid 2>&1)"; then
     echo "ERROR: Could not inspect PR #$PR_NUMBER base revision ($phase): $github_base" >&2
     echo "       Refusing to authorize a merge against an unknown base." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="review-base-inspection"
@@ -1737,7 +1746,7 @@ wait_for_pr_triggered_review() {
     fi
 
     if [ "$observed_head" = "$expected_head" ]; then
-      if observed_base="$(gh pr view "$PR_NUMBER" --json baseRefOid --jq '.baseRefOid' 2>&1)"; then
+      if observed_base="$(current_pr_base_oid 2>&1)"; then
         if [ -z "$observed_base" ]; then
           last_inspection_error="GitHub returned an empty base revision"
         fi

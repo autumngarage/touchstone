@@ -53,7 +53,6 @@ case "${1:-} ${2:-}" in
         ;;
       headRefName) echo "feature/test" ;;
       headRefOid) echo "pr-head-oid" ;;
-      baseRefOid) echo "base-oid" ;;
       isDraft) echo "false" ;;
       reviewDecision) echo "" ;;
       mergeStateStatus,mergeable)
@@ -97,6 +96,9 @@ case "${1:-} ${2:-}" in
     echo "merged"
     ;;
   "api graphql")
+    ;;
+  "api repos/"*)
+    echo "base-oid"
     ;;
   *)
     echo "unexpected gh args: $*" >&2

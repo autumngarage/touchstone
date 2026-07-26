@@ -228,7 +228,6 @@ case "${1:-} ${2:-}" in
       state) [ -f "${GH_MERGED_MARKER:-/dev/null/never}" ] && echo "MERGED" || echo "OPEN" ;;
       headRefName) echo "feature/test" ;;
       headRefOid) echo "pr-head-oid" ;;
-      baseRefOid) echo "base-oid" ;;
       isDraft) echo "false" ;;
       reviewDecision) echo "" ;;
       mergeStateStatus,mergeable) echo "CLEAN MERGEABLE" ;;
@@ -238,6 +237,7 @@ case "${1:-} ${2:-}" in
     esac
     ;;
   "api graphql") echo "" ;;
+  "api repos/"*) echo "base-oid" ;;
   "pr checkout") touch "$GH_CHECKOUT_FILE"; echo "checked out PR $3" ;;
   "pr comment") echo "commented" ;;
   "pr merge") touch "$GH_MERGED_MARKER"; echo "merged" ;;
