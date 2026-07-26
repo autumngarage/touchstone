@@ -195,6 +195,10 @@ case "${1:-} ${2:-}" in
     fi
     if printf '%s' "$query" | grep -q 'reviews(first:'; then
       reviews_graphql_call_count="$(increment_counter_file "${GH_REVIEWS_GRAPHQL_CALLS_FILE:-}")"
+      if [ "${GH_REVIEWS_GRAPHQL_FAIL:-false}" = "true" ]; then
+        echo "reviews graphql unavailable" >&2
+        exit 1
+      fi
       if [ "${GH_REVIEWS_GRAPHQL_FAIL_FIRST:-false}" = "true" ] && [ "$reviews_graphql_call_count" = "1" ]; then
         echo "reviews graphql unavailable" >&2
         exit 1
@@ -217,6 +221,10 @@ case "${1:-} ${2:-}" in
     case "${3:-}" in
       */comments)
         comments_call_count="$(increment_counter_file "${GH_COMMENTS_CALLS_FILE:-}")"
+        if [ "${GH_COMMENTS_FAIL:-false}" = "true" ]; then
+          echo "review comments unavailable" >&2
+          exit 1
+        fi
         if [ "$comments_call_count" -ge 2 ] && [ -n "${GH_ISSUE_COMMENTS_SECOND:-}" ]; then
           printf '%s' "$GH_ISSUE_COMMENTS_SECOND"
         else
@@ -500,11 +508,13 @@ reset_case_files() {
   unset GH_REJECT_UNBALANCED_GRAPHQL
   unset GH_TRUSTED_REVIEWS
   unset GH_TRUSTED_REVIEWS_SECOND
+  unset GH_REVIEWS_GRAPHQL_FAIL
   unset GH_REVIEWS_GRAPHQL_FAIL_FIRST
   unset GH_REACTIONS
   unset GH_REACTIONS_SECOND
   unset GH_ISSUE_COMMENTS
   unset GH_ISSUE_COMMENTS_SECOND
+  unset GH_COMMENTS_FAIL
   unset MERGE_PR_SLEEP_OVERRIDE
   unset CODEX_REVIEW_EXIT
   unset CODEX_REVIEW_STUB_OUTPUT
@@ -563,12 +573,14 @@ run_merge_pr() {
     GH_TRUSTED_REVIEWS="${GH_TRUSTED_REVIEWS:-}" \
     GH_TRUSTED_REVIEWS_SECOND="${GH_TRUSTED_REVIEWS_SECOND:-}" \
     GH_REVIEWS_GRAPHQL_CALLS_FILE="$TEST_DIR/gh-reviews-graphql-calls" \
+    GH_REVIEWS_GRAPHQL_FAIL="${GH_REVIEWS_GRAPHQL_FAIL:-false}" \
     GH_REVIEWS_GRAPHQL_FAIL_FIRST="${GH_REVIEWS_GRAPHQL_FAIL_FIRST:-false}" \
     GH_REACTIONS="${GH_REACTIONS:-}" \
     GH_REACTIONS_SECOND="${GH_REACTIONS_SECOND:-}" \
     GH_REACTIONS_CALLS_FILE="$TEST_DIR/gh-reactions-calls" \
     GH_ISSUE_COMMENTS="${GH_ISSUE_COMMENTS:-}" \
     GH_ISSUE_COMMENTS_SECOND="${GH_ISSUE_COMMENTS_SECOND:-}" \
+    GH_COMMENTS_FAIL="${GH_COMMENTS_FAIL:-false}" \
     GH_COMMENTS_CALLS_FILE="$TEST_DIR/gh-comments-calls" \
     MERGE_PR_SLEEP_OVERRIDE="${MERGE_PR_SLEEP_OVERRIDE:-}" \
     GIT_CHECKOUT_MAIN_FILE="$TEST_DIR/git-checkout-main" \
@@ -1461,6 +1473,44 @@ if grep -q 'Failed to inspect PR #123 head while waiting for PR-triggered AI rev
 else
   echo "FAIL: persistent PR head inspection failure should remain distinguishable from a missing review" >&2
   cat "$TEST_DIR/output-pr-triggered-head-inspection-fail.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: formal review inspection failure cannot fall back to a clean comment"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_REVIEWS_GRAPHQL_FAIL=true \
+  GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/clean\tCodex Review: Didn\'t find any major issues. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-review-channel-fail.txt" 123; then
+  echo "FAIL: clean comment bypassed a formal review inspection failure" >&2
+  exit 1
+fi
+if grep -q 'Failed to inspect trusted PR-visible AI review evidence for PR #123' "$TEST_DIR/output-pr-triggered-review-channel-fail.txt" \
+  && grep -q 'last gh error: formal reviews: reviews graphql unavailable' "$TEST_DIR/output-pr-triggered-review-channel-fail.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: formal review inspection failure blocks clean comment evidence"
+else
+  echo "FAIL: formal review inspection failure must remain distinct from an empty review channel" >&2
+  cat "$TEST_DIR/output-pr-triggered-review-channel-fail.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: review comment inspection failure cannot fall back to formal approval"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/approved' \
+  GH_COMMENTS_FAIL=true \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-comment-channel-fail.txt" 123; then
+  echo "FAIL: formal approval bypassed a review comment inspection failure" >&2
+  exit 1
+fi
+if grep -q 'Failed to inspect trusted PR-visible AI review evidence for PR #123' "$TEST_DIR/output-pr-triggered-comment-channel-fail.txt" \
+  && grep -q 'last gh error: review comments: review comments unavailable' "$TEST_DIR/output-pr-triggered-comment-channel-fail.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: review comment inspection failure blocks formal approval evidence"
+else
+  echo "FAIL: review comment inspection failure must remain distinct from an empty comment channel" >&2
+  cat "$TEST_DIR/output-pr-triggered-comment-channel-fail.txt" >&2
   exit 1
 fi
 

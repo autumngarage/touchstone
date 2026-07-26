@@ -73,6 +73,7 @@ PR_TRIGGERED_REVIEWED_HEAD_OID=""
 PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP=""
 PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN=false
 PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL=""
+PR_TRIGGERED_REVIEW_INSPECTION_ERROR=""
 REVIEW_SUMMARY_FILE=""
 PREFLIGHT_CACHE_KEY=""
 PREFLIGHT_CACHE_FILE=""
@@ -1369,8 +1370,10 @@ latest_trusted_pr_review_result() {
   local query reviews author commit_oid state submitted_at url
   local latest_state="" latest_submitted_at="" latest_url="" latest_author=""
 
-  [ -n "$REPO_OWNER" ] || return 1
-  [ -n "$REPO_NAME" ] || return 1
+  if [ -z "$REPO_OWNER" ] || [ -z "$REPO_NAME" ]; then
+    PR_TRIGGERED_REVIEW_INSPECTION_ERROR="formal reviews: repository identity is unavailable"
+    return 2
+  fi
 
   query='
 query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
@@ -1398,8 +1401,9 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     -F name="$REPO_NAME" \
     -F number="$PR_NUMBER" \
     -f query="$query" \
-    --jq '.data.repository.pullRequest.reviews.nodes[] | [(.author.login // ""), (.commit.oid // ""), (.state // ""), (.submittedAt // ""), (.url // "")] | @tsv' 2>/dev/null)"; then
-    return 1
+    --jq '.data.repository.pullRequest.reviews.nodes[] | [(.author.login // ""), (.commit.oid // ""), (.state // ""), (.submittedAt // ""), (.url // "")] | @tsv' 2>&1)"; then
+    PR_TRIGGERED_REVIEW_INSPECTION_ERROR="formal reviews: $reviews"
+    return 2
   fi
 
   while IFS="$(printf '\t')" read -r author commit_oid state submitted_at url || [ -n "$author" ]; do
@@ -1431,13 +1435,16 @@ latest_trusted_pr_comment_result() {
   local latest_author="" latest_created_at="" latest_url="" latest_body=""
   local result_label="non-clean"
 
-  [ -n "$REPO_OWNER" ] || return 1
-  [ -n "$REPO_NAME" ] || return 1
+  if [ -z "$REPO_OWNER" ] || [ -z "$REPO_NAME" ]; then
+    PR_TRIGGERED_REVIEW_INSPECTION_ERROR="review comments: repository identity is unavailable"
+    return 2
+  fi
 
   expected_head_short="$(printf '%.10s' "$expected_head")"
   if ! comments="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/issues/$PR_NUMBER/comments" \
-    --jq '.[] | [(.user.login // ""), (.created_at // ""), (.html_url // ""), ((.body // "") | gsub("[\r\n\t]"; " "))] | @tsv' 2>/dev/null)"; then
-    return 1
+    --jq '.[] | [(.user.login // ""), (.created_at // ""), (.html_url // ""), ((.body // "") | gsub("[\r\n\t]"; " "))] | @tsv' 2>&1)"; then
+    PR_TRIGGERED_REVIEW_INSPECTION_ERROR="review comments: $comments"
+    return 2
   fi
 
   while IFS="$(printf '\t')" read -r author created_at url body || [ -n "$author" ]; do
@@ -1473,20 +1480,44 @@ latest_trusted_pr_comment_result() {
 
 trusted_pr_clean_signal() {
   local expected_head="$1"
+  local result_status
   local review_found=false review_timestamp="" review_clean=false review_detail=""
   local comment_found=false comment_timestamp="" comment_clean=false comment_detail=""
+  local review_inspection_error="" comment_inspection_error=""
 
+  PR_TRIGGERED_REVIEW_INSPECTION_ERROR=""
   if latest_trusted_pr_review_result "$expected_head"; then
     review_found=true
     review_timestamp="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
     review_clean="$PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN"
     review_detail="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL"
+  else
+    result_status=$?
+    if [ "$result_status" -eq 2 ]; then
+      review_inspection_error="$PR_TRIGGERED_REVIEW_INSPECTION_ERROR"
+    fi
   fi
   if latest_trusted_pr_comment_result "$expected_head"; then
     comment_found=true
     comment_timestamp="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
     comment_clean="$PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN"
     comment_detail="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL"
+  else
+    result_status=$?
+    if [ "$result_status" -eq 2 ]; then
+      comment_inspection_error="$PR_TRIGGERED_REVIEW_INSPECTION_ERROR"
+    fi
+  fi
+
+  if [ -n "$review_inspection_error" ] || [ -n "$comment_inspection_error" ]; then
+    PR_TRIGGERED_REVIEW_INSPECTION_ERROR="$review_inspection_error"
+    if [ -n "$comment_inspection_error" ]; then
+      if [ -n "$PR_TRIGGERED_REVIEW_INSPECTION_ERROR" ]; then
+        PR_TRIGGERED_REVIEW_INSPECTION_ERROR="$PR_TRIGGERED_REVIEW_INSPECTION_ERROR; "
+      fi
+      PR_TRIGGERED_REVIEW_INSPECTION_ERROR="$PR_TRIGGERED_REVIEW_INSPECTION_ERROR$comment_inspection_error"
+    fi
+    return 2
   fi
 
   if [ "$review_found" = true ] && [ "$comment_found" = true ]; then
@@ -1521,7 +1552,7 @@ wait_for_pr_triggered_review() {
   local expected_head="$1"
   local phase="$2"
   local timeout_sec poll_sec start_epoch now_epoch elapsed observed_head sleep_seconds
-  local last_inspection_error=""
+  local last_inspection_error="" last_review_inspection_error="" signal_status
 
   if [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then
     echo "ERROR: Unsupported [review.pr_triggered].provider: $PR_TRIGGERED_REVIEW_PROVIDER" >&2
@@ -1575,6 +1606,13 @@ wait_for_pr_triggered_review() {
         echo "==> Trusted PR-visible AI review found for PR #$PR_NUMBER head $expected_head."
         [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
         return 0
+      else
+        signal_status=$?
+        if [ "$signal_status" -eq 2 ]; then
+          last_review_inspection_error="$PR_TRIGGERED_REVIEW_INSPECTION_ERROR"
+        else
+          last_review_inspection_error=""
+        fi
       fi
     fi
 
@@ -1594,6 +1632,15 @@ wait_for_pr_triggered_review() {
     echo "ERROR: Failed to inspect PR #$PR_NUMBER head while waiting for PR-triggered AI review." >&2
     echo "       phase: $phase" >&2
     echo "       last gh error: $(printf '%s' "$last_inspection_error" | tr '\n' ' ')" >&2
+    echo "       Verify GitHub authentication and API availability, then rerun the merge gate." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-inspection"
+    exit 1
+  fi
+
+  if [ -n "$last_review_inspection_error" ]; then
+    echo "ERROR: Failed to inspect trusted PR-visible AI review evidence for PR #$PR_NUMBER." >&2
+    echo "       phase: $phase" >&2
+    echo "       last gh error: $(printf '%s' "$last_review_inspection_error" | tr '\n' ' ')" >&2
     echo "       Verify GitHub authentication and API availability, then rerun the merge gate." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-inspection"
     exit 1
