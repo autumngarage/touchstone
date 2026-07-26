@@ -385,6 +385,10 @@ case "$*" in
     fi
     ;;
   "show origin/main:.touchstone-review.toml")
+    if [ "${GIT_TRUSTED_CONFIG_SHOW_FAIL:-false}" = "true" ]; then
+      echo "trusted review config unavailable" >&2
+      exit 1
+    fi
     cat "$(trusted_touchstone_config_file)"
     ;;
   "show origin/main:.codex-review.toml")
@@ -520,6 +524,7 @@ reset_case_files() {
   unset GIT_WORKTREE_REMOVE_FAIL
   unset GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE
   unset GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE
+  unset GIT_TRUSTED_CONFIG_SHOW_FAIL
   unset SHELLCHECK_VERSION_LINE
   unset TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS
 }
@@ -587,6 +592,7 @@ run_merge_pr() {
     GIT_WORKTREE_REMOVE_FAIL="${GIT_WORKTREE_REMOVE_FAIL:-false}" \
     GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE="${GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE:-}" \
     GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE="${GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE:-}" \
+    GIT_TRUSTED_CONFIG_SHOW_FAIL="${GIT_TRUSTED_CONFIG_SHOW_FAIL:-false}" \
     SHELLCHECK_VERSION_LINE="${SHELLCHECK_VERSION_LINE:-}" \
     CODEX_REVIEW_EXIT="${CODEX_REVIEW_EXIT:-0}" \
     CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
@@ -1182,6 +1188,25 @@ else
   exit 1
 fi
 
+echo "==> Test: trusted review config extraction failure aborts the merge gate"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GIT_TRUSTED_CONFIG_SHOW_FAIL=true \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-config-extraction-fail.txt" 123; then
+  echo "FAIL: merge-pr.sh ignored a trusted review config extraction failure" >&2
+  exit 1
+fi
+if grep -q 'Failed to extract trusted review config' "$TEST_DIR/output-pr-triggered-config-extraction-fail.txt" \
+  && grep -q 'source: origin/main:.touchstone-review.toml' "$TEST_DIR/output-pr-triggered-config-extraction-fail.txt" \
+  && [ ! -f "$TEST_DIR/gh-reviews-graphql-calls" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: trusted review config extraction failure aborts the merge gate"
+else
+  echo "FAIL: trusted review config extraction failure should fail closed" >&2
+  cat "$TEST_DIR/output-pr-triggered-config-extraction-fail.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: PR-triggered +1 reaction is ignored"
 reset_case_files
 write_pr_triggered_config true 0 0
@@ -1417,6 +1442,25 @@ else
   echo "FAIL: transient review lookup failure should not abort polling" >&2
   cat "$TEST_DIR/output-pr-triggered-transient.txt" >&2
   [ ! -f "$TEST_DIR/gh-reviews-graphql-calls" ] || cat "$TEST_DIR/gh-reviews-graphql-calls" >&2
+  exit 1
+fi
+
+echo "==> Test: persistent PR head inspection failure reports the GitHub error"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_HEAD_REF_FAIL_AFTER=2 \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-head-inspection-fail.txt" 123; then
+  echo "FAIL: merge-pr.sh ignored a persistent PR head inspection failure" >&2
+  exit 1
+fi
+if grep -q 'Failed to inspect PR #123 head while waiting for PR-triggered AI review' "$TEST_DIR/output-pr-triggered-head-inspection-fail.txt" \
+  && grep -q 'last gh error: gh pr view headRefOid unavailable' "$TEST_DIR/output-pr-triggered-head-inspection-fail.txt" \
+  && ! grep -q 'Timed out waiting for trusted PR-visible AI review' "$TEST_DIR/output-pr-triggered-head-inspection-fail.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: persistent PR head inspection failure reports the GitHub error"
+else
+  echo "FAIL: persistent PR head inspection failure should remain distinguishable from a missing review" >&2
+  cat "$TEST_DIR/output-pr-triggered-head-inspection-fail.txt" >&2
   exit 1
 fi
 

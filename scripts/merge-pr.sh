@@ -333,7 +333,7 @@ normalize_bool() {
 
 load_merge_review_config() {
   local config_file
-  resolve_merge_review_config_file
+  resolve_merge_review_config_file || return $?
   config_file="$MERGE_REVIEW_CONFIG_FILE"
   [ -f "$config_file" ] || return 0
   [ -f "$SCRIPT_DIR/../lib/toml.sh" ] || return 0
@@ -378,13 +378,22 @@ resolve_merge_review_config_file() {
     trusted_base="${MERGE_PR_TRUSTED_CONFIG_BASE:-origin/$DEFAULT_BRANCH}"
     for rel in .touchstone-review.toml .codex-review.toml; do
       if git cat-file -e "$trusted_base:$rel" 2>/dev/null; then
-        tmp="$(mktemp -t touchstone-merge-review-config.XXXXXX)" || return 0
+        if ! tmp="$(mktemp -t touchstone-merge-review-config.XXXXXX)"; then
+          echo "ERROR: Failed to create a temporary file for trusted review config." >&2
+          echo "       source: $trusted_base:$rel" >&2
+          TOUCHSTONE_MERGE_FAILURE_REASON="trusted-review-config"
+          return 1
+        fi
         if git show "$trusted_base:$rel" >"$tmp" 2>/dev/null; then
           MERGE_REVIEW_CONFIG_TMP_FILES+=("$tmp")
           MERGE_REVIEW_CONFIG_FILE="$tmp"
           return 0
         fi
         rm -f "$tmp"
+        echo "ERROR: Failed to extract trusted review config." >&2
+        echo "       source: $trusted_base:$rel" >&2
+        TOUCHSTONE_MERGE_FAILURE_REASON="trusted-review-config"
+        return 1
       fi
     done
     return 0
@@ -1512,6 +1521,7 @@ wait_for_pr_triggered_review() {
   local expected_head="$1"
   local phase="$2"
   local timeout_sec poll_sec start_epoch now_epoch elapsed observed_head sleep_seconds
+  local last_inspection_error=""
 
   if [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then
     echo "ERROR: Unsupported [review.pr_triggered].provider: $PR_TRIGGERED_REVIEW_PROVIDER" >&2
@@ -1544,7 +1554,12 @@ wait_for_pr_triggered_review() {
   echo "    provider=$PR_TRIGGERED_REVIEW_PROVIDER expected_head=$expected_head timeout=${timeout_sec}s"
 
   while true; do
-    observed_head="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")"
+    if observed_head="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>&1)"; then
+      last_inspection_error=""
+    else
+      last_inspection_error="$observed_head"
+      observed_head=""
+    fi
     if [ -n "$observed_head" ] && [ "$observed_head" != "$expected_head" ]; then
       echo "ERROR: PR #$PR_NUMBER head changed while waiting for PR-triggered AI review." >&2
       echo "       expected: $expected_head" >&2
@@ -1574,6 +1589,15 @@ wait_for_pr_triggered_review() {
     fi
     sleep "$sleep_seconds"
   done
+
+  if [ -n "$last_inspection_error" ]; then
+    echo "ERROR: Failed to inspect PR #$PR_NUMBER head while waiting for PR-triggered AI review." >&2
+    echo "       phase: $phase" >&2
+    echo "       last gh error: $(printf '%s' "$last_inspection_error" | tr '\n' ' ')" >&2
+    echo "       Verify GitHub authentication and API availability, then rerun the merge gate." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-inspection"
+    exit 1
+  fi
 
   echo "ERROR: Timed out waiting for trusted PR-visible AI review for PR #$PR_NUMBER." >&2
   echo "       phase: $phase" >&2
