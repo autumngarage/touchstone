@@ -1388,6 +1388,40 @@ else
   exit 1
 fi
 
+echo "==> Test: conflicting same-time formal reviews fail closed regardless of API order"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/findings\nchatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/approved' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-same-time-reviews.txt" 123; then
+  echo "FAIL: API order allowed tied formal approval to hide blocking review" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-same-time-reviews.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: conflicting same-time formal reviews fail closed"
+else
+  echo "FAIL: every formal review at the latest timestamp must be clean" >&2
+  cat "$TEST_DIR/output-pr-triggered-same-time-reviews.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: conflicting same-time review comments fail closed regardless of API order"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/findings\tCodex Review: Found a blocking issue. **Reviewed commit:** `pr-head-oi`\nchatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/clean\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-same-time-comments.txt" 123; then
+  echo "FAIL: API order allowed tied clean comment to hide findings" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-same-time-comments.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: conflicting same-time review comments fail closed"
+else
+  echo "FAIL: every review comment at the latest timestamp must be clean" >&2
+  cat "$TEST_DIR/output-pr-triggered-same-time-comments.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: newer findings comment overrides older formal approval"
 reset_case_files
 write_pr_triggered_config true 0 0

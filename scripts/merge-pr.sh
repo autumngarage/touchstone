@@ -1381,7 +1381,8 @@ current_pr_head_or_die() {
 latest_trusted_pr_review_result() {
   local expected_head="$1"
   local query reviews author commit_oid state submitted_at url
-  local latest_state="" latest_submitted_at="" latest_url="" latest_author=""
+  local candidate_clean candidate_detail
+  local latest_submitted_at="" latest_clean=false latest_detail=""
 
   if [ -z "$REPO_OWNER" ] || [ -z "$REPO_NAME" ]; then
     PR_TRIGGERED_REVIEW_INSPECTION_ERROR="formal reviews: repository identity is unavailable"
@@ -1424,29 +1425,37 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     csv_contains "$PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS" "$author" || continue
     [ "$commit_oid" = "$expected_head" ] || continue
     [ -n "$submitted_at" ] || continue
+    candidate_clean=false
+    [ "$state" = "APPROVED" ] && candidate_clean=true
+    candidate_detail="formal review by @$author ($state) at $submitted_at"
+    [ -n "$url" ] && candidate_detail="$candidate_detail: $url"
     if [ -n "$latest_submitted_at" ] && [[ "$submitted_at" < "$latest_submitted_at" ]]; then
       continue
     fi
-    latest_state="$state"
-    latest_submitted_at="$submitted_at"
-    latest_url="$url"
-    latest_author="$author"
+    if [ -z "$latest_submitted_at" ] || [[ "$submitted_at" > "$latest_submitted_at" ]]; then
+      latest_submitted_at="$submitted_at"
+      latest_clean="$candidate_clean"
+      latest_detail="$candidate_detail"
+      continue
+    fi
+    if [ "$candidate_clean" != true ]; then
+      latest_clean=false
+    fi
+    latest_detail="$latest_detail; $candidate_detail"
   done <<<"$reviews"
 
   [ -n "$latest_submitted_at" ] || return 1
   PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP="$latest_submitted_at"
-  PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN=false
-  [ "$latest_state" = "APPROVED" ] && PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN=true
-  PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL="formal review by @$latest_author ($latest_state) at $latest_submitted_at"
-  [ -n "$latest_url" ] && PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL: $latest_url"
+  PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN="$latest_clean"
+  PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL="$latest_detail"
   return 0
 }
 
 latest_trusted_pr_comment_result() {
   local expected_head="$1"
   local comments author created_at url body expected_head_short
-  local latest_author="" latest_created_at="" latest_url="" latest_body=""
-  local result_label="non-clean"
+  local candidate_clean candidate_detail result_label
+  local latest_created_at="" latest_clean=false latest_detail=""
 
   if [ -z "$REPO_OWNER" ] || [ -z "$REPO_NAME" ]; then
     PR_TRIGGERED_REVIEW_INSPECTION_ERROR="review comments: repository identity is unavailable"
@@ -1468,26 +1477,35 @@ latest_trusted_pr_comment_result() {
       *"Reviewed commit:"*"\`$expected_head_short\`"*) ;;
       *) continue ;;
     esac
+    candidate_clean=false
+    result_label="non-clean"
+    case "$body" in
+      "Codex Review: Didn't find any major issues."* | "Codex Review: No major issues."*)
+        candidate_clean=true
+        result_label="clean"
+        ;;
+    esac
+    candidate_detail="$result_label Codex review comment by @$author at $created_at"
+    [ -n "$url" ] && candidate_detail="$candidate_detail: $url"
     if [ -n "$latest_created_at" ] && [[ "$created_at" < "$latest_created_at" ]]; then
       continue
     fi
-    latest_author="$author"
-    latest_created_at="$created_at"
-    latest_url="$url"
-    latest_body="$body"
+    if [ -z "$latest_created_at" ] || [[ "$created_at" > "$latest_created_at" ]]; then
+      latest_created_at="$created_at"
+      latest_clean="$candidate_clean"
+      latest_detail="$candidate_detail"
+      continue
+    fi
+    if [ "$candidate_clean" != true ]; then
+      latest_clean=false
+    fi
+    latest_detail="$latest_detail; $candidate_detail"
   done <<<"$comments"
 
   [ -n "$latest_created_at" ] || return 1
   PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP="$latest_created_at"
-  PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN=false
-  case "$latest_body" in
-    "Codex Review: Didn't find any major issues."* | "Codex Review: No major issues."*)
-      PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN=true
-      result_label="clean"
-      ;;
-  esac
-  PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL="$result_label Codex review comment by @$latest_author at $latest_created_at"
-  [ -n "$latest_url" ] && PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL: $latest_url"
+  PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN="$latest_clean"
+  PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL="$latest_detail"
   return 0
 }
 
