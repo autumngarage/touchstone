@@ -70,6 +70,9 @@ PR_TRIGGERED_REVIEW_POLL_SEC=10
 PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS="chatgpt-codex-connector,chatgpt-codex-connector[bot]"
 PR_TRIGGERED_REVIEW_SKIP_MERGE_REVIEW=true
 PR_TRIGGERED_REVIEWED_HEAD_OID=""
+PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP=""
+PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN=false
+PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL=""
 REVIEW_SUMMARY_FILE=""
 PREFLIGHT_CACHE_KEY=""
 PREFLIGHT_CACHE_FILE=""
@@ -1352,7 +1355,7 @@ current_pr_head_or_die() {
   printf '%s' "$observed_head"
 }
 
-trusted_pr_review_signal() {
+latest_trusted_pr_review_result() {
   local expected_head="$1"
   local query reviews author commit_oid state submitted_at url
   local latest_state="" latest_submitted_at="" latest_url="" latest_author=""
@@ -1404,16 +1407,20 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     latest_author="$author"
   done <<<"$reviews"
 
-  [ "$latest_state" = "APPROVED" ] || return 1
-  PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="formal review by @$latest_author ($latest_state) at $latest_submitted_at"
-  [ -n "$latest_url" ] && PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL: $latest_url"
+  [ -n "$latest_submitted_at" ] || return 1
+  PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP="$latest_submitted_at"
+  PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN=false
+  [ "$latest_state" = "APPROVED" ] && PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN=true
+  PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL="formal review by @$latest_author ($latest_state) at $latest_submitted_at"
+  [ -n "$latest_url" ] && PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL: $latest_url"
   return 0
 }
 
-trusted_pr_clean_comment_signal() {
+latest_trusted_pr_comment_result() {
   local expected_head="$1"
   local comments author created_at url body expected_head_short
   local latest_author="" latest_created_at="" latest_url="" latest_body=""
+  local result_label="non-clean"
 
   [ -n "$REPO_OWNER" ] || return 1
   [ -n "$REPO_NAME" ] || return 1
@@ -1441,13 +1448,64 @@ trusted_pr_clean_comment_signal() {
     latest_body="$body"
   done <<<"$comments"
 
+  [ -n "$latest_created_at" ] || return 1
+  PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP="$latest_created_at"
+  PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN=false
   case "$latest_body" in
-    *"Codex Review:"*"Didn't find any major issues"* | *"Codex Review:"*"No major issues"*) ;;
-    *) return 1 ;;
+    *"Codex Review:"*"Didn't find any major issues"* | *"Codex Review:"*"No major issues"*)
+      PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN=true
+      result_label="clean"
+      ;;
   esac
-  PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="clean Codex review comment by @$latest_author at $latest_created_at"
-  [ -n "$latest_url" ] && PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL: $latest_url"
+  PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL="$result_label Codex review comment by @$latest_author at $latest_created_at"
+  [ -n "$latest_url" ] && PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL: $latest_url"
   return 0
+}
+
+trusted_pr_clean_signal() {
+  local expected_head="$1"
+  local review_found=false review_timestamp="" review_clean=false review_detail=""
+  local comment_found=false comment_timestamp="" comment_clean=false comment_detail=""
+
+  if latest_trusted_pr_review_result "$expected_head"; then
+    review_found=true
+    review_timestamp="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
+    review_clean="$PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN"
+    review_detail="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL"
+  fi
+  if latest_trusted_pr_comment_result "$expected_head"; then
+    comment_found=true
+    comment_timestamp="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
+    comment_clean="$PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN"
+    comment_detail="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL"
+  fi
+
+  if [ "$review_found" = true ] && [ "$comment_found" = true ]; then
+    if [[ "$review_timestamp" > "$comment_timestamp" ]]; then
+      PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail"
+      [ "$review_clean" = true ]
+      return
+    fi
+    if [[ "$comment_timestamp" > "$review_timestamp" ]]; then
+      PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$comment_detail"
+      [ "$comment_clean" = true ]
+      return
+    fi
+    PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail; $comment_detail"
+    [ "$review_clean" = true ] && [ "$comment_clean" = true ]
+    return
+  fi
+  if [ "$review_found" = true ]; then
+    PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail"
+    [ "$review_clean" = true ]
+    return
+  fi
+  if [ "$comment_found" = true ]; then
+    PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$comment_detail"
+    [ "$comment_clean" = true ]
+    return
+  fi
+  return 1
 }
 
 wait_for_pr_triggered_review() {
@@ -1497,8 +1555,7 @@ wait_for_pr_triggered_review() {
     fi
 
     if [ "$observed_head" = "$expected_head" ]; then
-      if trusted_pr_review_signal "$expected_head" \
-        || trusted_pr_clean_comment_signal "$expected_head"; then
+      if trusted_pr_clean_signal "$expected_head"; then
         PR_TRIGGERED_REVIEWED_HEAD_OID="$expected_head"
         echo "==> Trusted PR-visible AI review found for PR #$PR_NUMBER head $expected_head."
         [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
@@ -1850,7 +1907,7 @@ run_merge_review() {
     if branch_has_clean_review_marker "$pr_head_branch" "$pr_head_oid" "$current_merge_base"; then
       BYPASS_MARKER_SOURCE="clean-review"
     elif truthy "$PR_TRIGGERED_REVIEW_REQUIRED" \
-      && { trusted_pr_review_signal "$pr_head_oid" || trusted_pr_clean_comment_signal "$pr_head_oid"; }; then
+      && trusted_pr_clean_signal "$pr_head_oid"; then
       BYPASS_MARKER_SOURCE="pr-triggered-review"
     elif [ "$ALLOW_FAIL_OPEN_MARKER" = true ]; then
       if ! bypass_reason_mentions_fail_open; then

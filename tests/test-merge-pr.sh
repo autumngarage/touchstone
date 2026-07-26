@@ -1316,6 +1316,75 @@ else
   exit 1
 fi
 
+echo "==> Test: newer findings comment overrides older formal approval"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/approved' \
+  GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:01:00Z\thttps://example.test/comment/findings\tCodex Review: Found a blocking issue. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-comment-overrides-approval.txt" 123; then
+  echo "FAIL: older formal approval overrode a newer findings comment" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-comment-overrides-approval.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: globally latest findings comment overrides older formal approval"
+else
+  echo "FAIL: globally latest findings comment should override older formal approval" >&2
+  cat "$TEST_DIR/output-pr-triggered-comment-overrides-approval.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: newer COMMENTED formal review overrides older clean comment"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/clean\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
+  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:01:00Z\thttps://example.test/review/findings' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-review-overrides-clean-comment.txt" 123; then
+  echo "FAIL: older clean comment overrode a newer COMMENTED formal review" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-review-overrides-clean-comment.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: globally latest COMMENTED review overrides older clean comment"
+else
+  echo "FAIL: globally latest COMMENTED review should override older clean comment" >&2
+  cat "$TEST_DIR/output-pr-triggered-review-overrides-clean-comment.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: newer clean comment overrides older COMMENTED formal review"
+reset_case_files
+write_pr_triggered_config true 0 0
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/findings' \
+  GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:01:00Z\thttps://example.test/comment/clean\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-clean-comment-overrides-review.txt" 123
+if grep -q 'clean Codex review comment by @chatgpt-codex-connector' "$TEST_DIR/output-pr-triggered-clean-comment-overrides-review.txt" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: globally latest clean comment overrides older COMMENTED review"
+else
+  echo "FAIL: globally latest clean comment should override older COMMENTED review" >&2
+  cat "$TEST_DIR/output-pr-triggered-clean-comment-overrides-review.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: conflicting same-time trusted results fail closed"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/approved' \
+  GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/findings\tCodex Review: Found a blocking issue. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-conflicting-same-time.txt" 123; then
+  echo "FAIL: conflicting same-time trusted results unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-conflicting-same-time.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: conflicting same-time trusted results fail closed"
+else
+  echo "FAIL: conflicting same-time trusted results should fail closed" >&2
+  cat "$TEST_DIR/output-pr-triggered-conflicting-same-time.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: delayed PR-triggered review is polled before merge"
 reset_case_files
 write_pr_triggered_config true 2 1
