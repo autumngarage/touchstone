@@ -1019,7 +1019,7 @@ reset_case_files
 install_preflight_counter_fixture
 write_pr_triggered_config true 0 0
 GH_REJECT_UNBALANCED_GRAPHQL=true \
-  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/1' \
+  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/1' \
   PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
   run_merge_pr "$TEST_DIR/output-pr-triggered-skip.txt" 123
 rm -rf "${TEST_DIR:?}/lib"
@@ -1039,7 +1039,7 @@ fi
 echo "==> Test: PR-triggered review rejects a head change after the trusted signal"
 reset_case_files
 write_pr_triggered_config true 0 0
-if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/1' \
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/1' \
   GH_HEAD_REF_CHANGE_AFTER=4 \
   GH_HEAD_REF_CHANGED_OID="new-pr-head" \
   run_merge_pr "$TEST_DIR/output-pr-triggered-head-changed.txt" 123; then
@@ -1128,6 +1128,23 @@ if grep -q 'has unresolved review thread(s)' "$TEST_DIR/output-pr-triggered-feed
 else
   echo "FAIL: blocking feedback should fail before the PR-triggered review wait" >&2
   cat "$TEST_DIR/output-pr-triggered-feedback-before-wait.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: COMMENTED formal review does not count as clean approval"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/findings' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-commented-review.txt" 123; then
+  echo "FAIL: COMMENTED formal review unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-commented-review.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: COMMENTED formal review does not count as clean approval"
+else
+  echo "FAIL: COMMENTED formal review should not satisfy the merge gate" >&2
+  cat "$TEST_DIR/output-pr-triggered-commented-review.txt" >&2
   exit 1
 fi
 
@@ -1268,7 +1285,7 @@ fi
 echo "==> Test: delayed PR-triggered review is polled before merge"
 reset_case_files
 write_pr_triggered_config true 2 1
-GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/2' \
+GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/2' \
   MERGE_PR_SLEEP_OVERRIDE=0 \
   run_merge_pr "$TEST_DIR/output-pr-triggered-delayed.txt" 123
 if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-delayed.txt" \
@@ -1286,7 +1303,7 @@ echo "==> Test: transient PR-triggered review lookup failure does not abort poll
 reset_case_files
 write_pr_triggered_config true 2 1
 GH_REVIEWS_GRAPHQL_FAIL_FIRST=true \
-  GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/3' \
+  GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/3' \
   MERGE_PR_SLEEP_OVERRIDE=0 \
   run_merge_pr "$TEST_DIR/output-pr-triggered-transient.txt" 123
 if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-transient.txt" \
@@ -1304,8 +1321,8 @@ echo "==> Test: review-fix push requires a fresh PR-triggered review on the new 
 reset_case_files
 install_preflight_counter_fixture
 write_pr_triggered_config false 2 1
-GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/4' \
-  GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\treview-fixed-head\tCOMMENTED\t2026-06-23T00:01:00Z\thttps://example.test/review/5' \
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/4' \
+  GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\treview-fixed-head\tAPPROVED\t2026-06-23T00:01:00Z\thttps://example.test/review/5' \
   CODEX_REVIEW_MUTATE_HEAD="review-fixed-head" \
   GH_EXPECT_MERGE_HEAD="review-fixed-head" \
   PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \

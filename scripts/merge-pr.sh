@@ -1393,9 +1393,7 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     [ -n "$author" ] || continue
     csv_contains "$PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS" "$author" || continue
     [ "$commit_oid" = "$expected_head" ] || continue
-    case "$state" in
-      "" | DISMISSED | PENDING) continue ;;
-    esac
+    [ "$state" = "APPROVED" ] || continue
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="formal review by @$author"
     [ -n "$state" ] && PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL ($state)"
     [ -n "$submitted_at" ] && PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL at $submitted_at"
