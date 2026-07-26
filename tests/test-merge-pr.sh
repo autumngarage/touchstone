@@ -1887,7 +1887,7 @@ if run_merge_pr "$TEST_DIR/output-fresh.txt" 123 --bypass-with-disclosure="revie
   echo "FAIL: bypass on fresh branch unexpectedly succeeded" >&2
   exit 1
 fi
-if grep -q "No prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-fresh.txt" \
+if grep -q "No trusted PR-visible review or prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-fresh.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ] \
   && [ ! -f "$TEST_DIR/gh-comment" ] \
   && [ ! -f "$TEST_DIR/codex-review.log" ]; then
@@ -1905,7 +1905,7 @@ if run_merge_pr "$TEST_DIR/output-fail-open-no-flag.txt" 123 --bypass-with-discl
   echo "FAIL: fail-open marker bypass without allow flag unexpectedly succeeded" >&2
   exit 1
 fi
-if grep -q "No prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-fail-open-no-flag.txt" \
+if grep -q "No trusted PR-visible review or prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-fail-open-no-flag.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ] \
   && [ ! -f "$TEST_DIR/gh-comment" ] \
   && [ ! -f "$TEST_DIR/codex-review.log" ]; then
@@ -1995,23 +1995,22 @@ else
   exit 1
 fi
 
-echo "==> Test: bypass skips unavailable PR-triggered reviewer with clean marker"
+echo "==> Test: bypass derives eligibility from prior PR-triggered review"
 reset_case_files
 write_pr_triggered_config true 0 0
-mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
-printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=pr-head-oid\nmerge_base=base-oid\n' >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
-run_merge_pr "$TEST_DIR/output-bypass-pr-triggered.txt" 123 --bypass-with-disclosure="reviewer unavailable after prior clean review"
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/bypass' \
+  run_merge_pr "$TEST_DIR/output-bypass-pr-triggered.txt" 123 --bypass-with-disclosure="reviewer unavailable after prior clean review"
 if grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-bypass-pr-triggered.txt" \
-  && grep -q 'marker: clean-review' "$TEST_DIR/output-bypass-pr-triggered.txt" \
+  && grep -q 'marker: pr-triggered-review' "$TEST_DIR/output-bypass-pr-triggered.txt" \
   && grep -q 'reason: reviewer unavailable after prior clean review' "$TEST_DIR/output-bypass-pr-triggered.txt" \
-  && grep -q 'Reviewer bypassed via `--bypass-with-disclosure`. Marker: clean-review. Reason: reviewer unavailable after prior clean review' "$TEST_DIR/gh-comment" \
+  && grep -q 'Reviewer bypassed via `--bypass-with-disclosure`. Marker: pr-triggered-review. Reason: reviewer unavailable after prior clean review' "$TEST_DIR/gh-comment" \
   && grep -q '^Reviewer-bypass: reviewer unavailable after prior clean review$' "$TEST_DIR/gh-merge-body" \
   && ! grep -q 'Timed out waiting for trusted PR-visible AI review' "$TEST_DIR/output-bypass-pr-triggered.txt" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
   && [ ! -f "$TEST_DIR/codex-review.log" ]; then
-  echo "==> PASS: bypass can skip unavailable PR-triggered reviewer after clean marker"
+  echo "==> PASS: bypass derives eligibility from the prior exact-head PR review"
 else
-  echo "FAIL: bypass should not wait on unavailable PR-triggered reviewer" >&2
+  echo "FAIL: bypass should accept the prior exact-head PR review without a local marker" >&2
   cat "$TEST_DIR/output-bypass-pr-triggered.txt" >&2
   exit 1
 fi
@@ -2024,7 +2023,7 @@ if run_merge_pr "$TEST_DIR/output-stale.txt" 123 --bypass-with-disclosure="revie
   echo "FAIL: bypass with stale marker unexpectedly succeeded" >&2
   exit 1
 fi
-if grep -q "No prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-stale.txt" \
+if grep -q "No trusted PR-visible review or prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-stale.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ] \
   && [ ! -f "$TEST_DIR/gh-comment" ]; then
   echo "==> PASS: stale clean marker rejected"
@@ -2042,7 +2041,7 @@ if run_merge_pr "$TEST_DIR/output-old-base.txt" 123 --bypass-with-disclosure="re
   echo "FAIL: bypass with old-base marker unexpectedly succeeded" >&2
   exit 1
 fi
-if grep -q "No prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-old-base.txt" \
+if grep -q "No trusted PR-visible review or prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-old-base.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ] \
   && [ ! -f "$TEST_DIR/gh-comment" ]; then
   echo "==> PASS: old-base clean marker rejected"

@@ -1832,6 +1832,9 @@ run_merge_review() {
     BYPASS_MARKER_EVIDENCE=""
     if branch_has_clean_review_marker "$pr_head_branch" "$pr_head_oid" "$current_merge_base"; then
       BYPASS_MARKER_SOURCE="clean-review"
+    elif truthy "$PR_TRIGGERED_REVIEW_REQUIRED" \
+      && { trusted_pr_review_signal "$pr_head_oid" || trusted_pr_clean_comment_signal "$pr_head_oid"; }; then
+      BYPASS_MARKER_SOURCE="pr-triggered-review"
     elif [ "$ALLOW_FAIL_OPEN_MARKER" = true ]; then
       if ! bypass_reason_mentions_fail_open; then
         echo "ERROR: Refusing reviewer bypass for PR #$PR_NUMBER." >&2
@@ -1852,7 +1855,7 @@ run_merge_review() {
       BYPASS_MARKER_SOURCE="fail-open"
     else
       echo "ERROR: Refusing reviewer bypass for PR #$PR_NUMBER." >&2
-      echo "       No prior clean review marker matches branch '$pr_head_branch' at head '$pr_head_oid' and merge base '$current_merge_base'." >&2
+      echo "       No trusted PR-visible review or prior clean review marker matches branch '$pr_head_branch' at head '$pr_head_oid' and merge base '$current_merge_base'." >&2
       echo "       Run the reviewer cleanly once before using --bypass-with-disclosure, or pass --allow-fail-open-marker after a recent fail-open review-log event for this branch head." >&2
       exit 1
     fi
