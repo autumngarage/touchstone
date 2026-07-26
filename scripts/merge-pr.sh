@@ -2142,6 +2142,17 @@ run_merge_review
 
 # 5. Re-check PR-visible feedback on the exact reviewed head before merging.
 require_pr_feedback_clear "after merge review" "$REVIEWED_HEAD_OID"
+if { truthy "$PR_TRIGGERED_REVIEW_REQUIRED" && [ "$BYPASS_REVIEW" != true ]; } \
+  || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-review" ]; then
+  if ! trusted_pr_clean_signal "$REVIEWED_HEAD_OID"; then
+    echo "ERROR: The latest trusted PR-visible AI result is not clean for reviewed head $REVIEWED_HEAD_OID." >&2
+    echo "       A newer review result may have arrived during preflight; resolve it and rerun the merge gate." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-stale"
+    exit 1
+  fi
+  echo "==> Revalidated latest trusted PR-visible AI result for head $REVIEWED_HEAD_OID."
+  [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
+fi
 
 # 6. Squash-merge and delete the branch.
 echo "==> Squash-merging PR #$PR_NUMBER ..."

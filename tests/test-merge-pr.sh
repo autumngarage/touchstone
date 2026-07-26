@@ -1662,6 +1662,25 @@ else
   exit 1
 fi
 
+echo "==> Test: newer non-clean Codex result during preflight blocks merge"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/clean-before-preflight\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
+  GH_ISSUE_COMMENTS_SECOND=$'chatgpt-codex-connector\t2026-06-23T00:01:00Z\thttps://example.test/comment/findings-during-preflight\tCodex Review: Found a blocking issue. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-changed-during-preflight.txt" 123; then
+  echo "FAIL: merge-pr.sh accepted stale clean evidence after a newer non-clean result" >&2
+  exit 1
+fi
+if grep -q 'latest trusted PR-visible AI result is not clean' "$TEST_DIR/output-pr-triggered-changed-during-preflight.txt" \
+  && [ "$(cat "$TEST_DIR/gh-comments-calls" 2>/dev/null || echo 0)" -ge 2 ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: latest PR-visible result is revalidated immediately before merge"
+else
+  echo "FAIL: newer non-clean result during preflight should block merge" >&2
+  cat "$TEST_DIR/output-pr-triggered-changed-during-preflight.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: provider outage review failure prints exact retry command"
 install_preflight_counter_fixture
 reset_case_files
