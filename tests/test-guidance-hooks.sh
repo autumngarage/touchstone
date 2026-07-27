@@ -362,6 +362,37 @@ assert "allows literal command-substitution prose in single quotes" "0" \
 HEREDOC_PROSE_COMMAND="$(printf '%s\n' "cat > instructions.md <<'EOF'" "git push --no-verify origin main" "EOF")"
 assert "allows bypass prose in a heredoc body" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "$HEREDOC_PROSE_COMMAND")")"
+UNQUOTED_HEREDOC_PROSE_COMMAND="$(printf '%s\n' "cat > instructions.md <<EOF" "git push --no-verify origin main" "EOF")"
+assert "allows literal bypass prose in an unquoted heredoc body" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$UNQUOTED_HEREDOC_PROSE_COMMAND")")"
+UNQUOTED_HEREDOC_SUBSTITUTION_COMMAND="$(printf '%s\n' "cat <<EOF" '$(git push --no-verify origin main)' "EOF")"
+assert "blocks bypass push in an unquoted heredoc substitution" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$UNQUOTED_HEREDOC_SUBSTITUTION_COMMAND")")"
+UNQUOTED_HEREDOC_BACKTICK_COMMAND="$(printf '%s\n' "cat <<EOF" '`git push --no-verify origin main`' "EOF")"
+assert "blocks bypass push in an unquoted heredoc backtick substitution" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$UNQUOTED_HEREDOC_BACKTICK_COMMAND")")"
+UNQUOTED_HEREDOC_ESCAPED_COMMAND="$(printf '%s\n' "cat <<EOF" '\$(git push --no-verify origin main)' "EOF")"
+assert "allows escaped substitution prose in an unquoted heredoc body" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$UNQUOTED_HEREDOC_ESCAPED_COMMAND")")"
+UNQUOTED_HEREDOC_UNRELATED_SUBSTITUTION_COMMAND="$(
+  printf '%s\n' "cat <<EOF" 'Generated $(date): git push --no-verify origin main' "EOF"
+)"
+assert "allows literal bypass prose outside an unquoted heredoc substitution" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$UNQUOTED_HEREDOC_UNRELATED_SUBSTITUTION_COMMAND")")"
+BACKSLASH_QUOTED_HEREDOC_COMMAND="$(printf '%s\n' 'cat <<\EOF' '$(git push --no-verify origin main)' "EOF")"
+assert "allows substitution prose with a backslash-quoted heredoc delimiter" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$BACKSLASH_QUOTED_HEREDOC_COMMAND")")"
+PARTIALLY_QUOTED_HEREDOC_COMMAND="$(printf '%s\n' 'cat <<E"OF"' '$(git push --no-verify origin main)' "EOF")"
+assert "allows substitution prose with a partially quoted heredoc delimiter" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$PARTIALLY_QUOTED_HEREDOC_COMMAND")")"
+HEREDOC_CONTINUED_SUBSTITUTION_COMMAND="$(printf '%s\n' "cat <<EOF" '\' '$(git push --no-verify origin main)' "EOF")"
+assert "blocks heredoc substitution after a continued physical line" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$HEREDOC_CONTINUED_SUBSTITUTION_COMMAND")")"
+MULTILINE_HEREDOC_SUBSTITUTION_COMMAND="$(
+  printf '%s\n' "cat <<EOF" '$(' "git push --no-verify origin main" ')' "EOF"
+)"
+assert "blocks multiline substitution in an unquoted heredoc" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$MULTILINE_HEREDOC_SUBSTITUTION_COMMAND")")"
 HEREDOC_THEN_PUSH_COMMAND="$(printf '%s\n' "cat > instructions.md <<'EOF'" "ordinary prose" "EOF" "git push --no-verify origin main")"
 assert "blocks executable bypass push after a heredoc" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "$HEREDOC_THEN_PUSH_COMMAND")")"

@@ -133,8 +133,63 @@ without_single_quoted_literals() {
   '
 }
 
+# Quoted heredocs are literal. Unquoted heredocs expand command substitutions,
+# so retain only those executable regions and mask the surrounding prose.
 without_heredoc_bodies() {
   awk '
+    function print_executable_substitutions(line, output, i, char, next_char) {
+      output = ""
+      body_escaped = 0
+      substitution_escaped = 0
+      backtick_escaped = 0
+      for (i = 1; i <= length(line); i++) {
+        char = substr(line, i, 1)
+        next_char = substr(line, i + 1, 1)
+        if (substitution_depth > 0) {
+          output = output char
+          if (substitution_escaped) {
+            substitution_escaped = 0
+          } else if (char == "\\" && substitution_quote != "\047") {
+            substitution_escaped = 1
+          } else if (substitution_quote != "") {
+            if (char == substitution_quote) {
+              substitution_quote = ""
+            }
+          } else if (char == "\"" || char == "\047") {
+            substitution_quote = char
+          } else if (char == "(") {
+            substitution_depth++
+          } else if (char == ")") {
+            substitution_depth--
+          }
+        } else if (backtick_substitution) {
+          output = output char
+          if (backtick_escaped) {
+            backtick_escaped = 0
+          } else if (char == "\\") {
+            backtick_escaped = 1
+          } else if (char == "`") {
+            backtick_substitution = 0
+          }
+        } else if (body_escaped) {
+          output = output " "
+          body_escaped = 0
+        } else if (char == "\\") {
+          output = output " "
+          body_escaped = 1
+        } else if (char == "$" && next_char == "(") {
+          output = output "$("
+          substitution_depth = 1
+          i++
+        } else if (char == "`") {
+          output = output char
+          backtick_substitution = 1
+        } else {
+          output = output " "
+        }
+      }
+      print output
+    }
     {
       line = $0
       if (heredoc_delimiter != "") {
@@ -145,6 +200,12 @@ without_heredoc_bodies() {
         if (comparison == heredoc_delimiter) {
           heredoc_delimiter = ""
           strip_tabs = 0
+          heredoc_expands = 0
+          substitution_depth = 0
+          substitution_quote = ""
+          backtick_substitution = 0
+        } else if (heredoc_expands) {
+          print_executable_substitutions(line)
         }
         next
       }
@@ -175,17 +236,37 @@ without_heredoc_bodies() {
           while (substr(line, j, 1) ~ /[[:space:]]/) {
             j++
           }
-          delimiter_quote = substr(line, j, 1)
-          if (delimiter_quote == "\"" || delimiter_quote == "\047") {
-            j++
-          }
           token = ""
-          while (substr(line, j, 1) ~ /[A-Za-z0-9_]/) {
-            token = token substr(line, j, 1)
+          delimiter_quote = ""
+          delimiter_escaped = 0
+          delimiter_quoted = 0
+          while (j <= length(line)) {
+            delimiter_char = substr(line, j, 1)
+            if (delimiter_escaped) {
+              token = token delimiter_char
+              delimiter_escaped = 0
+            } else if (delimiter_char == "\\" && delimiter_quote != "\047") {
+              delimiter_quoted = 1
+              delimiter_escaped = 1
+            } else if (delimiter_quote != "") {
+              if (delimiter_char == delimiter_quote) {
+                delimiter_quote = ""
+              } else {
+                token = token delimiter_char
+              }
+            } else if (delimiter_char == "\"" || delimiter_char == "\047") {
+              delimiter_quoted = 1
+              delimiter_quote = delimiter_char
+            } else if (delimiter_char ~ /[[:space:];|&()<>]/) {
+              break
+            } else {
+              token = token delimiter_char
+            }
             j++
           }
           if (token != "") {
             heredoc_delimiter = token
+            heredoc_expands = !delimiter_quoted
           }
           break
         }
