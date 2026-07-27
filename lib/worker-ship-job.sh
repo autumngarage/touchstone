@@ -43,8 +43,8 @@ touchstone_ship_find_job_dir() {
 }
 
 touchstone_ship_job_key() {
-  local worktree_path="$1" branch="$2"
-  printf 'touchstone-worker-ship-v1\0%s' "$branch" \
+  local worktree_path="$1"
+  printf 'touchstone-worker-ship-v1\0%s' "$worktree_path" \
     | git -C "$worktree_path" hash-object --stdin 2>/dev/null
 }
 
@@ -55,7 +55,7 @@ touchstone_ship_job_dir() {
     branch="$(git -C "$normalized_path" rev-parse --abbrev-ref HEAD 2>/dev/null)" || return 1
     [ -n "$branch" ] && [ "$branch" != "HEAD" ] || return 1
     common_dir="$(touchstone_ship_common_dir "$normalized_path")" || return 1
-    key="$(touchstone_ship_job_key "$normalized_path" "$branch")" || return 1
+    key="$(touchstone_ship_job_key "$normalized_path")" || return 1
     printf '%s\n' "$common_dir/touchstone/ship-jobs/$key"
     return 0
   fi

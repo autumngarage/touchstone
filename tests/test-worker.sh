@@ -369,6 +369,17 @@ SHIP_STARTED_FILE="$TEST_DIR/collision-slash-started" \
 if ! wait_for_ship_status "$COLLISION_SLASH_WT" running "$COLLISION_SLASH_STATUS"; then
   fail "slash-branch detached ship did not enter running state"
 fi
+COLLISION_SLASH_LOG="$(sed -n 's/.*"log_path":"\([^"]*\)".*/\1/p' "$COLLISION_SLASH_STATUS")"
+git -C "$COLLISION_SLASH_WT" branch -m feat/collision/renamed
+"$TOUCHSTONE_ROOT/bin/touchstone" worker status \
+  --worktree "$COLLISION_SLASH_WT" --json >"$COLLISION_SLASH_STATUS"
+assert_contains "$COLLISION_SLASH_STATUS" "\"log_path\":\"$COLLISION_SLASH_LOG\""
+if SHIP_STARTED_FILE="$TEST_DIR/renamed-duplicate-started" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$COLLISION_SLASH_WT" --detach >"$TEST_DIR/renamed-duplicate.out" 2>&1; then
+  fail "branch rename allowed a duplicate detached job for one worktree"
+fi
+assert_contains "$TEST_DIR/renamed-duplicate.out" 'already active'
 if ! SHIP_STARTED_FILE="$TEST_DIR/collision-underscore-started" \
   SHIP_SLEEP_SECONDS=10 \
   "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
@@ -378,7 +389,6 @@ fi
 if ! wait_for_ship_status "$COLLISION_UNDERSCORE_WT" running "$COLLISION_UNDERSCORE_STATUS"; then
   fail "underscore-branch detached ship did not enter running state"
 fi
-COLLISION_SLASH_LOG="$(sed -n 's/.*"log_path":"\([^"]*\)".*/\1/p' "$COLLISION_SLASH_STATUS")"
 COLLISION_UNDERSCORE_LOG="$(sed -n 's/.*"log_path":"\([^"]*\)".*/\1/p' "$COLLISION_UNDERSCORE_STATUS")"
 if [ "$COLLISION_SLASH_LOG" = "$COLLISION_UNDERSCORE_LOG" ]; then
   fail "distinct branches resolved to the same detached job directory"
