@@ -84,7 +84,7 @@ case "$1 $2" in
     ;;
   "pr list")
     if [ "${GH_HAS_EXISTING_PR:-0}" = "1" ]; then
-      echo "https://example.test/touchstone/pull/777"
+      printf 'https://example.test/touchstone/pull/777\tmain\n'
     else
       echo ""
     fi

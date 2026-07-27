@@ -41,7 +41,7 @@ case "$1 $2" in
   "repo view") echo "main" ;;
   "pr list")
     if [ "${GH_HAS_EXISTING_PR:-0}" = "1" ]; then
-      echo "https://example.test/touchstone/pull/9999"
+      printf 'https://example.test/touchstone/pull/9999\tmain\n'
     else
       echo ""
     fi

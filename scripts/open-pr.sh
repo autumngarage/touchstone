@@ -74,6 +74,9 @@ ORPHAN_PR_NUMBER=""
 BODY_FILE=""
 ADVISORY_AT_PR_OPEN=false
 PREFLIGHT_REQUIRED=true
+PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=false
+PR_TRIGGERED_REVIEW_PROVIDER="github-codex"
+OPEN_PR_REVIEW_CONFIG_ERROR=""
 REPO_FULL_NAME=""
 
 on_exit() {
@@ -275,7 +278,7 @@ normalize_bool() {
   esac
 }
 
-load_open_pr_review_config() {
+load_open_pr_advisory_config() {
   local config_file
   local repo_root
   repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -304,6 +307,146 @@ load_open_pr_review_config() {
   }
 
   toml_parse "$config_file" open_pr_toml_callback
+}
+
+load_open_pr_review_request_config() {
+  local base_branch="$1"
+  local trusted_ref=""
+  local config_file="" config_tmp="" rel
+  local remote_ref="refs/remotes/origin/$base_branch"
+  local local_ref="refs/heads/$base_branch"
+  local fetch_refspec="+refs/heads/$base_branch:$remote_ref"
+
+  # Review-request policy is an authorization boundary. Refresh only the
+  # remote-tracking ref so a long-lived feature branch cannot use stale base
+  # policy, while leaving the user's local base branch untouched.
+  if git fetch --quiet --no-tags origin "$fetch_refspec" >/dev/null 2>&1; then
+    trusted_ref="$remote_ref"
+  elif git rev-parse --verify --quiet "$remote_ref^{commit}" >/dev/null; then
+    echo "ERROR: Could not refresh trusted review request policy base '$base_branch'." >&2
+    echo "       Refusing to use stale $remote_ref." >&2
+    return 1
+  elif git rev-parse --verify --quiet "$local_ref^{commit}" >/dev/null; then
+    # A stacked PR may intentionally target an unpublished local parent.
+    trusted_ref="$local_ref"
+  else
+    echo "ERROR: Could not resolve trusted review request policy base '$base_branch'." >&2
+    echo "       Expected $remote_ref or $local_ref." >&2
+    return 1
+  fi
+
+  for rel in .touchstone-review.toml .codex-review.toml; do
+    if git cat-file -e "$trusted_ref:$rel" 2>/dev/null; then
+      if ! config_tmp="$(mktemp -t touchstone-open-pr-review-config.XXXXXX)"; then
+        echo "ERROR: Failed to create a temporary trusted review request policy file." >&2
+        echo "       source: $trusted_ref:$rel" >&2
+        return 1
+      fi
+      if ! git show "$trusted_ref:$rel" >"$config_tmp" 2>/dev/null; then
+        rm -f "$config_tmp"
+        echo "ERROR: Failed to extract trusted review request policy." >&2
+        echo "       source: $trusted_ref:$rel" >&2
+        return 1
+      fi
+      config_file="$config_tmp"
+      break
+    fi
+  done
+  [ -n "$config_file" ] || return 0
+  if [ ! -f "$SCRIPT_DIR/../lib/toml.sh" ]; then
+    rm -f "$config_tmp"
+    return 0
+  fi
+
+  # shellcheck source=../lib/toml.sh
+  source "$SCRIPT_DIR/../lib/toml.sh"
+
+  open_pr_review_request_toml_callback() {
+    local section="$1"
+    local key="$2"
+    local value="$3"
+
+    if [ "$section" = "review.pr_triggered" ] && [ "$key" = "request_on_push" ]; then
+      case "$value" in
+        true | false) PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH="$value" ;;
+        *) OPEN_PR_REVIEW_CONFIG_ERROR="[review.pr_triggered].request_on_push must be true or false; got: $value" ;;
+      esac
+    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "provider" ]; then
+      PR_TRIGGERED_REVIEW_PROVIDER="$value"
+    fi
+  }
+
+  if ! toml_parse "$config_file" open_pr_review_request_toml_callback; then
+    rm -f "$config_tmp"
+    return 1
+  fi
+  rm -f "$config_tmp"
+  if [ -n "$OPEN_PR_REVIEW_CONFIG_ERROR" ]; then
+    echo "ERROR: $OPEN_PR_REVIEW_CONFIG_ERROR" >&2
+    echo "       source: $trusted_ref" >&2
+    return 1
+  fi
+}
+
+request_pr_triggered_review() {
+  local pr_number="$1"
+  local expected_head_sha="$2"
+  local head_sha marker existing_request_ids body attempt=1
+  local max_attempts="${TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS:-10}"
+  local retry_interval="${TOUCHSTONE_PR_HEAD_CONVERGENCE_INTERVAL:-1}"
+
+  if ! truthy "$PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH"; then
+    return 0
+  fi
+  if [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then
+    echo "ERROR: request_on_push only supports [review.pr_triggered].provider = \"github-codex\"." >&2
+    return 1
+  fi
+  case "$max_attempts" in
+    "" | 0 | *[!0-9]*)
+      echo "ERROR: TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS must be a positive integer." >&2
+      return 1
+      ;;
+  esac
+
+  while [ "$attempt" -le "$max_attempts" ]; do
+    if ! head_sha="$(gh pr view "$pr_number" --json headRefOid --jq '.headRefOid')"; then
+      echo "ERROR: failed to resolve the remote head for PR #$pr_number before requesting review." >&2
+      return 1
+    fi
+    if [ -z "$head_sha" ]; then
+      echo "ERROR: GitHub returned an empty remote head for PR #$pr_number." >&2
+      return 1
+    fi
+    if [ "$head_sha" = "$expected_head_sha" ]; then
+      break
+    fi
+    if [ "$attempt" -eq "$max_attempts" ]; then
+      echo "ERROR: PR #$pr_number head remained $head_sha; expected pushed head $expected_head_sha." >&2
+      return 1
+    fi
+    sleep "$retry_interval"
+    attempt=$((attempt + 1))
+  done
+  marker="<!-- touchstone:pr-review-request provider=github-codex head=$head_sha -->"
+  if ! existing_request_ids="$(
+    gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments?per_page=100" \
+      --jq ".[] | select(.body == \"@codex review\\n\\n$marker\") | .id"
+  )"; then
+    echo "ERROR: failed to inspect prior GitHub Codex review requests for PR #$pr_number." >&2
+    return 1
+  fi
+  if [ -n "$existing_request_ids" ]; then
+    echo "==> GitHub Codex review already requested for head $head_sha."
+    return 0
+  fi
+
+  body="$(printf '@codex review\n\n%s' "$marker")"
+  if ! gh pr comment "$pr_number" --body "$body" >/dev/null; then
+    echo "ERROR: failed to request GitHub Codex review for PR #$pr_number." >&2
+    return 1
+  fi
+  echo "==> Requested GitHub Codex review for head $head_sha."
 }
 
 run_advisory_review_at_pr_open() {
@@ -500,7 +643,7 @@ esac
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEMPLATE_PATH="$REPO_ROOT/.github/pull_request_template.md"
-load_open_pr_review_config
+load_open_pr_advisory_config
 
 # Fail fast if gh is missing or unauthenticated.
 if ! command -v gh >/dev/null 2>&1; then
@@ -592,12 +735,48 @@ if [ "$CLEANUP_WORKTREE" = true ] && [ "$AUTO_MERGE" != true ]; then
   exit 1
 fi
 
-# Resolve the actual base branch: --base overrides the repo default.
-BASE_BRANCH="${BASE_OVERRIDE:-$DEFAULT_BRANCH}"
+# Discover an existing PR before selecting trusted review-request policy. An
+# existing stacked PR keeps its GitHub base even when a later invocation omits
+# --base, so the repository default is not necessarily its authorization
+# boundary.
+if ! EXISTING_PR_RECORD="$(
+  gh pr list \
+    --head "$CURRENT_BRANCH" \
+    --author "@me" \
+    --state open \
+    --json url,baseRefName \
+    --jq 'if length > 0 then .[0] | [.url, .baseRefName] | @tsv else empty end' \
+    2>/dev/null
+)"; then
+  echo "ERROR: Failed to inspect existing PR metadata for branch '$CURRENT_BRANCH'." >&2
+  exit 1
+fi
+EXISTING_PR_URL=""
+EXISTING_PR_BASE_BRANCH=""
+if [ -n "$EXISTING_PR_RECORD" ]; then
+  IFS=$'\t' read -r EXISTING_PR_URL EXISTING_PR_BASE_BRANCH <<<"$EXISTING_PR_RECORD"
+  if [ -z "$EXISTING_PR_URL" ] || [ -z "$EXISTING_PR_BASE_BRANCH" ]; then
+    echo "ERROR: Existing PR metadata is missing its URL or base branch." >&2
+    exit 1
+  fi
+  if [ -n "$BASE_OVERRIDE" ] && [ "$BASE_OVERRIDE" != "$EXISTING_PR_BASE_BRANCH" ]; then
+    EXISTING_PR_NUMBER="$(basename "$EXISTING_PR_URL")"
+    echo "ERROR: --base '$BASE_OVERRIDE' does not match existing PR #$EXISTING_PR_NUMBER base '$EXISTING_PR_BASE_BRANCH'." >&2
+    echo "       Retarget the PR first: gh pr edit $EXISTING_PR_NUMBER --base '$BASE_OVERRIDE'" >&2
+    echo "       Or rerun without --base to use the PR's current base." >&2
+    exit 1
+  fi
+fi
+
+# An explicit --base selects a new PR's base, or confirms an existing PR's
+# actual base after the mismatch check above. Otherwise, updates to an existing
+# PR trust its actual GitHub base; new PRs trust the repository default.
+BASE_BRANCH="${BASE_OVERRIDE:-${EXISTING_PR_BASE_BRANCH:-$DEFAULT_BRANCH}}"
 if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
   echo "ERROR: --base $BASE_BRANCH cannot equal the current branch." >&2
   exit 1
 fi
+load_open_pr_review_request_config "$BASE_BRANCH"
 
 # Warn when stacking + auto-merge combine — the user is likely about to
 # orphan their stack. --auto-merge squashes the parent, which closes (not
@@ -618,6 +797,10 @@ fi
 # was created.
 EXISTING_UPSTREAM="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
 EXPECTED_UPSTREAM="origin/$CURRENT_BRANCH"
+# Git resolves the ref selected for transport before running pre-push hooks.
+# A hook may create a newer local commit, but that commit is not part of this
+# push. Preserve the selected SHA so the review request cannot drift to it.
+PUSHED_HEAD_SHA="$(git rev-parse HEAD)"
 if [ -n "$EXISTING_UPSTREAM" ] && [ "$EXISTING_UPSTREAM" = "$EXPECTED_UPSTREAM" ]; then
   echo "==> Pushing $CURRENT_BRANCH ..."
   git push
@@ -636,11 +819,11 @@ fi
 trap on_exit EXIT
 
 # If a PR already exists for this branch, just print the URL (and auto-merge if requested).
-EXISTING_PR_URL="$(gh pr list --head "$CURRENT_BRANCH" --author "@me" --state open --json url --jq '.[0].url // empty' 2>/dev/null || echo "")"
 if [ -n "$EXISTING_PR_URL" ]; then
   echo "==> PR already open for $CURRENT_BRANCH: $EXISTING_PR_URL"
+  PR_NUMBER="$(basename "$EXISTING_PR_URL")"
+  request_pr_triggered_review "$PR_NUMBER" "$PUSHED_HEAD_SHA"
   if [ "$AUTO_MERGE" = true ]; then
-    PR_NUMBER="$(basename "$EXISTING_PR_URL")"
     ORPHAN_PR_URL="$EXISTING_PR_URL"
     ORPHAN_PR_NUMBER="$PR_NUMBER"
     run_issue_claim_preflight "existing PR #$PR_NUMBER" --pr-number "$PR_NUMBER"
@@ -777,6 +960,7 @@ touchstone_emit_event pr_opened \
 
 run_pr_body_protocol_preflight "new PR #$ORPHAN_PR_NUMBER" "$ORPHAN_PR_NUMBER"
 run_advisory_review_at_pr_open "$ORPHAN_PR_NUMBER" "$BASE_BRANCH"
+request_pr_triggered_review "$ORPHAN_PR_NUMBER" "$PUSHED_HEAD_SHA"
 
 if [ -n "$DRAFT_FLAG" ]; then
   echo "    Opened as draft. Mark ready on github.com when ready to merge."
