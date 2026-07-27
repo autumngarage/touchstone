@@ -286,6 +286,8 @@ assert "allows ordinary 'git push origin main'" "0" \
 #     → allowed (the hook should be specific to push)
 assert "ignores --no-verify on non-push commands" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "echo --no-verify is a flag")")"
+assert "allows ordinary push after unrelated --no-verify argument" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "echo --no-verify; git push origin main")")"
 
 # 11. Documentation and issue bodies may quote the protected command. Text
 # inside another command's argument is not an executable push segment.
@@ -306,6 +308,8 @@ assert "blocks bypass push in a grouped command" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "{ git push --no-verify origin feat/test; }")")"
 assert "blocks bypass push after nested control prefixes" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "while ! git push --no-verify origin feat/test; do sleep 1; done")")"
+assert "blocks bypass push in a parenthesized command" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "(git push --no-verify origin feat/test)")")"
 assert "blocks sudo-wrapped bypass push" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "sudo git push --no-verify origin feat/test")")"
 assert "blocks nice-wrapped bypass push" "2" \
@@ -361,6 +365,12 @@ assert "allows bypass prose in a heredoc body" "0" \
 HEREDOC_THEN_PUSH_COMMAND="$(printf '%s\n' "cat > instructions.md <<'EOF'" "ordinary prose" "EOF" "git push --no-verify origin main")"
 assert "blocks executable bypass push after a heredoc" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "$HEREDOC_THEN_PUSH_COMMAND")")"
+COMMENTED_HEREDOC_THEN_PUSH_COMMAND="$(printf '%s\n' "# example <<EOF" "git push --no-verify origin main")"
+assert "ignores a commented heredoc lookalike before a bypass push" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$COMMENTED_HEREDOC_THEN_PUSH_COMMAND")")"
+QUOTED_HEREDOC_THEN_PUSH_COMMAND="$(printf '%s\n' "printf '%s\n' '<<EOF'" "git push --no-verify origin main")"
+assert "ignores a quoted heredoc lookalike before a bypass push" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$QUOTED_HEREDOC_THEN_PUSH_COMMAND")")"
 
 # 13. Emergency audit evidence belongs to the command runner's workdir, not
 # the driver session cwd. Cover absolute and relative workdir forms.
@@ -495,6 +505,12 @@ EXIT_SUBSTITUTION_SCOPE=0
 printf '%s' "$SUBSTITUTION_SCOPE_JSON" \
   | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_SUBSTITUTION_SCOPE=$?
 assert "blocks unquoted command-substitution push with emergency override" "2" "$EXIT_SUBSTITUTION_SCOPE"
+
+UNRELATED_SUBSTITUTION_JSON="$(mkjson 'echo "$(date)"; git push --no-verify origin feat/test' "$TMPDIR")"
+EXIT_UNRELATED_SUBSTITUTION=0
+printf '%s' "$UNRELATED_SUBSTITUTION_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_UNRELATED_SUBSTITUTION=$?
+assert "allows emergency push after unrelated command substitution" "0" "$EXIT_UNRELATED_SUBSTITUTION"
 
 # 14. The bypass must fail closed when required audit evidence cannot be
 # persisted. A file at the directory path makes mkdir deterministic.

@@ -70,7 +70,13 @@ shell_segments() {
           if (char == "\"" || char == "\047") {
             quote = char
             segment = segment char
-          } else if (char == ";" || char == "&" || char == "|" || char == "\n") {
+          } else if (char == "(") {
+            group_depth++
+            segment = segment char
+          } else if (char == ")" && group_depth > 0) {
+            group_depth--
+            segment = segment char
+          } else if (group_depth == 0 && (char == ";" || char == "&" || char == "|" || char == "\n")) {
             emit()
           } else {
             segment = segment char
@@ -144,13 +150,45 @@ without_heredoc_bodies() {
       }
 
       print line
-      opener = line
-      if (match(opener, /<<-?[[:space:]]*["\047]?[A-Za-z_][A-Za-z0-9_]*["\047]?/)) {
-        token = substr(opener, RSTART, RLENGTH)
-        strip_tabs = token ~ /^<<-/
-        sub(/^<<-?[[:space:]]*/, "", token)
-        gsub(/["\047]/, "", token)
-        heredoc_delimiter = token
+      quote = ""
+      escaped = 0
+      for (i = 1; i <= length(line); i++) {
+        char = substr(line, i, 1)
+        if (escaped) {
+          escaped = 0
+        } else if (char == "\\" && quote != "\047") {
+          escaped = 1
+        } else if (quote != "") {
+          if (char == quote) {
+            quote = ""
+          }
+        } else if (char == "\"" || char == "\047") {
+          quote = char
+        } else if (char == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[[:space:];|&()]/)) {
+          break
+        } else if (char == "<" && substr(line, i + 1, 1) == "<") {
+          j = i + 2
+          strip_tabs = substr(line, j, 1) == "-"
+          if (strip_tabs) {
+            j++
+          }
+          while (substr(line, j, 1) ~ /[[:space:]]/) {
+            j++
+          }
+          delimiter_quote = substr(line, j, 1)
+          if (delimiter_quote == "\"" || delimiter_quote == "\047") {
+            j++
+          }
+          token = ""
+          while (substr(line, j, 1) ~ /[A-Za-z0-9_]/) {
+            token = token substr(line, j, 1)
+            j++
+          }
+          if (token != "") {
+            heredoc_delimiter = token
+          }
+          break
+        }
       }
     }
   '
@@ -182,6 +220,9 @@ shell_words() {
           if (char == "\"" || char == "\047") {
             quote = char
             token_started = 1
+          } else if (char == "(" || char == ")") {
+            emit()
+            print char
           } else if (char ~ /[[:space:]]/) {
             emit()
           } else {
@@ -216,26 +257,6 @@ segment_has_bypass_words() {
     elif [ "$seen_push" = "false" ] && [ "$word" = "push" ]; then
       seen_push=true
     elif [ "$seen_push" = "true" ] && [ "$word" = "--no-verify" ]; then
-      return 0
-    fi
-  done < <(printf '%s' "$segment" | shell_words)
-
-  return 1
-}
-
-segment_has_git_push_words() {
-  local segment="$1"
-  local word=""
-  local seen_git=false
-
-  while IFS= read -r word; do
-    if [ "$seen_git" = "false" ]; then
-      case "$word" in
-        git | */git)
-          seen_git=true
-          ;;
-      esac
-    elif [ "$word" = "push" ]; then
       return 0
     fi
   done < <(printf '%s' "$segment" | shell_words)
@@ -294,16 +315,19 @@ segment_cd_target() {
 
 segment_runs_bypass_push() {
   local segment="$1"
+  local segment_executable=""
   local protected_push='git([^;&|)]*)[[:space:]]+push([^;&|)]*)--no-verify'
 
-  if [ "$command_nested_protected" = "true" ]; then
+  if [ "$command_dynamic_protected" = "true" ]; then
     push_context="nested"
     return 0
   fi
 
+  segment_executable="$(printf '%s' "$segment" | without_single_quoted_literals)"
+
   if segment_has_bypass_words "$segment"; then
-    if [ "$command_has_substitution" = "true" ] || printf '%s' "$segment" \
-      | grep -qE '^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(\(\))?[[:space:]]*\{'; then
+    if printf '%s' "$segment_executable" \
+      | grep -qE '(^|[^\\])\$\(|(^|[^\\])`|^[[:space:]]*\(|^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(\(\))?[[:space:]]*\{'; then
       push_context="nested"
     else
       push_context="direct"
@@ -311,16 +335,12 @@ segment_runs_bypass_push() {
     return 0
   fi
 
-  # The protected flag may reach push through variable expansion. If the tool
-  # call contains the literal anywhere and executes a push, require disclosure
-  # rather than trying to evaluate shell data flow.
-  if segment_has_git_push_words "$segment" \
-    && printf '%s' "$command" | grep -q -- '--no-verify'; then
-    if [ "$command_has_substitution" = "true" ]; then
-      push_context="nested"
-    else
-      push_context="direct"
-    fi
+  if printf '%s' "$segment_executable" \
+      | grep -qE '(^|[^\\])\$\(|(^|[^\\])`' \
+    && printf '%s' "$segment_executable" \
+      | tr '\n' ' ' \
+      | grep -qE 'git.*push.*--no-verify'; then
+    push_context="nested"
     return 0
   fi
 
@@ -339,8 +359,7 @@ push_segment=""
 push_context=""
 preceding_cd=""
 ambiguous_cd_scope=false
-command_has_substitution=false
-command_nested_protected=false
+command_dynamic_protected=false
 command_sets_cdpath=false
 cd_chain_proven=false
 command_executable_text="$(printf '%s' "$command" | without_single_quoted_literals)"
@@ -359,20 +378,11 @@ if printf '%s' "$command_executable_text" \
   cd_chain_proven=true
 fi
 if printf '%s' "$command_executable_text" \
-  | grep -qE '(^|[^\\])\$\(|(^|[^\\])`'; then
-  command_has_substitution=true
-  if printf '%s' "$command_executable_text" \
-    | tr '\n' ' ' \
-    | grep -qE 'git.*push.*--no-verify'; then
-    command_nested_protected=true
-  fi
-fi
-if printf '%s' "$command_executable_text" \
     | grep -qE '(^|[^\\])\$[{A-Za-z_]' \
   && printf '%s' "$command_executable_text" | grep -qE 'git([^[:alnum:]_]|$)' \
   && printf '%s' "$command_executable_text" | grep -qE 'push([^[:alnum:]_]|$)' \
   && printf '%s' "$command_executable_text" | grep -q -- '--no-verify'; then
-  command_nested_protected=true
+  command_dynamic_protected=true
 fi
 while IFS= read -r segment; do
   cd_target="$(segment_cd_target "$segment")"
