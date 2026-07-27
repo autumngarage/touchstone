@@ -321,6 +321,8 @@ LINE_CONTINUATION_COMMAND+=$'\n'
 LINE_CONTINUATION_COMMAND+="push --no-verify origin feat/test"
 assert "blocks bypass push across a line continuation" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "$LINE_CONTINUATION_COMMAND")")"
+assert "blocks bypass flag supplied through variable expansion" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'flag=--no-verify; git push "$flag" origin feat/test')")"
 
 # Nested executable contexts must not turn literal-looking text into a bypass.
 assert "blocks bypass push in command substitution" "2" \
@@ -454,6 +456,23 @@ EXIT_SCOPED_CD=0
 printf '%s' "$SCOPED_CD_JSON" \
   | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_SCOPED_CD=$?
 assert "blocks cd whose opening subshell is in an earlier segment" "2" "$EXIT_SCOPED_CD"
+
+CDPATH_PARENT="$(mktemp -d -t touchstone-cdpath-parent.XXXXXX)"
+CDPATH_TARGET="$CDPATH_PARENT/cdpath-target"
+mkdir -p "$CDPATH_TARGET"
+git -C "$CDPATH_TARGET" init --quiet --initial-branch=main
+CDPATH_JSON="$(mkjson "cd cdpath-target && git push --no-verify origin feat/test" "$TMPDIR")"
+EXIT_CDPATH=0
+printf '%s' "$CDPATH_JSON" \
+  | CDPATH="$CDPATH_PARENT" TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_CDPATH=$?
+assert "blocks relative cd when inherited CDPATH can redirect it" "2" "$EXIT_CDPATH"
+rm -rf "$CDPATH_PARENT"
+
+LOCAL_CDPATH_JSON="$(mkjson "CDPATH=$CDPATH_PARENT; cd cdpath-target && git push --no-verify origin feat/test" "$TMPDIR")"
+EXIT_LOCAL_CDPATH=0
+printf '%s' "$LOCAL_CDPATH_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_LOCAL_CDPATH=$?
+assert "blocks relative cd when command sets CDPATH" "2" "$EXIT_LOCAL_CDPATH"
 
 SUBSTITUTION_SCOPE_JSON="$(mkjson "echo \$(cd $EMERGENCY_TARGET && git push --no-verify origin feat/test)" "$TMPDIR")"
 EXIT_SUBSTITUTION_SCOPE=0

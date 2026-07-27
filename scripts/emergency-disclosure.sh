@@ -191,6 +191,26 @@ segment_has_bypass_words() {
   return 1
 }
 
+segment_has_git_push_words() {
+  local segment="$1"
+  local word=""
+  local seen_git=false
+
+  while IFS= read -r word; do
+    if [ "$seen_git" = "false" ]; then
+      case "$word" in
+        git | */git)
+          seen_git=true
+          ;;
+      esac
+    elif [ "$word" = "push" ]; then
+      return 0
+    fi
+  done < <(printf '%s' "$segment" | shell_words)
+
+  return 1
+}
+
 segment_has_shell_evaluator() {
   local segment="$1"
   local word=""
@@ -259,6 +279,19 @@ segment_runs_bypass_push() {
     return 0
   fi
 
+  # The protected flag may reach push through variable expansion. If the tool
+  # call contains the literal anywhere and executes a push, require disclosure
+  # rather than trying to evaluate shell data flow.
+  if segment_has_git_push_words "$segment" \
+    && printf '%s' "$command" | grep -q -- '--no-verify'; then
+    if [ "$command_has_substitution" = "true" ]; then
+      push_context="nested"
+    else
+      push_context="direct"
+    fi
+    return 0
+  fi
+
   # Shell -c and eval turn a quoted argument into executable input, including
   # when an execution wrapper appears before the evaluator.
   if segment_has_shell_evaluator "$segment" \
@@ -276,7 +309,12 @@ preceding_cd=""
 ambiguous_cd_scope=false
 command_has_substitution=false
 command_nested_protected=false
+command_sets_cdpath=false
 command_executable_text="$(printf '%s' "$command" | without_single_quoted_literals)"
+if printf '%s' "$command_executable_text" \
+  | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?CDPATH='; then
+  command_sets_cdpath=true
+fi
 if printf '%s' "$command_executable_text" | grep -qE '\(' \
   && printf '%s' "$command_executable_text" \
     | grep -qE '(^|[;&|()[:space:]])cd[[:space:]]+'; then
@@ -362,6 +400,10 @@ if [ -n "$preceding_cd" ]; then
   if printf '%s' "$preceding_cd" | grep -qE '^/'; then
     push_cwd="$preceding_cd"
   else
+    if [ -n "${CDPATH:-}" ] || [ "$command_sets_cdpath" = "true" ]; then
+      echo "emergency-disclosure: cannot safely resolve relative cd with CDPATH; bypass blocked" >&2
+      exit 2
+    fi
     push_cwd="$push_cwd/$preceding_cd"
   fi
 fi
