@@ -223,6 +223,18 @@ without_heredoc_bodies() {
           if (char == quote) {
             quote = ""
           }
+        } else if (arithmetic_depth > 0) {
+          if (char == "(") {
+            arithmetic_depth++
+          } else if (char == ")") {
+            arithmetic_depth--
+          }
+        } else if (char == "$" && substr(line, i + 1, 2) == "((") {
+          arithmetic_depth = 2
+          i += 2
+        } else if (char == "(" && substr(line, i + 1, 1) == "(") {
+          arithmetic_depth = 2
+          i++
         } else if (char == "\"" || char == "\047") {
           quote = char
         } else if (char == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[[:space:];|&()]/)) {

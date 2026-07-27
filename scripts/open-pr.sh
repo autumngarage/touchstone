@@ -338,7 +338,7 @@ request_pr_triggered_review() {
     echo "ERROR: failed to inspect prior GitHub Codex review requests for PR #$pr_number." >&2
     return 1
   fi
-  if printf '%s\n' "$comments" | grep -Fq "$marker"; then
+  if grep -Fqx "$marker" <<<"$comments"; then
     echo "==> GitHub Codex review already requested for head $head_sha."
     return 0
   fi

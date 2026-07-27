@@ -317,6 +317,21 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Case 8b: large trailing comment text preserves request idempotency"
+reset_case
+REQUEST_PADDING="$(head -c 131072 /dev/zero | tr '\0' x)"
+OUT="$TEST_DIR/request-idempotent-large.out"
+GH_EXISTING_REQUEST_BODY="$EXISTING_REQUEST_BODY"$'\n'"$REQUEST_PADDING" run_open_pr "$OUT"
+if grep -q "GitHub Codex review already requested for head $REQUEST_HEAD" "$OUT" \
+  && [ ! -f "$TEST_DIR/comments" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a large existing comment payload should not duplicate the request" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 9: request inspection failure stops before merge waiting"
 reset_case
 OUT="$TEST_DIR/request-inspection-failure.out"

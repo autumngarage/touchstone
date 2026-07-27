@@ -297,6 +297,12 @@ assert "allows quoted bypass text in another command's argument" "0" \
 # 12. A real push later in a compound command must still be detected.
 assert "blocks executable bypass segment after another command" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "printf 'ready' && git push --no-verify origin feat/test")")"
+ARITHMETIC_SHIFT_THEN_PUSH_COMMAND="$(printf '%s\n' 'echo $((1 << 2))' 'git push --no-verify origin feat/test')"
+assert "does not treat arithmetic left shift as a heredoc opener" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$ARITHMETIC_SHIFT_THEN_PUSH_COMMAND")")"
+ARITHMETIC_COMMAND_THEN_PUSH="$(printf '%s\n' '((value = 1 << 2))' 'git push --no-verify origin feat/test')"
+assert "does not treat arithmetic command shift as a heredoc opener" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$ARITHMETIC_COMMAND_THEN_PUSH")")"
 
 # Shell reserved words and execution prefixes remain part of the segment after
 # control-operator splitting. They must not hide a push in command position.
