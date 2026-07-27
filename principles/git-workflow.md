@@ -249,13 +249,25 @@ Git common directory, so it never dirties the worker branch. One active job is
 allowed per worker. Use `touchstone worker takeover --worktree
 ../project-fix` to stop that job without deleting the worktree or branch.
 
-Detaching does not create a second review or merge implementation: the
-background runner invokes the project-local `open-pr.sh --auto-merge`. It can
-wait for PR-visible review and merge a clean head. If review returns actionable
-feedback, the job fails visibly and preserves the worktree for a driving agent
-to take over, fix, test, reply, resolve, and relaunch. Touchstone does not
-silently invoke an unspecified coding agent or treat unresolved feedback as
-clean.
+The default detached job is wait-only: it invokes the project-local
+`open-pr.sh --auto-merge`, waits for PR-visible review, and merges a clean head.
+Actionable feedback stops the job and preserves the worktree for takeover.
+
+Use `--review-fix` when a bounded autonomous repair loop is authorized:
+
+```bash
+touchstone worker ship --worktree ../project-fix --detach --review-fix \
+  --max-fix-iterations 3 --max-fix-minutes 45
+```
+
+This mode invokes the subscription-backed Codex CLI to edit files, while
+Touchstone retains validation, explicit staging, commit, push, thread reply,
+thread resolution, and merge authority. Every iteration is tied to the full PR
+head OID and persisted thread IDs. Duplicate delivery resumes idempotently; a
+stale head, ambiguous feedback, failed validation, unavailable authorization,
+worker failure, or exhausted budget moves the job to `needs-attention` without
+deleting its worktree, branch, checkpoints, or log. Resume manually with the
+takeover command printed by `touchstone worker status --show-log`.
 
 Do not substitute `rm -rf <worktree-dir>` for `git worktree remove <path>`.
 Deleting only the directory can leave stale Git worktree metadata behind; Git

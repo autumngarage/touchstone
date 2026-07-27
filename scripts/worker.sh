@@ -11,6 +11,8 @@ TOUCHSTONE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$TOUCHSTONE_ROOT/lib/worker-state.sh"
 # shellcheck source=../lib/worker-ship-job.sh
 source "$TOUCHSTONE_ROOT/lib/worker-ship-job.sh"
+# shellcheck source=../lib/worker-review-fix.sh
+source "$TOUCHSTONE_ROOT/lib/worker-review-fix.sh"
 if [ -f "$TOUCHSTONE_ROOT/lib/events.sh" ]; then
   # shellcheck source=../lib/events.sh
   source "$TOUCHSTONE_ROOT/lib/events.sh"
@@ -32,7 +34,9 @@ usage() {
 Usage:
   touchstone worker spawn --task "<description>" --type fix|feat|chore|refactor|docs [--json]
   touchstone worker status --worktree <path> [--json] [--show-log] [--log-lines <n>]
-  touchstone worker ship --worktree <path> [--detach] [--cleanup] [--events-json <path>]
+  touchstone worker ship --worktree <path> [--detach] [--review-fix] [--cleanup]
+                         [--max-fix-iterations <n>] [--max-fix-minutes <n>]
+                         [--validation-command <command>] [--events-json <path>]
   touchstone worker takeover --worktree <path> [--force]
   touchstone worker abandon --worktree <path> [--dry-run] [--force]
   touchstone worker list [--repo <path>] [--json]
@@ -338,6 +342,8 @@ cmd_status() {
 
 cmd_ship_runner() {
   local job_dir="" worktree_path="" cleanup=false events_json="" child_pid="" exit_code=0 branch=""
+  local review_fix=false max_fix_iterations=3 max_fix_minutes=45 validation_command=""
+  local deadline_epoch="" reason=""
   local args
   args=(--auto-merge)
 
@@ -361,6 +367,22 @@ cmd_ship_runner() {
           return 2
         }
         events_json="$2"
+        shift 2
+        ;;
+      --review-fix)
+        review_fix=true
+        shift
+        ;;
+      --max-fix-iterations)
+        max_fix_iterations="$2"
+        shift 2
+        ;;
+      --max-fix-minutes)
+        max_fix_minutes="$2"
+        shift 2
+        ;;
+      --validation-command)
+        validation_command="$2"
         shift 2
         ;;
       *)
@@ -404,6 +426,26 @@ cmd_ship_runner() {
     worktree_path="$worktree_path" branch="$branch" pid="$$"
   touchstone_ship_write "$job_dir" status running
   touchstone_ship_write "$job_dir" reason ""
+  if [ "$review_fix" = true ]; then
+    deadline_epoch="$(touchstone_ship_read "$job_dir" deadline-epoch)"
+    case "$deadline_epoch" in
+      '' | *[!0-9]*)
+        deadline_epoch="$(( $(date +%s) + max_fix_minutes * 60 ))"
+        touchstone_ship_write "$job_dir" deadline-epoch "$deadline_epoch"
+        ;;
+    esac
+    if touchstone_review_fix_run \
+      "$job_dir" "$worktree_path" "$max_fix_iterations" "$deadline_epoch" \
+      "$validation_command" "$cleanup"; then
+      finish_runner succeeded 0
+      exit 0
+    else
+      exit_code=$?
+    fi
+    reason="${TOUCHSTONE_REVIEW_FIX_REASON:-review-fix-needs-attention}"
+    finish_runner needs-attention "${exit_code:-1}" "$reason"
+    exit "${exit_code:-1}"
+  fi
   if [ "$cleanup" = true ]; then
     args+=(--cleanup-worktree)
   fi
@@ -430,7 +472,8 @@ cmd_ship_runner() {
 }
 
 cmd_ship() {
-  local worktree_path="" cleanup=false events_json="" detach=false
+  local worktree_path="" cleanup=false events_json="" detach=false review_fix=false
+  local max_fix_iterations=3 max_fix_minutes=45 validation_command=""
   local job_dir="" runner_pid="" branch="" started_at="" args runner_args
   args=(--auto-merge)
 
@@ -448,6 +491,46 @@ cmd_ship() {
       --detach)
         detach=true
         shift
+        ;;
+      --review-fix)
+        review_fix=true
+        shift
+        ;;
+      --max-fix-iterations)
+        [ "$#" -ge 2 ] || {
+          echo "ERROR: --max-fix-iterations requires a value." >&2
+          return 2
+        }
+        case "$2" in
+          '' | *[!0-9]* | 0)
+            echo "ERROR: --max-fix-iterations must be a positive integer." >&2
+            return 2
+            ;;
+        esac
+        max_fix_iterations="$2"
+        shift 2
+        ;;
+      --max-fix-minutes)
+        [ "$#" -ge 2 ] || {
+          echo "ERROR: --max-fix-minutes requires a value." >&2
+          return 2
+        }
+        case "$2" in
+          '' | *[!0-9]* | 0)
+            echo "ERROR: --max-fix-minutes must be a positive integer." >&2
+            return 2
+            ;;
+        esac
+        max_fix_minutes="$2"
+        shift 2
+        ;;
+      --validation-command)
+        [ "$#" -ge 2 ] || {
+          echo "ERROR: --validation-command requires a value." >&2
+          return 2
+        }
+        validation_command="$2"
+        shift 2
         ;;
       --cleanup)
         cleanup=true
@@ -481,6 +564,10 @@ cmd_ship() {
     return 1
   }
   worktree_path="$(touchstone_ship_normalize_worktree_path "$worktree_path")"
+  if [ "$review_fix" = true ] && [ "$detach" != true ]; then
+    echo "ERROR: --review-fix requires --detach." >&2
+    return 2
+  fi
   if [ "$cleanup" = true ]; then
     args+=(--cleanup-worktree)
   fi
@@ -518,12 +605,27 @@ cmd_ship() {
   touchstone_ship_write "$job_dir" reason ""
   touchstone_ship_write "$job_dir" pid ""
   touchstone_ship_write "$job_dir" child-pid ""
+  if [ "$review_fix" = true ]; then
+    touchstone_ship_write "$job_dir" deadline-epoch "$(( $(date +%s) + max_fix_minutes * 60 ))"
+    touchstone_ship_write "$job_dir" review-fix-iteration 0
+    touchstone_ship_write "$job_dir" mode autonomous-review-fix
+  else
+    touchstone_ship_write "$job_dir" deadline-epoch ""
+    touchstone_ship_write "$job_dir" review-fix-iteration ""
+    touchstone_ship_write "$job_dir" mode wait-only
+  fi
   touchstone_ship_write "$job_dir" branch "$branch"
   touchstone_ship_write "$job_dir" worktree-path "$worktree_path"
   touchstone_ship_write "$job_dir" status starting
   rm -f "$job_dir/active/claimed-epoch"
 
   runner_args=(_ship-run --job-dir "$job_dir" --worktree "$worktree_path")
+  if [ "$review_fix" = true ]; then
+    runner_args+=(--review-fix)
+    runner_args+=(--max-fix-iterations "$max_fix_iterations")
+    runner_args+=(--max-fix-minutes "$max_fix_minutes")
+    [ -n "$validation_command" ] && runner_args+=(--validation-command "$validation_command")
+  fi
   [ "$cleanup" = true ] && runner_args+=(--cleanup)
   [ -n "$events_json" ] && runner_args+=(--events-json "$events_json")
   nohup bash "$TOUCHSTONE_ROOT/scripts/worker.sh" "${runner_args[@]}" \
@@ -583,11 +685,12 @@ cmd_takeover() {
   status="$(touchstone_ship_read "$job_dir" status)"
   pid="$(touchstone_ship_read "$job_dir" pid)"
   case "$status" in
-    starting | running)
+    starting | running | review-waiting | fixing)
       if ! touchstone_ship_pid_is_runner "$job_dir" "$pid"; then
         touchstone_ship_refresh "$job_dir"
         status="$(touchstone_ship_read "$job_dir" status)"
-        if [ "$status" != "starting" ] && [ "$status" != "running" ]; then
+        if [ "$status" != "starting" ] && [ "$status" != "running" ] \
+          && [ "$status" != "review-waiting" ] && [ "$status" != "fixing" ]; then
           echo "No active detached ship job exists for $worktree_path."
           return 0
         fi
@@ -614,6 +717,14 @@ cmd_takeover() {
           rmdir "$job_dir/active" 2>/dev/null || true
         fi
       fi
+      ;;
+    needs-attention)
+      rmdir "$job_dir/active" 2>/dev/null || true
+      touchstone_emit_event worker_ship_takeover worktree_path="$worktree_path" pid="$pid"
+      echo "Autonomous review-fix job needs attention."
+      echo "Reason: $(touchstone_ship_read "$job_dir" reason)"
+      echo "Worktree preserved for takeover: $worktree_path"
+      return 0
       ;;
     *)
       echo "No active detached ship job exists for $worktree_path."
@@ -723,7 +834,7 @@ cmd_abandon() {
     touchstone_ship_refresh "$ship_job_dir"
     ship_status="$(touchstone_ship_read "$ship_job_dir" status)"
     case "$ship_status" in
-      starting | running)
+      starting | running | review-waiting | fixing)
         echo "ERROR: refusing to abandon $worktree_path while detached shipping is active." >&2
         echo "       Run: touchstone worker takeover --worktree '$worktree_path'" >&2
         return 1

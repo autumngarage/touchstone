@@ -139,7 +139,7 @@ touchstone_ship_refresh() {
         touchstone_ship_mark_stale "$job_dir"
       fi
       ;;
-    running)
+    running | review-waiting | fixing)
       pid="$(touchstone_ship_read "$job_dir" pid)"
       if ! touchstone_ship_pid_is_runner "$job_dir" "$pid"; then
         touchstone_ship_mark_stale "$job_dir"
@@ -168,6 +168,7 @@ touchstone_ship_refresh() {
 touchstone_ship_json() {
   local job_dir="$1" log_lines="${2:-0}"
   local status pid exit_code started_at finished_at reason log_path log_tail=""
+  local mode iteration deadline_epoch
 
   [ -d "$job_dir" ] || {
     printf 'null'
@@ -181,6 +182,9 @@ touchstone_ship_json() {
   started_at="$(touchstone_ship_read "$job_dir" started-at)"
   finished_at="$(touchstone_ship_read "$job_dir" finished-at)"
   reason="$(touchstone_ship_read "$job_dir" reason)"
+  mode="$(touchstone_ship_read "$job_dir" mode)"
+  iteration="$(touchstone_ship_read "$job_dir" review-fix-iteration)"
+  deadline_epoch="$(touchstone_ship_read "$job_dir" deadline-epoch)"
   log_path="$job_dir/ship.log"
   case "$pid" in
     '' | *[!0-9]*) pid="" ;;
@@ -204,6 +208,12 @@ touchstone_ship_json() {
   json_field finished_at "$finished_at"
   printf ','
   json_field reason "$reason"
+  printf ','
+  json_field mode "$mode"
+  printf ','
+  json_number_or_null_field review_fix_iteration "$iteration"
+  printf ','
+  json_number_or_null_field deadline_epoch "$deadline_epoch"
   printf ','
   json_field log_path "$log_path"
   if [ "$log_lines" -gt 0 ]; then

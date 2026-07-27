@@ -1,0 +1,349 @@
+#!/usr/bin/env bash
+#
+# End-to-end fixtures for detached autonomous PR review repair.
+set -euo pipefail
+
+TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TEST_DIR="$(mktemp -d -t touchstone-test-worker-review-fix.XXXXXX)"
+trap '[ "${TOUCHSTONE_KEEP_TEST_DIR:-0}" = 1 ] || rm -rf "$TEST_DIR"' EXIT
+ERRORS=0
+
+fail() {
+  echo "FAIL: $*" >&2
+  ERRORS=$((ERRORS + 1))
+}
+
+assert_contains() {
+  local file="$1" pattern="$2"
+  if ! grep -qE "$pattern" "$file"; then
+    fail "expected $file to contain: $pattern"
+    [ -f "$file" ] && cat "$file" >&2
+  fi
+}
+
+wait_for_status() {
+  local worktree="$1" expected="$2" output="$3" attempts=0
+  while [ "$attempts" -lt 150 ]; do
+    "$TOUCHSTONE_ROOT/bin/touchstone" worker status \
+      --worktree "$worktree" --json >"$output"
+    grep -q "\"status\":\"$expected\"" "$output" && return 0
+    if grep -qE '"status":"(succeeded|failed|stopped|needs-attention)"' "$output"; then
+      return 1
+    fi
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  return 1
+}
+
+setup_fixture_repo() {
+  local repo="$1" origin="$2" branch="$3"
+  git init -q --bare "$origin"
+  git init -q -b main "$repo"
+  git -C "$repo" config user.name "Touchstone Test"
+  git -C "$repo" config user.email "touchstone@example.com"
+  mkdir -p "$repo/scripts"
+  printf 'original\n' >"$repo/target.txt"
+  cat >"$repo/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$(git rev-parse HEAD)" >>"$FAKE_OPEN_PR_LOG"
+if [ -f "$FAKE_THREAD_ACTIVE" ]; then
+  echo "review feedback blocks merge" >&2
+  exit 1
+fi
+printf 'merged\n' >"$FAKE_MERGED"
+EOF
+  chmod +x "$repo/scripts/open-pr.sh"
+  git -C "$repo" add target.txt scripts/open-pr.sh
+  git -C "$repo" commit -qm "fixture base"
+  git -C "$repo" remote add origin "$origin"
+  git -C "$repo" push -q -u origin main
+  git -C "$repo" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  git -C "$repo" branch "$branch"
+  git -C "$repo" push -q -u origin "$branch"
+}
+
+make_fake_gh() {
+  local bin_dir="$1"
+  mkdir -p "$bin_dir"
+  cat >"$bin_dir/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+command_name="${1:-}"
+subcommand="${2:-}"
+case "$command_name:$subcommand" in
+  "pr:list")
+    printf '77\n'
+    ;;
+  "pr:view")
+    if [ -f "${FAKE_STALE_NEXT:-/nonexistent}" ]; then
+      rm -f "$FAKE_STALE_NEXT"
+      printf '%040d\n' 0
+    else
+      git rev-parse HEAD
+    fi
+    ;;
+  "repo:view")
+    printf 'example/project\n'
+    ;;
+  "api:graphql")
+    args="$*"
+    if [[ "$args" == *reviewThreads* ]]; then
+      if [ -f "$FAKE_THREAD_ACTIVE" ]; then
+        printf '%s\ttarget.txt\t1\tfalse\tcodex\thttps://example.test/thread/%s\tReplace the original value with fixed.\\n' \
+          "$(cat "$FAKE_THREAD_ID")" "$(cat "$FAKE_THREAD_ID")"
+        [ "${FAKE_STALE_AFTER_THREADS:-0}" = 1 ] && : >"$FAKE_STALE_NEXT" || true
+      fi
+    elif [[ "$args" == *addPullRequestReviewThreadReply* ]]; then
+      printf 'reply\n' >>"$FAKE_REPLY_LOG"
+      : >"$FAKE_REPLIED"
+    elif [[ "$args" == *resolveReviewThread* ]]; then
+      printf 'resolve\n' >>"$FAKE_RESOLVE_LOG"
+      : >"$FAKE_RESOLVED"
+      if [ "${FAKE_REPLACE_THREAD:-0}" = 1 ] && [ ! -f "$FAKE_REPLACED" ]; then
+        printf 'thread-2\n' >"$FAKE_THREAD_ID"
+        : >"$FAKE_REPLACED"
+      else
+        rm -f "$FAKE_THREAD_ACTIVE"
+      fi
+    elif [[ "$args" == *"node(id:"* ]]; then
+      if [ -f "$FAKE_RESOLVED" ]; then
+        printf 'true\ttrue\n'
+      elif [ -f "$FAKE_REPLIED" ]; then
+        printf 'false\ttrue\n'
+      else
+        printf 'false\tfalse\n'
+      fi
+    else
+      echo "unexpected gh api request: $args" >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "unexpected gh request: $*" >&2
+    exit 1
+    ;;
+esac
+EOF
+  chmod +x "$bin_dir/gh"
+}
+
+make_fix_worker() {
+  local worker="$1"
+  cat >"$worker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+worktree="$1"
+result_file="$3"
+printf 'fixed\n' >>"$worktree/target.txt"
+{
+  printf 'TOUCHSTONE_REVIEW_FIX_FIXED\n'
+  case "$(basename "$0")" in
+    *ambiguous*) ;;
+    *) printf 'thread_id=%s\n' "$(cat "$FAKE_THREAD_ID")" ;;
+  esac
+} >"$result_file"
+EOF
+  chmod +x "$worker"
+}
+
+export FAKE_THREAD_ACTIVE="$TEST_DIR/thread-active"
+export FAKE_THREAD_ID="$TEST_DIR/thread-id"
+export FAKE_REPLY_LOG="$TEST_DIR/replies"
+export FAKE_RESOLVE_LOG="$TEST_DIR/resolves"
+export FAKE_REPLIED="$TEST_DIR/replied"
+export FAKE_RESOLVED="$TEST_DIR/resolved"
+export FAKE_REPLACED="$TEST_DIR/replaced"
+export FAKE_STALE_NEXT="$TEST_DIR/stale-next"
+export FAKE_OPEN_PR_LOG="$TEST_DIR/open-pr.log"
+export FAKE_MERGED="$TEST_DIR/merged"
+
+FAKE_BIN="$TEST_DIR/bin"
+make_fake_gh "$FAKE_BIN"
+export PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+
+echo "==> Case a: finding is fixed, pushed, replied, resolved, re-reviewed, and merged"
+REPO="$TEST_DIR/repo"
+ORIGIN="$TEST_DIR/origin.git"
+WORKTREE="$TEST_DIR/worktree"
+setup_fixture_repo "$REPO" "$ORIGIN" feat/review-fix
+git -C "$REPO" worktree add -q "$WORKTREE" feat/review-fix
+: >"$FAKE_THREAD_ACTIVE"
+printf 'thread-1\n' >"$FAKE_THREAD_ID"
+: >"$FAKE_REPLY_LOG"
+: >"$FAKE_RESOLVE_LOG"
+: >"$FAKE_OPEN_PR_LOG"
+FIX_WORKER="$TEST_DIR/fix-worker"
+make_fix_worker "$FIX_WORKER"
+EVENTS="$TEST_DIR/events.ndjson"
+STATUS="$TEST_DIR/status.json"
+TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$WORKTREE" \
+  --detach \
+  --review-fix \
+  --max-fix-iterations 2 \
+  --max-fix-minutes 2 \
+  --validation-command 'grep -qx fixed <(tail -n 1 target.txt)' \
+  --events-json "$EVENTS" >"$TEST_DIR/start.out"
+if ! wait_for_status "$WORKTREE" succeeded "$STATUS"; then
+  fail "autonomous review-fix did not merge successfully"
+  cat "$STATUS" >&2
+  SHIP_LOG="$(sed -n 's/.*"log_path":"\([^"]*\)".*/\1/p' "$STATUS")"
+  [ -f "$SHIP_LOG" ] && cat "$SHIP_LOG" >&2
+fi
+assert_contains "$STATUS" '"mode":"autonomous-review-fix"'
+assert_contains "$STATUS" '"review_fix_iteration":1'
+assert_contains "$EVENTS" '"event":"review_waiting"'
+assert_contains "$EVENTS" '"event":"fixing"'
+assert_contains "$EVENTS" '"event":"fix_pushed"'
+assert_contains "$EVENTS" '"event":"review_requested"'
+assert_contains "$EVENTS" '"event":"merged"'
+[ "$(wc -l <"$FAKE_REPLY_LOG" | tr -d ' ')" = 1 ] || fail "thread reply was not idempotent"
+[ "$(wc -l <"$FAKE_RESOLVE_LOG" | tr -d ' ')" = 1 ] || fail "thread resolution was not idempotent"
+[ "$(wc -l <"$FAKE_OPEN_PR_LOG" | tr -d ' ')" = 2 ] || fail "expected review gate to run twice"
+[ -f "$FAKE_MERGED" ] || fail "fixture PR did not merge"
+[ "$(git -C "$WORKTREE" rev-parse HEAD)" = "$(git --git-dir="$ORIGIN" rev-parse feat/review-fix)" ] \
+  || fail "fix commit was not pushed to the branch"
+
+echo "==> Case b: failed validation persists needs-attention and takeover preserves work"
+FAIL_WT="$TEST_DIR/fail-worktree"
+git -C "$REPO" branch feat/review-fail main
+git -C "$REPO" push -q origin feat/review-fail
+git -C "$REPO" worktree add -q "$FAIL_WT" feat/review-fail
+: >"$FAKE_THREAD_ACTIVE"
+printf 'thread-validation\n' >"$FAKE_THREAD_ID"
+rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED" "$FAKE_MERGED"
+TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$FAIL_WT" --detach --review-fix \
+  --validation-command false >/dev/null
+if ! wait_for_status "$FAIL_WT" needs-attention "$STATUS"; then
+  fail "failed validation did not enter needs-attention"
+fi
+assert_contains "$STATUS" '"reason":"validation-failed"'
+[ -n "$(git -C "$FAIL_WT" status --porcelain)" ] || fail "failed fix work was not preserved"
+"$TOUCHSTONE_ROOT/bin/touchstone" worker takeover \
+  --worktree "$FAIL_WT" >"$TEST_DIR/takeover.out"
+assert_contains "$TEST_DIR/takeover.out" 'needs attention'
+[ -d "$FAIL_WT" ] || fail "takeover removed needs-attention worktree"
+
+echo "==> Case c: ambiguous feedback result and stale heads fail closed"
+AMBIG_WT="$TEST_DIR/ambiguous-worktree"
+git -C "$REPO" branch feat/review-ambiguous main
+git -C "$REPO" push -q origin feat/review-ambiguous
+git -C "$REPO" worktree add -q "$AMBIG_WT" feat/review-ambiguous
+AMBIG_WORKER="$TEST_DIR/ambiguous-worker"
+make_fix_worker "$AMBIG_WORKER"
+: >"$FAKE_THREAD_ACTIVE"
+printf 'thread-ambiguous\n' >"$FAKE_THREAD_ID"
+rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED"
+TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$AMBIG_WORKER" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$AMBIG_WT" --detach --review-fix --validation-command : >/dev/null
+wait_for_status "$AMBIG_WT" needs-attention "$STATUS" \
+  || fail "ambiguous worker result did not enter needs-attention"
+assert_contains "$STATUS" '"reason":"ambiguous-worker-result"'
+
+STALE_WT="$TEST_DIR/stale-worktree"
+git -C "$REPO" branch feat/review-stale main
+git -C "$REPO" push -q origin feat/review-stale
+git -C "$REPO" worktree add -q "$STALE_WT" feat/review-stale
+git -C "$STALE_WT" config user.name "Touchstone Test"
+git -C "$STALE_WT" config user.email "touchstone@example.com"
+git -C "$STALE_WT" status --porcelain | cut -c4- | xargs -I{} rm -f "$STALE_WT/{}"
+: >"$FAKE_THREAD_ACTIVE"
+printf 'thread-stale\n' >"$FAKE_THREAD_ID"
+export FAKE_STALE_AFTER_THREADS=1
+TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$STALE_WT" --detach --review-fix --validation-command : >/dev/null
+wait_for_status "$STALE_WT" needs-attention "$STATUS" \
+  || fail "stale review head did not enter needs-attention"
+assert_contains "$STATUS" '"reason":"stale-review-head"'
+unset FAKE_STALE_AFTER_THREADS
+
+echo "==> Case d: a new thread after a fix exhausts the bounded iteration budget"
+BUDGET_WT="$TEST_DIR/budget-worktree"
+git -C "$REPO" branch feat/review-budget main
+git -C "$REPO" push -q origin feat/review-budget
+git -C "$REPO" worktree add -q "$BUDGET_WT" feat/review-budget
+: >"$FAKE_THREAD_ACTIVE"
+printf 'thread-budget-1\n' >"$FAKE_THREAD_ID"
+rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED" "$FAKE_REPLACED"
+export FAKE_REPLACE_THREAD=1
+TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$BUDGET_WT" --detach --review-fix \
+  --max-fix-iterations 1 --validation-command : >/dev/null
+wait_for_status "$BUDGET_WT" needs-attention "$STATUS" \
+  || fail "iteration budget exhaustion did not enter needs-attention"
+assert_contains "$STATUS" '"reason":"iteration-budget-exhausted"'
+unset FAKE_REPLACE_THREAD
+
+echo "==> Case e: restart checkpoint detects duplicate replies and resumes resolution"
+# shellcheck source=../lib/worker-state.sh
+source "$TOUCHSTONE_ROOT/lib/worker-state.sh"
+# shellcheck source=../lib/worker-ship-job.sh
+source "$TOUCHSTONE_ROOT/lib/worker-ship-job.sh"
+# shellcheck source=../lib/events.sh
+source "$TOUCHSTONE_ROOT/lib/events.sh"
+# shellcheck source=../lib/worker-review-fix.sh
+source "$TOUCHSTONE_ROOT/lib/worker-review-fix.sh"
+CHECKPOINT="$TEST_DIR/checkpoint"
+mkdir -p "$CHECKPOINT/review-fix"
+printf 'thread-restart\ttarget.txt\t1\tfalse\tcodex\turl\tbody\n' >"$CHECKPOINT/review-fix/threads.tsv"
+RESTART_HEAD="$(git -C "$WORKTREE" rev-parse HEAD)"
+touchstone_ship_write "$CHECKPOINT/review-fix" source-head "$(git -C "$WORKTREE" rev-parse HEAD~1)"
+touchstone_ship_write "$CHECKPOINT/review-fix" fix-head "$RESTART_HEAD"
+printf 'thread-restart\n' >"$FAKE_THREAD_ID"
+: >"$FAKE_REPLIED"
+rm -f "$FAKE_RESOLVED"
+BEFORE_REPLIES="$(wc -l <"$FAKE_REPLY_LOG" | tr -d ' ')"
+touchstone_review_fix_resume_checkpoint "$CHECKPOINT" "$WORKTREE" 77 "$RESTART_HEAD" \
+  || fail "restart checkpoint did not resume"
+AFTER_REPLIES="$(wc -l <"$FAKE_REPLY_LOG" | tr -d ' ')"
+[ "$BEFORE_REPLIES" = "$AFTER_REPLIES" ] || fail "restart duplicated an existing reply"
+[ ! -d "$CHECKPOINT/review-fix" ] || fail "restart checkpoint was not cleared"
+
+echo "==> Case f: the persisted wall-clock deadline terminates a stalled child"
+touchstone_ship_write "$CHECKPOINT" deadline-epoch "$(date +%s)"
+if touchstone_review_fix_run_child "$CHECKPOINT" sleep 5; then
+  fail "expired review-fix deadline did not stop the child"
+else
+  DEADLINE_EXIT=$?
+  [ "$DEADLINE_EXIT" -eq 124 ] || fail "deadline returned $DEADLINE_EXIT instead of 124"
+fi
+
+echo "==> Case g: default Codex worker rejects metered or unknown authentication"
+cat >"$FAKE_BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = login ] && [ "${2:-}" = status ]; then
+  echo "Logged in using an API key"
+  exit 0
+fi
+echo "unexpected Codex execution" >"$FAKE_CODEX_EXECUTED"
+EOF
+chmod +x "$FAKE_BIN/codex"
+printf 'brief\n' >"$TEST_DIR/auth-brief"
+export FAKE_CODEX_EXECUTED="$TEST_DIR/codex-executed"
+if touchstone_review_fix_invoke_worker \
+  "$WORKTREE" "$TEST_DIR/auth-brief" "$TEST_DIR/auth-result" \
+  >"$TEST_DIR/auth.out" 2>&1; then
+  fail "API-key Codex authentication was accepted"
+else
+  AUTH_EXIT=$?
+  [ "$AUTH_EXIT" -eq 126 ] || fail "API-key auth returned $AUTH_EXIT instead of 126"
+fi
+[ ! -f "$FAKE_CODEX_EXECUTED" ] || fail "Codex exec ran after metered authentication was rejected"
+assert_contains "$TEST_DIR/auth.out" 'requires a ChatGPT-authenticated Codex CLI'
+
+if [ "$ERRORS" -eq 0 ]; then
+  echo "==> PASS: autonomous review-fix is bounded, exact-head, durable, and idempotent"
+  exit 0
+fi
+
+echo "==> FAIL: $ERRORS autonomous review-fix assertion(s) failed" >&2
+exit 1
