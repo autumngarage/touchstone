@@ -357,6 +357,8 @@ assert "blocks nohup-wrapped bypass push" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "nohup git push --no-verify origin feat/test")")"
 assert "blocks bypass push after Git global options" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git --no-pager push --no-verify origin feat/test")")"
+assert "blocks a command-scoped Git push alias" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git -c alias.x=push x --no-verify origin feat/test")")"
 assert "blocks bypass push with a quoted git -C path" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'git -C "/tmp/repo with spaces" push --no-verify origin feat/test')")"
 LINE_CONTINUATION_COMMAND="git \\"
@@ -503,6 +505,19 @@ fi
 # command wrote no evidence.
 mkdir -p "$EMERGENCY_TARGET/.touchstone"
 : >"$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
+
+GIT_DIR_JSON="$(mkjson \
+  "GIT_DIR=$EMERGENCY_TARGET/.git git push --no-verify origin redirected" \
+  "$TMPDIR")"
+EXIT_GIT_DIR=0
+printf '%s' "$GIT_DIR_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_GIT_DIR=$?
+assert "blocks emergency push with command-scoped GIT_DIR" "2" "$EXIT_GIT_DIR"
+EXIT_INHERITED_GIT_DIR=0
+printf '%s' "$(mkjson "git push --no-verify origin redirected" "$TMPDIR")" \
+  | GIT_DIR="$EMERGENCY_TARGET/.git" TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" \
+    >/dev/null 2>&1 || EXIT_INHERITED_GIT_DIR=$?
+assert "blocks emergency push with inherited GIT_DIR" "2" "$EXIT_INHERITED_GIT_DIR"
 
 RELATIVE_TARGET_PARENT="$(dirname "$EMERGENCY_TARGET")"
 RELATIVE_TARGET_NAME="$(basename "$EMERGENCY_TARGET")"

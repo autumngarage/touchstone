@@ -638,6 +638,7 @@ preceding_cd=""
 ambiguous_cd_scope=false
 command_dynamic_protected=false
 command_sets_cdpath=false
+command_sets_git_context=false
 cd_chain_proven=false
 cd_count=0
 protected_aliases=""
@@ -646,6 +647,11 @@ command_executable_text="$(printf '%s' "$command" | without_shell_comments | wit
 if printf '%s' "$command_executable_text" \
   | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?CDPATH='; then
   command_sets_cdpath=true
+fi
+if [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ] || [ -n "${GIT_COMMON_DIR:-}" ] \
+  || printf '%s' "$command_executable_text" \
+  | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)='; then
+  command_sets_git_context=true
 fi
 if printf '%s' "$command_executable_text" | grep -qE '\(' \
   && printf '%s' "$command_executable_text" \
@@ -734,7 +740,7 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
     candidate_segment="${non_push_candidate_segments[$candidate_index]}"
     candidate_subcommand="${non_push_candidate_subcommands[$candidate_index]}"
     if [ "$cd_count" -gt 0 ] \
-      || printf '%s' "$candidate_segment" | grep -qE '(^|[[:space:]])-C([[:space:]]|$)'; then
+      || printf '%s' "$candidate_segment" | grep -qE '(^|[[:space:]])(-C|-c)([[:space:]]|$)'; then
       # Alias configuration is repository-scoped. A composed directory context
       # cannot be confirmed here without executing the shell, so fail closed.
       push_segment="$candidate_segment"
@@ -782,8 +788,9 @@ if [ "$multiple_protected_pushes" = "true" ]; then
   exit 2
 fi
 
-if [ "$push_context" != "direct" ] || [ "$ambiguous_cd_scope" = "true" ]; then
-  echo "emergency-disclosure: cannot safely resolve nested or subshell push context; bypass blocked" >&2
+if [ "$push_context" != "direct" ] || [ "$ambiguous_cd_scope" = "true" ] \
+  || [ "$command_sets_git_context" = "true" ]; then
+  echo "emergency-disclosure: cannot safely resolve protected push repository context; bypass blocked" >&2
   exit 2
 fi
 
