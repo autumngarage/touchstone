@@ -57,9 +57,26 @@ set -euo pipefail
 
 target="$PWD"
 subcommand=""
+command_alias=""
 bypass=0
 args=("$@")
 index=0
+
+if [ "${GIT_CONFIG_COUNT:-0}" -gt 0 ] 2>/dev/null; then
+  config_index=0
+  while [ "$config_index" -lt "$GIT_CONFIG_COUNT" ]; do
+    key_name="GIT_CONFIG_KEY_$config_index"
+    value_name="GIT_CONFIG_VALUE_$config_index"
+    config_key="${!key_name:-}"
+    config_value="${!value_name:-}"
+    case "$config_key=$config_value" in
+      alias.*=push)
+        command_alias="${config_key#alias.}"
+        ;;
+    esac
+    config_index=$((config_index + 1))
+  done
+fi
 
 while [ "$index" -lt "${#args[@]}" ]; do
   word="${args[$index]}"
@@ -76,6 +93,21 @@ while [ "$index" -lt "${#args[@]}" ]; do
       ;;
     -c)
       index=$((index + 1))
+      [ "$index" -lt "${#args[@]}" ] || exit 0
+      case "${args[$index]}" in
+        alias.*=push)
+          command_alias="${args[$index]#alias.}"
+          command_alias="${command_alias%=push}"
+          ;;
+      esac
+      ;;
+    --config-env=alias.*=*)
+      config_spec="${word#--config-env=}"
+      config_key="${config_spec%%=*}"
+      env_name="${config_spec#*=}"
+      if [ "${!env_name:-}" = "push" ]; then
+        command_alias="${config_key#alias.}"
+      fi
       ;;
     --no-pager|-P|--paginate|-p|--no-replace-objects|--literal-pathspecs|--no-literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs)
       ;;
@@ -91,6 +123,9 @@ while [ "$index" -lt "${#args[@]}" ]; do
 done
 
 if [ "$subcommand" = "p" ]; then
+  subcommand="push"
+fi
+if [ -n "$command_alias" ] && [ "$subcommand" = "$command_alias" ]; then
   subcommand="push"
 fi
 
@@ -359,6 +394,30 @@ assert_case "non-push-before-literal-push" repo-a \
   "git commit --no-verify -m fixture; git push --no-verify origin main"
 assert_case "non-push-before-git-push-alias" repo-a \
   "git commit --no-verify -m fixture; git p --no-verify origin main"
+assert_case "composed-git-executable" repo-a \
+  'g${x}it push --no-verify origin main'
+assert_case "composed-push-subcommand" ambiguous \
+  'git p${x}ush --no-verify origin main'
+assert_case "composed-bypass-flag" ambiguous \
+  'git push --no-$(printf ver)ify origin main'
+assert_case "assignment-prefixed-cd" repo-b \
+  "X=1 cd \"$REPO_B\" && git push --no-verify origin main"
+assert_case "assembled-variable-bypass-flag" repo-a \
+  'p=--no; q=-verify; git push "$p$q" origin main'
+assert_case "multiple-protected-pushes" ambiguous \
+  "git -C \"$REPO_A\" push --no-verify origin one; git -C \"$REPO_B\" push --no-verify origin two"
+assert_case "command-scoped-push-alias" ambiguous \
+  "git -c alias.x=push x --no-verify origin main"
+assert_case "git-dir-repository-redirection" ambiguous \
+  "GIT_DIR=\"$REPO_B/.git\" git push --no-verify origin main"
+assert_case "config-env-push-alias" ambiguous \
+  "ALIAS=push git --config-env=alias.x=ALIAS x --no-verify origin main"
+assert_case "git-config-count-push-alias" ambiguous \
+  "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=push git x --no-verify origin main"
+assert_case "pushd-repository-redirection" ambiguous \
+  "pushd \"$REPO_B\" >/dev/null && git push --no-verify origin main"
+assert_case "env-chdir-repository-redirection" ambiguous \
+  "env -C \"$REPO_B\" git push --no-verify origin main"
 
 echo "==> Deterministic generated execution matrix"
 
