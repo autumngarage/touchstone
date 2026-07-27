@@ -14,7 +14,9 @@
 #
 # Hook protocol:
 #   stdin   — JSON describing the tool call
-#             { "tool_name": "Bash", "tool_input": { "command": "..." }, "cwd": "..." }
+#             { "tool_name": "Bash",
+#               "tool_input": { "command": "...", "workdir": "..." },
+#               "cwd": "..." }
 #   exit 0  — allow the tool call
 #   exit 2  — block; stderr is shown to the user and surfaced to Claude
 #
@@ -42,7 +44,18 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
-cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"
+session_cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"
+tool_workdir="$(printf '%s' "$input" | jq -r '.tool_input.workdir // ""')"
+cwd="$session_cwd"
+if [ -n "$tool_workdir" ]; then
+  if printf '%s' "$tool_workdir" | grep -qE '^/'; then
+    cwd="$tool_workdir"
+  elif [ -n "$session_cwd" ]; then
+    cwd="$session_cwd/$tool_workdir"
+  else
+    cwd="$tool_workdir"
+  fi
+fi
 
 # Re-verify with the parsed command (the fast-path regex is a heuristic
 # over raw JSON; final decision uses the structured value). The trailing
