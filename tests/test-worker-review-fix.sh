@@ -111,6 +111,7 @@ case "$command_name:$subcommand" in
     elif [[ "$args" == *addPullRequestReviewThreadReply* ]]; then
       printf 'reply\n' >>"$FAKE_REPLY_LOG"
       : >"$FAKE_REPLIED"
+      [ "${FAKE_MOVE_HEAD_DURING_FINISH:-0}" = 1 ] && : >"$FAKE_HEAD_MOVED" || true
     elif [[ "$args" == *resolveReviewThread* ]]; then
       printf 'resolve\n' >>"$FAKE_RESOLVE_LOG"
       : >"$FAKE_RESOLVED"
@@ -120,7 +121,6 @@ case "$command_name:$subcommand" in
       else
         rm -f "$FAKE_THREAD_ACTIVE"
       fi
-      [ "${FAKE_MOVE_HEAD_DURING_FINISH:-0}" = 1 ] && : >"$FAKE_HEAD_MOVED" || true
     elif [[ "$args" == *"node(id:"* ]]; then
       if [ -f "$FAKE_RESOLVED" ]; then
         printf 'true\ttrue\n'
@@ -384,6 +384,9 @@ TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
 wait_for_status "$MOVED_HEAD_WT" needs-attention "$STATUS" \
   || fail "head movement during thread updates did not enter needs-attention"
 assert_contains "$STATUS" '"reason":"head-changed-during-thread-update"'
+[ -f "$FAKE_REPLIED" ] || fail "head-movement fixture did not reach the reply boundary"
+[ ! -f "$FAKE_RESOLVED" ] \
+  || fail "head movement after reply allowed stale-thread resolution"
 [ ! -f "$FAKE_MERGED" ] || fail "head movement during thread updates reached merge"
 unset FAKE_MOVE_HEAD_DURING_FINISH
 rm -f "$FAKE_HEAD_MOVED"

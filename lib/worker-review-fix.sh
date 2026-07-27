@@ -306,11 +306,20 @@ touchstone_review_fix_finish_threads() {
       continue
     fi
     if [ "$replied" != "true" ]; then
+      observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
+      [ "$observed_head" = "$fix_head" ] || return 3
       location="${path:-review thread}${line:+:$line}"
       body="Fixed $location in \`$(printf '%.12s' "$fix_head")\` and validated locally. $marker"
       touchstone_review_fix_reply "$thread_id" "$body" || return 1
+      observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
+      [ "$observed_head" = "$fix_head" ] || return 4
+    else
+      observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
+      [ "$observed_head" = "$fix_head" ] || return 3
     fi
     touchstone_review_fix_resolve "$thread_id" || return 1
+    observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
+    [ "$observed_head" = "$fix_head" ] || return 4
     touchstone_ship_write "$job_dir/review-fix" "resolved-$key" "$fix_head"
   done <"$threads_file"
 
