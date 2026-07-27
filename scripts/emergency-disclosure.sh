@@ -28,7 +28,7 @@ input="$(cat)"
 # parser path because separate values can assemble the flag at runtime.
 if ! printf '%s' "$input" | grep -q -- '--no-verify' \
   && ! printf '%s' "$input" | grep -q -- '--no-' \
-  && ! printf '%s' "$input" | grep -qE '(\\|\$|`)'; then
+  && ! printf '%s' "$input" | grep -qE '(\\|\$|`|git)'; then
   exit 0
 fi
 if ! command -v jq >/dev/null 2>&1; then
@@ -331,7 +331,12 @@ shell_words() {
   awk '
     function emit() {
       if (token_started) {
-        if (shell_composed_quote) {
+        if (token ~ /\{[^}]*([,]|\.\.)[^}]*\}/) {
+          token_shell_expansion = 1
+        }
+        if (token_shell_expansion) {
+          print "__touchstone_shell_expanded__:" token
+        } else if (shell_composed_quote) {
           print "__touchstone_shell_composed__:" token
         } else {
           print token
@@ -341,6 +346,7 @@ shell_words() {
       token_started = 0
       shell_composed_quote = 0
       token_quoted = 0
+      token_shell_expansion = 0
     }
     function emit_redirection() {
       if (token_started && !(token ~ /^[0-9]+$/ && !token_quoted)) {
@@ -350,6 +356,7 @@ shell_words() {
         token_started = 0
         shell_composed_quote = 0
         token_quoted = 0
+        token_shell_expansion = 0
       }
       print "__touchstone_redirection__"
     }
@@ -390,6 +397,9 @@ shell_words() {
           } else {
             token = token char
             token_started = 1
+            if (char == "[" || char == "]" || char == "*" || char == "?") {
+              token_shell_expansion = 1
+            }
           }
         } else if (char == quote) {
           quote = ""
@@ -441,6 +451,17 @@ segment_may_compose_no_verify() {
 
   printf '%s' "$segment" \
     | grep -qE -- '--no-[^[:space:]]*(\$|`).*ify([[:space:]]|$)'
+}
+
+word_is_shell_expanded_option() {
+  local word="$1"
+
+  case "$word" in
+    __touchstone_shell_expanded__:-* | __touchstone_shell_expanded__:\{* | __touchstone_shell_expanded__:\[* | __touchstone_shell_expanded__:\** | __touchstone_shell_expanded__:\?*)
+      return 0
+      ;;
+  esac
+  return 1
 }
 
 word_is_bypass_option() {
@@ -541,6 +562,7 @@ segment_has_bypass_words() {
   local expect_redirection_target=false
   local seen_no_verify=false
   local seen_dynamic_push_arg=false
+  local requires_alias_lookup=false
   local variable_name="" assigned_value=""
 
   while IFS= read -r word; do
@@ -594,9 +616,13 @@ segment_has_bypass_words() {
           esac
         fi
       else
-        case "$word" in
-          *'$'* | *'`'*) seen_dynamic_push_arg=true ;;
-        esac
+        if word_is_shell_expanded_option "$word"; then
+          seen_dynamic_push_arg=true
+        else
+          case "$word" in
+            *'$'* | *'`'*) seen_dynamic_push_arg=true ;;
+          esac
+        fi
       fi
     fi
   done < <(printf '%s' "$segment" | shell_words)
@@ -609,10 +635,52 @@ segment_has_bypass_words() {
     seen_no_verify=true
   fi
 
-  if [ -n "$subcommand" ] && [ "$seen_no_verify" = "true" ]; then
+  if [ -n "$subcommand" ] && [ "$subcommand" != "push" ]; then
+    requires_alias_lookup=true
+  fi
+  if [ -n "$subcommand" ] \
+    && { [ "$seen_no_verify" = "true" ] || [ "$requires_alias_lookup" = "true" ]; }; then
     push_subcommand="$subcommand"
+    push_candidate_has_bypass="$seen_no_verify"
     return 0
   fi
+
+  return 1
+}
+
+text_has_bypass_option() {
+  local text="$1"
+  local word=""
+
+  while IFS= read -r word; do
+    if word_is_bypass_option "$word"; then
+      return 0
+    fi
+  done < <(printf '%s' "$text" | shell_words)
+
+  return 1
+}
+
+segment_may_mutate_parent_directory() {
+  local segment="$1"
+  local word=""
+
+  while IFS= read -r word; do
+    case "$word" in
+      if | then | elif | else | while | until | do | ! | time | command | builtin | "(" | ")")
+        ;;
+      [A-Za-z_][A-Za-z0-9_]*=*)
+        ;;
+      eval | source | .)
+        return 0
+        ;;
+      -*)
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done < <(printf '%s' "$segment" | shell_words)
 
   return 1
 }
@@ -767,11 +835,15 @@ segment_runs_bypass_push() {
 push_segment=""
 push_context=""
 push_subcommand=""
+push_candidate_has_bypass=false
 selected_push_context=""
 selected_push_subcommand=""
+selected_directory_context_ambiguous=false
 non_push_candidate_segments=()
 non_push_candidate_contexts=()
 non_push_candidate_subcommands=()
+non_push_candidate_has_bypass=()
+non_push_candidate_directory_ambiguous=()
 preceding_cd=""
 ambiguous_cd_scope=false
 command_dynamic_protected=false
@@ -783,6 +855,7 @@ cd_count=0
 protected_aliases=""
 known_assignments=""
 multiple_protected_pushes=false
+preceding_parent_directory_mutator=false
 command_executable_text="$(printf '%s' "$command" | without_shell_comments | without_single_quoted_literals)"
 if printf '%s' "$command_executable_text" \
   | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?CDPATH='; then
@@ -819,6 +892,10 @@ if printf '%s' "$command_executable_text" | grep -qE '(^|[^\\])\$[{A-Za-z_]' \
   fi
 fi
 while IFS= read -r segment; do
+  if segment_may_mutate_parent_directory "$segment"; then
+    preceding_parent_directory_mutator=true
+  fi
+
   assignment_record="$(simple_assignment_record "$segment")"
   if [ -n "$assignment_record" ]; then
     assignment_name="${assignment_record%%	*}"
@@ -858,12 +935,15 @@ while IFS= read -r segment; do
 
   push_context=""
   push_subcommand=""
+  push_candidate_has_bypass=false
   if segment_runs_bypass_push "$segment"; then
     if [ -n "$push_subcommand" ] && [ "$push_subcommand" != "push" ]; then
       candidate_index="${#non_push_candidate_segments[@]}"
       non_push_candidate_segments[$candidate_index]="$segment"
       non_push_candidate_contexts[$candidate_index]="$push_context"
       non_push_candidate_subcommands[$candidate_index]="$push_subcommand"
+      non_push_candidate_has_bypass[$candidate_index]="$push_candidate_has_bypass"
+      non_push_candidate_directory_ambiguous[$candidate_index]="$preceding_parent_directory_mutator"
       continue
     fi
     if [ -n "$push_segment" ]; then
@@ -873,6 +953,7 @@ while IFS= read -r segment; do
     push_segment="$segment"
     selected_push_context="$push_context"
     selected_push_subcommand="$push_subcommand"
+    selected_directory_context_ambiguous="$preceding_parent_directory_mutator"
   fi
 done < <(printf '%s\n' "$command" | without_heredoc_bodies | without_shell_comments | shell_segments)
 
@@ -909,6 +990,10 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
     alias_command="$(printf '%s' "$alias_expansion" | shell_words | sed -n '1p')"
     case "$alias_command" in
       push)
+        if [ "${non_push_candidate_has_bypass[$candidate_index]}" != "true" ] \
+          && ! text_has_bypass_option "$alias_expansion"; then
+          continue
+        fi
         if [ -n "$push_segment" ]; then
           multiple_protected_pushes=true
           continue
@@ -916,9 +1001,12 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
         push_segment="$candidate_segment"
         selected_push_context="${non_push_candidate_contexts[$candidate_index]}"
         selected_push_subcommand="$candidate_subcommand"
+        selected_directory_context_ambiguous="${non_push_candidate_directory_ambiguous[$candidate_index]}"
         ;;
       !*)
-        if printf '%s' "$alias_expansion" | grep -qE '(^|[[:space:]])(git[[:space:]]+)?push([[:space:]]|$)'; then
+        if printf '%s' "$alias_expansion" | grep -qE '(^|[[:space:]])(git[[:space:]]+)?push([[:space:]]|$)' \
+          && { [ "${non_push_candidate_has_bypass[$candidate_index]}" = "true" ] \
+            || text_has_bypass_option "$alias_expansion"; }; then
           if [ -n "$push_segment" ]; then
             multiple_protected_pushes=true
             continue
@@ -926,6 +1014,7 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
           push_segment="$candidate_segment"
           selected_push_context="nested"
           selected_push_subcommand="$candidate_subcommand"
+          selected_directory_context_ambiguous="${non_push_candidate_directory_ambiguous[$candidate_index]}"
         fi
         ;;
     esac
@@ -946,7 +1035,8 @@ fi
 
 if [ "$push_context" != "direct" ] || [ "$ambiguous_cd_scope" = "true" ] \
   || [ "$command_sets_git_context" = "true" ] \
-  || [ "$command_changes_directory_ambiguously" = "true" ]; then
+  || [ "$command_changes_directory_ambiguously" = "true" ] \
+  || [ "$selected_directory_context_ambiguous" = "true" ]; then
   echo "emergency-disclosure: cannot safely resolve protected push repository context; bypass blocked" >&2
   exit 2
 fi

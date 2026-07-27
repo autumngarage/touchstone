@@ -283,6 +283,9 @@ assert "blocks a protected push after an fd redirection" "2" \
 git -C "$TMPDIR" config alias.p push
 assert "blocks push alias with --no-verify" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git p --no-verify origin feat/test")")"
+git -C "$TMPDIR" config alias.hard-bypass 'push --no-verify'
+assert "blocks a Git alias whose expansion contains the bypass flag" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git hard-bypass origin feat/test")")"
 git -C "$TMPDIR" config alias.ci commit
 assert "allows non-push alias with --no-verify" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git ci --no-verify -m wip")")"
@@ -408,6 +411,12 @@ assert "blocks bypass flag supplied through variable expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'flag=--no-verify; git push "$flag" origin feat/test')")"
 assert "allows a known safe branch supplied through variable expansion" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'branch=feat/test; git push origin "$branch"')")"
+assert "blocks a bypass flag formed by brace expansion" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'git push --no-{veri,verify} origin feat/test')")"
+assert "blocks a bypass flag formed by pathname expansion" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'git push --no-* origin feat/test')")"
+assert "allows a quoted pathname pattern that the shell cannot expand" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git push '--no-*' origin feat/test")")"
 assert "blocks a protected push stored in an assigned command string" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "cmd='git push --no-verify'; \$cmd")")"
 assert "blocks git command supplied through variable expansion" "2" \
@@ -454,6 +463,14 @@ assert "blocks bypass push in a nohup-wrapped shell payload" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "nohup zsh -c 'git push --no-verify origin feat/test'")")"
 assert "blocks bypass push in an eval payload" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "eval 'git push --no-verify origin feat/test'")")"
+EXIT_EVAL_DIRECTORY_CONTEXT=0
+printf '%s' "$(mkjson "eval 'cd /tmp'; git push --no-verify origin feat/test")" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_EVAL_DIRECTORY_CONTEXT=$?
+assert "emergency override rejects repository context after eval" "2" "$EXIT_EVAL_DIRECTORY_CONTEXT"
+EXIT_SOURCE_DIRECTORY_CONTEXT=0
+printf '%s' "$(mkjson "source /tmp/context.sh; git push --no-verify origin feat/test")" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_SOURCE_DIRECTORY_CONTEXT=$?
+assert "emergency override rejects repository context after source" "2" "$EXIT_SOURCE_DIRECTORY_CONTEXT"
 assert "conservatively blocks bypass push in a function body" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "push_later() { git push --no-verify origin feat/test; }; push_later")")"
 # Unquoted shell words are conservatively treated as executable text. Literal
