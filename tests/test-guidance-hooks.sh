@@ -449,6 +449,12 @@ printf '%s' "$SUBSHELL_SCOPE_JSON" \
   | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_SUBSHELL_SCOPE=$?
 assert "blocks ambiguous subshell cd even with emergency override" "2" "$EXIT_SUBSHELL_SCOPE"
 
+SCOPED_CD_JSON="$(mkjson "(echo prep; cd $EMERGENCY_TARGET; echo done); git push --no-verify origin feat/test" "$TMPDIR")"
+EXIT_SCOPED_CD=0
+printf '%s' "$SCOPED_CD_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_SCOPED_CD=$?
+assert "blocks cd whose opening subshell is in an earlier segment" "2" "$EXIT_SCOPED_CD"
+
 SUBSTITUTION_SCOPE_JSON="$(mkjson "echo \$(cd $EMERGENCY_TARGET && git push --no-verify origin feat/test)" "$TMPDIR")"
 EXIT_SUBSTITUTION_SCOPE=0
 printf '%s' "$SUBSTITUTION_SCOPE_JSON" \

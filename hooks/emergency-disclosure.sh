@@ -277,6 +277,11 @@ ambiguous_cd_scope=false
 command_has_substitution=false
 command_nested_protected=false
 command_executable_text="$(printf '%s' "$command" | without_single_quoted_literals)"
+if printf '%s' "$command_executable_text" | grep -qE '\(' \
+  && printf '%s' "$command_executable_text" \
+    | grep -qE '(^|[;&|()[:space:]])cd[[:space:]]+'; then
+  ambiguous_cd_scope=true
+fi
 if printf '%s' "$command_executable_text" \
   | grep -qE '(^|[^\\])\$\(|(^|[^\\])`'; then
   command_has_substitution=true
