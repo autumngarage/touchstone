@@ -110,15 +110,53 @@ without_single_quoted_literals() {
   '
 }
 
+without_quoted_literals() {
+  awk '
+    {
+      line = $0 "\n"
+      for (i = 1; i <= length(line); i++) {
+        char = substr(line, i, 1)
+        if (escaped) {
+          printf " "
+          escaped = 0
+        } else if (char == "\\" && quote != "\047") {
+          printf " "
+          escaped = 1
+        } else if (quote == "") {
+          if (char == "\"" || char == "\047") {
+            quote = char
+            printf " "
+          } else {
+            printf "%s", char
+          }
+        } else {
+          printf " "
+          if (char == quote) {
+            quote = ""
+          }
+        }
+      }
+    }
+  '
+}
+
 segment_runs_bypass_push() {
   local segment="$1"
   local executable_text=""
+  local unquoted_text=""
   local protected_push='git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+push([^;&|)]*)--no-verify'
 
-  if printf '%s' "$segment" \
-      | grep -qE '^[[:space:]({]*(((if|then|elif|else|while|until|do|!|time([[:space:]]+-[[:alpha:]]+)*)|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+|env|command|exec)[[:space:]]+)*git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+push([[:space:]]|$)' \
+  unquoted_text="$(printf '%s' "$segment" | without_quoted_literals)"
+  if printf '%s' "$unquoted_text" \
+      | grep -qE 'git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+push([[:space:]]|$)' \
     && printf '%s' "$segment" \
       | grep -qE '(^|[[:space:]'\''"])--no-verify([[:space:]'\''"]|$)'; then
+    if printf '%s' "$unquoted_text" \
+      | grep -qE '^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(\(\))?[[:space:]]*\{'; then
+      push_context="nested"
+    else
+      push_context="direct"
+    fi
     return 0
   fi
 
@@ -128,6 +166,7 @@ segment_runs_bypass_push() {
   # quotes. Single-quoted lookalikes were removed above.
   if printf '%s' "$executable_text" \
     | grep -qE "(^|[^\\\\])\\$\\([^)]*$protected_push|(^|[^\\\\])\`[^\`]*$protected_push"; then
+    push_context="nested"
     return 0
   fi
 
@@ -135,14 +174,7 @@ segment_runs_bypass_push() {
   if printf '%s' "$executable_text" \
       | grep -qE '^[[:space:]({]*(((if|then|elif|else|while|until|do|!|time([[:space:]]+-[[:alpha:]]+)*)|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+|env|command|exec)[[:space:]]+)*(([^[:space:]]*/)?(ba|da|k|z)?sh[[:space:]]+(-[^[:space:]]*[cC][^[:space:]]*|[^[:space:]]+[[:space:]]+-[^[:space:]]*[cC][^[:space:]]*)|eval)([[:space:]]|$)' \
     && printf '%s' "$segment" | grep -qE "$protected_push"; then
-    return 0
-  fi
-
-  # Function bodies are executable shell code. Conservatively require the
-  # emergency path even when invocation is not visible to this parser.
-  if printf '%s' "$executable_text" \
-      | grep -qE '^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(\(\))?[[:space:]]*\{' \
-    && printf '%s' "$executable_text" | grep -qE "$protected_push"; then
+    push_context="nested"
     return 0
   fi
 
@@ -150,12 +182,17 @@ segment_runs_bypass_push() {
 }
 
 push_segment=""
+push_context=""
 preceding_cd=""
+ambiguous_cd_scope=false
 while IFS= read -r segment; do
   cd_target="$(printf '%s' "$segment" \
     | grep -oE '^[[:space:]({]*((if|then|elif|else|while|until|do|!)[[:space:]]+)*cd[[:space:]]+[^[:space:]]+' \
     | sed -E 's/^.*cd[[:space:]]+//' || true)"
   if [ -n "$cd_target" ]; then
+    if printf '%s' "$segment" | grep -qE '^[[:space:]]*\('; then
+      ambiguous_cd_scope=true
+    fi
     if printf '%s' "$cd_target" | grep -qE '^/' || [ -z "$preceding_cd" ]; then
       preceding_cd="$cd_target"
     else
@@ -187,6 +224,11 @@ if [ "${TOUCHSTONE_EMERGENCY:-0}" != "1" ]; then
 
   See principles/git-workflow.md ("Emergency path").
 EOF
+  exit 2
+fi
+
+if [ "$push_context" != "direct" ] || [ "$ambiguous_cd_scope" = "true" ]; then
+  echo "emergency-disclosure: cannot safely resolve nested or subshell push context; bypass blocked" >&2
   exit 2
 fi
 

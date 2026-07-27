@@ -306,6 +306,12 @@ assert "blocks bypass push in a grouped command" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "{ git push --no-verify origin feat/test; }")")"
 assert "blocks bypass push after nested control prefixes" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "while ! git push --no-verify origin feat/test; do sleep 1; done")")"
+assert "blocks sudo-wrapped bypass push" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "sudo git push --no-verify origin feat/test")")"
+assert "blocks nice-wrapped bypass push" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "nice -n 5 git push --no-verify origin feat/test")")"
+assert "blocks nohup-wrapped bypass push" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "nohup git push --no-verify origin feat/test")")"
 
 # Nested executable contexts must not turn literal-looking text into a bypass.
 assert "blocks bypass push in command substitution" "2" \
@@ -316,8 +322,12 @@ assert "blocks bypass push in an eval payload" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "eval 'git push --no-verify origin feat/test'")")"
 assert "conservatively blocks bypass push in a function body" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "push_later() { git push --no-verify origin feat/test; }; push_later")")"
-assert "allows unquoted bypass words passed to another command" "0" \
+# Unquoted shell words are conservatively treated as executable text. Literal
+# prose remains supported through ordinary single- or double-quoted arguments.
+assert "conservatively blocks unquoted bypass words" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "echo if git push --no-verify origin feat/test")")"
+assert "allows double-quoted bypass prose" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'gh issue create --body "Run git push --no-verify only in an emergency"')")"
 assert "allows literal command-substitution prose in single quotes" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "gh issue create --body 'Example: \$(git push --no-verify)'")")"
 
@@ -387,6 +397,12 @@ else
   echo "  FAIL: emergency log did not follow git -C target" >&2
   FAIL=$((FAIL + 1))
 fi
+
+SUBSHELL_SCOPE_JSON="$(mkjson "(cd $EMERGENCY_TARGET && git status); git push --no-verify origin feat/test" "$TMPDIR")"
+EXIT_SUBSHELL_SCOPE=0
+printf '%s' "$SUBSHELL_SCOPE_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_SUBSHELL_SCOPE=$?
+assert "blocks ambiguous subshell cd even with emergency override" "2" "$EXIT_SUBSHELL_SCOPE"
 
 # 14. The bypass must fail closed when required audit evidence cannot be
 # persisted. A file at the directory path makes mkdir deterministic.
