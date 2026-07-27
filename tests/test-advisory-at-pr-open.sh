@@ -596,6 +596,27 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Case 9f: --base cannot silently override an existing PR's actual base"
+reset_case
+OUT="$TEST_DIR/request-existing-base-mismatch.out"
+if GH_EXISTING_PR_URL="https://example.test/touchstone/pull/789" \
+  GH_EXISTING_PR_BASE="feat/existing-policy-parent" \
+  run_open_pr "$OUT" --base main; then
+  echo "    FAIL: mismatched --base should stop before policy selection" >&2
+  ERRORS=$((ERRORS + 1))
+elif grep -q "does not match existing PR #789 base 'feat/existing-policy-parent'" "$OUT" \
+  && grep -q "gh pr edit 789 --base 'main'" "$OUT" \
+  && grep -q "rerun without --base to use the PR's current base" "$OUT" \
+  && ! grep -q '\[mock\] git push' "$OUT" \
+  && [ ! -f "$TEST_DIR/comments" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: existing PR base mismatch lacked fail-closed diagnostics" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 10: advisory preflight cache hashes relevant root worktree state from subdirs"
 reset_case
 printf '[review]\npreflight_required = true\nadvisory_at_pr_open = true\n' >"$REPO_DIR/.codex-review.toml"

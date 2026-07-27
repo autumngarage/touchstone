@@ -759,10 +759,18 @@ if [ -n "$EXISTING_PR_RECORD" ]; then
     echo "ERROR: Existing PR metadata is missing its URL or base branch." >&2
     exit 1
   fi
+  if [ -n "$BASE_OVERRIDE" ] && [ "$BASE_OVERRIDE" != "$EXISTING_PR_BASE_BRANCH" ]; then
+    EXISTING_PR_NUMBER="$(basename "$EXISTING_PR_URL")"
+    echo "ERROR: --base '$BASE_OVERRIDE' does not match existing PR #$EXISTING_PR_NUMBER base '$EXISTING_PR_BASE_BRANCH'." >&2
+    echo "       Retarget the PR first: gh pr edit $EXISTING_PR_NUMBER --base '$BASE_OVERRIDE'" >&2
+    echo "       Or rerun without --base to use the PR's current base." >&2
+    exit 1
+  fi
 fi
 
-# Explicit --base remains authoritative. Otherwise, updates to an existing PR
-# trust its actual GitHub base; new PRs trust the repository default.
+# An explicit --base selects a new PR's base, or confirms an existing PR's
+# actual base after the mismatch check above. Otherwise, updates to an existing
+# PR trust its actual GitHub base; new PRs trust the repository default.
 BASE_BRANCH="${BASE_OVERRIDE:-${EXISTING_PR_BASE_BRANCH:-$DEFAULT_BRANCH}}"
 if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
   echo "ERROR: --base $BASE_BRANCH cannot equal the current branch." >&2
