@@ -629,6 +629,8 @@ segment_runs_bypass_push() {
 push_segment=""
 push_context=""
 push_subcommand=""
+selected_push_context=""
+selected_push_subcommand=""
 non_push_candidate_segments=()
 non_push_candidate_contexts=()
 non_push_candidate_subcommands=()
@@ -710,6 +712,8 @@ while IFS= read -r segment; do
       continue
     fi
     push_segment="$segment"
+    selected_push_context="$push_context"
+    selected_push_subcommand="$push_subcommand"
   fi
 done < <(printf '%s\n' "$command" | without_heredoc_bodies | without_shell_comments | shell_segments)
 
@@ -734,8 +738,8 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
       # Alias configuration is repository-scoped. A composed directory context
       # cannot be confirmed here without executing the shell, so fail closed.
       push_segment="$candidate_segment"
-      push_context="nested"
-      push_subcommand="$candidate_subcommand"
+      selected_push_context="nested"
+      selected_push_subcommand="$candidate_subcommand"
       multiple_protected_pushes=true
       continue
     fi
@@ -748,8 +752,8 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
           continue
         fi
         push_segment="$candidate_segment"
-        push_context="${non_push_candidate_contexts[$candidate_index]}"
-        push_subcommand="$candidate_subcommand"
+        selected_push_context="${non_push_candidate_contexts[$candidate_index]}"
+        selected_push_subcommand="$candidate_subcommand"
         ;;
       !*)
         if printf '%s' "$alias_expansion" | grep -qE '(^|[[:space:]])(git[[:space:]]+)?push([[:space:]]|$)'; then
@@ -758,8 +762,8 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
             continue
           fi
           push_segment="$candidate_segment"
-          push_context="nested"
-          push_subcommand="$candidate_subcommand"
+          selected_push_context="nested"
+          selected_push_subcommand="$candidate_subcommand"
         fi
         ;;
     esac
@@ -769,6 +773,9 @@ fi
 if [ -z "$push_segment" ]; then
   exit 0
 fi
+
+push_context="$selected_push_context"
+push_subcommand="$selected_push_subcommand"
 
 if [ "$multiple_protected_pushes" = "true" ]; then
   echo "emergency-disclosure: multiple protected push segments require separate audited tool calls; bypass blocked" >&2

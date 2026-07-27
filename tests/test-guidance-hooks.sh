@@ -290,6 +290,20 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+before_conditional_lines="$(wc -l <"$TMPDIR/.touchstone/emergency-bypass.log" | tr -d ' ')"
+EXIT_CONDITIONAL_ALLOWED=0
+printf '%s' "$(mkjson "if git push --no-verify origin feat/test; then printf ok; fi")" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_CONDITIONAL_ALLOWED=$?
+after_conditional_lines="$(wc -l <"$TMPDIR/.touchstone/emergency-bypass.log" | tr -d ' ')"
+if [ "$EXIT_CONDITIONAL_ALLOWED" -eq 0 ] \
+  && [ "$after_conditional_lines" -eq $((before_conditional_lines + 1)) ]; then
+  echo "  OK: authorized conditional push preserves selected segment context"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: authorized conditional push lost selected segment context" >&2
+  FAIL=$((FAIL + 1))
+fi
+
 # 9. ordinary push (no --no-verify) → allowed
 assert "allows ordinary 'git push origin main'" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git push origin main")")"
