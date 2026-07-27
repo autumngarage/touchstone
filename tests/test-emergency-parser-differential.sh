@@ -117,6 +117,10 @@ cat >"$FAKE_BIN/nohup" <<'FAKE_NOHUP'
 #!/usr/bin/env bash
 exec "$@"
 FAKE_NOHUP
+cat >"$FAKE_BIN/gh" <<'FAKE_GH'
+#!/usr/bin/env bash
+exit 0
+FAKE_GH
 cat >"$FAKE_BIN/nice" <<'FAKE_NICE'
 #!/usr/bin/env bash
 if [ "${1:-}" = "-n" ]; then
@@ -124,7 +128,7 @@ if [ "${1:-}" = "-n" ]; then
 fi
 exec "$@"
 FAKE_NICE
-chmod +x "$FAKE_BIN/sudo" "$FAKE_BIN/nohup" "$FAKE_BIN/nice"
+chmod +x "$FAKE_BIN/sudo" "$FAKE_BIN/nohup" "$FAKE_BIN/gh" "$FAKE_BIN/nice"
 
 PASS=0
 FAIL=0
@@ -139,25 +143,26 @@ hook_payload() {
 }
 
 run_hook() {
-	local command="$1" authorized="$2" exit_code=0
+	local command="$1" authorized="$2" fixture_home="${3:-$HOME}" exit_code=0
 	if [ "$authorized" = "1" ]; then
 		printf '%s' "$(hook_payload "$command")" |
-			GIT=git TOUCHSTONE_EMERGENCY=1 bash "$HOOK" >/dev/null 2>&1 ||
+			HOME="$fixture_home" GIT=git TOUCHSTONE_EMERGENCY=1 bash "$HOOK" >/dev/null 2>&1 ||
 			exit_code=$?
 	else
 		printf '%s' "$(hook_payload "$command")" |
-			GIT=git bash "$HOOK" >/dev/null 2>&1 ||
+			HOME="$fixture_home" GIT=git bash "$HOOK" >/dev/null 2>&1 ||
 			exit_code=$?
 	fi
 	printf '%s' "$exit_code"
 }
 
 run_oracle() {
-	local command="$1" exit_code=0
+	local command="$1" fixture_home="${2:-$HOME}" exit_code=0
 	: >"$ORACLE_LOG"
 	(
 		cd "$REPO_A"
 		PATH="$FAKE_BIN:/usr/bin:/bin" \
+			HOME="$fixture_home" \
 			REAL_GIT="$REAL_GIT" \
 			ORACLE_LOG="$ORACLE_LOG" \
 			GIT=git \
@@ -174,13 +179,13 @@ record_failure() {
 }
 
 assert_case() {
-	local name="$1" classification="$2" command="$3"
+	local name="$1" classification="$2" command="$3" fixture_home="${4:-$HOME}"
 	local oracle_exit oracle_count observed_root unauthorized_exit authorized_exit
 	local expected_root="" audit_a=0 audit_b=0
 
 	CASE_COUNT=$((CASE_COUNT + 1))
 	rm -rf "$REPO_A/.touchstone" "$REPO_B/.touchstone"
-	oracle_exit="$(run_oracle "$command")"
+	oracle_exit="$(run_oracle "$command" "$fixture_home")"
 	oracle_count="$(wc -l <"$ORACLE_LOG" | tr -d ' ')"
 	observed_root=""
 	if [ "$oracle_count" -eq 1 ]; then
@@ -222,7 +227,7 @@ assert_case() {
 		return
 	fi
 
-	unauthorized_exit="$(run_hook "$command" 0)"
+	unauthorized_exit="$(run_hook "$command" 0 "$fixture_home")"
 	if [ "$oracle_count" -gt 0 ]; then
 		if [ "$unauthorized_exit" -ne 2 ]; then
 			record_failure "$name" "Bash executed a protected push but unauthorized hook exited $unauthorized_exit" "$command"
@@ -233,7 +238,7 @@ assert_case() {
 		return
 	fi
 
-	authorized_exit="$(run_hook "$command" 1)"
+	authorized_exit="$(run_hook "$command" 1 "$fixture_home")"
 	[ -f "$REPO_A/.touchstone/emergency-bypass.log" ] && audit_a=1
 	[ -f "$REPO_B/.touchstone/emergency-bypass.log" ] && audit_b=1
 
@@ -341,6 +346,19 @@ assert_case "command-wrapped-cd" repo-b \
 	"command cd \"$REPO_B\" && git push --no-verify origin main"
 assert_case "builtin-wrapped-cd" repo-b \
 	"builtin cd \"$REPO_B\" && git push --no-verify origin main"
+ansi_git_command="\$'git' push --no-verify origin main"
+assert_case "ansi-c-quoted-git" repo-a "$ansi_git_command"
+assert_case "argument-less-cd" repo-b \
+	"cd && git push --no-verify origin main" "$REPO_B"
+runtime_alias_command="$(printf '%s\n' \
+	"shopt -s expand_aliases" \
+	"alias gp='git push'" \
+	"gp --no-verify origin main")"
+assert_case "runtime-shell-alias" ambiguous "$runtime_alias_command"
+assert_case "non-push-before-literal-push" repo-a \
+	"git commit --no-verify -m fixture; git push --no-verify origin main"
+assert_case "non-push-before-git-push-alias" repo-a \
+	"git commit --no-verify -m fixture; git p --no-verify origin main"
 
 echo "==> Deterministic generated execution matrix"
 
@@ -386,6 +404,8 @@ assert_case "prose-single-quoted" none \
 	"printf '%s' 'git push --no-verify origin main'"
 assert_case "prose-double-quoted" none \
 	'printf "%s" "git push --no-verify origin main"'
+assert_case "prose-backticks-inside-single-quoted-cli-body" none \
+	'gh issue comment 504 --body '\''Example: `git push --no-verify origin main`'\'''
 assert_case "prose-comment-newline" none \
 	"$(printf '%s\n' "printf ok # git push --no-verify origin stale" "printf done")"
 assert_case "prose-escaped-substitution-heredoc" none \
