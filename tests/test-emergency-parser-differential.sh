@@ -418,6 +418,10 @@ assert_case "push-subcommand-before-redirection" repo-a \
   "git push>/dev/null --no-verify"
 assert_case "fd-redirection-before-push" repo-a \
   "git 2>/dev/null push --no-verify"
+assert_case "positional-git-executable" repo-a \
+  'set -- git; "$1" push --no-verify origin main'
+assert_case "positional-push-subcommand" ambiguous \
+  'set -- push; git "$1" --no-verify origin main'
 assert_case "assignment-prefixed-cd" repo-b \
   "X=1 cd \"$REPO_B\" && git push --no-verify origin main"
 assert_case "assembled-variable-bypass-flag" repo-a \
