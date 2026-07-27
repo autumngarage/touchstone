@@ -272,6 +272,14 @@ assert "blocks ANSI-C quoted --no-verify" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git push \$'--no-verify' origin feat/test")")"
 assert "blocks ANSI-C escaped --no-verify" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git push \$'--no-\\x76erify' origin feat/test")")"
+assert "blocks backslash-escaped --no-verify" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git push --no\\-verify origin feat/test")")"
+assert "blocks bypass option before an attached redirection" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git push --no-verify>/dev/null")")"
+assert "blocks push subcommand before an attached redirection" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git push>/dev/null --no-verify")")"
+assert "blocks a protected push after an fd redirection" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git 2>/dev/null push --no-verify")")"
 git -C "$TMPDIR" config alias.p push
 assert "blocks push alias with --no-verify" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git p --no-verify origin feat/test")")"

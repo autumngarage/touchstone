@@ -28,7 +28,7 @@ input="$(cat)"
 # parser path because separate values can assemble the flag at runtime.
 if ! printf '%s' "$input" | grep -q -- '--no-verify' \
   && ! printf '%s' "$input" | grep -q -- '--no-' \
-  && ! printf '%s' "$input" | grep -qE '(\$|`)'; then
+  && ! printf '%s' "$input" | grep -qE '(\\|\$|`)'; then
   exit 0
 fi
 if ! command -v jq >/dev/null 2>&1; then
@@ -340,6 +340,18 @@ shell_words() {
       token = ""
       token_started = 0
       shell_composed_quote = 0
+      token_quoted = 0
+    }
+    function emit_redirection() {
+      if (token_started && !(token ~ /^[0-9]+$/ && !token_quoted)) {
+        emit()
+      } else {
+        token = ""
+        token_started = 0
+        shell_composed_quote = 0
+        token_quoted = 0
+      }
+      print "__touchstone_redirection__"
     }
     {
       line = $0 "\n"
@@ -358,11 +370,18 @@ shell_words() {
           if (char == "$" && (substr(line, i + 1, 1) == "\"" || substr(line, i + 1, 1) == "\047")) {
             quote = substr(line, i + 1, 1)
             shell_composed_quote = 1
+            token_quoted = 1
             token_started = 1
             i++
           } else if (char == "\"" || char == "\047") {
             quote = char
+            token_quoted = 1
             token_started = 1
+          } else if (char == "<" || char == ">") {
+            emit_redirection()
+            while (substr(line, i + 1, 1) ~ /[<>&|]/) {
+              i++
+            }
           } else if (char == "(" || char == ")") {
             emit()
             print char
@@ -444,11 +463,18 @@ segment_has_bypass_words() {
   local seen_git=false
   local subcommand=""
   local expect_global_option_value=false
+  local expect_redirection_target=false
   local seen_no_verify=false
   local seen_dynamic_push_arg=false
 
   while IFS= read -r word; do
-    if [ "$seen_git" = "false" ]; then
+    if [ "$expect_redirection_target" = "true" ]; then
+      expect_redirection_target=false
+      continue
+    elif [ "$word" = "__touchstone_redirection__" ]; then
+      expect_redirection_target=true
+      continue
+    elif [ "$seen_git" = "false" ]; then
       case "$word" in
         git | */git | __touchstone_shell_composed__:*)
           seen_git=true
