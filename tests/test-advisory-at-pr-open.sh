@@ -69,7 +69,11 @@ case "${1:-} ${2:-}" in
       echo "mock comment inspection failure" >&2
       exit 1
     fi
-    printf '%s\n' "${GH_EXISTING_REQUEST_BODY:-}"
+    if [ -n "${GH_EXISTING_REQUEST_FILE:-}" ]; then
+      cat "$GH_EXISTING_REQUEST_FILE"
+    else
+      printf '%s\n' "${GH_EXISTING_REQUEST_BODY:-}"
+    fi
     ;;
   *)
     echo "unexpected gh args: $*" >&2
@@ -111,6 +115,7 @@ run_open_pr() {
         GH_COMMENT_FILE="$TEST_DIR/comments" \
         GH_API_FAIL="${GH_API_FAIL:-0}" \
         GH_EXISTING_REQUEST_BODY="${GH_EXISTING_REQUEST_BODY:-}" \
+        GH_EXISTING_REQUEST_FILE="${GH_EXISTING_REQUEST_FILE:-}" \
         CODEX_REVIEW_STUB_EXIT="${CODEX_REVIEW_STUB_EXIT:-0}" \
         CODEX_REVIEW_STUB_FINDINGS="${CODEX_REVIEW_STUB_FINDINGS:-0}" \
         CODEX_REVIEW_STUB_REASON="${CODEX_REVIEW_STUB_REASON:-clean}" \
@@ -319,9 +324,11 @@ fi
 
 echo "==> Case 8b: large trailing comment text preserves request idempotency"
 reset_case
-REQUEST_PADDING="$(head -c 131072 /dev/zero | tr '\0' x)"
+LARGE_REQUEST_FILE="$TEST_DIR/large-existing-request"
+printf '%s\n' "$EXISTING_REQUEST_BODY" >"$LARGE_REQUEST_FILE"
+head -c 131072 /dev/zero | tr '\0' x >>"$LARGE_REQUEST_FILE"
 OUT="$TEST_DIR/request-idempotent-large.out"
-GH_EXISTING_REQUEST_BODY="$EXISTING_REQUEST_BODY"$'\n'"$REQUEST_PADDING" run_open_pr "$OUT"
+GH_EXISTING_REQUEST_FILE="$LARGE_REQUEST_FILE" run_open_pr "$OUT"
 if grep -q "GitHub Codex review already requested for head $REQUEST_HEAD" "$OUT" \
   && [ ! -f "$TEST_DIR/comments" ]; then
   echo "    PASS"

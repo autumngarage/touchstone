@@ -30,9 +30,6 @@ fi
 if ! printf '%s' "$input" | grep -qE 'git([^[:alnum:]_]|$)'; then
   exit 0
 fi
-if ! printf '%s' "$input" | grep -qE 'push([^[:alnum:]_]|$)'; then
-  exit 0
-fi
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "emergency-disclosure: jq not installed — hook bypassed (install jq to enable)" >&2
@@ -338,7 +335,9 @@ segment_has_bypass_words() {
   local segment="$1"
   local word=""
   local seen_git=false
-  local seen_push=false
+  local subcommand=""
+  local expect_global_option_value=false
+  local seen_no_verify=false
 
   while IFS= read -r word; do
     if [ "$seen_git" = "false" ]; then
@@ -347,12 +346,30 @@ segment_has_bypass_words() {
           seen_git=true
           ;;
       esac
-    elif [ "$seen_push" = "false" ] && [ "$word" = "push" ]; then
-      seen_push=true
-    elif [ "$seen_push" = "true" ] && [ "$word" = "--no-verify" ]; then
-      return 0
+    elif [ "$expect_global_option_value" = "true" ]; then
+      expect_global_option_value=false
+    elif [ -z "$subcommand" ]; then
+      case "$word" in
+        -C | -c | --git-dir | --work-tree | --namespace)
+          expect_global_option_value=true
+          ;;
+        --no-pager | --paginate | -P | -p)
+          ;;
+        -*)
+          ;;
+        *)
+          subcommand="$word"
+          ;;
+      esac
+    elif [ "$word" = "--no-verify" ]; then
+      seen_no_verify=true
     fi
   done < <(printf '%s' "$segment" | shell_words)
+
+  if [ -n "$subcommand" ] && [ "$seen_no_verify" = "true" ]; then
+    push_subcommand="$subcommand"
+    return 0
+  fi
 
   return 1
 }
@@ -450,11 +467,13 @@ segment_runs_bypass_push() {
 
 push_segment=""
 push_context=""
+push_subcommand=""
 preceding_cd=""
 ambiguous_cd_scope=false
 command_dynamic_protected=false
 command_sets_cdpath=false
 cd_chain_proven=false
+cd_count=0
 command_executable_text="$(printf '%s' "$command" | without_single_quoted_literals)"
 if printf '%s' "$command_executable_text" \
   | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?CDPATH='; then
@@ -480,6 +499,12 @@ fi
 while IFS= read -r segment; do
   cd_target="$(segment_cd_target "$segment")"
   if [ -n "$cd_target" ]; then
+    cd_count=$((cd_count + 1))
+    if [ "$cd_count" -gt 1 ]; then
+      # Multiple directory changes can belong to different conditional chains.
+      # Refuse to guess which one controls the eventual push.
+      ambiguous_cd_scope=true
+    fi
     if printf '%s' "$segment" | grep -qE '^[[:space:]]*\('; then
       ambiguous_cd_scope=true
     fi
@@ -498,23 +523,6 @@ done < <(printf '%s\n' "$command" | without_heredoc_bodies | shell_segments)
 
 if [ -z "$push_segment" ]; then
   exit 0
-fi
-
-if [ "${TOUCHSTONE_EMERGENCY:-0}" != "1" ]; then
-  cat >&2 <<EOF
-==> Blocked by Touchstone emergency-disclosure: 'git push --no-verify'
-
-  --no-verify bypasses pre-push hooks (Conductor review, default-branch
-  checks). Routine pushes should not bypass these.
-
-  This is the documented emergency path. To use it:
-    1. Set TOUCHSTONE_EMERGENCY=1 in the environment for this push.
-    2. The next PR you open MUST include an "Emergency-bypass disclosure"
-       section explaining what was bypassed and why.
-
-  See principles/git-workflow.md ("Emergency path").
-EOF
-  exit 2
 fi
 
 if [ "$push_context" != "direct" ] || [ "$ambiguous_cd_scope" = "true" ]; then
@@ -580,7 +588,7 @@ while IFS= read -r git_word; do
     esac
   elif [ "$seen_git" = "true" ] && [ "$git_word" = "-C" ]; then
     expect_git_c_target=true
-  elif [ "$seen_git" = "true" ] && [ "$git_word" = "push" ]; then
+  elif [ "$seen_git" = "true" ] && [ "$git_word" = "$push_subcommand" ]; then
     break
   elif [ "$seen_git" = "true" ]; then
     case "$git_word" in
@@ -602,6 +610,47 @@ if [ -n "$git_c_target" ]; then
   else
     push_cwd="$push_cwd/$git_c_target"
   fi
+fi
+
+if [ "$push_subcommand" != "push" ]; then
+  alias_expansion="$(git -C "$push_cwd" config --get "alias.$push_subcommand" 2>/dev/null || true)"
+  alias_command="$(printf '%s' "$alias_expansion" | shell_words | sed -n '1p')"
+  case "$alias_command" in
+    push)
+      ;;
+    !*)
+      if printf '%s' "$alias_expansion" | grep -qE '(^|[[:space:]])(git[[:space:]]+)?push([[:space:]]|$)'; then
+        push_context="nested"
+      else
+        exit 0
+      fi
+      ;;
+    *)
+      exit 0
+      ;;
+  esac
+fi
+
+if [ "${TOUCHSTONE_EMERGENCY:-0}" != "1" ]; then
+  cat >&2 <<EOF
+==> Blocked by Touchstone emergency-disclosure: 'git push --no-verify'
+
+  --no-verify bypasses pre-push hooks (Conductor review, default-branch
+  checks). Routine pushes should not bypass these.
+
+  This is the documented emergency path. To use it:
+    1. Set TOUCHSTONE_EMERGENCY=1 in the environment for this push.
+    2. The next PR you open MUST include an "Emergency-bypass disclosure"
+       section explaining what was bypassed and why.
+
+  See principles/git-workflow.md ("Emergency path").
+EOF
+  exit 2
+fi
+
+if [ "$push_context" != "direct" ]; then
+  echo "emergency-disclosure: cannot safely resolve shell-based Git alias context; bypass blocked" >&2
+  exit 2
 fi
 
 audit_repo="$(git -C "$push_cwd" rev-parse --show-toplevel 2>/dev/null || true)"

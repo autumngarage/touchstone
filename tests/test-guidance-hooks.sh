@@ -264,6 +264,12 @@ echo "==> emergency-disclosure"
 # 7. git push --no-verify without env → blocked
 assert "blocks 'git push --no-verify' without TOUCHSTONE_EMERGENCY" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git push --no-verify origin feat/test")")"
+git -C "$TMPDIR" config alias.p push
+assert "blocks push alias with --no-verify" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git p --no-verify origin feat/test")")"
+git -C "$TMPDIR" config alias.ci commit
+assert "allows non-push alias with --no-verify" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git ci --no-verify -m wip")")"
 
 # 8. with env var, allowed (and logged)
 EXIT_ALLOWED=0
@@ -519,6 +525,14 @@ EXIT_SKIPPED_CD=0
 printf '%s' "$SKIPPED_CD_JSON" \
   | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_SKIPPED_CD=$?
 assert "blocks conditionally skipped cd before an outer push" "2" "$EXIT_SKIPPED_CD"
+
+MULTIPLE_CD_JSON="$(mkjson \
+  "cd $EMERGENCY_TARGET && echo ok; false && cd $MAIN_TARGET; git push --no-verify origin feat/test" \
+  "$TMPDIR")"
+EXIT_MULTIPLE_CD=0
+printf '%s' "$MULTIPLE_CD_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_MULTIPLE_CD=$?
+assert "blocks multiple conditional cd chains before an emergency push" "2" "$EXIT_MULTIPLE_CD"
 
 CDPATH_PARENT="$(mktemp -d -t touchstone-cdpath-parent.XXXXXX)"
 CDPATH_TARGET="$CDPATH_PARENT/cdpath-target"
