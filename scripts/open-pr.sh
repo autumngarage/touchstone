@@ -74,6 +74,9 @@ ORPHAN_PR_NUMBER=""
 BODY_FILE=""
 ADVISORY_AT_PR_OPEN=false
 PREFLIGHT_REQUIRED=true
+PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=false
+PR_TRIGGERED_REVIEW_PROVIDER=""
+OPEN_PR_REVIEW_CONFIG_ERROR=""
 REPO_FULL_NAME=""
 
 on_exit() {
@@ -300,10 +303,52 @@ load_open_pr_review_config() {
       ADVISORY_AT_PR_OPEN="$(normalize_bool "$value")"
     elif [ "$section" = "review" ] && [ "$key" = "preflight_required" ]; then
       PREFLIGHT_REQUIRED="$(normalize_bool "$value")"
+    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "request_on_push" ]; then
+      case "$value" in
+        true | false) PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH="$value" ;;
+        *) OPEN_PR_REVIEW_CONFIG_ERROR="[review.pr_triggered].request_on_push must be true or false; got: $value" ;;
+      esac
+    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "provider" ]; then
+      PR_TRIGGERED_REVIEW_PROVIDER="$value"
     fi
   }
 
   toml_parse "$config_file" open_pr_toml_callback
+  if [ -n "$OPEN_PR_REVIEW_CONFIG_ERROR" ]; then
+    echo "ERROR: $OPEN_PR_REVIEW_CONFIG_ERROR" >&2
+    return 1
+  fi
+}
+
+request_pr_triggered_review() {
+  local pr_number="$1"
+  local head_sha marker comments body
+
+  if ! truthy "$PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH"; then
+    return 0
+  fi
+  if [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then
+    echo "ERROR: request_on_push only supports [review.pr_triggered].provider = \"github-codex\"." >&2
+    return 1
+  fi
+
+  head_sha="$(git rev-parse HEAD)"
+  marker="<!-- touchstone:pr-review-request provider=github-codex head=$head_sha -->"
+  if ! comments="$(gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments?per_page=100" --jq '.[].body')"; then
+    echo "ERROR: failed to inspect prior GitHub Codex review requests for PR #$pr_number." >&2
+    return 1
+  fi
+  if printf '%s\n' "$comments" | grep -Fq "$marker"; then
+    echo "==> GitHub Codex review already requested for head $head_sha."
+    return 0
+  fi
+
+  body="$(printf '@codex review\n\n%s' "$marker")"
+  if ! gh pr comment "$pr_number" --body "$body" >/dev/null; then
+    echo "ERROR: failed to request GitHub Codex review for PR #$pr_number." >&2
+    return 1
+  fi
+  echo "==> Requested GitHub Codex review for head $head_sha."
 }
 
 run_advisory_review_at_pr_open() {
@@ -639,8 +684,9 @@ trap on_exit EXIT
 EXISTING_PR_URL="$(gh pr list --head "$CURRENT_BRANCH" --author "@me" --state open --json url --jq '.[0].url // empty' 2>/dev/null || echo "")"
 if [ -n "$EXISTING_PR_URL" ]; then
   echo "==> PR already open for $CURRENT_BRANCH: $EXISTING_PR_URL"
+  PR_NUMBER="$(basename "$EXISTING_PR_URL")"
+  request_pr_triggered_review "$PR_NUMBER"
   if [ "$AUTO_MERGE" = true ]; then
-    PR_NUMBER="$(basename "$EXISTING_PR_URL")"
     ORPHAN_PR_URL="$EXISTING_PR_URL"
     ORPHAN_PR_NUMBER="$PR_NUMBER"
     run_issue_claim_preflight "existing PR #$PR_NUMBER" --pr-number "$PR_NUMBER"
@@ -790,6 +836,8 @@ if [ -n "$DRAFT_FLAG" ]; then
   ORPHAN_PR_NUMBER=""
   exit 0
 fi
+
+request_pr_triggered_review "$ORPHAN_PR_NUMBER"
 
 # Auto-merge: extract PR number and run merge-pr.sh, then positively verify
 # the PR actually reached MERGED state on GitHub before claiming success.

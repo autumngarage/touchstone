@@ -56,6 +56,7 @@ high_scrutiny_paths = [
 [review.pr_triggered]
 required = true
 provider = "github-codex"
+request_on_push = true
 timeout_sec = 1800
 poll_sec = 10
 trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]

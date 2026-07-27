@@ -64,6 +64,13 @@ case "${1:-} ${2:-}" in
     fi
     printf '%s\n' "${5:-}" >> "$GH_COMMENT_FILE"
     ;;
+  "api --paginate")
+    if [ "${GH_API_FAIL:-0}" = "1" ]; then
+      echo "mock comment inspection failure" >&2
+      exit 1
+    fi
+    printf '%s\n' "${GH_EXISTING_REQUEST_BODY:-}"
+    ;;
   *)
     echo "unexpected gh args: $*" >&2
     exit 1
@@ -102,6 +109,8 @@ run_open_pr() {
     invoke_open_pr() {
       PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
         GH_COMMENT_FILE="$TEST_DIR/comments" \
+        GH_API_FAIL="${GH_API_FAIL:-0}" \
+        GH_EXISTING_REQUEST_BODY="${GH_EXISTING_REQUEST_BODY:-}" \
         CODEX_REVIEW_STUB_EXIT="${CODEX_REVIEW_STUB_EXIT:-0}" \
         CODEX_REVIEW_STUB_FINDINGS="${CODEX_REVIEW_STUB_FINDINGS:-0}" \
         CODEX_REVIEW_STUB_REASON="${CODEX_REVIEW_STUB_REASON:-clean}" \
@@ -274,8 +283,59 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Case 7: advisory preflight cache hashes relevant root worktree state from subdirs"
+echo "==> Case 7: request_on_push posts one head-bound GitHub Codex request"
 reset_case
+printf '[review]\npreflight_required = false\nadvisory_at_pr_open = false\n\n[review.pr_triggered]\nprovider = "github-codex"\nrequest_on_push = true\n' >"$REPO_DIR/.codex-review.toml"
+git -C "$REPO_DIR" add .codex-review.toml
+git -C "$REPO_DIR" commit -m "request codex review on push" >/dev/null 2>&1
+REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
+OUT="$TEST_DIR/request-on-push.out"
+run_open_pr "$OUT"
+if grep -q '^@codex review$' "$TEST_DIR/comments" \
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD -->" "$TEST_DIR/comments" \
+  && grep -q "Requested GitHub Codex review for head $REQUEST_HEAD" "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected one head-bound GitHub Codex request" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 8: request_on_push is idempotent for the same head"
+EXISTING_REQUEST_BODY="$(cat "$TEST_DIR/comments")"
+reset_case
+OUT="$TEST_DIR/request-idempotent.out"
+GH_EXISTING_REQUEST_BODY="$EXISTING_REQUEST_BODY" run_open_pr "$OUT"
+if grep -q "GitHub Codex review already requested for head $REQUEST_HEAD" "$OUT" \
+  && [ ! -f "$TEST_DIR/comments" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: repeated request should not post another comment" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 9: request inspection failure stops before merge waiting"
+reset_case
+OUT="$TEST_DIR/request-inspection-failure.out"
+if GH_API_FAIL=1 run_open_pr "$OUT"; then
+  echo "    FAIL: request inspection failure should fail closed" >&2
+  ERRORS=$((ERRORS + 1))
+elif grep -q 'failed to inspect prior GitHub Codex review requests' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: request inspection failure lacked actionable diagnostics" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 10: advisory preflight cache hashes relevant root worktree state from subdirs"
+reset_case
+printf '[review]\npreflight_required = true\nadvisory_at_pr_open = true\n' >"$REPO_DIR/.codex-review.toml"
+git -C "$REPO_DIR" add .codex-review.toml
+git -C "$REPO_DIR" commit -m "restore advisory preflight" >/dev/null 2>&1
 mkdir -p "$REPO_DIR/nested"
 printf 'change\nroot dirty one\n' >"$REPO_DIR/file.txt"
 OUT="$TEST_DIR/preflight-subdir-first.out"

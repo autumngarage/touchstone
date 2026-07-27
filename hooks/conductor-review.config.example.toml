@@ -94,6 +94,7 @@ unsafe_paths = [
 # [review.pr_triggered]
 # required = true
 # provider = "github-codex"
+# request_on_push = false  # Post one head-bound `@codex review` request per pushed PR head.
 # timeout_sec = 1800
 # poll_sec = 10
 # trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]
