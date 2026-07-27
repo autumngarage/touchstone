@@ -78,6 +78,25 @@ touchstone_ship_write() {
   mv "$tmp" "$job_dir/$name"
 }
 
+touchstone_ship_mtime_epoch() {
+  local path="$1" epoch
+  epoch="$(stat -f '%m' "$path" 2>/dev/null)" \
+    || epoch="$(stat -c '%Y' "$path" 2>/dev/null)" \
+    || return 1
+  case "$epoch" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$epoch"
+}
+
+touchstone_ship_claim() {
+  local job_dir="$1"
+  mkdir -p "$job_dir"
+  # mkdir is the claim boundary. The directory mtime is available atomically
+  # with creation, so contenders never depend on a later metadata write.
+  mkdir "$job_dir/active" 2>/dev/null
+}
+
 touchstone_ship_pid_is_runner() {
   local job_dir="$1" pid="$2" command_line
   case "$pid" in
@@ -151,15 +170,15 @@ touchstone_ship_refresh() {
         now_epoch="$(date +%s)"
         case "$claimed_epoch" in
           '' | *[!0-9]*)
-            rmdir "$job_dir/active" 2>/dev/null || true
-            ;;
-          *)
-            if [ $((now_epoch - claimed_epoch)) -ge 5 ]; then
-              rm -f "$job_dir/active/claimed-epoch"
-              rmdir "$job_dir/active" 2>/dev/null || true
-            fi
+            # New claims use the directory mtime as their atomic timestamp.
+            # Preserve compatibility with legacy claimed-epoch files below.
+            claimed_epoch="$(touchstone_ship_mtime_epoch "$job_dir/active")" || return 0
             ;;
         esac
+        if [ $((now_epoch - claimed_epoch)) -ge 5 ]; then
+          rm -f "$job_dir/active/claimed-epoch"
+          rmdir "$job_dir/active" 2>/dev/null || true
+        fi
       fi
       ;;
   esac

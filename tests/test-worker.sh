@@ -352,6 +352,25 @@ assert_contains "$DETACHED_STATUS" '"status":"failed"'
 assert_contains "$DETACHED_STATUS" '"reason":"stale-runner"'
 assert_contains "$DETACHED_EVENTS" '"event":"worker_ship_finished"'
 
+echo "==> Case d2b: concurrent startup preserves the first atomic claim"
+ATOMIC_JOB_DIR="$TEST_DIR/atomic-claim-job"
+# shellcheck source=../lib/worker-ship-job.sh
+source "$TOUCHSTONE_ROOT/lib/worker-ship-job.sh"
+touchstone_ship_claim "$ATOMIC_JOB_DIR"
+(
+  sleep 0.1
+  touchstone_ship_refresh "$ATOMIC_JOB_DIR"
+) &
+ATOMIC_REFRESH_PID=$!
+if touchstone_ship_claim "$ATOMIC_JOB_DIR"; then
+  fail "concurrent detached startup acquired an existing claim"
+fi
+wait "$ATOMIC_REFRESH_PID"
+if [ ! -d "$ATOMIC_JOB_DIR/active" ]; then
+  fail "refresh removed a newly created detached startup claim"
+fi
+rmdir "$ATOMIC_JOB_DIR/active"
+
 echo "==> Case d3: detached jobs do not collide when branch names sanitize alike"
 COLLISION_SLASH_WT="$TEST_DIR/collision-slash-worktree"
 COLLISION_UNDERSCORE_WT="$TEST_DIR/collision-underscore-worktree"

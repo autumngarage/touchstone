@@ -587,13 +587,11 @@ cmd_ship() {
     return 1
   }
   touchstone_ship_refresh "$job_dir"
-  mkdir -p "$job_dir"
-  if ! mkdir "$job_dir/active" 2>/dev/null; then
+  if ! touchstone_ship_claim "$job_dir"; then
     echo "ERROR: a detached ship job is already active for $worktree_path" >&2
     echo "       Inspect it with: touchstone worker status --worktree '$worktree_path' --show-log" >&2
     return 1
   fi
-  touchstone_ship_write "$job_dir/active" claimed-epoch "$(date +%s)"
 
   branch="$(worker_branch "$worktree_path")"
   started_at="$(touchstone_ship_now)"
@@ -617,7 +615,6 @@ cmd_ship() {
   touchstone_ship_write "$job_dir" branch "$branch"
   touchstone_ship_write "$job_dir" worktree-path "$worktree_path"
   touchstone_ship_write "$job_dir" status starting
-  rm -f "$job_dir/active/claimed-epoch"
 
   runner_args=(_ship-run --job-dir "$job_dir" --worktree "$worktree_path")
   if [ "$review_fix" = true ]; then
