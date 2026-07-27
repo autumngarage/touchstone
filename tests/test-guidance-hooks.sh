@@ -359,6 +359,12 @@ assert "blocks bypass push after Git global options" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git --no-pager push --no-verify origin feat/test")")"
 assert "blocks a command-scoped Git push alias" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git -c alias.x=push x --no-verify origin feat/test")")"
+assert "blocks a Git push alias supplied through --config-env" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "ALIAS=push git --config-env=alias.x=ALIAS x --no-verify origin feat/test")")"
+assert "blocks a Git push alias supplied through GIT_CONFIG_COUNT" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=push git x --no-verify origin feat/test")")"
+assert "blocks a Git alias lookup under command-scoped HOME" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "HOME=/tmp/alternate-git-home git x --no-verify origin feat/test")")"
 assert "blocks bypass push with a quoted git -C path" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'git -C "/tmp/repo with spaces" push --no-verify origin feat/test')")"
 LINE_CONTINUATION_COMMAND="git \\"

@@ -650,7 +650,7 @@ if printf '%s' "$command_executable_text" \
 fi
 if [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ] || [ -n "${GIT_COMMON_DIR:-}" ] \
   || printf '%s' "$command_executable_text" \
-  | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR)='; then
+  | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_CEILING_DIRECTORIES|GIT_CONFIG_[A-Z0-9_]+|HOME|XDG_CONFIG_HOME)='; then
   command_sets_git_context=true
 fi
 if printf '%s' "$command_executable_text" | grep -qE '\(' \
@@ -739,8 +739,9 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
   for candidate_index in "${!non_push_candidate_segments[@]}"; do
     candidate_segment="${non_push_candidate_segments[$candidate_index]}"
     candidate_subcommand="${non_push_candidate_subcommands[$candidate_index]}"
-    if [ "$cd_count" -gt 0 ] \
-      || printf '%s' "$candidate_segment" | grep -qE '(^|[[:space:]])(-C|-c)([[:space:]]|$)'; then
+    if [ "$command_sets_git_context" = "true" ] || [ "$cd_count" -gt 0 ] \
+      || printf '%s' "$candidate_segment" \
+      | grep -qE '(^|[[:space:]])(-C|-c|--config-env)(=|[[:space:]]|$)'; then
       # Alias configuration is repository-scoped. A composed directory context
       # cannot be confirmed here without executing the shell, so fail closed.
       push_segment="$candidate_segment"
