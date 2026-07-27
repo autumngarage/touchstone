@@ -1419,7 +1419,7 @@ FAKE_NICE
     "bash -c 'git push --no-verify origin main'"
   assert_case "invoked-function" ambiguous \
     "push_now() { git push --no-verify origin main; }; push_now"
-  assert_case "sudo-wrapper" repo-a \
+  assert_case "sudo-wrapper" ambiguous \
     "sudo git push --no-verify origin main"
   assert_case "nice-wrapper" repo-a \
     "nice -n 5 git push --no-verify origin main"
@@ -1562,7 +1562,11 @@ FAKE_NICE
   matrix_index=0
   for prefix in "${matrix_prefixes[@]}"; do
     matrix_index=$((matrix_index + 1))
-    assert_case "matrix-prefix-$matrix_index" repo-a \
+    expected="repo-a"
+    # Identity-changing wrappers cannot inherit the caller's auditable
+    # repository context, even when the wrapped command is otherwise static.
+    [ "$prefix" = "sudo " ] && expected="ambiguous"
+    assert_case "matrix-prefix-$matrix_index" "$expected" \
       "${prefix}git push --no-verify origin matrix-$matrix_index"
   done
 
