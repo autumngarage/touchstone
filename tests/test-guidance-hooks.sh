@@ -352,6 +352,10 @@ assert "blocks quoted Git executable supplied through environment expansion" "2"
   "$(run_hook "$EMERGENCY" "$(mkjson '"$GIT" push --no-verify origin feat/test')")"
 assert "blocks ANSI-C-quoted Git executable" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "\$'git' push --no-verify origin feat/test")")"
+assert "blocks a defined Git push alias invoked with the bypass flag" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "shopt -s expand_aliases; alias gp='git push'; gp --no-verify origin feat/test")")"
+assert "allows a Git push alias definition that is not invoked" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "alias gp='git push'; echo --no-verify")")"
 assert "blocks push subcommand supplied through variable expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'sub=push; git $sub --no-verify origin feat/test')")"
 

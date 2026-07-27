@@ -65,6 +65,7 @@ COMMENT_ON_CLEAN=true
 COMMENT_FINDINGS_HISTORY=true
 PR_TRIGGERED_REVIEW_REQUIRED=false
 PR_TRIGGERED_REVIEW_PROVIDER="github-codex"
+PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=false
 PR_TRIGGERED_REVIEW_TIMEOUT_SEC=1800
 PR_TRIGGERED_REVIEW_POLL_SEC=10
 PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS="chatgpt-codex-connector,chatgpt-codex-connector[bot]"
@@ -378,6 +379,11 @@ load_merge_review_config() {
       esac
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "provider" ]; then
       PR_TRIGGERED_REVIEW_PROVIDER="$value"
+    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "request_on_push" ]; then
+      case "$value" in
+        true | false) PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH="$value" ;;
+        *) config_error="[review.pr_triggered].request_on_push must be true or false; got: $value" ;;
+      esac
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "timeout_sec" ]; then
       PR_TRIGGERED_REVIEW_TIMEOUT_SEC="$value"
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "poll_sec" ]; then
@@ -1822,6 +1828,50 @@ wait_for_pr_triggered_review() {
   exit 1
 }
 
+request_pr_triggered_review() {
+  local expected_head="$1"
+  local phase="$2"
+  local observed_head marker comments body
+
+  truthy "$PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH" || return 0
+  if [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then
+    echo "ERROR: request_on_push only supports [review.pr_triggered].provider = \"github-codex\"." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
+    return 1
+  fi
+  if ! observed_head="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')"; then
+    echo "ERROR: Failed to resolve PR #$PR_NUMBER head before requesting review ($phase)." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
+    return 1
+  fi
+  if [ "$observed_head" != "$expected_head" ]; then
+    echo "ERROR: Refusing to request review for PR #$PR_NUMBER before its head converges." >&2
+    echo "       expected: $expected_head" >&2
+    echo "       actual:   ${observed_head:-<empty>}" >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
+    return 1
+  fi
+
+  marker="<!-- touchstone:pr-review-request provider=github-codex head=$expected_head -->"
+  if ! comments="$(gh api --paginate "repos/$REPO_FULL_NAME/issues/$PR_NUMBER/comments?per_page=100" --jq '.[].body')"; then
+    echo "ERROR: Failed to inspect prior GitHub Codex review requests for PR #$PR_NUMBER." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
+    return 1
+  fi
+  if grep -Fqx "$marker" <<<"$comments"; then
+    echo "==> GitHub Codex review already requested for head $expected_head."
+    return 0
+  fi
+
+  body="$(printf '@codex review\n\n%s' "$marker")"
+  if ! gh pr comment "$PR_NUMBER" --body "$body" >/dev/null; then
+    echo "ERROR: Failed to request GitHub Codex review for PR #$PR_NUMBER ($phase)." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
+    return 1
+  fi
+  echo "==> Requested GitHub Codex review for head $expected_head ($phase)."
+}
+
 print_unresolved_review_threads() {
   local threads="$1"
   local count=0
@@ -2341,6 +2391,7 @@ run_merge_review() {
       wait_for_pr_head "$reviewed_head_after"
       wait_for_clean_merge_state
       if truthy "$PR_TRIGGERED_REVIEW_REQUIRED"; then
+        request_pr_triggered_review "$reviewed_head_after" "after review fixes" || return 1
         wait_for_pr_triggered_review "$reviewed_head_after" "after review fixes"
         require_pr_feedback_clear "after PR-triggered AI review on review fixes" "$reviewed_head_after"
       fi

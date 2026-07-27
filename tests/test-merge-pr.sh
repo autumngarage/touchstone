@@ -163,7 +163,12 @@ case "${1:-} ${2:-}" in
       echo "unexpected gh pr comment args: $*" >&2
       exit 1
     fi
-    printf '%s\n' "${5:-}" > "$GH_COMMENT_FILE"
+    if [ -n "${GH_REVIEW_REQUEST_FILE:-}" ] \
+      && printf '%s' "${5:-}" | grep -q 'touchstone:pr-review-request'; then
+      printf '%s\n' "${5:-}" >>"$GH_REVIEW_REQUEST_FILE"
+    else
+      printf '%s\n' "${5:-}" >"$GH_COMMENT_FILE"
+    fi
     echo "commented"
     ;;
   "pr merge")
@@ -524,7 +529,7 @@ reset_case_files() {
   rm -f "$TEST_DIR"/output*.txt "$TEST_DIR"/codex-review*.log \
     "$TEST_DIR"/gh-checkout* "$TEST_DIR"/gh-merge-head* \
     "$TEST_DIR"/gh-merge-args* "$TEST_DIR"/gh-merge-body* \
-    "$TEST_DIR"/gh-comment* "$TEST_DIR"/git-checkout-main* \
+    "$TEST_DIR"/gh-comment* "$TEST_DIR"/gh-review-request* "$TEST_DIR"/git-checkout-main* \
     "$TEST_DIR"/git-detached-default* "$TEST_DIR"/git-branch-deleted* \
     "$TEST_DIR"/git-sibling-pull* "$TEST_DIR"/gh-merged-marker* \
     "$TEST_DIR"/git-review-head* "$TEST_DIR"/git-push-head* \
@@ -607,6 +612,7 @@ run_merge_pr() {
     GH_MERGE_ARGS_FILE="$TEST_DIR/gh-merge-args" \
     GH_MERGE_BODY_FILE="$TEST_DIR/gh-merge-body" \
     GH_COMMENT_FILE="$TEST_DIR/gh-comment" \
+    GH_REVIEW_REQUEST_FILE="$TEST_DIR/gh-review-request" \
     GH_HEAD_REF_FILE="$TEST_DIR/gh-head-ref" \
     GH_PR_HEAD_OID="${GH_PR_HEAD_OID:-pr-head-oid}" \
     GH_MERGED_MARKER="$TEST_DIR/gh-merged-marker" \
@@ -725,6 +731,7 @@ write_pr_triggered_config() {
   local timeout_sec="${2:-0}"
   local poll_sec="${3:-0}"
   local required="${4:-true}"
+  local request_on_push="${5:-false}"
 
   install_toml_parser_fixture
   mkdir -p "$DEFAULT_FAKE_WORKTREE"
@@ -732,6 +739,7 @@ write_pr_triggered_config() {
 [review.pr_triggered]
 required = $required
 provider = "github-codex"
+request_on_push = $request_on_push
 timeout_sec = $timeout_sec
 poll_sec = $poll_sec
 trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]
@@ -1790,7 +1798,7 @@ fi
 echo "==> Test: review-fix push requires a fresh PR-triggered review on the new head"
 reset_case_files
 install_preflight_counter_fixture
-write_pr_triggered_config false 2 1
+write_pr_triggered_config false 2 1 true true
 GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/4' \
   GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\treview-fixed-head\tAPPROVED\t2026-06-23T00:01:00Z\thttps://example.test/review/5' \
   CODEX_REVIEW_MUTATE_HEAD="review-fixed-head" \
@@ -1800,6 +1808,8 @@ GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-0
   run_merge_pr "$TEST_DIR/output-pr-triggered-review-fix.txt" 123
 rm -rf "${TEST_DIR:?}/lib"
 if grep -q '==> Merge review changed HEAD:' "$TEST_DIR/output-pr-triggered-review-fix.txt" \
+  && grep -q '<!-- touchstone:pr-review-request provider=github-codex head=review-fixed-head -->' "$TEST_DIR/gh-review-request" \
+  && grep -q '==> Requested GitHub Codex review for head review-fixed-head (after review fixes).' "$TEST_DIR/output-pr-triggered-review-fix.txt" \
   && grep -q '==> Waiting for trusted PR-visible AI review for PR #123 (after review fixes)' "$TEST_DIR/output-pr-triggered-review-fix.txt" \
   && grep -q '^review-fixed-head$' "$TEST_DIR/gh-merge-head" \
   && grep -q '^review-fixed-head$' "$TEST_DIR/git-push-head" \

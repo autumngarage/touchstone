@@ -447,6 +447,47 @@ segment_has_shell_evaluator() {
   return 1
 }
 
+segment_bypass_alias_name() {
+  local segment="$1"
+  local word="" alias_name="" alias_value="" seen_alias=false
+
+  while IFS= read -r word; do
+    if [ "$seen_alias" = "false" ]; then
+      [ "$word" = "alias" ] || return 0
+      seen_alias=true
+      continue
+    fi
+    case "$word" in
+      [A-Za-z_][A-Za-z0-9_]*=*)
+        alias_name="${word%%=*}"
+        alias_value="${word#*=}"
+        if printf '%s' "$alias_value" \
+          | grep -qE '(^|[[:space:]])([^[:space:]]*/)?git([[:space:]]+[^[:space:]]+)*[[:space:]]+push([[:space:]]|$)'; then
+          printf '%s' "$alias_name"
+          return 0
+        fi
+        ;;
+    esac
+  done < <(printf '%s' "$segment" | shell_words)
+}
+
+segment_invokes_bypass_alias() {
+  local segment="$1"
+  local protected_aliases="$2"
+  local word="" command_word="" seen_no_verify=false
+
+  while IFS= read -r word; do
+    if [ -z "$command_word" ]; then
+      command_word="$word"
+    elif [ "$word" = "--no-verify" ]; then
+      seen_no_verify=true
+    fi
+  done < <(printf '%s' "$segment" | shell_words)
+
+  [ "$seen_no_verify" = "true" ] || return 1
+  printf '%s\n' "$protected_aliases" | grep -Fqx "$command_word"
+}
+
 segment_cd_target() {
   local segment="$1"
   local token=""
@@ -527,6 +568,7 @@ command_dynamic_protected=false
 command_sets_cdpath=false
 cd_chain_proven=false
 cd_count=0
+protected_aliases=""
 command_executable_text="$(printf '%s' "$command" | without_shell_comments | without_single_quoted_literals)"
 if printf '%s' "$command_executable_text" \
   | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?CDPATH='; then
@@ -552,6 +594,18 @@ if printf '%s' "$command_executable_text" | grep -qE '(^|[^\\])\$[{A-Za-z_]' \
   fi
 fi
 while IFS= read -r segment; do
+  alias_name="$(segment_bypass_alias_name "$segment")"
+  if [ -n "$alias_name" ]; then
+    if [ -n "$protected_aliases" ]; then
+      protected_aliases="$(printf '%s\n%s' "$protected_aliases" "$alias_name")"
+    else
+      protected_aliases="$alias_name"
+    fi
+  elif [ -n "$protected_aliases" ] \
+    && segment_invokes_bypass_alias "$segment" "$protected_aliases"; then
+    command_dynamic_protected=true
+  fi
+
   cd_target="$(segment_cd_target "$segment")"
   if [ -n "$cd_target" ]; then
     cd_count=$((cd_count + 1))
