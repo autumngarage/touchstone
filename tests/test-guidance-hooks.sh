@@ -264,6 +264,14 @@ echo "==> emergency-disclosure"
 # 7. git push --no-verify without env → blocked
 assert "blocks 'git push --no-verify' without TOUCHSTONE_EMERGENCY" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git push --no-verify origin feat/test")")"
+assert "blocks the shortest accepted --no-verify abbreviation" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git push --no-veri origin feat/test")")"
+assert "blocks the longer accepted --no-verify abbreviation" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git push --no-verif origin feat/test")")"
+assert "blocks ANSI-C quoted --no-verify" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git push \$'--no-verify' origin feat/test")")"
+assert "blocks ANSI-C escaped --no-verify" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git push \$'--no-\\x76erify' origin feat/test")")"
 git -C "$TMPDIR" config alias.p push
 assert "blocks push alias with --no-verify" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git p --no-verify origin feat/test")")"

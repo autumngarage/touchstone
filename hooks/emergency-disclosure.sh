@@ -420,6 +420,24 @@ segment_may_compose_no_verify() {
     | grep -qE -- '--no-[^[:space:]]*(\$|`).*ify([[:space:]]|$)'
 }
 
+word_is_bypass_option() {
+  local word="$1"
+
+  case "$word" in
+    __touchstone_shell_composed__:*)
+      word="${word#__touchstone_shell_composed__:}"
+      word="$(printf '%b' "$word")"
+      ;;
+  esac
+
+  case "$word" in
+    --no-veri | --no-verif | --no-verify)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 segment_has_bypass_words() {
   local segment="$1"
   local word=""
@@ -460,7 +478,7 @@ segment_has_bypass_words() {
           fi
           ;;
       esac
-    elif [ "$word" = "--no-verify" ]; then
+    elif word_is_bypass_option "$word"; then
       seen_no_verify=true
     elif [ "$subcommand" = "push" ]; then
       case "$word" in
@@ -541,7 +559,7 @@ segment_invokes_bypass_alias() {
   while IFS= read -r word; do
     if [ -z "$command_word" ]; then
       command_word="$word"
-    elif [ "$word" = "--no-verify" ]; then
+    elif word_is_bypass_option "$word"; then
       seen_no_verify=true
     fi
   done < <(printf '%s' "$segment" | shell_words)
