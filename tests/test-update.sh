@@ -104,11 +104,11 @@ if [ "$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD)" != "$BASE_BRANCH" ]; the
 fi
 
 # --------------------------------------------------------------------------
-# Test 1b: same-version update migrates and stages the canonical unpinned
-# review config. The update must not leave the security boundary dirty.
+# Test 1b: same-version update reports but does not rewrite an unpinned
+# canonical review config. Review config ownership belongs to the project.
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Step 2b: Migrate canonical review config at the same version ---"
+echo "--- Step 2b: Preserve canonical review config at the same version ---"
 
 MIGRATION_PROJECT="$TEST_DIR/canonical-migration-project"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$MIGRATION_PROJECT" --no-register >/dev/null
@@ -116,25 +116,65 @@ configure_git "$MIGRATION_PROJECT"
 sed -i.bak '/^[[:space:]]*with[[:space:]]*=/d' "$MIGRATION_PROJECT/.touchstone-review.toml"
 rm -f "$MIGRATION_PROJECT/.touchstone-review.toml.bak"
 commit_all "$MIGRATION_PROJECT" "simulate unpinned canonical review config"
+MIGRATION_CONFIG_BEFORE="$(shasum "$MIGRATION_PROJECT/.touchstone-review.toml" | awk '{print $1}')"
+MIGRATION_HEAD_BEFORE="$(git -C "$MIGRATION_PROJECT" rev-parse HEAD)"
 
 (cd "$MIGRATION_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
   >"$TEST_DIR/update-canonical-migration-output.txt" 2>&1
 
 assert_contains "$TEST_DIR/update-canonical-migration-output.txt" \
-  'Touchstone version unchanged; running pending config migration'
+  'Review config migration available for .touchstone-review.toml'
 assert_contains "$TEST_DIR/update-canonical-migration-output.txt" \
-  'Migrating .touchstone-review.toml to the subscription-pinned shape'
-assert_contains "$MIGRATION_PROJECT/.touchstone-review.toml" 'with = "codex"'
-if git -C "$MIGRATION_PROJECT" show HEAD:.touchstone-review.toml | grep -q 'with = "codex"'; then
-  echo "    PASS: canonical migration was included in the update commit"
+  'This project-owned file was not changed'
+assert_contains "$TEST_DIR/update-canonical-migration-output.txt" \
+  'A missing review.conductor.with value defaults to Codex at runtime'
+assert_contains "$TEST_DIR/update-canonical-migration-output.txt" \
+  'touchstone migrate-review-config --file .touchstone-review.toml'
+if [ "$MIGRATION_CONFIG_BEFORE" = "$(shasum "$MIGRATION_PROJECT/.touchstone-review.toml" | awk '{print $1}')" ]; then
+  echo "    PASS: same-version update preserved canonical review config"
 else
-  echo "FAIL: canonical migration was not staged in the update commit" >&2
+  echo "FAIL: same-version update rewrote canonical review config" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ "$MIGRATION_HEAD_BEFORE" != "$(git -C "$MIGRATION_PROJECT" rev-parse HEAD)" ]; then
+  echo "FAIL: config advisory created a same-version update commit" >&2
   ERRORS=$((ERRORS + 1))
 fi
 if [ -n "$(git -C "$MIGRATION_PROJECT" status --porcelain)" ]; then
-  echo "FAIL: canonical config migration left a dirty worktree" >&2
+  echo "FAIL: config advisory left a dirty worktree" >&2
   git -C "$MIGRATION_PROJECT" status --short >&2
   ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
+# Test 1c: a real managed-file update must not rewrite or stage an existing
+# canonical review config.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 2c: Preserve canonical review config during a version update ---"
+
+PREVIOUS_TOUCHSTONE_SHA="$(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD^)"
+printf '%s\n' "$PREVIOUS_TOUCHSTONE_SHA" >"$MIGRATION_PROJECT/.touchstone-version"
+commit_all "$MIGRATION_PROJECT" "simulate previous touchstone version"
+MIGRATION_CONFIG_BEFORE="$(shasum "$MIGRATION_PROJECT/.touchstone-review.toml" | awk '{print $1}')"
+
+(cd "$MIGRATION_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-canonical-version-output.txt" 2>&1
+
+assert_contains "$TEST_DIR/update-canonical-version-output.txt" \
+  'Review config migration available for .touchstone-review.toml'
+if [ "$MIGRATION_CONFIG_BEFORE" = "$(shasum "$MIGRATION_PROJECT/.touchstone-review.toml" | awk '{print $1}')" ]; then
+  echo "    PASS: version update preserved canonical review config"
+else
+  echo "FAIL: version update rewrote canonical review config" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if git -C "$MIGRATION_PROJECT" diff-tree --no-commit-id --name-only -r HEAD \
+  | grep -qxF '.touchstone-review.toml'; then
+  echo "FAIL: version update staged project-owned canonical review config" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  echo "    PASS: version update did not stage canonical review config"
 fi
 
 # --------------------------------------------------------------------------

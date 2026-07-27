@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
 #
 # tests/test-update-migrate-reviewer-config.sh — Issue #177:
-# `bin/touchstone update` (= bootstrap/update-project.sh) auto-migrates a
-# project's `.codex-review.toml` from the v1.x `reviewers = [...]` shape
-# to the v2.x `reviewer = "conductor"` + `[review.conductor]` shape so
-# the deprecation note in scripts/codex-review.sh stops firing on every
-# push.
+# `bin/touchstone update` (= bootstrap/update-project.sh) identifies a
+# project's legacy `.codex-review.toml` shape but preserves the project-owned
+# file and directs the user to the explicit migration command.
 #
 # Cases covered:
-#   1. v1.x reviewers cascade → migrated; commit includes the rewrite.
-#   2. v1.x [review.local] block → migrated.
+#   1. v1.x reviewers cascade → preserved with an explicit migration hint.
+#   2. v1.x [review.local] block → preserved with an explicit migration hint.
 #   3. Already-v2.x config → unchanged (idempotent re-run).
 #   4. Absent .codex-review.toml → no error.
 #
@@ -53,9 +51,9 @@ run_update() {
 }
 
 # ---------------------------------------------------------------------------
-# Case 1: v1.x reviewers cascade is migrated.
+# Case 1: v1.x reviewers cascade is preserved.
 # ---------------------------------------------------------------------------
-echo "==> Case 1: v1.x reviewers cascade migrates to v2.x conductor shape"
+echo "==> Case 1: v1.x reviewers cascade gets an explicit migration hint"
 P1="$TEST_DIR/p1"
 bootstrap_project "$P1"
 rm -f "$P1/.touchstone-review.toml"
@@ -67,35 +65,27 @@ mode = "fix"
 unsafe_paths = ["src/auth/"]
 EOF
 commit_file "$P1" "test: legacy reviewer config"
+P1_BEFORE="$(shasum "$P1/.codex-review.toml" | awk '{print $1}')"
 
 if ! run_update "$P1"; then
   fail "case 1: update exited non-zero"
   cat "$TEST_DIR/update.out" >&2
 fi
 
-if ! grep -qE '^[[:space:]]*reviewer[[:space:]]*=[[:space:]]*"conductor"' "$P1/.codex-review.toml"; then
-  fail "case 1: .codex-review.toml does not have reviewer = \"conductor\""
-fi
-if grep -qE '^[[:space:]]*reviewers[[:space:]]*=[[:space:]]*\[' "$P1/.codex-review.toml"; then
-  fail "case 1: legacy reviewers = [...] line still present"
-fi
-if ! grep -qE '^\[review\.conductor\]' "$P1/.codex-review.toml"; then
-  fail "case 1: [review.conductor] block missing"
-fi
-if ! grep -q 'unsafe_paths' "$P1/.codex-review.toml"; then
-  fail "case 1: user-set unsafe_paths line lost"
-fi
-if ! git -C "$P1" log -1 --format=%s | grep -q 'chore: update touchstone'; then
-  fail "case 1: latest commit is not the touchstone update commit"
+if [ "$P1_BEFORE" != "$(shasum "$P1/.codex-review.toml" | awk '{print $1}')" ]; then
+  fail "case 1: project-owned legacy config was modified"
 fi
 if [ -n "$(git -C "$P1" status --porcelain -- .codex-review.toml)" ]; then
   fail "case 1: .codex-review.toml has uncommitted changes after update"
 fi
+if ! grep -qF 'touchstone migrate-review-config --file .codex-review.toml' "$TEST_DIR/update.out"; then
+  fail "case 1: explicit migration command missing"
+fi
 
 # ---------------------------------------------------------------------------
-# Case 2: [review.local] block triggers migration.
+# Case 2: [review.local] block triggers the advisory without mutation.
 # ---------------------------------------------------------------------------
-echo "==> Case 2: [review.local] block triggers migration"
+echo "==> Case 2: [review.local] block triggers migration advisory"
 P2="$TEST_DIR/p2"
 bootstrap_project "$P2"
 rm -f "$P2/.touchstone-review.toml"
@@ -108,16 +98,17 @@ reviewer = "conductor"
 command = "my-local-reviewer --model demo"
 EOF
 commit_file "$P2" "test: legacy review.local block"
+P2_BEFORE="$(shasum "$P2/.codex-review.toml" | awk '{print $1}')"
 
 if ! run_update "$P2"; then
   fail "case 2: update exited non-zero"
 fi
 
-if grep -qE '^\[review\.local\]' "$P2/.codex-review.toml"; then
-  fail "case 2: [review.local] header remains uncommented"
+if [ "$P2_BEFORE" != "$(shasum "$P2/.codex-review.toml" | awk '{print $1}')" ]; then
+  fail "case 2: project-owned legacy config was modified"
 fi
-if ! grep -qF '[review.local] — retired in Touchstone 2.0' "$P2/.codex-review.toml"; then
-  fail "case 2: retired-section comment marker missing"
+if ! grep -qF 'touchstone migrate-review-config --file .codex-review.toml' "$TEST_DIR/update.out"; then
+  fail "case 2: explicit migration command missing"
 fi
 
 # ---------------------------------------------------------------------------
@@ -171,4 +162,4 @@ if [ "$ERRORS" -gt 0 ]; then
   exit 1
 fi
 
-echo "==> PASS: update auto-migrates .codex-review.toml (#177)"
+echo "==> PASS: update preserves project-owned review configs"

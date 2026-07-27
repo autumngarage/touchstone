@@ -125,8 +125,9 @@ fi
 echo "==> Updating project: $PROJECT_DIR"
 echo "    Touchstone: $OLD_SHA -> $CURRENT_SHA"
 
-# Detect both legacy shapes and an unpinned 2.0 Conductor block so the
-# "Already up to date" early exit cannot preserve a metered-capable default.
+# Detect both legacy shapes and an unpinned 2.0 Conductor block so update can
+# surface the explicit migration path. Review configs are project-owned, so
+# detection must never turn into an automatic rewrite.
 # Prefer the canonical config when both compatibility names exist.
 REVIEW_CONFIG_TOML=""
 if [ -f "$PROJECT_DIR/.touchstone-review.toml" ]; then
@@ -153,12 +154,23 @@ if [ -n "$REVIEW_CONFIG_TOML" ]; then
   fi
 fi
 
-if [ "$OLD_SHA" = "$CURRENT_SHA" ] && [ "$NEEDS_CODEX_REVIEW_MIGRATION" = false ]; then
+print_review_config_migration_notice() {
+  local config_name
+  config_name="$(basename "$REVIEW_CONFIG_TOML")"
+  echo ""
+  echo "==> Review config migration available for $config_name."
+  echo "    This project-owned file was not changed."
+  echo "    A missing review.conductor.with value defaults to Codex at runtime."
+  echo "    To rewrite it explicitly: touchstone migrate-review-config --file $config_name"
+}
+
+if [ "$NEEDS_CODEX_REVIEW_MIGRATION" = true ]; then
+  print_review_config_migration_notice
+fi
+
+if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
   echo "==> Already up to date."
   exit 0
-fi
-if [ "$OLD_SHA" = "$CURRENT_SHA" ] && [ "$NEEDS_CODEX_REVIEW_MIGRATION" = true ]; then
-  echo "==> Touchstone version unchanged; running pending config migration."
 fi
 
 if [ "$CHECK_ONLY" = true ]; then
@@ -344,28 +356,6 @@ if [ "$DRY_RUN" = false ]; then
     echo "==> Creating update branch: $UPDATE_BRANCH"
     git -C "$PROJECT_DIR" checkout -b "$UPDATE_BRANCH" >/dev/null
     BRANCH_CREATED=true
-  fi
-fi
-
-# Issue #177: actually migrate .codex-review.toml from v1.x → v2.x. The
-# detection above already determined NEEDS_CODEX_REVIEW_MIGRATION; the
-# rewrite happens here, after require_clean_git_repo, so it never runs
-# against an ambiguous tree.
-if [ "$NEEDS_CODEX_REVIEW_MIGRATION" = true ] && [ "$DRY_RUN" = false ]; then
-  echo ""
-  echo "==> Migrating $(basename "$REVIEW_CONFIG_TOML") to the subscription-pinned shape..."
-  ensure_safe_dest "$PROJECT_DIR/.touchstone-migrate-codex-review.log" || true
-  if (
-    cd "$PROJECT_DIR" \
-      && bash "$TOUCHSTONE_ROOT/bootstrap/migrate-review-config.sh" --no-backup --file "$REVIEW_CONFIG_TOML"
-  ) >"$PROJECT_DIR/.touchstone-migrate-codex-review.log" 2>&1; then
-    rm -f "$PROJECT_DIR/.touchstone-migrate-codex-review.log"
-    echo "    $(basename "$REVIEW_CONFIG_TOML"): migrated review config to the subscription-pinned shape."
-    echo "    The migration warning in the Conductor review hook will no longer fire on push."
-  else
-    echo "    WARNING: auto-migration failed — leaving $(basename "$REVIEW_CONFIG_TOML") unchanged." >&2
-    echo "             Inspect: $PROJECT_DIR/.touchstone-migrate-codex-review.log" >&2
-    echo "             Rerun manually: cd $PROJECT_DIR && touchstone migrate-review-config" >&2
   fi
 fi
 
@@ -729,13 +719,6 @@ if [ "$DRY_RUN" = false ]; then
   echo ""
   echo "==> Committing touchstone update..."
   stage_touchstone_manifest_paths
-  # If the early auto-migration rewrote the canonical or legacy review config,
-  # ship it in the same update commit instead of leaving an unstaged diff.
-  review_config_rel="${REVIEW_CONFIG_TOML#"$PROJECT_DIR/"}"
-  if [ -f "$REVIEW_CONFIG_TOML" ] \
-    && [ -n "$(git -C "$PROJECT_DIR" status --porcelain -- "$review_config_rel" 2>/dev/null)" ]; then
-    git -C "$PROJECT_DIR" add -f -- "$review_config_rel"
-  fi
   if [ -f "$PROJECT_DIR/.claude/settings.json" ]; then
     git -C "$PROJECT_DIR" add -f -- .claude/settings.json
   fi
