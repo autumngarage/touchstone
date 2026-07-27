@@ -99,6 +99,22 @@ REAL_GIT="$(command -v git)"
 cat >"$FAKE_BIN/git" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "\${1:-}" = "fetch" ]; then
+  fetch_refspec="\${*: -1}"
+  remote_ref="\${fetch_refspec#*:}"
+  if [ "\${GIT_FETCH_FAIL:-0}" = "1" ]; then
+    exit 1
+  fi
+  if [ -n "\${GIT_FETCH_BASE_SHA:-}" ]; then
+    "$REAL_GIT" update-ref "\$remote_ref" "\$GIT_FETCH_BASE_SHA"
+    echo "[mock] git \$*"
+    exit 0
+  fi
+  if "$REAL_GIT" rev-parse --verify --quiet "\$remote_ref^{commit}" >/dev/null; then
+    exit 0
+  fi
+  exit 1
+fi
 if [ "\${1:-}" = "push" ]; then
   echo "[mock] git push \$*"
   if [ "\${GIT_PUSH_CREATE_LOCAL_COMMIT:-0}" = "1" ]; then
@@ -135,6 +151,8 @@ run_open_pr() {
         GH_EXISTING_REQUEST_BODY="${GH_EXISTING_REQUEST_BODY:-}" \
         GH_EXISTING_REQUEST_FILE="${GH_EXISTING_REQUEST_FILE:-}" \
         GH_PR_HEAD_SHA="${GH_PR_HEAD_SHA:-}" \
+        GIT_FETCH_BASE_SHA="${GIT_FETCH_BASE_SHA:-}" \
+        GIT_FETCH_FAIL="${GIT_FETCH_FAIL:-0}" \
         GIT_PUSH_CREATE_LOCAL_COMMIT="${GIT_PUSH_CREATE_LOCAL_COMMIT:-0}" \
         TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS="${TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS:-1}" \
         CODEX_REVIEW_STUB_EXIT="${CODEX_REVIEW_STUB_EXIT:-0}" \
@@ -329,6 +347,49 @@ if grep -q '^@codex review$' "$TEST_DIR/comments" \
   echo "    PASS"
 else
   echo "    FAIL: feature config disabled or redirected the trusted base request policy" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 7a: trusted base policy is refreshed before review is requested"
+reset_case
+git -C "$REPO_DIR" checkout main >/dev/null 2>&1
+printf '[review]\npreflight_required = false\nadvisory_at_pr_open = false\n\n[review.pr_triggered]\nprovider = "openrouter"\nrequest_on_push = false\n' >"$REPO_DIR/.codex-review.toml"
+git -C "$REPO_DIR" add .codex-review.toml
+git -C "$REPO_DIR" commit -m "temporarily disable review requests" >/dev/null 2>&1
+git -C "$REPO_DIR" update-ref refs/remotes/origin/main main
+printf '[review]\npreflight_required = false\nadvisory_at_pr_open = false\n\n[review.pr_triggered]\nprovider = "github-codex"\nrequest_on_push = true\n' >"$REPO_DIR/.codex-review.toml"
+git -C "$REPO_DIR" add .codex-review.toml
+git -C "$REPO_DIR" commit -m "reenable remote review requests" >/dev/null 2>&1
+FRESH_POLICY_SHA="$(git -C "$REPO_DIR" rev-parse HEAD)"
+git -C "$REPO_DIR" checkout feat/advisory >/dev/null 2>&1
+REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
+OUT="$TEST_DIR/request-refreshed-base.out"
+GIT_FETCH_BASE_SHA="$FRESH_POLICY_SHA" run_open_pr "$OUT"
+if grep -q '^@codex review$' "$TEST_DIR/comments" \
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD -->" "$TEST_DIR/comments" \
+  && [ "$(git -C "$REPO_DIR" rev-parse refs/remotes/origin/main)" = "$FRESH_POLICY_SHA" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: stale origin/main policy was not refreshed before requesting review" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 7aa: a published base policy fails closed when refresh fails"
+reset_case
+OUT="$TEST_DIR/request-base-refresh-failure.out"
+if GIT_FETCH_FAIL=1 run_open_pr "$OUT"; then
+  echo "    FAIL: published base refresh failure should stop PR creation" >&2
+  ERRORS=$((ERRORS + 1))
+elif grep -q "Could not refresh trusted review request policy base 'main'" "$OUT" \
+  && grep -q 'Refusing to use stale refs/remotes/origin/main' "$OUT" \
+  && [ ! -f "$TEST_DIR/comments" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: published base refresh failure lacked fail-closed diagnostics" >&2
   cat "$OUT" >&2
   [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
   ERRORS=$((ERRORS + 1))

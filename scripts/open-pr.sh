@@ -315,10 +315,19 @@ load_open_pr_review_request_config() {
   local config_file="" config_tmp="" rel
   local remote_ref="refs/remotes/origin/$base_branch"
   local local_ref="refs/heads/$base_branch"
+  local fetch_refspec="+refs/heads/$base_branch:$remote_ref"
 
-  if git rev-parse --verify --quiet "$remote_ref^{commit}" >/dev/null; then
+  # Review-request policy is an authorization boundary. Refresh only the
+  # remote-tracking ref so a long-lived feature branch cannot use stale base
+  # policy, while leaving the user's local base branch untouched.
+  if git fetch --quiet --no-tags origin "$fetch_refspec" >/dev/null 2>&1; then
     trusted_ref="$remote_ref"
+  elif git rev-parse --verify --quiet "$remote_ref^{commit}" >/dev/null; then
+    echo "ERROR: Could not refresh trusted review request policy base '$base_branch'." >&2
+    echo "       Refusing to use stale $remote_ref." >&2
+    return 1
   elif git rev-parse --verify --quiet "$local_ref^{commit}" >/dev/null; then
+    # A stacked PR may intentionally target an unpublished local parent.
     trusted_ref="$local_ref"
   else
     echo "ERROR: Could not resolve trusted review request policy base '$base_branch'." >&2
