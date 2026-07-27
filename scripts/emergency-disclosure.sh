@@ -370,8 +370,8 @@ shell_stdin_heredoc_payloads() {
           quote = char
         } else if (char == "<" && substr(line, i + 1, 1) == "<" && substr(line, i + 2, 1) != "<") {
           header = substr(line, 1, i - 1)
-          executes = header ~ /(^|[;&|()])[[:space:]]*([^[:space:]]*\/)?(sh|bash|dash|ksh|zsh)([[:space:]]|$)/ \
-            || header ~ /(^|[;&|()])[[:space:]]*(source|\.)[[:space:]]+\/dev\/stdin([[:space:]]|$)/
+          executes = header ~ /(^|[;&|()[:space:]])[[:space:]]*([^[:space:]]*\/)?(sh|bash|dash|ksh|zsh)([[:space:]]|$)/ \
+            || header ~ /(^|[;&|()[:space:]])[[:space:]]*(source|\.)[[:space:]]+\/dev\/stdin([[:space:]]|$)/
           j = i + 2
           strip_tabs = substr(line, j, 1) == "-"
           if (strip_tabs) {
@@ -701,6 +701,12 @@ segment_has_bypass_words() {
     elif [ "$expect_global_option_value" = "true" ]; then
       expect_global_option_value=false
     elif [ -z "$subcommand" ]; then
+      case "$word" in
+        __touchstone_shell_composed__:*)
+          word="${word#__touchstone_shell_composed__:}"
+          word="$(printf '%b' "$word")"
+          ;;
+      esac
       case "$word" in
         -C | -c | --git-dir | --work-tree | --namespace)
           expect_global_option_value=true
@@ -1220,6 +1226,24 @@ segment_invokes_bypass_alias() {
   printf '%s\n' "$protected_aliases" | grep -Fqx "$command_word"
 }
 
+segment_uses_sudo_wrapper() {
+  local segment="$1"
+  local word=""
+
+  while IFS= read -r word; do
+    case "$word" in
+      sudo | */sudo)
+        return 0
+        ;;
+      git | */git | __touchstone_shell_composed__:*)
+        return 1
+        ;;
+    esac
+  done < <(printf '%s' "$segment" | shell_words)
+
+  return 1
+}
+
 segment_cd_target() {
   local segment="$1"
   local token=""
@@ -1525,10 +1549,11 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
     if [ "$command_sets_git_context" = "true" ] \
       || [ "$command_changes_directory_ambiguously" = "true" ] \
       || [ "${non_push_candidate_cd_count[$candidate_index]}" -gt 0 ] \
+      || segment_uses_sudo_wrapper "$candidate_segment" \
       || printf '%s' "$candidate_segment" \
       | grep -qE '(^|[[:space:]])(-C|-c|--config-env)(=|[[:space:]]|$)'; then
-      # Alias configuration is repository-scoped. A composed directory context
-      # cannot be confirmed here without executing the shell, so fail closed.
+      # Alias configuration depends on repository and execution identity. A
+      # composed context cannot be confirmed without executing the shell.
       push_segment="$candidate_segment"
       selected_push_context="nested"
       selected_push_subcommand="$candidate_subcommand"
@@ -1649,6 +1674,7 @@ if [ ! -d "$cwd" ]; then
   echo "emergency-disclosure: cannot record emergency bypass: execution workdir does not exist: $cwd" >&2
   exit 2
 fi
+execution_cwd="$cwd"
 cwd="$(cd "$cwd" && pwd -P)"
 
 push_cwd="$cwd"
@@ -1664,7 +1690,24 @@ if [ -n "$selected_preceding_cd" ]; then
       echo "emergency-disclosure: cannot safely resolve relative cd with CDPATH; bypass blocked" >&2
       exit 2
     fi
-    push_cwd="$push_cwd/$selected_preceding_cd"
+    logical_push_cwd=""
+    physical_push_cwd=""
+    logical_push_cwd="$(
+      cd "$execution_cwd" \
+        && cd -L -- "$selected_preceding_cd" \
+        && pwd -P
+    )" || true
+    physical_push_cwd="$(
+      cd "$execution_cwd" \
+        && cd -P -- "$selected_preceding_cd" \
+        && pwd -P
+    )" || true
+    if [ -z "$logical_push_cwd" ] || [ -z "$physical_push_cwd" ] \
+      || [ "$logical_push_cwd" != "$physical_push_cwd" ]; then
+      echo "emergency-disclosure: cannot safely resolve logical/physical relative cd context; bypass blocked" >&2
+      exit 2
+    fi
+    push_cwd="$logical_push_cwd"
   fi
 fi
 

@@ -386,6 +386,8 @@ assert "blocks a Git push alias supplied through GIT_CONFIG_COUNT" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.x GIT_CONFIG_VALUE_0=push git x --no-verify origin feat/test")")"
 assert "blocks a Git alias lookup under command-scoped HOME" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "HOME=/tmp/alternate-git-home git x --no-verify origin feat/test")")"
+assert "blocks Git alias lookup after sudo changes identity and HOME" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "sudo -u deploy -H git ship --no-verify origin feat/test")")"
 assert "blocks bypass push with a quoted git -C path" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'git -C "/tmp/repo with spaces" push --no-verify origin feat/test')")"
 assert "blocks emergency push after pushd changes directory" "2" \
@@ -427,6 +429,8 @@ assert "blocks quoted Git executable supplied through environment expansion" "2"
   "$(run_hook "$EMERGENCY" "$(mkjson '"$GIT" push --no-verify origin feat/test')")"
 assert "blocks ANSI-C-quoted Git executable" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "\$'git' push --no-verify origin feat/test")")"
+assert "blocks ANSI-C-quoted Git push subcommand" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git \$'\\x70ush' --no-verify origin feat/test")")"
 assert "blocks a defined Git push alias invoked with the bypass flag" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "shopt -s expand_aliases; alias gp='git push'; gp --no-verify origin feat/test")")"
 assert "allows a Git push alias definition that is not invoked" "0" \
@@ -521,6 +525,19 @@ SHELL_STDIN_HEREDOC_COMMAND="$(
 )"
 assert "blocks bypass push supplied to shell stdin by a heredoc" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "$SHELL_STDIN_HEREDOC_COMMAND")")"
+WRAPPED_SHELL_HEADERS=("env bash" "command bash" "sudo bash" "nice -n 5 bash" "nohup bash" "FOO=1 bash")
+for wrapped_shell_header in "${WRAPPED_SHELL_HEADERS[@]}"; do
+  WRAPPED_SHELL_HEREDOC_COMMAND="$(
+    printf '%s\n' "$wrapped_shell_header <<'EOF'" "git push --no-verify origin feat/test" "EOF"
+  )"
+  assert "blocks bypass heredoc through $wrapped_shell_header" "2" \
+    "$(run_hook "$EMERGENCY" "$(mkjson "$WRAPPED_SHELL_HEREDOC_COMMAND")")"
+done
+IF_SHELL_HEREDOC_COMMAND="$(
+  printf '%s\n' "if bash <<'EOF'" "git push --no-verify origin feat/test" "EOF" "then" ":" "fi"
+)"
+assert "blocks bypass heredoc through an if shell prefix" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$IF_SHELL_HEREDOC_COMMAND")")"
 SOURCE_STDIN_HEREDOC_COMMAND="$(
   printf '%s\n' "source /dev/stdin <<'EOF'" "git push --no-verify origin feat/test" "EOF"
 )"
@@ -861,6 +878,26 @@ EXIT_LOCAL_CDPATH=0
 printf '%s' "$LOCAL_CDPATH_JSON" \
   | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_LOCAL_CDPATH=$?
 assert "blocks relative cd when command sets CDPATH" "2" "$EXIT_LOCAL_CDPATH"
+
+LOGICAL_REPO="$TMPDIR/logical-cwd-repo"
+PHYSICAL_REPO="$TMPDIR/physical-cwd-repo"
+mkdir -p "$LOGICAL_REPO" "$PHYSICAL_REPO/deep"
+git -C "$LOGICAL_REPO" init --quiet --initial-branch=main
+git -C "$PHYSICAL_REPO" init --quiet --initial-branch=main
+ln -s "$PHYSICAL_REPO/deep" "$LOGICAL_REPO/link"
+SYMLINK_CD_JSON="$(mkjson "cd .. && git push --no-verify origin feat/test" "$LOGICAL_REPO/link")"
+EXIT_SYMLINK_CD=0
+printf '%s' "$SYMLINK_CD_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_SYMLINK_CD=$?
+assert "blocks relative cd when logical and physical cwd resolution diverge" "2" "$EXIT_SYMLINK_CD"
+if [ ! -f "$LOGICAL_REPO/.touchstone/emergency-bypass.log" ] \
+  && [ ! -f "$PHYSICAL_REPO/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: ambiguous symlink cd wrote no audit evidence"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: ambiguous symlink cd wrote audit evidence to the wrong repository" >&2
+  FAIL=$((FAIL + 1))
+fi
 
 SUBSTITUTION_SCOPE_JSON="$(mkjson "echo \$(cd $EMERGENCY_TARGET && git push --no-verify origin feat/test)" "$TMPDIR")"
 EXIT_SUBSTITUTION_SCOPE=0
