@@ -112,6 +112,30 @@ fi
 echo "==> PASS: idempotent"
 
 # ----------------------------------------------------------------------------
+# Test: already-2.0 unpinned configs acquire the subscription-only default
+# ----------------------------------------------------------------------------
+echo "==> Test: unpinned 2.0 config migrates to subscription Codex"
+UNPINNED="$TEST_DIR/unpinned-v2.toml"
+cat >"$UNPINNED" <<'EOF'
+[review]
+reviewer = "conductor"
+
+[review.conductor]
+prefer = "best"
+effort = "high"
+
+[review.routing]
+enabled = true
+EOF
+bash "$MIGRATE" --no-backup --file "$UNPINNED" >/dev/null
+assert_file_contains "$UNPINNED" '^with = "codex"$' "unpinned 2.0 config pins subscription Codex"
+if [ "$(grep -c '^with = "codex"$' "$UNPINNED")" -ne 1 ]; then
+  echo "FAIL: subscription Codex pin should appear exactly once" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+echo "==> PASS: unpinned 2.0 config pinned to subscription Codex"
+
+# ----------------------------------------------------------------------------
 # Test: --dry-run leaves the file untouched
 # ----------------------------------------------------------------------------
 echo "==> Test: --dry-run leaves file untouched"

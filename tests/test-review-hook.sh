@@ -703,7 +703,7 @@ fi
 # ==========================================================================
 # Conductor reviewer tests (Touchstone 2.0+). The v1.x multi-reviewer
 # cascade tests were retired when the single `conductor` adapter shipped;
-# per-provider selection now lives inside Conductor's auto-router.
+# cross-provider selection now requires an explicit Conductor auto-route opt-in.
 # ==========================================================================
 
 CASCADE_REPO="$TEST_DIR/repo-cascade"
@@ -884,6 +884,7 @@ set -e
 
 if [ "$ROUTE_AUTH_EXIT" -eq 0 ] \
   && grep -q '^route .*--kind review .*--with openrouter' "$CASCADE_CALLS" \
+  && [ -z "$(awk '/^route / && /--estimated-input-tokens/ && !/--with openrouter/ { print }' "$CASCADE_CALLS")" ] \
   && grep -q '^review .*--with openrouter' "$CASCADE_CALLS" \
   && ! grep -q 'No reviewer available' "$CASCADE_OUTPUT"; then
   echo "==> PASS: pinned route auth allowed review despite doctor miss"
@@ -940,6 +941,7 @@ set +e
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
     CODEX_REVIEW_PR_NUMBER=123 \
+    TOUCHSTONE_CONDUCTOR_WITH=auto \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CASCADE_OUTPUT" 2>&1
 )
 ROUTE_VIABLE_EXIT=$?
@@ -1012,6 +1014,8 @@ set +e
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
     CODEX_REVIEW_PR_NUMBER=123 \
+    TOUCHSTONE_CONDUCTOR_WITH=auto \
+    TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY=true \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CASCADE_OUTPUT" 2>&1
 )
 ROUTE_FALLBACK_EXIT=$?
@@ -1078,6 +1082,7 @@ set +e
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
     CODEX_REVIEW_PR_NUMBER=123 \
+    TOUCHSTONE_CONDUCTOR_WITH=auto \
     TOUCHSTONE_CONDUCTOR_EXCLUDE="claude,codex,gemini,openrouter,kimi,deepseek-chat,deepseek-reasoner,ollama" \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CASCADE_OUTPUT" 2>&1
 )
@@ -1270,7 +1275,7 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Test: configured max_stall_sec reaches Conductor semantic review"
+echo "==> Test: configured max_stall_sec reaches review and fix phases"
 setup_mode_repo
 rm -rf "$MODE_BIN"
 mkdir -p "$MODE_BIN"
@@ -1284,10 +1289,15 @@ case "${1:-}" in
   doctor)
     printf '{"configured": true}\n'
     ;;
-  review | exec)
-    printf '%s\n' "$*" > "$CODEX_ARGS_FILE"
+  review)
+    printf 'review: %s\n' "$*" >> "$CODEX_ARGS_FILE"
     cat >/dev/null
-    printf 'CODEX_REVIEW_CLEAN\n'
+    printf 'CODEX_REVIEW_BLOCKED\n'
+    ;;
+  exec)
+    printf 'exec: %s\n' "$*" >> "$CODEX_ARGS_FILE"
+    cat >/dev/null
+    printf 'CODEX_REVIEW_BLOCKED\n'
     ;;
   *)
     exit 1
@@ -1304,19 +1314,27 @@ git -C "$MODE_REPO" add .codex-review.toml
 git -C "$MODE_REPO" commit -m "max stall config" >/dev/null 2>&1
 : >"$CODEX_ARGS_FILE"
 
+set +e
 (
   cd "$MODE_REPO"
   PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=fix \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
 )
+MAX_STALL_EXIT=$?
+set -e
 
-if grep -q -- '--max-stall-seconds 300' "$CODEX_ARGS_FILE"; then
-  echo "==> PASS: max_stall_sec was forwarded to Conductor"
+if [ "$MAX_STALL_EXIT" -eq 1 ] \
+  && grep -q -- '^review: .*--max-stall-seconds 300' "$CODEX_ARGS_FILE" \
+  && grep -q -- '^exec: .*--max-stall-seconds 300' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: max_stall_sec was forwarded to review and fix phases"
 else
-  echo "FAIL: expected --max-stall-seconds 300 in Conductor args" >&2
+  echo "FAIL: expected --max-stall-seconds 300 in review and fix args" >&2
+  echo "exit code: $MAX_STALL_EXIT" >&2
   cat "$MODE_OUTPUT" >&2
   cat "$CODEX_ARGS_FILE" >&2
   ERRORS=$((ERRORS + 1))
@@ -2148,6 +2166,7 @@ chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/conductor"
   PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     FALLBACK_ARGS_FILE="$FALLBACK_ARGS_FILE" \
     TOUCHSTONE_CONDUCTOR_WITH=gemini \
+    TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY=true \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
@@ -2189,6 +2208,8 @@ chmod +x "$TIMEOUT_BIN/conductor"
   cd "$TIMEOUT_REPO"
   PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     FALLBACK_ARGS_FILE="$FALLBACK_ARGS_FILE" \
+    TOUCHSTONE_CONDUCTOR_WITH=auto \
+    TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY=true \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
@@ -2250,6 +2271,7 @@ chmod +x "$TIMEOUT_BIN/conductor"
   PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     FALLBACK_ARGS_FILE="$FALLBACK_ARGS_FILE" \
     TOUCHSTONE_CONDUCTOR_WITH=gemini \
+    TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY=true \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
@@ -2286,6 +2308,7 @@ set +e
   PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     FALLBACK_ARGS_FILE="$FALLBACK_ARGS_FILE" \
     TOUCHSTONE_CONDUCTOR_WITH=gemini \
+    TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY=true \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MODE=review-only \
@@ -2358,6 +2381,7 @@ set +e
     FALLBACK_ARGS_FILE="$FALLBACK_ARGS_FILE" \
     FALLBACK_MUTATION_FILE="$FALLBACK_MUTATION_FILE" \
     TOUCHSTONE_CONDUCTOR_WITH=gemini \
+    TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY=true \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MODE=review-only \
@@ -2768,6 +2792,7 @@ git -C "$CTX_REPO" commit -m "tag sanitizer" >/dev/null 2>&1
     CONDUCTOR_ARGS_LOG="$CONDUCTOR_ARGS_LOG" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
+    TOUCHSTONE_CONDUCTOR_WITH=auto \
     TOUCHSTONE_CONDUCTOR_TAGS="code-review,tool-use,long-context" \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
@@ -2998,6 +3023,7 @@ CXEOF
 chmod +x "$CTX_BIN/conductor"
 cat >"$CTX_REPO/.codex-review.toml" <<'EOF'
 [review]
+high_scrutiny_mode = "peer"
 high_scrutiny_paths = ["critical/"]
 EOF
 git -C "$CTX_REPO" add .codex-review.toml && git -C "$CTX_REPO" commit -m "configure high scrutiny" >/dev/null 2>&1
@@ -3200,6 +3226,7 @@ chmod +x "$CTX_BIN/conductor"
   PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CONDUCTOR_COUNT_FILE="$CONDUCTOR_COUNT_FILE" \
     TOUCHSTONE_CONDUCTOR_WITH=codex \
+    TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY=true \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_SUMMARY_FILE="$JSON_SUMMARY" \
@@ -3232,7 +3259,7 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Test: missing Conductor session log keeps provider/model unknown"
+echo "==> Test: missing Conductor session log keeps pinned provider visible"
 setup_ctx_repo
 setup_ctx_bin
 cat >"$CTX_BIN/conductor" <<'CXEOF'
@@ -3253,12 +3280,12 @@ rm -f "$JSON_SUMMARY"
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
-if grep -q '"provider":"unknown"' "$JSON_SUMMARY" \
+if grep -q '"provider":"codex"' "$JSON_SUMMARY" \
   && grep -q '"model":"unknown"' "$JSON_SUMMARY" \
   && grep -q '"peer_provider":"none"' "$JSON_SUMMARY"; then
-  echo "==> PASS: missing session log falls back without blocking"
+  echo "==> PASS: missing session log retained the configured provider boundary"
 else
-  echo "FAIL: expected unknown provider/model fallback" >&2
+  echo "FAIL: expected configured provider with unknown model" >&2
   cat "$JSON_SUMMARY" 2>/dev/null >&2
   cat "$CTX_OUTPUT" >&2
   ERRORS=$((ERRORS + 1))

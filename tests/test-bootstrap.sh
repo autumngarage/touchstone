@@ -994,6 +994,10 @@ case "$1" in
     printf '{"configured": true}\n'
     exit 0
     ;;
+  route)
+    printf '{"selected_provider":"codex"}\n'
+    exit 0
+    ;;
 esac
 exit 0
 FAKECONDUCTOR
@@ -1013,7 +1017,8 @@ assert_not_contains "$TEST_DIR/setup-version-output.txt" "unknown AI reviewer"
 SETUP_CONDUCTOR_PROJECT="$TEST_DIR/setup-conductor-project"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SETUP_CONDUCTOR_PROJECT" --no-register --reviewer codex >/dev/null
 (cd "$SETUP_CONDUCTOR_PROJECT" && PATH="$SETUP_VERSION_FAKE_BIN:$PATH" bash setup.sh) >"$TEST_DIR/setup-conductor-output.txt"
-assert_contains "$TEST_DIR/setup-conductor-output.txt" 'conductor installed and configured (pinned provider: codex)'
+assert_contains "$TEST_DIR/setup-conductor-output.txt" 'pinned provider: codex'
+assert_contains "$TEST_DIR/setup-conductor-output.txt" 'no automatic metered overflow'
 assert_not_contains "$TEST_DIR/setup-conductor-output.txt" 'codex installed'
 assert_not_contains "$TEST_DIR/setup-conductor-output.txt" 'Installing Codex CLI'
 

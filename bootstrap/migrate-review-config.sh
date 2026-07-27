@@ -14,6 +14,7 @@
 #   [review.assist] {enabled = ...} → commented out, with a pointer to v2.1
 #   [review.routing].small_reviewers = ["X"] → small_with = "X"
 #                  .large_reviewers = ["Y"] → large_with = "Y"
+#   [review.conductor] without `with` → with = "codex"
 #
 # `local` as a reviewer name maps to `ollama` for explicit offline/local
 # compatibility.
@@ -91,6 +92,17 @@ already_migrated=true
 grep -qE '^[[:space:]]*reviewer[[:space:]]*=[[:space:]]*"conductor"' "$file" || already_migrated=false
 grep -qE '^\[review\.conductor\]' "$file" || already_migrated=false
 
+needs_subscription_pin=false
+if grep -qE '^\[review\.conductor\]' "$file" \
+  && ! awk '
+    /^\[review\.conductor\][[:space:]]*$/ { section = "review.conductor"; next }
+    /^\[/ { section = "other"; next }
+    section == "review.conductor" && /^[[:space:]]*with[[:space:]]*=/ { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' "$file"; then
+  needs_subscription_pin=true
+fi
+
 # Detect 1.x markers
 has_legacy_reviewers=false
 has_legacy_local=false
@@ -105,7 +117,8 @@ if [ "$already_migrated" = true ] \
   && [ "$has_legacy_reviewers" = false ] \
   && [ "$has_legacy_local" = false ] \
   && [ "$has_legacy_assist" = false ] \
-  && [ "$has_legacy_routing" = false ]; then
+  && [ "$has_legacy_routing" = false ] \
+  && [ "$needs_subscription_pin" = false ]; then
   echo "==> $file is already in 2.0 shape — nothing to migrate."
   exit 0
 fi
@@ -113,7 +126,8 @@ fi
 if [ "$has_legacy_reviewers" = false ] \
   && [ "$has_legacy_local" = false ] \
   && [ "$has_legacy_assist" = false ] \
-  && [ "$has_legacy_routing" = false ]; then
+  && [ "$has_legacy_routing" = false ] \
+  && [ "$needs_subscription_pin" = false ]; then
   echo "==> $file has no recognizable 1.x markers — nothing to migrate."
   echo "    (Looked for: reviewers=[...], [review.local], [review.assist], small_/large_reviewers=[...])"
   exit 0
@@ -124,6 +138,7 @@ echo "==> Migrating $file from 1.x → 2.0"
 [ "$has_legacy_local" = true ] && echo "    - [review.local] → commented out (retired in 2.0)"
 [ "$has_legacy_assist" = true ] && echo "    - [review.assist] → commented out (returns in 2.1)"
 [ "$has_legacy_routing" = true ] && echo "    - small_/large_reviewers=[...] → small_/large_with=\"...\""
+[ "$needs_subscription_pin" = true ] && echo "    - unpinned [review.conductor] → with=\"codex\" (subscription-only default)"
 
 tmp="$(mktemp "${TMPDIR:-/tmp}/codex-review-migrate.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
@@ -135,6 +150,7 @@ awk '
 BEGIN {
   section = ""
   saw_conductor_block = 0
+  saw_conductor_with = 0
   pending_with = ""
   pending_fallback = ""
 }
@@ -185,6 +201,10 @@ function all_quoted(line,   out, n, copy, q1, rest, q2, tok) {
   next
 }
 /^\[review\.local\][[:space:]]*$/ {
+  if (section == "review.conductor" && !saw_conductor_with) {
+    print "with = \"codex\""
+    saw_conductor_with = 1
+  }
   section = "review.local"
   print "# [review.local] — retired in Touchstone 2.0; register as a Conductor"
   print "# custom provider when v0.3 ships:"
@@ -192,14 +212,48 @@ function all_quoted(line,   out, n, copy, q1, rest, q2, tok) {
   next
 }
 /^\[review\.assist\][[:space:]]*$/ {
+  if (section == "review.conductor" && !saw_conductor_with) {
+    print "with = \"codex\""
+    saw_conductor_with = 1
+  }
   section = "review.assist"
   print "# [review.assist] — disabled in Touchstone 2.0; returns in v2.1"
   print "# via `conductor call --exclude <primary_provider>`."
   next
 }
-/^\[review\.routing\][[:space:]]*$/ { section = "review.routing"; print; next }
-/^\[review\][[:space:]]*$/          { section = "review"; print; next }
-/^\[/                                { section = "other"; print; next }
+/^\[review\.routing\][[:space:]]*$/ {
+  if (section == "review.conductor" && !saw_conductor_with) {
+    print "with = \"codex\""
+    saw_conductor_with = 1
+  }
+  section = "review.routing"
+  print
+  next
+}
+/^\[review\][[:space:]]*$/ {
+  if (section == "review.conductor" && !saw_conductor_with) {
+    print "with = \"codex\""
+    saw_conductor_with = 1
+  }
+  section = "review"
+  print
+  next
+}
+/^\[/ {
+  if (section == "review.conductor" && !saw_conductor_with) {
+    print "with = \"codex\""
+    saw_conductor_with = 1
+  }
+  section = "other"
+  print
+  next
+}
+
+section == "review.conductor" && /^[[:space:]]*with[[:space:]]*=/ {
+  saw_conductor_with = 1
+  print
+  next
+}
 
 # In retired sections, comment out everything until the next section.
 section == "review.local" || section == "review.assist" {
@@ -245,7 +299,9 @@ section == "review.routing" && /^[[:space:]]*large_reviewers[[:space:]]*=[[:spac
 { print }
 
 END {
-  if (!saw_conductor_block) {
+  if (saw_conductor_block && !saw_conductor_with) {
+    print "with = \"codex\""
+  } else if (!saw_conductor_block) {
     print ""
     print "[review.conductor]"
     print "# Conductor routing knobs. See touchstone CHANGELOG for the 2.0 contract."
@@ -253,13 +309,14 @@ END {
     print "effort = \"high\""
     print "tags = \"code-review\""
     if (pending_with != "") {
-      print "with = \"" pending_with "\""
-      if (pending_fallback != "") {
-        print "# Original 1.x cascade was: " pending_fallback
-        print "# Conductor auto-router now handles fallback when this provider is degraded."
+        print "with = \"" pending_with "\""
+        if (pending_fallback != "") {
+          print "# Original 1.x cascade was: " pending_fallback
+          print "# Secondary providers are recorded for audit only; automatic fallback is disabled."
       }
     } else {
-      print "# Pin a specific underlying provider with: with = \"<provider>\""
+      print "with = \"codex\""
+      print "# Use with = \"auto\" only for explicit cross-provider routing."
     }
   }
 }

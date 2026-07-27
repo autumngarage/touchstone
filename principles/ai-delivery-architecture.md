@@ -73,6 +73,7 @@ Human user
 - The exact commit merged has passed deterministic checks after its last mutation.
 - The exact commit merged has no unresolved blocking review comments, requested changes, or failing required checks.
 - Touchstone-managed LLM review uses Conductor as the only model access path. Driver CLIs do not call provider-specific review commands directly.
+- Local semantic review defaults to subscription-backed Codex. A metered provider or cross-provider auto-route requires explicit project configuration; provider failure follows `on_error` without silent metered overflow.
 - PR creation is the review coordination surface. It should happen early enough for CI and any PR-visible agentic reviewers to work against visible PR state.
 - Feature-branch push is not the expensive gate. It should preserve cheap local guardrails without running full test suites or LLM review by default.
 - Merge is allowed only after PR-visible review and check approval. The local merge helper gates on requested-changes review decisions and unresolved review threads before and after review, runs deterministic checks, and uses a trusted current-head PR-visible GitHub Codex signal or Conductor review as the model-review backstop.
@@ -100,7 +101,7 @@ The driver may use Conductor for bounded implementation, research, or review wor
 Conductor is the LLM router for review and delegated model work.
 
 - Touchstone-managed LLM review runs through Conductor, whether invoked by PR automation, an advisory review command, or a final merge backstop.
-- Conductor chooses the configured provider/model and handles provider fallback.
+- Conductor invokes the explicitly configured provider/model. Cross-provider fallback is opt-in and must make its cost boundary visible.
 - Conductor may apply safe fixes only when the review mode and path policy allow it.
 - Conductor findings should surface on the PR when possible. They are either fixed and committed on the PR branch, or block the merge.
 

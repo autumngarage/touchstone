@@ -68,16 +68,16 @@ bash setup.sh
 
 ### Turn on AI review
 
-Touchstone 2.0 delegates all LLM access to the [Conductor CLI](https://github.com/autumngarage/conductor). Install Conductor once, run its concierge setup, and every Touchstone-protected repo works with one shared auth:
+Touchstone delegates local semantic fallback to the [Conductor CLI](https://github.com/autumngarage/conductor). The default route is pinned to the subscription-backed Codex CLI. GitHub Codex provides the PR-visible review; the local fallback runs only when the merge workflow cannot rely on a clean exact-head GitHub review.
 
 ```bash
 brew install autumngarage/conductor/conductor
 conductor init                    # walks through each provider, one at a time
 ```
 
-Conductor supports native reviewers such as OpenAI Codex, Claude, and Gemini, plus hosted OpenRouter fallback and explicit local Ollama. Configure as many as you want; Conductor owns the provider policy for each job.
+Conductor supports native reviewers such as OpenAI Codex, Claude, and Gemini, plus hosted OpenRouter and explicit local Ollama. Touchstone does not automatically overflow from Codex into another provider. A project must explicitly set `with = "auto"` or name a different provider before Conductor may use it.
 
-When you run `touchstone new` or `touchstone init`, Touchstone asks whether you want AI review. If you say yes, the scaffold adds a default `[review.conductor]` block with `prefer = "best"` and `effort = "high"` — frontier-tier review with a bounded reasoning budget. Use `TOUCHSTONE_CONDUCTOR_EFFORT=max` when release-level scrutiny is worth the extra latency.
+When you run `touchstone new` or `touchstone init`, Touchstone asks whether you want AI review. If you say yes, the scaffold adds `with = "codex"` plus a bounded reasoning budget. If Codex is unavailable, review follows the project's `on_error` policy instead of selecting a metered API provider. Use `TOUCHSTONE_CONDUCTOR_EFFORT=max` when release-level scrutiny is worth the extra latency.
 
 You can keep using Touchstone without Conductor installed; the hook skips itself gracefully and prints install instructions.
 
@@ -87,11 +87,11 @@ Useful shortcuts:
 # Add Touchstone with AI review disabled
 touchstone init --no-ai-review
 
-# Pin a specific provider for one push (overrides auto-routing)
+# Explicitly choose a different provider for one push
 TOUCHSTONE_CONDUCTOR_WITH=claude git push
 
-# Use a cheaper preference for this push
-TOUCHSTONE_CONDUCTOR_PREFER=cheapest git push
+# Explicitly enable Conductor auto-routing (may use metered providers)
+TOUCHSTONE_CONDUCTOR_WITH=auto git push
 ```
 
 Full config reference: see `hooks/conductor-review.config.example.toml`. Legacy `.codex-review.toml` files still work; new projects use `.touchstone-review.toml`. Migrating from 1.x? See the historical 2.0 migration notes in [GitHub Releases](https://github.com/autumngarage/touchstone/releases).
@@ -131,7 +131,7 @@ bash setup.sh --deps-only
 | `touchstone init [--no-setup]` | Add touchstone to the current project |
 | `touchstone migrate-from-toolkit` | Migrate a project from the legacy `.toolkit-*` files before re-running `touchstone init` |
 | `touchstone init --review-routing all-local` | Use explicit offline Ollama review instead of hosted Conductor review |
-| `touchstone init --reviewer claude` | Pin Conductor to a specific underlying provider (codex / claude / gemini / openrouter / local) |
+| `touchstone init --reviewer claude` | Explicitly pin Conductor to a non-default provider (codex / claude / gemini / openrouter / local) |
 | `touchstone init --no-ai-review` | Add touchstone with AI review disabled |
 | `touchstone init --gitbutler` | Add touchstone with optional GitButler workflow setup |
 | `touchstone init --ci github` | Add `.github/workflows/validate.yml` that runs pre-commit hygiene and `touchstone run validate` on every PR |
@@ -241,14 +241,14 @@ Universal engineering standards, extracted and battle-tested from production sys
 
 ### AI Review Gate
 
-Automatically reviews code on PRs before it reaches the default branch. In Touchstone 2.0, Touchstone-managed LLM access routes through the [Conductor CLI](https://github.com/autumngarage/conductor):
+Automatically reviews code on PRs before it reaches the default branch. GitHub Codex is the visible PR reviewer; when exact-head GitHub evidence cannot satisfy the merge gate, local semantic fallback routes through [Conductor](https://github.com/autumngarage/conductor):
 
-- One reviewer — `conductor` — uses Conductor's semantic review path for read-only review with hosted fallback
-- Quality-tier-aware routing for provider-pinned and edit-capable modes (`prefer = "best"` picks the frontier-tier provider)
+- The local fallback pins subscription-backed Codex and never silently crosses into metered API billing
+- Explicit `with = "auto"` or another named provider opts a project into a different cost boundary
 - Per-push preference via env vars: `TOUCHSTONE_CONDUCTOR_WITH=<provider>`, `TOUCHSTONE_CONDUCTOR_PREFER=<mode>`, `TOUCHSTONE_CONDUCTOR_EFFORT=<level>`
-- Size-based routing — small diffs can use `prefer = "cheapest"` + minimal effort, large diffs use `prefer = "best"` + max effort — via `[review.routing]`
+- Size-based effort routing keeps the same Codex provider pin unless a bucket explicitly overrides `*_with`
 - Local Ollama providers are reserved for explicit offline review (`--review-routing all-local` or `--reviewer local`)
-- Graceful fallback: if the chosen hosted review provider returns 5xx / rate-limit / timeout, Conductor tries the next code-review provider
+- Provider failures follow `on_error`; cross-provider fallback retry is disabled unless explicitly enabled
 - Auto-fixes safe issues through a second edit-capable pass after read-only review
 - Blocks the merge or direct default-branch push for findings that should not be auto-fixed
 - Runs from `scripts/merge-pr.sh`, and from the pre-push hook only when pushing directly to the default branch
@@ -273,7 +273,7 @@ The static contract tests still run in the normal self-test suite:
 bash tests/test-agent-steering-contract.sh
 ```
 
-That test guards the interpretability contract without spending model quota: Claude, Codex, and Gemini are interchangeable driving CLIs; Conductor is the worker/reviewer router with provider fallback; all drivers must converge on the same managed principles and branch → PR → agentic review loop → approved merge lifecycle.
+That test guards the interpretability contract without spending model quota: Claude, Codex, and Gemini are interchangeable driving CLIs; Conductor is the worker/reviewer router, while the managed review default remains subscription Codex; all drivers must converge on the same managed principles and branch → PR → agentic review loop → approved merge lifecycle.
 
 Maintainer self-tests are split into a fast default tier and a slow opt-in tier. The fast tier is the pre-push contract and must not call live model/provider CLIs:
 

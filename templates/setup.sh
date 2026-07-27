@@ -190,7 +190,9 @@ if [ "$DEPS_ONLY" = false ]; then
   AI_REVIEWERS=()
   AI_REVIEWERS_CHECKED=""
   AI_LOCAL_REVIEW_COMMAND=""
-  AI_CONDUCTOR_WITH=""
+  # Missing provider pins resolve to the subscription-backed Codex CLI.
+  # Projects must explicitly set `with = "auto"` or a metered provider.
+  AI_CONDUCTOR_WITH="codex"
   AI_REVIEW_ROUTING_ENABLED=false
   AI_REVIEW_ROUTING_SMALL_MAX=400
 
@@ -295,8 +297,18 @@ if [ "$DEPS_ONLY" = false ]; then
       conductor)
         if command -v conductor >/dev/null 2>&1; then
           if conductor doctor --json 2>/dev/null | grep -q '"configured"[[:space:]]*:[[:space:]]*true'; then
-            if [ -n "$AI_CONDUCTOR_WITH" ]; then
-              ok "conductor installed and configured (pinned provider: $AI_CONDUCTOR_WITH)"
+            if [ "$AI_CONDUCTOR_WITH" = "auto" ]; then
+              warn "conductor installed and configured (explicit auto-route may use metered providers)"
+            elif [ "$AI_CONDUCTOR_WITH" = "codex" ]; then
+              AI_CODEX_ROUTE="$(conductor route --json --kind review --with codex 2>/dev/null || true)"
+              if printf '%s\n' "$AI_CODEX_ROUTE" \
+                | grep -Eq '"(selected_provider|provider)"[[:space:]]*:[[:space:]]*"codex"'; then
+                ok "conductor installed and configured (pinned provider: codex; no automatic metered overflow)"
+              else
+                warn "conductor is configured, but subscription Codex is unavailable. Run: codex login && conductor doctor"
+              fi
+            elif [ -n "$AI_CONDUCTOR_WITH" ]; then
+              ok "conductor installed and configured (pinned provider: $AI_CONDUCTOR_WITH; no automatic metered overflow)"
             else
               ok "conductor installed and configured"
             fi
