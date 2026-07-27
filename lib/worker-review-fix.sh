@@ -80,7 +80,9 @@ touchstone_review_fix_author_is_trusted() {
 }
 
 touchstone_review_fix_threads() {
-  local repo_full_name="$1" pr_number="$2" owner name query
+  local repo_full_name="$1" pr_number="$2" owner name query raw_file
+  local thread_id path line outdated author review_head truncated comment_count
+  local comment_ids snapshot_encoded url body snapshot_digest
   owner="${repo_full_name%%/*}"
   name="${repo_full_name#*/}"
   # shellcheck disable=SC2016 # GraphQL variables are expanded by GitHub.
@@ -96,10 +98,13 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
           path
           line
           startLine
-          comments(first: 1) {
+          comments(first: 100) {
+            totalCount
             nodes {
+              id
               author { login }
               body
+              updatedAt
               url
               pullRequestReview { commit { oid } }
             }
@@ -110,12 +115,30 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     }
   }
 }'
-  gh api graphql --paginate \
+  raw_file="$(mktemp -t touchstone-review-fix-threads.XXXXXX)" || return 1
+  if ! gh api graphql --paginate \
     -F owner="$owner" \
     -F name="$name" \
     -F number="$pr_number" \
     -f query="$query" \
-    --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | [.id, .path, ((.line // .startLine // "") | tostring), (.isOutdated | tostring), (.comments.nodes[0].author.login // ""), (.comments.nodes[0].pullRequestReview.commit.oid // ""), (((.comments.nodes[0].body // "") | length > 1000) | tostring), (.comments.nodes[0].url // ""), ((.comments.nodes[0].body // "") | gsub("[\r\n\t]"; " ") | .[0:1000])] | @tsv'
+    --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | [.id, (.path // "<no-path>"), ((.line // .startLine // "<no-line>") | tostring), (.isOutdated | tostring), (.comments.nodes[0].author.login // "<no-author>"), (.comments.nodes[0].pullRequestReview.commit.oid // "<no-review-head>"), (((.comments.nodes[0].body // "") | length > 1000) | tostring), (.comments.totalCount | tostring), ((.comments.nodes | map(.id) | join(",")) | if length == 0 then "<no-comment-ids>" else . end), (.comments.nodes | map({id: .id, updatedAt: .updatedAt, body: (.body // "")}) | tojson | @base64), (.comments.nodes[0].url // "<no-url>"), (((.comments.nodes[0].body // "") | gsub("[\r\n\t]"; " ") | .[0:1000]) | if length == 0 then "<empty-body>" else . end)] | @tsv' \
+    >"$raw_file"; then
+    rm -f "$raw_file"
+    return 1
+  fi
+
+  while IFS="$(printf '\t')" read -r thread_id path line outdated author review_head truncated \
+    comment_count comment_ids snapshot_encoded url body || [ -n "$thread_id" ]; do
+    [ -n "$thread_id" ] || continue
+    snapshot_digest="$(printf '%s' "$snapshot_encoded" | git hash-object --stdin)" || {
+      rm -f "$raw_file"
+      return 1
+    }
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$thread_id" "$path" "$line" "$outdated" "$author" "$review_head" "$truncated" \
+      "$comment_count" "$comment_ids" "$snapshot_digest" "$url" "$body"
+  done <"$raw_file"
+  rm -f "$raw_file"
 }
 
 touchstone_review_fix_thread_key() {
@@ -128,21 +151,41 @@ touchstone_review_fix_marker() {
 }
 
 touchstone_review_fix_thread_remote_state() {
-  local thread_id="$1" marker="$2" query
+  local thread_id="$1" marker="$2" expected_count="$3" expected_ids="$4" expected_digest="$5"
+  local query remote_state resolved total_count loaded_count nonmarker_count marker_count
+  local nonmarker_ids snapshot_encoded snapshot_digest replied=false snapshot_matches=false
   # shellcheck disable=SC2016 # GraphQL variables are expanded by GitHub.
   query='
 query($id: ID!) {
   node(id: $id) {
     ... on PullRequestReviewThread {
       isResolved
-      comments(last: 100) { nodes { body } }
+      comments(first: 100) {
+        totalCount
+        nodes { id body updatedAt }
+      }
     }
   }
 }'
-  gh api graphql \
+  remote_state="$(gh api graphql \
     -F id="$thread_id" \
     -f query="$query" \
-    --jq "[.data.node.isResolved, (any(.data.node.comments.nodes[]?; .body | contains(\"$marker\")))] | @tsv"
+    --jq "[.data.node.isResolved, (.data.node.comments.totalCount | tostring), (.data.node.comments.nodes | length | tostring), ([.data.node.comments.nodes[]? | select((((.body // \"\") | contains(\"$marker\"))) | not)] | length | tostring), ([.data.node.comments.nodes[]? | select((.body // \"\") | contains(\"$marker\"))] | length | tostring), (([.data.node.comments.nodes[]? | select((((.body // \"\") | contains(\"$marker\"))) | not) | .id] | join(\",\")) | if length == 0 then \"<no-comment-ids>\" else . end), ([.data.node.comments.nodes[]? | select((((.body // \"\") | contains(\"$marker\"))) | not) | {id: .id, updatedAt: .updatedAt, body: (.body // \"\")}] | tojson | @base64)] | @tsv")" || return 1
+
+  IFS="$(printf '\t')" read -r resolved total_count loaded_count nonmarker_count marker_count \
+    nonmarker_ids snapshot_encoded <<EOF
+$remote_state
+EOF
+  snapshot_digest="$(printf '%s' "$snapshot_encoded" | git hash-object --stdin)" || return 1
+  [ "$marker_count" = "1" ] && replied=true
+  if [ "$total_count" = "$loaded_count" ] \
+    && [ "$nonmarker_count" = "$expected_count" ] \
+    && [ "$nonmarker_ids" = "$expected_ids" ] \
+    && [ "$snapshot_digest" = "$expected_digest" ] \
+    && { [ "$marker_count" = "0" ] || [ "$marker_count" = "1" ]; }; then
+    snapshot_matches=true
+  fi
+  printf '%s\t%s\t%s\n' "$resolved" "$replied" "$snapshot_matches"
 }
 
 touchstone_review_fix_reply() {
@@ -196,7 +239,7 @@ thread_id=<id>
 
 Include one thread_id line for every thread and no unknown IDs.
 
-Unresolved review threads (tab-separated id, path, line, outdated, author, review head, body truncated, URL, body):
+Unresolved review threads (tab-separated id, path, line, outdated, author, review head, body truncated, comment count, comment IDs, comment snapshot, URL, body):
 EOF
     cat "$threads_file"
   } >"$brief_file"
@@ -276,47 +319,64 @@ touchstone_review_fix_validate() {
 }
 
 touchstone_review_fix_checkpoint_threads() {
-  local job_dir="$1" source_head="$2" threads_file="$3"
+  local job_dir="$1" source_head="$2" threads_file="$3" repo_full_name="$4" pr_number="$5"
   mkdir -p "$job_dir/review-fix"
   cp "$threads_file" "$job_dir/review-fix/threads.tsv"
   touchstone_ship_write "$job_dir/review-fix" source-head "$source_head"
   touchstone_ship_write "$job_dir/review-fix" fix-head ""
+  touchstone_ship_write "$job_dir/review-fix" repo-full-name "$repo_full_name"
+  touchstone_ship_write "$job_dir/review-fix" pr-number "$pr_number"
 }
 
 touchstone_review_fix_finish_threads() {
   local job_dir="$1" worktree_path="$2" pr_number="$3" source_head="$4" fix_head="$5"
   local threads_file="$job_dir/review-fix/threads.tsv"
-  local thread_id path line _outdated _author _review_head _truncated _url _body
-  local marker remote_state resolved replied key body location observed_head
+  local thread_id path line _outdated _author _review_head _truncated comment_count
+  local comment_ids comment_snapshot _url _body marker remote_state resolved replied
+  local snapshot_matches key body location observed_head
 
   observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
   [ "$observed_head" = "$fix_head" ] || return 3
 
-  while IFS="$(printf '\t')" read -r thread_id path line _outdated _author _review_head _truncated _url _body \
+  while IFS="$(printf '\t')" read -r thread_id path line _outdated _author _review_head _truncated \
+    comment_count comment_ids comment_snapshot _url _body \
     || [ -n "$thread_id" ]; do
     [ -n "$thread_id" ] || continue
     key="$(touchstone_review_fix_thread_key "$thread_id")"
     [ -f "$job_dir/review-fix/resolved-$key" ] && continue
     marker="$(touchstone_review_fix_marker "$source_head" "$fix_head" "$thread_id")"
-    remote_state="$(touchstone_review_fix_thread_remote_state "$thread_id" "$marker")" || return 1
-    resolved="${remote_state%%	*}"
-    replied="${remote_state#*	}"
+
+    observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
+    [ "$observed_head" = "$fix_head" ] || return 3
+    remote_state="$(touchstone_review_fix_thread_remote_state \
+      "$thread_id" "$marker" "$comment_count" "$comment_ids" "$comment_snapshot")" || return 1
+    IFS="$(printf '\t')" read -r resolved replied snapshot_matches <<EOF
+$remote_state
+EOF
     if [ "$resolved" = "true" ]; then
       touchstone_ship_write "$job_dir/review-fix" "resolved-$key" "$fix_head"
       continue
     fi
+    [ "$snapshot_matches" = "true" ] || return 5
+
     if [ "$replied" != "true" ]; then
-      observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
-      [ "$observed_head" = "$fix_head" ] || return 3
       location="${path:-review thread}${line:+:$line}"
       body="Fixed $location in \`$(printf '%.12s' "$fix_head")\` and validated locally. $marker"
       touchstone_review_fix_reply "$thread_id" "$body" || return 1
       observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
       [ "$observed_head" = "$fix_head" ] || return 4
-    else
-      observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
-      [ "$observed_head" = "$fix_head" ] || return 3
+      remote_state="$(touchstone_review_fix_thread_remote_state \
+        "$thread_id" "$marker" "$comment_count" "$comment_ids" "$comment_snapshot")" || return 1
+      IFS="$(printf '\t')" read -r resolved replied snapshot_matches <<EOF
+$remote_state
+EOF
+      if [ "$resolved" = "true" ]; then
+        touchstone_ship_write "$job_dir/review-fix" "resolved-$key" "$fix_head"
+        continue
+      fi
+      [ "$replied" = "true" ] && [ "$snapshot_matches" = "true" ] || return 5
     fi
+
     touchstone_review_fix_resolve "$thread_id" || return 1
     observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
     [ "$observed_head" = "$fix_head" ] || return 4
@@ -331,11 +391,14 @@ touchstone_review_fix_finish_threads() {
 }
 
 touchstone_review_fix_resume_checkpoint() {
-  local job_dir="$1" worktree_path="$2" pr_number="$3" observed_head="$4"
-  local source_head fix_head finish_rc=0
+  local job_dir="$1" worktree_path="$2" repo_full_name="$3" pr_number="$4" observed_head="$5"
+  local source_head fix_head checkpoint_repo checkpoint_pr finish_rc=0
   source_head="$(touchstone_ship_read "$job_dir/review-fix" source-head)"
   fix_head="$(touchstone_ship_read "$job_dir/review-fix" fix-head)"
+  checkpoint_repo="$(touchstone_ship_read "$job_dir/review-fix" repo-full-name)"
+  checkpoint_pr="$(touchstone_ship_read "$job_dir/review-fix" pr-number)"
   [ -n "$source_head" ] && [ -n "$fix_head" ] || return 1
+  [ "$checkpoint_repo" = "$repo_full_name" ] && [ "$checkpoint_pr" = "$pr_number" ] || return 2
   [ "$observed_head" = "$fix_head" ] || return 2
   touchstone_review_fix_finish_threads \
     "$job_dir" "$worktree_path" "$pr_number" "$source_head" "$fix_head" || finish_rc=$?
@@ -344,10 +407,15 @@ touchstone_review_fix_resume_checkpoint() {
 }
 
 touchstone_review_fix_run_child() {
-  local job_dir="$1" deadline_epoch now_epoch exit_code
+  local job_dir="$1" deadline_epoch now_epoch exit_code monitor_was_enabled=false
   shift
+  case "$-" in
+    *m*) monitor_was_enabled=true ;;
+    *) set -m ;;
+  esac
   "$@" &
   child_pid=$!
+  [ "$monitor_was_enabled" = true ] || set +m
   touchstone_ship_write "$job_dir" child-pid "$child_pid"
   deadline_epoch="$(touchstone_ship_read "$job_dir" deadline-epoch)"
   while kill -0 "$child_pid" 2>/dev/null; do
@@ -356,13 +424,15 @@ touchstone_review_fix_run_child() {
       *)
         now_epoch="$(date +%s)"
         if [ "$now_epoch" -ge "$deadline_epoch" ]; then
-          touchstone_ship_signal_tree "$child_pid" TERM
+          kill -TERM -- "-$child_pid" 2>/dev/null || true
+          sleep 0.2
+          kill -KILL -- "-$child_pid" 2>/dev/null || true
           wait "$child_pid" 2>/dev/null || true
           return 124
         fi
         ;;
     esac
-    sleep 1
+    sleep 0.1
   done
   if wait "$child_pid"; then
     exit_code=0
@@ -370,6 +440,29 @@ touchstone_review_fix_run_child() {
     exit_code=$?
   fi
   return "$exit_code"
+}
+
+touchstone_review_fix_in_worktree() {
+  local worktree_path="$1"
+  shift
+  cd "$worktree_path" && "$@"
+}
+
+touchstone_review_fix_capture_phase() {
+  local job_dir="$1" output_file="$2" worktree_path="$3"
+  shift 3
+  : >"$output_file"
+  touchstone_review_fix_run_child \
+    "$job_dir" touchstone_review_fix_in_worktree "$worktree_path" "$@" >"$output_file"
+}
+
+touchstone_review_fix_stop_for_phase() {
+  local job_dir="$1" worktree_path="$2" exit_code="$3" failure_reason="$4"
+  if [ "$exit_code" -eq 124 ]; then
+    touchstone_review_fix_need_attention "$job_dir" "$worktree_path" time-budget-exhausted
+  else
+    touchstone_review_fix_need_attention "$job_dir" "$worktree_path" "$failure_reason"
+  fi
 }
 
 touchstone_review_fix_wait_for_head() {
@@ -398,7 +491,8 @@ touchstone_review_fix_run() {
   local branch pr_number repo_full_name base_ref iteration observed_head source_head fix_head
   local threads_file brief_file result_file paths_file open_pr_exit now_epoch validation_display
   local trusted_authors thread_id _path _line thread_outdated thread_author thread_review_head
-  local thread_body_truncated _url _body finish_rc resume_rc
+  local thread_body_truncated thread_comment_count _comment_ids _comment_snapshot _url _body
+  local finish_rc resume_rc phase_rc phase_output
   local -a open_pr_args=(--auto-merge)
 
   # Dynamically scoped for cmd_ship_runner, which persists the terminal reason.
@@ -422,23 +516,54 @@ touchstone_review_fix_run() {
       return
     fi
 
-    pr_number="$(cd "$worktree_path" && touchstone_review_fix_pr_number "$branch")" || {
-      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" pr-inspection-failed
+    phase_output="$job_dir/pr-number.out"
+    phase_rc=0
+    touchstone_review_fix_capture_phase \
+      "$job_dir" "$phase_output" "$worktree_path" touchstone_review_fix_pr_number "$branch" \
+      || phase_rc=$?
+    if [ "$phase_rc" -ne 0 ]; then
+      touchstone_review_fix_stop_for_phase \
+        "$job_dir" "$worktree_path" "$phase_rc" pr-inspection-failed
       return
-    }
+    fi
+    pr_number="$(cat "$phase_output")"
     if [ -n "$pr_number" ]; then
-      observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || {
-        touchstone_review_fix_need_attention "$job_dir" "$worktree_path" head-inspection-failed
+      phase_rc=0
+      touchstone_review_fix_capture_phase \
+        "$job_dir" "$phase_output" "$worktree_path" touchstone_review_fix_pr_head "$pr_number" \
+        || phase_rc=$?
+      if [ "$phase_rc" -ne 0 ]; then
+        touchstone_review_fix_stop_for_phase \
+          "$job_dir" "$worktree_path" "$phase_rc" head-inspection-failed
         return
-      }
+      fi
+      observed_head="$(cat "$phase_output")"
       if [ -d "$job_dir/review-fix" ]; then
+        phase_rc=0
+        touchstone_review_fix_capture_phase \
+          "$job_dir" "$phase_output" "$worktree_path" touchstone_review_fix_repo_name \
+          || phase_rc=$?
+        if [ "$phase_rc" -ne 0 ]; then
+          touchstone_review_fix_stop_for_phase \
+            "$job_dir" "$worktree_path" "$phase_rc" repository-inspection-failed
+          return
+        fi
+        repo_full_name="$(cat "$phase_output")"
         resume_rc=0
-        touchstone_review_fix_resume_checkpoint \
-          "$job_dir" "$worktree_path" "$pr_number" "$observed_head" || resume_rc=$?
+        touchstone_review_fix_run_child \
+          "$job_dir" touchstone_review_fix_resume_checkpoint \
+          "$job_dir" "$worktree_path" "$repo_full_name" "$pr_number" "$observed_head" \
+          || resume_rc=$?
         if [ "$resume_rc" -eq 0 ]; then
           :
+        elif [ "$resume_rc" -eq 124 ]; then
+          touchstone_review_fix_need_attention "$job_dir" "$worktree_path" time-budget-exhausted
+          return
         elif [ "$resume_rc" -eq 3 ] || [ "$resume_rc" -eq 4 ]; then
           touchstone_review_fix_need_attention "$job_dir" "$worktree_path" head-changed-during-thread-update
+          return
+        elif [ "$resume_rc" -eq 5 ]; then
+          touchstone_review_fix_need_attention "$job_dir" "$worktree_path" review-thread-changed
           return
         else
           touchstone_review_fix_need_attention "$job_dir" "$worktree_path" checkpoint-head-mismatch
@@ -466,22 +591,40 @@ touchstone_review_fix_run() {
       return
     fi
 
-    pr_number="$(cd "$worktree_path" && touchstone_review_fix_pr_number "$branch")" || {
-      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" pr-inspection-failed
+    phase_rc=0
+    touchstone_review_fix_capture_phase \
+      "$job_dir" "$phase_output" "$worktree_path" touchstone_review_fix_pr_number "$branch" \
+      || phase_rc=$?
+    if [ "$phase_rc" -ne 0 ]; then
+      touchstone_review_fix_stop_for_phase \
+        "$job_dir" "$worktree_path" "$phase_rc" pr-inspection-failed
       return
-    }
+    fi
+    pr_number="$(cat "$phase_output")"
     [ -n "$pr_number" ] || {
       touchstone_review_fix_need_attention "$job_dir" "$worktree_path" pr-not-open
       return
     }
-    repo_full_name="$(cd "$worktree_path" && touchstone_review_fix_repo_name)" || {
-      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" repository-inspection-failed
+    phase_rc=0
+    touchstone_review_fix_capture_phase \
+      "$job_dir" "$phase_output" "$worktree_path" touchstone_review_fix_repo_name \
+      || phase_rc=$?
+    if [ "$phase_rc" -ne 0 ]; then
+      touchstone_review_fix_stop_for_phase \
+        "$job_dir" "$worktree_path" "$phase_rc" repository-inspection-failed
       return
-    }
-    source_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || {
-      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" head-inspection-failed
+    fi
+    repo_full_name="$(cat "$phase_output")"
+    phase_rc=0
+    touchstone_review_fix_capture_phase \
+      "$job_dir" "$phase_output" "$worktree_path" touchstone_review_fix_pr_head "$pr_number" \
+      || phase_rc=$?
+    if [ "$phase_rc" -ne 0 ]; then
+      touchstone_review_fix_stop_for_phase \
+        "$job_dir" "$worktree_path" "$phase_rc" head-inspection-failed
       return
-    }
+    fi
+    source_head="$(cat "$phase_output")"
     [ "$source_head" = "$(git -C "$worktree_path" rev-parse HEAD)" ] || {
       touchstone_review_fix_need_attention "$job_dir" "$worktree_path" local-remote-head-mismatch
       return
@@ -492,8 +635,14 @@ touchstone_review_fix_run() {
     }
 
     threads_file="$job_dir/threads-$source_head.tsv"
-    if ! (cd "$worktree_path" && touchstone_review_fix_threads "$repo_full_name" "$pr_number") >"$threads_file"; then
-      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" thread-inspection-failed
+    phase_rc=0
+    touchstone_review_fix_run_child \
+      "$job_dir" touchstone_review_fix_in_worktree "$worktree_path" \
+      touchstone_review_fix_threads "$repo_full_name" "$pr_number" >"$threads_file" \
+      || phase_rc=$?
+    if [ "$phase_rc" -ne 0 ]; then
+      touchstone_review_fix_stop_for_phase \
+        "$job_dir" "$worktree_path" "$phase_rc" thread-inspection-failed
       return
     fi
     [ -s "$threads_file" ] || {
@@ -505,7 +654,7 @@ touchstone_review_fix_run() {
       return
     }
     while IFS="$(printf '\t')" read -r thread_id _path _line thread_outdated thread_author thread_review_head \
-      thread_body_truncated _url _body \
+      thread_body_truncated thread_comment_count _comment_ids _comment_snapshot _url _body \
       || [ -n "$thread_id" ]; do
       [ -n "$thread_id" ] || continue
       if [ "$thread_outdated" = "true" ]; then
@@ -524,11 +673,21 @@ touchstone_review_fix_run() {
         touchstone_review_fix_need_attention "$job_dir" "$worktree_path" review-thread-body-truncated
         return
       fi
+      if [ "$thread_comment_count" != "1" ]; then
+        touchstone_review_fix_need_attention "$job_dir" "$worktree_path" review-thread-has-follow-ups
+        return
+      fi
     done <"$threads_file"
-    observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || {
-      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" head-inspection-failed
+    phase_rc=0
+    touchstone_review_fix_capture_phase \
+      "$job_dir" "$phase_output" "$worktree_path" touchstone_review_fix_pr_head "$pr_number" \
+      || phase_rc=$?
+    if [ "$phase_rc" -ne 0 ]; then
+      touchstone_review_fix_stop_for_phase \
+        "$job_dir" "$worktree_path" "$phase_rc" head-inspection-failed
       return
-    }
+    fi
+    observed_head="$(cat "$phase_output")"
     [ "$observed_head" = "$source_head" ] || {
       touchstone_review_fix_need_attention "$job_dir" "$worktree_path" stale-review-head
       return
@@ -540,7 +699,8 @@ touchstone_review_fix_run() {
 
     iteration=$((iteration + 1))
     touchstone_ship_write "$job_dir" review-fix-iteration "$iteration"
-    touchstone_review_fix_checkpoint_threads "$job_dir" "$source_head" "$threads_file"
+    touchstone_review_fix_checkpoint_threads \
+      "$job_dir" "$source_head" "$threads_file" "$repo_full_name" "$pr_number"
     brief_file="$job_dir/review-fix/brief.md"
     result_file="$job_dir/review-fix/result.txt"
     paths_file="$job_dir/review-fix/paths.zlist"
@@ -579,30 +739,54 @@ touchstone_review_fix_run() {
       touchstone_review_fix_need_attention "$job_dir" "$worktree_path" worker-made-no-changes
       return
     }
-    if ! touchstone_review_fix_validate "$worktree_path" "$validation_command" "$base_ref"; then
-      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" validation-failed
+    phase_rc=0
+    touchstone_review_fix_run_child \
+      "$job_dir" touchstone_review_fix_validate \
+      "$worktree_path" "$validation_command" "$base_ref" || phase_rc=$?
+    if [ "$phase_rc" -ne 0 ]; then
+      touchstone_review_fix_stop_for_phase \
+        "$job_dir" "$worktree_path" "$phase_rc" validation-failed
       return
     fi
-    if ! touchstone_review_fix_commit "$worktree_path" "$paths_file"; then
-      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" fix-commit-failed
+    phase_rc=0
+    touchstone_review_fix_run_child \
+      "$job_dir" touchstone_review_fix_commit "$worktree_path" "$paths_file" || phase_rc=$?
+    if [ "$phase_rc" -ne 0 ]; then
+      touchstone_review_fix_stop_for_phase \
+        "$job_dir" "$worktree_path" "$phase_rc" fix-commit-failed
       return
     fi
     fix_head="$(git -C "$worktree_path" rev-parse HEAD)"
     touchstone_ship_write "$job_dir/review-fix" fix-head "$fix_head"
-    if ! git -C "$worktree_path" push origin "HEAD:$branch"; then
-      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" fix-push-failed
+    phase_rc=0
+    touchstone_review_fix_run_child \
+      "$job_dir" git -C "$worktree_path" push origin "HEAD:$branch" || phase_rc=$?
+    if [ "$phase_rc" -ne 0 ]; then
+      touchstone_review_fix_stop_for_phase \
+        "$job_dir" "$worktree_path" "$phase_rc" fix-push-failed
       return
     fi
-    if ! touchstone_review_fix_wait_for_head \
-      "$worktree_path" "$pr_number" "$fix_head" "$deadline_epoch"; then
-      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" pushed-head-not-observed
+    phase_rc=0
+    touchstone_review_fix_run_child \
+      "$job_dir" touchstone_review_fix_wait_for_head \
+      "$worktree_path" "$pr_number" "$fix_head" "$deadline_epoch" || phase_rc=$?
+    if [ "$phase_rc" -ne 0 ]; then
+      touchstone_review_fix_stop_for_phase \
+        "$job_dir" "$worktree_path" "$phase_rc" pushed-head-not-observed
       return
     fi
     finish_rc=0
-    touchstone_review_fix_finish_threads \
+    touchstone_review_fix_run_child \
+      "$job_dir" touchstone_review_fix_finish_threads \
       "$job_dir" "$worktree_path" "$pr_number" "$source_head" "$fix_head" || finish_rc=$?
-    if [ "$finish_rc" -eq 3 ] || [ "$finish_rc" -eq 4 ]; then
+    if [ "$finish_rc" -eq 124 ]; then
+      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" time-budget-exhausted
+      return
+    elif [ "$finish_rc" -eq 3 ] || [ "$finish_rc" -eq 4 ]; then
       touchstone_review_fix_need_attention "$job_dir" "$worktree_path" head-changed-during-thread-update
+      return
+    elif [ "$finish_rc" -eq 5 ]; then
+      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" review-thread-changed
       return
     elif [ "$finish_rc" -ne 0 ]; then
       touchstone_review_fix_need_attention "$job_dir" "$worktree_path" thread-update-failed

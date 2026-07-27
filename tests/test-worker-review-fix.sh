@@ -99,12 +99,23 @@ case "$command_name:$subcommand" in
         if [ "$body_truncated" = true ]; then
           body="$(awk 'BEGIN { for (i = 0; i < 1100; i++) printf "x" }')"
         fi
-        printf '%s\ttarget.txt\t1\tfalse\t%s\t%s\t%s\thttps://example.test/thread/%s\t%s\n' \
-          "$(cat "$FAKE_THREAD_ID")" \
+        thread_id="$(cat "$FAKE_THREAD_ID")"
+        comment_count="${FAKE_INITIAL_COMMENT_COUNT:-1}"
+        comment_ids="$thread_id"
+        snapshot_encoded="$FAKE_SNAPSHOT_ENCODED"
+        if [ "$comment_count" != 1 ]; then
+          comment_ids="$thread_id,follow-up-comment"
+          snapshot_encoded="$FAKE_CHANGED_SNAPSHOT_ENCODED"
+        fi
+        printf '%s\ttarget.txt\t1\tfalse\t%s\t%s\t%s\t%s\t%s\t%s\thttps://example.test/thread/%s\t%s\n' \
+          "$thread_id" \
           "${FAKE_THREAD_AUTHOR:-chatgpt-codex-connector}" \
           "$review_head" \
           "$body_truncated" \
-          "$(cat "$FAKE_THREAD_ID")" \
+          "$comment_count" \
+          "$comment_ids" \
+          "$snapshot_encoded" \
+          "$thread_id" \
           "$body"
         [ "${FAKE_STALE_AFTER_THREADS:-0}" = 1 ] && : >"$FAKE_STALE_NEXT" || true
       fi
@@ -122,13 +133,33 @@ case "$command_name:$subcommand" in
         rm -f "$FAKE_THREAD_ACTIVE"
       fi
     elif [[ "$args" == *"node(id:"* ]]; then
-      if [ -f "$FAKE_RESOLVED" ]; then
-        printf 'true\ttrue\n'
-      elif [ -f "$FAKE_REPLIED" ]; then
-        printf 'false\ttrue\n'
-      else
-        printf 'false\tfalse\n'
+      thread_id="$(cat "$FAKE_THREAD_ID")"
+      total_count=1
+      loaded_count=1
+      nonmarker_count=1
+      marker_count=0
+      comment_ids="$thread_id"
+      snapshot_encoded="$FAKE_SNAPSHOT_ENCODED"
+      if [ -f "$FAKE_REPLIED" ]; then
+        total_count=2
+        loaded_count=2
+        marker_count=1
       fi
+      if [ "${FAKE_ADD_COMMENT_BEFORE_RESOLVE:-0}" = 1 ] && [ -f "$FAKE_REPLIED" ]; then
+        total_count=3
+        loaded_count=3
+        nonmarker_count=2
+        comment_ids="$thread_id,follow-up-comment"
+        snapshot_encoded="$FAKE_CHANGED_SNAPSHOT_ENCODED"
+      fi
+      if [ -f "$FAKE_RESOLVED" ]; then
+        resolved=true
+      else
+        resolved=false
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$resolved" "$total_count" "$loaded_count" "$nonmarker_count" \
+        "$marker_count" "$comment_ids" "$snapshot_encoded"
     else
       echo "unexpected gh api request: $args" >&2
       exit 1
@@ -173,6 +204,9 @@ export FAKE_STALE_NEXT="$TEST_DIR/stale-next"
 export FAKE_HEAD_MOVED="$TEST_DIR/head-moved"
 export FAKE_OPEN_PR_LOG="$TEST_DIR/open-pr.log"
 export FAKE_MERGED="$TEST_DIR/merged"
+export FAKE_SNAPSHOT_ENCODED="c25hcHNob3Q="
+export FAKE_CHANGED_SNAPSHOT_ENCODED="Y2hhbmdlZC1zbmFwc2hvdA=="
+FAKE_SNAPSHOT_DIGEST="$(printf '%s' "$FAKE_SNAPSHOT_ENCODED" | git hash-object --stdin)"
 
 FAKE_BIN="$TEST_DIR/bin"
 make_fake_gh "$FAKE_BIN"
@@ -391,6 +425,47 @@ assert_contains "$STATUS" '"reason":"head-changed-during-thread-update"'
 unset FAKE_MOVE_HEAD_DURING_FINISH
 rm -f "$FAKE_HEAD_MOVED"
 
+echo "==> Case c7: an existing follow-up comment blocks autonomous edits"
+FOLLOWUP_WT="$TEST_DIR/followup-worktree"
+git -C "$REPO" branch feat/review-followup main
+git -C "$REPO" push -q origin feat/review-followup
+git -C "$REPO" worktree add -q "$FOLLOWUP_WT" feat/review-followup
+: >"$FAKE_THREAD_ACTIVE"
+printf 'thread-followup\n' >"$FAKE_THREAD_ID"
+rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED"
+export FAKE_INITIAL_COMMENT_COUNT=2
+TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$FOLLOWUP_WT" --detach --review-fix --validation-command : >/dev/null
+wait_for_status "$FOLLOWUP_WT" needs-attention "$STATUS" \
+  || fail "multi-comment review thread did not enter needs-attention"
+assert_contains "$STATUS" '"reason":"review-thread-has-follow-ups"'
+[ -z "$(git -C "$FOLLOWUP_WT" status --porcelain)" ] \
+  || fail "multi-comment review thread caused autonomous edits"
+[ ! -f "$FAKE_REPLIED" ] || fail "multi-comment review thread received an autonomous reply"
+[ ! -f "$FAKE_RESOLVED" ] || fail "multi-comment review thread was autonomously resolved"
+unset FAKE_INITIAL_COMMENT_COUNT
+
+echo "==> Case c8: a comment arriving after the fix prevents thread resolution"
+CHANGED_THREAD_WT="$TEST_DIR/changed-thread-worktree"
+git -C "$REPO" branch feat/review-changed-thread main
+git -C "$REPO" push -q origin feat/review-changed-thread
+git -C "$REPO" worktree add -q "$CHANGED_THREAD_WT" feat/review-changed-thread
+: >"$FAKE_THREAD_ACTIVE"
+printf 'thread-changed\n' >"$FAKE_THREAD_ID"
+rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED" "$FAKE_MERGED"
+export FAKE_ADD_COMMENT_BEFORE_RESOLVE=1
+TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$CHANGED_THREAD_WT" --detach --review-fix --validation-command : >/dev/null
+wait_for_status "$CHANGED_THREAD_WT" needs-attention "$STATUS" \
+  || fail "changed review thread did not enter needs-attention"
+assert_contains "$STATUS" '"reason":"review-thread-changed"'
+[ -f "$FAKE_REPLIED" ] || fail "changed-thread fixture did not reach the reply boundary"
+[ ! -f "$FAKE_RESOLVED" ] || fail "new follow-up feedback was autonomously resolved"
+[ ! -f "$FAKE_MERGED" ] || fail "new follow-up feedback reached merge"
+unset FAKE_ADD_COMMENT_BEFORE_RESOLVE
+
 echo "==> Case d: a new thread after a fix exhausts the bounded iteration budget"
 BUDGET_WT="$TEST_DIR/budget-worktree"
 git -C "$REPO" branch feat/review-budget main
@@ -409,7 +484,7 @@ wait_for_status "$BUDGET_WT" needs-attention "$STATUS" \
 assert_contains "$STATUS" '"reason":"iteration-budget-exhausted"'
 unset FAKE_REPLACE_THREAD
 
-echo "==> Case e: restart checkpoint detects duplicate replies and resumes resolution"
+echo "==> Case e: a checkpoint cannot cross PR identity boundaries"
 # shellcheck source=../lib/worker-state.sh
 source "$TOUCHSTONE_ROOT/lib/worker-state.sh"
 # shellcheck source=../lib/worker-ship-job.sh
@@ -418,18 +493,44 @@ source "$TOUCHSTONE_ROOT/lib/worker-ship-job.sh"
 source "$TOUCHSTONE_ROOT/lib/events.sh"
 # shellcheck source=../lib/worker-review-fix.sh
 source "$TOUCHSTONE_ROOT/lib/worker-review-fix.sh"
+CROSS_CHECKPOINT="$TEST_DIR/cross-checkpoint"
+mkdir -p "$CROSS_CHECKPOINT/review-fix"
+RESTART_HEAD="$(git -C "$WORKTREE" rev-parse HEAD)"
+printf 'thread-cross\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\tfalse\t1\tthread-cross\t%s\turl\tbody\n' \
+  "$(git -C "$WORKTREE" rev-parse HEAD~1)" "$FAKE_SNAPSHOT_DIGEST" \
+  >"$CROSS_CHECKPOINT/review-fix/threads.tsv"
+touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" source-head "$(git -C "$WORKTREE" rev-parse HEAD~1)"
+touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" fix-head "$RESTART_HEAD"
+touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" repo-full-name example/project
+touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" pr-number 76
+printf 'thread-cross\n' >"$FAKE_THREAD_ID"
+rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED"
+if touchstone_review_fix_resume_checkpoint \
+  "$CROSS_CHECKPOINT" "$WORKTREE" example/project 77 "$RESTART_HEAD"; then
+  fail "checkpoint from another PR was allowed to resume"
+else
+  CROSS_EXIT=$?
+  [ "$CROSS_EXIT" -eq 2 ] || fail "cross-PR checkpoint returned $CROSS_EXIT instead of 2"
+fi
+[ ! -f "$FAKE_REPLIED" ] || fail "cross-PR checkpoint replied to an old thread"
+[ ! -f "$FAKE_RESOLVED" ] || fail "cross-PR checkpoint resolved an old thread"
+
+echo "==> Case e2: restart checkpoint detects duplicate replies and resumes resolution"
 CHECKPOINT="$TEST_DIR/checkpoint"
 mkdir -p "$CHECKPOINT/review-fix"
-printf 'thread-restart\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\tfalse\turl\tbody\n' \
-  "$(git -C "$WORKTREE" rev-parse HEAD~1)" >"$CHECKPOINT/review-fix/threads.tsv"
-RESTART_HEAD="$(git -C "$WORKTREE" rev-parse HEAD)"
+printf 'thread-restart\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\tfalse\t1\tthread-restart\t%s\turl\tbody\n' \
+  "$(git -C "$WORKTREE" rev-parse HEAD~1)" "$FAKE_SNAPSHOT_DIGEST" \
+  >"$CHECKPOINT/review-fix/threads.tsv"
 touchstone_ship_write "$CHECKPOINT/review-fix" source-head "$(git -C "$WORKTREE" rev-parse HEAD~1)"
 touchstone_ship_write "$CHECKPOINT/review-fix" fix-head "$RESTART_HEAD"
+touchstone_ship_write "$CHECKPOINT/review-fix" repo-full-name example/project
+touchstone_ship_write "$CHECKPOINT/review-fix" pr-number 77
 printf 'thread-restart\n' >"$FAKE_THREAD_ID"
 : >"$FAKE_REPLIED"
 rm -f "$FAKE_RESOLVED"
 BEFORE_REPLIES="$(wc -l <"$FAKE_REPLY_LOG" | tr -d ' ')"
-touchstone_review_fix_resume_checkpoint "$CHECKPOINT" "$WORKTREE" 77 "$RESTART_HEAD" \
+touchstone_review_fix_resume_checkpoint \
+  "$CHECKPOINT" "$WORKTREE" example/project 77 "$RESTART_HEAD" \
   || fail "restart checkpoint did not resume"
 AFTER_REPLIES="$(wc -l <"$FAKE_REPLY_LOG" | tr -d ' ')"
 [ "$BEFORE_REPLIES" = "$AFTER_REPLIES" ] || fail "restart duplicated an existing reply"
@@ -443,6 +544,32 @@ else
   DEADLINE_EXIT=$?
   [ "$DEADLINE_EXIT" -eq 124 ] || fail "deadline returned $DEADLINE_EXIT instead of 124"
 fi
+
+echo "==> Case f2: the persisted deadline terminates hung validation"
+DEADLINE_WT="$TEST_DIR/deadline-worktree"
+git -C "$REPO" branch feat/review-deadline main
+git -C "$REPO" push -q origin feat/review-deadline
+git -C "$REPO" worktree add -q "$DEADLINE_WT" feat/review-deadline
+: >"$FAKE_THREAD_ACTIVE"
+printf 'thread-deadline\n' >"$FAKE_THREAD_ID"
+rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED"
+DEADLINE_JOB="$(touchstone_ship_job_dir "$DEADLINE_WT")"
+DEADLINE_EPOCH="$(($(date +%s) + 4))"
+VALIDATION_STARTED="$TEST_DIR/validation-started"
+touchstone_ship_write "$DEADLINE_JOB" deadline-epoch "$DEADLINE_EPOCH"
+touchstone_ship_write "$DEADLINE_JOB" review-fix-iteration 0
+DEADLINE_START="$(date +%s)"
+if TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+  touchstone_review_fix_run \
+  "$DEADLINE_JOB" "$DEADLINE_WT" 2 "$DEADLINE_EPOCH" \
+  "trap '' TERM; printf started >'$VALIDATION_STARTED'; sleep 10" false; then
+  fail "hung validation unexpectedly completed"
+fi
+DEADLINE_ELAPSED=$(($(date +%s) - DEADLINE_START))
+assert_contains "$DEADLINE_JOB/reason" '^time-budget-exhausted$'
+[ -f "$VALIDATION_STARTED" ] || fail "deadline fixture did not reach validation"
+[ "$DEADLINE_ELAPSED" -lt 9 ] \
+  || fail "hung validation exceeded the persisted deadline ($DEADLINE_ELAPSED seconds)"
 
 echo "==> Case g: default Codex worker rejects metered or unknown authentication"
 cat >"$FAKE_BIN/codex" <<'EOF'
