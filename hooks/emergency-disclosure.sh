@@ -828,6 +828,11 @@ static_data_sink_segment() {
         | grep -qE '(^|[^\\])\$\(|(^|[^\\])`|[;&|<>]' && return 1
       return 0
       ;;
+    cat)
+      printf '%s' "$executable_segment" \
+        | grep -qE '^[[:space:]]*cat[[:space:]]*<<<[[:space:]]*$'
+      return
+      ;;
     gh)
       printf '%s' "$executable_segment" \
         | grep -qE '(^|[^\\])\$\(|(^|[^\\])`|[;&|<>]' && return 1
@@ -1221,11 +1226,23 @@ segment_cd_target() {
   local normalized=""
   local assignment_name=""
   local expect_target=false
+  local parse_options=false
 
   while IFS= read -r token; do
     if [ "$expect_target" = "true" ]; then
+      if [ "$parse_options" = "true" ]; then
+        case "$token" in
+          --)
+            parse_options=false
+            continue
+            ;;
+          -*)
+            printf '%s' "${token#-}" | grep -qE '^[LP]+$' && continue
+            ;;
+        esac
+      fi
       printf '%s' "$token"
-      return
+      return 0
     fi
     normalized="$(printf '%s' "$token" | sed -E 's/^[({]+//')"
     case "$normalized" in
@@ -1233,10 +1250,11 @@ segment_cd_target() {
         ;;
       *=*)
         assignment_name="${normalized%%=*}"
-        printf '%s' "$assignment_name" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || return
+        printf '%s' "$assignment_name" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || return 0
         ;;
       cd)
         expect_target=true
+        parse_options=true
         ;;
       *)
         return

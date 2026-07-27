@@ -349,6 +349,8 @@ assert "allows quoted bypass text in another command's argument" "0" \
 # 12. A real push later in a compound command must still be detected.
 assert "blocks executable bypass segment after another command" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "printf 'ready' && git push --no-verify origin feat/test")")"
+assert "blocks a dynamic bypass push after a compound assignment" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'x=gi; x+=t; "$x" push --no-verify origin feat/test')")"
 ARITHMETIC_SHIFT_THEN_PUSH_COMMAND="$(printf '%s\n' 'echo $((1 << 2))' 'git push --no-verify origin feat/test')"
 assert "does not treat arithmetic left shift as a heredoc opener" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "$ARITHMETIC_SHIFT_THEN_PUSH_COMMAND")")"
@@ -508,6 +510,12 @@ assert "blocks bypass push in a trap action" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "trap 'git push --no-verify origin feat/test' EXIT; true")")"
 assert "blocks bypass push supplied to shell stdin by a here-string" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "bash <<< 'git push --no-verify origin feat/test'")")"
+assert "allows literal bypass prose passed to cat by a here-string" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "cat <<< 'git push --no-verify origin feat/test'")")"
+assert "blocks command substitution passed to cat by a here-string" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'cat <<< "$(git push --no-verify origin feat/test)"')")"
+assert "blocks literal protected prose piped from cat into a shell" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "cat <<< 'git push --no-verify origin feat/test' | bash")")"
 SHELL_STDIN_HEREDOC_COMMAND="$(
   printf '%s\n' "bash <<'EOF'" "git push --no-verify origin feat/test" "EOF"
 )"
@@ -732,6 +740,34 @@ if [ -f "$QUOTED_C_TARGET/.touchstone/emergency-bypass.log" ]; then
   PASS=$((PASS + 1))
 else
   echo "  FAIL: emergency log did not follow quoted cd target" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+for cd_option in -P --; do
+  rm -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
+  OPTION_CD_JSON="$(mkjson "cd $cd_option $EMERGENCY_TARGET && git push --no-verify origin feat/test" "$TMPDIR")"
+  printf '%s' "$OPTION_CD_JSON" \
+    | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
+  if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
+    echo "  OK: emergency log follows cd $cd_option target"
+    PASS=$((PASS + 1))
+  else
+    echo "  FAIL: emergency log did not follow cd $cd_option target" >&2
+    FAIL=$((FAIL + 1))
+  fi
+done
+
+DASH_CD_TARGET="$TMPDIR/-P"
+mkdir -p "$DASH_CD_TARGET"
+git -C "$DASH_CD_TARGET" init --quiet --initial-branch=main
+DASH_CD_JSON="$(mkjson "cd -- -P && git push --no-verify origin feat/test" "$TMPDIR")"
+printf '%s' "$DASH_CD_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
+if [ -f "$DASH_CD_TARGET/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: emergency log follows a dash-prefixed cd target after --"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: emergency log did not follow a dash-prefixed cd target after --" >&2
   FAIL=$((FAIL + 1))
 fi
 
