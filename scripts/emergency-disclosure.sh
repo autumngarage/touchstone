@@ -57,10 +57,11 @@ shell_segments() {
       for (i = 1; i <= length(line); i++) {
         char = substr(line, i, 1)
         if (escaped) {
-          segment = segment char
+          if (char != "\n") {
+            segment = segment "\\" char
+          }
           escaped = 0
         } else if (char == "\\" && quote != "\047") {
-          segment = segment char
           escaped = 1
         } else if (quote == "") {
           if (char == "\"" || char == "\047") {
@@ -94,16 +95,29 @@ without_single_quoted_literals() {
         if (escaped) {
           printf "%s", char
           escaped = 0
-        } else if (!single_quote && char == "\\") {
+        } else if (char == "\\" && quote != "\047") {
           printf "%s", char
           escaped = 1
-        } else if (char == "\047") {
+        } else if (quote == "") {
+          if (char == "\047") {
+            quote = char
+            printf " "
+          } else {
+            if (char == "\"") {
+              quote = char
+            }
+            printf "%s", char
+          }
+        } else if (quote == "\047") {
           printf " "
-          single_quote = !single_quote
-        } else if (single_quote) {
-          printf " "
+          if (char == quote) {
+            quote = ""
+          }
         } else {
           printf "%s", char
+          if (char == quote) {
+            quote = ""
+          }
         }
       }
     }
@@ -124,8 +138,10 @@ shell_words() {
       for (i = 1; i <= length(line); i++) {
         char = substr(line, i, 1)
         if (escaped) {
-          token = token char
-          token_started = 1
+          if (char != "\n") {
+            token = token char
+            token_started = 1
+          }
           escaped = 0
         } else if (char == "\\" && quote != "\047") {
           escaped = 1
@@ -226,8 +242,12 @@ segment_cd_target() {
 
 segment_runs_bypass_push() {
   local segment="$1"
-  local executable_text=""
   local protected_push='git([^;&|)]*)[[:space:]]+push([^;&|)]*)--no-verify'
+
+  if [ "$command_nested_protected" = "true" ]; then
+    push_context="nested"
+    return 0
+  fi
 
   if segment_has_bypass_words "$segment"; then
     if [ "$command_has_substitution" = "true" ] || printf '%s' "$segment" \
@@ -236,16 +256,6 @@ segment_runs_bypass_push() {
     else
       push_context="direct"
     fi
-    return 0
-  fi
-
-  executable_text="$(printf '%s' "$segment" | without_single_quoted_literals)"
-
-  # Command substitutions and legacy backticks execute even inside double
-  # quotes. Single-quoted lookalikes were removed above.
-  if printf '%s' "$executable_text" \
-    | grep -qE "(^|[^\\\\])\\$\\([^)]*$protected_push|(^|[^\\\\])\`[^\`]*$protected_push"; then
-    push_context="nested"
     return 0
   fi
 
@@ -265,10 +275,16 @@ push_context=""
 preceding_cd=""
 ambiguous_cd_scope=false
 command_has_substitution=false
+command_nested_protected=false
 command_executable_text="$(printf '%s' "$command" | without_single_quoted_literals)"
 if printf '%s' "$command_executable_text" \
   | grep -qE '(^|[^\\])\$\(|(^|[^\\])`'; then
   command_has_substitution=true
+  if printf '%s' "$command_executable_text" \
+    | tr '\n' ' ' \
+    | grep -qE 'git.*push.*--no-verify'; then
+    command_nested_protected=true
+  fi
 fi
 while IFS= read -r segment; do
   cd_target="$(segment_cd_target "$segment")"

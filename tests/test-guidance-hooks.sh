@@ -316,10 +316,19 @@ assert "blocks bypass push after Git global options" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git --no-pager push --no-verify origin feat/test")")"
 assert "blocks bypass push with a quoted git -C path" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'git -C "/tmp/repo with spaces" push --no-verify origin feat/test')")"
+LINE_CONTINUATION_COMMAND="git \\"
+LINE_CONTINUATION_COMMAND+=$'\n'
+LINE_CONTINUATION_COMMAND+="push --no-verify origin feat/test"
+assert "blocks bypass push across a line continuation" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$LINE_CONTINUATION_COMMAND")")"
 
 # Nested executable contexts must not turn literal-looking text into a bypass.
 assert "blocks bypass push in command substitution" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'echo "$(git push --no-verify origin feat/test)"')")"
+assert "blocks command substitution after an apostrophe in double quotes" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson $'echo "it\'s $(git push --no-verify origin feat/test)"')")"
+assert "blocks bypass push after a nested command substitution" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'echo "$(echo $(date); git push --no-verify origin feat/test)"')")"
 assert "blocks bypass push in a shell -c payload" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "sh -c 'git push --no-verify origin feat/test'")")"
 assert "blocks bypass push in a sudo-wrapped shell payload" "2" \
