@@ -364,6 +364,14 @@ assert "allows a Git push alias definition that is not invoked" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "alias gp='git push'; echo --no-verify")")"
 assert "blocks push subcommand supplied through variable expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'sub=push; git $sub --no-verify origin feat/test')")"
+assert "blocks Git executable composed through an expansion" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'g${x}it push --no-verify origin feat/test')")"
+assert "blocks path-qualified Git executable composed through an expansion" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson '/usr/bin/g${x}it push --no-verify origin feat/test')")"
+assert "blocks push subcommand composed through an expansion" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'git p${x}ush --no-verify origin feat/test')")"
+assert "blocks bypass flag composed through command substitution" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'git push --no-$(printf ver)ify origin feat/test')")"
 
 # Nested executable contexts must not turn literal-looking text into a bypass.
 assert "blocks bypass push in command substitution" "2" \
@@ -538,6 +546,18 @@ if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
   PASS=$((PASS + 1))
 else
   echo "  FAIL: emergency log did not follow command-wrapped cd" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
+ASSIGNMENT_CD_JSON="$(mkjson "X=1 cd $EMERGENCY_TARGET && git push --no-verify origin feat/test" "$TMPDIR")"
+printf '%s' "$ASSIGNMENT_CD_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
+if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: emergency log follows assignment-prefixed cd"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: emergency log did not follow assignment-prefixed cd" >&2
   FAIL=$((FAIL + 1))
 fi
 

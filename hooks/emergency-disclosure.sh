@@ -23,8 +23,11 @@ set -euo pipefail
 
 input="$(cat)"
 
-# Fast path — avoid jq for calls that cannot contain the protected flag.
-if ! printf '%s' "$input" | grep -q -- '--no-verify'; then
+# Fast path — avoid jq for calls that cannot contain the protected flag. A
+# shell expansion may compose the middle of the flag, so retain --no-* input
+# for command-position analysis even when the final literal is absent.
+if ! printf '%s' "$input" | grep -q -- '--no-verify' \
+  && ! printf '%s' "$input" | grep -q -- '--no-'; then
   exit 0
 fi
 if ! command -v jq >/dev/null 2>&1; then
@@ -380,6 +383,42 @@ shell_words() {
   '
 }
 
+word_may_expand_to() {
+  local word="$1"
+  local expected="$2"
+  local static=""
+
+  case "$word" in
+    *'$'* | *'`'*) ;;
+    *) return 1 ;;
+  esac
+
+  static="$(printf '%s' "$word" \
+    | sed -E 's/\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$\([^)]*\)|`[^`]*`//g')"
+  static="${static##*/}"
+  [ -z "$static" ] && return 0
+
+  awk -v static="$static" -v expected="$expected" '
+    BEGIN {
+      position = 1
+      for (i = 1; i <= length(static); i++) {
+        found = index(substr(expected, position), substr(static, i, 1))
+        if (found == 0) {
+          exit 1
+        }
+        position += found
+      }
+    }
+  '
+}
+
+segment_may_compose_no_verify() {
+  local segment="$1"
+
+  printf '%s' "$segment" \
+    | grep -qE -- '--no-[^[:space:]]*(\$|`).*ify([[:space:]]|$)'
+}
+
 segment_has_bypass_words() {
   local segment="$1"
   local word=""
@@ -394,6 +433,11 @@ segment_has_bypass_words() {
         git | */git | __touchstone_shell_composed__:*)
           seen_git=true
           ;;
+        *)
+          if word_may_expand_to "$word" "git"; then
+            seen_git=true
+          fi
+          ;;
       esac
     elif [ "$expect_global_option_value" = "true" ]; then
       expect_global_option_value=false
@@ -407,13 +451,22 @@ segment_has_bypass_words() {
         -*)
           ;;
         *)
-          subcommand="$word"
+          if word_may_expand_to "$word" "push"; then
+            subcommand="push"
+          else
+            subcommand="$word"
+          fi
           ;;
       esac
     elif [ "$word" = "--no-verify" ]; then
       seen_no_verify=true
     fi
   done < <(printf '%s' "$segment" | shell_words)
+
+  if [ "$subcommand" = "push" ] && [ "$seen_no_verify" = "false" ] \
+    && segment_may_compose_no_verify "$segment"; then
+    seen_no_verify=true
+  fi
 
   if [ -n "$subcommand" ] && [ "$seen_no_verify" = "true" ]; then
     push_subcommand="$subcommand"
@@ -492,6 +545,7 @@ segment_cd_target() {
   local segment="$1"
   local token=""
   local normalized=""
+  local assignment_name=""
   local expect_target=false
 
   while IFS= read -r token; do
@@ -502,6 +556,10 @@ segment_cd_target() {
     normalized="$(printf '%s' "$token" | sed -E 's/^[({]+//')"
     case "$normalized" in
       if | then | elif | else | while | until | do | ! | command | builtin | "")
+        ;;
+      *=*)
+        assignment_name="${normalized%%=*}"
+        printf '%s' "$assignment_name" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || return
         ;;
       cd)
         expect_target=true
