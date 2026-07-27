@@ -322,7 +322,10 @@ load_open_pr_review_config() {
 
 request_pr_triggered_review() {
   local pr_number="$1"
-  local head_sha marker comments body
+  local expected_head_sha="$2"
+  local head_sha marker comments body attempt=1
+  local max_attempts="${TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS:-10}"
+  local retry_interval="${TOUCHSTONE_PR_HEAD_CONVERGENCE_INTERVAL:-1}"
 
   if ! truthy "$PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH"; then
     return 0
@@ -331,15 +334,32 @@ request_pr_triggered_review() {
     echo "ERROR: request_on_push only supports [review.pr_triggered].provider = \"github-codex\"." >&2
     return 1
   fi
+  case "$max_attempts" in
+    "" | 0 | *[!0-9]*)
+      echo "ERROR: TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS must be a positive integer." >&2
+      return 1
+      ;;
+  esac
 
-  if ! head_sha="$(gh pr view "$pr_number" --json headRefOid --jq '.headRefOid')"; then
-    echo "ERROR: failed to resolve the remote head for PR #$pr_number before requesting review." >&2
-    return 1
-  fi
-  if [ -z "$head_sha" ]; then
-    echo "ERROR: GitHub returned an empty remote head for PR #$pr_number." >&2
-    return 1
-  fi
+  while [ "$attempt" -le "$max_attempts" ]; do
+    if ! head_sha="$(gh pr view "$pr_number" --json headRefOid --jq '.headRefOid')"; then
+      echo "ERROR: failed to resolve the remote head for PR #$pr_number before requesting review." >&2
+      return 1
+    fi
+    if [ -z "$head_sha" ]; then
+      echo "ERROR: GitHub returned an empty remote head for PR #$pr_number." >&2
+      return 1
+    fi
+    if [ "$head_sha" = "$expected_head_sha" ]; then
+      break
+    fi
+    if [ "$attempt" -eq "$max_attempts" ]; then
+      echo "ERROR: PR #$pr_number head remained $head_sha; expected pushed head $expected_head_sha." >&2
+      return 1
+    fi
+    sleep "$retry_interval"
+    attempt=$((attempt + 1))
+  done
   marker="<!-- touchstone:pr-review-request provider=github-codex head=$head_sha -->"
   if ! comments="$(gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments?per_page=100" --jq '.[].body')"; then
     echo "ERROR: failed to inspect prior GitHub Codex review requests for PR #$pr_number." >&2
@@ -670,6 +690,10 @@ fi
 # was created.
 EXISTING_UPSTREAM="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
 EXPECTED_UPSTREAM="origin/$CURRENT_BRANCH"
+# Git resolves the ref selected for transport before running pre-push hooks.
+# A hook may create a newer local commit, but that commit is not part of this
+# push. Preserve the selected SHA so the review request cannot drift to it.
+PUSHED_HEAD_SHA="$(git rev-parse HEAD)"
 if [ -n "$EXISTING_UPSTREAM" ] && [ "$EXISTING_UPSTREAM" = "$EXPECTED_UPSTREAM" ]; then
   echo "==> Pushing $CURRENT_BRANCH ..."
   git push
@@ -692,7 +716,7 @@ EXISTING_PR_URL="$(gh pr list --head "$CURRENT_BRANCH" --author "@me" --state op
 if [ -n "$EXISTING_PR_URL" ]; then
   echo "==> PR already open for $CURRENT_BRANCH: $EXISTING_PR_URL"
   PR_NUMBER="$(basename "$EXISTING_PR_URL")"
-  request_pr_triggered_review "$PR_NUMBER"
+  request_pr_triggered_review "$PR_NUMBER" "$PUSHED_HEAD_SHA"
   if [ "$AUTO_MERGE" = true ]; then
     ORPHAN_PR_URL="$EXISTING_PR_URL"
     ORPHAN_PR_NUMBER="$PR_NUMBER"
@@ -844,7 +868,7 @@ if [ -n "$DRAFT_FLAG" ]; then
   exit 0
 fi
 
-request_pr_triggered_review "$ORPHAN_PR_NUMBER"
+request_pr_triggered_review "$ORPHAN_PR_NUMBER" "$PUSHED_HEAD_SHA"
 
 # Auto-merge: extract PR number and run merge-pr.sh, then positively verify
 # the PR actually reached MERGED state on GitHub before claiming success.

@@ -92,6 +92,11 @@ cat >"$FAKE_BIN/git" <<EOF
 set -euo pipefail
 if [ "\${1:-}" = "push" ]; then
   echo "[mock] git push \$*"
+  if [ "\${GIT_PUSH_CREATE_LOCAL_COMMIT:-0}" = "1" ]; then
+    printf 'pre-push autofix\n' >> pre-push-autofix.txt
+    "$REAL_GIT" add pre-push-autofix.txt
+    "$REAL_GIT" commit -m "fix: simulated pre-push autofix" >/dev/null
+  fi
   exit 0
 fi
 exec "$REAL_GIT" "\$@"
@@ -120,6 +125,8 @@ run_open_pr() {
         GH_EXISTING_REQUEST_BODY="${GH_EXISTING_REQUEST_BODY:-}" \
         GH_EXISTING_REQUEST_FILE="${GH_EXISTING_REQUEST_FILE:-}" \
         GH_PR_HEAD_SHA="${GH_PR_HEAD_SHA:-}" \
+        GIT_PUSH_CREATE_LOCAL_COMMIT="${GIT_PUSH_CREATE_LOCAL_COMMIT:-0}" \
+        TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS="${TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS:-1}" \
         CODEX_REVIEW_STUB_EXIT="${CODEX_REVIEW_STUB_EXIT:-0}" \
         CODEX_REVIEW_STUB_FINDINGS="${CODEX_REVIEW_STUB_FINDINGS:-0}" \
         CODEX_REVIEW_STUB_REASON="${CODEX_REVIEW_STUB_REASON:-clean}" \
@@ -343,17 +350,19 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Case 8c: request marker follows the remote PR head, not local HEAD"
+echo "==> Case 8c: request marker follows the selected push head when a hook advances local HEAD"
 reset_case
-REMOTE_REQUEST_HEAD="1111111111111111111111111111111111111111"
+SELECTED_REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 OUT="$TEST_DIR/request-remote-head.out"
-GH_PR_HEAD_SHA="$REMOTE_REQUEST_HEAD" run_open_pr "$OUT"
-if grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REMOTE_REQUEST_HEAD -->" "$TEST_DIR/comments" \
-  && ! grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD -->" "$TEST_DIR/comments" \
-  && grep -q "Requested GitHub Codex review for head $REMOTE_REQUEST_HEAD" "$OUT"; then
+GH_PR_HEAD_SHA="$SELECTED_REQUEST_HEAD" GIT_PUSH_CREATE_LOCAL_COMMIT=1 run_open_pr "$OUT"
+ADVANCED_LOCAL_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
+if [ "$ADVANCED_LOCAL_HEAD" != "$SELECTED_REQUEST_HEAD" ] \
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$SELECTED_REQUEST_HEAD -->" "$TEST_DIR/comments" \
+  && ! grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$ADVANCED_LOCAL_HEAD -->" "$TEST_DIR/comments" \
+  && grep -q "Requested GitHub Codex review for head $SELECTED_REQUEST_HEAD" "$OUT"; then
   echo "    PASS"
 else
-  echo "    FAIL: request marker should bind to GitHub's remote PR head" >&2
+  echo "    FAIL: request marker should bind to the SHA selected before the pre-push hook" >&2
   cat "$OUT" >&2
   [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
   ERRORS=$((ERRORS + 1))
