@@ -1390,6 +1390,54 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# A PATH entry is not proof that its launcher can execute. Simulate Homebrew
+# leaving behind a script whose shebang interpreter was removed: doctor must
+# keep this orientation check non-blocking but report the exact unhealthy path.
+BROKEN_SIBLING_BIN="$TEST_DIR/broken-sibling-bin"
+mkdir -p "$BROKEN_SIBLING_BIN"
+cat >"$BROKEN_SIBLING_BIN/cortex" <<EOF_BROKEN_CORTEX
+#!$TEST_DIR/missing-cortex-interpreter
+echo "cortex 7.7.7"
+EOF_BROKEN_CORTEX
+chmod +x "$BROKEN_SIBLING_BIN/cortex"
+cp "$SIBLING_STUB_BIN/sentinel" "$BROKEN_SIBLING_BIN/sentinel"
+
+PROJECT_DOCTOR_BROKEN_SIBLING="$TEST_DIR/test-project-doctor-broken-sibling"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_BROKEN_SIBLING" --no-register >/dev/null
+if (cd "$PROJECT_DOCTOR_BROKEN_SIBLING" && PATH="$BROKEN_SIBLING_BIN:$DOCTOR_CONDUCTOR_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-broken-sibling.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-broken-sibling.txt" "cortex CLI is unhealthy at $BROKEN_SIBLING_BIN/cortex"
+  assert_contains "$TEST_DIR/doctor-broken-sibling.txt" 'version probe failed'
+  assert_not_contains "$TEST_DIR/doctor-broken-sibling.txt" 'cortex 7.7.7 (installed)'
+else
+  echo "FAIL: broken sibling health must remain an orientation-only warning" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# execvp may continue PATH search when the first script's shebang interpreter
+# is missing. Probe the resolved path, not the command name, so an older healthy
+# install cannot hide the broken launcher the user's shell will resolve first.
+OLDER_SIBLING_BIN="$TEST_DIR/older-sibling-bin"
+mkdir -p "$OLDER_SIBLING_BIN"
+cat >"$OLDER_SIBLING_BIN/cortex" <<'EOF_OLDER_CORTEX'
+#!/usr/bin/env bash
+printf 'invoked\n' >"${TOUCHSTONE_OLDER_CORTEX_MARKER:?}"
+echo "cortex 6.6.6"
+EOF_OLDER_CORTEX
+chmod +x "$OLDER_SIBLING_BIN/cortex"
+cp "$SIBLING_STUB_BIN/sentinel" "$OLDER_SIBLING_BIN/sentinel"
+
+PROJECT_DOCTOR_SHADOWED_SIBLING="$TEST_DIR/test-project-doctor-shadowed-sibling"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_SHADOWED_SIBLING" --no-register >/dev/null
+older_cortex_marker="$TEST_DIR/older-cortex-invoked"
+if (cd "$PROJECT_DOCTOR_SHADOWED_SIBLING" && PATH="$BROKEN_SIBLING_BIN:$OLDER_SIBLING_BIN:$DOCTOR_CONDUCTOR_BIN:/usr/bin:/bin" TOUCHSTONE_OLDER_CORTEX_MARKER="$older_cortex_marker" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-shadowed-sibling.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-shadowed-sibling.txt" "cortex CLI is unhealthy at $BROKEN_SIBLING_BIN/cortex"
+  assert_not_exists "$older_cortex_marker"
+  assert_not_contains "$TEST_DIR/doctor-shadowed-sibling.txt" 'cortex 6.6.6 (installed)'
+else
+  echo "FAIL: shadowed broken sibling health must remain non-blocking" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # Break hooks and rerun doctor — it must exit nonzero and flag the gap.
 rm -f "$PROJECT_DOCTOR/.git/hooks/pre-push"
 if (cd "$PROJECT_DOCTOR" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-broken.txt" 2>&1; then
