@@ -871,14 +871,16 @@ _touchstone_doctor_review_enabled() {
 }
 
 _touchstone_doctor_check_conductor_peer() {
-  if command -v conductor >/dev/null 2>&1; then
+  local resolved=""
+  resolved="$(command -v conductor 2>/dev/null || true)"
+  if [ -n "$resolved" ]; then
     # Touchstone 2.0 delegates all review to conductor; richer status
     # lives in `conductor doctor`.
-    if conductor doctor --json 2>/dev/null | grep -q '"configured"[[:space:]]*:[[:space:]]*true'; then
-      tk_ok "conductor: $(command -v conductor) (at least one provider configured)"
+    if "$resolved" doctor --json 2>/dev/null | grep -q '"configured"[[:space:]]*:[[:space:]]*true'; then
+      tk_ok "conductor: $resolved (at least one provider configured)"
       return 0
     fi
-    tk_warn "conductor: $(command -v conductor) (no provider configured — run: conductor init)"
+    tk_warn "conductor: $resolved (unhealthy or no provider configured — run: conductor doctor)"
     return 1
   fi
 
