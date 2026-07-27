@@ -344,7 +344,7 @@ assert_contains "$DETACHED_STATUS" '"reason":"stale-runner"'
 
 printf 'starting\n' >"$DETACHED_JOB_DIR/status"
 printf '%s\n' "$$" >"$DETACHED_JOB_DIR/pid"
-printf '%s\n' "$(( $(date +%s) - 10 ))" >"$DETACHED_JOB_DIR/started-epoch"
+printf '%s\n' "$(($(date +%s) - 10))" >"$DETACHED_JOB_DIR/started-epoch"
 mkdir -p "$DETACHED_JOB_DIR/active"
 "$TOUCHSTONE_ROOT/bin/touchstone" worker status \
   --worktree "$DETACHED_WT" --json >"$DETACHED_STATUS"

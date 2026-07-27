@@ -24,8 +24,8 @@ SCRIPT_MIRROR="$TOUCHSTONE_ROOT/scripts/emergency-disclosure.sh"
 REAL_GIT="$(command -v git)"
 
 if ! command -v jq >/dev/null 2>&1; then
-	echo "==> SKIP: jq not installed"
-	exit 0
+  echo "==> SKIP: jq not installed"
+  exit 0
 fi
 
 TEST_ROOT="$(mktemp -d -t touchstone-emergency-differential.XXXXXX)"
@@ -40,11 +40,11 @@ REPO_A="$(cd "$REPO_A" && pwd -P)"
 REPO_B="$(cd "$REPO_B" && pwd -P)"
 
 init_repo() {
-	local repo="$1"
-	"$REAL_GIT" -C "$repo" init --quiet --initial-branch=main
-	"$REAL_GIT" -C "$repo" config user.email "test@touchstone.test"
-	"$REAL_GIT" -C "$repo" config user.name "Touchstone Test"
-	"$REAL_GIT" -C "$repo" config alias.p push
+  local repo="$1"
+  "$REAL_GIT" -C "$repo" init --quiet --initial-branch=main
+  "$REAL_GIT" -C "$repo" config user.email "test@touchstone.test"
+  "$REAL_GIT" -C "$repo" config user.name "Touchstone Test"
+  "$REAL_GIT" -C "$repo" config alias.p push
 }
 init_repo "$REPO_A"
 init_repo "$REPO_B"
@@ -135,295 +135,295 @@ FAIL=0
 CASE_COUNT=0
 
 hook_payload() {
-	local command="$1"
-	jq -nc \
-		--arg command "$command" \
-		--arg cwd "$REPO_A" \
-		'{tool_name: "Bash", tool_input: {command: $command}, cwd: $cwd}'
+  local command="$1"
+  jq -nc \
+    --arg command "$command" \
+    --arg cwd "$REPO_A" \
+    '{tool_name: "Bash", tool_input: {command: $command}, cwd: $cwd}'
 }
 
 run_hook() {
-	local command="$1" authorized="$2" fixture_home="${3:-$HOME}" exit_code=0
-	if [ "$authorized" = "1" ]; then
-		printf '%s' "$(hook_payload "$command")" |
-			HOME="$fixture_home" GIT=git TOUCHSTONE_EMERGENCY=1 bash "$HOOK" >/dev/null 2>&1 ||
-			exit_code=$?
-	else
-		printf '%s' "$(hook_payload "$command")" |
-			HOME="$fixture_home" GIT=git bash "$HOOK" >/dev/null 2>&1 ||
-			exit_code=$?
-	fi
-	printf '%s' "$exit_code"
+  local command="$1" authorized="$2" fixture_home="${3:-$HOME}" exit_code=0
+  if [ "$authorized" = "1" ]; then
+    printf '%s' "$(hook_payload "$command")" \
+      | HOME="$fixture_home" GIT=git TOUCHSTONE_EMERGENCY=1 bash "$HOOK" >/dev/null 2>&1 \
+      || exit_code=$?
+  else
+    printf '%s' "$(hook_payload "$command")" \
+      | HOME="$fixture_home" GIT=git bash "$HOOK" >/dev/null 2>&1 \
+      || exit_code=$?
+  fi
+  printf '%s' "$exit_code"
 }
 
 run_oracle() {
-	local command="$1" fixture_home="${2:-$HOME}" exit_code=0
-	: >"$ORACLE_LOG"
-	(
-		cd "$REPO_A"
-		PATH="$FAKE_BIN:/usr/bin:/bin" \
-			HOME="$fixture_home" \
-			REAL_GIT="$REAL_GIT" \
-			ORACLE_LOG="$ORACLE_LOG" \
-			GIT=git \
-			bash --noprofile --norc -c "$command"
-	) >/dev/null 2>&1 || exit_code=$?
-	printf '%s' "$exit_code"
+  local command="$1" fixture_home="${2:-$HOME}" exit_code=0
+  : >"$ORACLE_LOG"
+  (
+    cd "$REPO_A"
+    PATH="$FAKE_BIN:/usr/bin:/bin" \
+      HOME="$fixture_home" \
+      REAL_GIT="$REAL_GIT" \
+      ORACLE_LOG="$ORACLE_LOG" \
+      GIT=git \
+      bash --noprofile --norc -c "$command"
+  ) >/dev/null 2>&1 || exit_code=$?
+  printf '%s' "$exit_code"
 }
 
 record_failure() {
-	local name="$1" detail="$2" command="$3"
-	echo "  FAIL: $name: $detail" >&2
-	printf '        command: %q\n' "$command" >&2
-	FAIL=$((FAIL + 1))
+  local name="$1" detail="$2" command="$3"
+  echo "  FAIL: $name: $detail" >&2
+  printf '        command: %q\n' "$command" >&2
+  FAIL=$((FAIL + 1))
 }
 
 assert_case() {
-	local name="$1" classification="$2" command="$3" fixture_home="${4:-$HOME}"
-	local oracle_exit oracle_count observed_root unauthorized_exit authorized_exit
-	local expected_root="" audit_a=0 audit_b=0
+  local name="$1" classification="$2" command="$3" fixture_home="${4:-$HOME}"
+  local oracle_exit oracle_count observed_root unauthorized_exit authorized_exit
+  local expected_root="" audit_a=0 audit_b=0
 
-	CASE_COUNT=$((CASE_COUNT + 1))
-	rm -rf "$REPO_A/.touchstone" "$REPO_B/.touchstone"
-	oracle_exit="$(run_oracle "$command" "$fixture_home")"
-	oracle_count="$(wc -l <"$ORACLE_LOG" | tr -d ' ')"
-	observed_root=""
-	if [ "$oracle_count" -eq 1 ]; then
-		observed_root="$(cut -f2 "$ORACLE_LOG")"
-	fi
+  CASE_COUNT=$((CASE_COUNT + 1))
+  rm -rf "$REPO_A/.touchstone" "$REPO_B/.touchstone"
+  oracle_exit="$(run_oracle "$command" "$fixture_home")"
+  oracle_count="$(wc -l <"$ORACLE_LOG" | tr -d ' ')"
+  observed_root=""
+  if [ "$oracle_count" -eq 1 ]; then
+    observed_root="$(cut -f2 "$ORACLE_LOG")"
+  fi
 
-	case "$classification" in
-	none)
-		if [ "$oracle_count" -ne 0 ]; then
-			record_failure "$name" "fixture classified non-executing but Bash observed $oracle_count protected push(es)" "$command"
-			return
-		fi
-		;;
-	repo-a)
-		expected_root="$REPO_A"
-		;;
-	repo-b)
-		expected_root="$REPO_B"
-		;;
-	ambiguous)
-		if [ "$oracle_count" -eq 0 ]; then
-			record_failure "$name" "ambiguous fixture did not execute a protected push" "$command"
-			return
-		fi
-		;;
-	*)
-		record_failure "$name" "unknown classification '$classification'" "$command"
-		return
-		;;
-	esac
+  case "$classification" in
+    none)
+      if [ "$oracle_count" -ne 0 ]; then
+        record_failure "$name" "fixture classified non-executing but Bash observed $oracle_count protected push(es)" "$command"
+        return
+      fi
+      ;;
+    repo-a)
+      expected_root="$REPO_A"
+      ;;
+    repo-b)
+      expected_root="$REPO_B"
+      ;;
+    ambiguous)
+      if [ "$oracle_count" -eq 0 ]; then
+        record_failure "$name" "ambiguous fixture did not execute a protected push" "$command"
+        return
+      fi
+      ;;
+    *)
+      record_failure "$name" "unknown classification '$classification'" "$command"
+      return
+      ;;
+  esac
 
-	if [ -n "$expected_root" ]; then
-		if [ "$oracle_count" -ne 1 ] || [ "$observed_root" != "$expected_root" ]; then
-			record_failure "$name" "Bash oracle expected one push in '$expected_root', observed count=$oracle_count root='$observed_root' (exit $oracle_exit)" "$command"
-			return
-		fi
-	elif [ "$classification" = "none" ] && [ "$oracle_exit" -ne 0 ]; then
-		record_failure "$name" "non-executing fixture failed under Bash with exit $oracle_exit" "$command"
-		return
-	fi
+  if [ -n "$expected_root" ]; then
+    if [ "$oracle_count" -ne 1 ] || [ "$observed_root" != "$expected_root" ]; then
+      record_failure "$name" "Bash oracle expected one push in '$expected_root', observed count=$oracle_count root='$observed_root' (exit $oracle_exit)" "$command"
+      return
+    fi
+  elif [ "$classification" = "none" ] && [ "$oracle_exit" -ne 0 ]; then
+    record_failure "$name" "non-executing fixture failed under Bash with exit $oracle_exit" "$command"
+    return
+  fi
 
-	unauthorized_exit="$(run_hook "$command" 0 "$fixture_home")"
-	if [ "$oracle_count" -gt 0 ]; then
-		if [ "$unauthorized_exit" -ne 2 ]; then
-			record_failure "$name" "Bash executed a protected push but unauthorized hook exited $unauthorized_exit" "$command"
-			return
-		fi
-	elif [ "$unauthorized_exit" -ne 0 ]; then
-		record_failure "$name" "Bash executed no protected push but hook exited $unauthorized_exit" "$command"
-		return
-	fi
+  unauthorized_exit="$(run_hook "$command" 0 "$fixture_home")"
+  if [ "$oracle_count" -gt 0 ]; then
+    if [ "$unauthorized_exit" -ne 2 ]; then
+      record_failure "$name" "Bash executed a protected push but unauthorized hook exited $unauthorized_exit" "$command"
+      return
+    fi
+  elif [ "$unauthorized_exit" -ne 0 ]; then
+    record_failure "$name" "Bash executed no protected push but hook exited $unauthorized_exit" "$command"
+    return
+  fi
 
-	authorized_exit="$(run_hook "$command" 1 "$fixture_home")"
-	[ -f "$REPO_A/.touchstone/emergency-bypass.log" ] && audit_a=1
-	[ -f "$REPO_B/.touchstone/emergency-bypass.log" ] && audit_b=1
+  authorized_exit="$(run_hook "$command" 1 "$fixture_home")"
+  [ -f "$REPO_A/.touchstone/emergency-bypass.log" ] && audit_a=1
+  [ -f "$REPO_B/.touchstone/emergency-bypass.log" ] && audit_b=1
 
-	if [ "$classification" = "ambiguous" ]; then
-		if [ "$authorized_exit" -ne 2 ] || [ "$audit_a" -ne 0 ] || [ "$audit_b" -ne 0 ]; then
-			record_failure "$name" "ambiguous authorized push must fail closed without audit (exit=$authorized_exit audit-a=$audit_a audit-b=$audit_b)" "$command"
-			return
-		fi
-	elif [ "$classification" = "none" ]; then
-		if [ "$authorized_exit" -ne 0 ] || [ "$audit_a" -ne 0 ] || [ "$audit_b" -ne 0 ]; then
-			record_failure "$name" "non-executing fixture must pass without audit (exit=$authorized_exit audit-a=$audit_a audit-b=$audit_b)" "$command"
-			return
-		fi
-	elif [ "$expected_root" = "$REPO_A" ]; then
-		if [ "$authorized_exit" -ne 0 ] || [ "$audit_a" -ne 1 ] || [ "$audit_b" -ne 0 ]; then
-			record_failure "$name" "authorized push must audit repo-a only (exit=$authorized_exit audit-a=$audit_a audit-b=$audit_b)" "$command"
-			return
-		fi
-	elif [ "$expected_root" = "$REPO_B" ]; then
-		if [ "$authorized_exit" -ne 0 ] || [ "$audit_a" -ne 0 ] || [ "$audit_b" -ne 1 ]; then
-			record_failure "$name" "authorized push must audit repo-b only (exit=$authorized_exit audit-a=$audit_a audit-b=$audit_b)" "$command"
-			return
-		fi
-	fi
+  if [ "$classification" = "ambiguous" ]; then
+    if [ "$authorized_exit" -ne 2 ] || [ "$audit_a" -ne 0 ] || [ "$audit_b" -ne 0 ]; then
+      record_failure "$name" "ambiguous authorized push must fail closed without audit (exit=$authorized_exit audit-a=$audit_a audit-b=$audit_b)" "$command"
+      return
+    fi
+  elif [ "$classification" = "none" ]; then
+    if [ "$authorized_exit" -ne 0 ] || [ "$audit_a" -ne 0 ] || [ "$audit_b" -ne 0 ]; then
+      record_failure "$name" "non-executing fixture must pass without audit (exit=$authorized_exit audit-a=$audit_a audit-b=$audit_b)" "$command"
+      return
+    fi
+  elif [ "$expected_root" = "$REPO_A" ]; then
+    if [ "$authorized_exit" -ne 0 ] || [ "$audit_a" -ne 1 ] || [ "$audit_b" -ne 0 ]; then
+      record_failure "$name" "authorized push must audit repo-a only (exit=$authorized_exit audit-a=$audit_a audit-b=$audit_b)" "$command"
+      return
+    fi
+  elif [ "$expected_root" = "$REPO_B" ]; then
+    if [ "$authorized_exit" -ne 0 ] || [ "$audit_a" -ne 0 ] || [ "$audit_b" -ne 1 ]; then
+      record_failure "$name" "authorized push must audit repo-b only (exit=$authorized_exit audit-a=$audit_a audit-b=$audit_b)" "$command"
+      return
+    fi
+  fi
 
-	echo "  OK: $name"
-	PASS=$((PASS + 1))
+  echo "  OK: $name"
+  PASS=$((PASS + 1))
 }
 
 echo "==> Named PR #492 review reproductions"
 
 assert_case "compound-if-condition" repo-a \
-	"if git push --no-verify origin main; then printf ok; fi"
+  "if git push --no-verify origin main; then printf ok; fi"
 assert_case "time-prefix" repo-a \
-	"time -p git push --no-verify origin main"
+  "time -p git push --no-verify origin main"
 assert_case "command-substitution" ambiguous \
-	'printf "%s" "$(git push --no-verify origin main)"'
+  'printf "%s" "$(git push --no-verify origin main)"'
 assert_case "shell-c-payload" ambiguous \
-	"bash -c 'git push --no-verify origin main'"
+  "bash -c 'git push --no-verify origin main'"
 assert_case "invoked-function" ambiguous \
-	"push_now() { git push --no-verify origin main; }; push_now"
+  "push_now() { git push --no-verify origin main; }; push_now"
 assert_case "sudo-wrapper" repo-a \
-	"sudo git push --no-verify origin main"
+  "sudo git push --no-verify origin main"
 assert_case "nice-wrapper" repo-a \
-	"nice -n 5 git push --no-verify origin main"
+  "nice -n 5 git push --no-verify origin main"
 assert_case "nohup-wrapper" repo-a \
-	"nohup git push --no-verify origin main"
+  "nohup git push --no-verify origin main"
 assert_case "git-global-option" repo-a \
-	"git --no-pager push --no-verify origin main"
+  "git --no-pager push --no-verify origin main"
 assert_case "quoted-git-c" repo-b \
-	"git -C \"$REPO_B\" push --no-verify origin main"
+  "git -C \"$REPO_B\" push --no-verify origin main"
 assert_case "preceding-direct-cd" repo-b \
-	"cd \"$REPO_B\" && git push --no-verify origin main"
+  "cd \"$REPO_B\" && git push --no-verify origin main"
 assert_case "subshell-cd-before-outer-push" ambiguous \
-	"(cd \"$REPO_B\" && git status); git push --no-verify origin main"
+  "(cd \"$REPO_B\" && git status); git push --no-verify origin main"
 assert_case "nested-substitution-cd" ambiguous \
-	"printf '%s' \$(cd \"$REPO_B\" && git push --no-verify origin main)"
+  "printf '%s' \$(cd \"$REPO_B\" && git push --no-verify origin main)"
 assert_case "wrapped-shell-payload" ambiguous \
-	"sudo bash -c 'git push --no-verify origin main'"
+  "sudo bash -c 'git push --no-verify origin main'"
 line_continuation="git \\"
 line_continuation+=$'\n'
 line_continuation+="push --no-verify origin main"
 assert_case "line-continuation" repo-a "$line_continuation"
 assert_case "apostrophe-in-double-quotes" ambiguous \
-	'printf "%s" "it'\''s $(git push --no-verify origin main)"'
+  'printf "%s" "it'\''s $(git push --no-verify origin main)"'
 assert_case "nested-command-substitutions" ambiguous \
-	'printf "%s" "$(printf "%s" "$(date)"; git push --no-verify origin main)"'
+  'printf "%s" "$(printf "%s" "$(date)"; git push --no-verify origin main)"'
 assert_case "scoped-cd-before-outer-push" ambiguous \
-	"(printf prep; cd \"$REPO_B\"; printf done); git push --no-verify origin main"
+  "(printf prep; cd \"$REPO_B\"; printf done); git push --no-verify origin main"
 assert_case "expanded-bypass-flag" ambiguous \
-	'flag=--no-verify; git push "$flag" origin main'
+  'flag=--no-verify; git push "$flag" origin main'
 assert_case "command-local-cdpath" ambiguous \
-	"CDPATH=\"$TEST_ROOT\"; cd \"repo b\" && git push --no-verify origin main"
+  "CDPATH=\"$TEST_ROOT\"; cd \"repo b\" && git push --no-verify origin main"
 assert_case "expanded-git-command" ambiguous \
-	'cmd=git; "$cmd" push --no-verify origin main'
+  'cmd=git; "$cmd" push --no-verify origin main'
 assert_case "expanded-push-subcommand" ambiguous \
-	'sub=push; git "$sub" --no-verify origin main'
+  'sub=push; git "$sub" --no-verify origin main'
 assert_case "dynamic-git-environment" ambiguous \
-	'"$GIT" push --no-verify origin main'
+  '"$GIT" push --no-verify origin main'
 assert_case "skipped-cd-before-push" ambiguous \
-	"false && cd \"$REPO_B\"; git push --no-verify origin main"
+  "false && cd \"$REPO_B\"; git push --no-verify origin main"
 assert_case "literal-quoted-heredoc" none \
-	"$(printf '%s\n' "cat >/dev/null <<'EOF'" "git push --no-verify origin main" "EOF")"
+  "$(printf '%s\n' "cat >/dev/null <<'EOF'" "git push --no-verify origin main" "EOF")"
 assert_case "literal-unquoted-heredoc" none \
-	"$(printf '%s\n' "cat >/dev/null <<EOF" "git push --no-verify origin main" "EOF")"
+  "$(printf '%s\n' "cat >/dev/null <<EOF" "git push --no-verify origin main" "EOF")"
 assert_case "unquoted-heredoc-substitution" ambiguous \
-	"$(printf '%s\n' "cat >/dev/null <<EOF" '$(git push --no-verify origin main)' "EOF")"
+  "$(printf '%s\n' "cat >/dev/null <<EOF" '$(git push --no-verify origin main)' "EOF")"
 assert_case "parenthesized-push" ambiguous \
-	"(git push --no-verify origin main)"
+  "(git push --no-verify origin main)"
 assert_case "commented-heredoc-lookalike" repo-a \
-	"$(printf '%s\n' "# example <<EOF" "git push --no-verify origin main")"
+  "$(printf '%s\n' "# example <<EOF" "git push --no-verify origin main")"
 assert_case "quoted-heredoc-lookalike" repo-a \
-	"$(printf '%s\n' "printf '%s' '<<EOF'" "git push --no-verify origin main")"
+  "$(printf '%s\n' "printf '%s' '<<EOF'" "git push --no-verify origin main")"
 assert_case "unrelated-substitution-before-push" repo-a \
-	'printf "%s" "$(date)"; git push --no-verify origin main'
+  'printf "%s" "$(date)"; git push --no-verify origin main'
 assert_case "arithmetic-left-shift-before-push" repo-a \
-	"$(printf '%s\n' "printf '%s' \$((1 << 2))" "git push --no-verify origin main")"
+  "$(printf '%s\n' "printf '%s' \$((1 << 2))" "git push --no-verify origin main")"
 assert_case "multiple-conditional-directory-chains" ambiguous \
-	"cd \"$REPO_B\" && printf ok; false && cd \"$REPO_A\"; git push --no-verify origin main"
+  "cd \"$REPO_B\" && printf ok; false && cd \"$REPO_A\"; git push --no-verify origin main"
 assert_case "git-push-alias" repo-a \
-	"git p --no-verify origin main"
+  "git p --no-verify origin main"
 assert_case "unquoted-shell-comment" none \
-	"printf ok # git push --no-verify origin main"
+  "printf ok # git push --no-verify origin main"
 assert_case "command-wrapped-cd" repo-b \
-	"command cd \"$REPO_B\" && git push --no-verify origin main"
+  "command cd \"$REPO_B\" && git push --no-verify origin main"
 assert_case "builtin-wrapped-cd" repo-b \
-	"builtin cd \"$REPO_B\" && git push --no-verify origin main"
+  "builtin cd \"$REPO_B\" && git push --no-verify origin main"
 ansi_git_command="\$'git' push --no-verify origin main"
 assert_case "ansi-c-quoted-git" repo-a "$ansi_git_command"
 assert_case "argument-less-cd" repo-b \
-	"cd && git push --no-verify origin main" "$REPO_B"
+  "cd && git push --no-verify origin main" "$REPO_B"
 runtime_alias_command="$(printf '%s\n' \
-	"shopt -s expand_aliases" \
-	"alias gp='git push'" \
-	"gp --no-verify origin main")"
+  "shopt -s expand_aliases" \
+  "alias gp='git push'" \
+  "gp --no-verify origin main")"
 assert_case "runtime-shell-alias" ambiguous "$runtime_alias_command"
 assert_case "non-push-before-literal-push" repo-a \
-	"git commit --no-verify -m fixture; git push --no-verify origin main"
+  "git commit --no-verify -m fixture; git push --no-verify origin main"
 assert_case "non-push-before-git-push-alias" repo-a \
-	"git commit --no-verify -m fixture; git p --no-verify origin main"
+  "git commit --no-verify -m fixture; git p --no-verify origin main"
 
 echo "==> Deterministic generated execution matrix"
 
 matrix_prefixes=(
-	""
-	"command "
-	"time -p "
-	"sudo "
-	"nice -n 1 "
-	"nohup "
+  ""
+  "command "
+  "time -p "
+  "sudo "
+  "nice -n 1 "
+  "nohup "
 )
 matrix_index=0
 for prefix in "${matrix_prefixes[@]}"; do
-	matrix_index=$((matrix_index + 1))
-	assert_case "matrix-prefix-$matrix_index" repo-a \
-		"${prefix}git push --no-verify origin matrix-$matrix_index"
+  matrix_index=$((matrix_index + 1))
+  assert_case "matrix-prefix-$matrix_index" repo-a \
+    "${prefix}git push --no-verify origin matrix-$matrix_index"
 done
 
 matrix_index=0
 for global_option in "--no-pager" "-c color.ui=false" "-C \"$REPO_B\""; do
-	matrix_index=$((matrix_index + 1))
-	expected="repo-a"
-	# The hook detects `-c` but deliberately fails closed because its audit
-	# resolver does not model config-option arity.
-	[ "$matrix_index" -eq 2 ] && expected="ambiguous"
-	[ "$matrix_index" -eq 3 ] && expected="repo-b"
-	assert_case "matrix-global-option-$matrix_index" "$expected" \
-		"git $global_option push --no-verify origin matrix-$matrix_index"
+  matrix_index=$((matrix_index + 1))
+  expected="repo-a"
+  # The hook detects `-c` but deliberately fails closed because its audit
+  # resolver does not model config-option arity.
+  [ "$matrix_index" -eq 2 ] && expected="ambiguous"
+  [ "$matrix_index" -eq 3 ] && expected="repo-b"
+  assert_case "matrix-global-option-$matrix_index" "$expected" \
+    "git $global_option push --no-verify origin matrix-$matrix_index"
 done
 
 assert_case "matrix-control-and" repo-a \
-	"true && git push --no-verify origin matrix-and"
+  "true && git push --no-verify origin matrix-and"
 assert_case "matrix-control-or" repo-a \
-	"false || git push --no-verify origin matrix-or"
+  "false || git push --no-verify origin matrix-or"
 assert_case "matrix-control-group" repo-a \
-	"{ git push --no-verify origin matrix-group; }"
+  "{ git push --no-verify origin matrix-group; }"
 assert_case "matrix-control-subshell" ambiguous \
-	"(git push --no-verify origin matrix-subshell)"
+  "(git push --no-verify origin matrix-subshell)"
 
 echo "==> Deterministic false-positive matrix"
 
 assert_case "prose-single-quoted" none \
-	"printf '%s' 'git push --no-verify origin main'"
+  "printf '%s' 'git push --no-verify origin main'"
 assert_case "prose-double-quoted" none \
-	'printf "%s" "git push --no-verify origin main"'
+  'printf "%s" "git push --no-verify origin main"'
 assert_case "prose-backticks-inside-single-quoted-cli-body" none \
-	'gh issue comment 504 --body '\''Example: `git push --no-verify origin main`'\'''
+  'gh issue comment 504 --body '\''Example: `git push --no-verify origin main`'\'''
 assert_case "prose-comment-newline" none \
-	"$(printf '%s\n' "printf ok # git push --no-verify origin stale" "printf done")"
+  "$(printf '%s\n' "printf ok # git push --no-verify origin stale" "printf done")"
 assert_case "prose-escaped-substitution-heredoc" none \
-	"$(printf '%s\n' "cat >/dev/null <<EOF" '\$(git push --no-verify origin main)' "EOF")"
+  "$(printf '%s\n' "cat >/dev/null <<EOF" '\$(git push --no-verify origin main)' "EOF")"
 assert_case "prose-quoted-substitution-heredoc" none \
-	"$(printf '%s\n' "cat >/dev/null <<'EOF'" '$(git push --no-verify origin main)' "EOF")"
+  "$(printf '%s\n' "cat >/dev/null <<'EOF'" '$(git push --no-verify origin main)' "EOF")"
 
 if cmp -s "$HOOK" "$SCRIPT_MIRROR"; then
-	echo "  OK: emergency-disclosure hook mirror is byte-identical"
-	PASS=$((PASS + 1))
+  echo "  OK: emergency-disclosure hook mirror is byte-identical"
+  PASS=$((PASS + 1))
 else
-	echo "  FAIL: emergency-disclosure hook mirror differs" >&2
-	FAIL=$((FAIL + 1))
+  echo "  FAIL: emergency-disclosure hook mirror differs" >&2
+  FAIL=$((FAIL + 1))
 fi
 
 echo ""
 if [ "$FAIL" -gt 0 ]; then
-	echo "==> FAIL: $FAIL of $((PASS + FAIL)) checks failed"
-	exit 1
+  echo "==> FAIL: $FAIL of $((PASS + FAIL)) checks failed"
+  exit 1
 fi
 echo "==> OK: all $PASS checks passed across $CASE_COUNT differential fixtures"

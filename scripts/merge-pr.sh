@@ -250,25 +250,8 @@ review_failed_provider_csv() {
   printf '%s' "$csv"
 }
 
-recommended_retry_provider() {
-  local failed_csv="$1"
-  local provider
-
-  for provider in openrouter claude codex gemini kimi deepseek-chat deepseek-reasoner; do
-    if ! csv_contains "$failed_csv" "$provider"; then
-      printf '%s' "$provider"
-      return 0
-    fi
-  done
-  printf 'openrouter'
-}
-
 review_infra_retry_command() {
-  local failed_csv retry_provider
-
-  failed_csv="$(review_failed_provider_csv)"
-  retry_provider="$(recommended_retry_provider "$failed_csv")"
-  printf 'TOUCHSTONE_CONDUCTOR_WITH=%s bash scripts/merge-pr.sh %s' "$retry_provider" "$PR_NUMBER"
+  printf 'TOUCHSTONE_CONDUCTOR_WITH=codex bash scripts/merge-pr.sh %s' "$PR_NUMBER"
 }
 
 print_review_infra_retry_guidance() {
@@ -292,7 +275,8 @@ print_review_infra_retry_guidance() {
     echo "  failed/stalled provider(s): $failed_csv" >&2
   fi
   echo "  retry command: $retry_command" >&2
-  echo "  alternate route: TOUCHSTONE_CONDUCTOR_WITH=<configured-hosted-provider> bash scripts/merge-pr.sh $PR_NUMBER" >&2
+  echo "  repair route: authenticate the subscription Codex CLI, then run the retry command" >&2
+  echo "  cost boundary: any other provider or auto-routing mode requires explicit operator opt-in" >&2
 }
 
 BYPASS_REASON="$(trim "$(printf '%s' "$BYPASS_REASON" | tr '\r\n\t' '   ')")"

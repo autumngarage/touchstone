@@ -118,6 +118,7 @@ echo c >>"$REPO_AUTO/README.md" && git -C "$REPO_AUTO" add . && git -C "$REPO_AU
 out="$(run_review "$REPO_AUTO" --dry-run --base HEAD~1 2>&1)"
 
 if grep -q '^route' "$ARGS_FILE" \
+  && grep -q '\-\-with codex' "$ARGS_FILE" \
   && grep -q '\-\-prefer cheapest' "$ARGS_FILE" \
   && grep -q '\-\-effort minimal' "$ARGS_FILE" \
   && grep -q '\-\-tags code-review' "$ARGS_FILE" \
@@ -351,7 +352,7 @@ else
 fi
 
 # ----------------------------------------------------------------------------
-echo '==> Test: --dry-run with `with =` pinned config skips route preview'
+echo '==> Test: --dry-run forwards an explicit provider pin to route preview'
 REPO_PIN="$TEST_DIR/repo-pin"
 new_repo "$REPO_PIN"
 cat >"$REPO_PIN/.codex-review.toml" <<'EOF'
@@ -367,12 +368,36 @@ git -C "$REPO_PIN" add . && git -C "$REPO_PIN" commit -qm cfg
 : >"$ARGS_FILE"
 out="$(run_review "$REPO_PIN" --dry-run --base HEAD 2>&1)"
 
-if echo "$out" | grep -q 'pinned via --with=claude' \
-  && echo "$out" | grep -q 'routing  = small (0 <= 400 diff lines)' \
-  && ! grep -q '^route' "$ARGS_FILE"; then
-  echo "==> PASS: pinned config explained, no route preview attempted"
+if grep -q '^route .*--with claude' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'provider:    claude' \
+  && echo "$out" | grep -q 'cost:        explicit-provider:claude'; then
+  echo "==> PASS: pinned config reached the route capability preview"
 else
-  echo "FAIL: pinned config should have explained, not called conductor route" >&2
+  echo "FAIL: pinned config should reach conductor route with its provider boundary" >&2
+  echo "args: $(cat "$ARGS_FILE")" >&2
+  echo "out: $out" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ----------------------------------------------------------------------------
+echo '==> Test: `with = "auto"` is an explicit visible metered-capable opt-in'
+REPO_AUTO_EXPLICIT="$TEST_DIR/repo-auto-explicit"
+new_repo "$REPO_AUTO_EXPLICIT"
+cat >"$REPO_AUTO_EXPLICIT/.touchstone-review.toml" <<'EOF'
+[review.conductor]
+with = "auto"
+EOF
+git -C "$REPO_AUTO_EXPLICIT" add . && git -C "$REPO_AUTO_EXPLICIT" commit -qm cfg
+
+: >"$ARGS_FILE"
+out="$(run_review "$REPO_AUTO_EXPLICIT" --dry-run --base HEAD 2>&1)"
+if grep -q '^route ' "$ARGS_FILE" \
+  && ! grep -q -- '--with' "$ARGS_FILE" \
+  && echo "$out" | grep -q 'auto-explicit-may-be-metered' \
+  && echo "$out" | grep -q 'WARNING: explicit auto-routing may select a metered provider'; then
+  echo "==> PASS: auto-routing required explicit, visible opt-in"
+else
+  echo "FAIL: explicit auto-routing did not expose the metered-capable boundary" >&2
   echo "args: $(cat "$ARGS_FILE")" >&2
   echo "out: $out" >&2
   ERRORS=$((ERRORS + 1))
@@ -515,7 +540,8 @@ out="$(
 )"
 set -e
 if echo "$out" | grep -q 'TOUCHSTONE_REVIEWER=codex is deprecated' \
-  && echo "$out" | grep -q 'pinned via --with=codex'; then
+  && echo "$out" | grep -q 'provider:    codex' \
+  && echo "$out" | grep -q 'mocked dry-run for: --with codex '; then
   echo "==> PASS: TOUCHSTONE_REVIEWER=codex → deprecation note + --with=codex"
 else
   echo "FAIL: legacy TOUCHSTONE_REVIEWER value was silently ignored (regression of bug #13)" >&2
@@ -534,7 +560,8 @@ out="$(
     bash "$TOUCHSTONE_BIN" review --dry-run --base HEAD~1 2>&1
 )"
 if echo "$out" | grep -q 'TOUCHSTONE_REVIEWER=openrouter is deprecated' \
-  && echo "$out" | grep -q 'pinned via --with=openrouter'; then
+  && echo "$out" | grep -q 'provider:    openrouter' \
+  && echo "$out" | grep -q 'mocked dry-run for: --with openrouter '; then
   echo "==> PASS: TOUCHSTONE_REVIEWER=openrouter → deprecation note + --with=openrouter"
 else
   echo "FAIL: TOUCHSTONE_REVIEWER=openrouter did not translate to --with=openrouter" >&2
@@ -554,7 +581,8 @@ out="$(
     bash "$TOUCHSTONE_BIN" review --dry-run --base HEAD~1 2>&1
 )"
 if echo "$out" | grep -q 'TOUCHSTONE_REVIEWER=local is deprecated' \
-  && echo "$out" | grep -q 'pinned via --with=ollama'; then
+  && echo "$out" | grep -q 'provider:    ollama' \
+  && echo "$out" | grep -q 'mocked dry-run for: --with ollama '; then
   echo "==> PASS: TOUCHSTONE_REVIEWER=local → ollama (offline compatibility)"
 else
   echo "FAIL: TOUCHSTONE_REVIEWER=local did not translate to --with=ollama" >&2

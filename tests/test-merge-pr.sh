@@ -2124,8 +2124,9 @@ rm -rf "${TEST_DIR:?}/lib"
 if grep -q 'No concrete review findings were reported; this is a provider/infrastructure outage path' "$TEST_DIR/output-provider-outage.txt" \
   && grep -q 'concrete findings: 0' "$TEST_DIR/output-provider-outage.txt" \
   && grep -q 'failed/stalled provider(s): gemini' "$TEST_DIR/output-provider-outage.txt" \
-  && grep -q 'retry command: TOUCHSTONE_CONDUCTOR_WITH=openrouter bash scripts/merge-pr.sh 123' "$TEST_DIR/output-provider-outage.txt" \
-  && grep -q 'alternate route: TOUCHSTONE_CONDUCTOR_WITH=<configured-hosted-provider> bash scripts/merge-pr.sh 123' "$TEST_DIR/output-provider-outage.txt" \
+  && grep -q 'retry command: TOUCHSTONE_CONDUCTOR_WITH=codex bash scripts/merge-pr.sh 123' "$TEST_DIR/output-provider-outage.txt" \
+  && grep -q 'repair route: authenticate the subscription Codex CLI' "$TEST_DIR/output-provider-outage.txt" \
+  && grep -q 'cost boundary: any other provider or auto-routing mode requires explicit operator opt-in' "$TEST_DIR/output-provider-outage.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: provider outage path printed exact retry guidance"
 else

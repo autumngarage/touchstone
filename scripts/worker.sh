@@ -430,7 +430,7 @@ cmd_ship_runner() {
     deadline_epoch="$(touchstone_ship_read "$job_dir" deadline-epoch)"
     case "$deadline_epoch" in
       '' | *[!0-9]*)
-        deadline_epoch="$(( $(date +%s) + max_fix_minutes * 60 ))"
+        deadline_epoch="$(($(date +%s) + max_fix_minutes * 60))"
         touchstone_ship_write "$job_dir" deadline-epoch "$deadline_epoch"
         ;;
     esac
@@ -606,7 +606,7 @@ cmd_ship() {
   touchstone_ship_write "$job_dir" pid ""
   touchstone_ship_write "$job_dir" child-pid ""
   if [ "$review_fix" = true ]; then
-    touchstone_ship_write "$job_dir" deadline-epoch "$(( $(date +%s) + max_fix_minutes * 60 ))"
+    touchstone_ship_write "$job_dir" deadline-epoch "$(($(date +%s) + max_fix_minutes * 60))"
     touchstone_ship_write "$job_dir" review-fix-iteration 0
     touchstone_ship_write "$job_dir" mode autonomous-review-fix
   else

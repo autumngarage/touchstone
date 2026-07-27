@@ -276,7 +276,7 @@ if [ "$FAILURE_COMMENT_EXIT" -ne 0 ] \
   && grep -q 'merge review failed before a trusted clean verdict' "$TEST_DIR/comments" \
   && grep -q 'Failed/stalled provider(s): `gemini`' "$TEST_DIR/comments" \
   && grep -q 'Diagnostics: `/tmp/review-diagnostics.jsonl` (2 event(s))' "$TEST_DIR/comments" \
-  && grep -q 'Retry: `TOUCHSTONE_CONDUCTOR_WITH=openrouter bash scripts/merge-pr.sh 123`' "$TEST_DIR/comments" \
+  && grep -q 'Retry: `TOUCHSTONE_CONDUCTOR_WITH=codex bash scripts/merge-pr.sh 123`' "$TEST_DIR/comments" \
   && ! grep -q 'review clean' "$TEST_DIR/comments"; then
   echo "==> PASS: provider failure comment posted with retry guidance"
 else

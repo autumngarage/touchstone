@@ -104,6 +104,40 @@ if [ "$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD)" != "$BASE_BRANCH" ]; the
 fi
 
 # --------------------------------------------------------------------------
+# Test 1b: same-version update migrates and stages the canonical unpinned
+# review config. The update must not leave the security boundary dirty.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 2b: Migrate canonical review config at the same version ---"
+
+MIGRATION_PROJECT="$TEST_DIR/canonical-migration-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$MIGRATION_PROJECT" --no-register >/dev/null
+configure_git "$MIGRATION_PROJECT"
+sed -i.bak '/^[[:space:]]*with[[:space:]]*=/d' "$MIGRATION_PROJECT/.touchstone-review.toml"
+rm -f "$MIGRATION_PROJECT/.touchstone-review.toml.bak"
+commit_all "$MIGRATION_PROJECT" "simulate unpinned canonical review config"
+
+(cd "$MIGRATION_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-canonical-migration-output.txt" 2>&1
+
+assert_contains "$TEST_DIR/update-canonical-migration-output.txt" \
+  'Touchstone version unchanged; running pending config migration'
+assert_contains "$TEST_DIR/update-canonical-migration-output.txt" \
+  'Migrating .touchstone-review.toml to the subscription-pinned shape'
+assert_contains "$MIGRATION_PROJECT/.touchstone-review.toml" 'with = "codex"'
+if git -C "$MIGRATION_PROJECT" show HEAD:.touchstone-review.toml | grep -q 'with = "codex"'; then
+  echo "    PASS: canonical migration was included in the update commit"
+else
+  echo "FAIL: canonical migration was not staged in the update commit" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ -n "$(git -C "$MIGRATION_PROJECT" status --porcelain)" ]; then
+  echo "FAIL: canonical config migration left a dirty worktree" >&2
+  git -C "$MIGRATION_PROJECT" status --short >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
 # Test 2: committed local touchstone-owned changes update on a review branch.
 # --------------------------------------------------------------------------
 echo ""
@@ -141,6 +175,8 @@ assert_exists "$PROJECT/scripts/spawn-worktree.sh"
 assert_exists "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_exists "$PROJECT/lib/toml.sh"
 assert_exists "$PROJECT/lib/events.sh"
+assert_exists "$PROJECT/lib/worker-ship-job.sh"
+assert_exists "$PROJECT/lib/worker-review-fix.sh"
 assert_exists "$PROJECT/lib/script-sync-guard.sh"
 assert_exists "$PROJECT/lib/preflight.sh"
 assert_exists "$PROJECT/lib/review-comment.sh"
@@ -154,6 +190,8 @@ assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/toml\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/events\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-ship-job\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-review-fix\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/script-sync-guard\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/preflight\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/review-comment\.sh$'

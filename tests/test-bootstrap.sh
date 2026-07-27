@@ -160,6 +160,8 @@ assert_exists "$PROJECT/.worktreeinclude.example"
 assert_exists "$PROJECT/.github/pull_request_template.md"
 assert_exists "$PROJECT/.github/workflows/issue-claim-check.yml"
 assert_exists "$PROJECT/.touchstone-review.toml"
+assert_contains "$PROJECT/.touchstone-review.toml" '^with = "codex"$'
+assert_contains "$PROJECT/.touchstone-review.toml" '^request_on_push = true$'
 if ! diff -q "$TOUCHSTONE_ROOT/templates/ci/issue-claim-check.yml" "$TOUCHSTONE_ROOT/.github/workflows/issue-claim-check.yml" >/dev/null; then
   echo "FAIL: source issue-claim workflow must match installable template" >&2
   ERRORS=$((ERRORS + 1))
@@ -238,6 +240,8 @@ assert_contains "$PROJECT/.touchstone-manifest" '^scripts/issue-claim-check.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/toml\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-ship-job\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-review-fix\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/script-sync-guard\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/preflight\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/review-comment\.sh$'
@@ -597,12 +601,17 @@ assert_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^exclude =
 assert_not_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^small_with = "ollama"'
 
 # Fresh non-interactive bootstrap without --yes must use the same live-review
-# default instead of pinning a provider.
+# default: GitHub Codex plus subscription-backed Codex fallback.
 YES_MODE=false bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_DEFAULT_NONTTY" --no-register
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^enabled = true$'
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^reviewer = "conductor"$'
+assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^with = "codex"$'
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^exclude = \["ollama"\]$'
-assert_not_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^with = "openrouter"$'
+assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^\[review\.pr_triggered\]$'
+assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^required = true$'
+assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^provider = "github-codex"$'
+assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^request_on_push = true$'
+assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^skip_merge_review = true$'
 assert_not_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^small_with = "ollama"'
 
 # Retired small-local live routing remains accepted for compatibility, but it

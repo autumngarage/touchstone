@@ -91,8 +91,12 @@ case "$command_name:$subcommand" in
     args="$*"
     if [[ "$args" == *reviewThreads* ]]; then
       if [ -f "$FAKE_THREAD_ACTIVE" ]; then
-        printf '%s\ttarget.txt\t1\tfalse\tcodex\thttps://example.test/thread/%s\tReplace the original value with fixed.\\n' \
-          "$(cat "$FAKE_THREAD_ID")" "$(cat "$FAKE_THREAD_ID")"
+        review_head="${FAKE_REVIEW_HEAD:-$(git rev-parse HEAD)}"
+        printf '%s\ttarget.txt\t1\tfalse\t%s\t%s\thttps://example.test/thread/%s\tReplace the original value with fixed.\\n' \
+          "$(cat "$FAKE_THREAD_ID")" \
+          "${FAKE_THREAD_AUTHOR:-chatgpt-codex-connector}" \
+          "$review_head" \
+          "$(cat "$FAKE_THREAD_ID")"
         [ "${FAKE_STALE_AFTER_THREADS:-0}" = 1 ] && : >"$FAKE_STALE_NEXT" || true
       fi
     elif [[ "$args" == *addPullRequestReviewThreadReply* ]]; then
@@ -264,6 +268,46 @@ wait_for_status "$STALE_WT" needs-attention "$STATUS" \
 assert_contains "$STATUS" '"reason":"stale-review-head"'
 unset FAKE_STALE_AFTER_THREADS
 
+echo "==> Case c2: untrusted authors cannot drive autonomous edits"
+UNTRUSTED_WT="$TEST_DIR/untrusted-worktree"
+git -C "$REPO" branch feat/review-untrusted main
+git -C "$REPO" push -q origin feat/review-untrusted
+git -C "$REPO" worktree add -q "$UNTRUSTED_WT" feat/review-untrusted
+: >"$FAKE_THREAD_ACTIVE"
+printf 'thread-untrusted\n' >"$FAKE_THREAD_ID"
+rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED"
+export FAKE_THREAD_AUTHOR=untrusted-user
+TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$UNTRUSTED_WT" --detach --review-fix --validation-command : >/dev/null
+wait_for_status "$UNTRUSTED_WT" needs-attention "$STATUS" \
+  || fail "untrusted review author did not enter needs-attention"
+assert_contains "$STATUS" '"reason":"untrusted-review-author"'
+[ -z "$(git -C "$UNTRUSTED_WT" status --porcelain)" ] \
+  || fail "untrusted review author caused worktree edits"
+[ ! -f "$FAKE_REPLIED" ] || fail "untrusted review thread received an autonomous reply"
+[ ! -f "$FAKE_RESOLVED" ] || fail "untrusted review thread was autonomously resolved"
+unset FAKE_THREAD_AUTHOR
+
+echo "==> Case c3: a prior-head review thread cannot drive current-head edits"
+PRIOR_HEAD_WT="$TEST_DIR/prior-head-worktree"
+git -C "$REPO" branch feat/review-prior-head main
+git -C "$REPO" push -q origin feat/review-prior-head
+git -C "$REPO" worktree add -q "$PRIOR_HEAD_WT" feat/review-prior-head
+: >"$FAKE_THREAD_ACTIVE"
+printf 'thread-prior-head\n' >"$FAKE_THREAD_ID"
+rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED"
+export FAKE_REVIEW_HEAD=0000000000000000000000000000000000000000
+TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$PRIOR_HEAD_WT" --detach --review-fix --validation-command : >/dev/null
+wait_for_status "$PRIOR_HEAD_WT" needs-attention "$STATUS" \
+  || fail "prior-head review thread did not enter needs-attention"
+assert_contains "$STATUS" '"reason":"stale-review-thread"'
+[ -z "$(git -C "$PRIOR_HEAD_WT" status --porcelain)" ] \
+  || fail "prior-head review thread caused worktree edits"
+unset FAKE_REVIEW_HEAD
+
 echo "==> Case d: a new thread after a fix exhausts the bounded iteration budget"
 BUDGET_WT="$TEST_DIR/budget-worktree"
 git -C "$REPO" branch feat/review-budget main
@@ -293,7 +337,8 @@ source "$TOUCHSTONE_ROOT/lib/events.sh"
 source "$TOUCHSTONE_ROOT/lib/worker-review-fix.sh"
 CHECKPOINT="$TEST_DIR/checkpoint"
 mkdir -p "$CHECKPOINT/review-fix"
-printf 'thread-restart\ttarget.txt\t1\tfalse\tcodex\turl\tbody\n' >"$CHECKPOINT/review-fix/threads.tsv"
+printf 'thread-restart\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\turl\tbody\n' \
+  "$(git -C "$WORKTREE" rev-parse HEAD~1)" >"$CHECKPOINT/review-fix/threads.tsv"
 RESTART_HEAD="$(git -C "$WORKTREE" rev-parse HEAD)"
 touchstone_ship_write "$CHECKPOINT/review-fix" source-head "$(git -C "$WORKTREE" rev-parse HEAD~1)"
 touchstone_ship_write "$CHECKPOINT/review-fix" fix-head "$RESTART_HEAD"

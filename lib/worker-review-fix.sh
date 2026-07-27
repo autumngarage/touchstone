@@ -30,6 +30,50 @@ touchstone_review_fix_repo_name() {
   gh repo view --json nameWithOwner --jq '.nameWithOwner'
 }
 
+touchstone_review_fix_trusted_authors() {
+  local worktree_path="$1" base_ref="$2"
+  local config_file="" rel="" parsed_authors=""
+
+  for rel in .touchstone-review.toml .codex-review.toml; do
+    if git -C "$worktree_path" cat-file -e "$base_ref:$rel" 2>/dev/null; then
+      config_file="$(mktemp -t touchstone-review-fix-config.XXXXXX)" || return 1
+      git -C "$worktree_path" show "$base_ref:$rel" >"$config_file" || {
+        rm -f "$config_file"
+        return 1
+      }
+      break
+    fi
+  done
+
+  if [ -n "$config_file" ]; then
+    # shellcheck source=toml.sh
+    source "$TOUCHSTONE_ROOT/lib/toml.sh"
+    touchstone_review_fix_config_callback() {
+      local section="$1" key="$2" value="$3"
+      if [ "$section" = "review.pr_triggered" ] && [ "$key" = "trusted_review_authors" ]; then
+        parsed_authors="$(toml_normalize_array "$value")"
+      fi
+    }
+    toml_parse "$config_file" touchstone_review_fix_config_callback || {
+      rm -f "$config_file"
+      return 1
+    }
+    rm -f "$config_file"
+  fi
+
+  printf '%s' "${parsed_authors:-chatgpt-codex-connector,chatgpt-codex-connector[bot]}"
+}
+
+touchstone_review_fix_author_is_trusted() {
+  local author="$1" trusted_csv="$2" trusted=""
+  local IFS=','
+
+  for trusted in $trusted_csv; do
+    [ "$author" = "$trusted" ] && return 0
+  done
+  return 1
+}
+
 touchstone_review_fix_threads() {
   local repo_full_name="$1" pr_number="$2" owner name query
   owner="${repo_full_name%%/*}"
@@ -47,11 +91,12 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
           path
           line
           startLine
-          comments(last: 1) {
+          comments(first: 1) {
             nodes {
               author { login }
               body
               url
+              pullRequestReview { commit { oid } }
             }
           }
         }
@@ -65,7 +110,7 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     -F name="$name" \
     -F number="$pr_number" \
     -f query="$query" \
-    --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | [.id, .path, ((.line // .startLine // "") | tostring), (.isOutdated | tostring), (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // ""), ((.comments.nodes[0].body // "") | gsub("[\r\n\t]"; " ") | .[0:1000])] | @tsv'
+    --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | [.id, .path, ((.line // .startLine // "") | tostring), (.isOutdated | tostring), (.comments.nodes[0].author.login // ""), (.comments.nodes[0].pullRequestReview.commit.oid // ""), (.comments.nodes[0].url // ""), ((.comments.nodes[0].body // "") | gsub("[\r\n\t]"; " ") | .[0:1000])] | @tsv'
 }
 
 touchstone_review_fix_thread_key() {
@@ -146,7 +191,7 @@ thread_id=<id>
 
 Include one thread_id line for every thread and no unknown IDs.
 
-Unresolved review threads (tab-separated id, path, line, outdated, author, URL, body):
+Unresolved review threads (tab-separated id, path, line, outdated, author, review head, URL, body):
 EOF
     cat "$threads_file"
   } >"$brief_file"
@@ -236,9 +281,10 @@ touchstone_review_fix_checkpoint_threads() {
 touchstone_review_fix_finish_threads() {
   local job_dir="$1" worktree_path="$2" pr_number="$3" source_head="$4" fix_head="$5"
   local threads_file="$job_dir/review-fix/threads.tsv"
-  local thread_id path line _outdated _author _url _body marker remote_state resolved replied key body location
+  local thread_id path line _outdated _author _review_head _url _body
+  local marker remote_state resolved replied key body location
 
-  while IFS="$(printf '\t')" read -r thread_id path line _outdated _author _url _body || [ -n "$thread_id" ]; do
+  while IFS="$(printf '\t')" read -r thread_id path line _outdated _author _review_head _url _body || [ -n "$thread_id" ]; do
     [ -n "$thread_id" ] || continue
     key="$(touchstone_review_fix_thread_key "$thread_id")"
     [ -f "$job_dir/review-fix/resolved-$key" ] && continue
@@ -329,6 +375,8 @@ touchstone_review_fix_run() {
   local validation_command="$5" cleanup="$6"
   local branch pr_number repo_full_name base_ref iteration observed_head source_head fix_head
   local threads_file brief_file result_file paths_file open_pr_exit now_epoch validation_display
+  local trusted_authors thread_id _path _line thread_outdated thread_author thread_review_head
+  local _url _body
   local -a open_pr_args=(--auto-merge)
 
   # Dynamically scoped for cmd_ship_runner, which persists the terminal reason.
@@ -425,10 +473,26 @@ touchstone_review_fix_run() {
       touchstone_review_fix_need_attention "$job_dir" "$worktree_path" non-thread-merge-failure
       return
     }
-    if grep -q "$(printf '\ttrue\t')" "$threads_file"; then
-      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" outdated-thread-ambiguous
+    trusted_authors="$(touchstone_review_fix_trusted_authors "$worktree_path" "$base_ref")" || {
+      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" trusted-author-config-invalid
       return
-    fi
+    }
+    while IFS="$(printf '\t')" read -r thread_id _path _line thread_outdated thread_author thread_review_head _url _body \
+      || [ -n "$thread_id" ]; do
+      [ -n "$thread_id" ] || continue
+      if [ "$thread_outdated" = "true" ]; then
+        touchstone_review_fix_need_attention "$job_dir" "$worktree_path" outdated-thread-ambiguous
+        return
+      fi
+      if ! touchstone_review_fix_author_is_trusted "$thread_author" "$trusted_authors"; then
+        touchstone_review_fix_need_attention "$job_dir" "$worktree_path" untrusted-review-author
+        return
+      fi
+      if [ -z "$thread_review_head" ] || [ "$thread_review_head" != "$source_head" ]; then
+        touchstone_review_fix_need_attention "$job_dir" "$worktree_path" stale-review-thread
+        return
+      fi
+    done <"$threads_file"
     observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || {
       touchstone_review_fix_need_attention "$job_dir" "$worktree_path" head-inspection-failed
       return
