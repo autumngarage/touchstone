@@ -77,7 +77,9 @@ case "$command_name:$subcommand" in
     printf '77\n'
     ;;
   "pr:view")
-    if [ -f "${FAKE_STALE_NEXT:-/nonexistent}" ]; then
+    if [ -f "${FAKE_HEAD_MOVED:-/nonexistent}" ]; then
+      printf '%040d\n' 0
+    elif [ -f "${FAKE_STALE_NEXT:-/nonexistent}" ]; then
       rm -f "$FAKE_STALE_NEXT"
       printf '%040d\n' 0
     else
@@ -92,11 +94,18 @@ case "$command_name:$subcommand" in
     if [[ "$args" == *reviewThreads* ]]; then
       if [ -f "$FAKE_THREAD_ACTIVE" ]; then
         review_head="${FAKE_REVIEW_HEAD:-$(git rev-parse HEAD)}"
-        printf '%s\ttarget.txt\t1\tfalse\t%s\t%s\thttps://example.test/thread/%s\tReplace the original value with fixed.\\n' \
+        body_truncated="${FAKE_THREAD_TRUNCATED:-false}"
+        body='Replace the original value with fixed.'
+        if [ "$body_truncated" = true ]; then
+          body="$(awk 'BEGIN { for (i = 0; i < 1100; i++) printf "x" }')"
+        fi
+        printf '%s\ttarget.txt\t1\tfalse\t%s\t%s\t%s\thttps://example.test/thread/%s\t%s\n' \
           "$(cat "$FAKE_THREAD_ID")" \
           "${FAKE_THREAD_AUTHOR:-chatgpt-codex-connector}" \
           "$review_head" \
-          "$(cat "$FAKE_THREAD_ID")"
+          "$body_truncated" \
+          "$(cat "$FAKE_THREAD_ID")" \
+          "$body"
         [ "${FAKE_STALE_AFTER_THREADS:-0}" = 1 ] && : >"$FAKE_STALE_NEXT" || true
       fi
     elif [[ "$args" == *addPullRequestReviewThreadReply* ]]; then
@@ -111,6 +120,7 @@ case "$command_name:$subcommand" in
       else
         rm -f "$FAKE_THREAD_ACTIVE"
       fi
+      [ "${FAKE_MOVE_HEAD_DURING_FINISH:-0}" = 1 ] && : >"$FAKE_HEAD_MOVED" || true
     elif [[ "$args" == *"node(id:"* ]]; then
       if [ -f "$FAKE_RESOLVED" ]; then
         printf 'true\ttrue\n'
@@ -160,6 +170,7 @@ export FAKE_REPLIED="$TEST_DIR/replied"
 export FAKE_RESOLVED="$TEST_DIR/resolved"
 export FAKE_REPLACED="$TEST_DIR/replaced"
 export FAKE_STALE_NEXT="$TEST_DIR/stale-next"
+export FAKE_HEAD_MOVED="$TEST_DIR/head-moved"
 export FAKE_OPEN_PR_LOG="$TEST_DIR/open-pr.log"
 export FAKE_MERGED="$TEST_DIR/merged"
 
@@ -308,6 +319,75 @@ assert_contains "$STATUS" '"reason":"stale-review-thread"'
   || fail "prior-head review thread caused worktree edits"
 unset FAKE_REVIEW_HEAD
 
+echo "==> Case c4: an explicitly empty trusted-author list trusts nobody"
+EMPTY_TRUST_REPO="$TEST_DIR/empty-trust-repo"
+EMPTY_TRUST_ORIGIN="$TEST_DIR/empty-trust-origin.git"
+EMPTY_TRUST_WT="$TEST_DIR/empty-trust-worktree"
+setup_fixture_repo "$EMPTY_TRUST_REPO" "$EMPTY_TRUST_ORIGIN" feat/review-empty-trust
+cat >"$EMPTY_TRUST_REPO/.touchstone-review.toml" <<'EOF'
+[review.pr_triggered]
+trusted_review_authors = []
+EOF
+git -C "$EMPTY_TRUST_REPO" add .touchstone-review.toml
+git -C "$EMPTY_TRUST_REPO" commit -qm "configure an empty review allowlist"
+git -C "$EMPTY_TRUST_REPO" push -q origin main
+git -C "$EMPTY_TRUST_REPO" branch -f feat/review-empty-trust main
+git -C "$EMPTY_TRUST_REPO" push -q --force origin feat/review-empty-trust
+git -C "$EMPTY_TRUST_REPO" worktree add -q "$EMPTY_TRUST_WT" feat/review-empty-trust
+: >"$FAKE_THREAD_ACTIVE"
+printf 'thread-empty-trust\n' >"$FAKE_THREAD_ID"
+rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED"
+TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$EMPTY_TRUST_WT" --detach --review-fix --validation-command : >/dev/null
+wait_for_status "$EMPTY_TRUST_WT" needs-attention "$STATUS" \
+  || fail "empty trusted-author list did not enter needs-attention"
+assert_contains "$STATUS" '"reason":"untrusted-review-author"'
+[ -z "$(git -C "$EMPTY_TRUST_WT" status --porcelain)" ] \
+  || fail "empty trusted-author list allowed autonomous edits"
+[ ! -f "$FAKE_REPLIED" ] || fail "empty trusted-author list allowed an autonomous reply"
+[ ! -f "$FAKE_RESOLVED" ] || fail "empty trusted-author list allowed autonomous resolution"
+
+echo "==> Case c5: truncated feedback cannot be autonomously resolved"
+TRUNCATED_WT="$TEST_DIR/truncated-worktree"
+git -C "$REPO" branch feat/review-truncated main
+git -C "$REPO" push -q origin feat/review-truncated
+git -C "$REPO" worktree add -q "$TRUNCATED_WT" feat/review-truncated
+: >"$FAKE_THREAD_ACTIVE"
+printf 'thread-truncated\n' >"$FAKE_THREAD_ID"
+rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED"
+export FAKE_THREAD_TRUNCATED=true
+TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$TRUNCATED_WT" --detach --review-fix --validation-command : >/dev/null
+wait_for_status "$TRUNCATED_WT" needs-attention "$STATUS" \
+  || fail "truncated feedback did not enter needs-attention"
+assert_contains "$STATUS" '"reason":"review-thread-body-truncated"'
+[ -z "$(git -C "$TRUNCATED_WT" status --porcelain)" ] \
+  || fail "truncated feedback caused autonomous edits"
+[ ! -f "$FAKE_REPLIED" ] || fail "truncated feedback received an autonomous reply"
+[ ! -f "$FAKE_RESOLVED" ] || fail "truncated feedback was autonomously resolved"
+unset FAKE_THREAD_TRUNCATED
+
+echo "==> Case c6: head movement during thread updates stops the merge path"
+MOVED_HEAD_WT="$TEST_DIR/moved-head-worktree"
+git -C "$REPO" branch feat/review-moved-head main
+git -C "$REPO" push -q origin feat/review-moved-head
+git -C "$REPO" worktree add -q "$MOVED_HEAD_WT" feat/review-moved-head
+: >"$FAKE_THREAD_ACTIVE"
+printf 'thread-moved-head\n' >"$FAKE_THREAD_ID"
+rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED" "$FAKE_HEAD_MOVED" "$FAKE_MERGED"
+export FAKE_MOVE_HEAD_DURING_FINISH=1
+TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$MOVED_HEAD_WT" --detach --review-fix --validation-command : >/dev/null
+wait_for_status "$MOVED_HEAD_WT" needs-attention "$STATUS" \
+  || fail "head movement during thread updates did not enter needs-attention"
+assert_contains "$STATUS" '"reason":"head-changed-during-thread-update"'
+[ ! -f "$FAKE_MERGED" ] || fail "head movement during thread updates reached merge"
+unset FAKE_MOVE_HEAD_DURING_FINISH
+rm -f "$FAKE_HEAD_MOVED"
+
 echo "==> Case d: a new thread after a fix exhausts the bounded iteration budget"
 BUDGET_WT="$TEST_DIR/budget-worktree"
 git -C "$REPO" branch feat/review-budget main
@@ -337,7 +417,7 @@ source "$TOUCHSTONE_ROOT/lib/events.sh"
 source "$TOUCHSTONE_ROOT/lib/worker-review-fix.sh"
 CHECKPOINT="$TEST_DIR/checkpoint"
 mkdir -p "$CHECKPOINT/review-fix"
-printf 'thread-restart\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\turl\tbody\n' \
+printf 'thread-restart\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\tfalse\turl\tbody\n' \
   "$(git -C "$WORKTREE" rev-parse HEAD~1)" >"$CHECKPOINT/review-fix/threads.tsv"
 RESTART_HEAD="$(git -C "$WORKTREE" rev-parse HEAD)"
 touchstone_ship_write "$CHECKPOINT/review-fix" source-head "$(git -C "$WORKTREE" rev-parse HEAD~1)"
