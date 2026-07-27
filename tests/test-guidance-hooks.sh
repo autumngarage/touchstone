@@ -323,6 +323,10 @@ assert "blocks bypass push across a line continuation" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "$LINE_CONTINUATION_COMMAND")")"
 assert "blocks bypass flag supplied through variable expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'flag=--no-verify; git push "$flag" origin feat/test')")"
+assert "blocks git command supplied through variable expansion" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'cmd=git; $cmd push --no-verify origin feat/test')")"
+assert "blocks push subcommand supplied through variable expansion" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'sub=push; git $sub --no-verify origin feat/test')")"
 
 # Nested executable contexts must not turn literal-looking text into a bypass.
 assert "blocks bypass push in command substitution" "2" \
@@ -351,6 +355,12 @@ assert "allows double-quoted bypass prose" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'gh issue create --body "Run git push --no-verify only in an emergency"')")"
 assert "allows literal command-substitution prose in single quotes" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "gh issue create --body 'Example: \$(git push --no-verify)'")")"
+HEREDOC_PROSE_COMMAND="$(printf '%s\n' "cat > instructions.md <<'EOF'" "git push --no-verify origin main" "EOF")"
+assert "allows bypass prose in a heredoc body" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$HEREDOC_PROSE_COMMAND")")"
+HEREDOC_THEN_PUSH_COMMAND="$(printf '%s\n' "cat > instructions.md <<'EOF'" "ordinary prose" "EOF" "git push --no-verify origin main")"
+assert "blocks executable bypass push after a heredoc" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$HEREDOC_THEN_PUSH_COMMAND")")"
 
 # 13. Emergency audit evidence belongs to the command runner's workdir, not
 # the driver session cwd. Cover absolute and relative workdir forms.
@@ -456,6 +466,12 @@ EXIT_SCOPED_CD=0
 printf '%s' "$SCOPED_CD_JSON" \
   | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_SCOPED_CD=$?
 assert "blocks cd whose opening subshell is in an earlier segment" "2" "$EXIT_SCOPED_CD"
+
+SKIPPED_CD_JSON="$(mkjson "false && cd $EMERGENCY_TARGET; git push --no-verify origin feat/test" "$TMPDIR")"
+EXIT_SKIPPED_CD=0
+printf '%s' "$SKIPPED_CD_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_SKIPPED_CD=$?
+assert "blocks conditionally skipped cd before an outer push" "2" "$EXIT_SKIPPED_CD"
 
 CDPATH_PARENT="$(mktemp -d -t touchstone-cdpath-parent.XXXXXX)"
 CDPATH_TARGET="$CDPATH_PARENT/cdpath-target"

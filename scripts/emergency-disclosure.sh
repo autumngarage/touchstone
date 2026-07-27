@@ -27,7 +27,10 @@ input="$(cat)"
 if ! printf '%s' "$input" | grep -q -- '--no-verify'; then
   exit 0
 fi
-if ! printf '%s' "$input" | grep -qE 'git([^[:alnum:]_]|$).*push([^[:alnum:]_]|$)'; then
+if ! printf '%s' "$input" | grep -qE 'git([^[:alnum:]_]|$)'; then
+  exit 0
+fi
+if ! printf '%s' "$input" | grep -qE 'push([^[:alnum:]_]|$)'; then
   exit 0
 fi
 
@@ -119,6 +122,35 @@ without_single_quoted_literals() {
             quote = ""
           }
         }
+      }
+    }
+  '
+}
+
+without_heredoc_bodies() {
+  awk '
+    {
+      line = $0
+      if (heredoc_delimiter != "") {
+        comparison = line
+        if (strip_tabs) {
+          sub(/^\t+/, "", comparison)
+        }
+        if (comparison == heredoc_delimiter) {
+          heredoc_delimiter = ""
+          strip_tabs = 0
+        }
+        next
+      }
+
+      print line
+      opener = line
+      if (match(opener, /<<-?[[:space:]]*["\047]?[A-Za-z_][A-Za-z0-9_]*["\047]?/)) {
+        token = substr(opener, RSTART, RLENGTH)
+        strip_tabs = token ~ /^<<-/
+        sub(/^<<-?[[:space:]]*/, "", token)
+        gsub(/["\047]/, "", token)
+        heredoc_delimiter = token
       }
     }
   '
@@ -310,6 +342,7 @@ ambiguous_cd_scope=false
 command_has_substitution=false
 command_nested_protected=false
 command_sets_cdpath=false
+cd_chain_proven=false
 command_executable_text="$(printf '%s' "$command" | without_single_quoted_literals)"
 if printf '%s' "$command_executable_text" \
   | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?CDPATH='; then
@@ -321,6 +354,11 @@ if printf '%s' "$command_executable_text" | grep -qE '\(' \
   ambiguous_cd_scope=true
 fi
 if printf '%s' "$command_executable_text" \
+  | tr '\n' ' ' \
+  | grep -qE 'cd[[:space:]]+.*&&.*git.*push'; then
+  cd_chain_proven=true
+fi
+if printf '%s' "$command_executable_text" \
   | grep -qE '(^|[^\\])\$\(|(^|[^\\])`'; then
   command_has_substitution=true
   if printf '%s' "$command_executable_text" \
@@ -328,6 +366,13 @@ if printf '%s' "$command_executable_text" \
     | grep -qE 'git.*push.*--no-verify'; then
     command_nested_protected=true
   fi
+fi
+if printf '%s' "$command_executable_text" \
+    | grep -qE '(^|[^\\])\$[{A-Za-z_]' \
+  && printf '%s' "$command_executable_text" | grep -qE 'git([^[:alnum:]_]|$)' \
+  && printf '%s' "$command_executable_text" | grep -qE 'push([^[:alnum:]_]|$)' \
+  && printf '%s' "$command_executable_text" | grep -q -- '--no-verify'; then
+  command_nested_protected=true
 fi
 while IFS= read -r segment; do
   cd_target="$(segment_cd_target "$segment")"
@@ -346,7 +391,7 @@ while IFS= read -r segment; do
     push_segment="$segment"
     break
   fi
-done < <(printf '%s\n' "$command" | shell_segments)
+done < <(printf '%s\n' "$command" | without_heredoc_bodies | shell_segments)
 
 if [ -z "$push_segment" ]; then
   exit 0
@@ -397,6 +442,10 @@ cwd="$(cd "$cwd" && pwd -P)"
 
 push_cwd="$cwd"
 if [ -n "$preceding_cd" ]; then
+  if [ "$cd_chain_proven" != "true" ]; then
+    echo "emergency-disclosure: cannot prove preceding cd gates the push; bypass blocked" >&2
+    exit 2
+  fi
   if printf '%s' "$preceding_cd" | grep -qE '^/'; then
     push_cwd="$preceding_cd"
   else
