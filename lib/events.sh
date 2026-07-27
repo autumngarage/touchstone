@@ -14,6 +14,9 @@
 #   cleanup_done: worktree_path, result
 #   failed: phase, reason, pr_number
 #   worker_spawned: branch, worktree_path, task
+#   worker_ship_started: branch, worktree_path, pid
+#   worker_ship_finished: worktree_path, status, exit_code
+#   worker_ship_takeover: worktree_path, pid
 #   worker_state_changed: worktree_path, from, to
 #   worker_abandoned: worktree_path, branch
 

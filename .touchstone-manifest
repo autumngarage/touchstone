@@ -23,6 +23,7 @@ scripts/cleanup-worktrees.sh
 scripts/worker.sh
 lib/toml.sh
 lib/events.sh
+lib/worker-ship-job.sh
 lib/worker-state.sh
 scripts/run-pytest-in-venv.sh
 .claude/settings.json

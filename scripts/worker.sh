@@ -9,6 +9,8 @@ TOUCHSTONE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=../lib/worker-state.sh
 source "$TOUCHSTONE_ROOT/lib/worker-state.sh"
+# shellcheck source=../lib/worker-ship-job.sh
+source "$TOUCHSTONE_ROOT/lib/worker-ship-job.sh"
 if [ -f "$TOUCHSTONE_ROOT/lib/events.sh" ]; then
   # shellcheck source=../lib/events.sh
   source "$TOUCHSTONE_ROOT/lib/events.sh"
@@ -29,8 +31,9 @@ usage() {
   cat <<'EOF'
 Usage:
   touchstone worker spawn --task "<description>" --type fix|feat|chore|refactor|docs [--json]
-  touchstone worker status --worktree <path> [--json]
-  touchstone worker ship --worktree <path> [--auto-merge] [--cleanup] [--events-json <path>]
+  touchstone worker status --worktree <path> [--json] [--show-log] [--log-lines <n>]
+  touchstone worker ship --worktree <path> [--detach] [--cleanup] [--events-json <path>]
+  touchstone worker takeover --worktree <path> [--force]
   touchstone worker abandon --worktree <path> [--dry-run] [--force]
   touchstone worker list [--repo <path>] [--json]
 EOF
@@ -101,8 +104,8 @@ worker_pr_field() {
 }
 
 worker_status_json() {
-  local worktree_path="$1"
-  local state branch head_sha has_uncommitted pr_number pr_url merged_at
+  local worktree_path="$1" log_lines="${2:-0}"
+  local state branch head_sha has_uncommitted pr_number pr_url merged_at job_dir=""
 
   state="$(derive_worker_state "$worktree_path")"
   branch=""
@@ -129,6 +132,7 @@ worker_status_json() {
       fi
     fi
   fi
+  job_dir="$(touchstone_ship_job_dir "$worktree_path" || true)"
 
   printf '{'
   json_field state "$state"
@@ -147,6 +151,12 @@ worker_status_json() {
   if [ -n "$merged_at" ]; then
     printf ','
     json_field merged_at "$merged_at"
+  fi
+  printf ',"ship":'
+  if [ -n "$job_dir" ]; then
+    touchstone_ship_json "$job_dir" "$log_lines"
+  else
+    printf 'null'
   fi
   printf '}\n'
 }
@@ -228,7 +238,8 @@ cmd_spawn() {
 }
 
 cmd_status() {
-  local worktree_path="" json=false state branch head_sha has_uncommitted
+  local worktree_path="" json=false show_log=false log_lines=20
+  local state branch head_sha has_uncommitted job_dir="" ship_status="" ship_pid="" ship_exit="" ship_log=""
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -243,6 +254,24 @@ cmd_status() {
       --json)
         json=true
         shift
+        ;;
+      --show-log)
+        show_log=true
+        shift
+        ;;
+      --log-lines)
+        [ "$#" -ge 2 ] || {
+          echo "ERROR: --log-lines requires a value." >&2
+          return 2
+        }
+        case "$2" in
+          '' | *[!0-9]*)
+            echo "ERROR: --log-lines must be a non-negative integer." >&2
+            return 2
+            ;;
+        esac
+        log_lines="$2"
+        shift 2
         ;;
       -h | --help)
         usage
@@ -259,9 +288,14 @@ cmd_status() {
     echo "ERROR: worker status requires --worktree." >&2
     return 2
   }
+  worktree_path="$(touchstone_ship_normalize_worktree_path "$worktree_path" || printf '%s' "$worktree_path")"
 
   if [ "$json" = true ]; then
-    worker_status_json "$worktree_path"
+    if [ "$show_log" = true ]; then
+      worker_status_json "$worktree_path" "$log_lines"
+    else
+      worker_status_json "$worktree_path"
+    fi
     return 0
   fi
 
@@ -274,6 +308,7 @@ cmd_status() {
     head_sha="$(worker_head_sha "$worktree_path")"
     has_uncommitted="$(worker_has_uncommitted "$worktree_path")"
   fi
+  job_dir="$(touchstone_ship_job_dir "$worktree_path" || true)"
   echo "Worker state: $state"
   [ -n "$branch" ] && echo "Branch: $branch"
   [ -n "$head_sha" ] && echo "Head: $head_sha"
@@ -282,10 +317,121 @@ cmd_status() {
   else
     echo "Uncommitted changes: no"
   fi
+  if [ -n "$job_dir" ] && [ -d "$job_dir" ]; then
+    touchstone_ship_refresh "$job_dir"
+    ship_status="$(touchstone_ship_read "$job_dir" status)"
+    ship_pid="$(touchstone_ship_read "$job_dir" pid)"
+    ship_exit="$(touchstone_ship_read "$job_dir" exit-code)"
+    ship_log="$job_dir/ship.log"
+    echo "Ship job: ${ship_status:-unknown}"
+    [ -n "$ship_pid" ] && echo "Ship PID: $ship_pid"
+    [ -n "$ship_exit" ] && echo "Ship exit code: $ship_exit"
+    echo "Ship log: $ship_log"
+    if [ "$show_log" = true ] && [ -f "$ship_log" ]; then
+      echo "--- Ship log (last $log_lines lines) ---"
+      tail -n "$log_lines" "$ship_log"
+    fi
+  else
+    echo "Ship job: none"
+  fi
+}
+
+cmd_ship_runner() {
+  local job_dir="" worktree_path="" cleanup=false events_json="" child_pid="" exit_code=0 branch=""
+  local args
+  args=(--auto-merge)
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --job-dir)
+        job_dir="$2"
+        shift 2
+        ;;
+      --worktree)
+        worktree_path="$2"
+        shift 2
+        ;;
+      --cleanup)
+        cleanup=true
+        shift
+        ;;
+      --events-json)
+        [ "$#" -ge 2 ] || {
+          echo "ERROR: --events-json requires a path." >&2
+          return 2
+        }
+        events_json="$2"
+        shift 2
+        ;;
+      *)
+        echo "ERROR: unknown detached ship runner argument '$1'." >&2
+        exit 2
+        ;;
+    esac
+  done
+
+  [ -n "$job_dir" ] && [ -n "$worktree_path" ] || exit 2
+  if [ -n "$events_json" ]; then
+    export TOUCHSTONE_EVENTS_FILE="$events_json"
+  fi
+
+  finish_runner() {
+    local status="$1" code="$2" reason="${3-}"
+    touchstone_ship_write "$job_dir" exit-code "$code"
+    touchstone_ship_write "$job_dir" reason "$reason"
+    touchstone_ship_write "$job_dir" finished-at "$(touchstone_ship_now)"
+    touchstone_ship_write "$job_dir" status "$status"
+    rmdir "$job_dir/active" 2>/dev/null || true
+    touchstone_emit_event worker_ship_finished \
+      worktree_path="$worktree_path" status="$status" exit_code="$code"
+  }
+
+  # shellcheck disable=SC2329 # Invoked by the TERM/INT trap below.
+  stop_runner() {
+    trap - TERM INT
+    if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
+      touchstone_ship_signal_tree "$child_pid" TERM
+      wait "$child_pid" 2>/dev/null || true
+    fi
+    finish_runner stopped 143 takeover
+    exit 143
+  }
+  trap stop_runner TERM INT
+
+  touchstone_ship_write "$job_dir" pid "$$"
+  branch="$(touchstone_ship_read "$job_dir" branch)"
+  touchstone_emit_event worker_ship_started \
+    worktree_path="$worktree_path" branch="$branch" pid="$$"
+  touchstone_ship_write "$job_dir" status running
+  touchstone_ship_write "$job_dir" reason ""
+  if [ "$cleanup" = true ]; then
+    args+=(--cleanup-worktree)
+  fi
+
+  if [ -n "$events_json" ]; then
+    TOUCHSTONE_EVENTS_FILE="$events_json" \
+      bash -c 'cd "$1" && shift && bash scripts/open-pr.sh "$@"' _ "$worktree_path" "${args[@]}" &
+  else
+    (cd "$worktree_path" && bash scripts/open-pr.sh "${args[@]}") &
+  fi
+  child_pid=$!
+  touchstone_ship_write "$job_dir" child-pid "$child_pid"
+  if wait "$child_pid"; then
+    exit_code=0
+  else
+    exit_code=$?
+  fi
+  if [ "$exit_code" -eq 0 ]; then
+    finish_runner succeeded 0
+  else
+    finish_runner failed "$exit_code" open-pr-failed
+  fi
+  exit "$exit_code"
 }
 
 cmd_ship() {
-  local worktree_path="" cleanup=false events_json="" args
+  local worktree_path="" cleanup=false events_json="" detach=false
+  local job_dir="" runner_pid="" branch="" started_at="" args runner_args
   args=(--auto-merge)
 
   while [ "$#" -gt 0 ]; do
@@ -299,6 +445,10 @@ cmd_ship() {
         shift 2
         ;;
       --auto-merge) shift ;;
+      --detach)
+        detach=true
+        shift
+        ;;
       --cleanup)
         cleanup=true
         shift
@@ -330,15 +480,150 @@ cmd_ship() {
     echo "ERROR: worktree does not exist: $worktree_path" >&2
     return 1
   }
+  worktree_path="$(touchstone_ship_normalize_worktree_path "$worktree_path")"
   if [ "$cleanup" = true ]; then
     args+=(--cleanup-worktree)
   fi
-  if [ -n "$events_json" ]; then
-    TOUCHSTONE_EVENTS_FILE="$events_json" \
-      bash -c 'cd "$1" && shift && bash scripts/open-pr.sh "$@"' _ "$worktree_path" "${args[@]}"
-  else
-    (cd "$worktree_path" && bash scripts/open-pr.sh "${args[@]}")
+
+  if [ "$detach" != true ]; then
+    if [ -n "$events_json" ]; then
+      TOUCHSTONE_EVENTS_FILE="$events_json" \
+        bash -c 'cd "$1" && shift && bash scripts/open-pr.sh "$@"' _ "$worktree_path" "${args[@]}"
+    else
+      (cd "$worktree_path" && bash scripts/open-pr.sh "${args[@]}")
+    fi
+    return
   fi
+
+  job_dir="$(touchstone_ship_job_dir "$worktree_path")" || {
+    echo "ERROR: could not resolve detached ship state for $worktree_path" >&2
+    return 1
+  }
+  touchstone_ship_refresh "$job_dir"
+  mkdir -p "$job_dir"
+  if ! mkdir "$job_dir/active" 2>/dev/null; then
+    echo "ERROR: a detached ship job is already active for $worktree_path" >&2
+    echo "       Inspect it with: touchstone worker status --worktree '$worktree_path' --show-log" >&2
+    return 1
+  fi
+  touchstone_ship_write "$job_dir/active" claimed-epoch "$(date +%s)"
+
+  branch="$(worker_branch "$worktree_path")"
+  started_at="$(touchstone_ship_now)"
+  : >"$job_dir/ship.log"
+  touchstone_ship_write "$job_dir" started-at "$started_at"
+  touchstone_ship_write "$job_dir" started-epoch "$(date +%s)"
+  touchstone_ship_write "$job_dir" finished-at ""
+  touchstone_ship_write "$job_dir" exit-code ""
+  touchstone_ship_write "$job_dir" reason ""
+  touchstone_ship_write "$job_dir" pid ""
+  touchstone_ship_write "$job_dir" child-pid ""
+  touchstone_ship_write "$job_dir" branch "$branch"
+  touchstone_ship_write "$job_dir" worktree-path "$worktree_path"
+  touchstone_ship_write "$job_dir" status starting
+  rm -f "$job_dir/active/claimed-epoch"
+
+  runner_args=(_ship-run --job-dir "$job_dir" --worktree "$worktree_path")
+  [ "$cleanup" = true ] && runner_args+=(--cleanup)
+  [ -n "$events_json" ] && runner_args+=(--events-json "$events_json")
+  nohup bash "$TOUCHSTONE_ROOT/scripts/worker.sh" "${runner_args[@]}" \
+    >>"$job_dir/ship.log" 2>&1 </dev/null &
+  runner_pid=$!
+  touchstone_ship_write "$job_dir" pid "$runner_pid"
+
+  echo "Detached ship started."
+  echo "Worktree: $worktree_path"
+  echo "PID: $runner_pid"
+  echo "Status: touchstone worker status --worktree '$worktree_path' --show-log"
+}
+
+cmd_takeover() {
+  local worktree_path="" force=false job_dir="" status="" pid="" waited=0
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --worktree)
+        [ "$#" -ge 2 ] || {
+          echo "ERROR: --worktree requires a path." >&2
+          return 2
+        }
+        worktree_path="$2"
+        shift 2
+        ;;
+      --force)
+        force=true
+        shift
+        ;;
+      -h | --help)
+        usage
+        return 0
+        ;;
+      *)
+        echo "ERROR: unknown worker takeover argument '$1'." >&2
+        return 2
+        ;;
+    esac
+  done
+
+  [ -n "$worktree_path" ] || {
+    echo "ERROR: worker takeover requires --worktree." >&2
+    return 2
+  }
+  [ -d "$worktree_path" ] || {
+    echo "ERROR: worktree does not exist: $worktree_path" >&2
+    return 1
+  }
+  job_dir="$(touchstone_ship_job_dir "$worktree_path")" || return 1
+  [ -d "$job_dir" ] || {
+    echo "No detached ship job exists for $worktree_path."
+    return 0
+  }
+
+  touchstone_ship_refresh "$job_dir"
+  status="$(touchstone_ship_read "$job_dir" status)"
+  pid="$(touchstone_ship_read "$job_dir" pid)"
+  case "$status" in
+    starting | running)
+      if ! touchstone_ship_pid_is_runner "$job_dir" "$pid"; then
+        touchstone_ship_refresh "$job_dir"
+        status="$(touchstone_ship_read "$job_dir" status)"
+        if [ "$status" != "starting" ] && [ "$status" != "running" ]; then
+          echo "No active detached ship job exists for $worktree_path."
+          return 0
+        fi
+        echo "ERROR: detached ship runner is still starting; retry takeover shortly." >&2
+        return 1
+      else
+        if ! kill -TERM "$pid" 2>/dev/null; then
+          touchstone_ship_refresh "$job_dir"
+        fi
+        while [ "$waited" -lt 50 ] && [ -d "$job_dir/active" ]; do
+          sleep 0.1
+          waited=$((waited + 1))
+        done
+        if [ -d "$job_dir/active" ]; then
+          if [ "$force" != true ]; then
+            echo "ERROR: detached ship runner did not stop; retry with --force." >&2
+            return 1
+          fi
+          touchstone_ship_signal_tree "$pid" KILL
+          touchstone_ship_write "$job_dir" exit-code 137
+          touchstone_ship_write "$job_dir" reason forced-takeover
+          touchstone_ship_write "$job_dir" finished-at "$(touchstone_ship_now)"
+          touchstone_ship_write "$job_dir" status stopped
+          rmdir "$job_dir/active" 2>/dev/null || true
+        fi
+      fi
+      ;;
+    *)
+      echo "No active detached ship job exists for $worktree_path."
+      return 0
+      ;;
+  esac
+
+  touchstone_emit_event worker_ship_takeover worktree_path="$worktree_path" pid="$pid"
+  echo "Detached shipping is no longer active."
+  echo "Worktree preserved for takeover: $worktree_path"
 }
 
 branch_has_open_or_closed_pr() {
@@ -394,6 +679,7 @@ worktree_manager_path() {
 
 cmd_abandon() {
   local worktree_path="" dry_run=false force=false branch base unique_commits dirty_status manager_path remote_action
+  local ship_job_dir="" ship_status=""
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -432,6 +718,18 @@ cmd_abandon() {
     echo "ERROR: worktree does not exist: $worktree_path" >&2
     return 1
   }
+  ship_job_dir="$(touchstone_ship_job_dir "$worktree_path" || true)"
+  if [ -n "$ship_job_dir" ] && [ -d "$ship_job_dir" ]; then
+    touchstone_ship_refresh "$ship_job_dir"
+    ship_status="$(touchstone_ship_read "$ship_job_dir" status)"
+    case "$ship_status" in
+      starting | running)
+        echo "ERROR: refusing to abandon $worktree_path while detached shipping is active." >&2
+        echo "       Run: touchstone worker takeover --worktree '$worktree_path'" >&2
+        return 1
+        ;;
+    esac
+  fi
 
   branch="$(worker_branch "$worktree_path")"
   [ -n "$branch" ] && [ "$branch" != "HEAD" ] || {
@@ -603,8 +901,10 @@ case "$command" in
   spawn) cmd_spawn "$@" ;;
   status) cmd_status "$@" ;;
   ship) cmd_ship "$@" ;;
+  takeover) cmd_takeover "$@" ;;
   abandon) cmd_abandon "$@" ;;
   list) cmd_list "$@" ;;
+  _ship-run) cmd_ship_runner "$@" ;;
   help | -h | --help) usage ;;
   *)
     echo "ERROR: unknown worker command '$command'." >&2

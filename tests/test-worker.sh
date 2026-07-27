@@ -222,6 +222,172 @@ if ! grep -q "$TEST_DIR/ship-events.ndjson" "$TEST_DIR/ship-events-env"; then
   fail "worker ship did not forward TOUCHSTONE_EVENTS_FILE"
 fi
 
+echo "==> Case d2: detached worker ship persists lifecycle state and supports takeover"
+DETACHED_WT="$TEST_DIR/detached-ship-worktree"
+git -C "$REPO" worktree add -q "$DETACHED_WT" -b feat/detached-ship-test main
+
+write_detached_open_pr() {
+  local worktree="$1"
+  mkdir -p "$worktree/scripts"
+  cat >"$worktree/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "detached runner started"
+printf 'started\n' >"$SHIP_STARTED_FILE"
+sleep "${SHIP_SLEEP_SECONDS:-0}"
+echo "detached runner finished"
+exit "${SHIP_EXIT_CODE:-0}"
+EOF
+  chmod +x "$worktree/scripts/open-pr.sh"
+}
+write_detached_open_pr "$DETACHED_WT"
+
+wait_for_ship_status() {
+  local worktree="$1" expected="$2" output_file="$3" attempts=0
+  while [ "$attempts" -lt 100 ]; do
+    "$TOUCHSTONE_ROOT/bin/touchstone" worker status \
+      --worktree "$worktree" --json >"$output_file"
+    if grep -q "\"status\":\"$expected\"" "$output_file"; then
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 0.1
+  done
+  return 1
+}
+
+DETACHED_EVENTS="$TEST_DIR/detached-events.ndjson"
+DETACHED_STATUS="$TEST_DIR/detached-status.json"
+SHIP_STARTED_FILE="$TEST_DIR/detached-started" \
+  SHIP_SLEEP_SECONDS=10 \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$DETACHED_WT" \
+  --detach \
+  --events-json "$DETACHED_EVENTS" >"$TEST_DIR/detached-start.out"
+if ! wait_for_ship_status "$DETACHED_WT" running "$DETACHED_STATUS"; then
+  fail "detached ship did not enter running state"
+  cat "$DETACHED_STATUS" >&2
+fi
+assert_contains "$DETACHED_STATUS" '"log_path":'
+assert_contains "$DETACHED_EVENTS" '"event":"worker_ship_started"'
+
+if SHIP_STARTED_FILE="$TEST_DIR/duplicate-started" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$DETACHED_WT" --detach >"$TEST_DIR/detached-duplicate.out" 2>&1; then
+  fail "detached ship should refuse a duplicate active job"
+fi
+assert_contains "$TEST_DIR/detached-duplicate.out" 'already active'
+
+if "$TOUCHSTONE_ROOT/bin/touchstone" worker abandon \
+  --worktree "$DETACHED_WT" --force >"$TEST_DIR/detached-abandon.out" 2>&1; then
+  fail "worker abandon should refuse an active detached ship"
+fi
+assert_contains "$TEST_DIR/detached-abandon.out" 'detached shipping is active'
+
+"$TOUCHSTONE_ROOT/bin/touchstone" worker takeover \
+  --worktree "$DETACHED_WT" >"$TEST_DIR/detached-takeover.out"
+if ! wait_for_ship_status "$DETACHED_WT" stopped "$DETACHED_STATUS"; then
+  fail "takeover did not stop detached shipping"
+  cat "$DETACHED_STATUS" >&2
+fi
+if [ ! -d "$DETACHED_WT" ]; then
+  fail "takeover removed the worker worktree"
+fi
+
+SHIP_STARTED_FILE="$TEST_DIR/success-started" \
+  SHIP_EXIT_CODE=0 \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$DETACHED_WT" \
+  --detach \
+  --events-json "$DETACHED_EVENTS" >/dev/null
+if ! wait_for_ship_status "$DETACHED_WT" succeeded "$DETACHED_STATUS"; then
+  fail "detached ship did not persist success"
+  cat "$DETACHED_STATUS" >&2
+fi
+assert_contains "$DETACHED_STATUS" '"exit_code":0'
+"$TOUCHSTONE_ROOT/bin/touchstone" worker status \
+  --worktree "$DETACHED_WT" \
+  --show-log \
+  --log-lines 5 >"$TEST_DIR/detached-log.out"
+assert_contains "$TEST_DIR/detached-log.out" 'detached runner finished'
+
+git -C "$REPO" worktree remove --force "$DETACHED_WT"
+(
+  cd "$REPO"
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker status \
+    --worktree "$DETACHED_WT" --json >"$DETACHED_STATUS"
+)
+assert_contains "$DETACHED_STATUS" '"status":"succeeded"'
+assert_contains "$DETACHED_STATUS" '"exit_code":0'
+git -C "$REPO" worktree add -q "$DETACHED_WT" feat/detached-ship-test
+write_detached_open_pr "$DETACHED_WT"
+
+SHIP_STARTED_FILE="$TEST_DIR/failure-started" \
+  SHIP_EXIT_CODE=23 \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$DETACHED_WT" --detach >/dev/null
+if ! wait_for_ship_status "$DETACHED_WT" failed "$DETACHED_STATUS"; then
+  fail "detached ship did not persist failure"
+  cat "$DETACHED_STATUS" >&2
+fi
+assert_contains "$DETACHED_STATUS" '"exit_code":23'
+
+DETACHED_JOB_DIR="$(dirname "$(sed -n 's/.*"log_path":"\([^"]*\)".*/\1/p' "$DETACHED_STATUS")")"
+printf 'running\n' >"$DETACHED_JOB_DIR/status"
+printf '999999\n' >"$DETACHED_JOB_DIR/pid"
+mkdir -p "$DETACHED_JOB_DIR/active"
+"$TOUCHSTONE_ROOT/bin/touchstone" worker status \
+  --worktree "$DETACHED_WT" --json >"$DETACHED_STATUS"
+assert_contains "$DETACHED_STATUS" '"status":"failed"'
+assert_contains "$DETACHED_STATUS" '"exit_code":125'
+assert_contains "$DETACHED_STATUS" '"reason":"stale-runner"'
+
+printf 'starting\n' >"$DETACHED_JOB_DIR/status"
+printf '%s\n' "$$" >"$DETACHED_JOB_DIR/pid"
+printf '%s\n' "$(( $(date +%s) - 10 ))" >"$DETACHED_JOB_DIR/started-epoch"
+mkdir -p "$DETACHED_JOB_DIR/active"
+"$TOUCHSTONE_ROOT/bin/touchstone" worker status \
+  --worktree "$DETACHED_WT" --json >"$DETACHED_STATUS"
+assert_contains "$DETACHED_STATUS" '"status":"failed"'
+assert_contains "$DETACHED_STATUS" '"reason":"stale-runner"'
+assert_contains "$DETACHED_EVENTS" '"event":"worker_ship_finished"'
+
+echo "==> Case d3: detached jobs do not collide when branch names sanitize alike"
+COLLISION_SLASH_WT="$TEST_DIR/collision-slash-worktree"
+COLLISION_UNDERSCORE_WT="$TEST_DIR/collision-underscore-worktree"
+COLLISION_SLASH_STATUS="$TEST_DIR/collision-slash-status.json"
+COLLISION_UNDERSCORE_STATUS="$TEST_DIR/collision-underscore-status.json"
+git -C "$REPO" worktree add -q "$COLLISION_SLASH_WT" -b feat/collision/a main
+git -C "$REPO" worktree add -q "$COLLISION_UNDERSCORE_WT" -b feat/collision_a main
+write_detached_open_pr "$COLLISION_SLASH_WT"
+write_detached_open_pr "$COLLISION_UNDERSCORE_WT"
+
+SHIP_STARTED_FILE="$TEST_DIR/collision-slash-started" \
+  SHIP_SLEEP_SECONDS=10 \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$COLLISION_SLASH_WT" --detach >/dev/null
+if ! wait_for_ship_status "$COLLISION_SLASH_WT" running "$COLLISION_SLASH_STATUS"; then
+  fail "slash-branch detached ship did not enter running state"
+fi
+if ! SHIP_STARTED_FILE="$TEST_DIR/collision-underscore-started" \
+  SHIP_SLEEP_SECONDS=10 \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$COLLISION_UNDERSCORE_WT" --detach >"$TEST_DIR/collision-start.out" 2>&1; then
+  fail "sanitized branch-name collision blocked an independent detached job"
+fi
+if ! wait_for_ship_status "$COLLISION_UNDERSCORE_WT" running "$COLLISION_UNDERSCORE_STATUS"; then
+  fail "underscore-branch detached ship did not enter running state"
+fi
+COLLISION_SLASH_LOG="$(sed -n 's/.*"log_path":"\([^"]*\)".*/\1/p' "$COLLISION_SLASH_STATUS")"
+COLLISION_UNDERSCORE_LOG="$(sed -n 's/.*"log_path":"\([^"]*\)".*/\1/p' "$COLLISION_UNDERSCORE_STATUS")"
+if [ "$COLLISION_SLASH_LOG" = "$COLLISION_UNDERSCORE_LOG" ]; then
+  fail "distinct branches resolved to the same detached job directory"
+fi
+"$TOUCHSTONE_ROOT/bin/touchstone" worker takeover \
+  --worktree "$COLLISION_SLASH_WT" >/dev/null
+"$TOUCHSTONE_ROOT/bin/touchstone" worker takeover \
+  --worktree "$COLLISION_UNDERSCORE_WT" >/dev/null
+
 echo "==> Case e: worker abandon refuses unique work and removes spawned worktrees"
 if "$TOUCHSTONE_ROOT/bin/touchstone" worker abandon --worktree "$WORKTREE_PATH" >"$TEST_DIR/abandon-refuse.out" 2>&1; then
   fail "worker abandon should refuse unique commits without --force"

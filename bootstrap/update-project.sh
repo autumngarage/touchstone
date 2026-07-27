@@ -469,6 +469,7 @@ update_file "$TOUCHSTONE_ROOT/scripts/worker.sh" "$PROJECT_DIR/scripts/worker.sh
 # Libraries used by touchstone-owned scripts.
 update_file "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
 update_file "$TOUCHSTONE_ROOT/lib/events.sh" "$PROJECT_DIR/lib/events.sh"
+update_file "$TOUCHSTONE_ROOT/lib/worker-ship-job.sh" "$PROJECT_DIR/lib/worker-ship-job.sh"
 update_file "$TOUCHSTONE_ROOT/lib/worker-state.sh" "$PROJECT_DIR/lib/worker-state.sh"
 update_file "$TOUCHSTONE_ROOT/lib/script-sync-guard.sh" "$PROJECT_DIR/lib/script-sync-guard.sh"
 update_file "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PROJECT_DIR/lib/preflight.sh"
@@ -631,6 +632,7 @@ write_touchstone_manifest() {
     printf 'scripts/worker.sh\n'
     printf 'lib/toml.sh\n'
     printf 'lib/events.sh\n'
+    printf 'lib/worker-ship-job.sh\n'
     printf 'lib/worker-state.sh\n'
     printf 'lib/script-sync-guard.sh\n'
     printf 'lib/preflight.sh\n'
