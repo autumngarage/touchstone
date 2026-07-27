@@ -83,12 +83,87 @@ shell_segments() {
   '
 }
 
-push_segment=""
-while IFS= read -r segment; do
+# Preserve double-quoted text so executable command substitutions remain
+# visible, while masking single-quoted literals that the shell never executes.
+without_single_quoted_literals() {
+  awk '
+    {
+      line = $0 "\n"
+      for (i = 1; i <= length(line); i++) {
+        char = substr(line, i, 1)
+        if (escaped) {
+          printf "%s", char
+          escaped = 0
+        } else if (!single_quote && char == "\\") {
+          printf "%s", char
+          escaped = 1
+        } else if (char == "\047") {
+          printf " "
+          single_quote = !single_quote
+        } else if (single_quote) {
+          printf " "
+        } else {
+          printf "%s", char
+        }
+      }
+    }
+  '
+}
+
+segment_runs_bypass_push() {
+  local segment="$1"
+  local executable_text=""
+  local protected_push='git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+push([^;&|)]*)--no-verify'
+
   if printf '%s' "$segment" \
       | grep -qE '^[[:space:]({]*(((if|then|elif|else|while|until|do|!|time([[:space:]]+-[[:alpha:]]+)*)|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+|env|command|exec)[[:space:]]+)*git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+push([[:space:]]|$)' \
     && printf '%s' "$segment" \
       | grep -qE '(^|[[:space:]'\''"])--no-verify([[:space:]'\''"]|$)'; then
+    return 0
+  fi
+
+  executable_text="$(printf '%s' "$segment" | without_single_quoted_literals)"
+
+  # Command substitutions and legacy backticks execute even inside double
+  # quotes. Single-quoted lookalikes were removed above.
+  if printf '%s' "$executable_text" \
+    | grep -qE "(^|[^\\\\])\\$\\([^)]*$protected_push|(^|[^\\\\])\`[^\`]*$protected_push"; then
+    return 0
+  fi
+
+  # Shell -c and eval turn a quoted argument into executable input.
+  if printf '%s' "$executable_text" \
+      | grep -qE '^[[:space:]({]*(((if|then|elif|else|while|until|do|!|time([[:space:]]+-[[:alpha:]]+)*)|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+|env|command|exec)[[:space:]]+)*(([^[:space:]]*/)?(ba|da|k|z)?sh[[:space:]]+(-[^[:space:]]*[cC][^[:space:]]*|[^[:space:]]+[[:space:]]+-[^[:space:]]*[cC][^[:space:]]*)|eval)([[:space:]]|$)' \
+    && printf '%s' "$segment" | grep -qE "$protected_push"; then
+    return 0
+  fi
+
+  # Function bodies are executable shell code. Conservatively require the
+  # emergency path even when invocation is not visible to this parser.
+  if printf '%s' "$executable_text" \
+      | grep -qE '^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(\(\))?[[:space:]]*\{' \
+    && printf '%s' "$executable_text" | grep -qE "$protected_push"; then
+    return 0
+  fi
+
+  return 1
+}
+
+push_segment=""
+preceding_cd=""
+while IFS= read -r segment; do
+  cd_target="$(printf '%s' "$segment" \
+    | grep -oE '^[[:space:]({]*((if|then|elif|else|while|until|do|!)[[:space:]]+)*cd[[:space:]]+[^[:space:]]+' \
+    | sed -E 's/^.*cd[[:space:]]+//' || true)"
+  if [ -n "$cd_target" ]; then
+    if printf '%s' "$cd_target" | grep -qE '^/' || [ -z "$preceding_cd" ]; then
+      preceding_cd="$cd_target"
+    else
+      preceding_cd="$preceding_cd/$cd_target"
+    fi
+  fi
+
+  if segment_runs_bypass_push "$segment"; then
     push_segment="$segment"
     break
   fi
@@ -136,9 +211,42 @@ if [ ! -d "$cwd" ]; then
 fi
 cwd="$(cd "$cwd" && pwd -P)"
 
+push_cwd="$cwd"
+if [ -n "$preceding_cd" ]; then
+  if printf '%s' "$preceding_cd" | grep -qE '^/'; then
+    push_cwd="$preceding_cd"
+  else
+    push_cwd="$push_cwd/$preceding_cd"
+  fi
+fi
+
+git_c_target=""
+while IFS= read -r next_git_c_target; do
+  if printf '%s' "$next_git_c_target" | grep -qE '^/' || [ -z "$git_c_target" ]; then
+    git_c_target="$next_git_c_target"
+  else
+    git_c_target="$git_c_target/$next_git_c_target"
+  fi
+done < <(printf '%s' "$push_segment" \
+  | grep -oE '(^|[[:space:]])-C[[:space:]]+[^[:space:]]+' \
+  | sed -E 's/^[[:space:]]*-C[[:space:]]+//' || true)
+if [ -n "$git_c_target" ]; then
+  if printf '%s' "$git_c_target" | grep -qE '^/'; then
+    push_cwd="$git_c_target"
+  else
+    push_cwd="$push_cwd/$git_c_target"
+  fi
+fi
+
+audit_repo="$(git -C "$push_cwd" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$audit_repo" ]; then
+  echo "emergency-disclosure: cannot resolve pushed repository from '$push_cwd'; bypass blocked" >&2
+  exit 2
+fi
+
 # Audit persistence is part of emergency authorization. Never allow an
 # emergency bypass when its required recovery evidence cannot be recorded.
-log_dir="$cwd/.touchstone"
+log_dir="$audit_repo/.touchstone"
 log_file="$log_dir/emergency-bypass.log"
 if ! mkdir -p "$log_dir"; then
   echo "emergency-disclosure: cannot create emergency audit directory: $log_dir" >&2

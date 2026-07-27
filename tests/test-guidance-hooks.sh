@@ -307,17 +307,25 @@ assert "blocks bypass push in a grouped command" "2" \
 assert "blocks bypass push after nested control prefixes" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "while ! git push --no-verify origin feat/test; do sleep 1; done")")"
 
-# A function body is not executed when it is defined, and unquoted words passed
-# to another command are arguments rather than a command position.
-assert "allows bypass text in an uninvoked function definition" "0" \
-  "$(run_hook "$EMERGENCY" "$(mkjson "push_later() { git push --no-verify origin feat/test; }")")"
+# Nested executable contexts must not turn literal-looking text into a bypass.
+assert "blocks bypass push in command substitution" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'echo "$(git push --no-verify origin feat/test)"')")"
+assert "blocks bypass push in a shell -c payload" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "sh -c 'git push --no-verify origin feat/test'")")"
+assert "blocks bypass push in an eval payload" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "eval 'git push --no-verify origin feat/test'")")"
+assert "conservatively blocks bypass push in a function body" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "push_later() { git push --no-verify origin feat/test; }; push_later")")"
 assert "allows unquoted bypass words passed to another command" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "echo if git push --no-verify origin feat/test")")"
+assert "allows literal command-substitution prose in single quotes" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "gh issue create --body 'Example: \$(git push --no-verify)'")")"
 
 # 13. Emergency audit evidence belongs to the command runner's workdir, not
 # the driver session cwd. Cover absolute and relative workdir forms.
 EMERGENCY_TARGET="$(mktemp -d -t touchstone-emergency-target.XXXXXX)"
 trap 'rm -rf "$TMPDIR" "$WORKTREE" "$MAIN_TARGET" "$EMERGENCY_TARGET"' EXIT
+git -C "$EMERGENCY_TARGET" init --quiet --initial-branch=main
 TOOL_WORKDIR_EMERGENCY_JSON="$(jq -nc \
   --arg cmd "git push --no-verify origin feat/test" \
   --arg workdir "$EMERGENCY_TARGET" \
@@ -354,10 +362,37 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# A command-local cd and git -C both change the repository being pushed. Audit
+# evidence must follow that target rather than the caller's tool workdir.
+rm -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
+CD_EMERGENCY_JSON="$(mkjson "cd $EMERGENCY_TARGET && git push --no-verify origin feat/test" "$TMPDIR")"
+printf '%s' "$CD_EMERGENCY_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
+if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: emergency log follows preceding cd"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: emergency log did not follow preceding cd" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
+GIT_C_EMERGENCY_JSON="$(mkjson "git -C $EMERGENCY_TARGET push --no-verify origin feat/test" "$TMPDIR")"
+printf '%s' "$GIT_C_EMERGENCY_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
+if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: emergency log follows git -C target"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: emergency log did not follow git -C target" >&2
+  FAIL=$((FAIL + 1))
+fi
+
 # 14. The bypass must fail closed when required audit evidence cannot be
 # persisted. A file at the directory path makes mkdir deterministic.
 EMERGENCY_UNWRITABLE="$(mktemp -d -t touchstone-emergency-unwritable.XXXXXX)"
 trap 'rm -rf "$TMPDIR" "$WORKTREE" "$MAIN_TARGET" "$EMERGENCY_TARGET" "$EMERGENCY_UNWRITABLE"' EXIT
+git -C "$EMERGENCY_UNWRITABLE" init --quiet --initial-branch=main
 touch "$EMERGENCY_UNWRITABLE/.touchstone"
 UNWRITABLE_JSON="$(mkjson "git push --no-verify origin feat/test" "$EMERGENCY_UNWRITABLE")"
 EXIT_UNWRITABLE=0
