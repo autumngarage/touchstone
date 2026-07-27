@@ -140,6 +140,57 @@ fi
 echo "==> PASS: unpinned 2.0 config pinned to subscription Codex"
 
 # ----------------------------------------------------------------------------
+# Test: existing conductor tuning preserves the legacy cascade provider
+# ----------------------------------------------------------------------------
+echo "==> Test: existing conductor block preserves legacy first provider"
+LEGACY_TUNED="$TEST_DIR/legacy-tuned.toml"
+cat >"$LEGACY_TUNED" <<'EOF'
+[review]
+reviewers = ["claude", "codex"]
+
+[review.conductor]
+prefer = "best"
+effort = "high"
+
+[review.routing]
+enabled = true
+EOF
+bash "$MIGRATE" --no-backup --file "$LEGACY_TUNED" >/dev/null
+assert_file_contains "$LEGACY_TUNED" '^with = "claude"$' "existing conductor block uses legacy first provider"
+assert_file_contains "$LEGACY_TUNED" '# Original 1.x cascade was: claude, codex' "existing conductor block records legacy cascade"
+assert_file_lacks "$LEGACY_TUNED" '^with = "codex"$' "subscription default does not replace legacy provider"
+if [ "$(grep -c '^\[review\.conductor\]' "$LEGACY_TUNED")" -ne 1 ]; then
+  echo "FAIL: existing conductor block should not be duplicated" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+echo "==> PASS: existing conductor block preserves legacy first provider"
+
+# ----------------------------------------------------------------------------
+# Test: trailing TOML comments are valid on section headers
+# ----------------------------------------------------------------------------
+echo "==> Test: conductor header with trailing comment is recognized"
+COMMENTED_HEADER="$TEST_DIR/commented-header.toml"
+cat >"$COMMENTED_HEADER" <<'EOF'
+[review]
+reviewer = "conductor"
+
+[review.conductor] # project-owned tuning
+prefer = "best"
+effort = "high"
+
+[review.routing]
+enabled = true
+EOF
+bash "$MIGRATE" --no-backup --file "$COMMENTED_HEADER" >/dev/null
+assert_file_contains "$COMMENTED_HEADER" '^\[review\.conductor\] # project-owned tuning$' "commented conductor header preserved"
+assert_file_contains "$COMMENTED_HEADER" '^with = "codex"$' "commented conductor block gets subscription default"
+if [ "$(grep -c '^\[review\.conductor\]' "$COMMENTED_HEADER")" -ne 1 ]; then
+  echo "FAIL: commented conductor header should not produce a duplicate block" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+echo "==> PASS: conductor header with trailing comment is recognized"
+
+# ----------------------------------------------------------------------------
 # Test: --dry-run leaves the file untouched
 # ----------------------------------------------------------------------------
 echo "==> Test: --dry-run leaves file untouched"

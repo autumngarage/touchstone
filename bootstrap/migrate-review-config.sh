@@ -90,12 +90,12 @@ fi
 # and a `[review.conductor]` section, AND no 1.x markers remain.
 already_migrated=true
 grep -qE '^[[:space:]]*reviewer[[:space:]]*=[[:space:]]*"conductor"' "$file" || already_migrated=false
-grep -qE '^\[review\.conductor\]' "$file" || already_migrated=false
+grep -qE '^\[review\.conductor\][[:space:]]*(#.*)?$' "$file" || already_migrated=false
 
 needs_subscription_pin=false
-if grep -qE '^\[review\.conductor\]' "$file" \
+if grep -qE '^\[review\.conductor\][[:space:]]*(#.*)?$' "$file" \
   && ! awk '
-    /^\[review\.conductor\][[:space:]]*$/ { section = "review.conductor"; next }
+    /^\[review\.conductor\][[:space:]]*(#.*)?$/ { section = "review.conductor"; next }
     /^\[/ { section = "other"; next }
     section == "review.conductor" && /^[[:space:]]*with[[:space:]]*=/ { found = 1 }
     END { exit(found ? 0 : 1) }
@@ -193,17 +193,27 @@ function all_quoted(line,   out, n, copy, q1, rest, q2, tok) {
   return out
 }
 
+function emit_conductor_pin(    provider) {
+  provider = pending_with
+  if (provider == "") provider = "codex"
+  print "with = \"" provider "\""
+  if (pending_with != "" && pending_fallback != "") {
+    print "# Original 1.x cascade was: " pending_fallback
+    print "# Secondary providers are recorded for audit only; automatic fallback is disabled."
+  }
+  saw_conductor_with = 1
+}
+
 # Track section headers.
-/^\[review\.conductor\][[:space:]]*$/ {
+/^\[review\.conductor\][[:space:]]*(#.*)?$/ {
   saw_conductor_block = 1
   section = "review.conductor"
   print
   next
 }
-/^\[review\.local\][[:space:]]*$/ {
+/^\[review\.local\][[:space:]]*(#.*)?$/ {
   if (section == "review.conductor" && !saw_conductor_with) {
-    print "with = \"codex\""
-    saw_conductor_with = 1
+    emit_conductor_pin()
   }
   section = "review.local"
   print "# [review.local] — retired in Touchstone 2.0; register as a Conductor"
@@ -211,29 +221,26 @@ function all_quoted(line,   out, n, copy, q1, rest, q2, tok) {
   print "#   conductor providers add --name local --shell '\''<cmd>'\''"
   next
 }
-/^\[review\.assist\][[:space:]]*$/ {
+/^\[review\.assist\][[:space:]]*(#.*)?$/ {
   if (section == "review.conductor" && !saw_conductor_with) {
-    print "with = \"codex\""
-    saw_conductor_with = 1
+    emit_conductor_pin()
   }
   section = "review.assist"
   print "# [review.assist] — disabled in Touchstone 2.0; returns in v2.1"
   print "# via `conductor call --exclude <primary_provider>`."
   next
 }
-/^\[review\.routing\][[:space:]]*$/ {
+/^\[review\.routing\][[:space:]]*(#.*)?$/ {
   if (section == "review.conductor" && !saw_conductor_with) {
-    print "with = \"codex\""
-    saw_conductor_with = 1
+    emit_conductor_pin()
   }
   section = "review.routing"
   print
   next
 }
-/^\[review\][[:space:]]*$/ {
+/^\[review\][[:space:]]*(#.*)?$/ {
   if (section == "review.conductor" && !saw_conductor_with) {
-    print "with = \"codex\""
-    saw_conductor_with = 1
+    emit_conductor_pin()
   }
   section = "review"
   print
@@ -241,8 +248,7 @@ function all_quoted(line,   out, n, copy, q1, rest, q2, tok) {
 }
 /^\[/ {
   if (section == "review.conductor" && !saw_conductor_with) {
-    print "with = \"codex\""
-    saw_conductor_with = 1
+    emit_conductor_pin()
   }
   section = "other"
   print
@@ -300,7 +306,7 @@ section == "review.routing" && /^[[:space:]]*large_reviewers[[:space:]]*=[[:spac
 
 END {
   if (saw_conductor_block && !saw_conductor_with) {
-    print "with = \"codex\""
+    emit_conductor_pin()
   } else if (!saw_conductor_block) {
     print ""
     print "[review.conductor]"
@@ -309,11 +315,7 @@ END {
     print "effort = \"high\""
     print "tags = \"code-review\""
     if (pending_with != "") {
-        print "with = \"" pending_with "\""
-        if (pending_fallback != "") {
-          print "# Original 1.x cascade was: " pending_fallback
-          print "# Secondary providers are recorded for audit only; automatic fallback is disabled."
-      }
+      emit_conductor_pin()
     } else {
       print "with = \"codex\""
       print "# Use with = \"auto\" only for explicit cross-provider routing."
