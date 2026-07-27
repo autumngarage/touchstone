@@ -175,6 +175,30 @@ segment_has_bypass_words() {
   return 1
 }
 
+segment_has_shell_evaluator() {
+  local segment="$1"
+  local word=""
+  local seen_shell=false
+
+  while IFS= read -r word; do
+    case "$word" in
+      eval)
+        return 0
+        ;;
+      sh | */sh | bash | */bash | dash | */dash | ksh | */ksh | zsh | */zsh)
+        seen_shell=true
+        ;;
+      -*c*)
+        if [ "$seen_shell" = "true" ]; then
+          return 0
+        fi
+        ;;
+    esac
+  done < <(printf '%s' "$segment" | shell_words)
+
+  return 1
+}
+
 segment_cd_target() {
   local segment="$1"
   local token=""
@@ -225,9 +249,9 @@ segment_runs_bypass_push() {
     return 0
   fi
 
-  # Shell -c and eval turn a quoted argument into executable input.
-  if printf '%s' "$executable_text" \
-      | grep -qE '^[[:space:]({]*(((if|then|elif|else|while|until|do|!|time([[:space:]]+-[[:alpha:]]+)*)|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+|env|command|exec)[[:space:]]+)*(([^[:space:]]*/)?(ba|da|k|z)?sh[[:space:]]+(-[^[:space:]]*[cC][^[:space:]]*|[^[:space:]]+[[:space:]]+-[^[:space:]]*[cC][^[:space:]]*)|eval)([[:space:]]|$)' \
+  # Shell -c and eval turn a quoted argument into executable input, including
+  # when an execution wrapper appears before the evaluator.
+  if segment_has_shell_evaluator "$segment" \
     && printf '%s' "$segment" | grep -qE "$protected_push"; then
     push_context="nested"
     return 0

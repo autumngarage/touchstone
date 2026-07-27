@@ -322,6 +322,12 @@ assert "blocks bypass push in command substitution" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'echo "$(git push --no-verify origin feat/test)"')")"
 assert "blocks bypass push in a shell -c payload" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "sh -c 'git push --no-verify origin feat/test'")")"
+assert "blocks bypass push in a sudo-wrapped shell payload" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "sudo sh -c 'git push --no-verify origin feat/test'")")"
+assert "blocks bypass push in a nice-wrapped shell payload" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "nice -n 5 bash -lc 'git push --no-verify origin feat/test'")")"
+assert "blocks bypass push in a nohup-wrapped shell payload" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "nohup zsh -c 'git push --no-verify origin feat/test'")")"
 assert "blocks bypass push in an eval payload" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "eval 'git push --no-verify origin feat/test'")")"
 assert "conservatively blocks bypass push in a function body" "2" \
