@@ -447,10 +447,41 @@ assert "blocks a bypass flag assembled across variable expansions" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'p=--no; q=-verify; git push "$p$q" origin feat/test')")"
 assert "blocks subcommand and bypass option emitted by one expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "args='push --no-verify'; git \$args origin feat/test")")"
+assert "blocks a full protected invocation split by shell expansions" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'x=; git${IFS}pu${x}sh${IFS}--no-veri${x}fy origin feat/test')")"
+EXIT_SPLIT_INVOCATION_OVERRIDE=0
+printf '%s' "$(mkjson 'x=; git${IFS}pu${x}sh${IFS}--no-veri${x}fy origin feat/test')" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_SPLIT_INVOCATION_OVERRIDE=$?
+assert "emergency override rejects expansion-split protected invocation" "2" \
+  "$EXIT_SPLIT_INVOCATION_OVERRIDE"
 assert "blocks a Git push alias configured earlier in the command" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git config alias.runtime-push push; git runtime-push --no-verify origin feat/test")")"
 assert "blocks a push-forwarding shell function invoked with the bypass" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'git() { command git push "$@"; }; git --no-verify origin feat/test')")"
+
+git -C "$TMPDIR" config alias.chain-start chain-finish
+git -C "$TMPDIR" config alias.chain-finish 'push --no-verify'
+assert "blocks bypass embedded downstream in a chained Git alias" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git chain-start origin feat/test")")"
+git -C "$TMPDIR" config alias.global-chain-start '--no-pager global-chain-finish'
+git -C "$TMPDIR" config alias.global-chain-finish 'push --no-verify'
+assert "resolves harmless Git global options across an alias chain" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git global-chain-start origin feat/test")")"
+git -C "$TMPDIR" config alias.cycle-start cycle-finish
+git -C "$TMPDIR" config alias.cycle-finish cycle-start
+assert "fails closed on a cyclic Git alias carrying a bypass option" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git cycle-start --no-verify origin feat/test")")"
+git -C "$TMPDIR" config alias.shell-echo '!echo "$@"'
+assert "allows a non-push shell Git alias with an unrelated bypass argument" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git shell-echo --no-verify")")"
+alias_depth=1
+while [ "$alias_depth" -lt 17 ]; do
+  git -C "$TMPDIR" config "alias.depth-$alias_depth" "depth-$((alias_depth + 1))"
+  alias_depth=$((alias_depth + 1))
+done
+git -C "$TMPDIR" config alias.depth-17 'push --no-verify'
+assert "fails closed when a Git alias chain exceeds the resolution bound" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git depth-1 origin feat/test")")"
 
 # Nested executable contexts must not turn literal-looking text into a bypass.
 assert "blocks bypass push in command substitution" "2" \
@@ -578,6 +609,23 @@ if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
   PASS=$((PASS + 1))
 else
   echo "  FAIL: emergency log missing from absolute tool workdir" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -f "$TMPDIR/.touchstone/emergency-bypass.log" "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
+SELECTED_PUSH_SNAPSHOT_JSON="$(mkjson \
+  "git push --no-verify origin protected; cd $EMERGENCY_TARGET; git push origin ordinary" \
+  "$TMPDIR")"
+EXIT_SELECTED_PUSH_SNAPSHOT=0
+printf '%s' "$SELECTED_PUSH_SNAPSHOT_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_SELECTED_PUSH_SNAPSHOT=$?
+if [ "$EXIT_SELECTED_PUSH_SNAPSHOT" -eq 0 ] \
+  && [ -f "$TMPDIR/.touchstone/emergency-bypass.log" ] \
+  && [ ! -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: selected protected push snapshots its repository context"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: later directory context changed the selected push audit repository" >&2
   FAIL=$((FAIL + 1))
 fi
 

@@ -535,6 +535,39 @@ segment_may_compose_no_verify() {
     | grep -qE -- '--no-[^[:space:]]*(\$|`).*ify([[:space:]]|$)'
 }
 
+# Shell word splitting can turn one lexical word into a complete invocation,
+# for example git${IFS}pu${x}sh${IFS}--no-veri${x}fy. Keep this fallback
+# deliberately bounded: require static anchors for both Git and the protected
+# option, then ask only whether removing expansions preserves the protected
+# invocation in order. This classifies uncertainty without evaluating Bash.
+segment_may_expand_to_protected_invocation() {
+  local segment="$1"
+  local word="" static=""
+
+  while IFS= read -r word; do
+    case "$word" in
+      __touchstone_shell_expanded__:*)
+        word="${word#__touchstone_shell_expanded__:}"
+        ;;
+    esac
+    case "$word" in
+      *'$'* | *'`'*) ;;
+      *) continue ;;
+    esac
+    static="$(printf '%s' "$word" \
+      | sed -E 's/\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$\([^)]*\)|`[^`]*`//g')"
+    case "$static" in
+      *git*--no-veri*)
+        if word_may_expand_to "$word" "gitpush--no-verify"; then
+          return 0
+        fi
+        ;;
+    esac
+  done < <(printf '%s' "$segment" | shell_words)
+
+  return 1
+}
+
 word_is_shell_expanded_option() {
   local word="$1"
 
@@ -1029,6 +1062,101 @@ segment_git_push_alias_name() {
   done < <(printf '%s' "$segment" | shell_words)
 }
 
+resolve_git_alias_chain() {
+  local cwd="$1"
+  local current="$2"
+  local depth=0
+  local seen=""
+  local expansion="" word="" next=""
+  local expect_global_value=false
+  local found_subcommand=false
+
+  alias_resolution_kind="none"
+  alias_resolution_has_bypass=false
+  alias_resolution_context_ambiguous=false
+  alias_resolution_routes_push=false
+
+  while [ "$depth" -lt 16 ]; do
+    depth=$((depth + 1))
+    if printf '%s\n' "$seen" | grep -Fqx "$current"; then
+      alias_resolution_kind="ambiguous"
+      return 0
+    fi
+    if [ -n "$seen" ]; then
+      seen="$(printf '%s\n%s' "$seen" "$current")"
+    else
+      seen="$current"
+    fi
+
+    expansion="$(git -C "$cwd" config --get "alias.$current" 2>/dev/null || true)"
+    if [ -z "$expansion" ]; then
+      alias_resolution_kind="none"
+      return 0
+    fi
+    case "$expansion" in
+      !*)
+        alias_resolution_kind="shell"
+        if payload_has_protected_push "${expansion#!}"; then
+          alias_resolution_has_bypass=true
+          alias_resolution_routes_push=true
+        elif printf '%s' "${expansion#!}" \
+          | grep -qE '(^|[[:space:]])(git[[:space:]]+)?push([[:space:]]|$)'; then
+          alias_resolution_routes_push=true
+        fi
+        return 0
+        ;;
+    esac
+
+    next=""
+    expect_global_value=false
+    found_subcommand=false
+    while IFS= read -r word; do
+      if [ "$expect_global_value" = "true" ]; then
+        expect_global_value=false
+        continue
+      fi
+      if [ "$found_subcommand" = "false" ]; then
+        case "$word" in
+          -C | -c | --git-dir | --work-tree | --namespace | --config-env)
+            expect_global_value=true
+            case "$word" in
+              -C | -c | --git-dir | --work-tree | --namespace | --config-env)
+                alias_resolution_context_ambiguous=true
+                ;;
+            esac
+            ;;
+          -C* | -c* | --git-dir=* | --work-tree=* | --namespace=* | --config-env=*)
+            alias_resolution_context_ambiguous=true
+            ;;
+          --no-pager | --paginate | -P | -p | --bare | --no-replace-objects | --literal-pathspecs | --glob-pathspecs | --noglob-pathspecs | --icase-pathspecs)
+            ;;
+          -*)
+            alias_resolution_context_ambiguous=true
+            ;;
+          *)
+            next="$word"
+            found_subcommand=true
+            ;;
+        esac
+      elif word_is_bypass_option "$word"; then
+        alias_resolution_has_bypass=true
+      fi
+    done < <(printf '%s' "$expansion" | shell_words)
+
+    if [ "$expect_global_value" = "true" ] || [ -z "$next" ]; then
+      alias_resolution_kind="ambiguous"
+      return 0
+    fi
+    if [ "$next" = "push" ]; then
+      alias_resolution_kind="push"
+      return 0
+    fi
+    current="$next"
+  done
+
+  alias_resolution_kind="ambiguous"
+}
+
 segment_invokes_named_bypass() {
   local segment="$1"
   local protected_names="$2"
@@ -1136,6 +1264,14 @@ segment_runs_bypass_push() {
     return 0
   fi
 
+  if segment_may_expand_to_protected_invocation "$segment"; then
+    push_context="nested"
+    push_subcommand="push"
+    push_candidate_has_bypass=true
+    push_candidate_dynamic=true
+    return 0
+  fi
+
   segment_executable="$(printf '%s' "$segment" | without_single_quoted_literals)"
 
   if segment_has_bypass_words "$segment"; then
@@ -1174,11 +1310,14 @@ push_candidate_has_bypass=false
 push_candidate_dynamic=false
 selected_push_context=""
 selected_push_subcommand=""
+selected_preceding_cd=""
 selected_directory_context_ambiguous=false
 non_push_candidate_segments=()
 non_push_candidate_contexts=()
 non_push_candidate_subcommands=()
 non_push_candidate_has_bypass=()
+non_push_candidate_preceding_cd=()
+non_push_candidate_cd_count=()
 non_push_candidate_directory_ambiguous=()
 preceding_cd=""
 ambiguous_cd_scope=false
@@ -1318,6 +1457,8 @@ while IFS= read -r segment; do
       non_push_candidate_contexts[$candidate_index]="$push_context"
       non_push_candidate_subcommands[$candidate_index]="$push_subcommand"
       non_push_candidate_has_bypass[$candidate_index]="$push_candidate_has_bypass"
+      non_push_candidate_preceding_cd[$candidate_index]="$preceding_cd"
+      non_push_candidate_cd_count[$candidate_index]="$cd_count"
       non_push_candidate_directory_ambiguous[$candidate_index]="$preceding_parent_directory_mutator"
       continue
     fi
@@ -1328,6 +1469,7 @@ while IFS= read -r segment; do
     push_segment="$segment"
     selected_push_context="$push_context"
     selected_push_subcommand="$push_subcommand"
+    selected_preceding_cd="$preceding_cd"
     selected_directory_context_ambiguous="$preceding_parent_directory_mutator"
   fi
 done < <(printf '%s\n' "$command" | without_heredoc_bodies | without_shell_comments | shell_segments)
@@ -1358,12 +1500,13 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
       push_segment="$candidate_segment"
       selected_push_context="nested"
       selected_push_subcommand="$candidate_subcommand"
+      selected_preceding_cd="${non_push_candidate_preceding_cd[$candidate_index]}"
       selected_directory_context_ambiguous=true
       continue
     fi
     if [ "$command_sets_git_context" = "true" ] \
       || [ "$command_changes_directory_ambiguously" = "true" ] \
-      || [ "$cd_count" -gt 0 ] \
+      || [ "${non_push_candidate_cd_count[$candidate_index]}" -gt 0 ] \
       || printf '%s' "$candidate_segment" \
       | grep -qE '(^|[[:space:]])(-C|-c|--config-env)(=|[[:space:]]|$)'; then
       # Alias configuration is repository-scoped. A composed directory context
@@ -1374,12 +1517,11 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
       multiple_protected_pushes=true
       continue
     fi
-    alias_expansion="$(git -C "$candidate_cwd" config --get "alias.$candidate_subcommand" 2>/dev/null || true)"
-    alias_command="$(printf '%s' "$alias_expansion" | shell_words | sed -n '1p')"
-    case "$alias_command" in
+    resolve_git_alias_chain "$candidate_cwd" "$candidate_subcommand"
+    case "$alias_resolution_kind" in
       push)
         if [ "${non_push_candidate_has_bypass[$candidate_index]}" != "true" ] \
-          && ! text_has_bypass_option "$alias_expansion"; then
+          && [ "$alias_resolution_has_bypass" != "true" ]; then
           continue
         fi
         if [ -n "$push_segment" ]; then
@@ -1389,12 +1531,16 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
         push_segment="$candidate_segment"
         selected_push_context="${non_push_candidate_contexts[$candidate_index]}"
         selected_push_subcommand="$candidate_subcommand"
+        selected_preceding_cd="${non_push_candidate_preceding_cd[$candidate_index]}"
         selected_directory_context_ambiguous="${non_push_candidate_directory_ambiguous[$candidate_index]}"
+        if [ "$alias_resolution_context_ambiguous" = "true" ]; then
+          selected_directory_context_ambiguous=true
+        fi
         ;;
-      !*)
-        if printf '%s' "$alias_expansion" | grep -qE '(^|[[:space:]])(git[[:space:]]+)?push([[:space:]]|$)' \
-          && { [ "${non_push_candidate_has_bypass[$candidate_index]}" = "true" ] \
-            || text_has_bypass_option "$alias_expansion"; }; then
+      shell)
+        if [ "$alias_resolution_routes_push" = "true" ] \
+          && { [ "$alias_resolution_has_bypass" = "true" ] \
+            || [ "${non_push_candidate_has_bypass[$candidate_index]}" = "true" ]; }; then
           if [ -n "$push_segment" ]; then
             multiple_protected_pushes=true
             continue
@@ -1402,8 +1548,16 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
           push_segment="$candidate_segment"
           selected_push_context="nested"
           selected_push_subcommand="$candidate_subcommand"
+          selected_preceding_cd="${non_push_candidate_preceding_cd[$candidate_index]}"
           selected_directory_context_ambiguous="${non_push_candidate_directory_ambiguous[$candidate_index]}"
         fi
+        ;;
+      ambiguous)
+        push_segment="$candidate_segment"
+        selected_push_context="nested"
+        selected_push_subcommand="$candidate_subcommand"
+        selected_preceding_cd="${non_push_candidate_preceding_cd[$candidate_index]}"
+        selected_directory_context_ambiguous=true
         ;;
     esac
   done
@@ -1480,19 +1634,19 @@ fi
 cwd="$(cd "$cwd" && pwd -P)"
 
 push_cwd="$cwd"
-if [ -n "$preceding_cd" ]; then
+if [ -n "$selected_preceding_cd" ]; then
   if [ "$cd_chain_proven" != "true" ]; then
     echo "emergency-disclosure: cannot prove preceding cd gates the push; bypass blocked" >&2
     exit 2
   fi
-  if printf '%s' "$preceding_cd" | grep -qE '^/'; then
-    push_cwd="$preceding_cd"
+  if printf '%s' "$selected_preceding_cd" | grep -qE '^/'; then
+    push_cwd="$selected_preceding_cd"
   else
     if [ -n "${CDPATH:-}" ] || [ "$command_sets_cdpath" = "true" ]; then
       echo "emergency-disclosure: cannot safely resolve relative cd with CDPATH; bypass blocked" >&2
       exit 2
     fi
-    push_cwd="$push_cwd/$preceding_cd"
+    push_cwd="$push_cwd/$selected_preceding_cd"
   fi
 fi
 
@@ -1541,20 +1695,22 @@ if [ -n "$git_c_target" ]; then
 fi
 
 if [ "$push_subcommand" != "push" ]; then
-  alias_expansion="$(git -C "$push_cwd" config --get "alias.$push_subcommand" 2>/dev/null || true)"
-  alias_command="$(printf '%s' "$alias_expansion" | shell_words | sed -n '1p')"
-  case "$alias_command" in
+  resolve_git_alias_chain "$push_cwd" "$push_subcommand"
+  case "$alias_resolution_kind" in
     push)
-      ;;
-    !*)
-      if printf '%s' "$alias_expansion" | grep -qE '(^|[[:space:]])(git[[:space:]]+)?push([[:space:]]|$)'; then
+      if [ "$alias_resolution_context_ambiguous" = "true" ]; then
         push_context="nested"
-      else
-        exit 0
       fi
       ;;
-    *)
+    shell)
+      push_context="nested"
+      ;;
+    none)
       exit 0
+      ;;
+    ambiguous)
+      echo "emergency-disclosure: cannot safely resolve Git alias chain; bypass blocked" >&2
+      exit 2
       ;;
   esac
 fi
