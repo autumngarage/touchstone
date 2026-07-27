@@ -327,10 +327,15 @@ shell_words() {
   awk '
     function emit() {
       if (token_started) {
-        print token
+        if (shell_composed_quote) {
+          print "__touchstone_shell_composed__:" token
+        } else {
+          print token
+        }
       }
       token = ""
       token_started = 0
+      shell_composed_quote = 0
     }
     {
       line = $0 "\n"
@@ -346,7 +351,12 @@ shell_words() {
           escaped = 1
           token_started = 1
         } else if (quote == "") {
-          if (char == "\"" || char == "\047") {
+          if (char == "$" && (substr(line, i + 1, 1) == "\"" || substr(line, i + 1, 1) == "\047")) {
+            quote = substr(line, i + 1, 1)
+            shell_composed_quote = 1
+            token_started = 1
+            i++
+          } else if (char == "\"" || char == "\047") {
             quote = char
             token_started = 1
           } else if (char == "(" || char == ")") {
@@ -381,7 +391,7 @@ segment_has_bypass_words() {
   while IFS= read -r word; do
     if [ "$seen_git" = "false" ]; then
       case "$word" in
-        git | */git)
+        git | */git | __touchstone_shell_composed__:*)
           seen_git=true
           ;;
       esac
@@ -460,6 +470,10 @@ segment_cd_target() {
         ;;
     esac
   done < <(printf '%s' "$segment" | shell_words)
+
+  if [ "$expect_target" = "true" ]; then
+    printf '%s' "${HOME:-__touchstone_home_unset__}"
+  fi
 }
 
 segment_runs_bypass_push() {
@@ -520,12 +534,12 @@ if printf '%s' "$command_executable_text" \
 fi
 if printf '%s' "$command_executable_text" | grep -qE '\(' \
   && printf '%s' "$command_executable_text" \
-    | grep -qE '(^|[;&|()[:space:]])cd[[:space:]]+'; then
+    | grep -qE '(^|[;&|()[:space:]])cd([;&|()[:space:]]|$)'; then
   ambiguous_cd_scope=true
 fi
 if printf '%s' "$command_executable_text" \
   | tr '\n' ' ' \
-  | grep -qE 'cd[[:space:]]+.*&&.*git.*push'; then
+  | grep -qE '(^|[;&|()[:space:]])cd([[:space:]]+[^;&|)]*)?[[:space:]]*&&.*git.*push'; then
   cd_chain_proven=true
 fi
 if printf '%s' "$command_executable_text" | grep -qE '(^|[^\\])\$[{A-Za-z_]' \
@@ -623,7 +637,7 @@ while IFS= read -r git_word; do
     expect_git_c_target=false
   elif [ "$seen_git" = "false" ]; then
     case "$git_word" in
-      git | */git)
+      git | */git | __touchstone_shell_composed__:*)
         seen_git=true
         ;;
     esac

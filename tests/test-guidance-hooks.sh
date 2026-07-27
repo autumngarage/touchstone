@@ -350,6 +350,8 @@ assert "blocks git command supplied through variable expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'cmd=git; $cmd push --no-verify origin feat/test')")"
 assert "blocks quoted Git executable supplied through environment expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson '"$GIT" push --no-verify origin feat/test')")"
+assert "blocks ANSI-C-quoted Git executable" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "\$'git' push --no-verify origin feat/test")")"
 assert "blocks push subcommand supplied through variable expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'sub=push; git $sub --no-verify origin feat/test')")"
 
@@ -538,6 +540,18 @@ if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
   PASS=$((PASS + 1))
 else
   echo "  FAIL: emergency log did not follow builtin-wrapped cd" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
+HOME_CD_JSON="$(mkjson "cd && git push --no-verify origin feat/test" "$TMPDIR")"
+printf '%s' "$HOME_CD_JSON" \
+  | HOME="$EMERGENCY_TARGET" TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
+if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: emergency log follows argument-less cd to HOME"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: emergency log did not follow argument-less cd to HOME" >&2
   FAIL=$((FAIL + 1))
 fi
 
