@@ -639,6 +639,7 @@ ambiguous_cd_scope=false
 command_dynamic_protected=false
 command_sets_cdpath=false
 command_sets_git_context=false
+command_changes_directory_ambiguously=false
 cd_chain_proven=false
 cd_count=0
 protected_aliases=""
@@ -652,6 +653,12 @@ if [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ] || [ -n "${GIT_COMMON_DI
   || printf '%s' "$command_executable_text" \
   | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_CEILING_DIRECTORIES|GIT_CONFIG_[A-Z0-9_]+|HOME|XDG_CONFIG_HOME)='; then
   command_sets_git_context=true
+fi
+if printf '%s' "$command_executable_text" \
+  | grep -qE '(^|[;&|()[:space:]])(pushd|popd|chroot)([;&|()[:space:]]|$)' \
+  || printf '%s' "$command_executable_text" \
+  | grep -qE '(^|[;&|()[:space:]])(env|sudo)([^;&|)]*)[[:space:]](-C|-D|--chdir)(=|[[:space:]]|$)'; then
+  command_changes_directory_ambiguously=true
 fi
 if printf '%s' "$command_executable_text" | grep -qE '\(' \
   && printf '%s' "$command_executable_text" \
@@ -739,7 +746,9 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
   for candidate_index in "${!non_push_candidate_segments[@]}"; do
     candidate_segment="${non_push_candidate_segments[$candidate_index]}"
     candidate_subcommand="${non_push_candidate_subcommands[$candidate_index]}"
-    if [ "$command_sets_git_context" = "true" ] || [ "$cd_count" -gt 0 ] \
+    if [ "$command_sets_git_context" = "true" ] \
+      || [ "$command_changes_directory_ambiguously" = "true" ] \
+      || [ "$cd_count" -gt 0 ] \
       || printf '%s' "$candidate_segment" \
       | grep -qE '(^|[[:space:]])(-C|-c|--config-env)(=|[[:space:]]|$)'; then
       # Alias configuration is repository-scoped. A composed directory context
@@ -790,7 +799,8 @@ if [ "$multiple_protected_pushes" = "true" ]; then
 fi
 
 if [ "$push_context" != "direct" ] || [ "$ambiguous_cd_scope" = "true" ] \
-  || [ "$command_sets_git_context" = "true" ]; then
+  || [ "$command_sets_git_context" = "true" ] \
+  || [ "$command_changes_directory_ambiguously" = "true" ]; then
   echo "emergency-disclosure: cannot safely resolve protected push repository context; bypass blocked" >&2
   exit 2
 fi

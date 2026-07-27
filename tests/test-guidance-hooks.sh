@@ -367,6 +367,22 @@ assert "blocks a Git alias lookup under command-scoped HOME" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "HOME=/tmp/alternate-git-home git x --no-verify origin feat/test")")"
 assert "blocks bypass push with a quoted git -C path" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'git -C "/tmp/repo with spaces" push --no-verify origin feat/test')")"
+assert "blocks emergency push after pushd changes directory" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "pushd /tmp && git push --no-verify origin feat/test")")"
+assert "blocks emergency push through env --chdir" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "env --chdir=/tmp git push --no-verify origin feat/test")")"
+assert "blocks emergency push through sudo --chdir" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "sudo --chdir=/tmp git push --no-verify origin feat/test")")"
+assert "blocks emergency push through chroot" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "chroot /tmp git push --no-verify origin feat/test")")"
+EXIT_PUSHD_CONTEXT=0
+printf '%s' "$(mkjson "pushd /tmp && git push --no-verify origin feat/test")" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_PUSHD_CONTEXT=$?
+assert "emergency override still rejects pushd repository ambiguity" "2" "$EXIT_PUSHD_CONTEXT"
+EXIT_ENV_CHDIR_CONTEXT=0
+printf '%s' "$(mkjson "env --chdir=/tmp git push --no-verify origin feat/test")" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_ENV_CHDIR_CONTEXT=$?
+assert "emergency override still rejects env --chdir ambiguity" "2" "$EXIT_ENV_CHDIR_CONTEXT"
 LINE_CONTINUATION_COMMAND="git \\"
 LINE_CONTINUATION_COMMAND+=$'\n'
 LINE_CONTINUATION_COMMAND+="push --no-verify origin feat/test"
