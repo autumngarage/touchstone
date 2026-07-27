@@ -86,7 +86,7 @@ shell_segments() {
 push_segment=""
 while IFS= read -r segment; do
   if printf '%s' "$segment" \
-      | grep -qE '^[[:space:](]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+|env|command)[[:space:]]+)*git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+push([[:space:]]|$)' \
+      | grep -qE '^[[:space:]({]*(((if|then|elif|else|while|until|do|!|time([[:space:]]+-[[:alpha:]]+)*)|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+|env|command|exec)[[:space:]]+)*git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+push([[:space:]]|$)' \
     && printf '%s' "$segment" \
       | grep -qE '(^|[[:space:]'\''"])--no-verify([[:space:]'\''"]|$)'; then
     push_segment="$segment"

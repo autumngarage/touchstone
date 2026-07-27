@@ -296,6 +296,24 @@ assert "allows quoted bypass text in another command's argument" "0" \
 assert "blocks executable bypass segment after another command" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "printf 'ready' && git push --no-verify origin feat/test")")"
 
+# Shell reserved words and execution prefixes remain part of the segment after
+# control-operator splitting. They must not hide a push in command position.
+assert "blocks bypass push in an if condition" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "if git push --no-verify origin feat/test; then echo ok; fi")")"
+assert "blocks time-prefixed bypass push" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "time -p git push --no-verify origin feat/test")")"
+assert "blocks bypass push in a grouped command" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "{ git push --no-verify origin feat/test; }")")"
+assert "blocks bypass push after nested control prefixes" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "while ! git push --no-verify origin feat/test; do sleep 1; done")")"
+
+# A function body is not executed when it is defined, and unquoted words passed
+# to another command are arguments rather than a command position.
+assert "allows bypass text in an uninvoked function definition" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "push_later() { git push --no-verify origin feat/test; }")")"
+assert "allows unquoted bypass words passed to another command" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "echo if git push --no-verify origin feat/test")")"
+
 # 13. Emergency audit evidence belongs to the command runner's workdir, not
 # the driver session cwd. Cover absolute and relative workdir forms.
 EMERGENCY_TARGET="$(mktemp -d -t touchstone-emergency-target.XXXXXX)"
