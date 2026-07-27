@@ -11,6 +11,10 @@ TOUCHSTONE_BIN="$TOUCHSTONE_ROOT/bin/touchstone"
 TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-test-review-dry.XXXXXX")"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
+# shellcheck source=tests/review-log-test-helper.sh
+source "$TOUCHSTONE_ROOT/tests/review-log-test-helper.sh"
+touchstone_isolate_review_log "$TEST_DIR"
+
 ERRORS=0
 
 # Mock conductor that records its argv to a file so the test can assert

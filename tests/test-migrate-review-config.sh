@@ -12,6 +12,10 @@ MIGRATE="$TOUCHSTONE_ROOT/bootstrap/migrate-review-config.sh"
 TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-test-migrate-review.XXXXXX")"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
+# shellcheck source=tests/review-log-test-helper.sh
+source "$TOUCHSTONE_ROOT/tests/review-log-test-helper.sh"
+touchstone_isolate_review_log "$TEST_DIR"
+
 ERRORS=0
 
 assert_file_contains() {

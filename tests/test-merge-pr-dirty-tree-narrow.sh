@@ -14,6 +14,10 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-merge-pr-dirty.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
+# shellcheck source=tests/review-log-test-helper.sh
+source "$TOUCHSTONE_ROOT/tests/review-log-test-helper.sh"
+touchstone_isolate_review_log "$TEST_DIR"
+
 FAKE_BIN="$TEST_DIR/bin"
 MERGE_SCRIPT_DIR="$TEST_DIR/scripts"
 GIT_PATH_ROOT="$TEST_DIR/git-path"

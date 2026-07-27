@@ -8,6 +8,10 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-review-comment.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
+# shellcheck source=tests/review-log-test-helper.sh
+source "$TOUCHSTONE_ROOT/tests/review-log-test-helper.sh"
+touchstone_isolate_review_log "$TEST_DIR"
+
 echo "==> Test: format_clean_review_comment produces one-line audit text"
 # shellcheck source=../lib/review-comment.sh
 source "$TOUCHSTONE_ROOT/lib/review-comment.sh"

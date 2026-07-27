@@ -15,6 +15,10 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-preflight.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
+# shellcheck source=tests/review-log-test-helper.sh
+source "$TOUCHSTONE_ROOT/tests/review-log-test-helper.sh"
+touchstone_isolate_review_log "$TEST_DIR"
+
 CLEAN_FAKE_BIN="$TEST_DIR/clean-bin"
 mkdir -p "$CLEAN_FAKE_BIN"
 for tool in shellcheck shfmt markdownlint actionlint; do
