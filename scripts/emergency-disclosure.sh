@@ -27,7 +27,7 @@ input="$(cat)"
 if ! printf '%s' "$input" | grep -q -- '--no-verify'; then
   exit 0
 fi
-if ! printf '%s' "$input" | grep -qE '\bgit([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+push\b'; then
+if ! printf '%s' "$input" | grep -qE 'git([^[:alnum:]_]|$).*push([^[:alnum:]_]|$)'; then
   exit 0
 fi
 
@@ -110,48 +110,103 @@ without_single_quoted_literals() {
   '
 }
 
-without_quoted_literals() {
+shell_words() {
   awk '
+    function emit() {
+      if (token_started) {
+        print token
+      }
+      token = ""
+      token_started = 0
+    }
     {
       line = $0 "\n"
       for (i = 1; i <= length(line); i++) {
         char = substr(line, i, 1)
         if (escaped) {
-          printf " "
+          token = token char
+          token_started = 1
           escaped = 0
         } else if (char == "\\" && quote != "\047") {
-          printf " "
           escaped = 1
+          token_started = 1
         } else if (quote == "") {
           if (char == "\"" || char == "\047") {
             quote = char
-            printf " "
+            token_started = 1
+          } else if (char ~ /[[:space:]]/) {
+            emit()
           } else {
-            printf "%s", char
+            token = token char
+            token_started = 1
           }
+        } else if (char == quote) {
+          quote = ""
         } else {
-          printf " "
-          if (char == quote) {
-            quote = ""
-          }
+          token = token char
+          token_started = 1
         }
       }
     }
+    END { emit() }
   '
+}
+
+segment_has_bypass_words() {
+  local segment="$1"
+  local word=""
+  local seen_git=false
+  local seen_push=false
+
+  while IFS= read -r word; do
+    if [ "$seen_git" = "false" ]; then
+      case "$word" in
+        git | */git)
+          seen_git=true
+          ;;
+      esac
+    elif [ "$seen_push" = "false" ] && [ "$word" = "push" ]; then
+      seen_push=true
+    elif [ "$seen_push" = "true" ] && [ "$word" = "--no-verify" ]; then
+      return 0
+    fi
+  done < <(printf '%s' "$segment" | shell_words)
+
+  return 1
+}
+
+segment_cd_target() {
+  local segment="$1"
+  local token=""
+  local normalized=""
+  local expect_target=false
+
+  while IFS= read -r token; do
+    if [ "$expect_target" = "true" ]; then
+      printf '%s' "$token"
+      return
+    fi
+    normalized="$(printf '%s' "$token" | sed -E 's/^[({]+//')"
+    case "$normalized" in
+      if | then | elif | else | while | until | do | ! | "")
+        ;;
+      cd)
+        expect_target=true
+        ;;
+      *)
+        return
+        ;;
+    esac
+  done < <(printf '%s' "$segment" | shell_words)
 }
 
 segment_runs_bypass_push() {
   local segment="$1"
   local executable_text=""
-  local unquoted_text=""
-  local protected_push='git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+push([^;&|)]*)--no-verify'
+  local protected_push='git([^;&|)]*)[[:space:]]+push([^;&|)]*)--no-verify'
 
-  unquoted_text="$(printf '%s' "$segment" | without_quoted_literals)"
-  if printf '%s' "$unquoted_text" \
-      | grep -qE 'git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+push([[:space:]]|$)' \
-    && printf '%s' "$segment" \
-      | grep -qE '(^|[[:space:]'\''"])--no-verify([[:space:]'\''"]|$)'; then
-    if printf '%s' "$unquoted_text" \
+  if segment_has_bypass_words "$segment"; then
+    if [ "$command_has_substitution" = "true" ] || printf '%s' "$segment" \
       | grep -qE '^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(\(\))?[[:space:]]*\{'; then
       push_context="nested"
     else
@@ -185,10 +240,14 @@ push_segment=""
 push_context=""
 preceding_cd=""
 ambiguous_cd_scope=false
+command_has_substitution=false
+command_executable_text="$(printf '%s' "$command" | without_single_quoted_literals)"
+if printf '%s' "$command_executable_text" \
+  | grep -qE '(^|[^\\])\$\(|(^|[^\\])`'; then
+  command_has_substitution=true
+fi
 while IFS= read -r segment; do
-  cd_target="$(printf '%s' "$segment" \
-    | grep -oE '^[[:space:]({]*((if|then|elif|else|while|until|do|!)[[:space:]]+)*cd[[:space:]]+[^[:space:]]+' \
-    | sed -E 's/^.*cd[[:space:]]+//' || true)"
+  cd_target="$(segment_cd_target "$segment")"
   if [ -n "$cd_target" ]; then
     if printf '%s' "$segment" | grep -qE '^[[:space:]]*\('; then
       ambiguous_cd_scope=true
@@ -263,15 +322,41 @@ if [ -n "$preceding_cd" ]; then
 fi
 
 git_c_target=""
-while IFS= read -r next_git_c_target; do
-  if printf '%s' "$next_git_c_target" | grep -qE '^/' || [ -z "$git_c_target" ]; then
-    git_c_target="$next_git_c_target"
-  else
-    git_c_target="$git_c_target/$next_git_c_target"
+seen_git=false
+expect_git_c_target=false
+ambiguous_git_context=false
+while IFS= read -r git_word; do
+  if [ "$expect_git_c_target" = "true" ]; then
+    if printf '%s' "$git_word" | grep -qE '^/' || [ -z "$git_c_target" ]; then
+      git_c_target="$git_word"
+    else
+      git_c_target="$git_c_target/$git_word"
+    fi
+    expect_git_c_target=false
+  elif [ "$seen_git" = "false" ]; then
+    case "$git_word" in
+      git | */git)
+        seen_git=true
+        ;;
+    esac
+  elif [ "$seen_git" = "true" ] && [ "$git_word" = "-C" ]; then
+    expect_git_c_target=true
+  elif [ "$seen_git" = "true" ] && [ "$git_word" = "push" ]; then
+    break
+  elif [ "$seen_git" = "true" ]; then
+    case "$git_word" in
+      --no-pager | --paginate | -P | -p)
+        ;;
+      -*)
+        ambiguous_git_context=true
+        ;;
+    esac
   fi
-done < <(printf '%s' "$push_segment" \
-  | grep -oE '(^|[[:space:]])-C[[:space:]]+[^[:space:]]+' \
-  | sed -E 's/^[[:space:]]*-C[[:space:]]+//' || true)
+done < <(printf '%s' "$push_segment" | shell_words)
+if [ "$expect_git_c_target" = "true" ] || [ "$ambiguous_git_context" = "true" ]; then
+  echo "emergency-disclosure: cannot safely resolve Git global option context; bypass blocked" >&2
+  exit 2
+fi
 if [ -n "$git_c_target" ]; then
   if printf '%s' "$git_c_target" | grep -qE '^/'; then
     push_cwd="$git_c_target"

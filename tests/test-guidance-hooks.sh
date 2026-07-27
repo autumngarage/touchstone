@@ -312,6 +312,10 @@ assert "blocks nice-wrapped bypass push" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "nice -n 5 git push --no-verify origin feat/test")")"
 assert "blocks nohup-wrapped bypass push" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "nohup git push --no-verify origin feat/test")")"
+assert "blocks bypass push after Git global options" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git --no-pager push --no-verify origin feat/test")")"
+assert "blocks bypass push with a quoted git -C path" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'git -C "/tmp/repo with spaces" push --no-verify origin feat/test')")"
 
 # Nested executable contexts must not turn literal-looking text into a bypass.
 assert "blocks bypass push in command substitution" "2" \
@@ -398,11 +402,43 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+QUOTED_C_TARGET="$TMPDIR/repo with spaces"
+mkdir -p "$QUOTED_C_TARGET"
+git -C "$QUOTED_C_TARGET" init --quiet --initial-branch=main
+QUOTED_GIT_C_JSON="$(mkjson "git -C \"$QUOTED_C_TARGET\" push --no-verify origin feat/test" "$TMPDIR")"
+printf '%s' "$QUOTED_GIT_C_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
+if [ -f "$QUOTED_C_TARGET/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: emergency log follows quoted git -C target"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: emergency log did not follow quoted git -C target" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -f "$QUOTED_C_TARGET/.touchstone/emergency-bypass.log"
+QUOTED_CD_JSON="$(mkjson "cd \"$QUOTED_C_TARGET\" && git push --no-verify origin feat/test" "$TMPDIR")"
+printf '%s' "$QUOTED_CD_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
+if [ -f "$QUOTED_C_TARGET/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: emergency log follows quoted cd target"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: emergency log did not follow quoted cd target" >&2
+  FAIL=$((FAIL + 1))
+fi
+
 SUBSHELL_SCOPE_JSON="$(mkjson "(cd $EMERGENCY_TARGET && git status); git push --no-verify origin feat/test" "$TMPDIR")"
 EXIT_SUBSHELL_SCOPE=0
 printf '%s' "$SUBSHELL_SCOPE_JSON" \
   | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_SUBSHELL_SCOPE=$?
 assert "blocks ambiguous subshell cd even with emergency override" "2" "$EXIT_SUBSHELL_SCOPE"
+
+SUBSTITUTION_SCOPE_JSON="$(mkjson "echo \$(cd $EMERGENCY_TARGET && git push --no-verify origin feat/test)" "$TMPDIR")"
+EXIT_SUBSTITUTION_SCOPE=0
+printf '%s' "$SUBSTITUTION_SCOPE_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_SUBSTITUTION_SCOPE=$?
+assert "blocks unquoted command-substitution push with emergency override" "2" "$EXIT_SUBSTITUTION_SCOPE"
 
 # 14. The bypass must fail closed when required audit evidence cannot be
 # persisted. A file at the directory path makes mkdir deterministic.
