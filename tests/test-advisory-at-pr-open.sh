@@ -72,11 +72,20 @@ case "${1:-} ${2:-}" in
       echo "mock comment inspection failure" >&2
       exit 1
     fi
-    if [ -n "${GH_EXISTING_REQUEST_FILE:-}" ]; then
-      cat "$GH_EXISTING_REQUEST_FILE"
-    else
-      printf '%s\n' "${GH_EXISTING_REQUEST_BODY:-}"
+    if [[ "${5:-}" != *'.body == "@codex review\n\n<!-- touchstone:pr-review-request provider=github-codex head='* ]]; then
+      echo "request lookup must match the command and marker in one exact comment" >&2
+      exit 1
     fi
+    if [ -n "${GH_EXISTING_REQUEST_FILE:-}" ]; then
+      existing_request_body="$(cat "$GH_EXISTING_REQUEST_FILE")"
+    else
+      existing_request_body="${GH_EXISTING_REQUEST_BODY:-}"
+    fi
+    case "$existing_request_body" in
+      "@codex review"$'\n\n'"<!-- touchstone:pr-review-request provider=github-codex head="*" -->")
+        printf 'existing-request-id\n'
+        ;;
+    esac
     ;;
   *)
     echo "unexpected gh args: $*" >&2
@@ -319,6 +328,25 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Case 7b: request_on_push defaults an omitted provider to GitHub Codex"
+reset_case
+printf '[review]\npreflight_required = false\nadvisory_at_pr_open = false\n\n[review.pr_triggered]\nrequest_on_push = true\n' >"$REPO_DIR/.codex-review.toml"
+git -C "$REPO_DIR" add .codex-review.toml
+git -C "$REPO_DIR" commit -m "use default review provider" >/dev/null 2>&1
+REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
+OUT="$TEST_DIR/request-default-provider.out"
+run_open_pr "$OUT"
+if grep -q '^@codex review$' "$TEST_DIR/comments" \
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD -->" "$TEST_DIR/comments" \
+  && grep -q "Requested GitHub Codex review for head $REQUEST_HEAD" "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: an omitted provider should default to GitHub Codex" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 8: request_on_push is idempotent for the same head"
 EXISTING_REQUEST_BODY="$(cat "$TEST_DIR/comments")"
 reset_case
@@ -334,18 +362,21 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Case 8b: large trailing comment text preserves request idempotency"
+echo "==> Case 8b: a copied standalone marker does not suppress the real request"
 reset_case
-LARGE_REQUEST_FILE="$TEST_DIR/large-existing-request"
-printf '%s\n' "$EXISTING_REQUEST_BODY" >"$LARGE_REQUEST_FILE"
-head -c 131072 /dev/zero | tr '\0' x >>"$LARGE_REQUEST_FILE"
-OUT="$TEST_DIR/request-idempotent-large.out"
-GH_EXISTING_REQUEST_FILE="$LARGE_REQUEST_FILE" run_open_pr "$OUT"
-if grep -q "GitHub Codex review already requested for head $REQUEST_HEAD" "$OUT" \
-  && [ ! -f "$TEST_DIR/comments" ]; then
+COPIED_MARKER="Diagnostic copy:
+
+\`\`\`
+<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD -->
+\`\`\`"
+OUT="$TEST_DIR/request-copied-marker.out"
+GH_EXISTING_REQUEST_BODY="$COPIED_MARKER" run_open_pr "$OUT"
+if grep -q '^@codex review$' "$TEST_DIR/comments" \
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD -->" "$TEST_DIR/comments" \
+  && grep -q "Requested GitHub Codex review for head $REQUEST_HEAD" "$OUT"; then
   echo "    PASS"
 else
-  echo "    FAIL: a large existing comment payload should not duplicate the request" >&2
+  echo "    FAIL: a copied marker without the request command should not be idempotent" >&2
   cat "$OUT" >&2
   [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
   ERRORS=$((ERRORS + 1))

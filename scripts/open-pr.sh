@@ -75,7 +75,7 @@ BODY_FILE=""
 ADVISORY_AT_PR_OPEN=false
 PREFLIGHT_REQUIRED=true
 PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=false
-PR_TRIGGERED_REVIEW_PROVIDER=""
+PR_TRIGGERED_REVIEW_PROVIDER="github-codex"
 OPEN_PR_REVIEW_CONFIG_ERROR=""
 REPO_FULL_NAME=""
 
@@ -323,7 +323,7 @@ load_open_pr_review_config() {
 request_pr_triggered_review() {
   local pr_number="$1"
   local expected_head_sha="$2"
-  local head_sha marker comments body attempt=1
+  local head_sha marker existing_request_ids body attempt=1
   local max_attempts="${TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS:-10}"
   local retry_interval="${TOUCHSTONE_PR_HEAD_CONVERGENCE_INTERVAL:-1}"
 
@@ -361,11 +361,14 @@ request_pr_triggered_review() {
     attempt=$((attempt + 1))
   done
   marker="<!-- touchstone:pr-review-request provider=github-codex head=$head_sha -->"
-  if ! comments="$(gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments?per_page=100" --jq '.[].body')"; then
+  if ! existing_request_ids="$(
+    gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments?per_page=100" \
+      --jq ".[] | select(.body == \"@codex review\\n\\n$marker\") | .id"
+  )"; then
     echo "ERROR: failed to inspect prior GitHub Codex review requests for PR #$pr_number." >&2
     return 1
   fi
-  if grep -Fqx "$marker" <<<"$comments"; then
+  if [ -n "$existing_request_ids" ]; then
     echo "==> GitHub Codex review already requested for head $head_sha."
     return 0
   fi
