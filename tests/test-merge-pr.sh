@@ -1827,6 +1827,7 @@ fi
 
 echo "==> Test: review fix commits are postflighted, pushed, and merged by exact head"
 reset_case_files
+write_pr_triggered_config true 0 0 false true
 mkdir -p "$TEST_DIR/lib"
 cat >"$TEST_DIR/lib/preflight.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -1848,12 +1849,15 @@ rm -rf "${TEST_DIR:?}/lib"
 if grep -q '==> Merge review changed HEAD:' "$TEST_DIR/output-review-fix.txt" \
   && grep -q '==> Running deterministic postflight after review fixes' "$TEST_DIR/output-review-fix.txt" \
   && grep -q '==> Pushing review fix commit(s) to PR branch feature/test' "$TEST_DIR/output-review-fix.txt" \
+  && grep -q '<!-- touchstone:pr-review-request provider=github-codex head=review-fixed-head -->' "$TEST_DIR/gh-review-request" \
+  && grep -q '==> Requested GitHub Codex review for head review-fixed-head (after review fixes).' "$TEST_DIR/output-review-fix.txt" \
+  && ! grep -q '==> Waiting for trusted PR-visible AI review for PR #123 (after review fixes)' "$TEST_DIR/output-review-fix.txt" \
   && grep -q '^review-fixed-head$' "$TEST_DIR/git-push-head" \
   && grep -q '^review-fixed-head$' "$TEST_DIR/gh-merge-head" \
   && [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "2" ]; then
-  echo "==> PASS: review fix loop pushes the postflighted head before merge"
+  echo "==> PASS: review fix loop requests review independently of the required wait policy"
 else
-  echo "FAIL: review fix commits were not postflighted/pushed/merged correctly" >&2
+  echo "FAIL: review fix commits did not request review independently of the required wait policy" >&2
   cat "$TEST_DIR/output-review-fix.txt" >&2
   [ ! -f "$TEST_DIR/preflight-calls" ] || cat "$TEST_DIR/preflight-calls" >&2
   exit 1

@@ -2390,8 +2390,8 @@ run_merge_review() {
       fi
       wait_for_pr_head "$reviewed_head_after"
       wait_for_clean_merge_state
+      request_pr_triggered_review "$reviewed_head_after" "after review fixes" || return 1
       if truthy "$PR_TRIGGERED_REVIEW_REQUIRED"; then
-        request_pr_triggered_review "$reviewed_head_after" "after review fixes" || return 1
         wait_for_pr_triggered_review "$reviewed_head_after" "after review fixes"
         require_pr_feedback_clear "after PR-triggered AI review on review fixes" "$reviewed_head_after"
       fi

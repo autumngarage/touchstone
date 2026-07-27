@@ -854,6 +854,7 @@ touchstone_emit_event pr_opened \
 
 run_pr_body_protocol_preflight "new PR #$ORPHAN_PR_NUMBER" "$ORPHAN_PR_NUMBER"
 run_advisory_review_at_pr_open "$ORPHAN_PR_NUMBER" "$BASE_BRANCH"
+request_pr_triggered_review "$ORPHAN_PR_NUMBER" "$PUSHED_HEAD_SHA"
 
 if [ -n "$DRAFT_FLAG" ]; then
   echo "    Opened as draft. Mark ready on github.com when ready to merge."
@@ -867,8 +868,6 @@ if [ -n "$DRAFT_FLAG" ]; then
   ORPHAN_PR_NUMBER=""
   exit 0
 fi
-
-request_pr_triggered_review "$ORPHAN_PR_NUMBER" "$PUSHED_HEAD_SHA"
 
 # Auto-merge: extract PR number and run merge-pr.sh, then positively verify
 # the PR actually reached MERGED state on GitHub before claiming success.

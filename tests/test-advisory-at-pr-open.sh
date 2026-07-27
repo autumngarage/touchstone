@@ -116,6 +116,7 @@ git -C "$REPO_DIR" commit -m "test advisory" >/dev/null 2>&1
 
 run_open_pr() {
   local output_file="$1"
+  shift
   (
     cd "${OPEN_PR_WORKDIR:-$REPO_DIR}"
     invoke_open_pr() {
@@ -132,12 +133,12 @@ run_open_pr() {
         CODEX_REVIEW_STUB_REASON="${CODEX_REVIEW_STUB_REASON:-clean}" \
         CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
         CODEX_REVIEW_STUB_ENV_LOG="$TEST_DIR/review-env" \
-        bash "$RUN_DIR/scripts/open-pr.sh"
+        bash "$RUN_DIR/scripts/open-pr.sh" "$@"
     }
     if [ -n "${OPEN_PR_CONFIRM_DIRTY:-}" ]; then
-      printf '%s\n' "$OPEN_PR_CONFIRM_DIRTY" | invoke_open_pr
+      printf '%s\n' "$OPEN_PR_CONFIRM_DIRTY" | invoke_open_pr "$@"
     else
-      invoke_open_pr
+      invoke_open_pr "$@"
     fi
   ) >"$output_file" 2>&1
 }
@@ -363,6 +364,22 @@ if [ "$ADVANCED_LOCAL_HEAD" != "$SELECTED_REQUEST_HEAD" ] \
   echo "    PASS"
 else
   echo "    FAIL: request marker should bind to the SHA selected before the pre-push hook" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 8d: a newly opened draft PR still requests review for its pushed head"
+reset_case
+DRAFT_REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
+OUT="$TEST_DIR/request-draft.out"
+run_open_pr "$OUT" --draft
+if grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$DRAFT_REQUEST_HEAD -->" "$TEST_DIR/comments" \
+  && grep -q "Requested GitHub Codex review for head $DRAFT_REQUEST_HEAD" "$OUT" \
+  && grep -q 'Opened as draft' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: a draft PR should request review before returning" >&2
   cat "$OUT" >&2
   [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
   ERRORS=$((ERRORS + 1))
