@@ -154,6 +154,7 @@ assert_exists "$PROJECT/CLAUDE.md"
 assert_exists "$PROJECT/AGENTS.md"
 assert_exists "$PROJECT/GEMINI.md"
 assert_exists "$PROJECT/.pre-commit-config.yaml"
+assert_exists "$PROJECT/.markdownlint.json"
 assert_exists "$PROJECT/.gitignore"
 assert_exists "$PROJECT/.worktreeinclude.example"
 assert_exists "$PROJECT/.github/pull_request_template.md"
@@ -206,6 +207,11 @@ assert_executable "$PROJECT/scripts/spawn-worktree.sh"
 assert_executable "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'conductor-review.sh'
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'touchstone-run.sh validate'
+assert_contains "$PROJECT/.pre-commit-config.yaml" "args: \\['-d', '-i', '2', '-ci', '-bn'\\]"
+if ! diff -q "$TOUCHSTONE_ROOT/templates/.markdownlint.json" "$PROJECT/.markdownlint.json" >/dev/null; then
+  echo "FAIL: bootstrapped markdownlint config must match the referenced template" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 assert_contains "$PROJECT/.worktreeinclude.example" '^# Allowlist of gitignored files to copy into spawned worktrees\.$'
 assert_contains "$PROJECT/.worktreeinclude.example" '^# \.env\.local$'
 assert_contains "$PROJECT/.worktreeinclude.example" '^# \.vscode/settings\.json$'

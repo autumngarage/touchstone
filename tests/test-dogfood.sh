@@ -32,6 +32,16 @@ if ! grep -q 'scripts/touchstone-run.sh validate' "$PRE_COMMIT_CONFIG"; then
   exit 1
 fi
 
+# Both configs must reject formatting drift with the same shfmt mode used by
+# deterministic preflight. Without -d, shfmt prints corrected output but exits
+# successfully, so the advertised local gate silently accepts bad formatting.
+for config in "$PRE_COMMIT_CONFIG" "$TEMPLATE_PRE_COMMIT_CONFIG"; do
+  if ! grep -Fq "args: ['-d', '-i', '2', '-ci', '-bn']" "$config"; then
+    echo "FAIL: $config must make shfmt reject drift with -d" >&2
+    exit 1
+  fi
+done
+
 for git_env in \
   GIT_ALTERNATE_OBJECT_DIRECTORIES \
   GIT_CONFIG \

@@ -112,6 +112,7 @@ echo "--- Step 3: Modify a Touchstone-owned file, then update ---"
 echo "# locally modified" >>"$PROJECT/principles/engineering-principles.md"
 rm "$PROJECT/TOUCHSTONE.md"
 rm "$PROJECT/.github/workflows/issue-claim-check.yml"
+rm "$PROJECT/.markdownlint.json"
 rm "$PROJECT/scripts/touchstone-run.sh"
 rm "$PROJECT/scripts/claim-issue.sh"
 rm "$PROJECT/scripts/issue-claim-check.sh"
@@ -131,6 +132,8 @@ assert_contains "$TEST_DIR/update-output-2.txt" 'Committed: chore: update touchs
 assert_contains "$TEST_DIR/update-output-2.txt" 'bash scripts/open-pr.sh'
 assert_exists "$PROJECT/TOUCHSTONE.md"
 assert_exists "$PROJECT/.github/workflows/issue-claim-check.yml"
+assert_exists "$PROJECT/.markdownlint.json"
+assert_contains "$TEST_DIR/update-output-2.txt" 'added (project-owned).*\.markdownlint\.json'
 assert_exists "$PROJECT/scripts/touchstone-run.sh"
 assert_exists "$PROJECT/scripts/claim-issue.sh"
 assert_exists "$PROJECT/scripts/issue-claim-check.sh"
@@ -154,6 +157,10 @@ assert_contains "$PROJECT/.touchstone-manifest" '^lib/events\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/script-sync-guard\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/preflight\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/review-comment\.sh$'
+if grep -qxF '.markdownlint.json' "$PROJECT/.touchstone-manifest"; then
+  echo "FAIL: .markdownlint.json must remain project-owned" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 assert_not_exists "$PROJECT/principles/engineering-principles.md.bak"
 assert_not_exists "$PROJECT/.claude/settings.json.touchstone-pre-update.bak"
 
@@ -593,18 +600,28 @@ echo ""
 echo "--- Step 4: Verify project-owned files are untouched ---"
 
 echo "# my project context" >>"$PROJECT/CLAUDE.md"
+printf '{"custom": true}\n' >"$PROJECT/.markdownlint.json"
 echo "0000000000000000000000000000000000000001" >"$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate project-owned customization"
 CLAUDE_CHECKSUM="$(md5 -q "$PROJECT/CLAUDE.md" 2>/dev/null || md5sum "$PROJECT/CLAUDE.md" | awk '{print $1}')"
+MARKDOWNLINT_CHECKSUM="$(md5 -q "$PROJECT/.markdownlint.json" 2>/dev/null || md5sum "$PROJECT/.markdownlint.json" | awk '{print $1}')"
 
 (cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
 
 CLAUDE_CHECKSUM_AFTER="$(md5 -q "$PROJECT/CLAUDE.md" 2>/dev/null || md5sum "$PROJECT/CLAUDE.md" | awk '{print $1}')"
+MARKDOWNLINT_CHECKSUM_AFTER="$(md5 -q "$PROJECT/.markdownlint.json" 2>/dev/null || md5sum "$PROJECT/.markdownlint.json" | awk '{print $1}')"
 
 if [ "$CLAUDE_CHECKSUM" = "$CLAUDE_CHECKSUM_AFTER" ]; then
   echo "    PASS: CLAUDE.md was not modified by update"
 else
   echo "    FAIL: CLAUDE.md was modified by update" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+if [ "$MARKDOWNLINT_CHECKSUM" = "$MARKDOWNLINT_CHECKSUM_AFTER" ]; then
+  echo "    PASS: .markdownlint.json was not modified by update"
+else
+  echo "    FAIL: .markdownlint.json was modified by update" >&2
   ERRORS=$((ERRORS + 1))
 fi
 

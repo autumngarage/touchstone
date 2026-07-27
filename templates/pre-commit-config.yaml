@@ -49,8 +49,9 @@ repos:
     hooks:
       - id: shfmt
         # Match Touchstone's 2-space shell style while making case blocks and
-        # binary operators deterministic.
-        args: ['-i', '2', '-ci', '-bn']
+        # binary operators deterministic. Reject drift just like deterministic
+        # preflight; omitting -d only prints formatted output and exits zero.
+        args: ['-d', '-i', '2', '-ci', '-bn']
         exclude: ^(completions/|prototypes/)
 
   - repo: https://github.com/igorshubovych/markdownlint-cli

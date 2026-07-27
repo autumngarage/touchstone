@@ -535,12 +535,12 @@ if [ -d "$TOUCHSTONE_ROOT/skills" ] && [ "$DRY_RUN" = false ]; then
   touchstone_uninstall_legacy_project_skills "$PROJECT_DIR" || true
 fi
 
-# Per-profile project-owned templates (e.g. swift's .swiftlint.yml). These are
-# NOT touchstone-owned: add when missing, never overwrite a hand-edited copy.
-# They stay out of .touchstone-manifest so future `touchstone update` runs do
-# not clobber project-owned customization.
+# Project-owned templates, including shared formatting config and profile
+# additions such as Swift's .swiftlint.yml. Add them when missing, but never
+# overwrite a hand-edited copy. They stay out of .touchstone-manifest so future
+# updates do not clobber project-owned customization.
 PROJECT_OWNED_ADDED_PATHS=()
-add_profile_project_template_if_missing() {
+add_project_template_if_missing() {
   local src="$1" dst="$2"
   local rel_path
   rel_path="$(relative_project_path "$dst")"
@@ -569,8 +569,14 @@ add_profile_project_template_if_missing() {
   echo "    + added (project-owned): $dst"
 }
 
+if [ -f "$TOUCHSTONE_ROOT/templates/.markdownlint.json" ]; then
+  add_project_template_if_missing \
+    "$TOUCHSTONE_ROOT/templates/.markdownlint.json" \
+    "$PROJECT_DIR/.markdownlint.json"
+fi
+
 if [ "$PROJECT_TYPE" = "swift" ] && [ -f "$TOUCHSTONE_ROOT/templates/swift/.swiftlint.yml" ]; then
-  add_profile_project_template_if_missing \
+  add_project_template_if_missing \
     "$TOUCHSTONE_ROOT/templates/swift/.swiftlint.yml" \
     "$PROJECT_DIR/.swiftlint.yml"
 fi
@@ -578,7 +584,7 @@ fi
 if [ -f "$TOUCHSTONE_ROOT/templates/GEMINI.md" ]; then
   gemini_md_was_present=false
   [ -f "$PROJECT_DIR/GEMINI.md" ] && gemini_md_was_present=true
-  add_profile_project_template_if_missing \
+  add_project_template_if_missing \
     "$TOUCHSTONE_ROOT/templates/GEMINI.md" \
     "$PROJECT_DIR/GEMINI.md"
   if [ "$DRY_RUN" = false ] && [ "$gemini_md_was_present" = false ] && [ -f "$PROJECT_DIR/GEMINI.md" ]; then
@@ -721,11 +727,9 @@ if [ "$DRY_RUN" = false ]; then
   if [ -d "$PROJECT_DIR/.claude/skills" ]; then
     git -C "$PROJECT_DIR" add -f -- .claude/skills
   fi
-  # Stage any per-profile project-owned templates added on this run (e.g.
-  # swift's .swiftlint.yml). These are project-owned, but the addition only
-  # makes sense bundled into the same review commit as the rest of the
-  # update — leaving them unstaged would make `touchstone update --ship`
-  # ship an incomplete change.
+  # Stage project-owned templates added on this run (e.g. .markdownlint.json
+  # or Swift's .swiftlint.yml). Their addition only makes sense bundled into
+  # the same review commit as the rest of the update.
   if [ "${#PROJECT_OWNED_ADDED_PATHS[@]}" -gt 0 ]; then
     git -C "$PROJECT_DIR" add -f -- "${PROJECT_OWNED_ADDED_PATHS[@]}"
   fi
