@@ -370,8 +370,9 @@ shell_stdin_heredoc_payloads() {
           quote = char
         } else if (char == "<" && substr(line, i + 1, 1) == "<" && substr(line, i + 2, 1) != "<") {
           header = substr(line, 1, i - 1)
-          executes = header ~ /(^|[;&|()[:space:]])[[:space:]]*([^[:space:]]*\/)?(sh|bash|dash|ksh|zsh)([[:space:]]|$)/ \
-            || header ~ /(^|[;&|()[:space:]])[[:space:]]*(source|\.)[[:space:]]+\/dev\/stdin([[:space:]]|$)/
+          static_data = header ~ /^[[:space:]]*([^[:space:]]*\/)?cat([[:space:]]|$)/ \
+            && header !~ /[;&|()]/
+          executes = !static_data
           j = i + 2
           strip_tabs = substr(line, j, 1) == "-"
           if (strip_tabs) {
@@ -950,7 +951,7 @@ segment_code_payloads() {
           seen_shell=true
         fi
         ;;
-      sh | */sh | bash | */bash | dash | */dash | ksh | */ksh | zsh | */zsh)
+      sh | */sh | bash | */bash | dash | */dash | ksh | */ksh | zsh | */zsh | su | */su)
         seen_shell=true
         ;;
       -*c*)
@@ -1226,13 +1227,14 @@ segment_invokes_bypass_alias() {
   printf '%s\n' "$protected_aliases" | grep -Fqx "$command_word"
 }
 
-segment_uses_sudo_wrapper() {
+segment_uses_external_execution_wrapper() {
   local segment="$1"
   local word=""
 
   while IFS= read -r word; do
     case "$word" in
-      sudo | */sudo)
+      sudo | */sudo | su | */su | runuser | */runuser | doas | */doas | ssh | */ssh | \
+        docker | */docker | podman | */podman | kubectl | */kubectl)
         return 0
         ;;
       git | */git | __touchstone_shell_composed__:*)
@@ -1261,7 +1263,7 @@ segment_cd_target() {
             continue
             ;;
           -*)
-            printf '%s' "${token#-}" | grep -qE '^[LP]+$' && continue
+            printf '%s' "${token#-}" | grep -qE '^[LPq]+$' && continue
             ;;
         esac
       fi
@@ -1378,6 +1380,11 @@ preceding_parent_directory_mutator=false
 segment_count=0
 only_segment=""
 command_executable_text="$(printf '%s' "$command" | without_shell_comments | without_single_quoted_literals)"
+if segment_uses_external_execution_wrapper "$command" \
+  && printf '%s' "$command" | grep -qE '(^|[^[:alnum:]_])git([^[:alnum:]_]|$)' \
+  && printf '%s' "$command" | grep -qE -- '--no-veri(f(y)?)?([^[:alnum:]_]|$)'; then
+  command_dynamic_protected=true
+fi
 if printf '%s' "$command_executable_text" \
   | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?CDPATH='; then
   command_sets_cdpath=true
@@ -1549,9 +1556,9 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
     if [ "$command_sets_git_context" = "true" ] \
       || [ "$command_changes_directory_ambiguously" = "true" ] \
       || [ "${non_push_candidate_cd_count[$candidate_index]}" -gt 0 ] \
-      || segment_uses_sudo_wrapper "$candidate_segment" \
+      || segment_uses_external_execution_wrapper "$candidate_segment" \
       || printf '%s' "$candidate_segment" \
-      | grep -qE '(^|[[:space:]])(-C|-c|--config-env)(=|[[:space:]]|$)'; then
+      | grep -qE '(^|[[:space:]])(-C|-c|--config-env|--git-dir|--work-tree|--namespace|--bare|--exec-path)(=|[[:space:]]|$)'; then
       # Alias configuration depends on repository and execution identity. A
       # composed context cannot be confirmed without executing the shell.
       push_segment="$candidate_segment"
@@ -1683,32 +1690,35 @@ if [ -n "$selected_preceding_cd" ]; then
     echo "emergency-disclosure: cannot prove preceding cd gates the push; bypass blocked" >&2
     exit 2
   fi
-  if printf '%s' "$selected_preceding_cd" | grep -qE '^/'; then
-    push_cwd="$selected_preceding_cd"
-  else
-    if [ -n "${CDPATH:-}" ] || [ "$command_sets_cdpath" = "true" ]; then
-      echo "emergency-disclosure: cannot safely resolve relative cd with CDPATH; bypass blocked" >&2
+  case "$selected_preceding_cd" in
+    '~'* | __touchstone_shell_expanded__:* | __touchstone_shell_composed__:*)
+      echo "emergency-disclosure: cannot safely resolve an expanded cd target; bypass blocked" >&2
       exit 2
-    fi
-    logical_push_cwd=""
-    physical_push_cwd=""
-    logical_push_cwd="$(
-      cd "$execution_cwd" \
-        && cd -L -- "$selected_preceding_cd" \
-        && pwd -P
-    )" || true
-    physical_push_cwd="$(
-      cd "$execution_cwd" \
-        && cd -P -- "$selected_preceding_cd" \
-        && pwd -P
-    )" || true
-    if [ -z "$logical_push_cwd" ] || [ -z "$physical_push_cwd" ] \
-      || [ "$logical_push_cwd" != "$physical_push_cwd" ]; then
-      echo "emergency-disclosure: cannot safely resolve logical/physical relative cd context; bypass blocked" >&2
-      exit 2
-    fi
-    push_cwd="$logical_push_cwd"
+      ;;
+  esac
+  if ! printf '%s' "$selected_preceding_cd" | grep -qE '^/' \
+    && { [ -n "${CDPATH:-}" ] || [ "$command_sets_cdpath" = "true" ]; }; then
+    echo "emergency-disclosure: cannot safely resolve relative cd with CDPATH; bypass blocked" >&2
+    exit 2
   fi
+  logical_push_cwd=""
+  physical_push_cwd=""
+  logical_push_cwd="$(
+    cd "$execution_cwd" \
+      && cd -L -- "$selected_preceding_cd" \
+      && pwd -P
+  )" || true
+  physical_push_cwd="$(
+    cd "$execution_cwd" \
+      && cd -P -- "$selected_preceding_cd" \
+      && pwd -P
+  )" || true
+  if [ -z "$logical_push_cwd" ] || [ -z "$physical_push_cwd" ] \
+    || [ "$logical_push_cwd" != "$physical_push_cwd" ]; then
+    echo "emergency-disclosure: cannot safely resolve logical/physical cd context; bypass blocked" >&2
+    exit 2
+  fi
+  push_cwd="$logical_push_cwd"
 fi
 
 git_c_target=""
@@ -1717,11 +1727,18 @@ expect_git_c_target=false
 ambiguous_git_context=false
 while IFS= read -r git_word; do
   if [ "$expect_git_c_target" = "true" ]; then
-    if printf '%s' "$git_word" | grep -qE '^/' || [ -z "$git_c_target" ]; then
-      git_c_target="$git_word"
-    else
-      git_c_target="$git_c_target/$git_word"
-    fi
+    case "$git_word" in
+      '~'* | __touchstone_shell_expanded__:* | __touchstone_shell_composed__:*)
+        ambiguous_git_context=true
+        ;;
+      *)
+        if printf '%s' "$git_word" | grep -qE '^/' || [ -z "$git_c_target" ]; then
+          git_c_target="$git_word"
+        else
+          git_c_target="$git_c_target/$git_word"
+        fi
+        ;;
+    esac
     expect_git_c_target=false
   elif [ "$seen_git" = "false" ]; then
     case "$git_word" in

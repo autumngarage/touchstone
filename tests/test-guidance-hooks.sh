@@ -388,6 +388,14 @@ assert "blocks a Git alias lookup under command-scoped HOME" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "HOME=/tmp/alternate-git-home git x --no-verify origin feat/test")")"
 assert "blocks Git alias lookup after sudo changes identity and HOME" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "sudo -u deploy -H git ship --no-verify origin feat/test")")"
+assert "blocks Git alias lookup under an alternate git-dir" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git --git-dir=/tmp/alternate.git ship --no-verify origin feat/test")")"
+assert "blocks Git alias dispatch through an alternate exec-path" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git --exec-path=/tmp ship --no-verify origin feat/test")")"
+assert "blocks Git alias lookup through a remote execution wrapper" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "ssh deploy@example.test git ship --no-verify origin feat/test")")"
+assert "blocks Git alias lookup through an identity wrapper" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "su deploy -c 'git ship --no-verify origin feat/test'")")"
 assert "blocks bypass push with a quoted git -C path" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'git -C "/tmp/repo with spaces" push --no-verify origin feat/test')")"
 assert "blocks emergency push after pushd changes directory" "2" \
@@ -538,6 +546,31 @@ IF_SHELL_HEREDOC_COMMAND="$(
 )"
 assert "blocks bypass heredoc through an if shell prefix" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "$IF_SHELL_HEREDOC_COMMAND")")"
+COMPOSED_SHELL_HEREDOC_HEADERS=("b'a'sh" 'ba\sh' "\$'\\x62ash'" '$(printf bash)')
+for composed_shell_header in "${COMPOSED_SHELL_HEREDOC_HEADERS[@]}"; do
+  COMPOSED_SHELL_HEREDOC_COMMAND="$(
+    printf '%s\n' "$composed_shell_header <<'EOF'" "git push --no-verify origin feat/test" "EOF"
+  )"
+  assert "blocks bypass heredoc through composed consumer $composed_shell_header" "2" \
+    "$(run_hook "$EMERGENCY" "$(mkjson "$COMPOSED_SHELL_HEREDOC_COMMAND")")"
+done
+FUNCTION_SHELL_HEREDOC_COMMAND="$(
+  printf '%s\n' 'run_shell(){ bash "$@"; }; run_shell <<'\''EOF'\''' \
+    "git push --no-verify origin feat/test" "EOF"
+)"
+assert "blocks bypass heredoc through a shell function" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$FUNCTION_SHELL_HEREDOC_COMMAND")")"
+ALIAS_SHELL_HEREDOC_COMMAND="$(
+  printf '%s\n' "shopt -s expand_aliases; alias run_shell=bash; run_shell <<'EOF'" \
+    "git push --no-verify origin feat/test" "EOF"
+)"
+assert "blocks bypass heredoc through a shell alias" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$ALIAS_SHELL_HEREDOC_COMMAND")")"
+CAT_SHELL_NAMED_PATH_HEREDOC="$(
+  printf '%s\n' "cat > /tmp/bash <<'EOF'" "git push --no-verify origin feat/test" "EOF"
+)"
+assert "allows protected heredoc prose written to a shell-named path" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$CAT_SHELL_NAMED_PATH_HEREDOC")")"
 SOURCE_STDIN_HEREDOC_COMMAND="$(
   printf '%s\n' "source /dev/stdin <<'EOF'" "git push --no-verify origin feat/test" "EOF"
 )"
@@ -896,6 +929,69 @@ if [ ! -f "$LOGICAL_REPO/.touchstone/emergency-bypass.log" ] \
   PASS=$((PASS + 1))
 else
   echo "  FAIL: ambiguous symlink cd wrote audit evidence to the wrong repository" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+ABSOLUTE_SYMLINK_CD_JSON="$(
+  mkjson "cd $LOGICAL_REPO/link/.. && git push --no-verify origin feat/test" "$TMPDIR"
+)"
+EXIT_ABSOLUTE_SYMLINK_CD=0
+printf '%s' "$ABSOLUTE_SYMLINK_CD_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_ABSOLUTE_SYMLINK_CD=$?
+assert "blocks absolute cd when logical and physical resolution diverge" "2" "$EXIT_ABSOLUTE_SYMLINK_CD"
+
+TILDE_TARGET="$TMPDIR/tilde-target"
+TILDE_DECOY="$TMPDIR/~"
+mkdir -p "$TILDE_TARGET" "$TILDE_DECOY"
+git -C "$TILDE_TARGET" init --quiet --initial-branch=main
+git -C "$TILDE_DECOY" init --quiet --initial-branch=main
+TILDE_CD_JSON="$(mkjson "cd ~ && git push --no-verify origin feat/test" "$TMPDIR")"
+EXIT_TILDE_CD=0
+printf '%s' "$TILDE_CD_JSON" \
+  | HOME="$TILDE_TARGET" TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_TILDE_CD=$?
+assert "blocks an expanded cd target" "2" "$EXIT_TILDE_CD"
+if [ ! -f "$TILDE_TARGET/.touchstone/emergency-bypass.log" ] \
+  && [ ! -f "$TILDE_DECOY/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: expanded cd target wrote no audit evidence"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: expanded cd target wrote audit evidence to the wrong repository" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+GLOB_TARGET="$TMPDIR/repo-real"
+GLOB_DECOY="$TMPDIR/__touchstone_shell_expanded__:repo*"
+mkdir -p "$GLOB_TARGET" "$GLOB_DECOY"
+git -C "$GLOB_TARGET" init --quiet --initial-branch=main
+git -C "$GLOB_DECOY" init --quiet --initial-branch=main
+GLOB_GIT_C_JSON="$(mkjson "git -C repo* push --no-verify origin feat/test" "$TMPDIR")"
+EXIT_GLOB_GIT_C=0
+printf '%s' "$GLOB_GIT_C_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_GLOB_GIT_C=$?
+assert "blocks an expanded git -C target" "2" "$EXIT_GLOB_GIT_C"
+if [ ! -f "$GLOB_TARGET/.touchstone/emergency-bypass.log" ] \
+  && [ ! -f "$GLOB_DECOY/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: expanded git -C target wrote no audit evidence"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: expanded git -C target wrote audit evidence to the wrong repository" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+ZSH_Q_TARGET="$TMPDIR/zsh-q-target"
+ZSH_Q_DECOY="$TMPDIR/-q"
+mkdir -p "$ZSH_Q_TARGET" "$ZSH_Q_DECOY"
+git -C "$ZSH_Q_TARGET" init --quiet --initial-branch=main
+git -C "$ZSH_Q_DECOY" init --quiet --initial-branch=main
+ZSH_Q_CD_JSON="$(mkjson "cd -q $ZSH_Q_TARGET && git push --no-verify origin feat/test" "$TMPDIR")"
+printf '%s' "$ZSH_Q_CD_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
+if [ -f "$ZSH_Q_TARGET/.touchstone/emergency-bypass.log" ] \
+  && [ ! -f "$ZSH_Q_DECOY/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: emergency log skips zsh cd -q and follows its target"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: zsh cd -q audit evidence did not follow its target" >&2
   FAIL=$((FAIL + 1))
 fi
 
