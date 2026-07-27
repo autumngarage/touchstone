@@ -410,6 +410,14 @@ assert_case "ansi-c-quoted-bypass-flag" repo-a \
   "git push \$'--no-verify' origin main"
 assert_case "ansi-c-escaped-bypass-flag" repo-a \
   "git push \$'--no-\\x76erify' origin main"
+assert_case "backslash-escaped-bypass-flag" repo-a \
+  "git push --no\\-verify origin main"
+assert_case "bypass-flag-before-redirection" repo-a \
+  "git push --no-verify>/dev/null"
+assert_case "push-subcommand-before-redirection" repo-a \
+  "git push>/dev/null --no-verify"
+assert_case "fd-redirection-before-push" repo-a \
+  "git 2>/dev/null push --no-verify"
 assert_case "assignment-prefixed-cd" repo-b \
   "X=1 cd \"$REPO_B\" && git push --no-verify origin main"
 assert_case "assembled-variable-bypass-flag" repo-a \
