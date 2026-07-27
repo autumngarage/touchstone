@@ -332,7 +332,14 @@ request_pr_triggered_review() {
     return 1
   fi
 
-  head_sha="$(git rev-parse HEAD)"
+  if ! head_sha="$(gh pr view "$pr_number" --json headRefOid --jq '.headRefOid')"; then
+    echo "ERROR: failed to resolve the remote head for PR #$pr_number before requesting review." >&2
+    return 1
+  fi
+  if [ -z "$head_sha" ]; then
+    echo "ERROR: GitHub returned an empty remote head for PR #$pr_number." >&2
+    return 1
+  fi
   marker="<!-- touchstone:pr-review-request provider=github-codex head=$head_sha -->"
   if ! comments="$(gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments?per_page=100" --jq '.[].body')"; then
     echo "ERROR: failed to inspect prior GitHub Codex review requests for PR #$pr_number." >&2

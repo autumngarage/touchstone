@@ -57,6 +57,9 @@ case "${1:-} ${2:-}" in
   "pr create")
     echo "https://example.test/touchstone/pull/456"
     ;;
+  "pr view")
+    printf '%s\n' "${GH_PR_HEAD_SHA:-$(git rev-parse HEAD)}"
+    ;;
   "pr comment")
     if [ "${4:-}" != "--body" ]; then
       echo "unexpected gh pr comment args: $*" >&2
@@ -116,6 +119,7 @@ run_open_pr() {
         GH_API_FAIL="${GH_API_FAIL:-0}" \
         GH_EXISTING_REQUEST_BODY="${GH_EXISTING_REQUEST_BODY:-}" \
         GH_EXISTING_REQUEST_FILE="${GH_EXISTING_REQUEST_FILE:-}" \
+        GH_PR_HEAD_SHA="${GH_PR_HEAD_SHA:-}" \
         CODEX_REVIEW_STUB_EXIT="${CODEX_REVIEW_STUB_EXIT:-0}" \
         CODEX_REVIEW_STUB_FINDINGS="${CODEX_REVIEW_STUB_FINDINGS:-0}" \
         CODEX_REVIEW_STUB_REASON="${CODEX_REVIEW_STUB_REASON:-clean}" \
@@ -334,6 +338,22 @@ if grep -q "GitHub Codex review already requested for head $REQUEST_HEAD" "$OUT"
   echo "    PASS"
 else
   echo "    FAIL: a large existing comment payload should not duplicate the request" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 8c: request marker follows the remote PR head, not local HEAD"
+reset_case
+REMOTE_REQUEST_HEAD="1111111111111111111111111111111111111111"
+OUT="$TEST_DIR/request-remote-head.out"
+GH_PR_HEAD_SHA="$REMOTE_REQUEST_HEAD" run_open_pr "$OUT"
+if grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REMOTE_REQUEST_HEAD -->" "$TEST_DIR/comments" \
+  && ! grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD -->" "$TEST_DIR/comments" \
+  && grep -q "Requested GitHub Codex review for head $REMOTE_REQUEST_HEAD" "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: request marker should bind to GitHub's remote PR head" >&2
   cat "$OUT" >&2
   [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
   ERRORS=$((ERRORS + 1))

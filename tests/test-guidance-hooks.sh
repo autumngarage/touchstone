@@ -294,6 +294,13 @@ assert "ignores --no-verify on non-push commands" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "echo --no-verify is a flag")")"
 assert "allows ordinary push after unrelated --no-verify argument" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "echo --no-verify; git push origin main")")"
+assert "ignores a bypass push inside an unquoted shell comment" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "echo ok # git push --no-verify origin main")")"
+COMMENT_THEN_PUSH_COMMAND="$(printf '%s\n' "echo ok # git push --no-verify origin stale" "git push --no-verify origin main")"
+assert "still blocks a bypass push after a comment newline" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$COMMENT_THEN_PUSH_COMMAND")")"
+assert "preserves a hash inside an ordinary shell word" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "echo value#tag; git push --no-verify origin main")")"
 
 # 11. Documentation and issue bodies may quote the protected command. Text
 # inside another command's argument is not an executable push segment.
@@ -341,6 +348,8 @@ assert "blocks bypass flag supplied through variable expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'flag=--no-verify; git push "$flag" origin feat/test')")"
 assert "blocks git command supplied through variable expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'cmd=git; $cmd push --no-verify origin feat/test')")"
+assert "blocks quoted Git executable supplied through environment expansion" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson '"$GIT" push --no-verify origin feat/test')")"
 assert "blocks push subcommand supplied through variable expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'sub=push; git $sub --no-verify origin feat/test')")"
 
@@ -505,6 +514,30 @@ if [ -f "$QUOTED_C_TARGET/.touchstone/emergency-bypass.log" ]; then
   PASS=$((PASS + 1))
 else
   echo "  FAIL: emergency log did not follow quoted cd target" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
+COMMAND_CD_JSON="$(mkjson "command cd $EMERGENCY_TARGET && git push --no-verify origin feat/test" "$TMPDIR")"
+printf '%s' "$COMMAND_CD_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
+if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: emergency log follows command-wrapped cd"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: emergency log did not follow command-wrapped cd" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+rm -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
+BUILTIN_CD_JSON="$(mkjson "builtin cd $EMERGENCY_TARGET && git push --no-verify origin feat/test" "$TMPDIR")"
+printf '%s' "$BUILTIN_CD_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
+if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: emergency log follows builtin-wrapped cd"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: emergency log did not follow builtin-wrapped cd" >&2
   FAIL=$((FAIL + 1))
 fi
 

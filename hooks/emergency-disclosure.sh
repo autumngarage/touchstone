@@ -27,10 +27,6 @@ input="$(cat)"
 if ! printf '%s' "$input" | grep -q -- '--no-verify'; then
   exit 0
 fi
-if ! printf '%s' "$input" | grep -qE 'git([^[:alnum:]_]|$)'; then
-  exit 0
-fi
-
 if ! command -v jq >/dev/null 2>&1; then
   echo "emergency-disclosure: jq not installed — hook bypassed (install jq to enable)" >&2
   exit 0
@@ -39,6 +35,49 @@ fi
 command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
 session_cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"
 tool_workdir="$(printf '%s' "$input" | jq -r '.tool_input.workdir // ""')"
+
+# Remove comments using shell token boundaries while preserving newlines, so a
+# later physical line remains executable input. A # inside a word or quotes is
+# data, not a comment opener.
+without_shell_comments() {
+  awk '
+    {
+      line = $0 "\n"
+      comment = 0
+      previous = ""
+      for (i = 1; i <= length(line); i++) {
+        char = substr(line, i, 1)
+        if (comment) {
+          if (char == "\n") {
+            printf "\n"
+            comment = 0
+          }
+        } else if (escaped) {
+          printf "%s", char
+          escaped = 0
+        } else if (char == "\\" && quote != "\047") {
+          printf "%s", char
+          escaped = 1
+        } else if (quote == "") {
+          if (char == "\"" || char == "\047") {
+            quote = char
+            printf "%s", char
+          } else if (char == "#" && (previous == "" || previous ~ /[[:space:];&|()]/)) {
+            comment = 1
+          } else {
+            printf "%s", char
+          }
+        } else {
+          printf "%s", char
+          if (char == quote) {
+            quote = ""
+          }
+        }
+        previous = char
+      }
+    }
+  '
+}
 
 # Split only on shell control operators outside quotes. The authorization
 # boundary is an executable command segment, not arbitrary prose inside an
@@ -411,7 +450,7 @@ segment_cd_target() {
     fi
     normalized="$(printf '%s' "$token" | sed -E 's/^[({]+//')"
     case "$normalized" in
-      if | then | elif | else | while | until | do | ! | "")
+      if | then | elif | else | while | until | do | ! | command | builtin | "")
         ;;
       cd)
         expect_target=true
@@ -474,7 +513,7 @@ command_dynamic_protected=false
 command_sets_cdpath=false
 cd_chain_proven=false
 cd_count=0
-command_executable_text="$(printf '%s' "$command" | without_single_quoted_literals)"
+command_executable_text="$(printf '%s' "$command" | without_shell_comments | without_single_quoted_literals)"
 if printf '%s' "$command_executable_text" \
   | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?CDPATH='; then
   command_sets_cdpath=true
@@ -489,12 +528,14 @@ if printf '%s' "$command_executable_text" \
   | grep -qE 'cd[[:space:]]+.*&&.*git.*push'; then
   cd_chain_proven=true
 fi
-if printf '%s' "$command_executable_text" \
-    | grep -qE '(^|[^\\])\$[{A-Za-z_]' \
-  && printf '%s' "$command_executable_text" | grep -qE 'git([^[:alnum:]_]|$)' \
+if printf '%s' "$command_executable_text" | grep -qE '(^|[^\\])\$[{A-Za-z_]' \
   && printf '%s' "$command_executable_text" | grep -qE 'push([^[:alnum:]_]|$)' \
   && printf '%s' "$command_executable_text" | grep -q -- '--no-verify'; then
-  command_dynamic_protected=true
+  if printf '%s' "$command_executable_text" | grep -qE 'git([^[:alnum:]_]|$)' \
+    || printf '%s' "$command_executable_text" \
+      | grep -qE '("?\\)?\$[{]?[A-Za-z_][A-Za-z0-9_]*[}]?"?[[:space:]]+push([^[:alnum:]_]|$)'; then
+    command_dynamic_protected=true
+  fi
 fi
 while IFS= read -r segment; do
   cd_target="$(segment_cd_target "$segment")"
@@ -519,7 +560,7 @@ while IFS= read -r segment; do
     push_segment="$segment"
     break
   fi
-done < <(printf '%s\n' "$command" | without_heredoc_bodies | shell_segments)
+done < <(printf '%s\n' "$command" | without_heredoc_bodies | without_shell_comments | shell_segments)
 
 if [ -z "$push_segment" ]; then
   exit 0
