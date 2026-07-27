@@ -201,7 +201,13 @@ printf 'fixed\n' >>"$worktree/target.txt"
   printf 'TOUCHSTONE_REVIEW_FIX_FIXED\n'
   case "$(basename "$0")" in
     *ambiguous*) ;;
-    *) printf 'thread_id=%s\n' "$(cat "$FAKE_THREAD_ID")" ;;
+    *)
+      printf 'thread_id=%s\n' "$(cat "$FAKE_THREAD_ID")"
+      case "$(basename "$0")" in
+        *mixed*) printf 'TOUCHSTONE_REVIEW_FIX_NEEDS_ATTENTION\n' ;;
+        *extra*) printf 'Worker completed successfully.\n' ;;
+      esac
+      ;;
   esac
 } >"$result_file"
 EOF
@@ -309,6 +315,26 @@ TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$AMBIG_WORKER" \
 wait_for_status "$AMBIG_WT" needs-attention "$STATUS" \
   || fail "ambiguous worker result did not enter needs-attention"
 assert_contains "$STATUS" '"reason":"ambiguous-worker-result"'
+
+for INVALID_RESULT_KIND in mixed extra; do
+  INVALID_RESULT_WT="$TEST_DIR/$INVALID_RESULT_KIND-result-worktree"
+  git -C "$REPO" branch "feat/review-$INVALID_RESULT_KIND-result" main
+  git -C "$REPO" push -q origin "feat/review-$INVALID_RESULT_KIND-result"
+  git -C "$REPO" worktree add -q \
+    "$INVALID_RESULT_WT" "feat/review-$INVALID_RESULT_KIND-result"
+  INVALID_RESULT_WORKER="$TEST_DIR/$INVALID_RESULT_KIND-worker"
+  make_fix_worker "$INVALID_RESULT_WORKER"
+  : >"$FAKE_THREAD_ACTIVE"
+  printf 'thread-%s\n' "$INVALID_RESULT_KIND" >"$FAKE_THREAD_ID"
+  rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED"
+  TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$INVALID_RESULT_WORKER" \
+    "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+    --worktree "$INVALID_RESULT_WT" --detach --review-fix \
+    --validation-command : >/dev/null
+  wait_for_status "$INVALID_RESULT_WT" needs-attention "$STATUS" \
+    || fail "$INVALID_RESULT_KIND worker result did not enter needs-attention"
+  assert_contains "$STATUS" '"reason":"ambiguous-worker-result"'
+done
 
 STALE_WT="$TEST_DIR/stale-worktree"
 git -C "$REPO" branch feat/review-stale main
@@ -631,6 +657,45 @@ else
 fi
 [ ! -f "$FAKE_CODEX_EXECUTED" ] || fail "Codex exec ran after metered authentication was rejected"
 assert_contains "$TEST_DIR/auth.out" 'requires a ChatGPT-authenticated Codex CLI'
+
+echo "==> Case h: default preflight validates every dirty and untracked worker path"
+PREFLIGHT_REPO="$TEST_DIR/preflight-repo"
+PREFLIGHT_PATHS="$TEST_DIR/preflight-paths.zlist"
+cat >"$FAKE_BIN/shellcheck" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >&2
+saw_tracked=false
+saw_untracked=false
+for arg in "$@"; do
+  [ "$arg" = tracked-invalid.sh ] && saw_tracked=true
+  [ "$arg" = untracked-invalid.sh ] && saw_untracked=true
+done
+[ "$saw_tracked" = true ] && [ "$saw_untracked" = true ] && exit 1
+exit 0
+EOF
+chmod +x "$FAKE_BIN/shellcheck"
+git init -q -b main "$PREFLIGHT_REPO"
+git -C "$PREFLIGHT_REPO" config user.name "Touchstone Test"
+git -C "$PREFLIGHT_REPO" config user.email "touchstone@example.com"
+mkdir -p "$PREFLIGHT_REPO/lib"
+cp "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PREFLIGHT_REPO/lib/preflight.sh"
+cp "$TOUCHSTONE_ROOT/lib/preflight-scope.sh" "$PREFLIGHT_REPO/lib/preflight-scope.sh"
+printf 'fixture\n' >"$PREFLIGHT_REPO/tracked.txt"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$PREFLIGHT_REPO/tracked-invalid.sh"
+git -C "$PREFLIGHT_REPO" add lib tracked.txt tracked-invalid.sh
+git -C "$PREFLIGHT_REPO" commit -qm "fixture base"
+printf '#!/usr/bin/env bash\nif then\n' >"$PREFLIGHT_REPO/tracked-invalid.sh"
+printf '#!/usr/bin/env bash\nif then\n' >"$PREFLIGHT_REPO/untracked-invalid.sh"
+printf 'tracked-invalid.sh\0untracked-invalid.sh\0' >"$PREFLIGHT_PATHS"
+if touchstone_review_fix_validate \
+  "$PREFLIGHT_REPO" "" HEAD "$PREFLIGHT_PATHS" >"$TEST_DIR/preflight.out" 2>&1; then
+  fail "default preflight ignored dirty or untracked worker paths"
+fi
+[ -z "$(git -C "$PREFLIGHT_REPO" diff --cached --name-only)" ] \
+  || fail "default preflight staged worker changes before validation"
+assert_contains "$TEST_DIR/preflight.out" 'tracked-invalid.sh'
+assert_contains "$TEST_DIR/preflight.out" 'untracked-invalid.sh'
 
 if [ "$ERRORS" -eq 0 ]; then
   echo "==> PASS: autonomous review-fix is bounded, exact-head, durable, and idempotent"

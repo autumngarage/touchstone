@@ -284,12 +284,20 @@ touchstone_review_fix_invoke_worker() {
 }
 
 touchstone_review_fix_result_is_complete() {
-  local result_file="$1" threads_file="$2" expected_file actual_file
-  grep -qx 'TOUCHSTONE_REVIEW_FIX_FIXED' "$result_file" || return 1
+  local result_file="$1" threads_file="$2" expected_file actual_file first_line
   expected_file="${result_file}.expected"
   actual_file="${result_file}.actual"
-  cut -f1 "$threads_file" | sed '/^$/d' | LC_ALL=C sort -u >"$expected_file"
-  sed -n 's/^thread_id=//p' "$result_file" | sed '/^$/d' | LC_ALL=C sort -u >"$actual_file"
+  IFS= read -r first_line <"$result_file" || return 1
+  [ "$first_line" = "TOUCHSTONE_REVIEW_FIX_FIXED" ] || return 1
+  cut -f1 "$threads_file" \
+    | sed '/^$/d; s/^/thread_id=/' \
+    | LC_ALL=C sort >"$expected_file"
+  sed '1d' "$result_file" >"$actual_file"
+  [ -s "$actual_file" ] || return 1
+  if grep -Ev '^thread_id=.+$' "$actual_file" >/dev/null; then
+    return 1
+  fi
+  LC_ALL=C sort -o "$actual_file" "$actual_file"
   cmp -s "$expected_file" "$actual_file"
 }
 
@@ -314,13 +322,32 @@ touchstone_review_fix_commit() {
 }
 
 touchstone_review_fix_validate() {
-  local worktree_path="$1" validation_command="$2" base_ref="$3"
+  local worktree_path="$1" validation_command="$2" base_ref="$3" paths_file="$4"
   if [ -n "$validation_command" ]; then
     (cd "$worktree_path" && bash -lc "$validation_command")
     return
   fi
   [ -f "$worktree_path/lib/preflight.sh" ] || return 1
-  (cd "$worktree_path" && bash lib/preflight.sh --diff "$base_ref" "$worktree_path")
+  (
+    cd "$worktree_path" || exit 1
+    # shellcheck source=lib/preflight.sh
+    source lib/preflight.sh
+    compute_changed_paths_against() {
+      local requested_base="$1" path
+      git diff --name-only "$requested_base"...HEAD
+      while IFS= read -r -d '' path; do
+        case "$path" in
+          *$'\n'*)
+            echo "ERROR: preflight cannot safely scope a path containing a newline: $path" >&2
+            return 2
+            ;;
+        esac
+        printf '%s\n' "$path"
+      done <"$paths_file"
+    }
+    export TOUCHSTONE_PREFLIGHT_DISABLE_CACHE=1
+    touchstone_preflight_main --diff "$base_ref" "$worktree_path"
+  )
 }
 
 touchstone_review_fix_checkpoint_threads() {
@@ -771,7 +798,7 @@ touchstone_review_fix_run() {
     phase_rc=0
     touchstone_review_fix_run_child \
       "$job_dir" touchstone_review_fix_validate \
-      "$worktree_path" "$validation_command" "$base_ref" || phase_rc=$?
+      "$worktree_path" "$validation_command" "$base_ref" "$paths_file" || phase_rc=$?
     if [ "$phase_rc" -ne 0 ]; then
       touchstone_review_fix_stop_for_phase \
         "$job_dir" "$worktree_path" "$phase_rc" validation-failed
