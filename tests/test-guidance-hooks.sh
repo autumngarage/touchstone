@@ -287,6 +287,76 @@ assert "allows ordinary 'git push origin main'" "0" \
 assert "ignores --no-verify on non-push commands" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "echo --no-verify is a flag")")"
 
+# 11. Documentation and issue bodies may quote the protected command. Text
+# inside another command's argument is not an executable push segment.
+assert "allows quoted bypass text in another command's argument" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "gh issue create --body 'Run git push --no-verify only in an emergency'")")"
+
+# 12. A real push later in a compound command must still be detected.
+assert "blocks executable bypass segment after another command" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "printf 'ready' && git push --no-verify origin feat/test")")"
+
+# 13. Emergency audit evidence belongs to the command runner's workdir, not
+# the driver session cwd. Cover absolute and relative workdir forms.
+EMERGENCY_TARGET="$(mktemp -d -t touchstone-emergency-target.XXXXXX)"
+trap 'rm -rf "$TMPDIR" "$WORKTREE" "$MAIN_TARGET" "$EMERGENCY_TARGET"' EXIT
+TOOL_WORKDIR_EMERGENCY_JSON="$(jq -nc \
+  --arg cmd "git push --no-verify origin feat/test" \
+  --arg workdir "$EMERGENCY_TARGET" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd, workdir: $workdir}, cwd: $cwd}')"
+EXIT_TOOL_WORKDIR=0
+printf '%s' "$TOOL_WORKDIR_EMERGENCY_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_TOOL_WORKDIR=$?
+assert "allows emergency push with explicit tool workdir" "0" "$EXIT_TOOL_WORKDIR"
+if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: emergency log uses absolute tool workdir"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: emergency log missing from absolute tool workdir" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+RELATIVE_TARGET_PARENT="$(dirname "$EMERGENCY_TARGET")"
+RELATIVE_TARGET_NAME="$(basename "$EMERGENCY_TARGET")"
+TOOL_WORKDIR_RELATIVE_EMERGENCY_JSON="$(jq -nc \
+  --arg cmd "git push --no-verify origin feat/test" \
+  --arg workdir "$RELATIVE_TARGET_NAME" \
+  --arg cwd "$RELATIVE_TARGET_PARENT" \
+  '{tool_name: "Bash", tool_input: {command: $cmd, workdir: $workdir}, cwd: $cwd}')"
+before_relative_lines="$(wc -l <"$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" | tr -d ' ')"
+printf '%s' "$TOOL_WORKDIR_RELATIVE_EMERGENCY_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
+after_relative_lines="$(wc -l <"$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" | tr -d ' ')"
+if [ "$after_relative_lines" -eq $((before_relative_lines + 1)) ]; then
+  echo "  OK: emergency log resolves relative tool workdir"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: relative tool workdir did not receive emergency log entry" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# 14. The bypass must fail closed when required audit evidence cannot be
+# persisted. A file at the directory path makes mkdir deterministic.
+EMERGENCY_UNWRITABLE="$(mktemp -d -t touchstone-emergency-unwritable.XXXXXX)"
+trap 'rm -rf "$TMPDIR" "$WORKTREE" "$MAIN_TARGET" "$EMERGENCY_TARGET" "$EMERGENCY_UNWRITABLE"' EXIT
+touch "$EMERGENCY_UNWRITABLE/.touchstone"
+UNWRITABLE_JSON="$(mkjson "git push --no-verify origin feat/test" "$EMERGENCY_UNWRITABLE")"
+EXIT_UNWRITABLE=0
+printf '%s' "$UNWRITABLE_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_UNWRITABLE=$?
+assert "blocks emergency bypass when audit log cannot be created" "2" "$EXIT_UNWRITABLE"
+
+# Distributed and project-local hook copies must remain byte-identical.
+if cmp -s "$TOUCHSTONE_ROOT/hooks/emergency-disclosure.sh" \
+    "$TOUCHSTONE_ROOT/scripts/emergency-disclosure.sh"; then
+  echo "  OK: emergency-disclosure hook mirror is current"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: emergency-disclosure hook mirror differs" >&2
+  FAIL=$((FAIL + 1))
+fi
+
 # ----------------------------------------------------------------------
 # Latency budget
 # ----------------------------------------------------------------------
