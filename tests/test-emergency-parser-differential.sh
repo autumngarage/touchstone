@@ -48,6 +48,7 @@ init_repo() {
 }
 init_repo "$REPO_A"
 init_repo "$REPO_B"
+touch "$REPO_A/--no-verify"
 
 # This is the only `git` visible to oracle commands. It emulates enough global
 # option and alias handling to identify the protected operation, then exits.
@@ -440,6 +441,12 @@ assert_case "pushd-repository-redirection" ambiguous \
   "pushd \"$REPO_B\" >/dev/null && git push --no-verify origin main"
 assert_case "env-chdir-repository-redirection" ambiguous \
   "env -C \"$REPO_B\" git push --no-verify origin main"
+assert_case "brace-expanded-bypass-flag" repo-a \
+  "git push --no-{veri,verify} origin main"
+assert_case "pathname-expanded-bypass-flag" repo-a \
+  "git push --no-* origin main"
+assert_case "eval-directory-redirection" ambiguous \
+  "eval 'cd \"$REPO_B\"'; git push --no-verify origin main"
 
 echo "==> Deterministic generated execution matrix"
 
