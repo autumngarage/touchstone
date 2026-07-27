@@ -23,11 +23,12 @@ set -euo pipefail
 
 input="$(cat)"
 
-# Fast path — avoid jq for calls that cannot contain the protected flag. A
-# shell expansion may compose the middle of the flag, so retain --no-* input
-# for command-position analysis even when the final literal is absent.
+# Avoid jq only when neither a literal bypass fragment nor shell expansion can
+# produce the protected flag. Expanded commands must take the conservative
+# parser path because separate values can assemble the flag at runtime.
 if ! printf '%s' "$input" | grep -q -- '--no-verify' \
-  && ! printf '%s' "$input" | grep -q -- '--no-'; then
+  && ! printf '%s' "$input" | grep -q -- '--no-' \
+  && ! printf '%s' "$input" | grep -qE '(\$|`)'; then
   exit 0
 fi
 if ! command -v jq >/dev/null 2>&1; then
@@ -426,6 +427,7 @@ segment_has_bypass_words() {
   local subcommand=""
   local expect_global_option_value=false
   local seen_no_verify=false
+  local seen_dynamic_push_arg=false
 
   while IFS= read -r word; do
     if [ "$seen_git" = "false" ]; then
@@ -460,9 +462,16 @@ segment_has_bypass_words() {
       esac
     elif [ "$word" = "--no-verify" ]; then
       seen_no_verify=true
+    elif [ "$subcommand" = "push" ]; then
+      case "$word" in
+        *'$'* | *'`'*) seen_dynamic_push_arg=true ;;
+      esac
     fi
   done < <(printf '%s' "$segment" | shell_words)
 
+  if [ "$subcommand" = "push" ] && [ "$seen_dynamic_push_arg" = "true" ]; then
+    seen_no_verify=true
+  fi
   if [ "$subcommand" = "push" ] && [ "$seen_no_verify" = "false" ] \
     && segment_may_compose_no_verify "$segment"; then
     seen_no_verify=true
@@ -598,9 +607,9 @@ segment_runs_bypass_push() {
   fi
 
   if printf '%s' "$segment_executable" \
-      | grep -qE '(^|[^\\])\$\(|(^|[^\\])`' \
+    | grep -qE '(^|[^\\])\$\(|(^|[^\\])`' \
     && printf '%s' "$segment_executable" \
-      | tr '\n' ' ' \
+    | tr '\n' ' ' \
       | grep -qE 'git.*push.*--no-verify'; then
     push_context="nested"
     return 0
@@ -630,6 +639,7 @@ command_sets_cdpath=false
 cd_chain_proven=false
 cd_count=0
 protected_aliases=""
+multiple_protected_pushes=false
 command_executable_text="$(printf '%s' "$command" | without_shell_comments | without_single_quoted_literals)"
 if printf '%s' "$command_executable_text" \
   | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?CDPATH='; then
@@ -637,7 +647,7 @@ if printf '%s' "$command_executable_text" \
 fi
 if printf '%s' "$command_executable_text" | grep -qE '\(' \
   && printf '%s' "$command_executable_text" \
-    | grep -qE '(^|[;&|()[:space:]])cd([;&|()[:space:]]|$)'; then
+  | grep -qE '(^|[;&|()[:space:]])cd([;&|()[:space:]]|$)'; then
   ambiguous_cd_scope=true
 fi
 if printf '%s' "$command_executable_text" \
@@ -650,7 +660,7 @@ if printf '%s' "$command_executable_text" | grep -qE '(^|[^\\])\$[{A-Za-z_]' \
   && printf '%s' "$command_executable_text" | grep -q -- '--no-verify'; then
   if printf '%s' "$command_executable_text" | grep -qE 'git([^[:alnum:]_]|$)' \
     || printf '%s' "$command_executable_text" \
-      | grep -qE '("?\\)?\$[{]?[A-Za-z_][A-Za-z0-9_]*[}]?"?[[:space:]]+push([^[:alnum:]_]|$)'; then
+    | grep -qE '("?\\)?\$[{]?[A-Za-z_][A-Za-z0-9_]*[}]?"?[[:space:]]+push([^[:alnum:]_]|$)'; then
     command_dynamic_protected=true
   fi
 fi
@@ -695,12 +705,15 @@ while IFS= read -r segment; do
       non_push_candidate_subcommands[$candidate_index]="$push_subcommand"
       continue
     fi
+    if [ -n "$push_segment" ]; then
+      multiple_protected_pushes=true
+      continue
+    fi
     push_segment="$segment"
-    break
   fi
 done < <(printf '%s\n' "$command" | without_heredoc_bodies | without_shell_comments | shell_segments)
 
-if [ -z "$push_segment" ] && [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
+if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
   candidate_cwd="$session_cwd"
   if [ -n "$tool_workdir" ]; then
     if printf '%s' "$tool_workdir" | grep -qE '^/'; then
@@ -723,23 +736,30 @@ if [ -z "$push_segment" ] && [ "${#non_push_candidate_segments[@]}" -gt 0 ]; the
       push_segment="$candidate_segment"
       push_context="nested"
       push_subcommand="$candidate_subcommand"
-      break
+      multiple_protected_pushes=true
+      continue
     fi
     alias_expansion="$(git -C "$candidate_cwd" config --get "alias.$candidate_subcommand" 2>/dev/null || true)"
     alias_command="$(printf '%s' "$alias_expansion" | shell_words | sed -n '1p')"
     case "$alias_command" in
       push)
+        if [ -n "$push_segment" ]; then
+          multiple_protected_pushes=true
+          continue
+        fi
         push_segment="$candidate_segment"
         push_context="${non_push_candidate_contexts[$candidate_index]}"
         push_subcommand="$candidate_subcommand"
-        break
         ;;
       !*)
         if printf '%s' "$alias_expansion" | grep -qE '(^|[[:space:]])(git[[:space:]]+)?push([[:space:]]|$)'; then
+          if [ -n "$push_segment" ]; then
+            multiple_protected_pushes=true
+            continue
+          fi
           push_segment="$candidate_segment"
           push_context="nested"
           push_subcommand="$candidate_subcommand"
-          break
         fi
         ;;
     esac
@@ -748,6 +768,11 @@ fi
 
 if [ -z "$push_segment" ]; then
   exit 0
+fi
+
+if [ "$multiple_protected_pushes" = "true" ]; then
+  echo "emergency-disclosure: multiple protected push segments require separate audited tool calls; bypass blocked" >&2
+  exit 2
 fi
 
 if [ "$push_context" != "direct" ] || [ "$ambiguous_cd_scope" = "true" ]; then

@@ -372,6 +372,8 @@ assert "blocks push subcommand composed through an expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'git p${x}ush --no-verify origin feat/test')")"
 assert "blocks bypass flag composed through command substitution" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'git push --no-$(printf ver)ify origin feat/test')")"
+assert "blocks a bypass flag assembled across variable expansions" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'p=--no; q=-verify; git push "$p$q" origin feat/test')")"
 
 # Nested executable contexts must not turn literal-looking text into a bypass.
 assert "blocks bypass push in command substitution" "2" \
@@ -465,6 +467,28 @@ else
   echo "  FAIL: emergency log missing from absolute tool workdir" >&2
   FAIL=$((FAIL + 1))
 fi
+
+rm -f "$TMPDIR/.touchstone/emergency-bypass.log" "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
+MULTIPLE_PUSH_JSON="$(mkjson \
+  "git -C $TMPDIR push --no-verify origin one; git -C $EMERGENCY_TARGET push --no-verify origin two" \
+  "$TMPDIR")"
+EXIT_MULTIPLE_PUSH=0
+printf '%s' "$MULTIPLE_PUSH_JSON" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_MULTIPLE_PUSH=$?
+assert "blocks multiple bypass pushes in one tool call" "2" "$EXIT_MULTIPLE_PUSH"
+if [ ! -f "$TMPDIR/.touchstone/emergency-bypass.log" ] \
+  && [ ! -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
+  echo "  OK: rejected multi-push command wrote no partial audit evidence"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: rejected multi-push command wrote partial audit evidence" >&2
+  FAIL=$((FAIL + 1))
+fi
+# The relative-workdir fixture below measures an increment from an existing
+# audit file. Restore its empty baseline after proving the rejected compound
+# command wrote no evidence.
+mkdir -p "$EMERGENCY_TARGET/.touchstone"
+: >"$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
 
 RELATIVE_TARGET_PARENT="$(dirname "$EMERGENCY_TARGET")"
 RELATIVE_TARGET_NAME="$(basename "$EMERGENCY_TARGET")"
@@ -654,7 +678,7 @@ assert "blocks emergency bypass when audit log cannot be created" "2" "$EXIT_UNW
 
 # Distributed and project-local hook copies must remain byte-identical.
 if cmp -s "$TOUCHSTONE_ROOT/hooks/emergency-disclosure.sh" \
-    "$TOUCHSTONE_ROOT/scripts/emergency-disclosure.sh"; then
+  "$TOUCHSTONE_ROOT/scripts/emergency-disclosure.sh"; then
   echo "  OK: emergency-disclosure hook mirror is current"
   PASS=$((PASS + 1))
 else
