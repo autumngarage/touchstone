@@ -418,6 +418,10 @@ assert "allows a Git push alias definition that is not invoked" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "alias gp='git push'; echo --no-verify")")"
 assert "blocks push subcommand supplied through variable expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'sub=push; git $sub --no-verify origin feat/test')")"
+assert "blocks Git executable supplied through a positional parameter" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'set -- git; "$1" push --no-verify origin feat/test')")"
+assert "blocks push subcommand supplied through a positional parameter" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'set -- push; git "$1" --no-verify origin feat/test')")"
 assert "blocks Git executable composed through an expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'g${x}it push --no-verify origin feat/test')")"
 assert "blocks path-qualified Git executable composed through an expansion" "2" \

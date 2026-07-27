@@ -413,6 +413,10 @@ word_may_expand_to() {
     *) return 1 ;;
   esac
 
+  if printf '%s' "$word" | grep -qE '\$(\$|[0-9]+|[-*@#?!])'; then
+    return 0
+  fi
+
   static="$(printf '%s' "$word" \
     | sed -E 's/\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$\([^)]*\)|`[^`]*`//g')"
   static="${static##*/}"
