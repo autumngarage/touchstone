@@ -1831,7 +1831,7 @@ wait_for_pr_triggered_review() {
 request_pr_triggered_review() {
   local expected_head="$1"
   local phase="$2"
-  local observed_head marker comments body
+  local observed_head marker existing_request_ids body
 
   truthy "$PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH" || return 0
   if [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then
@@ -1853,12 +1853,15 @@ request_pr_triggered_review() {
   fi
 
   marker="<!-- touchstone:pr-review-request provider=github-codex head=$expected_head -->"
-  if ! comments="$(gh api --paginate "repos/$REPO_FULL_NAME/issues/$PR_NUMBER/comments?per_page=100" --jq '.[].body')"; then
+  if ! existing_request_ids="$(
+    gh api --paginate "repos/$REPO_FULL_NAME/issues/$PR_NUMBER/comments?per_page=100" \
+      --jq ".[] | select(.body == \"@codex review\\n\\n$marker\") | .id"
+  )"; then
     echo "ERROR: Failed to inspect prior GitHub Codex review requests for PR #$PR_NUMBER." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
-  if grep -Fqx "$marker" <<<"$comments"; then
+  if [ -n "$existing_request_ids" ]; then
     echo "==> GitHub Codex review already requested for head $expected_head."
     return 0
   fi

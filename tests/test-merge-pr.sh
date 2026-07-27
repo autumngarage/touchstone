@@ -259,6 +259,14 @@ case "${1:-} ${2:-}" in
   "api --paginate")
     case "${3:-}" in
       */comments)
+        if [[ "${5:-}" == *'.body == "@codex review\n\n<!-- touchstone:pr-review-request provider=github-codex head='* ]]; then
+          case "${GH_EXISTING_REQUEST_BODY:-}" in
+            "@codex review"$'\n\n'"<!-- touchstone:pr-review-request provider=github-codex head="*" -->")
+              printf 'existing-request-id\n'
+              ;;
+          esac
+          exit 0
+        fi
         comments_call_count="$(increment_counter_file "${GH_COMMENTS_CALLS_FILE:-}")"
         if [ "${GH_COMMENTS_FAIL:-false}" = "true" ]; then
           echo "review comments unavailable" >&2
@@ -572,6 +580,7 @@ reset_case_files() {
   unset GH_REACTIONS_SECOND
   unset GH_ISSUE_COMMENTS
   unset GH_ISSUE_COMMENTS_SECOND
+  unset GH_EXISTING_REQUEST_BODY
   unset GH_COMMENTS_FAIL
   unset GH_COMMENT_COMMIT_RESOLUTION_FAIL
   unset GH_RESOLVED_COMMENT_COMMIT
@@ -648,6 +657,7 @@ run_merge_pr() {
     GH_REACTIONS_CALLS_FILE="$TEST_DIR/gh-reactions-calls" \
     GH_ISSUE_COMMENTS="${GH_ISSUE_COMMENTS:-}" \
     GH_ISSUE_COMMENTS_SECOND="${GH_ISSUE_COMMENTS_SECOND:-}" \
+    GH_EXISTING_REQUEST_BODY="${GH_EXISTING_REQUEST_BODY:-}" \
     GH_COMMENTS_FAIL="${GH_COMMENTS_FAIL:-false}" \
     GH_COMMENT_COMMIT_RESOLUTION_FAIL="${GH_COMMENT_COMMIT_RESOLUTION_FAIL:-false}" \
     GH_RESOLVED_COMMENT_COMMIT="${GH_RESOLVED_COMMENT_COMMIT:-}" \
@@ -1843,6 +1853,7 @@ touchstone_preflight_main() {
 EOF
 CODEX_REVIEW_MUTATE_HEAD="review-fixed-head" \
   GH_EXPECT_MERGE_HEAD="review-fixed-head" \
+  GH_EXISTING_REQUEST_BODY=$'Diagnostic copy:\n\n```\n<!-- touchstone:pr-review-request provider=github-codex head=review-fixed-head -->\n```' \
   PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
   run_merge_pr "$TEST_DIR/output-review-fix.txt" 123
 rm -rf "${TEST_DIR:?}/lib"

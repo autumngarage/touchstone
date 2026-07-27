@@ -562,6 +562,9 @@ segment_runs_bypass_push() {
 push_segment=""
 push_context=""
 push_subcommand=""
+non_push_candidate_segments=()
+non_push_candidate_contexts=()
+non_push_candidate_subcommands=()
 preceding_cd=""
 ambiguous_cd_scope=false
 command_dynamic_protected=false
@@ -624,11 +627,66 @@ while IFS= read -r segment; do
     fi
   fi
 
+  push_context=""
+  push_subcommand=""
   if segment_runs_bypass_push "$segment"; then
+    if [ -n "$push_subcommand" ] && [ "$push_subcommand" != "push" ]; then
+      candidate_index="${#non_push_candidate_segments[@]}"
+      non_push_candidate_segments[$candidate_index]="$segment"
+      non_push_candidate_contexts[$candidate_index]="$push_context"
+      non_push_candidate_subcommands[$candidate_index]="$push_subcommand"
+      continue
+    fi
     push_segment="$segment"
     break
   fi
 done < <(printf '%s\n' "$command" | without_heredoc_bodies | without_shell_comments | shell_segments)
+
+if [ -z "$push_segment" ] && [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
+  candidate_cwd="$session_cwd"
+  if [ -n "$tool_workdir" ]; then
+    if printf '%s' "$tool_workdir" | grep -qE '^/'; then
+      candidate_cwd="$tool_workdir"
+    elif [ -n "$session_cwd" ]; then
+      candidate_cwd="$session_cwd/$tool_workdir"
+    else
+      candidate_cwd="$tool_workdir"
+    fi
+  fi
+  [ -n "$candidate_cwd" ] || candidate_cwd="$(pwd)"
+
+  for candidate_index in "${!non_push_candidate_segments[@]}"; do
+    candidate_segment="${non_push_candidate_segments[$candidate_index]}"
+    candidate_subcommand="${non_push_candidate_subcommands[$candidate_index]}"
+    if [ "$cd_count" -gt 0 ] \
+      || printf '%s' "$candidate_segment" | grep -qE '(^|[[:space:]])-C([[:space:]]|$)'; then
+      # Alias configuration is repository-scoped. A composed directory context
+      # cannot be confirmed here without executing the shell, so fail closed.
+      push_segment="$candidate_segment"
+      push_context="nested"
+      push_subcommand="$candidate_subcommand"
+      break
+    fi
+    alias_expansion="$(git -C "$candidate_cwd" config --get "alias.$candidate_subcommand" 2>/dev/null || true)"
+    alias_command="$(printf '%s' "$alias_expansion" | shell_words | sed -n '1p')"
+    case "$alias_command" in
+      push)
+        push_segment="$candidate_segment"
+        push_context="${non_push_candidate_contexts[$candidate_index]}"
+        push_subcommand="$candidate_subcommand"
+        break
+        ;;
+      !*)
+        if printf '%s' "$alias_expansion" | grep -qE '(^|[[:space:]])(git[[:space:]]+)?push([[:space:]]|$)'; then
+          push_segment="$candidate_segment"
+          push_context="nested"
+          push_subcommand="$candidate_subcommand"
+          break
+        fi
+        ;;
+    esac
+  done
+fi
 
 if [ -z "$push_segment" ]; then
   exit 0

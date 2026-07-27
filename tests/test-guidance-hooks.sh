@@ -270,6 +270,12 @@ assert "blocks push alias with --no-verify" "2" \
 git -C "$TMPDIR" config alias.ci commit
 assert "allows non-push alias with --no-verify" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git ci --no-verify -m wip")")"
+assert "keeps scanning after a non-push no-verify command" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git commit --no-verify -m wip; git push --no-verify origin feat/test")")"
+assert "finds a confirmed push alias after a non-push no-verify command" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git commit --no-verify -m wip; git p --no-verify origin feat/test")")"
+assert "allows multiple confirmed non-push no-verify commands" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git commit --no-verify -m one; git ci --no-verify -m two")")"
 
 # 8. with env var, allowed (and logged)
 EXIT_ALLOWED=0
