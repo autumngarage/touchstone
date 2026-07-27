@@ -735,8 +735,35 @@ if [ "$CLEANUP_WORKTREE" = true ] && [ "$AUTO_MERGE" != true ]; then
   exit 1
 fi
 
-# Resolve the actual base branch: --base overrides the repo default.
-BASE_BRANCH="${BASE_OVERRIDE:-$DEFAULT_BRANCH}"
+# Discover an existing PR before selecting trusted review-request policy. An
+# existing stacked PR keeps its GitHub base even when a later invocation omits
+# --base, so the repository default is not necessarily its authorization
+# boundary.
+if ! EXISTING_PR_RECORD="$(
+  gh pr list \
+    --head "$CURRENT_BRANCH" \
+    --author "@me" \
+    --state open \
+    --json url,baseRefName \
+    --jq 'if length > 0 then .[0] | [.url, .baseRefName] | @tsv else empty end' \
+    2>/dev/null
+)"; then
+  echo "ERROR: Failed to inspect existing PR metadata for branch '$CURRENT_BRANCH'." >&2
+  exit 1
+fi
+EXISTING_PR_URL=""
+EXISTING_PR_BASE_BRANCH=""
+if [ -n "$EXISTING_PR_RECORD" ]; then
+  IFS=$'\t' read -r EXISTING_PR_URL EXISTING_PR_BASE_BRANCH <<<"$EXISTING_PR_RECORD"
+  if [ -z "$EXISTING_PR_URL" ] || [ -z "$EXISTING_PR_BASE_BRANCH" ]; then
+    echo "ERROR: Existing PR metadata is missing its URL or base branch." >&2
+    exit 1
+  fi
+fi
+
+# Explicit --base remains authoritative. Otherwise, updates to an existing PR
+# trust its actual GitHub base; new PRs trust the repository default.
+BASE_BRANCH="${BASE_OVERRIDE:-${EXISTING_PR_BASE_BRANCH:-$DEFAULT_BRANCH}}"
 if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
   echo "ERROR: --base $BASE_BRANCH cannot equal the current branch." >&2
   exit 1
@@ -784,7 +811,6 @@ fi
 trap on_exit EXIT
 
 # If a PR already exists for this branch, just print the URL (and auto-merge if requested).
-EXISTING_PR_URL="$(gh pr list --head "$CURRENT_BRANCH" --author "@me" --state open --json url --jq '.[0].url // empty' 2>/dev/null || echo "")"
 if [ -n "$EXISTING_PR_URL" ]; then
   echo "==> PR already open for $CURRENT_BRANCH: $EXISTING_PR_URL"
   PR_NUMBER="$(basename "$EXISTING_PR_URL")"

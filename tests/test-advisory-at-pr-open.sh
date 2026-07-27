@@ -52,7 +52,12 @@ case "${1:-} ${2:-}" in
     echo "main"
     ;;
   "pr list")
-    echo ""
+    if [ "${GH_PR_LIST_FAIL:-0}" = "1" ]; then
+      exit 1
+    fi
+    if [ -n "${GH_EXISTING_PR_URL:-}" ]; then
+      printf '%s\t%s\n' "$GH_EXISTING_PR_URL" "${GH_EXISTING_PR_BASE:-}"
+    fi
     ;;
   "pr create")
     echo "https://example.test/touchstone/pull/456"
@@ -150,6 +155,9 @@ run_open_pr() {
         GH_API_FAIL="${GH_API_FAIL:-0}" \
         GH_EXISTING_REQUEST_BODY="${GH_EXISTING_REQUEST_BODY:-}" \
         GH_EXISTING_REQUEST_FILE="${GH_EXISTING_REQUEST_FILE:-}" \
+        GH_EXISTING_PR_URL="${GH_EXISTING_PR_URL:-}" \
+        GH_EXISTING_PR_BASE="${GH_EXISTING_PR_BASE:-}" \
+        GH_PR_LIST_FAIL="${GH_PR_LIST_FAIL:-0}" \
         GH_PR_HEAD_SHA="${GH_PR_HEAD_SHA:-}" \
         GIT_FETCH_BASE_SHA="${GIT_FETCH_BASE_SHA:-}" \
         GIT_FETCH_FAIL="${GIT_FETCH_FAIL:-0}" \
@@ -533,6 +541,56 @@ if grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$STACK_
   echo "    PASS"
 else
   echo "    FAIL: stacked PR did not use the local base policy fallback" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 9d: existing stacked PR updates trust their actual base and pushed head"
+reset_case
+git -C "$REPO_DIR" checkout main >/dev/null 2>&1
+printf '[review]\n\n[review.pr_triggered]\nprovider = "github-codex"\nrequest_on_push = false\n' >"$REPO_DIR/.codex-review.toml"
+git -C "$REPO_DIR" add .codex-review.toml
+git -C "$REPO_DIR" commit -m "disable default-branch requests" >/dev/null 2>&1
+git -C "$REPO_DIR" update-ref refs/remotes/origin/main main
+git -C "$REPO_DIR" checkout -b feat/existing-policy-parent main >/dev/null 2>&1
+printf '[review]\n\n[review.pr_triggered]\nprovider = "github-codex"\nrequest_on_push = true\n' >"$REPO_DIR/.codex-review.toml"
+git -C "$REPO_DIR" add .codex-review.toml
+git -C "$REPO_DIR" commit -m "enable stacked-base requests" >/dev/null 2>&1
+git -C "$REPO_DIR" update-ref refs/remotes/origin/feat/existing-policy-parent HEAD
+git -C "$REPO_DIR" checkout feat/advisory >/dev/null 2>&1
+EXISTING_REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
+OUT="$TEST_DIR/request-existing-stacked-policy.out"
+GH_EXISTING_PR_URL="https://example.test/touchstone/pull/789" \
+  GH_EXISTING_PR_BASE="feat/existing-policy-parent" \
+  GH_PR_HEAD_SHA="$EXISTING_REQUEST_HEAD" \
+  GIT_PUSH_CREATE_LOCAL_COMMIT=1 \
+  run_open_pr "$OUT"
+ADVANCED_EXISTING_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
+if [ "$ADVANCED_EXISTING_HEAD" != "$EXISTING_REQUEST_HEAD" ] \
+  && grep -q 'PR already open for feat/advisory: https://example.test/touchstone/pull/789' "$OUT" \
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$EXISTING_REQUEST_HEAD -->" "$TEST_DIR/comments" \
+  && ! grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$ADVANCED_EXISTING_HEAD -->" "$TEST_DIR/comments" \
+  && grep -q "Requested GitHub Codex review for head $EXISTING_REQUEST_HEAD" "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: existing stacked PR update ignored its actual base or selected push head" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 9e: existing PR discovery failure stops before policy selection"
+reset_case
+OUT="$TEST_DIR/request-existing-discovery-failure.out"
+if GH_PR_LIST_FAIL=1 run_open_pr "$OUT"; then
+  echo "    FAIL: existing PR discovery failure should fail closed" >&2
+  ERRORS=$((ERRORS + 1))
+elif grep -q "Failed to inspect existing PR metadata for branch 'feat/advisory'" "$OUT" \
+  && [ ! -f "$TEST_DIR/comments" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: existing PR discovery failure lacked fail-closed diagnostics" >&2
   cat "$OUT" >&2
   [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
   ERRORS=$((ERRORS + 1))
