@@ -258,13 +258,14 @@ case "${1:-} ${2:-}" in
     ;;
   "api --paginate")
     case "${3:-}" in
-      */comments)
-        if [[ "${5:-}" == *'.body == "@codex review\n\n<!-- touchstone:pr-review-request provider=github-codex head='* ]]; then
-          case "${GH_EXISTING_REQUEST_BODY:-}" in
-            "@codex review"$'\n\n'"<!-- touchstone:pr-review-request provider=github-codex head="*" -->")
-              printf 'existing-request-id\n'
-              ;;
-          esac
+      */comments | */comments\?*)
+        if [[ "${5:-}" == *"touchstone:pr-review-request"* ]]; then
+          existing_request_body="${GH_EXISTING_REQUEST_BODY:-}"
+          escaped_existing_request_body="${existing_request_body//$'\n'/\\n}"
+          if [ -n "$existing_request_body" ] \
+            && [[ "${5:-}" == *"$escaped_existing_request_body"* ]]; then
+            printf 'existing-request-id\n'
+          fi
           exit 0
         fi
         comments_call_count="$(increment_counter_file "${GH_COMMENTS_CALLS_FILE:-}")"
@@ -1370,6 +1371,41 @@ if grep -q 'Invalid trusted review config: \[review.pr_triggered\].required must
 else
   echo "FAIL: malformed required value should abort before review or merge" >&2
   cat "$TEST_DIR/output-pr-triggered-invalid-required.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: direct merge entry requests PR-triggered review for the exact current head"
+reset_case_files
+write_pr_triggered_config true 0 0 true true
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/direct-merge' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-direct-request.txt" 123
+if grep -q '^@codex review$' "$TEST_DIR/gh-review-request" \
+  && grep -q '<!-- touchstone:pr-review-request provider=github-codex head=pr-head-oid -->' "$TEST_DIR/gh-review-request" \
+  && grep -q '==> Requested GitHub Codex review for head pr-head-oid (before merge review).' "$TEST_DIR/output-pr-triggered-direct-request.txt" \
+  && grep -q '==> Waiting for trusted PR-visible AI review for PR #123 (before merge review)' "$TEST_DIR/output-pr-triggered-direct-request.txt" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: direct merge requests and reviews the exact current head"
+else
+  echo "FAIL: direct merge should request the exact head before waiting for review" >&2
+  cat "$TEST_DIR/output-pr-triggered-direct-request.txt" >&2
+  [ ! -f "$TEST_DIR/gh-review-request" ] || cat "$TEST_DIR/gh-review-request" >&2
+  exit 1
+fi
+
+echo "==> Test: direct merge review request is idempotent for the exact current head"
+reset_case_files
+write_pr_triggered_config true 0 0 true true
+GH_EXISTING_REQUEST_BODY=$'@codex review\n\n<!-- touchstone:pr-review-request provider=github-codex head=pr-head-oid -->' \
+  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/direct-merge-existing' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-direct-request-existing.txt" 123
+if grep -q '==> GitHub Codex review already requested for head pr-head-oid.' "$TEST_DIR/output-pr-triggered-direct-request-existing.txt" \
+  && [ ! -f "$TEST_DIR/gh-review-request" ] \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: direct merge does not duplicate an exact-head review request"
+else
+  echo "FAIL: direct merge should reuse an existing exact-head review request" >&2
+  cat "$TEST_DIR/output-pr-triggered-direct-request-existing.txt" >&2
+  [ ! -f "$TEST_DIR/gh-review-request" ] || cat "$TEST_DIR/gh-review-request" >&2
   exit 1
 fi
 

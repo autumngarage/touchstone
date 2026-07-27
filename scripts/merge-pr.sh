@@ -2455,6 +2455,7 @@ wait_for_clean_merge_state
 if truthy "$PR_TRIGGERED_REVIEW_REQUIRED" && [ "$BYPASS_REVIEW" != true ]; then
   require_pr_feedback_clear "before PR-triggered AI review"
   PR_TRIGGERED_HEAD_OID="$(current_pr_head_or_die "before PR-triggered AI review")"
+  request_pr_triggered_review "$PR_TRIGGERED_HEAD_OID" "before merge review" || exit 1
   wait_for_pr_triggered_review "$PR_TRIGGERED_HEAD_OID" "before merge review"
   require_pr_feedback_clear "after PR-triggered AI review" "$PR_TRIGGERED_HEAD_OID"
 else
