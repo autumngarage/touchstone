@@ -116,6 +116,19 @@ assert_not_contains() {
   fi
 }
 
+assert_section_contains() {
+  local file="$1" section="$2" expected="$3"
+  if ! awk -v section="[$section]" -v expected="$expected" '
+    $0 == section { in_section = 1; next }
+    /^\[/ { in_section = 0 }
+    in_section && $0 == expected { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' "$file"; then
+    echo "FAIL: expected [$section] in $file to contain '$expected'" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+}
+
 PROJECT="$TEST_DIR/test-project"
 PROJECT_WITH_UNSAFE="$TEST_DIR/test-project-unsafe"
 PROJECT_EXISTING="$TEST_DIR/test-project-existing"
@@ -606,7 +619,8 @@ YES_MODE=false bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^enabled = true$'
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^reviewer = "conductor"$'
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^with = "codex"$'
-assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^exclude = \["ollama"\]$'
+assert_section_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" \
+  "review.conductor" 'exclude = ["ollama"]'
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^\[review\.pr_triggered\]$'
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^required = true$'
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^provider = "github-codex"$'

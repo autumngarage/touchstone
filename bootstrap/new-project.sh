@@ -1226,6 +1226,10 @@ write_review_onboarding_config() {
         printf '# Explicit auto-routing opt-in; this may select a metered provider.\n'
         printf 'with = "auto"\n'
       fi
+      if [ "$with_pin" != "ollama" ]; then
+        printf '# Ollama is reserved for explicit offline/local review only.\n'
+        printf 'exclude = ["ollama"]\n'
+      fi
       if [ "$routing" = "all-hosted" ]; then
         printf '\n[review.pr_triggered]\n'
         printf 'required = true\n'
@@ -1235,10 +1239,6 @@ write_review_onboarding_config() {
         printf 'poll_sec = 10\n'
         printf 'trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]\n'
         printf 'skip_merge_review = true\n'
-      fi
-      if [ "$with_pin" != "ollama" ]; then
-        printf '# Ollama is reserved for explicit offline/local review only.\n'
-        printf 'exclude = ["ollama"]\n'
       fi
       if [ "$reviewer" = "local" ] && [ -n "$INPUT_LOCAL_REVIEW_COMMAND" ]; then
         printf '# NOTE: Touchstone 2.0 retired [review.local]. Your --local-review-command\n'
