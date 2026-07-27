@@ -4059,6 +4059,44 @@ EOF
     ERRORS=$((ERRORS + 1))
   fi
 
+  echo "==> Test: missing auth helper follows dependency fail-open without spending"
+  MISSING_AUTH_REPO="$TEST_DIR/missing-auth"
+  MISSING_AUTH_ROOT="$TEST_DIR/missing-auth-root"
+  MISSING_AUTH_OUTPUT="$TEST_DIR/missing-auth.out"
+  MISSING_AUTH_LOG="$TEST_DIR/missing-auth.log"
+  mkdir -p "$MISSING_AUTH_ROOT/lib"
+  cp "$TOUCHSTONE_ROOT/lib/toml.sh" "$MISSING_AUTH_ROOT/lib/toml.sh"
+  CONDUCTOR_ARGS_LOG="$TEST_DIR/missing-auth.args"
+  export CONDUCTOR_ARGS_LOG
+  : >"$CONDUCTOR_ARGS_LOG"
+  setup_repo "$MISSING_AUTH_REPO"
+  (
+    cd "$MISSING_AUTH_REPO"
+    PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+      TOUCHSTONE_ROOT="$MISSING_AUTH_ROOT" \
+      CONDUCTOR_ARGS_LOG="$CONDUCTOR_ARGS_LOG" \
+      CODEX_REVIEW_BASE=HEAD~1 \
+      CODEX_REVIEW_DISABLE_CACHE=1 \
+      CODEX_REVIEW_MODE=review-only \
+      CODEX_REVIEW_ON_ERROR=fail-open \
+      TOUCHSTONE_NO_PREFLIGHT=1 \
+      TOUCHSTONE_REVIEW_LOG="$MISSING_AUTH_LOG" \
+      bash "$HOOK" >"$MISSING_AUTH_OUTPUT" 2>&1
+  )
+
+  if [ ! -s "$CONDUCTOR_ARGS_LOG" ] \
+    && grep -Fq '[fail-open:FAIL_OPEN_DEPENDENCY_MISSING]' "$MISSING_AUTH_OUTPUT" \
+    && grep -q 'authentication helper unavailable' "$MISSING_AUTH_OUTPUT" \
+    && grep -q 'FAIL_OPEN_DEPENDENCY_MISSING' "$MISSING_AUTH_LOG"; then
+    echo "==> PASS: missing auth helper failed open through the audited dependency path"
+  else
+    echo "FAIL: missing auth helper must preserve fail-open and avoid provider invocation" >&2
+    cat "$MISSING_AUTH_OUTPUT" >&2
+    cat "$MISSING_AUTH_LOG" >&2
+    cat "$CONDUCTOR_ARGS_LOG" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+
   echo "==> Test: explicit auto route is visible and unpinned"
   AUTO_REPO="$TEST_DIR/auto"
   AUTO_OUTPUT="$TEST_DIR/auto.out"

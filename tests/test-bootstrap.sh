@@ -116,6 +116,15 @@ assert_not_contains() {
   fi
 }
 
+assert_line_count() {
+  local file="$1" pattern="$2" expected="$3" actual
+  actual="$(grep -c -e "$pattern" "$file" 2>/dev/null || true)"
+  if [ "$actual" != "$expected" ]; then
+    echo "FAIL: expected $file to contain '$pattern' $expected time(s), found $actual" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+}
+
 assert_section_contains() {
   local file="$1" section="$2" expected="$3"
   if ! awk -v section="[$section]" -v expected="$expected" '
@@ -139,6 +148,8 @@ PROJECT_PYTHON="$TEST_DIR/test-project-python"
 PROJECT_REVIEW_NONE="$TEST_DIR/test-project-review-none"
 PROJECT_REVIEW_LOCAL="$TEST_DIR/test-project-review-local"
 PROJECT_REVIEW_OPENROUTER="$TEST_DIR/test-project-review-openrouter"
+PROJECT_REVIEW_CLAUDE="$TEST_DIR/test-project-review-claude"
+PROJECT_REVIEW_AUTO="$TEST_DIR/test-project-review-auto"
 PROJECT_REVIEW_DEFAULT_NONTTY="$TEST_DIR/test-project-review-default-nontty"
 PROJECT_REVIEW_RETIRED_SMALL_LOCAL="$TEST_DIR/test-project-review-retired-small-local"
 PROJECT_GITBUTLER="$TEST_DIR/test-project-gitbutler"
@@ -174,6 +185,8 @@ assert_exists "$PROJECT/.github/pull_request_template.md"
 assert_exists "$PROJECT/.github/workflows/issue-claim-check.yml"
 assert_exists "$PROJECT/.touchstone-review.toml"
 assert_contains "$PROJECT/.touchstone-review.toml" '^with = "codex"$'
+assert_line_count "$PROJECT/.touchstone-review.toml" '^\[review\.conductor\]$' 1
+assert_line_count "$PROJECT/.touchstone-review.toml" '^with = ' 1
 assert_contains "$PROJECT/.touchstone-review.toml" '^required = false$'
 assert_contains "$PROJECT/.touchstone-review.toml" '^request_on_push = true$'
 if ! diff -q "$TOUCHSTONE_ROOT/templates/ci/issue-claim-check.yml" "$TOUCHSTONE_ROOT/.github/workflows/issue-claim-check.yml" >/dev/null; then
@@ -594,6 +607,8 @@ assert_contains "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^mode = "review-
 assert_contains "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^safe_by_default = false$'
 assert_contains "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^enabled = false$'
 assert_contains "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^reviewer = "conductor"$'
+assert_line_count "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^\[review\.conductor\]$' 0
+assert_line_count "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^with = ' 0
 
 # Bootstrap should support explicit offline local model reviewer commands. In
 # 2.0 the `[review.local]` block is retired; local maps to ollama with a comment
@@ -605,6 +620,9 @@ assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^safe_by_defaul
 assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^enabled = true$'
 assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^reviewer = "conductor"$'
 assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^with = "ollama"$'
+assert_line_count "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^\[review\.conductor\]$' 1
+assert_line_count "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^with = ' 1
+assert_line_count "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^exclude = \["ollama"\]$' 0
 assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" 'local-reviewer --model demo'
 assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '"src/auth/",'
 
@@ -613,8 +631,21 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_OPENROUTER" --
 assert_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^enabled = true$'
 assert_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^reviewer = "conductor"$'
 assert_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^with = "openrouter"$'
+assert_line_count "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^\[review\.conductor\]$' 1
+assert_line_count "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^with = ' 1
 assert_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^exclude = \["ollama"\]$'
 assert_not_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^small_with = "ollama"'
+
+# Explicit hosted and auto choices must be the sole live provider boundary.
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_CLAUDE" --no-register --reviewer claude
+assert_contains "$PROJECT_REVIEW_CLAUDE/.touchstone-review.toml" '^with = "claude"$'
+assert_line_count "$PROJECT_REVIEW_CLAUDE/.touchstone-review.toml" '^\[review\.conductor\]$' 1
+assert_line_count "$PROJECT_REVIEW_CLAUDE/.touchstone-review.toml" '^with = ' 1
+
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_AUTO" --no-register --reviewer auto
+assert_contains "$PROJECT_REVIEW_AUTO/.touchstone-review.toml" '^with = "auto"$'
+assert_line_count "$PROJECT_REVIEW_AUTO/.touchstone-review.toml" '^\[review\.conductor\]$' 1
+assert_line_count "$PROJECT_REVIEW_AUTO/.touchstone-review.toml" '^with = ' 1
 
 # Fresh non-interactive bootstrap without --yes must use the same live-review
 # default: GitHub Codex plus subscription-backed Codex fallback.
@@ -622,6 +653,8 @@ YES_MODE=false bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^enabled = true$'
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^reviewer = "conductor"$'
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^with = "codex"$'
+assert_line_count "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^\[review\.conductor\]$' 1
+assert_line_count "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^with = ' 1
 assert_section_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" \
   "review.conductor" 'exclude = ["ollama"]'
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^\[review\.pr_triggered\]$'

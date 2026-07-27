@@ -41,6 +41,7 @@ touchstone_sync_planned_write_paths() {
     printf 'scripts/worker.sh\n'
     printf 'lib/toml.sh\n'
     printf 'lib/events.sh\n'
+    printf 'lib/codex-auth.sh\n'
     printf 'lib/worker-ship-job.sh\n'
     printf 'lib/worker-review-fix.sh\n'
     printf 'lib/worker-state.sh\n'

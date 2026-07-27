@@ -243,8 +243,23 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOUCHSTONE_ROOT="${TOUCHSTONE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-# shellcheck source=../lib/codex-auth.sh
-source "$TOUCHSTONE_ROOT/lib/codex-auth.sh"
+CODEX_AUTH_SCRIPT="$TOUCHSTONE_ROOT/lib/codex-auth.sh"
+CODEX_AUTH_HELPER_FAILURE=""
+TOUCHSTONE_CODEX_AUTH_FAILURE=""
+if [ -r "$CODEX_AUTH_SCRIPT" ]; then
+  # shellcheck source=../lib/codex-auth.sh
+  if ! source "$CODEX_AUTH_SCRIPT"; then
+    CODEX_AUTH_HELPER_FAILURE="helper-load-failed"
+  fi
+else
+  CODEX_AUTH_HELPER_FAILURE="helper-missing"
+fi
+if [ -n "$CODEX_AUTH_HELPER_FAILURE" ]; then
+  touchstone_codex_subscription_auth_check() {
+    TOUCHSTONE_CODEX_AUTH_FAILURE="$CODEX_AUTH_HELPER_FAILURE"
+    return 127
+  }
+fi
 
 # Files materialized from the trusted base ref by resolve_trusted_review_file;
 # removed by cleanup_review_process on exit.
@@ -2910,7 +2925,10 @@ if ! resolve_reviewer; then
   unavailable_code="FAIL_OPEN_DEPENDENCY_MISSING"
   unavailable_reason="dependency-missing"
   unavailable_message="conductor CLI not found on PATH"
-  if reviewer_conductor_available; then
+  if [ "${CONDUCTOR_AUTH_FAILURE:-}" = "helper-missing" ] \
+    || [ "${CONDUCTOR_AUTH_FAILURE:-}" = "helper-load-failed" ]; then
+    unavailable_message="subscription Codex authentication helper unavailable: $CODEX_AUTH_SCRIPT"
+  elif reviewer_conductor_available; then
     unavailable_code="FAIL_OPEN_PROVIDER_UNAVAILABLE"
     unavailable_reason="provider-unavailable"
     if [ -n "${CONDUCTOR_AUTH_FAILURE:-}" ]; then

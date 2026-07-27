@@ -114,7 +114,7 @@ unsafe_paths = [
 # is useful for explicit offline review only; use `--review-routing all-local`
 # or `--reviewer local` when that is the desired mode.
 
-[review.conductor]
+# [review.conductor]
 # # Which provider wins auto-routing. One of:
 # #   "best"     — highest-quality-tier (frontier > strong > standard > local)
 # #   "cheapest" — minimize $/tok (good for throwaway branches)
@@ -133,7 +133,7 @@ unsafe_paths = [
 #
 # Subscription-only default. If Codex is unavailable, review follows
 # `on_error`; it does not fall through to a metered API provider.
-with = "codex"
+# with = "codex"
 #
 # Explicit metered opt-in:
 # # with = "openrouter"
@@ -146,7 +146,7 @@ with = "codex"
 # # minimum_version = "0.10.29"
 #
 # Exclude providers from hosted auto-routing (degraded, rate-limited, offline-only).
-exclude = ["ollama"]
+# exclude = ["ollama"]
 
 # --------------------------------------------------------------------------
 # Routing by diff size (default)

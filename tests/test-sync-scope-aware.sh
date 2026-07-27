@@ -87,6 +87,7 @@ assert_contains "$TEST_DIR/planned.out" "TOUCHSTONE.md"
 assert_contains "$TEST_DIR/planned.out" ".github/workflows/issue-claim-check.yml"
 assert_contains "$TEST_DIR/planned.out" "scripts/claim-issue.sh"
 assert_contains "$TEST_DIR/planned.out" "scripts/issue-claim-check.sh"
+assert_contains "$TEST_DIR/planned.out" "lib/codex-auth.sh"
 assert_contains "$TEST_DIR/planned.out" "lib/script-sync-guard.sh"
 assert_contains "$TEST_DIR/planned.out" "lib/preflight-scope.sh"
 
@@ -104,6 +105,19 @@ assert_contains "$TEST_DIR/overlap.out" "Dirty paths overlap planned touchstone 
 assert_contains "$TEST_DIR/overlap.out" "scripts/touchstone-run.sh"
 assert_contains "$OVERLAP_PROJECT/.git/touchstone/sync-skips.jsonl" '"reason":"dirty-overlap"'
 assert_contains "$OVERLAP_PROJECT/.git/touchstone/sync-skips.jsonl" '"command":"touchstone update"'
+
+echo ""
+echo "--- dirty managed auth helper refuses sync without losing local content ---"
+AUTH_OVERLAP_PROJECT="$TEST_DIR/auth-overlap-project"
+make_stale_project "$AUTH_OVERLAP_PROJECT" "0000000000000000000000000000000000000107"
+printf '\n# preserve local auth edit\n' >>"$AUTH_OVERLAP_PROJECT/lib/codex-auth.sh"
+if (cd "$AUTH_OVERLAP_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/auth-overlap.out" 2>&1; then
+  echo "FAIL: expected dirty auth helper to refuse sync" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/auth-overlap.out" "Dirty paths overlap planned touchstone writes"
+assert_contains "$TEST_DIR/auth-overlap.out" "lib/codex-auth.sh"
+assert_contains "$AUTH_OVERLAP_PROJECT/lib/codex-auth.sh" "# preserve local auth edit"
 
 echo ""
 echo "--- dirty issue-claim workflow refuses sync ---"

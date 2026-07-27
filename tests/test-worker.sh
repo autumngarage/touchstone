@@ -655,12 +655,17 @@ case "$command_name:$subcommand" in
       printf 'reply\n' >>"$FAKE_REPLY_LOG"
       : >"$FAKE_REPLIED"
       [ "${FAKE_MOVE_HEAD_DURING_FINISH:-0}" = 1 ] && : >"$FAKE_HEAD_MOVED" || true
+    elif [[ "$args" == *unresolveReviewThread* ]]; then
+      printf 'unresolve\n' >>"$FAKE_UNRESOLVE_LOG"
+      rm -f "$FAKE_RESOLVED"
+      : >"$FAKE_THREAD_ACTIVE"
     elif [[ "$args" == *resolveReviewThread* ]]; then
       printf 'resolve\n' >>"$FAKE_RESOLVE_LOG"
       : >"$FAKE_RESOLVED"
+      [ "${FAKE_ADD_COMMENT_DURING_RESOLVE:-0}" = 1 ] && : >"$FAKE_LATE_COMMENT" || true
       if [ "${FAKE_REPLACE_THREAD:-0}" = 1 ] && [ ! -f "$FAKE_REPLACED" ]; then
-        printf 'thread-2\n' >"$FAKE_THREAD_ID"
         : >"$FAKE_REPLACED"
+        : >"$FAKE_PENDING_REPLACEMENT"
       else
         rm -f "$FAKE_THREAD_ACTIVE"
       fi
@@ -688,6 +693,13 @@ case "$command_name:$subcommand" in
         comment_ids="$thread_id,follow-up-comment"
         snapshot_encoded="$FAKE_CHANGED_SNAPSHOT_ENCODED"
       fi
+      if [ -f "$FAKE_LATE_COMMENT" ]; then
+        total_count=3
+        loaded_count=3
+        nonmarker_count=2
+        comment_ids="$thread_id,late-follow-up-comment"
+        snapshot_encoded="$FAKE_CHANGED_SNAPSHOT_ENCODED"
+      fi
       if [ "${FAKE_UNTRUSTED_MARKER:-0}" = 1 ] && [ ! -f "$FAKE_REPLIED" ]; then
         total_count=2
         loaded_count=2
@@ -704,6 +716,11 @@ case "$command_name:$subcommand" in
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$resolved" "$total_count" "$loaded_count" "$nonmarker_count" \
         "$marker_count" "$comment_ids" "$snapshot_encoded"
+      if [ -f "$FAKE_PENDING_REPLACEMENT" ]; then
+        printf 'thread-2\n' >"$FAKE_THREAD_ID"
+        rm -f "$FAKE_PENDING_REPLACEMENT" "$FAKE_REPLIED" "$FAKE_RESOLVED"
+        : >"$FAKE_THREAD_ACTIVE"
+      fi
     else
       echo "unexpected gh api request: $args" >&2
       exit 1
@@ -747,9 +764,12 @@ EOF
   export FAKE_THREAD_ID="$TEST_DIR/thread-id"
   export FAKE_REPLY_LOG="$TEST_DIR/replies"
   export FAKE_RESOLVE_LOG="$TEST_DIR/resolves"
+  export FAKE_UNRESOLVE_LOG="$TEST_DIR/unresolves"
   export FAKE_REPLIED="$TEST_DIR/replied"
   export FAKE_RESOLVED="$TEST_DIR/resolved"
+  export FAKE_LATE_COMMENT="$TEST_DIR/late-comment"
   export FAKE_REPLACED="$TEST_DIR/replaced"
+  export FAKE_PENDING_REPLACEMENT="$TEST_DIR/pending-replacement"
   export FAKE_STALE_NEXT="$TEST_DIR/stale-next"
   export FAKE_HEAD_MOVED="$TEST_DIR/head-moved"
   export FAKE_OPEN_PR_LOG="$TEST_DIR/open-pr.log"
@@ -1036,7 +1056,34 @@ EOF
   [ ! -f "$FAKE_MERGED" ] || fail "new follow-up feedback reached merge"
   unset FAKE_ADD_COMMENT_BEFORE_RESOLVE
 
-  echo "==> Case c9: another author's marker-shaped comment cannot authorize resolution"
+  echo "==> Case c9: a comment arriving during resolution reopens the thread"
+  RESOLVE_RACE_WT="$TEST_DIR/resolve-race-worktree"
+  git -C "$REPO" branch feat/review-resolve-race main
+  git -C "$REPO" push -q origin feat/review-resolve-race
+  git -C "$REPO" worktree add -q "$RESOLVE_RACE_WT" feat/review-resolve-race
+  : >"$FAKE_THREAD_ACTIVE"
+  : >"$FAKE_RESOLVE_LOG"
+  : >"$FAKE_UNRESOLVE_LOG"
+  printf 'thread-resolve-race\n' >"$FAKE_THREAD_ID"
+  rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED" "$FAKE_LATE_COMMENT" "$FAKE_MERGED"
+  export FAKE_ADD_COMMENT_DURING_RESOLVE=1
+  TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+    "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+    --worktree "$RESOLVE_RACE_WT" --detach --review-fix --validation-command : >/dev/null
+  wait_for_status "$RESOLVE_RACE_WT" needs-attention "$STATUS" \
+    || fail "post-resolve follow-up did not enter needs-attention"
+  assert_contains "$STATUS" '"reason":"review-thread-changed"'
+  [ "$(wc -l <"$FAKE_RESOLVE_LOG" | tr -d ' ')" = 1 ] \
+    || fail "resolve-race fixture did not resolve exactly once"
+  [ "$(wc -l <"$FAKE_UNRESOLVE_LOG" | tr -d ' ')" = 1 ] \
+    || fail "resolve-race fixture did not reopen exactly once"
+  [ ! -f "$FAKE_RESOLVED" ] || fail "changed thread remained resolved after post-resolve verification"
+  [ -f "$FAKE_THREAD_ACTIVE" ] || fail "changed thread was not restored to the unresolved set"
+  [ ! -f "$FAKE_MERGED" ] || fail "post-resolve follow-up reached merge"
+  unset FAKE_ADD_COMMENT_DURING_RESOLVE
+  rm -f "$FAKE_LATE_COMMENT"
+
+  echo "==> Case c10: another author's marker-shaped comment cannot authorize resolution"
   UNTRUSTED_MARKER_WT="$TEST_DIR/untrusted-marker-worktree"
   git -C "$REPO" branch feat/review-untrusted-marker main
   git -C "$REPO" push -q origin feat/review-untrusted-marker
@@ -1063,7 +1110,7 @@ EOF
   git -C "$REPO" worktree add -q "$BUDGET_WT" feat/review-budget
   : >"$FAKE_THREAD_ACTIVE"
   printf 'thread-budget-1\n' >"$FAKE_THREAD_ID"
-  rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED" "$FAKE_REPLACED"
+  rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED" "$FAKE_REPLACED" "$FAKE_PENDING_REPLACEMENT"
   export FAKE_REPLACE_THREAD=1
   TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
     "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \

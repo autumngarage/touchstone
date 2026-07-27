@@ -220,6 +220,18 @@ mutation($thread: ID!) {
   gh api graphql -F thread="$thread_id" -f query="$query" >/dev/null
 }
 
+touchstone_review_fix_unresolve() {
+  local thread_id="$1" query
+  # shellcheck disable=SC2016 # GraphQL variables are expanded by GitHub.
+  query='
+mutation($thread: ID!) {
+  unresolveReviewThread(input: { threadId: $thread }) {
+    thread { id isResolved }
+  }
+}'
+  gh api graphql -F thread="$thread_id" -f query="$query" >/dev/null
+}
+
 touchstone_review_fix_write_brief() {
   local brief_file="$1" worktree_path="$2" pr_number="$3" source_head="$4"
   local threads_file="$5" validation_command="$6"
@@ -390,10 +402,11 @@ touchstone_review_fix_finish_threads() {
     IFS="$(printf '\t')" read -r resolved replied snapshot_matches <<EOF
 $remote_state
 EOF
-    if [ "$resolved" = "true" ]; then
+    if [ "$resolved" = "true" ] && [ "$snapshot_matches" = "true" ]; then
       touchstone_ship_write "$job_dir/review-fix" "resolved-$key" "$fix_head"
       continue
     fi
+    [ "$resolved" != "true" ] || return 5
     [ "$snapshot_matches" = "true" ] || return 5
 
     if [ "$replied" != "true" ]; then
@@ -408,16 +421,43 @@ EOF
       IFS="$(printf '\t')" read -r resolved replied snapshot_matches <<EOF
 $remote_state
 EOF
-      if [ "$resolved" = "true" ]; then
+      if [ "$resolved" = "true" ] && [ "$snapshot_matches" = "true" ]; then
         touchstone_ship_write "$job_dir/review-fix" "resolved-$key" "$fix_head"
         continue
       fi
+      [ "$resolved" != "true" ] || return 5
       [ "$replied" = "true" ] && [ "$snapshot_matches" = "true" ] || return 5
     fi
 
     touchstone_review_fix_resolve "$thread_id" || return 1
     observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
-    [ "$observed_head" = "$fix_head" ] || return 4
+    if [ "$observed_head" != "$fix_head" ]; then
+      touchstone_review_fix_unresolve "$thread_id" || true
+      return 4
+    fi
+    remote_state="$(touchstone_review_fix_thread_remote_state \
+      "$thread_id" "$marker" "$comment_count" "$comment_ids" "$comment_snapshot" \
+      "$reply_author")" || {
+      touchstone_review_fix_unresolve "$thread_id" || true
+      return 1
+    }
+    IFS="$(printf '\t')" read -r resolved replied snapshot_matches <<EOF
+$remote_state
+EOF
+    if [ "$resolved" != "true" ] \
+      || [ "$replied" != "true" ] \
+      || [ "$snapshot_matches" != "true" ]; then
+      [ "$resolved" != "true" ] || touchstone_review_fix_unresolve "$thread_id" || return 1
+      return 5
+    fi
+    observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || {
+      touchstone_review_fix_unresolve "$thread_id" || true
+      return 1
+    }
+    if [ "$observed_head" != "$fix_head" ]; then
+      touchstone_review_fix_unresolve "$thread_id" || true
+      return 4
+    fi
     touchstone_ship_write "$job_dir/review-fix" "resolved-$key" "$fix_head"
   done <"$threads_file"
 
