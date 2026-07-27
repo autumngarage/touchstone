@@ -41,7 +41,7 @@ bootstrap_project() {
 # block. The unit under test is update-project.sh, not pre-commit policy.
 commit_file() {
   local repo="$1" message="$2"
-  git -C "$repo" add -- .codex-review.toml || true
+  git -C "$repo" add -A -- .touchstone-review.toml .codex-review.toml || true
   git -C "$repo" commit --no-verify -m "$message" >/dev/null 2>&1 || true
 }
 
@@ -58,6 +58,7 @@ run_update() {
 echo "==> Case 1: v1.x reviewers cascade migrates to v2.x conductor shape"
 P1="$TEST_DIR/p1"
 bootstrap_project "$P1"
+rm -f "$P1/.touchstone-review.toml"
 cat >"$P1/.codex-review.toml" <<'EOF'
 [review]
 enabled = true
@@ -97,6 +98,7 @@ fi
 echo "==> Case 2: [review.local] block triggers migration"
 P2="$TEST_DIR/p2"
 bootstrap_project "$P2"
+rm -f "$P2/.touchstone-review.toml"
 cat >"$P2/.codex-review.toml" <<'EOF'
 [review]
 enabled = true
@@ -124,12 +126,14 @@ fi
 echo "==> Case 3: already-v2.x config is unchanged"
 P3="$TEST_DIR/p3"
 bootstrap_project "$P3"
+rm -f "$P3/.touchstone-review.toml"
 cat >"$P3/.codex-review.toml" <<'EOF'
 [review]
 enabled = true
 reviewer = "conductor"
 
 [review.conductor]
+with = "codex"
 prefer = "best"
 effort = "max"
 EOF
@@ -153,8 +157,8 @@ fi
 echo "==> Case 4: absent .codex-review.toml does not error"
 P4="$TEST_DIR/p4"
 bootstrap_project "$P4"
-rm -f "$P4/.codex-review.toml"
-git -C "$P4" rm -- .codex-review.toml >/dev/null 2>&1 || true
+rm -f "$P4/.touchstone-review.toml" "$P4/.codex-review.toml"
+git -C "$P4" add -A
 git -C "$P4" commit --no-verify -m "test: removed config" >/dev/null 2>&1 || true
 
 if ! run_update "$P4"; then
