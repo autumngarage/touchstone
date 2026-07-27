@@ -2,6 +2,9 @@
 #
 # Bounded autonomous repair of actionable GitHub PR review threads.
 
+# shellcheck source=codex-auth.sh
+source "$TOUCHSTONE_ROOT/lib/codex-auth.sh"
+
 touchstone_review_fix_set_state() {
   local job_dir="$1" worktree_path="$2" status="$3"
   touchstone_ship_write "$job_dir" status "$status"
@@ -253,7 +256,7 @@ EOF
 touchstone_review_fix_invoke_worker() {
   local worktree_path="$1" brief_file="$2" result_file="$3"
   local worker_command="${TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND:-}"
-  local login_status=""
+  local auth_rc=0
 
   : >"$result_file"
   if [ -n "$worker_command" ]; then
@@ -264,16 +267,12 @@ touchstone_review_fix_invoke_worker() {
     return
   fi
 
-  command -v codex >/dev/null 2>&1 || return 127
-  login_status="$(codex login status 2>&1)" || return 127
-  case "$login_status" in
-    *"Logged in using ChatGPT"*) ;;
-    *)
-      echo "ERROR: autonomous review-fix requires a ChatGPT-authenticated Codex CLI." >&2
-      echo "       Refusing API-key or unknown authentication to avoid metered review spend." >&2
-      return 126
-      ;;
-  esac
+  touchstone_codex_subscription_auth_check || auth_rc=$?
+  if [ "$auth_rc" -ne 0 ]; then
+    echo "ERROR: autonomous review-fix requires a ChatGPT-authenticated Codex CLI." >&2
+    echo "       Refusing API-key, unknown, or unverifiable authentication to avoid metered review spend." >&2
+    return "$auth_rc"
+  fi
   codex exec \
     --ephemeral \
     --sandbox workspace-write \

@@ -85,15 +85,18 @@ unsafe_paths = [
 # ]
 # # reviewer = "conductor"   # single-valued in 2.0+; absent reviewers[]
 
-# Optional merge gate for PR-triggered GitHub Codex review. When required,
-# scripts/merge-pr.sh waits for a trusted review signal on the exact PR head,
-# runs deterministic preflight, and skips the duplicate local merge LLM review
-# only while the exact head and captured base revision remain unchanged.
+# Optional strict merge gate for PR-triggered GitHub Codex review. Fresh
+# scaffolds request GitHub review asynchronously with required = false, so a
+# missing repository connector cannot stall delivery. Enable required = true
+# only after confirming the connector returns trusted exact-head reviews.
+# When required, scripts/merge-pr.sh waits for that signal, runs deterministic
+# preflight, and skips the duplicate local merge LLM review only while the exact
+# head and captured base revision remain unchanged.
 #
 # [review.pr_triggered]
 # required = true
 # provider = "github-codex"
-# request_on_push = false  # Post one head-bound `@codex review` request per pushed PR head.
+# request_on_push = true  # Post one head-bound `@codex review` request per pushed PR head.
 # timeout_sec = 1800
 # poll_sec = 10
 # trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]

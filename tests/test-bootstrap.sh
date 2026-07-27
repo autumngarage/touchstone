@@ -174,6 +174,7 @@ assert_exists "$PROJECT/.github/pull_request_template.md"
 assert_exists "$PROJECT/.github/workflows/issue-claim-check.yml"
 assert_exists "$PROJECT/.touchstone-review.toml"
 assert_contains "$PROJECT/.touchstone-review.toml" '^with = "codex"$'
+assert_contains "$PROJECT/.touchstone-review.toml" '^required = false$'
 assert_contains "$PROJECT/.touchstone-review.toml" '^request_on_push = true$'
 if ! diff -q "$TOUCHSTONE_ROOT/templates/ci/issue-claim-check.yml" "$TOUCHSTONE_ROOT/.github/workflows/issue-claim-check.yml" >/dev/null; then
   echo "FAIL: source issue-claim workflow must match installable template" >&2
@@ -198,6 +199,7 @@ assert_exists "$PROJECT/principles/README.md"
 assert_exists "$PROJECT/scripts/conductor-review.sh"
 assert_exists "$PROJECT/scripts/codex-review.sh"
 assert_exists "$PROJECT/lib/toml.sh"
+assert_exists "$PROJECT/lib/codex-auth.sh"
 assert_exists "$PROJECT/lib/script-sync-guard.sh"
 assert_exists "$PROJECT/lib/preflight.sh"
 assert_exists "$PROJECT/lib/review-comment.sh"
@@ -253,6 +255,7 @@ assert_contains "$PROJECT/.touchstone-manifest" '^scripts/issue-claim-check.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/toml\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/codex-auth\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-ship-job\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-review-fix\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/script-sync-guard\.sh$'
@@ -622,7 +625,7 @@ assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^with 
 assert_section_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" \
   "review.conductor" 'exclude = ["ollama"]'
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^\[review\.pr_triggered\]$'
-assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^required = true$'
+assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^required = false$'
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^provider = "github-codex"$'
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^request_on_push = true$'
 assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^skip_merge_review = true$'
@@ -2212,8 +2215,8 @@ echo "==> PASS: all assertions passed"
 # -----------------------------------------------------------------------------
 (
   #
-  # Verify a fresh generic scaffold's formatting hooks are executable contracts:
-  # every referenced config exists, markdownlint runs, and shfmt rejects drift.
+  # Verify a fresh generic scaffold's formatting contracts without downloading or
+  # executing remote hook environments in the fast test tier.
   #
   set -euo pipefail
 
@@ -2223,14 +2226,8 @@ echo "==> PASS: all assertions passed"
   TEST_DIR="$(mktemp -d -t touchstone-scaffold-format.XXXXXX)"
   trap 'rm -rf "$TEST_DIR"' EXIT
 
-  if ! command -v pre-commit >/dev/null 2>&1; then
-    echo "FAIL: pre-commit is required for scaffold formatting contract tests" >&2
-    exit 1
-  fi
-
   PROJECT="$TEST_DIR/generic-project"
   TEST_HOME="$TEST_DIR/home"
-  PRE_COMMIT_TEST_HOME="${REAL_HOME:-$TEST_HOME}"
   mkdir -p "$TEST_HOME"
 
   HOME="$TEST_HOME" YES_MODE=true bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
@@ -2244,34 +2241,23 @@ echo "==> PASS: all assertions passed"
     --no-with-sentinel \
     >/dev/null
 
-  if [ ! -f "$PROJECT/.markdownlint.json" ]; then
-    echo "FAIL: generic scaffold omitted the markdownlint config referenced by pre-commit" >&2
+  if ! cmp -s "$PROJECT/.pre-commit-config.yaml" "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml"; then
+    echo "FAIL: generic scaffold pre-commit config diverged from its template" >&2
+    exit 1
+  fi
+  if ! cmp -s "$PROJECT/.markdownlint.json" "$TOUCHSTONE_ROOT/templates/.markdownlint.json"; then
+    echo "FAIL: generic scaffold markdownlint config diverged from its template" >&2
+    exit 1
+  fi
+  if ! grep -q "args: \\['-d', '-i', '2', '-ci', '-bn'\\]" "$PROJECT/.pre-commit-config.yaml"; then
+    echo "FAIL: generated shfmt hook must reject drift without rewriting files" >&2
+    exit 1
+  fi
+  if ! grep -q "args: \\['--config', '.markdownlint.json'\\]" "$PROJECT/.pre-commit-config.yaml"; then
+    echo "FAIL: generated markdownlint hook must reference its project config" >&2
     exit 1
   fi
 
-  printf '# Valid heading\n' >"$PROJECT/formatting.md"
-  if ! (cd "$PROJECT" && HOME="$PRE_COMMIT_TEST_HOME" pre-commit run markdownlint --files formatting.md); then
-    echo "FAIL: generated markdownlint hook could not run against its config" >&2
-    exit 1
-  fi
-
-  cat >"$PROJECT/format-drift.sh" <<'EOF'
-#!/usr/bin/env bash
-if true;then
-echo drift
-fi
-EOF
-
-  if (cd "$PROJECT" && HOME="$PRE_COMMIT_TEST_HOME" pre-commit run shfmt --files format-drift.sh); then
-    echo "FAIL: generated shfmt hook accepted formatting drift" >&2
-    exit 1
-  fi
-
-  if ! grep -q '^if true;then$' "$PROJECT/format-drift.sh"; then
-    echo "FAIL: drift-enforcement hook must reject, not rewrite, the source file" >&2
-    exit 1
-  fi
-
-  echo "==> PASS: scaffold formatting hooks share deterministic preflight semantics"
+  echo "==> PASS: scaffold formatting contracts match their canonical templates"
 
 )

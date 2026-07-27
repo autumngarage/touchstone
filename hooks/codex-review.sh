@@ -243,6 +243,8 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOUCHSTONE_ROOT="${TOUCHSTONE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+# shellcheck source=../lib/codex-auth.sh
+source "$TOUCHSTONE_ROOT/lib/codex-auth.sh"
 
 # Files materialized from the trusted base ref by resolve_trusted_review_file;
 # removed by cleanup_review_process on exit.
@@ -1804,6 +1806,17 @@ reviewer_conductor_available() {
 }
 
 reviewer_conductor_auth_ok() {
+  local auth_rc=0
+
+  CONDUCTOR_AUTH_FAILURE=""
+  if [ "$REVIEW_COST_BOUNDARY" = "subscription-codex" ]; then
+    touchstone_codex_subscription_auth_check || auth_rc=$?
+    if [ "$auth_rc" -ne 0 ]; then
+      CONDUCTOR_AUTH_FAILURE="$TOUCHSTONE_CODEX_AUTH_FAILURE"
+      return 1
+    fi
+  fi
+
   # Delegate to `conductor doctor --json` — cheap check, makes no upstream
   # calls, confirms at least one provider is configured.
   local doctor_json
@@ -2345,9 +2358,15 @@ resolve_reviewer() {
     if ! "reviewer_${reviewer}_auth_ok"; then
       case "$reviewer" in
         conductor)
-          REVIEWER_STATUS="${REVIEWER_STATUS}    conductor: no provider is configured\n"
-          REVIEWER_STATUS="${REVIEWER_STATUS}      → conductor doctor    (diagnose what's missing)\n"
-          REVIEWER_STATUS="${REVIEWER_STATUS}      → conductor init      (guided provider setup)\n"
+          if [ -n "${CONDUCTOR_AUTH_FAILURE:-}" ]; then
+            REVIEWER_STATUS="${REVIEWER_STATUS}    conductor: subscription Codex requires verified ChatGPT authentication (${CONDUCTOR_AUTH_FAILURE})\n"
+            REVIEWER_STATUS="${REVIEWER_STATUS}      → codex login status    (must report Logged in using ChatGPT)\n"
+            REVIEWER_STATUS="${REVIEWER_STATUS}      → refusing API-key or unknown auth to avoid metered review spend\n"
+          else
+            REVIEWER_STATUS="${REVIEWER_STATUS}    conductor: no provider is configured\n"
+            REVIEWER_STATUS="${REVIEWER_STATUS}      → conductor doctor    (diagnose what's missing)\n"
+            REVIEWER_STATUS="${REVIEWER_STATUS}      → conductor init      (guided provider setup)\n"
+          fi
           ;;
         *)
           REVIEWER_STATUS="${REVIEWER_STATUS}    ${reviewer}: auth check failed\n"
@@ -2894,7 +2913,11 @@ if ! resolve_reviewer; then
   if reviewer_conductor_available; then
     unavailable_code="FAIL_OPEN_PROVIDER_UNAVAILABLE"
     unavailable_reason="provider-unavailable"
-    unavailable_message="conductor installed but no provider configured"
+    if [ -n "${CONDUCTOR_AUTH_FAILURE:-}" ]; then
+      unavailable_message="subscription Codex ChatGPT authentication not verified: ${CONDUCTOR_AUTH_FAILURE}"
+    else
+      unavailable_message="conductor installed but no provider configured"
+    fi
   fi
 
   if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then

@@ -472,6 +472,7 @@ update_file "$TOUCHSTONE_ROOT/scripts/worker.sh" "$PROJECT_DIR/scripts/worker.sh
 # Libraries used by touchstone-owned scripts.
 update_file "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
 update_file "$TOUCHSTONE_ROOT/lib/events.sh" "$PROJECT_DIR/lib/events.sh"
+update_file "$TOUCHSTONE_ROOT/lib/codex-auth.sh" "$PROJECT_DIR/lib/codex-auth.sh"
 update_file "$TOUCHSTONE_ROOT/lib/worker-ship-job.sh" "$PROJECT_DIR/lib/worker-ship-job.sh"
 update_file "$TOUCHSTONE_ROOT/lib/worker-review-fix.sh" "$PROJECT_DIR/lib/worker-review-fix.sh"
 update_file "$TOUCHSTONE_ROOT/lib/worker-state.sh" "$PROJECT_DIR/lib/worker-state.sh"
@@ -642,6 +643,7 @@ write_touchstone_manifest() {
     printf 'scripts/worker.sh\n'
     printf 'lib/toml.sh\n'
     printf 'lib/events.sh\n'
+    printf 'lib/codex-auth.sh\n'
     printf 'lib/worker-ship-job.sh\n'
     printf 'lib/worker-review-fix.sh\n'
     printf 'lib/worker-state.sh\n'

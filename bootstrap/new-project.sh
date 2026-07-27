@@ -1096,6 +1096,7 @@ write_touchstone_manifest() {
     printf 'scripts/worker.sh\n'
     printf 'lib/toml.sh\n'
     printf 'lib/events.sh\n'
+    printf 'lib/codex-auth.sh\n'
     printf 'lib/worker-ship-job.sh\n'
     printf 'lib/worker-review-fix.sh\n'
     printf 'lib/worker-state.sh\n'
@@ -1232,7 +1233,9 @@ write_review_onboarding_config() {
       fi
       if [ "$routing" = "all-hosted" ]; then
         printf '\n[review.pr_triggered]\n'
-        printf 'required = true\n'
+        printf '# GitHub Codex is requested asynchronously by default. Set required = true\n'
+        printf '# only after confirming the repository connector returns exact-head reviews.\n'
+        printf 'required = false\n'
         printf 'provider = "github-codex"\n'
         printf 'request_on_push = true\n'
         printf 'timeout_sec = 1800\n'
@@ -1376,6 +1379,7 @@ echo "==> Copying libraries (touchstone-owned, will be auto-updated):"
 mkdir -p "$PROJECT_DIR/lib"
 copy_file_force "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/events.sh" "$PROJECT_DIR/lib/events.sh"
+copy_file_force "$TOUCHSTONE_ROOT/lib/codex-auth.sh" "$PROJECT_DIR/lib/codex-auth.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/worker-ship-job.sh" "$PROJECT_DIR/lib/worker-ship-job.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/worker-review-fix.sh" "$PROJECT_DIR/lib/worker-review-fix.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/worker-state.sh" "$PROJECT_DIR/lib/worker-state.sh"

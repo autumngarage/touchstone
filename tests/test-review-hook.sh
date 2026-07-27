@@ -52,6 +52,19 @@ unset TOUCHSTONE_CONDUCTOR_EFFORT TOUCHSTONE_CONDUCTOR_TAGS TOUCHSTONE_CONDUCTOR
 unset TOUCHSTONE_PREFLIGHT_ALREADY_RAN TOUCHSTONE_REVIEWER
 unset TOUCHSTONE_NO_PREFLIGHT TOUCHSTONE_NO_AUTO_UPDATE
 
+codex() {
+  if [ "${1:-}" = login ] && [ "${2:-}" = status ]; then
+    if [ "${CODEX_LOGIN_STATUS:-}" = "status-failed" ]; then
+      return 1
+    fi
+    printf '%s\n' "${CODEX_LOGIN_STATUS:-Logged in using ChatGPT}"
+    return 0
+  fi
+  printf 'unexpected Codex command: %s\n' "$*" >&2
+  return 99
+}
+export -f codex
+
 mkdir -p "$FAKE_BIN"
 setup_test_repo "$REPO_DIR"
 
@@ -3934,6 +3947,7 @@ case "${1:-}" in
     ;;
 esac
 EOF
+
   chmod +x "$FAKE_BIN/gh" "$FAKE_BIN/conductor"
 
   setup_repo() {
@@ -3959,16 +3973,19 @@ EOF
     local repo="$1"
     local output="$2"
     local result="${3:-clean}"
+    local auth_status="${4:-Logged in using ChatGPT}"
+    local on_error="${5:-fail-closed}"
 
     (
       cd "$repo"
       PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
         CONDUCTOR_ARGS_LOG="$CONDUCTOR_ARGS_LOG" \
         CONDUCTOR_RESULT="$result" \
+        CODEX_LOGIN_STATUS="$auth_status" \
         CODEX_REVIEW_BASE=HEAD~1 \
         CODEX_REVIEW_DISABLE_CACHE=1 \
         CODEX_REVIEW_MODE=review-only \
-        CODEX_REVIEW_ON_ERROR=fail-closed \
+        CODEX_REVIEW_ON_ERROR="$on_error" \
         TOUCHSTONE_REVIEW_LOG=/dev/null \
         bash "$HOOK" >"$output" 2>&1
     )
@@ -3994,6 +4011,50 @@ EOF
   else
     echo "FAIL: omitted provider should invoke Codex once and fail per on_error" >&2
     cat "$DEFAULT_OUTPUT" >&2
+    cat "$CONDUCTOR_ARGS_LOG" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+
+  echo "==> Test: subscription Codex rejects API-key authentication before Conductor"
+  API_KEY_REPO="$TEST_DIR/api-key"
+  API_KEY_OUTPUT="$TEST_DIR/api-key.out"
+  CONDUCTOR_ARGS_LOG="$TEST_DIR/api-key.args"
+  export CONDUCTOR_ARGS_LOG
+  : >"$CONDUCTOR_ARGS_LOG"
+  setup_repo "$API_KEY_REPO"
+  set +e
+  run_review "$API_KEY_REPO" "$API_KEY_OUTPUT" clean "Logged in using an API key"
+  api_key_rc=$?
+  set -e
+
+  if [ "$api_key_rc" -eq 1 ] \
+    && [ ! -s "$CONDUCTOR_ARGS_LOG" ] \
+    && grep -q 'requires verified ChatGPT authentication (api-key)' "$API_KEY_OUTPUT" \
+    && grep -q 'refusing API-key or unknown auth to avoid metered review spend' "$API_KEY_OUTPUT"; then
+    echo "==> PASS: API-key auth was refused before provider invocation"
+  else
+    echo "FAIL: subscription Codex must never invoke Conductor under API-key auth" >&2
+    cat "$API_KEY_OUTPUT" >&2
+    cat "$CONDUCTOR_ARGS_LOG" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+
+  echo "==> Test: unverifiable subscription auth follows fail-open without spending"
+  AUTH_FAILURE_REPO="$TEST_DIR/auth-failure"
+  AUTH_FAILURE_OUTPUT="$TEST_DIR/auth-failure.out"
+  CONDUCTOR_ARGS_LOG="$TEST_DIR/auth-failure.args"
+  export CONDUCTOR_ARGS_LOG
+  : >"$CONDUCTOR_ARGS_LOG"
+  setup_repo "$AUTH_FAILURE_REPO"
+  run_review "$AUTH_FAILURE_REPO" "$AUTH_FAILURE_OUTPUT" clean status-failed fail-open
+
+  if [ ! -s "$CONDUCTOR_ARGS_LOG" ] \
+    && grep -q 'ChatGPT authentication not verified: status-failed' "$AUTH_FAILURE_OUTPUT" \
+    && grep -Fq '[fail-open:FAIL_OPEN_PROVIDER_UNAVAILABLE]' "$AUTH_FAILURE_OUTPUT"; then
+    echo "==> PASS: unverifiable auth failed open without provider invocation"
+  else
+    echo "FAIL: auth-status failure must preserve on_error without provider spend" >&2
+    cat "$AUTH_FAILURE_OUTPUT" >&2
     cat "$CONDUCTOR_ARGS_LOG" >&2
     ERRORS=$((ERRORS + 1))
   fi

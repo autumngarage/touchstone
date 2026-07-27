@@ -1146,21 +1146,36 @@ EOF
   printf 'thread-deadline\n' >"$FAKE_THREAD_ID"
   rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED"
   DEADLINE_JOB="$(touchstone_ship_job_dir "$DEADLINE_WT")"
-  DEADLINE_EPOCH="$(($(date +%s) + 4))"
+  DEADLINE_EPOCH="$(($(date +%s) + 60))"
   VALIDATION_STARTED="$TEST_DIR/validation-started"
   touchstone_ship_write "$DEADLINE_JOB" deadline-epoch "$DEADLINE_EPOCH"
   touchstone_ship_write "$DEADLINE_JOB" review-fix-iteration 0
-  DEADLINE_START="$(date +%s)"
+
+  # Keep setup independent of runner speed, then expire the persisted clock as
+  # soon as validation proves it started. The production poll loop remains real.
+  date() {
+    if [ "${1:-}" = "+%s" ] && [ -f "$VALIDATION_STARTED" ]; then
+      printf '%s\n' "$DEADLINE_EPOCH"
+      return
+    fi
+    command date "$@"
+  }
+
   if TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
     touchstone_review_fix_run \
     "$DEADLINE_JOB" "$DEADLINE_WT" 2 "$DEADLINE_EPOCH" \
-    "trap '' TERM; printf started >'$VALIDATION_STARTED'; sleep 10" false; then
+    "trap '' TERM; /bin/date +%s >'$VALIDATION_STARTED'; sleep 30" false; then
     fail "hung validation unexpectedly completed"
   fi
-  DEADLINE_ELAPSED=$(($(date +%s) - DEADLINE_START))
+  unset -f date
   assert_contains "$DEADLINE_JOB/reason" '^time-budget-exhausted$'
-  [ -f "$VALIDATION_STARTED" ] || fail "deadline fixture did not reach validation"
-  [ "$DEADLINE_ELAPSED" -lt 9 ] \
+  if [ -f "$VALIDATION_STARTED" ]; then
+    DEADLINE_ELAPSED=$(($(date +%s) - $(cat "$VALIDATION_STARTED")))
+  else
+    fail "deadline fixture did not reach validation"
+    DEADLINE_ELAPSED=999
+  fi
+  [ "$DEADLINE_ELAPSED" -lt 5 ] \
     || fail "hung validation exceeded the persisted deadline ($DEADLINE_ELAPSED seconds)"
 
   echo "==> Case g: default Codex worker rejects metered or unknown authentication"

@@ -23,6 +23,7 @@ scripts/cleanup-worktrees.sh
 scripts/worker.sh
 lib/toml.sh
 lib/events.sh
+lib/codex-auth.sh
 lib/worker-ship-job.sh
 lib/worker-review-fix.sh
 lib/worker-state.sh

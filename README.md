@@ -68,7 +68,7 @@ bash setup.sh
 
 ### Turn on AI review
 
-Touchstone delegates local semantic fallback to the [Conductor CLI](https://github.com/autumngarage/conductor). The default route is pinned to the subscription-backed Codex CLI. GitHub Codex provides the PR-visible review; the local fallback runs only when the merge workflow cannot rely on a clean exact-head GitHub review.
+Touchstone delegates local semantic review to the [Conductor CLI](https://github.com/autumngarage/conductor). The default route is pinned to the subscription-backed Codex CLI and verifies ChatGPT authentication before invocation. Fresh scaffolds request a PR-visible GitHub Codex review asynchronously, while local semantic review remains the merge gate so a missing repository connector cannot stall delivery. After confirming the connector returns trusted exact-head reviews, maintainers can opt into a strict GitHub-required gate.
 
 ```bash
 brew install autumngarage/conductor/conductor
@@ -241,9 +241,9 @@ Universal engineering standards, extracted and battle-tested from production sys
 
 ### AI Review Gate
 
-Automatically reviews code on PRs before it reaches the default branch. GitHub Codex is the visible PR reviewer; when exact-head GitHub evidence cannot satisfy the merge gate, local semantic fallback routes through [Conductor](https://github.com/autumngarage/conductor):
+Automatically reviews code on PRs before it reaches the default branch. Fresh scaffolds request GitHub Codex as the visible asynchronous reviewer and use local semantic review through [Conductor](https://github.com/autumngarage/conductor) as the default merge gate. Repositories with a verified connector can opt into requiring exact-head GitHub evidence:
 
-- The local fallback pins subscription-backed Codex and never silently crosses into metered API billing
+- The local gate pins subscription-backed Codex, verifies ChatGPT authentication, and never silently crosses into metered API billing
 - Explicit `with = "auto"` or another named provider opts a project into a different cost boundary
 - Per-push preference via env vars: `TOUCHSTONE_CONDUCTOR_WITH=<provider>`, `TOUCHSTONE_CONDUCTOR_PREFER=<mode>`, `TOUCHSTONE_CONDUCTOR_EFFORT=<level>`
 - Size-based effort routing keeps the same Codex provider pin unless a bucket explicitly overrides `*_with`
