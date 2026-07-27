@@ -445,6 +445,12 @@ assert "blocks bypass flag composed through command substitution" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'git push --no-$(printf ver)ify origin feat/test')")"
 assert "blocks a bypass flag assembled across variable expansions" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'p=--no; q=-verify; git push "$p$q" origin feat/test')")"
+assert "blocks subcommand and bypass option emitted by one expansion" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "args='push --no-verify'; git \$args origin feat/test")")"
+assert "blocks a Git push alias configured earlier in the command" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git config alias.runtime-push push; git runtime-push --no-verify origin feat/test")")"
+assert "blocks a push-forwarding shell function invoked with the bypass" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'git() { command git push "$@"; }; git --no-verify origin feat/test')")"
 
 # Nested executable contexts must not turn literal-looking text into a bypass.
 assert "blocks bypass push in command substitution" "2" \
@@ -455,6 +461,10 @@ assert "blocks bypass push after a nested command substitution" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'echo "$(echo $(date); git push --no-verify origin feat/test)"')")"
 assert "blocks bypass push in a shell -c payload" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "sh -c 'git push --no-verify origin feat/test'")")"
+assert "allows static bypass prose printed by a shell -c payload" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "bash -c 'echo \"git push --no-verify\"'")")"
+assert "blocks a protected xargs pipeline nested in a shell payload" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "bash -c \"printf '%s\\n' --no-verify | xargs git push\"")")"
 assert "blocks bypass push in a sudo-wrapped shell payload" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "sudo sh -c 'git push --no-verify origin feat/test'")")"
 assert "blocks bypass push in a nice-wrapped shell payload" "2" \
@@ -463,6 +473,30 @@ assert "blocks bypass push in a nohup-wrapped shell payload" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "nohup zsh -c 'git push --no-verify origin feat/test'")")"
 assert "blocks bypass push in an eval payload" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "eval 'git push --no-verify origin feat/test'")")"
+assert "blocks bypass push in a trap action" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "trap 'git push --no-verify origin feat/test' EXIT; true")")"
+assert "blocks bypass push supplied to shell stdin by a here-string" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "bash <<< 'git push --no-verify origin feat/test'")")"
+SHELL_STDIN_HEREDOC_COMMAND="$(
+  printf '%s\n' "bash <<'EOF'" "git push --no-verify origin feat/test" "EOF"
+)"
+assert "blocks bypass push supplied to shell stdin by a heredoc" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$SHELL_STDIN_HEREDOC_COMMAND")")"
+SOURCE_STDIN_HEREDOC_COMMAND="$(
+  printf '%s\n' "source /dev/stdin <<'EOF'" "git push --no-verify origin feat/test" "EOF"
+)"
+assert "blocks bypass push sourced from a stdin heredoc" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$SOURCE_STDIN_HEREDOC_COMMAND")")"
+assert "blocks protected atoms composed through an xargs pipeline" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "printf '%s\n' --no-verify | xargs git push")")"
+assert "blocks a protected script written and executed in one command" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "printf '%s\n' 'git push --no-verify origin feat/test' > /tmp/touchstone-generated.sh; bash /tmp/touchstone-generated.sh")")"
+assert "blocks protected code delegated to another interpreter" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "awk 'BEGIN { system(\"git push --no-verify origin feat/test\") }'")")"
+EXIT_DYNAMIC_OVERRIDE=0
+printf '%s' "$(mkjson "trap 'git push --no-verify origin feat/test' EXIT; true")" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_DYNAMIC_OVERRIDE=$?
+assert "emergency override rejects a dynamically executed protected push" "2" "$EXIT_DYNAMIC_OVERRIDE"
 EXIT_EVAL_DIRECTORY_CONTEXT=0
 printf '%s' "$(mkjson "eval 'cd /tmp'; git push --no-verify origin feat/test")" \
   | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || EXIT_EVAL_DIRECTORY_CONTEXT=$?

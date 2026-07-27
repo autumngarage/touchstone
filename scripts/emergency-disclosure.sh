@@ -116,7 +116,13 @@ shell_segments() {
           } else if (char == ")" && group_depth > 0) {
             group_depth--
             segment = segment char
-          } else if (group_depth == 0 && (char == ";" || char == "&" || char == "|" || char == "\n")) {
+          } else if (char == "{") {
+            brace_depth++
+            segment = segment char
+          } else if (char == "}" && brace_depth > 0) {
+            brace_depth--
+            segment = segment char
+          } else if (group_depth == 0 && brace_depth == 0 && (char == ";" || char == "&" || char == "|" || char == "\n")) {
             emit()
           } else {
             segment = segment char
@@ -319,6 +325,82 @@ without_heredoc_bodies() {
           if (token != "") {
             heredoc_delimiter = token
             heredoc_expands = !delimiter_quoted
+          }
+          break
+        }
+      }
+    }
+  '
+}
+
+# Heredoc bodies are data by default, but become shell code when redirected to
+# a shell interpreter or sourced from standard input.
+shell_stdin_heredoc_payloads() {
+  awk '
+    {
+      line = $0
+      if (delimiter != "") {
+        comparison = line
+        if (strip_tabs) {
+          sub(/^\t+/, "", comparison)
+        }
+        if (comparison == delimiter) {
+          delimiter = ""
+          executes = 0
+          strip_tabs = 0
+        } else if (executes) {
+          print line
+        }
+        next
+      }
+
+      quote = ""
+      escaped = 0
+      for (i = 1; i <= length(line); i++) {
+        char = substr(line, i, 1)
+        if (escaped) {
+          escaped = 0
+        } else if (char == "\\" && quote != "\047") {
+          escaped = 1
+        } else if (quote != "") {
+          if (char == quote) {
+            quote = ""
+          }
+        } else if (char == "\"" || char == "\047") {
+          quote = char
+        } else if (char == "<" && substr(line, i + 1, 1) == "<" && substr(line, i + 2, 1) != "<") {
+          header = substr(line, 1, i - 1)
+          executes = header ~ /(^|[;&|()])[[:space:]]*([^[:space:]]*\/)?(sh|bash|dash|ksh|zsh)([[:space:]]|$)/ \
+            || header ~ /(^|[;&|()])[[:space:]]*(source|\.)[[:space:]]+\/dev\/stdin([[:space:]]|$)/
+          j = i + 2
+          strip_tabs = substr(line, j, 1) == "-"
+          if (strip_tabs) {
+            j++
+          }
+          while (substr(line, j, 1) ~ /[[:space:]]/) {
+            j++
+          }
+          delimiter = ""
+          delimiter_quote = ""
+          while (j <= length(line)) {
+            delimiter_char = substr(line, j, 1)
+            if (delimiter_quote != "") {
+              if (delimiter_char == delimiter_quote) {
+                delimiter_quote = ""
+              } else {
+                delimiter = delimiter delimiter_char
+              }
+            } else if (delimiter_char == "\"" || delimiter_char == "\047") {
+              delimiter_quote = delimiter_char
+            } else if (delimiter_char == "\\") {
+              j++
+              delimiter = delimiter substr(line, j, 1)
+            } else if (delimiter_char ~ /[[:space:];|&()<>]/) {
+              break
+            } else {
+              delimiter = delimiter delimiter_char
+            }
+            j++
           }
           break
         }
@@ -595,8 +677,21 @@ segment_has_bypass_words() {
         -*)
           ;;
         *)
-          if word_may_expand_to "$word" "push"; then
+          variable_name="$(exact_variable_name "$word")"
+          if [ -n "$variable_name" ] \
+            && assigned_value="$(known_assignment_value "$variable_name")" \
+            && [ "$(printf '%s' "$assigned_value" | shell_words | sed -n '1p')" = "push" ]; then
             subcommand="push"
+            if text_has_bypass_option "$assigned_value"; then
+              seen_no_verify=true
+              push_candidate_dynamic=true
+            fi
+          elif word_may_expand_to "$word" "push"; then
+            # An unresolved subcommand expansion can emit both "push" and
+            # following options through shell word splitting.
+            subcommand="push"
+            seen_dynamic_push_arg=true
+            push_candidate_dynamic=true
           else
             subcommand="$word"
           fi
@@ -685,28 +780,270 @@ segment_may_mutate_parent_directory() {
   return 1
 }
 
-segment_has_shell_evaluator() {
+static_data_sink_segment() {
   local segment="$1"
-  local word=""
-  local seen_shell=false
+  local word="" command_word="" executable_segment=""
 
   while IFS= read -r word; do
+    [ -n "$command_word" ] || command_word="$word"
+  done < <(printf '%s' "$segment" | shell_words)
+  executable_segment="$(printf '%s' "$segment" | without_single_quoted_literals)"
+
+  case "$command_word" in
+    echo | printf)
+      printf '%s' "$executable_segment" \
+        | grep -qE '(^|[^\\])\$\(|(^|[^\\])`|[;&|<>]' && return 1
+      return 0
+      ;;
+    gh)
+      printf '%s' "$executable_segment" \
+        | grep -qE '(^|[^\\])\$\(|(^|[^\\])`|[;&|<>]' && return 1
+      printf '%s' "$segment" | grep -qE '(^|[[:space:]])(issue|pr)[[:space:]]+(create|comment)([[:space:]]|$)'
+      return
+      ;;
+  esac
+  return 1
+}
+
+plain_git_push_without_bypass() {
+  local segment="$1"
+  local word="" seen_git=false seen_push=false command_seen=false
+
+  while IFS= read -r word; do
+    if [ "$seen_git" = "false" ]; then
+      case "$word" in
+        if | then | elif | else | while | until | do | ! | time | command | builtin | "(" | ")" | "{" | "}")
+          [ "$command_seen" = "false" ] || return 1
+          ;;
+        [A-Za-z_][A-Za-z0-9_]*=*)
+          [ "$command_seen" = "false" ] || return 1
+          ;;
+        git | */git)
+          seen_git=true
+          command_seen=true
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+    elif [ "$seen_push" = "false" ]; then
+      case "$word" in
+        push) seen_push=true ;;
+        -C | -c | --git-dir | --work-tree | --namespace) ;;
+        -*) ;;
+        *) return 1 ;;
+      esac
+    elif word_is_bypass_option "$word"; then
+      return 1
+    fi
+  done < <(printf '%s' "$segment" | shell_words)
+  [ "$seen_push" = "true" ]
+}
+
+segment_is_static_nonprotected() {
+  local segment="$1"
+  local first_word=""
+
+  static_data_sink_segment "$segment" && return 0
+  segment_is_safe_code_carrier "$segment" && return 0
+  plain_git_push_without_bypass "$segment" && return 0
+  [ -n "$(simple_assignment_record "$segment")" ] && return 0
+  first_word="$(printf '%s' "$segment" | shell_words | sed -n '1p')"
+  case "$first_word" in
+    alias | true | :)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+# Print code strings carried by explicit shell execution boundaries. The caller
+# classifies these payloads; quoted text is not executable merely
+# because it appears somewhere inside a shell command.
+segment_code_payloads() {
+  local segment="$1"
+  local word="" seen_shell=false expect_payload=false
+  local seen_eval=false seen_trap=false seen_source=false seen_stdin_redirection=false
+  local words=()
+
+  while IFS= read -r word; do
+    words[${#words[@]}]="$word"
+  done < <(printf '%s' "$segment" | shell_words)
+
+  for word in "${words[@]}"; do
+    if [ "$expect_payload" = "true" ]; then
+      printf '%s\n' "$word"
+      expect_payload=false
+      continue
+    fi
+    if [ "$seen_eval" = "true" ]; then
+      printf '%s\n' "$word"
+      seen_eval=false
+      continue
+    fi
+    if [ "$seen_trap" = "true" ]; then
+      case "$word" in
+        -*)
+          continue
+          ;;
+      esac
+      printf '%s\n' "$word"
+      seen_trap=false
+      continue
+    fi
     case "$word" in
       eval)
-        return 0
+        seen_eval=true
+        ;;
+      trap)
+        seen_trap=true
+        ;;
+      source | .)
+        seen_source=true
+        ;;
+      /dev/stdin)
+        if [ "$seen_source" = "true" ]; then
+          seen_shell=true
+        fi
         ;;
       sh | */sh | bash | */bash | dash | */dash | ksh | */ksh | zsh | */zsh)
         seen_shell=true
         ;;
       -*c*)
         if [ "$seen_shell" = "true" ]; then
-          return 0
+          expect_payload=true
+        fi
+        ;;
+      __touchstone_redirection__)
+        if [ "$seen_shell" = "true" ] \
+          && printf '%s' "$segment" | grep -q '<<<'; then
+          seen_stdin_redirection=true
+        fi
+        ;;
+      *)
+        if [ "$seen_stdin_redirection" = "true" ]; then
+          printf '%s\n' "$word"
+          seen_stdin_redirection=false
         fi
         ;;
     esac
+  done
+}
+
+payload_has_protected_push() {
+  local payload="$1"
+  local nested_segment=""
+
+  while IFS= read -r nested_segment; do
+    push_subcommand=""
+    push_candidate_has_bypass=false
+    if segment_has_bypass_words "$nested_segment" \
+      && [ "$push_subcommand" = "push" ] \
+      && [ "$push_candidate_has_bypass" = "true" ]; then
+      return 0
+    fi
+  done < <(printf '%s\n' "$payload" | without_heredoc_bodies | without_shell_comments | shell_segments)
+  return 1
+}
+
+segment_has_protected_code_payload() {
+  local segment="$1"
+  local payload=""
+
+  while IFS= read -r payload; do
+    [ -n "$payload" ] || continue
+    if payload_has_protected_push "$payload"; then
+      return 0
+    fi
+  done < <(segment_code_payloads "$segment")
+  return 1
+}
+
+segment_is_safe_code_carrier() {
+  local segment="$1"
+  local payload="" payload_count=0
+
+  while IFS= read -r payload; do
+    [ -n "$payload" ] || continue
+    payload_count=$((payload_count + 1))
+    static_data_sink_segment "$payload" || return 1
+  done < <(segment_code_payloads "$segment")
+  [ "$payload_count" -gt 0 ]
+}
+
+segment_push_forwarding_function_name() {
+  local segment="$1"
+  local header="" name="" body="" body_segment=""
+
+  header="${segment%%\{*}"
+  if ! printf '%s' "$header" \
+    | grep -qE '^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(\(\))?[[:space:]]*$'; then
+    return 0
+  fi
+  name="$(printf '%s' "$header" \
+    | sed -E 's/^[[:space:]]*function[[:space:]]+//; s/[[:space:]]*(\(\))?[[:space:]]*$//')"
+  body="${segment#*\{}"
+  body="${body%\}*}"
+
+  while IFS= read -r body_segment; do
+    if printf '%s' "$body_segment" | grep -qE '(\$@|\$\*)' \
+      && segment_has_bypass_words "$body_segment" \
+      && [ "$push_subcommand" = "push" ]; then
+      printf '%s' "$name"
+      return 0
+    fi
+  done < <(printf '%s' "$body" | shell_segments)
+}
+
+segment_git_push_alias_name() {
+  local segment="$1"
+  local word="" seen_git=false seen_config=false alias_name="" expect_value=false
+
+  while IFS= read -r word; do
+    if [ "$seen_git" = "false" ]; then
+      case "$word" in
+        git | */git) seen_git=true ;;
+      esac
+    elif [ "$seen_config" = "false" ]; then
+      case "$word" in
+        config) seen_config=true ;;
+        -*) ;;
+        *) return 0 ;;
+      esac
+    elif [ "$expect_value" = "true" ]; then
+      case "$word" in
+        push | "push "*)
+          printf '%s' "$alias_name"
+          return 0
+          ;;
+      esac
+      return 0
+    else
+      case "$word" in
+        alias.*)
+          alias_name="${word#alias.}"
+          expect_value=true
+          ;;
+      esac
+    fi
+  done < <(printf '%s' "$segment" | shell_words)
+}
+
+segment_invokes_named_bypass() {
+  local segment="$1"
+  local protected_names="$2"
+  local word="" command_word="" seen_no_verify=false
+
+  while IFS= read -r word; do
+    if [ -z "$command_word" ]; then
+      command_word="$word"
+    elif word_is_bypass_option "$word"; then
+      seen_no_verify=true
+    fi
   done < <(printf '%s' "$segment" | shell_words)
 
-  return 1
+  [ "$seen_no_verify" = "true" ] || return 1
+  printf '%s\n' "$protected_names" | grep -Fqx "$command_word"
 }
 
 segment_bypass_alias_name() {
@@ -787,7 +1124,6 @@ segment_cd_target() {
 segment_runs_bypass_push() {
   local segment="$1"
   local segment_executable=""
-  local protected_push='git([^;&|)]*)[[:space:]]+push([^;&|)]*)--no-verify'
 
   if [ "$command_dynamic_protected" = "true" ]; then
     push_context="nested"
@@ -803,7 +1139,8 @@ segment_runs_bypass_push() {
   segment_executable="$(printf '%s' "$segment" | without_single_quoted_literals)"
 
   if segment_has_bypass_words "$segment"; then
-    if printf '%s' "$segment_executable" \
+    if [ "$push_candidate_dynamic" = "true" ] \
+      || printf '%s' "$segment_executable" \
       | grep -qE '(^|[^\\])\$\(|(^|[^\\])`|^[[:space:]]*\(|^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(\(\))?[[:space:]]*\{'; then
       push_context="nested"
     else
@@ -821,11 +1158,9 @@ segment_runs_bypass_push() {
     return 0
   fi
 
-  # Shell -c and eval turn a quoted argument into executable input, including
-  # when an execution wrapper appears before the evaluator.
-  if segment_has_shell_evaluator "$segment" \
-    && printf '%s' "$segment" | grep -qE "$protected_push"; then
+  if segment_has_protected_code_payload "$segment"; then
     push_context="nested"
+    push_subcommand="push"
     return 0
   fi
 
@@ -836,6 +1171,7 @@ push_segment=""
 push_context=""
 push_subcommand=""
 push_candidate_has_bypass=false
+push_candidate_dynamic=false
 selected_push_context=""
 selected_push_subcommand=""
 selected_directory_context_ambiguous=false
@@ -853,9 +1189,13 @@ command_changes_directory_ambiguously=false
 cd_chain_proven=false
 cd_count=0
 protected_aliases=""
+configured_push_aliases=""
+protected_functions=""
 known_assignments=""
 multiple_protected_pushes=false
 preceding_parent_directory_mutator=false
+segment_count=0
+only_segment=""
 command_executable_text="$(printf '%s' "$command" | without_shell_comments | without_single_quoted_literals)"
 if printf '%s' "$command_executable_text" \
   | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?CDPATH='; then
@@ -891,7 +1231,16 @@ if printf '%s' "$command_executable_text" | grep -qE '(^|[^\\])\$[{A-Za-z_]' \
     command_dynamic_protected=true
   fi
 fi
+while IFS= read -r stdin_payload; do
+  if [ -n "$stdin_payload" ] && payload_has_protected_push "$stdin_payload"; then
+    command_dynamic_protected=true
+    break
+  fi
+done < <(printf '%s\n' "$command" | shell_stdin_heredoc_payloads)
 while IFS= read -r segment; do
+  segment_count=$((segment_count + 1))
+  only_segment="$segment"
+
   if segment_may_mutate_parent_directory "$segment"; then
     preceding_parent_directory_mutator=true
   fi
@@ -901,6 +1250,31 @@ while IFS= read -r segment; do
     assignment_name="${assignment_record%%	*}"
     assignment_value="${assignment_record#*	}"
     remember_simple_assignment "$assignment_name" "$assignment_value"
+  fi
+
+  if segment_has_protected_code_payload "$segment"; then
+    command_dynamic_protected=true
+  fi
+
+  function_name="$(segment_push_forwarding_function_name "$segment")"
+  if [ -n "$function_name" ]; then
+    if [ -n "$protected_functions" ]; then
+      protected_functions="$(printf '%s\n%s' "$protected_functions" "$function_name")"
+    else
+      protected_functions="$function_name"
+    fi
+  elif [ -n "$protected_functions" ] \
+    && segment_invokes_named_bypass "$segment" "$protected_functions"; then
+    command_dynamic_protected=true
+  fi
+
+  configured_alias_name="$(segment_git_push_alias_name "$segment")"
+  if [ -n "$configured_alias_name" ]; then
+    if [ -n "$configured_push_aliases" ]; then
+      configured_push_aliases="$(printf '%s\n%s' "$configured_push_aliases" "$configured_alias_name")"
+    else
+      configured_push_aliases="$configured_alias_name"
+    fi
   fi
 
   alias_name="$(segment_bypass_alias_name "$segment")"
@@ -936,6 +1310,7 @@ while IFS= read -r segment; do
   push_context=""
   push_subcommand=""
   push_candidate_has_bypass=false
+  push_candidate_dynamic=false
   if segment_runs_bypass_push "$segment"; then
     if [ -n "$push_subcommand" ] && [ "$push_subcommand" != "push" ]; then
       candidate_index="${#non_push_candidate_segments[@]}"
@@ -973,6 +1348,19 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
   for candidate_index in "${!non_push_candidate_segments[@]}"; do
     candidate_segment="${non_push_candidate_segments[$candidate_index]}"
     candidate_subcommand="${non_push_candidate_subcommands[$candidate_index]}"
+    if [ -n "$configured_push_aliases" ] \
+      && printf '%s\n' "$configured_push_aliases" | grep -Fqx "$candidate_subcommand" \
+      && [ "${non_push_candidate_has_bypass[$candidate_index]}" = "true" ]; then
+      if [ -n "$push_segment" ]; then
+        multiple_protected_pushes=true
+        continue
+      fi
+      push_segment="$candidate_segment"
+      selected_push_context="nested"
+      selected_push_subcommand="$candidate_subcommand"
+      selected_directory_context_ambiguous=true
+      continue
+    fi
     if [ "$command_sets_git_context" = "true" ] \
       || [ "$command_changes_directory_ambiguously" = "true" ] \
       || [ "$cd_count" -gt 0 ] \
@@ -1019,6 +1407,35 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
         ;;
     esac
   done
+fi
+
+# The supported authorization subset is deliberately narrower than Bash.
+# Protected atoms outside a static data sink or classified code carrier are
+# dynamic: they may be joined by pipelines, generated files, xargs/find, or
+# another interpreter, so no repository can be audited safely.
+command_classifiable_text="$(
+  printf '%s\n' "$command" \
+    | without_heredoc_bodies \
+    | without_shell_comments
+)"
+if [ -z "$push_segment" ] \
+  && printf '%s' "$command_classifiable_text" | grep -qE '(^|[^[:alnum:]_])git([^[:alnum:]_]|$)' \
+  && printf '%s' "$command_classifiable_text" | grep -qE '(^|[^[:alnum:]_])push([^[:alnum:]_]|$)' \
+  && printf '%s' "$command_classifiable_text" | grep -qE -- '--no-veri(f(y)?)?([^[:alnum:]_]|$)'; then
+  fallback_dynamic=false
+  while IFS= read -r fallback_segment; do
+    if ! segment_is_static_nonprotected "$fallback_segment"; then
+      fallback_dynamic=true
+      break
+    fi
+  done < <(printf '%s\n' "$command_classifiable_text" | shell_segments)
+  if [ "$fallback_dynamic" = "false" ]; then
+    exit 0
+  fi
+  push_segment="${only_segment:-$command_classifiable_text}"
+  selected_push_context="nested"
+  selected_push_subcommand="push"
+  selected_directory_context_ambiguous=true
 fi
 
 if [ -z "$push_segment" ]; then
