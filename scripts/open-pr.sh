@@ -278,7 +278,7 @@ normalize_bool() {
   esac
 }
 
-load_open_pr_review_config() {
+load_open_pr_advisory_config() {
   local config_file
   local repo_root
   repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -303,7 +303,61 @@ load_open_pr_review_config() {
       ADVISORY_AT_PR_OPEN="$(normalize_bool "$value")"
     elif [ "$section" = "review" ] && [ "$key" = "preflight_required" ]; then
       PREFLIGHT_REQUIRED="$(normalize_bool "$value")"
-    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "request_on_push" ]; then
+    fi
+  }
+
+  toml_parse "$config_file" open_pr_toml_callback
+}
+
+load_open_pr_review_request_config() {
+  local base_branch="$1"
+  local trusted_ref=""
+  local config_file="" config_tmp="" rel
+  local remote_ref="refs/remotes/origin/$base_branch"
+  local local_ref="refs/heads/$base_branch"
+
+  if git rev-parse --verify --quiet "$remote_ref^{commit}" >/dev/null; then
+    trusted_ref="$remote_ref"
+  elif git rev-parse --verify --quiet "$local_ref^{commit}" >/dev/null; then
+    trusted_ref="$local_ref"
+  else
+    echo "ERROR: Could not resolve trusted review request policy base '$base_branch'." >&2
+    echo "       Expected $remote_ref or $local_ref." >&2
+    return 1
+  fi
+
+  for rel in .touchstone-review.toml .codex-review.toml; do
+    if git cat-file -e "$trusted_ref:$rel" 2>/dev/null; then
+      if ! config_tmp="$(mktemp -t touchstone-open-pr-review-config.XXXXXX)"; then
+        echo "ERROR: Failed to create a temporary trusted review request policy file." >&2
+        echo "       source: $trusted_ref:$rel" >&2
+        return 1
+      fi
+      if ! git show "$trusted_ref:$rel" >"$config_tmp" 2>/dev/null; then
+        rm -f "$config_tmp"
+        echo "ERROR: Failed to extract trusted review request policy." >&2
+        echo "       source: $trusted_ref:$rel" >&2
+        return 1
+      fi
+      config_file="$config_tmp"
+      break
+    fi
+  done
+  [ -n "$config_file" ] || return 0
+  if [ ! -f "$SCRIPT_DIR/../lib/toml.sh" ]; then
+    rm -f "$config_tmp"
+    return 0
+  fi
+
+  # shellcheck source=../lib/toml.sh
+  source "$SCRIPT_DIR/../lib/toml.sh"
+
+  open_pr_review_request_toml_callback() {
+    local section="$1"
+    local key="$2"
+    local value="$3"
+
+    if [ "$section" = "review.pr_triggered" ] && [ "$key" = "request_on_push" ]; then
       case "$value" in
         true | false) PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH="$value" ;;
         *) OPEN_PR_REVIEW_CONFIG_ERROR="[review.pr_triggered].request_on_push must be true or false; got: $value" ;;
@@ -313,9 +367,14 @@ load_open_pr_review_config() {
     fi
   }
 
-  toml_parse "$config_file" open_pr_toml_callback
+  if ! toml_parse "$config_file" open_pr_review_request_toml_callback; then
+    rm -f "$config_tmp"
+    return 1
+  fi
+  rm -f "$config_tmp"
   if [ -n "$OPEN_PR_REVIEW_CONFIG_ERROR" ]; then
     echo "ERROR: $OPEN_PR_REVIEW_CONFIG_ERROR" >&2
+    echo "       source: $trusted_ref" >&2
     return 1
   fi
 }
@@ -575,7 +634,7 @@ esac
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEMPLATE_PATH="$REPO_ROOT/.github/pull_request_template.md"
-load_open_pr_review_config
+load_open_pr_advisory_config
 
 # Fail fast if gh is missing or unauthenticated.
 if ! command -v gh >/dev/null 2>&1; then
@@ -673,6 +732,7 @@ if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
   echo "ERROR: --base $BASE_BRANCH cannot equal the current branch." >&2
   exit 1
 fi
+load_open_pr_review_request_config "$BASE_BRANCH"
 
 # Warn when stacking + auto-merge combine — the user is likely about to
 # orphan their stack. --auto-merge squashes the parent, which closes (not

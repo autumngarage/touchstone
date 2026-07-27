@@ -309,11 +309,17 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Case 7: request_on_push posts one head-bound GitHub Codex request"
+echo "==> Case 7: trusted base request policy overrides a weakened feature config"
 reset_case
+git -C "$REPO_DIR" checkout main >/dev/null 2>&1
 printf '[review]\npreflight_required = false\nadvisory_at_pr_open = false\n\n[review.pr_triggered]\nprovider = "github-codex"\nrequest_on_push = true\n' >"$REPO_DIR/.codex-review.toml"
 git -C "$REPO_DIR" add .codex-review.toml
-git -C "$REPO_DIR" commit -m "request codex review on push" >/dev/null 2>&1
+git -C "$REPO_DIR" commit -m "require codex review requests" >/dev/null 2>&1
+git -C "$REPO_DIR" update-ref refs/remotes/origin/main main
+git -C "$REPO_DIR" checkout feat/advisory >/dev/null 2>&1
+printf '[review]\npreflight_required = false\nadvisory_at_pr_open = false\n\n[review.pr_triggered]\nprovider = "openrouter"\nrequest_on_push = false\n' >"$REPO_DIR/.codex-review.toml"
+git -C "$REPO_DIR" add .codex-review.toml
+git -C "$REPO_DIR" commit -m "attempt to weaken review requests" >/dev/null 2>&1
 REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 OUT="$TEST_DIR/request-on-push.out"
 run_open_pr "$OUT"
@@ -322,7 +328,7 @@ if grep -q '^@codex review$' "$TEST_DIR/comments" \
   && grep -q "Requested GitHub Codex review for head $REQUEST_HEAD" "$OUT"; then
   echo "    PASS"
 else
-  echo "    FAIL: expected one head-bound GitHub Codex request" >&2
+  echo "    FAIL: feature config disabled or redirected the trusted base request policy" >&2
   cat "$OUT" >&2
   [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
   ERRORS=$((ERRORS + 1))
@@ -330,9 +336,12 @@ fi
 
 echo "==> Case 7b: request_on_push defaults an omitted provider to GitHub Codex"
 reset_case
+git -C "$REPO_DIR" checkout main >/dev/null 2>&1
 printf '[review]\npreflight_required = false\nadvisory_at_pr_open = false\n\n[review.pr_triggered]\nrequest_on_push = true\n' >"$REPO_DIR/.codex-review.toml"
 git -C "$REPO_DIR" add .codex-review.toml
-git -C "$REPO_DIR" commit -m "use default review provider" >/dev/null 2>&1
+git -C "$REPO_DIR" commit -m "use default trusted review provider" >/dev/null 2>&1
+git -C "$REPO_DIR" update-ref refs/remotes/origin/main main
+git -C "$REPO_DIR" checkout feat/advisory >/dev/null 2>&1
 REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 OUT="$TEST_DIR/request-default-provider.out"
 run_open_pr "$OUT"
@@ -427,6 +436,44 @@ elif grep -q 'failed to inspect prior GitHub Codex review requests' "$OUT"; then
 else
   echo "    FAIL: request inspection failure lacked actionable diagnostics" >&2
   cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 9b: stacked PR policy prefers origin/base over a divergent local base"
+reset_case
+git -C "$REPO_DIR" checkout -b feat/review-policy-parent main >/dev/null 2>&1
+printf '[review]\n\n[review.pr_triggered]\nprovider = "openrouter"\nrequest_on_push = false\n' >"$REPO_DIR/.codex-review.toml"
+git -C "$REPO_DIR" add .codex-review.toml
+git -C "$REPO_DIR" commit -m "remote stack policy disables requests" >/dev/null 2>&1
+git -C "$REPO_DIR" update-ref refs/remotes/origin/feat/review-policy-parent HEAD
+printf '[review]\n\n[review.pr_triggered]\nprovider = "github-codex"\nrequest_on_push = true\n' >"$REPO_DIR/.codex-review.toml"
+git -C "$REPO_DIR" add .codex-review.toml
+git -C "$REPO_DIR" commit -m "local stack policy enables requests" >/dev/null 2>&1
+git -C "$REPO_DIR" checkout feat/advisory >/dev/null 2>&1
+OUT="$TEST_DIR/request-stacked-remote-policy.out"
+run_open_pr "$OUT" --base feat/review-policy-parent
+if [ ! -f "$TEST_DIR/comments" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: stacked PR ignored origin/base policy in favor of local or feature config" >&2
+  cat "$OUT" >&2
+  cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 9c: stacked PR policy falls back to the local base branch"
+reset_case
+git -C "$REPO_DIR" update-ref -d refs/remotes/origin/feat/review-policy-parent
+STACK_REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
+OUT="$TEST_DIR/request-stacked-local-policy.out"
+run_open_pr "$OUT" --base feat/review-policy-parent
+if grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$STACK_REQUEST_HEAD -->" "$TEST_DIR/comments" \
+  && grep -q "Requested GitHub Codex review for head $STACK_REQUEST_HEAD" "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: stacked PR did not use the local base policy fallback" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
