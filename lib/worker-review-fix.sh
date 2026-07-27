@@ -30,6 +30,10 @@ touchstone_review_fix_repo_name() {
   gh repo view --json nameWithOwner --jq '.nameWithOwner'
 }
 
+touchstone_review_fix_viewer_login() {
+  gh api user --jq '.login'
+}
+
 touchstone_review_fix_trusted_authors() {
   local worktree_path="$1" base_ref="$2"
   local config_file="" rel="" parsed_authors="" authors_configured=false
@@ -152,6 +156,7 @@ touchstone_review_fix_marker() {
 
 touchstone_review_fix_thread_remote_state() {
   local thread_id="$1" marker="$2" expected_count="$3" expected_ids="$4" expected_digest="$5"
+  local reply_author="$6"
   local query remote_state resolved total_count loaded_count nonmarker_count marker_count
   local nonmarker_ids snapshot_encoded snapshot_digest replied=false snapshot_matches=false
   # shellcheck disable=SC2016 # GraphQL variables are expanded by GitHub.
@@ -162,7 +167,7 @@ query($id: ID!) {
       isResolved
       comments(first: 100) {
         totalCount
-        nodes { id body updatedAt }
+        nodes { id body updatedAt author { login } }
       }
     }
   }
@@ -170,7 +175,7 @@ query($id: ID!) {
   remote_state="$(gh api graphql \
     -F id="$thread_id" \
     -f query="$query" \
-    --jq "[.data.node.isResolved, (.data.node.comments.totalCount | tostring), (.data.node.comments.nodes | length | tostring), ([.data.node.comments.nodes[]? | select((((.body // \"\") | contains(\"$marker\"))) | not)] | length | tostring), ([.data.node.comments.nodes[]? | select((.body // \"\") | contains(\"$marker\"))] | length | tostring), (([.data.node.comments.nodes[]? | select((((.body // \"\") | contains(\"$marker\"))) | not) | .id] | join(\",\")) | if length == 0 then \"<no-comment-ids>\" else . end), ([.data.node.comments.nodes[]? | select((((.body // \"\") | contains(\"$marker\"))) | not) | {id: .id, updatedAt: .updatedAt, body: (.body // \"\")}] | tojson | @base64)] | @tsv")" || return 1
+    --jq "[.data.node.isResolved, (.data.node.comments.totalCount | tostring), (.data.node.comments.nodes | length | tostring), ([.data.node.comments.nodes[]? | select(((((.body // \"\") | endswith(\"$marker\")) and (.author.login == \"$reply_author\"))) | not)] | length | tostring), ([.data.node.comments.nodes[]? | select(((.body // \"\") | endswith(\"$marker\")) and (.author.login == \"$reply_author\"))] | length | tostring), (([.data.node.comments.nodes[]? | select(((((.body // \"\") | endswith(\"$marker\")) and (.author.login == \"$reply_author\"))) | not) | .id] | join(\",\")) | if length == 0 then \"<no-comment-ids>\" else . end), ([.data.node.comments.nodes[]? | select(((((.body // \"\") | endswith(\"$marker\")) and (.author.login == \"$reply_author\"))) | not) | {id: .id, updatedAt: .updatedAt, body: (.body // \"\")}] | tojson | @base64)] | @tsv")" || return 1
 
   IFS="$(printf '\t')" read -r resolved total_count loaded_count nonmarker_count marker_count \
     nonmarker_ids snapshot_encoded <<EOF
@@ -320,12 +325,14 @@ touchstone_review_fix_validate() {
 
 touchstone_review_fix_checkpoint_threads() {
   local job_dir="$1" source_head="$2" threads_file="$3" repo_full_name="$4" pr_number="$5"
+  local reply_author="$6"
   mkdir -p "$job_dir/review-fix"
   cp "$threads_file" "$job_dir/review-fix/threads.tsv"
   touchstone_ship_write "$job_dir/review-fix" source-head "$source_head"
   touchstone_ship_write "$job_dir/review-fix" fix-head ""
   touchstone_ship_write "$job_dir/review-fix" repo-full-name "$repo_full_name"
   touchstone_ship_write "$job_dir/review-fix" pr-number "$pr_number"
+  touchstone_ship_write "$job_dir/review-fix" reply-author "$reply_author"
 }
 
 touchstone_review_fix_finish_threads() {
@@ -333,7 +340,10 @@ touchstone_review_fix_finish_threads() {
   local threads_file="$job_dir/review-fix/threads.tsv"
   local thread_id path line _outdated _author _review_head _truncated comment_count
   local comment_ids comment_snapshot _url _body marker remote_state resolved replied
-  local snapshot_matches key body location observed_head
+  local snapshot_matches key body location observed_head reply_author
+
+  reply_author="$(touchstone_ship_read "$job_dir/review-fix" reply-author)"
+  [ -n "$reply_author" ] || return 1
 
   observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
   [ "$observed_head" = "$fix_head" ] || return 3
@@ -349,7 +359,8 @@ touchstone_review_fix_finish_threads() {
     observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
     [ "$observed_head" = "$fix_head" ] || return 3
     remote_state="$(touchstone_review_fix_thread_remote_state \
-      "$thread_id" "$marker" "$comment_count" "$comment_ids" "$comment_snapshot")" || return 1
+      "$thread_id" "$marker" "$comment_count" "$comment_ids" "$comment_snapshot" \
+      "$reply_author")" || return 1
     IFS="$(printf '\t')" read -r resolved replied snapshot_matches <<EOF
 $remote_state
 EOF
@@ -366,7 +377,8 @@ EOF
       observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
       [ "$observed_head" = "$fix_head" ] || return 4
       remote_state="$(touchstone_review_fix_thread_remote_state \
-        "$thread_id" "$marker" "$comment_count" "$comment_ids" "$comment_snapshot")" || return 1
+        "$thread_id" "$marker" "$comment_count" "$comment_ids" "$comment_snapshot" \
+        "$reply_author")" || return 1
       IFS="$(printf '\t')" read -r resolved replied snapshot_matches <<EOF
 $remote_state
 EOF
@@ -393,11 +405,14 @@ EOF
 touchstone_review_fix_resume_checkpoint() {
   local job_dir="$1" worktree_path="$2" repo_full_name="$3" pr_number="$4" observed_head="$5"
   local source_head fix_head checkpoint_repo checkpoint_pr finish_rc=0
+  local reply_author
   source_head="$(touchstone_ship_read "$job_dir/review-fix" source-head)"
   fix_head="$(touchstone_ship_read "$job_dir/review-fix" fix-head)"
   checkpoint_repo="$(touchstone_ship_read "$job_dir/review-fix" repo-full-name)"
   checkpoint_pr="$(touchstone_ship_read "$job_dir/review-fix" pr-number)"
+  reply_author="$(touchstone_ship_read "$job_dir/review-fix" reply-author)"
   [ -n "$source_head" ] && [ -n "$fix_head" ] || return 1
+  [ -n "$reply_author" ] || return 2
   [ "$checkpoint_repo" = "$repo_full_name" ] && [ "$checkpoint_pr" = "$pr_number" ] || return 2
   [ "$observed_head" = "$fix_head" ] || return 2
   touchstone_review_fix_finish_threads \
@@ -492,7 +507,7 @@ touchstone_review_fix_run() {
   local threads_file brief_file result_file paths_file open_pr_exit now_epoch validation_display
   local trusted_authors thread_id _path _line thread_outdated thread_author thread_review_head
   local thread_body_truncated thread_comment_count _comment_ids _comment_snapshot _url _body
-  local finish_rc resume_rc phase_rc phase_output
+  local finish_rc resume_rc phase_rc phase_output reply_author
   local -a open_pr_args=(--auto-merge)
 
   # Dynamically scoped for cmd_ship_runner, which persists the terminal reason.
@@ -699,8 +714,22 @@ touchstone_review_fix_run() {
 
     iteration=$((iteration + 1))
     touchstone_ship_write "$job_dir" review-fix-iteration "$iteration"
+    phase_rc=0
+    touchstone_review_fix_capture_phase \
+      "$job_dir" "$phase_output" "$worktree_path" touchstone_review_fix_viewer_login \
+      || phase_rc=$?
+    if [ "$phase_rc" -ne 0 ]; then
+      touchstone_review_fix_stop_for_phase \
+        "$job_dir" "$worktree_path" "$phase_rc" github-viewer-inspection-failed
+      return
+    fi
+    reply_author="$(cat "$phase_output")"
+    [ -n "$reply_author" ] || {
+      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" github-viewer-inspection-failed
+      return
+    }
     touchstone_review_fix_checkpoint_threads \
-      "$job_dir" "$source_head" "$threads_file" "$repo_full_name" "$pr_number"
+      "$job_dir" "$source_head" "$threads_file" "$repo_full_name" "$pr_number" "$reply_author"
     brief_file="$job_dir/review-fix/brief.md"
     result_file="$job_dir/review-fix/result.txt"
     paths_file="$job_dir/review-fix/paths.zlist"

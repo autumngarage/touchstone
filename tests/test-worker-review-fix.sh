@@ -89,6 +89,9 @@ case "$command_name:$subcommand" in
   "repo:view")
     printf 'example/project\n'
     ;;
+  "api:user")
+    printf 'touchstone-test-user\n'
+    ;;
   "api:graphql")
     args="$*"
     if [[ "$args" == *reviewThreads* ]]; then
@@ -133,6 +136,10 @@ case "$command_name:$subcommand" in
         rm -f "$FAKE_THREAD_ACTIVE"
       fi
     elif [[ "$args" == *"node(id:"* ]]; then
+      if [[ "$args" != *'.author.login == "touchstone-test-user"'* ]]; then
+        echo "thread snapshot query did not bind the marker reply to the authenticated actor" >&2
+        exit 1
+      fi
       thread_id="$(cat "$FAKE_THREAD_ID")"
       total_count=1
       loaded_count=1
@@ -150,6 +157,14 @@ case "$command_name:$subcommand" in
         loaded_count=3
         nonmarker_count=2
         comment_ids="$thread_id,follow-up-comment"
+        snapshot_encoded="$FAKE_CHANGED_SNAPSHOT_ENCODED"
+      fi
+      if [ "${FAKE_UNTRUSTED_MARKER:-0}" = 1 ] && [ ! -f "$FAKE_REPLIED" ]; then
+        total_count=2
+        loaded_count=2
+        nonmarker_count=2
+        marker_count=0
+        comment_ids="$thread_id,attacker-marker-comment"
         snapshot_encoded="$FAKE_CHANGED_SNAPSHOT_ENCODED"
       fi
       if [ -f "$FAKE_RESOLVED" ]; then
@@ -466,6 +481,26 @@ assert_contains "$STATUS" '"reason":"review-thread-changed"'
 [ ! -f "$FAKE_MERGED" ] || fail "new follow-up feedback reached merge"
 unset FAKE_ADD_COMMENT_BEFORE_RESOLVE
 
+echo "==> Case c9: another author's marker-shaped comment cannot authorize resolution"
+UNTRUSTED_MARKER_WT="$TEST_DIR/untrusted-marker-worktree"
+git -C "$REPO" branch feat/review-untrusted-marker main
+git -C "$REPO" push -q origin feat/review-untrusted-marker
+git -C "$REPO" worktree add -q "$UNTRUSTED_MARKER_WT" feat/review-untrusted-marker
+: >"$FAKE_THREAD_ACTIVE"
+printf 'thread-untrusted-marker\n' >"$FAKE_THREAD_ID"
+rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED" "$FAKE_MERGED"
+export FAKE_UNTRUSTED_MARKER=1
+TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$UNTRUSTED_MARKER_WT" --detach --review-fix --validation-command : >/dev/null
+wait_for_status "$UNTRUSTED_MARKER_WT" needs-attention "$STATUS" \
+  || fail "untrusted marker comment did not enter needs-attention"
+assert_contains "$STATUS" '"reason":"review-thread-changed"'
+[ ! -f "$FAKE_REPLIED" ] || fail "untrusted marker comment authorized an autonomous reply"
+[ ! -f "$FAKE_RESOLVED" ] || fail "untrusted marker comment authorized thread resolution"
+[ ! -f "$FAKE_MERGED" ] || fail "untrusted marker comment reached merge"
+unset FAKE_UNTRUSTED_MARKER
+
 echo "==> Case d: a new thread after a fix exhausts the bounded iteration budget"
 BUDGET_WT="$TEST_DIR/budget-worktree"
 git -C "$REPO" branch feat/review-budget main
@@ -503,6 +538,7 @@ touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" source-head "$(git -C "$WOR
 touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" fix-head "$RESTART_HEAD"
 touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" repo-full-name example/project
 touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" pr-number 76
+touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" reply-author touchstone-test-user
 printf 'thread-cross\n' >"$FAKE_THREAD_ID"
 rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED"
 if touchstone_review_fix_resume_checkpoint \
@@ -525,6 +561,7 @@ touchstone_ship_write "$CHECKPOINT/review-fix" source-head "$(git -C "$WORKTREE"
 touchstone_ship_write "$CHECKPOINT/review-fix" fix-head "$RESTART_HEAD"
 touchstone_ship_write "$CHECKPOINT/review-fix" repo-full-name example/project
 touchstone_ship_write "$CHECKPOINT/review-fix" pr-number 77
+touchstone_ship_write "$CHECKPOINT/review-fix" reply-author touchstone-test-user
 printf 'thread-restart\n' >"$FAKE_THREAD_ID"
 : >"$FAKE_REPLIED"
 rm -f "$FAKE_RESOLVED"
