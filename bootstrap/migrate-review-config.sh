@@ -143,16 +143,75 @@ echo "==> Migrating $file from 1.x → 2.0"
 tmp="$(mktemp "${TMPDIR:-/tmp}/codex-review-migrate.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 
-# Awk transformer. Single pass; tracks current section, rewrites known
-# legacy keys, comments out retired sections, and appends a synthesized
-# [review.conductor] block at end if the file didn't already have one.
-awk '
+# TOML table order is semantically irrelevant. Capture the legacy cascade
+# before transforming so an earlier [review.conductor] table can still inherit
+# the first provider from a later [review] table.
+legacy_metadata="$(
+  awk '
+  function map_provider(name,    out) {
+    out = name
+    if (out == "local") out = "ollama"
+    return out
+  }
+
+  function first_quoted(line,    q1, rest, q2) {
+    q1 = index(line, "\"")
+    if (q1 == 0) return ""
+    rest = substr(line, q1 + 1)
+    q2 = index(rest, "\"")
+    if (q2 == 0) return ""
+    return substr(rest, 1, q2 - 1)
+  }
+
+  function all_quoted(line,    out, copy, q1, rest, q2, tok) {
+    out = ""
+    copy = line
+    while (1) {
+      q1 = index(copy, "\"")
+      if (q1 == 0) break
+      rest = substr(copy, q1 + 1)
+      q2 = index(rest, "\"")
+      if (q2 == 0) break
+      tok = substr(rest, 1, q2 - 1)
+      if (out == "") out = tok
+      else out = out ", " tok
+      copy = substr(rest, q2 + 1)
+    }
+    return out
+  }
+
+  /^\[review\][[:space:]]*(#.*)?$/ {
+    section = "review"
+    next
+  }
+  /^\[/ {
+    section = "other"
+    next
+  }
+  section == "review" && /^[[:space:]]*reviewers[[:space:]]*=[[:space:]]*\[/ {
+    first = first_quoted($0)
+    all = all_quoted($0)
+    if (first != "" && first != "conductor") {
+      print map_provider(first)
+      if (all != first) print all
+    }
+    exit
+  }
+  ' "$file"
+)"
+legacy_with="$(printf '%s\n' "$legacy_metadata" | sed -n '1p')"
+legacy_fallback="$(printf '%s\n' "$legacy_metadata" | sed -n '2p')"
+
+# The transformer tracks the current section, rewrites known legacy keys,
+# comments out retired sections, and appends a synthesized [review.conductor]
+# block at end if the file did not already have one.
+awk -v initial_with="$legacy_with" -v initial_fallback="$legacy_fallback" '
 BEGIN {
   section = ""
   saw_conductor_block = 0
   saw_conductor_with = 0
-  pending_with = ""
-  pending_fallback = ""
+  pending_with = initial_with
+  pending_fallback = initial_fallback
 }
 
 # Map legacy reviewer name to a 2.0 `with=` provider name.

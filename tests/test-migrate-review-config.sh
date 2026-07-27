@@ -166,6 +166,35 @@ fi
 echo "==> PASS: existing conductor block preserves legacy first provider"
 
 # ----------------------------------------------------------------------------
+# Test: TOML table order does not change the migrated provider
+# ----------------------------------------------------------------------------
+echo "==> Test: earlier conductor block preserves later legacy first provider"
+LEGACY_REVERSED="$TEST_DIR/legacy-reversed.toml"
+cat >"$LEGACY_REVERSED" <<'EOF'
+[review.conductor] # project-owned tuning
+prefer = "fast"
+effort = "medium"
+
+[review]
+reviewers = ["gemini", "codex"]
+
+[review.routing]
+enabled = true
+EOF
+bash "$MIGRATE" --no-backup --file "$LEGACY_REVERSED" >/dev/null
+assert_file_contains "$LEGACY_REVERSED" '^\[review\.conductor\] # project-owned tuning$' "earlier commented conductor header preserved"
+assert_file_contains "$LEGACY_REVERSED" '^prefer = "fast"$' "earlier conductor tuning preserved"
+assert_file_contains "$LEGACY_REVERSED" '^effort = "medium"$' "earlier conductor effort preserved"
+assert_file_contains "$LEGACY_REVERSED" '^with = "gemini"$' "earlier conductor block uses later legacy first provider"
+assert_file_contains "$LEGACY_REVERSED" '# Original 1.x cascade was: gemini, codex' "earlier conductor block records later legacy cascade"
+assert_file_lacks "$LEGACY_REVERSED" '^with = "codex"$' "subscription default does not replace later legacy provider"
+if [ "$(grep -c '^\[review\.conductor\]' "$LEGACY_REVERSED")" -ne 1 ]; then
+  echo "FAIL: earlier conductor block should not be duplicated" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+echo "==> PASS: earlier conductor block preserves later legacy first provider"
+
+# ----------------------------------------------------------------------------
 # Test: trailing TOML comments are valid on section headers
 # ----------------------------------------------------------------------------
 echo "==> Test: conductor header with trailing comment is recognized"
