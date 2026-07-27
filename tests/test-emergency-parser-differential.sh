@@ -130,7 +130,9 @@ if [ -n "$command_alias" ] && [ "$subcommand" = "$command_alias" ]; then
 fi
 
 while [ "$index" -lt "${#args[@]}" ]; do
-  [ "${args[$index]}" = "--no-verify" ] && bypass=1
+  case "${args[$index]}" in
+    --no-veri | --no-verif | --no-verify) bypass=1 ;;
+  esac
   index=$((index + 1))
 done
 
@@ -400,6 +402,14 @@ assert_case "composed-push-subcommand" ambiguous \
   'git p${x}ush --no-verify origin main'
 assert_case "composed-bypass-flag" ambiguous \
   'git push --no-$(printf ver)ify origin main'
+assert_case "abbreviated-bypass-flag-shortest" repo-a \
+  "git push --no-veri origin main"
+assert_case "abbreviated-bypass-flag-longer" repo-a \
+  "git push --no-verif origin main"
+assert_case "ansi-c-quoted-bypass-flag" repo-a \
+  "git push \$'--no-verify' origin main"
+assert_case "ansi-c-escaped-bypass-flag" repo-a \
+  "git push \$'--no-\\x76erify' origin main"
 assert_case "assignment-prefixed-cd" repo-b \
   "X=1 cd \"$REPO_B\" && git push --no-verify origin main"
 assert_case "assembled-variable-bypass-flag" repo-a \
