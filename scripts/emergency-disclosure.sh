@@ -461,6 +461,77 @@ word_is_bypass_option() {
   return 1
 }
 
+simple_assignment_record() {
+  local segment="$1"
+  local word="" assignment="" word_count=0
+
+  while IFS= read -r word; do
+    word_count=$((word_count + 1))
+    if [ "$word_count" -eq 1 ] && [ "$word" = "export" ]; then
+      continue
+    fi
+    case "$word" in
+      [A-Za-z_][A-Za-z0-9_]*=*)
+        [ -z "$assignment" ] || return 0
+        assignment="$word"
+        ;;
+      *)
+        return 0
+        ;;
+    esac
+  done < <(printf '%s' "$segment" | shell_words)
+
+  if [ -n "$assignment" ]; then
+    printf '%s\t%s' "${assignment%%=*}" "${assignment#*=}"
+  fi
+}
+
+remember_simple_assignment() {
+  local name="$1" value="$2" filtered=""
+
+  if [ -n "$known_assignments" ]; then
+    filtered="$(printf '%s\n' "$known_assignments" | awk -F '\t' -v name="$name" '$1 != name')"
+  fi
+  if [ -n "$filtered" ]; then
+    known_assignments="$(printf '%s\n%s\t%s' "$filtered" "$name" "$value")"
+  else
+    known_assignments="$(printf '%s\t%s' "$name" "$value")"
+  fi
+}
+
+known_assignment_value() {
+  local name="$1"
+
+  printf '%s\n' "$known_assignments" \
+    | awk -F '\t' -v name="$name" '$1 == name { sub(/^[^\t]*\t/, ""); print; found=1 } END { exit !found }'
+}
+
+exact_variable_name() {
+  local word="$1" name=""
+
+  case "$word" in
+    \$\{[A-Za-z_][A-Za-z0-9_]*\})
+      name="${word#\$\{}"
+      name="${name%\}}"
+      ;;
+    '$'[A-Za-z_][A-Za-z0-9_]*)
+      name="${word#\$}"
+      ;;
+  esac
+  [ -n "$name" ] && printf '%s' "$name"
+}
+
+segment_invokes_assigned_bypass() {
+  local segment="$1"
+  local command_word="" variable_name="" assigned_value=""
+
+  command_word="$(printf '%s' "$segment" | shell_words | sed -n '1p')"
+  variable_name="$(exact_variable_name "$command_word")"
+  [ -n "$variable_name" ] || return 1
+  assigned_value="$(known_assignment_value "$variable_name")" || return 1
+  segment_has_bypass_words "$assigned_value"
+}
+
 segment_has_bypass_words() {
   local segment="$1"
   local word=""
@@ -470,6 +541,7 @@ segment_has_bypass_words() {
   local expect_redirection_target=false
   local seen_no_verify=false
   local seen_dynamic_push_arg=false
+  local variable_name="" assigned_value=""
 
   while IFS= read -r word; do
     if [ "$expect_redirection_target" = "true" ]; then
@@ -511,9 +583,21 @@ segment_has_bypass_words() {
     elif word_is_bypass_option "$word"; then
       seen_no_verify=true
     elif [ "$subcommand" = "push" ]; then
-      case "$word" in
-        *'$'* | *'`'*) seen_dynamic_push_arg=true ;;
-      esac
+      variable_name="$(exact_variable_name "$word")"
+      if [ -n "$variable_name" ] \
+        && assigned_value="$(known_assignment_value "$variable_name")"; then
+        if word_is_bypass_option "$assigned_value"; then
+          seen_no_verify=true
+        else
+          case "$assigned_value" in
+            *'$'* | *'`'*) seen_dynamic_push_arg=true ;;
+          esac
+        fi
+      else
+        case "$word" in
+          *'$'* | *'`'*) seen_dynamic_push_arg=true ;;
+        esac
+      fi
     fi
   done < <(printf '%s' "$segment" | shell_words)
 
@@ -642,6 +726,12 @@ segment_runs_bypass_push() {
     return 0
   fi
 
+  if segment_invokes_assigned_bypass "$segment"; then
+    push_context="nested"
+    push_subcommand="push"
+    return 0
+  fi
+
   segment_executable="$(printf '%s' "$segment" | without_single_quoted_literals)"
 
   if segment_has_bypass_words "$segment"; then
@@ -691,6 +781,7 @@ command_changes_directory_ambiguously=false
 cd_chain_proven=false
 cd_count=0
 protected_aliases=""
+known_assignments=""
 multiple_protected_pushes=false
 command_executable_text="$(printf '%s' "$command" | without_shell_comments | without_single_quoted_literals)"
 if printf '%s' "$command_executable_text" \
@@ -728,6 +819,13 @@ if printf '%s' "$command_executable_text" | grep -qE '(^|[^\\])\$[{A-Za-z_]' \
   fi
 fi
 while IFS= read -r segment; do
+  assignment_record="$(simple_assignment_record "$segment")"
+  if [ -n "$assignment_record" ]; then
+    assignment_name="${assignment_record%%	*}"
+    assignment_value="${assignment_record#*	}"
+    remember_simple_assignment "$assignment_name" "$assignment_value"
+  fi
+
   alias_name="$(segment_bypass_alias_name "$segment")"
   if [ -n "$alias_name" ]; then
     if [ -n "$protected_aliases" ]; then

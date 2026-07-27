@@ -406,6 +406,10 @@ assert "blocks bypass push across a line continuation" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "$LINE_CONTINUATION_COMMAND")")"
 assert "blocks bypass flag supplied through variable expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'flag=--no-verify; git push "$flag" origin feat/test')")"
+assert "allows a known safe branch supplied through variable expansion" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson 'branch=feat/test; git push origin "$branch"')")"
+assert "blocks a protected push stored in an assigned command string" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "cmd='git push --no-verify'; \$cmd")")"
 assert "blocks git command supplied through variable expansion" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson 'cmd=git; $cmd push --no-verify origin feat/test')")"
 assert "blocks quoted Git executable supplied through environment expansion" "2" \
