@@ -77,6 +77,8 @@ case "$1 $2" in
       echo "main"
     elif [ "$json_fields" = "nameWithOwner" ]; then
       echo "autumngarage/touchstone"
+    elif [ "$json_fields" = "url" ]; then
+      echo "https://github.com/autumngarage/touchstone"
     else
       echo "unexpected gh repo view json: $json_fields jq: $jq_expr" >&2
       exit 1

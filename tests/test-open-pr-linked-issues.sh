@@ -81,6 +81,7 @@ case "$1 $2" in
     done
     case "$json_fields" in
       nameWithOwner) echo "autumngarage/touchstone" ;;
+      url) echo "https://github.com/autumngarage/touchstone" ;;
       *) echo "main" ;;
     esac
     ;;

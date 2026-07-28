@@ -33,7 +33,7 @@ resolve_current_repo() {
 }
 
 resolve_repo_context() {
-  local resolved
+  local resolved repo_url repo_host server_url
   resolved="$(resolve_current_repo)"
   current_repo=""
   current_host=""
@@ -47,6 +47,31 @@ resolve_repo_context() {
       ;;
     *) return 1 ;;
   esac
+
+  if [ -z "$current_host" ] && [ -n "${GH_HOST:-}" ]; then
+    current_host="$GH_HOST"
+  fi
+  if [ -z "$current_host" ] && [ -n "${GITHUB_SERVER_URL:-}" ]; then
+    server_url="$GITHUB_SERVER_URL"
+    case "$server_url" in
+      http://* | https://*)
+        current_host="${server_url#*://}"
+        current_host="${current_host%%/*}"
+        ;;
+    esac
+  fi
+  if [ -z "$current_host" ]; then
+    repo_url="$(gh repo view --json url --jq '.url // empty' 2>/dev/null || true)"
+    case "$repo_url" in
+      http://* | https://*)
+        repo_host="${repo_url#*://}"
+        repo_host="${repo_host%%/*}"
+        if [ "$repo_host" != "github.com" ]; then
+          current_host="$repo_host"
+        fi
+        ;;
+    esac
+  fi
 }
 
 repo_api() {

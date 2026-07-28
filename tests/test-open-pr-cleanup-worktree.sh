@@ -39,11 +39,11 @@ cat >"$FAKE_BIN/gh" <<'EOF'
 set -euo pipefail
 case "$1 $2" in
   "repo view")
-    if printf '%s\n' "$*" | grep -q 'nameWithOwner'; then
-      echo "autumngarage/touchstone"
-    else
-      echo "main"
-    fi
+    case "$*" in
+      *"nameWithOwner"*) echo "autumngarage/touchstone" ;;
+      *"--json url"*) echo "https://github.com/autumngarage/touchstone" ;;
+      *) echo "main" ;;
+    esac
     ;;
   "api repos/autumngarage/touchstone/pulls/9999")
     case "$*" in
