@@ -23,6 +23,8 @@
 #
 set -euo pipefail
 
+export GH_REPO="" GH_HOST="" GITHUB_SERVER_URL=""
+
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-open-pr.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
@@ -60,6 +62,10 @@ git -C "$REPO_DIR" commit -m "test change" >/dev/null 2>&1
 cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = "api" ] && [ "${2:-}" = "--hostname" ]; then
+  shift 3
+  set -- api "$@"
+fi
 case "$1 $2" in
   "repo view")
     json_fields=""
@@ -77,6 +83,8 @@ case "$1 $2" in
       echo "main"
     elif [ "$json_fields" = "nameWithOwner" ]; then
       echo "autumngarage/touchstone"
+    elif [ "$json_fields" = "url" ]; then
+      echo "https://github.com/autumngarage/touchstone"
     else
       echo "unexpected gh repo view json: $json_fields jq: $jq_expr" >&2
       exit 1
@@ -143,29 +151,41 @@ case "$1 $2" in
   "api user")
     echo "${GH_PR_AUTHOR:-alice}"
     ;;
-  "issue view")
-    issue_number="$3"
-    json_fields=""
+  "api repos/"*)
+    api_path="$2"
+    jq_expr=""
     prev=""
     for arg in "$@"; do
-      if [ "$prev" = "--json" ]; then
-        json_fields="$arg"
+      if [ "$prev" = "--jq" ]; then
+        jq_expr="$arg"
       fi
       prev="$arg"
     done
-    if [ "$json_fields" = "state" ]; then
-      echo "OPEN"
-      exit 0
-    fi
-    if [ "$json_fields" = "assignees" ]; then
-      case "$issue_number" in
-        52) echo "alice" ;;
-        *) : ;;
-      esac
-      exit 0
-    fi
-    echo "unexpected gh issue view args: $*" >&2
-    exit 1
+    case "$api_path:$jq_expr" in
+      "repos/autumngarage/touchstone/pulls/777:.body // \"\"")
+        echo "${GH_PR_BODY:-}"
+        ;;
+      "repos/autumngarage/touchstone/pulls/777:.user.login // empty")
+        echo "${GH_PR_AUTHOR:-alice}"
+        ;;
+      "repos/autumngarage/touchstone/issues/"*":.state")
+        echo "open"
+        ;;
+      "repos/autumngarage/touchstone/issues/52:.assignees | map(.login) | join(\"\\n\")")
+        echo "alice"
+        ;;
+      "repos/autumngarage/touchstone/issues/"*":.assignees | map(.login) | join(\"\\n\")")
+        :
+        ;;
+      *)
+        echo "unexpected gh api args: $*" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  "issue view")
+    echo "issue claim check must use REST reads: $*" >&2
+    exit 90
     ;;
   *)
     echo "unexpected gh args: $*" >&2

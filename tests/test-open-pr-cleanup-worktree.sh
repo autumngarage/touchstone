@@ -13,6 +13,8 @@
 #
 set -euo pipefail
 
+export GH_REPO="" GH_HOST="" GITHUB_SERVER_URL=""
+
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-open-pr-cleanup.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
@@ -37,8 +39,25 @@ chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/issue-claim-check.sh" "$SCRIPT_DI
 cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = "api" ] && [ "${2:-}" = "--hostname" ]; then
+  shift 3
+  set -- api "$@"
+fi
 case "$1 $2" in
-  "repo view") echo "main" ;;
+  "repo view")
+    case "$*" in
+      *"nameWithOwner"*) echo "autumngarage/touchstone" ;;
+      *"--json url"*) echo "https://github.com/autumngarage/touchstone" ;;
+      *) echo "main" ;;
+    esac
+    ;;
+  "api repos/autumngarage/touchstone/pulls/9999")
+    case "$*" in
+      *".body // \"\""*) echo "" ;;
+      *".user.login // empty"*) echo "alice" ;;
+      *) echo "unexpected gh api args: $*" >&2; exit 1 ;;
+    esac
+    ;;
   "pr list")
     if [ "${GH_HAS_EXISTING_PR:-0}" = "1" ]; then
       printf 'https://example.test/touchstone/pull/9999\tmain\n'

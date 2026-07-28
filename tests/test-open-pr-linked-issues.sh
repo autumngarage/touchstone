@@ -9,6 +9,8 @@
 #
 set -euo pipefail
 
+export GH_REPO="" GH_HOST="" GITHUB_SERVER_URL=""
+
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-open-pr-linked.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
@@ -34,11 +36,61 @@ set -euo pipefail
 if [ -n "${GH_CALL_LOG:-}" ]; then
   printf '%s\n' "$*" >>"$GH_CALL_LOG"
 fi
+if [ "${1:-}" = "api" ] && [ "${2:-}" = "--hostname" ]; then
+  shift 3
+  set -- api "$@"
+fi
 case "$1 $2" in
   "api user")
     echo "alice"
     ;;
+  "api repos/"*)
+    api_path="$2"
+    jq_expr=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--jq" ]; then
+        jq_expr="$arg"
+      fi
+      prev="$arg"
+    done
+    issue_number="${api_path##*/}"
+    if [[ "$api_path" == */pulls/* ]]; then
+      case "$jq_expr" in
+        '.body // ""') cat "$FAKE_PR_BODY_FILE" ;;
+        '.user.login // empty') echo "alice" ;;
+        *) echo "unexpected pull REST args: $*" >&2; exit 1 ;;
+      esac
+      exit 0
+    fi
+    if [[ "$api_path" == */issues/*/comments ]]; then
+      exit 0
+    fi
+    case "$jq_expr" in
+      ".state")
+        case "$issue_number" in
+          51) echo "closed" ;;
+          *) echo "open" ;;
+        esac
+        ;;
+      '.assignees | map(.login) | join("\n")')
+        case "$issue_number" in
+          42 | 43 | 52 | 465) echo "alice" ;;
+          6[0-9]) echo "alice" ;;
+          53) echo "bob" ;;
+          *) : ;;
+        esac
+        ;;
+      *)
+        echo "unexpected gh api args: $*" >&2
+        exit 1
+        ;;
+    esac
+    ;;
   "repo view")
+    if [ "${FAKE_REPO_RESOLUTION_FAIL:-0}" = "1" ]; then
+      exit 1
+    fi
     json_fields=""
     prev=""
     for arg in "$@"; do
@@ -49,6 +101,7 @@ case "$1 $2" in
     done
     case "$json_fields" in
       nameWithOwner) echo "autumngarage/touchstone" ;;
+      url) echo "${FAKE_REPO_URL:-https://github.com/autumngarage/touchstone}" ;;
       *) echo "main" ;;
     esac
     ;;
@@ -71,33 +124,8 @@ case "$1 $2" in
     echo ""
     ;;
   "issue view")
-    issue_number="$3"
-    json_fields=""
-    prev=""
-    for arg in "$@"; do
-      if [ "$prev" = "--json" ]; then
-        json_fields="$arg"
-      fi
-      prev="$arg"
-    done
-    if [ "$json_fields" = "state" ]; then
-      case "$issue_number" in
-        51) echo "CLOSED" ;;
-        *) echo "OPEN" ;;
-      esac
-      exit 0
-    fi
-    if [ "$json_fields" = "assignees" ]; then
-      case "$issue_number" in
-        42 | 43 | 52) echo "alice" ;;
-        6[0-9]) echo "alice" ;;
-        53) echo "bob" ;;
-        *) : ;;
-      esac
-      exit 0
-    fi
-    echo "unexpected gh issue view args: $*" >&2
-    exit 1
+    echo "issue claim check must use REST reads: $*" >&2
+    exit 90
     ;;
   *)
     echo "unexpected gh args: $*" >&2
@@ -364,6 +392,109 @@ else
   echo "    FAIL: expected all closing verbs to pass when assigned" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 9: PR mode uses Actions-token-compatible REST reads"
+BODY="$TEST_DIR/pr-rest.md"
+printf 'Closes #465\n' >"$BODY"
+OUT="$TEST_DIR/pr-rest.out"
+: >"$TEST_DIR/gh-calls.log"
+GH_REPO="" GH_HOST="" GITHUB_SERVER_URL="" \
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  GH_CALL_LOG="$TEST_DIR/gh-calls.log" FAKE_PR_BODY_FILE="$BODY" \
+  bash "$SCRIPT_DIR/issue-claim-check.sh" --pr-number 77 >"$OUT" 2>&1 || ERRORS=$((ERRORS + 1))
+if grep -q 'All referenced issues are claimed by the PR author.' "$OUT" \
+  && grep -q '^api repos/autumngarage/touchstone/pulls/77 ' "$TEST_DIR/gh-calls.log" \
+  && ! grep -Eq '^(pr|issue) view ' "$TEST_DIR/gh-calls.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected PR mode to use REST reads exclusively" >&2
+  cat "$OUT" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 10: claim bypass does not require repository context"
+BODY="$TEST_DIR/bypass-outside-repo.md"
+printf '[skip-claim-check]\n' >"$BODY"
+OUT="$TEST_DIR/bypass-outside-repo.out"
+: >"$TEST_DIR/gh-calls.log"
+GH_REPO="" GH_HOST="" GITHUB_SERVER_URL="" \
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  GH_CALL_LOG="$TEST_DIR/gh-calls.log" FAKE_REPO_RESOLUTION_FAIL=1 \
+  bash "$SCRIPT_DIR/issue-claim-check.sh" --body-file "$BODY" --author alice >"$OUT" 2>&1
+if grep -q 'bypassing issue claim check' "$OUT" \
+  && ! grep -q '^repo view' "$TEST_DIR/gh-calls.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected bypass before repository resolution" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 11: host-qualified GH_REPO separates host from REST path"
+: >"$TEST_DIR/gh-calls.log"
+GH_REPO="github.example.com/autumngarage/touchstone" GH_HOST="" GITHUB_SERVER_URL="" \
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  GH_CALL_LOG="$TEST_DIR/gh-calls.log" FAKE_PR_BODY_FILE="$TEST_DIR/pr-rest.md" \
+  bash "$SCRIPT_DIR/issue-claim-check.sh" --pr-number 77 >"$TEST_DIR/host-qualified.out" 2>&1
+if grep -q '^api --hostname github.example.com repos/autumngarage/touchstone/pulls/77 ' "$TEST_DIR/gh-calls.log" \
+  && ! grep -q 'repos/github.example.com/' "$TEST_DIR/gh-calls.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected host-qualified GH_REPO to use --hostname" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 12: Actions server URL selects the enterprise host"
+: >"$TEST_DIR/gh-calls.log"
+GH_REPO="autumngarage/touchstone" GH_HOST="" GITHUB_SERVER_URL="https://github.example.com" \
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  GH_CALL_LOG="$TEST_DIR/gh-calls.log" FAKE_PR_BODY_FILE="$TEST_DIR/pr-rest.md" \
+  bash "$SCRIPT_DIR/issue-claim-check.sh" --pr-number 77 >"$TEST_DIR/actions-host.out" 2>&1
+if grep -q '^api --hostname github.example.com repos/autumngarage/touchstone/pulls/77 ' "$TEST_DIR/gh-calls.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected GITHUB_SERVER_URL to select the API host" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 13: local enterprise checkout derives host from repository URL"
+: >"$TEST_DIR/gh-calls.log"
+GH_REPO="" GH_HOST="" GITHUB_SERVER_URL="" \
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  GH_CALL_LOG="$TEST_DIR/gh-calls.log" FAKE_PR_BODY_FILE="$TEST_DIR/pr-rest.md" \
+  FAKE_REPO_URL="https://github.example.com/autumngarage/touchstone" \
+  bash "$SCRIPT_DIR/issue-claim-check.sh" --pr-number 77 >"$TEST_DIR/local-enterprise.out" 2>&1
+if grep -q '^api --hostname github.example.com repos/autumngarage/touchstone/pulls/77 ' "$TEST_DIR/gh-calls.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected repository URL to select the API host" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 14: enterprise failure comments use the resolved REST host"
+BODY="$TEST_DIR/pr-rest-unassigned.md"
+printf 'Closes #50\n' >"$BODY"
+: >"$TEST_DIR/gh-calls.log"
+RC=0
+GH_REPO="autumngarage/touchstone" GH_HOST="" GITHUB_SERVER_URL="https://github.example.com" \
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  GH_CALL_LOG="$TEST_DIR/gh-calls.log" FAKE_PR_BODY_FILE="$BODY" \
+  bash "$SCRIPT_DIR/issue-claim-check.sh" --pr-number 77 --comment-pr \
+  >"$TEST_DIR/enterprise-comment.out" 2>&1 || RC=$?
+if [ "$RC" != "0" ] \
+  && grep -q '^api --hostname github.example.com repos/autumngarage/touchstone/issues/77/comments ' "$TEST_DIR/gh-calls.log" \
+  && grep -q 'remediation comment posted' "$TEST_DIR/enterprise-comment.out"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected failure comment to use the resolved enterprise host" >&2
+  cat "$TEST_DIR/enterprise-comment.out" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
