@@ -162,6 +162,16 @@ set -euo pipefail
 echo "main"
 EOF
 
+cat >"$FAKE_BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then
+  printf 'Logged in using ChatGPT\n'
+  exit 0
+fi
+exit 1
+EOF
+
 cat >"$FAKE_BIN/conductor" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -174,7 +184,7 @@ printf '[conductor] auto (prefer=best, effort=max) -> codex (tier: frontier)\n' 
 printf 'No blocking issues were found in the diff.\n'
 printf 'The changes look safe to merge.\n'
 EOF
-chmod +x "$FAKE_BIN/gh" "$FAKE_BIN/conductor"
+chmod +x "$FAKE_BIN/gh" "$FAKE_BIN/codex" "$FAKE_BIN/conductor"
 
 set +e
 (

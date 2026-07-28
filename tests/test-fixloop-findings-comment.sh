@@ -78,7 +78,16 @@ case "${1:-}" in
     ;;
 esac
 EOF
-chmod +x "$FAKE_BIN/conductor"
+cat >"$FAKE_BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then
+  printf 'Logged in using ChatGPT\n'
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$FAKE_BIN/conductor" "$FAKE_BIN/codex"
 
 OUT="$TEST_DIR/review.out"
 (
