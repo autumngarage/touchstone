@@ -80,8 +80,8 @@ case "${1:-} ${2:-}" in
       echo "mock comment inspection failure" >&2
       exit 1
     fi
-    if [[ "${5:-}" != *'.body == "@codex review\n\n<!-- touchstone:pr-review-request provider=github-codex head='* ]]; then
-      echo "request lookup must match the command and marker in one exact comment" >&2
+    if [[ "${5:-}" != *"author_association"* ]]; then
+      echo "request lookup must filter repository-trusted actors" >&2
       exit 1
     fi
     if [ -n "${GH_EXISTING_REQUEST_FILE:-}" ]; then
@@ -89,11 +89,20 @@ case "${1:-} ${2:-}" in
     else
       existing_request_body="${GH_EXISTING_REQUEST_BODY:-}"
     fi
-    case "$existing_request_body" in
-      "@codex review"$'\n\n'"<!-- touchstone:pr-review-request provider=github-codex head="*" base="*" -->")
-        printf 'existing-request-id\n'
-        ;;
-    esac
+    query_head="$(printf '%s' "${5:-}" | sed -n 's/.*head=\([^ ]*\) base=.*/\1/p')"
+    existing_revision="$(
+      printf '%s\n' "$existing_request_body" \
+        | sed -n 's/.*head=\([^ ]*\) base=\([^ ]*\) -->.*/\1	\2/p'
+    )"
+    if [ -n "$existing_revision" ] \
+      && [ "${existing_revision%%	*}" = "$query_head" ]; then
+      printf '%s\n' "${existing_revision#*	}"
+    fi
+    if [ "$existing_request_body" = "@codex review
+
+<!-- touchstone:pr-review-request provider=github-codex head=$query_head -->" ]; then
+      printf '<unbound>\n'
+    fi
     ;;
   *)
     echo "unexpected gh args: $*" >&2
@@ -494,6 +503,49 @@ if grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$DRAFT_
   echo "    PASS"
 else
   echo "    FAIL: a draft PR should request review before returning" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 8e: one head cannot request reviews for multiple bases"
+reset_case
+OUT="$TEST_DIR/request-conflicting-base.out"
+GH_EXISTING_REQUEST_BODY="@codex review
+
+<!-- touchstone:pr-review-request provider=github-codex head=$DRAFT_REQUEST_HEAD base=old-base-oid -->" \
+  run_open_pr "$OUT" && {
+  echo "    FAIL: conflicting base request unexpectedly succeeded" >&2
+  ERRORS=$((ERRORS + 1))
+}
+if grep -q "head $DRAFT_REQUEST_HEAD already has trusted review requests for another base revision" "$OUT" \
+  && grep -q 'current base:  base-oid' "$OUT" \
+  && grep -q 'prior base(s): old-base-oid' "$OUT" \
+  && [ ! -f "$TEST_DIR/comments" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a reused head should not request review against a second base" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 8f: legacy head-only requests require a fresh PR head"
+reset_case
+OUT="$TEST_DIR/request-legacy-unbound.out"
+GH_EXISTING_REQUEST_BODY="@codex review
+
+<!-- touchstone:pr-review-request provider=github-codex head=$DRAFT_REQUEST_HEAD -->" \
+  run_open_pr "$OUT" && {
+  echo "    FAIL: legacy unbound request unexpectedly authorized a base-bound request" >&2
+  ERRORS=$((ERRORS + 1))
+}
+if grep -q "head $DRAFT_REQUEST_HEAD already has trusted review requests for another base revision" "$OUT" \
+  && grep -q 'prior base(s): <unbound>' "$OUT" \
+  && [ ! -f "$TEST_DIR/comments" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: legacy head-only request did not require a fresh PR head" >&2
   cat "$OUT" >&2
   [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
   ERRORS=$((ERRORS + 1))

@@ -391,7 +391,8 @@ load_open_pr_review_request_config() {
 request_pr_triggered_review() {
   local pr_number="$1"
   local expected_head_sha="$2"
-  local head_sha base_revision base_branch base_sha marker existing_request_ids body attempt=1
+  local head_sha base_revision base_branch base_sha marker request_bases request_base body attempt=1
+  local matching_request=false conflicting_bases=""
   local max_attempts="${TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS:-10}"
   local retry_interval="${TOUCHSTONE_PR_HEAD_CONVERGENCE_INTERVAL:-1}"
 
@@ -446,14 +447,47 @@ request_pr_triggered_review() {
     return 1
   fi
   marker="<!-- touchstone:pr-review-request provider=github-codex head=$head_sha base=$base_sha -->"
-  if ! existing_request_ids="$(
+  if ! request_bases="$(
     gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments?per_page=100" \
-      --jq ".[] | select(.body == \"@codex review\\n\\n$marker\") | .id"
+      --jq ".[] |
+        select(
+          .author_association == \"OWNER\" or
+          .author_association == \"MEMBER\" or
+          .author_association == \"COLLABORATOR\"
+        ) |
+        select(
+          (.body | startswith(\"@codex review\\n\\n<!-- touchstone:pr-review-request provider=github-codex head=$head_sha base=\")) or
+          .body == \"@codex review\\n\\n<!-- touchstone:pr-review-request provider=github-codex head=$head_sha -->\"
+        ) |
+        select(
+          .body == \"@codex review\\n\\n<!-- touchstone:pr-review-request provider=github-codex head=$head_sha -->\" or
+          (.body | endswith(\" -->\"))
+        ) |
+        if .body == \"@codex review\\n\\n<!-- touchstone:pr-review-request provider=github-codex head=$head_sha -->\" then
+          \"<unbound>\"
+        else
+          (.body | split(\" base=\")[-1] | rtrimstr(\" -->\"))
+        end"
   )"; then
     echo "ERROR: failed to inspect prior GitHub Codex review requests for PR #$pr_number." >&2
     return 1
   fi
-  if [ -n "$existing_request_ids" ]; then
+  while IFS= read -r request_base || [ -n "$request_base" ]; do
+    [ -n "$request_base" ] || continue
+    if [ "$request_base" = "$base_sha" ]; then
+      matching_request=true
+    else
+      conflicting_bases="${conflicting_bases}${conflicting_bases:+, }$request_base"
+    fi
+  done <<<"$request_bases"
+  if [ -n "$conflicting_bases" ]; then
+    echo "ERROR: PR #$pr_number head $head_sha already has trusted review requests for another base revision." >&2
+    echo "       current base:  $base_sha" >&2
+    echo "       prior base(s): $conflicting_bases" >&2
+    echo "       Update the PR head before requesting review for the new base." >&2
+    return 1
+  fi
+  if [ "$matching_request" = true ]; then
     echo "==> GitHub Codex review already requested for head $head_sha at base $base_sha."
     return 0
   fi

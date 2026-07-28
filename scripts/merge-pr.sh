@@ -1875,16 +1875,57 @@ wait_for_pr_triggered_review() {
 load_pr_review_request_timestamp() {
   local expected_head="$1"
   local expected_base="$2"
-  local marker timestamps
+  local prefix legacy_marker records created_at request_base
+  local matching_timestamps="" conflicting_bases=""
 
-  marker="<!-- touchstone:pr-review-request provider=github-codex head=$expected_head base=$expected_base -->"
-  if ! timestamps="$(
+  prefix="@codex review\\n\\n<!-- touchstone:pr-review-request provider=github-codex head=$expected_head base="
+  legacy_marker="@codex review\\n\\n<!-- touchstone:pr-review-request provider=github-codex head=$expected_head -->"
+  if ! records="$(
     gh api --paginate "repos/$REPO_FULL_NAME/issues/$PR_NUMBER/comments?per_page=100" \
-      --jq ".[] | select(.body == \"@codex review\\n\\n$marker\") | .created_at"
+      --jq ".[] |
+        select(
+          .author_association == \"OWNER\" or
+          .author_association == \"MEMBER\" or
+          .author_association == \"COLLABORATOR\"
+        ) |
+        select((.body | startswith(\"$prefix\")) or .body == \"$legacy_marker\") |
+        select(.body == \"$legacy_marker\" or (.body | endswith(\" -->\"))) |
+        [
+          .created_at,
+          (
+            if .body == \"$legacy_marker\" then
+              \"<unbound>\"
+            else
+              (.body | split(\" base=\")[-1] | rtrimstr(\" -->\"))
+            end
+          )
+        ] |
+        @tsv"
   )"; then
     return 1
   fi
-  PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP="$(printf '%s\n' "$timestamps" | sed '/^$/d' | sort | tail -n 1)"
+
+  while IFS="$(printf '\t')" read -r created_at request_base || [ -n "$created_at" ]; do
+    [ -n "$created_at" ] && [ -n "$request_base" ] || continue
+    if [ "$request_base" = "$expected_base" ]; then
+      matching_timestamps="${matching_timestamps}${matching_timestamps:+$'\n'}$created_at"
+    else
+      conflicting_bases="${conflicting_bases}${conflicting_bases:+, }$request_base"
+    fi
+  done <<<"$records"
+
+  if [ -n "$conflicting_bases" ]; then
+    echo "ERROR: PR #$PR_NUMBER head $expected_head has trusted review requests for multiple base revisions." >&2
+    echo "       current base:  $expected_base" >&2
+    echo "       prior base(s): $conflicting_bases" >&2
+    echo "       Update the PR head, then request a fresh review so old in-flight results cannot authorize the new base." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="review-request-base-conflict"
+    return 3
+  fi
+
+  PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP="$(
+    printf '%s\n' "$matching_timestamps" | sed '/^$/d' | sort | tail -n 1
+  )"
 }
 
 request_pr_triggered_review() {
@@ -1893,6 +1934,7 @@ request_pr_triggered_review() {
   local phase="$3"
   local force_request="${4:-false}"
   local observed_head observed_revision observed_branch observed_base marker body created_at
+  local request_lookup_status=0
 
   if ! truthy "$PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH" && [ "$force_request" != true ]; then
     return 0
@@ -1929,7 +1971,11 @@ request_pr_triggered_review() {
   fi
 
   marker="<!-- touchstone:pr-review-request provider=github-codex head=$expected_head base=$expected_base -->"
-  if ! load_pr_review_request_timestamp "$expected_head" "$expected_base"; then
+  load_pr_review_request_timestamp "$expected_head" "$expected_base" || request_lookup_status=$?
+  if [ "$request_lookup_status" -ne 0 ]; then
+    if [ "$request_lookup_status" -eq 3 ]; then
+      return 1
+    fi
     echo "ERROR: Failed to inspect prior GitHub Codex review requests for PR #$PR_NUMBER." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1

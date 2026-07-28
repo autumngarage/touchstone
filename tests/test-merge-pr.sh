@@ -261,17 +261,42 @@ case "${1:-} ${2:-}" in
     case "${3:-}" in
       */comments | */comments\?*)
         if [[ "${5:-}" == *"touchstone:pr-review-request"* ]]; then
+          if [[ "${5:-}" != *"author_association"* ]]; then
+            echo "request lookup must filter repository-trusted actors" >&2
+            exit 1
+          fi
+          if [ -n "${GH_REQUEST_RECORDS:-}" ]; then
+            printf '%s\n' "$GH_REQUEST_RECORDS"
+            exit 0
+          fi
+          query_head="$(printf '%s' "${5:-}" | sed -n 's/.*head=\([^ ]*\) base=.*/\1/p')"
           existing_request_body="${GH_EXISTING_REQUEST_BODY:-}"
-          escaped_existing_request_body="${existing_request_body//$'\n'/\\n}"
-          if [ -n "$existing_request_body" ] \
-            && [[ "${5:-}" == *"$escaped_existing_request_body"* ]]; then
-            printf '%s\n' "${GH_EXISTING_REQUEST_TIMESTAMP:-1969-01-01T00:00:00Z}"
-          elif [ -s "${GH_REVIEW_REQUEST_FILE:-/dev/null/never}" ]; then
-            requested_revision="$(printf '%s' "${5:-}" | sed -n 's/.*head=\([^ ]* base=[^ ]*\) -->.*/\1/p')"
-            if [ -n "$requested_revision" ] \
-              && grep -Fq "$requested_revision" "$GH_REVIEW_REQUEST_FILE"; then
-              printf '%s\n' "${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}"
-            fi
+          existing_revision="$(
+            printf '%s\n' "$existing_request_body" \
+              | sed -n 's/.*head=\([^ ]*\) base=\([^ ]*\) -->.*/\1	\2/p'
+          )"
+          if [ -n "$existing_revision" ] \
+            && [ "${existing_revision%%	*}" = "$query_head" ]; then
+            printf '%s\t%s\n' \
+              "${GH_EXISTING_REQUEST_TIMESTAMP:-1969-01-01T00:00:00Z}" \
+              "${existing_revision#*	}"
+          fi
+          if [ "$existing_request_body" = "@codex review
+
+<!-- touchstone:pr-review-request provider=github-codex head=$query_head -->" ]; then
+            printf '%s\t<unbound>\n' \
+              "${GH_EXISTING_REQUEST_TIMESTAMP:-1969-01-01T00:00:00Z}"
+          fi
+          if [ -s "${GH_REVIEW_REQUEST_FILE:-/dev/null/never}" ]; then
+            while IFS="$(printf '\t')" read -r requested_head requested_base; do
+              [ "$requested_head" = "$query_head" ] || continue
+              printf '%s\t%s\n' \
+                "${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}" \
+                "$requested_base"
+            done < <(
+              sed -n 's/.*head=\([^ ]*\) base=\([^ ]*\) -->.*/\1	\2/p' \
+                "$GH_REVIEW_REQUEST_FILE"
+            )
           fi
           exit 0
         fi
@@ -606,6 +631,7 @@ reset_case_files() {
   unset GH_ISSUE_COMMENTS_SECOND
   unset GH_EXISTING_REQUEST_BODY
   unset GH_EXISTING_REQUEST_TIMESTAMP
+  unset GH_REQUEST_RECORDS
   unset GH_REQUEST_CREATED_AT
   unset GH_COMMENTS_FAIL
   unset GH_COMMENT_COMMIT_RESOLUTION_FAIL
@@ -688,6 +714,7 @@ run_merge_pr() {
     GH_ISSUE_COMMENTS_SECOND="${GH_ISSUE_COMMENTS_SECOND:-}" \
     GH_EXISTING_REQUEST_BODY="${GH_EXISTING_REQUEST_BODY:-}" \
     GH_EXISTING_REQUEST_TIMESTAMP="${GH_EXISTING_REQUEST_TIMESTAMP:-1969-01-01T00:00:00Z}" \
+    GH_REQUEST_RECORDS="${GH_REQUEST_RECORDS:-}" \
     GH_REQUEST_CREATED_AT="${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}" \
     GH_COMMENTS_FAIL="${GH_COMMENTS_FAIL:-false}" \
     GH_COMMENT_COMMIT_RESOLUTION_FAIL="${GH_COMMENT_COMMIT_RESOLUTION_FAIL:-false}" \
@@ -1223,14 +1250,53 @@ if GH_BASE_REF_NAME="release/ancestor" \
   echo "FAIL: ancestor-base retarget reused a head-only clean result" >&2
   exit 1
 fi
-if grep -q 'head=pr-head-oid base=new-ancestor-base' "$TEST_DIR/gh-review-request" \
-  && grep -q 'Timed out waiting for trusted PR-visible AI review' "$TEST_DIR/output-pr-triggered-ancestor-retarget.txt" \
+if grep -q 'head pr-head-oid has trusted review requests for multiple base revisions' "$TEST_DIR/output-pr-triggered-ancestor-retarget.txt" \
+  && grep -q 'current base:  new-ancestor-base' "$TEST_DIR/output-pr-triggered-ancestor-retarget.txt" \
+  && grep -q 'prior base(s): old-base-oid' "$TEST_DIR/output-pr-triggered-ancestor-retarget.txt" \
+  && [ ! -f "$TEST_DIR/gh-review-request" ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
-  echo "==> PASS: retargeted ancestor base requires a fresh base-bound result"
+  echo "==> PASS: retargeted ancestor base requires a fresh PR head"
 else
-  echo "FAIL: retargeted ancestor base did not fail closed on missing base-bound evidence" >&2
+  echo "FAIL: retargeted ancestor base did not fail closed on ambiguous review evidence" >&2
   cat "$TEST_DIR/output-pr-triggered-ancestor-retarget.txt" >&2
   [ ! -f "$TEST_DIR/gh-review-request" ] || cat "$TEST_DIR/gh-review-request" >&2
+  exit 1
+fi
+
+echo "==> Test: one head cannot accept review requests for multiple bases"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_REQUEST_RECORDS=$'2026-06-22T00:00:00Z\told-base-oid' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-conflicting-base-request.txt" 123; then
+  echo "FAIL: merge-pr.sh accepted a review request for a reused head on a new base" >&2
+  exit 1
+fi
+if grep -q 'head pr-head-oid has trusted review requests for multiple base revisions' "$TEST_DIR/output-pr-triggered-conflicting-base-request.txt" \
+  && grep -q 'current base:  base-oid' "$TEST_DIR/output-pr-triggered-conflicting-base-request.txt" \
+  && grep -q 'prior base(s): old-base-oid' "$TEST_DIR/output-pr-triggered-conflicting-base-request.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: a base retarget requires a new PR head before review can authorize it"
+else
+  echo "FAIL: conflicting base-bound requests did not fail closed" >&2
+  cat "$TEST_DIR/output-pr-triggered-conflicting-base-request.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: legacy head-only review requests require a fresh PR head"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_REQUEST_RECORDS=$'2026-06-22T00:00:00Z\t<unbound>' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-legacy-request.txt" 123; then
+  echo "FAIL: merge-pr.sh treated a legacy head-only request as base-bound" >&2
+  exit 1
+fi
+if grep -q 'head pr-head-oid has trusted review requests for multiple base revisions' "$TEST_DIR/output-pr-triggered-legacy-request.txt" \
+  && grep -q 'prior base(s): <unbound>' "$TEST_DIR/output-pr-triggered-legacy-request.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: legacy unbound requests cannot cross the base-binding upgrade"
+else
+  echo "FAIL: legacy unbound review request did not fail closed" >&2
+  cat "$TEST_DIR/output-pr-triggered-legacy-request.txt" >&2
   exit 1
 fi
 
@@ -1299,13 +1365,14 @@ if GH_BASE_REF_CHANGE_AFTER=4 \
   echo "FAIL: merge-pr.sh reused the prior base request after the base advanced" >&2
   exit 1
 fi
-if grep -q 'head=pr-head-oid base=new-base-oid' "$TEST_DIR/gh-review-request" \
-  && grep -q 'Timed out waiting for trusted PR-visible AI review' "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" \
+if grep -q 'head pr-head-oid has trusted review requests for multiple base revisions' "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" \
+  && grep -q 'current base:  new-base-oid' "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" \
+  && grep -q 'prior base(s): base-oid' "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" \
   && ! grep -q 'Trusted PR-visible AI review found' "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
-  echo "==> PASS: base movement during polling invalidates the prior request timestamp"
+  echo "==> PASS: base movement during polling requires a fresh PR head"
 else
-  echo "FAIL: base movement while polling did not require fresh base-bound evidence" >&2
+  echo "FAIL: base movement while polling did not invalidate the reused PR head" >&2
   cat "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" >&2
   [ ! -f "$TEST_DIR/gh-review-request" ] || cat "$TEST_DIR/gh-review-request" >&2
   exit 1
