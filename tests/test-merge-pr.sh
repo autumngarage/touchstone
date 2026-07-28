@@ -2049,7 +2049,7 @@ fi
 
 echo "==> Test: persistent review-request marker lookup failure reports inspection error"
 reset_case_files
-write_pr_triggered_config true 1 1
+write_pr_triggered_config true 2 1
 if GH_REQUEST_LOOKUP_FAIL=true \
   MERGE_PR_SLEEP_OVERRIDE=0.1 \
   run_merge_pr "$TEST_DIR/output-pr-triggered-request-lookup-persistent.txt" 123; then
