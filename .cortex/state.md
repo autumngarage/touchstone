@@ -1,10 +1,10 @@
 ---
-Generated: 2026-07-27T21:42:17-04:00
+Generated: 2026-07-27T21:44:37-04:00
 Generator: cortex refresh-state v1.6.4
 Sources:
-  - HEAD sha: 51e57dd98ea1df00153eece29366eeb3a3df20b9
+  - HEAD sha: 88895ed3b2303a8a05b65b25061eedc3a632b2c6
   - .cortex/plans/*.md (2 files)
-  - .cortex/journal/*.md (22 entries, 2026-05-05..2026-07-27)
+  - .cortex/journal/*.md (23 entries, 2026-05-05..2026-07-27)
   - .cortex/doctrine/*.md (1 entries)
   - .cortex/templates/**/*.md (12 templates)
   - docs/case-studies/*.md (0 case studies)
@@ -34,6 +34,7 @@ Sources-hash:
   .cortex/journal/2026-06-16-pr-merged-1254.md: dffacf84e097889da140ca98d8781557720d6d26ea2fe0188db21a038efa3718
   .cortex/journal/2026-07-26-exact-head-pr-review-gate.md: 88ca144ea23766871784465fc27ae20fb2e8b78938a89e766c4903432d817ab2
   .cortex/journal/2026-07-27-pr-merged-2142.md: 72c0b3c99976c783db3c7de9d029c0bbc3396d9feaefef9b469b38d01c926fda
+  .cortex/journal/2026-07-27-pr-merged-2143.md: ba09c992cc729d3fa3ca82bc72d3aec82e840c305fab23a23ff6153ff22e19be
   .cortex/plans/touchstone-conductor-integration.md: be3f8211b7c19e32e0c4c858c35678c1d85418fe12c5d22b29cc0a7831f8a54c
   .cortex/plans/touchstone-cortex-metadata.md: 0e23c4e06b91c1e8da358b3928750798975eed88815502fb8e7ddfbdbd0187f5
   .cortex/templates/README.md: 695aa2e623bd7f4e698dae471bded0cde354da0c1d8589266660ceb1be8efad1
@@ -48,7 +49,7 @@ Sources-hash:
   .cortex/templates/journal/release.md: 9a6bc59219156e48b419fb170c7c50ff557767def8672ef20568df3e14eadbd0
   .cortex/templates/journal/sentinel-cycle.md: 2945e2d94af4ec9848584b4b3e9cea7060d2968dd42e78faf21fb6f859137476
   .cortex/templates/plans/template.md: d8156cfa3b86acd2a1fbb36cff07cae37d99f3adee7f72b14b7b16e645c51b44
-Corpus: 22 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
+Corpus: 23 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
 Omitted:
   []
 Incomplete:
@@ -82,6 +83,7 @@ Spec: 0.5.0
 - **2026-06-11** — Release v2.11.45 — PR-visible review gate (`.cortex/journal/2026-06-11-release-v2-11-45.md`, Type: release)
 - **2026-06-16** — PR #468 merged — fix(guard): allow branch-first compounds (`.cortex/journal/2026-06-16-pr-merged-1254.md`, Type: pr-merged)
 - **2026-07-27** — PR #506 merged — feat: ship major Touchstone delivery upgrades (`.cortex/journal/2026-07-27-pr-merged-2142.md`, Type: pr-merged)
+- **2026-07-27** — PR #492 merged — fix: harden emergency disclosure and request Codex reviews (`.cortex/journal/2026-07-27-pr-merged-2143.md`, Type: pr-merged)
 
 ## Stale-now / handle-later
 
