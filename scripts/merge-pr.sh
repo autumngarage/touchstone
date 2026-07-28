@@ -1655,6 +1655,7 @@ trusted_pr_clean_signal() {
   local result_status
   local review_found=false review_timestamp="" review_clean=false review_detail=""
   local comment_found=false comment_timestamp="" comment_clean=false comment_detail=""
+  local review_same_second=false comment_same_second=false
   local review_inspection_error="" comment_inspection_error=""
 
   PR_TRIGGERED_REVIEW_INSPECTION_ERROR=""
@@ -1664,12 +1665,12 @@ trusted_pr_clean_signal() {
   fi
   if latest_trusted_pr_review_result "$expected_head"; then
     review_timestamp="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
-    # GitHub timestamps have second precision, so a response completed later
-    # in the request's second is represented by the same timestamp.
-    if [[ ! "$review_timestamp" < "$request_timestamp" ]]; then
+    if [[ "$review_timestamp" > "$request_timestamp" ]]; then
       review_found=true
       review_clean="$PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN"
       review_detail="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL"
+    elif [ "$review_timestamp" = "$request_timestamp" ]; then
+      review_same_second=true
     fi
   else
     result_status=$?
@@ -1679,10 +1680,12 @@ trusted_pr_clean_signal() {
   fi
   if latest_trusted_pr_comment_result "$expected_head"; then
     comment_timestamp="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
-    if [[ ! "$comment_timestamp" < "$request_timestamp" ]]; then
+    if [[ "$comment_timestamp" > "$request_timestamp" ]]; then
       comment_found=true
       comment_clean="$PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN"
       comment_detail="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL"
+    elif [ "$comment_timestamp" = "$request_timestamp" ]; then
+      comment_same_second=true
     fi
   else
     result_status=$?
@@ -1699,6 +1702,14 @@ trusted_pr_clean_signal() {
       fi
       PR_TRIGGERED_REVIEW_INSPECTION_ERROR="$PR_TRIGGERED_REVIEW_INSPECTION_ERROR$comment_inspection_error"
     fi
+    return 2
+  fi
+
+  # GitHub timestamps have second precision. Equal timestamps cannot prove
+  # that review evidence followed the base-bound request, so fail closed.
+  if [ "$review_found" != true ] && [ "$comment_found" != true ] \
+    && { [ "$review_same_second" = true ] || [ "$comment_same_second" = true ]; }; then
+    PR_TRIGGERED_REVIEW_INSPECTION_ERROR="review evidence has the same second-level timestamp as its request; request a fresh review"
     return 2
   fi
 
@@ -1743,6 +1754,12 @@ wait_for_pr_triggered_review() {
     echo "       Supported provider: github-codex" >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
     exit 1
+  fi
+  if ! truthy "$PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH"; then
+    echo "ERROR: [review.pr_triggered].required = true requires request_on_push = true." >&2
+    echo "       Base-bound review evidence needs a trusted Touchstone request marker." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
+    exit 2
   fi
   if ! is_nonnegative_integer "$PR_TRIGGERED_REVIEW_TIMEOUT_SEC"; then
     echo "ERROR: [review.pr_triggered].timeout_sec must be a non-negative integer." >&2
@@ -1810,7 +1827,7 @@ wait_for_pr_triggered_review() {
       request_status=0
       if [ "$PR_TRIGGERED_REVIEW_REQUEST_BASE_OID" != "$observed_base" ]; then
         PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
-        request_pr_triggered_review "$expected_head" "$observed_base" "$phase" true || request_status=$?
+        request_pr_triggered_review "$expected_head" "$observed_base" "$phase" || request_status=$?
         if [ "$request_status" -eq 2 ]; then
           last_review_inspection_error="review request markers: ${PR_TRIGGERED_REVIEW_REQUEST_INSPECTION_ERROR:-unknown GitHub API failure}"
         elif [ "$request_status" -ne 0 ]; then
@@ -1947,11 +1964,10 @@ request_pr_triggered_review() {
   local expected_head="$1"
   local expected_base="$2"
   local phase="$3"
-  local force_request="${4:-false}"
   local observed_head observed_revision observed_branch observed_base marker body created_at
   local request_lookup_status=0
 
-  if ! truthy "$PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH" && [ "$force_request" != true ]; then
+  if ! truthy "$PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH"; then
     return 0
   fi
   if [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then

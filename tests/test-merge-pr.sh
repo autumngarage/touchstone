@@ -810,7 +810,7 @@ write_pr_triggered_config() {
   local timeout_sec="${2:-0}"
   local poll_sec="${3:-0}"
   local required="${4:-true}"
-  local request_on_push="${5:-false}"
+  local request_on_push="${5:-true}"
 
   install_toml_parser_fixture
   mkdir -p "$DEFAULT_FAKE_WORKTREE"
@@ -1448,6 +1448,7 @@ cat >"$TEST_DIR/fresh-trusted-base-review.toml" <<'EOF'
 [review.pr_triggered]
 required = true
 provider = "github-codex"
+request_on_push = true
 timeout_sec = 0
 poll_sec = 0
 trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]
@@ -1542,6 +1543,24 @@ if grep -q 'poll_sec must be positive when timeout_sec is positive' "$TEST_DIR/o
 else
   echo "FAIL: positive timeout should reject a zero poll interval before polling" >&2
   cat "$TEST_DIR/output-pr-triggered-zero-poll.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: required review rejects disabled request markers"
+reset_case_files
+write_pr_triggered_config true 0 0 true false
+if run_merge_pr "$TEST_DIR/output-pr-triggered-request-disabled.txt" 123; then
+  echo "FAIL: required PR-triggered review ignored request_on_push=false" >&2
+  exit 1
+fi
+if grep -q '\[review.pr_triggered\].required = true requires request_on_push = true' "$TEST_DIR/output-pr-triggered-request-disabled.txt" \
+  && grep -q 'Base-bound review evidence needs a trusted Touchstone request marker' "$TEST_DIR/output-pr-triggered-request-disabled.txt" \
+  && [ ! -f "$TEST_DIR/gh-review-request" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: incompatible required/request settings fail before provider use"
+else
+  echo "FAIL: incompatible required/request settings were not diagnosed" >&2
+  cat "$TEST_DIR/output-pr-triggered-request-disabled.txt" >&2
   exit 1
 fi
 
@@ -1900,32 +1919,38 @@ else
   exit 1
 fi
 
-echo "==> Test: formal review in the request timestamp second is accepted"
+echo "==> Test: formal review in the request timestamp second is ambiguous"
 reset_case_files
 write_pr_triggered_config true 0 0
-GH_REQUEST_RECORDS=$'2026-06-23T00:00:00Z\tbase-oid' \
+if GH_REQUEST_RECORDS=$'2026-06-23T00:00:00Z\tbase-oid' \
   GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/same-second' \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-same-second-review.txt" 123
-if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-same-second-review.txt" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
-  echo "==> PASS: same-second formal review remains valid exact-revision evidence"
+  run_merge_pr "$TEST_DIR/output-pr-triggered-same-second-review.txt" 123; then
+  echo "FAIL: same-second formal review unexpectedly authorized the merge" >&2
+  exit 1
+fi
+if grep -q 'review evidence has the same second-level timestamp as its request; request a fresh review' "$TEST_DIR/output-pr-triggered-same-second-review.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: same-second formal review fails closed as ambiguous"
 else
-  echo "FAIL: same-second formal review was discarded by timestamp precision" >&2
+  echo "FAIL: same-second formal review did not report the ambiguous boundary" >&2
   cat "$TEST_DIR/output-pr-triggered-same-second-review.txt" >&2
   exit 1
 fi
 
-echo "==> Test: clean comment in the request timestamp second is accepted"
+echo "==> Test: clean comment in the request timestamp second is ambiguous"
 reset_case_files
 write_pr_triggered_config true 0 0
-GH_REQUEST_RECORDS=$'2026-06-23T00:00:00Z\tbase-oid' \
+if GH_REQUEST_RECORDS=$'2026-06-23T00:00:00Z\tbase-oid' \
   GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/same-second\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-same-second-comment.txt" 123
-if grep -q 'clean Codex review comment by @chatgpt-codex-connector' "$TEST_DIR/output-pr-triggered-same-second-comment.txt" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
-  echo "==> PASS: same-second clean comment remains valid exact-revision evidence"
+  run_merge_pr "$TEST_DIR/output-pr-triggered-same-second-comment.txt" 123; then
+  echo "FAIL: same-second clean comment unexpectedly authorized the merge" >&2
+  exit 1
+fi
+if grep -q 'review evidence has the same second-level timestamp as its request; request a fresh review' "$TEST_DIR/output-pr-triggered-same-second-comment.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: same-second clean comment fails closed as ambiguous"
 else
-  echo "FAIL: same-second clean comment was discarded by timestamp precision" >&2
+  echo "FAIL: same-second clean comment did not report the ambiguous boundary" >&2
   cat "$TEST_DIR/output-pr-triggered-same-second-comment.txt" >&2
   exit 1
 fi
