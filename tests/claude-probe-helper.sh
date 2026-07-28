@@ -8,7 +8,7 @@ claude_probe_provider_unavailable() {
   local output="$1"
 
   printf '%s\n' "$output" | grep -qiE \
-    "hit your limit|rate.?limit|quota|too many requests|429|usage limit|provider unavailable|auth(entication)? (failed|required|expired)|not authenticated|not logged in|login required"
+    "hit your limit|rate.?limit|quota|too many requests|429|usage limit|provider unavailable|auth(entication)? (failed|required|expired)|oauth access token (has )?expired|not authenticated|not logged in|login required"
 }
 
 run_claude_probe() {

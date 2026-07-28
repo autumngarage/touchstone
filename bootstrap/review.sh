@@ -108,7 +108,8 @@ if [ ! -f "$REVIEW_SCRIPT" ]; then
 fi
 
 # Defaults (mirror the runtime cascade in hooks/conductor-review.sh).
-CONDUCTOR_WITH=""
+CONDUCTOR_WITH="codex"
+REVIEW_COST_BOUNDARY="subscription-codex"
 CONDUCTOR_PREFER=""
 CONDUCTOR_EFFORT=""
 CONDUCTOR_TAGS=""
@@ -277,7 +278,12 @@ fi
 # the translation block in hooks/conductor-review.sh (keep in sync).
 if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
   case "$TOUCHSTONE_REVIEWER" in
-    auto | conductor) ;;
+    auto)
+      echo "==> NOTE: TOUCHSTONE_REVIEWER=auto is deprecated in 2.0.0." >&2
+      echo "    Preserving explicit auto-routing; metered providers may be selected." >&2
+      [ -z "${TOUCHSTONE_CONDUCTOR_WITH:-}" ] && export TOUCHSTONE_CONDUCTOR_WITH="auto"
+      ;;
+    conductor) ;;
     local)
       echo "==> NOTE: TOUCHSTONE_REVIEWER=local is deprecated in 2.0.0." >&2
       echo "    Migrating to explicit offline review: TOUCHSTONE_CONDUCTOR_WITH=ollama." >&2
@@ -295,8 +301,22 @@ if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
   esac
 fi
 
-# Env overrides win.
-CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-${CONDUCTOR_WITH:-}}"
+set_conductor_with() {
+  local provider="${1:-codex}"
+  if [ "$provider" = "auto" ]; then
+    CONDUCTOR_WITH=""
+    REVIEW_COST_BOUNDARY="auto-explicit-may-be-metered"
+  elif [ "$provider" = "codex" ]; then
+    CONDUCTOR_WITH="codex"
+    REVIEW_COST_BOUNDARY="subscription-codex"
+  else
+    CONDUCTOR_WITH="$provider"
+    REVIEW_COST_BOUNDARY="explicit-provider:$provider"
+  fi
+}
+
+# Env overrides win. Only the literal `auto` removes the subscription pin.
+set_conductor_with "${TOUCHSTONE_CONDUCTOR_WITH:-${CONDUCTOR_WITH:-codex}}"
 CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-${CONDUCTOR_PREFER:-best}}"
 CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-${CONDUCTOR_EFFORT:-high}}"
 CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-${CONDUCTOR_TAGS:-code-review}}"
@@ -442,21 +462,21 @@ if [ "$ROUTING_ENABLED" = true ]; then
       if [ "$diff_line_count_available" = true ] && [ -n "$risk_reason" ]; then
         routing_decision="high-risk"
         routing_reason="$risk_reason; $DIFF_LINE_COUNT diff lines"
-        [ -n "$ROUTING_HIGH_RISK_WITH" ] && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_HIGH_RISK_WITH}"
+        [ -n "$ROUTING_HIGH_RISK_WITH" ] && set_conductor_with "${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_HIGH_RISK_WITH}"
         [ -n "$ROUTING_HIGH_RISK_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_HIGH_RISK_PREFER}"
         [ -n "$ROUTING_HIGH_RISK_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_HIGH_RISK_EFFORT}"
         [ -n "$ROUTING_HIGH_RISK_TAGS" ] && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_HIGH_RISK_TAGS}"
       elif [ "$diff_line_count_available" = true ] && [ "$DIFF_LINE_COUNT" -le "$ROUTING_SMALL_MAX_DIFF_LINES" ] 2>/dev/null; then
         routing_decision="small"
         routing_reason="$DIFF_LINE_COUNT <= $ROUTING_SMALL_MAX_DIFF_LINES diff lines"
-        [ -n "$ROUTING_SMALL_WITH" ] && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_SMALL_WITH}"
+        [ -n "$ROUTING_SMALL_WITH" ] && set_conductor_with "${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_SMALL_WITH}"
         [ -n "$ROUTING_SMALL_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_SMALL_PREFER}"
         [ -n "$ROUTING_SMALL_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_SMALL_EFFORT}"
         [ -n "$ROUTING_SMALL_TAGS" ] && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_SMALL_TAGS}"
       elif [ "$diff_line_count_available" = true ]; then
         routing_decision="large-low-risk"
         routing_reason="$DIFF_LINE_COUNT > $ROUTING_SMALL_MAX_DIFF_LINES diff lines; no high-risk paths"
-        [ -n "$ROUTING_LARGE_WITH" ] && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_LARGE_WITH}"
+        [ -n "$ROUTING_LARGE_WITH" ] && set_conductor_with "${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_LARGE_WITH}"
         [ -n "$ROUTING_LARGE_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_LARGE_PREFER}"
         [ -n "$ROUTING_LARGE_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_LARGE_EFFORT}"
         [ -n "$ROUTING_LARGE_TAGS" ] && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_LARGE_TAGS}"
@@ -480,27 +500,7 @@ esac
 
 # Build the conductor route command line.
 args=()
-if [ -n "$CONDUCTOR_WITH" ]; then
-  # `conductor route` doesn't take --with (it's a router preview); the
-  # equivalent is "exclude everyone but X". Show that as the dry-run
-  # equivalent to a pinned provider.
-  echo "==> Provider pinned via --with=$CONDUCTOR_WITH (skipping route preview;"
-  echo "    pinned providers bypass auto-routing). Showing capability check instead."
-  echo ""
-  echo "    Effective config:"
-  echo "      with     = $CONDUCTOR_WITH"
-  echo "      effort   = $CONDUCTOR_EFFORT"
-  echo "      prefer   = $CONDUCTOR_PREFER"
-  echo "      mode     = $REVIEW_MODE → tools=${tools:-<none>}"
-  echo "      base     = $BASE  ($DIFF_LINE_COUNT diff lines)"
-  echo "      routing  = $routing_decision ($routing_reason)"
-  echo ""
-  echo "    To preview which provider auto-routing would pick, unset"
-  echo "    TOUCHSTONE_CONDUCTOR_WITH and remove [review.conductor].with"
-  echo "    from .touchstone-review.toml, then re-run."
-  exit 0
-fi
-
+[ -n "$CONDUCTOR_WITH" ] && args+=(--with "$CONDUCTOR_WITH")
 [ -n "$CONDUCTOR_PREFER" ] && args+=(--prefer "$CONDUCTOR_PREFER")
 [ -n "$CONDUCTOR_EFFORT" ] && args+=(--effort "$CONDUCTOR_EFFORT")
 review_tags="$(normalize_conductor_review_tags "$CONDUCTOR_TAGS")"
@@ -514,9 +514,10 @@ if [ -z "$json_flag" ]; then
   echo "    base ref:    $BASE"
   echo "    diff lines:  $DIFF_LINE_COUNT"
   echo "    review mode: $REVIEW_MODE → tools=${tools:-<none>}"
-  if [ "$REVIEW_MODE" != "diff-only" ] && [ -z "$CONDUCTOR_WITH" ]; then
-    echo "    review cmd:  conductor review --base $BASE --brief-file -"
-  fi
+  echo "    provider:    ${CONDUCTOR_WITH:-auto (explicit)}"
+  echo "    cost:        $REVIEW_COST_BOUNDARY"
+  [ -z "$CONDUCTOR_WITH" ] && echo "    WARNING: explicit auto-routing may select a metered provider."
+  [ "$REVIEW_MODE" = "diff-only" ] || echo "    review cmd:  conductor review --base $BASE --brief-file -"
   if [ "$REVIEW_MODE" = "fix" ] || [ "$REVIEW_MODE" = "no-tests" ]; then
     echo "    fix tools:   ${tools:-<none>}"
   fi

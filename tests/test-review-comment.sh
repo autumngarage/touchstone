@@ -8,6 +8,10 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-review-comment.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
+# shellcheck source=tests/review-log-test-helper.sh
+source "$TOUCHSTONE_ROOT/tests/review-log-test-helper.sh"
+touchstone_isolate_review_log "$TEST_DIR"
+
 echo "==> Test: format_clean_review_comment produces one-line audit text"
 # shellcheck source=../lib/review-comment.sh
 source "$TOUCHSTONE_ROOT/lib/review-comment.sh"
@@ -272,7 +276,7 @@ if [ "$FAILURE_COMMENT_EXIT" -ne 0 ] \
   && grep -q 'merge review failed before a trusted clean verdict' "$TEST_DIR/comments" \
   && grep -q 'Failed/stalled provider(s): `gemini`' "$TEST_DIR/comments" \
   && grep -q 'Diagnostics: `/tmp/review-diagnostics.jsonl` (2 event(s))' "$TEST_DIR/comments" \
-  && grep -q 'Retry: `TOUCHSTONE_CONDUCTOR_WITH=openrouter bash scripts/merge-pr.sh 123`' "$TEST_DIR/comments" \
+  && grep -q 'Retry: `TOUCHSTONE_CONDUCTOR_WITH=codex bash scripts/merge-pr.sh 123`' "$TEST_DIR/comments" \
   && ! grep -q 'review clean' "$TEST_DIR/comments"; then
   echo "==> PASS: provider failure comment posted with retry guidance"
 else

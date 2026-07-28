@@ -12,6 +12,10 @@ MIGRATE="$TOUCHSTONE_ROOT/bootstrap/migrate-review-config.sh"
 TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-test-migrate-review.XXXXXX")"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
+# shellcheck source=tests/review-log-test-helper.sh
+source "$TOUCHSTONE_ROOT/tests/review-log-test-helper.sh"
+touchstone_isolate_review_log "$TEST_DIR"
+
 ERRORS=0
 
 assert_file_contains() {
@@ -110,6 +114,110 @@ if [ "$sha_before" != "$sha_after" ]; then
   ERRORS=$((ERRORS + 1))
 fi
 echo "==> PASS: idempotent"
+
+# ----------------------------------------------------------------------------
+# Test: already-2.0 unpinned configs acquire the subscription-only default
+# ----------------------------------------------------------------------------
+echo "==> Test: unpinned 2.0 config migrates to subscription Codex"
+UNPINNED="$TEST_DIR/unpinned-v2.toml"
+cat >"$UNPINNED" <<'EOF'
+[review]
+reviewer = "conductor"
+
+[review.conductor]
+prefer = "best"
+effort = "high"
+
+[review.routing]
+enabled = true
+EOF
+bash "$MIGRATE" --no-backup --file "$UNPINNED" >/dev/null
+assert_file_contains "$UNPINNED" '^with = "codex"$' "unpinned 2.0 config pins subscription Codex"
+if [ "$(grep -c '^with = "codex"$' "$UNPINNED")" -ne 1 ]; then
+  echo "FAIL: subscription Codex pin should appear exactly once" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+echo "==> PASS: unpinned 2.0 config pinned to subscription Codex"
+
+# ----------------------------------------------------------------------------
+# Test: existing conductor tuning preserves the legacy cascade provider
+# ----------------------------------------------------------------------------
+echo "==> Test: existing conductor block preserves legacy first provider"
+LEGACY_TUNED="$TEST_DIR/legacy-tuned.toml"
+cat >"$LEGACY_TUNED" <<'EOF'
+[review]
+reviewers = ["claude", "codex"]
+
+[review.conductor]
+prefer = "best"
+effort = "high"
+
+[review.routing]
+enabled = true
+EOF
+bash "$MIGRATE" --no-backup --file "$LEGACY_TUNED" >/dev/null
+assert_file_contains "$LEGACY_TUNED" '^with = "claude"$' "existing conductor block uses legacy first provider"
+assert_file_contains "$LEGACY_TUNED" '# Original 1.x cascade was: claude, codex' "existing conductor block records legacy cascade"
+assert_file_lacks "$LEGACY_TUNED" '^with = "codex"$' "subscription default does not replace legacy provider"
+if [ "$(grep -c '^\[review\.conductor\]' "$LEGACY_TUNED")" -ne 1 ]; then
+  echo "FAIL: existing conductor block should not be duplicated" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+echo "==> PASS: existing conductor block preserves legacy first provider"
+
+# ----------------------------------------------------------------------------
+# Test: TOML table order does not change the migrated provider
+# ----------------------------------------------------------------------------
+echo "==> Test: earlier conductor block preserves later legacy first provider"
+LEGACY_REVERSED="$TEST_DIR/legacy-reversed.toml"
+cat >"$LEGACY_REVERSED" <<'EOF'
+[review.conductor] # project-owned tuning
+prefer = "fast"
+effort = "medium"
+
+[review]
+reviewers = ["gemini", "codex"]
+
+[review.routing]
+enabled = true
+EOF
+bash "$MIGRATE" --no-backup --file "$LEGACY_REVERSED" >/dev/null
+assert_file_contains "$LEGACY_REVERSED" '^\[review\.conductor\] # project-owned tuning$' "earlier commented conductor header preserved"
+assert_file_contains "$LEGACY_REVERSED" '^prefer = "fast"$' "earlier conductor tuning preserved"
+assert_file_contains "$LEGACY_REVERSED" '^effort = "medium"$' "earlier conductor effort preserved"
+assert_file_contains "$LEGACY_REVERSED" '^with = "gemini"$' "earlier conductor block uses later legacy first provider"
+assert_file_contains "$LEGACY_REVERSED" '# Original 1.x cascade was: gemini, codex' "earlier conductor block records later legacy cascade"
+assert_file_lacks "$LEGACY_REVERSED" '^with = "codex"$' "subscription default does not replace later legacy provider"
+if [ "$(grep -c '^\[review\.conductor\]' "$LEGACY_REVERSED")" -ne 1 ]; then
+  echo "FAIL: earlier conductor block should not be duplicated" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+echo "==> PASS: earlier conductor block preserves later legacy first provider"
+
+# ----------------------------------------------------------------------------
+# Test: trailing TOML comments are valid on section headers
+# ----------------------------------------------------------------------------
+echo "==> Test: conductor header with trailing comment is recognized"
+COMMENTED_HEADER="$TEST_DIR/commented-header.toml"
+cat >"$COMMENTED_HEADER" <<'EOF'
+[review]
+reviewer = "conductor"
+
+[review.conductor] # project-owned tuning
+prefer = "best"
+effort = "high"
+
+[review.routing]
+enabled = true
+EOF
+bash "$MIGRATE" --no-backup --file "$COMMENTED_HEADER" >/dev/null
+assert_file_contains "$COMMENTED_HEADER" '^\[review\.conductor\] # project-owned tuning$' "commented conductor header preserved"
+assert_file_contains "$COMMENTED_HEADER" '^with = "codex"$' "commented conductor block gets subscription default"
+if [ "$(grep -c '^\[review\.conductor\]' "$COMMENTED_HEADER")" -ne 1 ]; then
+  echo "FAIL: commented conductor header should not produce a duplicate block" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+echo "==> PASS: conductor header with trailing comment is recognized"
 
 # ----------------------------------------------------------------------------
 # Test: --dry-run leaves the file untouched

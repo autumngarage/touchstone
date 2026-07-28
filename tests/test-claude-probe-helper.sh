@@ -76,6 +76,36 @@ if [ -f "$count_file" ]; then
 fi
 count=$((count + 1))
 printf '%s\n' "$count" >"$count_file"
+echo "Failed to authenticate. API Error: 401 OAuth access token has expired. Re-authenticate to continue."
+exit 1
+FAKECLAUDE
+chmod +x "$FAKE_BIN/claude"
+
+echo "==> Slow guidance probes skip once on expired Claude OAuth"
+count_file="$TEST_DIR/claude-oauth-count"
+set +e
+response="$(PATH="$FAKE_BIN:$PATH" \
+  TOUCHSTONE_FAKE_CLAUDE_COUNT="$count_file" \
+  TOUCHSTONE_CLAUDE_PROBE_TIMEOUT=5 \
+  bash "$TOUCHSTONE_ROOT/tests/slow-guidance-probes.sh" 2>&1)"
+rc=$?
+set -e
+
+assert_equals "$rc" "0" "expired-OAuth slow guidance exit code"
+assert_contains_text "$response" "SKIP: Claude provider unavailable"
+assert_contains_text "$response" "OAuth access token has expired"
+count_value="$(cat "$count_file" 2>/dev/null || echo 0)"
+assert_equals "$count_value" "1" "expired-OAuth slow guidance call count"
+
+cat >"$FAKE_BIN/claude" <<'FAKECLAUDE'
+#!/usr/bin/env bash
+count_file="${TOUCHSTONE_FAKE_CLAUDE_COUNT:?}"
+count=0
+if [ -f "$count_file" ]; then
+  count="$(cat "$count_file")"
+fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$count_file"
 echo "You've hit your limit · resets May 11 at 9pm (America/New_York)"
 exit 1
 FAKECLAUDE

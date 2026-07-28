@@ -104,6 +104,80 @@ if [ "$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD)" != "$BASE_BRANCH" ]; the
 fi
 
 # --------------------------------------------------------------------------
+# Test 1b: same-version update reports but does not rewrite an unpinned
+# canonical review config. Review config ownership belongs to the project.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 2b: Preserve canonical review config at the same version ---"
+
+MIGRATION_PROJECT="$TEST_DIR/canonical-migration-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$MIGRATION_PROJECT" --no-register >/dev/null
+configure_git "$MIGRATION_PROJECT"
+sed -i.bak '/^[[:space:]]*with[[:space:]]*=/d' "$MIGRATION_PROJECT/.touchstone-review.toml"
+rm -f "$MIGRATION_PROJECT/.touchstone-review.toml.bak"
+commit_all "$MIGRATION_PROJECT" "simulate unpinned canonical review config"
+MIGRATION_CONFIG_BEFORE="$(shasum "$MIGRATION_PROJECT/.touchstone-review.toml" | awk '{print $1}')"
+MIGRATION_HEAD_BEFORE="$(git -C "$MIGRATION_PROJECT" rev-parse HEAD)"
+
+(cd "$MIGRATION_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-canonical-migration-output.txt" 2>&1
+
+assert_contains "$TEST_DIR/update-canonical-migration-output.txt" \
+  'Review config migration available for .touchstone-review.toml'
+assert_contains "$TEST_DIR/update-canonical-migration-output.txt" \
+  'This project-owned file was not changed'
+assert_contains "$TEST_DIR/update-canonical-migration-output.txt" \
+  'A missing review.conductor.with value defaults to Codex at runtime'
+assert_contains "$TEST_DIR/update-canonical-migration-output.txt" \
+  'touchstone migrate-review-config --file .touchstone-review.toml'
+if [ "$MIGRATION_CONFIG_BEFORE" = "$(shasum "$MIGRATION_PROJECT/.touchstone-review.toml" | awk '{print $1}')" ]; then
+  echo "    PASS: same-version update preserved canonical review config"
+else
+  echo "FAIL: same-version update rewrote canonical review config" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ "$MIGRATION_HEAD_BEFORE" != "$(git -C "$MIGRATION_PROJECT" rev-parse HEAD)" ]; then
+  echo "FAIL: config advisory created a same-version update commit" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ -n "$(git -C "$MIGRATION_PROJECT" status --porcelain)" ]; then
+  echo "FAIL: config advisory left a dirty worktree" >&2
+  git -C "$MIGRATION_PROJECT" status --short >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
+# Test 1c: a real managed-file update must not rewrite or stage an existing
+# canonical review config.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 2c: Preserve canonical review config during a version update ---"
+
+PREVIOUS_TOUCHSTONE_SHA="$(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD^)"
+printf '%s\n' "$PREVIOUS_TOUCHSTONE_SHA" >"$MIGRATION_PROJECT/.touchstone-version"
+commit_all "$MIGRATION_PROJECT" "simulate previous touchstone version"
+MIGRATION_CONFIG_BEFORE="$(shasum "$MIGRATION_PROJECT/.touchstone-review.toml" | awk '{print $1}')"
+
+(cd "$MIGRATION_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-canonical-version-output.txt" 2>&1
+
+assert_contains "$TEST_DIR/update-canonical-version-output.txt" \
+  'Review config migration available for .touchstone-review.toml'
+if [ "$MIGRATION_CONFIG_BEFORE" = "$(shasum "$MIGRATION_PROJECT/.touchstone-review.toml" | awk '{print $1}')" ]; then
+  echo "    PASS: version update preserved canonical review config"
+else
+  echo "FAIL: version update rewrote canonical review config" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if git -C "$MIGRATION_PROJECT" diff-tree --no-commit-id --name-only -r HEAD \
+  | grep -qxF '.touchstone-review.toml'; then
+  echo "FAIL: version update staged project-owned canonical review config" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  echo "    PASS: version update did not stage canonical review config"
+fi
+
+# --------------------------------------------------------------------------
 # Test 2: committed local touchstone-owned changes update on a review branch.
 # --------------------------------------------------------------------------
 echo ""
@@ -112,6 +186,7 @@ echo "--- Step 3: Modify a Touchstone-owned file, then update ---"
 echo "# locally modified" >>"$PROJECT/principles/engineering-principles.md"
 rm "$PROJECT/TOUCHSTONE.md"
 rm "$PROJECT/.github/workflows/issue-claim-check.yml"
+rm "$PROJECT/.markdownlint.json"
 rm "$PROJECT/scripts/touchstone-run.sh"
 rm "$PROJECT/scripts/claim-issue.sh"
 rm "$PROJECT/scripts/issue-claim-check.sh"
@@ -131,6 +206,8 @@ assert_contains "$TEST_DIR/update-output-2.txt" 'Committed: chore: update touchs
 assert_contains "$TEST_DIR/update-output-2.txt" 'bash scripts/open-pr.sh'
 assert_exists "$PROJECT/TOUCHSTONE.md"
 assert_exists "$PROJECT/.github/workflows/issue-claim-check.yml"
+assert_exists "$PROJECT/.markdownlint.json"
+assert_contains "$TEST_DIR/update-output-2.txt" 'added (project-owned).*\.markdownlint\.json'
 assert_exists "$PROJECT/scripts/touchstone-run.sh"
 assert_exists "$PROJECT/scripts/claim-issue.sh"
 assert_exists "$PROJECT/scripts/issue-claim-check.sh"
@@ -138,6 +215,9 @@ assert_exists "$PROJECT/scripts/spawn-worktree.sh"
 assert_exists "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_exists "$PROJECT/lib/toml.sh"
 assert_exists "$PROJECT/lib/events.sh"
+assert_exists "$PROJECT/lib/codex-auth.sh"
+assert_exists "$PROJECT/lib/worker-ship-job.sh"
+assert_exists "$PROJECT/lib/worker-review-fix.sh"
 assert_exists "$PROJECT/lib/script-sync-guard.sh"
 assert_exists "$PROJECT/lib/preflight.sh"
 assert_exists "$PROJECT/lib/review-comment.sh"
@@ -151,9 +231,16 @@ assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/toml\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/events\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/codex-auth\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-ship-job\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-review-fix\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/script-sync-guard\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/preflight\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/review-comment\.sh$'
+if grep -qxF '.markdownlint.json' "$PROJECT/.touchstone-manifest"; then
+  echo "FAIL: .markdownlint.json must remain project-owned" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 assert_not_exists "$PROJECT/principles/engineering-principles.md.bak"
 assert_not_exists "$PROJECT/.claude/settings.json.touchstone-pre-update.bak"
 
@@ -593,18 +680,28 @@ echo ""
 echo "--- Step 4: Verify project-owned files are untouched ---"
 
 echo "# my project context" >>"$PROJECT/CLAUDE.md"
+printf '{"custom": true}\n' >"$PROJECT/.markdownlint.json"
 echo "0000000000000000000000000000000000000001" >"$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate project-owned customization"
 CLAUDE_CHECKSUM="$(md5 -q "$PROJECT/CLAUDE.md" 2>/dev/null || md5sum "$PROJECT/CLAUDE.md" | awk '{print $1}')"
+MARKDOWNLINT_CHECKSUM="$(md5 -q "$PROJECT/.markdownlint.json" 2>/dev/null || md5sum "$PROJECT/.markdownlint.json" | awk '{print $1}')"
 
 (cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
 
 CLAUDE_CHECKSUM_AFTER="$(md5 -q "$PROJECT/CLAUDE.md" 2>/dev/null || md5sum "$PROJECT/CLAUDE.md" | awk '{print $1}')"
+MARKDOWNLINT_CHECKSUM_AFTER="$(md5 -q "$PROJECT/.markdownlint.json" 2>/dev/null || md5sum "$PROJECT/.markdownlint.json" | awk '{print $1}')"
 
 if [ "$CLAUDE_CHECKSUM" = "$CLAUDE_CHECKSUM_AFTER" ]; then
   echo "    PASS: CLAUDE.md was not modified by update"
 else
   echo "    FAIL: CLAUDE.md was modified by update" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+if [ "$MARKDOWNLINT_CHECKSUM" = "$MARKDOWNLINT_CHECKSUM_AFTER" ]; then
+  echo "    PASS: .markdownlint.json was not modified by update"
+else
+  echo "    FAIL: .markdownlint.json was modified by update" >&2
   ERRORS=$((ERRORS + 1))
 fi
 

@@ -200,15 +200,15 @@ normalize_project_type() {
 }
 
 normalize_reviewer() {
-  # 2.0: the only runtime reviewer is `conductor`. The legacy values
-  # (codex/claude/gemini/local/auto) are preserved for back-compat and auto-
-  # migrate at push-time; `conductor` is the new canonical value.
+  # Conductor is the adapter; subscription-backed Codex is the provider
+  # default. `auto` is preserved only as an explicit metered-capable opt-in.
   local value="$1"
   value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
 
   case "$value" in
-    "" | auto | conductor) printf 'auto' ;;
-    openrouter | codex | claude | gemini | local) printf '%s' "$value" ;;
+    "" | conductor | codex) printf 'codex' ;;
+    auto) printf 'auto' ;;
+    openrouter | claude | gemini | local) printf '%s' "$value" ;;
     none | no | off | disabled | false) printf 'none' ;;
     *)
       echo "ERROR: unknown reviewer '$1' (expected conductor, openrouter, none, or legacy: codex, claude, gemini, local, auto)" >&2
@@ -304,12 +304,7 @@ prompt_yes_no() {
 }
 
 default_reviewer() {
-  # Touchstone 2.0: the single reviewer is `conductor`; the underlying
-  # provider is chosen by Conductor at runtime. Hosted review defaults to
-  # Conductor's semantic review route with hosted fallback.
-  # Users who want a specific provider can pass --reviewer <name> or edit
-  # .touchstone-review.toml afterwards.
-  printf 'conductor'
+  printf 'codex'
 }
 
 detect_node_package_manager() {
@@ -1090,6 +1085,9 @@ write_touchstone_manifest() {
     done
     printf 'scripts/conductor-review.sh\n'
     printf 'scripts/codex-review.sh\n'
+    printf 'scripts/branch-guard.sh\n'
+    printf 'scripts/emergency-disclosure.sh\n'
+    printf 'scripts/cortex-pr-merged-hook.sh\n'
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
@@ -1101,6 +1099,9 @@ write_touchstone_manifest() {
     printf 'scripts/worker.sh\n'
     printf 'lib/toml.sh\n'
     printf 'lib/events.sh\n'
+    printf 'lib/codex-auth.sh\n'
+    printf 'lib/worker-ship-job.sh\n'
+    printf 'lib/worker-review-fix.sh\n'
     printf 'lib/worker-state.sh\n'
     printf 'lib/script-sync-guard.sh\n'
     printf 'lib/preflight.sh\n'
@@ -1109,6 +1110,7 @@ write_touchstone_manifest() {
     if [ "$INPUT_TYPE" = "python" ]; then
       printf 'scripts/run-pytest-in-venv.sh\n'
     fi
+    printf '.claude/settings.json\n'
   } >"$manifest_tmp"
   if copy_file_force "$manifest_tmp" "$PROJECT_DIR/.touchstone-manifest"; then
     rm -f "$manifest_tmp"
@@ -1160,13 +1162,13 @@ set_review_config_key() {
 }
 
 conductor_with_for() {
-  # Map a legacy --reviewer value to its 2.0 Conductor `with=` pin.
-  # auto/conductor/empty -> no pin (router picks). Hosted providers pin
-  # directly. local maps to ollama for explicit offline review.
+  # Omitted/conductor/codex all remain inside the subscription boundary.
+  # `auto` alone opts into Conductor routing that may select metered providers.
   local reviewer="$1"
   case "$reviewer" in
-    auto | conductor | "") printf '' ;;
-    openrouter | codex | claude | gemini) printf '%s' "$reviewer" ;;
+    auto) printf '' ;;
+    conductor | codex | "") printf 'codex' ;;
+    openrouter | claude | gemini) printf '%s' "$reviewer" ;;
     local) printf 'ollama' ;;
     *) printf '%s' "$reviewer" ;;
   esac
@@ -1216,22 +1218,34 @@ write_review_onboarding_config() {
     printf 'reviewer = "conductor"\n'
     if [ "$enabled" = true ]; then
       printf '\n[review.conductor]\n'
-      printf '# Which provider wins auto-routing: best|cheapest|fastest|balanced\n'
+      printf '# Provider-local preference: best|cheapest|fastest|balanced\n'
       printf 'prefer = "best"\n'
       printf '# Thinking depth: minimal|low|medium|high|max or an integer token budget\n'
       printf 'effort = "high"\n'
       printf '# Capability tags passed to the router\n'
       printf 'tags = "code-review"\n'
       if [ -n "$with_pin" ]; then
-        printf '# Pin a specific underlying provider (bypasses auto-routing)\n'
+        printf '# Explicit provider boundary. The default stays on subscription Codex.\n'
         printf 'with = "%s"\n' "$with_pin"
       else
-        printf '# Conductor owns hosted code-review routing; uncomment only to pin a provider:\n'
-        printf '# with = "openrouter"\n'
+        printf '# Explicit auto-routing opt-in; this may select a metered provider.\n'
+        printf 'with = "auto"\n'
       fi
       if [ "$with_pin" != "ollama" ]; then
         printf '# Ollama is reserved for explicit offline/local review only.\n'
         printf 'exclude = ["ollama"]\n'
+      fi
+      if [ "$routing" = "all-hosted" ]; then
+        printf '\n[review.pr_triggered]\n'
+        printf '# GitHub Codex is requested asynchronously by default. Set required = true\n'
+        printf '# only after confirming the repository connector returns exact-head reviews.\n'
+        printf 'required = false\n'
+        printf 'provider = "github-codex"\n'
+        printf 'request_on_push = true\n'
+        printf 'timeout_sec = 1800\n'
+        printf 'poll_sec = 10\n'
+        printf 'trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]\n'
+        printf 'skip_merge_review = true\n'
       fi
       if [ "$reviewer" = "local" ] && [ -n "$INPUT_LOCAL_REVIEW_COMMAND" ]; then
         printf '# NOTE: Touchstone 2.0 retired [review.local]. Your --local-review-command\n'
@@ -1278,7 +1292,7 @@ print_review_setup_hint() {
   if [ -n "$pin" ]; then
     echo "==> AI review configured: conductor (pinned to $pin) — routing=$routing"
   else
-    echo "==> AI review configured: conductor (auto-routed) — routing=$routing"
+    echo "==> AI review configured: conductor (explicit auto-routing; metered providers possible) — routing=$routing"
   fi
 
   if [ "$routing" = "all-local" ]; then
@@ -1316,6 +1330,7 @@ copy_file "$TOUCHSTONE_ROOT/templates/GEMINI.md" "$PROJECT_DIR/GEMINI.md"
 # don't resolve the @-imports CLAUDE.md uses to pull in TOUCHSTONE.md.
 touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT" || true
 copy_file "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-commit-config.yaml"
+copy_file "$TOUCHSTONE_ROOT/templates/.markdownlint.json" "$PROJECT_DIR/.markdownlint.json"
 copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
 copy_file "$TOUCHSTONE_ROOT/templates/.worktreeinclude.example" "$PROJECT_DIR/.worktreeinclude.example"
 copy_file "$TOUCHSTONE_ROOT/templates/pull_request_template.md" "$PROJECT_DIR/.github/pull_request_template.md"
@@ -1352,6 +1367,7 @@ copy_file_force "$TOUCHSTONE_ROOT/hooks/conductor-review.sh" "$PROJECT_DIR/scrip
 copy_file_force "$TOUCHSTONE_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
 copy_file_force "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" "$PROJECT_DIR/scripts/branch-guard.sh"
 copy_file_force "$TOUCHSTONE_ROOT/hooks/emergency-disclosure.sh" "$PROJECT_DIR/scripts/emergency-disclosure.sh"
+copy_file_force "$TOUCHSTONE_ROOT/hooks/cortex-pr-merged-hook.sh" "$PROJECT_DIR/scripts/cortex-pr-merged-hook.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_DIR/scripts/touchstone-run.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
@@ -1368,6 +1384,9 @@ echo "==> Copying libraries (touchstone-owned, will be auto-updated):"
 mkdir -p "$PROJECT_DIR/lib"
 copy_file_force "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/events.sh" "$PROJECT_DIR/lib/events.sh"
+copy_file_force "$TOUCHSTONE_ROOT/lib/codex-auth.sh" "$PROJECT_DIR/lib/codex-auth.sh"
+copy_file_force "$TOUCHSTONE_ROOT/lib/worker-ship-job.sh" "$PROJECT_DIR/lib/worker-ship-job.sh"
+copy_file_force "$TOUCHSTONE_ROOT/lib/worker-review-fix.sh" "$PROJECT_DIR/lib/worker-review-fix.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/worker-state.sh" "$PROJECT_DIR/lib/worker-state.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/script-sync-guard.sh" "$PROJECT_DIR/lib/script-sync-guard.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PROJECT_DIR/lib/preflight.sh"
@@ -1489,7 +1508,7 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
 
   if [ "$REVIEW_CONFIG_REQUESTED" = false ] && [ "$TOUCHSTONE_REVIEW_CONFIG_CREATED" = true ]; then
     if [ "$YES_MODE" = true ]; then
-      # --yes: defaults are "AI review on, hosted Conductor review routing".
+      # --yes defaults to GitHub Codex plus subscription-backed Codex fallback.
       INPUT_REVIEW_ROUTING="all-hosted"
       INPUT_REVIEWER="$(default_reviewer)"
       INPUT_REVIEW_AUTOFIX=false
@@ -1499,7 +1518,7 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
       echo ""
       echo "==> Configure AI review (press Enter for the default):"
       echo "   Touchstone 2.0 routes every review through Conductor."
-      echo "   Hosted: Conductor uses semantic code-review routing with hosted fallback."
+      echo "   Hosted: GitHub Codex reviews the PR; local fallback stays on subscription Codex."
       echo "   Offline local: all review goes to Ollama; use only when hosted review is unavailable."
       if [ "$(prompt_yes_no "Use AI review before code reaches main?" "true")" = "true" ]; then
         local_review_style=""
@@ -1509,7 +1528,7 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
         case "$local_review_style" in
           all-hosted)
             INPUT_REVIEW_ROUTING="all-hosted"
-            read -r -p "   Pin a specific provider (e.g. openrouter, claude, codex, gemini; Enter = Conductor auto-route): " INPUT_REVIEWER
+            read -r -p "   Review provider (Enter = subscription Codex; auto = metered-capable routing): " INPUT_REVIEWER
             INPUT_REVIEWER="${INPUT_REVIEWER:-$(default_reviewer)}"
             INPUT_REVIEWER="$(normalize_reviewer "$INPUT_REVIEWER")"
             ;;

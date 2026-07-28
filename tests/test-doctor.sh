@@ -168,6 +168,46 @@ assert_exit "$PRESENT_CONDUCTOR_EXIT" 0 "present conductor peer"
 assert_contains "$PRESENT_CONDUCTOR_OUT" "conductor: $PRESENT_CONDUCTOR_BIN/conductor (at least one provider configured)"
 
 # --------------------------------------------------------------------------
+# Test 2c.1: installation doctor never falls through a broken first launcher
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Test 2c.1: installation doctor probes the resolved conductor path ---"
+
+BROKEN_CONDUCTOR_BIN="$TEST_DIR/broken-conductor-bin"
+OLDER_CONDUCTOR_BIN="$TEST_DIR/older-conductor-bin"
+write_fake_install_tools "$BROKEN_CONDUCTOR_BIN" "missing"
+write_fake_install_tools "$OLDER_CONDUCTOR_BIN" "present"
+cat >"$BROKEN_CONDUCTOR_BIN/conductor" <<EOF_BROKEN_CONDUCTOR
+#!$TEST_DIR/missing-conductor-interpreter
+exit 0
+EOF_BROKEN_CONDUCTOR
+chmod +x "$BROKEN_CONDUCTOR_BIN/conductor"
+cat >"$OLDER_CONDUCTOR_BIN/conductor" <<'EOF_OLDER_CONDUCTOR'
+#!/usr/bin/env bash
+printf 'invoked\n' >"${TOUCHSTONE_OLDER_CONDUCTOR_MARKER:?}"
+if [ "${1:-}" = "doctor" ] && [ "${2:-}" = "--json" ]; then
+  printf '{"providers":[{"configured":true}]}\n'
+fi
+EOF_OLDER_CONDUCTOR
+chmod +x "$OLDER_CONDUCTOR_BIN/conductor"
+
+SHADOWED_CONDUCTOR_OUT="$TEST_DIR/shadowed-conductor.out"
+older_conductor_marker="$TEST_DIR/older-conductor-invoked"
+set +e
+PATH="$BROKEN_CONDUCTOR_BIN:$OLDER_CONDUCTOR_BIN:/usr/bin:/bin" \
+  TOUCHSTONE_OLDER_CONDUCTOR_MARKER="$older_conductor_marker" \
+  run_doctor "$FAKE_HOME" --installation >"$SHADOWED_CONDUCTOR_OUT" 2>&1
+SHADOWED_CONDUCTOR_EXIT=$?
+set -e
+
+assert_exit "$SHADOWED_CONDUCTOR_EXIT" 1 "broken resolved conductor peer"
+assert_contains "$SHADOWED_CONDUCTOR_OUT" "conductor: $BROKEN_CONDUCTOR_BIN/conductor (unhealthy or no provider configured"
+if [ -e "$older_conductor_marker" ]; then
+  echo "FAIL: installation doctor invoked an older shadowed conductor" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
 # Test 2d: installation doctor ignores stale older latest-release metadata
 # --------------------------------------------------------------------------
 echo ""

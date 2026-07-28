@@ -41,6 +41,9 @@ touchstone_sync_planned_write_paths() {
     printf 'scripts/worker.sh\n'
     printf 'lib/toml.sh\n'
     printf 'lib/events.sh\n'
+    printf 'lib/codex-auth.sh\n'
+    printf 'lib/worker-ship-job.sh\n'
+    printf 'lib/worker-review-fix.sh\n'
     printf 'lib/worker-state.sh\n'
     printf 'lib/script-sync-guard.sh\n'
     printf 'lib/preflight.sh\n'
@@ -77,14 +80,6 @@ touchstone_sync_planned_write_paths() {
       printf 'AGENTS.md\n'
     fi
 
-    if [ -f "$project_dir/.codex-review.toml" ]; then
-      if grep -qE '^[[:space:]]*reviewers[[:space:]]*=[[:space:]]*\[' "$project_dir/.codex-review.toml" \
-        || grep -qE '^\[review\.local\]' "$project_dir/.codex-review.toml" \
-        || grep -qE '^\[review\.assist\]' "$project_dir/.codex-review.toml" \
-        || grep -qE '^[[:space:]]*(small|large)_reviewers[[:space:]]*=[[:space:]]*\[' "$project_dir/.codex-review.toml"; then
-        printf '.codex-review.toml\n'
-      fi
-    fi
   } | sort -u
 }
 

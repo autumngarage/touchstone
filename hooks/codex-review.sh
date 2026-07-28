@@ -66,7 +66,7 @@
 #   TOUCHSTONE_CONDUCTOR_EFFORT       — minimal|low|medium|high|max (default: size-aware)
 #   TOUCHSTONE_CONDUCTOR_TAGS         — comma-separated tag hints (default: code-review)
 #   TOUCHSTONE_CONDUCTOR_EXCLUDE      — comma-separated providers to skip
-#   TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY — true/false; retry infra/sentinel failures through auto-routing once
+#   TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY — true/false; explicitly opt into one cross-provider retry
 #   CODEX_REVIEW_SUPPRESS_LEGACY_WARNINGS — silence one-time migration hints
 #   CODEX_REVIEW_ENABLED              — true/false override for the [review].enabled setting
 #   CODEX_REVIEW_MODE                 — review-only|fix|diff-only|no-tests (default: fix)
@@ -243,6 +243,23 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOUCHSTONE_ROOT="${TOUCHSTONE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+CODEX_AUTH_SCRIPT="$TOUCHSTONE_ROOT/lib/codex-auth.sh"
+CODEX_AUTH_HELPER_FAILURE=""
+TOUCHSTONE_CODEX_AUTH_FAILURE=""
+if [ -r "$CODEX_AUTH_SCRIPT" ]; then
+  # shellcheck source=../lib/codex-auth.sh
+  if ! source "$CODEX_AUTH_SCRIPT"; then
+    CODEX_AUTH_HELPER_FAILURE="helper-load-failed"
+  fi
+else
+  CODEX_AUTH_HELPER_FAILURE="helper-missing"
+fi
+if [ -n "$CODEX_AUTH_HELPER_FAILURE" ]; then
+  touchstone_codex_subscription_auth_check() {
+    TOUCHSTONE_CODEX_AUTH_FAILURE="$CODEX_AUTH_HELPER_FAILURE"
+    return 127
+  }
+fi
 
 # Files materialized from the trusted base ref by resolve_trusted_review_file;
 # removed by cleanup_review_process on exit.
@@ -489,7 +506,7 @@ REVIEW_HEARTBEAT_SEC="${TOUCHSTONE_REVIEW_HEARTBEAT_SEC:-60}"
 ON_ERROR="${CODEX_REVIEW_ON_ERROR:-fail-open}"
 UNSAFE_PATHS=""
 HIGH_SCRUTINY_PATHS=""
-HIGH_SCRUTINY_MODE="peer"
+HIGH_SCRUTINY_MODE="off"
 HIGH_SCRUTINY_TRIGGERED=false
 HIGH_SCRUTINY_REASON=""
 REVIEWER_CASCADE=()
@@ -505,6 +522,7 @@ TOUCHSTONE_LOCAL_REVIEWER_AUTH_COMMAND="${TOUCHSTONE_LOCAL_REVIEWER_AUTH_COMMAND
 # 2.0 conductor knobs — filled from [review.conductor] during TOML parse;
 # env vars (TOUCHSTONE_CONDUCTOR_*) override just before invocation.
 CONDUCTOR_WITH=""
+REVIEW_COST_BOUNDARY="subscription-codex"
 CONDUCTOR_PREFER=""
 CONDUCTOR_EFFORT=""
 CONDUCTOR_TAGS=""
@@ -1109,19 +1127,18 @@ NO_AUTOFIX="$(normalize_bool "$NO_AUTOFIX")"
 
 # Legacy-config migration: v1.x used `[review].reviewers = [...]` (an ordered
 # cascade of codex/claude/gemini/local). Touchstone 2.0 routes through a
-# single Conductor adapter; Conductor's auto-router handles cross-provider
-# selection. If an older config is detected, translate + warn (one-time).
+# single Conductor adapter. The compatibility default is subscription-backed
+# Codex; cross-provider routing requires an explicit `with = "auto"` opt-in.
 if [ "${#REVIEWER_CASCADE[@]}" -gt 0 ]; then
   LEGACY_CASCADE="${REVIEWER_CASCADE[*]}"
   # If the legacy cascade was just ("conductor") we leave it alone.
   if [ "${LEGACY_CASCADE}" != "conductor" ]; then
     echo "==> NOTE: [review].reviewers = [${LEGACY_CASCADE// /, }] is a v1.x config." >&2
     echo "    Touchstone 2.0 uses a single reviewer ('conductor') and delegates" >&2
-    echo "    per-provider selection to the Conductor router. Migrating to:" >&2
+    echo "    provider selection to Conductor. Migrating to subscription Codex:" >&2
     echo "        reviewer = \"conductor\"" >&2
     echo "        [review.conductor]" >&2
-    echo "          prefer = \"best\"" >&2
-    echo "          effort = \"high\"" >&2
+    echo "          with = \"codex\"" >&2
     echo "    Update ${CONFIG_DISPLAY_NAME:-.touchstone-review.toml} at your convenience. See CHANGELOG for details." >&2
   fi
 fi
@@ -1143,6 +1160,11 @@ ROUTING_ENABLED="$(normalize_bool "$ROUTING_ENABLED")"
 # underlying provider should use TOUCHSTONE_CONDUCTOR_WITH=<provider>.
 if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
   case "$TOUCHSTONE_REVIEWER" in
+    auto)
+      echo "==> NOTE: TOUCHSTONE_REVIEWER=auto is deprecated in 2.0.0." >&2
+      echo "    Preserving explicit auto-routing; metered providers may be selected." >&2
+      CONDUCTOR_WITH="auto"
+      ;;
     conductor)
       : # canonical — no translation needed
       ;;
@@ -1167,7 +1189,7 @@ if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
       ;;
     *)
       echo "==> WARNING: TOUCHSTONE_REVIEWER=$TOUCHSTONE_REVIEWER is not a known legacy value." >&2
-      echo "    Ignoring; Conductor will auto-route. To pin a provider, use" >&2
+      echo "    Ignoring; the configured/default route applies. To pin a provider, use" >&2
       echo "    TOUCHSTONE_CONDUCTOR_WITH=<provider> directly." >&2
       ;;
   esac
@@ -1175,11 +1197,25 @@ if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
 fi
 
 # Env overrides for the conductor adapter (take precedence over the review config).
-CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-${CONDUCTOR_WITH:-}}"
+set_conductor_with() {
+  local provider="${1:-codex}"
+  if [ "$provider" = "auto" ]; then
+    CONDUCTOR_WITH=""
+    REVIEW_COST_BOUNDARY="auto-explicit-may-be-metered"
+  elif [ "$provider" = "codex" ]; then
+    CONDUCTOR_WITH="codex"
+    REVIEW_COST_BOUNDARY="subscription-codex"
+  else
+    CONDUCTOR_WITH="$provider"
+    REVIEW_COST_BOUNDARY="explicit-provider:$provider"
+  fi
+}
+
+set_conductor_with "${TOUCHSTONE_CONDUCTOR_WITH:-${CONDUCTOR_WITH:-codex}}"
 CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-${CONDUCTOR_PREFER:-best}}"
 CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-${CONDUCTOR_EFFORT:-high}}"
 CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-${CONDUCTOR_TAGS:-code-review}}"
-CONDUCTOR_FALLBACK_RETRY="${TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY:-true}"
+CONDUCTOR_FALLBACK_RETRY="${TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY:-false}"
 if [ -n "${TOUCHSTONE_CONDUCTOR_EXCLUDE+x}" ]; then
   CONDUCTOR_EXCLUDE="$TOUCHSTONE_CONDUCTOR_EXCLUDE"
 elif [ "$CONDUCTOR_EXCLUDE_CONFIGURED" = true ]; then
@@ -1790,6 +1826,17 @@ reviewer_conductor_available() {
 }
 
 reviewer_conductor_auth_ok() {
+  local auth_rc=0
+
+  CONDUCTOR_AUTH_FAILURE=""
+  if [ "$REVIEW_COST_BOUNDARY" = "subscription-codex" ]; then
+    touchstone_codex_subscription_auth_check || auth_rc=$?
+    if [ "$auth_rc" -ne 0 ]; then
+      CONDUCTOR_AUTH_FAILURE="$TOUCHSTONE_CODEX_AUTH_FAILURE"
+      return 1
+    fi
+  fi
+
   # Delegate to `conductor doctor --json` — cheap check, makes no upstream
   # calls, confirms at least one provider is configured.
   local doctor_json
@@ -2003,6 +2050,9 @@ reviewer_conductor_exec() {
     if conductor_timeout="$(conductor_inner_timeout "${REVIEW_TIMEOUT:-0}")"; then
       args+=(--timeout "$conductor_timeout")
     fi
+    if [ -n "${REVIEW_MAX_STALL_SEC:-}" ]; then
+      args+=(--max-stall-seconds "$REVIEW_MAX_STALL_SEC")
+    fi
     if [ -n "${REVIEW_CONDUCTOR_LOG_FILE:-}" ]; then
       args+=(--log-file "$REVIEW_CONDUCTOR_LOG_FILE")
     fi
@@ -2189,7 +2239,7 @@ conductor_route_preflight_for_phase() {
       echo "       phase: $phase (subcommand=$subcommand, tools=${tools:-none})" >&2
       echo "       requested provider: $CONDUCTOR_WITH" >&2
       echo "       missing capability: pinned provider cannot satisfy semantic conductor review" >&2
-      echo "       next action: use claude, codex, gemini, openrouter, or unset TOUCHSTONE_CONDUCTOR_WITH for auto-routing." >&2
+      echo "       next action: use codex, or explicitly choose another provider or auto-routing." >&2
       return 1
     fi
     route_exclude="$(conductor_semantic_review_exclude "$route_exclude")"
@@ -2201,7 +2251,7 @@ conductor_route_preflight_for_phase() {
       echo "       phase: $phase (subcommand=$subcommand, tools=${tools:-none})" >&2
       echo "       requested provider: $CONDUCTOR_WITH" >&2
       echo "       missing capability: pinned provider is excluded by TOUCHSTONE_CONDUCTOR_EXCLUDE/[review.conductor].exclude" >&2
-      echo "       next action: remove $CONDUCTOR_WITH from the exclusion list, unset TOUCHSTONE_CONDUCTOR_WITH, or pin a viable provider such as openrouter." >&2
+      echo "       next action: remove $CONDUCTOR_WITH from the exclusion list or authenticate that explicitly pinned provider." >&2
       return 1
     fi
     route_exclude="$(conductor_review_pin_exclude "$CONDUCTOR_WITH" "$route_exclude")"
@@ -2210,6 +2260,7 @@ conductor_route_preflight_for_phase() {
   estimated_input_tokens=$((ROUTING_DIFF_LINE_COUNT * 20 + 1000))
   args=(route --json --kind "$subcommand" --prefer "${CONDUCTOR_PREFER:-best}" --effort "${CONDUCTOR_EFFORT:-high}"
     --estimated-input-tokens "$estimated_input_tokens" --estimated-output-tokens 500)
+  [ -n "${CONDUCTOR_WITH:-}" ] && args+=(--with "$CONDUCTOR_WITH")
   [ -n "$route_tags" ] && args+=(--tags "$route_tags")
   [ -n "$tools" ] && args+=(--tools "$tools")
   [ -n "$route_exclude" ] && args+=(--exclude "$route_exclude")
@@ -2237,7 +2288,7 @@ conductor_route_preflight_for_phase() {
       *"does not support tools"*) echo "       missing capability: $error" >&2 ;;
       *) echo "       reason: $error" >&2 ;;
     esac
-    echo "       next action: set TOUCHSTONE_CONDUCTOR_WITH=openrouter, remove over-broad exclusions, or run conductor doctor." >&2
+    echo "       next action: authenticate ${CONDUCTOR_WITH:-the explicitly enabled auto route}, remove over-broad exclusions, or run conductor doctor." >&2
     return 1
   fi
 
@@ -2276,7 +2327,7 @@ run_conductor_route_preflight() {
   CONDUCTOR_PREFLIGHT_REVIEW_PROVIDER=""
   CONDUCTOR_PREFLIGHT_FIX_PROVIDER=""
 
-  echo "==> Review route preflight: mode=$REVIEW_MODE with=${CONDUCTOR_WITH:-auto} prefer=${CONDUCTOR_PREFER:-best} effort=${CONDUCTOR_EFFORT:-high} exclude=${CONDUCTOR_EXCLUDE:-none}"
+  echo "==> Review route preflight: mode=$REVIEW_MODE with=${CONDUCTOR_WITH:-auto-explicit} cost_boundary=$REVIEW_COST_BOUNDARY prefer=${CONDUCTOR_PREFER:-best} effort=${CONDUCTOR_EFFORT:-high} exclude=${CONDUCTOR_EXCLUDE:-none}"
 
   review_subcommand="$(conductor_subcommand_for_mode review)"
   review_tools=""
@@ -2327,9 +2378,15 @@ resolve_reviewer() {
     if ! "reviewer_${reviewer}_auth_ok"; then
       case "$reviewer" in
         conductor)
-          REVIEWER_STATUS="${REVIEWER_STATUS}    conductor: no provider is configured\n"
-          REVIEWER_STATUS="${REVIEWER_STATUS}      → conductor doctor    (diagnose what's missing)\n"
-          REVIEWER_STATUS="${REVIEWER_STATUS}      → conductor init      (guided provider setup)\n"
+          if [ -n "${CONDUCTOR_AUTH_FAILURE:-}" ]; then
+            REVIEWER_STATUS="${REVIEWER_STATUS}    conductor: subscription Codex requires verified ChatGPT authentication (${CONDUCTOR_AUTH_FAILURE})\n"
+            REVIEWER_STATUS="${REVIEWER_STATUS}      → codex login status    (must report Logged in using ChatGPT)\n"
+            REVIEWER_STATUS="${REVIEWER_STATUS}      → refusing API-key or unknown auth to avoid metered review spend\n"
+          else
+            REVIEWER_STATUS="${REVIEWER_STATUS}    conductor: no provider is configured\n"
+            REVIEWER_STATUS="${REVIEWER_STATUS}      → conductor doctor    (diagnose what's missing)\n"
+            REVIEWER_STATUS="${REVIEWER_STATUS}      → conductor init      (guided provider setup)\n"
+          fi
           ;;
         *)
           REVIEWER_STATUS="${REVIEWER_STATUS}    ${reviewer}: auth check failed\n"
@@ -2407,7 +2464,7 @@ apply_review_routing() {
   if [ -n "$risk_reason" ]; then
     REVIEWER_CASCADE=("${ROUTING_LARGE_REVIEWERS[@]}")
     ROUTING_DECISION="high-risk"
-    [ -n "$ROUTING_HIGH_RISK_WITH" ] && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_HIGH_RISK_WITH}"
+    [ -n "$ROUTING_HIGH_RISK_WITH" ] && set_conductor_with "${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_HIGH_RISK_WITH}"
     [ -n "$ROUTING_HIGH_RISK_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_HIGH_RISK_PREFER}"
     [ -n "$ROUTING_HIGH_RISK_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_HIGH_RISK_EFFORT}"
     [ -n "$ROUTING_HIGH_RISK_TAGS" ] && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_HIGH_RISK_TAGS}"
@@ -2418,7 +2475,7 @@ apply_review_routing() {
     # Apply 2.0 small-bucket overrides. Non-empty fields win; env still
     # trumps via the earlier cascade (TOUCHSTONE_CONDUCTOR_* set on the
     # command line or in the shell override the config-driven bucket).
-    [ -n "$ROUTING_SMALL_WITH" ] && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_SMALL_WITH}"
+    [ -n "$ROUTING_SMALL_WITH" ] && set_conductor_with "${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_SMALL_WITH}"
     [ -n "$ROUTING_SMALL_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_SMALL_PREFER}"
     [ -n "$ROUTING_SMALL_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_SMALL_EFFORT}"
     [ -n "$ROUTING_SMALL_TAGS" ] && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_SMALL_TAGS}"
@@ -2426,7 +2483,7 @@ apply_review_routing() {
   else
     REVIEWER_CASCADE=("${ROUTING_LARGE_REVIEWERS[@]}")
     ROUTING_DECISION="large-low-risk"
-    [ -n "$ROUTING_LARGE_WITH" ] && CONDUCTOR_WITH="${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_LARGE_WITH}"
+    [ -n "$ROUTING_LARGE_WITH" ] && set_conductor_with "${TOUCHSTONE_CONDUCTOR_WITH:-$ROUTING_LARGE_WITH}"
     [ -n "$ROUTING_LARGE_PREFER" ] && CONDUCTOR_PREFER="${TOUCHSTONE_CONDUCTOR_PREFER:-$ROUTING_LARGE_PREFER}"
     [ -n "$ROUTING_LARGE_EFFORT" ] && CONDUCTOR_EFFORT="${TOUCHSTONE_CONDUCTOR_EFFORT:-$ROUTING_LARGE_EFFORT}"
     [ -n "$ROUTING_LARGE_TAGS" ] && CONDUCTOR_TAGS="${TOUCHSTONE_CONDUCTOR_TAGS:-$ROUTING_LARGE_TAGS}"
@@ -2873,10 +2930,17 @@ if ! resolve_reviewer; then
   unavailable_code="FAIL_OPEN_DEPENDENCY_MISSING"
   unavailable_reason="dependency-missing"
   unavailable_message="conductor CLI not found on PATH"
-  if reviewer_conductor_available; then
+  if [ "${CONDUCTOR_AUTH_FAILURE:-}" = "helper-missing" ] \
+    || [ "${CONDUCTOR_AUTH_FAILURE:-}" = "helper-load-failed" ]; then
+    unavailable_message="subscription Codex authentication helper unavailable: $CODEX_AUTH_SCRIPT"
+  elif reviewer_conductor_available; then
     unavailable_code="FAIL_OPEN_PROVIDER_UNAVAILABLE"
     unavailable_reason="provider-unavailable"
-    unavailable_message="conductor installed but no provider configured"
+    if [ -n "${CONDUCTOR_AUTH_FAILURE:-}" ]; then
+      unavailable_message="subscription Codex ChatGPT authentication not verified: ${CONDUCTOR_AUTH_FAILURE}"
+    else
+      unavailable_message="conductor installed but no provider configured"
+    fi
   fi
 
   if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
@@ -4092,7 +4156,7 @@ try_review_fallback_retry() {
   local status_before="$3"
   local prompt="${4:-$REVIEW_PROMPT}"
   local output_file="${5:-$REVIEW_OUTPUT_FILE}"
-  local failed_provider failed_providers previous_with previous_exclude
+  local failed_provider failed_providers previous_with previous_exclude previous_cost_boundary
   local previous_preflight_review_provider previous_preflight_fix_provider fallback_exclude
 
   [ "${ACTIVE_REVIEWER:-}" = "conductor" ] || return 1
@@ -4124,15 +4188,16 @@ try_review_fallback_retry() {
 
   previous_with="$CONDUCTOR_WITH"
   previous_exclude="$CONDUCTOR_EXCLUDE"
+  previous_cost_boundary="$REVIEW_COST_BOUNDARY"
   previous_preflight_review_provider="$CONDUCTOR_PREFLIGHT_REVIEW_PROVIDER"
   previous_preflight_fix_provider="$CONDUCTOR_PREFLIGHT_FIX_PROVIDER"
   fallback_exclude="$(exclude_provider_csv "$CONDUCTOR_EXCLUDE" "$failed_providers")"
 
   phase "retrying with Conductor fallback (excluding $failed_providers)"
   echo "==> Review infrastructure/noncompliance failure: $reason"
-  echo "==> Retrying once with auto-routing; excluded provider(s): ${fallback_exclude:-<none>}"
+  echo "==> Retrying once with explicitly enabled auto-routing; excluded provider(s): ${fallback_exclude:-<none>}"
 
-  CONDUCTOR_WITH=""
+  set_conductor_with auto
   CONDUCTOR_EXCLUDE="$fallback_exclude"
   CONDUCTOR_PREFLIGHT_REVIEW_PROVIDER=""
   CONDUCTOR_PREFLIGHT_FIX_PROVIDER=""
@@ -4145,6 +4210,7 @@ try_review_fallback_retry() {
 
   CONDUCTOR_WITH="$previous_with"
   CONDUCTOR_EXCLUDE="$previous_exclude"
+  REVIEW_COST_BOUNDARY="$previous_cost_boundary"
   CONDUCTOR_PREFLIGHT_REVIEW_PROVIDER="$previous_preflight_review_provider"
   CONDUCTOR_PREFLIGHT_FIX_PROVIDER="$previous_preflight_fix_provider"
 
@@ -4413,7 +4479,7 @@ review_completion_status() {
 
 print_retry_suggestion() {
   echo "    Review did not complete. Retry with: CODEX_REVIEW_FORCE=1 git push"
-  echo "    If one provider is degraded, pin a healthy provider with TOUCHSTONE_CONDUCTOR_WITH=<provider>."
+  echo "    Repair the pinned provider, or explicitly choose another with TOUCHSTONE_CONDUCTOR_WITH=<provider>."
 }
 
 print_summary() {
@@ -4447,6 +4513,7 @@ print_summary() {
   printf "  ${C_DIM}mode:           %s${C_RESET}\n" "$REVIEW_MODE"
   printf "  ${C_DIM}context:        %s${C_RESET}\n" "$PROMPT_CONTEXT_DECISION"
   printf "  ${C_DIM}budget:         prefer=%s effort=%s${C_RESET}\n" "${CONDUCTOR_PREFER:-auto}" "${CONDUCTOR_EFFORT:-default}"
+  printf "  ${C_DIM}cost boundary:  %s${C_RESET}\n" "$REVIEW_COST_BOUNDARY"
   printf "  ${C_DIM}files:          %s${C_RESET}\n" "$REVIEW_FILES_INSPECTED"
   printf "  ${C_DIM}diff lines:     %s${C_RESET}\n" "$DIFF_LINE_COUNT"
   printf "  ${C_DIM}iterations:     %s/%s${C_RESET}\n" "${iter:-0}" "$MAX_ITERATIONS"

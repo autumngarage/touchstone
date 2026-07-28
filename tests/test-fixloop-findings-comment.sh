@@ -8,6 +8,10 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-fixloop-history.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
+# shellcheck source=tests/review-log-test-helper.sh
+source "$TOUCHSTONE_ROOT/tests/review-log-test-helper.sh"
+touchstone_isolate_review_log "$TEST_DIR"
+
 ERRORS=0
 
 echo "==> Case 1: codex-review.sh records FIXED and CLEAN iterations"
@@ -74,7 +78,16 @@ case "${1:-}" in
     ;;
 esac
 EOF
-chmod +x "$FAKE_BIN/conductor"
+cat >"$FAKE_BIN/codex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then
+  printf 'Logged in using ChatGPT\n'
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$FAKE_BIN/conductor" "$FAKE_BIN/codex"
 
 OUT="$TEST_DIR/review.out"
 (

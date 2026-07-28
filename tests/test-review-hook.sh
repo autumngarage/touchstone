@@ -52,6 +52,19 @@ unset TOUCHSTONE_CONDUCTOR_EFFORT TOUCHSTONE_CONDUCTOR_TAGS TOUCHSTONE_CONDUCTOR
 unset TOUCHSTONE_PREFLIGHT_ALREADY_RAN TOUCHSTONE_REVIEWER
 unset TOUCHSTONE_NO_PREFLIGHT TOUCHSTONE_NO_AUTO_UPDATE
 
+codex() {
+  if [ "${1:-}" = login ] && [ "${2:-}" = status ]; then
+    if [ "${CODEX_LOGIN_STATUS:-}" = "status-failed" ]; then
+      return 1
+    fi
+    printf '%s\n' "${CODEX_LOGIN_STATUS:-Logged in using ChatGPT}"
+    return 0
+  fi
+  printf 'unexpected Codex command: %s\n' "$*" >&2
+  return 99
+}
+export -f codex
+
 mkdir -p "$FAKE_BIN"
 setup_test_repo "$REPO_DIR"
 
@@ -703,7 +716,7 @@ fi
 # ==========================================================================
 # Conductor reviewer tests (Touchstone 2.0+). The v1.x multi-reviewer
 # cascade tests were retired when the single `conductor` adapter shipped;
-# per-provider selection now lives inside Conductor's auto-router.
+# cross-provider selection now requires an explicit Conductor auto-route opt-in.
 # ==========================================================================
 
 CASCADE_REPO="$TEST_DIR/repo-cascade"
@@ -884,6 +897,7 @@ set -e
 
 if [ "$ROUTE_AUTH_EXIT" -eq 0 ] \
   && grep -q '^route .*--kind review .*--with openrouter' "$CASCADE_CALLS" \
+  && [ -z "$(awk '/^route / && /--estimated-input-tokens/ && !/--with openrouter/ { print }' "$CASCADE_CALLS")" ] \
   && grep -q '^review .*--with openrouter' "$CASCADE_CALLS" \
   && ! grep -q 'No reviewer available' "$CASCADE_OUTPUT"; then
   echo "==> PASS: pinned route auth allowed review despite doctor miss"
@@ -940,6 +954,7 @@ set +e
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
     CODEX_REVIEW_PR_NUMBER=123 \
+    TOUCHSTONE_CONDUCTOR_WITH=auto \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CASCADE_OUTPUT" 2>&1
 )
 ROUTE_VIABLE_EXIT=$?
@@ -1012,6 +1027,8 @@ set +e
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
     CODEX_REVIEW_PR_NUMBER=123 \
+    TOUCHSTONE_CONDUCTOR_WITH=auto \
+    TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY=true \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CASCADE_OUTPUT" 2>&1
 )
 ROUTE_FALLBACK_EXIT=$?
@@ -1078,6 +1095,7 @@ set +e
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
     CODEX_REVIEW_PR_NUMBER=123 \
+    TOUCHSTONE_CONDUCTOR_WITH=auto \
     TOUCHSTONE_CONDUCTOR_EXCLUDE="claude,codex,gemini,openrouter,kimi,deepseek-chat,deepseek-reasoner,ollama" \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CASCADE_OUTPUT" 2>&1
 )
@@ -1270,7 +1288,7 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Test: configured max_stall_sec reaches Conductor semantic review"
+echo "==> Test: configured max_stall_sec reaches review and fix phases"
 setup_mode_repo
 rm -rf "$MODE_BIN"
 mkdir -p "$MODE_BIN"
@@ -1284,10 +1302,15 @@ case "${1:-}" in
   doctor)
     printf '{"configured": true}\n'
     ;;
-  review | exec)
-    printf '%s\n' "$*" > "$CODEX_ARGS_FILE"
+  review)
+    printf 'review: %s\n' "$*" >> "$CODEX_ARGS_FILE"
     cat >/dev/null
-    printf 'CODEX_REVIEW_CLEAN\n'
+    printf 'CODEX_REVIEW_BLOCKED\n'
+    ;;
+  exec)
+    printf 'exec: %s\n' "$*" >> "$CODEX_ARGS_FILE"
+    cat >/dev/null
+    printf 'CODEX_REVIEW_BLOCKED\n'
     ;;
   *)
     exit 1
@@ -1304,19 +1327,27 @@ git -C "$MODE_REPO" add .codex-review.toml
 git -C "$MODE_REPO" commit -m "max stall config" >/dev/null 2>&1
 : >"$CODEX_ARGS_FILE"
 
+set +e
 (
   cd "$MODE_REPO"
   PATH="$MODE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CODEX_ARGS_FILE="$CODEX_ARGS_FILE" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
+    CODEX_REVIEW_MODE=fix \
+    CODEX_REVIEW_ON_ERROR=fail-closed \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$MODE_OUTPUT" 2>&1
 )
+MAX_STALL_EXIT=$?
+set -e
 
-if grep -q -- '--max-stall-seconds 300' "$CODEX_ARGS_FILE"; then
-  echo "==> PASS: max_stall_sec was forwarded to Conductor"
+if [ "$MAX_STALL_EXIT" -eq 1 ] \
+  && grep -q -- '^review: .*--max-stall-seconds 300' "$CODEX_ARGS_FILE" \
+  && grep -q -- '^exec: .*--max-stall-seconds 300' "$CODEX_ARGS_FILE"; then
+  echo "==> PASS: max_stall_sec was forwarded to review and fix phases"
 else
-  echo "FAIL: expected --max-stall-seconds 300 in Conductor args" >&2
+  echo "FAIL: expected --max-stall-seconds 300 in review and fix args" >&2
+  echo "exit code: $MAX_STALL_EXIT" >&2
   cat "$MODE_OUTPUT" >&2
   cat "$CODEX_ARGS_FILE" >&2
   ERRORS=$((ERRORS + 1))
@@ -2148,6 +2179,7 @@ chmod +x "$TIMEOUT_BIN/gh" "$TIMEOUT_BIN/conductor"
   PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     FALLBACK_ARGS_FILE="$FALLBACK_ARGS_FILE" \
     TOUCHSTONE_CONDUCTOR_WITH=gemini \
+    TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY=true \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
@@ -2189,6 +2221,8 @@ chmod +x "$TIMEOUT_BIN/conductor"
   cd "$TIMEOUT_REPO"
   PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     FALLBACK_ARGS_FILE="$FALLBACK_ARGS_FILE" \
+    TOUCHSTONE_CONDUCTOR_WITH=auto \
+    TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY=true \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
@@ -2250,6 +2284,7 @@ chmod +x "$TIMEOUT_BIN/conductor"
   PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     FALLBACK_ARGS_FILE="$FALLBACK_ARGS_FILE" \
     TOUCHSTONE_CONDUCTOR_WITH=gemini \
+    TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY=true \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_ON_ERROR=fail-closed \
@@ -2286,6 +2321,7 @@ set +e
   PATH="$TIMEOUT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     FALLBACK_ARGS_FILE="$FALLBACK_ARGS_FILE" \
     TOUCHSTONE_CONDUCTOR_WITH=gemini \
+    TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY=true \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MODE=review-only \
@@ -2358,6 +2394,7 @@ set +e
     FALLBACK_ARGS_FILE="$FALLBACK_ARGS_FILE" \
     FALLBACK_MUTATION_FILE="$FALLBACK_MUTATION_FILE" \
     TOUCHSTONE_CONDUCTOR_WITH=gemini \
+    TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY=true \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_MODE=review-only \
@@ -2768,6 +2805,7 @@ git -C "$CTX_REPO" commit -m "tag sanitizer" >/dev/null 2>&1
     CONDUCTOR_ARGS_LOG="$CONDUCTOR_ARGS_LOG" \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
+    TOUCHSTONE_CONDUCTOR_WITH=auto \
     TOUCHSTONE_CONDUCTOR_TAGS="code-review,tool-use,long-context" \
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
@@ -2998,6 +3036,7 @@ CXEOF
 chmod +x "$CTX_BIN/conductor"
 cat >"$CTX_REPO/.codex-review.toml" <<'EOF'
 [review]
+high_scrutiny_mode = "peer"
 high_scrutiny_paths = ["critical/"]
 EOF
 git -C "$CTX_REPO" add .codex-review.toml && git -C "$CTX_REPO" commit -m "configure high scrutiny" >/dev/null 2>&1
@@ -3200,6 +3239,7 @@ chmod +x "$CTX_BIN/conductor"
   PATH="$CTX_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     CONDUCTOR_COUNT_FILE="$CONDUCTOR_COUNT_FILE" \
     TOUCHSTONE_CONDUCTOR_WITH=codex \
+    TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY=true \
     CODEX_REVIEW_BASE="HEAD~1" \
     CODEX_REVIEW_DISABLE_CACHE=1 \
     CODEX_REVIEW_SUMMARY_FILE="$JSON_SUMMARY" \
@@ -3232,7 +3272,7 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Test: missing Conductor session log keeps provider/model unknown"
+echo "==> Test: missing Conductor session log keeps pinned provider visible"
 setup_ctx_repo
 setup_ctx_bin
 cat >"$CTX_BIN/conductor" <<'CXEOF'
@@ -3253,12 +3293,12 @@ rm -f "$JSON_SUMMARY"
     bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh" >"$CTX_OUTPUT" 2>&1
 )
 
-if grep -q '"provider":"unknown"' "$JSON_SUMMARY" \
+if grep -q '"provider":"codex"' "$JSON_SUMMARY" \
   && grep -q '"model":"unknown"' "$JSON_SUMMARY" \
   && grep -q '"peer_provider":"none"' "$JSON_SUMMARY"; then
-  echo "==> PASS: missing session log falls back without blocking"
+  echo "==> PASS: missing session log retained the configured provider boundary"
 else
-  echo "FAIL: expected unknown provider/model fallback" >&2
+  echo "FAIL: expected configured provider with unknown model" >&2
   cat "$JSON_SUMMARY" 2>/dev/null >&2
   cat "$CTX_OUTPUT" >&2
   ERRORS=$((ERRORS + 1))
@@ -3854,10 +3894,375 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-if [ "$ERRORS" -eq 0 ]; then
-  echo "==> PASS: all review hook assertions passed"
-  exit 0
+if [ "$ERRORS" -ne 0 ]; then
+  echo "==> FAIL: $ERRORS review hook assertion(s) failed" >&2
+  exit 1
 fi
+echo "==> PASS: all review hook assertions passed"
 
-echo "==> FAIL: $ERRORS review hook assertion(s) failed" >&2
-exit 1
+# -----------------------------------------------------------------------------
+# Consolidated feature coverage: subscription-only review routing
+# -----------------------------------------------------------------------------
+(
+  #
+  # Regression coverage for the subscription-only local review boundary.
+
+  set -euo pipefail
+
+  TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+  HOOK="$TOUCHSTONE_ROOT/hooks/codex-review.sh"
+  TEST_DIR="$(mktemp -d -t touchstone-subscription-review.XXXXXX)"
+  trap 'rm -rf "$TEST_DIR"' EXIT
+
+  ERRORS=0
+  FAKE_BIN="$TEST_DIR/bin"
+  mkdir -p "$FAKE_BIN"
+
+  cat >"$FAKE_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf 'main\n'
+EOF
+
+  cat >"$FAKE_BIN/conductor" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+  doctor)
+    printf '{"providers":[{"configured":true}]}\n'
+    exit 0
+    ;;
+  review | exec | call)
+    printf '%s\n' "$*" >>"$CONDUCTOR_ARGS_LOG"
+    cat >/dev/null
+    if [ "${CONDUCTOR_RESULT:-clean}" = "fail" ]; then
+      printf 'configured provider unavailable\n' >&2
+      exit 42
+    fi
+    printf 'CODEX_REVIEW_CLEAN\n'
+    ;;
+  *)
+    printf 'unexpected conductor command: %s\n' "$*" >&2
+    exit 99
+    ;;
+esac
+EOF
+
+  chmod +x "$FAKE_BIN/gh" "$FAKE_BIN/conductor"
+
+  setup_repo() {
+    local repo="$1"
+    local config="${2:-}"
+
+    mkdir -p "$repo"
+    git -C "$repo" init -q
+    git -C "$repo" config user.name "Touchstone Test"
+    git -C "$repo" config user.email "touchstone@example.com"
+    printf 'base\n' >"$repo/example.txt"
+    if [ -n "$config" ]; then
+      printf '%s\n' "$config" >"$repo/.touchstone-review.toml"
+    fi
+    git -C "$repo" add .
+    git -C "$repo" commit -qm base
+    printf 'change\n' >>"$repo/example.txt"
+    git -C "$repo" add example.txt
+    git -C "$repo" commit -qm change
+  }
+
+  run_review() {
+    local repo="$1"
+    local output="$2"
+    local result="${3:-clean}"
+    local auth_status="${4:-Logged in using ChatGPT}"
+    local on_error="${5:-fail-closed}"
+
+    (
+      cd "$repo"
+      PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+        CONDUCTOR_ARGS_LOG="$CONDUCTOR_ARGS_LOG" \
+        CONDUCTOR_RESULT="$result" \
+        CODEX_LOGIN_STATUS="$auth_status" \
+        CODEX_REVIEW_BASE=HEAD~1 \
+        CODEX_REVIEW_DISABLE_CACHE=1 \
+        CODEX_REVIEW_MODE=review-only \
+        CODEX_REVIEW_ON_ERROR="$on_error" \
+        TOUCHSTONE_REVIEW_LOG=/dev/null \
+        bash "$HOOK" >"$output" 2>&1
+    )
+  }
+
+  echo "==> Test: omitted provider defaults to subscription Codex without fallback"
+  DEFAULT_REPO="$TEST_DIR/default"
+  DEFAULT_OUTPUT="$TEST_DIR/default.out"
+  CONDUCTOR_ARGS_LOG="$TEST_DIR/default.args"
+  export CONDUCTOR_ARGS_LOG
+  setup_repo "$DEFAULT_REPO"
+  set +e
+  run_review "$DEFAULT_REPO" "$DEFAULT_OUTPUT" fail
+  default_rc=$?
+  set -e
+
+  if [ "$default_rc" -eq 1 ] \
+    && [ "$(wc -l <"$CONDUCTOR_ARGS_LOG" | tr -d ' ')" = "1" ] \
+    && grep -q -- '^review .*--with codex' "$CONDUCTOR_ARGS_LOG" \
+    && grep -q 'cost boundary:  subscription-codex' "$DEFAULT_OUTPUT" \
+    && ! grep -q 'Retrying once' "$DEFAULT_OUTPUT"; then
+    echo "==> PASS: default stayed on subscription Codex"
+  else
+    echo "FAIL: omitted provider should invoke Codex once and fail per on_error" >&2
+    cat "$DEFAULT_OUTPUT" >&2
+    cat "$CONDUCTOR_ARGS_LOG" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+
+  echo "==> Test: subscription Codex rejects API-key authentication before Conductor"
+  API_KEY_REPO="$TEST_DIR/api-key"
+  API_KEY_OUTPUT="$TEST_DIR/api-key.out"
+  CONDUCTOR_ARGS_LOG="$TEST_DIR/api-key.args"
+  export CONDUCTOR_ARGS_LOG
+  : >"$CONDUCTOR_ARGS_LOG"
+  setup_repo "$API_KEY_REPO"
+  set +e
+  run_review "$API_KEY_REPO" "$API_KEY_OUTPUT" clean "Logged in using an API key"
+  api_key_rc=$?
+  set -e
+
+  if [ "$api_key_rc" -eq 1 ] \
+    && [ ! -s "$CONDUCTOR_ARGS_LOG" ] \
+    && grep -q 'requires verified ChatGPT authentication (api-key)' "$API_KEY_OUTPUT" \
+    && grep -q 'refusing API-key or unknown auth to avoid metered review spend' "$API_KEY_OUTPUT"; then
+    echo "==> PASS: API-key auth was refused before provider invocation"
+  else
+    echo "FAIL: subscription Codex must never invoke Conductor under API-key auth" >&2
+    cat "$API_KEY_OUTPUT" >&2
+    cat "$CONDUCTOR_ARGS_LOG" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+
+  echo "==> Test: unverifiable subscription auth follows fail-open without spending"
+  AUTH_FAILURE_REPO="$TEST_DIR/auth-failure"
+  AUTH_FAILURE_OUTPUT="$TEST_DIR/auth-failure.out"
+  CONDUCTOR_ARGS_LOG="$TEST_DIR/auth-failure.args"
+  export CONDUCTOR_ARGS_LOG
+  : >"$CONDUCTOR_ARGS_LOG"
+  setup_repo "$AUTH_FAILURE_REPO"
+  run_review "$AUTH_FAILURE_REPO" "$AUTH_FAILURE_OUTPUT" clean status-failed fail-open
+
+  if [ ! -s "$CONDUCTOR_ARGS_LOG" ] \
+    && grep -q 'ChatGPT authentication not verified: status-failed' "$AUTH_FAILURE_OUTPUT" \
+    && grep -Fq '[fail-open:FAIL_OPEN_PROVIDER_UNAVAILABLE]' "$AUTH_FAILURE_OUTPUT"; then
+    echo "==> PASS: unverifiable auth failed open without provider invocation"
+  else
+    echo "FAIL: auth-status failure must preserve on_error without provider spend" >&2
+    cat "$AUTH_FAILURE_OUTPUT" >&2
+    cat "$CONDUCTOR_ARGS_LOG" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+
+  echo "==> Test: missing auth helper follows dependency fail-open without spending"
+  MISSING_AUTH_REPO="$TEST_DIR/missing-auth"
+  MISSING_AUTH_ROOT="$TEST_DIR/missing-auth-root"
+  MISSING_AUTH_OUTPUT="$TEST_DIR/missing-auth.out"
+  MISSING_AUTH_LOG="$TEST_DIR/missing-auth.log"
+  mkdir -p "$MISSING_AUTH_ROOT/lib"
+  cp "$TOUCHSTONE_ROOT/lib/toml.sh" "$MISSING_AUTH_ROOT/lib/toml.sh"
+  CONDUCTOR_ARGS_LOG="$TEST_DIR/missing-auth.args"
+  export CONDUCTOR_ARGS_LOG
+  : >"$CONDUCTOR_ARGS_LOG"
+  setup_repo "$MISSING_AUTH_REPO"
+  (
+    cd "$MISSING_AUTH_REPO"
+    PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+      TOUCHSTONE_ROOT="$MISSING_AUTH_ROOT" \
+      CONDUCTOR_ARGS_LOG="$CONDUCTOR_ARGS_LOG" \
+      CODEX_REVIEW_BASE=HEAD~1 \
+      CODEX_REVIEW_DISABLE_CACHE=1 \
+      CODEX_REVIEW_MODE=review-only \
+      CODEX_REVIEW_ON_ERROR=fail-open \
+      TOUCHSTONE_NO_PREFLIGHT=1 \
+      TOUCHSTONE_REVIEW_LOG="$MISSING_AUTH_LOG" \
+      bash "$HOOK" >"$MISSING_AUTH_OUTPUT" 2>&1
+  )
+
+  if [ ! -s "$CONDUCTOR_ARGS_LOG" ] \
+    && grep -Fq '[fail-open:FAIL_OPEN_DEPENDENCY_MISSING]' "$MISSING_AUTH_OUTPUT" \
+    && grep -q 'authentication helper unavailable' "$MISSING_AUTH_OUTPUT" \
+    && grep -q 'FAIL_OPEN_DEPENDENCY_MISSING' "$MISSING_AUTH_LOG"; then
+    echo "==> PASS: missing auth helper failed open through the audited dependency path"
+  else
+    echo "FAIL: missing auth helper must preserve fail-open and avoid provider invocation" >&2
+    cat "$MISSING_AUTH_OUTPUT" >&2
+    cat "$MISSING_AUTH_LOG" >&2
+    cat "$CONDUCTOR_ARGS_LOG" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+
+  echo "==> Test: explicit auto route is visible and unpinned"
+  AUTO_REPO="$TEST_DIR/auto"
+  AUTO_OUTPUT="$TEST_DIR/auto.out"
+  CONDUCTOR_ARGS_LOG="$TEST_DIR/auto.args"
+  export CONDUCTOR_ARGS_LOG
+  setup_repo "$AUTO_REPO" '[review.conductor]
+with = "auto"'
+  run_review "$AUTO_REPO" "$AUTO_OUTPUT"
+
+  if grep -q '^review ' "$CONDUCTOR_ARGS_LOG" \
+    && ! grep -q -- '--with ' "$CONDUCTOR_ARGS_LOG" \
+    && grep -q -- '--prefer ' "$CONDUCTOR_ARGS_LOG" \
+    && grep -q 'cost boundary:  auto-explicit-may-be-metered' "$AUTO_OUTPUT"; then
+    echo "==> PASS: auto-routing required explicit, visible opt-in"
+  else
+    echo "FAIL: explicit auto route should be unpinned and visibly metered-capable" >&2
+    cat "$AUTO_OUTPUT" >&2
+    cat "$CONDUCTOR_ARGS_LOG" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+
+  echo "==> Test: legacy auto override remains visible and unpinned"
+  LEGACY_AUTO_REPO="$TEST_DIR/legacy-auto"
+  LEGACY_AUTO_OUTPUT="$TEST_DIR/legacy-auto.out"
+  CONDUCTOR_ARGS_LOG="$TEST_DIR/legacy-auto.args"
+  export CONDUCTOR_ARGS_LOG
+  setup_repo "$LEGACY_AUTO_REPO"
+  TOUCHSTONE_REVIEWER=auto run_review "$LEGACY_AUTO_REPO" "$LEGACY_AUTO_OUTPUT"
+
+  if grep -q '^review ' "$CONDUCTOR_ARGS_LOG" \
+    && ! grep -q -- '--with ' "$CONDUCTOR_ARGS_LOG" \
+    && grep -q 'TOUCHSTONE_REVIEWER=auto is deprecated' "$LEGACY_AUTO_OUTPUT" \
+    && grep -q 'cost boundary:  auto-explicit-may-be-metered' "$LEGACY_AUTO_OUTPUT"; then
+    echo "==> PASS: legacy auto override preserved explicit auto-routing"
+  else
+    echo "FAIL: legacy auto override silently changed to subscription Codex" >&2
+    cat "$LEGACY_AUTO_OUTPUT" >&2
+    cat "$CONDUCTOR_ARGS_LOG" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+
+  echo "==> Test: explicit provider pin remains supported"
+  METERED_REPO="$TEST_DIR/metered"
+  METERED_OUTPUT="$TEST_DIR/metered.out"
+  CONDUCTOR_ARGS_LOG="$TEST_DIR/metered.args"
+  export CONDUCTOR_ARGS_LOG
+  setup_repo "$METERED_REPO" '[review.conductor]
+with = "openrouter"'
+  run_review "$METERED_REPO" "$METERED_OUTPUT"
+
+  if grep -q -- '^review .*--with openrouter' "$CONDUCTOR_ARGS_LOG" \
+    && grep -q 'cost boundary:  explicit-provider:openrouter' "$METERED_OUTPUT"; then
+    echo "==> PASS: metered provider required an explicit pin"
+  else
+    echo "FAIL: explicit provider should be forwarded and labeled" >&2
+    cat "$METERED_OUTPUT" >&2
+    cat "$CONDUCTOR_ARGS_LOG" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+
+  echo "==> Test: managed defaults and installed hook mirror preserve the boundary"
+  if grep -q '^with = "codex"$' "$TOUCHSTONE_ROOT/.touchstone-review.toml" \
+    && grep -q '^high_scrutiny_mode = "off"$' "$TOUCHSTONE_ROOT/.touchstone-review.toml" \
+    && grep -q 'AI_CONDUCTOR_WITH="codex"' "$TOUCHSTONE_ROOT/templates/setup.sh" \
+    && cmp -s "$TOUCHSTONE_ROOT/hooks/codex-review.sh" "$TOUCHSTONE_ROOT/scripts/codex-review.sh"; then
+    echo "==> PASS: managed defaults are subscription-only"
+  else
+    echo "FAIL: managed config, setup status, and hook mirror must agree" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+
+  if [ "$ERRORS" -gt 0 ]; then
+    echo "==> FAIL: $ERRORS assertion(s) failed" >&2
+    exit 1
+  fi
+
+  echo "==> PASS: all subscription review routing assertions passed"
+
+)
+
+# -----------------------------------------------------------------------------
+# Consolidated feature coverage: review log isolation
+# -----------------------------------------------------------------------------
+(
+  #
+  # tests/test-review-log-isolation.sh — guard user review audit state from tests.
+
+  set -euo pipefail
+
+  TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+  TEST_DIR="$(mktemp -d -t touchstone-test-review-log-isolation.XXXXXX)"
+  trap 'rm -rf "$TEST_DIR"' EXIT
+
+  ERRORS=0
+  RELEVANT_TESTS="
+tests/test-review-dry-run.sh
+tests/test-migrate-review-config.sh
+tests/test-events-json.sh
+"
+
+  fail() {
+    echo "FAIL: $*" >&2
+    ERRORS=$((ERRORS + 1))
+  }
+
+  run_relevant_suite() {
+    local fake_home="$1"
+    local mode="$2"
+    local test_path output
+
+    for test_path in $RELEVANT_TESTS; do
+      output="$TEST_DIR/${mode}-$(basename "$test_path").out"
+      if ! HOME="$fake_home" bash "$TOUCHSTONE_ROOT/$test_path" >"$output" 2>&1; then
+        fail "$test_path failed under isolated HOME ($mode)"
+        cat "$output" >&2
+      fi
+    done
+  }
+
+  echo "==> Test: review and merge fixture class declares isolated audit state"
+  for test_path in "$TOUCHSTONE_ROOT"/tests/test-*.sh; do
+    [ "$(basename "$test_path")" = "test-review-log-isolation.sh" ] && continue
+
+    invokes_real_review=0
+    if grep -qF 'cp "$TOUCHSTONE_ROOT/scripts/merge-pr.sh"' "$test_path" \
+      || grep -qF 'bash "$TOUCHSTONE_ROOT/scripts/codex-review.sh"' "$test_path" \
+      || grep -qF 'bash "$TOUCHSTONE_ROOT/scripts/conductor-review.sh"' "$test_path" \
+      || grep -qF 'bash "$TOUCHSTONE_ROOT/hooks/codex-review.sh"' "$test_path" \
+      || grep -qF 'bash "$TOUCHSTONE_ROOT/hooks/conductor-review.sh"' "$test_path" \
+      || grep -qF 'bash "$TOUCHSTONE_ROOT/bin/touchstone" review' "$test_path" \
+      || grep -qF 'bash "$TOUCHSTONE_BIN" review' "$test_path"; then
+      invokes_real_review=1
+    fi
+
+    if [ "$invokes_real_review" -eq 1 ] \
+      && ! grep -q 'TOUCHSTONE_REVIEW_LOG=' "$test_path" \
+      && ! grep -q 'touchstone_isolate_review_log ' "$test_path"; then
+      fail "$(basename "$test_path") invokes a real review/merge path without isolated audit state"
+    fi
+  done
+
+  echo "==> Test: isolated suite cannot create the default user review log"
+  EMPTY_HOME="$TEST_DIR/empty-home"
+  mkdir -p "$EMPTY_HOME"
+  run_relevant_suite "$EMPTY_HOME" empty
+  if [ -e "$EMPTY_HOME/.touchstone-review-log" ]; then
+    fail "relevant suite created the default review log in an empty HOME"
+  fi
+
+  echo "==> Test: isolated suite cannot change existing user review state"
+  EXISTING_HOME="$TEST_DIR/existing-home"
+  EXISTING_LOG="$EXISTING_HOME/.touchstone-review-log"
+  mkdir -p "$EXISTING_HOME"
+  printf 'production-review-evidence-must-survive\n' >"$EXISTING_LOG"
+  before="$(shasum "$EXISTING_LOG" | awk '{print $1}')"
+  run_relevant_suite "$EXISTING_HOME" existing
+  after="$(shasum "$EXISTING_LOG" | awk '{print $1}')"
+  if [ "$before" != "$after" ]; then
+    fail "relevant suite changed the preexisting default review log"
+  fi
+
+  if [ "$ERRORS" -ne 0 ]; then
+    echo "FAIL: $ERRORS review-log isolation assertion(s) failed" >&2
+    exit 1
+  fi
+
+  echo "PASS: review tests cannot mutate default user review state"
+
+)

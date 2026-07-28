@@ -38,9 +38,8 @@ safe_by_default = false
 # mode = "fix"
 
 # Optional Touchstone wrapper wall-clock timeout per reviewer invocation, in
-# seconds. 0 = no wrapper timeout. By default Touchstone lets Conductor own
-# provider fallback and stall handling; set this only for CI/unattended runs
-# that need a hard total budget.
+# seconds. 0 = no wrapper timeout. Touchstone keeps the configured provider
+# pin across failures; set this for CI/unattended runs that need a hard budget.
 # timeout = 0
 
 # Optional Conductor stall watchdog for semantic review calls. This is passed
@@ -66,10 +65,10 @@ unsafe_paths = [
 # --------------------------------------------------------------------------
 # Reviewer (Touchstone 2.0+)
 # --------------------------------------------------------------------------
-# Touchstone 2.0 ships a single reviewer: `conductor`, which wraps the
-# `conductor` CLI (autumn-garage/conductor). Conductor owns per-provider
-# model selection, auth, tool-access translation, route logging, and cost
-# reporting. Touchstone tells it *what it needs*; Conductor picks *how*.
+# Touchstone ships a single local adapter: `conductor`, which wraps the
+# `conductor` CLI (autumn-garage/conductor). Touchstone pins subscription Codex
+# by default; Conductor owns model selection within that provider, auth,
+# tool-access translation, route logging, and cost reporting.
 #
 # For a fresh project, `reviewer = "conductor"` is the whole story.
 
@@ -79,22 +78,25 @@ unsafe_paths = [
 # comment_on_clean = true    # Leave a one-line PR audit trail after a clean merge review; set false for quiet repos.
 # advisory_at_pr_open = false      # Optional, non-blocking PR-open comment; required review belongs to the merge gate.
 # comment_findings_history = true  # After merge, post a collapsed history when the fix loop raised or auto-fixed findings.
-# high_scrutiny_mode = "peer"      # peer | council | off; auto second opinion when high_scrutiny_paths are touched.
+# high_scrutiny_mode = "off"       # peer/council explicitly enable a cross-provider second opinion.
 # high_scrutiny_paths = [
 #   # "src/auth/",
 #   # "migrations/",
 # ]
 # # reviewer = "conductor"   # single-valued in 2.0+; absent reviewers[]
 
-# Optional merge gate for PR-triggered GitHub Codex review. When required,
-# scripts/merge-pr.sh waits for a trusted review signal on the exact PR head,
-# runs deterministic preflight, and skips the duplicate local merge LLM review
-# only while the exact head and captured base revision remain unchanged.
+# Optional strict merge gate for PR-triggered GitHub Codex review. Fresh
+# scaffolds request GitHub review asynchronously with required = false, so a
+# missing repository connector cannot stall delivery. Enable required = true
+# only after confirming the connector returns trusted exact-head reviews.
+# When required, scripts/merge-pr.sh waits for that signal, runs deterministic
+# preflight, and skips the duplicate local merge LLM review only while the exact
+# head and captured base revision remain unchanged.
 #
 # [review.pr_triggered]
 # required = true
 # provider = "github-codex"
-# request_on_push = false  # Post one head-bound `@codex review` request per pushed PR head.
+# request_on_push = true  # Post one head-bound `@codex review` request per pushed PR head.
 # timeout_sec = 1800
 # poll_sec = 10
 # trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]
@@ -104,15 +106,15 @@ unsafe_paths = [
 # Conductor routing (optional)
 # --------------------------------------------------------------------------
 # Fine-tune what Conductor picks and how hard it thinks. Normal read-only
-# review uses Conductor's semantic review route with hosted fallback through
-# Conductor. This base template keeps provider pins commented
-# so Conductor owns hosted review policy.
+# fallback review is pinned to subscription-backed Codex. GitHub Codex remains
+# the PR-visible review surface. Metered providers require an explicit project
+# override and are never selected as silent overflow.
 #
 # Touchstone excludes ollama from hosted auto-routing by default. Local ollama
 # is useful for explicit offline review only; use `--review-routing all-local`
 # or `--reviewer local` when that is the desired mode.
 
-[review.conductor]
+# [review.conductor]
 # # Which provider wins auto-routing. One of:
 # #   "best"     — highest-quality-tier (frontier > strong > standard > local)
 # #   "cheapest" — minimize $/tok (good for throwaway branches)
@@ -129,16 +131,22 @@ unsafe_paths = [
 # # read-only review because Conductor embeds the diff directly.
 # # tags = "code-review"
 #
-# # Pin a specific provider (bypasses auto-routing). Omit for Conductor's
-# # semantic review route. Example:
+# Subscription-only default. If Codex is unavailable, review follows
+# `on_error`; it does not fall through to a metered API provider.
+# with = "codex"
+#
+# Explicit metered opt-in:
 # # with = "openrouter"
+#
+# Explicit Conductor auto-routing opt-in (may select a metered provider):
+# # with = "auto"
 #
 # # Fail closed when a project requires a Conductor release with a known
 # # semantic-route or review-gate fix.
 # # minimum_version = "0.10.29"
 #
 # Exclude providers from hosted auto-routing (degraded, rate-limited, offline-only).
-exclude = ["ollama"]
+# exclude = ["ollama"]
 
 # --------------------------------------------------------------------------
 # Routing by diff size (default)
@@ -196,8 +204,8 @@ exclude = ["ollama"]
 # transcript as an advisory block; it does NOT gate the merge (the
 # primary's sentinel still wins).
 #
-# `[review].high_scrutiny_paths` can enable this automatically for critical
-# files without turning peer review on for every diff. Set
+# `[review].high_scrutiny_paths` can enable this for critical files when
+# `high_scrutiny_mode` is explicitly set to `peer` or `council`. Set
 # `high_scrutiny_mode = "council"` to ask Conductor's council route for the
 # high-scrutiny second opinion instead of a single peer.
 #

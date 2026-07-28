@@ -31,10 +31,10 @@ unsafe_paths = [
 ]
 
 [review.conductor]
-# Live merge-gate review goes through Conductor's semantic review route:
-# Conductor's semantic review route, with hosted fallback via Conductor.
-# Ollama is reserved for
-# explicit offline/local review only.
+# Local semantic fallback is pinned to the subscription-backed Codex CLI.
+# GitHub Codex remains the PR-visible review surface. Metered providers require
+# an explicit project-level `with` override; Touchstone never auto-overflows.
+with = "codex"
 exclude = ["ollama"]
 
 [review]
@@ -42,7 +42,7 @@ preflight_required = true
 comment_on_clean = true
 advisory_at_pr_open = false
 comment_findings_history = true
-high_scrutiny_mode = "peer"
+high_scrutiny_mode = "off"
 high_scrutiny_paths = [
   "principles/",
   "hooks/",

@@ -159,7 +159,15 @@ case "$1" in
     ;;
 esac
 EOF
-chmod +x "$TEST_DIR/bin/conductor"
+cat >"$TEST_DIR/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then
+  printf 'Logged in using ChatGPT\n'
+  exit 0
+fi
+exit 1
+EOF
+chmod +x "$TEST_DIR/bin/conductor" "$TEST_DIR/bin/codex"
 (
   cd "$REPO_SMOKE"
   PATH="$TEST_DIR/bin:/usr/bin:/bin:/usr/sbin:/sbin" \

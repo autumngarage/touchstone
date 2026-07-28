@@ -2,7 +2,7 @@
 
 Reviews your code with an AI reviewer before it reaches the default branch. Normal feature-branch pushes stay fast; review runs from `scripts/merge-pr.sh` and from the pre-push hook only when pushing directly to the default branch.
 
-Touchstone 2.0 delegates all LLM access to [Conductor](https://github.com/autumngarage/conductor). The hook declares *what it needs* (review mode → tool access, effort budget, routing preference) and Conductor picks *how* to satisfy it (provider, model, auth, cost tracking, provider permissions).
+Touchstone delegates local semantic review to [Conductor](https://github.com/autumngarage/conductor). GitHub Codex is the PR-visible review surface. When the merge workflow needs a local fallback, Conductor invokes the subscription-backed Codex CLI by default; another provider or automatic routing requires explicit project opt-in.
 
 ## Setup
 
@@ -43,7 +43,9 @@ reviewer = "conductor"      # the only supported value in 2.0
 prefer = "best"             # best | cheapest | fastest | balanced
 effort = "high"             # minimal | low | medium | high | max | <int tokens>
 tags   = "code-review"
-# with = "openrouter"       # optional provider pin; omit for Conductor's review route
+with = "codex"              # subscription-only default; no automatic overflow
+# with = "auto"             # explicit auto-route opt-in; may use metered providers
+# with = "openrouter"       # explicit metered-provider opt-in
 exclude = ["ollama"]        # keep local providers for explicit offline review
 ```
 
@@ -58,7 +60,7 @@ When the review runs, the hook:
 1. Computes the diff between your branch and the default branch
 2. Chooses prompt context: small/simple diffs use a bounded rubric, while large, broad, high-risk, architectural, or configured paths keep full `AGENTS.md`/`CLAUDE.md` context
 3. Skips review if the exact same diff and review inputs already passed cleanly (cache key includes the Conductor knobs and prompt context mode, so changing `prefer`/`effort`/`with` or context mode invalidates)
-4. Invokes Conductor with the review prompt. Read-only review uses `conductor review --base ... --brief-file -`; edit-capable fix phases use Conductor with the requested tool set.
+4. Invokes Conductor with the review prompt and an explicit provider pin. Read-only review uses `conductor review --with codex --base ... --brief-file -` by default; edit-capable fix phases keep the same provider boundary.
 5. Reads one of three legacy protocol sentinels from the reviewer's output:
    - `CODEX_REVIEW_CLEAN` — no issues, push proceeds
    - `CODEX_REVIEW_FIXED` — the reviewer applied auto-fixes; the hook commits them and re-reviews
@@ -81,7 +83,7 @@ Conductor logs its route decision (provider, cost estimate, token count, wall-cl
 | `[review.conductor].prefer` | size-aware | `best` \| `cheapest` \| `fastest` \| `balanced`; used as a global fallback, but default size routing applies per bucket |
 | `[review.conductor].effort` | size-aware | `minimal` \| `low` \| `medium` \| `high` \| `max` \| integer thinking-token budget; used as a global fallback, but default size routing applies per bucket |
 | `[review.conductor].tags` | `"code-review"` | Capability tags passed to the review router; `tool-use` is ignored for read-only review |
-| `[review.conductor].with` | unset | Pin a specific provider. Omit it for Conductor's semantic review route. |
+| `[review.conductor].with` | `"codex"` | Provider boundary. `auto` explicitly enables cross-provider routing and may use metered providers. |
 | `[review.conductor].exclude` | `["ollama"]` | Exclude providers from hosted auto-routing in nonsemantic modes; use explicit all-local/offline review for Ollama. |
 | `[review.routing].enabled` | true | Route by diff size |
 | `[review.routing].small_max_diff_lines` | 400 | Diffs ≤ this use the `small_*` knobs unless high-risk paths are touched |
@@ -102,7 +104,7 @@ Conductor logs its route decision (provider, cost estimate, token count, wall-cl
 | `[review.context].small_max_files` | 4 | Max changed files for bounded prompt context |
 | `[review.context].full_context_paths` | [] | Extra path patterns that always require full `AGENTS.md`/`CLAUDE.md` context |
 | `[review].high_scrutiny_paths` | [] | Extra path patterns that require high-risk routing, full context, and automatic second opinion |
-| `[review].high_scrutiny_mode` | `"peer"` | `peer`, `council`, or `off` for high-scrutiny second opinions |
+| `[review].high_scrutiny_mode` | `"off"` | `peer` and `council` explicitly enable cross-provider second opinions; `off` stays within the Codex boundary |
 
 Routing uses a single cutoff (`small_max_diff_lines`) plus path risk. Diffs at or below the cutoff use the `small_*` bucket unless they touch `unsafe_paths`, built-in architectural paths, configured `high_scrutiny_paths`, or configured `full_context_paths`; those use `high_risk_*`. Diffs above the cutoff use `large_*` only when they are low-risk. The default route is `cheapest`/`minimal` for small low-risk diffs, `best`/`medium` for larger low-risk diffs, and `best`/`high` for high-risk diffs. There is no separate `large_max_diff_lines`. Use `TOUCHSTONE_CONDUCTOR_EFFORT=max` when release-level scrutiny is worth the extra latency. Explicit `TOUCHSTONE_CONDUCTOR_*` environment variables still win over bucket defaults.
 
@@ -138,6 +140,7 @@ The `CODEX_REVIEW_*` names are retained as the stable legacy hook protocol so ex
 | `TOUCHSTONE_CONDUCTOR_EFFORT` | Override `[review.conductor].effort` |
 | `TOUCHSTONE_CONDUCTOR_TAGS` | Override `[review.conductor].tags`; `tool-use` is ignored for read-only review |
 | `TOUCHSTONE_CONDUCTOR_EXCLUDE` | Override `[review.conductor].exclude` |
+| `TOUCHSTONE_CONDUCTOR_FALLBACK_RETRY` | Explicitly enable one cross-provider retry; disabled by default |
 | `TOUCHSTONE_REVIEWER` | Deprecated in 2.0 — auto-translates to `TOUCHSTONE_CONDUCTOR_WITH=<provider>` with a one-time hint |
 
 ## Graceful behavior
@@ -146,7 +149,7 @@ The `CODEX_REVIEW_*` names are retained as the stable legacy hook protocol so ex
 - If the `conductor` CLI is missing: prints `brew install …` + `conductor init` hints, skips review, push proceeds
 - If Conductor is installed but no provider is configured: prints `conductor doctor` + `conductor init` hints, skips review, push proceeds
 - If pushing a feature branch: skips review, push proceeds
-- If Conductor fails (network, quota, provider permission denial): skips review per `on_error = "fail-open"` (default); set `fail-closed` to block instead
+- If pinned Codex fails (network, quota, auth, permission denial): follows `on_error` without silently selecting a metered provider
 - If diff exceeds `max_diff_lines`: skips review, push proceeds
 - If the exact diff and review inputs already passed cleanly: skips repeat review, push proceeds
 - If reviewer output doesn't match the sentinel contract: skips review, push proceeds
@@ -160,7 +163,7 @@ The hook's default is fail-open on infrastructure errors and block on actual rev
 touchstone review --dry-run
 ```
 
-Shows which provider auto-routing would pick for the next push, the route ranking, and tool set — no upstream calls made. Touchstone does not send Conductor a sandbox flag; Conductor derives provider permission behavior from the requested tools.
+Shows the provider boundary and tool set for the next push without making an upstream call. The default reports subscription Codex. An explicit `with = "auto"` preview shows Conductor's route ranking and may include metered providers.
 
 ## Emergency bypass
 

@@ -24,6 +24,45 @@ ok() { printf "  ${GREEN}✓${RESET} %s\n" "$*"; }
 warn() { printf "  ${YELLOW}!${RESET} %s\n" "$*"; }
 fail() { printf "  ${RED}✗${RESET} %s\n" "$*"; }
 
+SETUP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CODEX_AUTH_SCRIPT="$SETUP_ROOT/lib/codex-auth.sh"
+CODEX_AUTH_HELPER_FAILURE=""
+TOUCHSTONE_CODEX_AUTH_FAILURE=""
+if [ -r "$CODEX_AUTH_SCRIPT" ]; then
+  # shellcheck source=../lib/codex-auth.sh
+  if ! source "$CODEX_AUTH_SCRIPT"; then
+    CODEX_AUTH_HELPER_FAILURE="helper-load-failed"
+  fi
+else
+  CODEX_AUTH_HELPER_FAILURE="helper-missing"
+fi
+if [ -n "$CODEX_AUTH_HELPER_FAILURE" ]; then
+  touchstone_codex_subscription_auth_check() {
+    TOUCHSTONE_CODEX_AUTH_FAILURE="$CODEX_AUTH_HELPER_FAILURE"
+    return 127
+  }
+fi
+
+warn_codex_subscription_auth() {
+  case "$TOUCHSTONE_CODEX_AUTH_FAILURE" in
+    api-key)
+      warn "subscription-backed Codex review refuses API-key authentication to avoid metered spend. Run: codex logout && codex login"
+      ;;
+    cli-missing)
+      warn "Codex CLI is unavailable. Install it, then run: codex login"
+      ;;
+    status-failed)
+      warn "Codex authentication could not be verified. Run: codex login"
+      ;;
+    helper-missing | helper-load-failed)
+      warn "Codex subscription authentication helper is unavailable: $CODEX_AUTH_SCRIPT"
+      ;;
+    *)
+      warn "Codex is not authenticated with ChatGPT. Run: codex logout && codex login"
+      ;;
+  esac
+}
+
 DEPS_ONLY=false
 GIT_WORKFLOW="git"
 GITBUTLER_MCP="false"
@@ -190,7 +229,9 @@ if [ "$DEPS_ONLY" = false ]; then
   AI_REVIEWERS=()
   AI_REVIEWERS_CHECKED=""
   AI_LOCAL_REVIEW_COMMAND=""
-  AI_CONDUCTOR_WITH=""
+  # Missing provider pins resolve to the subscription-backed Codex CLI.
+  # Projects must explicitly set `with = "auto"` or a metered provider.
+  AI_CONDUCTOR_WITH="codex"
   AI_REVIEW_ROUTING_ENABLED=false
   AI_REVIEW_ROUTING_SMALL_MAX=400
 
@@ -295,8 +336,22 @@ if [ "$DEPS_ONLY" = false ]; then
       conductor)
         if command -v conductor >/dev/null 2>&1; then
           if conductor doctor --json 2>/dev/null | grep -q '"configured"[[:space:]]*:[[:space:]]*true'; then
-            if [ -n "$AI_CONDUCTOR_WITH" ]; then
-              ok "conductor installed and configured (pinned provider: $AI_CONDUCTOR_WITH)"
+            if [ "$AI_CONDUCTOR_WITH" = "auto" ]; then
+              warn "conductor installed and configured (explicit auto-route may use metered providers)"
+            elif [ "$AI_CONDUCTOR_WITH" = "codex" ]; then
+              if ! touchstone_codex_subscription_auth_check; then
+                warn_codex_subscription_auth
+                return 0
+              fi
+              AI_CODEX_ROUTE="$(conductor route --json --kind review --with codex 2>/dev/null || true)"
+              if printf '%s\n' "$AI_CODEX_ROUTE" \
+                | grep -Eq '"(selected_provider|provider)"[[:space:]]*:[[:space:]]*"codex"'; then
+                ok "conductor installed and configured (pinned provider: codex; no automatic metered overflow)"
+              else
+                warn "conductor is configured, but subscription Codex is unavailable. Run: codex login && conductor doctor"
+              fi
+            elif [ -n "$AI_CONDUCTOR_WITH" ]; then
+              ok "conductor installed and configured (pinned provider: $AI_CONDUCTOR_WITH; no automatic metered overflow)"
             else
               ok "conductor installed and configured"
             fi
@@ -308,12 +363,10 @@ if [ "$DEPS_ONLY" = false ]; then
         fi
         ;;
       codex)
-        if command -v codex >/dev/null 2>&1; then
-          if codex login status >/dev/null 2>&1; then
-            ok "codex installed and authenticated"
-          else
-            warn "codex installed but not logged in. Run: codex login"
-          fi
+        if touchstone_codex_subscription_auth_check; then
+          ok "codex installed and authenticated with ChatGPT"
+        elif command -v codex >/dev/null 2>&1; then
+          warn_codex_subscription_auth
         elif command -v npm >/dev/null 2>&1; then
           warn "Installing Codex CLI..."
           npm install -g @openai/codex 2>/dev/null && ok "codex installed — run: codex login" || warn "codex install failed. Manual install: npm install -g @openai/codex"

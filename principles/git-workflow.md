@@ -236,6 +236,39 @@ For the full fan-out playbook — slice manifests, file ownership, parent orches
 - **Inline (preferred for fire-and-forget).** Pass `--cleanup-worktree` alongside `--auto-merge` to `scripts/open-pr.sh`. After the PR squash-merges, the helper removes the current feature worktree itself by invoking `git worktree remove` from the default-branch worktree. The worktree is gone before the script returns, so there's nothing to come back to. Failures here are reported as warnings — the merge already happened, cleanup is best-effort.
 - **Deferred sweep.** From the main checkout, run `scripts/cleanup-worktrees.sh` (dry-run by default) to preview and `--execute` to remove clean merged-or-equivalent worktrees. Use this when several worktrees accumulated across sessions, or when the inline cleanup couldn't run (dirty tree, etc.).
 
+For review/check latency that should not occupy the driving session, detach the
+same shipping path:
+
+```bash
+touchstone worker ship --worktree ../project-fix --detach --cleanup
+touchstone worker status --worktree ../project-fix --show-log
+```
+
+Detached mode stores its PID, result, timestamps, and log under the repository
+Git common directory, so it never dirties the worker branch. One active job is
+allowed per worker. Use `touchstone worker takeover --worktree
+../project-fix` to stop that job without deleting the worktree or branch.
+
+The default detached job is wait-only: it invokes the project-local
+`open-pr.sh --auto-merge`, waits for PR-visible review, and merges a clean head.
+Actionable feedback stops the job and preserves the worktree for takeover.
+
+Use `--review-fix` when a bounded autonomous repair loop is authorized:
+
+```bash
+touchstone worker ship --worktree ../project-fix --detach --review-fix \
+  --max-fix-iterations 3 --max-fix-minutes 45
+```
+
+This mode invokes the subscription-backed Codex CLI to edit files, while
+Touchstone retains validation, explicit staging, commit, push, thread reply,
+thread resolution, and merge authority. Every iteration is tied to the full PR
+head OID and persisted thread IDs. Duplicate delivery resumes idempotently; a
+stale head, ambiguous feedback, failed validation, unavailable authorization,
+worker failure, or exhausted budget moves the job to `needs-attention` without
+deleting its worktree, branch, checkpoints, or log. Resume manually with the
+takeover command printed by `touchstone worker status --show-log`.
+
 Do not substitute `rm -rf <worktree-dir>` for `git worktree remove <path>`.
 Deleting only the directory can leave stale Git worktree metadata behind; Git
 may still treat the missing path as owning the branch and refuse later branch

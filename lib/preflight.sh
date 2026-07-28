@@ -493,7 +493,7 @@ touchstone_preflight_delivery_only_path() {
     scripts/cleanup-worktrees.sh | scripts/worker.sh | scripts/run-pytest-in-venv.sh)
       return 0
       ;;
-    lib/toml.sh | lib/events.sh | lib/worker-state.sh | lib/script-sync-guard.sh)
+    lib/toml.sh | lib/events.sh | lib/codex-auth.sh | lib/worker-ship-job.sh | lib/worker-review-fix.sh | lib/worker-state.sh | lib/script-sync-guard.sh)
       return 0
       ;;
     lib/preflight.sh | lib/preflight-scope.sh | lib/review-comment.sh)

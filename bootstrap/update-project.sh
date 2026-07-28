@@ -125,27 +125,52 @@ fi
 echo "==> Updating project: $PROJECT_DIR"
 echo "    Touchstone: $OLD_SHA -> $CURRENT_SHA"
 
-# Issue #177: detect a v1.x .codex-review.toml so the "Already up to date"
-# early-exit below can fall through when a stale config still needs
-# migration. The actual rewrite happens later, after require_clean_git_repo,
-# so it never runs against an ambiguous tree. Read-only here.
-CODEX_REVIEW_TOML="$PROJECT_DIR/.codex-review.toml"
+# Detect both legacy shapes and an unpinned 2.0 Conductor block so update can
+# surface the explicit migration path. Review configs are project-owned, so
+# detection must never turn into an automatic rewrite.
+# Prefer the canonical config when both compatibility names exist.
+REVIEW_CONFIG_TOML=""
+if [ -f "$PROJECT_DIR/.touchstone-review.toml" ]; then
+  REVIEW_CONFIG_TOML="$PROJECT_DIR/.touchstone-review.toml"
+elif [ -f "$PROJECT_DIR/.codex-review.toml" ]; then
+  REVIEW_CONFIG_TOML="$PROJECT_DIR/.codex-review.toml"
+fi
 NEEDS_CODEX_REVIEW_MIGRATION=false
-if [ "$DRY_RUN" = false ] && [ "$CHECK_ONLY" = false ] && [ -f "$CODEX_REVIEW_TOML" ]; then
-  if grep -qE '^[[:space:]]*reviewers[[:space:]]*=[[:space:]]*\[' "$CODEX_REVIEW_TOML" \
-    || grep -qE '^\[review\.local\]' "$CODEX_REVIEW_TOML" \
-    || grep -qE '^\[review\.assist\]' "$CODEX_REVIEW_TOML" \
-    || grep -qE '^[[:space:]]*(small|large)_reviewers[[:space:]]*=[[:space:]]*\[' "$CODEX_REVIEW_TOML"; then
+if [ -n "$REVIEW_CONFIG_TOML" ]; then
+  if grep -qE '^[[:space:]]*reviewers[[:space:]]*=[[:space:]]*\[' "$REVIEW_CONFIG_TOML" \
+    || grep -qE '^\[review\.local\]' "$REVIEW_CONFIG_TOML" \
+    || grep -qE '^\[review\.assist\]' "$REVIEW_CONFIG_TOML" \
+    || grep -qE '^[[:space:]]*(small|large)_reviewers[[:space:]]*=[[:space:]]*\[' "$REVIEW_CONFIG_TOML" \
+    || {
+      grep -qE '^\[review\.conductor\]' "$REVIEW_CONFIG_TOML" \
+        && ! awk '
+          /^\[review\.conductor\][[:space:]]*$/ { section = "review.conductor"; next }
+          /^\[/ { section = "other"; next }
+          section == "review.conductor" && /^[[:space:]]*with[[:space:]]*=/ { found = 1 }
+          END { exit(found ? 0 : 1) }
+        ' "$REVIEW_CONFIG_TOML"
+    }; then
     NEEDS_CODEX_REVIEW_MIGRATION=true
   fi
 fi
 
-if [ "$OLD_SHA" = "$CURRENT_SHA" ] && [ "$NEEDS_CODEX_REVIEW_MIGRATION" = false ]; then
+print_review_config_migration_notice() {
+  local config_name
+  config_name="$(basename "$REVIEW_CONFIG_TOML")"
+  echo ""
+  echo "==> Review config migration available for $config_name."
+  echo "    This project-owned file was not changed."
+  echo "    A missing review.conductor.with value defaults to Codex at runtime."
+  echo "    To rewrite it explicitly: touchstone migrate-review-config --file $config_name"
+}
+
+if [ "$NEEDS_CODEX_REVIEW_MIGRATION" = true ]; then
+  print_review_config_migration_notice
+fi
+
+if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
   echo "==> Already up to date."
   exit 0
-fi
-if [ "$OLD_SHA" = "$CURRENT_SHA" ] && [ "$NEEDS_CODEX_REVIEW_MIGRATION" = true ]; then
-  echo "==> Touchstone version unchanged; running pending config migration."
 fi
 
 if [ "$CHECK_ONLY" = true ]; then
@@ -334,28 +359,6 @@ if [ "$DRY_RUN" = false ]; then
   fi
 fi
 
-# Issue #177: actually migrate .codex-review.toml from v1.x → v2.x. The
-# detection above already determined NEEDS_CODEX_REVIEW_MIGRATION; the
-# rewrite happens here, after require_clean_git_repo, so it never runs
-# against an ambiguous tree.
-if [ "$NEEDS_CODEX_REVIEW_MIGRATION" = true ]; then
-  echo ""
-  echo "==> Migrating .codex-review.toml from v1.x → v2.x shape..."
-  ensure_safe_dest "$PROJECT_DIR/.touchstone-migrate-codex-review.log" || true
-  if (
-    cd "$PROJECT_DIR" \
-      && bash "$TOUCHSTONE_ROOT/bootstrap/migrate-review-config.sh" --no-backup --file "$CODEX_REVIEW_TOML"
-  ) >"$PROJECT_DIR/.touchstone-migrate-codex-review.log" 2>&1; then
-    rm -f "$PROJECT_DIR/.touchstone-migrate-codex-review.log"
-    echo "    .codex-review.toml: rewrote v1.x reviewer cascade to v2.x conductor shape."
-    echo "    The migration warning in the Conductor review hook will no longer fire on push."
-  else
-    echo "    WARNING: auto-migration failed — leaving .codex-review.toml unchanged." >&2
-    echo "             Inspect: $PROJECT_DIR/.touchstone-migrate-codex-review.log" >&2
-    echo "             Rerun manually: cd $PROJECT_DIR && touchstone migrate-review-config" >&2
-  fi
-fi
-
 # Show changes between versions.
 echo ""
 echo "==> Changes in touchstone since last update:"
@@ -469,6 +472,9 @@ update_file "$TOUCHSTONE_ROOT/scripts/worker.sh" "$PROJECT_DIR/scripts/worker.sh
 # Libraries used by touchstone-owned scripts.
 update_file "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
 update_file "$TOUCHSTONE_ROOT/lib/events.sh" "$PROJECT_DIR/lib/events.sh"
+update_file "$TOUCHSTONE_ROOT/lib/codex-auth.sh" "$PROJECT_DIR/lib/codex-auth.sh"
+update_file "$TOUCHSTONE_ROOT/lib/worker-ship-job.sh" "$PROJECT_DIR/lib/worker-ship-job.sh"
+update_file "$TOUCHSTONE_ROOT/lib/worker-review-fix.sh" "$PROJECT_DIR/lib/worker-review-fix.sh"
 update_file "$TOUCHSTONE_ROOT/lib/worker-state.sh" "$PROJECT_DIR/lib/worker-state.sh"
 update_file "$TOUCHSTONE_ROOT/lib/script-sync-guard.sh" "$PROJECT_DIR/lib/script-sync-guard.sh"
 update_file "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PROJECT_DIR/lib/preflight.sh"
@@ -534,12 +540,12 @@ if [ -d "$TOUCHSTONE_ROOT/skills" ] && [ "$DRY_RUN" = false ]; then
   touchstone_uninstall_legacy_project_skills "$PROJECT_DIR" || true
 fi
 
-# Per-profile project-owned templates (e.g. swift's .swiftlint.yml). These are
-# NOT touchstone-owned: add when missing, never overwrite a hand-edited copy.
-# They stay out of .touchstone-manifest so future `touchstone update` runs do
-# not clobber project-owned customization.
+# Project-owned templates, including shared formatting config and profile
+# additions such as Swift's .swiftlint.yml. Add them when missing, but never
+# overwrite a hand-edited copy. They stay out of .touchstone-manifest so future
+# updates do not clobber project-owned customization.
 PROJECT_OWNED_ADDED_PATHS=()
-add_profile_project_template_if_missing() {
+add_project_template_if_missing() {
   local src="$1" dst="$2"
   local rel_path
   rel_path="$(relative_project_path "$dst")"
@@ -568,8 +574,14 @@ add_profile_project_template_if_missing() {
   echo "    + added (project-owned): $dst"
 }
 
+if [ -f "$TOUCHSTONE_ROOT/templates/.markdownlint.json" ]; then
+  add_project_template_if_missing \
+    "$TOUCHSTONE_ROOT/templates/.markdownlint.json" \
+    "$PROJECT_DIR/.markdownlint.json"
+fi
+
 if [ "$PROJECT_TYPE" = "swift" ] && [ -f "$TOUCHSTONE_ROOT/templates/swift/.swiftlint.yml" ]; then
-  add_profile_project_template_if_missing \
+  add_project_template_if_missing \
     "$TOUCHSTONE_ROOT/templates/swift/.swiftlint.yml" \
     "$PROJECT_DIR/.swiftlint.yml"
 fi
@@ -577,7 +589,7 @@ fi
 if [ -f "$TOUCHSTONE_ROOT/templates/GEMINI.md" ]; then
   gemini_md_was_present=false
   [ -f "$PROJECT_DIR/GEMINI.md" ] && gemini_md_was_present=true
-  add_profile_project_template_if_missing \
+  add_project_template_if_missing \
     "$TOUCHSTONE_ROOT/templates/GEMINI.md" \
     "$PROJECT_DIR/GEMINI.md"
   if [ "$DRY_RUN" = false ] && [ "$gemini_md_was_present" = false ] && [ -f "$PROJECT_DIR/GEMINI.md" ]; then
@@ -631,6 +643,9 @@ write_touchstone_manifest() {
     printf 'scripts/worker.sh\n'
     printf 'lib/toml.sh\n'
     printf 'lib/events.sh\n'
+    printf 'lib/codex-auth.sh\n'
+    printf 'lib/worker-ship-job.sh\n'
+    printf 'lib/worker-review-fix.sh\n'
     printf 'lib/worker-state.sh\n'
     printf 'lib/script-sync-guard.sh\n'
     printf 'lib/preflight.sh\n'
@@ -706,24 +721,15 @@ if [ "$DRY_RUN" = false ]; then
   echo ""
   echo "==> Committing touchstone update..."
   stage_touchstone_manifest_paths
-  # If the early auto-migration rewrote .codex-review.toml, stage it so
-  # the rewrite ships in the same update commit instead of dangling as
-  # an unstaged diff.
-  if [ -f "$PROJECT_DIR/.codex-review.toml" ] \
-    && [ -n "$(git -C "$PROJECT_DIR" status --porcelain -- .codex-review.toml 2>/dev/null)" ]; then
-    git -C "$PROJECT_DIR" add -f -- .codex-review.toml
-  fi
   if [ -f "$PROJECT_DIR/.claude/settings.json" ]; then
     git -C "$PROJECT_DIR" add -f -- .claude/settings.json
   fi
   if [ -d "$PROJECT_DIR/.claude/skills" ]; then
     git -C "$PROJECT_DIR" add -f -- .claude/skills
   fi
-  # Stage any per-profile project-owned templates added on this run (e.g.
-  # swift's .swiftlint.yml). These are project-owned, but the addition only
-  # makes sense bundled into the same review commit as the rest of the
-  # update — leaving them unstaged would make `touchstone update --ship`
-  # ship an incomplete change.
+  # Stage project-owned templates added on this run (e.g. .markdownlint.json
+  # or Swift's .swiftlint.yml). Their addition only makes sense bundled into
+  # the same review commit as the rest of the update.
   if [ "${#PROJECT_OWNED_ADDED_PATHS[@]}" -gt 0 ]; then
     git -C "$PROJECT_DIR" add -f -- "${PROJECT_OWNED_ADDED_PATHS[@]}"
   fi

@@ -113,7 +113,7 @@ derive_worker_state() {
       echo "unknown"
       exit 0
     fi
-    if ! has_uncommitted="$(git status --porcelain 2>/dev/null)"; then
+    if ! has_uncommitted="$(GIT_OPTIONAL_LOCKS=0 git status --porcelain 2>/dev/null)"; then
       echo "unknown"
       exit 0
     fi
