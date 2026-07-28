@@ -294,6 +294,12 @@ if ! wait_for_ship_status "$DETACHED_WT" running "$DETACHED_STATUS"; then
 fi
 assert_contains "$DETACHED_STATUS" '"log_path":'
 assert_contains "$DETACHED_EVENTS" '"event":"worker_ship_started"'
+DETACHED_RUNNER_PID="$(jq -r '.ship.pid // empty' "$DETACHED_STATUS")"
+DETACHED_RUNNER_PGID="$(ps -p "$DETACHED_RUNNER_PID" -o pgid= | tr -d '[:space:]')"
+TEST_PGID="$(ps -p "$$" -o pgid= | tr -d '[:space:]')"
+if [ -z "$DETACHED_RUNNER_PGID" ] || [ "$DETACHED_RUNNER_PGID" = "$TEST_PGID" ]; then
+  fail "detached runner remained in the invoking process group"
+fi
 
 if SHIP_STARTED_FILE="$TEST_DIR/duplicate-started" \
   "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \

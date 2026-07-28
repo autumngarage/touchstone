@@ -485,6 +485,7 @@ cmd_ship() {
   local worktree_path="" cleanup=false events_json="" detach=false review_fix=false
   local max_fix_iterations=3 max_fix_minutes=45 validation_command=""
   local job_dir="" runner_pid="" branch="" started_at="" claim_token="" args runner_args
+  local monitor_was_enabled=false
   args=(--auto-merge)
 
   while [ "$#" -gt 0 ]; do
@@ -642,9 +643,14 @@ cmd_ship() {
   fi
   [ "$cleanup" = true ] && runner_args+=(--cleanup)
   [ -n "$events_json" ] && runner_args+=(--events-json "$events_json")
+  case "$-" in
+    *m*) monitor_was_enabled=true ;;
+    *) set -m ;;
+  esac
   nohup bash "$TOUCHSTONE_ROOT/scripts/worker.sh" "${runner_args[@]}" \
     >>"$job_dir/ship.log" 2>&1 </dev/null &
   runner_pid=$!
+  [ "$monitor_was_enabled" = true ] || set +m
   touchstone_ship_write "$job_dir" pid "$runner_pid"
 
   echo "Detached ship started."
