@@ -347,7 +347,7 @@ write_failure_report "$failures_file" "$PR_AUTHOR" "terminal"
 if [ "$COMMENT_PR" = true ]; then
   comment_file="$(mktemp -t touchstone-claim-comment.XXXXXX)"
   write_failure_report "$failures_file" "$PR_AUTHOR" "markdown" >"$comment_file"
-  gh pr comment "$PR_NUMBER" --body-file "$comment_file"
+  repo_api "issues/$PR_NUMBER/comments" --method POST -F "body=@$comment_file" >/dev/null
   echo "Issue claim check failed; remediation comment posted to PR #$PR_NUMBER."
 fi
 

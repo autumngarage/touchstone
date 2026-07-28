@@ -13,6 +13,8 @@
 #
 set -euo pipefail
 
+export GH_REPO="" GH_HOST="" GITHUB_SERVER_URL=""
+
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-open-pr-cleanup.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
@@ -37,6 +39,10 @@ chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/issue-claim-check.sh" "$SCRIPT_DI
 cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = "api" ] && [ "${2:-}" = "--hostname" ]; then
+  shift 3
+  set -- api "$@"
+fi
 case "$1 $2" in
   "repo view")
     case "$*" in

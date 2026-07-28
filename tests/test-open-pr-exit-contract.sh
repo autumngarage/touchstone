@@ -23,6 +23,8 @@
 #
 set -euo pipefail
 
+export GH_REPO="" GH_HOST="" GITHUB_SERVER_URL=""
+
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-open-pr.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
@@ -60,6 +62,10 @@ git -C "$REPO_DIR" commit -m "test change" >/dev/null 2>&1
 cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [ "${1:-}" = "api" ] && [ "${2:-}" = "--hostname" ]; then
+  shift 3
+  set -- api "$@"
+fi
 case "$1 $2" in
   "repo view")
     json_fields=""
