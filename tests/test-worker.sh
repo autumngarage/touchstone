@@ -470,11 +470,13 @@ PATH="$INTERLEAVE_BIN:$PATH" \
   --worktree "$INTERLEAVE_WT" \
   --claim-token "$PREDECESSOR_TOKEN" &
 PREDECESSOR_PID=$!
-for _ in $(seq 1 100); do
+attempt=1
+while [ "$attempt" -le 100 ]; do
   if [ -e "$INTERLEAVE_SIGNAL" ] || ! kill -0 "$PREDECESSOR_PID" 2>/dev/null; then
     break
   fi
   sleep 0.05
+  attempt=$((attempt + 1))
 done
 SUCCESSOR_TOKEN="$(touchstone_ship_claim "$INTERLEAVE_JOB_DIR" "$$")" || {
   fail "successor could not claim after predecessor finished"
