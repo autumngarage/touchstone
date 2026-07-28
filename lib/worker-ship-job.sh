@@ -104,7 +104,7 @@ touchstone_ship_claim_exists() {
 touchstone_ship_claim_value() {
   local job_dir="$1" key="$2"
   [ -f "$job_dir/active" ] || return 0
-  sed -n "s/^$key=//p" "$job_dir/active" | head -n 1
+  sed -n "s/^$key=//p" "$job_dir/active" 2>/dev/null | head -n 1
 }
 
 touchstone_ship_claim_matches() {
