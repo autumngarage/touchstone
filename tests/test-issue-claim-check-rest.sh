@@ -50,7 +50,8 @@ esac
 EOF
 chmod +x "$FAKE_BIN/gh"
 
-PATH="$FAKE_BIN:/usr/bin:/bin" GH_LOG="$GH_LOG" FAKE_PR_BODY_FILE="$BODY_FILE" \
+GH_REPO="" GH_HOST="" GITHUB_SERVER_URL="" \
+  PATH="$FAKE_BIN:/usr/bin:/bin" GH_LOG="$GH_LOG" FAKE_PR_BODY_FILE="$BODY_FILE" \
   bash "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" --pr-number 77 \
   >"$TEST_DIR/output"
 
@@ -68,13 +69,13 @@ if grep -Eq '^(pr|issue) view ' "$GH_LOG"; then
 fi
 
 printf '[skip-claim-check]\n' >"$TEST_DIR/bypass.md"
-PATH="$FAKE_BIN:/usr/bin:/bin" GH_LOG="$GH_LOG" GH_REPO="" \
+PATH="$FAKE_BIN:/usr/bin:/bin" GH_LOG="$GH_LOG" GH_REPO="" GH_HOST="" GITHUB_SERVER_URL="" \
   bash "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" \
   --body-file "$TEST_DIR/bypass.md" --author alice >"$TEST_DIR/bypass-output"
 grep -q 'bypassing issue claim check' "$TEST_DIR/bypass-output"
 
 : >"$GH_LOG"
-GH_REPO="github.example.com/autumngarage/touchstone" \
+GH_REPO="github.example.com/autumngarage/touchstone" GH_HOST="" GITHUB_SERVER_URL="" \
   PATH="$FAKE_BIN:/usr/bin:/bin" GH_LOG="$GH_LOG" FAKE_PR_BODY_FILE="$BODY_FILE" \
   bash "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" --pr-number 77 \
   >"$TEST_DIR/enterprise-output"
@@ -85,14 +86,15 @@ if grep -q 'repos/github.example.com/' "$GH_LOG"; then
 fi
 
 : >"$GH_LOG"
-GH_REPO="autumngarage/touchstone" GITHUB_SERVER_URL="https://github.example.com" \
+GH_REPO="autumngarage/touchstone" GH_HOST="" GITHUB_SERVER_URL="https://github.example.com" \
   PATH="$FAKE_BIN:/usr/bin:/bin" GH_LOG="$GH_LOG" FAKE_PR_BODY_FILE="$BODY_FILE" \
   bash "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" --pr-number 77 \
   >"$TEST_DIR/enterprise-actions-output"
 grep -q '^api --hostname github.example.com repos/autumngarage/touchstone/pulls/77 ' "$GH_LOG"
 
 : >"$GH_LOG"
-FAKE_REPO_URL="https://github.example.com/autumngarage/touchstone" \
+GH_REPO="" GH_HOST="" GITHUB_SERVER_URL="" \
+  FAKE_REPO_URL="https://github.example.com/autumngarage/touchstone" \
   PATH="$FAKE_BIN:/usr/bin:/bin" GH_LOG="$GH_LOG" FAKE_PR_BODY_FILE="$BODY_FILE" \
   bash "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" --pr-number 77 \
   >"$TEST_DIR/enterprise-checkout-output"
