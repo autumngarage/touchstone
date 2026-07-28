@@ -391,7 +391,7 @@ load_open_pr_review_request_config() {
 request_pr_triggered_review() {
   local pr_number="$1"
   local expected_head_sha="$2"
-  local head_sha marker existing_request_ids body attempt=1
+  local head_sha base_revision base_branch base_sha marker existing_request_ids body attempt=1
   local max_attempts="${TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS:-10}"
   local retry_interval="${TOUCHSTONE_PR_HEAD_CONVERGENCE_INTERVAL:-1}"
 
@@ -428,7 +428,24 @@ request_pr_triggered_review() {
     sleep "$retry_interval"
     attempt=$((attempt + 1))
   done
-  marker="<!-- touchstone:pr-review-request provider=github-codex head=$head_sha -->"
+  if ! base_revision="$(
+    gh api "repos/$REPO_FULL_NAME/pulls/$pr_number" --jq '[.base.ref, .base.sha] | @tsv'
+  )"; then
+    echo "ERROR: failed to resolve the base revision for PR #$pr_number before requesting review." >&2
+    return 1
+  fi
+  IFS=$'\t' read -r base_branch base_sha <<<"$base_revision"
+  if [ -z "$base_branch" ] || [ -z "$base_sha" ]; then
+    echo "ERROR: GitHub returned incomplete base metadata for PR #$pr_number." >&2
+    return 1
+  fi
+  if [ "$base_branch" != "$BASE_BRANCH" ]; then
+    echo "ERROR: PR #$pr_number base changed before review was requested." >&2
+    echo "       expected: $BASE_BRANCH" >&2
+    echo "       actual:   $base_branch" >&2
+    return 1
+  fi
+  marker="<!-- touchstone:pr-review-request provider=github-codex head=$head_sha base=$base_sha -->"
   if ! existing_request_ids="$(
     gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments?per_page=100" \
       --jq ".[] | select(.body == \"@codex review\\n\\n$marker\") | .id"
@@ -437,7 +454,7 @@ request_pr_triggered_review() {
     return 1
   fi
   if [ -n "$existing_request_ids" ]; then
-    echo "==> GitHub Codex review already requested for head $head_sha."
+    echo "==> GitHub Codex review already requested for head $head_sha at base $base_sha."
     return 0
   fi
 
@@ -446,7 +463,7 @@ request_pr_triggered_review() {
     echo "ERROR: failed to request GitHub Codex review for PR #$pr_number." >&2
     return 1
   fi
-  echo "==> Requested GitHub Codex review for head $head_sha."
+  echo "==> Requested GitHub Codex review for head $head_sha at base $base_sha."
 }
 
 run_advisory_review_at_pr_open() {

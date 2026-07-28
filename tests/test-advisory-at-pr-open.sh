@@ -72,6 +72,9 @@ case "${1:-} ${2:-}" in
     fi
     printf '%s\n' "${5:-}" >> "$GH_COMMENT_FILE"
     ;;
+  "api repos/"*)
+    printf '%s\t%s\n' "${GH_PR_BASE_NAME:-main}" "${GH_PR_BASE_SHA:-base-oid}"
+    ;;
   "api --paginate")
     if [ "${GH_API_FAIL:-0}" = "1" ]; then
       echo "mock comment inspection failure" >&2
@@ -87,7 +90,7 @@ case "${1:-} ${2:-}" in
       existing_request_body="${GH_EXISTING_REQUEST_BODY:-}"
     fi
     case "$existing_request_body" in
-      "@codex review"$'\n\n'"<!-- touchstone:pr-review-request provider=github-codex head="*" -->")
+      "@codex review"$'\n\n'"<!-- touchstone:pr-review-request provider=github-codex head="*" base="*" -->")
         printf 'existing-request-id\n'
         ;;
     esac
@@ -159,6 +162,8 @@ run_open_pr() {
         GH_EXISTING_PR_BASE="${GH_EXISTING_PR_BASE:-}" \
         GH_PR_LIST_FAIL="${GH_PR_LIST_FAIL:-0}" \
         GH_PR_HEAD_SHA="${GH_PR_HEAD_SHA:-}" \
+        GH_PR_BASE_NAME="${GH_PR_BASE_NAME:-main}" \
+        GH_PR_BASE_SHA="${GH_PR_BASE_SHA:-base-oid}" \
         GIT_FETCH_BASE_SHA="${GIT_FETCH_BASE_SHA:-}" \
         GIT_FETCH_FAIL="${GIT_FETCH_FAIL:-0}" \
         GIT_PUSH_CREATE_LOCAL_COMMIT="${GIT_PUSH_CREATE_LOCAL_COMMIT:-0}" \
@@ -350,8 +355,8 @@ REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 OUT="$TEST_DIR/request-on-push.out"
 run_open_pr "$OUT"
 if grep -q '^@codex review$' "$TEST_DIR/comments" \
-  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD -->" "$TEST_DIR/comments" \
-  && grep -q "Requested GitHub Codex review for head $REQUEST_HEAD" "$OUT"; then
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+  && grep -q "Requested GitHub Codex review for head $REQUEST_HEAD at base base-oid" "$OUT"; then
   echo "    PASS"
 else
   echo "    FAIL: feature config disabled or redirected the trusted base request policy" >&2
@@ -376,7 +381,7 @@ REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 OUT="$TEST_DIR/request-refreshed-base.out"
 GIT_FETCH_BASE_SHA="$FRESH_POLICY_SHA" run_open_pr "$OUT"
 if grep -q '^@codex review$' "$TEST_DIR/comments" \
-  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD -->" "$TEST_DIR/comments" \
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
   && [ "$(git -C "$REPO_DIR" rev-parse refs/remotes/origin/main)" = "$FRESH_POLICY_SHA" ]; then
   echo "    PASS"
 else
@@ -415,8 +420,8 @@ REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 OUT="$TEST_DIR/request-default-provider.out"
 run_open_pr "$OUT"
 if grep -q '^@codex review$' "$TEST_DIR/comments" \
-  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD -->" "$TEST_DIR/comments" \
-  && grep -q "Requested GitHub Codex review for head $REQUEST_HEAD" "$OUT"; then
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+  && grep -q "Requested GitHub Codex review for head $REQUEST_HEAD at base base-oid" "$OUT"; then
   echo "    PASS"
 else
   echo "    FAIL: an omitted provider should default to GitHub Codex" >&2
@@ -430,7 +435,7 @@ EXISTING_REQUEST_BODY="$(cat "$TEST_DIR/comments")"
 reset_case
 OUT="$TEST_DIR/request-idempotent.out"
 GH_EXISTING_REQUEST_BODY="$EXISTING_REQUEST_BODY" run_open_pr "$OUT"
-if grep -q "GitHub Codex review already requested for head $REQUEST_HEAD" "$OUT" \
+if grep -q "GitHub Codex review already requested for head $REQUEST_HEAD at base base-oid" "$OUT" \
   && [ ! -f "$TEST_DIR/comments" ]; then
   echo "    PASS"
 else
@@ -450,8 +455,8 @@ COPIED_MARKER="Diagnostic copy:
 OUT="$TEST_DIR/request-copied-marker.out"
 GH_EXISTING_REQUEST_BODY="$COPIED_MARKER" run_open_pr "$OUT"
 if grep -q '^@codex review$' "$TEST_DIR/comments" \
-  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD -->" "$TEST_DIR/comments" \
-  && grep -q "Requested GitHub Codex review for head $REQUEST_HEAD" "$OUT"; then
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+  && grep -q "Requested GitHub Codex review for head $REQUEST_HEAD at base base-oid" "$OUT"; then
   echo "    PASS"
 else
   echo "    FAIL: a copied marker without the request command should not be idempotent" >&2
@@ -467,9 +472,9 @@ OUT="$TEST_DIR/request-remote-head.out"
 GH_PR_HEAD_SHA="$SELECTED_REQUEST_HEAD" GIT_PUSH_CREATE_LOCAL_COMMIT=1 run_open_pr "$OUT"
 ADVANCED_LOCAL_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 if [ "$ADVANCED_LOCAL_HEAD" != "$SELECTED_REQUEST_HEAD" ] \
-  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$SELECTED_REQUEST_HEAD -->" "$TEST_DIR/comments" \
-  && ! grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$ADVANCED_LOCAL_HEAD -->" "$TEST_DIR/comments" \
-  && grep -q "Requested GitHub Codex review for head $SELECTED_REQUEST_HEAD" "$OUT"; then
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$SELECTED_REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+  && ! grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$ADVANCED_LOCAL_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+  && grep -q "Requested GitHub Codex review for head $SELECTED_REQUEST_HEAD at base base-oid" "$OUT"; then
   echo "    PASS"
 else
   echo "    FAIL: request marker should bind to the SHA selected before the pre-push hook" >&2
@@ -483,8 +488,8 @@ reset_case
 DRAFT_REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 OUT="$TEST_DIR/request-draft.out"
 run_open_pr "$OUT" --draft
-if grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$DRAFT_REQUEST_HEAD -->" "$TEST_DIR/comments" \
-  && grep -q "Requested GitHub Codex review for head $DRAFT_REQUEST_HEAD" "$OUT" \
+if grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$DRAFT_REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+  && grep -q "Requested GitHub Codex review for head $DRAFT_REQUEST_HEAD at base base-oid" "$OUT" \
   && grep -q 'Opened as draft' "$OUT"; then
   echo "    PASS"
 else
@@ -555,9 +560,11 @@ reset_case
 git -C "$REPO_DIR" update-ref -d refs/remotes/origin/feat/review-policy-parent
 STACK_REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 OUT="$TEST_DIR/request-stacked-local-policy.out"
-run_open_pr "$OUT" --base feat/review-policy-parent
-if grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$STACK_REQUEST_HEAD -->" "$TEST_DIR/comments" \
-  && grep -q "Requested GitHub Codex review for head $STACK_REQUEST_HEAD" "$OUT"; then
+GH_PR_BASE_NAME="feat/review-policy-parent" \
+  GH_PR_BASE_SHA="stack-base-oid" \
+  run_open_pr "$OUT" --base feat/review-policy-parent
+if grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$STACK_REQUEST_HEAD base=stack-base-oid -->" "$TEST_DIR/comments" \
+  && grep -q "Requested GitHub Codex review for head $STACK_REQUEST_HEAD at base stack-base-oid" "$OUT"; then
   echo "    PASS"
 else
   echo "    FAIL: stacked PR did not use the local base policy fallback" >&2
@@ -584,14 +591,16 @@ OUT="$TEST_DIR/request-existing-stacked-policy.out"
 GH_EXISTING_PR_URL="https://example.test/touchstone/pull/789" \
   GH_EXISTING_PR_BASE="feat/existing-policy-parent" \
   GH_PR_HEAD_SHA="$EXISTING_REQUEST_HEAD" \
+  GH_PR_BASE_NAME="feat/existing-policy-parent" \
+  GH_PR_BASE_SHA="existing-stack-base-oid" \
   GIT_PUSH_CREATE_LOCAL_COMMIT=1 \
   run_open_pr "$OUT"
 ADVANCED_EXISTING_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 if [ "$ADVANCED_EXISTING_HEAD" != "$EXISTING_REQUEST_HEAD" ] \
   && grep -q 'PR already open for feat/advisory: https://example.test/touchstone/pull/789' "$OUT" \
-  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$EXISTING_REQUEST_HEAD -->" "$TEST_DIR/comments" \
-  && ! grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$ADVANCED_EXISTING_HEAD -->" "$TEST_DIR/comments" \
-  && grep -q "Requested GitHub Codex review for head $EXISTING_REQUEST_HEAD" "$OUT"; then
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$EXISTING_REQUEST_HEAD base=existing-stack-base-oid -->" "$TEST_DIR/comments" \
+  && ! grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$ADVANCED_EXISTING_HEAD base=existing-stack-base-oid -->" "$TEST_DIR/comments" \
+  && grep -q "Requested GitHub Codex review for head $EXISTING_REQUEST_HEAD at base existing-stack-base-oid" "$OUT"; then
   echo "    PASS"
 else
   echo "    FAIL: existing stacked PR update ignored its actual base or selected push head" >&2
@@ -632,6 +641,28 @@ elif grep -q "does not match existing PR #789 base 'feat/existing-policy-parent'
   echo "    PASS"
 else
   echo "    FAIL: existing PR base mismatch lacked fail-closed diagnostics" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 9g: review request rejects a base retarget after policy selection"
+reset_case
+OUT="$TEST_DIR/request-retargeted-before-comment.out"
+if GH_EXISTING_PR_URL="https://example.test/touchstone/pull/789" \
+  GH_EXISTING_PR_BASE="feat/existing-policy-parent" \
+  GH_PR_BASE_NAME="main" \
+  GH_PR_BASE_SHA="retargeted-base-oid" \
+  run_open_pr "$OUT"; then
+  echo "    FAIL: a retargeted PR should stop before requesting review" >&2
+  ERRORS=$((ERRORS + 1))
+elif grep -q 'PR #789 base changed before review was requested' "$OUT" \
+  && grep -q 'expected: feat/existing-policy-parent' "$OUT" \
+  && grep -q 'actual:   main' "$OUT" \
+  && [ ! -f "$TEST_DIR/comments" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: retargeted PR review request lacked fail-closed diagnostics" >&2
   cat "$OUT" >&2
   [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
   ERRORS=$((ERRORS + 1))
