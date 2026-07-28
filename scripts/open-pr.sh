@@ -822,10 +822,12 @@ trap on_exit EXIT
 if [ -n "$EXISTING_PR_URL" ]; then
   echo "==> PR already open for $CURRENT_BRANCH: $EXISTING_PR_URL"
   PR_NUMBER="$(basename "$EXISTING_PR_URL")"
-  request_pr_triggered_review "$PR_NUMBER" "$PUSHED_HEAD_SHA"
   if [ "$AUTO_MERGE" = true ]; then
     ORPHAN_PR_URL="$EXISTING_PR_URL"
     ORPHAN_PR_NUMBER="$PR_NUMBER"
+  fi
+  request_pr_triggered_review "$PR_NUMBER" "$PUSHED_HEAD_SHA"
+  if [ "$AUTO_MERGE" = true ]; then
     run_issue_claim_preflight "existing PR #$PR_NUMBER" --pr-number "$PR_NUMBER"
     run_pr_body_protocol_preflight "existing PR #$PR_NUMBER" "$PR_NUMBER"
     MERGE_SCRIPT="$SCRIPT_DIR/merge-pr.sh"

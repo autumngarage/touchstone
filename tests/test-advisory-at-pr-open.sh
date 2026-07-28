@@ -508,6 +508,26 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Case 9a: existing auto-merge PR request failure reports orphan recovery"
+reset_case
+OUT="$TEST_DIR/request-existing-orphan-risk.out"
+if GH_API_FAIL=1 \
+  GH_EXISTING_PR_URL="https://example.test/touchstone/pull/789" \
+  GH_EXISTING_PR_BASE="main" \
+  run_open_pr "$OUT" --auto-merge; then
+  echo "    FAIL: existing PR request inspection failure should fail closed" >&2
+  ERRORS=$((ERRORS + 1))
+elif grep -q 'failed to inspect prior GitHub Codex review requests' "$OUT" \
+  && grep -q 'ORPHAN RISK: PR opened but not merged' "$OUT" \
+  && grep -q 'https://example.test/touchstone/pull/789' "$OUT" \
+  && grep -q 'gh pr merge 789 --squash --delete-branch' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: existing PR request failure omitted orphan recovery guidance" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 9b: stacked PR policy prefers origin/base over a divergent local base"
 reset_case
 git -C "$REPO_DIR" checkout -b feat/review-policy-parent main >/dev/null 2>&1

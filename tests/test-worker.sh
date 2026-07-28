@@ -430,6 +430,71 @@ if ! touchstone_ship_claim_matches "$ATOMIC_JOB_DIR" "$ATOMIC_TOKEN"; then
 fi
 touchstone_ship_release_claim "$ATOMIC_JOB_DIR" "$ATOMIC_TOKEN"
 
+echo "==> Case d2c: predecessor publishes terminal state before a successor can claim"
+INTERLEAVE_JOB_DIR="$TEST_DIR/finish-interleave-job"
+INTERLEAVE_WT="$TEST_DIR/finish-interleave-worktree"
+INTERLEAVE_BIN="$TEST_DIR/finish-interleave-bin"
+INTERLEAVE_SIGNAL="$TEST_DIR/finish-interleave-signal"
+INTERLEAVE_GATE="$TEST_DIR/finish-interleave-gate"
+mkdir -p "$INTERLEAVE_WT/scripts" "$INTERLEAVE_BIN"
+cat >"$INTERLEAVE_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$INTERLEAVE_WT/scripts/open-pr.sh"
+cat >"$INTERLEAVE_BIN/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source_path="${@: -2:1}"
+destination="${@: -1}"
+if [ "$(basename "$destination")" = "status" ] \
+  && [ "$(cat "$source_path")" = "succeeded" ] \
+  && [ ! -e "$INTERLEAVE_WATCH_JOB_DIR/active" ]; then
+  : >"$INTERLEAVE_SIGNAL"
+  while [ ! -e "$INTERLEAVE_GATE" ]; do
+    sleep 0.05
+  done
+fi
+exec "$REAL_MV" "$@"
+EOF
+chmod +x "$INTERLEAVE_BIN/mv"
+PREDECESSOR_TOKEN="$(touchstone_ship_claim "$INTERLEAVE_JOB_DIR" "$$")"
+touchstone_ship_write "$INTERLEAVE_JOB_DIR" branch feat/finish-interleave
+PATH="$INTERLEAVE_BIN:$PATH" \
+  REAL_MV="$(command -v mv)" \
+  INTERLEAVE_WATCH_JOB_DIR="$INTERLEAVE_JOB_DIR" \
+  INTERLEAVE_SIGNAL="$INTERLEAVE_SIGNAL" \
+  INTERLEAVE_GATE="$INTERLEAVE_GATE" \
+  "$TOUCHSTONE_ROOT/scripts/worker.sh" _ship-run \
+  --job-dir "$INTERLEAVE_JOB_DIR" \
+  --worktree "$INTERLEAVE_WT" \
+  --claim-token "$PREDECESSOR_TOKEN" &
+PREDECESSOR_PID=$!
+for _ in $(seq 1 100); do
+  if [ -e "$INTERLEAVE_SIGNAL" ] || ! kill -0 "$PREDECESSOR_PID" 2>/dev/null; then
+    break
+  fi
+  sleep 0.05
+done
+SUCCESSOR_TOKEN="$(touchstone_ship_claim "$INTERLEAVE_JOB_DIR" "$$")" || {
+  fail "successor could not claim after predecessor finished"
+  SUCCESSOR_TOKEN=""
+}
+printf 'starting\n' >"$INTERLEAVE_JOB_DIR/status"
+if [ -e "$INTERLEAVE_SIGNAL" ]; then
+  : >"$INTERLEAVE_GATE"
+fi
+wait "$PREDECESSOR_PID" || fail "predecessor runner failed during finish interleaving"
+if [ "$(touchstone_ship_read "$INTERLEAVE_JOB_DIR" status)" != "starting" ]; then
+  fail "predecessor overwrote the successor's starting state after releasing its claim"
+fi
+if [ -n "$SUCCESSOR_TOKEN" ]; then
+  if ! touchstone_ship_claim_matches "$INTERLEAVE_JOB_DIR" "$SUCCESSOR_TOKEN"; then
+    fail "predecessor disturbed the successor's claim"
+  fi
+  touchstone_ship_release_claim "$INTERLEAVE_JOB_DIR" "$SUCCESSOR_TOKEN"
+fi
+
 DEAD_OWNER_JOB_DIR="$TEST_DIR/dead-owner-claim-job"
 sleep 30 &
 DEAD_OWNER_PID=$!
