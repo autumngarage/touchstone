@@ -1847,6 +1847,7 @@ GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\
   run_merge_pr "$TEST_DIR/output-pr-triggered-delayed.txt" 123
 if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-delayed.txt" \
   && [ "$(cat "$TEST_DIR/gh-reviews-graphql-calls" 2>/dev/null || echo 0)" -ge 2 ] \
+  && ! grep -q 'GitHub Codex review already requested' "$TEST_DIR/output-pr-triggered-delayed.txt" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
   echo "==> PASS: delayed PR-triggered review is polled until available"
 else

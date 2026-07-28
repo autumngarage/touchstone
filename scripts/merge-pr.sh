@@ -72,6 +72,7 @@ PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS="chatgpt-codex-connector,chatgpt-code
 PR_TRIGGERED_REVIEW_SKIP_MERGE_REVIEW=true
 PR_TRIGGERED_REVIEWED_HEAD_OID=""
 PR_TRIGGERED_REVIEWED_BASE_OID=""
+PR_TRIGGERED_REVIEW_REQUEST_BASE_OID=""
 PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
 PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP=""
 PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN=false
@@ -1761,6 +1762,7 @@ wait_for_pr_triggered_review() {
   poll_sec="$PR_TRIGGERED_REVIEW_POLL_SEC"
   start_epoch="$(date +%s)"
   PR_TRIGGERED_REVIEW_SIGNAL_DETAIL=""
+  PR_TRIGGERED_REVIEW_REQUEST_BASE_OID=""
   PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
 
   echo "==> Waiting for trusted PR-visible AI review for PR #$PR_NUMBER ($phase) ..."
@@ -1803,10 +1805,10 @@ wait_for_pr_triggered_review() {
     fi
 
     if [ "$observed_head" = "$expected_head" ] && [ -n "$observed_base" ]; then
-      # Reload the marker on every poll so a moving base cannot retain the
-      # timestamp from a request that was bound to the previous base SHA.
-      PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
-      request_pr_triggered_review "$expected_head" "$observed_base" "$phase" true || exit 1
+      if [ "$PR_TRIGGERED_REVIEW_REQUEST_BASE_OID" != "$observed_base" ]; then
+        PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
+        request_pr_triggered_review "$expected_head" "$observed_base" "$phase" true || exit 1
+      fi
       if trusted_pr_clean_signal "$expected_head" "$observed_base" "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"; then
         PR_TRIGGERED_REVIEWED_HEAD_OID="$expected_head"
         PR_TRIGGERED_REVIEWED_BASE_OID="$observed_base"
@@ -1932,6 +1934,7 @@ request_pr_triggered_review() {
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
+  PR_TRIGGERED_REVIEW_REQUEST_BASE_OID="$expected_base"
   if [ -n "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" ]; then
     echo "==> GitHub Codex review already requested for head $expected_head at base $expected_base."
     return 0
