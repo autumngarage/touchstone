@@ -271,6 +271,10 @@ case "${1:-} ${2:-}" in
             echo "request lookup must filter repository-trusted actors" >&2
             exit 1
           fi
+          if [[ "${5:-}" != *".created_at == .updated_at"* ]]; then
+            echo "request lookup must reject edited marker comments" >&2
+            exit 1
+          fi
           if [ -n "${GH_REQUEST_RECORDS:-}" ]; then
             printf '%s\n' "$GH_REQUEST_RECORDS"
             exit 0
@@ -282,6 +286,7 @@ case "${1:-} ${2:-}" in
               | sed -n 's/.*head=\([^ ]*\) base=\([^ ]*\) -->.*/\1	\2/p'
           )"
           if [ -n "$existing_revision" ] \
+            && [ "${GH_EXISTING_REQUEST_EDITED:-false}" != "true" ] \
             && [ "${existing_revision%%	*}" = "$query_head" ]; then
             printf '%s\t%s\n' \
               "${GH_EXISTING_REQUEST_TIMESTAMP:-1969-01-01T00:00:00Z}" \
@@ -289,7 +294,8 @@ case "${1:-} ${2:-}" in
           fi
           if [ "$existing_request_body" = "@codex review
 
-<!-- touchstone:pr-review-request provider=github-codex head=$query_head -->" ]; then
+<!-- touchstone:pr-review-request provider=github-codex head=$query_head -->" ] \
+            && [ "${GH_EXISTING_REQUEST_EDITED:-false}" != "true" ]; then
             printf '%s\t<unbound>\n' \
               "${GH_EXISTING_REQUEST_TIMESTAMP:-1969-01-01T00:00:00Z}"
           fi
@@ -1612,6 +1618,29 @@ if grep -q '==> GitHub Codex review already requested for head pr-head-oid at ba
 else
   echo "FAIL: direct merge should reuse an existing exact-head review request" >&2
   cat "$TEST_DIR/output-pr-triggered-direct-request-existing.txt" >&2
+  [ ! -f "$TEST_DIR/gh-review-request" ] || cat "$TEST_DIR/gh-review-request" >&2
+  exit 1
+fi
+
+echo "==> Test: edited review request marker cannot authorize a stale review"
+reset_case_files
+write_pr_triggered_config true 0 0 true true
+if GH_EXISTING_REQUEST_BODY=$'@codex review\n\n<!-- touchstone:pr-review-request provider=github-codex head=pr-head-oid base=base-oid -->' \
+  GH_EXISTING_REQUEST_EDITED=true \
+  GH_EXISTING_REQUEST_TIMESTAMP="2026-06-22T00:00:00Z" \
+  GH_REQUEST_CREATED_AT="2026-06-24T00:00:00Z" \
+  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/before-edit' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-edited-request.txt" 123; then
+  echo "FAIL: edited request marker authorized a stale review" >&2
+  exit 1
+fi
+if grep -q '<!-- touchstone:pr-review-request provider=github-codex head=pr-head-oid base=base-oid -->' "$TEST_DIR/gh-review-request" \
+  && grep -q 'Timed out waiting for trusted PR-visible AI review' "$TEST_DIR/output-pr-triggered-edited-request.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: edited request marker is replaced before review authorization"
+else
+  echo "FAIL: edited marker should require a fresh immutable review request" >&2
+  cat "$TEST_DIR/output-pr-triggered-edited-request.txt" >&2
   [ ! -f "$TEST_DIR/gh-review-request" ] || cat "$TEST_DIR/gh-review-request" >&2
   exit 1
 fi

@@ -295,6 +295,30 @@ EOF")"
 assert "allows branch-first compound with heredoc outside repo on main" "0" \
   "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_HEREDOC_JSON")"
 
+BRANCH_FIRST_HEREDOC_COMMIT_PROSE_JSON="$(mkjson "git checkout -b fix/branch-first-heredoc-prose && cat <<'EOF'
+git checkout main
+git commit -m 'documentation example'
+EOF
+git commit -m 'real commit'")"
+assert "ignores commit and checkout prose in a heredoc before the real commit" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_HEREDOC_COMMIT_PROSE_JSON")"
+
+HEREDOC_COMMIT_PROSE_ONLY_JSON="$(mkjson "git checkout -b fix/branch-first-heredoc-only && cat <<-EOF
+	git commit -m 'documentation example'
+	EOF")"
+assert "allows a tab-stripped heredoc whose only commit is prose" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$HEREDOC_COMMIT_PROSE_ONLY_JSON")"
+
+ARITHMETIC_SHIFT_BEFORE_COMMIT_JSON="$(mkjson "value=\$((1 << 2))
+git commit -m 'must remain guarded'")"
+assert "does not treat arithmetic expansion left shift as a heredoc" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$ARITHMETIC_SHIFT_BEFORE_COMMIT_JSON")"
+
+ARITHMETIC_COMMAND_SHIFT_BEFORE_COMMIT_JSON="$(mkjson "(( value = 1 << 2 ))
+git commit -m 'must remain guarded'")"
+assert "does not treat arithmetic command left shift as a heredoc" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$ARITHMETIC_COMMAND_SHIFT_BEFORE_COMMIT_JSON")"
+
 MAIN_TARGET="$(mktemp -d -t touchstone-hook-test-main-target.XXXXXX)"
 trap 'rm -rf "$TMPDIR" "$WORKTREE" "$MAIN_TARGET"' EXIT
 git -C "$MAIN_TARGET" init --quiet --initial-branch=main

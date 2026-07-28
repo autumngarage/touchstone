@@ -32,7 +32,7 @@ input="$(cat)"
 # Fast path — bail on non-git-commit calls without the jq/git overhead.
 # Matches `git commit` with optional `-c key=value` / `-C <path>` flags
 # ahead of the subcommand; explicitly NOT matching `commit-tree`.
-if ! printf '%s' "$input" | grep -qE '"command"[[:space:]]*:[[:space:]]*"[^"]*\bgit([[:space:]]+-c[[:space:]]+[^[:space:]]+|[[:space:]]+-C[[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
+if ! printf '%s' "$input" | grep -qE 'git([[:space:]]+-c[[:space:]]+[^[:space:]]+|[[:space:]]+-C[[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
   exit 0
 fi
 
@@ -80,6 +80,24 @@ shell_segments() {
       segment = ""
     }
     {
+      if (heredoc_active) {
+        comparison = $0
+        if (heredoc_strip_tabs[heredoc_index]) {
+          sub(/^\t+/, "", comparison)
+        }
+        if (comparison == heredoc_delimiter[heredoc_index]) {
+          heredoc_index++
+          if (heredoc_index > heredoc_count) {
+            delete heredoc_delimiter
+            delete heredoc_strip_tabs
+            heredoc_active = 0
+            heredoc_count = 0
+            heredoc_index = 0
+          }
+        }
+        next
+      }
+
       line = $0 "\n"
       for (i = 1; i <= length(line); i++) {
         char = substr(line, i, 1)
@@ -98,8 +116,67 @@ shell_segments() {
         } else if (char == "\\" && quote != "\047") {
           escaped = 1
         } else if (quote == "") {
-          if (char == "#" && word_start) {
+          if (arithmetic_depth > 0) {
+            segment = segment char
+            if (char == "(") {
+              arithmetic_depth++
+            } else if (char == ")") {
+              arithmetic_depth--
+            }
+            word_start = 0
+          } else if (char == "$" && substr(line, i + 1, 2) == "((") {
+            segment = segment "$(("
+            arithmetic_depth = 2
+            word_start = 0
+            i += 2
+          } else if (char == "(" && substr(line, i + 1, 1) == "(") {
+            segment = segment "(("
+            arithmetic_depth = 2
+            word_start = 0
+            i++
+          } else if (char == "#" && word_start) {
             comment = 1
+          } else if (char == "<" && substr(line, i + 1, 1) == "<" && substr(line, i + 2, 1) != "<") {
+            j = i + 2
+            strip_tabs = substr(line, j, 1) == "-"
+            if (strip_tabs) {
+              j++
+            }
+            while (substr(line, j, 1) ~ /[[:space:]]/) {
+              j++
+            }
+            token = ""
+            delimiter_quote = ""
+            delimiter_escaped = 0
+            while (j <= length(line)) {
+              delimiter_char = substr(line, j, 1)
+              if (delimiter_escaped) {
+                token = token delimiter_char
+                delimiter_escaped = 0
+              } else if (delimiter_char == "\\" && delimiter_quote != "\047") {
+                delimiter_escaped = 1
+              } else if (delimiter_quote != "") {
+                if (delimiter_char == delimiter_quote) {
+                  delimiter_quote = ""
+                } else {
+                  token = token delimiter_char
+                }
+              } else if (delimiter_char == "\"" || delimiter_char == "\047") {
+                delimiter_quote = delimiter_char
+              } else if (delimiter_char ~ /[[:space:];|&()<>]/) {
+                break
+              } else {
+                token = token delimiter_char
+              }
+              j++
+            }
+            if (token != "") {
+              heredoc_count++
+              heredoc_delimiter[heredoc_count] = token
+              heredoc_strip_tabs[heredoc_count] = strip_tabs
+            }
+            segment = segment char
+            word_start = 0
           } else if (char == "\"" || char == "\047") {
             quote = char
             segment = segment char
@@ -126,6 +203,10 @@ shell_segments() {
           }
           word_start = 0
         }
+      }
+      if (heredoc_count > 0) {
+        heredoc_active = 1
+        heredoc_index = 1
       }
     }
     END {
@@ -185,6 +266,9 @@ while IFS= read -r segment; do
     target_cwd_from_cd="$cd_target"
   fi
 done < <(printf '%s\n' "$command" | shell_segments)
+if [ -z "$commit_segment" ]; then
+  exit 0
+fi
 if [ -n "$commit_segment" ]; then
   target_cwd_from_C="$(printf '%s' "$commit_segment" | grep -oE '\-C[[:space:]]+[^[:space:]]+' | sed -E 's/^-C[[:space:]]+//' | tail -1 || true)"
 fi
@@ -200,6 +284,7 @@ target_cwd="${target_cwd_from_C:-$target_cwd_from_cd}"
 # to the default branch before committing. If the commit targets another cwd via
 # `git -C` or `cd`, keep checking that target.
 if [ "$branch_first_compound" = "true" ] \
+  && [ "$branch_first_seen_commit" = "true" ] \
   && [ "$branch_first_changes_branch" = "false" ] \
   && [ "$branch_first_has_later_commit" = "false" ] \
   && [ -z "$target_cwd" ]; then

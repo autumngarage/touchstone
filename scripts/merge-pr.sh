@@ -1919,6 +1919,7 @@ load_pr_review_request_timestamp() {
           .author_association == \"MEMBER\" or
           .author_association == \"COLLABORATOR\"
         ) |
+        select(.created_at == .updated_at) |
         select((.body | startswith(\"$prefix\")) or .body == \"$legacy_marker\") |
         select(.body == \"$legacy_marker\" or (.body | endswith(\" -->\"))) |
         [
