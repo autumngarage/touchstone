@@ -217,7 +217,7 @@ touchstone_ship_refresh() {
         touchstone_ship_mark_stale "$job_dir"
       fi
       ;;
-    running | review-waiting | fixing)
+    running | review-waiting | fixing | finishing)
       pid="$(touchstone_ship_read "$job_dir" pid)"
       if ! touchstone_ship_pid_is_runner "$job_dir" "$pid"; then
         touchstone_ship_mark_stale "$job_dir" "$claim_token"

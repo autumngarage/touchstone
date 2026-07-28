@@ -99,7 +99,7 @@ worker_head_sha() {
 }
 
 worker_has_uncommitted() {
-  git -C "$1" status --porcelain 2>/dev/null || true
+  GIT_OPTIONAL_LOCKS=0 git -C "$1" status --porcelain 2>/dev/null || true
 }
 
 worker_pr_field() {
@@ -407,6 +407,7 @@ cmd_ship_runner() {
     touchstone_ship_write "$job_dir" exit-code "$code"
     touchstone_ship_write "$job_dir" reason "$reason"
     touchstone_ship_write "$job_dir" finished-at "$(touchstone_ship_now)"
+    touchstone_ship_write "$job_dir" status finishing
     touchstone_emit_event worker_ship_finished \
       worktree_path="$worktree_path" status="$status" exit_code="$code"
     touchstone_ship_release_claim "$job_dir" "$claim_token" 2>/dev/null || true
@@ -694,6 +695,10 @@ cmd_takeover() {
   status="$(touchstone_ship_read "$job_dir" status)"
   pid="$(touchstone_ship_read "$job_dir" pid)"
   case "$status" in
+    finishing)
+      echo "ERROR: detached ship runner is publishing its final state; retry takeover shortly." >&2
+      return 1
+      ;;
     starting | running | review-waiting | fixing)
       if ! touchstone_ship_pid_is_runner "$job_dir" "$pid"; then
         touchstone_ship_refresh "$job_dir"
@@ -845,7 +850,7 @@ cmd_abandon() {
     touchstone_ship_refresh "$ship_job_dir"
     ship_status="$(touchstone_ship_read "$ship_job_dir" status)"
     case "$ship_status" in
-      starting | running | review-waiting | fixing)
+      starting | running | review-waiting | fixing | finishing)
         echo "ERROR: refusing to abandon $worktree_path while detached shipping is active." >&2
         echo "       Run: touchstone worker takeover --worktree '$worktree_path'" >&2
         return 1

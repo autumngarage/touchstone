@@ -148,6 +148,26 @@ printf 'dirty\n' >>"$WORKTREE_PATH/file.txt"
 assert_json_value "$STATUS_JSON" state "dirty"
 git -C "$WORKTREE_PATH" checkout -- file.txt
 
+STATUS_GIT_BIN="$TEST_DIR/status-git-bin"
+STATUS_GIT_LOG="$TEST_DIR/status-git.log"
+mkdir -p "$STATUS_GIT_BIN"
+cat >"$STATUS_GIT_BIN/git" <<'EOF'
+#!/usr/bin/env bash
+if [[ " $* " == *" status --porcelain "* ]]; then
+  printf '%s\n' "${GIT_OPTIONAL_LOCKS-unset}" >>"$STATUS_GIT_LOG"
+fi
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$STATUS_GIT_BIN/git"
+REAL_GIT="$(command -v git)" STATUS_GIT_LOG="$STATUS_GIT_LOG" \
+PATH="$STATUS_GIT_BIN:$PATH" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker status \
+  --worktree "$WORKTREE_PATH" --json >"$STATUS_JSON"
+if [ ! -s "$STATUS_GIT_LOG" ] || grep -Ev '^0$' "$STATUS_GIT_LOG" >/dev/null; then
+  fail "worker status did not disable optional Git index locks"
+  [ ! -f "$STATUS_GIT_LOG" ] || cat "$STATUS_GIT_LOG" >&2
+fi
+
 FAKE_GH="$TEST_DIR/fake-gh"
 make_fake_gh "$FAKE_GH"
 ORIGIN_URL="$(git -C "$REPO" remote get-url origin)"
