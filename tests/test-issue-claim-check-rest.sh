@@ -15,6 +15,10 @@ cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$GH_LOG"
+if [ "${1:-}" = "api" ] && [ "${2:-}" = "--hostname" ]; then
+  shift 3
+  set -- api "$@"
+fi
 case "$*" in
   "repo view --json nameWithOwner --jq .nameWithOwner // empty")
     printf 'autumngarage/touchstone\n'
@@ -57,6 +61,23 @@ grep -q '^api repos/autumngarage/touchstone/pulls/77 ' "$GH_LOG"
 grep -q '^api repos/autumngarage/touchstone/issues/465 ' "$GH_LOG"
 if grep -Eq '^(pr|issue) view ' "$GH_LOG"; then
   echo "FAIL: PR mode used a higher-level gh read instead of REST." >&2
+  exit 1
+fi
+
+printf '[skip-claim-check]\n' >"$TEST_DIR/bypass.md"
+PATH="$FAKE_BIN:/usr/bin:/bin" GH_LOG="$GH_LOG" GH_REPO="" \
+  bash "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" \
+  --body-file "$TEST_DIR/bypass.md" --author alice >"$TEST_DIR/bypass-output"
+grep -q 'bypassing issue claim check' "$TEST_DIR/bypass-output"
+
+: >"$GH_LOG"
+GH_REPO="github.example.com/autumngarage/touchstone" \
+  PATH="$FAKE_BIN:/usr/bin:/bin" GH_LOG="$GH_LOG" FAKE_PR_BODY_FILE="$BODY_FILE" \
+  bash "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" --pr-number 77 \
+  >"$TEST_DIR/enterprise-output"
+grep -q '^api --hostname github.example.com repos/autumngarage/touchstone/pulls/77 ' "$GH_LOG"
+if grep -q 'repos/github.example.com/' "$GH_LOG"; then
+  echo "FAIL: host-qualified GH_REPO leaked its hostname into the REST endpoint." >&2
   exit 1
 fi
 

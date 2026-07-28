@@ -38,7 +38,20 @@ cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$1 $2" in
-  "repo view") echo "main" ;;
+  "repo view")
+    if printf '%s\n' "$*" | grep -q 'nameWithOwner'; then
+      echo "autumngarage/touchstone"
+    else
+      echo "main"
+    fi
+    ;;
+  "api repos/autumngarage/touchstone/pulls/9999")
+    case "$*" in
+      *".body // \"\""*) echo "" ;;
+      *".user.login // empty"*) echo "alice" ;;
+      *) echo "unexpected gh api args: $*" >&2; exit 1 ;;
+    esac
+    ;;
   "pr list")
     if [ "${GH_HAS_EXISTING_PR:-0}" = "1" ]; then
       printf 'https://example.test/touchstone/pull/9999\tmain\n'

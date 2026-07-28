@@ -32,13 +32,51 @@ resolve_current_repo() {
   gh repo view --json nameWithOwner --jq '.nameWithOwner // empty' 2>/dev/null || true
 }
 
+resolve_repo_context() {
+  local resolved
+  resolved="$(resolve_current_repo)"
+  current_repo=""
+  current_host=""
+  case "$resolved" in
+    */*/*)
+      current_host="${resolved%%/*}"
+      current_repo="${resolved#*/}"
+      ;;
+    */*)
+      current_repo="$resolved"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+repo_api() {
+  local endpoint="$1"
+  shift
+  if [ -n "$current_host" ]; then
+    gh api --hostname "$current_host" "repos/$current_repo/$endpoint" "$@"
+  else
+    gh api "repos/$current_repo/$endpoint" "$@"
+  fi
+}
+
+resolved_repo_name() {
+  local resolved
+  resolved="$(resolve_current_repo)"
+  case "$resolved" in
+    */*/*) resolved="${resolved#*/}" ;;
+    */*) ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "$resolved" | tr '[:upper:]' '[:lower:]'
+}
+
 extract_issue_refs() {
   local body_file="$1"
   local refs_file="$2"
-  local match normalized issue_number target_repo current_repo
+  local match normalized issue_number target_repo comparison_repo
   local closing_keywords="(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)"
 
-  current_repo="$(resolve_current_repo | tr '[:upper:]' '[:lower:]')"
+  comparison_repo="$(resolved_repo_name 2>/dev/null || true)"
 
   # Pattern 1: same-repo numeric refs including closes-issue.
   while IFS= read -r match; do
@@ -52,7 +90,7 @@ extract_issue_refs() {
   while IFS= read -r match; do
     normalized="$(printf '%s' "$match" | tr '[:upper:]' '[:lower:]')"
     target_repo="$(printf '%s' "$normalized" | sed -nE "s/^${closing_keywords}:?[[:space:]]*([[:alnum:]_.-]+\/[[:alnum:]_.-]+)#[0-9]+$/\\2/p")"
-    if [ -n "$target_repo" ] && [ -n "$current_repo" ] && [ "$target_repo" != "$current_repo" ]; then
+    if [ -n "$target_repo" ] && [ -n "$comparison_repo" ] && [ "$target_repo" != "$comparison_repo" ]; then
       echo "==> Skipping cross-repo reference: $match"
       continue
     fi
@@ -134,6 +172,7 @@ PR_AUTHOR=""
 COMMENT_PR=false
 OWNED_BODY_FILE=""
 current_repo=""
+current_host=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -192,12 +231,6 @@ fi
 
 require_gh
 
-current_repo="$(resolve_current_repo)"
-if [ -z "$current_repo" ]; then
-  echo "ERROR: could not resolve current repository for issue claim check." >&2
-  exit 2
-fi
-
 # shellcheck disable=SC2329  # invoked by EXIT trap.
 cleanup() {
   if [ -n "$OWNED_BODY_FILE" ]; then
@@ -206,17 +239,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if [ -n "$PR_NUMBER" ]; then
-  if [ -z "$BODY_FILE" ]; then
-    OWNED_BODY_FILE="$(mktemp -t touchstone-claim-body.XXXXXX)"
-    BODY_FILE="$OWNED_BODY_FILE"
-    gh api "repos/$current_repo/pulls/$PR_NUMBER" --jq '.body // ""' >"$BODY_FILE"
-  fi
-fi
-
-if grep -Eqi '\[skip-claim-check\]' "$BODY_FILE"; then
+if [ -n "$BODY_FILE" ] && grep -Eqi '\[skip-claim-check\]' "$BODY_FILE"; then
   echo "[skip-claim-check] token found in PR body; bypassing issue claim check."
   exit 0
+fi
+
+if [ -n "$PR_NUMBER" ] && [ -z "$BODY_FILE" ]; then
+  if ! resolve_repo_context; then
+    echo "ERROR: could not resolve current repository for issue claim check." >&2
+    exit 2
+  fi
+  current_repo="$(printf '%s' "$current_repo" | tr '[:upper:]' '[:lower:]')"
+  OWNED_BODY_FILE="$(mktemp -t touchstone-claim-body.XXXXXX)"
+  BODY_FILE="$OWNED_BODY_FILE"
+  repo_api "pulls/$PR_NUMBER" --jq '.body // ""' >"$BODY_FILE"
+  if grep -Eqi '\[skip-claim-check\]' "$BODY_FILE"; then
+    echo "[skip-claim-check] token found in PR body; bypassing issue claim check."
+    exit 0
+  fi
 fi
 
 issue_refs_file="$(mktemp -t touchstone-claim-refs.XXXXXX)"
@@ -231,8 +271,16 @@ if [ ! -s "$issue_refs_file" ]; then
   exit 0
 fi
 
+if [ -z "$current_repo" ]; then
+  if ! resolve_repo_context; then
+    echo "ERROR: could not resolve current repository for issue claim check." >&2
+    exit 2
+  fi
+  current_repo="$(printf '%s' "$current_repo" | tr '[:upper:]' '[:lower:]')"
+fi
+
 if [ -n "$PR_NUMBER" ] && [ -z "$PR_AUTHOR" ]; then
-  PR_AUTHOR="$(gh api "repos/$current_repo/pulls/$PR_NUMBER" --jq '.user.login // empty')"
+  PR_AUTHOR="$(repo_api "pulls/$PR_NUMBER" --jq '.user.login // empty')"
 fi
 if [ -z "$PR_AUTHOR" ]; then
   PR_AUTHOR="$(gh api user --jq '.login' 2>/dev/null || true)"
@@ -249,13 +297,13 @@ while IFS= read -r issue_number; do
   [ -n "$issue_number" ] || continue
   echo "==> Checking issue #$issue_number"
 
-  issue_state="$(gh api "repos/$current_repo/issues/$issue_number" --jq '.state' | tr '[:upper:]' '[:lower:]')"
+  issue_state="$(repo_api "issues/$issue_number" --jq '.state' | tr '[:upper:]' '[:lower:]')"
   if [ "$issue_state" = "closed" ]; then
     echo "    issue is closed; skipping"
     continue
   fi
 
-  assignees="$(gh api "repos/$current_repo/issues/$issue_number" --jq '.assignees | map(.login) | join("\n")')"
+  assignees="$(repo_api "issues/$issue_number" --jq '.assignees | map(.login) | join("\n")')"
   if printf '%s\n' "$assignees" | grep -Fxq "$PR_AUTHOR"; then
     echo "    pass: @$PR_AUTHOR is assigned"
     continue

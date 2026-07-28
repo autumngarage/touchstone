@@ -143,29 +143,41 @@ case "$1 $2" in
   "api user")
     echo "${GH_PR_AUTHOR:-alice}"
     ;;
-  "issue view")
-    issue_number="$3"
-    json_fields=""
+  "api repos/"*)
+    api_path="$2"
+    jq_expr=""
     prev=""
     for arg in "$@"; do
-      if [ "$prev" = "--json" ]; then
-        json_fields="$arg"
+      if [ "$prev" = "--jq" ]; then
+        jq_expr="$arg"
       fi
       prev="$arg"
     done
-    if [ "$json_fields" = "state" ]; then
-      echo "OPEN"
-      exit 0
-    fi
-    if [ "$json_fields" = "assignees" ]; then
-      case "$issue_number" in
-        52) echo "alice" ;;
-        *) : ;;
-      esac
-      exit 0
-    fi
-    echo "unexpected gh issue view args: $*" >&2
-    exit 1
+    case "$api_path:$jq_expr" in
+      "repos/autumngarage/touchstone/pulls/777:.body // \"\"")
+        echo "${GH_PR_BODY:-}"
+        ;;
+      "repos/autumngarage/touchstone/pulls/777:.user.login // empty")
+        echo "${GH_PR_AUTHOR:-alice}"
+        ;;
+      "repos/autumngarage/touchstone/issues/"*":.state")
+        echo "open"
+        ;;
+      "repos/autumngarage/touchstone/issues/52:.assignees | map(.login) | join(\"\\n\")")
+        echo "alice"
+        ;;
+      "repos/autumngarage/touchstone/issues/"*":.assignees | map(.login) | join(\"\\n\")")
+        :
+        ;;
+      *)
+        echo "unexpected gh api args: $*" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  "issue view")
+    echo "issue claim check must use REST reads: $*" >&2
+    exit 90
     ;;
   *)
     echo "unexpected gh args: $*" >&2
