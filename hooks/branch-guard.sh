@@ -67,18 +67,23 @@ if ! printf '%s' "$command" | grep -qE '\bgit([[:space:]]+-c[[:space:]]+[^[:spac
 fi
 
 branch_first_compound=false
-branch_first_changes_branch_before_commit=false
+branch_first_changes_branch=false
+branch_first_seen_commit=false
+branch_first_has_later_commit=false
 if printf '%s' "$command" | grep -qE '^[[:space:]]*git([[:space:]]+-c[[:space:]]+[^[:space:]]+)*[[:space:]]+(checkout[[:space:]]+-b|switch[[:space:]]+-c)[[:space:]]+(feat|fix|docs|chore|refactor)/[^[:space:];&|]+[[:space:]]*&&'; then
   branch_first_compound=true
   branch_first_post_create="$(printf '%s' "$command" | sed -E 's/^[[:space:]]*git([[:space:]]+-c[[:space:]]+[^[:space:]]+)*[[:space:]]+(checkout[[:space:]]+-b|switch[[:space:]]+-c)[[:space:]]+(feat|fix|docs|chore|refactor)\/[^[:space:];&|]+[[:space:]]*&&[[:space:]]*//')"
   while IFS= read -r segment; do
     trimmed="$(printf '%s' "$segment" | sed -E 's/^[[:space:]]+//')"
     if printf '%s' "$trimmed" | grep -qE '^git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
-      break
+      if [ "$branch_first_seen_commit" = "true" ]; then
+        branch_first_has_later_commit=true
+      else
+        branch_first_seen_commit=true
+      fi
     fi
     if printf '%s' "$trimmed" | grep -qE '^git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+(checkout|switch)([[:space:]]|$)'; then
-      branch_first_changes_branch_before_commit=true
-      break
+      branch_first_changes_branch=true
     fi
   done < <(printf '%s\n' "$branch_first_post_create" | tr '&;|' '\n')
 fi
@@ -120,10 +125,12 @@ target_cwd="${target_cwd_from_C:-$target_cwd_from_cd}"
 # A compound that starts by creating a standard Touchstone feature branch with
 # `&&` will run a same-cwd later commit after leaving the default branch. Allow
 # that exact remedy shape instead of blocking before checkout can happen. Do
-# not allow `;`: if checkout fails, the later commit would still run. If a later
-# commit targets another cwd via `git -C` or `cd`, keep checking that target.
+# not allow a later commit or branch change: subsequent control flow can return
+# to the default branch before committing. If the commit targets another cwd via
+# `git -C` or `cd`, keep checking that target.
 if [ "$branch_first_compound" = "true" ] \
-  && [ "$branch_first_changes_branch_before_commit" = "false" ] \
+  && [ "$branch_first_changes_branch" = "false" ] \
+  && [ "$branch_first_has_later_commit" = "false" ] \
   && [ -z "$target_cwd" ]; then
   exit 0
 fi

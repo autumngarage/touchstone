@@ -227,6 +227,22 @@ BRANCH_FIRST_COMMIT_JSON="$(mkjson "git checkout -b fix/branch-first-commit && g
 assert "allows branch-first compound before git commit on main" "0" \
   "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_COMMIT_JSON")"
 
+BRANCH_FIRST_TRAILING_STATUS_JSON="$(mkjson "git checkout -b fix/branch-first-status && git commit -m 'wip' && git status")"
+assert "allows branch-first compound with harmless trailing control flow" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_TRAILING_STATUS_JSON")"
+
+BRANCH_FIRST_SECOND_COMMIT_JSON="$(mkjson "git checkout -b fix/branch-first-second-commit && git commit -m 'wip' && git commit --amend --no-edit")"
+assert "blocks branch-first compound with a second commit through &&" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_SECOND_COMMIT_JSON")"
+
+BRANCH_FIRST_FALLBACK_JSON="$(mkjson "git checkout -b fix/branch-first-fallback && git commit -m 'wip' || git checkout main && git commit -m 'fallback'")"
+assert "blocks branch-first compound with an || fallback commit on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_FALLBACK_JSON")"
+
+BRANCH_FIRST_SEMICOLON_JSON="$(mkjson "git checkout -b fix/branch-first-semicolon && git commit -m 'wip'; git checkout main; git commit -m 'fallback'")"
+assert "blocks branch-first compound with a semicolon-separated commit on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_SEMICOLON_JSON")"
+
 BRANCH_FIRST_SWITCH_BACK_JSON="$(mkjson "git checkout -b fix/branch-first-switch-back && git switch main && git commit --no-verify -m 'wip'")"
 assert "blocks branch-first compound when later switch returns to main" "2" \
   "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_SWITCH_BACK_JSON")"
@@ -255,6 +271,15 @@ BRANCH_FIRST_OTHER_CWD_JSON="$(jq -nc \
   '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
 assert "blocks branch-first compound when later commit targets another repo on main" "2" \
   "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_OTHER_CWD_JSON")"
+
+if cmp -s "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" \
+  "$TOUCHSTONE_ROOT/scripts/branch-guard.sh"; then
+  echo "  OK: branch-guard hook mirror is current"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: branch-guard hook mirror differs" >&2
+  FAIL=$((FAIL + 1))
+fi
 
 # ----------------------------------------------------------------------
 # emergency-disclosure
