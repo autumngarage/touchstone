@@ -66,6 +66,58 @@ if ! printf '%s' "$command" | grep -qE '\bgit([[:space:]]+-c[[:space:]]+[^[:spac
   exit 0
 fi
 
+# Split only on shell control operators outside quotes. This is a lexical
+# boundary scan only; it never evaluates the command.
+shell_segments() {
+  awk '
+    function emit() {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", segment)
+      if (segment != "") {
+        print segment
+      }
+      segment = ""
+    }
+    {
+      line = $0 "\n"
+      for (i = 1; i <= length(line); i++) {
+        char = substr(line, i, 1)
+        if (escaped) {
+          if (char != "\n") {
+            segment = segment "\\" char
+          }
+          escaped = 0
+        } else if (char == "\\" && quote != "\047") {
+          escaped = 1
+        } else if (quote == "") {
+          if (char == "\"" || char == "\047") {
+            quote = char
+            segment = segment char
+          } else if (char == ";" || char == "&" || char == "|" || char == "\n") {
+            emit()
+          } else {
+            segment = segment char
+          }
+        } else {
+          if (char == "\n") {
+            segment = segment " "
+          } else {
+            segment = segment char
+          }
+          if (char == quote) {
+            quote = ""
+          }
+        }
+      }
+    }
+    END {
+      if (escaped) {
+        segment = segment "\\"
+      }
+      emit()
+    }
+  '
+}
+
 branch_first_compound=false
 branch_first_changes_branch=false
 branch_first_seen_commit=false
@@ -74,7 +126,7 @@ if printf '%s' "$command" | grep -qE '^[[:space:]]*git([[:space:]]+-c[[:space:]]
   branch_first_compound=true
   branch_first_post_create="$(printf '%s' "$command" | sed -E 's/^[[:space:]]*git([[:space:]]+-c[[:space:]]+[^[:space:]]+)*[[:space:]]+(checkout[[:space:]]+-b|switch[[:space:]]+-c)[[:space:]]+(feat|fix|docs|chore|refactor)\/[^[:space:];&|]+[[:space:]]*&&[[:space:]]*//')"
   while IFS= read -r segment; do
-    trimmed="$(printf '%s' "$segment" | sed -E 's/^[[:space:]]+//')"
+    trimmed="$(printf '%s' "$segment" | sed -E 's/^[[:space:]({]+//')"
     if printf '%s' "$trimmed" | grep -qE '^git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
       if [ "$branch_first_seen_commit" = "true" ]; then
         branch_first_has_later_commit=true
@@ -85,7 +137,7 @@ if printf '%s' "$command" | grep -qE '^[[:space:]]*git([[:space:]]+-c[[:space:]]
     if printf '%s' "$trimmed" | grep -qE '^git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+(checkout|switch)([[:space:]]|$)'; then
       branch_first_changes_branch=true
     fi
-  done < <(printf '%s\n' "$branch_first_post_create" | tr '&;|' '\n')
+  done < <(printf '%s\n' "$branch_first_post_create" | shell_segments)
 fi
 
 # Worktree-aware: when commit targets a different repo via `-C <path>` OR
@@ -104,7 +156,7 @@ target_cwd_from_C=""
 target_cwd_from_cd=""
 commit_segment=""
 while IFS= read -r segment; do
-  trimmed="$(printf '%s' "$segment" | sed -E 's/^[[:space:]]+//')"
+  trimmed="$(printf '%s' "$segment" | sed -E 's/^[[:space:]({]+//')"
   if printf '%s' "$trimmed" | grep -qE '^git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
     commit_segment="$trimmed"
     break
@@ -113,7 +165,7 @@ while IFS= read -r segment; do
   if [ -n "$cd_target" ]; then
     target_cwd_from_cd="$cd_target"
   fi
-done < <(printf '%s\n' "$command" | tr '&;|' '\n')
+done < <(printf '%s\n' "$command" | shell_segments)
 if [ -n "$commit_segment" ]; then
   target_cwd_from_C="$(printf '%s' "$commit_segment" | grep -oE '\-C[[:space:]]+[^[:space:]]+' | sed -E 's/^-C[[:space:]]+//' | tail -1 || true)"
 fi

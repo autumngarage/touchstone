@@ -231,9 +231,38 @@ BRANCH_FIRST_TRAILING_STATUS_JSON="$(mkjson "git checkout -b fix/branch-first-st
 assert "allows branch-first compound with harmless trailing control flow" "0" \
   "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_TRAILING_STATUS_JSON")"
 
+BRANCH_FIRST_QUOTED_SEPARATOR_JSON="$(mkjson "git checkout -b fix/branch-first-quoted && git commit -m 'fix parser; git commit stays guarded'")"
+assert "allows separators and commit prose inside a single-quoted message" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_QUOTED_SEPARATOR_JSON")"
+
+BRANCH_FIRST_DOUBLE_QUOTED_SEPARATOR_JSON="$(mkjson 'git checkout -b fix/branch-first-double-quoted && git commit -m "fix parser && git checkout stays guarded"')"
+assert "allows separators and checkout prose inside a double-quoted message" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_DOUBLE_QUOTED_SEPARATOR_JSON")"
+
+BRANCH_FIRST_ESCAPED_SEPARATOR_JSON="$(mkjson 'git checkout -b fix/branch-first-escaped && git commit -m fix\; git commit stays guarded')"
+assert "allows escaped separators inside a commit argument" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_ESCAPED_SEPARATOR_JSON")"
+
+BRANCH_FIRST_MULTILINE_QUOTE_JSON="$(mkjson "git checkout -b fix/branch-first-multiline && git commit -m 'first line
+git commit is prose; git checkout is prose'")"
+assert "allows control-flow prose inside a multiline quoted message" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_MULTILINE_QUOTE_JSON")"
+
 BRANCH_FIRST_SECOND_COMMIT_JSON="$(mkjson "git checkout -b fix/branch-first-second-commit && git commit -m 'wip' && git commit --amend --no-edit")"
 assert "blocks branch-first compound with a second commit through &&" "2" \
   "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_SECOND_COMMIT_JSON")"
+
+BRANCH_FIRST_GROUPED_COMMIT_JSON="$(mkjson "git checkout -b fix/branch-first-grouped && git commit -m 'wip' && (git status; git commit --amend --no-edit)")"
+assert "blocks a later commit inside a parenthesized group" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_GROUPED_COMMIT_JSON")"
+
+BRANCH_FIRST_GROUPED_SWITCH_JSON="$(mkjson "git checkout -b fix/branch-first-grouped-switch && (git switch main; git commit -m 'bad')")"
+assert "blocks a switch-back and commit inside a parenthesized group" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_GROUPED_SWITCH_JSON")"
+
+BRANCH_FIRST_BRACE_COMMIT_JSON="$(mkjson "git checkout -b fix/branch-first-brace && git commit -m 'wip' && { git status; git commit --amend --no-edit; }")"
+assert "blocks a later commit inside a brace group" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_BRACE_COMMIT_JSON")"
 
 BRANCH_FIRST_FALLBACK_JSON="$(mkjson "git checkout -b fix/branch-first-fallback && git commit -m 'wip' || git checkout main && git commit -m 'fallback'")"
 assert "blocks branch-first compound with an || fallback commit on main" "2" \
