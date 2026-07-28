@@ -315,9 +315,22 @@ touchstone_review_fix_result_is_complete() {
 touchstone_review_fix_changed_paths() {
   local worktree_path="$1"
   {
-    git -C "$worktree_path" diff --no-renames --name-only -z
+    git -C "$worktree_path" diff --no-renames --name-only -z HEAD --
     git -C "$worktree_path" ls-files --others --exclude-standard -z
   }
+}
+
+touchstone_review_fix_worktree_tree() {
+  local worktree_path="$1" temporary_index tree_oid="" rc=0
+  temporary_index="$(mktemp -t touchstone-review-fix-index.XXXXXX)" || return 1
+  rm -f "$temporary_index"
+  GIT_INDEX_FILE="$temporary_index" git -C "$worktree_path" read-tree HEAD \
+    && GIT_INDEX_FILE="$temporary_index" git -C "$worktree_path" add -A \
+    && tree_oid="$(GIT_INDEX_FILE="$temporary_index" git -C "$worktree_path" write-tree)" \
+    || rc=$?
+  rm -f "$temporary_index" "$temporary_index.lock"
+  [ "$rc" -eq 0 ] || return "$rc"
+  printf '%s\n' "$tree_oid"
 }
 
 touchstone_review_fix_commit() {
@@ -402,11 +415,13 @@ touchstone_review_fix_finish_threads() {
     IFS="$(printf '\t')" read -r resolved replied snapshot_matches <<EOF
 $remote_state
 EOF
-    if [ "$resolved" = "true" ] && [ "$snapshot_matches" = "true" ]; then
-      touchstone_ship_write "$job_dir/review-fix" "resolved-$key" "$fix_head"
-      continue
+    if [ "$resolved" = "true" ]; then
+      if [ "$replied" = "true" ] && [ "$snapshot_matches" = "true" ]; then
+        touchstone_ship_write "$job_dir/review-fix" "resolved-$key" "$fix_head"
+        continue
+      fi
+      return 5
     fi
-    [ "$resolved" != "true" ] || return 5
     [ "$snapshot_matches" = "true" ] || return 5
 
     if [ "$replied" != "true" ]; then
@@ -421,11 +436,13 @@ EOF
       IFS="$(printf '\t')" read -r resolved replied snapshot_matches <<EOF
 $remote_state
 EOF
-      if [ "$resolved" = "true" ] && [ "$snapshot_matches" = "true" ]; then
-        touchstone_ship_write "$job_dir/review-fix" "resolved-$key" "$fix_head"
-        continue
+      if [ "$resolved" = "true" ]; then
+        if [ "$replied" = "true" ] && [ "$snapshot_matches" = "true" ]; then
+          touchstone_ship_write "$job_dir/review-fix" "resolved-$key" "$fix_head"
+          continue
+        fi
+        return 5
       fi
-      [ "$resolved" != "true" ] || return 5
       [ "$replied" = "true" ] && [ "$snapshot_matches" = "true" ] || return 5
     fi
 
@@ -570,7 +587,8 @@ touchstone_review_fix_run() {
   local job_dir="$1" worktree_path="$2" max_iterations="$3" deadline_epoch="$4"
   local validation_command="$5" cleanup="$6"
   local branch pr_number repo_full_name base_ref iteration observed_head source_head fix_head
-  local threads_file brief_file result_file paths_file open_pr_exit now_epoch validation_display
+  local threads_file brief_file result_file paths_file validated_paths_file
+  local open_pr_exit now_epoch validation_display validation_tree_before validation_tree_after
   local trusted_authors thread_id _path _line thread_outdated thread_author thread_review_head
   local thread_body_truncated thread_comment_count _comment_ids _comment_snapshot _url _body
   local finish_rc resume_rc phase_rc phase_output reply_author
@@ -799,6 +817,7 @@ touchstone_review_fix_run() {
     brief_file="$job_dir/review-fix/brief.md"
     result_file="$job_dir/review-fix/result.txt"
     paths_file="$job_dir/review-fix/paths.zlist"
+    validated_paths_file="$job_dir/review-fix/validated-paths.zlist"
     validation_display="$validation_command"
     if [ -z "$validation_display" ]; then
       validation_display="bash lib/preflight.sh --diff $base_ref $worktree_path"
@@ -834,6 +853,10 @@ touchstone_review_fix_run() {
       touchstone_review_fix_need_attention "$job_dir" "$worktree_path" worker-made-no-changes
       return
     }
+    validation_tree_before="$(touchstone_review_fix_worktree_tree "$worktree_path")" || {
+      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" worktree-snapshot-failed
+      return
+    }
     phase_rc=0
     touchstone_review_fix_run_child \
       "$job_dir" touchstone_review_fix_validate \
@@ -841,6 +864,24 @@ touchstone_review_fix_run() {
     if [ "$phase_rc" -ne 0 ]; then
       touchstone_review_fix_stop_for_phase \
         "$job_dir" "$worktree_path" "$phase_rc" validation-failed
+      return
+    fi
+    [ "$source_head" = "$(git -C "$worktree_path" rev-parse HEAD)" ] || {
+      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" validation-created-commit
+      return
+    }
+    git -C "$worktree_path" diff --cached --quiet || {
+      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" validation-staged-changes
+      return
+    }
+    touchstone_review_fix_changed_paths "$worktree_path" >"$validated_paths_file"
+    validation_tree_after="$(touchstone_review_fix_worktree_tree "$worktree_path")" || {
+      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" worktree-snapshot-failed
+      return
+    }
+    if ! cmp -s "$paths_file" "$validated_paths_file" \
+      || [ "$validation_tree_before" != "$validation_tree_after" ]; then
+      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" validation-mutated-worktree
       return
     fi
     phase_rc=0

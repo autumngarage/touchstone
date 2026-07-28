@@ -78,23 +78,63 @@ touchstone_ship_write() {
   mv "$tmp" "$job_dir/$name"
 }
 
-touchstone_ship_mtime_epoch() {
-  local path="$1" epoch
-  epoch="$(stat -f '%m' "$path" 2>/dev/null)" \
-    || epoch="$(stat -c '%Y' "$path" 2>/dev/null)" \
-    || return 1
-  case "$epoch" in
-    '' | *[!0-9]*) return 1 ;;
-  esac
-  printf '%s\n' "$epoch"
+touchstone_ship_claim() {
+  local job_dir="$1" owner_pid="${2:-$$}" token record
+  mkdir -p "$job_dir"
+  token="$owner_pid-$(date +%s)-${RANDOM:-0}"
+  record="$job_dir/.active.$token.tmp"
+  {
+    printf 'owner-pid=%s\n' "$owner_pid"
+    printf 'owner-token=%s\n' "$token"
+  } >"$record"
+  if ln "$record" "$job_dir/active" 2>/dev/null; then
+    rm -f "$record"
+    printf '%s\n' "$token"
+    return 0
+  fi
+  rm -f "$record"
+  return 1
 }
 
-touchstone_ship_claim() {
+touchstone_ship_claim_exists() {
   local job_dir="$1"
-  mkdir -p "$job_dir"
-  # mkdir is the claim boundary. The directory mtime is available atomically
-  # with creation, so contenders never depend on a later metadata write.
-  mkdir "$job_dir/active" 2>/dev/null
+  [ -f "$job_dir/active" ] || [ -d "$job_dir/active" ]
+}
+
+touchstone_ship_claim_value() {
+  local job_dir="$1" key="$2"
+  [ -f "$job_dir/active" ] || return 0
+  sed -n "s/^$key=//p" "$job_dir/active" | head -n 1
+}
+
+touchstone_ship_claim_matches() {
+  local job_dir="$1" expected_token="$2" actual_token
+  [ -n "$expected_token" ] || return 1
+  actual_token="$(touchstone_ship_claim_value "$job_dir" owner-token)"
+  [ -n "$actual_token" ] && [ "$actual_token" = "$expected_token" ]
+}
+
+touchstone_ship_claim_owner_alive() {
+  local job_dir="$1" owner_pid
+  owner_pid="$(touchstone_ship_claim_value "$job_dir" owner-pid)"
+  case "$owner_pid" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  kill -0 "$owner_pid" 2>/dev/null
+}
+
+touchstone_ship_release_claim() {
+  local job_dir="$1" expected_token="${2-}"
+  if [ -f "$job_dir/active" ]; then
+    touchstone_ship_claim_matches "$job_dir" "$expected_token" || return 1
+    rm -f "$job_dir/active"
+    return
+  fi
+  if [ -d "$job_dir/active" ]; then
+    [ -z "$expected_token" ] || return 1
+    rm -f "$job_dir/active/claimed-epoch"
+    rmdir "$job_dir/active"
+  fi
 }
 
 touchstone_ship_pid_is_runner() {
@@ -126,18 +166,19 @@ touchstone_ship_signal_tree() {
 }
 
 touchstone_ship_mark_stale() {
-  local job_dir="$1"
+  local job_dir="$1" claim_token="${2-}"
   touchstone_ship_write "$job_dir" exit-code 125
   touchstone_ship_write "$job_dir" reason stale-runner
   touchstone_ship_write "$job_dir" finished-at "$(touchstone_ship_now)"
   touchstone_ship_write "$job_dir" status failed
-  rmdir "$job_dir/active" 2>/dev/null || true
+  touchstone_ship_release_claim "$job_dir" "$claim_token" 2>/dev/null || true
 }
 
 touchstone_ship_refresh() {
-  local job_dir="$1" status pid started_epoch claimed_epoch now_epoch
+  local job_dir="$1" status pid started_epoch now_epoch claim_token
   [ -d "$job_dir" ] || return 0
   status="$(touchstone_ship_read "$job_dir" status)"
+  claim_token="$(touchstone_ship_claim_value "$job_dir" owner-token)"
   case "$status" in
     starting)
       pid="$(touchstone_ship_read "$job_dir" pid)"
@@ -145,6 +186,11 @@ touchstone_ship_refresh() {
       now_epoch="$(date +%s)"
       case "$pid" in
         '' | *[!0-9]*)
+          if [ -n "$claim_token" ]; then
+            touchstone_ship_claim_owner_alive "$job_dir" && return 0
+            touchstone_ship_mark_stale "$job_dir" "$claim_token"
+            return 0
+          fi
           case "$started_epoch" in
             '' | *[!0-9]*) return 0 ;;
           esac
@@ -155,6 +201,11 @@ touchstone_ship_refresh() {
           ;;
       esac
       if ! touchstone_ship_pid_is_runner "$job_dir" "$pid"; then
+        if [ -n "$claim_token" ]; then
+          touchstone_ship_claim_owner_alive "$job_dir" && return 0
+          touchstone_ship_mark_stale "$job_dir" "$claim_token"
+          return 0
+        fi
         case "$started_epoch" in
           '' | *[!0-9]*) ;;
           *)
@@ -169,24 +220,14 @@ touchstone_ship_refresh() {
     running | review-waiting | fixing)
       pid="$(touchstone_ship_read "$job_dir" pid)"
       if ! touchstone_ship_pid_is_runner "$job_dir" "$pid"; then
-        touchstone_ship_mark_stale "$job_dir"
+        touchstone_ship_mark_stale "$job_dir" "$claim_token"
       fi
       ;;
     *)
-      if [ -d "$job_dir/active" ]; then
-        claimed_epoch="$(touchstone_ship_read "$job_dir/active" claimed-epoch)"
-        now_epoch="$(date +%s)"
-        case "$claimed_epoch" in
-          '' | *[!0-9]*)
-            # New claims use the directory mtime as their atomic timestamp.
-            # Preserve compatibility with legacy claimed-epoch files below.
-            claimed_epoch="$(touchstone_ship_mtime_epoch "$job_dir/active")" || return 0
-            ;;
-        esac
-        if [ $((now_epoch - claimed_epoch)) -ge 5 ]; then
-          rm -f "$job_dir/active/claimed-epoch"
-          rmdir "$job_dir/active" 2>/dev/null || true
-        fi
+      if [ -n "$claim_token" ]; then
+        touchstone_ship_claim_owner_alive "$job_dir" \
+          || touchstone_ship_release_claim "$job_dir" "$claim_token" 2>/dev/null \
+          || true
       fi
       ;;
   esac

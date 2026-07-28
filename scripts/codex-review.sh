@@ -1160,6 +1160,11 @@ ROUTING_ENABLED="$(normalize_bool "$ROUTING_ENABLED")"
 # underlying provider should use TOUCHSTONE_CONDUCTOR_WITH=<provider>.
 if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
   case "$TOUCHSTONE_REVIEWER" in
+    auto)
+      echo "==> NOTE: TOUCHSTONE_REVIEWER=auto is deprecated in 2.0.0." >&2
+      echo "    Preserving explicit auto-routing; metered providers may be selected." >&2
+      CONDUCTOR_WITH="auto"
+      ;;
     conductor)
       : # canonical — no translation needed
       ;;
@@ -1184,7 +1189,7 @@ if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
       ;;
     *)
       echo "==> WARNING: TOUCHSTONE_REVIEWER=$TOUCHSTONE_REVIEWER is not a known legacy value." >&2
-      echo "    Ignoring; Conductor will auto-route. To pin a provider, use" >&2
+      echo "    Ignoring; the configured/default route applies. To pin a provider, use" >&2
       echo "    TOUCHSTONE_CONDUCTOR_WITH=<provider> directly." >&2
       ;;
   esac

@@ -537,6 +537,28 @@ fi
 # ----------------------------------------------------------------------------
 echo "==> Test: TOUCHSTONE_REVIEWER=<legacy> translates to --with pin + deprecation note"
 : >"$ARGS_FILE"
+out="$(
+  cd "$REPO_AUTO"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    ARGS_FILE="$ARGS_FILE" \
+    TOUCHSTONE_REVIEWER=auto \
+    TOUCHSTONE_NO_AUTO_UPDATE=1 \
+    bash "$TOUCHSTONE_BIN" review --dry-run --base HEAD~1 2>&1
+)"
+if echo "$out" | grep -q 'TOUCHSTONE_REVIEWER=auto is deprecated' \
+  && echo "$out" | grep -q 'metered providers may be selected' \
+  && echo "$out" | grep -q 'provider:    auto (explicit)' \
+  && echo "$out" | grep -q 'cost:        auto-explicit-may-be-metered' \
+  && ! grep -q -- '--with ' "$ARGS_FILE"; then
+  echo "==> PASS: TOUCHSTONE_REVIEWER=auto preserves explicit auto-routing"
+else
+  echo "FAIL: TOUCHSTONE_REVIEWER=auto silently changed to the default provider" >&2
+  echo "out: $out" >&2
+  cat "$ARGS_FILE" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+: >"$ARGS_FILE"
 set +e
 out="$(
   cd "$REPO_AUTO"

@@ -278,7 +278,12 @@ fi
 # the translation block in hooks/conductor-review.sh (keep in sync).
 if [ -n "${TOUCHSTONE_REVIEWER:-}" ]; then
   case "$TOUCHSTONE_REVIEWER" in
-    auto | conductor) ;;
+    auto)
+      echo "==> NOTE: TOUCHSTONE_REVIEWER=auto is deprecated in 2.0.0." >&2
+      echo "    Preserving explicit auto-routing; metered providers may be selected." >&2
+      [ -z "${TOUCHSTONE_CONDUCTOR_WITH:-}" ] && export TOUCHSTONE_CONDUCTOR_WITH="auto"
+      ;;
+    conductor) ;;
     local)
       echo "==> NOTE: TOUCHSTONE_REVIEWER=local is deprecated in 2.0.0." >&2
       echo "    Migrating to explicit offline review: TOUCHSTONE_CONDUCTOR_WITH=ollama." >&2

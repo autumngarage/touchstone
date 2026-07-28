@@ -4118,6 +4118,26 @@ with = "auto"'
     ERRORS=$((ERRORS + 1))
   fi
 
+  echo "==> Test: legacy auto override remains visible and unpinned"
+  LEGACY_AUTO_REPO="$TEST_DIR/legacy-auto"
+  LEGACY_AUTO_OUTPUT="$TEST_DIR/legacy-auto.out"
+  CONDUCTOR_ARGS_LOG="$TEST_DIR/legacy-auto.args"
+  export CONDUCTOR_ARGS_LOG
+  setup_repo "$LEGACY_AUTO_REPO"
+  TOUCHSTONE_REVIEWER=auto run_review "$LEGACY_AUTO_REPO" "$LEGACY_AUTO_OUTPUT"
+
+  if grep -q '^review ' "$CONDUCTOR_ARGS_LOG" \
+    && ! grep -q -- '--with ' "$CONDUCTOR_ARGS_LOG" \
+    && grep -q 'TOUCHSTONE_REVIEWER=auto is deprecated' "$LEGACY_AUTO_OUTPUT" \
+    && grep -q 'cost boundary:  auto-explicit-may-be-metered' "$LEGACY_AUTO_OUTPUT"; then
+    echo "==> PASS: legacy auto override preserved explicit auto-routing"
+  else
+    echo "FAIL: legacy auto override silently changed to subscription Codex" >&2
+    cat "$LEGACY_AUTO_OUTPUT" >&2
+    cat "$CONDUCTOR_ARGS_LOG" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+
   echo "==> Test: explicit provider pin remains supported"
   METERED_REPO="$TEST_DIR/metered"
   METERED_OUTPUT="$TEST_DIR/metered.out"

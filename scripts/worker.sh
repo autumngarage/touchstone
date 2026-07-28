@@ -341,7 +341,7 @@ cmd_status() {
 }
 
 cmd_ship_runner() {
-  local job_dir="" worktree_path="" cleanup=false events_json="" child_pid="" exit_code=0 branch=""
+  local job_dir="" worktree_path="" claim_token="" cleanup=false events_json="" child_pid="" exit_code=0 branch=""
   local review_fix=false max_fix_iterations=3 max_fix_minutes=45 validation_command=""
   local deadline_epoch="" reason=""
   local args
@@ -355,6 +355,10 @@ cmd_ship_runner() {
         ;;
       --worktree)
         worktree_path="$2"
+        shift 2
+        ;;
+      --claim-token)
+        claim_token="$2"
         shift 2
         ;;
       --cleanup)
@@ -392,7 +396,8 @@ cmd_ship_runner() {
     esac
   done
 
-  [ -n "$job_dir" ] && [ -n "$worktree_path" ] || exit 2
+  [ -n "$job_dir" ] && [ -n "$worktree_path" ] && [ -n "$claim_token" ] || exit 2
+  touchstone_ship_claim_matches "$job_dir" "$claim_token" || exit 1
   if [ -n "$events_json" ]; then
     export TOUCHSTONE_EVENTS_FILE="$events_json"
   fi
@@ -403,7 +408,7 @@ cmd_ship_runner() {
     touchstone_ship_write "$job_dir" reason "$reason"
     touchstone_ship_write "$job_dir" finished-at "$(touchstone_ship_now)"
     touchstone_ship_write "$job_dir" status "$status"
-    rmdir "$job_dir/active" 2>/dev/null || true
+    touchstone_ship_release_claim "$job_dir" "$claim_token" 2>/dev/null || true
     touchstone_emit_event worker_ship_finished \
       worktree_path="$worktree_path" status="$status" exit_code="$code"
   }
@@ -474,7 +479,7 @@ cmd_ship_runner() {
 cmd_ship() {
   local worktree_path="" cleanup=false events_json="" detach=false review_fix=false
   local max_fix_iterations=3 max_fix_minutes=45 validation_command=""
-  local job_dir="" runner_pid="" branch="" started_at="" args runner_args
+  local job_dir="" runner_pid="" branch="" started_at="" claim_token="" args runner_args
   args=(--auto-merge)
 
   while [ "$#" -gt 0 ]; do
@@ -564,6 +569,12 @@ cmd_ship() {
     return 1
   }
   worktree_path="$(touchstone_ship_normalize_worktree_path "$worktree_path")"
+  if [ -n "$events_json" ]; then
+    case "$events_json" in
+      /*) ;;
+      *) events_json="$(pwd -P)/$events_json" ;;
+    esac
+  fi
   if [ "$review_fix" = true ] && [ "$detach" != true ]; then
     echo "ERROR: --review-fix requires --detach." >&2
     return 2
@@ -587,11 +598,11 @@ cmd_ship() {
     return 1
   }
   touchstone_ship_refresh "$job_dir"
-  if ! touchstone_ship_claim "$job_dir"; then
+  claim_token="$(touchstone_ship_claim "$job_dir" "$$")" || {
     echo "ERROR: a detached ship job is already active for $worktree_path" >&2
     echo "       Inspect it with: touchstone worker status --worktree '$worktree_path' --show-log" >&2
     return 1
-  fi
+  }
 
   branch="$(worker_branch "$worktree_path")"
   started_at="$(touchstone_ship_now)"
@@ -615,8 +626,9 @@ cmd_ship() {
   touchstone_ship_write "$job_dir" branch "$branch"
   touchstone_ship_write "$job_dir" worktree-path "$worktree_path"
   touchstone_ship_write "$job_dir" status starting
+  touchstone_ship_claim_matches "$job_dir" "$claim_token" || return 1
 
-  runner_args=(_ship-run --job-dir "$job_dir" --worktree "$worktree_path")
+  runner_args=(_ship-run --job-dir "$job_dir" --worktree "$worktree_path" --claim-token "$claim_token")
   if [ "$review_fix" = true ]; then
     runner_args+=(--review-fix)
     runner_args+=(--max-fix-iterations "$max_fix_iterations")
@@ -628,6 +640,12 @@ cmd_ship() {
   nohup bash "$TOUCHSTONE_ROOT/scripts/worker.sh" "${runner_args[@]}" \
     >>"$job_dir/ship.log" 2>&1 </dev/null &
   runner_pid=$!
+  if ! touchstone_ship_claim_matches "$job_dir" "$claim_token"; then
+    kill "$runner_pid" 2>/dev/null || true
+    wait "$runner_pid" 2>/dev/null || true
+    echo "ERROR: detached ship claim changed before runner startup." >&2
+    return 1
+  fi
   touchstone_ship_write "$job_dir" pid "$runner_pid"
 
   echo "Detached ship started."
@@ -697,11 +715,11 @@ cmd_takeover() {
         if ! kill -TERM "$pid" 2>/dev/null; then
           touchstone_ship_refresh "$job_dir"
         fi
-        while [ "$waited" -lt 50 ] && [ -d "$job_dir/active" ]; do
+        while [ "$waited" -lt 50 ] && touchstone_ship_claim_exists "$job_dir"; do
           sleep 0.1
           waited=$((waited + 1))
         done
-        if [ -d "$job_dir/active" ]; then
+        if touchstone_ship_claim_exists "$job_dir"; then
           if [ "$force" != true ]; then
             echo "ERROR: detached ship runner did not stop; retry with --force." >&2
             return 1
@@ -711,12 +729,14 @@ cmd_takeover() {
           touchstone_ship_write "$job_dir" reason forced-takeover
           touchstone_ship_write "$job_dir" finished-at "$(touchstone_ship_now)"
           touchstone_ship_write "$job_dir" status stopped
-          rmdir "$job_dir/active" 2>/dev/null || true
+          touchstone_ship_release_claim \
+            "$job_dir" "$(touchstone_ship_claim_value "$job_dir" owner-token)" 2>/dev/null || true
         fi
       fi
       ;;
     needs-attention)
-      rmdir "$job_dir/active" 2>/dev/null || true
+      touchstone_ship_release_claim \
+        "$job_dir" "$(touchstone_ship_claim_value "$job_dir" owner-token)" 2>/dev/null || true
       touchstone_emit_event worker_ship_takeover worktree_path="$worktree_path" pid="$pid"
       echo "Autonomous review-fix job needs attention."
       echo "Reason: $(touchstone_ship_read "$job_dir" reason)"

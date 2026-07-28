@@ -234,6 +234,10 @@ write_detached_open_pr() {
 set -euo pipefail
 echo "detached runner started"
 printf 'started\n' >"$SHIP_STARTED_FILE"
+if [ "${SHIP_RECORD_CHILD_EVENT:-0}" = 1 ]; then
+  printf '%s\n' "$TOUCHSTONE_EVENTS_FILE" >"$SHIP_CHILD_EVENT_PATH_FILE"
+  printf '{"event":"open_pr_child"}\n' >>"$TOUCHSTONE_EVENTS_FILE"
+fi
 sleep "${SHIP_SLEEP_SECONDS:-0}"
 echo "detached runner finished"
 exit "${SHIP_EXIT_CODE:-0}"
@@ -305,6 +309,32 @@ if ! wait_for_ship_status "$DETACHED_WT" succeeded "$DETACHED_STATUS"; then
   cat "$DETACHED_STATUS" >&2
 fi
 assert_contains "$DETACHED_STATUS" '"exit_code":0'
+
+RELATIVE_EVENTS_CALLER="$TEST_DIR/relative-events-caller"
+mkdir -p "$RELATIVE_EVENTS_CALLER"
+RELATIVE_EVENTS_FILE="$(cd "$RELATIVE_EVENTS_CALLER" && pwd -P)/relative-events.ndjson"
+(
+  cd "$RELATIVE_EVENTS_CALLER"
+  SHIP_STARTED_FILE="$TEST_DIR/relative-events-started" \
+    SHIP_EXIT_CODE=0 \
+    SHIP_RECORD_CHILD_EVENT=1 \
+    SHIP_CHILD_EVENT_PATH_FILE="$TEST_DIR/relative-events-path" \
+    "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+    --worktree "$DETACHED_WT" \
+    --detach \
+    --events-json relative-events.ndjson >/dev/null
+)
+if ! wait_for_ship_status "$DETACHED_WT" succeeded "$DETACHED_STATUS"; then
+  fail "relative-event detached ship did not persist success"
+fi
+assert_contains "$TEST_DIR/relative-events-path" "^$RELATIVE_EVENTS_FILE$"
+assert_contains "$RELATIVE_EVENTS_FILE" '"event":"worker_ship_started"'
+assert_contains "$RELATIVE_EVENTS_FILE" '"event":"open_pr_child"'
+assert_contains "$RELATIVE_EVENTS_FILE" '"event":"worker_ship_finished"'
+if [ -e "$DETACHED_WT/relative-events.ndjson" ]; then
+  fail "relative detached event stream split into the worker worktree"
+fi
+
 "$TOUCHSTONE_ROOT/bin/touchstone" worker status \
   --worktree "$DETACHED_WT" \
   --show-log \
@@ -364,7 +394,8 @@ echo "==> Case d2b: concurrent startup preserves the first atomic claim"
 ATOMIC_JOB_DIR="$TEST_DIR/atomic-claim-job"
 # shellcheck source=../lib/worker-ship-job.sh
 source "$TOUCHSTONE_ROOT/lib/worker-ship-job.sh"
-touchstone_ship_claim "$ATOMIC_JOB_DIR"
+ATOMIC_TOKEN="$(touchstone_ship_claim "$ATOMIC_JOB_DIR" "$$")"
+touch -t 200001010000 "$ATOMIC_JOB_DIR/active"
 (
   sleep 0.1
   touchstone_ship_refresh "$ATOMIC_JOB_DIR"
@@ -374,10 +405,38 @@ if touchstone_ship_claim "$ATOMIC_JOB_DIR"; then
   fail "concurrent detached startup acquired an existing claim"
 fi
 wait "$ATOMIC_REFRESH_PID"
-if [ ! -d "$ATOMIC_JOB_DIR/active" ]; then
-  fail "refresh removed a newly created detached startup claim"
+if ! touchstone_ship_claim_matches "$ATOMIC_JOB_DIR" "$ATOMIC_TOKEN"; then
+  fail "refresh removed an aged claim whose owner was still live"
 fi
-rmdir "$ATOMIC_JOB_DIR/active"
+touchstone_ship_release_claim "$ATOMIC_JOB_DIR" "$ATOMIC_TOKEN"
+
+DEAD_OWNER_JOB_DIR="$TEST_DIR/dead-owner-claim-job"
+sleep 30 &
+DEAD_OWNER_PID=$!
+DEAD_OWNER_TOKEN="$(touchstone_ship_claim "$DEAD_OWNER_JOB_DIR" "$DEAD_OWNER_PID")"
+kill "$DEAD_OWNER_PID"
+wait "$DEAD_OWNER_PID" 2>/dev/null || true
+touchstone_ship_refresh "$DEAD_OWNER_JOB_DIR"
+if touchstone_ship_claim_exists "$DEAD_OWNER_JOB_DIR"; then
+  fail "refresh preserved a claim whose owner had exited"
+fi
+SUCCESSOR_TOKEN="$(touchstone_ship_claim "$DEAD_OWNER_JOB_DIR" "$$")"
+if touchstone_ship_release_claim "$DEAD_OWNER_JOB_DIR" "$DEAD_OWNER_TOKEN" 2>/dev/null; then
+  fail "a stale owner token released its successor's claim"
+fi
+if ! touchstone_ship_claim_matches "$DEAD_OWNER_JOB_DIR" "$SUCCESSOR_TOKEN"; then
+  fail "successor claim did not survive stale-token release"
+fi
+touchstone_ship_release_claim "$DEAD_OWNER_JOB_DIR" "$SUCCESSOR_TOKEN"
+
+LEGACY_CLAIM_JOB_DIR="$TEST_DIR/legacy-claim-job"
+mkdir -p "$LEGACY_CLAIM_JOB_DIR/active"
+touch -t 200001010000 "$LEGACY_CLAIM_JOB_DIR/active"
+touchstone_ship_refresh "$LEGACY_CLAIM_JOB_DIR"
+if [ ! -d "$LEGACY_CLAIM_JOB_DIR/active" ]; then
+  fail "ownerless legacy claim was expired solely by age"
+fi
+rmdir "$LEGACY_CLAIM_JOB_DIR/active"
 
 echo "==> Case d3: detached jobs do not collide when branch names sanitize alike"
 COLLISION_SLASH_WT="$TEST_DIR/collision-slash-worktree"
@@ -721,6 +780,12 @@ case "$command_name:$subcommand" in
       else
         resolved=false
       fi
+      if [ "${FAKE_RESOLVE_EXTERNALLY_BEFORE_REPLY:-0}" = 1 ] \
+        && [ ! -f "$FAKE_REPLIED" ]; then
+        resolved=true
+        : >"$FAKE_RESOLVED"
+        rm -f "$FAKE_THREAD_ACTIVE"
+      fi
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$resolved" "$total_count" "$loaded_count" "$nonmarker_count" \
         "$marker_count" "$comment_ids" "$snapshot_encoded"
@@ -855,6 +920,32 @@ EOF
     --worktree "$FAIL_WT" >"$TEST_DIR/takeover.out"
   assert_contains "$TEST_DIR/takeover.out" 'needs attention'
   [ -d "$FAIL_WT" ] || fail "takeover removed needs-attention worktree"
+
+  echo "==> Case b2: validation cannot mutate the autonomous fix"
+  MUTATING_VALIDATION_WT="$TEST_DIR/mutating-validation-worktree"
+  git -C "$REPO" branch feat/review-mutating-validation main
+  git -C "$REPO" push -q origin feat/review-mutating-validation
+  git -C "$REPO" worktree add -q "$MUTATING_VALIDATION_WT" feat/review-mutating-validation
+  : >"$FAKE_THREAD_ACTIVE"
+  printf 'thread-mutating-validation\n' >"$FAKE_THREAD_ID"
+  rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED" "$FAKE_MERGED"
+  MUTATING_VALIDATION_HEAD="$(git -C "$MUTATING_VALIDATION_WT" rev-parse HEAD)"
+  TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+    "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+    --worktree "$MUTATING_VALIDATION_WT" --detach --review-fix \
+    --validation-command 'printf generated > validation-output.txt' >/dev/null
+  wait_for_status "$MUTATING_VALIDATION_WT" needs-attention "$STATUS" \
+    || fail "mutating validation did not enter needs-attention"
+  assert_contains "$STATUS" '"reason":"validation-mutated-worktree"'
+  [ -f "$MUTATING_VALIDATION_WT/validation-output.txt" ] \
+    || fail "validator-authored output was not preserved for takeover"
+  [ -n "$(git -C "$MUTATING_VALIDATION_WT" status --porcelain)" ] \
+    || fail "mutating validation work was not preserved"
+  [ "$(git -C "$MUTATING_VALIDATION_WT" rev-parse HEAD)" = "$MUTATING_VALIDATION_HEAD" ] \
+    || fail "mutating validation created an autonomous commit"
+  [ ! -f "$FAKE_REPLIED" ] || fail "mutating validation reached thread reply"
+  [ ! -f "$FAKE_RESOLVED" ] || fail "mutating validation reached thread resolution"
+  [ ! -f "$FAKE_MERGED" ] || fail "mutating validation reached merge"
 
   echo "==> Case c: ambiguous feedback result and stale heads fail closed"
   AMBIG_WT="$TEST_DIR/ambiguous-worktree"
@@ -1063,6 +1154,31 @@ EOF
   [ ! -f "$FAKE_RESOLVED" ] || fail "new follow-up feedback was autonomously resolved"
   [ ! -f "$FAKE_MERGED" ] || fail "new follow-up feedback reached merge"
   unset FAKE_ADD_COMMENT_BEFORE_RESOLVE
+
+  echo "==> Case c8b: external resolution cannot authorize an autonomous merge"
+  EXTERNAL_RESOLVE_WT="$TEST_DIR/external-resolve-worktree"
+  git -C "$REPO" branch feat/review-external-resolve main
+  git -C "$REPO" push -q origin feat/review-external-resolve
+  git -C "$REPO" worktree add -q "$EXTERNAL_RESOLVE_WT" feat/review-external-resolve
+  : >"$FAKE_THREAD_ACTIVE"
+  : >"$FAKE_REPLY_LOG"
+  : >"$FAKE_RESOLVE_LOG"
+  : >"$FAKE_UNRESOLVE_LOG"
+  printf 'thread-external-resolve\n' >"$FAKE_THREAD_ID"
+  rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED" "$FAKE_MERGED"
+  export FAKE_RESOLVE_EXTERNALLY_BEFORE_REPLY=1
+  TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+    "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+    --worktree "$EXTERNAL_RESOLVE_WT" --detach --review-fix --validation-command : >/dev/null
+  wait_for_status "$EXTERNAL_RESOLVE_WT" needs-attention "$STATUS" \
+    || fail "external thread resolution did not enter needs-attention"
+  assert_contains "$STATUS" '"reason":"review-thread-changed"'
+  [ ! -s "$FAKE_REPLY_LOG" ] || fail "external resolution received a Touchstone reply"
+  [ ! -s "$FAKE_RESOLVE_LOG" ] || fail "external resolution was resolved again"
+  [ ! -s "$FAKE_UNRESOLVE_LOG" ] || fail "external resolution was reopened"
+  [ ! -f "$FAKE_MERGED" ] || fail "external resolution authorized merge"
+  [ -f "$FAKE_RESOLVED" ] || fail "external reviewer resolution was not preserved"
+  unset FAKE_RESOLVE_EXTERNALLY_BEFORE_REPLY
 
   echo "==> Case c9: a comment arriving during resolution reopens the thread"
   RESOLVE_RACE_WT="$TEST_DIR/resolve-race-worktree"
