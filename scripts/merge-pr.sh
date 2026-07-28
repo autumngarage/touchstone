@@ -1803,9 +1803,10 @@ wait_for_pr_triggered_review() {
     fi
 
     if [ "$observed_head" = "$expected_head" ] && [ -n "$observed_base" ]; then
-      if [ -z "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" ]; then
-        request_pr_triggered_review "$expected_head" "$observed_base" "$phase" true || exit 1
-      fi
+      # Reload the marker on every poll so a moving base cannot retain the
+      # timestamp from a request that was bound to the previous base SHA.
+      PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
+      request_pr_triggered_review "$expected_head" "$observed_base" "$phase" true || exit 1
       if trusted_pr_clean_signal "$expected_head" "$observed_base" "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"; then
         PR_TRIGGERED_REVIEWED_HEAD_OID="$expected_head"
         PR_TRIGGERED_REVIEWED_BASE_OID="$observed_base"

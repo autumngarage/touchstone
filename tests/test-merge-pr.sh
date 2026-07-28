@@ -1285,6 +1285,32 @@ else
   exit 1
 fi
 
+echo "==> Test: base advance while polling requires a new base-bound request"
+reset_case_files
+write_pr_triggered_config true 1 1
+if GH_BASE_REF_CHANGE_AFTER=4 \
+  GH_BASE_REF_CHANGED_OID="new-base-oid" \
+  GH_EXISTING_REQUEST_BODY=$'@codex review\n\n<!-- touchstone:pr-review-request provider=github-codex head=pr-head-oid base=base-oid -->' \
+  GH_EXISTING_REQUEST_TIMESTAMP="2026-06-22T00:00:00Z" \
+  GH_REQUEST_CREATED_AT="2026-06-24T00:00:00Z" \
+  GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/prior-base' \
+  MERGE_PR_SLEEP_OVERRIDE=1 \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" 123; then
+  echo "FAIL: merge-pr.sh reused the prior base request after the base advanced" >&2
+  exit 1
+fi
+if grep -q 'head=pr-head-oid base=new-base-oid' "$TEST_DIR/gh-review-request" \
+  && grep -q 'Timed out waiting for trusted PR-visible AI review' "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" \
+  && ! grep -q 'Trusted PR-visible AI review found' "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: base movement during polling invalidates the prior request timestamp"
+else
+  echo "FAIL: base movement while polling did not require fresh base-bound evidence" >&2
+  cat "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" >&2
+  [ ! -f "$TEST_DIR/gh-review-request" ] || cat "$TEST_DIR/gh-review-request" >&2
+  exit 1
+fi
+
 echo "==> Test: base advance after semantic review blocks final merge"
 reset_case_files
 install_preflight_counter_fixture
