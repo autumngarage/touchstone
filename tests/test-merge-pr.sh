@@ -1287,7 +1287,7 @@ fi
 
 echo "==> Test: base advance while polling requires a new base-bound request"
 reset_case_files
-write_pr_triggered_config true 1 1
+write_pr_triggered_config true 2 1
 if GH_BASE_REF_CHANGE_AFTER=4 \
   GH_BASE_REF_CHANGED_OID="new-base-oid" \
   GH_EXISTING_REQUEST_BODY=$'@codex review\n\n<!-- touchstone:pr-review-request provider=github-codex head=pr-head-oid base=base-oid -->' \
