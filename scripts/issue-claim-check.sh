@@ -133,6 +133,7 @@ PR_NUMBER=""
 PR_AUTHOR=""
 COMMENT_PR=false
 OWNED_BODY_FILE=""
+current_repo=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -191,6 +192,12 @@ fi
 
 require_gh
 
+current_repo="$(resolve_current_repo)"
+if [ -z "$current_repo" ]; then
+  echo "ERROR: could not resolve current repository for issue claim check." >&2
+  exit 2
+fi
+
 # shellcheck disable=SC2329  # invoked by EXIT trap.
 cleanup() {
   if [ -n "$OWNED_BODY_FILE" ]; then
@@ -203,7 +210,7 @@ if [ -n "$PR_NUMBER" ]; then
   if [ -z "$BODY_FILE" ]; then
     OWNED_BODY_FILE="$(mktemp -t touchstone-claim-body.XXXXXX)"
     BODY_FILE="$OWNED_BODY_FILE"
-    gh pr view "$PR_NUMBER" --json body,author --jq '.body // ""' >"$BODY_FILE"
+    gh api "repos/$current_repo/pulls/$PR_NUMBER" --jq '.body // ""' >"$BODY_FILE"
   fi
 fi
 
@@ -225,7 +232,7 @@ if [ ! -s "$issue_refs_file" ]; then
 fi
 
 if [ -n "$PR_NUMBER" ] && [ -z "$PR_AUTHOR" ]; then
-  PR_AUTHOR="$(gh pr view "$PR_NUMBER" --json body,author --jq '.author.login // empty')"
+  PR_AUTHOR="$(gh api "repos/$current_repo/pulls/$PR_NUMBER" --jq '.user.login // empty')"
 fi
 if [ -z "$PR_AUTHOR" ]; then
   PR_AUTHOR="$(gh api user --jq '.login' 2>/dev/null || true)"
@@ -242,13 +249,13 @@ while IFS= read -r issue_number; do
   [ -n "$issue_number" ] || continue
   echo "==> Checking issue #$issue_number"
 
-  issue_state="$(gh issue view "$issue_number" --json state --jq '.state')"
-  if [ "$issue_state" = "CLOSED" ]; then
+  issue_state="$(gh api "repos/$current_repo/issues/$issue_number" --jq '.state' | tr '[:upper:]' '[:lower:]')"
+  if [ "$issue_state" = "closed" ]; then
     echo "    issue is closed; skipping"
     continue
   fi
 
-  assignees="$(gh issue view "$issue_number" --json assignees --jq '.assignees | map(.login) | join("\n")')"
+  assignees="$(gh api "repos/$current_repo/issues/$issue_number" --jq '.assignees | map(.login) | join("\n")')"
   if printf '%s\n' "$assignees" | grep -Fxq "$PR_AUTHOR"; then
     echo "    pass: @$PR_AUTHOR is assigned"
     continue

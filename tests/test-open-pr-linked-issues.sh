@@ -38,6 +38,38 @@ case "$1 $2" in
   "api user")
     echo "alice"
     ;;
+  "api repos/"*)
+    api_path="$2"
+    jq_expr=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--jq" ]; then
+        jq_expr="$arg"
+      fi
+      prev="$arg"
+    done
+    issue_number="${api_path##*/}"
+    case "$jq_expr" in
+      ".state")
+        case "$issue_number" in
+          51) echo "closed" ;;
+          *) echo "open" ;;
+        esac
+        ;;
+      '.assignees | map(.login) | join("\n")')
+        case "$issue_number" in
+          42 | 43 | 52) echo "alice" ;;
+          6[0-9]) echo "alice" ;;
+          53) echo "bob" ;;
+          *) : ;;
+        esac
+        ;;
+      *)
+        echo "unexpected gh api args: $*" >&2
+        exit 1
+        ;;
+    esac
+    ;;
   "repo view")
     json_fields=""
     prev=""
@@ -71,33 +103,8 @@ case "$1 $2" in
     echo ""
     ;;
   "issue view")
-    issue_number="$3"
-    json_fields=""
-    prev=""
-    for arg in "$@"; do
-      if [ "$prev" = "--json" ]; then
-        json_fields="$arg"
-      fi
-      prev="$arg"
-    done
-    if [ "$json_fields" = "state" ]; then
-      case "$issue_number" in
-        51) echo "CLOSED" ;;
-        *) echo "OPEN" ;;
-      esac
-      exit 0
-    fi
-    if [ "$json_fields" = "assignees" ]; then
-      case "$issue_number" in
-        42 | 43 | 52) echo "alice" ;;
-        6[0-9]) echo "alice" ;;
-        53) echo "bob" ;;
-        *) : ;;
-      esac
-      exit 0
-    fi
-    echo "unexpected gh issue view args: $*" >&2
-    exit 1
+    echo "issue claim check must use REST reads: $*" >&2
+    exit 90
     ;;
   *)
     echo "unexpected gh args: $*" >&2
