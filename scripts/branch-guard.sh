@@ -70,6 +70,8 @@ fi
 # boundary scan only; it never evaluates the command.
 shell_segments() {
   awk '
+    BEGIN { word_start = 1 }
+
     function emit() {
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", segment)
       if (segment != "") {
@@ -81,21 +83,37 @@ shell_segments() {
       line = $0 "\n"
       for (i = 1; i <= length(line); i++) {
         char = substr(line, i, 1)
-        if (escaped) {
+        if (comment) {
+          if (char == "\n") {
+            comment = 0
+            emit()
+            word_start = 1
+          }
+        } else if (escaped) {
           if (char != "\n") {
             segment = segment "\\" char
+            word_start = 0
           }
           escaped = 0
         } else if (char == "\\" && quote != "\047") {
           escaped = 1
         } else if (quote == "") {
-          if (char == "\"" || char == "\047") {
+          if (char == "#" && word_start) {
+            comment = 1
+          } else if (char == "\"" || char == "\047") {
             quote = char
             segment = segment char
+            word_start = 0
           } else if (char == ";" || char == "&" || char == "|" || char == "\n") {
             emit()
+            word_start = 1
           } else {
             segment = segment char
+            if (char ~ /[[:space:]]/ || char == "(" || char == ")") {
+              word_start = 1
+            } else {
+              word_start = 0
+            }
           }
         } else {
           if (char == "\n") {
@@ -106,6 +124,7 @@ shell_segments() {
           if (char == quote) {
             quote = ""
           }
+          word_start = 0
         }
       }
     }

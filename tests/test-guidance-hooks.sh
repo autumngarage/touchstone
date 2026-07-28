@@ -248,9 +248,18 @@ git commit is prose; git checkout is prose'")"
 assert "allows control-flow prose inside a multiline quoted message" "0" \
   "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_MULTILINE_QUOTE_JSON")"
 
+BRANCH_FIRST_HASH_ARGUMENT_JSON="$(mkjson "git checkout -b fix/branch-first-hash && git commit -m fix#parser")"
+assert "preserves a hash that is part of an unquoted shell word" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_HASH_ARGUMENT_JSON")"
+
 BRANCH_FIRST_SECOND_COMMIT_JSON="$(mkjson "git checkout -b fix/branch-first-second-commit && git commit -m 'wip' && git commit --amend --no-edit")"
 assert "blocks branch-first compound with a second commit through &&" "2" \
   "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_SECOND_COMMIT_JSON")"
+
+BRANCH_FIRST_COMMENT_QUOTE_JSON="$(mkjson "git checkout -b fix/branch-first-comment && # '
+git checkout main && git commit --no-verify -m bad")"
+assert "ignores unmatched quotes in comments and blocks the later main commit" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_COMMENT_QUOTE_JSON")"
 
 BRANCH_FIRST_GROUPED_COMMIT_JSON="$(mkjson "git checkout -b fix/branch-first-grouped && git commit -m 'wip' && (git status; git commit --amend --no-edit)")"
 assert "blocks a later commit inside a parenthesized group" "2" \
