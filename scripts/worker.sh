@@ -407,10 +407,10 @@ cmd_ship_runner() {
     touchstone_ship_write "$job_dir" exit-code "$code"
     touchstone_ship_write "$job_dir" reason "$reason"
     touchstone_ship_write "$job_dir" finished-at "$(touchstone_ship_now)"
-    touchstone_ship_write "$job_dir" status "$status"
-    touchstone_ship_release_claim "$job_dir" "$claim_token" 2>/dev/null || true
     touchstone_emit_event worker_ship_finished \
       worktree_path="$worktree_path" status="$status" exit_code="$code"
+    touchstone_ship_release_claim "$job_dir" "$claim_token" 2>/dev/null || true
+    touchstone_ship_write "$job_dir" status "$status"
   }
 
   # shellcheck disable=SC2329 # Invoked by the TERM/INT trap below.
@@ -640,12 +640,6 @@ cmd_ship() {
   nohup bash "$TOUCHSTONE_ROOT/scripts/worker.sh" "${runner_args[@]}" \
     >>"$job_dir/ship.log" 2>&1 </dev/null &
   runner_pid=$!
-  if ! touchstone_ship_claim_matches "$job_dir" "$claim_token"; then
-    kill "$runner_pid" 2>/dev/null || true
-    wait "$runner_pid" 2>/dev/null || true
-    echo "ERROR: detached ship claim changed before runner startup." >&2
-    return 1
-  fi
   touchstone_ship_write "$job_dir" pid "$runner_pid"
 
   echo "Detached ship started."

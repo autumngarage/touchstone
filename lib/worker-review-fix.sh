@@ -15,7 +15,7 @@ touchstone_review_fix_need_attention() {
   local job_dir="$1" worktree_path="$2" reason="$3"
   TOUCHSTONE_REVIEW_FIX_REASON="$reason"
   touchstone_ship_write "$job_dir" reason "$reason"
-  touchstone_review_fix_set_state "$job_dir" "$worktree_path" needs-attention
+  touchstone_emit_event needs_attention worktree_path="$worktree_path"
   return 1
 }
 
