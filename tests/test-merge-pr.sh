@@ -261,6 +261,12 @@ case "${1:-} ${2:-}" in
     case "${3:-}" in
       */comments | */comments\?*)
         if [[ "${5:-}" == *"touchstone:pr-review-request"* ]]; then
+          request_lookup_call_count="$(increment_counter_file "${GH_REQUEST_LOOKUP_CALLS_FILE:-}")"
+          if [ "${GH_REQUEST_LOOKUP_FAIL:-false}" = "true" ] \
+            || { [ "${GH_REQUEST_LOOKUP_FAIL_FIRST:-false}" = "true" ] && [ "$request_lookup_call_count" -eq 1 ]; }; then
+            echo "review request markers unavailable" >&2
+            exit 1
+          fi
           if [[ "${5:-}" != *"author_association"* ]]; then
             echo "request lookup must filter repository-trusted actors" >&2
             exit 1
@@ -593,7 +599,7 @@ reset_case_files() {
     "$TEST_DIR"/git-worktree-remove* "$TEST_DIR"/touchstone-review-log* \
     "$TEST_DIR"/gh-graphql-calls* "$TEST_DIR"/gh-head-ref-calls* "$TEST_DIR"/gh-base-ref-calls* \
     "$TEST_DIR"/gh-reviews-graphql-calls* "$TEST_DIR"/gh-reactions-calls* \
-    "$TEST_DIR"/gh-comments-calls*
+    "$TEST_DIR"/gh-comments-calls* "$TEST_DIR"/gh-request-lookup-calls*
   rm -rf "$GIT_PATH_ROOT"
   rm -rf "$DEFAULT_FAKE_WORKTREE"
   mkdir -p "$GIT_PATH_ROOT"
@@ -633,6 +639,8 @@ reset_case_files() {
   unset GH_EXISTING_REQUEST_TIMESTAMP
   unset GH_REQUEST_RECORDS
   unset GH_REQUEST_CREATED_AT
+  unset GH_REQUEST_LOOKUP_FAIL
+  unset GH_REQUEST_LOOKUP_FAIL_FIRST
   unset GH_COMMENTS_FAIL
   unset GH_COMMENT_COMMIT_RESOLUTION_FAIL
   unset GH_RESOLVED_COMMENT_COMMIT
@@ -716,6 +724,9 @@ run_merge_pr() {
     GH_EXISTING_REQUEST_TIMESTAMP="${GH_EXISTING_REQUEST_TIMESTAMP:-1969-01-01T00:00:00Z}" \
     GH_REQUEST_RECORDS="${GH_REQUEST_RECORDS:-}" \
     GH_REQUEST_CREATED_AT="${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}" \
+    GH_REQUEST_LOOKUP_FAIL="${GH_REQUEST_LOOKUP_FAIL:-false}" \
+    GH_REQUEST_LOOKUP_FAIL_FIRST="${GH_REQUEST_LOOKUP_FAIL_FIRST:-false}" \
+    GH_REQUEST_LOOKUP_CALLS_FILE="$TEST_DIR/gh-request-lookup-calls" \
     GH_COMMENTS_FAIL="${GH_COMMENTS_FAIL:-false}" \
     GH_COMMENT_COMMIT_RESOLUTION_FAIL="${GH_COMMENT_COMMIT_RESOLUTION_FAIL:-false}" \
     GH_RESOLVED_COMMENT_COMMIT="${GH_RESOLVED_COMMENT_COMMIT:-}" \
@@ -1274,8 +1285,9 @@ fi
 if grep -q 'head pr-head-oid has trusted review requests for multiple base revisions' "$TEST_DIR/output-pr-triggered-conflicting-base-request.txt" \
   && grep -q 'current base:  base-oid' "$TEST_DIR/output-pr-triggered-conflicting-base-request.txt" \
   && grep -q 'prior base(s): old-base-oid' "$TEST_DIR/output-pr-triggered-conflicting-base-request.txt" \
+  && [ "$(cat "$TEST_DIR/gh-request-lookup-calls" 2>/dev/null || echo 0)" -eq 1 ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
-  echo "==> PASS: a base retarget requires a new PR head before review can authorize it"
+  echo "==> PASS: a base retarget fails immediately and requires a new PR head"
 else
   echo "FAIL: conflicting base-bound requests did not fail closed" >&2
   cat "$TEST_DIR/output-pr-triggered-conflicting-base-request.txt" >&2
@@ -1888,6 +1900,54 @@ else
   exit 1
 fi
 
+echo "==> Test: formal review in the request timestamp second is accepted"
+reset_case_files
+write_pr_triggered_config true 0 0
+GH_REQUEST_RECORDS=$'2026-06-23T00:00:00Z\tbase-oid' \
+  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/same-second' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-same-second-review.txt" 123
+if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-same-second-review.txt" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: same-second formal review remains valid exact-revision evidence"
+else
+  echo "FAIL: same-second formal review was discarded by timestamp precision" >&2
+  cat "$TEST_DIR/output-pr-triggered-same-second-review.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: clean comment in the request timestamp second is accepted"
+reset_case_files
+write_pr_triggered_config true 0 0
+GH_REQUEST_RECORDS=$'2026-06-23T00:00:00Z\tbase-oid' \
+  GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/same-second\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-same-second-comment.txt" 123
+if grep -q 'clean Codex review comment by @chatgpt-codex-connector' "$TEST_DIR/output-pr-triggered-same-second-comment.txt" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: same-second clean comment remains valid exact-revision evidence"
+else
+  echo "FAIL: same-second clean comment was discarded by timestamp precision" >&2
+  cat "$TEST_DIR/output-pr-triggered-same-second-comment.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: review evidence before the request timestamp remains stale"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_REQUEST_RECORDS=$'2026-06-23T00:00:01Z\tbase-oid' \
+  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/stale' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-before-request.txt" 123; then
+  echo "FAIL: review evidence older than its request authorized the merge" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-before-request.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: pre-request review evidence remains stale"
+else
+  echo "FAIL: pre-request review evidence did not fail as an ordinary missing result" >&2
+  cat "$TEST_DIR/output-pr-triggered-before-request.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: conflicting same-time trusted results fail closed"
 reset_case_files
 write_pr_triggered_config true 0 0
@@ -1939,6 +1999,48 @@ else
   echo "FAIL: transient review lookup failure should not abort polling" >&2
   cat "$TEST_DIR/output-pr-triggered-transient.txt" >&2
   [ ! -f "$TEST_DIR/gh-reviews-graphql-calls" ] || cat "$TEST_DIR/gh-reviews-graphql-calls" >&2
+  exit 1
+fi
+
+echo "==> Test: transient review-request marker lookup failure is retried"
+reset_case_files
+write_pr_triggered_config true 2 1
+GH_REQUEST_LOOKUP_FAIL_FIRST=true \
+  GH_REQUEST_RECORDS=$'2026-06-22T00:00:00Z\tbase-oid' \
+  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/request-retry' \
+  MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-request-lookup-transient.txt" 123
+if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-request-lookup-transient.txt" \
+  && [ "$(cat "$TEST_DIR/gh-request-lookup-calls" 2>/dev/null || echo 0)" -ge 2 ] \
+  && [ ! -f "$TEST_DIR/gh-review-request" ] \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: transient marker lookup failure is retried without a duplicate request"
+else
+  echo "FAIL: transient marker lookup failure aborted or duplicated the request" >&2
+  cat "$TEST_DIR/output-pr-triggered-request-lookup-transient.txt" >&2
+  [ ! -f "$TEST_DIR/gh-request-lookup-calls" ] || cat "$TEST_DIR/gh-request-lookup-calls" >&2
+  exit 1
+fi
+
+echo "==> Test: persistent review-request marker lookup failure reports inspection error"
+reset_case_files
+write_pr_triggered_config true 1 1
+if GH_REQUEST_LOOKUP_FAIL=true \
+  MERGE_PR_SLEEP_OVERRIDE=0.1 \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-request-lookup-persistent.txt" 123; then
+  echo "FAIL: persistent marker lookup failure unexpectedly authorized a merge" >&2
+  exit 1
+fi
+if grep -q 'Failed to inspect trusted PR-visible AI review evidence for PR #123' "$TEST_DIR/output-pr-triggered-request-lookup-persistent.txt" \
+  && grep -q 'last gh error: review request markers: review request markers unavailable' "$TEST_DIR/output-pr-triggered-request-lookup-persistent.txt" \
+  && [ "$(cat "$TEST_DIR/gh-request-lookup-calls" 2>/dev/null || echo 0)" -ge 2 ] \
+  && ! grep -q 'Timed out waiting for trusted PR-visible AI review' "$TEST_DIR/output-pr-triggered-request-lookup-persistent.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: persistent marker lookup failure remains distinct from a missing review"
+else
+  echo "FAIL: persistent marker lookup failure was not retried and diagnosed" >&2
+  cat "$TEST_DIR/output-pr-triggered-request-lookup-persistent.txt" >&2
+  [ ! -f "$TEST_DIR/gh-request-lookup-calls" ] || cat "$TEST_DIR/gh-request-lookup-calls" >&2
   exit 1
 fi
 

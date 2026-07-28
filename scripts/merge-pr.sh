@@ -1664,7 +1664,9 @@ trusted_pr_clean_signal() {
   fi
   if latest_trusted_pr_review_result "$expected_head"; then
     review_timestamp="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
-    if [[ "$review_timestamp" > "$request_timestamp" ]]; then
+    # GitHub timestamps have second precision, so a response completed later
+    # in the request's second is represented by the same timestamp.
+    if [[ ! "$review_timestamp" < "$request_timestamp" ]]; then
       review_found=true
       review_clean="$PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN"
       review_detail="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL"
@@ -1677,7 +1679,7 @@ trusted_pr_clean_signal() {
   fi
   if latest_trusted_pr_comment_result "$expected_head"; then
     comment_timestamp="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
-    if [[ "$comment_timestamp" > "$request_timestamp" ]]; then
+    if [[ ! "$comment_timestamp" < "$request_timestamp" ]]; then
       comment_found=true
       comment_clean="$PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN"
       comment_detail="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL"
@@ -1734,7 +1736,7 @@ wait_for_pr_triggered_review() {
   local expected_head="$1"
   local phase="$2"
   local timeout_sec poll_sec start_epoch now_epoch elapsed observed_head observed_revision observed_branch observed_base sleep_seconds
-  local last_inspection_error="" last_review_inspection_error="" signal_status
+  local last_inspection_error="" last_review_inspection_error="" request_status signal_status
 
   if [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then
     echo "ERROR: Unsupported [review.pr_triggered].provider: $PR_TRIGGERED_REVIEW_PROVIDER" >&2
@@ -1805,19 +1807,30 @@ wait_for_pr_triggered_review() {
     fi
 
     if [ "$observed_head" = "$expected_head" ] && [ -n "$observed_base" ]; then
+      request_status=0
       if [ "$PR_TRIGGERED_REVIEW_REQUEST_BASE_OID" != "$observed_base" ]; then
         PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
-        request_pr_triggered_review "$expected_head" "$observed_base" "$phase" true || exit 1
+        request_pr_triggered_review "$expected_head" "$observed_base" "$phase" true || request_status=$?
+        if [ "$request_status" -eq 2 ]; then
+          last_review_inspection_error="review request markers: ${PR_TRIGGERED_REVIEW_REQUEST_INSPECTION_ERROR:-unknown GitHub API failure}"
+        elif [ "$request_status" -ne 0 ]; then
+          exit 1
+        fi
       fi
-      if trusted_pr_clean_signal "$expected_head" "$observed_base" "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"; then
-        PR_TRIGGERED_REVIEWED_HEAD_OID="$expected_head"
-        PR_TRIGGERED_REVIEWED_BASE_OID="$observed_base"
-        echo "==> Trusted PR-visible AI review found for PR #$PR_NUMBER head $expected_head."
-        echo "    reviewed_base=$observed_base"
-        [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
-        return 0
-      else
-        signal_status=$?
+      if [ "$request_status" -eq 0 ]; then
+        if trusted_pr_clean_signal "$expected_head" "$observed_base" "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"; then
+          signal_status=0
+        else
+          signal_status=$?
+        fi
+        if [ "$signal_status" -eq 0 ]; then
+          PR_TRIGGERED_REVIEWED_HEAD_OID="$expected_head"
+          PR_TRIGGERED_REVIEWED_BASE_OID="$observed_base"
+          echo "==> Trusted PR-visible AI review found for PR #$PR_NUMBER head $expected_head."
+          echo "    reviewed_base=$observed_base"
+          [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
+          return 0
+        fi
         if [ "$signal_status" -eq 2 ]; then
           last_review_inspection_error="$PR_TRIGGERED_REVIEW_INSPECTION_ERROR"
         elif [ "$signal_status" -eq 3 ]; then
@@ -1878,6 +1891,7 @@ load_pr_review_request_timestamp() {
   local prefix legacy_marker records created_at request_base
   local matching_timestamps="" conflicting_bases=""
 
+  PR_TRIGGERED_REVIEW_REQUEST_INSPECTION_ERROR=""
   prefix="@codex review\\n\\n<!-- touchstone:pr-review-request provider=github-codex head=$expected_head base="
   legacy_marker="@codex review\\n\\n<!-- touchstone:pr-review-request provider=github-codex head=$expected_head -->"
   if ! records="$(
@@ -1900,9 +1914,10 @@ load_pr_review_request_timestamp() {
             end
           )
         ] |
-        @tsv"
+        @tsv" 2>&1
   )"; then
-    return 1
+    PR_TRIGGERED_REVIEW_REQUEST_INSPECTION_ERROR="$records"
+    return 2
   fi
 
   while IFS="$(printf '\t')" read -r created_at request_base || [ -n "$created_at" ]; do
@@ -1974,11 +1989,9 @@ request_pr_triggered_review() {
   load_pr_review_request_timestamp "$expected_head" "$expected_base" || request_lookup_status=$?
   if [ "$request_lookup_status" -ne 0 ]; then
     if [ "$request_lookup_status" -eq 3 ]; then
-      return 1
+      return 3
     fi
-    echo "ERROR: Failed to inspect prior GitHub Codex review requests for PR #$PR_NUMBER." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
-    return 1
+    return 2
   fi
   PR_TRIGGERED_REVIEW_REQUEST_BASE_OID="$expected_base"
   if [ -n "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" ]; then
@@ -2505,7 +2518,12 @@ run_merge_review() {
       fi
       wait_for_pr_head "$reviewed_head_after"
       wait_for_clean_merge_state
-      request_pr_triggered_review "$reviewed_head_after" "$REVIEWED_BASE_OID" "after review fixes" || return 1
+      if ! request_pr_triggered_review "$reviewed_head_after" "$REVIEWED_BASE_OID" "after review fixes"; then
+        if [ -n "${PR_TRIGGERED_REVIEW_REQUEST_INSPECTION_ERROR:-}" ]; then
+          echo "ERROR: Failed to inspect prior GitHub Codex review requests for PR #$PR_NUMBER: $PR_TRIGGERED_REVIEW_REQUEST_INSPECTION_ERROR" >&2
+        fi
+        return 1
+      fi
       if truthy "$PR_TRIGGERED_REVIEW_REQUIRED"; then
         wait_for_pr_triggered_review "$reviewed_head_after" "after review fixes"
         require_pr_feedback_clear "after PR-triggered AI review on review fixes" "$reviewed_head_after"
