@@ -90,6 +90,13 @@ assert_contains "$TEST_DIR/planned.out" "scripts/issue-claim-check.sh"
 assert_contains "$TEST_DIR/planned.out" "lib/codex-auth.sh"
 assert_contains "$TEST_DIR/planned.out" "lib/script-sync-guard.sh"
 assert_contains "$TEST_DIR/planned.out" "lib/preflight-scope.sh"
+cat >"$CLEAN_PROJECT/.codex-review.toml" <<'EOF_LEGACY_REVIEW'
+[review]
+reviewers = ["codex"]
+EOF_LEGACY_REVIEW
+touchstone_sync_planned_write_paths "$CLEAN_PROJECT" "$TOUCHSTONE_ROOT" >"$TEST_DIR/planned-legacy.out"
+assert_not_contains "$TEST_DIR/planned-legacy.out" ".codex-review.toml"
+rm -f "$CLEAN_PROJECT/.codex-review.toml"
 
 echo ""
 echo "--- dirty path inside owned set: sync refuses with overlap list ---"

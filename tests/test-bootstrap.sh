@@ -211,6 +211,9 @@ assert_exists "$PROJECT/principles/README.md"
 # Scripts
 assert_exists "$PROJECT/scripts/conductor-review.sh"
 assert_exists "$PROJECT/scripts/codex-review.sh"
+assert_exists "$PROJECT/scripts/branch-guard.sh"
+assert_exists "$PROJECT/scripts/emergency-disclosure.sh"
+assert_exists "$PROJECT/scripts/cortex-pr-merged-hook.sh"
 assert_exists "$PROJECT/lib/toml.sh"
 assert_exists "$PROJECT/lib/codex-auth.sh"
 assert_exists "$PROJECT/lib/script-sync-guard.sh"
@@ -262,6 +265,10 @@ assert_contains "$PROJECT/.touchstone-config" '^validate_full_command=$'
 assert_exists "$PROJECT/.touchstone-manifest"
 assert_contains "$PROJECT/.touchstone-manifest" '^\.touchstone-version$'
 assert_contains "$PROJECT/.touchstone-manifest" '^\.github/workflows/issue-claim-check\.yml$'
+assert_contains "$PROJECT/.touchstone-manifest" '^\.claude/settings\.json$'
+assert_contains "$PROJECT/.touchstone-manifest" '^scripts/branch-guard\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^scripts/emergency-disclosure\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cortex-pr-merged-hook\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/open-pr.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/claim-issue.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/issue-claim-check.sh$'
@@ -1044,10 +1051,16 @@ printf 'Logged in to github.com\n'
 FAKEGH
 cat >"$SETUP_VERSION_FAKE_BIN/codex" <<'FAKECODEX'
 #!/usr/bin/env bash
+if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then
+  printf '%s\n' "${CODEX_LOGIN_STATUS:-Logged in using ChatGPT}"
+fi
 exit 0
 FAKECODEX
 cat >"$SETUP_VERSION_FAKE_BIN/conductor" <<'FAKECONDUCTOR'
 #!/usr/bin/env bash
+if [ -n "${CONDUCTOR_SETUP_LOG:-}" ]; then
+  printf '%s\n' "$*" >>"$CONDUCTOR_SETUP_LOG"
+fi
 case "$1" in
   doctor)
     printf '{"configured": true}\n'
@@ -1075,11 +1088,24 @@ assert_not_contains "$TEST_DIR/setup-version-output.txt" "unknown AI reviewer"
 
 SETUP_CONDUCTOR_PROJECT="$TEST_DIR/setup-conductor-project"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SETUP_CONDUCTOR_PROJECT" --no-register --reviewer codex >/dev/null
-(cd "$SETUP_CONDUCTOR_PROJECT" && PATH="$SETUP_VERSION_FAKE_BIN:$PATH" bash setup.sh) >"$TEST_DIR/setup-conductor-output.txt"
+CONDUCTOR_SETUP_LOG="$TEST_DIR/setup-conductor.log"
+: >"$CONDUCTOR_SETUP_LOG"
+(cd "$SETUP_CONDUCTOR_PROJECT" && PATH="$SETUP_VERSION_FAKE_BIN:$PATH" CONDUCTOR_SETUP_LOG="$CONDUCTOR_SETUP_LOG" bash setup.sh) >"$TEST_DIR/setup-conductor-output.txt"
 assert_contains "$TEST_DIR/setup-conductor-output.txt" 'pinned provider: codex'
 assert_contains "$TEST_DIR/setup-conductor-output.txt" 'no automatic metered overflow'
 assert_not_contains "$TEST_DIR/setup-conductor-output.txt" 'codex installed'
 assert_not_contains "$TEST_DIR/setup-conductor-output.txt" 'Installing Codex CLI'
+assert_contains "$CONDUCTOR_SETUP_LOG" '^route --json --kind review --with codex$'
+
+: >"$CONDUCTOR_SETUP_LOG"
+(cd "$SETUP_CONDUCTOR_PROJECT" \
+  && PATH="$SETUP_VERSION_FAKE_BIN:$PATH" \
+    CODEX_LOGIN_STATUS='Logged in using an API key' \
+    CONDUCTOR_SETUP_LOG="$CONDUCTOR_SETUP_LOG" \
+    bash setup.sh) >"$TEST_DIR/setup-conductor-api-key-output.txt"
+assert_contains "$TEST_DIR/setup-conductor-api-key-output.txt" 'refuses API-key authentication to avoid metered spend'
+assert_not_contains "$TEST_DIR/setup-conductor-api-key-output.txt" 'pinned provider: codex'
+assert_not_contains "$CONDUCTOR_SETUP_LOG" '^route '
 
 # touchstone-run.sh should provide ecosystem-neutral task dispatch.
 RUNNER_FAKE_BIN="$TEST_DIR/runner-fake-bin"

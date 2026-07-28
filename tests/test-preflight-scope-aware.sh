@@ -478,11 +478,12 @@ new_fixture_repo "$REPO"
   cd "$REPO"
   mkdir -p lib scripts principles .claude/skills/touchstone-git-workflow
   printf '2.99.0\n' >.touchstone-version
+  printf '# shared subscription auth boundary\n' >lib/codex-auth.sh
   printf '# touchstone managed\n' >lib/preflight.sh
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho managed\n' >scripts/merge-pr.sh
   printf '# Principle\n' >principles/git-workflow.md
   printf '# Skill\n' >.claude/skills/touchstone-git-workflow/SKILL.md
-  git add .touchstone-version lib/preflight.sh scripts/merge-pr.sh principles/git-workflow.md .claude/skills/touchstone-git-workflow/SKILL.md
+  git add .touchstone-version lib/codex-auth.sh lib/preflight.sh scripts/merge-pr.sh principles/git-workflow.md .claude/skills/touchstone-git-workflow/SKILL.md
   git commit -q -m "touchstone delivery-only bump"
 )
 : >"$LOG"

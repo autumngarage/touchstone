@@ -1085,6 +1085,9 @@ write_touchstone_manifest() {
     done
     printf 'scripts/conductor-review.sh\n'
     printf 'scripts/codex-review.sh\n'
+    printf 'scripts/branch-guard.sh\n'
+    printf 'scripts/emergency-disclosure.sh\n'
+    printf 'scripts/cortex-pr-merged-hook.sh\n'
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
@@ -1107,6 +1110,7 @@ write_touchstone_manifest() {
     if [ "$INPUT_TYPE" = "python" ]; then
       printf 'scripts/run-pytest-in-venv.sh\n'
     fi
+    printf '.claude/settings.json\n'
   } >"$manifest_tmp"
   if copy_file_force "$manifest_tmp" "$PROJECT_DIR/.touchstone-manifest"; then
     rm -f "$manifest_tmp"
@@ -1363,6 +1367,7 @@ copy_file_force "$TOUCHSTONE_ROOT/hooks/conductor-review.sh" "$PROJECT_DIR/scrip
 copy_file_force "$TOUCHSTONE_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
 copy_file_force "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" "$PROJECT_DIR/scripts/branch-guard.sh"
 copy_file_force "$TOUCHSTONE_ROOT/hooks/emergency-disclosure.sh" "$PROJECT_DIR/scripts/emergency-disclosure.sh"
+copy_file_force "$TOUCHSTONE_ROOT/hooks/cortex-pr-merged-hook.sh" "$PROJECT_DIR/scripts/cortex-pr-merged-hook.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_DIR/scripts/touchstone-run.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"

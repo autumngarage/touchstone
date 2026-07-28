@@ -10,6 +10,7 @@
 #   2. v1.x [review.local] block → preserved with an explicit migration hint.
 #   3. Already-v2.x config → unchanged (idempotent re-run).
 #   4. Absent .codex-review.toml → no error.
+#   5. Dirty legacy config → unrelated to the updater's write set and preserved.
 #
 set -euo pipefail
 exec </dev/null
@@ -155,6 +156,43 @@ git -C "$P4" commit --no-verify -m "test: removed config" >/dev/null 2>&1 || tru
 if ! run_update "$P4"; then
   fail "case 4: update exited non-zero with no .codex-review.toml"
   cat "$TEST_DIR/update.out" >&2
+fi
+
+# ---------------------------------------------------------------------------
+# Case 5: dirty legacy config is notice-only and does not block update.
+# ---------------------------------------------------------------------------
+echo "==> Case 5: dirty legacy config is preserved as an unrelated path"
+P5="$TEST_DIR/p5"
+bootstrap_project "$P5"
+rm -f "$P5/.touchstone-review.toml"
+cat >"$P5/.codex-review.toml" <<'EOF'
+[review]
+reviewers = ["codex"]
+EOF
+commit_file "$P5" "test: committed legacy reviewer config"
+printf '%040d\n' 1 >"$P5/.touchstone-version"
+git -C "$P5" add .touchstone-version
+git -C "$P5" commit --no-verify -m "test: simulate stale touchstone" >/dev/null 2>&1
+printf '\n# uncommitted project-owned note\n' >>"$P5/.codex-review.toml"
+P5_BEFORE="$(shasum "$P5/.codex-review.toml" | awk '{print $1}')"
+
+if ! run_update "$P5"; then
+  fail "case 5: dirty project-owned legacy config blocked update"
+  cat "$TEST_DIR/update.out" >&2
+fi
+if [ "$P5_BEFORE" != "$(shasum "$P5/.codex-review.toml" | awk '{print $1}')" ]; then
+  fail "case 5: dirty project-owned legacy config was modified"
+fi
+if ! grep -qF 'Proceeding with sync past unrelated dirty paths:' "$TEST_DIR/update.out" \
+  || ! grep -qF '.codex-review.toml' "$TEST_DIR/update.out"; then
+  fail "case 5: dirty legacy config was not classified as unrelated"
+  cat "$TEST_DIR/update.out" >&2
+fi
+if ! grep -qF 'touchstone migrate-review-config --file .codex-review.toml' "$TEST_DIR/update.out"; then
+  fail "case 5: migration advisory missing for dirty legacy config"
+fi
+if [ -z "$(git -C "$P5" status --porcelain -- .codex-review.toml)" ]; then
+  fail "case 5: dirty legacy config no longer appears as a local change"
 fi
 
 if [ "$ERRORS" -gt 0 ]; then

@@ -344,8 +344,16 @@ assert_contains "$DETACHED_STATUS" '"reason":"stale-runner"'
 
 printf 'starting\n' >"$DETACHED_JOB_DIR/status"
 printf '%s\n' "$$" >"$DETACHED_JOB_DIR/pid"
-printf '%s\n' "$(($(date +%s) - 10))" >"$DETACHED_JOB_DIR/started-epoch"
+printf '%s\n' "$(date +%s)" >"$DETACHED_JOB_DIR/started-epoch"
 mkdir -p "$DETACHED_JOB_DIR/active"
+"$TOUCHSTONE_ROOT/bin/touchstone" worker status \
+  --worktree "$DETACHED_WT" --json >"$DETACHED_STATUS"
+assert_contains "$DETACHED_STATUS" '"status":"starting"'
+if [ ! -d "$DETACHED_JOB_DIR/active" ]; then
+  fail "refresh removed a populated startup claim during its grace period"
+fi
+
+printf '%s\n' "$(($(date +%s) - 10))" >"$DETACHED_JOB_DIR/started-epoch"
 "$TOUCHSTONE_ROOT/bin/touchstone" worker status \
   --worktree "$DETACHED_WT" --json >"$DETACHED_STATUS"
 assert_contains "$DETACHED_STATUS" '"status":"failed"'

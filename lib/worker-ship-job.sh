@@ -141,10 +141,10 @@ touchstone_ship_refresh() {
   case "$status" in
     starting)
       pid="$(touchstone_ship_read "$job_dir" pid)"
+      started_epoch="$(touchstone_ship_read "$job_dir" started-epoch)"
+      now_epoch="$(date +%s)"
       case "$pid" in
         '' | *[!0-9]*)
-          started_epoch="$(touchstone_ship_read "$job_dir" started-epoch)"
-          now_epoch="$(date +%s)"
           case "$started_epoch" in
             '' | *[!0-9]*) return 0 ;;
           esac
@@ -155,6 +155,14 @@ touchstone_ship_refresh() {
           ;;
       esac
       if ! touchstone_ship_pid_is_runner "$job_dir" "$pid"; then
+        case "$started_epoch" in
+          '' | *[!0-9]*) ;;
+          *)
+            if [ $((now_epoch - started_epoch)) -lt 5 ]; then
+              return 0
+            fi
+            ;;
+        esac
         touchstone_ship_mark_stale "$job_dir"
       fi
       ;;
