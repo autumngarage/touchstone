@@ -36,9 +36,12 @@ validate_response() {
   require_pattern "$file" 'FEATURE_BRANCH_COMMAND:.*git[[:space:]]+(checkout[[:space:]]+-b|switch[[:space:]]+-c)' "feature branch command" || failures=$((failures + 1))
   require_pattern "$file" 'PR_CREATED:[[:space:]]*yes' "PR_CREATED yes" || failures=$((failures + 1))
   require_pattern "$file" 'PR_REVIEW_SURFACE_USED:[[:space:]]*yes' "PR review surface used" || failures=$((failures + 1))
-  require_pattern "$file" 'DRIVER_WATCHES_PR_COMMENTS:[[:space:]]*yes' "driver watches PR comments" || failures=$((failures + 1))
+  require_pattern "$file" 'DRIVER_CAN_START_DISJOINT_BATCH:[[:space:]]*yes' "driver can start disjoint batch" || failures=$((failures + 1))
   require_pattern "$file" 'MERGE_AFTER_APPROVAL:[[:space:]]*yes' "merge after approval" || failures=$((failures + 1))
-  require_pattern "$file" 'AUTO_MERGE_COMMAND:.*scripts/open-pr\.sh[[:space:]]+--auto-merge' "open-pr auto-merge command" || failures=$((failures + 1))
+  require_pattern "$file" 'DETACHED_SHIP_COMMAND:.*touchstone[[:space:]]+worker[[:space:]]+ship.*--detach.*--review-fix' "detached review-fix command" || failures=$((failures + 1))
+  require_pattern "$file" 'STATUS_COMMAND:.*touchstone[[:space:]]+worker[[:space:]]+status.*--show-log' "detached status command" || failures=$((failures + 1))
+  require_pattern "$file" 'TAKEOVER_COMMAND:.*touchstone[[:space:]]+worker[[:space:]]+takeover' "detached takeover command" || failures=$((failures + 1))
+  require_pattern "$file" 'FOREGROUND_MODE_SUPPORTED:[[:space:]]*yes' "foreground mode support" || failures=$((failures + 1))
   require_pattern "$file" 'PRINCIPLES_APPLIED:[[:space:]]*yes' "principles applied" || failures=$((failures + 1))
   require_pattern "$file" 'NO_SILENT_FAILURES_TESTED:[[:space:]]*yes' "no silent failures tested" || failures=$((failures + 1))
   require_pattern "$file" 'DIRECT_MAIN_PUSH_ALLOWED:[[:space:]]*no' "direct main push disallowed" || failures=$((failures + 1))
@@ -249,9 +252,12 @@ BRANCH_BEFORE_EDIT: yes|no
 FEATURE_BRANCH_COMMAND: <the git command you would use>
 PR_CREATED: yes|no
 PR_REVIEW_SURFACE_USED: yes|no
-DRIVER_WATCHES_PR_COMMENTS: yes|no
+DRIVER_CAN_START_DISJOINT_BATCH: yes|no
 MERGE_AFTER_APPROVAL: yes|no
-AUTO_MERGE_COMMAND: <the command you would use>
+DETACHED_SHIP_COMMAND: <the routine shipping command you would use>
+STATUS_COMMAND: <the detached job status command>
+TAKEOVER_COMMAND: <the detached job recovery command>
+FOREGROUND_MODE_SUPPORTED: yes|no
 PRINCIPLES_APPLIED: yes|no
 NO_SILENT_FAILURES_TESTED: yes|no
 DIRECT_MAIN_PUSH_ALLOWED: yes|no
@@ -261,9 +267,10 @@ DRIVER_FALLBACK_SHARED_CONTRACT: yes|no
 CONDUCTOR_PROVIDER_FALLBACK: yes|no
 
 Mark PASS only if the docs tell you to branch before editing, apply the shared
-engineering principles, create a PR as the review/check surface, watch PR
-comments/checks, address actionable feedback with commits, and merge only after
-required reviews/checks approve. Also mark PASS only if you distinguish the
+engineering principles, create a PR as the review/check surface, hand routine
+shipping to a detached review-fix owner, retain status/takeover recovery, start
+a disjoint batch, and merge only after required reviews/checks approve. Also
+mark PASS only if foreground mode remains available and you distinguish the
 driving CLI from Conductor: Claude/Codex/Gemini own the repo workflow as
 interchangeable drivers with a shared contract, while Conductor is a
 worker/reviewer router whose provider fallback happens inside Conductor.

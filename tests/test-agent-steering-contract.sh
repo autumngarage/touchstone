@@ -44,7 +44,11 @@ for file in \
   assert_contains "$file" "Before the first edit"
   assert_contains "$file" "principles/ai-delivery-architecture.md"
   assert_contains "$file" "agentic review loop"
+  assert_contains "$file" 'touchstone worker ship --worktree "$PWD" --detach --review-fix'
+  assert_contains "$file" 'touchstone worker status --worktree "$PWD" --show-log'
+  assert_contains "$file" 'touchstone worker takeover --worktree "$PWD"'
   assert_contains "$file" "bash scripts/open-pr.sh --auto-merge"
+  assert_contains "$file" "only for foreground debugging"
   assert_contains "$file" "Claim issues before implementation"
   assert_contains "$file" "bash scripts/claim-issue.sh <n>"
   assert_contains "$file" "Reconcile issues"
@@ -78,6 +82,8 @@ echo "==> canonical git workflow describes the PR-visible review loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Agentic PR Review Loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "The driving CLI watches the PR"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "scripts/open-pr.sh --auto-merge"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'touchstone worker ship --worktree "$PWD" --detach --review-fix'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "detached and foreground modes share the"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Codex merge review"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "codex exec --full-auto"
 
@@ -86,6 +92,9 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Agent
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "PR creation is not completion"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Merge is allowed only after PR-visible review and check approval"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Parallel file-writing agents use worktrees by default"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" 'touchstone worker ship --detach --review-fix'
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "direct \`open-pr.sh\` remains the foreground diagnostic mode"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Durable status and takeover"
 
 echo "==> dogfood harness validates every machine-check field"
 GOOD_RESPONSE="$TEST_DIR/good-response.txt"
@@ -95,9 +104,12 @@ BRANCH_BEFORE_EDIT: yes
 FEATURE_BRANCH_COMMAND: git checkout -b fix/log-swallowed-exception
 PR_CREATED: yes
 PR_REVIEW_SURFACE_USED: yes
-DRIVER_WATCHES_PR_COMMENTS: yes
+DRIVER_CAN_START_DISJOINT_BATCH: yes
 MERGE_AFTER_APPROVAL: yes
-AUTO_MERGE_COMMAND: bash scripts/open-pr.sh --auto-merge
+DETACHED_SHIP_COMMAND: touchstone worker ship --worktree "$PWD" --detach --review-fix
+STATUS_COMMAND: touchstone worker status --worktree "$PWD" --show-log
+TAKEOVER_COMMAND: touchstone worker takeover --worktree "$PWD"
+FOREGROUND_MODE_SUPPORTED: yes
 PRINCIPLES_APPLIED: yes
 NO_SILENT_FAILURES_TESTED: yes
 DIRECT_MAIN_PUSH_ALLOWED: no
@@ -115,9 +127,12 @@ BRANCH_BEFORE_EDIT: yes
 FEATURE_BRANCH_COMMAND: git checkout -b fix/log-swallowed-exception
 PR_CREATED: yes
 PR_REVIEW_SURFACE_USED: yes
-DRIVER_WATCHES_PR_COMMENTS: yes
+DRIVER_CAN_START_DISJOINT_BATCH: yes
 MERGE_AFTER_APPROVAL: yes
-AUTO_MERGE_COMMAND: bash scripts/open-pr.sh --auto-merge
+DETACHED_SHIP_COMMAND: touchstone worker ship --worktree "$PWD" --detach --review-fix
+STATUS_COMMAND: touchstone worker status --worktree "$PWD" --show-log
+TAKEOVER_COMMAND: touchstone worker takeover --worktree "$PWD"
+FOREGROUND_MODE_SUPPORTED: yes
 PRINCIPLES_APPLIED: yes
 NO_SILENT_FAILURES_TESTED: yes
 DIRECT_MAIN_PUSH_ALLOWED: no
@@ -133,8 +148,12 @@ fi
 echo "==> dogfood harness documents its offline validator"
 assert_contains "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" "--validate-response FILE"
 assert_contains "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" "DRIVING_CLI_OWNS_REPO_WORKFLOW"
-assert_contains "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" "DRIVER_WATCHES_PR_COMMENTS"
+assert_contains "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" "DRIVER_CAN_START_DISJOINT_BATCH"
 assert_contains "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" "MERGE_AFTER_APPROVAL"
+assert_contains "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" "DETACHED_SHIP_COMMAND"
+assert_contains "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" "STATUS_COMMAND"
+assert_contains "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" "TAKEOVER_COMMAND"
+assert_contains "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" "FOREGROUND_MODE_SUPPORTED"
 assert_contains "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" "CONDUCTOR_PROVIDER_FALLBACK"
 
 if [ "$ERRORS" -gt 0 ]; then

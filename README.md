@@ -265,7 +265,7 @@ scripts/dogfood-agent-steering.sh --providers auto
 scripts/dogfood-agent-steering.sh --providers auto,claude,codex,gemini --keep
 ```
 
-The harness bootstraps a temporary Touchstone project, asks Conductor-routed agents to inspect the real steering files, and fails unless they infer the required branch-before-edit, PR creation, PR-visible review loop, and `scripts/open-pr.sh --auto-merge` flow. It is not part of `tests/test-*.sh` because it can spend provider quota.
+The harness bootstraps a temporary Touchstone project, asks Conductor-routed agents to inspect the real steering files, and fails unless they infer the required branch-before-edit, PR-visible review loop, detached review-fix handoff, status/takeover recovery, and foreground diagnostic mode. It is not part of `tests/test-*.sh` because it can spend provider quota.
 
 The static contract tests still run in the normal self-test suite:
 

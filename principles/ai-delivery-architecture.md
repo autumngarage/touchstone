@@ -28,15 +28,14 @@ Commit
   | stage explicit paths
   | create focused commit(s)
   v
-Open PR
+Detached Shipping Handoff
   |
-  | push feature branch
-  | create GitHub PR
-  | configured checks/reviews attach to the PR when enabled
+  | Touchstone worker owns push, PR creation, review fixes, checks, and merge
+  | Driver records status/takeover commands and starts a disjoint batch
   v
 Agentic PR Review Loop
   |
-  | Driver AI watches the PR
+  | Detached owner watches the PR
   | - check status and CI/check runs
   | - review PR comments and requested changes
   | - address actionable feedback with commits
@@ -69,7 +68,7 @@ Human user
 ## Required Invariants
 
 - Every change reaches `main` through a GitHub PR unless the documented emergency path is used.
-- PR creation is not completion. The driver stays responsible until the PR is approved, merged, and synced locally.
+- PR creation is not completion. The driver retains accountability through durable worker status and takeover until the PR is approved, merged, and synced locally.
 - The exact commit merged has passed deterministic checks after its last mutation.
 - The exact commit merged has no unresolved blocking review comments, requested changes, or failing required checks.
 - Touchstone-managed LLM review uses Conductor as the only model access path. Driver CLIs do not call provider-specific review commands directly.
@@ -88,10 +87,11 @@ The driver AI is Claude Code, Codex, Gemini CLI, or another AGENTS.md-native cod
 - run focused checks during implementation
 - stage explicit file paths
 - commit coherent changes
-- open the PR
-- watch PR comments, review decisions, and check status
-- address actionable PR feedback with commits
-- invoke final merge automation only after approval
+- hand routine shipping to a detached review-fix worker
+- record the worker status and takeover commands
+- start only work that is disjoint from the handed-off worktree
+- monitor completion and take over `needs-attention` jobs
+- use the foreground shipping path for interactive diagnosis
 - explain the outcome to the user
 
 The driver may use Conductor for bounded implementation, research, or review work, but Conductor does not own the branch-to-merge lifecycle.
@@ -143,9 +143,9 @@ Rules:
 
 The scripts now enforce the core merge-time parts of this architecture:
 
-1. `open-pr.sh` creates or updates the PR and is the default driver entry point for shipping.
+1. `touchstone worker ship --detach --review-fix` is the default driver entry point for routine shipping and invokes the project-local `open-pr.sh --auto-merge`; direct `open-pr.sh` remains the foreground diagnostic mode.
 2. Creating or updating the PR should expose configured checks and, when enabled, PR-visible agentic reviewers.
-3. The driver watches PR comments, review decisions, and checks after each push; actionable feedback becomes commits on the PR branch.
+3. The detached owner watches PR comments, review decisions, and checks after each push; actionable feedback becomes commits on the PR branch. Durable status and takeover keep the driver accountable without blocking it on review latency.
 4. `merge-pr.sh` blocks draft PRs, active requested-changes decisions, unresolved review threads, and thread-state inspection failures before the final squash merge.
 5. When configured for PR-triggered GitHub Codex review, `merge-pr.sh` binds the trusted signal to the exact current head and base. It skips duplicate local semantic review only when the PR head already contains that base, repeats the wait after any review-fix push, and rejects base or merge-base movement before merging with `--match-head-commit`.
 6. Review and preflight markers should key on base/head/config so repeated operations reuse valid results without hiding stale state.
