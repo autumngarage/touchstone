@@ -37,8 +37,8 @@
 #   but the `--auto-merge` default (squash) will orphan the child.
 #
 #   Prefer independent PRs against the default branch when slices can ship
-#   separately. Bundle only changes that prove one invariant in one subsystem;
-#   use a stack only when a child truly depends on an unmerged parent.
+#   separately; rebase or cherry-pick child-only commits onto the default branch
+#   first. Use a stack only when a child truly depends on an unmerged parent.
 #   See principles/git-workflow.md.
 #
 set -euo pipefail
@@ -936,8 +936,8 @@ if [ -n "$BASE_OVERRIDE" ] && [ "$AUTO_MERGE" = true ]; then
   echo "WARNING: --base $BASE_OVERRIDE with --auto-merge stacks this PR on another branch" >&2
   echo "         AND will squash-merge it, which orphans any later stacked children." >&2
   echo "         Either drop --auto-merge (open stack, merge manually in order)" >&2
-  echo "         or drop --base (open an independent PR on $DEFAULT_BRANCH)." >&2
-  echo "         Bundle only changes that prove the same invariant." >&2
+  echo "         or rebase/cherry-pick child-only commits onto $DEFAULT_BRANCH and rerun without --base." >&2
+  echo "         Dropping --base without rewriting history bundles the parent commits." >&2
 fi
 
 # Push. The "do I already have an upstream?" check is name-aware: a fresh

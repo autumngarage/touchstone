@@ -19,7 +19,7 @@ For the canonical version: read **`principles/pre-implementation-checklist.md`**
 
 ## Define the slice
 
-Record the invariant, owned subsystem/files, focused validation, non-goals, and stop condition. "Ship it all" defines a queue, not one PR. Freeze and split/replan when review reveals a second subsystem or two consecutive review/fix cycles uncover new structural defects.
+Record the invariant, minimum coupled subsystems/files required to ship it, focused validation, non-goals, and stop condition. "Ship it all" defines a queue, not one PR. Freeze and split/replan when review reveals another independently shippable concern or two consecutive review/fix cycles uncover new structural defects.
 
 ## The five implementation questions
 

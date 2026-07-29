@@ -15,9 +15,9 @@ Issue #536 records the failure mode and the required guardrail. The existing gui
 
 ## What we decided
 
-Every nontrivial delivery slice names one invariant, its owned subsystem, focused validation, non-goals, and a stop condition before implementation. "Ship everything" defines an ordered queue of independently shippable PRs. Review findings stay in the current PR only when they protect its invariant; findings that introduce a new subsystem become claimed follow-up work.
+Every nontrivial delivery slice names one invariant, the minimum coupled surfaces required to ship it, focused validation, non-goals, and a stop condition before implementation. "Ship everything" defines an ordered queue of independently shippable PRs. Review findings stay in the current PR only when they protect its invariant; independently shippable findings become filed follow-up work and are claimed only when implementation starts.
 
-A branch freezes for split or replan when review reveals a second subsystem, its file surface materially expands, two consecutive review/fix cycles uncover new structural defects, the delivery platform dominates the customer work, or a failing gate cannot identify the failed command.
+A branch freezes for split or replan when review reveals another independently shippable concern, its file surface expands beyond the minimum needed for the invariant, two consecutive review/fix cycles uncover new structural defects, the delivery platform dominates the customer work, or a failing gate cannot identify the failed command.
 
 ## Consequences / action items
 

@@ -43,7 +43,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers).
 - **Isolate file-writing subagents** — parallel workers use dedicated worktrees, slice manifests, and disjoint file ownership by default.
 - **File issues for bugs** — open a GitHub issue when you find a bug, in this project or in an autumngarage tool. Don't silently work around it.
-- **Bound delivery loops** — define the smallest shippable concern, explicit non-goals, and a stop condition. Repeated structural findings or a new subsystem trigger freeze/split/replan, not indefinite same-PR fixes.
+- **Bound delivery loops** — define the smallest shippable concern, explicit non-goals, and a stop condition. Repeated structural findings or a new independently shippable concern trigger freeze/split/replan.
 - **Escalate delivery friction upstream** — file actionable issues for tool-caused drag; don't normalize it.
 
 ## Never commit on the default branch

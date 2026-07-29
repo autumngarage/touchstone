@@ -33,16 +33,16 @@ The three layers are complementary — the local hook catches the honest mistake
 
 ## Delivery circuit breaker
 
-The review loop improves a bounded change; it does not authorize indefinite scope growth. Before implementation, record the invariant, owned surface, focused validation, non-goals, and stop condition from the [pre-implementation checklist](pre-implementation-checklist.md).
+The review loop improves a bounded change; it does not authorize indefinite scope growth. Before implementation, record the invariant, minimum coupled surface, focused validation, non-goals, and stop condition from the [pre-implementation checklist](pre-implementation-checklist.md).
 
 Freeze the branch and split/replan before another edit when any of these occurs:
 
-- Review reveals a second subsystem or the changed-file surface materially expands.
+- Review reveals another independently shippable concern or the changed-file surface expands beyond the minimum needed for the invariant.
 - Two consecutive review/fix cycles uncover new structural defects.
 - The delivery platform becomes the dominant work instead of enabling the customer product.
 - A failing gate cannot name the failed command or provide actionable diagnostics.
 
-At the circuit breaker, preserve the branch, file the newly discovered work, and choose the smallest release-blocking slice. Do not keep accepting findings into the same PR merely because each finding is valid. A request to "ship everything" establishes priority and sequencing; it does not waive coherent PR boundaries.
+At the circuit breaker, preserve the branch, file the newly discovered work, and claim it only when implementation starts. Choose the smallest release-blocking slice. Do not keep accepting findings into the same PR merely because each finding is valid. A request to "ship everything" establishes priority and sequencing; it does not waive coherent PR boundaries.
 
 ### Touchstone CLI auto-sync
 
@@ -161,7 +161,7 @@ A stacked PR is a PR whose base branch is another open PR's branch instead of th
 **What to do.**
 
 - **First preference: sequence independent PRs.** "Ship it all" defines the queue. Keep each PR to one coherent concern and merge independent slices directly to the default branch in priority order.
-- **Bundle only one invariant.** A PR may include several commits or issues when they prove the same invariant in the same subsystem. A new subsystem or independently releasable behavior is a separate PR.
+- **Bundle only one invariant.** A PR may include several commits, issues, or coupled subsystems when they are the minimum unit needed to prove one invariant. Independently releasable behavior is a separate PR.
 - **If you must stack:** drop `--auto-merge` on the whole chain. Merge each PR by hand in order, using **merge commit** or **rebase merge** (never squash) for the parent so the child's branch still traces to something on main. `open-pr.sh` will warn if you pass `--base <branch>` + `--auto-merge` together — take the warning seriously.
 - **Recover an orphaned child**: re-open the work as a fresh PR against current `main` (the lineage is lost but the diff usually still applies). If the parent's squashed content is already on main, the child's diff is just the child-only changes — which is usually what you wanted anyway.
 

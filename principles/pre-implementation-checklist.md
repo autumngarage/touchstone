@@ -9,12 +9,12 @@ This checklist is a pre-flight prompt; the canonical rules live in [engineering-
 Write a short scope manifest before implementation:
 
 - **Invariant:** the behavior that must be true when this slice ships.
-- **Surface:** the subsystem and expected files this slice owns.
+- **Surface:** the minimum coupled subsystems and expected files required to ship the invariant.
 - **Validation:** the focused checks that prove the invariant.
 - **Non-goals:** related work that belongs in follow-up issues.
 - **Stop condition:** the signal that freezes this branch for split/replan.
 
-A request to "ship it all" defines a delivery queue, not one PR. Freeze and replan before another edit when review reveals a second subsystem, the changed-file surface materially expands, or two consecutive review/fix cycles uncover new structural defects. Do not let platform work displace the customer product unless the platform defect blocks that product's release.
+A request to "ship it all" defines a delivery queue, not one PR. Freeze and replan before another edit when review reveals another independently shippable concern, the changed-file surface expands beyond the minimum coupled surface, or two consecutive review/fix cycles uncover new structural defects. Do not let platform work displace the customer product unless the platform defect blocks that product's release.
 
 ## 1. Am I adding to or patching local infrastructure that shared infrastructure should own?
 

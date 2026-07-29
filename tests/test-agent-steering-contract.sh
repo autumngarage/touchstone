@@ -83,8 +83,10 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Delivery circuit 
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '"Ship it all" defines the queue'
 assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "smallest shippable concern"
 assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" "## Bound delivery loops"
-assert_contains "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "Bundle only changes that prove one invariant"
-assert_contains "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "open an independent PR on"
+assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" "minimum coupled surfaces"
+assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" "claim them only when implementation starts"
+assert_contains "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "rebase/cherry-pick child-only commits"
+assert_contains "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "Dropping --base without rewriting history bundles"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Codex merge review"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "codex exec --full-auto"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '"ship it all," default to one PR'
