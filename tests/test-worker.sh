@@ -508,7 +508,55 @@ fi
 kill "$UNRELATED_PID"
 wait "$UNRELATED_PID" 2>/dev/null || true
 
-echo "==> Case d2e: predecessor publishes terminal state before a successor can claim"
+echo "==> Case d2e: refresh cannot overwrite a terminal state published after its snapshot"
+TERMINAL_RACE_JOB_DIR="$TEST_DIR/terminal-race-job"
+TERMINAL_RACE_SIGNAL="$TEST_DIR/terminal-race-signal"
+TERMINAL_RACE_GATE="$TEST_DIR/terminal-race-gate"
+TERMINAL_RACE_BIN="$TEST_DIR/terminal-race-bin"
+mkdir -p "$TERMINAL_RACE_BIN"
+cat >"$TERMINAL_RACE_BIN/ps" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+: >"$TERMINAL_RACE_SIGNAL"
+while [ ! -e "$TERMINAL_RACE_GATE" ]; do
+  sleep 0.01
+done
+exec "$REAL_PS" "$@"
+EOF
+chmod +x "$TERMINAL_RACE_BIN/ps"
+"$LIVE_OWNER_BIN/_ship-run" "$TERMINAL_RACE_JOB_DIR" &
+TERMINAL_RACE_RUNNER_PID=$!
+TERMINAL_RACE_TOKEN="$(touchstone_ship_claim "$TERMINAL_RACE_JOB_DIR" "$$")"
+touchstone_ship_transfer_claim \
+  "$TERMINAL_RACE_JOB_DIR" "$TERMINAL_RACE_TOKEN" "$TERMINAL_RACE_RUNNER_PID"
+touchstone_ship_write "$TERMINAL_RACE_JOB_DIR" status finishing
+touchstone_ship_write "$TERMINAL_RACE_JOB_DIR" pid "$TERMINAL_RACE_RUNNER_PID"
+PATH="$TERMINAL_RACE_BIN:$PATH" \
+  TERMINAL_RACE_SIGNAL="$TERMINAL_RACE_SIGNAL" \
+  TERMINAL_RACE_GATE="$TERMINAL_RACE_GATE" \
+  REAL_PS="$LIVE_OWNER_REAL_PS" \
+  touchstone_ship_refresh "$TERMINAL_RACE_JOB_DIR" &
+TERMINAL_RACE_REFRESH_PID=$!
+attempt=1
+while [ "$attempt" -le 100 ] && [ ! -e "$TERMINAL_RACE_SIGNAL" ]; do
+  sleep 0.01
+  attempt=$((attempt + 1))
+done
+touchstone_ship_write "$TERMINAL_RACE_JOB_DIR" exit-code 1
+touchstone_ship_write "$TERMINAL_RACE_JOB_DIR" reason review-thread-changed
+touchstone_ship_write "$TERMINAL_RACE_JOB_DIR" finished-at "$(touchstone_ship_now)"
+touchstone_ship_write "$TERMINAL_RACE_JOB_DIR" status needs-attention
+touchstone_ship_release_claim "$TERMINAL_RACE_JOB_DIR" "$TERMINAL_RACE_TOKEN"
+kill "$TERMINAL_RACE_RUNNER_PID"
+: >"$TERMINAL_RACE_GATE"
+wait "$TERMINAL_RACE_RUNNER_PID" 2>/dev/null || true
+wait "$TERMINAL_RACE_REFRESH_PID"
+if [ "$(touchstone_ship_read "$TERMINAL_RACE_JOB_DIR" status)" != "needs-attention" ] \
+  || [ "$(touchstone_ship_read "$TERMINAL_RACE_JOB_DIR" reason)" != "review-thread-changed" ]; then
+  fail "refresh overwrote a terminal state published after its status snapshot"
+fi
+
+echo "==> Case d2f: predecessor publishes terminal state before a successor can claim"
 INTERLEAVE_JOB_DIR="$TEST_DIR/finish-interleave-job"
 INTERLEAVE_WT="$TEST_DIR/finish-interleave-worktree"
 INTERLEAVE_BIN="$TEST_DIR/finish-interleave-bin"

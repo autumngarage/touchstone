@@ -195,12 +195,27 @@ touchstone_ship_signal_tree() {
 }
 
 touchstone_ship_mark_stale() {
-  local job_dir="$1" claim_token="${2-}"
+  local job_dir="$1" claim_token="${2-}" status
+  status="$(touchstone_ship_read "$job_dir" status)"
+  case "$status" in
+    starting | running | review-waiting | fixing | finishing) ;;
+    *) return 0 ;;
+  esac
+  if [ -n "$claim_token" ]; then
+    touchstone_ship_release_claim "$job_dir" "$claim_token" 2>/dev/null || return 0
+    status="$(touchstone_ship_read "$job_dir" status)"
+    case "$status" in
+      starting | running | review-waiting | fixing | finishing) ;;
+      *) return 0 ;;
+    esac
+  fi
   touchstone_ship_write "$job_dir" exit-code 125
   touchstone_ship_write "$job_dir" reason stale-runner
   touchstone_ship_write "$job_dir" finished-at "$(touchstone_ship_now)"
   touchstone_ship_write "$job_dir" status failed
-  touchstone_ship_release_claim "$job_dir" "$claim_token" 2>/dev/null || true
+  if [ -z "$claim_token" ]; then
+    touchstone_ship_release_claim "$job_dir" 2>/dev/null || true
+  fi
 }
 
 touchstone_ship_refresh() {
