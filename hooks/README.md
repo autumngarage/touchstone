@@ -65,7 +65,8 @@ When the review runs, the hook:
    - `CODEX_REVIEW_CLEAN` — no issues, push proceeds
    - `CODEX_REVIEW_FIXED` — the reviewer applied auto-fixes; the hook commits them and re-reviews
    - `CODEX_REVIEW_BLOCKED` — the reviewer found issues it won't auto-fix; push is blocked
-6. The loop repeats up to `max_iterations` times (default 3)
+6. The loop repeats up to `max_iterations` times (default 2 and hard-capped
+   at 2 whenever the selected mode can edit files)
 
 Conductor logs its route decision (provider, cost estimate, token count, wall-clock time) into the review transcript.
 
@@ -73,7 +74,7 @@ Conductor logs its route decision (provider, cost estimate, token count, wall-cl
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `max_iterations` | 3 | Max review-fix-review loops before aborting |
+| `max_iterations` | 2 | Max review-fix-review loops before aborting; edit-capable modes cannot exceed 2 |
 | `max_diff_lines` | 5000 | Skip review if diff exceeds this |
 | `cache_clean_reviews` | true | Cache clean reviews under `.git/` to skip repeat calls on the same diff |
 | `safe_by_default` | false | Whether unlisted paths allow auto-fix |
