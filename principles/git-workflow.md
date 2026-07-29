@@ -153,7 +153,7 @@ A stacked PR is a PR whose base branch is another open PR's branch instead of th
 
 **What to do.**
 
-- **First preference: bundle.** When the user says "ship it all," default to one PR with all the commits. The Conductor merge review reasons more cleanly about one coherent story than a chain; mergers prefer one squash over orchestrating a chain in order.
+- **First preference: independent PRs against the default branch.** "Ship it all" defines the queue. Bundle changes only when they form one coherent unit that cannot ship separately; give independently shippable concerns their own PRs.
 - **If you must stack:** drop `--auto-merge` on the whole chain. Merge each PR by hand in order, using **merge commit** or **rebase merge** (never squash) for the parent so the child's branch still traces to something on main. `open-pr.sh` will warn if you pass `--base <branch>` + `--auto-merge` together — take the warning seriously.
 - **Recover an orphaned child**: re-open the work as a fresh PR against current `main` (the lineage is lost but the diff usually still applies). If the parent's squashed content is already on main, the child's diff is just the child-only changes — which is usually what you wanted anyway.
 
