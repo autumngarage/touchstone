@@ -241,7 +241,7 @@ case "${1:-} ${2:-}" in
     esac
     ;;
   "api graphql") echo "" ;;
-  "api repos/"*) echo "base-oid" ;;
+  "api repos/"*) printf 'main\tbase-oid\n' ;;
   "pr checkout") touch "$GH_CHECKOUT_FILE"; echo "checked out PR $3" ;;
   "pr comment") echo "commented" ;;
   "pr merge") touch "$GH_MERGED_MARKER"; echo "merged" ;;
@@ -253,6 +253,7 @@ cat >"$MERGE_BIN/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
+  "check-ref-format --branch main") ;;
   "rev-parse --abbrev-ref HEAD") [ -f "$GH_CHECKOUT_FILE" ] && echo "HEAD" || echo "feature/test" ;;
   "rev-parse HEAD") [ -f "$GH_CHECKOUT_FILE" ] && echo "pr-head-oid" || echo "stale-local-oid" ;;
   "rev-parse --git-path touchstone/reviewer-clean") echo "$GIT_PATH_ROOT/touchstone/reviewer-clean" ;;

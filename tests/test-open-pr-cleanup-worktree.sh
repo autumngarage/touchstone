@@ -60,7 +60,8 @@ case "$1 $2" in
     ;;
   "pr list")
     if [ "${GH_HAS_EXISTING_PR:-0}" = "1" ]; then
-      printf 'https://example.test/touchstone/pull/9999\tmain\n'
+      printf 'https://example.test/touchstone/pull/9999\tmain\t%s\n' \
+        "${GH_PR_HEAD_OID:-existing-pr-head}"
     else
       echo ""
     fi
