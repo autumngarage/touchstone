@@ -188,7 +188,12 @@ case "${1:-} ${2:-}" in
     esac
     ;;
   "api graphql") echo "" ;;
-  "api repos/"*) echo "base-oid" ;;
+  "api repos/"*)
+    case "${2:-}" in
+      */pulls/123) printf 'main\tbase-oid\n' ;;
+      *) echo "base-oid" ;;
+    esac
+    ;;
   "pr checkout") echo checked-out > "$GH_CHECKOUT_FILE" ;;
   "pr merge") echo merged > "$GH_MERGE_FILE" ;;
   "pr comment") echo comment > "$GH_COMMENT_FILE" ;;
@@ -217,6 +222,7 @@ case "$*" in
   "rev-parse feature/test") echo "pr-head-oid" ;;
   "rev-parse --verify --quiet origin/main^{commit}") echo "base-oid" ;;
   "rev-parse --verify origin/main^{commit}") echo "base-oid" ;;
+  "check-ref-format --branch main") ;;
   "fetch origin +refs/heads/main:refs/remotes/origin/main") echo fetched ;;
   "cat-file -e origin/main:.touchstone-review.toml") [ -f "$TEST_REPO_ROOT/.touchstone-review.toml" ] || exit 1 ;;
   "cat-file -e origin/main:.codex-review.toml") [ -f "$TEST_REPO_ROOT/.codex-review.toml" ] || exit 1 ;;

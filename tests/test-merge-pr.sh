@@ -60,6 +60,21 @@ gh_query_arg() {
   return 0
 }
 
+gh_field_value() {
+  local field_name="$1"
+  shift
+  local previous="" arg
+
+  for arg in "$@"; do
+    if [ "$previous" = "-f" ] && [[ "$arg" = "$field_name="* ]]; then
+      printf '%s' "${arg#*=}"
+      return 0
+    fi
+    previous="$arg"
+  done
+  return 0
+}
+
 reject_unbalanced_graphql_query() {
   local query="$1"
   local opens closes
@@ -98,6 +113,9 @@ case "${1:-} ${2:-}" in
         ;;
     esac
     ;;
+  "api user")
+    echo "${GH_AUTHENTICATED_ACTOR:-henrymodisett}"
+    ;;
   "pr view")
     if [ -n "${GH_PR_VIEW_FAIL_FIELD:-}" ] && [ "${5:-}" = "$GH_PR_VIEW_FAIL_FIELD" ]; then
       echo "gh pr view ${5:-} unavailable" >&2
@@ -112,6 +130,7 @@ case "${1:-} ${2:-}" in
         fi
         ;;
       headRefName) echo "feature/test" ;;
+      baseRefName) echo "${GH_BASE_REF_NAME:-main}" ;;
       headRefOid)
         head_ref_call_count=1
         if [ -n "${GH_HEAD_REF_CALLS_FILE:-}" ]; then
@@ -125,7 +144,9 @@ case "${1:-} ${2:-}" in
           echo "gh pr view headRefOid unavailable" >&2
           exit 1
         fi
-        if [ -n "${GH_HEAD_REF_CHANGE_AFTER:-}" ] && [ "$head_ref_call_count" -ge "$GH_HEAD_REF_CHANGE_AFTER" ]; then
+        if [ -f "${GH_REVISION_CHANGE_AFTER_TRIGGER_FILE:-/dev/null/never}" ]; then
+          echo "${GH_HEAD_REF_AFTER_TRIGGER:-${GH_PR_HEAD_OID:-pr-head-oid}}"
+        elif [ -n "${GH_HEAD_REF_CHANGE_AFTER:-}" ] && [ "$head_ref_call_count" -ge "$GH_HEAD_REF_CHANGE_AFTER" ]; then
           echo "${GH_HEAD_REF_CHANGED_OID:-changed-pr-head}"
         elif [ -f "${GH_HEAD_REF_FILE:-/dev/null/never}" ]; then
           cat "$GH_HEAD_REF_FILE"
@@ -193,6 +214,18 @@ case "${1:-} ${2:-}" in
     ;;
   "api repos/"*)
     case "${2:-}" in
+      */collaborators/*/permission)
+        status_creator="${2#*/collaborators/}"
+        status_creator="${status_creator%/permission}"
+        if [ -z "$status_creator" ]; then
+          echo "blank status creator must not be inspected" >&2
+          exit 1
+        elif [ "$status_creator" = "untrusted-app" ]; then
+          echo "read"
+        else
+          echo "write"
+        fi
+        ;;
       */pulls/*)
         base_ref_call_count=1
         if [ -n "${GH_BASE_REF_CALLS_FILE:-}" ]; then
@@ -206,13 +239,21 @@ case "${1:-} ${2:-}" in
           echo "pull request base unavailable" >&2
           exit 1
         fi
-        if [ -n "${GH_BASE_REF_CHANGE_AFTER:-}" ] && [ "$base_ref_call_count" -ge "$GH_BASE_REF_CHANGE_AFTER" ]; then
-          echo "${GH_BASE_REF_CHANGED_OID:-changed-base-oid}"
+        if [ -f "${GH_REVISION_CHANGE_AFTER_TRIGGER_FILE:-/dev/null/never}" ]; then
+          printf '%s\t%s\n' \
+            "${GH_BASE_REF_NAME_AFTER_TRIGGER:-${GH_BASE_REF_NAME:-main}}" \
+            "${GH_BASE_REF_OID_AFTER_TRIGGER:-${GH_BASE_REF_OID:-base-oid}}"
+        elif [ -n "${GH_BASE_REF_CHANGE_AFTER:-}" ] && [ "$base_ref_call_count" -ge "$GH_BASE_REF_CHANGE_AFTER" ]; then
+          printf '%s\t%s\n' "${GH_BASE_REF_CHANGED_NAME:-${GH_BASE_REF_NAME:-main}}" "${GH_BASE_REF_CHANGED_OID:-changed-base-oid}"
         else
-          echo "${GH_BASE_REF_OID:-base-oid}"
+          printf '%s\t%s\n' "${GH_BASE_REF_NAME:-main}" "${GH_BASE_REF_OID:-base-oid}"
         fi
         ;;
       */commits/*)
+        if [[ "$*" = *".commit.committer.date"* ]]; then
+          echo "${GH_HEAD_COMMIT_DATE:-2026-07-29T00:00:00Z}"
+          exit 0
+        fi
         if [ "${GH_COMMENT_COMMIT_RESOLUTION_FAIL:-false}" = "true" ]; then
           echo "reviewed commit is ambiguous or unavailable" >&2
           exit 1
@@ -258,16 +299,34 @@ case "${1:-} ${2:-}" in
     ;;
   "api --paginate")
     case "${3:-}" in
-      */comments | */comments\?*)
-        if [[ "${5:-}" == *"touchstone:pr-review-request"* ]]; then
-          existing_request_body="${GH_EXISTING_REQUEST_BODY:-}"
-          escaped_existing_request_body="${existing_request_body//$'\n'/\\n}"
-          if [ -n "$existing_request_body" ] \
-            && [[ "${5:-}" == *"$escaped_existing_request_body"* ]]; then
-            printf 'existing-request-id\n'
-          fi
-          exit 0
+      */statuses | */statuses\?*)
+        request_lookup_call_count="$(increment_counter_file "${GH_REQUEST_LOOKUP_CALLS_FILE:-}")"
+        if [ "${GH_REQUEST_LOOKUP_FAIL:-false}" = "true" ] \
+          || { [ "${GH_REQUEST_LOOKUP_FAIL_FIRST:-false}" = "true" ] && [ "$request_lookup_call_count" -eq 1 ]; }; then
+          echo "review request records unavailable" >&2
+          exit 1
         fi
+        if [[ "${5:-}" != *"touchstone/review-request-intent"* ]] \
+          || [[ "${5:-}" != *"touchstone/review-request-complete"* ]] \
+          || [[ "${5:-}" != *'.state == "success"'* ]] \
+          || [[ "${5:-}" != *"creator.login"* ]]; then
+          echo "request lookup must filter durable status records" >&2
+          exit 1
+        fi
+        query_head="${3#*/commits/}"
+        query_head="${query_head%%/*}"
+        if [ -n "${GH_REQUEST_RECORDS:-}" ] \
+          && [ "$query_head" = "${GH_REQUEST_RECORDS_HEAD:-${GH_PR_HEAD_OID:-pr-head-oid}}" ]; then
+          printf '%s\n' "$GH_REQUEST_RECORDS"
+        fi
+        if [ -s "${GH_STATUS_RECORDS_FILE:-/dev/null/never}" ]; then
+          while IFS="$(printf '\t')" read -r record_head context created_at creator description; do
+            [ "$record_head" = "$query_head" ] || continue
+            printf '%s\t%s\t%s\t%s\n' "$context" "$created_at" "$creator" "$description"
+          done <"$GH_STATUS_RECORDS_FILE"
+        fi
+        ;;
+      */comments | */comments\?*)
         comments_call_count="$(increment_counter_file "${GH_COMMENTS_CALLS_FILE:-}")"
         if [ "${GH_COMMENTS_FAIL:-false}" = "true" ]; then
           echo "review comments unavailable" >&2
@@ -286,6 +345,50 @@ case "${1:-} ${2:-}" in
         else
           printf '%s' "${GH_REACTIONS:-}"
         fi
+        ;;
+    esac
+    ;;
+  "api -X")
+    if [ "${3:-}" != "POST" ]; then
+      echo "unexpected gh api POST args: $*" >&2
+      exit 1
+    fi
+    case "${4:-}" in
+      repos/*/issues/*/comments)
+        if [ "${5:-}" != "-f" ] || [[ "${6:-}" != body=* ]]; then
+          echo "unexpected gh api POST body: $*" >&2
+          exit 1
+        fi
+        printf '%s\n' "${6#body=}" >>"$GH_REVIEW_REQUEST_FILE"
+        if [ -n "${GH_REVISION_CHANGE_AFTER_TRIGGER_FILE:-}" ]; then
+          touch "$GH_REVISION_CHANGE_AFTER_TRIGGER_FILE"
+        fi
+        printf '%s\n' "${GH_COMMENT_CREATED_AT:-${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}}"
+        ;;
+      repos/*/statuses/*)
+        if [[ "$*" != *"context=touchstone/review-request"* ]] || [[ "$*" != *"description=pr="*" base="* ]]; then
+          echo "unexpected durable review status: $*" >&2
+          exit 1
+        fi
+        status_context="$(gh_field_value context "$@")"
+        status_description="$(gh_field_value description "$@")"
+        if [ "$status_context" = "touchstone/review-request-intent" ]; then
+          status_created_at="${GH_STATUS_INTENT_CREATED_AT:-${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}}"
+        else
+          status_created_at="${GH_STATUS_COMPLETE_CREATED_AT:-${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}}"
+        fi
+        status_head="${4##*/}"
+        printf '%s\t%s\t%s\t%s\t%s\n' \
+          "$status_head" \
+          "$status_context" \
+          "$status_created_at" \
+          "${GH_STATUS_CREATOR:-${GH_AUTHENTICATED_ACTOR:-henrymodisett}}" \
+          "$status_description" >>"$GH_STATUS_RECORDS_FILE"
+        printf '%s\n' "$status_created_at"
+        ;;
+      *)
+        echo "unexpected gh api POST target: $*" >&2
+        exit 1
         ;;
     esac
     ;;
@@ -394,6 +497,8 @@ if [ "${1:-}" = "-C" ]; then
 fi
 
 case "$*" in
+  check-ref-format\ --branch\ *)
+    ;;
   "rev-parse --abbrev-ref HEAD")
     if [ -f "$GIT_CHECKOUT_MAIN_FILE" ]; then
       echo "main"
@@ -430,11 +535,11 @@ case "$*" in
   "rev-parse --show-toplevel")
     printf '%s\n' "${TEST_CURRENT_WORKTREE:-/tmp/touchstone-feature-worktree}"
     ;;
-  "rev-parse --verify origin/main^{commit}")
+  rev-parse\ --verify\ origin/*^\{commit\})
     current_fake_base_oid
     printf '\n'
     ;;
-  "rev-parse --verify --quiet origin/main^{commit}")
+  rev-parse\ --verify\ --quiet\ origin/*^\{commit\})
     current_fake_base_oid
     printf '\n'
     ;;
@@ -444,10 +549,10 @@ case "$*" in
     fi
     printf '%s\n' "${GIT_LOCAL_BRANCH_HEAD:-pr-head-oid}"
     ;;
-  "cat-file -e origin/main:.touchstone-review.toml")
+  cat-file\ -e\ origin/*:.touchstone-review.toml)
     [ -f "$(trusted_touchstone_config_file)" ] || exit 1
     ;;
-  "cat-file -e origin/main:.codex-review.toml")
+  cat-file\ -e\ origin/*:.codex-review.toml)
     [ -f "${TEST_CURRENT_WORKTREE:-}/.codex-review.toml" ] || exit 1
     ;;
   "show-ref --verify --quiet refs/heads/feature/test")
@@ -455,22 +560,22 @@ case "$*" in
       exit 1
     fi
     ;;
-  "show origin/main:.touchstone-review.toml")
+  show\ origin/*:.touchstone-review.toml)
     if [ "${GIT_TRUSTED_CONFIG_SHOW_FAIL:-false}" = "true" ]; then
       echo "trusted review config unavailable" >&2
       exit 1
     fi
     cat "$(trusted_touchstone_config_file)"
     ;;
-  "show origin/main:.codex-review.toml")
+  show\ origin/*:.codex-review.toml)
     cat "${TEST_CURRENT_WORKTREE:-}/.codex-review.toml"
     ;;
   cat-file\ -e\ *^\{commit\})
     ;;
-  merge-base\ origin/main\ *)
+  merge-base\ origin/*\ *)
     printf '%s\n' "${GIT_MERGE_BASE_OID:-base-oid}"
     ;;
-  "fetch origin +refs/heads/main:refs/remotes/origin/main")
+  fetch\ origin\ +refs/heads/*:refs/remotes/origin/*)
     if [ -n "${GIT_FETCH_MAIN_FILE:-}" ]; then
       printf 'fetch\n' >>"$GIT_FETCH_MAIN_FILE"
     fi
@@ -487,7 +592,7 @@ case "$*" in
   ls-files\ --others\ --exclude-standard\ -z\ --*)
     emit_untracked_path "$@"
     ;;
-  "diff --name-only origin/main...HEAD")
+  "diff --name-only origin/"*"...HEAD")
     printf '%s\n' "${GIT_CHANGED_PATHS:-example.txt}"
     ;;
   diff\ --binary\ --*)
@@ -538,7 +643,7 @@ reset_case_files() {
   rm -f "$TEST_DIR"/output*.txt "$TEST_DIR"/codex-review*.log \
     "$TEST_DIR"/gh-checkout* "$TEST_DIR"/gh-merge-head* \
     "$TEST_DIR"/gh-merge-args* "$TEST_DIR"/gh-merge-body* \
-    "$TEST_DIR"/gh-comment* "$TEST_DIR"/gh-review-request* "$TEST_DIR"/git-checkout-main* \
+    "$TEST_DIR"/gh-comment* "$TEST_DIR"/gh-review-request* "$TEST_DIR"/gh-status-records* "$TEST_DIR"/git-checkout-main* \
     "$TEST_DIR"/git-detached-default* "$TEST_DIR"/git-branch-deleted* \
     "$TEST_DIR"/git-sibling-pull* "$TEST_DIR"/gh-merged-marker* \
     "$TEST_DIR"/git-review-head* "$TEST_DIR"/git-push-head* \
@@ -547,7 +652,8 @@ reset_case_files() {
     "$TEST_DIR"/git-worktree-remove* "$TEST_DIR"/touchstone-review-log* \
     "$TEST_DIR"/gh-graphql-calls* "$TEST_DIR"/gh-head-ref-calls* "$TEST_DIR"/gh-base-ref-calls* \
     "$TEST_DIR"/gh-reviews-graphql-calls* "$TEST_DIR"/gh-reactions-calls* \
-    "$TEST_DIR"/gh-comments-calls*
+    "$TEST_DIR"/gh-comments-calls* "$TEST_DIR"/gh-request-lookup-calls*
+  rm -f "$TEST_DIR/revision-changed-after-trigger"
   rm -rf "$GIT_PATH_ROOT"
   rm -rf "$DEFAULT_FAKE_WORKTREE"
   mkdir -p "$GIT_PATH_ROOT"
@@ -563,10 +669,16 @@ reset_case_files() {
   unset GH_HEAD_REF_FAIL_AFTER
   unset GH_HEAD_REF_CHANGE_AFTER
   unset GH_HEAD_REF_CHANGED_OID
+  unset GH_HEAD_REF_AFTER_TRIGGER
   unset GH_BASE_REF_OID
+  unset GH_BASE_REF_NAME
   unset GH_BASE_REF_FAIL_AFTER
   unset GH_BASE_REF_CHANGE_AFTER
+  unset GH_BASE_REF_CHANGED_NAME
   unset GH_BASE_REF_CHANGED_OID
+  unset GH_BASE_REF_NAME_AFTER_TRIGGER
+  unset GH_BASE_REF_OID_AFTER_TRIGGER
+  unset GH_REVISION_CHANGE_AFTER_TRIGGER_FILE
   unset GH_IS_DRAFT
   unset GH_REVIEW_DECISION
   unset GH_UNRESOLVED_THREADS
@@ -582,6 +694,18 @@ reset_case_files() {
   unset GH_ISSUE_COMMENTS
   unset GH_ISSUE_COMMENTS_SECOND
   unset GH_EXISTING_REQUEST_BODY
+  unset GH_EXISTING_REQUEST_EDITED
+  unset GH_EXISTING_REQUEST_TIMESTAMP
+  unset GH_REQUEST_RECORDS
+  unset GH_REQUEST_CREATED_AT
+  unset GH_STATUS_INTENT_CREATED_AT
+  unset GH_STATUS_COMPLETE_CREATED_AT
+  unset GH_STATUS_CREATOR
+  unset GH_AUTHENTICATED_ACTOR
+  unset GH_HEAD_COMMIT_DATE
+  unset GH_COMMENT_CREATED_AT
+  unset GH_REQUEST_LOOKUP_FAIL
+  unset GH_REQUEST_LOOKUP_FAIL_FIRST
   unset GH_COMMENTS_FAIL
   unset GH_COMMENT_COMMIT_RESOLUTION_FAIL
   unset GH_RESOLVED_COMMENT_COMMIT
@@ -613,6 +737,8 @@ reset_case_files() {
 
 run_merge_pr() {
   local output_file="$1"
+  local base_ref_name="${GH_BASE_REF_NAME:-main}"
+  local request_created_at="${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}"
   shift
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     GIT_PATH_ROOT="$GIT_PATH_ROOT" \
@@ -623,6 +749,7 @@ run_merge_pr() {
     GH_MERGE_BODY_FILE="$TEST_DIR/gh-merge-body" \
     GH_COMMENT_FILE="$TEST_DIR/gh-comment" \
     GH_REVIEW_REQUEST_FILE="$TEST_DIR/gh-review-request" \
+    GH_STATUS_RECORDS_FILE="$TEST_DIR/gh-status-records" \
     GH_HEAD_REF_FILE="$TEST_DIR/gh-head-ref" \
     GH_PR_HEAD_OID="${GH_PR_HEAD_OID:-pr-head-oid}" \
     GH_MERGED_MARKER="$TEST_DIR/gh-merged-marker" \
@@ -635,11 +762,17 @@ run_merge_pr() {
     GH_HEAD_REF_FAIL_AFTER="${GH_HEAD_REF_FAIL_AFTER:-}" \
     GH_HEAD_REF_CHANGE_AFTER="${GH_HEAD_REF_CHANGE_AFTER:-}" \
     GH_HEAD_REF_CHANGED_OID="${GH_HEAD_REF_CHANGED_OID:-changed-pr-head}" \
+    GH_HEAD_REF_AFTER_TRIGGER="${GH_HEAD_REF_AFTER_TRIGGER:-}" \
     GH_HEAD_REF_CALLS_FILE="$TEST_DIR/gh-head-ref-calls" \
     GH_BASE_REF_OID="${GH_BASE_REF_OID:-base-oid}" \
+    GH_BASE_REF_NAME="$base_ref_name" \
     GH_BASE_REF_FAIL_AFTER="${GH_BASE_REF_FAIL_AFTER:-}" \
     GH_BASE_REF_CHANGE_AFTER="${GH_BASE_REF_CHANGE_AFTER:-}" \
+    GH_BASE_REF_CHANGED_NAME="${GH_BASE_REF_CHANGED_NAME:-$base_ref_name}" \
     GH_BASE_REF_CHANGED_OID="${GH_BASE_REF_CHANGED_OID:-changed-base-oid}" \
+    GH_BASE_REF_NAME_AFTER_TRIGGER="${GH_BASE_REF_NAME_AFTER_TRIGGER:-}" \
+    GH_BASE_REF_OID_AFTER_TRIGGER="${GH_BASE_REF_OID_AFTER_TRIGGER:-}" \
+    GH_REVISION_CHANGE_AFTER_TRIGGER_FILE="${GH_REVISION_CHANGE_AFTER_TRIGGER_FILE:-}" \
     GH_BASE_REF_CALLS_FILE="$TEST_DIR/gh-base-ref-calls" \
     GH_IS_DRAFT="${GH_IS_DRAFT:-false}" \
     GH_REVIEW_DECISION="${GH_REVIEW_DECISION:-}" \
@@ -659,6 +792,19 @@ run_merge_pr() {
     GH_ISSUE_COMMENTS="${GH_ISSUE_COMMENTS:-}" \
     GH_ISSUE_COMMENTS_SECOND="${GH_ISSUE_COMMENTS_SECOND:-}" \
     GH_EXISTING_REQUEST_BODY="${GH_EXISTING_REQUEST_BODY:-}" \
+    GH_EXISTING_REQUEST_EDITED="${GH_EXISTING_REQUEST_EDITED:-false}" \
+    GH_EXISTING_REQUEST_TIMESTAMP="${GH_EXISTING_REQUEST_TIMESTAMP:-1969-01-01T00:00:00Z}" \
+    GH_REQUEST_RECORDS="${GH_REQUEST_RECORDS-$(durable_request_records "1969-01-01T00:00:00Z" "${GH_BASE_REF_OID:-base-oid}")}" \
+    GH_REQUEST_CREATED_AT="$request_created_at" \
+    GH_STATUS_INTENT_CREATED_AT="${GH_STATUS_INTENT_CREATED_AT:-}" \
+    GH_STATUS_COMPLETE_CREATED_AT="${GH_STATUS_COMPLETE_CREATED_AT:-}" \
+    GH_STATUS_CREATOR="${GH_STATUS_CREATOR:-henrymodisett}" \
+    GH_AUTHENTICATED_ACTOR="${GH_AUTHENTICATED_ACTOR:-henrymodisett}" \
+    GH_HEAD_COMMIT_DATE="${GH_HEAD_COMMIT_DATE:-2026-07-29T00:00:00Z}" \
+    GH_COMMENT_CREATED_AT="${GH_COMMENT_CREATED_AT:-$request_created_at}" \
+    GH_REQUEST_LOOKUP_FAIL="${GH_REQUEST_LOOKUP_FAIL:-false}" \
+    GH_REQUEST_LOOKUP_FAIL_FIRST="${GH_REQUEST_LOOKUP_FAIL_FIRST:-false}" \
+    GH_REQUEST_LOOKUP_CALLS_FILE="$TEST_DIR/gh-request-lookup-calls" \
     GH_COMMENTS_FAIL="${GH_COMMENTS_FAIL:-false}" \
     GH_COMMENT_COMMIT_RESOLUTION_FAIL="${GH_COMMENT_COMMIT_RESOLUTION_FAIL:-false}" \
     GH_RESOLVED_COMMENT_COMMIT="${GH_RESOLVED_COMMENT_COMMIT:-}" \
@@ -742,7 +888,7 @@ write_pr_triggered_config() {
   local timeout_sec="${2:-0}"
   local poll_sec="${3:-0}"
   local required="${4:-true}"
-  local request_on_push="${5:-false}"
+  local request_on_push="${5:-true}"
 
   install_toml_parser_fixture
   mkdir -p "$DEFAULT_FAKE_WORKTREE"
@@ -756,6 +902,18 @@ poll_sec = $poll_sec
 trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]
 skip_merge_review = $skip_merge_review
 EOF
+}
+
+durable_request_records() {
+  local intent_at="$1"
+  local base_oid="$2"
+  local creator="${3:-henrymodisett}"
+  local trigger_at="${4:-$intent_at}"
+
+  printf 'touchstone/review-request-intent\t%s\t%s\tpr=123 base=%s\n' \
+    "$intent_at" "$creator" "$base_oid"
+  printf 'touchstone/review-request-complete\t%s\t%s\tpr=123 base=%s intent=%s\n' \
+    "$trigger_at" "$creator" "$base_oid" "$intent_at trigger=$trigger_at"
 }
 
 write_established_boolean_alias_config() {
@@ -1134,6 +1292,28 @@ else
   exit 1
 fi
 
+echo "==> Test: stacked PR uses its actual base for policy, preflight, and review"
+reset_case_files
+install_preflight_counter_fixture
+GH_BASE_REF_NAME="feature/parent" \
+  GH_BASE_REF_OID="parent-base-oid" \
+  GIT_BASE_OID="parent-base-oid" \
+  GIT_MERGE_BASE_OID="parent-base-oid" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-stacked-base.txt" 123
+rm -rf "${TEST_DIR:?}/lib"
+if grep -q 'Refreshing origin/feature/parent before loading merge review config' "$TEST_DIR/output-stacked-base.txt" \
+  && grep -q 'diff vs origin/feature/parent' "$TEST_DIR/output-stacked-base.txt" \
+  && grep -q '^CODEX_REVIEW_BASE=origin/feature/parent$' "$TEST_DIR/codex-review.log" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: stacked PR gates consistently use the actual PR base"
+else
+  echo "FAIL: stacked PR did not use its actual base throughout the merge gate" >&2
+  cat "$TEST_DIR/output-stacked-base.txt" >&2
+  [ ! -f "$TEST_DIR/codex-review.log" ] || cat "$TEST_DIR/codex-review.log" >&2
+  exit 1
+fi
+
 echo "==> Test: PR-triggered review skips duplicate merge review after deterministic preflight"
 reset_case_files
 install_preflight_counter_fixture
@@ -1153,6 +1333,71 @@ else
   echo "FAIL: PR-triggered review did not skip duplicate merge review after preflight" >&2
   cat "$TEST_DIR/output-pr-triggered-skip.txt" >&2
   [ ! -f "$TEST_DIR/preflight-calls" ] || cat "$TEST_DIR/preflight-calls" >&2
+  exit 1
+fi
+
+echo "==> Test: ancestor-base retarget cannot reuse head-only trusted review"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_BASE_REF_NAME="release/ancestor" \
+  GH_BASE_REF_OID="new-ancestor-base" \
+  GIT_BASE_OID="new-ancestor-base" \
+  GIT_MERGE_BASE_OID="new-ancestor-base" \
+  GH_REQUEST_RECORDS="$(durable_request_records "2026-06-22T00:00:00Z" "old-base-oid")" \
+  GH_REQUEST_CREATED_AT="2026-06-24T00:00:00Z" \
+  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/pre-retarget' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-ancestor-retarget.txt" 123; then
+  echo "FAIL: ancestor-base retarget reused a head-only clean result" >&2
+  exit 1
+fi
+if grep -q 'head pr-head-oid has trusted review requests for multiple base revisions' "$TEST_DIR/output-pr-triggered-ancestor-retarget.txt" \
+  && grep -q 'current base:  new-ancestor-base' "$TEST_DIR/output-pr-triggered-ancestor-retarget.txt" \
+  && grep -q 'prior base(s): old-base-oid' "$TEST_DIR/output-pr-triggered-ancestor-retarget.txt" \
+  && [ ! -f "$TEST_DIR/gh-review-request" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: retargeted ancestor base requires a fresh PR head"
+else
+  echo "FAIL: retargeted ancestor base did not fail closed on ambiguous review evidence" >&2
+  cat "$TEST_DIR/output-pr-triggered-ancestor-retarget.txt" >&2
+  [ ! -f "$TEST_DIR/gh-review-request" ] || cat "$TEST_DIR/gh-review-request" >&2
+  exit 1
+fi
+
+echo "==> Test: one head cannot accept review requests for multiple bases"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_REQUEST_RECORDS="$(durable_request_records "2026-06-22T00:00:00Z" "old-base-oid")" \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-conflicting-base-request.txt" 123; then
+  echo "FAIL: merge-pr.sh accepted a review request for a reused head on a new base" >&2
+  exit 1
+fi
+if grep -q 'head pr-head-oid has trusted review requests for multiple base revisions' "$TEST_DIR/output-pr-triggered-conflicting-base-request.txt" \
+  && grep -q 'current base:  base-oid' "$TEST_DIR/output-pr-triggered-conflicting-base-request.txt" \
+  && grep -q 'prior base(s): old-base-oid' "$TEST_DIR/output-pr-triggered-conflicting-base-request.txt" \
+  && [ "$(cat "$TEST_DIR/gh-request-lookup-calls" 2>/dev/null || echo 0)" -eq 1 ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: a base retarget fails immediately and requires a new PR head"
+else
+  echo "FAIL: conflicting base-bound requests did not fail closed" >&2
+  cat "$TEST_DIR/output-pr-triggered-conflicting-base-request.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: legacy head-only review requests require a fresh PR head"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_REQUEST_RECORDS="" \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-legacy-request.txt" 123; then
+  echo "FAIL: merge-pr.sh treated a legacy head-only request as base-bound" >&2
+  exit 1
+fi
+if grep -q 'head pr-head-oid has no durable review-request evidence' "$TEST_DIR/output-pr-triggered-legacy-request.txt" \
+  && grep -q 'Push a fresh head with scripts/open-pr.sh before requesting review' "$TEST_DIR/output-pr-triggered-legacy-request.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: legacy unbound requests cannot cross the base-binding upgrade"
+else
+  echo "FAIL: legacy unbound review request did not fail closed" >&2
+  cat "$TEST_DIR/output-pr-triggered-legacy-request.txt" >&2
   exit 1
 fi
 
@@ -1181,24 +1426,55 @@ echo "==> Test: base advance after PR-visible review falls back to semantic revi
 reset_case_files
 install_preflight_counter_fixture
 write_pr_triggered_config true 0 0
-GH_BASE_REF_CHANGE_AFTER=2 \
+GH_BASE_REF_CHANGE_AFTER=4 \
   GH_BASE_REF_CHANGED_OID="new-base-oid" \
   GIT_BASE_CHANGE_AFTER_FETCH=2 \
   GIT_BASE_CHANGED_OID="new-base-oid" \
   GIT_MERGE_BASE_OID="base-oid" \
   GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/base-moved' \
   PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-base-moved-before-review.txt" 123
+  run_merge_pr "$TEST_DIR/output-pr-triggered-base-moved-before-review.txt" 123 \
+  && {
+    echo "FAIL: merge-pr.sh accepted PR-visible evidence bound to the prior base" >&2
+    exit 1
+  }
 rm -rf "${TEST_DIR:?}/lib"
 if grep -q 'reviewed_base=base-oid' "$TEST_DIR/output-pr-triggered-base-moved-before-review.txt" \
   && grep -q 'signal_base=base-oid' "$TEST_DIR/output-pr-triggered-base-moved-before-review.txt" \
   && grep -q 'current_base=new-base-oid merge_base=base-oid' "$TEST_DIR/output-pr-triggered-base-moved-before-review.txt" \
   && grep -q '^CODEX_REVIEW_MODE=fix$' "$TEST_DIR/codex-review.log" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
-  echo "==> PASS: base movement invalidates duplicate-review skipping"
+  && grep -q 'latest trusted PR-visible AI result is not clean for reviewed head' "$TEST_DIR/output-pr-triggered-base-moved-before-review.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: base movement invalidates duplicate-review skipping and final authorization"
 else
-  echo "FAIL: base movement after PR review should force local semantic review" >&2
+  echo "FAIL: base movement after PR review should require fresh base-bound evidence" >&2
   cat "$TEST_DIR/output-pr-triggered-base-moved-before-review.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: base advance while polling requires a new base-bound request"
+reset_case_files
+write_pr_triggered_config true 2 1
+if GH_BASE_REF_CHANGE_AFTER=4 \
+  GH_BASE_REF_CHANGED_OID="new-base-oid" \
+  GH_REQUEST_RECORDS="$(durable_request_records "2026-06-22T00:00:00Z" "base-oid")" \
+  GH_REQUEST_CREATED_AT="2026-06-24T00:00:00Z" \
+  GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/prior-base' \
+  MERGE_PR_SLEEP_OVERRIDE=1 \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" 123; then
+  echo "FAIL: merge-pr.sh reused the prior base request after the base advanced" >&2
+  exit 1
+fi
+if grep -q 'head pr-head-oid has trusted review requests for multiple base revisions' "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" \
+  && grep -q 'current base:  new-base-oid' "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" \
+  && grep -q 'prior base(s): base-oid' "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" \
+  && ! grep -q 'Trusted PR-visible AI review found' "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: base movement during polling requires a fresh PR head"
+else
+  echo "FAIL: base movement while polling did not invalidate the reused PR head" >&2
+  cat "$TEST_DIR/output-pr-triggered-base-moved-during-poll.txt" >&2
+  [ ! -f "$TEST_DIR/gh-review-request" ] || cat "$TEST_DIR/gh-review-request" >&2
   exit 1
 fi
 
@@ -1206,7 +1482,7 @@ echo "==> Test: base advance after semantic review blocks final merge"
 reset_case_files
 install_preflight_counter_fixture
 write_pr_triggered_config true 0 0
-if GH_BASE_REF_CHANGE_AFTER=3 \
+if GH_BASE_REF_CHANGE_AFTER=5 \
   GH_BASE_REF_CHANGED_OID="new-base-oid" \
   GIT_BASE_CHANGE_AFTER_FETCH=3 \
   GIT_BASE_CHANGED_OID="new-base-oid" \
@@ -1232,7 +1508,7 @@ echo "==> Test: PR-triggered review rejects a head change after the trusted sign
 reset_case_files
 write_pr_triggered_config true 0 0
 if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/1' \
-  GH_HEAD_REF_CHANGE_AFTER=4 \
+  GH_HEAD_REF_CHANGE_AFTER=5 \
   GH_HEAD_REF_CHANGED_OID="new-pr-head" \
   run_merge_pr "$TEST_DIR/output-pr-triggered-head-changed.txt" 123; then
   echo "FAIL: merge-pr.sh unexpectedly accepted a head change after PR-triggered review" >&2
@@ -1260,6 +1536,7 @@ cat >"$TEST_DIR/fresh-trusted-base-review.toml" <<'EOF'
 [review.pr_triggered]
 required = true
 provider = "github-codex"
+request_on_push = true
 timeout_sec = 0
 poll_sec = 0
 trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]
@@ -1357,6 +1634,46 @@ else
   exit 1
 fi
 
+echo "==> Test: required review remains compatible when request_on_push is disabled"
+reset_case_files
+write_pr_triggered_config true 0 0 true false
+if ! GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/automatic' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-request-disabled.txt" 123; then
+  echo "FAIL: compatible automatic review flow returned nonzero" >&2
+  cat "$TEST_DIR/output-pr-triggered-request-disabled.txt" >&2
+  exit 1
+fi
+if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-request-disabled.txt" \
+  && [ ! -f "$TEST_DIR/gh-review-request" ] \
+  && grep -q '^CODEX_REVIEW_MODE=fix$' "$TEST_DIR/codex-review.log" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: automatic exact-head reviews remain compatible and fall back to base-aware semantic review"
+else
+  echo "FAIL: required review should accept automatic evidence without posting a request" >&2
+  cat "$TEST_DIR/output-pr-triggered-request-disabled.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: unbound compatibility review is revalidated before merge"
+reset_case_files
+write_pr_triggered_config true 0 0 true false
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/automatic-clean' \
+  GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:01:00Z\thttps://example.test/review/automatic-findings' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-request-disabled-changed.txt" 123; then
+  echo "FAIL: newer unbound findings were not revalidated before merge" >&2
+  exit 1
+fi
+if grep -q 'latest trusted PR-visible AI result is not clean' "$TEST_DIR/output-pr-triggered-request-disabled-changed.txt" \
+  && [ "$(cat "$TEST_DIR/gh-reviews-graphql-calls" 2>/dev/null || echo 0)" -ge 2 ] \
+  && [ -f "$TEST_DIR/codex-review.log" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: unbound compatibility evidence is revalidated immediately before merge"
+else
+  echo "FAIL: unbound compatibility result was not revalidated after semantic review" >&2
+  cat "$TEST_DIR/output-pr-triggered-request-disabled-changed.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: malformed required value fails closed during trusted config loading"
 reset_case_files
 write_pr_triggered_config true 0 0 ture
@@ -1374,37 +1691,205 @@ else
   exit 1
 fi
 
-echo "==> Test: direct merge entry requests PR-triggered review for the exact current head"
+echo "==> Test: statusless direct merge requires a fresh published head"
 reset_case_files
 write_pr_triggered_config true 0 0 true true
-GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/direct-merge' \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-direct-request.txt" 123
-if grep -q '^@codex review$' "$TEST_DIR/gh-review-request" \
-  && grep -q '<!-- touchstone:pr-review-request provider=github-codex head=pr-head-oid -->' "$TEST_DIR/gh-review-request" \
-  && grep -q '==> Requested GitHub Codex review for head pr-head-oid (before merge review).' "$TEST_DIR/output-pr-triggered-direct-request.txt" \
-  && grep -q '==> Waiting for trusted PR-visible AI review for PR #123 (before merge review)' "$TEST_DIR/output-pr-triggered-direct-request.txt" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
-  echo "==> PASS: direct merge requests and reviews the exact current head"
+if GH_REQUEST_RECORDS="" run_merge_pr "$TEST_DIR/output-pr-triggered-direct-request.txt" 123; then
+  echo "FAIL: direct merge bootstrapped ambiguous legacy review state" >&2
+  exit 1
+fi
+if grep -q 'head pr-head-oid has no durable review-request evidence' "$TEST_DIR/output-pr-triggered-direct-request.txt" \
+  && grep -q 'Push a fresh head with scripts/open-pr.sh before requesting review' "$TEST_DIR/output-pr-triggered-direct-request.txt" \
+  && [ ! -f "$TEST_DIR/gh-review-request" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: only the publishing path can bootstrap durable request evidence"
 else
-  echo "FAIL: direct merge should request the exact head before waiting for review" >&2
+  echo "FAIL: statusless direct merge lacked fresh-head migration guidance" >&2
   cat "$TEST_DIR/output-pr-triggered-direct-request.txt" >&2
   [ ! -f "$TEST_DIR/gh-review-request" ] || cat "$TEST_DIR/gh-review-request" >&2
+  exit 1
+fi
+
+echo "==> Test: review arriving before the trigger comment remains stale"
+reset_case_files
+write_pr_triggered_config true 0 0 true true
+if GH_REQUEST_RECORDS="$(durable_request_records "2026-06-23T00:00:00Z" "base-oid" "prior-driver" "2026-06-23T00:00:02Z")" \
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:01Z\thttps://example.test/review/request-race' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-request-race.txt" 123; then
+  echo "FAIL: a review predating the trigger comment authorized the merge" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-request-race.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: request freshness is anchored to the trigger comment"
+else
+  echo "FAIL: pre-trigger review did not fail as stale evidence" >&2
+  cat "$TEST_DIR/output-pr-triggered-request-race.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: orphaned review-request intent retries the trigger and completes"
+reset_case_files
+write_pr_triggered_config true 0 0 true true
+GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-06-22T00:00:00Z\thenrymodisett\tpr=123 base=base-oid' \
+  GH_COMMENT_CREATED_AT="2026-06-22T00:00:01Z" \
+  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/orphan-retry' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-orphan-intent.txt" 123
+if grep -q 'Requested GitHub Codex review for head pr-head-oid at base base-oid' "$TEST_DIR/output-pr-triggered-orphan-intent.txt" \
+  && grep -q 'touchstone/review-request-complete' "$TEST_DIR/gh-status-records" \
+  && ! grep -q 'touchstone/review-request-intent' "$TEST_DIR/gh-status-records" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: an orphaned intent is retried without moving the freshness boundary"
+else
+  echo "FAIL: orphaned intent recovery did not complete the durable request" >&2
+  cat "$TEST_DIR/output-pr-triggered-orphan-intent.txt" >&2
+  [ ! -f "$TEST_DIR/gh-status-records" ] || cat "$TEST_DIR/gh-status-records" >&2
+  exit 1
+fi
+
+echo "==> Test: revision movement after the trigger cannot create stale completion evidence"
+reset_case_files
+write_pr_triggered_config true 0 0 true true
+if GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-06-22T00:00:00Z\thenrymodisett\tpr=123 base=base-oid' \
+  GH_BASE_REF_OID_AFTER_TRIGGER="changed-base-oid" \
+  GH_REVISION_CHANGE_AFTER_TRIGGER_FILE="$TEST_DIR/revision-changed-after-trigger" \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-revision-race.txt" 123; then
+  echo "FAIL: revision movement after the trigger should fail closed" >&2
+  exit 1
+fi
+if grep -q 'revision changed while review was being requested' "$TEST_DIR/output-pr-triggered-revision-race.txt" \
+  && grep -q '^@codex review$' "$TEST_DIR/gh-review-request" \
+  && { [ ! -f "$TEST_DIR/gh-status-records" ] || ! grep -q 'touchstone/review-request-complete' "$TEST_DIR/gh-status-records"; } \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: changed revision receives no stale durable completion evidence"
+else
+  echo "FAIL: changed revision received stale durable completion evidence" >&2
+  cat "$TEST_DIR/output-pr-triggered-revision-race.txt" >&2
+  [ ! -f "$TEST_DIR/gh-status-records" ] || cat "$TEST_DIR/gh-status-records" >&2
+  exit 1
+fi
+
+echo "==> Test: durable statuses survive driver handoff"
+reset_case_files
+write_pr_triggered_config true 0 0 true true
+GH_REQUEST_RECORDS="$(durable_request_records "2026-06-22T00:00:00Z" "base-oid" "prior-driver")" \
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/untrusted-status' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-untrusted-status.txt" 123
+if grep -q 'GitHub Codex review already requested for head pr-head-oid at base base-oid' "$TEST_DIR/output-pr-triggered-untrusted-status.txt" \
+  && [ ! -f "$TEST_DIR/gh-status-records" ] \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: another authenticated driver can reuse append-only request evidence"
+else
+  echo "FAIL: driver handoff duplicated or discarded durable request evidence" >&2
+  cat "$TEST_DIR/output-pr-triggered-untrusted-status.txt" >&2
+  [ ! -f "$TEST_DIR/gh-status-records" ] || cat "$TEST_DIR/gh-status-records" >&2
+  exit 1
+fi
+
+echo "==> Test: another PR's durable records cannot authorize this PR"
+reset_case_files
+write_pr_triggered_config true 0 0 true true
+if GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-06-22T00:00:00Z\thenrymodisett\tpr=122 base=base-oid\ntouchstone/review-request-complete\t2026-06-22T00:00:01Z\thenrymodisett\tpr=122 base=base-oid intent=2026-06-22T00:00:00Z trigger=2026-06-22T00:00:01Z' \
+  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/other-pr' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-other-pr.txt" 123; then
+  echo "FAIL: another PR's durable request authorized this PR" >&2
+  exit 1
+fi
+if grep -q 'head pr-head-oid has no durable review-request evidence' "$TEST_DIR/output-pr-triggered-other-pr.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: durable requests are bound to PR identity"
+else
+  echo "FAIL: other-PR records did not follow the fresh-head migration path" >&2
+  cat "$TEST_DIR/output-pr-triggered-other-pr.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: another PR's old-base records do not create a base conflict"
+reset_case_files
+write_pr_triggered_config true 0 0 true true
+if GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-06-22T00:00:00Z\thenrymodisett\tpr=122 base=old-base-oid' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-other-pr-old-base.txt" 123; then
+  echo "FAIL: statusless current PR unexpectedly merged" >&2
+  exit 1
+fi
+if grep -q 'head pr-head-oid has no durable review-request evidence' "$TEST_DIR/output-pr-triggered-other-pr-old-base.txt" \
+  && ! grep -q 'trusted review requests for multiple base revisions' "$TEST_DIR/output-pr-triggered-other-pr-old-base.txt"; then
+  echo "==> PASS: base conflicts are scoped to the current PR"
+else
+  echo "FAIL: another PR's old base contaminated current-PR authorization" >&2
+  cat "$TEST_DIR/output-pr-triggered-other-pr-old-base.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: unbound durable records remain legacy evidence"
+reset_case_files
+write_pr_triggered_config true 0 0 true true
+if GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-06-22T00:00:00Z\thenrymodisett\tbase=base-oid\ntouchstone/review-request-complete\t2026-06-22T00:00:01Z\thenrymodisett\tbase=base-oid intent=2026-06-22T00:00:00Z trigger=2026-06-22T00:00:01Z' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-unbound-records.txt" 123; then
+  echo "FAIL: base-only legacy records authorized the merge" >&2
+  exit 1
+fi
+if grep -q 'head pr-head-oid has no durable review-request evidence' "$TEST_DIR/output-pr-triggered-unbound-records.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: base-only records require a fresh PR head"
+else
+  echo "FAIL: legacy base-only evidence did not fail closed" >&2
+  cat "$TEST_DIR/output-pr-triggered-unbound-records.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: non-writer status creator cannot authorize review"
+reset_case_files
+write_pr_triggered_config true 0 0 true true
+if GH_REQUEST_RECORDS="$(durable_request_records "2026-06-22T00:00:00Z" "base-oid" "untrusted-app")" \
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/untrusted-status' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-untrusted-creator.txt" 123; then
+  echo "FAIL: a non-writer status creator authorized the merge" >&2
+  exit 1
+fi
+if grep -q "review-request status from untrusted creator 'untrusted-app'" "$TEST_DIR/output-pr-triggered-untrusted-creator.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: protocol status creators require repository write permission"
+else
+  echo "FAIL: non-writer protocol status did not fail closed" >&2
+  cat "$TEST_DIR/output-pr-triggered-untrusted-creator.txt" >&2
   exit 1
 fi
 
 echo "==> Test: direct merge review request is idempotent for the exact current head"
 reset_case_files
 write_pr_triggered_config true 0 0 true true
-GH_EXISTING_REQUEST_BODY=$'@codex review\n\n<!-- touchstone:pr-review-request provider=github-codex head=pr-head-oid -->' \
-  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/direct-merge-existing' \
+GH_REQUEST_RECORDS="$(durable_request_records "2026-06-22T00:00:00Z" "base-oid")" \
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/direct-merge-existing' \
   run_merge_pr "$TEST_DIR/output-pr-triggered-direct-request-existing.txt" 123
-if grep -q '==> GitHub Codex review already requested for head pr-head-oid.' "$TEST_DIR/output-pr-triggered-direct-request-existing.txt" \
+if grep -q '==> GitHub Codex review already requested for head pr-head-oid at base base-oid.' "$TEST_DIR/output-pr-triggered-direct-request-existing.txt" \
   && [ ! -f "$TEST_DIR/gh-review-request" ] \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
   echo "==> PASS: direct merge does not duplicate an exact-head review request"
 else
   echo "FAIL: direct merge should reuse an existing exact-head review request" >&2
   cat "$TEST_DIR/output-pr-triggered-direct-request-existing.txt" >&2
+  [ ! -f "$TEST_DIR/gh-review-request" ] || cat "$TEST_DIR/gh-review-request" >&2
+  exit 1
+fi
+
+echo "==> Test: durable old-base request survives comment mutation"
+reset_case_files
+write_pr_triggered_config true 0 0 true true
+if GH_REQUEST_RECORDS="$(durable_request_records "2026-06-22T00:00:00Z" "old-base-oid")" \
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-25T00:00:00Z\thttps://example.test/review/late-old-base' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-durable-request.txt" 123; then
+  echo "FAIL: late old-base review bypassed the durable request record" >&2
+  exit 1
+fi
+if grep -q 'head pr-head-oid has trusted review requests for multiple base revisions' "$TEST_DIR/output-pr-triggered-durable-request.txt" \
+  && grep -q 'prior base(s): old-base-oid' "$TEST_DIR/output-pr-triggered-durable-request.txt" \
+  && [ ! -f "$TEST_DIR/gh-review-request" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: durable old-base request requires a new head despite mutable comments"
+else
+  echo "FAIL: durable request status should survive edited or deleted trigger comments" >&2
+  cat "$TEST_DIR/output-pr-triggered-durable-request.txt" >&2
   [ ! -f "$TEST_DIR/gh-review-request" ] || cat "$TEST_DIR/gh-review-request" >&2
   exit 1
 fi
@@ -1712,6 +2197,87 @@ else
   exit 1
 fi
 
+echo "==> Test: formal review in the request timestamp second is ambiguous"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_REQUEST_RECORDS="$(durable_request_records "2026-06-23T00:00:00Z" "base-oid")" \
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/same-second' \
+GH_COMMENT_CREATED_AT="2026-06-23T00:00:01Z" \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-same-second-review.txt" 123; then
+  echo "FAIL: same-second formal review unexpectedly authorized the merge" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-same-second-review.txt" \
+  && [ "$(grep -c '^@codex review$' "$TEST_DIR/gh-review-request")" = "1" ] \
+  && grep -q 'pr=123 base=base-oid intent=2026-06-23T00:00:00Z trigger=2026-06-23T00:00:01Z' "$TEST_DIR/gh-status-records" \
+  && ! grep -q 'touchstone/review-request-intent' "$TEST_DIR/gh-status-records" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: same-second formal review appends one fresh request and fails closed"
+else
+  echo "FAIL: same-second formal review did not append exactly one recovery request" >&2
+  cat "$TEST_DIR/output-pr-triggered-same-second-review.txt" >&2
+  [ ! -f "$TEST_DIR/gh-status-records" ] || cat "$TEST_DIR/gh-status-records" >&2
+  exit 1
+fi
+
+echo "==> Test: clean comment in the request timestamp second is ambiguous"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_REQUEST_RECORDS="$(durable_request_records "2026-06-23T00:00:00Z" "base-oid")" \
+GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/same-second\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
+GH_COMMENT_CREATED_AT="2026-06-23T00:00:01Z" \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-same-second-comment.txt" 123; then
+  echo "FAIL: same-second clean comment unexpectedly authorized the merge" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-same-second-comment.txt" \
+  && [ "$(grep -c '^@codex review$' "$TEST_DIR/gh-review-request")" = "1" ] \
+  && grep -q 'pr=123 base=base-oid intent=2026-06-23T00:00:00Z trigger=2026-06-23T00:00:01Z' "$TEST_DIR/gh-status-records" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: same-second clean comment appends one fresh request and fails closed"
+else
+  echo "FAIL: same-second clean comment did not append exactly one recovery request" >&2
+  cat "$TEST_DIR/output-pr-triggered-same-second-comment.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: same-second ambiguity recovery can authorize a later review"
+reset_case_files
+write_pr_triggered_config true 2 1
+GH_REQUEST_RECORDS="$(durable_request_records "2026-06-23T00:00:00Z" "base-oid")" \
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/same-second' \
+GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:02Z\thttps://example.test/review/retry' \
+GH_COMMENT_CREATED_AT="2026-06-23T00:00:01Z" \
+MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-same-second-recovery.txt" 123
+if [ "$(grep -c '^@codex review$' "$TEST_DIR/gh-review-request")" = "1" ] \
+  && grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-same-second-recovery.txt" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: one append-only retry recovers from second-level ambiguity"
+else
+  echo "FAIL: same-second recovery did not accept the later exact-head review" >&2
+  cat "$TEST_DIR/output-pr-triggered-same-second-recovery.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: review evidence before the request timestamp remains stale"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_REQUEST_RECORDS="$(durable_request_records "2026-06-23T00:00:01Z" "base-oid")" \
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/stale' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-before-request.txt" 123; then
+  echo "FAIL: review evidence older than its request authorized the merge" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-before-request.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: pre-request review evidence remains stale"
+else
+  echo "FAIL: pre-request review evidence did not fail as an ordinary missing result" >&2
+  cat "$TEST_DIR/output-pr-triggered-before-request.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: conflicting same-time trusted results fail closed"
 reset_case_files
 write_pr_triggered_config true 0 0
@@ -1765,6 +2331,48 @@ else
   exit 1
 fi
 
+echo "==> Test: transient review-request marker lookup failure is retried"
+reset_case_files
+write_pr_triggered_config true 2 1
+GH_REQUEST_LOOKUP_FAIL_FIRST=true \
+  GH_REQUEST_RECORDS="$(durable_request_records "2026-06-22T00:00:00Z" "base-oid")" \
+  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/request-retry' \
+  MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-request-lookup-transient.txt" 123
+if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-request-lookup-transient.txt" \
+  && [ "$(cat "$TEST_DIR/gh-request-lookup-calls" 2>/dev/null || echo 0)" -ge 2 ] \
+  && [ ! -f "$TEST_DIR/gh-review-request" ] \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: transient marker lookup failure is retried without a duplicate request"
+else
+  echo "FAIL: transient marker lookup failure aborted or duplicated the request" >&2
+  cat "$TEST_DIR/output-pr-triggered-request-lookup-transient.txt" >&2
+  [ ! -f "$TEST_DIR/gh-request-lookup-calls" ] || cat "$TEST_DIR/gh-request-lookup-calls" >&2
+  exit 1
+fi
+
+echo "==> Test: persistent review-request marker lookup failure reports inspection error"
+reset_case_files
+write_pr_triggered_config true 2 1
+if GH_REQUEST_LOOKUP_FAIL=true \
+  MERGE_PR_SLEEP_OVERRIDE=0.1 \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-request-lookup-persistent.txt" 123; then
+  echo "FAIL: persistent marker lookup failure unexpectedly authorized a merge" >&2
+  exit 1
+fi
+if grep -q 'Failed to inspect trusted PR-visible AI review evidence for PR #123' "$TEST_DIR/output-pr-triggered-request-lookup-persistent.txt" \
+  && grep -q 'last gh error: review request markers: review request records unavailable' "$TEST_DIR/output-pr-triggered-request-lookup-persistent.txt" \
+  && [ "$(cat "$TEST_DIR/gh-request-lookup-calls" 2>/dev/null || echo 0)" -ge 2 ] \
+  && ! grep -q 'Timed out waiting for trusted PR-visible AI review' "$TEST_DIR/output-pr-triggered-request-lookup-persistent.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: persistent marker lookup failure remains distinct from a missing review"
+else
+  echo "FAIL: persistent marker lookup failure was not retried and diagnosed" >&2
+  cat "$TEST_DIR/output-pr-triggered-request-lookup-persistent.txt" >&2
+  [ ! -f "$TEST_DIR/gh-request-lookup-calls" ] || cat "$TEST_DIR/gh-request-lookup-calls" >&2
+  exit 1
+fi
+
 echo "==> Test: persistent PR head inspection failure reports the GitHub error"
 reset_case_files
 write_pr_triggered_config true 0 0
@@ -1787,7 +2395,7 @@ fi
 echo "==> Test: persistent PR base inspection failure reports the GitHub error"
 reset_case_files
 write_pr_triggered_config true 0 0
-if GH_BASE_REF_FAIL_AFTER=1 \
+if GH_BASE_REF_FAIL_AFTER=2 \
   run_merge_pr "$TEST_DIR/output-pr-triggered-base-inspection-fail.txt" 123; then
   echo "FAIL: merge-pr.sh ignored a persistent PR base inspection failure" >&2
   exit 1
@@ -1845,17 +2453,21 @@ echo "==> Test: review-fix push requires a fresh PR-triggered review on the new 
 reset_case_files
 install_preflight_counter_fixture
 write_pr_triggered_config false 2 1 true true
-GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/4' \
+if ! GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/4' \
   GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\treview-fixed-head\tAPPROVED\t2026-06-23T00:01:00Z\thttps://example.test/review/5' \
   CODEX_REVIEW_MUTATE_HEAD="review-fixed-head" \
   GH_EXPECT_MERGE_HEAD="review-fixed-head" \
   PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
   MERGE_PR_SLEEP_OVERRIDE=0 \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-review-fix.txt" 123
+  run_merge_pr "$TEST_DIR/output-pr-triggered-review-fix.txt" 123; then
+  echo "FAIL: review-fix flow returned nonzero" >&2
+  cat "$TEST_DIR/output-pr-triggered-review-fix.txt" >&2
+  exit 1
+fi
 rm -rf "${TEST_DIR:?}/lib"
 if grep -q '==> Merge review changed HEAD:' "$TEST_DIR/output-pr-triggered-review-fix.txt" \
-  && grep -q '<!-- touchstone:pr-review-request provider=github-codex head=review-fixed-head -->' "$TEST_DIR/gh-review-request" \
-  && grep -q '==> Requested GitHub Codex review for head review-fixed-head (after review fixes).' "$TEST_DIR/output-pr-triggered-review-fix.txt" \
+  && grep -q '<!-- touchstone:pr-review-request provider=github-codex pr=123 head=review-fixed-head base=base-oid -->' "$TEST_DIR/gh-review-request" \
+  && grep -q '==> Requested GitHub Codex review for head review-fixed-head at base base-oid (after review fixes).' "$TEST_DIR/output-pr-triggered-review-fix.txt" \
   && grep -q '==> Waiting for trusted PR-visible AI review for PR #123 (after review fixes)' "$TEST_DIR/output-pr-triggered-review-fix.txt" \
   && grep -q '^review-fixed-head$' "$TEST_DIR/gh-merge-head" \
   && grep -q '^review-fixed-head$' "$TEST_DIR/git-push-head" \
@@ -1896,8 +2508,8 @@ rm -rf "${TEST_DIR:?}/lib"
 if grep -q '==> Merge review changed HEAD:' "$TEST_DIR/output-review-fix.txt" \
   && grep -q '==> Running deterministic postflight after review fixes' "$TEST_DIR/output-review-fix.txt" \
   && grep -q '==> Pushing review fix commit(s) to PR branch feature/test' "$TEST_DIR/output-review-fix.txt" \
-  && grep -q '<!-- touchstone:pr-review-request provider=github-codex head=review-fixed-head -->' "$TEST_DIR/gh-review-request" \
-  && grep -q '==> Requested GitHub Codex review for head review-fixed-head (after review fixes).' "$TEST_DIR/output-review-fix.txt" \
+  && grep -q '<!-- touchstone:pr-review-request provider=github-codex pr=123 head=review-fixed-head base=base-oid -->' "$TEST_DIR/gh-review-request" \
+  && grep -q '==> Requested GitHub Codex review for head review-fixed-head at base base-oid (after review fixes).' "$TEST_DIR/output-review-fix.txt" \
   && ! grep -q '==> Waiting for trusted PR-visible AI review for PR #123 (after review fixes)' "$TEST_DIR/output-review-fix.txt" \
   && grep -q '^review-fixed-head$' "$TEST_DIR/git-push-head" \
   && grep -q '^review-fixed-head$' "$TEST_DIR/gh-merge-head" \
@@ -2549,6 +3161,7 @@ fi
 echo "==> Test: rollout bypass derives eligibility from prior PR-triggered review"
 reset_case_files
 write_pr_triggered_config false 0 0
+GH_REQUEST_RECORDS="$(durable_request_records "2026-06-22T00:00:00Z" "base-oid")" \
 GH_ISSUE_COMMENTS=$'chatgpt-codex-connector[bot]\t2026-06-23T00:00:00Z\thttps://example.test/comment/bypass\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
   run_merge_pr "$TEST_DIR/output-bypass-pr-triggered.txt" 123 --bypass-with-disclosure="reviewer unavailable after prior clean review"
 if grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-bypass-pr-triggered.txt" \

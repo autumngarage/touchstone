@@ -178,6 +178,7 @@ case "${1:-} ${2:-}" in
         ;;
       headRefName) echo "feature/test" ;;
       headRefOid) echo "pr-head-oid" ;;
+      baseRefName) echo "main" ;;
       isDraft) echo "false" ;;
       reviewDecision) echo "" ;;
       mergeStateStatus,mergeable) echo "CLEAN MERGEABLE" ;;
@@ -190,7 +191,10 @@ case "${1:-} ${2:-}" in
     echo ""
     ;;
   "api repos/"*)
-    echo "base-oid"
+    case "${2:-}" in
+      */pulls/123) printf 'main\tbase-oid\n' ;;
+      *) echo "base-oid" ;;
+    esac
     ;;
   "pr checkout")
     echo checked-out > "$GH_CHECKOUT_FILE"
@@ -226,6 +230,7 @@ case "$*" in
   "rev-parse feature/test") echo "pr-head-oid" ;;
   "rev-parse --verify --quiet origin/main^{commit}") echo "base-oid" ;;
   "rev-parse --verify origin/main^{commit}") echo "base-oid" ;;
+  "check-ref-format --branch main") ;;
   "rev-parse --git-path touchstone/reviewer-clean") printf '%s\n' "$TEST_REPO_ROOT/.git/touchstone/reviewer-clean" ;;
   "rev-parse --git-path touchstone/reviewer-findings-history") printf '%s\n' "$TEST_REPO_ROOT/.git/touchstone/reviewer-findings-history" ;;
   "rev-parse --git-path touchstone/squash-map.jsonl") printf '%s\n' "$TEST_REPO_ROOT/.git/touchstone/squash-map.jsonl" ;;
@@ -253,13 +258,17 @@ EOF
 chmod +x "$MERGE_FAKE_BIN/gh" "$MERGE_FAKE_BIN/git"
 
 MERGE_OUT="$TEST_DIR/merge.out"
-PATH="$MERGE_FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+if ! PATH="$MERGE_FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
   TEST_REPO_ROOT="$MERGE_DIR/repo" \
   GH_COMMENT_FILE="$TEST_DIR/merge-comments" \
   GH_MERGED_MARKER="$TEST_DIR/merged" \
   GH_CHECKOUT_FILE="$TEST_DIR/checkout" \
   TOUCHSTONE_NO_PREFLIGHT=1 \
-  bash "$MERGE_DIR/scripts/merge-pr.sh" 123 >"$MERGE_OUT" 2>&1
+  bash "$MERGE_DIR/scripts/merge-pr.sh" 123 >"$MERGE_OUT" 2>&1; then
+  echo "    FAIL: merge-pr.sh fixture failed" >&2
+  cat "$MERGE_OUT" >&2
+  exit 1
+fi
 
 if grep -q 'Posted findings-history PR comment' "$MERGE_OUT" \
   && grep -q '<details>' "$TEST_DIR/merge-comments" \

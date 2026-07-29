@@ -391,7 +391,10 @@ load_open_pr_review_request_config() {
 request_pr_triggered_review() {
   local pr_number="$1"
   local expected_head_sha="$2"
-  local head_sha marker existing_request_ids body attempt=1
+  local allow_status_bootstrap="${3:-false}"
+  local head_sha base_revision base_branch base_sha marker request_records context created_at _creator creator_permission description request_pr request_base request_intent_at request_trigger_at body trigger_at attempt=1
+  local completion_head completion_revision completion_branch completion_base
+  local intent_at="" completion_records="" matching_request=false trusted_records=false conflicting_bases=""
   local max_attempts="${TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS:-10}"
   local retry_interval="${TOUCHSTONE_PR_HEAD_CONVERGENCE_INTERVAL:-1}"
 
@@ -428,25 +431,170 @@ request_pr_triggered_review() {
     sleep "$retry_interval"
     attempt=$((attempt + 1))
   done
-  marker="<!-- touchstone:pr-review-request provider=github-codex head=$head_sha -->"
-  if ! existing_request_ids="$(
-    gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments?per_page=100" \
-      --jq ".[] | select(.body == \"@codex review\\n\\n$marker\") | .id"
+  if ! base_revision="$(
+    gh api "repos/$REPO_FULL_NAME/pulls/$pr_number" --jq '[.base.ref, .base.sha] | @tsv'
+  )"; then
+    echo "ERROR: failed to resolve the base revision for PR #$pr_number before requesting review." >&2
+    return 1
+  fi
+  IFS=$'\t' read -r base_branch base_sha <<<"$base_revision"
+  if [ -z "$base_branch" ] || [ -z "$base_sha" ]; then
+    echo "ERROR: GitHub returned incomplete base metadata for PR #$pr_number." >&2
+    return 1
+  fi
+  if [ "$base_branch" != "$BASE_BRANCH" ]; then
+    echo "ERROR: PR #$pr_number base changed before review was requested." >&2
+    echo "       expected: $BASE_BRANCH" >&2
+    echo "       actual:   $base_branch" >&2
+    return 1
+  fi
+  marker="<!-- touchstone:pr-review-request provider=github-codex pr=$pr_number head=$head_sha base=$base_sha -->"
+  if ! request_records="$(
+    gh api --paginate "repos/$REPO_FULL_NAME/commits/$head_sha/statuses?per_page=100" \
+      --jq '.[] |
+        select(
+          .context == "touchstone/review-request-intent" or
+          .context == "touchstone/review-request-complete"
+        ) |
+        select(.state == "success") |
+        [.context, .created_at, .creator.login, .description] |
+        @tsv'
   )"; then
     echo "ERROR: failed to inspect prior GitHub Codex review requests for PR #$pr_number." >&2
     return 1
   fi
-  if [ -n "$existing_request_ids" ]; then
-    echo "==> GitHub Codex review already requested for head $head_sha."
+  while IFS=$'\t' read -r context created_at _creator description || [ -n "$context" ]; do
+    [ -n "$context" ] || continue
+    case "$context" in
+      touchstone/review-request-intent)
+        case "$description" in
+          pr=*' base='*) ;;
+          *) continue ;;
+        esac
+        request_pr="${description#pr=}"
+        request_pr="${request_pr%% base=*}"
+        request_base="${description#* base=}"
+        request_intent_at="$created_at"
+        ;;
+      touchstone/review-request-complete)
+        case "$description" in
+          pr=*' base='*' intent='*' trigger='*) ;;
+          *) continue ;;
+        esac
+        request_pr="${description#pr=}"
+        request_pr="${request_pr%% base=*}"
+        request_base="${description#* base=}"
+        request_base="${request_base%% intent=*}"
+        request_intent_at="${description#* intent=}"
+        request_intent_at="${request_intent_at%% trigger=*}"
+        request_trigger_at="${description##* trigger=}"
+        ;;
+      *) continue ;;
+    esac
+    [ "$request_pr" = "$pr_number" ] || continue
+    if ! creator_permission="$(
+      gh api "repos/$REPO_FULL_NAME/collaborators/$_creator/permission" --jq '.permission' 2>/dev/null
+    )"; then
+      creator_permission=""
+    fi
+    case "$creator_permission" in
+      admin | maintain | write) ;;
+      *)
+        echo "ERROR: PR #$pr_number head $head_sha has review-request status from untrusted creator '$_creator'." >&2
+        echo "       Update the PR head before requesting review." >&2
+        return 1
+        ;;
+    esac
+    trusted_records=true
+    if [ "$request_base" != "$base_sha" ]; then
+      conflicting_bases="${conflicting_bases}${conflicting_bases:+, }$request_base"
+    elif [ "$context" = "touchstone/review-request-intent" ]; then
+      if [ -z "$intent_at" ] || [[ "$request_intent_at" > "$intent_at" ]]; then
+        intent_at="$request_intent_at"
+      fi
+    else
+      completion_records="${completion_records}${completion_records:+$'\n'}$request_intent_at"$'\t'"$request_trigger_at"
+    fi
+  done <<<"$request_records"
+  if [ -n "$conflicting_bases" ]; then
+    echo "ERROR: PR #$pr_number head $head_sha already has trusted review requests for another base revision." >&2
+    echo "       current base:  $base_sha" >&2
+    echo "       prior base(s): $conflicting_bases" >&2
+    echo "       Update the PR head before requesting review for the new base." >&2
+    return 1
+  fi
+  if [ "$trusted_records" = "false" ]; then
+    if [ "$allow_status_bootstrap" != "true" ]; then
+      echo "ERROR: PR #$pr_number head $head_sha has no durable review-request evidence." >&2
+      echo "       This invocation did not create or advance the PR head, so legacy review state is ambiguous." >&2
+      echo "       Update the PR head before requesting review under the durable protocol." >&2
+      return 1
+    fi
+  fi
+  if [ -n "$intent_at" ] && printf '%s\n' "$completion_records" | cut -f1 | grep -Fxq "$intent_at"; then
+    matching_request=true
+  fi
+  if [ "$matching_request" = true ]; then
+    echo "==> GitHub Codex review already requested for head $head_sha at base $base_sha."
     return 0
   fi
 
+  if [ -z "$intent_at" ]; then
+    if ! intent_at="$(
+      gh api -X POST "repos/$REPO_FULL_NAME/statuses/$head_sha" \
+        -f state=success \
+        -f context=touchstone/review-request-intent \
+        -f description="pr=$pr_number base=$base_sha" \
+        --jq '.created_at'
+    )"; then
+      echo "ERROR: failed to record review-request intent for PR #$pr_number." >&2
+      return 1
+    fi
+  fi
+  if [ -z "$intent_at" ]; then
+    echo "ERROR: GitHub returned no timestamp for review-request intent." >&2
+    return 1
+  fi
+
   body="$(printf '@codex review\n\n%s' "$marker")"
-  if ! gh pr comment "$pr_number" --body "$body" >/dev/null; then
+  if ! trigger_at="$(gh api -X POST "repos/$REPO_FULL_NAME/issues/$pr_number/comments" \
+    -f body="$body" --jq '.created_at')"; then
     echo "ERROR: failed to request GitHub Codex review for PR #$pr_number." >&2
     return 1
   fi
-  echo "==> Requested GitHub Codex review for head $head_sha."
+  if [ -z "$trigger_at" ]; then
+    echo "ERROR: GitHub returned no timestamp for the review trigger comment." >&2
+    return 1
+  fi
+  if ! completion_head="$(gh pr view "$pr_number" --json headRefOid --jq '.headRefOid')"; then
+    echo "ERROR: failed to revalidate PR #$pr_number head after requesting review." >&2
+    return 1
+  fi
+  if ! completion_revision="$(
+    gh api "repos/$REPO_FULL_NAME/pulls/$pr_number" --jq '[.base.ref, .base.sha] | @tsv'
+  )"; then
+    echo "ERROR: failed to revalidate PR #$pr_number base after requesting review." >&2
+    return 1
+  fi
+  IFS=$'\t' read -r completion_branch completion_base <<<"$completion_revision"
+  if [ "$completion_head" != "$head_sha" ] \
+    || [ "$completion_branch" != "$base_branch" ] \
+    || [ "$completion_base" != "$base_sha" ]; then
+    echo "ERROR: PR #$pr_number revision changed while review was being requested." >&2
+    echo "       requested: $base_branch@$base_sha head=$head_sha" >&2
+    echo "       current:   ${completion_branch:-<empty>}@${completion_base:-<empty>} head=${completion_head:-<empty>}" >&2
+    echo "       Rerun scripts/open-pr.sh against the current revision." >&2
+    return 1
+  fi
+  if ! gh api -X POST "repos/$REPO_FULL_NAME/statuses/$head_sha" \
+    -f state=success \
+    -f context=touchstone/review-request-complete \
+    -f description="pr=$pr_number base=$base_sha intent=$intent_at trigger=$trigger_at" \
+    --jq '.created_at' >/dev/null; then
+    echo "ERROR: failed to record durable review-request evidence for PR #$pr_number." >&2
+    return 1
+  fi
+  echo "==> Requested GitHub Codex review for head $head_sha at base $base_sha."
 }
 
 run_advisory_review_at_pr_open() {
@@ -744,8 +892,8 @@ if ! EXISTING_PR_RECORD="$(
     --head "$CURRENT_BRANCH" \
     --author "@me" \
     --state open \
-    --json url,baseRefName \
-    --jq 'if length > 0 then .[0] | [.url, .baseRefName] | @tsv else empty end' \
+    --json url,baseRefName,headRefOid \
+    --jq 'if length > 0 then .[0] | [.url, .baseRefName, .headRefOid] | @tsv else empty end' \
     2>/dev/null
 )"; then
   echo "ERROR: Failed to inspect existing PR metadata for branch '$CURRENT_BRANCH'." >&2
@@ -753,10 +901,11 @@ if ! EXISTING_PR_RECORD="$(
 fi
 EXISTING_PR_URL=""
 EXISTING_PR_BASE_BRANCH=""
+EXISTING_PR_HEAD_SHA=""
 if [ -n "$EXISTING_PR_RECORD" ]; then
-  IFS=$'\t' read -r EXISTING_PR_URL EXISTING_PR_BASE_BRANCH <<<"$EXISTING_PR_RECORD"
-  if [ -z "$EXISTING_PR_URL" ] || [ -z "$EXISTING_PR_BASE_BRANCH" ]; then
-    echo "ERROR: Existing PR metadata is missing its URL or base branch." >&2
+  IFS=$'\t' read -r EXISTING_PR_URL EXISTING_PR_BASE_BRANCH EXISTING_PR_HEAD_SHA <<<"$EXISTING_PR_RECORD"
+  if [ -z "$EXISTING_PR_URL" ] || [ -z "$EXISTING_PR_BASE_BRANCH" ] || [ -z "$EXISTING_PR_HEAD_SHA" ]; then
+    echo "ERROR: Existing PR metadata is missing its URL, base branch, or head revision." >&2
     exit 1
   fi
   if [ -n "$BASE_OVERRIDE" ] && [ "$BASE_OVERRIDE" != "$EXISTING_PR_BASE_BRANCH" ]; then
@@ -822,10 +971,16 @@ trap on_exit EXIT
 if [ -n "$EXISTING_PR_URL" ]; then
   echo "==> PR already open for $CURRENT_BRANCH: $EXISTING_PR_URL"
   PR_NUMBER="$(basename "$EXISTING_PR_URL")"
-  request_pr_triggered_review "$PR_NUMBER" "$PUSHED_HEAD_SHA"
   if [ "$AUTO_MERGE" = true ]; then
     ORPHAN_PR_URL="$EXISTING_PR_URL"
     ORPHAN_PR_NUMBER="$PR_NUMBER"
+  fi
+  STATUS_BOOTSTRAP_ALLOWED=false
+  if [ "$EXISTING_PR_HEAD_SHA" != "$PUSHED_HEAD_SHA" ]; then
+    STATUS_BOOTSTRAP_ALLOWED=true
+  fi
+  request_pr_triggered_review "$PR_NUMBER" "$PUSHED_HEAD_SHA" "$STATUS_BOOTSTRAP_ALLOWED"
+  if [ "$AUTO_MERGE" = true ]; then
     run_issue_claim_preflight "existing PR #$PR_NUMBER" --pr-number "$PR_NUMBER"
     run_pr_body_protocol_preflight "existing PR #$PR_NUMBER" "$PR_NUMBER"
     MERGE_SCRIPT="$SCRIPT_DIR/merge-pr.sh"
@@ -960,7 +1115,7 @@ touchstone_emit_event pr_opened \
 
 run_pr_body_protocol_preflight "new PR #$ORPHAN_PR_NUMBER" "$ORPHAN_PR_NUMBER"
 run_advisory_review_at_pr_open "$ORPHAN_PR_NUMBER" "$BASE_BRANCH"
-request_pr_triggered_review "$ORPHAN_PR_NUMBER" "$PUSHED_HEAD_SHA"
+request_pr_triggered_review "$ORPHAN_PR_NUMBER" "$PUSHED_HEAD_SHA" true
 
 if [ -n "$DRAFT_FLAG" ]; then
   echo "    Opened as draft. Mark ready on github.com when ready to merge."
