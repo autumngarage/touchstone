@@ -7,7 +7,7 @@
 [codex_review]
 # Maximum iterations of the review → fix → re-review loop.
 # After this many rounds without converging on CLEAN, the push aborts.
-max_iterations = 3
+max_iterations = 2
 
 # Maximum diff size (in lines) before the hook skips review entirely.
 # Very large diffs take too long and produce noisy reviews.

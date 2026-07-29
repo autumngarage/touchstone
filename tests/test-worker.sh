@@ -750,7 +750,9 @@ case "$command_name:$subcommand" in
       printf 'resolve\n' >>"$FAKE_RESOLVE_LOG"
       : >"$FAKE_RESOLVED"
       [ "${FAKE_ADD_COMMENT_DURING_RESOLVE:-0}" = 1 ] && : >"$FAKE_LATE_COMMENT" || true
-      if [ "${FAKE_REPLACE_THREAD:-0}" = 1 ] && [ ! -f "$FAKE_REPLACED" ]; then
+      if [ "${FAKE_REPLACE_THREAD_ALWAYS:-0}" = 1 ]; then
+        : >"$FAKE_PENDING_REPLACEMENT"
+      elif [ "${FAKE_REPLACE_THREAD:-0}" = 1 ] && [ ! -f "$FAKE_REPLACED" ]; then
         : >"$FAKE_REPLACED"
         : >"$FAKE_PENDING_REPLACEMENT"
       else
@@ -1263,9 +1265,34 @@ EOF
   wait_for_status "$BUDGET_WT" needs-attention "$STATUS" \
     || fail "iteration budget exhaustion did not enter needs-attention"
   assert_contains "$STATUS" '"reason":"iteration-budget-exhausted"'
+  assert_contains "$STATUS" '"handoff_invariant":"No autonomous edit is dispatched after needs-attention."'
+  assert_contains "$STATUS" '"handoff_validation":"[0-9a-f]{40}"'
+  assert_contains "$STATUS" '"handoff_non_goals":"No further edits, cleanup, thread resolution, or merge were attempted."'
   unset FAKE_REPLACE_THREAD
 
-  echo "==> Case e: a checkpoint cannot cross PR identity boundaries"
+  echo "==> Case e: oversized budgets are clamped before a third autonomous edit"
+  HARD_LIMIT_WT="$TEST_DIR/hard-limit-worktree"
+  git -C "$REPO" branch feat/review-hard-limit main
+  git -C "$REPO" push -q origin feat/review-hard-limit
+  git -C "$REPO" worktree add -q "$HARD_LIMIT_WT" feat/review-hard-limit
+  : >"$FAKE_THREAD_ACTIVE"
+  printf 'thread-hard-limit\n' >"$FAKE_THREAD_ID"
+  rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED" "$FAKE_REPLACED" "$FAKE_PENDING_REPLACEMENT"
+  export FAKE_REPLACE_THREAD_ALWAYS=1
+  TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+    "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+    --worktree "$HARD_LIMIT_WT" --detach --review-fix \
+    --max-fix-iterations 9 --validation-command : >"$TEST_DIR/hard-limit-start.out" 2>&1
+  wait_for_status "$HARD_LIMIT_WT" needs-attention "$STATUS" \
+    || fail "hard autonomous mutation ceiling did not enter needs-attention"
+  assert_contains "$TEST_DIR/hard-limit-start.out" 'capped at 2 mutation cycles'
+  assert_contains "$STATUS" '"reason":"iteration-budget-exhausted"'
+  assert_contains "$STATUS" '"review_fix_iteration":2'
+  [ "$(git -C "$HARD_LIMIT_WT" rev-list --count main..HEAD)" = 2 ] \
+    || fail "oversized budget dispatched more than two autonomous fixes"
+  unset FAKE_REPLACE_THREAD_ALWAYS
+
+  echo "==> Case f: a checkpoint cannot cross PR identity boundaries"
   # shellcheck source=../lib/worker-state.sh
   source "$TOUCHSTONE_ROOT/lib/worker-state.sh"
   # shellcheck source=../lib/worker-ship-job.sh
@@ -1274,6 +1301,13 @@ EOF
   source "$TOUCHSTONE_ROOT/lib/events.sh"
   # shellcheck source=../lib/worker-review-fix.sh
   source "$TOUCHSTONE_ROOT/lib/worker-review-fix.sh"
+  [ "$(touchstone_review_fix_effective_iterations 999999999999999999999999)" = 2 ] \
+    || fail "oversized decimal iteration budget was not clamped without arithmetic"
+  [ "$(touchstone_review_fix_effective_iterations 1)" = 1 ] \
+    || fail "lower autonomous iteration budget was not preserved"
+  if touchstone_review_fix_effective_iterations 01 >/dev/null; then
+    fail "non-canonical decimal iteration budget was accepted"
+  fi
   CROSS_CHECKPOINT="$TEST_DIR/cross-checkpoint"
   mkdir -p "$CROSS_CHECKPOINT/review-fix"
   RESTART_HEAD="$(git -C "$WORKTREE" rev-parse HEAD)"

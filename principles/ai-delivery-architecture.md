@@ -150,3 +150,15 @@ The scripts now enforce the core merge-time parts of this architecture:
 5. When configured for PR-triggered GitHub Codex review, `merge-pr.sh` binds the trusted signal to the exact current head and base. It skips duplicate local semantic review only when the PR head already contains that base, repeats the wait after any review-fix push, and rejects base or merge-base movement before merging with `--match-head-commit`.
 6. Review and preflight markers should key on base/head/config so repeated operations reuse valid results without hiding stale state.
 7. Docs, templates, tests, and issue guidance should describe the PR-visible review loop consistently.
+
+## Product Boundary
+
+Touchstone's supported core is policy distribution, deterministic validation,
+PR creation, current-revision review authorization, and guarded merge. Model
+providers and PR-visible reviewers are adapters around that contract.
+
+Detached wait-only shipping is a supported latency adapter because it does not
+mutate the branch. Detached review-fix remains experimental: it may author at
+most two validated fix commits, then must preserve its worktree and emit a
+`needs-attention` handoff before any third edit. The core workflow must not
+depend on autonomous repair succeeding.

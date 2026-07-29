@@ -5,6 +5,17 @@
 # shellcheck source=codex-auth.sh
 source "$TOUCHSTONE_ROOT/lib/codex-auth.sh"
 
+TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT=2
+
+touchstone_review_fix_effective_iterations() {
+  local requested="$1"
+  case "$requested" in
+    1 | 2) printf '%s\n' "$requested" ;;
+    '' | *[!0-9]* | 0 | 0*) return 1 ;;
+    *) printf '%s\n' "$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT" ;;
+  esac
+}
+
 touchstone_review_fix_set_state() {
   local job_dir="$1" worktree_path="$2" status="$3"
   touchstone_ship_write "$job_dir" status "$status"
@@ -13,9 +24,20 @@ touchstone_review_fix_set_state() {
 
 touchstone_review_fix_need_attention() {
   local job_dir="$1" worktree_path="$2" reason="$3"
+  local last_validated_head
   TOUCHSTONE_REVIEW_FIX_REASON="$reason"
+  last_validated_head="$(touchstone_ship_read "$job_dir" last-validated-head)"
   touchstone_ship_write "$job_dir" reason "$reason"
-  touchstone_emit_event needs_attention worktree_path="$worktree_path"
+  touchstone_ship_write "$job_dir" handoff-invariant \
+    "No autonomous edit is dispatched after needs-attention."
+  touchstone_ship_write "$job_dir" handoff-validation \
+    "${last_validated_head:-No autonomous fix head completed validation.}"
+  touchstone_ship_write "$job_dir" handoff-non-goals \
+    "No further edits, cleanup, thread resolution, or merge were attempted."
+  touchstone_emit_event needs_attention \
+    worktree_path="$worktree_path" reason="$reason" \
+    invariant="No autonomous edit is dispatched after needs-attention." \
+    last_validated_head="$last_validated_head"
   return 1
 }
 
@@ -597,6 +619,9 @@ touchstone_review_fix_run() {
   # Dynamically scoped for cmd_ship_runner, which persists the terminal reason.
   # shellcheck disable=SC2034
   TOUCHSTONE_REVIEW_FIX_REASON=""
+  if ! max_iterations="$(touchstone_review_fix_effective_iterations "$max_iterations")"; then
+    max_iterations="$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT"
+  fi
   branch="$(git -C "$worktree_path" rev-parse --abbrev-ref HEAD)" || return 1
   base_ref="$(cd "$worktree_path" && touchstone_worker_default_ref)" || {
     touchstone_review_fix_need_attention "$job_dir" "$worktree_path" base-ref-unavailable
@@ -893,6 +918,7 @@ touchstone_review_fix_run() {
       return
     fi
     fix_head="$(git -C "$worktree_path" rev-parse HEAD)"
+    touchstone_ship_write "$job_dir" last-validated-head "$fix_head"
     touchstone_ship_write "$job_dir/review-fix" fix-head "$fix_head"
     phase_rc=0
     touchstone_review_fix_run_child \

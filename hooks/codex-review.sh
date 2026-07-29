@@ -71,7 +71,7 @@
 #   CODEX_REVIEW_ENABLED              — true/false override for the [review].enabled setting
 #   CODEX_REVIEW_MODE                 — review-only|fix|diff-only|no-tests (default: fix)
 #   CODEX_REVIEW_BASE                 — base ref to diff against (default: origin/<default-branch>)
-#   CODEX_REVIEW_MAX_ITERATIONS       — fix loop cap (default: from config, or 3)
+#   CODEX_REVIEW_MAX_ITERATIONS       — fix loop cap (default: from config, or 2)
 #   CODEX_REVIEW_MAX_DIFF_LINES       — skip review if diff > this many lines (default: 5000)
 #   CODEX_REVIEW_CACHE_CLEAN          — cache exact-input clean reviews (default: true)
 #   CODEX_REVIEW_TIMEOUT              — optional wall-clock timeout per invocation in seconds (default: 0, no Touchstone wrapper timeout)
@@ -492,7 +492,8 @@ log_skip_event() {
 
 # Defaults (conservative: all paths unsafe, no auto-fix unless configured)
 SAFE_BY_DEFAULT=false
-MAX_ITERATIONS="${CODEX_REVIEW_MAX_ITERATIONS:-3}"
+MAX_AUTONOMOUS_FIX_ITERATIONS=2
+MAX_ITERATIONS="${CODEX_REVIEW_MAX_ITERATIONS:-$MAX_AUTONOMOUS_FIX_ITERATIONS}"
 MAX_DIFF_LINES="${CODEX_REVIEW_MAX_DIFF_LINES:-5000}"
 CACHE_CLEAN_REVIEWS="${CODEX_REVIEW_CACHE_CLEAN:-true}"
 NO_AUTOFIX="${CODEX_REVIEW_NO_AUTOFIX:-false}"
@@ -1270,6 +1271,20 @@ mode_allows_fix() {
   [ "$REVIEW_MODE" = "fix" ] || [ "$REVIEW_MODE" = "no-tests" ]
 }
 mode_allows_bash() { [ "$REVIEW_MODE" = "fix" ] || [ "$REVIEW_MODE" = "review-only" ]; }
+
+if mode_allows_fix; then
+  case "$MAX_ITERATIONS" in
+    1 | 2) ;;
+    '' | *[!0-9]* | 0 | 0*)
+      echo "WARNING: invalid autonomous repair iteration budget '$MAX_ITERATIONS'; using $MAX_AUTONOMOUS_FIX_ITERATIONS." >&2
+      MAX_ITERATIONS="$MAX_AUTONOMOUS_FIX_ITERATIONS"
+      ;;
+    *)
+      echo "WARNING: autonomous repair is capped at $MAX_AUTONOMOUS_FIX_ITERATIONS mutation cycles; clamping requested value $MAX_ITERATIONS." >&2
+      MAX_ITERATIONS="$MAX_AUTONOMOUS_FIX_ITERATIONS"
+      ;;
+  esac
+fi
 
 short_ref_name() {
   local ref="$1"

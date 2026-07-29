@@ -50,7 +50,10 @@ case "${1:-}" in
   review)
     cat >/dev/null
     printf '[conductor] auto (prefer=best, effort=max) -> codex (tier: frontier)\n' >&2
-    if grep -q 'auto-fixed missing review artifact' file.txt; then
+    if [ "${CONDUCTOR_NEVER_CONVERGE:-0}" = 1 ]; then
+      printf -- '- another autonomous finding\n'
+      printf 'CODEX_REVIEW_BLOCKED\n'
+    elif grep -q 'auto-fixed missing review artifact' file.txt; then
       printf 'CODEX_REVIEW_CLEAN\n'
     else
       printf -- '- missing review artifact for auto-fixed finding\n'
@@ -64,7 +67,11 @@ case "${1:-}" in
     [ -f "$count_file" ] && count="$(cat "$count_file")"
     count=$((count + 1))
     printf '%s\n' "$count" > "$count_file"
-    if [ "$count" -eq 1 ]; then
+    if [ "${CONDUCTOR_NEVER_CONVERGE:-0}" = 1 ]; then
+      printf 'non-converging-fix-%s\n' "$count" >> file.txt
+      printf -- '- another autonomous finding\n'
+      printf 'CODEX_REVIEW_FIXED\n'
+    elif [ "$count" -eq 1 ]; then
       printf 'auto-fixed missing review artifact\n' >> file.txt
       printf -- '- missing review artifact for auto-fixed finding\n'
       printf 'CODEX_REVIEW_FIXED\n'
@@ -118,7 +125,34 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Case 2: formatter renders collapsed actionable history"
+echo "==> Case 2: legacy fix mode clamps oversized mutation budgets"
+rm -f "$TEST_DIR/conductor-count"
+LIMIT_OUT="$TEST_DIR/review-limit.out"
+if (
+  cd "$REVIEW_REPO"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    CONDUCTOR_COUNT_FILE="$TEST_DIR/conductor-count" \
+    CONDUCTOR_NEVER_CONVERGE=1 \
+    TOUCHSTONE_REVIEW_LOG=/dev/null \
+    CODEX_REVIEW_FORCE=1 \
+    CODEX_REVIEW_BASE=main \
+    CODEX_REVIEW_MODE=fix \
+    CODEX_REVIEW_MAX_ITERATIONS=999999999999999999999999 \
+    bash "$TOUCHSTONE_ROOT/scripts/codex-review.sh"
+) >"$LIMIT_OUT" 2>&1; then
+  echo "    FAIL: non-converging review unexpectedly passed" >&2
+  ERRORS=$((ERRORS + 1))
+elif [ "$(cat "$TEST_DIR/conductor-count")" = 2 ] \
+  && grep -q 'capped at 2 mutation cycles' "$LIMIT_OUT" \
+  && grep -q 'did not converge after 2 iterations' "$LIMIT_OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: legacy fix mode exceeded the autonomous mutation ceiling" >&2
+  cat "$LIMIT_OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 3: formatter renders collapsed actionable history"
 # shellcheck source=../lib/review-comment.sh
 source "$TOUCHSTONE_ROOT/lib/review-comment.sh"
 COMMENT="$(format_findings_history_comment "$HISTORY_FILE")"
@@ -133,7 +167,7 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Case 3: merge-pr.sh posts findings-history comment after merge"
+echo "==> Case 4: merge-pr.sh posts findings-history comment after merge"
 MERGE_DIR="$TEST_DIR/merge"
 MERGE_FAKE_BIN="$TEST_DIR/bin-merge"
 mkdir -p "$MERGE_DIR/scripts" "$MERGE_DIR/lib" "$MERGE_DIR/repo/.git/touchstone/reviewer-findings-history" "$MERGE_FAKE_BIN"
@@ -281,7 +315,7 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Case 4: comment_findings_history=false skips post-merge history"
+echo "==> Case 5: comment_findings_history=false skips post-merge history"
 rm -f "$TEST_DIR/merge-comments" "$TEST_DIR/merged" "$TEST_DIR/checkout"
 printf '[review]\ncomment_on_clean = true\ncomment_findings_history = false\n' >"$MERGE_DIR/repo/.codex-review.toml"
 PATH="$MERGE_FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \

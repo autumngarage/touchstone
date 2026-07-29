@@ -35,7 +35,7 @@ Usage:
   touchstone worker spawn --task "<description>" --type fix|feat|chore|refactor|docs [--json]
   touchstone worker status --worktree <path> [--json] [--show-log] [--log-lines <n>]
   touchstone worker ship --worktree <path> [--detach] [--review-fix] [--cleanup]
-                         [--max-fix-iterations <n>] [--max-fix-minutes <n>]
+                         [--max-fix-iterations <1-2>] [--max-fix-minutes <n>]
                          [--validation-command <command>] [--events-json <path>]
   touchstone worker takeover --worktree <path> [--force]
   touchstone worker abandon --worktree <path> [--dry-run] [--force]
@@ -342,7 +342,8 @@ cmd_status() {
 
 cmd_ship_runner() {
   local job_dir="" worktree_path="" claim_token="" cleanup=false events_json="" child_pid="" exit_code=0 branch=""
-  local review_fix=false max_fix_iterations=3 max_fix_minutes=45 validation_command=""
+  local review_fix=false max_fix_iterations="$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT"
+  local max_fix_minutes=45 validation_command=""
   local deadline_epoch="" reason=""
   local args
   args=(--auto-merge)
@@ -479,8 +480,10 @@ cmd_ship_runner() {
 
 cmd_ship() {
   local worktree_path="" cleanup=false events_json="" detach=false review_fix=false
-  local max_fix_iterations=3 max_fix_minutes=45 validation_command=""
-  local job_dir="" runner_pid="" branch="" started_at="" claim_token="" args runner_args
+  local max_fix_iterations="$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT"
+  local max_fix_minutes=45 validation_command=""
+  local requested_fix_iterations="" job_dir="" runner_pid="" branch="" started_at=""
+  local claim_token="" args runner_args
   args=(--auto-merge)
 
   while [ "$#" -gt 0 ]; do
@@ -508,12 +511,18 @@ cmd_ship() {
           return 2
         }
         case "$2" in
-          '' | *[!0-9]* | 0)
-            echo "ERROR: --max-fix-iterations must be a positive integer." >&2
+          '' | *[!0-9]* | 0 | 0*)
+            echo "ERROR: --max-fix-iterations must be a canonical positive integer." >&2
             return 2
             ;;
         esac
-        max_fix_iterations="$2"
+        requested_fix_iterations="$2"
+        max_fix_iterations="$(
+          touchstone_review_fix_effective_iterations "$requested_fix_iterations"
+        )"
+        if [ "$requested_fix_iterations" != "$max_fix_iterations" ]; then
+          echo "WARNING: autonomous repair is capped at $TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT mutation cycles; clamping requested value $2." >&2
+        fi
         shift 2
         ;;
       --max-fix-minutes)
@@ -615,6 +624,10 @@ cmd_ship() {
   touchstone_ship_write "$job_dir" reason ""
   touchstone_ship_write "$job_dir" pid ""
   touchstone_ship_write "$job_dir" child-pid ""
+  touchstone_ship_write "$job_dir" last-validated-head ""
+  touchstone_ship_write "$job_dir" handoff-invariant ""
+  touchstone_ship_write "$job_dir" handoff-validation ""
+  touchstone_ship_write "$job_dir" handoff-non-goals ""
   if [ "$review_fix" = true ]; then
     touchstone_ship_write "$job_dir" deadline-epoch "$(($(date +%s) + max_fix_minutes * 60))"
     touchstone_ship_write "$job_dir" review-fix-iteration 0
@@ -739,6 +752,9 @@ cmd_takeover() {
       touchstone_emit_event worker_ship_takeover worktree_path="$worktree_path" pid="$pid"
       echo "Autonomous review-fix job needs attention."
       echo "Reason: $(touchstone_ship_read "$job_dir" reason)"
+      echo "Invariant: $(touchstone_ship_read "$job_dir" handoff-invariant)"
+      echo "Validation: $(touchstone_ship_read "$job_dir" handoff-validation)"
+      echo "Non-goals: $(touchstone_ship_read "$job_dir" handoff-non-goals)"
       echo "Worktree preserved for takeover: $worktree_path"
       return 0
       ;;

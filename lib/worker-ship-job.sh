@@ -236,7 +236,7 @@ touchstone_ship_refresh() {
 touchstone_ship_json() {
   local job_dir="$1" log_lines="${2:-0}"
   local status pid exit_code started_at finished_at reason log_path log_tail=""
-  local mode iteration deadline_epoch
+  local mode iteration deadline_epoch handoff_invariant handoff_validation handoff_non_goals
 
   [ -d "$job_dir" ] || {
     printf 'null'
@@ -253,6 +253,9 @@ touchstone_ship_json() {
   mode="$(touchstone_ship_read "$job_dir" mode)"
   iteration="$(touchstone_ship_read "$job_dir" review-fix-iteration)"
   deadline_epoch="$(touchstone_ship_read "$job_dir" deadline-epoch)"
+  handoff_invariant="$(touchstone_ship_read "$job_dir" handoff-invariant)"
+  handoff_validation="$(touchstone_ship_read "$job_dir" handoff-validation)"
+  handoff_non_goals="$(touchstone_ship_read "$job_dir" handoff-non-goals)"
   log_path="$job_dir/ship.log"
   case "$pid" in
     '' | *[!0-9]*) pid="" ;;
@@ -282,6 +285,12 @@ touchstone_ship_json() {
   json_number_or_null_field review_fix_iteration "$iteration"
   printf ','
   json_number_or_null_field deadline_epoch "$deadline_epoch"
+  printf ','
+  json_field handoff_invariant "$handoff_invariant"
+  printf ','
+  json_field handoff_validation "$handoff_validation"
+  printf ','
+  json_field handoff_non_goals "$handoff_non_goals"
   printf ','
   json_field log_path "$log_path"
   if [ "$log_lines" -gt 0 ]; then

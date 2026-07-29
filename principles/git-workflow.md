@@ -106,7 +106,8 @@ Behavior:
 - `merge-pr.sh` invokes `scripts/conductor-review.sh`, which routes LLM review through Conductor against the diff vs the default branch
 - Auto-fixes only low-risk findings (typos, missing imports, missing null checks, adding logging to empty exception handlers, named constants for unexplained magic numbers); anything that changes business logic or retry/error-handling semantics is reported as a finding for the author to address before merge
 - Blocks merge for unsafe findings (high-scrutiny paths)
-- Loops up to `max_iterations` times (default 3)
+- Loops up to `max_iterations` times (default 2; edit-capable modes are
+  hard-capped at 2)
 - Fails open on infra errors with a visible `[fail-open:<code>]` stderr line and an audit log entry (see codes above), unless the project config sets `on_error = "fail-closed"`
 
 ### Scope-aware preflight
@@ -253,11 +254,13 @@ The default detached job is wait-only: it invokes the project-local
 `open-pr.sh --auto-merge`, waits for PR-visible review, and merges a clean head.
 Actionable feedback stops the job and preserves the worktree for takeover.
 
-Use `--review-fix` when a bounded autonomous repair loop is authorized:
+`--review-fix` is an experimental adapter, not part of the supported core
+delivery contract. Use it only when a bounded autonomous repair loop is
+explicitly authorized:
 
 ```bash
 touchstone worker ship --worktree ../project-fix --detach --review-fix \
-  --max-fix-iterations 3 --max-fix-minutes 45
+  --max-fix-iterations 2 --max-fix-minutes 45
 ```
 
 This mode invokes the subscription-backed Codex CLI to edit files, while
@@ -268,6 +271,13 @@ stale head, ambiguous feedback, failed validation, unavailable authorization,
 worker failure, or exhausted budget moves the job to `needs-attention` without
 deleting its worktree, branch, checkpoints, or log. Resume manually with the
 takeover command printed by `touchstone worker status --show-log`.
+
+Autonomous repair has a non-configurable ceiling of two model-authored
+mutation cycles. Lower operator budgets are honored; higher values are clamped.
+After the ceiling, Touchstone dispatches no third edit and emits a durable
+handoff containing the stop reason, invariant, last validated fix head, and
+non-goals. Wait-only detached shipping remains the supported way to leave PR
+review latency running in the background.
 
 Do not substitute `rm -rf <worktree-dir>` for `git worktree remove <path>`.
 Deleting only the directory can leave stale Git worktree metadata behind; Git
