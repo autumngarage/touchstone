@@ -1,11 +1,11 @@
 ---
 name: touchstone-pre-impl
-description: Use before writing code on any non-trivial change — applies the 5-question pre-implementation gate (shared infra, root cause, code paths, public boundaries, reversibility).
+description: Use before writing code on any non-trivial change — defines the smallest shippable concern, then applies the 5-question implementation gate.
 ---
 
 # Pre-Implementation Checklist
 
-Walk through these five questions before writing code. If any answer exposes duplicated infrastructure, a symptom patch, a second code path, or unclear ownership, stop and discuss scope before continuing.
+Define the delivery slice, then walk through five implementation questions. If any answer exposes scope growth, duplicated infrastructure, a symptom patch, a second code path, or unclear ownership, stop and discuss scope before continuing.
 
 ## When to invoke
 
@@ -17,7 +17,11 @@ Walk through these five questions before writing code. If any answer exposes dup
 
 For the canonical version: read **`principles/pre-implementation-checklist.md`** now.
 
-## The five questions
+## Define the slice
+
+Record the invariant, owned subsystem/files, focused validation, non-goals, and stop condition. "Ship it all" defines a queue, not one PR. Freeze and split/replan when review reveals a second subsystem or two consecutive review/fix cycles uncover new structural defects.
+
+## The five implementation questions
 
 1. **Am I patching local infrastructure that shared infrastructure should own?**
    Search the project's existing utilities, base classes, and common modules first. Hand-rolling a thing the shared layer already provides deepens debt; migration eliminates it.

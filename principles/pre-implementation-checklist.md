@@ -4,6 +4,18 @@ Before writing code, walk through these questions. If any answer exposes duplica
 
 This checklist is a pre-flight prompt; the canonical rules live in [engineering-principles.md](engineering-principles.md).
 
+## 0. What is the smallest shippable concern?
+
+Write a short scope manifest before implementation:
+
+- **Invariant:** the behavior that must be true when this slice ships.
+- **Surface:** the subsystem and expected files this slice owns.
+- **Validation:** the focused checks that prove the invariant.
+- **Non-goals:** related work that belongs in follow-up issues.
+- **Stop condition:** the signal that freezes this branch for split/replan.
+
+A request to "ship it all" defines a delivery queue, not one PR. Freeze and replan before another edit when review reveals a second subsystem, the changed-file surface materially expands, or two consecutive review/fix cycles uncover new structural defects. Do not let platform work displace the customer product unless the platform defect blocks that product's release.
+
 ## 1. Am I adding to or patching local infrastructure that shared infrastructure should own?
 
 Search the project's existing shared layers (utilities, base classes, common modules) before writing or extending anything local. If a subsystem hand-rolls something the shared layer already provides, the fix is migration — not more hand-rolling. A patch on hand-rolled code deepens the debt; migration eliminates it.

@@ -49,6 +49,7 @@ for file in \
   assert_contains "$file" "bash scripts/claim-issue.sh <n>"
   assert_contains "$file" "Reconcile issues"
   assert_contains "$file" "Do not leave fixed issues open silently"
+  assert_contains "$file" "Bound delivery loops"
 done
 
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"
@@ -78,8 +79,12 @@ echo "==> canonical git workflow describes the PR-visible review loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Agentic PR Review Loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "The driving CLI watches the PR"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "scripts/open-pr.sh --auto-merge"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Delivery circuit breaker"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '"Ship it all" defines the queue'
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "smallest shippable concern"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Codex merge review"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "codex exec --full-auto"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '"ship it all," default to one PR'
 
 echo "==> canonical AI delivery architecture describes the PR review loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Agentic PR Review Loop"
