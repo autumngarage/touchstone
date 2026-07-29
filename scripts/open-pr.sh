@@ -36,8 +36,10 @@
 #   instead. So stacked PRs work well with a merge commit or rebase merge,
 #   but the `--auto-merge` default (squash) will orphan the child.
 #
-#   For simpler review, prefer bundling related work into one PR over
-#   stacks when you can. See principles/git-workflow.md.
+#   Prefer independent PRs against the default branch when slices can ship
+#   separately; rebase or cherry-pick child-only commits onto the default
+#   branch first. Use a stack only when a child truly depends on an unmerged
+#   parent. See principles/git-workflow.md.
 #
 set -euo pipefail
 
@@ -934,7 +936,13 @@ if [ -n "$BASE_OVERRIDE" ] && [ "$AUTO_MERGE" = true ]; then
   echo "WARNING: --base $BASE_OVERRIDE with --auto-merge stacks this PR on another branch" >&2
   echo "         AND will squash-merge it, which orphans any later stacked children." >&2
   echo "         Either drop --auto-merge (open stack, merge manually in order)" >&2
-  echo "         or drop --base (bundle into one PR on $DEFAULT_BRANCH)." >&2
+  echo "         or rebase/cherry-pick child-only commits onto $DEFAULT_BRANCH." >&2
+  if [ -n "$EXISTING_PR_URL" ]; then
+    EXISTING_PR_NUMBER="$(basename "$EXISTING_PR_URL")"
+    echo "         Then retarget the existing PR: gh pr edit $EXISTING_PR_NUMBER --base $DEFAULT_BRANCH" >&2
+  else
+    echo "         Then rerun without --base to open an independent PR." >&2
+  fi
 fi
 
 # Push. The "do I already have an upstream?" check is name-aware: a fresh

@@ -48,6 +48,7 @@ git -C "$REPO_DIR" config user.email "touchstone@example.com"
 printf 'base\n' >"$REPO_DIR/file.txt"
 git -C "$REPO_DIR" add file.txt
 git -C "$REPO_DIR" commit -m "base commit" >/dev/null 2>&1
+git -C "$REPO_DIR" branch feature/parent
 git -C "$REPO_DIR" checkout -b feat/test >/dev/null 2>&1
 printf 'change\n' >>"$REPO_DIR/file.txt"
 git -C "$REPO_DIR" add file.txt
@@ -92,7 +93,8 @@ case "$1 $2" in
     ;;
   "pr list")
     if [ "${GH_HAS_EXISTING_PR:-0}" = "1" ]; then
-      printf 'https://example.test/touchstone/pull/777\tmain\t%s\n' \
+      printf 'https://example.test/touchstone/pull/777\t%s\t%s\n' \
+        "${GH_EXISTING_PR_BASE:-main}" \
         "${GH_PR_HEAD_OID:-existing-pr-head}"
     else
       echo ""
@@ -228,11 +230,12 @@ run_open_pr() {
       GH_MERGED_AT="${GH_MERGED_AT:-}" \
       GH_PR_STATE="${GH_PR_STATE:-OPEN}" \
       GH_HAS_EXISTING_PR="${GH_HAS_EXISTING_PR:-0}" \
+      GH_EXISTING_PR_BASE="${GH_EXISTING_PR_BASE:-main}" \
       GH_PR_BODY="${GH_PR_BODY:-}" \
       GH_PR_AUTHOR="${GH_PR_AUTHOR:-alice}" \
       GH_REQUIRE_REPO_FOR_MERGED_AT="${GH_REQUIRE_REPO_FOR_MERGED_AT:-0}" \
       MERGE_PR_EXIT="${MERGE_PR_EXIT:-0}" \
-      bash "$SCRIPT_DIR/open-pr.sh" --auto-merge
+      bash "$SCRIPT_DIR/open-pr.sh" --auto-merge "$@"
   )
 }
 
@@ -490,6 +493,52 @@ else
   echo "    FAIL: expected extracted verify_pr_merged to accept MERGED state with empty mergedAt" >&2
   printf 'output: %s\n' "$out" >&2
   printf 'calls: %s\n' "$(cat "$VERIFY_COUNTER" 2>/dev/null || echo 0)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 11: a new stacked PR explains how to produce child-only history.
+# ---------------------------------------------------------------------------
+git -C "$REPO_DIR" commit --allow-empty -m $'exercise stacked warning\n\nProtocol: yes' >/dev/null 2>&1
+echo "==> Case 11: new stacked PR recovery preserves an independent slice"
+OUT="$TEST_DIR/case11.out"
+RC=0
+GH_PR_STATE="MERGED" GH_MERGED_AT="2026-07-29T12:00:00Z" GH_HAS_EXISTING_PR=0 \
+  GH_PR_BODY="Protocol: yes" MERGE_PR_EXIT=0 \
+  run_open_pr --base feature/parent >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'rebase/cherry-pick child-only commits onto main' "$OUT" \
+  && grep -q 'rerun without --base to open an independent PR' "$OUT" \
+  && ! grep -q 'gh pr edit' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected new-stack recovery to require child-only history" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 12: an existing stacked PR must also be retargeted on GitHub.
+# ---------------------------------------------------------------------------
+echo "==> Case 12: existing stacked PR recovery retargets the PR"
+OUT="$TEST_DIR/case12.out"
+RC=0
+GH_PR_STATE="MERGED" GH_MERGED_AT="2026-07-29T12:10:00Z" \
+  GH_HAS_EXISTING_PR=1 GH_EXISTING_PR_BASE="feature/parent" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' MERGE_PR_EXIT=0 \
+  run_open_pr --base feature/parent >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'rebase/cherry-pick child-only commits onto main' "$OUT" \
+  && grep -q 'gh pr edit 777 --base main' "$OUT" \
+  && ! grep -q 'rerun without --base to open an independent PR' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected existing-stack recovery to include explicit PR retarget" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
