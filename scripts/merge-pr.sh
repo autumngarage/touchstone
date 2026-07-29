@@ -1716,7 +1716,7 @@ trusted_pr_clean_signal() {
   if [ "$review_found" != true ] && [ "$comment_found" != true ] \
     && { [ "$review_same_second" = true ] || [ "$comment_same_second" = true ]; }; then
     PR_TRIGGERED_REVIEW_INSPECTION_ERROR="review evidence has the same second-level timestamp as its request; request a fresh review"
-    return 2
+    return 4
   fi
 
   if [ "$review_found" = true ] && [ "$comment_found" = true ]; then
@@ -1754,6 +1754,7 @@ wait_for_pr_triggered_review() {
   local phase="$2"
   local timeout_sec poll_sec start_epoch now_epoch elapsed observed_head observed_revision observed_branch observed_base sleep_seconds
   local last_inspection_error="" last_review_inspection_error="" request_status signal_status
+  local ambiguity_request_appended=false
 
   if [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then
     echo "ERROR: Unsupported [review.pr_triggered].provider: $PR_TRIGGERED_REVIEW_PROVIDER" >&2
@@ -1857,6 +1858,18 @@ wait_for_pr_triggered_review() {
         fi
         if [ "$signal_status" -eq 2 ]; then
           last_review_inspection_error="$PR_TRIGGERED_REVIEW_INSPECTION_ERROR"
+        elif [ "$signal_status" -eq 4 ]; then
+          if [ "$ambiguity_request_appended" = false ]; then
+            request_status=0
+            request_pr_triggered_review "$expected_head" "$observed_base" "$phase" false true || request_status=$?
+            if [ "$request_status" -ne 0 ]; then
+              exit 1
+            fi
+            ambiguity_request_appended=true
+            last_review_inspection_error=""
+            continue
+          fi
+          last_review_inspection_error="$PR_TRIGGERED_REVIEW_INSPECTION_ERROR"
         elif [ "$signal_status" -eq 3 ]; then
           echo "ERROR: Trusted PR-visible AI review is not clean for PR #$PR_NUMBER head $expected_head." >&2
           [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2
@@ -1912,7 +1925,7 @@ wait_for_pr_triggered_review() {
 load_pr_review_request_timestamp() {
   local expected_head="$1"
   local expected_base="$2"
-  local records context created_at _creator creator_permission description request_base intent_at trigger_at
+  local records context created_at _creator creator_permission description request_pr request_base intent_at trigger_at
   local matching_intents="" matching_completions="" trusted_records=false conflicting_bases=""
 
   PR_TRIGGERED_REVIEW_REQUEST_INSPECTION_ERROR=""
@@ -1940,6 +1953,33 @@ load_pr_review_request_timestamp() {
 
   while IFS="$(printf '\t')" read -r context created_at _creator description || [ -n "$context" ]; do
     [ -n "$context" ] || continue
+    case "$context" in
+      touchstone/review-request-intent)
+        case "$description" in
+          pr=*' base='*) ;;
+          *) continue ;;
+        esac
+        request_pr="${description#pr=}"
+        request_pr="${request_pr%% base=*}"
+        request_base="${description#* base=}"
+        intent_at="$created_at"
+        ;;
+      touchstone/review-request-complete)
+        case "$description" in
+          pr=*' base='*' intent='*' trigger='*) ;;
+          *) continue ;;
+        esac
+        request_pr="${description#pr=}"
+        request_pr="${request_pr%% base=*}"
+        request_base="${description#* base=}"
+        request_base="${request_base%% intent=*}"
+        intent_at="${description#* intent=}"
+        intent_at="${intent_at%% trigger=*}"
+        trigger_at="${description##* trigger=}"
+        ;;
+      *) continue ;;
+    esac
+    [ "$request_pr" = "$PR_NUMBER" ] || continue
     if ! creator_permission="$(
       gh api "repos/$REPO_FULL_NAME/collaborators/$_creator/permission" --jq '.permission' 2>/dev/null
     )"; then
@@ -1953,25 +1993,6 @@ load_pr_review_request_timestamp() {
         TOUCHSTONE_MERGE_FAILURE_REASON="review-request-untrusted-creator"
         return 3
         ;;
-    esac
-    case "$context" in
-      touchstone/review-request-intent)
-        request_base="${description#base=}"
-        [ "$request_base" != "$description" ] || continue
-        intent_at="$created_at"
-        ;;
-      touchstone/review-request-complete)
-        request_base="${description#base=}"
-        request_base="${request_base%% intent=*}"
-        intent_at="${description#* intent=}"
-        intent_at="${intent_at%% trigger=*}"
-        trigger_at="${description##* trigger=}"
-        case "$description" in
-          base=*' intent='*' trigger='*) ;;
-          *) continue ;;
-        esac
-        ;;
-      *) continue ;;
     esac
     trusted_records=true
     if [ "$request_base" != "$expected_base" ]; then
@@ -2013,6 +2034,7 @@ request_pr_triggered_review() {
   local expected_base="$2"
   local phase="$3"
   local allow_status_bootstrap="${4:-false}"
+  local force_append="${5:-false}"
   local observed_head observed_revision observed_branch observed_base marker body trigger_at created_at
   local request_lookup_status=0
 
@@ -2050,7 +2072,7 @@ request_pr_triggered_review() {
     return 1
   fi
 
-  marker="<!-- touchstone:pr-review-request provider=github-codex head=$expected_head base=$expected_base -->"
+  marker="<!-- touchstone:pr-review-request provider=github-codex pr=$PR_NUMBER head=$expected_head base=$expected_base -->"
   load_pr_review_request_timestamp "$expected_head" "$expected_base" || request_lookup_status=$?
   if [ "$request_lookup_status" -ne 0 ]; then
     if [ "$request_lookup_status" -eq 3 ]; then
@@ -2069,7 +2091,7 @@ request_pr_triggered_review() {
     fi
   fi
   PR_TRIGGERED_REVIEW_REQUEST_BASE_OID="$expected_base"
-  if [ -n "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" ]; then
+  if [ -n "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" ] && [ "$force_append" != "true" ]; then
     echo "==> GitHub Codex review already requested for head $expected_head at base $expected_base."
     return 0
   fi
@@ -2079,7 +2101,7 @@ request_pr_triggered_review() {
       gh api -X POST "repos/$REPO_FULL_NAME/statuses/$expected_head" \
         -f state=success \
         -f context=touchstone/review-request-intent \
-        -f description="base=$expected_base" \
+        -f description="pr=$PR_NUMBER base=$expected_base" \
         --jq '.created_at'
     )"; then
       echo "ERROR: Failed to record review-request intent for PR #$PR_NUMBER ($phase)." >&2
@@ -2108,7 +2130,7 @@ request_pr_triggered_review() {
   if ! created_at="$(gh api -X POST "repos/$REPO_FULL_NAME/statuses/$expected_head" \
     -f state=success \
     -f context=touchstone/review-request-complete \
-    -f description="base=$expected_base intent=$PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP trigger=$trigger_at" \
+    -f description="pr=$PR_NUMBER base=$expected_base intent=$PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP trigger=$trigger_at" \
     --jq '.created_at')"; then
     echo "ERROR: Failed to record durable review-request evidence for PR #$PR_NUMBER ($phase)." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"

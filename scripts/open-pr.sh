@@ -392,7 +392,7 @@ request_pr_triggered_review() {
   local pr_number="$1"
   local expected_head_sha="$2"
   local allow_status_bootstrap="${3:-false}"
-  local head_sha base_revision base_branch base_sha marker request_records context created_at _creator creator_permission description request_base request_intent_at request_trigger_at body trigger_at attempt=1
+  local head_sha base_revision base_branch base_sha marker request_records context created_at _creator creator_permission description request_pr request_base request_intent_at request_trigger_at body trigger_at attempt=1
   local intent_at="" completion_records="" matching_request=false trusted_records=false conflicting_bases=""
   local max_attempts="${TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS:-10}"
   local retry_interval="${TOUCHSTONE_PR_HEAD_CONVERGENCE_INTERVAL:-1}"
@@ -447,7 +447,7 @@ request_pr_triggered_review() {
     echo "       actual:   $base_branch" >&2
     return 1
   fi
-  marker="<!-- touchstone:pr-review-request provider=github-codex head=$head_sha base=$base_sha -->"
+  marker="<!-- touchstone:pr-review-request provider=github-codex pr=$pr_number head=$head_sha base=$base_sha -->"
   if ! request_records="$(
     gh api --paginate "repos/$REPO_FULL_NAME/commits/$head_sha/statuses?per_page=100" \
       --jq '.[] |
@@ -464,6 +464,33 @@ request_pr_triggered_review() {
   fi
   while IFS=$'\t' read -r context created_at _creator description || [ -n "$context" ]; do
     [ -n "$context" ] || continue
+    case "$context" in
+      touchstone/review-request-intent)
+        case "$description" in
+          pr=*' base='*) ;;
+          *) continue ;;
+        esac
+        request_pr="${description#pr=}"
+        request_pr="${request_pr%% base=*}"
+        request_base="${description#* base=}"
+        request_intent_at="$created_at"
+        ;;
+      touchstone/review-request-complete)
+        case "$description" in
+          pr=*' base='*' intent='*' trigger='*) ;;
+          *) continue ;;
+        esac
+        request_pr="${description#pr=}"
+        request_pr="${request_pr%% base=*}"
+        request_base="${description#* base=}"
+        request_base="${request_base%% intent=*}"
+        request_intent_at="${description#* intent=}"
+        request_intent_at="${request_intent_at%% trigger=*}"
+        request_trigger_at="${description##* trigger=}"
+        ;;
+      *) continue ;;
+    esac
+    [ "$request_pr" = "$pr_number" ] || continue
     if ! creator_permission="$(
       gh api "repos/$REPO_FULL_NAME/collaborators/$_creator/permission" --jq '.permission' 2>/dev/null
     )"; then
@@ -476,25 +503,6 @@ request_pr_triggered_review() {
         echo "       Update the PR head before requesting review." >&2
         return 1
         ;;
-    esac
-    case "$context" in
-      touchstone/review-request-intent)
-        request_base="${description#base=}"
-        [ "$request_base" != "$description" ] || continue
-        request_intent_at="$created_at"
-        ;;
-      touchstone/review-request-complete)
-        request_base="${description#base=}"
-        request_base="${request_base%% intent=*}"
-        request_intent_at="${description#* intent=}"
-        request_intent_at="${request_intent_at%% trigger=*}"
-        request_trigger_at="${description##* trigger=}"
-        case "$description" in
-          base=*' intent='*' trigger='*) ;;
-          *) continue ;;
-        esac
-        ;;
-      *) continue ;;
     esac
     trusted_records=true
     if [ "$request_base" != "$base_sha" ]; then
@@ -535,7 +543,7 @@ request_pr_triggered_review() {
       gh api -X POST "repos/$REPO_FULL_NAME/statuses/$head_sha" \
         -f state=success \
         -f context=touchstone/review-request-intent \
-        -f description="base=$base_sha" \
+        -f description="pr=$pr_number base=$base_sha" \
         --jq '.created_at'
     )"; then
       echo "ERROR: failed to record review-request intent for PR #$pr_number." >&2
@@ -560,7 +568,7 @@ request_pr_triggered_review() {
   if ! gh api -X POST "repos/$REPO_FULL_NAME/statuses/$head_sha" \
     -f state=success \
     -f context=touchstone/review-request-complete \
-    -f description="base=$base_sha intent=$intent_at trigger=$trigger_at" \
+    -f description="pr=$pr_number base=$base_sha intent=$intent_at trigger=$trigger_at" \
     --jq '.created_at' >/dev/null; then
     echo "ERROR: failed to record durable review-request evidence for PR #$pr_number." >&2
     return 1

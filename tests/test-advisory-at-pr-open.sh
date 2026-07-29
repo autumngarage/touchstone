@@ -152,7 +152,7 @@ case "${1:-} ${2:-}" in
         ;;
       repos/*/statuses/*)
         if [[ "$*" != *"context=touchstone/review-request"* ]] \
-          || [[ "$*" != *"description=base="* ]]; then
+          || [[ "$*" != *"description=pr="*" base="* ]]; then
           echo "unexpected durable review status: $*" >&2
           exit 1
         fi
@@ -452,10 +452,10 @@ REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 OUT="$TEST_DIR/request-on-push.out"
 run_open_pr "$OUT"
 if grep -q '^@codex review$' "$TEST_DIR/comments" \
-  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex pr=456 head=$REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
   && grep -q 'context=touchstone/review-request-intent' "$TEST_DIR/statuses" \
   && grep -q 'context=touchstone/review-request-complete' "$TEST_DIR/statuses" \
-  && grep -q 'description=base=base-oid' "$TEST_DIR/statuses" \
+  && grep -q 'description=pr=456 base=base-oid' "$TEST_DIR/statuses" \
   && grep -q "Requested GitHub Codex review for head $REQUEST_HEAD at base base-oid" "$OUT"; then
   echo "    PASS"
 else
@@ -481,7 +481,7 @@ REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 OUT="$TEST_DIR/request-refreshed-base.out"
 GIT_FETCH_BASE_SHA="$FRESH_POLICY_SHA" run_open_pr "$OUT"
 if grep -q '^@codex review$' "$TEST_DIR/comments" \
-  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex pr=456 head=$REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
   && [ "$(git -C "$REPO_DIR" rev-parse refs/remotes/origin/main)" = "$FRESH_POLICY_SHA" ]; then
   echo "    PASS"
 else
@@ -520,7 +520,7 @@ REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 OUT="$TEST_DIR/request-default-provider.out"
 run_open_pr "$OUT"
 if grep -q '^@codex review$' "$TEST_DIR/comments" \
-  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex pr=456 head=$REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
   && grep -q "Requested GitHub Codex review for head $REQUEST_HEAD at base base-oid" "$OUT"; then
   echo "    PASS"
 else
@@ -565,7 +565,7 @@ fi
 echo "==> Case 8aa: durable conflicting-base request survives trigger-comment deletion"
 reset_case
 OUT="$TEST_DIR/request-edited-conflicting.out"
-if GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\thenrymodisett\tbase=old-base-oid' \
+if GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\thenrymodisett\tpr=456 base=old-base-oid' \
   run_open_pr "$OUT"; then
   echo "    FAIL: edited conflicting marker unexpectedly requested a review" >&2
   ERRORS=$((ERRORS + 1))
@@ -583,7 +583,7 @@ fi
 echo "==> Case 8ab: orphaned intent retries and records completion"
 reset_case
 OUT="$TEST_DIR/request-orphan-intent.out"
-GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\thenrymodisett\tbase=base-oid' \
+GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\thenrymodisett\tpr=456 base=base-oid' \
   run_open_pr "$OUT"
 if grep -q '^@codex review$' "$TEST_DIR/comments" \
   && grep -q 'context=touchstone/review-request-complete' "$TEST_DIR/statuses" \
@@ -599,7 +599,7 @@ fi
 echo "==> Case 8ac: durable status survives driver handoff"
 reset_case
 OUT="$TEST_DIR/request-untrusted-status.out"
-GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\tprior-driver\tbase=base-oid\ntouchstone/review-request-complete\t2026-07-29T00:00:01Z\tprior-driver\tbase=base-oid intent=2026-07-29T00:00:00Z trigger=2026-07-29T00:00:01Z' \
+GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\tprior-driver\tpr=456 base=base-oid\ntouchstone/review-request-complete\t2026-07-29T00:00:01Z\tprior-driver\tpr=456 base=base-oid intent=2026-07-29T00:00:00Z trigger=2026-07-29T00:00:01Z' \
   run_open_pr "$OUT"
 if grep -q "GitHub Codex review already requested for head $REQUEST_HEAD at base base-oid" "$OUT" \
   && [ ! -f "$TEST_DIR/comments" ] \
@@ -615,7 +615,7 @@ fi
 echo "==> Case 8ad: non-writer status creator forces a fresh head"
 reset_case
 OUT="$TEST_DIR/request-untrusted-creator.out"
-if GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\tuntrusted-app\tbase=base-oid\ntouchstone/review-request-complete\t2026-07-29T00:00:01Z\tuntrusted-app\tbase=base-oid intent=2026-07-29T00:00:00Z trigger=2026-07-29T00:00:01Z' \
+if GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\tuntrusted-app\tpr=456 base=base-oid\ntouchstone/review-request-complete\t2026-07-29T00:00:01Z\tuntrusted-app\tpr=456 base=base-oid intent=2026-07-29T00:00:00Z trigger=2026-07-29T00:00:01Z' \
   run_open_pr "$OUT"; then
   echo "    FAIL: non-writer status creator suppressed a review request" >&2
   ERRORS=$((ERRORS + 1))
@@ -625,6 +625,40 @@ elif grep -q "review-request status from untrusted creator 'untrusted-app'" "$OU
   echo "    PASS"
 else
   echo "    FAIL: non-writer status creator did not fail closed" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 8ae: a newly created PR ignores another PR's durable records"
+reset_case
+OUT="$TEST_DIR/request-other-pr-created.out"
+GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\thenrymodisett\tpr=455 base=old-base-oid\ntouchstone/review-request-complete\t2026-07-29T00:00:01Z\thenrymodisett\tpr=455 base=old-base-oid intent=2026-07-29T00:00:00Z trigger=2026-07-29T00:00:01Z' \
+  run_open_pr "$OUT"
+if grep -q '<!-- touchstone:pr-review-request provider=github-codex pr=456 ' "$TEST_DIR/comments" \
+  && grep -q 'description=pr=456 base=base-oid' "$TEST_DIR/statuses"; then
+  echo "    PASS"
+else
+  echo "    FAIL: another PR's records suppressed or conflicted with a newly created PR request" >&2
+  cat "$OUT" >&2
+  [ ! -f "$TEST_DIR/statuses" ] || cat "$TEST_DIR/statuses" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 8af: an unchanged existing PR cannot adopt another PR's records"
+reset_case
+OUT="$TEST_DIR/request-other-pr-existing.out"
+if GH_EXISTING_PR_URL="https://example.test/touchstone/pull/456" \
+  GH_EXISTING_PR_BASE="main" \
+  GH_EXISTING_PR_HEAD="$REQUEST_HEAD" \
+  GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\thenrymodisett\tpr=455 base=base-oid\ntouchstone/review-request-complete\t2026-07-29T00:00:01Z\thenrymodisett\tpr=455 base=base-oid intent=2026-07-29T00:00:00Z trigger=2026-07-29T00:00:01Z' \
+  run_open_pr "$OUT"; then
+  echo "    FAIL: an unchanged existing PR adopted another PR's request evidence" >&2
+  ERRORS=$((ERRORS + 1))
+elif grep -q "head $REQUEST_HEAD has no durable review-request evidence" "$OUT" \
+  && [ ! -f "$TEST_DIR/comments" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: existing PR did not require a fresh head for current-PR evidence" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
@@ -639,7 +673,7 @@ COPIED_MARKER="Diagnostic copy:
 OUT="$TEST_DIR/request-copied-marker.out"
 GH_EXISTING_REQUEST_BODY="$COPIED_MARKER" run_open_pr "$OUT"
 if grep -q '^@codex review$' "$TEST_DIR/comments" \
-  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex pr=456 head=$REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
   && grep -q "Requested GitHub Codex review for head $REQUEST_HEAD at base base-oid" "$OUT"; then
   echo "    PASS"
 else
@@ -656,8 +690,8 @@ OUT="$TEST_DIR/request-remote-head.out"
 GH_PR_HEAD_SHA="$SELECTED_REQUEST_HEAD" GIT_PUSH_CREATE_LOCAL_COMMIT=1 run_open_pr "$OUT"
 ADVANCED_LOCAL_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 if [ "$ADVANCED_LOCAL_HEAD" != "$SELECTED_REQUEST_HEAD" ] \
-  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$SELECTED_REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
-  && ! grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$ADVANCED_LOCAL_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex pr=456 head=$SELECTED_REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+  && ! grep -q "<!-- touchstone:pr-review-request provider=github-codex pr=456 head=$ADVANCED_LOCAL_HEAD base=base-oid -->" "$TEST_DIR/comments" \
   && grep -q "Requested GitHub Codex review for head $SELECTED_REQUEST_HEAD at base base-oid" "$OUT"; then
   echo "    PASS"
 else
@@ -672,7 +706,7 @@ reset_case
 DRAFT_REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 OUT="$TEST_DIR/request-draft.out"
 run_open_pr "$OUT" --draft
-if grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$DRAFT_REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+if grep -q "<!-- touchstone:pr-review-request provider=github-codex pr=456 head=$DRAFT_REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
   && grep -q "Requested GitHub Codex review for head $DRAFT_REQUEST_HEAD at base base-oid" "$OUT" \
   && grep -q 'Opened as draft' "$OUT"; then
   echo "    PASS"
@@ -686,7 +720,7 @@ fi
 echo "==> Case 8e: one head cannot request reviews for multiple bases"
 reset_case
 OUT="$TEST_DIR/request-conflicting-base.out"
-GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\thenrymodisett\tbase=old-base-oid' \
+GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\thenrymodisett\tpr=456 base=old-base-oid' \
   run_open_pr "$OUT" && {
   echo "    FAIL: conflicting base request unexpectedly succeeded" >&2
   ERRORS=$((ERRORS + 1))
@@ -788,7 +822,7 @@ OUT="$TEST_DIR/request-stacked-local-policy.out"
 GH_PR_BASE_NAME="feat/review-policy-parent" \
   GH_PR_BASE_SHA="stack-base-oid" \
   run_open_pr "$OUT" --base feat/review-policy-parent
-if grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$STACK_REQUEST_HEAD base=stack-base-oid -->" "$TEST_DIR/comments" \
+if grep -q "<!-- touchstone:pr-review-request provider=github-codex pr=456 head=$STACK_REQUEST_HEAD base=stack-base-oid -->" "$TEST_DIR/comments" \
   && grep -q "Requested GitHub Codex review for head $STACK_REQUEST_HEAD at base stack-base-oid" "$OUT"; then
   echo "    PASS"
 else
@@ -824,8 +858,8 @@ GH_EXISTING_PR_URL="https://example.test/touchstone/pull/789" \
 ADVANCED_EXISTING_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 if [ "$ADVANCED_EXISTING_HEAD" != "$EXISTING_REQUEST_HEAD" ] \
   && grep -q 'PR already open for feat/advisory: https://example.test/touchstone/pull/789' "$OUT" \
-  && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$EXISTING_REQUEST_HEAD base=existing-stack-base-oid -->" "$TEST_DIR/comments" \
-  && ! grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$ADVANCED_EXISTING_HEAD base=existing-stack-base-oid -->" "$TEST_DIR/comments" \
+  && grep -q "<!-- touchstone:pr-review-request provider=github-codex pr=789 head=$EXISTING_REQUEST_HEAD base=existing-stack-base-oid -->" "$TEST_DIR/comments" \
+  && ! grep -q "<!-- touchstone:pr-review-request provider=github-codex pr=789 head=$ADVANCED_EXISTING_HEAD base=existing-stack-base-oid -->" "$TEST_DIR/comments" \
   && grep -q "Requested GitHub Codex review for head $EXISTING_REQUEST_HEAD at base existing-stack-base-oid" "$OUT"; then
   echo "    PASS"
 else
