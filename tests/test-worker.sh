@@ -1301,6 +1301,13 @@ EOF
   source "$TOUCHSTONE_ROOT/lib/events.sh"
   # shellcheck source=../lib/worker-review-fix.sh
   source "$TOUCHSTONE_ROOT/lib/worker-review-fix.sh"
+  [ "$(touchstone_review_fix_effective_iterations 999999999999999999999999)" = 2 ] \
+    || fail "oversized decimal iteration budget was not clamped without arithmetic"
+  [ "$(touchstone_review_fix_effective_iterations 1)" = 1 ] \
+    || fail "lower autonomous iteration budget was not preserved"
+  if touchstone_review_fix_effective_iterations 01 >/dev/null; then
+    fail "non-canonical decimal iteration budget was accepted"
+  fi
   CROSS_CHECKPOINT="$TEST_DIR/cross-checkpoint"
   mkdir -p "$CROSS_CHECKPOINT/review-fix"
   RESTART_HEAD="$(git -C "$WORKTREE" rev-parse HEAD)"

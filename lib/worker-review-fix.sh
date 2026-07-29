@@ -7,6 +7,15 @@ source "$TOUCHSTONE_ROOT/lib/codex-auth.sh"
 
 TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT=2
 
+touchstone_review_fix_effective_iterations() {
+  local requested="$1"
+  case "$requested" in
+    1 | 2) printf '%s\n' "$requested" ;;
+    '' | *[!0-9]* | 0 | 0*) return 1 ;;
+    *) printf '%s\n' "$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT" ;;
+  esac
+}
+
 touchstone_review_fix_set_state() {
   local job_dir="$1" worktree_path="$2" status="$3"
   touchstone_ship_write "$job_dir" status "$status"
@@ -610,7 +619,7 @@ touchstone_review_fix_run() {
   # Dynamically scoped for cmd_ship_runner, which persists the terminal reason.
   # shellcheck disable=SC2034
   TOUCHSTONE_REVIEW_FIX_REASON=""
-  if [ "$max_iterations" -gt "$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT" ]; then
+  if ! max_iterations="$(touchstone_review_fix_effective_iterations "$max_iterations")"; then
     max_iterations="$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT"
   fi
   branch="$(git -C "$worktree_path" rev-parse --abbrev-ref HEAD)" || return 1

@@ -482,7 +482,8 @@ cmd_ship() {
   local worktree_path="" cleanup=false events_json="" detach=false review_fix=false
   local max_fix_iterations="$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT"
   local max_fix_minutes=45 validation_command=""
-  local job_dir="" runner_pid="" branch="" started_at="" claim_token="" args runner_args
+  local requested_fix_iterations="" job_dir="" runner_pid="" branch="" started_at=""
+  local claim_token="" args runner_args
   args=(--auto-merge)
 
   while [ "$#" -gt 0 ]; do
@@ -510,16 +511,17 @@ cmd_ship() {
           return 2
         }
         case "$2" in
-          '' | *[!0-9]* | 0)
-            echo "ERROR: --max-fix-iterations must be a positive integer." >&2
+          '' | *[!0-9]* | 0 | 0*)
+            echo "ERROR: --max-fix-iterations must be a canonical positive integer." >&2
             return 2
             ;;
         esac
-        if [ "$2" -gt "$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT" ]; then
+        requested_fix_iterations="$2"
+        max_fix_iterations="$(
+          touchstone_review_fix_effective_iterations "$requested_fix_iterations"
+        )"
+        if [ "$requested_fix_iterations" != "$max_fix_iterations" ]; then
           echo "WARNING: autonomous repair is capped at $TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT mutation cycles; clamping requested value $2." >&2
-          max_fix_iterations="$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT"
-        else
-          max_fix_iterations="$2"
         fi
         shift 2
         ;;

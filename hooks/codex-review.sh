@@ -1274,15 +1274,14 @@ mode_allows_bash() { [ "$REVIEW_MODE" = "fix" ] || [ "$REVIEW_MODE" = "review-on
 
 if mode_allows_fix; then
   case "$MAX_ITERATIONS" in
-    '' | *[!0-9]* | 0)
+    1 | 2) ;;
+    '' | *[!0-9]* | 0 | 0*)
       echo "WARNING: invalid autonomous repair iteration budget '$MAX_ITERATIONS'; using $MAX_AUTONOMOUS_FIX_ITERATIONS." >&2
       MAX_ITERATIONS="$MAX_AUTONOMOUS_FIX_ITERATIONS"
       ;;
     *)
-      if [ "$MAX_ITERATIONS" -gt "$MAX_AUTONOMOUS_FIX_ITERATIONS" ]; then
-        echo "WARNING: autonomous repair is capped at $MAX_AUTONOMOUS_FIX_ITERATIONS mutation cycles; clamping requested value $MAX_ITERATIONS." >&2
-        MAX_ITERATIONS="$MAX_AUTONOMOUS_FIX_ITERATIONS"
-      fi
+      echo "WARNING: autonomous repair is capped at $MAX_AUTONOMOUS_FIX_ITERATIONS mutation cycles; clamping requested value $MAX_ITERATIONS." >&2
+      MAX_ITERATIONS="$MAX_AUTONOMOUS_FIX_ITERATIONS"
       ;;
   esac
 fi

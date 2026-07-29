@@ -137,7 +137,7 @@ if (
     CODEX_REVIEW_FORCE=1 \
     CODEX_REVIEW_BASE=main \
     CODEX_REVIEW_MODE=fix \
-    CODEX_REVIEW_MAX_ITERATIONS=9 \
+    CODEX_REVIEW_MAX_ITERATIONS=999999999999999999999999 \
     bash "$TOUCHSTONE_ROOT/scripts/codex-review.sh"
 ) >"$LIMIT_OUT" 2>&1; then
   echo "    FAIL: non-converging review unexpectedly passed" >&2
