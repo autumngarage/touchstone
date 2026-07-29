@@ -1392,7 +1392,7 @@ if GH_REQUEST_RECORDS="" \
   exit 1
 fi
 if grep -q 'head pr-head-oid has no durable review-request evidence' "$TEST_DIR/output-pr-triggered-legacy-request.txt" \
-  && grep -q 'Push a fresh head with scripts/open-pr.sh before requesting review' "$TEST_DIR/output-pr-triggered-legacy-request.txt" \
+  && grep -q 'Run scripts/open-pr.sh against the current head to request review' "$TEST_DIR/output-pr-triggered-legacy-request.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: legacy unbound requests cannot cross the base-binding upgrade"
 else
@@ -1699,7 +1699,7 @@ if GH_REQUEST_RECORDS="" run_merge_pr "$TEST_DIR/output-pr-triggered-direct-requ
   exit 1
 fi
 if grep -q 'head pr-head-oid has no durable review-request evidence' "$TEST_DIR/output-pr-triggered-direct-request.txt" \
-  && grep -q 'Push a fresh head with scripts/open-pr.sh before requesting review' "$TEST_DIR/output-pr-triggered-direct-request.txt" \
+  && grep -q 'Run scripts/open-pr.sh against the current head to request review' "$TEST_DIR/output-pr-triggered-direct-request.txt" \
   && [ ! -f "$TEST_DIR/gh-review-request" ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: only the publishing path can bootstrap durable request evidence"

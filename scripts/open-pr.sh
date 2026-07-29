@@ -393,10 +393,9 @@ load_open_pr_review_request_config() {
 request_pr_triggered_review() {
   local pr_number="$1"
   local expected_head_sha="$2"
-  local allow_status_bootstrap="${3:-false}"
   local head_sha base_revision base_branch base_sha marker request_records context created_at _creator creator_permission description request_pr request_base request_intent_at request_trigger_at body trigger_at attempt=1
   local completion_head completion_revision completion_branch completion_base
-  local intent_at="" completion_records="" matching_request=false trusted_records=false conflicting_bases=""
+  local intent_at="" completion_records="" matching_request=false conflicting_bases=""
   local max_attempts="${TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS:-10}"
   local retry_interval="${TOUCHSTONE_PR_HEAD_CONVERGENCE_INTERVAL:-1}"
 
@@ -507,7 +506,6 @@ request_pr_triggered_review() {
         return 1
         ;;
     esac
-    trusted_records=true
     if [ "$request_base" != "$base_sha" ]; then
       conflicting_bases="${conflicting_bases}${conflicting_bases:+, }$request_base"
     elif [ "$context" = "touchstone/review-request-intent" ]; then
@@ -524,14 +522,6 @@ request_pr_triggered_review() {
     echo "       prior base(s): $conflicting_bases" >&2
     echo "       Update the PR head before requesting review for the new base." >&2
     return 1
-  fi
-  if [ "$trusted_records" = "false" ]; then
-    if [ "$allow_status_bootstrap" != "true" ]; then
-      echo "ERROR: PR #$pr_number head $head_sha has no durable review-request evidence." >&2
-      echo "       This invocation did not create or advance the PR head, so legacy review state is ambiguous." >&2
-      echo "       Update the PR head before requesting review under the durable protocol." >&2
-      return 1
-    fi
   fi
   if [ -n "$intent_at" ] && printf '%s\n' "$completion_records" | cut -f1 | grep -Fxq "$intent_at"; then
     matching_request=true
@@ -983,11 +973,7 @@ if [ -n "$EXISTING_PR_URL" ]; then
     ORPHAN_PR_URL="$EXISTING_PR_URL"
     ORPHAN_PR_NUMBER="$PR_NUMBER"
   fi
-  STATUS_BOOTSTRAP_ALLOWED=false
-  if [ "$EXISTING_PR_HEAD_SHA" != "$PUSHED_HEAD_SHA" ]; then
-    STATUS_BOOTSTRAP_ALLOWED=true
-  fi
-  request_pr_triggered_review "$PR_NUMBER" "$PUSHED_HEAD_SHA" "$STATUS_BOOTSTRAP_ALLOWED"
+  request_pr_triggered_review "$PR_NUMBER" "$PUSHED_HEAD_SHA"
   if [ "$AUTO_MERGE" = true ]; then
     run_issue_claim_preflight "existing PR #$PR_NUMBER" --pr-number "$PR_NUMBER"
     run_pr_body_protocol_preflight "existing PR #$PR_NUMBER" "$PR_NUMBER"
@@ -1123,7 +1109,7 @@ touchstone_emit_event pr_opened \
 
 run_pr_body_protocol_preflight "new PR #$ORPHAN_PR_NUMBER" "$ORPHAN_PR_NUMBER"
 run_advisory_review_at_pr_open "$ORPHAN_PR_NUMBER" "$BASE_BRANCH"
-request_pr_triggered_review "$ORPHAN_PR_NUMBER" "$PUSHED_HEAD_SHA" true
+request_pr_triggered_review "$ORPHAN_PR_NUMBER" "$PUSHED_HEAD_SHA"
 
 if [ -n "$DRAFT_FLAG" ]; then
   echo "    Opened as draft. Mark ready on github.com when ready to merge."
