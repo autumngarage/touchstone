@@ -463,6 +463,7 @@ request_pr_triggered_review() {
     return 1
   fi
   while IFS=$'\t' read -r context created_at _creator description || [ -n "$context" ]; do
+    [ -n "$context" ] || continue
     if ! creator_permission="$(
       gh api "repos/$REPO_FULL_NAME/collaborators/$_creator/permission" --jq '.permission' 2>/dev/null
     )"; then

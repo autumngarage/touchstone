@@ -215,7 +215,10 @@ case "${1:-} ${2:-}" in
       */collaborators/*/permission)
         status_creator="${2#*/collaborators/}"
         status_creator="${status_creator%/permission}"
-        if [ "$status_creator" = "untrusted-app" ]; then
+        if [ -z "$status_creator" ]; then
+          echo "blank status creator must not be inspected" >&2
+          exit 1
+        elif [ "$status_creator" = "untrusted-app" ]; then
           echo "read"
         else
           echo "write"
