@@ -445,28 +445,70 @@ touchstone_ship_release_claim "$ATOMIC_JOB_DIR" "$ATOMIC_TOKEN"
 
 echo "==> Case d2c: refresh preserves live runner ownership during process inspection races"
 LIVE_OWNER_JOB_DIR="$TEST_DIR/live-owner-job"
+LIVE_OWNER_BIN="$TEST_DIR/live-owner-bin"
+LIVE_OWNER_PS_CALLS="$TEST_DIR/live-owner-ps-calls"
+mkdir -p "$LIVE_OWNER_BIN"
+cat >"$LIVE_OWNER_BIN/_ship-run" <<'EOF'
+#!/usr/bin/env bash
+sleep 10
+:
+EOF
+chmod +x "$LIVE_OWNER_BIN/_ship-run"
+cat >"$LIVE_OWNER_BIN/ps" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+calls=0
+[ ! -f "$LIVE_OWNER_PS_CALLS" ] || calls="$(cat "$LIVE_OWNER_PS_CALLS")"
+calls=$((calls + 1))
+printf '%s\n' "$calls" >"$LIVE_OWNER_PS_CALLS"
+if [ "$calls" -eq 1 ]; then
+  exit 1
+fi
+exec "$REAL_PS" "$@"
+EOF
+chmod +x "$LIVE_OWNER_BIN/ps"
 (
   exit 0
 ) &
 DEAD_LAUNCHER_PID=$!
 wait "$DEAD_LAUNCHER_PID"
-sleep 10 &
+"$LIVE_OWNER_BIN/_ship-run" "$LIVE_OWNER_JOB_DIR" &
 LIVE_RUNNER_PID=$!
 LIVE_OWNER_TOKEN="$(touchstone_ship_claim "$LIVE_OWNER_JOB_DIR" "$DEAD_LAUNCHER_PID")"
 touchstone_ship_transfer_claim "$LIVE_OWNER_JOB_DIR" "$LIVE_OWNER_TOKEN" "$LIVE_RUNNER_PID"
 touchstone_ship_write "$LIVE_OWNER_JOB_DIR" status running
 touchstone_ship_write "$LIVE_OWNER_JOB_DIR" pid "$LIVE_RUNNER_PID"
-touchstone_ship_refresh "$LIVE_OWNER_JOB_DIR"
+LIVE_OWNER_REAL_PS="$(command -v ps)"
+PATH="$LIVE_OWNER_BIN:$PATH" \
+  LIVE_OWNER_PS_CALLS="$LIVE_OWNER_PS_CALLS" \
+  REAL_PS="$LIVE_OWNER_REAL_PS" \
+  touchstone_ship_refresh "$LIVE_OWNER_JOB_DIR"
 if [ "$(touchstone_ship_read "$LIVE_OWNER_JOB_DIR" status)" != "running" ] \
   || ! touchstone_ship_claim_matches "$LIVE_OWNER_JOB_DIR" "$LIVE_OWNER_TOKEN" \
-  || [ "$(touchstone_ship_claim_value "$LIVE_OWNER_JOB_DIR" owner-pid)" != "$LIVE_RUNNER_PID" ]; then
+  || [ "$(touchstone_ship_claim_value "$LIVE_OWNER_JOB_DIR" owner-pid)" != "$LIVE_RUNNER_PID" ] \
+  || [ "$(cat "$LIVE_OWNER_PS_CALLS")" -lt 2 ]; then
   fail "refresh replaced a live runner's claim with stale-runner"
 fi
 kill "$LIVE_RUNNER_PID"
 wait "$LIVE_RUNNER_PID" 2>/dev/null || true
 touchstone_ship_release_claim "$LIVE_OWNER_JOB_DIR" "$LIVE_OWNER_TOKEN"
 
-echo "==> Case d2d: predecessor publishes terminal state before a successor can claim"
+echo "==> Case d2d: a reused runner PID cannot keep a stale claim alive"
+REUSED_PID_JOB_DIR="$TEST_DIR/reused-pid-job"
+sleep 10 &
+UNRELATED_PID=$!
+touchstone_ship_claim "$REUSED_PID_JOB_DIR" "$UNRELATED_PID" >/dev/null
+touchstone_ship_write "$REUSED_PID_JOB_DIR" status running
+touchstone_ship_write "$REUSED_PID_JOB_DIR" pid "$UNRELATED_PID"
+touchstone_ship_refresh "$REUSED_PID_JOB_DIR"
+if [ "$(touchstone_ship_read "$REUSED_PID_JOB_DIR" status)" != "failed" ] \
+  || [ "$(touchstone_ship_read "$REUSED_PID_JOB_DIR" reason)" != "stale-runner" ]; then
+  fail "unrelated live process kept a stale runner claim alive"
+fi
+kill "$UNRELATED_PID"
+wait "$UNRELATED_PID" 2>/dev/null || true
+
+echo "==> Case d2e: predecessor publishes terminal state before a successor can claim"
 INTERLEAVE_JOB_DIR="$TEST_DIR/finish-interleave-job"
 INTERLEAVE_WT="$TEST_DIR/finish-interleave-worktree"
 INTERLEAVE_BIN="$TEST_DIR/finish-interleave-bin"

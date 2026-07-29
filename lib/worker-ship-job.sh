@@ -166,6 +166,17 @@ touchstone_ship_pid_is_runner() {
     && printf '%s' "$command_line" | grep -Fq "$job_dir"
 }
 
+touchstone_ship_runner_identity_is_confirmed() {
+  local job_dir="$1" pid="$2" attempt=1
+  while [ "$attempt" -le 3 ]; do
+    touchstone_ship_pid_is_runner "$job_dir" "$pid" && return 0
+    kill -0 "$pid" 2>/dev/null || return 1
+    [ "$attempt" -lt 3 ] && sleep 0.05
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 touchstone_ship_child_pids() {
   local parent_pid="$1"
   ps -axo pid=,ppid= 2>/dev/null \
@@ -205,7 +216,15 @@ touchstone_ship_refresh() {
       case "$pid" in
         '' | *[!0-9]*)
           if [ -n "$claim_token" ]; then
-            touchstone_ship_claim_owner_alive "$job_dir" && return 0
+            case "$started_epoch" in
+              '' | *[!0-9]*) ;;
+              *)
+                if [ $((now_epoch - started_epoch)) -lt 5 ] \
+                  && touchstone_ship_claim_owner_alive "$job_dir"; then
+                  return 0
+                fi
+                ;;
+            esac
             touchstone_ship_mark_stale "$job_dir" "$claim_token"
             return 0
           fi
@@ -218,9 +237,17 @@ touchstone_ship_refresh() {
           return 0
           ;;
       esac
-      if ! touchstone_ship_pid_is_runner "$job_dir" "$pid"; then
+      if ! touchstone_ship_runner_identity_is_confirmed "$job_dir" "$pid"; then
         if [ -n "$claim_token" ]; then
-          touchstone_ship_claim_owner_alive "$job_dir" && return 0
+          case "$started_epoch" in
+            '' | *[!0-9]*) ;;
+            *)
+              if [ $((now_epoch - started_epoch)) -lt 5 ] \
+                && touchstone_ship_claim_owner_alive "$job_dir"; then
+                return 0
+              fi
+              ;;
+          esac
           touchstone_ship_mark_stale "$job_dir" "$claim_token"
           return 0
         fi
@@ -237,10 +264,7 @@ touchstone_ship_refresh() {
       ;;
     running | review-waiting | fixing | finishing)
       pid="$(touchstone_ship_read "$job_dir" pid)"
-      if ! touchstone_ship_pid_is_runner "$job_dir" "$pid"; then
-        if [ -n "$claim_token" ] && touchstone_ship_claim_owner_alive "$job_dir"; then
-          return 0
-        fi
+      if ! touchstone_ship_runner_identity_is_confirmed "$job_dir" "$pid"; then
         touchstone_ship_mark_stale "$job_dir" "$claim_token"
       fi
       ;;
