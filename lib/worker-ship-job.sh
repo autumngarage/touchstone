@@ -78,6 +78,17 @@ touchstone_ship_write() {
   mv "$tmp" "$job_dir/$name"
 }
 
+touchstone_ship_mtime_epoch() {
+  local path="$1" epoch
+  epoch="$(stat -f %m "$path" 2>/dev/null)" \
+    || epoch="$(stat -c %Y "$path" 2>/dev/null)" \
+    || return 1
+  case "$epoch" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  printf '%s\n' "$epoch"
+}
+
 touchstone_ship_state_lock_acquire() {
   local job_dir="$1" attempt=1
   local lock_dir="$job_dir/state-lock"
@@ -91,6 +102,11 @@ touchstone_ship_state_lock_acquire() {
     fi
     owner_pid="$(touchstone_ship_read "$lock_dir" owner-pid)"
     acquired_epoch="$(touchstone_ship_read "$lock_dir" acquired-epoch)"
+    case "$acquired_epoch" in
+      '' | *[!0-9]*)
+        acquired_epoch="$(touchstone_ship_mtime_epoch "$lock_dir")" || acquired_epoch=""
+        ;;
+    esac
     now_epoch="$(date +%s)"
     case "$acquired_epoch" in
       '' | *[!0-9]*) age=0 ;;

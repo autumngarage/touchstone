@@ -443,6 +443,17 @@ if ! touchstone_ship_claim_matches "$ATOMIC_JOB_DIR" "$ATOMIC_TOKEN"; then
 fi
 touchstone_ship_release_claim "$ATOMIC_JOB_DIR" "$ATOMIC_TOKEN"
 
+echo "==> Case d2b2: malformed orphaned state locks are recoverable"
+MALFORMED_LOCK_JOB_DIR="$TEST_DIR/malformed-state-lock-job"
+mkdir -p "$MALFORMED_LOCK_JOB_DIR/state-lock"
+touch -t 200001010000 "$MALFORMED_LOCK_JOB_DIR/state-lock"
+MALFORMED_LOCK_TOKEN="$(touchstone_ship_claim "$MALFORMED_LOCK_JOB_DIR" "$$")" \
+  || fail "ownerless state lock without an acquisition timestamp was not recovered"
+if ! touchstone_ship_claim_matches "$MALFORMED_LOCK_JOB_DIR" "$MALFORMED_LOCK_TOKEN"; then
+  fail "claim acquired after malformed lock recovery was not durable"
+fi
+touchstone_ship_release_claim "$MALFORMED_LOCK_JOB_DIR" "$MALFORMED_LOCK_TOKEN"
+
 echo "==> Case d2c: refresh preserves live runner ownership during process inspection races"
 LIVE_OWNER_JOB_DIR="$TEST_DIR/live-owner-job"
 LIVE_OWNER_BIN="$TEST_DIR/live-owner-bin"
