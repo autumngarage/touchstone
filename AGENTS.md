@@ -35,7 +35,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers).
 - **Isolate file-writing subagents** — parallel workers use dedicated worktrees, slice manifests, and disjoint file ownership by default.
 - **File issues for bugs** — open a GitHub issue when you find a bug, in this project or in an autumngarage tool. Don't silently work around it.
-- **Driving CLI circuit breaker** — before another edit or dispatch, stop after two consecutive structural review cycles or new shippable scope; preserve the branch and split/replan. Current-diff regressions still block.
+- **Driving CLI circuit breaker** — before another edit or dispatch, stop scope expansion after two consecutive structural review cycles or new shippable scope; preserve the branch and split/replan. Only current-diff blocker repairs continue.
 - **Escalate delivery friction upstream** — file actionable issues for tool-caused drag; don't normalize it.
 
 ## Never commit on the default branch
@@ -96,8 +96,8 @@ You are maintaining a shared engineering platform that provides universal princi
 - Claim every GitHub issue you are actively implementing with `bash scripts/claim-issue.sh <n>` before editing or dispatching an agent.
 - Keep changes logically grouped. Stage explicit file paths, commit with a concise message, and avoid unrelated refactors.
 - Reconcile issue state before opening the PR: fixed issues get closing trailers/PR body lines; partial or stale issues get an issue comment with evidence and remaining gaps.
-- To ship a completed branch, run `bash scripts/open-pr.sh --auto-merge` to push and create or update the PR; then watch the review/check loop yourself, commit fixes for any actionable feedback, and continue until the PR is approved and merged.
-- The PR is the review surface. Do not treat PR creation as completion; watch comments, checks, and requested changes until the PR is approved and merged.
+- To ship a completed branch, run `bash scripts/open-pr.sh --auto-merge` to push and create or update the PR; then watch the review/check loop yourself and commit fixes for current-diff blockers. If the driving CLI circuit breaker fires, stop accepting scope, record the stop state, and split or replan.
+- The PR is the review surface. Do not treat PR creation as completion; follow it through approval and merge or through a recorded circuit-breaker stop and handoff.
 - File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md` for slice manifests, file ownership, concurrency caps, and cleanup; use `scripts/spawn-worktree.sh` and `scripts/cleanup-worktrees.sh` for local setup and teardown.
 
 ### Touchstone-Specific Rules

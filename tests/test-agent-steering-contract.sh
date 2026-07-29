@@ -80,10 +80,11 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Agentic PR Review
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "The driving CLI watches the PR"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "scripts/open-pr.sh --auto-merge"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Driving CLI review-loop stop"
-assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Current-diff correctness"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "only edits allowed"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '"Ship it all" defines the queue'
-assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "issue #543"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "separate orchestration enforcement"
 assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" "## Bound driving-CLI review loops"
+assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" "If the driving CLI circuit breaker fires"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Codex merge review"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "codex exec --full-auto"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '"ship it all," default to one PR'

@@ -33,11 +33,11 @@ The three layers are complementary — the local hook catches the honest mistake
 
 ## Driving CLI review-loop stop
 
-Before the driving CLI initiates or dispatches another edit, freeze the branch when two consecutive review/fix cycles reveal new structural defects or when review expands the work to another independently shippable concern. Current-diff correctness, security, and data-integrity regressions remain blocking and must be fixed or reverted in the current PR.
+Before the driving CLI initiates or dispatches another edit, stop scope expansion when two consecutive review/fix cycles reveal new structural defects or when review expands the work to another independently shippable concern. After the stop, the only edits allowed on that branch are fixes or reverts for current-diff correctness, security, or data-integrity blockers.
 
 At the stop, preserve the branch and post a PR or issue note with the invariant, validation completed, non-goals, and stop reason. File pre-existing independent findings without claiming them until implementation starts. Split or replan around the smallest shippable concern. A request to "ship everything" sets the queue; it does not waive coherent PR boundaries.
 
-This rule governs the driving CLI's next decision. It does not claim that an already-running autonomous worker enforces the same inner-loop threshold; that orchestration work is tracked in Touchstone issue #543.
+This rule governs the driving CLI's next decision. An already-running autonomous worker needs separate orchestration enforcement; do not infer that agent guidance controls its inner iteration count.
 
 ### Touchstone CLI auto-sync
 
