@@ -424,12 +424,10 @@ cmd_ship_runner() {
     touchstone_ship_write "$job_dir" status finishing
     touchstone_emit_event worker_ship_finished \
       worktree_path="$worktree_path" status="$status" exit_code="$code"
-    if ! touchstone_ship_claim_matches "$job_dir" "$claim_token"; then
+    if ! touchstone_ship_publish_terminal_status "$job_dir" "$claim_token" "$status"; then
       echo "ERROR: detached ship runner lost its claim before publishing terminal state." >&2
       return 1
     fi
-    touchstone_ship_write "$job_dir" status "$status"
-    touchstone_ship_release_claim "$job_dir" "$claim_token" 2>/dev/null || true
   }
 
   # shellcheck disable=SC2329 # Invoked by the TERM/INT trap below.

@@ -556,7 +556,69 @@ if [ "$(touchstone_ship_read "$TERMINAL_RACE_JOB_DIR" status)" != "needs-attenti
   fail "refresh overwrote a terminal state published after its status snapshot"
 fi
 
-echo "==> Case d2f: predecessor publishes terminal state before a successor can claim"
+echo "==> Case d2f: stale state is complete before a successor can claim"
+STALE_LOCK_JOB_DIR="$TEST_DIR/stale-lock-job"
+STALE_LOCK_BIN="$TEST_DIR/stale-lock-bin"
+STALE_LOCK_SIGNAL="$TEST_DIR/stale-lock-signal"
+STALE_LOCK_GATE="$TEST_DIR/stale-lock-gate"
+STALE_LOCK_TOKEN_FILE="$TEST_DIR/stale-lock-successor-token"
+mkdir -p "$STALE_LOCK_BIN"
+cat >"$STALE_LOCK_BIN/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source_path="${@: -2:1}"
+destination="${@: -1}"
+if [ "$(basename "$destination")" = "status" ] \
+  && [ "$(cat "$source_path")" = "failed" ]; then
+  : >"$STALE_LOCK_SIGNAL"
+  while [ ! -e "$STALE_LOCK_GATE" ]; do
+    sleep 0.01
+  done
+fi
+exec "$REAL_MV" "$@"
+EOF
+chmod +x "$STALE_LOCK_BIN/mv"
+sleep 10 &
+STALE_LOCK_UNRELATED_PID=$!
+touchstone_ship_claim "$STALE_LOCK_JOB_DIR" "$STALE_LOCK_UNRELATED_PID" >/dev/null
+touchstone_ship_write "$STALE_LOCK_JOB_DIR" status running
+touchstone_ship_write "$STALE_LOCK_JOB_DIR" pid "$STALE_LOCK_UNRELATED_PID"
+PATH="$STALE_LOCK_BIN:$PATH" \
+  REAL_MV="$(command -v mv)" \
+  STALE_LOCK_SIGNAL="$STALE_LOCK_SIGNAL" \
+  STALE_LOCK_GATE="$STALE_LOCK_GATE" \
+  touchstone_ship_refresh "$STALE_LOCK_JOB_DIR" &
+STALE_LOCK_REFRESH_PID=$!
+attempt=1
+while [ "$attempt" -le 100 ] && [ ! -e "$STALE_LOCK_SIGNAL" ]; do
+  sleep 0.01
+  attempt=$((attempt + 1))
+done
+[ -e "$STALE_LOCK_SIGNAL" ] || fail "stale transition did not reach its terminal status write"
+(
+  touchstone_ship_claim "$STALE_LOCK_JOB_DIR" "$$" >"$STALE_LOCK_TOKEN_FILE"
+) &
+STALE_LOCK_SUCCESSOR_PID=$!
+sleep 0.1
+if [ -s "$STALE_LOCK_TOKEN_FILE" ]; then
+  fail "successor claimed the job before stale state was complete"
+fi
+: >"$STALE_LOCK_GATE"
+wait "$STALE_LOCK_REFRESH_PID"
+wait "$STALE_LOCK_SUCCESSOR_PID"
+if [ "$(touchstone_ship_read "$STALE_LOCK_JOB_DIR" status)" != "failed" ] \
+  || [ "$(touchstone_ship_read "$STALE_LOCK_JOB_DIR" reason)" != "stale-runner" ]; then
+  fail "successor observed an incomplete stale terminal state"
+fi
+STALE_LOCK_SUCCESSOR_TOKEN="$(cat "$STALE_LOCK_TOKEN_FILE")"
+if ! touchstone_ship_claim_matches "$STALE_LOCK_JOB_DIR" "$STALE_LOCK_SUCCESSOR_TOKEN"; then
+  fail "successor did not own the claim after stale state completed"
+fi
+touchstone_ship_release_claim "$STALE_LOCK_JOB_DIR" "$STALE_LOCK_SUCCESSOR_TOKEN"
+kill "$STALE_LOCK_UNRELATED_PID"
+wait "$STALE_LOCK_UNRELATED_PID" 2>/dev/null || true
+
+echo "==> Case d2g: predecessor publishes terminal state before a successor can claim"
 INTERLEAVE_JOB_DIR="$TEST_DIR/finish-interleave-job"
 INTERLEAVE_WT="$TEST_DIR/finish-interleave-worktree"
 INTERLEAVE_BIN="$TEST_DIR/finish-interleave-bin"

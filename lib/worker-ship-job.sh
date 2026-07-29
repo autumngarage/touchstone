@@ -78,9 +78,58 @@ touchstone_ship_write() {
   mv "$tmp" "$job_dir/$name"
 }
 
+touchstone_ship_state_lock_acquire() {
+  local job_dir="$1" attempt=1
+  local lock_dir="$job_dir/state-lock"
+  local current_pid="${BASHPID:-$$}" owner_pid acquired_epoch now_epoch age
+  mkdir -p "$job_dir"
+  while [ "$attempt" -le 200 ]; do
+    if mkdir "$lock_dir" 2>/dev/null; then
+      printf '%s\n' "$current_pid" >"$lock_dir/owner-pid"
+      printf '%s\n' "$(date +%s)" >"$lock_dir/acquired-epoch"
+      return 0
+    fi
+    owner_pid="$(touchstone_ship_read "$lock_dir" owner-pid)"
+    acquired_epoch="$(touchstone_ship_read "$lock_dir" acquired-epoch)"
+    now_epoch="$(date +%s)"
+    case "$acquired_epoch" in
+      '' | *[!0-9]*) age=0 ;;
+      *) age=$((now_epoch - acquired_epoch)) ;;
+    esac
+    if [ "$age" -ge 5 ]; then
+      case "$owner_pid" in
+        '' | *[!0-9]*) ;;
+        *)
+          if kill -0 "$owner_pid" 2>/dev/null && [ "$age" -lt 30 ]; then
+            sleep 0.01
+            attempt=$((attempt + 1))
+            continue
+          fi
+          ;;
+      esac
+      rm -f "$lock_dir/owner-pid" "$lock_dir/acquired-epoch"
+      rmdir "$lock_dir" 2>/dev/null || true
+      continue
+    fi
+    sleep 0.01
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
+touchstone_ship_state_lock_release() {
+  local job_dir="$1"
+  local lock_dir="$job_dir/state-lock"
+  local current_pid="${BASHPID:-$$}" owner_pid
+  owner_pid="$(touchstone_ship_read "$lock_dir" owner-pid)"
+  [ "$owner_pid" = "$current_pid" ] || return 1
+  rm -f "$lock_dir/owner-pid" "$lock_dir/acquired-epoch"
+  rmdir "$lock_dir"
+}
+
 touchstone_ship_claim() {
   local job_dir="$1" owner_pid="${2:-$$}" token record
-  mkdir -p "$job_dir"
+  touchstone_ship_state_lock_acquire "$job_dir" || return 1
   token="$owner_pid-$(date +%s)-${RANDOM:-0}"
   record="$job_dir/.active.$token.tmp"
   {
@@ -89,10 +138,12 @@ touchstone_ship_claim() {
   } >"$record"
   if ln "$record" "$job_dir/active" 2>/dev/null; then
     rm -f "$record"
+    touchstone_ship_state_lock_release "$job_dir" || return 1
     printf '%s\n' "$token"
     return 0
   fi
   rm -f "$record"
+  touchstone_ship_state_lock_release "$job_dir" 2>/dev/null || true
   return 1
 }
 
@@ -119,7 +170,11 @@ touchstone_ship_transfer_claim() {
   case "$owner_pid" in
     '' | *[!0-9]*) return 1 ;;
   esac
-  touchstone_ship_claim_matches "$job_dir" "$expected_token" || return 1
+  touchstone_ship_state_lock_acquire "$job_dir" || return 1
+  touchstone_ship_claim_matches "$job_dir" "$expected_token" || {
+    touchstone_ship_state_lock_release "$job_dir" 2>/dev/null || true
+    return 1
+  }
   record="$job_dir/.active-transfer.$$.${RANDOM:-0}.tmp"
   {
     printf 'owner-pid=%s\n' "$owner_pid"
@@ -127,9 +182,15 @@ touchstone_ship_transfer_claim() {
   } >"$record"
   touchstone_ship_claim_matches "$job_dir" "$expected_token" || {
     rm -f "$record"
+    touchstone_ship_state_lock_release "$job_dir" 2>/dev/null || true
     return 1
   }
-  mv "$record" "$job_dir/active"
+  if ! mv "$record" "$job_dir/active"; then
+    rm -f "$record"
+    touchstone_ship_state_lock_release "$job_dir" 2>/dev/null || true
+    return 1
+  fi
+  touchstone_ship_state_lock_release "$job_dir"
 }
 
 touchstone_ship_claim_owner_alive() {
@@ -143,16 +204,37 @@ touchstone_ship_claim_owner_alive() {
 
 touchstone_ship_release_claim() {
   local job_dir="$1" expected_token="${2-}"
+  touchstone_ship_state_lock_acquire "$job_dir" || return 1
   if [ -f "$job_dir/active" ]; then
-    touchstone_ship_claim_matches "$job_dir" "$expected_token" || return 1
+    touchstone_ship_claim_matches "$job_dir" "$expected_token" || {
+      touchstone_ship_state_lock_release "$job_dir" 2>/dev/null || true
+      return 1
+    }
     rm -f "$job_dir/active"
-    return
+    touchstone_ship_state_lock_release "$job_dir"
+    return 0
   fi
   if [ -d "$job_dir/active" ]; then
-    [ -z "$expected_token" ] || return 1
+    [ -z "$expected_token" ] || {
+      touchstone_ship_state_lock_release "$job_dir" 2>/dev/null || true
+      return 1
+    }
     rm -f "$job_dir/active/claimed-epoch"
     rmdir "$job_dir/active"
   fi
+  touchstone_ship_state_lock_release "$job_dir"
+}
+
+touchstone_ship_publish_terminal_status() {
+  local job_dir="$1" expected_token="$2" status="$3"
+  touchstone_ship_state_lock_acquire "$job_dir" || return 1
+  touchstone_ship_claim_matches "$job_dir" "$expected_token" || {
+    touchstone_ship_state_lock_release "$job_dir" 2>/dev/null || true
+    return 1
+  }
+  touchstone_ship_write "$job_dir" status "$status"
+  rm -f "$job_dir/active"
+  touchstone_ship_state_lock_release "$job_dir"
 }
 
 touchstone_ship_pid_is_runner() {
@@ -196,26 +278,31 @@ touchstone_ship_signal_tree() {
 
 touchstone_ship_mark_stale() {
   local job_dir="$1" claim_token="${2-}" status
+  touchstone_ship_state_lock_acquire "$job_dir" || return 0
   status="$(touchstone_ship_read "$job_dir" status)"
   case "$status" in
     starting | running | review-waiting | fixing | finishing) ;;
-    *) return 0 ;;
+    *)
+      touchstone_ship_state_lock_release "$job_dir" 2>/dev/null || true
+      return 0
+      ;;
   esac
   if [ -n "$claim_token" ]; then
-    touchstone_ship_release_claim "$job_dir" "$claim_token" 2>/dev/null || return 0
-    status="$(touchstone_ship_read "$job_dir" status)"
-    case "$status" in
-      starting | running | review-waiting | fixing | finishing) ;;
-      *) return 0 ;;
-    esac
+    touchstone_ship_claim_matches "$job_dir" "$claim_token" || {
+      touchstone_ship_state_lock_release "$job_dir" 2>/dev/null || true
+      return 0
+    }
+    rm -f "$job_dir/active"
   fi
   touchstone_ship_write "$job_dir" exit-code 125
   touchstone_ship_write "$job_dir" reason stale-runner
   touchstone_ship_write "$job_dir" finished-at "$(touchstone_ship_now)"
   touchstone_ship_write "$job_dir" status failed
-  if [ -z "$claim_token" ]; then
-    touchstone_ship_release_claim "$job_dir" 2>/dev/null || true
+  if [ -z "$claim_token" ] && [ -d "$job_dir/active" ]; then
+    rm -f "$job_dir/active/claimed-epoch"
+    rmdir "$job_dir/active" 2>/dev/null || true
   fi
+  touchstone_ship_state_lock_release "$job_dir" 2>/dev/null || true
 }
 
 touchstone_ship_refresh() {
