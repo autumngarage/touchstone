@@ -86,7 +86,7 @@ assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" "## Boun
 assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" "minimum coupled surfaces"
 assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" "claim them only when implementation starts"
 assert_contains "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "rebase/cherry-pick child-only commits"
-assert_contains "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "Dropping --base without rewriting history bundles"
+assert_contains "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "Then retarget the existing PR: gh pr edit"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Codex merge review"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "codex exec --full-auto"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '"ship it all," default to one PR'
