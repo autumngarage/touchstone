@@ -105,8 +105,8 @@ Use the normal lifecycle unless the user asks for a different flow:
 3. Claim every GitHub issue you are actively implementing with `bash scripts/claim-issue.sh <n>` before editing or dispatching an agent.
 4. Make the change, stage explicit file paths, and commit with a concise message.
 5. Reconcile issue state before opening the PR: fixed issues get closing trailers/PR body lines; partial or stale issues get an issue comment with evidence and remaining gaps.
-6. Ship with `bash scripts/open-pr.sh --auto-merge`; it creates or updates the PR. Then watch the review/check loop, address actionable feedback, and continue until the PR is approved and merged.
-7. The PR is the review surface. Do not treat PR creation as completion; watch comments, checks, and requested changes until the PR is approved and merged.
+6. Ship with `bash scripts/open-pr.sh --auto-merge`; it creates or updates the PR. Then watch the review/check loop and repair current-diff blockers. If the driving CLI circuit breaker fires, stop accepting scope, record the stop state, and split or replan.
+7. The PR is the review surface. Do not treat PR creation as completion; follow it through approval and merge or through a recorded circuit-breaker stop and handoff.
 8. Clean up the feature branch if it still exists locally.
 
 File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md` for slice manifests, file ownership, concurrency caps, and cleanup; use `scripts/spawn-worktree.sh` and `scripts/cleanup-worktrees.sh` for local setup and teardown.
