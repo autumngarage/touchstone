@@ -438,7 +438,19 @@ if ! touchstone_ship_claim_matches "$ATOMIC_JOB_DIR" "$ATOMIC_TOKEN"; then
 fi
 touchstone_ship_release_claim "$ATOMIC_JOB_DIR" "$ATOMIC_TOKEN"
 
-echo "==> Case d2c: predecessor publishes terminal state before a successor can claim"
+echo "==> Case d2c: refresh preserves live runner ownership during process inspection races"
+LIVE_OWNER_JOB_DIR="$TEST_DIR/live-owner-job"
+LIVE_OWNER_TOKEN="$(touchstone_ship_claim "$LIVE_OWNER_JOB_DIR" "$$")"
+touchstone_ship_write "$LIVE_OWNER_JOB_DIR" status running
+touchstone_ship_write "$LIVE_OWNER_JOB_DIR" pid "$$"
+touchstone_ship_refresh "$LIVE_OWNER_JOB_DIR"
+if [ "$(touchstone_ship_read "$LIVE_OWNER_JOB_DIR" status)" != "running" ] \
+  || ! touchstone_ship_claim_matches "$LIVE_OWNER_JOB_DIR" "$LIVE_OWNER_TOKEN"; then
+  fail "refresh replaced a live owner's terminal state with stale-runner"
+fi
+touchstone_ship_release_claim "$LIVE_OWNER_JOB_DIR" "$LIVE_OWNER_TOKEN"
+
+echo "==> Case d2d: predecessor publishes terminal state before a successor can claim"
 INTERLEAVE_JOB_DIR="$TEST_DIR/finish-interleave-job"
 INTERLEAVE_WT="$TEST_DIR/finish-interleave-worktree"
 INTERLEAVE_BIN="$TEST_DIR/finish-interleave-bin"

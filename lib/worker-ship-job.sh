@@ -220,6 +220,9 @@ touchstone_ship_refresh() {
     running | review-waiting | fixing | finishing)
       pid="$(touchstone_ship_read "$job_dir" pid)"
       if ! touchstone_ship_pid_is_runner "$job_dir" "$pid"; then
+        if [ -n "$claim_token" ] && touchstone_ship_claim_owner_alive "$job_dir"; then
+          return 0
+        fi
         touchstone_ship_mark_stale "$job_dir" "$claim_token"
       fi
       ;;
