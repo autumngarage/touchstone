@@ -271,7 +271,7 @@ if printf '%s' "$command" | grep -qE '^[[:space:]]*git([[:space:]]+-c[[:space:]]
     fi
     trimmed="$(printf '%s' "$segment" | sed -E 's/^[[:space:]({]+//')"
     trimmed_probe="$(printf '%s' "$trimmed" | sed "s/[\\\\'\"]//g")"
-    if printf '%s' "$trimmed_probe" | grep -qE '^git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
+    if printf '%s' "$trimmed_probe" | grep -qE '^((exec|sudo)([[:space:]]+[^[:space:]]+)*[[:space:]]+)?git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
       if [ "$branch_first_seen_commit" = "true" ]; then
         branch_first_has_later_commit=true
       else
@@ -317,7 +317,7 @@ while IFS= read -r segment; do
   fi
   trimmed="$(printf '%s' "$segment" | sed -E 's/^[[:space:]({]+//')"
   trimmed_probe="$(printf '%s' "$trimmed" | sed "s/[\\\\'\"]//g")"
-  if printf '%s' "$trimmed_probe" | grep -qE '^((if|then|elif|while|until|do|!|time([[:space:]]+-p)?|env([[:space:]]+[^[:space:]]+)*|command)[[:space:]]+)*([^[:space:]]*/)?git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
+  if printf '%s' "$trimmed_probe" | grep -qE '^((if|then|elif|while|until|do|!|time([[:space:]]+-p)?|env([[:space:]]+[^[:space:]]+)*|command|(exec|sudo)([[:space:]]+[^[:space:]]+)*)[[:space:]]+)*([^[:space:]]*/)?git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
     commit_segment="$trimmed_probe"
     break
   fi

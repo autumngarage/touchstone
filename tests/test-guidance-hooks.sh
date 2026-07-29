@@ -356,6 +356,18 @@ assert "blocks env-wrapped git commit on main" "2" \
 assert "blocks command-wrapped git commit on main" "2" \
   "$(run_hook "$BRANCH_GUARD" "$(mkjson "command git commit -m 'bad'")")"
 
+assert "blocks sudo-wrapped git commit on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "sudo git commit -m 'bad'")")"
+
+assert "blocks option-bearing sudo-wrapped git commit on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "sudo -u root git commit -m 'bad'")")"
+
+assert "blocks exec-wrapped git commit on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "exec git commit -m 'bad'")")"
+
+assert "blocks option-bearing exec-wrapped git commit on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "exec -a wrapped-git git commit -m 'bad'")")"
+
 assert "blocks git commit nested in shell control flow on main" "2" \
   "$(run_hook "$BRANCH_GUARD" "$(mkjson "if true; then git commit -m 'bad'; fi")")"
 
