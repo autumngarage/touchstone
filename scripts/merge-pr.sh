@@ -2750,10 +2750,17 @@ run_merge_review
 
 # 5. Re-check PR-visible feedback on the exact reviewed head before merging.
 require_pr_feedback_clear "after merge review" "$REVIEWED_HEAD_OID"
-if { truthy "$PR_TRIGGERED_REVIEW_REQUIRED" && [ "$BYPASS_REVIEW" != true ] \
-  && [ "$PR_TRIGGERED_REVIEW_BASE_BOUND" = true ]; } \
+if { truthy "$PR_TRIGGERED_REVIEW_REQUIRED" && [ "$BYPASS_REVIEW" != true ]; } \
   || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-review" ]; then
-  if ! load_pr_review_request_timestamp "$REVIEWED_HEAD_OID" "$REVIEWED_BASE_OID" \
+  final_request_loaded=true
+  if [ "$PR_TRIGGERED_REVIEW_BASE_BOUND" = true ] \
+    || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-review" ]; then
+    load_pr_review_request_timestamp "$REVIEWED_HEAD_OID" "$REVIEWED_BASE_OID" \
+      || final_request_loaded=false
+  else
+    PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
+  fi
+  if [ "$final_request_loaded" != true ] \
     || ! trusted_pr_clean_signal "$REVIEWED_HEAD_OID" "$REVIEWED_BASE_OID" "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"; then
     echo "ERROR: The latest trusted PR-visible AI result is not clean for reviewed head $REVIEWED_HEAD_OID." >&2
     echo "       A newer review result may have arrived during preflight; resolve it and rerun the merge gate." >&2

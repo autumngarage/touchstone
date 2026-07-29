@@ -1654,6 +1654,26 @@ else
   exit 1
 fi
 
+echo "==> Test: unbound compatibility review is revalidated before merge"
+reset_case_files
+write_pr_triggered_config true 0 0 true false
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/automatic-clean' \
+  GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:01:00Z\thttps://example.test/review/automatic-findings' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-request-disabled-changed.txt" 123; then
+  echo "FAIL: newer unbound findings were not revalidated before merge" >&2
+  exit 1
+fi
+if grep -q 'latest trusted PR-visible AI result is not clean' "$TEST_DIR/output-pr-triggered-request-disabled-changed.txt" \
+  && [ "$(cat "$TEST_DIR/gh-reviews-graphql-calls" 2>/dev/null || echo 0)" -ge 2 ] \
+  && [ -f "$TEST_DIR/codex-review.log" ] \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: unbound compatibility evidence is revalidated immediately before merge"
+else
+  echo "FAIL: unbound compatibility result was not revalidated after semantic review" >&2
+  cat "$TEST_DIR/output-pr-triggered-request-disabled-changed.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: malformed required value fails closed during trusted config loading"
 reset_case_files
 write_pr_triggered_config true 0 0 ture
