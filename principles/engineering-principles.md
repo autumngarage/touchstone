@@ -34,6 +34,11 @@ When a model, algorithm, or data source changes in a way that affects decisions,
 ## Separate behavior changes from tidying
 Do not mix functional changes with broad renames, formatting sweeps, dependency churn, or unrelated refactors. If cleanup is needed, do it before or after the behavior change in a separate commit or PR. Mixed changes hide regressions and make rollback unsafe: a behavior change bundled with a rename is hard to bisect, hard to revert without losing the rename, and hard to find via `git blame` later.
 
+## Bound driving-CLI review loops
+Before a driving CLI initiates or dispatches another edit, it must stop when two consecutive review/fix cycles reveal new structural defects or when review expands the work to another independently shippable concern. Preserve the branch, record the stop state in the PR or issue, and split or replan. This rule does not claim that an already-running autonomous worker enforces the same inner-loop threshold; that enforcement is tracked separately in Touchstone issue #543.
+
+Scope never excuses a regression introduced by the current diff. Current-diff correctness, security, and data-integrity defects remain blocking until fixed or reverted. File pre-existing independent findings without claiming them until implementation starts, then resume with the smallest shippable concern.
+
 ## Make irreversible actions recoverable
 Any destructive or one-way operation must have a recovery path before it runs. Deletes, migrations, format rewrites, external side effects, and history rewrites need a dry run, backup, idempotency key, rollback plan, or forward-fix plan. A change is not safe because it passed once; it is safe when failure leaves the system in a known recoverable state.
 

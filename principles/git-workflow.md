@@ -31,6 +31,14 @@ The three layers are complementary — the local hook catches the honest mistake
 5. **Ship.** `scripts/open-pr.sh --auto-merge` pushes, creates or updates the PR, and drives the project's shipping automation. Opening or updating the PR is the review/check coordination point; PR-visible agentic reviewers run there when configured. The driver watches the PR, addresses actionable comments with commits, pushes updates, and merges only after required reviews and checks are approved. If no PR-visible review appears, continue through the project's final verification instead of waiting. Use `scripts/open-pr.sh` (without `--auto-merge`) if you want to open the PR without merging. The canonical architecture is [AI Delivery Architecture](ai-delivery-architecture.md): PR-visible review loop first, final verification/merge after approval.
 6. **Clean up.** Delete the local feature branch. Run `scripts/cleanup-branches.sh` periodically for batch hygiene.
 
+## Driving CLI review-loop stop
+
+Before the driving CLI initiates or dispatches another edit, freeze the branch when two consecutive review/fix cycles reveal new structural defects or when review expands the work to another independently shippable concern. Current-diff correctness, security, and data-integrity regressions remain blocking and must be fixed or reverted in the current PR.
+
+At the stop, preserve the branch and post a PR or issue note with the invariant, validation completed, non-goals, and stop reason. File pre-existing independent findings without claiming them until implementation starts. Split or replan around the smallest shippable concern. A request to "ship everything" sets the queue; it does not waive coherent PR boundaries.
+
+This rule governs the driving CLI's next decision. It does not claim that an already-running autonomous worker enforces the same inner-loop threshold; that orchestration work is tracked in Touchstone issue #543.
+
 ### Touchstone CLI auto-sync
 
 When a brew-installed `touchstone` CLI runs a write-capable command inside a Touchstone-aware project, it compares the project's recorded `.touchstone-version` with the installed Touchstone version. Minor and major version drift triggers the same `touchstone update` path before the requested command so `principles/`, `hooks/`, and `scripts/` stay current; patch-only semver drift does not auto-sync project files. Source checkouts record git SHAs instead of semver, so any SHA drift still syncs.
@@ -147,7 +155,7 @@ A stacked PR is a PR whose base branch is another open PR's branch instead of th
 
 **What to do.**
 
-- **First preference: bundle.** When the user says "ship it all," default to one PR with all the commits. The Conductor merge review reasons more cleanly about one coherent story than a chain; mergers prefer one squash over orchestrating a chain in order.
+- **First preference: independent PRs against the default branch.** "Ship it all" defines the queue. Bundle changes only when they form one coherent unit that cannot ship separately.
 - **If you must stack:** drop `--auto-merge` on the whole chain. Merge each PR by hand in order, using **merge commit** or **rebase merge** (never squash) for the parent so the child's branch still traces to something on main. `open-pr.sh` will warn if you pass `--base <branch>` + `--auto-merge` together — take the warning seriously.
 - **Recover an orphaned child**: re-open the work as a fresh PR against current `main` (the lineage is lost but the diff usually still applies). If the parent's squashed content is already on main, the child's diff is just the child-only changes — which is usually what you wanted anyway.
 
