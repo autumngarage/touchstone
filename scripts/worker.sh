@@ -342,6 +342,7 @@ cmd_status() {
 
 cmd_ship_runner() {
   local job_dir="" worktree_path="" claim_token="" cleanup=false events_json="" child_pid="" exit_code=0 branch=""
+  local claim_owner_wait=0
   local review_fix=false max_fix_iterations=3 max_fix_minutes=45 validation_command=""
   local deadline_epoch="" reason=""
   local args
@@ -398,6 +399,15 @@ cmd_ship_runner() {
 
   [ -n "$job_dir" ] && [ -n "$worktree_path" ] && [ -n "$claim_token" ] || exit 2
   touchstone_ship_claim_matches "$job_dir" "$claim_token" || exit 1
+  while [ "$(touchstone_ship_claim_value "$job_dir" owner-pid)" != "$$" ]; do
+    touchstone_ship_claim_matches "$job_dir" "$claim_token" || exit 1
+    if [ "$claim_owner_wait" -ge 100 ]; then
+      echo "ERROR: detached ship runner did not receive claim ownership." >&2
+      exit 1
+    fi
+    sleep 0.01
+    claim_owner_wait=$((claim_owner_wait + 1))
+  done
   if [ -n "$events_json" ]; then
     export TOUCHSTONE_EVENTS_FILE="$events_json"
   fi
@@ -651,6 +661,13 @@ cmd_ship() {
     >>"$job_dir/ship.log" 2>&1 </dev/null &
   runner_pid=$!
   [ "$monitor_was_enabled" = true ] || set +m
+  if ! touchstone_ship_transfer_claim "$job_dir" "$claim_token" "$runner_pid"; then
+    touchstone_ship_signal_tree "$runner_pid" TERM
+    wait "$runner_pid" 2>/dev/null || true
+    touchstone_ship_release_claim "$job_dir" "$claim_token" 2>/dev/null || true
+    echo "ERROR: detached ship runner could not take ownership of its claim." >&2
+    return 1
+  fi
   touchstone_ship_write "$job_dir" pid "$runner_pid"
 
   echo "Detached ship started."

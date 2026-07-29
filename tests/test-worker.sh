@@ -297,6 +297,11 @@ assert_contains "$DETACHED_EVENTS" '"event":"worker_ship_started"'
 DETACHED_RUNNER_PID="$(
   sed -nE 's/.*"ship":\{[^}]*"pid":([0-9]+).*/\1/p' "$DETACHED_STATUS"
 )"
+DETACHED_RUNNING_JOB_DIR="$(dirname "$(sed -n 's/.*"log_path":"\([^"]*\)".*/\1/p' "$DETACHED_STATUS")")"
+DETACHED_CLAIM_OWNER="$(sed -n 's/^owner-pid=//p' "$DETACHED_RUNNING_JOB_DIR/active")"
+if [ "$DETACHED_CLAIM_OWNER" != "$DETACHED_RUNNER_PID" ]; then
+  fail "detached runner did not take ownership of the active claim"
+fi
 DETACHED_RUNNER_PGID="$(ps -p "$DETACHED_RUNNER_PID" -o pgid= | tr -d '[:space:]')"
 TEST_PGID="$(ps -p "$$" -o pgid= | tr -d '[:space:]')"
 if [ -z "$DETACHED_RUNNER_PGID" ] || [ "$DETACHED_RUNNER_PGID" = "$TEST_PGID" ]; then
@@ -440,14 +445,25 @@ touchstone_ship_release_claim "$ATOMIC_JOB_DIR" "$ATOMIC_TOKEN"
 
 echo "==> Case d2c: refresh preserves live runner ownership during process inspection races"
 LIVE_OWNER_JOB_DIR="$TEST_DIR/live-owner-job"
-LIVE_OWNER_TOKEN="$(touchstone_ship_claim "$LIVE_OWNER_JOB_DIR" "$$")"
+(
+  exit 0
+) &
+DEAD_LAUNCHER_PID=$!
+wait "$DEAD_LAUNCHER_PID"
+sleep 10 &
+LIVE_RUNNER_PID=$!
+LIVE_OWNER_TOKEN="$(touchstone_ship_claim "$LIVE_OWNER_JOB_DIR" "$DEAD_LAUNCHER_PID")"
+touchstone_ship_transfer_claim "$LIVE_OWNER_JOB_DIR" "$LIVE_OWNER_TOKEN" "$LIVE_RUNNER_PID"
 touchstone_ship_write "$LIVE_OWNER_JOB_DIR" status running
-touchstone_ship_write "$LIVE_OWNER_JOB_DIR" pid "$$"
+touchstone_ship_write "$LIVE_OWNER_JOB_DIR" pid "$LIVE_RUNNER_PID"
 touchstone_ship_refresh "$LIVE_OWNER_JOB_DIR"
 if [ "$(touchstone_ship_read "$LIVE_OWNER_JOB_DIR" status)" != "running" ] \
-  || ! touchstone_ship_claim_matches "$LIVE_OWNER_JOB_DIR" "$LIVE_OWNER_TOKEN"; then
-  fail "refresh replaced a live owner's terminal state with stale-runner"
+  || ! touchstone_ship_claim_matches "$LIVE_OWNER_JOB_DIR" "$LIVE_OWNER_TOKEN" \
+  || [ "$(touchstone_ship_claim_value "$LIVE_OWNER_JOB_DIR" owner-pid)" != "$LIVE_RUNNER_PID" ]; then
+  fail "refresh replaced a live runner's claim with stale-runner"
 fi
+kill "$LIVE_RUNNER_PID"
+wait "$LIVE_RUNNER_PID" 2>/dev/null || true
 touchstone_ship_release_claim "$LIVE_OWNER_JOB_DIR" "$LIVE_OWNER_TOKEN"
 
 echo "==> Case d2d: predecessor publishes terminal state before a successor can claim"
@@ -490,6 +506,7 @@ PATH="$INTERLEAVE_BIN:$PATH" \
   --worktree "$INTERLEAVE_WT" \
   --claim-token "$PREDECESSOR_TOKEN" &
 PREDECESSOR_PID=$!
+touchstone_ship_transfer_claim "$INTERLEAVE_JOB_DIR" "$PREDECESSOR_TOKEN" "$PREDECESSOR_PID"
 attempt=1
 while [ "$attempt" -le 100 ]; do
   if [ -e "$INTERLEAVE_SIGNAL" ] || ! kill -0 "$PREDECESSOR_PID" 2>/dev/null; then

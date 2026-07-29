@@ -114,6 +114,24 @@ touchstone_ship_claim_matches() {
   [ -n "$actual_token" ] && [ "$actual_token" = "$expected_token" ]
 }
 
+touchstone_ship_transfer_claim() {
+  local job_dir="$1" expected_token="$2" owner_pid="$3" record
+  case "$owner_pid" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  touchstone_ship_claim_matches "$job_dir" "$expected_token" || return 1
+  record="$job_dir/.active-transfer.$$.${RANDOM:-0}.tmp"
+  {
+    printf 'owner-pid=%s\n' "$owner_pid"
+    printf 'owner-token=%s\n' "$expected_token"
+  } >"$record"
+  touchstone_ship_claim_matches "$job_dir" "$expected_token" || {
+    rm -f "$record"
+    return 1
+  }
+  mv "$record" "$job_dir/active"
+}
+
 touchstone_ship_claim_owner_alive() {
   local job_dir="$1" owner_pid
   owner_pid="$(touchstone_ship_claim_value "$job_dir" owner-pid)"
