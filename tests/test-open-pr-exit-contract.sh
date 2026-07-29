@@ -528,7 +528,7 @@ RC=0
 GH_PR_STATE="MERGED" GH_MERGED_AT="2026-07-29T12:10:00Z" \
   GH_HAS_EXISTING_PR=1 GH_EXISTING_PR_BASE="feature/parent" \
   GH_PR_BODY=$'Closes #52\n\nProtocol: yes' MERGE_PR_EXIT=0 \
-  run_open_pr --base feature/parent >"$OUT" 2>&1 || RC=$?
+  run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" = "0" ] \
   && grep -q 'rebase/cherry-pick child-only commits onto main' "$OUT" \

@@ -932,8 +932,8 @@ load_open_pr_review_request_config "$BASE_BRANCH"
 # Warn when stacking + auto-merge combine — the user is likely about to
 # orphan their stack. --auto-merge squashes the parent, which closes (not
 # rebases) stacked children.
-if [ -n "$BASE_OVERRIDE" ] && [ "$AUTO_MERGE" = true ]; then
-  echo "WARNING: --base $BASE_OVERRIDE with --auto-merge stacks this PR on another branch" >&2
+if [ "$BASE_BRANCH" != "$DEFAULT_BRANCH" ] && [ "$AUTO_MERGE" = true ]; then
+  echo "WARNING: base $BASE_BRANCH with --auto-merge stacks this PR on another branch" >&2
   echo "         AND will squash-merge it, which orphans any later stacked children." >&2
   echo "         Either drop --auto-merge (open stack, merge manually in order)" >&2
   echo "         or rebase/cherry-pick child-only commits onto $DEFAULT_BRANCH." >&2
