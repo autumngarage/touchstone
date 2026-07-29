@@ -684,22 +684,24 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Case 8af: an unchanged existing PR cannot adopt another PR's records"
+echo "==> Case 8af: an unchanged existing PR creates current-PR evidence"
 reset_case
 OUT="$TEST_DIR/request-other-pr-existing.out"
-if GH_EXISTING_PR_URL="https://example.test/touchstone/pull/456" \
+if ! GH_EXISTING_PR_URL="https://example.test/touchstone/pull/456" \
   GH_EXISTING_PR_BASE="main" \
   GH_EXISTING_PR_HEAD="$REQUEST_HEAD" \
   GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\thenrymodisett\tpr=455 base=base-oid\ntouchstone/review-request-complete\t2026-07-29T00:00:01Z\thenrymodisett\tpr=455 base=base-oid intent=2026-07-29T00:00:00Z trigger=2026-07-29T00:00:01Z' \
   run_open_pr "$OUT"; then
-  echo "    FAIL: an unchanged existing PR adopted another PR's request evidence" >&2
+  echo "    FAIL: an unchanged existing PR could not create current-PR request evidence" >&2
   ERRORS=$((ERRORS + 1))
-elif grep -q "head $REQUEST_HEAD has no durable review-request evidence" "$OUT" \
-  && [ ! -f "$TEST_DIR/comments" ]; then
+elif grep -q "<!-- touchstone:pr-review-request provider=github-codex pr=456 head=$REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+  && grep -q 'description=pr=456 base=base-oid' "$TEST_DIR/statuses" \
+  && grep -q "Requested GitHub Codex review for head $REQUEST_HEAD at base base-oid" "$OUT"; then
   echo "    PASS"
 else
-  echo "    FAIL: existing PR did not require a fresh head for current-PR evidence" >&2
+  echo "    FAIL: existing PR reused another PR's evidence instead of creating bound records" >&2
   cat "$OUT" >&2
+  [ ! -f "$TEST_DIR/statuses" ] || cat "$TEST_DIR/statuses" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
@@ -777,24 +779,24 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Case 8f: legacy head-only requests require a fresh PR head"
+echo "==> Case 8f: an already-pushed existing head bootstraps durable request evidence"
 reset_case
 OUT="$TEST_DIR/request-legacy-unbound.out"
-GH_EXISTING_PR_URL="https://example.test/touchstone/pull/456" \
+if ! GH_EXISTING_PR_URL="https://example.test/touchstone/pull/456" \
   GH_EXISTING_PR_BASE="main" \
   GH_EXISTING_PR_HEAD="$DRAFT_REQUEST_HEAD" \
-  run_open_pr "$OUT" && {
-  echo "    FAIL: legacy unbound request unexpectedly authorized a base-bound request" >&2
+  run_open_pr "$OUT"; then
+  echo "    FAIL: already-pushed current head could not bootstrap request evidence" >&2
   ERRORS=$((ERRORS + 1))
-}
-if grep -q "head $DRAFT_REQUEST_HEAD has no durable review-request evidence" "$OUT" \
-  && grep -q 'This invocation did not create or advance the PR head' "$OUT" \
-  && [ ! -f "$TEST_DIR/comments" ]; then
+elif grep -q "<!-- touchstone:pr-review-request provider=github-codex pr=456 head=$DRAFT_REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+  && grep -q 'description=pr=456 base=base-oid' "$TEST_DIR/statuses" \
+  && grep -q "Requested GitHub Codex review for head $DRAFT_REQUEST_HEAD at base base-oid" "$OUT"; then
   echo "    PASS"
 else
-  echo "    FAIL: legacy head-only request did not require a fresh PR head" >&2
+  echo "    FAIL: existing exact head did not receive current PR/base-bound evidence" >&2
   cat "$OUT" >&2
   [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  [ ! -f "$TEST_DIR/statuses" ] || cat "$TEST_DIR/statuses" >&2
   ERRORS=$((ERRORS + 1))
 fi
 

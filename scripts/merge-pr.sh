@@ -2083,7 +2083,7 @@ request_pr_triggered_review() {
       if [ "$allow_status_bootstrap" != "true" ]; then
         echo "ERROR: PR #$PR_NUMBER head $expected_head has no durable review-request evidence." >&2
         echo "       The merge gate did not create or advance this head, so legacy review state is ambiguous." >&2
-        echo "       Push a fresh head with scripts/open-pr.sh before requesting review." >&2
+        echo "       Run scripts/open-pr.sh against the current head to request review." >&2
         TOUCHSTONE_MERGE_FAILURE_REASON="review-request-legacy-head"
         return 3
       fi
