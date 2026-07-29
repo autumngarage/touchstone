@@ -29,21 +29,16 @@ set -euo pipefail
 # Read stdin once; reuse for both fast-path and full parse.
 input="$(cat)"
 
-# Fast path — bail on non-git-commit calls without the jq/git overhead.
-# Matches `git commit` with optional `-c key=value` / `-C <path>` flags
-# ahead of the subcommand; explicitly NOT matching `commit-tree`.
-if ! printf '%s' "$input" | grep -qE 'git([[:space:]]+-c[[:space:]]+[^[:space:]]+|[[:space:]]+-C[[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
-  exit 0
-fi
-
-# Past the fast path: we need to parse JSON. Skip gracefully if jq missing
+# Parse the structured command before deciding whether it can commit. Raw JSON
+# escapes whitespace and line continuations, so it cannot provide a safe
+# negative fast path. Skip gracefully if jq is missing
 # (downstream projects may not have it) — same pattern as test-shellcheck.sh.
 if ! command -v jq >/dev/null 2>&1; then
   echo "branch-guard: jq not installed — hook bypassed (install jq to enable)" >&2
   exit 0
 fi
 
-command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
+command="$(printf '%s' "$input" | jq -r '(.tool_input.command // "") | gsub("\\\\\n"; "")')"
 session_cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"
 tool_workdir="$(printf '%s' "$input" | jq -r '.tool_input.workdir // ""')"
 cwd="$session_cwd"
@@ -57,12 +52,15 @@ if [ -n "$tool_workdir" ]; then
   fi
 fi
 
-# Re-verify with the parsed command (the fast-path regex is a heuristic
-# over raw JSON; final decision uses the structured value). The trailing
-# class is explicit — `\b` would match `commit-tree` because `-` is a
-# non-word char; we want `commit` followed by whitespace or end-of-string
-# only, so plumbing subcommands like `git commit-tree` pass through.
-if ! printf '%s' "$command" | grep -qE '\bgit([[:space:]]+-c[[:space:]]+[^[:space:]]+|[[:space:]]+-C[[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
+# Remove shell quote and escape fragments before the detection-only precheck.
+# The scanner below still receives the original command. This catches shell
+# word composition such as `g''it com''mit` without treating prose containing
+# the word "commit" as an invocation. Variable-dispatched commands are
+# ambiguous and therefore enter the fail-closed path as well.
+command_probe="$(printf '%s' "$command" | sed "s/[\\\\'\"]//g")"
+if ! printf '%s' "$command_probe" | grep -qE '(^|[^[:alnum:]_])commit([[:space:];&|()]|$)' \
+  || { ! printf '%s' "$command_probe" | grep -qE '(^|[^[:alnum:]_])([^[:space:]]*/)?git([[:space:];&|()]|$)' \
+    && ! printf '%s' "$command_probe" | grep -qE '\$[{]?[A-Za-z_][A-Za-z0-9_]*[}]?'; }; then
   exit 0
 fi
 
@@ -117,6 +115,9 @@ shell_segments() {
           escaped = 1
         } else if (quote == "") {
           if (arithmetic_depth > 0) {
+            if ((char == "$" && substr(line, i + 1, 1) == "(") || ((char == "<" || char == ">") && substr(line, i + 1, 1) == "(") || char == "`") {
+              print "__TOUCHSTONE_AMBIGUOUS__"
+            }
             segment = segment char
             if (char == "(") {
               arithmetic_depth++
@@ -134,6 +135,10 @@ shell_segments() {
             arithmetic_depth = 2
             word_start = 0
             i++
+          } else if ((char == "$" && substr(line, i + 1, 1) == "(") || ((char == "<" || char == ">") && substr(line, i + 1, 1) == "(") || char == "`") {
+            print "__TOUCHSTONE_AMBIGUOUS__"
+            segment = segment char
+            word_start = 0
           } else if (char == "#" && word_start) {
             comment = 1
           } else if (char == "<" && substr(line, i + 1, 1) == "<" && substr(line, i + 2, 1) != "<") {
@@ -148,12 +153,19 @@ shell_segments() {
             token = ""
             delimiter_quote = ""
             delimiter_escaped = 0
+            delimiter_quoted = 0
             while (j <= length(line)) {
               delimiter_char = substr(line, j, 1)
               if (delimiter_escaped) {
+                if (delimiter_char == "\n") {
+                  print "__TOUCHSTONE_AMBIGUOUS__"
+                  token = ""
+                  break
+                }
                 token = token delimiter_char
                 delimiter_escaped = 0
               } else if (delimiter_char == "\\" && delimiter_quote != "\047") {
+                delimiter_quoted = 1
                 delimiter_escaped = 1
               } else if (delimiter_quote != "") {
                 if (delimiter_char == delimiter_quote) {
@@ -162,6 +174,7 @@ shell_segments() {
                   token = token delimiter_char
                 }
               } else if (delimiter_char == "\"" || delimiter_char == "\047") {
+                delimiter_quoted = 1
                 delimiter_quote = delimiter_char
               } else if (delimiter_char ~ /[[:space:];|&()<>]/) {
                 break
@@ -171,6 +184,11 @@ shell_segments() {
               j++
             }
             if (token != "") {
+              consumer = segment
+              gsub(/^[[:space:]({]+/, "", consumer)
+              if (!delimiter_quoted || consumer !~ /^(cat|tee)([[:space:]]|$)/) {
+                print "__TOUCHSTONE_AMBIGUOUS__"
+              }
               heredoc_count++
               heredoc_delimiter[heredoc_count] = token
               heredoc_strip_tabs[heredoc_count] = strip_tabs
@@ -193,6 +211,9 @@ shell_segments() {
             }
           }
         } else {
+          if (quote == "\"" && ((char == "$" && substr(line, i + 1, 1) == "(") || ((char == "<" || char == ">") && substr(line, i + 1, 1) == "(") || char == "`")) {
+            print "__TOUCHSTONE_AMBIGUOUS__"
+          }
           if (char == "\n") {
             segment = segment " "
           } else {
@@ -218,16 +239,39 @@ shell_segments() {
   '
 }
 
+has_dynamic_commit_dispatch() {
+  local probe="$1"
+
+  printf '%s' "$probe" | grep -qE '(^|[;&|()])[[:space:]]*((env|command)([[:space:]]+[^[:space:]]+)*[[:space:]]+)?\$[{]?[A-Za-z0-9_@*]+[}]?[[:space:]]+commit([[:space:];&|()]|$)' \
+    || printf '%s' "$probe" | grep -qE '(^|[;&|()[:space:]])([^[:space:]]*/)?git[[:space:]]+\$[{]?[A-Za-z0-9_@*]+[}]?([[:space:];&|()]|$)' \
+    || { printf '%s' "$probe" | grep -qE '=git[[:space:]]+commit([[:space:];&|()]|$)' \
+      && printf '%s' "$probe" | grep -qE '(^|[;&|()])[[:space:]]*\$[{]?[A-Za-z0-9_@*]+[}]?([[:space:];&|()]|$)'; }
+}
+
 branch_first_compound=false
 branch_first_changes_branch=false
 branch_first_seen_commit=false
 branch_first_has_later_commit=false
+branch_first_ambiguous=false
 if printf '%s' "$command" | grep -qE '^[[:space:]]*git([[:space:]]+-c[[:space:]]+[^[:space:]]+)*[[:space:]]+(checkout[[:space:]]+-b|switch[[:space:]]+-c)[[:space:]]+(feat|fix|docs|chore|refactor)/[^[:space:];&|]+[[:space:]]*&&'; then
   branch_first_compound=true
   branch_first_post_create="$(printf '%s' "$command" | sed -E 's/^[[:space:]]*git([[:space:]]+-c[[:space:]]+[^[:space:]]+)*[[:space:]]+(checkout[[:space:]]+-b|switch[[:space:]]+-c)[[:space:]]+(feat|fix|docs|chore|refactor)\/[^[:space:];&|]+[[:space:]]*&&[[:space:]]*//')"
+  branch_first_probe="$(printf '%s' "$branch_first_post_create" | sed "s/[\\\\'\"]//g")"
+  if has_dynamic_commit_dispatch "$branch_first_probe"; then
+    branch_first_ambiguous=true
+  fi
+  if ! branch_first_segments="$(printf '%s\n' "$branch_first_post_create" | shell_segments)"; then
+    echo "branch-guard: failed to parse branch-first command; blocking conservatively" >&2
+    exit 2
+  fi
   while IFS= read -r segment; do
+    if [ "$segment" = "__TOUCHSTONE_AMBIGUOUS__" ]; then
+      branch_first_ambiguous=true
+      continue
+    fi
     trimmed="$(printf '%s' "$segment" | sed -E 's/^[[:space:]({]+//')"
-    if printf '%s' "$trimmed" | grep -qE '^git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
+    trimmed_probe="$(printf '%s' "$trimmed" | sed "s/[\\\\'\"]//g")"
+    if printf '%s' "$trimmed_probe" | grep -qE '^git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
       if [ "$branch_first_seen_commit" = "true" ]; then
         branch_first_has_later_commit=true
       else
@@ -236,8 +280,11 @@ if printf '%s' "$command" | grep -qE '^[[:space:]]*git([[:space:]]+-c[[:space:]]
     fi
     if printf '%s' "$trimmed" | grep -qE '^git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+(checkout|switch)([[:space:]]|$)'; then
       branch_first_changes_branch=true
+    elif printf '%s' "$trimmed" | grep -qE '^(eval|source|\.|trap|bash|sh|zsh)([[:space:]]|$)' \
+      || printf '%s' "$trimmed" | grep -qE '^(python[0-9.]*|ruby|perl|node)([[:space:]].*)?[[:space:]]-[ce]([[:space:]]|$)'; then
+      branch_first_ambiguous=true
     fi
-  done < <(printf '%s\n' "$branch_first_post_create" | shell_segments)
+  done <<<"$branch_first_segments"
 fi
 
 # Worktree-aware: when commit targets a different repo via `-C <path>` OR
@@ -255,18 +302,31 @@ target_cwd_from_C=""
 # they'd silently bypass the guard on main.
 target_cwd_from_cd=""
 commit_segment=""
+command_ambiguous=false
+if has_dynamic_commit_dispatch "$command_probe"; then
+  command_ambiguous=true
+fi
+if ! command_segments="$(printf '%s\n' "$command" | shell_segments)"; then
+  echo "branch-guard: failed to parse Git command; blocking conservatively" >&2
+  exit 2
+fi
 while IFS= read -r segment; do
+  if [ "$segment" = "__TOUCHSTONE_AMBIGUOUS__" ]; then
+    command_ambiguous=true
+    continue
+  fi
   trimmed="$(printf '%s' "$segment" | sed -E 's/^[[:space:]({]+//')"
-  if printf '%s' "$trimmed" | grep -qE '^git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
-    commit_segment="$trimmed"
+  trimmed_probe="$(printf '%s' "$trimmed" | sed "s/[\\\\'\"]//g")"
+  if printf '%s' "$trimmed_probe" | grep -qE '^((if|then|elif|while|until|do|!|time([[:space:]]+-p)?|env([[:space:]]+[^[:space:]]+)*|command)[[:space:]]+)*([^[:space:]]*/)?git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
+    commit_segment="$trimmed_probe"
     break
   fi
   cd_target="$(printf '%s' "$trimmed" | grep -oE '^cd[[:space:]]+[^[:space:]]+' | sed -E 's/^cd[[:space:]]+//' || true)"
   if [ -n "$cd_target" ]; then
     target_cwd_from_cd="$cd_target"
   fi
-done < <(printf '%s\n' "$command" | shell_segments)
-if [ -z "$commit_segment" ]; then
+done <<<"$command_segments"
+if [ -z "$commit_segment" ] && [ "$command_ambiguous" = "false" ]; then
   exit 0
 fi
 if [ -n "$commit_segment" ]; then
@@ -285,6 +345,7 @@ target_cwd="${target_cwd_from_C:-$target_cwd_from_cd}"
 # `git -C` or `cd`, keep checking that target.
 if [ "$branch_first_compound" = "true" ] \
   && [ "$branch_first_seen_commit" = "true" ] \
+  && [ "$branch_first_ambiguous" = "false" ] \
   && [ "$branch_first_changes_branch" = "false" ] \
   && [ "$branch_first_has_later_commit" = "false" ] \
   && [ -z "$target_cwd" ]; then

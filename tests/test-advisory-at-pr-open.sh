@@ -47,6 +47,22 @@ chmod +x "$RUN_DIR/scripts/codex-review.sh"
 cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+
+gh_field_value() {
+  local field_name="$1"
+  shift
+  local previous="" arg
+
+  for arg in "$@"; do
+    if [ "$previous" = "-f" ] && [[ "$arg" = "$field_name="* ]]; then
+      printf '%s' "${arg#*=}"
+      return 0
+    fi
+    previous="$arg"
+  done
+  return 0
+}
+
 case "${1:-} ${2:-}" in
   "repo view")
     echo "main"
@@ -56,7 +72,10 @@ case "${1:-} ${2:-}" in
       exit 1
     fi
     if [ -n "${GH_EXISTING_PR_URL:-}" ]; then
-      printf '%s\t%s\n' "$GH_EXISTING_PR_URL" "${GH_EXISTING_PR_BASE:-}"
+      printf '%s\t%s\t%s\n' \
+        "$GH_EXISTING_PR_URL" \
+        "${GH_EXISTING_PR_BASE:-main}" \
+        "${GH_EXISTING_PR_HEAD:-${GH_PR_HEAD_SHA:-$(git rev-parse HEAD)}}"
     fi
     ;;
   "pr create")
@@ -72,37 +91,90 @@ case "${1:-} ${2:-}" in
     fi
     printf '%s\n' "${5:-}" >> "$GH_COMMENT_FILE"
     ;;
+  "api user")
+    echo "${GH_AUTHENTICATED_ACTOR:-henrymodisett}"
+    ;;
   "api repos/"*)
-    printf '%s\t%s\n' "${GH_PR_BASE_NAME:-main}" "${GH_PR_BASE_SHA:-base-oid}"
+    if [[ "${2:-}" = */collaborators/*/permission ]]; then
+      status_creator="${2#*/collaborators/}"
+      status_creator="${status_creator%/permission}"
+      if [ "$status_creator" = "untrusted-app" ]; then
+        echo "read"
+      else
+        echo "write"
+      fi
+    elif [[ "${2:-}" = */commits/* ]] && [[ "$*" = *".commit.committer.date"* ]]; then
+      echo "${GH_HEAD_COMMIT_DATE:-2026-07-29T00:00:00Z}"
+    else
+      printf '%s\t%s\n' "${GH_PR_BASE_NAME:-main}" "${GH_PR_BASE_SHA:-base-oid}"
+    fi
     ;;
   "api --paginate")
     if [ "${GH_API_FAIL:-0}" = "1" ]; then
-      echo "mock comment inspection failure" >&2
+      echo "mock durable request inspection failure" >&2
       exit 1
     fi
-    if [[ "${5:-}" != *"author_association"* ]]; then
-      echo "request lookup must filter repository-trusted actors" >&2
+    if [[ "${3:-}" != repos/*/commits/*/statuses* ]]; then
+      echo "unexpected paginated API target: $*" >&2
       exit 1
     fi
-    if [ -n "${GH_EXISTING_REQUEST_FILE:-}" ]; then
-      existing_request_body="$(cat "$GH_EXISTING_REQUEST_FILE")"
-    else
-      existing_request_body="${GH_EXISTING_REQUEST_BODY:-}"
+    if [[ "$*" != *"touchstone/review-request-intent"* ]] \
+      || [[ "$*" != *"touchstone/review-request-complete"* ]] \
+      || [[ "$*" != *'.state == "success"'* ]] \
+      || [[ "$*" != *"creator.login"* ]]; then
+      echo "request lookup must filter durable status records" >&2
+      exit 1
     fi
-    query_head="$(printf '%s' "${5:-}" | sed -n 's/.*head=\([^ ]*\) base=.*/\1/p')"
-    existing_revision="$(
-      printf '%s\n' "$existing_request_body" \
-        | sed -n 's/.*head=\([^ ]*\) base=\([^ ]*\) -->.*/\1	\2/p'
-    )"
-    if [ -n "$existing_revision" ] \
-      && [ "${existing_revision%%	*}" = "$query_head" ]; then
-      printf '%s\n' "${existing_revision#*	}"
+    if [ -n "${GH_REQUEST_RECORDS:-}" ]; then
+      printf '%s\n' "$GH_REQUEST_RECORDS"
     fi
-    if [ "$existing_request_body" = "@codex review
-
-<!-- touchstone:pr-review-request provider=github-codex head=$query_head -->" ]; then
-      printf '<unbound>\n'
+    if [ -s "$GH_STATUS_RECORDS_FILE" ]; then
+      query_head="${3#*/commits/}"
+      query_head="${query_head%%/*}"
+      while IFS="$(printf '\t')" read -r record_head context created_at creator description; do
+        [ "$record_head" = "$query_head" ] || continue
+        printf '%s\t%s\t%s\t%s\n' "$context" "$created_at" "$creator" "$description"
+      done <"$GH_STATUS_RECORDS_FILE"
     fi
+    ;;
+  "api -X")
+    if [ "${3:-}" != "POST" ]; then
+      echo "unexpected API mutation: $*" >&2
+      exit 1
+    fi
+    case "${4:-}" in
+      repos/*/issues/*/comments)
+        printf '%s\n' "$(gh_field_value body "$@")" >>"$GH_COMMENT_FILE"
+        printf '%s\n' "${GH_COMMENT_CREATED_AT:-${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}}"
+        ;;
+      repos/*/statuses/*)
+        if [[ "$*" != *"context=touchstone/review-request"* ]] \
+          || [[ "$*" != *"description=base="* ]]; then
+          echo "unexpected durable review status: $*" >&2
+          exit 1
+        fi
+        status_context="$(gh_field_value context "$@")"
+        status_description="$(gh_field_value description "$@")"
+        if [ "$status_context" = "touchstone/review-request-intent" ]; then
+          status_created_at="${GH_STATUS_INTENT_CREATED_AT:-${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}}"
+        else
+          status_created_at="${GH_STATUS_COMPLETE_CREATED_AT:-${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}}"
+        fi
+        printf '%s\n' "$*" >>"$GH_STATUS_FILE"
+        status_head="${4##*/}"
+        printf '%s\t%s\t%s\t%s\t%s\n' \
+          "$status_head" \
+          "$status_context" \
+          "$status_created_at" \
+          "${GH_STATUS_CREATOR:-${GH_AUTHENTICATED_ACTOR:-henrymodisett}}" \
+          "$status_description" >>"$GH_STATUS_RECORDS_FILE"
+        printf '%s\n' "$status_created_at"
+        ;;
+      *)
+        echo "unexpected API mutation target: $*" >&2
+        exit 1
+        ;;
+    esac
     ;;
   *)
     echo "unexpected gh args: $*" >&2
@@ -162,13 +234,26 @@ run_open_pr() {
   (
     cd "${OPEN_PR_WORKDIR:-$REPO_DIR}"
     invoke_open_pr() {
+      local request_created_at="${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}"
       PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
         GH_COMMENT_FILE="$TEST_DIR/comments" \
+        GH_STATUS_FILE="$TEST_DIR/statuses" \
+        GH_STATUS_RECORDS_FILE="$TEST_DIR/status-records" \
         GH_API_FAIL="${GH_API_FAIL:-0}" \
+        GH_REQUEST_RECORDS="${GH_REQUEST_RECORDS:-}" \
+        GH_REQUEST_CREATED_AT="$request_created_at" \
+        GH_STATUS_INTENT_CREATED_AT="${GH_STATUS_INTENT_CREATED_AT:-}" \
+        GH_STATUS_COMPLETE_CREATED_AT="${GH_STATUS_COMPLETE_CREATED_AT:-}" \
+        GH_COMMENT_CREATED_AT="${GH_COMMENT_CREATED_AT:-$request_created_at}" \
+        GH_STATUS_CREATOR="${GH_STATUS_CREATOR:-henrymodisett}" \
+        GH_AUTHENTICATED_ACTOR="${GH_AUTHENTICATED_ACTOR:-henrymodisett}" \
+        GH_HEAD_COMMIT_DATE="${GH_HEAD_COMMIT_DATE:-2026-07-29T00:00:00Z}" \
         GH_EXISTING_REQUEST_BODY="${GH_EXISTING_REQUEST_BODY:-}" \
+        GH_EXISTING_REQUEST_EDITED="${GH_EXISTING_REQUEST_EDITED:-0}" \
         GH_EXISTING_REQUEST_FILE="${GH_EXISTING_REQUEST_FILE:-}" \
         GH_EXISTING_PR_URL="${GH_EXISTING_PR_URL:-}" \
         GH_EXISTING_PR_BASE="${GH_EXISTING_PR_BASE:-}" \
+        GH_EXISTING_PR_HEAD="${GH_EXISTING_PR_HEAD:-}" \
         GH_PR_LIST_FAIL="${GH_PR_LIST_FAIL:-0}" \
         GH_PR_HEAD_SHA="${GH_PR_HEAD_SHA:-}" \
         GH_PR_BASE_NAME="${GH_PR_BASE_NAME:-main}" \
@@ -193,7 +278,7 @@ run_open_pr() {
 }
 
 reset_case() {
-  rm -f "$TEST_DIR/comments" "$TEST_DIR/review-env"
+  rm -f "$TEST_DIR/comments" "$TEST_DIR/review-env" "$TEST_DIR/statuses" "$TEST_DIR/status-records"
   unset CODEX_REVIEW_STUB_OUTPUT
 }
 
@@ -365,6 +450,9 @@ OUT="$TEST_DIR/request-on-push.out"
 run_open_pr "$OUT"
 if grep -q '^@codex review$' "$TEST_DIR/comments" \
   && grep -q "<!-- touchstone:pr-review-request provider=github-codex head=$REQUEST_HEAD base=base-oid -->" "$TEST_DIR/comments" \
+  && grep -q 'context=touchstone/review-request-intent' "$TEST_DIR/statuses" \
+  && grep -q 'context=touchstone/review-request-complete' "$TEST_DIR/statuses" \
+  && grep -q 'description=base=base-oid' "$TEST_DIR/statuses" \
   && grep -q "Requested GitHub Codex review for head $REQUEST_HEAD at base base-oid" "$OUT"; then
   echo "    PASS"
 else
@@ -440,10 +528,10 @@ else
 fi
 
 echo "==> Case 8: request_on_push is idempotent for the same head"
-EXISTING_REQUEST_BODY="$(cat "$TEST_DIR/comments")"
+EXISTING_REQUEST_RECORDS="$(cut -f2- "$TEST_DIR/status-records")"
 reset_case
 OUT="$TEST_DIR/request-idempotent.out"
-GH_EXISTING_REQUEST_BODY="$EXISTING_REQUEST_BODY" run_open_pr "$OUT"
+GH_REQUEST_RECORDS="$EXISTING_REQUEST_RECORDS" run_open_pr "$OUT"
 if grep -q "GitHub Codex review already requested for head $REQUEST_HEAD at base base-oid" "$OUT" \
   && [ ! -f "$TEST_DIR/comments" ]; then
   echo "    PASS"
@@ -451,6 +539,90 @@ else
   echo "    FAIL: repeated request should not post another comment" >&2
   cat "$OUT" >&2
   [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 8a: durable matching request survives trigger-comment edits"
+reset_case
+OUT="$TEST_DIR/request-edited-matching.out"
+if ! GH_REQUEST_RECORDS="$EXISTING_REQUEST_RECORDS" \
+  run_open_pr "$OUT"; then
+  echo "    FAIL: edited trigger comment erased durable matching request evidence" >&2
+  ERRORS=$((ERRORS + 1))
+elif grep -q "GitHub Codex review already requested for head $REQUEST_HEAD at base base-oid" "$OUT" \
+  && [ ! -f "$TEST_DIR/comments" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: durable status should make mutable trigger comments irrelevant" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 8aa: durable conflicting-base request survives trigger-comment deletion"
+reset_case
+OUT="$TEST_DIR/request-edited-conflicting.out"
+if GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\thenrymodisett\tbase=old-base-oid' \
+  run_open_pr "$OUT"; then
+  echo "    FAIL: edited conflicting marker unexpectedly requested a review" >&2
+  ERRORS=$((ERRORS + 1))
+elif grep -q "head $REQUEST_HEAD already has trusted review requests for another base revision" "$OUT" \
+  && grep -q 'prior base(s): old-base-oid' "$OUT" \
+  && [ ! -f "$TEST_DIR/comments" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: durable conflicting request should require a new head" >&2
+  cat "$OUT" >&2
+  [ -f "$TEST_DIR/comments" ] && cat "$TEST_DIR/comments" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 8ab: orphaned intent retries and records completion"
+reset_case
+OUT="$TEST_DIR/request-orphan-intent.out"
+GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\thenrymodisett\tbase=base-oid' \
+  run_open_pr "$OUT"
+if grep -q '^@codex review$' "$TEST_DIR/comments" \
+  && grep -q 'context=touchstone/review-request-complete' "$TEST_DIR/statuses" \
+  && ! grep -q 'context=touchstone/review-request-intent' "$TEST_DIR/statuses"; then
+  echo "    PASS"
+else
+  echo "    FAIL: orphaned request intent should retry the trigger and complete" >&2
+  cat "$OUT" >&2
+  [ ! -f "$TEST_DIR/statuses" ] || cat "$TEST_DIR/statuses" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 8ac: durable status survives driver handoff"
+reset_case
+OUT="$TEST_DIR/request-untrusted-status.out"
+GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\tprior-driver\tbase=base-oid\ntouchstone/review-request-complete\t2026-07-29T00:00:01Z\tprior-driver\tbase=base-oid intent=2026-07-29T00:00:00Z trigger=2026-07-29T00:00:01Z' \
+  run_open_pr "$OUT"
+if grep -q "GitHub Codex review already requested for head $REQUEST_HEAD at base base-oid" "$OUT" \
+  && [ ! -f "$TEST_DIR/comments" ] \
+  && [ ! -f "$TEST_DIR/statuses" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: another driver should reuse append-only request evidence" >&2
+  cat "$OUT" >&2
+  [ ! -f "$TEST_DIR/statuses" ] || cat "$TEST_DIR/statuses" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 8ad: non-writer status creator forces a fresh head"
+reset_case
+OUT="$TEST_DIR/request-untrusted-creator.out"
+if GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\tuntrusted-app\tbase=base-oid\ntouchstone/review-request-complete\t2026-07-29T00:00:01Z\tuntrusted-app\tbase=base-oid intent=2026-07-29T00:00:00Z trigger=2026-07-29T00:00:01Z' \
+  run_open_pr "$OUT"; then
+  echo "    FAIL: non-writer status creator suppressed a review request" >&2
+  ERRORS=$((ERRORS + 1))
+elif grep -q "review-request status from untrusted creator 'untrusted-app'" "$OUT" \
+  && [ ! -f "$TEST_DIR/comments" ] \
+  && [ ! -f "$TEST_DIR/statuses" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: non-writer status creator did not fail closed" >&2
+  cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
@@ -511,9 +683,7 @@ fi
 echo "==> Case 8e: one head cannot request reviews for multiple bases"
 reset_case
 OUT="$TEST_DIR/request-conflicting-base.out"
-GH_EXISTING_REQUEST_BODY="@codex review
-
-<!-- touchstone:pr-review-request provider=github-codex head=$DRAFT_REQUEST_HEAD base=old-base-oid -->" \
+GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\thenrymodisett\tbase=old-base-oid' \
   run_open_pr "$OUT" && {
   echo "    FAIL: conflicting base request unexpectedly succeeded" >&2
   ERRORS=$((ERRORS + 1))
@@ -533,15 +703,15 @@ fi
 echo "==> Case 8f: legacy head-only requests require a fresh PR head"
 reset_case
 OUT="$TEST_DIR/request-legacy-unbound.out"
-GH_EXISTING_REQUEST_BODY="@codex review
-
-<!-- touchstone:pr-review-request provider=github-codex head=$DRAFT_REQUEST_HEAD -->" \
+GH_EXISTING_PR_URL="https://example.test/touchstone/pull/456" \
+  GH_EXISTING_PR_BASE="main" \
+  GH_EXISTING_PR_HEAD="$DRAFT_REQUEST_HEAD" \
   run_open_pr "$OUT" && {
   echo "    FAIL: legacy unbound request unexpectedly authorized a base-bound request" >&2
   ERRORS=$((ERRORS + 1))
 }
-if grep -q "head $DRAFT_REQUEST_HEAD already has trusted review requests for another base revision" "$OUT" \
-  && grep -q 'prior base(s): <unbound>' "$OUT" \
+if grep -q "head $DRAFT_REQUEST_HEAD has no durable review-request evidence" "$OUT" \
+  && grep -q 'This invocation did not create or advance the PR head' "$OUT" \
   && [ ! -f "$TEST_DIR/comments" ]; then
   echo "    PASS"
 else
@@ -642,6 +812,7 @@ EXISTING_REQUEST_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 OUT="$TEST_DIR/request-existing-stacked-policy.out"
 GH_EXISTING_PR_URL="https://example.test/touchstone/pull/789" \
   GH_EXISTING_PR_BASE="feat/existing-policy-parent" \
+  GH_EXISTING_PR_HEAD="old-existing-head" \
   GH_PR_HEAD_SHA="$EXISTING_REQUEST_HEAD" \
   GH_PR_BASE_NAME="feat/existing-policy-parent" \
   GH_PR_BASE_SHA="existing-stack-base-oid" \

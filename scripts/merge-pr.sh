@@ -72,8 +72,10 @@ PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS="chatgpt-codex-connector,chatgpt-code
 PR_TRIGGERED_REVIEW_SKIP_MERGE_REVIEW=true
 PR_TRIGGERED_REVIEWED_HEAD_OID=""
 PR_TRIGGERED_REVIEWED_BASE_OID=""
+PR_TRIGGERED_REVIEW_BASE_BOUND=false
 PR_TRIGGERED_REVIEW_REQUEST_BASE_OID=""
 PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
+PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP=""
 PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP=""
 PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN=false
 PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL=""
@@ -1659,17 +1661,21 @@ trusted_pr_clean_signal() {
   local review_inspection_error="" comment_inspection_error=""
 
   PR_TRIGGERED_REVIEW_INSPECTION_ERROR=""
-  if [ -z "$expected_base" ] || [ -z "$request_timestamp" ]; then
+  if [ -z "$expected_base" ]; then
     PR_TRIGGERED_REVIEW_INSPECTION_ERROR="review evidence is not bound to the current base revision"
+    return 2
+  fi
+  if [ -z "$request_timestamp" ] && truthy "$PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH"; then
+    PR_TRIGGERED_REVIEW_INSPECTION_ERROR="review evidence is missing durable request freshness"
     return 2
   fi
   if latest_trusted_pr_review_result "$expected_head"; then
     review_timestamp="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
-    if [[ "$review_timestamp" > "$request_timestamp" ]]; then
+    if [ -z "$request_timestamp" ] || [[ "$review_timestamp" > "$request_timestamp" ]]; then
       review_found=true
       review_clean="$PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN"
       review_detail="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL"
-    elif [ "$review_timestamp" = "$request_timestamp" ]; then
+    elif [ -n "$request_timestamp" ] && [ "$review_timestamp" = "$request_timestamp" ]; then
       review_same_second=true
     fi
   else
@@ -1680,11 +1686,11 @@ trusted_pr_clean_signal() {
   fi
   if latest_trusted_pr_comment_result "$expected_head"; then
     comment_timestamp="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
-    if [[ "$comment_timestamp" > "$request_timestamp" ]]; then
+    if [ -z "$request_timestamp" ] || [[ "$comment_timestamp" > "$request_timestamp" ]]; then
       comment_found=true
       comment_clean="$PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN"
       comment_detail="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL"
-    elif [ "$comment_timestamp" = "$request_timestamp" ]; then
+    elif [ -n "$request_timestamp" ] && [ "$comment_timestamp" = "$request_timestamp" ]; then
       comment_same_second=true
     fi
   else
@@ -1755,12 +1761,6 @@ wait_for_pr_triggered_review() {
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
     exit 1
   fi
-  if ! truthy "$PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH"; then
-    echo "ERROR: [review.pr_triggered].required = true requires request_on_push = true." >&2
-    echo "       Base-bound review evidence needs a trusted Touchstone request marker." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
-    exit 2
-  fi
   if ! is_nonnegative_integer "$PR_TRIGGERED_REVIEW_TIMEOUT_SEC"; then
     echo "ERROR: [review.pr_triggered].timeout_sec must be a non-negative integer." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
@@ -1781,8 +1781,10 @@ wait_for_pr_triggered_review() {
   poll_sec="$PR_TRIGGERED_REVIEW_POLL_SEC"
   start_epoch="$(date +%s)"
   PR_TRIGGERED_REVIEW_SIGNAL_DETAIL=""
+  PR_TRIGGERED_REVIEW_BASE_BOUND=false
   PR_TRIGGERED_REVIEW_REQUEST_BASE_OID=""
   PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
+  PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP=""
 
   echo "==> Waiting for trusted PR-visible AI review for PR #$PR_NUMBER ($phase) ..."
   echo "    provider=$PR_TRIGGERED_REVIEW_PROVIDER expected_head=$expected_head timeout=${timeout_sec}s"
@@ -1842,7 +1844,12 @@ wait_for_pr_triggered_review() {
         fi
         if [ "$signal_status" -eq 0 ]; then
           PR_TRIGGERED_REVIEWED_HEAD_OID="$expected_head"
-          PR_TRIGGERED_REVIEWED_BASE_OID="$observed_base"
+          if [ -n "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" ]; then
+            PR_TRIGGERED_REVIEWED_BASE_OID="$observed_base"
+            PR_TRIGGERED_REVIEW_BASE_BOUND=true
+          else
+            PR_TRIGGERED_REVIEWED_BASE_OID=""
+          fi
           echo "==> Trusted PR-visible AI review found for PR #$PR_NUMBER head $expected_head."
           echo "    reviewed_base=$observed_base"
           [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
@@ -1905,45 +1912,73 @@ wait_for_pr_triggered_review() {
 load_pr_review_request_timestamp() {
   local expected_head="$1"
   local expected_base="$2"
-  local prefix legacy_marker records created_at request_base
-  local matching_timestamps="" conflicting_bases=""
+  local records context created_at _creator creator_permission description request_base intent_at trigger_at
+  local matching_intents="" matching_completions="" trusted_records=false conflicting_bases=""
 
   PR_TRIGGERED_REVIEW_REQUEST_INSPECTION_ERROR=""
-  prefix="@codex review\\n\\n<!-- touchstone:pr-review-request provider=github-codex head=$expected_head base="
-  legacy_marker="@codex review\\n\\n<!-- touchstone:pr-review-request provider=github-codex head=$expected_head -->"
+  PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP=""
+  PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
   if ! records="$(
-    gh api --paginate "repos/$REPO_FULL_NAME/issues/$PR_NUMBER/comments?per_page=100" \
-      --jq ".[] |
+    gh api --paginate "repos/$REPO_FULL_NAME/commits/$expected_head/statuses?per_page=100" \
+      --jq '.[] |
         select(
-          .author_association == \"OWNER\" or
-          .author_association == \"MEMBER\" or
-          .author_association == \"COLLABORATOR\"
+          .context == "touchstone/review-request-intent" or
+          .context == "touchstone/review-request-complete"
         ) |
-        select(.created_at == .updated_at) |
-        select((.body | startswith(\"$prefix\")) or .body == \"$legacy_marker\") |
-        select(.body == \"$legacy_marker\" or (.body | endswith(\" -->\"))) |
+        select(.state == "success") |
         [
+          .context,
           .created_at,
-          (
-            if .body == \"$legacy_marker\" then
-              \"<unbound>\"
-            else
-              (.body | split(\" base=\")[-1] | rtrimstr(\" -->\"))
-            end
-          )
+          .creator.login,
+          .description
         ] |
-        @tsv" 2>&1
+        @tsv' 2>&1
   )"; then
     PR_TRIGGERED_REVIEW_REQUEST_INSPECTION_ERROR="$records"
     return 2
   fi
 
-  while IFS="$(printf '\t')" read -r created_at request_base || [ -n "$created_at" ]; do
-    [ -n "$created_at" ] && [ -n "$request_base" ] || continue
-    if [ "$request_base" = "$expected_base" ]; then
-      matching_timestamps="${matching_timestamps}${matching_timestamps:+$'\n'}$created_at"
-    else
+  while IFS="$(printf '\t')" read -r context created_at _creator description || [ -n "$context" ]; do
+    if ! creator_permission="$(
+      gh api "repos/$REPO_FULL_NAME/collaborators/$_creator/permission" --jq '.permission' 2>/dev/null
+    )"; then
+      creator_permission=""
+    fi
+    case "$creator_permission" in
+      admin | maintain | write) ;;
+      *)
+        echo "ERROR: PR #$PR_NUMBER head $expected_head has review-request status from untrusted creator '$_creator'." >&2
+        echo "       Update the PR head so untrusted status records cannot authorize or suppress review." >&2
+        TOUCHSTONE_MERGE_FAILURE_REASON="review-request-untrusted-creator"
+        return 3
+        ;;
+    esac
+    case "$context" in
+      touchstone/review-request-intent)
+        request_base="${description#base=}"
+        [ "$request_base" != "$description" ] || continue
+        intent_at="$created_at"
+        ;;
+      touchstone/review-request-complete)
+        request_base="${description#base=}"
+        request_base="${request_base%% intent=*}"
+        intent_at="${description#* intent=}"
+        intent_at="${intent_at%% trigger=*}"
+        trigger_at="${description##* trigger=}"
+        case "$description" in
+          base=*' intent='*' trigger='*) ;;
+          *) continue ;;
+        esac
+        ;;
+      *) continue ;;
+    esac
+    trusted_records=true
+    if [ "$request_base" != "$expected_base" ]; then
       conflicting_bases="${conflicting_bases}${conflicting_bases:+, }$request_base"
+    elif [ "$context" = "touchstone/review-request-intent" ]; then
+      matching_intents="${matching_intents}${matching_intents:+$'\n'}$intent_at"
+    else
+      matching_completions="${matching_completions}${matching_completions:+$'\n'}$intent_at"$'\t'"$trigger_at"
     fi
   done <<<"$records"
 
@@ -1956,8 +1991,19 @@ load_pr_review_request_timestamp() {
     return 3
   fi
 
+  if [ "$trusted_records" = "false" ]; then
+    return 4
+  fi
+
+  PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP="$(
+    printf '%s\n' "$matching_intents" | sed '/^$/d' | sort | tail -n 1
+  )"
   PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP="$(
-    printf '%s\n' "$matching_timestamps" | sed '/^$/d' | sort | tail -n 1
+    while IFS="$(printf '\t')" read -r intent_at trigger_at; do
+      [ -n "$intent_at" ] || continue
+      printf '%s\n' "$matching_intents" | grep -Fxq "$intent_at" || continue
+      printf '%s\n' "$trigger_at"
+    done <<<"$matching_completions" | sort | tail -n 1
   )"
 }
 
@@ -1965,7 +2011,8 @@ request_pr_triggered_review() {
   local expected_head="$1"
   local expected_base="$2"
   local phase="$3"
-  local observed_head observed_revision observed_branch observed_base marker body created_at
+  local allow_status_bootstrap="${4:-false}"
+  local observed_head observed_revision observed_branch observed_base marker body trigger_at created_at
   local request_lookup_status=0
 
   if ! truthy "$PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH"; then
@@ -2008,7 +2055,17 @@ request_pr_triggered_review() {
     if [ "$request_lookup_status" -eq 3 ]; then
       return 3
     fi
-    return 2
+    if [ "$request_lookup_status" -eq 4 ]; then
+      if [ "$allow_status_bootstrap" != "true" ]; then
+        echo "ERROR: PR #$PR_NUMBER head $expected_head has no durable review-request evidence." >&2
+        echo "       The merge gate did not create or advance this head, so legacy review state is ambiguous." >&2
+        echo "       Push a fresh head with scripts/open-pr.sh before requesting review." >&2
+        TOUCHSTONE_MERGE_FAILURE_REASON="review-request-legacy-head"
+        return 3
+      fi
+    else
+      return 2
+    fi
   fi
   PR_TRIGGERED_REVIEW_REQUEST_BASE_OID="$expected_base"
   if [ -n "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" ]; then
@@ -2016,19 +2073,52 @@ request_pr_triggered_review() {
     return 0
   fi
 
+  if [ -z "$PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP" ]; then
+    if ! PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP="$(
+      gh api -X POST "repos/$REPO_FULL_NAME/statuses/$expected_head" \
+        -f state=success \
+        -f context=touchstone/review-request-intent \
+        -f description="base=$expected_base" \
+        --jq '.created_at'
+    )"; then
+      echo "ERROR: Failed to record review-request intent for PR #$PR_NUMBER ($phase)." >&2
+      TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
+      return 1
+    fi
+  fi
+  if [ -z "$PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP" ]; then
+    echo "ERROR: GitHub returned no timestamp for review-request intent." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
+    return 1
+  fi
+
   body="$(printf '@codex review\n\n%s' "$marker")"
-  if ! created_at="$(gh api -X POST "repos/$REPO_FULL_NAME/issues/$PR_NUMBER/comments" \
+  if ! trigger_at="$(gh api -X POST "repos/$REPO_FULL_NAME/issues/$PR_NUMBER/comments" \
     -f body="$body" --jq '.created_at')"; then
     echo "ERROR: Failed to request GitHub Codex review for PR #$PR_NUMBER ($phase)." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
-  if [ -z "$created_at" ]; then
-    echo "ERROR: GitHub returned no timestamp for the PR-triggered review request." >&2
+  if [ -z "$trigger_at" ]; then
+    echo "ERROR: GitHub returned no timestamp for the review trigger comment." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
-  PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP="$created_at"
+  if ! created_at="$(gh api -X POST "repos/$REPO_FULL_NAME/statuses/$expected_head" \
+    -f state=success \
+    -f context=touchstone/review-request-complete \
+    -f description="base=$expected_base intent=$PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP trigger=$trigger_at" \
+    --jq '.created_at')"; then
+    echo "ERROR: Failed to record durable review-request evidence for PR #$PR_NUMBER ($phase)." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
+    return 1
+  fi
+  if [ -z "$created_at" ]; then
+    echo "ERROR: GitHub returned no timestamp for durable review-request evidence." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
+    return 1
+  fi
+  PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP="$trigger_at"
   echo "==> Requested GitHub Codex review for head $expected_head at base $expected_base ($phase)."
 }
 
@@ -2535,7 +2625,7 @@ run_merge_review() {
       fi
       wait_for_pr_head "$reviewed_head_after"
       wait_for_clean_merge_state
-      if ! request_pr_triggered_review "$reviewed_head_after" "$REVIEWED_BASE_OID" "after review fixes"; then
+      if ! request_pr_triggered_review "$reviewed_head_after" "$REVIEWED_BASE_OID" "after review fixes" true; then
         if [ -n "${PR_TRIGGERED_REVIEW_REQUEST_INSPECTION_ERROR:-}" ]; then
           echo "ERROR: Failed to inspect prior GitHub Codex review requests for PR #$PR_NUMBER: $PR_TRIGGERED_REVIEW_REQUEST_INSPECTION_ERROR" >&2
         fi
@@ -2616,7 +2706,8 @@ run_merge_review
 
 # 5. Re-check PR-visible feedback on the exact reviewed head before merging.
 require_pr_feedback_clear "after merge review" "$REVIEWED_HEAD_OID"
-if { truthy "$PR_TRIGGERED_REVIEW_REQUIRED" && [ "$BYPASS_REVIEW" != true ]; } \
+if { truthy "$PR_TRIGGERED_REVIEW_REQUIRED" && [ "$BYPASS_REVIEW" != true ] \
+  && [ "$PR_TRIGGERED_REVIEW_BASE_BOUND" = true ]; } \
   || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-review" ]; then
   if ! load_pr_review_request_timestamp "$REVIEWED_HEAD_OID" "$REVIEWED_BASE_OID" \
     || ! trusted_pr_clean_signal "$REVIEWED_HEAD_OID" "$REVIEWED_BASE_OID" "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"; then

@@ -231,6 +231,37 @@ BRANCH_FIRST_TRAILING_STATUS_JSON="$(mkjson "git checkout -b fix/branch-first-st
 assert "allows branch-first compound with harmless trailing control flow" "0" \
   "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_TRAILING_STATUS_JSON")"
 
+assert "allows branch-first compound with ordinary file setup" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "git checkout -b fix/branch-first-touch && touch file && git add file && git commit -m test")")"
+assert "allows branch-first compound with a trailing push" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "git checkout -b fix/branch-first-push && git commit -m test && git push origin fix/branch-first-push")")"
+assert "blocks quote-composed git command on the default branch" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "g''it commit -m test")")"
+assert "blocks quote-composed commit subcommand on the default branch" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "git com''mit -m test")")"
+assert "blocks variable-dispatched commit command on the default branch" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson 'cmd=git; $cmd commit -m test')")"
+assert "blocks variable-dispatched commit through env on the default branch" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson 'cmd=git; env $cmd commit -m test')")"
+assert "blocks an expanded commit subcommand on the default branch" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson 'sub=commit; git $sub -m test')")"
+assert "blocks a variable containing the git commit words on the default branch" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "cmd='git commit'; \$cmd -m test")")"
+assert "blocks a path-qualified git commit on the default branch" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson '/usr/bin/git commit -m test')")"
+assert "blocks an ANSI-C-quoted git executable on the default branch" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "\$'git' commit -m test")")"
+assert "blocks a positional-parameter git executable on the default branch" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson 'set -- git; $1 commit -m test')")"
+assert "blocks a positional-parameter commit subcommand on the default branch" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson 'set -- commit; git $1 -m test')")"
+assert "allows quote-composed git commit prose in another command" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "printf '%s\\n' 'g''it commit'")")"
+assert "allows variable data in a branch-first commit message" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson 'git checkout -b fix/branch-first-home && git commit -m "fix $HOME"')")"
+assert "allows expanded git commit prose in another command" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson 'cmd=git; printf "%s\n" "$cmd commit"')")"
+
 BRANCH_FIRST_QUOTED_SEPARATOR_JSON="$(mkjson "git checkout -b fix/branch-first-quoted && git commit -m 'fix parser; git commit stays guarded'")"
 assert "allows separators and commit prose inside a single-quoted message" "0" \
   "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_QUOTED_SEPARATOR_JSON")"
@@ -306,7 +337,7 @@ assert "ignores commit and checkout prose in a heredoc before the real commit" "
 HEREDOC_COMMIT_PROSE_ONLY_JSON="$(mkjson "git checkout -b fix/branch-first-heredoc-only && cat <<-EOF
 	git commit -m 'documentation example'
 	EOF")"
-assert "allows a tab-stripped heredoc whose only commit is prose" "0" \
+assert "fails closed on an unquoted heredoc whose only commit is prose" "2" \
   "$(run_hook "$BRANCH_GUARD" "$HEREDOC_COMMIT_PROSE_ONLY_JSON")"
 
 ARITHMETIC_SHIFT_BEFORE_COMMIT_JSON="$(mkjson "value=\$((1 << 2))
@@ -318,6 +349,80 @@ ARITHMETIC_COMMAND_SHIFT_BEFORE_COMMIT_JSON="$(mkjson "(( value = 1 << 2 ))
 git commit -m 'must remain guarded'")"
 assert "does not treat arithmetic command left shift as a heredoc" "2" \
   "$(run_hook "$BRANCH_GUARD" "$ARITHMETIC_COMMAND_SHIFT_BEFORE_COMMIT_JSON")"
+
+assert "blocks env-wrapped git commit on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "env FOO=bar git commit -m 'bad'")")"
+
+assert "blocks command-wrapped git commit on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "command git commit -m 'bad'")")"
+
+assert "blocks git commit nested in shell control flow on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "if true; then git commit -m 'bad'; fi")")"
+
+assert "blocks a tab-separated git commit on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson $'git\tcommit -m bad')")"
+
+assert "blocks a line-continued git commit on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "git \\
+commit -m bad")")"
+
+assert "blocks a line continuation inside the git token" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "g\\
+it commit -m bad")")"
+
+assert "blocks a line continuation inside the commit token" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "git com\\
+mit -m bad")")"
+
+BRANCH_FIRST_UNQUOTED_HEREDOC_SUBSTITUTION_JSON="$(mkjson 'git checkout -b fix/heredoc-substitution && cat <<EOF
+$(git switch main >/dev/null; git commit -m hidden)
+EOF
+git commit -m real')"
+assert "blocks executable substitutions in an unquoted branch-first heredoc" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_UNQUOTED_HEREDOC_SUBSTITUTION_JSON")"
+
+BRANCH_FIRST_SHELL_HEREDOC_JSON="$(mkjson "git checkout -b fix/shell-heredoc && bash <<'EOF'
+git switch main
+git commit -m hidden
+EOF
+git commit -m real")"
+assert "blocks a shell-consumed branch-first heredoc" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_SHELL_HEREDOC_JSON")"
+
+BRANCH_FIRST_ARITHMETIC_SUBSTITUTION_JSON="$(mkjson 'git checkout -b fix/arithmetic-substitution && git commit -m safe && value=$(( $(git switch main >/dev/null; git commit -m hidden >/dev/null; echo 1) ))')"
+assert "blocks executable substitutions nested in branch-first arithmetic" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_ARITHMETIC_SUBSTITUTION_JSON")"
+
+BRANCH_FIRST_PROCESS_SUBSTITUTION_JSON="$(mkjson 'git checkout -b fix/process-substitution && cat <(git switch main >/dev/null; git commit -m hidden)')"
+assert "blocks branch-first process substitutions" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_PROCESS_SUBSTITUTION_JSON")"
+
+assert "allows safe arithmetic in a branch-first compound" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson 'git checkout -b fix/safe-arithmetic && value=$((1 << 2)) && git commit -m safe')")"
+
+assert "allows literal substitution prose in a single-quoted commit message" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "git checkout -b fix/literal-substitution && git commit -m 'document \$(literal) and \`backticks\`'")")"
+
+assert "blocks a branch-first shell code carrier" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "git checkout -b fix/shell-carrier && git commit -m safe && bash -c 'git switch main; git commit -m hidden'")")"
+
+assert "blocks a branch-first eval code carrier" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "git checkout -b fix/eval-carrier && git commit -m safe && eval 'git switch main; git commit -m hidden'")")"
+
+BRANCH_FIRST_PIPED_HEREDOC_JSON="$(mkjson "git checkout -b fix/piped-heredoc && git commit -m safe && cat <<'EOF' | bash
+git switch main
+git commit -m hidden
+EOF")"
+assert "blocks a quoted heredoc piped into a shell" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_PIPED_HEREDOC_JSON")"
+
+CONTINUED_HEREDOC_DELIMITER_JSON="$(mkjson "cat << \\
+EOF
+body
+EOF
+git commit -m bad")"
+assert "blocks a commit after a line-continued heredoc delimiter" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$CONTINUED_HEREDOC_DELIMITER_JSON")"
 
 MAIN_TARGET="$(mktemp -d -t touchstone-hook-test-main-target.XXXXXX)"
 trap 'rm -rf "$TMPDIR" "$WORKTREE" "$MAIN_TARGET"' EXIT
