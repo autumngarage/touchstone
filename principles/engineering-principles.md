@@ -34,6 +34,11 @@ When a model, algorithm, or data source changes in a way that affects decisions,
 ## Separate behavior changes from tidying
 Do not mix functional changes with broad renames, formatting sweeps, dependency churn, or unrelated refactors. If cleanup is needed, do it before or after the behavior change in a separate commit or PR. Mixed changes hide regressions and make rollback unsafe: a behavior change bundled with a rename is hard to bisect, hard to revert without losing the rename, and hard to find via `git blame` later.
 
+## Bound review-fix loops
+Review is a gate for a bounded change, not a way to drain the backlog into one branch. Stop before another edit when two consecutive review/fix cycles reveal new structural defects, or when the work expands to another independently shippable concern. Preserve the branch and record the invariant, validation completed, non-goals, and stop reason in the PR or issue before handoff; include that record in takeover and review briefs.
+
+Scope is never an excuse to merge a regression introduced by the current diff. Every current-diff correctness, security, or data-integrity defect must be fixed or reverted in the current PR. File pre-existing independent problems, but claim them only when implementation starts. Resume with the smallest shippable concern, prioritizing a release blocker when one exists.
+
 ## Make irreversible actions recoverable
 Any destructive or one-way operation must have a recovery path before it runs. Deletes, migrations, format rewrites, external side effects, and history rewrites need a dry run, backup, idempotency key, rollback plan, or forward-fix plan. A change is not safe because it passed once; it is safe when failure leaves the system in a known recoverable state.
 
