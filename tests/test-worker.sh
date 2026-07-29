@@ -583,8 +583,10 @@ STALE_LOCK_UNRELATED_PID=$!
 touchstone_ship_claim "$STALE_LOCK_JOB_DIR" "$STALE_LOCK_UNRELATED_PID" >/dev/null
 touchstone_ship_write "$STALE_LOCK_JOB_DIR" status running
 touchstone_ship_write "$STALE_LOCK_JOB_DIR" pid "$STALE_LOCK_UNRELATED_PID"
+hash -r
+STALE_LOCK_REAL_MV="$(command -v mv)"
 PATH="$STALE_LOCK_BIN:$PATH" \
-  REAL_MV="$(command -v mv)" \
+  REAL_MV="$STALE_LOCK_REAL_MV" \
   STALE_LOCK_SIGNAL="$STALE_LOCK_SIGNAL" \
   STALE_LOCK_GATE="$STALE_LOCK_GATE" \
   touchstone_ship_refresh "$STALE_LOCK_JOB_DIR" &
@@ -648,8 +650,10 @@ EOF
 chmod +x "$INTERLEAVE_BIN/mv"
 PREDECESSOR_TOKEN="$(touchstone_ship_claim "$INTERLEAVE_JOB_DIR" "$$")"
 touchstone_ship_write "$INTERLEAVE_JOB_DIR" branch feat/finish-interleave
+hash -r
+INTERLEAVE_REAL_MV="$(command -v mv)"
 PATH="$INTERLEAVE_BIN:$PATH" \
-  REAL_MV="$(command -v mv)" \
+  REAL_MV="$INTERLEAVE_REAL_MV" \
   INTERLEAVE_WATCH_JOB_DIR="$INTERLEAVE_JOB_DIR" \
   INTERLEAVE_SIGNAL="$INTERLEAVE_SIGNAL" \
   INTERLEAVE_GATE="$INTERLEAVE_GATE" \
