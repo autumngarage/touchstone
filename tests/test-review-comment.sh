@@ -124,7 +124,7 @@ case "${1:-} ${2:-}" in
     echo ""
     ;;
   "api repos/"*)
-    echo "base-oid"
+    printf 'main\tbase-oid\n'
     ;;
   "pr checkout")
     echo checked-out > "$GH_CHECKOUT_FILE"
@@ -151,6 +151,8 @@ cat >"$FAKE_BIN/git" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$*" in
+  "check-ref-format --branch main")
+    ;;
   "rev-parse --show-toplevel") printf '%s\n' "$TEST_REPO_ROOT" ;;
   "rev-parse --abbrev-ref HEAD")
     if [ -f "$GH_CHECKOUT_FILE" ]; then echo "HEAD"; else echo "feature/test"; fi

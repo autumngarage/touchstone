@@ -96,7 +96,7 @@ case "${1:-} ${2:-}" in
   "api graphql")
     ;;
   "api repos/"*)
-    echo "base-oid"
+    printf 'main\tbase-oid\n'
     ;;
   *)
     echo "unexpected gh args: $*" >&2
@@ -114,6 +114,8 @@ cat >"$FAKE_BIN/git" <<'EOF'
 set -euo pipefail
 
 case "$*" in
+  "check-ref-format --branch main")
+    ;;
   "rev-parse --abbrev-ref HEAD")
     if [ -f "$GH_CHECKOUT_FILE" ]; then
       echo "HEAD"
