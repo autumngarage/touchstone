@@ -82,7 +82,11 @@ case "${1:-} ${2:-}" in
     echo "https://example.test/touchstone/pull/456"
     ;;
   "pr view")
-    printf '%s\n' "${GH_PR_HEAD_SHA:-$(git rev-parse HEAD)}"
+    if [ -f "${GH_REVISION_CHANGE_AFTER_TRIGGER_FILE:-/dev/null/never}" ]; then
+      printf '%s\n' "${GH_PR_HEAD_AFTER_TRIGGER:-${GH_PR_HEAD_SHA:-$(git rev-parse HEAD)}}"
+    else
+      printf '%s\n' "${GH_PR_HEAD_SHA:-$(git rev-parse HEAD)}"
+    fi
     ;;
   "pr comment")
     if [ "${4:-}" != "--body" ]; then
@@ -108,6 +112,10 @@ case "${1:-} ${2:-}" in
       fi
     elif [[ "${2:-}" = */commits/* ]] && [[ "$*" = *".commit.committer.date"* ]]; then
       echo "${GH_HEAD_COMMIT_DATE:-2026-07-29T00:00:00Z}"
+    elif [ -f "${GH_REVISION_CHANGE_AFTER_TRIGGER_FILE:-/dev/null/never}" ]; then
+      printf '%s\t%s\n' \
+        "${GH_PR_BASE_NAME_AFTER_TRIGGER:-${GH_PR_BASE_NAME:-main}}" \
+        "${GH_PR_BASE_SHA_AFTER_TRIGGER:-${GH_PR_BASE_SHA:-base-oid}}"
     else
       printf '%s\t%s\n' "${GH_PR_BASE_NAME:-main}" "${GH_PR_BASE_SHA:-base-oid}"
     fi
@@ -148,6 +156,9 @@ case "${1:-} ${2:-}" in
     case "${4:-}" in
       repos/*/issues/*/comments)
         printf '%s\n' "$(gh_field_value body "$@")" >>"$GH_COMMENT_FILE"
+        if [ -n "${GH_REVISION_CHANGE_AFTER_TRIGGER_FILE:-}" ]; then
+          touch "$GH_REVISION_CHANGE_AFTER_TRIGGER_FILE"
+        fi
         printf '%s\n' "${GH_COMMENT_CREATED_AT:-${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}}"
         ;;
       repos/*/statuses/*)
@@ -259,8 +270,12 @@ run_open_pr() {
         GH_EXISTING_PR_HEAD="${GH_EXISTING_PR_HEAD:-}" \
         GH_PR_LIST_FAIL="${GH_PR_LIST_FAIL:-0}" \
         GH_PR_HEAD_SHA="${GH_PR_HEAD_SHA:-}" \
+        GH_PR_HEAD_AFTER_TRIGGER="${GH_PR_HEAD_AFTER_TRIGGER:-}" \
         GH_PR_BASE_NAME="${GH_PR_BASE_NAME:-main}" \
         GH_PR_BASE_SHA="${GH_PR_BASE_SHA:-base-oid}" \
+        GH_PR_BASE_NAME_AFTER_TRIGGER="${GH_PR_BASE_NAME_AFTER_TRIGGER:-}" \
+        GH_PR_BASE_SHA_AFTER_TRIGGER="${GH_PR_BASE_SHA_AFTER_TRIGGER:-}" \
+        GH_REVISION_CHANGE_AFTER_TRIGGER_FILE="${GH_REVISION_CHANGE_AFTER_TRIGGER_FILE:-}" \
         GIT_FETCH_BASE_SHA="${GIT_FETCH_BASE_SHA:-}" \
         GIT_FETCH_FAIL="${GIT_FETCH_FAIL:-0}" \
         GIT_PUSH_CREATE_LOCAL_COMMIT="${GIT_PUSH_CREATE_LOCAL_COMMIT:-0}" \
@@ -281,8 +296,13 @@ run_open_pr() {
 }
 
 reset_case() {
-  rm -f "$TEST_DIR/comments" "$TEST_DIR/review-env" "$TEST_DIR/statuses" "$TEST_DIR/status-records"
+  rm -f "$TEST_DIR/comments" "$TEST_DIR/review-env" "$TEST_DIR/statuses" "$TEST_DIR/status-records" \
+    "$TEST_DIR/revision-changed-after-trigger"
   unset CODEX_REVIEW_STUB_OUTPUT
+  unset GH_PR_HEAD_AFTER_TRIGGER
+  unset GH_PR_BASE_NAME_AFTER_TRIGGER
+  unset GH_PR_BASE_SHA_AFTER_TRIGGER
+  unset GH_REVISION_CHANGE_AFTER_TRIGGER_FILE
 }
 
 echo "==> Case 1: clean advisory review posts clean summary"
@@ -591,6 +611,26 @@ if grep -q '^@codex review$' "$TEST_DIR/comments" \
   echo "    PASS"
 else
   echo "    FAIL: orphaned request intent should retry the trigger and complete" >&2
+  cat "$OUT" >&2
+  [ ! -f "$TEST_DIR/statuses" ] || cat "$TEST_DIR/statuses" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 8aba: revision movement after the trigger cannot create stale completion evidence"
+reset_case
+OUT="$TEST_DIR/request-revision-race.out"
+if GH_PR_HEAD_AFTER_TRIGGER="changed-pr-head" \
+  GH_REVISION_CHANGE_AFTER_TRIGGER_FILE="$TEST_DIR/revision-changed-after-trigger" \
+  GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-07-29T00:00:00Z\thenrymodisett\tpr=456 base=base-oid' \
+  run_open_pr "$OUT"; then
+  echo "    FAIL: revision movement after the trigger should fail closed" >&2
+  ERRORS=$((ERRORS + 1))
+elif grep -q 'revision changed while review was being requested' "$OUT" \
+  && grep -q '^@codex review$' "$TEST_DIR/comments" \
+  && { [ ! -f "$TEST_DIR/statuses" ] || ! grep -q 'context=touchstone/review-request-complete' "$TEST_DIR/statuses"; }; then
+  echo "    PASS"
+else
+  echo "    FAIL: changed revision received stale durable completion evidence" >&2
   cat "$OUT" >&2
   [ ! -f "$TEST_DIR/statuses" ] || cat "$TEST_DIR/statuses" >&2
   ERRORS=$((ERRORS + 1))

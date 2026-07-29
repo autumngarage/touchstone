@@ -2036,6 +2036,7 @@ request_pr_triggered_review() {
   local allow_status_bootstrap="${4:-false}"
   local force_append="${5:-false}"
   local observed_head observed_revision observed_branch observed_base marker body trigger_at created_at
+  local completion_head completion_revision completion_branch completion_base
   local request_lookup_status=0
 
   if ! truthy "$PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH"; then
@@ -2124,6 +2125,26 @@ request_pr_triggered_review() {
   fi
   if [ -z "$trigger_at" ]; then
     echo "ERROR: GitHub returned no timestamp for the review trigger comment." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
+    return 1
+  fi
+  if ! completion_head="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')"; then
+    echo "ERROR: Failed to revalidate PR #$PR_NUMBER head after requesting review ($phase)." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
+    return 1
+  fi
+  if ! completion_revision="$(current_pr_base_revision 2>&1)"; then
+    echo "ERROR: Failed to revalidate PR #$PR_NUMBER base after requesting review ($phase): $completion_revision" >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
+    return 1
+  fi
+  IFS="$(printf '\t')" read -r completion_branch completion_base <<<"$completion_revision"
+  if [ "$completion_head" != "$expected_head" ] \
+    || [ "$completion_branch" != "$PR_BASE_BRANCH" ] \
+    || [ "$completion_base" != "$expected_base" ]; then
+    echo "ERROR: PR #$PR_NUMBER revision changed while review was being requested ($phase)." >&2
+    echo "       requested: $PR_BASE_BRANCH@$expected_base head=$expected_head" >&2
+    echo "       current:   ${completion_branch:-<empty>}@${completion_base:-<empty>} head=${completion_head:-<empty>}" >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi

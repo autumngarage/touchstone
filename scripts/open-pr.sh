@@ -393,6 +393,7 @@ request_pr_triggered_review() {
   local expected_head_sha="$2"
   local allow_status_bootstrap="${3:-false}"
   local head_sha base_revision base_branch base_sha marker request_records context created_at _creator creator_permission description request_pr request_base request_intent_at request_trigger_at body trigger_at attempt=1
+  local completion_head completion_revision completion_branch completion_base
   local intent_at="" completion_records="" matching_request=false trusted_records=false conflicting_bases=""
   local max_attempts="${TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS:-10}"
   local retry_interval="${TOUCHSTONE_PR_HEAD_CONVERGENCE_INTERVAL:-1}"
@@ -563,6 +564,26 @@ request_pr_triggered_review() {
   fi
   if [ -z "$trigger_at" ]; then
     echo "ERROR: GitHub returned no timestamp for the review trigger comment." >&2
+    return 1
+  fi
+  if ! completion_head="$(gh pr view "$pr_number" --json headRefOid --jq '.headRefOid')"; then
+    echo "ERROR: failed to revalidate PR #$pr_number head after requesting review." >&2
+    return 1
+  fi
+  if ! completion_revision="$(
+    gh api "repos/$REPO_FULL_NAME/pulls/$pr_number" --jq '[.base.ref, .base.sha] | @tsv'
+  )"; then
+    echo "ERROR: failed to revalidate PR #$pr_number base after requesting review." >&2
+    return 1
+  fi
+  IFS=$'\t' read -r completion_branch completion_base <<<"$completion_revision"
+  if [ "$completion_head" != "$head_sha" ] \
+    || [ "$completion_branch" != "$base_branch" ] \
+    || [ "$completion_base" != "$base_sha" ]; then
+    echo "ERROR: PR #$pr_number revision changed while review was being requested." >&2
+    echo "       requested: $base_branch@$base_sha head=$head_sha" >&2
+    echo "       current:   ${completion_branch:-<empty>}@${completion_base:-<empty>} head=${completion_head:-<empty>}" >&2
+    echo "       Rerun scripts/open-pr.sh against the current revision." >&2
     return 1
   fi
   if ! gh api -X POST "repos/$REPO_FULL_NAME/statuses/$head_sha" \

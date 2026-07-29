@@ -144,7 +144,9 @@ case "${1:-} ${2:-}" in
           echo "gh pr view headRefOid unavailable" >&2
           exit 1
         fi
-        if [ -n "${GH_HEAD_REF_CHANGE_AFTER:-}" ] && [ "$head_ref_call_count" -ge "$GH_HEAD_REF_CHANGE_AFTER" ]; then
+        if [ -f "${GH_REVISION_CHANGE_AFTER_TRIGGER_FILE:-/dev/null/never}" ]; then
+          echo "${GH_HEAD_REF_AFTER_TRIGGER:-${GH_PR_HEAD_OID:-pr-head-oid}}"
+        elif [ -n "${GH_HEAD_REF_CHANGE_AFTER:-}" ] && [ "$head_ref_call_count" -ge "$GH_HEAD_REF_CHANGE_AFTER" ]; then
           echo "${GH_HEAD_REF_CHANGED_OID:-changed-pr-head}"
         elif [ -f "${GH_HEAD_REF_FILE:-/dev/null/never}" ]; then
           cat "$GH_HEAD_REF_FILE"
@@ -237,7 +239,11 @@ case "${1:-} ${2:-}" in
           echo "pull request base unavailable" >&2
           exit 1
         fi
-        if [ -n "${GH_BASE_REF_CHANGE_AFTER:-}" ] && [ "$base_ref_call_count" -ge "$GH_BASE_REF_CHANGE_AFTER" ]; then
+        if [ -f "${GH_REVISION_CHANGE_AFTER_TRIGGER_FILE:-/dev/null/never}" ]; then
+          printf '%s\t%s\n' \
+            "${GH_BASE_REF_NAME_AFTER_TRIGGER:-${GH_BASE_REF_NAME:-main}}" \
+            "${GH_BASE_REF_OID_AFTER_TRIGGER:-${GH_BASE_REF_OID:-base-oid}}"
+        elif [ -n "${GH_BASE_REF_CHANGE_AFTER:-}" ] && [ "$base_ref_call_count" -ge "$GH_BASE_REF_CHANGE_AFTER" ]; then
           printf '%s\t%s\n' "${GH_BASE_REF_CHANGED_NAME:-${GH_BASE_REF_NAME:-main}}" "${GH_BASE_REF_CHANGED_OID:-changed-base-oid}"
         else
           printf '%s\t%s\n' "${GH_BASE_REF_NAME:-main}" "${GH_BASE_REF_OID:-base-oid}"
@@ -354,6 +360,9 @@ case "${1:-} ${2:-}" in
           exit 1
         fi
         printf '%s\n' "${6#body=}" >>"$GH_REVIEW_REQUEST_FILE"
+        if [ -n "${GH_REVISION_CHANGE_AFTER_TRIGGER_FILE:-}" ]; then
+          touch "$GH_REVISION_CHANGE_AFTER_TRIGGER_FILE"
+        fi
         printf '%s\n' "${GH_COMMENT_CREATED_AT:-${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}}"
         ;;
       repos/*/statuses/*)
@@ -644,6 +653,7 @@ reset_case_files() {
     "$TEST_DIR"/gh-graphql-calls* "$TEST_DIR"/gh-head-ref-calls* "$TEST_DIR"/gh-base-ref-calls* \
     "$TEST_DIR"/gh-reviews-graphql-calls* "$TEST_DIR"/gh-reactions-calls* \
     "$TEST_DIR"/gh-comments-calls* "$TEST_DIR"/gh-request-lookup-calls*
+  rm -f "$TEST_DIR/revision-changed-after-trigger"
   rm -rf "$GIT_PATH_ROOT"
   rm -rf "$DEFAULT_FAKE_WORKTREE"
   mkdir -p "$GIT_PATH_ROOT"
@@ -659,12 +669,16 @@ reset_case_files() {
   unset GH_HEAD_REF_FAIL_AFTER
   unset GH_HEAD_REF_CHANGE_AFTER
   unset GH_HEAD_REF_CHANGED_OID
+  unset GH_HEAD_REF_AFTER_TRIGGER
   unset GH_BASE_REF_OID
   unset GH_BASE_REF_NAME
   unset GH_BASE_REF_FAIL_AFTER
   unset GH_BASE_REF_CHANGE_AFTER
   unset GH_BASE_REF_CHANGED_NAME
   unset GH_BASE_REF_CHANGED_OID
+  unset GH_BASE_REF_NAME_AFTER_TRIGGER
+  unset GH_BASE_REF_OID_AFTER_TRIGGER
+  unset GH_REVISION_CHANGE_AFTER_TRIGGER_FILE
   unset GH_IS_DRAFT
   unset GH_REVIEW_DECISION
   unset GH_UNRESOLVED_THREADS
@@ -748,6 +762,7 @@ run_merge_pr() {
     GH_HEAD_REF_FAIL_AFTER="${GH_HEAD_REF_FAIL_AFTER:-}" \
     GH_HEAD_REF_CHANGE_AFTER="${GH_HEAD_REF_CHANGE_AFTER:-}" \
     GH_HEAD_REF_CHANGED_OID="${GH_HEAD_REF_CHANGED_OID:-changed-pr-head}" \
+    GH_HEAD_REF_AFTER_TRIGGER="${GH_HEAD_REF_AFTER_TRIGGER:-}" \
     GH_HEAD_REF_CALLS_FILE="$TEST_DIR/gh-head-ref-calls" \
     GH_BASE_REF_OID="${GH_BASE_REF_OID:-base-oid}" \
     GH_BASE_REF_NAME="$base_ref_name" \
@@ -755,6 +770,9 @@ run_merge_pr() {
     GH_BASE_REF_CHANGE_AFTER="${GH_BASE_REF_CHANGE_AFTER:-}" \
     GH_BASE_REF_CHANGED_NAME="${GH_BASE_REF_CHANGED_NAME:-$base_ref_name}" \
     GH_BASE_REF_CHANGED_OID="${GH_BASE_REF_CHANGED_OID:-changed-base-oid}" \
+    GH_BASE_REF_NAME_AFTER_TRIGGER="${GH_BASE_REF_NAME_AFTER_TRIGGER:-}" \
+    GH_BASE_REF_OID_AFTER_TRIGGER="${GH_BASE_REF_OID_AFTER_TRIGGER:-}" \
+    GH_REVISION_CHANGE_AFTER_TRIGGER_FILE="${GH_REVISION_CHANGE_AFTER_TRIGGER_FILE:-}" \
     GH_BASE_REF_CALLS_FILE="$TEST_DIR/gh-base-ref-calls" \
     GH_IS_DRAFT="${GH_IS_DRAFT:-false}" \
     GH_REVIEW_DECISION="${GH_REVIEW_DECISION:-}" \
@@ -1705,6 +1723,28 @@ if grep -q 'Requested GitHub Codex review for head pr-head-oid at base base-oid'
 else
   echo "FAIL: orphaned intent recovery did not complete the durable request" >&2
   cat "$TEST_DIR/output-pr-triggered-orphan-intent.txt" >&2
+  [ ! -f "$TEST_DIR/gh-status-records" ] || cat "$TEST_DIR/gh-status-records" >&2
+  exit 1
+fi
+
+echo "==> Test: revision movement after the trigger cannot create stale completion evidence"
+reset_case_files
+write_pr_triggered_config true 0 0 true true
+if GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-06-22T00:00:00Z\thenrymodisett\tpr=123 base=base-oid' \
+  GH_BASE_REF_OID_AFTER_TRIGGER="changed-base-oid" \
+  GH_REVISION_CHANGE_AFTER_TRIGGER_FILE="$TEST_DIR/revision-changed-after-trigger" \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-revision-race.txt" 123; then
+  echo "FAIL: revision movement after the trigger should fail closed" >&2
+  exit 1
+fi
+if grep -q 'revision changed while review was being requested' "$TEST_DIR/output-pr-triggered-revision-race.txt" \
+  && grep -q '^@codex review$' "$TEST_DIR/gh-review-request" \
+  && { [ ! -f "$TEST_DIR/gh-status-records" ] || ! grep -q 'touchstone/review-request-complete' "$TEST_DIR/gh-status-records"; } \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: changed revision receives no stale durable completion evidence"
+else
+  echo "FAIL: changed revision received stale durable completion evidence" >&2
+  cat "$TEST_DIR/output-pr-triggered-revision-race.txt" >&2
   [ ! -f "$TEST_DIR/gh-status-records" ] || cat "$TEST_DIR/gh-status-records" >&2
   exit 1
 fi
