@@ -36,8 +36,10 @@
 #   instead. So stacked PRs work well with a merge commit or rebase merge,
 #   but the `--auto-merge` default (squash) will orphan the child.
 #
-#   For simpler review, prefer bundling related work into one PR over
-#   stacks when you can. See principles/git-workflow.md.
+#   Prefer independent PRs against the default branch when slices can ship
+#   separately. Bundle only changes that prove one invariant in one subsystem;
+#   use a stack only when a child truly depends on an unmerged parent.
+#   See principles/git-workflow.md.
 #
 set -euo pipefail
 

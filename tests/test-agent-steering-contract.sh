@@ -82,9 +82,12 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "scripts/open-pr.s
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Delivery circuit breaker"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '"Ship it all" defines the queue'
 assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" "smallest shippable concern"
+assert_contains "$TOUCHSTONE_ROOT/principles/engineering-principles.md" "## Bound delivery loops"
+assert_contains "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "Bundle only changes that prove one invariant"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Codex merge review"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "codex exec --full-auto"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" '"ship it all," default to one PR'
+assert_not_contains "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "prefer bundling related work into one PR"
 
 echo "==> canonical AI delivery architecture describes the PR review loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Agentic PR Review Loop"
