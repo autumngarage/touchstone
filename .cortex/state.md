@@ -1,10 +1,10 @@
 ---
-Generated: 2026-07-29T18:38:13-04:00
+Generated: 2026-07-30T06:37:23-04:00
 Generator: cortex refresh-state v1.6.4
 Sources:
-  - HEAD sha: ecb0bbc7380a84a533fa4978ea2a39dcbe488868
+  - HEAD sha: 58c107755a1fbc56e6f4b5c39cc6151b74458b69
   - .cortex/plans/*.md (2 files)
-  - .cortex/journal/*.md (25 entries, 2026-05-05..2026-07-29)
+  - .cortex/journal/*.md (28 entries, 2026-05-05..2026-07-30)
   - .cortex/doctrine/*.md (1 entries)
   - .cortex/templates/**/*.md (12 templates)
   - docs/case-studies/*.md (0 case studies)
@@ -37,6 +37,9 @@ Sources-hash:
   .cortex/journal/2026-07-27-pr-merged-2143.md: ba09c992cc729d3fa3ca82bc72d3aec82e840c305fab23a23ff6153ff22e19be
   .cortex/journal/2026-07-29-bound-autonomous-review-mutations.md: 4c21bf6a5fcf75eccdf80665a05f5c81c4abc3f1bf5bfe7b452750505a760a96
   .cortex/journal/2026-07-29-pr-merged-1838.md: 7eac677515b168a41a733dbd42710c1b44e53305361b278cd77e5b115b204a8a
+  .cortex/journal/2026-07-29-pr-merged-2306.md: 6b9db9251965267022538045132573d268a39befac8493aee533422b41e74744
+  .cortex/journal/2026-07-29-remove-local-model-router.md: 7b0ed0974ac61c38384d701d939685a5e32d918fb80879173b3d8d3c4f5b6531
+  .cortex/journal/2026-07-30-default-detached-shipping.md: d927f416ff51318448343a0f49bf539169ebbeb10b4426bd79356bbb3d06d77a
   .cortex/plans/touchstone-conductor-integration.md: be3f8211b7c19e32e0c4c858c35678c1d85418fe12c5d22b29cc0a7831f8a54c
   .cortex/plans/touchstone-cortex-metadata.md: 0e23c4e06b91c1e8da358b3928750798975eed88815502fb8e7ddfbdbd0187f5
   .cortex/templates/README.md: 695aa2e623bd7f4e698dae471bded0cde354da0c1d8589266660ceb1be8efad1
@@ -51,7 +54,7 @@ Sources-hash:
   .cortex/templates/journal/release.md: 9a6bc59219156e48b419fb170c7c50ff557767def8672ef20568df3e14eadbd0
   .cortex/templates/journal/sentinel-cycle.md: 2945e2d94af4ec9848584b4b3e9cea7060d2968dd42e78faf21fb6f859137476
   .cortex/templates/plans/template.md: d8156cfa3b86acd2a1fbb36cff07cae37d99f3adee7f72b14b7b16e645c51b44
-Corpus: 25 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
+Corpus: 28 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
 Omitted:
   []
 Incomplete:
@@ -87,6 +90,7 @@ Spec: 0.5.0
 - **2026-07-27** — PR #506 merged — feat: ship major Touchstone delivery upgrades (`.cortex/journal/2026-07-27-pr-merged-2142.md`, Type: pr-merged)
 - **2026-07-27** — PR #492 merged — fix: harden emergency disclosure and request Codex reviews (`.cortex/journal/2026-07-27-pr-merged-2143.md`, Type: pr-merged)
 - **2026-07-29** — PR #547 merged — fix(review): cap autonomous mutation cycles (`.cortex/journal/2026-07-29-pr-merged-1838.md`, Type: pr-merged)
+- **2026-07-29** — PR #554 merged — refactor: remove local model router (`.cortex/journal/2026-07-29-pr-merged-2306.md`, Type: pr-merged)
 
 ## Stale-now / handle-later
 
