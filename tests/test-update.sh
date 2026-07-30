@@ -181,6 +181,13 @@ assert_contains "$TEST_DIR/update-retirement-hook-reference.txt" '.pre-commit-co
 cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_RETIRED_REVIEW_HOOKS_REMOVED'
 repos: []
 EOF_RETIRED_REVIEW_HOOKS_REMOVED
+if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-retirement-dirty-hook-config.txt" 2>&1; then
+  echo "FAIL: update should block until project-owned hook migration is committed" >&2
+  exit 1
+fi
+assert_contains "$TEST_DIR/update-retirement-dirty-hook-config.txt" '.pre-commit-config.yaml (commit the hook migration first)'
+
 git -C "$TOUCHSTONE_ROOT" rev-parse HEAD >"$RETIREMENT_PROJECT/.touchstone-version"
 commit_all "$RETIREMENT_PROJECT" "remove project-owned review hooks"
 

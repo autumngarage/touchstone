@@ -140,6 +140,10 @@ retired_review_shim_manifest_entries() {
 RETIRED_REVIEW_SHIM_ENTRIES="$(retired_review_shim_manifest_entries)"
 RETIRED_REVIEW_SHIM_BLOCKERS=""
 if [ -n "$RETIRED_REVIEW_SHIM_ENTRIES" ]; then
+  if [ -n "$(git -C "$PROJECT_DIR" status --porcelain -- .pre-commit-config.yaml 2>/dev/null || true)" ]; then
+    RETIRED_REVIEW_SHIM_BLOCKERS="${RETIRED_REVIEW_SHIM_BLOCKERS}.pre-commit-config.yaml (commit the hook migration first)
+"
+  fi
   while IFS= read -r rel_path; do
     [ -n "$rel_path" ] || continue
     if [ -e "$PROJECT_DIR/$rel_path" ] \
