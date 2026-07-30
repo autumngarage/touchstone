@@ -953,7 +953,11 @@ copy_file "$TOUCHSTONE_ROOT/templates/.markdownlint.json" "$PROJECT_DIR/.markdow
 copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
 copy_file "$TOUCHSTONE_ROOT/templates/.worktreeinclude.example" "$PROJECT_DIR/.worktreeinclude.example"
 copy_file "$TOUCHSTONE_ROOT/templates/pull_request_template.md" "$PROJECT_DIR/.github/pull_request_template.md"
-copy_file "$TOUCHSTONE_ROOT/templates/touchstone-review.toml" "$PROJECT_DIR/.touchstone-review.toml"
+if [ -f "$PROJECT_DIR/.codex-review.toml" ] && [ ! -f "$PROJECT_DIR/.touchstone-review.toml" ]; then
+  echo "    exists (legacy, skipped): .codex-review.toml"
+else
+  copy_file "$TOUCHSTONE_ROOT/templates/touchstone-review.toml" "$PROJECT_DIR/.touchstone-review.toml"
+fi
 copy_file "$TOUCHSTONE_ROOT/templates/setup.sh" "$PROJECT_DIR/setup.sh"
 chmod +x "$PROJECT_DIR/setup.sh" 2>/dev/null || true
 

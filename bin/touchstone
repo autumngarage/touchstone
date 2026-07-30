@@ -1431,6 +1431,9 @@ cmd_diff() {
     ".pre-commit-config.yaml:templates/pre-commit-config.yaml"
     ".touchstone-review.toml:templates/touchstone-review.toml"
   )
+  if [ ! -f ".touchstone-review.toml" ] && [ -f ".codex-review.toml" ]; then
+    pairs+=(".codex-review.toml:templates/touchstone-review.toml")
+  fi
 
   for pair in "${pairs[@]}"; do
     local project_file="${pair%%:*}"

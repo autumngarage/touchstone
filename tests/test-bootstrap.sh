@@ -1211,14 +1211,30 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REINIT" --no-register
 rm -f "$PROJECT_REINIT/.git/hooks/pre-push"
 rm -f "$PROJECT_REINIT/principles/engineering-principles.md"
 rm -f "$PROJECT_REINIT/CLAUDE.md"
+rm -f "$PROJECT_REINIT/.touchstone-review.toml"
+cat >"$PROJECT_REINIT/.codex-review.toml" <<'EOF_REINIT_LEGACY_REVIEW'
+[review.pr_triggered]
+required = true
+provider = "github-codex"
+request_on_push = true
+trusted_review_authors = ["custom-reviewer"]
+EOF_REINIT_LEGACY_REVIEW
 # Run from a non-TTY so interactive prompts would hang if the gating is wrong.
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REINIT" --no-register </dev/null >"$TEST_DIR/reinit-output.txt" 2>&1
 assert_exists "$PROJECT_REINIT/.git/hooks/pre-push"
 assert_exists "$PROJECT_REINIT/principles/engineering-principles.md"
 assert_exists "$PROJECT_REINIT/CLAUDE.md"
+assert_exists "$PROJECT_REINIT/.codex-review.toml"
+assert_not_exists "$PROJECT_REINIT/.touchstone-review.toml"
+assert_contains "$PROJECT_REINIT/.codex-review.toml" 'trusted_review_authors = \["custom-reviewer"\]'
 assert_contains "$TEST_DIR/reinit-output.txt" 'Reconciling touchstone files'
+assert_contains "$TEST_DIR/reinit-output.txt" 'exists (legacy, skipped): .codex-review.toml'
 assert_contains "$TEST_DIR/reinit-output.txt" 'touchstone reconciled:'
 assert_not_contains "$TEST_DIR/reinit-output.txt" 'Fill in project details'
+
+(cd "$PROJECT_REINIT" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" diff) >"$TEST_DIR/reinit-diff-output.txt" 2>&1
+assert_contains "$TEST_DIR/reinit-diff-output.txt" '^--- .codex-review.toml (project)'
+assert_contains "$TEST_DIR/reinit-diff-output.txt" '^+++ templates/touchstone-review.toml (touchstone template)'
 
 # Reconcile in a repo where setup.sh was deleted must NOT re-run setup (no dev-tool installs
 # during a repair). Bootstrap, delete setup.sh, rerun init — verify backfill without invocation.
