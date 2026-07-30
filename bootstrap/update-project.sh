@@ -139,7 +139,13 @@ retired_review_shim_manifest_entries() {
 
 RETIRED_REVIEW_SHIM_ENTRIES="$(retired_review_shim_manifest_entries)"
 RETIRED_REVIEW_SHIM_BLOCKERS=""
+RETIRED_REVIEW_SHIM_SYMLINKED_CONFIG=false
 if [ -n "$RETIRED_REVIEW_SHIM_ENTRIES" ]; then
+  if [ -L "$PROJECT_DIR/.pre-commit-config.yaml" ]; then
+    RETIRED_REVIEW_SHIM_BLOCKERS="${RETIRED_REVIEW_SHIM_BLOCKERS}.pre-commit-config.yaml (symlink: migrate manifest entries explicitly)
+"
+    RETIRED_REVIEW_SHIM_SYMLINKED_CONFIG=true
+  fi
   if [ -n "$(git -C "$PROJECT_DIR" status --porcelain -- .pre-commit-config.yaml 2>/dev/null || true)" ]; then
     RETIRED_REVIEW_SHIM_BLOCKERS="${RETIRED_REVIEW_SHIM_BLOCKERS}.pre-commit-config.yaml (commit the hook migration first)
 "
@@ -168,6 +174,9 @@ if [ -n "$RETIRED_REVIEW_SHIM_BLOCKERS" ]; then
   fi
   printf '%s' "$RETIRED_REVIEW_SHIM_BLOCKERS" | sed '/^$/d; s/^/         - /' >&2
   echo "       Remove their hooks from project configuration, delete these files, and commit that change." >&2
+  if [ "$RETIRED_REVIEW_SHIM_SYMLINKED_CONFIG" = true ]; then
+    echo "       For a symlinked hook config, remove the retired entries from .touchstone-manifest in that commit." >&2
+  fi
   echo "       Then rerun: touchstone update" >&2
   if [ "$DRY_RUN" = true ]; then
     exit 0

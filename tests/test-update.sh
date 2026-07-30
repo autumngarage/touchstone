@@ -232,6 +232,27 @@ if [ ! -L "$UNSAFE_RETIREMENT_PROJECT/scripts/codex-review.sh" ]; then
   exit 1
 fi
 
+echo "--- Step 2d: Require explicit migration for symlinked hook configs ---"
+SYMLINK_CONFIG_PROJECT="$TEST_DIR/symlink-config-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SYMLINK_CONFIG_PROJECT" --no-register >/dev/null
+configure_git "$SYMLINK_CONFIG_PROJECT"
+printf 'scripts/conductor-review.sh\n' >>"$SYMLINK_CONFIG_PROJECT/.touchstone-manifest"
+mv "$SYMLINK_CONFIG_PROJECT/.pre-commit-config.yaml" "$SYMLINK_CONFIG_PROJECT/hooks.yml"
+ln -s hooks.yml "$SYMLINK_CONFIG_PROJECT/.pre-commit-config.yaml"
+commit_all "$SYMLINK_CONFIG_PROJECT" "simulate symlinked hook configuration"
+
+if (cd "$SYMLINK_CONFIG_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-retirement-symlink-config.txt" 2>&1; then
+  echo "FAIL: update should require explicit manifest migration for symlinked hook config" >&2
+  exit 1
+fi
+assert_contains "$TEST_DIR/update-retirement-symlink-config.txt" 'symlink: migrate manifest entries explicitly'
+assert_contains "$TEST_DIR/update-retirement-symlink-config.txt" 'remove the retired entries from .touchstone-manifest'
+if [ ! -L "$SYMLINK_CONFIG_PROJECT/.pre-commit-config.yaml" ]; then
+  echo "FAIL: update replaced symlinked hook config" >&2
+  exit 1
+fi
+
 # --------------------------------------------------------------------------
 # Test 2: committed local touchstone-owned changes update on a review branch.
 # --------------------------------------------------------------------------
