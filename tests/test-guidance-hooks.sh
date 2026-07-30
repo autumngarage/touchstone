@@ -153,6 +153,18 @@ ENV_WT_JSON="$(jq -nc \
   '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
 assert "preserves '-C <worktree>' after an env prefix" "0" \
   "$(run_hook "$BRANCH_GUARD" "$ENV_WT_JSON")"
+GIT_DIR_WT_JSON="$(jq -nc \
+  --arg cmd "GIT_DIR=$TMPDIR/.git git -C $WORKTREE commit -m 'wip'" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "blocks assignment-overridden Git context despite feature '-C'" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$GIT_DIR_WT_JSON")"
+ENV_GIT_DIR_WT_JSON="$(jq -nc \
+  --arg cmd "env GIT_DIR=$TMPDIR/.git git -C $WORKTREE commit -m 'wip'" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "blocks env-overridden Git context despite feature '-C'" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$ENV_GIT_DIR_WT_JSON")"
 
 # The command runner's explicit workdir is the execution context. It must
 # override the driver session cwd in both directions so the guard neither
@@ -326,6 +338,12 @@ assert "allows multiple confirmed non-push no-verify commands" "0" \
 PROTECTED_PUSH_PROSE="mention git push --no""-verify"
 assert "treats protected push text in a commit message as data" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git commit -m '$PROTECTED_PUSH_PROSE'")")"
+SUBSTITUTION_COMMIT="git commit -m \"\$(git push --no""-verify)\""
+assert "blocks protected push substitution in a commit message" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$SUBSTITUTION_COMMIT")")"
+BACKTICK_COMMIT="git commit -m \"\`git push --no""-verify\`\""
+assert "blocks protected push backticks in a commit message" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$BACKTICK_COMMIT")")"
 
 # 8. with env var, allowed (and logged)
 EXIT_ALLOWED=0

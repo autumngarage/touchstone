@@ -901,7 +901,13 @@ plain_git_push_without_bypass() {
 
 plain_git_builtin_non_push() {
   local segment="$1"
-  local word="" seen_git=false command_seen=false expect_global_value=false
+  local word="" seen_git=false command_seen=false expect_global_value=false executable_segment=""
+
+  executable_segment="$(printf '%s' "$segment" | without_single_quoted_literals)"
+  if printf '%s' "$executable_segment" \
+    | grep -qE '(^|[^\\])\$\(|(^|[^\\])`'; then
+    return 1
+  fi
 
   while IFS= read -r word; do
     if [ "$seen_git" = "false" ]; then

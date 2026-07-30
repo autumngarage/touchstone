@@ -81,11 +81,16 @@ target_cwd_from_C=""
 # they'd silently bypass the guard on main.
 target_cwd_from_cd=""
 commit_segment=""
+commit_context_ambiguous=false
 while IFS= read -r segment; do
   trimmed="$(printf '%s' "$segment" | sed -E 's/^[[:space:]]+//')"
   if printf '%s' "$trimmed" \
     | grep -qE '^([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)*(env([[:space:]]+-[^[:space:]]+)*([[:space:]]+[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+)*[[:space:]]+)?git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
     commit_segment="$trimmed"
+    if printf '%s' "$trimmed" \
+      | grep -qE '(^|[[:space:]])GIT_(DIR|WORK_TREE|NAMESPACE|OBJECT_DIRECTORY|COMMON_DIR)='; then
+      commit_context_ambiguous=true
+    fi
     break
   fi
   cd_target="$(printf '%s' "$trimmed" | grep -oE '^cd[[:space:]]+[^[:space:]]+' | sed -E 's/^cd[[:space:]]+//' || true)"
@@ -93,13 +98,16 @@ while IFS= read -r segment; do
     target_cwd_from_cd="$cd_target"
   fi
 done < <(printf '%s\n' "$command" | tr '&;|' '\n')
-if [ -n "$commit_segment" ]; then
+if [ -n "$commit_segment" ] && [ "$commit_context_ambiguous" = false ]; then
   target_cwd_from_C="$(printf '%s' "$commit_segment" | grep -oE '\-C[[:space:]]+[^[:space:]]+' | sed -E 's/^-C[[:space:]]+//' | tail -1 || true)"
 fi
 
 # `-C` is the more explicit form; prefer it. Fall back to the last `cd`
 # target seen before the commit.
-target_cwd="${target_cwd_from_C:-$target_cwd_from_cd}"
+target_cwd=""
+if [ "$commit_context_ambiguous" = false ]; then
+  target_cwd="${target_cwd_from_C:-$target_cwd_from_cd}"
+fi
 
 if [ -n "$target_cwd" ]; then
   if [ -n "$cwd" ] && [ -d "$cwd/$target_cwd" ]; then
