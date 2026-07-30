@@ -14,6 +14,7 @@ fi
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-preflight.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
+SYSTEM_PATH="$PATH"
 
 echo "==> Test: SHA-256 adapter falls back to sha256sum"
 SHA256_FALLBACK_BIN="$TEST_DIR/sha256-fallback-bin"
@@ -64,7 +65,7 @@ EOF
 done
 
 echo "==> Test: touchstone preflight exits clean on this tree"
-if ! PATH="$CLEAN_FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+if ! PATH="$CLEAN_FAKE_BIN:$SYSTEM_PATH" \
   TOUCHSTONE_NO_AUTO_UPDATE=1 \
   TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND=: \
   bash "$TOUCHSTONE_ROOT/bin/touchstone" preflight "$TOUCHSTONE_ROOT" >"$TEST_DIR/clean.txt" 2>&1; then
@@ -93,7 +94,7 @@ mkdir -p "$DOGFOOD_REPO"
   git add README.md
   git commit -q -m "dogfood fixture"
 )
-PATH="$CLEAN_FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+PATH="$CLEAN_FAKE_BIN:$SYSTEM_PATH" \
   TOUCHSTONE_NO_AUTO_UPDATE=1 \
   TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND=: \
   TOUCHSTONE_PREFLIGHT_DOGFOOD_COMMAND='printf "dogfood\n" >>"$DOGFOOD_LOG"' \
@@ -135,7 +136,7 @@ exit 0
 EOF
 chmod +x "$FAKE_BIN/shellcheck" "$FAKE_BIN/shfmt"
 
-if PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+if PATH="$FAKE_BIN:$SYSTEM_PATH" \
   TOUCHSTONE_NO_AUTO_UPDATE=1 \
   TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND=: \
   bash "$TOUCHSTONE_ROOT/bin/touchstone" preflight "$FIXTURE_REPO" >"$TEST_DIR/broken.txt" 2>&1; then
