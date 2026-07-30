@@ -224,8 +224,24 @@ assert "chained cd: last cd before commit wins (allows feature-branch commit)" "
   "$(run_hook "$BRANCH_GUARD" "$CHAIN_JSON")"
 
 BRANCH_FIRST_COMMIT_JSON="$(mkjson "git checkout -b fix/branch-first-commit && git commit -m 'wip'")"
-assert "allows branch-first compound before git commit on main" "0" \
+assert "blocks branch-first && compound before git commit on main" "2" \
   "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_COMMIT_JSON")"
+
+BRANCH_FIRST_OR_COMMIT_JSON="$(mkjson "git checkout -b fix/branch-first-or-commit || git commit -m 'wip'")"
+assert "blocks branch-first || compound before git commit on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_OR_COMMIT_JSON")"
+
+BRANCH_FIRST_SEMICOLON_COMMIT_JSON="$(mkjson "git checkout -b fix/branch-first-semicolon-commit ; git commit -m 'wip'")"
+assert "blocks branch-first semicolon compound before git commit on main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_SEMICOLON_COMMIT_JSON")"
+
+BRANCH_ONLY_JSON="$(mkjson "git checkout -b fix/branch-first-split")"
+assert "allows branch creation as a separate command on main" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$BRANCH_ONLY_JSON")"
+git -C "$TMPDIR" checkout --quiet -b fix/branch-first-split
+assert "allows a later separate commit command on the feature branch" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "git commit -m 'wip'")")"
+git -C "$TMPDIR" checkout --quiet main
 
 BRANCH_FIRST_SWITCH_BACK_JSON="$(mkjson "git checkout -b fix/branch-first-switch-back && git switch main && git commit --no-verify -m 'wip'")"
 assert "blocks branch-first compound when later switch returns to main" "2" \
