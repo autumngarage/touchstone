@@ -679,6 +679,18 @@ while [ "$#" -gt 0 ]; do
       INPUT_TYPE_REQUESTED=true
       shift 2
       ;;
+    --unsafe-paths | --reviewer | --local-review-command | --review-routing | --small-review-lines)
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: $1 requires a value" >&2
+        exit 1
+      }
+      echo "WARNING: $1 is retired and ignored; GitHub Codex PR review is mandatory." >&2
+      shift 2
+      ;;
+    --no-ai-review | --no-review | --review-assist | --no-review-assist | --review-autofix | --no-review-autofix)
+      echo "WARNING: $1 is retired and ignored; GitHub Codex PR review is mandatory." >&2
+      shift
+      ;;
     --git-workflow)
       [ "$#" -ge 2 ] || {
         echo "ERROR: --git-workflow requires a value (git or gitbutler)" >&2

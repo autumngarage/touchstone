@@ -357,6 +357,20 @@ if [ -d "$TEST_DIR/--help" ]; then
   ERRORS=$((ERRORS + 1))
 fi
 
+LEGACY_FLAGS_PROJECT="$TEST_DIR/legacy-review-flags"
+if bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
+  "$LEGACY_FLAGS_PROJECT" --yes --no-register --no-initial-commit --no-github \
+  --reviewer conductor --review-routing all-local --no-ai-review \
+  >"$TEST_DIR/legacy-review-flags.out" 2>&1; then
+  assert_exists "$LEGACY_FLAGS_PROJECT/.touchstone-version"
+  assert_contains "$TEST_DIR/legacy-review-flags.out" '--reviewer is retired and ignored'
+  assert_contains "$TEST_DIR/legacy-review-flags.out" '--review-routing is retired and ignored'
+  assert_contains "$TEST_DIR/legacy-review-flags.out" '--no-ai-review is retired and ignored'
+else
+  echo "FAIL: deprecated review flags should not block touchstone new" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # `cmd_new` is a passthrough to new-project.sh, which doesn't accept the
 # init-only --claude-principles flags. Guard against drift between
 # cmd_new's usage string and the flags new-project.sh actually parses —
