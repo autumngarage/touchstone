@@ -114,6 +114,8 @@ read_config_value() {
 
 AUTO_DRAFT_SUBJECT_PREFIX='docs(journal): auto-draft pr-merged entry'
 AUTO_DRAFT_BRANCH_PREFIX='docs/journal-pr'
+JOURNAL_MERGE_POLL_ATTEMPTS=60
+JOURNAL_MERGE_POLL_INTERVAL_SECONDS=5
 
 sanitize_branch_component() {
   printf '%s' "$1" \
@@ -155,6 +157,86 @@ resolve_default_branch() {
     resolved="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)"
   fi
   printf '%s' "${resolved:-main}"
+}
+
+repo_allows_auto_merge() {
+  local repo_slug
+  repo_slug="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)"
+  if [ -z "$repo_slug" ]; then
+    return 1
+  fi
+  gh api "repos/$repo_slug" --jq '.allow_auto_merge' 2>/dev/null
+}
+
+merge_journal_pr_synchronously() {
+  local pr_number="$1" pr_url="$2" expected_head="$3"
+  local attempt pr_state merge_state mergeable failed_checks observed_head view_output view_status
+  local merge_requested=false merge_command_failed=false
+
+  for ((attempt = 1; attempt <= JOURNAL_MERGE_POLL_ATTEMPTS; attempt++)); do
+    view_status=0
+    view_output="$(gh pr view "$pr_number" \
+      --json state,headRefOid,mergeStateStatus,mergeable,statusCheckRollup \
+      --jq '[.state, .mergeStateStatus, .mergeable, ([.statusCheckRollup[]? | select((.status == "COMPLETED" and (.conclusion != "SUCCESS" and .conclusion != "NEUTRAL" and .conclusion != "SKIPPED")) or .state == "ERROR" or .state == "FAILURE")] | length), .headRefOid] | @tsv' \
+      2>&1)" || view_status=$?
+    if [ "$view_status" -ne 0 ]; then
+      if [ "$attempt" -eq 1 ]; then
+        log "cortex-pr-merged-hook: could not inspect journal PR #${pr_number} (gh exited ${view_status}): ${view_output}"
+      fi
+      if [ "$attempt" -lt "$JOURNAL_MERGE_POLL_ATTEMPTS" ]; then
+        sleep "$JOURNAL_MERGE_POLL_INTERVAL_SECONDS"
+      fi
+      continue
+    fi
+    IFS=$'\t' read -r pr_state merge_state mergeable failed_checks observed_head <<<"$view_output"
+
+    if [ "$observed_head" != "$expected_head" ]; then
+      log "cortex-pr-merged-hook: journal PR #${pr_number} head changed unexpectedly."
+      log "  Expected: ${expected_head}"
+      log "  Observed: ${observed_head:-<missing>}"
+      return 1
+    fi
+    if [ "$pr_state" = "MERGED" ]; then
+      return 0
+    fi
+    if [ "$pr_state" = "CLOSED" ]; then
+      log "cortex-pr-merged-hook: journal PR #${pr_number} closed before it could merge."
+      log "  Recovery: inspect ${pr_url} and restore the journal change from branch '${journal_branch}'."
+      return 1
+    fi
+    if [ "$mergeable" = "CONFLICTING" ] || [ "$merge_state" = "DIRTY" ]; then
+      log "cortex-pr-merged-hook: journal PR #${pr_number} has merge conflicts."
+      log "  Recovery: update branch '${journal_branch}' and merge ${pr_url} manually."
+      return 1
+    fi
+    if [ "${failed_checks:-0}" -gt 0 ] 2>/dev/null; then
+      log "cortex-pr-merged-hook: journal PR #${pr_number} has ${failed_checks} failed check(s)."
+      log "  Recovery: inspect ${pr_url}, fix the failed checks, and merge the journal PR."
+      return 1
+    fi
+    if [ "$merge_state" = "CLEAN" ] && [ "$mergeable" = "MERGEABLE" ] \
+      && [ "$merge_requested" = false ]; then
+      merge_requested=true
+      if gh pr merge "$pr_number" --squash --delete-branch \
+        --match-head-commit "$expected_head" >/dev/null 2>&1; then
+        :
+      else
+        merge_command_failed=true
+      fi
+    fi
+
+    if [ "$attempt" -lt "$JOURNAL_MERGE_POLL_ATTEMPTS" ]; then
+      sleep "$JOURNAL_MERGE_POLL_INTERVAL_SECONDS"
+    fi
+  done
+
+  if [ "$merge_command_failed" = true ]; then
+    log "cortex-pr-merged-hook: exact-head merge command failed and journal PR #${pr_number} did not reach MERGED state."
+  else
+    log "cortex-pr-merged-hook: timed out waiting for journal PR #${pr_number} to reach MERGED state."
+  fi
+  log "  Recovery: inspect ${pr_url} and merge it after required checks pass."
+  return 1
 }
 
 # 1. Detection — silent skip if any precondition fails.
@@ -470,14 +552,28 @@ if [ -z "$pr_number" ]; then
   exit 0
 fi
 
+journal_head="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
+allow_auto_merge="$(cd "$PROJECT_DIR" && repo_allows_auto_merge || true)"
 merge_status=0
-(cd "$PROJECT_DIR" && gh pr merge "$pr_number" --squash --delete-branch --auto >/dev/null 2>&1) \
-  || merge_status=$?
+if [ "$allow_auto_merge" = "true" ]; then
+  (cd "$PROJECT_DIR" && gh pr merge "$pr_number" --squash --delete-branch --auto >/dev/null 2>&1) \
+    || merge_status=$?
+  if [ "$merge_status" -ne 0 ]; then
+    log "cortex-pr-merged-hook: 'gh pr merge --auto' on #${pr_number} returned ${merge_status}; falling back to a bounded synchronous merge."
+    merge_status=0
+    (cd "$PROJECT_DIR" && merge_journal_pr_synchronously "$pr_number" "$pr_url" "$journal_head") \
+      || merge_status=$?
+  fi
+else
+  if [ "$allow_auto_merge" != "false" ]; then
+    log "cortex-pr-merged-hook: could not determine whether repository auto-merge is enabled; using the bounded synchronous merge path."
+  fi
+  (cd "$PROJECT_DIR" && merge_journal_pr_synchronously "$pr_number" "$pr_url" "$journal_head") \
+    || merge_status=$?
+fi
 if [ "$merge_status" -ne 0 ]; then
   git -C "$PROJECT_DIR" checkout "$default_branch" >/dev/null 2>&1 || true
-  log "cortex-pr-merged-hook: 'gh pr merge --auto' on #${pr_number} returned ${merge_status}."
-  log "  PR opened at ${pr_url} but auto-merge could not be queued. Merge it manually."
-  exit 0
+  exit 1
 fi
 
 if ! git -C "$PROJECT_DIR" checkout "$default_branch" >/dev/null; then

@@ -237,17 +237,51 @@ cat >"$FAKEBIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_GH_LOG"
+if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then
+  printf '%s\n' 'autumngarage/example'
+  exit 0
+fi
+if [ "${1:-}" = "api" ] && [ "${2:-}" = "repos/autumngarage/example" ]; then
+  printf '%s\n' "${FAKE_GH_ALLOW_AUTO_MERGE:-true}"
+  exit 0
+fi
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "create" ]; then
   printf 'https://example.test/cortex-journal-pr/777\n'
   exit 0
 fi
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+  if [ -f "$FAKE_GH_LOG.merged" ]; then
+    printf 'MERGED\tCLEAN\tMERGEABLE\t0\t%s\n' "${FAKE_GH_MERGED_HEAD:-$(git rev-parse HEAD)}"
+  else
+    printf '%b\t%s\n' "${FAKE_GH_PR_VIEW_OUTPUT:-OPEN\tCLEAN\tMERGEABLE\t0}" \
+      "${FAKE_GH_PR_HEAD:-$(git rev-parse HEAD)}"
+  fi
+  exit 0
+fi
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ]; then
+  case " $* " in
+    *" --auto "*)
+      exit "${FAKE_GH_AUTO_MERGE_STATUS:-0}"
+      ;;
+  esac
+  sync_status="${FAKE_GH_SYNC_MERGE_STATUS:-0}"
+  if [ "$sync_status" = "0" ] || [ "${FAKE_GH_SYNC_REMOTE_MERGED:-false}" = "true" ]; then
+    touch "$FAKE_GH_LOG.merged"
+  fi
+  exit "$sync_status"
+fi
+if [ "${1:-}" = "label" ] && [ "${2:-}" = "list" ]; then
   exit 0
 fi
 printf 'unexpected fake gh invocation: %s\n' "$*" >&2
 exit 2
 EOF
 chmod +x "$FAKEBIN/gh"
+cat >"$FAKEBIN/sleep" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$FAKEBIN/sleep"
 
 # Scenario H: activated hook drafts a journal entry, refreshes state.md,
 # and includes both files in the same local hook commit.
@@ -632,6 +666,144 @@ if ! grep -q "pr merge 777 --squash --delete-branch --auto" "$Q_GH_LOG"; then
   exit 1
 fi
 
+mk_cortex_publish_fixture() {
+  local fixture="$1"
+  local dir remote
+  dir="$(mk_fixture "$fixture")"
+  remote="$TMPROOT/${fixture}-remote.git"
+  git init -q --bare "$remote"
+  git -C "$dir" remote add origin "$remote"
+  git -C "$dir" push -q -u origin main
+  mkdir -p "$dir/.cortex"
+  printf '0.5.0\n' >"$dir/.cortex/SPEC_VERSION"
+  printf 'tracked state\n' >"$dir/.cortex/state.md"
+  (
+    cd "$dir"
+    git add .cortex/SPEC_VERSION .cortex/state.md
+    git commit -q -m "add cortex state"
+    git push -q origin main
+  )
+  printf '%s' "$dir"
+}
+
+# Scenario Q2: repositories with auto-merge disabled wait for the PR to
+# become clean, then synchronously merge the exact journal head.
+Q2="$(mk_cortex_publish_fixture Q2)"
+Q2_BRANCH="docs/cortex-pr-merged-sync-test"
+Q2_GH_LOG="$TMPROOT/Q2-gh.log"
+(
+  cd "$Q2"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_GH_LOG="$Q2_GH_LOG" \
+    FAKE_GH_ALLOW_AUTO_MERGE=false \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_BRANCH="$Q2_BRANCH" \
+    TOUCHSTONE_MERGED_PR=779 \
+    bash "$HOOK"
+)
+Q2_JOURNAL_HEAD="$(git -C "$Q2" rev-parse "$Q2_BRANCH")"
+if grep -q -- "--auto" "$Q2_GH_LOG"; then
+  echo "FAIL [Q2]: auto-merge-disabled repository still used --auto" >&2
+  cat "$Q2_GH_LOG" >&2
+  exit 1
+fi
+if ! grep -q "pr view 777 --json state,headRefOid,mergeStateStatus,mergeable,statusCheckRollup" "$Q2_GH_LOG" \
+  || ! grep -q "pr merge 777 --squash --delete-branch --match-head-commit $Q2_JOURNAL_HEAD" "$Q2_GH_LOG"; then
+  echo "FAIL [Q2]: synchronous fallback did not poll and merge the exact journal head" >&2
+  cat "$Q2_GH_LOG" >&2
+  exit 1
+fi
+
+# Scenario Q3b: a nonzero merge command is accepted when GitHub confirms
+# that the exact expected head merged despite local cleanup failure.
+Q3B="$(mk_cortex_publish_fixture Q3B)"
+Q3B_BRANCH="docs/cortex-pr-merged-local-cleanup-test"
+Q3B_GH_LOG="$TMPROOT/Q3B-gh.log"
+(
+  cd "$Q3B"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_GH_LOG="$Q3B_GH_LOG" \
+    FAKE_GH_ALLOW_AUTO_MERGE=false \
+    FAKE_GH_SYNC_MERGE_STATUS=1 \
+    FAKE_GH_SYNC_REMOTE_MERGED=true \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_BRANCH="$Q3B_BRANCH" \
+    TOUCHSTONE_MERGED_PR=780 \
+    bash "$HOOK"
+)
+if [ "$(grep -c '^pr view 777 ' "$Q3B_GH_LOG")" -lt 2 ]; then
+  echo "FAIL [Q3B]: nonzero merge command did not recheck remote state" >&2
+  cat "$Q3B_GH_LOG" >&2
+  exit 1
+fi
+
+# Scenario Q3: a failed auto-merge queue request falls back to the same
+# bounded exact-head synchronous path.
+Q3="$(mk_cortex_publish_fixture Q3)"
+Q3_BRANCH="docs/cortex-pr-merged-auto-fallback-test"
+Q3_GH_LOG="$TMPROOT/Q3-gh.log"
+Q3_STDERR="$TMPROOT/Q3-stderr"
+(
+  cd "$Q3"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_GH_LOG="$Q3_GH_LOG" \
+    FAKE_GH_AUTO_MERGE_STATUS=1 \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_BRANCH="$Q3_BRANCH" \
+    TOUCHSTONE_MERGED_PR=780 \
+    bash "$HOOK"
+) 2>"$Q3_STDERR"
+if ! grep -q -- "--auto" "$Q3_GH_LOG" \
+  || ! grep -q -- "--match-head-commit" "$Q3_GH_LOG" \
+  || ! grep -q "falling back to a bounded synchronous merge" "$Q3_STDERR"; then
+  echo "FAIL [Q3]: failed auto-merge request did not use the synchronous fallback" >&2
+  cat "$Q3_GH_LOG" >&2
+  cat "$Q3_STDERR" >&2
+  exit 1
+fi
+
+assert_sync_landing_failure() {
+  local fixture="$1" view_output="$2" expected_message="$3" expected_views="$4"
+  local dir branch gh_log stderr_file hook_status=0 actual_views fake_head=""
+  dir="$(mk_cortex_publish_fixture "$fixture")"
+  branch="docs/cortex-pr-merged-${fixture}-test"
+  gh_log="$TMPROOT/${fixture}-gh.log"
+  stderr_file="$TMPROOT/${fixture}-stderr"
+  if [ "$fixture" = "Q7" ]; then
+    fake_head="unexpected-head"
+  fi
+  (
+    cd "$dir"
+    PATH="$FAKEBIN:$PATH" \
+      FAKE_GH_LOG="$gh_log" \
+      FAKE_GH_ALLOW_AUTO_MERGE=false \
+      FAKE_GH_PR_VIEW_OUTPUT="$view_output" \
+      FAKE_GH_PR_HEAD="$fake_head" \
+      TOUCHSTONE_DEFAULT_BRANCH=main \
+      TOUCHSTONE_CORTEX_HOOK_BRANCH="$branch" \
+      TOUCHSTONE_MERGED_PR=781 \
+      bash "$HOOK"
+  ) 2>"$stderr_file" || hook_status=$?
+  actual_views="$(grep -c '^pr view 777 ' "$gh_log" || true)"
+  if [ "$hook_status" -eq 0 ] || ! grep -q "$expected_message" "$stderr_file" \
+    || [ "$actual_views" -ne "$expected_views" ]; then
+    echo "FAIL [$fixture]: synchronous journal landing failure was not bounded and actionable" >&2
+    cat "$stderr_file" >&2
+    grep '^pr view 777 ' "$gh_log" >&2 || true
+    exit 1
+  fi
+}
+
+# Scenarios Q4-Q6: conflicts and failed checks stop on the first poll;
+# a PR that stays blocked stops at the bounded timeout.
+assert_sync_landing_failure Q4 $'OPEN\tDIRTY\tCONFLICTING\t0' "has merge conflicts" 1
+assert_sync_landing_failure Q5 $'OPEN\tBLOCKED\tMERGEABLE\t1' "has 1 failed check(s)" 1
+assert_sync_landing_failure Q6 $'OPEN\tBLOCKED\tMERGEABLE\t0' "timed out waiting" 60
+
+# Scenario Q7: an externally merged journal PR must still match the
+# generated exact head.
+assert_sync_landing_failure Q7 $'MERGED\tCLEAN\tMERGEABLE\t0' "head changed unexpectedly" 1
+
 # Scenario R: explicit legacy direct-push mode bypasses pre-push hooks for
 # the deterministic auto-journal commit. This preserves the compatibility
 # path without letting local default-branch guards block post-merge cleanup.
@@ -675,4 +847,4 @@ if ! git -C "$R" show --name-only --format= HEAD | grep -qx '.cortex/journal/pr-
   exit 1
 fi
 
-echo "==> PASS: cortex-pr-merged-hook activation gates + graceful-degradation paths verified (A-R)"
+echo "==> PASS: cortex-pr-merged-hook activation gates + journal PR landing paths verified (A-R)"
