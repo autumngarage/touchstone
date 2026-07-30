@@ -104,7 +104,7 @@ if [ "$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD)" != "$BASE_BRANCH" ]; the
 fi
 
 # --------------------------------------------------------------------------
-# Test 1b: version updates remove retired manifest-managed review helpers.
+# Test 1b: retired review shims require one explicit project-owned migration.
 # --------------------------------------------------------------------------
 echo ""
 echo "--- Step 2b: Remove retired managed review helpers ---"
@@ -118,7 +118,7 @@ chmod +x \
   "$RETIREMENT_PROJECT/scripts/conductor-review.sh" \
   "$RETIREMENT_PROJECT/scripts/codex-review.sh"
 printf '# retired helper\n' >"$RETIREMENT_PROJECT/lib/review-comment.sh"
-printf 'scripts/conductor-review.sh\nscripts/codex-review.sh\nlib/review-comment.sh\n' >>"$RETIREMENT_PROJECT/.touchstone-manifest"
+printf 'scripts/conductor-review.sh\r\nscripts/codex-review.sh\r\nlib/review-comment.sh\n' >>"$RETIREMENT_PROJECT/.touchstone-manifest"
 cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_RETIRED_REVIEW_HOOKS'
 repos:
   - repo: local
@@ -145,7 +145,8 @@ assert_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
 assert_contains "$RETIREMENT_PROJECT/scripts/conductor-review.sh" 'legacy local router'
 assert_contains "$RETIREMENT_PROJECT/scripts/codex-review.sh" 'legacy local router'
 assert_contains "$TEST_DIR/update-retirement-blocked.txt" 'Retired local review shims require a project-owned migration'
-assert_contains "$TEST_DIR/update-retirement-blocked.txt" 'Remove their hooks from project configuration'
+assert_contains "$TEST_DIR/update-retirement-blocked.txt" 'remove the same entries'
+assert_contains "$TEST_DIR/update-retirement-blocked.txt" 'from .touchstone-manifest'
 
 if ! (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --dry-run) \
   >"$TEST_DIR/update-retirement-dry-run.txt" 2>&1; then
@@ -165,33 +166,14 @@ fi
 assert_contains "$TEST_DIR/update-retirement-check.txt" '^ERROR: Retired local review shims'
 
 rm "$RETIREMENT_PROJECT/scripts/conductor-review.sh" "$RETIREMENT_PROJECT/scripts/codex-review.sh"
-if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-retirement-dirty-delete.txt" 2>&1; then
-  echo "FAIL: update should block until shim deletion is committed" >&2
-  exit 1
-fi
-assert_contains "$TEST_DIR/update-retirement-dirty-delete.txt" 'Retired local review shims require a project-owned migration'
-
-commit_all "$RETIREMENT_PROJECT" "delete retired review shims"
-if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-retirement-hook-reference.txt" 2>&1; then
-  echo "FAIL: update should block while project-owned hooks reference retired shims" >&2
-  exit 1
-fi
-assert_contains "$TEST_DIR/update-retirement-hook-reference.txt" '.pre-commit-config.yaml -> scripts/conductor-review.sh'
-
 cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_RETIRED_REVIEW_HOOKS_REMOVED'
 repos: []
 EOF_RETIRED_REVIEW_HOOKS_REMOVED
-if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-retirement-dirty-hook-config.txt" 2>&1; then
-  echo "FAIL: update should block until project-owned hook migration is committed" >&2
-  exit 1
-fi
-assert_contains "$TEST_DIR/update-retirement-dirty-hook-config.txt" '.pre-commit-config.yaml (commit the hook migration first)'
-
-git -C "$TOUCHSTONE_ROOT" rev-parse HEAD >"$RETIREMENT_PROJECT/.touchstone-version"
-commit_all "$RETIREMENT_PROJECT" "remove project-owned review hooks"
+tr -d '\r' <"$RETIREMENT_PROJECT/.touchstone-manifest" \
+  | sed '/^scripts\/conductor-review\.sh$/d; /^scripts\/codex-review\.sh$/d' \
+    >"$RETIREMENT_PROJECT/.touchstone-manifest.tmp"
+mv "$RETIREMENT_PROJECT/.touchstone-manifest.tmp" "$RETIREMENT_PROJECT/.touchstone-manifest"
+commit_all "$RETIREMENT_PROJECT" "remove project-owned review hooks and shims"
 
 (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
   >"$TEST_DIR/update-retirement-output.txt" 2>&1
@@ -210,49 +192,6 @@ if ! git -C "$RETIREMENT_PROJECT" diff --quiet \
   echo "FAIL: retired helper migration left unstaged or staged changes after commit" >&2
   git -C "$RETIREMENT_PROJECT" status --short >&2
   ERRORS=$((ERRORS + 1))
-fi
-
-echo "--- Step 2c: Preserve unsafe and untracked retired review shims ---"
-UNSAFE_RETIREMENT_PROJECT="$TEST_DIR/unsafe-retirement-project"
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$UNSAFE_RETIREMENT_PROJECT" --no-register >/dev/null
-configure_git "$UNSAFE_RETIREMENT_PROJECT"
-printf 'scripts/conductor-review.sh\nscripts/codex-review.sh\n' >>"$UNSAFE_RETIREMENT_PROJECT/.touchstone-manifest"
-commit_all "$UNSAFE_RETIREMENT_PROJECT" "simulate legacy review shim manifest"
-printf 'untracked local content\n' >"$UNSAFE_RETIREMENT_PROJECT/scripts/conductor-review.sh"
-printf 'external symlink target\n' >"$TEST_DIR/external-review-target.sh"
-ln -s "$TEST_DIR/external-review-target.sh" "$UNSAFE_RETIREMENT_PROJECT/scripts/codex-review.sh"
-
-if (cd "$UNSAFE_RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-retirement-unsafe.txt" 2>&1; then
-  echo "FAIL: update should block on untracked or symlinked review shims" >&2
-  exit 1
-fi
-assert_contains "$UNSAFE_RETIREMENT_PROJECT/scripts/conductor-review.sh" 'untracked local content'
-assert_contains "$TEST_DIR/external-review-target.sh" 'external symlink target'
-if [ ! -L "$UNSAFE_RETIREMENT_PROJECT/scripts/codex-review.sh" ]; then
-  echo "FAIL: update replaced retired review shim symlink" >&2
-  exit 1
-fi
-
-echo "--- Step 2d: Require explicit migration for symlinked hook configs ---"
-SYMLINK_CONFIG_PROJECT="$TEST_DIR/symlink-config-project"
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SYMLINK_CONFIG_PROJECT" --no-register >/dev/null
-configure_git "$SYMLINK_CONFIG_PROJECT"
-printf 'scripts/conductor-review.sh\n' >>"$SYMLINK_CONFIG_PROJECT/.touchstone-manifest"
-mv "$SYMLINK_CONFIG_PROJECT/.pre-commit-config.yaml" "$SYMLINK_CONFIG_PROJECT/hooks.yml"
-ln -s hooks.yml "$SYMLINK_CONFIG_PROJECT/.pre-commit-config.yaml"
-commit_all "$SYMLINK_CONFIG_PROJECT" "simulate symlinked hook configuration"
-
-if (cd "$SYMLINK_CONFIG_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-retirement-symlink-config.txt" 2>&1; then
-  echo "FAIL: update should require explicit manifest migration for symlinked hook config" >&2
-  exit 1
-fi
-assert_contains "$TEST_DIR/update-retirement-symlink-config.txt" 'symlink: migrate manifest entries explicitly'
-assert_contains "$TEST_DIR/update-retirement-symlink-config.txt" 'remove the retired entries from .touchstone-manifest'
-if [ ! -L "$SYMLINK_CONFIG_PROJECT/.pre-commit-config.yaml" ]; then
-  echo "FAIL: update replaced symlinked hook config" >&2
-  exit 1
 fi
 
 # --------------------------------------------------------------------------

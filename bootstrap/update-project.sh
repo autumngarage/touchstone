@@ -132,59 +132,30 @@ retired_review_shim_manifest_entries() {
 
   [ -f "$manifest" ] || return 0
   for rel_path in scripts/conductor-review.sh scripts/codex-review.sh; do
-    grep -qxF "$rel_path" "$manifest" 2>/dev/null && printf '%s\n' "$rel_path"
+    if tr -d '\r' <"$manifest" | grep -qxF "$rel_path"; then
+      printf '%s\n' "$rel_path"
+    fi
   done
   return 0
 }
 
 RETIRED_REVIEW_SHIM_ENTRIES="$(retired_review_shim_manifest_entries)"
-RETIRED_REVIEW_SHIM_BLOCKERS=""
-RETIRED_REVIEW_SHIM_SYMLINKED_CONFIG=false
 if [ -n "$RETIRED_REVIEW_SHIM_ENTRIES" ]; then
-  if [ -L "$PROJECT_DIR/.pre-commit-config.yaml" ]; then
-    RETIRED_REVIEW_SHIM_BLOCKERS="${RETIRED_REVIEW_SHIM_BLOCKERS}.pre-commit-config.yaml (symlink: migrate manifest entries explicitly)
-"
-    RETIRED_REVIEW_SHIM_SYMLINKED_CONFIG=true
-  fi
-  if [ -n "$(git -C "$PROJECT_DIR" status --porcelain -- .pre-commit-config.yaml 2>/dev/null || true)" ]; then
-    RETIRED_REVIEW_SHIM_BLOCKERS="${RETIRED_REVIEW_SHIM_BLOCKERS}.pre-commit-config.yaml (commit the hook migration first)
-"
-  fi
-  while IFS= read -r rel_path; do
-    [ -n "$rel_path" ] || continue
-    if [ -e "$PROJECT_DIR/$rel_path" ] \
-      || [ -L "$PROJECT_DIR/$rel_path" ] \
-      || [ -n "$(git -C "$PROJECT_DIR" status --porcelain -- "$rel_path" 2>/dev/null || true)" ]; then
-      RETIRED_REVIEW_SHIM_BLOCKERS="${RETIRED_REVIEW_SHIM_BLOCKERS}${rel_path}
-"
-    fi
-    if [ ! -L "$PROJECT_DIR/.pre-commit-config.yaml" ] \
-      && [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ] \
-      && grep -qF "$rel_path" "$PROJECT_DIR/.pre-commit-config.yaml"; then
-      RETIRED_REVIEW_SHIM_BLOCKERS="${RETIRED_REVIEW_SHIM_BLOCKERS}.pre-commit-config.yaml -> ${rel_path}
-"
-    fi
-  done <<<"$RETIRED_REVIEW_SHIM_ENTRIES"
-fi
-
-if [ -n "$RETIRED_REVIEW_SHIM_BLOCKERS" ]; then
   if [ "$DRY_RUN" = true ]; then
     echo "WARNING: Retired local review shims require a project-owned migration before Touchstone can update." >&2
   else
     echo "ERROR: Retired local review shims require a project-owned migration before Touchstone can update." >&2
   fi
-  printf '%s' "$RETIRED_REVIEW_SHIM_BLOCKERS" | sed '/^$/d; s/^/         - /' >&2
-  echo "       Remove their hooks from project configuration, delete these files, and commit that change." >&2
-  if [ "$RETIRED_REVIEW_SHIM_SYMLINKED_CONFIG" = true ]; then
-    echo "       For a symlinked hook config, remove the retired entries from .touchstone-manifest in that commit." >&2
-  fi
+  printf '%s\n' "$RETIRED_REVIEW_SHIM_ENTRIES" | sed 's/^/         - /' >&2
+  echo "       Remove their project-owned hooks, delete these files, and remove the same entries" >&2
+  echo "       from .touchstone-manifest. Commit the migration together." >&2
   echo "       Then rerun: touchstone update" >&2
   if [ "$DRY_RUN" != true ]; then
     exit 1
   fi
 fi
 
-if [ "$OLD_SHA" = "$CURRENT_SHA" ] && [ -z "$RETIRED_REVIEW_SHIM_ENTRIES" ]; then
+if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
   echo "==> Already up to date."
   exit 0
 fi
