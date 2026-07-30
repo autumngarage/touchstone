@@ -1236,17 +1236,29 @@ else
   exit 1
 fi
 
-echo "==> Test: disabling mandatory request-on-push fails closed"
+echo "==> Test: legacy request-on-push false is normalized to mandatory review"
 reset_case_files
 write_pr_triggered_config true 0 0 true false
-if run_merge_pr "$TEST_DIR/output-pr-triggered-request-disabled.txt" 123; then
-  echo "FAIL: merge-pr.sh accepted request_on_push=false" >&2
-  exit 1
-fi
-if grep -q 'request_on_push cannot be false' "$TEST_DIR/output-pr-triggered-request-disabled.txt"; then
-  echo "==> PASS: request-on-push remains mandatory"
+GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-request-disabled.txt" 123
+if grep -q 'request_on_push=false is retired and ignored' "$TEST_DIR/output-pr-triggered-request-disabled.txt" \
+  && [ "$(cat "$TEST_DIR/gh-merge-head")" = "pr-head-oid" ]; then
+  echo "==> PASS: legacy request-on-push false is normalized to mandatory review"
 else
   cat "$TEST_DIR/output-pr-triggered-request-disabled.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: legacy required false is normalized to mandatory review"
+reset_case_files
+write_pr_triggered_config true 0 0 false true
+GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-required-disabled.txt" 123
+if grep -q 'required=false is retired and ignored' "$TEST_DIR/output-pr-triggered-required-disabled.txt" \
+  && [ "$(cat "$TEST_DIR/gh-merge-head")" = "pr-head-oid" ]; then
+  echo "==> PASS: legacy required false is normalized to mandatory review"
+else
+  cat "$TEST_DIR/output-pr-triggered-required-disabled.txt" >&2
   exit 1
 fi
 

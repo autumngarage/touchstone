@@ -289,7 +289,9 @@ load_open_pr_review_request_config() {
     if [ "$section" = "review.pr_triggered" ] && [ "$key" = "request_on_push" ]; then
       case "$value" in
         true) PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=true ;;
-        false) OPEN_PR_REVIEW_CONFIG_ERROR="[review.pr_triggered].request_on_push must remain true" ;;
+        false)
+          echo "WARNING: [review.pr_triggered].request_on_push=false is retired and ignored; every pushed head requests review." >&2
+          ;;
         *) OPEN_PR_REVIEW_CONFIG_ERROR="[review.pr_triggered].request_on_push must be true; got: $value" ;;
       esac
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "provider" ]; then

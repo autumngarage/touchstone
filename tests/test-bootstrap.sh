@@ -1240,6 +1240,26 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+cp "$PROJECT_DOCTOR/.touchstone-review.toml" "$TEST_DIR/doctor-review-policy.toml"
+cat >"$PROJECT_DOCTOR/.touchstone-review.toml" <<'EOF'
+[unrelated]
+required = false
+request_on_push = false
+provider = "other"
+
+[review.pr_triggered]
+required = true # mandatory
+provider = 'github-codex'
+request_on_push = true # every head
+EOF
+if (cd "$PROJECT_DOCTOR" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-toml-policy.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-toml-policy.txt" 'PR-visible exact-head review required'
+else
+  echo "FAIL: doctor should parse review policy with the shared TOML semantics" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+cp "$TEST_DIR/doctor-review-policy.toml" "$PROJECT_DOCTOR/.touchstone-review.toml"
+
 # Autumn Garage siblings block must appear in doctor --project output on every
 # project, regardless of whether cortex/sentinel are installed. Absence is the
 # normal case for most users; missing-block would be an orientation regression.

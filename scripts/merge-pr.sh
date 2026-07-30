@@ -278,7 +278,9 @@ load_merge_review_config() {
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "required" ]; then
       case "$value" in
         true) : ;;
-        false) config_error="[review.pr_triggered].required cannot be false; PR-visible review is mandatory" ;;
+        false)
+          echo "WARNING: [review.pr_triggered].required=false is retired and ignored; PR-visible review remains mandatory." >&2
+          ;;
         *) config_error="[review.pr_triggered].required must be true; got: $value" ;;
       esac
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "provider" ]; then
@@ -286,7 +288,9 @@ load_merge_review_config() {
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "request_on_push" ]; then
       case "$value" in
         true) PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=true ;;
-        false) config_error="[review.pr_triggered].request_on_push cannot be false; every pushed head must request review" ;;
+        false)
+          echo "WARNING: [review.pr_triggered].request_on_push=false is retired and ignored; every pushed head requests review." >&2
+          ;;
         *) config_error="[review.pr_triggered].request_on_push must be true; got: $value" ;;
       esac
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "timeout_sec" ]; then

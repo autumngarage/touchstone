@@ -582,6 +582,30 @@ cmd_status() {
   status_print_project "$(pwd)"
 }
 
+touchstone_doctor_pr_review_policy_valid() {
+  local config_file="$1"
+  local required="" request_on_push="" provider=""
+
+  [ -f "$TOUCHSTONE_ROOT/lib/toml.sh" ] || return 1
+  # shellcheck source=../lib/toml.sh
+  source "$TOUCHSTONE_ROOT/lib/toml.sh"
+
+  touchstone_doctor_review_policy_callback() {
+    local section="$1" key="$2" value="$3"
+    [ "$section" = "review.pr_triggered" ] || return 0
+    case "$key" in
+      required) required="$value" ;;
+      request_on_push) request_on_push="$value" ;;
+      provider) provider="$value" ;;
+    esac
+  }
+
+  toml_parse "$config_file" touchstone_doctor_review_policy_callback
+  case "$required" in true | false) ;; *) return 1 ;; esac
+  case "$request_on_push" in true | false) ;; *) return 1 ;; esac
+  [ "$provider" = "github-codex" ]
+}
+
 cmd_doctor_project() {
   local project_dir issues=0
   project_dir="$(touchstone_find_project_root 2>/dev/null || pwd)"
@@ -712,9 +736,7 @@ cmd_doctor_project() {
   # 6. Required PR-visible review policy.
   if [ -f "$project_dir/.touchstone-review.toml" ]; then
     tk_ok ".touchstone-review.toml present"
-    if grep -qE '^[[:space:]]*required[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$project_dir/.touchstone-review.toml" \
-      && grep -qE '^[[:space:]]*request_on_push[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$project_dir/.touchstone-review.toml" \
-      && grep -qE '^[[:space:]]*provider[[:space:]]*=[[:space:]]*"github-codex"[[:space:]]*$' "$project_dir/.touchstone-review.toml"; then
+    if touchstone_doctor_pr_review_policy_valid "$project_dir/.touchstone-review.toml"; then
       tk_ok "PR-visible exact-head review required"
     else
       tk_fail ".touchstone-review.toml must require and request GitHub Codex review"
