@@ -378,14 +378,14 @@ refresh_trusted_merge_review_config_base() {
 }
 
 preflight_hash_stream() {
-  shasum -a 256 | awk '{ print $1 }'
+  touchstone_sha256_stream
 }
 
 preflight_hash_file() {
   local path="$1"
 
   if [ -f "$path" ]; then
-    shasum -a 256 "$path" | awk '{ print $1 }'
+    touchstone_sha256_file "$path"
   else
     printf 'missing'
   fi
@@ -524,6 +524,7 @@ preflight_cache_inputs() {
   merge_base="$(git -C "$repo_root" merge-base "$base_ref" "$head_sha" 2>/dev/null)" || return 1
   changed_paths_hash="$(preflight_changed_paths_hash "$repo_root" "$base_ref")" || return 1
   checker_hash="$(preflight_hash_file_list \
+    "lib/sha256.sh" "$(dirname "$PREFLIGHT_SCRIPT")/sha256.sh" \
     "lib/preflight.sh" "$PREFLIGHT_SCRIPT" \
     "lib/preflight-scope.sh" "$(dirname "$PREFLIGHT_SCRIPT")/preflight-scope.sh" \
     "scripts/touchstone-run.sh" "$SCRIPT_DIR/touchstone-run.sh")"

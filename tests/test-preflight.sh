@@ -15,6 +15,44 @@ TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-preflight.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
+echo "==> Test: SHA-256 adapter falls back to sha256sum"
+SHA256_FALLBACK_BIN="$TEST_DIR/sha256-fallback-bin"
+mkdir -p "$SHA256_FALLBACK_BIN"
+cat >"$SHA256_FALLBACK_BIN/sha256sum" <<'EOF'
+#!/bin/bash
+printf 'windows-fallback-digest  -\n'
+EOF
+cat >"$SHA256_FALLBACK_BIN/awk" <<'EOF'
+#!/bin/bash
+read -r digest _rest
+printf '%s\n' "$digest"
+EOF
+chmod +x "$SHA256_FALLBACK_BIN/sha256sum" "$SHA256_FALLBACK_BIN/awk"
+fallback_digest="$(
+  printf 'portable input\n' \
+    | PATH="$SHA256_FALLBACK_BIN" TOUCHSTONE_ROOT="$TOUCHSTONE_ROOT" /bin/bash -c \
+      'source "$TOUCHSTONE_ROOT/lib/sha256.sh"; touchstone_sha256_stream'
+)"
+if [ "$fallback_digest" != "windows-fallback-digest" ]; then
+  echo "FAIL: SHA-256 adapter did not use the sha256sum fallback" >&2
+  exit 1
+fi
+
+echo "==> Test: SHA-256 adapter fails closed without an implementation"
+SHA256_EMPTY_BIN="$TEST_DIR/sha256-empty-bin"
+mkdir -p "$SHA256_EMPTY_BIN"
+if PATH="$SHA256_EMPTY_BIN" TOUCHSTONE_ROOT="$TOUCHSTONE_ROOT" /bin/bash -c \
+  'source "$TOUCHSTONE_ROOT/lib/sha256.sh"; touchstone_sha256_stream' \
+  >"$TEST_DIR/sha256-missing.out" 2>&1; then
+  echo "FAIL: SHA-256 adapter passed without shasum or sha256sum" >&2
+  exit 1
+fi
+if ! grep -q "requires 'shasum' or 'sha256sum'" "$TEST_DIR/sha256-missing.out"; then
+  echo "FAIL: SHA-256 adapter did not explain its missing dependency" >&2
+  cat "$TEST_DIR/sha256-missing.out" >&2
+  exit 1
+fi
+
 CLEAN_FAKE_BIN="$TEST_DIR/clean-bin"
 mkdir -p "$CLEAN_FAKE_BIN"
 for tool in shellcheck shfmt markdownlint actionlint; do

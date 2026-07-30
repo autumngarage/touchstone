@@ -1,0 +1,40 @@
+name: Windows Git Bash portability
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-git-bash.yml"
+      - "bootstrap/new-project.sh"
+      - "bootstrap/update-project.sh"
+      - "lib/preflight.sh"
+      - "lib/sha256.sh"
+      - "scripts/merge-pr.sh"
+      - "tests/test-preflight.sh"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/windows-git-bash.yml"
+      - "bootstrap/new-project.sh"
+      - "bootstrap/update-project.sh"
+      - "lib/preflight.sh"
+      - "lib/sha256.sh"
+      - "scripts/merge-pr.sh"
+      - "tests/test-preflight.sh"
+
+permissions:
+  contents: read
+
+jobs:
+  sha256-preflight:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Exercise the Git Bash SHA-256 and preflight path
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v sha256sum
+          bash -n lib/sha256.sh lib/preflight.sh scripts/merge-pr.sh
+          bash tests/test-preflight.sh

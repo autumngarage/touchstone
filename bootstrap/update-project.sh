@@ -30,6 +30,8 @@ source "$TOUCHSTONE_ROOT/lib/touchstone-block.sh"
 source "$TOUCHSTONE_ROOT/lib/install-skills.sh"
 # shellcheck source=../lib/sync-discipline.sh
 source "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
+# shellcheck source=../lib/sha256.sh
+source "$TOUCHSTONE_ROOT/lib/sha256.sh"
 PROJECT_DIR="$(pwd)"
 DRY_RUN=false
 CHECK_ONLY=false
@@ -498,6 +500,7 @@ update_file "$TOUCHSTONE_ROOT/lib/worker-ship-job.sh" "$PROJECT_DIR/lib/worker-s
 update_file "$TOUCHSTONE_ROOT/lib/worker-review-fix.sh" "$PROJECT_DIR/lib/worker-review-fix.sh"
 update_file "$TOUCHSTONE_ROOT/lib/worker-state.sh" "$PROJECT_DIR/lib/worker-state.sh"
 update_file "$TOUCHSTONE_ROOT/lib/script-sync-guard.sh" "$PROJECT_DIR/lib/script-sync-guard.sh"
+update_file "$TOUCHSTONE_ROOT/lib/sha256.sh" "$PROJECT_DIR/lib/sha256.sh"
 update_file "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PROJECT_DIR/lib/preflight.sh"
 update_file "$TOUCHSTONE_ROOT/lib/preflight-scope.sh" "$PROJECT_DIR/lib/preflight-scope.sh"
 
@@ -624,9 +627,9 @@ fi
 # content that CLAUDE.md gets for free via @-imports.
 AGENTS_PRINCIPLES_TOUCHED=false
 if [ "$DRY_RUN" = false ] && [ -f "$PROJECT_DIR/AGENTS.md" ]; then
-  agents_md_before_sha="$(shasum -a 256 "$PROJECT_DIR/AGENTS.md" | awk '{print $1}')"
+  agents_md_before_sha="$(touchstone_sha256_file "$PROJECT_DIR/AGENTS.md")"
   touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT" || true
-  agents_md_after_sha="$(shasum -a 256 "$PROJECT_DIR/AGENTS.md" | awk '{print $1}')"
+  agents_md_after_sha="$(touchstone_sha256_file "$PROJECT_DIR/AGENTS.md")"
   if [ "$agents_md_before_sha" != "$agents_md_after_sha" ]; then
     AGENTS_PRINCIPLES_TOUCHED=true
     echo "    refreshed (project-owned, managed block): AGENTS.md"
@@ -666,6 +669,7 @@ write_touchstone_manifest() {
     printf 'lib/worker-review-fix.sh\n'
     printf 'lib/worker-state.sh\n'
     printf 'lib/script-sync-guard.sh\n'
+    printf 'lib/sha256.sh\n'
     printf 'lib/preflight.sh\n'
     printf 'lib/preflight-scope.sh\n'
     if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
