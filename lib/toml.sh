@@ -83,6 +83,53 @@ toml_strip_comment() {
   printf '%s' "$out"
 }
 
+toml_array_content_before_close() {
+  local line="$1"
+  local out=""
+  local char
+  local in_single=false
+  local in_double=false
+  local len="${#line}"
+  local i=0
+
+  while [ "$i" -lt "$len" ]; do
+    char="${line:$i:1}"
+
+    if [ "$in_double" = true ] && [ "$char" = "\\" ]; then
+      out="$out$char"
+      i=$((i + 1))
+      if [ "$i" -lt "$len" ]; then
+        out="$out${line:$i:1}"
+      fi
+      i=$((i + 1))
+      continue
+    fi
+
+    if [ "$char" = '"' ] && [ "$in_single" = false ]; then
+      if [ "$in_double" = true ]; then
+        in_double=false
+      else
+        in_double=true
+      fi
+    elif [ "$char" = "'" ] && [ "$in_double" = false ]; then
+      if [ "$in_single" = true ]; then
+        in_single=false
+      else
+        in_single=true
+      fi
+    elif [ "$char" = "]" ] && [ "$in_single" = false ] && [ "$in_double" = false ]; then
+      printf '%s' "$out"
+      return 0
+    fi
+
+    out="$out$char"
+    i=$((i + 1))
+  done
+
+  printf '%s' "$out"
+  return 1
+}
+
 # toml_parse <file> <callback_function>
 # The callback is called as: callback "<section>" "<key>" "<value>"
 # For arrays, value is the raw bracketed array string; callers can pass it to
@@ -97,6 +144,7 @@ toml_parse() {
   local in_array=false
   local array_key=""
   local array_buffer=""
+  local array_content=""
 
   while IFS= read -r raw_line || [ -n "$raw_line" ]; do
     local line
@@ -114,8 +162,8 @@ toml_parse() {
 
     # Multiline array continuation
     if [ "$in_array" = true ]; then
-      if [[ "$line" == *"]"* ]]; then
-        array_buffer="${array_buffer} ${line%%]*}"
+      if array_content="$(toml_array_content_before_close "$line")"; then
+        array_buffer="${array_buffer} ${array_content}"
         "$callback" "$current_section" "$array_key" "[$array_buffer]"
         in_array=false
         array_buffer=""
@@ -133,14 +181,15 @@ toml_parse() {
 
       # Array detection
       if [[ "$val" == "["* ]]; then
-        if [[ "$val" == *"]" ]]; then
+        array_content="${val#\[}"
+        if array_content="$(toml_array_content_before_close "$array_content")"; then
           # Single-line array
-          "$callback" "$current_section" "$key" "$val"
+          "$callback" "$current_section" "$key" "[$array_content]"
         else
           # Start of multiline array
           in_array=true
           array_key="$key"
-          array_buffer="${val#\[}"
+          array_buffer="$array_content"
         fi
       else
         "$callback" "$current_section" "$key" "$(toml_unquote "$val")"

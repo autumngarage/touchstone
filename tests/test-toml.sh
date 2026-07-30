@@ -59,5 +59,12 @@ assert_eq ":arr=a,b|" "$test_results" "Multiline array"
 assert_eq "a,b" "$(toml_normalize_array '["a", "b"]')" "Array normalization"
 assert_eq "a,b" "$(toml_normalize_array '[ "a" , "b" ]')" "Array normalization with spaces"
 
+# Case 6: Brackets inside quoted multiline array values
+printf 'arr = [\n"chatgpt-codex-connector",\n"chatgpt-codex-connector[bot]",\n"reviewer"\n]' >test.toml
+test_results=""
+toml_parse test.toml test_callback
+assert_eq ":arr=chatgpt-codex-connector,chatgpt-codex-connector[bot],reviewer|" \
+  "$test_results" "Quoted brackets do not terminate multiline arrays"
+
 rm test.toml
 echo "All TOML tests passed."
