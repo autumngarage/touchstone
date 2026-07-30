@@ -37,6 +37,7 @@ REQUESTED_BRANCH=""
 SHIP=false
 IN_PLACE=false
 RETIRED_MANAGED_PATHS=()
+PRESERVED_RETIRED_MANAGED_PATHS=()
 
 usage() {
   echo "Usage: $0 [--dry-run|-n] [--check] [--branch <name>] [--in-place|--no-branch] [--ship]"
@@ -125,119 +126,6 @@ fi
 
 echo "==> Updating project: $PROJECT_DIR"
 echo "    Touchstone: $OLD_SHA -> $CURRENT_SHA"
-
-retired_review_hook_refs() {
-  local scan_legacy="$1"
-  local scan_codex="$2"
-
-  awk -v scan_legacy="$scan_legacy" -v scan_codex="$scan_codex" '
-    function indentation(text, copy) {
-      copy = text
-      sub(/[^[:space:]].*$/, "", copy)
-      return length(copy)
-    }
-    function has_retired_ref(text) {
-      return (scan_legacy == "true" && text ~ /scripts\/conductor-review\.sh/) ||
-        (scan_codex == "true" && text ~ /scripts\/codex-review\.sh/)
-    }
-    {
-      raw = $0
-      line = raw
-      sub(/^[[:space:]]*#.*/, "", line)
-      sub(/[[:space:]]+#.*$/, "", line)
-
-      if (entry_block == 1 && line !~ /^[[:space:]]*$/) {
-        if (indentation(line) > entry_indent) {
-          if (has_retired_ref(line)) {
-            print NR ":" raw
-          }
-          next
-        }
-        entry_block = 0
-      }
-
-      remaining = line
-      while (match(remaining, /(^|[,{[:space:]-])entry[[:space:]]*:/)) {
-        value = substr(remaining, RSTART + RLENGTH)
-        if (line ~ /\{.*entry[[:space:]]*:/) {
-          sub(/[,}].*$/, "", value)
-        }
-        if (has_retired_ref(value)) {
-          print NR ":" raw
-        }
-        trimmed = value
-        sub(/^[[:space:]]*/, "", trimmed)
-        if (trimmed == "" || trimmed ~ /^[>|][+-]?[[:space:]]*$/) {
-          entry_block = 1
-          entry_indent = indentation(line)
-        }
-        remaining = substr(remaining, RSTART + RLENGTH)
-        if (remaining !~ /[,}]/) {
-          break
-        }
-        sub(/^[^,}]*[,}]/, "", remaining)
-      }
-    }
-  '
-}
-
-require_retired_review_hook_migration() {
-  local config="$PROJECT_DIR/.pre-commit-config.yaml"
-  local manifest="$PROJECT_DIR/.touchstone-manifest"
-  local committed_refs=""
-  local prefix="ERROR"
-  local scan_codex=false
-  local scan_legacy=false
-  local working_refs=""
-
-  [ "$DRY_RUN" = true ] && prefix="WARNING"
-
-  if [ -f "$manifest" ]; then
-    grep -qxF "scripts/conductor-review.sh" "$manifest" 2>/dev/null \
-      && scan_legacy=true
-    grep -qxF "scripts/codex-review.sh" "$manifest" 2>/dev/null \
-      && scan_codex=true
-  fi
-  if [ "$scan_legacy" = false ] && [ "$scan_codex" = false ]; then
-    return 0
-  fi
-
-  if [ -f "$config" ]; then
-    working_refs="$(retired_review_hook_refs "$scan_legacy" "$scan_codex" <"$config")"
-  fi
-
-  if git -C "$PROJECT_DIR" cat-file -e "HEAD:.pre-commit-config.yaml" 2>/dev/null; then
-    committed_refs="$(
-      git -C "$PROJECT_DIR" show "HEAD:.pre-commit-config.yaml" \
-        | retired_review_hook_refs "$scan_legacy" "$scan_codex"
-    )"
-  fi
-
-  if [ -n "$working_refs" ]; then
-    echo "$prefix: .pre-commit-config.yaml still references retired local review hooks:" >&2
-    printf '%s\n' "$working_refs" | sed 's/^/         /' >&2
-    echo "       Remove the hook block(s) that reference:" >&2
-    echo "         - scripts/conductor-review.sh" >&2
-    echo "         - scripts/codex-review.sh" >&2
-    echo "       PR-visible review is requested by scripts/open-pr.sh." >&2
-    echo "       Commit the project-owned .pre-commit-config.yaml change, then rerun:" >&2
-    echo "         touchstone update" >&2
-    [ "$DRY_RUN" = true ] && return 0
-    exit 1
-  fi
-
-  if [ -n "$committed_refs" ]; then
-    echo "$prefix: the retired review-hook removal is not committed." >&2
-    echo "       HEAD still contains these .pre-commit-config.yaml entries:" >&2
-    printf '%s\n' "$committed_refs" | sed 's/^/         /' >&2
-    echo "       Commit the project-owned .pre-commit-config.yaml migration, then rerun:" >&2
-    echo "         touchstone update" >&2
-    [ "$DRY_RUN" = true ] && return 0
-    exit 1
-  fi
-}
-
-require_retired_review_hook_migration
 
 if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
   echo "==> Already up to date."
@@ -493,6 +381,22 @@ update_file() {
   UPDATED=$((UPDATED + 1))
 }
 
+retired_review_path_referenced() {
+  local rel_path="$1"
+  local config="$PROJECT_DIR/.pre-commit-config.yaml"
+
+  case "$rel_path" in
+    scripts/conductor-review.sh | scripts/codex-review.sh) ;;
+    *) return 1 ;;
+  esac
+
+  if [ -f "$config" ] && grep -qF "$rel_path" "$config"; then
+    return 0
+  fi
+  git -C "$PROJECT_DIR" show "HEAD:.pre-commit-config.yaml" 2>/dev/null \
+    | grep -qF "$rel_path"
+}
+
 remove_retired_managed_file() {
   local rel_path="$1"
   local manifest="$PROJECT_DIR/.touchstone-manifest"
@@ -504,6 +408,12 @@ remove_retired_managed_file() {
   if ! ensure_safe_dest "$target" || [ ! -f "$target" ]; then
     echo "    ! refusing to remove unsafe retired path: $target" >&2
     SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1))
+    return 0
+  fi
+  if retired_review_path_referenced "$rel_path"; then
+    echo "    ! preserving referenced retired file: $target" >&2
+    echo "      Remove every .pre-commit-config.yaml reference, commit it, and rerun the update." >&2
+    PRESERVED_RETIRED_MANAGED_PATHS+=("$rel_path")
     return 0
   fi
   if ! git -C "$PROJECT_DIR" ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1; then
@@ -732,6 +642,9 @@ write_touchstone_manifest() {
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
+    if [ "${#PRESERVED_RETIRED_MANAGED_PATHS[@]}" -gt 0 ]; then
+      printf '%s\n' "${PRESERVED_RETIRED_MANAGED_PATHS[@]}"
+    fi
     printf 'scripts/claim-issue.sh\n'
     printf 'scripts/issue-claim-check.sh\n'
     printf 'scripts/cleanup-branches.sh\n'

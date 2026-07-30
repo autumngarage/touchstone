@@ -130,110 +130,36 @@ PREVIOUS_TOUCHSTONE_SHA="$(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD^)"
 printf '%s\n' "$PREVIOUS_TOUCHSTONE_SHA" >"$RETIREMENT_PROJECT/.touchstone-version"
 commit_all "$RETIREMENT_PROJECT" "simulate project with retired review helpers"
 
-RETIREMENT_HEAD="$(git -C "$RETIREMENT_PROJECT" rev-parse HEAD)"
-RETIREMENT_CONFIG_SHA="$(shasum -a 256 "$RETIREMENT_PROJECT/.pre-commit-config.yaml" | awk '{print $1}')"
-RETIREMENT_VERSION="$(cat "$RETIREMENT_PROJECT/.touchstone-version")"
-if ! (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --dry-run) \
-  >"$TEST_DIR/update-retirement-dry-run-output.txt" 2>&1; then
-  echo "FAIL: dry-run should warn and continue while a managed retired hook remains" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-assert_contains "$TEST_DIR/update-retirement-dry-run-output.txt" 'WARNING: .pre-commit-config.yaml still references retired local review hooks'
-assert_not_contains "$TEST_DIR/update-retirement-dry-run-output.txt" 'ERROR:'
-assert_contains "$TEST_DIR/update-retirement-dry-run-output.txt" 'Dry run complete'
-assert_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
-assert_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
-
-if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
-  >"$TEST_DIR/update-retirement-check-output.txt" 2>&1; then
-  echo "FAIL: check mode should fail while a managed retired hook remains" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-assert_contains "$TEST_DIR/update-retirement-check-output.txt" 'ERROR: .pre-commit-config.yaml still references retired local review hooks'
-
-if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-retirement-blocked-output.txt" 2>&1; then
-  echo "FAIL: update should stop while project-owned pre-commit config invokes retired review hooks" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-assert_contains "$TEST_DIR/update-retirement-blocked-output.txt" 'still references retired local review hooks'
-assert_contains "$TEST_DIR/update-retirement-blocked-output.txt" 'Remove the hook block(s)'
-assert_contains "$TEST_DIR/update-retirement-blocked-output.txt" 'Commit the project-owned .pre-commit-config.yaml change'
-assert_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
-assert_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
-assert_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/conductor-review\.sh$'
-assert_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/codex-review\.sh$'
-if [ "$(git -C "$RETIREMENT_PROJECT" rev-parse HEAD)" != "$RETIREMENT_HEAD" ]; then
-  echo "FAIL: blocked review-hook migration created a commit" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-if [ "$(shasum -a 256 "$RETIREMENT_PROJECT/.pre-commit-config.yaml" | awk '{print $1}')" != "$RETIREMENT_CONFIG_SHA" ]; then
-  echo "FAIL: blocked review-hook migration rewrote project-owned pre-commit config" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-if [ "$(cat "$RETIREMENT_PROJECT/.touchstone-version")" != "$RETIREMENT_VERSION" ]; then
-  echo "FAIL: blocked review-hook migration changed touchstone version" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
 cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_FOLDED_REVIEW_HOOK'
 repos:
   - repo: local
     hooks:
       - id: codex-review
-        entry: >-
+        entry: >2-
           bash
           scripts/codex-review.sh
         language: system
+      - id: conductor-review
+        "entry": bash scripts/conductor-review.sh
+        language: system
 EOF_FOLDED_REVIEW_HOOK
-commit_all "$RETIREMENT_PROJECT" "simulate folded retired review hook"
-if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-retirement-folded-output.txt" 2>&1; then
-  echo "FAIL: update should detect a folded retired review hook" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-assert_contains "$TEST_DIR/update-retirement-folded-output.txt" 'scripts/codex-review\.sh'
-assert_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
+commit_all "$RETIREMENT_PROJECT" "simulate referenced retired review hooks"
 
-cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_FLOW_REVIEW_HOOK'
-repos: [{repo: local, hooks: [{id: harmless, entry: echo ok}, {id: conductor-review, entry: bash scripts/conductor-review.sh, language: system}]}]
-EOF_FLOW_REVIEW_HOOK
-commit_all "$RETIREMENT_PROJECT" "simulate flow-style retired review hook"
-if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-retirement-flow-output.txt" 2>&1; then
-  echo "FAIL: update should detect a flow-style retired review hook" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-assert_contains "$TEST_DIR/update-retirement-flow-output.txt" 'scripts/conductor-review\.sh'
-assert_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
+(cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-retirement-preserved-output.txt" 2>&1
 
-RETIREMENT_HEAD="$(git -C "$RETIREMENT_PROJECT" rev-parse HEAD)"
-cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_REVIEW_HOOKS_REMOVED'
-repos: [] # retired: bash scripts/codex-review.sh
-exclude: ^scripts/codex-review.sh$
-# retired: entry: bash scripts/conductor-review.sh
-EOF_REVIEW_HOOKS_REMOVED
-
-if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-retirement-uncommitted-output.txt" 2>&1; then
-  echo "FAIL: update should stop when the review-hook migration exists only in the working tree" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-assert_contains "$TEST_DIR/update-retirement-uncommitted-output.txt" 'retired review-hook removal is not committed'
-assert_contains "$TEST_DIR/update-retirement-uncommitted-output.txt" 'HEAD still contains'
 assert_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
 assert_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
 assert_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/conductor-review\.sh$'
 assert_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/codex-review\.sh$'
-if [ "$(git -C "$RETIREMENT_PROJECT" rev-parse HEAD)" != "$RETIREMENT_HEAD" ]; then
-  echo "FAIL: uncommitted review-hook migration created an update commit" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-if [ "$(cat "$RETIREMENT_PROJECT/.touchstone-version")" != "$RETIREMENT_VERSION" ]; then
-  echo "FAIL: uncommitted review-hook migration changed touchstone version" >&2
-  ERRORS=$((ERRORS + 1))
-fi
+assert_contains "$TEST_DIR/update-retirement-preserved-output.txt" 'preserving referenced retired file'
+assert_not_exists "$RETIREMENT_PROJECT/lib/review-comment.sh"
+assert_not_exists "$HOME/.claude/skills/conductor-delegation"
+assert_exists "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md"
+assert_contains "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md" 'retired skill'
 
+printf '%s\n' "$PREVIOUS_TOUCHSTONE_SHA" >"$RETIREMENT_PROJECT/.touchstone-version"
+printf 'repos: []\n' >"$RETIREMENT_PROJECT/.pre-commit-config.yaml"
 printf '\nscripts/codex-review.sh\n' >>"$RETIREMENT_PROJECT/.gitignore"
 git -C "$RETIREMENT_PROJECT" rm --cached scripts/codex-review.sh >/dev/null
 commit_all "$RETIREMENT_PROJECT" "remove retired local review hooks"
@@ -246,9 +172,6 @@ assert_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
 assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/conductor-review\.sh$'
 assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/codex-review\.sh$'
 assert_not_exists "$RETIREMENT_PROJECT/lib/review-comment.sh"
-assert_not_exists "$HOME/.claude/skills/conductor-delegation"
-assert_exists "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md"
-assert_contains "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md" 'retired skill'
 assert_contains "$TEST_DIR/update-retirement-output.txt" 'removed retired managed file'
 assert_contains "$TEST_DIR/update-retirement-output.txt" 'leaving untracked retired file in place'
 if ! git -C "$RETIREMENT_PROJECT" diff --quiet \
