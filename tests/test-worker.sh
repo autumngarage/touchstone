@@ -1089,6 +1089,15 @@ EOF
   WORKTREE="$TEST_DIR/worktree"
   setup_fixture_repo "$REPO" "$ORIGIN" feat/review-fix
   git -C "$REPO" worktree add -q "$WORKTREE" feat/review-fix
+  for INVALID_MINUTES in 00 08; do
+    if "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+      --worktree "$WORKTREE" --detach --review-fix \
+      --max-fix-minutes "$INVALID_MINUTES" >"$TEST_DIR/invalid-minutes-$INVALID_MINUTES.out" 2>&1; then
+      fail "non-canonical fix-minute budget $INVALID_MINUTES was accepted"
+    fi
+    assert_contains "$TEST_DIR/invalid-minutes-$INVALID_MINUTES.out" \
+      'max-fix-minutes must be a canonical positive integer'
+  done
   : >"$FAKE_THREAD_ACTIVE"
   printf 'thread-1\n' >"$FAKE_THREAD_ID"
   : >"$FAKE_REPLY_LOG"
