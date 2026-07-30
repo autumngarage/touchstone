@@ -899,7 +899,20 @@ case "$command_name:$subcommand" in
     printf '77\n'
     ;;
   "pr:view")
-    if [ -f "${FAKE_HEAD_MOVED:-/nonexistent}" ]; then
+    if [[ "$*" == *baseRefName* ]] && [[ "$*" == *baseRefOid* ]]; then
+      base_oid="${FAKE_PR_BASE_OID:-$(git rev-parse main)}"
+      [ ! -f "${FAKE_BASE_MOVED:-/nonexistent}" ] || base_oid="$(printf '%040d' 0)"
+      printf '%s\t%s\t%s\n' \
+        "${FAKE_PR_URL:-$(git remote get-url origin)/pull/77}" \
+        "${FAKE_PR_BASE_BRANCH:-main}" \
+        "$base_oid"
+    elif [[ "$*" == *baseRefOid* ]]; then
+      if [ -f "${FAKE_BASE_MOVED:-/nonexistent}" ]; then
+        printf '%040d\n' 0
+      else
+        printf '%s\n' "${FAKE_PR_BASE_OID:-$(git rev-parse main)}"
+      fi
+    elif [ -f "${FAKE_HEAD_MOVED:-/nonexistent}" ]; then
       printf '%040d\n' 0
     elif [ -f "${FAKE_STALE_NEXT:-/nonexistent}" ]; then
       rm -f "$FAKE_STALE_NEXT"
@@ -910,6 +923,16 @@ case "$command_name:$subcommand" in
     ;;
   "repo:view")
     printf 'example/project\n'
+    ;;
+  "api:--paginate")
+    request_base="${FAKE_REQUEST_BASE_OID:-$(git rev-parse main)}"
+    printf 'touchstone/review-request-intent\t2026-01-01T00:00:00Z\ttouchstone-test-user\tpr=77 base=%s\n' \
+      "$request_base"
+    printf 'touchstone/review-request-complete\t2026-01-01T00:00:01Z\ttouchstone-test-user\tpr=77 base=%s intent=2026-01-01T00:00:00Z trigger=2026-01-01T00:00:01Z\n' \
+      "$request_base"
+    ;;
+  api:repos/*/collaborators/*/permission)
+    printf 'write\n'
     ;;
   "api:user")
     printf 'touchstone-test-user\n'
@@ -932,10 +955,11 @@ case "$command_name:$subcommand" in
           comment_ids="$thread_id,follow-up-comment"
           snapshot_encoded="$FAKE_CHANGED_SNAPSHOT_ENCODED"
         fi
-        printf '%s\ttarget.txt\t1\tfalse\t%s\t%s\t%s\t%s\t%s\t%s\thttps://example.test/thread/%s\t%s\n' \
+        printf '%s\ttarget.txt\t1\tfalse\t%s\t%s\t%s\t%s\t%s\t%s\t%s\thttps://example.test/thread/%s\t%s\n' \
           "$thread_id" \
           "${FAKE_THREAD_AUTHOR:-chatgpt-codex-connector}" \
           "$review_head" \
+          "${FAKE_REVIEW_SUBMITTED_AT:-2026-01-01T00:00:02Z}" \
           "$body_truncated" \
           "$comment_count" \
           "$comment_ids" \
@@ -948,8 +972,10 @@ case "$command_name:$subcommand" in
       printf 'reply\n' >>"$FAKE_REPLY_LOG"
       : >"$FAKE_REPLIED"
       [ "${FAKE_MOVE_HEAD_DURING_FINISH:-0}" = 1 ] && : >"$FAKE_HEAD_MOVED" || true
+      [ "${FAKE_MOVE_BASE_DURING_FINISH:-0}" = 1 ] && : >"$FAKE_BASE_MOVED" || true
     elif [[ "$args" == *unresolveReviewThread* ]]; then
       printf 'unresolve\n' >>"$FAKE_UNRESOLVE_LOG"
+      [ "${FAKE_UNRESOLVE_FAIL:-0}" != 1 ] || exit 42
       rm -f "$FAKE_RESOLVED"
       : >"$FAKE_THREAD_ACTIVE"
     elif [[ "$args" == *resolveReviewThread* ]]; then
@@ -1073,6 +1099,7 @@ EOF
   export FAKE_PENDING_REPLACEMENT="$TEST_DIR/pending-replacement"
   export FAKE_STALE_NEXT="$TEST_DIR/stale-next"
   export FAKE_HEAD_MOVED="$TEST_DIR/head-moved"
+  export FAKE_BASE_MOVED="$TEST_DIR/base-moved"
   export FAKE_OPEN_PR_LOG="$TEST_DIR/open-pr.log"
   export FAKE_MERGED="$TEST_DIR/merged"
   export FAKE_SNAPSHOT_ENCODED="c25hcHNob3Q="
@@ -1279,6 +1306,27 @@ EOF
     || fail "prior-head review thread caused worktree edits"
   unset FAKE_REVIEW_HEAD
 
+  echo "==> Case c3b: prior-base review evidence cannot drive current-base edits"
+  PRIOR_BASE_WT="$TEST_DIR/prior-base-worktree"
+  git -C "$REPO" branch feat/review-prior-base main
+  git -C "$REPO" push -q origin feat/review-prior-base
+  git -C "$REPO" worktree add -q "$PRIOR_BASE_WT" feat/review-prior-base
+  : >"$FAKE_THREAD_ACTIVE"
+  printf 'thread-prior-base\n' >"$FAKE_THREAD_ID"
+  rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED"
+  export FAKE_REQUEST_BASE_OID=0000000000000000000000000000000000000000
+  TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+    "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+    --worktree "$PRIOR_BASE_WT" --detach --review-fix --validation-command : >/dev/null
+  wait_for_status "$PRIOR_BASE_WT" needs-attention "$STATUS" \
+    || fail "prior-base review evidence did not enter needs-attention"
+  assert_contains "$STATUS" '"reason":"review-request-base-mismatch"'
+  [ -z "$(git -C "$PRIOR_BASE_WT" status --porcelain)" ] \
+    || fail "prior-base review evidence caused worktree edits"
+  [ ! -f "$FAKE_REPLIED" ] || fail "prior-base review evidence received an autonomous reply"
+  [ ! -f "$FAKE_RESOLVED" ] || fail "prior-base review evidence was autonomously resolved"
+  unset FAKE_REQUEST_BASE_OID
+
   echo "==> Case c4: an explicitly empty trusted-author list trusts nobody"
   EMPTY_TRUST_REPO="$TEST_DIR/empty-trust-repo"
   EMPTY_TRUST_ORIGIN="$TEST_DIR/empty-trust-origin.git"
@@ -1350,6 +1398,28 @@ EOF
   [ ! -f "$FAKE_MERGED" ] || fail "head movement during thread updates reached merge"
   unset FAKE_MOVE_HEAD_DURING_FINISH
   rm -f "$FAKE_HEAD_MOVED"
+
+  echo "==> Case c6b: base movement during thread updates stops the merge path"
+  MOVED_BASE_WT="$TEST_DIR/moved-base-worktree"
+  git -C "$REPO" branch feat/review-moved-base main
+  git -C "$REPO" push -q origin feat/review-moved-base
+  git -C "$REPO" worktree add -q "$MOVED_BASE_WT" feat/review-moved-base
+  : >"$FAKE_THREAD_ACTIVE"
+  printf 'thread-moved-base\n' >"$FAKE_THREAD_ID"
+  rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED" "$FAKE_BASE_MOVED" "$FAKE_MERGED"
+  export FAKE_MOVE_BASE_DURING_FINISH=1
+  TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+    "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+    --worktree "$MOVED_BASE_WT" --detach --review-fix --validation-command : >/dev/null
+  wait_for_status "$MOVED_BASE_WT" needs-attention "$STATUS" \
+    || fail "base movement during thread updates did not enter needs-attention"
+  assert_contains "$STATUS" '"reason":"base-changed-during-thread-update"'
+  [ -f "$FAKE_REPLIED" ] || fail "base-movement fixture did not reach the reply boundary"
+  [ ! -f "$FAKE_RESOLVED" ] \
+    || fail "base movement after reply allowed stale-thread resolution"
+  [ ! -f "$FAKE_MERGED" ] || fail "base movement during thread updates reached merge"
+  unset FAKE_MOVE_BASE_DURING_FINISH
+  rm -f "$FAKE_BASE_MOVED"
 
   echo "==> Case c7: an existing follow-up comment blocks autonomous edits"
   FOLLOWUP_WT="$TEST_DIR/followup-worktree"
@@ -1444,6 +1514,30 @@ EOF
   unset FAKE_ADD_COMMENT_DURING_RESOLVE
   rm -f "$FAKE_LATE_COMMENT"
 
+  echo "==> Case c9b: a failed thread rollback persists a distinct handoff"
+  ROLLBACK_FAIL_WT="$TEST_DIR/rollback-fail-worktree"
+  git -C "$REPO" branch feat/review-rollback-fail main
+  git -C "$REPO" push -q origin feat/review-rollback-fail
+  git -C "$REPO" worktree add -q "$ROLLBACK_FAIL_WT" feat/review-rollback-fail
+  : >"$FAKE_THREAD_ACTIVE"
+  : >"$FAKE_UNRESOLVE_LOG"
+  printf 'thread-rollback-fail\n' >"$FAKE_THREAD_ID"
+  rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED" "$FAKE_LATE_COMMENT" "$FAKE_MERGED"
+  export FAKE_ADD_COMMENT_DURING_RESOLVE=1
+  export FAKE_UNRESOLVE_FAIL=1
+  TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+    "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+    --worktree "$ROLLBACK_FAIL_WT" --detach --review-fix --validation-command : >/dev/null
+  wait_for_status "$ROLLBACK_FAIL_WT" needs-attention "$STATUS" \
+    || fail "failed thread rollback did not enter needs-attention"
+  assert_contains "$STATUS" '"reason":"thread-rollback-failed"'
+  ROLLBACK_FAIL_JOB="$(touchstone_ship_job_dir "$ROLLBACK_FAIL_WT")"
+  assert_contains "$ROLLBACK_FAIL_JOB/review-fix/rollback-thread-id" '^thread-rollback-fail$'
+  [ -f "$FAKE_RESOLVED" ] || fail "rollback failure fixture did not preserve the remote resolved state"
+  [ ! -f "$FAKE_MERGED" ] || fail "failed thread rollback reached merge"
+  unset FAKE_ADD_COMMENT_DURING_RESOLVE FAKE_UNRESOLVE_FAIL
+  rm -f "$FAKE_LATE_COMMENT"
+
   echo "==> Case c10: another author's marker-shaped comment cannot authorize resolution"
   UNTRUSTED_MARKER_WT="$TEST_DIR/untrusted-marker-worktree"
   git -C "$REPO" branch feat/review-untrusted-marker main
@@ -1523,14 +1617,83 @@ EOF
   if touchstone_review_fix_effective_iterations 01 >/dev/null; then
     fail "non-canonical decimal iteration budget was accepted"
   fi
+  STACK_BASE_WT="$TEST_DIR/stack-base-worktree"
+  git -C "$REPO" branch stack-parent main
+  git -C "$REPO" worktree add -q "$STACK_BASE_WT" stack-parent
+  cat >"$STACK_BASE_WT/.touchstone-review.toml" <<'EOF'
+[review.pr_triggered]
+trusted_review_authors = ["stack-reviewer"]
+EOF
+  git -C "$STACK_BASE_WT" add .touchstone-review.toml
+  git -C "$STACK_BASE_WT" commit -qm "stack base policy"
+  git -C "$STACK_BASE_WT" push -q -u origin stack-parent
+  git -C "$REPO" worktree remove "$STACK_BASE_WT"
+  STACK_BASE_REPO="$TEST_DIR/stack-base.git"
+  git init -q --bare "$STACK_BASE_REPO"
+  git -C "$REPO" push -q "$STACK_BASE_REPO" stack-parent
+  git --git-dir="$ORIGIN" update-ref refs/heads/stack-parent "$(git -C "$REPO" rev-parse main)"
+  git -C "$REPO" tag touchstone-pr-base/77 main
+  export FAKE_PR_BASE_BRANCH=stack-parent
+  export FAKE_PR_URL="$STACK_BASE_REPO/pull/77"
+  export FAKE_PR_BASE_OID
+  FAKE_PR_BASE_OID="$(git --git-dir="$STACK_BASE_REPO" rev-parse stack-parent)"
+  STACK_BASE_SNAPSHOT="$(touchstone_review_fix_pr_base_snapshot "$WORKTREE" 77)" \
+    || fail "stacked PR base ref was not resolved"
+  IFS="$(printf '\t')" read -r STACK_BASE_REF STACK_BASE_OID <<EOF
+$STACK_BASE_SNAPSHOT
+EOF
+  [ "$STACK_BASE_REF" = refs/remotes/touchstone-pr-base/77 ] \
+    || fail "stacked PR resolved an unexpected base ref: $STACK_BASE_REF"
+  [ "$STACK_BASE_OID" = "$FAKE_PR_BASE_OID" ] \
+    || fail "stacked PR did not preserve its exact base revision"
+  [ "$(touchstone_review_fix_trusted_authors "$WORKTREE" "$STACK_BASE_REF")" = stack-reviewer ] \
+    || fail "fully qualified stacked PR ref did not load policy from the base repository"
+  STACK_REWRITTEN_HEAD="$(git -C "$REPO" rev-parse main)"
+  git --git-dir="$STACK_BASE_REPO" update-ref refs/heads/stack-parent "$STACK_REWRITTEN_HEAD"
+  FAKE_PR_BASE_OID="$STACK_REWRITTEN_HEAD"
+  STACK_BASE_SNAPSHOT="$(touchstone_review_fix_pr_base_snapshot "$WORKTREE" 77)" \
+    || fail "rewritten stacked PR base ref was not resolved"
+  IFS="$(printf '\t')" read -r STACK_BASE_REF STACK_BASE_OID <<EOF
+$STACK_BASE_SNAPSHOT
+EOF
+  [ "$(git -C "$WORKTREE" rev-parse "$STACK_BASE_REF")" = "$STACK_REWRITTEN_HEAD" ] \
+    || fail "rewritten stacked PR base did not force-update its tracking ref"
+  unset FAKE_PR_BASE_BRANCH FAKE_PR_URL FAKE_PR_BASE_OID
+  ROLLBACK_CHECKPOINT="$TEST_DIR/rollback-checkpoint"
+  mkdir -p "$ROLLBACK_CHECKPOINT/review-fix"
+  {
+    printf 'thread-checkpoint\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\t2026-01-01T00:00:02Z\tfalse\t1\tthread-checkpoint\t%s\turl\tbody\n' \
+      "$(git -C "$WORKTREE" rev-parse HEAD)" "$FAKE_SNAPSHOT_DIGEST"
+    printf 'thread-checkpoint-2\ttarget.txt\t2\tfalse\tchatgpt-codex-connector\t%s\t2026-01-01T00:00:03Z\tfalse\t1\tthread-checkpoint-2\t%s\turl\tbody\n' \
+      "$(git -C "$WORKTREE" rev-parse HEAD)" "$FAKE_SNAPSHOT_DIGEST"
+  } >"$ROLLBACK_CHECKPOINT/review-fix/threads.tsv"
+  ROLLBACK_CHECKPOINT_KEY="$(touchstone_review_fix_thread_key thread-checkpoint)"
+  ROLLBACK_CHECKPOINT_KEY_2="$(touchstone_review_fix_thread_key thread-checkpoint-2)"
+  touchstone_ship_write "$ROLLBACK_CHECKPOINT/review-fix" \
+    "resolved-$ROLLBACK_CHECKPOINT_KEY" "$(git -C "$WORKTREE" rev-parse HEAD)"
+  touchstone_ship_write "$ROLLBACK_CHECKPOINT/review-fix" \
+    "resolved-$ROLLBACK_CHECKPOINT_KEY_2" "$(git -C "$WORKTREE" rev-parse HEAD)"
+  printf 'thread-checkpoint\n' >"$FAKE_THREAD_ID"
+  : >"$FAKE_UNRESOLVE_LOG"
+  : >"$FAKE_RESOLVED"
+  touchstone_review_fix_rollback_checkpoint_threads "$ROLLBACK_CHECKPOINT" \
+    || fail "checkpointed review thread rollback failed"
+  [ ! -f "$ROLLBACK_CHECKPOINT/review-fix/resolved-$ROLLBACK_CHECKPOINT_KEY" ] \
+    || fail "checkpointed review thread remained marked resolved after rollback"
+  [ ! -f "$ROLLBACK_CHECKPOINT/review-fix/resolved-$ROLLBACK_CHECKPOINT_KEY_2" ] \
+    || fail "second checkpointed review thread remained marked resolved after rollback"
+  [ "$(wc -l <"$FAKE_UNRESOLVE_LOG" | tr -d ' ')" -eq 2 ] \
+    || fail "all checkpointed review threads were not rolled back"
   CROSS_CHECKPOINT="$TEST_DIR/cross-checkpoint"
   mkdir -p "$CROSS_CHECKPOINT/review-fix"
   RESTART_HEAD="$(git -C "$WORKTREE" rev-parse HEAD)"
-  printf 'thread-cross\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\tfalse\t1\tthread-cross\t%s\turl\tbody\n' \
+  RESTART_BASE="$(git -C "$WORKTREE" rev-parse main)"
+  printf 'thread-cross\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\t2026-01-01T00:00:02Z\tfalse\t1\tthread-cross\t%s\turl\tbody\n' \
     "$(git -C "$WORKTREE" rev-parse HEAD~1)" "$FAKE_SNAPSHOT_DIGEST" \
     >"$CROSS_CHECKPOINT/review-fix/threads.tsv"
   touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" source-head "$(git -C "$WORKTREE" rev-parse HEAD~1)"
   touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" fix-head "$RESTART_HEAD"
+  touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" base-oid "$RESTART_BASE"
   touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" repo-full-name example/project
   touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" pr-number 76
   touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" reply-author touchstone-test-user
@@ -1549,11 +1712,12 @@ EOF
   echo "==> Case e2: restart checkpoint detects duplicate replies and resumes resolution"
   CHECKPOINT="$TEST_DIR/checkpoint"
   mkdir -p "$CHECKPOINT/review-fix"
-  printf 'thread-restart\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\tfalse\t1\tthread-restart\t%s\turl\tbody\n' \
+  printf 'thread-restart\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\t2026-01-01T00:00:02Z\tfalse\t1\tthread-restart\t%s\turl\tbody\n' \
     "$(git -C "$WORKTREE" rev-parse HEAD~1)" "$FAKE_SNAPSHOT_DIGEST" \
     >"$CHECKPOINT/review-fix/threads.tsv"
   touchstone_ship_write "$CHECKPOINT/review-fix" source-head "$(git -C "$WORKTREE" rev-parse HEAD~1)"
   touchstone_ship_write "$CHECKPOINT/review-fix" fix-head "$RESTART_HEAD"
+  touchstone_ship_write "$CHECKPOINT/review-fix" base-oid "$RESTART_BASE"
   touchstone_ship_write "$CHECKPOINT/review-fix" repo-full-name example/project
   touchstone_ship_write "$CHECKPOINT/review-fix" pr-number 77
   touchstone_ship_write "$CHECKPOINT/review-fix" reply-author touchstone-test-user
