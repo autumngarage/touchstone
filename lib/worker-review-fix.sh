@@ -382,6 +382,16 @@ touchstone_review_fix_rollback_checkpoint_threads() {
   done <"$threads_file"
 }
 
+touchstone_review_fix_confirm_head() {
+  local job_dir="$1" worktree_path="$2" pr_number="$3" expected_head="$4"
+  local mismatch_exit="$5" observed_head
+  observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" \
+    || return 1
+  [ "$observed_head" = "$expected_head" ] && return 0
+  touchstone_review_fix_rollback_checkpoint_threads "$job_dir" || return 6
+  return "$mismatch_exit"
+}
+
 touchstone_review_fix_write_brief() {
   local brief_file="$1" worktree_path="$2" pr_number="$3" source_head="$4"
   local threads_file="$5" validation_command="$6"
@@ -549,8 +559,8 @@ touchstone_review_fix_finish_threads() {
   reply_author="$(touchstone_ship_read "$job_dir/review-fix" reply-author)"
   [ -n "$reply_author" ] || return 1
 
-  observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
-  [ "$observed_head" = "$fix_head" ] || return 3
+  touchstone_review_fix_confirm_head "$job_dir" "$worktree_path" "$pr_number" "$fix_head" 3 \
+    || return $?
   if ! touchstone_review_fix_pr_base_matches "$worktree_path" "$pr_number" "$base_oid"; then
     touchstone_review_fix_rollback_checkpoint_threads "$job_dir" || return 6
     return 7
@@ -564,8 +574,8 @@ touchstone_review_fix_finish_threads() {
     [ -f "$job_dir/review-fix/resolved-$key" ] && continue
     marker="$(touchstone_review_fix_marker "$source_head" "$fix_head" "$thread_id")"
 
-    observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
-    [ "$observed_head" = "$fix_head" ] || return 3
+    touchstone_review_fix_confirm_head "$job_dir" "$worktree_path" "$pr_number" "$fix_head" 3 \
+      || return $?
     if ! touchstone_review_fix_pr_base_matches "$worktree_path" "$pr_number" "$base_oid"; then
       touchstone_review_fix_rollback_checkpoint_threads "$job_dir" || return 6
       return 7
@@ -589,8 +599,8 @@ EOF
       location="${path:-review thread}${line:+:$line}"
       body="Fixed $location in \`$(printf '%.12s' "$fix_head")\` and validated locally. $marker"
       touchstone_review_fix_reply "$thread_id" "$body" || return 1
-      observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
-      [ "$observed_head" = "$fix_head" ] || return 4
+      touchstone_review_fix_confirm_head "$job_dir" "$worktree_path" "$pr_number" "$fix_head" 4 \
+        || return $?
       remote_state="$(touchstone_review_fix_thread_remote_state \
         "$thread_id" "$marker" "$comment_count" "$comment_ids" "$comment_snapshot" \
         "$reply_author")" || return 1
@@ -618,6 +628,7 @@ EOF
     }
     if [ "$observed_head" != "$fix_head" ]; then
       touchstone_review_fix_rollback_thread "$job_dir" "$thread_id" || return 6
+      touchstone_review_fix_rollback_checkpoint_threads "$job_dir" || return 6
       return 4
     fi
     if ! touchstone_review_fix_pr_base_matches "$worktree_path" "$pr_number" "$base_oid"; then
@@ -648,13 +659,14 @@ EOF
     }
     if [ "$observed_head" != "$fix_head" ]; then
       touchstone_review_fix_rollback_thread "$job_dir" "$thread_id" || return 6
+      touchstone_review_fix_rollback_checkpoint_threads "$job_dir" || return 6
       return 4
     fi
     touchstone_ship_write "$job_dir/review-fix" "resolved-$key" "$fix_head"
   done <"$threads_file"
 
-  observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
-  [ "$observed_head" = "$fix_head" ] || return 4
+  touchstone_review_fix_confirm_head "$job_dir" "$worktree_path" "$pr_number" "$fix_head" 4 \
+    || return $?
   if ! touchstone_review_fix_pr_base_matches "$worktree_path" "$pr_number" "$base_oid"; then
     touchstone_review_fix_rollback_checkpoint_threads "$job_dir" || return 6
     return 7
@@ -707,6 +719,8 @@ touchstone_review_fix_run_child() {
           sleep 0.2
           kill -KILL -- "-$child_pid" 2>/dev/null || true
           wait "$child_pid" 2>/dev/null || true
+          child_pid=""
+          touchstone_ship_write "$job_dir" child-pid ""
           return 124
         fi
         ;;
@@ -718,6 +732,8 @@ touchstone_review_fix_run_child() {
   else
     exit_code=$?
   fi
+  child_pid=""
+  touchstone_ship_write "$job_dir" child-pid ""
   return "$exit_code"
 }
 
