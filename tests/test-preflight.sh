@@ -64,10 +64,14 @@ EOF
 done
 
 echo "==> Test: touchstone preflight exits clean on this tree"
-PATH="$CLEAN_FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+if ! PATH="$CLEAN_FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
   TOUCHSTONE_NO_AUTO_UPDATE=1 \
   TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND=: \
-  bash "$TOUCHSTONE_ROOT/bin/touchstone" preflight "$TOUCHSTONE_ROOT" >"$TEST_DIR/clean.txt" 2>&1
+  bash "$TOUCHSTONE_ROOT/bin/touchstone" preflight "$TOUCHSTONE_ROOT" >"$TEST_DIR/clean.txt" 2>&1; then
+  echo "FAIL: clean tree preflight exited non-zero" >&2
+  cat "$TEST_DIR/clean.txt" >&2
+  exit 1
+fi
 if grep -q '==> preflight clean' "$TEST_DIR/clean.txt"; then
   echo "==> PASS: clean tree preflight exits 0"
 else
