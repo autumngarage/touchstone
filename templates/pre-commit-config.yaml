@@ -3,7 +3,7 @@
 #
 # Hooks run at two stages:
 #   pre-commit: fast checks on every commit (formatting, secrets, file hygiene)
-#   pre-push:   fast branch checks; Conductor review only runs for direct default-branch pushes
+#   pre-push:   fast branch and project validation checks
 
 repos:
   # ── Standard file hygiene ──────────────────────────────────────────────
@@ -71,17 +71,6 @@ repos:
           /usr/bin/env bash -c 'branch="$(git rev-parse --abbrev-ref HEAD)";
           [[ "$branch" == "main" || "$branch" == "master" || "$branch" =~ ^(feat|fix|chore|refactor|docs)/ ]] ||
           { echo "Branch name must match: feat/, fix/, chore/, refactor/, or docs/"; exit 1; }'
-        language: system
-        stages: [pre-push]
-        always_run: true
-        pass_filenames: false
-
-  # ── Conductor default-branch push review ───────────────────────────────
-  - repo: local
-    hooks:
-      - id: conductor-review
-        name: Conductor default-branch push review
-        entry: /usr/bin/env bash scripts/conductor-review.sh
         language: system
         stages: [pre-push]
         always_run: true

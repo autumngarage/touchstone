@@ -62,17 +62,6 @@ repos:
       - id: actionlint
         files: ^\.github/workflows/.*\.ya?ml$
 
-  # Conductor review for direct pushes to the default branch
-  - repo: local
-    hooks:
-      - id: conductor-review
-        name: Conductor default-branch push review
-        entry: /usr/bin/env bash hooks/conductor-review.sh
-        language: system
-        stages: [pre-push]
-        always_run: true
-        pass_filenames: false
-
   # Self-tests via the same touchstone-run.sh validate path downstream projects
   # use. Touchstone's .touchstone-config sets validate_command to loop through
   # tests/test-*.sh — this means any change to the validate dispatcher that
@@ -97,12 +86,3 @@ repos:
         stages: [pre-push]
         always_run: true
         pass_filenames: false
-  - repo: local
-    hooks:
-      - id: conductor-refresh
-        name: Refresh conductor integrations if stale
-        entry: conductor refresh-on-commit
-        language: system
-        pass_filenames: false
-        always_run: true
-        stages: [pre-commit]

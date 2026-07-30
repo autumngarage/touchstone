@@ -6,7 +6,7 @@
 #
 # Why this exists:
 #   The user-scoped skill bundle (engineering principles, git workflow,
-#   cortex protocol, conductor delegation, audit-weak-points, agent-swarms,
+#   Cortex protocol, audit-weak-points, agent-swarms,
 #   memory-audit) is touchstone-owned guidance that should be available to
 #   Claude Code in every project, not duplicated into each project's
 #   `.claude/skills/`. This helper writes them to `~/.claude/skills/` so a
@@ -49,7 +49,6 @@ _TOUCHSTONE_BUNDLED_SKILL_NAMES=(
   touchstone-agent-swarms
   touchstone-audit-weak-points
   cortex-protocol
-  conductor-delegation
   memory-audit
 )
 

@@ -104,78 +104,29 @@ if [ "$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD)" != "$BASE_BRANCH" ]; the
 fi
 
 # --------------------------------------------------------------------------
-# Test 1b: same-version update reports but does not rewrite an unpinned
-# canonical review config. Review config ownership belongs to the project.
+# Test 1b: version updates remove retired manifest-managed review helpers.
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Step 2b: Preserve canonical review config at the same version ---"
+echo "--- Step 2b: Remove retired managed review helpers ---"
 
-MIGRATION_PROJECT="$TEST_DIR/canonical-migration-project"
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$MIGRATION_PROJECT" --no-register >/dev/null
-configure_git "$MIGRATION_PROJECT"
-sed -i.bak '/^[[:space:]]*with[[:space:]]*=/d' "$MIGRATION_PROJECT/.touchstone-review.toml"
-rm -f "$MIGRATION_PROJECT/.touchstone-review.toml.bak"
-commit_all "$MIGRATION_PROJECT" "simulate unpinned canonical review config"
-MIGRATION_CONFIG_BEFORE="$(shasum "$MIGRATION_PROJECT/.touchstone-review.toml" | awk '{print $1}')"
-MIGRATION_HEAD_BEFORE="$(git -C "$MIGRATION_PROJECT" rev-parse HEAD)"
-
-(cd "$MIGRATION_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-canonical-migration-output.txt" 2>&1
-
-assert_contains "$TEST_DIR/update-canonical-migration-output.txt" \
-  'Review config migration available for .touchstone-review.toml'
-assert_contains "$TEST_DIR/update-canonical-migration-output.txt" \
-  'This project-owned file was not changed'
-assert_contains "$TEST_DIR/update-canonical-migration-output.txt" \
-  'A missing review.conductor.with value defaults to Codex at runtime'
-assert_contains "$TEST_DIR/update-canonical-migration-output.txt" \
-  'touchstone migrate-review-config --file .touchstone-review.toml'
-if [ "$MIGRATION_CONFIG_BEFORE" = "$(shasum "$MIGRATION_PROJECT/.touchstone-review.toml" | awk '{print $1}')" ]; then
-  echo "    PASS: same-version update preserved canonical review config"
-else
-  echo "FAIL: same-version update rewrote canonical review config" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-if [ "$MIGRATION_HEAD_BEFORE" != "$(git -C "$MIGRATION_PROJECT" rev-parse HEAD)" ]; then
-  echo "FAIL: config advisory created a same-version update commit" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-if [ -n "$(git -C "$MIGRATION_PROJECT" status --porcelain)" ]; then
-  echo "FAIL: config advisory left a dirty worktree" >&2
-  git -C "$MIGRATION_PROJECT" status --short >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
-# --------------------------------------------------------------------------
-# Test 1c: a real managed-file update must not rewrite or stage an existing
-# canonical review config.
-# --------------------------------------------------------------------------
-echo ""
-echo "--- Step 2c: Preserve canonical review config during a version update ---"
-
+RETIREMENT_PROJECT="$TEST_DIR/retirement-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$RETIREMENT_PROJECT" --no-register >/dev/null
+configure_git "$RETIREMENT_PROJECT"
+printf '#!/usr/bin/env bash\n' >"$RETIREMENT_PROJECT/scripts/conductor-review.sh"
+printf '#!/usr/bin/env bash\n' >"$RETIREMENT_PROJECT/scripts/codex-review.sh"
+printf '# retired helper\n' >"$RETIREMENT_PROJECT/lib/review-comment.sh"
+printf 'scripts/conductor-review.sh\nscripts/codex-review.sh\nlib/review-comment.sh\n' >>"$RETIREMENT_PROJECT/.touchstone-manifest"
 PREVIOUS_TOUCHSTONE_SHA="$(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD^)"
-printf '%s\n' "$PREVIOUS_TOUCHSTONE_SHA" >"$MIGRATION_PROJECT/.touchstone-version"
-commit_all "$MIGRATION_PROJECT" "simulate previous touchstone version"
-MIGRATION_CONFIG_BEFORE="$(shasum "$MIGRATION_PROJECT/.touchstone-review.toml" | awk '{print $1}')"
+printf '%s\n' "$PREVIOUS_TOUCHSTONE_SHA" >"$RETIREMENT_PROJECT/.touchstone-version"
+commit_all "$RETIREMENT_PROJECT" "simulate project with retired review helpers"
 
-(cd "$MIGRATION_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-canonical-version-output.txt" 2>&1
+(cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-retirement-output.txt" 2>&1
 
-assert_contains "$TEST_DIR/update-canonical-version-output.txt" \
-  'Review config migration available for .touchstone-review.toml'
-if [ "$MIGRATION_CONFIG_BEFORE" = "$(shasum "$MIGRATION_PROJECT/.touchstone-review.toml" | awk '{print $1}')" ]; then
-  echo "    PASS: version update preserved canonical review config"
-else
-  echo "FAIL: version update rewrote canonical review config" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-if git -C "$MIGRATION_PROJECT" diff-tree --no-commit-id --name-only -r HEAD \
-  | grep -qxF '.touchstone-review.toml'; then
-  echo "FAIL: version update staged project-owned canonical review config" >&2
-  ERRORS=$((ERRORS + 1))
-else
-  echo "    PASS: version update did not stage canonical review config"
-fi
+assert_not_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
+assert_not_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
+assert_not_exists "$RETIREMENT_PROJECT/lib/review-comment.sh"
+assert_contains "$TEST_DIR/update-retirement-output.txt" 'removed retired managed file'
 
 # --------------------------------------------------------------------------
 # Test 2: committed local touchstone-owned changes update on a review branch.
@@ -220,7 +171,7 @@ assert_exists "$PROJECT/lib/worker-ship-job.sh"
 assert_exists "$PROJECT/lib/worker-review-fix.sh"
 assert_exists "$PROJECT/lib/script-sync-guard.sh"
 assert_exists "$PROJECT/lib/preflight.sh"
-assert_exists "$PROJECT/lib/review-comment.sh"
+assert_not_exists "$PROJECT/lib/review-comment.sh"
 assert_exists "$PROJECT/.touchstone-manifest"
 assert_contains "$PROJECT/.touchstone-manifest" '^TOUCHSTONE.md$'
 assert_contains "$PROJECT/.touchstone-manifest" '^\.github/workflows/issue-claim-check\.yml$'
@@ -236,7 +187,7 @@ assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-ship-job\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-review-fix\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/script-sync-guard\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/preflight\.sh$'
-assert_contains "$PROJECT/.touchstone-manifest" '^lib/review-comment\.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^lib/review-comment\.sh$'
 if grep -qxF '.markdownlint.json' "$PROJECT/.touchstone-manifest"; then
   echo "FAIL: .markdownlint.json must remain project-owned" >&2
   ERRORS=$((ERRORS + 1))

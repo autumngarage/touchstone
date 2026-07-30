@@ -25,8 +25,6 @@ touchstone_sync_planned_write_paths() {
     printf '.github/workflows/issue-claim-check.yml\n'
     printf '.claude/settings.json\n'
     printf 'principles/\n'
-    printf 'scripts/conductor-review.sh\n'
-    printf 'scripts/codex-review.sh\n'
     printf 'scripts/branch-guard.sh\n'
     printf 'scripts/emergency-disclosure.sh\n'
     printf 'scripts/cortex-pr-merged-hook.sh\n'
@@ -48,7 +46,6 @@ touchstone_sync_planned_write_paths() {
     printf 'lib/script-sync-guard.sh\n'
     printf 'lib/preflight.sh\n'
     printf 'lib/preflight-scope.sh\n'
-    printf 'lib/review-comment.sh\n'
 
     if [ "$project_type" = "python" ] || [ -f "$project_dir/scripts/run-pytest-in-venv.sh" ]; then
       printf 'scripts/run-pytest-in-venv.sh\n'

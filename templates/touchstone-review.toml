@@ -1,8 +1,7 @@
 # Touchstone delivery policy.
 #
 # Deterministic checks run locally. Semantic review is PR-visible and bound to
-# the exact GitHub head and base revisions; Touchstone does not invoke a local
-# model router or reviewer.
+# the exact GitHub head and base revisions.
 
 [review]
 preflight_required = true

@@ -139,19 +139,10 @@ assert_section_contains() {
 }
 
 PROJECT="$TEST_DIR/test-project"
-PROJECT_WITH_UNSAFE="$TEST_DIR/test-project-unsafe"
 PROJECT_EXISTING="$TEST_DIR/test-project-existing"
-PROJECT_EXISTING_CONFIG="$TEST_DIR/test-project-existing-config"
 PROJECT_INIT_EXISTING_SETUP="$TEST_DIR/test-project-init-existing-setup"
 PROJECT_NODE="$TEST_DIR/test-project-node"
 PROJECT_PYTHON="$TEST_DIR/test-project-python"
-PROJECT_REVIEW_NONE="$TEST_DIR/test-project-review-none"
-PROJECT_REVIEW_LOCAL="$TEST_DIR/test-project-review-local"
-PROJECT_REVIEW_OPENROUTER="$TEST_DIR/test-project-review-openrouter"
-PROJECT_REVIEW_CLAUDE="$TEST_DIR/test-project-review-claude"
-PROJECT_REVIEW_AUTO="$TEST_DIR/test-project-review-auto"
-PROJECT_REVIEW_DEFAULT_NONTTY="$TEST_DIR/test-project-review-default-nontty"
-PROJECT_REVIEW_RETIRED_SMALL_LOCAL="$TEST_DIR/test-project-review-retired-small-local"
 PROJECT_GITBUTLER="$TEST_DIR/test-project-gitbutler"
 PROJECT_CI_OFF="$TEST_DIR/test-project-ci-off"
 PROJECT_CI_GITHUB="$TEST_DIR/test-project-ci-github"
@@ -184,10 +175,9 @@ assert_exists "$PROJECT/.worktreeinclude.example"
 assert_exists "$PROJECT/.github/pull_request_template.md"
 assert_exists "$PROJECT/.github/workflows/issue-claim-check.yml"
 assert_exists "$PROJECT/.touchstone-review.toml"
-assert_contains "$PROJECT/.touchstone-review.toml" '^with = "codex"$'
-assert_line_count "$PROJECT/.touchstone-review.toml" '^\[review\.conductor\]$' 1
-assert_line_count "$PROJECT/.touchstone-review.toml" '^with = ' 1
-assert_contains "$PROJECT/.touchstone-review.toml" '^required = false$'
+assert_contains "$PROJECT/.touchstone-review.toml" '^\[review\.pr_triggered\]$'
+assert_contains "$PROJECT/.touchstone-review.toml" '^required = true$'
+assert_contains "$PROJECT/.touchstone-review.toml" '^provider = "github-codex"$'
 assert_contains "$PROJECT/.touchstone-review.toml" '^request_on_push = true$'
 if ! diff -q "$TOUCHSTONE_ROOT/templates/ci/issue-claim-check.yml" "$TOUCHSTONE_ROOT/.github/workflows/issue-claim-check.yml" >/dev/null; then
   echo "FAIL: source issue-claim workflow must match installable template" >&2
@@ -209,8 +199,8 @@ assert_exists "$PROJECT/principles/git-workflow.md"
 assert_exists "$PROJECT/principles/README.md"
 
 # Scripts
-assert_exists "$PROJECT/scripts/conductor-review.sh"
-assert_exists "$PROJECT/scripts/codex-review.sh"
+assert_not_exists "$PROJECT/scripts/conductor-review.sh"
+assert_not_exists "$PROJECT/scripts/codex-review.sh"
 assert_exists "$PROJECT/scripts/branch-guard.sh"
 assert_exists "$PROJECT/scripts/emergency-disclosure.sh"
 assert_exists "$PROJECT/scripts/cortex-pr-merged-hook.sh"
@@ -218,7 +208,7 @@ assert_exists "$PROJECT/lib/toml.sh"
 assert_exists "$PROJECT/lib/codex-auth.sh"
 assert_exists "$PROJECT/lib/script-sync-guard.sh"
 assert_exists "$PROJECT/lib/preflight.sh"
-assert_exists "$PROJECT/lib/review-comment.sh"
+assert_not_exists "$PROJECT/lib/review-comment.sh"
 assert_exists "$PROJECT/scripts/touchstone-run.sh"
 assert_exists "$PROJECT/scripts/open-pr.sh"
 assert_exists "$PROJECT/scripts/merge-pr.sh"
@@ -228,8 +218,6 @@ assert_exists "$PROJECT/scripts/cleanup-branches.sh"
 assert_exists "$PROJECT/scripts/spawn-worktree.sh"
 assert_exists "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_not_exists "$PROJECT/scripts/run-pytest-in-venv.sh"
-assert_executable "$PROJECT/scripts/conductor-review.sh"
-assert_executable "$PROJECT/scripts/codex-review.sh"
 assert_executable "$PROJECT/scripts/touchstone-run.sh"
 assert_executable "$PROJECT/scripts/open-pr.sh"
 assert_executable "$PROJECT/scripts/merge-pr.sh"
@@ -238,7 +226,7 @@ assert_executable "$PROJECT/scripts/issue-claim-check.sh"
 assert_executable "$PROJECT/scripts/cleanup-branches.sh"
 assert_executable "$PROJECT/scripts/spawn-worktree.sh"
 assert_executable "$PROJECT/scripts/cleanup-worktrees.sh"
-assert_contains "$PROJECT/.pre-commit-config.yaml" 'conductor-review.sh'
+assert_not_contains "$PROJECT/.pre-commit-config.yaml" 'conductor-review.sh'
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'touchstone-run.sh validate'
 assert_contains "$PROJECT/.pre-commit-config.yaml" "args: \\['-d', '-i', '2', '-ci', '-bn'\\]"
 if ! diff -q "$TOUCHSTONE_ROOT/templates/.markdownlint.json" "$PROJECT/.markdownlint.json" >/dev/null; then
@@ -280,7 +268,7 @@ assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-ship-job\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-review-fix\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/script-sync-guard\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/preflight\.sh$'
-assert_contains "$PROJECT/.touchstone-manifest" '^lib/review-comment\.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^lib/review-comment\.sh$'
 if grep -q '^\.touchstone-config$' "$PROJECT/.gitignore"; then
   echo "FAIL: expected .touchstone-config to be commit-friendly, not ignored" >&2
   ERRORS=$((ERRORS + 1))
@@ -343,7 +331,7 @@ fi
 assert_contains "$PROJECT/CLAUDE.md" "test-project"
 assert_contains "$PROJECT/AGENTS.md" "test-project"
 assert_contains "$PROJECT/GEMINI.md" "test-project"
-assert_contains "$PROJECT/GEMINI.md" "Conductor"
+assert_contains "$PROJECT/GEMINI.md" "PR-visible reviewer"
 # Touchstone steering content must reach non-Claude reviewers via AGENTS.md.
 assert_contains "$PROJECT/AGENTS.md" "touchstone:steering:start"
 assert_contains "$PROJECT/AGENTS.md" "touchstone:steering:end"
@@ -356,11 +344,8 @@ phase "help flags + ecosystem profiles"
 
 # Help flags should print usage instead of bootstrapping a project named --help.
 if (cd "$TEST_DIR" && bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" --help) >"$TEST_DIR/new-project-help.txt" 2>&1; then
-  assert_contains "$TEST_DIR/new-project-help.txt" 'unsafe-paths'
-  assert_contains "$TEST_DIR/new-project-help.txt" 'reviewer conductor|openrouter|none'
-  assert_contains "$TEST_DIR/new-project-help.txt" 'legacy: codex|claude|gemini|local|auto'
-  assert_contains "$TEST_DIR/new-project-help.txt" 'review-routing all-hosted|all-local'
-  assert_not_contains "$TEST_DIR/new-project-help.txt" 'review-routing all-hosted|all-local|small-local'
+  assert_not_contains "$TEST_DIR/new-project-help.txt" 'reviewer'
+  assert_not_contains "$TEST_DIR/new-project-help.txt" 'review-routing'
   assert_contains "$TEST_DIR/new-project-help.txt" 'gitbutler'
   assert_contains "$TEST_DIR/new-project-help.txt" 'node|python|swift|rust|go|generic|auto'
 else
@@ -396,23 +381,14 @@ fi
 
 if TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --help >"$TEST_DIR/touchstone-init-help.txt" 2>&1; then
   assert_contains "$TEST_DIR/touchstone-init-help.txt" 'Usage: touchstone init'
-  assert_contains "$TEST_DIR/touchstone-init-help.txt" 'reviewer conductor|openrouter|none'
-  assert_contains "$TEST_DIR/touchstone-init-help.txt" 'legacy: codex|claude|gemini|local|auto'
-  assert_contains "$TEST_DIR/touchstone-init-help.txt" 'review-routing all-hosted|all-local'
-  assert_not_contains "$TEST_DIR/touchstone-init-help.txt" 'review-routing all-hosted|all-local|small-local'
+  assert_not_contains "$TEST_DIR/touchstone-init-help.txt" 'reviewer'
+  assert_not_contains "$TEST_DIR/touchstone-init-help.txt" 'review-routing'
   assert_contains "$TEST_DIR/touchstone-init-help.txt" 'gitbutler'
   assert_contains "$TEST_DIR/touchstone-init-help.txt" 'node|python|swift|rust|go|generic|auto'
 else
   echo "FAIL: expected touchstone init --help to succeed" >&2
   ERRORS=$((ERRORS + 1))
 fi
-
-# Bootstrap with explicit unsafe paths.
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_WITH_UNSAFE" --no-register --unsafe-paths "src/auth/,migrations/"
-assert_exists "$PROJECT_WITH_UNSAFE/.touchstone-review.toml"
-assert_contains "$PROJECT_WITH_UNSAFE/.touchstone-review.toml" '"src/auth/",'
-assert_contains "$PROJECT_WITH_UNSAFE/.touchstone-review.toml" '"migrations/",'
-assert_contains "$PROJECT_WITH_UNSAFE/.touchstone-review.toml" '^unsafe_paths = \[$'
 
 # Ecosystem profiles should configure shared runner behavior without making
 # Python the default for every project.
@@ -574,7 +550,7 @@ assert_contains "$PROJECT_NODE/setup.sh" 'install_go_devtools'
 assert_contains "$PROJECT_NODE/setup.sh" 'install_rust_devtools'
 assert_contains "$PROJECT_PYTHON/setup.sh" 'install_swift_devtools'
 
-phase "existing-dir + reviewer/CI/scaffold-tests opt-outs"
+phase "existing-dir + CI/scaffold-tests opt-outs"
 
 # Bootstrap into an existing directory should back up touchstone-owned files before replacing them.
 mkdir -p "$PROJECT_EXISTING/principles" "$PROJECT_EXISTING/scripts"
@@ -589,95 +565,7 @@ assert_contains "$PROJECT_EXISTING/principles/engineering-principles.md.bak" 'cu
 assert_contains "$PROJECT_EXISTING/scripts/open-pr.sh.bak" 'custom script'
 assert_contains "$PROJECT_EXISTING/.touchstone-manifest.bak" 'custom manifest'
 
-# Existing project-owned legacy review config must not be rewritten by --unsafe-paths.
-mkdir -p "$PROJECT_EXISTING_CONFIG"
-{
-  printf '[codex_review]\n'
-  printf 'max_iterations = 9\n'
-  printf 'unsafe_paths = []\n'
-  printf 'safe_by_default = true\n'
-} >"$PROJECT_EXISTING_CONFIG/.codex-review.toml"
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_EXISTING_CONFIG" --no-register --unsafe-paths "src/auth/"
-assert_contains "$PROJECT_EXISTING_CONFIG/.codex-review.toml" '^unsafe_paths = \[\]$'
-assert_contains "$PROJECT_EXISTING_CONFIG/.codex-review.toml" '^safe_by_default = true$'
-assert_not_exists "$PROJECT_EXISTING_CONFIG/.touchstone-review.toml"
-if grep -q 'src/auth' "$PROJECT_EXISTING_CONFIG/.codex-review.toml"; then
-  echo "FAIL: expected existing legacy review config unsafe_paths to remain unchanged" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
-# Bootstrap should let users opt out of AI review explicitly.
-# 2.0 shape: `reviewer = "conductor"` is always the reviewer (the field is
-# single-valued in 2.0); `enabled = false` is how opt-out is recorded.
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_NONE" --no-register --no-ai-review
-assert_contains "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^mode = "review-only"$'
-assert_contains "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^safe_by_default = false$'
-assert_contains "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^enabled = false$'
-assert_contains "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^reviewer = "conductor"$'
-assert_line_count "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^\[review\.conductor\]$' 0
-assert_line_count "$PROJECT_REVIEW_NONE/.touchstone-review.toml" '^with = ' 0
-
-# Bootstrap should support explicit offline local model reviewer commands. In
-# 2.0 the `[review.local]` block is retired; local maps to ollama with a comment
-# preserving the user's --local-review-command for later custom-provider
-# registration (Conductor v0.3).
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_LOCAL" --no-register --reviewer local --local-review-command "local-reviewer --model demo" --review-assist --review-autofix --unsafe-paths "src/auth/"
-assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^mode = "fix"$'
-assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^safe_by_default = true$'
-assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^enabled = true$'
-assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^reviewer = "conductor"$'
-assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^with = "ollama"$'
-assert_line_count "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^\[review\.conductor\]$' 1
-assert_line_count "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^with = ' 1
-assert_line_count "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '^exclude = \["ollama"\]$' 0
-assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" 'local-reviewer --model demo'
-assert_contains "$PROJECT_REVIEW_LOCAL/.touchstone-review.toml" '"src/auth/",'
-
-# Bootstrap should still support an explicit OpenRouter provider pin.
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_OPENROUTER" --no-register --reviewer openrouter
-assert_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^enabled = true$'
-assert_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^reviewer = "conductor"$'
-assert_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^with = "openrouter"$'
-assert_line_count "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^\[review\.conductor\]$' 1
-assert_line_count "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^with = ' 1
-assert_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^exclude = \["ollama"\]$'
-assert_not_contains "$PROJECT_REVIEW_OPENROUTER/.touchstone-review.toml" '^small_with = "ollama"'
-
-# Explicit hosted and auto choices must be the sole live provider boundary.
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_CLAUDE" --no-register --reviewer claude
-assert_contains "$PROJECT_REVIEW_CLAUDE/.touchstone-review.toml" '^with = "claude"$'
-assert_line_count "$PROJECT_REVIEW_CLAUDE/.touchstone-review.toml" '^\[review\.conductor\]$' 1
-assert_line_count "$PROJECT_REVIEW_CLAUDE/.touchstone-review.toml" '^with = ' 1
-
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_AUTO" --no-register --reviewer auto
-assert_contains "$PROJECT_REVIEW_AUTO/.touchstone-review.toml" '^with = "auto"$'
-assert_line_count "$PROJECT_REVIEW_AUTO/.touchstone-review.toml" '^\[review\.conductor\]$' 1
-assert_line_count "$PROJECT_REVIEW_AUTO/.touchstone-review.toml" '^with = ' 1
-
-# Fresh non-interactive bootstrap without --yes must use the same live-review
-# default: GitHub Codex plus subscription-backed Codex fallback.
-YES_MODE=false bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_DEFAULT_NONTTY" --no-register
-assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^enabled = true$'
-assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^reviewer = "conductor"$'
-assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^with = "codex"$'
-assert_line_count "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^\[review\.conductor\]$' 1
-assert_line_count "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^with = ' 1
-assert_section_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" \
-  "review.conductor" 'exclude = ["ollama"]'
-assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^\[review\.pr_triggered\]$'
-assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^required = false$'
-assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^provider = "github-codex"$'
-assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^request_on_push = true$'
-assert_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^skip_merge_review = true$'
-assert_not_contains "$PROJECT_REVIEW_DEFAULT_NONTTY/.touchstone-review.toml" '^small_with = "ollama"'
-
-# Retired small-local live routing remains accepted for compatibility, but it
-# degrades to hosted routing instead of sending small diffs to Ollama.
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_REVIEW_RETIRED_SMALL_LOCAL" --no-register --review-routing small-local --small-review-lines 123 --reviewer codex --local-review-command "local-reviewer --model demo"
-assert_contains "$PROJECT_REVIEW_RETIRED_SMALL_LOCAL/.touchstone-review.toml" '^with = "codex"$'
-assert_not_contains "$PROJECT_REVIEW_RETIRED_SMALL_LOCAL/.touchstone-review.toml" '^small_with = "ollama"'
-assert_not_contains "$PROJECT_REVIEW_RETIRED_SMALL_LOCAL/.touchstone-review.toml" '^\[review.routing\]$'
-
+# Review policy is installed from the canonical template and is not user-selectable during bootstrap.
 # Bootstrap should record the optional GitButler workflow choice without making it the default.
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_GITBUTLER" --no-register --gitbutler --gitbutler-mcp
 assert_contains "$PROJECT_GITBUTLER/.touchstone-config" '^git_workflow=gitbutler$'
@@ -1002,18 +890,6 @@ SETUP_VERSION_FAKE_BIN="$TEST_DIR/setup-version-fake-bin"
 mkdir -p "$SETUP_VERSION_FAKE_BIN"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SETUP_VERSION_PROJECT" --no-register >/dev/null
 {
-  printf '\n[review]\n'
-  printf 'enabled = true\n'
-  printf 'reviewers = ["local"]\n'
-  printf '\n[review.routing]\n'
-  printf 'enabled = true\n'
-  printf 'small_max_diff_lines = 123\n'
-  printf 'small_reviewers = ["local", "codex"]\n'
-  printf 'large_reviewers = ["codex"]\n'
-  printf '\n[review.local]\n'
-  printf 'command = "local-reviewer --model demo"\n'
-} >>"$SETUP_VERSION_PROJECT/.touchstone-review.toml"
-{
   printf 'git_workflow=gitbutler\n'
   printf 'gitbutler_mcp=false\n'
 } >>"$SETUP_VERSION_PROJECT/.touchstone-config"
@@ -1056,23 +932,6 @@ if [ "${1:-}" = "login" ] && [ "${2:-}" = "status" ]; then
 fi
 exit 0
 FAKECODEX
-cat >"$SETUP_VERSION_FAKE_BIN/conductor" <<'FAKECONDUCTOR'
-#!/usr/bin/env bash
-if [ -n "${CONDUCTOR_SETUP_LOG:-}" ]; then
-  printf '%s\n' "$*" >>"$CONDUCTOR_SETUP_LOG"
-fi
-case "$1" in
-  doctor)
-    printf '{"configured": true}\n'
-    exit 0
-    ;;
-  route)
-    printf '{"selected_provider":"codex"}\n'
-    exit 0
-    ;;
-esac
-exit 0
-FAKECONDUCTOR
 cat >"$SETUP_VERSION_FAKE_BIN/but" <<'FAKEBUT'
 #!/usr/bin/env bash
 exit 0
@@ -1080,32 +939,8 @@ FAKEBUT
 chmod +x "$SETUP_VERSION_FAKE_BIN/"*
 (cd "$SETUP_VERSION_PROJECT" && PATH="$SETUP_VERSION_FAKE_BIN:$PATH" bash setup.sh) >"$TEST_DIR/setup-version-output.txt"
 assert_contains "$TEST_DIR/setup-version-output.txt" 'touchstone v9.9.9'
-assert_contains "$TEST_DIR/setup-version-output.txt" 'review routing enabled'
-assert_contains "$TEST_DIR/setup-version-output.txt" 'local reviewer configured: local-reviewer --model demo'
 assert_contains "$TEST_DIR/setup-version-output.txt" 'GitButler selected'
 assert_contains "$TEST_DIR/setup-version-output.txt" 'but installed'
-assert_not_contains "$TEST_DIR/setup-version-output.txt" "unknown AI reviewer"
-
-SETUP_CONDUCTOR_PROJECT="$TEST_DIR/setup-conductor-project"
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SETUP_CONDUCTOR_PROJECT" --no-register --reviewer codex >/dev/null
-CONDUCTOR_SETUP_LOG="$TEST_DIR/setup-conductor.log"
-: >"$CONDUCTOR_SETUP_LOG"
-(cd "$SETUP_CONDUCTOR_PROJECT" && PATH="$SETUP_VERSION_FAKE_BIN:$PATH" CONDUCTOR_SETUP_LOG="$CONDUCTOR_SETUP_LOG" bash setup.sh) >"$TEST_DIR/setup-conductor-output.txt"
-assert_contains "$TEST_DIR/setup-conductor-output.txt" 'pinned provider: codex'
-assert_contains "$TEST_DIR/setup-conductor-output.txt" 'no automatic metered overflow'
-assert_not_contains "$TEST_DIR/setup-conductor-output.txt" 'codex installed'
-assert_not_contains "$TEST_DIR/setup-conductor-output.txt" 'Installing Codex CLI'
-assert_contains "$CONDUCTOR_SETUP_LOG" '^route --json --kind review --with codex$'
-
-: >"$CONDUCTOR_SETUP_LOG"
-(cd "$SETUP_CONDUCTOR_PROJECT" \
-  && PATH="$SETUP_VERSION_FAKE_BIN:$PATH" \
-    CODEX_LOGIN_STATUS='Logged in using an API key' \
-    CONDUCTOR_SETUP_LOG="$CONDUCTOR_SETUP_LOG" \
-    bash setup.sh) >"$TEST_DIR/setup-conductor-api-key-output.txt"
-assert_contains "$TEST_DIR/setup-conductor-api-key-output.txt" 'refuses API-key authentication to avoid metered spend'
-assert_not_contains "$TEST_DIR/setup-conductor-api-key-output.txt" 'pinned provider: codex'
-assert_not_contains "$CONDUCTOR_SETUP_LOG" '^route '
 
 # touchstone-run.sh should provide ecosystem-neutral task dispatch.
 RUNNER_FAKE_BIN="$TEST_DIR/runner-fake-bin"
@@ -1381,18 +1216,6 @@ fi
 
 phase "touchstone doctor + sibling detection"
 
-DOCTOR_CONDUCTOR_BIN="$TEST_DIR/doctor-conductor-bin"
-mkdir -p "$DOCTOR_CONDUCTOR_BIN"
-cat >"$DOCTOR_CONDUCTOR_BIN/conductor" <<'CONDUCTORSTUB'
-#!/usr/bin/env bash
-if [ "${1:-}" = "doctor" ] && [ "${2:-}" = "--json" ]; then
-  printf '{"providers":[{"configured":true}]}\n'
-  exit 0
-fi
-exit 0
-CONDUCTORSTUB
-chmod +x "$DOCTOR_CONDUCTOR_BIN/conductor"
-
 # touchstone doctor --project must exit clean on a fully-armed repo.
 # Use the fake pre-commit so hooks install regardless of what's on the tester's real PATH.
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR" --no-register >/dev/null
@@ -1417,7 +1240,7 @@ assert_contains "$TEST_DIR/doctor-clean.txt" 'Autumn Garage siblings'
 PROJECT_DOCTOR_NO_SIBLINGS="$TEST_DIR/test-project-doctor-no-siblings"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_NO_SIBLINGS" --no-register \
   --no-with-cortex --no-with-sentinel >/dev/null
-if (cd "$PROJECT_DOCTOR_NO_SIBLINGS" && PATH="$DOCTOR_CONDUCTOR_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-no-siblings.txt" 2>&1; then
+if (cd "$PROJECT_DOCTOR_NO_SIBLINGS" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-no-siblings.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-no-siblings.txt" 'Autumn Garage siblings'
   assert_contains "$TEST_DIR/doctor-no-siblings.txt" 'cortex not installed'
   assert_contains "$TEST_DIR/doctor-no-siblings.txt" 'sentinel not installed'
@@ -1433,7 +1256,7 @@ fi
 PROJECT_DOCTOR_MARKER_ONLY="$TEST_DIR/test-project-doctor-marker-only"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_MARKER_ONLY" --no-register >/dev/null
 mkdir -p "$PROJECT_DOCTOR_MARKER_ONLY/.cortex"
-if (cd "$PROJECT_DOCTOR_MARKER_ONLY" && PATH="$DOCTOR_CONDUCTOR_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-marker-only.txt" 2>&1; then
+if (cd "$PROJECT_DOCTOR_MARKER_ONLY" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-marker-only.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-marker-only.txt" 'cortex CLI missing but .cortex/ present'
 else
   echo "FAIL: doctor --project should exit 0 when a sibling CLI is missing but its marker dir is present — still non-blocking" >&2
@@ -1466,7 +1289,7 @@ chmod +x "$SIBLING_STUB_BIN/sentinel"
 
 PROJECT_DOCTOR_SIBLINGS="$TEST_DIR/test-project-doctor-with-siblings"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_SIBLINGS" --no-register >/dev/null
-if (cd "$PROJECT_DOCTOR_SIBLINGS" && PATH="$SIBLING_STUB_BIN:$DOCTOR_CONDUCTOR_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-with-siblings.txt" 2>&1; then
+if (cd "$PROJECT_DOCTOR_SIBLINGS" && PATH="$SIBLING_STUB_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-with-siblings.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-with-siblings.txt" 'cortex 9.9.9 (installed)'
   # Sentinel only responds to --version — asserts the probe-fallback works.
   assert_contains "$TEST_DIR/doctor-with-siblings.txt" 'sentinel 8.8.8 (installed)'
@@ -1489,7 +1312,7 @@ cp "$SIBLING_STUB_BIN/sentinel" "$BROKEN_SIBLING_BIN/sentinel"
 
 PROJECT_DOCTOR_BROKEN_SIBLING="$TEST_DIR/test-project-doctor-broken-sibling"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_BROKEN_SIBLING" --no-register >/dev/null
-if (cd "$PROJECT_DOCTOR_BROKEN_SIBLING" && PATH="$BROKEN_SIBLING_BIN:$DOCTOR_CONDUCTOR_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-broken-sibling.txt" 2>&1; then
+if (cd "$PROJECT_DOCTOR_BROKEN_SIBLING" && PATH="$BROKEN_SIBLING_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-broken-sibling.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-broken-sibling.txt" "cortex CLI is unhealthy at $BROKEN_SIBLING_BIN/cortex"
   assert_contains "$TEST_DIR/doctor-broken-sibling.txt" 'version probe failed'
   assert_not_contains "$TEST_DIR/doctor-broken-sibling.txt" 'cortex 7.7.7 (installed)'
@@ -1514,7 +1337,7 @@ cp "$SIBLING_STUB_BIN/sentinel" "$OLDER_SIBLING_BIN/sentinel"
 PROJECT_DOCTOR_SHADOWED_SIBLING="$TEST_DIR/test-project-doctor-shadowed-sibling"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_SHADOWED_SIBLING" --no-register >/dev/null
 older_cortex_marker="$TEST_DIR/older-cortex-invoked"
-if (cd "$PROJECT_DOCTOR_SHADOWED_SIBLING" && PATH="$BROKEN_SIBLING_BIN:$OLDER_SIBLING_BIN:$DOCTOR_CONDUCTOR_BIN:/usr/bin:/bin" TOUCHSTONE_OLDER_CORTEX_MARKER="$older_cortex_marker" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-shadowed-sibling.txt" 2>&1; then
+if (cd "$PROJECT_DOCTOR_SHADOWED_SIBLING" && PATH="$BROKEN_SIBLING_BIN:$OLDER_SIBLING_BIN:/usr/bin:/bin" TOUCHSTONE_OLDER_CORTEX_MARKER="$older_cortex_marker" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-shadowed-sibling.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-shadowed-sibling.txt" "cortex CLI is unhealthy at $BROKEN_SIBLING_BIN/cortex"
   assert_not_exists "$older_cortex_marker"
   assert_not_contains "$TEST_DIR/doctor-shadowed-sibling.txt" 'cortex 6.6.6 (installed)'
@@ -1665,7 +1488,7 @@ printf 'profile=python\n' >>"$PROJECT_DOCTOR_ALIAS_KEY/.touchstone-config"
 if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
   echo "SKIP: ruff on minimal PATH; cannot test project_type/profile last-wins doctor case on this machine" >&2
 else
-  if (cd "$PROJECT_DOCTOR_ALIAS_KEY" && PATH="$DOCTOR_CONDUCTOR_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-alias-key.txt" 2>&1; then
+  if (cd "$PROJECT_DOCTOR_ALIAS_KEY" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-alias-key.txt" 2>&1; then
     echo "FAIL: doctor --project on a Python-via-profile= project with no ruff should exit nonzero" >&2
     ERRORS=$((ERRORS + 1))
   else
@@ -1757,7 +1580,7 @@ sed -i '' 's|^test_command=.*|test_command=echo "custom test"|' "$PROJECT_DOCTOR
 if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
   echo "SKIP: ruff on minimal PATH; cannot test override-suppresses-ruff-check on this machine" >&2
 else
-  if (cd "$PROJECT_DOCTOR_PY_OVERRIDE" && PATH="$DOCTOR_CONDUCTOR_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-py-override.txt" 2>&1; then
+  if (cd "$PROJECT_DOCTOR_PY_OVERRIDE" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-py-override.txt" 2>&1; then
     assert_contains "$TEST_DIR/doctor-py-override.txt" 'Project is fully armed'
     assert_contains "$TEST_DIR/doctor-py-override.txt" 'lint: overridden via .touchstone-config'
     assert_contains "$TEST_DIR/doctor-py-override.txt" 'tests: overridden via .touchstone-config'
@@ -2293,7 +2116,6 @@ echo "==> PASS: all assertions passed"
     "$PROJECT" \
     --no-register \
     --type generic \
-    --reviewer none \
     --no-gitbutler \
     --no-ci \
     --no-with-cortex \

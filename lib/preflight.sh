@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# lib/preflight.sh — deterministic review preflight checks.
+# lib/preflight.sh — deterministic preflight checks.
 #
 # Public entrypoint:
 #   touchstone_preflight_main [--diff <base-ref>|--all-files] [repo-root]
@@ -36,41 +36,8 @@ touchstone_preflight_truthy() {
   esac
 }
 
-touchstone_preflight_unset_review_env() {
-  unset TOUCHSTONE_CONDUCTOR_WITH
-  unset TOUCHSTONE_CONDUCTOR_PREFER
-  unset TOUCHSTONE_CONDUCTOR_EFFORT
-  unset TOUCHSTONE_CONDUCTOR_TAGS
-  unset TOUCHSTONE_CONDUCTOR_EXCLUDE
-  unset TOUCHSTONE_REVIEWER
-  unset CODEX_REVIEW_ASSIST
-  unset CODEX_REVIEW_ASSIST_TIMEOUT
-  unset CODEX_REVIEW_ASSIST_MAX_ROUNDS
-  unset CODEX_REVIEW_BASE
-  unset CODEX_REVIEW_BRANCH_NAME
-  unset CODEX_REVIEW_CACHE_CLEAN
-  unset CODEX_REVIEW_CONTEXT_MODE
-  unset CODEX_REVIEW_CONTEXT_SMALL_MAX_DIFF_LINES
-  unset CODEX_REVIEW_CONTEXT_SMALL_MAX_FILES
-  unset CODEX_REVIEW_DISABLE_CACHE
-  unset CODEX_REVIEW_ENABLED
-  unset CODEX_REVIEW_DIAGNOSTICS_FILE
-  unset CODEX_REVIEW_FINDINGS_HISTORY_FILE
-  unset CODEX_REVIEW_FORCE
-  unset CODEX_REVIEW_MAX_DIFF_LINES
-  unset CODEX_REVIEW_MAX_ITERATIONS
-  unset CODEX_REVIEW_MODE
-  unset CODEX_REVIEW_NO_AUTOFIX
-  unset CODEX_REVIEW_ON_ERROR
-  unset CODEX_REVIEW_SUMMARY_FILE
-  unset CODEX_REVIEW_TIMEOUT
-}
-
 touchstone_preflight_main_sanitized() {
-  (
-    touchstone_preflight_unset_review_env
-    touchstone_preflight_main "$@"
-  )
+  touchstone_preflight_main "$@"
 }
 
 touchstone_preflight_repo_root() {
@@ -205,9 +172,6 @@ touchstone_preflight_tool_fingerprint() {
 }
 
 touchstone_preflight_env_fingerprint() {
-  local dogfood_resolved_command
-
-  dogfood_resolved_command="$(touchstone_preflight_dogfood_command || true)"
   {
     printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_SCRIPT=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_SCRIPT:-}"
     printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND:-}"
@@ -216,7 +180,6 @@ touchstone_preflight_env_fingerprint() {
     printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_SMOKE_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_SMOKE_COMMAND:-}"
     printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_FULL_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_FULL_COMMAND:-}"
     printf 'TOUCHSTONE_PREFLIGHT_DOGFOOD_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_DOGFOOD_COMMAND:-}"
-    printf 'TOUCHSTONE_PREFLIGHT_DOGFOOD_RESOLVED_COMMAND=%s\n' "$dogfood_resolved_command"
     printf 'TOUCHSTONE_PREFLIGHT_SKIP_DOGFOOD=%s\n' "${TOUCHSTONE_PREFLIGHT_SKIP_DOGFOOD:-}"
   } | touchstone_preflight_hash_stream
 }
@@ -235,11 +198,9 @@ touchstone_preflight_cache_inputs() {
   checker_hash="$(touchstone_preflight_hash_file_list \
     "lib/preflight.sh" "$PREFLIGHT_LIB_DIR/preflight.sh" \
     "lib/preflight-scope.sh" "$PREFLIGHT_LIB_DIR/preflight-scope.sh" \
-    "scripts/touchstone-run.sh" "$PREFLIGHT_LIB_DIR/../scripts/touchstone-run.sh" \
-    "scripts/conductor-dogfood-smoke.py" "$PREFLIGHT_LIB_DIR/../scripts/conductor-dogfood-smoke.py")"
+    "scripts/touchstone-run.sh" "$PREFLIGHT_LIB_DIR/../scripts/touchstone-run.sh")"
   config_hash="$(touchstone_preflight_hash_paths "$repo_root" \
     ".touchstone-review.toml" \
-    ".codex-review.toml" \
     ".touchstone-config" \
     ".touchstone-version" \
     ".pre-commit-config.yaml" \
@@ -463,7 +424,7 @@ touchstone_preflight_delivery_only_path() {
     .touchstone-version | .touchstone-manifest | TOUCHSTONE.md | AGENTS.md | GEMINI.md)
       return 0
       ;;
-    .touchstone-review.toml | .codex-review.toml)
+    .touchstone-review.toml)
       return 0
       ;;
     .github/workflows/issue-claim-check.yml)
@@ -475,7 +436,7 @@ touchstone_preflight_delivery_only_path() {
     principles/*)
       return 0
       ;;
-    scripts/conductor-review.sh | scripts/codex-review.sh | scripts/branch-guard.sh)
+    scripts/branch-guard.sh)
       return 0
       ;;
     scripts/emergency-disclosure.sh | scripts/cortex-pr-merged-hook.sh)
@@ -496,10 +457,7 @@ touchstone_preflight_delivery_only_path() {
     lib/toml.sh | lib/events.sh | lib/codex-auth.sh | lib/worker-ship-job.sh | lib/worker-review-fix.sh | lib/worker-state.sh | lib/script-sync-guard.sh)
       return 0
       ;;
-    lib/preflight.sh | lib/preflight-scope.sh | lib/review-comment.sh)
-      return 0
-      ;;
-    hooks/conductor-review.sh | hooks/codex-review.sh)
+    lib/preflight.sh | lib/preflight-scope.sh)
       return 0
       ;;
   esac
@@ -1062,18 +1020,6 @@ touchstone_preflight_validate() {
 touchstone_preflight_dogfood_command() {
   if [ -n "${TOUCHSTONE_PREFLIGHT_DOGFOOD_COMMAND:-}" ]; then
     printf '%s\n' "$TOUCHSTONE_PREFLIGHT_DOGFOOD_COMMAND"
-    return 0
-  fi
-
-  if [ ! -f "scripts/conductor-dogfood-smoke.py" ]; then
-    return 1
-  fi
-  if [ -x ".venv/bin/python" ]; then
-    printf '%s\n' ".venv/bin/python scripts/conductor-dogfood-smoke.py"
-    return 0
-  fi
-  if command -v uv >/dev/null 2>&1; then
-    printf '%s\n' "uv run python scripts/conductor-dogfood-smoke.py"
     return 0
   fi
   return 1

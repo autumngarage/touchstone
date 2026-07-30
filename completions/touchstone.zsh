@@ -10,7 +10,6 @@ _touchstone() {
     'sync:Deprecated alias for update-all'
     'status:Show project status (use --all for the registry view)'
     'doctor:Check project or installation health'
-    'review-stats:Report conductor-review fail-open trends'
     'preflight:Run deterministic review preflight checks'
     'version:Show installed version'
     'list:Show registered projects'
@@ -35,31 +34,13 @@ _touchstone() {
           _arguments \
             '--no-setup[Bootstrap files without running setup.sh]' \
             '--no-register[Do not add the project to ~/.touchstone-projects]' \
-            '--type[Project type]:project type:(auto node python swift rust go generic)' \
-            '--unsafe-paths[Comma-separated high-scrutiny paths]:paths:' \
-            '--reviewer[AI reviewer]:reviewer:(auto codex claude gemini local none)' \
-            '--no-ai-review[Disable AI review]' \
-            '--no-review[Disable AI review]' \
-            '--review-assist[Allow one peer reviewer second opinion]' \
-            '--no-review-assist[Disable peer reviewer assistance]' \
-            '--review-autofix[Allow low-risk auto-fixes]' \
-            '--no-review-autofix[Disable auto-fixes]' \
-            '--local-review-command[Command that reads review prompt on stdin]:command:'
+            '--type[Project type]:project type:(auto node python swift rust go generic)'
           ;;
         new)
           _arguments \
             '1:project directory:_directories' \
             '--no-register[Do not add the project to ~/.touchstone-projects]' \
-            '--type[Project type]:project type:(auto node python swift rust go generic)' \
-            '--unsafe-paths[Comma-separated high-scrutiny paths]:paths:' \
-            '--reviewer[AI reviewer]:reviewer:(auto codex claude gemini local none)' \
-            '--no-ai-review[Disable AI review]' \
-            '--no-review[Disable AI review]' \
-            '--review-assist[Allow one peer reviewer second opinion]' \
-            '--no-review-assist[Disable peer reviewer assistance]' \
-            '--review-autofix[Allow low-risk auto-fixes]' \
-            '--no-review-autofix[Disable auto-fixes]' \
-            '--local-review-command[Command that reads review prompt on stdin]:command:'
+            '--type[Project type]:project type:(auto node python swift rust go generic)'
           ;;
         update)
           _arguments \
@@ -86,11 +67,6 @@ _touchstone() {
             '--project[Check per-project health]' \
             '--require-capability[Require a project-local workflow capability]:capability:' \
             '--installation[Check touchstone installation health]'
-          ;;
-        review-stats)
-          _arguments \
-            '--log-path[Read a fixture or alternate review log]:log path:_files' \
-            '--threshold[Warn when last-7d fail-open rate exceeds this percent]:percent:'
           ;;
         unregister)
           # Complete from registered projects.

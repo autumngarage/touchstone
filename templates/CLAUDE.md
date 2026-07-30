@@ -10,7 +10,9 @@ Codex and other AGENTS.md-native tools read `AGENTS.md`; Gemini CLI reads `GEMIN
 
 Claude Code is a **driving CLI** in this repo: it owns file edits, git state, tests, commits, PR creation, PR comment triage, fix commits, approval tracking, and merge. Codex and Gemini CLI are equivalent fallback drivers because all three load the same managed principles and delivery workflow.
 
-Conductor is the **worker/reviewer router**. The driving CLI may invoke Conductor for code review or bounded model work, and Conductor can fall back across configured providers such as Claude, Codex, Gemini, or local models. Conductor provider fallback does not replace the driving CLI's responsibility for the branch → PR → agentic review loop → approved merge workflow.
+Semantic review is PR-visible and asynchronous. The driving CLI remains
+responsible for addressing review findings, validating each revised head, and
+merging only after the required GitHub review and checks approve.
 
 ## Universal steering
 

@@ -14,29 +14,7 @@ GIT_PATH_ROOT="$TEST_DIR/git-path"
 DEFAULT_FAKE_WORKTREE="$TEST_DIR/default-feature-worktree"
 mkdir -p "$FAKE_BIN" "$MERGE_SCRIPT_DIR" "$GIT_PATH_ROOT" "$DEFAULT_FAKE_WORKTREE"
 cp "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$MERGE_SCRIPT_DIR/merge-pr.sh"
-cat >"$MERGE_SCRIPT_DIR/codex-review.sh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-{
-  printf 'CODEX_REVIEW_BASE=%s\n' "${CODEX_REVIEW_BASE:-}"
-  printf 'CODEX_REVIEW_FORCE=%s\n' "${CODEX_REVIEW_FORCE:-}"
-  printf 'CODEX_REVIEW_MODE=%s\n' "${CODEX_REVIEW_MODE:-}"
-  printf 'CODEX_REVIEW_ON_ERROR=%s\n' "${CODEX_REVIEW_ON_ERROR:-}"
-  printf 'CODEX_REVIEW_BRANCH_NAME=%s\n' "${CODEX_REVIEW_BRANCH_NAME:-}"
-  printf 'TOUCHSTONE_CONDUCTOR_WITH=%s\n' "${TOUCHSTONE_CONDUCTOR_WITH:-}"
-} > "$CODEX_REVIEW_LOG"
-if [ -n "${CODEX_REVIEW_STUB_OUTPUT:-}" ]; then
-  printf '%s\n' "$CODEX_REVIEW_STUB_OUTPUT"
-fi
-if [ -n "${CODEX_REVIEW_STUB_SUMMARY:-}" ] && [ -n "${CODEX_REVIEW_SUMMARY_FILE:-}" ]; then
-  printf '%s\n' "$CODEX_REVIEW_STUB_SUMMARY" > "$CODEX_REVIEW_SUMMARY_FILE"
-fi
-if [ -n "${CODEX_REVIEW_MUTATE_HEAD:-}" ]; then
-  printf '%s\n' "$CODEX_REVIEW_MUTATE_HEAD" > "$GIT_REVIEW_HEAD_FILE"
-fi
-exit "${CODEX_REVIEW_EXIT:-0}"
-EOF
-chmod +x "$MERGE_SCRIPT_DIR/merge-pr.sh" "$MERGE_SCRIPT_DIR/codex-review.sh"
+chmod +x "$MERGE_SCRIPT_DIR/merge-pr.sh"
 
 cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -156,7 +134,18 @@ case "${1:-} ${2:-}" in
         ;;
       isDraft) echo "${GH_IS_DRAFT:-false}" ;;
       reviewDecision) echo "${GH_REVIEW_DECISION:-}" ;;
-      mergeStateStatus,mergeable) echo "${GH_MERGE_STATE:-CLEAN MERGEABLE}" ;;
+      mergeStateStatus,mergeable)
+        merge_state_attempt="$(increment_counter_file "${GH_MERGE_ATTEMPTS_FILE:-}")"
+        if [ -n "${GH_MERGE_STATE_IMMEDIATE:-}" ]; then
+          echo "$GH_MERGE_STATE_IMMEDIATE"
+        elif [ "$merge_state_attempt" -le "${GH_MERGE_STATE_PENDING_ATTEMPTS:-0}" ]; then
+          echo "${GH_MERGE_STATE_PENDING_VALUE:-UNSTABLE MERGEABLE}"
+        elif [ "$merge_state_attempt" -le "${GH_MERGE_STATE_UNKNOWN_ATTEMPTS:-0}" ]; then
+          echo "UNKNOWN UNKNOWN"
+        else
+          echo "${GH_MERGE_STATE:-CLEAN MERGEABLE}"
+        fi
+        ;;
       *)
         echo "unexpected gh pr view args: $*" >&2
         exit 1
@@ -552,9 +541,6 @@ case "$*" in
   cat-file\ -e\ origin/*:.touchstone-review.toml)
     [ -f "$(trusted_touchstone_config_file)" ] || exit 1
     ;;
-  cat-file\ -e\ origin/*:.codex-review.toml)
-    [ -f "${TEST_CURRENT_WORKTREE:-}/.codex-review.toml" ] || exit 1
-    ;;
   "show-ref --verify --quiet refs/heads/feature/test")
     if [ -f "$GIT_BRANCH_DELETED_FILE" ]; then
       exit 1
@@ -566,9 +552,6 @@ case "$*" in
       exit 1
     fi
     cat "$(trusted_touchstone_config_file)"
-    ;;
-  show\ origin/*:.codex-review.toml)
-    cat "${TEST_CURRENT_WORKTREE:-}/.codex-review.toml"
     ;;
   cat-file\ -e\ *^\{commit\})
     ;;
@@ -585,6 +568,7 @@ case "$*" in
     printf '%s' "${GIT_WORKTREE_STATUS:-}"
     ;;
   "status --porcelain" | "status --porcelain --untracked-files=all")
+    printf '%s' "${GIT_WORKTREE_STATUS:-}"
     ;;
   "ls-files --others --exclude-standard -z")
     emit_untracked_path "$@"
@@ -640,7 +624,7 @@ EOF
 chmod +x "$FAKE_BIN/gh" "$FAKE_BIN/git"
 
 reset_case_files() {
-  rm -f "$TEST_DIR"/output*.txt "$TEST_DIR"/codex-review*.log \
+  rm -f "$TEST_DIR"/output*.txt \
     "$TEST_DIR"/gh-checkout* "$TEST_DIR"/gh-merge-head* \
     "$TEST_DIR"/gh-merge-args* "$TEST_DIR"/gh-merge-body* \
     "$TEST_DIR"/gh-comment* "$TEST_DIR"/gh-review-request* "$TEST_DIR"/gh-status-records* "$TEST_DIR"/git-checkout-main* \
@@ -653,6 +637,7 @@ reset_case_files() {
     "$TEST_DIR"/gh-graphql-calls* "$TEST_DIR"/gh-head-ref-calls* "$TEST_DIR"/gh-base-ref-calls* \
     "$TEST_DIR"/gh-reviews-graphql-calls* "$TEST_DIR"/gh-reactions-calls* \
     "$TEST_DIR"/gh-comments-calls* "$TEST_DIR"/gh-request-lookup-calls*
+  rm -f "$TEST_DIR/gh-merge-attempts"
   rm -f "$TEST_DIR/revision-changed-after-trigger"
   rm -rf "$GIT_PATH_ROOT"
   rm -rf "$DEFAULT_FAKE_WORKTREE"
@@ -663,6 +648,10 @@ reset_case_files() {
   unset TEST_CURRENT_WORKTREE
   unset GH_PR_MERGE_FAIL_LOCAL
   unset GH_MERGE_STATE
+  unset GH_MERGE_STATE_IMMEDIATE
+  unset GH_MERGE_STATE_PENDING_ATTEMPTS
+  unset GH_MERGE_STATE_PENDING_VALUE
+  unset GH_MERGE_STATE_UNKNOWN_ATTEMPTS
   unset GH_FAILED_CHECKS
   unset GH_REPO_FULL_NAME
   unset GH_PR_VIEW_FAIL_FIELD
@@ -710,10 +699,6 @@ reset_case_files() {
   unset GH_COMMENT_COMMIT_RESOLUTION_FAIL
   unset GH_RESOLVED_COMMENT_COMMIT
   unset MERGE_PR_SLEEP_OVERRIDE
-  unset CODEX_REVIEW_EXIT
-  unset CODEX_REVIEW_STUB_OUTPUT
-  unset CODEX_REVIEW_STUB_SUMMARY
-  unset CODEX_REVIEW_MUTATE_HEAD
   unset GIT_LOCAL_BRANCH_HEAD
   unset GH_EXPECT_MERGE_HEAD
   unset GH_PR_HEAD_OID
@@ -742,7 +727,6 @@ run_merge_pr() {
   shift
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     GIT_PATH_ROOT="$GIT_PATH_ROOT" \
-    CODEX_REVIEW_LOG="$TEST_DIR/codex-review.log" \
     GH_CHECKOUT_FILE="$TEST_DIR/gh-checkout" \
     GH_MERGE_HEAD_FILE="$TEST_DIR/gh-merge-head" \
     GH_MERGE_ARGS_FILE="$TEST_DIR/gh-merge-args" \
@@ -756,6 +740,11 @@ run_merge_pr() {
     GH_EXPECT_MERGE_HEAD="${GH_EXPECT_MERGE_HEAD:-pr-head-oid}" \
     GH_PR_MERGE_FAIL_LOCAL="${GH_PR_MERGE_FAIL_LOCAL:-false}" \
     GH_MERGE_STATE="${GH_MERGE_STATE:-CLEAN MERGEABLE}" \
+    GH_MERGE_STATE_IMMEDIATE="${GH_MERGE_STATE_IMMEDIATE:-}" \
+    GH_MERGE_STATE_PENDING_ATTEMPTS="${GH_MERGE_STATE_PENDING_ATTEMPTS:-0}" \
+    GH_MERGE_STATE_PENDING_VALUE="${GH_MERGE_STATE_PENDING_VALUE:-UNSTABLE MERGEABLE}" \
+    GH_MERGE_STATE_UNKNOWN_ATTEMPTS="${GH_MERGE_STATE_UNKNOWN_ATTEMPTS:-0}" \
+    GH_MERGE_ATTEMPTS_FILE="$TEST_DIR/gh-merge-attempts" \
     GH_FAILED_CHECKS="${GH_FAILED_CHECKS:-}" \
     GH_REPO_FULL_NAME="${GH_REPO_FULL_NAME:-autumngarage/touchstone}" \
     GH_PR_VIEW_FAIL_FIELD="${GH_PR_VIEW_FAIL_FIELD:-}" \
@@ -835,10 +824,6 @@ run_merge_pr() {
     GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE="${GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE:-}" \
     GIT_TRUSTED_CONFIG_SHOW_FAIL="${GIT_TRUSTED_CONFIG_SHOW_FAIL:-false}" \
     SHELLCHECK_VERSION_LINE="${SHELLCHECK_VERSION_LINE:-}" \
-    CODEX_REVIEW_EXIT="${CODEX_REVIEW_EXIT:-0}" \
-    CODEX_REVIEW_STUB_OUTPUT="${CODEX_REVIEW_STUB_OUTPUT:-}" \
-    CODEX_REVIEW_STUB_SUMMARY="${CODEX_REVIEW_STUB_SUMMARY:-}" \
-    CODEX_REVIEW_MUTATE_HEAD="${CODEX_REVIEW_MUTATE_HEAD:-}" \
     GIT_LOCAL_BRANCH_HEAD="${GIT_LOCAL_BRANCH_HEAD:-pr-head-oid}" \
     PREFLIGHT_CALLS_FILE="${PREFLIGHT_CALLS_FILE:-}" \
     TEST_CURRENT_WORKTREE="${TEST_CURRENT_WORKTREE:-$DEFAULT_FAKE_WORKTREE}" \
@@ -916,6 +901,8 @@ durable_request_records() {
     "$trigger_at" "$creator" "$base_oid" "$intent_at trigger=$trigger_at"
 }
 
+CLEAN_TRUSTED_REVIEW=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/clean'
+
 write_established_boolean_alias_config() {
   install_toml_parser_fixture
   mkdir -p "$DEFAULT_FAKE_WORKTREE"
@@ -931,389 +918,7 @@ skip_merge_review = true
 EOF
 }
 
-echo "==> Test: merge preflight sanitizes reviewer routing env"
-mkdir -p "$TEST_DIR/lib"
-cat >"$TEST_DIR/lib/preflight.sh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-touchstone_preflight_main() {
-  {
-    printf 'TOUCHSTONE_CONDUCTOR_WITH=%s\n' "${TOUCHSTONE_CONDUCTOR_WITH:-}"
-    printf 'TOUCHSTONE_CONDUCTOR_EFFORT=%s\n' "${TOUCHSTONE_CONDUCTOR_EFFORT:-}"
-    printf 'CODEX_REVIEW_MODE=%s\n' "${CODEX_REVIEW_MODE:-}"
-    printf 'CODEX_REVIEW_TIMEOUT=%s\n' "${CODEX_REVIEW_TIMEOUT:-}"
-  } >"$PREFLIGHT_ENV_LOG"
-}
-
-touchstone_preflight_main_sanitized() {
-  (
-    unset TOUCHSTONE_CONDUCTOR_WITH
-    unset TOUCHSTONE_CONDUCTOR_EFFORT
-    unset CODEX_REVIEW_MODE
-    unset CODEX_REVIEW_TIMEOUT
-    touchstone_preflight_main "$@"
-  )
-}
-EOF
-reset_case_files
-(
-  export PREFLIGHT_ENV_LOG="$TEST_DIR/preflight-env.log"
-  export TOUCHSTONE_CONDUCTOR_WITH="deepseek-reasoner"
-  export TOUCHSTONE_CONDUCTOR_EFFORT="high"
-  export CODEX_REVIEW_MODE="diff-only"
-  export CODEX_REVIEW_TIMEOUT="7"
-  run_merge_pr "$TEST_DIR/output-preflight-env.txt" 123
-)
-rm -rf "${TEST_DIR:?}/lib"
-if grep -q '^TOUCHSTONE_CONDUCTOR_WITH=$' "$TEST_DIR/preflight-env.log" \
-  && grep -q '^TOUCHSTONE_CONDUCTOR_EFFORT=$' "$TEST_DIR/preflight-env.log" \
-  && grep -q '^CODEX_REVIEW_MODE=$' "$TEST_DIR/preflight-env.log" \
-  && grep -q '^CODEX_REVIEW_TIMEOUT=$' "$TEST_DIR/preflight-env.log" \
-  && grep -q '^TOUCHSTONE_CONDUCTOR_WITH=deepseek-reasoner$' "$TEST_DIR/codex-review.log"; then
-  echo "==> PASS: merge preflight saw sanitized env while live review kept provider pin"
-else
-  echo "FAIL: merge preflight should not inherit reviewer routing env" >&2
-  echo "--- preflight env ---" >&2
-  cat "$TEST_DIR/preflight-env.log" >&2
-  echo "--- review env ---" >&2
-  cat "$TEST_DIR/codex-review.log" >&2
-  echo "--- output ---" >&2
-  cat "$TEST_DIR/output-preflight-env.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: clean preflight marker reuses exact merge-gate inputs"
-install_preflight_counter_fixture
-reset_case_files
-: >"$TEST_DIR/preflight-calls"
-if CODEX_REVIEW_EXIT=1 \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-first.txt" 123; then
-  echo "FAIL: first cache fixture run should stop at review failure" >&2
-  exit 1
-fi
-if CODEX_REVIEW_EXIT=1 \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-second.txt" 123; then
-  echo "FAIL: second cache fixture run should stop at review failure" >&2
-  exit 1
-fi
-rm -rf "${TEST_DIR:?}/lib"
-if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "1" ] \
-  && grep -q 'Deterministic preflight clean (cached=false' "$TEST_DIR/output-preflight-cache-first.txt" \
-  && grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-second.txt"; then
-  echo "==> PASS: exact preflight inputs reused clean marker"
-else
-  echo "FAIL: exact preflight inputs should reuse the clean marker" >&2
-  cat "$TEST_DIR/preflight-calls" >&2
-  cat "$TEST_DIR/output-preflight-cache-first.txt" >&2
-  cat "$TEST_DIR/output-preflight-cache-second.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: preflight cache reruns when PR head changes"
-install_preflight_counter_fixture
-reset_case_files
-: >"$TEST_DIR/preflight-calls"
-if CODEX_REVIEW_EXIT=1 \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-head-first.txt" 123; then
-  echo "FAIL: first head-mismatch fixture run should stop at review failure" >&2
-  exit 1
-fi
-if CODEX_REVIEW_EXIT=1 \
-  GH_PR_HEAD_OID="next-head-oid" \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-head-second.txt" 123; then
-  echo "FAIL: second head-mismatch fixture run should stop at review failure" >&2
-  exit 1
-fi
-rm -rf "${TEST_DIR:?}/lib"
-if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "2" ] \
-  && grep -q 'Deterministic preflight clean (cached=false' "$TEST_DIR/output-preflight-cache-head-second.txt" \
-  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-head-second.txt"; then
-  echo "==> PASS: changed PR head forced preflight rerun"
-else
-  echo "FAIL: changed PR head should force preflight rerun" >&2
-  cat "$TEST_DIR/preflight-calls" >&2
-  cat "$TEST_DIR/output-preflight-cache-head-second.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: preflight cache reruns when base or merge-base changes"
-install_preflight_counter_fixture
-reset_case_files
-: >"$TEST_DIR/preflight-calls"
-if CODEX_REVIEW_EXIT=1 \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-base-first.txt" 123; then
-  echo "FAIL: first base-mismatch fixture run should stop at review failure" >&2
-  exit 1
-fi
-if CODEX_REVIEW_EXIT=1 \
-  GIT_BASE_OID="new-base-oid" \
-  GH_BASE_REF_OID="new-base-oid" \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-base-second.txt" 123; then
-  echo "FAIL: second base-mismatch fixture run should stop at review failure" >&2
-  exit 1
-fi
-if CODEX_REVIEW_EXIT=1 \
-  GIT_MERGE_BASE_OID="new-merge-base-oid" \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-merge-base.txt" 123; then
-  echo "FAIL: merge-base-mismatch fixture run should stop at review failure" >&2
-  exit 1
-fi
-rm -rf "${TEST_DIR:?}/lib"
-if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "3" ] \
-  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-base-second.txt" \
-  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-merge-base.txt"; then
-  echo "==> PASS: base and merge-base changes forced preflight reruns"
-else
-  echo "FAIL: base or merge-base changes should force preflight reruns" >&2
-  cat "$TEST_DIR/preflight-calls" >&2
-  cat "$TEST_DIR/output-preflight-cache-base-second.txt" >&2
-  cat "$TEST_DIR/output-preflight-cache-merge-base.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: preflight cache reruns when checker or config hashes change"
-install_preflight_counter_fixture
-reset_case_files
-CACHE_WORKTREE="$TEST_DIR/cache-worktree"
-mkdir -p "$CACHE_WORKTREE"
-printf '[review]\npreflight_required = true\n' >"$CACHE_WORKTREE/.codex-review.toml"
-: >"$TEST_DIR/preflight-calls"
-if CODEX_REVIEW_EXIT=1 \
-  TEST_CURRENT_WORKTREE="$CACHE_WORKTREE" \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-hash-first.txt" 123; then
-  echo "FAIL: first hash-mismatch fixture run should stop at review failure" >&2
-  exit 1
-fi
-printf '\n# checker hash changed\n' >>"$TEST_DIR/lib/preflight.sh"
-if CODEX_REVIEW_EXIT=1 \
-  TEST_CURRENT_WORKTREE="$CACHE_WORKTREE" \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-checker-second.txt" 123; then
-  echo "FAIL: checker-mismatch fixture run should stop at review failure" >&2
-  exit 1
-fi
-printf 'comment_on_clean = false\n' >>"$CACHE_WORKTREE/.codex-review.toml"
-if CODEX_REVIEW_EXIT=1 \
-  TEST_CURRENT_WORKTREE="$CACHE_WORKTREE" \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-config-third.txt" 123; then
-  echo "FAIL: config-mismatch fixture run should stop at review failure" >&2
-  exit 1
-fi
-rm -rf "${TEST_DIR:?}/lib"
-if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "3" ] \
-  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-checker-second.txt" \
-  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-config-third.txt"; then
-  echo "==> PASS: checker and config changes forced preflight reruns"
-else
-  echo "FAIL: checker or config changes should force preflight reruns" >&2
-  cat "$TEST_DIR/preflight-calls" >&2
-  cat "$TEST_DIR/output-preflight-cache-checker-second.txt" >&2
-  cat "$TEST_DIR/output-preflight-cache-config-third.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: preflight cache ignores unrelated untracked file contents"
-install_preflight_counter_fixture
-reset_case_files
-UNTRACKED_FILE="$TEST_DIR/untracked-local-test.sh"
-printf 'echo pass\n' >"$UNTRACKED_FILE"
-: >"$TEST_DIR/preflight-calls"
-if CODEX_REVIEW_EXIT=1 \
-  GIT_UNTRACKED_PATH="$UNTRACKED_FILE" \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-untracked-first.txt" 123; then
-  echo "FAIL: first untracked-content fixture run should stop at review failure" >&2
-  exit 1
-fi
-printf 'echo fail\n' >"$UNTRACKED_FILE"
-if CODEX_REVIEW_EXIT=1 \
-  GIT_UNTRACKED_PATH="$UNTRACKED_FILE" \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-untracked-second.txt" 123; then
-  echo "FAIL: second unrelated-untracked fixture run should stop at review failure" >&2
-  exit 1
-fi
-rm -rf "${TEST_DIR:?}/lib"
-if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "1" ] \
-  && grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-untracked-second.txt"; then
-  echo "==> PASS: unrelated untracked file contents did not force preflight rerun"
-else
-  echo "FAIL: unrelated untracked file contents should reuse the preflight cache" >&2
-  cat "$TEST_DIR/preflight-calls" >&2
-  cat "$TEST_DIR/output-preflight-cache-untracked-second.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: preflight cache reruns when changed-path untracked file contents change"
-install_preflight_counter_fixture
-reset_case_files
-printf 'echo pass\n' >"$DEFAULT_FAKE_WORKTREE/example.txt"
-: >"$TEST_DIR/preflight-calls"
-if CODEX_REVIEW_EXIT=1 \
-  GIT_UNTRACKED_PATH="example.txt" \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-relevant-untracked-first.txt" 123; then
-  echo "FAIL: first relevant-untracked fixture run should stop at review failure" >&2
-  exit 1
-fi
-printf 'echo fail\n' >"$DEFAULT_FAKE_WORKTREE/example.txt"
-if CODEX_REVIEW_EXIT=1 \
-  GIT_UNTRACKED_PATH="example.txt" \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-relevant-untracked-second.txt" 123; then
-  echo "FAIL: second relevant-untracked fixture run should stop at review failure" >&2
-  exit 1
-fi
-rm -rf "${TEST_DIR:?}/lib"
-if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "2" ] \
-  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-relevant-untracked-second.txt"; then
-  echo "==> PASS: changed-path untracked file contents forced preflight rerun"
-else
-  echo "FAIL: changed-path untracked file contents should force preflight rerun" >&2
-  cat "$TEST_DIR/preflight-calls" >&2
-  cat "$TEST_DIR/output-preflight-cache-relevant-untracked-second.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: preflight cache hashes root worktree state from subdirs"
-install_preflight_counter_fixture
-reset_case_files
-ROOT_HASH_WORKTREE="$TEST_DIR/root-hash-worktree"
-mkdir -p "$ROOT_HASH_WORKTREE/nested"
-printf 'root one\n' >"$ROOT_HASH_WORKTREE/root-only.log"
-: >"$TEST_DIR/preflight-calls"
-if CODEX_REVIEW_EXIT=1 \
-  TEST_CURRENT_WORKTREE="$ROOT_HASH_WORKTREE" \
-  GIT_CHANGED_PATHS="root-only.log" \
-  GIT_UNTRACKED_PATH="root-only.log" \
-  GIT_REQUIRE_ROOT_FOR_UNTRACKED=true \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-root-first.txt" 123; then
-  echo "FAIL: first root-state fixture run should stop at review failure" >&2
-  exit 1
-fi
-printf 'root two\n' >"$ROOT_HASH_WORKTREE/root-only.log"
-(
-  cd "$ROOT_HASH_WORKTREE/nested"
-  if CODEX_REVIEW_EXIT=1 \
-    TEST_CURRENT_WORKTREE="$ROOT_HASH_WORKTREE" \
-    GIT_CHANGED_PATHS="root-only.log" \
-    GIT_UNTRACKED_PATH="root-only.log" \
-    GIT_REQUIRE_ROOT_FOR_UNTRACKED=true \
-    PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-    run_merge_pr "$TEST_DIR/output-preflight-cache-root-second.txt" 123; then
-    echo "FAIL: second root-state fixture run should stop at review failure" >&2
-    exit 1
-  fi
-)
-rm -rf "${TEST_DIR:?}/lib"
-if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "2" ] \
-  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-root-second.txt"; then
-  echo "==> PASS: subdir launch still hashes root worktree state"
-else
-  echo "FAIL: subdir launch should not reuse stale root worktree cache" >&2
-  cat "$TEST_DIR/preflight-calls" >&2
-  cat "$TEST_DIR/output-preflight-cache-root-second.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: preflight cache reruns when full tool version output changes"
-install_preflight_counter_fixture
-reset_case_files
-cat >"$FAKE_BIN/shellcheck" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [ "${1:-}" = "--version" ]; then
-  printf 'ShellCheck - shell script analysis tool\n'
-  printf 'version: %s\n' "${SHELLCHECK_VERSION_LINE:-0.10.0}"
-  exit 0
-fi
-exit 0
-EOF
-chmod +x "$FAKE_BIN/shellcheck"
-: >"$TEST_DIR/preflight-calls"
-if CODEX_REVIEW_EXIT=1 \
-  SHELLCHECK_VERSION_LINE="0.10.0" \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-tool-first.txt" 123; then
-  echo "FAIL: first tool-version fixture run should stop at review failure" >&2
-  exit 1
-fi
-if CODEX_REVIEW_EXIT=1 \
-  SHELLCHECK_VERSION_LINE="0.11.0" \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-preflight-cache-tool-second.txt" 123; then
-  echo "FAIL: second tool-version fixture run should stop at review failure" >&2
-  exit 1
-fi
-rm -f "$FAKE_BIN/shellcheck"
-rm -rf "${TEST_DIR:?}/lib"
-if [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "2" ] \
-  && ! grep -q 'Deterministic preflight clean (cached=true' "$TEST_DIR/output-preflight-cache-tool-second.txt"; then
-  echo "==> PASS: full tool version output change forced preflight rerun"
-else
-  echo "FAIL: full tool version output change should force preflight rerun" >&2
-  cat "$TEST_DIR/preflight-calls" >&2
-  cat "$TEST_DIR/output-preflight-cache-tool-second.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: merge script works without jq in PATH"
-reset_case_files
-run_merge_pr "$TEST_DIR/output-normal.txt" 123
-if grep -q 'attempt 1: mergeStateStatus=CLEAN mergeable=MERGEABLE' "$TEST_DIR/output-normal.txt" \
-  && grep -q '==> Refreshing origin/main for merge review' "$TEST_DIR/output-normal.txt" \
-  && grep -q '==> Checking out PR #123 head (feature/test) for merge review' "$TEST_DIR/output-normal.txt" \
-  && grep -q '==> Running merge review' "$TEST_DIR/output-normal.txt" \
-  && grep -q '==> Done\.' "$TEST_DIR/output-normal.txt" \
-  && grep -q '^checked-out$' "$TEST_DIR/gh-checkout" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
-  && grep -q '^CODEX_REVIEW_BASE=origin/main$' "$TEST_DIR/codex-review.log" \
-  && grep -q '^CODEX_REVIEW_FORCE=1$' "$TEST_DIR/codex-review.log" \
-  && grep -q '^CODEX_REVIEW_MODE=fix$' "$TEST_DIR/codex-review.log" \
-  && grep -q '^CODEX_REVIEW_ON_ERROR=fail-closed$' "$TEST_DIR/codex-review.log" \
-  && grep -q '^CODEX_REVIEW_BRANCH_NAME=feature/test$' "$TEST_DIR/codex-review.log" \
-  && grep -q "==> Deleting local branch 'feature/test' after verified squash merge of pr-head-oid" "$TEST_DIR/output-normal.txt" \
-  && grep -q '^deleted feature/test$' "$TEST_DIR/git-branch-deleted"; then
-  echo "==> PASS: merge-pr.sh completed without jq"
-else
-  echo "FAIL: merge-pr.sh output did not show a successful jq-free merge path" >&2
-  cat "$TEST_DIR/output-normal.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: stacked PR uses its actual base for policy, preflight, and review"
-reset_case_files
-install_preflight_counter_fixture
-GH_BASE_REF_NAME="feature/parent" \
-  GH_BASE_REF_OID="parent-base-oid" \
-  GIT_BASE_OID="parent-base-oid" \
-  GIT_MERGE_BASE_OID="parent-base-oid" \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-stacked-base.txt" 123
-rm -rf "${TEST_DIR:?}/lib"
-if grep -q 'Refreshing origin/feature/parent before loading merge review config' "$TEST_DIR/output-stacked-base.txt" \
-  && grep -q 'diff vs origin/feature/parent' "$TEST_DIR/output-stacked-base.txt" \
-  && grep -q '^CODEX_REVIEW_BASE=origin/feature/parent$' "$TEST_DIR/codex-review.log" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
-  echo "==> PASS: stacked PR gates consistently use the actual PR base"
-else
-  echo "FAIL: stacked PR did not use its actual base throughout the merge gate" >&2
-  cat "$TEST_DIR/output-stacked-base.txt" >&2
-  [ ! -f "$TEST_DIR/codex-review.log" ] || cat "$TEST_DIR/codex-review.log" >&2
-  exit 1
-fi
-
+echo "==> Test: PR-visible exact-revision review authorizes merge after preflight"
 echo "==> Test: PR-triggered review skips duplicate merge review after deterministic preflight"
 reset_case_files
 install_preflight_counter_fixture
@@ -1324,13 +929,12 @@ GH_REJECT_UNBALANCED_GRAPHQL=true \
   run_merge_pr "$TEST_DIR/output-pr-triggered-skip.txt" 123
 rm -rf "${TEST_DIR:?}/lib"
 if grep -q '==> Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-skip.txt" \
-  && grep -q '==> Skipping merge review because the trusted PR-visible AI review is bound to the current head and base' "$TEST_DIR/output-pr-triggered-skip.txt" \
+  && grep -q '==> Trusted PR-visible review covers the current head and base' "$TEST_DIR/output-pr-triggered-skip.txt" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
-  && [ ! -f "$TEST_DIR/codex-review.log" ] \
   && [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "1" ]; then
-  echo "==> PASS: PR-triggered review can satisfy the merge gate without duplicate LLM review"
+  echo "==> PASS: exact-revision PR review plus deterministic preflight satisfies the merge gate"
 else
-  echo "FAIL: PR-triggered review did not skip duplicate merge review after preflight" >&2
+  echo "FAIL: exact-revision PR review did not satisfy the merge gate after preflight" >&2
   cat "$TEST_DIR/output-pr-triggered-skip.txt" >&2
   [ ! -f "$TEST_DIR/preflight-calls" ] || cat "$TEST_DIR/preflight-calls" >&2
   exit 1
@@ -1401,28 +1005,30 @@ else
   exit 1
 fi
 
-echo "==> Test: behind PR head cannot use PR-visible review to skip semantic review"
+echo "==> Test: behind PR head cannot use PR-visible review"
 reset_case_files
 install_preflight_counter_fixture
 write_pr_triggered_config true 0 0
-GH_BASE_REF_OID="new-base-oid" \
+if GH_BASE_REF_OID="new-base-oid" \
   GIT_BASE_OID="new-base-oid" \
   GIT_MERGE_BASE_OID="base-oid" \
   GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/behind' \
   PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-behind-base.txt" 123
+  run_merge_pr "$TEST_DIR/output-pr-triggered-behind-base.txt" 123; then
+  echo "FAIL: behind PR head unexpectedly merged" >&2
+  exit 1
+fi
 rm -rf "${TEST_DIR:?}/lib"
-if grep -q 'PR-visible AI review cannot replace local semantic review because the base revision changed or the PR is behind' "$TEST_DIR/output-pr-triggered-behind-base.txt" \
-  && grep -q '^CODEX_REVIEW_MODE=fix$' "$TEST_DIR/codex-review.log" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
-  echo "==> PASS: behind PR head falls back to local semantic review"
+if grep -q 'trusted PR-visible review does not cover the current base revision' "$TEST_DIR/output-pr-triggered-behind-base.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: behind PR head requires an updated branch and fresh review"
 else
-  echo "FAIL: behind PR head should not skip semantic review" >&2
+  echo "FAIL: behind PR head should fail closed" >&2
   cat "$TEST_DIR/output-pr-triggered-behind-base.txt" >&2
   exit 1
 fi
 
-echo "==> Test: base advance after PR-visible review falls back to semantic review"
+echo "==> Test: base advance after PR-visible review requires fresh review"
 reset_case_files
 install_preflight_counter_fixture
 write_pr_triggered_config true 0 0
@@ -1439,13 +1045,11 @@ GH_BASE_REF_CHANGE_AFTER=4 \
     exit 1
   }
 rm -rf "${TEST_DIR:?}/lib"
-if grep -q 'reviewed_base=base-oid' "$TEST_DIR/output-pr-triggered-base-moved-before-review.txt" \
-  && grep -q 'signal_base=base-oid' "$TEST_DIR/output-pr-triggered-base-moved-before-review.txt" \
-  && grep -q 'current_base=new-base-oid merge_base=base-oid' "$TEST_DIR/output-pr-triggered-base-moved-before-review.txt" \
-  && grep -q '^CODEX_REVIEW_MODE=fix$' "$TEST_DIR/codex-review.log" \
-  && grep -q 'latest trusted PR-visible AI result is not clean for reviewed head' "$TEST_DIR/output-pr-triggered-base-moved-before-review.txt" \
+if grep -q 'trusted PR-visible review does not cover the current base revision' "$TEST_DIR/output-pr-triggered-base-moved-before-review.txt" \
+  && grep -q 'reviewed base: base-oid' "$TEST_DIR/output-pr-triggered-base-moved-before-review.txt" \
+  && grep -q 'current base:  new-base-oid' "$TEST_DIR/output-pr-triggered-base-moved-before-review.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
-  echo "==> PASS: base movement invalidates duplicate-review skipping and final authorization"
+  echo "==> PASS: base movement invalidates the prior review"
 else
   echo "FAIL: base movement after PR review should require fresh base-bound evidence" >&2
   cat "$TEST_DIR/output-pr-triggered-base-moved-before-review.txt" >&2
@@ -1554,7 +1158,6 @@ if GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE="$TEST_DIR/stale-trusted-base-review.toml"
 fi
 rm -rf "${TEST_DIR:?}/lib"
 if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-trusted-base.txt" \
-  && [ ! -f "$TEST_DIR/codex-review.log" ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: PR-triggered policy is loaded from refreshed trusted base config"
 else
@@ -1572,7 +1175,6 @@ if run_merge_pr "$TEST_DIR/output-pr-triggered-timeout.txt" 123; then
 fi
 if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-timeout.txt" \
   && grep -q "@codex review" "$TEST_DIR/output-pr-triggered-timeout.txt" \
-  && [ ! -f "$TEST_DIR/codex-review.log" ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: missing PR-triggered review fails closed with actionable guidance"
 else
@@ -1634,43 +1236,17 @@ else
   exit 1
 fi
 
-echo "==> Test: required review remains compatible when request_on_push is disabled"
+echo "==> Test: disabling mandatory request-on-push fails closed"
 reset_case_files
 write_pr_triggered_config true 0 0 true false
-if ! GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/automatic' \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-request-disabled.txt" 123; then
-  echo "FAIL: compatible automatic review flow returned nonzero" >&2
-  cat "$TEST_DIR/output-pr-triggered-request-disabled.txt" >&2
+if run_merge_pr "$TEST_DIR/output-pr-triggered-request-disabled.txt" 123; then
+  echo "FAIL: merge-pr.sh accepted request_on_push=false" >&2
   exit 1
 fi
-if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-request-disabled.txt" \
-  && [ ! -f "$TEST_DIR/gh-review-request" ] \
-  && grep -q '^CODEX_REVIEW_MODE=fix$' "$TEST_DIR/codex-review.log" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
-  echo "==> PASS: automatic exact-head reviews remain compatible and fall back to base-aware semantic review"
+if grep -q 'request_on_push cannot be false' "$TEST_DIR/output-pr-triggered-request-disabled.txt"; then
+  echo "==> PASS: request-on-push remains mandatory"
 else
-  echo "FAIL: required review should accept automatic evidence without posting a request" >&2
   cat "$TEST_DIR/output-pr-triggered-request-disabled.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: unbound compatibility review is revalidated before merge"
-reset_case_files
-write_pr_triggered_config true 0 0 true false
-if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/automatic-clean' \
-  GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:01:00Z\thttps://example.test/review/automatic-findings' \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-request-disabled-changed.txt" 123; then
-  echo "FAIL: newer unbound findings were not revalidated before merge" >&2
-  exit 1
-fi
-if grep -q 'latest trusted PR-visible AI result is not clean' "$TEST_DIR/output-pr-triggered-request-disabled-changed.txt" \
-  && [ "$(cat "$TEST_DIR/gh-reviews-graphql-calls" 2>/dev/null || echo 0)" -ge 2 ] \
-  && [ -f "$TEST_DIR/codex-review.log" ] \
-  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
-  echo "==> PASS: unbound compatibility evidence is revalidated immediately before merge"
-else
-  echo "FAIL: unbound compatibility result was not revalidated after semantic review" >&2
-  cat "$TEST_DIR/output-pr-triggered-request-disabled-changed.txt" >&2
   exit 1
 fi
 
@@ -1681,7 +1257,7 @@ if run_merge_pr "$TEST_DIR/output-pr-triggered-invalid-required.txt" 123; then
   echo "FAIL: merge-pr.sh treated malformed required value as disabled" >&2
   exit 1
 fi
-if grep -q 'Invalid trusted review config: \[review.pr_triggered\].required must be true or false; got: ture' "$TEST_DIR/output-pr-triggered-invalid-required.txt" \
+if grep -q 'Invalid trusted review config: \[review.pr_triggered\].required must be true; got: ture' "$TEST_DIR/output-pr-triggered-invalid-required.txt" \
   && [ ! -f "$TEST_DIR/gh-reviews-graphql-calls" ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: malformed required value fails closed during trusted config loading"
@@ -1894,19 +1470,6 @@ else
   exit 1
 fi
 
-echo "==> Test: established review boolean aliases remain compatible"
-reset_case_files
-write_established_boolean_alias_config
-run_merge_pr "$TEST_DIR/output-established-boolean-aliases.txt" 123
-if grep -q '^CODEX_REVIEW_MODE=fix$' "$TEST_DIR/codex-review.log" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
-  echo "==> PASS: established review boolean aliases remain compatible"
-else
-  echo "FAIL: established review boolean aliases should continue to normalize" >&2
-  cat "$TEST_DIR/output-established-boolean-aliases.txt" >&2
-  exit 1
-fi
-
 echo "==> Test: extracted trusted review config is removed on exit"
 reset_case_files
 write_pr_triggered_config true 0 0
@@ -1966,8 +1529,7 @@ write_pr_triggered_config true 0 0
 GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/1\tCodex Review: Didn'\''t find any major issues. Another round soon, please! **Reviewed commit:** `pr-head-oi`' \
   run_merge_pr "$TEST_DIR/output-pr-triggered-clean-comment.txt" 123
 if grep -q 'clean Codex review comment by @chatgpt-codex-connector' "$TEST_DIR/output-pr-triggered-clean-comment.txt" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
-  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
   echo "==> PASS: prior clean Codex issue comment can satisfy the merge gate"
 else
   echo "FAIL: prior clean Codex issue comment should satisfy the merge gate" >&2
@@ -2449,97 +2011,6 @@ else
   exit 1
 fi
 
-echo "==> Test: review-fix push requires a fresh PR-triggered review on the new head"
-reset_case_files
-install_preflight_counter_fixture
-write_pr_triggered_config false 2 1 true true
-if ! GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/4' \
-  GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\treview-fixed-head\tAPPROVED\t2026-06-23T00:01:00Z\thttps://example.test/review/5' \
-  CODEX_REVIEW_MUTATE_HEAD="review-fixed-head" \
-  GH_EXPECT_MERGE_HEAD="review-fixed-head" \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  MERGE_PR_SLEEP_OVERRIDE=0 \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-review-fix.txt" 123; then
-  echo "FAIL: review-fix flow returned nonzero" >&2
-  cat "$TEST_DIR/output-pr-triggered-review-fix.txt" >&2
-  exit 1
-fi
-rm -rf "${TEST_DIR:?}/lib"
-if grep -q '==> Merge review changed HEAD:' "$TEST_DIR/output-pr-triggered-review-fix.txt" \
-  && grep -q '<!-- touchstone:pr-review-request provider=github-codex pr=123 head=review-fixed-head base=base-oid -->' "$TEST_DIR/gh-review-request" \
-  && grep -q '==> Requested GitHub Codex review for head review-fixed-head at base base-oid (after review fixes).' "$TEST_DIR/output-pr-triggered-review-fix.txt" \
-  && grep -q '==> Waiting for trusted PR-visible AI review for PR #123 (after review fixes)' "$TEST_DIR/output-pr-triggered-review-fix.txt" \
-  && grep -q '^review-fixed-head$' "$TEST_DIR/gh-merge-head" \
-  && grep -q '^review-fixed-head$' "$TEST_DIR/git-push-head" \
-  && grep -q '^CODEX_REVIEW_MODE=fix$' "$TEST_DIR/codex-review.log" \
-  && [ "$(cat "$TEST_DIR/gh-reviews-graphql-calls" 2>/dev/null || echo 0)" -ge 2 ] \
-  && [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "2" ]; then
-  echo "==> PASS: review-fix commits require a PR-visible re-review before merge"
-else
-  echo "FAIL: review-fix commit should require PR-triggered re-review on the new head" >&2
-  cat "$TEST_DIR/output-pr-triggered-review-fix.txt" >&2
-  [ ! -f "$TEST_DIR/preflight-calls" ] || cat "$TEST_DIR/preflight-calls" >&2
-  [ ! -f "$TEST_DIR/gh-reviews-graphql-calls" ] || cat "$TEST_DIR/gh-reviews-graphql-calls" >&2
-  exit 1
-fi
-
-echo "==> Test: review fix commits are postflighted, pushed, and merged by exact head"
-reset_case_files
-write_pr_triggered_config true 0 0 false true
-mkdir -p "$TEST_DIR/lib"
-cat >"$TEST_DIR/lib/preflight.sh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-touchstone_preflight_main_sanitized() {
-  printf '%s\n' "$*" >> "$PREFLIGHT_CALLS_FILE"
-}
-
-touchstone_preflight_main() {
-  touchstone_preflight_main_sanitized "$@"
-}
-EOF
-CODEX_REVIEW_MUTATE_HEAD="review-fixed-head" \
-  GH_EXPECT_MERGE_HEAD="review-fixed-head" \
-  GH_EXISTING_REQUEST_BODY=$'Diagnostic copy:\n\n```\n<!-- touchstone:pr-review-request provider=github-codex head=review-fixed-head -->\n```' \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-review-fix.txt" 123
-rm -rf "${TEST_DIR:?}/lib"
-if grep -q '==> Merge review changed HEAD:' "$TEST_DIR/output-review-fix.txt" \
-  && grep -q '==> Running deterministic postflight after review fixes' "$TEST_DIR/output-review-fix.txt" \
-  && grep -q '==> Pushing review fix commit(s) to PR branch feature/test' "$TEST_DIR/output-review-fix.txt" \
-  && grep -q '<!-- touchstone:pr-review-request provider=github-codex pr=123 head=review-fixed-head base=base-oid -->' "$TEST_DIR/gh-review-request" \
-  && grep -q '==> Requested GitHub Codex review for head review-fixed-head at base base-oid (after review fixes).' "$TEST_DIR/output-review-fix.txt" \
-  && ! grep -q '==> Waiting for trusted PR-visible AI review for PR #123 (after review fixes)' "$TEST_DIR/output-review-fix.txt" \
-  && grep -q '^review-fixed-head$' "$TEST_DIR/git-push-head" \
-  && grep -q '^review-fixed-head$' "$TEST_DIR/gh-merge-head" \
-  && [ "$(wc -l <"$TEST_DIR/preflight-calls" | tr -d ' ')" = "2" ]; then
-  echo "==> PASS: review fix loop requests review independently of the required wait policy"
-else
-  echo "FAIL: review fix commits did not request review independently of the required wait policy" >&2
-  cat "$TEST_DIR/output-review-fix.txt" >&2
-  [ ! -f "$TEST_DIR/preflight-calls" ] || cat "$TEST_DIR/preflight-calls" >&2
-  exit 1
-fi
-
-echo "==> Test: blocked review preserves the local feature branch"
-reset_case_files
-if CODEX_REVIEW_EXIT=1 run_merge_pr "$TEST_DIR/output-review-blocked.txt" 123; then
-  echo "FAIL: merge-pr.sh unexpectedly succeeded when review blocked" >&2
-  exit 1
-fi
-if grep -q '==> Running merge review' "$TEST_DIR/output-review-blocked.txt" \
-  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
-  && [ ! -f "$TEST_DIR/git-checkout-main" ] \
-  && [ ! -f "$TEST_DIR/git-detached-default" ] \
-  && [ ! -f "$TEST_DIR/git-branch-deleted" ]; then
-  echo "==> PASS: blocked review leaves local branch intact"
-else
-  echo "FAIL: blocked review should not merge, sync, detach, or delete the branch" >&2
-  cat "$TEST_DIR/output-review-blocked.txt" >&2
-  exit 1
-fi
-
 echo "==> Test: failed checks stop merge polling before review"
 reset_case_files
 if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
@@ -2550,12 +2021,77 @@ if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
 fi
 if grep -q 'has failed check(s); stopping automerge' "$TEST_DIR/output-check-failed.txt" \
   && grep -q 'Issue claim check (FAILURE): https://example.test/checks/claim-check' "$TEST_DIR/output-check-failed.txt" \
-  && [ ! -f "$TEST_DIR/codex-review.log" ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: failed checks fail fast before review"
 else
   echo "FAIL: failed checks should stop before review/merge" >&2
   cat "$TEST_DIR/output-check-failed.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: transient UNKNOWN merge state retries past five attempts"
+reset_case_files
+GH_MERGE_STATE_UNKNOWN_ATTEMPTS=6 \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-unknown-then-clean.txt" 123
+attempt_count="$(grep -c 'attempt [0-9][0-9]*: mergeStateStatus=' "$TEST_DIR/output-unknown-then-clean.txt")"
+if [ "$attempt_count" -eq 7 ] \
+  && grep -q 'attempt 7: mergeStateStatus=CLEAN mergeable=MERGEABLE' "$TEST_DIR/output-unknown-then-clean.txt" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: UNKNOWN state uses the expanded retry budget"
+else
+  cat "$TEST_DIR/output-unknown-then-clean.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: definite conflict refuses immediately"
+reset_case_files
+if GH_MERGE_STATE_IMMEDIATE="DIRTY CONFLICTING" \
+  MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-conflict.txt" 123; then
+  echo "FAIL: conflicting PR unexpectedly merged" >&2
+  exit 1
+fi
+attempt_count="$(grep -c 'attempt [0-9][0-9]*: mergeStateStatus=' "$TEST_DIR/output-conflict.txt")"
+if [ "$attempt_count" -eq 1 ] \
+  && grep -q 'Final merge state: mergeStateStatus=DIRTY mergeable=CONFLICTING' "$TEST_DIR/output-conflict.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: definite conflict does not burn the retry budget"
+else
+  cat "$TEST_DIR/output-conflict.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: dirty path outside the PR diff does not block verification"
+reset_case_files
+GIT_WORKTREE_STATUS=$' M bootstrap/new-project.sh\n' \
+  GIT_CHANGED_PATHS=$'scripts/merge-pr.sh\ntests/test-merge-pr.sh' \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  run_merge_pr "$TEST_DIR/output-dirty-outside.txt" 123
+if grep -q 'Working tree has uncommitted changes outside PR #123' "$TEST_DIR/output-dirty-outside.txt" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: unrelated dirty work does not block the merge gate"
+else
+  cat "$TEST_DIR/output-dirty-outside.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: dirty path overlapping the PR diff blocks verification"
+reset_case_files
+if GIT_WORKTREE_STATUS=$' M scripts/merge-pr.sh\n' \
+  GIT_CHANGED_PATHS=$'scripts/merge-pr.sh\ntests/test-merge-pr.sh' \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  run_merge_pr "$TEST_DIR/output-dirty-overlap.txt" 123; then
+  echo "FAIL: overlapping dirty path unexpectedly merged" >&2
+  exit 1
+fi
+if grep -q "uncommitted changes that overlap PR #123's diff" "$TEST_DIR/output-dirty-overlap.txt" \
+  && grep -q 'scripts/merge-pr.sh' "$TEST_DIR/output-dirty-overlap.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: overlapping dirty work fails closed"
+else
+  cat "$TEST_DIR/output-dirty-overlap.txt" >&2
   exit 1
 fi
 
@@ -2567,7 +2103,6 @@ if GH_IS_DRAFT=true run_merge_pr "$TEST_DIR/output-draft-feedback.txt" 123; then
 fi
 if grep -q 'is still a draft; refusing to merge' "$TEST_DIR/output-draft-feedback.txt" \
   && grep -q 'Mark it ready for review' "$TEST_DIR/output-draft-feedback.txt" \
-  && [ ! -f "$TEST_DIR/codex-review.log" ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: draft PR blocks before review"
 else
@@ -2584,7 +2119,6 @@ if GH_PR_VIEW_FAIL_FIELD=isDraft run_merge_pr "$TEST_DIR/output-draft-state-fail
 fi
 if grep -q 'Could not inspect draft state for PR #123' "$TEST_DIR/output-draft-state-fail.txt" \
   && grep -q 'Refusing to merge without draft-state confirmation' "$TEST_DIR/output-draft-state-fail.txt" \
-  && [ ! -f "$TEST_DIR/codex-review.log" ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: draft-state inspection failure fails closed before review"
 else
@@ -2601,7 +2135,6 @@ if GH_REVIEW_DECISION=CHANGES_REQUESTED run_merge_pr "$TEST_DIR/output-requested
 fi
 if grep -q 'active CHANGES_REQUESTED review decision' "$TEST_DIR/output-requested-changes.txt" \
   && grep -q 'Address the requested changes' "$TEST_DIR/output-requested-changes.txt" \
-  && [ ! -f "$TEST_DIR/codex-review.log" ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: requested-changes review decision blocks before review"
 else
@@ -2618,7 +2151,6 @@ if GH_PR_VIEW_FAIL_FIELD=reviewDecision run_merge_pr "$TEST_DIR/output-review-de
 fi
 if grep -q 'Could not inspect review decision for PR #123' "$TEST_DIR/output-review-decision-fail.txt" \
   && grep -q 'Refusing to merge without review-decision confirmation' "$TEST_DIR/output-review-decision-fail.txt" \
-  && [ ! -f "$TEST_DIR/codex-review.log" ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: review-decision inspection failure fails closed before review"
 else
@@ -2638,7 +2170,6 @@ if grep -q 'has unresolved review thread(s)' "$TEST_DIR/output-unresolved-thread
   && grep -q 'scripts/merge-pr.sh:123 by @reviewer' "$TEST_DIR/output-unresolved-thread.txt" \
   && grep -q 'https://example.test/thread/1' "$TEST_DIR/output-unresolved-thread.txt" \
   && grep -q 'Resolve or explicitly answer every actionable thread' "$TEST_DIR/output-unresolved-thread.txt" \
-  && [ ! -f "$TEST_DIR/codex-review.log" ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: unresolved review threads block before review"
 else
@@ -2655,7 +2186,6 @@ if GH_GRAPHQL_FAIL=true run_merge_pr "$TEST_DIR/output-graphql-fail.txt" 123; th
 fi
 if grep -q 'Could not inspect PR #123 review threads via GitHub GraphQL' "$TEST_DIR/output-graphql-fail.txt" \
   && grep -q 'Refusing to merge without thread-level review state' "$TEST_DIR/output-graphql-fail.txt" \
-  && [ ! -f "$TEST_DIR/codex-review.log" ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: PR feedback inspection failure fails closed"
 else
@@ -2664,36 +2194,19 @@ else
   exit 1
 fi
 
-echo "==> Test: post-review head inspection failure fails closed before merge"
-reset_case_files
-if GH_HEAD_REF_FAIL_AFTER=2 run_merge_pr "$TEST_DIR/output-post-review-head-fail.txt" 123; then
-  echo "FAIL: merge-pr.sh unexpectedly merged when post-review head inspection failed" >&2
-  exit 1
-fi
-if grep -q 'Checking PR-visible review feedback for PR #123 (after merge review)' "$TEST_DIR/output-post-review-head-fail.txt" \
-  && grep -q 'Could not inspect PR #123 head commit' "$TEST_DIR/output-post-review-head-fail.txt" \
-  && grep -q 'Refusing to merge without exact-head confirmation' "$TEST_DIR/output-post-review-head-fail.txt" \
-  && [ -f "$TEST_DIR/codex-review.log" ] \
-  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
-  echo "==> PASS: post-review head inspection failure fails closed before merge"
-else
-  echo "FAIL: post-review head inspection failure should stop after review but before merge" >&2
-  cat "$TEST_DIR/output-post-review-head-fail.txt" >&2
-  exit 1
-fi
-
 echo "==> Test: post-review unresolved thread blocks exact-head merge"
 reset_case_files
-if GH_UNRESOLVED_THREADS_SECOND=$'thread-2\tREADME.md\t44\tfalse\treviewer\thttps://example.test/thread/2\tNew feedback after review.' \
+write_pr_triggered_config true 0 0
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/thread' \
+  GH_UNRESOLVED_THREADS_SECOND=$'thread-2\tREADME.md\t44\tfalse\treviewer\thttps://example.test/thread/2\tNew feedback after review.' \
   run_merge_pr "$TEST_DIR/output-post-review-thread.txt" 123; then
   echo "FAIL: merge-pr.sh unexpectedly merged after post-review thread appeared" >&2
   exit 1
 fi
-if grep -q 'Checking PR-visible review feedback for PR #123 (before merge review)' "$TEST_DIR/output-post-review-thread.txt" \
-  && grep -q 'Checking PR-visible review feedback for PR #123 (after merge review)' "$TEST_DIR/output-post-review-thread.txt" \
+if grep -q 'Checking PR-visible review feedback for PR #123 (before PR-triggered AI review)' "$TEST_DIR/output-post-review-thread.txt" \
+  && grep -q 'Checking PR-visible review feedback for PR #123 (after PR-triggered AI review)' "$TEST_DIR/output-post-review-thread.txt" \
   && grep -q 'README.md:44 by @reviewer' "$TEST_DIR/output-post-review-thread.txt" \
   && grep -q 'New feedback after review' "$TEST_DIR/output-post-review-thread.txt" \
-  && [ -f "$TEST_DIR/codex-review.log" ] \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: post-review unresolved thread blocks exact-head merge"
 else
@@ -2721,122 +2234,6 @@ else
   exit 1
 fi
 
-echo "==> Test: provider outage review failure prints exact retry command"
-install_preflight_counter_fixture
-reset_case_files
-: >"$TEST_DIR/preflight-calls"
-if CODEX_REVIEW_EXIT=1 \
-  CODEX_REVIEW_STUB_SUMMARY='{"reviewer":"Conductor","provider":"gemini","findings":0,"fallback_attempted":true,"fallback_primary_provider":"gemini","fallback_retry_provider":"","fallback_excluded_providers":"gemini","fallback_reason":"timeout after 60s","exit_reason":"timeout"}' \
-  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
-  run_merge_pr "$TEST_DIR/output-provider-outage.txt" 123; then
-  echo "FAIL: provider outage fixture should fail closed" >&2
-  exit 1
-fi
-rm -rf "${TEST_DIR:?}/lib"
-if grep -q 'No concrete review findings were reported; this is a provider/infrastructure outage path' "$TEST_DIR/output-provider-outage.txt" \
-  && grep -q 'concrete findings: 0' "$TEST_DIR/output-provider-outage.txt" \
-  && grep -q 'failed/stalled provider(s): gemini' "$TEST_DIR/output-provider-outage.txt" \
-  && grep -q 'retry command: TOUCHSTONE_CONDUCTOR_WITH=codex bash scripts/merge-pr.sh 123' "$TEST_DIR/output-provider-outage.txt" \
-  && grep -q 'repair route: authenticate the subscription Codex CLI' "$TEST_DIR/output-provider-outage.txt" \
-  && grep -q 'cost boundary: any other provider or auto-routing mode requires explicit operator opt-in' "$TEST_DIR/output-provider-outage.txt" \
-  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
-  echo "==> PASS: provider outage path printed exact retry guidance"
-else
-  echo "FAIL: expected provider outage retry guidance" >&2
-  cat "$TEST_DIR/output-provider-outage.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: review infrastructure failure with prior clean marker fails closed"
-reset_case_files
-# Synthesize a clean review marker for the same head/base the harness's fake
-# git resolves to (pr-head-oid + base-oid). The marker permits an explicit
-# --bypass-with-disclosure path, but an unrequested merge-gate reviewer
-# infrastructure failure must fail closed rather than auto-bypass.
-mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
-printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nbase=origin/main\nmerge_base=base-oid\nhead=pr-head-oid\n' \
-  >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
-if CODEX_REVIEW_EXIT=124 run_merge_pr "$TEST_DIR/output-auto-bypass.txt" 123; then
-  echo "FAIL: merge-pr.sh auto-bypassed a merge-gate reviewer failure" >&2
-  cat "$TEST_DIR/output-auto-bypass.txt" >&2
-  exit 1
-fi
-if grep -q 'merge-gate review fails closed' "$TEST_DIR/output-auto-bypass.txt" \
-  && grep -q 'Emergency bypass requires an explicit --bypass-with-disclosure reason' "$TEST_DIR/output-auto-bypass.txt" \
-  && [ ! -f "$TEST_DIR/gh-comment" ] \
-  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
-  && ! grep -q 'Auto-promoting to reviewer bypass' "$TEST_DIR/output-auto-bypass.txt"; then
-  echo "==> PASS: review infrastructure failure with prior clean marker fails closed"
-else
-  echo "FAIL: merge-gate reviewer failure should require explicit bypass" >&2
-  cat "$TEST_DIR/output-auto-bypass.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: prior clean marker does not bypass concrete review findings"
-reset_case_files
-mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
-printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nbase=origin/main\nmerge_base=base-oid\nhead=pr-head-oid\n' \
-  >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
-if CODEX_REVIEW_EXIT=1 CODEX_REVIEW_STUB_OUTPUT=$'Conductor review found 1 finding(s)\n- blocking finding\nCODEX_REVIEW_BLOCKED' \
-  run_merge_pr "$TEST_DIR/output-blocked-with-marker.txt" 123; then
-  echo "FAIL: merge-pr.sh auto-bypassed concrete findings despite prior clean marker" >&2
-  cat "$TEST_DIR/output-blocked-with-marker.txt" >&2
-  exit 1
-fi
-if grep -q 'merge-gate review fails closed' "$TEST_DIR/output-blocked-with-marker.txt" \
-  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
-  && ! grep -q 'Auto-promoting to reviewer bypass' "$TEST_DIR/output-blocked-with-marker.txt"; then
-  echo "==> PASS: concrete findings block merge even with prior clean marker"
-else
-  echo "FAIL: concrete findings should not merge without explicit bypass" >&2
-  cat "$TEST_DIR/output-blocked-with-marker.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: review failure with NO prior clean marker still fails closed (#182 safety)"
-reset_case_files
-# No marker is created. The auto-promotion must NOT fire — without a marker
-# there is no proof the diff was ever reviewed cleanly, so failing the
-# review must still refuse the merge (preserves the safety guarantee).
-if CODEX_REVIEW_EXIT=124 run_merge_pr "$TEST_DIR/output-no-marker.txt" 123; then
-  echo "FAIL: merge-pr.sh auto-bypassed even without a clean marker" >&2
-  cat "$TEST_DIR/output-no-marker.txt" >&2
-  exit 1
-fi
-if [ ! -f "$TEST_DIR/gh-merge-head" ] \
-  && ! grep -q 'Auto-promoting to reviewer bypass' "$TEST_DIR/output-no-marker.txt"; then
-  echo "==> PASS: review failure without marker fails closed (no auto-bypass)"
-else
-  echo "FAIL: failure-without-marker case should not merge or auto-bypass" >&2
-  cat "$TEST_DIR/output-no-marker.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: auto-bypass rejects clean marker when live branch HEAD advanced (#211)"
-reset_case_files
-# Reproduce the safety regression: the branch has a clean marker for the
-# earlier PR head, then the local branch advances before the final merge
-# review fails. The stale marker must not auto-promote that failed review
-# to a bypass, because the live branch HEAD has never reviewed cleanly.
-mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
-printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nbase=origin/main\nmerge_base=base-oid\nhead=pr-head-oid\n' \
-  >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
-if CODEX_REVIEW_EXIT=124 GIT_LOCAL_BRANCH_HEAD="advanced-head-oid" \
-  run_merge_pr "$TEST_DIR/output-advanced-head.txt" 123; then
-  echo "FAIL: merge-pr.sh auto-bypassed with a clean marker for an earlier HEAD" >&2
-  cat "$TEST_DIR/output-advanced-head.txt" >&2
-  exit 1
-fi
-if [ ! -f "$TEST_DIR/gh-merge-head" ] \
-  && ! grep -q 'Auto-promoting to reviewer bypass' "$TEST_DIR/output-advanced-head.txt"; then
-  echo "==> PASS: clean marker for earlier HEAD does not auto-bypass advanced branch"
-else
-  echo "FAIL: advanced-head case should not merge or auto-bypass" >&2
-  cat "$TEST_DIR/output-advanced-head.txt" >&2
-  exit 1
-fi
-
 echo "==> Test: sibling worktree owning main is fast-forwarded without false merge failure"
 reset_case_files
 MAIN_WORKTREE="$TEST_DIR/main-worktree"
@@ -2855,7 +2252,7 @@ branch refs/heads/feature/test
 
 EOF
 )"
-run_merge_pr "$TEST_DIR/output-sibling-worktree.txt" 123
+GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" run_merge_pr "$TEST_DIR/output-sibling-worktree.txt" 123
 if grep -q "==> main is checked out in sibling worktree: $MAIN_WORKTREE" "$TEST_DIR/output-sibling-worktree.txt" \
   && grep -q '==> Fast-forwarding that worktree after remote merge' "$TEST_DIR/output-sibling-worktree.txt" \
   && grep -q '==> Done\.' "$TEST_DIR/output-sibling-worktree.txt" \
@@ -2873,7 +2270,9 @@ fi
 
 echo "==> Test: local branch that moved after review is preserved"
 reset_case_files
-GIT_LOCAL_BRANCH_HEAD="new-local-oid" run_merge_pr "$TEST_DIR/output-moved-branch.txt" 123
+GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  GIT_LOCAL_BRANCH_HEAD="new-local-oid" \
+  run_merge_pr "$TEST_DIR/output-moved-branch.txt" 123
 if grep -q "WARNING: Local branch 'feature/test' is at new-local-oid, not reviewed PR head pr-head-oid; leaving it intact." "$TEST_DIR/output-moved-branch.txt" \
   && [ ! -f "$TEST_DIR/git-branch-deleted" ] \
   && grep -q '==> Done\.' "$TEST_DIR/output-moved-branch.txt"; then
@@ -2902,7 +2301,7 @@ branch refs/heads/feature/test
 
 EOF
 )"
-run_merge_pr "$TEST_DIR/output-stale-worktree.txt" 123
+GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" run_merge_pr "$TEST_DIR/output-stale-worktree.txt" 123
 if grep -q "WARNING: main is recorded as checked out in a missing worktree: $STALE_MAIN_WORKTREE" "$TEST_DIR/output-stale-worktree.txt" \
   && grep -q "stale git worktree metadata" "$TEST_DIR/output-stale-worktree.txt" \
   && grep -q "git worktree prune" "$TEST_DIR/output-stale-worktree.txt" \
@@ -2936,6 +2335,7 @@ branch refs/heads/feature/test
 EOF
 )"
 GH_PR_MERGE_FAIL_LOCAL=true \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
   run_merge_pr "$TEST_DIR/output-gh-local-fail.txt" 123
 rc=$?
 if [ "$rc" = "0" ] \
@@ -2957,7 +2357,7 @@ reset_case_files
 PRIMARY_WORKTREE="$TEST_DIR/primary-checkout"
 mkdir -p "$PRIMARY_WORKTREE"
 TEST_CURRENT_WORKTREE="$PRIMARY_WORKTREE"
-run_merge_pr "$TEST_DIR/output-primary-checkout.txt" 123
+GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" run_merge_pr "$TEST_DIR/output-primary-checkout.txt" 123
 if grep -q "==> Local branch 'feature/test' deleted." "$TEST_DIR/output-primary-checkout.txt" \
   && ! grep -q "No separate default-branch worktree is available" "$TEST_DIR/output-primary-checkout.txt" \
   && ! grep -q "Removing merged PR worktree" "$TEST_DIR/output-primary-checkout.txt" \
@@ -2987,7 +2387,7 @@ branch refs/heads/feature/test
 
 EOF
 )"
-run_merge_pr "$TEST_DIR/output-worktree-remove.txt" 123
+GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" run_merge_pr "$TEST_DIR/output-worktree-remove.txt" 123
 if grep -q "==> Removing merged PR worktree '$MERGE_FEATURE_WORKTREE'" "$TEST_DIR/output-worktree-remove.txt" \
   && grep -q "==> Merged PR worktree removed." "$TEST_DIR/output-worktree-remove.txt" \
   && [ "$(cat "$TEST_DIR/git-worktree-remove")" = "$MERGE_FEATURE_WORKTREE" ]; then
@@ -3017,7 +2417,7 @@ branch refs/heads/feature/test
 
 EOF
 )"
-run_merge_pr "$TEST_DIR/output-worktree-dirty.txt" 123
+GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" run_merge_pr "$TEST_DIR/output-worktree-dirty.txt" 123
 if grep -q "WARNING: Merged PR worktree '$DIRTY_FEATURE_WORKTREE' has uncommitted changes; leaving it in place." "$TEST_DIR/output-worktree-dirty.txt" \
   && grep -q "cleanup-worktrees.sh --execute" "$TEST_DIR/output-worktree-dirty.txt" \
   && [ ! -f "$TEST_DIR/git-worktree-remove" ]; then
@@ -3050,10 +2450,9 @@ if run_merge_pr "$TEST_DIR/output-fresh.txt" 123 --bypass-with-disclosure="revie
   echo "FAIL: bypass on fresh branch unexpectedly succeeded" >&2
   exit 1
 fi
-if grep -q "No trusted PR-visible review or prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-fresh.txt" \
+if grep -q "No trusted PR-visible review matches branch 'feature/test' at head 'pr-head-oid' and base 'base-oid'" "$TEST_DIR/output-fresh.txt" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ] \
-  && [ ! -f "$TEST_DIR/gh-comment" ] \
-  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
+  && [ ! -f "$TEST_DIR/gh-comment" ]; then
   echo "==> PASS: fresh-branch bypass rejected"
 else
   echo "FAIL: fresh-branch bypass did not fail safely" >&2
@@ -3061,104 +2460,7 @@ else
   exit 1
 fi
 
-echo "==> Test: fail-open marker bypass requires explicit allow flag"
-reset_case_files
-write_fail_open_review_log
-if run_merge_pr "$TEST_DIR/output-fail-open-no-flag.txt" 123 --bypass-with-disclosure="fail-open reviewer timeout"; then
-  echo "FAIL: fail-open marker bypass without allow flag unexpectedly succeeded" >&2
-  exit 1
-fi
-if grep -q "No trusted PR-visible review or prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-fail-open-no-flag.txt" \
-  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
-  && [ ! -f "$TEST_DIR/gh-comment" ] \
-  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
-  echo "==> PASS: fail-open marker is ignored unless explicitly allowed"
-else
-  echo "FAIL: fail-open marker without allow flag did not fail safely" >&2
-  cat "$TEST_DIR/output-fail-open-no-flag.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: fail-open marker bypass requires outage disclosure"
-reset_case_files
-write_fail_open_review_log
-if run_merge_pr "$TEST_DIR/output-fail-open-vague.txt" 123 --bypass-with-disclosure="manual override" --allow-fail-open-marker; then
-  echo "FAIL: fail-open marker bypass with vague disclosure unexpectedly succeeded" >&2
-  exit 1
-fi
-if grep -q -- '--allow-fail-open-marker requires a disclosure reason' "$TEST_DIR/output-fail-open-vague.txt" \
-  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
-  && [ ! -f "$TEST_DIR/gh-comment" ] \
-  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
-  echo "==> PASS: fail-open marker bypass rejects vague disclosure"
-else
-  echo "FAIL: vague fail-open disclosure did not fail safely" >&2
-  cat "$TEST_DIR/output-fail-open-vague.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: fail-open marker bypass requires matching current head"
-reset_case_files
-write_fail_open_review_log feature/test old-head
-if run_merge_pr "$TEST_DIR/output-fail-open-stale.txt" 123 --bypass-with-disclosure="fail-open reviewer infrastructure outage" --allow-fail-open-marker; then
-  echo "FAIL: fail-open marker bypass with stale head unexpectedly succeeded" >&2
-  exit 1
-fi
-if grep -q "No recent fail-open review-log marker matches branch 'feature/test' at head 'pr-head-oid'" "$TEST_DIR/output-fail-open-stale.txt" \
-  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
-  && [ ! -f "$TEST_DIR/gh-comment" ] \
-  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
-  echo "==> PASS: stale fail-open marker rejected"
-else
-  echo "FAIL: stale fail-open marker did not fail safely" >&2
-  cat "$TEST_DIR/output-fail-open-stale.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: fail-open marker bypass records evidence and audit log"
-reset_case_files
-write_fail_open_review_log
-run_merge_pr "$TEST_DIR/output-fail-open-bypass.txt" 123 --bypass-with-disclosure="fail-open reviewer infrastructure outage; deterministic checks clean" --allow-fail-open-marker
-if grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-fail-open-bypass.txt" \
-  && grep -q 'marker: fail-open' "$TEST_DIR/output-fail-open-bypass.txt" \
-  && grep -q 'reason: fail-open reviewer infrastructure outage; deterministic checks clean' "$TEST_DIR/output-fail-open-bypass.txt" \
-  && grep -q 'Reviewer bypassed via `--bypass-with-disclosure`. Marker: fail-open. Reason: fail-open reviewer infrastructure outage; deterministic checks clean' "$TEST_DIR/gh-comment" \
-  && grep -q 'Fail-open evidence: timestamp=' "$TEST_DIR/gh-comment" \
-  && grep -q 'reason=FAIL_OPEN_TIMEOUT' "$TEST_DIR/gh-comment" \
-  && grep -q '^Reviewer-bypass: fail-open reviewer infrastructure outage; deterministic checks clean$' "$TEST_DIR/gh-merge-body" \
-  && grep -q $'\treview-bypass\t' "$TEST_DIR/touchstone-review-log" \
-  && grep -q 'marker=fail-open' "$TEST_DIR/touchstone-review-log" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
-  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
-  echo "==> PASS: fail-open bypass is disclosed, audited, and merged"
-else
-  echo "FAIL: fail-open bypass path did not disclose and merge as expected" >&2
-  cat "$TEST_DIR/output-fail-open-bypass.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: bypass after clean marker records disclosure and trailer"
-reset_case_files
-mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
-printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=pr-head-oid\nmerge_base=base-oid\n' >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
-run_merge_pr "$TEST_DIR/output-bypass.txt" 123 --bypass-with-disclosure="reviewer timed out after prior clean review"
-if grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-bypass.txt" \
-  && grep -q 'marker: clean-review' "$TEST_DIR/output-bypass.txt" \
-  && grep -q 'reason: reviewer timed out after prior clean review' "$TEST_DIR/output-bypass.txt" \
-  && grep -q 'Reviewer bypassed via `--bypass-with-disclosure`. Marker: clean-review. Reason: reviewer timed out after prior clean review' "$TEST_DIR/gh-comment" \
-  && grep -q '^Reviewer-bypass: reviewer timed out after prior clean review$' "$TEST_DIR/gh-merge-body" \
-  && grep -q $'\treview-bypass\t' "$TEST_DIR/touchstone-review-log" \
-  && grep -q 'marker=clean-review' "$TEST_DIR/touchstone-review-log" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
-  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
-  echo "==> PASS: bypass is disclosed and merged with trailer"
-else
-  echo "FAIL: bypass path did not disclose and merge as expected" >&2
-  cat "$TEST_DIR/output-bypass.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: rollout bypass derives eligibility from prior PR-triggered review"
+echo "==> Test: bypass derives eligibility from prior PR-triggered review"
 reset_case_files
 write_pr_triggered_config false 0 0
 GH_REQUEST_RECORDS="$(durable_request_records "2026-06-22T00:00:00Z" "base-oid")" \
@@ -3170,8 +2472,7 @@ if grep -q 'BYPASSING REVIEWER GATE' "$TEST_DIR/output-bypass-pr-triggered.txt" 
   && grep -q 'Reviewer bypassed via `--bypass-with-disclosure`. Marker: pr-triggered-review. Reason: reviewer unavailable after prior clean review' "$TEST_DIR/gh-comment" \
   && grep -q '^Reviewer-bypass: reviewer unavailable after prior clean review$' "$TEST_DIR/gh-merge-body" \
   && ! grep -q 'Timed out waiting for trusted PR-visible AI review' "$TEST_DIR/output-bypass-pr-triggered.txt" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
-  && [ ! -f "$TEST_DIR/codex-review.log" ]; then
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
   echo "==> PASS: rollout bypass derives eligibility from the prior exact-head PR review"
 else
   echo "FAIL: rollout bypass should accept the prior exact-head PR review without a local marker" >&2
@@ -3202,39 +2503,4 @@ else
   exit 1
 fi
 
-echo "==> Test: stale clean marker is rejected"
-reset_case_files
-mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
-printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=old-head\n' >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
-if run_merge_pr "$TEST_DIR/output-stale.txt" 123 --bypass-with-disclosure="reviewer timed out"; then
-  echo "FAIL: bypass with stale marker unexpectedly succeeded" >&2
-  exit 1
-fi
-if grep -q "No trusted PR-visible review or prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-stale.txt" \
-  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
-  && [ ! -f "$TEST_DIR/gh-comment" ]; then
-  echo "==> PASS: stale clean marker rejected"
-else
-  echo "FAIL: stale marker did not fail safely" >&2
-  cat "$TEST_DIR/output-stale.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: old-base clean marker is rejected"
-reset_case_files
-mkdir -p "$GIT_PATH_ROOT/touchstone/reviewer-clean"
-printf 'result=CODEX_REVIEW_CLEAN\nbranch=feature/test\nhead=pr-head-oid\nmerge_base=old-base\n' >"$GIT_PATH_ROOT/touchstone/reviewer-clean/feature_test.clean"
-if run_merge_pr "$TEST_DIR/output-old-base.txt" 123 --bypass-with-disclosure="reviewer timed out"; then
-  echo "FAIL: bypass with old-base marker unexpectedly succeeded" >&2
-  exit 1
-fi
-if grep -q "No trusted PR-visible review or prior clean review marker matches branch 'feature/test' at head 'pr-head-oid' and merge base 'base-oid'" "$TEST_DIR/output-old-base.txt" \
-  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
-  && [ ! -f "$TEST_DIR/gh-comment" ]; then
-  echo "==> PASS: old-base clean marker rejected"
-  exit 0
-fi
-
-echo "FAIL: old-base marker did not fail safely" >&2
-cat "$TEST_DIR/output-old-base.txt" >&2
-exit 1
+echo "==> PASS: merge gate requires deterministic checks plus exact-revision PR review"

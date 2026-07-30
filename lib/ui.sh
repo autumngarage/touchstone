@@ -6,8 +6,7 @@
 # banner. Gracefully degrades when gum is not installed: the rails turn into
 # ASCII bars, and the hero turns into a plain wordmark.
 #
-# Sourced by bin/touchstone. The codex-review hook carries its own inline
-# copy because it ships into downstream projects without lib/.
+# Sourced by bin/touchstone.
 
 # Guard: only define helpers once per shell.
 if [ -n "${TK_UI_SOURCED:-}" ]; then return 0; fi

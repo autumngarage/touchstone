@@ -63,16 +63,14 @@ touchstone_review_fix_trusted_authors() {
   local worktree_path="$1" base_ref="$2"
   local config_file="" rel="" parsed_authors="" authors_configured=false
 
-  for rel in .touchstone-review.toml .codex-review.toml; do
-    if git -C "$worktree_path" cat-file -e "$base_ref:$rel" 2>/dev/null; then
-      config_file="$(mktemp -t touchstone-review-fix-config.XXXXXX)" || return 1
-      git -C "$worktree_path" show "$base_ref:$rel" >"$config_file" || {
-        rm -f "$config_file"
-        return 1
-      }
-      break
-    fi
-  done
+  rel=".touchstone-review.toml"
+  if git -C "$worktree_path" cat-file -e "$base_ref:$rel" 2>/dev/null; then
+    config_file="$(mktemp -t touchstone-review-fix-config.XXXXXX)" || return 1
+    git -C "$worktree_path" show "$base_ref:$rel" >"$config_file" || {
+      rm -f "$config_file"
+      return 1
+    }
+  fi
 
   if [ -n "$config_file" ]; then
     # shellcheck source=toml.sh

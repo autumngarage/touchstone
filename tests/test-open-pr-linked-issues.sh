@@ -59,6 +59,9 @@ case "$1 $2" in
       case "$jq_expr" in
         '.body // ""') cat "$FAKE_PR_BODY_FILE" ;;
         '.user.login // empty') echo "alice" ;;
+        '[.base.ref, .base.sha] | @tsv')
+          printf 'main\t%s\n' "$(git rev-parse main)"
+          ;;
         *) echo "unexpected pull REST args: $*" >&2; exit 1 ;;
       esac
       exit 0
@@ -121,7 +124,33 @@ case "$1 $2" in
     echo "https://example.test/touchstone/pull/4242"
     ;;
   "pr view")
-    echo ""
+    json_fields=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--json" ]; then
+        json_fields="$arg"
+      fi
+      prev="$arg"
+    done
+    case "$json_fields" in
+      headRefOid) git rev-parse HEAD ;;
+      state,mergedAt) printf '{"state":"MERGED","mergedAt":"2026-07-29T00:00:02Z"}\n' ;;
+      *) echo "unexpected gh pr view args: $*" >&2; exit 1 ;;
+    esac
+    ;;
+  "api --paginate")
+    # No prior durable review-request records.
+    ;;
+  "api -X")
+    case "${4:-}" in
+      repos/autumngarage/touchstone/statuses/*)
+        echo "2026-07-29T00:00:00Z"
+        ;;
+      repos/autumngarage/touchstone/issues/*/comments)
+        echo "2026-07-29T00:00:01Z"
+        ;;
+      *) echo "unexpected gh api POST args: $*" >&2; exit 1 ;;
+    esac
     ;;
   "issue view")
     echo "issue claim check must use REST reads: $*" >&2

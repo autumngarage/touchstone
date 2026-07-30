@@ -120,7 +120,7 @@ a whole.
 
 If a lane changes the review/merge pipeline itself, ship that lane before other
 parallel lanes. Pipeline fixes include `scripts/merge-pr.sh`,
-`scripts/open-pr.sh`, `scripts/conductor-review.sh`, and pre-push hooks. Every
+`scripts/open-pr.sh`, `scripts/merge-pr.sh`, and pre-push hooks. Every
 other lane flows through that path at review/merge time, so leaving known
 pipeline bugs in place can invalidate otherwise-correct slice PRs.
 

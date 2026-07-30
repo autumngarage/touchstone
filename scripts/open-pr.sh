@@ -22,11 +22,10 @@
 #   PR" failure mode where an agent's session ends mid-merge and leaves a
 #   reviewed-but-unmerged PR open indefinitely.
 #
-#   Why local polling instead of `gh pr merge --auto`: native auto-merge fires
-#   when GitHub's required-checks gate flips green. Touchstone's review gate is
-#   the local Conductor review (run from merge-pr.sh), not a GitHub Action, so
-#   a queued native auto-merge would never fire. Keeping the merge in-band lets
-#   us positively confirm merge before reporting success.
+#   Why local polling instead of `gh pr merge --auto`: Touchstone validates
+#   exact-head review evidence and unresolved threads locally before asking
+#   GitHub to merge. Keeping the merge in-band lets us positively confirm that
+#   authorization before reporting success.
 #
 # ⚠ Stacked PRs — read this before using --base:
 #   Stacking a PR on another PR's branch is useful when work naturally
@@ -51,7 +50,6 @@ if [ -f "$SCRIPT_SYNC_GUARD" ]; then
   touchstone_script_sync_guard "$0" "$@"
 fi
 PREFLIGHT_SCRIPT="$SCRIPT_DIR/../lib/preflight.sh"
-REVIEW_COMMENT_SCRIPT="$SCRIPT_DIR/../lib/review-comment.sh"
 ISSUE_CLAIM_CHECK_SCRIPT="$SCRIPT_DIR/issue-claim-check.sh"
 if [ -f "$SCRIPT_DIR/../lib/events.sh" ]; then
   # shellcheck source=../lib/events.sh
@@ -63,20 +61,13 @@ if [ -f "$PREFLIGHT_SCRIPT" ]; then
   # shellcheck source=../lib/preflight.sh
   source "$PREFLIGHT_SCRIPT"
 fi
-if [ -f "$REVIEW_COMMENT_SCRIPT" ]; then
-  # shellcheck source=../lib/review-comment.sh
-  source "$REVIEW_COMMENT_SCRIPT"
-fi
-
 # orphan_warning is set to a PR URL once we know one — any nonzero exit after
 # that point prints recovery instructions as the script's last output, so the
 # user (or future agent) can see exactly which PR is stuck.
 ORPHAN_PR_URL=""
 ORPHAN_PR_NUMBER=""
 BODY_FILE=""
-ADVISORY_AT_PR_OPEN=false
-PREFLIGHT_REQUIRED=true
-PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=false
+PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=true
 PR_TRIGGERED_REVIEW_PROVIDER="github-codex"
 OPEN_PR_REVIEW_CONFIG_ERROR=""
 REPO_FULL_NAME=""
@@ -233,82 +224,11 @@ run_pr_body_protocol_preflight() {
   fi
 }
 
-run_deterministic_preflight_for_advisory() {
-  local base_ref="$1"
-  local repo_root cache_key_short
-
-  repo_root="$(git rev-parse --show-toplevel)"
-
-  if declare -F touchstone_preflight_cache_prepare >/dev/null 2>&1 \
-    && touchstone_preflight_cache_prepare "$base_ref" \
-    && touchstone_preflight_cache_hit; then
-    cache_key_short="$(touchstone_preflight_cache_short_key)"
-    echo "==> Deterministic preflight clean (cached=true, key=$cache_key_short; before advisory review, diff vs $base_ref)."
-    return 0
-  fi
-
-  echo "==> Running deterministic preflight before advisory review ..."
-  if touchstone_preflight_main_sanitized --diff "$base_ref" "$repo_root"; then
-    if declare -F touchstone_preflight_write_clean_cache >/dev/null 2>&1; then
-      touchstone_preflight_write_clean_cache
-    fi
-    if [ -n "${TOUCHSTONE_PREFLIGHT_CACHE_KEY:-}" ] \
-      && declare -F touchstone_preflight_cache_short_key >/dev/null 2>&1; then
-      cache_key_short="$(touchstone_preflight_cache_short_key)"
-      echo "==> Deterministic preflight clean (cached=false, key=$cache_key_short)."
-    else
-      echo "==> Deterministic preflight clean (cached=false)."
-    fi
-    return 0
-  fi
-
-  return 1
-}
-
 truthy() {
   case "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" in
     true | 1 | yes | on) return 0 ;;
     *) return 1 ;;
   esac
-}
-
-normalize_bool() {
-  case "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" in
-    true | 1 | yes | on) printf 'true' ;;
-    false | 0 | no | off) printf 'false' ;;
-    *) printf '%s' "$1" ;;
-  esac
-}
-
-load_open_pr_advisory_config() {
-  local config_file
-  local repo_root
-  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-  [ -n "$repo_root" ] || return 0
-  if [ -f "$repo_root/.touchstone-review.toml" ]; then
-    config_file="$repo_root/.touchstone-review.toml"
-  else
-    config_file="$repo_root/.codex-review.toml"
-  fi
-  [ -f "$config_file" ] || return 0
-  [ -f "$SCRIPT_DIR/../lib/toml.sh" ] || return 0
-
-  # shellcheck source=../lib/toml.sh
-  source "$SCRIPT_DIR/../lib/toml.sh"
-
-  open_pr_toml_callback() {
-    local section="$1"
-    local key="$2"
-    local value="$3"
-
-    if [ "$section" = "review" ] && [ "$key" = "advisory_at_pr_open" ]; then
-      ADVISORY_AT_PR_OPEN="$(normalize_bool "$value")"
-    elif [ "$section" = "review" ] && [ "$key" = "preflight_required" ]; then
-      PREFLIGHT_REQUIRED="$(normalize_bool "$value")"
-    fi
-  }
-
-  toml_parse "$config_file" open_pr_toml_callback
 }
 
 load_open_pr_review_request_config() {
@@ -337,23 +257,21 @@ load_open_pr_review_request_config() {
     return 1
   fi
 
-  for rel in .touchstone-review.toml .codex-review.toml; do
-    if git cat-file -e "$trusted_ref:$rel" 2>/dev/null; then
-      if ! config_tmp="$(mktemp -t touchstone-open-pr-review-config.XXXXXX)"; then
-        echo "ERROR: Failed to create a temporary trusted review request policy file." >&2
-        echo "       source: $trusted_ref:$rel" >&2
-        return 1
-      fi
-      if ! git show "$trusted_ref:$rel" >"$config_tmp" 2>/dev/null; then
-        rm -f "$config_tmp"
-        echo "ERROR: Failed to extract trusted review request policy." >&2
-        echo "       source: $trusted_ref:$rel" >&2
-        return 1
-      fi
-      config_file="$config_tmp"
-      break
+  rel=".touchstone-review.toml"
+  if git cat-file -e "$trusted_ref:$rel" 2>/dev/null; then
+    if ! config_tmp="$(mktemp -t touchstone-open-pr-review-config.XXXXXX)"; then
+      echo "ERROR: Failed to create a temporary trusted review request policy file." >&2
+      echo "       source: $trusted_ref:$rel" >&2
+      return 1
     fi
-  done
+    if ! git show "$trusted_ref:$rel" >"$config_tmp" 2>/dev/null; then
+      rm -f "$config_tmp"
+      echo "ERROR: Failed to extract trusted review request policy." >&2
+      echo "       source: $trusted_ref:$rel" >&2
+      return 1
+    fi
+    config_file="$config_tmp"
+  fi
   [ -n "$config_file" ] || return 0
   if [ ! -f "$SCRIPT_DIR/../lib/toml.sh" ]; then
     rm -f "$config_tmp"
@@ -370,8 +288,9 @@ load_open_pr_review_request_config() {
 
     if [ "$section" = "review.pr_triggered" ] && [ "$key" = "request_on_push" ]; then
       case "$value" in
-        true | false) PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH="$value" ;;
-        *) OPEN_PR_REVIEW_CONFIG_ERROR="[review.pr_triggered].request_on_push must be true or false; got: $value" ;;
+        true) PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=true ;;
+        false) OPEN_PR_REVIEW_CONFIG_ERROR="[review.pr_triggered].request_on_push must remain true" ;;
+        *) OPEN_PR_REVIEW_CONFIG_ERROR="[review.pr_triggered].request_on_push must be true; got: $value" ;;
       esac
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "provider" ]; then
       PR_TRIGGERED_REVIEW_PROVIDER="$value"
@@ -589,86 +508,6 @@ request_pr_triggered_review() {
   echo "==> Requested GitHub Codex review for head $head_sha at base $base_sha."
 }
 
-run_advisory_review_at_pr_open() {
-  local pr_number="$1"
-  local base_branch="$2"
-  local review_script summary_file output_file review_rc summary_json comment
-  local advisory_preflight_passed=false
-
-  if ! truthy "$ADVISORY_AT_PR_OPEN"; then
-    echo "==> Advisory review at PR open disabled; merge-gate review still runs during auto-merge."
-    return 0
-  fi
-
-  if ! declare -F post_pr_review_comment >/dev/null 2>&1 \
-    || ! declare -F format_clean_review_comment >/dev/null 2>&1 \
-    || ! declare -F format_advisory_findings_comment >/dev/null 2>&1; then
-    echo "==> Review comment helper not found at $REVIEW_COMMENT_SCRIPT; skipping advisory review."
-    return 0
-  fi
-
-  if truthy "$PREFLIGHT_REQUIRED" && ! truthy "${TOUCHSTONE_NO_PREFLIGHT:-false}"; then
-    if declare -F touchstone_preflight_main >/dev/null 2>&1; then
-      if ! run_deterministic_preflight_for_advisory "origin/$base_branch"; then
-        echo "WARNING: preflight failed; skipping non-blocking advisory review to avoid spending provider tokens." >&2
-        return 0
-      fi
-      advisory_preflight_passed=true
-    else
-      echo "==> Preflight helper not found at $PREFLIGHT_SCRIPT — skipping preflight."
-    fi
-  else
-    echo "==> Preflight disabled before advisory review."
-  fi
-
-  review_script="$SCRIPT_DIR/conductor-review.sh"
-  if [ ! -f "$review_script" ]; then
-    review_script="$SCRIPT_DIR/codex-review.sh"
-    if [ ! -f "$review_script" ]; then
-      echo "WARNING: conductor review script not found at $SCRIPT_DIR/conductor-review.sh or $SCRIPT_DIR/codex-review.sh; skipping advisory review." >&2
-      return 0
-    fi
-  fi
-
-  summary_file="$(git rev-parse --git-path "touchstone/review-summary-pr-${pr_number}-advisory.json" 2>/dev/null || echo "")"
-  output_file="$(mktemp -t touchstone-advisory-review.XXXXXX.txt)"
-  if [ -n "$summary_file" ]; then
-    mkdir -p "$(dirname "$summary_file")" 2>/dev/null || true
-    rm -f "$summary_file" 2>/dev/null || true
-  fi
-
-  echo "==> Running advisory conductor review for PR #$pr_number ..."
-  review_rc=0
-  CODEX_REVIEW_BASE="origin/$base_branch" \
-    CODEX_REVIEW_BRANCH_NAME="$CURRENT_BRANCH" \
-    CODEX_REVIEW_FORCE=1 \
-    CODEX_REVIEW_MODE=review-only \
-    TOUCHSTONE_PREFLIGHT_ALREADY_RAN="$advisory_preflight_passed" \
-    CODEX_REVIEW_SUMMARY_FILE="$summary_file" \
-    bash "$review_script" >"$output_file" 2>&1 || review_rc=$?
-
-  summary_json="$(tail -n 1 "$summary_file" 2>/dev/null || true)"
-  if [ -z "$summary_json" ]; then
-    echo "WARNING: advisory review summary missing; skipping advisory PR comment." >&2
-    rm -f "$output_file"
-    return 0
-  fi
-
-  if [ "$review_rc" -eq 0 ]; then
-    comment="$(format_clean_review_comment "$summary_json")"
-  else
-    comment="$(format_advisory_findings_comment "$summary_json" "$(cat "$output_file" 2>/dev/null || true)")"
-  fi
-
-  if post_pr_review_comment "$pr_number" "$comment"; then
-    echo "==> Posted advisory review PR comment."
-  else
-    echo "WARNING: failed to post advisory review PR comment for PR #$pr_number." >&2
-  fi
-  rm -f "$output_file"
-  return 0
-}
-
 # Locate the worktree that has the default branch checked out, by parsing
 # `git worktree list --porcelain`. Returns empty when no sibling worktree
 # owns the default branch (single-checkout case).
@@ -783,8 +622,6 @@ esac
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 TEMPLATE_PATH="$REPO_ROOT/.github/pull_request_template.md"
-load_open_pr_advisory_config
-
 # Fail fast if gh is missing or unauthenticated.
 if ! command -v gh >/dev/null 2>&1; then
   echo "ERROR: 'gh' (GitHub CLI) is not installed. Install it before opening PRs." >&2
@@ -1108,7 +945,6 @@ touchstone_emit_event pr_opened \
   head_sha="$HEAD_SHA"
 
 run_pr_body_protocol_preflight "new PR #$ORPHAN_PR_NUMBER" "$ORPHAN_PR_NUMBER"
-run_advisory_review_at_pr_open "$ORPHAN_PR_NUMBER" "$BASE_BRANCH"
 request_pr_triggered_review "$ORPHAN_PR_NUMBER" "$PUSHED_HEAD_SHA"
 
 if [ -n "$DRAFT_FLAG" ]; then
