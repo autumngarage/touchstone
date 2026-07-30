@@ -404,6 +404,20 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+if TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" review-stats >"$TEST_DIR/retired-review-stats.txt" 2>&1; then
+  assert_contains "$TEST_DIR/retired-review-stats.txt" 'review-stats is retired'
+else
+  echo "FAIL: retired review-stats compatibility handler should succeed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" migrate-review-config >"$TEST_DIR/retired-review-migration.txt" 2>&1; then
+  assert_contains "$TEST_DIR/retired-review-migration.txt" 'migrate-review-config is retired'
+  assert_contains "$TEST_DIR/retired-review-migration.txt" 'reads legacy .codex-review.toml policy'
+else
+  echo "FAIL: retired review-config migration handler should succeed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # Ecosystem profiles should configure shared runner behavior without making
 # Python the default for every project.
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_NODE" --no-register --type node

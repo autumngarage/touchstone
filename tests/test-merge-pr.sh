@@ -539,7 +539,12 @@ case "$*" in
     printf '%s\n' "${GIT_LOCAL_BRANCH_HEAD:-pr-head-oid}"
     ;;
   cat-file\ -e\ origin/*:.touchstone-review.toml)
+    [ -z "${GIT_TRUSTED_LEGACY_CONFIG_FILE:-}" ] || exit 1
     [ -f "$(trusted_touchstone_config_file)" ] || exit 1
+    ;;
+  cat-file\ -e\ origin/*:.codex-review.toml)
+    [ -n "${GIT_TRUSTED_LEGACY_CONFIG_FILE:-}" ] \
+      && [ -f "$GIT_TRUSTED_LEGACY_CONFIG_FILE" ] || exit 1
     ;;
   "show-ref --verify --quiet refs/heads/feature/test")
     if [ -f "$GIT_BRANCH_DELETED_FILE" ]; then
@@ -552,6 +557,9 @@ case "$*" in
       exit 1
     fi
     cat "$(trusted_touchstone_config_file)"
+    ;;
+  show\ origin/*:.codex-review.toml)
+    cat "$GIT_TRUSTED_LEGACY_CONFIG_FILE"
     ;;
   cat-file\ -e\ *^\{commit\})
     ;;
@@ -714,6 +722,7 @@ reset_case_files() {
   unset GIT_WORKTREE_STATUS
   unset GIT_WORKTREE_REMOVE_FAIL
   unset GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE
+  unset GIT_TRUSTED_LEGACY_CONFIG_FILE
   unset GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE
   unset GIT_TRUSTED_CONFIG_SHOW_FAIL
   unset SHELLCHECK_VERSION_LINE
@@ -821,6 +830,7 @@ run_merge_pr() {
     GIT_WORKTREE_STATUS="${GIT_WORKTREE_STATUS:-}" \
     GIT_WORKTREE_REMOVE_FAIL="${GIT_WORKTREE_REMOVE_FAIL:-false}" \
     GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE="${GIT_TRUSTED_TOUCHSTONE_CONFIG_FILE:-}" \
+    GIT_TRUSTED_LEGACY_CONFIG_FILE="${GIT_TRUSTED_LEGACY_CONFIG_FILE:-}" \
     GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE="${GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE:-}" \
     GIT_TRUSTED_CONFIG_SHOW_FAIL="${GIT_TRUSTED_CONFIG_SHOW_FAIL:-false}" \
     SHELLCHECK_VERSION_LINE="${SHELLCHECK_VERSION_LINE:-}" \
@@ -1163,6 +1173,29 @@ if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TE
 else
   echo "FAIL: refreshed trusted base config should control PR-triggered policy" >&2
   cat "$TEST_DIR/output-pr-triggered-trusted-base.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: legacy trusted policy filename preserves its author allowlist"
+reset_case_files
+install_toml_parser_fixture
+cat >"$TEST_DIR/legacy-trusted-review.toml" <<'EOF'
+[review.pr_triggered]
+required = true
+provider = "github-codex"
+request_on_push = true
+timeout_sec = 0
+poll_sec = 0
+trusted_review_authors = ["legacy-reviewer"]
+EOF
+GIT_TRUSTED_LEGACY_CONFIG_FILE="$TEST_DIR/legacy-trusted-review.toml" \
+  GH_TRUSTED_REVIEWS=$'legacy-reviewer\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/legacy' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-legacy-policy.txt" 123
+rm -rf "${TEST_DIR:?}/lib"
+if [ "$(cat "$TEST_DIR/gh-merge-head")" = "pr-head-oid" ]; then
+  echo "==> PASS: legacy trusted policy filename preserves authorization"
+else
+  cat "$TEST_DIR/output-pr-triggered-legacy-policy.txt" >&2
   exit 1
 fi
 

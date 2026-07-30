@@ -302,6 +302,23 @@ cmd_migrate_from_toolkit() {
   exec bash "$TOUCHSTONE_ROOT/bootstrap/migrate-from-toolkit.sh" "$@"
 }
 
+cmd_retired_review() {
+  echo "WARNING: touchstone review is retired; running deterministic preflight instead." >&2
+  echo "         Semantic review is requested automatically after scripts/open-pr.sh pushes the PR." >&2
+  cmd_preflight
+}
+
+cmd_retired_review_stats() {
+  echo "WARNING: touchstone review-stats is retired; local model-review metrics no longer exist." >&2
+  echo "         Inspect PR review state with: gh pr view --comments" >&2
+}
+
+cmd_retired_review_migration() {
+  echo "WARNING: touchstone migrate-review-config is retired." >&2
+  echo "         Touchstone reads legacy .codex-review.toml policy during migration." >&2
+  echo "         Compare with templates/touchstone-review.toml and migrate through a normal PR." >&2
+}
+
 cmd_sync() {
   echo "DEPRECATED: touchstone sync is deprecated; use touchstone update-all." >&2
   cmd_update_all "$@"
@@ -734,9 +751,17 @@ cmd_doctor_project() {
   fi
 
   # 6. Required PR-visible review policy.
+  local review_policy_file=""
   if [ -f "$project_dir/.touchstone-review.toml" ]; then
+    review_policy_file="$project_dir/.touchstone-review.toml"
     tk_ok ".touchstone-review.toml present"
-    if touchstone_doctor_pr_review_policy_valid "$project_dir/.touchstone-review.toml"; then
+  elif [ -f "$project_dir/.codex-review.toml" ]; then
+    review_policy_file="$project_dir/.codex-review.toml"
+    tk_warn ".codex-review.toml legacy policy in use"
+    tk_dim "  Migrate through a PR using: touchstone diff"
+  fi
+  if [ -n "$review_policy_file" ]; then
+    if touchstone_doctor_pr_review_policy_valid "$review_policy_file"; then
       tk_ok "PR-visible exact-head review required"
     else
       tk_fail ".touchstone-review.toml must require and request GitHub Codex review"
@@ -1778,6 +1803,9 @@ case "$COMMAND" in
   update)       cmd_update "$@" ;;
   update-all)   cmd_update_all "$@" ;;
   migrate-from-toolkit) cmd_migrate_from_toolkit "$@" ;;
+  migrate-review-config) cmd_retired_review_migration "$@" ;;
+  review)       cmd_retired_review "$@" ;;
+  review-stats) cmd_retired_review_stats "$@" ;;
   sync)         cmd_sync "$@" ;;
   status)       cmd_status "$@" ;;
   list|ls)      cmd_list ;;

@@ -257,8 +257,10 @@ load_open_pr_review_request_config() {
     return 1
   fi
 
-  rel=".touchstone-review.toml"
-  if git cat-file -e "$trusted_ref:$rel" 2>/dev/null; then
+  for rel in .touchstone-review.toml .codex-review.toml; do
+    if ! git cat-file -e "$trusted_ref:$rel" 2>/dev/null; then
+      continue
+    fi
     if ! config_tmp="$(mktemp -t touchstone-open-pr-review-config.XXXXXX)"; then
       echo "ERROR: Failed to create a temporary trusted review request policy file." >&2
       echo "       source: $trusted_ref:$rel" >&2
@@ -271,7 +273,8 @@ load_open_pr_review_request_config() {
       return 1
     fi
     config_file="$config_tmp"
-  fi
+    break
+  done
   [ -n "$config_file" ] || return 0
   if [ ! -f "$SCRIPT_DIR/../lib/toml.sh" ]; then
     rm -f "$config_tmp"

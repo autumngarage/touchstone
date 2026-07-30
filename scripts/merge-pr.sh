@@ -317,8 +317,10 @@ resolve_merge_review_config_file() {
   MERGE_REVIEW_CONFIG_FILE=""
   if [ -n "$PR_NUMBER" ] && [ -n "${PR_BASE_REF:-}" ]; then
     trusted_base="${MERGE_PR_TRUSTED_CONFIG_BASE:-$PR_BASE_REF}"
-    rel=".touchstone-review.toml"
-    if git cat-file -e "$trusted_base:$rel" 2>/dev/null; then
+    for rel in .touchstone-review.toml .codex-review.toml; do
+      if ! git cat-file -e "$trusted_base:$rel" 2>/dev/null; then
+        continue
+      fi
       if ! tmp="$(mktemp -t touchstone-merge-review-config.XXXXXX)"; then
         echo "ERROR: Failed to create a temporary file for trusted review config." >&2
         echo "       source: $trusted_base:$rel" >&2
@@ -335,16 +337,18 @@ resolve_merge_review_config_file() {
       echo "       source: $trusted_base:$rel" >&2
       TOUCHSTONE_MERGE_FAILURE_REASON="trusted-review-config"
       return 1
-    fi
+    done
     return 0
   fi
 
   repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
   [ -n "$repo_root" ] || return 0
-  rel=".touchstone-review.toml"
-  if [ -f "$repo_root/$rel" ]; then
-    MERGE_REVIEW_CONFIG_FILE="$repo_root/$rel"
-  fi
+  for rel in .touchstone-review.toml .codex-review.toml; do
+    if [ -f "$repo_root/$rel" ]; then
+      MERGE_REVIEW_CONFIG_FILE="$repo_root/$rel"
+      return 0
+    fi
+  done
   return 0
 }
 
