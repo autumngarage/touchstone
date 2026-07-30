@@ -126,6 +126,119 @@ fi
 echo "==> Updating project: $PROJECT_DIR"
 echo "    Touchstone: $OLD_SHA -> $CURRENT_SHA"
 
+retired_review_hook_refs() {
+  local scan_legacy="$1"
+  local scan_codex="$2"
+
+  awk -v scan_legacy="$scan_legacy" -v scan_codex="$scan_codex" '
+    function indentation(text, copy) {
+      copy = text
+      sub(/[^[:space:]].*$/, "", copy)
+      return length(copy)
+    }
+    function has_retired_ref(text) {
+      return (scan_legacy == "true" && text ~ /scripts\/conductor-review\.sh/) ||
+        (scan_codex == "true" && text ~ /scripts\/codex-review\.sh/)
+    }
+    {
+      raw = $0
+      line = raw
+      sub(/^[[:space:]]*#.*/, "", line)
+      sub(/[[:space:]]+#.*$/, "", line)
+
+      if (entry_block == 1 && line !~ /^[[:space:]]*$/) {
+        if (indentation(line) > entry_indent) {
+          if (has_retired_ref(line)) {
+            print NR ":" raw
+          }
+          next
+        }
+        entry_block = 0
+      }
+
+      remaining = line
+      while (match(remaining, /(^|[,{[:space:]-])entry[[:space:]]*:/)) {
+        value = substr(remaining, RSTART + RLENGTH)
+        if (line ~ /\{.*entry[[:space:]]*:/) {
+          sub(/[,}].*$/, "", value)
+        }
+        if (has_retired_ref(value)) {
+          print NR ":" raw
+        }
+        trimmed = value
+        sub(/^[[:space:]]*/, "", trimmed)
+        if (trimmed == "" || trimmed ~ /^[>|][+-]?[[:space:]]*$/) {
+          entry_block = 1
+          entry_indent = indentation(line)
+        }
+        remaining = substr(remaining, RSTART + RLENGTH)
+        if (remaining !~ /[,}]/) {
+          break
+        }
+        sub(/^[^,}]*[,}]/, "", remaining)
+      }
+    }
+  '
+}
+
+require_retired_review_hook_migration() {
+  local config="$PROJECT_DIR/.pre-commit-config.yaml"
+  local manifest="$PROJECT_DIR/.touchstone-manifest"
+  local committed_refs=""
+  local prefix="ERROR"
+  local scan_codex=false
+  local scan_legacy=false
+  local working_refs=""
+
+  [ "$DRY_RUN" = true ] && prefix="WARNING"
+
+  if [ -f "$manifest" ]; then
+    grep -qxF "scripts/conductor-review.sh" "$manifest" 2>/dev/null \
+      && scan_legacy=true
+    grep -qxF "scripts/codex-review.sh" "$manifest" 2>/dev/null \
+      && scan_codex=true
+  fi
+  if [ "$scan_legacy" = false ] && [ "$scan_codex" = false ]; then
+    return 0
+  fi
+
+  if [ -f "$config" ]; then
+    working_refs="$(retired_review_hook_refs "$scan_legacy" "$scan_codex" <"$config")"
+  fi
+
+  if git -C "$PROJECT_DIR" cat-file -e "HEAD:.pre-commit-config.yaml" 2>/dev/null; then
+    committed_refs="$(
+      git -C "$PROJECT_DIR" show "HEAD:.pre-commit-config.yaml" \
+        | retired_review_hook_refs "$scan_legacy" "$scan_codex"
+    )"
+  fi
+
+  if [ -n "$working_refs" ]; then
+    echo "$prefix: .pre-commit-config.yaml still references retired local review hooks:" >&2
+    printf '%s\n' "$working_refs" | sed 's/^/         /' >&2
+    echo "       Remove the hook block(s) that reference:" >&2
+    echo "         - scripts/conductor-review.sh" >&2
+    echo "         - scripts/codex-review.sh" >&2
+    echo "       PR-visible review is requested by scripts/open-pr.sh." >&2
+    echo "       Commit the project-owned .pre-commit-config.yaml change, then rerun:" >&2
+    echo "         touchstone update" >&2
+    [ "$DRY_RUN" = true ] && return 0
+    exit 1
+  fi
+
+  if [ -n "$committed_refs" ]; then
+    echo "$prefix: the retired review-hook removal is not committed." >&2
+    echo "       HEAD still contains these .pre-commit-config.yaml entries:" >&2
+    printf '%s\n' "$committed_refs" | sed 's/^/         /' >&2
+    echo "       Commit the project-owned .pre-commit-config.yaml migration, then rerun:" >&2
+    echo "         touchstone update" >&2
+    [ "$DRY_RUN" = true ] && return 0
+    exit 1
+  fi
+}
+
+require_retired_review_hook_migration
+
 if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
   echo "==> Already up to date."
   exit 0
@@ -236,7 +349,6 @@ rollback_failed_update() {
   for rel in ${ADDED_PATHS[@]+"${ADDED_PATHS[@]}"}; do
     rm -f "$PROJECT_DIR/$rel" 2>/dev/null || true
   done
-
   if [ "$IN_PLACE" != true ] && [ -n "$ORIGINAL_BRANCH" ]; then
     git -C "$PROJECT_DIR" checkout -f "$ORIGINAL_BRANCH" >/dev/null 2>&1 || true
   fi
@@ -394,33 +506,26 @@ remove_retired_managed_file() {
     SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1))
     return 0
   fi
+  if ! git -C "$PROJECT_DIR" ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1; then
+    echo "    ! leaving untracked retired file in place: $target" >&2
+    echo "      Touchstone will stop managing it; remove it manually after preserving any local changes." >&2
+    return 0
+  fi
   if [ "$DRY_RUN" = true ]; then
     echo "    - would remove retired managed file: $target"
   else
-    rm -f "$target"
     RETIRED_MANAGED_PATHS+=("$rel_path")
+    rm -f "$target"
     echo "    - removed retired managed file: $target"
   fi
   UPDATED=$((UPDATED + 1))
 }
 
-update_compatibility_shim_if_managed() {
-  local rel_path="$1"
-  local source_path="$2"
-  local manifest="$PROJECT_DIR/.touchstone-manifest"
-
-  [ -f "$manifest" ] || return 0
-  grep -qxF "$rel_path" "$manifest" 2>/dev/null || return 0
-  update_file "$source_path" "$PROJECT_DIR/$rel_path"
-}
-
 echo "==> Updating touchstone-owned files:"
 
 remove_retired_managed_file "lib/review-comment.sh"
-update_compatibility_shim_if_managed \
-  "scripts/conductor-review.sh" "$TOUCHSTONE_ROOT/scripts/conductor-review.sh"
-update_compatibility_shim_if_managed \
-  "scripts/codex-review.sh" "$TOUCHSTONE_ROOT/scripts/codex-review.sh"
+remove_retired_managed_file "scripts/conductor-review.sh"
+remove_retired_managed_file "scripts/codex-review.sh"
 
 # Principles
 if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
@@ -627,10 +732,6 @@ write_touchstone_manifest() {
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
-    [ -f "$PROJECT_DIR/scripts/conductor-review.sh" ] \
-      && printf 'scripts/conductor-review.sh\n'
-    [ -f "$PROJECT_DIR/scripts/codex-review.sh" ] \
-      && printf 'scripts/codex-review.sh\n'
     printf 'scripts/claim-issue.sh\n'
     printf 'scripts/issue-claim-check.sh\n'
     printf 'scripts/cleanup-branches.sh\n'
