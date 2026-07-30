@@ -922,6 +922,7 @@ write_touchstone_manifest() {
     printf 'lib/worker-review-fix.sh\n'
     printf 'lib/worker-state.sh\n'
     printf 'lib/script-sync-guard.sh\n'
+    printf 'lib/sha256.sh\n'
     printf 'lib/preflight.sh\n'
     printf 'lib/preflight-scope.sh\n'
     if [ "$INPUT_TYPE" = "python" ]; then
@@ -1004,6 +1005,7 @@ copy_file_force "$TOUCHSTONE_ROOT/lib/worker-ship-job.sh" "$PROJECT_DIR/lib/work
 copy_file_force "$TOUCHSTONE_ROOT/lib/worker-review-fix.sh" "$PROJECT_DIR/lib/worker-review-fix.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/worker-state.sh" "$PROJECT_DIR/lib/worker-state.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/script-sync-guard.sh" "$PROJECT_DIR/lib/script-sync-guard.sh"
+copy_file_force "$TOUCHSTONE_ROOT/lib/sha256.sh" "$PROJECT_DIR/lib/sha256.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PROJECT_DIR/lib/preflight.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/preflight-scope.sh" "$PROJECT_DIR/lib/preflight-scope.sh"
 

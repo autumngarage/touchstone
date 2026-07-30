@@ -14,6 +14,45 @@ fi
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-preflight.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
+SYSTEM_PATH="$PATH"
+
+echo "==> Test: SHA-256 adapter falls back to sha256sum"
+SHA256_FALLBACK_BIN="$TEST_DIR/sha256-fallback-bin"
+mkdir -p "$SHA256_FALLBACK_BIN"
+cat >"$SHA256_FALLBACK_BIN/sha256sum" <<'EOF'
+#!/bin/bash
+printf 'windows-fallback-digest  -\n'
+EOF
+cat >"$SHA256_FALLBACK_BIN/awk" <<'EOF'
+#!/bin/bash
+read -r digest _rest
+printf '%s\n' "$digest"
+EOF
+chmod +x "$SHA256_FALLBACK_BIN/sha256sum" "$SHA256_FALLBACK_BIN/awk"
+fallback_digest="$(
+  printf 'portable input\n' \
+    | PATH="$SHA256_FALLBACK_BIN" TOUCHSTONE_ROOT="$TOUCHSTONE_ROOT" /bin/bash -c \
+      'source "$TOUCHSTONE_ROOT/lib/sha256.sh"; touchstone_sha256_stream'
+)"
+if [ "$fallback_digest" != "windows-fallback-digest" ]; then
+  echo "FAIL: SHA-256 adapter did not use the sha256sum fallback" >&2
+  exit 1
+fi
+
+echo "==> Test: SHA-256 adapter fails closed without an implementation"
+SHA256_EMPTY_BIN="$TEST_DIR/sha256-empty-bin"
+mkdir -p "$SHA256_EMPTY_BIN"
+if PATH="$SHA256_EMPTY_BIN" TOUCHSTONE_ROOT="$TOUCHSTONE_ROOT" /bin/bash -c \
+  'source "$TOUCHSTONE_ROOT/lib/sha256.sh"; touchstone_sha256_stream' \
+  >"$TEST_DIR/sha256-missing.out" 2>&1; then
+  echo "FAIL: SHA-256 adapter passed without shasum or sha256sum" >&2
+  exit 1
+fi
+if ! grep -q "requires 'shasum' or 'sha256sum'" "$TEST_DIR/sha256-missing.out"; then
+  echo "FAIL: SHA-256 adapter did not explain its missing dependency" >&2
+  cat "$TEST_DIR/sha256-missing.out" >&2
+  exit 1
+fi
 
 CLEAN_FAKE_BIN="$TEST_DIR/clean-bin"
 mkdir -p "$CLEAN_FAKE_BIN"
@@ -26,10 +65,14 @@ EOF
 done
 
 echo "==> Test: touchstone preflight exits clean on this tree"
-PATH="$CLEAN_FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+if ! PATH="$CLEAN_FAKE_BIN:$SYSTEM_PATH" \
   TOUCHSTONE_NO_AUTO_UPDATE=1 \
   TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND=: \
-  bash "$TOUCHSTONE_ROOT/bin/touchstone" preflight "$TOUCHSTONE_ROOT" >"$TEST_DIR/clean.txt" 2>&1
+  bash "$TOUCHSTONE_ROOT/bin/touchstone" preflight "$TOUCHSTONE_ROOT" >"$TEST_DIR/clean.txt" 2>&1; then
+  echo "FAIL: clean tree preflight exited non-zero" >&2
+  cat "$TEST_DIR/clean.txt" >&2
+  exit 1
+fi
 if grep -q '==> preflight clean' "$TEST_DIR/clean.txt"; then
   echo "==> PASS: clean tree preflight exits 0"
 else
@@ -51,7 +94,7 @@ mkdir -p "$DOGFOOD_REPO"
   git add README.md
   git commit -q -m "dogfood fixture"
 )
-PATH="$CLEAN_FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+PATH="$CLEAN_FAKE_BIN:$SYSTEM_PATH" \
   TOUCHSTONE_NO_AUTO_UPDATE=1 \
   TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND=: \
   TOUCHSTONE_PREFLIGHT_DOGFOOD_COMMAND='printf "dogfood\n" >>"$DOGFOOD_LOG"' \
@@ -93,7 +136,7 @@ exit 0
 EOF
 chmod +x "$FAKE_BIN/shellcheck" "$FAKE_BIN/shfmt"
 
-if PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+if PATH="$FAKE_BIN:$SYSTEM_PATH" \
   TOUCHSTONE_NO_AUTO_UPDATE=1 \
   TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND=: \
   bash "$TOUCHSTONE_ROOT/bin/touchstone" preflight "$FIXTURE_REPO" >"$TEST_DIR/broken.txt" 2>&1; then

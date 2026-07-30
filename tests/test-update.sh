@@ -238,6 +238,7 @@ assert_exists "$PROJECT/lib/codex-auth.sh"
 assert_exists "$PROJECT/lib/worker-ship-job.sh"
 assert_exists "$PROJECT/lib/worker-review-fix.sh"
 assert_exists "$PROJECT/lib/script-sync-guard.sh"
+assert_exists "$PROJECT/lib/sha256.sh"
 assert_exists "$PROJECT/lib/preflight.sh"
 assert_not_exists "$PROJECT/lib/review-comment.sh"
 assert_exists "$PROJECT/.touchstone-manifest"
@@ -254,6 +255,7 @@ assert_contains "$PROJECT/.touchstone-manifest" '^lib/codex-auth\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-ship-job\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-review-fix\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/script-sync-guard\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/sha256\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/preflight\.sh$'
 assert_not_contains "$PROJECT/.touchstone-manifest" '^lib/review-comment\.sh$'
 if grep -qxF '.markdownlint.json' "$PROJECT/.touchstone-manifest"; then

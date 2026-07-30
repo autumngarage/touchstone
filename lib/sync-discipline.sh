@@ -44,6 +44,7 @@ touchstone_sync_planned_write_paths() {
     printf 'lib/worker-review-fix.sh\n'
     printf 'lib/worker-state.sh\n'
     printf 'lib/script-sync-guard.sh\n'
+    printf 'lib/sha256.sh\n'
     printf 'lib/preflight.sh\n'
     printf 'lib/preflight-scope.sh\n'
     printf 'lib/review-comment.sh\n'

@@ -207,6 +207,7 @@ assert_exists "$PROJECT/scripts/cortex-pr-merged-hook.sh"
 assert_exists "$PROJECT/lib/toml.sh"
 assert_exists "$PROJECT/lib/codex-auth.sh"
 assert_exists "$PROJECT/lib/script-sync-guard.sh"
+assert_exists "$PROJECT/lib/sha256.sh"
 assert_exists "$PROJECT/lib/preflight.sh"
 assert_not_exists "$PROJECT/lib/review-comment.sh"
 assert_exists "$PROJECT/scripts/touchstone-run.sh"
@@ -267,6 +268,7 @@ assert_contains "$PROJECT/.touchstone-manifest" '^lib/codex-auth\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-ship-job\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/worker-review-fix\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/script-sync-guard\.sh$'
+assert_contains "$PROJECT/.touchstone-manifest" '^lib/sha256\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/preflight\.sh$'
 assert_not_contains "$PROJECT/.touchstone-manifest" '^lib/review-comment\.sh$'
 if grep -q '^\.touchstone-config$' "$PROJECT/.gitignore"; then

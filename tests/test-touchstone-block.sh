@@ -25,6 +25,8 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 
 # shellcheck source=../lib/touchstone-block.sh
 source "$TOUCHSTONE_ROOT/lib/touchstone-block.sh"
+# shellcheck source=../lib/sha256.sh
+source "$TOUCHSTONE_ROOT/lib/sha256.sh"
 
 ERRORS=0
 fail() {
@@ -106,9 +108,9 @@ cat >"$target" <<'EOF'
 
 EOF
 touchstone_block_apply "$target" "$TOUCHSTONE_ROOT"
-sha_before="$(shasum -a 256 "$target" | awk '{print $1}')"
+sha_before="$(touchstone_sha256_file "$target")"
 touchstone_block_apply "$target" "$TOUCHSTONE_ROOT"
-sha_after="$(shasum -a 256 "$target" | awk '{print $1}')"
+sha_after="$(touchstone_sha256_file "$target")"
 assert_eq "idempotent sha" "$sha_before" "$sha_after"
 
 # --- 5. Refresh a stale block (current sentinel) ----------------------------
@@ -145,13 +147,13 @@ Someone deleted the end marker by accident.
 
 ## Project content still here.
 EOF
-sha_before="$(shasum -a 256 "$target" | awk '{print $1}')"
+sha_before="$(touchstone_sha256_file "$target")"
 set +e
 touchstone_block_apply "$target" "$TOUCHSTONE_ROOT" 2>/dev/null
 rc=$?
 set -e
 assert_eq "orphan rc" 1 "$rc"
-sha_after="$(shasum -a 256 "$target" | awk '{print $1}')"
+sha_after="$(touchstone_sha256_file "$target")"
 assert_eq "orphan untouched" "$sha_before" "$sha_after"
 
 # --- 7. Block lands BEFORE existing project content (top-of-file priority) --

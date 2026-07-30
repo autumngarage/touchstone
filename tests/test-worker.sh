@@ -1860,6 +1860,7 @@ EOF
   git -C "$PREFLIGHT_REPO" config user.name "Touchstone Test"
   git -C "$PREFLIGHT_REPO" config user.email "touchstone@example.com"
   mkdir -p "$PREFLIGHT_REPO/lib"
+  cp "$TOUCHSTONE_ROOT/lib/sha256.sh" "$PREFLIGHT_REPO/lib/sha256.sh"
   cp "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PREFLIGHT_REPO/lib/preflight.sh"
   cp "$TOUCHSTONE_ROOT/lib/preflight-scope.sh" "$PREFLIGHT_REPO/lib/preflight-scope.sh"
   printf 'fixture\n' >"$PREFLIGHT_REPO/tracked.txt"

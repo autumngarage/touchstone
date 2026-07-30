@@ -13,6 +13,8 @@
 set -euo pipefail
 
 PREFLIGHT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/sha256.sh
+source "$PREFLIGHT_LIB_DIR/sha256.sh"
 if [ -f "$PREFLIGHT_LIB_DIR/preflight-scope.sh" ]; then
   # shellcheck source=lib/preflight-scope.sh
   source "$PREFLIGHT_LIB_DIR/preflight-scope.sh"
@@ -50,14 +52,14 @@ touchstone_preflight_repo_root() {
 }
 
 touchstone_preflight_hash_stream() {
-  shasum -a 256 | awk '{ print $1 }'
+  touchstone_sha256_stream
 }
 
 touchstone_preflight_hash_file() {
   local path="$1"
 
   if [ -f "$path" ]; then
-    shasum -a 256 "$path" | awk '{ print $1 }'
+    touchstone_sha256_file "$path"
   else
     printf 'missing'
   fi
@@ -196,6 +198,7 @@ touchstone_preflight_cache_inputs() {
   merge_base="$(git -C "$repo_root" merge-base "$base_ref" "$head_sha" 2>/dev/null)" || return 1
   changed_paths_hash="$(touchstone_preflight_changed_paths_hash "$repo_root" "$base_ref")" || return 1
   checker_hash="$(touchstone_preflight_hash_file_list \
+    "lib/sha256.sh" "$PREFLIGHT_LIB_DIR/sha256.sh" \
     "lib/preflight.sh" "$PREFLIGHT_LIB_DIR/preflight.sh" \
     "lib/preflight-scope.sh" "$PREFLIGHT_LIB_DIR/preflight-scope.sh" \
     "scripts/touchstone-run.sh" "$PREFLIGHT_LIB_DIR/../scripts/touchstone-run.sh")"
@@ -457,7 +460,7 @@ touchstone_preflight_delivery_only_path() {
     lib/toml.sh | lib/events.sh | lib/codex-auth.sh | lib/worker-ship-job.sh | lib/worker-review-fix.sh | lib/worker-state.sh | lib/script-sync-guard.sh)
       return 0
       ;;
-    lib/preflight.sh | lib/preflight-scope.sh)
+    lib/sha256.sh | lib/preflight.sh | lib/preflight-scope.sh)
       return 0
       ;;
   esac
