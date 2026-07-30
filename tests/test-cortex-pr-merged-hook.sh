@@ -660,8 +660,9 @@ if ! grep -q "pr create" "$Q_GH_LOG" \
   cat "$Q_GH_LOG" >&2
   exit 1
 fi
-if ! grep -q "pr merge 777 --squash --delete-branch --auto" "$Q_GH_LOG"; then
-  echo "FAIL [Q]: hook did not queue journal PR auto-merge" >&2
+Q_JOURNAL_HEAD="$(git -C "$Q" rev-parse "$Q_BRANCH")"
+if ! grep -q "pr merge 777 --squash --delete-branch --auto --match-head-commit $Q_JOURNAL_HEAD" "$Q_GH_LOG"; then
+  echo "FAIL [Q]: hook did not bind queued journal PR auto-merge to its head" >&2
   cat "$Q_GH_LOG" >&2
   exit 1
 fi

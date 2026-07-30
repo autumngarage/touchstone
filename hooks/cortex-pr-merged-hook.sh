@@ -556,7 +556,8 @@ journal_head="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
 allow_auto_merge="$(cd "$PROJECT_DIR" && repo_allows_auto_merge || true)"
 merge_status=0
 if [ "$allow_auto_merge" = "true" ]; then
-  (cd "$PROJECT_DIR" && gh pr merge "$pr_number" --squash --delete-branch --auto >/dev/null 2>&1) \
+  (cd "$PROJECT_DIR" && gh pr merge "$pr_number" --squash --delete-branch --auto \
+    --match-head-commit "$journal_head" >/dev/null 2>&1) \
     || merge_status=$?
   if [ "$merge_status" -ne 0 ]; then
     log "cortex-pr-merged-hook: 'gh pr merge --auto' on #${pr_number} returned ${merge_status}; falling back to a bounded synchronous merge."
