@@ -158,7 +158,8 @@ if [ -n "$RETIRED_REVIEW_SHIM_ENTRIES" ]; then
       RETIRED_REVIEW_SHIM_BLOCKERS="${RETIRED_REVIEW_SHIM_BLOCKERS}${rel_path}
 "
     fi
-    if [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ] \
+    if [ ! -L "$PROJECT_DIR/.pre-commit-config.yaml" ] \
+      && [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ] \
       && grep -qF "$rel_path" "$PROJECT_DIR/.pre-commit-config.yaml"; then
       RETIRED_REVIEW_SHIM_BLOCKERS="${RETIRED_REVIEW_SHIM_BLOCKERS}.pre-commit-config.yaml -> ${rel_path}
 "
