@@ -37,6 +37,7 @@ REQUESTED_BRANCH=""
 SHIP=false
 IN_PLACE=false
 RETIRED_MANAGED_PATHS=()
+RETAINED_REVIEW_SHIM_PATHS=()
 
 usage() {
   echo "Usage: $0 [--dry-run|-n] [--check] [--branch <name>] [--in-place|--no-branch] [--ship]"
@@ -417,8 +418,28 @@ retire_review_shim_management() {
   [ -f "$manifest" ] || return 0
   grep -qxF "$rel_path" "$manifest" 2>/dev/null || return 0
   [ -e "$target" ] || return 0
-  echo "    ! leaving retired review shim in place: $target" >&2
-  echo "      Touchstone will stop managing it; remove it with its project-owned hook migration." >&2
+  if ! ensure_safe_dest "$target" || [ ! -f "$target" ]; then
+    echo "    ! retaining management of unsafe retired review shim: $target" >&2
+    RETAINED_REVIEW_SHIM_PATHS+=("$rel_path")
+    return 0
+  fi
+  if ! git -C "$PROJECT_DIR" ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1; then
+    echo "    ! retaining management of untracked retired review shim: $target" >&2
+    RETAINED_REVIEW_SHIM_PATHS+=("$rel_path")
+    return 0
+  fi
+  if [ "$DRY_RUN" = true ]; then
+    echo "    ! would neutralize retired review shim: $target"
+  else
+    printf '%s\n' \
+      '#!/usr/bin/env bash' \
+      'echo "Touchstone: local review shim retired; PR-visible review runs during PR shipping." >&2' \
+      'exit 0' >"$target"
+    chmod +x "$target"
+    RETIRED_MANAGED_PATHS+=("$rel_path")
+    echo "    ! neutralized retired review shim before dropping management: $target"
+  fi
+  UPDATED=$((UPDATED + 1))
 }
 
 echo "==> Updating touchstone-owned files:"
@@ -632,6 +653,9 @@ write_touchstone_manifest() {
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
+    if [ "${#RETAINED_REVIEW_SHIM_PATHS[@]}" -gt 0 ]; then
+      printf '%s\n' "${RETAINED_REVIEW_SHIM_PATHS[@]}"
+    fi
     printf 'scripts/claim-issue.sh\n'
     printf 'scripts/issue-claim-check.sh\n'
     printf 'scripts/cleanup-branches.sh\n'

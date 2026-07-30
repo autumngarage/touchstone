@@ -111,7 +111,6 @@ active_router_refs="$(grep -Rin "conductor" \
   "$TOUCHSTONE_ROOT/skills" \
   "$TOUCHSTONE_ROOT/templates" 2>/dev/null \
   | grep -v 'bootstrap/update-project.sh:.*conductor-review' \
-  | grep -v 'lib/sync-discipline.sh:.*scripts/conductor-review.sh' \
   | grep -v 'lib/install-skills.sh:.*conductor-delegation' \
   || true)"
 if [ -n "$active_router_refs" ]; then

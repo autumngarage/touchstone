@@ -112,8 +112,8 @@ echo "--- Step 2b: Remove retired managed review helpers ---"
 RETIREMENT_PROJECT="$TEST_DIR/retirement-project"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$RETIREMENT_PROJECT" --no-register >/dev/null
 configure_git "$RETIREMENT_PROJECT"
-printf '#!/usr/bin/env bash\n' >"$RETIREMENT_PROJECT/scripts/conductor-review.sh"
-printf '#!/usr/bin/env bash\n' >"$RETIREMENT_PROJECT/scripts/codex-review.sh"
+printf '#!/usr/bin/env bash\necho legacy local router\n' >"$RETIREMENT_PROJECT/scripts/conductor-review.sh"
+printf '#!/usr/bin/env bash\necho legacy local router\n' >"$RETIREMENT_PROJECT/scripts/codex-review.sh"
 chmod +x \
   "$RETIREMENT_PROJECT/scripts/conductor-review.sh" \
   "$RETIREMENT_PROJECT/scripts/codex-review.sh"
@@ -140,8 +140,11 @@ assert_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
 assert_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
 assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/conductor-review\.sh$'
 assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/codex-review\.sh$'
-assert_contains "$TEST_DIR/update-retirement-output.txt" 'leaving retired review shim in place'
-assert_contains "$TEST_DIR/update-retirement-output.txt" 'Touchstone will stop managing it'
+assert_contains "$RETIREMENT_PROJECT/scripts/conductor-review.sh" 'local review shim retired'
+assert_contains "$RETIREMENT_PROJECT/scripts/codex-review.sh" 'local review shim retired'
+assert_not_contains "$RETIREMENT_PROJECT/scripts/conductor-review.sh" 'legacy local router'
+assert_not_contains "$RETIREMENT_PROJECT/scripts/codex-review.sh" 'legacy local router'
+assert_contains "$TEST_DIR/update-retirement-output.txt" 'neutralized retired review shim'
 assert_not_exists "$RETIREMENT_PROJECT/lib/review-comment.sh"
 assert_not_exists "$HOME/.claude/skills/conductor-delegation"
 assert_exists "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md"
