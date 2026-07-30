@@ -78,13 +78,34 @@ touchstone_ship_write() {
   mv "$tmp" "$job_dir/$name"
 }
 
+touchstone_ship_process_start() {
+  local pid="$1" attempt=1 value
+  case "$pid" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  while [ "$attempt" -le 3 ]; do
+    value="$(ps -ww -p "$pid" -o lstart= 2>/dev/null \
+      | awk '{$1=$1; print}' || true)"
+    [ -n "$value" ] && {
+      printf '%s\n' "$value"
+      return 0
+    }
+    kill -0 "$pid" 2>/dev/null || return 1
+    [ "$attempt" -lt 3 ] && sleep 0.05
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 touchstone_ship_claim() {
-  local job_dir="$1" owner_pid="${2:-$$}" token record
+  local job_dir="$1" owner_pid="${2:-$$}" token record owner_start=""
   mkdir -p "$job_dir"
+  owner_start="$(touchstone_ship_process_start "$owner_pid" || true)"
   token="$owner_pid-$(date +%s)-${RANDOM:-0}"
   record="$job_dir/.active.$token.tmp"
   {
     printf 'owner-pid=%s\n' "$owner_pid"
+    printf 'owner-start=%s\n' "$owner_start"
     printf 'owner-token=%s\n' "$token"
   } >"$record"
   if ln "$record" "$job_dir/active" 2>/dev/null; then
@@ -114,13 +135,37 @@ touchstone_ship_claim_matches() {
   [ -n "$actual_token" ] && [ "$actual_token" = "$expected_token" ]
 }
 
+touchstone_ship_transfer_claim() {
+  local job_dir="$1" expected_token="$2" owner_pid="$3" record owner_start
+  case "$owner_pid" in
+    '' | *[!0-9]*) return 1 ;;
+  esac
+  touchstone_ship_claim_matches "$job_dir" "$expected_token" || return 1
+  owner_start="$(touchstone_ship_process_start "$owner_pid")" || return 1
+  record="$job_dir/.active-transfer.$$.${RANDOM:-0}.tmp"
+  {
+    printf 'owner-pid=%s\n' "$owner_pid"
+    printf 'owner-start=%s\n' "$owner_start"
+    printf 'owner-token=%s\n' "$expected_token"
+  } >"$record"
+  touchstone_ship_claim_matches "$job_dir" "$expected_token" || {
+    rm -f "$record"
+    return 1
+  }
+  mv "$record" "$job_dir/active"
+}
+
 touchstone_ship_claim_owner_alive() {
-  local job_dir="$1" owner_pid
+  local job_dir="$1" owner_pid expected_start actual_start
   owner_pid="$(touchstone_ship_claim_value "$job_dir" owner-pid)"
   case "$owner_pid" in
     '' | *[!0-9]*) return 1 ;;
   esac
-  kill -0 "$owner_pid" 2>/dev/null
+  kill -0 "$owner_pid" 2>/dev/null || return 1
+  expected_start="$(touchstone_ship_claim_value "$job_dir" owner-start)"
+  [ -n "$expected_start" ] || return 0
+  actual_start="$(touchstone_ship_process_start "$owner_pid")" || return 1
+  [ "$actual_start" = "$expected_start" ]
 }
 
 touchstone_ship_release_claim() {
@@ -148,6 +193,23 @@ touchstone_ship_pid_is_runner() {
     && printf '%s' "$command_line" | grep -Fq "$job_dir"
 }
 
+touchstone_ship_runner_identity_is_confirmed() {
+  local job_dir="$1" pid="$2" attempt=1 owner_pid owner_start
+  owner_pid="$(touchstone_ship_claim_value "$job_dir" owner-pid)"
+  owner_start="$(touchstone_ship_claim_value "$job_dir" owner-start)"
+  if [ "$owner_pid" = "$pid" ] && [ -n "$owner_start" ] \
+    && touchstone_ship_claim_owner_alive "$job_dir"; then
+    return 0
+  fi
+  while [ "$attempt" -le 3 ]; do
+    touchstone_ship_pid_is_runner "$job_dir" "$pid" && return 0
+    kill -0 "$pid" 2>/dev/null || return 1
+    [ "$attempt" -lt 3 ] && sleep 0.05
+    attempt=$((attempt + 1))
+  done
+  return 1
+}
+
 touchstone_ship_child_pids() {
   local parent_pid="$1"
   ps -axo pid=,ppid= 2>/dev/null \
@@ -167,11 +229,32 @@ touchstone_ship_signal_tree() {
 
 touchstone_ship_mark_stale() {
   local job_dir="$1" claim_token="${2-}"
+  touchstone_ship_write "$job_dir" suspected-stale-at ""
   touchstone_ship_write "$job_dir" exit-code 125
   touchstone_ship_write "$job_dir" reason stale-runner
   touchstone_ship_write "$job_dir" finished-at "$(touchstone_ship_now)"
   touchstone_ship_write "$job_dir" status failed
   touchstone_ship_release_claim "$job_dir" "$claim_token" 2>/dev/null || true
+}
+
+touchstone_ship_stale_is_confirmed() {
+  local job_dir="$1" observed_at now_epoch
+  observed_at="$(touchstone_ship_read "$job_dir" suspected-stale-at)"
+  now_epoch="$(date +%s)"
+  case "$observed_at" in
+    '' | *[!0-9]*)
+      touchstone_ship_write "$job_dir" suspected-stale-at "$now_epoch"
+      return 1
+      ;;
+  esac
+  [ $((now_epoch - observed_at)) -ge 1 ]
+}
+
+touchstone_ship_clear_stale_observation() {
+  local job_dir="$1"
+  [ -n "$(touchstone_ship_read "$job_dir" suspected-stale-at)" ] \
+    && touchstone_ship_write "$job_dir" suspected-stale-at ""
+  return 0
 }
 
 touchstone_ship_refresh() {
@@ -187,8 +270,12 @@ touchstone_ship_refresh() {
       case "$pid" in
         '' | *[!0-9]*)
           if [ -n "$claim_token" ]; then
-            touchstone_ship_claim_owner_alive "$job_dir" && return 0
-            touchstone_ship_mark_stale "$job_dir" "$claim_token"
+            if touchstone_ship_claim_owner_alive "$job_dir"; then
+              touchstone_ship_clear_stale_observation "$job_dir"
+              return 0
+            fi
+            touchstone_ship_stale_is_confirmed "$job_dir" \
+              && touchstone_ship_mark_stale "$job_dir" "$claim_token"
             return 0
           fi
           case "$started_epoch" in
@@ -200,10 +287,20 @@ touchstone_ship_refresh() {
           return 0
           ;;
       esac
-      if ! touchstone_ship_pid_is_runner "$job_dir" "$pid"; then
+      if ! touchstone_ship_runner_identity_is_confirmed "$job_dir" "$pid"; then
         if [ -n "$claim_token" ]; then
-          touchstone_ship_claim_owner_alive "$job_dir" && return 0
-          touchstone_ship_mark_stale "$job_dir" "$claim_token"
+          case "$started_epoch" in
+            '' | *[!0-9]*) ;;
+            *)
+              if [ $((now_epoch - started_epoch)) -lt 5 ] \
+                && touchstone_ship_claim_owner_alive "$job_dir"; then
+                touchstone_ship_clear_stale_observation "$job_dir"
+                return 0
+              fi
+              ;;
+          esac
+          touchstone_ship_stale_is_confirmed "$job_dir" \
+            && touchstone_ship_mark_stale "$job_dir" "$claim_token"
           return 0
         fi
         case "$started_epoch" in
@@ -214,13 +311,19 @@ touchstone_ship_refresh() {
             fi
             ;;
         esac
-        touchstone_ship_mark_stale "$job_dir"
+        touchstone_ship_stale_is_confirmed "$job_dir" \
+          && touchstone_ship_mark_stale "$job_dir"
+      else
+        touchstone_ship_clear_stale_observation "$job_dir"
       fi
       ;;
     running | review-waiting | fixing | finishing)
       pid="$(touchstone_ship_read "$job_dir" pid)"
-      if ! touchstone_ship_pid_is_runner "$job_dir" "$pid"; then
-        touchstone_ship_mark_stale "$job_dir" "$claim_token"
+      if ! touchstone_ship_runner_identity_is_confirmed "$job_dir" "$pid"; then
+        touchstone_ship_stale_is_confirmed "$job_dir" \
+          && touchstone_ship_mark_stale "$job_dir" "$claim_token"
+      else
+        touchstone_ship_clear_stale_observation "$job_dir"
       fi
       ;;
     *)
@@ -231,6 +334,7 @@ touchstone_ship_refresh() {
       fi
       ;;
   esac
+  return 0
 }
 
 touchstone_ship_json() {
