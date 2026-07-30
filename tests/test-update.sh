@@ -114,6 +114,9 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$RETIREMENT_PROJECT" --no-regi
 configure_git "$RETIREMENT_PROJECT"
 printf '#!/usr/bin/env bash\n' >"$RETIREMENT_PROJECT/scripts/conductor-review.sh"
 printf '#!/usr/bin/env bash\n' >"$RETIREMENT_PROJECT/scripts/codex-review.sh"
+chmod +x \
+  "$RETIREMENT_PROJECT/scripts/conductor-review.sh" \
+  "$RETIREMENT_PROJECT/scripts/codex-review.sh"
 printf '# retired helper\n' >"$RETIREMENT_PROJECT/lib/review-comment.sh"
 printf 'scripts/conductor-review.sh\nscripts/codex-review.sh\nlib/review-comment.sh\n' >>"$RETIREMENT_PROJECT/.touchstone-manifest"
 cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_RETIRED_REVIEW_HOOKS'
@@ -130,51 +133,19 @@ PREVIOUS_TOUCHSTONE_SHA="$(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD^)"
 printf '%s\n' "$PREVIOUS_TOUCHSTONE_SHA" >"$RETIREMENT_PROJECT/.touchstone-version"
 commit_all "$RETIREMENT_PROJECT" "simulate project with retired review helpers"
 
-cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_FOLDED_REVIEW_HOOK'
-repos:
-  - repo: local
-    hooks:
-      - id: codex-review
-        entry: >2-
-          bash
-          scripts/codex-review.sh
-        language: system
-      - id: conductor-review
-        "entry": bash scripts/conductor-review.sh
-        language: system
-EOF_FOLDED_REVIEW_HOOK
-awk 'BEGIN { for (i = 0; i < 10000; i++) print "# padding " i }' \
-  >>"$RETIREMENT_PROJECT/.pre-commit-config.yaml"
-printf '\nscripts/codex-review.sh\n' >>"$RETIREMENT_PROJECT/.gitignore"
-git -C "$RETIREMENT_PROJECT" rm --cached scripts/codex-review.sh >/dev/null
-commit_all "$RETIREMENT_PROJECT" "simulate referenced retired review hooks"
-printf 'repos: []\n' >"$RETIREMENT_PROJECT/.pre-commit-config.yaml"
-
 (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-retirement-preserved-output.txt" 2>&1
+  >"$TEST_DIR/update-retirement-output.txt" 2>&1
 
 assert_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
 assert_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
-assert_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/conductor-review\.sh$'
+assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/conductor-review\.sh$'
 assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/codex-review\.sh$'
-assert_contains "$TEST_DIR/update-retirement-preserved-output.txt" 'preserving referenced retired file'
-assert_contains "$TEST_DIR/update-retirement-preserved-output.txt" 'leaving untracked retired file in place'
+assert_contains "$TEST_DIR/update-retirement-output.txt" 'leaving retired review shim in place'
+assert_contains "$TEST_DIR/update-retirement-output.txt" 'Touchstone will stop managing it'
 assert_not_exists "$RETIREMENT_PROJECT/lib/review-comment.sh"
 assert_not_exists "$HOME/.claude/skills/conductor-delegation"
 assert_exists "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md"
 assert_contains "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md" 'retired skill'
-
-commit_all "$RETIREMENT_PROJECT" "remove retired local review hooks"
-
-(cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-retirement-output.txt" 2>&1
-
-assert_not_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
-assert_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
-assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/conductor-review\.sh$'
-assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/codex-review\.sh$'
-assert_contains "$TEST_DIR/update-retirement-output.txt" 'Retired managed files still need reconciliation'
-assert_not_exists "$RETIREMENT_PROJECT/lib/review-comment.sh"
 assert_contains "$TEST_DIR/update-retirement-output.txt" 'removed retired managed file'
 if ! git -C "$RETIREMENT_PROJECT" diff --quiet \
   || ! git -C "$RETIREMENT_PROJECT" diff --cached --quiet; then
@@ -182,29 +153,6 @@ if ! git -C "$RETIREMENT_PROJECT" diff --quiet \
   git -C "$RETIREMENT_PROJECT" status --short >&2
   ERRORS=$((ERRORS + 1))
 fi
-
-CUSTOM_REVIEW_PROJECT="$TEST_DIR/custom-review-project"
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$CUSTOM_REVIEW_PROJECT" --no-register >/dev/null
-configure_git "$CUSTOM_REVIEW_PROJECT"
-printf '#!/usr/bin/env bash\nexit 0\n' >"$CUSTOM_REVIEW_PROJECT/scripts/codex-review.sh"
-cat >"$CUSTOM_REVIEW_PROJECT/.pre-commit-config.yaml" <<'EOF_CUSTOM_REVIEW_HOOK'
-repos:
-  - repo: local
-    hooks:
-      - id: project-owned-review
-        entry: bash scripts/codex-review.sh
-        language: system
-EOF_CUSTOM_REVIEW_HOOK
-printf '%s\n' "$PREVIOUS_TOUCHSTONE_SHA" >"$CUSTOM_REVIEW_PROJECT/.touchstone-version"
-commit_all "$CUSTOM_REVIEW_PROJECT" "simulate project-owned review hook"
-
-(cd "$CUSTOM_REVIEW_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-custom-review-output.txt" 2>&1
-
-assert_exists "$CUSTOM_REVIEW_PROJECT/scripts/codex-review.sh"
-assert_not_contains "$CUSTOM_REVIEW_PROJECT/.touchstone-manifest" '^scripts/codex-review\.sh$'
-assert_contains "$CUSTOM_REVIEW_PROJECT/.pre-commit-config.yaml" 'entry: bash scripts/codex-review\.sh'
-assert_not_contains "$TEST_DIR/update-custom-review-output.txt" 'retired local review hooks'
 
 # --------------------------------------------------------------------------
 # Test 2: committed local touchstone-owned changes update on a review branch.

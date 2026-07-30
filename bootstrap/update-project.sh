@@ -37,7 +37,6 @@ REQUESTED_BRANCH=""
 SHIP=false
 IN_PLACE=false
 RETIRED_MANAGED_PATHS=()
-PRESERVED_RETIRED_MANAGED_PATHS=()
 
 usage() {
   echo "Usage: $0 [--dry-run|-n] [--check] [--branch <name>] [--in-place|--no-branch] [--ship]"
@@ -127,21 +126,9 @@ fi
 echo "==> Updating project: $PROJECT_DIR"
 echo "    Touchstone: $OLD_SHA -> $CURRENT_SHA"
 
-retired_managed_paths_pending() {
-  local manifest="$PROJECT_DIR/.touchstone-manifest"
-
-  [ -f "$manifest" ] || return 1
-  grep -qxF "lib/review-comment.sh" "$manifest" \
-    || grep -qxF "scripts/conductor-review.sh" "$manifest" \
-    || grep -qxF "scripts/codex-review.sh" "$manifest"
-}
-
-if [ "$OLD_SHA" = "$CURRENT_SHA" ] && ! retired_managed_paths_pending; then
+if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
   echo "==> Already up to date."
   exit 0
-fi
-if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
-  echo "==> Retired managed files still need reconciliation."
 fi
 
 if [ "$CHECK_ONLY" = true ]; then
@@ -249,6 +236,7 @@ rollback_failed_update() {
   for rel in ${ADDED_PATHS[@]+"${ADDED_PATHS[@]}"}; do
     rm -f "$PROJECT_DIR/$rel" 2>/dev/null || true
   done
+
   if [ "$IN_PLACE" != true ] && [ -n "$ORIGINAL_BRANCH" ]; then
     git -C "$PROJECT_DIR" checkout -f "$ORIGINAL_BRANCH" >/dev/null 2>&1 || true
   fi
@@ -393,21 +381,6 @@ update_file() {
   UPDATED=$((UPDATED + 1))
 }
 
-retired_review_path_referenced() {
-  local rel_path="$1"
-  local config="$PROJECT_DIR/.pre-commit-config.yaml"
-
-  case "$rel_path" in
-    scripts/conductor-review.sh | scripts/codex-review.sh) ;;
-    *) return 1 ;;
-  esac
-
-  if [ -f "$config" ] && grep -qF "$rel_path" "$config"; then
-    return 0
-  fi
-  git -C "$PROJECT_DIR" grep -qF "$rel_path" HEAD -- .pre-commit-config.yaml 2>/dev/null
-}
-
 remove_retired_managed_file() {
   local rel_path="$1"
   local manifest="$PROJECT_DIR/.touchstone-manifest"
@@ -426,12 +399,6 @@ remove_retired_managed_file() {
     echo "      Touchstone will stop managing it; remove it manually after preserving any local changes." >&2
     return 0
   fi
-  if retired_review_path_referenced "$rel_path"; then
-    echo "    ! preserving referenced retired file: $target" >&2
-    echo "      Remove every .pre-commit-config.yaml reference, commit it, and rerun the update." >&2
-    PRESERVED_RETIRED_MANAGED_PATHS+=("$rel_path")
-    return 0
-  fi
   if [ "$DRY_RUN" = true ]; then
     echo "    - would remove retired managed file: $target"
   else
@@ -442,11 +409,23 @@ remove_retired_managed_file() {
   UPDATED=$((UPDATED + 1))
 }
 
+retire_review_shim_management() {
+  local rel_path="$1"
+  local manifest="$PROJECT_DIR/.touchstone-manifest"
+  local target="$PROJECT_DIR/$rel_path"
+
+  [ -f "$manifest" ] || return 0
+  grep -qxF "$rel_path" "$manifest" 2>/dev/null || return 0
+  [ -e "$target" ] || return 0
+  echo "    ! leaving retired review shim in place: $target" >&2
+  echo "      Touchstone will stop managing it; remove it with its project-owned hook migration." >&2
+}
+
 echo "==> Updating touchstone-owned files:"
 
+retire_review_shim_management "scripts/conductor-review.sh"
+retire_review_shim_management "scripts/codex-review.sh"
 remove_retired_managed_file "lib/review-comment.sh"
-remove_retired_managed_file "scripts/conductor-review.sh"
-remove_retired_managed_file "scripts/codex-review.sh"
 
 # Principles
 if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
@@ -653,9 +632,6 @@ write_touchstone_manifest() {
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
-    if [ "${#PRESERVED_RETIRED_MANAGED_PATHS[@]}" -gt 0 ]; then
-      printf '%s\n' "${PRESERVED_RETIRED_MANAGED_PATHS[@]}"
-    fi
     printf 'scripts/claim-issue.sh\n'
     printf 'scripts/issue-claim-check.sh\n'
     printf 'scripts/cleanup-branches.sh\n'
