@@ -344,6 +344,12 @@ assert "blocks protected push substitution in a commit message" "2" \
 BACKTICK_COMMIT="git commit -m \"\`git push --no""-verify\`\""
 assert "blocks protected push backticks in a commit message" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "$BACKTICK_COMMIT")")"
+INPUT_PROCESS_COMMIT="git commit -m <(git push --no""-verify)"
+assert "blocks protected input process substitution in a commit argument" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$INPUT_PROCESS_COMMIT")")"
+OUTPUT_PROCESS_COMMIT="git commit -m >(git push --no""-verify)"
+assert "blocks protected output process substitution in a commit argument" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$OUTPUT_PROCESS_COMMIT")")"
 
 # 8. with env var, allowed (and logged)
 EXIT_ALLOWED=0

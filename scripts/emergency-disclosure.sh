@@ -905,7 +905,7 @@ plain_git_builtin_non_push() {
 
   executable_segment="$(printf '%s' "$segment" | without_single_quoted_literals)"
   if printf '%s' "$executable_segment" \
-    | grep -qE '(^|[^\\])\$\(|(^|[^\\])`'; then
+    | grep -qE '(^|[^\\])\$\(|(^|[^\\])`|(^|[^\\])[<>]\('; then
     return 1
   fi
 
