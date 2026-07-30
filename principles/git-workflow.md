@@ -4,7 +4,7 @@ Normal code changes go through a feature branch + PR + PR-visible review loop + 
 
 ## Never commit on the default branch
 
-**This is the one rule that makes everything else work.** Every code change — including a one-line typo fix, a doc tweak, a version bump, a README edit — starts on a feature branch. Committing directly to `main` (or `master`) bypasses PR review, bypasses Conductor review, bypasses the audit trail, and leaves you in a local state that's awkward to untangle without rewriting history someone else may already have pulled.
+**This is the one rule that makes everything else work.** Every code change — including a one-line typo fix, a doc tweak, a version bump, a README edit — starts on a feature branch. Committing directly to `main` (or `master`) bypasses PR review and the audit trail, and leaves you in a local state that's awkward to untangle without rewriting history someone else may already have pulled.
 
 **The concrete rule for any AI or human working here:** before the first edit of a tracked file in a session — `Edit`, `Write`, or any tool that mutates a file under git — run `git branch --show-current`. If the output is `main` or `master`, stop and branch first. `git checkout -b <type>/<slug>` preserves your staged and unstaged changes, so there's no cost to branching late — but there's real cost to discovering the mistake at commit time after batching several files of work.
 
@@ -18,9 +18,9 @@ Normal code changes go through a feature branch + PR + PR-visible review loop + 
 
 - The `no-commit-to-branch` hook in `.pre-commit-config.yaml` is configured with `--branch main --branch master`. It runs at `pre-commit` stage and refuses the commit outright. `git commit --no-verify` bypasses it; that's the documented emergency path, not a daily shortcut.
 - GitHub branch protection on the default branch requires the change to go through a PR (`required_pull_request_reviews` with `required_approving_review_count: 0`; direct pushes to `main` are rejected by the server even if the local hook was bypassed). Admin enforcement is left off so the `--no-verify` emergency path remains usable; the audit trail is the backstop.
-- The Conductor-backed review hook (when installed) is the last line of defense: it runs on default-branch pushes via `merge-pr.sh` and can block unsafe findings before they land.
+- `merge-pr.sh` requires trusted exact-head PR review, clean required checks, and no unresolved review threads before it asks GitHub to merge.
 
-The three layers are complementary — the local hook catches the honest mistake before it becomes a commit, branch protection catches the deliberate or hook-bypassing push at the server, and the Conductor review catches the class of content we explicitly don't want on main.
+The three layers are complementary: the local hook catches the honest mistake before it becomes a commit, branch protection rejects direct pushes at the server, and the PR review gate catches semantic defects before merge.
 
 ## The lifecycle
 
@@ -28,7 +28,7 @@ The three layers are complementary — the local hook catches the honest mistake
 2. **Branch — before any edit that might become a commit.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`. Do this as step one of the work, not as a cleanup step later. The check is `git branch --show-current` *before your first edit* — see "Never commit on the default branch" above for why edit time and not commit time.
 3. **Check the tree before changing it.** Run `git status --short` and `git branch --show-current` before starting implementation. If the tree is dirty with unrelated user changes, do not stash them and do not auto-commit on the user's behalf. Ask how to proceed, or branch around the changes when the file surfaces are disjoint. `git stash` is hidden multi-agent state, not a coordination mechanism.
 4. **Loop: change → commit → push.** Each meaningful sub-task gets its own commit and push. Stage explicit file paths (not `git add -A`), write a concise message, push to the open branch. Don't batch a session's worth of changes into one commit at the end — see the "Commit and push frequency" section below.
-5. **Ship.** `scripts/open-pr.sh --auto-merge` pushes, creates or updates the PR, and drives the project's shipping automation. Opening or updating the PR is the review/check coordination point; PR-visible agentic reviewers run there when configured. The driver watches the PR, addresses actionable comments with commits, pushes updates, and merges only after required reviews and checks are approved. If no PR-visible review appears, continue through the project's final verification instead of waiting. Use `scripts/open-pr.sh` (without `--auto-merge`) if you want to open the PR without merging. The canonical architecture is [AI Delivery Architecture](ai-delivery-architecture.md): PR-visible review loop first, final verification/merge after approval.
+5. **Ship.** `scripts/open-pr.sh --auto-merge` pushes, creates or updates the PR, requests review for the exact head, and drives the project's shipping automation. The driver watches the PR, addresses actionable comments with commits, pushes updates, and merges only after required review and checks approve. Use `scripts/open-pr.sh` without `--auto-merge` to open the PR without merging. The canonical architecture is [AI Delivery Architecture](ai-delivery-architecture.md).
 6. **Clean up.** Delete the local feature branch. Run `scripts/cleanup-branches.sh` periodically for batch hygiene.
 
 ### Touchstone CLI auto-sync
@@ -47,7 +47,7 @@ Project-local high-risk scripts such as `scripts/open-pr.sh` and `scripts/merge-
 
 **One concern per commit.** A commit should describe a single logical change — a feature, a fix, a refactor, a doc update — not a multi-day grab bag. The diff might span many files, but it should be one coherent thought. This is the "atomic commit" principle: every commit is a self-contained unit of intent.
 
-**Why it matters.** Atomic commits pay back continuously: they make `git blame` and `git log` informative ("this line exists because of fix X" beats "this line exists because of giant-batch Y"), they make `git bisect` able to pin a regression to a single change, they make `git revert` surgical (you can undo the broken thing without losing the four good things shipped alongside), and they let the Conductor merge review reason about one semantic change at a time instead of a tangle.
+**Why it matters.** Atomic commits pay back continuously: they make `git blame` and `git log` informative ("this line exists because of fix X" beats "this line exists because of giant-batch Y"), they make `git bisect` able to pin a regression to a single change, they make `git revert` surgical, and they let reviewers reason about one semantic change at a time instead of a tangle.
 
 **Concise commit messages.** Lead with *what* changed in the subject line. Use the body to explain *why* when the why isn't obvious from the diff. The PR description handles the broader narrative; commit messages are the per-step record.
 
@@ -59,7 +59,7 @@ Project-local high-risk scripts such as `scripts/open-pr.sh` and `scripts/merge-
 
 ## Commit and push frequency
 
-**Commit at every clear stopping point.** A sub-task is complete and its tests pass — that's a commit boundary. Don't wait until "the whole feature is done." Holding hours of work in an uncommitted working tree creates four problems: (1) the Conductor merge review faces one giant diff instead of a legible sequence, (2) any single mistake can lose all of it, (3) other branches can't pull your in-flight work, and (4) you lose the per-step `git log` story that future-you will rely on when debugging months later.
+**Commit at every clear stopping point.** A sub-task is complete and its tests pass — that's a commit boundary. Don't wait until "the whole feature is done." Holding hours of work in an uncommitted working tree creates four problems: (1) review faces one giant diff instead of a legible sequence, (2) any single mistake can lose all of it, (3) other branches can't pull your in-flight work, and (4) you lose the per-step `git log` story that future-you will rely on when debugging months later.
 
 **Push after every commit.** Local commits are not durable. Pushing to the remote (or a personal fork) means your work survives a laptop dying or a `git reset --hard` finger-slip. On a PR branch, pushing also makes incremental work visible from another worktree or session, so a fallback agent (or future-you in a new shell) can pick up the in-flight state without rebuilding it.
 
@@ -79,57 +79,34 @@ Project-local high-risk scripts such as `scripts/open-pr.sh` and `scripts/merge-
 
 ## Agentic PR Review Loop
 
-If the project has AI review configured (see `.touchstone-review.toml` for policy and the `conductor-review` hook in `.pre-commit-config.yaml` for the entry point), the PR is the review surface. Opening or updating the PR should expose configured checks and PR-visible agentic reviews when enabled. The driving CLI watches the PR, reads comments and requested changes, fixes actionable findings with commits, pushes the branch again, and repeats until all blocking reviews/checks are approved. Legacy `.codex-review.toml` configs and `codex-review` hooks still work as compatibility names.
+The PR is the only semantic review surface. `open-pr.sh` posts one review
+request for each exact head and records durable head/base-bound request
+evidence. The driving CLI watches the PR, fixes actionable findings, pushes a
+new head, and repeats until the latest trusted review is clean.
 
-Touchstone-managed LLM review delegates model access to Conductor, so the reviewer may be Claude, Codex, Gemini, a local model, or another configured provider. Feature-branch pushes should stay cheap. In projects that still use the local merge helper, `scripts/open-pr.sh --auto-merge` runs deterministic preflight, refuses active requested-changes decisions or unresolved review threads, runs Conductor review/fix, re-checks PR feedback on the reviewed head, and runs deterministic postflight as a final backstop before squash merge. When `[review.pr_triggered].required=true`, the helper first waits for a trusted current-head PR-visible GitHub Codex review signal and skips the duplicate local merge LLM review only when that head contains the captured base revision. Base movement or a behind branch falls back to local semantic review, and final authorization rejects any change to the reviewed base or merge base. Do not run hidden required reviews detached from the PR; findings should surface as PR comments, review threads, check results, or commits.
+`merge-pr.sh` fails closed when review evidence is missing, stale, authored by
+an untrusted account, or bound to a different base. It also blocks active
+requested-changes decisions, unresolved review threads, failed required
+checks, behind branches, and base movement. It then runs deterministic
+preflight and revalidates review immediately before merging with
+`--match-head-commit`.
 
-**AI review is advisory.** It does not replace deterministic checks (lint, tests, type checking). It catches semantic bugs and policy violations that automated tools miss; it does not guarantee correctness.
-
-**Fail-open by default.** When the review infrastructure fails — timeout, missing Conductor CLI, no provider configured, or unparseable reviewer output — the hook allows the push rather than blocking it. This is the correct trade-off: a Conductor outage during a critical week should not freeze all merges. The cost is that the AI safety net is absent during those events, so each fail-open event is made explicitly visible:
-
-- A `[fail-open:<code>]` line is written to stderr naming exactly why the safety net opened.
-- A structured entry is appended to `~/.touchstone-review-log` for audit and skip-rate monitoring.
-
-The fail-open taxonomy codes are:
-
-| Code | Cause |
-|------|-------|
-| `FAIL_OPEN_TIMEOUT` | Reviewer exceeded an explicit `CODEX_REVIEW_TIMEOUT` / `timeout` budget |
-| `FAIL_OPEN_PARSE_ERROR` | Reviewer output contained no valid sentinel line |
-| `FAIL_OPEN_DEPENDENCY_MISSING` | Conductor CLI not found on PATH |
-| `FAIL_OPEN_PROVIDER_UNAVAILABLE` | Conductor installed but no provider configured |
-| `FAIL_OPEN_REVIEWER_ERROR` | Reviewer crashed or returned non-zero |
-
-To make infra failures fatal instead, set `on_error = "fail-closed"` in `.touchstone-review.toml`.
-
-Behavior:
-- `merge-pr.sh` invokes `scripts/conductor-review.sh`, which routes LLM review through Conductor against the diff vs the default branch
-- Auto-fixes only low-risk findings (typos, missing imports, missing null checks, adding logging to empty exception handlers, named constants for unexplained magic numbers); anything that changes business logic or retry/error-handling semantics is reported as a finding for the author to address before merge
-- Blocks merge for unsafe findings (high-scrutiny paths)
-- Loops up to `max_iterations` times (default 2; edit-capable modes are
-  hard-capped at 2)
-- Fails open on infra errors with a visible `[fail-open:<code>]` stderr line and an audit log entry (see codes above), unless the project config sets `on_error = "fail-closed"`
-
-### Scope-aware preflight
+AI review supplements deterministic checks; it does not replace lint, type
+checking, tests, or project-specific validators. Touchstone does not run a
+hidden local semantic reviewer and does not route model calls through a
+provider abstraction.
 
 Merge gates run deterministic preflight in diff mode:
-`bash lib/preflight.sh --diff origin/<default-branch>`. The invariant is that
-preflight checks the files changed by the PR, not the whole project, unless
-`--all-files` is explicitly passed.
+`bash lib/preflight.sh --diff origin/<default-branch>`. Use
+`bash lib/preflight.sh --all-files` for repo-wide audits.
+`TOUCHSTONE_NO_PREFLIGHT=1` remains an emergency escape hatch, but it does not
+bypass the exact-head PR review requirement.
 
-In diff mode, shellcheck, shfmt, markdownlint, and actionlint receive only
-changed files with matching extensions or paths. Touchstone's own self-tests
-remain full-project because Touchstone changes propagate to downstream
-projects. In non-Touchstone projects, project-level validate commands are not
-run in diff mode unless changed `tests/test-*.sh` files can be executed
-directly; use `bash lib/preflight.sh --all-files` for repo-wide audits.
-`TOUCHSTONE_NO_PREFLIGHT=1` remains the emergency escape hatch.
-
-If the reviewer itself wedges after the PR already has a clean review signal, use `scripts/merge-pr.sh <pr-number> --bypass-with-disclosure="<reason>"` instead of dropping to raw `gh pr merge`. The bypass refuses fresh branches, prints a visible warning, comments on the PR with the reason, and adds a `Reviewer-bypass: <reason>` trailer to the squash commit when GitHub accepts the supplied merge body. This is for a stalled reviewer path on an already-reviewed branch, not for bypassing substantive findings.
-
-Prefer a different model or provider for AI review than the one that authored the change, when Conductor has one available. Deterministic checks — format, lint, typecheck, tests, and project-specific validators — still run before AI review; model diversity complements those checks, it does not replace them.
-
-If the project enables GitHub merge queue, `open-pr.sh --auto-merge` should enqueue the reviewed PR instead of bypassing the queue. Never use `--admin` to skip required checks or queue policy. Treat queue removal or repeated queue failure as a blocker that needs diagnosis before retrying.
+If merge orchestration wedges after the PR already has a trusted clean signal,
+use `scripts/merge-pr.sh <pr-number>
+--bypass-with-disclosure="<reason>"`. The bypass remains head/base-bound,
+comments on the PR, and records the disclosure in the squash commit. It cannot
+override substantive findings or missing review evidence.
 
 ## Periodic branch hygiene
 
@@ -148,13 +125,13 @@ A stacked PR is a PR whose base branch is another open PR's branch instead of th
 
 **What to do.**
 
-- **First preference: bundle.** When the user says "ship it all," default to one PR with all the commits. The Conductor merge review reasons more cleanly about one coherent story than a chain; mergers prefer one squash over orchestrating a chain in order.
+- **First preference: bundle.** When the user says "ship it all," default to one PR with all the commits. Reviewers reason more cleanly about one coherent story than a chain, and mergers prefer one squash over orchestrating a chain in order.
 - **If you must stack:** drop `--auto-merge` on the whole chain. Merge each PR by hand in order, using **merge commit** or **rebase merge** (never squash) for the parent so the child's branch still traces to something on main. `open-pr.sh` will warn if you pass `--base <branch>` + `--auto-merge` together — take the warning seriously.
 - **Recover an orphaned child**: re-open the work as a fresh PR against current `main` (the lineage is lost but the diff usually still applies). If the parent's squashed content is already on main, the child's diff is just the child-only changes — which is usually what you wanted anyway.
 
 ## Claiming issues before agent dispatch
 
-Before spawning a coding agent — Claude Code subagent, Conductor `exec` worker, Codex CLI, or any other — to work on a GitHub issue, **claim it first**. Set the assignee, post a one-line dispatch comment, then spawn the agent. The cost is ten seconds per issue; the cost of skipping it is two agents picking up the same issue and shipping competing PRs.
+Before spawning a coding agent — Claude Code subagent, Codex CLI, or any other — to work on a GitHub issue, **claim it first**. Set the assignee, post a one-line dispatch comment, then spawn the agent. The cost is ten seconds per issue; the cost of skipping it is two agents picking up the same issue and shipping competing PRs.
 
 **The mechanical steps.**
 
@@ -292,4 +269,4 @@ paths, then retry the blocked command.
 
 If a production bug requires immediate action and can't wait for the PR cycle, push directly with `git push --no-verify`. The next PR must include an "Emergency-bypass disclosure" section explaining what was bypassed and why. The convention — not the tooling — is what keeps the discipline.
 
-Do not use `git push --no-verify` for a wedged Conductor merge review when the PR path is otherwise healthy. Use `scripts/merge-pr.sh --bypass-with-disclosure="<reason>"` so the bypass remains in the PR and merge audit trail.
+Do not use `git push --no-verify` for a wedged merge orchestrator when the PR path is otherwise healthy. Use `scripts/merge-pr.sh --bypass-with-disclosure="<reason>"` so the bypass remains in the PR and merge audit trail.

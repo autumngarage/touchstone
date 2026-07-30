@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 #
 # tests/test-agent-steering-contract.sh — guard the interpretability contract
-# that lets Claude, Codex, and Gemini act as interchangeable driving CLIs while
-# Conductor remains the worker/reviewer router.
+# that lets Claude, Codex, and Gemini act as interchangeable driving CLIs.
 
 set -euo pipefail
 
@@ -39,11 +38,11 @@ for file in \
   "$TOUCHSTONE_ROOT/templates/AGENTS.md"; do
   assert_contains "$file" "Agent Roles And Fallbacks"
   assert_contains "$file" "Driving CLI"
-  assert_contains "$file" "Conductor worker/reviewer"
+  assert_contains "$file" "PR-visible reviewer"
   assert_contains "$file" "Required Delivery Workflow"
   assert_contains "$file" "Before the first edit"
   assert_contains "$file" "principles/ai-delivery-architecture.md"
-  assert_contains "$file" "agentic review loop"
+  assert_contains "$file" "watch the review loop"
   assert_contains "$file" "bash scripts/open-pr.sh --auto-merge"
   assert_contains "$file" "Claim issues before implementation"
   assert_contains "$file" "bash scripts/claim-issue.sh <n>"
@@ -70,8 +69,8 @@ for file in \
   "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
   assert_contains "$file" "Agent Roles And Fallbacks"
   assert_contains "$file" "Driving CLI"
-  assert_contains "$file" "Conductor worker/reviewer router"
-  assert_contains "$file" "branch → PR → agentic review loop → approved merge workflow"
+  assert_contains "$file" "PR-visible reviewer"
+  assert_contains "$file" "review runs asynchronously against the exact pushed head"
 done
 
 echo "==> canonical git workflow describes the PR-visible review loop"
@@ -86,56 +85,33 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Agent
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "PR creation is not completion"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Merge is allowed only after PR-visible review and check approval"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Parallel file-writing agents use worktrees by default"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Touchstone does not invoke a local semantic reviewer or model router"
 
-echo "==> dogfood harness validates every machine-check field"
-GOOD_RESPONSE="$TEST_DIR/good-response.txt"
-cat >"$GOOD_RESPONSE" <<'EOF'
-TOUCHSTONE_DOGFOOD_RESULT: PASS
-BRANCH_BEFORE_EDIT: yes
-FEATURE_BRANCH_COMMAND: git checkout -b fix/log-swallowed-exception
-PR_CREATED: yes
-PR_REVIEW_SURFACE_USED: yes
-DRIVER_WATCHES_PR_COMMENTS: yes
-MERGE_AFTER_APPROVAL: yes
-AUTO_MERGE_COMMAND: bash scripts/open-pr.sh --auto-merge
-PRINCIPLES_APPLIED: yes
-NO_SILENT_FAILURES_TESTED: yes
-DIRECT_MAIN_PUSH_ALLOWED: no
-DRIVING_CLI_OWNS_REPO_WORKFLOW: yes
-CONDUCTOR_IS_WORKER_OR_REVIEWER: yes
-DRIVER_FALLBACK_SHARED_CONTRACT: yes
-CONDUCTOR_PROVIDER_FALLBACK: yes
-EOF
-"$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" --validate-response "$GOOD_RESPONSE" >/dev/null
-
-BAD_RESPONSE="$TEST_DIR/bad-response.txt"
-cat >"$BAD_RESPONSE" <<'EOF'
-TOUCHSTONE_DOGFOOD_RESULT: PASS
-BRANCH_BEFORE_EDIT: yes
-FEATURE_BRANCH_COMMAND: git checkout -b fix/log-swallowed-exception
-PR_CREATED: yes
-PR_REVIEW_SURFACE_USED: yes
-DRIVER_WATCHES_PR_COMMENTS: yes
-MERGE_AFTER_APPROVAL: yes
-AUTO_MERGE_COMMAND: bash scripts/open-pr.sh --auto-merge
-PRINCIPLES_APPLIED: yes
-NO_SILENT_FAILURES_TESTED: yes
-DIRECT_MAIN_PUSH_ALLOWED: no
-DRIVING_CLI_OWNS_REPO_WORKFLOW: no
-CONDUCTOR_IS_WORKER_OR_REVIEWER: yes
-DRIVER_FALLBACK_SHARED_CONTRACT: yes
-CONDUCTOR_PROVIDER_FALLBACK: yes
-EOF
-if "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" --validate-response "$BAD_RESPONSE" >/dev/null 2>&1; then
-  fail "dogfood response validator accepted a response where the driving CLI does not own repo workflow"
+echo "==> active product surfaces do not reintroduce the retired model router"
+active_router_refs="$(grep -Rin "conductor" \
+  "$TOUCHSTONE_ROOT/AGENTS.md" \
+  "$TOUCHSTONE_ROOT/CLAUDE.md" \
+  "$TOUCHSTONE_ROOT/GEMINI.md" \
+  "$TOUCHSTONE_ROOT/README.md" \
+  "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
+  "$TOUCHSTONE_ROOT/bin" \
+  "$TOUCHSTONE_ROOT/bootstrap" \
+  "$TOUCHSTONE_ROOT/completions" \
+  "$TOUCHSTONE_ROOT/hooks" \
+  "$TOUCHSTONE_ROOT/lib" \
+  "$TOUCHSTONE_ROOT/principles" \
+  "$TOUCHSTONE_ROOT/scripts" \
+  "$TOUCHSTONE_ROOT/skills" \
+  "$TOUCHSTONE_ROOT/templates" 2>/dev/null \
+  | grep -v 'bootstrap/update-project.sh:.*scripts/conductor-review.sh' \
+  | grep -v 'lib/sync-discipline.sh:.*scripts/conductor-review.sh' \
+  | grep -v 'lib/install-skills.sh:.*conductor-delegation' \
+  | grep -v 'scripts/conductor-review.sh:' \
+  || true)"
+if [ -n "$active_router_refs" ]; then
+  printf '%s\n' "$active_router_refs" >&2
+  fail "retired model-router reference found on an active product surface"
 fi
-
-echo "==> dogfood harness documents its offline validator"
-assert_contains "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" "--validate-response FILE"
-assert_contains "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" "DRIVING_CLI_OWNS_REPO_WORKFLOW"
-assert_contains "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" "DRIVER_WATCHES_PR_COMMENTS"
-assert_contains "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" "MERGE_AFTER_APPROVAL"
-assert_contains "$TOUCHSTONE_ROOT/scripts/dogfood-agent-steering.sh" "CONDUCTOR_PROVIDER_FALLBACK"
 
 if [ "$ERRORS" -gt 0 ]; then
   echo ""

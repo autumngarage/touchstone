@@ -36,6 +36,7 @@ CHECK_ONLY=false
 REQUESTED_BRANCH=""
 SHIP=false
 IN_PLACE=false
+RETIRED_MANAGED_PATHS=()
 
 usage() {
   echo "Usage: $0 [--dry-run|-n] [--check] [--branch <name>] [--in-place|--no-branch] [--ship]"
@@ -124,49 +125,6 @@ fi
 
 echo "==> Updating project: $PROJECT_DIR"
 echo "    Touchstone: $OLD_SHA -> $CURRENT_SHA"
-
-# Detect both legacy shapes and an unpinned 2.0 Conductor block so update can
-# surface the explicit migration path. Review configs are project-owned, so
-# detection must never turn into an automatic rewrite.
-# Prefer the canonical config when both compatibility names exist.
-REVIEW_CONFIG_TOML=""
-if [ -f "$PROJECT_DIR/.touchstone-review.toml" ]; then
-  REVIEW_CONFIG_TOML="$PROJECT_DIR/.touchstone-review.toml"
-elif [ -f "$PROJECT_DIR/.codex-review.toml" ]; then
-  REVIEW_CONFIG_TOML="$PROJECT_DIR/.codex-review.toml"
-fi
-NEEDS_CODEX_REVIEW_MIGRATION=false
-if [ -n "$REVIEW_CONFIG_TOML" ]; then
-  if grep -qE '^[[:space:]]*reviewers[[:space:]]*=[[:space:]]*\[' "$REVIEW_CONFIG_TOML" \
-    || grep -qE '^\[review\.local\]' "$REVIEW_CONFIG_TOML" \
-    || grep -qE '^\[review\.assist\]' "$REVIEW_CONFIG_TOML" \
-    || grep -qE '^[[:space:]]*(small|large)_reviewers[[:space:]]*=[[:space:]]*\[' "$REVIEW_CONFIG_TOML" \
-    || {
-      grep -qE '^\[review\.conductor\]' "$REVIEW_CONFIG_TOML" \
-        && ! awk '
-          /^\[review\.conductor\][[:space:]]*$/ { section = "review.conductor"; next }
-          /^\[/ { section = "other"; next }
-          section == "review.conductor" && /^[[:space:]]*with[[:space:]]*=/ { found = 1 }
-          END { exit(found ? 0 : 1) }
-        ' "$REVIEW_CONFIG_TOML"
-    }; then
-    NEEDS_CODEX_REVIEW_MIGRATION=true
-  fi
-fi
-
-print_review_config_migration_notice() {
-  local config_name
-  config_name="$(basename "$REVIEW_CONFIG_TOML")"
-  echo ""
-  echo "==> Review config migration available for $config_name."
-  echo "    This project-owned file was not changed."
-  echo "    A missing review.conductor.with value defaults to Codex at runtime."
-  echo "    To rewrite it explicitly: touchstone migrate-review-config --file $config_name"
-}
-
-if [ "$NEEDS_CODEX_REVIEW_MIGRATION" = true ]; then
-  print_review_config_migration_notice
-fi
 
 if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
   echo "==> Already up to date."
@@ -423,7 +381,46 @@ update_file() {
   UPDATED=$((UPDATED + 1))
 }
 
+remove_retired_managed_file() {
+  local rel_path="$1"
+  local manifest="$PROJECT_DIR/.touchstone-manifest"
+  local target="$PROJECT_DIR/$rel_path"
+
+  [ -f "$manifest" ] || return 0
+  grep -qxF "$rel_path" "$manifest" 2>/dev/null || return 0
+  [ -e "$target" ] || return 0
+  if ! ensure_safe_dest "$target" || [ ! -f "$target" ]; then
+    echo "    ! refusing to remove unsafe retired path: $target" >&2
+    SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1))
+    return 0
+  fi
+  if [ "$DRY_RUN" = true ]; then
+    echo "    - would remove retired managed file: $target"
+  else
+    rm -f "$target"
+    RETIRED_MANAGED_PATHS+=("$rel_path")
+    echo "    - removed retired managed file: $target"
+  fi
+  UPDATED=$((UPDATED + 1))
+}
+
+update_compatibility_shim_if_managed() {
+  local rel_path="$1"
+  local source_path="$2"
+  local manifest="$PROJECT_DIR/.touchstone-manifest"
+
+  [ -f "$manifest" ] || return 0
+  grep -qxF "$rel_path" "$manifest" 2>/dev/null || return 0
+  update_file "$source_path" "$PROJECT_DIR/$rel_path"
+}
+
 echo "==> Updating touchstone-owned files:"
+
+remove_retired_managed_file "lib/review-comment.sh"
+update_compatibility_shim_if_managed \
+  "scripts/conductor-review.sh" "$TOUCHSTONE_ROOT/scripts/conductor-review.sh"
+update_compatibility_shim_if_managed \
+  "scripts/codex-review.sh" "$TOUCHSTONE_ROOT/scripts/codex-review.sh"
 
 # Principles
 if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
@@ -454,8 +451,6 @@ if [ -f "$PROJECT_DIR/.touchstone-config" ]; then
 fi
 
 # Scripts
-update_file "$TOUCHSTONE_ROOT/hooks/conductor-review.sh" "$PROJECT_DIR/scripts/conductor-review.sh"
-update_file "$TOUCHSTONE_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
 update_file "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" "$PROJECT_DIR/scripts/branch-guard.sh"
 update_file "$TOUCHSTONE_ROOT/hooks/emergency-disclosure.sh" "$PROJECT_DIR/scripts/emergency-disclosure.sh"
 update_file "$TOUCHSTONE_ROOT/hooks/cortex-pr-merged-hook.sh" "$PROJECT_DIR/scripts/cortex-pr-merged-hook.sh"
@@ -479,7 +474,6 @@ update_file "$TOUCHSTONE_ROOT/lib/worker-state.sh" "$PROJECT_DIR/lib/worker-stat
 update_file "$TOUCHSTONE_ROOT/lib/script-sync-guard.sh" "$PROJECT_DIR/lib/script-sync-guard.sh"
 update_file "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PROJECT_DIR/lib/preflight.sh"
 update_file "$TOUCHSTONE_ROOT/lib/preflight-scope.sh" "$PROJECT_DIR/lib/preflight-scope.sh"
-update_file "$TOUCHSTONE_ROOT/lib/review-comment.sh" "$PROJECT_DIR/lib/review-comment.sh"
 
 if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
   update_file "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
@@ -627,14 +621,16 @@ write_touchstone_manifest() {
         printf 'principles/%s\n' "$(basename "$f")"
       done
     fi
-    printf 'scripts/conductor-review.sh\n'
-    printf 'scripts/codex-review.sh\n'
     printf 'scripts/branch-guard.sh\n'
     printf 'scripts/emergency-disclosure.sh\n'
     printf 'scripts/cortex-pr-merged-hook.sh\n'
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
+    [ -f "$PROJECT_DIR/scripts/conductor-review.sh" ] \
+      && printf 'scripts/conductor-review.sh\n'
+    [ -f "$PROJECT_DIR/scripts/codex-review.sh" ] \
+      && printf 'scripts/codex-review.sh\n'
     printf 'scripts/claim-issue.sh\n'
     printf 'scripts/issue-claim-check.sh\n'
     printf 'scripts/cleanup-branches.sh\n'
@@ -650,7 +646,6 @@ write_touchstone_manifest() {
     printf 'lib/script-sync-guard.sh\n'
     printf 'lib/preflight.sh\n'
     printf 'lib/preflight-scope.sh\n'
-    printf 'lib/review-comment.sh\n'
     if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
       printf 'scripts/run-pytest-in-venv.sh\n'
     fi
@@ -721,6 +716,9 @@ if [ "$DRY_RUN" = false ]; then
   echo ""
   echo "==> Committing touchstone update..."
   stage_touchstone_manifest_paths
+  if [ "${#RETIRED_MANAGED_PATHS[@]}" -gt 0 ]; then
+    git -C "$PROJECT_DIR" add -u -- "${RETIRED_MANAGED_PATHS[@]}"
+  fi
   if [ -f "$PROJECT_DIR/.claude/settings.json" ]; then
     git -C "$PROJECT_DIR" add -f -- .claude/settings.json
   fi
@@ -758,7 +756,7 @@ echo "      diff $TOUCHSTONE_ROOT/templates/CLAUDE.md ./CLAUDE.md"
 echo "      diff $TOUCHSTONE_ROOT/templates/AGENTS.md ./AGENTS.md"
 echo "      diff $TOUCHSTONE_ROOT/templates/GEMINI.md ./GEMINI.md"
 echo "      diff $TOUCHSTONE_ROOT/templates/pre-commit-config.yaml ./.pre-commit-config.yaml"
-echo "      diff $TOUCHSTONE_ROOT/hooks/conductor-review.config.example.toml ./.touchstone-review.toml"
+echo "      diff $TOUCHSTONE_ROOT/templates/touchstone-review.toml ./.touchstone-review.toml"
 
 if [ "$DRY_RUN" = false ]; then
   if [ "$SHIP" = true ] && [ "${COMMIT_CREATED:-false}" = true ]; then

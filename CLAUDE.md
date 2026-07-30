@@ -2,7 +2,7 @@
 
 ## Who You Are on This Project
 
-You are maintaining a shared engineering platform that provides universal principles, reusable scripts, and a Conductor-backed AI review workflow for all of Henry's projects. Changes here propagate to every downstream project via `sync-all.sh`. Quality matters doubly: a bug in Touchstone is a bug in every project that uses it.
+You are maintaining a shared engineering platform that provides universal principles, reusable scripts, deterministic validation, and a PR-visible review workflow for all of Henry's projects. Changes here propagate to every downstream project via `sync-all.sh`. Quality matters doubly: a bug in Touchstone is a bug in every project that uses it.
 
 Codex and other AGENTS.md-native tools read `AGENTS.md`; Gemini CLI reads `GEMINI.md`. Keep `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` aligned when Touchstone workflow, architecture, or hard-won lessons change.
 
@@ -69,7 +69,6 @@ touchstone/
 | `bootstrap/new-project.sh` | Spin up a new project with all touchstone files |
 | `bootstrap/update-project.sh` | Pull latest touchstone files into an existing project |
 | `bootstrap/sync-all.sh` | Update all registered projects at once |
-| `hooks/codex-review.sh` | Conductor-backed AI review + auto-fix hook |
 | `lib/touchstone-block.sh` | Renders TOUCHSTONE.md into the managed block of AGENTS.md/GEMINI.md |
 | `lib/install-skills.sh` | Installs user-scoped skill bundle from `skills/` to `~/.claude/skills/` |
 | `scripts/spawn-worktree.sh` | Create an isolated branch/worktree for parallel file-writing agent slices |
@@ -100,10 +99,6 @@ Release flow:
 Required repo secret: `HOMEBREW_TAP_PAT` (classic PAT with `repo` scope on the tap, or fine-grained with `contents:write` on `autumngarage/homebrew-touchstone`).
 
 Do not call a Touchstone release complete until GitHub Releases, the Homebrew formula, `origin/main`, and the local brew install all agree on the same version.
-
-<!-- conductor:begin v0.10.34 -->
-@~/.conductor/delegation-guidance.md
-<!-- conductor:end -->
 
 ## Current state (read this first)
 

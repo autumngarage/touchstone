@@ -45,7 +45,6 @@ This also applies to **workflow friction** caused by the tools, even when it is 
 The repos:
 
 - **touchstone** — `bin/touchstone`, the synced `scripts/`, `hooks/`, `principles/`, the bootstrap/update flow → https://github.com/autumngarage/touchstone/issues
-- **conductor** — the `conductor` CLI, provider routing, `conductor exec` / `call` / `ask` / `review` → https://github.com/autumngarage/conductor/issues
 - **cortex** — `.cortex/journal/`, `.cortex/doctrine/`, the Cortex Protocol → https://github.com/autumngarage/cortex/issues
 
 `gh issue create --repo autumngarage/<tool>` with the same body shape as above. Search first: `gh issue list --repo autumngarage/<tool> --search "<keywords>"`. If a matching issue exists, comment with your repro instead of opening a duplicate.

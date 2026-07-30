@@ -6,9 +6,6 @@
 #   new-project.sh <project-dir>
 #   new-project.sh <project-dir> --no-register   # skip adding to ~/.touchstone-projects
 #   new-project.sh <project-dir> --type node|python|swift|rust|go|generic|auto
-#   new-project.sh <project-dir> --unsafe-paths src/auth/,migrations/
-#   new-project.sh <project-dir> --reviewer conductor|openrouter|none (or legacy: codex|claude|gemini|local|auto)
-#   new-project.sh <project-dir> --review-routing all-hosted|all-local
 #   new-project.sh <project-dir> --gitbutler
 #
 # What this does:
@@ -37,20 +34,13 @@ source "$TOUCHSTONE_ROOT/lib/install-skills.sh"
 REGISTER=true
 
 REGISTER_REQUESTED=false # Doctrine 0002: track whether --register / --no-register was passed.
-INPUT_UNSAFE=""
 INPUT_TYPE=""
 # shellcheck disable=SC2034  # set below, read by future --type-aware branches.
 INPUT_TYPE_REQUESTED=false # Tracks explicit --type (not the auto-detect fall-through).
-INPUT_REVIEWER=""
-INPUT_REVIEW_ASSIST=""
-INPUT_REVIEW_AUTOFIX=""
-INPUT_LOCAL_REVIEW_COMMAND=""
-INPUT_REVIEW_ROUTING=""
 INPUT_GIT_WORKFLOW=""
 INPUT_GITBUTLER_MCP=""
 INPUT_CI=""
 INPUT_SCAFFOLD_TESTS=false
-REVIEW_CONFIG_REQUESTED=false
 WORKFLOW_CONFIG_REQUESTED=false
 
 # Doctrine 0002 wizard — new state. Each *_REQUESTED flag records whether the
@@ -69,7 +59,7 @@ GITHUB_MODE="" # unset | private | public | none
 GITHUB_MODE_REQUESTED=false
 
 usage() {
-  echo "Usage: $0 <project-dir> [--yes|-y] [--register|--no-register] [--type node|python|swift|rust|go|generic|auto] [--skip-language-scaffold] [--unsafe-paths path1,path2] [--reviewer conductor|openrouter|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local] [--review-assist|--no-review-assist] [--review-autofix|--no-review-autofix] [--local-review-command <command>] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|none] [--scaffold-tests] [--with-cortex|--no-with-cortex] [--with-sentinel|--no-with-sentinel] [--initial-commit|--no-initial-commit] [--github-private|--github-public|--no-github]"
+  echo "Usage: $0 <project-dir> [--yes|-y] [--register|--no-register] [--type node|python|swift|rust|go|generic|auto] [--skip-language-scaffold] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|none] [--scaffold-tests] [--with-cortex|--no-with-cortex] [--with-sentinel|--no-with-sentinel] [--initial-commit|--no-initial-commit] [--github-private|--github-public|--no-github]"
 }
 
 trim() {
@@ -113,60 +103,6 @@ escape_sed_replacement() {
   printf '%s' "$1" | sed 's/[\\/&]/\\&/g'
 }
 
-escape_toml_basic_string() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
-
-write_unsafe_paths_block() {
-  local file="$1"
-  shift
-
-  local block_file tmp_file
-  block_file="$(mktemp -t touchstone-codex-review-block.XXXXXX)"
-  tmp_file="$(mktemp -t touchstone-codex-review.XXXXXX)"
-
-  {
-    printf 'unsafe_paths = [\n'
-    for path in "$@"; do
-      [ -z "$path" ] && continue
-      printf '  "%s",\n' "$(escape_toml_basic_string "$path")"
-    done
-    printf ']\n'
-  } >"$block_file"
-
-  if awk -v block_file="$block_file" '
-    BEGIN { replaced = 0; in_block = 0 }
-    /^[[:space:]]*unsafe_paths[[:space:]]*=/ && !replaced {
-      while ((getline line < block_file) > 0) {
-        print line
-      }
-      close(block_file)
-      replaced = 1
-      in_block = ($0 !~ /\]/)
-      next
-    }
-    in_block {
-      if ($0 ~ /^[[:space:]]*\]/) {
-        in_block = 0
-      }
-      next
-    }
-    { print }
-    END {
-      if (!replaced) {
-        exit 1
-      }
-    }
-  ' "$file" >"$tmp_file"; then
-    mv "$tmp_file" "$file"
-  else
-    rm -f "$block_file" "$tmp_file"
-    return 1
-  fi
-
-  rm -f "$block_file"
-}
-
 next_backup_path() {
   local dst="$1"
   local backup="$dst.bak"
@@ -199,43 +135,6 @@ normalize_project_type() {
   esac
 }
 
-normalize_reviewer() {
-  # Conductor is the adapter; subscription-backed Codex is the provider
-  # default. `auto` is preserved only as an explicit metered-capable opt-in.
-  local value="$1"
-  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
-
-  case "$value" in
-    "" | conductor | codex) printf 'codex' ;;
-    auto) printf 'auto' ;;
-    openrouter | claude | gemini | local) printf '%s' "$value" ;;
-    none | no | off | disabled | false) printf 'none' ;;
-    *)
-      echo "ERROR: unknown reviewer '$1' (expected conductor, openrouter, none, or legacy: codex, claude, gemini, local, auto)" >&2
-      return 1
-      ;;
-  esac
-}
-
-normalize_review_routing() {
-  local value="$1"
-  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
-
-  case "$value" in
-    "" | hosted | all | all-hosted | cloud | remote) printf 'all-hosted' ;;
-    local | all-local | offline | offline-local) printf 'all-local' ;;
-    hybrid | small-local | local-small | small-local-large-hosted)
-      echo "WARNING: review routing '$1' is retired for live review; use all-hosted or all-local for explicit offline review. Treating as all-hosted." >&2
-      printf 'all-hosted'
-      ;;
-    none | off | disabled | false) printf 'none' ;;
-    *)
-      echo "ERROR: unknown review routing '$1' (expected all-hosted or all-local)" >&2
-      return 1
-      ;;
-  esac
-}
-
 normalize_git_workflow() {
   local value="$1"
   value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
@@ -246,23 +145,6 @@ normalize_git_workflow() {
     *)
       echo "ERROR: unknown git workflow '$1' (expected git or gitbutler)" >&2
       return 1
-      ;;
-  esac
-}
-
-normalize_positive_int() {
-  local value="$1"
-  case "$value" in
-    '' | *[!0-9]*)
-      echo "ERROR: expected a positive integer, got '$1'" >&2
-      return 1
-      ;;
-    *)
-      if [ "$value" -le 0 ] 2>/dev/null; then
-        echo "ERROR: expected a positive integer, got '$1'" >&2
-        return 1
-      fi
-      printf '%s' "$value"
       ;;
   esac
 }
@@ -301,10 +183,6 @@ prompt_yes_no() {
   else
     normalize_yes_no "$answer"
   fi
-}
-
-default_reviewer() {
-  printf 'codex'
 }
 
 detect_node_package_manager() {
@@ -801,75 +679,17 @@ while [ "$#" -gt 0 ]; do
       INPUT_TYPE_REQUESTED=true
       shift 2
       ;;
-    --unsafe-paths)
+    --unsafe-paths | --reviewer | --local-review-command | --review-routing | --small-review-lines)
       [ "$#" -ge 2 ] || {
-        echo "ERROR: --unsafe-paths requires a comma-separated value" >&2
+        echo "ERROR: $1 requires a value" >&2
         exit 1
       }
-      INPUT_UNSAFE="$2"
+      echo "WARNING: $1 is retired and ignored; GitHub Codex PR review is mandatory." >&2
       shift 2
       ;;
-    --reviewer)
-      [ "$#" -ge 2 ] || {
-        echo "ERROR: --reviewer requires a value (conductor, openrouter, none, or legacy: codex, claude, gemini, local, auto)" >&2
-        exit 1
-      }
-      INPUT_REVIEWER="$(normalize_reviewer "$2")"
-      REVIEW_CONFIG_REQUESTED=true
-      shift 2
-      ;;
-    --review-routing)
-      [ "$#" -ge 2 ] || {
-        echo "ERROR: --review-routing requires a value (all-hosted, all-local)" >&2
-        exit 1
-      }
-      INPUT_REVIEW_ROUTING="$(normalize_review_routing "$2")"
-      REVIEW_CONFIG_REQUESTED=true
-      shift 2
-      ;;
-    --small-review-lines)
-      [ "$#" -ge 2 ] || {
-        echo "ERROR: --small-review-lines requires a positive integer" >&2
-        exit 1
-      }
-      normalize_positive_int "$2" >/dev/null
-      REVIEW_CONFIG_REQUESTED=true
-      shift 2
-      ;;
-    --no-ai-review | --no-review)
-      INPUT_REVIEWER="none"
-      INPUT_REVIEW_ROUTING="none"
-      REVIEW_CONFIG_REQUESTED=true
+    --no-ai-review | --no-review | --review-assist | --no-review-assist | --review-autofix | --no-review-autofix)
+      echo "WARNING: $1 is retired and ignored; GitHub Codex PR review is mandatory." >&2
       shift
-      ;;
-    --review-assist)
-      INPUT_REVIEW_ASSIST=true
-      REVIEW_CONFIG_REQUESTED=true
-      shift
-      ;;
-    --no-review-assist)
-      INPUT_REVIEW_ASSIST=false
-      REVIEW_CONFIG_REQUESTED=true
-      shift
-      ;;
-    --review-autofix)
-      INPUT_REVIEW_AUTOFIX=true
-      REVIEW_CONFIG_REQUESTED=true
-      shift
-      ;;
-    --no-review-autofix)
-      INPUT_REVIEW_AUTOFIX=false
-      REVIEW_CONFIG_REQUESTED=true
-      shift
-      ;;
-    --local-review-command)
-      [ "$#" -ge 2 ] || {
-        echo "ERROR: --local-review-command requires a command string" >&2
-        exit 1
-      }
-      INPUT_LOCAL_REVIEW_COMMAND="$2"
-      REVIEW_CONFIG_REQUESTED=true
-      shift 2
       ;;
     --git-workflow)
       [ "$#" -ge 2 ] || {
@@ -1083,8 +903,6 @@ write_touchstone_manifest() {
     for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
       printf 'principles/%s\n' "$(basename "$f")"
     done
-    printf 'scripts/conductor-review.sh\n'
-    printf 'scripts/codex-review.sh\n'
     printf 'scripts/branch-guard.sh\n'
     printf 'scripts/emergency-disclosure.sh\n'
     printf 'scripts/cortex-pr-merged-hook.sh\n'
@@ -1106,7 +924,6 @@ write_touchstone_manifest() {
     printf 'lib/script-sync-guard.sh\n'
     printf 'lib/preflight.sh\n'
     printf 'lib/preflight-scope.sh\n'
-    printf 'lib/review-comment.sh\n'
     if [ "$INPUT_TYPE" = "python" ]; then
       printf 'scripts/run-pytest-in-venv.sh\n'
     fi
@@ -1117,204 +934,6 @@ write_touchstone_manifest() {
   else
     rm -f "$manifest_tmp"
     return 1
-  fi
-}
-
-set_review_config_key() {
-  local file="$1"
-  local key="$2"
-  local value="$3"
-  local tmp_file
-  tmp_file="$(mktemp -t touchstone-codex-review-key.XXXXXX)"
-
-  awk -v key="$key" -v repl="$key = $value" '
-    BEGIN { in_section = 0; replaced = 0 }
-    /^\[codex_review\][[:space:]]*$/ {
-      in_section = 1
-      print
-      next
-    }
-    /^\[/ {
-      if (in_section && !replaced) {
-        print repl
-        replaced = 1
-      }
-      in_section = 0
-      print
-      next
-    }
-    in_section && !replaced {
-      pattern = "^[[:space:]#]*" key "[[:space:]]*="
-      if ($0 ~ pattern) {
-        print repl
-        replaced = 1
-        next
-      }
-    }
-    { print }
-    END {
-      if (in_section && !replaced) {
-        print repl
-      }
-    }
-  ' "$file" >"$tmp_file"
-  mv "$tmp_file" "$file"
-}
-
-conductor_with_for() {
-  # Omitted/conductor/codex all remain inside the subscription boundary.
-  # `auto` alone opts into Conductor routing that may select metered providers.
-  local reviewer="$1"
-  case "$reviewer" in
-    auto) printf '' ;;
-    conductor | codex | "") printf 'codex' ;;
-    openrouter | claude | gemini) printf '%s' "$reviewer" ;;
-    local) printf 'ollama' ;;
-    *) printf '%s' "$reviewer" ;;
-  esac
-}
-
-write_review_onboarding_config() {
-  local file="$1"
-  local reviewer="${INPUT_REVIEWER:-auto}"
-  local routing="${INPUT_REVIEW_ROUTING:-}"
-  local assist="${INPUT_REVIEW_ASSIST:-false}"
-  local autofix="${INPUT_REVIEW_AUTOFIX:-false}"
-  local enabled=true
-  local with_pin
-
-  if [ -z "$routing" ]; then
-    case "$reviewer" in
-      local) routing="all-local" ;;
-      none) routing="none" ;;
-      *) routing="all-hosted" ;;
-    esac
-  fi
-
-  if [ "$routing" = "none" ] || [ "$reviewer" = "none" ]; then
-    enabled=false
-    routing="none"
-    with_pin=""
-  elif [ "$routing" = "all-local" ]; then
-    # All-local routing is the explicit offline path and pins ollama for every diff.
-    reviewer="local"
-    with_pin="ollama"
-  else
-    with_pin="$(conductor_with_for "$reviewer")"
-  fi
-
-  if [ "$enabled" = true ] && [ "$autofix" = true ]; then
-    set_review_config_key "$file" "mode" '"fix"'
-    set_review_config_key "$file" "safe_by_default" "true"
-  else
-    set_review_config_key "$file" "mode" '"review-only"'
-    set_review_config_key "$file" "safe_by_default" "false"
-  fi
-
-  {
-    printf '\n# Touchstone onboarding choices. You can edit these later.\n'
-    printf '[review]\n'
-    printf 'enabled = %s\n' "$enabled"
-    printf 'reviewer = "conductor"\n'
-    if [ "$enabled" = true ]; then
-      printf '\n[review.conductor]\n'
-      printf '# Provider-local preference: best|cheapest|fastest|balanced\n'
-      printf 'prefer = "best"\n'
-      printf '# Thinking depth: minimal|low|medium|high|max or an integer token budget\n'
-      printf 'effort = "high"\n'
-      printf '# Capability tags passed to the router\n'
-      printf 'tags = "code-review"\n'
-      if [ -n "$with_pin" ]; then
-        printf '# Explicit provider boundary. The default stays on subscription Codex.\n'
-        printf 'with = "%s"\n' "$with_pin"
-      else
-        printf '# Explicit auto-routing opt-in; this may select a metered provider.\n'
-        printf 'with = "auto"\n'
-      fi
-      if [ "$with_pin" != "ollama" ]; then
-        printf '# Ollama is reserved for explicit offline/local review only.\n'
-        printf 'exclude = ["ollama"]\n'
-      fi
-      if [ "$routing" = "all-hosted" ]; then
-        printf '\n[review.pr_triggered]\n'
-        printf '# GitHub Codex is requested asynchronously by default. Set required = true\n'
-        printf '# only after confirming the repository connector returns exact-head reviews.\n'
-        printf 'required = false\n'
-        printf 'provider = "github-codex"\n'
-        printf 'request_on_push = true\n'
-        printf 'timeout_sec = 1800\n'
-        printf 'poll_sec = 10\n'
-        printf 'trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]\n'
-        printf 'skip_merge_review = true\n'
-      fi
-      if [ "$reviewer" = "local" ] && [ -n "$INPUT_LOCAL_REVIEW_COMMAND" ]; then
-        printf '# NOTE: Touchstone 2.0 retired [review.local]. Your --local-review-command\n'
-        printf '#   was "%s"\n' "$(escape_toml_basic_string "$INPUT_LOCAL_REVIEW_COMMAND")"
-        printf '#   Register it as a Conductor custom provider when v0.3 ships:\n'
-        printf "#     conductor providers add --name local --shell '<cmd>' --tags code-review,offline\n"
-      fi
-    fi
-    if [ "$assist" = "true" ]; then
-      printf '\n# NOTE: --review-assist requested. Peer review is disabled in Touchstone 2.0.0;\n'
-      printf "# it returns in v2.1 via 'conductor call --exclude <primary>'. Your choice is\n"
-      printf '# preserved here as a comment so the intent is not lost:\n'
-      printf '# [review.assist]\n'
-      printf '# enabled = true\n'
-    fi
-  } >>"$file"
-}
-
-print_review_setup_hint() {
-  local reviewer="${INPUT_REVIEWER:-auto}"
-  local routing="${INPUT_REVIEW_ROUTING:-}"
-  local enabled=true
-
-  if [ -z "$routing" ]; then
-    case "$reviewer" in
-      local) routing="all-local" ;;
-      none) routing="none" ;;
-      *) routing="all-hosted" ;;
-    esac
-  fi
-
-  { [ "$reviewer" = "none" ] || [ "$routing" = "none" ]; } && enabled=false
-  if [ "$enabled" = true ] && [ "$routing" = "all-local" ]; then
-    reviewer="local"
-  fi
-  if [ "$enabled" = false ]; then
-    echo "==> AI review disabled. You can enable it later in .touchstone-review.toml."
-    return
-  fi
-
-  local pin
-  pin="$(conductor_with_for "$reviewer")"
-
-  if [ -n "$pin" ]; then
-    echo "==> AI review configured: conductor (pinned to $pin) — routing=$routing"
-  else
-    echo "==> AI review configured: conductor (explicit auto-routing; metered providers possible) — routing=$routing"
-  fi
-
-  if [ "$routing" = "all-local" ]; then
-    echo "    Offline mode: all review routes to ollama and no hosted provider is used."
-  fi
-
-  if ! command -v conductor >/dev/null 2>&1; then
-    echo "    Conductor is not installed yet. Review will skip until you install it."
-    echo "      brew install autumngarage/conductor/conductor"
-    echo "      conductor init"
-  elif ! conductor doctor --json 2>/dev/null | grep -q '"configured"[[:space:]]*:[[:space:]]*true'; then
-    echo "    Conductor is installed but no provider is configured yet."
-    echo "      conductor doctor    (diagnose what's missing)"
-    echo "      conductor init      (guided provider setup)"
-  elif [ -n "$pin" ]; then
-    echo "    Confirm \`$pin\` is ready: conductor list"
-  fi
-
-  if [ "$reviewer" = "local" ] && [ -n "$INPUT_LOCAL_REVIEW_COMMAND" ]; then
-    echo "    NOTE: --local-review-command \"$INPUT_LOCAL_REVIEW_COMMAND\" is recorded in"
-    echo "    .touchstone-review.toml as a comment. Touchstone 2.0 retired [review.local];"
-    echo "    register your command as a Conductor custom provider when v0.3 ships."
   fi
 }
 
@@ -1336,10 +955,8 @@ copy_file "$TOUCHSTONE_ROOT/templates/.worktreeinclude.example" "$PROJECT_DIR/.w
 copy_file "$TOUCHSTONE_ROOT/templates/pull_request_template.md" "$PROJECT_DIR/.github/pull_request_template.md"
 if [ -f "$PROJECT_DIR/.codex-review.toml" ] && [ ! -f "$PROJECT_DIR/.touchstone-review.toml" ]; then
   echo "    exists (legacy, skipped): .codex-review.toml"
-  TOUCHSTONE_REVIEW_CONFIG_CREATED=false
 else
-  copy_file "$TOUCHSTONE_ROOT/hooks/conductor-review.config.example.toml" "$PROJECT_DIR/.touchstone-review.toml"
-  TOUCHSTONE_REVIEW_CONFIG_CREATED="$LAST_COPY_CREATED"
+  copy_file "$TOUCHSTONE_ROOT/templates/touchstone-review.toml" "$PROJECT_DIR/.touchstone-review.toml"
 fi
 copy_file "$TOUCHSTONE_ROOT/templates/setup.sh" "$PROJECT_DIR/setup.sh"
 chmod +x "$PROJECT_DIR/setup.sh" 2>/dev/null || true
@@ -1363,8 +980,6 @@ copy_file_force "$TOUCHSTONE_ROOT/templates/ci/issue-claim-check.yml" "$PROJECT_
 echo ""
 echo "==> Copying scripts (touchstone-owned, will be auto-updated):"
 mkdir -p "$PROJECT_DIR/scripts"
-copy_file_force "$TOUCHSTONE_ROOT/hooks/conductor-review.sh" "$PROJECT_DIR/scripts/conductor-review.sh"
-copy_file_force "$TOUCHSTONE_ROOT/hooks/codex-review.sh" "$PROJECT_DIR/scripts/codex-review.sh"
 copy_file_force "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" "$PROJECT_DIR/scripts/branch-guard.sh"
 copy_file_force "$TOUCHSTONE_ROOT/hooks/emergency-disclosure.sh" "$PROJECT_DIR/scripts/emergency-disclosure.sh"
 copy_file_force "$TOUCHSTONE_ROOT/hooks/cortex-pr-merged-hook.sh" "$PROJECT_DIR/scripts/cortex-pr-merged-hook.sh"
@@ -1391,7 +1006,6 @@ copy_file_force "$TOUCHSTONE_ROOT/lib/worker-state.sh" "$PROJECT_DIR/lib/worker-
 copy_file_force "$TOUCHSTONE_ROOT/lib/script-sync-guard.sh" "$PROJECT_DIR/lib/script-sync-guard.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PROJECT_DIR/lib/preflight.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/preflight-scope.sh" "$PROJECT_DIR/lib/preflight-scope.sh"
-copy_file_force "$TOUCHSTONE_ROOT/lib/review-comment.sh" "$PROJECT_DIR/lib/review-comment.sh"
 
 # Claude Code settings — wires the branch-guard and emergency-disclosure
 # PreToolUse hooks shipped above. Touchstone-owned (overwritten on update);
@@ -1402,7 +1016,7 @@ mkdir -p "$PROJECT_DIR/.claude"
 copy_file_force "$TOUCHSTONE_ROOT/templates/claude-settings.json" "$PROJECT_DIR/.claude/settings.json"
 
 # Touchstone-shipped skills — installed to USER scope (~/.claude/skills/) so
-# the bundled engineering/git/cortex/conductor skills are available in every
+# the bundled engineering, git, Cortex, and workflow skills are available in every
 # project the user opens, not duplicated into each project. Project-scoped
 # skills (anything under <project>/.claude/skills/ that the user adds) remain
 # project-owned and untouched.
@@ -1505,56 +1119,6 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
     fi
     INPUT_TYPE="$(normalize_project_type "$INPUT_TYPE")"
   fi
-
-  if [ "$REVIEW_CONFIG_REQUESTED" = false ] && [ "$TOUCHSTONE_REVIEW_CONFIG_CREATED" = true ]; then
-    if [ "$YES_MODE" = true ]; then
-      # --yes defaults to GitHub Codex plus subscription-backed Codex fallback.
-      INPUT_REVIEW_ROUTING="all-hosted"
-      INPUT_REVIEWER="$(default_reviewer)"
-      INPUT_REVIEW_AUTOFIX=false
-      INPUT_REVIEW_ASSIST=false
-      REVIEW_CONFIG_REQUESTED=true
-    else
-      echo ""
-      echo "==> Configure AI review (press Enter for the default):"
-      echo "   Touchstone 2.0 routes every review through Conductor."
-      echo "   Hosted: GitHub Codex reviews the PR; local fallback stays on subscription Codex."
-      echo "   Offline local: all review goes to Ollama; use only when hosted review is unavailable."
-      if [ "$(prompt_yes_no "Use AI review before code reaches main?" "true")" = "true" ]; then
-        local_review_style=""
-        read -r -p "   Review style (hosted, offline-local) [hosted]: " local_review_style
-        local_review_style="$(normalize_review_routing "${local_review_style:-hosted}")"
-
-        case "$local_review_style" in
-          all-hosted)
-            INPUT_REVIEW_ROUTING="all-hosted"
-            read -r -p "   Review provider (Enter = subscription Codex; auto = metered-capable routing): " INPUT_REVIEWER
-            INPUT_REVIEWER="${INPUT_REVIEWER:-$(default_reviewer)}"
-            INPUT_REVIEWER="$(normalize_reviewer "$INPUT_REVIEWER")"
-            ;;
-          all-local)
-            INPUT_REVIEW_ROUTING="all-local"
-            INPUT_REVIEWER="local"
-            ;;
-        esac
-
-        INPUT_REVIEW_AUTOFIX="$(prompt_yes_no "Let the AI auto-fix low-risk issues?" "false")"
-        # Peer review is retired in 2.0.0 — returns in 2.1 via `conductor call --exclude`.
-        INPUT_REVIEW_ASSIST=false
-
-        if [ "$INPUT_REVIEW_AUTOFIX" = "true" ] && [ -z "$INPUT_UNSAFE" ]; then
-          read -r -p "   High-scrutiny paths the AI must never auto-fix (comma-separated, e.g., src/auth/,migrations/): " INPUT_UNSAFE
-        fi
-      else
-        INPUT_REVIEWER="none"
-        INPUT_REVIEW_ROUTING="none"
-        INPUT_REVIEW_AUTOFIX=false
-        INPUT_REVIEW_ASSIST=false
-      fi
-      REVIEW_CONFIG_REQUESTED=true
-    fi # YES_MODE else
-  fi
-
   if [ "$WORKFLOW_CONFIG_REQUESTED" = false ]; then
     echo ""
     echo "==> Choose Git workflow helpers (press Enter for the default):"
@@ -1639,18 +1203,6 @@ if [ "$WIZARD_INTERACTIVE" = true ]; then
     fi
   fi
 fi
-
-# Fresh non-interactive scaffolds skip the wizard, but they still need the same
-# live-review default as --yes. Only do this when the Touchstone review config was
-# newly copied; pre-existing project-owned review choices remain untouched.
-if [ "$REVIEW_CONFIG_REQUESTED" = false ] && [ "$TOUCHSTONE_REVIEW_CONFIG_CREATED" = true ]; then
-  INPUT_REVIEW_ROUTING="all-hosted"
-  INPUT_REVIEWER="$(default_reviewer)"
-  INPUT_REVIEW_AUTOFIX=false
-  INPUT_REVIEW_ASSIST=false
-  REVIEW_CONFIG_REQUESTED=true
-fi
-
 # Non-interactive fallback defaults — Doctrine 0002: non-TTY without --yes and
 # without a flag means "no behavior change from pre-R2 wizard". Cortex/Sentinel
 # init, GitHub repo creation, and initial commit stay off unless asked for;
@@ -1696,7 +1248,7 @@ PACKAGE_MANAGER="$(detect_node_package_manager "$PROJECT_DIR")"
 MONOREPO="$(detect_monorepo "$PROJECT_DIR")"
 TARGETS="$(detect_targets "$PROJECT_DIR")"
 
-if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ] || [ -n "$INPUT_UNSAFE" ]; then
+if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ]; then
   # Apply to project-owned AI instruction files.
   if [ -n "$INPUT_NAME" ]; then
     ESCAPED_NAME="$(escape_sed_replacement "$INPUT_NAME")"
@@ -1715,35 +1267,9 @@ if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ] || [ -n 
     sed -i '' "s/{{TEST_COMMAND[^}]*}}/$ESCAPED_TEST/g" "$PROJECT_DIR/CLAUDE.md" 2>/dev/null || true
   fi
 
-  if [ -n "$INPUT_UNSAFE" ]; then
-    unsafe_paths_input=()
-    local_unsafe_paths=()
-    IFS=',' read -r -a unsafe_paths_input <<<"$INPUT_UNSAFE"
-    for unsafe_path in "${unsafe_paths_input[@]}"; do # empty-array-guard: safe — populated by IFS-split of non-empty INPUT_UNSAFE
-      unsafe_path="$(trim "$unsafe_path")"
-      [ -z "$unsafe_path" ] && continue
-      local_unsafe_paths+=("$unsafe_path")
-    done
-
-    if [ "${#local_unsafe_paths[@]}" -gt 0 ] && [ "$TOUCHSTONE_REVIEW_CONFIG_CREATED" = true ]; then
-      write_unsafe_paths_block "$PROJECT_DIR/.touchstone-review.toml" "${local_unsafe_paths[@]}"
-    elif [ "${#local_unsafe_paths[@]}" -gt 0 ]; then
-      echo "==> Review config already exists; left unsafe_paths unchanged."
-    fi
-  fi
-
   if [ -t 0 ]; then
     echo ""
     echo "==> Placeholders filled! Review CLAUDE.md, AGENTS.md, and GEMINI.md to add more detail."
-  fi
-fi
-
-if [ "$REVIEW_CONFIG_REQUESTED" = true ]; then
-  if [ "$TOUCHSTONE_REVIEW_CONFIG_CREATED" = true ]; then
-    write_review_onboarding_config "$PROJECT_DIR/.touchstone-review.toml"
-    print_review_setup_hint
-  else
-    echo "==> Review config already exists; left AI review choices unchanged."
   fi
 fi
 
@@ -2040,8 +1566,8 @@ if [ "$WIZARD_INTERACTIVE" = true ] || [ "$YES_MODE" = true ]; then
   [ "$SKIP_LANGUAGE_SCAFFOLD" = true ] && scaffold_flag=" --skip-language-scaffold"
   echo ""
   echo "==> Equivalent to rerun:"
-  printf "    touchstone new %s --type %s --reviewer %s%s \\\\\n" \
-    "$PROJECT_DIR" "$INPUT_TYPE" "${INPUT_REVIEWER:-auto}" "$scaffold_flag"
+  printf "    touchstone new %s --type %s%s \\\\\n" \
+    "$PROJECT_DIR" "$INPUT_TYPE" "$scaffold_flag"
   printf "      %s %s %s %s %s\n" \
     "$register_flag" "$cortex_flag" "$sentinel_flag" "$commit_flag" "$github_flag"
 fi

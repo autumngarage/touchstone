@@ -35,12 +35,12 @@ Your unstaged changes carry over. The trigger is *edit time*, not commit time �
 1. `git pull --rebase` on the default branch
 2. Branch (before any edit)
 3. Commit (explicit file paths, concise message, one concern per commit)
-4. `bash scripts/open-pr.sh --auto-merge` — pushes, opens PR, posts advisory conductor review comment (if configured), runs the local merge-gate pipeline, blocks unresolved PR feedback, squash-merges, and syncs default; the driver owns watching PR comments and committing fixes between PR open and this merge step
+4. `bash scripts/open-pr.sh --auto-merge` — pushes, opens the PR, requests exact-head review, runs deterministic preflight, blocks unresolved PR feedback, squash-merges, and syncs default; the driver owns watching PR comments and committing fixes between PR open and merge
 5. Local cleanup (`git branch -D <feature>` if it persists)
 
 ## Quick rules
 
-- **One concern per commit.** Atomic commits make `git blame`, `git bisect`, `git revert`, and Conductor review all work better.
+- **One concern per commit.** Atomic commits make `git blame`, `git bisect`, `git revert`, and PR review work better.
 - **Stage explicit file paths** — never `git add -A` (sweeps `.env`, credentials, generated files).
 - **Push after every commit.** Local commits are not durable; pushed commits survive a `reset --hard` slip.
 - **Issue-closing trailers.** `Closes-issue: #123` in the commit body — `open-pr.sh` injects `Closes #123` into the PR body, auto-closing on merge.

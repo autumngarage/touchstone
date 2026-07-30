@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 #
-# Preferred Conductor review entry point.
-#
-# The implementation still accepts the legacy codex-review protocol names
-# (`CODEX_REVIEW_*`, CODEX_REVIEW_CLEAN/FIXED/BLOCKED) for compatibility.
-set -euo pipefail
+# Compatibility shim for project-owned pre-commit configs from Touchstone 2.x.
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-exec "$SCRIPT_DIR/codex-review.sh" "$@"
+echo "WARNING: scripts/conductor-review.sh is retired; semantic review now runs through GitHub Codex on the PR." >&2
+exit 0

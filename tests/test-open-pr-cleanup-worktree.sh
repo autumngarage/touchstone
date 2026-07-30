@@ -55,7 +55,23 @@ case "$1 $2" in
     case "$*" in
       *".body // \"\""*) echo "" ;;
       *".user.login // empty"*) echo "alice" ;;
+      *"[.base.ref, .base.sha] | @tsv"*) printf 'main\t%s\n' "$(git rev-parse main)" ;;
       *) echo "unexpected gh api args: $*" >&2; exit 1 ;;
+    esac
+    ;;
+  "api user") echo "alice" ;;
+  "api --paginate")
+    # No prior durable review-request records.
+    ;;
+  "api -X")
+    case "${4:-}" in
+      repos/autumngarage/touchstone/statuses/*)
+        echo "2026-07-29T00:00:00Z"
+        ;;
+      repos/autumngarage/touchstone/issues/9999/comments)
+        echo "2026-07-29T00:00:01Z"
+        ;;
+      *) echo "unexpected gh api POST args: $*" >&2; exit 1 ;;
     esac
     ;;
   "pr list")
@@ -90,6 +106,8 @@ case "$1 $2" in
         ;;
       state,mergedAt) printf '{"state":"MERGED","mergedAt":"2026-04-30T05:00:00Z"}\n' ;;
       mergedAt) echo "2026-04-30T05:00:00Z" ;;
+      headRefOid) git rev-parse HEAD ;;
+      baseRefOid) git rev-parse main ;;
       *) echo "unexpected gh pr view json: $json_fields" >&2; exit 1 ;;
     esac
     ;;

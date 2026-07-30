@@ -4,7 +4,7 @@
 #
 # Usage:
 #   touchstone new <project-dir>          Create a new project with touchstone files
-#   touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--reviewer conductor|openrouter|none (or legacy: codex|claude|gemini|local|auto)]
+#   touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto]
 #                                      Add touchstone to the current project
 #   touchstone run <task>                  Run profile task: lint, test, build, typecheck, validate
 #   touchstone preflight                   Run deterministic review preflight checks
@@ -24,7 +24,6 @@
 #   touchstone version                    Show installed version
 #   touchstone --version                  Show installed version
 #   touchstone doctor                     Check project or installation health
-#   touchstone review-stats               Report conductor-review fail-open trends
 #   touchstone help                       Show this help
 #
 # Install:
@@ -61,7 +60,6 @@ source "$TOUCHSTONE_ROOT/lib/colors.sh"
 source "$TOUCHSTONE_ROOT/lib/ui.sh"
 source "$TOUCHSTONE_ROOT/lib/claude-md-touchstone-ref.sh"
 source "$TOUCHSTONE_ROOT/lib/status.sh"
-source "$TOUCHSTONE_ROOT/lib/touchstone-doctor.sh"
 
 # Auto-update check (throttled, non-blocking on failure). When an update
 # succeeds, re-exec so the current command runs against the upgraded files.
@@ -107,12 +105,12 @@ escape_sed_replacement() {
 
 cmd_new() {
   if [ "$#" -lt 1 ]; then
-    echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer conductor|openrouter|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests]" >&2
+    echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests]" >&2
     exit 1
   fi
   case "${1:-}" in
     -h|--help)
-      echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--unsafe-paths path1,path2] [--reviewer conductor|openrouter|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests]"
+      echo "Usage: touchstone new <project-dir> [--no-register] [--type node|python|swift|rust|go|generic|auto] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests]"
       return 0
       ;;
   esac
@@ -142,7 +140,7 @@ cmd_init() {
         shift
         ;;
       -h|--help)
-        echo "Usage: touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer conductor|openrouter|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests] [--claude-principles yes|no|prompt] [--no-claude-principles]"
+        echo "Usage: touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--gitbutler|--no-gitbutler] [--gitbutler-mcp|--no-gitbutler-mcp] [--ci github|--no-ci] [--scaffold-tests] [--claude-principles yes|no|prompt] [--no-claude-principles]"
         return 0
         ;;
       --type)
@@ -157,15 +155,15 @@ cmd_init() {
         args+=("$1")
         shift
         ;;
-      --unsafe-paths)
+      --unsafe-paths|--reviewer|--local-review-command|--review-routing|--small-review-lines)
         if [ "$#" -lt 2 ]; then
-          echo "ERROR: --unsafe-paths requires a comma-separated value" >&2
+          echo "ERROR: $1 requires a value" >&2
           exit 1
         fi
-        args+=("$1" "$2")
+        echo "WARNING: $1 is retired and ignored; GitHub Codex PR review is mandatory." >&2
         shift 2
         ;;
-      --reviewer|--local-review-command|--review-routing|--small-review-lines|--git-workflow)
+      --git-workflow)
         if [ "$#" -lt 2 ]; then
           echo "ERROR: $1 requires a value" >&2
           exit 1
@@ -183,7 +181,11 @@ cmd_init() {
           shift
         fi
         ;;
-      --no-ai-review|--no-review|--review-assist|--no-review-assist|--review-autofix|--no-review-autofix|--gitbutler|--no-gitbutler|--gitbutler-mcp|--no-gitbutler-mcp|--no-ci|--scaffold-tests)
+      --no-ai-review|--no-review|--review-assist|--no-review-assist|--review-autofix|--no-review-autofix)
+        echo "WARNING: $1 is retired and ignored; GitHub Codex PR review is mandatory." >&2
+        shift
+        ;;
+      --gitbutler|--no-gitbutler|--gitbutler-mcp|--no-gitbutler-mcp|--no-ci|--scaffold-tests)
         args+=("$1")
         shift
         ;;
@@ -207,7 +209,7 @@ cmd_init() {
         ;;
       *)
         echo "ERROR: unknown argument '$1'" >&2
-        echo "Usage: touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--unsafe-paths path1,path2] [--reviewer conductor|openrouter|none (or legacy: codex|claude|gemini|local|auto)] [--review-routing all-hosted|all-local] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests] [--claude-principles yes|no|prompt] [--no-claude-principles]" >&2
+        echo "Usage: touchstone init [--no-setup] [--type node|python|swift|rust|go|generic|auto] [--no-register] [--gitbutler|--no-gitbutler] [--ci github|--no-ci] [--scaffold-tests] [--claude-principles yes|no|prompt] [--no-claude-principles]" >&2
         exit 1
         ;;
     esac
@@ -300,12 +302,21 @@ cmd_migrate_from_toolkit() {
   exec bash "$TOUCHSTONE_ROOT/bootstrap/migrate-from-toolkit.sh" "$@"
 }
 
-cmd_migrate_review_config() {
-  exec bash "$TOUCHSTONE_ROOT/bootstrap/migrate-review-config.sh" "$@"
+cmd_retired_review() {
+  echo "WARNING: touchstone review is retired; running deterministic preflight instead." >&2
+  echo "         Semantic review is requested automatically after scripts/open-pr.sh pushes the PR." >&2
+  cmd_preflight
 }
 
-cmd_review() {
-  exec bash "$TOUCHSTONE_ROOT/bootstrap/review.sh" "$@"
+cmd_retired_review_stats() {
+  echo "WARNING: touchstone review-stats is retired; local model-review metrics no longer exist." >&2
+  echo "         Inspect PR review state with: gh pr view --comments" >&2
+}
+
+cmd_retired_review_migration() {
+  echo "WARNING: touchstone migrate-review-config is retired." >&2
+  echo "         Touchstone reads legacy .codex-review.toml policy during migration." >&2
+  echo "         Compare with templates/touchstone-review.toml and migrate through a normal PR." >&2
 }
 
 cmd_sync() {
@@ -588,6 +599,30 @@ cmd_status() {
   status_print_project "$(pwd)"
 }
 
+touchstone_doctor_pr_review_policy_valid() {
+  local config_file="$1"
+  local required="" request_on_push="" provider=""
+
+  [ -f "$TOUCHSTONE_ROOT/lib/toml.sh" ] || return 1
+  # shellcheck source=../lib/toml.sh
+  source "$TOUCHSTONE_ROOT/lib/toml.sh"
+
+  touchstone_doctor_review_policy_callback() {
+    local section="$1" key="$2" value="$3"
+    [ "$section" = "review.pr_triggered" ] || return 0
+    case "$key" in
+      required) required="$value" ;;
+      request_on_push) request_on_push="$value" ;;
+      provider) provider="$value" ;;
+    esac
+  }
+
+  toml_parse "$config_file" touchstone_doctor_review_policy_callback
+  [ "$required" = "true" ] || return 1
+  [ "$request_on_push" = "true" ] || return 1
+  [ "$provider" = "github-codex" ]
+}
+
 cmd_doctor_project() {
   local project_dir issues=0
   project_dir="$(touchstone_find_project_root 2>/dev/null || pwd)"
@@ -631,7 +666,7 @@ cmd_doctor_project() {
   #   - file absent → hook never runs
   #   - file present but not executable → Git skips it (same effect as absent)
   #   - file executable but not the pre-commit-framework shim → another hook
-  #     framework replaced it; pushes proceed without Conductor review / validate.
+  #     framework replaced it; pushes proceed without deterministic validation.
   if [ ! -f "$project_dir/.pre-commit-config.yaml" ]; then
     tk_warn ".pre-commit-config.yaml is missing"
     tk_dim "  Fix: touchstone init  (reconciles missing templates)"
@@ -715,33 +750,27 @@ cmd_doctor_project() {
     tk_dim "  Fix: echo \"$project_dir\" >> $projects_file"
   fi
 
-  # 6. Conductor review config and required reviewer peer.
-  local review_config=""
+  # 6. Required PR-visible review policy.
+  local review_policy_file=""
   if [ -f "$project_dir/.touchstone-review.toml" ]; then
-    review_config=".touchstone-review.toml"
+    review_policy_file="$project_dir/.touchstone-review.toml"
     tk_ok ".touchstone-review.toml present"
   elif [ -f "$project_dir/.codex-review.toml" ]; then
-    review_config=".codex-review.toml"
-    tk_ok ".codex-review.toml present (legacy name)"
-    tk_dim "  Preferred name for new projects: .touchstone-review.toml"
+    review_policy_file="$project_dir/.codex-review.toml"
+    tk_warn ".codex-review.toml legacy policy in use"
+    tk_dim "  Migrate through a PR using: touchstone diff"
   fi
-  if [ -n "$review_config" ]; then
-    if grep -qE '^[[:space:]]*reviewers[[:space:]]*=[[:space:]]*\[' "$project_dir/$review_config" \
-       || grep -qE '^\[review\.(local|assist)\]' "$project_dir/$review_config" \
-       || grep -qE '^[[:space:]]*(small|large)_reviewers[[:space:]]*=[[:space:]]*\[' "$project_dir/$review_config"; then
-      tk_warn "$review_config uses legacy 1.x review schema"
-      tk_dim "  Fix: touchstone migrate-review-config"
+  if [ -n "$review_policy_file" ]; then
+    if touchstone_doctor_pr_review_policy_valid "$review_policy_file"; then
+      tk_ok "PR-visible exact-head review required"
+    else
+      tk_fail ".touchstone-review.toml must require and request GitHub Codex review"
+      tk_dim "  Compare with: touchstone diff"
       issues=$((issues + 1))
     fi
   else
-    tk_dim ".touchstone-review.toml not found (optional — configures AI review)"
-  fi
-  if _touchstone_doctor_review_enabled "$project_dir/$review_config"; then
-    if ! _touchstone_doctor_check_conductor_peer; then
-      issues=$((issues + 1))
-    fi
-  else
-    tk_dim "conductor: not required ([review] enabled = false)"
+    tk_fail ".touchstone-review.toml missing"
+    issues=$((issues + 1))
   fi
 
   # 7. Profile-aware test-surface and tooling gap checks.
@@ -832,65 +861,6 @@ cmd_doctor_project() {
   echo ""
   return 1
 }
-
-_touchstone_doctor_review_enabled() {
-  local config_path="$1"
-  [ -f "$config_path" ] || return 0
-
-  awk '
-    function trim(s) {
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", s)
-      return s
-    }
-    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
-    /^[[:space:]]*\[/ {
-      section = $0
-      sub(/^[[:space:]]*\[/, "", section)
-      sub(/\].*$/, "", section)
-      section = trim(section)
-      next
-    }
-    section == "review" {
-      line = $0
-      sub(/[[:space:]]+#.*$/, "", line)
-      if (line ~ /^[[:space:]]*enabled[[:space:]]*=/) {
-        sub(/^[^=]*=/, "", line)
-        value = trim(line)
-        gsub(/^"|"$/, "", value)
-        if (value == "false") {
-          disabled = 1
-        }
-      }
-    }
-    END {
-      exit disabled ? 0 : 1
-    }
-  ' "$config_path" && return 1
-
-  return 0
-}
-
-_touchstone_doctor_check_conductor_peer() {
-  local resolved=""
-  resolved="$(command -v conductor 2>/dev/null || true)"
-  if [ -n "$resolved" ]; then
-    # Touchstone 2.0 delegates all review to conductor; richer status
-    # lives in `conductor doctor`.
-    if "$resolved" doctor --json 2>/dev/null | grep -q '"configured"[[:space:]]*:[[:space:]]*true'; then
-      tk_ok "conductor: $resolved (at least one provider configured)"
-      return 0
-    fi
-    tk_warn "conductor: $resolved (unhealthy or no provider configured — run: conductor doctor)"
-    return 1
-  fi
-
-  tk_fail "conductor: MISSING — the pre-push review hook will not run without conductor"
-  tk_dim "  Install: brew install autumngarage/conductor/conductor"
-  tk_dim "  Configure: conductor init"
-  tk_dim "  Required by autumn-garage doctrine 0009"
-  return 1
-}
-
 # Report presence + version of a sibling CLI in the Autumn Garage trio.
 # File-contract only — no code imports, no reading sibling config beyond a
 # presence check on the marker directory. Resolve the CLI path once; a 3s
@@ -1216,6 +1186,24 @@ _touchstone_profile_has_tests() {
   esac
 }
 
+touchstone_doctor_usage() {
+  cat <<'EOF'
+Usage: touchstone doctor [--project|--installation]
+       touchstone doctor --require-capability <name>
+
+  (no flag)             Check the current project, or installation health outside a project
+  --project             Check project health and delivery policy
+  --require-capability <name>
+                        Require a project-local Touchstone workflow capability
+  --installation        Check Touchstone installation health
+
+Exit codes:
+  0  structural checks passed
+  1  broken or incomplete state
+  2  invalid arguments
+EOF
+}
+
 cmd_doctor() {
   local project_mode=false
   local installation_mode=false
@@ -1228,13 +1216,6 @@ cmd_doctor() {
       installation_mode=true
     fi
   fi
-
-  case "${1:-}" in
-    --log-path|--threshold)
-      echo "ERROR: review metrics moved to: touchstone review-stats" >&2
-      return 2
-      ;;
-  esac
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1294,10 +1275,6 @@ cmd_doctor() {
       issues=$((issues + 1))
     fi
   done
-  if ! _touchstone_doctor_check_conductor_peer; then
-    issues=$((issues + 1))
-  fi
-
   # Recommended tools.
   for tool in pre-commit gitleaks shellcheck shfmt; do
     if command -v "$tool" >/dev/null 2>&1; then
@@ -1373,10 +1350,6 @@ cmd_doctor() {
     echo ""
     return 1
   fi
-}
-
-cmd_review_stats() {
-  touchstone_doctor_review_log "$@"
 }
 
 cmd_list() {
@@ -1456,9 +1429,11 @@ cmd_diff() {
     "AGENTS.md:templates/AGENTS.md"
     "GEMINI.md:templates/GEMINI.md"
     ".pre-commit-config.yaml:templates/pre-commit-config.yaml"
-    ".touchstone-review.toml:hooks/conductor-review.config.example.toml"
-    ".codex-review.toml:hooks/codex-review.config.example.toml"
+    ".touchstone-review.toml:templates/touchstone-review.toml"
   )
+  if [ ! -f ".touchstone-review.toml" ] && [ -f ".codex-review.toml" ]; then
+    pairs+=(".codex-review.toml:templates/touchstone-review.toml")
+  fi
 
   for pair in "${pairs[@]}"; do
     local project_file="${pair%%:*}"
@@ -1731,7 +1706,6 @@ cmd_help() {
   tk_header "touchstone — shared engineering starter kit"
   echo "  ${BOLD}Project commands:${RESET}"
   printf "    ${BOLD}touchstone init${RESET} [--no-setup]      Add touchstone to the current project\n"
-  printf "    ${BOLD}touchstone init${RESET} --reviewer openrouter   Use hosted OpenRouter review\n"
   printf "    ${BOLD}touchstone init${RESET} --gitbutler       Add optional GitButler workflow setup\n"
   printf "    ${BOLD}touchstone new${RESET} <dir>              Bootstrap a new project from scratch\n"
   printf "    ${BOLD}touchstone detect${RESET}                 Show detected project profile\n"
@@ -1749,8 +1723,6 @@ cmd_help() {
   printf "    ${BOLD}touchstone update${RESET} --check         Report whether this project needs update\n"
   printf "    ${BOLD}touchstone update${RESET} --ship          Push, open PR, review, and auto-merge\n"
   printf "    ${BOLD}touchstone migrate-from-toolkit${RESET}   One-shot rename of legacy .toolkit-* files (pre-1.0.0 projects)\n"
-  printf "    ${BOLD}touchstone migrate-review-config${RESET}  Rewrite legacy review config from 1.x → 2.0 shape (silences migration warnings on push)\n"
-  printf "    ${BOLD}touchstone review${RESET}                Run the conductor review without pushing (--dry-run previews routing)\n"
   printf "    ${BOLD}touchstone update-all${RESET}             Update all registered projects\n"
   printf "    ${BOLD}touchstone update-all${RESET} --ship      Ship registered project updates through PRs\n"
   printf "    ${BOLD}touchstone update-all${RESET} --check     Report which projects need update\n"
@@ -1770,7 +1742,6 @@ cmd_help() {
   printf "    ${BOLD}touchstone doctor${RESET}                 Check project or installation health\n"
   printf "    ${BOLD}touchstone doctor${RESET} --project       Check per-project health (hooks, manifest, registry)\n"
   printf "    ${BOLD}touchstone doctor${RESET} --installation  Check installation health\n"
-  printf "    ${BOLD}touchstone review-stats${RESET}           Report conductor-review fail-open trends\n"
   printf "    ${BOLD}touchstone version${RESET}                Show installed version\n"
   printf "    ${BOLD}touchstone changelog${RESET} [N]          Show last N releases (default 10)\n"
   printf "    ${BOLD}touchstone skills${RESET}                 List Claude Code skills\n"
@@ -1835,8 +1806,9 @@ case "$COMMAND" in
   update)       cmd_update "$@" ;;
   update-all)   cmd_update_all "$@" ;;
   migrate-from-toolkit) cmd_migrate_from_toolkit "$@" ;;
-  migrate-review-config) cmd_migrate_review_config "$@" ;;
-  review)       cmd_review "$@" ;;
+  migrate-review-config) cmd_retired_review_migration "$@" ;;
+  review)       cmd_retired_review "$@" ;;
+  review-stats) cmd_retired_review_stats "$@" ;;
   sync)         cmd_sync "$@" ;;
   status)       cmd_status "$@" ;;
   list|ls)      cmd_list ;;
@@ -1848,7 +1820,6 @@ case "$COMMAND" in
   release)      cmd_release "$@" ;;
   version|--version) cmd_version ;;
   doctor)       cmd_doctor "$@" ;;
-  review-stats) cmd_review_stats "$@" ;;
   help|-h|--help) cmd_help ;;
   *)
     printf "${RED}Unknown command: $COMMAND${RESET}\n" >&2

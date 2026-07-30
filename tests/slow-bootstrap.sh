@@ -25,10 +25,5 @@ if ! command -v sentinel >/dev/null 2>&1; then
   echo "ERROR: 'sentinel' is not on PATH; install it (brew install autumngarage/sentinel/sentinel) before running this slow probe." >&2
   exit 1
 fi
-if ! command -v conductor >/dev/null 2>&1; then
-  echo "ERROR: 'conductor' is not on PATH; install it (brew install autumngarage/conductor/conductor) before running this slow probe." >&2
-  exit 1
-fi
-
 DIR="$(cd "$(dirname "$0")" && pwd)"
 exec env TOUCHSTONE_REAL_BOOTSTRAP=1 bash "$DIR/test-bootstrap.sh" "$@"

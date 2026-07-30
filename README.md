@@ -8,7 +8,7 @@
 
 > *Scaffolding + PR-visible agentic review for AI-assisted projects.*
 >
-> by **[Autumn Garage](https://github.com/autumngarage/autumn-garage)** · alongside [Cortex](https://github.com/autumngarage/cortex) · [Sentinel](https://github.com/autumngarage/sentinel) · [Conductor](https://github.com/autumngarage/conductor) · [Alchemist](https://github.com/autumngarage/alchemist) — issue-driven transmuter — open issue in, reviewed PR out.
+> by **[Autumn Garage](https://github.com/autumngarage/autumn-garage)** · alongside [Cortex](https://github.com/autumngarage/cortex) · [Sentinel](https://github.com/autumngarage/sentinel) · [Alchemist](https://github.com/autumngarage/alchemist) — issue-driven transmuter — open issue in, reviewed PR out.
 
 # Touchstone
 
@@ -66,35 +66,11 @@ touchstone init --no-setup
 bash setup.sh
 ```
 
-### Turn on AI review
+### PR review
 
-Touchstone delegates local semantic review to the [Conductor CLI](https://github.com/autumngarage/conductor). The default route is pinned to the subscription-backed Codex CLI and verifies ChatGPT authentication before invocation. Fresh scaffolds request a PR-visible GitHub Codex review asynchronously, while local semantic review remains the merge gate so a missing repository connector cannot stall delivery. After confirming the connector returns trusted exact-head reviews, maintainers can opt into a strict GitHub-required gate.
+Touchstone requests GitHub Codex review automatically for every pushed PR head. The merge helper waits for trusted exact-head review, deterministic preflight, required checks, and resolved review threads before merging. No local model router or API key is required.
 
-```bash
-brew install autumngarage/conductor/conductor
-conductor init                    # walks through each provider, one at a time
-```
-
-Conductor supports native reviewers such as OpenAI Codex, Claude, and Gemini, plus hosted OpenRouter and explicit local Ollama. Touchstone does not automatically overflow from Codex into another provider. A project must explicitly set `with = "auto"` or name a different provider before Conductor may use it.
-
-When you run `touchstone new` or `touchstone init`, Touchstone asks whether you want AI review. If you say yes, the scaffold adds `with = "codex"` plus a bounded reasoning budget. If Codex is unavailable, review follows the project's `on_error` policy instead of selecting a metered API provider. Use `TOUCHSTONE_CONDUCTOR_EFFORT=max` when release-level scrutiny is worth the extra latency.
-
-You can keep using Touchstone without Conductor installed; the hook skips itself gracefully and prints install instructions.
-
-Useful shortcuts:
-
-```bash
-# Add Touchstone with AI review disabled
-touchstone init --no-ai-review
-
-# Explicitly choose a different provider for one push
-TOUCHSTONE_CONDUCTOR_WITH=claude git push
-
-# Explicitly enable Conductor auto-routing (may use metered providers)
-TOUCHSTONE_CONDUCTOR_WITH=auto git push
-```
-
-Full config reference: see `hooks/conductor-review.config.example.toml`. Legacy `.codex-review.toml` files still work; new projects use `.touchstone-review.toml`. Migrating from 1.x? See the historical 2.0 migration notes in [GitHub Releases](https://github.com/autumngarage/touchstone/releases).
+See [hooks/README.md](hooks/README.md) for the review contract.
 
 ### Choose a Git workflow
 
@@ -130,17 +106,11 @@ bash setup.sh --deps-only
 |---------|-------------|
 | `touchstone init [--no-setup]` | Add touchstone to the current project |
 | `touchstone migrate-from-toolkit` | Migrate a project from the legacy `.toolkit-*` files before re-running `touchstone init` |
-| `touchstone init --review-routing all-local` | Use explicit offline Ollama review instead of hosted Conductor review |
-| `touchstone init --reviewer claude` | Explicitly pin Conductor to a non-default provider (codex / claude / gemini / openrouter / local) |
-| `touchstone init --no-ai-review` | Add touchstone with AI review disabled |
 | `touchstone init --gitbutler` | Add touchstone with optional GitButler workflow setup |
 | `touchstone init --ci github` | Add `.github/workflows/validate.yml` that runs pre-commit hygiene and `touchstone run validate` on every PR |
 | `touchstone init --scaffold-tests` | Write one placeholder smoke test for Python, Node, or Go projects (Rust and Swift already ship scaffolds via `cargo init` / `swift package init`) |
 | `touchstone new <dir>` | Bootstrap a new project with principles, scripts, hooks, and templates |
 | `touchstone new <dir> --type node` | Bootstrap with an explicit Node/TypeScript, Swift, Rust, Go, Python, or generic profile |
-| `touchstone new <dir> --review-routing all-local` | Bootstrap with explicit offline Ollama review instead of hosted Conductor review |
-| `touchstone new <dir> --reviewer claude` | Bootstrap pinned to a specific underlying provider |
-| `touchstone new <dir> --no-ai-review` | Bootstrap a new project with AI review disabled |
 | `touchstone new <dir> --gitbutler` | Bootstrap with optional GitButler workflow setup |
 | `touchstone new <dir> --ci github` | Bootstrap with the opt-in GitHub Actions validate workflow |
 | `touchstone new <dir> --scaffold-tests` | Bootstrap with a placeholder smoke test for Python, Node, or Go projects |
@@ -164,8 +134,6 @@ bash setup.sh --deps-only
 | `touchstone version` | Show installed version and install method |
 | `touchstone changelog [N]` | Show the last N GitHub releases |
 | `touchstone doctor` | Health check — version, tools, project staleness |
-| `touchstone review [--dry-run]` | Run the conductor review without pushing, or preview routing with `--dry-run` |
-| `touchstone review-stats` | Report conductor-review fail-open trends from the local review log |
 | `touchstone skills` | List Claude Code skills visible to the current repo and user |
 | `touchstone skills check` | Validate Claude Code skill frontmatter |
 | `touchstone release [--major\|--minor\|--patch]` | Cut a Touchstone release; maintainers only |
@@ -180,7 +148,7 @@ When you run `touchstone new`, these files get created in your project:
 - `CLAUDE.md` — Claude Code instructions with `{{PLACEHOLDERS}}` to fill in
 - `AGENTS.md` — Codex/agent instructions plus the AI review rubric with project-specific priorities
 - `GEMINI.md` — Gemini CLI instructions that point at the shared authoring/review workflow
-- `.touchstone-review.toml` — Conductor review config (reviewers, modes, safe/unsafe paths)
+- `.touchstone-review.toml` — required PR-visible review policy
 - `.touchstone-config` — Project profile, workflow choices, and optional lint/test/build command overrides
 - `.pre-commit-config.yaml` — Pre-commit hooks including fast branch checks and direct default-branch guardrails
 - `.gitignore` — Sensible defaults
@@ -192,11 +160,9 @@ When you run `touchstone new`, these files get created in your project:
 - `.touchstone-version` — The touchstone revision this project has applied
 - `.touchstone-manifest` — The visible list of touchstone-managed paths
 - `principles/*.md` — Universal engineering principles
-- `scripts/conductor-review.sh` — AI review + auto-fix loop
-- `scripts/codex-review.sh` — legacy compatibility entry point for existing integrations
 - `scripts/touchstone-run.sh` — Profile-aware runner for Node/TypeScript, Swift, Rust, Python, Go, and monorepos
 - `scripts/open-pr.sh` — Push + create PR via `gh`
-- `scripts/merge-pr.sh` — PR feedback gate + AI review + squash-merge + sync main
+- `scripts/merge-pr.sh` — exact-head review gate + deterministic preflight + squash-merge + sync main
 - `scripts/cleanup-branches.sh` — Safe branch hygiene
 - `scripts/run-pytest-in-venv.sh` — Legacy Python helper copied for Python profiles
 
@@ -241,39 +207,31 @@ Universal engineering standards, extracted and battle-tested from production sys
 
 ### AI Review Gate
 
-Automatically reviews code on PRs before it reaches the default branch. Fresh scaffolds request GitHub Codex as the visible asynchronous reviewer and use local semantic review through [Conductor](https://github.com/autumngarage/conductor) as the default merge gate. Repositories with a verified connector can opt into requiring exact-head GitHub evidence:
+Every pushed PR head receives a GitHub Codex review request. Touchstone binds
+the request and accepted result to the full head and base revisions, rejects
+stale reviews and unresolved threads, runs deterministic preflight, and
+revalidates authorization immediately before merge.
 
-- The local gate pins subscription-backed Codex, verifies ChatGPT authentication, and never silently crosses into metered API billing
-- Explicit `with = "auto"` or another named provider opts a project into a different cost boundary
-- Per-push preference via env vars: `TOUCHSTONE_CONDUCTOR_WITH=<provider>`, `TOUCHSTONE_CONDUCTOR_PREFER=<mode>`, `TOUCHSTONE_CONDUCTOR_EFFORT=<level>`
-- Size-based effort routing keeps the same Codex provider pin unless a bucket explicitly overrides `*_with`
-- Local Ollama providers are reserved for explicit offline review (`--review-routing all-local` or `--reviewer local`)
-- Provider failures follow `on_error`; cross-provider fallback retry is disabled unless explicitly enabled
-- Auto-fixes safe issues through a second edit-capable pass after read-only review
-- Blocks the merge or direct default-branch push for findings that should not be auto-fixed
-- Runs from `scripts/merge-pr.sh`, and from the pre-push hook only when pushing directly to the default branch
-- Loops up to N times, gracefully skips when Conductor is not installed
+Touchstone does not run a hidden local semantic reviewer, route model calls, or
+apply reviewer-authored edits. The driving CLI addresses findings with normal
+commits, which trigger a new exact-head review.
 
-Configure per-project behavior in `.touchstone-review.toml` (`.codex-review.toml` remains a legacy compatibility name). Write your coding-agent guidance and review rubric in `AGENTS.md`. See [hooks/README.md](hooks/README.md) for reviewer modes, caching, and fail-open behavior. Peer review returns in 2.1 via `conductor call --exclude <primary>`.
+Configure timeouts and trusted GitHub review authors in
+`.touchstone-review.toml`. Write the project review rubric in `AGENTS.md`. See
+[hooks/README.md](hooks/README.md) for the complete contract.
 
-### Agent Steering Dogfood
+### Agent Steering Contract
 
-Maintainers can test whether the generated Claude, Codex, and Gemini guidance actually steers agents to the required workflow:
-
-```bash
-scripts/dogfood-agent-steering.sh --providers auto
-scripts/dogfood-agent-steering.sh --providers auto,claude,codex,gemini --keep
-```
-
-The harness bootstraps a temporary Touchstone project, asks Conductor-routed agents to inspect the real steering files, and fails unless they infer the required branch-before-edit, PR creation, PR-visible review loop, and `scripts/open-pr.sh --auto-merge` flow. It is not part of `tests/test-*.sh` because it can spend provider quota.
-
-The static contract tests still run in the normal self-test suite:
+The static steering contract runs in the normal self-test suite:
 
 ```bash
 bash tests/test-agent-steering-contract.sh
 ```
 
-That test guards the interpretability contract without spending model quota: Claude, Codex, and Gemini are interchangeable driving CLIs; Conductor is the worker/reviewer router, while the managed review default remains subscription Codex; all drivers must converge on the same managed principles and branch → PR → agentic review loop → approved merge lifecycle.
+That test guards the interpretability contract without spending model quota:
+Claude, Codex, and Gemini are interchangeable driving CLIs, and all drivers
+must converge on the same managed principles and branch → PR → review →
+approved merge lifecycle.
 
 Maintainer self-tests are split into a fast default tier and a slow opt-in tier. The fast tier is the pre-push contract and must not call live model/provider CLIs:
 

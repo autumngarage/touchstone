@@ -5,12 +5,11 @@
 # Usage:
 #   bash scripts/merge-pr.sh <pr-number>
 #   bash scripts/merge-pr.sh <pr-number> --bypass-with-disclosure="<reason>"
-#   bash scripts/merge-pr.sh <pr-number> --bypass-with-disclosure="<reason>" --allow-fail-open-marker
 #
 # What this does:
 #   1. Verifies the PR is open and mergeable.
 #   2. Verifies PR-visible feedback has no blocking review state.
-#   3. Waits for configured PR-triggered AI review, or runs AI code review as a merge gate.
+#   3. Waits for trusted exact-head PR-visible AI review.
 #   4. Re-checks PR-visible feedback on the reviewed head.
 #   5. Squash-merges and deletes the remote branch.
 #   6. Checks out/syncs the default branch where the local topology permits.
@@ -35,12 +34,7 @@ if [ -f "$SCRIPT_SYNC_GUARD" ]; then
   source "$SCRIPT_SYNC_GUARD"
   touchstone_script_sync_guard "$0" "$@"
 fi
-REVIEW_SCRIPT="$SCRIPT_DIR/conductor-review.sh"
-if [ ! -f "$REVIEW_SCRIPT" ]; then
-  REVIEW_SCRIPT="$SCRIPT_DIR/codex-review.sh"
-fi
 PREFLIGHT_SCRIPT="$SCRIPT_DIR/../lib/preflight.sh"
-REVIEW_COMMENT_SCRIPT="$SCRIPT_DIR/../lib/review-comment.sh"
 if [ -f "$SCRIPT_DIR/../lib/events.sh" ]; then
   # shellcheck source=../lib/events.sh
   source "$SCRIPT_DIR/../lib/events.sh"
@@ -51,25 +45,16 @@ if [ -f "$PREFLIGHT_SCRIPT" ]; then
   # shellcheck source=../lib/preflight.sh
   source "$PREFLIGHT_SCRIPT"
 fi
-if [ -f "$REVIEW_COMMENT_SCRIPT" ]; then
-  # shellcheck source=../lib/review-comment.sh
-  source "$REVIEW_COMMENT_SCRIPT"
-fi
 REVIEWED_HEAD_OID=""
 PR_HEAD_BRANCH=""
 BYPASS_REVIEW=false
-ALLOW_FAIL_OPEN_MARKER=false
 TOUCHSTONE_MERGE_FAILURE_REASON="nonzero-exit"
 PREFLIGHT_REQUIRED=true
-COMMENT_ON_CLEAN=true
-COMMENT_FINDINGS_HISTORY=true
-PR_TRIGGERED_REVIEW_REQUIRED=false
 PR_TRIGGERED_REVIEW_PROVIDER="github-codex"
-PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=false
+PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=true
 PR_TRIGGERED_REVIEW_TIMEOUT_SEC=1800
 PR_TRIGGERED_REVIEW_POLL_SEC=10
 PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS="chatgpt-codex-connector,chatgpt-codex-connector[bot]"
-PR_TRIGGERED_REVIEW_SKIP_MERGE_REVIEW=true
 PR_TRIGGERED_REVIEWED_HEAD_OID=""
 PR_TRIGGERED_REVIEWED_BASE_OID=""
 PR_TRIGGERED_REVIEW_BASE_BOUND=false
@@ -84,7 +69,6 @@ CURRENT_REVIEW_BASE_OID=""
 CURRENT_REVIEW_MERGE_BASE_OID=""
 REVIEWED_BASE_OID=""
 REVIEWED_MERGE_BASE_OID=""
-REVIEW_SUMMARY_FILE=""
 PREFLIGHT_CACHE_KEY=""
 PREFLIGHT_CACHE_FILE=""
 PREFLIGHT_CACHE_INPUTS=""
@@ -96,9 +80,6 @@ PR_BASE_BRANCH=""
 PR_BASE_REF=""
 MERGE_REVIEW_CONFIG_TMP_FILES=()
 MERGE_REVIEW_CONFIG_FILE=""
-TOUCHSTONE_REVIEW_LOG="${TOUCHSTONE_REVIEW_LOG-${HOME:-}/.touchstone-review-log}"
-TOUCHSTONE_REVIEW_LOG_MAX_LINES="${TOUCHSTONE_REVIEW_LOG_MAX_LINES:-1000}"
-TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS="${TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS:-24}"
 
 on_merge_exit() {
   local rc="$?"
@@ -126,10 +107,6 @@ while [ "$#" -gt 0 ]; do
     --bypass-with-disclosure)
       echo "ERROR: --bypass-with-disclosure requires a non-empty reason." >&2
       exit 2
-      ;;
-    --allow-fail-open-marker)
-      ALLOW_FAIL_OPEN_MARKER=true
-      shift
       ;;
     --*)
       echo "ERROR: Unknown option: $1" >&2
@@ -197,106 +174,14 @@ csv_add_unique() {
   fi
 }
 
-summary_string_field() {
-  local field="$1"
-  [ -n "$REVIEW_SUMMARY_FILE" ] || return 0
-  [ -f "$REVIEW_SUMMARY_FILE" ] || return 0
-  sed -nE 's/.*"'"$field"'"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' "$REVIEW_SUMMARY_FILE" 2>/dev/null | head -1
-}
-
-summary_number_field() {
-  local field="$1"
-  [ -n "$REVIEW_SUMMARY_FILE" ] || return 0
-  [ -f "$REVIEW_SUMMARY_FILE" ] || return 0
-  sed -nE 's/.*"'"$field"'"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' "$REVIEW_SUMMARY_FILE" 2>/dev/null | head -1
-}
-
-review_output_has_concrete_findings() {
-  local output_file="$1"
-  [ -f "$output_file" ] || return 1
-  grep -Eq 'CODEX_REVIEW_BLOCKED|^- ' "$output_file"
-}
-
-review_failure_is_infra() {
-  local review_rc="$1"
-  local output_file="$2"
-  local findings exit_reason
-
-  review_output_has_concrete_findings "$output_file" && return 1
-
-  findings="$(summary_number_field findings)"
-  if [ -n "$findings" ] && [ "$findings" != "0" ]; then
-    return 1
-  fi
-
-  exit_reason="$(summary_string_field exit_reason)"
-  case "$exit_reason" in
-    timeout | error | provider-unavailable | dependency-missing | malformed-sentinel) return 0 ;;
-    blocked | worktree-mutated | max-iterations) return 1 ;;
-  esac
-
-  [ "$review_rc" -eq 124 ] && return 0
-  return 1
-}
-
-review_failed_provider_csv() {
-  local csv field value item
-  local -a provider_items
-
-  csv=""
-  for field in provider fallback_primary_provider fallback_retry_provider fallback_excluded_providers; do
-    value="$(summary_string_field "$field")"
-    if [ -n "$value" ]; then
-      IFS=',' read -r -a provider_items <<<"$value"
-      for item in "${provider_items[@]}"; do
-        csv="$(csv_add_unique "$csv" "$item")"
-      done
-    fi
-  done
-  printf '%s' "$csv"
-}
-
-review_infra_retry_command() {
-  printf 'TOUCHSTONE_CONDUCTOR_WITH=codex bash scripts/merge-pr.sh %s' "$PR_NUMBER"
-}
-
-print_review_infra_retry_guidance() {
-  local failed_csv exit_reason fallback_reason retry_command
-
-  failed_csv="$(review_failed_provider_csv)"
-  exit_reason="$(summary_string_field exit_reason)"
-  fallback_reason="$(summary_string_field fallback_reason)"
-  [ -n "$exit_reason" ] || exit_reason="reviewer-infrastructure"
-  retry_command="$(review_infra_retry_command)"
-
-  echo "" >&2
-  echo "Provider/infrastructure outage details:" >&2
-  echo "  deterministic preflight: clean" >&2
-  echo "  concrete findings: 0" >&2
-  echo "  review exit reason: $exit_reason" >&2
-  if [ -n "$fallback_reason" ]; then
-    echo "  fallback reason: $fallback_reason" >&2
-  fi
-  if [ -n "$failed_csv" ]; then
-    echo "  failed/stalled provider(s): $failed_csv" >&2
-  fi
-  echo "  retry command: $retry_command" >&2
-  echo "  repair route: authenticate the subscription Codex CLI, then run the retry command" >&2
-  echo "  cost boundary: any other provider or auto-routing mode requires explicit operator opt-in" >&2
-}
-
 BYPASS_REASON="$(trim "$(printf '%s' "$BYPASS_REASON" | tr '\r\n\t' '   ')")"
 
 if [ -z "$PR_NUMBER" ] || ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
-  echo "Usage: bash scripts/merge-pr.sh <pr-number> [--bypass-with-disclosure=\"<reason>\" [--allow-fail-open-marker]]" >&2
+  echo "Usage: bash scripts/merge-pr.sh <pr-number> [--bypass-with-disclosure=\"<reason>\"]" >&2
   exit 2
 fi
 if [ "$BYPASS_REVIEW" = true ] && [ -z "$BYPASS_REASON" ]; then
   echo "ERROR: --bypass-with-disclosure requires a non-empty reason." >&2
-  exit 2
-fi
-if [ "$ALLOW_FAIL_OPEN_MARKER" = true ] && [ "$BYPASS_REVIEW" != true ]; then
-  echo "ERROR: --allow-fail-open-marker requires --bypass-with-disclosure=\"<reason>\"." >&2
   exit 2
 fi
 
@@ -390,29 +275,23 @@ load_merge_review_config() {
         true | false) PREFLIGHT_REQUIRED="$normalized" ;;
         *) config_error="[review].preflight_required must be true or false; got: $value" ;;
       esac
-    elif [ "$section" = "review" ] && [ "$key" = "comment_on_clean" ]; then
-      normalized="$(normalize_bool "$value")"
-      case "$normalized" in
-        true | false) COMMENT_ON_CLEAN="$normalized" ;;
-        *) config_error="[review].comment_on_clean must be true or false; got: $value" ;;
-      esac
-    elif [ "$section" = "review" ] && [ "$key" = "comment_findings_history" ]; then
-      normalized="$(normalize_bool "$value")"
-      case "$normalized" in
-        true | false) COMMENT_FINDINGS_HISTORY="$normalized" ;;
-        *) config_error="[review].comment_findings_history must be true or false; got: $value" ;;
-      esac
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "required" ]; then
       case "$value" in
-        true | false) PR_TRIGGERED_REVIEW_REQUIRED="$value" ;;
-        *) config_error="[review.pr_triggered].required must be true or false; got: $value" ;;
+        true) : ;;
+        false)
+          echo "WARNING: [review.pr_triggered].required=false is retired and ignored; PR-visible review remains mandatory." >&2
+          ;;
+        *) config_error="[review.pr_triggered].required must be true; got: $value" ;;
       esac
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "provider" ]; then
       PR_TRIGGERED_REVIEW_PROVIDER="$value"
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "request_on_push" ]; then
       case "$value" in
-        true | false) PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH="$value" ;;
-        *) config_error="[review.pr_triggered].request_on_push must be true or false; got: $value" ;;
+        true) PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=true ;;
+        false)
+          echo "WARNING: [review.pr_triggered].request_on_push=false is retired and ignored; every pushed head requests review." >&2
+          ;;
+        *) config_error="[review.pr_triggered].request_on_push must be true; got: $value" ;;
       esac
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "timeout_sec" ]; then
       PR_TRIGGERED_REVIEW_TIMEOUT_SEC="$value"
@@ -420,11 +299,6 @@ load_merge_review_config() {
       PR_TRIGGERED_REVIEW_POLL_SEC="$value"
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "trusted_review_authors" ]; then
       PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS="$(toml_normalize_array "$value")"
-    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "skip_merge_review" ]; then
-      case "$value" in
-        true | false) PR_TRIGGERED_REVIEW_SKIP_MERGE_REVIEW="$value" ;;
-        *) config_error="[review.pr_triggered].skip_merge_review must be true or false; got: $value" ;;
-      esac
     fi
   }
 
@@ -444,24 +318,25 @@ resolve_merge_review_config_file() {
   if [ -n "$PR_NUMBER" ] && [ -n "${PR_BASE_REF:-}" ]; then
     trusted_base="${MERGE_PR_TRUSTED_CONFIG_BASE:-$PR_BASE_REF}"
     for rel in .touchstone-review.toml .codex-review.toml; do
-      if git cat-file -e "$trusted_base:$rel" 2>/dev/null; then
-        if ! tmp="$(mktemp -t touchstone-merge-review-config.XXXXXX)"; then
-          echo "ERROR: Failed to create a temporary file for trusted review config." >&2
-          echo "       source: $trusted_base:$rel" >&2
-          TOUCHSTONE_MERGE_FAILURE_REASON="trusted-review-config"
-          return 1
-        fi
-        if git show "$trusted_base:$rel" >"$tmp" 2>/dev/null; then
-          MERGE_REVIEW_CONFIG_TMP_FILES+=("$tmp")
-          MERGE_REVIEW_CONFIG_FILE="$tmp"
-          return 0
-        fi
-        rm -f "$tmp"
-        echo "ERROR: Failed to extract trusted review config." >&2
+      if ! git cat-file -e "$trusted_base:$rel" 2>/dev/null; then
+        continue
+      fi
+      if ! tmp="$(mktemp -t touchstone-merge-review-config.XXXXXX)"; then
+        echo "ERROR: Failed to create a temporary file for trusted review config." >&2
         echo "       source: $trusted_base:$rel" >&2
         TOUCHSTONE_MERGE_FAILURE_REASON="trusted-review-config"
         return 1
       fi
+      if git show "$trusted_base:$rel" >"$tmp" 2>/dev/null; then
+        MERGE_REVIEW_CONFIG_TMP_FILES+=("$tmp")
+        MERGE_REVIEW_CONFIG_FILE="$tmp"
+        return 0
+      fi
+      rm -f "$tmp"
+      echo "ERROR: Failed to extract trusted review config." >&2
+      echo "       source: $trusted_base:$rel" >&2
+      TOUCHSTONE_MERGE_FAILURE_REASON="trusted-review-config"
+      return 1
     done
     return 0
   fi
@@ -492,31 +367,6 @@ refresh_trusted_merge_review_config_base() {
     echo "ERROR: Could not verify trusted merge review config base $trusted_base." >&2
     exit 1
   fi
-}
-
-review_clean_marker_key() {
-  local branch="$1"
-  printf '%s' "$branch" | sed 's/[^A-Za-z0-9._-]/_/g'
-}
-
-review_clean_marker_file() {
-  local branch="$1"
-  printf '%s/%s.clean' \
-    "$(git rev-parse --git-path touchstone/reviewer-clean)" \
-    "$(review_clean_marker_key "$branch")"
-}
-
-review_findings_history_file() {
-  local branch="$1"
-  printf '%s/%s.jsonl' \
-    "$(git rev-parse --git-path touchstone/reviewer-findings-history)" \
-    "$(review_clean_marker_key "$branch")"
-}
-
-marker_field() {
-  local field="$1"
-  local marker="$2"
-  awk -F= -v key="$field" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$marker"
 }
 
 preflight_hash_stream() {
@@ -642,11 +492,6 @@ preflight_tool_fingerprint() {
 }
 
 preflight_env_fingerprint() {
-  local dogfood_resolved_command=""
-
-  if declare -F touchstone_preflight_dogfood_command >/dev/null 2>&1; then
-    dogfood_resolved_command="$(touchstone_preflight_dogfood_command || true)"
-  fi
   {
     printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_SCRIPT=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_SCRIPT:-}"
     printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_COMMAND:-}"
@@ -655,7 +500,6 @@ preflight_env_fingerprint() {
     printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_SMOKE_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_SMOKE_COMMAND:-}"
     printf 'TOUCHSTONE_PREFLIGHT_VALIDATE_FULL_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_VALIDATE_FULL_COMMAND:-}"
     printf 'TOUCHSTONE_PREFLIGHT_DOGFOOD_COMMAND=%s\n' "${TOUCHSTONE_PREFLIGHT_DOGFOOD_COMMAND:-}"
-    printf 'TOUCHSTONE_PREFLIGHT_DOGFOOD_RESOLVED_COMMAND=%s\n' "$dogfood_resolved_command"
     printf 'TOUCHSTONE_PREFLIGHT_SKIP_DOGFOOD=%s\n' "${TOUCHSTONE_PREFLIGHT_SKIP_DOGFOOD:-}"
   } | preflight_hash_stream
 }
@@ -674,11 +518,9 @@ preflight_cache_inputs() {
   checker_hash="$(preflight_hash_file_list \
     "lib/preflight.sh" "$PREFLIGHT_SCRIPT" \
     "lib/preflight-scope.sh" "$(dirname "$PREFLIGHT_SCRIPT")/preflight-scope.sh" \
-    "scripts/touchstone-run.sh" "$SCRIPT_DIR/touchstone-run.sh" \
-    "scripts/conductor-dogfood-smoke.py" "$SCRIPT_DIR/conductor-dogfood-smoke.py")"
+    "scripts/touchstone-run.sh" "$SCRIPT_DIR/touchstone-run.sh")"
   config_hash="$(preflight_hash_paths "$repo_root" \
     ".touchstone-review.toml" \
-    ".codex-review.toml" \
     ".touchstone-config" \
     ".touchstone-version" \
     ".pre-commit-config.yaml" \
@@ -790,30 +632,6 @@ worktree_path_for_branch() {
   return 0
 }
 
-branch_has_clean_review_marker() {
-  local branch="$1"
-  local head_oid="$2"
-  local merge_base="$3"
-  local marker marker_branch marker_head marker_merge_base live_branch_head
-  marker="$(review_clean_marker_file "$branch")"
-  [ -f "$marker" ] || return 1
-  grep -q '^result=CODEX_REVIEW_CLEAN$' "$marker" || return 1
-  marker_branch="$(marker_field branch "$marker")"
-  marker_head="$(marker_field head "$marker")"
-  marker_merge_base="$(marker_field merge_base "$marker")"
-
-  if ! live_branch_head="$(git rev-parse "$branch" 2>/dev/null)"; then
-    live_branch_head="$(git rev-parse HEAD 2>/dev/null || echo "")"
-  fi
-
-  # Invariant: A clean-review marker is valid only when its `head` field equals the current branch HEAD.
-  [ "$marker_branch" = "$branch" ] \
-    && [ -n "$live_branch_head" ] \
-    && [ "$live_branch_head" = "$head_oid" ] \
-    && [ "$marker_head" = "$live_branch_head" ] \
-    && [ "$marker_merge_base" = "$merge_base" ]
-}
-
 is_positive_integer() {
   case "${1:-}" in
     "" | *[!0-9]*) return 1 ;;
@@ -826,154 +644,6 @@ is_nonnegative_integer() {
     "" | *[!0-9]*) return 1 ;;
     *) [ "$1" -ge 0 ] ;;
   esac
-}
-
-timestamp_to_epoch() {
-  local timestamp="$1"
-
-  date -j -f "%Y-%m-%dT%H:%M:%S%z" "$timestamp" "+%s" 2>/dev/null \
-    || date -d "$timestamp" "+%s" 2>/dev/null
-}
-
-head_oid_matches_logged_sha() {
-  local head_oid="$1"
-  local logged_sha="$2"
-
-  [ -n "$head_oid" ] || return 1
-  [ -n "$logged_sha" ] || return 1
-
-  case "$head_oid" in
-    "$logged_sha"*) return 0 ;;
-  esac
-  case "$logged_sha" in
-    "$head_oid"*) return 0 ;;
-  esac
-  return 1
-}
-
-bypass_reason_mentions_fail_open() {
-  local reason_lower
-  reason_lower="$(printf '%s' "$BYPASS_REASON" | tr '[:upper:]' '[:lower:]')"
-
-  case "$reason_lower" in
-    *fail-open* | *"fail open"* | *provider* | *infra* | *outage* | *timeout* | *"timed out"* | *"reviewer unavailable"* | *"reviewer error"*)
-      return 0
-      ;;
-    *) return 1 ;;
-  esac
-}
-
-branch_has_recent_fail_open_marker() {
-  local branch="$1"
-  local head_oid="$2"
-  local log_file="$TOUCHSTONE_REVIEW_LOG"
-  local window_hours="$TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS"
-  local window_seconds now_epoch tab
-  local timestamp repo_path log_branch logged_sha reason detail
-  local event_epoch age
-
-  [ -n "$log_file" ] || return 1
-  [ "$log_file" != "/dev/null" ] || return 1
-  [ -f "$log_file" ] || return 1
-  is_positive_integer "$window_hours" || return 1
-
-  window_seconds=$((window_hours * 3600))
-  now_epoch="$(date "+%s" 2>/dev/null)" || return 1
-  tab="$(printf '\t')"
-
-  while IFS="$tab" read -r timestamp repo_path log_branch logged_sha reason detail || [ -n "$timestamp" ]; do
-    [ "$log_branch" = "$branch" ] || continue
-    head_oid_matches_logged_sha "$head_oid" "$logged_sha" || continue
-    case "$reason" in
-      FAIL_OPEN_*) ;;
-      *) continue ;;
-    esac
-    case "$detail" in
-      fail-open:*) ;;
-      *) continue ;;
-    esac
-    event_epoch="$(timestamp_to_epoch "$timestamp" 2>/dev/null || true)"
-    [ -n "$event_epoch" ] || continue
-    age=$((now_epoch - event_epoch))
-    # Allow a small future skew between the review hook and merge machine clocks.
-    [ "$age" -ge -300 ] || continue
-    [ "$age" -le "$window_seconds" ] || continue
-
-    BYPASS_MARKER_EVIDENCE="timestamp=$timestamp; repo=$repo_path; branch=$log_branch; sha=$logged_sha; reason=$reason; detail=$detail"
-    return 0
-  done <"$log_file"
-
-  return 1
-}
-
-sanitize_review_log_field() {
-  printf '%s' "$1" | tr '\t\n' '  '
-}
-
-append_review_log_event() {
-  local reason="$1"
-  local detail="$2"
-  local log_file="$TOUCHSTONE_REVIEW_LOG"
-  local timestamp repo_root branch sha tmp_dir tmp_file line_count keep_lines
-
-  [ -n "$log_file" ] || return 0
-  [ "$log_file" != "/dev/null" ] || return 0
-
-  timestamp="$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || echo unknown)"
-  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || echo unknown)"
-  branch="${PR_HEAD_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)}"
-  sha="${REVIEWED_HEAD_OID:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}"
-  if [ "$sha" != "unknown" ] && [ "${#sha}" -gt 12 ]; then
-    sha="${sha:0:12}"
-  fi
-
-  reason="$(sanitize_review_log_field "$reason")"
-  detail="$(sanitize_review_log_field "$detail")"
-  branch="$(sanitize_review_log_field "$branch")"
-
-  tmp_dir="${TMPDIR:-/tmp}"
-  tmp_dir="${tmp_dir%/}"
-  tmp_file="$tmp_dir/touchstone-merge-review-log.$$.tmp"
-
-  if ! mkdir -p "$(dirname "$log_file")" 2>/dev/null; then
-    echo "WARNING: Could not create review audit log directory for $log_file." >&2
-    return 0
-  fi
-
-  if [ -f "$log_file" ]; then
-    line_count="$(wc -l <"$log_file" 2>/dev/null | tr -d ' ')" || line_count=0
-    line_count="${line_count:-0}"
-    if is_positive_integer "$TOUCHSTONE_REVIEW_LOG_MAX_LINES" && [ "$line_count" -ge "$TOUCHSTONE_REVIEW_LOG_MAX_LINES" ]; then
-      keep_lines=$((TOUCHSTONE_REVIEW_LOG_MAX_LINES - 1))
-      tail -n "$keep_lines" "$log_file" >"$tmp_file" 2>/dev/null || : >"$tmp_file"
-    else
-      cat "$log_file" >"$tmp_file" 2>/dev/null || : >"$tmp_file"
-    fi
-  else
-    : >"$tmp_file"
-  fi
-
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$timestamp" "$repo_root" "$branch" "$sha" "$reason" "$detail" \
-    >>"$tmp_file" 2>/dev/null || {
-    rm -f "$tmp_file" 2>/dev/null
-    echo "WARNING: Could not append review audit log entry for $log_file." >&2
-    return 0
-  }
-
-  if ! mv "$tmp_file" "$log_file" 2>/dev/null; then
-    rm -f "$tmp_file" 2>/dev/null
-    echo "WARNING: Could not update review audit log $log_file." >&2
-  fi
-}
-
-record_bypass_audit_log() {
-  local detail
-  detail="reason=$BYPASS_REASON; marker=$BYPASS_MARKER_SOURCE"
-  if [ -n "$BYPASS_MARKER_EVIDENCE" ]; then
-    detail="$detail; evidence=[$BYPASS_MARKER_EVIDENCE]"
-  fi
-  append_review_log_event review-bypass "$detail"
 }
 
 sync_default_branch_after_merge() {
@@ -1229,133 +899,6 @@ record_bypass_comment() {
 Fail-open evidence: $BYPASS_MARKER_EVIDENCE"
   fi
   gh pr comment "$PR_NUMBER" --body "$body"
-}
-
-post_clean_review_comment() {
-  local summary_file="$1"
-  local summary_json comment exit_reason
-
-  if ! truthy "$COMMENT_ON_CLEAN"; then
-    echo "==> Clean-review PR comment disabled by [review].comment_on_clean=false."
-    return 0
-  fi
-  if [ "$BYPASS_REVIEW" = true ]; then
-    return 0
-  fi
-  if ! declare -F format_clean_review_comment >/dev/null 2>&1 \
-    || ! declare -F post_pr_review_comment >/dev/null 2>&1; then
-    echo "WARNING: review comment helper not found at $REVIEW_COMMENT_SCRIPT; skipping clean-review comment." >&2
-    return 0
-  fi
-  if [ -z "$summary_file" ] || [ ! -f "$summary_file" ]; then
-    echo "WARNING: clean review summary file missing; skipping clean-review comment." >&2
-    return 0
-  fi
-
-  summary_json="$(tail -n 1 "$summary_file" 2>/dev/null || true)"
-  if [ -z "$summary_json" ]; then
-    echo "WARNING: clean review summary file is empty; skipping clean-review comment." >&2
-    return 0
-  fi
-
-  exit_reason="$(review_comment_json_field "$summary_json" exit_reason 2>/dev/null || true)"
-  if [ -n "$exit_reason" ] && [ "$exit_reason" != "clean" ] && [ "$exit_reason" != "cache-hit" ]; then
-    if declare -F format_review_failure_comment >/dev/null 2>&1; then
-      comment="$(format_review_failure_comment "$summary_json" "" "" "")"
-      if post_pr_review_comment "$PR_NUMBER" "$comment"; then
-        echo "==> Posted non-clean review summary PR comment (exit_reason=$exit_reason)."
-        return 0
-      fi
-      echo "WARNING: failed to post non-clean review summary comment for PR #$PR_NUMBER." >&2
-    else
-      echo "WARNING: review summary exit_reason=$exit_reason; skipping clean-review comment." >&2
-    fi
-    return 0
-  fi
-
-  comment="$(format_clean_review_comment "$summary_json")"
-  if post_pr_review_comment "$PR_NUMBER" "$comment"; then
-    echo "==> Posted clean-review PR comment."
-    return 0
-  fi
-
-  echo "WARNING: failed to post clean-review PR comment for PR #$PR_NUMBER." >&2
-  return 0
-}
-
-post_review_failure_comment() {
-  local review_output_file="$1"
-  local infra_failure="$2"
-  local summary_json output comment retry_command failed_csv
-
-  if [ "$BYPASS_REVIEW" = true ]; then
-    return 0
-  fi
-  if ! declare -F format_review_failure_comment >/dev/null 2>&1 \
-    || ! declare -F post_pr_review_comment >/dev/null 2>&1; then
-    echo "WARNING: review comment helper not found at $REVIEW_COMMENT_SCRIPT; skipping review-failure comment." >&2
-    return 0
-  fi
-
-  if [ -n "$REVIEW_SUMMARY_FILE" ] && [ -f "$REVIEW_SUMMARY_FILE" ]; then
-    summary_json="$(tail -n 1 "$REVIEW_SUMMARY_FILE" 2>/dev/null || true)"
-  else
-    summary_json='{"reviewer":"Conductor","provider":"unknown","model":"unknown","peer_provider":"none","iterations":0,"mode":"fix","findings":0,"exit_reason":"reviewer-infrastructure"}'
-  fi
-  [ -n "$summary_json" ] || summary_json='{"reviewer":"Conductor","provider":"unknown","model":"unknown","peer_provider":"none","iterations":0,"mode":"fix","findings":0,"exit_reason":"reviewer-infrastructure"}'
-
-  output="$(cat "$review_output_file" 2>/dev/null || true)"
-  retry_command=""
-  failed_csv=""
-  if [ "$infra_failure" = true ]; then
-    retry_command="$(review_infra_retry_command)"
-    failed_csv="$(review_failed_provider_csv)"
-  fi
-
-  comment="$(format_review_failure_comment "$summary_json" "$output" "$retry_command" "$failed_csv")"
-  if post_pr_review_comment "$PR_NUMBER" "$comment"; then
-    echo "==> Posted review-failure PR comment."
-    return 0
-  fi
-
-  echo "WARNING: failed to post review-failure PR comment for PR #$PR_NUMBER." >&2
-  return 0
-}
-
-post_findings_history_comment() {
-  local branch="$1"
-  local history_file comment
-
-  if ! truthy "$COMMENT_FINDINGS_HISTORY"; then
-    echo "==> Findings-history PR comment disabled by [review].comment_findings_history=false."
-    return 0
-  fi
-  if [ "$BYPASS_REVIEW" = true ]; then
-    return 0
-  fi
-  if ! declare -F format_findings_history_comment >/dev/null 2>&1 \
-    || ! declare -F post_pr_review_comment >/dev/null 2>&1; then
-    echo "WARNING: review comment helper not found at $REVIEW_COMMENT_SCRIPT; skipping findings-history comment." >&2
-    return 0
-  fi
-  if [ -z "$branch" ]; then
-    echo "WARNING: PR head branch missing; skipping findings-history comment." >&2
-    return 0
-  fi
-
-  history_file="$(review_findings_history_file "$branch")"
-  if ! comment="$(format_findings_history_comment "$history_file")"; then
-    echo "==> No actionable review findings history to comment."
-    return 0
-  fi
-
-  if post_pr_review_comment "$PR_NUMBER" "$comment"; then
-    echo "==> Posted findings-history PR comment."
-    return 0
-  fi
-
-  echo "WARNING: failed to post findings-history PR comment for PR #$PR_NUMBER." >&2
-  return 0
 }
 
 failed_checks() {
@@ -2412,7 +1955,7 @@ run_preflight_gate() {
     return 0
   fi
 
-  echo "ERROR: Deterministic preflight failed; refusing to spend provider tokens on review." >&2
+  echo "ERROR: Deterministic preflight failed; refusing to merge." >&2
   echo "       Fix the preflight failure or set TOUCHSTONE_NO_PREFLIGHT=1 for an emergency bypass." >&2
   head_sha="$(git rev-parse HEAD 2>/dev/null || echo "")"
   touchstone_emit_event preflight_blocked pr_number="$PR_NUMBER" head_sha="$head_sha"
@@ -2422,8 +1965,6 @@ run_preflight_gate() {
 
 run_merge_review() {
   local current_branch current_worktree base_ref default_worktree local_head pr_head_branch pr_head_oid
-  local pr_triggered_signal_covers_revision=false
-
   if ! pr_head_branch="$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName' 2>/dev/null)"; then
     echo "ERROR: Failed to resolve PR #$PR_NUMBER head branch." >&2
     exit 1
@@ -2443,8 +1984,7 @@ run_merge_review() {
 
   PR_HEAD_BRANCH="$pr_head_branch"
   REVIEWED_HEAD_OID="$pr_head_oid"
-  if truthy "$PR_TRIGGERED_REVIEW_REQUIRED" \
-    && [ -n "$PR_TRIGGERED_REVIEWED_HEAD_OID" ] \
+  if [ -n "$PR_TRIGGERED_REVIEWED_HEAD_OID" ] \
     && [ "$pr_head_oid" != "$PR_TRIGGERED_REVIEWED_HEAD_OID" ]; then
     echo "ERROR: PR #$PR_NUMBER head changed after the trusted PR-triggered AI review signal." >&2
     echo "       reviewed head: $PR_TRIGGERED_REVIEWED_HEAD_OID" >&2
@@ -2483,33 +2023,13 @@ run_merge_review() {
       echo "       Update the PR branch and obtain a fresh exact-head review." >&2
       TOUCHSTONE_MERGE_FAILURE_REASON="review-base-behind"
       exit 1
-    elif branch_has_clean_review_marker "$pr_head_branch" "$pr_head_oid" "$current_merge_base"; then
-      BYPASS_MARKER_SOURCE="clean-review"
     elif load_pr_review_request_timestamp "$pr_head_oid" "$current_base_oid" \
       && trusted_pr_clean_signal "$pr_head_oid" "$current_base_oid" "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"; then
       BYPASS_MARKER_SOURCE="pr-triggered-review"
-    elif [ "$ALLOW_FAIL_OPEN_MARKER" = true ]; then
-      if ! bypass_reason_mentions_fail_open; then
-        echo "ERROR: Refusing reviewer bypass for PR #$PR_NUMBER." >&2
-        echo "       --allow-fail-open-marker requires a disclosure reason that cites the fail-open reviewer/provider outage." >&2
-        exit 1
-      fi
-      if ! is_positive_integer "$TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS"; then
-        echo "ERROR: TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS must be a positive integer." >&2
-        exit 2
-      fi
-      if ! branch_has_recent_fail_open_marker "$pr_head_branch" "$pr_head_oid"; then
-        echo "ERROR: Refusing reviewer bypass for PR #$PR_NUMBER." >&2
-        echo "       No recent fail-open review-log marker matches branch '$pr_head_branch' at head '$pr_head_oid'." >&2
-        echo "       Looked in: ${TOUCHSTONE_REVIEW_LOG:-<disabled>} (window: ${TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS}h)." >&2
-        echo "       Expected a FAIL_OPEN_* entry with detail 'fail-open:*' for the current branch head." >&2
-        exit 1
-      fi
-      BYPASS_MARKER_SOURCE="fail-open"
     else
       echo "ERROR: Refusing reviewer bypass for PR #$PR_NUMBER." >&2
-      echo "       No trusted PR-visible review or prior clean review marker matches branch '$pr_head_branch' at head '$pr_head_oid' and merge base '$current_merge_base'." >&2
-      echo "       Run the reviewer cleanly once before using --bypass-with-disclosure, or pass --allow-fail-open-marker after a recent fail-open review-log event for this branch head." >&2
+      echo "       No trusted PR-visible review matches branch '$pr_head_branch' at head '$pr_head_oid' and base '$current_base_oid'." >&2
+      echo "       Obtain a fresh exact-head PR review before using --bypass-with-disclosure." >&2
       exit 1
     fi
     REVIEWED_BASE_OID="$current_base_oid"
@@ -2517,17 +2037,6 @@ run_merge_review() {
     touchstone_emit_event review_bypass pr_number="$PR_NUMBER" head_sha="$pr_head_oid" reason="$BYPASS_REASON" marker="$BYPASS_MARKER_SOURCE" evidence="$BYPASS_MARKER_EVIDENCE"
     print_bypass_banner
     record_bypass_comment
-    record_bypass_audit_log
-    return 0
-  fi
-
-  if truthy "${SKIP_REVIEW:-${SKIP_CODEX_REVIEW:-false}}"; then
-    echo "==> Skipping merge review because SKIP_REVIEW is set."
-    return 0
-  fi
-
-  if [ ! -f "$REVIEW_SCRIPT" ] && ! truthy "$PR_TRIGGERED_REVIEW_REQUIRED"; then
-    echo "==> Review script not found at $REVIEW_SCRIPT — skipping review."
     return 0
   fi
 
@@ -2578,7 +2087,7 @@ run_merge_review() {
   current_branch="$(git rev-parse --abbrev-ref HEAD)"
   local_head="$(git rev-parse HEAD)"
   if [ "$current_branch" != "$pr_head_branch" ] || [ "$local_head" != "$pr_head_oid" ]; then
-    echo "==> Checking out PR #$PR_NUMBER head ($pr_head_branch) for merge review ..."
+    echo "==> Checking out PR #$PR_NUMBER head ($pr_head_branch) for deterministic verification ..."
     gh pr checkout "$PR_NUMBER" --detach
     local_head="$(git rev-parse HEAD)"
   fi
@@ -2590,127 +2099,26 @@ run_merge_review() {
     exit 1
   fi
 
-  inspect_review_revision "$pr_head_oid" "$base_ref" "before merge review" || return $?
+  inspect_review_revision "$pr_head_oid" "$base_ref" "before deterministic verification" || return $?
   REVIEWED_BASE_OID="$CURRENT_REVIEW_BASE_OID"
   REVIEWED_MERGE_BASE_OID="$CURRENT_REVIEW_MERGE_BASE_OID"
 
-  run_preflight_gate "$base_ref" "before merge review" "merge" || return $?
+  run_preflight_gate "$base_ref" "before merge" "merge" || return $?
 
-  if truthy "$PR_TRIGGERED_REVIEW_REQUIRED" && truthy "$PR_TRIGGERED_REVIEW_SKIP_MERGE_REVIEW"; then
-    if [ "$PR_TRIGGERED_REVIEWED_BASE_OID" = "$REVIEWED_BASE_OID" ] \
-      && [ "$REVIEWED_MERGE_BASE_OID" = "$REVIEWED_BASE_OID" ]; then
-      pr_triggered_signal_covers_revision=true
-    fi
-    if [ "$pr_triggered_signal_covers_revision" = true ]; then
-      echo "==> Skipping merge review because the trusted PR-visible AI review is bound to the current head and base."
-      return 0
-    fi
-    echo "==> PR-visible AI review cannot replace local semantic review because the base revision changed or the PR is behind."
-    echo "    signal_base=${PR_TRIGGERED_REVIEWED_BASE_OID:-<missing>}"
-    echo "    current_base=$REVIEWED_BASE_OID merge_base=$REVIEWED_MERGE_BASE_OID"
+  if [ "$PR_TRIGGERED_REVIEWED_BASE_OID" != "$REVIEWED_BASE_OID" ] \
+    || [ "$REVIEWED_MERGE_BASE_OID" != "$REVIEWED_BASE_OID" ]; then
+    echo "ERROR: The trusted PR-visible review does not cover the current base revision." >&2
+    echo "       reviewed base: ${PR_TRIGGERED_REVIEWED_BASE_OID:-<missing>}" >&2
+    echo "       current base:  $REVIEWED_BASE_OID" >&2
+    echo "       merge base:    $REVIEWED_MERGE_BASE_OID" >&2
+    echo "       Update the PR branch and obtain a fresh exact-head review." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="review-base-unreviewed"
+    return 1
   fi
 
-  if [ ! -f "$REVIEW_SCRIPT" ]; then
-    if truthy "$PR_TRIGGERED_REVIEW_REQUIRED"; then
-      echo "ERROR: Review script not found at $REVIEW_SCRIPT, but the PR-visible review does not cover the current base revision." >&2
-      echo "       Update the PR branch and obtain a fresh exact-head review, or restore the local reviewer." >&2
-      TOUCHSTONE_MERGE_FAILURE_REASON="review-base-unreviewed"
-      return 1
-    fi
-    echo "==> Review script not found at $REVIEW_SCRIPT — skipping review."
-    return 0
-  fi
-
-  echo "==> Running merge review ..."
-  local review_rc=0
-  local review_output_file
-  local review_infra_failure
-  local reviewed_head_after
-  review_output_file="$(mktemp -t touchstone-merge-review.XXXXXX.txt)"
-  REVIEW_SUMMARY_FILE="$(git rev-parse --git-path "touchstone/review-summary-pr-${PR_NUMBER}.json" 2>/dev/null || echo "")"
-  if [ -n "$REVIEW_SUMMARY_FILE" ]; then
-    mkdir -p "$(dirname "$REVIEW_SUMMARY_FILE")" 2>/dev/null || true
-    rm -f "$REVIEW_SUMMARY_FILE" 2>/dev/null || true
-  fi
-  touchstone_emit_event review_started pr_number="$PR_NUMBER" mode=fix
-  set +e
-  CODEX_REVIEW_BASE="$base_ref" \
-    CODEX_REVIEW_BRANCH_NAME="$pr_head_branch" \
-    CODEX_REVIEW_PR_NUMBER="$PR_NUMBER" \
-    CODEX_REVIEW_FORCE=1 \
-    CODEX_REVIEW_MODE=fix \
-    CODEX_REVIEW_ON_ERROR=fail-closed \
-    TOUCHSTONE_PREFLIGHT_ALREADY_RAN=1 \
-    CODEX_REVIEW_SUMMARY_FILE="$REVIEW_SUMMARY_FILE" \
-    bash "$REVIEW_SCRIPT" 2>&1 | tee "$review_output_file"
-  review_rc="${PIPESTATUS[0]}"
-  set -e
-
-  if [ "$review_rc" -eq 0 ]; then
-    rm -f "$review_output_file"
-    reviewed_head_after="$(git rev-parse HEAD 2>/dev/null || echo "")"
-    if [ -z "$reviewed_head_after" ]; then
-      echo "ERROR: Could not resolve reviewed HEAD after merge review." >&2
-      TOUCHSTONE_MERGE_FAILURE_REASON="missing-reviewed-head"
-      return 1
-    fi
-    REVIEWED_HEAD_OID="$reviewed_head_after"
-    if [ "$reviewed_head_after" != "$pr_head_oid" ]; then
-      echo "==> Merge review changed HEAD:"
-      echo "    before: $pr_head_oid"
-      echo "    after:  $reviewed_head_after"
-      echo "==> Running deterministic postflight after review fixes ..."
-      run_preflight_gate "$base_ref" "after review fixes" "post-review" || return $?
-      echo "==> Pushing review fix commit(s) to PR branch $pr_head_branch ..."
-      if ! git push origin "HEAD:refs/heads/$pr_head_branch"; then
-        echo "ERROR: Failed to push review fix commit(s) to PR branch $pr_head_branch." >&2
-        TOUCHSTONE_MERGE_FAILURE_REASON="push-review-fixes"
-        return 1
-      fi
-      wait_for_pr_head "$reviewed_head_after"
-      wait_for_clean_merge_state
-      if ! request_pr_triggered_review "$reviewed_head_after" "$REVIEWED_BASE_OID" "after review fixes" true; then
-        if [ -n "${PR_TRIGGERED_REVIEW_REQUEST_INSPECTION_ERROR:-}" ]; then
-          echo "ERROR: Failed to inspect prior GitHub Codex review requests for PR #$PR_NUMBER: $PR_TRIGGERED_REVIEW_REQUEST_INSPECTION_ERROR" >&2
-        fi
-        return 1
-      fi
-      if truthy "$PR_TRIGGERED_REVIEW_REQUIRED"; then
-        wait_for_pr_triggered_review "$reviewed_head_after" "after review fixes"
-        require_pr_feedback_clear "after PR-triggered AI review on review fixes" "$reviewed_head_after"
-      fi
-    fi
-    inspect_review_revision "$reviewed_head_after" "$base_ref" "after merge review" || return $?
-    if [ "$CURRENT_REVIEW_BASE_OID" != "$REVIEWED_BASE_OID" ]; then
-      echo "ERROR: PR #$PR_NUMBER base revision changed while semantic review was running." >&2
-      echo "       reviewed base: $REVIEWED_BASE_OID" >&2
-      echo "       current base:  $CURRENT_REVIEW_BASE_OID" >&2
-      echo "       Rerun the merge gate against the refreshed base." >&2
-      TOUCHSTONE_MERGE_FAILURE_REASON="review-base-changed"
-      return 1
-    fi
-    REVIEWED_MERGE_BASE_OID="$CURRENT_REVIEW_MERGE_BASE_OID"
-    touchstone_emit_event review_clean pr_number="$PR_NUMBER" head_sha="$reviewed_head_after"
-    return 0
-  fi
-
-  echo "" >&2
-  echo "ERROR: Merge review exited $review_rc; merge-gate review fails closed." >&2
-  review_infra_failure=false
-  if review_failure_is_infra "$review_rc" "$review_output_file"; then
-    review_infra_failure=true
-    echo "       No concrete review findings were reported; this is a provider/infrastructure outage path." >&2
-    print_review_infra_retry_guidance
-  else
-    echo "       Concrete review findings were reported; fix the findings, then rerun the merge gate." >&2
-  fi
-  echo "       Emergency bypass requires an explicit --bypass-with-disclosure reason and either a matching prior clean review marker or --allow-fail-open-marker with recent fail-open evidence." >&2
-  post_review_failure_comment "$review_output_file" "$review_infra_failure"
-
-  rm -f "$review_output_file"
-  touchstone_emit_event review_blocked pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
-  TOUCHSTONE_MERGE_FAILURE_REASON="review-blocked"
-  return "$review_rc"
+  echo "==> Trusted PR-visible review covers the current head and base."
+  touchstone_emit_event review_clean pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+  return 0
 }
 
 refresh_trusted_merge_review_config_base
@@ -2731,27 +2139,22 @@ fi
 # 2. Check mergeability with retries (GitHub's status can lag after a push).
 wait_for_clean_merge_state
 
-# 3. If configured, block until the current PR head has a trusted PR-visible
-# AI review signal before spending local model-review tokens.
-if truthy "$PR_TRIGGERED_REVIEW_REQUIRED" && [ "$BYPASS_REVIEW" != true ]; then
+# 3. Block until the current PR head has a trusted PR-visible AI review signal.
+if [ "$BYPASS_REVIEW" != true ]; then
   require_pr_feedback_clear "before PR-triggered AI review"
   PR_TRIGGERED_HEAD_OID="$(current_pr_head_or_die "before PR-triggered AI review")"
-  wait_for_pr_triggered_review "$PR_TRIGGERED_HEAD_OID" "before merge review"
+  wait_for_pr_triggered_review "$PR_TRIGGERED_HEAD_OID" "before merge"
   require_pr_feedback_clear "after PR-triggered AI review" "$PR_TRIGGERED_HEAD_OID"
 else
-  # Block on PR-visible requested changes or unresolved review threads before
-  # spending model-review tokens. Audited bypasses also come through here so
-  # the bypass path can still work when the PR-triggered reviewer is unavailable.
-  require_pr_feedback_clear "before merge review"
+  require_pr_feedback_clear "before reviewed bypass"
 fi
 
-# 4. Run AI review as the merge gate.
+# 4. Run deterministic verification and bind it to the reviewed revision.
 run_merge_review
 
 # 5. Re-check PR-visible feedback on the exact reviewed head before merging.
-require_pr_feedback_clear "after merge review" "$REVIEWED_HEAD_OID"
-if { truthy "$PR_TRIGGERED_REVIEW_REQUIRED" && [ "$BYPASS_REVIEW" != true ]; } \
-  || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-review" ]; then
+require_pr_feedback_clear "after deterministic verification" "$REVIEWED_HEAD_OID"
+if [ "$BYPASS_REVIEW" != true ] || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-review" ]; then
   final_request_loaded=true
   if [ "$PR_TRIGGERED_REVIEW_BASE_BOUND" = true ] \
     || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-review" ]; then
@@ -2770,8 +2173,7 @@ if { truthy "$PR_TRIGGERED_REVIEW_REQUIRED" && [ "$BYPASS_REVIEW" != true ]; } \
   echo "==> Revalidated latest trusted PR-visible AI result for head $REVIEWED_HEAD_OID."
   [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
 fi
-if { truthy "$PR_TRIGGERED_REVIEW_REQUIRED" && [ "$BYPASS_REVIEW" != true ]; } \
-  || [ -n "$BYPASS_MARKER_SOURCE" ]; then
+if [ "$BYPASS_REVIEW" != true ] || [ -n "$BYPASS_MARKER_SOURCE" ]; then
   require_review_revision_unchanged "$REVIEWED_HEAD_OID" "final merge authorization" || exit $?
 fi
 
@@ -2814,8 +2216,6 @@ fi
 
 MERGED_AT="$(gh pr view "$PR_NUMBER" --json mergedAt --jq '.mergedAt // empty' 2>/dev/null || echo "")"
 touchstone_emit_event merged pr_number="$PR_NUMBER" merged_at="$MERGED_AT" head_sha="$REVIEWED_HEAD_OID"
-post_clean_review_comment "$REVIEW_SUMMARY_FILE"
-post_findings_history_comment "$PR_HEAD_BRANCH"
 
 # Record squash-merge metadata for cleanup-branches.sh. The merge has
 # succeeded on GitHub; this is best-effort persistence for later cleanup.

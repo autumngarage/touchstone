@@ -566,13 +566,13 @@ OUT="$TEST_DIR/touchstone-bump.out"
 new_fixture_repo "$REPO"
 (
   cd "$REPO"
-  mkdir -p lib scripts hooks principles .claude/skills/touchstone-example
+  mkdir -p lib scripts principles .claude/skills/touchstone-example
   printf '# touchstone managed\n' >lib/preflight.sh
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho managed\n' >scripts/merge-pr.sh
-  printf '#!/usr/bin/env bash\nset -euo pipefail\necho managed\n' >hooks/codex-review.sh
+  printf '[review.pr_triggered]\nrequired = true\nrequest_on_push = true\n' >.touchstone-review.toml
   printf '# Principle\n' >principles/git-workflow.md
   printf '# Skill\n' >.claude/skills/touchstone-example/SKILL.md
-  git add lib/preflight.sh scripts/merge-pr.sh hooks/codex-review.sh principles/git-workflow.md .claude/skills/touchstone-example/SKILL.md
+  git add .touchstone-review.toml lib/preflight.sh scripts/merge-pr.sh principles/git-workflow.md .claude/skills/touchstone-example/SKILL.md
   git commit -q -m "touchstone bump"
 )
 : >"$LOG"

@@ -20,7 +20,7 @@ Driver AI
 Implementation
   |
   | Driver AI edits files
-  | may delegate bounded work through Conductor
+  | may delegate bounded work through its native agent tools
   | may run focused local checks while developing
   v
 Commit
@@ -52,8 +52,8 @@ Approval Gate
   v
 Final Verification
   |
-  | merge helper may run deterministic checks and
-  | Conductor review/fix backstop for the final head
+  | merge helper runs deterministic checks and revalidates
+  | trusted PR review for the exact head and base
   v
 Merge PR
   |
@@ -72,11 +72,10 @@ Human user
 - PR creation is not completion. The driver stays responsible until the PR is approved, merged, and synced locally.
 - The exact commit merged has passed deterministic checks after its last mutation.
 - The exact commit merged has no unresolved blocking review comments, requested changes, or failing required checks.
-- Touchstone-managed LLM review uses Conductor as the only model access path. Driver CLIs do not call provider-specific review commands directly.
-- Local semantic review defaults to subscription-backed Codex. A metered provider or cross-provider auto-route requires explicit project configuration; provider failure follows `on_error` without silent metered overflow.
+- Touchstone does not invoke a local semantic reviewer or model router.
 - PR creation is the review coordination surface. It should happen early enough for CI and any PR-visible agentic reviewers to work against visible PR state.
 - Feature-branch push is not the expensive gate. It should preserve cheap local guardrails without running full test suites or LLM review by default.
-- Merge is allowed only after PR-visible review and check approval. The local merge helper gates on requested-changes review decisions and unresolved review threads before and after review, runs deterministic checks, and uses a trusted current-head PR-visible GitHub Codex signal or Conductor review as the model-review backstop.
+- Merge is allowed only after PR-visible review and check approval. The local merge helper gates on requested-changes review decisions and unresolved review threads, runs deterministic checks, and requires a trusted current-head GitHub review signal bound to the captured base revision.
 - A deterministic check result may be reused only when the cache key includes the base ref, head commit, relevant config, and checker version/input boundary.
 
 ## Driver AI Responsibilities
@@ -94,18 +93,14 @@ The driver AI is Claude Code, Codex, Gemini CLI, or another AGENTS.md-native cod
 - invoke final merge automation only after approval
 - explain the outcome to the user
 
-The driver may use Conductor for bounded implementation, research, or review work, but Conductor does not own the branch-to-merge lifecycle.
+## Reviewer Responsibilities
 
-## Conductor Responsibilities
+The configured GitHub reviewer is an asynchronous, PR-visible adapter.
 
-Conductor is the LLM router for review and delegated model work.
-
-- Touchstone-managed LLM review runs through Conductor, whether invoked by PR automation, an advisory review command, or a final merge backstop.
-- Conductor invokes the explicitly configured provider/model. Cross-provider fallback is opt-in and must make its cost boundary visible.
-- Conductor may apply safe fixes only when the review mode and path policy allow it.
-- Conductor findings should surface on the PR when possible. They are either fixed and committed on the PR branch, or block the merge.
-
-Provider-specific commands such as direct Claude/Codex/Gemini review invocations are not part of the required review architecture.
+- Review the exact requested head and base revisions.
+- Publish findings where the driver and other maintainers can inspect them.
+- Produce durable authorship and timestamp evidence that the merge helper can verify.
+- Never mutate the local branch or own merge authority.
 
 ## Agent Swarms And Worktrees
 
@@ -147,7 +142,7 @@ The scripts now enforce the core merge-time parts of this architecture:
 2. Creating or updating the PR should expose configured checks and, when enabled, PR-visible agentic reviewers.
 3. The driver watches PR comments, review decisions, and checks after each push; actionable feedback becomes commits on the PR branch.
 4. `merge-pr.sh` blocks draft PRs, active requested-changes decisions, unresolved review threads, and thread-state inspection failures before the final squash merge.
-5. When configured for PR-triggered GitHub Codex review, `merge-pr.sh` binds the trusted signal to the exact current head and base. It skips duplicate local semantic review only when the PR head already contains that base, repeats the wait after any review-fix push, and rejects base or merge-base movement before merging with `--match-head-commit`.
+5. `merge-pr.sh` binds the trusted GitHub review signal to the exact current head and base, rejects base or merge-base movement, and merges with `--match-head-commit`.
 6. Review and preflight markers should key on base/head/config so repeated operations reuse valid results without hiding stale state.
 7. Docs, templates, tests, and issue guidance should describe the PR-visible review loop consistently.
 

@@ -148,11 +148,29 @@ case "$1 $2" in
       echo "${GH_MERGED_AT:-}"
       exit 0
     fi
+    if [ "$json_fields" = "headRefOid" ]; then
+      git rev-parse HEAD
+      exit 0
+    fi
     echo "unexpected gh pr view json: $json_fields jq: $jq_expr" >&2
     exit 1
     ;;
   "api user")
     echo "${GH_PR_AUTHOR:-alice}"
+    ;;
+  "api --paginate")
+    # No prior durable review-request records.
+    ;;
+  "api -X")
+    case "${4:-}" in
+      repos/autumngarage/touchstone/statuses/*)
+        echo "2026-07-29T00:00:00Z"
+        ;;
+      repos/autumngarage/touchstone/issues/*/comments)
+        echo "2026-07-29T00:00:01Z"
+        ;;
+      *) echo "unexpected gh api POST args: $*" >&2; exit 1 ;;
+    esac
     ;;
   "api repos/"*)
     api_path="$2"
@@ -164,6 +182,11 @@ case "$1 $2" in
       fi
       prev="$arg"
     done
+    if [[ "$api_path" = repos/autumngarage/touchstone/pulls/* ]] \
+      && [ "$jq_expr" = '[.base.ref, .base.sha] | @tsv' ]; then
+      printf '%s\t%s\n' "${GH_CREATED_PR_BASE:-${GH_EXISTING_PR_BASE:-main}}" "$(git rev-parse "${GH_CREATED_PR_BASE:-${GH_EXISTING_PR_BASE:-main}}")"
+      exit 0
+    fi
     case "$api_path:$jq_expr" in
       "repos/autumngarage/touchstone/pulls/777:.body // \"\"")
         echo "${GH_PR_BODY:-}"
@@ -213,7 +236,7 @@ EOF
 chmod +x "$FAKE_BIN/git"
 
 # Stub merge-pr.sh — behaviour controlled by MERGE_PR_EXIT (default 0).
-# When nonzero, simulates "Conductor blocked" or similar review-failure.
+# When nonzero, simulates a blocked PR review.
 cat >"$SCRIPT_DIR/merge-pr.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "[mock merge-pr.sh] called for PR $1"
@@ -231,6 +254,7 @@ run_open_pr() {
       GH_PR_STATE="${GH_PR_STATE:-OPEN}" \
       GH_HAS_EXISTING_PR="${GH_HAS_EXISTING_PR:-0}" \
       GH_EXISTING_PR_BASE="${GH_EXISTING_PR_BASE:-main}" \
+      GH_CREATED_PR_BASE="${GH_CREATED_PR_BASE:-}" \
       GH_PR_BODY="${GH_PR_BODY:-}" \
       GH_PR_AUTHOR="${GH_PR_AUTHOR:-alice}" \
       GH_REQUIRE_REPO_FOR_MERGED_AT="${GH_REQUIRE_REPO_FOR_MERGED_AT:-0}" \
@@ -260,10 +284,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Case 2: merge-pr.sh blocks (review failure / conductor blocked).
+# Case 2: merge-pr.sh blocks on a review failure.
 # Expect: nonzero exit + ORPHAN RISK banner with PR URL.
 # ---------------------------------------------------------------------------
-echo "==> Case 2: merge-pr.sh blocks (Conductor blocks review)"
+echo "==> Case 2: merge-pr.sh blocks on PR review"
 OUT="$TEST_DIR/case2.out"
 RC=0
 GH_PR_STATE="OPEN" GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 MERGE_PR_EXIT=1 \
@@ -504,6 +528,7 @@ echo "==> Case 11: new stacked PR recovery preserves an independent slice"
 OUT="$TEST_DIR/case11.out"
 RC=0
 GH_PR_STATE="MERGED" GH_MERGED_AT="2026-07-29T12:00:00Z" GH_HAS_EXISTING_PR=0 \
+  GH_CREATED_PR_BASE="feature/parent" \
   GH_PR_BODY="Protocol: yes" MERGE_PR_EXIT=0 \
   run_open_pr --base feature/parent >"$OUT" 2>&1 || RC=$?
 

@@ -14,7 +14,7 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 ## Agent Roles And Fallbacks
 
 - **Driving CLI** — Claude Code, Codex, or Gemini CLI. Owns file edits, git state, tests, commits, PR creation, PR comment triage, fix commits, approval tracking, and merge. Drivers are interchangeable; driver fallback is shared-contract fallback — if one is unavailable, another reads the same files and continues.
-- **Conductor worker/reviewer router** — the model router used by the driving CLI for review and bounded model work. Conductor can route to Claude, Codex, Gemini, Kimi, Ollama, or other providers, and provider fallback runs across configured backends, but Conductor does not replace the driver's responsibility for the branch → PR → agentic review loop → approved merge workflow.
+- **PR-visible reviewer** — GitHub-hosted review runs asynchronously against the exact pushed head. It reports findings on the PR; it never owns local files, git state, validation, or merge authority.
 
 ## Engineering principles (always in mind)
 
@@ -35,7 +35,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers).
 - **Isolate file-writing subagents** — parallel workers use dedicated worktrees, slice manifests, and disjoint file ownership by default.
 - **File issues for bugs** — open a GitHub issue when you find a bug, in this project or in an autumngarage tool. Don't silently work around it.
-- **Escalate delivery friction upstream** — if Conductor or Touchstone causes workflow drag (excessive token burn, weak parallelization, unclear delegation ergonomics, brittle review/merge behavior, or other agent-delivery inefficiency), file an actionable upstream issue with repro steps and impact instead of normalizing the pain.
+- **Escalate delivery friction upstream** — if Touchstone or the configured PR reviewer causes workflow drag (excessive latency, weak parallelization, brittle review/merge behavior, or other delivery inefficiency), file an actionable upstream issue with repro steps and impact instead of normalizing the pain.
 
 ## Never commit on the default branch
 
@@ -50,7 +50,7 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 3. **Claim issues before implementation.** If the work starts from a GitHub issue, claim it before editing or dispatching an agent: `bash scripts/claim-issue.sh <n>`. Claim every issue in a multi-issue bundle so two agents do not ship competing fixes.
 4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
 5. **Reconcile issues.** Before opening the PR, list every GitHub issue found, claimed, fixed, partially fixed, or made stale by the work. Fully fixed issues get closing trailers (`Closes-issue: #123` or `Closes #123`) so merge auto-closes them; partial/stale issues get a comment explaining the evidence or remaining gap. Do not leave fixed issues open silently.
-6. **Open PR + watch the review loop.** `bash scripts/open-pr.sh --auto-merge` pushes, opens or updates the PR, and drives shipping. Treat the PR as the review/check surface: watch comments/status, commit fixes for actionable feedback, rerun as needed, and merge only after required reviews/checks approve. The merge helper refuses to merge while GitHub reports requested changes or unresolved review threads. If no PR-visible agentic review is configured, continue with final verification instead of waiting.
+6. **Open PR + watch the review loop.** `bash scripts/open-pr.sh --auto-merge` pushes, opens or updates the PR, requests exact-head review, and drives shipping. Treat the PR as the review/check surface: watch comments/status, commit fixes for actionable feedback, rerun as needed, and merge only after required reviews/checks approve. The merge helper refuses to merge without trusted current-head review or while GitHub reports requested changes or unresolved review threads.
 7. **Clean up.** Delete the local branch if it persists.
 
 Do not bypass the PR/review/merge path with a direct default-branch push except through the documented emergency path in `principles/git-workflow.md`.
@@ -67,17 +67,16 @@ Do not bypass the PR/review/merge path with a direct default-branch push except 
 | When you're about to... | Read |
 |---|---|
 | commit, branch, open a PR, run review, merge, recover from `no-commit-to-branch`, work with stacked PRs, or fan out worktrees | `principles/git-workflow.md` |
-| understand the AI-authored change lifecycle, PR review loop architecture, or where Conductor fits | `principles/ai-delivery-architecture.md` |
+| understand the AI-authored change lifecycle or PR review loop architecture | `principles/ai-delivery-architecture.md` |
 | start a non-trivial code change | `principles/pre-implementation-checklist.md` |
 | understand the *why* of a daily-reminder rule | `principles/engineering-principles.md` |
 | edit, write, or audit documentation | `principles/documentation-ownership.md` |
-| coordinate parallel agents (subagents, worktrees, conductor swarm) | `principles/agent-swarms.md` |
+| coordinate parallel agents (subagents or worktrees) | `principles/agent-swarms.md` |
 | audit a structural bug class after fixing one instance | `principles/audit-weak-points.md` |
 | hit a bug in an upstream tool (don't silently work around it) | `principles/file-upstream-bugs.md` |
 | write a `.cortex/` artifact or see a Tier-1 trigger fire | `.cortex/protocol.md` |
-| delegate to Conductor — pick a provider, write a brief, choose `--kind` / `--effort` | `~/.conductor/delegation-guidance.md` |
 
-Claude Code agents: the Touchstone-bundled user-scoped skills (`touchstone-git-workflow`, `touchstone-pre-impl`, `cortex-protocol`, `conductor-delegation`, `touchstone-audit-weak-points`, `touchstone-agent-swarms`, `memory-audit`) provide the same routing surface as this table, with descriptions in your session header. Trust whichever surface fires first.
+Claude Code agents: the Touchstone-bundled user-scoped skills (`touchstone-git-workflow`, `touchstone-pre-impl`, `cortex-protocol`, `touchstone-audit-weak-points`, `touchstone-agent-swarms`, `memory-audit`) provide the same routing surface as this table, with descriptions in your session header. Trust whichever surface fires first.
 
 ## Orientation
 
@@ -87,7 +86,7 @@ If `.cortex/state.md` exists in the project, read it at session start for the cu
 
 ## Authoring Guide
 
-You are maintaining a shared engineering platform that provides universal principles, reusable scripts, and a Conductor-backed AI review workflow for Henry's projects. Changes here propagate to downstream projects via `sync-all.sh`, so treat fixes here as platform changes, not isolated repo edits.
+You are maintaining a shared engineering platform that provides universal principles, reusable scripts, deterministic validation, and a PR-visible review workflow for Henry's projects. Changes here propagate to downstream projects via `sync-all.sh`, so treat fixes here as platform changes, not isolated repo edits.
 
 ### Git Workflow
 
@@ -103,7 +102,7 @@ You are maintaining a shared engineering platform that provides universal princi
 
 - Files in `principles/`, `hooks/`, and `scripts/` are touchstone-owned and copied into downstream projects by `update-project.sh`.
 - Files in `templates/` are copied once at bootstrap time and then project-owned; template changes affect new projects only.
-- `bootstrap/new-project.sh`, `bootstrap/update-project.sh`, and `hooks/conductor-review.sh` are high-risk. `hooks/codex-review.sh` remains the legacy compatibility path. Preserve backup, clean-worktree, branch/commit, skip, and fail-open behavior.
+- `bootstrap/new-project.sh`, `bootstrap/update-project.sh`, `scripts/open-pr.sh`, and `scripts/merge-pr.sh` are high-risk. Preserve backup, clean-worktree, exact-head review, branch/commit, and guarded-merge behavior.
 - All shell must stay portable to macOS with standard tools: `bash`, `git`, `gh`, `sed`, and `awk`.
 
 ### Testing
@@ -167,8 +166,8 @@ You are reviewing pull requests for the **touchstone** repo — a shared enginee
 
 1. **Bootstrap/update correctness.** `new-project.sh` and `update-project.sh` must never silently lose user data. For bootstrap, file overwrites without `.bak` backups are critical. For update, bypassing the clean-git branch/commit boundary, incorrect copy paths, or broken skip logic for project-owned files are critical bugs.
 2. **Script portability.** All scripts must work on macOS (zsh default) with standard tools (`bash`, `git`, `gh`, `sed`, `awk`). No Linux-only flags, no GNU-specific extensions without fallbacks.
-3. **Conductor hook safety.** `hooks/conductor-review.sh` runs during `git push` (`hooks/codex-review.sh` remains a legacy compatibility entry point). A bug here can block or silently skip all pushes. The fail-open design (graceful skip on errors) must be preserved. **AI review is advisory** — it does not replace deterministic checks (lint, tests, type checking). The hook fails open by default (`on_error=fail-open`): infra errors (timeout, missing provider, malformed output, reviewer crash) allow the push rather than blocking it. Each fail-open event emits a visible `[fail-open:<code>]` line to stderr and writes a structured entry to `~/.touchstone-review-log`; taxonomy codes include `FAIL_OPEN_TIMEOUT`, `FAIL_OPEN_PARSE_ERROR`, `FAIL_OPEN_DEPENDENCY_MISSING`, `FAIL_OPEN_PROVIDER_UNAVAILABLE`, and `FAIL_OPEN_REVIEWER_ERROR`. The trade-off is explicit: a Conductor outage during a critical week will not block pushes, but the AI safety net will be visibly absent rather than silently bypassed.
-4. **Config parsing correctness.** The TOML parser in the Conductor review hook is minimal — it handles simple key=value and single-line arrays. Changes must not break on edge cases (quoted strings, comments, empty arrays).
+3. **Review authorization safety.** `open-pr.sh` requests review for the exact pushed head and base; `merge-pr.sh` must reject stale heads, base movement, requested changes, and unresolved threads. AI review supplements deterministic checks; it never replaces them.
+4. **Config parsing correctness.** Review policy is loaded from the trusted base revision, not the PR head. Changes must not let a PR weaken its own review requirement.
 5. **Principle accuracy.** Changes to `principles/*.md` should reflect genuinely universal engineering standards. Project-specific advice doesn't belong here.
 6. **Template quality.** `templates/` should have clear `{{PLACEHOLDER}}` markers and be immediately useful after bootstrap. No placeholder that requires understanding Touchstone's internals to fill in.
 
@@ -180,20 +179,20 @@ Style nits and theoretical refactors are **out of scope**.
 
 ### High-scrutiny paths
 
-Files: `bootstrap/new-project.sh`, `bootstrap/update-project.sh`, `hooks/conductor-review.sh`, `hooks/codex-review.sh`
+Files: `bootstrap/new-project.sh`, `bootstrap/update-project.sh`, `scripts/open-pr.sh`, `scripts/merge-pr.sh`
 
 Flag any of the following:
 
-- **Silent overwrites.** `new-project.sh` may overwrite touchstone-owned files only through `copy_file_force`, which backs up existing content as `.bak`. `update-project.sh` must not create `.bak` files; instead it must require a clean git worktree, create a `chore/touchstone-*` branch, and commit the update as the review/recovery boundary. Project-owned files (CLAUDE.md, AGENTS.md, .touchstone-review.toml, legacy .codex-review.toml) must use `copy_file` (skip if exists) and must not be auto-updated.
+- **Silent overwrites.** `new-project.sh` may overwrite touchstone-owned files only through `copy_file_force`, which backs up existing content as `.bak`. `update-project.sh` must not create `.bak` files; instead it must require a clean git worktree, create a `chore/touchstone-*` branch, and commit the update as the review/recovery boundary. Project-owned files (CLAUDE.md, AGENTS.md, `.touchstone-review.toml`) must use `copy_file` (skip if exists) and must not be auto-updated.
 - **Missing error handling.** The bootstrap scripts use `set -euo pipefail`. New commands that can fail legitimately (network calls, optional tools) must be guarded with `|| true` or `set +e`.
 - **Path assumptions.** Never assume repo root is `~/Repos/touchstone`. Always derive paths from `$0` or `git rev-parse`.
 - **Registry corruption.** `~/.touchstone-projects` is append-only during bootstrap. Changes must not truncate it or write duplicate entries.
 
-### Codex hook
+### PR review gate
 
-- The three final-marker contract (CLEAN/FIXED/BLOCKED) is the API boundary. Any change to marker handling must be backwards-compatible.
-- The hook must never block a push due to its own infrastructure failure (network, missing tool, parse error). It must block *only* on actual code review findings.
-- `.touchstone-review.toml` and legacy `.codex-review.toml` parsing must handle missing keys gracefully (use defaults).
+- Review requests and accepted results must be bound to the full head and base revisions.
+- Review-author trust checks must fail closed when GitHub state cannot be inspected.
+- `.touchstone-review.toml` cannot disable required PR-visible review or per-push requests.
 
 ### Self-tests
 
@@ -219,52 +218,6 @@ Flag any of the following:
 4. **Tests** — do the self-tests pass?
 
 If there are zero blocking issues: "LGTM."
-
-<!-- conductor:begin v0.10.38 -->
-## Conductor delegation
-
-This project has [conductor](https://github.com/autumngarage/conductor)
-available for delegating tasks to other LLMs from inside an agent loop.
-You can shell out to it instead of trying to do everything yourself.
-
-Pick the job type first; do not pick a provider unless the user explicitly
-asks for one:
-
-- Quick factual/background ask:
-  `conductor ask --kind research --effort minimal --brief-file /tmp/brief.md`.
-- Deeper synthesis/research:
-  `conductor ask --kind research --effort medium --brief-file /tmp/brief.md`.
-- Text/prose/docs/instructions review:
-  `conductor ask --kind text-review --effort medium --brief-file /tmp/brief.md`.
-- Code explanation or small coding judgment:
-  `conductor ask --kind code --effort low --brief-file /tmp/brief.md`.
-- Repo-changing implementation/debugging:
-  `conductor ask --kind code --effort high --brief-file /tmp/brief.md`.
-- Merge/PR/diff review:
-  `conductor ask --kind review --effort medium --base <ref> --brief-file /tmp/review.md`.
-- Architecture/product judgment needing multiple views:
-  `conductor ask --kind council --effort medium --brief-file /tmp/brief.md`.
-- `conductor list` — show configured providers and their tags.
-
-Conductor does not inherit your conversation context. For delegation,
-write a complete brief with goal, context, scope, constraints, expected
-output, and validation; use `--brief-file` for nontrivial `exec` tasks.
-Default to `conductor ask`; use provider-specific `call` / `exec` only
-when the user explicitly asks for a provider or the semantic API does not
-fit.
-Do not attach `--with` or `--model` to `conductor ask`; provider/model
-overrides belong to lower-level commands, for example:
-
-    conductor call --with openrouter --brief-file /tmp/brief.md
-
-Default routing is flat-rate-first when the job contract allows it, then
-OpenRouter as metered overflow. `review` means code diff/PR review;
-`text-review` means prose/docs/prompt review without diff tooling.
-
-Full delegation guidance (when to delegate, when not to, error handling):
-
-    ~/.conductor/delegation-guidance.md
-<!-- conductor:end -->
 
 ## Current state (read this first)
 

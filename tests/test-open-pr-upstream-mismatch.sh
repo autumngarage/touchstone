@@ -34,7 +34,22 @@ cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 case "$1 $2" in
-  "repo view") echo "main" ;;
+  "repo view")
+    json_fields=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--json" ]; then
+        json_fields="$arg"
+      fi
+      prev="$arg"
+    done
+    case "$json_fields" in
+      defaultBranchRef) echo "main" ;;
+      nameWithOwner) echo "autumngarage/touchstone" ;;
+      url) echo "https://github.com/autumngarage/touchstone" ;;
+      *) echo "unexpected gh repo view args: $*" >&2; exit 1 ;;
+    esac
+    ;;
   "pr list") echo "" ;;
   "pr create") echo "https://example.test/touchstone/pull/9999" ;;
   "pr view")
@@ -47,11 +62,41 @@ case "$1 $2" in
       prev="$arg"
     done
     case "$json_fields" in
+      headRefOid) git rev-parse HEAD ;;
       state,mergedAt) printf '{"state":"MERGED","mergedAt":"2026-05-06T18:00:00Z"}\n' ;;
       mergedAt) echo "2026-05-06T18:00:00Z" ;;
       "") echo "" ;;
       *) echo "unexpected gh pr view json: $json_fields" >&2; exit 1 ;;
     esac
+    ;;
+  "api --paginate")
+    ;;
+  "api -X")
+    case "${4:-}" in
+      repos/autumngarage/touchstone/statuses/*)
+        echo "2026-07-29T00:00:00Z"
+        ;;
+      repos/autumngarage/touchstone/issues/*/comments)
+        echo "2026-07-29T00:00:01Z"
+        ;;
+      *) echo "unexpected gh api POST args: $*" >&2; exit 1 ;;
+    esac
+    ;;
+  "api repos/"*)
+    jq_expr=""
+    prev=""
+    for arg in "$@"; do
+      if [ "$prev" = "--jq" ]; then
+        jq_expr="$arg"
+      fi
+      prev="$arg"
+    done
+    if [ "$jq_expr" = '[.base.ref, .base.sha] | @tsv' ]; then
+      printf 'main\t%s\n' "$(git rev-parse main)"
+    else
+      echo "unexpected gh api args: $*" >&2
+      exit 1
+    fi
     ;;
   *) echo "unexpected gh args: $*" >&2; exit 1 ;;
 esac

@@ -6,7 +6,7 @@
 #
 # Why this exists:
 #   The user-scoped skill bundle (engineering principles, git workflow,
-#   cortex protocol, conductor delegation, audit-weak-points, agent-swarms,
+#   Cortex protocol, audit-weak-points, agent-swarms,
 #   memory-audit) is touchstone-owned guidance that should be available to
 #   Claude Code in every project, not duplicated into each project's
 #   `.claude/skills/`. This helper writes them to `~/.claude/skills/` so a
@@ -44,12 +44,12 @@ fi
 # explicitly rather than by glob so a hand-added skill that happens to
 # start with "touchstone-" (project's own) is not deleted.
 _TOUCHSTONE_BUNDLED_SKILL_NAMES=(
+  conductor-delegation
   touchstone-git-workflow
   touchstone-pre-impl
   touchstone-agent-swarms
   touchstone-audit-weak-points
   cortex-protocol
-  conductor-delegation
   memory-audit
 )
 
@@ -73,8 +73,26 @@ touchstone_install_skills() {
     return 1
   fi
 
-  local installed=0 updated=0 unchanged=0 backed_up=0
-  local skill_dir name target
+  local installed=0 updated=0 unchanged=0 backed_up=0 retired=0
+  local skill_dir name target retired_dir retired_backup suffix
+
+  target="$user_skills_dir/conductor-delegation"
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    if touchstone_ensure_safe_dest "$target" "$user_skills_dir" false; then
+      retired_dir="$user_skills_dir/.touchstone-retired"
+      retired_backup="$retired_dir/conductor-delegation"
+      suffix=0
+      while [ -e "$retired_backup" ] || [ -L "$retired_backup" ]; do
+        suffix=$((suffix + 1))
+        retired_backup="$retired_dir/conductor-delegation.$suffix"
+      done
+      if touchstone_ensure_safe_dest "$retired_backup" "$user_skills_dir" false; then
+        mkdir -p "$retired_dir"
+        mv "$target" "$retired_backup"
+        retired=1
+      fi
+    fi
+  fi
 
   for skill_dir in "$source_dir"/*/; do
     [ -d "$skill_dir" ] || continue
@@ -109,8 +127,8 @@ touchstone_install_skills() {
   done
 
   # Caller can read the summary via stdout if they want it.
-  printf 'touchstone-skills: installed=%d updated=%d unchanged=%d backed_up=%d target=%s\n' \
-    "$installed" "$updated" "$unchanged" "$backed_up" "$user_skills_dir"
+  printf 'touchstone-skills: installed=%d updated=%d unchanged=%d backed_up=%d retired=%d target=%s\n' \
+    "$installed" "$updated" "$unchanged" "$backed_up" "$retired" "$user_skills_dir"
   return 0
 }
 
