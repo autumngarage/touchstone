@@ -645,6 +645,7 @@ reset_case_files() {
     "$TEST_DIR"/gh-graphql-calls* "$TEST_DIR"/gh-head-ref-calls* "$TEST_DIR"/gh-base-ref-calls* \
     "$TEST_DIR"/gh-reviews-graphql-calls* "$TEST_DIR"/gh-reactions-calls* \
     "$TEST_DIR"/gh-comments-calls* "$TEST_DIR"/gh-request-lookup-calls*
+  rm -f "$TEST_DIR/merge-events.ndjson"
   rm -f "$TEST_DIR/gh-merge-attempts"
   rm -f "$TEST_DIR/revision-changed-after-trigger"
   rm -rf "$GIT_PATH_ROOT"
@@ -727,6 +728,7 @@ reset_case_files() {
   unset GIT_TRUSTED_CONFIG_SHOW_FAIL
   unset SHELLCHECK_VERSION_LINE
   unset TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS
+  unset TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT
 }
 
 run_merge_pr() {
@@ -734,6 +736,8 @@ run_merge_pr() {
   local base_ref_name="${GH_BASE_REF_NAME:-main}"
   local request_created_at="${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}"
   shift
+  mkdir -p "$TEST_DIR/lib"
+  cp "$TOUCHSTONE_ROOT/lib/events.sh" "$TEST_DIR/lib/events.sh"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     GIT_PATH_ROOT="$GIT_PATH_ROOT" \
     GH_CHECKOUT_FILE="$TEST_DIR/gh-checkout" \
@@ -838,7 +842,9 @@ run_merge_pr() {
     PREFLIGHT_CALLS_FILE="${PREFLIGHT_CALLS_FILE:-}" \
     TEST_CURRENT_WORKTREE="${TEST_CURRENT_WORKTREE:-$DEFAULT_FAKE_WORKTREE}" \
     TOUCHSTONE_REVIEW_LOG="$TEST_DIR/touchstone-review-log" \
+    TOUCHSTONE_EVENTS_FILE="$TEST_DIR/merge-events.ndjson" \
     TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS="${TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS:-24}" \
+    TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT="${TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT:-0}" \
     bash "$MERGE_SCRIPT_DIR/merge-pr.sh" "$@" >"$output_file" 2>&1
 }
 
@@ -1359,6 +1365,7 @@ GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-06-22T00:00:00Z\then
 if grep -q 'Requested GitHub Codex review for head pr-head-oid at base base-oid' "$TEST_DIR/output-pr-triggered-orphan-intent.txt" \
   && grep -q 'touchstone/review-request-complete' "$TEST_DIR/gh-status-records" \
   && ! grep -q 'touchstone/review-request-intent' "$TEST_DIR/gh-status-records" \
+  && grep -q '"event":"review_requested".*"request_count":1' "$TEST_DIR/merge-events.ndjson" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
   echo "==> PASS: an orphaned intent is retried without moving the freshness boundary"
 else
@@ -1908,9 +1915,14 @@ reset_case_files
 write_pr_triggered_config true 2 1
 GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/2' \
   MERGE_PR_SLEEP_OVERRIDE=0 \
+  TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT=1 \
   run_merge_pr "$TEST_DIR/output-pr-triggered-delayed.txt" 123
 if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-delayed.txt" \
   && [ "$(cat "$TEST_DIR/gh-reviews-graphql-calls" 2>/dev/null || echo 0)" -ge 2 ] \
+  && grep -q "\"event\":\"review_result\".*\"worktree_path\":\"$DEFAULT_FAKE_WORKTREE\".*\"base_sha\":\"base-oid\".*\"status\":\"clean\".*\"wait_seconds\":[0-9][0-9]*.*\"request_count\":1" \
+    "$TEST_DIR/merge-events.ndjson" \
+  && grep -q '"request_at":"1969-01-01T00:00:00Z".*"result_at":"2026-06-23T00:00:00Z"' \
+    "$TEST_DIR/merge-events.ndjson" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
   echo "==> PASS: delayed PR-triggered review is polled until available"
 else

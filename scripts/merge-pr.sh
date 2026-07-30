@@ -61,6 +61,13 @@ PR_TRIGGERED_REVIEW_BASE_BOUND=false
 PR_TRIGGERED_REVIEW_REQUEST_BASE_OID=""
 PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
 PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP=""
+PR_TRIGGERED_REVIEW_REQUEST_COUNT="${TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT:-0}"
+case "$PR_TRIGGERED_REVIEW_REQUEST_COUNT" in
+  '' | *[!0-9]*)
+    echo "ERROR: TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT must be a non-negative integer." >&2
+    exit 2
+    ;;
+esac
 PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP=""
 PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN=false
 PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL=""
@@ -73,6 +80,7 @@ PREFLIGHT_CACHE_KEY=""
 PREFLIGHT_CACHE_FILE=""
 PREFLIGHT_CACHE_INPUTS=""
 PR_WORKTREE_PATH=""
+REVIEW_EVENT_WORKTREE_PATH="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
 REPO_FULL_NAME=""
 REPO_OWNER=""
 REPO_NAME=""
@@ -1397,6 +1405,14 @@ wait_for_pr_triggered_review() {
           echo "==> Trusted PR-visible AI review found for PR #$PR_NUMBER head $expected_head."
           echo "    reviewed_base=$observed_base"
           [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
+          now_epoch="$(date +%s)"
+          elapsed=$((now_epoch - start_epoch))
+          touchstone_emit_event review_result \
+            worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
+            pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=clean \
+            wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
+            request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
+            result_at="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
           return 0
         fi
         if [ "$signal_status" -eq 2 ]; then
@@ -1414,6 +1430,14 @@ wait_for_pr_triggered_review() {
           fi
           last_review_inspection_error="$PR_TRIGGERED_REVIEW_INSPECTION_ERROR"
         elif [ "$signal_status" -eq 3 ]; then
+          now_epoch="$(date +%s)"
+          elapsed=$((now_epoch - start_epoch))
+          touchstone_emit_event review_result \
+            worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
+            pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=findings \
+            wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
+            request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
+            result_at="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
           echo "ERROR: Trusted PR-visible AI review is not clean for PR #$PR_NUMBER head $expected_head." >&2
           [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2
           echo "       Address the findings, push the fix, and request a fresh exact-head review." >&2
@@ -1438,6 +1462,11 @@ wait_for_pr_triggered_review() {
   done
 
   if [ -n "$last_inspection_error" ]; then
+    touchstone_emit_event review_result \
+      worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
+      pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=inspection-error \
+      wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
+      request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"
     echo "ERROR: Failed to inspect PR #$PR_NUMBER head or base revision while waiting for PR-triggered AI review." >&2
     echo "       phase: $phase" >&2
     echo "       last gh error: $(printf '%s' "$last_inspection_error" | tr '\n' ' ')" >&2
@@ -1447,6 +1476,11 @@ wait_for_pr_triggered_review() {
   fi
 
   if [ -n "$last_review_inspection_error" ]; then
+    touchstone_emit_event review_result \
+      worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
+      pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=inspection-error \
+      wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
+      request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"
     echo "ERROR: Failed to inspect trusted PR-visible AI review evidence for PR #$PR_NUMBER." >&2
     echo "       phase: $phase" >&2
     echo "       last gh error: $(printf '%s' "$last_review_inspection_error" | tr '\n' ' ')" >&2
@@ -1455,6 +1489,11 @@ wait_for_pr_triggered_review() {
     exit 1
   fi
 
+  touchstone_emit_event review_result \
+    worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
+    pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=timeout \
+    wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
+    request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"
   echo "ERROR: Timed out waiting for trusted PR-visible AI review for PR #$PR_NUMBER." >&2
   echo "       phase: $phase" >&2
   echo "       expected head: $expected_head" >&2
@@ -1706,6 +1745,11 @@ request_pr_triggered_review() {
     return 1
   fi
   PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP="$trigger_at"
+  PR_TRIGGERED_REVIEW_REQUEST_COUNT=$((PR_TRIGGERED_REVIEW_REQUEST_COUNT + 1))
+  touchstone_emit_event review_requested \
+    worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
+    pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$expected_base" \
+    phase="$phase" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT"
   echo "==> Requested GitHub Codex review for head $expected_head at base $expected_base ($phase)."
 }
 

@@ -49,18 +49,22 @@ touchstone_ship_job_key() {
 }
 
 touchstone_ship_job_dir() {
-  local worktree_path="$1" branch common_dir key normalized_path
+  local worktree_path="$1" repo_path="${2:-.}" branch common_dir key normalized_path
   normalized_path="$(touchstone_ship_normalize_worktree_path "$worktree_path")" || return 1
   if [ -d "$normalized_path" ]; then
     branch="$(git -C "$normalized_path" rev-parse --abbrev-ref HEAD 2>/dev/null)" || return 1
-    [ -n "$branch" ] && [ "$branch" != "HEAD" ] || return 1
     common_dir="$(touchstone_ship_common_dir "$normalized_path")" || return 1
+    if [ "$branch" = "HEAD" ]; then
+      touchstone_ship_find_job_dir "$common_dir" "$normalized_path"
+      return
+    fi
+    [ -n "$branch" ] || return 1
     key="$(touchstone_ship_job_key "$normalized_path")" || return 1
     printf '%s\n' "$common_dir/touchstone/ship-jobs/$key"
     return 0
   fi
 
-  common_dir="$(touchstone_ship_common_dir .)" || return 1
+  common_dir="$(touchstone_ship_common_dir "$repo_path")" || return 1
   touchstone_ship_find_job_dir "$common_dir" "$normalized_path"
 }
 
@@ -340,7 +344,7 @@ touchstone_ship_refresh() {
 touchstone_ship_json() {
   local job_dir="$1" log_lines="${2:-0}"
   local status pid exit_code started_at finished_at reason log_path log_tail=""
-  local mode iteration deadline_epoch handoff_invariant handoff_validation handoff_non_goals
+  local mode iteration deadline_epoch handoff_invariant handoff_validation handoff_non_goals events_path
 
   [ -d "$job_dir" ] || {
     printf 'null'
@@ -360,6 +364,7 @@ touchstone_ship_json() {
   handoff_invariant="$(touchstone_ship_read "$job_dir" handoff-invariant)"
   handoff_validation="$(touchstone_ship_read "$job_dir" handoff-validation)"
   handoff_non_goals="$(touchstone_ship_read "$job_dir" handoff-non-goals)"
+  events_path="$(touchstone_ship_read "$job_dir" events-path)"
   log_path="$job_dir/ship.log"
   case "$pid" in
     '' | *[!0-9]*) pid="" ;;
@@ -397,6 +402,8 @@ touchstone_ship_json() {
   json_field handoff_non_goals "$handoff_non_goals"
   printf ','
   json_field log_path "$log_path"
+  printf ','
+  json_field events_path "$events_path"
   if [ "$log_lines" -gt 0 ]; then
     printf ','
     json_field log_tail "$log_tail"

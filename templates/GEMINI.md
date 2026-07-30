@@ -48,8 +48,8 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 3. **Claim issues before implementation.** If the work starts from a GitHub issue, claim it before editing or dispatching an agent: `bash scripts/claim-issue.sh <n>`. Claim every issue in a multi-issue bundle so two agents do not ship competing fixes.
 4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
 5. **Reconcile issues.** Before opening the PR, list every GitHub issue found, claimed, fixed, partially fixed, or made stale by the work. Fully fixed issues get closing trailers (`Closes-issue: #123` or `Closes #123`) so merge auto-closes them; partial/stale issues get a comment explaining the evidence or remaining gap. Do not leave fixed issues open silently.
-6. **Open PR + watch the review loop.** `bash scripts/open-pr.sh --auto-merge` pushes, opens or updates the PR, requests exact-head review, and drives shipping. Treat the PR as the review/check surface: watch comments/status, commit fixes for actionable feedback, rerun as needed, and merge only after required reviews/checks approve. The merge helper refuses to merge without trusted current-head review or while GitHub reports requested changes or unresolved review threads.
-7. **Clean up.** Delete the local branch if it persists.
+6. **Hand off routine shipping.** `touchstone worker ship --worktree "$PWD" --detach` runs the same PR/review/check/merge path and returns control immediately. Record the printed `worker status` and `worker takeover` commands, start only disjoint work in another worktree, and fix any durable `needs-attention` result before handing the branch back. Use `bash scripts/open-pr.sh --auto-merge` when foreground diagnosis is useful.
+7. **Clean up after merge.** Confirm worker status reports a merged/succeeded result, then delete the local branch if it persists.
 
 Do not bypass the PR/review/merge path with a direct default-branch push except through the documented emergency path in `principles/git-workflow.md`.
 

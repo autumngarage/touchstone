@@ -58,8 +58,8 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 3. **Claim issues before implementation.** If the work starts from a GitHub issue, claim it before editing or dispatching an agent: `bash scripts/claim-issue.sh <n>`. Claim every issue in a multi-issue bundle so two agents do not ship competing fixes.
 4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
 5. **Reconcile issues.** Before opening the PR, list every GitHub issue found, claimed, fixed, partially fixed, or made stale by the work. Fully fixed issues get closing trailers (`Closes-issue: #123` or `Closes #123`) so merge auto-closes them; partial/stale issues get a comment explaining the evidence or remaining gap. Do not leave fixed issues open silently.
-6. **Open PR + watch the review loop.** `bash scripts/open-pr.sh --auto-merge` pushes, opens or updates the PR, requests exact-head review, and drives shipping. Treat the PR as the review/check surface: watch comments/status, commit fixes for actionable feedback, rerun as needed, and merge only after required reviews/checks approve. The merge helper refuses to merge without trusted current-head review or while GitHub reports requested changes or unresolved review threads.
-7. **Clean up.** Delete the local branch if it persists.
+6. **Hand off routine shipping.** `touchstone worker ship --worktree "$PWD" --detach` runs the same PR/review/check/merge path and returns control immediately. Record the printed `worker status` and `worker takeover` commands, start only disjoint work in another worktree, and fix any durable `needs-attention` result before handing the branch back. Use `bash scripts/open-pr.sh --auto-merge` when foreground diagnosis is useful.
+7. **Clean up after merge.** Confirm worker status reports a merged/succeeded result, then delete the local branch if it persists.
 
 Do not bypass the PR/review/merge path with a direct default-branch push except through the documented emergency path in `principles/git-workflow.md`.
 
@@ -103,8 +103,8 @@ Use the normal lifecycle unless the user asks for a different flow:
 3. Claim every GitHub issue you are actively implementing with `bash scripts/claim-issue.sh <n>` before editing or dispatching an agent.
 4. Make the change, stage explicit file paths, and commit with a concise message.
 5. Reconcile issue state before opening the PR: fixed issues get closing trailers/PR body lines; partial or stale issues get an issue comment with evidence and remaining gaps.
-6. Ship with `bash scripts/open-pr.sh --auto-merge`; it creates or updates the PR. Then watch the review/check loop, address actionable feedback, and continue until the PR is approved and merged.
-7. The PR is the review surface. Do not treat PR creation as completion; watch comments, checks, and requested changes until the PR is approved and merged.
+6. Ship with `touchstone worker ship --worktree "$PWD" --detach`, record the printed status and takeover commands, and continue only with disjoint work. Use `bash scripts/open-pr.sh --auto-merge` when foreground diagnosis is useful.
+7. The PR is the review surface. Do not treat PR creation as completion; confirm the worker succeeds, or take over `needs-attention` state and commit fixes before handing the branch back.
 8. Clean up the feature branch if it still exists locally.
 
 File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md` for slice manifests, file ownership, concurrency caps, and cleanup; use `scripts/spawn-worktree.sh` and `scripts/cleanup-worktrees.sh` for local setup and teardown.
