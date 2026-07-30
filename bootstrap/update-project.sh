@@ -36,6 +36,7 @@ CHECK_ONLY=false
 REQUESTED_BRANCH=""
 SHIP=false
 IN_PLACE=false
+RETIRED_MANAGED_PATHS=()
 
 usage() {
   echo "Usage: $0 [--dry-run|-n] [--check] [--branch <name>] [--in-place|--no-branch] [--ship]"
@@ -397,16 +398,29 @@ remove_retired_managed_file() {
     echo "    - would remove retired managed file: $target"
   else
     rm -f "$target"
+    RETIRED_MANAGED_PATHS+=("$rel_path")
     echo "    - removed retired managed file: $target"
   fi
   UPDATED=$((UPDATED + 1))
 }
 
+update_compatibility_shim_if_managed() {
+  local rel_path="$1"
+  local source_path="$2"
+  local manifest="$PROJECT_DIR/.touchstone-manifest"
+
+  [ -f "$manifest" ] || return 0
+  grep -qxF "$rel_path" "$manifest" 2>/dev/null || return 0
+  update_file "$source_path" "$PROJECT_DIR/$rel_path"
+}
+
 echo "==> Updating touchstone-owned files:"
 
-remove_retired_managed_file "scripts/conductor-review.sh"
-remove_retired_managed_file "scripts/codex-review.sh"
 remove_retired_managed_file "lib/review-comment.sh"
+update_compatibility_shim_if_managed \
+  "scripts/conductor-review.sh" "$TOUCHSTONE_ROOT/scripts/conductor-review.sh"
+update_compatibility_shim_if_managed \
+  "scripts/codex-review.sh" "$TOUCHSTONE_ROOT/scripts/codex-review.sh"
 
 # Principles
 if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
@@ -613,6 +627,10 @@ write_touchstone_manifest() {
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
+    [ -f "$PROJECT_DIR/scripts/conductor-review.sh" ] \
+      && printf 'scripts/conductor-review.sh\n'
+    [ -f "$PROJECT_DIR/scripts/codex-review.sh" ] \
+      && printf 'scripts/codex-review.sh\n'
     printf 'scripts/claim-issue.sh\n'
     printf 'scripts/issue-claim-check.sh\n'
     printf 'scripts/cleanup-branches.sh\n'
@@ -698,6 +716,9 @@ if [ "$DRY_RUN" = false ]; then
   echo ""
   echo "==> Committing touchstone update..."
   stage_touchstone_manifest_paths
+  if [ "${#RETIRED_MANAGED_PATHS[@]}" -gt 0 ]; then
+    git -C "$PROJECT_DIR" add -u -- "${RETIRED_MANAGED_PATHS[@]}"
+  fi
   if [ -f "$PROJECT_DIR/.claude/settings.json" ]; then
     git -C "$PROJECT_DIR" add -f -- .claude/settings.json
   fi

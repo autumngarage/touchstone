@@ -116,6 +116,8 @@ printf '#!/usr/bin/env bash\n' >"$RETIREMENT_PROJECT/scripts/conductor-review.sh
 printf '#!/usr/bin/env bash\n' >"$RETIREMENT_PROJECT/scripts/codex-review.sh"
 printf '# retired helper\n' >"$RETIREMENT_PROJECT/lib/review-comment.sh"
 printf 'scripts/conductor-review.sh\nscripts/codex-review.sh\nlib/review-comment.sh\n' >>"$RETIREMENT_PROJECT/.touchstone-manifest"
+mkdir -p "$HOME/.claude/skills/conductor-delegation"
+printf 'retired skill\n' >"$HOME/.claude/skills/conductor-delegation/SKILL.md"
 PREVIOUS_TOUCHSTONE_SHA="$(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD^)"
 printf '%s\n' "$PREVIOUS_TOUCHSTONE_SHA" >"$RETIREMENT_PROJECT/.touchstone-version"
 commit_all "$RETIREMENT_PROJECT" "simulate project with retired review helpers"
@@ -123,10 +125,19 @@ commit_all "$RETIREMENT_PROJECT" "simulate project with retired review helpers"
 (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
   >"$TEST_DIR/update-retirement-output.txt" 2>&1
 
-assert_not_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
-assert_not_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
+assert_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
+assert_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
+assert_contains "$RETIREMENT_PROJECT/scripts/conductor-review.sh" 'is retired'
+assert_contains "$RETIREMENT_PROJECT/scripts/codex-review.sh" 'is retired'
 assert_not_exists "$RETIREMENT_PROJECT/lib/review-comment.sh"
+assert_not_exists "$HOME/.claude/skills/conductor-delegation"
 assert_contains "$TEST_DIR/update-retirement-output.txt" 'removed retired managed file'
+if ! git -C "$RETIREMENT_PROJECT" diff --quiet \
+  || ! git -C "$RETIREMENT_PROJECT" diff --cached --quiet; then
+  echo "FAIL: retired helper migration left unstaged or staged changes after commit" >&2
+  git -C "$RETIREMENT_PROJECT" status --short >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 # --------------------------------------------------------------------------
 # Test 2: committed local touchstone-owned changes update on a review branch.
