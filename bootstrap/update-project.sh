@@ -37,7 +37,6 @@ REQUESTED_BRANCH=""
 SHIP=false
 IN_PLACE=false
 RETIRED_MANAGED_PATHS=()
-RETAINED_REVIEW_SHIM_PATHS=()
 
 usage() {
   echo "Usage: $0 [--dry-run|-n] [--check] [--branch <name>] [--in-place|--no-branch] [--ship]"
@@ -127,7 +126,43 @@ fi
 echo "==> Updating project: $PROJECT_DIR"
 echo "    Touchstone: $OLD_SHA -> $CURRENT_SHA"
 
-if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
+retired_review_shim_manifest_entries() {
+  local manifest="$PROJECT_DIR/.touchstone-manifest"
+  local rel_path
+
+  [ -f "$manifest" ] || return 0
+  for rel_path in scripts/conductor-review.sh scripts/codex-review.sh; do
+    grep -qxF "$rel_path" "$manifest" 2>/dev/null && printf '%s\n' "$rel_path"
+  done
+  return 0
+}
+
+RETIRED_REVIEW_SHIM_ENTRIES="$(retired_review_shim_manifest_entries)"
+RETIRED_REVIEW_SHIM_BLOCKERS=""
+if [ -n "$RETIRED_REVIEW_SHIM_ENTRIES" ]; then
+  while IFS= read -r rel_path; do
+    [ -n "$rel_path" ] || continue
+    if [ -e "$PROJECT_DIR/$rel_path" ] \
+      || [ -L "$PROJECT_DIR/$rel_path" ] \
+      || [ -n "$(git -C "$PROJECT_DIR" status --porcelain -- "$rel_path" 2>/dev/null || true)" ]; then
+      RETIRED_REVIEW_SHIM_BLOCKERS="${RETIRED_REVIEW_SHIM_BLOCKERS}${rel_path}
+"
+    fi
+  done <<<"$RETIRED_REVIEW_SHIM_ENTRIES"
+fi
+
+if [ -n "$RETIRED_REVIEW_SHIM_BLOCKERS" ]; then
+  echo "ERROR: Retired local review shims require a project-owned migration before Touchstone can update." >&2
+  printf '%s' "$RETIRED_REVIEW_SHIM_BLOCKERS" | sed '/^$/d; s/^/         - /' >&2
+  echo "       Remove their hooks from project configuration, delete these files, and commit that change." >&2
+  echo "       Then rerun: touchstone update" >&2
+  if [ "$DRY_RUN" = true ] || [ "$CHECK_ONLY" = true ]; then
+    exit 0
+  fi
+  exit 1
+fi
+
+if [ "$OLD_SHA" = "$CURRENT_SHA" ] && [ -z "$RETIRED_REVIEW_SHIM_ENTRIES" ]; then
   echo "==> Already up to date."
   exit 0
 fi
@@ -410,42 +445,8 @@ remove_retired_managed_file() {
   UPDATED=$((UPDATED + 1))
 }
 
-retire_review_shim_management() {
-  local rel_path="$1"
-  local manifest="$PROJECT_DIR/.touchstone-manifest"
-  local target="$PROJECT_DIR/$rel_path"
-
-  [ -f "$manifest" ] || return 0
-  grep -qxF "$rel_path" "$manifest" 2>/dev/null || return 0
-  [ -e "$target" ] || return 0
-  if ! ensure_safe_dest "$target" || [ ! -f "$target" ]; then
-    echo "    ! retaining management of unsafe retired review shim: $target" >&2
-    RETAINED_REVIEW_SHIM_PATHS+=("$rel_path")
-    return 0
-  fi
-  if ! git -C "$PROJECT_DIR" ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1; then
-    echo "    ! retaining management of untracked retired review shim: $target" >&2
-    RETAINED_REVIEW_SHIM_PATHS+=("$rel_path")
-    return 0
-  fi
-  if [ "$DRY_RUN" = true ]; then
-    echo "    ! would neutralize retired review shim: $target"
-  else
-    printf '%s\n' \
-      '#!/usr/bin/env bash' \
-      'echo "Touchstone: local review shim retired; PR-visible review runs during PR shipping." >&2' \
-      'exit 0' >"$target"
-    chmod +x "$target"
-    RETIRED_MANAGED_PATHS+=("$rel_path")
-    echo "    ! neutralized retired review shim before dropping management: $target"
-  fi
-  UPDATED=$((UPDATED + 1))
-}
-
 echo "==> Updating touchstone-owned files:"
 
-retire_review_shim_management "scripts/conductor-review.sh"
-retire_review_shim_management "scripts/codex-review.sh"
 remove_retired_managed_file "lib/review-comment.sh"
 
 # Principles
@@ -653,9 +654,6 @@ write_touchstone_manifest() {
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
-    if [ "${#RETAINED_REVIEW_SHIM_PATHS[@]}" -gt 0 ]; then
-      printf '%s\n' "${RETAINED_REVIEW_SHIM_PATHS[@]}"
-    fi
     printf 'scripts/claim-issue.sh\n'
     printf 'scripts/issue-claim-check.sh\n'
     printf 'scripts/cleanup-branches.sh\n'

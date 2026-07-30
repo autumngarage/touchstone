@@ -134,17 +134,40 @@ printf '%s\n' "$PREVIOUS_TOUCHSTONE_SHA" >"$RETIREMENT_PROJECT/.touchstone-versi
 commit_all "$RETIREMENT_PROJECT" "simulate project with retired review helpers"
 
 (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-retirement-output.txt" 2>&1
+  >"$TEST_DIR/update-retirement-blocked.txt" 2>&1 \
+  && {
+    echo "FAIL: update should block until project-owned review hooks and shims are removed" >&2
+    exit 1
+  }
 
 assert_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
 assert_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
+assert_contains "$RETIREMENT_PROJECT/scripts/conductor-review.sh" 'legacy local router'
+assert_contains "$RETIREMENT_PROJECT/scripts/codex-review.sh" 'legacy local router'
+assert_contains "$TEST_DIR/update-retirement-blocked.txt" 'Retired local review shims require a project-owned migration'
+assert_contains "$TEST_DIR/update-retirement-blocked.txt" 'Remove their hooks from project configuration'
+
+rm "$RETIREMENT_PROJECT/scripts/conductor-review.sh" "$RETIREMENT_PROJECT/scripts/codex-review.sh"
+cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_RETIRED_REVIEW_HOOKS_REMOVED'
+repos: []
+EOF_RETIRED_REVIEW_HOOKS_REMOVED
+if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-retirement-dirty-delete.txt" 2>&1; then
+  echo "FAIL: update should block until shim deletion is committed" >&2
+  exit 1
+fi
+assert_contains "$TEST_DIR/update-retirement-dirty-delete.txt" 'Retired local review shims require a project-owned migration'
+
+git -C "$TOUCHSTONE_ROOT" rev-parse HEAD >"$RETIREMENT_PROJECT/.touchstone-version"
+commit_all "$RETIREMENT_PROJECT" "remove project-owned review hooks and shims"
+
+(cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-retirement-output.txt" 2>&1
+
+assert_not_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
+assert_not_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
 assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/conductor-review\.sh$'
 assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/codex-review\.sh$'
-assert_contains "$RETIREMENT_PROJECT/scripts/conductor-review.sh" 'local review shim retired'
-assert_contains "$RETIREMENT_PROJECT/scripts/codex-review.sh" 'local review shim retired'
-assert_not_contains "$RETIREMENT_PROJECT/scripts/conductor-review.sh" 'legacy local router'
-assert_not_contains "$RETIREMENT_PROJECT/scripts/codex-review.sh" 'legacy local router'
-assert_contains "$TEST_DIR/update-retirement-output.txt" 'neutralized retired review shim'
 assert_not_exists "$RETIREMENT_PROJECT/lib/review-comment.sh"
 assert_not_exists "$HOME/.claude/skills/conductor-delegation"
 assert_exists "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md"
@@ -155,6 +178,28 @@ if ! git -C "$RETIREMENT_PROJECT" diff --quiet \
   echo "FAIL: retired helper migration left unstaged or staged changes after commit" >&2
   git -C "$RETIREMENT_PROJECT" status --short >&2
   ERRORS=$((ERRORS + 1))
+fi
+
+echo "--- Step 2c: Preserve unsafe and untracked retired review shims ---"
+UNSAFE_RETIREMENT_PROJECT="$TEST_DIR/unsafe-retirement-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$UNSAFE_RETIREMENT_PROJECT" --no-register >/dev/null
+configure_git "$UNSAFE_RETIREMENT_PROJECT"
+printf 'scripts/conductor-review.sh\nscripts/codex-review.sh\n' >>"$UNSAFE_RETIREMENT_PROJECT/.touchstone-manifest"
+commit_all "$UNSAFE_RETIREMENT_PROJECT" "simulate legacy review shim manifest"
+printf 'untracked local content\n' >"$UNSAFE_RETIREMENT_PROJECT/scripts/conductor-review.sh"
+printf 'external symlink target\n' >"$TEST_DIR/external-review-target.sh"
+ln -s "$TEST_DIR/external-review-target.sh" "$UNSAFE_RETIREMENT_PROJECT/scripts/codex-review.sh"
+
+if (cd "$UNSAFE_RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-retirement-unsafe.txt" 2>&1; then
+  echo "FAIL: update should block on untracked or symlinked review shims" >&2
+  exit 1
+fi
+assert_contains "$UNSAFE_RETIREMENT_PROJECT/scripts/conductor-review.sh" 'untracked local content'
+assert_contains "$TEST_DIR/external-review-target.sh" 'external symlink target'
+if [ ! -L "$UNSAFE_RETIREMENT_PROJECT/scripts/codex-review.sh" ]; then
+  echo "FAIL: update replaced retired review shim symlink" >&2
+  exit 1
 fi
 
 # --------------------------------------------------------------------------
