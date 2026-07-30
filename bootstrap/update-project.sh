@@ -126,6 +126,41 @@ fi
 echo "==> Updating project: $PROJECT_DIR"
 echo "    Touchstone: $OLD_SHA -> $CURRENT_SHA"
 
+retired_review_shim_manifest_entries() {
+  local manifest="$PROJECT_DIR/.touchstone-manifest"
+  local manifest_entry
+  local has_primary_shim=false
+  local has_compat_shim=false
+
+  [ -f "$manifest" ] || return 0
+  while IFS= read -r manifest_entry || [ -n "$manifest_entry" ]; do
+    manifest_entry="${manifest_entry%$'\r'}"
+    case "$manifest_entry" in
+      scripts/conductor-review.sh) has_primary_shim=true ;;
+      scripts/codex-review.sh) has_compat_shim=true ;;
+    esac
+  done <"$manifest"
+  [ "$has_primary_shim" = true ] && printf 'scripts/conductor-review.sh\n'
+  [ "$has_compat_shim" = true ] && printf 'scripts/codex-review.sh\n'
+  return 0
+}
+
+RETIRED_REVIEW_SHIM_ENTRIES="$(retired_review_shim_manifest_entries)"
+if [ -n "$RETIRED_REVIEW_SHIM_ENTRIES" ]; then
+  if [ "$DRY_RUN" = true ]; then
+    echo "WARNING: Retired local review shims require a project-owned migration before Touchstone can update." >&2
+  else
+    echo "ERROR: Retired local review shims require a project-owned migration before Touchstone can update." >&2
+  fi
+  printf '%s\n' "$RETIRED_REVIEW_SHIM_ENTRIES" | sed 's/^/         - /' >&2
+  echo "       Remove their project-owned hooks, delete these files, and remove the same entries" >&2
+  echo "       from .touchstone-manifest. Commit the migration together." >&2
+  echo "       Then rerun: touchstone update" >&2
+  if [ "$DRY_RUN" != true ]; then
+    exit 1
+  fi
+fi
+
 if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
   echo "==> Already up to date."
   exit 0
@@ -394,33 +429,24 @@ remove_retired_managed_file() {
     SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1))
     return 0
   fi
+  if ! git -C "$PROJECT_DIR" ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1; then
+    echo "    ! leaving untracked retired file in place: $target" >&2
+    echo "      Touchstone will stop managing it; remove it manually after preserving any local changes." >&2
+    return 0
+  fi
   if [ "$DRY_RUN" = true ]; then
     echo "    - would remove retired managed file: $target"
   else
-    rm -f "$target"
     RETIRED_MANAGED_PATHS+=("$rel_path")
+    rm -f "$target"
     echo "    - removed retired managed file: $target"
   fi
   UPDATED=$((UPDATED + 1))
 }
 
-update_compatibility_shim_if_managed() {
-  local rel_path="$1"
-  local source_path="$2"
-  local manifest="$PROJECT_DIR/.touchstone-manifest"
-
-  [ -f "$manifest" ] || return 0
-  grep -qxF "$rel_path" "$manifest" 2>/dev/null || return 0
-  update_file "$source_path" "$PROJECT_DIR/$rel_path"
-}
-
 echo "==> Updating touchstone-owned files:"
 
 remove_retired_managed_file "lib/review-comment.sh"
-update_compatibility_shim_if_managed \
-  "scripts/conductor-review.sh" "$TOUCHSTONE_ROOT/scripts/conductor-review.sh"
-update_compatibility_shim_if_managed \
-  "scripts/codex-review.sh" "$TOUCHSTONE_ROOT/scripts/codex-review.sh"
 
 # Principles
 if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
@@ -627,10 +653,6 @@ write_touchstone_manifest() {
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
-    [ -f "$PROJECT_DIR/scripts/conductor-review.sh" ] \
-      && printf 'scripts/conductor-review.sh\n'
-    [ -f "$PROJECT_DIR/scripts/codex-review.sh" ] \
-      && printf 'scripts/codex-review.sh\n'
     printf 'scripts/claim-issue.sh\n'
     printf 'scripts/issue-claim-check.sh\n'
     printf 'scripts/cleanup-branches.sh\n'

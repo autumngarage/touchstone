@@ -31,8 +31,6 @@ touchstone_sync_planned_write_paths() {
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
-    printf 'scripts/conductor-review.sh\n'
-    printf 'scripts/codex-review.sh\n'
     printf 'scripts/claim-issue.sh\n'
     printf 'scripts/issue-claim-check.sh\n'
     printf 'scripts/cleanup-branches.sh\n'

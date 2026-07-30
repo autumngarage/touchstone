@@ -104,7 +104,7 @@ if [ "$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD)" != "$BASE_BRANCH" ]; the
 fi
 
 # --------------------------------------------------------------------------
-# Test 1b: version updates remove retired manifest-managed review helpers.
+# Test 1b: retired review shims require one explicit project-owned migration.
 # --------------------------------------------------------------------------
 echo ""
 echo "--- Step 2b: Remove retired managed review helpers ---"
@@ -112,10 +112,23 @@ echo "--- Step 2b: Remove retired managed review helpers ---"
 RETIREMENT_PROJECT="$TEST_DIR/retirement-project"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$RETIREMENT_PROJECT" --no-register >/dev/null
 configure_git "$RETIREMENT_PROJECT"
-printf '#!/usr/bin/env bash\n' >"$RETIREMENT_PROJECT/scripts/conductor-review.sh"
-printf '#!/usr/bin/env bash\n' >"$RETIREMENT_PROJECT/scripts/codex-review.sh"
+printf '#!/usr/bin/env bash\necho legacy local router\n' >"$RETIREMENT_PROJECT/scripts/conductor-review.sh"
+printf '#!/usr/bin/env bash\necho legacy local router\n' >"$RETIREMENT_PROJECT/scripts/codex-review.sh"
+chmod +x \
+  "$RETIREMENT_PROJECT/scripts/conductor-review.sh" \
+  "$RETIREMENT_PROJECT/scripts/codex-review.sh"
 printf '# retired helper\n' >"$RETIREMENT_PROJECT/lib/review-comment.sh"
-printf 'scripts/conductor-review.sh\nscripts/codex-review.sh\nlib/review-comment.sh\n' >>"$RETIREMENT_PROJECT/.touchstone-manifest"
+printf 'scripts/conductor-review.sh\r\nscripts/codex-review.sh\r\nlib/review-comment.sh\n' >>"$RETIREMENT_PROJECT/.touchstone-manifest"
+awk 'BEGIN { for (i = 0; i < 10000; i++) printf "legacy/extra/%d\n", i }' \
+  >>"$RETIREMENT_PROJECT/.touchstone-manifest"
+cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_RETIRED_REVIEW_HOOKS'
+repos:
+  - repo: local
+    hooks:
+      - id: conductor-review
+        entry: bash scripts/conductor-review.sh
+        language: system
+EOF_RETIRED_REVIEW_HOOKS
 mkdir -p "$HOME/.claude/skills/conductor-delegation"
 printf 'retired skill\n' >"$HOME/.claude/skills/conductor-delegation/SKILL.md"
 PREVIOUS_TOUCHSTONE_SHA="$(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD^)"
@@ -123,12 +136,54 @@ printf '%s\n' "$PREVIOUS_TOUCHSTONE_SHA" >"$RETIREMENT_PROJECT/.touchstone-versi
 commit_all "$RETIREMENT_PROJECT" "simulate project with retired review helpers"
 
 (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-retirement-output.txt" 2>&1
+  >"$TEST_DIR/update-retirement-blocked.txt" 2>&1 \
+  && {
+    echo "FAIL: update should block until project-owned review hooks and shims are removed" >&2
+    exit 1
+  }
 
 assert_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
 assert_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
-assert_contains "$RETIREMENT_PROJECT/scripts/conductor-review.sh" 'is retired'
-assert_contains "$RETIREMENT_PROJECT/scripts/codex-review.sh" 'is retired'
+assert_contains "$RETIREMENT_PROJECT/scripts/conductor-review.sh" 'legacy local router'
+assert_contains "$RETIREMENT_PROJECT/scripts/codex-review.sh" 'legacy local router'
+assert_contains "$TEST_DIR/update-retirement-blocked.txt" 'Retired local review shims require a project-owned migration'
+assert_contains "$TEST_DIR/update-retirement-blocked.txt" 'remove the same entries'
+assert_contains "$TEST_DIR/update-retirement-blocked.txt" 'from .touchstone-manifest'
+
+if ! (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --dry-run) \
+  >"$TEST_DIR/update-retirement-dry-run.txt" 2>&1; then
+  echo "FAIL: dry-run should report the migration blocker without failing" >&2
+  exit 1
+fi
+assert_contains "$TEST_DIR/update-retirement-dry-run.txt" '^WARNING: Retired local review shims'
+assert_not_contains "$TEST_DIR/update-retirement-dry-run.txt" '^ERROR:'
+assert_contains "$TEST_DIR/update-retirement-dry-run.txt" '^==> Updating touchstone-owned files:'
+assert_contains "$TEST_DIR/update-retirement-dry-run.txt" '^==> Summary:'
+
+if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/update-retirement-check.txt" 2>&1; then
+  echo "FAIL: check mode should fail while review shim migration blocks synchronization" >&2
+  exit 1
+fi
+assert_contains "$TEST_DIR/update-retirement-check.txt" '^ERROR: Retired local review shims'
+
+rm "$RETIREMENT_PROJECT/scripts/conductor-review.sh" "$RETIREMENT_PROJECT/scripts/codex-review.sh"
+cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_RETIRED_REVIEW_HOOKS_REMOVED'
+repos: []
+EOF_RETIRED_REVIEW_HOOKS_REMOVED
+tr -d '\r' <"$RETIREMENT_PROJECT/.touchstone-manifest" \
+  | sed '/^scripts\/conductor-review\.sh$/d; /^scripts\/codex-review\.sh$/d' \
+    >"$RETIREMENT_PROJECT/.touchstone-manifest.tmp"
+mv "$RETIREMENT_PROJECT/.touchstone-manifest.tmp" "$RETIREMENT_PROJECT/.touchstone-manifest"
+commit_all "$RETIREMENT_PROJECT" "remove project-owned review hooks and shims"
+
+(cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-retirement-output.txt" 2>&1
+
+assert_not_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
+assert_not_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
+assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/conductor-review\.sh$'
+assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/codex-review\.sh$'
 assert_not_exists "$RETIREMENT_PROJECT/lib/review-comment.sh"
 assert_not_exists "$HOME/.claude/skills/conductor-delegation"
 assert_exists "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md"
