@@ -131,7 +131,9 @@ retired_managed_paths_pending() {
   local manifest="$PROJECT_DIR/.touchstone-manifest"
 
   [ -f "$manifest" ] || return 1
-  grep -Eq '^(lib/review-comment\.sh|scripts/(conductor|codex)-review\.sh)$' "$manifest"
+  grep -qxF "lib/review-comment.sh" "$manifest" \
+    || grep -qxF "scripts/conductor-review.sh" "$manifest" \
+    || grep -qxF "scripts/codex-review.sh" "$manifest"
 }
 
 if [ "$OLD_SHA" = "$CURRENT_SHA" ] && ! retired_managed_paths_pending; then
