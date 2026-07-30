@@ -21,6 +21,8 @@
 #   fixing: worktree_path
 #   fix_pushed: worktree_path, pr_number, head_sha
 #   review_requested: worktree_path, pr_number, head_sha
+#   preflight_attestation_clean: pr_number, head_sha, base_sha, run_id
+#   preflight_attestation_blocked: pr_number, head_sha, base_sha, reason
 #   needs_attention: worktree_path
 #   worker_state_changed: worktree_path, from, to
 #   worker_abandoned: worktree_path, branch

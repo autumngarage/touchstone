@@ -72,6 +72,7 @@ REVIEWED_MERGE_BASE_OID=""
 PREFLIGHT_CACHE_KEY=""
 PREFLIGHT_CACHE_FILE=""
 PREFLIGHT_CACHE_INPUTS=""
+PREFLIGHT_ATTESTATION_WORKFLOW=".github/workflows/deterministic-preflight.yml"
 PR_WORKTREE_PATH=""
 REPO_FULL_NAME=""
 REPO_OWNER=""
@@ -1912,6 +1913,139 @@ wait_for_pr_head() {
   exit 1
 }
 
+timestamp_epoch() {
+  local timestamp="$1"
+
+  [ -n "$timestamp" ] || return 1
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$timestamp" '+%s' 2>/dev/null \
+    || date -u -d "$timestamp" '+%s' 2>/dev/null
+}
+
+trusted_ci_preflight_attestation() {
+  local base_ref="$1"
+  local head_sha="$2"
+  local expected_base="$CURRENT_REVIEW_BASE_OID"
+  local -a contract_paths=(
+    "$PREFLIGHT_ATTESTATION_WORKFLOW"
+    ".pre-commit-config.yaml"
+    "lib/preflight.sh"
+    "lib/preflight-scope.sh"
+    "scripts/touchstone-run.sh"
+  )
+  local record run_id check_suite_id status conclusion created_at updated_at run_url
+  local event workflow_path attested_head attested_base attested_pr app_slug
+  local request_epoch now_epoch request_to_attestation_seconds=""
+
+  if ! git cat-file -e "$base_ref:$PREFLIGHT_ATTESTATION_WORKFLOW" 2>/dev/null; then
+    return 2
+  fi
+
+  if ! git diff --quiet "$base_ref"...HEAD -- "${contract_paths[@]}"; then
+    return 3
+  fi
+
+  if ! record="$(
+    TOUCHSTONE_EXPECTED_HEAD="$head_sha" \
+      TOUCHSTONE_EXPECTED_BASE="$expected_base" \
+      TOUCHSTONE_EXPECTED_PR="$PR_NUMBER" \
+      gh api "repos/$REPO_FULL_NAME/actions/workflows/deterministic-preflight.yml/runs?event=pull_request&per_page=100" \
+      --jq '
+          [.workflow_runs[]
+            | select(
+                .event == "pull_request"
+                and .path == ".github/workflows/deterministic-preflight.yml"
+                and .head_sha == env.TOUCHSTONE_EXPECTED_HEAD
+                and any(.pull_requests[]?;
+                  (.number | tostring) == env.TOUCHSTONE_EXPECTED_PR
+                  and .base.sha == env.TOUCHSTONE_EXPECTED_BASE)
+              )]
+          | sort_by(.id)
+          | last
+          | if . == null then empty else
+              [
+                .id,
+                .check_suite_id,
+                .status,
+                (.conclusion // "none"),
+                .created_at,
+                .updated_at,
+                .html_url,
+                .event,
+                .path,
+                .head_sha,
+                ([.pull_requests[] | select((.number | tostring) == env.TOUCHSTONE_EXPECTED_PR) | .base.sha] | first),
+                env.TOUCHSTONE_EXPECTED_PR
+              ]
+              | @tsv
+            end
+        ' 2>/dev/null
+  )"; then
+    echo "ERROR: Could not inspect deterministic CI preflight runs." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="preflight-attestation-unavailable"
+    return 1
+  fi
+
+  if [ -z "$record" ]; then
+    echo "ERROR: No deterministic CI preflight attestation matches PR #$PR_NUMBER head $head_sha and base $expected_base." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="preflight-attestation-missing"
+    touchstone_emit_event preflight_attestation_blocked \
+      pr_number="$PR_NUMBER" head_sha="$head_sha" base_sha="$expected_base" reason=missing
+    return 1
+  fi
+
+  IFS="$(printf '\t')" read -r run_id check_suite_id status conclusion created_at updated_at run_url \
+    event workflow_path attested_head attested_base attested_pr <<<"$record"
+
+  if [ "$event" != "pull_request" ] \
+    || [ "$workflow_path" != "$PREFLIGHT_ATTESTATION_WORKFLOW" ] \
+    || [ "$attested_head" != "$head_sha" ] \
+    || [ "$attested_base" != "$expected_base" ] \
+    || [ "$attested_pr" != "$PR_NUMBER" ]; then
+    echo "ERROR: Deterministic CI preflight attestation is stale or revision-mismatched." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="preflight-attestation-stale"
+    touchstone_emit_event preflight_attestation_blocked \
+      pr_number="$PR_NUMBER" head_sha="$head_sha" base_sha="$expected_base" reason=stale run_id="$run_id"
+    return 1
+  fi
+
+  if ! app_slug="$(gh api "repos/$REPO_FULL_NAME/check-suites/$check_suite_id" --jq '.app.slug' 2>/dev/null)"; then
+    echo "ERROR: Could not verify deterministic CI preflight producer." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="preflight-attestation-untrusted"
+    return 1
+  fi
+  if [ "$app_slug" != "github-actions" ]; then
+    echo "ERROR: Deterministic CI preflight was not produced by GitHub Actions (producer=$app_slug)." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="preflight-attestation-untrusted"
+    touchstone_emit_event preflight_attestation_blocked \
+      pr_number="$PR_NUMBER" head_sha="$head_sha" base_sha="$expected_base" reason=untrusted run_id="$run_id"
+    return 1
+  fi
+
+  if [ "$status" != "completed" ] || [ "$conclusion" != "success" ]; then
+    echo "ERROR: Deterministic CI preflight is not green (status=$status conclusion=${conclusion:-none})." >&2
+    echo "       $run_url" >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="preflight-attestation-not-green"
+    touchstone_emit_event preflight_attestation_blocked \
+      pr_number="$PR_NUMBER" head_sha="$head_sha" base_sha="$expected_base" reason=not-green \
+      run_id="$run_id" status="$status" conclusion="$conclusion"
+    return 1
+  fi
+
+  if request_epoch="$(timestamp_epoch "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" 2>/dev/null)"; then
+    now_epoch="$(date +%s)"
+    if [ "$now_epoch" -ge "$request_epoch" ]; then
+      request_to_attestation_seconds="$((now_epoch - request_epoch))"
+    fi
+  fi
+
+  echo "==> Deterministic CI preflight attested for exact head/base (run $run_id)."
+  touchstone_emit_event preflight_attestation_clean \
+    pr_number="$PR_NUMBER" head_sha="$head_sha" base_sha="$expected_base" run_id="$run_id" \
+    created_at="$created_at" updated_at="$updated_at" request_to_attestation_seconds="$request_to_attestation_seconds" \
+    run_url="$run_url"
+  return 0
+}
+
 run_preflight_gate() {
   local base_ref="$1"
   local label="${2:-before merge review}"
@@ -1926,12 +2060,42 @@ run_preflight_gate() {
     echo "==> Skipping preflight because TOUCHSTONE_NO_PREFLIGHT=1."
     return 0
   fi
+  head_sha="$(git rev-parse HEAD 2>/dev/null || echo "")"
+  if trusted_ci_preflight_attestation "$base_ref" "$head_sha"; then
+    return 0
+  else
+    case "$?" in
+      2)
+        echo "==> Trusted base has no deterministic CI workflow; using local preflight during rollout."
+        ;;
+      3)
+        echo "==> Deterministic CI attestation contract changed in this PR; running local full preflight."
+        if ! declare -F touchstone_preflight_main >/dev/null 2>&1; then
+          echo "ERROR: Preflight helper not found at $PREFLIGHT_SCRIPT; cannot validate attestation contract change." >&2
+          TOUCHSTONE_MERGE_FAILURE_REASON="preflight-helper-missing"
+          return 1
+        fi
+        touchstone_emit_event preflight_started pr_number="$PR_NUMBER" mode=workflow-change cached=false
+        if touchstone_preflight_main_sanitized --all-files "$(git rev-parse --show-toplevel)"; then
+          touchstone_emit_event preflight_clean pr_number="$PR_NUMBER" head_sha="$head_sha" cached=false mode=workflow-change
+          return 0
+        fi
+        echo "ERROR: Full deterministic preflight failed for CI attestation contract change." >&2
+        TOUCHSTONE_MERGE_FAILURE_REASON="preflight-blocked"
+        touchstone_emit_event preflight_blocked pr_number="$PR_NUMBER" head_sha="$head_sha" mode=workflow-change
+        return 1
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  fi
+
   if ! declare -F touchstone_preflight_main >/dev/null 2>&1; then
     echo "==> Preflight helper not found at $PREFLIGHT_SCRIPT — skipping preflight."
     return 0
   fi
 
-  head_sha="$(git rev-parse HEAD 2>/dev/null || echo "")"
   if preflight_cache_prepare "$base_ref" "$event_mode" && preflight_cache_hit; then
     cache_key_short="$(preflight_cache_short_key)"
     echo "==> Deterministic preflight clean (cached=true, key=$cache_key_short; $label, diff vs $base_ref)."
@@ -2215,7 +2379,16 @@ if [ "$gh_merge_exit" -ne 0 ]; then
 fi
 
 MERGED_AT="$(gh pr view "$PR_NUMBER" --json mergedAt --jq '.mergedAt // empty' 2>/dev/null || echo "")"
-touchstone_emit_event merged pr_number="$PR_NUMBER" merged_at="$MERGED_AT" head_sha="$REVIEWED_HEAD_OID"
+REQUEST_TO_MERGE_SECONDS=""
+if request_epoch="$(timestamp_epoch "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" 2>/dev/null)"; then
+  merge_epoch="$(date +%s)"
+  if [ "$merge_epoch" -ge "$request_epoch" ]; then
+    REQUEST_TO_MERGE_SECONDS="$((merge_epoch - request_epoch))"
+  fi
+fi
+touchstone_emit_event merged \
+  pr_number="$PR_NUMBER" merged_at="$MERGED_AT" head_sha="$REVIEWED_HEAD_OID" \
+  request_to_merge_seconds="$REQUEST_TO_MERGE_SECONDS"
 
 # Record squash-merge metadata for cleanup-branches.sh. The merge has
 # succeeded on GitHub; this is best-effort persistence for later cleanup.

@@ -203,6 +203,12 @@ case "${1:-} ${2:-}" in
     ;;
   "api repos/"*)
     case "${2:-}" in
+      */actions/workflows/deterministic-preflight.yml/runs*)
+        printf '%s' "${GH_ATTESTATION_RUN_RECORD:-}"
+        ;;
+      */check-suites/*)
+        printf '%s\n' "${GH_ATTESTATION_APP:-github-actions}"
+        ;;
       */collaborators/*/permission)
         status_creator="${2#*/collaborators/}"
         status_creator="${status_creator%/permission}"
@@ -546,6 +552,9 @@ case "$*" in
     [ -n "${GIT_TRUSTED_LEGACY_CONFIG_FILE:-}" ] \
       && [ -f "$GIT_TRUSTED_LEGACY_CONFIG_FILE" ] || exit 1
     ;;
+  cat-file\ -e\ origin/*:.github/workflows/deterministic-preflight.yml)
+    [ "${GIT_ATTESTATION_WORKFLOW_IN_BASE:-false}" = "true" ]
+    ;;
   "show-ref --verify --quiet refs/heads/feature/test")
     if [ -f "$GIT_BRANCH_DELETED_FILE" ]; then
       exit 1
@@ -586,6 +595,9 @@ case "$*" in
     ;;
   "diff --name-only origin/"*"...HEAD")
     printf '%s\n' "${GIT_CHANGED_PATHS:-example.txt}"
+    ;;
+  diff\ --quiet\ origin/*...HEAD\ --\ .github/workflows/deterministic-preflight.yml*)
+    [ "${GIT_ATTESTATION_WORKFLOW_CHANGED:-false}" != "true" ]
     ;;
   diff\ --binary\ --*)
     printf '%s' "${GIT_WORKTREE_DIFF:-}"
@@ -645,6 +657,7 @@ reset_case_files() {
     "$TEST_DIR"/gh-graphql-calls* "$TEST_DIR"/gh-head-ref-calls* "$TEST_DIR"/gh-base-ref-calls* \
     "$TEST_DIR"/gh-reviews-graphql-calls* "$TEST_DIR"/gh-reactions-calls* \
     "$TEST_DIR"/gh-comments-calls* "$TEST_DIR"/gh-request-lookup-calls*
+  rm -f "$TEST_DIR"/events*
   rm -f "$TEST_DIR/gh-merge-attempts"
   rm -f "$TEST_DIR/revision-changed-after-trigger"
   rm -rf "$GIT_PATH_ROOT"
@@ -725,8 +738,13 @@ reset_case_files() {
   unset GIT_TRUSTED_LEGACY_CONFIG_FILE
   unset GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE
   unset GIT_TRUSTED_CONFIG_SHOW_FAIL
+  unset GIT_ATTESTATION_WORKFLOW_IN_BASE
+  unset GIT_ATTESTATION_WORKFLOW_CHANGED
+  unset GH_ATTESTATION_RUN_RECORD
+  unset GH_ATTESTATION_APP
   unset SHELLCHECK_VERSION_LINE
   unset TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS
+  unset TOUCHSTONE_EVENTS_FILE
 }
 
 run_merge_pr() {
@@ -833,11 +851,16 @@ run_merge_pr() {
     GIT_TRUSTED_LEGACY_CONFIG_FILE="${GIT_TRUSTED_LEGACY_CONFIG_FILE:-}" \
     GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE="${GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE:-}" \
     GIT_TRUSTED_CONFIG_SHOW_FAIL="${GIT_TRUSTED_CONFIG_SHOW_FAIL:-false}" \
+    GIT_ATTESTATION_WORKFLOW_IN_BASE="${GIT_ATTESTATION_WORKFLOW_IN_BASE:-false}" \
+    GIT_ATTESTATION_WORKFLOW_CHANGED="${GIT_ATTESTATION_WORKFLOW_CHANGED:-false}" \
+    GH_ATTESTATION_RUN_RECORD="${GH_ATTESTATION_RUN_RECORD:-}" \
+    GH_ATTESTATION_APP="${GH_ATTESTATION_APP:-github-actions}" \
     SHELLCHECK_VERSION_LINE="${SHELLCHECK_VERSION_LINE:-}" \
     GIT_LOCAL_BRANCH_HEAD="${GIT_LOCAL_BRANCH_HEAD:-pr-head-oid}" \
     PREFLIGHT_CALLS_FILE="${PREFLIGHT_CALLS_FILE:-}" \
     TEST_CURRENT_WORKTREE="${TEST_CURRENT_WORKTREE:-$DEFAULT_FAKE_WORKTREE}" \
     TOUCHSTONE_REVIEW_LOG="$TEST_DIR/touchstone-review-log" \
+    TOUCHSTONE_EVENTS_FILE="${TOUCHSTONE_EVENTS_FILE:-}" \
     TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS="${TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS:-24}" \
     bash "$MERGE_SCRIPT_DIR/merge-pr.sh" "$@" >"$output_file" 2>&1
 }
@@ -859,6 +882,7 @@ write_fail_open_review_log() {
 
 install_preflight_counter_fixture() {
   mkdir -p "$TEST_DIR/lib"
+  cp "$TOUCHSTONE_ROOT/lib/events.sh" "$TEST_DIR/lib/events.sh"
   cat >"$TEST_DIR/lib/preflight.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -911,6 +935,17 @@ durable_request_records() {
     "$trigger_at" "$creator" "$base_oid" "$intent_at trigger=$trigger_at"
 }
 
+preflight_attestation_record() {
+  local status="${1:-completed}"
+  local conclusion="${2:-success}"
+  local head_sha="${3:-pr-head-oid}"
+  local base_sha="${4:-base-oid}"
+  local pr_number="${5:-123}"
+
+  printf '101\t201\t%s\t%s\t2026-07-30T04:00:00Z\t2026-07-30T04:05:00Z\thttps://example.test/actions/runs/101\tpull_request\t.github/workflows/deterministic-preflight.yml\t%s\t%s\t%s' \
+    "$status" "$conclusion" "$head_sha" "$base_sha" "$pr_number"
+}
+
 CLEAN_TRUSTED_REVIEW=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/clean'
 
 write_established_boolean_alias_config() {
@@ -946,6 +981,129 @@ if grep -q '==> Trusted PR-visible AI review found for PR #123 head pr-head-oid'
 else
   echo "FAIL: exact-revision PR review did not satisfy the merge gate after preflight" >&2
   cat "$TEST_DIR/output-pr-triggered-skip.txt" >&2
+  [ ! -f "$TEST_DIR/preflight-calls" ] || cat "$TEST_DIR/preflight-calls" >&2
+  exit 1
+fi
+
+echo "==> Test: exact-head/base CI attestation skips duplicate local preflight"
+reset_case_files
+install_preflight_counter_fixture
+write_pr_triggered_config true 0 0
+GIT_ATTESTATION_WORKFLOW_IN_BASE=true \
+  GH_ATTESTATION_RUN_RECORD="$(preflight_attestation_record)" \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  TOUCHSTONE_EVENTS_FILE="$TEST_DIR/events-attestation-clean" \
+  run_merge_pr "$TEST_DIR/output-attestation-clean.txt" 123
+rm -rf "${TEST_DIR:?}/lib"
+if grep -q 'Deterministic CI preflight attested for exact head/base' "$TEST_DIR/output-attestation-clean.txt" \
+  && [ ! -f "$TEST_DIR/preflight-calls" ] \
+  && grep -q '"event":"preflight_attestation_clean"' "$TEST_DIR/events-attestation-clean" \
+  && grep -Eq '"event":"merged".*"request_to_merge_seconds":[0-9]+' "$TEST_DIR/events-attestation-clean" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: trusted exact-revision CI result replaces duplicate local preflight"
+else
+  echo "FAIL: clean exact-revision CI attestation was not reused" >&2
+  cat "$TEST_DIR/output-attestation-clean.txt" >&2
+  [ ! -f "$TEST_DIR/preflight-calls" ] || cat "$TEST_DIR/preflight-calls" >&2
+  exit 1
+fi
+
+echo "==> Test: missing CI attestation fails closed after workflow rollout"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GIT_ATTESTATION_WORKFLOW_IN_BASE=true \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  run_merge_pr "$TEST_DIR/output-attestation-missing.txt" 123; then
+  echo "FAIL: merge accepted a missing CI attestation" >&2
+  cat "$TEST_DIR/output-attestation-missing.txt" >&2
+  exit 1
+fi
+if grep -q 'No deterministic CI preflight attestation matches' "$TEST_DIR/output-attestation-missing.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: missing exact-revision CI evidence blocks merge"
+else
+  echo "FAIL: missing CI evidence did not fail closed" >&2
+  cat "$TEST_DIR/output-attestation-missing.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: pending and failed CI attestations fail closed"
+for attestation_case in pending failed; do
+  reset_case_files
+  write_pr_triggered_config true 0 0
+  if [ "$attestation_case" = "pending" ]; then
+    attestation_record="$(preflight_attestation_record in_progress none)"
+  else
+    attestation_record="$(preflight_attestation_record completed failure)"
+  fi
+  if GIT_ATTESTATION_WORKFLOW_IN_BASE=true \
+    GH_ATTESTATION_RUN_RECORD="$attestation_record" \
+    GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+    run_merge_pr "$TEST_DIR/output-attestation-$attestation_case.txt" 123; then
+    echo "FAIL: merge accepted $attestation_case CI attestation" >&2
+    exit 1
+  fi
+  if ! grep -q 'Deterministic CI preflight is not green' "$TEST_DIR/output-attestation-$attestation_case.txt" \
+    || [ -f "$TEST_DIR/gh-merge-head" ]; then
+    echo "FAIL: $attestation_case CI attestation did not fail closed" >&2
+    cat "$TEST_DIR/output-attestation-$attestation_case.txt" >&2
+    exit 1
+  fi
+done
+echo "==> PASS: non-green CI evidence blocks merge"
+
+echo "==> Test: stale or untrusted CI attestations fail closed"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GIT_ATTESTATION_WORKFLOW_IN_BASE=true \
+  GH_ATTESTATION_RUN_RECORD="$(preflight_attestation_record completed success stale-head)" \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  run_merge_pr "$TEST_DIR/output-attestation-stale.txt" 123; then
+  echo "FAIL: merge accepted stale CI attestation" >&2
+  exit 1
+fi
+if ! grep -q 'attestation is stale or revision-mismatched' "$TEST_DIR/output-attestation-stale.txt"; then
+  echo "FAIL: stale CI attestation was not diagnosed" >&2
+  cat "$TEST_DIR/output-attestation-stale.txt" >&2
+  exit 1
+fi
+reset_case_files
+write_pr_triggered_config true 0 0
+if GIT_ATTESTATION_WORKFLOW_IN_BASE=true \
+  GH_ATTESTATION_RUN_RECORD="$(preflight_attestation_record)" \
+  GH_ATTESTATION_APP=untrusted-app \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  run_merge_pr "$TEST_DIR/output-attestation-untrusted.txt" 123; then
+  echo "FAIL: merge accepted untrusted CI producer" >&2
+  exit 1
+fi
+if grep -q 'was not produced by GitHub Actions' "$TEST_DIR/output-attestation-untrusted.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: stale revisions and untrusted producers block merge"
+else
+  echo "FAIL: untrusted CI producer did not fail closed" >&2
+  cat "$TEST_DIR/output-attestation-untrusted.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: CI workflow changes require local full preflight"
+reset_case_files
+install_preflight_counter_fixture
+write_pr_triggered_config true 0 0
+GIT_ATTESTATION_WORKFLOW_IN_BASE=true \
+  GIT_ATTESTATION_WORKFLOW_CHANGED=true \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls" \
+  run_merge_pr "$TEST_DIR/output-attestation-workflow-change.txt" 123
+rm -rf "${TEST_DIR:?}/lib"
+if grep -q 'attestation contract changed.*running local full preflight' "$TEST_DIR/output-attestation-workflow-change.txt" \
+  && grep -q '^--all-files ' "$TEST_DIR/preflight-calls" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: an attestation workflow cannot attest its own modification"
+else
+  echo "FAIL: CI workflow change did not force local full verification" >&2
+  cat "$TEST_DIR/output-attestation-workflow-change.txt" >&2
   [ ! -f "$TEST_DIR/preflight-calls" ] || cat "$TEST_DIR/preflight-calls" >&2
   exit 1
 fi
