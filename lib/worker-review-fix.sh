@@ -58,7 +58,7 @@ touchstone_review_fix_pr_base_ref() {
   [ -n "$base_branch" ] || return 1
   git check-ref-format --branch "$base_branch" >/dev/null 2>&1 || return 1
   git -C "$worktree_path" fetch --quiet --no-tags origin \
-    "refs/heads/$base_branch:refs/remotes/origin/$base_branch" || return 1
+    "+refs/heads/$base_branch:refs/remotes/origin/$base_branch" || return 1
   git -C "$worktree_path" rev-parse --verify --quiet "origin/$base_branch^{commit}" >/dev/null \
     || return 1
   printf 'origin/%s\n' "$base_branch"

@@ -1568,6 +1568,12 @@ EOF
     || fail "stacked PR resolved base '$STACK_BASE_REF' instead of origin/stack-parent"
   [ "$(touchstone_review_fix_trusted_authors "$WORKTREE" "$STACK_BASE_REF")" = stack-reviewer ] \
     || fail "stacked PR trusted authors were not loaded from its base"
+  STACK_REWRITTEN_HEAD="$(git -C "$REPO" rev-parse main)"
+  git --git-dir="$ORIGIN" update-ref refs/heads/stack-parent "$STACK_REWRITTEN_HEAD"
+  STACK_BASE_REF="$(touchstone_review_fix_pr_base_ref "$WORKTREE" 77)" \
+    || fail "rewritten stacked PR base ref was not resolved"
+  [ "$(git -C "$WORKTREE" rev-parse "$STACK_BASE_REF")" = "$STACK_REWRITTEN_HEAD" ] \
+    || fail "rewritten stacked PR base did not force-update its tracking ref"
   unset FAKE_PR_BASE_BRANCH
   CROSS_CHECKPOINT="$TEST_DIR/cross-checkpoint"
   mkdir -p "$CROSS_CHECKPOINT/review-fix"
