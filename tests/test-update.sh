@@ -131,6 +131,8 @@ assert_contains "$RETIREMENT_PROJECT/scripts/conductor-review.sh" 'is retired'
 assert_contains "$RETIREMENT_PROJECT/scripts/codex-review.sh" 'is retired'
 assert_not_exists "$RETIREMENT_PROJECT/lib/review-comment.sh"
 assert_not_exists "$HOME/.claude/skills/conductor-delegation"
+assert_exists "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md"
+assert_contains "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md" 'retired skill'
 assert_contains "$TEST_DIR/update-retirement-output.txt" 'removed retired managed file'
 if ! git -C "$RETIREMENT_PROJECT" diff --quiet \
   || ! git -C "$RETIREMENT_PROJECT" diff --cached --quiet; then

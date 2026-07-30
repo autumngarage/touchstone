@@ -74,13 +74,23 @@ touchstone_install_skills() {
   fi
 
   local installed=0 updated=0 unchanged=0 backed_up=0 retired=0
-  local skill_dir name target
+  local skill_dir name target retired_dir retired_backup suffix
 
   target="$user_skills_dir/conductor-delegation"
   if [ -e "$target" ] || [ -L "$target" ]; then
     if touchstone_ensure_safe_dest "$target" "$user_skills_dir" false; then
-      rm -rf "$target"
-      retired=1
+      retired_dir="$user_skills_dir/.touchstone-retired"
+      retired_backup="$retired_dir/conductor-delegation"
+      suffix=0
+      while [ -e "$retired_backup" ] || [ -L "$retired_backup" ]; do
+        suffix=$((suffix + 1))
+        retired_backup="$retired_dir/conductor-delegation.$suffix"
+      done
+      if touchstone_ensure_safe_dest "$retired_backup" "$user_skills_dir" false; then
+        mkdir -p "$retired_dir"
+        mv "$target" "$retired_backup"
+        retired=1
+      fi
     fi
   fi
 

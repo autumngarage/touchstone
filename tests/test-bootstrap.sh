@@ -1258,6 +1258,18 @@ else
   echo "FAIL: doctor should parse review policy with the shared TOML semantics" >&2
   ERRORS=$((ERRORS + 1))
 fi
+cat >"$PROJECT_DOCTOR/.touchstone-review.toml" <<'EOF'
+[review.pr_triggered]
+required = false
+provider = "github-codex"
+request_on_push = true
+EOF
+if (cd "$PROJECT_DOCTOR" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-disabled-policy.txt" 2>&1; then
+  echo "FAIL: doctor should reject a stored review policy with required=false" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-disabled-policy.txt" 'must require and request GitHub Codex review'
+fi
 cp "$TEST_DIR/doctor-review-policy.toml" "$PROJECT_DOCTOR/.touchstone-review.toml"
 
 # Autumn Garage siblings block must appear in doctor --project output on every

@@ -103,7 +103,10 @@ active_router_refs="$(grep -Rin "conductor" \
   "$TOUCHSTONE_ROOT/scripts" \
   "$TOUCHSTONE_ROOT/skills" \
   "$TOUCHSTONE_ROOT/templates" 2>/dev/null \
-  | grep -v 'bootstrap/update-project.sh:.*remove_retired_managed_file "scripts/conductor-review.sh"' \
+  | grep -v 'bootstrap/update-project.sh:.*scripts/conductor-review.sh' \
+  | grep -v 'lib/sync-discipline.sh:.*scripts/conductor-review.sh' \
+  | grep -v 'lib/install-skills.sh:.*conductor-delegation' \
+  | grep -v 'scripts/conductor-review.sh:' \
   || true)"
 if [ -n "$active_router_refs" ]; then
   printf '%s\n' "$active_router_refs" >&2

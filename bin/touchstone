@@ -601,8 +601,8 @@ touchstone_doctor_pr_review_policy_valid() {
   }
 
   toml_parse "$config_file" touchstone_doctor_review_policy_callback
-  case "$required" in true | false) ;; *) return 1 ;; esac
-  case "$request_on_push" in true | false) ;; *) return 1 ;; esac
+  [ "$required" = "true" ] || return 1
+  [ "$request_on_push" = "true" ] || return 1
   [ "$provider" = "github-codex" ]
 }
 

@@ -2,7 +2,7 @@
 #
 # prototypes/ui-banners.sh — visual prototypes for Touchstone's branded output.
 # Run this script in a real terminal to compare styles. Pick one and we'll wire
-# it into lib/ui.sh and hooks/codex-review.sh.
+# it into lib/ui.sh.
 #
 # Requires: gum (brew install gum). Falls back to plain echoes without it.
 #
