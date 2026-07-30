@@ -571,8 +571,8 @@ cmd_ship() {
           return 2
         }
         case "$2" in
-          '' | *[!0-9]* | 0)
-            echo "ERROR: --max-fix-minutes must be a positive integer." >&2
+          '' | *[!0-9]* | 0*)
+            echo "ERROR: --max-fix-minutes must be a canonical positive integer." >&2
             return 2
             ;;
         esac
