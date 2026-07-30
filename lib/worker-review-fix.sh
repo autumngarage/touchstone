@@ -52,6 +52,18 @@ touchstone_review_fix_pr_head() {
   gh pr view "$pr_number" --json headRefOid --jq '.headRefOid'
 }
 
+touchstone_review_fix_pr_base_ref() {
+  local worktree_path="$1" pr_number="$2" base_branch
+  base_branch="$(gh pr view "$pr_number" --json baseRefName --jq '.baseRefName')" || return 1
+  [ -n "$base_branch" ] || return 1
+  git check-ref-format --branch "$base_branch" >/dev/null 2>&1 || return 1
+  git -C "$worktree_path" fetch --quiet --no-tags origin \
+    "refs/heads/$base_branch:refs/remotes/origin/$base_branch" || return 1
+  git -C "$worktree_path" rev-parse --verify --quiet "origin/$base_branch^{commit}" >/dev/null \
+    || return 1
+  printf 'origin/%s\n' "$base_branch"
+}
+
 touchstone_review_fix_repo_name() {
   gh repo view --json nameWithOwner --jq '.nameWithOwner'
 }
@@ -253,6 +265,14 @@ mutation($thread: ID!) {
   }
 }'
   gh api graphql -F thread="$thread_id" -f query="$query" >/dev/null
+}
+
+touchstone_review_fix_rollback_thread() {
+  local job_dir="$1" thread_id="$2"
+  if ! touchstone_review_fix_unresolve "$thread_id"; then
+    touchstone_ship_write "$job_dir/review-fix" rollback-thread-id "$thread_id"
+    return 1
+  fi
 }
 
 touchstone_review_fix_write_brief() {
@@ -470,15 +490,18 @@ EOF
     fi
 
     touchstone_review_fix_resolve "$thread_id" || return 1
-    observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
+    observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || {
+      touchstone_review_fix_rollback_thread "$job_dir" "$thread_id" || return 6
+      return 1
+    }
     if [ "$observed_head" != "$fix_head" ]; then
-      touchstone_review_fix_unresolve "$thread_id" || true
+      touchstone_review_fix_rollback_thread "$job_dir" "$thread_id" || return 6
       return 4
     fi
     remote_state="$(touchstone_review_fix_thread_remote_state \
       "$thread_id" "$marker" "$comment_count" "$comment_ids" "$comment_snapshot" \
       "$reply_author")" || {
-      touchstone_review_fix_unresolve "$thread_id" || true
+      touchstone_review_fix_rollback_thread "$job_dir" "$thread_id" || return 6
       return 1
     }
     IFS="$(printf '\t')" read -r resolved replied snapshot_matches <<EOF
@@ -487,15 +510,17 @@ EOF
     if [ "$resolved" != "true" ] \
       || [ "$replied" != "true" ] \
       || [ "$snapshot_matches" != "true" ]; then
-      [ "$resolved" != "true" ] || touchstone_review_fix_unresolve "$thread_id" || return 1
+      [ "$resolved" != "true" ] \
+        || touchstone_review_fix_rollback_thread "$job_dir" "$thread_id" \
+        || return 6
       return 5
     fi
     observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || {
-      touchstone_review_fix_unresolve "$thread_id" || true
+      touchstone_review_fix_rollback_thread "$job_dir" "$thread_id" || return 6
       return 1
     }
     if [ "$observed_head" != "$fix_head" ]; then
-      touchstone_review_fix_unresolve "$thread_id" || true
+      touchstone_review_fix_rollback_thread "$job_dir" "$thread_id" || return 6
       return 4
     fi
     touchstone_ship_write "$job_dir/review-fix" "resolved-$key" "$fix_head"
@@ -624,10 +649,6 @@ touchstone_review_fix_run() {
     max_iterations="$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT"
   fi
   branch="$(git -C "$worktree_path" rev-parse --abbrev-ref HEAD)" || return 1
-  base_ref="$(cd "$worktree_path" && touchstone_worker_default_ref)" || {
-    touchstone_review_fix_need_attention "$job_dir" "$worktree_path" base-ref-unavailable
-    return
-  }
   [ "$cleanup" = true ] && open_pr_args+=(--cleanup-worktree)
   iteration="$(touchstone_ship_read "$job_dir" review-fix-iteration)"
   case "$iteration" in
@@ -690,6 +711,9 @@ touchstone_review_fix_run() {
         elif [ "$resume_rc" -eq 5 ]; then
           touchstone_review_fix_need_attention "$job_dir" "$worktree_path" review-thread-changed
           return
+        elif [ "$resume_rc" -eq 6 ]; then
+          touchstone_review_fix_need_attention "$job_dir" "$worktree_path" thread-rollback-failed
+          return
         else
           touchstone_review_fix_need_attention "$job_dir" "$worktree_path" checkpoint-head-mismatch
           return
@@ -730,6 +754,17 @@ touchstone_review_fix_run() {
       touchstone_review_fix_need_attention "$job_dir" "$worktree_path" pr-not-open
       return
     }
+    phase_rc=0
+    touchstone_review_fix_capture_phase \
+      "$job_dir" "$phase_output" "$worktree_path" \
+      touchstone_review_fix_pr_base_ref "$worktree_path" "$pr_number" \
+      || phase_rc=$?
+    if [ "$phase_rc" -ne 0 ]; then
+      touchstone_review_fix_stop_for_phase \
+        "$job_dir" "$worktree_path" "$phase_rc" base-ref-unavailable
+      return
+    fi
+    base_ref="$(cat "$phase_output")"
     phase_rc=0
     touchstone_review_fix_capture_phase \
       "$job_dir" "$phase_output" "$worktree_path" touchstone_review_fix_repo_name \
@@ -950,6 +985,9 @@ touchstone_review_fix_run() {
       return
     elif [ "$finish_rc" -eq 5 ]; then
       touchstone_review_fix_need_attention "$job_dir" "$worktree_path" review-thread-changed
+      return
+    elif [ "$finish_rc" -eq 6 ]; then
+      touchstone_review_fix_need_attention "$job_dir" "$worktree_path" thread-rollback-failed
       return
     elif [ "$finish_rc" -ne 0 ]; then
       touchstone_review_fix_need_attention "$job_dir" "$worktree_path" thread-update-failed

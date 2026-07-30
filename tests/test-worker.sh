@@ -899,7 +899,9 @@ case "$command_name:$subcommand" in
     printf '77\n'
     ;;
   "pr:view")
-    if [ -f "${FAKE_HEAD_MOVED:-/nonexistent}" ]; then
+    if [[ " $* " == *" baseRefName "* ]]; then
+      printf '%s\n' "${FAKE_PR_BASE_BRANCH:-main}"
+    elif [ -f "${FAKE_HEAD_MOVED:-/nonexistent}" ]; then
       printf '%040d\n' 0
     elif [ -f "${FAKE_STALE_NEXT:-/nonexistent}" ]; then
       rm -f "$FAKE_STALE_NEXT"
@@ -950,6 +952,7 @@ case "$command_name:$subcommand" in
       [ "${FAKE_MOVE_HEAD_DURING_FINISH:-0}" = 1 ] && : >"$FAKE_HEAD_MOVED" || true
     elif [[ "$args" == *unresolveReviewThread* ]]; then
       printf 'unresolve\n' >>"$FAKE_UNRESOLVE_LOG"
+      [ "${FAKE_UNRESOLVE_FAIL:-0}" != 1 ] || exit 42
       rm -f "$FAKE_RESOLVED"
       : >"$FAKE_THREAD_ACTIVE"
     elif [[ "$args" == *resolveReviewThread* ]]; then
@@ -1444,6 +1447,30 @@ EOF
   unset FAKE_ADD_COMMENT_DURING_RESOLVE
   rm -f "$FAKE_LATE_COMMENT"
 
+  echo "==> Case c9b: a failed thread rollback persists a distinct handoff"
+  ROLLBACK_FAIL_WT="$TEST_DIR/rollback-fail-worktree"
+  git -C "$REPO" branch feat/review-rollback-fail main
+  git -C "$REPO" push -q origin feat/review-rollback-fail
+  git -C "$REPO" worktree add -q "$ROLLBACK_FAIL_WT" feat/review-rollback-fail
+  : >"$FAKE_THREAD_ACTIVE"
+  : >"$FAKE_UNRESOLVE_LOG"
+  printf 'thread-rollback-fail\n' >"$FAKE_THREAD_ID"
+  rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED" "$FAKE_LATE_COMMENT" "$FAKE_MERGED"
+  export FAKE_ADD_COMMENT_DURING_RESOLVE=1
+  export FAKE_UNRESOLVE_FAIL=1
+  TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+    "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+    --worktree "$ROLLBACK_FAIL_WT" --detach --review-fix --validation-command : >/dev/null
+  wait_for_status "$ROLLBACK_FAIL_WT" needs-attention "$STATUS" \
+    || fail "failed thread rollback did not enter needs-attention"
+  assert_contains "$STATUS" '"reason":"thread-rollback-failed"'
+  ROLLBACK_FAIL_JOB="$(touchstone_ship_job_dir "$ROLLBACK_FAIL_WT")"
+  assert_contains "$ROLLBACK_FAIL_JOB/review-fix/rollback-thread-id" '^thread-rollback-fail$'
+  [ -f "$FAKE_RESOLVED" ] || fail "rollback failure fixture did not preserve the remote resolved state"
+  [ ! -f "$FAKE_MERGED" ] || fail "failed thread rollback reached merge"
+  unset FAKE_ADD_COMMENT_DURING_RESOLVE FAKE_UNRESOLVE_FAIL
+  rm -f "$FAKE_LATE_COMMENT"
+
   echo "==> Case c10: another author's marker-shaped comment cannot authorize resolution"
   UNTRUSTED_MARKER_WT="$TEST_DIR/untrusted-marker-worktree"
   git -C "$REPO" branch feat/review-untrusted-marker main
@@ -1523,6 +1550,25 @@ EOF
   if touchstone_review_fix_effective_iterations 01 >/dev/null; then
     fail "non-canonical decimal iteration budget was accepted"
   fi
+  STACK_BASE_WT="$TEST_DIR/stack-base-worktree"
+  git -C "$REPO" branch stack-parent main
+  git -C "$REPO" worktree add -q "$STACK_BASE_WT" stack-parent
+  cat >"$STACK_BASE_WT/.touchstone-review.toml" <<'EOF'
+[review.pr_triggered]
+trusted_review_authors = ["stack-reviewer"]
+EOF
+  git -C "$STACK_BASE_WT" add .touchstone-review.toml
+  git -C "$STACK_BASE_WT" commit -qm "stack base policy"
+  git -C "$STACK_BASE_WT" push -q -u origin stack-parent
+  git -C "$REPO" worktree remove "$STACK_BASE_WT"
+  export FAKE_PR_BASE_BRANCH=stack-parent
+  STACK_BASE_REF="$(touchstone_review_fix_pr_base_ref "$WORKTREE" 77)" \
+    || fail "stacked PR base ref was not resolved"
+  [ "$STACK_BASE_REF" = origin/stack-parent ] \
+    || fail "stacked PR resolved base '$STACK_BASE_REF' instead of origin/stack-parent"
+  [ "$(touchstone_review_fix_trusted_authors "$WORKTREE" "$STACK_BASE_REF")" = stack-reviewer ] \
+    || fail "stacked PR trusted authors were not loaded from its base"
+  unset FAKE_PR_BASE_BRANCH
   CROSS_CHECKPOINT="$TEST_DIR/cross-checkpoint"
   mkdir -p "$CROSS_CHECKPOINT/review-fix"
   RESTART_HEAD="$(git -C "$WORKTREE" rev-parse HEAD)"
