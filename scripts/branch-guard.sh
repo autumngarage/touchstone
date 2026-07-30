@@ -83,7 +83,8 @@ target_cwd_from_cd=""
 commit_segment=""
 while IFS= read -r segment; do
   trimmed="$(printf '%s' "$segment" | sed -E 's/^[[:space:]]+//')"
-  if printf '%s' "$trimmed" | grep -qE '^git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
+  if printf '%s' "$trimmed" \
+    | grep -qE '^([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)*(env([[:space:]]+-[^[:space:]]+)*([[:space:]]+[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+)*[[:space:]]+)?git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
     commit_segment="$trimmed"
     break
   fi

@@ -141,6 +141,18 @@ WT_JSON="$(jq -nc \
   '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
 assert "allows 'git -C <worktree>' commit when worktree is on a feature branch" "0" \
   "$(run_hook "$BRANCH_GUARD" "$WT_JSON")"
+ASSIGNMENT_WT_JSON="$(jq -nc \
+  --arg cmd "FOO=1 git -C $WORKTREE commit -m 'wip'" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "preserves '-C <worktree>' after an assignment prefix" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$ASSIGNMENT_WT_JSON")"
+ENV_WT_JSON="$(jq -nc \
+  --arg cmd "env FOO=1 git -C $WORKTREE commit -m 'wip'" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "preserves '-C <worktree>' after an env prefix" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$ENV_WT_JSON")"
 
 # The command runner's explicit workdir is the execution context. It must
 # override the driver session cwd in both directions so the guard neither
@@ -311,6 +323,9 @@ assert "finds a confirmed push alias after a non-push no-verify command" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git commit --no-verify -m wip; git p --no-verify origin feat/test")")"
 assert "allows multiple confirmed non-push no-verify commands" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git commit --no-verify -m one; git ci --no-verify -m two")")"
+PROTECTED_PUSH_PROSE="mention git push --no""-verify"
+assert "treats protected push text in a commit message as data" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git commit -m '$PROTECTED_PUSH_PROSE'")")"
 
 # 8. with env var, allowed (and logged)
 EXIT_ALLOWED=0
