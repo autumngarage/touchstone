@@ -128,14 +128,20 @@ echo "    Touchstone: $OLD_SHA -> $CURRENT_SHA"
 
 retired_review_shim_manifest_entries() {
   local manifest="$PROJECT_DIR/.touchstone-manifest"
-  local rel_path
+  local manifest_entry
+  local has_conductor=false
+  local has_codex=false
 
   [ -f "$manifest" ] || return 0
-  for rel_path in scripts/conductor-review.sh scripts/codex-review.sh; do
-    if tr -d '\r' <"$manifest" | grep -qxF "$rel_path"; then
-      printf '%s\n' "$rel_path"
-    fi
-  done
+  while IFS= read -r manifest_entry || [ -n "$manifest_entry" ]; do
+    manifest_entry="${manifest_entry%$'\r'}"
+    case "$manifest_entry" in
+      scripts/conductor-review.sh) has_conductor=true ;;
+      scripts/codex-review.sh) has_codex=true ;;
+    esac
+  done <"$manifest"
+  [ "$has_conductor" = true ] && printf 'scripts/conductor-review.sh\n'
+  [ "$has_codex" = true ] && printf 'scripts/codex-review.sh\n'
   return 0
 }
 

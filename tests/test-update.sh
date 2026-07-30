@@ -119,6 +119,8 @@ chmod +x \
   "$RETIREMENT_PROJECT/scripts/codex-review.sh"
 printf '# retired helper\n' >"$RETIREMENT_PROJECT/lib/review-comment.sh"
 printf 'scripts/conductor-review.sh\r\nscripts/codex-review.sh\r\nlib/review-comment.sh\n' >>"$RETIREMENT_PROJECT/.touchstone-manifest"
+awk 'BEGIN { for (i = 0; i < 10000; i++) printf "legacy/extra/%d\n", i }' \
+  >>"$RETIREMENT_PROJECT/.touchstone-manifest"
 cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_RETIRED_REVIEW_HOOKS'
 repos:
   - repo: local
