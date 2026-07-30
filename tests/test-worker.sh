@@ -924,6 +924,16 @@ case "$command_name:$subcommand" in
   "repo:view")
     printf 'example/project\n'
     ;;
+  "api:--paginate")
+    request_base="${FAKE_REQUEST_BASE_OID:-$(git rev-parse main)}"
+    printf 'touchstone/review-request-intent\t2026-01-01T00:00:00Z\ttouchstone-test-user\tpr=77 base=%s\n' \
+      "$request_base"
+    printf 'touchstone/review-request-complete\t2026-01-01T00:00:01Z\ttouchstone-test-user\tpr=77 base=%s intent=2026-01-01T00:00:00Z trigger=2026-01-01T00:00:01Z\n' \
+      "$request_base"
+    ;;
+  api:repos/*/collaborators/*/permission)
+    printf 'write\n'
+    ;;
   "api:user")
     printf 'touchstone-test-user\n'
     ;;
@@ -945,10 +955,11 @@ case "$command_name:$subcommand" in
           comment_ids="$thread_id,follow-up-comment"
           snapshot_encoded="$FAKE_CHANGED_SNAPSHOT_ENCODED"
         fi
-        printf '%s\ttarget.txt\t1\tfalse\t%s\t%s\t%s\t%s\t%s\t%s\thttps://example.test/thread/%s\t%s\n' \
+        printf '%s\ttarget.txt\t1\tfalse\t%s\t%s\t%s\t%s\t%s\t%s\t%s\thttps://example.test/thread/%s\t%s\n' \
           "$thread_id" \
           "${FAKE_THREAD_AUTHOR:-chatgpt-codex-connector}" \
           "$review_head" \
+          "${FAKE_REVIEW_SUBMITTED_AT:-2026-01-01T00:00:02Z}" \
           "$body_truncated" \
           "$comment_count" \
           "$comment_ids" \
@@ -1295,6 +1306,27 @@ EOF
     || fail "prior-head review thread caused worktree edits"
   unset FAKE_REVIEW_HEAD
 
+  echo "==> Case c3b: prior-base review evidence cannot drive current-base edits"
+  PRIOR_BASE_WT="$TEST_DIR/prior-base-worktree"
+  git -C "$REPO" branch feat/review-prior-base main
+  git -C "$REPO" push -q origin feat/review-prior-base
+  git -C "$REPO" worktree add -q "$PRIOR_BASE_WT" feat/review-prior-base
+  : >"$FAKE_THREAD_ACTIVE"
+  printf 'thread-prior-base\n' >"$FAKE_THREAD_ID"
+  rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED"
+  export FAKE_REQUEST_BASE_OID=0000000000000000000000000000000000000000
+  TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+    "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+    --worktree "$PRIOR_BASE_WT" --detach --review-fix --validation-command : >/dev/null
+  wait_for_status "$PRIOR_BASE_WT" needs-attention "$STATUS" \
+    || fail "prior-base review evidence did not enter needs-attention"
+  assert_contains "$STATUS" '"reason":"review-request-base-mismatch"'
+  [ -z "$(git -C "$PRIOR_BASE_WT" status --porcelain)" ] \
+    || fail "prior-base review evidence caused worktree edits"
+  [ ! -f "$FAKE_REPLIED" ] || fail "prior-base review evidence received an autonomous reply"
+  [ ! -f "$FAKE_RESOLVED" ] || fail "prior-base review evidence was autonomously resolved"
+  unset FAKE_REQUEST_BASE_OID
+
   echo "==> Case c4: an explicitly empty trusted-author list trusts nobody"
   EMPTY_TRUST_REPO="$TEST_DIR/empty-trust-repo"
   EMPTY_TRUST_ORIGIN="$TEST_DIR/empty-trust-origin.git"
@@ -1627,11 +1659,27 @@ EOF
   [ "$(git -C "$WORKTREE" rev-parse "$STACK_BASE_REF")" = "$STACK_REWRITTEN_HEAD" ] \
     || fail "rewritten stacked PR base did not force-update its tracking ref"
   unset FAKE_PR_BASE_BRANCH FAKE_PR_URL FAKE_PR_BASE_OID
+  ROLLBACK_CHECKPOINT="$TEST_DIR/rollback-checkpoint"
+  mkdir -p "$ROLLBACK_CHECKPOINT/review-fix"
+  printf 'thread-checkpoint\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\t2026-01-01T00:00:02Z\tfalse\t1\tthread-checkpoint\t%s\turl\tbody\n' \
+    "$(git -C "$WORKTREE" rev-parse HEAD)" "$FAKE_SNAPSHOT_DIGEST" \
+    >"$ROLLBACK_CHECKPOINT/review-fix/threads.tsv"
+  ROLLBACK_CHECKPOINT_KEY="$(touchstone_review_fix_thread_key thread-checkpoint)"
+  touchstone_ship_write "$ROLLBACK_CHECKPOINT/review-fix" \
+    "resolved-$ROLLBACK_CHECKPOINT_KEY" "$(git -C "$WORKTREE" rev-parse HEAD)"
+  printf 'thread-checkpoint\n' >"$FAKE_THREAD_ID"
+  : >"$FAKE_UNRESOLVE_LOG"
+  : >"$FAKE_RESOLVED"
+  touchstone_review_fix_rollback_checkpoint_threads "$ROLLBACK_CHECKPOINT" \
+    || fail "checkpointed review thread rollback failed"
+  [ ! -f "$ROLLBACK_CHECKPOINT/review-fix/resolved-$ROLLBACK_CHECKPOINT_KEY" ] \
+    || fail "checkpointed review thread remained marked resolved after rollback"
+  assert_contains "$FAKE_UNRESOLVE_LOG" '^unresolve$'
   CROSS_CHECKPOINT="$TEST_DIR/cross-checkpoint"
   mkdir -p "$CROSS_CHECKPOINT/review-fix"
   RESTART_HEAD="$(git -C "$WORKTREE" rev-parse HEAD)"
   RESTART_BASE="$(git -C "$WORKTREE" rev-parse main)"
-  printf 'thread-cross\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\tfalse\t1\tthread-cross\t%s\turl\tbody\n' \
+  printf 'thread-cross\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\t2026-01-01T00:00:02Z\tfalse\t1\tthread-cross\t%s\turl\tbody\n' \
     "$(git -C "$WORKTREE" rev-parse HEAD~1)" "$FAKE_SNAPSHOT_DIGEST" \
     >"$CROSS_CHECKPOINT/review-fix/threads.tsv"
   touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" source-head "$(git -C "$WORKTREE" rev-parse HEAD~1)"
@@ -1655,7 +1703,7 @@ EOF
   echo "==> Case e2: restart checkpoint detects duplicate replies and resumes resolution"
   CHECKPOINT="$TEST_DIR/checkpoint"
   mkdir -p "$CHECKPOINT/review-fix"
-  printf 'thread-restart\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\tfalse\t1\tthread-restart\t%s\turl\tbody\n' \
+  printf 'thread-restart\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\t2026-01-01T00:00:02Z\tfalse\t1\tthread-restart\t%s\turl\tbody\n' \
     "$(git -C "$WORKTREE" rev-parse HEAD~1)" "$FAKE_SNAPSHOT_DIGEST" \
     >"$CHECKPOINT/review-fix/threads.tsv"
   touchstone_ship_write "$CHECKPOINT/review-fix" source-head "$(git -C "$WORKTREE" rev-parse HEAD~1)"
