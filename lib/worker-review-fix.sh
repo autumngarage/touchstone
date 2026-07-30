@@ -26,6 +26,7 @@ touchstone_review_fix_need_attention() {
   local job_dir="$1" worktree_path="$2" reason="$3"
   local last_validated_head
   TOUCHSTONE_REVIEW_FIX_REASON="$reason"
+  touchstone_ship_write "$job_dir" status finishing
   last_validated_head="$(touchstone_ship_read "$job_dir" last-validated-head)"
   touchstone_ship_write "$job_dir" reason "$reason"
   touchstone_ship_write "$job_dir" handoff-invariant \

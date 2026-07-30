@@ -294,6 +294,24 @@ if ! wait_for_ship_status "$DETACHED_WT" running "$DETACHED_STATUS"; then
 fi
 assert_contains "$DETACHED_STATUS" '"log_path":'
 assert_contains "$DETACHED_EVENTS" '"event":"worker_ship_started"'
+DETACHED_RUNNER_PID="$(
+  sed -nE 's/.*"ship":\{[^}]*"pid":([0-9]+).*/\1/p' "$DETACHED_STATUS"
+)"
+DETACHED_RUNNING_JOB_DIR="$(
+  dirname "$(sed -n 's/.*"log_path":"\([^"]*\)".*/\1/p' "$DETACHED_STATUS")"
+)"
+DETACHED_CLAIM_OWNER="$(sed -n 's/^owner-pid=//p' "$DETACHED_RUNNING_JOB_DIR/active")"
+if [ "$DETACHED_CLAIM_OWNER" != "$DETACHED_RUNNER_PID" ]; then
+  fail "detached runner did not take ownership of the active claim"
+fi
+if [ -z "$(sed -n 's/^owner-start=//p' "$DETACHED_RUNNING_JOB_DIR/active")" ]; then
+  fail "detached runner claim did not record process birth identity"
+fi
+DETACHED_RUNNER_PGID="$(ps -p "$DETACHED_RUNNER_PID" -o pgid= | tr -d '[:space:]')"
+TEST_PGID="$(ps -p "$$" -o pgid= | tr -d '[:space:]')"
+if [ -z "$DETACHED_RUNNER_PGID" ] || [ "$DETACHED_RUNNER_PGID" = "$TEST_PGID" ]; then
+  fail "detached runner remained in the invoking process group"
+fi
 
 if SHIP_STARTED_FILE="$TEST_DIR/duplicate-started" \
   "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
@@ -386,6 +404,7 @@ DETACHED_JOB_DIR="$(dirname "$(sed -n 's/.*"log_path":"\([^"]*\)".*/\1/p' "$DETA
 printf 'running\n' >"$DETACHED_JOB_DIR/status"
 printf '999999\n' >"$DETACHED_JOB_DIR/pid"
 mkdir -p "$DETACHED_JOB_DIR/active"
+printf '%s\n' "$(($(date +%s) - 2))" >"$DETACHED_JOB_DIR/suspected-stale-at"
 "$TOUCHSTONE_ROOT/bin/touchstone" worker status \
   --worktree "$DETACHED_WT" --json >"$DETACHED_STATUS"
 assert_contains "$DETACHED_STATUS" '"status":"failed"'
@@ -404,6 +423,7 @@ if [ ! -d "$DETACHED_JOB_DIR/active" ]; then
 fi
 
 printf '%s\n' "$(($(date +%s) - 10))" >"$DETACHED_JOB_DIR/started-epoch"
+printf '%s\n' "$(($(date +%s) - 2))" >"$DETACHED_JOB_DIR/suspected-stale-at"
 "$TOUCHSTONE_ROOT/bin/touchstone" worker status \
   --worktree "$DETACHED_WT" --json >"$DETACHED_STATUS"
 assert_contains "$DETACHED_STATUS" '"status":"failed"'
@@ -429,6 +449,141 @@ if ! touchstone_ship_claim_matches "$ATOMIC_JOB_DIR" "$ATOMIC_TOKEN"; then
   fail "refresh removed an aged claim whose owner was still live"
 fi
 touchstone_ship_release_claim "$ATOMIC_JOB_DIR" "$ATOMIC_TOKEN"
+
+echo "==> Case d2c: refresh tolerates a transient runner identity inspection failure"
+LIVE_OWNER_JOB_DIR="$TEST_DIR/live-owner-job"
+LIVE_OWNER_BIN="$TEST_DIR/live-owner-bin"
+LIVE_OWNER_PS_CALLS="$TEST_DIR/live-owner-ps-calls"
+mkdir -p "$LIVE_OWNER_BIN"
+cat >"$LIVE_OWNER_BIN/_ship-run" <<'EOF'
+#!/usr/bin/env bash
+sleep 10
+EOF
+chmod +x "$LIVE_OWNER_BIN/_ship-run"
+cat >"$LIVE_OWNER_BIN/ps" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+calls=0
+[ ! -f "$LIVE_OWNER_PS_CALLS" ] || calls="$(cat "$LIVE_OWNER_PS_CALLS")"
+calls=$((calls + 1))
+printf '%s\n' "$calls" >"$LIVE_OWNER_PS_CALLS"
+if [ "$calls" -eq 1 ]; then
+  exit 1
+fi
+exec "$REAL_PS" "$@"
+EOF
+chmod +x "$LIVE_OWNER_BIN/ps"
+"$LIVE_OWNER_BIN/_ship-run" "$LIVE_OWNER_JOB_DIR" &
+LIVE_RUNNER_PID=$!
+LIVE_OWNER_TOKEN="$(touchstone_ship_claim "$LIVE_OWNER_JOB_DIR" "$$")"
+touchstone_ship_transfer_claim "$LIVE_OWNER_JOB_DIR" "$LIVE_OWNER_TOKEN" "$LIVE_RUNNER_PID"
+touchstone_ship_write "$LIVE_OWNER_JOB_DIR" status running
+touchstone_ship_write "$LIVE_OWNER_JOB_DIR" pid "$LIVE_RUNNER_PID"
+LIVE_OWNER_REAL_PS="$(command -v ps)"
+PATH="$LIVE_OWNER_BIN:$PATH" \
+  LIVE_OWNER_PS_CALLS="$LIVE_OWNER_PS_CALLS" \
+  REAL_PS="$LIVE_OWNER_REAL_PS" \
+  touchstone_ship_refresh "$LIVE_OWNER_JOB_DIR"
+if [ "$(touchstone_ship_read "$LIVE_OWNER_JOB_DIR" status)" != "running" ] \
+  || ! touchstone_ship_claim_matches "$LIVE_OWNER_JOB_DIR" "$LIVE_OWNER_TOKEN" \
+  || [ "$(cat "$LIVE_OWNER_PS_CALLS")" -lt 2 ]; then
+  fail "refresh replaced a live runner with stale-runner after a transient ps failure"
+fi
+kill "$LIVE_RUNNER_PID"
+wait "$LIVE_RUNNER_PID" 2>/dev/null || true
+touchstone_ship_release_claim "$LIVE_OWNER_JOB_DIR" "$LIVE_OWNER_TOKEN"
+
+echo "==> Case d2d: a reused runner PID cannot keep a stale claim alive"
+REUSED_PID_JOB_DIR="$TEST_DIR/reused-pid-job"
+sleep 10 &
+UNRELATED_PID=$!
+REUSED_PID_TOKEN="$(touchstone_ship_claim "$REUSED_PID_JOB_DIR" "$UNRELATED_PID")"
+cat >"$REUSED_PID_JOB_DIR/active" <<EOF_REUSED_PID
+owner-pid=$UNRELATED_PID
+owner-start=stale-process-birth
+owner-token=$REUSED_PID_TOKEN
+EOF_REUSED_PID
+touchstone_ship_write "$REUSED_PID_JOB_DIR" status running
+touchstone_ship_write "$REUSED_PID_JOB_DIR" pid "$UNRELATED_PID"
+touchstone_ship_refresh "$REUSED_PID_JOB_DIR"
+if [ "$(touchstone_ship_read "$REUSED_PID_JOB_DIR" status)" != "running" ]; then
+  fail "one stale observation failed a runner before confirmation"
+fi
+touchstone_ship_write "$REUSED_PID_JOB_DIR" suspected-stale-at "$(($(date +%s) - 2))"
+touchstone_ship_refresh "$REUSED_PID_JOB_DIR"
+if [ "$(touchstone_ship_read "$REUSED_PID_JOB_DIR" status)" != "failed" ] \
+  || [ "$(touchstone_ship_read "$REUSED_PID_JOB_DIR" reason)" != "stale-runner" ]; then
+  fail "unrelated live process kept a stale runner claim alive"
+fi
+kill "$UNRELATED_PID"
+wait "$UNRELATED_PID" 2>/dev/null || true
+
+echo "==> Case d2e: terminal state is published before runner ownership is released"
+INTERLEAVE_JOB_DIR="$TEST_DIR/finish-interleave-job"
+INTERLEAVE_WT="$TEST_DIR/finish-interleave-worktree"
+INTERLEAVE_BIN="$TEST_DIR/finish-interleave-bin"
+INTERLEAVE_SIGNAL="$TEST_DIR/finish-interleave-signal"
+INTERLEAVE_GATE="$TEST_DIR/finish-interleave-gate"
+mkdir -p "$INTERLEAVE_WT/scripts" "$INTERLEAVE_BIN"
+cat >"$INTERLEAVE_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$INTERLEAVE_WT/scripts/open-pr.sh"
+cat >"$INTERLEAVE_BIN/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source_path="${@: -2:1}"
+destination="${@: -1}"
+if [ "$(basename "$destination")" = "status" ] \
+  && [ "$(cat "$source_path")" = "succeeded" ] \
+  && [ -e "$INTERLEAVE_WATCH_JOB_DIR/active" ]; then
+  : >"$INTERLEAVE_SIGNAL"
+  while [ ! -e "$INTERLEAVE_GATE" ]; do
+    sleep 0.05
+  done
+fi
+exec "$REAL_MV" "$@"
+EOF
+chmod +x "$INTERLEAVE_BIN/mv"
+PREDECESSOR_TOKEN="$(touchstone_ship_claim "$INTERLEAVE_JOB_DIR" "$$")"
+touchstone_ship_write "$INTERLEAVE_JOB_DIR" branch feat/finish-interleave
+PATH="$INTERLEAVE_BIN:$PATH" \
+  REAL_MV="$(command -v mv)" \
+  INTERLEAVE_WATCH_JOB_DIR="$INTERLEAVE_JOB_DIR" \
+  INTERLEAVE_SIGNAL="$INTERLEAVE_SIGNAL" \
+  INTERLEAVE_GATE="$INTERLEAVE_GATE" \
+  "$TOUCHSTONE_ROOT/scripts/worker.sh" _ship-run \
+  --job-dir "$INTERLEAVE_JOB_DIR" \
+  --worktree "$INTERLEAVE_WT" \
+  --claim-token "$PREDECESSOR_TOKEN" &
+PREDECESSOR_PID=$!
+touchstone_ship_transfer_claim "$INTERLEAVE_JOB_DIR" "$PREDECESSOR_TOKEN" "$PREDECESSOR_PID"
+for _ in $(seq 1 100); do
+  if [ -e "$INTERLEAVE_SIGNAL" ] || ! kill -0 "$PREDECESSOR_PID" 2>/dev/null; then
+    break
+  fi
+  sleep 0.05
+done
+if [ ! -e "$INTERLEAVE_SIGNAL" ]; then
+  fail "predecessor did not reach terminal publication gate"
+else
+  touchstone_ship_refresh "$INTERLEAVE_JOB_DIR"
+  if [ "$(touchstone_ship_read "$INTERLEAVE_JOB_DIR" status)" != "finishing" ]; then
+    fail "status polling replaced the predecessor's finishing state"
+  fi
+  if touchstone_ship_claim "$INTERLEAVE_JOB_DIR" "$$" >/dev/null; then
+    fail "successor claimed before predecessor published terminal state"
+  fi
+  : >"$INTERLEAVE_GATE"
+fi
+wait "$PREDECESSOR_PID" || fail "predecessor failed during terminal publication"
+if [ "$(touchstone_ship_read "$INTERLEAVE_JOB_DIR" status)" != "succeeded" ]; then
+  fail "predecessor did not publish succeeded terminal state"
+fi
+if touchstone_ship_claim_exists "$INTERLEAVE_JOB_DIR"; then
+  fail "predecessor did not release ownership after terminal publication"
+fi
 
 DEAD_OWNER_JOB_DIR="$TEST_DIR/dead-owner-claim-job"
 sleep 30 &
