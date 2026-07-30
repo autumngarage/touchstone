@@ -154,6 +154,8 @@ if ! (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-projec
 fi
 assert_contains "$TEST_DIR/update-retirement-dry-run.txt" '^WARNING: Retired local review shims'
 assert_not_contains "$TEST_DIR/update-retirement-dry-run.txt" '^ERROR:'
+assert_contains "$TEST_DIR/update-retirement-dry-run.txt" '^==> Updating touchstone-owned files:'
+assert_contains "$TEST_DIR/update-retirement-dry-run.txt" '^==> Summary:'
 
 if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
   >"$TEST_DIR/update-retirement-check.txt" 2>&1; then

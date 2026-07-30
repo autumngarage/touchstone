@@ -178,10 +178,9 @@ if [ -n "$RETIRED_REVIEW_SHIM_BLOCKERS" ]; then
     echo "       For a symlinked hook config, remove the retired entries from .touchstone-manifest in that commit." >&2
   fi
   echo "       Then rerun: touchstone update" >&2
-  if [ "$DRY_RUN" = true ]; then
-    exit 0
+  if [ "$DRY_RUN" != true ]; then
+    exit 1
   fi
-  exit 1
 fi
 
 if [ "$OLD_SHA" = "$CURRENT_SHA" ] && [ -z "$RETIRED_REVIEW_SHIM_ENTRIES" ]; then
