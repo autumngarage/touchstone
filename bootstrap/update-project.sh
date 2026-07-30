@@ -148,15 +148,24 @@ if [ -n "$RETIRED_REVIEW_SHIM_ENTRIES" ]; then
       RETIRED_REVIEW_SHIM_BLOCKERS="${RETIRED_REVIEW_SHIM_BLOCKERS}${rel_path}
 "
     fi
+    if [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ] \
+      && grep -qF "$rel_path" "$PROJECT_DIR/.pre-commit-config.yaml"; then
+      RETIRED_REVIEW_SHIM_BLOCKERS="${RETIRED_REVIEW_SHIM_BLOCKERS}.pre-commit-config.yaml -> ${rel_path}
+"
+    fi
   done <<<"$RETIRED_REVIEW_SHIM_ENTRIES"
 fi
 
 if [ -n "$RETIRED_REVIEW_SHIM_BLOCKERS" ]; then
-  echo "ERROR: Retired local review shims require a project-owned migration before Touchstone can update." >&2
+  if [ "$DRY_RUN" = true ]; then
+    echo "WARNING: Retired local review shims require a project-owned migration before Touchstone can update." >&2
+  else
+    echo "ERROR: Retired local review shims require a project-owned migration before Touchstone can update." >&2
+  fi
   printf '%s' "$RETIRED_REVIEW_SHIM_BLOCKERS" | sed '/^$/d; s/^/         - /' >&2
   echo "       Remove their hooks from project configuration, delete these files, and commit that change." >&2
   echo "       Then rerun: touchstone update" >&2
-  if [ "$DRY_RUN" = true ] || [ "$CHECK_ONLY" = true ]; then
+  if [ "$DRY_RUN" = true ]; then
     exit 0
   fi
   exit 1

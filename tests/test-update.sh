@@ -147,10 +147,22 @@ assert_contains "$RETIREMENT_PROJECT/scripts/codex-review.sh" 'legacy local rout
 assert_contains "$TEST_DIR/update-retirement-blocked.txt" 'Retired local review shims require a project-owned migration'
 assert_contains "$TEST_DIR/update-retirement-blocked.txt" 'Remove their hooks from project configuration'
 
+if ! (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --dry-run) \
+  >"$TEST_DIR/update-retirement-dry-run.txt" 2>&1; then
+  echo "FAIL: dry-run should report the migration blocker without failing" >&2
+  exit 1
+fi
+assert_contains "$TEST_DIR/update-retirement-dry-run.txt" '^WARNING: Retired local review shims'
+assert_not_contains "$TEST_DIR/update-retirement-dry-run.txt" '^ERROR:'
+
+if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/update-retirement-check.txt" 2>&1; then
+  echo "FAIL: check mode should fail while review shim migration blocks synchronization" >&2
+  exit 1
+fi
+assert_contains "$TEST_DIR/update-retirement-check.txt" '^ERROR: Retired local review shims'
+
 rm "$RETIREMENT_PROJECT/scripts/conductor-review.sh" "$RETIREMENT_PROJECT/scripts/codex-review.sh"
-cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_RETIRED_REVIEW_HOOKS_REMOVED'
-repos: []
-EOF_RETIRED_REVIEW_HOOKS_REMOVED
 if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
   >"$TEST_DIR/update-retirement-dirty-delete.txt" 2>&1; then
   echo "FAIL: update should block until shim deletion is committed" >&2
@@ -158,8 +170,19 @@ if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.
 fi
 assert_contains "$TEST_DIR/update-retirement-dirty-delete.txt" 'Retired local review shims require a project-owned migration'
 
+commit_all "$RETIREMENT_PROJECT" "delete retired review shims"
+if (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-retirement-hook-reference.txt" 2>&1; then
+  echo "FAIL: update should block while project-owned hooks reference retired shims" >&2
+  exit 1
+fi
+assert_contains "$TEST_DIR/update-retirement-hook-reference.txt" '.pre-commit-config.yaml -> scripts/conductor-review.sh'
+
+cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_RETIRED_REVIEW_HOOKS_REMOVED'
+repos: []
+EOF_RETIRED_REVIEW_HOOKS_REMOVED
 git -C "$TOUCHSTONE_ROOT" rev-parse HEAD >"$RETIREMENT_PROJECT/.touchstone-version"
-commit_all "$RETIREMENT_PROJECT" "remove project-owned review hooks and shims"
+commit_all "$RETIREMENT_PROJECT" "remove project-owned review hooks"
 
 (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
   >"$TEST_DIR/update-retirement-output.txt" 2>&1
