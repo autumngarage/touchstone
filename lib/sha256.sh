@@ -21,17 +21,25 @@ touchstone_sha256_program() {
 }
 
 touchstone_sha256_stream() {
-  local program
+  local program output digest
   program="$(touchstone_sha256_program)" || return $?
 
   case "$program" in
-    shasum) shasum -a 256 ;;
-    sha256sum) sha256sum ;;
+    shasum) output="$(shasum -a 256)" || return $? ;;
+    sha256sum) output="$(sha256sum)" || return $? ;;
     *)
       echo "ERROR: unsupported SHA-256 program: $program" >&2
       return 127
       ;;
-  esac | awk '{ print $1 }'
+  esac
+
+  IFS=' ' read -r digest _ <<<"$output"
+  if [[ ! "$digest" =~ ^[[:xdigit:]]{64}$ ]]; then
+    echo "ERROR: $program returned an invalid SHA-256 digest." >&2
+    return 1
+  fi
+
+  printf '%s\n' "$digest"
 }
 
 touchstone_sha256_file() {

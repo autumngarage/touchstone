@@ -21,21 +21,65 @@ SHA256_FALLBACK_BIN="$TEST_DIR/sha256-fallback-bin"
 mkdir -p "$SHA256_FALLBACK_BIN"
 cat >"$SHA256_FALLBACK_BIN/sha256sum" <<'EOF'
 #!/bin/bash
-printf 'windows-fallback-digest  -\n'
+printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  -\n'
 EOF
-cat >"$SHA256_FALLBACK_BIN/awk" <<'EOF'
-#!/bin/bash
-read -r digest _rest
-printf '%s\n' "$digest"
-EOF
-chmod +x "$SHA256_FALLBACK_BIN/sha256sum" "$SHA256_FALLBACK_BIN/awk"
+chmod +x "$SHA256_FALLBACK_BIN/sha256sum"
 fallback_digest="$(
   printf 'portable input\n' \
     | PATH="$SHA256_FALLBACK_BIN" TOUCHSTONE_ROOT="$TOUCHSTONE_ROOT" /bin/bash -c \
       'source "$TOUCHSTONE_ROOT/lib/sha256.sh"; touchstone_sha256_stream'
 )"
-if [ "$fallback_digest" != "windows-fallback-digest" ]; then
+if [ "$fallback_digest" != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ]; then
   echo "FAIL: SHA-256 adapter did not use the sha256sum fallback" >&2
+  exit 1
+fi
+
+echo "==> Test: SHA-256 adapter propagates checksum command failures"
+SHA256_BROKEN_BIN="$TEST_DIR/sha256-broken-bin"
+mkdir -p "$SHA256_BROKEN_BIN"
+cat >"$SHA256_BROKEN_BIN/shasum" <<'EOF'
+#!/bin/bash
+exit 23
+EOF
+cat >"$SHA256_BROKEN_BIN/sha256sum" <<'EOF'
+#!/bin/bash
+printf 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  -\n'
+EOF
+chmod +x "$SHA256_BROKEN_BIN/shasum" "$SHA256_BROKEN_BIN/sha256sum"
+set +e
+PATH="$SHA256_BROKEN_BIN" TOUCHSTONE_ROOT="$TOUCHSTONE_ROOT" /bin/bash -c \
+  'set +o pipefail; source "$TOUCHSTONE_ROOT/lib/sha256.sh"; touchstone_sha256_stream' \
+  >"$TEST_DIR/sha256-broken.out" 2>&1
+broken_status=$?
+set -e
+if [ "$broken_status" -ne 23 ]; then
+  echo "FAIL: SHA-256 adapter did not propagate the selected command failure" >&2
+  cat "$TEST_DIR/sha256-broken.out" >&2
+  exit 1
+fi
+if [ -s "$TEST_DIR/sha256-broken.out" ]; then
+  echo "FAIL: SHA-256 adapter emitted output after the selected command failed" >&2
+  cat "$TEST_DIR/sha256-broken.out" >&2
+  exit 1
+fi
+
+echo "==> Test: SHA-256 adapter rejects malformed command output"
+SHA256_MALFORMED_BIN="$TEST_DIR/sha256-malformed-bin"
+mkdir -p "$SHA256_MALFORMED_BIN"
+cat >"$SHA256_MALFORMED_BIN/shasum" <<'EOF'
+#!/bin/bash
+printf 'not-a-digest  -\n'
+EOF
+chmod +x "$SHA256_MALFORMED_BIN/shasum"
+if PATH="$SHA256_MALFORMED_BIN" TOUCHSTONE_ROOT="$TOUCHSTONE_ROOT" /bin/bash -c \
+  'source "$TOUCHSTONE_ROOT/lib/sha256.sh"; touchstone_sha256_stream' \
+  >"$TEST_DIR/sha256-malformed.out" 2>&1; then
+  echo "FAIL: SHA-256 adapter accepted malformed command output" >&2
+  exit 1
+fi
+if ! grep -q "returned an invalid SHA-256 digest" "$TEST_DIR/sha256-malformed.out"; then
+  echo "FAIL: SHA-256 adapter did not explain malformed command output" >&2
+  cat "$TEST_DIR/sha256-malformed.out" >&2
   exit 1
 fi
 
