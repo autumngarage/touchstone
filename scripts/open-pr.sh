@@ -70,6 +70,7 @@ BODY_FILE=""
 PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=true
 PR_TRIGGERED_REVIEW_PROVIDER="github-codex"
 OPEN_PR_REVIEW_CONFIG_ERROR=""
+OPEN_PR_REVIEW_REQUEST_COUNT=0
 REPO_FULL_NAME=""
 
 on_exit() {
@@ -510,6 +511,10 @@ request_pr_triggered_review() {
     echo "ERROR: failed to record durable review-request evidence for PR #$pr_number." >&2
     return 1
   fi
+  OPEN_PR_REVIEW_REQUEST_COUNT=$((OPEN_PR_REVIEW_REQUEST_COUNT + 1))
+  touchstone_emit_event review_requested \
+    worktree_path="$REPO_ROOT" pr_number="$pr_number" head_sha="$head_sha" base_sha="$base_sha" \
+    phase=open-pr request_count="$OPEN_PR_REVIEW_REQUEST_COUNT"
   echo "==> Requested GitHub Codex review for head $head_sha at base $base_sha."
 }
 
@@ -827,7 +832,8 @@ if [ -n "$EXISTING_PR_URL" ]; then
     echo ""
     echo "==> Auto-merging PR #$PR_NUMBER ..."
     # Don't exec — we need to verify mergedAt after merge-pr.sh returns.
-    if ! bash "$MERGE_SCRIPT" "$PR_NUMBER"; then
+    if ! TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT="$OPEN_PR_REVIEW_REQUEST_COUNT" \
+      bash "$MERGE_SCRIPT" "$PR_NUMBER"; then
       echo "ERROR: merge-pr.sh failed for PR #$PR_NUMBER." >&2
       exit 1
     fi
@@ -981,7 +987,8 @@ if [ "$AUTO_MERGE" = true ]; then
   # code but never positively confirmed merge happened, so any silent failure
   # post-review (network blip on `gh pr merge`, etc.) could end with exit 0
   # and a still-open PR. The new flow always asks GitHub.
-  if ! bash "$MERGE_SCRIPT" "$PR_NUMBER"; then
+  if ! TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT="$OPEN_PR_REVIEW_REQUEST_COUNT" \
+    bash "$MERGE_SCRIPT" "$PR_NUMBER"; then
     echo "ERROR: merge-pr.sh failed for PR #$PR_NUMBER." >&2
     exit 1
   fi

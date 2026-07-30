@@ -21,6 +21,8 @@
 #   fixing: worktree_path
 #   fix_pushed: worktree_path, pr_number, head_sha
 #   review_requested: worktree_path, pr_number, head_sha
+#   review_result: worktree_path, pr_number, head_sha, base_sha, status,
+#                  wait_seconds, request_count, request_at, result_at
 #   needs_attention: worktree_path
 #   worker_state_changed: worktree_path, from, to
 #   worker_abandoned: worktree_path, branch

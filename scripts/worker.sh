@@ -33,7 +33,7 @@ usage() {
   cat <<'EOF'
 Usage:
   touchstone worker spawn --task "<description>" --type fix|feat|chore|refactor|docs [--json]
-  touchstone worker status --worktree <path> [--json] [--show-log] [--log-lines <n>]
+  touchstone worker status --worktree <path> [--repo <path>] [--json] [--show-log] [--log-lines <n>]
   touchstone worker ship --worktree <path> [--detach] [--review-fix] [--cleanup]
                          [--max-fix-iterations <1-2>] [--max-fix-minutes <n>]
                          [--validation-command <command>] [--events-json <path>]
@@ -63,6 +63,10 @@ json_number_or_null_field() {
   else
     printf '"%s":null' "$key"
   fi
+}
+
+shell_quote() {
+  printf '%q' "$1"
 }
 
 sanitize_task_slug() {
@@ -108,7 +112,7 @@ worker_pr_field() {
 }
 
 worker_status_json() {
-  local worktree_path="$1" log_lines="${2:-0}"
+  local worktree_path="$1" log_lines="${2:-0}" repo_path="${3:-.}"
   local state branch head_sha has_uncommitted pr_number pr_url merged_at job_dir=""
 
   state="$(derive_worker_state "$worktree_path")"
@@ -136,7 +140,7 @@ worker_status_json() {
       fi
     fi
   fi
-  job_dir="$(touchstone_ship_job_dir "$worktree_path" || true)"
+  job_dir="$(touchstone_ship_job_dir "$worktree_path" "$repo_path" || true)"
 
   printf '{'
   json_field state "$state"
@@ -242,8 +246,8 @@ cmd_spawn() {
 }
 
 cmd_status() {
-  local worktree_path="" json=false show_log=false log_lines=20
-  local state branch head_sha has_uncommitted job_dir="" ship_status="" ship_pid="" ship_exit="" ship_log=""
+  local worktree_path="" repo_path="." json=false show_log=false log_lines=20
+  local state branch head_sha has_uncommitted job_dir="" ship_status="" ship_pid="" ship_exit="" ship_log="" ship_events=""
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -253,6 +257,14 @@ cmd_status() {
           return 2
         }
         worktree_path="$2"
+        shift 2
+        ;;
+      --repo)
+        [ "$#" -ge 2 ] || {
+          echo "ERROR: --repo requires a path." >&2
+          return 2
+        }
+        repo_path="$2"
         shift 2
         ;;
       --json)
@@ -293,12 +305,13 @@ cmd_status() {
     return 2
   }
   worktree_path="$(touchstone_ship_normalize_worktree_path "$worktree_path" || printf '%s' "$worktree_path")"
+  repo_path="$(touchstone_ship_normalize_worktree_path "$repo_path" || printf '%s' "$repo_path")"
 
   if [ "$json" = true ]; then
     if [ "$show_log" = true ]; then
-      worker_status_json "$worktree_path" "$log_lines"
+      worker_status_json "$worktree_path" "$log_lines" "$repo_path"
     else
-      worker_status_json "$worktree_path"
+      worker_status_json "$worktree_path" 0 "$repo_path"
     fi
     return 0
   fi
@@ -312,7 +325,7 @@ cmd_status() {
     head_sha="$(worker_head_sha "$worktree_path")"
     has_uncommitted="$(worker_has_uncommitted "$worktree_path")"
   fi
-  job_dir="$(touchstone_ship_job_dir "$worktree_path" || true)"
+  job_dir="$(touchstone_ship_job_dir "$worktree_path" "$repo_path" || true)"
   echo "Worker state: $state"
   [ -n "$branch" ] && echo "Branch: $branch"
   [ -n "$head_sha" ] && echo "Head: $head_sha"
@@ -327,10 +340,16 @@ cmd_status() {
     ship_pid="$(touchstone_ship_read "$job_dir" pid)"
     ship_exit="$(touchstone_ship_read "$job_dir" exit-code)"
     ship_log="$job_dir/ship.log"
+    ship_events="$(touchstone_ship_read "$job_dir" events-path)"
     echo "Ship job: ${ship_status:-unknown}"
     [ -n "$ship_pid" ] && echo "Ship PID: $ship_pid"
     [ -n "$ship_exit" ] && echo "Ship exit code: $ship_exit"
     echo "Ship log: $ship_log"
+    [ -n "$ship_events" ] && echo "Ship events: $ship_events"
+    if [ "$ship_status" = "needs-attention" ]; then
+      echo "Reason: $(touchstone_ship_read "$job_dir" reason)"
+      printf 'Take over: touchstone worker takeover --worktree %s\n' "$(shell_quote "$worktree_path")"
+    fi
     if [ "$show_log" = true ] && [ -f "$ship_log" ]; then
       echo "--- Ship log (last $log_lines lines) ---"
       tail -n "$log_lines" "$ship_log"
@@ -487,7 +506,13 @@ cmd_ship_runner() {
   if [ "$exit_code" -eq 0 ]; then
     finish_runner succeeded 0
   else
-    finish_runner failed "$exit_code" open-pr-failed
+    touchstone_ship_write "$job_dir" handoff-invariant \
+      "The detached owner stopped after the project shipping path returned nonzero."
+    touchstone_ship_write "$job_dir" handoff-validation \
+      "Inspect the PR and ship log before changing the branch."
+    touchstone_ship_write "$job_dir" handoff-non-goals \
+      "No autonomous review fix was attempted."
+    finish_runner needs-attention "$exit_code" shipping-needs-attention
   fi
   exit "$exit_code"
 }
@@ -496,7 +521,7 @@ cmd_ship() {
   local worktree_path="" cleanup=false events_json="" detach=false review_fix=false
   local max_fix_iterations="$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT"
   local max_fix_minutes=45 validation_command=""
-  local requested_fix_iterations="" job_dir="" runner_pid="" branch="" started_at=""
+  local requested_fix_iterations="" job_dir="" runner_pid="" branch="" started_at="" repo_path=""
   local claim_token="" args runner_args
   local monitor_was_enabled=false
   args=(--auto-merge)
@@ -594,6 +619,9 @@ cmd_ship() {
     return 1
   }
   worktree_path="$(touchstone_ship_normalize_worktree_path "$worktree_path")"
+  if [ -z "$events_json" ] && [ -n "${TOUCHSTONE_EVENTS_FILE:-}" ]; then
+    events_json="$TOUCHSTONE_EVENTS_FILE"
+  fi
   if [ -n "$events_json" ]; then
     case "$events_json" in
       /*) ;;
@@ -622,14 +650,17 @@ cmd_ship() {
     echo "ERROR: could not resolve detached ship state for $worktree_path" >&2
     return 1
   }
+  [ -n "$events_json" ] || events_json="$job_dir/events.ndjson"
   touchstone_ship_refresh "$job_dir"
   claim_token="$(touchstone_ship_claim "$job_dir" "$$")" || {
     echo "ERROR: a detached ship job is already active for $worktree_path" >&2
-    echo "       Inspect it with: touchstone worker status --worktree '$worktree_path' --show-log" >&2
+    printf '       Inspect it with: touchstone worker status --worktree %s --show-log\n' \
+      "$(shell_quote "$worktree_path")" >&2
     return 1
   }
 
   branch="$(worker_branch "$worktree_path")"
+  repo_path="$(worktree_manager_path "$worktree_path")"
   started_at="$(touchstone_ship_now)"
   : >"$job_dir/ship.log"
   touchstone_ship_write "$job_dir" started-at "$started_at"
@@ -640,6 +671,7 @@ cmd_ship() {
   touchstone_ship_write "$job_dir" pid ""
   touchstone_ship_write "$job_dir" child-pid ""
   touchstone_ship_write "$job_dir" suspected-stale-at ""
+  touchstone_ship_write "$job_dir" events-path "$events_json"
   touchstone_ship_write "$job_dir" last-validated-head ""
   touchstone_ship_write "$job_dir" handoff-invariant ""
   touchstone_ship_write "$job_dir" handoff-validation ""
@@ -687,11 +719,15 @@ cmd_ship() {
   echo "Detached ship started."
   echo "Worktree: $worktree_path"
   echo "PID: $runner_pid"
-  echo "Status: touchstone worker status --worktree '$worktree_path' --show-log"
+  printf 'Status: touchstone worker status --repo %s --worktree %s --show-log\n' \
+    "$(shell_quote "$repo_path")" "$(shell_quote "$worktree_path")"
+  printf 'Take over: touchstone worker takeover --worktree %s\n' "$(shell_quote "$worktree_path")"
+  echo "Events: $events_json"
 }
 
 cmd_takeover() {
-  local worktree_path="" force=false job_dir="" status="" pid="" waited=0
+  local worktree_path="" force=false job_dir="" status="" pid="" waited=0 persisted_events_path=""
+  local TOUCHSTONE_EVENTS_FILE="${TOUCHSTONE_EVENTS_FILE:-}"
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -731,6 +767,8 @@ cmd_takeover() {
     echo "No detached ship job exists for $worktree_path."
     return 0
   }
+  persisted_events_path="$(touchstone_ship_read "$job_dir" events-path)"
+  [ -z "$persisted_events_path" ] || TOUCHSTONE_EVENTS_FILE="$persisted_events_path"
 
   touchstone_ship_refresh "$job_dir"
   status="$(touchstone_ship_read "$job_dir" status)"
@@ -778,11 +816,14 @@ cmd_takeover() {
       touchstone_ship_release_claim \
         "$job_dir" "$(touchstone_ship_claim_value "$job_dir" owner-token)" 2>/dev/null || true
       touchstone_emit_event worker_ship_takeover worktree_path="$worktree_path" pid="$pid"
-      echo "Autonomous review-fix job needs attention."
+      echo "Detached shipping needs attention."
       echo "Reason: $(touchstone_ship_read "$job_dir" reason)"
-      echo "Invariant: $(touchstone_ship_read "$job_dir" handoff-invariant)"
-      echo "Validation: $(touchstone_ship_read "$job_dir" handoff-validation)"
-      echo "Non-goals: $(touchstone_ship_read "$job_dir" handoff-non-goals)"
+      [ -z "$(touchstone_ship_read "$job_dir" handoff-invariant)" ] \
+        || echo "Invariant: $(touchstone_ship_read "$job_dir" handoff-invariant)"
+      [ -z "$(touchstone_ship_read "$job_dir" handoff-validation)" ] \
+        || echo "Validation: $(touchstone_ship_read "$job_dir" handoff-validation)"
+      [ -z "$(touchstone_ship_read "$job_dir" handoff-non-goals)" ] \
+        || echo "Non-goals: $(touchstone_ship_read "$job_dir" handoff-non-goals)"
       echo "Worktree preserved for takeover: $worktree_path"
       return 0
       ;;
@@ -896,7 +937,8 @@ cmd_abandon() {
     case "$ship_status" in
       starting | running | review-waiting | fixing | finishing)
         echo "ERROR: refusing to abandon $worktree_path while detached shipping is active." >&2
-        echo "       Run: touchstone worker takeover --worktree '$worktree_path'" >&2
+        printf '       Run: touchstone worker takeover --worktree %s\n' \
+          "$(shell_quote "$worktree_path")" >&2
         return 1
         ;;
     esac

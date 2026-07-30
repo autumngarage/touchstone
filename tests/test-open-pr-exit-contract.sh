@@ -32,12 +32,15 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 ERRORS=0
 
 REPO_DIR="$TEST_DIR/repo"
+OPEN_PR_WORKTREE_PATH=""
 SCRIPT_DIR="$TEST_DIR/scripts"
 FAKE_BIN="$TEST_DIR/bin"
 mkdir -p "$REPO_DIR" "$SCRIPT_DIR" "$FAKE_BIN"
 
 cp "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$SCRIPT_DIR/open-pr.sh"
 cp "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$SCRIPT_DIR/issue-claim-check.sh"
+mkdir -p "$TEST_DIR/lib"
+cp "$TOUCHSTONE_ROOT/lib/events.sh" "$TEST_DIR/lib/events.sh"
 chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/issue-claim-check.sh"
 
 # Real git inside a fresh repo with a feature branch checked out, so the
@@ -53,6 +56,7 @@ git -C "$REPO_DIR" checkout -b feat/test >/dev/null 2>&1
 printf 'change\n' >>"$REPO_DIR/file.txt"
 git -C "$REPO_DIR" add file.txt
 git -C "$REPO_DIR" commit -m "test change" >/dev/null 2>&1
+OPEN_PR_WORKTREE_PATH="$(cd "$REPO_DIR" && pwd -P)"
 
 # Mock gh — behaviour controlled by env vars so each scenario reuses one mock.
 # GH_PR_STATE   — value returned for `gh pr view --json state,mergedAt`
@@ -240,6 +244,8 @@ chmod +x "$FAKE_BIN/git"
 cat >"$SCRIPT_DIR/merge-pr.sh" <<'EOF'
 #!/usr/bin/env bash
 echo "[mock merge-pr.sh] called for PR $1"
+printf '%s\n' "${TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT:-}" \
+  >"$MERGE_PR_REQUEST_COUNT_FILE"
 exit "${MERGE_PR_EXIT:-0}"
 EOF
 chmod +x "$SCRIPT_DIR/merge-pr.sh"
@@ -259,6 +265,8 @@ run_open_pr() {
       GH_PR_AUTHOR="${GH_PR_AUTHOR:-alice}" \
       GH_REQUIRE_REPO_FOR_MERGED_AT="${GH_REQUIRE_REPO_FOR_MERGED_AT:-0}" \
       MERGE_PR_EXIT="${MERGE_PR_EXIT:-0}" \
+      MERGE_PR_REQUEST_COUNT_FILE="$TEST_DIR/merge-pr-request-count" \
+      TOUCHSTONE_EVENTS_FILE="$TEST_DIR/open-pr-events.ndjson" \
       bash "$SCRIPT_DIR/open-pr.sh" --auto-merge "$@"
   )
 }
@@ -274,6 +282,9 @@ GH_PR_STATE="MERGED" GH_MERGED_AT="2026-04-28T12:00:00Z" GH_HAS_EXISTING_PR=0 ME
 
 if [ "$RC" = "0" ] \
   && grep -q '==> Verified: PR #123 merged at 2026-04-28T12:00:00Z' "$OUT" \
+  && grep -q '^1$' "$TEST_DIR/merge-pr-request-count" \
+  && grep -q "\"event\":\"review_requested\".*\"worktree_path\":\"$OPEN_PR_WORKTREE_PATH\".*\"phase\":\"open-pr\".*\"request_count\":1" \
+    "$TEST_DIR/open-pr-events.ndjson" \
   && ! grep -q 'ORPHAN RISK' "$OUT"; then
   echo "    PASS"
 else

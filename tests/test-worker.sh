@@ -23,6 +23,14 @@ assert_contains() {
   fi
 }
 
+assert_contains_fixed() {
+  local file="$1" text="$2"
+  if ! grep -qF "$text" "$file"; then
+    fail "expected $file to contain: $text"
+    [ -f "$file" ] && cat "$file" >&2
+  fi
+}
+
 assert_json_value() {
   local file="$1" key="$2" expected="$3"
   if ! grep -q "\"$key\":\"$expected\"" "$file"; then
@@ -230,6 +238,7 @@ EOF
 chmod +x "$SHIP_WT/scripts/open-pr.sh"
 SHIP_ARGS_FILE="$TEST_DIR/ship-args" \
   SHIP_EVENTS_FILE="$TEST_DIR/ship-events-env" \
+  TOUCHSTONE_EVENTS_FILE="$TEST_DIR/inherited-ship-events.ndjson" \
   "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
   --worktree "$SHIP_WT" \
   --cleanup \
@@ -239,12 +248,25 @@ if ! grep -q -- '--auto-merge --cleanup-worktree' "$TEST_DIR/ship-args"; then
   cat "$TEST_DIR/ship-args" >&2
 fi
 if ! grep -q "$TEST_DIR/ship-events.ndjson" "$TEST_DIR/ship-events-env"; then
-  fail "worker ship did not forward TOUCHSTONE_EVENTS_FILE"
+  fail "explicit worker ship events path did not override inherited TOUCHSTONE_EVENTS_FILE"
+fi
+
+SHIP_ARGS_FILE="$TEST_DIR/ship-inherited-args" \
+  SHIP_EVENTS_FILE="$TEST_DIR/ship-inherited-events-env" \
+  TOUCHSTONE_EVENTS_FILE="$TEST_DIR/inherited-ship-events.ndjson" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$SHIP_WT"
+if ! grep -q "$TEST_DIR/inherited-ship-events.ndjson" "$TEST_DIR/ship-inherited-events-env"; then
+  fail "worker ship did not preserve inherited TOUCHSTONE_EVENTS_FILE"
 fi
 
 echo "==> Case d2: detached worker ship persists lifecycle state and supports takeover"
-DETACHED_WT="$TEST_DIR/detached-ship-worktree"
+DETACHED_WT="$TEST_DIR/detached ship 'worktree"
 git -C "$REPO" worktree add -q "$DETACHED_WT" -b feat/detached-ship-test main
+DETACHED_WT="$(cd "$DETACHED_WT" && pwd -P)"
+DETACHED_REPO="$(cd "$REPO" && pwd -P)"
+QUOTED_DETACHED_WT="$(printf '%q' "$DETACHED_WT")"
+QUOTED_DETACHED_REPO="$(printf '%q' "$DETACHED_REPO")"
 
 write_detached_open_pr() {
   local worktree="$1"
@@ -312,6 +334,11 @@ TEST_PGID="$(ps -p "$$" -o pgid= | tr -d '[:space:]')"
 if [ -z "$DETACHED_RUNNER_PGID" ] || [ "$DETACHED_RUNNER_PGID" = "$TEST_PGID" ]; then
   fail "detached runner remained in the invoking process group"
 fi
+assert_contains_fixed "$TEST_DIR/detached-start.out" \
+  "Status: touchstone worker status --repo $QUOTED_DETACHED_REPO --worktree $QUOTED_DETACHED_WT --show-log"
+assert_contains_fixed "$TEST_DIR/detached-start.out" \
+  "Take over: touchstone worker takeover --worktree $QUOTED_DETACHED_WT"
+assert_contains "$TEST_DIR/detached-start.out" "Events: $DETACHED_EVENTS"
 
 if SHIP_STARTED_FILE="$TEST_DIR/duplicate-started" \
   "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
@@ -319,6 +346,8 @@ if SHIP_STARTED_FILE="$TEST_DIR/duplicate-started" \
   fail "detached ship should refuse a duplicate active job"
 fi
 assert_contains "$TEST_DIR/detached-duplicate.out" 'already active'
+assert_contains_fixed "$TEST_DIR/detached-duplicate.out" \
+  "Inspect it with: touchstone worker status --worktree $QUOTED_DETACHED_WT --show-log"
 
 if "$TOUCHSTONE_ROOT/bin/touchstone" worker abandon \
   --worktree "$DETACHED_WT" --force >"$TEST_DIR/detached-abandon.out" 2>&1; then
@@ -347,6 +376,14 @@ if ! wait_for_ship_status "$DETACHED_WT" succeeded "$DETACHED_STATUS"; then
   cat "$DETACHED_STATUS" >&2
 fi
 assert_contains "$DETACHED_STATUS" '"exit_code":0'
+
+git -C "$DETACHED_WT" checkout -q --detach
+git -C "$REPO" branch -D feat/detached-ship-test >/dev/null
+"$TOUCHSTONE_ROOT/bin/touchstone" worker status \
+  --worktree "$DETACHED_WT" --json >"$DETACHED_STATUS"
+assert_contains "$DETACHED_STATUS" '"status":"succeeded"'
+assert_contains "$DETACHED_STATUS" '"exit_code":0'
+git -C "$DETACHED_WT" switch -q -c feat/detached-ship-test
 
 RELATIVE_EVENTS_CALLER="$TEST_DIR/relative-events-caller"
 mkdir -p "$RELATIVE_EVENTS_CALLER"
@@ -380,10 +417,12 @@ fi
 assert_contains "$TEST_DIR/detached-log.out" 'detached runner finished'
 
 git -C "$REPO" worktree remove --force "$DETACHED_WT"
+REMOVED_STATUS_CALLER="$TEST_DIR/removed-status-caller"
+mkdir -p "$REMOVED_STATUS_CALLER"
 (
-  cd "$REPO"
+  cd "$REMOVED_STATUS_CALLER"
   "$TOUCHSTONE_ROOT/bin/touchstone" worker status \
-    --worktree "$DETACHED_WT" --json >"$DETACHED_STATUS"
+    --repo "$DETACHED_REPO" --worktree "$DETACHED_WT" --json >"$DETACHED_STATUS"
 )
 assert_contains "$DETACHED_STATUS" '"status":"succeeded"'
 assert_contains "$DETACHED_STATUS" '"exit_code":0'
@@ -394,11 +433,23 @@ SHIP_STARTED_FILE="$TEST_DIR/failure-started" \
   SHIP_EXIT_CODE=23 \
   "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
   --worktree "$DETACHED_WT" --detach >/dev/null
-if ! wait_for_ship_status "$DETACHED_WT" failed "$DETACHED_STATUS"; then
-  fail "detached ship did not persist failure"
+if ! wait_for_ship_status "$DETACHED_WT" needs-attention "$DETACHED_STATUS"; then
+  fail "detached ship did not preserve a nonzero result for takeover"
   cat "$DETACHED_STATUS" >&2
 fi
 assert_contains "$DETACHED_STATUS" '"exit_code":23'
+assert_contains "$DETACHED_STATUS" '"reason":"shipping-needs-attention"'
+assert_contains "$DETACHED_STATUS" '"events_path":"[^"]*/events.ndjson"'
+DEFAULT_EVENTS_PATH="$(sed -n 's/.*"events_path":"\([^"]*\)".*/\1/p' "$DETACHED_STATUS")"
+assert_contains "$DEFAULT_EVENTS_PATH" '"event":"worker_ship_finished"'
+"$TOUCHSTONE_ROOT/bin/touchstone" worker status \
+  --worktree "$DETACHED_WT" --show-log >"$TEST_DIR/detached-needs-attention.out"
+assert_contains "$TEST_DIR/detached-needs-attention.out" "Take over: touchstone worker takeover"
+assert_contains_fixed "$TEST_DIR/detached-needs-attention.out" \
+  "Take over: touchstone worker takeover --worktree $QUOTED_DETACHED_WT"
+"$TOUCHSTONE_ROOT/bin/touchstone" worker takeover \
+  --worktree "$DETACHED_WT" >"$TEST_DIR/detached-needs-attention-takeover.out"
+assert_contains "$DEFAULT_EVENTS_PATH" '"event":"worker_ship_takeover"'
 
 DETACHED_JOB_DIR="$(dirname "$(sed -n 's/.*"log_path":"\([^"]*\)".*/\1/p' "$DETACHED_STATUS")")"
 printf 'running\n' >"$DETACHED_JOB_DIR/status"

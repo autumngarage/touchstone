@@ -70,6 +70,14 @@ bash setup.sh
 
 Touchstone requests GitHub Codex review automatically for every pushed PR head. The merge helper waits for trusted exact-head review, deterministic preflight, required checks, and resolved review threads before merging. No local model router or API key is required.
 
+Routine shipping is non-blocking:
+
+```bash
+touchstone worker ship --worktree "$PWD" --detach
+```
+
+The command prints durable status and takeover commands. A clean PR merges through the normal gate; actionable feedback preserves the worktree as `needs-attention` for the driving CLI to fix.
+
 See [hooks/README.md](hooks/README.md) for the review contract.
 
 ### Choose a Git workflow
@@ -255,6 +263,7 @@ Run `touchstone skills` to list visible project and user skills, and `touchstone
 
 - **open-pr.sh** — `git push` + `gh pr create` with your PR template. Idempotent.
 - **merge-pr.sh** — Sanity-check mergeability, block unresolved PR feedback, run AI review, squash-merge, delete branch, and sync main.
+- **worker ship** — Hand the same PR/review/check/merge path to a durable wait-only background owner.
 - **cleanup-branches.sh** — Dry-run by default. Never deletes unmerged work.
 
 ## Project structure
