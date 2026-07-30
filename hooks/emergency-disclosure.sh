@@ -899,6 +899,57 @@ plain_git_push_without_bypass() {
   [ "$seen_push" = "true" ]
 }
 
+plain_git_builtin_non_push() {
+  local segment="$1"
+  local word="" seen_git=false command_seen=false expect_global_value=false executable_segment=""
+
+  executable_segment="$(printf '%s' "$segment" | without_single_quoted_literals)"
+  if printf '%s' "$executable_segment" \
+    | grep -qE '[$`]|[<>]\('; then
+    return 1
+  fi
+
+  while IFS= read -r word; do
+    if [ "$seen_git" = "false" ]; then
+      case "$word" in
+        if | then | elif | else | while | until | do | ! | time | command | builtin | env | "(" | ")" | "{" | "}")
+          [ "$command_seen" = "false" ] || return 1
+          ;;
+        [A-Za-z_][A-Za-z0-9_]*=*)
+          [ "$command_seen" = "false" ] || return 1
+          ;;
+        git | */git)
+          seen_git=true
+          command_seen=true
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+    elif [ "$expect_global_value" = "true" ]; then
+      expect_global_value=false
+    else
+      case "$word" in
+        -C | -c | --git-dir | --work-tree | --namespace | --config-env)
+          expect_global_value=true
+          ;;
+        --no-pager | --paginate | -P | -p | --bare | --no-replace-objects)
+          ;;
+        -*)
+          ;;
+        commit | commit-tree)
+          return 0
+          ;;
+        *)
+          return 1
+          ;;
+      esac
+    fi
+  done < <(printf '%s' "$segment" | shell_words)
+
+  return 1
+}
+
 segment_is_static_nonprotected() {
   local segment="$1"
   local first_word=""
@@ -906,6 +957,7 @@ segment_is_static_nonprotected() {
   static_data_sink_segment "$segment" && return 0
   segment_is_safe_code_carrier "$segment" && return 0
   plain_git_push_without_bypass "$segment" && return 0
+  plain_git_builtin_non_push "$segment" && return 0
   [ -n "$(simple_assignment_record "$segment")" ] && return 0
   first_word="$(printf '%s' "$segment" | shell_words | sed -n '1p')"
   case "$first_word" in

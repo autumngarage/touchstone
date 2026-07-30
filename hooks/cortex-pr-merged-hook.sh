@@ -159,15 +159,6 @@ resolve_default_branch() {
   printf '%s' "${resolved:-main}"
 }
 
-repo_allows_auto_merge() {
-  local repo_slug
-  repo_slug="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)"
-  if [ -z "$repo_slug" ]; then
-    return 1
-  fi
-  gh api "repos/$repo_slug" --jq '.allow_auto_merge' 2>/dev/null
-}
-
 merge_journal_pr_synchronously() {
   local pr_number="$1" pr_url="$2" expected_head="$3"
   local attempt pr_state merge_state mergeable failed_checks observed_head view_output view_status
@@ -553,24 +544,9 @@ if [ -z "$pr_number" ]; then
 fi
 
 journal_head="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
-allow_auto_merge="$(cd "$PROJECT_DIR" && repo_allows_auto_merge || true)"
 merge_status=0
-if [ "$allow_auto_merge" = "true" ]; then
-  (cd "$PROJECT_DIR" && gh pr merge "$pr_number" --squash --delete-branch --auto >/dev/null 2>&1) \
-    || merge_status=$?
-  if [ "$merge_status" -ne 0 ]; then
-    log "cortex-pr-merged-hook: 'gh pr merge --auto' on #${pr_number} returned ${merge_status}; falling back to a bounded synchronous merge."
-    merge_status=0
-    (cd "$PROJECT_DIR" && merge_journal_pr_synchronously "$pr_number" "$pr_url" "$journal_head") \
-      || merge_status=$?
-  fi
-else
-  if [ "$allow_auto_merge" != "false" ]; then
-    log "cortex-pr-merged-hook: could not determine whether repository auto-merge is enabled; using the bounded synchronous merge path."
-  fi
-  (cd "$PROJECT_DIR" && merge_journal_pr_synchronously "$pr_number" "$pr_url" "$journal_head") \
-    || merge_status=$?
-fi
+(cd "$PROJECT_DIR" && merge_journal_pr_synchronously "$pr_number" "$pr_url" "$journal_head") \
+  || merge_status=$?
 if [ "$merge_status" -ne 0 ]; then
   git -C "$PROJECT_DIR" checkout "$default_branch" >/dev/null 2>&1 || true
   exit 1

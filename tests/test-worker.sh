@@ -1716,6 +1716,22 @@ EOF
   fi
   [ ! -f "$FAKE_REPLIED" ] || fail "cross-PR checkpoint replied to an old thread"
   [ ! -f "$FAKE_RESOLVED" ] || fail "cross-PR checkpoint resolved an old thread"
+  touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" pr-number 77
+  CROSS_KEY="$(touchstone_review_fix_thread_key thread-cross)"
+  touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" "resolved-$CROSS_KEY" "$RESTART_HEAD"
+  : >"$FAKE_UNRESOLVE_LOG"
+  if touchstone_review_fix_resume_checkpoint \
+    "$CROSS_CHECKPOINT" "$WORKTREE" example/project 77 "$(printf '%040d' 0)"; then
+    fail "checkpoint resumed after the PR head changed"
+  else
+    CROSS_HEAD_EXIT=$?
+    [ "$CROSS_HEAD_EXIT" -eq 2 ] \
+      || fail "changed checkpoint head returned $CROSS_HEAD_EXIT instead of 2"
+  fi
+  [ ! -f "$CROSS_CHECKPOINT/review-fix/resolved-$CROSS_KEY" ] \
+    || fail "resume head mismatch left a checkpointed thread resolved"
+  [ "$(wc -l <"$FAKE_UNRESOLVE_LOG" | tr -d ' ')" -eq 1 ] \
+    || fail "resume head mismatch did not reopen its checkpointed thread"
 
   echo "==> Case e2: restart checkpoint detects duplicate replies and resumes resolution"
   CHECKPOINT="$TEST_DIR/checkpoint"

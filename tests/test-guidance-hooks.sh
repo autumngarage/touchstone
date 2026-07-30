@@ -141,6 +141,36 @@ WT_JSON="$(jq -nc \
   '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
 assert "allows 'git -C <worktree>' commit when worktree is on a feature branch" "0" \
   "$(run_hook "$BRANCH_GUARD" "$WT_JSON")"
+ASSIGNMENT_WT_JSON="$(jq -nc \
+  --arg cmd "FOO=1 git -C $WORKTREE commit -m 'wip'" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "preserves '-C <worktree>' after an assignment prefix" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$ASSIGNMENT_WT_JSON")"
+ENV_WT_JSON="$(jq -nc \
+  --arg cmd "env FOO=1 git -C $WORKTREE commit -m 'wip'" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "preserves '-C <worktree>' after an env prefix" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$ENV_WT_JSON")"
+GIT_DIR_WT_JSON="$(jq -nc \
+  --arg cmd "GIT_DIR=$TMPDIR/.git git -C $WORKTREE commit -m 'wip'" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "blocks assignment-overridden Git context despite feature '-C'" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$GIT_DIR_WT_JSON")"
+ENV_GIT_DIR_WT_JSON="$(jq -nc \
+  --arg cmd "env GIT_DIR=$TMPDIR/.git git -C $WORKTREE commit -m 'wip'" \
+  --arg cwd "$TMPDIR" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "blocks env-overridden Git context despite feature '-C'" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$ENV_GIT_DIR_WT_JSON")"
+FEATURE_GIT_DIR_JSON="$(jq -nc \
+  --arg cmd "GIT_DIR=$TMPDIR/.git git commit -m 'wip'" \
+  --arg cwd "$WORKTREE" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "blocks Git context override from a feature worktree" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$FEATURE_GIT_DIR_JSON")"
 
 # The command runner's explicit workdir is the execution context. It must
 # override the driver session cwd in both directions so the guard neither
@@ -311,6 +341,24 @@ assert "finds a confirmed push alias after a non-push no-verify command" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git commit --no-verify -m wip; git p --no-verify origin feat/test")")"
 assert "allows multiple confirmed non-push no-verify commands" "0" \
   "$(run_hook "$EMERGENCY" "$(mkjson "git commit --no-verify -m one; git ci --no-verify -m two")")"
+PROTECTED_PUSH_PROSE="mention git push --no""-verify"
+assert "treats protected push text in a commit message as data" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git commit -m '$PROTECTED_PUSH_PROSE'")")"
+SUBSTITUTION_COMMIT="git commit -m \"\$(git push --no""-verify)\""
+assert "blocks protected push substitution in a commit message" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$SUBSTITUTION_COMMIT")")"
+BACKTICK_COMMIT="git commit -m \"\`git push --no""-verify\`\""
+assert "blocks protected push backticks in a commit message" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$BACKTICK_COMMIT")")"
+INPUT_PROCESS_COMMIT="git commit -m <(git push --no""-verify)"
+assert "blocks protected input process substitution in a commit argument" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$INPUT_PROCESS_COMMIT")")"
+OUTPUT_PROCESS_COMMIT="git commit -m >(git push --no""-verify)"
+assert "blocks protected output process substitution in a commit argument" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$OUTPUT_PROCESS_COMMIT")")"
+EVEN_BACKSLASH_COMMIT='git commit -m "\\$(git push --no''-verify)"'
+assert "blocks protected substitution after an even backslash run" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$EVEN_BACKSLASH_COMMIT")")"
 
 # 8. with env var, allowed (and logged)
 EXIT_ALLOWED=0

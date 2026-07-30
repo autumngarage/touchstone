@@ -689,7 +689,10 @@ touchstone_review_fix_resume_checkpoint() {
   [ -n "$source_head" ] && [ -n "$fix_head" ] && [ -n "$base_oid" ] || return 1
   [ -n "$reply_author" ] || return 2
   [ "$checkpoint_repo" = "$repo_full_name" ] && [ "$checkpoint_pr" = "$pr_number" ] || return 2
-  [ "$observed_head" = "$fix_head" ] || return 2
+  if [ "$observed_head" != "$fix_head" ]; then
+    touchstone_review_fix_rollback_checkpoint_threads "$job_dir" || return 6
+    return 2
+  fi
   touchstone_review_fix_finish_threads \
     "$job_dir" "$worktree_path" "$pr_number" "$source_head" "$fix_head" "$base_oid" \
     || finish_rc=$?

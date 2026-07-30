@@ -660,8 +660,10 @@ if ! grep -q "pr create" "$Q_GH_LOG" \
   cat "$Q_GH_LOG" >&2
   exit 1
 fi
-if ! grep -q "pr merge 777 --squash --delete-branch --auto" "$Q_GH_LOG"; then
-  echo "FAIL [Q]: hook did not queue journal PR auto-merge" >&2
+Q_JOURNAL_HEAD="$(git -C "$Q" rev-parse "$Q_BRANCH")"
+if grep -q -- "--auto" "$Q_GH_LOG" \
+  || ! grep -q "pr merge 777 --squash --delete-branch --match-head-commit $Q_JOURNAL_HEAD" "$Q_GH_LOG"; then
+  echo "FAIL [Q]: hook did not synchronously merge the exact journal head" >&2
   cat "$Q_GH_LOG" >&2
   exit 1
 fi
@@ -737,8 +739,7 @@ if [ "$(grep -c '^pr view 777 ' "$Q3B_GH_LOG")" -lt 2 ]; then
   exit 1
 fi
 
-# Scenario Q3: a failed auto-merge queue request falls back to the same
-# bounded exact-head synchronous path.
+# Scenario Q3: auto-merge capability does not bypass the bounded exact-head path.
 Q3="$(mk_cortex_publish_fixture Q3)"
 Q3_BRANCH="docs/cortex-pr-merged-auto-fallback-test"
 Q3_GH_LOG="$TMPROOT/Q3-gh.log"
@@ -753,10 +754,9 @@ Q3_STDERR="$TMPROOT/Q3-stderr"
     TOUCHSTONE_MERGED_PR=780 \
     bash "$HOOK"
 ) 2>"$Q3_STDERR"
-if ! grep -q -- "--auto" "$Q3_GH_LOG" \
-  || ! grep -q -- "--match-head-commit" "$Q3_GH_LOG" \
-  || ! grep -q "falling back to a bounded synchronous merge" "$Q3_STDERR"; then
-  echo "FAIL [Q3]: failed auto-merge request did not use the synchronous fallback" >&2
+if grep -q -- "--auto" "$Q3_GH_LOG" \
+  || ! grep -q -- "--match-head-commit" "$Q3_GH_LOG"; then
+  echo "FAIL [Q3]: auto-merge capability bypassed the synchronous exact-head path" >&2
   cat "$Q3_GH_LOG" >&2
   cat "$Q3_STDERR" >&2
   exit 1
