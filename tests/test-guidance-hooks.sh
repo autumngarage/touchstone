@@ -165,6 +165,12 @@ ENV_GIT_DIR_WT_JSON="$(jq -nc \
   '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
 assert "blocks env-overridden Git context despite feature '-C'" "2" \
   "$(run_hook "$BRANCH_GUARD" "$ENV_GIT_DIR_WT_JSON")"
+FEATURE_GIT_DIR_JSON="$(jq -nc \
+  --arg cmd "GIT_DIR=$TMPDIR/.git git commit -m 'wip'" \
+  --arg cwd "$WORKTREE" \
+  '{tool_name: "Bash", tool_input: {command: $cmd}, cwd: $cwd}')"
+assert "blocks Git context override from a feature worktree" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$FEATURE_GIT_DIR_JSON")"
 
 # The command runner's explicit workdir is the execution context. It must
 # override the driver session cwd in both directions so the guard neither
@@ -350,6 +356,9 @@ assert "blocks protected input process substitution in a commit argument" "2" \
 OUTPUT_PROCESS_COMMIT="git commit -m >(git push --no""-verify)"
 assert "blocks protected output process substitution in a commit argument" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "$OUTPUT_PROCESS_COMMIT")")"
+EVEN_BACKSLASH_COMMIT='git commit -m "\\$(git push --no''-verify)"'
+assert "blocks protected substitution after an even backslash run" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "$EVEN_BACKSLASH_COMMIT")")"
 
 # 8. with env var, allowed (and logged)
 EXIT_ALLOWED=0

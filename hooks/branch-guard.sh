@@ -109,6 +109,11 @@ if [ "$commit_context_ambiguous" = false ]; then
   target_cwd="${target_cwd_from_C:-$target_cwd_from_cd}"
 fi
 
+if [ "$commit_context_ambiguous" = true ]; then
+  echo "branch-guard: Git context environment overrides are not allowed for guarded commits." >&2
+  exit 2
+fi
+
 if [ -n "$target_cwd" ]; then
   if [ -n "$cwd" ] && [ -d "$cwd/$target_cwd" ]; then
     cwd="$cwd/$target_cwd"
