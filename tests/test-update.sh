@@ -143,7 +143,12 @@ repos:
         "entry": bash scripts/conductor-review.sh
         language: system
 EOF_FOLDED_REVIEW_HOOK
+awk 'BEGIN { for (i = 0; i < 10000; i++) print "# padding " i }' \
+  >>"$RETIREMENT_PROJECT/.pre-commit-config.yaml"
+printf '\nscripts/codex-review.sh\n' >>"$RETIREMENT_PROJECT/.gitignore"
+git -C "$RETIREMENT_PROJECT" rm --cached scripts/codex-review.sh >/dev/null
 commit_all "$RETIREMENT_PROJECT" "simulate referenced retired review hooks"
+printf 'repos: []\n' >"$RETIREMENT_PROJECT/.pre-commit-config.yaml"
 
 (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
   >"$TEST_DIR/update-retirement-preserved-output.txt" 2>&1
@@ -151,17 +156,14 @@ commit_all "$RETIREMENT_PROJECT" "simulate referenced retired review hooks"
 assert_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
 assert_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
 assert_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/conductor-review\.sh$'
-assert_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/codex-review\.sh$'
+assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/codex-review\.sh$'
 assert_contains "$TEST_DIR/update-retirement-preserved-output.txt" 'preserving referenced retired file'
+assert_contains "$TEST_DIR/update-retirement-preserved-output.txt" 'leaving untracked retired file in place'
 assert_not_exists "$RETIREMENT_PROJECT/lib/review-comment.sh"
 assert_not_exists "$HOME/.claude/skills/conductor-delegation"
 assert_exists "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md"
 assert_contains "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md" 'retired skill'
 
-printf '%s\n' "$PREVIOUS_TOUCHSTONE_SHA" >"$RETIREMENT_PROJECT/.touchstone-version"
-printf 'repos: []\n' >"$RETIREMENT_PROJECT/.pre-commit-config.yaml"
-printf '\nscripts/codex-review.sh\n' >>"$RETIREMENT_PROJECT/.gitignore"
-git -C "$RETIREMENT_PROJECT" rm --cached scripts/codex-review.sh >/dev/null
 commit_all "$RETIREMENT_PROJECT" "remove retired local review hooks"
 
 (cd "$RETIREMENT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
@@ -171,9 +173,9 @@ assert_not_exists "$RETIREMENT_PROJECT/scripts/conductor-review.sh"
 assert_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
 assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/conductor-review\.sh$'
 assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/codex-review\.sh$'
+assert_contains "$TEST_DIR/update-retirement-output.txt" 'Retired managed files still need reconciliation'
 assert_not_exists "$RETIREMENT_PROJECT/lib/review-comment.sh"
 assert_contains "$TEST_DIR/update-retirement-output.txt" 'removed retired managed file'
-assert_contains "$TEST_DIR/update-retirement-output.txt" 'leaving untracked retired file in place'
 if ! git -C "$RETIREMENT_PROJECT" diff --quiet \
   || ! git -C "$RETIREMENT_PROJECT" diff --cached --quiet; then
   echo "FAIL: retired helper migration left unstaged or staged changes after commit" >&2

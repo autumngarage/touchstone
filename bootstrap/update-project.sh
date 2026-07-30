@@ -127,9 +127,19 @@ fi
 echo "==> Updating project: $PROJECT_DIR"
 echo "    Touchstone: $OLD_SHA -> $CURRENT_SHA"
 
-if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
+retired_managed_paths_pending() {
+  local manifest="$PROJECT_DIR/.touchstone-manifest"
+
+  [ -f "$manifest" ] || return 1
+  grep -Eq '^(lib/review-comment\.sh|scripts/(conductor|codex)-review\.sh)$' "$manifest"
+}
+
+if [ "$OLD_SHA" = "$CURRENT_SHA" ] && ! retired_managed_paths_pending; then
   echo "==> Already up to date."
   exit 0
+fi
+if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
+  echo "==> Retired managed files still need reconciliation."
 fi
 
 if [ "$CHECK_ONLY" = true ]; then
@@ -393,8 +403,7 @@ retired_review_path_referenced() {
   if [ -f "$config" ] && grep -qF "$rel_path" "$config"; then
     return 0
   fi
-  git -C "$PROJECT_DIR" show "HEAD:.pre-commit-config.yaml" 2>/dev/null \
-    | grep -qF "$rel_path"
+  git -C "$PROJECT_DIR" grep -qF "$rel_path" HEAD -- .pre-commit-config.yaml 2>/dev/null
 }
 
 remove_retired_managed_file() {
@@ -410,15 +419,15 @@ remove_retired_managed_file() {
     SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1))
     return 0
   fi
+  if ! git -C "$PROJECT_DIR" ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1; then
+    echo "    ! leaving untracked retired file in place: $target" >&2
+    echo "      Touchstone will stop managing it; remove it manually after preserving any local changes." >&2
+    return 0
+  fi
   if retired_review_path_referenced "$rel_path"; then
     echo "    ! preserving referenced retired file: $target" >&2
     echo "      Remove every .pre-commit-config.yaml reference, commit it, and rerun the update." >&2
     PRESERVED_RETIRED_MANAGED_PATHS+=("$rel_path")
-    return 0
-  fi
-  if ! git -C "$PROJECT_DIR" ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1; then
-    echo "    ! leaving untracked retired file in place: $target" >&2
-    echo "      Touchstone will stop managing it; remove it manually after preserving any local changes." >&2
     return 0
   fi
   if [ "$DRY_RUN" = true ]; then
