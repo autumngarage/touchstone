@@ -1676,8 +1676,16 @@ EOF
   printf 'thread-checkpoint\n' >"$FAKE_THREAD_ID"
   : >"$FAKE_UNRESOLVE_LOG"
   : >"$FAKE_RESOLVED"
-  touchstone_review_fix_rollback_checkpoint_threads "$ROLLBACK_CHECKPOINT" \
-    || fail "checkpointed review thread rollback failed"
+  : >"$FAKE_HEAD_MOVED"
+  if touchstone_review_fix_confirm_head \
+    "$ROLLBACK_CHECKPOINT" "$WORKTREE" 77 "$(git -C "$WORKTREE" rev-parse HEAD)" 4; then
+    fail "changed PR head did not stop checkpointed thread finalization"
+  else
+    ROLLBACK_HEAD_EXIT=$?
+    [ "$ROLLBACK_HEAD_EXIT" -eq 4 ] \
+      || fail "changed PR head returned $ROLLBACK_HEAD_EXIT instead of 4"
+  fi
+  rm -f "$FAKE_HEAD_MOVED"
   [ ! -f "$ROLLBACK_CHECKPOINT/review-fix/resolved-$ROLLBACK_CHECKPOINT_KEY" ] \
     || fail "checkpointed review thread remained marked resolved after rollback"
   [ ! -f "$ROLLBACK_CHECKPOINT/review-fix/resolved-$ROLLBACK_CHECKPOINT_KEY_2" ] \
@@ -1732,7 +1740,13 @@ EOF
   [ "$BEFORE_REPLIES" = "$AFTER_REPLIES" ] || fail "restart duplicated an existing reply"
   [ ! -d "$CHECKPOINT/review-fix" ] || fail "restart checkpoint was not cleared"
 
-  echo "==> Case f: the persisted wall-clock deadline terminates a stalled child"
+  echo "==> Case f: completed and timed-out child PID state is cleared"
+  touchstone_ship_write "$CHECKPOINT" deadline-epoch "$(($(date +%s) + 30))"
+  touchstone_review_fix_run_child "$CHECKPOINT" : \
+    || fail "successful review-fix child returned failure"
+  [ -z "$child_pid" ] || fail "completed review-fix child PID remained in memory"
+  [ -z "$(touchstone_ship_read "$CHECKPOINT" child-pid)" ] \
+    || fail "completed review-fix child PID remained persisted"
   touchstone_ship_write "$CHECKPOINT" deadline-epoch "$(date +%s)"
   if touchstone_review_fix_run_child "$CHECKPOINT" sleep 5; then
     fail "expired review-fix deadline did not stop the child"
@@ -1740,6 +1754,9 @@ EOF
     DEADLINE_EXIT=$?
     [ "$DEADLINE_EXIT" -eq 124 ] || fail "deadline returned $DEADLINE_EXIT instead of 124"
   fi
+  [ -z "$child_pid" ] || fail "timed-out review-fix child PID remained in memory"
+  [ -z "$(touchstone_ship_read "$CHECKPOINT" child-pid)" ] \
+    || fail "timed-out review-fix child PID remained persisted"
 
   echo "==> Case f2: the persisted deadline terminates hung validation"
   DEADLINE_WT="$TEST_DIR/deadline-worktree"
