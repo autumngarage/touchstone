@@ -899,8 +899,19 @@ case "$command_name:$subcommand" in
     printf '77\n'
     ;;
   "pr:view")
-    if [[ " $* " == *" baseRefName "* ]]; then
-      printf '%s\n' "${FAKE_PR_BASE_BRANCH:-main}"
+    if [[ "$*" == *baseRefName* ]] && [[ "$*" == *baseRefOid* ]]; then
+      base_oid="${FAKE_PR_BASE_OID:-$(git rev-parse main)}"
+      [ ! -f "${FAKE_BASE_MOVED:-/nonexistent}" ] || base_oid="$(printf '%040d' 0)"
+      printf '%s\t%s\t%s\n' \
+        "${FAKE_PR_URL:-$(git remote get-url origin)/pull/77}" \
+        "${FAKE_PR_BASE_BRANCH:-main}" \
+        "$base_oid"
+    elif [[ "$*" == *baseRefOid* ]]; then
+      if [ -f "${FAKE_BASE_MOVED:-/nonexistent}" ]; then
+        printf '%040d\n' 0
+      else
+        printf '%s\n' "${FAKE_PR_BASE_OID:-$(git rev-parse main)}"
+      fi
     elif [ -f "${FAKE_HEAD_MOVED:-/nonexistent}" ]; then
       printf '%040d\n' 0
     elif [ -f "${FAKE_STALE_NEXT:-/nonexistent}" ]; then
@@ -950,6 +961,7 @@ case "$command_name:$subcommand" in
       printf 'reply\n' >>"$FAKE_REPLY_LOG"
       : >"$FAKE_REPLIED"
       [ "${FAKE_MOVE_HEAD_DURING_FINISH:-0}" = 1 ] && : >"$FAKE_HEAD_MOVED" || true
+      [ "${FAKE_MOVE_BASE_DURING_FINISH:-0}" = 1 ] && : >"$FAKE_BASE_MOVED" || true
     elif [[ "$args" == *unresolveReviewThread* ]]; then
       printf 'unresolve\n' >>"$FAKE_UNRESOLVE_LOG"
       [ "${FAKE_UNRESOLVE_FAIL:-0}" != 1 ] || exit 42
@@ -1076,6 +1088,7 @@ EOF
   export FAKE_PENDING_REPLACEMENT="$TEST_DIR/pending-replacement"
   export FAKE_STALE_NEXT="$TEST_DIR/stale-next"
   export FAKE_HEAD_MOVED="$TEST_DIR/head-moved"
+  export FAKE_BASE_MOVED="$TEST_DIR/base-moved"
   export FAKE_OPEN_PR_LOG="$TEST_DIR/open-pr.log"
   export FAKE_MERGED="$TEST_DIR/merged"
   export FAKE_SNAPSHOT_ENCODED="c25hcHNob3Q="
@@ -1354,6 +1367,28 @@ EOF
   unset FAKE_MOVE_HEAD_DURING_FINISH
   rm -f "$FAKE_HEAD_MOVED"
 
+  echo "==> Case c6b: base movement during thread updates stops the merge path"
+  MOVED_BASE_WT="$TEST_DIR/moved-base-worktree"
+  git -C "$REPO" branch feat/review-moved-base main
+  git -C "$REPO" push -q origin feat/review-moved-base
+  git -C "$REPO" worktree add -q "$MOVED_BASE_WT" feat/review-moved-base
+  : >"$FAKE_THREAD_ACTIVE"
+  printf 'thread-moved-base\n' >"$FAKE_THREAD_ID"
+  rm -f "$FAKE_REPLIED" "$FAKE_RESOLVED" "$FAKE_BASE_MOVED" "$FAKE_MERGED"
+  export FAKE_MOVE_BASE_DURING_FINISH=1
+  TOUCHSTONE_REVIEW_FIX_WORKER_COMMAND="$FIX_WORKER" \
+    "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+    --worktree "$MOVED_BASE_WT" --detach --review-fix --validation-command : >/dev/null
+  wait_for_status "$MOVED_BASE_WT" needs-attention "$STATUS" \
+    || fail "base movement during thread updates did not enter needs-attention"
+  assert_contains "$STATUS" '"reason":"base-changed-during-thread-update"'
+  [ -f "$FAKE_REPLIED" ] || fail "base-movement fixture did not reach the reply boundary"
+  [ ! -f "$FAKE_RESOLVED" ] \
+    || fail "base movement after reply allowed stale-thread resolution"
+  [ ! -f "$FAKE_MERGED" ] || fail "base movement during thread updates reached merge"
+  unset FAKE_MOVE_BASE_DURING_FINISH
+  rm -f "$FAKE_BASE_MOVED"
+
   echo "==> Case c7: an existing follow-up comment blocks autonomous edits"
   FOLLOWUP_WT="$TEST_DIR/followup-worktree"
   git -C "$REPO" branch feat/review-followup main
@@ -1561,28 +1596,47 @@ EOF
   git -C "$STACK_BASE_WT" commit -qm "stack base policy"
   git -C "$STACK_BASE_WT" push -q -u origin stack-parent
   git -C "$REPO" worktree remove "$STACK_BASE_WT"
+  STACK_BASE_REPO="$TEST_DIR/stack-base.git"
+  git init -q --bare "$STACK_BASE_REPO"
+  git -C "$REPO" push -q "$STACK_BASE_REPO" stack-parent
+  git --git-dir="$ORIGIN" update-ref refs/heads/stack-parent "$(git -C "$REPO" rev-parse main)"
+  git -C "$REPO" tag touchstone-pr-base/77 main
   export FAKE_PR_BASE_BRANCH=stack-parent
-  STACK_BASE_REF="$(touchstone_review_fix_pr_base_ref "$WORKTREE" 77)" \
+  export FAKE_PR_URL="$STACK_BASE_REPO/pull/77"
+  export FAKE_PR_BASE_OID
+  FAKE_PR_BASE_OID="$(git --git-dir="$STACK_BASE_REPO" rev-parse stack-parent)"
+  STACK_BASE_SNAPSHOT="$(touchstone_review_fix_pr_base_snapshot "$WORKTREE" 77)" \
     || fail "stacked PR base ref was not resolved"
-  [ "$STACK_BASE_REF" = origin/stack-parent ] \
-    || fail "stacked PR resolved base '$STACK_BASE_REF' instead of origin/stack-parent"
+  IFS="$(printf '\t')" read -r STACK_BASE_REF STACK_BASE_OID <<EOF
+$STACK_BASE_SNAPSHOT
+EOF
+  [ "$STACK_BASE_REF" = refs/remotes/touchstone-pr-base/77 ] \
+    || fail "stacked PR resolved an unexpected base ref: $STACK_BASE_REF"
+  [ "$STACK_BASE_OID" = "$FAKE_PR_BASE_OID" ] \
+    || fail "stacked PR did not preserve its exact base revision"
   [ "$(touchstone_review_fix_trusted_authors "$WORKTREE" "$STACK_BASE_REF")" = stack-reviewer ] \
-    || fail "stacked PR trusted authors were not loaded from its base"
+    || fail "fully qualified stacked PR ref did not load policy from the base repository"
   STACK_REWRITTEN_HEAD="$(git -C "$REPO" rev-parse main)"
-  git --git-dir="$ORIGIN" update-ref refs/heads/stack-parent "$STACK_REWRITTEN_HEAD"
-  STACK_BASE_REF="$(touchstone_review_fix_pr_base_ref "$WORKTREE" 77)" \
+  git --git-dir="$STACK_BASE_REPO" update-ref refs/heads/stack-parent "$STACK_REWRITTEN_HEAD"
+  FAKE_PR_BASE_OID="$STACK_REWRITTEN_HEAD"
+  STACK_BASE_SNAPSHOT="$(touchstone_review_fix_pr_base_snapshot "$WORKTREE" 77)" \
     || fail "rewritten stacked PR base ref was not resolved"
+  IFS="$(printf '\t')" read -r STACK_BASE_REF STACK_BASE_OID <<EOF
+$STACK_BASE_SNAPSHOT
+EOF
   [ "$(git -C "$WORKTREE" rev-parse "$STACK_BASE_REF")" = "$STACK_REWRITTEN_HEAD" ] \
     || fail "rewritten stacked PR base did not force-update its tracking ref"
-  unset FAKE_PR_BASE_BRANCH
+  unset FAKE_PR_BASE_BRANCH FAKE_PR_URL FAKE_PR_BASE_OID
   CROSS_CHECKPOINT="$TEST_DIR/cross-checkpoint"
   mkdir -p "$CROSS_CHECKPOINT/review-fix"
   RESTART_HEAD="$(git -C "$WORKTREE" rev-parse HEAD)"
+  RESTART_BASE="$(git -C "$WORKTREE" rev-parse main)"
   printf 'thread-cross\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\tfalse\t1\tthread-cross\t%s\turl\tbody\n' \
     "$(git -C "$WORKTREE" rev-parse HEAD~1)" "$FAKE_SNAPSHOT_DIGEST" \
     >"$CROSS_CHECKPOINT/review-fix/threads.tsv"
   touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" source-head "$(git -C "$WORKTREE" rev-parse HEAD~1)"
   touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" fix-head "$RESTART_HEAD"
+  touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" base-oid "$RESTART_BASE"
   touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" repo-full-name example/project
   touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" pr-number 76
   touchstone_ship_write "$CROSS_CHECKPOINT/review-fix" reply-author touchstone-test-user
@@ -1606,6 +1660,7 @@ EOF
     >"$CHECKPOINT/review-fix/threads.tsv"
   touchstone_ship_write "$CHECKPOINT/review-fix" source-head "$(git -C "$WORKTREE" rev-parse HEAD~1)"
   touchstone_ship_write "$CHECKPOINT/review-fix" fix-head "$RESTART_HEAD"
+  touchstone_ship_write "$CHECKPOINT/review-fix" base-oid "$RESTART_BASE"
   touchstone_ship_write "$CHECKPOINT/review-fix" repo-full-name example/project
   touchstone_ship_write "$CHECKPOINT/review-fix" pr-number 77
   touchstone_ship_write "$CHECKPOINT/review-fix" reply-author touchstone-test-user
