@@ -566,7 +566,10 @@ touchstone_review_fix_finish_threads() {
 
     observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || return 1
     [ "$observed_head" = "$fix_head" ] || return 3
-    touchstone_review_fix_pr_base_matches "$worktree_path" "$pr_number" "$base_oid" || return 7
+    if ! touchstone_review_fix_pr_base_matches "$worktree_path" "$pr_number" "$base_oid"; then
+      touchstone_review_fix_rollback_checkpoint_threads "$job_dir" || return 6
+      return 7
+    fi
     remote_state="$(touchstone_review_fix_thread_remote_state \
       "$thread_id" "$marker" "$comment_count" "$comment_ids" "$comment_snapshot" \
       "$reply_author")" || return 1
@@ -604,7 +607,10 @@ EOF
       [ "$replied" = "true" ] && [ "$snapshot_matches" = "true" ] || return 5
     fi
 
-    touchstone_review_fix_pr_base_matches "$worktree_path" "$pr_number" "$base_oid" || return 7
+    if ! touchstone_review_fix_pr_base_matches "$worktree_path" "$pr_number" "$base_oid"; then
+      touchstone_review_fix_rollback_checkpoint_threads "$job_dir" || return 6
+      return 7
+    fi
     touchstone_review_fix_resolve "$thread_id" || return 1
     observed_head="$(cd "$worktree_path" && touchstone_review_fix_pr_head "$pr_number")" || {
       touchstone_review_fix_rollback_thread "$job_dir" "$thread_id" || return 6
@@ -616,6 +622,7 @@ EOF
     fi
     if ! touchstone_review_fix_pr_base_matches "$worktree_path" "$pr_number" "$base_oid"; then
       touchstone_review_fix_rollback_thread "$job_dir" "$thread_id" || return 6
+      touchstone_review_fix_rollback_checkpoint_threads "$job_dir" || return 6
       return 7
     fi
     remote_state="$(touchstone_review_fix_thread_remote_state \

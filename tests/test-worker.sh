@@ -1661,12 +1661,18 @@ EOF
   unset FAKE_PR_BASE_BRANCH FAKE_PR_URL FAKE_PR_BASE_OID
   ROLLBACK_CHECKPOINT="$TEST_DIR/rollback-checkpoint"
   mkdir -p "$ROLLBACK_CHECKPOINT/review-fix"
-  printf 'thread-checkpoint\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\t2026-01-01T00:00:02Z\tfalse\t1\tthread-checkpoint\t%s\turl\tbody\n' \
-    "$(git -C "$WORKTREE" rev-parse HEAD)" "$FAKE_SNAPSHOT_DIGEST" \
-    >"$ROLLBACK_CHECKPOINT/review-fix/threads.tsv"
+  {
+    printf 'thread-checkpoint\ttarget.txt\t1\tfalse\tchatgpt-codex-connector\t%s\t2026-01-01T00:00:02Z\tfalse\t1\tthread-checkpoint\t%s\turl\tbody\n' \
+      "$(git -C "$WORKTREE" rev-parse HEAD)" "$FAKE_SNAPSHOT_DIGEST"
+    printf 'thread-checkpoint-2\ttarget.txt\t2\tfalse\tchatgpt-codex-connector\t%s\t2026-01-01T00:00:03Z\tfalse\t1\tthread-checkpoint-2\t%s\turl\tbody\n' \
+      "$(git -C "$WORKTREE" rev-parse HEAD)" "$FAKE_SNAPSHOT_DIGEST"
+  } >"$ROLLBACK_CHECKPOINT/review-fix/threads.tsv"
   ROLLBACK_CHECKPOINT_KEY="$(touchstone_review_fix_thread_key thread-checkpoint)"
+  ROLLBACK_CHECKPOINT_KEY_2="$(touchstone_review_fix_thread_key thread-checkpoint-2)"
   touchstone_ship_write "$ROLLBACK_CHECKPOINT/review-fix" \
     "resolved-$ROLLBACK_CHECKPOINT_KEY" "$(git -C "$WORKTREE" rev-parse HEAD)"
+  touchstone_ship_write "$ROLLBACK_CHECKPOINT/review-fix" \
+    "resolved-$ROLLBACK_CHECKPOINT_KEY_2" "$(git -C "$WORKTREE" rev-parse HEAD)"
   printf 'thread-checkpoint\n' >"$FAKE_THREAD_ID"
   : >"$FAKE_UNRESOLVE_LOG"
   : >"$FAKE_RESOLVED"
@@ -1674,7 +1680,10 @@ EOF
     || fail "checkpointed review thread rollback failed"
   [ ! -f "$ROLLBACK_CHECKPOINT/review-fix/resolved-$ROLLBACK_CHECKPOINT_KEY" ] \
     || fail "checkpointed review thread remained marked resolved after rollback"
-  assert_contains "$FAKE_UNRESOLVE_LOG" '^unresolve$'
+  [ ! -f "$ROLLBACK_CHECKPOINT/review-fix/resolved-$ROLLBACK_CHECKPOINT_KEY_2" ] \
+    || fail "second checkpointed review thread remained marked resolved after rollback"
+  [ "$(wc -l <"$FAKE_UNRESOLVE_LOG" | tr -d ' ')" -eq 2 ] \
+    || fail "all checkpointed review threads were not rolled back"
   CROSS_CHECKPOINT="$TEST_DIR/cross-checkpoint"
   mkdir -p "$CROSS_CHECKPOINT/review-fix"
   RESTART_HEAD="$(git -C "$WORKTREE" rev-parse HEAD)"
