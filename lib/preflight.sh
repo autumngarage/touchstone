@@ -304,6 +304,49 @@ touchstone_preflight_changed_files() {
   touchstone_preflight_all_files
 }
 
+touchstone_preflight_is_python_shell_polyglot() {
+  local path="$1"
+
+  case "$path" in
+    *.py) ;;
+    *) return 1 ;;
+  esac
+
+  # A Python file may use a small POSIX launcher so the same executable works
+  # with Windows `py -3` and Unix `python3`/`python`. Recognize only the
+  # standard triple-quoted wrapper plus an exec of this file with its original
+  # arguments. A shell shebang or quote marker alone is not an exclusion. Keep
+  # CRLF wrappers in shell lint: their carriage returns break direct POSIX
+  # execution, so recognizing them would hide a real portability defect.
+  awk '
+    NR == 2 {
+      if ($0 == "\"\"\":\"") {
+        closer = "\":\"\"\""
+      } else if ($0 == "\047\047\047:\047") {
+        closer = "\047:\047\047\047"
+      } else {
+        exit 1
+      }
+      next
+    }
+    NR > 2 && $0 == closer {
+      found_closer = 1
+      exit
+    }
+    NR > 2 \
+      && $0 ~ /^[[:space:]]*exec[[:space:]]+(py[[:space:]]+-3|python3?)[[:space:]]+/ \
+      && index($0, "\"$0\"") \
+      && index($0, "\"$@\"") {
+      found_launcher = 1
+    }
+    END {
+      if (!found_closer || !found_launcher) {
+        exit 1
+      }
+    }
+  ' "$path"
+}
+
 touchstone_preflight_shell_files() {
   touchstone_preflight_changed_files \
     | awk '
@@ -321,6 +364,9 @@ touchstone_preflight_shell_files() {
         *)
           if IFS= read -r first_line <"$path" \
             && printf '%s\n' "$first_line" | grep -Eq '^#!.*(sh|bash|zsh|ksh)'; then
+            if touchstone_preflight_is_python_shell_polyglot "$path"; then
+              continue
+            fi
             printf '%s\n' "$path"
           fi
           ;;
