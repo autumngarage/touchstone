@@ -225,6 +225,8 @@ assert_contains "$TEST_DIR/update-output-2.txt" 'Committed: chore: update touchs
 assert_contains "$TEST_DIR/update-output-2.txt" 'bash scripts/open-pr.sh'
 assert_exists "$PROJECT/TOUCHSTONE.md"
 assert_exists "$PROJECT/.github/workflows/issue-claim-check.yml"
+assert_contains "$PROJECT/.github/workflows/issue-claim-check.yml" 'claim-check-${{ github.event.pull_request.number || github.ref }}'
+assert_contains "$PROJECT/.github/workflows/issue-claim-check.yml" 'cancel-in-progress: true'
 assert_exists "$PROJECT/.markdownlint.json"
 assert_contains "$TEST_DIR/update-output-2.txt" 'added (project-owned).*\.markdownlint\.json'
 assert_exists "$PROJECT/scripts/touchstone-run.sh"
