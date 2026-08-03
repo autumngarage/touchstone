@@ -195,6 +195,115 @@ assert_log_contains "$LOG" 'shfmt:.*changed-clean.sh'
 assert_log_not_contains "$LOG" 'unchanged-bad.sh'
 echo "==> PASS: clean changed shell passes despite unchanged debt"
 
+echo "==> Test: recognized shell-launched Python polyglot stays out of shell lint"
+REPO="$TEST_DIR/repo-python-polyglot"
+LOG="$TEST_DIR/python-polyglot.log"
+OUT="$TEST_DIR/python-polyglot.out"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  cat >scripts/cross-platform-tool.py <<'EOF_PYTHON_POLYGLOT'
+#!/bin/sh
+""":"
+if command -v py >/dev/null 2>&1; then
+  exec py -3 "$0" "$@"
+fi
+if command -v python3 >/dev/null 2>&1; then
+  exec python3 "$0" "$@"
+fi
+echo "ERROR: Python 3 is required." >&2
+exit 2
+":"""
+
+print("python body")
+EOF_PYTHON_POLYGLOT
+  cat >scripts/single-quoted-tool.py <<'EOF_SINGLE_QUOTED_POLYGLOT'
+#!/bin/sh
+''':'
+exec python3 "$0" "$@"
+':'''
+
+print("python body")
+EOF_SINGLE_QUOTED_POLYGLOT
+  git add scripts/cross-platform-tool.py scripts/single-quoted-tool.py
+  git commit -q -m "add cross-platform Python tool"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_not_contains "$LOG" 'shellcheck:.*cross-platform-tool.py'
+assert_log_not_contains "$LOG" 'shfmt:.*cross-platform-tool.py'
+assert_log_not_contains "$LOG" 'shellcheck:.*single-quoted-tool.py'
+assert_log_not_contains "$LOG" 'shfmt:.*single-quoted-tool.py'
+assert_log_contains "$LOG" '^validate:validate$'
+echo "==> PASS: Python polyglot variants remain owned by Python validation"
+
+echo "==> Test: shell-shebang Python file needs the recognized launcher contract"
+REPO="$TEST_DIR/repo-unrecognized-python-shell"
+LOG="$TEST_DIR/unrecognized-python-shell.log"
+OUT="$TEST_DIR/unrecognized-python-shell.out"
+new_fixture_repo "$REPO"
+(
+  cd "$REPO"
+  cat >scripts/not-a-python-polyglot.py <<'EOF_UNRECOGNIZED_PYTHON_SHELL'
+#!/bin/sh
+""":"
+echo "This marker alone must not disable shell lint."
+":"""
+
+print("python body")
+EOF_UNRECOGNIZED_PYTHON_SHELL
+  cat >scripts/reordered-launcher.py <<'EOF_REORDERED_PYTHON_LAUNCHER'
+#!/bin/sh
+""":"
+exec python3 "$@" "$0"
+":"""
+
+print("python body")
+EOF_REORDERED_PYTHON_LAUNCHER
+  cat >scripts/helper-launcher.py <<'EOF_HELPER_PYTHON_LAUNCHER'
+#!/bin/sh
+""":"
+exec python3 helper.py "$0" "$@"
+":"""
+
+print("python body")
+EOF_HELPER_PYTHON_LAUNCHER
+  cat >scripts/heredoc-launcher.py <<'EOF_HEREDOC_PYTHON_LAUNCHER'
+#!/bin/sh
+""":"
+cat <<'LAUNCHER_TEXT'
+exec python3 "$0" "$@"
+LAUNCHER_TEXT
+":"""
+
+print("python body")
+EOF_HEREDOC_PYTHON_LAUNCHER
+  printf '%s\r\n' \
+    '#!/bin/sh' \
+    '""":"' \
+    'exec py -3 "$0" "$@"' \
+    '":"""' \
+    '' \
+    'print("python body")' >scripts/crlf-polyglot.py
+  git add scripts/not-a-python-polyglot.py scripts/reordered-launcher.py \
+    scripts/helper-launcher.py scripts/heredoc-launcher.py \
+    scripts/crlf-polyglot.py
+  git commit -q -m "add unrecognized shell Python file"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" 'shellcheck:.*not-a-python-polyglot.py'
+assert_log_contains "$LOG" 'shfmt:.*not-a-python-polyglot.py'
+assert_log_contains "$LOG" 'shellcheck:.*crlf-polyglot.py'
+assert_log_contains "$LOG" 'shfmt:.*crlf-polyglot.py'
+assert_log_contains "$LOG" 'shellcheck:.*reordered-launcher.py'
+assert_log_contains "$LOG" 'shfmt:.*reordered-launcher.py'
+assert_log_contains "$LOG" 'shellcheck:.*helper-launcher.py'
+assert_log_contains "$LOG" 'shfmt:.*helper-launcher.py'
+assert_log_contains "$LOG" 'shellcheck:.*heredoc-launcher.py'
+assert_log_contains "$LOG" 'shfmt:.*heredoc-launcher.py'
+echo "==> PASS: a quote marker cannot become a shell-lint bypass"
+
 echo "==> Test: changed shell file with issue blocks"
 REPO="$TEST_DIR/repo-bad-shell"
 LOG="$TEST_DIR/bad-shell.log"

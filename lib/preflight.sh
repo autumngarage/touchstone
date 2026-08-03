@@ -304,6 +304,131 @@ touchstone_preflight_changed_files() {
   touchstone_preflight_all_files
 }
 
+touchstone_preflight_is_python_shell_polyglot() {
+  local path="$1"
+
+  case "$path" in
+    *.py) ;;
+    *) return 1 ;;
+  esac
+
+  # A Python file may use a small POSIX launcher so the same executable works
+  # with Windows `py -3` and Unix `python3`/`python`. Recognize only the full
+  # canonical wrapper structure, not launcher-looking text embedded in other
+  # shell constructs. A shell shebang or quote marker alone is not an
+  # exclusion. Keep CRLF wrappers in shell lint: their carriage returns break
+  # direct POSIX execution, so recognizing them would hide a real portability
+  # defect.
+  awk '
+    function is_static_failure(line, payload) {
+      if (substr(line, 1, 6) != "echo \"") {
+        return 0
+      }
+      if (substr(line, length(line) - 4) != "\" >&2") {
+        return 0
+      }
+
+      payload = substr(line, 7, length(line) - 11)
+      return index(payload, "ERROR: Python 3 is required") == 1 \
+        && index(payload, "\"") == 0 \
+        && index(payload, "\\") == 0 \
+        && index(payload, "$") == 0 \
+        && index(payload, "`") == 0
+    }
+    NR == 1 {
+      if ($0 != "#!/bin/sh") {
+        exit 1
+      }
+      next
+    }
+    NR == 2 {
+      if ($0 == "\"\"\":\"") {
+        closer = "\":\"\"\""
+      } else if ($0 == "\047\047\047:\047") {
+        closer = "\047:\047\047\047"
+      } else {
+        exit 1
+      }
+      state = "wrapper"
+      next
+    }
+    NR > 2 {
+      if ($0 == closer) {
+        if (state != "direct_done" && state != "guarded_done") {
+          exit 1
+        }
+        found_closer = 1
+        exit 0
+      }
+
+      if (state == "wrapper") {
+        if ($0 == "exec py -3 \"$0\" \"$@\"" \
+          || $0 == "exec python3 \"$0\" \"$@\"" \
+          || $0 == "exec python \"$0\" \"$@\"") {
+          found_launcher = 1
+          state = "direct_done"
+          next
+        }
+
+        if ($0 == "if command -v py >/dev/null 2>&1; then") {
+          expected_launcher = "  exec py -3 \"$0\" \"$@\""
+          state = "launcher"
+          next
+        }
+        if ($0 == "if command -v python3 >/dev/null 2>&1; then") {
+          expected_launcher = "  exec python3 \"$0\" \"$@\""
+          state = "launcher"
+          next
+        }
+        if ($0 == "if command -v python >/dev/null 2>&1; then") {
+          expected_launcher = "  exec python \"$0\" \"$@\""
+          state = "launcher"
+          next
+        }
+
+        if (guarded_launchers > 0 && is_static_failure($0)) {
+          state = "failure_exit"
+          next
+        }
+        exit 1
+      }
+
+      if (state == "launcher") {
+        if ($0 != expected_launcher) {
+          exit 1
+        }
+        found_launcher = 1
+        state = "launcher_end"
+        next
+      }
+
+      if (state == "launcher_end") {
+        if ($0 != "fi") {
+          exit 1
+        }
+        guarded_launchers++
+        state = "wrapper"
+        next
+      }
+
+      if (state == "failure_exit") {
+        if ($0 !~ /^exit [1-9][0-9]*$/) {
+          exit 1
+        }
+        state = "guarded_done"
+        next
+      }
+
+      exit 1
+    }
+    END {
+      if (!found_closer || !found_launcher) {
+        exit 1
+      }
+    }
+  ' "$path"
+}
+
 touchstone_preflight_shell_files() {
   touchstone_preflight_changed_files \
     | awk '
@@ -321,6 +446,9 @@ touchstone_preflight_shell_files() {
         *)
           if IFS= read -r first_line <"$path" \
             && printf '%s\n' "$first_line" | grep -Eq '^#!.*(sh|bash|zsh|ksh)'; then
+            if touchstone_preflight_is_python_shell_polyglot "$path"; then
+              continue
+            fi
             printf '%s\n' "$path"
           fi
           ;;
