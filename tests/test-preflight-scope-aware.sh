@@ -268,6 +268,16 @@ exec python3 helper.py "$0" "$@"
 
 print("python body")
 EOF_HELPER_PYTHON_LAUNCHER
+  cat >scripts/heredoc-launcher.py <<'EOF_HEREDOC_PYTHON_LAUNCHER'
+#!/bin/sh
+""":"
+cat <<'LAUNCHER_TEXT'
+exec python3 "$0" "$@"
+LAUNCHER_TEXT
+":"""
+
+print("python body")
+EOF_HEREDOC_PYTHON_LAUNCHER
   printf '%s\r\n' \
     '#!/bin/sh' \
     '""":"' \
@@ -276,7 +286,8 @@ EOF_HELPER_PYTHON_LAUNCHER
     '' \
     'print("python body")' >scripts/crlf-polyglot.py
   git add scripts/not-a-python-polyglot.py scripts/reordered-launcher.py \
-    scripts/helper-launcher.py scripts/crlf-polyglot.py
+    scripts/helper-launcher.py scripts/heredoc-launcher.py \
+    scripts/crlf-polyglot.py
   git commit -q -m "add unrecognized shell Python file"
 )
 : >"$LOG"
@@ -289,6 +300,8 @@ assert_log_contains "$LOG" 'shellcheck:.*reordered-launcher.py'
 assert_log_contains "$LOG" 'shfmt:.*reordered-launcher.py'
 assert_log_contains "$LOG" 'shellcheck:.*helper-launcher.py'
 assert_log_contains "$LOG" 'shfmt:.*helper-launcher.py'
+assert_log_contains "$LOG" 'shellcheck:.*heredoc-launcher.py'
+assert_log_contains "$LOG" 'shfmt:.*heredoc-launcher.py'
 echo "==> PASS: a quote marker cannot become a shell-lint bypass"
 
 echo "==> Test: changed shell file with issue blocks"
