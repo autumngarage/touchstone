@@ -84,6 +84,15 @@ request for each exact head and records durable head/base-bound request
 evidence. The driving CLI watches the PR, fixes actionable findings, pushes a
 new head, and repeats until the latest trusted review is clean.
 
+Draft PRs are early coordination surfaces, not semantic-review requests.
+`open-pr.sh --draft` creates or updates a draft without requiring the final PR
+body protocol, emitting review-intent evidence, posting a review request, or
+merging. When the delivery contract and evidence are final, rerun
+`open-pr.sh --auto-merge`: it runs deterministic issue-claim and PR-body
+preflights, marks an existing draft ready, requests review for that exact head,
+and enters the guarded merge path. A plain invocation against an existing
+draft leaves it draft and prints the final-shipping command.
+
 `merge-pr.sh` fails closed when review evidence is missing, stale, authored by
 an untrusted account, or bound to a different base. It also blocks active
 requested-changes decisions, unresolved review threads, failed required

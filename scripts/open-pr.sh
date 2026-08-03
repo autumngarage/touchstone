@@ -11,7 +11,7 @@
 #   bash scripts/open-pr.sh --auto-merge             # open + merge-gate review + squash-merge
 #   bash scripts/open-pr.sh --auto-merge \
 #                            --cleanup-worktree       # auto-merge, then remove this feature worktree
-#   bash scripts/open-pr.sh --draft                  # same, opened as draft
+#   bash scripts/open-pr.sh --draft                  # create/update a review-free draft
 #   bash scripts/open-pr.sh --base feat/X            # stacked PR: base this PR on feat/X, not main
 #   bash scripts/open-pr.sh "Custom title"           # explicit title
 #
@@ -207,15 +207,21 @@ run_pr_body_protocol_preflight() {
   echo "==> Running PR body protocol preflight ($label): $checker_rel"
   rc=0
   if [ -x "$checker" ]; then
-    API_BOUNDARY_PR_BODY="$body" PR_BODY="$body" "$checker" || rc=$?
+    API_BOUNDARY_PR_BODY="$body" PR_BODY="$body" \
+      GH_REPO="$REPO_FULL_NAME" PR_NUMBER="$pr_number" \
+      "$checker" || rc=$?
   elif [ "${checker##*.}" = "py" ]; then
     if ! command -v python3 >/dev/null 2>&1; then
       echo "ERROR: $checker_rel requires python3, but python3 was not found." >&2
       exit 1
     fi
-    API_BOUNDARY_PR_BODY="$body" PR_BODY="$body" python3 "$checker" || rc=$?
+    API_BOUNDARY_PR_BODY="$body" PR_BODY="$body" \
+      GH_REPO="$REPO_FULL_NAME" PR_NUMBER="$pr_number" \
+      python3 "$checker" || rc=$?
   else
-    API_BOUNDARY_PR_BODY="$body" PR_BODY="$body" bash "$checker" || rc=$?
+    API_BOUNDARY_PR_BODY="$body" PR_BODY="$body" \
+      GH_REPO="$REPO_FULL_NAME" PR_NUMBER="$pr_number" \
+      bash "$checker" || rc=$?
   fi
 
   if [ "$rc" -ne 0 ]; then
@@ -294,7 +300,7 @@ load_open_pr_review_request_config() {
       case "$value" in
         true) PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=true ;;
         false)
-          echo "WARNING: [review.pr_triggered].request_on_push=false is retired and ignored; every pushed head requests review." >&2
+          echo "WARNING: [review.pr_triggered].request_on_push=false is retired and ignored; every final-shipping head requests review." >&2
           ;;
         *) OPEN_PR_REVIEW_CONFIG_ERROR="[review.pr_triggered].request_on_push must be true; got: $value" ;;
       esac
@@ -615,9 +621,9 @@ Push the current feature branch, create or reuse its GitHub PR, and optionally
 run the local merge gate.
 
 Options:
-  --auto-merge        Run merge-pr.sh after opening or finding the PR.
+  --auto-merge        Open or finalize the PR, request review, and run merge-pr.sh.
   --cleanup-worktree  Remove this worktree after a verified auto-merge.
-  --draft             Open the PR as a draft.
+  --draft             Create or update a draft without final body protocol, review, or merge.
   --base <branch>     Target a non-default base branch.
   -h, --help          Show this help.
 EOF
@@ -812,7 +818,8 @@ fi
 # handles temp-file cleanup once BODY_FILE is set further down.
 trap on_exit EXIT
 
-# If a PR already exists for this branch, just print the URL (and auto-merge if requested).
+# If a PR already exists for this branch, reuse it. Draft invocations remain
+# review-free; final shipping validates the contract before requesting review.
 if [ -n "$EXISTING_PR_URL" ]; then
   echo "==> PR already open for $CURRENT_BRANCH: $EXISTING_PR_URL"
   PR_NUMBER="$(basename "$EXISTING_PR_URL")"
@@ -820,10 +827,48 @@ if [ -n "$EXISTING_PR_URL" ]; then
     ORPHAN_PR_URL="$EXISTING_PR_URL"
     ORPHAN_PR_NUMBER="$PR_NUMBER"
   fi
+  if ! EXISTING_PR_IS_DRAFT="$(
+    gh pr view "$PR_NUMBER" --json isDraft --jq '.isDraft' 2>/dev/null
+  )"; then
+    echo "ERROR: Failed to inspect draft state for PR #$PR_NUMBER." >&2
+    exit 1
+  fi
+  case "$EXISTING_PR_IS_DRAFT" in
+    true | false) ;;
+    *)
+      echo "ERROR: GitHub returned invalid draft state for PR #$PR_NUMBER: ${EXISTING_PR_IS_DRAFT:-<empty>}." >&2
+      exit 1
+      ;;
+  esac
+
+  if [ -n "$DRAFT_FLAG" ]; then
+    if [ "$EXISTING_PR_IS_DRAFT" != true ]; then
+      echo "==> Marking PR #$PR_NUMBER as draft ..."
+      gh pr ready "$PR_NUMBER" --undo >/dev/null
+    fi
+    echo "    PR remains a draft; no semantic review was requested."
+    if [ "$AUTO_MERGE" = true ]; then
+      echo "WARNING: --auto-merge ignored because --draft was passed; PR remains draft only." >&2
+    fi
+    ORPHAN_PR_URL=""
+    ORPHAN_PR_NUMBER=""
+    exit 0
+  fi
+
+  if [ "$EXISTING_PR_IS_DRAFT" = true ] && [ "$AUTO_MERGE" != true ]; then
+    echo "    PR is still a draft; no semantic review was requested."
+    echo "    Rerun with --auto-merge to mark it ready and ship the exact head."
+    exit 0
+  fi
+
+  run_issue_claim_preflight "existing PR #$PR_NUMBER" --pr-number "$PR_NUMBER"
+  run_pr_body_protocol_preflight "existing PR #$PR_NUMBER" "$PR_NUMBER"
+  if [ "$EXISTING_PR_IS_DRAFT" = true ]; then
+    echo "==> Marking draft PR #$PR_NUMBER ready for review ..."
+    gh pr ready "$PR_NUMBER" >/dev/null
+  fi
   request_pr_triggered_review "$PR_NUMBER" "$PUSHED_HEAD_SHA"
   if [ "$AUTO_MERGE" = true ]; then
-    run_issue_claim_preflight "existing PR #$PR_NUMBER" --pr-number "$PR_NUMBER"
-    run_pr_body_protocol_preflight "existing PR #$PR_NUMBER" "$PR_NUMBER"
     MERGE_SCRIPT="$SCRIPT_DIR/merge-pr.sh"
     if [ ! -f "$MERGE_SCRIPT" ]; then
       echo "ERROR: merge-pr.sh not found at $MERGE_SCRIPT — cannot auto-merge." >&2
@@ -955,11 +1000,9 @@ touchstone_emit_event pr_opened \
   base_branch="$BASE_BRANCH" \
   head_sha="$HEAD_SHA"
 
-run_pr_body_protocol_preflight "new PR #$ORPHAN_PR_NUMBER" "$ORPHAN_PR_NUMBER"
-request_pr_triggered_review "$ORPHAN_PR_NUMBER" "$PUSHED_HEAD_SHA"
-
 if [ -n "$DRAFT_FLAG" ]; then
-  echo "    Opened as draft. Mark ready on github.com when ready to merge."
+  echo "    Opened as draft; no semantic review was requested."
+  echo "    Rerun with --auto-merge to mark it ready and ship the exact head."
   if [ "$AUTO_MERGE" = true ]; then
     # --auto-merge + --draft is a contradiction (drafts can't merge). Don't
     # claim success silently — the user explicitly asked for a merge.
@@ -970,6 +1013,9 @@ if [ -n "$DRAFT_FLAG" ]; then
   ORPHAN_PR_NUMBER=""
   exit 0
 fi
+
+run_pr_body_protocol_preflight "new PR #$ORPHAN_PR_NUMBER" "$ORPHAN_PR_NUMBER"
+request_pr_triggered_review "$ORPHAN_PR_NUMBER" "$PUSHED_HEAD_SHA"
 
 # Auto-merge: extract PR number and run merge-pr.sh, then positively verify
 # the PR actually reached MERGED state on GitHub before claiming success.

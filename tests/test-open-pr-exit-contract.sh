@@ -62,6 +62,7 @@ OPEN_PR_WORKTREE_PATH="$(cd "$REPO_DIR" && pwd -P)"
 # GH_PR_STATE   — value returned for `gh pr view --json state,mergedAt`
 # GH_MERGED_AT  — mergedAt value returned for `gh pr view --json state,mergedAt`
 # GH_HAS_EXISTING_PR — if "1", `gh pr list` returns an existing PR URL
+# GH_PR_IS_DRAFT — live draft state returned for an existing PR
 # GH_PR_BODY — value returned for existing PR claim-preflight body reads
 # GH_PR_AUTHOR — value returned for existing PR claim-preflight author reads
 cat >"$FAKE_BIN/gh" <<'EOF'
@@ -105,8 +106,11 @@ case "$1 $2" in
     fi
     ;;
   "pr create")
-    # Last positional is the body file flag pair; we only need to emit a URL.
+    printf '%s\n' "$*" >>"$GH_PR_CREATE_LOG"
     echo "https://example.test/touchstone/pull/123"
+    ;;
+  "pr ready")
+    printf '%s\n' "$*" >>"$GH_PR_READY_LOG"
     ;;
   "pr view")
     json_fields=""
@@ -156,6 +160,10 @@ case "$1 $2" in
       git rev-parse HEAD
       exit 0
     fi
+    if [ "$json_fields" = "isDraft" ]; then
+      echo "${GH_PR_IS_DRAFT:-false}"
+      exit 0
+    fi
     echo "unexpected gh pr view json: $json_fields jq: $jq_expr" >&2
     exit 1
     ;;
@@ -166,6 +174,7 @@ case "$1 $2" in
     # No prior durable review-request records.
     ;;
   "api -X")
+    printf '%s\n' "$*" >>"$GH_REVIEW_REQUEST_LOG"
     case "${4:-}" in
       repos/autumngarage/touchstone/statuses/*)
         echo "2026-07-29T00:00:00Z"
@@ -255,20 +264,34 @@ chmod +x "$SCRIPT_DIR/merge-pr.sh"
 run_open_pr() {
   (
     cd "$REPO_DIR"
+    if [ "${OPEN_PR_AUTO_MERGE:-1}" = "1" ]; then
+      set -- --auto-merge "$@"
+    fi
     PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
       GH_MERGED_AT="${GH_MERGED_AT:-}" \
       GH_PR_STATE="${GH_PR_STATE:-OPEN}" \
       GH_HAS_EXISTING_PR="${GH_HAS_EXISTING_PR:-0}" \
       GH_EXISTING_PR_BASE="${GH_EXISTING_PR_BASE:-main}" \
       GH_CREATED_PR_BASE="${GH_CREATED_PR_BASE:-}" \
+      GH_PR_IS_DRAFT="${GH_PR_IS_DRAFT:-false}" \
       GH_PR_BODY="${GH_PR_BODY:-}" \
       GH_PR_AUTHOR="${GH_PR_AUTHOR:-alice}" \
       GH_REQUIRE_REPO_FOR_MERGED_AT="${GH_REQUIRE_REPO_FOR_MERGED_AT:-0}" \
       MERGE_PR_EXIT="${MERGE_PR_EXIT:-0}" \
       MERGE_PR_REQUEST_COUNT_FILE="$TEST_DIR/merge-pr-request-count" \
+      GH_PR_CREATE_LOG="$TEST_DIR/pr-create.log" \
+      GH_PR_READY_LOG="$TEST_DIR/pr-ready.log" \
+      GH_REVIEW_REQUEST_LOG="$TEST_DIR/review-request.log" \
       TOUCHSTONE_EVENTS_FILE="$TEST_DIR/open-pr-events.ndjson" \
-      bash "$SCRIPT_DIR/open-pr.sh" --auto-merge "$@"
+      bash "$SCRIPT_DIR/open-pr.sh" "$@"
   )
+}
+
+reset_open_pr_logs() {
+  : >"$TEST_DIR/pr-create.log"
+  : >"$TEST_DIR/pr-ready.log"
+  : >"$TEST_DIR/review-request.log"
+  rm -f "$TEST_DIR/merge-pr-request-count"
 }
 
 # ---------------------------------------------------------------------------
@@ -420,6 +443,14 @@ echo "==> Case 7: PR body protocol preflight blocks before merge-pr.sh"
 mkdir -p "$REPO_DIR/scripts"
 cat >"$REPO_DIR/scripts/check-api-boundary-protocol.py" <<'EOF'
 #!/usr/bin/env bash
+[ "${GH_REPO:-}" = "autumngarage/touchstone" ] || {
+  echo "missing GH_REPO context" >&2
+  exit 43
+}
+case "${PR_NUMBER:-}" in
+  123 | 777) ;;
+  *) echo "missing PR_NUMBER context" >&2; exit 44 ;;
+esac
 case "${API_BOUNDARY_PR_BODY:-}" in
   *"Protocol: yes"*) exit 0 ;;
   *) echo "missing Protocol: yes" >&2; exit 42 ;;
@@ -431,12 +462,14 @@ git -C "$REPO_DIR" commit -m "add body protocol checker" >/dev/null 2>&1
 
 OUT="$TEST_DIR/case7.out"
 RC=0
+reset_open_pr_logs
 GH_PR_STATE="OPEN" GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 GH_PR_BODY="Missing protocol" MERGE_PR_EXIT=0 \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" != "0" ] \
   && grep -q 'Running PR body protocol preflight (new PR #123)' "$OUT" \
   && grep -q 'PR body protocol preflight failed for PR #123' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ] \
   && ! grep -q '\[mock merge-pr.sh\] called' "$OUT"; then
   echo "    PASS"
 else
@@ -467,11 +500,165 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Case 9: post-merge verification still works after merge-pr.sh has removed
+# Case 9: a new draft is a coordination surface. Creating it must not run the
+# final body protocol, emit review-request statuses/comments, or call merge.
+# ---------------------------------------------------------------------------
+echo "==> Case 9: new draft skips semantic review and final body protocol"
+OUT="$TEST_DIR/case13.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GH_PR_BODY="Missing protocol" \
+  run_open_pr --draft >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'Opened as draft; no semantic review was requested' "$OUT" \
+  && grep -q -- '--draft' "$TEST_DIR/pr-create.log" \
+  && ! grep -q 'Running PR body protocol preflight' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ] \
+  && ! grep -q '\[mock merge-pr.sh\] called' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected new draft creation without final protocol or review" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 10: updating an existing draft with --draft keeps it draft and emits no
+# final body preflight or semantic-review request.
+# ---------------------------------------------------------------------------
+echo "==> Case 10: existing draft update remains review-free"
+OUT="$TEST_DIR/case14.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=true \
+  GH_PR_BODY="Missing protocol" run_open_pr --draft >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'PR remains a draft; no semantic review was requested' "$OUT" \
+  && ! grep -q 'Running PR body protocol preflight' "$OUT" \
+  && [ ! -s "$TEST_DIR/pr-ready.log" ] \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected existing draft update to remain review-free" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 11: --draft on an existing ready PR explicitly moves it back to draft
+# without spending review intent or requiring a final body contract.
+# ---------------------------------------------------------------------------
+echo "==> Case 11: --draft moves an existing ready PR back to draft"
+OUT="$TEST_DIR/case15.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_BODY="Missing protocol" run_open_pr --draft >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'Marking PR #777 as draft' "$OUT" \
+  && grep -q '^pr ready 777 --undo$' "$TEST_DIR/pr-ready.log" \
+  && ! grep -q 'Running PR body protocol preflight' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected --draft to transition the ready PR without review" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 12: an existing draft without a final-shipping flag remains draft and
+# tells the caller how to ship it, rather than requesting review implicitly.
+# ---------------------------------------------------------------------------
+echo "==> Case 12: existing draft without --auto-merge stays review-free"
+OUT="$TEST_DIR/case16.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=true \
+  GH_PR_BODY="Missing protocol" run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'PR is still a draft; no semantic review was requested' "$OUT" \
+  && grep -q 'Rerun with --auto-merge to mark it ready' "$OUT" \
+  && ! grep -q 'Running PR body protocol preflight' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected non-final invocation to leave draft review-free" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 13: final shipping of an existing draft runs both deterministic
+# preflights, marks ready, requests exactly one review, then merges.
+# ---------------------------------------------------------------------------
+echo "==> Case 13: --auto-merge transitions draft after preflight and reviews once"
+OUT="$TEST_DIR/case17.out"
+RC=0
+reset_open_pr_logs
+GH_PR_STATE="MERGED" GH_MERGED_AT="2026-08-03T15:00:00Z" \
+  GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=true \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' MERGE_PR_EXIT=0 \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+protocol_line="$(grep -n 'Running PR body protocol preflight' "$OUT" | head -1 | cut -d: -f1)"
+ready_line="$(grep -n 'Marking draft PR #777 ready for review' "$OUT" | head -1 | cut -d: -f1)"
+review_line="$(grep -n 'Requested GitHub Codex review' "$OUT" | head -1 | cut -d: -f1)"
+review_comments="$(grep -c 'issues/777/comments' "$TEST_DIR/review-request.log" || true)"
+
+if [ "$RC" = "0" ] \
+  && [ -n "$protocol_line" ] && [ -n "$ready_line" ] && [ -n "$review_line" ] \
+  && [ "$protocol_line" -lt "$ready_line" ] \
+  && [ "$ready_line" -lt "$review_line" ] \
+  && grep -q '^pr ready 777$' "$TEST_DIR/pr-ready.log" \
+  && [ "$review_comments" = "1" ] \
+  && grep -q '^1$' "$TEST_DIR/merge-pr-request-count" \
+  && grep -q 'Verified: PR #777 merged at 2026-08-03T15:00:00Z' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected preflight -> ready -> one review -> verified merge" >&2
+  echo "    rc=$RC protocol=$protocol_line ready=$ready_line review=$review_line comments=$review_comments" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 14: an existing ready PR with an invalid contract fails deterministic
+# preflight before any review-request status or comment is emitted.
+# ---------------------------------------------------------------------------
+echo "==> Case 14: existing PR protocol failure precedes review request"
+OUT="$TEST_DIR/case18.out"
+RC=0
+reset_open_pr_logs
+GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_BODY=$'Closes #52\n\nMissing protocol' MERGE_PR_EXIT=0 \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'PR body protocol preflight failed for PR #777' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ] \
+  && ! grep -q '\[mock merge-pr.sh\] called' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected invalid existing PR to fail before review request" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 15: post-merge verification still works after merge-pr.sh has removed
 # the current worktree. The real failure mode is that gh can no longer infer
 # the repository from cwd; the fix is to use the captured --repo explicitly.
 # ---------------------------------------------------------------------------
-echo "==> Case 9: post-merge verification uses captured repo context"
+echo "==> Case 15: post-merge verification uses captured repo context"
 OUT="$TEST_DIR/case9.out"
 RC=0
 GH_PR_STATE="MERGED" GH_MERGED_AT="2026-05-17T17:10:41Z" GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" GH_REQUIRE_REPO_FOR_MERGED_AT=1 MERGE_PR_EXIT=0 \
@@ -490,10 +677,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Case 10: verify_pr_merged stays sourceable by itself and treats state=MERGED
+# Case 16: verify_pr_merged stays sourceable by itself and treats state=MERGED
 # as authoritative when mergedAt is briefly empty.
 # ---------------------------------------------------------------------------
-echo "==> Case 10: extracted verify_pr_merged handles state=MERGED without helpers"
+echo "==> Case 16: extracted verify_pr_merged handles state=MERGED without helpers"
 VERIFY_FUNCTIONS="$TEST_DIR/verify-functions.sh"
 VERIFY_COUNTER="$TEST_DIR/verify-calls"
 VERIFY_PAYLOAD_DIR="$TEST_DIR/verify-payloads"
@@ -532,10 +719,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Case 11: a new stacked PR explains how to produce child-only history.
+# Case 17: a new stacked PR explains how to produce child-only history.
 # ---------------------------------------------------------------------------
 git -C "$REPO_DIR" commit --allow-empty -m $'exercise stacked warning\n\nProtocol: yes' >/dev/null 2>&1
-echo "==> Case 11: new stacked PR recovery preserves an independent slice"
+echo "==> Case 17: new stacked PR recovery preserves an independent slice"
 OUT="$TEST_DIR/case11.out"
 RC=0
 GH_PR_STATE="MERGED" GH_MERGED_AT="2026-07-29T12:00:00Z" GH_HAS_EXISTING_PR=0 \
@@ -556,9 +743,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Case 12: an existing stacked PR must also be retargeted on GitHub.
+# Case 18: an existing stacked PR must also be retargeted on GitHub.
 # ---------------------------------------------------------------------------
-echo "==> Case 12: existing stacked PR recovery retargets the PR"
+echo "==> Case 18: existing stacked PR recovery retargets the PR"
 OUT="$TEST_DIR/case12.out"
 RC=0
 GH_PR_STATE="MERGED" GH_MERGED_AT="2026-07-29T12:10:00Z" \
