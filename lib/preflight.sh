@@ -334,9 +334,7 @@ touchstone_preflight_is_python_shell_polyglot() {
       exit
     }
     NR > 2 \
-      && $0 ~ /^[[:space:]]*exec[[:space:]]+(py[[:space:]]+-3|python3?)[[:space:]]+/ \
-      && index($0, "\"$0\"") \
-      && index($0, "\"$@\"") {
+      && $0 ~ /^[[:space:]]*exec[[:space:]]+(py[[:space:]]+-3|python3?)[[:space:]]+"\$0"[[:space:]]+"\$@"[[:space:]]*$/ {
       found_launcher = 1
     }
     END {

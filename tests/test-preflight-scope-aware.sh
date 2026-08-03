@@ -252,6 +252,22 @@ echo "This marker alone must not disable shell lint."
 
 print("python body")
 EOF_UNRECOGNIZED_PYTHON_SHELL
+  cat >scripts/reordered-launcher.py <<'EOF_REORDERED_PYTHON_LAUNCHER'
+#!/bin/sh
+""":"
+exec python3 "$@" "$0"
+":"""
+
+print("python body")
+EOF_REORDERED_PYTHON_LAUNCHER
+  cat >scripts/helper-launcher.py <<'EOF_HELPER_PYTHON_LAUNCHER'
+#!/bin/sh
+""":"
+exec python3 helper.py "$0" "$@"
+":"""
+
+print("python body")
+EOF_HELPER_PYTHON_LAUNCHER
   printf '%s\r\n' \
     '#!/bin/sh' \
     '""":"' \
@@ -259,7 +275,8 @@ EOF_UNRECOGNIZED_PYTHON_SHELL
     '":"""' \
     '' \
     'print("python body")' >scripts/crlf-polyglot.py
-  git add scripts/not-a-python-polyglot.py scripts/crlf-polyglot.py
+  git add scripts/not-a-python-polyglot.py scripts/reordered-launcher.py \
+    scripts/helper-launcher.py scripts/crlf-polyglot.py
   git commit -q -m "add unrecognized shell Python file"
 )
 : >"$LOG"
@@ -268,6 +285,10 @@ assert_log_contains "$LOG" 'shellcheck:.*not-a-python-polyglot.py'
 assert_log_contains "$LOG" 'shfmt:.*not-a-python-polyglot.py'
 assert_log_contains "$LOG" 'shellcheck:.*crlf-polyglot.py'
 assert_log_contains "$LOG" 'shfmt:.*crlf-polyglot.py'
+assert_log_contains "$LOG" 'shellcheck:.*reordered-launcher.py'
+assert_log_contains "$LOG" 'shfmt:.*reordered-launcher.py'
+assert_log_contains "$LOG" 'shellcheck:.*helper-launcher.py'
+assert_log_contains "$LOG" 'shfmt:.*helper-launcher.py'
 echo "==> PASS: a quote marker cannot become a shell-lint bypass"
 
 echo "==> Test: changed shell file with issue blocks"
