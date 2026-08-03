@@ -68,7 +68,11 @@ bash setup.sh
 
 ### PR review
 
-Touchstone requests GitHub Codex review automatically for every pushed PR head. The merge helper waits for trusted exact-head review, deterministic preflight, required checks, and resolved review threads before merging. No local model router or API key is required.
+Touchstone requests GitHub Codex review automatically for every ready PR head
+that enters final shipping. Draft PRs remain review-free coordination surfaces.
+The merge helper waits for trusted exact-head review, deterministic preflight,
+required checks, and resolved review threads before merging. No local model
+router or API key is required.
 
 Routine shipping is non-blocking:
 
@@ -215,10 +219,12 @@ Universal engineering standards, extracted and battle-tested from production sys
 
 ### AI Review Gate
 
-Every pushed PR head receives a GitHub Codex review request. Touchstone binds
-the request and accepted result to the full head and base revisions, rejects
-stale reviews and unresolved threads, runs deterministic preflight, and
-revalidates authorization immediately before merge.
+Every ready PR head that enters final shipping receives a GitHub Codex review
+request. Draft heads remain review-free until final shipping explicitly marks
+the PR ready. Touchstone binds the request and accepted result to the full head
+and base revisions, rejects stale reviews and unresolved threads, runs
+deterministic preflight, and revalidates authorization immediately before
+merge.
 
 Touchstone does not run a hidden local semantic reviewer, route model calls, or
 apply reviewer-authored edits. The driving CLI addresses findings with normal

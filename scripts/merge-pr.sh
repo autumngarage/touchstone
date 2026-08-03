@@ -297,7 +297,7 @@ load_merge_review_config() {
       case "$value" in
         true) PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=true ;;
         false)
-          echo "WARNING: [review.pr_triggered].request_on_push=false is retired and ignored; every pushed head requests review." >&2
+          echo "WARNING: [review.pr_triggered].request_on_push=false is retired and ignored; every final-shipping head requests review." >&2
           ;;
         *) config_error="[review.pr_triggered].request_on_push must be true; got: $value" ;;
       esac

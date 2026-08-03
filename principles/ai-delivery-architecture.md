@@ -69,6 +69,7 @@ Human user
 
 - Every change reaches `main` through a GitHub PR unless the documented emergency path is used.
 - PR creation is not completion. The driver remains accountable through durable worker status and takeover until the PR is approved, merged, and synced locally.
+- A draft PR is a review-free coordination surface. It does not emit semantic-review intent or consume an exact-head review until final shipping explicitly marks it ready.
 - The exact commit merged has passed deterministic checks after its last mutation.
 - The exact commit merged has no unresolved blocking review comments, requested changes, or failing required checks.
 - Touchstone does not invoke a local semantic reviewer or model router.
@@ -139,13 +140,14 @@ Rules:
 The scripts now enforce the core merge-time parts of this architecture:
 
 1. `touchstone worker ship --worktree "$PWD" --detach` is the default routine shipping entry point and invokes the project-local `open-pr.sh --auto-merge`; direct `open-pr.sh` remains the foreground diagnostic mode.
-2. Creating or updating the PR should expose configured checks and, when enabled, PR-visible agentic reviewers.
-3. The wait-only owner watches review decisions and checks without mutating the branch; actionable feedback becomes a durable `needs-attention` handoff for the driver.
-4. `merge-pr.sh` blocks draft PRs, active requested-changes decisions, unresolved review threads, and thread-state inspection failures before the final squash merge.
-5. `merge-pr.sh` binds the trusted GitHub review signal to the exact current head and base, rejects base or merge-base movement, and merges with `--match-head-commit`.
-6. Review and preflight markers should key on base/head/config so repeated operations reuse valid results without hiding stale state.
-7. Detached events record review request count and wait time so external latency remains observable.
-8. Docs, templates, tests, and issue guidance should describe the PR-visible review loop consistently.
+2. `open-pr.sh --draft` creates or updates a review-free coordination surface; it does not run the final PR-body protocol or emit semantic-review intent, completion status, or request comments.
+3. Final shipping runs deterministic issue-claim and PR-body preflights before marking an existing draft ready and requesting exact-head review.
+4. The wait-only owner watches review decisions and checks without mutating the branch; actionable feedback becomes a durable `needs-attention` handoff for the driver.
+5. `merge-pr.sh` blocks draft PRs, active requested-changes decisions, unresolved review threads, and thread-state inspection failures before the final squash merge.
+6. `merge-pr.sh` binds the trusted GitHub review signal to the exact current head and base, rejects base or merge-base movement, and merges with `--match-head-commit`.
+7. Review and preflight markers should key on base/head/config so repeated operations reuse valid results without hiding stale state.
+8. Detached events record review request count and wait time so external latency remains observable.
+9. Docs, templates, tests, and issue guidance should describe the PR-visible review loop consistently.
 
 ## Product Boundary
 

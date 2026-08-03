@@ -34,14 +34,15 @@ poll_sec = 10
 trusted_review_authors = ["chatgpt-codex-connector", "chatgpt-codex-connector[bot]"]
 ```
 
-`open-pr.sh` posts one `@codex review` request per pushed head and records
+`open-pr.sh --draft` creates or updates a review-free coordination surface.
+Final shipping posts one `@codex review` request per ready head and records
 durable request evidence bound to the full head and base revisions.
 `merge-pr.sh` waits for a trusted result, rejects stale or ambiguous review
 state, runs deterministic preflight, and revalidates the exact revision before
 merge.
 
-Review findings are addressed by the driving CLI in normal commits. Every push
-creates a new head and therefore requires a new review. Touchstone never applies
+Review findings are addressed by the driving CLI in normal commits. Every new
+head entering final shipping requires a new review. Touchstone never applies
 hidden reviewer edits.
 
 ## Emergency Path

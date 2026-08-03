@@ -108,6 +108,7 @@ case "$1 $2" in
       mergedAt) echo "2026-04-30T05:00:00Z" ;;
       headRefOid) git rev-parse HEAD ;;
       baseRefOid) git rev-parse main ;;
+      isDraft) echo false ;;
       *) echo "unexpected gh pr view json: $json_fields" >&2; exit 1 ;;
     esac
     ;;
