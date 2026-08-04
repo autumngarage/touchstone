@@ -90,21 +90,28 @@ new_touchstone_self_repo() {
     git init -q
     git config user.email test@example.com
     git config user.name "Touchstone Test"
-    mkdir -p bootstrap scripts tests principles .claude/skills/touchstone-git-workflow docs templates
+    mkdir -p bootstrap scripts tests principles .claude/skills/touchstone-git-workflow docs templates/ci .github/workflows
     printf '9.99.0\n' >VERSION
     printf '#!/usr/bin/env bash\nset -euo pipefail\n' >bootstrap/new-project.sh
     printf '#!/usr/bin/env bash\nset -euo pipefail\n' >scripts/touchstone-run.sh
     printf '#!/usr/bin/env bash\nset -euo pipefail\n' >scripts/issue-claim-check.sh
-    chmod +x bootstrap/new-project.sh scripts/touchstone-run.sh scripts/issue-claim-check.sh
+    printf '#!/usr/bin/env bash\nset -euo pipefail\n' >scripts/merge-pr.sh
+    printf 'name: issue claim\n' >templates/ci/issue-claim-check.yml
+    cp templates/ci/issue-claim-check.yml .github/workflows/issue-claim-check.yml
+    chmod +x bootstrap/new-project.sh scripts/touchstone-run.sh scripts/issue-claim-check.sh scripts/merge-pr.sh
     for test_name in \
       test-agent-steering-contract \
+      test-bootstrap \
       test-claim-issue \
+      test-cortex-pr-merged-hook \
       test-dogfood \
+      test-merge-pr \
       test-open-pr-cleanup-worktree \
       test-open-pr-exit-contract \
       test-open-pr-linked-issues \
       test-steering-size-caps \
       test-touchstone-block \
+      test-update \
       test-other \
       test-target; do
       cat >"tests/${test_name}.sh" <<'EOF_SELF_TEST'
@@ -125,7 +132,7 @@ EOF_SELF_TEST
     printf '# Template Claude steering\n@TOUCHSTONE.md\n' >templates/CLAUDE.md
     printf '# Template Gemini steering\n' >templates/GEMINI.md
     printf '# Docs\n' >docs/overview.md
-    git add VERSION bootstrap/new-project.sh scripts/touchstone-run.sh scripts/issue-claim-check.sh tests AGENTS.md CLAUDE.md principles/git-workflow.md .claude/skills/touchstone-git-workflow/SKILL.md docs/overview.md templates
+    git add VERSION bootstrap/new-project.sh scripts/touchstone-run.sh scripts/issue-claim-check.sh scripts/merge-pr.sh tests AGENTS.md CLAUDE.md principles/git-workflow.md .claude/skills/touchstone-git-workflow/SKILL.md docs/overview.md templates .github/workflows/issue-claim-check.yml
     git commit -q -m "baseline touchstone fixture"
     git update-ref refs/remotes/origin/main HEAD
     git checkout -q -b feature/scope-test
@@ -781,6 +788,8 @@ assert_log_contains "$LOG" '^self:test-open-pr-cleanup-worktree.sh$'
 assert_log_contains "$LOG" '^self:test-open-pr-exit-contract.sh$'
 assert_log_contains "$LOG" '^self:test-open-pr-linked-issues.sh$'
 assert_log_not_contains "$LOG" '^self:test-claim-issue.sh$'
+assert_log_not_contains "$LOG" '^self:test-bootstrap.sh$'
+assert_log_not_contains "$LOG" '^self:test-update.sh$'
 assert_log_not_contains "$LOG" '^self:test-other.sh$'
 assert_log_not_contains "$LOG" '^self:test-target.sh$'
 if ! grep -q 'tests (touchstone scoped self-tests)' "$OUT"; then
@@ -789,6 +798,45 @@ if ! grep -q 'tests (touchstone scoped self-tests)' "$OUT"; then
   exit 1
 fi
 echo "==> PASS: issue-claim helper runs its fixture consumers without the full suite"
+
+echo "==> Test: Touchstone issue-claim workflow runs installation and consistency consumers"
+REPO="$TEST_DIR/repo-touchstone-issue-claim-workflow"
+LOG="$TEST_DIR/touchstone-issue-claim-workflow.log"
+OUT="$TEST_DIR/touchstone-issue-claim-workflow.out"
+new_touchstone_self_repo "$REPO"
+(
+  cd "$REPO"
+  printf '\n# changed workflow contract\n' >>templates/ci/issue-claim-check.yml
+  git add templates/ci/issue-claim-check.yml
+  git commit -q -m "change issue claim workflow"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^self:test-bootstrap.sh$'
+assert_log_contains "$LOG" '^self:test-update.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-cleanup-worktree.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-exit-contract.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-linked-issues.sh$'
+assert_log_not_contains "$LOG" '^self:test-other.sh$'
+echo "==> PASS: issue-claim workflow runs every demonstrated workflow consumer"
+
+echo "==> Test: Touchstone merge helper runs merge and post-merge hook consumers"
+REPO="$TEST_DIR/repo-touchstone-merge-helper"
+LOG="$TEST_DIR/touchstone-merge-helper.log"
+OUT="$TEST_DIR/touchstone-merge-helper.out"
+new_touchstone_self_repo "$REPO"
+(
+  cd "$REPO"
+  printf '\n# changed merge boundary\n' >>scripts/merge-pr.sh
+  git add scripts/merge-pr.sh
+  git commit -q -m "change merge helper"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^self:test-cortex-pr-merged-hook.sh$'
+assert_log_contains "$LOG" '^self:test-merge-pr.sh$'
+assert_log_not_contains "$LOG" '^self:test-other.sh$'
+echo "==> PASS: merge helper runs its merge and post-merge hook consumers"
 
 echo "==> Test: Touchstone unknown diffs keep full self-test fallback"
 REPO="$TEST_DIR/repo-touchstone-full-fallback"

@@ -621,11 +621,19 @@ touchstone_preflight_touchstone_scoped_self_test_files() {
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-claim-issue.sh
         ;;
-      scripts/issue-claim-check.sh | templates/ci/issue-claim-check.yml | .github/workflows/issue-claim-check.yml)
+      scripts/issue-claim-check.sh)
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-open-pr-cleanup-worktree.sh \
           tests/test-open-pr-exit-contract.sh \
           tests/test-open-pr-linked-issues.sh
+        ;;
+      templates/ci/issue-claim-check.yml | .github/workflows/issue-claim-check.yml)
+        touchstone_preflight_add_existing_self_tests "$output_file" \
+          tests/test-bootstrap.sh \
+          tests/test-open-pr-cleanup-worktree.sh \
+          tests/test-open-pr-exit-contract.sh \
+          tests/test-open-pr-linked-issues.sh \
+          tests/test-update.sh
         ;;
       scripts/open-pr.sh)
         touchstone_preflight_add_existing_self_tests "$output_file" \
@@ -637,6 +645,7 @@ touchstone_preflight_touchstone_scoped_self_test_files() {
         ;;
       scripts/merge-pr.sh)
         touchstone_preflight_add_existing_self_tests "$output_file" \
+          tests/test-cortex-pr-merged-hook.sh \
           tests/test-merge-pr.sh
         ;;
       lib/auto-update.sh)
