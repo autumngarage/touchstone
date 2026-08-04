@@ -47,14 +47,21 @@ touchstone_project_hooks_present() {
   [ -f "$pre_commit_hook" ] && [ -f "$pre_push_hook" ]
 }
 
+touchstone_pre_commit_hook_ready() {
+  local hook_path="$1"
+
+  [ -s "$hook_path" ] && [ -x "$hook_path" ] \
+    && grep -q 'pre-commit\.com' "$hook_path" 2>/dev/null
+}
+
 touchstone_project_hooks_ready() {
   local project_dir="$1"
   local pre_commit_hook pre_push_hook
 
   pre_commit_hook="$(touchstone_git_hook_path "$project_dir" pre-commit)" || return 2
   pre_push_hook="$(touchstone_git_hook_path "$project_dir" pre-push)" || return 2
-  [ -s "$pre_commit_hook" ] && [ -x "$pre_commit_hook" ] \
-    && [ -s "$pre_push_hook" ] && [ -x "$pre_push_hook" ]
+  touchstone_pre_commit_hook_ready "$pre_commit_hook" \
+    && touchstone_pre_commit_hook_ready "$pre_push_hook"
 }
 
 touchstone_install_hooks() {

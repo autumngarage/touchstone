@@ -1181,9 +1181,47 @@ exit 0
 CUSTOMHOOK
 cp "$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-commit" "$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-push"
 chmod +x "$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-commit" "$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-push"
+
+# Keep the generated setup run hermetic. Every foundation tool setup checks is
+# represented locally, and the brew sentinel fails if setup tries to install or
+# contact anything instead of merely validating the isolated fixture.
+INIT_SETUP_FAKE_BIN="$TEST_DIR/init-setup-fake-bin"
+SETUP_EXTERNAL_LOG="$TEST_DIR/setup-external.log"
+mkdir -p "$INIT_SETUP_FAKE_BIN"
+cp "$HOOKS_FAKE_BIN/pre-commit" "$INIT_SETUP_FAKE_BIN/pre-commit"
+cat >"$INIT_SETUP_FAKE_BIN/brew" <<'FAKEBREW'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${SETUP_EXTERNAL_LOG:?}"
+exit 97
+FAKEBREW
+cat >"$INIT_SETUP_FAKE_BIN/touchstone" <<'FAKETOUCHSTONE'
+#!/usr/bin/env bash
+case "${1:-}" in
+  version) printf 'touchstone test-fixture\n' ;;
+  update) printf 'Already up to date.\n' ;;
+esac
+exit 0
+FAKETOUCHSTONE
+cat >"$INIT_SETUP_FAKE_BIN/gh" <<'FAKESETUPGH'
+#!/usr/bin/env bash
+if [ "${1:-} ${2:-}" = "auth status" ]; then
+  printf 'Logged in to github.com\n'
+fi
+exit 0
+FAKESETUPGH
+cat >"$INIT_SETUP_FAKE_BIN/setup-tool" <<'FAKESETUPTOOL'
+#!/usr/bin/env bash
+exit 0
+FAKESETUPTOOL
+for setup_tool in gitleaks shellcheck shfmt; do
+  cp "$INIT_SETUP_FAKE_BIN/setup-tool" "$INIT_SETUP_FAKE_BIN/$setup_tool"
+done
+chmod +x "$INIT_SETUP_FAKE_BIN"/*
+: >"$SETUP_EXTERNAL_LOG"
 : >"$HOOKS_LOG"
 if (cd "$PROJECT_INIT_CUSTOM_HOOKS" \
-  && PATH="$HOOKS_FAKE_BIN:$PATH" \
+  && PATH="$INIT_SETUP_FAKE_BIN:$PATH" \
+    SETUP_EXTERNAL_LOG="$SETUP_EXTERNAL_LOG" \
     TOUCHSTONE_NO_AUTO_UPDATE=1 \
     TOUCHSTONE_SKIP_DEVTOOLS=1 \
     "$TOUCHSTONE_ROOT/bin/touchstone" init --no-register --type generic) \
@@ -1197,6 +1235,10 @@ if (cd "$PROJECT_INIT_CUSTOM_HOOKS" \
   assert_contains "$TEST_DIR/init-custom-hooks.txt" 'preserving project-owned hooks'
   if [ -s "$HOOKS_LOG" ]; then
     echo "FAIL: fresh init invoked pre-commit install despite core.hooksPath" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+  if [ -s "$SETUP_EXTERNAL_LOG" ]; then
+    echo "FAIL: fresh init attempted a Homebrew install in the hermetic setup fixture" >&2
     ERRORS=$((ERRORS + 1))
   fi
 else
@@ -1213,6 +1255,7 @@ mkdir -p "$PROJECT_GITHUB_UNGATED/.githooks" "$GITHUB_FAKE_BIN"
 git -C "$PROJECT_GITHUB_UNGATED" init >/dev/null
 git -C "$PROJECT_GITHUB_UNGATED" config core.hooksPath .githooks
 cp "$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-commit" "$PROJECT_GITHUB_UNGATED/.githooks/pre-commit"
+cp "$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-push" "$PROJECT_GITHUB_UNGATED/.githooks/pre-push"
 cat >"$GITHUB_FAKE_BIN/gh" <<'FAKEGH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${GITHUB_LOG:?}"
