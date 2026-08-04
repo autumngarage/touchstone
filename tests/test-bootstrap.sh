@@ -1168,6 +1168,68 @@ assert_exists "$PROJECT_HOOKS_WITH/.git/hooks/pre-commit"
 assert_exists "$PROJECT_HOOKS_WITH/.git/hooks/pre-push"
 assert_not_exists "$PROJECT_HOOKS_WITH/.git/hooks/commit-msg"
 
+# Fresh `touchstone init` also runs the generated setup.sh. A repository-owned
+# hooks path must survive both bootstrap and setup, and setup must not install
+# pre-commit shims into a different path behind Git's back.
+PROJECT_INIT_CUSTOM_HOOKS="$TEST_DIR/test-project-init-custom-hooks"
+mkdir -p "$PROJECT_INIT_CUSTOM_HOOKS/.githooks"
+git -C "$PROJECT_INIT_CUSTOM_HOOKS" init >/dev/null
+git -C "$PROJECT_INIT_CUSTOM_HOOKS" config core.hooksPath .githooks
+cat >"$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-commit" <<'CUSTOMHOOK'
+#!/usr/bin/env bash
+exit 0
+CUSTOMHOOK
+cp "$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-commit" "$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-push"
+chmod +x "$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-commit" "$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-push"
+: >"$HOOKS_LOG"
+if (cd "$PROJECT_INIT_CUSTOM_HOOKS" \
+  && PATH="$HOOKS_FAKE_BIN:$PATH" \
+    TOUCHSTONE_NO_AUTO_UPDATE=1 \
+    TOUCHSTONE_SKIP_DEVTOOLS=1 \
+    "$TOUCHSTONE_ROOT/bin/touchstone" init --no-register --type generic) \
+  >"$TEST_DIR/init-custom-hooks.txt" 2>&1; then
+  if [ "$(git -C "$PROJECT_INIT_CUSTOM_HOOKS" config --get core.hooksPath)" != ".githooks" ]; then
+    echo "FAIL: fresh init changed core.hooksPath" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+  assert_executable "$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-commit"
+  assert_executable "$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-push"
+  assert_contains "$TEST_DIR/init-custom-hooks.txt" 'preserving project-owned hooks'
+  if [ -s "$HOOKS_LOG" ]; then
+    echo "FAIL: fresh init invoked pre-commit install despite core.hooksPath" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+else
+  echo "FAIL: fresh touchstone init should preserve a configured hooks path" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Requested remote creation must never perform its first push unless the hooks
+# Git will actually execute are non-empty and executable.
+PROJECT_GITHUB_UNGATED="$TEST_DIR/test-project-github-ungated"
+GITHUB_FAKE_BIN="$TEST_DIR/github-fake-bin"
+GITHUB_LOG="$TEST_DIR/github.log"
+mkdir -p "$PROJECT_GITHUB_UNGATED/.githooks" "$GITHUB_FAKE_BIN"
+git -C "$PROJECT_GITHUB_UNGATED" init >/dev/null
+git -C "$PROJECT_GITHUB_UNGATED" config core.hooksPath .githooks
+cp "$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-commit" "$PROJECT_GITHUB_UNGATED/.githooks/pre-commit"
+cat >"$GITHUB_FAKE_BIN/gh" <<'FAKEGH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${GITHUB_LOG:?}"
+case "$1 ${2:-}" in
+  "auth status") exit 0 ;;
+  "repo create") exit 0 ;;
+esac
+exit 1
+FAKEGH
+chmod +x "$GITHUB_FAKE_BIN/gh"
+: >"$GITHUB_LOG"
+PATH="$GITHUB_FAKE_BIN:$HOOKS_FAKE_BIN:$PATH" GITHUB_LOG="$GITHUB_LOG" \
+  bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_GITHUB_UNGATED" \
+  --no-register --github-public >"$TEST_DIR/github-ungated.txt" 2>&1
+assert_contains "$TEST_DIR/github-ungated.txt" 'GitHub repo creation skipped: effective pre-commit and pre-push hooks are not ready'
+assert_not_contains "$GITHUB_LOG" '^repo create'
+
 # Bootstrap without pre-commit on PATH must print the gap, succeed (no fatal error),
 # and leave hooks uninstalled — rather than silently "succeed" with an ungated repo.
 if PATH="/usr/bin:/bin" command -v pre-commit >/dev/null 2>&1; then
@@ -1284,6 +1346,35 @@ if (cd "$PROJECT_DOCTOR_LINKED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT
   assert_contains "$TEST_DIR/doctor-linked.txt" '/.git/hooks/pre-commit'
 else
   echo "FAIL: doctor --project should resolve shared hooks from a linked worktree" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Apple still ships Git versions older than 2.31 on supported machines. Hook
+# discovery must not depend on `git rev-parse --path-format`, which those
+# versions reject. This wrapper delegates every older-compatible invocation.
+LEGACY_GIT_BIN="$TEST_DIR/legacy-git-bin"
+REAL_GIT_FOR_HOOKS="$(command -v git)"
+mkdir -p "$LEGACY_GIT_BIN"
+cat >"$LEGACY_GIT_BIN/git" <<'LEGACYGIT'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  if [ "$arg" = "--path-format=absolute" ]; then
+    echo "legacy git: unknown option --path-format=absolute" >&2
+    exit 129
+  fi
+done
+exec "${REAL_GIT_FOR_HOOKS:?}" "$@"
+LEGACYGIT
+chmod +x "$LEGACY_GIT_BIN/git"
+if (cd "$PROJECT_DOCTOR_LINKED" \
+  && PATH="$LEGACY_GIT_BIN:$PATH" \
+    REAL_GIT_FOR_HOOKS="$REAL_GIT_FOR_HOOKS" \
+    TOUCHSTONE_NO_AUTO_UPDATE=1 \
+    "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) \
+  >"$TEST_DIR/doctor-legacy-git.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-legacy-git.txt" 'Project is fully armed'
+else
+  echo "FAIL: doctor --project should resolve hooks with pre-2.31 Git" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
