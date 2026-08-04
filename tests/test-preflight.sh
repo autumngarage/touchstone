@@ -217,6 +217,7 @@ mkdir -p "$SILENT_REPO/bootstrap" "$SILENT_REPO/scripts" "$SILENT_REPO/tests" "$
     tests/test-a-pass.sh tests/test-b-silent.sh tests/test-c-silent.sh lib/example.sh
   git add VERSION bootstrap/new-project.sh scripts/touchstone-run.sh tests lib/example.sh
   git commit -q -m "fixture baseline"
+  git update-ref refs/remotes/origin/main HEAD
   git checkout -q -b fix/silent-test
   printf '# changed\n' >>lib/example.sh
   git add lib/example.sh
@@ -233,7 +234,7 @@ for old_run in 01 02 03 04 05 06 07 08; do
 done
 if PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
   TOUCHSTONE_PREFLIGHT_SKIP_DOGFOOD=1 \
-  bash "$TOUCHSTONE_ROOT/lib/preflight.sh" --diff main "$SILENT_REPO" >"$SILENT_OUT" 2>&1; then
+  bash "$TOUCHSTONE_ROOT/lib/preflight.sh" --diff origin/main "$SILENT_REPO" >"$SILENT_OUT" 2>&1; then
   echo "FAIL: silent self-test fixture unexpectedly passed preflight" >&2
   cat "$SILENT_OUT" >&2
   exit 1

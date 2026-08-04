@@ -79,31 +79,36 @@ touchstone_preflight_prune_failure_log_dirs() {
 }
 
 touchstone_preflight_ensure_failure_log_dir() {
-  local common_dir resolved_common_dir touchstone_state_dir failure_root timestamp
+  local common_dir touchstone_state_dir failure_root timestamp
 
   if [ -n "$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR" ]; then
     return 0
   fi
 
-  common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
-  [ -n "$common_dir" ] || return 1
-  # Git Bash reports an absolute common dir as C:/..., which is directly
-  # usable by `cd` but does not start with `/`. Resolve the value as returned
-  # first, then fall back to repository-relative resolution for `.git`.
-  if resolved_common_dir="$(cd "$common_dir" 2>/dev/null && pwd)"; then
-    common_dir="$resolved_common_dir"
-  else
-    common_dir="$(cd "$(pwd)/$common_dir" 2>/dev/null && pwd)" || return 1
+  common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [ -z "$common_dir" ]; then
+    touchstone_preflight_fail "could not resolve the repository's common Git directory for retained diagnostics"
+    return 1
   fi
+  common_dir="$(cd "$common_dir" 2>/dev/null && pwd)" || {
+    touchstone_preflight_fail "could not access the repository's common Git directory: $common_dir"
+    return 1
+  }
   touchstone_state_dir="$common_dir/touchstone"
   failure_root="$touchstone_state_dir/preflight-failures"
   if [ -L "$touchstone_state_dir" ] || [ -L "$failure_root" ]; then
     touchstone_preflight_fail "refusing to retain diagnostics through a symlink under $common_dir"
     return 1
   fi
-  timestamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null)" || return 1
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null)" || {
+    touchstone_preflight_fail "could not timestamp retained preflight diagnostics"
+    return 1
+  }
   TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR="$failure_root/$timestamp-$$"
-  mkdir -p "$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR"
+  mkdir -p "$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR" || {
+    touchstone_preflight_fail "could not create retained preflight diagnostics: $TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR"
+    return 1
+  }
   touchstone_preflight_prune_failure_log_dirs \
     "$failure_root" "$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR"
 }
