@@ -284,12 +284,16 @@ if [ "$DEPS_ONLY" = false ]; then
   # --------------------------------------------------------------------------
   info "Setting up git hooks"
   if [ -f ".pre-commit-config.yaml" ]; then
-    # Clear core.hooksPath if set — it conflicts with pre-commit.
-    git config --unset-all core.hooksPath 2>/dev/null || true
-    # Install hook shims (environments install lazily on first run).
-    pre-commit install 2>&1 | tail -1 | while read -r line; do ok "$line"; done
-    pre-commit install --hook-type pre-push 2>&1 | tail -1 | while read -r line; do ok "$line"; done
-    ok "pre-commit hooks installed (pre-commit, pre-push)"
+    configured_hooks_path="$(git config --get core.hooksPath 2>/dev/null || true)"
+    if [ -n "$configured_hooks_path" ]; then
+      warn "core.hooksPath is configured ($configured_hooks_path); preserving project-owned hooks"
+      warn "Remove core.hooksPath and rerun setup only if pre-commit should manage the hooks."
+    else
+      # Install hook shims (environments install lazily on first run).
+      pre-commit install 2>&1 | tail -1 | while read -r line; do ok "$line"; done
+      pre-commit install --hook-type pre-push 2>&1 | tail -1 | while read -r line; do ok "$line"; done
+      ok "pre-commit hooks installed (pre-commit, pre-push)"
+    fi
   else
     warn "No .pre-commit-config.yaml found — skipping hooks"
   fi

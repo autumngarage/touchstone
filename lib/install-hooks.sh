@@ -21,13 +21,21 @@
 touchstone_git_hook_path() {
   local project_dir="$1"
   local hook_type="$2"
+  local hook_path project_root
 
   if [ -z "$project_dir" ] || [ -z "$hook_type" ]; then
     echo "ERROR: touchstone_git_hook_path requires a project directory and hook type" >&2
     return 1
   fi
 
-  git -C "$project_dir" rev-parse --path-format=absolute --git-path "hooks/$hook_type"
+  hook_path="$(git -C "$project_dir" rev-parse --git-path "hooks/$hook_type")" || return 1
+  case "$hook_path" in
+    /*) printf '%s\n' "$hook_path" ;;
+    *)
+      project_root="$(cd -P "$project_dir" && pwd)" || return 1
+      printf '%s/%s\n' "$project_root" "$hook_path"
+      ;;
+  esac
 }
 
 touchstone_project_hooks_present() {
@@ -37,6 +45,16 @@ touchstone_project_hooks_present() {
   pre_commit_hook="$(touchstone_git_hook_path "$project_dir" pre-commit)" || return 2
   pre_push_hook="$(touchstone_git_hook_path "$project_dir" pre-push)" || return 2
   [ -f "$pre_commit_hook" ] && [ -f "$pre_push_hook" ]
+}
+
+touchstone_project_hooks_ready() {
+  local project_dir="$1"
+  local pre_commit_hook pre_push_hook
+
+  pre_commit_hook="$(touchstone_git_hook_path "$project_dir" pre-commit)" || return 2
+  pre_push_hook="$(touchstone_git_hook_path "$project_dir" pre-push)" || return 2
+  [ -s "$pre_commit_hook" ] && [ -x "$pre_commit_hook" ] \
+    && [ -s "$pre_push_hook" ] && [ -x "$pre_push_hook" ]
 }
 
 touchstone_install_hooks() {
