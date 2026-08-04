@@ -1,0 +1,40 @@
+# touchstone:managed-gitleaks-config
+title = "Touchstone managed secret-scanning rules"
+
+# Project-owned rules and allowlists live in .gitleaks.local.toml. That file
+# may itself extend Gitleaks' built-in defaults; Gitleaks supports chained
+# configuration to a depth of two.
+[extend]
+path = ".gitleaks.local.toml"
+
+[[rules]]
+id = "db-uri-with-password"
+description = "Database connection URI with embedded password"
+regex = '''(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis)://[^\s:/@]+:[^\s/@]+@[^\s/]+'''
+tags = ["database", "credentials", "uri"]
+
+[[rules.allowlists]]
+description = "Database URI placeholders and provider template references"
+regexTarget = "match"
+regexes = [
+  '''\$\{\{[^}]+\}\}''',
+  '''\$\{[A-Z_][A-Z0-9_]*\}''',
+  '''(?i):(password|placeholder|example|changeme|your[_-]?password|new[_-]?pw|new[_-]?password|literal[_-]?password|secret|xxx+|fake|dummy)@''',
+  '''<[A-Za-z][A-Za-z0-9_]*>@''',
+  '''\[[A-Z][A-Z0-9_]*\]@''',
+]
+
+[[rules]]
+id = "pgpassword-env"
+description = "PGPASSWORD set inline on a command"
+regex = '''(?i)\bPGPASSWORD\s*=\s*['"]?[^'"\s$]{8,}'''
+tags = ["postgres", "credentials", "env"]
+
+[[rules.allowlists]]
+description = "PGPASSWORD documentation placeholders"
+regexTarget = "match"
+regexes = [
+  '''(?i)PGPASSWORD\s*=\s*['"]?(password|placeholder|example|changeme|your[_-]?password|new[_-]?pw|new[_-]?password|literal[_-]?password|secret|xxx+|fake|dummy)''',
+  '''PGPASSWORD\s*=\s*['"]?<[^>]+>''',
+  '''PGPASSWORD\s*=\s*['"]?\[[A-Z][A-Z0-9_]*\]''',
+]

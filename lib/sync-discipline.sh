@@ -23,6 +23,7 @@ touchstone_sync_planned_write_paths() {
     printf '.touchstone-version\n'
     printf 'TOUCHSTONE.md\n'
     printf '.github/workflows/issue-claim-check.yml\n'
+    printf '.gitleaks.toml\n'
     printf '.claude/settings.json\n'
     printf 'principles/\n'
     printf 'scripts/branch-guard.sh\n'
@@ -48,6 +49,10 @@ touchstone_sync_planned_write_paths() {
     printf 'lib/preflight.sh\n'
     printf 'lib/preflight-scope.sh\n'
     printf 'lib/review-comment.sh\n'
+
+    if [ ! -f "$project_dir/.gitleaks.local.toml" ]; then
+      printf '.gitleaks.local.toml\n'
+    fi
 
     # Legacy project-scoped copies of these Touchstone-owned skills are
     # removed during update now that the bundle installs at user scope. Keep

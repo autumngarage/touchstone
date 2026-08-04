@@ -232,6 +232,16 @@ assert_executable "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_not_contains "$PROJECT/.pre-commit-config.yaml" 'conductor-review.sh'
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'touchstone-run.sh validate'
 assert_contains "$PROJECT/.pre-commit-config.yaml" "args: \\['-d', '-i', '2', '-ci', '-bn'\\]"
+assert_exists "$PROJECT/.gitleaks.toml"
+assert_exists "$PROJECT/.gitleaks.local.toml"
+if ! diff -q "$TOUCHSTONE_ROOT/templates/.gitleaks.toml" "$PROJECT/.gitleaks.toml" >/dev/null; then
+  echo "FAIL: managed Gitleaks config must match the Touchstone template" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if ! diff -q "$TOUCHSTONE_ROOT/templates/.gitleaks.local.toml" "$PROJECT/.gitleaks.local.toml" >/dev/null; then
+  echo "FAIL: new project-local Gitleaks config must match its starter template" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 if ! diff -q "$TOUCHSTONE_ROOT/templates/.markdownlint.json" "$PROJECT/.markdownlint.json" >/dev/null; then
   echo "FAIL: bootstrapped markdownlint config must match the referenced template" >&2
   ERRORS=$((ERRORS + 1))
@@ -256,6 +266,8 @@ assert_contains "$PROJECT/.touchstone-config" '^validate_full_command=$'
 assert_exists "$PROJECT/.touchstone-manifest"
 assert_contains "$PROJECT/.touchstone-manifest" '^\.touchstone-version$'
 assert_contains "$PROJECT/.touchstone-manifest" '^\.github/workflows/issue-claim-check\.yml$'
+assert_contains "$PROJECT/.touchstone-manifest" '^\.gitleaks\.toml$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^\.gitleaks\.local\.toml$'
 assert_contains "$PROJECT/.touchstone-manifest" '^\.claude/settings\.json$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/branch-guard\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/emergency-disclosure\.sh$'
@@ -589,6 +601,11 @@ mkdir -p "$PROJECT_EXISTING/principles" "$PROJECT_EXISTING/scripts"
 printf 'custom principle\n' >"$PROJECT_EXISTING/principles/engineering-principles.md"
 printf 'custom script\n' >"$PROJECT_EXISTING/scripts/open-pr.sh"
 printf 'custom manifest\n' >"$PROJECT_EXISTING/.touchstone-manifest"
+cat >"$PROJECT_EXISTING/.gitleaks.toml" <<'EOF_CUSTOM_GITLEAKS'
+title = "Existing project Gitleaks config"
+[extend]
+useDefault = true
+EOF_CUSTOM_GITLEAKS
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_EXISTING" --no-register
 assert_exists "$PROJECT_EXISTING/principles/engineering-principles.md.bak"
 assert_exists "$PROJECT_EXISTING/scripts/open-pr.sh.bak"
@@ -596,6 +613,9 @@ assert_exists "$PROJECT_EXISTING/.touchstone-manifest.bak"
 assert_contains "$PROJECT_EXISTING/principles/engineering-principles.md.bak" 'custom principle'
 assert_contains "$PROJECT_EXISTING/scripts/open-pr.sh.bak" 'custom script'
 assert_contains "$PROJECT_EXISTING/.touchstone-manifest.bak" 'custom manifest'
+assert_contains "$PROJECT_EXISTING/.gitleaks.toml" '^# touchstone:managed-gitleaks-config$'
+assert_contains "$PROJECT_EXISTING/.gitleaks.local.toml" '^title = "Existing project Gitleaks config"$'
+assert_not_exists "$PROJECT_EXISTING/.gitleaks.toml.bak"
 
 # Review policy is installed from the canonical template and is not user-selectable during bootstrap.
 # Bootstrap should record the optional GitButler workflow choice without making it the default.

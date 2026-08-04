@@ -199,6 +199,70 @@ if ! git -C "$RETIREMENT_PROJECT" diff --quiet \
 fi
 
 # --------------------------------------------------------------------------
+# Test 1c: existing project configuration migrates without losing bytes.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 2c: Preserve existing Gitleaks customization ---"
+
+GITLEAKS_MIGRATION_PROJECT="$TEST_DIR/gitleaks-migration-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GITLEAKS_MIGRATION_PROJECT" --no-register >/dev/null
+configure_git "$GITLEAKS_MIGRATION_PROJECT"
+rm -f \
+  "$GITLEAKS_MIGRATION_PROJECT/.gitleaks.toml" \
+  "$GITLEAKS_MIGRATION_PROJECT/.gitleaks.local.toml"
+cat >"$GITLEAKS_MIGRATION_PROJECT/.gitleaks.toml" <<'EOF_MIGRATED_GITLEAKS'
+title = "Existing custom rules survive migration"
+[extend]
+useDefault = true
+EOF_MIGRATED_GITLEAKS
+printf '0000000000000000000000000000000000000009\n' \
+  >"$GITLEAKS_MIGRATION_PROJECT/.touchstone-version"
+commit_all "$GITLEAKS_MIGRATION_PROJECT" "simulate project before managed Gitleaks rules"
+(cd "$GITLEAKS_MIGRATION_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/gitleaks-migration-output.txt" 2>&1
+assert_contains "$TEST_DIR/gitleaks-migration-output.txt" 'preserved project Gitleaks config as .gitleaks.local.toml'
+assert_contains "$GITLEAKS_MIGRATION_PROJECT/.gitleaks.toml" '^# touchstone:managed-gitleaks-config$'
+assert_contains "$GITLEAKS_MIGRATION_PROJECT/.gitleaks.local.toml" '^title = "Existing custom rules survive migration"$'
+assert_contains "$GITLEAKS_MIGRATION_PROJECT/.touchstone-manifest" '^\.gitleaks\.toml$'
+assert_not_contains "$GITLEAKS_MIGRATION_PROJECT/.touchstone-manifest" '^\.gitleaks\.local\.toml$'
+if git -C "$GITLEAKS_MIGRATION_PROJECT" log -1 --name-only --format='' \
+  | grep -qxF '.gitleaks.local.toml'; then
+  echo "    PASS: migrated project Gitleaks config is committed with the update"
+else
+  echo "FAIL: migrated .gitleaks.local.toml was not committed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Ambiguous ownership must stop before either configuration is overwritten.
+GITLEAKS_COLLISION_PROJECT="$TEST_DIR/gitleaks-collision-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GITLEAKS_COLLISION_PROJECT" --no-register >/dev/null
+configure_git "$GITLEAKS_COLLISION_PROJECT"
+cat >"$GITLEAKS_COLLISION_PROJECT/.gitleaks.toml" <<'EOF_COLLIDING_ROOT'
+title = "Custom root config"
+EOF_COLLIDING_ROOT
+cat >"$GITLEAKS_COLLISION_PROJECT/.gitleaks.local.toml" <<'EOF_COLLIDING_LOCAL'
+title = "Custom local config"
+EOF_COLLIDING_LOCAL
+printf '0000000000000000000000000000000000000008\n' \
+  >"$GITLEAKS_COLLISION_PROJECT/.touchstone-version"
+commit_all "$GITLEAKS_COLLISION_PROJECT" "simulate ambiguous Gitleaks ownership"
+GITLEAKS_COLLISION_BRANCH="$(git -C "$GITLEAKS_COLLISION_PROJECT" branch --show-current)"
+GITLEAKS_COLLISION_HEAD="$(git -C "$GITLEAKS_COLLISION_PROJECT" rev-parse HEAD)"
+if (cd "$GITLEAKS_COLLISION_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/gitleaks-collision-output.txt" 2>&1; then
+  echo "FAIL: update should reject ambiguous Gitleaks configuration ownership" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/gitleaks-collision-output.txt" 'both a project-owned .gitleaks.toml and .gitleaks.local.toml exist'
+fi
+if [ "$(git -C "$GITLEAKS_COLLISION_PROJECT" branch --show-current)" != "$GITLEAKS_COLLISION_BRANCH" ] \
+  || [ "$(git -C "$GITLEAKS_COLLISION_PROJECT" rev-parse HEAD)" != "$GITLEAKS_COLLISION_HEAD" ] \
+  || [ -n "$(git -C "$GITLEAKS_COLLISION_PROJECT" status --porcelain)" ]; then
+  echo "FAIL: failed Gitleaks migration did not restore the original Git boundary" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
 # Test 2: committed local touchstone-owned changes update on a review branch.
 # --------------------------------------------------------------------------
 echo ""
@@ -212,6 +276,18 @@ rm "$PROJECT/scripts/touchstone-run.sh"
 rm "$PROJECT/scripts/claim-issue.sh"
 rm "$PROJECT/scripts/issue-claim-check.sh"
 printf '{"custom": true}\n' >"$PROJECT/.claude/settings.json"
+cat >"$PROJECT/.gitleaks.toml" <<'EOF_OLD_MANAGED_GITLEAKS'
+# touchstone:managed-gitleaks-config
+title = "Old managed Gitleaks rules"
+[extend]
+path = ".gitleaks.local.toml"
+EOF_OLD_MANAGED_GITLEAKS
+cat >"$PROJECT/.gitleaks.local.toml" <<'EOF_PROJECT_GITLEAKS'
+title = "Preserve this project Gitleaks config"
+[extend]
+useDefault = true
+EOF_PROJECT_GITLEAKS
+cp "$PROJECT/.gitleaks.local.toml" "$TEST_DIR/project-gitleaks-before.toml"
 echo "0000000000000000000000000000000000000000" >"$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate old touchstone state"
 
@@ -231,6 +307,14 @@ assert_contains "$PROJECT/.github/workflows/issue-claim-check.yml" 'claim-check-
 assert_contains "$PROJECT/.github/workflows/issue-claim-check.yml" 'cancel-in-progress: true'
 assert_exists "$PROJECT/.markdownlint.json"
 assert_contains "$TEST_DIR/update-output-2.txt" 'added (project-owned).*\.markdownlint\.json'
+if ! cmp -s "$TOUCHSTONE_ROOT/templates/.gitleaks.toml" "$PROJECT/.gitleaks.toml"; then
+  echo "FAIL: update did not refresh the managed Gitleaks rules" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if ! cmp -s "$TEST_DIR/project-gitleaks-before.toml" "$PROJECT/.gitleaks.local.toml"; then
+  echo "FAIL: update overwrote project-owned Gitleaks configuration" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 assert_exists "$PROJECT/scripts/touchstone-run.sh"
 assert_exists "$PROJECT/scripts/claim-issue.sh"
 assert_exists "$PROJECT/scripts/issue-claim-check.sh"
@@ -248,6 +332,8 @@ assert_not_exists "$PROJECT/lib/review-comment.sh"
 assert_exists "$PROJECT/.touchstone-manifest"
 assert_contains "$PROJECT/.touchstone-manifest" '^TOUCHSTONE.md$'
 assert_contains "$PROJECT/.touchstone-manifest" '^\.github/workflows/issue-claim-check\.yml$'
+assert_contains "$PROJECT/.touchstone-manifest" '^\.gitleaks\.toml$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^\.gitleaks\.local\.toml$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/touchstone-run.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/claim-issue.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/issue-claim-check.sh$'

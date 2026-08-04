@@ -30,6 +30,8 @@ source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
 source "$TOUCHSTONE_ROOT/lib/touchstone-block.sh"
 # shellcheck source=../lib/install-skills.sh
 source "$TOUCHSTONE_ROOT/lib/install-skills.sh"
+# shellcheck source=../lib/gitleaks-config.sh
+source "$TOUCHSTONE_ROOT/lib/gitleaks-config.sh"
 
 REGISTER=true
 
@@ -900,6 +902,7 @@ write_touchstone_manifest() {
     printf '.touchstone-version\n'
     printf 'TOUCHSTONE.md\n'
     printf '.github/workflows/issue-claim-check.yml\n'
+    printf '.gitleaks.toml\n'
     for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
       printf 'principles/%s\n' "$(basename "$f")"
     done
@@ -940,6 +943,7 @@ write_touchstone_manifest() {
 
 echo ""
 echo "==> Copying templates (project-owned, won't be auto-updated):"
+touchstone_gitleaks_prepare_project_config "$PROJECT_DIR" false
 copy_file "$TOUCHSTONE_ROOT/templates/CLAUDE.md" "$PROJECT_DIR/CLAUDE.md"
 CLAUDE_MD_CREATED="$LAST_COPY_CREATED"
 copy_file "$TOUCHSTONE_ROOT/templates/AGENTS.md" "$PROJECT_DIR/AGENTS.md"
@@ -950,6 +954,7 @@ copy_file "$TOUCHSTONE_ROOT/templates/GEMINI.md" "$PROJECT_DIR/GEMINI.md"
 # don't resolve the @-imports CLAUDE.md uses to pull in TOUCHSTONE.md.
 touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT" || true
 copy_file "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-commit-config.yaml"
+copy_file "$TOUCHSTONE_ROOT/templates/.gitleaks.local.toml" "$PROJECT_DIR/.gitleaks.local.toml"
 copy_file "$TOUCHSTONE_ROOT/templates/.markdownlint.json" "$PROJECT_DIR/.markdownlint.json"
 copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
 copy_file "$TOUCHSTONE_ROOT/templates/.worktreeinclude.example" "$PROJECT_DIR/.worktreeinclude.example"
@@ -964,6 +969,7 @@ chmod +x "$PROJECT_DIR/setup.sh" 2>/dev/null || true
 
 echo ""
 echo "==> Copying principles (touchstone-owned, will be auto-updated):"
+copy_file_force "$TOUCHSTONE_ROOT/templates/.gitleaks.toml" "$PROJECT_DIR/.gitleaks.toml"
 mkdir -p "$PROJECT_DIR/principles"
 for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
   copy_file_force "$f" "$PROJECT_DIR/principles/$(basename "$f")"

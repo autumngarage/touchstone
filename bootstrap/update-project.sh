@@ -32,6 +32,8 @@ source "$TOUCHSTONE_ROOT/lib/install-skills.sh"
 source "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
 # shellcheck source=../lib/sha256.sh
 source "$TOUCHSTONE_ROOT/lib/sha256.sh"
+# shellcheck source=../lib/gitleaks-config.sh
+source "$TOUCHSTONE_ROOT/lib/gitleaks-config.sh"
 PROJECT_DIR="$(pwd)"
 DRY_RUN=false
 CHECK_ONLY=false
@@ -417,6 +419,7 @@ ADDED=0
 UPDATED=0
 UNCHANGED=0
 SKIPPED_UNSAFE=0
+PROJECT_OWNED_ADDED_PATHS=()
 
 update_file() {
   local src="$1"
@@ -488,6 +491,12 @@ remove_retired_managed_file() {
 }
 
 echo "==> Updating touchstone-owned files:"
+
+touchstone_gitleaks_prepare_project_config "$PROJECT_DIR" "$DRY_RUN"
+if [ "$TOUCHSTONE_GITLEAKS_MIGRATED" = true ]; then
+  PROJECT_OWNED_ADDED_PATHS+=(".gitleaks.local.toml")
+fi
+update_file "$TOUCHSTONE_ROOT/templates/.gitleaks.toml" "$PROJECT_DIR/.gitleaks.toml"
 
 remove_retired_managed_file "lib/review-comment.sh"
 
@@ -608,7 +617,6 @@ fi
 # additions such as Swift's .swiftlint.yml. Add them when missing, but never
 # overwrite a hand-edited copy. They stay out of .touchstone-manifest so future
 # updates do not clobber project-owned customization.
-PROJECT_OWNED_ADDED_PATHS=()
 add_project_template_if_missing() {
   local src="$1" dst="$2"
   local rel_path
@@ -642,6 +650,12 @@ if [ -f "$TOUCHSTONE_ROOT/templates/.markdownlint.json" ]; then
   add_project_template_if_missing \
     "$TOUCHSTONE_ROOT/templates/.markdownlint.json" \
     "$PROJECT_DIR/.markdownlint.json"
+fi
+
+if [ -f "$TOUCHSTONE_ROOT/templates/.gitleaks.local.toml" ]; then
+  add_project_template_if_missing \
+    "$TOUCHSTONE_ROOT/templates/.gitleaks.local.toml" \
+    "$PROJECT_DIR/.gitleaks.local.toml"
 fi
 
 if [ "$PROJECT_TYPE" = "swift" ] && [ -f "$TOUCHSTONE_ROOT/templates/swift/.swiftlint.yml" ]; then
@@ -686,6 +700,7 @@ write_touchstone_manifest() {
     printf '.touchstone-version\n'
     printf 'TOUCHSTONE.md\n'
     printf '.github/workflows/issue-claim-check.yml\n'
+    printf '.gitleaks.toml\n'
     if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
       for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
         printf 'principles/%s\n' "$(basename "$f")"
