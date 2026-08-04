@@ -30,14 +30,56 @@ TOUCHSTONE_PREFLIGHT_FAILURE_SEQUENCE=0
 TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_COMMAND=""
 TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_EXIT=""
 TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_LOG=""
+# One review epoch permits three reviewed heads. Retaining two diagnostic runs
+# per head preserves local/merge-gate evidence for that whole epoch while
+# bounding persistent failure output in the repository's Git metadata.
+TOUCHSTONE_PREFLIGHT_FAILURE_LOG_MAX_RUNS="${TOUCHSTONE_PREFLIGHT_FAILURE_LOG_MAX_RUNS:-6}"
 
 touchstone_preflight_info() { printf '==> %s\n' "$*"; }
 touchstone_preflight_ok() { printf '  OK %s\n' "$*"; }
 touchstone_preflight_skip() { printf '  SKIP %s\n' "$*"; }
 touchstone_preflight_fail() { printf '  FAIL %s\n' "$*" >&2; }
 
+touchstone_preflight_prune_failure_log_dirs() {
+  local failure_root="$1"
+  local current_dir="$2"
+  local max_runs="$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_MAX_RUNS"
+  local kept=1 stale_dir
+
+  case "$max_runs" in
+    "" | *[!0-9]* | 0)
+      touchstone_preflight_fail "invalid TOUCHSTONE_PREFLIGHT_FAILURE_LOG_MAX_RUNS=$max_runs (expected a positive integer)"
+      return 1
+      ;;
+  esac
+
+  while IFS= read -r stale_dir; do
+    [ -n "$stale_dir" ] || continue
+    [ "$stale_dir" != "$current_dir" ] || continue
+    if [ "$kept" -lt "$max_runs" ]; then
+      kept=$((kept + 1))
+      continue
+    fi
+    case "$stale_dir" in
+      "$failure_root"/*) ;;
+      *)
+        touchstone_preflight_fail "refusing to prune failure log outside $failure_root: $stale_dir"
+        return 1
+        ;;
+    esac
+    [ -e "$stale_dir" ] || continue
+    find "$stale_dir" -depth -delete || {
+      touchstone_preflight_fail "could not prune stale preflight diagnostics: $stale_dir"
+      return 1
+    }
+  done < <(
+    find "$failure_root" -mindepth 1 -maxdepth 1 -type d \
+      -name '????????T??????Z-*' -print 2>/dev/null | LC_ALL=C sort -r
+  )
+}
+
 touchstone_preflight_ensure_failure_log_dir() {
-  local common_dir timestamp
+  local common_dir touchstone_state_dir failure_root timestamp
 
   if [ -n "$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR" ]; then
     return 0
@@ -50,9 +92,17 @@ touchstone_preflight_ensure_failure_log_dir() {
     *) common_dir="$(pwd)/$common_dir" ;;
   esac
   common_dir="$(cd "$common_dir" 2>/dev/null && pwd)" || return 1
-  timestamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || printf unknown)"
-  TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR="$common_dir/touchstone/preflight-failures/$timestamp-$$"
+  touchstone_state_dir="$common_dir/touchstone"
+  failure_root="$touchstone_state_dir/preflight-failures"
+  if [ -L "$touchstone_state_dir" ] || [ -L "$failure_root" ]; then
+    touchstone_preflight_fail "refusing to retain diagnostics through a symlink under $common_dir"
+    return 1
+  fi
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null)" || return 1
+  TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR="$failure_root/$timestamp-$$"
   mkdir -p "$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR"
+  touchstone_preflight_prune_failure_log_dirs \
+    "$failure_root" "$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR"
 }
 
 touchstone_preflight_run_recorded_command() {

@@ -222,6 +222,17 @@ mkdir -p "$SILENT_REPO/bootstrap" "$SILENT_REPO/scripts" "$SILENT_REPO/tests" "$
   git commit -q -m "trigger full fallback"
 )
 SILENT_OUT="$TEST_DIR/silent-self-test.txt"
+SILENT_COMMON_DIR="$(git -C "$SILENT_REPO" rev-parse --git-common-dir)"
+case "$SILENT_COMMON_DIR" in
+  /*) ;;
+  *) SILENT_COMMON_DIR="$SILENT_REPO/$SILENT_COMMON_DIR" ;;
+esac
+SILENT_FAILURE_ROOT="$SILENT_COMMON_DIR/touchstone/preflight-failures"
+mkdir -p "$SILENT_FAILURE_ROOT"
+for old_run in 01 02 03 04 05 06 07 08; do
+  mkdir -p "$SILENT_FAILURE_ROOT/20000101T0000${old_run}Z-$old_run"
+  printf 'old diagnostic %s\n' "$old_run" >"$SILENT_FAILURE_ROOT/20000101T0000${old_run}Z-$old_run/output.log"
+done
 if PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
   TOUCHSTONE_PREFLIGHT_SKIP_DOGFOOD=1 \
   bash "$TOUCHSTONE_ROOT/lib/preflight.sh" --diff main "$SILENT_REPO" >"$SILENT_OUT" 2>&1; then
@@ -232,6 +243,7 @@ fi
 SILENT_LOGS="$(sed -n 's/^  FAIL retained output: //p' "$SILENT_OUT")"
 SILENT_FIRST_LOG="$(printf '%s\n' "$SILENT_LOGS" | sed -n '1p')"
 SILENT_SECOND_LOG="$(printf '%s\n' "$SILENT_LOGS" | sed -n '2p')"
+SILENT_RETAINED_RUNS="$(find "$SILENT_FAILURE_ROOT" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d '[:space:]')"
 if grep -q 'command: TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash tests/test-a-pass.sh' "$SILENT_OUT" \
   && grep -q 'OK command exit=0: TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash tests/test-a-pass.sh' "$SILENT_OUT" \
   && grep -q 'FAIL command exit=7: TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash tests/test-b-silent.sh' "$SILENT_OUT" \
@@ -239,8 +251,10 @@ if grep -q 'command: TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash tests/test-a-pass.s
   && grep -q 'FAIL first failing command: TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash tests/test-b-silent.sh' "$SILENT_OUT" \
   && grep -q 'FAIL first exit status: 7' "$SILENT_OUT" \
   && [ -n "$SILENT_FIRST_LOG" ] && [ -f "$SILENT_FIRST_LOG" ] \
-  && [ -n "$SILENT_SECOND_LOG" ] && [ -f "$SILENT_SECOND_LOG" ]; then
-  echo "==> PASS: silent failures name each command and preserve the first failure"
+  && [ -n "$SILENT_SECOND_LOG" ] && [ -f "$SILENT_SECOND_LOG" ] \
+  && [ "$SILENT_RETAINED_RUNS" -eq 6 ] \
+  && [ ! -e "$SILENT_FAILURE_ROOT/20000101T000001Z-01" ]; then
+  echo "==> PASS: silent failures preserve bounded, actionable diagnostics"
 else
   echo "FAIL: silent self-test failure lacked actionable diagnostics" >&2
   cat "$SILENT_OUT" >&2
