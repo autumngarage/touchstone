@@ -208,38 +208,77 @@ ensure_safe_dest() {
 }
 
 ADDED_PATHS=()
-BRANCH_CREATED=false
 COMMIT_CREATED=false
 ORIGINAL_BRANCH=""
 ORIGINAL_HEAD=""
 UPDATE_BRANCH=""
 ROLLBACK_TMP_DIR=""
+ROLLBACK_STARTED=false
+ROLLBACK_PATHS=()
+ROLLBACK_EXISTING_PATHS_FILE=""
+ROLLBACK_STAGED_PATCH=""
 
-snapshot_touchstone_metadata() {
+snapshot_update_boundary() {
+  local rel target backup
+
   ROLLBACK_TMP_DIR="$(mktemp -d -t touchstone-update-rollback.XXXXXX)"
-  cp "$PROJECT_DIR/.touchstone-version" "$ROLLBACK_TMP_DIR/.touchstone-version"
-  if [ -f "$PROJECT_DIR/.touchstone-manifest" ]; then
-    cp "$PROJECT_DIR/.touchstone-manifest" "$ROLLBACK_TMP_DIR/.touchstone-manifest"
-  elif [ -e "$PROJECT_DIR/.touchstone-manifest" ]; then
-    : >"$ROLLBACK_TMP_DIR/.touchstone-manifest.nonfile"
-  else
-    : >"$ROLLBACK_TMP_DIR/.touchstone-manifest.missing"
+  ROLLBACK_EXISTING_PATHS_FILE="$ROLLBACK_TMP_DIR/existing-paths"
+  ROLLBACK_STAGED_PATCH="$ROLLBACK_TMP_DIR/staged.patch"
+  : >"$ROLLBACK_EXISTING_PATHS_FILE"
+
+  while IFS= read -r rel; do
+    rel="${rel%/}"
+    [ -n "$rel" ] || continue
+    case "$rel" in
+      /* | .. | ../* | */../* | */..)
+        echo "ERROR: Refusing unsafe rollback path: $rel" >&2
+        return 1
+        ;;
+    esac
+    ROLLBACK_PATHS+=("$rel")
+    target="$PROJECT_DIR/$rel"
+    if [ -e "$target" ] || [ -L "$target" ]; then
+      backup="$ROLLBACK_TMP_DIR/tree/$rel"
+      mkdir -p "$(dirname "$backup")"
+      cp -pR "$target" "$backup"
+      printf '%s\n' "$rel" >>"$ROLLBACK_EXISTING_PATHS_FILE"
+    fi
+  done < <(touchstone_sync_planned_write_paths "$PROJECT_DIR" "$TOUCHSTONE_ROOT")
+
+  if [ "${#ROLLBACK_PATHS[@]}" -gt 0 ]; then
+    git -C "$PROJECT_DIR" diff --cached --binary HEAD -- "${ROLLBACK_PATHS[@]}" \
+      >"$ROLLBACK_STAGED_PATCH"
   fi
 }
 
-restore_touchstone_metadata() {
-  [ -n "$ROLLBACK_TMP_DIR" ] || return
+restore_update_boundary() {
+  local rel target backup existed=false
 
-  if [ -f "$ROLLBACK_TMP_DIR/.touchstone-version" ]; then
-    cp "$ROLLBACK_TMP_DIR/.touchstone-version" "$PROJECT_DIR/.touchstone-version"
+  [ -n "$ROLLBACK_TMP_DIR" ] || return 0
+  if [ "${#ROLLBACK_PATHS[@]}" -gt 0 ]; then
+    git -C "$PROJECT_DIR" reset -q HEAD -- "${ROLLBACK_PATHS[@]}" >/dev/null 2>&1 || true
   fi
 
-  if [ -f "$ROLLBACK_TMP_DIR/.touchstone-manifest.missing" ]; then
-    if [ -f "$PROJECT_DIR/.touchstone-manifest" ]; then
-      rm -f "$PROJECT_DIR/.touchstone-manifest"
+  for rel in ${ROLLBACK_PATHS[@]+"${ROLLBACK_PATHS[@]}"}; do
+    target="$PROJECT_DIR/$rel"
+    backup="$ROLLBACK_TMP_DIR/tree/$rel"
+    existed=false
+    if grep -qxF "$rel" "$ROLLBACK_EXISTING_PATHS_FILE" 2>/dev/null; then
+      existed=true
     fi
-  elif [ -f "$ROLLBACK_TMP_DIR/.touchstone-manifest" ]; then
-    cp "$ROLLBACK_TMP_DIR/.touchstone-manifest" "$PROJECT_DIR/.touchstone-manifest"
+    rm -rf "$target"
+    if [ "$existed" = true ]; then
+      mkdir -p "$(dirname "$target")"
+      cp -pR "$backup" "$target"
+    fi
+  done
+
+  if [ -s "$ROLLBACK_STAGED_PATCH" ]; then
+    if ! git -C "$PROJECT_DIR" apply --cached "$ROLLBACK_STAGED_PATCH"; then
+      echo "ERROR: Could not restore the pre-update staged state." >&2
+      echo "       Recovery snapshot retained at: $ROLLBACK_TMP_DIR" >&2
+      return 1
+    fi
   fi
 }
 
@@ -253,7 +292,7 @@ rollback_failed_update() {
     return
   fi
 
-  if [ "$BRANCH_CREATED" != true ] && [ "$IN_PLACE" != true ]; then
+  if [ "$ROLLBACK_STARTED" != true ]; then
     if [ -n "$ROLLBACK_TMP_DIR" ]; then
       rm -rf "$ROLLBACK_TMP_DIR"
     fi
@@ -266,8 +305,9 @@ rollback_failed_update() {
   else
     echo "==> Update failed; rolling back $UPDATE_BRANCH" >&2
   fi
-  git -C "$PROJECT_DIR" restore --staged --worktree . >/dev/null 2>&1 || true
-  restore_touchstone_metadata
+  if ! restore_update_boundary; then
+    return
+  fi
 
   local rel
   for rel in ${ADDED_PATHS[@]+"${ADDED_PATHS[@]}"}; do
@@ -275,7 +315,7 @@ rollback_failed_update() {
   done
 
   if [ "$IN_PLACE" != true ] && [ -n "$ORIGINAL_BRANCH" ]; then
-    git -C "$PROJECT_DIR" checkout -f "$ORIGINAL_BRANCH" >/dev/null 2>&1 || true
+    git -C "$PROJECT_DIR" checkout "$ORIGINAL_BRANCH" >/dev/null 2>&1 || true
   fi
   if [ "$IN_PLACE" != true ] && [ -n "$UPDATE_BRANCH" ]; then
     git -C "$PROJECT_DIR" branch -D "$UPDATE_BRANCH" >/dev/null 2>&1 || true
@@ -335,7 +375,8 @@ if [ "$DRY_RUN" = false ]; then
 
   if [ "$IN_PLACE" = true ]; then
     UPDATE_BRANCH="$ORIGINAL_BRANCH"
-    snapshot_touchstone_metadata
+    snapshot_update_boundary
+    ROLLBACK_STARTED=true
     echo "==> Applying update on current branch: $UPDATE_BRANCH"
   else
     if [ -n "$REQUESTED_BRANCH" ]; then
@@ -347,10 +388,10 @@ if [ "$DRY_RUN" = false ]; then
     else
       UPDATE_BRANCH="$(unique_branch_name "chore/touchstone-$(sanitize_branch_component "$CURRENT_LABEL")")"
     fi
-    snapshot_touchstone_metadata
+    snapshot_update_boundary
     echo "==> Creating update branch: $UPDATE_BRANCH"
+    ROLLBACK_STARTED=true
     git -C "$PROJECT_DIR" checkout -b "$UPDATE_BRANCH" >/dev/null
-    BRANCH_CREATED=true
   fi
 fi
 
@@ -710,12 +751,15 @@ stage_touchstone_manifest_paths() {
 
 # Ensure scripts are executable and write touchstone metadata.
 if [ "$DRY_RUN" = false ]; then
-  if [ -d "$PROJECT_DIR/scripts" ]; then
-    # -type f (find does not follow symlinks here) so we only chmod real files;
-    # a glob would follow a planted symlink and flip perms on its target.
-    find "$PROJECT_DIR/scripts" -maxdepth 1 -type f -name '*.sh' \
-      -exec chmod +x {} + 2>/dev/null || true
-  fi
+  while IFS= read -r managed_path; do
+    case "$managed_path" in
+      scripts/*.sh)
+        if [ -f "$PROJECT_DIR/$managed_path" ] && [ ! -L "$PROJECT_DIR/$managed_path" ]; then
+          chmod +x "$PROJECT_DIR/$managed_path" 2>/dev/null || true
+        fi
+        ;;
+    esac
+  done < <(touchstone_sync_planned_write_paths "$PROJECT_DIR" "$TOUCHSTONE_ROOT")
   ensure_safe_dest "$PROJECT_DIR/.touchstone-version" || true
   echo "$CURRENT_SHA" >"$PROJECT_DIR/.touchstone-version"
   write_touchstone_manifest

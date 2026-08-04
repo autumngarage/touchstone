@@ -78,6 +78,8 @@ echo ""
 echo "--- Step 1: Bootstrap ---"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT" --no-register
 configure_git "$PROJECT"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$PROJECT/scripts/project-owned.sh"
+chmod 644 "$PROJECT/scripts/project-owned.sh"
 commit_all "$PROJECT" "initial touchstone project"
 
 BASE_BRANCH="$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD)"
@@ -313,6 +315,13 @@ if git -C "$PROJECT" ls-files --error-unmatch .github/workflows/issue-claim-chec
 else
   echo "FAIL: expected .github/workflows/issue-claim-check.yml to be tracked" >&2
   ERRORS=$((ERRORS + 1))
+fi
+
+if [ -x "$PROJECT/scripts/project-owned.sh" ]; then
+  echo "FAIL: update changed executable mode on a project-owned script" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  echo "    PASS: project-owned script mode was preserved"
 fi
 
 # --------------------------------------------------------------------------
@@ -804,8 +813,12 @@ echo "0000000000000000000000000000000000000002" >"$DIRTY_PROJECT/.touchstone-ver
 commit_all "$DIRTY_PROJECT" "simulate old dirty test project"
 DIRTY_BRANCH="$(git -C "$DIRTY_PROJECT" rev-parse --abbrev-ref HEAD)"
 echo "# uncommitted change" >>"$DIRTY_PROJECT/scripts/open-pr.sh"
+printf 'unrelated dirty work\n' >>"$DIRTY_PROJECT/README.md"
+DIRTY_STATUS_BEFORE="$(git -C "$DIRTY_PROJECT" status --porcelain=v1)"
+DIRTY_OPEN_PR_BEFORE="$(cat "$DIRTY_PROJECT/scripts/open-pr.sh")"
+DIRTY_README_BEFORE="$(cat "$DIRTY_PROJECT/README.md")"
 
-if (cd "$DIRTY_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/dirty-output.txt" 2>&1; then
+if (cd "$DIRTY_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) >"$TEST_DIR/dirty-output.txt" 2>&1; then
   echo "FAIL: expected dirty update to fail" >&2
   ERRORS=$((ERRORS + 1))
 else
@@ -816,6 +829,13 @@ if [ "$(git -C "$DIRTY_PROJECT" rev-parse --abbrev-ref HEAD)" != "$DIRTY_BRANCH"
   echo "FAIL: dirty update should not switch branches" >&2
   ERRORS=$((ERRORS + 1))
 fi
+if [ "$(git -C "$DIRTY_PROJECT" status --porcelain=v1)" != "$DIRTY_STATUS_BEFORE" ] \
+  || [ "$(cat "$DIRTY_PROJECT/scripts/open-pr.sh")" != "$DIRTY_OPEN_PR_BEFORE" ] \
+  || [ "$(cat "$DIRTY_PROJECT/README.md")" != "$DIRTY_README_BEFORE" ]; then
+  echo "FAIL: refused in-place update changed pre-existing dirty work" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_not_contains "$TEST_DIR/dirty-output.txt" 'rolling back in-place changes'
 
 # --------------------------------------------------------------------------
 # Test 5: failed updates restore ignored legacy metadata.
@@ -834,6 +854,10 @@ echo "legacy-old-version" >"$ROLLBACK_PROJECT/.touchstone-version"
 rm "$ROLLBACK_PROJECT/.touchstone-manifest"
 mkdir "$ROLLBACK_PROJECT/.touchstone-manifest"
 ROLLBACK_BRANCH="$(git -C "$ROLLBACK_PROJECT" rev-parse --abbrev-ref HEAD)"
+printf 'unrelated rollback sentinel\n' >>"$ROLLBACK_PROJECT/README.md"
+git -C "$ROLLBACK_PROJECT" add README.md
+ROLLBACK_README_BEFORE="$(cat "$ROLLBACK_PROJECT/README.md")"
+ROLLBACK_STATUS_BEFORE="$(git -C "$ROLLBACK_PROJECT" status --porcelain=v1)"
 
 if (cd "$ROLLBACK_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/rollback-output.txt" 2>&1; then
   echo "FAIL: expected rollback update to fail on legacy manifest directory" >&2
@@ -851,6 +875,12 @@ if [ "$(cat "$ROLLBACK_PROJECT/.touchstone-version")" = "legacy-old-version" ]; 
   echo "    PASS: rollback restored ignored .touchstone-version"
 else
   echo "FAIL: rollback did not restore ignored .touchstone-version" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+if [ "$(cat "$ROLLBACK_PROJECT/README.md")" != "$ROLLBACK_README_BEFORE" ] \
+  || [ "$(git -C "$ROLLBACK_PROJECT" status --porcelain=v1)" != "$ROLLBACK_STATUS_BEFORE" ]; then
+  echo "FAIL: rollback changed unrelated staged work" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
