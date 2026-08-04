@@ -28,10 +28,10 @@ touchstone_release_preflight_github_release_auth() {
 touchstone_release_preflight_remote_main() {
   local local_head remote_head
 
-  tk_info "Refreshing origin/main and release tags"
-  if ! git -C "$TOUCHSTONE_ROOT" fetch --prune --tags origin \
+  tk_info "Refreshing origin/main"
+  if ! git -C "$TOUCHSTONE_ROOT" fetch --prune --no-tags origin \
     "+refs/heads/main:refs/remotes/origin/main"; then
-    tk_fail "Could not refresh origin/main and tags. Release state was not mutated."
+    tk_fail "Could not refresh origin/main. Release state was not mutated."
     return 1
   fi
 
@@ -76,15 +76,22 @@ touchstone_release_preflight_tag_absent() {
 
 touchstone_release_remote_ref_oid() {
   local ref_name="$1"
-  local remote_output remote_status=0
+  local remote_output remote_oid="" remote_status=0
 
   remote_output="$(git -C "$TOUCHSTONE_ROOT" ls-remote --exit-code origin "$ref_name")" \
     || remote_status=$?
   case "$remote_status" in
-    0) printf '%s\n' "$remote_output" | awk 'NR == 1 { print $1 }' ;;
+    0)
+      remote_oid="$(printf '%s\n' "$remote_output" | awk 'NR == 1 { print $1 }')"
+      if [[ ! "$remote_oid" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
+        tk_fail "Remote ref $ref_name returned an invalid object ID." >&2
+        return 1
+      fi
+      printf '%s\n' "$remote_oid"
+      ;;
     2) printf '\n' ;;
     *)
-      tk_fail "Could not inspect remote ref $ref_name (git exit $remote_status)."
+      tk_fail "Could not inspect remote ref $ref_name (git exit $remote_status)." >&2
       return "$remote_status"
       ;;
   esac
@@ -96,14 +103,14 @@ touchstone_release_github_release_state() {
 
   state="$(gh release view "$release_tag" \
     --repo autumngarage/touchstone \
-    --json isDraft,publishedAt \
-    --jq 'if .isDraft then "draft" elif .publishedAt != null then "published" else "unknown" end')" \
+    --json isDraft,isPrerelease,publishedAt \
+    --jq 'if .isDraft and .isPrerelease then "draft-prerelease" elif .isPrerelease then "published-prerelease" elif .isDraft then "draft" elif .publishedAt != null then "published" else "unknown" end')" \
     || view_status=$?
   [ "$view_status" -eq 0 ] || return "$view_status"
   case "$state" in
-    published | draft | unknown) printf '%s\n' "$state" ;;
+    published | draft | draft-prerelease | published-prerelease | unknown) printf '%s\n' "$state" ;;
     *)
-      tk_fail "GitHub returned an invalid release state for $release_tag."
+      tk_fail "GitHub returned an invalid release state for $release_tag." >&2
       return 1
       ;;
   esac
@@ -130,6 +137,23 @@ touchstone_release_ensure_github_release() {
         fi
         tk_fail "Could not publish the existing draft GitHub Release for $release_tag."
         return "$edit_status"
+        ;;
+      draft-prerelease)
+        gh release edit "$release_tag" \
+          --repo autumngarage/touchstone \
+          --prerelease=false \
+          --draft=false || edit_status=$?
+        if [ "$edit_status" -eq 0 ]; then
+          tk_ok "Published existing draft as a non-prerelease GitHub release"
+          return 0
+        fi
+        tk_fail "Could not publish the prerelease draft safely for $release_tag."
+        return "$edit_status"
+        ;;
+      published-prerelease)
+        tk_fail "GitHub Release $release_tag is already published as a prerelease."
+        tk_dim "  Clear the prerelease flag, then manually dispatch release.yml for $release_tag."
+        return 1
         ;;
       unknown)
         tk_fail "GitHub Release $release_tag exists but is neither draft nor published."
@@ -167,16 +191,36 @@ touchstone_release_ensure_github_release() {
       return 0
     fi
   fi
+  if [ "$state_status" -eq 0 ] && [ "$state" = "draft-prerelease" ]; then
+    edit_status=0
+    gh release edit "$release_tag" \
+      --repo autumngarage/touchstone \
+      --prerelease=false \
+      --draft=false || edit_status=$?
+    if [ "$edit_status" -eq 0 ]; then
+      tk_ok "Published prerelease draft left by the failed request as a normal release"
+      return 0
+    fi
+  fi
+  if [ "$state_status" -eq 0 ] && [ "$state" = "published-prerelease" ]; then
+    tk_fail "GitHub created $release_tag as a prerelease; automatic tap publication did not run."
+    tk_dim "  Clear the prerelease flag, then manually dispatch release.yml for $release_tag."
+  fi
 
   return "$create_status"
 }
 
 touchstone_release_resume() {
   local release_tag="$1"
+  local expected_release_oid="$2"
   local remote_tag_oid=""
 
   if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     tk_fail "Invalid release tag: $release_tag (expected vMAJOR.MINOR.PATCH)"
+    return 1
+  fi
+  if [[ ! "$expected_release_oid" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
+    tk_fail "Invalid expected release commit: $expected_release_oid"
     return 1
   fi
 
@@ -186,12 +230,18 @@ touchstone_release_resume() {
     tk_fail "Remote tag does not exist: $release_tag"
     return 1
   fi
+  if [ "$remote_tag_oid" != "$expected_release_oid" ]; then
+    tk_fail "Remote tag $release_tag no longer identifies the intended release commit."
+    tk_dim "  expected: $expected_release_oid"
+    tk_dim "  observed: $remote_tag_oid"
+    return 1
+  fi
 
   local github_release_status=0
   touchstone_release_ensure_github_release "$release_tag" || github_release_status=$?
   if [ "$github_release_status" -ne 0 ]; then
     tk_fail "GitHub Release recovery is still incomplete for $release_tag."
-    tk_dim "  Retry: touchstone release --resume $release_tag"
+    tk_dim "  Retry: bash scripts/release.sh --resume $release_tag $expected_release_oid"
     return "$github_release_status"
   fi
   tk_ok "Release recovery complete: $release_tag is published"
@@ -353,7 +403,7 @@ touchstone_release() {
       tk_fail "Atomic publication failed before either release ref was published."
       tk_dim "  Local release commit and $release_tag remain for retry or verified local rollback."
       tk_dim "  Retry: git push --atomic --no-verify --force-with-lease=refs/heads/main:$release_base_head origin HEAD:refs/heads/main refs/tags/$release_tag:refs/tags/$release_tag"
-      tk_dim "  Abort after revalidating remote refs: touchstone release --abort-local $release_tag $release_base_head"
+      tk_dim "  Abort after revalidating remote refs: bash scripts/release.sh --abort-local $release_tag $release_base_head"
       return "$push_status"
     else
       tk_fail "Atomic publication returned an error and remote state changed concurrently."
@@ -375,10 +425,10 @@ touchstone_release() {
   local github_release_status=0
   touchstone_release_ensure_github_release "$release_tag" || github_release_status=$?
   if [ "$github_release_status" -ne 0 ]; then
-    tk_fail "Git refs were published, but the GitHub Release is not published."
+    tk_fail "Git refs were published, but normal GitHub Release recovery did not complete."
     tk_dim "  Published commit: $(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD)"
     tk_dim "  Published tag: $release_tag"
-    tk_dim "  Resume idempotently: touchstone release --resume $release_tag"
+    tk_dim "  Resume idempotently: bash scripts/release.sh --resume $release_tag $release_commit"
     return "$github_release_status"
   fi
 

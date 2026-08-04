@@ -6,7 +6,7 @@
 #   scripts/release.sh --patch   # default
 #   scripts/release.sh --minor
 #   scripts/release.sh --major
-#   scripts/release.sh --resume vMAJOR.MINOR.PATCH
+#   scripts/release.sh --resume vMAJOR.MINOR.PATCH RELEASE_COMMIT
 #   scripts/release.sh --abort-local vMAJOR.MINOR.PATCH BASE_COMMIT
 #
 # Thin wrapper around `bin/touchstone release` so all four autumn-garage
@@ -22,11 +22,11 @@ bump="${1:---patch}"
 case "$bump" in
   --major | --minor | --patch) ;;
   --resume)
-    [ "$#" -eq 2 ] || {
-      echo "ERROR: --resume requires vMAJOR.MINOR.PATCH" >&2
+    [ "$#" -eq 3 ] || {
+      echo "ERROR: --resume requires vMAJOR.MINOR.PATCH and RELEASE_COMMIT" >&2
       exit 1
     }
-    TOUCHSTONE_NO_AUTO_UPDATE=1 exec bin/touchstone release --resume "$2"
+    TOUCHSTONE_NO_AUTO_UPDATE=1 exec bin/touchstone release --resume "$2" "$3"
     ;;
   --abort-local)
     [ "$#" -eq 3 ] || {

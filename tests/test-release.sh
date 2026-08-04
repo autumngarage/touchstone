@@ -158,6 +158,9 @@ run_release "$TAG_OUT" 0 0
   || fail "existing remote tag mutated VERSION"
 [ "$(git -C "$PROJECT" rev-parse HEAD)" = "$INITIAL_HEAD" ] \
   || fail "existing remote tag created a release commit"
+if git -C "$PROJECT" show-ref --verify --quiet refs/tags/v1.2.4; then
+  fail "remote tag preflight imported the rejected tag into local state"
+fi
 assert_contains "$TAG_OUT" "Release tag already exists"
 echo "==> PASS: fetched remote tags block duplicate publication"
 
@@ -188,7 +191,7 @@ git -C "$PROJECT" show-ref --verify --quiet refs/tags/v1.2.4 \
   || fail "atomic failure did not preserve the local tag for diagnosis"
 assert_contains "$ATOMIC_OUT" "Atomic publication failed"
 assert_contains "$ATOMIC_OUT" "Retry: git push --atomic"
-assert_contains "$ATOMIC_OUT" "Abort after revalidating remote refs: touchstone release --abort-local"
+assert_contains "$ATOMIC_OUT" "Abort after revalidating remote refs: bash scripts/release.sh --abort-local"
 LOCAL_RELEASE_HEAD="$(git -C "$PROJECT" rev-parse HEAD)"
 ABORT_OUT="$TEST_DIR/atomic-reject/abort.out"
 (
@@ -283,15 +286,69 @@ PUBLISHED_HEAD="$(git -C "$PROJECT" rev-parse HEAD)"
   || fail "successful atomic publication did not advance remote main"
 [ "$(git --git-dir="$REMOTE" rev-parse refs/tags/v1.2.4)" = "$PUBLISHED_HEAD" ] \
   || fail "successful atomic publication did not publish the matching tag"
-assert_contains "$RELEASE_OUT" "Git refs were published, but the GitHub Release is not published"
+assert_contains "$RELEASE_OUT" "Git refs were published, but normal GitHub Release recovery did not complete"
 RECOVERY_COMMAND="$(sed -n 's/^.*Resume idempotently: //p' "$RELEASE_OUT")"
-[ "$RECOVERY_COMMAND" = "touchstone release --resume v1.2.4" ] \
+[ "$RECOVERY_COMMAND" = "bash scripts/release.sh --resume v1.2.4 $PUBLISHED_HEAD" ] \
   || fail "GitHub Release failure omitted its idempotent resume command"
 assert_contains "$GH_LOG" "release view v1.2.4 --repo autumngarage/touchstone"
 assert_contains "$GH_LOG" "release create v1.2.4 --repo autumngarage/touchstone --title v1.2.4 --generate-notes --verify-tag"
 echo "==> PASS: published Git refs have a deterministic forward-fix path"
 
-echo "==> Test: resume accepts published releases and publishes drafts"
+echo "==> Test: resume is bound to the intended remote tag commit"
+git --git-dir="$REMOTE" update-ref refs/tags/v1.2.4 "$INITIAL_HEAD"
+MOVED_TAG_OUT="$TEST_DIR/github-release-failure/resume-moved-tag.out"
+GH_CALLS_BEFORE_MOVED_TAG="$(wc -l <"$GH_LOG" | tr -d '[:space:]')"
+set +e
+(
+  export TOUCHSTONE_ROOT="$PROJECT"
+  export PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+  export FAKE_GH_LOG="$GH_LOG"
+  export FAKE_GH_AUTH_EXIT=0
+  export FAKE_GH_RELEASE_VIEW_EXIT=0
+  export FAKE_GH_RELEASE_STATE=published
+  source "$REPO_ROOT/lib/release.sh"
+  touchstone_release_resume v1.2.4 "$PUBLISHED_HEAD"
+) >"$MOVED_TAG_OUT" 2>&1
+MOVED_TAG_STATUS=$?
+set -e
+[ "$MOVED_TAG_STATUS" -ne 0 ] || fail "resume accepted a force-moved remote release tag"
+assert_contains "$MOVED_TAG_OUT" "no longer identifies the intended release commit"
+[ "$(wc -l <"$GH_LOG" | tr -d '[:space:]')" -eq $((GH_CALLS_BEFORE_MOVED_TAG + 1)) ] \
+  || fail "resume queried or mutated a GitHub release after the remote tag identity check failed"
+git --git-dir="$REMOTE" update-ref refs/tags/v1.2.4 "$PUBLISHED_HEAD"
+echo "==> PASS: recovery cannot publish a replacement tag commit"
+
+echo "==> Test: remote inspection failures remain visible"
+REMOTE_FAIL_BIN="$TEST_DIR/github-release-failure/remote-fail-bin"
+mkdir -p "$REMOTE_FAIL_BIN"
+cat >"$REMOTE_FAIL_BIN/git" <<EOF_REMOTE_FAIL_GIT
+#!/usr/bin/env bash
+set -euo pipefail
+for arg in "\$@"; do
+  if [ "\$arg" = "ls-remote" ]; then
+    exit 42
+  fi
+done
+exec "$REAL_GIT" "\$@"
+EOF_REMOTE_FAIL_GIT
+chmod +x "$REMOTE_FAIL_BIN/git"
+REMOTE_FAIL_OUT="$TEST_DIR/github-release-failure/resume-remote-fail.out"
+set +e
+(
+  export TOUCHSTONE_ROOT="$PROJECT"
+  export PATH="$REMOTE_FAIL_BIN:$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+  export FAKE_GH_LOG="$GH_LOG"
+  export FAKE_GH_AUTH_EXIT=0
+  source "$REPO_ROOT/lib/release.sh"
+  touchstone_release_resume v1.2.4 "$PUBLISHED_HEAD"
+) >"$REMOTE_FAIL_OUT" 2>&1
+REMOTE_FAIL_STATUS=$?
+set -e
+[ "$REMOTE_FAIL_STATUS" -ne 0 ] || fail "resume ignored a remote inspection failure"
+assert_contains "$REMOTE_FAIL_OUT" "Could not inspect remote ref refs/tags/v1.2.4 (git exit 42)"
+echo "==> PASS: captured ref lookups preserve actionable diagnostics"
+
+echo "==> Test: resume accepts published releases and publishes safe drafts"
 PUBLISHED_RESUME_OUT="$TEST_DIR/github-release-failure/resume-published.out"
 set +e
 (
@@ -302,7 +359,7 @@ set +e
   export FAKE_GH_RELEASE_VIEW_EXIT=0
   export FAKE_GH_RELEASE_STATE=published
   source "$REPO_ROOT/lib/release.sh"
-  touchstone_release_resume v1.2.4
+  touchstone_release_resume v1.2.4 "$PUBLISHED_HEAD"
 ) >"$PUBLISHED_RESUME_OUT" 2>&1
 PUBLISHED_RESUME_STATUS=$?
 set -e
@@ -320,13 +377,48 @@ set +e
   export FAKE_GH_RELEASE_STATE=draft
   export FAKE_GH_RELEASE_EDIT_EXIT=0
   source "$REPO_ROOT/lib/release.sh"
-  touchstone_release_resume v1.2.4
+  touchstone_release_resume v1.2.4 "$PUBLISHED_HEAD"
 ) >"$DRAFT_RESUME_OUT" 2>&1
 DRAFT_RESUME_STATUS=$?
 set -e
 [ "$DRAFT_RESUME_STATUS" -eq 0 ] || fail "draft release was not published by resume"
 assert_contains "$GH_LOG" "release edit v1.2.4 --repo autumngarage/touchstone --draft=false"
 assert_contains "$DRAFT_RESUME_OUT" "Published existing draft GitHub release"
-echo "==> PASS: recovery requires a published release, not mere existence"
+
+DRAFT_PRERELEASE_OUT="$TEST_DIR/github-release-failure/resume-draft-prerelease.out"
+set +e
+(
+  export TOUCHSTONE_ROOT="$PROJECT"
+  export PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+  export FAKE_GH_LOG="$GH_LOG"
+  export FAKE_GH_AUTH_EXIT=0
+  export FAKE_GH_RELEASE_VIEW_EXIT=0
+  export FAKE_GH_RELEASE_STATE=draft-prerelease
+  export FAKE_GH_RELEASE_EDIT_EXIT=0
+  source "$REPO_ROOT/lib/release.sh"
+  touchstone_release_resume v1.2.4 "$PUBLISHED_HEAD"
+) >"$DRAFT_PRERELEASE_OUT" 2>&1
+DRAFT_PRERELEASE_STATUS=$?
+set -e
+[ "$DRAFT_PRERELEASE_STATUS" -eq 0 ] || fail "prerelease draft was not normalized before publication"
+assert_contains "$GH_LOG" "release edit v1.2.4 --repo autumngarage/touchstone --prerelease=false --draft=false"
+
+PUBLISHED_PRERELEASE_OUT="$TEST_DIR/github-release-failure/resume-published-prerelease.out"
+set +e
+(
+  export TOUCHSTONE_ROOT="$PROJECT"
+  export PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+  export FAKE_GH_LOG="$GH_LOG"
+  export FAKE_GH_AUTH_EXIT=0
+  export FAKE_GH_RELEASE_VIEW_EXIT=0
+  export FAKE_GH_RELEASE_STATE=published-prerelease
+  source "$REPO_ROOT/lib/release.sh"
+  touchstone_release_resume v1.2.4 "$PUBLISHED_HEAD"
+) >"$PUBLISHED_PRERELEASE_OUT" 2>&1
+PUBLISHED_PRERELEASE_STATUS=$?
+set -e
+[ "$PUBLISHED_PRERELEASE_STATUS" -ne 0 ] || fail "published prerelease incorrectly completed recovery"
+assert_contains "$PUBLISHED_PRERELEASE_OUT" "manually dispatch release.yml"
+echo "==> PASS: recovery requires a normal published release, not mere existence"
 
 echo "==> PASS: release publication is exact-base, atomic, and recoverable"

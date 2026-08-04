@@ -1673,7 +1673,7 @@ cmd_release() {
   source "$TOUCHSTONE_ROOT/lib/release.sh"
 
   local bump_type="minor"
-  local resume_tag=""
+  local resume_tag="" resume_commit=""
   local abort_tag="" abort_base=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1681,9 +1681,10 @@ cmd_release() {
       --minor) bump_type="minor"; shift ;;
       --patch) bump_type="patch"; shift ;;
       --resume)
-        [ "$#" -ge 2 ] || { echo "Usage: touchstone release --resume vMAJOR.MINOR.PATCH" >&2; exit 1; }
+        [ "$#" -ge 3 ] || { echo "Usage: touchstone release --resume vMAJOR.MINOR.PATCH RELEASE_COMMIT" >&2; exit 1; }
         resume_tag="$2"
-        shift 2
+        resume_commit="$3"
+        shift 3
         ;;
       --abort-local)
         [ "$#" -ge 3 ] || { echo "Usage: touchstone release --abort-local vMAJOR.MINOR.PATCH BASE_COMMIT" >&2; exit 1; }
@@ -1691,12 +1692,12 @@ cmd_release() {
         abort_base="$3"
         shift 3
         ;;
-      *) echo "Usage: touchstone release [--major|--minor|--patch|--resume TAG|--abort-local TAG BASE]" >&2; exit 1 ;;
+      *) echo "Usage: touchstone release [--major|--minor|--patch|--resume TAG COMMIT|--abort-local TAG BASE]" >&2; exit 1 ;;
     esac
   done
 
   if [ -n "$resume_tag" ]; then
-    touchstone_release_resume "$resume_tag"
+    touchstone_release_resume "$resume_tag" "$resume_commit"
     return
   fi
   if [ -n "$abort_tag" ]; then
