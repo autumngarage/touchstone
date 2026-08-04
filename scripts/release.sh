@@ -7,6 +7,7 @@
 #   scripts/release.sh --minor
 #   scripts/release.sh --major
 #   scripts/release.sh --resume vMAJOR.MINOR.PATCH RELEASE_COMMIT
+#   scripts/release.sh --retry vMAJOR.MINOR.PATCH BASE_COMMIT RELEASE_COMMIT
 #   scripts/release.sh --abort-local vMAJOR.MINOR.PATCH BASE_COMMIT
 #
 # Thin wrapper around `bin/touchstone release` so all four autumn-garage
@@ -29,6 +30,13 @@ case "$bump" in
     }
     TOUCHSTONE_NO_AUTO_UPDATE=1 exec "$REPO_ROOT/bin/touchstone" release --resume "$2" "$3"
     ;;
+  --retry)
+    [ "$#" -eq 4 ] || {
+      echo "ERROR: --retry requires vMAJOR.MINOR.PATCH, BASE_COMMIT, and RELEASE_COMMIT" >&2
+      exit 1
+    }
+    TOUCHSTONE_NO_AUTO_UPDATE=1 exec "$REPO_ROOT/bin/touchstone" release --retry "$2" "$3" "$4"
+    ;;
   --abort-local)
     [ "$#" -eq 3 ] || {
       echo "ERROR: --abort-local requires vMAJOR.MINOR.PATCH and BASE_COMMIT" >&2
@@ -37,7 +45,7 @@ case "$bump" in
     TOUCHSTONE_NO_AUTO_UPDATE=1 exec "$REPO_ROOT/bin/touchstone" release --abort-local "$2" "$3"
     ;;
   *)
-    echo "ERROR: unknown release arg: $bump (use a bump, --resume TAG COMMIT, or --abort-local TAG BASE)" >&2
+    echo "ERROR: unknown release arg: $bump (use a bump, --resume TAG COMMIT, --retry TAG BASE COMMIT, or --abort-local TAG BASE)" >&2
     exit 1
     ;;
 esac

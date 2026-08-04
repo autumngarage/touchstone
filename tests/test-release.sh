@@ -113,6 +113,18 @@ assert_unmutated_release() {
   [ -s "$output_file" ] || fail "release failure produced no diagnostic output"
 }
 
+echo "==> Test: release CLI rejects mixed bump and recovery modes"
+MIXED_MODE_OUT="$TEST_DIR/mixed-mode.out"
+set +e
+TOUCHSTONE_NO_AUTO_UPDATE=1 TOUCHSTONE_NO_AUTO_PROJECT_SYNC=1 \
+  "$REPO_ROOT/bin/touchstone" release --patch --resume \
+  v1.2.3 0000000000000000000000000000000000000000 >"$MIXED_MODE_OUT" 2>&1
+MIXED_MODE_STATUS=$?
+set -e
+[ "$MIXED_MODE_STATUS" -ne 0 ] || fail "release CLI accepted incompatible modes"
+assert_contains "$MIXED_MODE_OUT" "choose exactly one release bump or recovery operation"
+echo "==> PASS: recovery operations cannot be silently shadowed by another mode"
+
 echo "==> Test: GitHub auth fails before repository mutation"
 new_release_fixture auth
 AUTH_OUT="$TEST_DIR/auth/release.out"
@@ -189,12 +201,14 @@ fi
   || fail "atomic failure did not preserve the local release state for diagnosis"
 git -C "$PROJECT" show-ref --verify --quiet refs/tags/v1.2.4 \
   || fail "atomic failure did not preserve the local tag for diagnosis"
+LOCAL_RELEASE_HEAD="$(git -C "$PROJECT" rev-parse HEAD)"
 assert_contains "$ATOMIC_OUT" "Atomic publication failed"
-assert_contains "$ATOMIC_OUT" "Retry: git push --atomic"
+EXPECTED_RETRY_COMMAND="$(printf 'bash %q --retry %q %q %q' \
+  "$PROJECT/scripts/release.sh" v1.2.4 "$INITIAL_HEAD" "$LOCAL_RELEASE_HEAD")"
+assert_contains "$ATOMIC_OUT" "Retry complete publication: $EXPECTED_RETRY_COMMAND"
 EXPECTED_ABORT_COMMAND="$(printf 'bash %q --abort-local %q %q' \
   "$PROJECT/scripts/release.sh" v1.2.4 "$INITIAL_HEAD")"
 assert_contains "$ATOMIC_OUT" "Abort after revalidating remote refs: $EXPECTED_ABORT_COMMAND"
-LOCAL_RELEASE_HEAD="$(git -C "$PROJECT" rev-parse HEAD)"
 ABORT_OUT="$TEST_DIR/atomic-reject/abort.out"
 (
   export TOUCHSTONE_ROOT="$PROJECT"
@@ -209,7 +223,49 @@ fi
 [ "$(git -C "$PROJECT" rev-parse refs/touchstone/release-aborts/v1.2.4)" = "$LOCAL_RELEASE_HEAD" ] \
   || fail "verified local abort did not retain a recovery ref"
 assert_contains "$ABORT_OUT" "Recovery ref retained"
+EXPECTED_RESTORE_COMMAND="$(printf 'git -C %q reset --hard %q && git -C %q tag %q %q' \
+  "$PROJECT" refs/touchstone/release-aborts/v1.2.4 \
+  "$PROJECT" v1.2.4 refs/touchstone/release-aborts/v1.2.4)"
+assert_contains "$ABORT_OUT" "Restore if needed: $EXPECTED_RESTORE_COMMAND"
 echo "==> PASS: remote branch and tag remain all-or-nothing"
+
+echo "==> Test: rejected publication retry completes refs and GitHub Release"
+new_release_fixture atomic-retry
+cat >"$REMOTE/hooks/pre-receive" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$REMOTE/hooks/pre-receive"
+RETRY_INITIAL_OUT="$TEST_DIR/atomic-retry/release.out"
+run_release "$RETRY_INITIAL_OUT" 0 0
+[ "$RELEASE_RESULT" -ne 0 ] || fail "retry fixture initial publication unexpectedly passed"
+RETRY_RELEASE_HEAD="$(git -C "$PROJECT" rev-parse HEAD)"
+EXPECTED_RETRY_COMMAND="$(printf 'bash %q --retry %q %q %q' \
+  "$PROJECT/scripts/release.sh" v1.2.4 "$INITIAL_HEAD" "$RETRY_RELEASE_HEAD")"
+assert_contains "$RETRY_INITIAL_OUT" "Retry complete publication: $EXPECTED_RETRY_COMMAND"
+rm "$REMOTE/hooks/pre-receive"
+RETRY_OUT="$TEST_DIR/atomic-retry/retry.out"
+set +e
+(
+  export TOUCHSTONE_ROOT="$PROJECT"
+  export PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+  export FAKE_GH_LOG="$GH_LOG"
+  export FAKE_GH_AUTH_EXIT=0
+  export FAKE_GH_RELEASE_VIEW_EXIT=1
+  export FAKE_GH_RELEASE_EXIT=0
+  source "$REPO_ROOT/lib/release.sh"
+  touchstone_release_retry v1.2.4 "$INITIAL_HEAD" "$RETRY_RELEASE_HEAD"
+) >"$RETRY_OUT" 2>&1
+RETRY_STATUS=$?
+set -e
+[ "$RETRY_STATUS" -eq 0 ] || fail "release retry did not complete publication"
+[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/main)" = "$RETRY_RELEASE_HEAD" ] \
+  || fail "release retry did not publish remote main"
+[ "$(git --git-dir="$REMOTE" rev-parse refs/tags/v1.2.4)" = "$RETRY_RELEASE_HEAD" ] \
+  || fail "release retry did not publish the matching tag"
+assert_contains "$GH_LOG" "release create v1.2.4 --repo autumngarage/touchstone"
+assert_contains "$RETRY_OUT" "Release publication retry complete"
+echo "==> PASS: retry uses one validated path through refs and release publication"
 
 echo "==> Test: expected-old-value lease blocks a deleted or reset main"
 new_release_fixture lease-race
@@ -442,7 +498,7 @@ chmod +x "$WRAPPER_ROOT/bin/touchstone"
 RENDERED_COMMAND="$({
   export TOUCHSTONE_ROOT="$WRAPPER_ROOT"
   source "$REPO_ROOT/lib/release.sh"
-  touchstone_release_command --resume v1.2.4 "$PUBLISHED_HEAD"
+  touchstone_release_command --retry v1.2.4 "$INITIAL_HEAD" "$PUBLISHED_HEAD"
 })"
 (
   cd /
@@ -452,9 +508,10 @@ RENDERED_COMMAND="$({
 [ "$(sed -n '1p' "$WRAPPER_LOG")" = "$WRAPPER_ROOT_PHYSICAL" ] \
   || fail "release wrapper did not derive its checkout independently of the caller cwd"
 [ "$(sed -n '2p' "$WRAPPER_LOG")" = "release" ] \
-  && [ "$(sed -n '3p' "$WRAPPER_LOG")" = "--resume" ] \
+  && [ "$(sed -n '3p' "$WRAPPER_LOG")" = "--retry" ] \
   && [ "$(sed -n '4p' "$WRAPPER_LOG")" = "v1.2.4" ] \
-  && [ "$(sed -n '5p' "$WRAPPER_LOG")" = "$PUBLISHED_HEAD" ] \
+  && [ "$(sed -n '5p' "$WRAPPER_LOG")" = "$INITIAL_HEAD" ] \
+  && [ "$(sed -n '6p' "$WRAPPER_LOG")" = "$PUBLISHED_HEAD" ] \
   || fail "rendered recovery command did not preserve its arguments"
 echo "==> PASS: recovery commands are absolute, shell-safe, and cwd-independent"
 

@@ -1673,31 +1673,53 @@ cmd_release() {
   source "$TOUCHSTONE_ROOT/lib/release.sh"
 
   local bump_type="minor"
+  local bump_explicit=false recovery_mode_count=0
   local resume_tag="" resume_commit=""
+  local retry_tag="" retry_base="" retry_commit=""
   local abort_tag="" abort_base=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --major) bump_type="major"; shift ;;
-      --minor) bump_type="minor"; shift ;;
-      --patch) bump_type="patch"; shift ;;
+      --major) bump_type="major"; bump_explicit=true; shift ;;
+      --minor) bump_type="minor"; bump_explicit=true; shift ;;
+      --patch) bump_type="patch"; bump_explicit=true; shift ;;
       --resume)
         [ "$#" -ge 3 ] || { echo "Usage: touchstone release --resume vMAJOR.MINOR.PATCH RELEASE_COMMIT" >&2; exit 1; }
+        recovery_mode_count=$((recovery_mode_count + 1))
         resume_tag="$2"
         resume_commit="$3"
         shift 3
         ;;
+      --retry)
+        [ "$#" -ge 4 ] || { echo "Usage: touchstone release --retry vMAJOR.MINOR.PATCH BASE_COMMIT RELEASE_COMMIT" >&2; exit 1; }
+        recovery_mode_count=$((recovery_mode_count + 1))
+        retry_tag="$2"
+        retry_base="$3"
+        retry_commit="$4"
+        shift 4
+        ;;
       --abort-local)
         [ "$#" -ge 3 ] || { echo "Usage: touchstone release --abort-local vMAJOR.MINOR.PATCH BASE_COMMIT" >&2; exit 1; }
+        recovery_mode_count=$((recovery_mode_count + 1))
         abort_tag="$2"
         abort_base="$3"
         shift 3
         ;;
-      *) echo "Usage: touchstone release [--major|--minor|--patch|--resume TAG COMMIT|--abort-local TAG BASE]" >&2; exit 1 ;;
+      *) echo "Usage: touchstone release [--major|--minor|--patch|--resume TAG COMMIT|--retry TAG BASE COMMIT|--abort-local TAG BASE]" >&2; exit 1 ;;
     esac
   done
 
+  if [ "$recovery_mode_count" -gt 1 ] \
+    || { [ "$recovery_mode_count" -eq 1 ] && [ "$bump_explicit" = true ]; }; then
+    echo "Usage: choose exactly one release bump or recovery operation" >&2
+    return 1
+  fi
+
   if [ -n "$resume_tag" ]; then
     touchstone_release_resume "$resume_tag" "$resume_commit"
+    return
+  fi
+  if [ -n "$retry_tag" ]; then
+    touchstone_release_retry "$retry_tag" "$retry_base" "$retry_commit"
     return
   fi
   if [ -n "$abort_tag" ]; then
