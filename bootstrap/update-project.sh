@@ -775,11 +775,15 @@ echo "    Prototype shim runner available for evaluation: touchstone run-script 
 
 # Reinstall pre-commit hook shims so a drifted or empty .git/hooks/ gets repaired.
 # The helper is idempotent; it skips silently when there's nothing to do.
-if [ "$DRY_RUN" = false ] \
-  && [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ] \
-  && { [ ! -f "$PROJECT_DIR/.git/hooks/pre-commit" ] || [ ! -f "$PROJECT_DIR/.git/hooks/pre-push" ]; }; then
-  echo ""
-  touchstone_install_hooks "$PROJECT_DIR" || true
+if [ "$DRY_RUN" = false ] && [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ]; then
+  HOOKS_PRESENT_STATUS=0
+  touchstone_project_hooks_present "$PROJECT_DIR" || HOOKS_PRESENT_STATUS=$?
+  if [ "$HOOKS_PRESENT_STATUS" -eq 1 ]; then
+    echo ""
+    touchstone_install_hooks "$PROJECT_DIR" || true
+  elif [ "$HOOKS_PRESENT_STATUS" -eq 2 ]; then
+    echo "==> WARNING: could not resolve Git hook paths; hooks were not changed." >&2
+  fi
 fi
 
 if [ "$DRY_RUN" = false ]; then
