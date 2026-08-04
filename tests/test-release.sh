@@ -7,6 +7,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-release.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
+REAL_GIT="$(command -v git)"
 
 FAKE_BIN="$TEST_DIR/bin"
 mkdir -p "$FAKE_BIN"
@@ -17,8 +18,14 @@ set -euo pipefail
 printf '%s\n' "$*" >>"${FAKE_GH_LOG:?}"
 case "${1:-} ${2:-}" in
   "auth status") exit "${FAKE_GH_AUTH_EXIT:-0}" ;;
-  "release view") exit "${FAKE_GH_RELEASE_VIEW_EXIT:-1}" ;;
+  "release view")
+    if [ "${FAKE_GH_RELEASE_VIEW_EXIT:-1}" -ne 0 ]; then
+      exit "${FAKE_GH_RELEASE_VIEW_EXIT:-1}"
+    fi
+    printf '%s\n' "${FAKE_GH_RELEASE_STATE:-unknown}"
+    ;;
   "release create") exit "${FAKE_GH_RELEASE_EXIT:-0}" ;;
+  "release edit") exit "${FAKE_GH_RELEASE_EDIT_EXIT:-0}" ;;
   *) exit 1 ;;
 esac
 EOF
@@ -67,14 +74,22 @@ run_release() {
   local output_file="$1"
   local auth_exit="${2:-0}"
   local github_release_exit="${3:-0}"
+  local github_release_state="${4:-missing}"
+  local github_release_edit_exit="${5:-0}"
+  local github_release_view_exit=0
+
+  [ "$github_release_state" != "missing" ] || github_release_view_exit=1
 
   set +e
   (
     export TOUCHSTONE_ROOT="$PROJECT"
-    export PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+    export PATH="${RELEASE_EXTRA_BIN:+$RELEASE_EXTRA_BIN:}$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
     export FAKE_GH_LOG="$GH_LOG"
     export FAKE_GH_AUTH_EXIT="$auth_exit"
     export FAKE_GH_RELEASE_EXIT="$github_release_exit"
+    export FAKE_GH_RELEASE_STATE="$github_release_state"
+    export FAKE_GH_RELEASE_VIEW_EXIT="$github_release_view_exit"
+    export FAKE_GH_RELEASE_EDIT_EXIT="$github_release_edit_exit"
     # shellcheck source=../lib/release.sh
     source "$REPO_ROOT/lib/release.sh"
     touchstone_release patch
@@ -172,35 +187,146 @@ fi
 git -C "$PROJECT" show-ref --verify --quiet refs/tags/v1.2.4 \
   || fail "atomic failure did not preserve the local tag for diagnosis"
 assert_contains "$ATOMIC_OUT" "Atomic publication failed"
-assert_contains "$ATOMIC_OUT" "Retry after resolving remote state"
-assert_contains "$ATOMIC_OUT" "Abort the local release"
+assert_contains "$ATOMIC_OUT" "Retry: git push --atomic"
+assert_contains "$ATOMIC_OUT" "Abort after revalidating remote refs: touchstone release --abort-local"
+LOCAL_RELEASE_HEAD="$(git -C "$PROJECT" rev-parse HEAD)"
+ABORT_OUT="$TEST_DIR/atomic-reject/abort.out"
+(
+  export TOUCHSTONE_ROOT="$PROJECT"
+  source "$REPO_ROOT/lib/release.sh"
+  touchstone_release_abort_local v1.2.4 "$INITIAL_HEAD"
+) >"$ABORT_OUT" 2>&1
+[ "$(git -C "$PROJECT" rev-parse HEAD)" = "$INITIAL_HEAD" ] \
+  || fail "verified local abort did not restore the release base"
+if git -C "$PROJECT" show-ref --verify --quiet refs/tags/v1.2.4; then
+  fail "verified local abort retained the release tag"
+fi
+[ "$(git -C "$PROJECT" rev-parse refs/touchstone/release-aborts/v1.2.4)" = "$LOCAL_RELEASE_HEAD" ] \
+  || fail "verified local abort did not retain a recovery ref"
+assert_contains "$ABORT_OUT" "Recovery ref retained"
 echo "==> PASS: remote branch and tag remain all-or-nothing"
+
+echo "==> Test: expected-old-value lease blocks a deleted or reset main"
+new_release_fixture lease-race
+LEASE_BIN="$TEST_DIR/lease-race/bin"
+LEASE_MARKER="$TEST_DIR/lease-race/push-mutated"
+mkdir -p "$LEASE_BIN"
+cat >"$LEASE_BIN/git" <<EOF_LEASE_GIT
+#!/usr/bin/env bash
+set -euo pipefail
+is_push=false
+for arg in "\$@"; do
+  [ "\$arg" = "push" ] && is_push=true
+done
+if [ "\$is_push" = true ] && [ ! -f "$LEASE_MARKER" ]; then
+  : >"$LEASE_MARKER"
+  "$REAL_GIT" --git-dir="$REMOTE" update-ref -d refs/heads/main
+fi
+exec "$REAL_GIT" "\$@"
+EOF_LEASE_GIT
+chmod +x "$LEASE_BIN/git"
+LEASE_OUT="$TEST_DIR/lease-race/release.out"
+RELEASE_EXTRA_BIN="$LEASE_BIN" run_release "$LEASE_OUT" 0 0
+[ "$RELEASE_RESULT" -ne 0 ] || fail "release recreated a concurrently deleted main"
+if git --git-dir="$REMOTE" show-ref --verify --quiet refs/heads/main; then
+  fail "expected-old-value lease did not preserve the concurrent main deletion"
+fi
+if git --git-dir="$REMOTE" show-ref --verify --quiet refs/tags/v1.2.4; then
+  fail "lease rejection partially published the release tag"
+fi
+assert_contains "$LEASE_OUT" "remote state changed concurrently"
+if grep -qF -- '--abort-local' "$LEASE_OUT"; then
+  fail "concurrent remote state offered a destructive local abort"
+fi
+echo "==> PASS: atomic publication is bound to the preflighted main revision"
+
+echo "==> Test: failed push response reconciles a committed remote transaction"
+new_release_fixture ambiguous-push-response
+AMBIGUOUS_BIN="$TEST_DIR/ambiguous-push-response/bin"
+AMBIGUOUS_MARKER="$TEST_DIR/ambiguous-push-response/push-returned-error"
+mkdir -p "$AMBIGUOUS_BIN"
+cat >"$AMBIGUOUS_BIN/git" <<EOF_AMBIGUOUS_GIT
+#!/usr/bin/env bash
+set -euo pipefail
+is_push=false
+for arg in "\$@"; do
+  [ "\$arg" = "push" ] && is_push=true
+done
+if [ "\$is_push" = true ] && [ ! -f "$AMBIGUOUS_MARKER" ]; then
+  : >"$AMBIGUOUS_MARKER"
+  "$REAL_GIT" "\$@"
+  exit 42
+fi
+exec "$REAL_GIT" "\$@"
+EOF_AMBIGUOUS_GIT
+chmod +x "$AMBIGUOUS_BIN/git"
+AMBIGUOUS_OUT="$TEST_DIR/ambiguous-push-response/release.out"
+RELEASE_EXTRA_BIN="$AMBIGUOUS_BIN" run_release "$AMBIGUOUS_OUT" 0 0
+[ "$RELEASE_RESULT" -eq 0 ] || fail "published remote transaction did not continue after reconciliation"
+AMBIGUOUS_HEAD="$(git -C "$PROJECT" rev-parse HEAD)"
+[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/main)" = "$AMBIGUOUS_HEAD" ] \
+  || fail "ambiguous response did not publish remote main"
+[ "$(git --git-dir="$REMOTE" rev-parse refs/tags/v1.2.4)" = "$AMBIGUOUS_HEAD" ] \
+  || fail "ambiguous response did not publish the release tag"
+assert_contains "$AMBIGUOUS_OUT" "both release refs were published"
+assert_contains "$GH_LOG" "release create v1.2.4"
+echo "==> PASS: a lost push response cannot strand published refs without a release"
 
 echo "==> Test: GitHub Release failure prints an executable resume command"
 new_release_fixture github-release-failure
 RELEASE_OUT="$TEST_DIR/github-release-failure/release.out"
 run_release "$RELEASE_OUT" 0 99
-[ "$RELEASE_RESULT" -eq 99 ] || fail "GitHub Release failure did not preserve its exit status"
+[ "$RELEASE_RESULT" -eq 99 ] \
+  || fail "GitHub Release failure returned $RELEASE_RESULT instead of preserving exit 99"
 PUBLISHED_HEAD="$(git -C "$PROJECT" rev-parse HEAD)"
 [ "$(git --git-dir="$REMOTE" rev-parse refs/heads/main)" = "$PUBLISHED_HEAD" ] \
   || fail "successful atomic publication did not advance remote main"
 [ "$(git --git-dir="$REMOTE" rev-parse refs/tags/v1.2.4)" = "$PUBLISHED_HEAD" ] \
   || fail "successful atomic publication did not publish the matching tag"
-assert_contains "$RELEASE_OUT" "Git refs were published, but the GitHub Release was not created"
+assert_contains "$RELEASE_OUT" "Git refs were published, but the GitHub Release is not published"
 RECOVERY_COMMAND="$(sed -n 's/^.*Resume idempotently: //p' "$RELEASE_OUT")"
-[ -n "$RECOVERY_COMMAND" ] || fail "GitHub Release failure omitted its recovery command"
-FAKE_GH_LOG="$GH_LOG" FAKE_GH_RELEASE_VIEW_EXIT=0 FAKE_GH_RELEASE_EXIT=0 \
-  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-  bash -c "$RECOVERY_COMMAND"
-[ "$(grep -c '^release create ' "$GH_LOG")" -eq 1 ] \
-  || fail "idempotent recovery retried creation when the GitHub Release already existed"
-FAKE_GH_LOG="$GH_LOG" FAKE_GH_RELEASE_VIEW_EXIT=1 FAKE_GH_RELEASE_EXIT=0 \
-  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
-  bash -c "$RECOVERY_COMMAND"
-[ "$(grep -c '^release create ' "$GH_LOG")" -eq 2 ] \
-  || fail "printed recovery command did not retry the GitHub Release creation"
+[ "$RECOVERY_COMMAND" = "touchstone release --resume v1.2.4" ] \
+  || fail "GitHub Release failure omitted its idempotent resume command"
 assert_contains "$GH_LOG" "release view v1.2.4 --repo autumngarage/touchstone"
 assert_contains "$GH_LOG" "release create v1.2.4 --repo autumngarage/touchstone --title v1.2.4 --generate-notes --verify-tag"
 echo "==> PASS: published Git refs have a deterministic forward-fix path"
+
+echo "==> Test: resume accepts published releases and publishes drafts"
+PUBLISHED_RESUME_OUT="$TEST_DIR/github-release-failure/resume-published.out"
+set +e
+(
+  export TOUCHSTONE_ROOT="$PROJECT"
+  export PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+  export FAKE_GH_LOG="$GH_LOG"
+  export FAKE_GH_AUTH_EXIT=0
+  export FAKE_GH_RELEASE_VIEW_EXIT=0
+  export FAKE_GH_RELEASE_STATE=published
+  source "$REPO_ROOT/lib/release.sh"
+  touchstone_release_resume v1.2.4
+) >"$PUBLISHED_RESUME_OUT" 2>&1
+PUBLISHED_RESUME_STATUS=$?
+set -e
+[ "$PUBLISHED_RESUME_STATUS" -eq 0 ] || fail "published release was not idempotent"
+assert_contains "$PUBLISHED_RESUME_OUT" "already published"
+
+DRAFT_RESUME_OUT="$TEST_DIR/github-release-failure/resume-draft.out"
+set +e
+(
+  export TOUCHSTONE_ROOT="$PROJECT"
+  export PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+  export FAKE_GH_LOG="$GH_LOG"
+  export FAKE_GH_AUTH_EXIT=0
+  export FAKE_GH_RELEASE_VIEW_EXIT=0
+  export FAKE_GH_RELEASE_STATE=draft
+  export FAKE_GH_RELEASE_EDIT_EXIT=0
+  source "$REPO_ROOT/lib/release.sh"
+  touchstone_release_resume v1.2.4
+) >"$DRAFT_RESUME_OUT" 2>&1
+DRAFT_RESUME_STATUS=$?
+set -e
+[ "$DRAFT_RESUME_STATUS" -eq 0 ] || fail "draft release was not published by resume"
+assert_contains "$GH_LOG" "release edit v1.2.4 --repo autumngarage/touchstone --draft=false"
+assert_contains "$DRAFT_RESUME_OUT" "Published existing draft GitHub release"
+echo "==> PASS: recovery requires a published release, not mere existence"
 
 echo "==> PASS: release publication is exact-base, atomic, and recoverable"
