@@ -49,6 +49,18 @@ expect_clean() {
 printf 'DATABASE_URL=%s%s\n' 'postgres://convoy:' 'correct-horse-battery@db.internal/game' \
   >"$PROJECT/db-secret.txt"
 expect_rule db-secret.txt db-uri-with-password
+
+printf '%s\n' 'DATABASE_URL=postgres://${DB_USER}:correct-horse-battery@db.internal/game' \
+  >"$PROJECT/db-placeholder-user-secret.txt"
+expect_rule db-placeholder-user-secret.txt db-uri-with-password
+
+printf '%s\n' 'REDIS_URL=redis://:correct-horse-battery@cache.internal/0' \
+  >"$PROJECT/redis-secret.txt"
+expect_rule redis-secret.txt db-uri-with-password
+
+printf '%s\n' 'REDIS_URL=rediss://:correct-horse-battery@cache.internal/0' \
+  >"$PROJECT/rediss-secret.txt"
+expect_rule rediss-secret.txt db-uri-with-password
 git -C "$PROJECT" add db-secret.txt
 STAGED_REPORT="$TEST_DIR/staged.json"
 STAGED_STATUS=0
@@ -62,11 +74,21 @@ git -C "$PROJECT" reset -q HEAD -- db-secret.txt
 printf 'PGPASSWORD=%s\n' 'correct-horse-battery' >"$PROJECT/pg-secret.txt"
 expect_rule pg-secret.txt pgpassword-env
 
+printf '%s\n' 'PGPASSWORD=secret1234' >"$PROJECT/pg-placeholder-prefix-secret.txt"
+expect_rule pg-placeholder-prefix-secret.txt pgpassword-env
+
+printf '%s\n' 'PGPASSWORD=password-prod-db' >"$PROJECT/pg-password-prefix-secret.txt"
+expect_rule pg-password-prefix-secret.txt pgpassword-env
+
 {
   printf '%s\n' 'DATABASE_URL=postgres://convoy:${{Postgres.PGPASSWORD}}@db.internal/game'
+  printf '%s\n' 'DATABASE_URL=postgres://convoy:${DB_PASSWORD}@db.internal/game'
   printf '%s\n' 'DATABASE_URL=postgres://convoy:<NEW_PASSWORD>@db.internal/game'
+  printf '%s\n' 'REDIS_URL=rediss://:${REDIS_PASSWORD}@cache.internal/0'
   printf '%s\n' 'PGPASSWORD=${PGPASSWORD}'
   printf '%s\n' 'PGPASSWORD=changeme'
+  printf '%s\n' 'PGPASSWORD=<NEW_PASSWORD>'
+  printf '%s\n' 'PGPASSWORD=[PGPASSWORD]'
 } >"$PROJECT/placeholders.txt"
 expect_clean placeholders.txt
 

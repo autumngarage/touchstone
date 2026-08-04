@@ -248,6 +248,13 @@ printf '0000000000000000000000000000000000000008\n' \
 commit_all "$GITLEAKS_COLLISION_PROJECT" "simulate ambiguous Gitleaks ownership"
 GITLEAKS_COLLISION_BRANCH="$(git -C "$GITLEAKS_COLLISION_PROJECT" branch --show-current)"
 GITLEAKS_COLLISION_HEAD="$(git -C "$GITLEAKS_COLLISION_PROJECT" rev-parse HEAD)"
+if (cd "$GITLEAKS_COLLISION_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/gitleaks-collision-check-output.txt" 2>&1; then
+  echo "FAIL: update --check should reject ambiguous Gitleaks configuration ownership" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/gitleaks-collision-check-output.txt" 'both a project-owned .gitleaks.toml and .gitleaks.local.toml exist'
+fi
 if (cd "$GITLEAKS_COLLISION_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$TEST_DIR/gitleaks-collision-output.txt" 2>&1; then
   echo "FAIL: update should reject ambiguous Gitleaks configuration ownership" >&2
@@ -259,6 +266,55 @@ if [ "$(git -C "$GITLEAKS_COLLISION_PROJECT" branch --show-current)" != "$GITLEA
   || [ "$(git -C "$GITLEAKS_COLLISION_PROJECT" rev-parse HEAD)" != "$GITLEAKS_COLLISION_HEAD" ] \
   || [ -n "$(git -C "$GITLEAKS_COLLISION_PROJECT" status --porcelain)" ]; then
   echo "FAIL: failed Gitleaks migration did not restore the original Git boundary" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Project-owned Gitleaks paths have stricter final-component handling than
+# managed paths: refuse symlinks and directories without mutating them.
+GITLEAKS_SYMLINK_PROJECT="$TEST_DIR/gitleaks-symlink-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GITLEAKS_SYMLINK_PROJECT" --no-register >/dev/null
+configure_git "$GITLEAKS_SYMLINK_PROJECT"
+printf 'title = "Shared Gitleaks config"\n' >"$GITLEAKS_SYMLINK_PROJECT/shared-gitleaks.toml"
+rm "$GITLEAKS_SYMLINK_PROJECT/.gitleaks.local.toml"
+ln -s shared-gitleaks.toml "$GITLEAKS_SYMLINK_PROJECT/.gitleaks.local.toml"
+printf '0000000000000000000000000000000000000007\n' \
+  >"$GITLEAKS_SYMLINK_PROJECT/.touchstone-version"
+commit_all "$GITLEAKS_SYMLINK_PROJECT" "simulate shared Gitleaks configuration"
+GITLEAKS_SYMLINK_TARGET_BEFORE="$(cat "$GITLEAKS_SYMLINK_PROJECT/shared-gitleaks.toml")"
+if (cd "$GITLEAKS_SYMLINK_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/gitleaks-symlink-check-output.txt" 2>&1; then
+  echo "FAIL: update --check should reject a project-owned Gitleaks symlink" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/gitleaks-symlink-check-output.txt" 'project-owned .gitleaks.local.toml is a symlink'
+fi
+if [ ! -L "$GITLEAKS_SYMLINK_PROJECT/.gitleaks.local.toml" ] \
+  || [ "$(cat "$GITLEAKS_SYMLINK_PROJECT/shared-gitleaks.toml")" != "$GITLEAKS_SYMLINK_TARGET_BEFORE" ] \
+  || [ -n "$(git -C "$GITLEAKS_SYMLINK_PROJECT" status --porcelain)" ]; then
+  echo "FAIL: Gitleaks symlink validation mutated project-owned state" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+GITLEAKS_DIRECTORY_PROJECT="$TEST_DIR/gitleaks-directory-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GITLEAKS_DIRECTORY_PROJECT" --no-register >/dev/null
+configure_git "$GITLEAKS_DIRECTORY_PROJECT"
+rm "$GITLEAKS_DIRECTORY_PROJECT/.gitleaks.local.toml"
+mkdir "$GITLEAKS_DIRECTORY_PROJECT/.gitleaks.local.toml"
+printf 'directory sentinel\n' >"$GITLEAKS_DIRECTORY_PROJECT/.gitleaks.local.toml/sentinel"
+printf '0000000000000000000000000000000000000006\n' \
+  >"$GITLEAKS_DIRECTORY_PROJECT/.touchstone-version"
+commit_all "$GITLEAKS_DIRECTORY_PROJECT" "simulate Gitleaks directory collision"
+if (cd "$GITLEAKS_DIRECTORY_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/gitleaks-directory-output.txt" 2>&1; then
+  echo "FAIL: update should reject a Gitleaks directory collision" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/gitleaks-directory-output.txt" 'existing .gitleaks.local.toml is not a regular file'
+fi
+assert_contains "$GITLEAKS_DIRECTORY_PROJECT/.gitleaks.local.toml/sentinel" '^directory sentinel$'
+assert_not_exists "$GITLEAKS_DIRECTORY_PROJECT/.gitleaks.local.toml/.gitleaks.local.toml"
+if [ -n "$(git -C "$GITLEAKS_DIRECTORY_PROJECT" status --porcelain)" ]; then
+  echo "FAIL: Gitleaks directory validation mutated project-owned state" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
@@ -972,6 +1028,48 @@ fi
 
 if git -C "$ROLLBACK_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
   echo "FAIL: rollback should delete the failed update branch" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# A successful legacy Gitleaks migration followed by a later update failure must
+# restore the original root config exactly and remove the newly copied local
+# config. This guards the snapshot/ADDED_PATHS ordering that previously deleted
+# the restored root during rollback.
+GITLEAKS_ROLLBACK_PROJECT="$TEST_DIR/gitleaks-rollback-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GITLEAKS_ROLLBACK_PROJECT" --no-register >/dev/null
+configure_git "$GITLEAKS_ROLLBACK_PROJECT"
+rm -f \
+  "$GITLEAKS_ROLLBACK_PROJECT/.gitleaks.toml" \
+  "$GITLEAKS_ROLLBACK_PROJECT/.gitleaks.local.toml" \
+  "$GITLEAKS_ROLLBACK_PROJECT/.touchstone-manifest"
+cat >"$GITLEAKS_ROLLBACK_PROJECT/.gitleaks.toml" <<'EOF_ROLLBACK_GITLEAKS'
+title = "Restore this exact custom Gitleaks config"
+[extend]
+useDefault = true
+EOF_ROLLBACK_GITLEAKS
+mkdir "$GITLEAKS_ROLLBACK_PROJECT/.touchstone-manifest"
+printf 'manifest directory sentinel\n' \
+  >"$GITLEAKS_ROLLBACK_PROJECT/.touchstone-manifest/sentinel"
+printf '0000000000000000000000000000000000000005\n' \
+  >"$GITLEAKS_ROLLBACK_PROJECT/.touchstone-version"
+commit_all "$GITLEAKS_ROLLBACK_PROJECT" "simulate rollback after Gitleaks migration"
+cp "$GITLEAKS_ROLLBACK_PROJECT/.gitleaks.toml" "$TEST_DIR/gitleaks-root-before.toml"
+GITLEAKS_ROLLBACK_BRANCH="$(git -C "$GITLEAKS_ROLLBACK_PROJECT" branch --show-current)"
+GITLEAKS_ROLLBACK_HEAD="$(git -C "$GITLEAKS_ROLLBACK_PROJECT" rev-parse HEAD)"
+if (cd "$GITLEAKS_ROLLBACK_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/gitleaks-rollback-output.txt" 2>&1; then
+  echo "FAIL: expected post-migration update failure" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/gitleaks-rollback-output.txt" 'Update failed; rolling back'
+fi
+if ! cmp -s "$TEST_DIR/gitleaks-root-before.toml" "$GITLEAKS_ROLLBACK_PROJECT/.gitleaks.toml" \
+  || [ -e "$GITLEAKS_ROLLBACK_PROJECT/.gitleaks.local.toml" ] \
+  || [ ! -f "$GITLEAKS_ROLLBACK_PROJECT/.touchstone-manifest/sentinel" ] \
+  || [ "$(git -C "$GITLEAKS_ROLLBACK_PROJECT" branch --show-current)" != "$GITLEAKS_ROLLBACK_BRANCH" ] \
+  || [ "$(git -C "$GITLEAKS_ROLLBACK_PROJECT" rev-parse HEAD)" != "$GITLEAKS_ROLLBACK_HEAD" ] \
+  || [ -n "$(git -C "$GITLEAKS_ROLLBACK_PROJECT" status --porcelain)" ]; then
+  echo "FAIL: post-migration rollback did not restore the exact original tree" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
