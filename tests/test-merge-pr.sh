@@ -1638,6 +1638,27 @@ else
   exit 1
 fi
 
+echo "==> Test: persisted result timestamp follows the accepted newer signal"
+reset_case_files
+write_pr_triggered_config true 0 0
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t1970-01-01T00:00:02Z\thttps://example.test/review/newer-clean' \
+  GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:01Z\thttps://example.test/comment/older-finding\tCodex Review: Actionable finding. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-newer-formal-result.txt" 123
+if grep -q 'formal review by @chatgpt-codex-connector\[bot\] (APPROVED) at 1970-01-01T00:00:02Z' \
+  "$TEST_DIR/output-pr-triggered-newer-formal-result.txt" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
+  && grep -q $'touchstone/review-result-clean\t.*\tv=1 pr=123 base=base-oid req=1969-01-01T00:00:00Z result=1970-01-01T00:00:02Z$' \
+    "$TEST_DIR/gh-status-records" \
+  && grep -q '"result_at":"1970-01-01T00:00:02Z"' \
+    "$TEST_DIR/merge-events.ndjson"; then
+  echo "==> PASS: durable evidence records the timestamp of the selected clean signal"
+else
+  echo "FAIL: durable evidence recorded an unselected review-result timestamp" >&2
+  cat "$TEST_DIR/output-pr-triggered-newer-formal-result.txt" >&2
+  [ ! -f "$TEST_DIR/gh-status-records" ] || cat "$TEST_DIR/gh-status-records" >&2
+  exit 1
+fi
+
 echo "==> Test: an existing trusted clean-result status is reused across merge runs"
 reset_case_files
 write_pr_triggered_config true 0 0

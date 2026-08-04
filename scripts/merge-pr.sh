@@ -62,6 +62,7 @@ PR_TRIGGERED_REVIEW_REQUEST_BASE_OID=""
 PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
 PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP=""
 PR_TRIGGERED_REVIEW_REQUEST_COUNT="${TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT:-0}"
+PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP=""
 PR_TRIGGERED_REVIEW_RESULT_STATUS_CONTEXT="touchstone/review-result-clean"
 PR_TRIGGERED_REVIEW_RESULT_PERSISTED_KEY=""
 case "$PR_TRIGGERED_REVIEW_REQUEST_COUNT" in
@@ -1215,6 +1216,7 @@ trusted_pr_clean_signal() {
   local review_inspection_error="" comment_inspection_error=""
 
   PR_TRIGGERED_REVIEW_INSPECTION_ERROR=""
+  PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP=""
   if [ -z "$expected_base" ]; then
     PR_TRIGGERED_REVIEW_INSPECTION_ERROR="review evidence is not bound to the current base revision"
     return 2
@@ -1275,15 +1277,18 @@ trusted_pr_clean_signal() {
 
   if [ "$review_found" = true ] && [ "$comment_found" = true ]; then
     if [[ "$review_timestamp" > "$comment_timestamp" ]]; then
+      PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$review_timestamp"
       PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail"
       [ "$review_clean" = true ] && return 0
       return 3
     fi
     if [[ "$comment_timestamp" > "$review_timestamp" ]]; then
+      PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$comment_timestamp"
       PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$comment_detail"
       [ "$comment_clean" = true ] && return 0
       return 3
     fi
+    PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$review_timestamp"
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail; $comment_detail"
     if [ "$review_clean" = true ] && [ "$comment_clean" = true ]; then
       return 0
@@ -1291,11 +1296,13 @@ trusted_pr_clean_signal() {
     return 3
   fi
   if [ "$review_found" = true ]; then
+    PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$review_timestamp"
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail"
     [ "$review_clean" = true ] && return 0
     return 3
   fi
   if [ "$comment_found" = true ]; then
+    PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$comment_timestamp"
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$comment_detail"
     [ "$comment_clean" = true ] && return 0
     return 3
@@ -1478,7 +1485,7 @@ wait_for_pr_triggered_review() {
             "$expected_head" \
             "$observed_base" \
             "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
-            "$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"; then
+            "$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"; then
             TOUCHSTONE_MERGE_FAILURE_REASON="review-result-persistence"
             exit 1
           fi
@@ -1499,7 +1506,7 @@ wait_for_pr_triggered_review() {
             pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=clean \
             wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
             request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
-            result_at="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
+            result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
           return 0
         fi
         if [ "$signal_status" -eq 2 ]; then
@@ -1524,7 +1531,7 @@ wait_for_pr_triggered_review() {
             pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=findings \
             wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
             request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
-            result_at="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
+            result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
           echo "ERROR: Trusted PR-visible AI review is not clean for PR #$PR_NUMBER head $expected_head." >&2
           [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2
           echo "       Address the findings, push the fix, and request a fresh exact-head review." >&2
@@ -2305,7 +2312,7 @@ if [ "$BYPASS_REVIEW" != true ] || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-rev
     "$REVIEWED_HEAD_OID" \
     "$REVIEWED_BASE_OID" \
     "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
-    "$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"; then
+    "$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"; then
     TOUCHSTONE_MERGE_FAILURE_REASON="review-result-persistence"
     exit 1
   fi
