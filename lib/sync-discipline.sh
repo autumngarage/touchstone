@@ -49,6 +49,18 @@ touchstone_sync_planned_write_paths() {
     printf 'lib/preflight-scope.sh\n'
     printf 'lib/review-comment.sh\n'
 
+    # Legacy project-scoped copies of these Touchstone-owned skills are
+    # removed during update now that the bundle installs at user scope. Keep
+    # them in the planned write set so overlap detection and rollback protect
+    # any pre-existing bytes before that migration runs.
+    printf '.claude/skills/conductor-delegation/\n'
+    printf '.claude/skills/touchstone-git-workflow/\n'
+    printf '.claude/skills/touchstone-pre-impl/\n'
+    printf '.claude/skills/touchstone-agent-swarms/\n'
+    printf '.claude/skills/touchstone-audit-weak-points/\n'
+    printf '.claude/skills/cortex-protocol/\n'
+    printf '.claude/skills/memory-audit/\n'
+
     if [ "$project_type" = "python" ] || [ -f "$project_dir/scripts/run-pytest-in-venv.sh" ]; then
       printf 'scripts/run-pytest-in-venv.sh\n'
     fi

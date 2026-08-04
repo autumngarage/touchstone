@@ -120,7 +120,9 @@ esac
 GHEOF
 chmod +x "$FAKE_BIN/gh"
 
-# Stub git push so the script never talks to a real remote.
+# Stub git push so the script never talks to a real remote. Each fixture uses
+# itself as a local origin, which lets the review-admission guard refresh and
+# verify the exact base revision without network access.
 REAL_GIT="$(command -v git)"
 cat >"$FAKE_BIN/git" <<EOF
 #!/usr/bin/env bash
@@ -148,6 +150,7 @@ make_repo() {
   printf 'base\n' >"$repo/file.txt"
   git -C "$repo" add file.txt
   git -C "$repo" commit -m "base commit" >/dev/null 2>&1
+  git -C "$repo" remote add origin "$repo"
   git -C "$repo" checkout -b feat/test >/dev/null 2>&1
   printf 'change\n' >>"$repo/file.txt"
   git -C "$repo" add file.txt

@@ -95,6 +95,8 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" 'touch
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "foreground diagnostic mode"
 
 echo "==> active product surfaces do not reintroduce the retired model router"
+# The two compatibility helpers may name retired paths solely to back them up
+# and remove them; every executable/guidance surface remains prohibited.
 active_router_refs="$(grep -Rin "conductor" \
   "$TOUCHSTONE_ROOT/AGENTS.md" \
   "$TOUCHSTONE_ROOT/CLAUDE.md" \
@@ -112,6 +114,7 @@ active_router_refs="$(grep -Rin "conductor" \
   "$TOUCHSTONE_ROOT/templates" 2>/dev/null \
   | grep -v 'bootstrap/update-project.sh:.*conductor-review' \
   | grep -v 'lib/install-skills.sh:.*conductor-delegation' \
+  | grep -v 'lib/sync-discipline.sh:.*conductor-delegation' \
   || true)"
 if [ -n "$active_router_refs" ]; then
   printf '%s\n' "$active_router_refs" >&2

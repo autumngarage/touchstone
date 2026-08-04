@@ -418,10 +418,19 @@ touchstone_auto_project_sync_command_skips() {
   esac
 
   case "$command:$subcommand" in
-    adr:list | worker:status | worker:list | review:--dry-run | review:-n)
+    adr:list | worker:status | worker:list | worker:takeover | review:--dry-run | review:-n)
       return 0
       ;;
   esac
+
+  if [ "$command:$subcommand" = "worker:abandon" ]; then
+    local arg
+    for arg in "$@"; do
+      if [ "$arg" = "--dry-run" ]; then
+        return 0
+      fi
+    done
+  fi
 
   return 1
 }
