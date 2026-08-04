@@ -18,7 +18,7 @@ set -euo pipefail
 printf '%s\n' "$*" >>"${FAKE_GH_LOG:?}"
 case "${1:-} ${2:-}" in
   "auth status") exit "${FAKE_GH_AUTH_EXIT:-0}" ;;
-  "release view")
+  "api graphql")
     if [ "${FAKE_GH_RELEASE_VIEW_EXIT:-1}" -ne 0 ]; then
       exit "${FAKE_GH_RELEASE_VIEW_EXIT:-1}"
     fi
@@ -76,9 +76,7 @@ run_release() {
   local github_release_exit="${3:-0}"
   local github_release_state="${4:-missing}"
   local github_release_edit_exit="${5:-0}"
-  local github_release_view_exit=0
-
-  [ "$github_release_state" != "missing" ] || github_release_view_exit=1
+  local github_release_view_exit="${6:-0}"
 
   set +e
   (
@@ -176,6 +174,29 @@ fi
 assert_contains "$TAG_OUT" "Release tag already exists"
 echo "==> PASS: fetched remote tags block duplicate publication"
 
+echo "==> Test: a stale published GitHub Release blocks before mutation"
+new_release_fixture stale-published-release
+STALE_RELEASE_OUT="$TEST_DIR/stale-published-release/release.out"
+run_release "$STALE_RELEASE_OUT" 0 0 published
+[ "$RELEASE_RESULT" -ne 0 ] || fail "stale published release was reused as a new publication event"
+assert_unmutated_release "$STALE_RELEASE_OUT"
+[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/main)" = "$INITIAL_HEAD" ] \
+  || fail "stale published release preflight advanced remote main"
+if git --git-dir="$REMOTE" show-ref --verify --quiet refs/tags/v1.2.4; then
+  fail "stale published release preflight created the remote tag"
+fi
+assert_contains "$STALE_RELEASE_OUT" "already exists while preparing v1.2.4"
+echo "==> PASS: a prior release record cannot impersonate a new published event"
+
+echo "==> Test: GitHub Release inspection errors fail before mutation"
+new_release_fixture release-inspection-failure
+INSPECTION_OUT="$TEST_DIR/release-inspection-failure/release.out"
+run_release "$INSPECTION_OUT" 0 0 missing 0 42
+[ "$RELEASE_RESULT" -ne 0 ] || fail "release continued after GitHub state inspection failed"
+assert_unmutated_release "$INSPECTION_OUT"
+assert_contains "$INSPECTION_OUT" "Could not establish GitHub Release state"
+echo "==> PASS: missing and uninspectable release states remain distinct"
+
 echo "==> Test: atomic push prevents a partial branch/tag publication"
 new_release_fixture atomic-reject
 cat >"$REMOTE/hooks/pre-receive" <<'EOF'
@@ -244,6 +265,27 @@ EXPECTED_RETRY_COMMAND="$(printf 'bash %q --retry %q %q %q' \
   "$PROJECT/scripts/release.sh" v1.2.4 "$INITIAL_HEAD" "$RETRY_RELEASE_HEAD")"
 assert_contains "$RETRY_INITIAL_OUT" "Retry complete publication: $EXPECTED_RETRY_COMMAND"
 rm "$REMOTE/hooks/pre-receive"
+STALE_RETRY_OUT="$TEST_DIR/atomic-retry/stale-release-retry.out"
+set +e
+(
+  export TOUCHSTONE_ROOT="$PROJECT"
+  export PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+  export FAKE_GH_LOG="$GH_LOG"
+  export FAKE_GH_AUTH_EXIT=0
+  export FAKE_GH_RELEASE_VIEW_EXIT=0
+  export FAKE_GH_RELEASE_STATE=published
+  source "$REPO_ROOT/lib/release.sh"
+  touchstone_release_retry v1.2.4 "$INITIAL_HEAD" "$RETRY_RELEASE_HEAD"
+) >"$STALE_RETRY_OUT" 2>&1
+STALE_RETRY_STATUS=$?
+set -e
+[ "$STALE_RETRY_STATUS" -ne 0 ] || fail "retry reused a stale published release"
+[ "$(git --git-dir="$REMOTE" rev-parse refs/heads/main)" = "$INITIAL_HEAD" ] \
+  || fail "stale release retry advanced remote main"
+if git --git-dir="$REMOTE" show-ref --verify --quiet refs/tags/v1.2.4; then
+  fail "stale release retry published the remote tag"
+fi
+assert_contains "$STALE_RETRY_OUT" "already exists while preparing v1.2.4"
 RETRY_OUT="$TEST_DIR/atomic-retry/retry.out"
 set +e
 (
@@ -251,7 +293,8 @@ set +e
   export PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
   export FAKE_GH_LOG="$GH_LOG"
   export FAKE_GH_AUTH_EXIT=0
-  export FAKE_GH_RELEASE_VIEW_EXIT=1
+  export FAKE_GH_RELEASE_VIEW_EXIT=0
+  export FAKE_GH_RELEASE_STATE=missing
   export FAKE_GH_RELEASE_EXIT=0
   source "$REPO_ROOT/lib/release.sh"
   touchstone_release_retry v1.2.4 "$INITIAL_HEAD" "$RETRY_RELEASE_HEAD"
@@ -350,7 +393,7 @@ EXPECTED_RECOVERY_COMMAND="$(printf 'bash %q --resume %q %q' \
   "$PROJECT/scripts/release.sh" v1.2.4 "$PUBLISHED_HEAD")"
 [ "$RECOVERY_COMMAND" = "$EXPECTED_RECOVERY_COMMAND" ] \
   || fail "GitHub Release failure omitted its idempotent resume command"
-assert_contains "$GH_LOG" "release view v1.2.4 --repo autumngarage/touchstone"
+assert_contains "$GH_LOG" "api graphql -f owner=autumngarage -f name=touchstone -f tagName=v1.2.4"
 assert_contains "$GH_LOG" "release create v1.2.4 --repo autumngarage/touchstone --title v1.2.4 --generate-notes --verify-tag"
 echo "==> PASS: published Git refs have a deterministic forward-fix path"
 

@@ -117,16 +117,18 @@ touchstone_release_restore_command() {
 
 touchstone_release_github_release_state() {
   local release_tag="$1"
-  local state="" view_status=0
+  local state="" query_status=0
 
-  state="$(gh release view "$release_tag" \
-    --repo autumngarage/touchstone \
-    --json isDraft,isPrerelease,publishedAt \
-    --jq 'if .isDraft and .isPrerelease then "draft-prerelease" elif .isPrerelease then "published-prerelease" elif .isDraft then "draft" elif .publishedAt != null then "published" else "unknown" end')" \
-    || view_status=$?
-  [ "$view_status" -eq 0 ] || return "$view_status"
+  state="$(gh api graphql \
+    -f owner=autumngarage \
+    -f name=touchstone \
+    -f tagName="$release_tag" \
+    -f query='query($owner:String!,$name:String!,$tagName:String!){repository(owner:$owner,name:$name){release(tagName:$tagName){isDraft isPrerelease publishedAt}}}' \
+    --jq '.data.repository.release | if . == null then "missing" elif .isDraft and .isPrerelease then "draft-prerelease" elif .isPrerelease then "published-prerelease" elif .isDraft then "draft" elif .publishedAt != null then "published" else "unknown" end')" \
+    || query_status=$?
+  [ "$query_status" -eq 0 ] || return "$query_status"
   case "$state" in
-    published | draft | draft-prerelease | published-prerelease | unknown) printf '%s\n' "$state" ;;
+    missing | published | draft | draft-prerelease | published-prerelease | unknown) printf '%s\n' "$state" ;;
     *)
       tk_fail "GitHub returned an invalid release state for $release_tag." >&2
       return 1
@@ -134,51 +136,91 @@ touchstone_release_github_release_state() {
   esac
 }
 
-touchstone_release_ensure_github_release() {
+touchstone_release_preflight_github_release_reuse() {
   local release_tag="$1"
-  local state="" state_status=0 create_status=0 edit_status=0
+  local state="" state_status=0
 
   state="$(touchstone_release_github_release_state "$release_tag")" || state_status=$?
-  if [ "$state_status" -eq 0 ]; then
-    case "$state" in
-      published)
+  if [ "$state_status" -ne 0 ]; then
+    tk_fail "Could not establish GitHub Release state for $release_tag before publication."
+    return "$state_status"
+  fi
+  case "$state" in
+    missing | draft | draft-prerelease) return 0 ;;
+    published | published-prerelease)
+      tk_fail "A published GitHub Release already exists while preparing $release_tag."
+      tk_dim "  Automatic reuse cannot emit the release.published event required by release.yml."
+      tk_dim "  Inspect and remove or otherwise reconcile the stale release record before retrying."
+      return 1
+      ;;
+    unknown)
+      tk_fail "GitHub Release $release_tag exists in an unsupported state."
+      return 1
+      ;;
+  esac
+}
+
+touchstone_release_ensure_github_release() {
+  local release_tag="$1"
+  local existing_published_policy="${2:-reject-existing}"
+  local state="" state_status=0 create_status=0 edit_status=0
+
+  case "$existing_published_policy" in
+    accept-existing | reject-existing) ;;
+    *)
+      tk_fail "Invalid existing-release policy: $existing_published_policy"
+      return 1
+      ;;
+  esac
+  state="$(touchstone_release_github_release_state "$release_tag")" || state_status=$?
+  if [ "$state_status" -ne 0 ]; then
+    tk_fail "Could not inspect GitHub Release state for $release_tag."
+    return "$state_status"
+  fi
+  case "$state" in
+    published)
+      if [ "$existing_published_policy" = "accept-existing" ]; then
         tk_ok "GitHub release already published"
         return 0
-        ;;
-      draft)
-        gh release edit "$release_tag" \
-          --repo autumngarage/touchstone \
-          --draft=false || edit_status=$?
-        if [ "$edit_status" -eq 0 ]; then
-          tk_ok "Published existing draft GitHub release"
-          return 0
-        fi
-        tk_fail "Could not publish the existing draft GitHub Release for $release_tag."
-        return "$edit_status"
-        ;;
-      draft-prerelease)
-        gh release edit "$release_tag" \
-          --repo autumngarage/touchstone \
-          --prerelease=false \
-          --draft=false || edit_status=$?
-        if [ "$edit_status" -eq 0 ]; then
-          tk_ok "Published existing draft as a non-prerelease GitHub release"
-          return 0
-        fi
-        tk_fail "Could not publish the prerelease draft safely for $release_tag."
-        return "$edit_status"
-        ;;
-      published-prerelease)
-        tk_fail "GitHub Release $release_tag is already published as a prerelease."
-        tk_dim "  Clear the prerelease flag, then manually dispatch release.yml for $release_tag."
-        return 1
-        ;;
-      unknown)
-        tk_fail "GitHub Release $release_tag exists but is neither draft nor published."
-        return 1
-        ;;
-    esac
-  fi
+      fi
+      tk_fail "GitHub Release $release_tag was already published before this publication attempt."
+      tk_dim "  Verify the published refs, then manually dispatch release.yml for $release_tag."
+      return 1
+      ;;
+    draft)
+      gh release edit "$release_tag" \
+        --repo autumngarage/touchstone \
+        --draft=false || edit_status=$?
+      if [ "$edit_status" -eq 0 ]; then
+        tk_ok "Published existing draft GitHub release"
+        return 0
+      fi
+      tk_fail "Could not publish the existing draft GitHub Release for $release_tag."
+      return "$edit_status"
+      ;;
+    draft-prerelease)
+      gh release edit "$release_tag" \
+        --repo autumngarage/touchstone \
+        --prerelease=false \
+        --draft=false || edit_status=$?
+      if [ "$edit_status" -eq 0 ]; then
+        tk_ok "Published existing draft as a non-prerelease GitHub release"
+        return 0
+      fi
+      tk_fail "Could not publish the prerelease draft safely for $release_tag."
+      return "$edit_status"
+      ;;
+    published-prerelease)
+      tk_fail "GitHub Release $release_tag is already published as a prerelease."
+      tk_dim "  Clear the prerelease flag, then manually dispatch release.yml for $release_tag."
+      return 1
+      ;;
+    unknown)
+      tk_fail "GitHub Release $release_tag exists but is neither draft nor published."
+      return 1
+      ;;
+    missing) ;;
+  esac
 
   gh release create "$release_tag" \
     --repo autumngarage/touchstone \
@@ -256,7 +298,8 @@ touchstone_release_resume() {
   fi
 
   local github_release_status=0
-  touchstone_release_ensure_github_release "$release_tag" || github_release_status=$?
+  touchstone_release_ensure_github_release \
+    "$release_tag" accept-existing || github_release_status=$?
   if [ "$github_release_status" -ne 0 ]; then
     tk_fail "GitHub Release recovery is still incomplete for $release_tag."
     tk_dim "  Retry: $(touchstone_release_command --resume "$release_tag" "$expected_release_oid")"
@@ -458,7 +501,8 @@ touchstone_release_complete_publication() {
   [ "$publication_status" -eq 0 ] || return "$publication_status"
   tk_ok "Atomically published main and $release_tag"
 
-  touchstone_release_ensure_github_release "$release_tag" || github_release_status=$?
+  touchstone_release_ensure_github_release \
+    "$release_tag" reject-existing || github_release_status=$?
   if [ "$github_release_status" -ne 0 ]; then
     tk_fail "Git refs were published, but normal GitHub Release recovery did not complete."
     tk_dim "  Published commit: $release_commit"
@@ -476,6 +520,7 @@ touchstone_release_retry() {
   touchstone_release_validate_retry_state \
     "$release_tag" "$release_base_head" "$release_commit" || return 1
   touchstone_release_preflight_github_release_auth || return 1
+  touchstone_release_preflight_github_release_reuse "$release_tag" || return 1
   touchstone_release_complete_publication \
     "$release_tag" "$release_base_head" "$release_commit" || return $?
   tk_ok "Release publication retry complete: $release_tag is published"
@@ -533,6 +578,7 @@ touchstone_release() {
   touchstone_release_preflight_remote_main || return 1
   local release_tag="v${new_version}"
   touchstone_release_preflight_tag_absent "$release_tag" || return 1
+  touchstone_release_preflight_github_release_reuse "$release_tag" || return 1
   local release_base_head
   release_base_head="$(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD)"
 
