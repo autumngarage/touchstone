@@ -1515,6 +1515,7 @@ case "$HOOK_INSTALL_STATUS" in
   1) printf '    hooks:    SKIPPED — no .pre-commit-config.yaml (unexpected)\n' ;;
   2) printf '    hooks:    NOT INSTALLED — pre-commit CLI missing\n' ;;
   3) printf '    hooks:    PARTIAL — one or more installs failed (see above)\n' ;;
+  4) printf '    hooks:    NOT CHANGED — core.hooksPath is project-owned (see above)\n' ;;
 esac
 
 if [ -n "$INITIAL_COMMIT_SHA" ]; then

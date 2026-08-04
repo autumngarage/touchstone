@@ -1274,6 +1274,42 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# Linked worktrees use the repository's common Git directory for hooks. Doctor
+# must follow Git's resolved hook paths instead of looking beneath the linked
+# worktree's .git gitfile.
+PROJECT_DOCTOR_LINKED="$TEST_DIR/test-project-doctor-linked"
+git -C "$PROJECT_DOCTOR" worktree add -q -b test/doctor-linked "$PROJECT_DOCTOR_LINKED"
+if (cd "$PROJECT_DOCTOR_LINKED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-linked.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-linked.txt" 'Project is fully armed'
+  assert_contains "$TEST_DIR/doctor-linked.txt" '/.git/hooks/pre-commit'
+else
+  echo "FAIL: doctor --project should resolve shared hooks from a linked worktree" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# A configured hook path is an explicit Git boundary. Doctor must inspect the
+# hooks Git will execute, and init must never silently unset the configuration.
+PROJECT_DOCTOR_CUSTOM_HOOKS="$TEST_DIR/test-project-doctor-custom-hooks"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_CUSTOM_HOOKS" --no-register >/dev/null
+git -C "$PROJECT_DOCTOR_CUSTOM_HOOKS" config core.hooksPath .githooks
+mkdir -p "$PROJECT_DOCTOR_CUSTOM_HOOKS/.githooks"
+cp "$PROJECT_DOCTOR_CUSTOM_HOOKS/.git/hooks/pre-commit" "$PROJECT_DOCTOR_CUSTOM_HOOKS/.githooks/pre-commit"
+cp "$PROJECT_DOCTOR_CUSTOM_HOOKS/.git/hooks/pre-push" "$PROJECT_DOCTOR_CUSTOM_HOOKS/.githooks/pre-push"
+if (cd "$PROJECT_DOCTOR_CUSTOM_HOOKS" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-custom-hooks.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-custom-hooks.txt" '/.githooks/pre-commit'
+else
+  echo "FAIL: doctor --project should honor core.hooksPath" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+rm -f "$PROJECT_DOCTOR_CUSTOM_HOOKS/.githooks/pre-push"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_CUSTOM_HOOKS" --no-register >"$TEST_DIR/custom-hooks-reinit.txt" 2>&1
+if [ "$(git -C "$PROJECT_DOCTOR_CUSTOM_HOOKS" config --get core.hooksPath)" != ".githooks" ]; then
+  echo "FAIL: init silently changed core.hooksPath" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_not_exists "$PROJECT_DOCTOR_CUSTOM_HOOKS/.githooks/pre-push"
+assert_contains "$TEST_DIR/custom-hooks-reinit.txt" 'Touchstone will not unset repository hook configuration'
+
 cp "$PROJECT_DOCTOR/.touchstone-review.toml" "$TEST_DIR/doctor-review-policy.toml"
 cat >"$PROJECT_DOCTOR/.touchstone-review.toml" <<'EOF'
 [unrelated]
