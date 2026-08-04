@@ -261,4 +261,25 @@ else
   exit 1
 fi
 
+echo "==> Test: invalid diagnostic retention limits fail closed without persistent output"
+SILENT_INVALID_OUT="$TEST_DIR/silent-invalid-retention.txt"
+if PATH="$TOUCHSTONE_TEST_GIT_BIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin" \
+  TOUCHSTONE_PREFLIGHT_SKIP_DOGFOOD=1 \
+  TOUCHSTONE_PREFLIGHT_FAILURE_LOG_MAX_RUNS=invalid \
+  bash "$TOUCHSTONE_ROOT/lib/preflight.sh" --diff origin/main "$SILENT_REPO" >"$SILENT_INVALID_OUT" 2>&1; then
+  echo "FAIL: invalid retention fixture unexpectedly passed preflight" >&2
+  cat "$SILENT_INVALID_OUT" >&2
+  exit 1
+fi
+SILENT_RUNS_AFTER_INVALID="$(find "$SILENT_FAILURE_ROOT" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d '[:space:]')"
+if [ "$SILENT_RUNS_AFTER_INVALID" -eq 6 ] \
+  && grep -q 'invalid TOUCHSTONE_PREFLIGHT_FAILURE_LOG_MAX_RUNS=invalid' "$SILENT_INVALID_OUT" \
+  && ! grep -q "retained output: $SILENT_FAILURE_ROOT/" "$SILENT_INVALID_OUT"; then
+  echo "==> PASS: invalid retention configuration leaves persistent storage bounded"
+else
+  echo "FAIL: invalid retention configuration persisted unbounded output" >&2
+  cat "$SILENT_INVALID_OUT" >&2
+  exit 1
+fi
+
 echo "==> PASS: deterministic preflight checks are explicit and fail closed"

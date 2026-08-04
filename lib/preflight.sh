@@ -109,8 +109,12 @@ touchstone_preflight_ensure_failure_log_dir() {
     touchstone_preflight_fail "could not create retained preflight diagnostics: $TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR"
     return 1
   }
-  touchstone_preflight_prune_failure_log_dirs \
-    "$failure_root" "$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR"
+  if ! touchstone_preflight_prune_failure_log_dirs \
+    "$failure_root" "$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR"; then
+    rmdir "$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR" 2>/dev/null || true
+    TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR=""
+    return 1
+  fi
 }
 
 touchstone_preflight_run_recorded_command() {
