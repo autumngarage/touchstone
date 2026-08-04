@@ -202,7 +202,8 @@ SILENT_REPO="$TEST_DIR/silent-self-test-repo"
 mkdir -p "$SILENT_REPO/bootstrap" "$SILENT_REPO/scripts" "$SILENT_REPO/tests" "$SILENT_REPO/lib"
 (
   cd "$SILENT_REPO"
-  git init -q -b main
+  git init -q
+  git checkout -q -b main
   git config user.email test@example.com
   git config user.name "Touchstone Test"
   printf '0.0.0\n' >VERSION
@@ -222,11 +223,8 @@ mkdir -p "$SILENT_REPO/bootstrap" "$SILENT_REPO/scripts" "$SILENT_REPO/tests" "$
   git commit -q -m "trigger full fallback"
 )
 SILENT_OUT="$TEST_DIR/silent-self-test.txt"
-SILENT_COMMON_DIR="$(git -C "$SILENT_REPO" rev-parse --git-common-dir)"
-case "$SILENT_COMMON_DIR" in
-  /*) ;;
-  *) SILENT_COMMON_DIR="$SILENT_REPO/$SILENT_COMMON_DIR" ;;
-esac
+SILENT_COMMON_DIR="$(git -C "$SILENT_REPO" rev-parse --path-format=absolute --git-common-dir)"
+SILENT_COMMON_DIR="$(cd "$SILENT_COMMON_DIR" && pwd)"
 SILENT_FAILURE_ROOT="$SILENT_COMMON_DIR/touchstone/preflight-failures"
 mkdir -p "$SILENT_FAILURE_ROOT"
 for old_run in 01 02 03 04 05 06 07 08; do

@@ -79,7 +79,7 @@ touchstone_preflight_prune_failure_log_dirs() {
 }
 
 touchstone_preflight_ensure_failure_log_dir() {
-  local common_dir touchstone_state_dir failure_root timestamp
+  local common_dir resolved_common_dir touchstone_state_dir failure_root timestamp
 
   if [ -n "$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR" ]; then
     return 0
@@ -87,11 +87,14 @@ touchstone_preflight_ensure_failure_log_dir() {
 
   common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
   [ -n "$common_dir" ] || return 1
-  case "$common_dir" in
-    /*) ;;
-    *) common_dir="$(pwd)/$common_dir" ;;
-  esac
-  common_dir="$(cd "$common_dir" 2>/dev/null && pwd)" || return 1
+  # Git Bash reports an absolute common dir as C:/..., which is directly
+  # usable by `cd` but does not start with `/`. Resolve the value as returned
+  # first, then fall back to repository-relative resolution for `.git`.
+  if resolved_common_dir="$(cd "$common_dir" 2>/dev/null && pwd)"; then
+    common_dir="$resolved_common_dir"
+  else
+    common_dir="$(cd "$(pwd)/$common_dir" 2>/dev/null && pwd)" || return 1
+  fi
   touchstone_state_dir="$common_dir/touchstone"
   failure_root="$touchstone_state_dir/preflight-failures"
   if [ -L "$touchstone_state_dir" ] || [ -L "$failure_root" ]; then
