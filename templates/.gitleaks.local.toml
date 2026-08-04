@@ -2,5 +2,7 @@ title = "Project-owned Gitleaks configuration"
 
 # Add project-specific rules and allowlists below. Touchstone never overwrites
 # this file. Its managed .gitleaks.toml wrapper adds the shared credential rules.
+# Do not add extend.path here: the wrapper already consumes one config-chain
+# level. Inline shared rules here or keep the built-in-default extension below.
 [extend]
 useDefault = true

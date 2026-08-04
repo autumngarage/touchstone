@@ -3,14 +3,15 @@ title = "Touchstone managed secret-scanning rules"
 
 # Project-owned rules and allowlists live in .gitleaks.local.toml. That file
 # may itself extend Gitleaks' built-in defaults; Gitleaks supports chained
-# configuration to a depth of two.
+# configuration to a depth of two. The local file may extend built-in defaults,
+# but it cannot extend another file without exceeding that depth.
 [extend]
 path = ".gitleaks.local.toml"
 
 [[rules]]
 id = "db-uri-with-password"
 description = "Database connection URI with embedded password"
-regex = '''(?i)\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|rediss?)://[^\s:/@]*:[^\s/@]+@[^\s/]+'''
+regex = '''(?i)\b(?:(?:postgres(?:ql)?|mysql|mariadb)(?:\+[a-z0-9_.-]+)?|mongodb(?:\+srv)?|rediss?)://[^\s:/@]*:[^\s/@]+@[^\s/]+'''
 tags = ["database", "credentials", "uri"]
 
 [[rules.allowlists]]

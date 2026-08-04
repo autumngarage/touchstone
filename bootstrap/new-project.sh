@@ -824,6 +824,11 @@ if [ ! -d "$PROJECT_DIR/.git" ]; then
   git -C "$PROJECT_DIR" init -b "$default_branch"
 fi
 
+PROJECT_HAD_HEAD=false
+if git -C "$PROJECT_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+  PROJECT_HAD_HEAD=true
+fi
+
 # Helper: copy a project-owned file if it does not already exist.
 LAST_COPY_CREATED=false
 copy_file() {
@@ -860,6 +865,7 @@ copy_file() {
 copy_file_force() {
   local src="$1"
   local dst="$2"
+  local back_up_existing="${3:-true}"
   local backup_path dst_dir
   dst_dir="$(dirname "$dst")"
 
@@ -880,15 +886,36 @@ copy_file_force() {
       echo "ERROR: destination exists but is not a regular file: $dst" >&2
       return 1
     fi
+    if [ "$back_up_existing" = false ]; then
+      if ! cp "$src" "$dst"; then
+        echo "ERROR: could not install managed file: $dst" >&2
+        return 1
+      fi
+      echo "    ! $(basename "$dst") (project config preserved as .gitleaks.local.toml)"
+      FILES_UPDATED=$((FILES_UPDATED + 1))
+      return
+    fi
     backup_path="$(next_backup_path "$dst")"
-    cp "$dst" "$backup_path"
-    cp "$src" "$dst"
+    if ! cp "$dst" "$backup_path"; then
+      echo "ERROR: could not back up managed destination: $dst" >&2
+      return 1
+    fi
+    if ! cp "$src" "$dst"; then
+      echo "ERROR: could not install managed file: $dst" >&2
+      if ! cp "$backup_path" "$dst"; then
+        echo "ERROR: could not restore backup after failed install: $backup_path" >&2
+      fi
+      return 1
+    fi
     echo "    ! $(basename "$dst") (backed up as $(basename "$backup_path"))"
     FILES_UPDATED=$((FILES_UPDATED + 1))
     return
   fi
 
-  cp "$src" "$dst"
+  if ! cp "$src" "$dst"; then
+    echo "ERROR: could not install managed file: $dst" >&2
+    return 1
+  fi
   echo "    + $(basename "$dst")"
   FILES_ADDED=$((FILES_ADDED + 1))
 }
@@ -943,7 +970,7 @@ write_touchstone_manifest() {
 
 echo ""
 echo "==> Copying templates (project-owned, won't be auto-updated):"
-touchstone_gitleaks_prepare_project_config "$PROJECT_DIR" false
+touchstone_gitleaks_validate_project_config "$PROJECT_DIR" "$PROJECT_HAD_HEAD"
 copy_file "$TOUCHSTONE_ROOT/templates/CLAUDE.md" "$PROJECT_DIR/CLAUDE.md"
 CLAUDE_MD_CREATED="$LAST_COPY_CREATED"
 copy_file "$TOUCHSTONE_ROOT/templates/AGENTS.md" "$PROJECT_DIR/AGENTS.md"
@@ -954,7 +981,6 @@ copy_file "$TOUCHSTONE_ROOT/templates/GEMINI.md" "$PROJECT_DIR/GEMINI.md"
 # don't resolve the @-imports CLAUDE.md uses to pull in TOUCHSTONE.md.
 touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT" || true
 copy_file "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-commit-config.yaml"
-copy_file "$TOUCHSTONE_ROOT/templates/.gitleaks.local.toml" "$PROJECT_DIR/.gitleaks.local.toml"
 copy_file "$TOUCHSTONE_ROOT/templates/.markdownlint.json" "$PROJECT_DIR/.markdownlint.json"
 copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
 copy_file "$TOUCHSTONE_ROOT/templates/.worktreeinclude.example" "$PROJECT_DIR/.worktreeinclude.example"
@@ -969,7 +995,26 @@ chmod +x "$PROJECT_DIR/setup.sh" 2>/dev/null || true
 
 echo ""
 echo "==> Copying principles (touchstone-owned, will be auto-updated):"
-copy_file_force "$TOUCHSTONE_ROOT/templates/.gitleaks.toml" "$PROJECT_DIR/.gitleaks.toml"
+touchstone_gitleaks_prepare_project_config "$PROJECT_DIR" false
+copy_file "$TOUCHSTONE_ROOT/templates/.gitleaks.local.toml" "$PROJECT_DIR/.gitleaks.local.toml"
+gitleaks_root_backup=true
+if [ "$TOUCHSTONE_GITLEAKS_MIGRATED" = true ]; then
+  gitleaks_root_backup=false
+fi
+if ! copy_file_force \
+  "$TOUCHSTONE_ROOT/templates/.gitleaks.toml" \
+  "$PROJECT_DIR/.gitleaks.toml" \
+  "$gitleaks_root_backup"; then
+  if [ "$TOUCHSTONE_GITLEAKS_MIGRATED" = true ] \
+    && ! touchstone_gitleaks_config_is_managed "$PROJECT_DIR/.gitleaks.toml"; then
+    if cp "$PROJECT_DIR/.gitleaks.local.toml" "$PROJECT_DIR/.gitleaks.toml"; then
+      rm -f "$PROJECT_DIR/.gitleaks.local.toml"
+    else
+      echo "ERROR: original Gitleaks config remains recoverable at .gitleaks.local.toml" >&2
+    fi
+  fi
+  exit 1
+fi
 mkdir -p "$PROJECT_DIR/principles"
 for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
   copy_file_force "$f" "$PROJECT_DIR/principles/$(basename "$f")"

@@ -318,6 +318,86 @@ if [ -n "$(git -C "$GITLEAKS_DIRECTORY_PROJECT" status --porcelain)" ]; then
   ERRORS=$((ERRORS + 1))
 fi
 
+# The managed wrapper must never become the only tracked half of its config
+# chain. Require an existing project-owned local file to be committed first.
+GITLEAKS_UNTRACKED_PROJECT="$TEST_DIR/gitleaks-untracked-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GITLEAKS_UNTRACKED_PROJECT" --no-register >/dev/null
+configure_git "$GITLEAKS_UNTRACKED_PROJECT"
+printf '.gitleaks.local.toml\n' >>"$GITLEAKS_UNTRACKED_PROJECT/.git/info/exclude"
+git -C "$GITLEAKS_UNTRACKED_PROJECT" rm --cached .gitleaks.local.toml >/dev/null
+printf '0000000000000000000000000000000000000004\n' \
+  >"$GITLEAKS_UNTRACKED_PROJECT/.touchstone-version"
+git -C "$GITLEAKS_UNTRACKED_PROJECT" add -- .touchstone-version
+git -C "$GITLEAKS_UNTRACKED_PROJECT" commit --no-verify \
+  -m "simulate ignored local Gitleaks config" >/dev/null
+GITLEAKS_UNTRACKED_CONTENT="$(cat "$GITLEAKS_UNTRACKED_PROJECT/.gitleaks.local.toml")"
+if (cd "$GITLEAKS_UNTRACKED_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/gitleaks-untracked-output.txt" 2>&1; then
+  echo "FAIL: update should reject an untracked local Gitleaks dependency" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/gitleaks-untracked-output.txt" 'gitleaks.local.toml exists but is not tracked'
+fi
+if [ "$(cat "$GITLEAKS_UNTRACKED_PROJECT/.gitleaks.local.toml")" != "$GITLEAKS_UNTRACKED_CONTENT" ] \
+  || [ -n "$(git -C "$GITLEAKS_UNTRACKED_PROJECT" status --porcelain)" ]; then
+  echo "FAIL: untracked Gitleaks validation mutated project state" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+GITLEAKS_MISSING_LOCAL_PROJECT="$TEST_DIR/gitleaks-missing-local-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GITLEAKS_MISSING_LOCAL_PROJECT" --no-register >/dev/null
+configure_git "$GITLEAKS_MISSING_LOCAL_PROJECT"
+git -C "$GITLEAKS_MISSING_LOCAL_PROJECT" rm .gitleaks.local.toml >/dev/null
+git -C "$GITLEAKS_MISSING_LOCAL_PROJECT" commit --no-verify \
+  -m "simulate missing local Gitleaks config" >/dev/null
+if (cd "$GITLEAKS_MISSING_LOCAL_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/gitleaks-missing-local-output.txt" 2>&1; then
+  echo "FAIL: update should reject a managed wrapper with no local config" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/gitleaks-missing-local-output.txt" 'local config is missing'
+fi
+if [ -n "$(git -C "$GITLEAKS_MISSING_LOCAL_PROJECT" status --porcelain)" ]; then
+  echo "FAIL: missing-local Gitleaks validation mutated project state" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Touchstone consumes the remaining file-extension level. Refuse an existing
+# path-based chain instead of silently dropping its grandchild rules.
+GITLEAKS_DEPTH_PROJECT="$TEST_DIR/gitleaks-depth-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GITLEAKS_DEPTH_PROJECT" --no-register >/dev/null
+configure_git "$GITLEAKS_DEPTH_PROJECT"
+rm -f \
+  "$GITLEAKS_DEPTH_PROJECT/.gitleaks.toml" \
+  "$GITLEAKS_DEPTH_PROJECT/.gitleaks.local.toml"
+cat >"$GITLEAKS_DEPTH_PROJECT/.gitleaks.toml" <<'EOF_GITLEAKS_DEPTH_ROOT'
+title = "Existing organization wrapper"
+[extend]
+path = "organization-gitleaks.toml"
+EOF_GITLEAKS_DEPTH_ROOT
+cat >"$GITLEAKS_DEPTH_PROJECT/organization-gitleaks.toml" <<'EOF_GITLEAKS_DEPTH_ORG'
+title = "Organization rules"
+[extend]
+useDefault = true
+EOF_GITLEAKS_DEPTH_ORG
+printf '0000000000000000000000000000000000000003\n' \
+  >"$GITLEAKS_DEPTH_PROJECT/.touchstone-version"
+commit_all "$GITLEAKS_DEPTH_PROJECT" "simulate nested Gitleaks config chain"
+GITLEAKS_DEPTH_ROOT_BEFORE="$(cat "$GITLEAKS_DEPTH_PROJECT/.gitleaks.toml")"
+if (cd "$GITLEAKS_DEPTH_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/gitleaks-depth-output.txt" 2>&1; then
+  echo "FAIL: update should reject a nested Gitleaks file chain" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/gitleaks-depth-output.txt" 'gitleaks.toml uses extend.path'
+fi
+if [ "$(cat "$GITLEAKS_DEPTH_PROJECT/.gitleaks.toml")" != "$GITLEAKS_DEPTH_ROOT_BEFORE" ] \
+  || [ -e "$GITLEAKS_DEPTH_PROJECT/.gitleaks.local.toml" ] \
+  || [ -n "$(git -C "$GITLEAKS_DEPTH_PROJECT" status --porcelain)" ]; then
+  echo "FAIL: nested Gitleaks validation mutated project state" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # --------------------------------------------------------------------------
 # Test 2: committed local touchstone-owned changes update on a review branch.
 # --------------------------------------------------------------------------

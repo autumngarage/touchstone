@@ -61,6 +61,14 @@ expect_rule redis-secret.txt db-uri-with-password
 printf '%s\n' 'REDIS_URL=rediss://:correct-horse-battery@cache.internal/0' \
   >"$PROJECT/rediss-secret.txt"
 expect_rule rediss-secret.txt db-uri-with-password
+
+printf '%s\n' 'DATABASE_URL=postgresql+psycopg2://convoy:correct-horse-battery@db.internal/game' \
+  >"$PROJECT/sqlalchemy-postgres-secret.txt"
+expect_rule sqlalchemy-postgres-secret.txt db-uri-with-password
+
+printf '%s\n' 'DATABASE_URL=mysql+pymysql://convoy:correct-horse-battery@db.internal/game' \
+  >"$PROJECT/sqlalchemy-mysql-secret.txt"
+expect_rule sqlalchemy-mysql-secret.txt db-uri-with-password
 git -C "$PROJECT" add db-secret.txt
 STAGED_REPORT="$TEST_DIR/staged.json"
 STAGED_STATUS=0

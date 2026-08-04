@@ -168,7 +168,7 @@ fi
 # Check project-owned configuration invariants before the cheap version/check
 # exits. `touchstone update --check` must report an update that cannot actually
 # be applied, and validation itself never mutates the project.
-touchstone_gitleaks_validate_project_config "$PROJECT_DIR"
+touchstone_gitleaks_validate_project_config "$PROJECT_DIR" true
 
 if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
   echo "==> Already up to date."
@@ -497,7 +497,7 @@ remove_retired_managed_file() {
 
 echo "==> Updating touchstone-owned files:"
 
-touchstone_gitleaks_prepare_project_config "$PROJECT_DIR" "$DRY_RUN" copy
+touchstone_gitleaks_prepare_project_config "$PROJECT_DIR" "$DRY_RUN"
 if [ "$TOUCHSTONE_GITLEAKS_MIGRATED" = true ]; then
   PROJECT_OWNED_ADDED_PATHS+=(".gitleaks.local.toml")
 fi

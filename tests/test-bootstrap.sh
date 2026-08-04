@@ -596,6 +596,32 @@ assert_contains "$PROJECT_PYTHON/setup.sh" 'install_swift_devtools'
 
 phase "existing-dir + CI/scaffold-tests opt-outs"
 
+# A later bootstrap collision must not move away the auto-discovered custom
+# root config before the managed wrapper can be installed.
+PROJECT_GITLEAKS_BOOTSTRAP_FAILURE="$TEST_DIR/test-project-gitleaks-bootstrap-failure"
+mkdir -p "$PROJECT_GITLEAKS_BOOTSTRAP_FAILURE/CLAUDE.md"
+cat >"$PROJECT_GITLEAKS_BOOTSTRAP_FAILURE/.gitleaks.toml" <<'EOF_FAILED_BOOTSTRAP_GITLEAKS'
+title = "Keep this root config after bootstrap failure"
+[extend]
+useDefault = true
+EOF_FAILED_BOOTSTRAP_GITLEAKS
+cp \
+  "$PROJECT_GITLEAKS_BOOTSTRAP_FAILURE/.gitleaks.toml" \
+  "$TEST_DIR/failed-bootstrap-gitleaks-before.toml"
+if bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
+  "$PROJECT_GITLEAKS_BOOTSTRAP_FAILURE" --no-register \
+  >"$TEST_DIR/gitleaks-bootstrap-failure-output.txt" 2>&1; then
+  echo "FAIL: bootstrap should reject a directory at CLAUDE.md" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if ! cmp -s \
+  "$TEST_DIR/failed-bootstrap-gitleaks-before.toml" \
+  "$PROJECT_GITLEAKS_BOOTSTRAP_FAILURE/.gitleaks.toml"; then
+  echo "FAIL: failed bootstrap moved or changed the auto-discovered root Gitleaks config" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_not_exists "$PROJECT_GITLEAKS_BOOTSTRAP_FAILURE/.gitleaks.local.toml"
+
 # Bootstrap into an existing directory should back up touchstone-owned files before replacing them.
 mkdir -p "$PROJECT_EXISTING/principles" "$PROJECT_EXISTING/scripts"
 printf 'custom principle\n' >"$PROJECT_EXISTING/principles/engineering-principles.md"
