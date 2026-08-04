@@ -57,6 +57,30 @@ assert_version_equals() {
   fi
 }
 
+assert_worker_control_does_not_sync() {
+  local label="$1" subcommand="$2"
+  shift 2
+  local project="$TEST_DIR/project-worker-$label"
+  local fake_home="$TEST_DIR/home-worker-$label"
+  local old_id="00000000000000000000000000000000000000${label}"
+  local output="$TEST_DIR/worker-$label.out"
+  local branch_before head_before
+
+  make_project "$project" "$old_id"
+  git -C "$project" checkout -q -b feature/worker-control
+  branch_before="$(git -C "$project" branch --show-current)"
+  head_before="$(git -C "$project" rev-parse HEAD)"
+  (cd "$project" && run_touchstone "$fake_home" worker "$subcommand" "$@") >"$output" 2>&1 || true
+
+  assert_not_contains "$output" "auto-synced touchstone"
+  assert_version_equals "$project" "$old_id"
+  if [ "$(git -C "$project" branch --show-current)" != "$branch_before" ] \
+    || [ "$(git -C "$project" rev-parse HEAD)" != "$head_before" ]; then
+    echo "FAIL: worker $subcommand changed branch or HEAD before controlling the job" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+}
+
 run_touchstone() {
   local fake_home="$1"
   shift
@@ -354,6 +378,13 @@ assert_not_contains "$HELP_OUT" "auto-synced touchstone"
 assert_contains "$HELP_OUT" "TOUCHSTONE_NO_AUTO_PROJECT_SYNC"
 assert_contains "$HELP_OUT" "TOUCHSTONE_NO_AUTO_PROJECT_SHIP"
 assert_version_equals "$VERSION_PROJECT" "$VERSION_OLD"
+
+echo ""
+echo "--- worker lifecycle inspection/control commands do not sync ---"
+assert_worker_control_does_not_sync 21 status --worktree "$TEST_DIR/project-worker-21" --json
+assert_worker_control_does_not_sync 22 list --repo "$TEST_DIR/project-worker-22" --json
+assert_worker_control_does_not_sync 23 takeover --worktree "$TEST_DIR/project-worker-23" --force
+assert_worker_control_does_not_sync 24 abandon --worktree "$TEST_DIR/project-worker-24" --dry-run
 
 echo ""
 echo "--- drift warning surfaces after repeated skips ---"
