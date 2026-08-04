@@ -1308,7 +1308,7 @@ persist_pr_clean_review_result() {
   local expected_base="$2"
   local request_timestamp="$3"
   local result_timestamp="$4"
-  local description persisted_at persistence_key
+  local description persisted_at persistence_key records creator existing_description creator_permission
 
   if [ -z "$expected_head" ] || [ -z "$expected_base" ] || [ -z "$result_timestamp" ]; then
     echo "ERROR: Refusing to persist incomplete clean-review evidence for PR #$PR_NUMBER." >&2
@@ -1334,6 +1334,32 @@ persist_pr_clean_review_result() {
     echo "ERROR: Clean-review evidence description exceeds GitHub's status limit." >&2
     return 1
   fi
+  if ! records="$(
+    gh api --paginate "repos/$REPO_FULL_NAME/commits/$expected_head/statuses?per_page=100" \
+      --jq '.[] |
+        select(.context == "touchstone/review-result-clean") |
+        select(.state == "success") |
+        [(.creator.login // ""), (.description // "")] |
+        @tsv'
+  )"; then
+    echo "ERROR: Failed to inspect prior clean-review evidence for PR #$PR_NUMBER head $expected_head." >&2
+    return 1
+  fi
+  while IFS="$(printf '\t')" read -r creator existing_description || [ -n "$creator" ]; do
+    [ -n "$creator" ] || continue
+    [ "$existing_description" = "$description" ] || continue
+    if creator_permission="$(
+      gh api "repos/$REPO_FULL_NAME/collaborators/$creator/permission" --jq '.permission' 2>/dev/null
+    )"; then
+      case "$creator_permission" in
+        admin | maintain | write)
+          PR_TRIGGERED_REVIEW_RESULT_PERSISTED_KEY="$persistence_key"
+          echo "==> Full-SHA clean-review evidence already persisted for head $expected_head."
+          return 0
+          ;;
+      esac
+    fi
+  done <<<"$records"
   if ! persisted_at="$(
     gh api -X POST "repos/$REPO_FULL_NAME/statuses/$expected_head" \
       -f state=success \

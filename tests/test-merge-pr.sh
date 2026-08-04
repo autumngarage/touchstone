@@ -289,6 +289,25 @@ case "${1:-} ${2:-}" in
   "api --paginate")
     case "${3:-}" in
       */statuses | */statuses\?*)
+        query_head="${3#*/commits/}"
+        query_head="${query_head%%/*}"
+        if [[ "${5:-}" = *"touchstone/review-result-clean"* ]]; then
+          if [ "${GH_RESULT_LOOKUP_FAIL:-false}" = "true" ]; then
+            echo "review result records unavailable" >&2
+            exit 1
+          fi
+          if [ -n "${GH_RESULT_RECORDS:-}" ]; then
+            printf '%s\n' "$GH_RESULT_RECORDS"
+          fi
+          if [ -s "${GH_STATUS_RECORDS_FILE:-/dev/null/never}" ]; then
+            while IFS="$(printf '\t')" read -r record_head context _created_at creator description; do
+              [ "$record_head" = "$query_head" ] || continue
+              [ "$context" = "touchstone/review-result-clean" ] || continue
+              printf '%s\t%s\n' "$creator" "$description"
+            done <"$GH_STATUS_RECORDS_FILE"
+          fi
+          exit 0
+        fi
         request_lookup_call_count="$(increment_counter_file "${GH_REQUEST_LOOKUP_CALLS_FILE:-}")"
         if [ "${GH_REQUEST_LOOKUP_FAIL:-false}" = "true" ] \
           || { [ "${GH_REQUEST_LOOKUP_FAIL_FIRST:-false}" = "true" ] && [ "$request_lookup_call_count" -eq 1 ]; }; then
@@ -302,8 +321,6 @@ case "${1:-} ${2:-}" in
           echo "request lookup must filter durable status records" >&2
           exit 1
         fi
-        query_head="${3#*/commits/}"
-        query_head="${query_head%%/*}"
         if [ -n "${GH_REQUEST_RECORDS:-}" ] \
           && [ "$query_head" = "${GH_REQUEST_RECORDS_HEAD:-${GH_PR_HEAD_OID:-pr-head-oid}}" ]; then
           printf '%s\n' "$GH_REQUEST_RECORDS"
@@ -719,6 +736,8 @@ reset_case_files() {
   unset GH_STATUS_COMPLETE_CREATED_AT
   unset GH_STATUS_RESULT_CREATED_AT
   unset GH_RESULT_STATUS_FAIL
+  unset GH_RESULT_LOOKUP_FAIL
+  unset GH_RESULT_RECORDS
   unset GH_STATUS_CREATOR
   unset GH_AUTHENTICATED_ACTOR
   unset GH_HEAD_COMMIT_DATE
@@ -823,6 +842,8 @@ run_merge_pr() {
     GH_STATUS_COMPLETE_CREATED_AT="${GH_STATUS_COMPLETE_CREATED_AT:-}" \
     GH_STATUS_RESULT_CREATED_AT="${GH_STATUS_RESULT_CREATED_AT:-}" \
     GH_RESULT_STATUS_FAIL="${GH_RESULT_STATUS_FAIL:-false}" \
+    GH_RESULT_LOOKUP_FAIL="${GH_RESULT_LOOKUP_FAIL:-false}" \
+    GH_RESULT_RECORDS="${GH_RESULT_RECORDS:-}" \
     GH_STATUS_CREATOR="${GH_STATUS_CREATOR:-henrymodisett}" \
     GH_AUTHENTICATED_ACTOR="${GH_AUTHENTICATED_ACTOR:-henrymodisett}" \
     GH_HEAD_COMMIT_DATE="${GH_HEAD_COMMIT_DATE:-2026-07-29T00:00:00Z}" \
@@ -1613,6 +1634,24 @@ if grep -q 'clean Codex review comment by @chatgpt-codex-connector' "$TEST_DIR/o
 else
   echo "FAIL: prior clean Codex issue comment should persist evidence and satisfy the merge gate" >&2
   cat "$TEST_DIR/output-pr-triggered-clean-comment.txt" >&2
+  [ ! -f "$TEST_DIR/gh-status-records" ] || cat "$TEST_DIR/gh-status-records" >&2
+  exit 1
+fi
+
+echo "==> Test: an existing trusted clean-result status is reused across merge runs"
+reset_case_files
+write_pr_triggered_config true 0 0
+GH_RESULT_RECORDS=$'prior-driver\tv=1 pr=123 base=base-oid req=1969-01-01T00:00:00Z result=1970-01-01T00:00:00Z' \
+  GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/existing-result\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-existing-result.txt" 123
+if grep -q 'Full-SHA clean-review evidence already persisted for head pr-head-oid' \
+  "$TEST_DIR/output-pr-triggered-existing-result.txt" \
+  && [ ! -f "$TEST_DIR/gh-status-records" ] \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: trusted clean-result evidence is idempotent across merge runs"
+else
+  echo "FAIL: an existing trusted clean-result status was duplicated or rejected" >&2
+  cat "$TEST_DIR/output-pr-triggered-existing-result.txt" >&2
   [ ! -f "$TEST_DIR/gh-status-records" ] || cat "$TEST_DIR/gh-status-records" >&2
   exit 1
 fi
