@@ -355,17 +355,36 @@ case "${1:-} ${2:-}" in
         printf '%s\n' "${GH_COMMENT_CREATED_AT:-${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}}"
         ;;
       repos/*/statuses/*)
-        if [[ "$*" != *"context=touchstone/review-request"* ]] || [[ "$*" != *"description=pr="*" base="* ]]; then
-          echo "unexpected durable review status: $*" >&2
-          exit 1
-        fi
         status_context="$(gh_field_value context "$@")"
         status_description="$(gh_field_value description "$@")"
-        if [ "$status_context" = "touchstone/review-request-intent" ]; then
-          status_created_at="${GH_STATUS_INTENT_CREATED_AT:-${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}}"
-        else
-          status_created_at="${GH_STATUS_COMPLETE_CREATED_AT:-${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}}"
-        fi
+        case "$status_context" in
+          touchstone/review-request-intent | touchstone/review-request-complete)
+            if [[ "$status_description" != pr=*" base="* ]]; then
+              echo "unexpected durable review request status: $*" >&2
+              exit 1
+            fi
+            if [ "$status_context" = "touchstone/review-request-intent" ]; then
+              status_created_at="${GH_STATUS_INTENT_CREATED_AT:-${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}}"
+            else
+              status_created_at="${GH_STATUS_COMPLETE_CREATED_AT:-${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}}"
+            fi
+            ;;
+          touchstone/review-result-clean)
+            if [ "${GH_RESULT_STATUS_FAIL:-false}" = "true" ]; then
+              echo "review result status unavailable" >&2
+              exit 1
+            fi
+            if [[ "$status_description" != v=1\ pr=*" base="*" req="*" result="* ]]; then
+              echo "unexpected durable clean-review status: $*" >&2
+              exit 1
+            fi
+            status_created_at="${GH_STATUS_RESULT_CREATED_AT:-2026-06-23T00:00:01Z}"
+            ;;
+          *)
+            echo "unexpected durable review status: $*" >&2
+            exit 1
+            ;;
+        esac
         status_head="${4##*/}"
         printf '%s\t%s\t%s\t%s\t%s\n' \
           "$status_head" \
@@ -698,6 +717,8 @@ reset_case_files() {
   unset GH_REQUEST_CREATED_AT
   unset GH_STATUS_INTENT_CREATED_AT
   unset GH_STATUS_COMPLETE_CREATED_AT
+  unset GH_STATUS_RESULT_CREATED_AT
+  unset GH_RESULT_STATUS_FAIL
   unset GH_STATUS_CREATOR
   unset GH_AUTHENTICATED_ACTOR
   unset GH_HEAD_COMMIT_DATE
@@ -800,6 +821,8 @@ run_merge_pr() {
     GH_REQUEST_CREATED_AT="$request_created_at" \
     GH_STATUS_INTENT_CREATED_AT="${GH_STATUS_INTENT_CREATED_AT:-}" \
     GH_STATUS_COMPLETE_CREATED_AT="${GH_STATUS_COMPLETE_CREATED_AT:-}" \
+    GH_STATUS_RESULT_CREATED_AT="${GH_STATUS_RESULT_CREATED_AT:-}" \
+    GH_RESULT_STATUS_FAIL="${GH_RESULT_STATUS_FAIL:-false}" \
     GH_STATUS_CREATOR="${GH_STATUS_CREATOR:-henrymodisett}" \
     GH_AUTHENTICATED_ACTOR="${GH_AUTHENTICATED_ACTOR:-henrymodisett}" \
     GH_HEAD_COMMIT_DATE="${GH_HEAD_COMMIT_DATE:-2026-07-29T00:00:00Z}" \
@@ -1404,9 +1427,10 @@ GH_REQUEST_RECORDS="$(durable_request_records "2026-06-22T00:00:00Z" "base-oid" 
 GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/untrusted-status' \
   run_merge_pr "$TEST_DIR/output-pr-triggered-untrusted-status.txt" 123
 if grep -q 'GitHub Codex review already requested for head pr-head-oid at base base-oid' "$TEST_DIR/output-pr-triggered-untrusted-status.txt" \
-  && [ ! -f "$TEST_DIR/gh-status-records" ] \
+  && ! grep -q 'touchstone/review-request-' "$TEST_DIR/gh-status-records" \
+  && [ "$(grep -c 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records")" = "1" ] \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
-  echo "==> PASS: another authenticated driver can reuse append-only request evidence"
+  echo "==> PASS: another authenticated driver reuses request evidence and records the clean result"
 else
   echo "FAIL: driver handoff duplicated or discarded durable request evidence" >&2
   cat "$TEST_DIR/output-pr-triggered-untrusted-status.txt" >&2
@@ -1581,11 +1605,34 @@ write_pr_triggered_config true 0 0
 GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/1\tCodex Review: Didn'\''t find any major issues. Another round soon, please! **Reviewed commit:** `pr-head-oi`' \
   run_merge_pr "$TEST_DIR/output-pr-triggered-clean-comment.txt" 123
 if grep -q 'clean Codex review comment by @chatgpt-codex-connector' "$TEST_DIR/output-pr-triggered-clean-comment.txt" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
-  echo "==> PASS: prior clean Codex issue comment can satisfy the merge gate"
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
+  && [ "$(grep -c $'^pr-head-oid\ttouchstone/review-result-clean\t' "$TEST_DIR/gh-status-records")" = "1" ] \
+  && grep -q $'touchstone/review-result-clean\t.*\tv=1 pr=123 base=base-oid req=1969-01-01T00:00:00Z result=1970-01-01T00:00:00Z$' \
+    "$TEST_DIR/gh-status-records"; then
+  echo "==> PASS: prior clean Codex issue comment persists full-head evidence and satisfies the merge gate"
 else
-  echo "FAIL: prior clean Codex issue comment should satisfy the merge gate" >&2
+  echo "FAIL: prior clean Codex issue comment should persist evidence and satisfy the merge gate" >&2
   cat "$TEST_DIR/output-pr-triggered-clean-comment.txt" >&2
+  [ ! -f "$TEST_DIR/gh-status-records" ] || cat "$TEST_DIR/gh-status-records" >&2
+  exit 1
+fi
+
+echo "==> Test: clean review cannot merge when durable result persistence fails"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_RESULT_STATUS_FAIL=true \
+  GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/result-write-failure\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-result-write-failure.txt" 123; then
+  echo "FAIL: merge proceeded without durable clean-review evidence" >&2
+  exit 1
+fi
+if grep -q 'Failed to persist clean-review evidence for PR #123 head pr-head-oid' \
+  "$TEST_DIR/output-pr-triggered-result-write-failure.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: clean-review result persistence fails closed"
+else
+  echo "FAIL: result-persistence failure did not block merge" >&2
+  cat "$TEST_DIR/output-pr-triggered-result-write-failure.txt" >&2
   exit 1
 fi
 

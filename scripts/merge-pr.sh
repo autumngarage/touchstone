@@ -62,6 +62,8 @@ PR_TRIGGERED_REVIEW_REQUEST_BASE_OID=""
 PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
 PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP=""
 PR_TRIGGERED_REVIEW_REQUEST_COUNT="${TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT:-0}"
+PR_TRIGGERED_REVIEW_RESULT_STATUS_CONTEXT="touchstone/review-result-clean"
+PR_TRIGGERED_REVIEW_RESULT_PERSISTED_KEY=""
 case "$PR_TRIGGERED_REVIEW_REQUEST_COUNT" in
   '' | *[!0-9]*)
     echo "ERROR: TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT must be a non-negative integer." >&2
@@ -1301,6 +1303,56 @@ trusted_pr_clean_signal() {
   return 1
 }
 
+persist_pr_clean_review_result() {
+  local expected_head="$1"
+  local expected_base="$2"
+  local request_timestamp="$3"
+  local result_timestamp="$4"
+  local description persisted_at persistence_key
+
+  if [ -z "$expected_head" ] || [ -z "$expected_base" ] || [ -z "$result_timestamp" ]; then
+    echo "ERROR: Refusing to persist incomplete clean-review evidence for PR #$PR_NUMBER." >&2
+    return 1
+  fi
+  if [ -z "$request_timestamp" ]; then
+    # Compatibility for installations that intentionally disable per-head
+    # review requests. Without a durable request there is no freshness anchor
+    # from which to build portable post-rebase evidence.
+    return 0
+  fi
+
+  persistence_key="$expected_head|$expected_base|$request_timestamp|$result_timestamp"
+  if [ "$PR_TRIGGERED_REVIEW_RESULT_PERSISTED_KEY" = "$persistence_key" ]; then
+    return 0
+  fi
+
+  # The commit-status target is the full reviewed SHA. Keep the description
+  # compact enough for GitHub's 140-character limit while binding the result
+  # to this PR, base revision, request, and reviewer-result timestamp.
+  description="v=1 pr=$PR_NUMBER base=$expected_base req=$request_timestamp result=$result_timestamp"
+  if [ "${#description}" -gt 140 ]; then
+    echo "ERROR: Clean-review evidence description exceeds GitHub's status limit." >&2
+    return 1
+  fi
+  if ! persisted_at="$(
+    gh api -X POST "repos/$REPO_FULL_NAME/statuses/$expected_head" \
+      -f state=success \
+      -f context="$PR_TRIGGERED_REVIEW_RESULT_STATUS_CONTEXT" \
+      -f description="$description" \
+      --jq '.created_at'
+  )"; then
+    echo "ERROR: Failed to persist clean-review evidence for PR #$PR_NUMBER head $expected_head." >&2
+    return 1
+  fi
+  if [ -z "$persisted_at" ]; then
+    echo "ERROR: GitHub returned no timestamp for clean-review evidence." >&2
+    return 1
+  fi
+
+  PR_TRIGGERED_REVIEW_RESULT_PERSISTED_KEY="$persistence_key"
+  echo "==> Persisted full-SHA clean-review evidence for head $expected_head."
+}
+
 wait_for_pr_triggered_review() {
   local expected_head="$1"
   local phase="$2"
@@ -1396,6 +1448,14 @@ wait_for_pr_triggered_review() {
           signal_status=$?
         fi
         if [ "$signal_status" -eq 0 ]; then
+          if ! persist_pr_clean_review_result \
+            "$expected_head" \
+            "$observed_base" \
+            "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
+            "$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"; then
+            TOUCHSTONE_MERGE_FAILURE_REASON="review-result-persistence"
+            exit 1
+          fi
           PR_TRIGGERED_REVIEWED_HEAD_OID="$expected_head"
           if [ -n "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" ]; then
             PR_TRIGGERED_REVIEWED_BASE_OID="$observed_base"
@@ -2213,6 +2273,14 @@ if [ "$BYPASS_REVIEW" != true ] || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-rev
     echo "ERROR: The latest trusted PR-visible AI result is not clean for reviewed head $REVIEWED_HEAD_OID." >&2
     echo "       A newer review result may have arrived during preflight; resolve it and rerun the merge gate." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-stale"
+    exit 1
+  fi
+  if ! persist_pr_clean_review_result \
+    "$REVIEWED_HEAD_OID" \
+    "$REVIEWED_BASE_OID" \
+    "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
+    "$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"; then
+    TOUCHSTONE_MERGE_FAILURE_REASON="review-result-persistence"
     exit 1
   fi
   echo "==> Revalidated latest trusted PR-visible AI result for head $REVIEWED_HEAD_OID."

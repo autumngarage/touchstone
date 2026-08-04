@@ -198,6 +198,7 @@ assert_exists "$PROJECT/principles/pre-implementation-checklist.md"
 assert_exists "$PROJECT/principles/audit-weak-points.md"
 assert_exists "$PROJECT/principles/documentation-ownership.md"
 assert_exists "$PROJECT/principles/git-workflow.md"
+assert_exists "$PROJECT/principles/review-evidence.md"
 assert_exists "$PROJECT/principles/README.md"
 
 # Scripts
