@@ -62,6 +62,9 @@ PR_TRIGGERED_REVIEW_REQUEST_BASE_OID=""
 PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
 PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP=""
 PR_TRIGGERED_REVIEW_REQUEST_COUNT="${TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT:-0}"
+PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP=""
+PR_TRIGGERED_REVIEW_RESULT_STATUS_CONTEXT="touchstone/review-result-clean"
+PR_TRIGGERED_REVIEW_RESULT_PERSISTED_KEY=""
 case "$PR_TRIGGERED_REVIEW_REQUEST_COUNT" in
   '' | *[!0-9]*)
     echo "ERROR: TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT must be a non-negative integer." >&2
@@ -1213,6 +1216,7 @@ trusted_pr_clean_signal() {
   local review_inspection_error="" comment_inspection_error=""
 
   PR_TRIGGERED_REVIEW_INSPECTION_ERROR=""
+  PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP=""
   if [ -z "$expected_base" ]; then
     PR_TRIGGERED_REVIEW_INSPECTION_ERROR="review evidence is not bound to the current base revision"
     return 2
@@ -1273,15 +1277,18 @@ trusted_pr_clean_signal() {
 
   if [ "$review_found" = true ] && [ "$comment_found" = true ]; then
     if [[ "$review_timestamp" > "$comment_timestamp" ]]; then
+      PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$review_timestamp"
       PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail"
       [ "$review_clean" = true ] && return 0
       return 3
     fi
     if [[ "$comment_timestamp" > "$review_timestamp" ]]; then
+      PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$comment_timestamp"
       PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$comment_detail"
       [ "$comment_clean" = true ] && return 0
       return 3
     fi
+    PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$review_timestamp"
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail; $comment_detail"
     if [ "$review_clean" = true ] && [ "$comment_clean" = true ]; then
       return 0
@@ -1289,16 +1296,94 @@ trusted_pr_clean_signal() {
     return 3
   fi
   if [ "$review_found" = true ]; then
+    PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$review_timestamp"
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail"
     [ "$review_clean" = true ] && return 0
     return 3
   fi
   if [ "$comment_found" = true ]; then
+    PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$comment_timestamp"
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$comment_detail"
     [ "$comment_clean" = true ] && return 0
     return 3
   fi
   return 1
+}
+
+persist_pr_clean_review_result() {
+  local expected_head="$1"
+  local expected_base="$2"
+  local request_timestamp="$3"
+  local result_timestamp="$4"
+  local description persisted_at persistence_key records creator existing_description creator_permission
+
+  if [ -z "$expected_head" ] || [ -z "$expected_base" ] || [ -z "$result_timestamp" ]; then
+    echo "ERROR: Refusing to persist incomplete clean-review evidence for PR #$PR_NUMBER." >&2
+    return 1
+  fi
+  if [ -z "$request_timestamp" ]; then
+    # Compatibility for installations that intentionally disable per-head
+    # review requests. Without a durable request there is no freshness anchor
+    # from which to build portable post-rebase evidence.
+    return 0
+  fi
+
+  persistence_key="$expected_head|$expected_base|$request_timestamp|$result_timestamp"
+  if [ "$PR_TRIGGERED_REVIEW_RESULT_PERSISTED_KEY" = "$persistence_key" ]; then
+    return 0
+  fi
+
+  # The commit-status target is the full reviewed SHA. Keep the description
+  # compact enough for GitHub's 140-character limit while binding the result
+  # to this PR, base revision, request, and reviewer-result timestamp.
+  description="v=1 pr=$PR_NUMBER base=$expected_base req=$request_timestamp result=$result_timestamp"
+  if [ "${#description}" -gt 140 ]; then
+    echo "ERROR: Clean-review evidence description exceeds GitHub's status limit." >&2
+    return 1
+  fi
+  if ! records="$(
+    gh api --paginate "repos/$REPO_FULL_NAME/commits/$expected_head/statuses?per_page=100" \
+      --jq '.[] |
+        select(.context == "touchstone/review-result-clean") |
+        select(.state == "success") |
+        [(.creator.login // ""), (.description // "")] |
+        @tsv'
+  )"; then
+    echo "ERROR: Failed to inspect prior clean-review evidence for PR #$PR_NUMBER head $expected_head." >&2
+    return 1
+  fi
+  while IFS="$(printf '\t')" read -r creator existing_description || [ -n "$creator" ]; do
+    [ -n "$creator" ] || continue
+    [ "$existing_description" = "$description" ] || continue
+    if creator_permission="$(
+      gh api "repos/$REPO_FULL_NAME/collaborators/$creator/permission" --jq '.permission' 2>/dev/null
+    )"; then
+      case "$creator_permission" in
+        admin | maintain | write)
+          PR_TRIGGERED_REVIEW_RESULT_PERSISTED_KEY="$persistence_key"
+          echo "==> Full-SHA clean-review evidence already persisted for head $expected_head."
+          return 0
+          ;;
+      esac
+    fi
+  done <<<"$records"
+  if ! persisted_at="$(
+    gh api -X POST "repos/$REPO_FULL_NAME/statuses/$expected_head" \
+      -f state=success \
+      -f context="$PR_TRIGGERED_REVIEW_RESULT_STATUS_CONTEXT" \
+      -f description="$description" \
+      --jq '.created_at'
+  )"; then
+    echo "ERROR: Failed to persist clean-review evidence for PR #$PR_NUMBER head $expected_head." >&2
+    return 1
+  fi
+  if [ -z "$persisted_at" ]; then
+    echo "ERROR: GitHub returned no timestamp for clean-review evidence." >&2
+    return 1
+  fi
+
+  PR_TRIGGERED_REVIEW_RESULT_PERSISTED_KEY="$persistence_key"
+  echo "==> Persisted full-SHA clean-review evidence for head $expected_head."
 }
 
 wait_for_pr_triggered_review() {
@@ -1396,6 +1481,14 @@ wait_for_pr_triggered_review() {
           signal_status=$?
         fi
         if [ "$signal_status" -eq 0 ]; then
+          if ! persist_pr_clean_review_result \
+            "$expected_head" \
+            "$observed_base" \
+            "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
+            "$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"; then
+            TOUCHSTONE_MERGE_FAILURE_REASON="review-result-persistence"
+            exit 1
+          fi
           PR_TRIGGERED_REVIEWED_HEAD_OID="$expected_head"
           if [ -n "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" ]; then
             PR_TRIGGERED_REVIEWED_BASE_OID="$observed_base"
@@ -1413,7 +1506,7 @@ wait_for_pr_triggered_review() {
             pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=clean \
             wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
             request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
-            result_at="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
+            result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
           return 0
         fi
         if [ "$signal_status" -eq 2 ]; then
@@ -1438,7 +1531,7 @@ wait_for_pr_triggered_review() {
             pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=findings \
             wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
             request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
-            result_at="$PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP"
+            result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
           echo "ERROR: Trusted PR-visible AI review is not clean for PR #$PR_NUMBER head $expected_head." >&2
           [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2
           echo "       Address the findings, push the fix, and request a fresh exact-head review." >&2
@@ -2213,6 +2306,14 @@ if [ "$BYPASS_REVIEW" != true ] || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-rev
     echo "ERROR: The latest trusted PR-visible AI result is not clean for reviewed head $REVIEWED_HEAD_OID." >&2
     echo "       A newer review result may have arrived during preflight; resolve it and rerun the merge gate." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-stale"
+    exit 1
+  fi
+  if ! persist_pr_clean_review_result \
+    "$REVIEWED_HEAD_OID" \
+    "$REVIEWED_BASE_OID" \
+    "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
+    "$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"; then
+    TOUCHSTONE_MERGE_FAILURE_REASON="review-result-persistence"
     exit 1
   fi
   echo "==> Revalidated latest trusted PR-visible AI result for head $REVIEWED_HEAD_OID."

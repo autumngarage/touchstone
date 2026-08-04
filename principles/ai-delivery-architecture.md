@@ -76,6 +76,10 @@ Human user
 - PR creation is the review coordination surface. It should happen early enough for CI and any PR-visible agentic reviewers to work against visible PR state.
 - Feature-branch push is not the expensive gate. It should preserve cheap local guardrails without running full test suites or LLM review by default.
 - Merge is allowed only after PR-visible review and check approval. The local merge helper gates on requested-changes review decisions and unresolved review threads, runs deterministic checks, and requires a trusted current-head GitHub review signal bound to the captured base revision.
+- A clean result observed after a durable request is persisted on the full
+  reviewed SHA before later deterministic gates run. The versioned schema,
+  trust checks, and rebase compatibility path are owned by
+  [Review Evidence Contract](review-evidence.md).
 - A deterministic check result may be reused only when the cache key includes the base ref, head commit, relevant config, and checker version/input boundary.
 
 ## Driver AI Responsibilities
@@ -148,6 +152,9 @@ The scripts now enforce the core merge-time parts of this architecture:
 7. Review and preflight markers should key on base/head/config so repeated operations reuse valid results without hiding stale state.
 8. Detached events record review request count and wait time so external latency remains observable.
 9. Docs, templates, tests, and issue guidance should describe the PR-visible review loop consistently.
+10. The merge helper records versioned clean-result evidence on the reviewed
+    commit so a fail-closed root-cause reset can prove a rewritten historical
+    review without treating a short SHA as authorization.
 
 ## Product Boundary
 

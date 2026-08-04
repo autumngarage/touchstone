@@ -72,7 +72,9 @@ Touchstone requests GitHub Codex review automatically for every ready PR head
 that enters final shipping. Draft PRs remain review-free coordination surfaces.
 The merge helper waits for trusted exact-head review, deterministic preflight,
 required checks, and resolved review threads before merging. No local model
-router or API key is required.
+router or API key is required. Clean results are persisted on their full
+reviewed SHA for fail-closed recovery after a later rebase; see the
+[Review Evidence Contract](principles/review-evidence.md).
 
 Routine shipping is non-blocking:
 
@@ -215,6 +217,7 @@ Universal engineering standards, extracted and battle-tested from production sys
 - **[audit-weak-points.md](principles/audit-weak-points.md)** — Methodology: find one bug → audit the whole class → ranked fix → guardrail test
 - **[documentation-ownership.md](principles/documentation-ownership.md)** — Single canonical owner per volatile fact
 - **[ai-delivery-architecture.md](principles/ai-delivery-architecture.md)** — Human request → driver AI → PR → agentic review loop → approved merge
+- **[review-evidence.md](principles/review-evidence.md)** — Full-SHA clean-result evidence, trust checks, and rebase compatibility
 - **[git-workflow.md](principles/git-workflow.md)** — Feature branch → PR → review comments/checks → squash merge
 
 ### AI Review Gate
