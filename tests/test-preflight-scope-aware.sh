@@ -197,6 +197,63 @@ assert_log_not_contains() {
   fi
 }
 
+echo "==> Test: scoped consumer discovery propagates inspection errors"
+FAILING_GREP_BIN="$TEST_DIR/failing-grep-bin"
+mkdir -p "$FAILING_GREP_BIN"
+cat >"$FAILING_GREP_BIN/grep" <<'EOF_FAILING_GREP'
+#!/usr/bin/env bash
+exit 42
+EOF_FAILING_GREP
+chmod +x "$FAILING_GREP_BIN/grep"
+if (
+  cd "$TOUCHSTONE_ROOT"
+  # shellcheck source=../lib/preflight.sh
+  source "$TOUCHSTONE_ROOT/lib/preflight.sh"
+  touchstone_preflight_changed_files() {
+    printf 'scripts/open-pr.sh\n'
+  }
+  PATH="$FAILING_GREP_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    touchstone_preflight_touchstone_scoped_self_test_files \
+    "$TEST_DIR/discovered-consumers.txt"
+) >"$TEST_DIR/discovery-failure.out" 2>&1; then
+  echo "FAIL: direct-consumer inspection error unexpectedly passed" >&2
+  cat "$TEST_DIR/discovery-failure.out" >&2
+  exit 1
+fi
+if grep -q 'could not inspect .* for dependency on scripts/open-pr.sh (grep exit 42)' \
+  "$TEST_DIR/discovery-failure.out"; then
+  echo "==> PASS: consumer inspection errors are explicit and blocking"
+else
+  echo "FAIL: consumer inspection error lacked actionable diagnostics" >&2
+  cat "$TEST_DIR/discovery-failure.out" >&2
+  exit 1
+fi
+
+echo "==> Test: partial changed-path enumeration falls back to the full suite"
+if (
+  cd "$TOUCHSTONE_ROOT"
+  # shellcheck source=../lib/preflight.sh
+  source "$TOUCHSTONE_ROOT/lib/preflight.sh"
+  touchstone_preflight_changed_files() {
+    printf 'scripts/open-pr.sh\n'
+    return 42
+  }
+  touchstone_preflight_touchstone_scoped_self_test_files \
+    "$TEST_DIR/partial-mapping.txt"
+) >"$TEST_DIR/partial-mapping.out" 2>&1; then
+  echo "FAIL: partial changed-path enumeration unexpectedly produced scoped coverage" >&2
+  cat "$TEST_DIR/partial-mapping.out" >&2
+  exit 1
+fi
+if grep -q 'could not enumerate changed paths for scoped self-tests; using the full suite' \
+  "$TEST_DIR/partial-mapping.out"; then
+  echo "==> PASS: partial changed-path enumeration cannot authorize scoped coverage"
+else
+  echo "FAIL: changed-path enumeration error lacked full-suite fallback context" >&2
+  cat "$TEST_DIR/partial-mapping.out" >&2
+  exit 1
+fi
+
 echo "==> Test: changed clean shell file ignores unchanged shell debt"
 REPO="$TEST_DIR/repo-clean-shell"
 LOG="$TEST_DIR/clean-shell.log"

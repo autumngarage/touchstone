@@ -665,14 +665,17 @@ touchstone_preflight_add_existing_self_tests() {
 
   for test_file in "$@"; do
     [ -f "$test_file" ] || continue
-    printf '%s\n' "$test_file" >>"$output_file"
+    if ! printf '%s\n' "$test_file" >>"$output_file"; then
+      touchstone_preflight_fail "could not record scoped self-test: $test_file"
+      return 1
+    fi
   done
 }
 
 touchstone_preflight_add_literal_self_test_consumers() {
   local output_file="$1"
   local source_path="$2"
-  local test_file
+  local test_file grep_status
 
   # Explicit mappings below cover indirect contracts. This discovery pass is
   # the structural backstop for direct consumers: when a self-test names the
@@ -680,110 +683,203 @@ touchstone_preflight_add_literal_self_test_consumers() {
   # second hand-maintained list that can drift.
   for test_file in tests/test-*.sh; do
     [ -f "$test_file" ] || continue
-    if grep -Fq -- "$source_path" "$test_file"; then
-      printf '%s\n' "$test_file" >>"$output_file"
-    fi
+    grep_status=0
+    grep -Fq -- "$source_path" "$test_file" || grep_status=$?
+    case "$grep_status" in
+      0)
+        if ! printf '%s\n' "$test_file" >>"$output_file"; then
+          touchstone_preflight_fail "could not record discovered self-test consumer: $test_file"
+          return 1
+        fi
+        ;;
+      1) ;;
+      *)
+        touchstone_preflight_fail "could not inspect $test_file for dependency on $source_path (grep exit $grep_status)"
+        return "$grep_status"
+        ;;
+    esac
   done
 }
 
 touchstone_preflight_touchstone_scoped_self_test_files() {
   local output_file="$1"
   local unique_file="${output_file}.unique"
-  local path saw_path=false
+  local changed_paths_file path saw_path=false mapping_status=0
 
   # This is an allowlist of demonstrated source-to-test dependencies. A path
   # without an explicit contract falls back to every self-test below; adding a
   # guessed mapping here would trade visible latency for silent coverage loss.
-  : >"$output_file"
+  if ! : >"$output_file"; then
+    touchstone_preflight_fail "could not initialize scoped self-test selection: $output_file"
+    return 1
+  fi
+  changed_paths_file="$(mktemp -t touchstone-preflight-mapped-paths.XXXXXX)" || {
+    touchstone_preflight_fail "could not allocate changed-path mapping state"
+    return 1
+  }
+  if ! touchstone_preflight_changed_files >"$changed_paths_file"; then
+    rm -f "$changed_paths_file"
+    touchstone_preflight_fail "could not enumerate changed paths for scoped self-tests; using the full suite"
+    return 1
+  fi
 
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     saw_path=true
     case "$path" in
       tests/test-*.sh)
-        [ -f "$path" ] || return 1
-        touchstone_preflight_add_existing_self_tests "$output_file" "$path"
+        if [ ! -f "$path" ] \
+          || ! touchstone_preflight_add_existing_self_tests "$output_file" "$path"; then
+          mapping_status=1
+          break
+        fi
         ;;
       CLAUDE.md | AGENTS.md | GEMINI.md | TOUCHSTONE.md | principles/*)
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-agent-steering-contract.sh \
           tests/test-dogfood.sh \
           tests/test-steering-size-caps.sh \
-          tests/test-touchstone-block.sh
+          tests/test-touchstone-block.sh || {
+          mapping_status=1
+          break
+        }
         ;;
       templates/CLAUDE.md | templates/AGENTS.md | templates/GEMINI.md | .claude/skills/touchstone-*/*)
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-agent-steering-contract.sh \
           tests/test-dogfood.sh \
           tests/test-steering-size-caps.sh \
-          tests/test-touchstone-block.sh
+          tests/test-touchstone-block.sh || {
+          mapping_status=1
+          break
+        }
         ;;
       scripts/claim-issue.sh)
-        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
         touchstone_preflight_add_existing_self_tests "$output_file" \
-          tests/test-claim-issue.sh
+          tests/test-claim-issue.sh || {
+          mapping_status=1
+          break
+        }
         ;;
       scripts/issue-claim-check.sh)
-        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-open-pr-cleanup-worktree.sh \
           tests/test-open-pr-exit-contract.sh \
-          tests/test-open-pr-linked-issues.sh
+          tests/test-open-pr-linked-issues.sh || {
+          mapping_status=1
+          break
+        }
         ;;
       templates/ci/issue-claim-check.yml | .github/workflows/issue-claim-check.yml)
-        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-bootstrap.sh \
           tests/test-open-pr-cleanup-worktree.sh \
           tests/test-open-pr-exit-contract.sh \
           tests/test-open-pr-linked-issues.sh \
-          tests/test-update.sh
+          tests/test-update.sh || {
+          mapping_status=1
+          break
+        }
         ;;
       scripts/open-pr.sh)
-        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-open-pr-cleanup-worktree.sh \
           tests/test-open-pr-exit-contract.sh \
           tests/test-open-pr-linked-issues.sh \
           tests/test-open-pr-sentinel-body.sh \
-          tests/test-open-pr-upstream-mismatch.sh
+          tests/test-open-pr-upstream-mismatch.sh || {
+          mapping_status=1
+          break
+        }
         ;;
       scripts/merge-pr.sh)
-        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-cortex-pr-merged-hook.sh \
-          tests/test-merge-pr.sh
+          tests/test-merge-pr.sh || {
+          mapping_status=1
+          break
+        }
         ;;
       lib/auto-update.sh)
-        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-auto-project-sync.sh \
-          tests/test-auto-update.sh
+          tests/test-auto-update.sh || {
+          mapping_status=1
+          break
+        }
         ;;
       scripts/worker.sh | lib/worker-review-fix.sh | lib/worker-ship-job.sh | lib/worker-state.sh)
-        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
         touchstone_preflight_add_existing_self_tests "$output_file" \
-          tests/test-worker.sh
+          tests/test-worker.sh || {
+          mapping_status=1
+          break
+        }
         ;;
       scripts/release.sh | lib/release.sh)
-        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
         touchstone_preflight_add_existing_self_tests "$output_file" \
-          tests/test-release.sh
+          tests/test-release.sh || {
+          mapping_status=1
+          break
+        }
         ;;
       README.md | CHANGELOG.md | docs/* | audits/* | feedback/*)
         ;;
       *)
         touchstone_preflight_info "full self-test fallback: unmapped changed path: $path"
-        return 1
+        mapping_status=1
+        break
         ;;
     esac
-  done < <(touchstone_preflight_changed_files)
+  done <"$changed_paths_file"
+  rm -f "$changed_paths_file"
+
+  [ "$mapping_status" -eq 0 ] || return 1
 
   [ "$saw_path" = true ] || return 1
 
   if [ -s "$output_file" ]; then
-    awk '!seen[$0]++' "$output_file" >"$unique_file"
-    mv "$unique_file" "$output_file"
+    if ! awk '!seen[$0]++' "$output_file" >"$unique_file"; then
+      rm -f "$unique_file"
+      touchstone_preflight_fail "could not deduplicate scoped self-test selection"
+      return 1
+    fi
+    if ! mv "$unique_file" "$output_file"; then
+      rm -f "$unique_file"
+      touchstone_preflight_fail "could not finalize scoped self-test selection"
+      return 1
+    fi
   fi
   return 0
 }
