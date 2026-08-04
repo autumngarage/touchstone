@@ -25,11 +25,178 @@ TOUCHSTONE_PREFLIGHT_DIFF_BASE="${TOUCHSTONE_PREFLIGHT_DIFF_BASE:-}"
 TOUCHSTONE_PREFLIGHT_CACHE_KEY=""
 TOUCHSTONE_PREFLIGHT_CACHE_FILE=""
 TOUCHSTONE_PREFLIGHT_CACHE_INPUTS=""
+TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR=""
+TOUCHSTONE_PREFLIGHT_FAILURE_SEQUENCE=0
+TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_COMMAND=""
+TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_EXIT=""
+TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_LOG=""
+# One review epoch permits three reviewed heads. Retaining two diagnostic runs
+# per head preserves local/merge-gate evidence for that whole epoch while
+# bounding persistent failure output in the repository's Git metadata.
+TOUCHSTONE_PREFLIGHT_FAILURE_LOG_MAX_RUNS="${TOUCHSTONE_PREFLIGHT_FAILURE_LOG_MAX_RUNS:-6}"
 
 touchstone_preflight_info() { printf '==> %s\n' "$*"; }
 touchstone_preflight_ok() { printf '  OK %s\n' "$*"; }
 touchstone_preflight_skip() { printf '  SKIP %s\n' "$*"; }
 touchstone_preflight_fail() { printf '  FAIL %s\n' "$*" >&2; }
+
+touchstone_preflight_prune_failure_log_dirs() {
+  local failure_root="$1"
+  local current_dir="$2"
+  local max_runs="$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_MAX_RUNS"
+  local kept=1 stale_dir enumeration_file sorted_file prune_status=0
+
+  case "$max_runs" in
+    "" | *[!0-9]* | 0)
+      touchstone_preflight_fail "invalid TOUCHSTONE_PREFLIGHT_FAILURE_LOG_MAX_RUNS=$max_runs (expected a positive integer)"
+      return 1
+      ;;
+  esac
+
+  enumeration_file="$(mktemp -t touchstone-preflight-failure-dirs.XXXXXX)" || {
+    touchstone_preflight_fail "could not allocate failure-log enumeration state"
+    return 1
+  }
+  sorted_file="$(mktemp -t touchstone-preflight-failure-dirs-sorted.XXXXXX)" || {
+    rm -f "$enumeration_file"
+    touchstone_preflight_fail "could not allocate sorted failure-log state"
+    return 1
+  }
+  if ! find "$failure_root" -mindepth 1 -maxdepth 1 -type d \
+    -name '????????T??????Z-*' -print >"$enumeration_file"; then
+    rm -f "$enumeration_file" "$sorted_file"
+    touchstone_preflight_fail "could not enumerate retained preflight diagnostics under $failure_root"
+    return 1
+  fi
+  if ! LC_ALL=C sort -r "$enumeration_file" >"$sorted_file"; then
+    rm -f "$enumeration_file" "$sorted_file"
+    touchstone_preflight_fail "could not order retained preflight diagnostics under $failure_root"
+    return 1
+  fi
+
+  while IFS= read -r stale_dir; do
+    [ -n "$stale_dir" ] || continue
+    [ "$stale_dir" != "$current_dir" ] || continue
+    if [ "$kept" -lt "$max_runs" ]; then
+      kept=$((kept + 1))
+      continue
+    fi
+    case "$stale_dir" in
+      "$failure_root"/*) ;;
+      *)
+        touchstone_preflight_fail "refusing to prune failure log outside $failure_root: $stale_dir"
+        prune_status=1
+        break
+        ;;
+    esac
+    [ -e "$stale_dir" ] || continue
+    find "$stale_dir" -depth -delete || {
+      touchstone_preflight_fail "could not prune stale preflight diagnostics: $stale_dir"
+      prune_status=1
+      break
+    }
+  done <"$sorted_file"
+  rm -f "$enumeration_file" "$sorted_file"
+  return "$prune_status"
+}
+
+touchstone_preflight_ensure_failure_log_dir() {
+  local common_dir touchstone_state_dir failure_root timestamp
+
+  if [ -n "$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR" ]; then
+    return 0
+  fi
+
+  common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [ -z "$common_dir" ]; then
+    touchstone_preflight_fail "could not resolve the repository's common Git directory for retained diagnostics"
+    return 1
+  fi
+  common_dir="$(cd "$common_dir" 2>/dev/null && pwd)" || {
+    touchstone_preflight_fail "could not access the repository's common Git directory: $common_dir"
+    return 1
+  }
+  touchstone_state_dir="$common_dir/touchstone"
+  failure_root="$touchstone_state_dir/preflight-failures"
+  if [ -L "$touchstone_state_dir" ] || [ -L "$failure_root" ]; then
+    touchstone_preflight_fail "refusing to retain diagnostics through a symlink under $common_dir"
+    return 1
+  fi
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null)" || {
+    touchstone_preflight_fail "could not timestamp retained preflight diagnostics"
+    return 1
+  }
+  TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR="$failure_root/$timestamp-$$"
+  mkdir -p "$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR" || {
+    touchstone_preflight_fail "could not create retained preflight diagnostics: $TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR"
+    return 1
+  }
+  if ! touchstone_preflight_prune_failure_log_dirs \
+    "$failure_root" "$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR"; then
+    rmdir "$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR" 2>/dev/null || true
+    TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR=""
+    return 1
+  fi
+}
+
+touchstone_preflight_run_recorded_command() {
+  local display_command="$1"
+  shift
+  local capture_file output_file safe_name command_rc capture_rc
+  local -a pipeline_status=()
+
+  capture_file="$(mktemp -t touchstone-preflight-command.XXXXXX)" || {
+    touchstone_preflight_fail "could not capture output for command: $display_command"
+    return 1
+  }
+
+  touchstone_preflight_info "command: $display_command"
+  set +e
+  "$@" 2>&1 | tee "$capture_file"
+  pipeline_status=("${PIPESTATUS[@]}")
+  set -e
+  command_rc="${pipeline_status[0]:-1}"
+  capture_rc="${pipeline_status[1]:-1}"
+  if [ "$capture_rc" -ne 0 ]; then
+    touchstone_preflight_fail "output capture exit=$capture_rc: $display_command"
+    [ "$command_rc" -ne 0 ] || command_rc=1
+  fi
+
+  if [ "$command_rc" -eq 0 ]; then
+    rm -f "$capture_file"
+    touchstone_preflight_ok "command exit=0: $display_command"
+    return 0
+  fi
+
+  TOUCHSTONE_PREFLIGHT_FAILURE_SEQUENCE=$((TOUCHSTONE_PREFLIGHT_FAILURE_SEQUENCE + 1))
+  safe_name="$(printf '%s' "$display_command" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-120)"
+  output_file="$capture_file"
+  if touchstone_preflight_ensure_failure_log_dir; then
+    output_file="$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR/$(printf '%03d' "$TOUCHSTONE_PREFLIGHT_FAILURE_SEQUENCE")-$safe_name.log"
+    if ! mv "$capture_file" "$output_file"; then
+      output_file="$capture_file"
+    fi
+  fi
+
+  touchstone_preflight_fail "command exit=$command_rc: $display_command"
+  touchstone_preflight_fail "retained output: $output_file"
+  if [ -z "$TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_COMMAND" ]; then
+    TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_COMMAND="$display_command"
+    TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_EXIT="$command_rc"
+    TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_LOG="$output_file"
+  fi
+  return "$command_rc"
+}
+
+touchstone_preflight_run_test_file() {
+  local test_file="$1"
+  local display_command
+
+  printf -v display_command 'TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash %q' "$test_file"
+  touchstone_preflight_run_recorded_command \
+    "$display_command" \
+    env TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash "$test_file"
+}
 
 touchstone_preflight_truthy() {
   case "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" in
@@ -498,52 +665,221 @@ touchstone_preflight_add_existing_self_tests() {
 
   for test_file in "$@"; do
     [ -f "$test_file" ] || continue
-    printf '%s\n' "$test_file" >>"$output_file"
+    if ! printf '%s\n' "$test_file" >>"$output_file"; then
+      touchstone_preflight_fail "could not record scoped self-test: $test_file"
+      return 1
+    fi
+  done
+}
+
+touchstone_preflight_add_literal_self_test_consumers() {
+  local output_file="$1"
+  local source_path="$2"
+  local test_file grep_status
+
+  # Explicit mappings below cover indirect contracts. This discovery pass is
+  # the structural backstop for direct consumers: when a self-test names the
+  # changed source/template path, scoped preflight must include it without a
+  # second hand-maintained list that can drift.
+  for test_file in tests/test-*.sh; do
+    [ -f "$test_file" ] || continue
+    grep_status=0
+    grep -Fq -- "$source_path" "$test_file" || grep_status=$?
+    case "$grep_status" in
+      0)
+        if ! printf '%s\n' "$test_file" >>"$output_file"; then
+          touchstone_preflight_fail "could not record discovered self-test consumer: $test_file"
+          return 1
+        fi
+        ;;
+      1) ;;
+      *)
+        touchstone_preflight_fail "could not inspect $test_file for dependency on $source_path (grep exit $grep_status)"
+        return "$grep_status"
+        ;;
+    esac
   done
 }
 
 touchstone_preflight_touchstone_scoped_self_test_files() {
   local output_file="$1"
   local unique_file="${output_file}.unique"
-  local path saw_path=false
+  local changed_paths_file path saw_path=false mapping_status=0
 
-  : >"$output_file"
+  # This is an allowlist of demonstrated source-to-test dependencies. A path
+  # without an explicit contract falls back to every self-test below; adding a
+  # guessed mapping here would trade visible latency for silent coverage loss.
+  if ! : >"$output_file"; then
+    touchstone_preflight_fail "could not initialize scoped self-test selection: $output_file"
+    return 1
+  fi
+  changed_paths_file="$(mktemp -t touchstone-preflight-mapped-paths.XXXXXX)" || {
+    touchstone_preflight_fail "could not allocate changed-path mapping state"
+    return 1
+  }
+  if ! touchstone_preflight_changed_files >"$changed_paths_file"; then
+    rm -f "$changed_paths_file"
+    touchstone_preflight_fail "could not enumerate changed paths for scoped self-tests; using the full suite"
+    return 1
+  fi
 
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     saw_path=true
     case "$path" in
       tests/test-*.sh)
-        [ -f "$path" ] || return 1
-        touchstone_preflight_add_existing_self_tests "$output_file" "$path"
+        if [ ! -f "$path" ] \
+          || ! touchstone_preflight_add_existing_self_tests "$output_file" "$path"; then
+          mapping_status=1
+          break
+        fi
         ;;
       CLAUDE.md | AGENTS.md | GEMINI.md | TOUCHSTONE.md | principles/*)
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-agent-steering-contract.sh \
           tests/test-dogfood.sh \
           tests/test-steering-size-caps.sh \
-          tests/test-touchstone-block.sh
+          tests/test-touchstone-block.sh || {
+          mapping_status=1
+          break
+        }
         ;;
       templates/CLAUDE.md | templates/AGENTS.md | templates/GEMINI.md | .claude/skills/touchstone-*/*)
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-agent-steering-contract.sh \
           tests/test-dogfood.sh \
           tests/test-steering-size-caps.sh \
-          tests/test-touchstone-block.sh
+          tests/test-touchstone-block.sh || {
+          mapping_status=1
+          break
+        }
+        ;;
+      scripts/claim-issue.sh)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
+        touchstone_preflight_add_existing_self_tests "$output_file" \
+          tests/test-claim-issue.sh || {
+          mapping_status=1
+          break
+        }
+        ;;
+      scripts/issue-claim-check.sh)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
+        touchstone_preflight_add_existing_self_tests "$output_file" \
+          tests/test-open-pr-cleanup-worktree.sh \
+          tests/test-open-pr-exit-contract.sh \
+          tests/test-open-pr-linked-issues.sh || {
+          mapping_status=1
+          break
+        }
+        ;;
+      templates/ci/issue-claim-check.yml | .github/workflows/issue-claim-check.yml)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
+        touchstone_preflight_add_existing_self_tests "$output_file" \
+          tests/test-bootstrap.sh \
+          tests/test-open-pr-cleanup-worktree.sh \
+          tests/test-open-pr-exit-contract.sh \
+          tests/test-open-pr-linked-issues.sh \
+          tests/test-update.sh || {
+          mapping_status=1
+          break
+        }
+        ;;
+      scripts/open-pr.sh)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
+        touchstone_preflight_add_existing_self_tests "$output_file" \
+          tests/test-open-pr-cleanup-worktree.sh \
+          tests/test-open-pr-exit-contract.sh \
+          tests/test-open-pr-linked-issues.sh \
+          tests/test-open-pr-sentinel-body.sh \
+          tests/test-open-pr-upstream-mismatch.sh || {
+          mapping_status=1
+          break
+        }
+        ;;
+      scripts/merge-pr.sh)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
+        touchstone_preflight_add_existing_self_tests "$output_file" \
+          tests/test-cortex-pr-merged-hook.sh \
+          tests/test-merge-pr.sh || {
+          mapping_status=1
+          break
+        }
+        ;;
+      lib/auto-update.sh)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
+        touchstone_preflight_add_existing_self_tests "$output_file" \
+          tests/test-auto-project-sync.sh \
+          tests/test-auto-update.sh || {
+          mapping_status=1
+          break
+        }
+        ;;
+      scripts/worker.sh | lib/worker-review-fix.sh | lib/worker-ship-job.sh | lib/worker-state.sh)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
+        touchstone_preflight_add_existing_self_tests "$output_file" \
+          tests/test-worker.sh || {
+          mapping_status=1
+          break
+        }
+        ;;
+      scripts/release.sh | lib/release.sh)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
+        touchstone_preflight_add_existing_self_tests "$output_file" \
+          tests/test-release.sh || {
+          mapping_status=1
+          break
+        }
         ;;
       README.md | CHANGELOG.md | docs/* | audits/* | feedback/*)
         ;;
       *)
-        return 1
+        touchstone_preflight_info "full self-test fallback: unmapped changed path: $path"
+        mapping_status=1
+        break
         ;;
     esac
-  done < <(touchstone_preflight_changed_files)
+  done <"$changed_paths_file"
+  rm -f "$changed_paths_file"
+
+  [ "$mapping_status" -eq 0 ] || return 1
 
   [ "$saw_path" = true ] || return 1
 
   if [ -s "$output_file" ]; then
-    awk '!seen[$0]++' "$output_file" >"$unique_file"
-    mv "$unique_file" "$output_file"
+    if ! awk '!seen[$0]++' "$output_file" >"$unique_file"; then
+      rm -f "$unique_file"
+      touchstone_preflight_fail "could not deduplicate scoped self-test selection"
+      return 1
+    fi
+    if ! mv "$unique_file" "$output_file"; then
+      rm -f "$unique_file"
+      touchstone_preflight_fail "could not finalize scoped self-test selection"
+      return 1
+    fi
   fi
   return 0
 }
@@ -920,7 +1256,7 @@ touchstone_preflight_run_touchstone_self_tests() {
 
       touchstone_preflight_info "tests (touchstone scoped self-tests)"
       for test_file in "${test_files[@]}"; do
-        if TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash "$test_file"; then
+        if touchstone_preflight_run_test_file "$test_file"; then
           :
         else
           failures=$((failures + 1))
@@ -939,7 +1275,7 @@ touchstone_preflight_run_touchstone_self_tests() {
   touchstone_preflight_info "tests (touchstone self-tests)"
   for test_file in tests/test-*.sh; do
     [ -f "$test_file" ] || continue
-    if TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash "$test_file"; then
+    if touchstone_preflight_run_test_file "$test_file"; then
       :
     else
       failures=$((failures + 1))
@@ -1119,7 +1455,7 @@ touchstone_preflight_validate() {
 
     touchstone_preflight_info "tests (changed test files)"
     for test_file in "${test_files[@]}"; do
-      if TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash "$test_file"; then
+      if touchstone_preflight_run_test_file "$test_file"; then
         :
       else
         failures=$((failures + 1))
@@ -1182,6 +1518,12 @@ touchstone_preflight_run() {
   local repo_root="$1"
   local failures=0
 
+  TOUCHSTONE_PREFLIGHT_FAILURE_LOG_DIR=""
+  TOUCHSTONE_PREFLIGHT_FAILURE_SEQUENCE=0
+  TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_COMMAND=""
+  TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_EXIT=""
+  TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_LOG=""
+
   cd "$repo_root"
   touchstone_preflight_info "preflight in $repo_root"
   if [ "$TOUCHSTONE_PREFLIGHT_SCOPE_MODE" = "diff" ]; then
@@ -1209,6 +1551,11 @@ touchstone_preflight_run() {
   fi
 
   touchstone_preflight_fail "preflight failed ($failures check group(s))"
+  if [ -n "$TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_COMMAND" ]; then
+    touchstone_preflight_fail "first failing command: $TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_COMMAND"
+    touchstone_preflight_fail "first exit status: $TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_EXIT"
+    touchstone_preflight_fail "first retained output: $TOUCHSTONE_PREFLIGHT_FIRST_FAILURE_LOG"
+  fi
   return 1
 }
 

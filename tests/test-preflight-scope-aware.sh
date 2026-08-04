@@ -90,16 +90,31 @@ new_touchstone_self_repo() {
     git init -q
     git config user.email test@example.com
     git config user.name "Touchstone Test"
-    mkdir -p bootstrap scripts tests principles .claude/skills/touchstone-git-workflow docs templates
+    mkdir -p bootstrap scripts tests principles .claude/skills/touchstone-git-workflow docs templates/ci .github/workflows
     printf '9.99.0\n' >VERSION
     printf '#!/usr/bin/env bash\nset -euo pipefail\n' >bootstrap/new-project.sh
     printf '#!/usr/bin/env bash\nset -euo pipefail\n' >scripts/touchstone-run.sh
-    chmod +x bootstrap/new-project.sh scripts/touchstone-run.sh
+    printf '#!/usr/bin/env bash\nset -euo pipefail\n' >scripts/issue-claim-check.sh
+    printf '#!/usr/bin/env bash\nset -euo pipefail\n' >scripts/open-pr.sh
+    printf '#!/usr/bin/env bash\nset -euo pipefail\n' >scripts/merge-pr.sh
+    printf 'name: issue claim\n' >templates/ci/issue-claim-check.yml
+    cp templates/ci/issue-claim-check.yml .github/workflows/issue-claim-check.yml
+    chmod +x bootstrap/new-project.sh scripts/touchstone-run.sh scripts/issue-claim-check.sh scripts/open-pr.sh scripts/merge-pr.sh
     for test_name in \
       test-agent-steering-contract \
+      test-bootstrap \
+      test-claim-issue \
+      test-cortex-pr-merged-hook \
       test-dogfood \
+      test-merge-pr \
+      test-open-pr-cleanup-worktree \
+      test-open-pr-exit-contract \
+      test-open-pr-linked-issues \
+      test-open-pr-sentinel-body \
+      test-open-pr-upstream-mismatch \
       test-steering-size-caps \
       test-touchstone-block \
+      test-update \
       test-other \
       test-target; do
       cat >"tests/${test_name}.sh" <<'EOF_SELF_TEST'
@@ -111,6 +126,11 @@ if [ "${SELF_TEST_FAIL:-}" = "$(basename "$0")" ]; then
 fi
 EOF_SELF_TEST
       chmod +x "tests/${test_name}.sh"
+      case "$test_name" in
+        test-update)
+          printf '# direct consumer: scripts/open-pr.sh\n# direct consumer: scripts/merge-pr.sh\n' >>"tests/${test_name}.sh"
+          ;;
+      esac
     done
     printf '# Agent steering\n' >AGENTS.md
     printf '# Claude steering\n@TOUCHSTONE.md\n' >CLAUDE.md
@@ -120,7 +140,7 @@ EOF_SELF_TEST
     printf '# Template Claude steering\n@TOUCHSTONE.md\n' >templates/CLAUDE.md
     printf '# Template Gemini steering\n' >templates/GEMINI.md
     printf '# Docs\n' >docs/overview.md
-    git add VERSION bootstrap/new-project.sh scripts/touchstone-run.sh tests AGENTS.md CLAUDE.md principles/git-workflow.md .claude/skills/touchstone-git-workflow/SKILL.md docs/overview.md templates
+    git add VERSION bootstrap/new-project.sh scripts/touchstone-run.sh scripts/issue-claim-check.sh scripts/open-pr.sh scripts/merge-pr.sh tests AGENTS.md CLAUDE.md principles/git-workflow.md .claude/skills/touchstone-git-workflow/SKILL.md docs/overview.md templates .github/workflows/issue-claim-check.yml
     git commit -q -m "baseline touchstone fixture"
     git update-ref refs/remotes/origin/main HEAD
     git checkout -q -b feature/scope-test
@@ -176,6 +196,63 @@ assert_log_not_contains() {
     exit 1
   fi
 }
+
+echo "==> Test: scoped consumer discovery propagates inspection errors"
+FAILING_GREP_BIN="$TEST_DIR/failing-grep-bin"
+mkdir -p "$FAILING_GREP_BIN"
+cat >"$FAILING_GREP_BIN/grep" <<'EOF_FAILING_GREP'
+#!/usr/bin/env bash
+exit 42
+EOF_FAILING_GREP
+chmod +x "$FAILING_GREP_BIN/grep"
+if (
+  cd "$TOUCHSTONE_ROOT"
+  # shellcheck source=../lib/preflight.sh
+  source "$TOUCHSTONE_ROOT/lib/preflight.sh"
+  touchstone_preflight_changed_files() {
+    printf 'scripts/open-pr.sh\n'
+  }
+  PATH="$FAILING_GREP_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    touchstone_preflight_touchstone_scoped_self_test_files \
+    "$TEST_DIR/discovered-consumers.txt"
+) >"$TEST_DIR/discovery-failure.out" 2>&1; then
+  echo "FAIL: direct-consumer inspection error unexpectedly passed" >&2
+  cat "$TEST_DIR/discovery-failure.out" >&2
+  exit 1
+fi
+if grep -q 'could not inspect .* for dependency on scripts/open-pr.sh (grep exit 42)' \
+  "$TEST_DIR/discovery-failure.out"; then
+  echo "==> PASS: consumer inspection errors are explicit and blocking"
+else
+  echo "FAIL: consumer inspection error lacked actionable diagnostics" >&2
+  cat "$TEST_DIR/discovery-failure.out" >&2
+  exit 1
+fi
+
+echo "==> Test: partial changed-path enumeration falls back to the full suite"
+if (
+  cd "$TOUCHSTONE_ROOT"
+  # shellcheck source=../lib/preflight.sh
+  source "$TOUCHSTONE_ROOT/lib/preflight.sh"
+  touchstone_preflight_changed_files() {
+    printf 'scripts/open-pr.sh\n'
+    return 42
+  }
+  touchstone_preflight_touchstone_scoped_self_test_files \
+    "$TEST_DIR/partial-mapping.txt"
+) >"$TEST_DIR/partial-mapping.out" 2>&1; then
+  echo "FAIL: partial changed-path enumeration unexpectedly produced scoped coverage" >&2
+  cat "$TEST_DIR/partial-mapping.out" >&2
+  exit 1
+fi
+if grep -q 'could not enumerate changed paths for scoped self-tests; using the full suite' \
+  "$TEST_DIR/partial-mapping.out"; then
+  echo "==> PASS: partial changed-path enumeration cannot authorize scoped coverage"
+else
+  echo "FAIL: changed-path enumeration error lacked full-suite fallback context" >&2
+  cat "$TEST_DIR/partial-mapping.out" >&2
+  exit 1
+fi
 
 echo "==> Test: changed clean shell file ignores unchanged shell debt"
 REPO="$TEST_DIR/repo-clean-shell"
@@ -759,6 +836,96 @@ assert_log_contains "$LOG" '^self:test-touchstone-block.sh$'
 assert_log_not_contains "$LOG" '^self:test-other.sh$'
 echo "==> PASS: Touchstone Claude/template steering diff runs focused sentinel self-tests"
 
+echo "==> Test: Touchstone issue-claim helper runs only its declared consumers"
+REPO="$TEST_DIR/repo-touchstone-issue-claim"
+LOG="$TEST_DIR/touchstone-issue-claim.log"
+OUT="$TEST_DIR/touchstone-issue-claim.out"
+new_touchstone_self_repo "$REPO"
+(
+  cd "$REPO"
+  printf '\n# changed claim boundary\n' >>scripts/issue-claim-check.sh
+  git add scripts/issue-claim-check.sh
+  git commit -q -m "change issue claim helper"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^self:test-open-pr-cleanup-worktree.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-exit-contract.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-linked-issues.sh$'
+assert_log_not_contains "$LOG" '^self:test-claim-issue.sh$'
+assert_log_not_contains "$LOG" '^self:test-bootstrap.sh$'
+assert_log_not_contains "$LOG" '^self:test-update.sh$'
+assert_log_not_contains "$LOG" '^self:test-other.sh$'
+assert_log_not_contains "$LOG" '^self:test-target.sh$'
+if ! grep -q 'tests (touchstone scoped self-tests)' "$OUT"; then
+  echo "FAIL: issue-claim helper diff did not report scoped self-tests" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "==> PASS: issue-claim helper runs its fixture consumers without the full suite"
+
+echo "==> Test: Touchstone issue-claim workflow runs installation and consistency consumers"
+REPO="$TEST_DIR/repo-touchstone-issue-claim-workflow"
+LOG="$TEST_DIR/touchstone-issue-claim-workflow.log"
+OUT="$TEST_DIR/touchstone-issue-claim-workflow.out"
+new_touchstone_self_repo "$REPO"
+(
+  cd "$REPO"
+  printf '\n# changed workflow contract\n' >>templates/ci/issue-claim-check.yml
+  git add templates/ci/issue-claim-check.yml
+  git commit -q -m "change issue claim workflow"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^self:test-bootstrap.sh$'
+assert_log_contains "$LOG" '^self:test-update.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-cleanup-worktree.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-exit-contract.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-linked-issues.sh$'
+assert_log_not_contains "$LOG" '^self:test-other.sh$'
+echo "==> PASS: issue-claim workflow runs every demonstrated workflow consumer"
+
+echo "==> Test: Touchstone open-PR helper includes every direct and indirect consumer"
+REPO="$TEST_DIR/repo-touchstone-open-pr-helper"
+LOG="$TEST_DIR/touchstone-open-pr-helper.log"
+OUT="$TEST_DIR/touchstone-open-pr-helper.out"
+new_touchstone_self_repo "$REPO"
+(
+  cd "$REPO"
+  printf '\n# changed PR helper boundary\n' >>scripts/open-pr.sh
+  git add scripts/open-pr.sh
+  git commit -q -m "change open PR helper"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^self:test-open-pr-cleanup-worktree.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-exit-contract.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-linked-issues.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-sentinel-body.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-upstream-mismatch.sh$'
+assert_log_contains "$LOG" '^self:test-update.sh$'
+assert_log_not_contains "$LOG" '^self:test-other.sh$'
+echo "==> PASS: open-PR helper includes its discovered update integration consumer"
+
+echo "==> Test: Touchstone merge helper runs merge and post-merge hook consumers"
+REPO="$TEST_DIR/repo-touchstone-merge-helper"
+LOG="$TEST_DIR/touchstone-merge-helper.log"
+OUT="$TEST_DIR/touchstone-merge-helper.out"
+new_touchstone_self_repo "$REPO"
+(
+  cd "$REPO"
+  printf '\n# changed merge boundary\n' >>scripts/merge-pr.sh
+  git add scripts/merge-pr.sh
+  git commit -q -m "change merge helper"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^self:test-cortex-pr-merged-hook.sh$'
+assert_log_contains "$LOG" '^self:test-merge-pr.sh$'
+assert_log_contains "$LOG" '^self:test-update.sh$'
+assert_log_not_contains "$LOG" '^self:test-other.sh$'
+echo "==> PASS: merge helper runs merge, hook, and update integration consumers"
+
 echo "==> Test: Touchstone unknown diffs keep full self-test fallback"
 REPO="$TEST_DIR/repo-touchstone-full-fallback"
 LOG="$TEST_DIR/touchstone-full-fallback.log"
@@ -776,6 +943,11 @@ assert_log_contains "$LOG" '^self:test-target.sh$'
 assert_log_contains "$LOG" '^self:test-other.sh$'
 if ! grep -q 'tests (touchstone self-tests)' "$OUT"; then
   echo "FAIL: Touchstone unknown diff did not report full self-tests" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+if ! grep -q 'full self-test fallback: unmapped changed path: unexpected-runtime-file.txt' "$OUT"; then
+  echo "FAIL: Touchstone fallback did not name the unmapped changed path" >&2
   cat "$OUT" >&2
   exit 1
 fi
