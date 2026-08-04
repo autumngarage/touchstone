@@ -281,6 +281,11 @@ if [ "${SHIP_RECORD_CHILD_EVENT:-0}" = 1 ]; then
   printf '{"event":"open_pr_child"}\n' >>"$TOUCHSTONE_EVENTS_FILE"
 fi
 sleep "${SHIP_SLEEP_SECONDS:-0}"
+if [ "${SHIP_PREFLIGHT_DIAGNOSTIC:-0}" = 1 ]; then
+  echo "  FAIL first failing command: TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash tests/test-silent.sh" >&2
+  echo "  FAIL first exit status: 7" >&2
+  echo "  FAIL first retained output: /tmp/preflight-silent.log" >&2
+fi
 echo "detached runner finished"
 exit "${SHIP_EXIT_CODE:-0}"
 EOF
@@ -431,6 +436,7 @@ write_detached_open_pr "$DETACHED_WT"
 
 SHIP_STARTED_FILE="$TEST_DIR/failure-started" \
   SHIP_EXIT_CODE=23 \
+  SHIP_PREFLIGHT_DIAGNOSTIC=1 \
   "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
   --worktree "$DETACHED_WT" --detach >/dev/null
 if ! wait_for_ship_status "$DETACHED_WT" needs-attention "$DETACHED_STATUS"; then
@@ -445,6 +451,9 @@ assert_contains "$DEFAULT_EVENTS_PATH" '"event":"worker_ship_finished"'
 "$TOUCHSTONE_ROOT/bin/touchstone" worker status \
   --worktree "$DETACHED_WT" --show-log >"$TEST_DIR/detached-needs-attention.out"
 assert_contains "$TEST_DIR/detached-needs-attention.out" "Take over: touchstone worker takeover"
+assert_contains "$TEST_DIR/detached-needs-attention.out" 'first failing command: TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash tests/test-silent.sh'
+assert_contains "$TEST_DIR/detached-needs-attention.out" 'first exit status: 7'
+assert_contains "$TEST_DIR/detached-needs-attention.out" 'first retained output: /tmp/preflight-silent.log'
 assert_contains_fixed "$TEST_DIR/detached-needs-attention.out" \
   "Take over: touchstone worker takeover --worktree $QUOTED_DETACHED_WT"
 "$TOUCHSTONE_ROOT/bin/touchstone" worker takeover \

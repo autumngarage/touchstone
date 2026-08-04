@@ -197,4 +197,54 @@ else
   exit 1
 fi
 
+echo "==> Test: silent self-test failures retain exact command diagnostics"
+SILENT_REPO="$TEST_DIR/silent-self-test-repo"
+mkdir -p "$SILENT_REPO/bootstrap" "$SILENT_REPO/scripts" "$SILENT_REPO/tests" "$SILENT_REPO/lib"
+(
+  cd "$SILENT_REPO"
+  git init -q -b main
+  git config user.email test@example.com
+  git config user.name "Touchstone Test"
+  printf '0.0.0\n' >VERSION
+  printf '#!/usr/bin/env bash\nexit 0\n' >bootstrap/new-project.sh
+  printf '#!/usr/bin/env bash\nexit 0\n' >scripts/touchstone-run.sh
+  printf '#!/usr/bin/env bash\nexit 0\n' >tests/test-a-pass.sh
+  printf '#!/usr/bin/env bash\nexit 7\n' >tests/test-b-silent.sh
+  printf '#!/usr/bin/env bash\nexit 9\n' >tests/test-c-silent.sh
+  printf '#!/usr/bin/env bash\nexit 0\n' >lib/example.sh
+  chmod +x bootstrap/new-project.sh scripts/touchstone-run.sh \
+    tests/test-a-pass.sh tests/test-b-silent.sh tests/test-c-silent.sh lib/example.sh
+  git add VERSION bootstrap/new-project.sh scripts/touchstone-run.sh tests lib/example.sh
+  git commit -q -m "fixture baseline"
+  git checkout -q -b fix/silent-test
+  printf '# changed\n' >>lib/example.sh
+  git add lib/example.sh
+  git commit -q -m "trigger full fallback"
+)
+SILENT_OUT="$TEST_DIR/silent-self-test.txt"
+if PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+  TOUCHSTONE_PREFLIGHT_SKIP_DOGFOOD=1 \
+  bash "$TOUCHSTONE_ROOT/lib/preflight.sh" --diff main "$SILENT_REPO" >"$SILENT_OUT" 2>&1; then
+  echo "FAIL: silent self-test fixture unexpectedly passed preflight" >&2
+  cat "$SILENT_OUT" >&2
+  exit 1
+fi
+SILENT_LOGS="$(sed -n 's/^  FAIL retained output: //p' "$SILENT_OUT")"
+SILENT_FIRST_LOG="$(printf '%s\n' "$SILENT_LOGS" | sed -n '1p')"
+SILENT_SECOND_LOG="$(printf '%s\n' "$SILENT_LOGS" | sed -n '2p')"
+if grep -q 'command: TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash tests/test-a-pass.sh' "$SILENT_OUT" \
+  && grep -q 'OK command exit=0: TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash tests/test-a-pass.sh' "$SILENT_OUT" \
+  && grep -q 'FAIL command exit=7: TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash tests/test-b-silent.sh' "$SILENT_OUT" \
+  && grep -q 'FAIL command exit=9: TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash tests/test-c-silent.sh' "$SILENT_OUT" \
+  && grep -q 'FAIL first failing command: TOUCHSTONE_PREFLIGHT_IN_PROGRESS=1 bash tests/test-b-silent.sh' "$SILENT_OUT" \
+  && grep -q 'FAIL first exit status: 7' "$SILENT_OUT" \
+  && [ -n "$SILENT_FIRST_LOG" ] && [ -f "$SILENT_FIRST_LOG" ] \
+  && [ -n "$SILENT_SECOND_LOG" ] && [ -f "$SILENT_SECOND_LOG" ]; then
+  echo "==> PASS: silent failures name each command and preserve the first failure"
+else
+  echo "FAIL: silent self-test failure lacked actionable diagnostics" >&2
+  cat "$SILENT_OUT" >&2
+  exit 1
+fi
+
 echo "==> PASS: deterministic preflight checks are explicit and fail closed"

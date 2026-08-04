@@ -94,10 +94,15 @@ new_touchstone_self_repo() {
     printf '9.99.0\n' >VERSION
     printf '#!/usr/bin/env bash\nset -euo pipefail\n' >bootstrap/new-project.sh
     printf '#!/usr/bin/env bash\nset -euo pipefail\n' >scripts/touchstone-run.sh
-    chmod +x bootstrap/new-project.sh scripts/touchstone-run.sh
+    printf '#!/usr/bin/env bash\nset -euo pipefail\n' >scripts/issue-claim-check.sh
+    chmod +x bootstrap/new-project.sh scripts/touchstone-run.sh scripts/issue-claim-check.sh
     for test_name in \
       test-agent-steering-contract \
+      test-claim-issue \
       test-dogfood \
+      test-open-pr-cleanup-worktree \
+      test-open-pr-exit-contract \
+      test-open-pr-linked-issues \
       test-steering-size-caps \
       test-touchstone-block \
       test-other \
@@ -120,7 +125,7 @@ EOF_SELF_TEST
     printf '# Template Claude steering\n@TOUCHSTONE.md\n' >templates/CLAUDE.md
     printf '# Template Gemini steering\n' >templates/GEMINI.md
     printf '# Docs\n' >docs/overview.md
-    git add VERSION bootstrap/new-project.sh scripts/touchstone-run.sh tests AGENTS.md CLAUDE.md principles/git-workflow.md .claude/skills/touchstone-git-workflow/SKILL.md docs/overview.md templates
+    git add VERSION bootstrap/new-project.sh scripts/touchstone-run.sh scripts/issue-claim-check.sh tests AGENTS.md CLAUDE.md principles/git-workflow.md .claude/skills/touchstone-git-workflow/SKILL.md docs/overview.md templates
     git commit -q -m "baseline touchstone fixture"
     git update-ref refs/remotes/origin/main HEAD
     git checkout -q -b feature/scope-test
@@ -759,6 +764,32 @@ assert_log_contains "$LOG" '^self:test-touchstone-block.sh$'
 assert_log_not_contains "$LOG" '^self:test-other.sh$'
 echo "==> PASS: Touchstone Claude/template steering diff runs focused sentinel self-tests"
 
+echo "==> Test: Touchstone issue-claim helper runs only its declared consumers"
+REPO="$TEST_DIR/repo-touchstone-issue-claim"
+LOG="$TEST_DIR/touchstone-issue-claim.log"
+OUT="$TEST_DIR/touchstone-issue-claim.out"
+new_touchstone_self_repo "$REPO"
+(
+  cd "$REPO"
+  printf '\n# changed claim boundary\n' >>scripts/issue-claim-check.sh
+  git add scripts/issue-claim-check.sh
+  git commit -q -m "change issue claim helper"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+assert_log_contains "$LOG" '^self:test-open-pr-cleanup-worktree.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-exit-contract.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-linked-issues.sh$'
+assert_log_not_contains "$LOG" '^self:test-claim-issue.sh$'
+assert_log_not_contains "$LOG" '^self:test-other.sh$'
+assert_log_not_contains "$LOG" '^self:test-target.sh$'
+if ! grep -q 'tests (touchstone scoped self-tests)' "$OUT"; then
+  echo "FAIL: issue-claim helper diff did not report scoped self-tests" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "==> PASS: issue-claim helper runs its fixture consumers without the full suite"
+
 echo "==> Test: Touchstone unknown diffs keep full self-test fallback"
 REPO="$TEST_DIR/repo-touchstone-full-fallback"
 LOG="$TEST_DIR/touchstone-full-fallback.log"
@@ -776,6 +807,11 @@ assert_log_contains "$LOG" '^self:test-target.sh$'
 assert_log_contains "$LOG" '^self:test-other.sh$'
 if ! grep -q 'tests (touchstone self-tests)' "$OUT"; then
   echo "FAIL: Touchstone unknown diff did not report full self-tests" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+if ! grep -q 'full self-test fallback: unmapped changed path: unexpected-runtime-file.txt' "$OUT"; then
+  echo "FAIL: Touchstone fallback did not name the unmapped changed path" >&2
   cat "$OUT" >&2
   exit 1
 fi
