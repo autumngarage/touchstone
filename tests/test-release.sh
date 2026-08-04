@@ -191,7 +191,9 @@ git -C "$PROJECT" show-ref --verify --quiet refs/tags/v1.2.4 \
   || fail "atomic failure did not preserve the local tag for diagnosis"
 assert_contains "$ATOMIC_OUT" "Atomic publication failed"
 assert_contains "$ATOMIC_OUT" "Retry: git push --atomic"
-assert_contains "$ATOMIC_OUT" "Abort after revalidating remote refs: bash scripts/release.sh --abort-local"
+EXPECTED_ABORT_COMMAND="$(printf 'bash %q --abort-local %q %q' \
+  "$PROJECT/scripts/release.sh" v1.2.4 "$INITIAL_HEAD")"
+assert_contains "$ATOMIC_OUT" "Abort after revalidating remote refs: $EXPECTED_ABORT_COMMAND"
 LOCAL_RELEASE_HEAD="$(git -C "$PROJECT" rev-parse HEAD)"
 ABORT_OUT="$TEST_DIR/atomic-reject/abort.out"
 (
@@ -288,7 +290,9 @@ PUBLISHED_HEAD="$(git -C "$PROJECT" rev-parse HEAD)"
   || fail "successful atomic publication did not publish the matching tag"
 assert_contains "$RELEASE_OUT" "Git refs were published, but normal GitHub Release recovery did not complete"
 RECOVERY_COMMAND="$(sed -n 's/^.*Resume idempotently: //p' "$RELEASE_OUT")"
-[ "$RECOVERY_COMMAND" = "bash scripts/release.sh --resume v1.2.4 $PUBLISHED_HEAD" ] \
+EXPECTED_RECOVERY_COMMAND="$(printf 'bash %q --resume %q %q' \
+  "$PROJECT/scripts/release.sh" v1.2.4 "$PUBLISHED_HEAD")"
+[ "$RECOVERY_COMMAND" = "$EXPECTED_RECOVERY_COMMAND" ] \
   || fail "GitHub Release failure omitted its idempotent resume command"
 assert_contains "$GH_LOG" "release view v1.2.4 --repo autumngarage/touchstone"
 assert_contains "$GH_LOG" "release create v1.2.4 --repo autumngarage/touchstone --title v1.2.4 --generate-notes --verify-tag"
@@ -420,5 +424,38 @@ set -e
 [ "$PUBLISHED_PRERELEASE_STATUS" -ne 0 ] || fail "published prerelease incorrectly completed recovery"
 assert_contains "$PUBLISHED_PRERELEASE_OUT" "manually dispatch release.yml"
 echo "==> PASS: recovery requires a normal published release, not mere existence"
+
+echo "==> Test: rendered recovery commands work outside a checkout"
+WRAPPER_ROOT="$TEST_DIR/release wrapper checkout"
+WRAPPER_LOG="$TEST_DIR/release-wrapper.log"
+mkdir -p "$WRAPPER_ROOT/bin" "$WRAPPER_ROOT/lib" "$WRAPPER_ROOT/scripts"
+WRAPPER_ROOT_PHYSICAL="$(cd -P "$WRAPPER_ROOT" && pwd)"
+cp "$REPO_ROOT/lib/colors.sh" "$WRAPPER_ROOT/lib/colors.sh"
+cp "$REPO_ROOT/scripts/release.sh" "$WRAPPER_ROOT/scripts/release.sh"
+cat >"$WRAPPER_ROOT/bin/touchstone" <<'EOF_WRAPPER_TOUCHSTONE'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$PWD" >"${WRAPPER_LOG:?}"
+printf '%s\n' "$@" >>"$WRAPPER_LOG"
+EOF_WRAPPER_TOUCHSTONE
+chmod +x "$WRAPPER_ROOT/bin/touchstone"
+RENDERED_COMMAND="$({
+  export TOUCHSTONE_ROOT="$WRAPPER_ROOT"
+  source "$REPO_ROOT/lib/release.sh"
+  touchstone_release_command --resume v1.2.4 "$PUBLISHED_HEAD"
+})"
+(
+  cd /
+  export WRAPPER_LOG
+  bash -c "$RENDERED_COMMAND"
+)
+[ "$(sed -n '1p' "$WRAPPER_LOG")" = "$WRAPPER_ROOT_PHYSICAL" ] \
+  || fail "release wrapper did not derive its checkout independently of the caller cwd"
+[ "$(sed -n '2p' "$WRAPPER_LOG")" = "release" ] \
+  && [ "$(sed -n '3p' "$WRAPPER_LOG")" = "--resume" ] \
+  && [ "$(sed -n '4p' "$WRAPPER_LOG")" = "v1.2.4" ] \
+  && [ "$(sed -n '5p' "$WRAPPER_LOG")" = "$PUBLISHED_HEAD" ] \
+  || fail "rendered recovery command did not preserve its arguments"
+echo "==> PASS: recovery commands are absolute, shell-safe, and cwd-independent"
 
 echo "==> PASS: release publication is exact-base, atomic, and recoverable"

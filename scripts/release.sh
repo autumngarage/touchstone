@@ -15,7 +15,8 @@
 # tag, push, gh release create, async tap bump via release.yml).
 set -euo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
 bump="${1:---patch}"
@@ -26,19 +27,19 @@ case "$bump" in
       echo "ERROR: --resume requires vMAJOR.MINOR.PATCH and RELEASE_COMMIT" >&2
       exit 1
     }
-    TOUCHSTONE_NO_AUTO_UPDATE=1 exec bin/touchstone release --resume "$2" "$3"
+    TOUCHSTONE_NO_AUTO_UPDATE=1 exec "$REPO_ROOT/bin/touchstone" release --resume "$2" "$3"
     ;;
   --abort-local)
     [ "$#" -eq 3 ] || {
       echo "ERROR: --abort-local requires vMAJOR.MINOR.PATCH and BASE_COMMIT" >&2
       exit 1
     }
-    TOUCHSTONE_NO_AUTO_UPDATE=1 exec bin/touchstone release --abort-local "$2" "$3"
+    TOUCHSTONE_NO_AUTO_UPDATE=1 exec "$REPO_ROOT/bin/touchstone" release --abort-local "$2" "$3"
     ;;
   *)
-    echo "ERROR: unknown release arg: $bump (use a bump, --resume TAG, or --abort-local TAG BASE)" >&2
+    echo "ERROR: unknown release arg: $bump (use a bump, --resume TAG COMMIT, or --abort-local TAG BASE)" >&2
     exit 1
     ;;
 esac
 
-TOUCHSTONE_NO_AUTO_UPDATE=1 exec bin/touchstone release "$bump"
+TOUCHSTONE_NO_AUTO_UPDATE=1 exec "$REPO_ROOT/bin/touchstone" release "$bump"

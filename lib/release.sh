@@ -97,6 +97,16 @@ touchstone_release_remote_ref_oid() {
   esac
 }
 
+touchstone_release_command() {
+  local arg
+
+  printf 'bash '
+  printf '%q' "$TOUCHSTONE_ROOT/scripts/release.sh"
+  for arg in "$@"; do
+    printf ' %q' "$arg"
+  done
+}
+
 touchstone_release_github_release_state() {
   local release_tag="$1"
   local state="" view_status=0
@@ -241,7 +251,7 @@ touchstone_release_resume() {
   touchstone_release_ensure_github_release "$release_tag" || github_release_status=$?
   if [ "$github_release_status" -ne 0 ]; then
     tk_fail "GitHub Release recovery is still incomplete for $release_tag."
-    tk_dim "  Retry: bash scripts/release.sh --resume $release_tag $expected_release_oid"
+    tk_dim "  Retry: $(touchstone_release_command --resume "$release_tag" "$expected_release_oid")"
     return "$github_release_status"
   fi
   tk_ok "Release recovery complete: $release_tag is published"
@@ -403,7 +413,7 @@ touchstone_release() {
       tk_fail "Atomic publication failed before either release ref was published."
       tk_dim "  Local release commit and $release_tag remain for retry or verified local rollback."
       tk_dim "  Retry: git push --atomic --no-verify --force-with-lease=refs/heads/main:$release_base_head origin HEAD:refs/heads/main refs/tags/$release_tag:refs/tags/$release_tag"
-      tk_dim "  Abort after revalidating remote refs: bash scripts/release.sh --abort-local $release_tag $release_base_head"
+      tk_dim "  Abort after revalidating remote refs: $(touchstone_release_command --abort-local "$release_tag" "$release_base_head")"
       return "$push_status"
     else
       tk_fail "Atomic publication returned an error and remote state changed concurrently."
@@ -428,7 +438,7 @@ touchstone_release() {
     tk_fail "Git refs were published, but normal GitHub Release recovery did not complete."
     tk_dim "  Published commit: $(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD)"
     tk_dim "  Published tag: $release_tag"
-    tk_dim "  Resume idempotently: bash scripts/release.sh --resume $release_tag $release_commit"
+    tk_dim "  Resume idempotently: $(touchstone_release_command --resume "$release_tag" "$release_commit")"
     return "$github_release_status"
   fi
 
