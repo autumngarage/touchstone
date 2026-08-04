@@ -51,6 +51,7 @@ git -C "$REPO_DIR" config user.email "touchstone@example.com"
 printf 'base\n' >"$REPO_DIR/file.txt"
 git -C "$REPO_DIR" add file.txt
 git -C "$REPO_DIR" commit -m "base commit" >/dev/null 2>&1
+git -C "$REPO_DIR" remote add origin "$REPO_DIR"
 git -C "$REPO_DIR" branch feature/parent
 git -C "$REPO_DIR" checkout -b feat/test >/dev/null 2>&1
 printf 'change\n' >>"$REPO_DIR/file.txt"
@@ -760,6 +761,41 @@ if [ "$RC" = "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: expected existing-stack recovery to include explicit PR retarget" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 19: a current-base review request must not be spent on a branch whose
+# head predates that base. This is deterministic before review or merge.
+# ---------------------------------------------------------------------------
+echo "==> Case 19: stale merge base blocks before review admission"
+STALE_FEATURE_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
+git -C "$REPO_DIR" checkout -q main
+printf 'new base work\n' >"$REPO_DIR/base-advance.txt"
+git -C "$REPO_DIR" add base-advance.txt
+git -C "$REPO_DIR" commit -q -m "advance base during final evidence"
+git -C "$REPO_DIR" checkout -q feat/test
+if [ "$(git -C "$REPO_DIR" rev-parse HEAD)" != "$STALE_FEATURE_HEAD" ]; then
+  echo "    FAIL: stale-base fixture changed the feature head" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+OUT="$TEST_DIR/case19.out"
+RC=0
+reset_open_pr_logs
+GH_HAS_EXISTING_PR=1 GH_EXISTING_PR_BASE="main" GH_PR_IS_DRAFT=false \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' MERGE_PR_EXIT=0 \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'head does not contain the current main revision' "$OUT" \
+  && grep -q 'No review request was recorded or submitted' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ] \
+  && ! grep -q '\[mock merge-pr.sh\] called' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: stale base should fail before review intent, comment, or merge" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))

@@ -380,6 +380,39 @@ request_pr_triggered_review() {
     echo "       actual:   $base_branch" >&2
     return 1
   fi
+
+  local remote_base_ref="refs/remotes/origin/$base_branch"
+  local fetched_base_sha
+  if ! git fetch --quiet --no-tags origin \
+    "+refs/heads/$base_branch:$remote_base_ref" >/dev/null 2>&1; then
+    echo "ERROR: Could not refresh PR #$pr_number base '$base_branch' before requesting review." >&2
+    echo "       No review request was recorded or submitted." >&2
+    return 1
+  fi
+  if ! fetched_base_sha="$(git rev-parse "$remote_base_ref^{commit}" 2>/dev/null)"; then
+    echo "ERROR: Could not resolve refreshed base '$remote_base_ref' before requesting review." >&2
+    echo "       No review request was recorded or submitted." >&2
+    return 1
+  fi
+  if [ "$fetched_base_sha" != "$base_sha" ]; then
+    echo "ERROR: PR #$pr_number base moved while review admission was being checked." >&2
+    echo "       GitHub base:   $base_sha" >&2
+    echo "       fetched base:  $fetched_base_sha" >&2
+    echo "       Rerun scripts/open-pr.sh against the current base." >&2
+    echo "       No review request was recorded or submitted." >&2
+    return 1
+  fi
+  if ! git merge-base --is-ancestor "$base_sha" "$head_sha" >/dev/null 2>&1; then
+    echo "ERROR: PR #$pr_number head does not contain the current $base_branch revision." >&2
+    echo "       head:        $head_sha" >&2
+    echo "       current base: $base_sha" >&2
+    echo "       Update the branch before spending exact-head review budget:" >&2
+    echo "         git fetch origin $base_branch" >&2
+    echo "         git rebase origin/$base_branch" >&2
+    echo "       Then rerun: bash scripts/open-pr.sh --auto-merge" >&2
+    echo "       No review request was recorded or submitted." >&2
+    return 1
+  fi
   marker="<!-- touchstone:pr-review-request provider=github-codex pr=$pr_number head=$head_sha base=$base_sha -->"
   if ! request_records="$(
     gh api --paginate "repos/$REPO_FULL_NAME/commits/$head_sha/statuses?per_page=100" \
