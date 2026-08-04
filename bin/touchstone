@@ -686,8 +686,8 @@ cmd_doctor_project() {
         tk_fail "git hooks exist but are not executable — Git will skip them, repo is ungated"
         tk_dim "  Fix: chmod +x \"$pre_commit_hook\" \"$pre_push_hook\""
         issues=$((issues + 1))
-      elif grep -q 'pre-commit\.com' "$pre_push_hook" 2>/dev/null \
-           && grep -q 'pre-commit\.com' "$pre_commit_hook" 2>/dev/null; then
+      elif touchstone_pre_commit_hook_ready "$pre_push_hook" \
+           && touchstone_pre_commit_hook_ready "$pre_commit_hook"; then
         tk_ok "git hooks installed ($pre_commit_hook, $pre_push_hook)"
       else
         tk_warn "git hook files exist but aren't the pre-commit-framework shim"
