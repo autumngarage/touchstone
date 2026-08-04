@@ -647,6 +647,23 @@ touchstone_preflight_add_existing_self_tests() {
   done
 }
 
+touchstone_preflight_add_literal_self_test_consumers() {
+  local output_file="$1"
+  local source_path="$2"
+  local test_file
+
+  # Explicit mappings below cover indirect contracts. This discovery pass is
+  # the structural backstop for direct consumers: when a self-test names the
+  # changed source/template path, scoped preflight must include it without a
+  # second hand-maintained list that can drift.
+  for test_file in tests/test-*.sh; do
+    [ -f "$test_file" ] || continue
+    if grep -Fq -- "$source_path" "$test_file"; then
+      printf '%s\n' "$test_file" >>"$output_file"
+    fi
+  done
+}
+
 touchstone_preflight_touchstone_scoped_self_test_files() {
   local output_file="$1"
   local unique_file="${output_file}.unique"
@@ -680,16 +697,19 @@ touchstone_preflight_touchstone_scoped_self_test_files() {
           tests/test-touchstone-block.sh
         ;;
       scripts/claim-issue.sh)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-claim-issue.sh
         ;;
       scripts/issue-claim-check.sh)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-open-pr-cleanup-worktree.sh \
           tests/test-open-pr-exit-contract.sh \
           tests/test-open-pr-linked-issues.sh
         ;;
       templates/ci/issue-claim-check.yml | .github/workflows/issue-claim-check.yml)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-bootstrap.sh \
           tests/test-open-pr-cleanup-worktree.sh \
@@ -698,6 +718,7 @@ touchstone_preflight_touchstone_scoped_self_test_files() {
           tests/test-update.sh
         ;;
       scripts/open-pr.sh)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-open-pr-cleanup-worktree.sh \
           tests/test-open-pr-exit-contract.sh \
@@ -706,20 +727,24 @@ touchstone_preflight_touchstone_scoped_self_test_files() {
           tests/test-open-pr-upstream-mismatch.sh
         ;;
       scripts/merge-pr.sh)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-cortex-pr-merged-hook.sh \
           tests/test-merge-pr.sh
         ;;
       lib/auto-update.sh)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-auto-project-sync.sh \
           tests/test-auto-update.sh
         ;;
       scripts/worker.sh | lib/worker-review-fix.sh | lib/worker-ship-job.sh | lib/worker-state.sh)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-worker.sh
         ;;
       scripts/release.sh | lib/release.sh)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path"
         touchstone_preflight_add_existing_self_tests "$output_file" \
           tests/test-release.sh
         ;;
