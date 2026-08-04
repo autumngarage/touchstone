@@ -1,10 +1,10 @@
 ---
-Generated: 2026-08-03T11:58:23-04:00
+Generated: 2026-08-04T16:38:00-04:00
 Generator: cortex refresh-state v1.6.4
 Sources:
-  - HEAD sha: f0c27e0078da5985e9d0ced3f4e39d92dc2295ad
+  - HEAD sha: bfe5e528f11904c7af43934646430bb20f7ea0ec
   - .cortex/plans/*.md (2 files)
-  - .cortex/journal/*.md (29 entries, 2026-05-05..2026-08-03)
+  - .cortex/journal/*.md (33 entries, 2026-05-05..2026-08-03)
   - .cortex/doctrine/*.md (1 entries)
   - .cortex/templates/**/*.md (12 templates)
   - docs/case-studies/*.md (0 case studies)
@@ -40,6 +40,10 @@ Sources-hash:
   .cortex/journal/2026-07-29-pr-merged-2306.md: 6b9db9251965267022538045132573d268a39befac8493aee533422b41e74744
   .cortex/journal/2026-07-29-remove-local-model-router.md: 7b0ed0974ac61c38384d701d939685a5e32d918fb80879173b3d8d3c4f5b6531
   .cortex/journal/2026-07-30-default-detached-shipping.md: d927f416ff51318448343a0f49bf539169ebbeb10b4426bd79356bbb3d06d77a
+  .cortex/journal/2026-07-30-pr-587-windows-sha256.md: b07506d1f6f512a2ddabeb369bb89582bfab2dd17c1cbc8b70698ebb27576d8f
+  .cortex/journal/2026-07-30-pr-589-sha256-failure-propagation.md: 84118f567516d73467b1b491912c7189f0bf0508783dc3c9297c4fdb98c7438f
+  .cortex/journal/2026-07-30-release-v2-11-56.md: f8ae42d6eead1ffffe3daf405f1937027eefdbd3194cb48d1f4f0dbea21ba5b1
+  .cortex/journal/2026-07-30-release-v2-11-57.md: 87ed6da743bd1e5e8389e77e910e7be40db5cc2e31229491a4959ec06ca21a17
   .cortex/journal/2026-08-03-pr-merged-1158.md: af08e17f24baa0e308f1a13e703a8a0a9de8c7d2df71333c05eef3b4b8623dfe
   .cortex/plans/touchstone-conductor-integration.md: be3f8211b7c19e32e0c4c858c35678c1d85418fe12c5d22b29cc0a7831f8a54c
   .cortex/plans/touchstone-cortex-metadata.md: 0e23c4e06b91c1e8da358b3928750798975eed88815502fb8e7ddfbdbd0187f5
@@ -55,7 +59,7 @@ Sources-hash:
   .cortex/templates/journal/release.md: 9a6bc59219156e48b419fb170c7c50ff557767def8672ef20568df3e14eadbd0
   .cortex/templates/journal/sentinel-cycle.md: 2945e2d94af4ec9848584b4b3e9cea7060d2968dd42e78faf21fb6f859137476
   .cortex/templates/plans/template.md: d8156cfa3b86acd2a1fbb36cff07cae37d99f3adee7f72b14b7b16e645c51b44
-Corpus: 29 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
+Corpus: 33 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
 Omitted:
   []
 Incomplete:
@@ -92,6 +96,10 @@ Spec: 0.5.0
 - **2026-07-27** — PR #492 merged — fix: harden emergency disclosure and request Codex reviews (`.cortex/journal/2026-07-27-pr-merged-2143.md`, Type: pr-merged)
 - **2026-07-29** — PR #547 merged — fix(review): cap autonomous mutation cycles (`.cortex/journal/2026-07-29-pr-merged-1838.md`, Type: pr-merged)
 - **2026-07-29** — PR #554 merged — refactor: remove local model router (`.cortex/journal/2026-07-29-pr-merged-2306.md`, Type: pr-merged)
+- **2026-07-30** — PR #587 merged — support Git for Windows SHA-256 (`.cortex/journal/2026-07-30-pr-587-windows-sha256.md`, Type: pr-merged)
+- **2026-07-30** — PR #589 merged — propagate SHA-256 command failures (`.cortex/journal/2026-07-30-pr-589-sha256-failure-propagation.md`, Type: pr-merged)
+- **2026-07-30** — Release v2.11.56 — portable delivery checksums (`.cortex/journal/2026-07-30-release-v2-11-56.md`, Type: release)
+- **2026-07-30** — Release v2.11.57 — fail-closed checksum adapter (`.cortex/journal/2026-07-30-release-v2-11-57.md`, Type: release)
 - **2026-08-03** — PR #597 merged — fix(review): keep draft shipping review-free (`.cortex/journal/2026-08-03-pr-merged-1158.md`, Type: pr-merged)
 
 ## Stale-now / handle-later
