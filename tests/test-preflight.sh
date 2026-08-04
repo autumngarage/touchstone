@@ -14,6 +14,7 @@ fi
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_DIR="$(mktemp -d -t touchstone-test-preflight.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
+TOUCHSTONE_TEST_GIT_BIN_DIR="$(dirname "$(command -v git)")"
 SYSTEM_PATH="$PATH"
 
 echo "==> Test: SHA-256 adapter falls back to sha256sum"
@@ -232,7 +233,7 @@ for old_run in 01 02 03 04 05 06 07 08; do
   mkdir -p "$SILENT_FAILURE_ROOT/20000101T0000${old_run}Z-$old_run"
   printf 'old diagnostic %s\n' "$old_run" >"$SILENT_FAILURE_ROOT/20000101T0000${old_run}Z-$old_run/output.log"
 done
-if PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+if PATH="$TOUCHSTONE_TEST_GIT_BIN_DIR:/usr/bin:/bin:/usr/sbin:/sbin" \
   TOUCHSTONE_PREFLIGHT_SKIP_DOGFOOD=1 \
   bash "$TOUCHSTONE_ROOT/lib/preflight.sh" --diff origin/main "$SILENT_REPO" >"$SILENT_OUT" 2>&1; then
   echo "FAIL: silent self-test fixture unexpectedly passed preflight" >&2
