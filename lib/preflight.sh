@@ -44,7 +44,7 @@ touchstone_preflight_prune_failure_log_dirs() {
   local failure_root="$1"
   local current_dir="$2"
   local max_runs="$TOUCHSTONE_PREFLIGHT_FAILURE_LOG_MAX_RUNS"
-  local kept=1 stale_dir
+  local kept=1 stale_dir enumeration_file sorted_file prune_status=0
 
   case "$max_runs" in
     "" | *[!0-9]* | 0)
@@ -52,6 +52,27 @@ touchstone_preflight_prune_failure_log_dirs() {
       return 1
       ;;
   esac
+
+  enumeration_file="$(mktemp -t touchstone-preflight-failure-dirs.XXXXXX)" || {
+    touchstone_preflight_fail "could not allocate failure-log enumeration state"
+    return 1
+  }
+  sorted_file="$(mktemp -t touchstone-preflight-failure-dirs-sorted.XXXXXX)" || {
+    rm -f "$enumeration_file"
+    touchstone_preflight_fail "could not allocate sorted failure-log state"
+    return 1
+  }
+  if ! find "$failure_root" -mindepth 1 -maxdepth 1 -type d \
+    -name '????????T??????Z-*' -print >"$enumeration_file"; then
+    rm -f "$enumeration_file" "$sorted_file"
+    touchstone_preflight_fail "could not enumerate retained preflight diagnostics under $failure_root"
+    return 1
+  fi
+  if ! LC_ALL=C sort -r "$enumeration_file" >"$sorted_file"; then
+    rm -f "$enumeration_file" "$sorted_file"
+    touchstone_preflight_fail "could not order retained preflight diagnostics under $failure_root"
+    return 1
+  fi
 
   while IFS= read -r stale_dir; do
     [ -n "$stale_dir" ] || continue
@@ -64,18 +85,19 @@ touchstone_preflight_prune_failure_log_dirs() {
       "$failure_root"/*) ;;
       *)
         touchstone_preflight_fail "refusing to prune failure log outside $failure_root: $stale_dir"
-        return 1
+        prune_status=1
+        break
         ;;
     esac
     [ -e "$stale_dir" ] || continue
     find "$stale_dir" -depth -delete || {
       touchstone_preflight_fail "could not prune stale preflight diagnostics: $stale_dir"
-      return 1
+      prune_status=1
+      break
     }
-  done < <(
-    find "$failure_root" -mindepth 1 -maxdepth 1 -type d \
-      -name '????????T??????Z-*' -print 2>/dev/null | LC_ALL=C sort -r
-  )
+  done <"$sorted_file"
+  rm -f "$enumeration_file" "$sorted_file"
+  return "$prune_status"
 }
 
 touchstone_preflight_ensure_failure_log_dir() {

@@ -198,6 +198,33 @@ else
   exit 1
 fi
 
+echo "==> Test: failure-log enumeration errors fail closed"
+FAILING_FIND_BIN="$TEST_DIR/failing-find-bin"
+FIND_FAILURE_ROOT="$TEST_DIR/find-failure-root"
+FIND_CURRENT_DIR="$FIND_FAILURE_ROOT/20260804T000000Z-1"
+mkdir -p "$FAILING_FIND_BIN" "$FIND_CURRENT_DIR"
+cat >"$FAILING_FIND_BIN/find" <<'EOF'
+#!/usr/bin/env bash
+exit 42
+EOF
+chmod +x "$FAILING_FIND_BIN/find"
+# shellcheck source=../lib/preflight.sh
+source "$TOUCHSTONE_ROOT/lib/preflight.sh"
+if PATH="$FAILING_FIND_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  touchstone_preflight_prune_failure_log_dirs \
+  "$FIND_FAILURE_ROOT" "$FIND_CURRENT_DIR" >"$TEST_DIR/find-failure.txt" 2>&1; then
+  echo "FAIL: failed failure-log enumeration unexpectedly passed" >&2
+  cat "$TEST_DIR/find-failure.txt" >&2
+  exit 1
+fi
+if grep -q 'could not enumerate retained preflight diagnostics' "$TEST_DIR/find-failure.txt"; then
+  echo "==> PASS: failure-log enumeration errors are explicit and blocking"
+else
+  echo "FAIL: failed failure-log enumeration lacked actionable diagnostics" >&2
+  cat "$TEST_DIR/find-failure.txt" >&2
+  exit 1
+fi
+
 echo "==> Test: silent self-test failures retain exact command diagnostics"
 SILENT_REPO="$TEST_DIR/silent-self-test-repo"
 mkdir -p "$SILENT_REPO/bootstrap" "$SILENT_REPO/scripts" "$SILENT_REPO/tests" "$SILENT_REPO/lib"
