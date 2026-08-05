@@ -47,11 +47,25 @@ touchstone_project_hooks_present() {
   [ -f "$pre_commit_hook" ] && [ -f "$pre_push_hook" ]
 }
 
+# A hook shim is ready only when it is TYPED for the slot it occupies. The
+# generic pre-commit.com marker is not sufficient: a pre-commit shim copied
+# over pre-push still carries the marker but runs `--hook-type pre-commit`,
+# silently bypassing every pre-push validation. The framework writes the
+# invoked hook type into the shim (HOOK_TYPE= or --hook-type[= ]); require
+# that recorded type to match the slot the file occupies.
 touchstone_pre_commit_hook_ready() {
   local hook_path="$1"
+  local hook_type="$2"
 
+  if [ -z "$hook_type" ]; then
+    echo "ERROR: touchstone_pre_commit_hook_ready requires an expected hook type" >&2
+    return 1
+  fi
   [ -s "$hook_path" ] && [ -x "$hook_path" ] \
-    && grep -q 'pre-commit\.com' "$hook_path" 2>/dev/null
+    && grep -q 'pre-commit\.com' "$hook_path" 2>/dev/null \
+    && grep -Eq -- \
+      "(--hook-type[= ]|HOOK_TYPE=)[\"']?${hook_type}[\"']?([^a-z-]|$)" \
+      "$hook_path" 2>/dev/null
 }
 
 touchstone_project_hooks_ready() {
@@ -60,8 +74,8 @@ touchstone_project_hooks_ready() {
 
   pre_commit_hook="$(touchstone_git_hook_path "$project_dir" pre-commit)" || return 2
   pre_push_hook="$(touchstone_git_hook_path "$project_dir" pre-push)" || return 2
-  touchstone_pre_commit_hook_ready "$pre_commit_hook" \
-    && touchstone_pre_commit_hook_ready "$pre_push_hook"
+  touchstone_pre_commit_hook_ready "$pre_commit_hook" pre-commit \
+    && touchstone_pre_commit_hook_ready "$pre_push_hook" pre-push
 }
 
 touchstone_install_hooks() {
