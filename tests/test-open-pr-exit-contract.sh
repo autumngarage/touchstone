@@ -889,6 +889,49 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Case 28: concurrently demoted ready PR takes the review-free draft path"
+OUT="$TEST_DIR/case28.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_VIEW_IS_DRAFT=true GH_PR_BODY="Missing protocol" \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'concurrently converted to draft; treating it as a draft' "$OUT" \
+  && grep -q 'PR is still a draft; no semantic review was requested' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ] \
+  && [ ! -s "$TEST_DIR/pr-ready.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected demoted PR to exit review-free as a draft" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 29: demoted PR under --auto-merge re-promotes and reviews once"
+OUT="$TEST_DIR/case29.out"
+RC=0
+reset_open_pr_logs
+GH_PR_STATE="MERGED" GH_MERGED_AT="2026-08-05T23:00:00Z" \
+  GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false GH_PR_VIEW_IS_DRAFT=true \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' MERGE_PR_EXIT=0 \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'concurrently converted to draft; treating it as a draft' "$OUT" \
+  && grep -q '^pr ready 777$' "$TEST_DIR/pr-ready.log" \
+  && [ -s "$TEST_DIR/review-request.log" ] \
+  && grep -q 'Verified: PR #777 merged' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected demoted PR under --auto-merge to re-promote and merge" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # ---------------------------------------------------------------------------
 # Cases 21-23: review policy is validated before any publish step, and draft
 # coordination never depends on it. Commit a malformed .touchstone-review.toml

@@ -914,40 +914,41 @@ if [ -n "$EXISTING_PR_URL" ]; then
     ORPHAN_PR_NUMBER="$PR_NUMBER"
   fi
 
-  # The pre-push snapshot said "draft", and draft-ness is what authorizes the
-  # review-free exits below. Re-read it now: a concurrent actor may have
-  # marked the PR ready between the snapshot and the push, in which case the
-  # push just published a new head to a READY PR and skipping review would
-  # leave that head without its required request.
-  if [ "$EXISTING_PR_IS_DRAFT" = true ]; then
-    if ! FRESH_PR_IS_DRAFT="$(
-      gh pr view "$PR_NUMBER" --json isDraft --jq '.isDraft' 2>/dev/null
-    )"; then
-      echo "ERROR: Failed to re-check draft state for PR #$PR_NUMBER after push." >&2
+  # Draft-ness authorizes the review-free exits below AND the semantic
+  # review request in final shipping, so the pre-push snapshot cannot be
+  # trusted for either direction. Re-read the state now: a concurrent actor
+  # may have promoted a draft (the pushed head would skip its required
+  # review) or demoted a ready PR (a review request would land on a draft
+  # coordination surface). Route on the fresh value.
+  if ! FRESH_PR_IS_DRAFT="$(
+    gh pr view "$PR_NUMBER" --json isDraft --jq '.isDraft' 2>/dev/null
+  )"; then
+    echo "ERROR: Failed to re-check draft state for PR #$PR_NUMBER after push." >&2
+    exit 1
+  fi
+  case "$FRESH_PR_IS_DRAFT" in
+    true | false) ;;
+    *)
+      echo "ERROR: GitHub returned invalid draft state for PR #$PR_NUMBER: ${FRESH_PR_IS_DRAFT:-<empty>}." >&2
+      exit 1
+      ;;
+  esac
+  if [ "$EXISTING_PR_IS_DRAFT" = true ] && [ "$FRESH_PR_IS_DRAFT" != true ]; then
+    if [ -n "$DRAFT_FLAG" ]; then
+      echo "ERROR: PR #$PR_NUMBER was marked ready for review while this draft update pushed." >&2
+      echo "       The just-pushed head has no review request, and a --draft invocation" >&2
+      echo "       cannot request one. Ship it properly: bash scripts/open-pr.sh --auto-merge" >&2
       exit 1
     fi
-    case "$FRESH_PR_IS_DRAFT" in
-      true | false) ;;
-      *)
-        echo "ERROR: GitHub returned invalid draft state for PR #$PR_NUMBER: ${FRESH_PR_IS_DRAFT:-<empty>}." >&2
-        exit 1
-        ;;
-    esac
-    if [ "$FRESH_PR_IS_DRAFT" != true ]; then
-      if [ -n "$DRAFT_FLAG" ]; then
-        echo "ERROR: PR #$PR_NUMBER was marked ready for review while this draft update pushed." >&2
-        echo "       The just-pushed head has no review request, and a --draft invocation" >&2
-        echo "       cannot request one. Ship it properly: bash scripts/open-pr.sh --auto-merge" >&2
-        exit 1
-      fi
-      echo "==> PR #$PR_NUMBER was concurrently marked ready; routing through final shipping."
-      EXISTING_PR_IS_DRAFT=false
-      if [ "$OPEN_PR_REVIEW_POLICY_LOADED" != true ]; then
-        load_open_pr_review_request_config "$BASE_BRANCH"
-        OPEN_PR_REVIEW_POLICY_LOADED=true
-      fi
+    echo "==> PR #$PR_NUMBER was concurrently marked ready; routing through final shipping."
+    if [ "$OPEN_PR_REVIEW_POLICY_LOADED" != true ]; then
+      load_open_pr_review_request_config "$BASE_BRANCH"
+      OPEN_PR_REVIEW_POLICY_LOADED=true
     fi
+  elif [ "$EXISTING_PR_IS_DRAFT" != true ] && [ "$FRESH_PR_IS_DRAFT" = true ]; then
+    echo "==> PR #$PR_NUMBER was concurrently converted to draft; treating it as a draft."
   fi
+  EXISTING_PR_IS_DRAFT="$FRESH_PR_IS_DRAFT"
 
   if [ -n "$DRAFT_FLAG" ]; then
     # A ready PR was already rejected before the push, and a concurrent
