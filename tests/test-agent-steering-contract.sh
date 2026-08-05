@@ -136,9 +136,16 @@ for file in \
   assert_contains "$file" "fail-closed"
   assert_contains "$file" "before the first review request"
   assert_contains "$file" "time-bounded migration shims"
+  assert_contains "$file" "unmatched"
 done
 assert_not_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
   "migration-state matrix"
+# The principle syncs into downstream projects, where Touchstone-local PR and
+# issue numbers are meaningless or point at unrelated work.
+assert_not_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "PR #554"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "issue #558"
 
 if [ "$ERRORS" -gt 0 ]; then
   echo ""

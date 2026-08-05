@@ -35,7 +35,7 @@ For the canonical version: read **`principles/pre-implementation-checklist.md`**
    Deletes, migrations, history rewrites, external side effects. See "Make irreversible actions recoverable" — needs dry-run, backup, idempotency key, rollback plan, or forward-fix plan before it runs.
 
 6. **Am I removing or replacing a subsystem users already have state in?**
-   Enumerate the observable starting states derived from the subsystem's own persistence boundary (config files, generated artifacts, installed hooks, CLI entry points, downstream copies) — not a fixed global matrix. For each supported state: name the invariant, the source of truth, and the fail-closed behavior for unmatched inputs, and land a regression fixture before the first review request. Distinguish active compatibility from inert, time-bounded migration shims with a named removal condition.
+   Enumerate the observable starting states derived from the subsystem's own persistence boundary (config files, generated artifacts, installed hooks, CLI entry points, downstream copies) — not a fixed global matrix. For each supported state: name the invariant, the source of truth, and the fail-closed behavior for unmatched inputs, and land a regression fixture before the first review request — including a dedicated fixture for the unmatched-state explicit-error fallback itself. Distinguish active compatibility from inert, time-bounded migration shims with a named removal condition.
 
 ## When to stop and ask
 

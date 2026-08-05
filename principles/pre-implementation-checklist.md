@@ -26,7 +26,7 @@ If this deletes, migrates, rewrites history, or has external side effects, see *
 
 ## 6. Am I removing or replacing a subsystem users already have state in?
 
-Removals look clean in a fresh checkout and break in the field, one starting state at a time (PR #554 needed six serial review rounds to surface them; issue #558). Before the first review request, enumerate the observable starting states **derived from this subsystem's own persistence boundary** — its config files, generated artifacts, installed hooks and skills, CLI entry points, and downstream copies. Do not work from a fixed global matrix; the states that matter are wherever *this* subsystem actually persists itself.
+Removals look clean in a fresh checkout and break in the field, one starting state at a time — each edge case discovered by an external reviewer one head after another instead of enumerated up front. Before the first review request, enumerate the observable starting states **derived from this subsystem's own persistence boundary** — its config files, generated artifacts, installed hooks and skills, CLI entry points, and downstream copies. Do not work from a fixed global matrix; the states that matter are wherever *this* subsystem actually persists itself.
 
 For each state you decide to support, write down:
 
@@ -34,6 +34,8 @@ For each state you decide to support, write down:
 - the **source of truth** that decides that state's outcome;
 - the **fail-closed behavior** when an input matches no supported state — an explicit error naming the replacement, never silence;
 - a **regression fixture** exercising that state, landed before the first review request — not added one reviewer round at a time.
+
+The fail-closed fallback is itself a state to verify: include a dedicated fixture that presents an unmatched or unsupported persisted-state combination and asserts the explicit error, so the safeguard is exercised rather than assumed.
 
 Distinguish **active compatibility** (behavior the new code keeps indefinitely) from **inert, time-bounded migration shims** (warn-and-rewrite paths with a named removal version or condition). A shim without a removal condition is a second code path — see question 3.
 
