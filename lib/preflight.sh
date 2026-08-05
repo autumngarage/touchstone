@@ -486,6 +486,51 @@ touchstone_preflight_is_python_shell_polyglot() {
   # exclusion. Keep CRLF wrappers in shell lint: their carriage returns break
   # direct POSIX execution, so recognizing them would hide a real portability
   # defect.
+  #
+  # Inspect bytes before awk. Windows Git Bash may open awk input in text mode
+  # and normalize CRLF to LF, which would erase the defect before the structural
+  # classifier can reject it. Stop enforcing the byte invariant at the wrapper
+  # closer; line endings in the Python-only payload do not affect shell launch.
+  if ! LC_ALL=C od -An -tx1 -v "$path" 2>/dev/null \
+    | awk '
+        function line_is_closer() {
+          return line_length == 5 \
+            && (line == "223a222222" || line == "273a272727")
+        }
+        {
+          for (field = 1; field <= NF; field++) {
+            if (found_closer) {
+              continue
+            }
+            byte = tolower($field)
+            if (byte == "0d") {
+              found_carriage_return = 1
+              continue
+            }
+            if (byte == "0a") {
+              if (line_is_closer()) {
+                found_closer = 1
+              }
+              line = ""
+              line_length = 0
+              continue
+            }
+            line_length++
+            if (line_length <= 5) {
+              line = line byte
+            }
+          }
+        }
+        END {
+          if (!found_closer && line_is_closer()) {
+            found_closer = 1
+          }
+          exit found_carriage_return || !found_closer
+        }
+      '; then
+    return 1
+  fi
+
   awk '
     function is_static_failure(line, payload) {
       if (substr(line, 1, 6) != "echo \"") {
