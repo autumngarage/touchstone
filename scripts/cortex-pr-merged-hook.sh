@@ -46,6 +46,16 @@
 #   TOUCHSTONE_MERGED_PR        — PR number to thread through to the
 #                                 commit message (e.g. supplied by
 #                                 merge-pr.sh after `gh pr merge`).
+#   TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR
+#                               — worktree to journal against, overriding
+#                                 the invocation cwd. merge-pr.sh passes
+#                                 the resolved default-branch worktree so
+#                                 the hook fires even when shipping ran
+#                                 from a feature worktree whose sibling
+#                                 holds the default branch (issue #613).
+#                                 Being explicit caller input, an invalid
+#                                 path is a visible exit-1 error, not a
+#                                 silent skip.
 #   TOUCHSTONE_CORTEX_HOOK_DISABLE
 #                               — set to 1/true/on to short-circuit even
 #                                 when config says auto/on. Useful for
@@ -230,10 +240,24 @@ merge_journal_pr_synchronously() {
   return 1
 }
 
-# 1. Detection — silent skip if any precondition fails.
-PROJECT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -z "$PROJECT_DIR" ]; then
-  exit 0
+# 1. Detection — silent skip if any precondition fails. An explicit
+# TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR is caller input, so its failures are
+# visible errors rather than silent skips.
+if [ -n "${TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR:-}" ]; then
+  if [ ! -d "$TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR" ]; then
+    log "cortex-pr-merged-hook: TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR is not a directory: $TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR"
+    exit 1
+  fi
+  PROJECT_DIR="$(git -C "$TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -z "$PROJECT_DIR" ]; then
+    log "cortex-pr-merged-hook: TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR is not inside a git worktree: $TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR"
+    exit 1
+  fi
+else
+  PROJECT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -z "$PROJECT_DIR" ]; then
+    exit 0
+  fi
 fi
 
 current_branch="$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || true)"

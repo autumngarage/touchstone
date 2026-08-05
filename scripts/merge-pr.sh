@@ -2389,8 +2389,19 @@ for candidate_hook in \
 done
 
 if [ -n "$CORTEX_HOOK_SCRIPT" ]; then
+  # The hook self-gates on its worktree being on the default branch. When
+  # shipping runs from a feature worktree whose sibling holds the default
+  # branch (synced above by sync_default_branch_after_merge), point the hook
+  # at that worktree explicitly so T1.9 journals fire instead of silently
+  # skipping (issue #613). An empty value preserves the cwd-based behavior.
+  CORTEX_HOOK_PROJECT_DIR="$(worktree_path_for_branch "$DEFAULT_BRANCH" | head -n 1)"
+  if [ -n "$CORTEX_HOOK_PROJECT_DIR" ] && [ ! -d "$CORTEX_HOOK_PROJECT_DIR" ]; then
+    CORTEX_HOOK_PROJECT_DIR=""
+  fi
   hook_status=0
-  TOUCHSTONE_MERGED_PR="$PR_NUMBER" bash "$CORTEX_HOOK_SCRIPT" || hook_status=$?
+  TOUCHSTONE_MERGED_PR="$PR_NUMBER" \
+    TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR="$CORTEX_HOOK_PROJECT_DIR" \
+    bash "$CORTEX_HOOK_SCRIPT" || hook_status=$?
   if [ "$hook_status" -ne 0 ]; then
     echo "WARNING: cortex-pr-merged-hook exited $hook_status (see above)." >&2
     echo "         The PR merged cleanly; only the auto-draft journal step had a problem." >&2
