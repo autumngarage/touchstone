@@ -867,9 +867,11 @@ fi
 # that published head without its required review request. This condition
 # mirrors exactly the invocations that reach the existing-PR final-shipping
 # path below (draft-only updates exit early and stay review-free).
+OPEN_PR_REVIEW_POLICY_LOADED=false
 if [ -n "$EXISTING_PR_URL" ] && [ -z "$DRAFT_FLAG" ] \
   && { [ "$EXISTING_PR_IS_DRAFT" != true ] || [ "$AUTO_MERGE" = true ]; }; then
   load_open_pr_review_request_config "$BASE_BRANCH"
+  OPEN_PR_REVIEW_POLICY_LOADED=true
 fi
 
 # Push. The "do I already have an upstream?" check is name-aware: a fresh
@@ -911,9 +913,45 @@ if [ -n "$EXISTING_PR_URL" ]; then
     ORPHAN_PR_URL="$EXISTING_PR_URL"
     ORPHAN_PR_NUMBER="$PR_NUMBER"
   fi
+
+  # The pre-push snapshot said "draft", and draft-ness is what authorizes the
+  # review-free exits below. Re-read it now: a concurrent actor may have
+  # marked the PR ready between the snapshot and the push, in which case the
+  # push just published a new head to a READY PR and skipping review would
+  # leave that head without its required request.
+  if [ "$EXISTING_PR_IS_DRAFT" = true ]; then
+    if ! FRESH_PR_IS_DRAFT="$(
+      gh pr view "$PR_NUMBER" --json isDraft --jq '.isDraft' 2>/dev/null
+    )"; then
+      echo "ERROR: Failed to re-check draft state for PR #$PR_NUMBER after push." >&2
+      exit 1
+    fi
+    case "$FRESH_PR_IS_DRAFT" in
+      true | false) ;;
+      *)
+        echo "ERROR: GitHub returned invalid draft state for PR #$PR_NUMBER: ${FRESH_PR_IS_DRAFT:-<empty>}." >&2
+        exit 1
+        ;;
+    esac
+    if [ "$FRESH_PR_IS_DRAFT" != true ]; then
+      if [ -n "$DRAFT_FLAG" ]; then
+        echo "ERROR: PR #$PR_NUMBER was marked ready for review while this draft update pushed." >&2
+        echo "       The just-pushed head has no review request, and a --draft invocation" >&2
+        echo "       cannot request one. Ship it properly: bash scripts/open-pr.sh --auto-merge" >&2
+        exit 1
+      fi
+      echo "==> PR #$PR_NUMBER was concurrently marked ready; routing through final shipping."
+      EXISTING_PR_IS_DRAFT=false
+      if [ "$OPEN_PR_REVIEW_POLICY_LOADED" != true ]; then
+        load_open_pr_review_request_config "$BASE_BRANCH"
+        OPEN_PR_REVIEW_POLICY_LOADED=true
+      fi
+    fi
+  fi
+
   if [ -n "$DRAFT_FLAG" ]; then
-    # A ready PR was already rejected before the push; only a draft reaches
-    # this point.
+    # A ready PR was already rejected before the push, and a concurrent
+    # promotion was rejected just above; only a still-draft PR reaches this.
     echo "    PR remains a draft; no semantic review was requested."
     ORPHAN_PR_URL=""
     ORPHAN_PR_NUMBER=""

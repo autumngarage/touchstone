@@ -165,7 +165,10 @@ case "$1 $2" in
       exit 0
     fi
     if [ "$json_fields" = "isDraft" ]; then
-      echo "${GH_PR_IS_DRAFT:-false}"
+      # Post-push re-read of draft state. Defaults to the pr-list snapshot
+      # value; set GH_PR_VIEW_IS_DRAFT to simulate a concurrent actor
+      # changing the PR between the snapshot and the push.
+      echo "${GH_PR_VIEW_IS_DRAFT:-${GH_PR_IS_DRAFT:-false}}"
       exit 0
     fi
     echo "unexpected gh pr view json: $json_fields jq: $jq_expr" >&2
@@ -278,6 +281,7 @@ run_open_pr() {
       GH_EXISTING_PR_BASE="${GH_EXISTING_PR_BASE:-main}" \
       GH_CREATED_PR_BASE="${GH_CREATED_PR_BASE:-}" \
       GH_PR_IS_DRAFT="${GH_PR_IS_DRAFT:-false}" \
+      GH_PR_VIEW_IS_DRAFT="${GH_PR_VIEW_IS_DRAFT:-}" \
       GH_PR_BODY="${GH_PR_BODY:-}" \
       GH_PR_AUTHOR="${GH_PR_AUTHOR:-alice}" \
       GH_REQUIRE_REPO_FOR_MERGED_AT="${GH_REQUIRE_REPO_FOR_MERGED_AT:-0}" \
@@ -835,6 +839,55 @@ for existing_pr in 0 1; do
     ERRORS=$((ERRORS + 1))
   fi
 done
+
+# ---------------------------------------------------------------------------
+# Cases 26-27: draft-ness authorizes the review-free exits, so it must be
+# re-read after the push. A concurrent actor marking the draft ready between
+# the pr-list snapshot and the push must not let the new head skip review.
+# ---------------------------------------------------------------------------
+echo "==> Case 26: --draft fails closed when the draft was concurrently promoted"
+OUT="$TEST_DIR/case26.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=true \
+  GH_PR_VIEW_IS_DRAFT=false GH_PR_BODY="Missing protocol" \
+  run_open_pr --draft >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'marked ready for review while this draft update pushed' "$OUT" \
+  && [ ! -s "$TEST_DIR/pr-ready.log" ] \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected concurrent promotion to fail a --draft update closed" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 27: concurrently promoted draft routes through final shipping"
+OUT="$TEST_DIR/case27.out"
+RC=0
+reset_open_pr_logs
+# Final shipping enforces the current-base gate; earlier cases advanced main,
+# so bring the fixture branch up to date before exercising the reroute.
+git -C "$REPO_DIR" rebase main >/dev/null 2>&1
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=true \
+  GH_PR_VIEW_IS_DRAFT=false GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'concurrently marked ready; routing through final shipping' "$OUT" \
+  && [ -s "$TEST_DIR/review-request.log" ] \
+  && [ ! -s "$TEST_DIR/pr-ready.log" ] \
+  && ! grep -q 'PR is still a draft' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected promoted draft to receive a review request via final shipping" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 # ---------------------------------------------------------------------------
 # Cases 21-23: review policy is validated before any publish step, and draft
