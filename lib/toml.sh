@@ -204,8 +204,11 @@ toml_normalize_array() {
   local item
   val="${val#\[}"
   val="${val%\]}"
-  # Split by comma, unquote each, rejoin with comma
-  local IFS=','
+  # Split by comma, unquote each, rejoin with comma. `local` scopes IFS to this
+  # function, so it cannot tamper with the caller's environment; Semgrep's
+  # ifs-tampering rule does not model local scoping, so the confirmed false
+  # positive is annotated rather than rewriting a safe, idiomatic split.
+  local IFS=',' # nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering
   local result=""
   for item in $val; do
     item="$(toml_unquote "$(toml_trim "$item")")"

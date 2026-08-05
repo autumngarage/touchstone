@@ -319,6 +319,17 @@ load_open_pr_review_request_config() {
     echo "       source: $trusted_ref" >&2
     return 1
   fi
+  # Validate the provider HERE, not just at request time: this loader runs
+  # before any head is published (push / gh pr ready / gh pr create), so an
+  # unsupported provider must fail closed now. Deferring to
+  # request_pr_triggered_review would publish a final-shipping head and then
+  # exit without its required review request.
+  if truthy "$PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH" \
+    && [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then
+    echo "ERROR: request_on_push only supports [review.pr_triggered].provider = \"github-codex\"; got: $PR_TRIGGERED_REVIEW_PROVIDER" >&2
+    echo "       source: $trusted_ref" >&2
+    return 1
+  fi
 }
 
 request_pr_triggered_review() {
@@ -779,8 +790,8 @@ if ! EXISTING_PR_RECORD="$(
     --head "$CURRENT_BRANCH" \
     --author "@me" \
     --state open \
-    --json url,baseRefName,headRefOid \
-    --jq 'if length > 0 then .[0] | [.url, .baseRefName, .headRefOid] | @tsv else empty end' \
+    --json url,baseRefName,headRefOid,isDraft \
+    --jq 'if length > 0 then .[0] | [.url, .baseRefName, .headRefOid, .isDraft] | @tsv else empty end' \
     2>/dev/null
 )"; then
   echo "ERROR: Failed to inspect existing PR metadata for branch '$CURRENT_BRANCH'." >&2
@@ -789,10 +800,31 @@ fi
 EXISTING_PR_URL=""
 EXISTING_PR_BASE_BRANCH=""
 EXISTING_PR_HEAD_SHA=""
+EXISTING_PR_IS_DRAFT=""
 if [ -n "$EXISTING_PR_RECORD" ]; then
-  IFS=$'\t' read -r EXISTING_PR_URL EXISTING_PR_BASE_BRANCH EXISTING_PR_HEAD_SHA <<<"$EXISTING_PR_RECORD"
+  IFS=$'\t' read -r EXISTING_PR_URL EXISTING_PR_BASE_BRANCH EXISTING_PR_HEAD_SHA EXISTING_PR_IS_DRAFT <<<"$EXISTING_PR_RECORD"
   if [ -z "$EXISTING_PR_URL" ] || [ -z "$EXISTING_PR_BASE_BRANCH" ] || [ -z "$EXISTING_PR_HEAD_SHA" ]; then
     echo "ERROR: Existing PR metadata is missing its URL, base branch, or head revision." >&2
+    exit 1
+  fi
+  case "$EXISTING_PR_IS_DRAFT" in
+    true | false) ;;
+    *)
+      echo "ERROR: GitHub returned invalid draft state for PR $EXISTING_PR_URL: ${EXISTING_PR_IS_DRAFT:-<empty>}." >&2
+      exit 1
+      ;;
+  esac
+  # Reject --draft against a ready PR before the unconditional push below.
+  # Pushing first would update the ready PR's head and invalidate its
+  # exact-head review evidence before we refuse; refusing here leaves the
+  # remote PR exactly as it was.
+  if [ -n "$DRAFT_FLAG" ] && [ "$EXISTING_PR_IS_DRAFT" != true ]; then
+    EXISTING_PR_NUMBER="$(basename "$EXISTING_PR_URL")"
+    echo "ERROR: PR #$EXISTING_PR_NUMBER is already ready for review; refusing --draft." >&2
+    echo "       Reverting a ready PR to draft would leave prior exact-head review" >&2
+    echo "       request markers and @codex review comments in place, which could" >&2
+    echo "       be reused as though still valid. To start fresh, close this PR and" >&2
+    echo "       open a new draft." >&2
     exit 1
   fi
   if [ -n "$BASE_OVERRIDE" ] && [ "$BASE_OVERRIDE" != "$EXISTING_PR_BASE_BRANCH" ]; then
@@ -812,7 +844,6 @@ if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
   echo "ERROR: --base $BASE_BRANCH cannot equal the current branch." >&2
   exit 1
 fi
-load_open_pr_review_request_config "$BASE_BRANCH"
 
 # Warn when stacking + auto-merge combine — the user is likely about to
 # orphan their stack. --auto-merge squashes the parent, which closes (not
@@ -828,6 +859,19 @@ if [ "$BASE_BRANCH" != "$DEFAULT_BRANCH" ] && [ "$AUTO_MERGE" = true ]; then
   else
     echo "         Then rerun without --base to open an independent PR." >&2
   fi
+fi
+
+# Final-shipping updates to an existing PR validate review policy BEFORE the
+# push: for a ready PR the push itself publishes a new head, and a malformed
+# policy or failed trusted-base refresh discovered afterwards would strand
+# that published head without its required review request. This condition
+# mirrors exactly the invocations that reach the existing-PR final-shipping
+# path below (draft-only updates exit early and stay review-free).
+OPEN_PR_REVIEW_POLICY_LOADED=false
+if [ -n "$EXISTING_PR_URL" ] && [ -z "$DRAFT_FLAG" ] \
+  && { [ "$EXISTING_PR_IS_DRAFT" != true ] || [ "$AUTO_MERGE" = true ]; }; then
+  load_open_pr_review_request_config "$BASE_BRANCH"
+  OPEN_PR_REVIEW_POLICY_LOADED=true
 fi
 
 # Push. The "do I already have an upstream?" check is name-aware: a fresh
@@ -869,25 +913,46 @@ if [ -n "$EXISTING_PR_URL" ]; then
     ORPHAN_PR_URL="$EXISTING_PR_URL"
     ORPHAN_PR_NUMBER="$PR_NUMBER"
   fi
-  if ! EXISTING_PR_IS_DRAFT="$(
+
+  # Draft-ness authorizes the review-free exits below AND the semantic
+  # review request in final shipping, so the pre-push snapshot cannot be
+  # trusted for either direction. Re-read the state now: a concurrent actor
+  # may have promoted a draft (the pushed head would skip its required
+  # review) or demoted a ready PR (a review request would land on a draft
+  # coordination surface). Route on the fresh value.
+  if ! FRESH_PR_IS_DRAFT="$(
     gh pr view "$PR_NUMBER" --json isDraft --jq '.isDraft' 2>/dev/null
   )"; then
-    echo "ERROR: Failed to inspect draft state for PR #$PR_NUMBER." >&2
+    echo "ERROR: Failed to re-check draft state for PR #$PR_NUMBER after push." >&2
     exit 1
   fi
-  case "$EXISTING_PR_IS_DRAFT" in
+  case "$FRESH_PR_IS_DRAFT" in
     true | false) ;;
     *)
-      echo "ERROR: GitHub returned invalid draft state for PR #$PR_NUMBER: ${EXISTING_PR_IS_DRAFT:-<empty>}." >&2
+      echo "ERROR: GitHub returned invalid draft state for PR #$PR_NUMBER: ${FRESH_PR_IS_DRAFT:-<empty>}." >&2
       exit 1
       ;;
   esac
+  if [ "$EXISTING_PR_IS_DRAFT" = true ] && [ "$FRESH_PR_IS_DRAFT" != true ]; then
+    if [ -n "$DRAFT_FLAG" ]; then
+      echo "ERROR: PR #$PR_NUMBER was marked ready for review while this draft update pushed." >&2
+      echo "       The just-pushed head has no review request, and a --draft invocation" >&2
+      echo "       cannot request one. Ship it properly: bash scripts/open-pr.sh --auto-merge" >&2
+      exit 1
+    fi
+    echo "==> PR #$PR_NUMBER was concurrently marked ready; routing through final shipping."
+    if [ "$OPEN_PR_REVIEW_POLICY_LOADED" != true ]; then
+      load_open_pr_review_request_config "$BASE_BRANCH"
+      OPEN_PR_REVIEW_POLICY_LOADED=true
+    fi
+  elif [ "$EXISTING_PR_IS_DRAFT" != true ] && [ "$FRESH_PR_IS_DRAFT" = true ]; then
+    echo "==> PR #$PR_NUMBER was concurrently converted to draft; treating it as a draft."
+  fi
+  EXISTING_PR_IS_DRAFT="$FRESH_PR_IS_DRAFT"
 
   if [ -n "$DRAFT_FLAG" ]; then
-    if [ "$EXISTING_PR_IS_DRAFT" != true ]; then
-      echo "==> Marking PR #$PR_NUMBER as draft ..."
-      gh pr ready "$PR_NUMBER" --undo >/dev/null
-    fi
+    # A ready PR was already rejected before the push, and a concurrent
+    # promotion was rejected just above; only a still-draft PR reaches this.
     echo "    PR remains a draft; no semantic review was requested."
     ORPHAN_PR_URL=""
     ORPHAN_PR_NUMBER=""
@@ -902,6 +967,7 @@ if [ -n "$EXISTING_PR_URL" ]; then
 
   run_issue_claim_preflight "existing PR #$PR_NUMBER" --pr-number "$PR_NUMBER"
   run_pr_body_protocol_preflight "existing PR #$PR_NUMBER" "$PR_NUMBER"
+  # Review policy was already loaded and validated before the push above.
   if [ "$EXISTING_PR_IS_DRAFT" = true ]; then
     echo "==> Marking draft PR #$PR_NUMBER ready for review ..."
     gh pr ready "$PR_NUMBER" >/dev/null
@@ -1017,6 +1083,14 @@ BODY_FILE="$(mktemp -t touchstone-pr-body.XXXXXX.md)"
 } >"$BODY_FILE"
 
 run_issue_claim_preflight "new PR body" --body-file "$BODY_FILE"
+
+# Load and validate review policy before `gh pr create` on the final-shipping
+# path: malformed policy or a failed trusted-base refresh must fail before a
+# ready PR is published without its required review request. Draft creation
+# stays review-free and skips review infrastructure entirely.
+if [ -z "$DRAFT_FLAG" ]; then
+  load_open_pr_review_request_config "$BASE_BRANCH"
+fi
 
 echo "==> Opening PR against $BASE_BRANCH ..."
 if [ -n "$DRAFT_FLAG" ]; then

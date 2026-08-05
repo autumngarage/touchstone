@@ -67,4 +67,20 @@ assert_eq ":arr=chatgpt-codex-connector,chatgpt-codex-connector[bot],reviewer|" 
   "$test_results" "Quoted brackets do not terminate multiline arrays"
 
 rm test.toml
+
+# Case 7 (regression, issue #620): downstream projects run Semgrep p/default
+# with --error against synced Touchstone files. The `local IFS` split in
+# toml_normalize_array is safe (local scoping), but Semgrep's ifs-tampering
+# rule cannot model that and blocks every consumer's security gate unless the
+# targeted suppression ships with the file. Guard the annotation so a
+# refactor cannot silently drop it again.
+if ! grep -q 'nosemgrep: bash.lang.security.ifs-tampering.ifs-tampering' \
+  "$REPO_ROOT/lib/toml.sh"; then
+  echo "FAIL: lib/toml.sh lost its targeted ifs-tampering nosemgrep annotation"
+  echo "  Downstream Semgrep-gated projects (see issue #620) fail their"
+  echo "  security scan on the synced file without it."
+  exit 1
+fi
+echo "PASS: ifs-tampering nosemgrep annotation present (issue #620 guard)"
+
 echo "All TOML tests passed."
