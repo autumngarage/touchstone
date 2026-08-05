@@ -1061,6 +1061,20 @@ fi
 assert_contains "$SHIP_REFUSAL_OUT" 'ship refused: effective pre-commit/pre-push hooks are not ready'
 assert_not_contains "$SHIP_REFUSAL_OUT" 'Shipping update via scripts/open-pr.sh'
 
+# A project-owned setup.sh carrying the legacy core.hooksPath reset must be
+# flagged on update — the fixed template never reaches existing projects, so
+# the update warning is the migration surface (PR #638 review). A real
+# (non-dry-run) update is required: dry runs and up-to-date projects exit
+# before the hook section runs.
+printf '#!/usr/bin/env bash\ngit config --unset-all core.hooksPath 2>/dev/null || true\n' \
+  >"$SHIP_REFUSAL_PROJECT/setup.sh"
+printf 'stale-version-2\n' >"$SHIP_REFUSAL_PROJECT/.touchstone-version"
+commit_all "$SHIP_REFUSAL_PROJECT" "legacy setup fixture"
+LEGACY_SETUP_OUT="$TEST_DIR/legacy-setup-output.txt"
+(cd "$SHIP_REFUSAL_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$LEGACY_SETUP_OUT" 2>&1 || true
+assert_contains "$LEGACY_SETUP_OUT" 'legacy core.hooksPath reset'
+
 # --------------------------------------------------------------------------
 # Results
 # --------------------------------------------------------------------------

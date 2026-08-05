@@ -707,6 +707,19 @@ cmd_doctor_project() {
     fi
   fi
 
+  # 2b. Legacy setup.sh hook reset. setup.sh is project-owned after bootstrap,
+  # so the template fix that stopped unsetting core.hooksPath never reaches
+  # existing projects; their copy silently deletes a configured hook boundary
+  # on every setup run. Migration is a warning here because Touchstone never
+  # rewrites project-owned files silently.
+  if [ -f "$project_dir/setup.sh" ] \
+    && grep -q 'unset-all core\.hooksPath' "$project_dir/setup.sh"; then
+    tk_warn "setup.sh contains the legacy core.hooksPath reset — running it deletes a configured hook boundary"
+    tk_dim "  Fix: re-sync your project-owned setup.sh hook section from templates/setup.sh"
+    tk_dim "  (the fixed template preserves core.hooksPath instead of unsetting it)"
+    issues=$((issues + 1))
+  fi
+
   # 3. Manifest files present?
   if [ -f "$project_dir/.touchstone-manifest" ]; then
     local missing=0 line

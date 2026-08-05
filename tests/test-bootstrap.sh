@@ -1689,6 +1689,20 @@ else
   assert_contains "$TEST_DIR/doctor-hook-wrong-type.txt" "aren't typed pre-commit-framework shims"
 fi
 
+# doctor must flag a project-owned setup.sh that still carries the legacy
+# core.hooksPath reset: the template fix never reaches existing projects, so
+# their setup run silently deletes a configured hook boundary (PR #638).
+PROJECT_DOCTOR_LEGACY_SETUP="$TEST_DIR/test-project-doctor-legacy-setup"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_LEGACY_SETUP" --no-register >/dev/null
+printf '#!/usr/bin/env bash\ngit config --unset-all core.hooksPath 2>/dev/null || true\n' \
+  >"$PROJECT_DOCTOR_LEGACY_SETUP/setup.sh"
+if (cd "$PROJECT_DOCTOR_LEGACY_SETUP" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-legacy-setup.txt" 2>&1; then
+  echo "FAIL: doctor --project should flag the legacy setup.sh hook reset" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-legacy-setup.txt" 'legacy core.hooksPath reset'
+fi
+
 # doctor must flag a pre-push hook that exists with the right content but is
 # not executable — Git silently skips such hooks, so the repo is effectively
 # ungated. Same failure class as "hook missing", different failure mode.

@@ -793,6 +793,15 @@ if [ "$DRY_RUN" = false ] && [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ]; then
   fi
 fi
 
+# setup.sh is project-owned after bootstrap, so existing projects keep the
+# legacy copy that unsets core.hooksPath — the template fix never reaches
+# them through updates. Warn (never rewrite a project-owned file silently).
+if [ -f "$PROJECT_DIR/setup.sh" ] \
+  && grep -q 'unset-all core\.hooksPath' "$PROJECT_DIR/setup.sh"; then
+  echo "==> WARNING: setup.sh contains the legacy core.hooksPath reset; running it deletes a configured hook boundary." >&2
+  echo "    Re-sync your project-owned setup.sh hook section from templates/setup.sh." >&2
+fi
+
 if [ "$DRY_RUN" = false ]; then
   echo ""
   echo "==> Committing touchstone update..."
