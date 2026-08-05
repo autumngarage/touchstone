@@ -540,8 +540,12 @@ if [ -n "${TOUCHSTONE_MERGED_PR:-}" ]; then
 fi
 pr_body="${pr_body_source_line}Auto-drafted by \`cortex-pr-merged-hook\` after the source PR merged. Implements Cortex Protocol section 2 Tier-1 trigger T1.9."
 
+# Anchored to the TARGET repository: with an explicit project-dir override
+# the invocation cwd may be a different repo whose labels don't exist on the
+# target, and passing a nonexistent label would fail `gh pr create` after the
+# journal branch already pushed.
 label_args=()
-if gh label list --limit 200 --json name --jq '.[].name' 2>/dev/null \
+if (cd "$PROJECT_DIR" && gh label list --limit 200 --json name --jq '.[].name' 2>/dev/null) \
   | grep -qx 'cortex-auto-draft'; then
   label_args=(--label cortex-auto-draft)
 fi

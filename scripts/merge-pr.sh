@@ -2393,16 +2393,16 @@ if [ -n "$CORTEX_HOOK_SCRIPT" ]; then
   # shipping runs from a feature worktree whose sibling holds the default
   # branch (synced above by sync_default_branch_after_merge), point the hook
   # at that worktree explicitly so T1.9 journals fire instead of silently
-  # skipping (issue #613). Only pass a worktree that verifiably contains the
-  # squash-merge commit: if the sync above merely warned (dirty/diverged
-  # sibling, failed fast-forward) the worktree is stale and journaling there
-  # would document the wrong HEAD. An empty value preserves the cwd-based
-  # behavior, where the hook's own default-branch gate decides.
+  # skipping (issue #613). Only pass a worktree whose HEAD IS the
+  # squash-merge commit: the hook journals `--since HEAD~1` under this PR's
+  # number, so ancestry is not enough — a worktree that already advanced to
+  # a later merge (or never synced) would journal the wrong commit. An empty
+  # value preserves the cwd-based behavior, where the hook's own
+  # default-branch gate decides.
   CORTEX_HOOK_PROJECT_DIR="$(worktree_path_for_branch "$DEFAULT_BRANCH" | head -n 1)"
   if [ -z "$SQUASH_COMMIT_OID" ] \
     || [ ! -d "$CORTEX_HOOK_PROJECT_DIR" ] \
-    || ! git -C "$CORTEX_HOOK_PROJECT_DIR" merge-base --is-ancestor \
-      "$SQUASH_COMMIT_OID" HEAD 2>/dev/null; then
+    || [ "$(git -C "$CORTEX_HOOK_PROJECT_DIR" rev-parse HEAD 2>/dev/null)" != "$SQUASH_COMMIT_OID" ]; then
     CORTEX_HOOK_PROJECT_DIR=""
   fi
   hook_status=0
