@@ -1,11 +1,11 @@
 ---
 name: touchstone-pre-impl
-description: Use before writing code on any non-trivial change — applies the 5-question pre-implementation gate (shared infra, root cause, code paths, public boundaries, reversibility).
+description: Use before writing code on any non-trivial change — applies the 6-question pre-implementation gate (shared infra, root cause, code paths, public boundaries, reversibility, migration states).
 ---
 
 # Pre-Implementation Checklist
 
-Walk through these five questions before writing code. If any answer exposes duplicated infrastructure, a symptom patch, a second code path, or unclear ownership, stop and discuss scope before continuing.
+Walk through these six questions before writing code. If any answer exposes duplicated infrastructure, a symptom patch, a second code path, or unclear ownership, stop and discuss scope before continuing.
 
 ## When to invoke
 
@@ -17,7 +17,7 @@ Walk through these five questions before writing code. If any answer exposes dup
 
 For the canonical version: read **`principles/pre-implementation-checklist.md`** now.
 
-## The five questions
+## The six questions
 
 1. **Am I patching local infrastructure that shared infrastructure should own?**
    Search the project's existing utilities, base classes, and common modules first. Hand-rolling a thing the shared layer already provides deepens debt; migration eliminates it.
@@ -33,6 +33,9 @@ For the canonical version: read **`principles/pre-implementation-checklist.md`**
 
 5. **Is this action reversible?**
    Deletes, migrations, history rewrites, external side effects. See "Make irreversible actions recoverable" — needs dry-run, backup, idempotency key, rollback plan, or forward-fix plan before it runs.
+
+6. **Am I removing or replacing a subsystem users already have state in?**
+   Enumerate the observable starting states derived from the subsystem's own persistence boundary (config files, generated artifacts, installed hooks, CLI entry points, downstream copies) — not a fixed global matrix. For each supported state: name the invariant, the source of truth, and the fail-closed behavior for unmatched inputs, and land a regression fixture before the first review request. Distinguish active compatibility from inert, time-bounded migration shims with a named removal condition.
 
 ## When to stop and ask
 

@@ -23,3 +23,18 @@ If this touches a public API, config file, schema, CLI flag, hook, template, or 
 ## 5. Is this action reversible?
 
 If this deletes, migrates, rewrites history, or has external side effects, see **Make irreversible actions recoverable**. The PR must describe how failure leaves the system in a known recoverable state — dry run, backup, idempotency key, rollback, or forward-fix plan.
+
+## 6. Am I removing or replacing a subsystem users already have state in?
+
+Removals look clean in a fresh checkout and break in the field, one starting state at a time (PR #554 needed six serial review rounds to surface them; issue #558). Before the first review request, enumerate the observable starting states **derived from this subsystem's own persistence boundary** — its config files, generated artifacts, installed hooks and skills, CLI entry points, and downstream copies. Do not work from a fixed global matrix; the states that matter are wherever *this* subsystem actually persists itself.
+
+For each state you decide to support, write down:
+
+- the **invariant** that must hold after the change;
+- the **source of truth** that decides that state's outcome;
+- the **fail-closed behavior** when an input matches no supported state — an explicit error naming the replacement, never silence;
+- a **regression fixture** exercising that state, landed before the first review request — not added one reviewer round at a time.
+
+Distinguish **active compatibility** (behavior the new code keeps indefinitely) from **inert, time-bounded migration shims** (warn-and-rewrite paths with a named removal version or condition). A shim without a removal condition is a second code path — see question 3.
+
+A bounded example, removing a config-file-backed subsystem: fresh project (no config → defaults, doctor clean); current project (modern config → behavior unchanged); legacy-only (retired file → migrate or fail closed with the migration command); mixed (both files → named precedence); retired CLI flags and subcommands (explicit error naming the replacement); stale downstream copies (update path reconciles or refuses loudly). Your subsystem's boundary decides which of these exist and which additional ones do.
