@@ -2415,7 +2415,13 @@ if [ -n "$CORTEX_HOOK_SCRIPT" ]; then
   else
     echo "WARNING: skipping cortex-pr-merged-hook: no default-branch worktree is at the exact merge commit ${SQUASH_COMMIT_OID:-<unknown>}." >&2
     echo "         Sync the default branch, then journal manually if needed:" >&2
-    echo "         TOUCHSTONE_MERGED_PR=$PR_NUMBER bash scripts/cortex-pr-merged-hook.sh" >&2
+    if [ -n "$CORTEX_HOOK_PROJECT_DIR" ] && [ -d "$CORTEX_HOOK_PROJECT_DIR" ]; then
+      # Target the default-branch worktree explicitly — run from a feature
+      # worktree, the bare command would silently fail the hook's branch gate.
+      echo "         TOUCHSTONE_MERGED_PR=$PR_NUMBER TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR=\"$CORTEX_HOOK_PROJECT_DIR\" bash scripts/cortex-pr-merged-hook.sh" >&2
+    else
+      echo "         (from the synced default-branch worktree) TOUCHSTONE_MERGED_PR=$PR_NUMBER bash scripts/cortex-pr-merged-hook.sh" >&2
+    fi
   fi
 fi
 
