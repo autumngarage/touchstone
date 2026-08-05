@@ -3,7 +3,7 @@
 **Date:** 2026-08-05
 **Type:** decision
 **Trigger:** T1.1
-**Cites:** journal/2026-07-29 (PR #554 aftermath), GitHub issue #558, GitHub PR #562 (closed), GitHub PR #639
+**Cites:** journal/2026-07-29-remove-local-model-router.md, GitHub issue #558, GitHub PR #562 (closed), GitHub PR #639
 
 > Question 6 of the pre-implementation gate requires enumerating migration
 > states from the subsystem's own persistence boundary instead of walking a
