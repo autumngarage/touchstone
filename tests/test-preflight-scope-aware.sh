@@ -367,6 +367,22 @@ EOF_HEREDOC_PYTHON_LAUNCHER
     scripts/crlf-polyglot.py
   git commit -q -m "add unrecognized shell Python file"
 )
+
+# Model MSYS awk's text-mode CRLF normalization directly. The classifier must
+# reject the raw file before this shim can erase its carriage returns.
+if (
+  cd "$REPO"
+  # shellcheck source=../lib/preflight.sh
+  source "$TOUCHSTONE_ROOT/lib/preflight.sh"
+  awk() {
+    local program="$1" input="$2"
+    tr -d '\r' <"$input" | command awk "$program"
+  }
+  touchstone_preflight_is_python_shell_polyglot scripts/crlf-polyglot.py
+); then
+  echo "FAIL: text-mode awk normalization hid a raw CRLF polyglot" >&2
+  exit 1
+fi
 : >"$LOG"
 run_preflight "$REPO" "$OUT" "$LOG"
 assert_log_contains "$LOG" 'shellcheck:.*not-a-python-polyglot.py'
