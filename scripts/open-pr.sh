@@ -319,6 +319,17 @@ load_open_pr_review_request_config() {
     echo "       source: $trusted_ref" >&2
     return 1
   fi
+  # Validate the provider HERE, not just at request time: this loader runs
+  # before any head is published (push / gh pr ready / gh pr create), so an
+  # unsupported provider must fail closed now. Deferring to
+  # request_pr_triggered_review would publish a final-shipping head and then
+  # exit without its required review request.
+  if truthy "$PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH" \
+    && [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then
+    echo "ERROR: request_on_push only supports [review.pr_triggered].provider = \"github-codex\"; got: $PR_TRIGGERED_REVIEW_PROVIDER" >&2
+    echo "       source: $trusted_ref" >&2
+    return 1
+  fi
 }
 
 request_pr_triggered_review() {

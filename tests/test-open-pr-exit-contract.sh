@@ -912,6 +912,39 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Case 25: unsupported review provider fails a ready-PR update before push"
+git -C "$REPO_DIR" checkout main >/dev/null 2>&1
+printf '[review.pr_triggered]\nrequest_on_push = true\nprovider = "other"\n' \
+  >"$REPO_DIR/.touchstone-review.toml"
+git -C "$REPO_DIR" add .touchstone-review.toml
+git -C "$REPO_DIR" commit -m "unsupported review provider" >/dev/null 2>&1
+git -C "$REPO_DIR" checkout feat/test >/dev/null 2>&1
+OUT="$TEST_DIR/case25.out"
+RC=0
+reset_open_pr_logs
+GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'only supports \[review.pr_triggered\].provider = "github-codex"' "$OUT" \
+  && ! grep -q '\[mock\] git push' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ] \
+  && ! grep -q '\[mock merge-pr.sh\] called' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected unsupported provider to fail before pushing to a ready PR" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+git -C "$REPO_DIR" checkout main >/dev/null 2>&1
+printf '[review.pr_triggered]\nrequest_on_push = "sometimes"\n' \
+  >"$REPO_DIR/.touchstone-review.toml"
+git -C "$REPO_DIR" add .touchstone-review.toml
+git -C "$REPO_DIR" commit -m "restore malformed review policy" >/dev/null 2>&1
+git -C "$REPO_DIR" checkout feat/test >/dev/null 2>&1
+
 echo "==> Case 23: draft coordination succeeds despite malformed review policy"
 OUT="$TEST_DIR/case23.out"
 RC=0
