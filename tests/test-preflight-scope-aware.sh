@@ -1065,3 +1065,104 @@ if [ -z "$WORKTREE_HASH_BEFORE" ] || [ -z "$WORKTREE_HASH_AFTER" ] || [ "$WORKTR
   exit 1
 fi
 echo "==> PASS: untracked changed-path replacement affects worktree_hash"
+
+# ---------------------------------------------------------------------------
+# Issue #628: a diff of exactly {VERSION, .touchstone-version} holding the
+# same valid semver is the deterministic release bump and selects the focused
+# release lane. Any looser shape fails closed to the full self-test suite.
+# ---------------------------------------------------------------------------
+add_release_lane_baseline() {
+  # Extends the touchstone-self fixture baseline with the release-lane test
+  # consumers and a synchronized .touchstone-version, then re-anchors
+  # origin/main so a later bump commit is the entire diff.
+  (
+    cd "$1"
+    local t
+    for t in test-release test-run-script test-auto-update test-status; do
+      cp tests/test-other.sh "tests/${t}.sh"
+      chmod +x "tests/${t}.sh"
+    done
+    printf '9.99.0\n' >.touchstone-version
+    git add tests .touchstone-version
+    git commit -q -m "baseline release-lane fixtures"
+    git update-ref refs/remotes/origin/main HEAD
+  )
+}
+
+echo "==> Test: version-only release bump selects the focused release lane"
+REPO="$TEST_DIR/repo-touchstone-release-bump"
+LOG="$TEST_DIR/touchstone-release-bump.log"
+OUT="$TEST_DIR/touchstone-release-bump.out"
+new_touchstone_self_repo "$REPO"
+add_release_lane_baseline "$REPO"
+(
+  cd "$REPO"
+  printf '9.99.1\n' >VERSION
+  printf '9.99.1\n' >.touchstone-version
+  git add VERSION .touchstone-version
+  git commit -q -m "release bump"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+if ! grep -q 'version-only release lane (VERSION = .touchstone-version = 9.99.1)' "$OUT"; then
+  echo "FAIL: version-only bump did not report the release lane" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+assert_log_contains "$LOG" '^self:test-release.sh$'
+assert_log_contains "$LOG" '^self:test-update.sh$'
+assert_log_contains "$LOG" '^self:test-run-script.sh$'
+assert_log_contains "$LOG" '^self:test-auto-update.sh$'
+assert_log_contains "$LOG" '^self:test-status.sh$'
+assert_log_not_contains "$LOG" '^self:test-other.sh$'
+assert_log_not_contains "$LOG" '^self:test-bootstrap.sh$'
+echo "==> PASS: version-only release bump runs only version-reader self-tests"
+
+echo "==> Test: non-release version diffs fail closed to the full suite"
+for variant in alone mismatch invalid extra; do
+  REPO="$TEST_DIR/repo-touchstone-release-$variant"
+  LOG="$TEST_DIR/touchstone-release-$variant.log"
+  OUT="$TEST_DIR/touchstone-release-$variant.out"
+  new_touchstone_self_repo "$REPO"
+  add_release_lane_baseline "$REPO"
+  (
+    cd "$REPO"
+    case "$variant" in
+      alone)
+        printf '9.99.1\n' >VERSION
+        git add VERSION
+        ;;
+      mismatch)
+        printf '9.99.1\n' >VERSION
+        printf '9.99.2\n' >.touchstone-version
+        git add VERSION .touchstone-version
+        ;;
+      invalid)
+        printf 'v9.99.1-rc\n' >VERSION
+        printf 'v9.99.1-rc\n' >.touchstone-version
+        git add VERSION .touchstone-version
+        ;;
+      extra)
+        printf '9.99.1\n' >VERSION
+        printf '9.99.1\n' >.touchstone-version
+        printf '# stray\n' >stray-file.md
+        git add VERSION .touchstone-version stray-file.md
+        ;;
+    esac
+    git commit -q -m "non-release version diff ($variant)"
+  )
+  : >"$LOG"
+  run_preflight "$REPO" "$OUT" "$LOG"
+  if grep -q 'version-only release lane' "$OUT"; then
+    echo "FAIL: variant '$variant' wrongly selected the release lane" >&2
+    cat "$OUT" >&2
+    exit 1
+  fi
+  if ! grep -q 'full self-test fallback: unmapped changed path' "$OUT"; then
+    echo "FAIL: variant '$variant' did not fall back to the full suite" >&2
+    cat "$OUT" >&2
+    exit 1
+  fi
+  assert_log_contains "$LOG" '^self:test-other.sh$'
+done
+echo "==> PASS: version diffs outside the exact release shape fail closed"
