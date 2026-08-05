@@ -869,7 +869,7 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Case 22: malformed policy fails draft promotion before gh pr ready"
+echo "==> Case 22: malformed policy fails draft promotion before push and gh pr ready"
 OUT="$TEST_DIR/case22.out"
 RC=0
 reset_open_pr_logs
@@ -879,12 +879,34 @@ GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=true \
 
 if [ "$RC" != "0" ] \
   && grep -q 'request_on_push must be true' "$OUT" \
+  && ! grep -q '\[mock\] git push' "$OUT" \
   && [ ! -s "$TEST_DIR/pr-ready.log" ] \
   && [ ! -s "$TEST_DIR/review-request.log" ] \
   && ! grep -q '\[mock merge-pr.sh\] called' "$OUT"; then
   echo "    PASS"
 else
-  echo "    FAIL: expected malformed policy to fail before gh pr ready" >&2
+  echo "    FAIL: expected malformed policy to fail before push and gh pr ready" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 24: malformed policy fails a ready-PR update before push"
+OUT="$TEST_DIR/case24.out"
+RC=0
+reset_open_pr_logs
+GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'request_on_push must be true' "$OUT" \
+  && ! grep -q '\[mock\] git push' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ] \
+  && ! grep -q '\[mock merge-pr.sh\] called' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected malformed policy to fail before pushing to a ready PR" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))

@@ -850,6 +850,17 @@ if [ "$BASE_BRANCH" != "$DEFAULT_BRANCH" ] && [ "$AUTO_MERGE" = true ]; then
   fi
 fi
 
+# Final-shipping updates to an existing PR validate review policy BEFORE the
+# push: for a ready PR the push itself publishes a new head, and a malformed
+# policy or failed trusted-base refresh discovered afterwards would strand
+# that published head without its required review request. This condition
+# mirrors exactly the invocations that reach the existing-PR final-shipping
+# path below (draft-only updates exit early and stay review-free).
+if [ -n "$EXISTING_PR_URL" ] && [ -z "$DRAFT_FLAG" ] \
+  && { [ "$EXISTING_PR_IS_DRAFT" != true ] || [ "$AUTO_MERGE" = true ]; }; then
+  load_open_pr_review_request_config "$BASE_BRANCH"
+fi
+
 # Push. The "do I already have an upstream?" check is name-aware: a fresh
 # `git checkout -b <branch> origin/main` sets upstream to `origin/main`,
 # which makes `git push` (without `-u`) fail with "upstream does not match
@@ -906,10 +917,7 @@ if [ -n "$EXISTING_PR_URL" ]; then
 
   run_issue_claim_preflight "existing PR #$PR_NUMBER" --pr-number "$PR_NUMBER"
   run_pr_body_protocol_preflight "existing PR #$PR_NUMBER" "$PR_NUMBER"
-  # Load and validate review policy before publishing: malformed policy or a
-  # failed trusted-base refresh must fail while the PR is still a draft, not
-  # after `gh pr ready` has already exposed it without its review request.
-  load_open_pr_review_request_config "$BASE_BRANCH"
+  # Review policy was already loaded and validated before the push above.
   if [ "$EXISTING_PR_IS_DRAFT" = true ]; then
     echo "==> Marking draft PR #$PR_NUMBER ready for review ..."
     gh pr ready "$PR_NUMBER" >/dev/null
