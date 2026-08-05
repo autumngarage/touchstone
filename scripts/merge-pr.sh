@@ -2393,25 +2393,29 @@ if [ -n "$CORTEX_HOOK_SCRIPT" ]; then
   # shipping runs from a feature worktree whose sibling holds the default
   # branch (synced above by sync_default_branch_after_merge), point the hook
   # at that worktree explicitly so T1.9 journals fire instead of silently
-  # skipping (issue #613). Only pass a worktree whose HEAD IS the
-  # squash-merge commit: the hook journals `--since HEAD~1` under this PR's
-  # number, so ancestry is not enough — a worktree that already advanced to
-  # a later merge (or never synced) would journal the wrong commit. An empty
-  # value preserves the cwd-based behavior, where the hook's own
-  # default-branch gate decides.
+  # skipping (issue #613). The hook is invoked ONLY when a default-branch
+  # worktree's HEAD IS the squash-merge commit: it journals `--since HEAD~1`
+  # under this PR's number, so an unverified target — sync failed, squash
+  # OID unavailable, worktree already advanced — must skip the invocation
+  # entirely. A cwd fallback is not safe either: when merging from the
+  # default-branch worktree itself with a failed pull, the cwd passes the
+  # hook's branch gate and would journal the stale pre-merge HEAD.
   CORTEX_HOOK_PROJECT_DIR="$(worktree_path_for_branch "$DEFAULT_BRANCH" | head -n 1)"
-  if [ -z "$SQUASH_COMMIT_OID" ] \
-    || [ ! -d "$CORTEX_HOOK_PROJECT_DIR" ] \
-    || [ "$(git -C "$CORTEX_HOOK_PROJECT_DIR" rev-parse HEAD 2>/dev/null)" != "$SQUASH_COMMIT_OID" ]; then
-    CORTEX_HOOK_PROJECT_DIR=""
-  fi
-  hook_status=0
-  TOUCHSTONE_MERGED_PR="$PR_NUMBER" \
-    TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR="$CORTEX_HOOK_PROJECT_DIR" \
-    bash "$CORTEX_HOOK_SCRIPT" || hook_status=$?
-  if [ "$hook_status" -ne 0 ]; then
-    echo "WARNING: cortex-pr-merged-hook exited $hook_status (see above)." >&2
-    echo "         The PR merged cleanly; only the auto-draft journal step had a problem." >&2
+  if [ -n "$SQUASH_COMMIT_OID" ] \
+    && [ -d "$CORTEX_HOOK_PROJECT_DIR" ] \
+    && [ "$(git -C "$CORTEX_HOOK_PROJECT_DIR" rev-parse HEAD 2>/dev/null)" = "$SQUASH_COMMIT_OID" ]; then
+    hook_status=0
+    TOUCHSTONE_MERGED_PR="$PR_NUMBER" \
+      TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR="$CORTEX_HOOK_PROJECT_DIR" \
+      bash "$CORTEX_HOOK_SCRIPT" || hook_status=$?
+    if [ "$hook_status" -ne 0 ]; then
+      echo "WARNING: cortex-pr-merged-hook exited $hook_status (see above)." >&2
+      echo "         The PR merged cleanly; only the auto-draft journal step had a problem." >&2
+    fi
+  else
+    echo "WARNING: skipping cortex-pr-merged-hook: no default-branch worktree is at the exact merge commit ${SQUASH_COMMIT_OID:-<unknown>}." >&2
+    echo "         Sync the default branch, then journal manually if needed:" >&2
+    echo "         TOUCHSTONE_MERGED_PR=$PR_NUMBER bash scripts/cortex-pr-merged-hook.sh" >&2
   fi
 fi
 
