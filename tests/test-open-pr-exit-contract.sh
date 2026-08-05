@@ -15,6 +15,7 @@
 #   3. merge-pr.sh exits 0 but PR is NOT actually merged (the silent-orphan
 #      class — gh API hiccup post-review) → nonzero + URL printed.
 #   4. merge-pr.sh missing on disk → nonzero + URL printed (no silent skip).
+#   5. Contradictory --draft + --auto-merge → nonzero before PR mutation.
 #
 # Design: the script under test is copied into a temp dir, real `git` is used
 # (the repo is local), and `gh` plus `merge-pr.sh` are stubbed out. Stub
@@ -800,6 +801,36 @@ else
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+# ---------------------------------------------------------------------------
+# Case 20: --draft and --auto-merge promise incompatible terminal states. The
+# contradiction must fail before discovery, push, claim, or GitHub mutation.
+# Test both the new-PR and existing-PR environment because neither may turn a
+# failed terminal delivery request into an intentionally open draft.
+# ---------------------------------------------------------------------------
+echo "==> Case 20: contradictory draft auto-merge fails before mutation"
+for existing_pr in 0 1; do
+  OUT="$TEST_DIR/case20-$existing_pr.out"
+  RC=0
+  reset_open_pr_logs
+  OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR="$existing_pr" \
+    run_open_pr --draft --auto-merge >"$OUT" 2>&1 || RC=$?
+
+  if [ "$RC" != "0" ] \
+    && grep -q -- '--draft and --auto-merge are mutually exclusive' "$OUT" \
+    && ! grep -q '\[mock\] git push' "$OUT" \
+    && [ ! -s "$TEST_DIR/pr-create.log" ] \
+    && [ ! -s "$TEST_DIR/pr-ready.log" ] \
+    && [ ! -s "$TEST_DIR/review-request.log" ] \
+    && [ ! -f "$TEST_DIR/merge-pr-request-count" ]; then
+    echo "    PASS: existing_pr=$existing_pr"
+  else
+    echo "    FAIL: contradictory flags mutated delivery state (existing_pr=$existing_pr)" >&2
+    echo "    rc=$RC" >&2
+    cat "$OUT" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # Summary

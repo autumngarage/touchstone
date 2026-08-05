@@ -657,6 +657,7 @@ Options:
   --auto-merge        Open or finalize the PR, request review, and run merge-pr.sh.
   --cleanup-worktree  Remove this worktree after a verified auto-merge.
   --draft             Create or update a draft without final body protocol, review, or merge.
+                      Mutually exclusive with --auto-merge.
   --base <branch>     Target a non-default base branch.
   -h, --help          Show this help.
 EOF
@@ -758,6 +759,14 @@ set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
 # notices instead of getting silent no-op behavior.
 if [ "$CLEANUP_WORKTREE" = true ] && [ "$AUTO_MERGE" != true ]; then
   echo "ERROR: --cleanup-worktree requires --auto-merge (cleanup runs only after a successful merge)." >&2
+  exit 1
+fi
+
+# A draft is intentionally open while --auto-merge promises a verified merged
+# terminal state. Reject the contradiction before push or PR mutation so a
+# caller can never mistake an intentionally open draft for successful delivery.
+if [ -n "$DRAFT_FLAG" ] && [ "$AUTO_MERGE" = true ]; then
+  echo "ERROR: --draft and --auto-merge are mutually exclusive." >&2
   exit 1
 fi
 
@@ -880,9 +889,6 @@ if [ -n "$EXISTING_PR_URL" ]; then
       gh pr ready "$PR_NUMBER" --undo >/dev/null
     fi
     echo "    PR remains a draft; no semantic review was requested."
-    if [ "$AUTO_MERGE" = true ]; then
-      echo "WARNING: --auto-merge ignored because --draft was passed; PR remains draft only." >&2
-    fi
     ORPHAN_PR_URL=""
     ORPHAN_PR_NUMBER=""
     exit 0
@@ -1036,11 +1042,6 @@ touchstone_emit_event pr_opened \
 if [ -n "$DRAFT_FLAG" ]; then
   echo "    Opened as draft; no semantic review was requested."
   echo "    Rerun with --auto-merge to mark it ready and ship the exact head."
-  if [ "$AUTO_MERGE" = true ]; then
-    # --auto-merge + --draft is a contradiction (drafts can't merge). Don't
-    # claim success silently — the user explicitly asked for a merge.
-    echo "WARNING: --auto-merge ignored because --draft was passed; PR opened as draft only." >&2
-  fi
   # Draft path: PR is intentionally open and not merged. That's not an orphan.
   ORPHAN_PR_URL=""
   ORPHAN_PR_NUMBER=""
