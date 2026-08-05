@@ -47,12 +47,14 @@ touchstone_project_hooks_present() {
   [ -f "$pre_commit_hook" ] && [ -f "$pre_push_hook" ]
 }
 
-# A hook shim is ready only when it is TYPED for the slot it occupies. The
-# generic pre-commit.com marker is not sufficient: a pre-commit shim copied
-# over pre-push still carries the marker but runs `--hook-type pre-commit`,
-# silently bypassing every pre-push validation. The framework writes the
-# invoked hook type into the shim (HOOK_TYPE= or --hook-type[= ]); require
-# that recorded type to match the slot the file occupies.
+# A hook shim is ready only when it is TYPED for the slot it occupies AND
+# bound to this project's Touchstone config. The generic pre-commit.com
+# marker is not sufficient: a pre-commit shim copied over pre-push still
+# carries the marker but runs `--hook-type pre-commit`, silently bypassing
+# every pre-push validation; and a shim installed with an alternate
+# `--config other.yaml` runs none of this project's validation. The
+# framework records both into the shim; require the recorded hook type to
+# match the slot and the recorded config to be .pre-commit-config.yaml.
 touchstone_pre_commit_hook_ready() {
   local hook_path="$1"
   local hook_type="$2"
@@ -65,6 +67,9 @@ touchstone_pre_commit_hook_ready() {
     && grep -q 'pre-commit\.com' "$hook_path" 2>/dev/null \
     && grep -Eq -- \
       "(--hook-type[= ]|HOOK_TYPE=)[\"']?${hook_type}[\"']?([^a-z-]|$)" \
+      "$hook_path" 2>/dev/null \
+    && grep -Eq -- \
+      "--config[= ][\"']?\.pre-commit-config\.yaml[\"']?([^0-9A-Za-z._-]|$)" \
       "$hook_path" 2>/dev/null
 }
 
@@ -90,13 +95,11 @@ touchstone_install_hooks() {
     return 1
   fi
 
-  if ! command -v pre-commit >/dev/null 2>&1; then
-    echo "==> Git hooks skipped: pre-commit CLI is not installed."
-    echo "    Install it:  brew install pre-commit  (or: pip install pre-commit)"
-    echo "    Then run:    cd \"$project_dir\" && pre-commit install --hook-type pre-commit --hook-type pre-push"
-    return 2
-  fi
-
+  # The configured hook boundary is checked BEFORE tool availability: a
+  # project-owned core.hooksPath is a preservation decision that holds whether
+  # or not the optional pre-commit CLI happens to be installed. Checking the
+  # CLI first would misreport "hooks not installed, install pre-commit" for a
+  # repo whose configured path already carries valid typed shims.
   local configured_hooks_path=""
   configured_hooks_path="$(git -C "$project_dir" config --get core.hooksPath 2>/dev/null || true)"
   if [ -n "$configured_hooks_path" ]; then
@@ -104,6 +107,13 @@ touchstone_install_hooks() {
     echo "    Touchstone will not unset repository hook configuration." >&2
     echo "    Remove core.hooksPath and rerun touchstone init if Touchstone should manage pre-commit shims." >&2
     return 4
+  fi
+
+  if ! command -v pre-commit >/dev/null 2>&1; then
+    echo "==> Git hooks skipped: pre-commit CLI is not installed."
+    echo "    Install it:  brew install pre-commit  (or: pip install pre-commit)"
+    echo "    Then run:    cd \"$project_dir\" && pre-commit install --hook-type pre-commit --hook-type pre-push"
+    return 2
   fi
 
   echo "==> Installing git hooks"

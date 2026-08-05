@@ -1249,6 +1249,37 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# The configured hook boundary must be diagnosed independently of tool
+# availability: with core.hooksPath set and NO pre-commit CLI on PATH, init
+# must still report the project-owned boundary (status 4), not "hooks not
+# installed, install pre-commit" (status 2).
+PROJECT_HOOKSPATH_NO_CLI="$TEST_DIR/test-project-hookspath-no-cli"
+mkdir -p "$PROJECT_HOOKSPATH_NO_CLI/.githooks"
+git -C "$PROJECT_HOOKSPATH_NO_CLI" init >/dev/null
+git -C "$PROJECT_HOOKSPATH_NO_CLI" config core.hooksPath .githooks
+cp "$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-commit" "$PROJECT_HOOKSPATH_NO_CLI/.githooks/pre-commit"
+cp "$PROJECT_INIT_CUSTOM_HOOKS/.githooks/pre-push" "$PROJECT_HOOKSPATH_NO_CLI/.githooks/pre-push"
+chmod +x "$PROJECT_HOOKSPATH_NO_CLI/.githooks/pre-commit" "$PROJECT_HOOKSPATH_NO_CLI/.githooks/pre-push"
+NO_PRECOMMIT_BIN="$TEST_DIR/no-precommit-bin"
+mkdir -p "$NO_PRECOMMIT_BIN"
+for fake_tool in touchstone gh setup-tool gitleaks shellcheck shfmt brew; do
+  cp "$INIT_SETUP_FAKE_BIN/$fake_tool" "$NO_PRECOMMIT_BIN/$fake_tool" 2>/dev/null || true
+done
+chmod +x "$NO_PRECOMMIT_BIN"/* 2>/dev/null || true
+: >"$SETUP_EXTERNAL_LOG"
+(cd "$PROJECT_HOOKSPATH_NO_CLI" \
+  && PATH="$NO_PRECOMMIT_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    SETUP_EXTERNAL_LOG="$SETUP_EXTERNAL_LOG" \
+    TOUCHSTONE_NO_AUTO_UPDATE=1 \
+    TOUCHSTONE_SKIP_DEVTOOLS=1 \
+    "$TOUCHSTONE_ROOT/bin/touchstone" init --no-register --type generic) \
+  >"$TEST_DIR/init-hookspath-no-cli.txt" 2>&1 || true
+assert_contains "$TEST_DIR/init-hookspath-no-cli.txt" 'core.hooksPath is configured'
+if grep -q 'pre-commit CLI is not installed' "$TEST_DIR/init-hookspath-no-cli.txt"; then
+  echo "FAIL: hooksPath boundary must be diagnosed before pre-commit CLI availability" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # Requested remote creation must never perform its first push unless the hooks
 # Git will actually execute are non-empty and executable.
 PROJECT_GITHUB_UNGATED="$TEST_DIR/test-project-github-ungated"
