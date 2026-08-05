@@ -153,6 +153,11 @@ git_push_clean_env() {
   env -u SKIP_REVIEW -u SKIP_CODEX_REVIEW git -C "$PROJECT_DIR" push "$@"
 }
 
+# Resolves the TARGET project's default branch. Every lookup is anchored to
+# $PROJECT_DIR, not the invocation cwd: with an explicit
+# TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR the hook may run from a different
+# worktree (or a different repo entirely), and a cwd-based lookup would
+# compare the target's branch against the wrong repository's default.
 resolve_default_branch() {
   if [ -n "${TOUCHSTONE_DEFAULT_BRANCH:-}" ]; then
     printf '%s' "$TOUCHSTONE_DEFAULT_BRANCH"
@@ -160,11 +165,11 @@ resolve_default_branch() {
   fi
   local resolved=""
   if command -v gh >/dev/null 2>&1; then
-    resolved="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
+    resolved="$(cd "$PROJECT_DIR" && gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
   fi
   if [ -z "$resolved" ]; then
     # Fall back to the local symbolic-ref of origin/HEAD; finally to "main".
-    resolved="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)"
+    resolved="$(git -C "$PROJECT_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)"
   fi
   printf '%s' "${resolved:-main}"
 }
