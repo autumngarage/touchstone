@@ -302,7 +302,15 @@ exec python3 "$0" "$@"
 
 print("python body")
 EOF_SINGLE_QUOTED_POLYGLOT
-  git add scripts/cross-platform-tool.py scripts/single-quoted-tool.py
+  cat >scripts/mixed-ending-tool.py <<'EOF_MIXED_ENDING_POLYGLOT'
+#!/bin/sh
+""":"
+exec python3 "$0" "$@"
+":"""
+EOF_MIXED_ENDING_POLYGLOT
+  printf '\r\nprint("CRLF Python body")\r\n' >>scripts/mixed-ending-tool.py
+  git add scripts/cross-platform-tool.py scripts/single-quoted-tool.py \
+    scripts/mixed-ending-tool.py
   git commit -q -m "add cross-platform Python tool"
 )
 : >"$LOG"
@@ -311,6 +319,8 @@ assert_log_not_contains "$LOG" 'shellcheck:.*cross-platform-tool.py'
 assert_log_not_contains "$LOG" 'shfmt:.*cross-platform-tool.py'
 assert_log_not_contains "$LOG" 'shellcheck:.*single-quoted-tool.py'
 assert_log_not_contains "$LOG" 'shfmt:.*single-quoted-tool.py'
+assert_log_not_contains "$LOG" 'shellcheck:.*mixed-ending-tool.py'
+assert_log_not_contains "$LOG" 'shfmt:.*mixed-ending-tool.py'
 assert_log_contains "$LOG" '^validate:validate$'
 echo "==> PASS: Python polyglot variants remain owned by Python validation"
 
@@ -375,7 +385,12 @@ if (
   # shellcheck source=../lib/preflight.sh
   source "$TOUCHSTONE_ROOT/lib/preflight.sh"
   awk() {
-    local program="$1" input="$2"
+    local program="$1" input
+    if [ "$#" -eq 1 ]; then
+      command awk "$program"
+      return
+    fi
+    input="$2"
     tr -d '\r' <"$input" | command awk "$program"
   }
   touchstone_preflight_is_python_shell_polyglot scripts/crlf-polyglot.py
