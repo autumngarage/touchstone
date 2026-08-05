@@ -779,8 +779,8 @@ if ! EXISTING_PR_RECORD="$(
     --head "$CURRENT_BRANCH" \
     --author "@me" \
     --state open \
-    --json url,baseRefName,headRefOid \
-    --jq 'if length > 0 then .[0] | [.url, .baseRefName, .headRefOid] | @tsv else empty end' \
+    --json url,baseRefName,headRefOid,isDraft \
+    --jq 'if length > 0 then .[0] | [.url, .baseRefName, .headRefOid, .isDraft] | @tsv else empty end' \
     2>/dev/null
 )"; then
   echo "ERROR: Failed to inspect existing PR metadata for branch '$CURRENT_BRANCH'." >&2
@@ -789,10 +789,31 @@ fi
 EXISTING_PR_URL=""
 EXISTING_PR_BASE_BRANCH=""
 EXISTING_PR_HEAD_SHA=""
+EXISTING_PR_IS_DRAFT=""
 if [ -n "$EXISTING_PR_RECORD" ]; then
-  IFS=$'\t' read -r EXISTING_PR_URL EXISTING_PR_BASE_BRANCH EXISTING_PR_HEAD_SHA <<<"$EXISTING_PR_RECORD"
+  IFS=$'\t' read -r EXISTING_PR_URL EXISTING_PR_BASE_BRANCH EXISTING_PR_HEAD_SHA EXISTING_PR_IS_DRAFT <<<"$EXISTING_PR_RECORD"
   if [ -z "$EXISTING_PR_URL" ] || [ -z "$EXISTING_PR_BASE_BRANCH" ] || [ -z "$EXISTING_PR_HEAD_SHA" ]; then
     echo "ERROR: Existing PR metadata is missing its URL, base branch, or head revision." >&2
+    exit 1
+  fi
+  case "$EXISTING_PR_IS_DRAFT" in
+    true | false) ;;
+    *)
+      echo "ERROR: GitHub returned invalid draft state for PR $EXISTING_PR_URL: ${EXISTING_PR_IS_DRAFT:-<empty>}." >&2
+      exit 1
+      ;;
+  esac
+  # Reject --draft against a ready PR before the unconditional push below.
+  # Pushing first would update the ready PR's head and invalidate its
+  # exact-head review evidence before we refuse; refusing here leaves the
+  # remote PR exactly as it was.
+  if [ -n "$DRAFT_FLAG" ] && [ "$EXISTING_PR_IS_DRAFT" != true ]; then
+    EXISTING_PR_NUMBER="$(basename "$EXISTING_PR_URL")"
+    echo "ERROR: PR #$EXISTING_PR_NUMBER is already ready for review; refusing --draft." >&2
+    echo "       Reverting a ready PR to draft would leave prior exact-head review" >&2
+    echo "       request markers and @codex review comments in place, which could" >&2
+    echo "       be reused as though still valid. To start fresh, close this PR and" >&2
+    echo "       open a new draft." >&2
     exit 1
   fi
   if [ -n "$BASE_OVERRIDE" ] && [ "$BASE_OVERRIDE" != "$EXISTING_PR_BASE_BRANCH" ]; then
@@ -812,7 +833,6 @@ if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
   echo "ERROR: --base $BASE_BRANCH cannot equal the current branch." >&2
   exit 1
 fi
-load_open_pr_review_request_config "$BASE_BRANCH"
 
 # Warn when stacking + auto-merge combine — the user is likely about to
 # orphan their stack. --auto-merge squashes the parent, which closes (not
@@ -869,25 +889,9 @@ if [ -n "$EXISTING_PR_URL" ]; then
     ORPHAN_PR_URL="$EXISTING_PR_URL"
     ORPHAN_PR_NUMBER="$PR_NUMBER"
   fi
-  if ! EXISTING_PR_IS_DRAFT="$(
-    gh pr view "$PR_NUMBER" --json isDraft --jq '.isDraft' 2>/dev/null
-  )"; then
-    echo "ERROR: Failed to inspect draft state for PR #$PR_NUMBER." >&2
-    exit 1
-  fi
-  case "$EXISTING_PR_IS_DRAFT" in
-    true | false) ;;
-    *)
-      echo "ERROR: GitHub returned invalid draft state for PR #$PR_NUMBER: ${EXISTING_PR_IS_DRAFT:-<empty>}." >&2
-      exit 1
-      ;;
-  esac
-
   if [ -n "$DRAFT_FLAG" ]; then
-    if [ "$EXISTING_PR_IS_DRAFT" != true ]; then
-      echo "==> Marking PR #$PR_NUMBER as draft ..."
-      gh pr ready "$PR_NUMBER" --undo >/dev/null
-    fi
+    # A ready PR was already rejected before the push; only a draft reaches
+    # this point.
     echo "    PR remains a draft; no semantic review was requested."
     ORPHAN_PR_URL=""
     ORPHAN_PR_NUMBER=""
@@ -902,6 +906,10 @@ if [ -n "$EXISTING_PR_URL" ]; then
 
   run_issue_claim_preflight "existing PR #$PR_NUMBER" --pr-number "$PR_NUMBER"
   run_pr_body_protocol_preflight "existing PR #$PR_NUMBER" "$PR_NUMBER"
+  # Load and validate review policy before publishing: malformed policy or a
+  # failed trusted-base refresh must fail while the PR is still a draft, not
+  # after `gh pr ready` has already exposed it without its review request.
+  load_open_pr_review_request_config "$BASE_BRANCH"
   if [ "$EXISTING_PR_IS_DRAFT" = true ]; then
     echo "==> Marking draft PR #$PR_NUMBER ready for review ..."
     gh pr ready "$PR_NUMBER" >/dev/null
@@ -1017,6 +1025,14 @@ BODY_FILE="$(mktemp -t touchstone-pr-body.XXXXXX.md)"
 } >"$BODY_FILE"
 
 run_issue_claim_preflight "new PR body" --body-file "$BODY_FILE"
+
+# Load and validate review policy before `gh pr create` on the final-shipping
+# path: malformed policy or a failed trusted-base refresh must fail before a
+# ready PR is published without its required review request. Draft creation
+# stays review-free and skips review infrastructure entirely.
+if [ -z "$DRAFT_FLAG" ]; then
+  load_open_pr_review_request_config "$BASE_BRANCH"
+fi
 
 echo "==> Opening PR against $BASE_BRANCH ..."
 if [ -n "$DRAFT_FLAG" ]; then

@@ -42,6 +42,7 @@ cp "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$SCRIPT_DIR/open-pr.sh"
 cp "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$SCRIPT_DIR/issue-claim-check.sh"
 mkdir -p "$TEST_DIR/lib"
 cp "$TOUCHSTONE_ROOT/lib/events.sh" "$TEST_DIR/lib/events.sh"
+cp "$TOUCHSTONE_ROOT/lib/toml.sh" "$TEST_DIR/lib/toml.sh"
 chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/issue-claim-check.sh"
 
 # Real git inside a fresh repo with a feature branch checked out, so the
@@ -100,9 +101,10 @@ case "$1 $2" in
     ;;
   "pr list")
     if [ "${GH_HAS_EXISTING_PR:-0}" = "1" ]; then
-      printf 'https://example.test/touchstone/pull/777\t%s\t%s\n' \
+      printf 'https://example.test/touchstone/pull/777\t%s\t%s\t%s\n' \
         "${GH_EXISTING_PR_BASE:-main}" \
-        "${GH_PR_HEAD_OID:-existing-pr-head}"
+        "${GH_PR_HEAD_OID:-existing-pr-head}" \
+        "${GH_PR_IS_DRAFT:-false}"
     else
       echo ""
     fi
@@ -551,24 +553,26 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Case 11: --draft on an existing ready PR explicitly moves it back to draft
-# without spending review intent or requiring a final body contract.
+# Case 11: --draft on an existing ready PR is refused before the push. Prior
+# exact-head review markers and @codex comments on the ready PR must not be
+# left reusable behind a demoted draft, and the refusal must land before the
+# push so the ready PR's reviewed head is never updated by this invocation.
 # ---------------------------------------------------------------------------
-echo "==> Case 11: --draft moves an existing ready PR back to draft"
+echo "==> Case 11: --draft on an existing ready PR is refused before push"
 OUT="$TEST_DIR/case15.out"
 RC=0
 reset_open_pr_logs
 OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
   GH_PR_BODY="Missing protocol" run_open_pr --draft >"$OUT" 2>&1 || RC=$?
 
-if [ "$RC" = "0" ] \
-  && grep -q 'Marking PR #777 as draft' "$OUT" \
-  && grep -q '^pr ready 777 --undo$' "$TEST_DIR/pr-ready.log" \
-  && ! grep -q 'Running PR body protocol preflight' "$OUT" \
+if [ "$RC" != "0" ] \
+  && grep -q 'already ready for review; refusing --draft' "$OUT" \
+  && ! grep -q '\[mock\] git push' "$OUT" \
+  && [ ! -s "$TEST_DIR/pr-ready.log" ] \
   && [ ! -s "$TEST_DIR/review-request.log" ]; then
   echo "    PASS"
 else
-  echo "    FAIL: expected --draft to transition the ready PR without review" >&2
+  echo "    FAIL: expected --draft on a ready PR to be refused before push" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
@@ -831,6 +835,79 @@ for existing_pr in 0 1; do
     ERRORS=$((ERRORS + 1))
   fi
 done
+
+# ---------------------------------------------------------------------------
+# Cases 21-23: review policy is validated before any publish step, and draft
+# coordination never depends on it. Commit a malformed .touchstone-review.toml
+# to the trusted base (main) — every final-shipping invocation must now fail
+# BEFORE `gh pr create` / `gh pr ready`, while draft invocations still work.
+# These run last because they mutate the shared repo's main branch.
+# ---------------------------------------------------------------------------
+git -C "$REPO_DIR" checkout main >/dev/null 2>&1
+printf '[review.pr_triggered]\nrequest_on_push = "sometimes"\n' \
+  >"$REPO_DIR/.touchstone-review.toml"
+git -C "$REPO_DIR" add .touchstone-review.toml
+git -C "$REPO_DIR" commit -m "malformed review policy" >/dev/null 2>&1
+git -C "$REPO_DIR" checkout feat/test >/dev/null 2>&1
+
+echo "==> Case 21: malformed policy fails a new ready PR before gh pr create"
+OUT="$TEST_DIR/case21.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'request_on_push must be true' "$OUT" \
+  && [ ! -s "$TEST_DIR/pr-create.log" ] \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected malformed policy to fail before gh pr create" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 22: malformed policy fails draft promotion before gh pr ready"
+OUT="$TEST_DIR/case22.out"
+RC=0
+reset_open_pr_logs
+GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=true \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'request_on_push must be true' "$OUT" \
+  && [ ! -s "$TEST_DIR/pr-ready.log" ] \
+  && [ ! -s "$TEST_DIR/review-request.log" ] \
+  && ! grep -q '\[mock merge-pr.sh\] called' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected malformed policy to fail before gh pr ready" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 23: draft coordination succeeds despite malformed review policy"
+OUT="$TEST_DIR/case23.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GH_PR_BODY="Missing protocol" \
+  run_open_pr --draft >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'Opened as draft; no semantic review was requested' "$OUT" \
+  && grep -q -- '--draft' "$TEST_DIR/pr-create.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected draft creation to ignore review policy entirely" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 # ---------------------------------------------------------------------------
 # Summary
