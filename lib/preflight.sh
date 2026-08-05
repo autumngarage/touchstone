@@ -746,6 +746,37 @@ touchstone_preflight_add_literal_self_test_consumers() {
   done
 }
 
+# Release lane (issue #628): a diff of EXACTLY {VERSION, .touchstone-version}
+# holding the same valid X.Y.Z is the deterministic release bump every
+# `touchstone release` produces. Its demonstrated consumers are the version
+# readers — release, update, run-script/version-contract, auto-update, and
+# status — not the entire suite. Anything looser (either file alone, value
+# mismatch, invalid semver, any extra path) falls through to the per-path
+# mapping, where these paths are intentionally unmapped and fail closed to
+# the full suite.
+touchstone_preflight_version_only_release_lane() {
+  local output_file="$1"
+  local changed_paths_file="$2"
+  local sorted_paths version_value touchstone_version_value
+
+  sorted_paths="$(sort "$changed_paths_file" | paste -sd ' ' -)" || return 1
+  [ "$sorted_paths" = ".touchstone-version VERSION" ] || return 1
+  [ -f VERSION ] && [ -f .touchstone-version ] || return 1
+  version_value="$(tr -d '[:space:]' <VERSION)" || return 1
+  touchstone_version_value="$(tr -d '[:space:]' <.touchstone-version)" || return 1
+  [ -n "$version_value" ] || return 1
+  [ "$version_value" = "$touchstone_version_value" ] || return 1
+  printf '%s' "$version_value" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || return 1
+  touchstone_preflight_add_existing_self_tests "$output_file" \
+    tests/test-release.sh \
+    tests/test-update.sh \
+    tests/test-run-script.sh \
+    tests/test-auto-update.sh \
+    tests/test-status.sh || return 1
+  touchstone_preflight_info "scoped self-tests: version-only release lane (VERSION = .touchstone-version = $version_value)"
+  return 0
+}
+
 touchstone_preflight_touchstone_scoped_self_test_files() {
   local output_file="$1"
   local unique_file="${output_file}.unique"
@@ -767,6 +798,18 @@ touchstone_preflight_touchstone_scoped_self_test_files() {
     touchstone_preflight_fail "could not enumerate changed paths for scoped self-tests; using the full suite"
     return 1
   fi
+
+  if touchstone_preflight_version_only_release_lane "$output_file" "$changed_paths_file"; then
+    rm -f "$changed_paths_file"
+    if [ -s "$output_file" ]; then
+      return 0
+    fi
+    touchstone_preflight_fail "release lane selected no self-tests; using the full suite"
+    return 1
+  fi
+  # Not a clean release bump — discard any partial lane state and classify
+  # path-by-path below, where these files intentionally fail closed.
+  : >"$output_file"
 
   while IFS= read -r path; do
     [ -n "$path" ] || continue
