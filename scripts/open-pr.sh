@@ -887,16 +887,39 @@ EXPECTED_UPSTREAM="origin/$CURRENT_BRANCH"
 # A hook may create a newer local commit, but that commit is not part of this
 # push. Preserve the selected SHA so the review request cannot drift to it.
 PUSHED_HEAD_SHA="$(git rev-parse HEAD)"
+PUSH_STATUS=0
 if [ -n "$EXISTING_UPSTREAM" ] && [ "$EXISTING_UPSTREAM" = "$EXPECTED_UPSTREAM" ]; then
   echo "==> Pushing $CURRENT_BRANCH ..."
-  git push
+  git push || PUSH_STATUS=$?
 else
   if [ -n "$EXISTING_UPSTREAM" ] && [ "$EXISTING_UPSTREAM" != "$EXPECTED_UPSTREAM" ]; then
     echo "==> Existing upstream '$EXISTING_UPSTREAM' does not match '$EXPECTED_UPSTREAM'; resetting on first push." >&2
   else
     echo "==> Pushing $CURRENT_BRANCH (setting upstream) ..."
   fi
-  git push -u origin "$CURRENT_BRANCH"
+  git push -u origin "$CURRENT_BRANCH" || PUSH_STATUS=$?
+fi
+
+# Rebased-PR resume (issue #630): a rejected push on a branch with an open PR
+# is the sanctioned rebase-after-takeover flow, not an error. Retry ONCE with
+# --force-with-lease pinned to the PR head observed in this run's pre-push
+# snapshot: the lease publishes the rebase only if the remote still points at
+# exactly that head, and fails closed if anything else moved it. Branches
+# without an open PR never force-push.
+if [ "$PUSH_STATUS" -ne 0 ]; then
+  if [ -z "$EXISTING_PR_URL" ] || [ -z "$EXISTING_PR_HEAD_SHA" ]; then
+    echo "ERROR: push failed for '$CURRENT_BRANCH' and no open PR authorizes a guarded retry." >&2
+    exit "$PUSH_STATUS"
+  fi
+  echo "==> Push rejected; PR $EXISTING_PR_URL exists for this branch."
+  echo "==> Retrying with --force-with-lease pinned to observed PR head ${EXISTING_PR_HEAD_SHA:0:12} ..."
+  if ! git push --force-with-lease="$CURRENT_BRANCH:$EXISTING_PR_HEAD_SHA" -u origin "$CURRENT_BRANCH"; then
+    echo "ERROR: guarded force-with-lease push failed for '$CURRENT_BRANCH'." >&2
+    echo "       The remote branch no longer points at the observed PR head ${EXISTING_PR_HEAD_SHA:0:12}," >&2
+    echo "       so something else updated it since this run's snapshot. Inspect the remote" >&2
+    echo "       branch and rerun after reconciling; refusing to overwrite unseen work." >&2
+    exit 1
+  fi
 fi
 
 # Install the cleanup/orphan-warning trap now — every later exit path may

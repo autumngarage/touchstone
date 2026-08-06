@@ -249,6 +249,18 @@ cat >"$FAKE_BIN/git" <<EOF
 set -euo pipefail
 if [ "\${1:-}" = "push" ]; then
   echo "[mock] git push \$*"
+  if [ -n "\${GIT_PUSH_LOG:-}" ]; then
+    printf '%s\n' "\$*" >>"\$GIT_PUSH_LOG"
+  fi
+  case " \$* " in
+    *" --force-with-lease="*)
+      exit "\${GIT_PUSH_LEASE_EXIT:-0}"
+      ;;
+  esac
+  if [ "\${GIT_PUSH_PLAIN_EXIT:-0}" != 0 ]; then
+    echo " ! [rejected]        (non-fast-forward)" >&2
+    exit "\${GIT_PUSH_PLAIN_EXIT}"
+  fi
   exit 0
 fi
 exec "$REAL_GIT" "\$@"
@@ -285,6 +297,9 @@ run_open_pr() {
       GH_PR_BODY="${GH_PR_BODY:-}" \
       GH_PR_AUTHOR="${GH_PR_AUTHOR:-alice}" \
       GH_REQUIRE_REPO_FOR_MERGED_AT="${GH_REQUIRE_REPO_FOR_MERGED_AT:-0}" \
+      GIT_PUSH_PLAIN_EXIT="${GIT_PUSH_PLAIN_EXIT:-0}" \
+      GIT_PUSH_LEASE_EXIT="${GIT_PUSH_LEASE_EXIT:-0}" \
+      GIT_PUSH_LOG="$TEST_DIR/git-push.log" \
       MERGE_PR_EXIT="${MERGE_PR_EXIT:-0}" \
       MERGE_PR_REQUEST_COUNT_FILE="$TEST_DIR/merge-pr-request-count" \
       GH_PR_CREATE_LOG="$TEST_DIR/pr-create.log" \
@@ -299,6 +314,7 @@ reset_open_pr_logs() {
   : >"$TEST_DIR/pr-create.log"
   : >"$TEST_DIR/pr-ready.log"
   : >"$TEST_DIR/review-request.log"
+  : >"$TEST_DIR/git-push.log"
   rm -f "$TEST_DIR/merge-pr-request-count"
 }
 
@@ -927,6 +943,70 @@ if [ "$RC" = "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: expected demoted PR under --auto-merge to re-promote and merge" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Cases 30-32 (issue #630): a rejected push on a branch with an open PR is
+# the sanctioned rebase-after-takeover flow. Retry once with
+# --force-with-lease pinned to the snapshot's observed PR head; fail closed
+# without an open PR or when the lease is stale.
+# ---------------------------------------------------------------------------
+echo "==> Case 30: rebased PR branch resumes via guarded force-with-lease"
+OUT="$TEST_DIR/case30.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'Retrying with --force-with-lease pinned to observed PR head' "$OUT" \
+  && grep -q -- '--force-with-lease=feat/test:existing-pr-head' "$TEST_DIR/git-push.log" \
+  && [ -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected guarded lease retry to resume the rebased PR branch" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" "$TEST_DIR/git-push.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 31: rejected push without an open PR fails closed"
+OUT="$TEST_DIR/case31.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GIT_PUSH_PLAIN_EXIT=1 \
+  GH_PR_BODY="Protocol: yes" run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'no open PR authorizes a guarded retry' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/pr-create.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected non-PR branch push rejection to fail closed" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 32: stale lease fails closed without overwriting unseen work"
+OUT="$TEST_DIR/case32.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GIT_PUSH_PLAIN_EXIT=1 GIT_PUSH_LEASE_EXIT=1 \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'refusing to overwrite unseen work' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected stale lease to fail closed" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
