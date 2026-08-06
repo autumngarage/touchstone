@@ -34,8 +34,8 @@ For the canonical version: read **`principles/pre-implementation-checklist.md`**
 5. **Is this action reversible?**
    Deletes, migrations, history rewrites, external side effects. See "Make irreversible actions recoverable" — needs dry-run, backup, idempotency key, rollback plan, or forward-fix plan before it runs.
 
-6. **Am I removing or replacing a subsystem users already have state in?**
-   Enumerate the observable starting states derived from the subsystem's own persistence boundary (config files, generated artifacts, installed hooks, CLI entry points, downstream copies) — not a fixed global matrix. For each supported state: name the invariant, the source of truth, and the fail-closed behavior for unmatched inputs, and land a regression fixture before the first review request — including a dedicated fixture for the unmatched-state explicit-error fallback itself. Distinguish active compatibility from inert, time-bounded migration shims with a named removal condition — and treat every executable shim as a temporary second code path carrying all of question 3's controls until deleted.
+6. **Am I removing or replacing a subsystem with existing persisted or deployed state?**
+   The gate fires on any persisted state, whoever owns it — user config and artifacts, but equally system- or operator-owned schemas, queues, caches, and checkpoints. Enumerate the observable starting states derived from the subsystem's own persistence boundary (config files, generated artifacts, installed hooks, CLI entry points, downstream copies, schemas, queues, checkpoints) — not a fixed global matrix. For each supported state: name the invariant, the source of truth, and the fail-closed behavior for unmatched inputs, and land a regression fixture before the first review request — including a dedicated fixture for the unmatched-state explicit-error fallback itself. Distinguish active compatibility from inert, time-bounded migration shims with a named removal condition — and treat every executable shim as a temporary second code path carrying all of question 3's controls until deleted.
 
 ## When to stop and ask
 

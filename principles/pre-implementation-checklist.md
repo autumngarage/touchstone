@@ -24,9 +24,9 @@ If this touches a public API, config file, schema, CLI flag, hook, template, or 
 
 If this deletes, migrates, rewrites history, or has external side effects, see **Make irreversible actions recoverable**. The PR must describe how failure leaves the system in a known recoverable state — dry run, backup, idempotency key, rollback, or forward-fix plan.
 
-## 6. Am I removing or replacing a subsystem users already have state in?
+## 6. Am I removing or replacing a subsystem with existing persisted or deployed state?
 
-Removals look clean in a fresh checkout and break in the field, one starting state at a time — each edge case discovered by an external reviewer one head after another instead of enumerated up front. Before the first review request, enumerate the observable starting states **derived from this subsystem's own persistence boundary** — its config files, generated artifacts, installed hooks and skills, CLI entry points, and downstream copies. Do not work from a fixed global matrix; the states that matter are wherever *this* subsystem actually persists itself.
+Removals look clean in a fresh checkout and break in the field, one starting state at a time — each edge case discovered by an external reviewer one head after another instead of enumerated up front. The gate fires on **any existing persisted or deployed state**, whoever owns it: user-visible config and artifacts, but equally system- or operator-owned state such as database schemas, queued work, cache contents, and internal checkpoints. Before the first review request, enumerate the observable starting states **derived from this subsystem's own persistence boundary** — its config files, generated artifacts, installed hooks and skills, CLI entry points, downstream copies, schemas, queues, and checkpoints. Do not work from a fixed global matrix; the states that matter are wherever *this* subsystem actually persists itself.
 
 For each state you decide to support, write down:
 
