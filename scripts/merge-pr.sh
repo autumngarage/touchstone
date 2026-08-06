@@ -209,6 +209,48 @@ if [ -n "$REPO_FULL_NAME" ] && [ "$REPO_FULL_NAME" != "${REPO_FULL_NAME#*/}" ]; 
   REPO_NAME="${REPO_FULL_NAME#*/}"
 fi
 
+# Review-round economics (issue #649). When a review returns findings, print
+# the round number for this PR and enumerate EVERY unresolved thread with its
+# one-command response, so the driver fixes the complete batch in one round
+# instead of paying full review latency per finding. Best-effort throughout:
+# this is guidance attached to an already-failed gate, so an API hiccup here
+# must not change the exit path, and partial output states its own limits.
+report_review_round_economics() {
+  local pr="$1"
+  local rounds threads listed=0
+
+  if [ -z "$REPO_OWNER" ] || [ -z "$REPO_NAME" ]; then
+    echo "       (round accounting unavailable: repository identity unresolved)" >&2
+    return 0
+  fi
+  local authors_json
+  authors_json="$(printf '%s' "$PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS" \
+    | awk -F, '{for (i = 1; i <= NF; i++) printf "%s\"%s\"", (i > 1 ? "," : ""), $i}')"
+  rounds="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/pulls/$pr/reviews" \
+    --jq "[.[] | select(.user.login as \$l | [$authors_json] | index(\$l))] | length" \
+    2>/dev/null | awk '{s+=$1} END {print s+0}')" || rounds=""
+  if [ -n "$rounds" ] && [ "$rounds" -gt 0 ] 2>/dev/null; then
+    echo "       Review round $rounds for this PR (rounds=$rounds)." >&2
+  fi
+  threads="$(gh api graphql --paginate \
+    -f query="query(\$endCursor: String) { repository(owner:\"$REPO_OWNER\", name:\"$REPO_NAME\") { pullRequest(number:$pr) { reviewThreads(first:100, after:\$endCursor) { nodes { isResolved comments(first:1) { nodes { databaseId path } } } pageInfo { hasNextPage endCursor } } } } }" \
+    --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | [(.comments.nodes[0].databaseId | tostring), (.comments.nodes[0].path // "-")] | @tsv' \
+    2>/dev/null)" || threads=""
+  if [ -z "$threads" ]; then
+    echo "       (could not enumerate unresolved threads; open the review URL above for the full set)" >&2
+    return 0
+  fi
+  echo "       Every unresolved finding on this PR:" >&2
+  while IFS=$'\t' read -r cid path; do
+    [ -n "$cid" ] || continue
+    listed=$((listed + 1))
+    echo "         - comment $cid ($path)" >&2
+    echo "           respond: bash scripts/respond-review.sh $pr --comment-id $cid --body-file <reply.md>" >&2
+  done <<<"$threads"
+  echo "       findings_open=$listed" >&2
+  return 0
+}
+
 current_pr_base_revision() {
   if [ -z "$REPO_OWNER" ] || [ -z "$REPO_NAME" ]; then
     echo "repository identity is unavailable" >&2
@@ -1560,7 +1602,11 @@ wait_for_pr_triggered_review() {
             result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
           echo "ERROR: Trusted PR-visible AI review is not clean for PR #$PR_NUMBER head $expected_head." >&2
           [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2
-          echo "       Address the findings, push the fix, and request a fresh exact-head review." >&2
+          report_review_round_economics "$PR_NUMBER"
+          echo "       Address EVERY finding above in ONE batch (single fix commit or series)," >&2
+          echo "       answer each thread, then request one fresh exact-head review. One round" >&2
+          echo "       per finding pays full review latency per finding; one round per batch" >&2
+          echo "       pays it once (issue #649)." >&2
           TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-findings"
           exit 1
         else
@@ -1818,7 +1864,7 @@ request_pr_triggered_review() {
     return 1
   fi
 
-  body="$(printf '@codex review\n\n%s' "$marker")"
+  body="$(printf '@codex review\n\nPlease report every finding for this exact head in this single review pass -- findings\naddressed one per round each cost a full review cycle (issue #649).\n\n%s' "$marker")"
   if ! trigger_at="$(gh api -X POST "repos/$REPO_FULL_NAME/issues/$PR_NUMBER/comments" \
     -f body="$body" --jq '.created_at')"; then
     echo "ERROR: Failed to request GitHub Codex review for PR #$PR_NUMBER ($phase)." >&2

@@ -523,7 +523,7 @@ request_pr_triggered_review() {
     return 1
   fi
 
-  body="$(printf '@codex review\n\n%s' "$marker")"
+  body="$(printf '@codex review\n\nPlease report every finding for this exact head in this single review pass -- findings\naddressed one per round each cost a full review cycle (issue #649).\n\n%s' "$marker")"
   if ! trigger_at="$(gh api -X POST "repos/$REPO_FULL_NAME/issues/$pr_number/comments" \
     -f body="$body" --jq '.created_at')"; then
     echo "ERROR: failed to request GitHub Codex review for PR #$pr_number." >&2
