@@ -361,6 +361,8 @@ cmd_status() {
 
 cmd_ship_runner() {
   local job_dir="" worktree_path="" claim_token="" cleanup=false events_json="" child_pid="" exit_code=0 branch=""
+  local ship_attempt=1 max_base_moved_retries="" log_lines_before=0 attempt_log=""
+  local default_branch="" old_head="" new_head="" conflict_files=""
   local claim_owner_wait=0
   local review_fix=false max_fix_iterations="$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT"
   local max_fix_minutes=45 validation_command=""
@@ -490,19 +492,70 @@ cmd_ship_runner() {
     args+=(--cleanup-worktree)
   fi
 
-  if [ -n "$events_json" ]; then
-    TOUCHSTONE_EVENTS_FILE="$events_json" \
-      bash -c 'cd "$1" && shift && bash scripts/open-pr.sh "$@"' _ "$worktree_path" "${args[@]}" &
-  else
-    (cd "$worktree_path" && bash scripts/open-pr.sh "${args[@]}") &
-  fi
-  child_pid=$!
-  touchstone_ship_write "$job_dir" child-pid "$child_pid"
-  if wait "$child_pid"; then
-    exit_code=0
-  else
-    exit_code=$?
-  fi
+  # Bounded base-moved auto-recovery (issue #651). Every sibling merge
+  # invalidates this PR's exact-base authorization; the recovery is
+  # deterministic (fetch, rebase, re-enter the ship lifecycle — the push
+  # itself goes through open-pr's guarded integration-evidence resume), so
+  # the runner performs it instead of parking. Bounded per job; a rebase
+  # CONFLICT parks immediately with the conflicting files — the runner never
+  # resolves content. Each cycle is recorded in the job state and events so
+  # the audit trail names every head that existed.
+  ship_attempt=1
+  max_base_moved_retries="${TOUCHSTONE_SHIP_BASE_MOVED_RETRIES:-3}"
+  case "$max_base_moved_retries" in
+    '' | *[!0-9]*) max_base_moved_retries=3 ;;
+  esac
+  while :; do
+    log_lines_before=0
+    if [ -f "$job_dir/ship.log" ]; then
+      log_lines_before="$(wc -l <"$job_dir/ship.log" | tr -d ' ')"
+    fi
+    if [ -n "$events_json" ]; then
+      TOUCHSTONE_EVENTS_FILE="$events_json" \
+        bash -c 'cd "$1" && shift && bash scripts/open-pr.sh "$@"' _ "$worktree_path" "${args[@]}" &
+    else
+      (cd "$worktree_path" && bash scripts/open-pr.sh "${args[@]}") &
+    fi
+    child_pid=$!
+    touchstone_ship_write "$job_dir" child-pid "$child_pid"
+    if wait "$child_pid"; then
+      exit_code=0
+    else
+      exit_code=$?
+    fi
+    [ "$exit_code" -eq 0 ] && break
+    attempt_log="$(tail -n +"$((log_lines_before + 1))" "$job_dir/ship.log" 2>/dev/null || true)"
+    if ! printf '%s' "$attempt_log" | grep -q 'base moved while'; then
+      break
+    fi
+    if [ "$ship_attempt" -gt "$max_base_moved_retries" ]; then
+      echo "==> Base moved again, but $max_base_moved_retries automatic rebase cycle(s) are already spent; handing off." >&2
+      reason="base-moved-retries-exhausted"
+      break
+    fi
+    default_branch="$(cd "$worktree_path" && gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo main)"
+    old_head="$(cd "$worktree_path" && git rev-parse HEAD 2>/dev/null || echo unknown)"
+    echo "==> Base moved under PR authorization; automatic rebase cycle $ship_attempt of $max_base_moved_retries ..."
+    if ! (cd "$worktree_path" && git fetch origin "$default_branch" >/dev/null 2>&1); then
+      echo "==> Could not fetch origin/$default_branch for the automatic rebase; handing off." >&2
+      reason="base-moved-fetch-failed"
+      break
+    fi
+    if ! (cd "$worktree_path" && git rebase "origin/$default_branch" >/dev/null 2>&1); then
+      conflict_files="$(cd "$worktree_path" && git diff --name-only --diff-filter=U 2>/dev/null | head -10)"
+      (cd "$worktree_path" && git rebase --abort) >/dev/null 2>&1 || true
+      echo "==> Automatic rebase hit conflicts; handing off without resolving content:" >&2
+      printf '%s\n' "$conflict_files" | sed 's/^/      /' >&2
+      reason="base-moved-rebase-conflict"
+      break
+    fi
+    new_head="$(cd "$worktree_path" && git rev-parse HEAD 2>/dev/null || echo unknown)"
+    touchstone_ship_write "$job_dir" base-moved-retries "$ship_attempt"
+    touchstone_emit_event worker_ship_base_moved_retry \
+      worktree_path="$worktree_path" attempt="$ship_attempt" \
+      old_head="$old_head" new_head="$new_head" base_branch="$default_branch"
+    ship_attempt=$((ship_attempt + 1))
+  done
   if [ "$exit_code" -eq 0 ]; then
     finish_runner succeeded 0
   else
@@ -512,7 +565,7 @@ cmd_ship_runner() {
       "Inspect the PR and ship log before changing the branch."
     touchstone_ship_write "$job_dir" handoff-non-goals \
       "No autonomous review fix was attempted."
-    finish_runner needs-attention "$exit_code" shipping-needs-attention
+    finish_runner needs-attention "$exit_code" "${reason:-shipping-needs-attention}"
   fi
   exit "$exit_code"
 }
