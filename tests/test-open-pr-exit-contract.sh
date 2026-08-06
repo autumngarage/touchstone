@@ -297,6 +297,7 @@ run_open_pr() {
       GH_PR_BODY="${GH_PR_BODY:-}" \
       GH_PR_AUTHOR="${GH_PR_AUTHOR:-alice}" \
       GH_REQUIRE_REPO_FOR_MERGED_AT="${GH_REQUIRE_REPO_FOR_MERGED_AT:-0}" \
+      GH_PR_HEAD_OID="${GH_PR_HEAD_OID:-existing-pr-head}" \
       GIT_PUSH_PLAIN_EXIT="${GIT_PUSH_PLAIN_EXIT:-0}" \
       GIT_PUSH_LEASE_EXIT="${GIT_PUSH_LEASE_EXIT:-0}" \
       GIT_PUSH_LOG="$TEST_DIR/git-push.log" \
@@ -958,13 +959,19 @@ echo "==> Case 30: rebased PR branch resumes via guarded force-with-lease"
 OUT="$TEST_DIR/case30.out"
 RC=0
 reset_open_pr_logs
+# The observed remote head is an ancestor of local HEAD, so every remote
+# change is incorporated and the guarded retry may publish the rebase.
+OBSERVED_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
+LOCAL_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
 OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$OBSERVED_HEAD" \
   GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" = "0" ] \
   && grep -q 'Retrying with --force-with-lease pinned to observed PR head' "$OUT" \
-  && grep -q -- '--force-with-lease=feat/test:existing-pr-head' "$TEST_DIR/git-push.log" \
+  && grep -q -- "--force-with-lease=feat/test:$OBSERVED_HEAD" "$TEST_DIR/git-push.log" \
+  && grep -q -- "$LOCAL_HEAD:refs/heads/feat/test" "$TEST_DIR/git-push.log" \
   && [ -s "$TEST_DIR/review-request.log" ]; then
   echo "    PASS"
 else
@@ -998,6 +1005,7 @@ OUT="$TEST_DIR/case32.out"
 RC=0
 reset_open_pr_logs
 OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$(git -C "$REPO_DIR" rev-parse HEAD)" \
   GIT_PUSH_PLAIN_EXIT=1 GIT_PUSH_LEASE_EXIT=1 \
   GH_PR_BODY=$'Closes #52\n\nProtocol: yes' run_open_pr >"$OUT" 2>&1 || RC=$?
 
@@ -1007,6 +1015,54 @@ if [ "$RC" != "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: expected stale lease to fail closed" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 33: unincorporated remote commits refuse the guarded retry"
+OUT="$TEST_DIR/case33.out"
+RC=0
+reset_open_pr_logs
+# Fabricate a commit object that exists locally but whose change was never
+# incorporated into the branch history — a remote-only review commit seen by
+# the snapshot from a stale checkout. Plumbing only; the worktree stays clean.
+SIDE_BLOB="$(git -C "$REPO_DIR" hash-object -w /dev/stdin <<<"remote only change")"
+SIDE_TREE="$(printf '100644 blob %s\tremote-only.txt\n' "$SIDE_BLOB" | git -C "$REPO_DIR" mktree)"
+SIDE_SHA="$(git -C "$REPO_DIR" commit-tree "$SIDE_TREE" -p "$(git -C "$REPO_DIR" rev-parse HEAD)" -m "remote only commit")"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$SIDE_SHA" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'whose changes are not in this checkout' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected unincorporated remote commits to refuse the retry" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 34: unknown observed head refuses the guarded retry"
+OUT="$TEST_DIR/case34.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="ffffffffffffffffffffffffffffffffffffffff" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'is not present locally' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected unknown observed head to refuse the retry" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))

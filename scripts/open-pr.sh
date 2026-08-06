@@ -903,23 +903,45 @@ fi
 # Rebased-PR resume (issue #630): a rejected push on a branch with an open PR
 # is the sanctioned rebase-after-takeover flow, not an error. Retry ONCE with
 # --force-with-lease pinned to the PR head observed in this run's pre-push
-# snapshot: the lease publishes the rebase only if the remote still points at
-# exactly that head, and fails closed if anything else moved it. Branches
-# without an open PR never force-push.
+# snapshot — but the lease only proves nothing moved AFTER the snapshot, not
+# that this checkout ever incorporated that head. Before forcing, require
+# integration evidence: the observed head must exist locally and contribute
+# no patches absent from the local history (git cherry). A stale checkout
+# missing remote-only commits fails closed instead of deleting them. The
+# retry pushes the CAPTURED head SHA explicitly so a pre-push hook that
+# advances HEAD cannot publish a head the review request is not bound to.
+# Branches without an open PR never force-push.
 if [ "$PUSH_STATUS" -ne 0 ]; then
   if [ -z "$EXISTING_PR_URL" ] || [ -z "$EXISTING_PR_HEAD_SHA" ]; then
     echo "ERROR: push failed for '$CURRENT_BRANCH' and no open PR authorizes a guarded retry." >&2
     exit "$PUSH_STATUS"
   fi
-  echo "==> Push rejected; PR $EXISTING_PR_URL exists for this branch."
+  if ! git cat-file -e "$EXISTING_PR_HEAD_SHA^{commit}" 2>/dev/null; then
+    echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} is not present locally." >&2
+    echo "       This checkout never had the remote branch's current history; forcing would" >&2
+    echo "       delete it. Fetch the branch, reconcile (rebase or merge), then rerun." >&2
+    exit 1
+  fi
+  UNINCORPORATED="$(git cherry "$PUSHED_HEAD_SHA" "$EXISTING_PR_HEAD_SHA" 2>/dev/null | grep -c '^+' || true)"
+  if [ "$UNINCORPORATED" != 0 ]; then
+    echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} carries $UNINCORPORATED commit(s)" >&2
+    echo "       whose changes are not in this checkout's history. Forcing would delete them." >&2
+    echo "       Fetch and reconcile (rebase or merge) so every remote change is incorporated," >&2
+    echo "       then rerun; refusing to overwrite unseen work." >&2
+    exit 1
+  fi
+  echo "==> Push rejected; PR $EXISTING_PR_URL exists and every observed-head change is incorporated locally."
   echo "==> Retrying with --force-with-lease pinned to observed PR head ${EXISTING_PR_HEAD_SHA:0:12} ..."
-  if ! git push --force-with-lease="$CURRENT_BRANCH:$EXISTING_PR_HEAD_SHA" -u origin "$CURRENT_BRANCH"; then
+  if ! git push --force-with-lease="$CURRENT_BRANCH:$EXISTING_PR_HEAD_SHA" \
+    origin "$PUSHED_HEAD_SHA:refs/heads/$CURRENT_BRANCH"; then
     echo "ERROR: guarded force-with-lease push failed for '$CURRENT_BRANCH'." >&2
     echo "       The remote branch no longer points at the observed PR head ${EXISTING_PR_HEAD_SHA:0:12}," >&2
     echo "       so something else updated it since this run's snapshot. Inspect the remote" >&2
     echo "       branch and rerun after reconciling; refusing to overwrite unseen work." >&2
     exit 1
   fi
+  # The refspec push does not manage upstream; make later plain pushes work.
+  git branch --set-upstream-to="origin/$CURRENT_BRANCH" >/dev/null 2>&1 || true
 fi
 
 # Install the cleanup/orphan-warning trap now — every later exit path may
