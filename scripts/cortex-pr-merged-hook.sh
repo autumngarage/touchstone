@@ -387,11 +387,28 @@ fi
 # the absolute path on stdout. We capture stdout to grab that path; we
 # leave stderr untouched so any cortex-side warnings (gh not auth'd, etc)
 # surface to the operator running the merge.
+#
+# When the caller named the source PR, forward it: without --pr, Cortex
+# infers the PR from the current HEAD subject, so a recovered journal for an
+# older merge would carry that PR in its branch/commit/PR body while the
+# durable artifact silently described a different, newer PR (issue #513).
+# Inference remains the fallback only when no explicit value exists.
+draft_pr_args=()
+case "${TOUCHSTONE_MERGED_PR:-}" in
+  "") ;;
+  *[!0-9]*)
+    log "cortex-pr-merged-hook: TOUCHSTONE_MERGED_PR must be numeric, got: $TOUCHSTONE_MERGED_PR"
+    exit 1
+    ;;
+  *)
+    draft_pr_args=(--pr "$TOUCHSTONE_MERGED_PR")
+    ;;
+esac
 draft_stdout=""
 draft_status=0
 draft_stdout="$(cd "$PROJECT_DIR" \
   && CORTEX_PR_MERGED_FIRED_TRIGGERS="$fired_triggers_ndjson" \
-    cortex journal draft pr-merged --no-edit)" \
+    cortex journal draft pr-merged --no-edit ${draft_pr_args[@]+"${draft_pr_args[@]}"})" \
   || draft_status=$?
 if [ "$draft_status" -ne 0 ]; then
   log "cortex-pr-merged-hook: cortex journal draft pr-merged exited $draft_status."

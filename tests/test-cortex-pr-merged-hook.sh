@@ -202,9 +202,23 @@ if [ "${1:-}" = "check-triggers" ]; then
 fi
 
 if [ "${1:-}" = "journal" ] && [ "${2:-}" = "draft" ] && [ "${3:-}" = "pr-merged" ]; then
+  # Mirror the real CLI: an explicit --pr wins; otherwise infer from HEAD's
+  # subject. The drafted entry records which source PR it described so tests
+  # can assert transport metadata and durable content agree (issue #513).
+  pr_value=""
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "--pr" ]; then
+      pr_value="$arg"
+    fi
+    prev="$arg"
+  done
+  if [ -z "$pr_value" ]; then
+    pr_value="inferred-from-head:$(git log -1 --format=%s | { grep -oE '#[0-9]+' || true; } | head -1 | tr -d '#')"
+  fi
   mkdir -p .cortex/journal
   entry="$(pwd)/.cortex/journal/pr-merged.md"
-  printf 'drafted journal\n' > "$entry"
+  printf 'drafted journal for source-pr=%s\n' "$pr_value" > "$entry"
   printf '%s\n' "$entry"
   exit 0
 fi
@@ -318,6 +332,19 @@ fi
 if ! printf '%s\n' "$H_CHANGED" | grep -qx '.cortex/state.md'; then
   echo "FAIL [H]: hook commit did not include refreshed Cortex state" >&2
   printf '%s\n' "$H_CHANGED" >&2
+  exit 1
+fi
+# Issue #513 coherence: the branch name, commit message, and the DURABLE
+# journal artifact must all describe the same source PR. The fixture's HEAD
+# subject carries no PR reference, so only an explicitly forwarded --pr can
+# make the drafted entry say 131 — inference would corrupt the record.
+if ! git -C "$H" show HEAD:.cortex/journal/pr-merged.md | grep -q 'source-pr=131'; then
+  echo "FAIL [H]: drafted journal does not describe the explicit source PR 131" >&2
+  git -C "$H" show HEAD:.cortex/journal/pr-merged.md >&2
+  exit 1
+fi
+if ! git -C "$H" log -1 --format=%s | grep -q '#131'; then
+  echo "FAIL [H]: hook commit subject does not name source PR 131" >&2
   exit 1
 fi
 if [ "$(cat "$H/.cortex/state.md")" != "refreshed state" ]; then
