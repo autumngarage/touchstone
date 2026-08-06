@@ -2667,4 +2667,201 @@ else
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# respond-review.sh — the one-command review-finding response (issue #652).
+# Folded into this suite because it is part of the PR review/merge surface:
+# the merge gate requires resolved threads, and this script owns the
+# reply + resolve + verify exchange. Self-contained mock; does not reuse the
+# merge mocks above.
+# ---------------------------------------------------------------------------
+echo "==> respond-review: one-command finding response contract"
+RR_SCRIPT="$TOUCHSTONE_ROOT/scripts/respond-review.sh"
+RR_BIN="$TEST_DIR/respond-review-bin"
+RR_GH_LOG="$TEST_DIR/respond-review-gh.log"
+mkdir -p "$RR_BIN"
+cat >"$RR_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$RR_GH_LOG"
+case "${1:-} ${2:-}" in
+  "repo view")
+    echo "autumngarage/example"
+    ;;
+  "api graphql")
+    count_file="${RR_GRAPHQL_COUNT_FILE:?}"
+    count="$(cat "$count_file" 2>/dev/null || echo 0)"
+    count=$((count + 1))
+    printf '%s' "$count" >"$count_file"
+    if [ "$count" -le "${RR_FAIL_GRAPHQL_TIMES:-0}" ]; then
+      echo "invalid character '<' looking for beginning of value" >&2
+      exit 1
+    fi
+    case "$*" in
+      *"resolveReviewThread"*) echo "${RR_RESOLVE_RESULT:-true}" ;;
+      *"node(id:"*) echo "${RR_VERIFY_RESULT:-true}" ;;
+      *"reviewThreads"*)
+        if [ -n "${RR_THREADS_OUTPUT:-}" ]; then
+          printf '%s\n' "$RR_THREADS_OUTPUT"
+        fi
+        ;;
+      *) echo "unexpected graphql: $*" >&2; exit 1 ;;
+    esac
+    ;;
+  "api --paginate")
+    case "$*" in
+      *"pulls/77/comments"*) printf '%s\n' "${RR_EXISTING_REPLIES:-}" ;;
+      *) echo "unexpected paginated api: $*" >&2; exit 1 ;;
+    esac
+    ;;
+  "api repos/autumngarage/example/pulls/77/comments/9001/replies")
+    echo "5555"
+    ;;
+  *)
+    echo "unexpected gh args: $*" >&2
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "$RR_BIN/gh"
+cat >"$RR_BIN/sleep" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$RR_BIN/sleep"
+
+run_respond_review() {
+  : >"$RR_GH_LOG"
+  printf '0' >"$TEST_DIR/respond-review-graphql-count"
+  PATH="$RR_BIN:/usr/bin:/bin" \
+    RR_GH_LOG="$RR_GH_LOG" \
+    RR_GRAPHQL_COUNT_FILE="$TEST_DIR/respond-review-graphql-count" \
+    RR_THREADS_OUTPUT="${RR_THREADS_OUTPUT:-}" \
+    RR_EXISTING_REPLIES="${RR_EXISTING_REPLIES:-}" \
+    RR_RESOLVE_RESULT="${RR_RESOLVE_RESULT:-true}" \
+    RR_VERIFY_RESULT="${RR_VERIFY_RESULT:-true}" \
+    RR_FAIL_GRAPHQL_TIMES="${RR_FAIL_GRAPHQL_TIMES:-0}" \
+    bash "$RR_SCRIPT" "$@"
+}
+
+RR_BODY_FILE="$TEST_DIR/respond-review-reply.md"
+printf 'Fixed by hardening the check.\n' >"$RR_BODY_FILE"
+
+# Happy path: reply posted, thread resolved, verification read passes, and
+# the paginated thread scans are used.
+RR_OUT="$TEST_DIR/respond-review-happy.out"
+RC=0
+RR_THREADS_OUTPUT="THREAD_NODE_1" run_respond_review 77 --comment-id 9001 --body-file "$RR_BODY_FILE" >"$RR_OUT" 2>&1 || RC=$?
+if [ "$RC" = 0 ] \
+  && grep -q 'reply id: 5555' "$RR_OUT" \
+  && grep -q 'Replied and resolved' "$RR_OUT" \
+  && grep -q -- '--paginate' "$RR_GH_LOG" \
+  && grep -q 'resolveReviewThread' "$RR_GH_LOG"; then
+  echo "    PASS: happy path replies, resolves, verifies via paginated scans"
+else
+  echo "FAIL: respond-review happy path (rc=$RC)" >&2
+  cat "$RR_OUT" >&2
+  exit 1
+fi
+
+# Fix-commit trailer and idempotency marker both land in the reply payload.
+RC=0
+RR_THREADS_OUTPUT="THREAD_NODE_1" run_respond_review 77 --comment-id 9001 --body-file "$RR_BODY_FILE" --fix-commit abc1234 >"$RR_OUT" 2>&1 || RC=$?
+if [ "$RC" = 0 ] \
+  && grep -q 'Fixed in abc1234' "$RR_GH_LOG" \
+  && grep -q 'touchstone:respond-review comment=9001' "$RR_GH_LOG"; then
+  echo "    PASS: fix-commit trailer and idempotency marker in reply"
+else
+  echo "FAIL: respond-review trailer/marker (rc=$RC)" >&2
+  cat "$RR_OUT" >&2
+  exit 1
+fi
+
+# Rerun after a posted reply: the marker suppresses a duplicate post.
+RC=0
+RR_THREADS_OUTPUT="THREAD_NODE_1" \
+  RR_EXISTING_REPLIES="prior reply body
+<!-- touchstone:respond-review comment=9001 -->" \
+  run_respond_review 77 --comment-id 9001 --body-file "$RR_BODY_FILE" >"$RR_OUT" 2>&1 || RC=$?
+if [ "$RC" = 0 ] \
+  && grep -q 'already posted (marker found); skipping the reply step' "$RR_OUT" \
+  && ! grep -q 'replies' "$RR_GH_LOG"; then
+  echo "    PASS: rerun is idempotent after a posted reply"
+else
+  echo "FAIL: respond-review idempotent rerun (rc=$RC)" >&2
+  cat "$RR_OUT" >&2
+  exit 1
+fi
+
+# Verification failure exits nonzero (the mutation response alone cannot be
+# trusted).
+RC=0
+RR_THREADS_OUTPUT="THREAD_NODE_1" RR_VERIFY_RESULT=false \
+  run_respond_review 77 --comment-id 9001 --body-file "$RR_BODY_FILE" >"$RR_OUT" 2>&1 || RC=$?
+if [ "$RC" != 0 ] && grep -q 'still unresolved after the mutation' "$RR_OUT"; then
+  echo "    PASS: verification failure exits nonzero"
+else
+  echo "FAIL: respond-review verification failure (rc=$RC)" >&2
+  cat "$RR_OUT" >&2
+  exit 1
+fi
+
+# Transient GraphQL failures retry then succeed.
+RC=0
+RR_THREADS_OUTPUT="THREAD_NODE_1" RR_FAIL_GRAPHQL_TIMES=1 \
+  run_respond_review 77 --comment-id 9001 --body-file "$RR_BODY_FILE" >"$RR_OUT" 2>&1 || RC=$?
+if [ "$RC" = 0 ] && grep -q 'retrying in' "$RR_OUT"; then
+  echo "    PASS: transient GraphQL failure retries then succeeds"
+else
+  echo "FAIL: respond-review transient retry (rc=$RC)" >&2
+  cat "$RR_OUT" >&2
+  exit 1
+fi
+
+# --all-resolved-check gates on open threads and lists them.
+RC=0
+RR_THREADS_OUTPUT="" run_respond_review 77 --all-resolved-check >"$RR_OUT" 2>&1 || RC=$?
+if [ "$RC" != 0 ]; then
+  echo "FAIL: respond-review clean resolved-check (rc=$RC)" >&2
+  cat "$RR_OUT" >&2
+  exit 1
+fi
+RC=0
+RR_THREADS_OUTPUT="$(printf 'THREAD_NODE_2\t9002\tscripts/foo.sh')" \
+  run_respond_review 77 --all-resolved-check >"$RR_OUT" 2>&1 || RC=$?
+if [ "$RC" != 0 ] && grep -q 'comment 9002 (scripts/foo.sh)' "$RR_OUT"; then
+  echo "    PASS: --all-resolved-check gates on open threads"
+else
+  echo "FAIL: respond-review dirty resolved-check (rc=$RC)" >&2
+  cat "$RR_OUT" >&2
+  exit 1
+fi
+
+# Unknown comment id fails before any mutation.
+RC=0
+RR_THREADS_OUTPUT="" run_respond_review 77 --comment-id 9001 --body-file "$RR_BODY_FILE" >"$RR_OUT" 2>&1 || RC=$?
+if [ "$RC" != 0 ] \
+  && grep -q 'no review thread found' "$RR_OUT" \
+  && ! grep -q 'resolveReviewThread' "$RR_GH_LOG"; then
+  echo "    PASS: unknown comment id fails before any mutation"
+else
+  echo "FAIL: respond-review unknown comment (rc=$RC)" >&2
+  cat "$RR_OUT" >&2
+  exit 1
+fi
+
+# Propagation: the script must reach downstream projects through every
+# distribution surface — bootstrap copy, update sync, the sync-discipline
+# planned-write boundary, and preflight's delivery-only classification.
+for propagation_file in \
+  "bootstrap/new-project.sh" \
+  "bootstrap/update-project.sh" \
+  "lib/sync-discipline.sh" \
+  "lib/preflight.sh"; do
+  if ! grep -q 'scripts/respond-review\.sh' "$TOUCHSTONE_ROOT/$propagation_file"; then
+    echo "FAIL: $propagation_file does not register scripts/respond-review.sh" >&2
+    exit 1
+  fi
+done
+echo "    PASS: respond-review registered across all distribution surfaces"
+
 echo "==> PASS: merge gate requires deterministic checks plus exact-revision PR review"

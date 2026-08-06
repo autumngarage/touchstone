@@ -104,9 +104,18 @@ graphql_with_retry() {
   done
 }
 
+# All thread scans paginate: a PR can carry more than one page of review
+# threads, and a fixed-size query would silently ignore later pages —
+# --all-resolved-check would pass with unresolved threads remaining.
+THREADS_QUERY='query($endCursor: String) { repository(owner:"OWNER", name:"NAME") { pullRequest(number:PRNUM) { reviewThreads(first:100, after:$endCursor) { nodes { id isResolved comments(first:1) { nodes { databaseId path } } } pageInfo { hasNextPage endCursor } } } } }'
+threads_query() {
+  printf '%s' "$THREADS_QUERY" \
+    | sed -e "s/OWNER/$REPO_OWNER/" -e "s/NAME/$REPO_NAME/" -e "s/PRNUM/$PR_NUMBER/"
+}
+
 list_unresolved_threads() {
-  graphql_with_retry \
-    -f query="query { repository(owner:\"$REPO_OWNER\", name:\"$REPO_NAME\") { pullRequest(number:$PR_NUMBER) { reviewThreads(first:100) { nodes { id isResolved comments(first:1) { nodes { databaseId path body } } } } } } }" \
+  graphql_with_retry --paginate \
+    -f query="$(threads_query)" \
     --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | [.id, (.comments.nodes[0].databaseId | tostring), (.comments.nodes[0].path // "-")] | @tsv'
 }
 
@@ -136,16 +145,31 @@ if [ -n "$FIX_COMMIT" ]; then
 
 Fixed in $FIX_COMMIT."
 fi
+# Idempotency marker: reruns after a partial failure (reply posted, resolve
+# failed) must not post a duplicate reply. The marker is invisible in
+# rendered Markdown and detectable on the next run.
+REPLY_MARKER="<!-- touchstone:respond-review comment=$COMMENT_ID -->"
+REPLY_BODY="$REPLY_BODY
 
-echo "==> Replying to review comment $COMMENT_ID on PR #$PR_NUMBER ..."
-REPLY_ID="$(gh api "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/comments/$COMMENT_ID/replies" \
-  -f body="$REPLY_BODY" --jq '.id' 2>&1)" \
-  || fail "could not post the reply: $REPLY_ID"
-echo "    reply id: $REPLY_ID"
+$REPLY_MARKER"
+
+EXISTING_REPLY="$(gh api --paginate \
+  "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/comments" \
+  --jq ".[] | select(.in_reply_to_id == $COMMENT_ID) | .body" 2>&1)" \
+  || fail "could not inspect existing replies for comment $COMMENT_ID: $EXISTING_REPLY"
+if printf '%s' "$EXISTING_REPLY" | grep -qF "$REPLY_MARKER"; then
+  echo "==> Reply for comment $COMMENT_ID already posted (marker found); skipping the reply step."
+else
+  echo "==> Replying to review comment $COMMENT_ID on PR #$PR_NUMBER ..."
+  REPLY_ID="$(gh api "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/comments/$COMMENT_ID/replies" \
+    -f body="$REPLY_BODY" --jq '.id' 2>&1)" \
+    || fail "could not post the reply: $REPLY_ID"
+  echo "    reply id: $REPLY_ID"
+fi
 
 echo "==> Resolving the thread for comment $COMMENT_ID ..."
-THREAD_ID="$(graphql_with_retry \
-  -f query="query { repository(owner:\"$REPO_OWNER\", name:\"$REPO_NAME\") { pullRequest(number:$PR_NUMBER) { reviewThreads(first:100) { nodes { id comments(first:1) { nodes { databaseId } } } } } } }" \
+THREAD_ID="$(graphql_with_retry --paginate \
+  -f query="$(threads_query)" \
   --jq ".data.repository.pullRequest.reviewThreads.nodes[] | select(.comments.nodes[0].databaseId == $COMMENT_ID) | .id")" \
   || fail "could not look up the review thread for comment $COMMENT_ID."
 [ -n "$THREAD_ID" ] || fail "no review thread found whose first comment is $COMMENT_ID."
