@@ -1131,6 +1131,36 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Case 38: git replace refs cannot spoof the integration evidence"
+OUT="$TEST_DIR/case38.out"
+RC=0
+reset_open_pr_logs
+# A replace ref maps the remote-only commit onto the local HEAD: with
+# replacement objects honored, every inspection would see the local commit
+# and bless the force-push while the lease matches the original remote SHA.
+# The inspections must run with GIT_NO_REPLACE_OBJECTS=1 and refuse.
+SPOOF_BLOB="$(git -C "$REPO_DIR" hash-object -w /dev/stdin <<<"spoofed remote content")"
+SPOOF_TREE="$(printf '100644 blob %s\tspoofed-only.txt\n' "$SPOOF_BLOB" | git -C "$REPO_DIR" mktree)"
+SPOOF_SHA="$(git -C "$REPO_DIR" commit-tree "$SPOOF_TREE" -p "$(git -C "$REPO_DIR" rev-parse HEAD~1)" -m "spoofed remote commit")"
+git -C "$REPO_DIR" replace "$SPOOF_SHA" "$(git -C "$REPO_DIR" rev-parse HEAD)"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$SPOOF_SHA" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" replace -d "$SPOOF_SHA" >/dev/null 2>&1 || true
+
+if [ "$RC" != "0" ] \
+  && grep -q 'whose changes are not in this checkout' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected replace-ref spoof to be refused" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 34: unknown observed head refuses the guarded retry"
 OUT="$TEST_DIR/case34.out"
 RC=0

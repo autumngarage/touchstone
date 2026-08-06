@@ -916,7 +916,12 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
     echo "ERROR: push failed for '$CURRENT_BRANCH' and no open PR authorizes a guarded retry." >&2
     exit "$PUSH_STATUS"
   fi
-  if ! git cat-file -e "$EXISTING_PR_HEAD_SHA^{commit}" 2>/dev/null; then
+  # Every integration inspection runs with replacement objects disabled: a
+  # local `git replace` ref for the observed head would otherwise substitute
+  # a different commit during validation while the lease still matches the
+  # original remote SHA — the checks would bless content the force-push then
+  # deletes.
+  if ! GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "$EXISTING_PR_HEAD_SHA^{commit}" 2>/dev/null; then
     echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} is not present locally." >&2
     echo "       This checkout never had the remote branch's current history; forcing would" >&2
     echo "       delete it. Fetch the branch, reconcile (rebase or merge), then rerun." >&2
@@ -929,7 +934,7 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
   # patch equivalence — refuse and require manual reconciliation. Both
   # history inspections FAIL CLOSED on traversal errors (missing or corrupt
   # ancestor objects): a check that could not run is not a clean check.
-  if ! MERGE_LIST="$(git rev-list --merges "$EXISTING_PR_HEAD_SHA" --not "$PUSHED_HEAD_SHA" 2>&1)"; then
+  if ! MERGE_LIST="$(GIT_NO_REPLACE_OBJECTS=1 git rev-list --merges "$EXISTING_PR_HEAD_SHA" --not "$PUSHED_HEAD_SHA" 2>&1)"; then
     echo "ERROR: push rejected and the observed PR head's history could not be traversed:" >&2
     printf '%s\n' "$MERGE_LIST" | sed 's/^/       /' >&2
     echo "       Cannot prove the remote history is incorporated; refusing to force-push." >&2
@@ -953,7 +958,7 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
   # (rebases renumber them), everything else must match byte-for-byte.
   open_pr_exact_patch_fingerprint() {
     local commit="$1" patch_text
-    if ! patch_text="$(git diff-tree --no-commit-id --full-index -p -U3 "$commit" 2>&1)"; then
+    if ! patch_text="$(GIT_NO_REPLACE_OBJECTS=1 git diff-tree --no-commit-id --full-index -p -U3 "$commit" 2>&1)"; then
       echo "ERROR: could not compute the patch for commit ${commit:0:12}:" >&2
       printf '%s\n' "$patch_text" | sed 's/^/       /' >&2
       return 1
@@ -971,14 +976,14 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
   fi
   # shellcheck source=../lib/sha256.sh
   source "$SCRIPT_DIR/../lib/sha256.sh"
-  if ! REMOTE_ONLY_COMMITS="$(git rev-list "$EXISTING_PR_HEAD_SHA" --not "$PUSHED_HEAD_SHA" 2>&1)"; then
+  if ! REMOTE_ONLY_COMMITS="$(GIT_NO_REPLACE_OBJECTS=1 git rev-list "$EXISTING_PR_HEAD_SHA" --not "$PUSHED_HEAD_SHA" 2>&1)"; then
     echo "ERROR: push rejected and the observed PR head's history could not be traversed:" >&2
     printf '%s\n' "$REMOTE_ONLY_COMMITS" | sed 's/^/       /' >&2
     echo "       Cannot prove the remote history is incorporated; refusing to force-push." >&2
     exit 1
   fi
   if [ -n "$REMOTE_ONLY_COMMITS" ]; then
-    if ! LOCAL_ONLY_COMMITS="$(git rev-list "$PUSHED_HEAD_SHA" --not "$EXISTING_PR_HEAD_SHA" 2>&1)"; then
+    if ! LOCAL_ONLY_COMMITS="$(GIT_NO_REPLACE_OBJECTS=1 git rev-list "$PUSHED_HEAD_SHA" --not "$EXISTING_PR_HEAD_SHA" 2>&1)"; then
       echo "ERROR: push rejected and the local branch history could not be traversed:" >&2
       printf '%s\n' "$LOCAL_ONLY_COMMITS" | sed 's/^/       /' >&2
       echo "       Cannot prove the remote history is incorporated; refusing to force-push." >&2
