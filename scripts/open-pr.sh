@@ -1031,7 +1031,13 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
     exit 1
   fi
   # The refspec push does not manage upstream; make later plain pushes work.
-  git branch --set-upstream-to="origin/$CURRENT_BRANCH" >/dev/null 2>&1 || true
+  # A failure here must be visible (the review flow continues, but a later
+  # plain push would target the old upstream or need another recovery run).
+  if ! UPSTREAM_SET_OUTPUT="$(git branch --set-upstream-to="origin/$CURRENT_BRANCH" 2>&1)"; then
+    echo "WARNING: could not restore upstream origin/$CURRENT_BRANCH after the guarded push:" >&2
+    printf '%s\n' "$UPSTREAM_SET_OUTPUT" | sed 's/^/         /' >&2
+    echo "         Set it manually: git branch --set-upstream-to=origin/$CURRENT_BRANCH" >&2
+  fi
 fi
 
 # Install the cleanup/orphan-warning trap now — every later exit path may
