@@ -96,7 +96,15 @@ draft leaves it draft and prints the final-shipping command.
 `merge-pr.sh` fails closed when review evidence is missing, stale, authored by
 an untrusted account, or bound to a different base. It also blocks active
 requested-changes decisions, unresolved review threads, failed required
-checks, behind branches, and base movement. It then runs deterministic
+checks, behind branches, and base movement.
+
+Answer each review finding with the canonical response command instead of
+hand-rolling API calls: `bash scripts/respond-review.sh <pr> --comment-id
+<id> --body-file <file> [--fix-commit <sha>]` posts the threaded reply,
+resolves the thread, and verifies the resolution stuck (with bounded retries
+for transient API failures). Before re-requesting review, gate on
+`bash scripts/respond-review.sh <pr> --all-resolved-check`, which lists any
+remaining unresolved threads and exits nonzero. It then runs deterministic
 preflight and revalidates review immediately before merging with
 `--match-head-commit`.
 
