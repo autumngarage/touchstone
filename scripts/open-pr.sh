@@ -944,19 +944,76 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
     echo "       manually (fetch, merge or rebase), then rerun." >&2
     exit 1
   fi
-  if ! CHERRY_LIST="$(git cherry "$PUSHED_HEAD_SHA" "$EXISTING_PR_HEAD_SHA" 2>&1)"; then
-    echo "ERROR: push rejected and patch comparison against the observed PR head failed:" >&2
-    printf '%s\n' "$CHERRY_LIST" | sed 's/^/       /' >&2
+  # Exact-content integration evidence. git cherry's patch-ids ignore
+  # whitespace, which is behaviorally significant in Python, YAML, and shell
+  # continuations — a remote commit differing only in whitespace would count
+  # as incorporated and its content would be forced away. Instead, every
+  # remote-only commit must have a whitespace-EXACT patch twin among the
+  # local-only commits: hunk headers and index lines are normalized out
+  # (rebases renumber them), everything else must match byte-for-byte.
+  open_pr_exact_patch_fingerprint() {
+    local commit="$1" patch_text
+    if ! patch_text="$(git diff-tree --no-commit-id --full-index -p -U3 "$commit" 2>&1)"; then
+      echo "ERROR: could not compute the patch for commit ${commit:0:12}:" >&2
+      printf '%s\n' "$patch_text" | sed 's/^/       /' >&2
+      return 1
+    fi
+    # An empty patch carries no provable content; the caller refuses.
+    [ -n "$patch_text" ] || return 2
+    printf '%s\n' "$patch_text" \
+      | sed -e '/^index /d' -e 's/^@@ .*@@/@@/' \
+      | touchstone_sha256_stream
+  }
+  if [ ! -f "$SCRIPT_DIR/../lib/sha256.sh" ]; then
+    echo "ERROR: push rejected and lib/sha256.sh is missing; cannot prove remote history" >&2
+    echo "       is incorporated. Refusing to force-push." >&2
+    exit 1
+  fi
+  # shellcheck source=../lib/sha256.sh
+  source "$SCRIPT_DIR/../lib/sha256.sh"
+  if ! REMOTE_ONLY_COMMITS="$(git rev-list "$EXISTING_PR_HEAD_SHA" --not "$PUSHED_HEAD_SHA" 2>&1)"; then
+    echo "ERROR: push rejected and the observed PR head's history could not be traversed:" >&2
+    printf '%s\n' "$REMOTE_ONLY_COMMITS" | sed 's/^/       /' >&2
     echo "       Cannot prove the remote history is incorporated; refusing to force-push." >&2
     exit 1
   fi
-  UNINCORPORATED="$(printf '%s' "$CHERRY_LIST" | grep -c '^+' || true)"
-  if [ "$UNINCORPORATED" != 0 ]; then
-    echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} carries $UNINCORPORATED commit(s)" >&2
-    echo "       whose changes are not in this checkout's history. Forcing would delete them." >&2
-    echo "       Fetch and reconcile (rebase or merge) so every remote change is incorporated," >&2
-    echo "       then rerun; refusing to overwrite unseen work." >&2
-    exit 1
+  if [ -n "$REMOTE_ONLY_COMMITS" ]; then
+    if ! LOCAL_ONLY_COMMITS="$(git rev-list "$PUSHED_HEAD_SHA" --not "$EXISTING_PR_HEAD_SHA" 2>&1)"; then
+      echo "ERROR: push rejected and the local branch history could not be traversed:" >&2
+      printf '%s\n' "$LOCAL_ONLY_COMMITS" | sed 's/^/       /' >&2
+      echo "       Cannot prove the remote history is incorporated; refusing to force-push." >&2
+      exit 1
+    fi
+    LOCAL_PATCH_FINGERPRINTS=" "
+    for local_commit in $LOCAL_ONLY_COMMITS; do
+      fp_status=0
+      local_fp="$(open_pr_exact_patch_fingerprint "$local_commit")" || fp_status=$?
+      # Status 2 (empty patch) just contributes no twin; hard errors abort.
+      if [ "$fp_status" -eq 1 ]; then
+        echo "       Refusing to force-push without complete integration evidence." >&2
+        exit 1
+      fi
+      [ "$fp_status" -eq 0 ] && LOCAL_PATCH_FINGERPRINTS="${LOCAL_PATCH_FINGERPRINTS}${local_fp} "
+    done
+    for remote_commit in $REMOTE_ONLY_COMMITS; do
+      fp_status=0
+      remote_fp="$(open_pr_exact_patch_fingerprint "$remote_commit")" || fp_status=$?
+      if [ "$fp_status" -ne 0 ]; then
+        echo "ERROR: push rejected and remote commit ${remote_commit:0:12} has no provable patch content." >&2
+        echo "       Refusing to force-push without complete integration evidence." >&2
+        exit 1
+      fi
+      case "$LOCAL_PATCH_FINGERPRINTS" in
+        *" $remote_fp "*) ;;
+        *)
+          echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} carries commit ${remote_commit:0:12}" >&2
+          echo "       whose changes are not in this checkout's history byte-for-byte (whitespace" >&2
+          echo "       differences count). Forcing would delete them. Fetch and reconcile" >&2
+          echo "       (rebase or merge), then rerun; refusing to overwrite unseen work." >&2
+          exit 1
+          ;;
+      esac
+    done
   fi
   echo "==> Push rejected; PR $EXISTING_PR_URL exists and every observed-head change is incorporated locally."
   echo "==> Retrying with --force-with-lease pinned to observed PR head ${EXISTING_PR_HEAD_SHA:0:12} ..."

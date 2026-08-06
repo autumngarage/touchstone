@@ -43,6 +43,7 @@ cp "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$SCRIPT_DIR/issue-claim-chec
 mkdir -p "$TEST_DIR/lib"
 cp "$TOUCHSTONE_ROOT/lib/events.sh" "$TEST_DIR/lib/events.sh"
 cp "$TOUCHSTONE_ROOT/lib/toml.sh" "$TEST_DIR/lib/toml.sh"
+cp "$TOUCHSTONE_ROOT/lib/sha256.sh" "$TEST_DIR/lib/sha256.sh"
 chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/issue-claim-check.sh"
 
 # Real git inside a fresh repo with a feature branch checked out, so the
@@ -1097,6 +1098,34 @@ if [ "$RC" != "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: expected traversal failure to refuse the retry" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 37: whitespace-only remote variant refuses the retry"
+OUT="$TEST_DIR/case37.out"
+RC=0
+reset_open_pr_logs
+# A remote commit whose patch differs from the local commit ONLY by trailing
+# whitespace: git cherry's patch-ids treat them as equivalent, but whitespace
+# is behaviorally significant — exact-content evidence must refuse.
+WS_BLOB="$(git -C "$REPO_DIR" cat-file -p HEAD:file.txt | sed 's/change/change /' | git -C "$REPO_DIR" hash-object -w --stdin)"
+OLD_BLOB="$(git -C "$REPO_DIR" rev-parse HEAD:file.txt)"
+WS_TREE="$(git -C "$REPO_DIR" ls-tree HEAD | sed "s/$OLD_BLOB/$WS_BLOB/" | git -C "$REPO_DIR" mktree)"
+WS_SHA="$(git -C "$REPO_DIR" commit-tree "$WS_TREE" -p "$(git -C "$REPO_DIR" rev-parse HEAD~1)" -m "test change")"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$WS_SHA" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'byte-for-byte' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected whitespace-only remote variant to refuse the retry" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
