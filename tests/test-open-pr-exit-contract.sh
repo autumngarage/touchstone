@@ -43,6 +43,7 @@ cp "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$SCRIPT_DIR/issue-claim-chec
 mkdir -p "$TEST_DIR/lib"
 cp "$TOUCHSTONE_ROOT/lib/events.sh" "$TEST_DIR/lib/events.sh"
 cp "$TOUCHSTONE_ROOT/lib/toml.sh" "$TEST_DIR/lib/toml.sh"
+cp "$TOUCHSTONE_ROOT/lib/sha256.sh" "$TEST_DIR/lib/sha256.sh"
 chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/issue-claim-check.sh"
 
 # Real git inside a fresh repo with a feature branch checked out, so the
@@ -101,10 +102,11 @@ case "$1 $2" in
     ;;
   "pr list")
     if [ "${GH_HAS_EXISTING_PR:-0}" = "1" ]; then
-      printf 'https://example.test/touchstone/pull/777\t%s\t%s\t%s\n' \
+      printf 'https://example.test/touchstone/pull/777\t%s\t%s\t%s\t%s\n' \
         "${GH_EXISTING_PR_BASE:-main}" \
         "${GH_PR_HEAD_OID:-existing-pr-head}" \
-        "${GH_PR_IS_DRAFT:-false}"
+        "${GH_PR_IS_DRAFT:-false}" \
+        "${GH_PR_IS_CROSS_REPO:-false}"
     else
       echo ""
     fi
@@ -249,6 +251,18 @@ cat >"$FAKE_BIN/git" <<EOF
 set -euo pipefail
 if [ "\${1:-}" = "push" ]; then
   echo "[mock] git push \$*"
+  if [ -n "\${GIT_PUSH_LOG:-}" ]; then
+    printf '%s\n' "\$*" >>"\$GIT_PUSH_LOG"
+  fi
+  case " \$* " in
+    *" --force-with-lease="*)
+      exit "\${GIT_PUSH_LEASE_EXIT:-0}"
+      ;;
+  esac
+  if [ "\${GIT_PUSH_PLAIN_EXIT:-0}" != 0 ]; then
+    echo " ! [rejected]        (non-fast-forward)" >&2
+    exit "\${GIT_PUSH_PLAIN_EXIT}"
+  fi
   exit 0
 fi
 exec "$REAL_GIT" "\$@"
@@ -285,6 +299,11 @@ run_open_pr() {
       GH_PR_BODY="${GH_PR_BODY:-}" \
       GH_PR_AUTHOR="${GH_PR_AUTHOR:-alice}" \
       GH_REQUIRE_REPO_FOR_MERGED_AT="${GH_REQUIRE_REPO_FOR_MERGED_AT:-0}" \
+      GH_PR_HEAD_OID="${GH_PR_HEAD_OID:-existing-pr-head}" \
+      GH_PR_IS_CROSS_REPO="${GH_PR_IS_CROSS_REPO:-false}" \
+      GIT_PUSH_PLAIN_EXIT="${GIT_PUSH_PLAIN_EXIT:-0}" \
+      GIT_PUSH_LEASE_EXIT="${GIT_PUSH_LEASE_EXIT:-0}" \
+      GIT_PUSH_LOG="$TEST_DIR/git-push.log" \
       MERGE_PR_EXIT="${MERGE_PR_EXIT:-0}" \
       MERGE_PR_REQUEST_COUNT_FILE="$TEST_DIR/merge-pr-request-count" \
       GH_PR_CREATE_LOG="$TEST_DIR/pr-create.log" \
@@ -299,6 +318,7 @@ reset_open_pr_logs() {
   : >"$TEST_DIR/pr-create.log"
   : >"$TEST_DIR/pr-ready.log"
   : >"$TEST_DIR/review-request.log"
+  : >"$TEST_DIR/git-push.log"
   rm -f "$TEST_DIR/merge-pr-request-count"
 }
 
@@ -927,6 +947,260 @@ if [ "$RC" = "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: expected demoted PR under --auto-merge to re-promote and merge" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Cases 30-32 (issue #630): a rejected push on a branch with an open PR is
+# the sanctioned rebase-after-takeover flow. Retry once with
+# --force-with-lease pinned to the snapshot's observed PR head; fail closed
+# without an open PR or when the lease is stale.
+# ---------------------------------------------------------------------------
+echo "==> Case 30: rebased PR branch resumes via guarded force-with-lease"
+OUT="$TEST_DIR/case30.out"
+RC=0
+reset_open_pr_logs
+# The observed remote head is an ancestor of local HEAD, so every remote
+# change is incorporated and the guarded retry may publish the rebase.
+OBSERVED_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
+LOCAL_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$OBSERVED_HEAD" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'Retrying with --force-with-lease pinned to observed PR head' "$OUT" \
+  && grep -q -- "--force-with-lease=feat/test:$OBSERVED_HEAD" "$TEST_DIR/git-push.log" \
+  && grep -q -- "$LOCAL_HEAD:refs/heads/feat/test" "$TEST_DIR/git-push.log" \
+  && [ -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected guarded lease retry to resume the rebased PR branch" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" "$TEST_DIR/git-push.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 31: rejected push without an open PR fails closed"
+OUT="$TEST_DIR/case31.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GIT_PUSH_PLAIN_EXIT=1 \
+  GH_PR_BODY="Protocol: yes" run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'no open PR authorizes a guarded retry' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/pr-create.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected non-PR branch push rejection to fail closed" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 32: stale lease fails closed without overwriting unseen work"
+OUT="$TEST_DIR/case32.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$(git -C "$REPO_DIR" rev-parse HEAD)" \
+  GIT_PUSH_PLAIN_EXIT=1 GIT_PUSH_LEASE_EXIT=1 \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'refusing to overwrite unseen work' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected stale lease to fail closed" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 33: unincorporated remote commits refuse the guarded retry"
+OUT="$TEST_DIR/case33.out"
+RC=0
+reset_open_pr_logs
+# Fabricate a commit object that exists locally but whose change was never
+# incorporated into the branch history — a remote-only review commit seen by
+# the snapshot from a stale checkout. Plumbing only; the worktree stays clean.
+SIDE_BLOB="$(git -C "$REPO_DIR" hash-object -w /dev/stdin <<<"remote only change")"
+SIDE_TREE="$(printf '100644 blob %s\tremote-only.txt\n' "$SIDE_BLOB" | git -C "$REPO_DIR" mktree)"
+SIDE_SHA="$(git -C "$REPO_DIR" commit-tree "$SIDE_TREE" -p "$(git -C "$REPO_DIR" rev-parse HEAD)" -m "remote only commit")"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$SIDE_SHA" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'whose changes are not in this checkout' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected unincorporated remote commits to refuse the retry" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 35: remote merge commit outside local history refuses the retry"
+OUT="$TEST_DIR/case35.out"
+RC=0
+reset_open_pr_logs
+# A merge of two LOCAL ancestors whose resolution tree differs from both:
+# git cherry sees no unincorporated non-merge commits, but the resolution
+# content exists nowhere locally — exactly the case patch comparison cannot
+# prove. Plumbing only; the worktree stays clean.
+MERGE_BLOB="$(git -C "$REPO_DIR" hash-object -w /dev/stdin <<<"merge resolution only")"
+MERGE_TREE="$(printf '100644 blob %s\tresolution-only.txt\n' "$MERGE_BLOB" | git -C "$REPO_DIR" mktree)"
+MERGE_SHA="$(git -C "$REPO_DIR" commit-tree "$MERGE_TREE" -p "$(git -C "$REPO_DIR" rev-parse HEAD)" -p "$(git -C "$REPO_DIR" rev-parse HEAD~1)" -m "remote merge with unseen resolution")"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$MERGE_SHA" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'Merge resolutions cannot be proven' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected remote merge commit to refuse the guarded retry" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 36: history traversal failure refuses the retry (fail closed)"
+OUT="$TEST_DIR/case36.out"
+RC=0
+reset_open_pr_logs
+# A commit object that exists locally but references a missing parent: the
+# existence check passes, then rev-list/cherry fail traversing. A check that
+# could not run must not read as clean.
+BROKEN_COMMIT="$(printf 'tree %s\nparent aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nauthor T <t@e.co> 1700000000 +0000\ncommitter T <t@e.co> 1700000000 +0000\n\nbroken ancestry\n' \
+  "$(git -C "$REPO_DIR" rev-parse 'HEAD^{tree}')" \
+  | git -C "$REPO_DIR" hash-object -t commit -w --stdin --literally)"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$BROKEN_COMMIT" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'could not be traversed' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected traversal failure to refuse the retry" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 37: whitespace-only remote variant refuses the retry"
+OUT="$TEST_DIR/case37.out"
+RC=0
+reset_open_pr_logs
+# A remote commit whose patch differs from the local commit ONLY by trailing
+# whitespace: git cherry's patch-ids treat them as equivalent, but whitespace
+# is behaviorally significant — exact-content evidence must refuse.
+WS_BLOB="$(git -C "$REPO_DIR" cat-file -p HEAD:file.txt | sed 's/change/change /' | git -C "$REPO_DIR" hash-object -w --stdin)"
+OLD_BLOB="$(git -C "$REPO_DIR" rev-parse HEAD:file.txt)"
+WS_TREE="$(git -C "$REPO_DIR" ls-tree HEAD | sed "s/$OLD_BLOB/$WS_BLOB/" | git -C "$REPO_DIR" mktree)"
+WS_SHA="$(git -C "$REPO_DIR" commit-tree "$WS_TREE" -p "$(git -C "$REPO_DIR" rev-parse HEAD~1)" -m "test change")"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$WS_SHA" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'byte-for-byte' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected whitespace-only remote variant to refuse the retry" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 38: git replace refs cannot spoof the integration evidence"
+OUT="$TEST_DIR/case38.out"
+RC=0
+reset_open_pr_logs
+# A replace ref maps the remote-only commit onto the local HEAD: with
+# replacement objects honored, every inspection would see the local commit
+# and bless the force-push while the lease matches the original remote SHA.
+# The inspections must run with GIT_NO_REPLACE_OBJECTS=1 and refuse.
+SPOOF_BLOB="$(git -C "$REPO_DIR" hash-object -w /dev/stdin <<<"spoofed remote content")"
+SPOOF_TREE="$(printf '100644 blob %s\tspoofed-only.txt\n' "$SPOOF_BLOB" | git -C "$REPO_DIR" mktree)"
+SPOOF_SHA="$(git -C "$REPO_DIR" commit-tree "$SPOOF_TREE" -p "$(git -C "$REPO_DIR" rev-parse HEAD~1)" -m "spoofed remote commit")"
+git -C "$REPO_DIR" replace "$SPOOF_SHA" "$(git -C "$REPO_DIR" rev-parse HEAD)"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$SPOOF_SHA" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" replace -d "$SPOOF_SHA" >/dev/null 2>&1 || true
+
+if [ "$RC" != "0" ] \
+  && grep -q 'whose changes are not in this checkout' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected replace-ref spoof to be refused" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 39: fork-backed PR never authorizes the guarded retry"
+OUT="$TEST_DIR/case39.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_IS_CROSS_REPO=true \
+  GH_PR_HEAD_OID="$(git -C "$REPO_DIR" rev-parse HEAD)" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'fork-backed (cross-repository)' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected fork-backed PR to refuse the guarded retry" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 34: unknown observed head refuses the guarded retry"
+OUT="$TEST_DIR/case34.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="ffffffffffffffffffffffffffffffffffffffff" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'is not present locally' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected unknown observed head to refuse the retry" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))

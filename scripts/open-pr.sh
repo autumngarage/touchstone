@@ -790,8 +790,8 @@ if ! EXISTING_PR_RECORD="$(
     --head "$CURRENT_BRANCH" \
     --author "@me" \
     --state open \
-    --json url,baseRefName,headRefOid,isDraft \
-    --jq 'if length > 0 then .[0] | [.url, .baseRefName, .headRefOid, .isDraft] | @tsv else empty end' \
+    --json url,baseRefName,headRefOid,isDraft,isCrossRepository \
+    --jq 'if length > 0 then .[0] | [.url, .baseRefName, .headRefOid, .isDraft, .isCrossRepository] | @tsv else empty end' \
     2>/dev/null
 )"; then
   echo "ERROR: Failed to inspect existing PR metadata for branch '$CURRENT_BRANCH'." >&2
@@ -801,8 +801,9 @@ EXISTING_PR_URL=""
 EXISTING_PR_BASE_BRANCH=""
 EXISTING_PR_HEAD_SHA=""
 EXISTING_PR_IS_DRAFT=""
+EXISTING_PR_IS_CROSS_REPO=""
 if [ -n "$EXISTING_PR_RECORD" ]; then
-  IFS=$'\t' read -r EXISTING_PR_URL EXISTING_PR_BASE_BRANCH EXISTING_PR_HEAD_SHA EXISTING_PR_IS_DRAFT <<<"$EXISTING_PR_RECORD"
+  IFS=$'\t' read -r EXISTING_PR_URL EXISTING_PR_BASE_BRANCH EXISTING_PR_HEAD_SHA EXISTING_PR_IS_DRAFT EXISTING_PR_IS_CROSS_REPO <<<"$EXISTING_PR_RECORD"
   if [ -z "$EXISTING_PR_URL" ] || [ -z "$EXISTING_PR_BASE_BRANCH" ] || [ -z "$EXISTING_PR_HEAD_SHA" ]; then
     echo "ERROR: Existing PR metadata is missing its URL, base branch, or head revision." >&2
     exit 1
@@ -811,6 +812,13 @@ if [ -n "$EXISTING_PR_RECORD" ]; then
     true | false) ;;
     *)
       echo "ERROR: GitHub returned invalid draft state for PR $EXISTING_PR_URL: ${EXISTING_PR_IS_DRAFT:-<empty>}." >&2
+      exit 1
+      ;;
+  esac
+  case "$EXISTING_PR_IS_CROSS_REPO" in
+    true | false) ;;
+    *)
+      echo "ERROR: GitHub returned invalid cross-repository state for PR $EXISTING_PR_URL: ${EXISTING_PR_IS_CROSS_REPO:-<empty>}." >&2
       exit 1
       ;;
   esac
@@ -887,16 +895,168 @@ EXPECTED_UPSTREAM="origin/$CURRENT_BRANCH"
 # A hook may create a newer local commit, but that commit is not part of this
 # push. Preserve the selected SHA so the review request cannot drift to it.
 PUSHED_HEAD_SHA="$(git rev-parse HEAD)"
+PUSH_STATUS=0
 if [ -n "$EXISTING_UPSTREAM" ] && [ "$EXISTING_UPSTREAM" = "$EXPECTED_UPSTREAM" ]; then
   echo "==> Pushing $CURRENT_BRANCH ..."
-  git push
+  git push || PUSH_STATUS=$?
 else
   if [ -n "$EXISTING_UPSTREAM" ] && [ "$EXISTING_UPSTREAM" != "$EXPECTED_UPSTREAM" ]; then
     echo "==> Existing upstream '$EXISTING_UPSTREAM' does not match '$EXPECTED_UPSTREAM'; resetting on first push." >&2
   else
     echo "==> Pushing $CURRENT_BRANCH (setting upstream) ..."
   fi
-  git push -u origin "$CURRENT_BRANCH"
+  git push -u origin "$CURRENT_BRANCH" || PUSH_STATUS=$?
+fi
+
+# Rebased-PR resume (issue #630): a rejected push on a branch with an open PR
+# is the sanctioned rebase-after-takeover flow, not an error. Retry ONCE with
+# --force-with-lease pinned to the PR head observed in this run's pre-push
+# snapshot — but the lease only proves nothing moved AFTER the snapshot, not
+# that this checkout ever incorporated that head. Before forcing, require
+# integration evidence: the observed head must exist locally and contribute
+# no patches absent from the local history (git cherry). A stale checkout
+# missing remote-only commits fails closed instead of deleting them. The
+# retry pushes the CAPTURED head SHA explicitly so a pre-push hook that
+# advances HEAD cannot publish a head the review request is not bound to.
+# Branches without an open PR never force-push.
+if [ "$PUSH_STATUS" -ne 0 ]; then
+  if [ -z "$EXISTING_PR_URL" ] || [ -z "$EXISTING_PR_HEAD_SHA" ]; then
+    echo "ERROR: push failed for '$CURRENT_BRANCH' and no open PR authorizes a guarded retry." >&2
+    exit "$PUSH_STATUS"
+  fi
+  # gh pr list --head matches branch NAME only; a fork-backed PR with the
+  # same branch name would supply a fork SHA as the lease while the retry
+  # pushes to origin — rewriting a same-named base-repository branch without
+  # touching the PR. Cross-repository PRs never authorize the retry.
+  if [ "$EXISTING_PR_IS_CROSS_REPO" != false ]; then
+    echo "ERROR: push failed and PR $EXISTING_PR_URL is fork-backed (cross-repository);" >&2
+    echo "       its observed head does not describe origin/$CURRENT_BRANCH, so a guarded" >&2
+    echo "       retry could rewrite an unrelated same-named branch. Push to the fork" >&2
+    echo "       remote manually after reconciling." >&2
+    exit 1
+  fi
+  # Every integration inspection runs with replacement objects disabled: a
+  # local `git replace` ref for the observed head would otherwise substitute
+  # a different commit during validation while the lease still matches the
+  # original remote SHA — the checks would bless content the force-push then
+  # deletes.
+  if ! GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "$EXISTING_PR_HEAD_SHA^{commit}" 2>/dev/null; then
+    echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} is not present locally." >&2
+    echo "       This checkout never had the remote branch's current history; forcing would" >&2
+    echo "       delete it. Fetch the branch, reconcile (rebase or merge), then rerun." >&2
+    exit 1
+  fi
+  # git cherry compares patch IDs and SKIPS merge commits entirely, so a
+  # remote merge whose conflict-resolution content is absent locally would
+  # sail through the patch check. Any merge commit reachable from the
+  # observed head but not from the captured local head is unprovable by
+  # patch equivalence — refuse and require manual reconciliation. Both
+  # history inspections FAIL CLOSED on traversal errors (missing or corrupt
+  # ancestor objects): a check that could not run is not a clean check.
+  if ! MERGE_LIST="$(GIT_NO_REPLACE_OBJECTS=1 git rev-list --merges "$EXISTING_PR_HEAD_SHA" --not "$PUSHED_HEAD_SHA" 2>&1)"; then
+    echo "ERROR: push rejected and the observed PR head's history could not be traversed:" >&2
+    printf '%s\n' "$MERGE_LIST" | sed 's/^/       /' >&2
+    echo "       Cannot prove the remote history is incorporated; refusing to force-push." >&2
+    echo "       Fetch the branch fully, reconcile, then rerun." >&2
+    exit 1
+  fi
+  UNPROVABLE_MERGES="$(printf '%s' "$MERGE_LIST" | grep -c . || true)"
+  if [ "$UNPROVABLE_MERGES" != 0 ]; then
+    echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} contains $UNPROVABLE_MERGES merge commit(s)" >&2
+    echo "       outside this checkout's history. Merge resolutions cannot be proven" >&2
+    echo "       incorporated by patch comparison; forcing could delete them. Reconcile" >&2
+    echo "       manually (fetch, merge or rebase), then rerun." >&2
+    exit 1
+  fi
+  # Exact-content integration evidence. git cherry's patch-ids ignore
+  # whitespace, which is behaviorally significant in Python, YAML, and shell
+  # continuations — a remote commit differing only in whitespace would count
+  # as incorporated and its content would be forced away. Instead, every
+  # remote-only commit must have a whitespace-EXACT patch twin among the
+  # local-only commits: hunk headers and index lines are normalized out
+  # (rebases renumber them), everything else must match byte-for-byte.
+  open_pr_exact_patch_fingerprint() {
+    local commit="$1" patch_text
+    if ! patch_text="$(GIT_NO_REPLACE_OBJECTS=1 git diff-tree --no-commit-id --full-index -p -U3 "$commit" 2>&1)"; then
+      echo "ERROR: could not compute the patch for commit ${commit:0:12}:" >&2
+      printf '%s\n' "$patch_text" | sed 's/^/       /' >&2
+      return 1
+    fi
+    # An empty patch carries no provable content; the caller refuses.
+    [ -n "$patch_text" ] || return 2
+    printf '%s\n' "$patch_text" \
+      | sed -e '/^index /d' -e 's/^@@ .*@@/@@/' \
+      | touchstone_sha256_stream
+  }
+  if [ ! -f "$SCRIPT_DIR/../lib/sha256.sh" ]; then
+    echo "ERROR: push rejected and lib/sha256.sh is missing; cannot prove remote history" >&2
+    echo "       is incorporated. Refusing to force-push." >&2
+    exit 1
+  fi
+  # shellcheck source=../lib/sha256.sh
+  source "$SCRIPT_DIR/../lib/sha256.sh"
+  if ! REMOTE_ONLY_COMMITS="$(GIT_NO_REPLACE_OBJECTS=1 git rev-list "$EXISTING_PR_HEAD_SHA" --not "$PUSHED_HEAD_SHA" 2>&1)"; then
+    echo "ERROR: push rejected and the observed PR head's history could not be traversed:" >&2
+    printf '%s\n' "$REMOTE_ONLY_COMMITS" | sed 's/^/       /' >&2
+    echo "       Cannot prove the remote history is incorporated; refusing to force-push." >&2
+    exit 1
+  fi
+  if [ -n "$REMOTE_ONLY_COMMITS" ]; then
+    if ! LOCAL_ONLY_COMMITS="$(GIT_NO_REPLACE_OBJECTS=1 git rev-list "$PUSHED_HEAD_SHA" --not "$EXISTING_PR_HEAD_SHA" 2>&1)"; then
+      echo "ERROR: push rejected and the local branch history could not be traversed:" >&2
+      printf '%s\n' "$LOCAL_ONLY_COMMITS" | sed 's/^/       /' >&2
+      echo "       Cannot prove the remote history is incorporated; refusing to force-push." >&2
+      exit 1
+    fi
+    LOCAL_PATCH_FINGERPRINTS=" "
+    for local_commit in $LOCAL_ONLY_COMMITS; do
+      fp_status=0
+      local_fp="$(open_pr_exact_patch_fingerprint "$local_commit")" || fp_status=$?
+      # Status 2 (empty patch) just contributes no twin; hard errors abort.
+      if [ "$fp_status" -eq 1 ]; then
+        echo "       Refusing to force-push without complete integration evidence." >&2
+        exit 1
+      fi
+      [ "$fp_status" -eq 0 ] && LOCAL_PATCH_FINGERPRINTS="${LOCAL_PATCH_FINGERPRINTS}${local_fp} "
+    done
+    for remote_commit in $REMOTE_ONLY_COMMITS; do
+      fp_status=0
+      remote_fp="$(open_pr_exact_patch_fingerprint "$remote_commit")" || fp_status=$?
+      if [ "$fp_status" -ne 0 ]; then
+        echo "ERROR: push rejected and remote commit ${remote_commit:0:12} has no provable patch content." >&2
+        echo "       Refusing to force-push without complete integration evidence." >&2
+        exit 1
+      fi
+      case "$LOCAL_PATCH_FINGERPRINTS" in
+        *" $remote_fp "*) ;;
+        *)
+          echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} carries commit ${remote_commit:0:12}" >&2
+          echo "       whose changes are not in this checkout's history byte-for-byte (whitespace" >&2
+          echo "       differences count). Forcing would delete them. Fetch and reconcile" >&2
+          echo "       (rebase or merge), then rerun; refusing to overwrite unseen work." >&2
+          exit 1
+          ;;
+      esac
+    done
+  fi
+  echo "==> Push rejected; PR $EXISTING_PR_URL exists and every observed-head change is incorporated locally."
+  echo "==> Retrying with --force-with-lease pinned to observed PR head ${EXISTING_PR_HEAD_SHA:0:12} ..."
+  if ! git push --force-with-lease="$CURRENT_BRANCH:$EXISTING_PR_HEAD_SHA" \
+    origin "$PUSHED_HEAD_SHA:refs/heads/$CURRENT_BRANCH"; then
+    echo "ERROR: guarded force-with-lease push failed for '$CURRENT_BRANCH'." >&2
+    echo "       The remote branch no longer points at the observed PR head ${EXISTING_PR_HEAD_SHA:0:12}," >&2
+    echo "       so something else updated it since this run's snapshot. Inspect the remote" >&2
+    echo "       branch and rerun after reconciling; refusing to overwrite unseen work." >&2
+    exit 1
+  fi
+  # The refspec push does not manage upstream; make later plain pushes work.
+  # A failure here must be visible (the review flow continues, but a later
+  # plain push would target the old upstream or need another recovery run).
+  if ! UPSTREAM_SET_OUTPUT="$(git branch --set-upstream-to="origin/$CURRENT_BRANCH" 2>&1)"; then
+    echo "WARNING: could not restore upstream origin/$CURRENT_BRANCH after the guarded push:" >&2
+    printf '%s\n' "$UPSTREAM_SET_OUTPUT" | sed 's/^/         /' >&2
+    echo "         Set it manually: git branch --set-upstream-to=origin/$CURRENT_BRANCH" >&2
+  fi
 fi
 
 # Install the cleanup/orphan-warning trap now — every later exit path may
