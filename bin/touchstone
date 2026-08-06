@@ -720,6 +720,26 @@ cmd_doctor_project() {
     issues=$((issues + 1))
   fi
 
+  # 2c. Legacy CI shape (advisory only — never counted as an issue). The
+  # starter validate workflow is project-owned after bootstrap, so the lean
+  # template (PR-only trigger, superseded-run cancellation) never reaches
+  # existing projects. The old shape bills a full validation run per obsolete
+  # review head and re-validates default-branch pushes the merge gate already
+  # verified. Cost advice, not a gating problem: local determinism is the
+  # source of truth either way.
+  local ci_workflow="$project_dir/.github/workflows/validate.yml"
+  if [ -f "$ci_workflow" ]; then
+    if ! grep -q 'cancel-in-progress' "$ci_workflow"; then
+      tk_warn "CI validate.yml has no concurrency guard — superseded review heads each bill a full run"
+      tk_dim "  Fix: add the concurrency block from templates/ci/github-validate.yml"
+    fi
+    if grep -Eq '^[[:space:]]*branches: \[main, master\]' "$ci_workflow" \
+      && grep -Eq '^[[:space:]]*push:' "$ci_workflow"; then
+      tk_warn "CI validate.yml re-validates default-branch pushes the merge gate already verified"
+      tk_dim "  Fix: drop the push trigger; keep pull_request as the hookless-contributor backstop"
+    fi
+  fi
+
   # 3. Manifest files present?
   if [ -f "$project_dir/.touchstone-manifest" ]; then
     local missing=0 line

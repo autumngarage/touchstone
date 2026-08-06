@@ -1703,6 +1703,34 @@ else
   assert_contains "$TEST_DIR/doctor-legacy-setup.txt" 'legacy core.hooksPath reset'
 fi
 
+# Lean CI (issue #656): --ci installs the lean template (PR-only trigger,
+# superseded-run cancellation), and doctor advises — without failing — when a
+# project-owned copy still has the legacy cost shape. Advisory only: CI shape
+# is a cost concern, never a gating problem.
+PROJECT_LEAN_CI="$TEST_DIR/test-project-lean-ci"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_LEAN_CI" --no-register --ci github >/dev/null
+assert_exists "$PROJECT_LEAN_CI/.github/workflows/validate.yml"
+assert_contains "$PROJECT_LEAN_CI/.github/workflows/validate.yml" 'cancel-in-progress: true'
+if grep -Eq '^[[:space:]]*push:' "$PROJECT_LEAN_CI/.github/workflows/validate.yml"; then
+  echo "FAIL: lean CI template must not trigger on default-branch pushes" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-lean-ci.txt" 2>&1; then
+  echo "FAIL: doctor --project should pass on a lean-CI bootstrap" >&2
+  cat "$TEST_DIR/doctor-lean-ci.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_not_contains "$TEST_DIR/doctor-lean-ci.txt" 'no concurrency guard'
+printf 'name: validate\non:\n  push:\n    branches: [main, master]\n  pull_request:\njobs: {}\n' \
+  >"$PROJECT_LEAN_CI/.github/workflows/validate.yml"
+if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-legacy-ci.txt" 2>&1; then
+  echo "FAIL: legacy CI shape must stay advisory — doctor should still exit 0" >&2
+  cat "$TEST_DIR/doctor-legacy-ci.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/doctor-legacy-ci.txt" 'no concurrency guard'
+assert_contains "$TEST_DIR/doctor-legacy-ci.txt" 're-validates default-branch pushes'
+
 # doctor must flag a pre-push hook that exists with the right content but is
 # not executable — Git silently skips such hooks, so the repo is effectively
 # ungated. Same failure class as "hook missing", different failure mode.
