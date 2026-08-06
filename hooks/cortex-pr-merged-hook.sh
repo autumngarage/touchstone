@@ -46,6 +46,16 @@
 #   TOUCHSTONE_MERGED_PR        — PR number to thread through to the
 #                                 commit message (e.g. supplied by
 #                                 merge-pr.sh after `gh pr merge`).
+#   TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR
+#                               — worktree to journal against, overriding
+#                                 the invocation cwd. merge-pr.sh passes
+#                                 the resolved default-branch worktree so
+#                                 the hook fires even when shipping ran
+#                                 from a feature worktree whose sibling
+#                                 holds the default branch (issue #613).
+#                                 Being explicit caller input, an invalid
+#                                 path is a visible exit-1 error, not a
+#                                 silent skip.
 #   TOUCHSTONE_CORTEX_HOOK_DISABLE
 #                               — set to 1/true/on to short-circuit even
 #                                 when config says auto/on. Useful for
@@ -143,6 +153,11 @@ git_push_clean_env() {
   env -u SKIP_REVIEW -u SKIP_CODEX_REVIEW git -C "$PROJECT_DIR" push "$@"
 }
 
+# Resolves the TARGET project's default branch. Every lookup is anchored to
+# $PROJECT_DIR, not the invocation cwd: with an explicit
+# TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR the hook may run from a different
+# worktree (or a different repo entirely), and a cwd-based lookup would
+# compare the target's branch against the wrong repository's default.
 resolve_default_branch() {
   if [ -n "${TOUCHSTONE_DEFAULT_BRANCH:-}" ]; then
     printf '%s' "$TOUCHSTONE_DEFAULT_BRANCH"
@@ -150,11 +165,11 @@ resolve_default_branch() {
   fi
   local resolved=""
   if command -v gh >/dev/null 2>&1; then
-    resolved="$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
+    resolved="$(cd "$PROJECT_DIR" && gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
   fi
   if [ -z "$resolved" ]; then
     # Fall back to the local symbolic-ref of origin/HEAD; finally to "main".
-    resolved="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)"
+    resolved="$(git -C "$PROJECT_DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||' || true)"
   fi
   printf '%s' "${resolved:-main}"
 }
@@ -230,10 +245,24 @@ merge_journal_pr_synchronously() {
   return 1
 }
 
-# 1. Detection — silent skip if any precondition fails.
-PROJECT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -z "$PROJECT_DIR" ]; then
-  exit 0
+# 1. Detection — silent skip if any precondition fails. An explicit
+# TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR is caller input, so its failures are
+# visible errors rather than silent skips.
+if [ -n "${TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR:-}" ]; then
+  if [ ! -d "$TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR" ]; then
+    log "cortex-pr-merged-hook: TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR is not a directory: $TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR"
+    exit 1
+  fi
+  PROJECT_DIR="$(git -C "$TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -z "$PROJECT_DIR" ]; then
+    log "cortex-pr-merged-hook: TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR is not inside a git worktree: $TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR"
+    exit 1
+  fi
+else
+  PROJECT_DIR="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -z "$PROJECT_DIR" ]; then
+    exit 0
+  fi
 fi
 
 current_branch="$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || true)"
@@ -511,8 +540,12 @@ if [ -n "${TOUCHSTONE_MERGED_PR:-}" ]; then
 fi
 pr_body="${pr_body_source_line}Auto-drafted by \`cortex-pr-merged-hook\` after the source PR merged. Implements Cortex Protocol section 2 Tier-1 trigger T1.9."
 
+# Anchored to the TARGET repository: with an explicit project-dir override
+# the invocation cwd may be a different repo whose labels don't exist on the
+# target, and passing a nonexistent label would fail `gh pr create` after the
+# journal branch already pushed.
 label_args=()
-if gh label list --limit 200 --json name --jq '.[].name' 2>/dev/null \
+if (cd "$PROJECT_DIR" && gh label list --limit 200 --json name --jq '.[].name' 2>/dev/null) \
   | grep -qx 'cortex-auto-draft'; then
   label_args=(--label cortex-auto-draft)
 fi

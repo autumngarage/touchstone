@@ -847,4 +847,154 @@ if ! git -C "$R" show --name-only --format= HEAD | grep -qx '.cortex/journal/pr-
   exit 1
 fi
 
-echo "==> PASS: cortex-pr-merged-hook activation gates + journal PR landing paths verified (A-R)"
+# Scenarios S/T/U: sibling-worktree targeting (issue #613). Shipping from a
+# feature worktree while main lives in a sibling worktree must still journal:
+# merge-pr.sh passes the resolved default-branch worktree explicitly via
+# TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR, and the hook journals against it.
+S="$(mk_fixture S)"
+mkdir -p "$S/.cortex"
+printf '0.5.0\n' >"$S/.cortex/SPEC_VERSION"
+printf 'stale state\n' >"$S/.cortex/state.md"
+(cd "$S" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
+S_FEATURE="$TMPROOT/S-feature"
+git -C "$S" worktree add -q -b feature/sibling "$S_FEATURE"
+S_MAIN_BEFORE="$(git -C "$S" rev-parse main)"
+
+# Scenario T: without the explicit project dir, invoking from the feature
+# worktree silently skips (the pre-#613 behavior the caller must compensate
+# for). Guards against the hook growing implicit cwd-crawling behavior.
+(
+  cd "$S_FEATURE"
+  PATH="$FAKEBIN:$PATH" \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+    bash "$HOOK"
+)
+if [ "$(git -C "$S" rev-parse main)" != "$S_MAIN_BEFORE" ] \
+  || [ "$(git -C "$S" branch --show-current)" != "main" ]; then
+  echo "FAIL [T]: hook fired from a feature worktree without an explicit project dir" >&2
+  exit 1
+fi
+
+# Scenario S: with TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR pointing at the sibling
+# default-branch worktree, the hook journals there and leaves the feature
+# worktree untouched.
+S_FEATURE_HEAD_BEFORE="$(git -C "$S_FEATURE" rev-parse HEAD)"
+(
+  cd "$S_FEATURE"
+  PATH="$FAKEBIN:$PATH" \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+    TOUCHSTONE_MERGED_PR=613 \
+    TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR="$S" \
+    bash "$HOOK"
+)
+if [ "$(git -C "$S" rev-parse main)" != "$S_MAIN_BEFORE" ]; then
+  echo "FAIL [S]: sibling-worktree journal moved the default branch ref" >&2
+  git -C "$S" log --oneline --decorate -3 >&2
+  exit 1
+fi
+if [ "$(git -C "$S" branch --show-current)" != "docs/journal-pr-613" ]; then
+  echo "FAIL [S]: hook did not journal in the targeted default-branch worktree" >&2
+  git -C "$S" branch --show-current >&2
+  exit 1
+fi
+S_CHANGED="$(git -C "$S" show --name-only --format= HEAD)"
+if ! printf '%s\n' "$S_CHANGED" | grep -qx '.cortex/journal/pr-merged.md'; then
+  echo "FAIL [S]: sibling-worktree hook commit missing drafted journal entry" >&2
+  printf '%s\n' "$S_CHANGED" >&2
+  exit 1
+fi
+if [ "$(git -C "$S_FEATURE" rev-parse HEAD)" != "$S_FEATURE_HEAD_BEFORE" ] \
+  || [ "$(git -C "$S_FEATURE" branch --show-current)" != "feature/sibling" ] \
+  || [ -n "$(git -C "$S_FEATURE" status --porcelain)" ]; then
+  echo "FAIL [S]: sibling-worktree journal disturbed the feature worktree" >&2
+  exit 1
+fi
+
+# Scenario U: an invalid explicit project dir is caller input, so it must be
+# a visible exit-1 error, never a silent skip.
+U_STDERR="$TMPROOT/U-stderr"
+U_RC=0
+(
+  cd "$S_FEATURE"
+  TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR="$TMPROOT/does-not-exist" \
+    bash "$HOOK"
+) 2>"$U_STDERR" || U_RC=$?
+if [ "$U_RC" != "1" ] || ! grep -q 'not a directory' "$U_STDERR"; then
+  echo "FAIL [U]: invalid explicit project dir must fail visibly (rc=$U_RC)" >&2
+  cat "$U_STDERR" >&2
+  exit 1
+fi
+
+# merge-pr.sh must actually wire the resolved default-branch worktree through
+# to the hook; without this, the T1.9 journal silently skips in the
+# isolated-worktree shipping flow.
+if ! grep -q 'TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR' "$TOUCHSTONE_ROOT/scripts/merge-pr.sh"; then
+  echo "FAIL [S]: scripts/merge-pr.sh does not pass TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR" >&2
+  exit 1
+fi
+
+# Scenario V: default-branch resolution is anchored to the TARGET worktree.
+# The target repo's default branch is `trunk` (via origin/HEAD symbolic-ref);
+# the invocation cwd is a different repo whose default is `main`. A cwd-based
+# lookup resolves `main`, mismatches the target's `trunk`, and silently skips
+# the journal — the P3 regression from PR #636 review.
+V="$TMPROOT/V-target"
+mkdir -p "$V"
+(
+  cd "$V"
+  git init -q -b trunk
+  git config user.email t@e.co
+  git config user.name Test
+  : >.keep
+  git add .keep
+  git commit -q -m "init"
+  mkdir -p .cortex
+  printf '0.5.0\n' >.cortex/SPEC_VERSION
+  printf 'stale state\n' >.cortex/state.md
+  git add .cortex/SPEC_VERSION .cortex/state.md
+  git commit -q -m "add cortex state"
+  git remote add origin "$V"
+  git update-ref refs/remotes/origin/trunk trunk
+  git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+)
+V_CWD="$(mk_fixture V-elsewhere)"
+git -C "$V_CWD" remote add origin "$V_CWD"
+git -C "$V_CWD" update-ref refs/remotes/origin/main main
+git -C "$V_CWD" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+V_BIN="$TMPROOT/V-bin"
+mkdir -p "$V_BIN"
+cp "$FAKEBIN/cortex" "$V_BIN/cortex"
+cp "$FAKEBIN/sleep" "$V_BIN/sleep"
+V_TRUNK_BEFORE="$(git -C "$V" rev-parse trunk)"
+(
+  cd "$V_CWD"
+  # No TOUCHSTONE_DEFAULT_BRANCH override and no gh on PATH: resolution must
+  # come from the TARGET's origin/HEAD symbolic-ref, not the cwd repo's.
+  PATH="$V_BIN:/usr/bin:/bin" \
+    TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+    TOUCHSTONE_MERGED_PR=636 \
+    TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR="$V" \
+    bash "$HOOK"
+)
+if [ "$(git -C "$V" rev-parse trunk)" != "$V_TRUNK_BEFORE" ]; then
+  echo "FAIL [V]: journal moved the target default branch ref" >&2
+  exit 1
+fi
+if [ "$(git -C "$V" branch --show-current)" != "docs/journal-pr-636" ]; then
+  echo "FAIL [V]: hook did not resolve the target repo's default branch (trunk)" >&2
+  git -C "$V" branch --show-current >&2
+  exit 1
+fi
+if ! git -C "$V" show --name-only --format= HEAD | grep -qx '.cortex/journal/pr-merged.md'; then
+  echo "FAIL [V]: journal commit missing in cross-repo target" >&2
+  exit 1
+fi
+if [ "$(git -C "$V_CWD" branch --show-current)" != "main" ]; then
+  echo "FAIL [V]: hook disturbed the invocation cwd repo" >&2
+  exit 1
+fi
+
+echo "==> PASS: cortex-pr-merged-hook activation gates + journal PR landing paths verified (A-V)"
