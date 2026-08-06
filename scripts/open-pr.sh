@@ -790,8 +790,8 @@ if ! EXISTING_PR_RECORD="$(
     --head "$CURRENT_BRANCH" \
     --author "@me" \
     --state open \
-    --json url,baseRefName,headRefOid,isDraft \
-    --jq 'if length > 0 then .[0] | [.url, .baseRefName, .headRefOid, .isDraft] | @tsv else empty end' \
+    --json url,baseRefName,headRefOid,isDraft,isCrossRepository \
+    --jq 'if length > 0 then .[0] | [.url, .baseRefName, .headRefOid, .isDraft, .isCrossRepository] | @tsv else empty end' \
     2>/dev/null
 )"; then
   echo "ERROR: Failed to inspect existing PR metadata for branch '$CURRENT_BRANCH'." >&2
@@ -801,8 +801,9 @@ EXISTING_PR_URL=""
 EXISTING_PR_BASE_BRANCH=""
 EXISTING_PR_HEAD_SHA=""
 EXISTING_PR_IS_DRAFT=""
+EXISTING_PR_IS_CROSS_REPO=""
 if [ -n "$EXISTING_PR_RECORD" ]; then
-  IFS=$'\t' read -r EXISTING_PR_URL EXISTING_PR_BASE_BRANCH EXISTING_PR_HEAD_SHA EXISTING_PR_IS_DRAFT <<<"$EXISTING_PR_RECORD"
+  IFS=$'\t' read -r EXISTING_PR_URL EXISTING_PR_BASE_BRANCH EXISTING_PR_HEAD_SHA EXISTING_PR_IS_DRAFT EXISTING_PR_IS_CROSS_REPO <<<"$EXISTING_PR_RECORD"
   if [ -z "$EXISTING_PR_URL" ] || [ -z "$EXISTING_PR_BASE_BRANCH" ] || [ -z "$EXISTING_PR_HEAD_SHA" ]; then
     echo "ERROR: Existing PR metadata is missing its URL, base branch, or head revision." >&2
     exit 1
@@ -811,6 +812,13 @@ if [ -n "$EXISTING_PR_RECORD" ]; then
     true | false) ;;
     *)
       echo "ERROR: GitHub returned invalid draft state for PR $EXISTING_PR_URL: ${EXISTING_PR_IS_DRAFT:-<empty>}." >&2
+      exit 1
+      ;;
+  esac
+  case "$EXISTING_PR_IS_CROSS_REPO" in
+    true | false) ;;
+    *)
+      echo "ERROR: GitHub returned invalid cross-repository state for PR $EXISTING_PR_URL: ${EXISTING_PR_IS_CROSS_REPO:-<empty>}." >&2
       exit 1
       ;;
   esac
@@ -915,6 +923,17 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
   if [ -z "$EXISTING_PR_URL" ] || [ -z "$EXISTING_PR_HEAD_SHA" ]; then
     echo "ERROR: push failed for '$CURRENT_BRANCH' and no open PR authorizes a guarded retry." >&2
     exit "$PUSH_STATUS"
+  fi
+  # gh pr list --head matches branch NAME only; a fork-backed PR with the
+  # same branch name would supply a fork SHA as the lease while the retry
+  # pushes to origin — rewriting a same-named base-repository branch without
+  # touching the PR. Cross-repository PRs never authorize the retry.
+  if [ "$EXISTING_PR_IS_CROSS_REPO" != false ]; then
+    echo "ERROR: push failed and PR $EXISTING_PR_URL is fork-backed (cross-repository);" >&2
+    echo "       its observed head does not describe origin/$CURRENT_BRANCH, so a guarded" >&2
+    echo "       retry could rewrite an unrelated same-named branch. Push to the fork" >&2
+    echo "       remote manually after reconciling." >&2
+    exit 1
   fi
   # Every integration inspection runs with replacement objects disabled: a
   # local `git replace` ref for the observed head would otherwise substitute

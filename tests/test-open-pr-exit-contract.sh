@@ -102,10 +102,11 @@ case "$1 $2" in
     ;;
   "pr list")
     if [ "${GH_HAS_EXISTING_PR:-0}" = "1" ]; then
-      printf 'https://example.test/touchstone/pull/777\t%s\t%s\t%s\n' \
+      printf 'https://example.test/touchstone/pull/777\t%s\t%s\t%s\t%s\n' \
         "${GH_EXISTING_PR_BASE:-main}" \
         "${GH_PR_HEAD_OID:-existing-pr-head}" \
-        "${GH_PR_IS_DRAFT:-false}"
+        "${GH_PR_IS_DRAFT:-false}" \
+        "${GH_PR_IS_CROSS_REPO:-false}"
     else
       echo ""
     fi
@@ -299,6 +300,7 @@ run_open_pr() {
       GH_PR_AUTHOR="${GH_PR_AUTHOR:-alice}" \
       GH_REQUIRE_REPO_FOR_MERGED_AT="${GH_REQUIRE_REPO_FOR_MERGED_AT:-0}" \
       GH_PR_HEAD_OID="${GH_PR_HEAD_OID:-existing-pr-head}" \
+      GH_PR_IS_CROSS_REPO="${GH_PR_IS_CROSS_REPO:-false}" \
       GIT_PUSH_PLAIN_EXIT="${GIT_PUSH_PLAIN_EXIT:-0}" \
       GIT_PUSH_LEASE_EXIT="${GIT_PUSH_LEASE_EXIT:-0}" \
       GIT_PUSH_LOG="$TEST_DIR/git-push.log" \
@@ -1156,6 +1158,28 @@ if [ "$RC" != "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: expected replace-ref spoof to be refused" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 39: fork-backed PR never authorizes the guarded retry"
+OUT="$TEST_DIR/case39.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_IS_CROSS_REPO=true \
+  GH_PR_HEAD_OID="$(git -C "$REPO_DIR" rev-parse HEAD)" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'fork-backed (cross-repository)' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected fork-backed PR to refuse the guarded retry" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
