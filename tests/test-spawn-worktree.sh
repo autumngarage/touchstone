@@ -122,4 +122,15 @@ fi
 assert_exists "$DEFAULT_WORKTREE/.git"
 [ "$(git -C "$DEFAULT_WORKTREE" branch --show-current)" = "feat/default-path" ] || fail "default-path branch not created"
 
+# Issue #653: the default worktree path derives from the REPOSITORY identity
+# (primary checkout), not the invoking worktree's basename. Spawning from a
+# linked worktree must produce the same sibling name a primary-checkout spawn
+# would, instead of compounding the parent worktree's name.
+(cd "$WORKTREE" && bash "$TOUCHSTONE_ROOT/scripts/spawn-worktree.sh" feat/nested-spawn) \
+  >"$TEST_DIR/nested-spawn-output.txt" 2>&1 \
+  || fail "spawn from a linked worktree should succeed"
+assert_exists "$TEST_DIR/demo-nested-spawn/.git"
+assert_not_exists "$TEST_DIR/demo-slice-nested-spawn"
+assert_contains "$TEST_DIR/nested-spawn-output.txt" 'demo-nested-spawn'
+
 echo "==> PASS: spawn-worktree creates isolated branches and copies allowlisted ignored files"
