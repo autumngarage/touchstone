@@ -1075,6 +1075,33 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Case 36: history traversal failure refuses the retry (fail closed)"
+OUT="$TEST_DIR/case36.out"
+RC=0
+reset_open_pr_logs
+# A commit object that exists locally but references a missing parent: the
+# existence check passes, then rev-list/cherry fail traversing. A check that
+# could not run must not read as clean.
+BROKEN_COMMIT="$(printf 'tree %s\nparent aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nauthor T <t@e.co> 1700000000 +0000\ncommitter T <t@e.co> 1700000000 +0000\n\nbroken ancestry\n' \
+  "$(git -C "$REPO_DIR" rev-parse 'HEAD^{tree}')" \
+  | git -C "$REPO_DIR" hash-object -t commit -w --stdin --literally)"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$BROKEN_COMMIT" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'could not be traversed' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected traversal failure to refuse the retry" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 34: unknown observed head refuses the guarded retry"
 OUT="$TEST_DIR/case34.out"
 RC=0

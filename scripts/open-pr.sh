@@ -926,8 +926,17 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
   # remote merge whose conflict-resolution content is absent locally would
   # sail through the patch check. Any merge commit reachable from the
   # observed head but not from the captured local head is unprovable by
-  # patch equivalence — refuse and require manual reconciliation.
-  UNPROVABLE_MERGES="$(git rev-list --merges "$EXISTING_PR_HEAD_SHA" --not "$PUSHED_HEAD_SHA" 2>/dev/null | grep -c . || true)"
+  # patch equivalence — refuse and require manual reconciliation. Both
+  # history inspections FAIL CLOSED on traversal errors (missing or corrupt
+  # ancestor objects): a check that could not run is not a clean check.
+  if ! MERGE_LIST="$(git rev-list --merges "$EXISTING_PR_HEAD_SHA" --not "$PUSHED_HEAD_SHA" 2>&1)"; then
+    echo "ERROR: push rejected and the observed PR head's history could not be traversed:" >&2
+    printf '%s\n' "$MERGE_LIST" | sed 's/^/       /' >&2
+    echo "       Cannot prove the remote history is incorporated; refusing to force-push." >&2
+    echo "       Fetch the branch fully, reconcile, then rerun." >&2
+    exit 1
+  fi
+  UNPROVABLE_MERGES="$(printf '%s' "$MERGE_LIST" | grep -c . || true)"
   if [ "$UNPROVABLE_MERGES" != 0 ]; then
     echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} contains $UNPROVABLE_MERGES merge commit(s)" >&2
     echo "       outside this checkout's history. Merge resolutions cannot be proven" >&2
@@ -935,7 +944,13 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
     echo "       manually (fetch, merge or rebase), then rerun." >&2
     exit 1
   fi
-  UNINCORPORATED="$(git cherry "$PUSHED_HEAD_SHA" "$EXISTING_PR_HEAD_SHA" 2>/dev/null | grep -c '^+' || true)"
+  if ! CHERRY_LIST="$(git cherry "$PUSHED_HEAD_SHA" "$EXISTING_PR_HEAD_SHA" 2>&1)"; then
+    echo "ERROR: push rejected and patch comparison against the observed PR head failed:" >&2
+    printf '%s\n' "$CHERRY_LIST" | sed 's/^/       /' >&2
+    echo "       Cannot prove the remote history is incorporated; refusing to force-push." >&2
+    exit 1
+  fi
+  UNINCORPORATED="$(printf '%s' "$CHERRY_LIST" | grep -c '^+' || true)"
   if [ "$UNINCORPORATED" != 0 ]; then
     echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} carries $UNINCORPORATED commit(s)" >&2
     echo "       whose changes are not in this checkout's history. Forcing would delete them." >&2
