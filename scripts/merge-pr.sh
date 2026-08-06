@@ -726,6 +726,20 @@ checkout_default_ref_for_cleanup() {
     return 1
   fi
 
+  # A failed targeted cortex hook intentionally leaves the sibling default
+  # worktree on its journal recovery branch, so no worktree currently holds
+  # the default branch. Claiming it here would relocate the default checkout
+  # into this feature worktree (and then block this worktree's removal);
+  # detach instead so the sibling resumes its role once recovered.
+  if [ "${CORTEX_HOOK_RECOVERY_ACTIVE:-false}" = true ]; then
+    echo "==> Default-branch worktree is on a journal recovery branch; detaching here instead of claiming $DEFAULT_BRANCH ..."
+    if git checkout --detach "$DEFAULT_BRANCH"; then
+      return 0
+    fi
+    echo "WARNING: Could not detach this worktree at $DEFAULT_BRANCH; leaving local branch '$branch' intact." >&2
+    return 1
+  fi
+
   if git checkout "$DEFAULT_BRANCH"; then
     return 0
   fi
@@ -2379,6 +2393,7 @@ sync_default_branch_after_merge
 # review gates. Failures inside the hook surface as visible stderr; we
 # don't fail the overall merge over a journal-write hiccup.
 CORTEX_HOOK_SCRIPT=""
+CORTEX_HOOK_RECOVERY_ACTIVE=false
 for candidate_hook in \
   "$SCRIPT_DIR/cortex-pr-merged-hook.sh" \
   "$(git rev-parse --show-toplevel 2>/dev/null)/scripts/cortex-pr-merged-hook.sh"; do
@@ -2411,6 +2426,12 @@ if [ -n "$CORTEX_HOOK_SCRIPT" ]; then
     if [ "$hook_status" -ne 0 ]; then
       echo "WARNING: cortex-pr-merged-hook exited $hook_status (see above)." >&2
       echo "         The PR merged cleanly; only the auto-draft journal step had a problem." >&2
+      # A failed hook intentionally leaves its target worktree on the journal
+      # recovery branch. Cleanup below must not claim the default branch in
+      # this worktree while the sibling is mid-recovery.
+      if [ "$CORTEX_HOOK_PROJECT_DIR" != "$(git rev-parse --show-toplevel 2>/dev/null)" ]; then
+        CORTEX_HOOK_RECOVERY_ACTIVE=true
+      fi
     fi
   else
     echo "WARNING: skipping cortex-pr-merged-hook: no default-branch worktree is at the exact merge commit ${SQUASH_COMMIT_OID:-<unknown>}." >&2
