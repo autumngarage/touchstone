@@ -21,6 +21,13 @@
 #
 set -euo pipefail
 
+# Classify bytes, not glyphs: every token this guard cares about is ASCII
+# shell syntax, and macOS awk aborts with "towc: multibyte conversion
+# failure" on non-UTF-8-clean input (em dashes in commit-message heredocs
+# were enough — issue #637). The C locale makes every awk tokenizer below
+# treat multibyte content as opaque bytes.
+export LC_ALL=C
+
 input="$(cat)"
 
 # Avoid jq only when neither a literal bypass fragment nor shell expansion can
@@ -39,6 +46,21 @@ fi
 command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
 session_cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"
 tool_workdir="$(printf '%s' "$input" | jq -r '.tool_input.workdir // ""')"
+
+# Early allow, proof-based (issue #637): a protected push needs the word
+# `push`. A command whose raw text carries no `push` substring AND none of
+# the characters that could splice or expand one at runtime (quotes,
+# dollar, backtick, backslash) provably cannot contain a push in any form,
+# so the shell emulation below — and any bug in it — never runs for the
+# overwhelmingly common benign calls (`git -C <path> status`, `git add`,
+# cd-compounds with plain arguments). Anything quoted, expanded, or
+# containing `push` still takes the full conservative parser path.
+case "$command" in
+  *push* | *\$* | *\`* | *\\* | *\'* | *\"*) ;;
+  *)
+    exit 0
+    ;;
+esac
 
 # Remove comments using shell token boundaries while preserving newlines, so a
 # later physical line remains executable input. A # inside a word or quotes is
@@ -899,6 +921,25 @@ plain_git_push_without_bypass() {
   [ "$seen_push" = "true" ]
 }
 
+# Git refuses to run an alias that shadows a builtin, so a builtin
+# subcommand can never resolve to push regardless of which repository's
+# configuration applies — directory-context ambiguity is irrelevant for
+# these names. push itself is intentionally absent.
+git_subcommand_is_builtin() {
+  case "$1" in
+    add | am | apply | archive | bisect | blame | branch | cat-file | checkout | \
+      cherry | cherry-pick | clean | clone | commit | config | count-objects | \
+      describe | diff | difftool | fetch | for-each-ref | fsck | gc | grep | \
+      init | log | ls-files | ls-remote | ls-tree | merge | mv | notes | pull | \
+      rebase | reflog | remote | reset | restore | rev-list | rev-parse | \
+      revert | rm | shortlog | show | show-ref | sparse-checkout | stash | \
+      status | submodule | switch | symbolic-ref | tag | update-ref | worktree)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 plain_git_builtin_non_push() {
   local segment="$1"
   local word="" seen_git=false command_seen=false expect_global_value=false executable_segment=""
@@ -981,7 +1022,11 @@ segment_code_payloads() {
     words[${#words[@]}]="$word"
   done < <(printf '%s' "$segment" | shell_words)
 
-  for word in "${words[@]}"; do
+  # Bash 3.2 + set -u treats an empty array's "${words[@]}" as unbound; the
+  # ${arr[@]+...} idiom expands to nothing instead of dying mid-classification
+  # (issue #637 — the crash left classification in garbage state and
+  # escalated benign commands to protected-push verdicts).
+  for word in ${words[@]+"${words[@]}"}; do
     if [ "$expect_payload" = "true" ]; then
       printf '%s\n' "$word"
       expect_payload=false
@@ -1625,6 +1670,18 @@ if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
       || segment_uses_external_execution_wrapper "$candidate_segment" \
       || printf '%s' "$candidate_segment" \
       | grep -qE '(^|[[:space:]])(-C|-c|--config-env|--git-dir|--work-tree|--namespace|--bare|--exec-path)(=|[[:space:]]|$)'; then
+      # A builtin subcommand cannot be an alias in ANY repository, so an
+      # unresolvable directory context cannot turn it into a push — unless
+      # the segment carries bypass words or redirects git's own executable
+      # lookup (--exec-path), in which case stay conservative (issue #637:
+      # this path blocked every `git -C <worktree> status` and every
+      # cd-compound `git commit`).
+      if git_subcommand_is_builtin "$candidate_subcommand" \
+        && [ "${non_push_candidate_has_bypass[$candidate_index]}" != "true" ] \
+        && ! printf '%s' "$candidate_segment" \
+        | grep -qE '(^|[[:space:]])--exec-path(=|[[:space:]]|$)'; then
+        continue
+      fi
       # Alias configuration depends on repository and execution identity. A
       # composed context cannot be confirmed without executing the shell.
       push_segment="$candidate_segment"
