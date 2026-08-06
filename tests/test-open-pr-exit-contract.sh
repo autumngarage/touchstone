@@ -1047,6 +1047,34 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Case 35: remote merge commit outside local history refuses the retry"
+OUT="$TEST_DIR/case35.out"
+RC=0
+reset_open_pr_logs
+# A merge of two LOCAL ancestors whose resolution tree differs from both:
+# git cherry sees no unincorporated non-merge commits, but the resolution
+# content exists nowhere locally — exactly the case patch comparison cannot
+# prove. Plumbing only; the worktree stays clean.
+MERGE_BLOB="$(git -C "$REPO_DIR" hash-object -w /dev/stdin <<<"merge resolution only")"
+MERGE_TREE="$(printf '100644 blob %s\tresolution-only.txt\n' "$MERGE_BLOB" | git -C "$REPO_DIR" mktree)"
+MERGE_SHA="$(git -C "$REPO_DIR" commit-tree "$MERGE_TREE" -p "$(git -C "$REPO_DIR" rev-parse HEAD)" -p "$(git -C "$REPO_DIR" rev-parse HEAD~1)" -m "remote merge with unseen resolution")"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$MERGE_SHA" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'Merge resolutions cannot be proven' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected remote merge commit to refuse the guarded retry" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 34: unknown observed head refuses the guarded retry"
 OUT="$TEST_DIR/case34.out"
 RC=0

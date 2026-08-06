@@ -922,6 +922,19 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
     echo "       delete it. Fetch the branch, reconcile (rebase or merge), then rerun." >&2
     exit 1
   fi
+  # git cherry compares patch IDs and SKIPS merge commits entirely, so a
+  # remote merge whose conflict-resolution content is absent locally would
+  # sail through the patch check. Any merge commit reachable from the
+  # observed head but not from the captured local head is unprovable by
+  # patch equivalence — refuse and require manual reconciliation.
+  UNPROVABLE_MERGES="$(git rev-list --merges "$EXISTING_PR_HEAD_SHA" --not "$PUSHED_HEAD_SHA" 2>/dev/null | grep -c . || true)"
+  if [ "$UNPROVABLE_MERGES" != 0 ]; then
+    echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} contains $UNPROVABLE_MERGES merge commit(s)" >&2
+    echo "       outside this checkout's history. Merge resolutions cannot be proven" >&2
+    echo "       incorporated by patch comparison; forcing could delete them. Reconcile" >&2
+    echo "       manually (fetch, merge or rebase), then rerun." >&2
+    exit 1
+  fi
   UNINCORPORATED="$(git cherry "$PUSHED_HEAD_SHA" "$EXISTING_PR_HEAD_SHA" 2>/dev/null | grep -c '^+' || true)"
   if [ "$UNINCORPORATED" != 0 ]; then
     echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} carries $UNINCORPORATED commit(s)" >&2
