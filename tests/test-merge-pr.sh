@@ -15,6 +15,14 @@ DEFAULT_FAKE_WORKTREE="$TEST_DIR/default-feature-worktree"
 mkdir -p "$FAKE_BIN" "$MERGE_SCRIPT_DIR" "$GIT_PATH_ROOT" "$DEFAULT_FAKE_WORKTREE"
 cp "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$MERGE_SCRIPT_DIR/merge-pr.sh"
 chmod +x "$MERGE_SCRIPT_DIR/merge-pr.sh"
+# Fake direct claim verification for the issue #658 substitution fixtures;
+# CLAIM_DIRECT_EXIT drives pass/fail per case.
+cat >"$MERGE_SCRIPT_DIR/issue-claim-check.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "direct claim verification (fake) for PR ${3:-?}"
+exit "${CLAIM_DIRECT_EXIT:-0}"
+EOF
+chmod +x "$MERGE_SCRIPT_DIR/issue-claim-check.sh"
 
 cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -203,6 +211,11 @@ case "${1:-} ${2:-}" in
     ;;
   "api repos/"*)
     case "${2:-}" in
+      */actions/runs/*/jobs)
+        # Step count for the claim-check run inspection (issue #658):
+        # 0 simulates a zero-step infrastructure failure.
+        echo "${GH_CLAIM_RUN_REAL_STEPS:-5}"
+        ;;
       */collaborators/*/permission)
         status_creator="${2#*/collaborators/}"
         status_creator="${status_creator%/permission}"
@@ -799,6 +812,8 @@ run_merge_pr() {
     GH_MERGE_STATE_UNKNOWN_ATTEMPTS="${GH_MERGE_STATE_UNKNOWN_ATTEMPTS:-0}" \
     GH_MERGE_ATTEMPTS_FILE="$TEST_DIR/gh-merge-attempts" \
     GH_FAILED_CHECKS="${GH_FAILED_CHECKS:-}" \
+    GH_CLAIM_RUN_REAL_STEPS="${GH_CLAIM_RUN_REAL_STEPS:-5}" \
+    CLAIM_DIRECT_EXIT="${CLAIM_DIRECT_EXIT:-0}" \
     GH_REPO_FULL_NAME="${GH_REPO_FULL_NAME:-autumngarage/touchstone}" \
     GH_PR_VIEW_FAIL_FIELD="${GH_PR_VIEW_FAIL_FIELD:-}" \
     GH_HEAD_REF_FAIL_AFTER="${GH_HEAD_REF_FAIL_AFTER:-}" \
@@ -2190,6 +2205,94 @@ if grep -q 'has failed check(s); stopping automerge' "$TEST_DIR/output-check-fai
 else
   echo "FAIL: failed checks should stop before review/merge" >&2
   cat "$TEST_DIR/output-check-failed.txt" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Issue #658: a claim-check that failed WITHOUT executing a step (Actions
+# infrastructure class) is substitutable by a passing direct API claim
+# verification — disclosed on the PR and in the squash body. Executed
+# failures, failed direct verification, and any other failing check still
+# block.
+# ---------------------------------------------------------------------------
+CLAIM_INFRA_CHECKS=$'claim-check\tFAILURE\thttps://example.test/actions/runs/999/job/1'
+
+echo "==> Test: zero-step claim-check substitutes to direct API verification"
+reset_case_files
+if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
+  GH_FAILED_CHECKS="$CLAIM_INFRA_CHECKS" \
+  GH_CLAIM_RUN_REAL_STEPS=0 \
+  CLAIM_DIRECT_EXIT=0 \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  run_merge_pr "$TEST_DIR/output-claim-substitution.txt" 123; then
+  if grep -q 'verified by direct API read' "$TEST_DIR/output-claim-substitution.txt" \
+    && grep -q 'Claim-substitution' "$TEST_DIR/gh-merge-body" \
+    && grep -q 'direct API read' "$TEST_DIR/gh-comment"; then
+    echo "==> PASS: zero-step claim-check substitutes with full disclosure"
+  else
+    echo "FAIL: substitution must disclose in output, squash body, and PR comment" >&2
+    cat "$TEST_DIR/output-claim-substitution.txt" >&2
+    exit 1
+  fi
+else
+  echo "FAIL: zero-step claim-check with passing direct verification should merge" >&2
+  cat "$TEST_DIR/output-claim-substitution.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: zero-step claim-check with failing direct verification blocks"
+reset_case_files
+if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
+  GH_FAILED_CHECKS="$CLAIM_INFRA_CHECKS" \
+  GH_CLAIM_RUN_REAL_STEPS=0 \
+  CLAIM_DIRECT_EXIT=1 \
+  run_merge_pr "$TEST_DIR/output-claim-direct-fail.txt" 123; then
+  echo "FAIL: failed direct verification must block the merge" >&2
+  exit 1
+fi
+if grep -q 'direct API claim verification failed' "$TEST_DIR/output-claim-direct-fail.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: failed direct verification blocks with its own reason"
+else
+  echo "FAIL: expected the direct-verification failure reason" >&2
+  cat "$TEST_DIR/output-claim-direct-fail.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: claim-check that EXECUTED and failed still blocks"
+reset_case_files
+if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
+  GH_FAILED_CHECKS="$CLAIM_INFRA_CHECKS" \
+  GH_CLAIM_RUN_REAL_STEPS=7 \
+  CLAIM_DIRECT_EXIT=0 \
+  run_merge_pr "$TEST_DIR/output-claim-executed.txt" 123; then
+  echo "FAIL: an executed claim-check failure must block regardless of direct verification" >&2
+  exit 1
+fi
+if grep -q 'has failed check(s); stopping automerge' "$TEST_DIR/output-claim-executed.txt" \
+  && ! grep -q 'verified by direct API read' "$TEST_DIR/output-claim-executed.txt"; then
+  echo "==> PASS: executed claim-check failure is a real failure from either surface"
+else
+  echo "FAIL: executed failure must not be substituted" >&2
+  cat "$TEST_DIR/output-claim-executed.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: zero-step claim-check plus another failed check still blocks"
+reset_case_files
+if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
+  GH_FAILED_CHECKS="$(printf 'claim-check\tFAILURE\thttps://example.test/actions/runs/999/job/1\nsha256-preflight\tFAILURE\thttps://example.test/actions/runs/998/job/1')" \
+  GH_CLAIM_RUN_REAL_STEPS=0 \
+  CLAIM_DIRECT_EXIT=0 \
+  run_merge_pr "$TEST_DIR/output-claim-plus-other.txt" 123; then
+  echo "FAIL: substitution must not cover non-claim failed checks" >&2
+  exit 1
+fi
+if grep -q 'has failed check(s); stopping automerge' "$TEST_DIR/output-claim-plus-other.txt"; then
+  echo "==> PASS: substitution scope is exactly the unexecuted claim-check"
+else
+  echo "FAIL: expected the normal failed-check block" >&2
+  cat "$TEST_DIR/output-claim-plus-other.txt" >&2
   exit 1
 fi
 

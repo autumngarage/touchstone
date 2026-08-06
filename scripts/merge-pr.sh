@@ -1983,6 +1983,71 @@ require_pr_feedback_clear() {
   echo "==> PR-visible review feedback clear."
 }
 
+# Direct-API claim substitution (issue #658). During the 2026-08-06 Actions
+# major outage, GitHub's API stayed fully operational while hosted runners
+# could not start jobs — and locally-validated PRs sat blocked for hours on
+# claim-check runs that never executed a step. The claim invariant (PR author
+# assigned to every closed issue) is readable straight from the API, so a
+# hosted check that failed WITHOUT executing user steps may be substituted by
+# a passing direct verification. An executed-and-failed check still blocks
+# (real violations block from either surface), any other failing check still
+# blocks, and the substitution is disclosed on the PR and in output.
+CLAIM_CHECK_SUBSTITUTED=false
+
+claim_check_run_never_executed() {
+  local link="$1" run_id="" real_steps=""
+  [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] || return 1
+  run_id="$(printf '%s' "$link" | grep -oE '/runs/[0-9]+' | head -1 | tr -dc '0-9')"
+  [ -n "$run_id" ] || return 1
+  # Setup/teardown pseudo-steps appear even on infra failures; user code ran
+  # only if any OTHER step exists. Fail closed on API errors (return 1 keeps
+  # the check treated as a genuine failure).
+  real_steps="$(gh api "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$run_id/jobs" \
+    --jq '[.jobs[].steps[]? | select(.name != "Set up job" and .name != "Complete job")] | length' \
+    2>/dev/null)" || return 1
+  [ "$real_steps" = "0" ]
+}
+
+failed_checks_are_only_unexecuted_claim_checks() {
+  local failed_checks="$1"
+  local name state link saw_claim=false
+
+  while IFS="$(printf '\t')" read -r name state link || [ -n "$name" ]; do
+    [ -n "$name" ] || continue
+    case "$name" in
+      claim-check)
+        claim_check_run_never_executed "$link" || return 1
+        saw_claim=true
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done <<<"$failed_checks"
+  [ "$saw_claim" = true ]
+}
+
+attempt_claim_check_substitution() {
+  local failed_checks="$1" direct_output=""
+
+  failed_checks_are_only_unexecuted_claim_checks "$failed_checks" || return 1
+  [ -f "$SCRIPT_DIR/issue-claim-check.sh" ] || return 1
+  if ! direct_output="$(bash "$SCRIPT_DIR/issue-claim-check.sh" --pr-number "$PR_NUMBER" 2>&1)"; then
+    echo "ERROR: claim-check never executed AND direct API claim verification failed:" >&2
+    printf '%s\n' "$direct_output" | sed 's/^/       /' >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="claim-verification-failed"
+    exit 1
+  fi
+  echo "==> claim-check failed without executing a step (hosted-runner infrastructure class)."
+  echo "==> Claim invariant verified by direct API read instead:"
+  printf '%s\n' "$direct_output" | sed 's/^/    /'
+  gh pr comment "$PR_NUMBER" --body "Claim invariant verified by direct API read (merge-pr, issue #658): the hosted claim-check failed without executing a step during a GitHub Actions infrastructure incident. Direct verification confirmed every closed issue is assigned to the PR author." \
+    >/dev/null 2>&1 \
+    || echo "WARNING: could not post the claim-substitution disclosure comment; the substitution is recorded in this log." >&2
+  CLAIM_CHECK_SUBSTITUTED=true
+  return 0
+}
+
 print_failed_checks_and_exit() {
   local failed_checks="$1"
   local name state link
@@ -2026,6 +2091,9 @@ wait_for_clean_merge_state() {
     fi
     FAILED_CHECKS="$(failed_checks)"
     if [ -n "$FAILED_CHECKS" ]; then
+      if attempt_claim_check_substitution "$FAILED_CHECKS"; then
+        return 0
+      fi
       print_failed_checks_and_exit "$FAILED_CHECKS"
     fi
     if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$STATE" = "DIRTY" ] || [ "$STATE" = "BEHIND" ] || [ "$STATE" = "CONFLICTING" ]; then
@@ -2360,6 +2428,12 @@ gh_merge_exit=0
 if [ "$BYPASS_REVIEW" = true ]; then
   gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID" \
     --body "Reviewer-bypass: $BYPASS_REASON" || gh_merge_exit=$?
+elif [ "$CLAIM_CHECK_SUBSTITUTED" = true ]; then
+  # The squash commit itself records the substitution so the audit trail
+  # survives PR-comment pruning.
+  gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID" \
+    --body "Claim-substitution: hosted claim-check never executed (Actions infrastructure incident); claim invariant verified by direct API read (issue #658)." \
+    || gh_merge_exit=$?
 else
   gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID" \
     || gh_merge_exit=$?
