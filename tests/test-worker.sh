@@ -673,6 +673,71 @@ if [ ! -d "$LEGACY_CLAIM_JOB_DIR/active" ]; then
 fi
 rmdir "$LEGACY_CLAIM_JOB_DIR/active"
 
+echo "==> Case d2f: detached ship auto-recovers a base-moved failure (issue #651)"
+BASE_MOVED_WT="$TEST_DIR/base-moved-worktree"
+git -C "$REPO" worktree add -q "$BASE_MOVED_WT" -b feat/base-moved-test main
+BASE_MOVED_WT="$(cd "$BASE_MOVED_WT" && pwd -P)"
+mkdir -p "$BASE_MOVED_WT/scripts"
+cat >"$BASE_MOVED_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+count=$((count + 1))
+printf '%s' "$count" >"$count_file"
+if [ "$count" -eq 1 ]; then
+  echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+  exit 1
+fi
+echo "second attempt shipped"
+exit 0
+EOF
+chmod +x "$BASE_MOVED_WT/scripts/open-pr.sh"
+: >"$TEST_DIR/base-moved-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-attempts" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$BASE_MOVED_WT" --detach \
+  --events-json "$TEST_DIR/base-moved-events.ndjson" >/dev/null
+wait_for_ship_status "$BASE_MOVED_WT" succeeded "$TEST_DIR/base-moved-status.json"
+if [ "$(cat "$TEST_DIR/base-moved-attempts")" != "2" ]; then
+  fail "base-moved recovery should invoke open-pr exactly twice, got $(cat "$TEST_DIR/base-moved-attempts")"
+fi
+if ! grep -q 'worker_ship_base_moved_retry' "$TEST_DIR/base-moved-events.ndjson"; then
+  fail "base-moved recovery did not emit worker_ship_base_moved_retry"
+fi
+
+echo "==> Case d2g: base-moved recovery is bounded and hands off with its reason"
+EXHAUST_WT="$TEST_DIR/base-moved-exhaust-worktree"
+git -C "$REPO" worktree add -q "$EXHAUST_WT" -b feat/base-moved-exhaust main
+EXHAUST_WT="$(cd "$EXHAUST_WT" && pwd -P)"
+mkdir -p "$EXHAUST_WT/scripts"
+cat >"$EXHAUST_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+printf '%s' "$((count + 1))" >"$count_file"
+echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+exit 1
+EOF
+chmod +x "$EXHAUST_WT/scripts/open-pr.sh"
+: >"$TEST_DIR/base-moved-exhaust-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-exhaust-attempts" \
+  TOUCHSTONE_SHIP_BASE_MOVED_RETRIES=2 \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$EXHAUST_WT" --detach >/dev/null
+wait_for_ship_status "$EXHAUST_WT" needs-attention "$TEST_DIR/base-moved-exhaust-status.json"
+if [ "$(cat "$TEST_DIR/base-moved-exhaust-attempts")" != "3" ]; then
+  fail "bounded recovery should run 1 initial + 2 retries = 3 attempts, got $(cat "$TEST_DIR/base-moved-exhaust-attempts")"
+fi
+EXHAUST_JOB_DIR="$(ls -td "$REPO/.git/touchstone/ship-jobs"/*/ 2>/dev/null | head -1)"
+if [ ! -f "$EXHAUST_JOB_DIR/reason" ] \
+  || [ "$(cat "$EXHAUST_JOB_DIR/reason")" != "base-moved-retries-exhausted" ]; then
+  fail "exhausted recovery should hand off with reason base-moved-retries-exhausted (got: $(cat "$EXHAUST_JOB_DIR/reason" 2>/dev/null))"
+fi
+
 echo "==> Case d3: detached jobs do not collide when branch names sanitize alike"
 COLLISION_SLASH_WT="$TEST_DIR/collision-slash-worktree"
 COLLISION_UNDERSCORE_WT="$TEST_DIR/collision-underscore-worktree"
