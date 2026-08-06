@@ -121,6 +121,32 @@ if [ -n "$active_router_refs" ]; then
   fail "retired model-router reference found on an active product surface"
 fi
 
+echo "==> Pre-implementation gate covers migration-state enumeration (issue #558)"
+# The canonical checklist and its user-scoped skill must stay in sync on the
+# subsystem-removal gate: states are derived from the subsystem's own
+# persistence boundary (not a fixed global matrix), each supported state names
+# its source of truth and fail-closed behavior, and shims are explicitly
+# inert and time-bounded.
+for file in \
+  "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "$TOUCHSTONE_ROOT/skills/touchstone-pre-impl/SKILL.md"; do
+  assert_contains "$file" "removing or replacing a subsystem"
+  assert_contains "$file" "persistence boundary"
+  assert_contains "$file" "source of truth"
+  assert_contains "$file" "fail-closed"
+  assert_contains "$file" "before the first review request"
+  assert_contains "$file" "time-bounded migration shims"
+  assert_contains "$file" "unmatched"
+done
+assert_not_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "migration-state matrix"
+# The principle syncs into downstream projects, where Touchstone-local PR and
+# issue numbers are meaningless or point at unrelated work.
+assert_not_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "PR #554"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "issue #558"
+
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
   echo "==> FAIL: $ERRORS agent steering contract check(s) failed"

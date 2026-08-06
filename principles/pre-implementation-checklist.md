@@ -23,3 +23,20 @@ If this touches a public API, config file, schema, CLI flag, hook, template, or 
 ## 5. Is this action reversible?
 
 If this deletes, migrates, rewrites history, or has external side effects, see **Make irreversible actions recoverable**. The PR must describe how failure leaves the system in a known recoverable state — dry run, backup, idempotency key, rollback, or forward-fix plan.
+
+## 6. Am I removing or replacing a subsystem with existing persisted or deployed state?
+
+Removals look clean in a fresh checkout and break in the field, one starting state at a time — each edge case discovered by an external reviewer one head after another instead of enumerated up front. The gate fires on **any existing persisted or deployed state**, whoever owns it: user-visible config and artifacts, but equally system- or operator-owned state such as database schemas, queued work, cache contents, and internal checkpoints. Before the first review request, enumerate the observable starting states **derived from this subsystem's own persistence boundary** — its config files, generated artifacts, installed hooks and skills, CLI entry points, downstream copies, schemas, queues, and checkpoints. Do not work from a fixed global matrix; the states that matter are wherever *this* subsystem actually persists itself.
+
+For each state you decide to support, write down:
+
+- the **invariant** that must hold after the change;
+- the **source of truth** that decides that state's outcome;
+- the **fail-closed behavior** when an input matches no supported state — an explicit error naming the replacement, never silence;
+- a **regression fixture** exercising that state, landed before the first review request — not added one reviewer round at a time.
+
+The fail-closed fallback is itself a state to verify: include a dedicated fixture that presents an unmatched or unsupported persisted-state combination and asserts the explicit error, so the safeguard is exercised rather than assumed.
+
+Distinguish **active compatibility** (behavior the new code keeps indefinitely) from **inert, time-bounded migration shims** (warn-and-rewrite paths with a named removal version or condition). The distinction sets lifetime expectations — it exempts nothing: every executable compatibility shim is a temporary second code path and carries all of question 3's controls (named owner, removal condition, follow-up issue) until it is deleted. A named expiry bounds the drift window; it does not remove the drift.
+
+A bounded example, removing a config-file-backed subsystem: fresh project (no config → defaults, doctor clean); current project (modern config → behavior unchanged); legacy-only (retired file → migrate or fail closed with the migration command); mixed (both files → named precedence); retired CLI flags and subcommands (explicit error naming the replacement); stale downstream copies (update path reconciles or refuses loudly). Your subsystem's boundary decides which of these exist and which additional ones do.
