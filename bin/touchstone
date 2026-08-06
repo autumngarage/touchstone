@@ -60,6 +60,8 @@ source "$TOUCHSTONE_ROOT/lib/colors.sh"
 source "$TOUCHSTONE_ROOT/lib/ui.sh"
 source "$TOUCHSTONE_ROOT/lib/claude-md-touchstone-ref.sh"
 source "$TOUCHSTONE_ROOT/lib/status.sh"
+# shellcheck source=../lib/install-hooks.sh
+source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
 
 # Auto-update check (throttled, non-blocking on failure). When an update
 # succeeds, re-exec so the current command runs against the upgraded files.
@@ -672,17 +674,25 @@ cmd_doctor_project() {
     tk_dim "  Fix: touchstone init  (reconciles missing templates)"
     issues=$((issues + 1))
   else
-    if [ -f "$project_dir/.git/hooks/pre-commit" ] && [ -f "$project_dir/.git/hooks/pre-push" ]; then
-      if [ ! -x "$project_dir/.git/hooks/pre-commit" ] || [ ! -x "$project_dir/.git/hooks/pre-push" ]; then
+    local pre_commit_hook="" pre_push_hook="" hook_paths_resolved=true
+    pre_commit_hook="$(touchstone_git_hook_path "$project_dir" pre-commit)" || hook_paths_resolved=false
+    pre_push_hook="$(touchstone_git_hook_path "$project_dir" pre-push)" || hook_paths_resolved=false
+    if [ "$hook_paths_resolved" != true ]; then
+      tk_fail "could not resolve Git hook paths — repo gating cannot be verified"
+      tk_dim "  Fix: verify this is a Git worktree, then rerun touchstone doctor --project"
+      issues=$((issues + 1))
+    elif [ -f "$pre_commit_hook" ] && [ -f "$pre_push_hook" ]; then
+      if [ ! -x "$pre_commit_hook" ] || [ ! -x "$pre_push_hook" ]; then
         tk_fail "git hooks exist but are not executable — Git will skip them, repo is ungated"
-        tk_dim "  Fix: chmod +x $project_dir/.git/hooks/pre-commit $project_dir/.git/hooks/pre-push"
+        tk_dim "  Fix: chmod +x \"$pre_commit_hook\" \"$pre_push_hook\""
         issues=$((issues + 1))
-      elif grep -q 'pre-commit\.com' "$project_dir/.git/hooks/pre-push" 2>/dev/null \
-           && grep -q 'pre-commit\.com' "$project_dir/.git/hooks/pre-commit" 2>/dev/null; then
-        tk_ok "git hooks installed (.git/hooks/pre-commit, .git/hooks/pre-push)"
+      elif touchstone_pre_commit_hook_ready "$pre_push_hook" pre-push \
+           && touchstone_pre_commit_hook_ready "$pre_commit_hook" pre-commit; then
+        tk_ok "git hooks installed ($pre_commit_hook, $pre_push_hook)"
       else
-        tk_warn "git hook files exist but aren't the pre-commit-framework shim"
-        tk_dim "  Another hook framework may have replaced them."
+        tk_warn "git hook files exist but aren't typed pre-commit-framework shims"
+        tk_dim "  Another framework may have replaced them, or a shim was copied"
+        tk_dim "  into the wrong hook slot (it would run the wrong --hook-type)."
         tk_dim "  Fix: pre-commit install --hook-type pre-commit --hook-type pre-push"
         issues=$((issues + 1))
       fi
@@ -695,6 +705,19 @@ cmd_doctor_project() {
       fi
       issues=$((issues + 1))
     fi
+  fi
+
+  # 2b. Legacy setup.sh hook reset. setup.sh is project-owned after bootstrap,
+  # so the template fix that stopped unsetting core.hooksPath never reaches
+  # existing projects; their copy silently deletes a configured hook boundary
+  # on every setup run. Migration is a warning here because Touchstone never
+  # rewrites project-owned files silently.
+  if [ -f "$project_dir/setup.sh" ] \
+    && grep -q 'unset-all core\.hooksPath' "$project_dir/setup.sh"; then
+    tk_warn "setup.sh contains the legacy core.hooksPath reset — running it deletes a configured hook boundary"
+    tk_dim "  Fix: re-sync your project-owned setup.sh hook section from templates/setup.sh"
+    tk_dim "  (the fixed template preserves core.hooksPath instead of unsetting it)"
+    issues=$((issues + 1))
   fi
 
   # 3. Manifest files present?

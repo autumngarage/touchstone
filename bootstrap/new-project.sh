@@ -1490,6 +1490,10 @@ fi
 echo ""
 HOOK_INSTALL_STATUS=0
 touchstone_install_hooks "$PROJECT_DIR" || HOOK_INSTALL_STATUS=$?
+HOOK_PUSH_GATE_READY=false
+if touchstone_project_hooks_ready "$PROJECT_DIR"; then
+  HOOK_PUSH_GATE_READY=true
+fi
 
 # --------------------------------------------------------------------------
 # Summary block — every init exits with a checkable state, not silent success.
@@ -1515,6 +1519,7 @@ case "$HOOK_INSTALL_STATUS" in
   1) printf '    hooks:    SKIPPED — no .pre-commit-config.yaml (unexpected)\n' ;;
   2) printf '    hooks:    NOT INSTALLED — pre-commit CLI missing\n' ;;
   3) printf '    hooks:    PARTIAL — one or more installs failed (see above)\n' ;;
+  4) printf '    hooks:    NOT CHANGED — core.hooksPath is project-owned (see above)\n' ;;
 esac
 
 if [ -n "$INITIAL_COMMIT_SHA" ]; then
@@ -1533,7 +1538,11 @@ fi
 # artifacts are captured in the scaffold commit.
 
 if { [ "$GITHUB_MODE" = "private" ] || [ "$GITHUB_MODE" = "public" ]; } && [ "$RE_INIT" = false ]; then
-  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  if [ "$HOOK_PUSH_GATE_READY" != true ]; then
+    echo ""
+    echo "==> GitHub repo creation skipped: effective pre-commit and pre-push hooks are not ready." >&2
+    echo "    Repair the configured hook path, verify with touchstone doctor --project, then create the remote." >&2
+  elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     echo ""
     echo "==> Creating GitHub repo ($GITHUB_MODE) ..."
     gh_visibility_flag="--${GITHUB_MODE}"

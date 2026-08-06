@@ -775,11 +775,31 @@ echo "    Prototype shim runner available for evaluation: touchstone run-script 
 
 # Reinstall pre-commit hook shims so a drifted or empty .git/hooks/ gets repaired.
 # The helper is idempotent; it skips silently when there's nothing to do.
-if [ "$DRY_RUN" = false ] \
-  && [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ] \
-  && { [ ! -f "$PROJECT_DIR/.git/hooks/pre-commit" ] || [ ! -f "$PROJECT_DIR/.git/hooks/pre-push" ]; }; then
-  echo ""
-  touchstone_install_hooks "$PROJECT_DIR" || true
+if [ "$DRY_RUN" = false ] && [ -f "$PROJECT_DIR/.pre-commit-config.yaml" ]; then
+  HOOKS_PRESENT_STATUS=0
+  touchstone_project_hooks_present "$PROJECT_DIR" || HOOKS_PRESENT_STATUS=$?
+  if [ "$HOOKS_PRESENT_STATUS" -eq 1 ]; then
+    echo ""
+    touchstone_install_hooks "$PROJECT_DIR" || true
+  elif [ "$HOOKS_PRESENT_STATUS" -eq 2 ]; then
+    echo "==> WARNING: could not resolve Git hook paths; hooks were not changed." >&2
+  fi
+  # Presence is not readiness: files that exist but are inert, typed for the
+  # wrong slot, or bound to another config leave the repo ungated. Surface it
+  # on every update; --ship additionally refuses below.
+  if ! touchstone_project_hooks_ready "$PROJECT_DIR"; then
+    echo "==> WARNING: effective pre-commit/pre-push hooks are not ready (missing, inert, wrong-typed, or bound to another config)." >&2
+    echo "    Diagnose with: touchstone doctor --project" >&2
+  fi
+fi
+
+# setup.sh is project-owned after bootstrap, so existing projects keep the
+# legacy copy that unsets core.hooksPath — the template fix never reaches
+# them through updates. Warn (never rewrite a project-owned file silently).
+if [ -f "$PROJECT_DIR/setup.sh" ] \
+  && grep -q 'unset-all core\.hooksPath' "$PROJECT_DIR/setup.sh"; then
+  echo "==> WARNING: setup.sh contains the legacy core.hooksPath reset; running it deletes a configured hook boundary." >&2
+  echo "    Re-sync your project-owned setup.sh hook section from templates/setup.sh." >&2
 fi
 
 if [ "$DRY_RUN" = false ]; then
@@ -830,6 +850,19 @@ echo "      diff $TOUCHSTONE_ROOT/templates/touchstone-review.toml ./.touchstone
 
 if [ "$DRY_RUN" = false ]; then
   if [ "$SHIP" = true ] && [ "${COMMIT_CREATED:-false}" = true ]; then
+    # Shipping pushes through git, and the deterministic validation this
+    # update preserves lives in the effective pre-push hook. If readiness
+    # cannot be established — hooks missing, inert, wrong-typed, bound to a
+    # different config, or an unrepairable configured hook path — refuse the
+    # ship rather than push an ungated update.
+    if ! touchstone_project_hooks_ready "$PROJECT_DIR"; then
+      echo ""
+      echo "==> --ship refused: effective pre-commit/pre-push hooks are not ready." >&2
+      echo "    The push would bypass deterministic pre-push validation." >&2
+      echo "    Diagnose with: touchstone doctor --project" >&2
+      echo "    branch: $UPDATE_BRANCH (left for manual ship after repair)" >&2
+      exit 1
+    fi
     if [ ! -x "$PROJECT_DIR/scripts/open-pr.sh" ]; then
       echo ""
       echo "==> --ship requested but scripts/open-pr.sh is missing or not executable."
