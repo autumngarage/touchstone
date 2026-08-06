@@ -808,6 +808,18 @@ cleanup_pr_worktree_after_merge() {
 
   current_worktree="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
   default_worktree="$(worktree_path_for_branch "$DEFAULT_BRANCH" | head -n 1)"
+  # During hook recovery the sibling default worktree sits on its journal
+  # recovery branch, so no worktree holds the default branch — but that
+  # sibling still exists and anchors the removal fine. Without this, cleanup
+  # would fall back to the feature worktree itself and refuse, stranding
+  # every clean merged worktree behind a journal hiccup.
+  if { [ -z "$default_worktree" ] || [ ! -d "$default_worktree" ]; } \
+    && [ "${CORTEX_HOOK_RECOVERY_ACTIVE:-false}" = true ] \
+    && [ -n "${CORTEX_HOOK_PROJECT_DIR:-}" ] \
+    && [ -d "$CORTEX_HOOK_PROJECT_DIR" ] \
+    && [ "$CORTEX_HOOK_PROJECT_DIR" != "$pr_worktree" ]; then
+    default_worktree="$CORTEX_HOOK_PROJECT_DIR"
+  fi
   if [ -z "$default_worktree" ] || [ ! -d "$default_worktree" ]; then
     default_worktree="$current_worktree"
   fi
