@@ -119,9 +119,9 @@ if [ "$DEPS_ONLY" = false ]; then
   # --------------------------------------------------------------------------
   info "Setting up git hooks"
   if [ -f ".pre-commit-config.yaml" ]; then
-    configured_hooks_path="$(git config --get core.hooksPath 2>/dev/null || true)"
-    if [ -n "$configured_hooks_path" ]; then
-      warn "core.hooksPath is configured ($configured_hooks_path); preserving project-owned hooks"
+    # Key presence is the boundary — Git honors an explicitly empty value too.
+    if configured_hooks_path="$(git config --get core.hooksPath 2>/dev/null)"; then
+      warn "core.hooksPath is configured (${configured_hooks_path:-<empty>}); preserving project-owned hooks"
       warn "Remove core.hooksPath and rerun setup only if pre-commit should manage the hooks."
     else
       # Install hook shims (environments install lazily on first run).

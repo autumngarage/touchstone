@@ -2519,6 +2519,19 @@ case "$READY_R7_RESOLVED" in
     ;;
 esac
 
+# Case 9: an EXPLICITLY EMPTY core.hooksPath is still an active Git hook
+# boundary (hooks resolve relative to the filesystem root), so the installer
+# must preserve it (status 4) exactly like a nonempty configured path.
+READY_R9="$(readiness_repo case9)"
+git -C "$READY_R9" config core.hooksPath ""
+printf 'repos: []\n' >"$READY_R9/.pre-commit-config.yaml"
+READY_R9_STATUS=0
+touchstone_install_hooks "$READY_R9" >/dev/null 2>&1 || READY_R9_STATUS=$?
+if [ "$READY_R9_STATUS" != 4 ]; then
+  echo "FAIL: readiness 9 — empty core.hooksPath must be preserved (status 4), got $READY_R9_STATUS" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 READY_R8="$(readiness_repo case8)"
 readiness_write_shim "$READY_R8/.git/hooks/pre-commit" pre-commit other.yaml
 readiness_write_shim "$READY_R8/.git/hooks/pre-push" pre-push

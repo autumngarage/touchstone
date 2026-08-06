@@ -100,10 +100,15 @@ touchstone_install_hooks() {
   # or not the optional pre-commit CLI happens to be installed. Checking the
   # CLI first would misreport "hooks not installed, install pre-commit" for a
   # repo whose configured path already carries valid typed shims.
-  local configured_hooks_path=""
-  configured_hooks_path="$(git -C "$project_dir" config --get core.hooksPath 2>/dev/null || true)"
-  if [ -n "$configured_hooks_path" ]; then
-    echo "==> Git hooks not changed: core.hooksPath is configured ($configured_hooks_path)." >&2
+  # Presence of the key is the boundary, not a nonempty value: Git treats an
+  # explicitly empty core.hooksPath as an active hook path (hooks resolve to
+  # the filesystem root), so an empty value must be preserved the same way.
+  local configured_hooks_path="" hooks_path_set=false
+  if configured_hooks_path="$(git -C "$project_dir" config --get core.hooksPath 2>/dev/null)"; then
+    hooks_path_set=true
+  fi
+  if [ "$hooks_path_set" = true ]; then
+    echo "==> Git hooks not changed: core.hooksPath is configured (${configured_hooks_path:-<empty>})." >&2
     echo "    Touchstone will not unset repository hook configuration." >&2
     echo "    Remove core.hooksPath and rerun touchstone init if Touchstone should manage pre-commit shims." >&2
     return 4
