@@ -383,10 +383,12 @@ touchstone_ship_base_moved_recover() {
   # and rebasing onto the repository default would rewrite the head so the
   # guarded push refuses it (or worse, admits the wrong lineage). Fail closed
   # when the base cannot be resolved.
-  pr_base="$(cd "$worktree_path" && gh pr list --head "$branch" --state open \
-    --json baseRefName --jq '.[0].baseRefName // empty' 2>/dev/null || true)"
+  pr_base="$(cd "$worktree_path" && gh pr list --head "$branch" --author "@me" --state open \
+    --json baseRefName,isCrossRepository \
+    --jq '[.[] | select(.isCrossRepository == false)][0].baseRefName // empty' 2>/dev/null || true)"
   if [ -z "$pr_base" ]; then
-    echo "==> Could not resolve the open PR's base branch for '$branch'; handing off." >&2
+    echo "==> Could not resolve an own same-repository open PR base for '$branch'; handing off." >&2
+    echo "    (fork-backed PRs sharing the branch name never authorize recovery)" >&2
     TOUCHSTONE_BASE_MOVED_REASON="base-moved-base-unresolved"
     return 1
   fi
@@ -396,12 +398,29 @@ touchstone_ship_base_moved_recover() {
   # credentials would be prompted. Diagnostics are captured and reported —
   # auth, connectivity, and missing-ref failures need different operator
   # responses.
-  local fetch_output=""
+  # Explicit refspec: a narrow-clone origin can "successfully" fetch only
+  # FETCH_HEAD, leaving the tracking ref the rebase targets stale or absent.
+  # Capture the pre-fetch tip first: a stacked base that was REWRITTEN
+  # (non-fast-forward) rather than advanced would make a plain rebase replay
+  # the old parent's commits into the child; that case fails closed.
+  local fetch_output="" base_tip_before=""
+  base_tip_before="$(cd "$worktree_path" \
+    && git rev-parse --verify --quiet "refs/remotes/origin/$pr_base" 2>/dev/null || true)"
   if ! fetch_output="$(cd "$worktree_path" \
-    && GIT_TERMINAL_PROMPT=0 git fetch origin "$pr_base" 2>&1)"; then
+    && GIT_TERMINAL_PROMPT=0 git fetch origin \
+      "+refs/heads/$pr_base:refs/remotes/origin/$pr_base" 2>&1)"; then
     echo "==> Could not fetch origin/$pr_base for the automatic rebase; handing off with the diagnostic:" >&2
     printf '%s\n' "$fetch_output" | sed 's/^/      /' >&2
     TOUCHSTONE_BASE_MOVED_REASON="base-moved-fetch-failed"
+    return 1
+  fi
+  if [ -n "$base_tip_before" ] \
+    && ! (cd "$worktree_path" \
+      && git merge-base --is-ancestor "$base_tip_before" "refs/remotes/origin/$pr_base" 2>/dev/null); then
+    echo "==> Base '$pr_base' was rewritten (non-fast-forward) rather than advanced; a plain" >&2
+    echo "    rebase would replay stale parent commits into this branch. Handing off for" >&2
+    echo "    manual reconciliation." >&2
+    TOUCHSTONE_BASE_MOVED_REASON="base-moved-base-rewritten"
     return 1
   fi
   if (cd "$worktree_path" && git rebase -h 2>&1 | grep -q 'update-refs'); then
@@ -421,7 +440,13 @@ touchstone_ship_base_moved_recover() {
     }
   conflict_files="$(cd "$worktree_path" \
     && git diff --name-only --diff-filter=U 2>/dev/null | awk 'NR <= 10' || true)"
-  (cd "$worktree_path" && git rebase --abort) >/dev/null 2>&1 || true
+  local abort_output=""
+  if ! abort_output="$(cd "$worktree_path" && git rebase --abort 2>&1)"; then
+    echo "==> git rebase --abort FAILED; the worktree may remain mid-rebase:" >&2
+    printf '%s\n' "$abort_output" | sed 's/^/      /' >&2
+    TOUCHSTONE_BASE_MOVED_REASON="base-moved-abort-failed"
+    return 1
+  fi
   if [ -n "$conflict_files" ]; then
     echo "==> Automatic rebase hit conflicts; handing off without resolving content:" >&2
     printf '%s\n' "$conflict_files" | sed 's/^/      /' >&2
@@ -550,53 +575,20 @@ cmd_ship_runner() {
         touchstone_ship_write "$job_dir" deadline-epoch "$deadline_epoch"
         ;;
     esac
-    ship_attempt=1
-    max_base_moved_retries="${TOUCHSTONE_SHIP_BASE_MOVED_RETRIES:-3}"
-    case "$max_base_moved_retries" in
-      '' | *[!0-9]*) max_base_moved_retries=3 ;;
-    esac
-    while :; do
-      log_lines_before=0
-      if [ -f "$job_dir/ship.log" ]; then
-        log_lines_before="$(wc -l <"$job_dir/ship.log" | tr -d ' ')"
-      fi
-      if touchstone_review_fix_run \
-        "$job_dir" "$worktree_path" "$max_fix_iterations" "$deadline_epoch" \
-        "$validation_command" "$cleanup"; then
-        finish_runner succeeded 0
-        exit 0
-      else
-        # Captured in the else branch: after the `if` compound, $? would be
-        # the compound's own zero (PR #663 review).
-        exit_code=$?
-      fi
-      reason="${TOUCHSTONE_REVIEW_FIX_REASON:-review-fix-needs-attention}"
-      # Review-fix mode meets base movement in the same merge path; the same
-      # bounded recovery applies (PR #663 review).
-      [ "$reason" = "non-thread-merge-failure" ] || break
-      attempt_log="$(tail -n +"$((log_lines_before + 1))" "$job_dir/ship.log" 2>/dev/null || true)"
-      printf '%s' "$attempt_log" | grep -q 'base moved while' || break
-      if [ "$ship_attempt" -gt "$max_base_moved_retries" ]; then
-        reason="base-moved-retries-exhausted"
-        break
-      fi
-      # Recovery runs outside the fix child's deadline enforcement; respect
-      # the same budget here rather than extending the job past it.
-      if [ -n "$deadline_epoch" ] && [ "$(date +%s)" -ge "$deadline_epoch" ]; then
-        reason="time-budget-exhausted"
-        break
-      fi
-      if ! touchstone_ship_base_moved_recover "$worktree_path" "$job_dir" "$ship_attempt"; then
-        reason="$TOUCHSTONE_BASE_MOVED_REASON"
-        break
-      fi
-      # The failed fix run already published a needs-attention posture;
-      # recovery supersedes it — republish running state so job state and
-      # the retry event stay coherent for observers.
-      touchstone_ship_write "$job_dir" status running
-      touchstone_ship_write "$job_dir" reason ""
-      ship_attempt=$((ship_attempt + 1))
-    done
+    if touchstone_review_fix_run \
+      "$job_dir" "$worktree_path" "$max_fix_iterations" "$deadline_epoch" \
+      "$validation_command" "$cleanup"; then
+      finish_runner succeeded 0
+      exit 0
+    else
+      exit_code=$?
+    fi
+    # Base-moved recovery deliberately does NOT run in review-fix mode: the
+    # fix engine owns deadline enforcement and the needs-attention event
+    # contract, and recovery wrapped around it cannot stay coherent with
+    # either (PR #663 review, rounds 2-4). Review-fix recovery lands inside
+    # the admission redesign (#650/#659) instead.
+    reason="${TOUCHSTONE_REVIEW_FIX_REASON:-review-fix-needs-attention}"
     finish_runner needs-attention "${exit_code:-1}" "$reason"
     exit "${exit_code:-1}"
   fi
@@ -641,7 +633,8 @@ cmd_ship_runner() {
     touchstone_ship_write "$job_dir" child-pid ""
     [ "$exit_code" -eq 0 ] && break
     attempt_log="$(tail -n +"$((log_lines_before + 1))" "$job_dir/ship.log" 2>/dev/null || true)"
-    if ! printf '%s' "$attempt_log" | grep -q 'base moved while'; then
+    if ! printf '%s' "$attempt_log" \
+      | grep -qE 'base moved while|revision changed while review was being requested'; then
       break
     fi
     if [ "$ship_attempt" -gt "$max_base_moved_retries" ]; then
@@ -649,10 +642,29 @@ cmd_ship_runner() {
       reason="base-moved-retries-exhausted"
       break
     fi
-    if ! touchstone_ship_base_moved_recover "$worktree_path" "$job_dir" "$ship_attempt"; then
-      reason="$TOUCHSTONE_BASE_MOVED_REASON"
+    # The recovery runs as a tracked child so an operator takeover can
+    # signal it: bash defers the runner's TERM trap while a foreground
+    # command runs, and a foreground fetch/rebase would make takeover wait
+    # on the network. The reason travels through the job kv (subshell
+    # variables do not propagate).
+    (
+      if touchstone_ship_base_moved_recover "$worktree_path" "$job_dir" "$ship_attempt"; then
+        exit 0
+      fi
+      touchstone_ship_write "$job_dir" base-moved-reason "$TOUCHSTONE_BASE_MOVED_REASON"
+      exit 1
+    ) &
+    child_pid=$!
+    touchstone_ship_write "$job_dir" child-pid "$child_pid"
+    if ! wait "$child_pid"; then
+      reason="$(touchstone_ship_read "$job_dir" base-moved-reason)"
+      [ -n "$reason" ] || reason="base-moved-recovery-failed"
+      child_pid=""
+      touchstone_ship_write "$job_dir" child-pid ""
       break
     fi
+    child_pid=""
+    touchstone_ship_write "$job_dir" child-pid ""
     ship_attempt=$((ship_attempt + 1))
   done
   if [ "$exit_code" -eq 0 ]; then
