@@ -836,6 +836,41 @@ if [ ! -f "$MISMATCH_JOB_DIR/reason" ] \
   fail "mismatched-PR recovery should hand off with reason base-moved-pr-mismatch (got: $(cat "$MISMATCH_JOB_DIR/reason" 2>/dev/null))"
 fi
 
+echo "==> Case d2j: recovery parks when GitHub's base tip drifts from the validated fetch"
+OID_DRIFT_WT="$TEST_DIR/base-moved-oid-drift-worktree"
+git -C "$REPO" worktree add -q "$OID_DRIFT_WT" -b feat/base-moved-oid-drift main
+OID_DRIFT_WT="$(cd "$OID_DRIFT_WT" && pwd -P)"
+mkdir -p "$OID_DRIFT_WT/scripts"
+cat >"$OID_DRIFT_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+printf '%s' "$((count + 1))" >"$count_file"
+echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+exit 1
+EOF
+chmod +x "$OID_DRIFT_WT/scripts/open-pr.sh"
+: >"$TEST_DIR/base-moved-oid-drift-attempts"
+# The reported base tip is a real commit that is NOT the fetched origin/main
+# tip: the recheck must refuse to rebase onto history the checks never saw.
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-oid-drift-attempts" \
+  GH_PR_VIEW_HEAD="feat/base-moved-oid-drift" \
+  GH_PR_VIEW_BASE_OID="$(git -C "$REPO" rev-parse main~1)" \
+  GH_PR_VIEW_HEAD_OID="$(git -C "$OID_DRIFT_WT" rev-parse HEAD)" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$OID_DRIFT_WT" --detach >/dev/null
+wait_for_ship_status "$OID_DRIFT_WT" needs-attention "$TEST_DIR/base-moved-oid-drift-status.json"
+if [ "$(cat "$TEST_DIR/base-moved-oid-drift-attempts")" != "1" ]; then
+  fail "base-OID drift must not retry shipping, got $(cat "$TEST_DIR/base-moved-oid-drift-attempts") attempts"
+fi
+OID_DRIFT_JOB_DIR="$(grep -l "$OID_DRIFT_WT" "$REPO/.git/touchstone/ship-jobs"/*/worktree-path 2>/dev/null | head -1 | xargs dirname)"
+if [ ! -f "$OID_DRIFT_JOB_DIR/reason" ] \
+  || [ "$(cat "$OID_DRIFT_JOB_DIR/reason")" != "base-moved-base-oid-drift" ]; then
+  fail "base-OID drift should hand off with reason base-moved-base-oid-drift (got: $(cat "$OID_DRIFT_JOB_DIR/reason" 2>/dev/null))"
+fi
+
 echo "==> Case d3: detached jobs do not collide when branch names sanitize alike"
 COLLISION_SLASH_WT="$TEST_DIR/collision-slash-worktree"
 COLLISION_UNDERSCORE_WT="$TEST_DIR/collision-underscore-worktree"

@@ -617,6 +617,19 @@ TOUCHSTONE_BASE_CANDIDATES
       return 1
     fi
   fi
+  # The local HEAD must still be the revision recovery validated: another
+  # process committing, amending, or resetting this worktree after old_head
+  # was captured would otherwise be rebased and published unvalidated.
+  local current_local_head=""
+  current_local_head="$(cd "$worktree_path" \
+    && GIT_NO_REPLACE_OBJECTS=1 git rev-parse HEAD 2>/dev/null || echo unknown)"
+  if [ "$current_local_head" != "$old_head" ]; then
+    echo "==> Local HEAD moved during recovery ($old_head -> $current_local_head);" >&2
+    echo "    another process changed this worktree. Handing off rather than" >&2
+    echo "    rebasing unvalidated local history." >&2
+    TOUCHSTONE_BASE_MOVED_REASON="base-moved-local-head-moved"
+    return 1
+  fi
   # Rebase onto the frozen OID, not the shared tracking ref: a raw commit id
   # cannot be moved by a concurrent fetch or shadowed by a tag named
   # origin/<base>, so the rebase consumes exactly the history the rewrite
@@ -766,6 +779,13 @@ cmd_ship_runner() {
       touchstone_ship_signal_tree "$child_pid" TERM
       wait "$child_pid" 2>/dev/null || true
     fi
+    # The recovery child's TERM trap may have FAILED to abort an in-flight
+    # rebase; publishing a plain "stopped" would tell the takeover operator
+    # the worktree is quiet when it is mid-rebase. Surface that state.
+    if [ "$(touchstone_ship_read "$job_dir" base-moved-reason)" = "base-moved-takeover-abort-failed" ]; then
+      finish_runner needs-attention 143 base-moved-takeover-abort-failed
+      exit 143
+    fi
     finish_runner stopped 143 takeover
     exit 143
   }
@@ -877,7 +897,7 @@ cmd_ship_runner() {
     # single marker can be the post-rewrite SHA and hide the rewrite) and
     # binds its base lookup to that exact PR.
     authorized_bases="$(printf '%s' "$attempt_log" \
-      | grep -oE '(GitHub base:[[:space:]]+|local base:[[:space:]]+|at base )[0-9a-f]{40}' \
+      | grep -oE '(GitHub base:[[:space:]]+|local base:[[:space:]]+|fetched base:[[:space:]]+|at base )[0-9a-f]{40}' \
       | grep -oE '[0-9a-f]{40}' | sort -u || true)"
     failed_pr="$(printf '%s' "$attempt_log" \
       | grep -E '^ERROR: PR #[0-9]+ base moved while' | tail -1 \
