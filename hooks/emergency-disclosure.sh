@@ -21,12 +21,14 @@
 #
 set -euo pipefail
 
-# Classify bytes, not glyphs: every token this guard cares about is ASCII
-# shell syntax, and macOS awk aborts with "towc: multibyte conversion
-# failure" on non-UTF-8-clean input (em dashes in commit-message heredocs
-# were enough — issue #637). The C locale makes every awk tokenizer below
-# treat multibyte content as opaque bytes.
-export LC_ALL=C
+# Classify bytes, not glyphs — but ONLY inside the awk tokenizers: macOS
+# awk aborts with "towc: multibyte conversion failure" on non-UTF-8-clean
+# input (em dashes in commit-message heredocs were enough — issue #637),
+# so each awk below runs under LC_ALL=C where multibyte content is opaque
+# bytes that never match shell metacharacters. The shell-level boundary
+# checks deliberately KEEP the session locale: under a global C locale
+# every byte of a non-ASCII letter would satisfy [^[:alnum:]_], so a
+# benign argument like "égit" would tokenize as "git" and misclassify.
 
 input="$(cat)"
 
@@ -47,16 +49,18 @@ command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
 session_cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"
 tool_workdir="$(printf '%s' "$input" | jq -r '.tool_input.workdir // ""')"
 
-# Early allow, proof-based (issue #637): a protected push needs the word
-# `push`. A command whose raw text carries no `push` substring AND none of
-# the characters that could splice or expand one at runtime (quotes,
-# dollar, backtick, backslash) provably cannot contain a push in any form,
-# so the shell emulation below — and any bug in it — never runs for the
-# overwhelmingly common benign calls (`git -C <path> status`, `git add`,
-# cd-compounds with plain arguments). Anything quoted, expanded, or
-# containing `push` still takes the full conservative parser path.
+# Early allow, proof-based (issue #637): a protected push needs either the
+# word `push` or a git invocation that could resolve an alias to it
+# (`alias.p=push` makes `git p --no-verify` a push with no literal
+# "push"). A command whose raw text carries no `push` substring, no `git`
+# substring, AND none of the characters that could splice or expand
+# either at runtime (quotes, dollar, backtick, backslash) provably cannot
+# reach a protected push, so the shell emulation below — and any bug in
+# it — never runs for plain non-git calls. Anything mentioning git goes
+# through the parser, where the builtin-cannot-be-aliased exemption keeps
+# benign `git status`/`git add` cheap and alias chains are resolved.
 case "$command" in
-  *push* | *\$* | *\`* | *\\* | *\'* | *\"*) ;;
+  *push* | *git* | *\$* | *\`* | *\\* | *\'* | *\"*) ;;
   *)
     exit 0
     ;;
@@ -66,7 +70,7 @@ esac
 # later physical line remains executable input. A # inside a word or quotes is
 # data, not a comment opener.
 without_shell_comments() {
-  awk '
+  LC_ALL=C awk '
     {
       line = $0 "\n"
       comment = 0
@@ -109,7 +113,7 @@ without_shell_comments() {
 # boundary is an executable command segment, not arbitrary prose inside an
 # argument such as an issue body.
 shell_segments() {
-  awk '
+  LC_ALL=C awk '
     function emit() {
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", segment)
       if (segment != "") {
@@ -164,7 +168,7 @@ shell_segments() {
 # Preserve double-quoted text so executable command substitutions remain
 # visible, while masking single-quoted literals that the shell never executes.
 without_single_quoted_literals() {
-  awk '
+  LC_ALL=C awk '
     {
       line = $0 "\n"
       for (i = 1; i <= length(line); i++) {
@@ -204,7 +208,7 @@ without_single_quoted_literals() {
 # Quoted heredocs are literal. Unquoted heredocs expand command substitutions,
 # so retain only those executable regions and mask the surrounding prose.
 without_heredoc_bodies() {
-  awk '
+  LC_ALL=C awk '
     function print_executable_substitutions(line, output, i, char, next_char) {
       output = ""
       body_escaped = 0
@@ -358,7 +362,7 @@ without_heredoc_bodies() {
 # Heredoc bodies are data by default, but become shell code when redirected to
 # a shell interpreter or sourced from standard input.
 shell_stdin_heredoc_payloads() {
-  awk '
+  LC_ALL=C awk '
     {
       line = $0
       if (delimiter != "") {
@@ -447,7 +451,7 @@ shell_stdin_heredoc_payloads() {
 }
 
 shell_words() {
-  awk '
+  LC_ALL=C awk '
     function emit() {
       if (token_started) {
         if (token ~ /\{[^}]*([,]|\.\.)[^}]*\}/) {

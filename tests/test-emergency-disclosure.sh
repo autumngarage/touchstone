@@ -83,8 +83,16 @@ EOF
 assert_allowed "issue body quoting tokens" "gh issue create --body 'mentions git push --no-verify in prose'"
 assert_allowed "plain push (hooks run)" "git push"
 assert_allowed "push with lease" "git push --force-with-lease=branch:sha origin sha:refs/heads/branch"
+# Locale scoping (PR #665): with a global C locale every byte of a
+# multibyte letter is a word boundary, so "égit" would tokenize as
+# "git" and the fallback predicates would block this benign command.
+assert_allowed "multibyte word containing git+push" "python script.py égit push --no-verify-nothing"
 
 echo "==> Protected corpus must stay blocked without TOUCHSTONE_EMERGENCY"
+# A configured alias means the raw text of "git p --no-verify" contains no
+# literal "push" — the early allow must still route git invocations to the
+# parser (PR #665 P1).
+git -C "$REPO" config alias.p push
 assert_blocked "literal" "git push --no-verify"
 assert_blocked "flag order" "git push origin main --no-verify"
 assert_blocked "abbreviated flag" "git push --no-verif origin main"
@@ -93,6 +101,7 @@ assert_blocked "env prefix" "env SKIP=1 git push --no-verify"
 assert_blocked "compound tail" "cd $REPO && git push --no-verify"
 assert_blocked "variable-assembled flag" 'FLAG=--no-verify; git push $FLAG'
 assert_blocked "alias-defined push" "git -c alias.p='push --no-verify' p"
+assert_blocked "repo-configured alias push" "git p --no-verify"
 assert_blocked "dash-C with literal push" "git -C $REPO push --no-verify"
 assert_blocked "cd compound push" "cd $REPO && git commit -m 'x' && git push --no-verify"
 
