@@ -1983,6 +1983,122 @@ require_pr_feedback_clear() {
   echo "==> PR-visible review feedback clear."
 }
 
+# Direct-API claim substitution (issue #658). During the 2026-08-06 Actions
+# major outage, GitHub's API stayed fully operational while hosted runners
+# could not start jobs — and locally-validated PRs sat blocked for hours on
+# claim-check runs that never executed a step. The claim invariant (PR author
+# assigned to every closed issue) is readable straight from the API, so a
+# hosted check that failed WITHOUT executing user steps may be substituted by
+# a passing direct verification. An executed-and-failed check still blocks
+# (real violations block from either surface), any other failing check still
+# blocks, and the substitution is disclosed on the PR and in output.
+CLAIM_CHECK_SUBSTITUTED=false
+CLAIM_SUBSTITUTION_KIND=""
+
+claim_check_run_never_executed() {
+  local link="$1" run_id="" real_steps=""
+  [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] || return 1
+  run_id="$(printf '%s' "$link" | grep -oE '/runs/[0-9]+' | head -1 | tr -dc '0-9')"
+  [ -n "$run_id" ] || return 1
+  # Setup/teardown pseudo-steps appear even on infra failures; user code ran
+  # only if any OTHER step exists. Fail closed on API errors (return 1 keeps
+  # the check treated as a genuine failure).
+  real_steps="$(gh api "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$run_id/jobs" \
+    --jq '[.jobs[].steps[]? | select(.name != "Set up job" and .name != "Complete job")] | length' \
+    2>/dev/null)" || return 1
+  [ "$real_steps" = "0" ]
+}
+
+failed_checks_are_only_unexecuted_claim_checks() {
+  local failed_checks="$1"
+  local name state link saw_claim=false
+
+  while IFS="$(printf '\t')" read -r name state link || [ -n "$name" ]; do
+    [ -n "$name" ] || continue
+    case "$name" in
+      claim-check)
+        claim_check_run_never_executed "$link" || return 1
+        saw_claim=true
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done <<<"$failed_checks"
+  [ "$saw_claim" = true ]
+}
+
+# Any non-claim check still outstanding? Substitution must not shortcut the
+# wait for the REST of the checks; it only neutralizes the unexecuted claim
+# run. Outstanding covers every bucket that is not a completed pass/skip:
+# pending AND canceled runs have not passed (gh buckets them separately from
+# fail, so failed_checks never sees them). Inspection failure counts as
+# outstanding — an unverifiable check state must never authorize an early
+# substitution.
+non_claim_checks_outstanding() {
+  local outstanding stderr_file
+  # gh pr checks exits nonzero whenever any check failed — and a failed
+  # claim-check is exactly why this path runs — so exit status alone cannot
+  # distinguish "rendered a failing check" from "could not inspect". A true
+  # inspection failure writes to stderr; rendered results do not. Fail
+  # closed (outstanding) on stderr output or on being unable to capture it.
+  stderr_file="$(mktemp -t touchstone-checks-stderr.XXXXXX)" || return 0
+  outstanding="$(gh pr checks "$PR_NUMBER" \
+    --json name,bucket \
+    --template '{{range .}}{{if and (ne .bucket "pass") (ne .bucket "skipping") (ne .bucket "fail")}}{{.name}}{{"\n"}}{{end}}{{end}}' \
+    2>"$stderr_file")" || true
+  if [ -s "$stderr_file" ]; then
+    rm -f "$stderr_file"
+    return 0
+  fi
+  rm -f "$stderr_file"
+  printf '%s' "$outstanding" | grep -qv '^claim-check$' 2>/dev/null && return 0
+  return 1
+}
+
+attempt_claim_check_substitution() {
+  local failed_checks="$1" direct_output="" base_revision="" base_sha="" trusted_checker=""
+
+  failed_checks_are_only_unexecuted_claim_checks "$failed_checks" || return 1
+  # Execute the claim verifier FROM THE TRUSTED BASE REVISION, mirroring the
+  # hosted workflow's base-sha checkout: running the PR-head copy would let a
+  # PR that edits the verifier authorize its own substitution exactly when
+  # the trusted hosted check never ran.
+  base_revision="$(current_pr_base_revision 2>/dev/null)" || return 1
+  base_sha="${base_revision##*	}"
+  [ -n "$base_sha" ] || return 1
+  trusted_checker="$(mktemp -t touchstone-claim-checker.XXXXXX)" || return 1
+  if ! git show "$base_sha:scripts/issue-claim-check.sh" >"$trusted_checker" 2>/dev/null; then
+    rm -f "$trusted_checker"
+    return 1
+  fi
+  if ! direct_output="$(bash "$trusted_checker" --pr-number "$PR_NUMBER" 2>&1)"; then
+    rm -f "$trusted_checker"
+    echo "ERROR: claim-check never executed AND direct API claim verification failed:" >&2
+    printf '%s\n' "$direct_output" | sed 's/^/       /' >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="claim-verification-failed"
+    exit 1
+  fi
+  rm -f "$trusted_checker"
+  echo "==> claim-check failed without executing a step (hosted-runner infrastructure class)."
+  # The verifier can succeed two different ways, and the disclosure must say
+  # which: a completed assignment verification, or the documented
+  # [skip-claim-check] exception the PR body carries. Calling a bypass
+  # "verified" would hide that the merge used the exception.
+  if printf '%s' "$direct_output" | grep -q '\[skip-claim-check\] token found'; then
+    CLAIM_SUBSTITUTION_KIND="documented [skip-claim-check] bypass honored by the trusted-base verifier"
+  else
+    CLAIM_SUBSTITUTION_KIND="every open referenced issue confirmed assigned to the PR author by direct API read against the trusted base revision"
+  fi
+  echo "==> Direct verification result: $CLAIM_SUBSTITUTION_KIND:"
+  printf '%s\n' "$direct_output" | sed 's/^/    /'
+  gh pr comment "$PR_NUMBER" --body "Claim substitution (merge-pr, issue #658): the hosted claim-check failed without executing a step during a GitHub Actions infrastructure incident. Result: $CLAIM_SUBSTITUTION_KIND." \
+    >/dev/null 2>&1 \
+    || echo "WARNING: could not post the claim-substitution disclosure comment; the substitution is recorded in this log." >&2
+  CLAIM_CHECK_SUBSTITUTED=true
+  return 0
+}
+
 print_failed_checks_and_exit() {
   local failed_checks="$1"
   local name state link
@@ -2026,7 +2142,40 @@ wait_for_clean_merge_state() {
     fi
     FAILED_CHECKS="$(failed_checks)"
     if [ -n "$FAILED_CHECKS" ]; then
-      print_failed_checks_and_exit "$FAILED_CHECKS"
+      if failed_checks_are_only_unexecuted_claim_checks "$FAILED_CHECKS" \
+        && non_claim_checks_outstanding; then
+        # The unexecuted claim run alone must not fail the wait while other
+        # checks are still running; keep polling them.
+        :
+      elif failed_checks_are_only_unexecuted_claim_checks "$FAILED_CHECKS" \
+        && { [ "$CLAIM_CHECK_SUBSTITUTED" = true ] \
+          || attempt_claim_check_substitution "$FAILED_CHECKS"; }; then
+        # Substitution neutralizes ONLY the unexecuted claim run, and the
+        # failed-check shape is revalidated on EVERY poll — a new failure
+        # (e.g. sha256-preflight landing between polls) drops this branch
+        # and blocks normally. Authorize continuation solely from the
+        # states this path is designed for (allow-list, not block-list):
+        # CLEAN or UNSTABLE with MERGEABLE. Behind/dirty/conflicting keep
+        # their explicit rejection; anything else (UNKNOWN, BLOCKED, ...)
+        # keeps waiting for GitHub to settle — CLAIM_CHECK_SUBSTITUTED only
+        # prevents re-running the substitution (and re-posting its
+        # disclosure) on later attempts.
+        if { [ "$STATE" = "CLEAN" ] || [ "$STATE" = "UNSTABLE" ]; } \
+          && [ "$MERGEABLE" = "MERGEABLE" ]; then
+          return 0
+        fi
+        if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$STATE" = "DIRTY" ] \
+          || [ "$STATE" = "BEHIND" ] || [ "$STATE" = "CONFLICTING" ]; then
+          echo "ERROR: PR #$PR_NUMBER is $STATE — has conflicts or is out of date with base." >&2
+          echo "       Claim substitution does not waive merge-state requirements." >&2
+          echo "       Rebase or resolve conflicts on the PR branch before merging." >&2
+          TOUCHSTONE_MERGE_FAILURE_REASON="not-mergeable"
+          exit 1
+        fi
+        echo "==> Claim substituted, but merge state is $STATE/$MERGEABLE — continuing to wait for an authorizing state."
+      else
+        print_failed_checks_and_exit "$FAILED_CHECKS"
+      fi
     fi
     if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$STATE" = "DIRTY" ] || [ "$STATE" = "BEHIND" ] || [ "$STATE" = "CONFLICTING" ]; then
       echo "ERROR: PR #$PR_NUMBER is $STATE — has conflicts or is out of date with base." >&2
@@ -2357,9 +2506,21 @@ if [ -z "$REVIEWED_HEAD_OID" ]; then
   exit 1
 fi
 gh_merge_exit=0
+# One body assembly for every disclosure: bypass and claim substitution can
+# co-occur, and the squash commit is the durable audit record for both (the
+# PR comment is best-effort and the terminal log is ephemeral).
+MERGE_BODY=""
 if [ "$BYPASS_REVIEW" = true ]; then
+  MERGE_BODY="Reviewer-bypass: $BYPASS_REASON"
+fi
+if [ "$CLAIM_CHECK_SUBSTITUTED" = true ]; then
+  MERGE_BODY="${MERGE_BODY:+$MERGE_BODY
+
+}Claim-substitution: hosted claim-check never executed (Actions infrastructure incident); ${CLAIM_SUBSTITUTION_KIND:-every open referenced issue confirmed assigned to the PR author by direct API read against the trusted base revision} (issue #658)."
+fi
+if [ -n "$MERGE_BODY" ]; then
   gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID" \
-    --body "Reviewer-bypass: $BYPASS_REASON" || gh_merge_exit=$?
+    --body "$MERGE_BODY" || gh_merge_exit=$?
 else
   gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID" \
     || gh_merge_exit=$?
@@ -2383,6 +2544,32 @@ if [ "$gh_merge_exit" -ne 0 ]; then
     echo "ERROR: gh pr merge exited $gh_merge_exit and PR #$PR_NUMBER is not MERGED." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="gh-pr-merge"
     exit "$gh_merge_exit"
+  fi
+fi
+
+# When the claim substitution authorized this merge, the hosted check GitHub
+# sees is still failed. If branch protection marks it REQUIRED, gh pr merge
+# arms auto-merge and exits zero while the PR remains OPEN — direct
+# verification cannot update GitHub's required-check status. Verify MERGED
+# explicitly, disarm the surprise auto-merge, and fail honestly.
+if [ "$CLAIM_CHECK_SUBSTITUTED" = true ]; then
+  # Bounded retries: a transient inspection failure or propagation-empty
+  # state must not be read as proof the PR stayed open.
+  substituted_state=""
+  for substituted_state_attempt in 1 2 3; do
+    substituted_state="$(gh pr view "$PR_NUMBER" --json state --jq '.state' 2>/dev/null || echo "")"
+    [ "$substituted_state" = "MERGED" ] && break
+    [ "$substituted_state_attempt" -lt 3 ] && sleep 2
+  done
+  if [ "$substituted_state" != "MERGED" ]; then
+    gh pr merge "$PR_NUMBER" --disable-auto >/dev/null 2>&1 \
+      || echo "WARNING: could not disarm auto-merge on PR #$PR_NUMBER; it may merge when the hosted check recovers." >&2
+    echo "ERROR: merge accepted but PR #$PR_NUMBER is not MERGED (state: ${substituted_state:-unknown})." >&2
+    echo "       The claim-check is required by branch protection; claim substitution can" >&2
+    echo "       satisfy Touchstone's gate but cannot update GitHub's required-check status." >&2
+    echo "       Rerun the hosted claim-check when Actions recovers, then merge normally." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="claim-substitution-required-check"
+    exit 1
   fi
 fi
 
