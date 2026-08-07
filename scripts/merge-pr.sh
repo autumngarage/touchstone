@@ -304,7 +304,7 @@ report_review_round_economics() {
     [ -n "$cid" ] || continue
     listed=$((listed + 1))
     echo "         - comment $cid ($path)" >&2
-    echo "           respond: bash scripts/respond-review.sh $pr --comment-id $cid --body-file <reply.md>" >&2
+    echo "           respond: bash scripts/respond-review.sh $pr --comment-id $cid --body-file reply.md" >&2
   done <<<"$threads"
   echo "       findings_open=$listed" >&2
   return 0
@@ -2580,12 +2580,24 @@ if [ "$BYPASS_REVIEW" != true ] || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-rev
   else
     PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP=""
   fi
-  if [ "$final_request_loaded" != true ] \
-    || ! trusted_pr_clean_signal "$REVIEWED_HEAD_OID" "$REVIEWED_BASE_OID" "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"; then
+  final_signal_status=0
+  if [ "$final_request_loaded" = true ]; then
+    trusted_pr_clean_signal "$REVIEWED_HEAD_OID" "$REVIEWED_BASE_OID" "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
+      || final_signal_status=$?
+  fi
+  if [ "$final_request_loaded" != true ] || [ "$final_signal_status" -ne 0 ]; then
     echo "ERROR: The latest trusted PR-visible AI result is not clean for reviewed head $REVIEWED_HEAD_OID." >&2
     echo "       A newer review result may have arrived during preflight; resolve it and rerun the merge gate." >&2
-    report_review_round_economics "$PR_NUMBER"
-    print_batch_fix_guidance
+    # Round economics and batch guidance describe FINDINGS (status 3). An
+    # evidence-load failure or inspection error is a state problem; printing
+    # findings_open=0 there would misdirect the driver to hunt for findings
+    # that do not exist.
+    if [ "$final_signal_status" -eq 3 ]; then
+      report_review_round_economics "$PR_NUMBER"
+      print_batch_fix_guidance
+    elif [ -n "${PR_TRIGGERED_REVIEW_INSPECTION_ERROR:-}" ]; then
+      echo "       Inspection detail: $PR_TRIGGERED_REVIEW_INSPECTION_ERROR" >&2
+    fi
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-stale"
     exit 1
   fi
