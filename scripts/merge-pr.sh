@@ -215,9 +215,16 @@ fi
 # instead of paying full review latency per finding. Best-effort throughout:
 # this is guidance attached to an already-failed gate, so an API hiccup here
 # must not change the exit path, and partial output states its own limits.
-report_review_round_economics() {
+print_batch_fix_guidance() {
+  echo "       Address EVERY finding above in ONE batch (single fix commit or series)," >&2
+  echo "       answer each thread, then request one fresh exact-head review. One round" >&2
+  echo "       per finding pays full review latency per finding; one round per batch" >&2
+  echo "       pays it once (issue #649)." >&2
+}
+
+report_review_rounds() {
   local pr="$1"
-  local rounds threads listed=0
+  local rounds="" comment_rounds=""
 
   if [ -z "$REPO_OWNER" ] || [ -z "$REPO_NAME" ]; then
     echo "       (round accounting unavailable: repository identity unresolved)" >&2
@@ -231,8 +238,22 @@ report_review_round_economics() {
   if rounds="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/pulls/$pr/reviews" \
     --jq "[.[] | select(.user.login as \$l | [$authors_json] | index(\$l))] | length" \
     2>"${rounds_stderr:-/dev/null}" | awk '{s+=$1} END {print s+0}')"; then
-    if [ -n "$rounds" ] && [ "$rounds" -gt 0 ] 2>/dev/null; then
-      echo "       Review round $rounds for this PR (rounds=$rounds)." >&2
+    # Comment-delivered results (latest_trusted_pr_comment_result's surface)
+    # never appear in /pulls/N/reviews; count trusted-author result comments
+    # too or comment-mode rounds are invisible.
+    if comment_rounds="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/issues/$pr/comments" \
+      --jq "[.[] | select(.user.login as \$l | [$authors_json] | index(\$l)) | select((.body // \"\") | contains(\"Reviewed commit:\"))] | length" \
+      2>"${rounds_stderr:-/dev/null}" | awk '{s+=$1} END {print s+0}')"; then
+      rounds=$((rounds + comment_rounds))
+      if [ "$rounds" -gt 0 ] 2>/dev/null; then
+        echo "       Review round $rounds for this PR (formal=$((rounds - comment_rounds)), comment=$comment_rounds)." >&2
+      fi
+    else
+      echo "       (round accounting incomplete: comment-result lookup failed;" >&2
+      echo "        formal-review rounds=$rounds)" >&2
+      if [ -n "$rounds_stderr" ] && [ -s "$rounds_stderr" ]; then
+        sed 's/^/         /' "$rounds_stderr" >&2
+      fi
     fi
   else
     # Best-effort data is allowed only when its absence is visible: a
@@ -243,18 +264,36 @@ report_review_round_economics() {
     fi
   fi
   [ -z "$rounds_stderr" ] || rm -f "$rounds_stderr"
+  return 0
+}
+
+report_review_round_economics() {
+  local pr="$1"
+  local threads listed=0
+
+  if [ -z "$REPO_OWNER" ] || [ -z "$REPO_NAME" ]; then
+    echo "       (round accounting unavailable: repository identity unresolved)" >&2
+    return 0
+  fi
+  report_review_rounds "$pr"
   # An empty result from a SUCCESSFUL query is real data (zero unresolved
   # threads — e.g. the formal review is COMMENTED but every inline thread
   # is resolved); only a failed query may claim enumeration was impossible.
-  local threads_status=0
+  local threads_status=0 threads_stderr=""
+  threads_stderr="$(mktemp -t touchstone-threads.XXXXXX)" || threads_stderr=""
   threads="$(gh api graphql --paginate \
     -f query="query(\$endCursor: String) { repository(owner:\"$REPO_OWNER\", name:\"$REPO_NAME\") { pullRequest(number:$pr) { reviewThreads(first:100, after:\$endCursor) { nodes { isResolved comments(first:1) { nodes { databaseId path } } } pageInfo { hasNextPage endCursor } } } } }" \
     --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | [(.comments.nodes[0].databaseId | tostring), (.comments.nodes[0].path // "-")] | @tsv' \
-    2>/dev/null)" || threads_status=$?
+    2>"${threads_stderr:-/dev/null}")" || threads_status=$?
   if [ "$threads_status" -ne 0 ]; then
     echo "       (could not enumerate unresolved threads; open the review URL above for the full set)" >&2
+    if [ -n "$threads_stderr" ] && [ -s "$threads_stderr" ]; then
+      sed 's/^/         /' "$threads_stderr" >&2
+    fi
+    [ -z "$threads_stderr" ] || rm -f "$threads_stderr"
     return 0
   fi
+  [ -z "$threads_stderr" ] || rm -f "$threads_stderr"
   if [ -z "$threads" ]; then
     echo "       findings_open=0 (no unresolved inline threads; the reviewer's finding" >&2
     echo "       is in the review body itself — open the review URL above)" >&2
@@ -1623,10 +1662,7 @@ wait_for_pr_triggered_review() {
           echo "ERROR: Trusted PR-visible AI review is not clean for PR #$PR_NUMBER head $expected_head." >&2
           [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2
           report_review_round_economics "$PR_NUMBER"
-          echo "       Address EVERY finding above in ONE batch (single fix commit or series)," >&2
-          echo "       answer each thread, then request one fresh exact-head review. One round" >&2
-          echo "       per finding pays full review latency per finding; one round per batch" >&2
-          echo "       pays it once (issue #649)." >&2
+          print_batch_fix_guidance
           TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-findings"
           exit 1
         else
@@ -2042,6 +2078,8 @@ require_pr_feedback_clear() {
     if [ "$thread_count" -gt 100 ]; then
       echo "       Listed first page(s) reported by GitHub; inspect the PR for the complete thread list." >&2
     fi
+    report_review_rounds "$PR_NUMBER"
+    print_batch_fix_guidance
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-blocked"
     exit 1
   fi
@@ -2546,6 +2584,8 @@ if [ "$BYPASS_REVIEW" != true ] || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-rev
     || ! trusted_pr_clean_signal "$REVIEWED_HEAD_OID" "$REVIEWED_BASE_OID" "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"; then
     echo "ERROR: The latest trusted PR-visible AI result is not clean for reviewed head $REVIEWED_HEAD_OID." >&2
     echo "       A newer review result may have arrived during preflight; resolve it and rerun the merge gate." >&2
+    report_review_round_economics "$PR_NUMBER"
+    print_batch_fix_guidance
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-stale"
     exit 1
   fi
