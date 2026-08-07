@@ -369,7 +369,7 @@ cmd_status() {
 # returns 1. The runner never resolves content.
 TOUCHSTONE_BASE_MOVED_REASON=""
 touchstone_ship_base_moved_recover() {
-  local worktree_path="$1" job_dir="$2" attempt="$3"
+  local worktree_path="$1" job_dir="$2" attempt="$3" authorized_base="${4:-}"
   local branch="" pr_base="" old_head="" new_head="" rebase_output=""
   local conflict_files="" update_refs_flag=""
 
@@ -383,11 +383,23 @@ touchstone_ship_base_moved_recover() {
   # and rebasing onto the repository default would rewrite the head so the
   # guarded push refuses it (or worse, admits the wrong lineage). Fail closed
   # when the base cannot be resolved.
-  pr_base="$(cd "$worktree_path" && gh pr list --head "$branch" --author "@me" --state open \
+  local lookup_stderr=""
+  lookup_stderr="$(mktemp -t touchstone-pr-lookup.XXXXXX)" || {
+    TOUCHSTONE_BASE_MOVED_REASON="base-moved-base-unresolved"
+    return 1
+  }
+  if ! pr_base="$(cd "$worktree_path" && gh pr list --head "$branch" --author "@me" --state open \
     --json baseRefName,isCrossRepository \
-    --jq '[.[] | select(.isCrossRepository == false)][0].baseRefName // empty' 2>/dev/null || true)"
+    --jq '[.[] | select(.isCrossRepository == false)][0].baseRefName // empty' 2>"$lookup_stderr")"; then
+    echo "==> PR base lookup FAILED for '$branch'; handing off with the diagnostic:" >&2
+    sed 's/^/      /' "$lookup_stderr" >&2
+    rm -f "$lookup_stderr"
+    TOUCHSTONE_BASE_MOVED_REASON="base-moved-pr-lookup-failed"
+    return 1
+  fi
+  rm -f "$lookup_stderr"
   if [ -z "$pr_base" ]; then
-    echo "==> Could not resolve an own same-repository open PR base for '$branch'; handing off." >&2
+    echo "==> No own same-repository open PR found for '$branch'; handing off." >&2
     echo "    (fork-backed PRs sharing the branch name never authorize recovery)" >&2
     TOUCHSTONE_BASE_MOVED_REASON="base-moved-base-unresolved"
     return 1
@@ -404,8 +416,17 @@ touchstone_ship_base_moved_recover() {
   # (non-fast-forward) rather than advanced would make a plain rebase replay
   # the old parent's commits into the child; that case fails closed.
   local fetch_output="" base_tip_before=""
-  base_tip_before="$(cd "$worktree_path" \
-    && git rev-parse --verify --quiet "refs/remotes/origin/$pr_base" 2>/dev/null || true)"
+  if [ -n "$authorized_base" ] \
+    && (cd "$worktree_path" && git cat-file -e "$authorized_base^{commit}" 2>/dev/null); then
+    # The base revision the failed run actually authorized against — parsed
+    # from its review-request record. open-pr may already have advanced the
+    # tracking ref before reporting movement, so the tracking tip alone can
+    # hide a force-push.
+    base_tip_before="$authorized_base"
+  else
+    base_tip_before="$(cd "$worktree_path" \
+      && git rev-parse --verify --quiet "refs/remotes/origin/$pr_base" 2>/dev/null || true)"
+  fi
   if ! fetch_output="$(cd "$worktree_path" \
     && GIT_TERMINAL_PROMPT=0 git fetch origin \
       "+refs/heads/$pr_base:refs/remotes/origin/$pr_base" 2>&1)"; then
@@ -461,7 +482,7 @@ touchstone_ship_base_moved_recover() {
 
 cmd_ship_runner() {
   local job_dir="" worktree_path="" claim_token="" cleanup=false events_json="" child_pid="" exit_code=0 branch=""
-  local ship_attempt=1 max_base_moved_retries="" log_lines_before=0 attempt_log=""
+  local ship_attempt=1 max_base_moved_retries="" log_lines_before=0 attempt_log="" authorized_base=""
   local claim_owner_wait=0
   local review_fix=false max_fix_iterations="$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT"
   local max_fix_minutes=45 validation_command=""
@@ -647,8 +668,10 @@ cmd_ship_runner() {
     # command runs, and a foreground fetch/rebase would make takeover wait
     # on the network. The reason travels through the job kv (subshell
     # variables do not propagate).
+    authorized_base="$(printf '%s' "$attempt_log" \
+      | grep -oE 'at base [0-9a-f]{40}' | tail -1 | awk '{print $3}' || true)"
     (
-      if touchstone_ship_base_moved_recover "$worktree_path" "$job_dir" "$ship_attempt"; then
+      if touchstone_ship_base_moved_recover "$worktree_path" "$job_dir" "$ship_attempt" "$authorized_base"; then
         exit 0
       fi
       touchstone_ship_write "$job_dir" base-moved-reason "$TOUCHSTONE_BASE_MOVED_REASON"
