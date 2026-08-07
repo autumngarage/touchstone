@@ -1723,7 +1723,7 @@ if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin
   cat "$TEST_DIR/doctor-lean-ci.txt" >&2
   ERRORS=$((ERRORS + 1))
 fi
-assert_not_contains "$TEST_DIR/doctor-lean-ci.txt" 'no concurrency guard'
+assert_not_contains "$TEST_DIR/doctor-lean-ci.txt" 'concurrency guard'
 printf 'name: validate\non:\n  push:\n    branches: [main, master]\n  pull_request:\njobs: {}\n' \
   >"$PROJECT_LEAN_CI/.github/workflows/validate.yml"
 if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-legacy-ci.txt" 2>&1; then
@@ -1731,7 +1731,7 @@ if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin
   cat "$TEST_DIR/doctor-legacy-ci.txt" >&2
   ERRORS=$((ERRORS + 1))
 fi
-assert_contains "$TEST_DIR/doctor-legacy-ci.txt" 'no concurrency guard'
+assert_contains "$TEST_DIR/doctor-legacy-ci.txt" 'no PR-scoped concurrency guard'
 assert_contains "$TEST_DIR/doctor-legacy-ci.txt" 're-validates default-branch pushes'
 
 # doctor must flag a pre-push hook that exists with the right content but is

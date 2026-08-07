@@ -732,20 +732,43 @@ cmd_doctor_project() {
     # Only a workflow that actually runs for pull requests can bill per
     # superseded review head; push/schedule-only repurposings are exempt.
     # Cancellation must be ENABLED (cancel-in-progress: false or a comment
-    # still bills obsolete runs) AND scoped to a PR-specific group — a
-    # global or head_ref group can cancel unrelated PRs or miss superseded
-    # heads entirely.
-    if ! grep -Eq '^[[:space:]]*cancel-in-progress:[[:space:]]*true' "$ci_workflow" \
-      || ! grep -Eq 'pull_request\.number' "$ci_workflow"; then
-      tk_warn "CI validate.yml has no concurrency guard — superseded review heads each bill a full run"
-      tk_dim "  Fix: add a concurrency block keyed by PR number with cancel-in-progress: true"
+    # still bills obsolete runs) AND scoped to a PR-specific group — and
+    # BOTH must live in the same top-level concurrency block: independent
+    # file-wide greps would accept cancellation on an unrelated job plus a
+    # pull_request.number mention in an env value or comment.
+    local ci_concurrency_block=""
+    ci_concurrency_block="$(awk '
+      /^concurrency:/ { inb = 1; next }
+      inb && /^[^[:space:]#]/ { inb = 0 }
+      inb { print }
+    ' "$ci_workflow")"
+    if ! grep -Eq '^[[:space:]]*cancel-in-progress:[[:space:]]*true' <<<"$ci_concurrency_block" \
+      || ! grep -Eq '^[[:space:]]*group:.*pull_request\.number' <<<"$ci_concurrency_block"; then
+      tk_warn "CI validate.yml has no PR-scoped concurrency guard — superseded review heads each bill a full run"
+      tk_dim "  Fix: add a top-level concurrency block keyed by PR number with cancel-in-progress: true"
       tk_dim "  (reference: templates/ci/github-validate.yml in the touchstone repo,"
       tk_dim "   https://github.com/autumngarage/touchstone/blob/main/templates/ci/github-validate.yml)"
     fi
-    if grep -Eq '^[[:space:]]*branches: \[main, master\]' "$ci_workflow" \
-      && grep -Eq '^[[:space:]]*push:' "$ci_workflow"; then
-      tk_warn "CI validate.yml re-validates default-branch pushes the merge gate already verified"
-      tk_dim "  Fix: drop the push trigger; keep pull_request as the hookless-contributor backstop"
+    # The default-branch advisory reads the branch filter INSIDE the push
+    # trigger block: a project pushing only develop while restricting
+    # pull_request to [main, master] must not be told it re-validates
+    # default-branch pushes.
+    local ci_push_block=""
+    ci_push_block="$(awk '
+      /^[[:space:]]*push:[[:space:]]*$/ { inb = 1; ind = index($0, "push:"); next }
+      inb {
+        pos = 1
+        while (substr($0, pos, 1) == " ") pos++
+        if ($0 !~ /^[[:space:]]*$/ && pos <= ind) { inb = 0 }
+        else { print }
+      }
+    ' "$ci_workflow")"
+    if [ -n "$ci_push_block" ]; then
+      if ! grep -Eq '^[[:space:]]*branches:' <<<"$ci_push_block" \
+        || grep -Eq 'main|master' <<<"$ci_push_block"; then
+        tk_warn "CI validate.yml re-validates default-branch pushes the merge gate already verified"
+        tk_dim "  Fix: drop the push trigger; keep pull_request as the hookless-contributor backstop"
+      fi
     fi
   fi
 
