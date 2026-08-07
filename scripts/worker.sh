@@ -562,11 +562,11 @@ TOUCHSTONE_BASE_CANDIDATES
     # onto a base the PR no longer targets. The recheck's stderr is
     # preserved: an API or auth failure here must read as a lookup failure,
     # not masquerade as a retargeted PR.
-    local pr_recheck="" recheck_stderr=""
+    local pr_recheck="" recheck_stderr="" recheck_base_oid=""
     recheck_stderr="$(mktemp -t touchstone-pr-recheck.XXXXXX)" || recheck_stderr=""
     if ! pr_recheck="$(cd "$worktree_path" && gh pr view "$failed_pr" \
-      --json baseRefName,headRefName,isCrossRepository,state \
-      --jq '[.state, (.isCrossRepository | tostring), .headRefName, .baseRefName] | join("\n")' \
+      --json baseRefName,baseRefOid,headRefName,isCrossRepository,state \
+      --jq '[.state, (.isCrossRepository | tostring), .headRefName, .baseRefName, .baseRefOid] | join("\n")' \
       2>"${recheck_stderr:-/dev/null}")"; then
       echo "==> PR #$failed_pr recheck FAILED immediately before the rebase; handing off" >&2
       echo "    with the diagnostic:" >&2
@@ -578,11 +578,25 @@ TOUCHSTONE_BASE_CANDIDATES
       return 1
     fi
     [ -z "$recheck_stderr" ] || rm -f "$recheck_stderr"
+    recheck_base_oid="$(printf '%s\n' "$pr_recheck" | sed -n '5p')"
+    pr_recheck="$(printf '%s\n' "$pr_recheck" | sed -n '1,4p')"
     if [ "$pr_recheck" != "$(printf 'OPEN\nfalse\n%s\n%s' "$branch" "$pr_base")" ]; then
       echo "==> PR #$failed_pr changed while recovery was preparing (retargeted, closed," >&2
       echo "    or no longer this branch); handing off rather than rebasing onto a" >&2
       echo "    stale base." >&2
       TOUCHSTONE_BASE_MOVED_REASON="base-moved-pr-mismatch"
+      return 1
+    fi
+    # The name tuple alone cannot see a base force-pushed AFTER the
+    # validated fetch: the branch name is unchanged while the revision is
+    # not. Require GitHub's current base tip to equal the frozen OID the
+    # rewrite check validated; any drift parks rather than rebasing onto
+    # history the checks never saw.
+    if [ "$recheck_base_oid" != "$base_oid" ]; then
+      echo "==> Base '$pr_base' moved again after the validated fetch (GitHub tip" >&2
+      echo "    $recheck_base_oid vs validated $base_oid); handing off rather than" >&2
+      echo "    rebasing onto a base revision the rewrite checks never saw." >&2
+      TOUCHSTONE_BASE_MOVED_REASON="base-moved-base-oid-drift"
       return 1
     fi
   fi
