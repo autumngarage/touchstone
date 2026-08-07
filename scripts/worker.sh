@@ -461,12 +461,22 @@ touchstone_ship_base_moved_recover() {
     }
   conflict_files="$(cd "$worktree_path" \
     && git diff --name-only --diff-filter=U 2>/dev/null | awk 'NR <= 10' || true)"
-  local abort_output=""
-  if ! abort_output="$(cd "$worktree_path" && git rebase --abort 2>&1)"; then
-    echo "==> git rebase --abort FAILED; the worktree may remain mid-rebase:" >&2
-    printf '%s\n' "$abort_output" | sed 's/^/      /' >&2
-    TOUCHSTONE_BASE_MOVED_REASON="base-moved-abort-failed"
-    return 1
+  # Abort only when rebase state actually exists: a rebase rejected before
+  # creating state (pre-rebase hook, untracked-file collision) has nothing
+  # to abort, and the "No rebase in progress" abort error would bury the
+  # real diagnostic.
+  local rebase_state_dir=""
+  rebase_state_dir="$(cd "$worktree_path" && git rev-parse --git-path rebase-merge 2>/dev/null || true)"
+  if [ -n "$rebase_state_dir" ] && (cd "$worktree_path" && [ -d "$rebase_state_dir" ]) \
+    || { rebase_state_dir="$(cd "$worktree_path" && git rev-parse --git-path rebase-apply 2>/dev/null || true)" \
+      && [ -n "$rebase_state_dir" ] && (cd "$worktree_path" && [ -d "$rebase_state_dir" ]); }; then
+    local abort_output=""
+    if ! abort_output="$(cd "$worktree_path" && git rebase --abort 2>&1)"; then
+      echo "==> git rebase --abort FAILED; the worktree may remain mid-rebase:" >&2
+      printf '%s\n' "$abort_output" | sed 's/^/      /' >&2
+      TOUCHSTONE_BASE_MOVED_REASON="base-moved-abort-failed"
+      return 1
+    fi
   fi
   if [ -n "$conflict_files" ]; then
     echo "==> Automatic rebase hit conflicts; handing off without resolving content:" >&2
@@ -630,6 +640,11 @@ cmd_ship_runner() {
   case "$max_base_moved_retries" in
     '' | *[!0-9]*) max_base_moved_retries=3 ;;
   esac
+  # Clamp BEFORE comparison: an all-digit value beyond integer range makes
+  # bash's -gt fail with "integer expression expected" mid-loop.
+  if [ "${#max_base_moved_retries}" -gt 2 ]; then
+    max_base_moved_retries=10
+  fi
   while :; do
     log_lines_before=0
     if [ -f "$job_dir/ship.log" ]; then
@@ -654,8 +669,11 @@ cmd_ship_runner() {
     touchstone_ship_write "$job_dir" child-pid ""
     [ "$exit_code" -eq 0 ] && break
     attempt_log="$(tail -n +"$((log_lines_before + 1))" "$job_dir/ship.log" 2>/dev/null || true)"
+    # Structural, line-anchored classification: only the delivery scripts'
+    # own error formats qualify — a project test or hook echoing the phrase
+    # mid-line cannot spoof an authorization race.
     if ! printf '%s' "$attempt_log" \
-      | grep -qE 'base moved while|revision changed while review was being requested'; then
+      | grep -qE '^ERROR: (PR #[0-9]+ )?(base moved while|revision changed while review was being requested)'; then
       break
     fi
     if [ "$ship_attempt" -gt "$max_base_moved_retries" ]; then
@@ -668,8 +686,16 @@ cmd_ship_runner() {
     # command runs, and a foreground fetch/rebase would make takeover wait
     # on the network. The reason travels through the job kv (subshell
     # variables do not propagate).
+    # The admission failure reports the base it authorized against as
+    # "GitHub base: <sha>" (pre-force-push even when the tracking ref was
+    # already updated); the review-request marker's "at base <sha>" is the
+    # fallback, the tracking tip the last resort inside the helper.
     authorized_base="$(printf '%s' "$attempt_log" \
-      | grep -oE 'at base [0-9a-f]{40}' | tail -1 | awk '{print $3}' || true)"
+      | grep -oE 'GitHub base: [0-9a-f]{40}' | tail -1 | awk '{print $3}' || true)"
+    if [ -z "$authorized_base" ]; then
+      authorized_base="$(printf '%s' "$attempt_log" \
+        | grep -oE 'at base [0-9a-f]{40}' | tail -1 | awk '{print $3}' || true)"
+    fi
     (
       if touchstone_ship_base_moved_recover "$worktree_path" "$job_dir" "$ship_attempt" "$authorized_base"; then
         exit 0
