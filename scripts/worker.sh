@@ -384,10 +384,13 @@ touchstone_ship_base_moved_recover() {
   # guarded push refuses it (or worse, admits the wrong lineage). Fail closed
   # when the base cannot be resolved.
   local lookup_stderr=""
-  lookup_stderr="$(mktemp -t touchstone-pr-lookup.XXXXXX)" || {
-    TOUCHSTONE_BASE_MOVED_REASON="base-moved-base-unresolved"
+  if ! lookup_stderr="$(mktemp -t touchstone-pr-lookup.XXXXXX 2>&1)"; then
+    echo "==> Could not create a temporary diagnostics file (mktemp):" >&2
+    printf '%s\n' "$lookup_stderr" | sed 's/^/      /' >&2
+    echo "    Recovery never reached the PR lookup; check the temp directory." >&2
+    TOUCHSTONE_BASE_MOVED_REASON="base-moved-tempfile-failed"
     return 1
-  }
+  fi
   if [ -n "$failed_pr" ]; then
     # Bind recovery to the exact PR that reported the race: a PR retargeted
     # or replaced while recovery starts — or a second own PR sharing this
@@ -782,10 +785,13 @@ cmd_ship_runner() {
     # The recovery child's TERM trap may have FAILED to abort an in-flight
     # rebase; publishing a plain "stopped" would tell the takeover operator
     # the worktree is quiet when it is mid-rebase. Surface that state.
-    if [ "$(touchstone_ship_read "$job_dir" base-moved-reason)" = "base-moved-takeover-abort-failed" ]; then
-      finish_runner needs-attention 143 base-moved-takeover-abort-failed
-      exit 143
-    fi
+    case "$(touchstone_ship_read "$job_dir" base-moved-reason)" in
+      base-moved-takeover-abort-failed | base-moved-abort-failed)
+        finish_runner needs-attention 143 \
+          "$(touchstone_ship_read "$job_dir" base-moved-reason)"
+        exit 143
+        ;;
+    esac
     finish_runner stopped 143 takeover
     exit 143
   }
@@ -873,14 +879,16 @@ cmd_ship_runner() {
     [ "$exit_code" -eq 0 ] && break
     attempt_log="$(tail -n +"$((log_lines_before + 1))" "$job_dir/ship.log" 2>/dev/null || true)"
     # Structural, line-anchored classification: only the delivery scripts'
-    # own BASE-MOVED error formats qualify — a project test or hook echoing
-    # the phrase mid-line cannot spoof an authorization race. The broader
+    # own BASE-MOVED error formats qualify, and those always carry the PR
+    # number — requiring it means a project test or hook echoing the bare
+    # phrase can neither spoof a race nor push recovery onto the
+    # fallback PR lookup. The broader
     # "revision changed while review was being requested" shape is
     # deliberately excluded: it also fires when the PR HEAD or base BRANCH
     # changed, where autonomously rebasing a stale checkout would be wrong;
     # that class parks for a human.
     if ! printf '%s' "$attempt_log" \
-      | grep -qE '^ERROR: (PR #[0-9]+ )?base moved while'; then
+      | grep -qE '^ERROR: PR #[0-9]+ base moved while'; then
       break
     fi
     if [ "$ship_attempt" -gt "$max_base_moved_retries" ]; then

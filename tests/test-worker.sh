@@ -62,6 +62,16 @@ set -euo pipefail
 
 case "${1:-} ${2:-}" in
   "pr view")
+    if [ -n "${GH_PR_VIEW_COUNT_FILE:-}" ]; then
+      view_count="$(cat "$GH_PR_VIEW_COUNT_FILE" 2>/dev/null || echo 0)"
+      view_count=$((view_count + 1))
+      printf '%s' "$view_count" >"$GH_PR_VIEW_COUNT_FILE"
+      if [ "$view_count" -ge 2 ] && [ -n "${GH_PR_VIEW_MUTATE_WT:-}" ] \
+        && [ ! -f "$GH_PR_VIEW_MUTATE_WT/.mutated" ]; then
+        git -C "$GH_PR_VIEW_MUTATE_WT" commit --allow-empty -qm "concurrent local commit" 2>/dev/null || true
+        : >"$GH_PR_VIEW_MUTATE_WT/.mutated"
+      fi
+    fi
     printf '%s\n' "${GH_PR_VIEW_STATE:-OPEN}" "${GH_PR_VIEW_CROSS:-false}" \
       "${GH_PR_VIEW_HEAD:-}" "${GH_PR_VIEW_BASE:-main}" "${GH_PR_VIEW_BASE_OID:-}" \
       "${GH_PR_VIEW_HEAD_OID:-}"
@@ -870,6 +880,93 @@ if [ ! -f "$OID_DRIFT_JOB_DIR/reason" ] \
   || [ "$(cat "$OID_DRIFT_JOB_DIR/reason")" != "base-moved-base-oid-drift" ]; then
   fail "base-OID drift should hand off with reason base-moved-base-oid-drift (got: $(cat "$OID_DRIFT_JOB_DIR/reason" 2>/dev/null))"
 fi
+
+write_base_moved_open_pr() {
+  local wt="$1" extra_markers="${2:-}"
+  mkdir -p "$wt/scripts"
+  cat >"$wt/scripts/open-pr.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="\${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="\$(cat "\$count_file" 2>/dev/null || echo 0)"
+printf '%s' "\$((count + 1))" >"\$count_file"
+echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+$extra_markers
+exit 1
+EOF
+  chmod +x "$wt/scripts/open-pr.sh"
+}
+
+assert_base_moved_parks() {
+  local label="$1" attempts_file="$2" wt="$3" expected_reason="$4"
+  if [ "$(cat "$attempts_file")" != "1" ]; then
+    fail "$label must not retry shipping, got $(cat "$attempts_file") attempts"
+  fi
+  local job_dir=""
+  job_dir="$(grep -l "$wt" "$REPO/.git/touchstone/ship-jobs"/*/worktree-path 2>/dev/null | head -1 | xargs dirname)"
+  if [ ! -f "$job_dir/reason" ] || [ "$(cat "$job_dir/reason")" != "$expected_reason" ]; then
+    fail "$label should hand off with reason $expected_reason (got: $(cat "$job_dir/reason" 2>/dev/null))"
+  fi
+}
+
+echo "==> Case d2l: recovery parks when GitHub's PR head drifts from the local HEAD"
+HEAD_DRIFT_WT="$TEST_DIR/base-moved-head-drift-worktree"
+git -C "$REPO" worktree add -q "$HEAD_DRIFT_WT" -b feat/base-moved-head-drift main
+HEAD_DRIFT_WT="$(cd "$HEAD_DRIFT_WT" && pwd -P)"
+write_base_moved_open_pr "$HEAD_DRIFT_WT"
+: >"$TEST_DIR/base-moved-head-drift-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-head-drift-attempts" \
+  GH_PR_VIEW_HEAD="feat/base-moved-head-drift" \
+  GH_PR_VIEW_BASE_OID="$(git -C "$ORIGIN_URL" rev-parse main)" \
+  GH_PR_VIEW_HEAD_OID="$(git -C "$REPO" rev-parse main~1)" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$HEAD_DRIFT_WT" --detach >/dev/null
+wait_for_ship_status "$HEAD_DRIFT_WT" needs-attention "$TEST_DIR/base-moved-head-drift-status.json"
+assert_base_moved_parks "remote head drift" "$TEST_DIR/base-moved-head-drift-attempts" \
+  "$HEAD_DRIFT_WT" "base-moved-head-drift"
+
+echo "==> Case d2m: recovery parks when another process moves the local HEAD mid-recovery"
+LOCAL_DRIFT_WT="$TEST_DIR/base-moved-local-drift-worktree"
+git -C "$REPO" worktree add -q "$LOCAL_DRIFT_WT" -b feat/base-moved-local-drift main
+LOCAL_DRIFT_WT="$(cd "$LOCAL_DRIFT_WT" && pwd -P)"
+write_base_moved_open_pr "$LOCAL_DRIFT_WT"
+: >"$TEST_DIR/base-moved-local-drift-attempts"
+: >"$TEST_DIR/base-moved-local-drift-views"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-local-drift-attempts" \
+  GH_PR_VIEW_HEAD="feat/base-moved-local-drift" \
+  GH_PR_VIEW_BASE_OID="$(git -C "$ORIGIN_URL" rev-parse main)" \
+  GH_PR_VIEW_HEAD_OID="$(git -C "$LOCAL_DRIFT_WT" rev-parse HEAD)" \
+  GH_PR_VIEW_COUNT_FILE="$TEST_DIR/base-moved-local-drift-views" \
+  GH_PR_VIEW_MUTATE_WT="$LOCAL_DRIFT_WT" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$LOCAL_DRIFT_WT" --detach >/dev/null
+wait_for_ship_status "$LOCAL_DRIFT_WT" needs-attention "$TEST_DIR/base-moved-local-drift-status.json"
+assert_base_moved_parks "local head drift" "$TEST_DIR/base-moved-local-drift-attempts" \
+  "$LOCAL_DRIFT_WT" "base-moved-local-head-moved"
+
+echo "==> Case d2k: recovery parks when the base was force-pushed (non-fast-forward)"
+REWRITE_WT="$TEST_DIR/base-moved-rewrite-worktree"
+git -C "$REPO" worktree add -q "$REWRITE_WT" -b feat/base-moved-rewrite main
+REWRITE_WT="$(cd "$REWRITE_WT" && pwd -P)"
+OLD_MAIN_TIP="$(git -C "$REPO" rev-parse main)"
+git -C "$REPO" commit -q --amend -m "chore: rewritten base tip"
+git -C "$REPO" push -q --force origin main
+NEW_MAIN_TIP="$(git -C "$ORIGIN_URL" rev-parse main)"
+write_base_moved_open_pr "$REWRITE_WT" "echo \"       GitHub base: $NEW_MAIN_TIP\" >&2
+echo \"       local base:  $OLD_MAIN_TIP\" >&2"
+: >"$TEST_DIR/base-moved-rewrite-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-rewrite-attempts" \
+  GH_PR_VIEW_HEAD="feat/base-moved-rewrite" \
+  GH_PR_VIEW_BASE_OID="$NEW_MAIN_TIP" \
+  GH_PR_VIEW_HEAD_OID="$(git -C "$REWRITE_WT" rev-parse HEAD)" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$REWRITE_WT" --detach >/dev/null
+wait_for_ship_status "$REWRITE_WT" needs-attention "$TEST_DIR/base-moved-rewrite-status.json"
+assert_base_moved_parks "base rewrite" "$TEST_DIR/base-moved-rewrite-attempts" \
+  "$REWRITE_WT" "base-moved-base-rewritten"
 
 echo "==> Case d3: detached jobs do not collide when branch names sanitize alike"
 COLLISION_SLASH_WT="$TEST_DIR/collision-slash-worktree"
