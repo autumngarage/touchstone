@@ -15,14 +15,10 @@ DEFAULT_FAKE_WORKTREE="$TEST_DIR/default-feature-worktree"
 mkdir -p "$FAKE_BIN" "$MERGE_SCRIPT_DIR" "$GIT_PATH_ROOT" "$DEFAULT_FAKE_WORKTREE"
 cp "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$MERGE_SCRIPT_DIR/merge-pr.sh"
 chmod +x "$MERGE_SCRIPT_DIR/merge-pr.sh"
-# Fake direct claim verification for the issue #658 substitution fixtures;
-# CLAIM_DIRECT_EXIT drives pass/fail per case.
-cat >"$MERGE_SCRIPT_DIR/issue-claim-check.sh" <<'EOF'
-#!/usr/bin/env bash
-echo "direct claim verification (fake) for PR ${3:-?}"
-exit "${CLAIM_DIRECT_EXIT:-0}"
-EOF
-chmod +x "$MERGE_SCRIPT_DIR/issue-claim-check.sh"
+# The issue #658 substitution executes the claim verifier from the TRUSTED
+# BASE revision via `git show`; the fake git serves that content (keyed by
+# CLAIM_DIRECT_EXIT / GIT_CLAIM_CHECKER_SHOW_FAIL), so no PR-head copy is
+# installed here — running one would mask the self-weakening hazard.
 
 cat >"$FAKE_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -161,12 +157,23 @@ case "${1:-} ${2:-}" in
     esac
     ;;
   "pr checks")
-    if [ -n "${GH_FAILED_CHECKS:-}" ]; then
-      printf '%s\n' "$GH_FAILED_CHECKS"
-    else
-      echo "no failed checks reported on the branch" >&2
-      exit 1
-    fi
+    case "$*" in
+      *pending*)
+        # Pending-bucket scan (issue #658): substitution must keep waiting
+        # while non-claim checks are still running.
+        if [ -n "${GH_PENDING_CHECKS:-}" ]; then
+          printf '%s\n' "$GH_PENDING_CHECKS"
+        fi
+        ;;
+      *)
+        if [ -n "${GH_FAILED_CHECKS:-}" ]; then
+          printf '%s\n' "$GH_FAILED_CHECKS"
+        else
+          echo "no failed checks reported on the branch" >&2
+          exit 1
+        fi
+        ;;
+    esac
     ;;
   "pr checkout")
     if [ "${4:-}" != "--detach" ]; then
@@ -610,6 +617,14 @@ case "$*" in
   show\ origin/*:.codex-review.toml)
     cat "$GIT_TRUSTED_LEGACY_CONFIG_FILE"
     ;;
+  show\ *:scripts/issue-claim-check.sh)
+    # Trusted-base claim verifier for the issue #658 substitution fixtures.
+    if [ "${GIT_CLAIM_CHECKER_SHOW_FAIL:-false}" = "true" ]; then
+      echo "trusted claim checker unavailable" >&2
+      exit 1
+    fi
+    printf '#!/usr/bin/env bash\necho "direct claim verification (trusted-base fake) for PR ${3:-?}"\nexit "${CLAIM_DIRECT_EXIT:-0}"\n'
+    ;;
   cat-file\ -e\ *^\{commit\})
     ;;
   merge-base\ origin/*\ *)
@@ -813,6 +828,8 @@ run_merge_pr() {
     GH_MERGE_ATTEMPTS_FILE="$TEST_DIR/gh-merge-attempts" \
     GH_FAILED_CHECKS="${GH_FAILED_CHECKS:-}" \
     GH_CLAIM_RUN_REAL_STEPS="${GH_CLAIM_RUN_REAL_STEPS:-5}" \
+    GH_PENDING_CHECKS="${GH_PENDING_CHECKS:-}" \
+    GIT_CLAIM_CHECKER_SHOW_FAIL="${GIT_CLAIM_CHECKER_SHOW_FAIL:-false}" \
     CLAIM_DIRECT_EXIT="${CLAIM_DIRECT_EXIT:-0}" \
     GH_REPO_FULL_NAME="${GH_REPO_FULL_NAME:-autumngarage/touchstone}" \
     GH_PR_VIEW_FAIL_FIELD="${GH_PR_VIEW_FAIL_FIELD:-}" \
@@ -2275,6 +2292,50 @@ if grep -q 'has failed check(s); stopping automerge' "$TEST_DIR/output-claim-exe
 else
   echo "FAIL: executed failure must not be substituted" >&2
   cat "$TEST_DIR/output-claim-executed.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: substitution waits while non-claim checks are still pending"
+reset_case_files
+if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
+  GH_FAILED_CHECKS="$CLAIM_INFRA_CHECKS" \
+  GH_PENDING_CHECKS="sha256-preflight" \
+  GH_CLAIM_RUN_REAL_STEPS=0 \
+  CLAIM_DIRECT_EXIT=0 \
+  MERGE_PR_STATE_MAX_ATTEMPTS=2 \
+  MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-claim-pending.txt" 123; then
+  echo "FAIL: substitution must not shortcut pending non-claim checks" >&2
+  exit 1
+fi
+if ! grep -q 'verified by direct API read' "$TEST_DIR/output-claim-pending.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: substitution keeps waiting for pending non-claim checks"
+else
+  echo "FAIL: substitution ran despite pending checks" >&2
+  cat "$TEST_DIR/output-claim-pending.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: bypass and claim substitution disclose together in the squash body"
+reset_case_files
+if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
+  GH_FAILED_CHECKS="$CLAIM_INFRA_CHECKS" \
+  GH_CLAIM_RUN_REAL_STEPS=0 \
+  CLAIM_DIRECT_EXIT=0 \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  run_merge_pr "$TEST_DIR/output-claim-bypass.txt" 123 --bypass-with-disclosure="review wedge test"; then
+  if grep -q 'Reviewer-bypass: review wedge test' "$TEST_DIR/gh-merge-body" \
+    && grep -q 'Claim-substitution' "$TEST_DIR/gh-merge-body"; then
+    echo "==> PASS: both disclosures land in one squash body"
+  else
+    echo "FAIL: squash body must carry both disclosures" >&2
+    cat "$TEST_DIR/gh-merge-body" >&2
+    exit 1
+  fi
+else
+  echo "FAIL: bypass with claim substitution should merge" >&2
+  cat "$TEST_DIR/output-claim-bypass.txt" >&2
   exit 1
 fi
 

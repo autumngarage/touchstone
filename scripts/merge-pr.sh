@@ -2027,17 +2027,42 @@ failed_checks_are_only_unexecuted_claim_checks() {
   [ "$saw_claim" = true ]
 }
 
+# Any non-claim check still pending? Substitution must not shortcut the wait
+# for the REST of the checks; it only neutralizes the unexecuted claim run.
+non_claim_checks_pending() {
+  local pending
+  pending="$(gh pr checks "$PR_NUMBER" \
+    --json name,bucket \
+    --template '{{range .}}{{if eq .bucket "pending"}}{{.name}}{{"\n"}}{{end}}{{end}}' \
+    2>/dev/null || true)"
+  printf '%s' "$pending" | grep -qv '^claim-check$' 2>/dev/null && return 0
+  return 1
+}
+
 attempt_claim_check_substitution() {
-  local failed_checks="$1" direct_output=""
+  local failed_checks="$1" direct_output="" base_revision="" base_sha="" trusted_checker=""
 
   failed_checks_are_only_unexecuted_claim_checks "$failed_checks" || return 1
-  [ -f "$SCRIPT_DIR/issue-claim-check.sh" ] || return 1
-  if ! direct_output="$(bash "$SCRIPT_DIR/issue-claim-check.sh" --pr-number "$PR_NUMBER" 2>&1)"; then
+  # Execute the claim verifier FROM THE TRUSTED BASE REVISION, mirroring the
+  # hosted workflow's base-sha checkout: running the PR-head copy would let a
+  # PR that edits the verifier authorize its own substitution exactly when
+  # the trusted hosted check never ran.
+  base_revision="$(current_pr_base_revision 2>/dev/null)" || return 1
+  base_sha="${base_revision##*	}"
+  [ -n "$base_sha" ] || return 1
+  trusted_checker="$(mktemp -t touchstone-claim-checker.XXXXXX)" || return 1
+  if ! git show "$base_sha:scripts/issue-claim-check.sh" >"$trusted_checker" 2>/dev/null; then
+    rm -f "$trusted_checker"
+    return 1
+  fi
+  if ! direct_output="$(bash "$trusted_checker" --pr-number "$PR_NUMBER" 2>&1)"; then
+    rm -f "$trusted_checker"
     echo "ERROR: claim-check never executed AND direct API claim verification failed:" >&2
     printf '%s\n' "$direct_output" | sed 's/^/       /' >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="claim-verification-failed"
     exit 1
   fi
+  rm -f "$trusted_checker"
   echo "==> claim-check failed without executing a step (hosted-runner infrastructure class)."
   echo "==> Claim invariant verified by direct API read instead:"
   printf '%s\n' "$direct_output" | sed 's/^/    /'
@@ -2091,10 +2116,16 @@ wait_for_clean_merge_state() {
     fi
     FAILED_CHECKS="$(failed_checks)"
     if [ -n "$FAILED_CHECKS" ]; then
-      if attempt_claim_check_substitution "$FAILED_CHECKS"; then
+      if failed_checks_are_only_unexecuted_claim_checks "$FAILED_CHECKS" \
+        && non_claim_checks_pending; then
+        # The unexecuted claim run alone must not fail the wait while other
+        # checks are still running; keep polling them.
+        :
+      elif attempt_claim_check_substitution "$FAILED_CHECKS"; then
         return 0
+      else
+        print_failed_checks_and_exit "$FAILED_CHECKS"
       fi
-      print_failed_checks_and_exit "$FAILED_CHECKS"
     fi
     if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$STATE" = "DIRTY" ] || [ "$STATE" = "BEHIND" ] || [ "$STATE" = "CONFLICTING" ]; then
       echo "ERROR: PR #$PR_NUMBER is $STATE — has conflicts or is out of date with base." >&2
@@ -2425,15 +2456,21 @@ if [ -z "$REVIEWED_HEAD_OID" ]; then
   exit 1
 fi
 gh_merge_exit=0
+# One body assembly for every disclosure: bypass and claim substitution can
+# co-occur, and the squash commit is the durable audit record for both (the
+# PR comment is best-effort and the terminal log is ephemeral).
+MERGE_BODY=""
 if [ "$BYPASS_REVIEW" = true ]; then
+  MERGE_BODY="Reviewer-bypass: $BYPASS_REASON"
+fi
+if [ "$CLAIM_CHECK_SUBSTITUTED" = true ]; then
+  MERGE_BODY="${MERGE_BODY:+$MERGE_BODY
+
+}Claim-substitution: hosted claim-check never executed (Actions infrastructure incident); claim invariant verified by direct API read against the trusted base revision (issue #658)."
+fi
+if [ -n "$MERGE_BODY" ]; then
   gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID" \
-    --body "Reviewer-bypass: $BYPASS_REASON" || gh_merge_exit=$?
-elif [ "$CLAIM_CHECK_SUBSTITUTED" = true ]; then
-  # The squash commit itself records the substitution so the audit trail
-  # survives PR-comment pruning.
-  gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID" \
-    --body "Claim-substitution: hosted claim-check never executed (Actions infrastructure incident); claim invariant verified by direct API read (issue #658)." \
-    || gh_merge_exit=$?
+    --body "$MERGE_BODY" || gh_merge_exit=$?
 else
   gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID" \
     || gh_merge_exit=$?
