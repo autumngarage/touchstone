@@ -18,8 +18,10 @@ on:
 
 # One live run per PR: a superseded head's validation is worthless, and
 # multi-round review PRs would otherwise bill a full run per obsolete head.
+# Keyed by PR NUMBER, not head_ref: two PRs from same-named branches (fork
+# `main` vs fork `main`) share a head_ref and would cancel each other's runs.
 concurrency:
-  group: validate-${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  group: validate-${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
