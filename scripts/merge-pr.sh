@@ -226,18 +226,38 @@ report_review_round_economics() {
   local authors_json
   authors_json="$(printf '%s' "$PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS" \
     | awk -F, '{for (i = 1; i <= NF; i++) printf "%s\"%s\"", (i > 1 ? "," : ""), $i}')"
-  rounds="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/pulls/$pr/reviews" \
+  local rounds_stderr=""
+  rounds_stderr="$(mktemp -t touchstone-rounds.XXXXXX)" || rounds_stderr=""
+  if rounds="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/pulls/$pr/reviews" \
     --jq "[.[] | select(.user.login as \$l | [$authors_json] | index(\$l))] | length" \
-    2>/dev/null | awk '{s+=$1} END {print s+0}')" || rounds=""
-  if [ -n "$rounds" ] && [ "$rounds" -gt 0 ] 2>/dev/null; then
-    echo "       Review round $rounds for this PR (rounds=$rounds)." >&2
+    2>"${rounds_stderr:-/dev/null}" | awk '{s+=$1} END {print s+0}')"; then
+    if [ -n "$rounds" ] && [ "$rounds" -gt 0 ] 2>/dev/null; then
+      echo "       Review round $rounds for this PR (rounds=$rounds)." >&2
+    fi
+  else
+    # Best-effort data is allowed only when its absence is visible: a
+    # transient API failure must say so, not silently omit the accounting.
+    echo "       (round accounting unavailable: review lookup failed)" >&2
+    if [ -n "$rounds_stderr" ] && [ -s "$rounds_stderr" ]; then
+      sed 's/^/         /' "$rounds_stderr" >&2
+    fi
   fi
+  [ -z "$rounds_stderr" ] || rm -f "$rounds_stderr"
+  # An empty result from a SUCCESSFUL query is real data (zero unresolved
+  # threads — e.g. the formal review is COMMENTED but every inline thread
+  # is resolved); only a failed query may claim enumeration was impossible.
+  local threads_status=0
   threads="$(gh api graphql --paginate \
     -f query="query(\$endCursor: String) { repository(owner:\"$REPO_OWNER\", name:\"$REPO_NAME\") { pullRequest(number:$pr) { reviewThreads(first:100, after:\$endCursor) { nodes { isResolved comments(first:1) { nodes { databaseId path } } } pageInfo { hasNextPage endCursor } } } } }" \
     --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | [(.comments.nodes[0].databaseId | tostring), (.comments.nodes[0].path // "-")] | @tsv' \
-    2>/dev/null)" || threads=""
-  if [ -z "$threads" ]; then
+    2>/dev/null)" || threads_status=$?
+  if [ "$threads_status" -ne 0 ]; then
     echo "       (could not enumerate unresolved threads; open the review URL above for the full set)" >&2
+    return 0
+  fi
+  if [ -z "$threads" ]; then
+    echo "       findings_open=0 (no unresolved inline threads; the reviewer's finding" >&2
+    echo "       is in the review body itself — open the review URL above)" >&2
     return 0
   fi
   echo "       Every unresolved finding on this PR:" >&2

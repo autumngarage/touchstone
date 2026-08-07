@@ -1356,10 +1356,11 @@ else
   exit 1
 fi
 # Issue #649: a findings failure must steer the driver toward one batched fix
-# round, and degrade visibly (never silently) when thread enumeration is
-# unavailable — the fixture's mock gh does not serve the enumeration APIs.
+# round, and report the enumeration state truthfully: a listed set, an
+# explicit zero state (the mock's graphql succeeds with no threads, which is
+# real findings_open=0 data), or a visible could-not-enumerate degradation.
 if grep -q 'Address EVERY finding above in ONE batch' "$TEST_DIR/output-pr-triggered-commented-review.txt" \
-  && grep -Eq 'could not enumerate unresolved threads|Every unresolved finding on this PR' "$TEST_DIR/output-pr-triggered-commented-review.txt"; then
+  && grep -Eq 'could not enumerate unresolved threads|Every unresolved finding on this PR|findings_open=0' "$TEST_DIR/output-pr-triggered-commented-review.txt"; then
   echo "==> PASS: findings failure reports round economics and batch guidance"
 else
   echo "FAIL: findings failure should include batch guidance and enumeration state" >&2
