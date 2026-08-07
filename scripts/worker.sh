@@ -1273,15 +1273,18 @@ cmd_takeover() {
           fi
           touchstone_ship_signal_tree "$pid" KILL
           # The tree kill enumerates before it signals: a descendant spawned
-          # in between (the recovery shell advancing into git rebase)
-          # survives the first sweep. Wait for the runner to die, then
-          # sweep again before inspecting rebase state, so the abort below
-          # never races a still-running rebase.
+          # in between (the recovery shell advancing into git rebase) is
+          # reparented once its parents die and a second PID-tree sweep
+          # rooted at the dead runner cannot see it. The runner is spawned
+          # as a process-group LEADER (set -m at detach), so a group kill
+          # reaches reparented survivors; then wait for the runner to die
+          # so the abort below never races a still-running rebase.
+          kill -KILL -- "-$pid" 2>/dev/null || true
           for _ in 1 2 3 4 5 6 7 8 9 10; do
             kill -0 "$pid" 2>/dev/null || break
             sleep 0.1
           done
-          touchstone_ship_signal_tree "$pid" KILL 2>/dev/null || true
+          kill -KILL -- "-$pid" 2>/dev/null || true
           # KILL bypasses the recovery child's TERM trap, so an in-flight
           # recovery rebase leaves rebase-merge/rebase-apply state behind.
           # Clean it up here — and say so when the abort itself fails,
