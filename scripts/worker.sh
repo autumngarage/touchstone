@@ -482,8 +482,18 @@ touchstone_ship_base_moved_recover() {
   local candidate="" checked_any=false ancestor_status=0 ancestor_err=""
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
-    (cd "$worktree_path" \
-      && GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "$candidate^{commit}" 2>/dev/null) || continue
+    # Fail closed on unresolvable markers: in a shallow clone or a repo
+    # with a missing object, silently skipping a recorded PRE-REWRITE base
+    # would let a resolvable post-rewrite tip satisfy checked_any and
+    # suppress exactly the comparison that would have caught the rewrite.
+    if ! (cd "$worktree_path" \
+      && GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "$candidate^{commit}" 2>/dev/null); then
+      echo "==> Recorded base revision $candidate is not resolvable in this repository" >&2
+      echo "    (shallow clone or missing object); the rewrite check cannot run" >&2
+      echo "    completely. Handing off for manual reconciliation." >&2
+      TOUCHSTONE_BASE_MOVED_REASON="base-moved-graph-inspect-failed"
+      return 1
+    fi
     checked_any=true
     # merge-base --is-ancestor exits 1 for a genuine non-ancestor but >1
     # when it cannot inspect the graph (missing/corrupt object, shallow
@@ -570,21 +580,25 @@ TOUCHSTONE_BASE_CANDIDATES
     # preserved: an API or auth failure here must read as a lookup failure,
     # not masquerade as a retargeted PR.
     local pr_recheck="" recheck_stderr="" recheck_base_oid=""
-    recheck_stderr="$(mktemp -t touchstone-pr-recheck.XXXXXX)" || recheck_stderr=""
+    if ! recheck_stderr="$(mktemp -t touchstone-pr-recheck.XXXXXX 2>&1)"; then
+      echo "==> Could not create a temporary diagnostics file for the pre-rebase" >&2
+      echo "    recheck (mktemp):" >&2
+      printf '%s\n' "$recheck_stderr" | sed 's/^/      /' >&2
+      TOUCHSTONE_BASE_MOVED_REASON="base-moved-tempfile-failed"
+      return 1
+    fi
     if ! pr_recheck="$(cd "$worktree_path" && gh pr view "$failed_pr" \
       --json baseRefName,baseRefOid,headRefName,headRefOid,isCrossRepository,state \
       --jq '[.state, (.isCrossRepository | tostring), .headRefName, .baseRefName, .baseRefOid, .headRefOid] | join("\n")' \
-      2>"${recheck_stderr:-/dev/null}")"; then
+      2>"$recheck_stderr")"; then
       echo "==> PR #$failed_pr recheck FAILED immediately before the rebase; handing off" >&2
       echo "    with the diagnostic:" >&2
-      if [ -n "$recheck_stderr" ]; then
-        sed 's/^/      /' "$recheck_stderr" >&2
-        rm -f "$recheck_stderr"
-      fi
+      sed 's/^/      /' "$recheck_stderr" >&2
+      rm -f "$recheck_stderr"
       TOUCHSTONE_BASE_MOVED_REASON="base-moved-pr-lookup-failed"
       return 1
     fi
-    [ -z "$recheck_stderr" ] || rm -f "$recheck_stderr"
+    rm -f "$recheck_stderr"
     local recheck_head_oid=""
     recheck_head_oid="$(printf '%s\n' "$pr_recheck" | sed -n '6p')"
     recheck_base_oid="$(printf '%s\n' "$pr_recheck" | sed -n '5p')"
@@ -1258,7 +1272,7 @@ cmd_takeover() {
           # Clean it up here — and say so when the abort itself fails,
           # because a "stopped" verdict over a mid-rebase worktree would
           # misdirect the operator taking over.
-          takeover_state_kind="" takeover_state_dir=""
+          takeover_state_kind="" takeover_state_dir="" takeover_abort_failed=false
           for takeover_state_kind in rebase-merge rebase-apply; do
             takeover_state_dir="$(cd "$worktree_path" \
               && git rev-parse --git-path "$takeover_state_kind" 2>/dev/null || true)"
@@ -1268,6 +1282,7 @@ cmd_takeover() {
                 && GIT_NO_REPLACE_OBJECTS=1 git rebase --abort >/dev/null 2>&1); then
                 echo "Aborted the recovery rebase the forced takeover interrupted."
               else
+                takeover_abort_failed=true
                 echo "WARNING: could not abort the interrupted recovery rebase;" >&2
                 echo "         the worktree may remain mid-rebase ($takeover_state_kind)." >&2
                 echo "         Inspect it before continuing: git -C $worktree_path status" >&2
@@ -1276,9 +1291,17 @@ cmd_takeover() {
             fi
           done
           touchstone_ship_write "$job_dir" exit-code 137
-          touchstone_ship_write "$job_dir" reason forced-takeover
-          touchstone_ship_write "$job_dir" finished-at "$(touchstone_ship_now)"
-          touchstone_ship_write "$job_dir" status stopped
+          # A failed abort must publish needs-attention: a "stopped" verdict
+          # would report a quiet worktree that is actually mid-rebase.
+          if [ "$takeover_abort_failed" = true ]; then
+            touchstone_ship_write "$job_dir" reason base-moved-takeover-abort-failed
+            touchstone_ship_write "$job_dir" finished-at "$(touchstone_ship_now)"
+            touchstone_ship_write "$job_dir" status needs-attention
+          else
+            touchstone_ship_write "$job_dir" reason forced-takeover
+            touchstone_ship_write "$job_dir" finished-at "$(touchstone_ship_now)"
+            touchstone_ship_write "$job_dir" status stopped
+          fi
           touchstone_ship_release_claim \
             "$job_dir" "$(touchstone_ship_claim_value "$job_dir" owner-token)" 2>/dev/null || true
         fi
