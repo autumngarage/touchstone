@@ -359,10 +359,75 @@ cmd_status() {
   fi
 }
 
+# Shared base-moved recovery (issue #651, hardened per PR #663 review).
+# Recovers the worktree onto ITS PR's actual base (stacked PRs never rebase
+# onto the repository default), preserves feature-local merge commits
+# (--rebase-merges), never mutates refs outside the worktree
+# (--no-update-refs where supported), reports the real rebase failure when it
+# is not a content conflict, and consumes conflict lists without SIGPIPE.
+# Returns 0 when recovered; otherwise sets TOUCHSTONE_BASE_MOVED_REASON and
+# returns 1. The runner never resolves content.
+TOUCHSTONE_BASE_MOVED_REASON=""
+touchstone_ship_base_moved_recover() {
+  local worktree_path="$1" job_dir="$2" attempt="$3"
+  local branch="" pr_base="" old_head="" new_head="" rebase_output=""
+  local conflict_files="" update_refs_flag=""
+
+  TOUCHSTONE_BASE_MOVED_REASON=""
+  branch="$(cd "$worktree_path" && git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [ -z "$branch" ] || [ "$branch" = "HEAD" ]; then
+    TOUCHSTONE_BASE_MOVED_REASON="base-moved-branch-unresolved"
+    return 1
+  fi
+  # The PR's ACTUAL base: a stacked PR deliberately keeps a non-default base,
+  # and rebasing onto the repository default would rewrite the head so the
+  # guarded push refuses it (or worse, admits the wrong lineage). Fail closed
+  # when the base cannot be resolved.
+  pr_base="$(cd "$worktree_path" && gh pr list --head "$branch" --state open \
+    --json baseRefName --jq '.[0].baseRefName // empty' 2>/dev/null || true)"
+  if [ -z "$pr_base" ]; then
+    echo "==> Could not resolve the open PR's base branch for '$branch'; handing off." >&2
+    TOUCHSTONE_BASE_MOVED_REASON="base-moved-base-unresolved"
+    return 1
+  fi
+  old_head="$(cd "$worktree_path" && git rev-parse HEAD 2>/dev/null || echo unknown)"
+  echo "==> Base moved under PR authorization; automatic rebase cycle $attempt onto origin/$pr_base ..."
+  if ! (cd "$worktree_path" && git fetch origin "$pr_base" >/dev/null 2>&1); then
+    echo "==> Could not fetch origin/$pr_base for the automatic rebase; handing off." >&2
+    TOUCHSTONE_BASE_MOVED_REASON="base-moved-fetch-failed"
+    return 1
+  fi
+  if (cd "$worktree_path" && git rebase -h 2>&1 | grep -q 'update-refs'); then
+    update_refs_flag="--no-update-refs"
+  fi
+  rebase_output="$(cd "$worktree_path" \
+    && git rebase --rebase-merges ${update_refs_flag:+"$update_refs_flag"} "origin/$pr_base" 2>&1)" \
+    && {
+      new_head="$(cd "$worktree_path" && git rev-parse HEAD 2>/dev/null || echo unknown)"
+      touchstone_ship_write "$job_dir" base-moved-retries "$attempt"
+      touchstone_emit_event worker_ship_base_moved_retry \
+        worktree_path="$worktree_path" attempt="$attempt" \
+        old_head="$old_head" new_head="$new_head" base_branch="$pr_base"
+      return 0
+    }
+  conflict_files="$(cd "$worktree_path" \
+    && git diff --name-only --diff-filter=U 2>/dev/null | awk 'NR <= 10' || true)"
+  (cd "$worktree_path" && git rebase --abort) >/dev/null 2>&1 || true
+  if [ -n "$conflict_files" ]; then
+    echo "==> Automatic rebase hit conflicts; handing off without resolving content:" >&2
+    printf '%s\n' "$conflict_files" | sed 's/^/      /' >&2
+    TOUCHSTONE_BASE_MOVED_REASON="base-moved-rebase-conflict"
+  else
+    echo "==> Automatic rebase failed for a non-conflict reason; handing off with the diagnostic:" >&2
+    printf '%s\n' "$rebase_output" | sed 's/^/      /' >&2
+    TOUCHSTONE_BASE_MOVED_REASON="base-moved-rebase-failed"
+  fi
+  return 1
+}
+
 cmd_ship_runner() {
   local job_dir="" worktree_path="" claim_token="" cleanup=false events_json="" child_pid="" exit_code=0 branch=""
   local ship_attempt=1 max_base_moved_retries="" log_lines_before=0 attempt_log=""
-  local default_branch="" old_head="" new_head="" conflict_files=""
   local claim_owner_wait=0
   local review_fix=false max_fix_iterations="$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT"
   local max_fix_minutes=45 validation_command=""
@@ -476,15 +541,39 @@ cmd_ship_runner() {
         touchstone_ship_write "$job_dir" deadline-epoch "$deadline_epoch"
         ;;
     esac
-    if touchstone_review_fix_run \
-      "$job_dir" "$worktree_path" "$max_fix_iterations" "$deadline_epoch" \
-      "$validation_command" "$cleanup"; then
-      finish_runner succeeded 0
-      exit 0
-    else
+    ship_attempt=1
+    max_base_moved_retries="${TOUCHSTONE_SHIP_BASE_MOVED_RETRIES:-3}"
+    case "$max_base_moved_retries" in
+      '' | *[!0-9]*) max_base_moved_retries=3 ;;
+    esac
+    while :; do
+      log_lines_before=0
+      if [ -f "$job_dir/ship.log" ]; then
+        log_lines_before="$(wc -l <"$job_dir/ship.log" | tr -d ' ')"
+      fi
+      if touchstone_review_fix_run \
+        "$job_dir" "$worktree_path" "$max_fix_iterations" "$deadline_epoch" \
+        "$validation_command" "$cleanup"; then
+        finish_runner succeeded 0
+        exit 0
+      fi
       exit_code=$?
-    fi
-    reason="${TOUCHSTONE_REVIEW_FIX_REASON:-review-fix-needs-attention}"
+      reason="${TOUCHSTONE_REVIEW_FIX_REASON:-review-fix-needs-attention}"
+      # Review-fix mode meets base movement in the same merge path; the same
+      # bounded recovery applies (PR #663 review).
+      [ "$reason" = "non-thread-merge-failure" ] || break
+      attempt_log="$(tail -n +"$((log_lines_before + 1))" "$job_dir/ship.log" 2>/dev/null || true)"
+      printf '%s' "$attempt_log" | grep -q 'base moved while' || break
+      if [ "$ship_attempt" -gt "$max_base_moved_retries" ]; then
+        reason="base-moved-retries-exhausted"
+        break
+      fi
+      if ! touchstone_ship_base_moved_recover "$worktree_path" "$job_dir" "$ship_attempt"; then
+        reason="$TOUCHSTONE_BASE_MOVED_REASON"
+        break
+      fi
+      ship_attempt=$((ship_attempt + 1))
+    done
     finish_runner needs-attention "${exit_code:-1}" "$reason"
     exit "${exit_code:-1}"
   fi
@@ -533,27 +622,10 @@ cmd_ship_runner() {
       reason="base-moved-retries-exhausted"
       break
     fi
-    default_branch="$(cd "$worktree_path" && gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || echo main)"
-    old_head="$(cd "$worktree_path" && git rev-parse HEAD 2>/dev/null || echo unknown)"
-    echo "==> Base moved under PR authorization; automatic rebase cycle $ship_attempt of $max_base_moved_retries ..."
-    if ! (cd "$worktree_path" && git fetch origin "$default_branch" >/dev/null 2>&1); then
-      echo "==> Could not fetch origin/$default_branch for the automatic rebase; handing off." >&2
-      reason="base-moved-fetch-failed"
+    if ! touchstone_ship_base_moved_recover "$worktree_path" "$job_dir" "$ship_attempt"; then
+      reason="$TOUCHSTONE_BASE_MOVED_REASON"
       break
     fi
-    if ! (cd "$worktree_path" && git rebase "origin/$default_branch" >/dev/null 2>&1); then
-      conflict_files="$(cd "$worktree_path" && git diff --name-only --diff-filter=U 2>/dev/null | head -10)"
-      (cd "$worktree_path" && git rebase --abort) >/dev/null 2>&1 || true
-      echo "==> Automatic rebase hit conflicts; handing off without resolving content:" >&2
-      printf '%s\n' "$conflict_files" | sed 's/^/      /' >&2
-      reason="base-moved-rebase-conflict"
-      break
-    fi
-    new_head="$(cd "$worktree_path" && git rev-parse HEAD 2>/dev/null || echo unknown)"
-    touchstone_ship_write "$job_dir" base-moved-retries "$ship_attempt"
-    touchstone_emit_event worker_ship_base_moved_retry \
-      worktree_path="$worktree_path" attempt="$ship_attempt" \
-      old_head="$old_head" new_head="$new_head" base_branch="$default_branch"
     ship_attempt=$((ship_attempt + 1))
   done
   if [ "$exit_code" -eq 0 ]; then
