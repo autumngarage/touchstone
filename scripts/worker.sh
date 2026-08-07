@@ -476,14 +476,28 @@ touchstone_ship_base_moved_recover() {
   # requiring EVERY resolvable candidate to be an ancestor of the fetched
   # tip cannot. The pre-fetch tracking tip is the fallback when no marker
   # resolves locally.
-  local candidate="" checked_any=false
+  local candidate="" checked_any=false ancestor_status=0 ancestor_err=""
   while IFS= read -r candidate; do
     [ -n "$candidate" ] || continue
     (cd "$worktree_path" \
       && GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "$candidate^{commit}" 2>/dev/null) || continue
     checked_any=true
-    if ! (cd "$worktree_path" \
-      && GIT_NO_REPLACE_OBJECTS=1 git merge-base --is-ancestor "$candidate" "$base_oid" 2>/dev/null); then
+    # merge-base --is-ancestor exits 1 for a genuine non-ancestor but >1
+    # when it cannot inspect the graph (missing/corrupt object, shallow
+    # boundary). Conflating them would tell the operator to reconcile a
+    # force-pushed base when the repository actually needs repair.
+    ancestor_status=0
+    ancestor_err="$(cd "$worktree_path" \
+      && GIT_NO_REPLACE_OBJECTS=1 git merge-base --is-ancestor "$candidate" "$base_oid" 2>&1)" \
+      || ancestor_status=$?
+    if [ "$ancestor_status" -gt 1 ]; then
+      echo "==> Could not inspect ancestry of recorded base $candidate (git exit" >&2
+      echo "    $ancestor_status); handing off with the diagnostic:" >&2
+      printf '%s\n' "$ancestor_err" | sed 's/^/      /' >&2
+      TOUCHSTONE_BASE_MOVED_REASON="base-moved-graph-inspect-failed"
+      return 1
+    fi
+    if [ "$ancestor_status" -eq 1 ]; then
       echo "==> Base '$pr_base' was rewritten (non-fast-forward): recorded base revision" >&2
       echo "    $candidate is not an ancestor of the fetched tip. A plain rebase would" >&2
       echo "    replay stale parent commits into this branch; handing off for manual" >&2
@@ -494,29 +508,77 @@ touchstone_ship_base_moved_recover() {
   done <<TOUCHSTONE_BASE_CANDIDATES
 $authorized_bases
 TOUCHSTONE_BASE_CANDIDATES
-  if [ "$checked_any" = false ] && [ -n "$base_tip_before" ] \
-    && ! (cd "$worktree_path" \
-      && GIT_NO_REPLACE_OBJECTS=1 git merge-base --is-ancestor "$base_tip_before" "$base_oid" 2>/dev/null); then
-    echo "==> Base '$pr_base' was rewritten (non-fast-forward) rather than advanced; a plain" >&2
-    echo "    rebase would replay stale parent commits into this branch. Handing off for" >&2
-    echo "    manual reconciliation." >&2
-    TOUCHSTONE_BASE_MOVED_REASON="base-moved-base-rewritten"
-    return 1
+  if [ "$checked_any" = false ] && [ -n "$base_tip_before" ]; then
+    ancestor_status=0
+    ancestor_err="$(cd "$worktree_path" \
+      && GIT_NO_REPLACE_OBJECTS=1 git merge-base --is-ancestor "$base_tip_before" "$base_oid" 2>&1)" \
+      || ancestor_status=$?
+    if [ "$ancestor_status" -gt 1 ]; then
+      echo "==> Could not inspect ancestry of the pre-fetch base tip $base_tip_before" >&2
+      echo "    (git exit $ancestor_status); handing off with the diagnostic:" >&2
+      printf '%s\n' "$ancestor_err" | sed 's/^/      /' >&2
+      TOUCHSTONE_BASE_MOVED_REASON="base-moved-graph-inspect-failed"
+      return 1
+    fi
+    if [ "$ancestor_status" -eq 1 ]; then
+      echo "==> Base '$pr_base' was rewritten (non-fast-forward) rather than advanced; a plain" >&2
+      echo "    rebase would replay stale parent commits into this branch. Handing off for" >&2
+      echo "    manual reconciliation." >&2
+      TOUCHSTONE_BASE_MOVED_REASON="base-moved-base-rewritten"
+      return 1
+    fi
   fi
   if (cd "$worktree_path" && git rebase -h 2>&1 | grep -q 'update-refs'); then
     update_refs_flag="--no-update-refs"
+  fi
+  # A feature-local merge commit would be recreated with a new OID by the
+  # rebase, and the guarded resume in open-pr.sh refuses to publish merge
+  # commits — the retry could never succeed. Detect BEFORE mutating local
+  # history and park with the branch untouched.
+  local merge_count="" merge_count_status=0
+  merge_count="$(cd "$worktree_path" \
+    && GIT_NO_REPLACE_OBJECTS=1 git rev-list --min-parents=2 --count "$base_oid..HEAD" 2>&1)" \
+    || merge_count_status=$?
+  if [ "$merge_count_status" -ne 0 ]; then
+    echo "==> Could not count merge commits between the fetched base and HEAD; handing" >&2
+    echo "    off with the diagnostic:" >&2
+    printf '%s\n' "$merge_count" | sed 's/^/      /' >&2
+    TOUCHSTONE_BASE_MOVED_REASON="base-moved-graph-inspect-failed"
+    return 1
+  fi
+  if [ "$merge_count" -gt 0 ] 2>/dev/null; then
+    echo "==> This branch carries $merge_count feature-local merge commit(s); a rebase" >&2
+    echo "    would recreate them with new ids and the guarded push refuses merge" >&2
+    echo "    commits, so an automatic retry can never publish. Handing off with the" >&2
+    echo "    branch untouched." >&2
+    TOUCHSTONE_BASE_MOVED_REASON="base-moved-unpublishable-merges"
+    return 1
   fi
   if [ -n "$failed_pr" ]; then
     # TOCTOU guard: revalidate the exact PR immediately before rebasing. A
     # retarget or close between the initial lookup and this point must park
     # rather than rebase onto the formerly reported base — the next
     # open-pr.sh attempt could otherwise guarded-force-push a head rebased
-    # onto a base the PR no longer targets.
-    local pr_recheck=""
+    # onto a base the PR no longer targets. The recheck's stderr is
+    # preserved: an API or auth failure here must read as a lookup failure,
+    # not masquerade as a retargeted PR.
+    local pr_recheck="" recheck_stderr=""
+    recheck_stderr="$(mktemp -t touchstone-pr-recheck.XXXXXX)" || recheck_stderr=""
     if ! pr_recheck="$(cd "$worktree_path" && gh pr view "$failed_pr" \
       --json baseRefName,headRefName,isCrossRepository,state \
-      --jq '[.state, (.isCrossRepository | tostring), .headRefName, .baseRefName] | join("\n")' 2>/dev/null)" \
-      || [ "$pr_recheck" != "$(printf 'OPEN\nfalse\n%s\n%s' "$branch" "$pr_base")" ]; then
+      --jq '[.state, (.isCrossRepository | tostring), .headRefName, .baseRefName] | join("\n")' \
+      2>"${recheck_stderr:-/dev/null}")"; then
+      echo "==> PR #$failed_pr recheck FAILED immediately before the rebase; handing off" >&2
+      echo "    with the diagnostic:" >&2
+      if [ -n "$recheck_stderr" ]; then
+        sed 's/^/      /' "$recheck_stderr" >&2
+        rm -f "$recheck_stderr"
+      fi
+      TOUCHSTONE_BASE_MOVED_REASON="base-moved-pr-lookup-failed"
+      return 1
+    fi
+    [ -z "$recheck_stderr" ] || rm -f "$recheck_stderr"
+    if [ "$pr_recheck" != "$(printf 'OPEN\nfalse\n%s\n%s' "$branch" "$pr_base")" ]; then
       echo "==> PR #$failed_pr changed while recovery was preparing (retargeted, closed," >&2
       echo "    or no longer this branch); handing off rather than rebasing onto a" >&2
       echo "    stale base." >&2
