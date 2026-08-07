@@ -2147,15 +2147,19 @@ wait_for_clean_merge_state() {
         # The unexecuted claim run alone must not fail the wait while other
         # checks are still running; keep polling them.
         :
-      elif [ "$CLAIM_CHECK_SUBSTITUTED" = true ] \
-        || attempt_claim_check_substitution "$FAILED_CHECKS"; then
-        # Substitution neutralizes ONLY the unexecuted claim run. Authorize
-        # continuation solely from the states this path is designed for
-        # (allow-list, not block-list): CLEAN or UNSTABLE with MERGEABLE.
-        # Behind/dirty/conflicting keep their explicit rejection; anything
-        # else (UNKNOWN, BLOCKED, ...) keeps waiting for GitHub to settle —
-        # CLAIM_CHECK_SUBSTITUTED guards against re-running the
-        # substitution (and re-posting its disclosure) on later attempts.
+      elif failed_checks_are_only_unexecuted_claim_checks "$FAILED_CHECKS" \
+        && { [ "$CLAIM_CHECK_SUBSTITUTED" = true ] \
+          || attempt_claim_check_substitution "$FAILED_CHECKS"; }; then
+        # Substitution neutralizes ONLY the unexecuted claim run, and the
+        # failed-check shape is revalidated on EVERY poll — a new failure
+        # (e.g. sha256-preflight landing between polls) drops this branch
+        # and blocks normally. Authorize continuation solely from the
+        # states this path is designed for (allow-list, not block-list):
+        # CLEAN or UNSTABLE with MERGEABLE. Behind/dirty/conflicting keep
+        # their explicit rejection; anything else (UNKNOWN, BLOCKED, ...)
+        # keeps waiting for GitHub to settle — CLAIM_CHECK_SUBSTITUTED only
+        # prevents re-running the substitution (and re-posting its
+        # disclosure) on later attempts.
         if { [ "$STATE" = "CLEAN" ] || [ "$STATE" = "UNSTABLE" ]; } \
           && [ "$MERGEABLE" = "MERGEABLE" ]; then
           return 0
@@ -2540,6 +2544,25 @@ if [ "$gh_merge_exit" -ne 0 ]; then
     echo "ERROR: gh pr merge exited $gh_merge_exit and PR #$PR_NUMBER is not MERGED." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="gh-pr-merge"
     exit "$gh_merge_exit"
+  fi
+fi
+
+# When the claim substitution authorized this merge, the hosted check GitHub
+# sees is still failed. If branch protection marks it REQUIRED, gh pr merge
+# arms auto-merge and exits zero while the PR remains OPEN — direct
+# verification cannot update GitHub's required-check status. Verify MERGED
+# explicitly, disarm the surprise auto-merge, and fail honestly.
+if [ "$CLAIM_CHECK_SUBSTITUTED" = true ]; then
+  substituted_state="$(gh pr view "$PR_NUMBER" --json state --jq '.state' 2>/dev/null || echo "")"
+  if [ "$substituted_state" != "MERGED" ]; then
+    gh pr merge "$PR_NUMBER" --disable-auto >/dev/null 2>&1 \
+      || echo "WARNING: could not disarm auto-merge on PR #$PR_NUMBER; it may merge when the hosted check recovers." >&2
+    echo "ERROR: merge accepted but PR #$PR_NUMBER is not MERGED (state: ${substituted_state:-unknown})." >&2
+    echo "       The claim-check is required by branch protection; claim substitution can" >&2
+    echo "       satisfy Touchstone's gate but cannot update GitHub's required-check status." >&2
+    echo "       Rerun the hosted claim-check when Actions recovers, then merge normally." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="claim-substitution-required-check"
+    exit 1
   fi
 fi
 

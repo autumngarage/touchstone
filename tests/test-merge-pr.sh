@@ -204,6 +204,10 @@ case "${1:-} ${2:-}" in
     echo "commented"
     ;;
   "pr merge")
+    if [ "${4:-}" = "--disable-auto" ]; then
+      printf 'disable-auto\n' >>"$GH_MERGE_ARGS_FILE"
+      exit 0
+    fi
     printf '%s\n' "$*" > "$GH_MERGE_ARGS_FILE"
     expected_head="${GH_EXPECT_MERGE_HEAD:-pr-head-oid}"
     if [ "${4:-} ${5:-} ${6:-} ${7:-}" != "--squash --delete-branch --match-head-commit $expected_head" ]; then
@@ -214,7 +218,9 @@ case "${1:-} ${2:-}" in
       printf '%s\n' "${9:-}" > "$GH_MERGE_BODY_FILE"
     fi
     echo "$7" > "$GH_MERGE_HEAD_FILE"
-    if [ -n "${GH_MERGED_MARKER:-}" ]; then
+    # GH_MERGE_LEAVES_OPEN=true models a required-checks merge queue: the
+    # command is accepted (auto-merge armed) but the PR does not merge.
+    if [ -n "${GH_MERGED_MARKER:-}" ] && [ "${GH_MERGE_LEAVES_OPEN:-false}" != "true" ]; then
       touch "$GH_MERGED_MARKER"
     fi
     if [ "${GH_PR_MERGE_FAIL_LOCAL:-false}" = "true" ]; then
@@ -843,6 +849,7 @@ run_merge_pr() {
     GH_CLAIM_RUN_REAL_STEPS="${GH_CLAIM_RUN_REAL_STEPS:-5}" \
     GH_PENDING_CHECKS="${GH_PENDING_CHECKS:-}" \
     GH_PENDING_CHECKS_FAIL="${GH_PENDING_CHECKS_FAIL:-false}" \
+    GH_MERGE_LEAVES_OPEN="${GH_MERGE_LEAVES_OPEN:-false}" \
     GIT_CLAIM_CHECKER_SHOW_FAIL="${GIT_CLAIM_CHECKER_SHOW_FAIL:-false}" \
     CLAIM_DIRECT_BYPASS="${CLAIM_DIRECT_BYPASS:-false}" \
     CLAIM_DIRECT_EXIT="${CLAIM_DIRECT_EXIT:-0}" \
@@ -2252,6 +2259,7 @@ CLAIM_INFRA_CHECKS=$'claim-check\tFAILURE\thttps://example.test/actions/runs/999
 echo "==> Test: zero-step claim-check substitutes to direct API verification"
 reset_case_files
 if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
+  GH_PR_STATE="MERGED" GH_MERGED_AT="2026-08-07T02:00:00Z" \
   GH_FAILED_CHECKS="$CLAIM_INFRA_CHECKS" \
   GH_CLAIM_RUN_REAL_STEPS=0 \
   CLAIM_DIRECT_EXIT=0 \
@@ -2275,6 +2283,7 @@ fi
 echo "==> Test: substitution discloses a documented bypass as a bypass"
 reset_case_files
 if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
+  GH_PR_STATE="MERGED" GH_MERGED_AT="2026-08-07T02:00:00Z" \
   GH_FAILED_CHECKS="$CLAIM_INFRA_CHECKS" \
   GH_CLAIM_RUN_REAL_STEPS=0 \
   CLAIM_DIRECT_BYPASS=true \
@@ -2358,6 +2367,7 @@ fi
 echo "==> Test: bypass and claim substitution disclose together in the squash body"
 reset_case_files
 if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
+  GH_PR_STATE="MERGED" GH_MERGED_AT="2026-08-07T02:00:00Z" \
   GH_FAILED_CHECKS="$CLAIM_INFRA_CHECKS" \
   GH_CLAIM_RUN_REAL_STEPS=0 \
   CLAIM_DIRECT_EXIT=0 \
@@ -2415,6 +2425,27 @@ if grep -q 'does not waive merge-state requirements' "$TEST_DIR/output-claim-beh
 else
   echo "FAIL: expected the merge-state rejection after substitution" >&2
   cat "$TEST_DIR/output-claim-behind.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: substituted merge that leaves the PR open fails honestly"
+reset_case_files
+if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
+  GH_MERGE_LEAVES_OPEN=true \
+  GH_FAILED_CHECKS="$CLAIM_INFRA_CHECKS" \
+  GH_CLAIM_RUN_REAL_STEPS=0 \
+  CLAIM_DIRECT_EXIT=0 \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  run_merge_pr "$TEST_DIR/output-claim-open-after-merge.txt" 123; then
+  echo "FAIL: a substituted merge that leaves the PR OPEN must not report success" >&2
+  exit 1
+fi
+if grep -q 'cannot update GitHub.s required-check status' "$TEST_DIR/output-claim-open-after-merge.txt" \
+  && grep -q 'disable-auto' "$TEST_DIR/gh-merge-args"; then
+  echo "==> PASS: required-check substitution fails honestly and disarms auto-merge"
+else
+  echo "FAIL: expected honest failure plus auto-merge disarm" >&2
+  cat "$TEST_DIR/output-claim-open-after-merge.txt" >&2
   exit 1
 fi
 
