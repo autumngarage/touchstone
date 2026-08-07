@@ -1,15 +1,15 @@
 ---
-Generated: 2026-08-04T16:38:00-04:00
-Generator: cortex refresh-state v1.6.4
+Generated: 2026-08-06T20:22:28-04:00
+Generator: cortex refresh-state v1.6.3
 Sources:
-  - HEAD sha: bfe5e528f11904c7af43934646430bb20f7ea0ec
+  - HEAD sha: 8e32d69c967b95091984e519c72efea09c9bc78f
   - .cortex/plans/*.md (2 files)
-  - .cortex/journal/*.md (33 entries, 2026-05-05..2026-08-03)
+  - .cortex/journal/*.md (35 entries, 2026-05-05..2026-08-06)
   - .cortex/doctrine/*.md (1 entries)
   - .cortex/templates/**/*.md (12 templates)
   - docs/case-studies/*.md (0 case studies)
   - SPEC version: 0.5.0
-  - (no project manifest detected) + cortex package version: 1.6.4
+  - (no project manifest detected) + cortex package version: 1.6.3
 Sources-hash:
   .cortex/doctrine/0001-touchstone-owns-shared-agent-workflow.md: 349b627cedf003e60838d1d1d660284f80644086ed387b79a58ff3fe1e7e0b46
   .cortex/journal/2026-05-05-cortex-install-baseline.md: dcc1ddd566c02c618277309b6daebf1334d477994b154a0f87a615642bd32829
@@ -45,6 +45,8 @@ Sources-hash:
   .cortex/journal/2026-07-30-release-v2-11-56.md: f8ae42d6eead1ffffe3daf405f1937027eefdbd3194cb48d1f4f0dbea21ba5b1
   .cortex/journal/2026-07-30-release-v2-11-57.md: 87ed6da743bd1e5e8389e77e910e7be40db5cc2e31229491a4959ec06ca21a17
   .cortex/journal/2026-08-03-pr-merged-1158.md: af08e17f24baa0e308f1a13e703a8a0a9de8c7d2df71333c05eef3b4b8623dfe
+  .cortex/journal/2026-08-05-migration-state-enumeration-gate.md: bd82c8cf623ac0b299036fda290652ecf05d2b25133f4261db21ae808e6cd300
+  .cortex/journal/2026-08-06-pr-merged-2022.md: 717167164fcd145c51859a178e189eb0b06952eecb245b070ee6812e25cc0e5d
   .cortex/plans/touchstone-conductor-integration.md: be3f8211b7c19e32e0c4c858c35678c1d85418fe12c5d22b29cc0a7831f8a54c
   .cortex/plans/touchstone-cortex-metadata.md: 0e23c4e06b91c1e8da358b3928750798975eed88815502fb8e7ddfbdbd0187f5
   .cortex/templates/README.md: 695aa2e623bd7f4e698dae471bded0cde354da0c1d8589266660ceb1be8efad1
@@ -59,7 +61,7 @@ Sources-hash:
   .cortex/templates/journal/release.md: 9a6bc59219156e48b419fb170c7c50ff557767def8672ef20568df3e14eadbd0
   .cortex/templates/journal/sentinel-cycle.md: 2945e2d94af4ec9848584b4b3e9cea7060d2968dd42e78faf21fb6f859137476
   .cortex/templates/plans/template.md: d8156cfa3b86acd2a1fbb36cff07cae37d99f3adee7f72b14b7b16e645c51b44
-Corpus: 33 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
+Corpus: 35 Journal entries, 2 Plans, 1 Doctrine entries, 12 Templates, 0 Case studies
 Omitted:
   []
 Incomplete:
@@ -101,6 +103,7 @@ Spec: 0.5.0
 - **2026-07-30** — Release v2.11.56 — portable delivery checksums (`.cortex/journal/2026-07-30-release-v2-11-56.md`, Type: release)
 - **2026-07-30** — Release v2.11.57 — fail-closed checksum adapter (`.cortex/journal/2026-07-30-release-v2-11-57.md`, Type: release)
 - **2026-08-03** — PR #597 merged — fix(review): keep draft shipping review-free (`.cortex/journal/2026-08-03-pr-merged-1158.md`, Type: pr-merged)
+- **2026-08-06** — PR #654 merged — feat(review): add respond-review.sh, the one-command finding response (`.cortex/journal/2026-08-06-pr-merged-2022.md`, Type: pr-merged)
 
 ## Stale-now / handle-later
 
