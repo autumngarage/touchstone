@@ -797,6 +797,10 @@ cmd_ship_runner() {
     worktree_path="$worktree_path" branch="$branch" pid="$$"
   touchstone_ship_write "$job_dir" status running
   touchstone_ship_write "$job_dir" reason ""
+  # A reused job directory may carry the previous job's recovery verdict;
+  # stale base-moved-takeover-abort-failed would make THIS job's takeover
+  # publish needs-attention for a rebase that never happened.
+  touchstone_ship_write "$job_dir" base-moved-reason ""
   if [ "$review_fix" = true ]; then
     deadline_epoch="$(touchstone_ship_read "$job_dir" deadline-epoch)"
     case "$deadline_epoch" in
@@ -1241,6 +1245,28 @@ cmd_takeover() {
             return 1
           fi
           touchstone_ship_signal_tree "$pid" KILL
+          # KILL bypasses the recovery child's TERM trap, so an in-flight
+          # recovery rebase leaves rebase-merge/rebase-apply state behind.
+          # Clean it up here — and say so when the abort itself fails,
+          # because a "stopped" verdict over a mid-rebase worktree would
+          # misdirect the operator taking over.
+          takeover_state_kind="" takeover_state_dir=""
+          for takeover_state_kind in rebase-merge rebase-apply; do
+            takeover_state_dir="$(cd "$worktree_path" \
+              && git rev-parse --git-path "$takeover_state_kind" 2>/dev/null || true)"
+            if [ -n "$takeover_state_dir" ] \
+              && (cd "$worktree_path" && [ -d "$takeover_state_dir" ]); then
+              if (cd "$worktree_path" \
+                && GIT_NO_REPLACE_OBJECTS=1 git rebase --abort >/dev/null 2>&1); then
+                echo "Aborted the recovery rebase the forced takeover interrupted."
+              else
+                echo "WARNING: could not abort the interrupted recovery rebase;" >&2
+                echo "         the worktree may remain mid-rebase ($takeover_state_kind)." >&2
+                echo "         Inspect it before continuing: git -C $worktree_path status" >&2
+              fi
+              break
+            fi
+          done
           touchstone_ship_write "$job_dir" exit-code 137
           touchstone_ship_write "$job_dir" reason forced-takeover
           touchstone_ship_write "$job_dir" finished-at "$(touchstone_ship_now)"
