@@ -448,9 +448,12 @@ touchstone_ship_base_moved_recover() {
     update_refs_flag="--no-update-refs"
   fi
   # Fully qualified target: a tag literally named origin/<base> would win the
-  # shorthand resolution and rebase onto unrelated history.
+  # shorthand resolution and rebase onto unrelated history. --no-autostash
+  # overrides inherited rebase.autoStash=true: a conflicting stash pop can
+  # leave unmerged paths while git still exits 0, so a dirty worktree must
+  # fail the rebase outright and park instead of "succeeding" into a rerun.
   rebase_output="$(cd "$worktree_path" \
-    && GIT_TERMINAL_PROMPT=0 git rebase --rebase-merges ${update_refs_flag:+"$update_refs_flag"} "refs/remotes/origin/$pr_base" 2>&1)" \
+    && GIT_TERMINAL_PROMPT=0 git rebase --no-autostash --rebase-merges ${update_refs_flag:+"$update_refs_flag"} "refs/remotes/origin/$pr_base" 2>&1)" \
     && {
       new_head="$(cd "$worktree_path" && git rev-parse HEAD 2>/dev/null || echo unknown)"
       touchstone_ship_write "$job_dir" base-moved-retries "$attempt"
