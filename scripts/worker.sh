@@ -670,10 +670,14 @@ cmd_ship_runner() {
     [ "$exit_code" -eq 0 ] && break
     attempt_log="$(tail -n +"$((log_lines_before + 1))" "$job_dir/ship.log" 2>/dev/null || true)"
     # Structural, line-anchored classification: only the delivery scripts'
-    # own error formats qualify — a project test or hook echoing the phrase
-    # mid-line cannot spoof an authorization race.
+    # own BASE-MOVED error formats qualify — a project test or hook echoing
+    # the phrase mid-line cannot spoof an authorization race. The broader
+    # "revision changed while review was being requested" shape is
+    # deliberately excluded: it also fires when the PR HEAD or base BRANCH
+    # changed, where autonomously rebasing a stale checkout would be wrong;
+    # that class parks for a human.
     if ! printf '%s' "$attempt_log" \
-      | grep -qE '^ERROR: (PR #[0-9]+ )?(base moved while|revision changed while review was being requested)'; then
+      | grep -qE '^ERROR: (PR #[0-9]+ )?base moved while'; then
       break
     fi
     if [ "$ship_attempt" -gt "$max_base_moved_retries" ]; then
@@ -691,7 +695,7 @@ cmd_ship_runner() {
     # already updated); the review-request marker's "at base <sha>" is the
     # fallback, the tracking tip the last resort inside the helper.
     authorized_base="$(printf '%s' "$attempt_log" \
-      | grep -oE 'GitHub base: [0-9a-f]{40}' | tail -1 | awk '{print $3}' || true)"
+      | grep -oE 'GitHub base:[[:space:]]+[0-9a-f]{40}' | tail -1 | awk '{print $NF}' || true)"
     if [ -z "$authorized_base" ]; then
       authorized_base="$(printf '%s' "$attempt_log" \
         | grep -oE 'at base [0-9a-f]{40}' | tail -1 | awk '{print $3}' || true)"
