@@ -731,9 +731,12 @@ cmd_doctor_project() {
   if [ -f "$ci_workflow" ] && grep -Eq '^[[:space:]]*pull_request:' "$ci_workflow"; then
     # Only a workflow that actually runs for pull requests can bill per
     # superseded review head; push/schedule-only repurposings are exempt.
-    # Cancellation must be ENABLED, not merely mentioned: cancel-in-progress:
-    # false (or the key in a comment) still bills obsolete runs in full.
-    if ! grep -Eq '^[[:space:]]*cancel-in-progress:[[:space:]]*true' "$ci_workflow"; then
+    # Cancellation must be ENABLED (cancel-in-progress: false or a comment
+    # still bills obsolete runs) AND scoped to a PR-specific group — a
+    # global or head_ref group can cancel unrelated PRs or miss superseded
+    # heads entirely.
+    if ! grep -Eq '^[[:space:]]*cancel-in-progress:[[:space:]]*true' "$ci_workflow" \
+      || ! grep -Eq 'pull_request\.number' "$ci_workflow"; then
       tk_warn "CI validate.yml has no concurrency guard — superseded review heads each bill a full run"
       tk_dim "  Fix: add a concurrency block keyed by PR number with cancel-in-progress: true"
       tk_dim "  (reference: templates/ci/github-validate.yml in the touchstone repo,"
