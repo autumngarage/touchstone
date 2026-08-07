@@ -2553,7 +2553,14 @@ fi
 # verification cannot update GitHub's required-check status. Verify MERGED
 # explicitly, disarm the surprise auto-merge, and fail honestly.
 if [ "$CLAIM_CHECK_SUBSTITUTED" = true ]; then
-  substituted_state="$(gh pr view "$PR_NUMBER" --json state --jq '.state' 2>/dev/null || echo "")"
+  # Bounded retries: a transient inspection failure or propagation-empty
+  # state must not be read as proof the PR stayed open.
+  substituted_state=""
+  for substituted_state_attempt in 1 2 3; do
+    substituted_state="$(gh pr view "$PR_NUMBER" --json state --jq '.state' 2>/dev/null || echo "")"
+    [ "$substituted_state" = "MERGED" ] && break
+    [ "$substituted_state_attempt" -lt 3 ] && sleep 2
+  done
   if [ "$substituted_state" != "MERGED" ]; then
     gh pr merge "$PR_NUMBER" --disable-auto >/dev/null 2>&1 \
       || echo "WARNING: could not disarm auto-merge on PR #$PR_NUMBER; it may merge when the hosted check recovers." >&2
