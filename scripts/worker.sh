@@ -369,7 +369,7 @@ cmd_status() {
 # returns 1. The runner never resolves content.
 TOUCHSTONE_BASE_MOVED_REASON=""
 touchstone_ship_base_moved_recover() {
-  local worktree_path="$1" job_dir="$2" attempt="$3" authorized_base="${4:-}"
+  local worktree_path="$1" job_dir="$2" attempt="$3" authorized_bases="${4:-}" failed_pr="${5:-}"
   local branch="" pr_base="" old_head="" new_head="" rebase_output=""
   local conflict_files="" update_refs_flag=""
 
@@ -388,7 +388,36 @@ touchstone_ship_base_moved_recover() {
     TOUCHSTONE_BASE_MOVED_REASON="base-moved-base-unresolved"
     return 1
   }
-  if ! pr_base="$(cd "$worktree_path" && gh pr list --head "$branch" --author "@me" --state open \
+  if [ -n "$failed_pr" ]; then
+    # Bind recovery to the exact PR that reported the race: a PR retargeted
+    # or replaced while recovery starts — or a second own PR sharing this
+    # head branch — must not silently substitute its base.
+    local pr_info=""
+    if ! pr_info="$(cd "$worktree_path" && gh pr view "$failed_pr" \
+      --json baseRefName,headRefName,isCrossRepository,state \
+      --jq '[.state, (.isCrossRepository | tostring), .headRefName, .baseRefName] | join("\n")' \
+      2>"$lookup_stderr")"; then
+      echo "==> PR #$failed_pr lookup FAILED; handing off with the diagnostic:" >&2
+      sed 's/^/      /' "$lookup_stderr" >&2
+      rm -f "$lookup_stderr"
+      TOUCHSTONE_BASE_MOVED_REASON="base-moved-pr-lookup-failed"
+      return 1
+    fi
+    local pr_state="" pr_cross="" pr_head=""
+    pr_state="$(printf '%s\n' "$pr_info" | sed -n '1p')"
+    pr_cross="$(printf '%s\n' "$pr_info" | sed -n '2p')"
+    pr_head="$(printf '%s\n' "$pr_info" | sed -n '3p')"
+    pr_base="$(printf '%s\n' "$pr_info" | sed -n '4p')"
+    if [ "$pr_state" != "OPEN" ] || [ "$pr_cross" != "false" ] \
+      || [ "$pr_head" != "$branch" ] || [ -z "$pr_base" ]; then
+      echo "==> PR #$failed_pr no longer matches this worktree (state=$pr_state," >&2
+      echo "    cross-repository=$pr_cross, PR head=$pr_head, local branch=$branch);" >&2
+      echo "    handing off rather than rebasing onto an unrelated base." >&2
+      rm -f "$lookup_stderr"
+      TOUCHSTONE_BASE_MOVED_REASON="base-moved-pr-mismatch"
+      return 1
+    fi
+  elif ! pr_base="$(cd "$worktree_path" && gh pr list --head "$branch" --author "@me" --state open \
     --json baseRefName,isCrossRepository \
     --jq '[.[] | select(.isCrossRepository == false)][0].baseRefName // empty' 2>"$lookup_stderr")"; then
     echo "==> PR base lookup FAILED for '$branch'; handing off with the diagnostic:" >&2
@@ -416,17 +445,8 @@ touchstone_ship_base_moved_recover() {
   # (non-fast-forward) rather than advanced would make a plain rebase replay
   # the old parent's commits into the child; that case fails closed.
   local fetch_output="" base_tip_before=""
-  if [ -n "$authorized_base" ] \
-    && (cd "$worktree_path" && git cat-file -e "$authorized_base^{commit}" 2>/dev/null); then
-    # The base revision the failed run actually authorized against — parsed
-    # from its review-request record. open-pr may already have advanced the
-    # tracking ref before reporting movement, so the tracking tip alone can
-    # hide a force-push.
-    base_tip_before="$authorized_base"
-  else
-    base_tip_before="$(cd "$worktree_path" \
-      && git rev-parse --verify --quiet "refs/remotes/origin/$pr_base" 2>/dev/null || true)"
-  fi
+  base_tip_before="$(cd "$worktree_path" \
+    && GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify --quiet "refs/remotes/origin/$pr_base" 2>/dev/null || true)"
   if ! fetch_output="$(cd "$worktree_path" \
     && GIT_TERMINAL_PROMPT=0 git fetch origin \
       "+refs/heads/$pr_base:refs/remotes/origin/$pr_base" 2>&1)"; then
@@ -435,9 +455,48 @@ touchstone_ship_base_moved_recover() {
     TOUCHSTONE_BASE_MOVED_REASON="base-moved-fetch-failed"
     return 1
   fi
-  if [ -n "$base_tip_before" ] \
+  # Freeze the fetched tip: worktrees share remote-tracking refs, so a
+  # concurrent fetch in another worktree could move refs/remotes/origin/<base>
+  # between the rewrite check and the rebase — every later step targets this
+  # exact OID. GIT_NO_REPLACE_OBJECTS=1 throughout: a local refs/replace
+  # entry would substitute graph history here while open-pr.sh's integration
+  # checks judge the real objects with replacement disabled.
+  local base_oid=""
+  base_oid="$(cd "$worktree_path" \
+    && GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify "refs/remotes/origin/$pr_base^{commit}" 2>/dev/null || true)"
+  if [ -z "$base_oid" ]; then
+    echo "==> origin/$pr_base did not resolve to a commit after the fetch; handing off." >&2
+    TOUCHSTONE_BASE_MOVED_REASON="base-moved-base-unresolved"
+    return 1
+  fi
+  # Rewrite detection over the UNION of recorded base evidence: the failed
+  # attempt may report both the pre-rewrite revision it authorized against
+  # ("local base:", "at base") and the post-rewrite GitHub tip ("GitHub
+  # base:"). Any single marker can equal the new tip and hide the rewrite;
+  # requiring EVERY resolvable candidate to be an ancestor of the fetched
+  # tip cannot. The pre-fetch tracking tip is the fallback when no marker
+  # resolves locally.
+  local candidate="" checked_any=false
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    (cd "$worktree_path" \
+      && GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "$candidate^{commit}" 2>/dev/null) || continue
+    checked_any=true
+    if ! (cd "$worktree_path" \
+      && GIT_NO_REPLACE_OBJECTS=1 git merge-base --is-ancestor "$candidate" "$base_oid" 2>/dev/null); then
+      echo "==> Base '$pr_base' was rewritten (non-fast-forward): recorded base revision" >&2
+      echo "    $candidate is not an ancestor of the fetched tip. A plain rebase would" >&2
+      echo "    replay stale parent commits into this branch; handing off for manual" >&2
+      echo "    reconciliation." >&2
+      TOUCHSTONE_BASE_MOVED_REASON="base-moved-base-rewritten"
+      return 1
+    fi
+  done <<TOUCHSTONE_BASE_CANDIDATES
+$authorized_bases
+TOUCHSTONE_BASE_CANDIDATES
+  if [ "$checked_any" = false ] && [ -n "$base_tip_before" ] \
     && ! (cd "$worktree_path" \
-      && git merge-base --is-ancestor "$base_tip_before" "refs/remotes/origin/$pr_base" 2>/dev/null); then
+      && GIT_NO_REPLACE_OBJECTS=1 git merge-base --is-ancestor "$base_tip_before" "$base_oid" 2>/dev/null); then
     echo "==> Base '$pr_base' was rewritten (non-fast-forward) rather than advanced; a plain" >&2
     echo "    rebase would replay stale parent commits into this branch. Handing off for" >&2
     echo "    manual reconciliation." >&2
@@ -447,13 +506,15 @@ touchstone_ship_base_moved_recover() {
   if (cd "$worktree_path" && git rebase -h 2>&1 | grep -q 'update-refs'); then
     update_refs_flag="--no-update-refs"
   fi
-  # Fully qualified target: a tag literally named origin/<base> would win the
-  # shorthand resolution and rebase onto unrelated history. --no-autostash
-  # overrides inherited rebase.autoStash=true: a conflicting stash pop can
-  # leave unmerged paths while git still exits 0, so a dirty worktree must
-  # fail the rebase outright and park instead of "succeeding" into a rerun.
+  # Rebase onto the frozen OID, not the shared tracking ref: a raw commit id
+  # cannot be moved by a concurrent fetch or shadowed by a tag named
+  # origin/<base>, so the rebase consumes exactly the history the rewrite
+  # check validated. --no-autostash overrides inherited rebase.autoStash=true:
+  # a conflicting stash pop can leave unmerged paths while git still exits 0,
+  # so a dirty worktree must fail the rebase outright and park instead of
+  # "succeeding" into a rerun.
   rebase_output="$(cd "$worktree_path" \
-    && GIT_TERMINAL_PROMPT=0 git rebase --no-autostash --rebase-merges ${update_refs_flag:+"$update_refs_flag"} "refs/remotes/origin/$pr_base" 2>&1)" \
+    && GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1 git rebase --no-autostash --rebase-merges ${update_refs_flag:+"$update_refs_flag"} "$base_oid" 2>&1)" \
     && {
       new_head="$(cd "$worktree_path" && git rev-parse HEAD 2>/dev/null || echo unknown)"
       touchstone_ship_write "$job_dir" base-moved-retries "$attempt"
@@ -495,7 +556,7 @@ touchstone_ship_base_moved_recover() {
 
 cmd_ship_runner() {
   local job_dir="" worktree_path="" claim_token="" cleanup=false events_json="" child_pid="" exit_code=0 branch=""
-  local ship_attempt=1 max_base_moved_retries="" log_lines_before=0 attempt_log="" authorized_base=""
+  local ship_attempt=1 max_base_moved_retries="" log_lines_before=0 attempt_log="" authorized_bases="" failed_pr=""
   local claim_owner_wait=0
   local review_fix=false max_fix_iterations="$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT"
   local max_fix_minutes=45 validation_command=""
@@ -693,18 +754,21 @@ cmd_ship_runner() {
     # command runs, and a foreground fetch/rebase would make takeover wait
     # on the network. The reason travels through the job kv (subshell
     # variables do not propagate).
-    # The admission failure reports the base it authorized against as
-    # "GitHub base: <sha>" (pre-force-push even when the tracking ref was
-    # already updated); the review-request marker's "at base <sha>" is the
-    # fallback, the tracking tip the last resort inside the helper.
-    authorized_base="$(printf '%s' "$attempt_log" \
-      | grep -oE 'GitHub base:[[:space:]]+[0-9a-f]{40}' | tail -1 | awk '{print $NF}' || true)"
-    if [ -z "$authorized_base" ]; then
-      authorized_base="$(printf '%s' "$attempt_log" \
-        | grep -oE 'at base [0-9a-f]{40}' | tail -1 | awk '{print $3}' || true)"
-    fi
+    # Collect EVERY base revision the failed attempt recorded — open-pr's
+    # admission failure and merge-pr's inspection failure emit "GitHub
+    # base:" / "local base:", the review-request marker emits "at base" —
+    # plus the number of the PR that reported the race. The helper requires
+    # all resolvable candidates to be ancestors of the fetched tip (a
+    # single marker can be the post-rewrite SHA and hide the rewrite) and
+    # binds its base lookup to that exact PR.
+    authorized_bases="$(printf '%s' "$attempt_log" \
+      | grep -oE '(GitHub base:[[:space:]]+|local base:[[:space:]]+|at base )[0-9a-f]{40}' \
+      | grep -oE '[0-9a-f]{40}' | sort -u || true)"
+    failed_pr="$(printf '%s' "$attempt_log" \
+      | grep -E '^ERROR: PR #[0-9]+ base moved while' | tail -1 \
+      | grep -oE '#[0-9]+' | head -1 | tr -d '#' || true)"
     (
-      if touchstone_ship_base_moved_recover "$worktree_path" "$job_dir" "$ship_attempt" "$authorized_base"; then
+      if touchstone_ship_base_moved_recover "$worktree_path" "$job_dir" "$ship_attempt" "$authorized_bases" "$failed_pr"; then
         exit 0
       fi
       touchstone_ship_write "$job_dir" base-moved-reason "$TOUCHSTONE_BASE_MOVED_REASON"

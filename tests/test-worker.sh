@@ -61,6 +61,10 @@ make_fake_gh() {
 set -euo pipefail
 
 case "${1:-} ${2:-}" in
+  "pr view")
+    printf '%s\n' "${GH_PR_VIEW_STATE:-OPEN}" "${GH_PR_VIEW_CROSS:-false}" \
+      "${GH_PR_VIEW_HEAD:-}" "${GH_PR_VIEW_BASE:-main}"
+    ;;
   "pr list")
     field=""
     while [ "$#" -gt 0 ]; do
@@ -696,6 +700,7 @@ EOF
 chmod +x "$BASE_MOVED_WT/scripts/open-pr.sh"
 : >"$TEST_DIR/base-moved-attempts"
 SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-attempts" \
+  GH_PR_VIEW_HEAD="feat/base-moved-test" \
   PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
   "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
   --worktree "$BASE_MOVED_WT" --detach \
@@ -726,6 +731,7 @@ chmod +x "$EXHAUST_WT/scripts/open-pr.sh"
 : >"$TEST_DIR/base-moved-exhaust-attempts"
 SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-exhaust-attempts" \
   TOUCHSTONE_SHIP_BASE_MOVED_RETRIES=2 \
+  GH_PR_VIEW_HEAD="feat/base-moved-exhaust" \
   PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
   "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
   --worktree "$EXHAUST_WT" --detach >/dev/null
@@ -764,6 +770,8 @@ chmod +x "$STACKED_WT/scripts/open-pr.sh"
 : >"$TEST_DIR/base-moved-stacked-attempts"
 SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-stacked-attempts" \
   GH_PR_BASE_REF="feature/parent" \
+  GH_PR_VIEW_HEAD="feat/base-moved-stacked" \
+  GH_PR_VIEW_BASE="feature/parent" \
   PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
   "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
   --worktree "$STACKED_WT" --detach \
@@ -771,6 +779,37 @@ SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-stacked-attempts" \
 wait_for_ship_status "$STACKED_WT" succeeded "$TEST_DIR/base-moved-stacked-status.json"
 if ! grep -q '"base_branch":"feature/parent"' "$TEST_DIR/base-moved-stacked-events.ndjson"; then
   fail "stacked recovery must rebase onto the PR's actual base, not the repository default"
+fi
+
+echo "==> Case d2i: recovery parks when the reporting PR no longer matches the worktree"
+PR_MISMATCH_WT="$TEST_DIR/base-moved-mismatch-worktree"
+git -C "$REPO" worktree add -q "$PR_MISMATCH_WT" -b feat/base-moved-mismatch main
+PR_MISMATCH_WT="$(cd "$PR_MISMATCH_WT" && pwd -P)"
+mkdir -p "$PR_MISMATCH_WT/scripts"
+cat >"$PR_MISMATCH_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+printf '%s' "$((count + 1))" >"$count_file"
+echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+exit 1
+EOF
+chmod +x "$PR_MISMATCH_WT/scripts/open-pr.sh"
+: >"$TEST_DIR/base-moved-mismatch-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-mismatch-attempts" \
+  GH_PR_VIEW_HEAD="feat/some-other-branch" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$PR_MISMATCH_WT" --detach >/dev/null
+wait_for_ship_status "$PR_MISMATCH_WT" needs-attention "$TEST_DIR/base-moved-mismatch-status.json"
+if [ "$(cat "$TEST_DIR/base-moved-mismatch-attempts")" != "1" ]; then
+  fail "mismatched-PR recovery must not retry shipping, got $(cat "$TEST_DIR/base-moved-mismatch-attempts") attempts"
+fi
+MISMATCH_JOB_DIR="$(grep -l "$PR_MISMATCH_WT" "$REPO/.git/touchstone/ship-jobs"/*/worktree-path 2>/dev/null | head -1 | xargs dirname)"
+if [ ! -f "$MISMATCH_JOB_DIR/reason" ] \
+  || [ "$(cat "$MISMATCH_JOB_DIR/reason")" != "base-moved-pr-mismatch" ]; then
+  fail "mismatched-PR recovery should hand off with reason base-moved-pr-mismatch (got: $(cat "$MISMATCH_JOB_DIR/reason" 2>/dev/null))"
 fi
 
 echo "==> Case d3: detached jobs do not collide when branch names sanitize alike"
