@@ -1711,6 +1711,9 @@ PROJECT_LEAN_CI="$TEST_DIR/test-project-lean-ci"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_LEAN_CI" --no-register --ci github >/dev/null
 assert_exists "$PROJECT_LEAN_CI/.github/workflows/validate.yml"
 assert_contains "$PROJECT_LEAN_CI/.github/workflows/validate.yml" 'cancel-in-progress: true'
+# The PR-number key specifically: a head_ref key would pass the cancellation
+# assertion while letting same-named fork branches cancel each other.
+assert_contains "$PROJECT_LEAN_CI/.github/workflows/validate.yml" 'github.event.pull_request.number'
 if grep -Eq '^[[:space:]]*push:' "$PROJECT_LEAN_CI/.github/workflows/validate.yml"; then
   echo "FAIL: lean CI template must not trigger on default-branch pushes" >&2
   ERRORS=$((ERRORS + 1))

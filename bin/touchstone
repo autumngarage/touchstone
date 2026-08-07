@@ -728,10 +728,14 @@ cmd_doctor_project() {
   # verified. Cost advice, not a gating problem: local determinism is the
   # source of truth either way.
   local ci_workflow="$project_dir/.github/workflows/validate.yml"
-  if [ -f "$ci_workflow" ]; then
+  if [ -f "$ci_workflow" ] && grep -Eq '^[[:space:]]*pull_request:' "$ci_workflow"; then
+    # Only a workflow that actually runs for pull requests can bill per
+    # superseded review head; push/schedule-only repurposings are exempt.
     if ! grep -q 'cancel-in-progress' "$ci_workflow"; then
       tk_warn "CI validate.yml has no concurrency guard — superseded review heads each bill a full run"
-      tk_dim "  Fix: add the concurrency block from templates/ci/github-validate.yml"
+      tk_dim "  Fix: add a concurrency block keyed by PR number with cancel-in-progress: true"
+      tk_dim "  (reference: templates/ci/github-validate.yml in the touchstone repo,"
+      tk_dim "   https://github.com/autumngarage/touchstone/blob/main/templates/ci/github-validate.yml)"
     fi
     if grep -Eq '^[[:space:]]*branches: \[main, master\]' "$ci_workflow" \
       && grep -Eq '^[[:space:]]*push:' "$ci_workflow"; then
