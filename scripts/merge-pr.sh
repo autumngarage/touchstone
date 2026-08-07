@@ -2036,13 +2036,22 @@ failed_checks_are_only_unexecuted_claim_checks() {
 # outstanding — an unverifiable check state must never authorize an early
 # substitution.
 non_claim_checks_outstanding() {
-  local outstanding
-  if ! outstanding="$(gh pr checks "$PR_NUMBER" \
+  local outstanding stderr_file
+  # gh pr checks exits nonzero whenever any check failed — and a failed
+  # claim-check is exactly why this path runs — so exit status alone cannot
+  # distinguish "rendered a failing check" from "could not inspect". A true
+  # inspection failure writes to stderr; rendered results do not. Fail
+  # closed (outstanding) on stderr output or on being unable to capture it.
+  stderr_file="$(mktemp -t touchstone-checks-stderr.XXXXXX)" || return 0
+  outstanding="$(gh pr checks "$PR_NUMBER" \
     --json name,bucket \
     --template '{{range .}}{{if and (ne .bucket "pass") (ne .bucket "skipping") (ne .bucket "fail")}}{{.name}}{{"\n"}}{{end}}{{end}}' \
-    2>/dev/null)"; then
+    2>"$stderr_file")" || true
+  if [ -s "$stderr_file" ]; then
+    rm -f "$stderr_file"
     return 0
   fi
+  rm -f "$stderr_file"
   printf '%s' "$outstanding" | grep -qv '^claim-check$' 2>/dev/null && return 0
   return 1
 }
@@ -2138,10 +2147,19 @@ wait_for_clean_merge_state() {
         # The unexecuted claim run alone must not fail the wait while other
         # checks are still running; keep polling them.
         :
-      elif attempt_claim_check_substitution "$FAILED_CHECKS"; then
-        # Substitution neutralizes ONLY the unexecuted claim run; the
-        # definitive merge-state guards still apply — a behind, dirty, or
-        # conflicting PR keeps its normal rejection.
+      elif [ "$CLAIM_CHECK_SUBSTITUTED" = true ] \
+        || attempt_claim_check_substitution "$FAILED_CHECKS"; then
+        # Substitution neutralizes ONLY the unexecuted claim run. Authorize
+        # continuation solely from the states this path is designed for
+        # (allow-list, not block-list): CLEAN or UNSTABLE with MERGEABLE.
+        # Behind/dirty/conflicting keep their explicit rejection; anything
+        # else (UNKNOWN, BLOCKED, ...) keeps waiting for GitHub to settle —
+        # CLAIM_CHECK_SUBSTITUTED guards against re-running the
+        # substitution (and re-posting its disclosure) on later attempts.
+        if { [ "$STATE" = "CLEAN" ] || [ "$STATE" = "UNSTABLE" ]; } \
+          && [ "$MERGEABLE" = "MERGEABLE" ]; then
+          return 0
+        fi
         if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$STATE" = "DIRTY" ] \
           || [ "$STATE" = "BEHIND" ] || [ "$STATE" = "CONFLICTING" ]; then
           echo "ERROR: PR #$PR_NUMBER is $STATE — has conflicts or is out of date with base." >&2
@@ -2150,7 +2168,7 @@ wait_for_clean_merge_state() {
           TOUCHSTONE_MERGE_FAILURE_REASON="not-mergeable"
           exit 1
         fi
-        return 0
+        echo "==> Claim substituted, but merge state is $STATE/$MERGEABLE — continuing to wait for an authorizing state."
       else
         print_failed_checks_and_exit "$FAILED_CHECKS"
       fi

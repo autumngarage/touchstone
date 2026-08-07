@@ -159,9 +159,10 @@ case "${1:-} ${2:-}" in
   "pr checks")
     case "$*" in
       *'ne .bucket'*)
-        # Outstanding-bucket scan (issue #658): substitution must keep
-        # waiting while non-claim checks are pending OR canceled, and must
-        # refuse when the inspection itself fails.
+        # Outstanding-bucket scan (issue #658). Mirrors real gh semantics:
+        # rendering a failing check exits nonzero with EMPTY stderr, while a
+        # true inspection failure writes stderr. Substitution must key on
+        # stderr, not exit status.
         if [ "${GH_PENDING_CHECKS_FAIL:-false}" = "true" ]; then
           echo "check inspection unavailable" >&2
           exit 1
@@ -169,6 +170,7 @@ case "${1:-} ${2:-}" in
         if [ -n "${GH_PENDING_CHECKS:-}" ]; then
           printf '%s\n' "$GH_PENDING_CHECKS"
         fi
+        exit 1
         ;;
       *)
         if [ -n "${GH_FAILED_CHECKS:-}" ]; then
@@ -2413,6 +2415,28 @@ if grep -q 'does not waive merge-state requirements' "$TEST_DIR/output-claim-beh
 else
   echo "FAIL: expected the merge-state rejection after substitution" >&2
   cat "$TEST_DIR/output-claim-behind.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: non-authorizing merge state keeps waiting after substitution"
+reset_case_files
+if GH_MERGE_STATE="UNKNOWN UNKNOWN" \
+  GH_FAILED_CHECKS="$CLAIM_INFRA_CHECKS" \
+  GH_CLAIM_RUN_REAL_STEPS=0 \
+  CLAIM_DIRECT_EXIT=0 \
+  MERGE_PR_STATE_MAX_ATTEMPTS=2 \
+  MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-claim-unknown-state.txt" 123; then
+  echo "FAIL: UNKNOWN state must not be authorized by claim substitution" >&2
+  exit 1
+fi
+if grep -q 'continuing to wait for an authorizing state' "$TEST_DIR/output-claim-unknown-state.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
+  && [ "$(grep -c 'Direct verification result' "$TEST_DIR/output-claim-unknown-state.txt")" = "1" ]; then
+  echo "==> PASS: substitution allow-lists authorizing states and never re-runs"
+else
+  echo "FAIL: expected wait-and-no-reprocessing on UNKNOWN state" >&2
+  cat "$TEST_DIR/output-claim-unknown-state.txt" >&2
   exit 1
 fi
 
