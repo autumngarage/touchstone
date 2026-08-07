@@ -506,6 +506,24 @@ TOUCHSTONE_BASE_CANDIDATES
   if (cd "$worktree_path" && git rebase -h 2>&1 | grep -q 'update-refs'); then
     update_refs_flag="--no-update-refs"
   fi
+  if [ -n "$failed_pr" ]; then
+    # TOCTOU guard: revalidate the exact PR immediately before rebasing. A
+    # retarget or close between the initial lookup and this point must park
+    # rather than rebase onto the formerly reported base — the next
+    # open-pr.sh attempt could otherwise guarded-force-push a head rebased
+    # onto a base the PR no longer targets.
+    local pr_recheck=""
+    if ! pr_recheck="$(cd "$worktree_path" && gh pr view "$failed_pr" \
+      --json baseRefName,headRefName,isCrossRepository,state \
+      --jq '[.state, (.isCrossRepository | tostring), .headRefName, .baseRefName] | join("\n")' 2>/dev/null)" \
+      || [ "$pr_recheck" != "$(printf 'OPEN\nfalse\n%s\n%s' "$branch" "$pr_base")" ]; then
+      echo "==> PR #$failed_pr changed while recovery was preparing (retargeted, closed," >&2
+      echo "    or no longer this branch); handing off rather than rebasing onto a" >&2
+      echo "    stale base." >&2
+      TOUCHSTONE_BASE_MOVED_REASON="base-moved-pr-mismatch"
+      return 1
+    fi
+  fi
   # Rebase onto the frozen OID, not the shared tracking ref: a raw commit id
   # cannot be moved by a concurrent fetch or shadowed by a tag named
   # origin/<base>, so the rebase consumes exactly the history the rewrite
