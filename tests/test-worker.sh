@@ -683,6 +683,16 @@ echo "==> Case d2f: detached ship auto-recovers a base-moved failure (issue #651
 BASE_MOVED_WT="$TEST_DIR/base-moved-worktree"
 git -C "$REPO" worktree add -q "$BASE_MOVED_WT" -b feat/base-moved-test main
 BASE_MOVED_WT="$(cd "$BASE_MOVED_WT" && pwd -P)"
+# A feature commit on the branch plus a base advanced AFTERWARD: recovery
+# must transplant the commit onto the new base, not just fast-forward an
+# empty branch (the already-up-to-date rebase would mask transplant bugs).
+printf 'feature\n' >"$BASE_MOVED_WT/feature-file.txt"
+git -C "$BASE_MOVED_WT" add feature-file.txt
+git -C "$BASE_MOVED_WT" commit -qm "feat: base-moved fixture commit"
+printf 'advanced\n' >>"$REPO/file.txt"
+git -C "$REPO" add file.txt
+git -C "$REPO" commit -qm "chore: advance base under the fixture PR"
+git -C "$REPO" push -q origin main
 mkdir -p "$BASE_MOVED_WT/scripts"
 cat >"$BASE_MOVED_WT/scripts/open-pr.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -714,6 +724,13 @@ if [ "$(cat "$TEST_DIR/base-moved-attempts")" != "2" ]; then
 fi
 if ! grep -q 'worker_ship_base_moved_retry' "$TEST_DIR/base-moved-events.ndjson"; then
   fail "base-moved recovery did not emit worker_ship_base_moved_retry"
+fi
+if ! git -C "$BASE_MOVED_WT" merge-base --is-ancestor \
+  "$(git -C "$ORIGIN_URL" rev-parse main)" HEAD; then
+  fail "recovery rebase did not transplant the branch onto the advanced base"
+fi
+if ! git -C "$BASE_MOVED_WT" cat-file -e HEAD:feature-file.txt 2>/dev/null; then
+  fail "recovery rebase lost the feature commit during transplantation"
 fi
 
 echo "==> Case d2g: base-moved recovery is bounded and hands off with its reason"

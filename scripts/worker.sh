@@ -624,8 +624,12 @@ TOUCHSTONE_BASE_CANDIDATES
   # a conflicting stash pop can leave unmerged paths while git still exits 0,
   # so a dirty worktree must fail the rebase outright and park instead of
   # "succeeding" into a rerun.
+  # -c rerere.enabled=false: with rerere.autoupdate a remembered resolution
+  # gets applied and STAGED before the rebase returns nonzero, so the
+  # unmerged-paths probe would find nothing and report a generic rebase
+  # failure instead of the conflict hand-off.
   rebase_output="$(cd "$worktree_path" \
-    && GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1 git rebase --no-autostash --rebase-merges ${update_refs_flag:+"$update_refs_flag"} "$base_oid" 2>&1)" \
+    && GIT_TERMINAL_PROMPT=0 GIT_NO_REPLACE_OBJECTS=1 git -c rerere.enabled=false rebase --no-autostash --rebase-merges ${update_refs_flag:+"$update_refs_flag"} "$base_oid" 2>&1)" \
     && {
       new_head="$(cd "$worktree_path" && git rev-parse HEAD 2>/dev/null || echo unknown)"
       touchstone_ship_write "$job_dir" base-moved-retries "$attempt"
@@ -646,7 +650,7 @@ TOUCHSTONE_BASE_CANDIDATES
     || { rebase_state_dir="$(cd "$worktree_path" && git rev-parse --git-path rebase-apply 2>/dev/null || true)" \
       && [ -n "$rebase_state_dir" ] && (cd "$worktree_path" && [ -d "$rebase_state_dir" ]); }; then
     local abort_output=""
-    if ! abort_output="$(cd "$worktree_path" && git rebase --abort 2>&1)"; then
+    if ! abort_output="$(cd "$worktree_path" && GIT_NO_REPLACE_OBJECTS=1 git rebase --abort 2>&1)"; then
       echo "==> git rebase --abort FAILED; the worktree may remain mid-rebase:" >&2
       printf '%s\n' "$abort_output" | sed 's/^/      /' >&2
       TOUCHSTONE_BASE_MOVED_REASON="base-moved-abort-failed"
@@ -883,16 +887,19 @@ cmd_ship_runner() {
       # Without a trap the TERM'd rebase leaves rebase-merge/rebase-apply
       # state behind and the worktree stays mid-rebase; abort it (only if
       # state exists) and record the truthful reason before exiting.
-      state_kind="" state_dir=""
+      state_kind="" state_dir="" takeover_reason=""
       trap '
+        takeover_reason="base-moved-takeover-interrupted"
         for state_kind in rebase-merge rebase-apply; do
           state_dir="$(cd "$worktree_path" && git rev-parse --git-path "$state_kind" 2>/dev/null || true)"
           if [ -n "$state_dir" ] && (cd "$worktree_path" && [ -d "$state_dir" ]); then
-            (cd "$worktree_path" && git rebase --abort >/dev/null 2>&1) || true
+            if ! (cd "$worktree_path" && GIT_NO_REPLACE_OBJECTS=1 git rebase --abort >/dev/null 2>&1); then
+              takeover_reason="base-moved-takeover-abort-failed"
+            fi
             break
           fi
         done
-        touchstone_ship_write "$job_dir" base-moved-reason "base-moved-takeover-interrupted"
+        touchstone_ship_write "$job_dir" base-moved-reason "$takeover_reason"
         exit 1
       ' TERM INT
       if touchstone_ship_base_moved_recover "$worktree_path" "$job_dir" "$ship_attempt" "$authorized_bases" "$failed_pr"; then
