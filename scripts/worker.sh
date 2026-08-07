@@ -392,16 +392,25 @@ touchstone_ship_base_moved_recover() {
   fi
   old_head="$(cd "$worktree_path" && git rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "==> Base moved under PR authorization; automatic rebase cycle $attempt onto origin/$pr_base ..."
-  if ! (cd "$worktree_path" && git fetch origin "$pr_base" >/dev/null 2>&1); then
-    echo "==> Could not fetch origin/$pr_base for the automatic rebase; handing off." >&2
+  # GIT_TERMINAL_PROMPT=0: an autonomous recovery must fail, not hang, when
+  # credentials would be prompted. Diagnostics are captured and reported —
+  # auth, connectivity, and missing-ref failures need different operator
+  # responses.
+  local fetch_output=""
+  if ! fetch_output="$(cd "$worktree_path" \
+    && GIT_TERMINAL_PROMPT=0 git fetch origin "$pr_base" 2>&1)"; then
+    echo "==> Could not fetch origin/$pr_base for the automatic rebase; handing off with the diagnostic:" >&2
+    printf '%s\n' "$fetch_output" | sed 's/^/      /' >&2
     TOUCHSTONE_BASE_MOVED_REASON="base-moved-fetch-failed"
     return 1
   fi
   if (cd "$worktree_path" && git rebase -h 2>&1 | grep -q 'update-refs'); then
     update_refs_flag="--no-update-refs"
   fi
+  # Fully qualified target: a tag literally named origin/<base> would win the
+  # shorthand resolution and rebase onto unrelated history.
   rebase_output="$(cd "$worktree_path" \
-    && git rebase --rebase-merges ${update_refs_flag:+"$update_refs_flag"} "origin/$pr_base" 2>&1)" \
+    && GIT_TERMINAL_PROMPT=0 git rebase --rebase-merges ${update_refs_flag:+"$update_refs_flag"} "refs/remotes/origin/$pr_base" 2>&1)" \
     && {
       new_head="$(cd "$worktree_path" && git rev-parse HEAD 2>/dev/null || echo unknown)"
       touchstone_ship_write "$job_dir" base-moved-retries "$attempt"
@@ -556,8 +565,11 @@ cmd_ship_runner() {
         "$validation_command" "$cleanup"; then
         finish_runner succeeded 0
         exit 0
+      else
+        # Captured in the else branch: after the `if` compound, $? would be
+        # the compound's own zero (PR #663 review).
+        exit_code=$?
       fi
-      exit_code=$?
       reason="${TOUCHSTONE_REVIEW_FIX_REASON:-review-fix-needs-attention}"
       # Review-fix mode meets base movement in the same merge path; the same
       # bounded recovery applies (PR #663 review).
@@ -568,10 +580,21 @@ cmd_ship_runner() {
         reason="base-moved-retries-exhausted"
         break
       fi
+      # Recovery runs outside the fix child's deadline enforcement; respect
+      # the same budget here rather than extending the job past it.
+      if [ -n "$deadline_epoch" ] && [ "$(date +%s)" -ge "$deadline_epoch" ]; then
+        reason="time-budget-exhausted"
+        break
+      fi
       if ! touchstone_ship_base_moved_recover "$worktree_path" "$job_dir" "$ship_attempt"; then
         reason="$TOUCHSTONE_BASE_MOVED_REASON"
         break
       fi
+      # The failed fix run already published a needs-attention posture;
+      # recovery supersedes it — republish running state so job state and
+      # the retry event stay coherent for observers.
+      touchstone_ship_write "$job_dir" status running
+      touchstone_ship_write "$job_dir" reason ""
       ship_attempt=$((ship_attempt + 1))
     done
     finish_runner needs-attention "${exit_code:-1}" "$reason"
@@ -612,6 +635,10 @@ cmd_ship_runner() {
     else
       exit_code=$?
     fi
+    # The child is reaped; clear the PID so a takeover during recovery
+    # cannot signal a recycled PID belonging to an unrelated process.
+    child_pid=""
+    touchstone_ship_write "$job_dir" child-pid ""
     [ "$exit_code" -eq 0 ] && break
     attempt_log="$(tail -n +"$((log_lines_before + 1))" "$job_dir/ship.log" 2>/dev/null || true)"
     if ! printf '%s' "$attempt_log" | grep -q 'base moved while'; then
