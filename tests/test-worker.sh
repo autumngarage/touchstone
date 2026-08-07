@@ -63,7 +63,8 @@ set -euo pipefail
 case "${1:-} ${2:-}" in
   "pr view")
     printf '%s\n' "${GH_PR_VIEW_STATE:-OPEN}" "${GH_PR_VIEW_CROSS:-false}" \
-      "${GH_PR_VIEW_HEAD:-}" "${GH_PR_VIEW_BASE:-main}" "${GH_PR_VIEW_BASE_OID:-}"
+      "${GH_PR_VIEW_HEAD:-}" "${GH_PR_VIEW_BASE:-main}" "${GH_PR_VIEW_BASE_OID:-}" \
+      "${GH_PR_VIEW_HEAD_OID:-}"
     ;;
   "pr list")
     field=""
@@ -702,6 +703,7 @@ chmod +x "$BASE_MOVED_WT/scripts/open-pr.sh"
 SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-attempts" \
   GH_PR_VIEW_HEAD="feat/base-moved-test" \
   GH_PR_VIEW_BASE_OID="$(git -C "$ORIGIN_URL" rev-parse main)" \
+  GH_PR_VIEW_HEAD_OID="$(git -C "$BASE_MOVED_WT" rev-parse HEAD)" \
   PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
   "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
   --worktree "$BASE_MOVED_WT" --detach \
@@ -734,6 +736,7 @@ SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-exhaust-attempts" \
   TOUCHSTONE_SHIP_BASE_MOVED_RETRIES=2 \
   GH_PR_VIEW_HEAD="feat/base-moved-exhaust" \
   GH_PR_VIEW_BASE_OID="$(git -C "$ORIGIN_URL" rev-parse main)" \
+  GH_PR_VIEW_HEAD_OID="$(git -C "$EXHAUST_WT" rev-parse HEAD)" \
   PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
   "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
   --worktree "$EXHAUST_WT" --detach >/dev/null
@@ -775,6 +778,7 @@ SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-stacked-attempts" \
   GH_PR_VIEW_HEAD="feat/base-moved-stacked" \
   GH_PR_VIEW_BASE="feature/parent" \
   GH_PR_VIEW_BASE_OID="$(git -C "$ORIGIN_URL" rev-parse feature/parent)" \
+  GH_PR_VIEW_HEAD_OID="$(git -C "$STACKED_WT" rev-parse HEAD)" \
   PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
   "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
   --worktree "$STACKED_WT" --detach \

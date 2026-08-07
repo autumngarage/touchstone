@@ -528,7 +528,11 @@ TOUCHSTONE_BASE_CANDIDATES
       return 1
     fi
   fi
-  if (cd "$worktree_path" && git rebase -h 2>&1 | grep -q 'update-refs'); then
+  # git rebase -h prints its help but exits 129: under pipefail the raw
+  # pipeline always failed, so the capability was never detected and an
+  # inherited rebase.updateRefs=true could drag other checked-out branches
+  # through the recovery rebase.
+  if (cd "$worktree_path" && { git rebase -h 2>&1 || true; } | grep -q 'update-refs'); then
     update_refs_flag="--no-update-refs"
   fi
   # A feature-local merge commit would be recreated with a new OID by the
@@ -565,8 +569,8 @@ TOUCHSTONE_BASE_CANDIDATES
     local pr_recheck="" recheck_stderr="" recheck_base_oid=""
     recheck_stderr="$(mktemp -t touchstone-pr-recheck.XXXXXX)" || recheck_stderr=""
     if ! pr_recheck="$(cd "$worktree_path" && gh pr view "$failed_pr" \
-      --json baseRefName,baseRefOid,headRefName,isCrossRepository,state \
-      --jq '[.state, (.isCrossRepository | tostring), .headRefName, .baseRefName, .baseRefOid] | join("\n")' \
+      --json baseRefName,baseRefOid,headRefName,headRefOid,isCrossRepository,state \
+      --jq '[.state, (.isCrossRepository | tostring), .headRefName, .baseRefName, .baseRefOid, .headRefOid] | join("\n")' \
       2>"${recheck_stderr:-/dev/null}")"; then
       echo "==> PR #$failed_pr recheck FAILED immediately before the rebase; handing off" >&2
       echo "    with the diagnostic:" >&2
@@ -578,6 +582,8 @@ TOUCHSTONE_BASE_CANDIDATES
       return 1
     fi
     [ -z "$recheck_stderr" ] || rm -f "$recheck_stderr"
+    local recheck_head_oid=""
+    recheck_head_oid="$(printf '%s\n' "$pr_recheck" | sed -n '6p')"
     recheck_base_oid="$(printf '%s\n' "$pr_recheck" | sed -n '5p')"
     pr_recheck="$(printf '%s\n' "$pr_recheck" | sed -n '1,4p')"
     if [ "$pr_recheck" != "$(printf 'OPEN\nfalse\n%s\n%s' "$branch" "$pr_base")" ]; then
@@ -597,6 +603,17 @@ TOUCHSTONE_BASE_CANDIDATES
       echo "    $recheck_base_oid vs validated $base_oid); handing off rather than" >&2
       echo "    rebasing onto a base revision the rewrite checks never saw." >&2
       TOUCHSTONE_BASE_MOVED_REASON="base-moved-base-oid-drift"
+      return 1
+    fi
+    # The head must still be the revision this worktree is about to rebase:
+    # if another actor pushed the branch meanwhile, rewriting the stale
+    # local history would set up the next attempt to force-push over their
+    # work.
+    if [ "$recheck_head_oid" != "$old_head" ]; then
+      echo "==> PR #$failed_pr head is $recheck_head_oid but this worktree holds" >&2
+      echo "    $old_head — another actor updated the branch during recovery." >&2
+      echo "    Handing off rather than rebasing stale history over their push." >&2
+      TOUCHSTONE_BASE_MOVED_REASON="base-moved-head-drift"
       return 1
     fi
   fi
@@ -862,6 +879,22 @@ cmd_ship_runner() {
       | grep -E '^ERROR: PR #[0-9]+ base moved while' | tail -1 \
       | grep -oE '#[0-9]+' | head -1 | tr -d '#' || true)"
     (
+      # A takeover TERMs both the in-flight git command and this subshell.
+      # Without a trap the TERM'd rebase leaves rebase-merge/rebase-apply
+      # state behind and the worktree stays mid-rebase; abort it (only if
+      # state exists) and record the truthful reason before exiting.
+      state_kind="" state_dir=""
+      trap '
+        for state_kind in rebase-merge rebase-apply; do
+          state_dir="$(cd "$worktree_path" && git rev-parse --git-path "$state_kind" 2>/dev/null || true)"
+          if [ -n "$state_dir" ] && (cd "$worktree_path" && [ -d "$state_dir" ]); then
+            (cd "$worktree_path" && git rebase --abort >/dev/null 2>&1) || true
+            break
+          fi
+        done
+        touchstone_ship_write "$job_dir" base-moved-reason "base-moved-takeover-interrupted"
+        exit 1
+      ' TERM INT
       if touchstone_ship_base_moved_recover "$worktree_path" "$job_dir" "$ship_attempt" "$authorized_bases" "$failed_pr"; then
         exit 0
       fi
