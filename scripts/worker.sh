@@ -551,25 +551,31 @@ TOUCHSTONE_BASE_CANDIDATES
   # A feature-local merge commit would be recreated with a new OID by the
   # rebase, and the guarded resume in open-pr.sh refuses to publish merge
   # commits — the retry could never succeed. Detect BEFORE mutating local
-  # history and park with the branch untouched.
-  local merge_count="" merge_count_status=0
-  merge_count="$(cd "$worktree_path" \
-    && GIT_NO_REPLACE_OBJECTS=1 git rev-list --min-parents=2 --count "$base_oid..HEAD" 2>&1)" \
-    || merge_count_status=$?
-  if [ "$merge_count_status" -ne 0 ]; then
-    echo "==> Could not count merge commits between the fetched base and HEAD; handing" >&2
-    echo "    off with the diagnostic:" >&2
-    printf '%s\n' "$merge_count" | sed 's/^/      /' >&2
-    TOUCHSTONE_BASE_MOVED_REASON="base-moved-graph-inspect-failed"
-    return 1
-  fi
-  if [ "$merge_count" -gt 0 ] 2>/dev/null; then
-    echo "==> This branch carries $merge_count feature-local merge commit(s); a rebase" >&2
-    echo "    would recreate them with new ids and the guarded push refuses merge" >&2
-    echo "    commits, so an automatic retry can never publish. Handing off with the" >&2
-    echo "    branch untouched." >&2
-    TOUCHSTONE_BASE_MOVED_REASON="base-moved-unpublishable-merges"
-    return 1
+  # history and park with the branch untouched. Exception: when the fetched
+  # base is already an ancestor of HEAD the rebase is a no-op and the next
+  # push is ordinary (no force, no guarded resume), so merge-bearing heads
+  # are publishable and must not park.
+  if ! (cd "$worktree_path" \
+    && GIT_NO_REPLACE_OBJECTS=1 git merge-base --is-ancestor "$base_oid" HEAD 2>/dev/null); then
+    local merge_count="" merge_count_status=0
+    merge_count="$(cd "$worktree_path" \
+      && GIT_NO_REPLACE_OBJECTS=1 git rev-list --min-parents=2 --count "$base_oid..HEAD" 2>&1)" \
+      || merge_count_status=$?
+    if [ "$merge_count_status" -ne 0 ]; then
+      echo "==> Could not count merge commits between the fetched base and HEAD; handing" >&2
+      echo "    off with the diagnostic:" >&2
+      printf '%s\n' "$merge_count" | sed 's/^/      /' >&2
+      TOUCHSTONE_BASE_MOVED_REASON="base-moved-graph-inspect-failed"
+      return 1
+    fi
+    if [ "$merge_count" -gt 0 ] 2>/dev/null; then
+      echo "==> This branch carries $merge_count feature-local merge commit(s); a rebase" >&2
+      echo "    would recreate them with new ids and the guarded push refuses merge" >&2
+      echo "    commits, so an automatic retry can never publish. Handing off with the" >&2
+      echo "    branch untouched." >&2
+      TOUCHSTONE_BASE_MOVED_REASON="base-moved-unpublishable-merges"
+      return 1
+    fi
   fi
   if [ -n "$failed_pr" ]; then
     # TOCTOU guard: revalidate the exact PR immediately before rebasing. A
@@ -901,8 +907,7 @@ cmd_ship_runner() {
     # deliberately excluded: it also fires when the PR HEAD or base BRANCH
     # changed, where autonomously rebasing a stale checkout would be wrong;
     # that class parks for a human.
-    if ! printf '%s' "$attempt_log" \
-      | grep -qE '^ERROR: PR #[0-9]+ base moved while'; then
+    if ! grep -qE '^ERROR: PR #[0-9]+ base moved while' <<<"$attempt_log"; then
       break
     fi
     if [ "$ship_attempt" -gt "$max_base_moved_retries" ]; then
@@ -1267,6 +1272,16 @@ cmd_takeover() {
             return 1
           fi
           touchstone_ship_signal_tree "$pid" KILL
+          # The tree kill enumerates before it signals: a descendant spawned
+          # in between (the recovery shell advancing into git rebase)
+          # survives the first sweep. Wait for the runner to die, then
+          # sweep again before inspecting rebase state, so the abort below
+          # never races a still-running rebase.
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+          done
+          touchstone_ship_signal_tree "$pid" KILL 2>/dev/null || true
           # KILL bypasses the recovery child's TERM trap, so an in-flight
           # recovery rebase leaves rebase-merge/rebase-apply state behind.
           # Clean it up here — and say so when the abort itself fails,
@@ -1329,7 +1344,15 @@ cmd_takeover() {
   esac
 
   touchstone_emit_event worker_ship_takeover worktree_path="$worktree_path" pid="$pid"
-  echo "Detached shipping is no longer active."
+  # The runner (or the forced path above) may have published needs-attention
+  # while this command was stopping it — e.g. a rebase abort that failed.
+  # Reporting "no longer active" would hide a mid-rebase worktree.
+  if [ "$(touchstone_ship_read "$job_dir" status)" = "needs-attention" ]; then
+    echo "Detached shipping needs attention."
+    echo "Reason: $(touchstone_ship_read "$job_dir" reason)"
+  else
+    echo "Detached shipping is no longer active."
+  fi
   echo "Worktree preserved for takeover: $worktree_path"
 }
 
