@@ -1993,6 +1993,7 @@ require_pr_feedback_clear() {
 # (real violations block from either surface), any other failing check still
 # blocks, and the substitution is disclosed on the PR and in output.
 CLAIM_CHECK_SUBSTITUTED=false
+CLAIM_SUBSTITUTION_KIND=""
 
 claim_check_run_never_executed() {
   local link="$1" run_id="" real_steps=""
@@ -2064,9 +2065,18 @@ attempt_claim_check_substitution() {
   fi
   rm -f "$trusted_checker"
   echo "==> claim-check failed without executing a step (hosted-runner infrastructure class)."
-  echo "==> Claim invariant verified by direct API read instead:"
+  # The verifier can succeed two different ways, and the disclosure must say
+  # which: a completed assignment verification, or the documented
+  # [skip-claim-check] exception the PR body carries. Calling a bypass
+  # "verified" would hide that the merge used the exception.
+  if printf '%s' "$direct_output" | grep -q '\[skip-claim-check\] token found'; then
+    CLAIM_SUBSTITUTION_KIND="documented [skip-claim-check] bypass honored by the trusted-base verifier"
+  else
+    CLAIM_SUBSTITUTION_KIND="claim invariant verified by direct API read against the trusted base revision"
+  fi
+  echo "==> Direct verification result: $CLAIM_SUBSTITUTION_KIND:"
   printf '%s\n' "$direct_output" | sed 's/^/    /'
-  gh pr comment "$PR_NUMBER" --body "Claim invariant verified by direct API read (merge-pr, issue #658): the hosted claim-check failed without executing a step during a GitHub Actions infrastructure incident. Direct verification confirmed every closed issue is assigned to the PR author." \
+  gh pr comment "$PR_NUMBER" --body "Claim substitution (merge-pr, issue #658): the hosted claim-check failed without executing a step during a GitHub Actions infrastructure incident. Result: $CLAIM_SUBSTITUTION_KIND." \
     >/dev/null 2>&1 \
     || echo "WARNING: could not post the claim-substitution disclosure comment; the substitution is recorded in this log." >&2
   CLAIM_CHECK_SUBSTITUTED=true
@@ -2466,7 +2476,7 @@ fi
 if [ "$CLAIM_CHECK_SUBSTITUTED" = true ]; then
   MERGE_BODY="${MERGE_BODY:+$MERGE_BODY
 
-}Claim-substitution: hosted claim-check never executed (Actions infrastructure incident); claim invariant verified by direct API read against the trusted base revision (issue #658)."
+}Claim-substitution: hosted claim-check never executed (Actions infrastructure incident); ${CLAIM_SUBSTITUTION_KIND:-claim invariant verified by direct API read against the trusted base revision} (issue #658)."
 fi
 if [ -n "$MERGE_BODY" ]; then
   gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID" \

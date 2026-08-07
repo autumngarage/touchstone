@@ -619,11 +619,17 @@ case "$*" in
     ;;
   show\ *:scripts/issue-claim-check.sh)
     # Trusted-base claim verifier for the issue #658 substitution fixtures.
+    # CLAIM_DIRECT_BYPASS=true emits the documented [skip-claim-check]
+    # bypass line so disclosures can be asserted truthful.
     if [ "${GIT_CLAIM_CHECKER_SHOW_FAIL:-false}" = "true" ]; then
       echo "trusted claim checker unavailable" >&2
       exit 1
     fi
-    printf '#!/usr/bin/env bash\necho "direct claim verification (trusted-base fake) for PR ${3:-?}"\nexit "${CLAIM_DIRECT_EXIT:-0}"\n'
+    if [ "${CLAIM_DIRECT_BYPASS:-false}" = "true" ]; then
+      printf '#!/usr/bin/env bash\necho "[skip-claim-check] token found in PR body; bypassing issue claim check."\nexit 0\n'
+    else
+      printf '#!/usr/bin/env bash\necho "direct claim verification (trusted-base fake) for PR ${3:-?}"\nexit "${CLAIM_DIRECT_EXIT:-0}"\n'
+    fi
     ;;
   cat-file\ -e\ *^\{commit\})
     ;;
@@ -830,6 +836,7 @@ run_merge_pr() {
     GH_CLAIM_RUN_REAL_STEPS="${GH_CLAIM_RUN_REAL_STEPS:-5}" \
     GH_PENDING_CHECKS="${GH_PENDING_CHECKS:-}" \
     GIT_CLAIM_CHECKER_SHOW_FAIL="${GIT_CLAIM_CHECKER_SHOW_FAIL:-false}" \
+    CLAIM_DIRECT_BYPASS="${CLAIM_DIRECT_BYPASS:-false}" \
     CLAIM_DIRECT_EXIT="${CLAIM_DIRECT_EXIT:-0}" \
     GH_REPO_FULL_NAME="${GH_REPO_FULL_NAME:-autumngarage/touchstone}" \
     GH_PR_VIEW_FAIL_FIELD="${GH_PR_VIEW_FAIL_FIELD:-}" \
@@ -2254,6 +2261,29 @@ if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
 else
   echo "FAIL: zero-step claim-check with passing direct verification should merge" >&2
   cat "$TEST_DIR/output-claim-substitution.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: substitution discloses a documented bypass as a bypass"
+reset_case_files
+if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
+  GH_FAILED_CHECKS="$CLAIM_INFRA_CHECKS" \
+  GH_CLAIM_RUN_REAL_STEPS=0 \
+  CLAIM_DIRECT_BYPASS=true \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  run_merge_pr "$TEST_DIR/output-claim-bypass-token.txt" 123; then
+  if grep -q 'bypass honored' "$TEST_DIR/gh-merge-body" \
+    && grep -q 'bypass honored' "$TEST_DIR/gh-comment" \
+    && ! grep -q 'invariant verified' "$TEST_DIR/gh-merge-body"; then
+    echo "==> PASS: bypass-based substitution is disclosed as a bypass, not a verification"
+  else
+    echo "FAIL: bypass substitution must not claim verification" >&2
+    cat "$TEST_DIR/gh-merge-body" >&2
+    exit 1
+  fi
+else
+  echo "FAIL: bypass-token substitution should merge" >&2
+  cat "$TEST_DIR/output-claim-bypass-token.txt" >&2
   exit 1
 fi
 
