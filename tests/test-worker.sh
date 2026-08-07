@@ -71,6 +71,7 @@ case "${1:-} ${2:-}" in
       shift
     done
     case "$field" in
+      *baseRefName*) printf '%s\n' "${GH_PR_BASE_REF:-main}" ;;
       *number*) printf '%s\n' "${GH_PR_NUMBER:-}" ;;
       *url*) printf '%s\n' "${GH_PR_URL:-}" ;;
       *state*) printf '%s\n' "${GH_PR_STATE:-}" ;;
@@ -736,6 +737,40 @@ EXHAUST_JOB_DIR="$(ls -td "$REPO/.git/touchstone/ship-jobs"/*/ 2>/dev/null | hea
 if [ ! -f "$EXHAUST_JOB_DIR/reason" ] \
   || [ "$(cat "$EXHAUST_JOB_DIR/reason")" != "base-moved-retries-exhausted" ]; then
   fail "exhausted recovery should hand off with reason base-moved-retries-exhausted (got: $(cat "$EXHAUST_JOB_DIR/reason" 2>/dev/null))"
+fi
+
+echo "==> Case d2h: base-moved recovery rebases onto the PR's ACTUAL base"
+git -C "$REPO" update-ref refs/heads/feature/parent "$(git -C "$REPO" rev-parse main)"
+# The recovery fetches the base from origin; the bare remote needs the ref.
+git -C "$ORIGIN_URL" update-ref refs/heads/feature/parent "$(git -C "$REPO" rev-parse main)"
+STACKED_WT="$TEST_DIR/base-moved-stacked-worktree"
+git -C "$REPO" worktree add -q "$STACKED_WT" -b feat/base-moved-stacked main
+STACKED_WT="$(cd "$STACKED_WT" && pwd -P)"
+mkdir -p "$STACKED_WT/scripts"
+cat >"$STACKED_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+count=$((count + 1))
+printf '%s' "$count" >"$count_file"
+if [ "$count" -eq 1 ]; then
+  echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$STACKED_WT/scripts/open-pr.sh"
+: >"$TEST_DIR/base-moved-stacked-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-stacked-attempts" \
+  GH_PR_BASE_REF="feature/parent" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$STACKED_WT" --detach \
+  --events-json "$TEST_DIR/base-moved-stacked-events.ndjson" >/dev/null
+wait_for_ship_status "$STACKED_WT" succeeded "$TEST_DIR/base-moved-stacked-status.json"
+if ! grep -q '"base_branch":"feature/parent"' "$TEST_DIR/base-moved-stacked-events.ndjson"; then
+  fail "stacked recovery must rebase onto the PR's actual base, not the repository default"
 fi
 
 echo "==> Case d3: detached jobs do not collide when branch names sanitize alike"
