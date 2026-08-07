@@ -2028,15 +2028,22 @@ failed_checks_are_only_unexecuted_claim_checks() {
   [ "$saw_claim" = true ]
 }
 
-# Any non-claim check still pending? Substitution must not shortcut the wait
-# for the REST of the checks; it only neutralizes the unexecuted claim run.
-non_claim_checks_pending() {
-  local pending
-  pending="$(gh pr checks "$PR_NUMBER" \
+# Any non-claim check still outstanding? Substitution must not shortcut the
+# wait for the REST of the checks; it only neutralizes the unexecuted claim
+# run. Outstanding covers every bucket that is not a completed pass/skip:
+# pending AND canceled runs have not passed (gh buckets them separately from
+# fail, so failed_checks never sees them). Inspection failure counts as
+# outstanding — an unverifiable check state must never authorize an early
+# substitution.
+non_claim_checks_outstanding() {
+  local outstanding
+  if ! outstanding="$(gh pr checks "$PR_NUMBER" \
     --json name,bucket \
-    --template '{{range .}}{{if eq .bucket "pending"}}{{.name}}{{"\n"}}{{end}}{{end}}' \
-    2>/dev/null || true)"
-  printf '%s' "$pending" | grep -qv '^claim-check$' 2>/dev/null && return 0
+    --template '{{range .}}{{if and (ne .bucket "pass") (ne .bucket "skipping") (ne .bucket "fail")}}{{.name}}{{"\n"}}{{end}}{{end}}' \
+    2>/dev/null)"; then
+    return 0
+  fi
+  printf '%s' "$outstanding" | grep -qv '^claim-check$' 2>/dev/null && return 0
   return 1
 }
 
@@ -2072,7 +2079,7 @@ attempt_claim_check_substitution() {
   if printf '%s' "$direct_output" | grep -q '\[skip-claim-check\] token found'; then
     CLAIM_SUBSTITUTION_KIND="documented [skip-claim-check] bypass honored by the trusted-base verifier"
   else
-    CLAIM_SUBSTITUTION_KIND="claim invariant verified by direct API read against the trusted base revision"
+    CLAIM_SUBSTITUTION_KIND="every open referenced issue confirmed assigned to the PR author by direct API read against the trusted base revision"
   fi
   echo "==> Direct verification result: $CLAIM_SUBSTITUTION_KIND:"
   printf '%s\n' "$direct_output" | sed 's/^/    /'
@@ -2127,11 +2134,22 @@ wait_for_clean_merge_state() {
     FAILED_CHECKS="$(failed_checks)"
     if [ -n "$FAILED_CHECKS" ]; then
       if failed_checks_are_only_unexecuted_claim_checks "$FAILED_CHECKS" \
-        && non_claim_checks_pending; then
+        && non_claim_checks_outstanding; then
         # The unexecuted claim run alone must not fail the wait while other
         # checks are still running; keep polling them.
         :
       elif attempt_claim_check_substitution "$FAILED_CHECKS"; then
+        # Substitution neutralizes ONLY the unexecuted claim run; the
+        # definitive merge-state guards still apply — a behind, dirty, or
+        # conflicting PR keeps its normal rejection.
+        if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$STATE" = "DIRTY" ] \
+          || [ "$STATE" = "BEHIND" ] || [ "$STATE" = "CONFLICTING" ]; then
+          echo "ERROR: PR #$PR_NUMBER is $STATE — has conflicts or is out of date with base." >&2
+          echo "       Claim substitution does not waive merge-state requirements." >&2
+          echo "       Rebase or resolve conflicts on the PR branch before merging." >&2
+          TOUCHSTONE_MERGE_FAILURE_REASON="not-mergeable"
+          exit 1
+        fi
         return 0
       else
         print_failed_checks_and_exit "$FAILED_CHECKS"
@@ -2476,7 +2494,7 @@ fi
 if [ "$CLAIM_CHECK_SUBSTITUTED" = true ]; then
   MERGE_BODY="${MERGE_BODY:+$MERGE_BODY
 
-}Claim-substitution: hosted claim-check never executed (Actions infrastructure incident); ${CLAIM_SUBSTITUTION_KIND:-claim invariant verified by direct API read against the trusted base revision} (issue #658)."
+}Claim-substitution: hosted claim-check never executed (Actions infrastructure incident); ${CLAIM_SUBSTITUTION_KIND:-every open referenced issue confirmed assigned to the PR author by direct API read against the trusted base revision} (issue #658)."
 fi
 if [ -n "$MERGE_BODY" ]; then
   gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID" \
