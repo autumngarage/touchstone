@@ -853,6 +853,17 @@ touchstone_preflight_touchstone_scoped_self_test_files() {
           break
         }
         ;;
+      scripts/respond-review.sh)
+        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
+          mapping_status=1
+          break
+        }
+        touchstone_preflight_add_existing_self_tests "$output_file" \
+          tests/test-merge-pr.sh || {
+          mapping_status=1
+          break
+        }
+        ;;
       scripts/issue-claim-check.sh)
         touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
           mapping_status=1
@@ -1000,7 +1011,7 @@ touchstone_preflight_delivery_only_path() {
     scripts/touchstone-run.sh | scripts/open-pr.sh | scripts/merge-pr.sh)
       return 0
       ;;
-    scripts/claim-issue.sh | scripts/issue-claim-check.sh)
+    scripts/claim-issue.sh | scripts/respond-review.sh | scripts/issue-claim-check.sh)
       return 0
       ;;
     scripts/cleanup-branches.sh | scripts/spawn-worktree.sh)
