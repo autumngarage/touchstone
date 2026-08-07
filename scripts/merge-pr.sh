@@ -2078,7 +2078,11 @@ require_pr_feedback_clear() {
     if [ "$thread_count" -gt 100 ]; then
       echo "       Listed first page(s) reported by GitHub; inspect the PR for the complete thread list." >&2
     fi
-    report_review_rounds "$PR_NUMBER"
+    # The full economics reporter (not rounds-only): its enumeration carries
+    # the database comment IDs and ready-to-run respond-review.sh commands —
+    # the thread listing above shows paths and URLs but not the IDs the
+    # driver needs to answer each thread.
+    report_review_round_economics "$PR_NUMBER"
     print_batch_fix_guidance
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-blocked"
     exit 1
