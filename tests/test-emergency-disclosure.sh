@@ -98,10 +98,10 @@ RC=0
 printf '{"tool_input":{"command":%s},"cwd":%s}' \
   "$(printf '%s' "?it push --no-verify" | jq -Rs .)" \
   "$(printf '%s' "$REPO" | jq -Rs .)" \
-  | (cd "$REPO" && TOUCHSTONE_EMERGENCY=0 bash "$GUARD") \
+  | (cd "$REPO" && TOUCHSTONE_EMERGENCY=yes bash "$GUARD") \
     >/dev/null 2>&1 || RC=$?
 if [ "$RC" -eq 0 ]; then
-  fail "TOUCHSTONE_EMERGENCY=0 must not authorize a glob-assembled bypass"
+  fail "a non-canonical TOUCHSTONE_EMERGENCY value must not authorize a glob-assembled bypass"
 fi
 
 echo "==> Protected corpus must stay blocked without TOUCHSTONE_EMERGENCY"
@@ -127,6 +127,7 @@ assert_blocked "semicolon-adjacent glob" "true;?it push --no-verify"
 assert_blocked "quote-elsewhere glob" "echo \"x\"; ?it push --no-verify"
 assert_blocked "path-prefixed glob git" "/usr/bin/g?t push --no-verify"
 assert_blocked "brace-expanded push" "{g..g}it {p..p}ush --no-verify"
+assert_blocked "escaped quote before glob push" "echo \\\"; ?it push --no-verify"
 assert_blocked "dash-C with literal push" "git -C $REPO push --no-verify"
 assert_blocked "cd compound push" "cd $REPO && git commit -m 'x' && git push --no-verify"
 

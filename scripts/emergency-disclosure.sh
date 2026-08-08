@@ -82,7 +82,16 @@ strip_quoted_spans() {
     line = $0; out = "";
     for (i = 1; i <= length(line); i++) {
       c = substr(line, i, 1)
-      if (q != "") { if (c == q) q = ""; continue }
+      if (q == "\x27") { if (c == q) q = ""; continue }
+      if (q == "\"") {
+        if (c == "\\") { i++; continue }
+        if (c == q) q = ""
+        continue
+      }
+      # Outside quotes a backslash escapes the next character: \" is a
+      # literal quote (not a span opener) and \? is a literal question
+      # mark the shell will never expand — both are data, not syntax.
+      if (c == "\\") { i++; continue }
       if (c == "\x27" || c == "\"") { q = c; continue }
       out = out c
     }
@@ -95,7 +104,11 @@ case "$unquoted_command" in
     case "$unquoted_command" in
       *\?* | *\** | *\[* | *\{*)
         case "${TOUCHSTONE_EMERGENCY:-}" in
-          "" | 0 | false)
+          1)
+            # The parser owns the audited authorization path, and it
+            # accepts exactly this value; anything else never authorizes.
+            ;;
+          *)
             echo "emergency-disclosure: unquoted dynamic expansion (glob/brace) combined with a --no- fragment cannot be proven safe; write the command literally (prose belongs in --body-file)" >&2
             exit 2
             ;;
