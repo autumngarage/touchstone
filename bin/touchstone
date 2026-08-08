@@ -728,7 +728,10 @@ cmd_doctor_project() {
   # verified. Cost advice, not a gating problem: local determinism is the
   # source of truth either way.
   local ci_workflow="$project_dir/.github/workflows/validate.yml"
-  if [ -f "$ci_workflow" ] && grep -Eq '^[[:space:]]*pull_request:' "$ci_workflow"; then
+  # Both block-style (pull_request:) and inline (on: [push, pull_request] /
+  # on: pull_request) trigger forms enter the advisory.
+  if [ -f "$ci_workflow" ] \
+    && grep -Eq '^[[:space:]]*pull_request:|^on:[[:space:]]*\[[^]]*pull_request|^on:[[:space:]]*pull_request[[:space:]]*$' "$ci_workflow"; then
     # Only a workflow that actually runs for pull requests can bill per
     # superseded review head; push/schedule-only repurposings are exempt.
     # Cancellation must be ENABLED (cancel-in-progress: false or a comment
@@ -737,10 +740,12 @@ cmd_doctor_project() {
     # file-wide greps would accept cancellation on an unrelated job plus a
     # pull_request.number mention in an env value or comment.
     local ci_concurrency_block=""
+    # Comments are stripped before matching: "group: global # TODO use
+    # github.event.pull_request.number" must not satisfy the check.
     ci_concurrency_block="$(awk '
       /^concurrency:/ { inb = 1; next }
       inb && /^[^[:space:]#]/ { inb = 0 }
-      inb { print }
+      inb { sub(/#.*$/, ""); print }
     ' "$ci_workflow")"
     if ! grep -Eq '^[[:space:]]*cancel-in-progress:[[:space:]]*true' <<<"$ci_concurrency_block" \
       || ! grep -Eq '^[[:space:]]*group:.*pull_request\.number' <<<"$ci_concurrency_block"; then
@@ -760,12 +765,23 @@ cmd_doctor_project() {
         pos = 1
         while (substr($0, pos, 1) == " ") pos++
         if ($0 !~ /^[[:space:]]*$/ && pos <= ind) { inb = 0 }
-        else { print }
+        else { sub(/#.*$/, ""); print }
       }
     ' "$ci_workflow")"
-    if [ -n "$ci_push_block" ]; then
-      if ! grep -Eq '^[[:space:]]*branches:' <<<"$ci_push_block" \
-        || grep -Eq 'main|master' <<<"$ci_push_block"; then
+    # An inline "on: [push, ...]" trigger has no filter block at all — it
+    # includes the default branch, same as a bare block-style push.
+    local ci_inline_push=false
+    if grep -Eq '^on:[[:space:]]*\[[^]]*push' "$ci_workflow"; then
+      ci_inline_push=true
+    fi
+    if [ -n "$ci_push_block" ] || [ "$ci_inline_push" = true ]; then
+      # Exempt only pushes provably excluding the default branch: an
+      # explicit branches: filter without main/master, or a
+      # branches-ignore: that names them.
+      if { ! grep -Eq '^[[:space:]]*branches:' <<<"$ci_push_block" \
+        || grep -Eq 'main|master' <<<"$ci_push_block"; } \
+        && ! { grep -Eq '^[[:space:]]*branches-ignore:' <<<"$ci_push_block" \
+          && grep -Eq 'main|master' <<<"$ci_push_block"; }; then
         tk_warn "CI validate.yml re-validates default-branch pushes the merge gate already verified"
         tk_dim "  Fix: drop the push trigger; keep pull_request as the hookless-contributor backstop"
       fi
