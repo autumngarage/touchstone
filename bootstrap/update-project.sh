@@ -477,6 +477,16 @@ remove_retired_managed_file() {
     echo "      Touchstone will stop managing it; remove it manually after preserving any local changes." >&2
     return 0
   fi
+  # Never destroy local work: a retired file carrying uncommitted edits is
+  # left in place with an explicit notice. Retirement removes Touchstone's
+  # managed copy, it does not discard a project's modifications.
+  if ! git -C "$PROJECT_DIR" diff --quiet -- "$rel_path" 2>/dev/null \
+    || ! git -C "$PROJECT_DIR" diff --cached --quiet -- "$rel_path" 2>/dev/null; then
+    echo "    ! leaving locally modified retired file in place: $target" >&2
+    echo "      It has uncommitted changes; Touchstone no longer manages it." >&2
+    echo "      Commit or discard them, then delete the file when you are ready." >&2
+    return 0
+  fi
   if [ "$DRY_RUN" = true ]; then
     echo "    - would remove retired managed file: $target"
   else
