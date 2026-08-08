@@ -490,6 +490,13 @@ remove_retired_managed_file() {
 echo "==> Updating touchstone-owned files:"
 
 remove_retired_managed_file "lib/review-comment.sh"
+# Worker engine retired in 2.13.0 (issue #694): remove downstream copies so a
+# stale scripts/worker.sh cannot keep running against a manifest that no
+# longer manages it.
+remove_retired_managed_file "scripts/worker.sh"
+remove_retired_managed_file "lib/worker-ship-job.sh"
+remove_retired_managed_file "lib/worker-review-fix.sh"
+remove_retired_managed_file "lib/worker-state.sh"
 
 # Principles
 if [ -d "$TOUCHSTONE_ROOT/principles" ]; then

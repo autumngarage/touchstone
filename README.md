@@ -12,7 +12,11 @@
 
 # Touchstone
 
-Touchstone is a command-line starter kit for AI-assisted projects. It helps you start a project folder, add the same useful project files every time, and keep those shared files updated later without copy-pasting between projects.
+**Touchstone makes sure AI-written code actually gets reviewed and tested before it lands — in any project you install it into.**
+
+It does not review your code; GitHub and whatever reviewer you have configured do that. Touchstone is what makes the loop close: it stops the agent committing to your default branch, runs your local tests before anything merges, and refuses to merge while review feedback is unanswered or checks are failing. Whether the review comes from a hosted AI reviewer, a bot, or a colleague, the rule is the same — respond to every comment, resolve the thread, then merge.
+
+It also helps you start a project folder, add the same useful project files every time, and keep those shared files updated later without copy-pasting between projects.
 
 It gives you:
 - starter instructions for Claude, Codex, and other AI coding tools
