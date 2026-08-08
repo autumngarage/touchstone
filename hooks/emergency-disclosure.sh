@@ -60,61 +60,48 @@ tool_workdir="$(printf '%s' "$input" | jq -r '.tool_input.workdir // ""')"
 # through the parser, where the builtin-cannot-be-aliased exemption keeps
 # benign `git status`/`git add` cheap and alias chains are resolved.
 case "$command" in
-  *push* | *git* | *\$* | *\`* | *\\* | *\'* | *\"* | *\?* | *\** | *\[*) ;;
+  *push* | *git* | *\$* | *\`* | *\\* | *\'* | *\"* | *\?* | *\** | *\[* | *\{*) ;;
   *)
     exit 0
     ;;
 esac
 
-# Glob metacharacters are dynamic input (touchstone#675): with adversarial
-# filenames a pattern word can expand into protected tokens at execution
-# time, and this guard cannot see the filesystem the command will run
-# against. Each glob-bearing WORD is pattern-matched against the protected
-# tokens themselves — a mix of literal and glob-assembled tokens
-# ("git p?sh --no-verify") is analyzed the same as a fully assembled one.
-# Skipped when TOUCHSTONE_EMERGENCY is set (the parser below owns the
-# authorized-audit path) and when the command carries quotes (quoted prose
-# is data; the parser understands quoting).
-case "$command" in
-  *\'* | *\"*) ;;
-  *\?* | *\** | *\[*)
-    if [ -z "${TOUCHSTONE_EMERGENCY:-}" ]; then
-      glob_word_matches() {
-        # Unquoted case pattern = bash glob semantics, exactly what the
-        # shell would apply against directory entries.
-        # shellcheck disable=SC2254
-        case "$2" in
-          $1) return 0 ;;
-        esac
-        return 1
-      }
-      # set -f: analyze the pattern TEXT itself. Without noglob, word
-      # splitting of $command would expand the patterns against the hook
-      # process's own cwd — the exact adversarial condition (git/push
-      # pathnames present) would rewrite the words before inspection.
-      set -f
-      for guard_word in $command; do
-        case "$guard_word" in
-          *\?* | *\** | *\[*) ;;
-          *) continue ;;
-        esac
-        if glob_word_matches "$guard_word" "--no-verify"; then
-          set +f
-          echo "emergency-disclosure: glob pattern '$guard_word' can expand to the --no-verify bypass; blocked" >&2
-          exit 2
-        fi
-        case "$command" in
-          *--no-v*)
-            if glob_word_matches "$guard_word" "push" || glob_word_matches "$guard_word" "git"; then
-              set +f
-              echo "emergency-disclosure: glob pattern '$guard_word' combined with a --no-verify fragment cannot be proven safe; blocked" >&2
-              exit 2
-            fi
+# Dynamic expansion combined with a bypass fragment is never provably safe
+# (touchstone#675, PR #679 rounds 1-4). Word-level glob analysis cannot
+# out-enumerate shell semantics — semicolon-adjacent patterns, quotes
+# elsewhere in the command, path-prefixed patterns (/usr/bin/g?t), and
+# brace expansion ({g..g}it) each defeated a smarter predecessor of this
+# check. The rule applies to the QUOTE-STRIPPED command text: quoted spans
+# are data the shell will never expand ('--no-*' stays a literal argument,
+# prose stays prose), while any unquoted glob or brace metacharacter
+# alongside an unquoted --no- fragment blocks, fail closed. A truthy
+# emergency override falls through to the parser, which owns the audited
+# authorization path; "0"/"false" never authorize.
+strip_quoted_spans() {
+  LC_ALL=C awk '{
+    line = $0; out = "";
+    for (i = 1; i <= length(line); i++) {
+      c = substr(line, i, 1)
+      if (q != "") { if (c == q) q = ""; continue }
+      if (c == "\x27" || c == "\"") { q = c; continue }
+      out = out c
+    }
+    print out
+  }'
+}
+unquoted_command="$(printf '%s' "$command" | strip_quoted_spans)"
+case "$unquoted_command" in
+  *--no-*)
+    case "$unquoted_command" in
+      *\?* | *\** | *\[* | *\{*)
+        case "${TOUCHSTONE_EMERGENCY:-}" in
+          "" | 0 | false)
+            echo "emergency-disclosure: unquoted dynamic expansion (glob/brace) combined with a --no- fragment cannot be proven safe; write the command literally (prose belongs in --body-file)" >&2
+            exit 2
             ;;
         esac
-      done
-      set +f
-    fi
+        ;;
+    esac
     ;;
 esac
 
