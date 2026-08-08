@@ -720,72 +720,26 @@ cmd_doctor_project() {
     issues=$((issues + 1))
   fi
 
-  # 2c. Legacy CI shape (advisory only — never counted as an issue). The
-  # starter validate workflow is project-owned after bootstrap, so the lean
-  # template (PR-only trigger, superseded-run cancellation) never reaches
-  # existing projects. The old shape bills a full validation run per obsolete
-  # review head and re-validates default-branch pushes the merge gate already
-  # verified. Cost advice, not a gating problem: local determinism is the
-  # source of truth either way.
+  # 2c. Legacy CI shape (advisory only — never counted as an issue).
+  # SCOPE, deliberately narrow: doctor only recognizes the EXACT starter
+  # shape Touchstone itself installed before the lean template — block-style
+  # push + pull_request triggers with the starter's "branches: [main,
+  # master]" filter and no concurrency key anywhere. Statically analyzing
+  # arbitrary project-owned YAML in shell is unbounded (inline triggers,
+  # renamed jobs, expression values, non-main default branches, deploy jobs
+  # guarded by event conditions — see PR #668); on anything that is not the
+  # known legacy signature, doctor makes NO claim. Cost advice, not a
+  # gating problem: local determinism is the source of truth either way.
   local ci_workflow="$project_dir/.github/workflows/validate.yml"
-  # Both block-style (pull_request:) and inline (on: [push, pull_request] /
-  # on: pull_request) trigger forms enter the advisory.
   if [ -f "$ci_workflow" ] \
-    && grep -Eq '^[[:space:]]*pull_request:|^on:[[:space:]]*\[[^]]*pull_request|^on:[[:space:]]*pull_request[[:space:]]*$' "$ci_workflow"; then
-    # Only a workflow that actually runs for pull requests can bill per
-    # superseded review head; push/schedule-only repurposings are exempt.
-    # Cancellation must be ENABLED (cancel-in-progress: false or a comment
-    # still bills obsolete runs) AND scoped to a PR-specific group — and
-    # BOTH must live in the same top-level concurrency block: independent
-    # file-wide greps would accept cancellation on an unrelated job plus a
-    # pull_request.number mention in an env value or comment.
-    local ci_concurrency_block=""
-    # Comments are stripped before matching: "group: global # TODO use
-    # github.event.pull_request.number" must not satisfy the check.
-    ci_concurrency_block="$(awk '
-      /^concurrency:/ { inb = 1; next }
-      inb && /^[^[:space:]#]/ { inb = 0 }
-      inb { sub(/#.*$/, ""); print }
-    ' "$ci_workflow")"
-    if ! grep -Eq '^[[:space:]]*cancel-in-progress:[[:space:]]*true' <<<"$ci_concurrency_block" \
-      || ! grep -Eq '^[[:space:]]*group:.*pull_request\.number' <<<"$ci_concurrency_block"; then
-      tk_warn "CI validate.yml has no PR-scoped concurrency guard — superseded review heads each bill a full run"
-      tk_dim "  Fix: add a top-level concurrency block keyed by PR number with cancel-in-progress: true"
-      tk_dim "  (reference: templates/ci/github-validate.yml in the touchstone repo,"
-      tk_dim "   https://github.com/autumngarage/touchstone/blob/main/templates/ci/github-validate.yml)"
-    fi
-    # The default-branch advisory reads the branch filter INSIDE the push
-    # trigger block: a project pushing only develop while restricting
-    # pull_request to [main, master] must not be told it re-validates
-    # default-branch pushes.
-    local ci_push_block=""
-    ci_push_block="$(awk '
-      /^[[:space:]]*push:[[:space:]]*$/ { inb = 1; ind = index($0, "push:"); next }
-      inb {
-        pos = 1
-        while (substr($0, pos, 1) == " ") pos++
-        if ($0 !~ /^[[:space:]]*$/ && pos <= ind) { inb = 0 }
-        else { sub(/#.*$/, ""); print }
-      }
-    ' "$ci_workflow")"
-    # An inline "on: [push, ...]" trigger has no filter block at all — it
-    # includes the default branch, same as a bare block-style push.
-    local ci_inline_push=false
-    if grep -Eq '^on:[[:space:]]*\[[^]]*push' "$ci_workflow"; then
-      ci_inline_push=true
-    fi
-    if [ -n "$ci_push_block" ] || [ "$ci_inline_push" = true ]; then
-      # Exempt only pushes provably excluding the default branch: an
-      # explicit branches: filter without main/master, or a
-      # branches-ignore: that names them.
-      if { ! grep -Eq '^[[:space:]]*branches:' <<<"$ci_push_block" \
-        || grep -Eq 'main|master' <<<"$ci_push_block"; } \
-        && ! { grep -Eq '^[[:space:]]*branches-ignore:' <<<"$ci_push_block" \
-          && grep -Eq 'main|master' <<<"$ci_push_block"; }; then
-        tk_warn "CI validate.yml re-validates default-branch pushes the merge gate already verified"
-        tk_dim "  Fix: drop the push trigger; keep pull_request as the hookless-contributor backstop"
-      fi
-    fi
+    && grep -Eq '^[[:space:]]*push:[[:space:]]*$' "$ci_workflow" \
+    && grep -Eq '^[[:space:]]*pull_request:[[:space:]]*$' "$ci_workflow" \
+    && grep -Eq '^[[:space:]]*branches: \[main, master\]' "$ci_workflow" \
+    && ! grep -q 'concurrency' "$ci_workflow"; then
+    tk_warn "CI validate.yml matches the legacy Touchstone starter shape (push + PR triggers, no concurrency)"
+    tk_dim "  Cost: superseded review heads and already-verified default-branch pushes each bill a full run"
+    tk_dim "  Fix: adopt the lean starter — PR-only trigger, PR-numbered concurrency, cancellation:"
+    tk_dim "  https://github.com/autumngarage/touchstone/blob/main/templates/ci/github-validate.yml"
   fi
 
   # 3. Manifest files present?

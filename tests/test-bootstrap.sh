@@ -1714,8 +1714,9 @@ assert_contains "$PROJECT_LEAN_CI/.github/workflows/validate.yml" 'cancel-in-pro
 # The PR-number key specifically: a head_ref key would pass the cancellation
 # assertion while letting same-named fork branches cancel each other.
 assert_contains "$PROJECT_LEAN_CI/.github/workflows/validate.yml" 'github.event.pull_request.number'
-if grep -Eq '^[[:space:]]*push:' "$PROJECT_LEAN_CI/.github/workflows/validate.yml"; then
-  echo "FAIL: lean CI template must not trigger on default-branch pushes" >&2
+if grep -Eq '^[[:space:]]*push:|^on:[[:space:]]*\[[^]]*push|^on:[[:space:]]*push' \
+  "$PROJECT_LEAN_CI/.github/workflows/validate.yml"; then
+  echo "FAIL: lean CI template must not trigger on pushes (block or inline form)" >&2
   ERRORS=$((ERRORS + 1))
 fi
 if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-lean-ci.txt" 2>&1; then
@@ -1723,7 +1724,7 @@ if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin
   cat "$TEST_DIR/doctor-lean-ci.txt" >&2
   ERRORS=$((ERRORS + 1))
 fi
-assert_not_contains "$TEST_DIR/doctor-lean-ci.txt" 'concurrency guard'
+assert_not_contains "$TEST_DIR/doctor-lean-ci.txt" 'legacy Touchstone starter shape'
 printf 'name: validate\non:\n  push:\n    branches: [main, master]\n  pull_request:\njobs: {}\n' \
   >"$PROJECT_LEAN_CI/.github/workflows/validate.yml"
 if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-legacy-ci.txt" 2>&1; then
@@ -1731,8 +1732,17 @@ if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin
   cat "$TEST_DIR/doctor-legacy-ci.txt" >&2
   ERRORS=$((ERRORS + 1))
 fi
-assert_contains "$TEST_DIR/doctor-legacy-ci.txt" 'no PR-scoped concurrency guard'
-assert_contains "$TEST_DIR/doctor-legacy-ci.txt" 're-validates default-branch pushes'
+assert_contains "$TEST_DIR/doctor-legacy-ci.txt" 'legacy Touchstone starter shape'
+# A customized (non-signature) workflow gets NO claim from doctor: scope is
+# provenance-based, not general YAML analysis (PR #668 rounds 1-7).
+printf 'name: validate\non: [push, pull_request]\njobs: {}\n' \
+  >"$PROJECT_LEAN_CI/.github/workflows/validate.yml"
+if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-custom-ci.txt" 2>&1; then
+  echo "FAIL: customized CI must stay advisory-silent — doctor should exit 0" >&2
+  cat "$TEST_DIR/doctor-custom-ci.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_not_contains "$TEST_DIR/doctor-custom-ci.txt" 'legacy Touchstone starter shape'
 
 # doctor must flag a pre-push hook that exists with the right content but is
 # not executable — Git silently skips such hooks, so the repo is effectively
