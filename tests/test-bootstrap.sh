@@ -1753,6 +1753,16 @@ if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin
   ERRORS=$((ERRORS + 1))
 fi
 assert_not_contains "$TEST_DIR/doctor-deploy-ci.txt" 'legacy Touchstone starter shape'
+# Starter shape plus an added trigger (schedule) = customized: PR-only
+# advice would drop the owner's schedule; doctor stays silent.
+printf 'name: validate\non:\n  push:\n    branches: [main, master]\n  pull_request:\n  schedule:\n    - cron: "0 4 * * *"\njobs:\n  validate:\n    runs-on: ubuntu-latest\n' \
+  >"$PROJECT_LEAN_CI/.github/workflows/validate.yml"
+if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-schedule-ci.txt" 2>&1; then
+  echo "FAIL: schedule-augmented custom CI must stay advisory-silent — doctor should exit 0" >&2
+  cat "$TEST_DIR/doctor-schedule-ci.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_not_contains "$TEST_DIR/doctor-schedule-ci.txt" 'legacy Touchstone starter shape'
 
 # doctor must flag a pre-push hook that exists with the right content but is
 # not executable — Git silently skips such hooks, so the repo is effectively

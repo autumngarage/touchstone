@@ -735,19 +735,27 @@ cmd_doctor_project() {
   # triggers but added push-only work (a deploy job guarded by
   # github.event_name) has customized the workflow, and removing its push
   # trigger would break real behavior — such files are out of contract.
-  local ci_job_ids=""
+  local ci_job_ids="" ci_trigger_ids=""
   ci_job_ids="$([ -f "$ci_workflow" ] && awk '
     /^jobs:[[:space:]]*$/ { inj = 1; next }
     inj && /^[^[:space:]#]/ { inj = 0 }
     inj && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { gsub(/[ :]/, ""); print }
   ' "$ci_workflow" | tr '\n' ',' || true)"
+  # The trigger set must be EXACTLY the starter pair: an added schedule: or
+  # workflow_dispatch: is a customization, and PR-only advice would drop it.
+  ci_trigger_ids="$([ -f "$ci_workflow" ] && awk '
+    /^on:[[:space:]]*$/ { int_ = 1; next }
+    int_ && /^[^[:space:]#]/ { int_ = 0 }
+    int_ && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { gsub(/[ :]/, ""); print }
+  ' "$ci_workflow" | sort | tr '\n' ',' || true)"
   if [ -f "$ci_workflow" ] \
     && grep -Eq '^[[:space:]]*push:[[:space:]]*$' "$ci_workflow" \
     && grep -Eq '^[[:space:]]*pull_request:[[:space:]]*$' "$ci_workflow" \
     && grep -Eq '^[[:space:]]*branches: \[main, master\]' "$ci_workflow" \
     && ! grep -q 'concurrency' "$ci_workflow" \
     && ! grep -q 'github.event_name' "$ci_workflow" \
-    && [ "$ci_job_ids" = "validate," ]; then
+    && [ "$ci_job_ids" = "validate," ] \
+    && [ "$ci_trigger_ids" = "pull_request,push," ]; then
     tk_warn "CI validate.yml matches the legacy Touchstone starter shape (push + PR triggers, no concurrency)"
     tk_dim "  Cost: superseded review heads and already-verified default-branch pushes each bill a full run"
     tk_dim "  Fix: adopt the lean starter — PR-only trigger, PR-numbered concurrency, cancellation:"
