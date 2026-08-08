@@ -2103,7 +2103,7 @@ require_pr_feedback_clear() {
 CLAIM_CHECK_SUBSTITUTED=false
 CLAIM_SUBSTITUTION_KIND=""
 
-claim_check_run_never_executed() {
+check_run_never_executed() {
   local link="$1" run_id="" real_steps=""
   [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] || return 1
   run_id="$(printf '%s' "$link" | grep -oE '/runs/[0-9]+' | head -1 | tr -dc '0-9')"
@@ -2115,6 +2115,104 @@ claim_check_run_never_executed() {
     --jq '[.jobs[].steps[]? | select(.name != "Set up job" and .name != "Complete job")] | length' \
     2>/dev/null)" || return 1
   [ "$real_steps" = "0" ]
+}
+
+claim_check_run_never_executed() {
+  check_run_never_executed "$1"
+}
+
+# Zero-step failures carry GitHub's own explanation in their check-run
+# annotations (billing, spending limit, runner capacity). Surfacing it
+# distinguishes an infrastructure startup failure from a code failure —
+# without it, every PR in an outage reads as a validation problem
+# (issue #631).
+zero_step_failure_annotations() {
+  local link="$1" run_id="" job_id="" messages=""
+  [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] || return 1
+  run_id="$(printf '%s' "$link" | grep -oE '/runs/[0-9]+' | head -1 | tr -dc '0-9')"
+  [ -n "$run_id" ] || return 1
+  while IFS= read -r job_id; do
+    [ -n "$job_id" ] || continue
+    messages="$messages$(gh api "repos/$REPO_OWNER/$REPO_NAME/check-runs/$job_id/annotations" --jq '.[].message' 2>/dev/null || true)"
+  done <<<"$(gh api "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$run_id/jobs" --jq '.jobs[].id' 2>/dev/null || true)"
+  [ -n "$messages" ] || return 1
+  printf '%s\n' "$messages"
+}
+
+# UNSTABLE with NO failed checks: gh buckets cancelled runs separately from
+# fail, so a concurrency-cancelled predecessor (open-pr's review-request
+# comment cancelling the pull_request run it superseded) leaves the PR
+# UNSTABLE forever while every live check is green (issue #593). Tolerate
+# that exact shape only: every check bucket is pass/skipping/cancel, and
+# every cancelled check name also has a SUCCESSFUL completed run on the
+# same head. Fail closed on any inspection error.
+unstable_only_superseded_cancellations() {
+  local head_sha="" buckets="" rollup="" stderr_file=""
+  local name="" bucket="" _run_status="" conclusion="" saw_cancel=false
+  [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] || return 1
+  stderr_file="$(mktemp -t touchstone-checkruns.XXXXXX)" || return 1
+  buckets="$(gh pr checks "$PR_NUMBER" --json name,bucket \
+    --template '{{range .}}{{.name}}{{"\t"}}{{.bucket}}{{"\n"}}{{end}}' \
+    2>"$stderr_file")" || true
+  if [ -s "$stderr_file" ]; then
+    rm -f "$stderr_file"
+    return 1
+  fi
+  [ -n "$buckets" ] || {
+    rm -f "$stderr_file"
+    return 1
+  }
+  while IFS="$(printf '\t')" read -r name bucket || [ -n "$name" ]; do
+    [ -n "$name" ] || continue
+    case "$bucket" in
+      pass | skipping) ;;
+      cancel) saw_cancel=true ;;
+      *)
+        rm -f "$stderr_file"
+        return 1
+        ;;
+    esac
+  done <<<"$buckets"
+  [ "$saw_cancel" = true ] || {
+    rm -f "$stderr_file"
+    return 1
+  }
+  head_sha="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null)" || {
+    rm -f "$stderr_file"
+    return 1
+  }
+  [ -n "$head_sha" ] || {
+    rm -f "$stderr_file"
+    return 1
+  }
+  rollup="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/commits/$head_sha/check-runs?per_page=100" \
+    --jq '.check_runs[] | [.name, (.status // ""), (.conclusion // "")] | @tsv' \
+    2>"$stderr_file")" || {
+    rm -f "$stderr_file"
+    return 1
+  }
+  if [ -s "$stderr_file" ]; then
+    rm -f "$stderr_file"
+    return 1
+  fi
+  rm -f "$stderr_file"
+  [ -n "$rollup" ] || return 1
+  while IFS="$(printf '\t')" read -r name _run_status conclusion || [ -n "$name" ]; do
+    [ -n "$name" ] || continue
+    case "$conclusion" in
+      success | skipped | neutral) ;;
+      cancelled)
+        # The cancelled run counts only when a successful replacement of
+        # the SAME check name completed on this head.
+        printf '%s\n' "$rollup" \
+          | grep -F "$(printf '%s\tcompleted\tsuccess' "$name")" >/dev/null || return 1
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done <<<"$rollup"
+  return 0
 }
 
 failed_checks_are_only_unexecuted_claim_checks() {
@@ -2212,7 +2310,7 @@ attempt_claim_check_substitution() {
 
 print_failed_checks_and_exit() {
   local failed_checks="$1"
-  local name state link
+  local name state link annotations="" infra_seen=false
 
   [ -n "$failed_checks" ] || return 1
 
@@ -2224,8 +2322,27 @@ print_failed_checks_and_exit() {
     else
       echo "       - $name (${state:-failed})" >&2
     fi
+    # A failure with zero executed steps never ran the project's code; the
+    # check-run annotations carry GitHub's own explanation (issue #631).
+    if [ -n "$link" ] && check_run_never_executed "$link" \
+      && annotations="$(zero_step_failure_annotations "$link")"; then
+      printf '%s\n' "$annotations" | sed 's/^/         annotation: /' >&2
+      if printf '%s' "$annotations" \
+        | grep -qiE 'payment|billing|spending limit|quota|runner|capacity|account'; then
+        infra_seen=true
+      fi
+    fi
   done <<<"$failed_checks"
-  TOUCHSTONE_MERGE_FAILURE_REASON="check-failed"
+  if [ "$infra_seen" = true ]; then
+    echo "       CLASSIFICATION: infrastructure startup failure — the check failed before" >&2
+    echo "       executing any project step, and GitHub's annotation names an external" >&2
+    echo "       blocker (billing/quota/runner). Local code is not implicated. After the" >&2
+    echo "       account or runner condition is repaired, rerun the failed checks" >&2
+    echo "       (gh run rerun <run-id> --failed) and re-run the merge gate." >&2
+    TOUCHSTONE_MERGE_FAILURE_REASON="check-infrastructure-failure"
+  else
+    TOUCHSTONE_MERGE_FAILURE_REASON="check-failed"
+  fi
   exit 1
 }
 
@@ -2287,6 +2404,12 @@ wait_for_clean_merge_state() {
       else
         print_failed_checks_and_exit "$FAILED_CHECKS"
       fi
+    fi
+    if [ "$STATE" = "UNSTABLE" ] && [ "$MERGEABLE" = "MERGEABLE" ] \
+      && [ -z "$FAILED_CHECKS" ] && unstable_only_superseded_cancellations; then
+      echo "==> UNSTABLE stems only from concurrency-cancelled runs whose replacements"
+      echo "    succeeded on this head (issue #593); every live check is green — proceeding."
+      return 0
     fi
     if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$STATE" = "DIRTY" ] || [ "$STATE" = "BEHIND" ] || [ "$STATE" = "CONFLICTING" ]; then
       echo "ERROR: PR #$PR_NUMBER is $STATE — has conflicts or is out of date with base." >&2

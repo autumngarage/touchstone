@@ -172,6 +172,17 @@ case "${1:-} ${2:-}" in
         fi
         exit 1
         ;;
+      *'{{.bucket}}'*)
+        # Full bucket listing (issue #593): name TAB bucket per check.
+        if [ "${GH_BUCKET_LIST_FAIL:-false}" = "true" ]; then
+          echo "bucket listing unavailable" >&2
+          exit 1
+        fi
+        if [ -n "${GH_CHECK_BUCKETS:-}" ]; then
+          printf '%s\n' "$GH_CHECK_BUCKETS"
+        fi
+        exit 0
+        ;;
       *)
         if [ -n "${GH_FAILED_CHECKS:-}" ]; then
           printf '%s\n' "$GH_FAILED_CHECKS"
@@ -233,8 +244,18 @@ case "${1:-} ${2:-}" in
     case "${2:-}" in
       */actions/runs/*/jobs)
         # Step count for the claim-check run inspection (issue #658):
-        # 0 simulates a zero-step infrastructure failure.
-        echo "${GH_CLAIM_RUN_REAL_STEPS:-5}"
+        # 0 simulates a zero-step infrastructure failure. When the query
+        # asks for job IDS (issue #631 annotation walk), emit one job id.
+        case "$*" in
+          *'.jobs[].id'*) echo "9101" ;;
+          *) echo "${GH_CLAIM_RUN_REAL_STEPS:-5}" ;;
+        esac
+        ;;
+      */check-runs/*/annotations)
+        # Check-run annotations for zero-step failures (issue #631).
+        if [ -n "${GH_CHECK_ANNOTATIONS:-}" ]; then
+          printf '%s\n' "$GH_CHECK_ANNOTATIONS"
+        fi
         ;;
       */collaborators/*/permission)
         status_creator="${2#*/collaborators/}"
@@ -321,6 +342,14 @@ case "${1:-} ${2:-}" in
     ;;
   "api --paginate")
     case "${3:-}" in
+      */commits/*/check-runs*)
+        # Commit check-run rollup (issue #593): name TAB status TAB
+        # conclusion per run, cancelled predecessors alongside their
+        # successful replacements.
+        if [ -n "${GH_CHECK_ROLLUP:-}" ]; then
+          printf '%s\n' "$GH_CHECK_ROLLUP"
+        fi
+        ;;
       */statuses | */statuses\?*)
         query_head="${3#*/commits/}"
         query_head="${query_head%%/*}"
@@ -857,6 +886,10 @@ run_merge_pr() {
     GH_CLAIM_RUN_REAL_STEPS="${GH_CLAIM_RUN_REAL_STEPS:-5}" \
     GH_PENDING_CHECKS="${GH_PENDING_CHECKS:-}" \
     GH_PENDING_CHECKS_FAIL="${GH_PENDING_CHECKS_FAIL:-false}" \
+    GH_CHECK_BUCKETS="${GH_CHECK_BUCKETS:-}" \
+    GH_BUCKET_LIST_FAIL="${GH_BUCKET_LIST_FAIL:-false}" \
+    GH_CHECK_ROLLUP="${GH_CHECK_ROLLUP:-}" \
+    GH_CHECK_ANNOTATIONS="${GH_CHECK_ANNOTATIONS:-}" \
     GH_MERGE_LEAVES_OPEN="${GH_MERGE_LEAVES_OPEN:-false}" \
     GIT_CLAIM_CHECKER_SHOW_FAIL="${GIT_CLAIM_CHECKER_SHOW_FAIL:-false}" \
     CLAIM_DIRECT_BYPASS="${CLAIM_DIRECT_BYPASS:-false}" \
@@ -2540,6 +2573,66 @@ if [ "$attempt_count" -eq 1 ] \
   echo "==> PASS: definite conflict does not burn the retry budget"
 else
   cat "$TEST_DIR/output-conflict.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: superseded cancelled run tolerates UNSTABLE (issue #593)"
+reset_case_files
+if ! GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
+  GH_CHECK_BUCKETS=$'delivery-protocol\tcancel\nclaim-check\tpass' \
+  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tcancelled\ndelivery-protocol\tcompleted\tsuccess\nclaim-check\tcompleted\tsuccess' \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  MERGE_PR_STATE_MAX_ATTEMPTS=3 MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-superseded-cancel.txt" 123; then
+  echo "FAIL: superseded-cancellation UNSTABLE did not merge" >&2
+  cat "$TEST_DIR/output-superseded-cancel.txt" >&2
+  exit 1
+fi
+if grep -q 'stems only from concurrency-cancelled runs' "$TEST_DIR/output-superseded-cancel.txt" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: cancelled predecessor with successful replacement merges"
+else
+  cat "$TEST_DIR/output-superseded-cancel.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: cancelled run WITHOUT a successful replacement keeps waiting"
+reset_case_files
+if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
+  GH_CHECK_BUCKETS=$'delivery-protocol\tcancel\nclaim-check\tpass' \
+  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tcancelled\nclaim-check\tcompleted\tsuccess' \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  MERGE_PR_STATE_MAX_ATTEMPTS=2 MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-unreplaced-cancel.txt" 123; then
+  echo "FAIL: cancelled run without a successful replacement must not merge" >&2
+  cat "$TEST_DIR/output-unreplaced-cancel.txt" >&2
+  exit 1
+fi
+if [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: unreplaced cancellation never authorizes the merge"
+else
+  cat "$TEST_DIR/output-unreplaced-cancel.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: zero-step check failure surfaces its annotation (issue #631)"
+reset_case_files
+if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
+  GH_FAILED_CHECKS=$'validate\tfail\thttps://github.com/autumngarage/example/actions/runs/555/job/1' \
+  GH_CLAIM_RUN_REAL_STEPS=0 \
+  GH_CHECK_ANNOTATIONS='The job was not started because recent account payments have failed or your spending limit needs to be increased.' \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-infra-annotation.txt" 123; then
+  echo "FAIL: zero-step infrastructure failure must still stop the merge" >&2
+  exit 1
+fi
+if grep -q 'annotation: The job was not started because recent account payments' "$TEST_DIR/output-infra-annotation.txt" \
+  && grep -q 'CLASSIFICATION: infrastructure startup failure' "$TEST_DIR/output-infra-annotation.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: zero-step failure carries GitHub's own explanation and classification"
+else
+  cat "$TEST_DIR/output-infra-annotation.txt" >&2
   exit 1
 fi
 
