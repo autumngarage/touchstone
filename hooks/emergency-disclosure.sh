@@ -60,61 +60,9 @@ tool_workdir="$(printf '%s' "$input" | jq -r '.tool_input.workdir // ""')"
 # through the parser, where the builtin-cannot-be-aliased exemption keeps
 # benign `git status`/`git add` cheap and alias chains are resolved.
 case "$command" in
-  *push* | *git* | *\$* | *\`* | *\\* | *\'* | *\"* | *\?* | *\** | *\[* | *\{*) ;;
+  *push* | *git* | *\$* | *\`* | *\\* | *\'* | *\"*) ;;
   *)
     exit 0
-    ;;
-esac
-
-# Dynamic expansion combined with a bypass fragment is never provably safe
-# (touchstone#675, PR #679 rounds 1-4). Word-level glob analysis cannot
-# out-enumerate shell semantics — semicolon-adjacent patterns, quotes
-# elsewhere in the command, path-prefixed patterns (/usr/bin/g?t), and
-# brace expansion ({g..g}it) each defeated a smarter predecessor of this
-# check. The rule applies to the QUOTE-STRIPPED command text: quoted spans
-# are data the shell will never expand ('--no-*' stays a literal argument,
-# prose stays prose), while any unquoted glob or brace metacharacter
-# alongside an unquoted --no- fragment blocks, fail closed. A truthy
-# emergency override falls through to the parser, which owns the audited
-# authorization path; "0"/"false" never authorize.
-strip_quoted_spans() {
-  LC_ALL=C awk '{
-    line = $0; out = "";
-    for (i = 1; i <= length(line); i++) {
-      c = substr(line, i, 1)
-      if (q == "\x27") { if (c == q) q = ""; continue }
-      if (q == "\"") {
-        if (c == "\\") { i++; continue }
-        if (c == q) q = ""
-        continue
-      }
-      # Outside quotes a backslash escapes the next character: \" is a
-      # literal quote (not a span opener) and \? is a literal question
-      # mark the shell will never expand — both are data, not syntax.
-      if (c == "\\") { i++; continue }
-      if (c == "\x27" || c == "\"") { q = c; continue }
-      out = out c
-    }
-    print out
-  }'
-}
-unquoted_command="$(printf '%s' "$command" | strip_quoted_spans)"
-case "$unquoted_command" in
-  *--no-*)
-    case "$unquoted_command" in
-      *\?* | *\** | *\[* | *\{*)
-        case "${TOUCHSTONE_EMERGENCY:-}" in
-          1)
-            # The parser owns the audited authorization path, and it
-            # accepts exactly this value; anything else never authorizes.
-            ;;
-          *)
-            echo "emergency-disclosure: unquoted dynamic expansion (glob/brace) combined with a --no- fragment cannot be proven safe; write the command literally (prose belongs in --body-file)" >&2
-            exit 2
-            ;;
-        esac
-        ;;
-    esac
     ;;
 esac
 

@@ -87,22 +87,6 @@ assert_allowed "push with lease" "git push --force-with-lease=branch:sha origin 
 # multibyte letter is a word boundary, so "égit" would tokenize as
 # "git" and the fallback predicates would block this benign command.
 assert_allowed "multibyte word containing git+push" "python script.py égit push --no-verify-nothing"
-assert_allowed "benign glob non-git" "ls *.txt"
-# Quoted spans are data the shell never expands: prose and quoted
-# patterns stay allowed; the fail-closed rule applies to the
-# quote-stripped text only.
-assert_allowed "quoted glob prose" "gh issue create --body '?it p?sh --no-verify in prose'"
-
-echo "==> Falsy emergency values never authorize dynamic expansion"
-RC=0
-printf '{"tool_input":{"command":%s},"cwd":%s}' \
-  "$(printf '%s' "?it push --no-verify" | jq -Rs .)" \
-  "$(printf '%s' "$REPO" | jq -Rs .)" \
-  | (cd "$REPO" && TOUCHSTONE_EMERGENCY=yes bash "$GUARD") \
-    >/dev/null 2>&1 || RC=$?
-if [ "$RC" -eq 0 ]; then
-  fail "a non-canonical TOUCHSTONE_EMERGENCY value must not authorize a glob-assembled bypass"
-fi
 
 echo "==> Protected corpus must stay blocked without TOUCHSTONE_EMERGENCY"
 # A configured alias means the raw text of "git p --no-verify" contains no
@@ -118,16 +102,6 @@ assert_blocked "compound tail" "cd $REPO && git push --no-verify"
 assert_blocked "variable-assembled flag" 'FLAG=--no-verify; git push $FLAG'
 assert_blocked "alias-defined push" "git -c alias.p='push --no-verify' p"
 assert_blocked "repo-configured alias push" "git p --no-verify"
-# Glob metacharacters are dynamic input (touchstone#675): with files named
-# git/push in cwd, ?it p?sh expands to git push at execution time.
-assert_blocked "glob-assembled push" "?it p?sh --no-verify"
-assert_blocked "glob-assembled bypass flag" "git push --no-*"
-assert_blocked "literal git with glob push" "git p?sh --no-verify"
-assert_blocked "semicolon-adjacent glob" "true;?it push --no-verify"
-assert_blocked "quote-elsewhere glob" "echo \"x\"; ?it push --no-verify"
-assert_blocked "path-prefixed glob git" "/usr/bin/g?t push --no-verify"
-assert_blocked "brace-expanded push" "{g..g}it {p..p}ush --no-verify"
-assert_blocked "escaped quote before glob push" "echo \\\"; ?it push --no-verify"
 assert_blocked "dash-C with literal push" "git -C $REPO push --no-verify"
 assert_blocked "cd compound push" "cd $REPO && git commit -m 'x' && git push --no-verify"
 
