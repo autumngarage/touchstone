@@ -67,8 +67,27 @@ if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
   exit 1
 fi
 
-REPO_NAME="$(basename "$REPO_ROOT")"
-WORKTREE_PATH="${EXPLICIT_PATH:-../$REPO_NAME-$SLUG}"
+# Derive the worktree prefix from the REPOSITORY identity, not the current
+# worktree's basename: spawning from a linked worktree would otherwise
+# compound its name into the new directory
+# (touchstone-foo -> touchstone-foo-bar), misstating the slice's parentage
+# and growing with nesting depth (issue #653). The primary checkout is the
+# parent of the common git dir; fall back to the current toplevel when the
+# layout is unexpected (e.g. a bare or detached-gitdir setup).
+GIT_COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+case "$GIT_COMMON_DIR" in
+  */.git)
+    PRIMARY_CHECKOUT="$(cd "$(dirname "$GIT_COMMON_DIR")" && pwd -P)"
+    ;;
+  .git)
+    PRIMARY_CHECKOUT="$(pwd -P)"
+    ;;
+  *)
+    PRIMARY_CHECKOUT="$REPO_ROOT"
+    ;;
+esac
+REPO_NAME="$(basename "$PRIMARY_CHECKOUT")"
+WORKTREE_PATH="${EXPLICIT_PATH:-$(dirname "$PRIMARY_CHECKOUT")/$REPO_NAME-$SLUG}"
 WORKTREE_PARENT="$(dirname "$WORKTREE_PATH")"
 
 if [ -e "$WORKTREE_PATH" ]; then
