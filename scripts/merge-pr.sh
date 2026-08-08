@@ -2219,7 +2219,7 @@ unstable_only_superseded_cancellations() {
     return 1
   }
   rollup="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/commits/$head_sha/check-runs?per_page=100" \
-    --jq '.check_runs[] | [.name, (.status // ""), (.conclusion // ""), (.completed_at // .started_at // ""), (.app.slug // "")] | @tsv' \
+    --jq '.check_runs[] | [.name, (.status // ""), (.conclusion // ""), (.completed_at // .started_at // ""), (.app.slug // ""), ((.check_suite.id // "") | tostring)] | @tsv' \
     2>"$stderr_file")" || {
     rm -f "$stderr_file"
     return 1
@@ -2230,24 +2230,28 @@ unstable_only_superseded_cancellations() {
   fi
   rm -f "$stderr_file"
   [ -n "$rollup" ] || return 1
-  local n2="" s2="" c2="" t2="" a2="" ts="" app="" newer_success=false
-  while IFS="$(printf '\t')" read -r name _run_status conclusion ts app || [ -n "$name" ]; do
+  local n2="" s2="" c2="" t2="" a2="" u2="" ts="" app="" suite="" newer_success=false
+  while IFS="$(printf '\t')" read -r name _run_status conclusion ts app suite || [ -n "$name" ]; do
     [ -n "$name" ] || continue
     case "$conclusion" in
       success | skipped | neutral) ;;
       cancelled)
-        # The cancelled run counts only when a successful run of the SAME
-        # check name FROM THE SAME APP completed AFTER it — a same-named
-        # check emitted by an unrelated workflow or GitHub App must not
-        # supersede it, and an older success does not supersede a newer
-        # cancellation (PR #680 review). ISO-8601 timestamps compare
-        # lexically; missing timestamps or app slugs fail closed.
+        # A cancellation is superseded only by a success that is the SAME
+        # check name, from the SAME app, in a DIFFERENT check suite of the
+        # same workflow lineage, completing AFTER it. Two workflows both
+        # running as the "actions" app can emit a shared check name, so app
+        # identity alone is not lineage (PR #680 review); the check-suite id
+        # distinguishes runs, and a superseding re-run always lands in a new
+        # suite. ISO-8601 timestamps compare lexically. Missing timestamps,
+        # app slugs, or suite ids fail closed.
         newer_success=false
-        while IFS="$(printf '\t')" read -r n2 s2 c2 t2 a2 || [ -n "$n2" ]; do
+        while IFS="$(printf '\t')" read -r n2 s2 c2 t2 a2 u2 || [ -n "$n2" ]; do
           [ "$n2" = "$name" ] || continue
           [ "$s2" = "completed" ] || continue
           [ "$c2" = "success" ] || continue
           [ -n "$a2" ] && [ "$a2" = "$app" ] || continue
+          [ -n "$u2" ] && [ -n "$suite" ] || continue
+          [ "$u2" != "$suite" ] || continue
           if [ -n "$t2" ] && [ -n "$ts" ] && [[ "$t2" > "$ts" ]]; then
             newer_success=true
           fi

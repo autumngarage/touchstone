@@ -2584,7 +2584,7 @@ echo "==> Test: superseded cancelled run tolerates UNSTABLE (issue #593)"
 reset_case_files
 if ! GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
   GH_CHECK_BUCKETS=$'delivery-protocol\tcancel\nclaim-check\tpass' \
-  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tcancelled\t2026-01-01T10:00:00Z\tactions\ndelivery-protocol\tcompleted\tsuccess\t2026-01-01T10:05:00Z\tactions\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z\tactions' \
+  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tcancelled\t2026-01-01T10:00:00Z\tactions\t111\ndelivery-protocol\tcompleted\tsuccess\t2026-01-01T10:05:00Z\tactions\t222\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z\tactions\t222' \
   GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
   MERGE_PR_STATE_MAX_ATTEMPTS=3 MERGE_PR_SLEEP_OVERRIDE=0 \
   run_merge_pr "$TEST_DIR/output-superseded-cancel.txt" 123; then
@@ -2604,7 +2604,7 @@ echo "==> Test: cancelled run WITHOUT a successful replacement keeps waiting"
 reset_case_files
 if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
   GH_CHECK_BUCKETS=$'delivery-protocol\tcancel\nclaim-check\tpass' \
-  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tcancelled\t2026-01-01T10:00:00Z\tactions\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z\tactions' \
+  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tcancelled\t2026-01-01T10:00:00Z\tactions\t111\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z\tactions\t222' \
   GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
   MERGE_PR_STATE_MAX_ATTEMPTS=2 MERGE_PR_SLEEP_OVERRIDE=0 \
   run_merge_pr "$TEST_DIR/output-unreplaced-cancel.txt" 123; then
@@ -2623,7 +2623,7 @@ echo "==> Test: an older success does not supersede a newer cancellation"
 reset_case_files
 if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
   GH_CHECK_BUCKETS=$'delivery-protocol\tcancel\nclaim-check\tpass' \
-  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tsuccess\t2026-01-01T09:00:00Z\tactions\ndelivery-protocol\tcompleted\tcancelled\t2026-01-01T10:00:00Z\tactions\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z\tactions' \
+  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tsuccess\t2026-01-01T09:00:00Z\tactions\t222\ndelivery-protocol\tcompleted\tcancelled\t2026-01-01T10:00:00Z\tactions\t111\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z\tactions\t222' \
   GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
   MERGE_PR_STATE_MAX_ATTEMPTS=2 MERGE_PR_SLEEP_OVERRIDE=0 \
   run_merge_pr "$TEST_DIR/output-stale-success.txt" 123; then
@@ -2634,6 +2634,25 @@ fi
 if [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: supersession requires the success to be newer"
 else
+  exit 1
+fi
+
+echo "==> Test: a same-named check from another workflow does not supersede"
+reset_case_files
+if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
+  GH_CHECK_BUCKETS=$'validate\tcancel\nclaim-check\tpass' \
+  GH_CHECK_ROLLUP=$'validate\tcompleted\tcancelled\t2026-01-01T10:00:00Z\tactions\t111\nvalidate\tcompleted\tsuccess\t2026-01-01T10:05:00Z\tactions\t111\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z\tactions\t222' \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  MERGE_PR_STATE_MAX_ATTEMPTS=2 MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-same-suite.txt" 123; then
+  echo "FAIL: a success in the SAME suite as the cancellation must not supersede it" >&2
+  cat "$TEST_DIR/output-same-suite.txt" >&2
+  exit 1
+fi
+if [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: supersession requires a distinct check-suite lineage"
+else
+  cat "$TEST_DIR/output-same-suite.txt" >&2
   exit 1
 fi
 
