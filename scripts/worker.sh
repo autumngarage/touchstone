@@ -707,7 +707,7 @@ TOUCHSTONE_BASE_CANDIDATES
 
 cmd_ship_runner() {
   local job_dir="" worktree_path="" claim_token="" cleanup=false events_json="" child_pid="" exit_code=0 branch=""
-  local ship_attempt=1 max_base_moved_retries="" log_lines_before=0 attempt_log="" authorized_bases="" failed_pr=""
+  local ship_attempt=1 max_base_moved_retries="" log_lines_before=0 attempt_log_file="" authorized_bases="" failed_pr=""
   local claim_owner_wait=0
   local review_fix=false max_fix_iterations="$TOUCHSTONE_REVIEW_FIX_MUTATION_LIMIT"
   local max_fix_minutes=45 validation_command=""
@@ -897,7 +897,12 @@ cmd_ship_runner() {
     child_pid=""
     touchstone_ship_write "$job_dir" child-pid ""
     [ "$exit_code" -eq 0 ] && break
-    attempt_log="$(tail -n +"$((log_lines_before + 1))" "$job_dir/ship.log" 2>/dev/null || true)"
+    # Slice the attempt's log to a FILE: buffering a large hook/test log
+    # into a bash variable and piping it through each classifier copies it
+    # repeatedly; grepping the file streams it instead.
+    attempt_log_file="$job_dir/attempt-tail.log"
+    tail -n +"$((log_lines_before + 1))" "$job_dir/ship.log" >"$attempt_log_file" 2>/dev/null \
+      || : >"$attempt_log_file"
     # Structural, line-anchored classification: only the delivery scripts'
     # own BASE-MOVED error formats qualify, and those always carry the PR
     # number — requiring it means a project test or hook echoing the bare
@@ -907,7 +912,8 @@ cmd_ship_runner() {
     # deliberately excluded: it also fires when the PR HEAD or base BRANCH
     # changed, where autonomously rebasing a stale checkout would be wrong;
     # that class parks for a human.
-    if ! grep -qE '^ERROR: PR #[0-9]+ base moved while' <<<"$attempt_log"; then
+    if ! grep -qE '^ERROR: PR #[0-9]+ base moved while' "$attempt_log_file"; then
+      rm -f "$attempt_log_file"
       break
     fi
     if [ "$ship_attempt" -gt "$max_base_moved_retries" ]; then
@@ -927,30 +933,22 @@ cmd_ship_runner() {
     # all resolvable candidates to be ancestors of the fetched tip (a
     # single marker can be the post-rewrite SHA and hide the rewrite) and
     # binds its base lookup to that exact PR.
-    authorized_bases="$(printf '%s' "$attempt_log" \
-      | grep -oE '(GitHub base:[[:space:]]+|local base:[[:space:]]+|fetched base:[[:space:]]+|at base )[0-9a-f]{40}' \
-      | grep -oE '[0-9a-f]{40}' | sort -u || true)"
-    failed_pr="$(printf '%s' "$attempt_log" \
-      | grep -E '^ERROR: PR #[0-9]+ base moved while' | tail -1 \
-      | grep -oE '#[0-9]+' | head -1 | tr -d '#' || true)"
+    authorized_bases="$(grep -oE '(GitHub base:[[:space:]]+|local base:[[:space:]]+|fetched base:[[:space:]]+|at base )[0-9a-f]{40}' \
+      "$attempt_log_file" | grep -oE '[0-9a-f]{40}' | sort -u || true)"
+    failed_pr="$(grep -E '^ERROR: PR #[0-9]+ base moved while' "$attempt_log_file" \
+      | tail -1 | grep -oE '#[0-9]+' | head -1 | tr -d '#' || true)"
+    rm -f "$attempt_log_file"
     (
       # A takeover TERMs both the in-flight git command and this subshell.
       # Without a trap the TERM'd rebase leaves rebase-merge/rebase-apply
       # state behind and the worktree stays mid-rebase; abort it (only if
       # state exists) and record the truthful reason before exiting.
-      state_kind="" state_dir="" takeover_reason=""
       trap '
-        takeover_reason="base-moved-takeover-interrupted"
-        for state_kind in rebase-merge rebase-apply; do
-          state_dir="$(cd "$worktree_path" && git rev-parse --git-path "$state_kind" 2>/dev/null || true)"
-          if [ -n "$state_dir" ] && (cd "$worktree_path" && [ -d "$state_dir" ]); then
-            if ! (cd "$worktree_path" && GIT_NO_REPLACE_OBJECTS=1 git rebase --abort >/dev/null 2>&1); then
-              takeover_reason="base-moved-takeover-abort-failed"
-            fi
-            break
-          fi
-        done
-        touchstone_ship_write "$job_dir" base-moved-reason "$takeover_reason"
+        if touchstone_ship_abort_stale_rebase "$worktree_path"; then
+          touchstone_ship_write "$job_dir" base-moved-reason "base-moved-takeover-interrupted"
+        else
+          touchstone_ship_write "$job_dir" base-moved-reason "base-moved-takeover-abort-failed"
+        fi
         exit 1
       ' TERM INT
       if touchstone_ship_base_moved_recover "$worktree_path" "$job_dir" "$ship_attempt" "$authorized_bases" "$failed_pr"; then
@@ -1290,24 +1288,13 @@ cmd_takeover() {
           # Clean it up here — and say so when the abort itself fails,
           # because a "stopped" verdict over a mid-rebase worktree would
           # misdirect the operator taking over.
-          takeover_state_kind="" takeover_state_dir="" takeover_abort_failed=false
-          for takeover_state_kind in rebase-merge rebase-apply; do
-            takeover_state_dir="$(cd "$worktree_path" \
-              && git rev-parse --git-path "$takeover_state_kind" 2>/dev/null || true)"
-            if [ -n "$takeover_state_dir" ] \
-              && (cd "$worktree_path" && [ -d "$takeover_state_dir" ]); then
-              if (cd "$worktree_path" \
-                && GIT_NO_REPLACE_OBJECTS=1 git rebase --abort >/dev/null 2>&1); then
-                echo "Aborted the recovery rebase the forced takeover interrupted."
-              else
-                takeover_abort_failed=true
-                echo "WARNING: could not abort the interrupted recovery rebase;" >&2
-                echo "         the worktree may remain mid-rebase ($takeover_state_kind)." >&2
-                echo "         Inspect it before continuing: git -C $worktree_path status" >&2
-              fi
-              break
-            fi
-          done
+          takeover_abort_failed=false
+          if ! touchstone_ship_abort_stale_rebase "$worktree_path"; then
+            takeover_abort_failed=true
+            echo "WARNING: could not abort the interrupted recovery rebase;" >&2
+            echo "         the worktree may remain mid-rebase." >&2
+            echo "         Inspect it before continuing: git -C $worktree_path status" >&2
+          fi
           touchstone_ship_write "$job_dir" exit-code 137
           # A failed abort must publish needs-attention: a "stopped" verdict
           # would report a quiet worktree that is actually mid-rebase.

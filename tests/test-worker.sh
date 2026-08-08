@@ -968,6 +968,138 @@ wait_for_ship_status "$REWRITE_WT" needs-attention "$TEST_DIR/base-moved-rewrite
 assert_base_moved_parks "base rewrite" "$TEST_DIR/base-moved-rewrite-attempts" \
   "$REWRITE_WT" "base-moved-base-rewritten"
 
+echo "==> Case d2n: recovery rebase does not drag other branch refs (rebase.updateRefs)"
+UR_WT="$TEST_DIR/base-moved-updaterefs-worktree"
+git -C "$REPO" worktree add -q "$UR_WT" -b feat/base-moved-updaterefs main
+UR_WT="$(cd "$UR_WT" && pwd -P)"
+printf 'ur-feature\n' >"$UR_WT/ur-feature.txt"
+git -C "$UR_WT" add ur-feature.txt
+git -C "$UR_WT" commit -qm "feat: updateRefs fixture commit"
+UR_PRE_HEAD="$(git -C "$UR_WT" rev-parse HEAD)"
+# A sibling branch pinned to the tip being rebased: with an inherited
+# rebase.updateRefs=true and no --no-update-refs, the recovery rebase would
+# move it; the safety flag must keep it pinned.
+git -C "$REPO" branch feat/ur-marker "$UR_PRE_HEAD"
+printf 'ur-advance\n' >>"$REPO/file.txt"
+git -C "$REPO" add file.txt
+git -C "$REPO" commit -qm "chore: advance base under updateRefs fixture"
+git -C "$REPO" push -q origin main
+git -C "$UR_WT" config rebase.updateRefs true
+mkdir -p "$UR_WT/scripts"
+cat >"$UR_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+count=$((count + 1))
+printf '%s' "$count" >"$count_file"
+if [ "$count" -eq 1 ]; then
+  echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$UR_WT/scripts/open-pr.sh"
+: >"$TEST_DIR/base-moved-updaterefs-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-updaterefs-attempts" \
+  GH_PR_VIEW_HEAD="feat/base-moved-updaterefs" \
+  GH_PR_VIEW_BASE_OID="$(git -C "$ORIGIN_URL" rev-parse main)" \
+  GH_PR_VIEW_HEAD_OID="$UR_PRE_HEAD" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$UR_WT" --detach >/dev/null
+wait_for_ship_status "$UR_WT" succeeded "$TEST_DIR/base-moved-updaterefs-status.json"
+if [ "$(git -C "$REPO" rev-parse feat/ur-marker)" != "$UR_PRE_HEAD" ]; then
+  fail "recovery rebase moved a sibling branch ref (rebase.updateRefs leaked through)"
+fi
+git -C "$UR_WT" config --unset rebase.updateRefs
+
+echo "==> Case d2o: a rerere-remembered conflict still parks as a conflict"
+RR_BASE_FILE_SETUP="$REPO/conflict.txt"
+printf 'base\n' >"$RR_BASE_FILE_SETUP"
+git -C "$REPO" add conflict.txt
+git -C "$REPO" commit -qm "chore: seed conflict fixture file"
+git -C "$REPO" push -q origin main
+RR_WT="$TEST_DIR/base-moved-rerere-worktree"
+git -C "$REPO" worktree add -q "$RR_WT" -b feat/base-moved-rerere main
+RR_WT="$(cd "$RR_WT" && pwd -P)"
+printf 'branch-side\n' >"$RR_WT/conflict.txt"
+git -C "$RR_WT" add conflict.txt
+git -C "$RR_WT" commit -qm "feat: branch side of the conflict"
+RR_PRE_HEAD="$(git -C "$RR_WT" rev-parse HEAD)"
+printf 'main-side\n' >"$REPO/conflict.txt"
+git -C "$REPO" add conflict.txt
+git -C "$REPO" commit -qm "chore: main side of the conflict"
+git -C "$REPO" push -q origin main
+git -C "$RR_WT" config rerere.enabled true
+git -C "$RR_WT" config rerere.autoupdate true
+# Record a remembered resolution for exactly this conflict, then rewind.
+git -C "$RR_WT" fetch -q origin "+refs/heads/main:refs/remotes/origin/main"
+if git -C "$RR_WT" rebase refs/remotes/origin/main >/dev/null 2>&1; then
+  fail "rerere fixture rebase should conflict on first application"
+fi
+printf 'resolved\n' >"$RR_WT/conflict.txt"
+git -C "$RR_WT" add conflict.txt
+GIT_EDITOR=true git -C "$RR_WT" rebase --continue >/dev/null 2>&1
+git -C "$RR_WT" reset -q --hard "$RR_PRE_HEAD"
+mkdir -p "$RR_WT/scripts"
+cat >"$RR_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+printf '%s' "$((count + 1))" >"$count_file"
+echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+exit 1
+EOF
+chmod +x "$RR_WT/scripts/open-pr.sh"
+: >"$TEST_DIR/base-moved-rerere-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-rerere-attempts" \
+  GH_PR_VIEW_HEAD="feat/base-moved-rerere" \
+  GH_PR_VIEW_BASE_OID="$(git -C "$ORIGIN_URL" rev-parse main)" \
+  GH_PR_VIEW_HEAD_OID="$RR_PRE_HEAD" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$RR_WT" --detach >/dev/null
+wait_for_ship_status "$RR_WT" needs-attention "$TEST_DIR/base-moved-rerere-status.json"
+assert_base_moved_parks "rerere conflict" "$TEST_DIR/base-moved-rerere-attempts" \
+  "$RR_WT" "base-moved-rebase-conflict"
+if [ "$(git -C "$RR_WT" rev-parse HEAD)" != "$RR_PRE_HEAD" ]; then
+  fail "conflict park must leave the branch at its pre-recovery head"
+fi
+git -C "$RR_WT" config --unset rerere.enabled
+git -C "$RR_WT" config --unset rerere.autoupdate
+
+echo "==> Case d2p: the stale-rebase abort helper cleans a real conflicted rebase"
+AB_WT="$TEST_DIR/abort-helper-worktree"
+git -C "$REPO" worktree add -q "$AB_WT" -b feat/abort-helper main
+AB_WT="$(cd "$AB_WT" && pwd -P)"
+printf 'helper-side\n' >"$AB_WT/conflict.txt"
+git -C "$AB_WT" add conflict.txt
+git -C "$AB_WT" commit -qm "feat: helper side of the conflict"
+AB_PRE_HEAD="$(git -C "$AB_WT" rev-parse HEAD)"
+printf 'helper-main-side\n' >"$REPO/conflict.txt"
+git -C "$REPO" add conflict.txt
+git -C "$REPO" commit -qm "chore: helper main side"
+git -C "$REPO" push -q origin main
+git -C "$AB_WT" fetch -q origin "+refs/heads/main:refs/remotes/origin/main"
+if git -C "$AB_WT" rebase refs/remotes/origin/main >/dev/null 2>&1; then
+  fail "abort-helper fixture rebase should conflict"
+fi
+if ! touchstone_ship_abort_stale_rebase "$AB_WT"; then
+  fail "abort helper reported failure on a genuine conflicted rebase"
+fi
+AB_STATE_DIR="$(git -C "$AB_WT" rev-parse --git-path rebase-merge)"
+if [ -d "$AB_STATE_DIR" ]; then
+  fail "abort helper left rebase-merge state behind"
+fi
+if [ "$(git -C "$AB_WT" rev-parse HEAD)" != "$AB_PRE_HEAD" ]; then
+  fail "abort helper did not restore the pre-rebase head"
+fi
+if ! touchstone_ship_abort_stale_rebase "$AB_WT"; then
+  fail "abort helper must succeed when no rebase state exists"
+fi
+
 echo "==> Case d3: detached jobs do not collide when branch names sanitize alike"
 COLLISION_SLASH_WT="$TEST_DIR/collision-slash-worktree"
 COLLISION_UNDERSCORE_WT="$TEST_DIR/collision-underscore-worktree"

@@ -220,6 +220,26 @@ touchstone_ship_child_pids() {
     | awk -v parent="$parent_pid" '$2 == parent { print $1 }'
 }
 
+# Abort any rebase-merge/rebase-apply state in the worktree, with
+# replacement objects disabled. Returns 0 when no state existed or the
+# abort succeeded; 1 when the abort failed and the worktree may remain
+# mid-rebase. Shared by the recovery TERM trap and forced takeover so the
+# cleanup contract is one testable function.
+touchstone_ship_abort_stale_rebase() {
+  local worktree_path="$1" state_kind="" state_dir=""
+  for state_kind in rebase-merge rebase-apply; do
+    state_dir="$(cd "$worktree_path" && git rev-parse --git-path "$state_kind" 2>/dev/null || true)"
+    if [ -n "$state_dir" ] && (cd "$worktree_path" && [ -d "$state_dir" ]); then
+      if ! (cd "$worktree_path" \
+        && GIT_NO_REPLACE_OBJECTS=1 git rebase --abort >/dev/null 2>&1); then
+        return 1
+      fi
+      return 0
+    fi
+  done
+  return 0
+}
+
 touchstone_ship_signal_tree() {
   local pid="$1" signal="$2" child
   case "$pid" in
