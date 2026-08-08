@@ -245,16 +245,6 @@ merge_journal_pr_synchronously() {
   return 1
 }
 
-# 0. Input validation — before ANY state change. A malformed
-# TOUCHSTONE_MERGED_PR previously failed only after the journal branch was
-# checked out, leaving the repo off its default branch with no cleanup hint.
-case "${TOUCHSTONE_MERGED_PR:-}" in
-  *[!0-9]*)
-    log "cortex-pr-merged-hook: TOUCHSTONE_MERGED_PR must be numeric, got: $TOUCHSTONE_MERGED_PR"
-    exit 1
-    ;;
-esac
-
 # 1. Detection — silent skip if any precondition fails. An explicit
 # TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR is caller input, so its failures are
 # visible errors rather than silent skips.
@@ -328,6 +318,18 @@ if ! command -v cortex >/dev/null 2>&1; then
   exit 0
 fi
 
+# 1b. Input validation — after every inactivity short-circuit above (a
+# disabled or non-default-worktree hook stays silent regardless of env),
+# but before ANY state change: a malformed TOUCHSTONE_MERGED_PR previously
+# failed only after the journal branch was checked out, leaving the repo
+# off its default branch with no cleanup hint.
+case "${TOUCHSTONE_MERGED_PR:-}" in
+  *[!0-9]*)
+    log "cortex-pr-merged-hook: TOUCHSTONE_MERGED_PR must be numeric, got: $TOUCHSTONE_MERGED_PR"
+    exit 1
+    ;;
+esac
+
 # 2. Substantive-merge gate (cortex#206). Only draft a pr-merged
 # journal entry when Cortex reports at least one trigger fired. If the
 # gate is unavailable, log the degradation and fall back to the prior
@@ -342,13 +344,15 @@ fired_triggers_ndjson=""
 explicit_pr_head_mismatch=0
 if [ -n "${TOUCHSTONE_MERGED_PR:-}" ]; then
   head_subject="$(git -C "$PROJECT_DIR" log -1 --format=%s HEAD 2>/dev/null || true)"
-  head_subject_pr="$(printf '%s' "$head_subject" | sed -n 's/.*(#\([0-9][0-9]*\))$/\1/p')"
-  # Mismatch only when the squash subject AFFIRMATIVELY names a different
-  # PR; an unrecognized subject convention keeps the evidence (fail-open),
-  # so custom merge styles never silently lose their trigger context.
-  if [ -n "$head_subject_pr" ] && [ "$head_subject_pr" != "$TOUCHSTONE_MERGED_PR" ]; then
-    explicit_pr_head_mismatch=1
-  fi
+  # POSITIVE evidence required: HEAD must name the source PR (trailing
+  # squash "(#N)" or a "Merge pull request #N" subject). Anything else —
+  # a different PR, a custom title, an advanced default branch — omits
+  # the HEAD-derived evidence: attributing another merge's triggers to a
+  # recovered journal is worse than a journal without trigger context.
+  case "$head_subject" in
+    *"(#${TOUCHSTONE_MERGED_PR})" | "Merge pull request #${TOUCHSTONE_MERGED_PR} "*) ;;
+    *) explicit_pr_head_mismatch=1 ;;
+  esac
 fi
 if [ "$explicit_pr_head_mismatch" -eq 1 ]; then
   log "cortex-pr-merged-hook: HEAD is not PR #${TOUCHSTONE_MERGED_PR}'s merge; omitting HEAD-derived trigger evidence rather than attributing another merge's triggers."

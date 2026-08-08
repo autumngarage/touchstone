@@ -303,7 +303,7 @@ H="$(mk_fixture H)"
 mkdir -p "$H/.cortex"
 printf '0.5.0\n' >"$H/.cortex/SPEC_VERSION"
 printf 'stale state\n' >"$H/.cortex/state.md"
-(cd "$H" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$H" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#131)")
 H_MAIN_BEFORE="$(git -C "$H" rev-parse main)"
 (
   cd "$H"
@@ -464,7 +464,7 @@ K="$(mk_fixture K)"
 mkdir -p "$K/.cortex"
 printf '0.5.0\n' >"$K/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$K/.cortex/state.md"
-(cd "$K" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$K" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#300)")
 K_NDJSON='{"trigger":"T1.4","reason":"file deletion exceeds 100 lines (deleted 142 from src/foo.py)","files":["src/foo.py"]}'
 (
   cd "$K"
@@ -489,7 +489,7 @@ L="$(mk_fixture L)"
 mkdir -p "$L/.cortex"
 printf '0.5.0\n' >"$L/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$L/.cortex/state.md"
-(cd "$L" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$L" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#301)")
 L_NDJSON='{"trigger":"T1.1","reason":"diff touches principles/","files":["principles/foo.md"]}'
 (
   cd "$L"
@@ -549,7 +549,7 @@ M="$(mk_fixture M)"
 mkdir -p "$M/.cortex"
 printf '0.5.0\n' >"$M/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$M/.cortex/state.md"
-(cd "$M" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$M" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#400)")
 M_LOG="$TMPROOT/M-cortex.log"
 (
   cd "$M"
@@ -578,7 +578,7 @@ mkdir -p "$N/.cortex"
 printf '0.5.0\n' >"$N/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$N/.cortex/state.md"
 printf 'cortex_pr_merged_hook=force\n' >"$N/.touchstone-config"
-(cd "$N" && git add .cortex/SPEC_VERSION .cortex/state.md .touchstone-config && git commit -q -m "add cortex state with force config")
+(cd "$N" && git add .cortex/SPEC_VERSION .cortex/state.md .touchstone-config && git commit -q -m "add cortex state with force config (#401)")
 N_LOG="$TMPROOT/N-cortex.log"
 (
   cd "$N"
@@ -605,7 +605,7 @@ O="$(mk_fixture O)"
 mkdir -p "$O/.cortex"
 printf '0.5.0\n' >"$O/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$O/.cortex/state.md"
-(cd "$O" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$O" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#500)")
 O_STDERR="$TMPROOT/O-stderr"
 (
   cd "$O"
@@ -671,7 +671,7 @@ git -C "$Q" push -q -u origin main
 mkdir -p "$Q/.cortex"
 printf '0.5.0\n' >"$Q/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$Q/.cortex/state.md"
-(cd "$Q" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state" && git push -q origin main)
+(cd "$Q" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#777)" && git push -q origin main)
 Q_HEAD_BEFORE="$(git -C "$Q" rev-parse HEAD)"
 (
   cd "$Q"
@@ -744,7 +744,7 @@ mk_cortex_publish_fixture() {
   (
     cd "$dir"
     git add .cortex/SPEC_VERSION .cortex/state.md
-    git commit -q -m "add cortex state"
+    git commit -q -m "add cortex state (#779)"
     git push -q origin main
   )
   printf '%s' "$dir"
@@ -878,7 +878,7 @@ git -C "$R" push -q -u origin main
 mkdir -p "$R/.cortex"
 printf '0.5.0\n' >"$R/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$R/.cortex/state.md"
-(cd "$R" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state" && git push -q origin main)
+(cd "$R" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#778)" && git push -q origin main)
 cat >"$R/.git/hooks/pre-push" <<EOF
 #!/usr/bin/env bash
 printf 'pre-push hook unexpectedly ran\n' >"$R_PRE_PUSH_LOG"
@@ -917,7 +917,7 @@ S="$(mk_fixture S)"
 mkdir -p "$S/.cortex"
 printf '0.5.0\n' >"$S/.cortex/SPEC_VERSION"
 printf 'stale state\n' >"$S/.cortex/state.md"
-(cd "$S" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$S" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#613)")
 S_FEATURE="$TMPROOT/S-feature"
 git -C "$S" worktree add -q -b feature/sibling "$S_FEATURE"
 S_MAIN_BEFORE="$(git -C "$S" rev-parse main)"
@@ -1017,7 +1017,7 @@ mkdir -p "$V"
   printf '0.5.0\n' >.cortex/SPEC_VERSION
   printf 'stale state\n' >.cortex/state.md
   git add .cortex/SPEC_VERSION .cortex/state.md
-  git commit -q -m "add cortex state"
+  git commit -q -m "add cortex state (#636)"
   git remote add origin "$V"
   git update-ref refs/remotes/origin/trunk trunk
   git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
