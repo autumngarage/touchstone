@@ -318,13 +318,46 @@ if ! command -v cortex >/dev/null 2>&1; then
   exit 0
 fi
 
+# 1b. Input validation — after every inactivity short-circuit above (a
+# disabled or non-default-worktree hook stays silent regardless of env),
+# but before ANY state change: a malformed TOUCHSTONE_MERGED_PR previously
+# failed only after the journal branch was checked out, leaving the repo
+# off its default branch with no cleanup hint.
+case "${TOUCHSTONE_MERGED_PR:-}" in
+  *[!0-9]*)
+    log "cortex-pr-merged-hook: TOUCHSTONE_MERGED_PR must be numeric, got: $TOUCHSTONE_MERGED_PR"
+    exit 1
+    ;;
+esac
+
 # 2. Substantive-merge gate (cortex#206). Only draft a pr-merged
 # journal entry when Cortex reports at least one trigger fired. If the
 # gate is unavailable, log the degradation and fall back to the prior
 # journal-every-merge behavior; a spurious journal is recoverable, while
 # a silently skipped substantive merge is not.
 fired_triggers_ndjson=""
-if [ "$force_journal" -eq 0 ]; then
+# The gate inspects HEAD~1..HEAD. When an explicit TOUCHSTONE_MERGED_PR
+# names a PR whose squash merge is NOT the current HEAD (the recovery
+# case), that evidence belongs to a different merge — drafting it into
+# PR #N's journal would misattribute another PR's triggers. Omit the
+# evidence and journal unconditionally instead.
+explicit_pr_head_mismatch=0
+if [ -n "${TOUCHSTONE_MERGED_PR:-}" ]; then
+  head_subject="$(git -C "$PROJECT_DIR" log -1 --format=%s HEAD 2>/dev/null || true)"
+  # POSITIVE evidence required: HEAD must name the source PR (trailing
+  # squash "(#N)" or a "Merge pull request #N" subject). Anything else —
+  # a different PR, a custom title, an advanced default branch — omits
+  # the HEAD-derived evidence: attributing another merge's triggers to a
+  # recovered journal is worse than a journal without trigger context.
+  case "$head_subject" in
+    *"(#${TOUCHSTONE_MERGED_PR})" | "Merge pull request #${TOUCHSTONE_MERGED_PR} "*) ;;
+    *) explicit_pr_head_mismatch=1 ;;
+  esac
+fi
+if [ "$explicit_pr_head_mismatch" -eq 1 ]; then
+  log "cortex-pr-merged-hook: HEAD is not PR #${TOUCHSTONE_MERGED_PR}'s merge; omitting HEAD-derived trigger evidence rather than attributing another merge's triggers."
+fi
+if [ "$force_journal" -eq 0 ] && [ "$explicit_pr_head_mismatch" -eq 0 ]; then
   if ! git -C "$PROJECT_DIR" rev-parse --verify --quiet HEAD~1 >/dev/null 2>&1; then
     log "cortex-pr-merged-hook: HEAD has no parent commit; substantive-merge gate skipped, falling back to journal-every-merge."
   else
@@ -387,11 +420,22 @@ fi
 # the absolute path on stdout. We capture stdout to grab that path; we
 # leave stderr untouched so any cortex-side warnings (gh not auth'd, etc)
 # surface to the operator running the merge.
+#
+# When the caller named the source PR, forward it: without --pr, Cortex
+# infers the PR from the current HEAD subject, so a recovered journal for an
+# older merge would carry that PR in its branch/commit/PR body while the
+# durable artifact silently described a different, newer PR (issue #513).
+# Inference remains the fallback only when no explicit value exists.
+# Validation happened in section 0, before any state change.
+draft_pr_args=()
+if [ -n "${TOUCHSTONE_MERGED_PR:-}" ]; then
+  draft_pr_args=(--pr "$TOUCHSTONE_MERGED_PR")
+fi
 draft_stdout=""
 draft_status=0
 draft_stdout="$(cd "$PROJECT_DIR" \
   && CORTEX_PR_MERGED_FIRED_TRIGGERS="$fired_triggers_ndjson" \
-    cortex journal draft pr-merged --no-edit)" \
+    cortex journal draft pr-merged --no-edit ${draft_pr_args[@]+"${draft_pr_args[@]}"})" \
   || draft_status=$?
 if [ "$draft_status" -ne 0 ]; then
   log "cortex-pr-merged-hook: cortex journal draft pr-merged exited $draft_status."

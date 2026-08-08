@@ -202,9 +202,23 @@ if [ "${1:-}" = "check-triggers" ]; then
 fi
 
 if [ "${1:-}" = "journal" ] && [ "${2:-}" = "draft" ] && [ "${3:-}" = "pr-merged" ]; then
+  # Mirror the real CLI: an explicit --pr wins; otherwise infer from HEAD's
+  # subject. The drafted entry records which source PR it described so tests
+  # can assert transport metadata and durable content agree (issue #513).
+  pr_value=""
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "--pr" ]; then
+      pr_value="$arg"
+    fi
+    prev="$arg"
+  done
+  if [ -z "$pr_value" ]; then
+    pr_value="inferred-from-head:$(git log -1 --format=%s | { grep -oE '#[0-9]+' || true; } | head -1 | tr -d '#')"
+  fi
   mkdir -p .cortex/journal
   entry="$(pwd)/.cortex/journal/pr-merged.md"
-  printf 'drafted journal\n' > "$entry"
+  printf 'drafted journal for source-pr=%s\n' "$pr_value" > "$entry"
   printf '%s\n' "$entry"
   exit 0
 fi
@@ -289,7 +303,7 @@ H="$(mk_fixture H)"
 mkdir -p "$H/.cortex"
 printf '0.5.0\n' >"$H/.cortex/SPEC_VERSION"
 printf 'stale state\n' >"$H/.cortex/state.md"
-(cd "$H" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$H" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#131)")
 H_MAIN_BEFORE="$(git -C "$H" rev-parse main)"
 (
   cd "$H"
@@ -318,6 +332,19 @@ fi
 if ! printf '%s\n' "$H_CHANGED" | grep -qx '.cortex/state.md'; then
   echo "FAIL [H]: hook commit did not include refreshed Cortex state" >&2
   printf '%s\n' "$H_CHANGED" >&2
+  exit 1
+fi
+# Issue #513 coherence: the branch name, commit message, and the DURABLE
+# journal artifact must all describe the same source PR. The fixture's HEAD
+# subject carries no PR reference, so only an explicitly forwarded --pr can
+# make the drafted entry say 131 — inference would corrupt the record.
+if ! git -C "$H" show HEAD:.cortex/journal/pr-merged.md | grep -q 'source-pr=131'; then
+  echo "FAIL [H]: drafted journal does not describe the explicit source PR 131" >&2
+  git -C "$H" show HEAD:.cortex/journal/pr-merged.md >&2
+  exit 1
+fi
+if ! git -C "$H" log -1 --format=%s | grep -q '#131'; then
+  echo "FAIL [H]: hook commit subject does not name source PR 131" >&2
   exit 1
 fi
 if [ "$(cat "$H/.cortex/state.md")" != "refreshed state" ]; then
@@ -437,7 +464,7 @@ K="$(mk_fixture K)"
 mkdir -p "$K/.cortex"
 printf '0.5.0\n' >"$K/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$K/.cortex/state.md"
-(cd "$K" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$K" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#300)")
 K_NDJSON='{"trigger":"T1.4","reason":"file deletion exceeds 100 lines (deleted 142 from src/foo.py)","files":["src/foo.py"]}'
 (
   cd "$K"
@@ -462,7 +489,7 @@ L="$(mk_fixture L)"
 mkdir -p "$L/.cortex"
 printf '0.5.0\n' >"$L/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$L/.cortex/state.md"
-(cd "$L" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$L" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#301)")
 L_NDJSON='{"trigger":"T1.1","reason":"diff touches principles/","files":["principles/foo.md"]}'
 (
   cd "$L"
@@ -482,12 +509,47 @@ if ! printf '%s\n' "$L_BODY" | grep -q "## Triggers fired" \
   exit 1
 fi
 
+# Scenario L2: recovery for an OLDER PR while HEAD is a different PR's
+# squash merge — HEAD-derived trigger evidence must be omitted, not
+# attributed to the recovered PR (PR #672).
+L2="$(mk_fixture L2)"
+mkdir -p "$L2/.cortex"
+printf '0.5.0\n' >"$L2/.cortex/SPEC_VERSION"
+printf 'tracked state\n' >"$L2/.cortex/state.md"
+(cd "$L2" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "feat: newer unrelated merge (#999)")
+L2_LOG="$TMPROOT/L2-cortex.log"
+(
+  cd "$L2"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_CORTEX_LOG="$L2_LOG" \
+    FAKE_CORTEX_CHECK_TRIGGERS_NDJSON='{"trigger":"T1.1","reason":"should never be attributed","files":["principles/foo.md"]}' \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+    TOUCHSTONE_MERGED_PR=300 \
+    bash "$HOOK" 2>"$TMPROOT/L2-stderr.txt"
+)
+L2_BODY="$(git -C "$L2" show HEAD:.cortex/journal/pr-merged.md)"
+if printf '%s\n' "$L2_BODY" | grep -q "should never be attributed"; then
+  echo "FAIL [L2]: recovered journal attributed another merge's trigger evidence" >&2
+  printf '%s\n' "$L2_BODY" >&2
+  exit 1
+fi
+if grep -q "check-triggers" "$L2_LOG" 2>/dev/null; then
+  echo "FAIL [L2]: check-triggers ran despite the PR/HEAD mismatch" >&2
+  exit 1
+fi
+if ! grep -q "omitting HEAD-derived trigger evidence" "$TMPROOT/L2-stderr.txt"; then
+  echo "FAIL [L2]: mismatch degradation was not logged" >&2
+  cat "$TMPROOT/L2-stderr.txt" >&2
+  exit 1
+fi
+
 # Scenario M: env force bypasses the gate and avoids check-triggers entirely.
 M="$(mk_fixture M)"
 mkdir -p "$M/.cortex"
 printf '0.5.0\n' >"$M/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$M/.cortex/state.md"
-(cd "$M" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$M" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#400)")
 M_LOG="$TMPROOT/M-cortex.log"
 (
   cd "$M"
@@ -516,7 +578,7 @@ mkdir -p "$N/.cortex"
 printf '0.5.0\n' >"$N/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$N/.cortex/state.md"
 printf 'cortex_pr_merged_hook=force\n' >"$N/.touchstone-config"
-(cd "$N" && git add .cortex/SPEC_VERSION .cortex/state.md .touchstone-config && git commit -q -m "add cortex state with force config")
+(cd "$N" && git add .cortex/SPEC_VERSION .cortex/state.md .touchstone-config && git commit -q -m "add cortex state with force config (#401)")
 N_LOG="$TMPROOT/N-cortex.log"
 (
   cd "$N"
@@ -543,7 +605,7 @@ O="$(mk_fixture O)"
 mkdir -p "$O/.cortex"
 printf '0.5.0\n' >"$O/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$O/.cortex/state.md"
-(cd "$O" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$O" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#500)")
 O_STDERR="$TMPROOT/O-stderr"
 (
   cd "$O"
@@ -609,7 +671,7 @@ git -C "$Q" push -q -u origin main
 mkdir -p "$Q/.cortex"
 printf '0.5.0\n' >"$Q/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$Q/.cortex/state.md"
-(cd "$Q" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state" && git push -q origin main)
+(cd "$Q" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#777)" && git push -q origin main)
 Q_HEAD_BEFORE="$(git -C "$Q" rev-parse HEAD)"
 (
   cd "$Q"
@@ -682,7 +744,7 @@ mk_cortex_publish_fixture() {
   (
     cd "$dir"
     git add .cortex/SPEC_VERSION .cortex/state.md
-    git commit -q -m "add cortex state"
+    git commit -q -m "add cortex state (#779)"
     git push -q origin main
   )
   printf '%s' "$dir"
@@ -816,7 +878,7 @@ git -C "$R" push -q -u origin main
 mkdir -p "$R/.cortex"
 printf '0.5.0\n' >"$R/.cortex/SPEC_VERSION"
 printf 'tracked state\n' >"$R/.cortex/state.md"
-(cd "$R" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state" && git push -q origin main)
+(cd "$R" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#778)" && git push -q origin main)
 cat >"$R/.git/hooks/pre-push" <<EOF
 #!/usr/bin/env bash
 printf 'pre-push hook unexpectedly ran\n' >"$R_PRE_PUSH_LOG"
@@ -855,7 +917,7 @@ S="$(mk_fixture S)"
 mkdir -p "$S/.cortex"
 printf '0.5.0\n' >"$S/.cortex/SPEC_VERSION"
 printf 'stale state\n' >"$S/.cortex/state.md"
-(cd "$S" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state")
+(cd "$S" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "add cortex state (#613)")
 S_FEATURE="$TMPROOT/S-feature"
 git -C "$S" worktree add -q -b feature/sibling "$S_FEATURE"
 S_MAIN_BEFORE="$(git -C "$S" rev-parse main)"
@@ -955,7 +1017,7 @@ mkdir -p "$V"
   printf '0.5.0\n' >.cortex/SPEC_VERSION
   printf 'stale state\n' >.cortex/state.md
   git add .cortex/SPEC_VERSION .cortex/state.md
-  git commit -q -m "add cortex state"
+  git commit -q -m "add cortex state (#636)"
   git remote add origin "$V"
   git update-ref refs/remotes/origin/trunk trunk
   git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
