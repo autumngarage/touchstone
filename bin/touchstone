@@ -9,7 +9,6 @@
 #   touchstone run <task>                  Run profile task: lint, test, build, typecheck, validate
 #   touchstone preflight                   Run deterministic review preflight checks
 #   touchstone run-script <name>           Prototype runner for pinned project-local script shims
-#   touchstone worker <command>            Manage worker worktree lifecycle
 #   touchstone update                     Update current project to latest touchstone
 #   touchstone update --in-place          Update on the current branch
 #   touchstone update --dry-run           Show what would change without applying
@@ -332,10 +331,6 @@ cmd_run() {
 
 cmd_preflight() {
   exec bash "$TOUCHSTONE_ROOT/lib/preflight.sh" "$@"
-}
-
-cmd_worker() {
-  exec bash "$TOUCHSTONE_ROOT/scripts/worker.sh" "$@"
 }
 
 run_script_usage() {
@@ -1760,11 +1755,6 @@ cmd_help() {
   printf "    ${BOLD}touchstone run${RESET} <task>             Run lint, typecheck, build, test, or validate\n"
   printf "    ${BOLD}touchstone preflight${RESET}              Run deterministic review preflight checks\n"
   printf "    ${BOLD}touchstone run-script${RESET} <name>      Prototype runner for pinned script shims\n"
-  printf "    ${BOLD}touchstone worker${RESET} spawn --task ... --type fix|feat|chore|refactor|docs\n"
-  printf "    ${BOLD}touchstone worker${RESET} status --worktree <path> [--json]\n"
-  printf "    ${BOLD}touchstone worker${RESET} ship --worktree <path> [--cleanup]\n"
-  printf "    ${BOLD}touchstone worker${RESET} abandon --worktree <path> [--dry-run|--force]\n"
-  printf "    ${BOLD}touchstone worker${RESET} list [--repo <path>] [--json]\n"
   printf "    ${BOLD}touchstone update${RESET}                 Create a branch + commit for touchstone updates\n"
   printf "    ${BOLD}touchstone update${RESET} --in-place      Commit touchstone updates on the current branch\n"
   printf "    ${BOLD}touchstone update${RESET} --dry-run       Preview what would change\n"
@@ -1849,7 +1839,6 @@ case "$COMMAND" in
   run)          cmd_run "$@" ;;
   preflight)    cmd_preflight "$@" ;;
   run-script)   cmd_run_script "$@" ;;
-  worker)      cmd_worker "$@" ;;
   detect)       cmd_detect ;;
   update)       cmd_update "$@" ;;
   update-all)   cmd_update_all "$@" ;;
