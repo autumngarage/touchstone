@@ -1028,7 +1028,13 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
         exit 1
       fi
       case "$LOCAL_PATCH_FINGERPRINTS" in
-        *" $remote_fp "*) ;;
+        *" $remote_fp "*)
+          # Consume the twin: each remote occurrence needs its OWN local
+          # occurrence. Remote histories can carry the same patch twice
+          # (add X, revert X, add X again); set-membership would let both
+          # occurrences claim one local twin and force away real content.
+          LOCAL_PATCH_FINGERPRINTS="${LOCAL_PATCH_FINGERPRINTS/ ${remote_fp} / }"
+          ;;
         *)
           echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} carries commit ${remote_commit:0:12}" >&2
           echo "       whose changes are not in this checkout's history byte-for-byte (whitespace" >&2
