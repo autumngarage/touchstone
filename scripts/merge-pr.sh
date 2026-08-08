@@ -2104,8 +2104,19 @@ CLAIM_CHECK_SUBSTITUTED=false
 CLAIM_SUBSTITUTION_KIND=""
 
 check_run_never_executed() {
-  local link="$1" run_id="" real_steps=""
+  local link="$1" run_id="" job_id="" real_steps=""
   [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] || return 1
+  # Inspect the FAILED JOB when the link names one: a sibling job's
+  # executed steps must not make a zero-step failure look like it ran
+  # project code (PR #680 review).
+  job_id="$(printf '%s' "$link" | grep -oE '/job/[0-9]+' | head -1 | tr -dc '0-9')"
+  if [ -n "$job_id" ]; then
+    real_steps="$(gh api "repos/$REPO_OWNER/$REPO_NAME/actions/jobs/$job_id" \
+      --jq '[.steps[]? | select(.name != "Set up job" and .name != "Complete job")] | length' \
+      2>/dev/null)" || return 1
+    [ "$real_steps" = "0" ]
+    return
+  fi
   run_id="$(printf '%s' "$link" | grep -oE '/runs/[0-9]+' | head -1 | tr -dc '0-9')"
   [ -n "$run_id" ] || return 1
   # Setup/teardown pseudo-steps appear even on infra failures; user code ran
@@ -2127,14 +2138,33 @@ claim_check_run_never_executed() {
 # without it, every PR in an outage reads as a validation problem
 # (issue #631).
 zero_step_failure_annotations() {
-  local link="$1" run_id="" job_id="" messages=""
+  local link="$1" run_id="" job_id="" job_ids="" messages="" one="" one_err=0
   [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] || return 1
-  run_id="$(printf '%s' "$link" | grep -oE '/runs/[0-9]+' | head -1 | tr -dc '0-9')"
-  [ -n "$run_id" ] || return 1
+  job_id="$(printf '%s' "$link" | grep -oE '/job/[0-9]+' | head -1 | tr -dc '0-9')"
+  if [ -n "$job_id" ]; then
+    job_ids="$job_id"
+  else
+    run_id="$(printf '%s' "$link" | grep -oE '/runs/[0-9]+' | head -1 | tr -dc '0-9')"
+    [ -n "$run_id" ] || return 1
+    if ! job_ids="$(gh api "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$run_id/jobs" \
+      --jq '.jobs[].id' 2>&1)"; then
+      # An API failure must be VISIBLE, not read as "no annotations" —
+      # auth and rate-limit problems need a different operator response.
+      echo "       (annotation lookup failed for run $run_id: $job_ids)" >&2
+      return 1
+    fi
+  fi
   while IFS= read -r job_id; do
     [ -n "$job_id" ] || continue
-    messages="$messages$(gh api "repos/$REPO_OWNER/$REPO_NAME/check-runs/$job_id/annotations" --jq '.[].message' 2>/dev/null || true)"
-  done <<<"$(gh api "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$run_id/jobs" --jq '.jobs[].id' 2>/dev/null || true)"
+    one_err=0
+    one="$(gh api "repos/$REPO_OWNER/$REPO_NAME/check-runs/$job_id/annotations" \
+      --jq '.[].message' 2>&1)" || one_err=$?
+    if [ "$one_err" -ne 0 ]; then
+      echo "       (annotation lookup failed for job $job_id: $one)" >&2
+      continue
+    fi
+    messages="$messages$one"
+  done <<<"$job_ids"
   [ -n "$messages" ] || return 1
   printf '%s\n' "$messages"
 }
@@ -2186,7 +2216,7 @@ unstable_only_superseded_cancellations() {
     return 1
   }
   rollup="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/commits/$head_sha/check-runs?per_page=100" \
-    --jq '.check_runs[] | [.name, (.status // ""), (.conclusion // "")] | @tsv' \
+    --jq '.check_runs[] | [.name, (.status // ""), (.conclusion // ""), (.completed_at // .started_at // "")] | @tsv' \
     2>"$stderr_file")" || {
     rm -f "$stderr_file"
     return 1
@@ -2197,15 +2227,26 @@ unstable_only_superseded_cancellations() {
   fi
   rm -f "$stderr_file"
   [ -n "$rollup" ] || return 1
-  while IFS="$(printf '\t')" read -r name _run_status conclusion || [ -n "$name" ]; do
+  local n2="" s2="" c2="" t2="" ts="" newer_success=false
+  while IFS="$(printf '\t')" read -r name _run_status conclusion ts || [ -n "$name" ]; do
     [ -n "$name" ] || continue
     case "$conclusion" in
       success | skipped | neutral) ;;
       cancelled)
-        # The cancelled run counts only when a successful replacement of
-        # the SAME check name completed on this head.
-        printf '%s\n' "$rollup" \
-          | grep -F "$(printf '%s\tcompleted\tsuccess' "$name")" >/dev/null || return 1
+        # The cancelled run counts only when a successful run of the SAME
+        # check name completed AFTER it — an older success does not
+        # supersede a newer cancellation (PR #680 review). ISO-8601
+        # timestamps compare lexically; missing timestamps fail closed.
+        newer_success=false
+        while IFS="$(printf '\t')" read -r n2 s2 c2 t2 || [ -n "$n2" ]; do
+          [ "$n2" = "$name" ] || continue
+          [ "$s2" = "completed" ] || continue
+          [ "$c2" = "success" ] || continue
+          if [ -n "$t2" ] && [ -n "$ts" ] && [[ "$t2" > "$ts" ]]; then
+            newer_success=true
+          fi
+        done <<<"$rollup"
+        [ "$newer_success" = true ] || return 1
         ;;
       *)
         return 1
@@ -2310,13 +2351,14 @@ attempt_claim_check_substitution() {
 
 print_failed_checks_and_exit() {
   local failed_checks="$1"
-  local name state link annotations="" infra_seen=false
+  local name state link annotations="" failure_count=0 infra_count=0
 
   [ -n "$failed_checks" ] || return 1
 
   echo "ERROR: PR #$PR_NUMBER has failed check(s); stopping automerge." >&2
   while IFS="$(printf '\t')" read -r name state link || [ -n "$name" ]; do
     [ -n "$name" ] || continue
+    failure_count=$((failure_count + 1))
     if [ -n "$link" ]; then
       echo "       - $name (${state:-failed}): $link" >&2
     else
@@ -2329,11 +2371,14 @@ print_failed_checks_and_exit() {
       printf '%s\n' "$annotations" | sed 's/^/         annotation: /' >&2
       if printf '%s' "$annotations" \
         | grep -qiE 'payment|billing|spending limit|quota|runner|capacity|account'; then
-        infra_seen=true
+        infra_count=$((infra_count + 1))
       fi
     fi
   done <<<"$failed_checks"
-  if [ "$infra_seen" = true ]; then
+  # Classify as infrastructure only when EVERY failure qualifies: one
+  # zero-step billing failure next to a genuine test failure must still
+  # read as a code problem (PR #680 review).
+  if [ "$infra_count" -gt 0 ] && [ "$infra_count" -eq "$failure_count" ]; then
     echo "       CLASSIFICATION: infrastructure startup failure — the check failed before" >&2
     echo "       executing any project step, and GitHub's annotation names an external" >&2
     echo "       blocker (billing/quota/runner). Local code is not implicated. After the" >&2

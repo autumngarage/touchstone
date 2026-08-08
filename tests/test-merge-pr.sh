@@ -242,6 +242,10 @@ case "${1:-} ${2:-}" in
     ;;
   "api repos/"*)
     case "${2:-}" in
+      */actions/jobs/*)
+        # Job-level step count (PR #680): mirrors the run-level knob.
+        echo "${GH_CLAIM_RUN_REAL_STEPS:-5}"
+        ;;
       */actions/runs/*/jobs)
         # Step count for the claim-check run inspection (issue #658):
         # 0 simulates a zero-step infrastructure failure. When the query
@@ -2580,7 +2584,7 @@ echo "==> Test: superseded cancelled run tolerates UNSTABLE (issue #593)"
 reset_case_files
 if ! GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
   GH_CHECK_BUCKETS=$'delivery-protocol\tcancel\nclaim-check\tpass' \
-  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tcancelled\ndelivery-protocol\tcompleted\tsuccess\nclaim-check\tcompleted\tsuccess' \
+  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tcancelled\t2026-01-01T10:00:00Z\ndelivery-protocol\tcompleted\tsuccess\t2026-01-01T10:05:00Z\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z' \
   GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
   MERGE_PR_STATE_MAX_ATTEMPTS=3 MERGE_PR_SLEEP_OVERRIDE=0 \
   run_merge_pr "$TEST_DIR/output-superseded-cancel.txt" 123; then
@@ -2600,7 +2604,7 @@ echo "==> Test: cancelled run WITHOUT a successful replacement keeps waiting"
 reset_case_files
 if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
   GH_CHECK_BUCKETS=$'delivery-protocol\tcancel\nclaim-check\tpass' \
-  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tcancelled\nclaim-check\tcompleted\tsuccess' \
+  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tcancelled\t2026-01-01T10:00:00Z\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z' \
   GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
   MERGE_PR_STATE_MAX_ATTEMPTS=2 MERGE_PR_SLEEP_OVERRIDE=0 \
   run_merge_pr "$TEST_DIR/output-unreplaced-cancel.txt" 123; then
@@ -2612,6 +2616,44 @@ if [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: unreplaced cancellation never authorizes the merge"
 else
   cat "$TEST_DIR/output-unreplaced-cancel.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: an older success does not supersede a newer cancellation"
+reset_case_files
+if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
+  GH_CHECK_BUCKETS=$'delivery-protocol\tcancel\nclaim-check\tpass' \
+  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tsuccess\t2026-01-01T09:00:00Z\ndelivery-protocol\tcompleted\tcancelled\t2026-01-01T10:00:00Z\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z' \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  MERGE_PR_STATE_MAX_ATTEMPTS=2 MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-stale-success.txt" 123; then
+  echo "FAIL: an older success must not supersede a newer cancellation" >&2
+  cat "$TEST_DIR/output-stale-success.txt" >&2
+  exit 1
+fi
+if [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: supersession requires the success to be newer"
+else
+  exit 1
+fi
+
+echo "==> Test: mixed infra and code failures classify as code (PR #680)"
+reset_case_files
+if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
+  GH_FAILED_CHECKS=$'validate\tfail\thttps://github.com/autumngarage/example/actions/runs/555/job/1\nunit-tests\tfail\t' \
+  GH_CLAIM_RUN_REAL_STEPS=0 \
+  GH_CHECK_ANNOTATIONS='The job was not started because recent account payments have failed.' \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-mixed-failure.txt" 123; then
+  echo "FAIL: mixed failure must stop the merge" >&2
+  exit 1
+fi
+if ! grep -q 'CLASSIFICATION: infrastructure startup failure' "$TEST_DIR/output-mixed-failure.txt" \
+  && grep -q 'annotation: The job was not started' "$TEST_DIR/output-mixed-failure.txt"; then
+  echo "==> PASS: a genuine code failure keeps the code classification"
+else
+  cat "$TEST_DIR/output-mixed-failure.txt" >&2
   exit 1
 fi
 
