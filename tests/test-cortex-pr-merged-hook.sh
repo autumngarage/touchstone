@@ -509,6 +509,41 @@ if ! printf '%s\n' "$L_BODY" | grep -q "## Triggers fired" \
   exit 1
 fi
 
+# Scenario L2: recovery for an OLDER PR while HEAD is a different PR's
+# squash merge — HEAD-derived trigger evidence must be omitted, not
+# attributed to the recovered PR (PR #672).
+L2="$(mk_fixture L2)"
+mkdir -p "$L2/.cortex"
+printf '0.5.0\n' >"$L2/.cortex/SPEC_VERSION"
+printf 'tracked state\n' >"$L2/.cortex/state.md"
+(cd "$L2" && git add .cortex/SPEC_VERSION .cortex/state.md && git commit -q -m "feat: newer unrelated merge (#999)")
+L2_LOG="$TMPROOT/L2-cortex.log"
+(
+  cd "$L2"
+  PATH="$FAKEBIN:$PATH" \
+    FAKE_CORTEX_LOG="$L2_LOG" \
+    FAKE_CORTEX_CHECK_TRIGGERS_NDJSON='{"trigger":"T1.1","reason":"should never be attributed","files":["principles/foo.md"]}' \
+    TOUCHSTONE_DEFAULT_BRANCH=main \
+    TOUCHSTONE_CORTEX_HOOK_SKIP_PUSH=1 \
+    TOUCHSTONE_MERGED_PR=300 \
+    bash "$HOOK" 2>"$TMPROOT/L2-stderr.txt"
+)
+L2_BODY="$(git -C "$L2" show HEAD:.cortex/journal/pr-merged.md)"
+if printf '%s\n' "$L2_BODY" | grep -q "should never be attributed"; then
+  echo "FAIL [L2]: recovered journal attributed another merge's trigger evidence" >&2
+  printf '%s\n' "$L2_BODY" >&2
+  exit 1
+fi
+if grep -q "check-triggers" "$L2_LOG" 2>/dev/null; then
+  echo "FAIL [L2]: check-triggers ran despite the PR/HEAD mismatch" >&2
+  exit 1
+fi
+if ! grep -q "omitting HEAD-derived trigger evidence" "$TMPROOT/L2-stderr.txt"; then
+  echo "FAIL [L2]: mismatch degradation was not logged" >&2
+  cat "$TMPROOT/L2-stderr.txt" >&2
+  exit 1
+fi
+
 # Scenario M: env force bypasses the gate and avoids check-triggers entirely.
 M="$(mk_fixture M)"
 mkdir -p "$M/.cortex"
