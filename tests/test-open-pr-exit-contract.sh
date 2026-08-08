@@ -27,6 +27,9 @@ set -euo pipefail
 export GH_REPO="" GH_HOST="" GITHUB_SERVER_URL=""
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=stage-touchstone-libs.sh
+source "$(dirname "${BASH_SOURCE[0]}")/stage-touchstone-libs.sh"
+
 TEST_DIR="$(mktemp -d -t touchstone-test-open-pr.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
@@ -44,7 +47,8 @@ mkdir -p "$TEST_DIR/lib"
 cp "$TOUCHSTONE_ROOT/lib/events.sh" "$TEST_DIR/lib/events.sh"
 cp "$TOUCHSTONE_ROOT/lib/toml.sh" "$TEST_DIR/lib/toml.sh"
 cp "$TOUCHSTONE_ROOT/lib/sha256.sh" "$TEST_DIR/lib/sha256.sh"
-cp "$TOUCHSTONE_ROOT/lib/preflight.sh" "$TEST_DIR/lib/preflight.sh"
+stage_touchstone_libs "$TOUCHSTONE_ROOT" "$TEST_DIR/scripts"
+
 chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/issue-claim-check.sh"
 
 # Real git inside a fresh repo with a feature branch checked out, so the
@@ -1255,23 +1259,33 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-echo "==> Case 43: hunks of different shape stay distinct (issue #689)"
+echo "==> Case 43: identical block at a different location refuses (issue #689)"
 OUT="$TEST_DIR/case43.out"
 RC=0
 reset_open_pr_logs
+# The motivating collision: a file of IDENTICAL lines where remote inserts
+# a marker near the top and local inserts the same marker near the bottom.
+# Both patches carry byte-identical context and payload text and differ
+# only in hunk-header line numbers, so any patch-TEXT fingerprint that
+# normalizes headers away (the parent implementation) rates them equal and
+# authorizes a destructive force-push. Content-identity fingerprints see
+# different post-image blobs and refuse.
 CASE43_BASE="$(git -C "$REPO_DIR" rev-parse HEAD)"
-CASE43_BLOB_R="$(printf 'one\ntwo\nthree\n' | git -C "$REPO_DIR" hash-object -w --stdin)"
-CASE43_BLOB_L="$(printf 'one\ntwo\nthree\nfour\n' | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE43_SAME="$(for _ in $(seq 1 20); do printf 'same\n'; done)"
+CASE43_REMOTE_BODY="$(printf '%s\n' "$CASE43_SAME" | awk 'NR==3{print; print "MARKER"; next} {print}')"
+CASE43_LOCAL_BODY="$(printf '%s\n' "$CASE43_SAME" | awk 'NR==15{print; print "MARKER"; next} {print}')"
+CASE43_BLOB_R="$(printf '%s\n' "$CASE43_REMOTE_BODY" | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE43_BLOB_L="$(printf '%s\n' "$CASE43_LOCAL_BODY" | git -C "$REPO_DIR" hash-object -w --stdin)"
 CASE43_TREE_R="$(git -C "$REPO_DIR" ls-tree HEAD | {
   cat
-  printf '100644 blob %s\tshaped.txt\n' "$CASE43_BLOB_R"
+  printf '100644 blob %s\trepeated.txt\n' "$CASE43_BLOB_R"
 } | git -C "$REPO_DIR" mktree)"
 CASE43_TREE_L="$(git -C "$REPO_DIR" ls-tree HEAD | {
   cat
-  printf '100644 blob %s\tshaped.txt\n' "$CASE43_BLOB_L"
+  printf '100644 blob %s\trepeated.txt\n' "$CASE43_BLOB_L"
 } | git -C "$REPO_DIR" mktree)"
-CASE43_REMOTE="$(git -C "$REPO_DIR" commit-tree "$CASE43_TREE_R" -p "$CASE43_BASE" -m "add shaped")"
-CASE43_LOCAL="$(git -C "$REPO_DIR" commit-tree "$CASE43_TREE_L" -p "$CASE43_BASE" -m "add shaped")"
+CASE43_REMOTE="$(git -C "$REPO_DIR" commit-tree "$CASE43_TREE_R" -p "$CASE43_BASE" -m "add marker")"
+CASE43_LOCAL="$(git -C "$REPO_DIR" commit-tree "$CASE43_TREE_L" -p "$CASE43_BASE" -m "add marker")"
 git -C "$REPO_DIR" reset -q --hard "$CASE43_LOCAL"
 OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
   GH_PR_HEAD_OID="$CASE43_REMOTE" \
@@ -1283,7 +1297,40 @@ if [ "$RC" != "0" ] \
   && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log"; then
   echo "    PASS"
 else
-  echo "    FAIL: hunks with different line counts must fingerprint differently" >&2
+  echo "    FAIL: an identical block at a different location must not fingerprint equal" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 44: a rebased twin still authorizes the guarded retry"
+OUT="$TEST_DIR/case44.out"
+RC=0
+reset_open_pr_logs
+# The complementary invariant: the SAME content reached through a
+# different parent (a rebase) must still count as incorporated, or the
+# guarded resume this evidence exists to enable would never fire.
+CASE44_BASE="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CASE44_BLOB="$(printf 'rebased payload\n' | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE44_TREE="$(git -C "$REPO_DIR" ls-tree HEAD | {
+  cat
+  printf '100644 blob %s\trebased.txt\n' "$CASE44_BLOB"
+} | git -C "$REPO_DIR" mktree)"
+CASE44_SIDE="$(git -C "$REPO_DIR" commit-tree "$CASE44_BASE^{tree}" -p "$CASE44_BASE" -m "unrelated parent")"
+CASE44_REMOTE="$(git -C "$REPO_DIR" commit-tree "$CASE44_TREE" -p "$CASE44_BASE" -m "add payload")"
+CASE44_LOCAL="$(git -C "$REPO_DIR" commit-tree "$CASE44_TREE" -p "$CASE44_SIDE" -m "add payload")"
+git -C "$REPO_DIR" reset -q --hard "$CASE44_LOCAL"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE44_REMOTE" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE44_BASE"
+if [ "$RC" = "0" ] \
+  && grep -q 'every observed-head change is incorporated locally' "$OUT" \
+  && grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: identical content under a different parent must still authorize" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))

@@ -5,6 +5,9 @@
 set -euo pipefail
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=stage-touchstone-libs.sh
+source "$(dirname "${BASH_SOURCE[0]}")/stage-touchstone-libs.sh"
+
 TEST_DIR="$(mktemp -d -t touchstone-test-events.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
@@ -59,6 +62,7 @@ copy_event_scripts() {
   mkdir -p "$dst/scripts" "$dst/lib"
   cp "$TOUCHSTONE_ROOT/lib/events.sh" "$dst/lib/events.sh"
   cp "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$dst/scripts/open-pr.sh"
+  stage_touchstone_libs "$TOUCHSTONE_ROOT" "$dst/scripts"
   cp "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$dst/scripts/issue-claim-check.sh"
   cp "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$dst/scripts/merge-pr.sh"
   chmod +x "$dst/scripts/"*.sh

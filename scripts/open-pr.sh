@@ -979,33 +979,34 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
   # whitespace, which is behaviorally significant in Python, YAML, and shell
   # continuations — a remote commit differing only in whitespace would count
   # as incorporated and its content would be forced away. Instead, every
-  # remote-only commit must have a whitespace-EXACT patch twin among the
-  # local-only commits: hunk headers and index lines are normalized out
-  # (rebases renumber them), everything else must match byte-for-byte.
+  # remote-only commit must have a content-identical twin among the
+  # local-only commits.
+  # Content-identity fingerprint: for every path a commit touches, digest
+  # (change status, path, POST-image blob id). The post-image blob is the
+  # exact bytes the commit produced — identical after a rebase, different
+  # for any different content, and defined for binary paths. Patch TEXT is
+  # deliberately not used: it renders binary changes as deltas or
+  # placeholders (PR #691 review) and cannot distinguish an identical block
+  # added at a different location from a rebase shift (issue #689 finding
+  # 5). Pre-image ids are excluded — they name the parent, which is exactly
+  # what a rebase changes.
   open_pr_exact_patch_fingerprint() {
-    local commit="$1" patch_text
-    # --binary: without it, differing binary blobs render an identical
-    # "Binary files differ" placeholder and two DIFFERENT binary changes
-    # fingerprint equal (issue #685).
-    if ! patch_text="$(GIT_NO_REPLACE_OBJECTS=1 git diff-tree --no-commit-id --full-index --binary -p -U3 "$commit" 2>&1)"; then
-      echo "ERROR: could not compute the patch for commit ${commit:0:12}:" >&2
-      printf '%s\n' "$patch_text" | sed 's/^/       /' >&2
+    local commit="$1" raw_text
+    if ! raw_text="$(GIT_NO_REPLACE_OBJECTS=1 git diff-tree --no-commit-id -r --raw "$commit" 2>&1)"; then
+      echo "ERROR: could not compute the change list for commit ${commit:0:12}:" >&2
+      printf '%s\n' "$raw_text" | sed 's/^/       /' >&2
       return 1
     fi
-    # An empty patch carries no provable content; the caller refuses.
-    [ -n "$patch_text" ] || return 2
-    # Hunk normalization keeps line COUNTS and hunk order: rebases
-    # renumber start offsets but never change how many lines a hunk
-    # touches, so "@@ -12,7 +12,9 @@" and its rebased twin normalize
-    # identically while hunks of different shape stay distinct
-    # (issue #689 finding 5). Residual bound, documented: identical
-    # content added at a different location with byte-identical context
-    # is indistinguishable from a rebase shift by content alone; the
-    # multiset twin-consumption (issue #674) covers the duplicated-block
-    # form of that ambiguity.
-    printf '%s\n' "$patch_text" \
-      | sed -e '/^index /d' \
-        -e 's/^@@ -[0-9]*\(,[0-9]*\)\{0,1\} +[0-9]*\(,[0-9]*\)\{0,1\} @@.*/@@ -\1 +\2 @@/' \
+    # An empty change list carries no provable content; the caller refuses.
+    [ -n "$raw_text" ] || return 2
+    # :srcmode dstmode srcsha dstsha status\tpath — keep dstmode, dstsha,
+    # status and path; sort so path enumeration order cannot vary.
+    printf '%s\n' "$raw_text" \
+      | awk -F'\t' '{
+          split($1, meta, " ")
+          printf "%s %s %s\t%s\n", meta[2], meta[4], meta[5], $2
+        }' \
+      | LC_ALL=C sort \
       | touchstone_sha256_stream
   }
   if [ ! -f "$SCRIPT_DIR/../lib/sha256.sh" ]; then
