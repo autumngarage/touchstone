@@ -1725,7 +1725,7 @@ if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin
   ERRORS=$((ERRORS + 1))
 fi
 assert_not_contains "$TEST_DIR/doctor-lean-ci.txt" 'legacy Touchstone starter shape'
-printf 'name: validate\non:\n  push:\n    branches: [main, master]\n  pull_request:\njobs: {}\n' \
+printf 'name: validate\non:\n  push:\n    branches: [main, master]\n  pull_request:\njobs:\n  validate:\n    runs-on: ubuntu-latest\n' \
   >"$PROJECT_LEAN_CI/.github/workflows/validate.yml"
 if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-legacy-ci.txt" 2>&1; then
   echo "FAIL: legacy CI shape must stay advisory — doctor should still exit 0" >&2
@@ -1743,6 +1743,16 @@ if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin
   ERRORS=$((ERRORS + 1))
 fi
 assert_not_contains "$TEST_DIR/doctor-custom-ci.txt" 'legacy Touchstone starter shape'
+# Starter triggers PLUS an extra event-guarded job = customized: the owner
+# has real push-only behavior, and doctor must not advise dropping it.
+printf 'name: validate\non:\n  push:\n    branches: [main, master]\n  pull_request:\njobs:\n  validate:\n    runs-on: ubuntu-latest\n  deploy:\n    if: github.event_name == %s\n    runs-on: ubuntu-latest\n' "'push'" \
+  >"$PROJECT_LEAN_CI/.github/workflows/validate.yml"
+if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-deploy-ci.txt" 2>&1; then
+  echo "FAIL: event-guarded custom CI must stay advisory-silent — doctor should exit 0" >&2
+  cat "$TEST_DIR/doctor-deploy-ci.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_not_contains "$TEST_DIR/doctor-deploy-ci.txt" 'legacy Touchstone starter shape'
 
 # doctor must flag a pre-push hook that exists with the right content but is
 # not executable — Git silently skips such hooks, so the repo is effectively

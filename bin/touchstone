@@ -731,11 +731,23 @@ cmd_doctor_project() {
   # known legacy signature, doctor makes NO claim. Cost advice, not a
   # gating problem: local determinism is the source of truth either way.
   local ci_workflow="$project_dir/.github/workflows/validate.yml"
+  # The FULL starter shape, jobs included: an owner who kept the starter
+  # triggers but added push-only work (a deploy job guarded by
+  # github.event_name) has customized the workflow, and removing its push
+  # trigger would break real behavior — such files are out of contract.
+  local ci_job_ids=""
+  ci_job_ids="$([ -f "$ci_workflow" ] && awk '
+    /^jobs:[[:space:]]*$/ { inj = 1; next }
+    inj && /^[^[:space:]#]/ { inj = 0 }
+    inj && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { gsub(/[ :]/, ""); print }
+  ' "$ci_workflow" | tr '\n' ',' || true)"
   if [ -f "$ci_workflow" ] \
     && grep -Eq '^[[:space:]]*push:[[:space:]]*$' "$ci_workflow" \
     && grep -Eq '^[[:space:]]*pull_request:[[:space:]]*$' "$ci_workflow" \
     && grep -Eq '^[[:space:]]*branches: \[main, master\]' "$ci_workflow" \
-    && ! grep -q 'concurrency' "$ci_workflow"; then
+    && ! grep -q 'concurrency' "$ci_workflow" \
+    && ! grep -q 'github.event_name' "$ci_workflow" \
+    && [ "$ci_job_ids" = "validate," ]; then
     tk_warn "CI validate.yml matches the legacy Touchstone starter shape (push + PR triggers, no concurrency)"
     tk_dim "  Cost: superseded review heads and already-verified default-branch pushes each bill a full run"
     tk_dim "  Fix: adopt the lean starter — PR-only trigger, PR-numbered concurrency, cancellation:"
