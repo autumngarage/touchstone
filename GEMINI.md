@@ -9,6 +9,22 @@
 
 You are an AI agent (Claude Code, Codex, or another driving CLI) working in a Touchstone-bootstrapped project. This block is the universal contract: rules that apply on every turn, plus a routing table to deeper docs you should consult when specific triggers fire. Project-specific guidance lives outside this block in your driver's steering doc (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`).
 
+## What Touchstone Is For
+
+**Touchstone turns AI-generated code into reviewed, tested, thoughtful code — in any project it is installed into.**
+
+It earns its place by doing three things:
+
+1. **Constrain** — you cannot commit to the default branch, skip local validation, merge without exact-head review, or bypass hooks silently.
+2. **Make state legible** — what happened lives in git, PRs, and issues, where a human can verify it without trusting your account of it.
+3. **Carry the contract** — the same rules reach every project and every agent automatically.
+
+This is also a scope boundary, not just a description. When you are deciding whether Touchstone should grow a capability, the test is not "is this useful?" — plenty of useful things belong in your project, not here. The test is:
+
+> **Does it constrain the agent, or does it merely serve the agent?**
+
+Constraints and the evidence that makes them checkable belong in Touchstone. Conveniences that automate what you can already do yourself — retrying a failed push, recovering from a moved base, working around a flaky external service — do not: you are the recovery mechanism, and automating your own recovery adds destructive autonomous behaviour in exchange for saving you a command. Propose those as project-local tooling or leave them out.
+
 ## Agent Roles And Fallbacks
 
 - **Driving CLI** — Claude Code, Codex, or Gemini CLI. Owns file edits, git state, tests, commits, PR creation, PR comment triage, fix commits, approval tracking, and merge. Drivers are interchangeable; driver fallback is shared-contract fallback — if one is unavailable, another reads the same files and continues.

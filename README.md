@@ -12,7 +12,13 @@
 
 # Touchstone
 
-Touchstone is a command-line starter kit for AI-assisted projects. It helps you start a project folder, add the same useful project files every time, and keep those shared files updated later without copy-pasting between projects.
+**Touchstone turns AI-generated code into reviewed, tested, thoughtful code — in any project you install it into.**
+
+It does that by constraining the agent (no commits on the default branch, no skipped validation, no merge without exact-head review, no silent hook bypass), keeping the evidence legible in git and PRs where you can check it yourself, and carrying the same contract into every project automatically.
+
+That sentence is also the scope boundary. Touchstone adds capabilities that *constrain* an agent; it deliberately does not automate what an agent can already do for itself — retrying a push, recovering from a moved base, working around a flaky service. Those save a command and cost autonomous, destructive behaviour, so they live in your project or nowhere.
+
+Practically, it helps you start a project folder, add the same useful project files every time, and keep those shared files updated later without copy-pasting between projects.
 
 It gives you:
 - starter instructions for Claude, Codex, and other AI coding tools
