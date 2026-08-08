@@ -61,6 +61,21 @@ make_fake_gh() {
 set -euo pipefail
 
 case "${1:-} ${2:-}" in
+  "pr view")
+    if [ -n "${GH_PR_VIEW_COUNT_FILE:-}" ]; then
+      view_count="$(cat "$GH_PR_VIEW_COUNT_FILE" 2>/dev/null || echo 0)"
+      view_count=$((view_count + 1))
+      printf '%s' "$view_count" >"$GH_PR_VIEW_COUNT_FILE"
+      if [ "$view_count" -ge 2 ] && [ -n "${GH_PR_VIEW_MUTATE_WT:-}" ] \
+        && [ ! -f "$GH_PR_VIEW_MUTATE_WT/.mutated" ]; then
+        git -C "$GH_PR_VIEW_MUTATE_WT" commit --allow-empty -qm "concurrent local commit" 2>/dev/null || true
+        : >"$GH_PR_VIEW_MUTATE_WT/.mutated"
+      fi
+    fi
+    printf '%s\n' "${GH_PR_VIEW_STATE:-OPEN}" "${GH_PR_VIEW_CROSS:-false}" \
+      "${GH_PR_VIEW_HEAD:-}" "${GH_PR_VIEW_BASE:-main}" "${GH_PR_VIEW_BASE_OID:-}" \
+      "${GH_PR_VIEW_HEAD_OID:-}"
+    ;;
   "pr list")
     field=""
     while [ "$#" -gt 0 ]; do
@@ -71,6 +86,7 @@ case "${1:-} ${2:-}" in
       shift
     done
     case "$field" in
+      *baseRefName*) printf '%s\n' "${GH_PR_BASE_REF:-main}" ;;
       *number*) printf '%s\n' "${GH_PR_NUMBER:-}" ;;
       *url*) printf '%s\n' "${GH_PR_URL:-}" ;;
       *state*) printf '%s\n' "${GH_PR_STATE:-}" ;;
@@ -672,6 +688,417 @@ if [ ! -d "$LEGACY_CLAIM_JOB_DIR/active" ]; then
   fail "ownerless legacy claim was expired solely by age"
 fi
 rmdir "$LEGACY_CLAIM_JOB_DIR/active"
+
+echo "==> Case d2f: detached ship auto-recovers a base-moved failure (issue #651)"
+BASE_MOVED_WT="$TEST_DIR/base-moved-worktree"
+git -C "$REPO" worktree add -q "$BASE_MOVED_WT" -b feat/base-moved-test main
+BASE_MOVED_WT="$(cd "$BASE_MOVED_WT" && pwd -P)"
+# A feature commit on the branch plus a base advanced AFTERWARD: recovery
+# must transplant the commit onto the new base, not just fast-forward an
+# empty branch (the already-up-to-date rebase would mask transplant bugs).
+printf 'feature\n' >"$BASE_MOVED_WT/feature-file.txt"
+git -C "$BASE_MOVED_WT" add feature-file.txt
+git -C "$BASE_MOVED_WT" commit -qm "feat: base-moved fixture commit"
+printf 'advanced\n' >>"$REPO/file.txt"
+git -C "$REPO" add file.txt
+git -C "$REPO" commit -qm "chore: advance base under the fixture PR"
+git -C "$REPO" push -q origin main
+mkdir -p "$BASE_MOVED_WT/scripts"
+cat >"$BASE_MOVED_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+count=$((count + 1))
+printf '%s' "$count" >"$count_file"
+if [ "$count" -eq 1 ]; then
+  echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+  exit 1
+fi
+echo "second attempt shipped"
+exit 0
+EOF
+chmod +x "$BASE_MOVED_WT/scripts/open-pr.sh"
+: >"$TEST_DIR/base-moved-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-attempts" \
+  GH_PR_VIEW_HEAD="feat/base-moved-test" \
+  GH_PR_VIEW_BASE_OID="$(git -C "$ORIGIN_URL" rev-parse main)" \
+  GH_PR_VIEW_HEAD_OID="$(git -C "$BASE_MOVED_WT" rev-parse HEAD)" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$BASE_MOVED_WT" --detach \
+  --events-json "$TEST_DIR/base-moved-events.ndjson" >/dev/null
+wait_for_ship_status "$BASE_MOVED_WT" succeeded "$TEST_DIR/base-moved-status.json"
+if [ "$(cat "$TEST_DIR/base-moved-attempts")" != "2" ]; then
+  fail "base-moved recovery should invoke open-pr exactly twice, got $(cat "$TEST_DIR/base-moved-attempts")"
+fi
+if ! grep -q 'worker_ship_base_moved_retry' "$TEST_DIR/base-moved-events.ndjson"; then
+  fail "base-moved recovery did not emit worker_ship_base_moved_retry"
+fi
+if ! git -C "$BASE_MOVED_WT" merge-base --is-ancestor \
+  "$(git -C "$ORIGIN_URL" rev-parse main)" HEAD; then
+  fail "recovery rebase did not transplant the branch onto the advanced base"
+fi
+if ! git -C "$BASE_MOVED_WT" cat-file -e HEAD:feature-file.txt 2>/dev/null; then
+  fail "recovery rebase lost the feature commit during transplantation"
+fi
+
+echo "==> Case d2g: base-moved recovery is bounded and hands off with its reason"
+EXHAUST_WT="$TEST_DIR/base-moved-exhaust-worktree"
+git -C "$REPO" worktree add -q "$EXHAUST_WT" -b feat/base-moved-exhaust main
+EXHAUST_WT="$(cd "$EXHAUST_WT" && pwd -P)"
+mkdir -p "$EXHAUST_WT/scripts"
+cat >"$EXHAUST_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+printf '%s' "$((count + 1))" >"$count_file"
+echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+exit 1
+EOF
+chmod +x "$EXHAUST_WT/scripts/open-pr.sh"
+: >"$TEST_DIR/base-moved-exhaust-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-exhaust-attempts" \
+  TOUCHSTONE_SHIP_BASE_MOVED_RETRIES=2 \
+  GH_PR_VIEW_HEAD="feat/base-moved-exhaust" \
+  GH_PR_VIEW_BASE_OID="$(git -C "$ORIGIN_URL" rev-parse main)" \
+  GH_PR_VIEW_HEAD_OID="$(git -C "$EXHAUST_WT" rev-parse HEAD)" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$EXHAUST_WT" --detach >/dev/null
+wait_for_ship_status "$EXHAUST_WT" needs-attention "$TEST_DIR/base-moved-exhaust-status.json"
+if [ "$(cat "$TEST_DIR/base-moved-exhaust-attempts")" != "3" ]; then
+  fail "bounded recovery should run 1 initial + 2 retries = 3 attempts, got $(cat "$TEST_DIR/base-moved-exhaust-attempts")"
+fi
+EXHAUST_JOB_DIR="$(ls -td "$REPO/.git/touchstone/ship-jobs"/*/ 2>/dev/null | head -1)"
+if [ ! -f "$EXHAUST_JOB_DIR/reason" ] \
+  || [ "$(cat "$EXHAUST_JOB_DIR/reason")" != "base-moved-retries-exhausted" ]; then
+  fail "exhausted recovery should hand off with reason base-moved-retries-exhausted (got: $(cat "$EXHAUST_JOB_DIR/reason" 2>/dev/null))"
+fi
+
+echo "==> Case d2h: base-moved recovery rebases onto the PR's ACTUAL base"
+git -C "$REPO" update-ref refs/heads/feature/parent "$(git -C "$REPO" rev-parse main)"
+# The recovery fetches the base from origin; the bare remote needs the ref.
+git -C "$ORIGIN_URL" update-ref refs/heads/feature/parent "$(git -C "$REPO" rev-parse main)"
+STACKED_WT="$TEST_DIR/base-moved-stacked-worktree"
+git -C "$REPO" worktree add -q "$STACKED_WT" -b feat/base-moved-stacked main
+STACKED_WT="$(cd "$STACKED_WT" && pwd -P)"
+mkdir -p "$STACKED_WT/scripts"
+cat >"$STACKED_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+count=$((count + 1))
+printf '%s' "$count" >"$count_file"
+if [ "$count" -eq 1 ]; then
+  echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$STACKED_WT/scripts/open-pr.sh"
+: >"$TEST_DIR/base-moved-stacked-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-stacked-attempts" \
+  GH_PR_BASE_REF="feature/parent" \
+  GH_PR_VIEW_HEAD="feat/base-moved-stacked" \
+  GH_PR_VIEW_BASE="feature/parent" \
+  GH_PR_VIEW_BASE_OID="$(git -C "$ORIGIN_URL" rev-parse feature/parent)" \
+  GH_PR_VIEW_HEAD_OID="$(git -C "$STACKED_WT" rev-parse HEAD)" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$STACKED_WT" --detach \
+  --events-json "$TEST_DIR/base-moved-stacked-events.ndjson" >/dev/null
+wait_for_ship_status "$STACKED_WT" succeeded "$TEST_DIR/base-moved-stacked-status.json"
+if ! grep -q '"base_branch":"feature/parent"' "$TEST_DIR/base-moved-stacked-events.ndjson"; then
+  fail "stacked recovery must rebase onto the PR's actual base, not the repository default"
+fi
+
+echo "==> Case d2i: recovery parks when the reporting PR no longer matches the worktree"
+PR_MISMATCH_WT="$TEST_DIR/base-moved-mismatch-worktree"
+git -C "$REPO" worktree add -q "$PR_MISMATCH_WT" -b feat/base-moved-mismatch main
+PR_MISMATCH_WT="$(cd "$PR_MISMATCH_WT" && pwd -P)"
+mkdir -p "$PR_MISMATCH_WT/scripts"
+cat >"$PR_MISMATCH_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+printf '%s' "$((count + 1))" >"$count_file"
+echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+exit 1
+EOF
+chmod +x "$PR_MISMATCH_WT/scripts/open-pr.sh"
+: >"$TEST_DIR/base-moved-mismatch-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-mismatch-attempts" \
+  GH_PR_VIEW_HEAD="feat/some-other-branch" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$PR_MISMATCH_WT" --detach >/dev/null
+wait_for_ship_status "$PR_MISMATCH_WT" needs-attention "$TEST_DIR/base-moved-mismatch-status.json"
+if [ "$(cat "$TEST_DIR/base-moved-mismatch-attempts")" != "1" ]; then
+  fail "mismatched-PR recovery must not retry shipping, got $(cat "$TEST_DIR/base-moved-mismatch-attempts") attempts"
+fi
+MISMATCH_JOB_DIR="$(grep -l "$PR_MISMATCH_WT" "$REPO/.git/touchstone/ship-jobs"/*/worktree-path 2>/dev/null | head -1 | xargs dirname)"
+if [ ! -f "$MISMATCH_JOB_DIR/reason" ] \
+  || [ "$(cat "$MISMATCH_JOB_DIR/reason")" != "base-moved-pr-mismatch" ]; then
+  fail "mismatched-PR recovery should hand off with reason base-moved-pr-mismatch (got: $(cat "$MISMATCH_JOB_DIR/reason" 2>/dev/null))"
+fi
+
+echo "==> Case d2j: recovery parks when GitHub's base tip drifts from the validated fetch"
+OID_DRIFT_WT="$TEST_DIR/base-moved-oid-drift-worktree"
+git -C "$REPO" worktree add -q "$OID_DRIFT_WT" -b feat/base-moved-oid-drift main
+OID_DRIFT_WT="$(cd "$OID_DRIFT_WT" && pwd -P)"
+mkdir -p "$OID_DRIFT_WT/scripts"
+cat >"$OID_DRIFT_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+printf '%s' "$((count + 1))" >"$count_file"
+echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+exit 1
+EOF
+chmod +x "$OID_DRIFT_WT/scripts/open-pr.sh"
+: >"$TEST_DIR/base-moved-oid-drift-attempts"
+# The reported base tip is a real commit that is NOT the fetched origin/main
+# tip: the recheck must refuse to rebase onto history the checks never saw.
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-oid-drift-attempts" \
+  GH_PR_VIEW_HEAD="feat/base-moved-oid-drift" \
+  GH_PR_VIEW_BASE_OID="$(git -C "$REPO" rev-parse main~1)" \
+  GH_PR_VIEW_HEAD_OID="$(git -C "$OID_DRIFT_WT" rev-parse HEAD)" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$OID_DRIFT_WT" --detach >/dev/null
+wait_for_ship_status "$OID_DRIFT_WT" needs-attention "$TEST_DIR/base-moved-oid-drift-status.json"
+if [ "$(cat "$TEST_DIR/base-moved-oid-drift-attempts")" != "1" ]; then
+  fail "base-OID drift must not retry shipping, got $(cat "$TEST_DIR/base-moved-oid-drift-attempts") attempts"
+fi
+OID_DRIFT_JOB_DIR="$(grep -l "$OID_DRIFT_WT" "$REPO/.git/touchstone/ship-jobs"/*/worktree-path 2>/dev/null | head -1 | xargs dirname)"
+if [ ! -f "$OID_DRIFT_JOB_DIR/reason" ] \
+  || [ "$(cat "$OID_DRIFT_JOB_DIR/reason")" != "base-moved-base-oid-drift" ]; then
+  fail "base-OID drift should hand off with reason base-moved-base-oid-drift (got: $(cat "$OID_DRIFT_JOB_DIR/reason" 2>/dev/null))"
+fi
+
+write_base_moved_open_pr() {
+  local wt="$1" extra_markers="${2:-}"
+  mkdir -p "$wt/scripts"
+  cat >"$wt/scripts/open-pr.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="\${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="\$(cat "\$count_file" 2>/dev/null || echo 0)"
+printf '%s' "\$((count + 1))" >"\$count_file"
+echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+$extra_markers
+exit 1
+EOF
+  chmod +x "$wt/scripts/open-pr.sh"
+}
+
+assert_base_moved_parks() {
+  local label="$1" attempts_file="$2" wt="$3" expected_reason="$4"
+  if [ "$(cat "$attempts_file")" != "1" ]; then
+    fail "$label must not retry shipping, got $(cat "$attempts_file") attempts"
+  fi
+  local job_dir=""
+  job_dir="$(grep -l "$wt" "$REPO/.git/touchstone/ship-jobs"/*/worktree-path 2>/dev/null | head -1 | xargs dirname)"
+  if [ ! -f "$job_dir/reason" ] || [ "$(cat "$job_dir/reason")" != "$expected_reason" ]; then
+    fail "$label should hand off with reason $expected_reason (got: $(cat "$job_dir/reason" 2>/dev/null))"
+  fi
+}
+
+echo "==> Case d2l: recovery parks when GitHub's PR head drifts from the local HEAD"
+HEAD_DRIFT_WT="$TEST_DIR/base-moved-head-drift-worktree"
+git -C "$REPO" worktree add -q "$HEAD_DRIFT_WT" -b feat/base-moved-head-drift main
+HEAD_DRIFT_WT="$(cd "$HEAD_DRIFT_WT" && pwd -P)"
+write_base_moved_open_pr "$HEAD_DRIFT_WT"
+: >"$TEST_DIR/base-moved-head-drift-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-head-drift-attempts" \
+  GH_PR_VIEW_HEAD="feat/base-moved-head-drift" \
+  GH_PR_VIEW_BASE_OID="$(git -C "$ORIGIN_URL" rev-parse main)" \
+  GH_PR_VIEW_HEAD_OID="$(git -C "$REPO" rev-parse main~1)" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$HEAD_DRIFT_WT" --detach >/dev/null
+wait_for_ship_status "$HEAD_DRIFT_WT" needs-attention "$TEST_DIR/base-moved-head-drift-status.json"
+assert_base_moved_parks "remote head drift" "$TEST_DIR/base-moved-head-drift-attempts" \
+  "$HEAD_DRIFT_WT" "base-moved-head-drift"
+
+echo "==> Case d2m: recovery parks when another process moves the local HEAD mid-recovery"
+LOCAL_DRIFT_WT="$TEST_DIR/base-moved-local-drift-worktree"
+git -C "$REPO" worktree add -q "$LOCAL_DRIFT_WT" -b feat/base-moved-local-drift main
+LOCAL_DRIFT_WT="$(cd "$LOCAL_DRIFT_WT" && pwd -P)"
+write_base_moved_open_pr "$LOCAL_DRIFT_WT"
+: >"$TEST_DIR/base-moved-local-drift-attempts"
+: >"$TEST_DIR/base-moved-local-drift-views"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-local-drift-attempts" \
+  GH_PR_VIEW_HEAD="feat/base-moved-local-drift" \
+  GH_PR_VIEW_BASE_OID="$(git -C "$ORIGIN_URL" rev-parse main)" \
+  GH_PR_VIEW_HEAD_OID="$(git -C "$LOCAL_DRIFT_WT" rev-parse HEAD)" \
+  GH_PR_VIEW_COUNT_FILE="$TEST_DIR/base-moved-local-drift-views" \
+  GH_PR_VIEW_MUTATE_WT="$LOCAL_DRIFT_WT" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$LOCAL_DRIFT_WT" --detach >/dev/null
+wait_for_ship_status "$LOCAL_DRIFT_WT" needs-attention "$TEST_DIR/base-moved-local-drift-status.json"
+assert_base_moved_parks "local head drift" "$TEST_DIR/base-moved-local-drift-attempts" \
+  "$LOCAL_DRIFT_WT" "base-moved-local-head-moved"
+
+echo "==> Case d2k: recovery parks when the base was force-pushed (non-fast-forward)"
+REWRITE_WT="$TEST_DIR/base-moved-rewrite-worktree"
+git -C "$REPO" worktree add -q "$REWRITE_WT" -b feat/base-moved-rewrite main
+REWRITE_WT="$(cd "$REWRITE_WT" && pwd -P)"
+OLD_MAIN_TIP="$(git -C "$REPO" rev-parse main)"
+git -C "$REPO" commit -q --amend -m "chore: rewritten base tip"
+git -C "$REPO" push -q --force origin main
+NEW_MAIN_TIP="$(git -C "$ORIGIN_URL" rev-parse main)"
+write_base_moved_open_pr "$REWRITE_WT" "echo \"       GitHub base: $NEW_MAIN_TIP\" >&2
+echo \"       local base:  $OLD_MAIN_TIP\" >&2"
+: >"$TEST_DIR/base-moved-rewrite-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-rewrite-attempts" \
+  GH_PR_VIEW_HEAD="feat/base-moved-rewrite" \
+  GH_PR_VIEW_BASE_OID="$NEW_MAIN_TIP" \
+  GH_PR_VIEW_HEAD_OID="$(git -C "$REWRITE_WT" rev-parse HEAD)" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$REWRITE_WT" --detach >/dev/null
+wait_for_ship_status "$REWRITE_WT" needs-attention "$TEST_DIR/base-moved-rewrite-status.json"
+assert_base_moved_parks "base rewrite" "$TEST_DIR/base-moved-rewrite-attempts" \
+  "$REWRITE_WT" "base-moved-base-rewritten"
+
+echo "==> Case d2n: recovery rebase does not drag other branch refs (rebase.updateRefs)"
+UR_WT="$TEST_DIR/base-moved-updaterefs-worktree"
+git -C "$REPO" worktree add -q "$UR_WT" -b feat/base-moved-updaterefs main
+UR_WT="$(cd "$UR_WT" && pwd -P)"
+printf 'ur-feature\n' >"$UR_WT/ur-feature.txt"
+git -C "$UR_WT" add ur-feature.txt
+git -C "$UR_WT" commit -qm "feat: updateRefs fixture commit"
+UR_PRE_HEAD="$(git -C "$UR_WT" rev-parse HEAD)"
+# A sibling branch pinned to the tip being rebased: with an inherited
+# rebase.updateRefs=true and no --no-update-refs, the recovery rebase would
+# move it; the safety flag must keep it pinned.
+git -C "$REPO" branch feat/ur-marker "$UR_PRE_HEAD"
+printf 'ur-advance\n' >>"$REPO/file.txt"
+git -C "$REPO" add file.txt
+git -C "$REPO" commit -qm "chore: advance base under updateRefs fixture"
+git -C "$REPO" push -q origin main
+git -C "$UR_WT" config rebase.updateRefs true
+mkdir -p "$UR_WT/scripts"
+cat >"$UR_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+count=$((count + 1))
+printf '%s' "$count" >"$count_file"
+if [ "$count" -eq 1 ]; then
+  echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$UR_WT/scripts/open-pr.sh"
+: >"$TEST_DIR/base-moved-updaterefs-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-updaterefs-attempts" \
+  GH_PR_VIEW_HEAD="feat/base-moved-updaterefs" \
+  GH_PR_VIEW_BASE_OID="$(git -C "$ORIGIN_URL" rev-parse main)" \
+  GH_PR_VIEW_HEAD_OID="$UR_PRE_HEAD" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$UR_WT" --detach >/dev/null
+wait_for_ship_status "$UR_WT" succeeded "$TEST_DIR/base-moved-updaterefs-status.json"
+if [ "$(git -C "$REPO" rev-parse feat/ur-marker)" != "$UR_PRE_HEAD" ]; then
+  fail "recovery rebase moved a sibling branch ref (rebase.updateRefs leaked through)"
+fi
+git -C "$UR_WT" config --unset rebase.updateRefs
+
+echo "==> Case d2o: a rerere-remembered conflict still parks as a conflict"
+RR_BASE_FILE_SETUP="$REPO/conflict.txt"
+printf 'base\n' >"$RR_BASE_FILE_SETUP"
+git -C "$REPO" add conflict.txt
+git -C "$REPO" commit -qm "chore: seed conflict fixture file"
+git -C "$REPO" push -q origin main
+RR_WT="$TEST_DIR/base-moved-rerere-worktree"
+git -C "$REPO" worktree add -q "$RR_WT" -b feat/base-moved-rerere main
+RR_WT="$(cd "$RR_WT" && pwd -P)"
+printf 'branch-side\n' >"$RR_WT/conflict.txt"
+git -C "$RR_WT" add conflict.txt
+git -C "$RR_WT" commit -qm "feat: branch side of the conflict"
+RR_PRE_HEAD="$(git -C "$RR_WT" rev-parse HEAD)"
+printf 'main-side\n' >"$REPO/conflict.txt"
+git -C "$REPO" add conflict.txt
+git -C "$REPO" commit -qm "chore: main side of the conflict"
+git -C "$REPO" push -q origin main
+git -C "$RR_WT" config rerere.enabled true
+git -C "$RR_WT" config rerere.autoupdate true
+# Record a remembered resolution for exactly this conflict, then rewind.
+git -C "$RR_WT" fetch -q origin "+refs/heads/main:refs/remotes/origin/main"
+if git -C "$RR_WT" rebase refs/remotes/origin/main >/dev/null 2>&1; then
+  fail "rerere fixture rebase should conflict on first application"
+fi
+printf 'resolved\n' >"$RR_WT/conflict.txt"
+git -C "$RR_WT" add conflict.txt
+GIT_EDITOR=true git -C "$RR_WT" rebase --continue >/dev/null 2>&1
+git -C "$RR_WT" reset -q --hard "$RR_PRE_HEAD"
+mkdir -p "$RR_WT/scripts"
+cat >"$RR_WT/scripts/open-pr.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count_file="${SHIP_ATTEMPT_COUNT_FILE:?}"
+count="$(cat "$count_file" 2>/dev/null || echo 0)"
+printf '%s' "$((count + 1))" >"$count_file"
+echo "ERROR: PR #9 base moved while inspecting the reviewed revision (final merge authorization)." >&2
+exit 1
+EOF
+chmod +x "$RR_WT/scripts/open-pr.sh"
+: >"$TEST_DIR/base-moved-rerere-attempts"
+SHIP_ATTEMPT_COUNT_FILE="$TEST_DIR/base-moved-rerere-attempts" \
+  GH_PR_VIEW_HEAD="feat/base-moved-rerere" \
+  GH_PR_VIEW_BASE_OID="$(git -C "$ORIGIN_URL" rev-parse main)" \
+  GH_PR_VIEW_HEAD_OID="$RR_PRE_HEAD" \
+  PATH="$FAKE_GH:/usr/bin:/bin:/usr/sbin:/sbin" \
+  "$TOUCHSTONE_ROOT/bin/touchstone" worker ship \
+  --worktree "$RR_WT" --detach >/dev/null
+wait_for_ship_status "$RR_WT" needs-attention "$TEST_DIR/base-moved-rerere-status.json"
+assert_base_moved_parks "rerere conflict" "$TEST_DIR/base-moved-rerere-attempts" \
+  "$RR_WT" "base-moved-rebase-conflict"
+if [ "$(git -C "$RR_WT" rev-parse HEAD)" != "$RR_PRE_HEAD" ]; then
+  fail "conflict park must leave the branch at its pre-recovery head"
+fi
+git -C "$RR_WT" config --unset rerere.enabled
+git -C "$RR_WT" config --unset rerere.autoupdate
+
+echo "==> Case d2p: the stale-rebase abort helper cleans a real conflicted rebase"
+AB_WT="$TEST_DIR/abort-helper-worktree"
+git -C "$REPO" worktree add -q "$AB_WT" -b feat/abort-helper main
+AB_WT="$(cd "$AB_WT" && pwd -P)"
+printf 'helper-side\n' >"$AB_WT/conflict.txt"
+git -C "$AB_WT" add conflict.txt
+git -C "$AB_WT" commit -qm "feat: helper side of the conflict"
+AB_PRE_HEAD="$(git -C "$AB_WT" rev-parse HEAD)"
+printf 'helper-main-side\n' >"$REPO/conflict.txt"
+git -C "$REPO" add conflict.txt
+git -C "$REPO" commit -qm "chore: helper main side"
+git -C "$REPO" push -q origin main
+git -C "$AB_WT" fetch -q origin "+refs/heads/main:refs/remotes/origin/main"
+if git -C "$AB_WT" rebase refs/remotes/origin/main >/dev/null 2>&1; then
+  fail "abort-helper fixture rebase should conflict"
+fi
+if ! touchstone_ship_abort_stale_rebase "$AB_WT"; then
+  fail "abort helper reported failure on a genuine conflicted rebase"
+fi
+AB_STATE_DIR="$(git -C "$AB_WT" rev-parse --git-path rebase-merge)"
+if [ -d "$AB_STATE_DIR" ]; then
+  fail "abort helper left rebase-merge state behind"
+fi
+if [ "$(git -C "$AB_WT" rev-parse HEAD)" != "$AB_PRE_HEAD" ]; then
+  fail "abort helper did not restore the pre-rebase head"
+fi
+if ! touchstone_ship_abort_stale_rebase "$AB_WT"; then
+  fail "abort helper must succeed when no rebase state exists"
+fi
 
 echo "==> Case d3: detached jobs do not collide when branch names sanitize alike"
 COLLISION_SLASH_WT="$TEST_DIR/collision-slash-worktree"
