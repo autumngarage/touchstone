@@ -88,6 +88,7 @@ assert_allowed "push with lease" "git push --force-with-lease=branch:sha origin 
 # "git" and the fallback predicates would block this benign command.
 assert_allowed "multibyte word containing git+push" "python script.py égit push --no-verify-nothing"
 assert_allowed "benign glob non-git" "ls *.txt"
+assert_allowed "quoted glob prose" "gh issue create --body '?it p?sh --no-verify in prose'"
 
 echo "==> Protected corpus must stay blocked without TOUCHSTONE_EMERGENCY"
 # A configured alias means the raw text of "git p --no-verify" contains no
@@ -107,6 +108,7 @@ assert_blocked "repo-configured alias push" "git p --no-verify"
 # git/push in cwd, ?it p?sh expands to git push at execution time.
 assert_blocked "glob-assembled push" "?it p?sh --no-verify"
 assert_blocked "glob-assembled bypass flag" "git push --no-*"
+assert_blocked "literal git with glob push" "git p?sh --no-verify"
 assert_blocked "dash-C with literal push" "git -C $REPO push --no-verify"
 assert_blocked "cd compound push" "cd $REPO && git commit -m 'x' && git push --no-verify"
 
