@@ -2123,11 +2123,13 @@ check_run_never_executed() {
   run_id="$(printf '%s' "$link" | grep -oE '/runs/[0-9]+' | head -1 | tr -dc '0-9')"
   [ -n "$run_id" ] || return 1
   # Setup/teardown pseudo-steps appear even on infra failures; user code ran
-  # only if any OTHER step exists. Fail closed on API errors (return 1 keeps
-  # the check treated as a genuine failure).
-  real_steps="$(gh api "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$run_id/jobs" \
+  # only if any OTHER step exists. --paginate walks EVERY page of jobs: a
+  # later page carrying executed steps must not be missed (PR #680 review).
+  # Fail closed on API errors (return 1 keeps the check treated as a genuine
+  # failure).
+  real_steps="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$run_id/jobs?per_page=100" \
     --jq '[.jobs[].steps[]? | select(.name != "Set up job" and .name != "Complete job")] | length' \
-    2>/dev/null)" || return 1
+    2>/dev/null | awk '{total += $1} END {print total + 0}')" || return 1
   [ "$real_steps" = "0" ]
 }
 
@@ -2170,100 +2172,6 @@ zero_step_failure_annotations() {
   done <<<"$job_ids"
   [ -n "$messages" ] || return 1
   printf '%s\n' "$messages"
-}
-
-# UNSTABLE with NO failed checks: gh buckets cancelled runs separately from
-# fail, so a concurrency-cancelled predecessor (open-pr's review-request
-# comment cancelling the pull_request run it superseded) leaves the PR
-# UNSTABLE forever while every live check is green (issue #593). Tolerate
-# that exact shape only: every check bucket is pass/skipping/cancel, and
-# every cancelled check name also has a SUCCESSFUL completed run on the
-# same head. Fail closed on any inspection error.
-unstable_only_superseded_cancellations() {
-  local head_sha="" buckets="" rollup="" stderr_file=""
-  local name="" bucket="" _run_status="" conclusion="" saw_cancel=false
-  [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] || return 1
-  stderr_file="$(mktemp -t touchstone-checkruns.XXXXXX)" || return 1
-  buckets="$(gh pr checks "$PR_NUMBER" --json name,bucket \
-    --template '{{range .}}{{.name}}{{"\t"}}{{.bucket}}{{"\n"}}{{end}}' \
-    2>"$stderr_file")" || true
-  if [ -s "$stderr_file" ]; then
-    rm -f "$stderr_file"
-    return 1
-  fi
-  [ -n "$buckets" ] || {
-    rm -f "$stderr_file"
-    return 1
-  }
-  while IFS="$(printf '\t')" read -r name bucket || [ -n "$name" ]; do
-    [ -n "$name" ] || continue
-    case "$bucket" in
-      pass | skipping) ;;
-      cancel) saw_cancel=true ;;
-      *)
-        rm -f "$stderr_file"
-        return 1
-        ;;
-    esac
-  done <<<"$buckets"
-  [ "$saw_cancel" = true ] || {
-    rm -f "$stderr_file"
-    return 1
-  }
-  head_sha="$(gh pr view "$PR_NUMBER" --json headRefOid --jq .headRefOid 2>/dev/null)" || {
-    rm -f "$stderr_file"
-    return 1
-  }
-  [ -n "$head_sha" ] || {
-    rm -f "$stderr_file"
-    return 1
-  }
-  rollup="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/commits/$head_sha/check-runs?per_page=100" \
-    --jq '.check_runs[] | [.name, (.status // ""), (.conclusion // ""), (.completed_at // .started_at // ""), (.app.slug // ""), ((.check_suite.id // "") | tostring)] | @tsv' \
-    2>"$stderr_file")" || {
-    rm -f "$stderr_file"
-    return 1
-  }
-  if [ -s "$stderr_file" ]; then
-    rm -f "$stderr_file"
-    return 1
-  fi
-  rm -f "$stderr_file"
-  [ -n "$rollup" ] || return 1
-  local n2="" s2="" c2="" t2="" a2="" u2="" ts="" app="" suite="" newer_success=false
-  while IFS="$(printf '\t')" read -r name _run_status conclusion ts app suite || [ -n "$name" ]; do
-    [ -n "$name" ] || continue
-    case "$conclusion" in
-      success | skipped | neutral) ;;
-      cancelled)
-        # A cancellation is superseded only by a success that is the SAME
-        # check name, from the SAME app, in a DIFFERENT check suite of the
-        # same workflow lineage, completing AFTER it. Two workflows both
-        # running as the "actions" app can emit a shared check name, so app
-        # identity alone is not lineage (PR #680 review); the check-suite id
-        # distinguishes runs, and a superseding re-run always lands in a new
-        # suite. ISO-8601 timestamps compare lexically. Missing timestamps,
-        # app slugs, or suite ids fail closed.
-        newer_success=false
-        while IFS="$(printf '\t')" read -r n2 s2 c2 t2 a2 u2 || [ -n "$n2" ]; do
-          [ "$n2" = "$name" ] || continue
-          [ "$s2" = "completed" ] || continue
-          [ "$c2" = "success" ] || continue
-          [ -n "$a2" ] && [ "$a2" = "$app" ] || continue
-          [ -n "$u2" ] && [ -n "$suite" ] || continue
-          [ "$u2" != "$suite" ] || continue
-          if [ -n "$t2" ] && [ -n "$ts" ] && [[ "$t2" > "$ts" ]]; then
-            newer_success=true
-          fi
-        done <<<"$rollup"
-        [ "$newer_success" = true ] || return 1
-        ;;
-      *)
-        return 1
-        ;;
-    esac
-  done <<<"$rollup"
-  return 0
 }
 
 failed_checks_are_only_unexecuted_claim_checks() {
@@ -2459,12 +2367,6 @@ wait_for_clean_merge_state() {
       else
         print_failed_checks_and_exit "$FAILED_CHECKS"
       fi
-    fi
-    if [ "$STATE" = "UNSTABLE" ] && [ "$MERGEABLE" = "MERGEABLE" ] \
-      && [ -z "$FAILED_CHECKS" ] && unstable_only_superseded_cancellations; then
-      echo "==> UNSTABLE stems only from concurrency-cancelled runs whose replacements"
-      echo "    succeeded on this head (issue #593); every live check is green — proceeding."
-      return 0
     fi
     if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$STATE" = "DIRTY" ] || [ "$STATE" = "BEHIND" ] || [ "$STATE" = "CONFLICTING" ]; then
       echo "ERROR: PR #$PR_NUMBER is $STATE — has conflicts or is out of date with base." >&2
