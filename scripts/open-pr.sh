@@ -60,6 +60,13 @@ fi
 if [ -f "$PREFLIGHT_SCRIPT" ]; then
   # shellcheck source=../lib/preflight.sh
   source "$PREFLIGHT_SCRIPT"
+else
+  # Fail CLOSED (issue #689 finding 3): an absent preflight module means
+  # required validation cannot run; silently skipping it would let a
+  # partially-synced or tampered checkout ship without its gates.
+  echo "ERROR: lib/preflight.sh is missing; required preflight validation cannot run." >&2
+  echo "       Re-sync Touchstone files (touchstone update) before shipping." >&2
+  exit 1
 fi
 # orphan_warning is set to a PR URL once we know one — any nonzero exit after
 # that point prints recovery instructions as the script's last output, so the

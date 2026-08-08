@@ -16,6 +16,9 @@ set -euo pipefail
 export GH_REPO="" GH_HOST="" GITHUB_SERVER_URL=""
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=stage-touchstone-libs.sh
+source "$(dirname "${BASH_SOURCE[0]}")/stage-touchstone-libs.sh"
+
 TEST_DIR="$(mktemp -d -t touchstone-test-open-pr-cleanup.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
@@ -28,6 +31,7 @@ mkdir -p "$SCRIPT_DIR" "$FAKE_BIN"
 
 cp "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$SCRIPT_DIR/open-pr.sh"
 cp "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$SCRIPT_DIR/issue-claim-check.sh"
+stage_touchstone_libs "$TOUCHSTONE_ROOT" "$SCRIPT_DIR"
 # merge-pr.sh is invoked by open-pr.sh on --auto-merge; stub it.
 cat >"$SCRIPT_DIR/merge-pr.sh" <<'EOF'
 #!/usr/bin/env bash

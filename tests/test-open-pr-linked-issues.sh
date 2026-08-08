@@ -12,6 +12,9 @@ set -euo pipefail
 export GH_REPO="" GH_HOST="" GITHUB_SERVER_URL=""
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=stage-touchstone-libs.sh
+source "$(dirname "${BASH_SOURCE[0]}")/stage-touchstone-libs.sh"
+
 TEST_DIR="$(mktemp -d -t touchstone-test-open-pr-linked.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
@@ -24,6 +27,7 @@ REPO_DIR="$TEST_DIR/repo"
 mkdir -p "$SCRIPT_DIR" "$FAKE_BIN"
 
 cp "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$SCRIPT_DIR/open-pr.sh"
+stage_touchstone_libs "$TOUCHSTONE_ROOT" "$SCRIPT_DIR"
 cp "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$SCRIPT_DIR/issue-claim-check.sh"
 chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/issue-claim-check.sh"
 

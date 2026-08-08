@@ -27,6 +27,9 @@ set -euo pipefail
 export GH_REPO="" GH_HOST="" GITHUB_SERVER_URL=""
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=stage-touchstone-libs.sh
+source "$(dirname "${BASH_SOURCE[0]}")/stage-touchstone-libs.sh"
+
 TEST_DIR="$(mktemp -d -t touchstone-test-open-pr.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
@@ -44,6 +47,8 @@ mkdir -p "$TEST_DIR/lib"
 cp "$TOUCHSTONE_ROOT/lib/events.sh" "$TEST_DIR/lib/events.sh"
 cp "$TOUCHSTONE_ROOT/lib/toml.sh" "$TEST_DIR/lib/toml.sh"
 cp "$TOUCHSTONE_ROOT/lib/sha256.sh" "$TEST_DIR/lib/sha256.sh"
+stage_touchstone_libs "$TOUCHSTONE_ROOT" "$TEST_DIR/scripts"
+
 chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/issue-claim-check.sh"
 
 # Real git inside a fresh repo with a feature branch checked out, so the
@@ -1197,6 +1202,24 @@ if [ "$RC" != "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: duplicate remote patches must not share one local twin" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 41: absent lib/preflight.sh fails closed (issue #689)"
+OUT="$TEST_DIR/case41.out"
+RC=0
+reset_open_pr_logs
+mv "$TEST_DIR/lib/preflight.sh" "$TEST_DIR/lib/preflight.sh.hidden"
+OPEN_PR_AUTO_MERGE=0 GH_PR_BODY="Protocol: yes" run_open_pr >"$OUT" 2>&1 || RC=$?
+mv "$TEST_DIR/lib/preflight.sh.hidden" "$TEST_DIR/lib/preflight.sh"
+if [ "$RC" != "0" ] \
+  && grep -q 'lib/preflight.sh is missing; required preflight validation cannot run' "$OUT" \
+  && [ ! -s "$TEST_DIR/git-push.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: missing preflight module must fail closed before any push" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
