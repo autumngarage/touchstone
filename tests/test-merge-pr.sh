@@ -2584,7 +2584,7 @@ echo "==> Test: superseded cancelled run tolerates UNSTABLE (issue #593)"
 reset_case_files
 if ! GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
   GH_CHECK_BUCKETS=$'delivery-protocol\tcancel\nclaim-check\tpass' \
-  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tcancelled\t2026-01-01T10:00:00Z\ndelivery-protocol\tcompleted\tsuccess\t2026-01-01T10:05:00Z\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z' \
+  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tcancelled\t2026-01-01T10:00:00Z\tactions\ndelivery-protocol\tcompleted\tsuccess\t2026-01-01T10:05:00Z\tactions\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z\tactions' \
   GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
   MERGE_PR_STATE_MAX_ATTEMPTS=3 MERGE_PR_SLEEP_OVERRIDE=0 \
   run_merge_pr "$TEST_DIR/output-superseded-cancel.txt" 123; then
@@ -2604,7 +2604,7 @@ echo "==> Test: cancelled run WITHOUT a successful replacement keeps waiting"
 reset_case_files
 if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
   GH_CHECK_BUCKETS=$'delivery-protocol\tcancel\nclaim-check\tpass' \
-  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tcancelled\t2026-01-01T10:00:00Z\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z' \
+  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tcancelled\t2026-01-01T10:00:00Z\tactions\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z\tactions' \
   GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
   MERGE_PR_STATE_MAX_ATTEMPTS=2 MERGE_PR_SLEEP_OVERRIDE=0 \
   run_merge_pr "$TEST_DIR/output-unreplaced-cancel.txt" 123; then
@@ -2623,7 +2623,7 @@ echo "==> Test: an older success does not supersede a newer cancellation"
 reset_case_files
 if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
   GH_CHECK_BUCKETS=$'delivery-protocol\tcancel\nclaim-check\tpass' \
-  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tsuccess\t2026-01-01T09:00:00Z\ndelivery-protocol\tcompleted\tcancelled\t2026-01-01T10:00:00Z\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z' \
+  GH_CHECK_ROLLUP=$'delivery-protocol\tcompleted\tsuccess\t2026-01-01T09:00:00Z\tactions\ndelivery-protocol\tcompleted\tcancelled\t2026-01-01T10:00:00Z\tactions\nclaim-check\tcompleted\tsuccess\t2026-01-01T10:06:00Z\tactions' \
   GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
   MERGE_PR_STATE_MAX_ATTEMPTS=2 MERGE_PR_SLEEP_OVERRIDE=0 \
   run_merge_pr "$TEST_DIR/output-stale-success.txt" 123; then
