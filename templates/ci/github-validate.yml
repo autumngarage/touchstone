@@ -20,8 +20,11 @@ on:
 # multi-round review PRs would otherwise bill a full run per obsolete head.
 # Keyed by PR NUMBER, not head_ref: two PRs from same-named branches (fork
 # `main` vs fork `main`) share a head_ref and would cancel each other's runs.
+# The literal touchstone-validate namespace is unique to THIS file — another
+# workflow that also sets `name: validate` would make github.workflow
+# collide and cancel unrelated runs for the same PR.
 concurrency:
-  group: validate-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: touchstone-validate-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:

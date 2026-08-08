@@ -81,6 +81,70 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$TEST_DIR/test-project" --no-r
 # Verify structure.
 ERRORS=0
 
+# Byte-exact copy of the v2 legacy starter (PR #434): the doctor advisory
+# recognizes ONLY shipped-starter fingerprints, so the fixture must hash
+# identically — the self-check below fails fast if this heredoc drifts.
+LEGACY_CI_FIXTURE="$TEST_DIR/legacy-validate-v2.yml"
+cat >"$LEGACY_CI_FIXTURE" <<'LEGACY_V2'
+# Touchstone-provided starter CI workflow. Runs the same pre-commit hygiene
+# checks and `scripts/touchstone-run.sh validate` path that gate local pre-push.
+# A CI failure here means the same thing a pre-push rejection would mean locally.
+#
+# `touchstone-run.sh validate` silently skips when profile linters/tests are
+# absent (correct runtime UX). In CI that's useless — install your profile's
+# toolchain in the block below before the validate step, or CI will pass on
+# gaps pre-push would catch.
+
+name: validate
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      # --- Add profile-specific toolchain steps here ---
+      # Node:
+      #   - uses: actions/setup-node@v4
+      #     with:
+      #       node-version: '20'
+      #       cache: 'pnpm'
+      # Python:
+      #   - uses: actions/setup-python@v5
+      #     with:
+      #       python-version: '3.12'
+      # Rust:
+      #   - uses: dtolnay/rust-toolchain@stable
+      # Go:
+      #   - uses: actions/setup-go@v5
+      #     with:
+      #       go-version: '1.23'
+      # Swift:
+      #   - uses: swift-actions/setup-swift@v2
+
+      - name: Install pre-commit
+        run: pipx install pre-commit
+
+      - name: Run pre-commit hygiene
+        run: pre-commit run --all-files --hook-stage pre-commit --show-diff-on-failure
+
+      - name: Run touchstone validate
+        run: bash scripts/touchstone-run.sh validate
+LEGACY_V2
+# shellcheck source=../lib/sha256.sh
+source "$TOUCHSTONE_ROOT/lib/sha256.sh"
+if [ "$(touchstone_sha256_file "$LEGACY_CI_FIXTURE")" != "5b599e26ff5bcc02ee8c0626cabdd3be7c30e0885ad72c6dd1408139c5dec9aa" ]; then
+  echo "FAIL: legacy CI fixture heredoc no longer matches the shipped v2 fingerprint" >&2
+  exit 1
+fi
+
 assert_exists() {
   if [ ! -e "$1" ]; then
     echo "FAIL: expected $1 to exist" >&2
@@ -1725,44 +1789,25 @@ if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin
   ERRORS=$((ERRORS + 1))
 fi
 assert_not_contains "$TEST_DIR/doctor-lean-ci.txt" 'legacy Touchstone starter shape'
-printf 'name: validate\non:\n  push:\n    branches: [main, master]\n  pull_request:\njobs:\n  validate:\n    runs-on: ubuntu-latest\n' \
-  >"$PROJECT_LEAN_CI/.github/workflows/validate.yml"
+# Byte-identical legacy starter (v2, PR #434): the ONLY shape the advisory
+# recognizes. TOUCHSTONE_LEGACY_CI_FIXTURE is written by the harness below.
+cp "$LEGACY_CI_FIXTURE" "$PROJECT_LEAN_CI/.github/workflows/validate.yml"
 if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-legacy-ci.txt" 2>&1; then
   echo "FAIL: legacy CI shape must stay advisory — doctor should still exit 0" >&2
   cat "$TEST_DIR/doctor-legacy-ci.txt" >&2
   ERRORS=$((ERRORS + 1))
 fi
-assert_contains "$TEST_DIR/doctor-legacy-ci.txt" 'legacy Touchstone starter shape'
-# A customized (non-signature) workflow gets NO claim from doctor: scope is
-# provenance-based, not general YAML analysis (PR #668 rounds 1-7).
-printf 'name: validate\non: [push, pull_request]\njobs: {}\n' \
-  >"$PROJECT_LEAN_CI/.github/workflows/validate.yml"
+assert_contains "$TEST_DIR/doctor-legacy-ci.txt" 'unmodified legacy Touchstone starter'
+# ANY modification — even one appended comment — is project-customized and
+# gets advisory silence (fingerprint scope, PR #668).
+cp "$LEGACY_CI_FIXTURE" "$PROJECT_LEAN_CI/.github/workflows/validate.yml"
+printf '# local note\n' >>"$PROJECT_LEAN_CI/.github/workflows/validate.yml"
 if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-custom-ci.txt" 2>&1; then
   echo "FAIL: customized CI must stay advisory-silent — doctor should exit 0" >&2
   cat "$TEST_DIR/doctor-custom-ci.txt" >&2
   ERRORS=$((ERRORS + 1))
 fi
-assert_not_contains "$TEST_DIR/doctor-custom-ci.txt" 'legacy Touchstone starter shape'
-# Starter triggers PLUS an extra event-guarded job = customized: the owner
-# has real push-only behavior, and doctor must not advise dropping it.
-printf 'name: validate\non:\n  push:\n    branches: [main, master]\n  pull_request:\njobs:\n  validate:\n    runs-on: ubuntu-latest\n  deploy:\n    if: github.event_name == %s\n    runs-on: ubuntu-latest\n' "'push'" \
-  >"$PROJECT_LEAN_CI/.github/workflows/validate.yml"
-if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-deploy-ci.txt" 2>&1; then
-  echo "FAIL: event-guarded custom CI must stay advisory-silent — doctor should exit 0" >&2
-  cat "$TEST_DIR/doctor-deploy-ci.txt" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-assert_not_contains "$TEST_DIR/doctor-deploy-ci.txt" 'legacy Touchstone starter shape'
-# Starter shape plus an added trigger (schedule) = customized: PR-only
-# advice would drop the owner's schedule; doctor stays silent.
-printf 'name: validate\non:\n  push:\n    branches: [main, master]\n  pull_request:\n  schedule:\n    - cron: "0 4 * * *"\njobs:\n  validate:\n    runs-on: ubuntu-latest\n' \
-  >"$PROJECT_LEAN_CI/.github/workflows/validate.yml"
-if ! (cd "$PROJECT_LEAN_CI" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-schedule-ci.txt" 2>&1; then
-  echo "FAIL: schedule-augmented custom CI must stay advisory-silent — doctor should exit 0" >&2
-  cat "$TEST_DIR/doctor-schedule-ci.txt" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-assert_not_contains "$TEST_DIR/doctor-schedule-ci.txt" 'legacy Touchstone starter shape'
+assert_not_contains "$TEST_DIR/doctor-custom-ci.txt" 'legacy Touchstone starter'
 
 # doctor must flag a pre-push hook that exists with the right content but is
 # not executable — Git silently skips such hooks, so the repo is effectively

@@ -721,45 +721,28 @@ cmd_doctor_project() {
   fi
 
   # 2c. Legacy CI shape (advisory only — never counted as an issue).
-  # SCOPE, deliberately narrow: doctor only recognizes the EXACT starter
-  # shape Touchstone itself installed before the lean template — block-style
-  # push + pull_request triggers with the starter's "branches: [main,
-  # master]" filter and no concurrency key anywhere. Statically analyzing
-  # arbitrary project-owned YAML in shell is unbounded (inline triggers,
-  # renamed jobs, expression values, non-main default branches, deploy jobs
-  # guarded by event conditions — see PR #668); on anything that is not the
-  # known legacy signature, doctor makes NO claim. Cost advice, not a
-  # gating problem: local determinism is the source of truth either way.
+  # TERMINAL SCOPE (PR #668, rounds 1-10): doctor fingerprints the file.
+  # Only a byte-identical copy of a starter workflow Touchstone itself
+  # shipped counts as legacy — every claim in the warning is then true by
+  # construction. ANY edit (added triggers, jobs, comments, filters) makes
+  # the file project-customized and doctor says nothing: static analysis
+  # of arbitrary project-owned YAML in shell demonstrably cannot converge.
   local ci_workflow="$project_dir/.github/workflows/validate.yml"
-  # The FULL starter shape, jobs included: an owner who kept the starter
-  # triggers but added push-only work (a deploy job guarded by
-  # github.event_name) has customized the workflow, and removing its push
-  # trigger would break real behavior — such files are out of contract.
-  local ci_job_ids="" ci_trigger_ids=""
-  ci_job_ids="$([ -f "$ci_workflow" ] && awk '
-    /^jobs:[[:space:]]*$/ { inj = 1; next }
-    inj && /^[^[:space:]#]/ { inj = 0 }
-    inj && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { gsub(/[ :]/, ""); print }
-  ' "$ci_workflow" | tr '\n' ',' || true)"
-  # The trigger set must be EXACTLY the starter pair: an added schedule: or
-  # workflow_dispatch: is a customization, and PR-only advice would drop it.
-  ci_trigger_ids="$([ -f "$ci_workflow" ] && awk '
-    /^on:[[:space:]]*$/ { int_ = 1; next }
-    int_ && /^[^[:space:]#]/ { int_ = 0 }
-    int_ && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { gsub(/[ :]/, ""); print }
-  ' "$ci_workflow" | sort | tr '\n' ',' || true)"
-  if [ -f "$ci_workflow" ] \
-    && grep -Eq '^[[:space:]]*push:[[:space:]]*$' "$ci_workflow" \
-    && grep -Eq '^[[:space:]]*pull_request:[[:space:]]*$' "$ci_workflow" \
-    && grep -Eq '^[[:space:]]*branches: \[main, master\]' "$ci_workflow" \
-    && ! grep -q 'concurrency' "$ci_workflow" \
-    && ! grep -q 'github.event_name' "$ci_workflow" \
-    && [ "$ci_job_ids" = "validate," ] \
-    && [ "$ci_trigger_ids" = "pull_request,push," ]; then
-    tk_warn "CI validate.yml matches the legacy Touchstone starter shape (push + PR triggers, no concurrency)"
-    tk_dim "  Cost: superseded review heads and already-verified default-branch pushes each bill a full run"
-    tk_dim "  Fix: adopt the lean starter — PR-only trigger, PR-numbered concurrency, cancellation:"
-    tk_dim "  https://github.com/autumngarage/touchstone/blob/main/templates/ci/github-validate.yml"
+  if [ -f "$ci_workflow" ]; then
+    # shellcheck source=../lib/sha256.sh
+    source "$TOUCHSTONE_ROOT/lib/sha256.sh"
+    local ci_fingerprint=""
+    ci_fingerprint="$(touchstone_sha256_file "$ci_workflow" 2>/dev/null || true)"
+    case "$ci_fingerprint" in
+      8567c597e21da543f6542ba10c3f41cfc8d69a3be3959ccf4e4a05fee6abd6ef | \
+        5b599e26ff5bcc02ee8c0626cabdd3be7c30e0885ad72c6dd1408139c5dec9aa)
+        # v1 (PR #43) and v2 (PR #434) of the pre-lean starter.
+        tk_warn "CI validate.yml is the unmodified legacy Touchstone starter (push + PR triggers, no concurrency)"
+        tk_dim "  Cost: superseded review heads and already-verified default-branch pushes each bill a full run"
+        tk_dim "  Fix: adopt the lean starter — PR-only trigger, PR-numbered concurrency, cancellation:"
+        tk_dim "  https://github.com/autumngarage/touchstone/blob/main/templates/ci/github-validate.yml"
+        ;;
+    esac
   fi
 
   # 3. Manifest files present?
