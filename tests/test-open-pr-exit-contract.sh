@@ -44,6 +44,7 @@ mkdir -p "$TEST_DIR/lib"
 cp "$TOUCHSTONE_ROOT/lib/events.sh" "$TEST_DIR/lib/events.sh"
 cp "$TOUCHSTONE_ROOT/lib/toml.sh" "$TEST_DIR/lib/toml.sh"
 cp "$TOUCHSTONE_ROOT/lib/sha256.sh" "$TEST_DIR/lib/sha256.sh"
+cp "$TOUCHSTONE_ROOT/lib/preflight.sh" "$TEST_DIR/lib/preflight.sh"
 chmod +x "$SCRIPT_DIR/open-pr.sh" "$SCRIPT_DIR/issue-claim-check.sh"
 
 # Real git inside a fresh repo with a feature branch checked out, so the
@@ -1197,6 +1198,92 @@ if [ "$RC" != "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: duplicate remote patches must not share one local twin" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 41: absent lib/preflight.sh fails closed (issue #689)"
+OUT="$TEST_DIR/case41.out"
+RC=0
+reset_open_pr_logs
+mv "$TEST_DIR/lib/preflight.sh" "$TEST_DIR/lib/preflight.sh.hidden"
+OPEN_PR_AUTO_MERGE=0 GH_PR_BODY="Protocol: yes" run_open_pr >"$OUT" 2>&1 || RC=$?
+mv "$TEST_DIR/lib/preflight.sh.hidden" "$TEST_DIR/lib/preflight.sh"
+if [ "$RC" != "0" ] \
+  && grep -q 'lib/preflight.sh is missing; required preflight validation cannot run' "$OUT" \
+  && [ ! -s "$TEST_DIR/git-push.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: missing preflight module must fail closed before any push" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 42: differing binary content refuses the guarded retry (issue #685)"
+OUT="$TEST_DIR/case42.out"
+RC=0
+reset_open_pr_logs
+CASE42_BASE="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CASE42_BLOB_A="$(printf 'BIN\x00A' | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE42_BLOB_B="$(printf 'BIN\x00B' | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE42_TREE_A="$(git -C "$REPO_DIR" ls-tree HEAD | {
+  cat
+  printf '100644 blob %s\tblob.bin\n' "$CASE42_BLOB_A"
+} | git -C "$REPO_DIR" mktree)"
+CASE42_TREE_B="$(git -C "$REPO_DIR" ls-tree HEAD | {
+  cat
+  printf '100644 blob %s\tblob.bin\n' "$CASE42_BLOB_B"
+} | git -C "$REPO_DIR" mktree)"
+CASE42_REMOTE="$(git -C "$REPO_DIR" commit-tree "$CASE42_TREE_A" -p "$CASE42_BASE" -m "add binary")"
+CASE42_LOCAL="$(git -C "$REPO_DIR" commit-tree "$CASE42_TREE_B" -p "$CASE42_BASE" -m "add binary")"
+git -C "$REPO_DIR" reset -q --hard "$CASE42_LOCAL"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_REMOTE" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE42_BASE"
+if [ "$RC" != "0" ] \
+  && grep -q 'whose changes are not in this checkout' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: different binary content must never fingerprint equal" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 43: hunks of different shape stay distinct (issue #689)"
+OUT="$TEST_DIR/case43.out"
+RC=0
+reset_open_pr_logs
+CASE43_BASE="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CASE43_BLOB_R="$(printf 'one\ntwo\nthree\n' | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE43_BLOB_L="$(printf 'one\ntwo\nthree\nfour\n' | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE43_TREE_R="$(git -C "$REPO_DIR" ls-tree HEAD | {
+  cat
+  printf '100644 blob %s\tshaped.txt\n' "$CASE43_BLOB_R"
+} | git -C "$REPO_DIR" mktree)"
+CASE43_TREE_L="$(git -C "$REPO_DIR" ls-tree HEAD | {
+  cat
+  printf '100644 blob %s\tshaped.txt\n' "$CASE43_BLOB_L"
+} | git -C "$REPO_DIR" mktree)"
+CASE43_REMOTE="$(git -C "$REPO_DIR" commit-tree "$CASE43_TREE_R" -p "$CASE43_BASE" -m "add shaped")"
+CASE43_LOCAL="$(git -C "$REPO_DIR" commit-tree "$CASE43_TREE_L" -p "$CASE43_BASE" -m "add shaped")"
+git -C "$REPO_DIR" reset -q --hard "$CASE43_LOCAL"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE43_REMOTE" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE43_BASE"
+if [ "$RC" != "0" ] \
+  && grep -q 'whose changes are not in this checkout' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: hunks with different line counts must fingerprint differently" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))

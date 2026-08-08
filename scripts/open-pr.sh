@@ -60,6 +60,13 @@ fi
 if [ -f "$PREFLIGHT_SCRIPT" ]; then
   # shellcheck source=../lib/preflight.sh
   source "$PREFLIGHT_SCRIPT"
+else
+  # Fail CLOSED (issue #689 finding 3): an absent preflight module means
+  # required validation cannot run; silently skipping it would let a
+  # partially-synced or tampered checkout ship without its gates.
+  echo "ERROR: lib/preflight.sh is missing; required preflight validation cannot run." >&2
+  echo "       Re-sync Touchstone files (touchstone update) before shipping." >&2
+  exit 1
 fi
 # orphan_warning is set to a PR URL once we know one — any nonzero exit after
 # that point prints recovery instructions as the script's last output, so the
@@ -977,15 +984,28 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
   # (rebases renumber them), everything else must match byte-for-byte.
   open_pr_exact_patch_fingerprint() {
     local commit="$1" patch_text
-    if ! patch_text="$(GIT_NO_REPLACE_OBJECTS=1 git diff-tree --no-commit-id --full-index -p -U3 "$commit" 2>&1)"; then
+    # --binary: without it, differing binary blobs render an identical
+    # "Binary files differ" placeholder and two DIFFERENT binary changes
+    # fingerprint equal (issue #685).
+    if ! patch_text="$(GIT_NO_REPLACE_OBJECTS=1 git diff-tree --no-commit-id --full-index --binary -p -U3 "$commit" 2>&1)"; then
       echo "ERROR: could not compute the patch for commit ${commit:0:12}:" >&2
       printf '%s\n' "$patch_text" | sed 's/^/       /' >&2
       return 1
     fi
     # An empty patch carries no provable content; the caller refuses.
     [ -n "$patch_text" ] || return 2
+    # Hunk normalization keeps line COUNTS and hunk order: rebases
+    # renumber start offsets but never change how many lines a hunk
+    # touches, so "@@ -12,7 +12,9 @@" and its rebased twin normalize
+    # identically while hunks of different shape stay distinct
+    # (issue #689 finding 5). Residual bound, documented: identical
+    # content added at a different location with byte-identical context
+    # is indistinguishable from a rebase shift by content alone; the
+    # multiset twin-consumption (issue #674) covers the duplicated-block
+    # form of that ambiguity.
     printf '%s\n' "$patch_text" \
-      | sed -e '/^index /d' -e 's/^@@ .*@@/@@/' \
+      | sed -e '/^index /d' \
+        -e 's/^@@ -[0-9]*\(,[0-9]*\)\{0,1\} +[0-9]*\(,[0-9]*\)\{0,1\} @@.*/@@ -\1 +\2 @@/' \
       | touchstone_sha256_stream
   }
   if [ ! -f "$SCRIPT_DIR/../lib/sha256.sh" ]; then
