@@ -60,9 +60,24 @@ tool_workdir="$(printf '%s' "$input" | jq -r '.tool_input.workdir // ""')"
 # through the parser, where the builtin-cannot-be-aliased exemption keeps
 # benign `git status`/`git add` cheap and alias chains are resolved.
 case "$command" in
-  *push* | *git* | *\$* | *\`* | *\\* | *\'* | *\"*) ;;
+  *push* | *git* | *\$* | *\`* | *\\* | *\'* | *\"* | *\?* | *\** | *\[*) ;;
   *)
     exit 0
+    ;;
+esac
+
+# Glob metacharacters are dynamic input (touchstone#675): with adversarial
+# filenames a pattern word can expand into git/push at execution time, and
+# this guard cannot see the filesystem the command will run against. A
+# pattern combined with a --no-verify fragment cannot be proven safe.
+case "$command" in
+  *\?* | *\** | *\[*)
+    case "$command" in
+      *--no-v*)
+        echo "emergency-disclosure: glob pattern combined with a --no-verify fragment cannot be proven safe; bypass blocked" >&2
+        exit 2
+        ;;
+    esac
     ;;
 esac
 

@@ -2176,7 +2176,10 @@ attempt_claim_check_substitution() {
   base_sha="${base_revision##*	}"
   [ -n "$base_sha" ] || return 1
   trusted_checker="$(mktemp -t touchstone-claim-checker.XXXXXX)" || return 1
-  if ! git show "$base_sha:scripts/issue-claim-check.sh" >"$trusted_checker" 2>/dev/null; then
+  # GIT_NO_REPLACE_OBJECTS: a local refs/replace entry for the GitHub base
+  # SHA would make git show read the replacement, so the "trusted" checker
+  # could differ from what GitHub actually has at that commit.
+  if ! GIT_NO_REPLACE_OBJECTS=1 git show "$base_sha:scripts/issue-claim-check.sh" >"$trusted_checker" 2>/dev/null; then
     rm -f "$trusted_checker"
     return 1
   fi

@@ -87,6 +87,7 @@ assert_allowed "push with lease" "git push --force-with-lease=branch:sha origin 
 # multibyte letter is a word boundary, so "égit" would tokenize as
 # "git" and the fallback predicates would block this benign command.
 assert_allowed "multibyte word containing git+push" "python script.py égit push --no-verify-nothing"
+assert_allowed "benign glob non-git" "ls *.txt"
 
 echo "==> Protected corpus must stay blocked without TOUCHSTONE_EMERGENCY"
 # A configured alias means the raw text of "git p --no-verify" contains no
@@ -102,6 +103,9 @@ assert_blocked "compound tail" "cd $REPO && git push --no-verify"
 assert_blocked "variable-assembled flag" 'FLAG=--no-verify; git push $FLAG'
 assert_blocked "alias-defined push" "git -c alias.p='push --no-verify' p"
 assert_blocked "repo-configured alias push" "git p --no-verify"
+# Glob metacharacters are dynamic input (touchstone#675): with files named
+# git/push in cwd, ?it p?sh expands to git push at execution time.
+assert_blocked "glob-assembled push" "?it p?sh --no-verify"
 assert_blocked "dash-C with literal push" "git -C $REPO push --no-verify"
 assert_blocked "cd compound push" "cd $REPO && git commit -m 'x' && git push --no-verify"
 

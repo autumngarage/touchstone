@@ -107,15 +107,15 @@ graphql_with_retry() {
 # All thread scans paginate: a PR can carry more than one page of review
 # threads, and a fixed-size query would silently ignore later pages —
 # --all-resolved-check would pass with unresolved threads remaining.
-THREADS_QUERY='query($endCursor: String) { repository(owner:"OWNER", name:"NAME") { pullRequest(number:PRNUM) { reviewThreads(first:100, after:$endCursor) { nodes { id isResolved comments(first:1) { nodes { databaseId path } } } pageInfo { hasNextPage endCursor } } } } }'
-threads_query() {
-  printf '%s' "$THREADS_QUERY" \
-    | sed -e "s/OWNER/$REPO_OWNER/" -e "s/NAME/$REPO_NAME/" -e "s/PRNUM/$PR_NUMBER/"
-}
+# Repository identity travels as GraphQL VARIABLES, never textual
+# substitution: a repository name containing a placeholder-like token
+# (e.g. PRNUM-tools) must not be rewritten by a later replacement pass.
+THREADS_QUERY='query($endCursor: String, $owner: String!, $name: String!, $pr: Int!) { repository(owner:$owner, name:$name) { pullRequest(number:$pr) { reviewThreads(first:100, after:$endCursor) { nodes { id isResolved comments(first:1) { nodes { databaseId path } } } pageInfo { hasNextPage endCursor } } } } }'
 
 list_unresolved_threads() {
   graphql_with_retry --paginate \
-    -f query="$(threads_query)" \
+    -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F pr="$PR_NUMBER" \
+    -f query="$THREADS_QUERY" \
     --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | [.id, (.comments.nodes[0].databaseId | tostring), (.comments.nodes[0].path // "-")] | @tsv'
 }
 
@@ -169,7 +169,8 @@ fi
 
 echo "==> Resolving the thread for comment $COMMENT_ID ..."
 THREAD_ID="$(graphql_with_retry --paginate \
-  -f query="$(threads_query)" \
+  -f owner="$REPO_OWNER" -f name="$REPO_NAME" -F pr="$PR_NUMBER" \
+  -f query="$THREADS_QUERY" \
   --jq ".data.repository.pullRequest.reviewThreads.nodes[] | select(.comments.nodes[0].databaseId == $COMMENT_ID) | .id")" \
   || fail "could not look up the review thread for comment $COMMENT_ID."
 [ -n "$THREAD_ID" ] || fail "no review thread found whose first comment is $COMMENT_ID."
