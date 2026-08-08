@@ -1163,6 +1163,45 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Case 40: duplicate remote patches each require their own local twin"
+OUT="$TEST_DIR/case40.out"
+RC=0
+reset_open_pr_logs
+# Remote history carries the same patch TWICE (add X, revert X, add X
+# again); the local branch incorporates the add and the revert ONCE each.
+# Set-membership matching would let both remote adds claim the single
+# local twin and force one occurrence away (touchstone#674).
+CASE40_BASE="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CASE40_BLOB="$(git -C "$REPO_DIR" hash-object -w /dev/stdin <<<"duplicate patch payload")"
+CASE40_TREE_X="$(git -C "$REPO_DIR" ls-tree HEAD | {
+  cat
+  printf '100644 blob %s\tdup-patch.txt\n' "$CASE40_BLOB"
+} | git -C "$REPO_DIR" mktree)"
+CASE40_TREE_BASE="$(git -C "$REPO_DIR" rev-parse "HEAD^{tree}")"
+CASE40_A1="$(git -C "$REPO_DIR" commit-tree "$CASE40_TREE_X" -p "$CASE40_BASE" -m "remote add X")"
+CASE40_R="$(git -C "$REPO_DIR" commit-tree "$CASE40_TREE_BASE" -p "$CASE40_A1" -m "remote revert X")"
+CASE40_A2="$(git -C "$REPO_DIR" commit-tree "$CASE40_TREE_X" -p "$CASE40_R" -m "remote re-add X")"
+CASE40_L1="$(git -C "$REPO_DIR" commit-tree "$CASE40_TREE_X" -p "$CASE40_BASE" -m "local add X")"
+CASE40_L2="$(git -C "$REPO_DIR" commit-tree "$CASE40_TREE_BASE" -p "$CASE40_L1" -m "local revert X")"
+git -C "$REPO_DIR" reset -q --hard "$CASE40_L2"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE40_A2" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE40_BASE"
+
+if [ "$RC" != "0" ] \
+  && grep -q 'whose changes are not in this checkout' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: duplicate remote patches must not share one local twin" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 39: fork-backed PR never authorizes the guarded retry"
 OUT="$TEST_DIR/case39.out"
 RC=0

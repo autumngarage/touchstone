@@ -634,6 +634,14 @@ case "$*" in
     # Trusted-base claim verifier for the issue #658 substitution fixtures.
     # CLAIM_DIRECT_BYPASS=true emits the documented [skip-claim-check]
     # bypass line so disclosures can be asserted truthful.
+    # The trusted-base read MUST disable replacement objects: a local
+    # refs/replace entry for the base SHA would otherwise substitute the
+    # executed verifier (touchstone#677). Mirroring real git here makes
+    # every substitution fixture a regression for the missing env.
+    if [ "${GIT_NO_REPLACE_OBJECTS:-}" != "1" ]; then
+      echo "trusted-base read ran with replacement objects enabled (touchstone#677)" >&2
+      exit 97
+    fi
     if [ "${GIT_CLAIM_CHECKER_SHOW_FAIL:-false}" = "true" ]; then
       echo "trusted claim checker unavailable" >&2
       exit 1
@@ -2993,7 +3001,9 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$RR_GH_LOG"
 case "${1:-} ${2:-}" in
   "repo view")
-    echo "autumngarage/example"
+    # A placeholder-like token in the real repository identity: textual
+    # placeholder substitution would corrupt this (touchstone#676).
+    echo "PRNUM-tools/PRNUM-example"
     ;;
   "api graphql")
     count_file="${RR_GRAPHQL_COUNT_FILE:?}"
@@ -3021,7 +3031,7 @@ case "${1:-} ${2:-}" in
       *) echo "unexpected paginated api: $*" >&2; exit 1 ;;
     esac
     ;;
-  "api repos/autumngarage/example/pulls/77/comments/9001/replies")
+  "api repos/PRNUM-tools/PRNUM-example/pulls/77/comments/9001/replies")
     echo "5555"
     ;;
   *)
@@ -3171,5 +3181,19 @@ for propagation_file in \
   fi
 done
 echo "    PASS: respond-review registered across all distribution surfaces"
+
+# Repository identity must travel as GraphQL variables — never substituted
+# into the query text, where a PRNUM-like repo name gets corrupted.
+if grep -q -- '-f owner=PRNUM-tools' "$RR_GH_LOG" \
+  && grep -q -- '-f name=PRNUM-example' "$RR_GH_LOG" \
+  && grep -q -- '-F pr=77' "$RR_GH_LOG" \
+  && grep -q 'repository(owner:\$owner, name:\$name)' "$RR_GH_LOG" \
+  && ! grep -q 'repository(owner:"PRNUM-tools"' "$RR_GH_LOG"; then
+  echo "    PASS: repository identity travels as GraphQL variables"
+else
+  echo "FAIL: respond-review must pass owner/name/pr as GraphQL variables" >&2
+  grep 'graphql' "$RR_GH_LOG" | head -3 >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 echo "==> PASS: merge gate requires deterministic checks plus exact-revision PR review"

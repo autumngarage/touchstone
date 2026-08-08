@@ -67,17 +67,47 @@ case "$command" in
 esac
 
 # Glob metacharacters are dynamic input (touchstone#675): with adversarial
-# filenames a pattern word can expand into git/push at execution time, and
-# this guard cannot see the filesystem the command will run against. A
-# pattern combined with a --no-verify fragment cannot be proven safe.
+# filenames a pattern word can expand into protected tokens at execution
+# time, and this guard cannot see the filesystem the command will run
+# against. The check pattern-matches each glob-bearing word against the
+# protected tokens themselves, so "--no-*" (which can expand to the bypass
+# flag) blocks even without a literal fragment, while "ls *.txt" (whose
+# pattern cannot match any protected token) stays allowed.
 case "$command" in
+  *git* | *push*)
+    # Literal protected tokens present: the parser below owns
+    # classification — including pathname-expanded bypass flags and the
+    # TOUCHSTONE_EMERGENCY audit path. The glob pre-block must not
+    # preempt an authorized, audited push.
+    ;;
   *\?* | *\** | *\[*)
-    case "$command" in
-      *--no-v*)
-        echo "emergency-disclosure: glob pattern combined with a --no-verify fragment cannot be proven safe; bypass blocked" >&2
+    glob_word_matches() {
+      # Unquoted case pattern = bash glob semantics, exactly what the
+      # shell would apply against directory entries.
+      # shellcheck disable=SC2254
+      case "$2" in
+        $1) return 0 ;;
+      esac
+      return 1
+    }
+    for guard_word in $command; do
+      case "$guard_word" in
+        *\?* | *\** | *\[*) ;;
+        *) continue ;;
+      esac
+      if glob_word_matches "$guard_word" "--no-verify"; then
+        echo "emergency-disclosure: glob pattern '$guard_word' can expand to the --no-verify bypass; blocked" >&2
         exit 2
-        ;;
-    esac
+      fi
+      case "$command" in
+        *--no-v*)
+          if glob_word_matches "$guard_word" "push" || glob_word_matches "$guard_word" "git"; then
+            echo "emergency-disclosure: glob pattern '$guard_word' combined with a --no-verify fragment cannot be proven safe; blocked" >&2
+            exit 2
+          fi
+          ;;
+      esac
+    done
     ;;
 esac
 

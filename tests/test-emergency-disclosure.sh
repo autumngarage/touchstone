@@ -106,6 +106,7 @@ assert_blocked "repo-configured alias push" "git p --no-verify"
 # Glob metacharacters are dynamic input (touchstone#675): with files named
 # git/push in cwd, ?it p?sh expands to git push at execution time.
 assert_blocked "glob-assembled push" "?it p?sh --no-verify"
+assert_blocked "glob-assembled bypass flag" "git push --no-*"
 assert_blocked "dash-C with literal push" "git -C $REPO push --no-verify"
 assert_blocked "cd compound push" "cd $REPO && git commit -m 'x' && git push --no-verify"
 
