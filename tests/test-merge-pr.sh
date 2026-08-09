@@ -2649,7 +2649,7 @@ fi
 # EVERY job — the gate never labels the cause itself.
 if grep -q 'this check failed before executing any project step' "$TEST_DIR/output-zero-step-report.txt" \
   && grep -q 'annotation: first job annotation' "$TEST_DIR/output-zero-step-report.txt" \
-  && grep -q 'spending limit needs to be increased' "$TEST_DIR/output-zero-step-report.txt" \
+  && grep -q '^ *annotation: The job was not started' "$TEST_DIR/output-zero-step-report.txt" \
   && ! grep -qi 'CLASSIFICATION' "$TEST_DIR/output-zero-step-report.txt"; then
   echo "==> PASS: zero-step failures report facts, not a guessed cause"
 else

@@ -2176,7 +2176,18 @@ zero_step_failure_annotations() {
       echo "       (annotation lookup failed for job $job_id: $one)" >&2
       continue
     fi
-    messages="$messages$one"
+    # Keep a newline between jobs: command substitution strips the trailing
+    # one, so plain concatenation runs the last annotation of one job into
+    # the first annotation of the next. A literal newline is used because
+    # $(printf '\n') would itself be stripped.
+    if [ -n "$one" ]; then
+      if [ -n "$messages" ]; then
+        messages="$messages
+$one"
+      else
+        messages="$one"
+      fi
+    fi
   done <<<"$job_ids"
   [ -n "$messages" ] || return 1
   printf '%s\n' "$messages"
