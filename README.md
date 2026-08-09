@@ -12,7 +12,13 @@
 
 # Touchstone
 
-Touchstone is a command-line starter kit for AI-assisted projects. It helps you start a project folder, add the same useful project files every time, and keep those shared files updated later without copy-pasting between projects.
+**Touchstone makes sure AI-written code actually gets reviewed and tested before it lands — in any project you install it into.**
+
+It does not review your code; GitHub and whatever reviewer you have configured do that. Touchstone is what makes the loop close: it stops the agent committing to your default branch, runs your local tests before anything merges, and refuses to merge while a review thread is unresolved, a review requests changes, or a required check is failing. Whether the review comes from a hosted AI reviewer, a bot, or a colleague, the rule is the same — respond to every comment, resolve its thread, then merge.
+
+(The enforced signals are GitHub's own: unresolved review threads, the review decision, and required status checks. A comment left somewhere GitHub does not track as a thread — a plain issue comment, say — is not something any tool can verify you answered.)
+
+It also helps you start a project folder, add the same useful project files every time, and keep those shared files updated later without copy-pasting between projects.
 
 It gives you:
 - starter instructions for Claude, Codex, and other AI coding tools
@@ -76,13 +82,13 @@ router or API key is required. Clean results are persisted on their full
 reviewed SHA for fail-closed recovery after a later rebase; see the
 [Review Evidence Contract](principles/review-evidence.md).
 
-Routine shipping is non-blocking:
+Routine shipping is one command:
 
 ```bash
-touchstone worker ship --worktree "$PWD" --detach
+bash scripts/open-pr.sh --auto-merge
 ```
 
-The command prints durable status and takeover commands. A clean PR merges through the normal gate; actionable feedback preserves the worktree as `needs-attention` for the driving CLI to fix.
+It opens the PR, requests review, and merges once the gate passes. If it stops, it names the blocking condition — fix that and run it again.
 
 See [hooks/README.md](hooks/README.md) for the review contract.
 
@@ -272,7 +278,6 @@ Run `touchstone skills` to list visible project and user skills, and `touchstone
 
 - **open-pr.sh** — `git push` + `gh pr create` with your PR template. Idempotent.
 - **merge-pr.sh** — Sanity-check mergeability, block unresolved PR feedback, run AI review, squash-merge, delete branch, and sync main.
-- **worker ship** — Hand the same PR/review/check/merge path to a durable wait-only background owner.
 - **cleanup-branches.sh** — Dry-run by default. Never deletes unmerged work.
 
 ## Project structure

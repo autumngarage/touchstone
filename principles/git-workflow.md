@@ -28,8 +28,9 @@ The three layers are complementary: the local hook catches the honest mistake be
 2. **Branch — before any edit that might become a commit.** `git checkout -b <type>/<short-description>` where `<type>` is one of `feat`, `fix`, `chore`, `refactor`, `docs`. Do this as step one of the work, not as a cleanup step later. The check is `git branch --show-current` *before your first edit* — see "Never commit on the default branch" above for why edit time and not commit time.
 3. **Check the tree before changing it.** Run `git status --short` and `git branch --show-current` before starting implementation. If the tree is dirty with unrelated user changes, do not stash them and do not auto-commit on the user's behalf. Ask how to proceed, or branch around the changes when the file surfaces are disjoint. `git stash` is hidden multi-agent state, not a coordination mechanism.
 4. **Loop: change → commit → push.** Each meaningful sub-task gets its own commit and push. Stage explicit file paths (not `git add -A`), write a concise message, push to the open branch. Don't batch a session's worth of changes into one commit at the end — see the "Commit and push frequency" section below.
-5. **Ship.** From the completed worktree, run `touchstone worker ship --worktree "$PWD" --detach`. The wait-only worker invokes the same project-local `open-pr.sh --auto-merge`, returns control immediately, and owns external review/check latency without mutating the branch. Record the printed status and takeover commands, start only disjoint work in another worktree, and take over any `needs-attention` result to address feedback. Use `scripts/open-pr.sh --auto-merge` directly when foreground diagnosis is useful; use it without `--auto-merge` to open a PR without merging. The canonical architecture is [AI Delivery Architecture](ai-delivery-architecture.md).
-6. **Clean up after merge.** Confirm the detached job succeeded before deleting the local feature branch. Run `scripts/cleanup-branches.sh` periodically for batch hygiene.
+5. **Ship.** From the completed worktree, run `bash scripts/open-pr.sh --auto-merge`. It opens or updates the PR, requests review for that exact head, and merges once the gate passes. If it stops, it names the blocking condition — fix that and run it again; there is no separate recovery command. Omit `--auto-merge` to open a PR without merging. The canonical architecture is [AI Delivery Architecture](ai-delivery-architecture.md).
+6. **Answer every piece of PR feedback before merging.** Reply to each comment and resolve its thread, whoever left it — a hosted AI reviewer, a bot, or a colleague. Unresolved threads and a `CHANGES_REQUESTED` decision both block the merge regardless of author. `bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file>` replies and resolves in one step; `--all-resolved-check` proves none remain.
+7. **Clean up after merge.** Delete the local feature branch once the PR is merged. Run `scripts/cleanup-branches.sh` periodically for batch hygiene.
 
 ### Touchstone CLI auto-sync
 
@@ -192,7 +193,7 @@ When one lane closes multiple issues (e.g., Wave 1's Lane A bundling shfmt + mar
 
 Three layers back the convention so a missed claim doesn't reach merge silently:
 
-- **`scripts/claim-issue.sh`** is the canonical claim path. It does the claim + dispatch comment in one step, and detects races (another assignee appeared between the API read and write — back off, exit non-zero so the dispatching agent knows not to spawn a worker). Use it instead of raw `gh issue edit` when an agent is about to start work.
+- **`scripts/claim-issue.sh`** is the canonical claim path. It does the claim + dispatch comment in one step, and detects races (another assignee appeared between the API read and write — back off, exit non-zero so the dispatching agent knows not to start work). Use it instead of raw `gh issue edit` when an agent is about to start work.
 - **`scripts/open-pr.sh`** runs `scripts/issue-claim-check.sh` locally before creating a new PR and before auto-merging an existing PR. If the PR body closes an open issue that is not assigned to the PR author, it fails before spending review time.
 - **`.github/workflows/issue-claim-check.yml`** runs on every `pull_request` open/edit/synchronize. It parses `Closes #N` / `Fixes #N` / `Resolves #N` / `Closes-issue: #N` from the PR body, fetches each open referenced issue, and fails the check if the PR author is not in the issue's assignees. The failure posts a comment on the PR explaining what to fix.
 
@@ -217,7 +218,7 @@ For the full fan-out playbook — slice manifests, file ownership, parent orches
 **Rules that make it actually parallel.**
 
 - **Disjoint file sets.** If two concurrent tasks touch the same file, they're not parallel — they're a merge conflict delivered on two branches. Before launching, name the file surface each task owns; if they overlap, sequence them.
-- **No coordination in flight.** Each independently shippable worktree hands off to its own wait-only shipping worker, or reports back to a parent-owned aggregate PR when the feature only makes sense as a unit. If task B needs something from task A's PR before it can merge, that's stacked work — see the stacked-PR section above and run them sequentially instead.
+- **No coordination in flight.** Each independently shippable worktree ships its own PR, or reports back to a parent-owned aggregate PR when the feature only makes sense as a unit. If task B needs something from task A's PR before it can merge, that's stacked work — see the stacked-PR section above and run them sequentially instead.
 - **Each agent burns its own budget.** Five parallel agents use roughly 5× the tokens and 5× the CPU of one. Start with 2–3 concurrent worktrees, observe, and scale from there. Practitioners report the comfortable cap without heavy orchestration is around 5–6.
 
 **Gotchas.**
@@ -231,51 +232,24 @@ For the full fan-out playbook — slice manifests, file ownership, parent orches
 - **Inline (preferred for fire-and-forget).** Pass `--cleanup-worktree` alongside `--auto-merge` to `scripts/open-pr.sh`. After the PR squash-merges, the helper removes the current feature worktree itself by invoking `git worktree remove` from the default-branch worktree. The worktree is gone before the script returns, so there's nothing to come back to. Failures here are reported as warnings — the merge already happened, cleanup is best-effort.
 - **Deferred sweep.** From the main checkout, run `scripts/cleanup-worktrees.sh` (dry-run by default) to preview and `--execute` to remove clean merged-or-equivalent worktrees. Use this when several worktrees accumulated across sessions, or when the inline cleanup couldn't run (dirty tree, etc.).
 
-Routine shipping detaches the same project-local `open-pr.sh --auto-merge`
-path so review/check latency does not occupy the driving session:
+Routine shipping is a single foreground command:
 
 ```bash
-touchstone worker ship --worktree ../project-fix --detach
-touchstone worker status --worktree ../project-fix --show-log
-touchstone worker takeover --worktree ../project-fix
+bash scripts/open-pr.sh --auto-merge
 ```
 
-Detached mode stores its PID, result, timestamps, and log under the repository
-Git common directory, so it never dirties the worker branch. One active job is
-allowed per worker. The start handoff prints status, takeover, and durable event
-paths; `review_requested` and `review_result` events expose request/result
-timestamps, request count, and wait time for latency tracking.
+It pushes, opens or updates the PR, requests review for that exact head, and
+merges once the gate passes. When it stops it names the blocking condition —
+a failing check, an unresolved review thread, a requested-changes decision, a
+moved base. Fix that and run it again; there is no separate recovery command
+and no background owner to reconcile with.
 
-The default detached job is wait-only: it invokes the project-local
-`open-pr.sh --auto-merge`, waits for PR-visible review, and merges a clean head.
-Any nonzero review, check, or merge result becomes `needs-attention` and
-preserves the worktree for takeover. The driving CLI fixes actionable feedback,
-commits a new head, and hands the branch back to a new wait-only worker.
+The gate emits `review_requested` and `review_result` events carrying the
+request and result timestamps, request count, and wait time, so review latency
+is measurable without inferring it from logs.
 
-`--review-fix` is an experimental adapter, not part of the supported core
-delivery contract. Use it only when a bounded autonomous repair loop is
-explicitly authorized:
-
-```bash
-touchstone worker ship --worktree ../project-fix --detach --review-fix \
-  --max-fix-iterations 2 --max-fix-minutes 45
-```
-
-This mode invokes the subscription-backed Codex CLI to edit files, while
-Touchstone retains validation, explicit staging, commit, push, thread reply,
-thread resolution, and merge authority. Every iteration is tied to the full PR
-head OID and persisted thread IDs. Duplicate delivery resumes idempotently; a
-stale head, ambiguous feedback, failed validation, unavailable authorization,
-worker failure, or exhausted budget moves the job to `needs-attention` without
-deleting its worktree, branch, checkpoints, or log. Resume manually with the
-takeover command printed by `touchstone worker status --show-log`.
-
-Autonomous repair has a non-configurable ceiling of two model-authored
-mutation cycles. Lower operator budgets are honored; higher values are clamped.
-After the ceiling, Touchstone dispatches no third edit and emits a durable
-handoff containing the stop reason, invariant, last validated fix head, and
-non-goals. Wait-only detached shipping remains the supported way to leave PR
-review latency running in the background.
+Touchstone does not repair changes autonomously. A project that wants shipping
+automation layered on top of this contract owns that automation itself.
 
 Do not substitute `rm -rf <worktree-dir>` for `git worktree remove <path>`.
 Deleting only the directory can leave stale Git worktree metadata behind; Git

@@ -42,11 +42,10 @@ for file in \
   assert_contains "$file" "Required Delivery Workflow"
   assert_contains "$file" "Before the first edit"
   assert_contains "$file" "principles/ai-delivery-architecture.md"
-  assert_contains "$file" 'touchstone worker ship --worktree "$PWD" --detach'
-  assert_contains "$file" "worker status"
-  assert_contains "$file" "worker takeover"
-  assert_contains "$file" "needs-attention"
   assert_contains "$file" "bash scripts/open-pr.sh --auto-merge"
+  assert_contains "$file" "Answer every piece of PR feedback before merging"
+  assert_contains "$file" "scripts/respond-review.sh"
+  assert_not_contains "$file" "touchstone worker"
   assert_contains "$file" "Claim issues before implementation"
   assert_contains "$file" "bash scripts/claim-issue.sh <n>"
   assert_contains "$file" "Reconcile issues"
@@ -78,8 +77,6 @@ done
 
 echo "==> canonical git workflow describes the PR-visible review loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Agentic PR Review Loop"
-assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'touchstone worker ship --worktree "$PWD" --detach'
-assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "wait-only worker"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "review_result"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "scripts/open-pr.sh --auto-merge"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Codex merge review"
@@ -91,8 +88,6 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "PR cr
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Merge is allowed only after PR-visible review and check approval"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Parallel file-writing agents use worktrees by default"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Touchstone does not invoke a local semantic reviewer or model router"
-assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" 'touchstone worker ship --worktree "$PWD" --detach'
-assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "foreground diagnostic mode"
 
 echo "==> active product surfaces do not reintroduce the retired model router"
 # The two compatibility helpers may name retired paths solely to back them up

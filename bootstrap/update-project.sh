@@ -459,13 +459,38 @@ update_file() {
   UPDATED=$((UPDATED + 1))
 }
 
+# Retired-but-not-removed: list stale worker files so the owner can delete
+# them deliberately. Never mutates the project.
+report_retired_worker_files() {
+  local rel found=false
+  for rel in scripts/worker.sh lib/worker-ship-job.sh lib/worker-review-fix.sh lib/worker-state.sh; do
+    if [ -e "$PROJECT_DIR/$rel" ]; then
+      if [ "$found" = false ]; then
+        echo "    ! the worker engine was retired in 2.13.0; these files are no longer managed:"
+        found=true
+      fi
+      echo "      - $rel"
+    fi
+  done
+  if [ "$found" = true ]; then
+    echo "      Ship with: bash scripts/open-pr.sh --auto-merge"
+    echo "      Delete them when you are ready; Touchstone will not touch them."
+  fi
+}
+
 remove_retired_managed_file() {
   local rel_path="$1"
   local manifest="$PROJECT_DIR/.touchstone-manifest"
   local target="$PROJECT_DIR/$rel_path"
 
   [ -f "$manifest" ] || return 0
-  grep -qxF "$rel_path" "$manifest" 2>/dev/null || return 0
+  # CRLF tolerance: a manifest checked out with core.autocrlf carries \r,
+  # which a plain fixed-string match would never equal. Read into a variable
+  # rather than piping: grep -q exits at the first match, tr takes SIGPIPE,
+  # and pipefail would turn a successful MATCH into a nonzero pipeline.
+  local manifest_entries=""
+  manifest_entries="$(tr -d '\r' <"$manifest")" || return 0
+  grep -qxF "$rel_path" <<<"$manifest_entries" || return 0
   [ -e "$target" ] || return 0
   if ! ensure_safe_dest "$target" || [ ! -f "$target" ]; then
     echo "    ! refusing to remove unsafe retired path: $target" >&2
@@ -475,6 +500,18 @@ remove_retired_managed_file() {
   if ! git -C "$PROJECT_DIR" ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1; then
     echo "    ! leaving untracked retired file in place: $target" >&2
     echo "      Touchstone will stop managing it; remove it manually after preserving any local changes." >&2
+    return 0
+  fi
+  # Never destroy local work: a retired file carrying uncommitted edits is
+  # left in place with an explicit notice. Retirement removes Touchstone's
+  # managed copy, it does not discard a project's modifications.
+  # Worktree OR index: a staged customization must neither be deleted nor
+  # swept into Touchstone's own update commit.
+  if ! git -C "$PROJECT_DIR" diff --quiet -- "$rel_path" 2>/dev/null \
+    || ! git -C "$PROJECT_DIR" diff --cached --quiet -- "$rel_path" 2>/dev/null; then
+    echo "    ! leaving locally modified retired file in place: $target" >&2
+    echo "      It has uncommitted changes (worktree or index); Touchstone no longer manages it." >&2
+    echo "      Commit or discard them, then delete the file when you are ready." >&2
     return 0
   fi
   if [ "$DRY_RUN" = true ]; then
@@ -490,6 +527,13 @@ remove_retired_managed_file() {
 echo "==> Updating touchstone-owned files:"
 
 remove_retired_managed_file "lib/review-comment.sh"
+# Worker engine retired in 2.13.0 (issue #694). Touchstone stops managing
+# these files and NOTIFIES; it does not delete them. Automatic deletion of a
+# project's tracked files has to reason about dirty worktrees, staged edits,
+# staged renames and deletions, and rollback snapshots — convenience
+# automation with an unbounded edge-case surface, which is exactly what this
+# release removes. One notice, the project owner decides.
+report_retired_worker_files
 
 # Principles
 if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
@@ -532,15 +576,11 @@ update_file "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$PROJECT_DIR/script
 update_file "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
 update_file "$TOUCHSTONE_ROOT/scripts/spawn-worktree.sh" "$PROJECT_DIR/scripts/spawn-worktree.sh"
 update_file "$TOUCHSTONE_ROOT/scripts/cleanup-worktrees.sh" "$PROJECT_DIR/scripts/cleanup-worktrees.sh"
-update_file "$TOUCHSTONE_ROOT/scripts/worker.sh" "$PROJECT_DIR/scripts/worker.sh"
 
 # Libraries used by touchstone-owned scripts.
 update_file "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
 update_file "$TOUCHSTONE_ROOT/lib/events.sh" "$PROJECT_DIR/lib/events.sh"
 update_file "$TOUCHSTONE_ROOT/lib/codex-auth.sh" "$PROJECT_DIR/lib/codex-auth.sh"
-update_file "$TOUCHSTONE_ROOT/lib/worker-ship-job.sh" "$PROJECT_DIR/lib/worker-ship-job.sh"
-update_file "$TOUCHSTONE_ROOT/lib/worker-review-fix.sh" "$PROJECT_DIR/lib/worker-review-fix.sh"
-update_file "$TOUCHSTONE_ROOT/lib/worker-state.sh" "$PROJECT_DIR/lib/worker-state.sh"
 update_file "$TOUCHSTONE_ROOT/lib/script-sync-guard.sh" "$PROJECT_DIR/lib/script-sync-guard.sh"
 update_file "$TOUCHSTONE_ROOT/lib/sha256.sh" "$PROJECT_DIR/lib/sha256.sh"
 update_file "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PROJECT_DIR/lib/preflight.sh"
@@ -704,13 +744,9 @@ write_touchstone_manifest() {
     printf 'scripts/cleanup-branches.sh\n'
     printf 'scripts/spawn-worktree.sh\n'
     printf 'scripts/cleanup-worktrees.sh\n'
-    printf 'scripts/worker.sh\n'
     printf 'lib/toml.sh\n'
     printf 'lib/events.sh\n'
     printf 'lib/codex-auth.sh\n'
-    printf 'lib/worker-ship-job.sh\n'
-    printf 'lib/worker-review-fix.sh\n'
-    printf 'lib/worker-state.sh\n'
     printf 'lib/script-sync-guard.sh\n'
     printf 'lib/sha256.sh\n'
     printf 'lib/preflight.sh\n'

@@ -28,18 +28,16 @@ Commit
   | stage explicit paths
   | create focused commit(s)
   v
-Detached Shipping Handoff
+Ship
   |
-  | wait-only owner pushes and opens the PR
-  | driver records status/takeover commands and starts disjoint work
+  | open-pr.sh --auto-merge pushes and opens the PR
   v
 Agentic PR Review Loop
   |
-  | Detached owner watches the PR
-  | - check status and CI/check runs
-  | - wait for exact-head review
-  | - merge a clean head
-  | - preserve actionable feedback as needs-attention
+  | - required checks run
+  | - the configured reviewer reviews the exact head
+  | - the driver answers every comment and resolves its thread
+  | - a clean, fully-answered head merges
   |
   v
 Approval Gate
@@ -68,7 +66,7 @@ Human user
 ## Required Invariants
 
 - Every change reaches `main` through a GitHub PR unless the documented emergency path is used.
-- PR creation is not completion. The driver remains accountable through durable worker status and takeover until the PR is approved, merged, and synced locally.
+- PR creation is not completion. The driver remains accountable until every piece of PR feedback is answered and resolved, the PR is merged, and the merge is synced locally.
 - A draft PR is a review-free coordination surface. It does not emit semantic-review intent or consume an exact-head review until final shipping explicitly marks it ready.
 - The exact commit merged has passed deterministic checks after its last mutation.
 - The exact commit merged has no unresolved blocking review comments, requested changes, or failing required checks.
@@ -91,11 +89,9 @@ The driver AI is Claude Code, Codex, Gemini CLI, or another AGENTS.md-native cod
 - run focused checks during implementation
 - stage explicit file paths
 - commit coherent changes
-- hand routine shipping to a wait-only detached owner
-- record status and takeover commands
-- start only work disjoint from the handed-off worktree
-- take over `needs-attention` jobs and commit feedback fixes
-- use foreground shipping for interactive diagnosis
+- ship with `bash scripts/open-pr.sh --auto-merge`
+- answer every piece of PR feedback and resolve its thread
+- commit fixes for actionable feedback and ship again
 - explain the outcome to the user
 
 ## Reviewer Responsibilities
@@ -118,9 +114,9 @@ Driver AI
   v
 Agent swarm
   |
-  | one worker per worktree
-  | each worker gets an explicit file/module scope
-  | workers commit only in their own worktree
+  | one agent per worktree
+  | each agent gets an explicit file/module scope
+  | agents commit only in their own worktree
   v
 Driver AI integration
   |
@@ -132,21 +128,21 @@ Driver AI integration
 Rules:
 
 - Use worktrees for file-writing parallel agents.
-- Give every worker a bounded task and explicit file ownership.
+- Give every agent a bounded task and explicit file ownership.
 - Workers must not edit outside their assigned scope.
-- Workers must not revert or overwrite another worker's work.
+- Agents must not revert or overwrite another agent's work.
 - Workers may produce candidate changes; only the driver integrates them into the PR that enters the review loop.
-- No worker opens or merges the final PR unless the driver explicitly assigns that role.
+- No agent opens or merges the final PR unless the driver explicitly assigns that role.
 - Clean up worktrees after merge or abandonment.
 
 ## Implementation Scope
 
 The scripts now enforce the core merge-time parts of this architecture:
 
-1. `touchstone worker ship --worktree "$PWD" --detach` is the default routine shipping entry point and invokes the project-local `open-pr.sh --auto-merge`; direct `open-pr.sh` remains the foreground diagnostic mode.
+1. `bash scripts/open-pr.sh --auto-merge` is the shipping entry point; a plain `open-pr.sh` opens a PR without merging.
 2. `open-pr.sh --draft` creates or updates a review-free coordination surface; it does not run the final PR-body protocol or emit semantic-review intent, completion status, or request comments.
 3. Final shipping runs deterministic issue-claim and PR-body preflights before marking an existing draft ready and requesting exact-head review.
-4. The wait-only owner watches review decisions and checks without mutating the branch; actionable feedback becomes a durable `needs-attention` handoff for the driver.
+4. When the gate stops, it names the blocking condition; the driver fixes that and ships again. Actionable review feedback is answered and its thread resolved before the next attempt.
 5. `merge-pr.sh` blocks draft PRs, active requested-changes decisions, unresolved review threads, and thread-state inspection failures before the final squash merge.
 6. `merge-pr.sh` binds the trusted GitHub review signal to the exact current head and base, rejects base or merge-base movement, and merges with `--match-head-commit`.
 7. Review and preflight markers should key on base/head/config so repeated operations reuse valid results without hiding stale state.
@@ -162,8 +158,7 @@ Touchstone's supported core is policy distribution, deterministic validation,
 PR creation, current-revision review authorization, and guarded merge. Model
 providers and PR-visible reviewers are adapters around that contract.
 
-Detached wait-only shipping is a supported latency adapter because it does not
-mutate the branch. Detached review-fix remains experimental: it may author at
-most two validated fix commits, then must preserve its worktree and emit a
-`needs-attention` handoff before any third edit. The core workflow must not
-depend on autonomous repair succeeding.
+Autonomous repair is not part of the contract. When the gate stops it names the
+blocking condition and the driver fixes it — Touchstone constrains the change,
+it does not repair it. A project that wants shipping automation on top of this
+contract owns that automation itself.

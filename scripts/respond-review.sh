@@ -189,4 +189,4 @@ VERIFY="$(graphql_with_retry \
 [ "$VERIFY" = "true" ] || fail "thread $THREAD_ID is still unresolved after the mutation."
 
 echo "==> Replied and resolved. Re-request review with a fresh exact head when all threads are answered:"
-echo "    bash scripts/respond-review.sh $PR_NUMBER --all-resolved-check && touchstone worker ship --worktree \"\$PWD\" --detach"
+echo "    bash scripts/respond-review.sh $PR_NUMBER --all-resolved-check && bash scripts/open-pr.sh --auto-merge"

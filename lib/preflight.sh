@@ -931,17 +931,6 @@ touchstone_preflight_touchstone_scoped_self_test_files() {
           break
         }
         ;;
-      scripts/worker.sh | lib/worker-review-fix.sh | lib/worker-ship-job.sh | lib/worker-state.sh)
-        touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
-          mapping_status=1
-          break
-        }
-        touchstone_preflight_add_existing_self_tests "$output_file" \
-          tests/test-worker.sh || {
-          mapping_status=1
-          break
-        }
-        ;;
       scripts/release.sh | lib/release.sh)
         touchstone_preflight_add_literal_self_test_consumers "$output_file" "$path" || {
           mapping_status=1
@@ -1017,10 +1006,10 @@ touchstone_preflight_delivery_only_path() {
     scripts/cleanup-branches.sh | scripts/spawn-worktree.sh)
       return 0
       ;;
-    scripts/cleanup-worktrees.sh | scripts/worker.sh | scripts/run-pytest-in-venv.sh)
+    scripts/cleanup-worktrees.sh | scripts/run-pytest-in-venv.sh)
       return 0
       ;;
-    lib/toml.sh | lib/events.sh | lib/codex-auth.sh | lib/worker-ship-job.sh | lib/worker-review-fix.sh | lib/worker-state.sh | lib/script-sync-guard.sh)
+    lib/toml.sh | lib/events.sh | lib/codex-auth.sh | lib/script-sync-guard.sh)
       return 0
       ;;
     lib/sha256.sh | lib/preflight.sh | lib/preflight-scope.sh)
