@@ -193,7 +193,7 @@ When one lane closes multiple issues (e.g., Wave 1's Lane A bundling shfmt + mar
 
 Three layers back the convention so a missed claim doesn't reach merge silently:
 
-- **`scripts/claim-issue.sh`** is the canonical claim path. It does the claim + dispatch comment in one step, and detects races (another assignee appeared between the API read and write — back off, exit non-zero so the dispatching agent knows not to spawn a worker). Use it instead of raw `gh issue edit` when an agent is about to start work.
+- **`scripts/claim-issue.sh`** is the canonical claim path. It does the claim + dispatch comment in one step, and detects races (another assignee appeared between the API read and write — back off, exit non-zero so the dispatching agent knows not to start work). Use it instead of raw `gh issue edit` when an agent is about to start work.
 - **`scripts/open-pr.sh`** runs `scripts/issue-claim-check.sh` locally before creating a new PR and before auto-merging an existing PR. If the PR body closes an open issue that is not assigned to the PR author, it fails before spending review time.
 - **`.github/workflows/issue-claim-check.yml`** runs on every `pull_request` open/edit/synchronize. It parses `Closes #N` / `Fixes #N` / `Resolves #N` / `Closes-issue: #N` from the PR body, fetches each open referenced issue, and fails the check if the PR author is not in the issue's assignees. The failure posts a comment on the PR explaining what to fix.
 
@@ -218,7 +218,7 @@ For the full fan-out playbook — slice manifests, file ownership, parent orches
 **Rules that make it actually parallel.**
 
 - **Disjoint file sets.** If two concurrent tasks touch the same file, they're not parallel — they're a merge conflict delivered on two branches. Before launching, name the file surface each task owns; if they overlap, sequence them.
-- **No coordination in flight.** Each independently shippable worktree hands off to its own wait-only shipping worker, or reports back to a parent-owned aggregate PR when the feature only makes sense as a unit. If task B needs something from task A's PR before it can merge, that's stacked work — see the stacked-PR section above and run them sequentially instead.
+- **No coordination in flight.** Each independently shippable worktree ships its own PR, or reports back to a parent-owned aggregate PR when the feature only makes sense as a unit. If task B needs something from task A's PR before it can merge, that's stacked work — see the stacked-PR section above and run them sequentially instead.
 - **Each agent burns its own budget.** Five parallel agents use roughly 5× the tokens and 5× the CPU of one. Start with 2–3 concurrent worktrees, observe, and scale from there. Practitioners report the comfortable cap without heavy orchestration is around 5–6.
 
 **Gotchas.**
@@ -250,10 +250,6 @@ is measurable without inferring it from logs.
 
 Touchstone does not repair changes autonomously. A project that wants shipping
 automation layered on top of this contract owns that automation itself.
-After the ceiling, Touchstone dispatches no third edit and emits a durable
-handoff containing the stop reason, invariant, last validated fix head, and
-non-goals. Wait-only detached shipping remains the supported way to leave PR
-review latency running in the background.
 
 Do not substitute `rm -rf <worktree-dir>` for `git worktree remove <path>`.
 Deleting only the directory can leave stale Git worktree metadata behind; Git

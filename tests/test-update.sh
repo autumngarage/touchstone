@@ -399,8 +399,12 @@ chmod +x "$RETIRED_WORKER_PROJECT/scripts/worker.sh"
 echo "0000000000000000000000000000000000000005" >"$RETIRED_WORKER_PROJECT/.touchstone-version"
 commit_all "$RETIRED_WORKER_PROJECT" "simulate project carrying the retired worker engine"
 
-(cd "$RETIRED_WORKER_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-retired-worker.txt" 2>&1 || true
+if ! (cd "$RETIRED_WORKER_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-retired-worker.txt" 2>&1; then
+  echo "FAIL: update of a project carrying the retired worker engine should succeed" >&2
+  cat "$TEST_DIR/update-retired-worker.txt" >&2
+  exit 1
+fi
 
 # Touchstone stops managing these files; it never deletes the project's.
 assert_exists "$RETIRED_WORKER_PROJECT/scripts/worker.sh"
