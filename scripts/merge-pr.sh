@@ -2103,18 +2103,94 @@ require_pr_feedback_clear() {
 CLAIM_CHECK_SUBSTITUTED=false
 CLAIM_SUBSTITUTION_KIND=""
 
-claim_check_run_never_executed() {
-  local link="$1" run_id="" real_steps=""
+check_run_never_executed() {
+  local link="$1" run_id="" job_id="" real_steps=""
   [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] || return 1
+  # Inspect the FAILED JOB when the link names one: a sibling job's
+  # executed steps must not make a zero-step failure look like it ran
+  # project code (PR #680 review).
+  job_id="$(printf '%s' "$link" | grep -oE '/job/[0-9]+' | head -1 | tr -dc '0-9')"
+  if [ -n "$job_id" ]; then
+    if ! real_steps="$(gh api "repos/$REPO_OWNER/$REPO_NAME/actions/jobs/$job_id" \
+      --jq '[.steps[]? | select(.name != "Set up job" and .name != "Complete job")] | length' \
+      2>&1)"; then
+      echo "       (job step inspection failed for job $job_id: $real_steps)" >&2
+      return 1
+    fi
+    [ "$real_steps" = "0" ]
+    return
+  fi
   run_id="$(printf '%s' "$link" | grep -oE '/runs/[0-9]+' | head -1 | tr -dc '0-9')"
   [ -n "$run_id" ] || return 1
   # Setup/teardown pseudo-steps appear even on infra failures; user code ran
-  # only if any OTHER step exists. Fail closed on API errors (return 1 keeps
-  # the check treated as a genuine failure).
-  real_steps="$(gh api "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$run_id/jobs" \
+  # only if any OTHER step exists. --paginate walks EVERY page of jobs: a
+  # later page carrying executed steps must not be missed (PR #680 review).
+  # Fail closed on API errors (return 1 keeps the check treated as a genuine
+  # failure).
+  local steps_err="" steps_status=0
+  steps_err="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$run_id/jobs?per_page=100" \
     --jq '[.jobs[].steps[]? | select(.name != "Set up job" and .name != "Complete job")] | length' \
-    2>/dev/null)" || return 1
+    2>&1)" || steps_status=$?
+  if [ "$steps_status" -ne 0 ]; then
+    echo "       (run step inspection failed for run $run_id: $steps_err)" >&2
+    return 1
+  fi
+  real_steps="$(printf '%s\n' "$steps_err" | awk '{total += $1} END {print total + 0}')"
   [ "$real_steps" = "0" ]
+}
+
+claim_check_run_never_executed() {
+  check_run_never_executed "$1"
+}
+
+# Zero-step failures carry GitHub's own explanation in their check-run
+# annotations (billing, spending limit, runner capacity). Surfacing it
+# distinguishes an infrastructure startup failure from a code failure —
+# without it, every PR in an outage reads as a validation problem
+# (issue #631).
+zero_step_failure_annotations() {
+  local link="$1" run_id="" job_id="" job_ids="" messages="" one="" one_err=0
+  [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] || return 1
+  job_id="$(printf '%s' "$link" | grep -oE '/job/[0-9]+' | head -1 | tr -dc '0-9')"
+  if [ -n "$job_id" ]; then
+    job_ids="$job_id"
+  else
+    run_id="$(printf '%s' "$link" | grep -oE '/runs/[0-9]+' | head -1 | tr -dc '0-9')"
+    [ -n "$run_id" ] || return 1
+    # --paginate: a run with more jobs than one page would otherwise have its
+    # later jobs' annotations silently dropped.
+    if ! job_ids="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$run_id/jobs?per_page=100" \
+      --jq '.jobs[].id' 2>&1)"; then
+      # An API failure must be VISIBLE, not read as "no annotations" —
+      # auth and rate-limit problems need a different operator response.
+      echo "       (annotation lookup failed for run $run_id: $job_ids)" >&2
+      return 1
+    fi
+  fi
+  while IFS= read -r job_id; do
+    [ -n "$job_id" ] || continue
+    one_err=0
+    one="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/check-runs/$job_id/annotations?per_page=100" \
+      --jq '.[].message' 2>&1)" || one_err=$?
+    if [ "$one_err" -ne 0 ]; then
+      echo "       (annotation lookup failed for job $job_id: $one)" >&2
+      continue
+    fi
+    # Keep a newline between jobs: command substitution strips the trailing
+    # one, so plain concatenation runs the last annotation of one job into
+    # the first annotation of the next. A literal newline is used because
+    # $(printf '\n') would itself be stripped.
+    if [ -n "$one" ]; then
+      if [ -n "$messages" ]; then
+        messages="$messages
+$one"
+      else
+        messages="$one"
+      fi
+    fi
+  done <<<"$job_ids"
+  [ -n "$messages" ] || return 1
+  printf '%s\n' "$messages"
 }
 
 failed_checks_are_only_unexecuted_claim_checks() {
@@ -2212,7 +2288,7 @@ attempt_claim_check_substitution() {
 
 print_failed_checks_and_exit() {
   local failed_checks="$1"
-  local name state link
+  local name state link annotations=""
 
   [ -n "$failed_checks" ] || return 1
 
@@ -2223,6 +2299,18 @@ print_failed_checks_and_exit() {
       echo "       - $name (${state:-failed}): $link" >&2
     else
       echo "       - $name (${state:-failed})" >&2
+    fi
+    # A check that failed without executing any project step did not run this
+    # code. That is a FACT from the jobs API, so state it — and print
+    # GitHub's own annotations verbatim rather than interpreting them.
+    # Deciding *why* it failed by matching annotation prose against a keyword
+    # list is a heuristic on vendor wording; it belongs to whoever reads the
+    # message, not to the gate (issue #631, PR #680 review).
+    if [ -n "$link" ] && check_run_never_executed "$link"; then
+      echo "         this check failed before executing any project step" >&2
+      if annotations="$(zero_step_failure_annotations "$link")"; then
+        printf '%s\n' "$annotations" | sed 's/^/         annotation: /' >&2
+      fi
     fi
   done <<<"$failed_checks"
   TOUCHSTONE_MERGE_FAILURE_REASON="check-failed"
