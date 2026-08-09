@@ -35,9 +35,9 @@ Your unstaged changes carry over. The trigger is *edit time*, not commit time �
 1. `git pull --rebase` on the default branch
 2. Branch (before any edit)
 3. Commit (explicit file paths, concise message, one concern per commit)
-4. `touchstone worker ship --worktree "$PWD" --detach` — hands the same exact-head PR review, deterministic preflight, and guarded merge path to a wait-only owner; record its status/takeover commands, continue only disjoint work, and take over `needs-attention` results
+4. `bash scripts/open-pr.sh --auto-merge` — pushes, opens the PR, requests exact-head review, and merges once the gate passes; if it stops, fix the cause it names and run it again
 5. Answer review findings with `bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file>` (reply + resolve + verify in one command); gate the re-ship on `--all-resolved-check`
-6. After worker status confirms merge, clean up locally (`git branch -D <feature>` if it persists)
+6. After the PR merges, clean up locally (`git branch -D <feature>` if it persists)
 
 ## Quick rules
 

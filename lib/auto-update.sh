@@ -418,7 +418,7 @@ touchstone_auto_project_sync_command_skips() {
   esac
 
   case "$command:$subcommand" in
-    adr:list | review:--dry-run | review:-n)
+    adr:list | review:--dry-run | review:-n | worker:*)
       return 0
       ;;
   esac

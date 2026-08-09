@@ -102,7 +102,7 @@ You are maintaining a shared engineering platform that provides universal princi
 - Keep changes logically grouped. Stage explicit file paths, commit with a concise message, and avoid unrelated refactors.
 - Reconcile issue state before opening the PR: fixed issues get closing trailers/PR body lines; partial or stale issues get an issue comment with evidence and remaining gaps.
 - To ship a completed branch, run `bash scripts/open-pr.sh --auto-merge`. If it stops, fix the cause it names and run it again.
-- The PR is the review surface. Do not treat PR creation as completion; confirm the worker succeeds, or take over `needs-attention` state and commit fixes before handing the branch back.
+- The PR is the review surface. Do not treat PR creation as completion: answer every piece of PR feedback and resolve its thread — whoever left it — before merging.
 - File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md` for slice manifests, file ownership, concurrency caps, and cleanup; use `scripts/spawn-worktree.sh` and `scripts/cleanup-worktrees.sh` for local setup and teardown.
 
 ### Touchstone-Specific Rules

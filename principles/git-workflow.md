@@ -232,47 +232,24 @@ For the full fan-out playbook — slice manifests, file ownership, parent orches
 - **Inline (preferred for fire-and-forget).** Pass `--cleanup-worktree` alongside `--auto-merge` to `scripts/open-pr.sh`. After the PR squash-merges, the helper removes the current feature worktree itself by invoking `git worktree remove` from the default-branch worktree. The worktree is gone before the script returns, so there's nothing to come back to. Failures here are reported as warnings — the merge already happened, cleanup is best-effort.
 - **Deferred sweep.** From the main checkout, run `scripts/cleanup-worktrees.sh` (dry-run by default) to preview and `--execute` to remove clean merged-or-equivalent worktrees. Use this when several worktrees accumulated across sessions, or when the inline cleanup couldn't run (dirty tree, etc.).
 
-Routine shipping detaches the same project-local `open-pr.sh --auto-merge`
-path so review/check latency does not occupy the driving session:
+Routine shipping is a single foreground command:
 
 ```bash
-touchstone worker ship --worktree ../project-fix --detach
-touchstone worker status --worktree ../project-fix --show-log
-touchstone worker takeover --worktree ../project-fix
+bash scripts/open-pr.sh --auto-merge
 ```
 
-Detached mode stores its PID, result, timestamps, and log under the repository
-Git common directory, so it never dirties the worker branch. One active job is
-allowed per worker. The start handoff prints status, takeover, and durable event
-paths; `review_requested` and `review_result` events expose request/result
-timestamps, request count, and wait time for latency tracking.
+It pushes, opens or updates the PR, requests review for that exact head, and
+merges once the gate passes. When it stops it names the blocking condition —
+a failing check, an unresolved review thread, a requested-changes decision, a
+moved base. Fix that and run it again; there is no separate recovery command
+and no background owner to reconcile with.
 
-The default detached job is wait-only: it invokes the project-local
-`open-pr.sh --auto-merge`, waits for PR-visible review, and merges a clean head.
-Any nonzero review, check, or merge result becomes `needs-attention` and
-preserves the worktree for takeover. The driving CLI fixes actionable feedback,
-commits a new head, and hands the branch back to a new wait-only worker.
+The gate emits `review_requested` and `review_result` events carrying the
+request and result timestamps, request count, and wait time, so review latency
+is measurable without inferring it from logs.
 
-`--review-fix` is an experimental adapter, not part of the supported core
-delivery contract. Use it only when a bounded autonomous repair loop is
-explicitly authorized:
-
-```bash
-touchstone worker ship --worktree ../project-fix --detach --review-fix \
-  --max-fix-iterations 2 --max-fix-minutes 45
-```
-
-This mode invokes the subscription-backed Codex CLI to edit files, while
-Touchstone retains validation, explicit staging, commit, push, thread reply,
-thread resolution, and merge authority. Every iteration is tied to the full PR
-head OID and persisted thread IDs. Duplicate delivery resumes idempotently; a
-stale head, ambiguous feedback, failed validation, unavailable authorization,
-worker failure, or exhausted budget moves the job to `needs-attention` without
-deleting its worktree, branch, checkpoints, or log. Resume manually with the
-takeover command printed by `touchstone worker status --show-log`.
-
-Autonomous repair has a non-configurable ceiling of two model-authored
-mutation cycles. Lower operator budgets are honored; higher values are clamped.
+Touchstone does not repair changes autonomously. A project that wants shipping
+automation layered on top of this contract owns that automation itself.
 After the ceiling, Touchstone dispatches no third edit and emits a durable
 handoff containing the stop reason, invariant, last validated fix head, and
 non-goals. Wait-only detached shipping remains the supported way to leave PR
