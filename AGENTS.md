@@ -17,7 +17,13 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar. Because approval never comes from a person, the merge gate is: required checks green, a clean review from a trusted author bound to this exact head and base, no active `CHANGES_REQUESTED`, and every review thread resolved. An untrusted, stale, or non-clean review fails the gate even with nothing left open. Local hooks are fast feedback; branch protection is the real boundary; emergency paths are audited.
 
-Judging a capability, "is it useful?" is not the test: **does it constrain the agent, or merely serve it?** Automating what you can already do (retrying a push, recovering a moved base) belongs in the project, not here: you are the recovery mechanism.
+To hold those lines, Touchstone does three things and nothing else:
+
+1. **Constrain** — you cannot commit to the default branch, skip validation, merge without exact-head review, or bypass hooks silently.
+2. **Make state legible** — what happened lives in git, PRs, and issues, verifiable without trusting your narration.
+3. **Carry the contract** — the same rules reach every project and every agent, automatically.
+
+Before adding anything here, name which of the three it serves; if you cannot, it does not belong. "Is it useful?" is not the test: **does it constrain the agent, or merely serve it?** Automating what you can already do (retrying a push, recovering a moved base) belongs in the project, not here: you are the recovery mechanism.
 
 ## Agent Roles And Fallbacks
 
@@ -138,6 +144,7 @@ Lint is not part of the test suite. The full lint suite runs at pre-commit and v
 
 ```
 touchstone/
+├── capabilities.toml # Scope ledger — every shipped file declares its mission job (repo-only, not synced)
 ├── principles/     # Universal docs (touchstone-owned, synced to all projects)
 ├── templates/      # Starter files (copied once at bootstrap, then project-owned)
 ├── hooks/          # Reusable git hooks (touchstone-owned, synced as scripts/* in projects)
@@ -158,6 +165,10 @@ touchstone/
 |------|---------|
 | `scripts/spawn-worktree.sh` | Create an isolated branch/worktree for parallel file-writing agent slices |
 | `scripts/cleanup-worktrees.sh` | Dry-run-first cleanup for clean merged-or-equivalent worktrees |
+
+### Nothing ships unjustified
+
+Every file under `bin/`, `bootstrap/`, `hooks/`, `lib/`, and `scripts/` must declare a mission job in `capabilities.toml`, and `tests/test-capability-registry.sh` fails if it does not. Adding a capability means writing down which of the three jobs it serves — constrain, make state legible, or carry the contract — in the same diff. If you cannot name one, do not add the file. A capability kept only until its removal lands is marked `cut` with a tracking issue, so the debt is reported on every test run instead of quietly becoming normal.
 
 ## Review Guide
 
