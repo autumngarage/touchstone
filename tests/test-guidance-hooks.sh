@@ -303,6 +303,71 @@ assert "blocks branch-first compound when later commit targets another repo on m
   "$(run_hook "$BRANCH_GUARD" "$BRANCH_FIRST_OTHER_CWD_JSON")"
 
 # ----------------------------------------------------------------------
+# Fast-path encoding bypasses (issue #634)
+#
+# The fast path runs against the RAW JSON payload, where shell text is
+# encoded: a newline is \ + n, a tab is \ + t, and an embedded quote is
+# \ + ". A regex that matches the `git ... commit` SHAPE against that text
+# false-negatives every spelling below — each exited 0 on main before the
+# fix. Fail-closed is the whole contract here: over-blocking is a nuisance,
+# under-blocking is the product not working.
+#
+# Each case must block on main. On a feature branch the same command is
+# allowed, which is asserted once at the end so the cases prove the branch
+# check still governs rather than a blanket refusal.
+# ----------------------------------------------------------------------
+git -C "$TMPDIR" checkout --quiet main
+
+assert "blocks a commit that starts on line 2" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "$(printf 'x=1\ngit commit -m wip')")")"
+
+assert "blocks a commit after a leading newline" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "$(printf '\ngit commit -m wip')")")"
+
+assert "blocks a commit preceded by a tab" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "$(printf '\tgit commit -m wip')")")"
+
+assert "blocks a commit split by a line continuation" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "$(printf 'git \\\n  commit -m wip')")")"
+
+assert "blocks a commit on line 2 of an && compound" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "$(printf 'echo hi &&\ngit commit -m wip')")")"
+
+assert "blocks a commit carried by eval with embedded quotes" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson 'eval "git commit -m wip"')")"
+
+assert "blocks a commit carried by sh -c with embedded quotes" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson 'sh -c "git commit -m wip"')")"
+
+assert "blocks a commit carried by bash -lc" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "bash -lc 'git commit -m wip'")")"
+
+assert "blocks a commit wrapped in 'command'" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson 'command git commit -m wip')")"
+
+# A \u escape is the only way the literal substring `commit` can be absent
+# from a payload that still decodes to one, so the fast path must fall
+# through on any \u rather than trusting the substring test.
+UNICODE_COMMIT_JSON='{"tool_name":"Bash","tool_input":{"command":"git commit -m wip"},"cwd":"'"$TMPDIR"'"}'
+assert "blocks a commit hidden behind a \\u escape" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$UNICODE_COMMIT_JSON")"
+
+# The encoded spellings must still be ALLOWED off the default branch —
+# otherwise the cases above would pass under a guard that blocks everything.
+git -C "$TMPDIR" checkout --quiet feat/test
+assert "allows a line-2 commit on a feature branch" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "$(printf 'x=1\ngit commit -m wip')")")"
+assert "allows an eval-carried commit on a feature branch" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson 'eval "git commit -m wip"')")"
+git -C "$TMPDIR" checkout --quiet main
+
+# `git commit-tree` is plumbing, not a commit to the checked-out branch, and
+# must stay allowed even though its text contains the `commit` substring the
+# fast path now keys on.
+assert "still allows 'git commit-tree' plumbing on main" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson 'git commit-tree abc123')")"
+
+# ----------------------------------------------------------------------
 # emergency-disclosure
 # ----------------------------------------------------------------------
 echo "==> emergency-disclosure"
@@ -1090,6 +1155,17 @@ if cmp -s "$TOUCHSTONE_ROOT/hooks/emergency-disclosure.sh" \
   PASS=$((PASS + 1))
 else
   echo "  FAIL: emergency-disclosure hook mirror differs" >&2
+  FAIL=$((FAIL + 1))
+fi
+
+# branch-guard had no such check, so a fix could land in hooks/ and never
+# reach the copy projects actually run (found while fixing issue #634).
+if cmp -s "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" \
+  "$TOUCHSTONE_ROOT/scripts/branch-guard.sh"; then
+  echo "  OK: branch-guard hook mirror is current"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: branch-guard hook mirror differs" >&2
   FAIL=$((FAIL + 1))
 fi
 

@@ -29,10 +29,30 @@ set -euo pipefail
 # Read stdin once; reuse for both fast-path and full parse.
 input="$(cat)"
 
-# Fast path — bail on non-git-commit calls without the jq/git overhead.
-# Matches `git commit` with optional `-c key=value` / `-C <path>` flags
-# ahead of the subcommand; explicitly NOT matching `commit-tree`.
-if ! printf '%s' "$input" | grep -qE '"command"[[:space:]]*:[[:space:]]*"[^"]*\bgit([[:space:]]+-c[[:space:]]+[^[:space:]]+|[[:space:]]+-C[[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
+# Fast path — cheaply skip calls that cannot be a commit, WITHOUT trying to
+# match the command's shape.
+#
+# Matching shape against the raw payload is unsound, because the payload is
+# JSON and the shell text inside it is encoded (issue #634):
+#
+#   - a newline is the two characters \ and n, so `x=1\ngit commit` puts a
+#     word character immediately before `git` and `\bgit` finds no boundary;
+#   - a tab is \ and t, with the same effect;
+#   - a line continuation puts backslashes between `git` and `commit`, which
+#     no [[:space:]]+ will cross;
+#   - an embedded quote is \ and ", so `[^"]*` stops dead at the first one,
+#     which is why `eval "git commit"` and `sh -c "git commit"` slipped past.
+#
+# Seven distinct spellings of a real commit bypassed the old shape regex and
+# exited 0 on main. The decision belongs to the structured parse below, which
+# sees the decoded command; this test exists only to avoid the jq/git cost on
+# the overwhelming majority of calls. It is therefore deliberately
+# over-inclusive: it may admit non-commits, but it must never reject a commit.
+#
+# `commit` is the one substring a real `git commit` cannot avoid, and JSON
+# encodes ASCII letters as themselves. The single way to hide it is a \u
+# escape, so any \u also falls through to the structured parse.
+if ! printf '%s' "$input" | grep -qE 'commit|\\u'; then
   exit 0
 fi
 
@@ -45,6 +65,12 @@ fi
 
 command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
 session_cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"
+
+# Join backslash-newline continuations before any matching. `git \<newline>
+# commit -m x` is ONE command, but every check below is line-oriented (grep
+# scans line by line; the segment walker reads line by line), so without this
+# the two halves never meet and a real commit reads as neither (issue #634).
+command="${command//\\$'\n'/ }"
 tool_workdir="$(printf '%s' "$input" | jq -r '.tool_input.workdir // ""')"
 cwd="$session_cwd"
 if [ -n "$tool_workdir" ]; then
