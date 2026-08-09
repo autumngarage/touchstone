@@ -714,6 +714,11 @@ if [ "$DRY_RUN" = false ] && [ -f "$PROJECT_DIR/AGENTS.md" ]; then
   agents_md_before_sha="$(touchstone_sha256_file "$PROJECT_DIR/AGENTS.md")"
   touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT" || true
   agents_md_after_sha="$(touchstone_sha256_file "$PROJECT_DIR/AGENTS.md")"
+  # GEMINI.md carries the same managed block. It was never refreshed here, so
+  # a contract change reached Codex but not Gemini (PR #703 review).
+  if [ -f "$PROJECT_DIR/GEMINI.md" ]; then
+    touchstone_block_apply "$PROJECT_DIR/GEMINI.md" "$TOUCHSTONE_ROOT" || true
+  fi
   if [ "$agents_md_before_sha" != "$agents_md_after_sha" ]; then
     AGENTS_PRINCIPLES_TOUCHED=true
     echo "    refreshed (project-owned, managed block): AGENTS.md"

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# tests/test-steering-size-caps.sh — guardrail against steering-doc bloat.
+# tests/test-steering-size-caps.sh — scope guardrails: steering-doc size caps
+# and the capability registry that governs the shipped executable surface.
 #
 # The whole point of the TOUCHSTONE.md routing layer is to keep auto-loaded
 # context lean: rules that fire on every turn live in TOUCHSTONE.md (which
@@ -54,10 +55,157 @@ echo "==> GEMINI.md size cap (24 KiB — same headroom)"
 assert_under "GEMINI.md" "$TOUCHSTONE_ROOT/GEMINI.md" 24576
 assert_under "templates/GEMINI.md" "$TOUCHSTONE_ROOT/templates/GEMINI.md" 24576
 
+# =============================================================================
+# Capability registry — the same guardrail applied to the executable surface.
+#
+# The size caps above stop steering docs growing without a decision. These
+# checks stop the shipped code surface growing without one: every file under
+# the governed directories must declare, in capabilities.toml, which of the
+# three mission jobs it serves (TOUCHSTONE.md "Scope"). A new script cannot
+# enter the product by simply existing.
+#
+# These live here rather than in their own file because the repo's review
+# guide asks new assertions to join an existing self-test, and because
+# preflight already selects this test for steering paths — folding them in
+# means a governed-path change cannot skip the parity check (PR #703 review).
+# =============================================================================
+
+REGISTRY="$TOUCHSTONE_ROOT/capabilities.toml"
+# shellcheck source=../lib/toml.sh
+source "$TOUCHSTONE_ROOT/lib/toml.sh"
+
+echo "==> capability registry: surface parity"
+
+if [ ! -f "$REGISTRY" ]; then
+  fail "capabilities.toml is missing"
+else
+  REG_DIR="$(mktemp -d -t touchstone-capreg.XXXXXX)"
+  trap 'rm -rf "$REG_DIR"' EXIT
+
+  registry_collect() {
+    local section="$1" key="$2" value="$3" path
+    path="$(toml_unquote "$section")"
+    [ -n "$path" ] || return 0
+    printf '%s\t%s\n' "$key" "$value" >>"$REG_DIR/$(printf '%s' "$path" | tr '/' '%')"
+    printf '%s\n' "$path" >>"$REG_DIR/paths.raw"
+  }
+
+  : >"$REG_DIR/paths.raw"
+  toml_parse "$REGISTRY" registry_collect
+  # Materialize the declared set ONCE. Re-sorting it per entry made this
+  # check quadratic in capability count (PR #703 review).
+  sort -u "$REG_DIR/paths.raw" >"$REG_DIR/declared"
+
+  entry_value() {
+    local file
+    file="$REG_DIR/$(printf '%s' "$1" | tr '/' '%')"
+    [ -f "$file" ] || return 1
+    # Print everything after the first tab. Assigning $1="" would rebuild the
+    # record with OFS (a space) and silently prefix every value.
+    awk -F'\t' -v k="$2" '$1 == k { print substr($0, index($0, "\t") + 1); exit }' "$file"
+  }
+
+  # Enumerate the governed surface RECURSIVELY. Top-level globs let a file in
+  # a subdirectory (scripts/helpers/check.sh) or without a .sh suffix ship
+  # undeclared, which is the exact hole this check exists to close (PR #703
+  # review). Exclusions are explicit: dotfiles and prose.
+  find "$TOUCHSTONE_ROOT/bin" "$TOUCHSTONE_ROOT/bootstrap" "$TOUCHSTONE_ROOT/hooks" \
+    "$TOUCHSTONE_ROOT/lib" "$TOUCHSTONE_ROOT/scripts" \
+    -type f ! -name '.*' ! -name '*.md' -print 2>/dev/null \
+    | sed "s|^$TOUCHSTONE_ROOT/||" | sort -u >"$REG_DIR/shipped"
+
+  while IFS= read -r path; do
+    grep -qxF "$path" "$REG_DIR/shipped" \
+      || fail "capabilities.toml declares $path, which does not exist"
+  done <"$REG_DIR/declared"
+
+  while IFS= read -r path; do
+    grep -qxF "$path" "$REG_DIR/declared" \
+      || fail "$path ships but is not declared in capabilities.toml — declare its mission job or delete it"
+  done <"$REG_DIR/shipped"
+
+  printf '  OK: %s shipped files enumerated, %s declared\n' \
+    "$(wc -l <"$REG_DIR/shipped" | tr -d ' ')" "$(wc -l <"$REG_DIR/declared" | tr -d ' ')"
+
+  echo "==> capability registry: entry validity"
+  CUT_COUNT=0
+  while IFS= read -r path; do
+    job="$(entry_value "$path" job || true)"
+    why="$(entry_value "$path" why || true)"
+
+    case "$job" in
+      constrain | legible | carry | support | mirror | cut) ;;
+      "") fail "$path declares no job" ;;
+      *) fail "$path declares unknown job '$job'" ;;
+    esac
+
+    if [ -z "$why" ]; then
+      fail "$path declares no why"
+    elif [ "${#why}" -lt 30 ]; then
+      fail "$path has a why of ${#why} chars; say what the file does, not what category it is"
+    fi
+
+    case "$job" in
+      support)
+        serves="$(entry_value "$path" serves || true)"
+        if [ -z "$serves" ]; then
+          fail "$path is support but names no consumers (serves = [...])"
+        else
+          for dep in $(toml_normalize_array "$serves" | tr ',' ' '); do
+            [ -n "$dep" ] || continue
+            if ! grep -qxF "$dep" "$REG_DIR/declared"; then
+              fail "$path serves '$dep', which is not a declared capability"
+              continue
+            fi
+            [ "$(entry_value "$dep" job || true)" = "support" ] \
+              && fail "$path serves '$dep', which is itself support — support must bottom out in a mission job"
+          done
+        fi
+        ;;
+      mirror)
+        target="$(entry_value "$path" mirrors || true)"
+        if [ -z "$target" ]; then
+          fail "$path is a mirror but names no target (mirrors = \"...\")"
+        elif [ ! -f "$TOUCHSTONE_ROOT/$target" ]; then
+          fail "$path mirrors '$target', which does not exist"
+        elif ! cmp -s "$TOUCHSTONE_ROOT/$path" "$TOUCHSTONE_ROOT/$target"; then
+          fail "$path has drifted from its mirror target '$target' — they must stay byte-identical"
+        fi
+        ;;
+      cut)
+        tracked="$(entry_value "$path" tracked || true)"
+        # Anchored: a glob like #[0-9]* also accepts "#7oops" and would let a
+        # condemned file pass with no real tracking issue (PR #703 review).
+        if printf '%s' "$tracked" | grep -qE '^#[0-9]+$'; then
+          CUT_COUNT=$((CUT_COUNT + 1))
+        elif [ -z "$tracked" ]; then
+          fail "$path is marked cut but names no tracking issue (tracked = \"#N\")"
+        else
+          fail "$path has tracked='$tracked'; expected an issue reference like \"#694\""
+        fi
+        ;;
+    esac
+  done <"$REG_DIR/declared"
+
+  echo "==> capability registry: scope debt"
+  if [ "$CUT_COUNT" -eq 0 ]; then
+    echo "  OK: no capabilities are awaiting removal"
+  else
+    cut_lines=0
+    while IFS= read -r path; do
+      [ "$(entry_value "$path" job || true)" = "cut" ] || continue
+      n="$(wc -l <"$TOUCHSTONE_ROOT/$path" | tr -d ' ')"
+      cut_lines=$((cut_lines + n))
+      printf '  cut: %s (%s lines, %s)\n' "$path" "$n" "$(entry_value "$path" tracked)"
+    done <"$REG_DIR/declared"
+    printf '  %s capabilities awaiting removal, %s lines\n' "$CUT_COUNT" "$cut_lines"
+  fi
+fi
+
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
-  echo "==> FAIL: $ERRORS size-cap check(s) failed"
+  echo "==> FAIL: $ERRORS scope-guardrail check(s) failed"
   exit 1
 fi
 echo ""
-echo "==> PASS: all steering-doc size caps respected"
+echo "==> PASS: steering-doc size caps and capability registry are respected"

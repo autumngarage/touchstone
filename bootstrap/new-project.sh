@@ -950,6 +950,11 @@ GEMINI_MD_CREATED="$LAST_COPY_CREATED"
 # non-Claude reviewers (Codex/Gemini) see the steering content directly — they
 # don't resolve the @-imports CLAUDE.md uses to pull in TOUCHSTONE.md.
 touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT" || true
+# GEMINI.md carries the same managed block and was never refreshed here, so
+# Gemini agents read whatever steering the template shipped with (PR #703
+# review). Same contract, same treatment.
+[ -f "$PROJECT_DIR/GEMINI.md" ] \
+  && touchstone_block_apply "$PROJECT_DIR/GEMINI.md" "$TOUCHSTONE_ROOT" || true
 copy_file "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-commit-config.yaml"
 copy_file "$TOUCHSTONE_ROOT/templates/.markdownlint.json" "$PROJECT_DIR/.markdownlint.json"
 copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
