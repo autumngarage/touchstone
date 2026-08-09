@@ -136,9 +136,9 @@ serves = ["bin/touchstone"]
 why = "Banner and progress rendering for the CLI."
 
 ["lib/codex-auth.sh"]
-job = "support"
-serves = ["lib/preflight.sh"]
-why = "Subscription auth check for Codex-backed execution. Reachability is thin — see #702."
+job = "cut"
+tracked = "#702"
+why = "Subscription auth for Codex execution the product no longer does; no runtime consumer sources it, only manifests list the path."
 
 ["lib/events.sh"]
 job = "cut"

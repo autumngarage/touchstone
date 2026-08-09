@@ -21,9 +21,13 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 ## Scope
 
-Touchstone makes AI-generated changes reviewed and tested before they land: it constrains you and keeps evidence in git and the PR. Local hooks are fast feedback; branch protection is the real boundary; emergency paths are audited.
+Touchstone makes AI-generated code into reviewed, tested code, in any project it is installed into. It does three things and nothing else:
 
-Judging a capability, "is it useful?" is not the test: **does it constrain the agent, or merely serve it?** Automating what you can already do (retrying a push, recovering a moved base) belongs in the project, not here: you are the recovery mechanism.
+1. **Constrain** — you cannot commit to the default branch, skip validation, merge without exact-head review, or bypass hooks silently.
+2. **Make state legible** — what happened lives in git, PRs, and issues, verifiable without trusting your narration.
+3. **Carry the contract** — the same rules reach every project and every agent, automatically.
+
+Before adding anything here, name which of the three it serves; if you cannot, it does not belong. "Is it useful?" is not the test: **does it constrain the agent, or merely serve it?** Automating what you can already do (retrying a push, recovering a moved base) belongs in the project, not here: you are the recovery mechanism. Local hooks are fast feedback; branch protection is the real boundary; emergency paths are audited.
 
 ## Agent Roles And Fallbacks
 
@@ -70,13 +74,6 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 
 Do not bypass the PR/review/merge path with a direct default-branch push except through the documented emergency path in `principles/git-workflow.md`.
 
-## Memory hygiene
-
-- Treat AI-agent memory as cached guidance, not canonical truth. Verify a remembered command, flag, path, or version against this repo before relying on it.
-- Don't write memory for facts that are cheap to derive from `README.md`, the steering files, `VERSION`, `bin/touchstone --help`, or the scripts.
-- If memory mentions a command, flag, file path, version, or workflow, include the date (`YYYY-MM-DD`) and the canonical source checked.
-- If memory conflicts with the repo, follow the repo and propose updating the stale memory.
-
 ## Routing table — read these when the trigger fires
 
 | When you're about to... | Read |
@@ -89,6 +86,7 @@ Do not bypass the PR/review/merge path with a direct default-branch push except 
 | coordinate parallel agents (subagents or worktrees) | `principles/agent-swarms.md` |
 | audit a structural bug class after fixing one instance | `principles/audit-weak-points.md` |
 | hit a bug in an upstream tool (don't silently work around it) | `principles/file-upstream-bugs.md` |
+| write agent memory, or rely on something memory told you | `principles/memory-hygiene.md` |
 | write a `.cortex/` artifact or see a Tier-1 trigger fire | `.cortex/protocol.md` |
 
 Claude Code agents: the Touchstone-bundled user-scoped skills (`touchstone-git-workflow`, `touchstone-pre-impl`, `cortex-protocol`, `touchstone-audit-weak-points`, `touchstone-agent-swarms`, `memory-audit`) provide the same routing surface as this table, with descriptions in your session header. Trust whichever surface fires first.

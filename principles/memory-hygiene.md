@@ -29,8 +29,14 @@ history are all in the repo — don't restate them. What is not in the repo:
 - Preferences and working style the user stated but never wrote down.
 - The **why** behind a correction, especially where the obvious approach is the
   wrong one here.
-- Constraints on in-flight work that no file records.
 - Pointers to external resources (dashboards, tickets, URLs).
+
+**Constraints on in-flight work are the exception.** Do not let memory be their
+only copy. Drivers are interchangeable — a fresh session, or a different CLI
+picking the work up, cannot read your memory, and will proceed in violation of
+a constraint it has no way to see. Record the constraint where the next agent
+will find it (`.cortex/state.md`, the issue, or the PR body), and let memory
+hold only a pointer to that record.
 
 ## Auditing
 
