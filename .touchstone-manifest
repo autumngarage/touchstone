@@ -18,13 +18,9 @@ scripts/merge-pr.sh
 scripts/cleanup-branches.sh
 scripts/spawn-worktree.sh
 scripts/cleanup-worktrees.sh
-scripts/worker.sh
 lib/toml.sh
 lib/events.sh
 lib/codex-auth.sh
-lib/worker-ship-job.sh
-lib/worker-review-fix.sh
-lib/worker-state.sh
 scripts/run-pytest-in-venv.sh
 .claude/settings.json
 .claude/skills/touchstone-agent-swarms/SKILL.md

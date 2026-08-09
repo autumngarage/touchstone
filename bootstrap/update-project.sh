@@ -39,6 +39,9 @@ REQUESTED_BRANCH=""
 SHIP=false
 IN_PLACE=false
 RETIRED_MANAGED_PATHS=()
+# Retired paths left in place because they carry local edits; excluded from
+# the update commit so a staged customization is never committed as ours.
+RETIREMENT_PRESERVED_PATHS=()
 
 usage() {
   echo "Usage: $0 [--dry-run|-n] [--check] [--branch <name>] [--in-place|--no-branch] [--ship]"
@@ -465,7 +468,13 @@ remove_retired_managed_file() {
   local target="$PROJECT_DIR/$rel_path"
 
   [ -f "$manifest" ] || return 0
-  grep -qxF "$rel_path" "$manifest" 2>/dev/null || return 0
+  # CRLF tolerance: a manifest checked out with core.autocrlf carries \r,
+  # which a plain fixed-string match would never equal. Read into a variable
+  # rather than piping: grep -q exits at the first match, tr takes SIGPIPE,
+  # and pipefail would turn a successful MATCH into a nonzero pipeline.
+  local manifest_entries=""
+  manifest_entries="$(tr -d '\r' <"$manifest")" || return 0
+  grep -qxF "$rel_path" <<<"$manifest_entries" || return 0
   [ -e "$target" ] || return 0
   if ! ensure_safe_dest "$target" || [ ! -f "$target" ]; then
     echo "    ! refusing to remove unsafe retired path: $target" >&2
@@ -480,11 +489,14 @@ remove_retired_managed_file() {
   # Never destroy local work: a retired file carrying uncommitted edits is
   # left in place with an explicit notice. Retirement removes Touchstone's
   # managed copy, it does not discard a project's modifications.
+  # Worktree OR index: a staged customization must neither be deleted nor
+  # swept into Touchstone's own update commit.
   if ! git -C "$PROJECT_DIR" diff --quiet -- "$rel_path" 2>/dev/null \
     || ! git -C "$PROJECT_DIR" diff --cached --quiet -- "$rel_path" 2>/dev/null; then
     echo "    ! leaving locally modified retired file in place: $target" >&2
-    echo "      It has uncommitted changes; Touchstone no longer manages it." >&2
+    echo "      It has uncommitted changes (worktree or index); Touchstone no longer manages it." >&2
     echo "      Commit or discard them, then delete the file when you are ready." >&2
+    RETIREMENT_PRESERVED_PATHS+=("$rel_path")
     return 0
   fi
   if [ "$DRY_RUN" = true ]; then
@@ -816,6 +828,21 @@ fi
 if [ "$DRY_RUN" = false ]; then
   echo ""
   echo "==> Committing touchstone update..."
+  # A retired file we preserved may already carry the project's own STAGED
+  # edit. `git commit` commits the whole index, so that edit would land in
+  # Touchstone's update commit as if we authored it. Unstage exactly those
+  # paths first — the worktree content is untouched, only the staging is
+  # dropped, and we say so.
+  if [ "${#RETIREMENT_PRESERVED_PATHS[@]}" -gt 0 ]; then
+    for preserved_path in "${RETIREMENT_PRESERVED_PATHS[@]}"; do
+      if ! git -C "$PROJECT_DIR" diff --cached --quiet -- "$preserved_path" 2>/dev/null; then
+        git -C "$PROJECT_DIR" restore --staged -- "$preserved_path" 2>/dev/null \
+          || git -C "$PROJECT_DIR" reset -q HEAD -- "$preserved_path" 2>/dev/null || true
+        echo "    ! unstaged your edit to retired $preserved_path so it is not committed as a Touchstone update" >&2
+        echo "      The file and your changes are untouched; re-stage and commit them yourself." >&2
+      fi
+    done
+  fi
   stage_touchstone_manifest_paths
   if [ "${#RETIRED_MANAGED_PATHS[@]}" -gt 0 ]; then
     git -C "$PROJECT_DIR" add -u -- "${RETIRED_MANAGED_PATHS[@]}"
