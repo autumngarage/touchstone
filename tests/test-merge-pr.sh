@@ -369,6 +369,19 @@ case "${1:-} ${2:-}" in
     ;;
   "api --paginate")
     case "${3:-}" in
+      */check-runs/*/annotations*)
+        if [ "${GH_ANNOTATIONS_FAIL:-false}" = "true" ]; then
+          echo "annotations unavailable" >&2
+          exit 1
+        fi
+        annotation_job="${3##*/check-runs/}"
+        annotation_job="${annotation_job%%/annotations*}"
+        if [ "$annotation_job" = "9102" ] && [ -n "${GH_CHECK_ANNOTATIONS_SECOND:-}" ]; then
+          printf '%s\n' "$GH_CHECK_ANNOTATIONS_SECOND"
+        elif [ -n "${GH_CHECK_ANNOTATIONS:-}" ]; then
+          printf '%s\n' "$GH_CHECK_ANNOTATIONS"
+        fi
+        ;;
       */actions/runs/*/jobs*)
         if [ "${GH_RUN_JOBS_FAIL:-false}" = "true" ]; then
           echo "run jobs lookup unavailable" >&2
@@ -2618,29 +2631,51 @@ else
   exit 1
 fi
 
-echo "==> Test: run-level annotations are gathered from every job page"
+echo "==> Test: zero-step failures report the fact and GitHub's own annotations"
 reset_case_files
 if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
   GH_FAILED_CHECKS=$'validate\tfail\thttps://github.com/autumngarage/example/actions/runs/555' \
   GH_RUN_JOB_IDS=$'9101\n9102' \
   GH_RUN_STEP_COUNTS=$'0\n0' \
-  GH_CHECK_ANNOTATIONS='first page annotation' \
+  GH_CHECK_ANNOTATIONS='first job annotation' \
   GH_CHECK_ANNOTATIONS_SECOND='The job was not started because your spending limit needs to be increased.' \
   GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
   MERGE_PR_SLEEP_OVERRIDE=0 \
-  run_merge_pr "$TEST_DIR/output-multi-job-annotations.txt" 123; then
-  echo "FAIL: zero-step run failure must stop the merge" >&2
+  run_merge_pr "$TEST_DIR/output-zero-step-report.txt" 123; then
+  echo "FAIL: a failed check must stop the merge" >&2
   exit 1
 fi
-if grep -q 'spending limit needs to be increased' "$TEST_DIR/output-multi-job-annotations.txt" \
-  && grep -q 'CLASSIFICATION: infrastructure startup failure' "$TEST_DIR/output-multi-job-annotations.txt"; then
-  echo "==> PASS: a later job's annotation is not dropped"
+# The fact comes from the API; the explanation is GitHub's, verbatim, from
+# EVERY job — the gate never labels the cause itself.
+if grep -q 'this check failed before executing any project step' "$TEST_DIR/output-zero-step-report.txt" \
+  && grep -q 'annotation: first job annotation' "$TEST_DIR/output-zero-step-report.txt" \
+  && grep -q 'spending limit needs to be increased' "$TEST_DIR/output-zero-step-report.txt" \
+  && ! grep -qi 'CLASSIFICATION' "$TEST_DIR/output-zero-step-report.txt"; then
+  echo "==> PASS: zero-step failures report facts, not a guessed cause"
 else
-  cat "$TEST_DIR/output-multi-job-annotations.txt" >&2
+  cat "$TEST_DIR/output-zero-step-report.txt" >&2
   exit 1
 fi
 
-echo "==> Test: run-level step inspection failure is reported, not silent"
+echo "==> Test: an executed check claims nothing about steps"
+reset_case_files
+if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
+  GH_FAILED_CHECKS=$'validate\tfail\thttps://github.com/autumngarage/example/actions/runs/555/job/9101' \
+  GH_CLAIM_RUN_REAL_STEPS=7 \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-executed-check.txt" 123; then
+  echo "FAIL: a failed check must stop the merge" >&2
+  exit 1
+fi
+if ! grep -q 'failed before executing any project step' "$TEST_DIR/output-executed-check.txt"; then
+  echo "==> PASS: a check that ran project code makes no zero-step claim"
+else
+  cat "$TEST_DIR/output-executed-check.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: an uninspectable run reports its diagnostic and claims nothing"
 reset_case_files
 if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
   GH_FAILED_CHECKS=$'validate\tfail\thttps://github.com/autumngarage/example/actions/runs/555' \
@@ -2652,51 +2687,10 @@ if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
   exit 1
 fi
 if grep -q 'run step inspection failed for run 555' "$TEST_DIR/output-run-probe-failure.txt" \
-  && ! grep -q 'CLASSIFICATION: infrastructure startup failure' "$TEST_DIR/output-run-probe-failure.txt"; then
-  echo "==> PASS: an unverifiable probe reports and stays a code failure"
+  && ! grep -q 'failed before executing any project step' "$TEST_DIR/output-run-probe-failure.txt"; then
+  echo "==> PASS: an unverifiable probe reports and asserts nothing"
 else
   cat "$TEST_DIR/output-run-probe-failure.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: annotation lookup failure is reported, not read as clean"
-reset_case_files
-if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
-  GH_FAILED_CHECKS=$'validate\tfail\thttps://github.com/autumngarage/example/actions/runs/555/job/9101' \
-  GH_CLAIM_RUN_REAL_STEPS=0 \
-  GH_ANNOTATIONS_FAIL=true \
-  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
-  MERGE_PR_SLEEP_OVERRIDE=0 \
-  run_merge_pr "$TEST_DIR/output-annotation-failure.txt" 123; then
-  echo "FAIL: the merge must stop when a failed check cannot be explained" >&2
-  exit 1
-fi
-if grep -q 'annotation lookup failed for job 9101' "$TEST_DIR/output-annotation-failure.txt" \
-  && ! grep -q 'CLASSIFICATION: infrastructure startup failure' "$TEST_DIR/output-annotation-failure.txt"; then
-  echo "==> PASS: an unexplainable failure never claims infrastructure"
-else
-  cat "$TEST_DIR/output-annotation-failure.txt" >&2
-  exit 1
-fi
-
-echo "==> Test: zero-step check failure surfaces its annotation (issue #631)"
-reset_case_files
-if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
-  GH_FAILED_CHECKS=$'validate\tfail\thttps://github.com/autumngarage/example/actions/runs/555/job/1' \
-  GH_CLAIM_RUN_REAL_STEPS=0 \
-  GH_CHECK_ANNOTATIONS='The job was not started because recent account payments have failed or your spending limit needs to be increased.' \
-  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
-  MERGE_PR_SLEEP_OVERRIDE=0 \
-  run_merge_pr "$TEST_DIR/output-infra-annotation.txt" 123; then
-  echo "FAIL: zero-step infrastructure failure must still stop the merge" >&2
-  exit 1
-fi
-if grep -q 'annotation: The job was not started because recent account payments' "$TEST_DIR/output-infra-annotation.txt" \
-  && grep -q 'CLASSIFICATION: infrastructure startup failure' "$TEST_DIR/output-infra-annotation.txt" \
-  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
-  echo "==> PASS: zero-step failure carries GitHub's own explanation and classification"
-else
-  cat "$TEST_DIR/output-infra-annotation.txt" >&2
   exit 1
 fi
 

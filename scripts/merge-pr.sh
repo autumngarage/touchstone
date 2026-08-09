@@ -2170,7 +2170,7 @@ zero_step_failure_annotations() {
   while IFS= read -r job_id; do
     [ -n "$job_id" ] || continue
     one_err=0
-    one="$(gh api "repos/$REPO_OWNER/$REPO_NAME/check-runs/$job_id/annotations" \
+    one="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/check-runs/$job_id/annotations?per_page=100" \
       --jq '.[].message' 2>&1)" || one_err=$?
     if [ "$one_err" -ne 0 ]; then
       echo "       (annotation lookup failed for job $job_id: $one)" >&2
@@ -2277,43 +2277,32 @@ attempt_claim_check_substitution() {
 
 print_failed_checks_and_exit() {
   local failed_checks="$1"
-  local name state link annotations="" failure_count=0 infra_count=0
+  local name state link annotations=""
 
   [ -n "$failed_checks" ] || return 1
 
   echo "ERROR: PR #$PR_NUMBER has failed check(s); stopping automerge." >&2
   while IFS="$(printf '\t')" read -r name state link || [ -n "$name" ]; do
     [ -n "$name" ] || continue
-    failure_count=$((failure_count + 1))
     if [ -n "$link" ]; then
       echo "       - $name (${state:-failed}): $link" >&2
     else
       echo "       - $name (${state:-failed})" >&2
     fi
-    # A failure with zero executed steps never ran the project's code; the
-    # check-run annotations carry GitHub's own explanation (issue #631).
-    if [ -n "$link" ] && check_run_never_executed "$link" \
-      && annotations="$(zero_step_failure_annotations "$link")"; then
-      printf '%s\n' "$annotations" | sed 's/^/         annotation: /' >&2
-      if printf '%s' "$annotations" \
-        | grep -qiE 'payment|billing|spending limit|quota|runner|capacity|account'; then
-        infra_count=$((infra_count + 1))
+    # A check that failed without executing any project step did not run this
+    # code. That is a FACT from the jobs API, so state it — and print
+    # GitHub's own annotations verbatim rather than interpreting them.
+    # Deciding *why* it failed by matching annotation prose against a keyword
+    # list is a heuristic on vendor wording; it belongs to whoever reads the
+    # message, not to the gate (issue #631, PR #680 review).
+    if [ -n "$link" ] && check_run_never_executed "$link"; then
+      echo "         this check failed before executing any project step" >&2
+      if annotations="$(zero_step_failure_annotations "$link")"; then
+        printf '%s\n' "$annotations" | sed 's/^/         annotation: /' >&2
       fi
     fi
   done <<<"$failed_checks"
-  # Classify as infrastructure only when EVERY failure qualifies: one
-  # zero-step billing failure next to a genuine test failure must still
-  # read as a code problem (PR #680 review).
-  if [ "$infra_count" -gt 0 ] && [ "$infra_count" -eq "$failure_count" ]; then
-    echo "       CLASSIFICATION: infrastructure startup failure — the check failed before" >&2
-    echo "       executing any project step, and GitHub's annotation names an external" >&2
-    echo "       blocker (billing/quota/runner). Local code is not implicated. After the" >&2
-    echo "       account or runner condition is repaired, rerun the failed checks" >&2
-    echo "       (gh run rerun <run-id> --failed) and re-run the merge gate." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="check-infrastructure-failure"
-  else
-    TOUCHSTONE_MERGE_FAILURE_REASON="check-failed"
-  fi
+  TOUCHSTONE_MERGE_FAILURE_REASON="check-failed"
   exit 1
 }
 
