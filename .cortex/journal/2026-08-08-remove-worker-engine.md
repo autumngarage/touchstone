@@ -44,7 +44,12 @@ it existed solely for agent comfort.
 Removed: `scripts/worker.sh`, `lib/worker-ship-job.sh`, `lib/worker-review-fix.sh`,
 `lib/worker-state.sh`, `tests/test-worker.sh`, the `touchstone worker` command,
 its auto-update special cases, and its manifest and preflight-scope entries.
-Downstream copies are retired on update so no stale engine survives the change.
+Downstream copies are REPORTED on update, never deleted: `update-project.sh`
+lists any surviving worker files and states they are no longer managed, and
+the project owner removes them. Automatic deletion was attempted and dropped
+during review — it has to reason about dirty worktrees, staged edits, staged
+renames and deletions, and rollback snapshots, which is precisely the
+unbounded convenience surface this release exists to remove.
 
 Replacement: `bash scripts/open-pr.sh --auto-merge`; on failure, fix the named
 cause and run it again.
