@@ -2127,9 +2127,15 @@ check_run_never_executed() {
   # later page carrying executed steps must not be missed (PR #680 review).
   # Fail closed on API errors (return 1 keeps the check treated as a genuine
   # failure).
-  real_steps="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$run_id/jobs?per_page=100" \
+  local steps_err="" steps_status=0
+  steps_err="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$run_id/jobs?per_page=100" \
     --jq '[.jobs[].steps[]? | select(.name != "Set up job" and .name != "Complete job")] | length' \
-    2>/dev/null | awk '{total += $1} END {print total + 0}')" || return 1
+    2>&1)" || steps_status=$?
+  if [ "$steps_status" -ne 0 ]; then
+    echo "       (run step inspection failed for run $run_id: $steps_err)" >&2
+    return 1
+  fi
+  real_steps="$(printf '%s\n' "$steps_err" | awk '{total += $1} END {print total + 0}')"
   [ "$real_steps" = "0" ]
 }
 
@@ -2151,7 +2157,9 @@ zero_step_failure_annotations() {
   else
     run_id="$(printf '%s' "$link" | grep -oE '/runs/[0-9]+' | head -1 | tr -dc '0-9')"
     [ -n "$run_id" ] || return 1
-    if ! job_ids="$(gh api "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$run_id/jobs" \
+    # --paginate: a run with more jobs than one page would otherwise have its
+    # later jobs' annotations silently dropped.
+    if ! job_ids="$(gh api --paginate "repos/$REPO_OWNER/$REPO_NAME/actions/runs/$run_id/jobs?per_page=100" \
       --jq '.jobs[].id' 2>&1)"; then
       # An API failure must be VISIBLE, not read as "no annotations" —
       # auth and rate-limit problems need a different operator response.

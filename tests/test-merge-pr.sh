@@ -246,7 +246,22 @@ case "${1:-} ${2:-}" in
         # Job-level step count (PR #680): mirrors the run-level knob.
         echo "${GH_CLAIM_RUN_REAL_STEPS:-5}"
         ;;
-      */actions/runs/*/jobs)
+      */actions/runs/*/jobs*)
+        if [ "${GH_RUN_JOBS_FAIL:-false}" = "true" ]; then
+          echo "run jobs lookup unavailable" >&2
+          exit 1
+        fi
+        case "$*" in
+          *'.jobs[].id'*)
+            # Two job ids: annotations must be gathered from BOTH.
+            printf '%s\n' "${GH_RUN_JOB_IDS:-9101}"
+            ;;
+          *)
+            printf '%s\n' "${GH_RUN_STEP_COUNTS:-${GH_CLAIM_RUN_REAL_STEPS:-5}}"
+            ;;
+        esac
+        ;;
+      */actions/runs/*/jobs-unused)
         # Step count for the claim-check run inspection (issue #658):
         # 0 simulates a zero-step infrastructure failure. When the query
         # asks for job IDS (issue #631 annotation walk), emit one job id.
@@ -257,7 +272,15 @@ case "${1:-} ${2:-}" in
         ;;
       */check-runs/*/annotations)
         # Check-run annotations for zero-step failures (issue #631).
-        if [ -n "${GH_CHECK_ANNOTATIONS:-}" ]; then
+        if [ "${GH_ANNOTATIONS_FAIL:-false}" = "true" ]; then
+          echo "annotations unavailable" >&2
+          exit 1
+        fi
+        annotation_job="${2##*/check-runs/}"
+        annotation_job="${annotation_job%%/annotations}"
+        if [ "$annotation_job" = "9102" ] && [ -n "${GH_CHECK_ANNOTATIONS_SECOND:-}" ]; then
+          printf '%s\n' "$GH_CHECK_ANNOTATIONS_SECOND"
+        elif [ -n "${GH_CHECK_ANNOTATIONS:-}" ]; then
           printf '%s\n' "$GH_CHECK_ANNOTATIONS"
         fi
         ;;
@@ -346,6 +369,16 @@ case "${1:-} ${2:-}" in
     ;;
   "api --paginate")
     case "${3:-}" in
+      */actions/runs/*/jobs*)
+        if [ "${GH_RUN_JOBS_FAIL:-false}" = "true" ]; then
+          echo "run jobs lookup unavailable" >&2
+          exit 1
+        fi
+        case "$*" in
+          *'.jobs[].id'*) printf '%s\n' "${GH_RUN_JOB_IDS:-9101}" ;;
+          *) printf '%s\n' "${GH_RUN_STEP_COUNTS:-${GH_CLAIM_RUN_REAL_STEPS:-5}}" ;;
+        esac
+        ;;
       */commits/*/check-runs*)
         # Commit check-run rollup (issue #593): name TAB status TAB
         # conclusion per run, cancelled predecessors alongside their
@@ -894,6 +927,11 @@ run_merge_pr() {
     GH_BUCKET_LIST_FAIL="${GH_BUCKET_LIST_FAIL:-false}" \
     GH_CHECK_ROLLUP="${GH_CHECK_ROLLUP:-}" \
     GH_CHECK_ANNOTATIONS="${GH_CHECK_ANNOTATIONS:-}" \
+    GH_CHECK_ANNOTATIONS_SECOND="${GH_CHECK_ANNOTATIONS_SECOND:-}" \
+    GH_RUN_JOB_IDS="${GH_RUN_JOB_IDS:-9101}" \
+    GH_RUN_STEP_COUNTS="${GH_RUN_STEP_COUNTS:-}" \
+    GH_RUN_JOBS_FAIL="${GH_RUN_JOBS_FAIL:-false}" \
+    GH_ANNOTATIONS_FAIL="${GH_ANNOTATIONS_FAIL:-false}" \
     GH_MERGE_LEAVES_OPEN="${GH_MERGE_LEAVES_OPEN:-false}" \
     GIT_CLAIM_CHECKER_SHOW_FAIL="${GIT_CLAIM_CHECKER_SHOW_FAIL:-false}" \
     CLAIM_DIRECT_BYPASS="${CLAIM_DIRECT_BYPASS:-false}" \
@@ -2577,6 +2615,67 @@ if [ "$attempt_count" -eq 1 ] \
   echo "==> PASS: definite conflict does not burn the retry budget"
 else
   cat "$TEST_DIR/output-conflict.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: run-level annotations are gathered from every job page"
+reset_case_files
+if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
+  GH_FAILED_CHECKS=$'validate\tfail\thttps://github.com/autumngarage/example/actions/runs/555' \
+  GH_RUN_JOB_IDS=$'9101\n9102' \
+  GH_RUN_STEP_COUNTS=$'0\n0' \
+  GH_CHECK_ANNOTATIONS='first page annotation' \
+  GH_CHECK_ANNOTATIONS_SECOND='The job was not started because your spending limit needs to be increased.' \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-multi-job-annotations.txt" 123; then
+  echo "FAIL: zero-step run failure must stop the merge" >&2
+  exit 1
+fi
+if grep -q 'spending limit needs to be increased' "$TEST_DIR/output-multi-job-annotations.txt" \
+  && grep -q 'CLASSIFICATION: infrastructure startup failure' "$TEST_DIR/output-multi-job-annotations.txt"; then
+  echo "==> PASS: a later job's annotation is not dropped"
+else
+  cat "$TEST_DIR/output-multi-job-annotations.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: run-level step inspection failure is reported, not silent"
+reset_case_files
+if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
+  GH_FAILED_CHECKS=$'validate\tfail\thttps://github.com/autumngarage/example/actions/runs/555' \
+  GH_RUN_JOBS_FAIL=true \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-run-probe-failure.txt" 123; then
+  echo "FAIL: an uninspectable failed check must stop the merge" >&2
+  exit 1
+fi
+if grep -q 'run step inspection failed for run 555' "$TEST_DIR/output-run-probe-failure.txt" \
+  && ! grep -q 'CLASSIFICATION: infrastructure startup failure' "$TEST_DIR/output-run-probe-failure.txt"; then
+  echo "==> PASS: an unverifiable probe reports and stays a code failure"
+else
+  cat "$TEST_DIR/output-run-probe-failure.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: annotation lookup failure is reported, not read as clean"
+reset_case_files
+if GH_MERGE_STATE_IMMEDIATE="UNSTABLE MERGEABLE" \
+  GH_FAILED_CHECKS=$'validate\tfail\thttps://github.com/autumngarage/example/actions/runs/555/job/9101' \
+  GH_CLAIM_RUN_REAL_STEPS=0 \
+  GH_ANNOTATIONS_FAIL=true \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  MERGE_PR_SLEEP_OVERRIDE=0 \
+  run_merge_pr "$TEST_DIR/output-annotation-failure.txt" 123; then
+  echo "FAIL: the merge must stop when a failed check cannot be explained" >&2
+  exit 1
+fi
+if grep -q 'annotation lookup failed for job 9101' "$TEST_DIR/output-annotation-failure.txt" \
+  && ! grep -q 'CLASSIFICATION: infrastructure startup failure' "$TEST_DIR/output-annotation-failure.txt"; then
+  echo "==> PASS: an unexplainable failure never claims infrastructure"
+else
+  cat "$TEST_DIR/output-annotation-failure.txt" >&2
   exit 1
 fi
 
