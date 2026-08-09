@@ -39,9 +39,6 @@ REQUESTED_BRANCH=""
 SHIP=false
 IN_PLACE=false
 RETIRED_MANAGED_PATHS=()
-# Retired paths left in place because they carry local edits; excluded from
-# the update commit so a staged customization is never committed as ours.
-RETIREMENT_PRESERVED_PATHS=()
 
 usage() {
   echo "Usage: $0 [--dry-run|-n] [--check] [--branch <name>] [--in-place|--no-branch] [--ship]"
@@ -462,6 +459,25 @@ update_file() {
   UPDATED=$((UPDATED + 1))
 }
 
+# Retired-but-not-removed: list stale worker files so the owner can delete
+# them deliberately. Never mutates the project.
+report_retired_worker_files() {
+  local rel found=false
+  for rel in scripts/worker.sh lib/worker-ship-job.sh lib/worker-review-fix.sh lib/worker-state.sh; do
+    if [ -e "$PROJECT_DIR/$rel" ]; then
+      if [ "$found" = false ]; then
+        echo "    ! the worker engine was retired in 2.13.0; these files are no longer managed:"
+        found=true
+      fi
+      echo "      - $rel"
+    fi
+  done
+  if [ "$found" = true ]; then
+    echo "      Ship with: bash scripts/open-pr.sh --auto-merge"
+    echo "      Delete them when you are ready; Touchstone will not touch them."
+  fi
+}
+
 remove_retired_managed_file() {
   local rel_path="$1"
   local manifest="$PROJECT_DIR/.touchstone-manifest"
@@ -496,7 +512,6 @@ remove_retired_managed_file() {
     echo "    ! leaving locally modified retired file in place: $target" >&2
     echo "      It has uncommitted changes (worktree or index); Touchstone no longer manages it." >&2
     echo "      Commit or discard them, then delete the file when you are ready." >&2
-    RETIREMENT_PRESERVED_PATHS+=("$rel_path")
     return 0
   fi
   if [ "$DRY_RUN" = true ]; then
@@ -512,13 +527,13 @@ remove_retired_managed_file() {
 echo "==> Updating touchstone-owned files:"
 
 remove_retired_managed_file "lib/review-comment.sh"
-# Worker engine retired in 2.13.0 (issue #694): remove downstream copies so a
-# stale scripts/worker.sh cannot keep running against a manifest that no
-# longer manages it.
-remove_retired_managed_file "scripts/worker.sh"
-remove_retired_managed_file "lib/worker-ship-job.sh"
-remove_retired_managed_file "lib/worker-review-fix.sh"
-remove_retired_managed_file "lib/worker-state.sh"
+# Worker engine retired in 2.13.0 (issue #694). Touchstone stops managing
+# these files and NOTIFIES; it does not delete them. Automatic deletion of a
+# project's tracked files has to reason about dirty worktrees, staged edits,
+# staged renames and deletions, and rollback snapshots — convenience
+# automation with an unbounded edge-case surface, which is exactly what this
+# release removes. One notice, the project owner decides.
+report_retired_worker_files
 
 # Principles
 if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
@@ -828,21 +843,6 @@ fi
 if [ "$DRY_RUN" = false ]; then
   echo ""
   echo "==> Committing touchstone update..."
-  # A retired file we preserved may already carry the project's own STAGED
-  # edit. `git commit` commits the whole index, so that edit would land in
-  # Touchstone's update commit as if we authored it. Unstage exactly those
-  # paths first — the worktree content is untouched, only the staging is
-  # dropped, and we say so.
-  if [ "${#RETIREMENT_PRESERVED_PATHS[@]}" -gt 0 ]; then
-    for preserved_path in "${RETIREMENT_PRESERVED_PATHS[@]}"; do
-      if ! git -C "$PROJECT_DIR" diff --cached --quiet -- "$preserved_path" 2>/dev/null; then
-        git -C "$PROJECT_DIR" restore --staged -- "$preserved_path" 2>/dev/null \
-          || git -C "$PROJECT_DIR" reset -q HEAD -- "$preserved_path" 2>/dev/null || true
-        echo "    ! unstaged your edit to retired $preserved_path so it is not committed as a Touchstone update" >&2
-        echo "      The file and your changes are untouched; re-stage and commit them yourself." >&2
-      fi
-    done
-  fi
   stage_touchstone_manifest_paths
   if [ "${#RETIRED_MANAGED_PATHS[@]}" -gt 0 ]; then
     git -C "$PROJECT_DIR" add -u -- "${RETIRED_MANAGED_PATHS[@]}"

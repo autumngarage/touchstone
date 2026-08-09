@@ -388,26 +388,24 @@ fi
 # to ship as exact manifest entries.
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Step 3b2: Retirement never discards local modifications ---"
+echo "--- Step 3b2: Retired worker files are reported, never deleted ---"
 
-DIRTY_RETIRED_PROJECT="$TEST_DIR/dirty-retired-project"
-bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$DIRTY_RETIRED_PROJECT" --no-register >/dev/null
-configure_git "$DIRTY_RETIRED_PROJECT"
-# A managed file Touchstone retired in this release, tracked and committed.
-printf '#!/usr/bin/env bash\necho worker\n' >"$DIRTY_RETIRED_PROJECT/scripts/worker.sh"
-chmod +x "$DIRTY_RETIRED_PROJECT/scripts/worker.sh"
-printf 'scripts/worker.sh\n' >>"$DIRTY_RETIRED_PROJECT/.touchstone-manifest"
-echo "0000000000000000000000000000000000000005" >"$DIRTY_RETIRED_PROJECT/.touchstone-version"
-commit_all "$DIRTY_RETIRED_PROJECT" "simulate project carrying the retired worker file"
-# Local customization made after the commit: retirement must not destroy it.
-printf '# local customization\n' >>"$DIRTY_RETIRED_PROJECT/scripts/worker.sh"
+RETIRED_WORKER_PROJECT="$TEST_DIR/retired-worker-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$RETIRED_WORKER_PROJECT" --no-register >/dev/null
+configure_git "$RETIRED_WORKER_PROJECT"
+# A project still carrying the engine Touchstone retired in 2.13.0.
+printf '#!/usr/bin/env bash\necho worker\n' >"$RETIRED_WORKER_PROJECT/scripts/worker.sh"
+chmod +x "$RETIRED_WORKER_PROJECT/scripts/worker.sh"
+echo "0000000000000000000000000000000000000005" >"$RETIRED_WORKER_PROJECT/.touchstone-version"
+commit_all "$RETIRED_WORKER_PROJECT" "simulate project carrying the retired worker engine"
 
-(cd "$DIRTY_RETIRED_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
-  >"$TEST_DIR/update-dirty-retired.txt" 2>&1 || true
+(cd "$RETIRED_WORKER_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-retired-worker.txt" 2>&1 || true
 
-assert_exists "$DIRTY_RETIRED_PROJECT/scripts/worker.sh"
-assert_contains "$DIRTY_RETIRED_PROJECT/scripts/worker.sh" 'local customization'
-assert_contains "$TEST_DIR/update-dirty-retired.txt" 'leaving locally modified retired file in place'
+# Touchstone stops managing these files; it never deletes the project's.
+assert_exists "$RETIRED_WORKER_PROJECT/scripts/worker.sh"
+assert_contains "$TEST_DIR/update-retired-worker.txt" 'no longer managed'
+assert_contains "$TEST_DIR/update-retired-worker.txt" 'scripts/worker.sh'
 
 # --------------------------------------------------------------------------
 echo ""

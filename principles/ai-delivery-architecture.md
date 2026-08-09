@@ -68,7 +68,7 @@ Human user
 ## Required Invariants
 
 - Every change reaches `main` through a GitHub PR unless the documented emergency path is used.
-- PR creation is not completion. The driver remains accountable through durable worker status and takeover until the PR is approved, merged, and synced locally.
+- PR creation is not completion. The driver remains accountable until every piece of PR feedback is answered and resolved, the PR is merged, and the merge is synced locally.
 - A draft PR is a review-free coordination surface. It does not emit semantic-review intent or consume an exact-head review until final shipping explicitly marks it ready.
 - The exact commit merged has passed deterministic checks after its last mutation.
 - The exact commit merged has no unresolved blocking review comments, requested changes, or failing required checks.
@@ -118,9 +118,9 @@ Driver AI
   v
 Agent swarm
   |
-  | one worker per worktree
-  | each worker gets an explicit file/module scope
-  | workers commit only in their own worktree
+  | one agent per worktree
+  | each agent gets an explicit file/module scope
+  | agents commit only in their own worktree
   v
 Driver AI integration
   |
@@ -132,7 +132,7 @@ Driver AI integration
 Rules:
 
 - Use worktrees for file-writing parallel agents.
-- Give every worker a bounded task and explicit file ownership.
+- Give every agent a bounded task and explicit file ownership.
 - Workers must not edit outside their assigned scope.
 - Workers must not revert or overwrite another worker's work.
 - Workers may produce candidate changes; only the driver integrates them into the PR that enters the review loop.
