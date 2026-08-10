@@ -195,6 +195,14 @@ fi
 # guard that does not know must not guess. A commit with NO redirect is
 # unaffected — it runs where the tool runs, and that we do know.
 if [ -n "$target_cwd" ] && [ "$redirect_trusted" = false ]; then
+  # Check the override BEFORE printing, so the message always describes what
+  # actually happened. Printing "Blocked" and then allowing is worse than
+  # either outcome on its own.
+  if [ "${TOUCHSTONE_EMERGENCY:-0}" = "1" ]; then
+    echo "branch-guard: TOUCHSTONE_EMERGENCY=1 — allowing a commit whose target worktree" >&2
+    echo "              could not be determined (next PR must disclose)" >&2
+    exit 0
+  fi
   cat >&2 <<'EOF'
 ==> Blocked by Touchstone branch-guard: ambiguous commit target
 
@@ -207,7 +215,7 @@ if [ -n "$target_cwd" ] && [ "$redirect_trusted" = false ]; then
 
   Override (emergencies only): set TOUCHSTONE_EMERGENCY=1 and re-run.
 EOF
-  [ "${TOUCHSTONE_EMERGENCY:-0}" = "1" ] || exit 2
+  exit 2
 fi
 
 if [ "$commit_context_ambiguous" = true ]; then

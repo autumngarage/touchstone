@@ -403,6 +403,30 @@ EXPLICIT_C_WITH_HEREDOC="$(printf 'git -C %s commit -m real\ncat <<'"'"'EOF'"'"'
 assert "ambiguous -C plus heredoc is refused, not guessed" "2" \
   "$(run_hook "$BRANCH_GUARD" "$(mkjson "$EXPLICIT_C_WITH_HEREDOC" "$WORKTREE")")"
 
+# The refuse path has its own emergency override, and its output has to match
+# what it did. The first version printed the full "Blocked" banner and then
+# allowed when TOUCHSTONE_EMERGENCY=1 was set -- worse than either outcome
+# alone, because the transcript then disagrees with reality.
+AMBIGUOUS_OVERRIDE_EXIT=0
+printf '%s' "$(mkjson "$EXPLICIT_C_WITH_HEREDOC" "$WORKTREE")" \
+  | TOUCHSTONE_EMERGENCY=1 bash "$BRANCH_GUARD" >/dev/null 2>"$TMPDIR/ambiguous-override.err" \
+  || AMBIGUOUS_OVERRIDE_EXIT=$?
+assert "ambiguous-target override allows the call" "0" "$AMBIGUOUS_OVERRIDE_EXIT"
+if grep -q 'Blocked' "$TMPDIR/ambiguous-override.err"; then
+  echo "  FAIL: override output still claims the call was blocked" >&2
+  FAIL=$((FAIL + 1))
+else
+  echo "  OK: ambiguous-target override output matches what it did"
+  PASS=$((PASS + 1))
+fi
+if grep -q 'disclose' "$TMPDIR/ambiguous-override.err"; then
+  echo "  OK: ambiguous-target override demands disclosure"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: override does not tell the user to disclose" >&2
+  FAIL=$((FAIL + 1))
+fi
+
 # The encoded spellings must still be ALLOWED off the default branch —
 # otherwise the cases above would pass under a guard that blocks everything.
 git -C "$TMPDIR" checkout --quiet feat/test
