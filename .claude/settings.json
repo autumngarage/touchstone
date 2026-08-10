@@ -7,11 +7,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash scripts/branch-guard.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/scripts/branch-guard.sh"
           },
           {
             "type": "command",
-            "command": "bash scripts/emergency-disclosure.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/scripts/emergency-disclosure.sh"
           }
         ]
       }
