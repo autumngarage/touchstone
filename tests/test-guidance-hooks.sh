@@ -345,12 +345,30 @@ assert "blocks a commit carried by bash -lc" "2" \
 assert "blocks a commit wrapped in 'command'" "2" \
   "$(run_hook "$BRANCH_GUARD" "$(mkjson 'command git commit -m wip')")"
 
-# A \u escape is the only way the literal substring `commit` can be absent
-# from a payload that still decodes to one, so the fast path must fall
-# through on any \u rather than trusting the substring test.
-UNICODE_COMMIT_JSON='{"tool_name":"Bash","tool_input":{"command":"git commit -m wip"},"cwd":"'"$TMPDIR"'"}'
+# A \u escape hides the literal substring while still decoding to `commit`,
+# so the fast path must fall through on any \u rather than trusting the
+# substring test. The escape has to be a REAL one in the payload — an earlier
+# version of this case shipped literal `git commit` text, so it exercised the
+# ordinary substring path and would have passed with the \u fallback deleted
+# (PR #706 review).
+UNICODE_COMMIT_JSON='{"tool_name":"Bash","tool_input":{"command":"git comm\u0069t -m wip"},"cwd":"'"$TMPDIR"'"}'
+case "$UNICODE_COMMIT_JSON" in
+  *commit*)
+    echo "  FAIL: \\u fixture still contains a literal 'commit' — it tests nothing" >&2
+    FAIL=$((FAIL + 1))
+    ;;
+esac
 assert "blocks a commit hidden behind a \\u escape" "2" \
   "$(run_hook "$BRANCH_GUARD" "$UNICODE_COMMIT_JSON")"
+
+# Line continuations can split ANY token, so neither `commit` nor `\u` is
+# present. Bash removes the backslash-newline entirely, so `git com\<nl>mit`
+# and `g\<nl>it commit` both execute as `git commit` (PR #706 review).
+assert "blocks a commit whose subcommand is split by a continuation" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "$(printf 'git com\\\nmit -m wip')")")"
+
+assert "blocks a commit whose 'git' token is split by a continuation" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "$(printf 'g\\\nit commit -m wip')")")"
 
 # The encoded spellings must still be ALLOWED off the default branch —
 # otherwise the cases above would pass under a guard that blocks everything.

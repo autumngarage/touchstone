@@ -49,10 +49,16 @@ input="$(cat)"
 # the overwhelming majority of calls. It is therefore deliberately
 # over-inclusive: it may admit non-commits, but it must never reject a commit.
 #
-# `commit` is the one substring a real `git commit` cannot avoid, and JSON
-# encodes ASCII letters as themselves. The single way to hide it is a \u
-# escape, so any \u also falls through to the structured parse.
-if ! printf '%s' "$input" | grep -qE 'commit|\\u'; then
+# Three ways a real commit can reach the shell, so three ways through here:
+#
+#   1. `commit` appears literally — the ordinary case. JSON encodes ASCII
+#      letters as themselves, so the substring survives encoding.
+#   2. A \u escape spells a letter of it (`commit`).
+#   3. A line continuation splits a token: `git com\<newline>mit` executes as
+#      `git commit`, and neither `commit` nor `\u` appears in the payload.
+#      Any continuation needs a literal backslash, which JSON encodes as two,
+#      so an escaped backslash anywhere means "might be a split token".
+if ! printf '%s' "$input" | grep -qE 'commit|\\u|\\\\'; then
   exit 0
 fi
 
@@ -66,11 +72,16 @@ fi
 command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
 session_cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"
 
-# Join backslash-newline continuations before any matching. `git \<newline>
+# Remove backslash-newline continuations before any matching. `git \<newline>
 # commit -m x` is ONE command, but every check below is line-oriented (grep
 # scans line by line; the segment walker reads line by line), so without this
 # the two halves never meet and a real commit reads as neither (issue #634).
-command="${command//\\$'\n'/ }"
+#
+# REMOVED, not replaced with a space: that is what bash does. Substituting a
+# space rejoins `git \<newline>commit` correctly but turns `g\<newline>it
+# commit` into `g it commit`, which no longer matches — the split-token case
+# would still walk past the guard (PR #706 review).
+command="${command//\\$'\n'/}"
 tool_workdir="$(printf '%s' "$input" | jq -r '.tool_input.workdir // ""')"
 cwd="$session_cwd"
 if [ -n "$tool_workdir" ]; then
