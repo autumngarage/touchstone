@@ -384,6 +384,21 @@ assert "heredoc-fabricated cd cannot redirect the guard off main" "2" \
 assert "plain cd redirect to a feature worktree stays allowed" "0" \
   "$(run_hook "$BRANCH_GUARD" "$(mkjson "cd $WORKTREE && git commit -m wip")")"
 
+# Single quotes hide a continuation exactly as a heredoc does, so the same
+# fabrication works without any `<<` (PR #706 review). The trust rule is now
+# about the continuation itself, not the construct carrying it.
+SQ_FABRICATED_CD="$(printf "echo '\nc\\\nd %s\n'; git commit -m real" "$WORKTREE")"
+assert "single-quoted continuation cannot fabricate a cd redirect" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "$SQ_FABRICATED_CD")")"
+
+# An explicit -C is read off the commit segment bash will actually run, so it
+# is never forged and must survive a heredoc elsewhere in the command.
+# Discarding it let a commit explicitly targeting main pass from a feature
+# worktree (PR #706 review).
+EXPLICIT_C_WITH_HEREDOC="$(printf 'git -C %s commit -m real\ncat <<'"'"'EOF'"'"'\nnote\nEOF' "$TMPDIR")"
+assert "explicit -C target survives a heredoc in the same command" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "$EXPLICIT_C_WITH_HEREDOC" "$WORKTREE")")"
+
 # The encoded spellings must still be ALLOWED off the default branch —
 # otherwise the cases above would pass under a guard that blocks everything.
 git -C "$TMPDIR" checkout --quiet feat/test

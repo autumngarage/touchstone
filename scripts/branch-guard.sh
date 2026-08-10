@@ -81,6 +81,11 @@ session_cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"
 # space rejoins `git \<newline>commit` correctly but turns `g\<newline>it
 # commit` into `g it commit`, which no longer matches — the split-token case
 # would still walk past the guard (PR #706 review).
+#
+# The pre-normalization text is kept: it is the only place we can still see
+# that a continuation was present at all, which decides below whether an
+# INFERRED `cd` can be trusted.
+raw_command="$command"
 command="${command//\\$'\n'/}"
 tool_workdir="$(printf '%s' "$input" | jq -r '.tool_input.workdir // ""')"
 cwd="$session_cwd"
@@ -139,11 +144,31 @@ if [ -n "$commit_segment" ] && [ "$commit_context_ambiguous" = false ]; then
   target_cwd_from_C="$(printf '%s' "$commit_segment" | grep -oE '\-C[[:space:]]+[^[:space:]]+' | sed -E 's/^-C[[:space:]]+//' | tail -1 || true)"
 fi
 
-# `-C` is the more explicit form; prefer it. Fall back to the last `cd`
-# target seen before the commit.
+# Two kinds of redirect, and only one of them can be forged.
+#
+# `-C` is read off the commit segment itself — the exact tokens bash will run.
+# A `cd` is INFERRED from an earlier line, and that inference is only as good
+# as our ability to tell commands from data. Two constructs let quoted data
+# masquerade as a command line: a heredoc body, and a continuation inside
+# quoted text, which normalization above rewrites into what looks like a real
+# `cd` (PR #706 review, twice — first via heredoc, then via single quotes).
+#
+# So: an explicit `-C` is always honoured, and an inferred `cd` is dropped
+# whenever either construct appears anywhere in the command. Redirection is the
+# only thing that can WEAKEN this guard, so it is the only thing that has to be
+# certain; dropping it can only over-block.
+inferred_cd_trusted=true
+case "$raw_command" in
+  *'<<'* | *\\$'\n'*) inferred_cd_trusted=false ;;
+esac
+
 target_cwd=""
 if [ "$commit_context_ambiguous" = false ]; then
-  target_cwd="${target_cwd_from_C:-$target_cwd_from_cd}"
+  if [ -n "$target_cwd_from_C" ]; then
+    target_cwd="$target_cwd_from_C"
+  elif [ "$inferred_cd_trusted" = true ]; then
+    target_cwd="$target_cwd_from_cd"
+  fi
 fi
 
 if [ "$commit_context_ambiguous" = true ]; then
@@ -158,33 +183,6 @@ if [ -n "$target_cwd" ]; then
     cwd="$target_cwd"
   fi
 fi
-
-# A heredoc body is DATA, not commands, but it arrives as ordinary lines and
-# the segment walker above cannot tell the difference. Worse, continuation
-# removal happens before the walk, so a quoted heredoc containing
-# `c\<newline>d /feature` — text bash would pass through untouched — becomes a
-# literal `cd /feature` line that the walker adopts as the commit's target
-# worktree. A real `git commit` later in the same command would then be
-# checked against that worktree instead of the one it actually runs in
-# (PR #706 review).
-#
-# Redirection is the only thing that can WEAKEN this guard, so it is the only
-# thing that has to be certain. When a heredoc is present, drop the redirect
-# and check the real working directory. Cost is over-blocking a worktree
-# commit that also carries a heredoc; the fix for that is two tool calls.
-case "$command" in
-  *'<<'*)
-    if [ -n "$target_cwd" ]; then
-      cwd="${tool_workdir:-$session_cwd}"
-      if [ -n "$tool_workdir" ] && [ -n "$session_cwd" ]; then
-        case "$tool_workdir" in
-          /*) cwd="$tool_workdir" ;;
-          *) cwd="$session_cwd/$tool_workdir" ;;
-        esac
-      fi
-    fi
-    ;;
-esac
 
 # Determine current branch in the project Claude is operating in.
 branch=""
