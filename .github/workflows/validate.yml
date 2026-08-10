@@ -1,0 +1,81 @@
+name: validate
+
+# The one check that proves the tests actually passed.
+#
+# Before this existed, the entire 43-file fast tier ran only on the author's
+# machine, in the agent's own process, and was reported by that same agent.
+# Nothing independently verified it, and `required_status_checks` was empty —
+# so "bad code cannot reach main" was enforced by nothing.
+#
+# This job is what branch protection should require. It is deliberately the
+# same command a developer runs locally, with no CI-only variations: one code
+# path, so a green run here means the same thing as a green run there.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer push supersedes an in-flight run for the same ref. Without this,
+# a rebase-and-reship leaves the old run racing the new one, and the merge
+# gate can bind to whichever finishes last.
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          # The fast tier exercises real git history in temp repos; a shallow
+          # clone is fine, but the tests need a usable git identity.
+          fetch-depth: 0
+
+      - name: Configure git identity
+        run: |
+          git config --global user.email "ci@touchstone.invalid"
+          git config --global user.name "Touchstone CI"
+          git config --global init.defaultBranch main
+
+      - name: Install test dependencies
+        run: |
+          # jq is used by the hook tests; shellcheck and shfmt by preflight.
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq shellcheck
+          curl -fsSL -o /tmp/shfmt \
+            https://github.com/mvdan/sh/releases/download/v3.10.0/shfmt_v3.10.0_linux_amd64
+          sudo install -m 0755 /tmp/shfmt /usr/local/bin/shfmt
+          shfmt --version
+
+      - name: Run the fast tier
+        env:
+          # The tests must not reach for the network or a live model, and must
+          # not try to auto-update themselves mid-run.
+          TOUCHSTONE_NO_AUTO_UPDATE: "1"
+          TOUCHSTONE_NO_AUTO_PROJECT_SYNC: "1"
+        run: |
+          set -euo pipefail
+          failed=0
+          for t in tests/test-*.sh; do
+            echo "::group::$t"
+            if bash "$t"; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error file=$t::$t failed"
+              failed=$((failed + 1))
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "$failed test file(s) failed"
+            exit 1
+          fi
+          echo "fast tier green"
