@@ -181,18 +181,18 @@ why = "Project-side shim that runs the release helper from a project checkout."
 
 ["scripts/cleanup-branches.sh"]
 job = "support"
-serves = ["scripts/open-pr.sh"]
-why = "Dry-run-first deletion of branches already merged by the delivery path."
+serves = ["bin/touchstone"]
+why = "Dry-run-first deletion of branches already merged; dispatched by the CLI via run_script_path."
 
 ["scripts/cleanup-worktrees.sh"]
 job = "support"
-serves = ["scripts/spawn-worktree.sh"]
-why = "Dry-run-first teardown of worktrees spawn-worktree created."
+serves = ["bin/touchstone"]
+why = "Dry-run-first teardown of merged-or-equivalent worktrees; dispatched by the CLI via run_script_path."
 
 ["scripts/run-pytest-in-venv.sh"]
-job = "support"
-serves = ["scripts/touchstone-run.sh"]
-why = "Resolves the project virtualenv Python before running pytest."
+job = "cut"
+tracked = "#702"
+why = "Legacy pytest wrapper with no runtime consumer; touchstone-run.sh resolves the venv itself via find_python_bin."
 
 ["scripts/branch-guard.sh"]
 job = "mirror"
