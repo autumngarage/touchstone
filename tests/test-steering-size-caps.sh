@@ -86,7 +86,8 @@ else
     local section="$1" key="$2" value="$3" path
     path="$(toml_unquote "$section")"
     [ -n "$path" ] || return 0
-    printf '%s\t%s\n' "$key" "$value" >>"$REG_DIR/$(printf '%s' "$path" | tr '/' '%')"
+    printf '%s\t%s\n' "$key" "$value" \
+      >>"$REG_DIR/$(printf '%s' "$path" | sed -e 's/%/%25/g' -e 's;/;%2F;g')"
     printf '%s\n' "$path" >>"$REG_DIR/paths.raw"
   }
 
@@ -96,33 +97,36 @@ else
   # check quadratic in capability count (PR #703 review).
   sort -u "$REG_DIR/paths.raw" >"$REG_DIR/declared"
 
+  # Injective: `%` is escaped BEFORE `/` becomes `%2F`, so `lib/a/b` and
+  # `lib/a%b` cannot collide into one file and borrow each other's job and why
+  # (PR #703 review). `tr '/' '%'` alone was not one-to-one.
+  entry_key() {
+    printf '%s' "$1" | sed -e 's/%/%25/g' -e 's;/;%2F;g'
+  }
+
   entry_value() {
     local file
-    file="$REG_DIR/$(printf '%s' "$1" | tr '/' '%')"
+    file="$REG_DIR/$(entry_key "$1")"
     [ -f "$file" ] || return 1
     # Print everything after the first tab. Assigning $1="" would rebuild the
     # record with OFS (a space) and silently prefix every value.
     awk -F'\t' -v k="$2" '$1 == k { print substr($0, index($0, "\t") + 1); exit }' "$file"
   }
 
-  # Enumerate the governed surface RECURSIVELY. Top-level globs let a file in
-  # a subdirectory (scripts/helpers/check.sh) or without a .sh suffix ship
-  # undeclared, which is the exact hole this check exists to close (PR #703
-  # review). Exclusions are explicit: dotfiles and prose.
+  # The governed surface is what the repository SHIPS, which is what git
+  # tracks — not what happens to sit on this filesystem.
   #
-  # Symlinks count too: `-type f` alone let a symlinked capability ship with no
-  # declaration at all, and the check still reported full parity (PR #703
-  # review). `\( -type f -o -type l \)` covers both.
-  #
-  # Enumerated from INSIDE $TOUCHSTONE_ROOT so paths come out relative. Piping
-  # absolute paths through `sed "s|^$TOUCHSTONE_ROOT/||"` interpolates the
-  # checkout path into a regex, so a directory containing `[` or `.` would
-  # fail to strip and every file would read as undeclared (PR #703 review).
-  (
-    cd "$TOUCHSTONE_ROOT" || exit 1
-    find bin bootstrap hooks lib scripts \
-      \( -type f -o -type l \) ! -name '.*' ! -name '*.md' -print 2>/dev/null
-  ) | sort -u >"$REG_DIR/shipped"
+  # `find` walked the working tree, so an untracked or ignored local artifact
+  # (scripts/local-tool, a scratch script, an editor backup) was reported as
+  # shipping undeclared and failed a required fast-tier guardrail on unrelated
+  # workspace state (PR #703 review). `git ls-files` also lists tracked
+  # symlinks, which `-type f` excluded, and emits repo-relative paths with no
+  # prefix to strip — so the regex-interpolation hazard is gone rather than
+  # worked around.
+  git -C "$TOUCHSTONE_ROOT" ls-files -- bin bootstrap hooks lib scripts 2>/dev/null \
+    | grep -vE '(^|/)\.[^/]*$' \
+    | grep -vE '\.md$' \
+    | sort -u >"$REG_DIR/shipped"
 
   while IFS= read -r path; do
     grep -qxF "$path" "$REG_DIR/shipped" \
@@ -158,19 +162,25 @@ else
     case "$job" in
       support)
         serves="$(entry_value "$path" serves || true)"
-        if [ -z "$serves" ]; then
-          fail "$path is support but names no consumers (serves = [...])"
-        else
-          for dep in $(toml_normalize_array "$serves" | tr ',' ' '); do
-            [ -n "$dep" ] || continue
-            if ! grep -qxF "$dep" "$REG_DIR/declared"; then
-              fail "$path serves '$dep', which is not a declared capability"
-              continue
-            fi
-            [ "$(entry_value "$dep" job || true)" = "support" ] \
-              && fail "$path serves '$dep', which is itself support — support must bottom out in a mission job"
-          done
-        fi
+        # Count AFTER normalization: `serves = []` is a nonempty raw value that
+        # normalizes to nothing, so an emptiness test on the raw string let an
+        # entry pass while naming no consumer at all (PR #703 review).
+        serves_count=0
+        for dep in $(toml_normalize_array "$serves" | tr ',' ' '); do
+          [ -n "$dep" ] || continue
+          serves_count=$((serves_count + 1))
+          if ! grep -qxF "$dep" "$REG_DIR/declared"; then
+            fail "$path serves '$dep', which is not a declared capability"
+            continue
+          fi
+          dep_job="$(entry_value "$dep" job || true)"
+          case "$dep_job" in
+            constrain | legible | carry) ;;
+            *) fail "$path serves '$dep' (job='$dep_job'); support must bottom out in a mission job" ;;
+          esac
+        done
+        [ "$serves_count" -gt 0 ] \
+          || fail "$path is support but names no consumers (serves must list at least one)"
         ;;
       mirror)
         target="$(entry_value "$path" mirrors || true)"
@@ -186,8 +196,13 @@ else
           fail "$path mirrors '$target', which does not exist"
         elif ! grep -qxF "$target" "$REG_DIR/declared"; then
           fail "$path mirrors '$target', which is not a declared capability"
-        elif [ "$target_job" = "mirror" ] || [ "$target_job" = "cut" ] || [ -z "$target_job" ]; then
-          fail "$path mirrors '$target' (job='$target_job'); a mirror must resolve to a real mission job"
+        elif [ "$target_job" != "constrain" ] && [ "$target_job" != "legible" ] && [ "$target_job" != "carry" ]; then
+          # Allowlist, not denylist. Excluding only mirror/cut still admitted a
+          # support target, and a support↔mirror pair could then satisfy each
+          # other without either reaching a mission job (PR #703 review).
+          # Requiring a mission job here makes cycles unrepresentable rather
+          # than something to detect.
+          fail "$path mirrors '$target' (job='$target_job'); a mirror must resolve to constrain, legible, or carry"
         elif ! cmp -s "$TOUCHSTONE_ROOT/$path" "$TOUCHSTONE_ROOT/$target"; then
           fail "$path has drifted from its mirror target '$target' — they must stay byte-identical"
         fi
