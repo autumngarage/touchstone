@@ -66,13 +66,145 @@ assert_under "templates/GEMINI.md" "$TOUCHSTONE_ROOT/templates/GEMINI.md" 24576
 #
 # These live here rather than in their own file because the repo's review
 # guide asks new assertions to join an existing self-test, and because
-# preflight already selects this test for steering paths — folding them in
-# means a governed-path change cannot skip the parity check (PR #703 review).
+# preflight already selects this test for governed paths.
 # =============================================================================
 
 REGISTRY="$TOUCHSTONE_ROOT/capabilities.toml"
 # shellcheck source=../lib/toml.sh
 source "$TOUCHSTONE_ROOT/lib/toml.sh"
+
+# Injective: `%` is escaped BEFORE `/` becomes `%2F`, so `lib/a/b` and
+# `lib/a%b` cannot collide into one file and borrow each other's job and why
+# (PR #703 review). `tr '/' '%'` alone was not one-to-one.
+entry_key() {
+  printf '%s' "$1" | sed -e 's/%/%25/g' -e 's;/;%2F;g'
+}
+
+# Reads whatever registry registry_validate_entries last parsed.
+REG_ENTRIES_DIR=""
+entry_value() {
+  local f
+  f="$REG_ENTRIES_DIR/$(entry_key "$1")"
+  [ -f "$f" ] || return 1
+  # Print everything after the first tab. Assigning $1="" would rebuild the
+  # record with OFS (a space) and silently prefix every value.
+  awk -F'\t' -v k="$2" '$1 == k { print substr($0, index($0, "\t") + 1); exit }' "$f"
+}
+
+registry_collect_entry() {
+  local section="$1" key="$2" value="$3" p
+  p="$(toml_unquote "$section")"
+  [ -n "$p" ] || return 0
+  printf '%s\t%s\n' "$key" "$value" >>"$REG_ENTRIES_DIR/$(entry_key "$p")"
+  printf '%s\n' "$p" >>"$REG_SCRATCH/paths.raw"
+}
+
+# Validate a registry's entries. Problems print on stdout, one per line; the
+# return code says whether there were any.
+#
+# Split out so the rejection branches can be exercised by negative fixtures in
+# CI. Running only against the valid checked-in registry meant deleting any
+# guard left the suite green — they were verified by hand during review and by
+# nothing afterwards (PR #703 review). Sets CUT_COUNT and leaves the parsed
+# entries behind for the scope-debt report.
+registry_validate_entries() {
+  REGISTRY_FILE="$1"
+  REG_SCRATCH="$2"
+  local errs=0
+  local path job why serves dep dep_job serves_count target target_job tracked
+
+  rm -rf "$REG_SCRATCH/entries"
+  mkdir -p "$REG_SCRATCH/entries"
+  REG_ENTRIES_DIR="$REG_SCRATCH/entries"
+  : >"$REG_SCRATCH/paths.raw"
+
+  toml_parse "$REGISTRY_FILE" registry_collect_entry
+  sort -u "$REG_SCRATCH/paths.raw" >"$REG_SCRATCH/declared"
+
+  problem() {
+    printf '%s\n' "$1"
+    errs=$((errs + 1))
+  }
+
+  CUT_COUNT=0
+  while IFS= read -r path; do
+    job="$(entry_value "$path" job || true)"
+    why="$(entry_value "$path" why || true)"
+
+    case "$job" in
+      constrain | legible | carry | support | mirror | cut) ;;
+      "") problem "$path declares no job" ;;
+      *) problem "$path declares unknown job '$job'" ;;
+    esac
+
+    if [ -z "$why" ]; then
+      problem "$path declares no why"
+    elif [ "${#why}" -lt 30 ]; then
+      problem "$path has a why of ${#why} chars; say what the file does, not what category it is"
+    fi
+
+    case "$job" in
+      support)
+        serves="$(entry_value "$path" serves || true)"
+        # Count AFTER normalization: `serves = []` is a nonempty raw value that
+        # normalizes to nothing, so an emptiness test on the raw string let an
+        # entry pass while naming no consumer at all (PR #703 review).
+        serves_count=0
+        for dep in $(toml_normalize_array "$serves" | tr ',' ' '); do
+          [ -n "$dep" ] || continue
+          serves_count=$((serves_count + 1))
+          if ! grep -qxF "$dep" "$REG_SCRATCH/declared"; then
+            problem "$path serves '$dep', which is not a declared capability"
+            continue
+          fi
+          dep_job="$(entry_value "$dep" job || true)"
+          case "$dep_job" in
+            constrain | legible | carry) ;;
+            *) problem "$path serves '$dep' (job='$dep_job'); support must bottom out in a mission job" ;;
+          esac
+        done
+        [ "$serves_count" -gt 0 ] \
+          || problem "$path is support but names no consumers (serves must list at least one)"
+        ;;
+      mirror)
+        target="$(entry_value "$path" mirrors || true)"
+        target_job="$(entry_value "$target" job 2>/dev/null || true)"
+        if [ -z "$target" ]; then
+          problem "$path is a mirror but names no target (mirrors = \"...\")"
+        elif [ "$target" = "$path" ]; then
+          # A self-mirror satisfies "target exists" and "cmp matches" while
+          # never bottoming out in a mission job (PR #703 review).
+          problem "$path mirrors itself; a mirror must point at another capability"
+        elif [ ! -f "$TOUCHSTONE_ROOT/$target" ]; then
+          problem "$path mirrors '$target', which does not exist"
+        elif ! grep -qxF "$target" "$REG_SCRATCH/declared"; then
+          problem "$path mirrors '$target', which is not a declared capability"
+        elif [ "$target_job" != "constrain" ] && [ "$target_job" != "legible" ] && [ "$target_job" != "carry" ]; then
+          # Allowlist, not denylist. Excluding only mirror/cut still admitted a
+          # support target, and a support-mirror pair could satisfy each other
+          # without either reaching a mission job (PR #703 review). Requiring a
+          # mission job makes cycles unrepresentable rather than detectable.
+          problem "$path mirrors '$target' (job='$target_job'); a mirror must resolve to constrain, legible, or carry"
+        elif ! cmp -s "$TOUCHSTONE_ROOT/$path" "$TOUCHSTONE_ROOT/$target"; then
+          problem "$path has drifted from its mirror target '$target' — they must stay byte-identical"
+        fi
+        ;;
+      cut)
+        tracked="$(entry_value "$path" tracked || true)"
+        # Anchored: a glob like #[0-9]* also accepts "#7oops" (PR #703 review).
+        if printf '%s' "$tracked" | grep -qE '^#[0-9]+$'; then
+          CUT_COUNT=$((CUT_COUNT + 1))
+        elif [ -z "$tracked" ]; then
+          problem "$path is marked cut but names no tracking issue (tracked = \"#N\")"
+        else
+          problem "$path has tracked='$tracked'; expected an issue reference like \"#694\""
+        fi
+        ;;
+    esac
+  done <"$REG_SCRATCH/declared"
+
+  [ "$errs" -eq 0 ]
+}
 
 echo "==> capability registry: surface parity"
 
@@ -82,47 +214,14 @@ else
   REG_DIR="$(mktemp -d -t touchstone-capreg.XXXXXX)"
   trap 'rm -rf "$REG_DIR"' EXIT
 
-  registry_collect() {
-    local section="$1" key="$2" value="$3" path
-    path="$(toml_unquote "$section")"
-    [ -n "$path" ] || return 0
-    printf '%s\t%s\n' "$key" "$value" \
-      >>"$REG_DIR/$(printf '%s' "$path" | sed -e 's/%/%25/g' -e 's;/;%2F;g')"
-    printf '%s\n' "$path" >>"$REG_DIR/paths.raw"
-  }
-
-  : >"$REG_DIR/paths.raw"
-  toml_parse "$REGISTRY" registry_collect
-  # Materialize the declared set ONCE. Re-sorting it per entry made this
-  # check quadratic in capability count (PR #703 review).
-  sort -u "$REG_DIR/paths.raw" >"$REG_DIR/declared"
-
-  # Injective: `%` is escaped BEFORE `/` becomes `%2F`, so `lib/a/b` and
-  # `lib/a%b` cannot collide into one file and borrow each other's job and why
-  # (PR #703 review). `tr '/' '%'` alone was not one-to-one.
-  entry_key() {
-    printf '%s' "$1" | sed -e 's/%/%25/g' -e 's;/;%2F;g'
-  }
-
-  entry_value() {
-    local file
-    file="$REG_DIR/$(entry_key "$1")"
-    [ -f "$file" ] || return 1
-    # Print everything after the first tab. Assigning $1="" would rebuild the
-    # record with OFS (a space) and silently prefix every value.
-    awk -F'\t' -v k="$2" '$1 == k { print substr($0, index($0, "\t") + 1); exit }' "$file"
-  }
+  registry_validate_entries "$REGISTRY" "$REG_DIR" >"$REG_DIR/problems" || true
 
   # The governed surface is what the repository SHIPS, which is what git
-  # tracks — not what happens to sit on this filesystem.
-  #
-  # `find` walked the working tree, so an untracked or ignored local artifact
-  # (scripts/local-tool, a scratch script, an editor backup) was reported as
-  # shipping undeclared and failed a required fast-tier guardrail on unrelated
-  # workspace state (PR #703 review). `git ls-files` also lists tracked
-  # symlinks, which `-type f` excluded, and emits repo-relative paths with no
-  # prefix to strip — so the regex-interpolation hazard is gone rather than
-  # worked around.
+  # tracks — not what happens to sit on this filesystem. `find` reported
+  # untracked local artifacts as shipping undeclared and failed a required
+  # guardrail on unrelated workspace state; `git ls-files` also lists tracked
+  # symlinks and emits repo-relative paths, so the regex-interpolation hazard
+  # is gone rather than worked around (PR #703 review).
   git -C "$TOUCHSTONE_ROOT" ls-files -- bin bootstrap hooks lib scripts 2>/dev/null \
     | grep -vE '(^|/)\.[^/]*$' \
     | grep -vE '\.md$' \
@@ -142,85 +241,11 @@ else
     "$(wc -l <"$REG_DIR/shipped" | tr -d ' ')" "$(wc -l <"$REG_DIR/declared" | tr -d ' ')"
 
   echo "==> capability registry: entry validity"
-  CUT_COUNT=0
-  while IFS= read -r path; do
-    job="$(entry_value "$path" job || true)"
-    why="$(entry_value "$path" why || true)"
-
-    case "$job" in
-      constrain | legible | carry | support | mirror | cut) ;;
-      "") fail "$path declares no job" ;;
-      *) fail "$path declares unknown job '$job'" ;;
-    esac
-
-    if [ -z "$why" ]; then
-      fail "$path declares no why"
-    elif [ "${#why}" -lt 30 ]; then
-      fail "$path has a why of ${#why} chars; say what the file does, not what category it is"
-    fi
-
-    case "$job" in
-      support)
-        serves="$(entry_value "$path" serves || true)"
-        # Count AFTER normalization: `serves = []` is a nonempty raw value that
-        # normalizes to nothing, so an emptiness test on the raw string let an
-        # entry pass while naming no consumer at all (PR #703 review).
-        serves_count=0
-        for dep in $(toml_normalize_array "$serves" | tr ',' ' '); do
-          [ -n "$dep" ] || continue
-          serves_count=$((serves_count + 1))
-          if ! grep -qxF "$dep" "$REG_DIR/declared"; then
-            fail "$path serves '$dep', which is not a declared capability"
-            continue
-          fi
-          dep_job="$(entry_value "$dep" job || true)"
-          case "$dep_job" in
-            constrain | legible | carry) ;;
-            *) fail "$path serves '$dep' (job='$dep_job'); support must bottom out in a mission job" ;;
-          esac
-        done
-        [ "$serves_count" -gt 0 ] \
-          || fail "$path is support but names no consumers (serves must list at least one)"
-        ;;
-      mirror)
-        target="$(entry_value "$path" mirrors || true)"
-        target_job="$(entry_value "$target" job 2>/dev/null || true)"
-        if [ -z "$target" ]; then
-          fail "$path is a mirror but names no target (mirrors = \"...\")"
-        elif [ "$target" = "$path" ]; then
-          # A self-mirror satisfies "target exists" and "cmp matches" while
-          # never bottoming out in a mission job — a free pass through the
-          # whole check (PR #703 review).
-          fail "$path mirrors itself; a mirror must point at another capability"
-        elif [ ! -f "$TOUCHSTONE_ROOT/$target" ]; then
-          fail "$path mirrors '$target', which does not exist"
-        elif ! grep -qxF "$target" "$REG_DIR/declared"; then
-          fail "$path mirrors '$target', which is not a declared capability"
-        elif [ "$target_job" != "constrain" ] && [ "$target_job" != "legible" ] && [ "$target_job" != "carry" ]; then
-          # Allowlist, not denylist. Excluding only mirror/cut still admitted a
-          # support target, and a support↔mirror pair could then satisfy each
-          # other without either reaching a mission job (PR #703 review).
-          # Requiring a mission job here makes cycles unrepresentable rather
-          # than something to detect.
-          fail "$path mirrors '$target' (job='$target_job'); a mirror must resolve to constrain, legible, or carry"
-        elif ! cmp -s "$TOUCHSTONE_ROOT/$path" "$TOUCHSTONE_ROOT/$target"; then
-          fail "$path has drifted from its mirror target '$target' — they must stay byte-identical"
-        fi
-        ;;
-      cut)
-        tracked="$(entry_value "$path" tracked || true)"
-        # Anchored: a glob like #[0-9]* also accepts "#7oops" and would let a
-        # condemned file pass with no real tracking issue (PR #703 review).
-        if printf '%s' "$tracked" | grep -qE '^#[0-9]+$'; then
-          CUT_COUNT=$((CUT_COUNT + 1))
-        elif [ -z "$tracked" ]; then
-          fail "$path is marked cut but names no tracking issue (tracked = \"#N\")"
-        else
-          fail "$path has tracked='$tracked'; expected an issue reference like \"#694\""
-        fi
-        ;;
-    esac
-  done <"$REG_DIR/declared"
+  while IFS= read -r problem_line; do
+    [ -n "$problem_line" ] || continue
+    fail "$problem_line"
+  done <"$REG_DIR/problems"
+  [ -s "$REG_DIR/problems" ] || echo "  OK: all entries declare a valid job, why, and job-specific requirements"
 
   echo "==> capability registry: scope debt"
   if [ "$CUT_COUNT" -eq 0 ]; then
@@ -235,6 +260,111 @@ else
     done <"$REG_DIR/declared"
     printf '  %s capabilities awaiting removal, %s lines\n' "$CUT_COUNT" "$cut_lines"
   fi
+
+  # ---------------------------------------------------------------------------
+  # Negative fixtures. Each injects one invalid declaration and must be
+  # REJECTED. Without these, deleting any rejection branch above leaves CI
+  # green — the guards were verified by hand during review and by nothing
+  # afterwards (PR #703 review).
+  # ---------------------------------------------------------------------------
+  echo "==> capability registry: rejection branches"
+  FIXTURE_DIR="$(mktemp -d -t touchstone-capreg-fixtures.XXXXXX)"
+  trap 'rm -rf "$REG_DIR" "$FIXTURE_DIR"' EXIT
+
+  reject_case() {
+    local name="$1" body="$2" expect="$3"
+    local reg="$FIXTURE_DIR/reg.toml" out
+    printf '%s\n' "$body" >"$reg"
+    if out="$(registry_validate_entries "$reg" "$FIXTURE_DIR" 2>&1)"; then
+      fail "registry fixture '$name' was accepted; the rejection branch is dead"
+    elif ! printf '%s' "$out" | grep -qF "$expect"; then
+      fail "registry fixture '$name' was rejected for the wrong reason: $out"
+    else
+      echo "  OK: rejects $name"
+    fi
+  }
+
+  VALID_ANCHOR='["scripts/open-pr.sh"]
+job = "constrain"
+why = "Forces shipping through the PR path and hands off to the merge gate."'
+
+  reject_case "an unknown job" "$VALID_ANCHOR
+[\"lib/x.sh\"]
+job = \"vibes\"
+why = \"A capability declaring a job that does not exist at all.\"" "unknown job 'vibes'"
+
+  reject_case "a missing why" "$VALID_ANCHOR
+[\"lib/x.sh\"]
+job = \"carry\"" "declares no why"
+
+  reject_case "a boilerplate why" "$VALID_ANCHOR
+[\"lib/x.sh\"]
+job = \"carry\"
+why = \"helper\"" "say what the file does"
+
+  reject_case "an empty serves list" "$VALID_ANCHOR
+[\"lib/x.sh\"]
+job = \"support\"
+serves = []
+why = \"A support helper that names no consumer whatsoever.\"" "names no consumers"
+
+  reject_case "support that never reaches a mission job" "$VALID_ANCHOR
+[\"lib/a.sh\"]
+job = \"support\"
+serves = [\"lib/b.sh\"]
+why = \"A support helper serving only another support helper.\"
+[\"lib/b.sh\"]
+job = \"support\"
+serves = [\"lib/a.sh\"]
+why = \"The other half of a support cycle that reaches no mission job.\"" "must bottom out in a mission job"
+
+  reject_case "a self-referential mirror" "$VALID_ANCHOR
+[\"scripts/branch-guard.sh\"]
+job = \"mirror\"
+mirrors = \"scripts/branch-guard.sh\"
+why = \"A mirror declaring itself as its own target to escape validation.\"" "mirrors itself"
+
+  reject_case "a mirror onto a support entry" "$VALID_ANCHOR
+[\"lib/ui.sh\"]
+job = \"support\"
+serves = [\"scripts/open-pr.sh\"]
+why = \"A support helper used here as an illegitimate mirror target.\"
+[\"scripts/branch-guard.sh\"]
+job = \"mirror\"
+mirrors = \"lib/ui.sh\"
+why = \"A mirror pointing at support rather than a mission job.\"" "must resolve to constrain, legible, or carry"
+
+  reject_case "a cut with no tracking issue" "$VALID_ANCHOR
+[\"lib/x.sh\"]
+job = \"cut\"
+why = \"A condemned capability with no issue tracking its removal.\"" "names no tracking issue"
+
+  reject_case "a cut with a malformed tracking issue" "$VALID_ANCHOR
+[\"lib/x.sh\"]
+job = \"cut\"
+tracked = \"#7oops\"
+why = \"A condemned capability whose tracking reference is not an issue.\"" "expected an issue reference"
+
+  reject_case "path keys that collide under encoding" "$VALID_ANCHOR
+[\"lib/a/b\"]
+job = \"carry\"
+why = \"A declared path that must not share storage with a similar one.\"
+[\"lib/a%b\"]
+job = \"vibes\"
+why = \"A second path that differs only by slash versus percent sign.\"" "unknown job 'vibes'"
+
+  # A valid registry must still be accepted, or every case above would pass
+  # for the trivial reason that validation always fails.
+  if registry_validate_entries "$FIXTURE_DIR/valid.toml" "$FIXTURE_DIR" >/dev/null 2>&1 \
+    || { printf '%s\n' "$VALID_ANCHOR" >"$FIXTURE_DIR/valid.toml" \
+      && registry_validate_entries "$FIXTURE_DIR/valid.toml" "$FIXTURE_DIR" >/dev/null 2>&1; }; then
+    echo "  OK: accepts a valid registry"
+  else
+    fail "a minimal valid registry was rejected; the fixtures above prove nothing"
+  fi
+
+  # Restore the real registry's parse for anything downstream.
+  registry_validate_entries "$REGISTRY" "$REG_DIR" >/dev/null || true
 fi
 
 if [ "$ERRORS" -gt 0 ]; then

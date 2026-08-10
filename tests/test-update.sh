@@ -778,6 +778,44 @@ if ! git -C "$PROJECT" log -1 --name-only --pretty=format: | grep -qx 'GEMINI.md
 fi
 
 # --------------------------------------------------------------------------
+# An EXISTING GEMINI.md with a stale managed block must be refreshed and
+# staged. The case above only covers adding the file for the first time, so it
+# passed even with the refresh conditional and its staging flag deleted --
+# neither propagation bug had CI coverage (PR #703 review).
+#
+# The block is also refreshed independently of AGENTS.md: a project can ship
+# GEMINI.md without AGENTS.md, update never backfills a missing AGENTS.md, and
+# nesting the refresh under that check stranded such projects permanently.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 4a-bis: existing stale GEMINI.md block is refreshed and staged ---"
+
+python3 - "$PROJECT/GEMINI.md" <<'PY'
+import io, re, sys
+p = sys.argv[1]
+s = io.open(p, encoding="utf-8").read()
+s = re.sub(r"(?s)(<!-- touchstone:steering:start -->).*?(<!-- touchstone:steering:end -->)",
+           r"\1\nSTALE-GEMINI-BLOCK-MARKER\n\2", s)
+io.open(p, "w", encoding="utf-8").write(s)
+PY
+rm -f "$PROJECT/AGENTS.md"
+echo "0000000000000000000000000000000000000002" >"$PROJECT/.touchstone-version"
+commit_all "$PROJECT" "simulate stale gemini block, no AGENTS.md"
+
+(cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
+
+assert_not_contains "$PROJECT/GEMINI.md" "STALE-GEMINI-BLOCK-MARKER"
+assert_contains "$PROJECT/GEMINI.md" "Required Delivery Workflow"
+if ! git -C "$PROJECT" log -1 --name-only --pretty=format: | grep -qx 'GEMINI.md'; then
+  echo "FAIL: refreshed GEMINI.md must be staged into the update commit, not left dirty" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if ! git -C "$PROJECT" diff --quiet -- GEMINI.md; then
+  echo "FAIL: GEMINI.md still has unstaged changes after the update commit" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
 # Test 3b: pre-existing AGENTS.md without the steering block gets the
 # touchstone-managed block injected on update. This is the migration path
 # for projects bootstrapped before the block existed — without it, non-
