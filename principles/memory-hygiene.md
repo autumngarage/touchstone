@@ -11,9 +11,9 @@ ago reads exactly like a flag that still exists.
 
 - **Memory is cached guidance, not canonical truth.** Verify a remembered
   command, flag, path, or version against this repo before relying on it.
-- **Don't cache what is cheap to derive.** `README.md`, the steering files,
-  `VERSION`, `bin/touchstone --help`, and the scripts are all one command away
-  and always current. A memory that duplicates them can only go stale.
+- **Don't cache what is cheap to derive.** This project's own README, steering
+  files, version file, `--help` output, and scripts are one command away and
+  always current. A memory that duplicates them can only go stale.
 - **Date and source every claim.** If a memory mentions a command, flag, file
   path, version, or workflow, include the date (`YYYY-MM-DD`) and the canonical
   source you checked. A memory with no date cannot be aged out.
@@ -34,9 +34,13 @@ history are all in the repo — don't restate them. What is not in the repo:
 **Constraints on in-flight work are the exception.** Do not let memory be their
 only copy. Drivers are interchangeable — a fresh session, or a different CLI
 picking the work up, cannot read your memory, and will proceed in violation of
-a constraint it has no way to see. Record the constraint where the next agent
-will find it (`.cortex/state.md`, the issue, or the PR body), and let memory
-hold only a pointer to that record.
+a constraint it has no way to see.
+
+Record the constraint somewhere authored and durable: the issue, the pull
+request, a plan, or a journal entry. Then let memory hold only a pointer to it.
+Do not write it into generated state — a file rebuilt from other sources will
+erase hand-authored text that is not inside an explicitly protected region, and
+the constraint disappears with no trace that it ever existed.
 
 ## Auditing
 

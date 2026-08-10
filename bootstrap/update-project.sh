@@ -708,18 +708,28 @@ fi
 # touchstone-owned so non-Claude reviewers (Codex/Gemini) get the steering
 # content that CLAUDE.md gets for free via @-imports.
 AGENTS_PRINCIPLES_TOUCHED=false
+GEMINI_PRINCIPLES_TOUCHED=false
 if [ "$DRY_RUN" = false ] && [ -f "$PROJECT_DIR/AGENTS.md" ]; then
   agents_md_before_sha="$(touchstone_sha256_file "$PROJECT_DIR/AGENTS.md")"
   touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT" || true
   agents_md_after_sha="$(touchstone_sha256_file "$PROJECT_DIR/AGENTS.md")"
-  # GEMINI.md carries the same managed block. It was never refreshed here, so
-  # a contract change reached Codex but not Gemini (PR #703 review).
-  if [ -f "$PROJECT_DIR/GEMINI.md" ]; then
-    touchstone_block_apply "$PROJECT_DIR/GEMINI.md" "$TOUCHSTONE_ROOT" || true
-  fi
   if [ "$agents_md_before_sha" != "$agents_md_after_sha" ]; then
     AGENTS_PRINCIPLES_TOUCHED=true
     echo "    refreshed (project-owned, managed block): AGENTS.md"
+  fi
+fi
+# GEMINI.md carries the same managed block and was never refreshed here, so a
+# contract change reached Codex but not Gemini (PR #703 review). Its own
+# conditional: a project can ship GEMINI.md without AGENTS.md, and update
+# never backfills a missing AGENTS.md, so nesting this under that check would
+# strand Gemini-only projects on the old contract permanently.
+if [ "$DRY_RUN" = false ] && [ -f "$PROJECT_DIR/GEMINI.md" ]; then
+  gemini_md_before_sha="$(touchstone_sha256_file "$PROJECT_DIR/GEMINI.md")"
+  touchstone_block_apply "$PROJECT_DIR/GEMINI.md" "$TOUCHSTONE_ROOT" || true
+  gemini_md_after_sha="$(touchstone_sha256_file "$PROJECT_DIR/GEMINI.md")"
+  if [ "$gemini_md_before_sha" != "$gemini_md_after_sha" ]; then
+    GEMINI_PRINCIPLES_TOUCHED=true
+    echo "    refreshed (project-owned, managed block): GEMINI.md"
   fi
 fi
 
@@ -869,6 +879,12 @@ if [ "$DRY_RUN" = false ]; then
   # update commit rather than dangling as an unstaged diff.
   if [ "$AGENTS_PRINCIPLES_TOUCHED" = true ] && [ -f "$PROJECT_DIR/AGENTS.md" ]; then
     git -C "$PROJECT_DIR" add -f -- AGENTS.md
+  fi
+  # Same for GEMINI.md — refreshing the block without staging it committed the
+  # version bump while leaving the new contract dangling as an unstaged diff
+  # (PR #703 review).
+  if [ "$GEMINI_PRINCIPLES_TOUCHED" = true ] && [ -f "$PROJECT_DIR/GEMINI.md" ]; then
+    git -C "$PROJECT_DIR" add -f -- GEMINI.md
   fi
 
   if git -C "$PROJECT_DIR" diff --cached --quiet; then
