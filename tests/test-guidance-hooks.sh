@@ -370,6 +370,20 @@ assert "blocks a commit whose subcommand is split by a continuation" "2" \
 assert "blocks a commit whose 'git' token is split by a continuation" "2" \
   "$(run_hook "$BRANCH_GUARD" "$(mkjson "$(printf 'g\\\nit commit -m wip')")")"
 
+# Continuation removal runs before the segment walk, so a QUOTED heredoc whose
+# body carries a split `cd` -- text bash passes through untouched -- would
+# otherwise be rewritten into a real `cd` line, and the walker would adopt that
+# worktree for a commit that actually runs on main (PR #706 review).
+# Redirection is the only thing that can WEAKEN this guard, so a heredoc
+# anywhere in the command disables it.
+HEREDOC_FABRICATED_CD="$(printf 'echo git commit -m prose\ncat <<'"'"'EOF'"'"'\nc\\\nd %s\nEOF\ngit commit -m real' "$WORKTREE")"
+assert "heredoc-fabricated cd cannot redirect the guard off main" "2" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "$HEREDOC_FABRICATED_CD")")"
+
+# ...while an ordinary redirect carrying no heredoc still works.
+assert "plain cd redirect to a feature worktree stays allowed" "0" \
+  "$(run_hook "$BRANCH_GUARD" "$(mkjson "cd $WORKTREE && git commit -m wip")")"
+
 # The encoded spellings must still be ALLOWED off the default branch —
 # otherwise the cases above would pass under a guard that blocks everything.
 git -C "$TMPDIR" checkout --quiet feat/test

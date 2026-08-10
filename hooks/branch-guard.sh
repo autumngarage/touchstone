@@ -159,6 +159,33 @@ if [ -n "$target_cwd" ]; then
   fi
 fi
 
+# A heredoc body is DATA, not commands, but it arrives as ordinary lines and
+# the segment walker above cannot tell the difference. Worse, continuation
+# removal happens before the walk, so a quoted heredoc containing
+# `c\<newline>d /feature` — text bash would pass through untouched — becomes a
+# literal `cd /feature` line that the walker adopts as the commit's target
+# worktree. A real `git commit` later in the same command would then be
+# checked against that worktree instead of the one it actually runs in
+# (PR #706 review).
+#
+# Redirection is the only thing that can WEAKEN this guard, so it is the only
+# thing that has to be certain. When a heredoc is present, drop the redirect
+# and check the real working directory. Cost is over-blocking a worktree
+# commit that also carries a heredoc; the fix for that is two tool calls.
+case "$command" in
+  *'<<'*)
+    if [ -n "$target_cwd" ]; then
+      cwd="${tool_workdir:-$session_cwd}"
+      if [ -n "$tool_workdir" ] && [ -n "$session_cwd" ]; then
+        case "$tool_workdir" in
+          /*) cwd="$tool_workdir" ;;
+          *) cwd="$session_cwd/$tool_workdir" ;;
+        esac
+      fi
+    fi
+    ;;
+esac
+
 # Determine current branch in the project Claude is operating in.
 branch=""
 if [ -n "$cwd" ] && [ -d "$cwd" ]; then
