@@ -86,8 +86,101 @@ on_exit() {
   if [ -n "$BODY_FILE" ] && [ -f "$BODY_FILE" ]; then
     rm -f "$BODY_FILE"
   fi
+  if [ -n "$TRUSTED_MERGE_BUNDLE_DIR" ] && [ -d "$TRUSTED_MERGE_BUNDLE_DIR" ]; then
+    rm -rf "$TRUSTED_MERGE_BUNDLE_DIR"
+  fi
   print_orphan_warning "$rc"
   return "$rc"
+}
+
+# --- Trusted merge authorizer -----------------------------------------------
+#
+# The merge gate decides whether review evidence is clean and then calls
+# `gh pr merge`. Running it from this worktree means a PR that edits
+# merge-pr.sh is authorized by the edited merge-pr.sh — the gate's verdict
+# becomes conditional on the very change it is supposed to be gating. That is
+# not hypothetical for a repo whose own PRs routinely touch the gate.
+#
+# So the authorizer is materialized from the PR's BASE revision instead: code
+# that is already merged and already reviewed. A PR can still change the gate;
+# it just cannot use the changed gate to admit itself. The next PR gets the new
+# gate, because by then it is on the base.
+#
+# The whole of lib/ comes along, not a hand-listed subset. merge-pr.sh sources
+# script-sync-guard, events, preflight and toml, and preflight sources sha256
+# and preflight-scope; a hardcoded list would silently rot the first time that
+# sourcing changes, and the failure mode would be a gate running half-trusted.
+#
+# This closes the accidental case, which is the real one. It does not make the
+# authorizer independent of a deliberately hostile open-pr.sh — that caller is
+# still this file. Issue #640's full form moves invocation to the installed
+# CLI, outside the repository entirely.
+TRUSTED_MERGE_BUNDLE_DIR=""
+TRUSTED_MERGE_SCRIPT=""
+TRUSTED_MERGE_BASE_OID=""
+
+materialize_trusted_merge_authorizer() {
+  local base_branch="$1"
+  local base_oid remote_ref bundle
+
+  remote_ref="refs/remotes/origin/$base_branch"
+  if ! base_oid="$(git rev-parse --verify --quiet "$remote_ref^{commit}" 2>/dev/null)"; then
+    git fetch --quiet --no-tags origin "$base_branch" >/dev/null 2>&1 || true
+    if ! base_oid="$(git rev-parse --verify --quiet "$remote_ref^{commit}" 2>/dev/null)"; then
+      echo "ERROR: cannot resolve the trusted base '$base_branch' to materialize the merge gate." >&2
+      echo "       The gate must come from reviewed, already-merged code, not from this branch." >&2
+      echo "       Fetch the base and rerun:" >&2
+      echo "         git fetch origin $base_branch" >&2
+      return 1
+    fi
+  fi
+
+  if ! bundle="$(mktemp -d -t touchstone-trusted-merge.XXXXXX)"; then
+    echo "ERROR: could not create a temporary directory for the trusted merge gate." >&2
+    return 1
+  fi
+  TRUSTED_MERGE_BUNDLE_DIR="$bundle"
+
+  # Check presence before archiving: `git archive` fails on an unmatched
+  # pathspec, so without this the precise diagnosis is lost in a generic
+  # extraction error.
+  if ! git cat-file -e "$base_oid:scripts/merge-pr.sh" 2>/dev/null; then
+    echo "ERROR: base $base_branch (${base_oid:0:12}) has no scripts/merge-pr.sh." >&2
+    echo "       The merge gate must come from the base, and this base does not carry one." >&2
+    echo "       Land the Touchstone delivery scripts on $base_branch first." >&2
+    return 1
+  fi
+
+  if ! git archive "$base_oid" scripts/merge-pr.sh lib 2>/dev/null | tar -x -C "$bundle" 2>/dev/null; then
+    echo "ERROR: could not extract scripts/merge-pr.sh and lib/ from base $base_branch (${base_oid:0:12})." >&2
+    echo "       Refusing to authorize a merge with the gate from this worktree." >&2
+    return 1
+  fi
+  if [ ! -f "$bundle/scripts/merge-pr.sh" ]; then
+    echo "ERROR: base $base_branch (${base_oid:0:12}) has no scripts/merge-pr.sh." >&2
+    echo "       Land the Touchstone update on $base_branch before shipping from this branch." >&2
+    return 1
+  fi
+
+  TRUSTED_MERGE_SCRIPT="$bundle/scripts/merge-pr.sh"
+  TRUSTED_MERGE_BASE_OID="$base_oid"
+  return 0
+}
+
+# Resolve and announce the authorizer. Both --auto-merge call sites go through
+# this, so they cannot drift apart on which gate they trust.
+resolve_merge_authorizer() {
+  local base_branch="$1"
+
+  if ! materialize_trusted_merge_authorizer "$base_branch"; then
+    return 1
+  fi
+  echo "==> Merge gate materialized from $base_branch @ ${TRUSTED_MERGE_BASE_OID:0:12} (not this worktree)."
+  if ! cmp -s "$TRUSTED_MERGE_SCRIPT" "$SCRIPT_DIR/merge-pr.sh"; then
+    echo "    NOTE: this branch modifies merge-pr.sh. The base version is authorizing"
+    echo "          this merge; your changes take effect for the next PR."
+  fi
+  return 0
 }
 
 print_orphan_warning() {
@@ -1147,11 +1240,10 @@ if [ -n "$EXISTING_PR_URL" ]; then
   fi
   request_pr_triggered_review "$PR_NUMBER" "$PUSHED_HEAD_SHA"
   if [ "$AUTO_MERGE" = true ]; then
-    MERGE_SCRIPT="$SCRIPT_DIR/merge-pr.sh"
-    if [ ! -f "$MERGE_SCRIPT" ]; then
-      echo "ERROR: merge-pr.sh not found at $MERGE_SCRIPT — cannot auto-merge." >&2
+    if ! resolve_merge_authorizer "$BASE_BRANCH"; then
       exit 1
     fi
+    MERGE_SCRIPT="$TRUSTED_MERGE_SCRIPT"
     echo ""
     echo "==> Auto-merging PR #$PR_NUMBER ..."
     # Don't exec — we need to verify mergedAt after merge-pr.sh returns.
@@ -1302,11 +1394,10 @@ request_pr_triggered_review "$ORPHAN_PR_NUMBER" "$PUSHED_HEAD_SHA"
 # the PR actually reached MERGED state on GitHub before claiming success.
 if [ "$AUTO_MERGE" = true ]; then
   PR_NUMBER="$(basename "$PR_URL")"
-  MERGE_SCRIPT="$SCRIPT_DIR/merge-pr.sh"
-  if [ ! -f "$MERGE_SCRIPT" ]; then
-    echo "ERROR: merge-pr.sh not found at $MERGE_SCRIPT — cannot auto-merge." >&2
+  if ! resolve_merge_authorizer "$BASE_BRANCH"; then
     exit 1
   fi
+  MERGE_SCRIPT="$TRUSTED_MERGE_SCRIPT"
   echo ""
   echo "==> Auto-merging PR #$PR_NUMBER ..."
   # Don't exec — we need to verify mergedAt after merge-pr.sh returns. The

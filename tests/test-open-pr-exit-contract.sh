@@ -58,7 +58,26 @@ git -C "$REPO_DIR" config user.name "Touchstone Test"
 git -C "$REPO_DIR" config user.email "touchstone@example.com"
 printf 'base\n' >"$REPO_DIR/file.txt"
 git -C "$REPO_DIR" add file.txt
+# open-pr.sh materializes the merge gate from the BASE revision rather than
+# running the copy in the PR's worktree (issue #640), so a realistic fixture
+# has to carry scripts/merge-pr.sh and lib/ in its history the way a
+# bootstrapped project does. Committing them on the first commit means every
+# branch below — including the stacked-PR parents — inherits them.
+mkdir -p "$REPO_DIR/scripts" "$REPO_DIR/lib"
+cat >"$REPO_DIR/scripts/merge-pr.sh" <<'BASEGATE'
+#!/usr/bin/env bash
+# Trusted base copy of the merge gate. Scenarios drive the stub that the
+# worktree copy delegates to, so this file only has to prove WHICH copy ran.
+printf 'trusted-base-gate\n' >>"${MERGE_STUB_LOG:-/dev/null}"
+exec bash "${MERGE_STUB_DELEGATE:?merge stub delegate not set}" "$@"
+BASEGATE
+chmod +x "$REPO_DIR/scripts/merge-pr.sh"
+printf '# placeholder library shipped on the base revision\n' >"$REPO_DIR/lib/.keep.sh"
 git -C "$REPO_DIR" commit -m "base commit" >/dev/null 2>&1
+# A base that predates the vendored gate, for the refuse-to-authorize case.
+git -C "$REPO_DIR" branch base/no-gate
+git -C "$REPO_DIR" add scripts/merge-pr.sh lib/.keep.sh
+git -C "$REPO_DIR" commit -m "vendor touchstone delivery scripts" >/dev/null 2>&1
 git -C "$REPO_DIR" remote add origin "$REPO_DIR"
 git -C "$REPO_DIR" branch feature/parent
 git -C "$REPO_DIR" checkout -b feat/test >/dev/null 2>&1
@@ -311,6 +330,8 @@ run_open_pr() {
       GIT_PUSH_LOG="$TEST_DIR/git-push.log" \
       MERGE_PR_EXIT="${MERGE_PR_EXIT:-0}" \
       MERGE_PR_REQUEST_COUNT_FILE="$TEST_DIR/merge-pr-request-count" \
+      MERGE_STUB_DELEGATE="$SCRIPT_DIR/merge-pr.sh" \
+      MERGE_STUB_LOG="$TEST_DIR/gate-provenance.log" \
       GH_PR_CREATE_LOG="$TEST_DIR/pr-create.log" \
       GH_PR_READY_LOG="$TEST_DIR/pr-ready.log" \
       GH_REVIEW_REQUEST_LOG="$TEST_DIR/review-request.log" \
@@ -397,26 +418,73 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Case 4: merge-pr.sh missing on disk — script must NOT silently exit 0.
-# Earlier behaviour: WARNING + fall through to exit 0 (the orphan trap).
-# New behaviour: ERROR + nonzero exit + orphan banner.
+# Case 4: the trusted base carries no merge gate — refuse, don't fall back.
+#
+# Before issue #640 this case hid the worktree copy of merge-pr.sh, because
+# that copy was what ran. Now the gate is materialized from the base, so the
+# meaningful absence is on the base: a project whose default branch predates
+# the vendored delivery scripts must be refused, NOT quietly authorized by
+# whatever the feature branch happens to contain.
 # ---------------------------------------------------------------------------
-echo "==> Case 4: merge-pr.sh missing on disk"
+echo "==> Case 4: trusted base carries no merge gate"
 OUT="$TEST_DIR/case4.out"
 RC=0
-mv "$SCRIPT_DIR/merge-pr.sh" "$SCRIPT_DIR/merge-pr.sh.hidden"
 GH_PR_STATE="OPEN" GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 \
-  run_open_pr >"$OUT" 2>&1 || RC=$?
-mv "$SCRIPT_DIR/merge-pr.sh.hidden" "$SCRIPT_DIR/merge-pr.sh"
+  GH_CREATED_PR_BASE="base/no-gate" \
+  run_open_pr --base base/no-gate >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" != "0" ] \
-  && grep -q 'merge-pr.sh not found' "$OUT" \
+  && grep -q 'no scripts/merge-pr.sh' "$OUT" \
   && grep -q 'ORPHAN RISK: PR opened but not merged' "$OUT" \
   && grep -q 'https://example.test/touchstone/pull/123' "$OUT"; then
   echo "    PASS"
 else
-  echo "    FAIL: expected nonzero exit + missing-script error + orphan banner" >&2
+  echo "    FAIL: expected nonzero exit + absent-base-gate error + orphan banner" >&2
   echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 4b: a PR that REWRITES the gate is authorized by the base gate.
+#
+# This is issue #640 itself. The worktree copy of merge-pr.sh is replaced with
+# one that would authorize anything; the run must still go through the copy
+# committed on the base, which is the only reviewed one. 12 of 40 recent
+# commits on touchstone's own main modified these scripts, so this is the
+# normal case for this repo, not an edge case.
+# ---------------------------------------------------------------------------
+echo "==> Case 4b: a PR rewriting merge-pr.sh is authorized by the BASE gate"
+OUT="$TEST_DIR/case4b.out"
+RC=0
+: >"$TEST_DIR/gate-provenance.log"
+CASE4B_RESTORE="$(git -C "$REPO_DIR" rev-parse HEAD)"
+# Commit the edited gate on the feature branch — that is what a PR changing
+# merge-pr.sh actually looks like, and open-pr.sh refuses to run on a dirty
+# tree anyway.
+cat >"$REPO_DIR/scripts/merge-pr.sh" <<'HOSTILE'
+#!/usr/bin/env bash
+# A gate edited by the PR under review. If this ever runs, the merge decision
+# was made by unreviewed code and issue #640 has regressed.
+printf 'worktree-gate\n' >>"${MERGE_STUB_LOG:-/dev/null}"
+exit 0
+HOSTILE
+git -C "$REPO_DIR" add scripts/merge-pr.sh
+git -C "$REPO_DIR" commit -m "PR edits the merge gate" >/dev/null 2>&1
+GH_PR_STATE="MERGED" GH_MERGED_AT="2026-08-09T00:00:00Z" GH_HAS_EXISTING_PR=0 \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset --hard "$CASE4B_RESTORE" >/dev/null 2>&1
+
+if [ "$RC" = "0" ] \
+  && grep -q 'trusted-base-gate' "$TEST_DIR/gate-provenance.log" \
+  && ! grep -q 'worktree-gate' "$TEST_DIR/gate-provenance.log" \
+  && grep -q 'Merge gate materialized from main' "$OUT" \
+  && grep -q 'this branch modifies merge-pr.sh' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected the BASE gate to run, not the worktree copy" >&2
+  echo "    rc=$RC" >&2
+  echo "    provenance: $(tr '\n' ' ' <"$TEST_DIR/gate-provenance.log")" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
