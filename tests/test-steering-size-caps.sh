@@ -92,10 +92,18 @@ entry_value() {
 }
 
 registry_collect_entry() {
-  local section="$1" key="$2" value="$3" p
+  local section="$1" key="$2" value="$3" p f
   p="$(toml_unquote "$section")"
   [ -n "$p" ] || return 0
-  printf '%s\t%s\n' "$key" "$value" >>"$REG_ENTRIES_DIR/$(entry_key "$p")"
+  f="$REG_ENTRIES_DIR/$(entry_key "$p")"
+  # A repeated table or key is invalid TOML that entry_value would resolve
+  # first-wins, letting a second contradictory declaration borrow the first
+  # one's valid values — a second `bin/touchstone` table with job = "vibes"
+  # passed the whole suite (PR #703 review). Record the collision instead.
+  if [ -f "$f" ] && awk -F'\t' -v k="$key" '$1 == k { found = 1 } END { exit !found }' "$f"; then
+    printf 'duplicate\t%s\n' "$key" >>"$f"
+  fi
+  printf '%s\t%s\n' "$key" "$value" >>"$f"
   printf '%s\n' "$p" >>"$REG_SCRATCH/paths.raw"
 }
 
@@ -130,6 +138,10 @@ registry_validate_entries() {
   while IFS= read -r path; do
     job="$(entry_value "$path" job || true)"
     why="$(entry_value "$path" why || true)"
+
+    if [ -n "$(entry_value "$path" duplicate || true)" ]; then
+      problem "$path declares '$(entry_value "$path" duplicate)' more than once; one file, one unambiguous declaration"
+    fi
 
     case "$job" in
       constrain | legible | carry | support | mirror | cut) ;;
@@ -222,8 +234,11 @@ else
   # guardrail on unrelated workspace state; `git ls-files` also lists tracked
   # symlinks and emits repo-relative paths, so the regex-interpolation hazard
   # is gone rather than worked around (PR #703 review).
+  # Exclusions are an explicit allowlist of non-capability artifacts, not a
+  # shape filter. Excluding every dotfile let a tracked `scripts/.guard` ship
+  # with no declaration at all (PR #703 review), and it bought nothing: the
+  # only non-capability file tracked under these directories is prose.
   git -C "$TOUCHSTONE_ROOT" ls-files -- bin bootstrap hooks lib scripts 2>/dev/null \
-    | grep -vE '(^|/)\.[^/]*$' \
     | grep -vE '\.md$' \
     | sort -u >"$REG_DIR/shipped"
 
@@ -345,6 +360,11 @@ job = \"cut\"
 tracked = \"#7oops\"
 why = \"A condemned capability whose tracking reference is not an issue.\"" "expected an issue reference"
 
+  reject_case "a repeated declaration" "$VALID_ANCHOR
+[\"scripts/open-pr.sh\"]
+job = \"vibes\"
+why = \"A second table for a path that was already declared above.\"" "more than once"
+
   reject_case "path keys that collide under encoding" "$VALID_ANCHOR
 [\"lib/a/b\"]
 job = \"carry\"
@@ -355,12 +375,23 @@ why = \"A second path that differs only by slash versus percent sign.\"" "unknow
 
   # A valid registry must still be accepted, or every case above would pass
   # for the trivial reason that validation always fails.
-  if registry_validate_entries "$FIXTURE_DIR/valid.toml" "$FIXTURE_DIR" >/dev/null 2>&1 \
-    || { printf '%s\n' "$VALID_ANCHOR" >"$FIXTURE_DIR/valid.toml" \
-      && registry_validate_entries "$FIXTURE_DIR/valid.toml" "$FIXTURE_DIR" >/dev/null 2>&1; }; then
+  #
+  # Written BEFORE it is validated. The previous form short-circuited on a
+  # nonexistent file, which toml_parse reads as an empty-and-valid registry,
+  # so the control reported success without ever parsing VALID_ANCHOR
+  # (PR #703 review).
+  printf '%s\n' "$VALID_ANCHOR" >"$FIXTURE_DIR/valid.toml"
+  if registry_validate_entries "$FIXTURE_DIR/valid.toml" "$FIXTURE_DIR" >/dev/null 2>&1; then
     echo "  OK: accepts a valid registry"
   else
     fail "a minimal valid registry was rejected; the fixtures above prove nothing"
+  fi
+
+  # An empty registry must NOT read as a passing one, or a missing or
+  # truncated capabilities.toml would look like a clean bill of health.
+  : >"$FIXTURE_DIR/empty.toml"
+  if registry_validate_entries "$FIXTURE_DIR/empty.toml" "$FIXTURE_DIR" >/dev/null 2>&1; then
+    echo "  NOTE: an empty registry validates vacuously; surface parity is what catches it"
   fi
 
   # Restore the real registry's parse for anything downstream.

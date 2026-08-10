@@ -952,9 +952,25 @@ GEMINI_MD_CREATED="$LAST_COPY_CREATED"
 touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT" || true
 # GEMINI.md carries the same managed block and was never refreshed here, so
 # Gemini agents read whatever steering the template shipped with (PR #703
-# review). Same contract, same treatment.
-[ -f "$PROJECT_DIR/GEMINI.md" ] \
-  && touchstone_block_apply "$PROJECT_DIR/GEMINI.md" "$TOUCHSTONE_ROOT" || true
+# review). Same contract, same treatment — with one difference from the update
+# flow: bootstrap can run against an existing repository and has no guaranteed
+# commit to recover from, so an in-place rewrite of a project-owned file must
+# leave a .bak first (PR #703 review). `copy_file` skips GEMINI.md as
+# project-owned, so without this the block rewrite would be unrecoverable.
+if [ -f "$PROJECT_DIR/GEMINI.md" ]; then
+  gemini_backup="$(next_backup_path "$PROJECT_DIR/GEMINI.md")"
+  cp "$PROJECT_DIR/GEMINI.md" "$gemini_backup"
+  if touchstone_block_apply "$PROJECT_DIR/GEMINI.md" "$TOUCHSTONE_ROOT"; then
+    # Nothing changed — don't leave a spurious .bak behind.
+    if cmp -s "$PROJECT_DIR/GEMINI.md" "$gemini_backup"; then
+      rm -f "$gemini_backup"
+    else
+      echo "    refreshed (managed block, previous content backed up as $(basename "$gemini_backup")): GEMINI.md"
+    fi
+  else
+    rm -f "$gemini_backup"
+  fi
+fi
 copy_file "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-commit-config.yaml"
 copy_file "$TOUCHSTONE_ROOT/templates/.markdownlint.json" "$PROJECT_DIR/.markdownlint.json"
 copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"

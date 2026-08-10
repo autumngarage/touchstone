@@ -790,14 +790,16 @@ fi
 echo ""
 echo "--- Step 4a-bis: existing stale GEMINI.md block is refreshed and staged ---"
 
-python3 - "$PROJECT/GEMINI.md" <<'PY'
-import io, re, sys
-p = sys.argv[1]
-s = io.open(p, encoding="utf-8").read()
-s = re.sub(r"(?s)(<!-- touchstone:steering:start -->).*?(<!-- touchstone:steering:end -->)",
-           r"\1\nSTALE-GEMINI-BLOCK-MARKER\n\2", s)
-io.open(p, "w", encoding="utf-8").write(s)
-PY
+# awk, not python3: the fast tier is the "is this safe to push" gate and has
+# to run on a stock macOS checkout, where python3 is not guaranteed to be
+# installed (PR #703 review). Replaces the managed block's contents with a
+# stale marker, leaving the markers themselves in place.
+awk '
+  /<!-- touchstone:steering:start -->/ { print; print "STALE-GEMINI-BLOCK-MARKER"; inblock = 1; next }
+  /<!-- touchstone:steering:end -->/   { print; inblock = 0; next }
+  !inblock { print }
+' "$PROJECT/GEMINI.md" >"$PROJECT/GEMINI.md.stale" \
+  && mv "$PROJECT/GEMINI.md.stale" "$PROJECT/GEMINI.md"
 rm -f "$PROJECT/AGENTS.md"
 echo "0000000000000000000000000000000000000002" >"$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate stale gemini block, no AGENTS.md"
