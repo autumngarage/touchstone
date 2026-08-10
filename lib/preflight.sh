@@ -814,6 +814,20 @@ touchstone_preflight_touchstone_scoped_self_test_files() {
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     saw_path=true
+    # capabilities.toml declares every file under the governed directories, so
+    # ANY add, delete, or rename there can invalidate the registry — including
+    # paths with their own explicit mapping below, which would otherwise run
+    # only their own tests and let a stale declaration through (PR #703
+    # review). Selected first, then the path falls through to its own mapping.
+    case "$path" in
+      bin/* | bootstrap/* | hooks/* | lib/* | scripts/* | capabilities.toml)
+        touchstone_preflight_add_existing_self_tests "$output_file" \
+          tests/test-steering-size-caps.sh || {
+          mapping_status=1
+          break
+        }
+        ;;
+    esac
     case "$path" in
       tests/test-*.sh)
         if [ ! -f "$path" ] \

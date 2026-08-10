@@ -109,10 +109,20 @@ else
   # a subdirectory (scripts/helpers/check.sh) or without a .sh suffix ship
   # undeclared, which is the exact hole this check exists to close (PR #703
   # review). Exclusions are explicit: dotfiles and prose.
-  find "$TOUCHSTONE_ROOT/bin" "$TOUCHSTONE_ROOT/bootstrap" "$TOUCHSTONE_ROOT/hooks" \
-    "$TOUCHSTONE_ROOT/lib" "$TOUCHSTONE_ROOT/scripts" \
-    -type f ! -name '.*' ! -name '*.md' -print 2>/dev/null \
-    | sed "s|^$TOUCHSTONE_ROOT/||" | sort -u >"$REG_DIR/shipped"
+  #
+  # Symlinks count too: `-type f` alone let a symlinked capability ship with no
+  # declaration at all, and the check still reported full parity (PR #703
+  # review). `\( -type f -o -type l \)` covers both.
+  #
+  # Enumerated from INSIDE $TOUCHSTONE_ROOT so paths come out relative. Piping
+  # absolute paths through `sed "s|^$TOUCHSTONE_ROOT/||"` interpolates the
+  # checkout path into a regex, so a directory containing `[` or `.` would
+  # fail to strip and every file would read as undeclared (PR #703 review).
+  (
+    cd "$TOUCHSTONE_ROOT" || exit 1
+    find bin bootstrap hooks lib scripts \
+      \( -type f -o -type l \) ! -name '.*' ! -name '*.md' -print 2>/dev/null
+  ) | sort -u >"$REG_DIR/shipped"
 
   while IFS= read -r path; do
     grep -qxF "$path" "$REG_DIR/shipped" \
@@ -164,10 +174,20 @@ else
         ;;
       mirror)
         target="$(entry_value "$path" mirrors || true)"
+        target_job="$(entry_value "$target" job 2>/dev/null || true)"
         if [ -z "$target" ]; then
           fail "$path is a mirror but names no target (mirrors = \"...\")"
+        elif [ "$target" = "$path" ]; then
+          # A self-mirror satisfies "target exists" and "cmp matches" while
+          # never bottoming out in a mission job — a free pass through the
+          # whole check (PR #703 review).
+          fail "$path mirrors itself; a mirror must point at another capability"
         elif [ ! -f "$TOUCHSTONE_ROOT/$target" ]; then
           fail "$path mirrors '$target', which does not exist"
+        elif ! grep -qxF "$target" "$REG_DIR/declared"; then
+          fail "$path mirrors '$target', which is not a declared capability"
+        elif [ "$target_job" = "mirror" ] || [ "$target_job" = "cut" ] || [ -z "$target_job" ]; then
+          fail "$path mirrors '$target' (job='$target_job'); a mirror must resolve to a real mission job"
         elif ! cmp -s "$TOUCHSTONE_ROOT/$path" "$TOUCHSTONE_ROOT/$target"; then
           fail "$path has drifted from its mirror target '$target' — they must stay byte-identical"
         fi

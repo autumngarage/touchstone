@@ -1,7 +1,7 @@
 # capabilities.toml — the scope ledger for Touchstone's executable surface.
 #
 # Every file under bin/, bootstrap/, hooks/, lib/, and scripts/ must appear
-# here with a declared mission job. `tests/test-capability-registry.sh` fails
+# here with a declared mission job. `tests/test-steering-size-caps.sh` fails
 # when a file is present but unregistered, registered but absent, or declares
 # a job it cannot support.
 #
