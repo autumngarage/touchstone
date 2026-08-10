@@ -49,16 +49,23 @@ input="$(cat)"
 # the overwhelming majority of calls. It is therefore deliberately
 # over-inclusive: it may admit non-commits, but it must never reject a commit.
 #
-# Three ways a real commit can reach the shell, so three ways through here:
+# Four ways a real commit can reach the shell, so four ways through here:
 #
 #   1. `commit` appears literally — the ordinary case. JSON encodes ASCII
 #      letters as themselves, so the substring survives encoding.
 #   2. A \u escape spells a letter of it (`commit`).
 #   3. A line continuation splits a token: `git com\<newline>mit` executes as
 #      `git commit`, and neither `commit` nor `\u` appears in the payload.
-#      Any continuation needs a literal backslash, which JSON encodes as two,
-#      so an escaped backslash anywhere means "might be a split token".
-if ! printf '%s' "$input" | grep -qE 'commit|\\u|\\\\'; then
+#      Any continuation needs a literal backslash, which JSON encodes as two.
+#   4. Quoting splits a token: `git com''mit` and `g''it commit` both execute
+#      normally, and again the substring is absent (PR #706 review).
+#
+# Rounds two through five of this review each found another way to spell a
+# token. That is the signal: no substring test over encoded text is ever
+# complete. Any quote now falls through to the structured parse, which costs
+# a jq call on most commands and buys the property that actually matters —
+# this test can over-admit, but it can no longer reject a real commit.
+if ! printf '%s' "$input" | grep -qE "commit|\\\\u|\\\\\\\\|['\"]"; then
   exit 0
 fi
 
@@ -87,6 +94,10 @@ session_cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"
 # INFERRED `cd` can be trusted.
 raw_command="$command"
 command="${command//\\$'\n'/}"
+# Empty quote pairs are removed by bash before a word is a word, so
+# `git com''mit` and `g""it commit` are ordinary commits (PR #706 review).
+command="${command//\'\'/}"
+command="${command//\"\"/}"
 tool_workdir="$(printf '%s' "$input" | jq -r '.tool_input.workdir // ""')"
 cwd="$session_cwd"
 if [ -n "$tool_workdir" ]; then
@@ -144,31 +155,59 @@ if [ -n "$commit_segment" ] && [ "$commit_context_ambiguous" = false ]; then
   target_cwd_from_C="$(printf '%s' "$commit_segment" | grep -oE '\-C[[:space:]]+[^[:space:]]+' | sed -E 's/^-C[[:space:]]+//' | tail -1 || true)"
 fi
 
-# Two kinds of redirect, and only one of them can be forged.
+# Redirection is the ONLY thing here that can weaken the guard. Everything
+# else can merely over-block, which is safe. So redirection is the one decision
+# that has to be certain, and this is where four review rounds went wrong:
+# each round trusted a redirect parsed out of text that turned out to be data.
 #
-# `-C` is read off the commit segment itself — the exact tokens bash will run.
-# A `cd` is INFERRED from an earlier line, and that inference is only as good
-# as our ability to tell commands from data. Two constructs let quoted data
-# masquerade as a command line: a heredoc body, and a continuation inside
-# quoted text, which normalization above rewrites into what looks like a real
-# `cd` (PR #706 review, twice — first via heredoc, then via single quotes).
+#   round 3 — a heredoc body fabricated a `cd` via a continuation
+#   round 4 — single-quoted text did the same with no heredoc
+#   round 5 — a heredoc body supplied a `-C`, and "explicit -C is never
+#             forged" turned out to be false: it is only unforgeable when we
+#             can tell which line is a command
 #
-# So: an explicit `-C` is always honoured, and an inferred `cd` is dropped
-# whenever either construct appears anywhere in the command. Redirection is the
-# only thing that can WEAKEN this guard, so it is the only thing that has to be
-# certain; dropping it can only over-block.
-inferred_cd_trusted=true
+# Each fix closed one carrier and the next round found another, because the
+# question "is this line code or data?" is not answerable by regex. So stop
+# asking it. A redirect is honoured only when the whole command is in a shape
+# with no way to smuggle a command line into it: no heredoc, no continuation,
+# no substitution. Anything else keeps the real working directory, and on the
+# default branch that means blocked.
+#
+# This is the whitelist principle from #507 applied one level down —
+# unrecognized stops meaning "guess" and starts meaning "no".
+redirect_trusted=true
 case "$raw_command" in
-  *'<<'* | *\\$'\n'*) inferred_cd_trusted=false ;;
+  *'<<'* | *\\$'\n'* | *'$('* | *'`'* | *'${'*) redirect_trusted=false ;;
 esac
 
 target_cwd=""
 if [ "$commit_context_ambiguous" = false ]; then
-  if [ -n "$target_cwd_from_C" ]; then
-    target_cwd="$target_cwd_from_C"
-  elif [ "$inferred_cd_trusted" = true ]; then
-    target_cwd="$target_cwd_from_cd"
-  fi
+  target_cwd="${target_cwd_from_C:-$target_cwd_from_cd}"
+fi
+
+# Rounds four and five pull `-C` in opposite directions: one needs it honoured
+# so a commit explicitly targeting main is caught, the other needs it ignored
+# because a heredoc body supplied it. Both are right, which means falling back
+# to the working directory is wrong in one of them either way.
+#
+# So when a redirect was parsed but the command is not in a shape where we can
+# trust it, refuse. We do not know which worktree this commit lands in, and a
+# guard that does not know must not guess. A commit with NO redirect is
+# unaffected — it runs where the tool runs, and that we do know.
+if [ -n "$target_cwd" ] && [ "$redirect_trusted" = false ]; then
+  cat >&2 <<'EOF'
+==> Blocked by Touchstone branch-guard: ambiguous commit target
+
+  This command redirects the commit (via `cd` or `git -C`) AND contains a
+  heredoc, line continuation, or substitution. Those can put a command-looking
+  line into data, so the redirect cannot be trusted, and the target worktree
+  cannot be determined.
+
+  Split it into separate tool calls: run the redirected commit on its own.
+
+  Override (emergencies only): set TOUCHSTONE_EMERGENCY=1 and re-run.
+EOF
+  [ "${TOUCHSTONE_EMERGENCY:-0}" = "1" ] || exit 2
 fi
 
 if [ "$commit_context_ambiguous" = true ]; then

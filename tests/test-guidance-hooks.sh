@@ -396,7 +396,11 @@ assert "single-quoted continuation cannot fabricate a cd redirect" "2" \
 # Discarding it let a commit explicitly targeting main pass from a feature
 # worktree (PR #706 review).
 EXPLICIT_C_WITH_HEREDOC="$(printf 'git -C %s commit -m real\ncat <<'"'"'EOF'"'"'\nnote\nEOF' "$TMPDIR")"
-assert "explicit -C target survives a heredoc in the same command" "2" \
+# Rounds 4 and 5 pulled -C in opposite directions -- one needed it honoured,
+# the other needed it ignored because a heredoc supplied it. Neither fallback
+# is right, so an untrustworthy redirect is now refused outright: the target
+# cannot be determined, and a guard that cannot tell must not guess.
+assert "ambiguous -C plus heredoc is refused, not guessed" "2" \
   "$(run_hook "$BRANCH_GUARD" "$(mkjson "$EXPLICIT_C_WITH_HEREDOC" "$WORKTREE")")"
 
 # The encoded spellings must still be ALLOWED off the default branch —
