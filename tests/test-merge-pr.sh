@@ -214,6 +214,21 @@ case "${1:-} ${2:-}" in
     fi
     echo "commented"
     ;;
+  "pr list")
+    # Dependent-PR lookup used before deciding whether to delete the branch
+    # (issue #713). Any other `pr list` shape falls through to the generic
+    # handler below.
+    case "$*" in
+      *--base*)
+        if [ "${GH_DEPENDENT_PRS:-}" = "__FAIL__" ]; then
+          echo "gh: could not list pull requests" >&2
+          exit 1
+        fi
+        printf '%s\n' "${GH_DEPENDENT_PRS:-}"
+        exit 0
+        ;;
+    esac
+    ;;
   "pr merge")
     if [ "${4:-}" = "--disable-auto" ]; then
       printf 'disable-auto\n' >>"$GH_MERGE_ARGS_FILE"
@@ -221,14 +236,22 @@ case "${1:-} ${2:-}" in
     fi
     printf '%s\n' "$*" > "$GH_MERGE_ARGS_FILE"
     expected_head="${GH_EXPECT_MERGE_HEAD:-pr-head-oid}"
-    if [ "${4:-} ${5:-} ${6:-} ${7:-}" != "--squash --delete-branch --match-head-commit $expected_head" ]; then
+    # --delete-branch is omitted when another open PR is based on this branch,
+    # because deleting it would close the dependents (issue #713).
+    if [ "${4:-} ${5:-} ${6:-} ${7:-}" = "--squash --delete-branch --match-head-commit $expected_head" ]; then
+      merge_head_arg="$7"
+      body_flag_pos=8
+    elif [ "${4:-} ${5:-} ${6:-}" = "--squash --match-head-commit $expected_head" ]; then
+      merge_head_arg="$6"
+      body_flag_pos=7
+    else
       echo "unexpected gh pr merge args: $*" >&2
       exit 1
     fi
-    if [ "${8:-}" = "--body" ]; then
-      printf '%s\n' "${9:-}" > "$GH_MERGE_BODY_FILE"
+    if [ "$(eval printf '%s' "\${$body_flag_pos:-}")" = "--body" ]; then
+      eval "printf '%s\\n' \"\${$((body_flag_pos + 1)):-}\"" > "$GH_MERGE_BODY_FILE"
     fi
-    echo "$7" > "$GH_MERGE_HEAD_FILE"
+    echo "$merge_head_arg" > "$GH_MERGE_HEAD_FILE"
     # GH_MERGE_LEAVES_OPEN=true models a required-checks merge queue: the
     # command is accepted (auto-merge armed) but the PR does not merge.
     if [ -n "${GH_MERGED_MARKER:-}" ] && [ "${GH_MERGE_LEAVES_OPEN:-false}" != "true" ]; then
@@ -946,6 +969,7 @@ run_merge_pr() {
     GH_RUN_JOBS_FAIL="${GH_RUN_JOBS_FAIL:-false}" \
     GH_ANNOTATIONS_FAIL="${GH_ANNOTATIONS_FAIL:-false}" \
     GH_MERGE_LEAVES_OPEN="${GH_MERGE_LEAVES_OPEN:-false}" \
+    GH_DEPENDENT_PRS="${GH_DEPENDENT_PRS:-}" \
     GIT_CLAIM_CHECKER_SHOW_FAIL="${GIT_CLAIM_CHECKER_SHOW_FAIL:-false}" \
     CLAIM_DIRECT_BYPASS="${CLAIM_DIRECT_BYPASS:-false}" \
     CLAIM_DIRECT_EXIT="${CLAIM_DIRECT_EXIT:-0}" \
@@ -3345,6 +3369,69 @@ else
   echo "FAIL: respond-review must pass owner/name/pr as GraphQL variables" >&2
   grep 'graphql' "$RR_GH_LOG" | head -3 >&2
   ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Stacked PRs must survive the merge (issue #713).
+#
+# `gh pr merge --delete-branch` removes the base branch of anything stacked on
+# it, and GitHub marks those PRs CLOSED -- not merged -- discarding their
+# review threads. Observed on arpeggio 2026-08-10: one merge silently closed
+# two dependents, and recovery required recreating the branch at its exact
+# recorded head OID before GitHub would reopen them.
+#
+# The branch is retained rather than the merge refused: review evidence is
+# already clean by this point, so blocking would be a worse trade than leaving
+# a branch for cleanup-branches.sh to collect.
+# ---------------------------------------------------------------------------
+run_dependents_case() {
+  reset_case_files
+  install_preflight_counter_fixture
+  write_pr_triggered_config true 0 0
+  GH_DEPENDENT_PRS="$1" \
+    PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls-dependents" \
+    GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/1' \
+    run_merge_pr "$2" 123
+  rm -rf "${TEST_DIR:?}/lib"
+}
+
+echo "==> Test: a branch with dependent PRs is retained, not deleted"
+DEP_OUT="$TEST_DIR/output-dependents.txt"
+run_dependents_case "27, 28" "$DEP_OUT"
+if ! grep -q -- '--delete-branch' "$TEST_DIR/gh-merge-args" \
+  && grep -q 'Retaining branch' "$DEP_OUT" \
+  && grep -q '27, 28' "$DEP_OUT"; then
+  echo "==> PASS: dependent PRs keep their base branch"
+else
+  echo "FAIL: a branch with dependent PRs must be retained, and the reason reported" >&2
+  cat "$TEST_DIR/gh-merge-args" >&2
+  tail -25 "$DEP_OUT" >&2
+  exit 1
+fi
+
+echo "==> Test: a branch with no dependents is still deleted"
+NODEP_OUT="$TEST_DIR/output-no-dependents.txt"
+run_dependents_case "" "$NODEP_OUT"
+if grep -q -- '--delete-branch' "$TEST_DIR/gh-merge-args"; then
+  echo "==> PASS: ordinary merges still clean up their branch"
+else
+  echo "FAIL: nothing depended on the branch but it was retained anyway" >&2
+  cat "$TEST_DIR/gh-merge-args" >&2
+  tail -25 "$NODEP_OUT" >&2
+  exit 1
+fi
+
+echo "==> Test: an unanswerable dependent query retains the branch"
+FAILDEP_OUT="$TEST_DIR/output-dependents-fail.txt"
+run_dependents_case "__FAIL__" "$FAILDEP_OUT"
+if ! grep -q -- '--delete-branch' "$TEST_DIR/gh-merge-args" \
+  && grep -q 'could not determine whether any PR is based on' "$FAILDEP_OUT"; then
+  echo "==> PASS: unanswerable dependent query fails safe"
+else
+  echo "FAIL: an unanswerable dependent query must retain the branch and say so" >&2
+  cat "$TEST_DIR/gh-merge-args" >&2
+  tail -25 "$FAILDEP_OUT" >&2
+  exit 1
 fi
 
 echo "==> PASS: merge gate requires deterministic checks plus exact-revision PR review"

@@ -2731,11 +2731,50 @@ if [ "$CLAIM_CHECK_SUBSTITUTED" = true ]; then
 
 }Claim-substitution: hosted claim-check never executed (Actions infrastructure incident); ${CLAIM_SUBSTITUTION_KIND:-every open referenced issue confirmed assigned to the PR author by direct API read against the trusted base revision} (issue #658)."
 fi
+# Deleting this branch closes anything stacked on it. GitHub marks a PR whose
+# base branch disappears as CLOSED — not merged — and its review threads go
+# with it. Observed on arpeggio 2026-08-10: merging one PR silently closed two
+# dependents, and recovery needed the base branch recreated at its exact
+# recorded head OID before GitHub would reopen them (issue #713).
+#
+# `principles/git-workflow.md` warns about this in prose, but advice cannot
+# stop a single unconditional command, and the check is one query.
+#
+# Retaining the branch is chosen over refusing the merge: it preserves the
+# dependents automatically, costs nothing but a branch that
+# `cleanup-branches.sh` will collect once nothing points at it, and does not
+# block a merge whose review evidence is already clean.
+#
+# Fails safe: if the query cannot be answered, keep the branch. An extra
+# branch is recoverable; a silently closed PR with its threads is not.
+DELETE_BRANCH_FLAG="--delete-branch"
+if [ -n "$PR_HEAD_BRANCH" ] && [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ]; then
+  dependent_prs=""
+  if dependent_prs="$(gh pr list --repo "$REPO_OWNER/$REPO_NAME" --state open \
+    --base "$PR_HEAD_BRANCH" --json number --jq '[.[].number] | join(", ")' 2>&1)"; then
+    if [ -n "$dependent_prs" ]; then
+      DELETE_BRANCH_FLAG=""
+      echo "==> Retaining branch '$PR_HEAD_BRANCH': PR(s) $dependent_prs are based on it."
+      echo "    Deleting it would close them as CLOSED (not merged) and discard their"
+      echo "    review threads. Retarget them, then delete the branch:"
+      echo "      gh pr edit <n> --base $PR_BASE_REF"
+      echo "      git push origin --delete $PR_HEAD_BRANCH"
+    fi
+  else
+    DELETE_BRANCH_FLAG=""
+    echo "WARNING: could not determine whether any PR is based on '$PR_HEAD_BRANCH':" >&2
+    printf '%s\n' "$dependent_prs" | sed 's/^/         /' >&2
+    echo "         Retaining the branch. Delete it manually once nothing depends on it." >&2
+  fi
+fi
+
 if [ -n "$MERGE_BODY" ]; then
-  gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID" \
+  # shellcheck disable=SC2086 # DELETE_BRANCH_FLAG is one flag or empty.
+  gh pr merge "$PR_NUMBER" --squash $DELETE_BRANCH_FLAG --match-head-commit "$REVIEWED_HEAD_OID" \
     --body "$MERGE_BODY" || gh_merge_exit=$?
 else
-  gh pr merge "$PR_NUMBER" --squash --delete-branch --match-head-commit "$REVIEWED_HEAD_OID" \
+  # shellcheck disable=SC2086 # DELETE_BRANCH_FLAG is one flag or empty.
+  gh pr merge "$PR_NUMBER" --squash $DELETE_BRANCH_FLAG --match-head-commit "$REVIEWED_HEAD_OID" \
     || gh_merge_exit=$?
 fi
 
