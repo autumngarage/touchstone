@@ -7,6 +7,8 @@
 #   pr_opened: pr_url, pr_number, branch, base_branch, head_sha
 #   review_started: pr_number, mode
 #   review_clean: pr_number, head_sha
+#   review_findings_resolved: pr_number, head_sha — the gate was satisfied by
+#     answered findings (issue #751), not by a clean verdict
 #   review_blocked: pr_number, head_sha
 #   review_bypass: pr_number, reason
 #   merged: pr_number, merged_at, head_sha

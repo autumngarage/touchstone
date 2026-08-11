@@ -1443,14 +1443,16 @@ fi
 echo "==> Test: findings review with all threads resolved satisfies the merge gate (issue #751)"
 reset_case_files
 write_pr_triggered_config true 0 0
-GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/findings' \
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/findings\t2' \
   run_merge_pr "$TEST_DIR/output-pr-triggered-findings-resolved.txt" 123
 if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid (findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-findings-resolved.txt" \
   && grep -q 'Answered findings satisfy the review gate' "$TEST_DIR/output-pr-triggered-findings-resolved.txt" \
   && grep -q 'Revalidated trusted PR-visible AI result for head pr-head-oid (findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-findings-resolved.txt" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
   && ! grep -q 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records" 2>/dev/null \
-  && grep -q '"status":"findings-resolved"' "$TEST_DIR/merge-events.ndjson"; then
+  && grep -q '"status":"findings-resolved"' "$TEST_DIR/merge-events.ndjson" \
+  && grep -q 'review_findings_resolved' "$TEST_DIR/merge-events.ndjson" \
+  && ! grep -q '"event":"review_clean"' "$TEST_DIR/merge-events.ndjson"; then
   echo "==> PASS: answered findings satisfy the merge gate without a fresh review"
 else
   echo "FAIL: findings review with all threads resolved should satisfy the merge gate" >&2
@@ -1989,37 +1991,109 @@ else
   exit 1
 fi
 
-# Issue #751: a non-clean comment result with zero unresolved threads is an
-# answered finding set — the gate is satisfied via the findings-resolved path
-# and the non-clean classification must persist no clean-review evidence.
-echo "==> Test: non-clean Codex comment classifies non-clean and merges via answered findings"
+# PR #755 review (f): a COMMENTED review whose findings are BODY-ONLY (zero
+# inline comments) must not take the answered path. Zero unresolved threads
+# proves nothing about a finding that never became a thread — the pre-#751
+# rule stands for this class.
+echo "==> Test: body-only findings review blocks despite zero unresolved threads (PR #755)"
 reset_case_files
 write_pr_triggered_config true 0 0
-GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/2\tCodex Review: Found major issues. **Reviewed commit:** `pr-head-oi`' \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-non-clean-comment.txt" 123
-if grep -q '(findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-non-clean-comment.txt" \
-  && grep -q 'non-clean Codex review comment by @chatgpt-codex-connector' "$TEST_DIR/output-pr-triggered-non-clean-comment.txt" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
-  && ! grep -q 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records" 2>/dev/null; then
-  echo "==> PASS: non-clean comment stays non-clean and merges only via answered findings"
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/body-only\t0' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-body-only.txt" 123; then
+  echo "FAIL: body-only findings review unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Blocking condition: a body-only trusted finding (no resolvable inline threads)' "$TEST_DIR/output-pr-triggered-body-only.txt" \
+  && grep -q 'Thread resolution cannot answer a finding that never became a thread' "$TEST_DIR/output-pr-triggered-body-only.txt" \
+  && grep -q '"status":"findings-body-only"' "$TEST_DIR/merge-events.ndjson" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: body-only review findings still require a fresh review"
 else
-  echo "FAIL: non-clean comment should merge via answered findings without clean evidence" >&2
+  echo "FAIL: body-only findings must block with the body-only reason" >&2
+  cat "$TEST_DIR/output-pr-triggered-body-only.txt" >&2
+  exit 1
+fi
+
+# PR #755 review (g): a DISMISSED review is invalidated evidence — it neither
+# satisfies the gate nor represents a live verdict, so the head reads as
+# unreviewed and the gate keeps waiting.
+echo "==> Test: a dismissed review never authorizes the answered-findings path (PR #755)"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tDISMISSED\t2026-06-23T00:00:00Z\thttps://example.test/review/dismissed\t3' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-dismissed.txt" 123; then
+  echo "FAIL: a dismissed review unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Timed out waiting for trusted PR-visible AI review for PR #123' "$TEST_DIR/output-pr-triggered-dismissed.txt" \
+  && ! grep -q '(findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-dismissed.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: dismissal invalidates the review instead of feeding the answered path"
+else
+  echo "FAIL: a dismissed review must not select as the latest trusted result" >&2
+  cat "$TEST_DIR/output-pr-triggered-dismissed.txt" >&2
+  exit 1
+fi
+
+# PR #755 review (h): a non-clean COMMENT-channel result is body-only by
+# construction — the supported latest_trusted_pr_comment_result path must not
+# ride the answered-findings branch either.
+echo "==> Test: a non-clean comment-channel result blocks despite zero threads (PR #755)"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:05Z\thttps://example.test/comment/body-only\tCodex Review: Actionable finding in the body. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-comment-body-only.txt" 123; then
+  echo "FAIL: a non-clean comment result unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Blocking condition: a body-only trusted finding (no resolvable inline threads)' "$TEST_DIR/output-pr-triggered-comment-body-only.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: comment-channel findings still require a fresh review"
+else
+  echo "FAIL: comment-channel findings must block with the body-only reason" >&2
+  cat "$TEST_DIR/output-pr-triggered-comment-body-only.txt" >&2
+  exit 1
+fi
+
+# Issue #751 as bounded by PR #755 review: a non-clean COMMENT result is
+# body-only — it raises no resolvable threads, so zero unresolved threads is
+# not an answer to it. It must block (pre-#751 rule for this class), classify
+# non-clean, and persist no clean-review evidence.
+echo "==> Test: non-clean Codex comment blocks as body-only and persists nothing"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/2\tCodex Review: Found major issues. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-non-clean-comment.txt" 123; then
+  echo "FAIL: non-clean comment unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Blocking condition: a body-only trusted finding (no resolvable inline threads)' "$TEST_DIR/output-pr-triggered-non-clean-comment.txt" \
+  && grep -q 'non-clean Codex review comment by @chatgpt-codex-connector' "$TEST_DIR/output-pr-triggered-non-clean-comment.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
+  && ! grep -q 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records" 2>/dev/null; then
+  echo "==> PASS: non-clean comment blocks as body-only without clean evidence"
+else
+  echo "FAIL: non-clean comment must block as body-only, classify non-clean, persist nothing" >&2
   cat "$TEST_DIR/output-pr-triggered-non-clean-comment.txt" >&2
   exit 1
 fi
 
 # The classification contract survives issue #751: a clean phrase quoted
-# inside findings details must NOT classify the result clean. The merge now
-# proceeds via the answered-findings path, so the discriminator is the
-# findings-resolved acceptance plus the absence of clean-review evidence.
+# inside findings details must NOT classify the result clean. Under the
+# body-only rule (PR #755 review) the non-clean comment blocks, so the
+# discriminator is the body-only block plus the absence of clean evidence —
+# a misclassification to clean would instead merge and persist evidence.
 echo "==> Test: clean phrase inside findings details does not count as a clean result"
 reset_case_files
 write_pr_triggered_config true 0 0
-GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/mixed\tCodex Review: Found a blocking issue. Quoted context: No major issues. **Reviewed commit:** `pr-head-oi`' \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-mixed-comment.txt" 123
-if grep -q '(findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-mixed-comment.txt" \
+if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t1970-01-01T00:00:00Z\thttps://example.test/comment/mixed\tCodex Review: Found a blocking issue. Quoted context: No major issues. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-mixed-comment.txt" 123; then
+  echo "FAIL: mixed-phrase comment unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Blocking condition: a body-only trusted finding (no resolvable inline threads)' "$TEST_DIR/output-pr-triggered-mixed-comment.txt" \
   && grep -q 'non-clean Codex review comment by @chatgpt-codex-connector' "$TEST_DIR/output-pr-triggered-mixed-comment.txt" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
   && ! grep -q 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records" 2>/dev/null; then
   echo "==> PASS: clean phrase inside findings details remains non-clean"
 else
@@ -2031,13 +2105,16 @@ fi
 echo "==> Test: later non-clean Codex comment overrides clean result for the same head"
 reset_case_files
 write_pr_triggered_config true 0 0
-GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/clean\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`\nchatgpt-codex-connector\t2026-06-23T00:01:00Z\thttps://example.test/comment/findings\tCodex Review: Found a blocking issue. **Reviewed commit:** `pr-head-oi`' \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-later-non-clean-comment.txt" 123
-if grep -q '(findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-later-non-clean-comment.txt" \
+if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/clean\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`\nchatgpt-codex-connector\t2026-06-23T00:01:00Z\thttps://example.test/comment/findings\tCodex Review: Found a blocking issue. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-later-non-clean-comment.txt" 123; then
+  echo "FAIL: later non-clean comment unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Blocking condition: a body-only trusted finding (no resolvable inline threads)' "$TEST_DIR/output-pr-triggered-later-non-clean-comment.txt" \
   && grep -q 'non-clean Codex review comment by @chatgpt-codex-connector at 2026-06-23T00:01:00Z' "$TEST_DIR/output-pr-triggered-later-non-clean-comment.txt" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
   && ! grep -q 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records" 2>/dev/null; then
-  echo "==> PASS: latest Codex comment controls the exact-head result"
+  echo "==> PASS: latest Codex comment controls the exact-head result (body-only block)"
 else
   echo "FAIL: the latest non-clean comment must control classification (no clean evidence)" >&2
   cat "$TEST_DIR/output-pr-triggered-later-non-clean-comment.txt" >&2
@@ -2047,7 +2124,7 @@ fi
 echo "==> Test: later COMMENTED formal review overrides earlier approval for the same head"
 reset_case_files
 write_pr_triggered_config true 0 0
-GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/approved\nchatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:01:00Z\thttps://example.test/review/findings' \
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/approved\nchatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:01:00Z\thttps://example.test/review/findings\t1' \
   run_merge_pr "$TEST_DIR/output-pr-triggered-later-commented-review.txt" 123
 if grep -q '(findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-later-commented-review.txt" \
   && grep -q 'formal review by @chatgpt-codex-connector\[bot\] (COMMENTED) at 2026-06-23T00:01:00Z' "$TEST_DIR/output-pr-triggered-later-commented-review.txt" \
@@ -2067,7 +2144,7 @@ fi
 echo "==> Test: conflicting same-time formal reviews classify non-clean regardless of API order"
 reset_case_files
 write_pr_triggered_config true 0 0
-GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/findings\nchatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/approved' \
+GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/findings\t1\nchatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/approved' \
   run_merge_pr "$TEST_DIR/output-pr-triggered-same-time-reviews.txt" 123
 if grep -q '(findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-same-time-reviews.txt" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
@@ -2082,10 +2159,13 @@ fi
 echo "==> Test: conflicting same-time review comments classify non-clean regardless of API order"
 reset_case_files
 write_pr_triggered_config true 0 0
-GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/findings\tCodex Review: Found a blocking issue. **Reviewed commit:** `pr-head-oi`\nchatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/clean\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-same-time-comments.txt" 123
-if grep -q '(findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-same-time-comments.txt" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
+if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/findings\tCodex Review: Found a blocking issue. **Reviewed commit:** `pr-head-oi`\nchatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/clean\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-same-time-comments.txt" 123; then
+  echo "FAIL: tied clean/non-clean comments unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Blocking condition: a body-only trusted finding (no resolvable inline threads)' "$TEST_DIR/output-pr-triggered-same-time-comments.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
   && ! grep -q 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records" 2>/dev/null; then
   echo "==> PASS: conflicting same-time review comments classify non-clean"
 else
@@ -2097,12 +2177,15 @@ fi
 echo "==> Test: newer findings comment overrides older formal approval"
 reset_case_files
 write_pr_triggered_config true 0 0
-GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/approved' \
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/approved' \
   GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:01:00Z\thttps://example.test/comment/findings\tCodex Review: Found a blocking issue. **Reviewed commit:** `pr-head-oi`' \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-comment-overrides-approval.txt" 123
-if grep -q '(findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-comment-overrides-approval.txt" \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-comment-overrides-approval.txt" 123; then
+  echo "FAIL: newer findings comment unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Blocking condition: a body-only trusted finding (no resolvable inline threads)' "$TEST_DIR/output-pr-triggered-comment-overrides-approval.txt" \
   && grep -q 'non-clean Codex review comment by @chatgpt-codex-connector at 2026-06-23T00:01:00Z' "$TEST_DIR/output-pr-triggered-comment-overrides-approval.txt" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
   && ! grep -q 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records" 2>/dev/null; then
   echo "==> PASS: globally latest findings comment overrides older formal approval"
 else
@@ -2115,7 +2198,7 @@ echo "==> Test: newer COMMENTED formal review overrides older clean comment"
 reset_case_files
 write_pr_triggered_config true 0 0
 GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/clean\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
-  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:01:00Z\thttps://example.test/review/findings' \
+  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:01:00Z\thttps://example.test/review/findings\t1' \
   run_merge_pr "$TEST_DIR/output-pr-triggered-review-overrides-clean-comment.txt" 123
 if grep -q '(findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-review-overrides-clean-comment.txt" \
   && grep -q 'formal review by @chatgpt-codex-connector\[bot\] (COMMENTED) at 2026-06-23T00:01:00Z' "$TEST_DIR/output-pr-triggered-review-overrides-clean-comment.txt" \
@@ -2227,11 +2310,14 @@ fi
 echo "==> Test: conflicting same-time trusted results classify non-clean"
 reset_case_files
 write_pr_triggered_config true 0 0
-GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/approved' \
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/approved' \
   GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/findings\tCodex Review: Found a blocking issue. **Reviewed commit:** `pr-head-oi`' \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-conflicting-same-time.txt" 123
-if grep -q '(findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-conflicting-same-time.txt" \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-conflicting-same-time.txt" 123; then
+  echo "FAIL: tied approval + non-clean comment unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Blocking condition: a body-only trusted finding (no resolvable inline threads)' "$TEST_DIR/output-pr-triggered-conflicting-same-time.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ] \
   && ! grep -q 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records" 2>/dev/null; then
   echo "==> PASS: conflicting same-time trusted results classify non-clean"
 else
@@ -2907,22 +2993,25 @@ else
   exit 1
 fi
 
-# Issue #751 (also neutralizes the blocking symptom of #724): a non-clean
-# comment result arriving during preflight posts zero inline threads, so the
-# answered-findings gate is satisfied — but the final revalidation must still
-# see the newer result (classification flips to non-clean) and must NOT
-# persist a second clean-evidence status for it.
-echo "==> Test: newer non-clean Codex result during preflight merges via answered findings"
+# PR #755 review bounds issue #751 at revalidation too: a non-clean COMMENT
+# arriving during preflight is body-only — zero threads is not an answer to
+# it, so the final gate blocks (the pre-#751 semantics for this class). The
+# earlier clean result must have persisted exactly one evidence status, and
+# no merge may proceed.
+echo "==> Test: newer body-only non-clean result during preflight blocks the final gate"
 reset_case_files
 write_pr_triggered_config true 0 0
-GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/clean-before-preflight\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
+if GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/clean-before-preflight\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
   GH_ISSUE_COMMENTS_SECOND=$'chatgpt-codex-connector\t2026-06-23T00:01:00Z\thttps://example.test/comment/findings-during-preflight\tCodex Review: Found a blocking issue. **Reviewed commit:** `pr-head-oi`' \
-  run_merge_pr "$TEST_DIR/output-pr-triggered-changed-during-preflight.txt" 123
-if grep -q 'Revalidated trusted PR-visible AI result for head pr-head-oid (findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-changed-during-preflight.txt" \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-changed-during-preflight.txt" 123; then
+  echo "FAIL: a newer body-only result during preflight unexpectedly merged" >&2
+  exit 1
+fi
+if grep -q 'Blocking condition: a body-only trusted finding (no resolvable inline threads); request a fresh review of this head' "$TEST_DIR/output-pr-triggered-changed-during-preflight.txt" \
   && [ "$(cat "$TEST_DIR/gh-comments-calls" 2>/dev/null || echo 0)" -ge 2 ] \
   && [ "$(grep -c 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records")" = "1" ] \
-  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
-  echo "==> PASS: the newer non-clean result is seen, classified, and merged via answered findings"
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: the newer body-only result is seen, classified, and blocks the final gate"
 else
   echo "FAIL: a newer non-clean result during preflight must be revalidated as answered findings" >&2
   cat "$TEST_DIR/output-pr-triggered-changed-during-preflight.txt" >&2

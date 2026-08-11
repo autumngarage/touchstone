@@ -1243,9 +1243,9 @@ require_review_revision_unchanged() {
 
 latest_trusted_pr_review_result() {
   local expected_head="$1"
-  local query reviews author commit_oid state submitted_at url
+  local query reviews author commit_oid state submitted_at url inline_count
   local candidate_clean candidate_detail
-  local latest_submitted_at="" latest_clean=false latest_detail=""
+  local latest_submitted_at="" latest_clean=false latest_detail="" latest_inline=0
 
   if [ -z "$REPO_OWNER" ] || [ -z "$REPO_NAME" ]; then
     PR_TRIGGERED_REVIEW_INSPECTION_ERROR="formal reviews: repository identity is unavailable"
@@ -1263,6 +1263,7 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
           submittedAt
           url
           commit { oid }
+          comments { totalCount }
         }
         pageInfo {
           hasNextPage
@@ -1278,16 +1279,25 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     -F name="$REPO_NAME" \
     -F number="$PR_NUMBER" \
     -f query="$query" \
-    --jq '.data.repository.pullRequest.reviews.nodes[] | [(.author.login // ""), (.commit.oid // ""), (.state // ""), (.submittedAt // ""), (.url // "")] | @tsv' 2>&1)"; then
+    --jq '.data.repository.pullRequest.reviews.nodes[] | [(.author.login // ""), (.commit.oid // ""), (.state // ""), (.submittedAt // ""), (.url // ""), ((.comments.totalCount // 0) | tostring)] | @tsv' 2>&1)"; then
     PR_TRIGGERED_REVIEW_INSPECTION_ERROR="formal reviews: $reviews"
     return 2
   fi
 
-  while IFS="$(printf '\t')" read -r author commit_oid state submitted_at url || [ -n "$author" ]; do
+  while IFS="$(printf '\t')" read -r author commit_oid state submitted_at url inline_count || [ -n "$author" ]; do
     [ -n "$author" ] || continue
     csv_contains "$PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS" "$author" || continue
     [ "$commit_oid" = "$expected_head" ] || continue
     [ -n "$submitted_at" ] || continue
+    # A dismissed review is invalidated evidence. It is neither a clean verdict
+    # nor a live blocking one, so it must not select as the latest result —
+    # letting one through would allow the answered-findings path to authorize a
+    # merge from a review GitHub explicitly revoked (PR #755 review).
+    [ "$state" = "DISMISSED" ] && continue
+    # Inline-comment count: the findings that materialized as resolvable
+    # threads. Non-numeric or absent (older fixtures, defensive) reads as 0,
+    # which fails closed — body-only results cannot take the answered path.
+    case "$inline_count" in '' | *[!0-9]*) inline_count=0 ;; esac
     candidate_clean=false
     [ "$state" = "APPROVED" ] && candidate_clean=true
     candidate_detail="formal review by @$author ($state) at $submitted_at"
@@ -1299,10 +1309,16 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
       latest_submitted_at="$submitted_at"
       latest_clean="$candidate_clean"
       latest_detail="$candidate_detail"
+      latest_inline="$inline_count"
       continue
     fi
     if [ "$candidate_clean" != true ]; then
       latest_clean=false
+    fi
+    # Same-second reviews merge into one verdict; threads from any of them can
+    # answer it, so the inline count is the max across the tie.
+    if [ "$inline_count" -gt "$latest_inline" ]; then
+      latest_inline="$inline_count"
     fi
     latest_detail="$latest_detail; $candidate_detail"
   done <<<"$reviews"
@@ -1311,6 +1327,7 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP="$latest_submitted_at"
   PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN="$latest_clean"
   PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL="$latest_detail"
+  PR_TRIGGERED_REVIEW_CANDIDATE_INLINE_COUNT="$latest_inline"
   return 0
 }
 
@@ -1379,6 +1396,9 @@ latest_trusted_pr_comment_result() {
   PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP="$latest_created_at"
   PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN="$latest_clean"
   PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL="$latest_detail"
+  # Issue comments have no inline threads; a non-clean comment result is
+  # body-only by construction and can never take the answered-findings path.
+  PR_TRIGGERED_REVIEW_CANDIDATE_INLINE_COUNT=0
   return 0
 }
 
@@ -1391,9 +1411,17 @@ trusted_pr_clean_signal() {
   local comment_found=false comment_timestamp="" comment_clean=false comment_detail=""
   local review_same_second=false comment_same_second=false
   local review_inspection_error="" comment_inspection_error=""
+  local review_inline=0
 
   PR_TRIGGERED_REVIEW_INSPECTION_ERROR=""
   PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP=""
+  # Which surface produced the signal, and how many of its findings exist as
+  # resolvable inline threads. The answered-findings path (issue #751) may only
+  # apply when the blocking findings could actually be answered by resolving
+  # threads — a body-only result has none, so resolving threads proves nothing
+  # about it (PR #755 review).
+  PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL=""
+  PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT=0
   if [ -z "$expected_base" ]; then
     PR_TRIGGERED_REVIEW_INSPECTION_ERROR="review evidence is not bound to the current base revision"
     return 2
@@ -1408,6 +1436,7 @@ trusted_pr_clean_signal() {
       review_found=true
       review_clean="$PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN"
       review_detail="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL"
+      review_inline="${PR_TRIGGERED_REVIEW_CANDIDATE_INLINE_COUNT:-0}"
     elif [ -n "$request_timestamp" ] && [ "$review_timestamp" = "$request_timestamp" ]; then
       review_same_second=true
     fi
@@ -1456,31 +1485,51 @@ trusted_pr_clean_signal() {
     if [[ "$review_timestamp" > "$comment_timestamp" ]]; then
       PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$review_timestamp"
       PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail"
+      PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="review"
+      PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT="$review_inline"
       [ "$review_clean" = true ] && return 0
       return 3
     fi
     if [[ "$comment_timestamp" > "$review_timestamp" ]]; then
       PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$comment_timestamp"
       PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$comment_detail"
+      PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="comment"
+      PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT=0
       [ "$comment_clean" = true ] && return 0
       return 3
     fi
     PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$review_timestamp"
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail; $comment_detail"
     if [ "$review_clean" = true ] && [ "$comment_clean" = true ]; then
+      PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="review"
+      PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT="$review_inline"
       return 0
+    fi
+    # Same-second tie with a blocking part: attribute the signal to the surface
+    # that is actually blocking. A clean review tied with a non-clean comment
+    # means the comment is the blocker — and it is body-only by construction.
+    if [ "$review_clean" != true ]; then
+      PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="review"
+      PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT="$review_inline"
+    else
+      PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="comment"
+      PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT=0
     fi
     return 3
   fi
   if [ "$review_found" = true ]; then
     PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$review_timestamp"
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail"
+    PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="review"
+    PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT="$review_inline"
     [ "$review_clean" = true ] && return 0
     return 3
   fi
   if [ "$comment_found" = true ]; then
     PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$comment_timestamp"
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$comment_detail"
+    PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="comment"
+    PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT=0
     [ "$comment_clean" = true ] && return 0
     return 3
   fi
@@ -1684,6 +1733,7 @@ wait_for_pr_triggered_review() {
             wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
             request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
             result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
+          PR_TRIGGERED_REVIEW_SATISFIED_KIND="clean"
           return 0
         fi
         if [ "$signal_status" -eq 2 ]; then
@@ -1709,6 +1759,34 @@ wait_for_pr_triggered_review() {
           # cannot terminate.
           answered_status=0
           pr_answered_findings_state || answered_status=$?
+          if [ "$answered_status" -eq 0 ] \
+            && { [ "$PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL" != "review" ] \
+              || [ "${PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT:-0}" -eq 0 ]; }; then
+            # Body-only findings: the blocking result raised no inline threads
+            # (a comment-channel verdict, or a formal review with no inline
+            # comments). Zero unresolved threads proves nothing about whether
+            # it was answered — the pre-#751 rule stands for this class: a
+            # fresh review of this head is the only durable acknowledgement
+            # (PR #755 review).
+            now_epoch="$(date +%s)"
+            elapsed=$((now_epoch - start_epoch))
+            touchstone_emit_event review_result \
+              worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
+              pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=findings-body-only \
+              wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
+              request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
+              result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
+            echo "ERROR: Trusted PR-visible AI review is not clean for PR #$PR_NUMBER head $expected_head." >&2
+            if [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ]; then
+              echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2
+            fi
+            echo "       Blocking condition: a body-only trusted finding (no resolvable inline threads)." >&2
+            echo "       Thread resolution cannot answer a finding that never became a thread." >&2
+            echo "       Address the finding, then request a fresh review of this head:" >&2
+            echo "         bash scripts/open-pr.sh" >&2
+            TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-body-only-findings"
+            exit 1
+          fi
           if [ "$answered_status" -eq 0 ]; then
             PR_TRIGGERED_REVIEWED_HEAD_OID="$expected_head"
             if [ -n "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" ]; then
@@ -1733,6 +1811,7 @@ wait_for_pr_triggered_review() {
               wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
               request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
               result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
+            PR_TRIGGERED_REVIEW_SATISFIED_KIND="findings-resolved"
             return 0
           fi
           if [ "$answered_status" -eq 2 ]; then
@@ -2723,7 +2802,14 @@ run_merge_review() {
   fi
 
   echo "==> Trusted PR-visible review covers the current head and base."
-  touchstone_emit_event review_clean pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+  # The lifecycle event must match the outcome: emitting review_clean for a
+  # gate satisfied by answered findings would tell event consumers a clean
+  # review occurred when it did not (PR #755 review).
+  if [ "${PR_TRIGGERED_REVIEW_SATISFIED_KIND:-clean}" = "findings-resolved" ]; then
+    touchstone_emit_event review_findings_resolved pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+  else
+    touchstone_emit_event review_clean pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+  fi
   return 0
 }
 
@@ -2786,7 +2872,13 @@ if [ "$BYPASS_REVIEW" != true ] || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-rev
     elif [ "$final_signal_status" -eq 3 ]; then
       final_answered_status=0
       pr_answered_findings_state || final_answered_status=$?
-      if [ "$final_answered_status" -eq 0 ]; then
+      if [ "$final_answered_status" -eq 0 ] \
+        && { [ "$PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL" != "review" ] \
+          || [ "${PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT:-0}" -eq 0 ]; }; then
+        # Same body-only rule as the wait loop: resolving threads cannot answer
+        # a finding that never became one (PR #755 review).
+        PR_ANSWERED_FINDINGS_BLOCK_REASON="a body-only trusted finding (no resolvable inline threads); request a fresh review of this head"
+      elif [ "$final_answered_status" -eq 0 ]; then
         final_gate_satisfied=true
         final_answered_findings=true
       elif [ "$final_answered_status" -eq 2 ]; then
