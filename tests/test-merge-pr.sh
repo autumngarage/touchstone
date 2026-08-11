@@ -3397,10 +3397,14 @@ run_retention_case() {
   reset_case_files
   install_preflight_counter_fixture
   write_pr_triggered_config true 0 0
+  local rc=0
   PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls-retention" \
     GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/1' \
-    run_merge_pr "$1" 123
+    run_merge_pr "$1" 123 || rc=$?
   rm -rf "${TEST_DIR:?}/lib"
+  # Return the MERGE's status, not the cleanup's. Without this the refusal
+  # cases below silently read as successes.
+  return "$rc"
 }
 
 echo "==> Test: the merge never deletes the branch"
@@ -3433,6 +3437,42 @@ else
   echo "FAIL: with deleteBranchOnMerge enabled the merge must say the branch will NOT" >&2
   echo "      survive, and must print how to restore the ref" >&2
   tail -25 "$AUTODEL_OUT" >&2
+  exit 1
+fi
+
+# Disclosure is enough only while nothing is stacked. With dependents present,
+# a warning printed before an unavoidable server-side deletion is not retention
+# — the dependent PRs are closed with their review threads either way, so the
+# merge has to refuse rather than narrate the loss (PR #715 review).
+echo "==> Test: auto-delete plus stacked dependents refuses the merge"
+AUTODEL_DEPS_OUT="$TEST_DIR/output-autodelete-deps.txt"
+DEPS_RC=0
+GH_DELETE_BRANCH_ON_MERGE=true GH_DEPENDENT_PRS="4242, 4243" \
+  run_retention_case "$AUTODEL_DEPS_OUT" || DEPS_RC=$?
+if [ "$DEPS_RC" -ne 0 ] \
+  && grep -q '4242, 4243' "$AUTODEL_DEPS_OUT" \
+  && grep -q 'delete-branch-on-merge=false' "$AUTODEL_DEPS_OUT" \
+  && ! grep -q -- '--squash' "$TEST_DIR/gh-merge-args" 2>/dev/null; then
+  echo "==> PASS: refuses, names the dependents, and never reaches the merge call"
+else
+  echo "FAIL: deleteBranchOnMerge with dependents must refuse to merge" >&2
+  echo "      rc=$DEPS_RC" >&2
+  cat "$TEST_DIR/gh-merge-args" 2>/dev/null >&2
+  tail -25 "$AUTODEL_DEPS_OUT" >&2
+  exit 1
+fi
+
+echo "==> Test: auto-delete with an unreadable dependent list fails closed"
+AUTODEL_ERR_OUT="$TEST_DIR/output-autodelete-err.txt"
+ERR_RC=0
+GH_DELETE_BRANCH_ON_MERGE=true GH_DEPENDENT_PRS="__FAIL__" \
+  run_retention_case "$AUTODEL_ERR_OUT" || ERR_RC=$?
+if [ "$ERR_RC" -ne 0 ] && grep -q 'could not be inspected' "$AUTODEL_ERR_OUT"; then
+  echo "==> PASS: an unreadable dependent list is refused, not assumed empty"
+else
+  echo "FAIL: deleteBranchOnMerge with an uninspectable dependent list must fail closed" >&2
+  echo "      rc=$ERR_RC" >&2
+  tail -25 "$AUTODEL_ERR_OUT" >&2
   exit 1
 fi
 

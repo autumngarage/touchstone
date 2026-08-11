@@ -2768,12 +2768,39 @@ if [ -n "$PR_HEAD_BRANCH" ]; then
       echo "      bash scripts/cleanup-branches.sh --remote-too"
       ;;
     true)
+      # A warning printed before an unavoidable deletion is not retention. If
+      # anything is stacked on this branch, GitHub will delete the base out from
+      # under it and close those PRs with their review threads — so refuse the
+      # merge instead of narrating the loss (PR #715 review).
+      if ! auto_delete_dependents="$(gh pr list --state open --base "$PR_HEAD_BRANCH" \
+        --limit "${OPEN_PR_SCAN_LIMIT:-200}" --json number --jq '[.[].number] | join(", ")' 2>&1)"; then
+        echo "ERROR: this repository has deleteBranchOnMerge enabled, and the open PRs" >&2
+        echo "       stacked on '$PR_HEAD_BRANCH' could not be inspected:" >&2
+        echo "       $auto_delete_dependents" >&2
+        echo "       Refusing to merge: GitHub would delete the branch server-side and" >&2
+        echo "       any dependent PR would be closed. Fix the inspection, or run:" >&2
+        echo "         gh repo edit --delete-branch-on-merge=false" >&2
+        TOUCHSTONE_MERGE_FAILURE_REASON="auto-delete-dependents-unknown"
+        exit 1
+      fi
+      if [ -n "$auto_delete_dependents" ]; then
+        echo "ERROR: this repository has deleteBranchOnMerge enabled, so GitHub will delete" >&2
+        echo "       '$PR_HEAD_BRANCH' server-side after this merge — and PR(s)" >&2
+        echo "       $auto_delete_dependents are based on it. Merging would close them" >&2
+        echo "       along with their review threads." >&2
+        echo "       Refusing. Either retarget those PRs, or turn the setting off:" >&2
+        echo "         gh repo edit --delete-branch-on-merge=false" >&2
+        TOUCHSTONE_MERGE_FAILURE_REASON="auto-delete-would-close-dependents"
+        exit 1
+      fi
       echo "WARNING: this repository has deleteBranchOnMerge enabled, so GitHub will"
       echo "         delete '$PR_HEAD_BRANCH' server-side after this merge. Omitting"
       echo "         --delete-branch does NOT retain it."
+      echo "         No open PR is based on it, so nothing is closed by that."
       if [ -n "${REVIEWED_HEAD_OID:-}" ]; then
-        echo "         Restore the ref if a stacked PR needs it:"
-        echo "           git push origin $REVIEWED_HEAD_OID:refs/heads/$PR_HEAD_BRANCH"
+        echo "         Restore the ref if you need it back:"
+        printf '           git push origin %s:refs/heads/%s\n' \
+          "$REVIEWED_HEAD_OID" "$(printf '%q' "$PR_HEAD_BRANCH")"
       fi
       echo "         Turn the setting off to keep stacked bases intact:"
       echo "           gh repo edit --delete-branch-on-merge=false"
@@ -2783,7 +2810,8 @@ if [ -n "$PR_HEAD_BRANCH" ]; then
       echo "         whether '$PR_HEAD_BRANCH' survives this merge is unknown."
       if [ -n "${REVIEWED_HEAD_OID:-}" ]; then
         echo "         Restore the ref if it disappears and a stacked PR needs it:"
-        echo "           git push origin $REVIEWED_HEAD_OID:refs/heads/$PR_HEAD_BRANCH"
+        printf '           git push origin %s:refs/heads/%s\n' \
+          "$REVIEWED_HEAD_OID" "$(printf '%q' "$PR_HEAD_BRANCH")"
       fi
       ;;
   esac

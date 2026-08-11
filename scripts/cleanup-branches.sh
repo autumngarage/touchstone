@@ -396,10 +396,28 @@ if [ "$REMOTE_TOO" -eq 1 ] && [ "${#REMOTE_DELETABLE[@]}" -gt 0 ]; then
       echo "    SKIPPED remote (PR(s) $own_pr opened FROM it since the scan): origin/$b"
       continue
     fi
+    # The two lookups above narrow the race but cannot close it: GitHub offers
+    # no compare-and-delete for refs, so a PR created between the last check and
+    # this call is still lost. The principle that applies is therefore
+    # recoverability, not atomicity — capture the SHA first and print it, so a
+    # branch deleted inside that window can be restored exactly (PR #715
+    # review).
+    deleted_sha="$(git rev-parse --verify --quiet "refs/remotes/origin/$b" 2>/dev/null || true)"
+    if [ -z "$deleted_sha" ] && [ -n "$REPO_SLUG" ]; then
+      deleted_sha="$(gh api "/repos/$REPO_SLUG/git/refs/heads/$b" --jq '.object.sha' 2>/dev/null || true)"
+    fi
+    if [ -z "$deleted_sha" ]; then
+      echo "    SKIPPED remote (could not resolve its SHA, so deletion would be unrecoverable): origin/$b" >&2
+      continue
+    fi
     if [ -n "$REPO_SLUG" ] && gh api -X DELETE "/repos/$REPO_SLUG/git/refs/heads/$b" >/dev/null 2>&1; then
       echo "    deleted remote: origin/$b"
+      printf '      restore with: git push origin %s:refs/heads/%s\n' \
+        "$deleted_sha" "$(printf '%q' "$b")"
     elif git push origin --delete -- "$b" 2>&1; then
       echo "    deleted remote (via git push fallback): origin/$b"
+      printf '      restore with: git push origin %s:refs/heads/%s\n' \
+        "$deleted_sha" "$(printf '%q' "$b")"
     else
       echo "    SKIPPED remote (both gh api and git push --delete failed): origin/$b" >&2
     fi
