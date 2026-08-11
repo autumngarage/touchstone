@@ -69,6 +69,13 @@ jobs:
             https://github.com/mvdan/sh/releases/download/v3.10.0/shfmt_v3.10.0_linux_amd64
           sudo install -m 0755 /tmp/shfmt /usr/local/bin/shfmt
           shfmt --version
+          # pre-commit is a REQUIREMENT of the suite, not a lint convenience.
+          # bootstrap and update install git hooks through it, and without it
+          # `update --ship` stops at "effective hooks are not ready" — so the
+          # ship-failure case never reaches the step it means to exercise and
+          # fails for an unrelated reason.
+          python3 -m pip install --quiet --disable-pip-version-check pre-commit
+          pre-commit --version
 
       # No `env:` block here, deliberately. Setting TOUCHSTONE_NO_AUTO_UPDATE=1
       # for the whole loop disables the very behaviour tests/test-auto-update.sh
