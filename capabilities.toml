@@ -125,6 +125,11 @@ job = "support"
 serves = ["lib/preflight.sh", "scripts/merge-pr.sh", "scripts/open-pr.sh", "bin/touchstone", "bootstrap/update-project.sh"]
 why = "Portable SHA-256 adapter that fails closed when no backend is available."
 
+["lib/sed-inplace.sh"]
+job = "support"
+serves = ["bin/touchstone", "bootstrap/new-project.sh", "bootstrap/update-project.sh"]
+why = "Portable in-place sed shim replacing BSD-only `sed -i ''` so placeholder substitution works on GNU sed (PR #747)."
+
 ["lib/colors.sh"]
 job = "support"
 serves = ["bin/touchstone", "lib/status.sh", "lib/release.sh"]

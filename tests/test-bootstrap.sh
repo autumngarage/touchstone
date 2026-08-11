@@ -433,6 +433,36 @@ for f in CLAUDE.md AGENTS.md GEMINI.md; do
     ERRORS=$((ERRORS + 1))
   fi
 done
+
+# A pre-existing GEMINI.md that already carries the managed block, but a STALE
+# one, must be refreshed in place — and because bootstrap can run against a
+# repository with no guaranteed commit to recover from, the original bytes
+# must survive as a .bak (PR #703 review). The case above covers only files
+# without sentinels; this is the only recovery boundary for the refresh path.
+echo "==> Test: bootstrap refreshes an existing stale GEMINI.md and backs up the original"
+PROJECT_STALE_GEMINI="$TEST_DIR/preexisting-stale-gemini"
+mkdir -p "$PROJECT_STALE_GEMINI"
+cat >"$PROJECT_STALE_GEMINI/GEMINI.md" <<'EOF_STALE_GEMINI'
+# Existing Gemini instructions
+
+Project-owned preamble that must survive the refresh.
+
+<!-- touchstone:steering:start -->
+STALE-GEMINI-BOOTSTRAP-MARKER
+<!-- touchstone:steering:end -->
+
+Project-owned tail that must survive the refresh.
+EOF_STALE_GEMINI
+(cd "$PROJECT_STALE_GEMINI" && git init -q 2>/dev/null || true)
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_STALE_GEMINI" \
+  >"$TEST_DIR/preexisting-stale-gemini.log" 2>&1 || true
+assert_not_contains "$PROJECT_STALE_GEMINI/GEMINI.md" "STALE-GEMINI-BOOTSTRAP-MARKER"
+assert_contains "$PROJECT_STALE_GEMINI/GEMINI.md" "Required Delivery Workflow"
+assert_contains "$PROJECT_STALE_GEMINI/GEMINI.md" "Project-owned preamble that must survive the refresh."
+assert_contains "$PROJECT_STALE_GEMINI/GEMINI.md" "Project-owned tail that must survive the refresh."
+assert_exists "$PROJECT_STALE_GEMINI/GEMINI.md.bak"
+assert_contains "$PROJECT_STALE_GEMINI/GEMINI.md.bak" "STALE-GEMINI-BOOTSTRAP-MARKER"
+assert_not_contains "$PROJECT_STALE_GEMINI/GEMINI.md.bak" "Required Delivery Workflow"
 assert_contains "$PROJECT/GEMINI.md" "test-project"
 assert_contains "$PROJECT/GEMINI.md" "PR-visible reviewer"
 # Touchstone steering content must reach non-Claude reviewers via AGENTS.md.

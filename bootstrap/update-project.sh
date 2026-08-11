@@ -711,9 +711,27 @@ fi
 # content that CLAUDE.md gets for free via @-imports.
 AGENTS_PRINCIPLES_TOUCHED=false
 GEMINI_PRINCIPLES_TOUCHED=false
+
+# A block-apply failure (orphaned sentinel, symlinked target, missing render
+# source) must FAIL the update. Swallowing it with `|| true` committed the
+# new .touchstone-version anyway, so automated sync treated the project as
+# current and never retried while the agent stayed on a stale or malformed
+# contract (PR #703 review). Exiting here lands inside the rollback boundary:
+# nothing is committed and the version is not advanced.
+fail_block_apply() {
+  local target_name="$1"
+  echo "ERROR: could not refresh the touchstone-managed steering block in $target_name." >&2
+  echo "       The usual cause is an orphaned sentinel: one '<!-- touchstone:steering:start/end -->'" >&2
+  echo "       marker without its pair (see the exact reason above)." >&2
+  echo "       Repair $target_name, then rerun touchstone update. Continuing would advance" >&2
+  echo "       .touchstone-version while this file stays on the old contract, and automated" >&2
+  echo "       sync would never retry." >&2
+  exit 1
+}
+
 if [ "$DRY_RUN" = false ] && [ -f "$PROJECT_DIR/AGENTS.md" ]; then
   agents_md_before_sha="$(touchstone_sha256_file "$PROJECT_DIR/AGENTS.md")"
-  touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT" || true
+  touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT" || fail_block_apply "AGENTS.md"
   agents_md_after_sha="$(touchstone_sha256_file "$PROJECT_DIR/AGENTS.md")"
   if [ "$agents_md_before_sha" != "$agents_md_after_sha" ]; then
     AGENTS_PRINCIPLES_TOUCHED=true
@@ -727,7 +745,7 @@ fi
 # strand Gemini-only projects on the old contract permanently.
 if [ "$DRY_RUN" = false ] && [ -f "$PROJECT_DIR/GEMINI.md" ]; then
   gemini_md_before_sha="$(touchstone_sha256_file "$PROJECT_DIR/GEMINI.md")"
-  touchstone_block_apply "$PROJECT_DIR/GEMINI.md" "$TOUCHSTONE_ROOT" || true
+  touchstone_block_apply "$PROJECT_DIR/GEMINI.md" "$TOUCHSTONE_ROOT" || fail_block_apply "GEMINI.md"
   gemini_md_after_sha="$(touchstone_sha256_file "$PROJECT_DIR/GEMINI.md")"
   if [ "$gemini_md_before_sha" != "$gemini_md_after_sha" ]; then
     GEMINI_PRINCIPLES_TOUCHED=true
@@ -879,14 +897,29 @@ if [ "$DRY_RUN" = false ]; then
   # The shared-principles block inside AGENTS.md is touchstone-managed even
   # though the file is project-owned. Stage it so a refresh ships in this
   # update commit rather than dangling as an unstaged diff.
+  #
+  # Only when the file is already tracked (files this run created were staged
+  # via PROJECT_OWNED_ADDED_PATHS above, so they are tracked by now). A
+  # pre-existing gitignored file is invisible to the clean-worktree check, and
+  # `git add -f` on it published deliberately-ignored private local steering
+  # content into the update commit (PR #703 review). The on-disk block still
+  # refreshes; the file just stays untracked, as its owner chose.
+  stage_refreshed_steering_file() {
+    local rel="$1"
+    if git -C "$PROJECT_DIR" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+      git -C "$PROJECT_DIR" add -f -- "$rel"
+    else
+      echo "    NOTE: $rel is untracked (gitignored?); refreshed managed block left unstaged, not published."
+    fi
+  }
   if [ "$AGENTS_PRINCIPLES_TOUCHED" = true ] && [ -f "$PROJECT_DIR/AGENTS.md" ]; then
-    git -C "$PROJECT_DIR" add -f -- AGENTS.md
+    stage_refreshed_steering_file AGENTS.md
   fi
   # Same for GEMINI.md — refreshing the block without staging it committed the
   # version bump while leaving the new contract dangling as an unstaged diff
   # (PR #703 review).
   if [ "$GEMINI_PRINCIPLES_TOUCHED" = true ] && [ -f "$PROJECT_DIR/GEMINI.md" ]; then
-    git -C "$PROJECT_DIR" add -f -- GEMINI.md
+    stage_refreshed_steering_file GEMINI.md
   fi
 
   if git -C "$PROJECT_DIR" diff --cached --quiet; then

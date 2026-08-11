@@ -44,8 +44,14 @@ assert_under() {
   fi
 }
 
-echo "==> TOUCHSTONE.md size cap (8 KiB — lean router)"
-assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 8192
+# 9 KiB, raised deliberately from 8 KiB: main's reviewed Purpose section
+# (PR #746) plus this branch's enforceable three-job scope contract left 8 KiB
+# unreachable (8509 bytes merged). Derivation: TOUCHSTONE.md is inlined into
+# AGENTS.md as the managed block; at <= 9 KiB the rendered block stays under
+# ~9.5 KiB, preserving >14 KiB of project-tail headroom inside the 24 KiB
+# AGENTS.md cap below.
+echo "==> TOUCHSTONE.md size cap (9 KiB — lean router)"
+assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 9216
 
 echo "==> AGENTS.md size cap (24 KiB — leaves headroom under Codex's 32 KiB default)"
 assert_under "AGENTS.md" "$TOUCHSTONE_ROOT/AGENTS.md" 24576
@@ -236,10 +242,16 @@ else
   # is gone rather than worked around (PR #703 review).
   # Exclusions are an explicit allowlist of non-capability artifacts, not a
   # shape filter. Excluding every dotfile let a tracked `scripts/.guard` ship
-  # with no declaration at all (PR #703 review), and it bought nothing: the
-  # only non-capability file tracked under these directories is prose.
+  # with no declaration at all, and a blanket `.md` exclusion had the same
+  # hole: ANY markdown-named file under a governed directory could land with
+  # no declaration (PR #703 review, twice). Exact paths only — a new prose
+  # file must be added here deliberately, in the same diff that adds it.
+  PROSE_ALLOWLIST='hooks/README.md'
+  filter_prose_allowlist() {
+    grep -vxF "$PROSE_ALLOWLIST" || true
+  }
   git -C "$TOUCHSTONE_ROOT" ls-files -- bin bootstrap hooks lib scripts 2>/dev/null \
-    | grep -vE '\.md$' \
+    | filter_prose_allowlist \
     | sort -u >"$REG_DIR/shipped"
 
   while IFS= read -r path; do
@@ -254,6 +266,22 @@ else
 
   printf '  OK: %s shipped files enumerated, %s declared\n' \
     "$(wc -l <"$REG_DIR/shipped" | tr -d ' ')" "$(wc -l <"$REG_DIR/declared" | tr -d ' ')"
+
+  # The allowlist must exclude by exact path, not by shape. A markdown-NAMED
+  # capability (e.g. a tracked `scripts/notes.md` helper or symlink) must stay
+  # on the shipped surface and therefore require a declaration; only the
+  # enumerated prose file leaves it (PR #703 review).
+  echo "==> capability registry: prose allowlist is exact paths, not a shape"
+  if printf 'scripts/notes.md\n' | filter_prose_allowlist | grep -qxF 'scripts/notes.md'; then
+    echo "  OK: an unlisted markdown-named file stays on the governed surface"
+  else
+    fail "an unlisted markdown-named file (scripts/notes.md) was silently dropped from the governed surface; exclusions must name exact prose paths"
+  fi
+  if printf 'hooks/README.md\n' | filter_prose_allowlist | grep -qxF 'hooks/README.md'; then
+    fail "hooks/README.md was not excluded by the prose allowlist"
+  else
+    echo "  OK: hooks/README.md is excluded by name"
+  fi
 
   echo "==> capability registry: entry validity"
   while IFS= read -r problem_line; do
