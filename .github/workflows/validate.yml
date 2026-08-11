@@ -25,6 +25,17 @@ name: validate
 # so shipping bash means being in that contract (#742, scoped by decision 3 on
 # #744). The Windows leg runs the same full fast tier as Linux — no paths
 # filter, no spot checks — because a spot check is not support.
+#
+# The Windows leg is ADVISORY (continue-on-error) until it has been observed
+# green. This is trap 1's local-gate cousin: scripts/merge-pr.sh blocks on ANY
+# failing check, required or not, so an unproven leg that can go red for
+# platform reasons would freeze every merge in the repository the moment this
+# lands on main. Advisory is not silent — a red run still writes ::error
+# annotations per failed test and a step summary naming #742 — it just cannot
+# hold other work hostage until the discovery cycle (port or loud-skip each
+# platform failure) has actually finished. Flipping it to enforcing is the
+# two-line removal of `advisory: true` + `continue-on-error`, tracked as the
+# closing act of #742.
 
 on:
   pull_request:
@@ -65,6 +76,7 @@ jobs:
           # would never report at all.
           - os: ubuntu-latest
             timeout: 60
+            advisory: false
           # Fork-heavy bash is several times slower under MSYS2 than on Linux
           # (process creation is emulated, not native), so the ~30-minute Linux
           # measurement scales up rather than across. Same rationale as above:
@@ -72,7 +84,11 @@ jobs:
           # after the cut.
           - os: windows-latest
             timeout: 180
+            advisory: true
     timeout-minutes: ${{ matrix.timeout }}
+    # See the header: advisory legs report loudly but cannot block. Remove
+    # together with `advisory: true` above once the Windows leg is green.
+    continue-on-error: ${{ matrix.advisory }}
     steps:
       # Git for Windows on the runner image checks out with CRLF translation
       # enabled, and actions/checkout clones using the runner's git config.
@@ -187,6 +203,16 @@ jobs:
           done
           if [ "$failed" -ne 0 ]; then
             echo "$failed test file(s) failed"
+            if [ "${{ matrix.advisory }}" = "true" ]; then
+              {
+                echo "## ADVISORY leg red — discovery mode (#742)"
+                echo ""
+                echo "$failed test file(s) failed on ${{ matrix.os }}. This leg cannot"
+                echo "block merges until it has been proven green; every failure above"
+                echo "is either a portability bug to fix or a platform limitation to"
+                echo "loud-skip (see tests/test-sed-inplace.sh for the pattern)."
+              } >>"$GITHUB_STEP_SUMMARY"
+            fi
             exit 1
           fi
           echo "fast tier green"
