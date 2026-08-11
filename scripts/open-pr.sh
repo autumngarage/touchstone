@@ -423,7 +423,7 @@ request_pr_triggered_review() {
   local expected_head_sha="$2"
   local head_sha base_revision base_branch base_sha marker request_records context created_at _creator creator_permission description request_pr request_base request_intent_at request_trigger_at body trigger_at attempt=1
   local completion_head completion_revision completion_branch completion_base
-  local intent_at="" completion_records="" matching_request=false conflicting_bases="" matching_trigger_at=""
+  local intent_at="" completion_records="" matching_request=false conflicting_bases="" matching_trigger_at="" request_consumed_by_dismissal=false
   local head_review_status
   local max_attempts="${TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS:-10}"
   local retry_interval="${TOUCHSTONE_PR_HEAD_CONVERGENCE_INTERVAL:-1}"
@@ -603,8 +603,24 @@ request_pr_triggered_review() {
     printf '%s\n' "$OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR" | sed 's/^/         /' >&2
     echo "         Falling back to durable request-evidence checks." >&2
   fi
+  # A dismissal that postdates the completed request's TRIGGER consumed that
+  # request — its answer was revoked. This must be known BEFORE the
+  # reviewed-head skip: an older still-live review on the same head would
+  # otherwise satisfy that skip and make the consumption branch unreachable,
+  # stranding the gate between a rejected dismissed answer and an older
+  # review that predates the request (PR #755 review, round 9).
+  matching_trigger_at="$(printf '%s\n' "$completion_records" \
+    | awk -F'\t' -v i="$intent_at" '$1 == i { print $2; exit }')"
+  request_consumed_by_dismissal=false
+  if [ -n "${OPEN_PR_HEAD_REVIEW_DISMISSED_AT:-}" ] \
+    && [ -n "$matching_trigger_at" ] \
+    && [[ "$OPEN_PR_HEAD_REVIEW_DISMISSED_AT" > "$matching_trigger_at" ]]; then
+    request_consumed_by_dismissal=true
+  fi
+
   if [ "$head_review_status" -eq 0 ] && [ "$matching_request" = true ] \
-    && [ "${FRESH_REVIEW:-false}" != true ]; then
+    && [ "${FRESH_REVIEW:-false}" != true ] \
+    && [ "$request_consumed_by_dismissal" != true ]; then
     echo "==> Head $head_sha is already reviewed: a trusted formal review exists for this exact head; not re-requesting (issue #751)."
     echo "    (If the merge gate reported a BODY-ONLY finding, re-run with --fresh-review.)"
     return 0
@@ -615,12 +631,7 @@ request_pr_triggered_review() {
     echo "    merge gate can bind it."
   fi
   if [ "$matching_request" = true ] && [ "${FRESH_REVIEW:-false}" != true ]; then
-    matching_trigger_at="$(printf '%s\n' "$completion_records" \
-      | awk -F'\t' -v i="$intent_at" '$1 == i { print $2; exit }')"
-    if [ "$head_review_status" -ne 0 ] \
-      && [ -n "${OPEN_PR_HEAD_REVIEW_DISMISSED_AT:-}" ] \
-      && [ -n "$matching_trigger_at" ] \
-      && [[ "$OPEN_PR_HEAD_REVIEW_DISMISSED_AT" > "$matching_trigger_at" ]]; then
+    if [ "$request_consumed_by_dismissal" = true ]; then
       # The durable request was answered — and the answer was then dismissed.
       # "Answered" is anchored to the completed request's TRIGGER timestamp,
       # not its intent: a review submitted between intent and trigger predates
