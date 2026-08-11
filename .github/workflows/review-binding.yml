@@ -606,11 +606,16 @@ jobs:
             local context status_state created_at status_creator description
             local request_pr request_base intent_ref trigger_at
             statuses_tsv="$(gh api --paginate "repos/$REPO/commits/$head_sha/statuses?per_page=100" \
-              --jq '.[] | [(.context // ""), (.state // ""), (.created_at // ""), (.creator.login // ""), ((.description // "") | gsub("[\r\n\t]"; " "))] | @tsv')"
+              --jq '.[] | [(.context // "<none>"), (.state // "<none>"), (.created_at // "<none>"), ((.creator.login // "") | if . == "" then "<none>" else . end), ((.description // "") | gsub("[\r\n\t]"; " ") | if . == "" then "<none>" else . end)] | @tsv')"
             bound_bases=""
             matching_intent_ats=""
             completion_rows=""
             untrusted_request_creators=""
+            # Every field above is sentinel-filled ("<none>") rather than
+            # empty: tab is IFS whitespace, so read COLLAPSES adjacent tabs —
+            # an empty creator.login (deleted principal) would shift the
+            # description into status_creator and skip the untrusted-creator
+            # record entirely (PR #753 review, round 9).
             while IFS=$'\t' read -r context status_state created_at status_creator description || [ -n "$context" ]; do
               case "$context" in
                 "$INTENT_STATUS_CONTEXT")
@@ -631,7 +636,7 @@ jobs:
               request_pr="${description#pr=}"
               request_pr="${request_pr%% base=*}"
               [ "$request_pr" = "$pr_number" ] || continue
-              if ! creator_has_push_access "$status_creator"; then
+              if [ "$status_creator" = "<none>" ] || ! creator_has_push_access "$status_creator"; then
                 record_untrusted_creator "$status_creator"
                 continue
               fi
@@ -929,6 +934,7 @@ jobs:
             if [ -z "$status_prs" ]; then
               echo "No open PR has head $status_sha; nothing to evaluate."
             else
+              status_failures=0
               while read -r pr; do
                 [ -n "$pr" ] || continue
                 run_isolated evaluate_pr "$pr" "$status_sha"

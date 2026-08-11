@@ -64,14 +64,20 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 # Strip comment-only lines (YAML comments and the bash comments inside the
 # run block) before scanning for dangerous strings.
 STRIPPED="$(grep -v -E '^[[:space:]]*#' "$WORKFLOW")"
+# All assertions grep a FILE, not a `printf | grep -q` pipeline: grep -q exits
+# on first match, the producer takes SIGPIPE on a ~30 KB payload, and pipefail
+# turns a FOUND marker into a reported failure — a scheduling-dependent flake
+# on macOS (PR #753 review, round 9).
+STRIPPED_FILE="$TMP_DIR/stripped-workflow.txt"
+printf '%s\n' "$STRIPPED" >"$STRIPPED_FILE"
 
 echo "==> No PR-controlled code can execute"
-if printf '%s\n' "$STRIPPED" | grep -q -E '(^|[[:space:]])uses:'; then
+if grep -q -E '(^|[[:space:]])uses:' "$STRIPPED_FILE"; then
   fail "workflow must run zero actions (no 'uses:' steps — not even checkout)"
 else
   ok "no 'uses:' steps: nothing is checked out, no third-party actions run"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q 'pull_request_target'; then
+if grep -q 'pull_request_target' "$STRIPPED_FILE"; then
   fail "workflow must not trigger on pull_request_target"
 else
   ok "no pull_request_target trigger"
@@ -81,7 +87,7 @@ fi
 # opened as a SECOND PR inherits the first PR's commit-level check unless the
 # opened event re-evaluates it (PR #753 review, round 5). Mutation: removing
 # `opened` from the types list must fail here.
-if printf '%s\n' "$STRIPPED" | grep -qE 'types:[[:space:]]*\[opened,'; then
+if grep -qE 'types:[[:space:]]*\[opened,' "$STRIPPED_FILE"; then
   ok "pull_request trigger covers opened (shared-head guard reachable on sibling creation)"
 else
   fail "pull_request types must include opened — without it a sibling PR at a green commit inherits the check"
@@ -89,7 +95,7 @@ fi
 
 # One PR's evaluation failure must not strand the rest of a sweep with stale
 # verdicts (set -e aborts the loop otherwise).
-if printf '%s\n' "$STRIPPED" | grep -q 'sweep_failures'; then
+if grep -q 'sweep_failures' "$STRIPPED_FILE"; then
   ok "sweep isolates per-PR evaluation failures and fails the run afterward"
 else
   fail "the base-push sweep must isolate per-PR failures — an early API error strands later heads on stale verdicts"
@@ -100,12 +106,12 @@ fi
 # `if ! evaluate_pr` lets inner API failures fall through to a successful
 # return. The run_isolated helper runs the subshell OUTSIDE any tested
 # context (PR #753 review, round 6).
-if printf '%s\n' "$STRIPPED" | grep -q 'run_isolated()'; then
+if grep -q 'run_isolated()' "$STRIPPED_FILE"; then
   ok "errexit-preserving isolation helper present"
 else
   fail "isolation must preserve errexit (run_isolated); a tested-context call suppresses set -e inside evaluate_pr"
 fi
-if printf '%s\n' "$STRIPPED" | grep -qE 'if ! (evaluate_pr|publish_sweep_overflow)'; then
+if grep -qE 'if ! (evaluate_pr|publish_sweep_overflow)' "$STRIPPED_FILE"; then
   fail "evaluate_pr/publish_sweep_overflow must never be invoked in a tested context — that suppresses errexit through the whole function"
 else
   ok "no tested-context invocations of the fallible sweep functions"
@@ -114,46 +120,46 @@ fi
 # Sweep/status paths know the affected SHA before any fallible call; the
 # previous verdict at that SHA must be neutralized FIRST, or a coordinate
 # lookup failure leaves a stale green standing (PR #753 review, round 7).
-if printf '%s\n' "$STRIPPED" | grep -q 'known_sha' \
-  && printf '%s\n' "$STRIPPED" | grep -q 'evaluate_pr "\$pr" "\$sweep_head"' \
-  && printf '%s\n' "$STRIPPED" | grep -q 'evaluate_pr "\$pr" "\$status_sha"'; then
+if grep -q 'known_sha' "$STRIPPED_FILE" \
+  && grep -q 'evaluate_pr "\$pr" "\$sweep_head"' "$STRIPPED_FILE" \
+  && grep -q 'evaluate_pr "\$pr" "\$status_sha"' "$STRIPPED_FILE"; then
   ok "known-SHA callers neutralize the prior verdict before coordinate lookup"
 else
   fail "sweep/status paths must pass their known SHA so pending publishes before the fallible PR lookup"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q 'PR_EVENT_HEAD_SHA' \
-  && printf '%s\n' "$STRIPPED" | grep -q 'evaluate_pr "\$PR_NUMBER" "\${PR_EVENT_HEAD_SHA:-}"'; then
+if grep -q 'PR_EVENT_HEAD_SHA' "$STRIPPED_FILE" \
+  && grep -q 'evaluate_pr "\$PR_NUMBER" "\${PR_EVENT_HEAD_SHA:-}"' "$STRIPPED_FILE"; then
   ok "pull_request events pass the payload head — the known-SHA enumeration is closed by construction"
 else
   fail "the generic path must pass the pull_request payload head as known_sha (retarget with unchanged head)"
 fi
 
 echo "==> Trusted-author allowlist is never PR-controlled"
-if printf '%s\n' "$STRIPPED" | grep -q -F 'chatgpt-codex-connector,chatgpt-codex-connector[bot]'; then
+if grep -q -F 'chatgpt-codex-connector,chatgpt-codex-connector[bot]' "$STRIPPED_FILE"; then
   ok "fallback allowlist hardcoded in env (merge-pr.sh's built-in default)"
 else
   fail "fallback allowlist 'chatgpt-codex-connector,chatgpt-codex-connector[bot]' missing from workflow env"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -F '.touchstone-review.toml'; then
+if grep -q -F '.touchstone-review.toml' "$STRIPPED_FILE"; then
   ok "live allowlist read from the review config at the PR's base oid (merge-pr.sh parity)"
 else
   fail "workflow must load trusted_review_authors from .touchstone-review.toml at the PR's current base oid"
 fi
 
 echo "==> Permissions"
-if printf '%s\n' "$STRIPPED" | grep -q -E '^[[:space:]]*checks:[[:space:]]*write$'; then
+if grep -q -E '^[[:space:]]*checks:[[:space:]]*write$' "$STRIPPED_FILE"; then
   ok "checks: write present"
 else
   fail "permissions must include 'checks: write' to publish the check-run"
 fi
 
 echo "==> Check-run identity"
-if [ "$(printf '%s\n' "$STRIPPED" | grep -c -E '^name: review-binding$')" -eq 1 ]; then
+if [ "$(grep -c -E '^name: review-binding$' "$STRIPPED_FILE")" -eq 1 ]; then
   ok "workflow is named review-binding"
 else
   fail "expected exactly one top-level 'name: review-binding'"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -F -- '-f name=review-binding'; then
+if grep -q -F -- '-f name=review-binding' "$STRIPPED_FILE"; then
   ok "POSTs a check-run named review-binding"
 else
   fail "workflow must POST a check-run with '-f name=review-binding'"
@@ -186,61 +192,61 @@ if printf '%s\n' "$JOB_KEYS" | grep -q -F -x 'review-binding'; then
 else
   ok "no job key named review-binding"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -E '^[[:space:]]+name: review-binding$'; then
+if grep -q -E '^[[:space:]]+name: review-binding$' "$STRIPPED_FILE"; then
   fail "no job or step name: property may be review-binding — its own check-run would race the published verdict"
 else
   ok "no job/step name: property review-binding (published verdict is the only run of that name)"
 fi
 
 echo "==> Binding evidence sources"
-if printf '%s\n' "$STRIPPED" | grep -q -E 'touchstone/review-request-intent($|[^A-Za-z0-9-])'; then
+if grep -q -E 'touchstone/review-request-intent($|[^A-Za-z0-9-])' "$STRIPPED_FILE"; then
   ok "reads the touchstone/review-request-intent base binding"
 else
   fail "workflow must read the 'touchstone/review-request-intent' commit status for base binding"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -E 'touchstone/review-request-complete($|[^A-Za-z0-9-])'; then
+if grep -q -E 'touchstone/review-request-complete($|[^A-Za-z0-9-])' "$STRIPPED_FILE"; then
   ok "reads the touchstone/review-request-complete trigger record (merge-pr.sh parity)"
 else
   fail "workflow must read the 'touchstone/review-request-complete' status: an intent-anchored freshness bar accepts in-flight reviews of the previous base"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -F 'collaborators/$login/permission'; then
+if grep -q -F 'collaborators/$login/permission' "$STRIPPED_FILE"; then
   ok "intent-status creators resolved to collaborator permission (statuses:write alone cannot bind)"
 else
   fail "workflow must resolve each intent-status creator via collaborators/<login>/permission (merge-pr.sh parity)"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -F 'commits/$head_sha/pulls'; then
+if grep -q -F 'commits/$head_sha/pulls' "$STRIPPED_FILE"; then
   ok "shared-head guard present (a head serving multiple open PRs fails closed)"
 else
   fail "workflow must detect a head shared by multiple open PRs via commits/<sha>/pulls and fail closed"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -F 'Reviewed commit:'; then
+if grep -q -F 'Reviewed commit:' "$STRIPPED_FILE"; then
   ok "accepts the trusted result-comment channel (parity with merge-pr.sh)"
 else
   fail "workflow must accept the trusted 'Reviewed commit:' comment channel merge-pr.sh accepts"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -F 'earliest_matching_trigger_at'; then
+if grep -q -F 'earliest_matching_trigger_at' "$STRIPPED_FILE"; then
   ok "freshness anchored to the earliest completed request's trigger timestamp"
 else
   fail "workflow must anchor evidence freshness to the earliest completed request's trigger (earliest_matching_trigger_at) — the intent timestamp accepts a review already in flight for the previous base"
 fi
 
 echo "==> Publication discipline"
-if printf '%s\n' "$STRIPPED" | grep -q -F -- '-f status=in_progress'; then
+if grep -q -F -- '-f status=in_progress' "$STRIPPED_FILE"; then
   ok "pending run posted before fallible inspection (a mid-inspection death cannot leave a stale success standing)"
 else
   fail "workflow must POST an in_progress review-binding run before fallible inspection so an inspection failure invalidates the prior verdict"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -F -- '-X PATCH "repos/$REPO/check-runs/$run_id"'; then
+if grep -q -F -- '-X PATCH "repos/$REPO/check-runs/$run_id"' "$STRIPPED_FILE"; then
   ok "verdict completes the pending run in place (PATCH to completed)"
 else
   fail "workflow must PATCH its pending check-run to completed with the verdict"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -F 'live_head'; then
+if grep -q -F 'live_head' "$STRIPPED_FILE"; then
   ok "publish-time revalidation present (stale coordinates never publish a verdict)"
 else
   fail "workflow must re-read live head/base before publishing so a stale evaluation cannot overwrite a newer verdict"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -F 'publish_sweep_overflow'; then
+if grep -q -F 'publish_sweep_overflow' "$STRIPPED_FILE"; then
   ok "sweep overflow fails closed (no PR past the cap keeps a stale verdict)"
 else
   fail "PRs past MAX_BASE_SWEEP_PRS must get an explicit fail-closed check-run (publish_sweep_overflow)"
@@ -264,42 +270,42 @@ else
 fi
 
 echo "==> Triggers"
-if printf '%s\n' "$STRIPPED" | grep -q -E '^[[:space:]]*pull_request_review:'; then
+if grep -q -E '^[[:space:]]*pull_request_review:' "$STRIPPED_FILE"; then
   ok "pull_request_review trigger present"
 else
   fail "workflow must trigger on pull_request_review (formal review submission fires no issue_comment)"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -E '^[[:space:]]*push:'; then
+if grep -q -E '^[[:space:]]*push:' "$STRIPPED_FILE"; then
   ok "push trigger present"
 else
   fail "workflow must trigger on push (base-branch advance stales bindings with no PR-scoped event)"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -F 'MAX_BASE_SWEEP_PRS'; then
+if grep -q -F 'MAX_BASE_SWEEP_PRS' "$STRIPPED_FILE"; then
   ok "push fan-out bounded by MAX_BASE_SWEEP_PRS"
 else
   fail "the push fan-out must be bounded by a named MAX_BASE_SWEEP_PRS cap"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -E '^[[:space:]]*status:[[:space:]]*$'; then
+if grep -q -E '^[[:space:]]*status:[[:space:]]*$' "$STRIPPED_FILE"; then
   ok "status trigger present (review-request status writes re-evaluate the head)"
 else
   fail "workflow must trigger on status — adding a review-request status fires no PR-scoped event, leaving a prior green standing"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -E '^[[:space:]]*issue_comment:'; then
+if grep -q -E '^[[:space:]]*issue_comment:' "$STRIPPED_FILE"; then
   ok "issue_comment trigger present"
 else
   fail "workflow must trigger on issue_comment (review completion is signalled by a PR comment)"
 fi
-if printf '%s\n' "$STRIPPED" | grep -A1 -E '^[[:space:]]*issue_comment:' | grep -q -E 'types:.*created.*edited.*deleted'; then
+if grep -A1 -E '^[[:space:]]*issue_comment:' "$STRIPPED_FILE" | grep -q -E 'types:.*created.*edited.*deleted'; then
   ok "issue_comment covers created, edited, and deleted (evidence removal re-evaluates fail-closed)"
 else
   fail "issue_comment types must include created, edited, and deleted — deleting/editing a result comment removes evidence and must re-evaluate"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -E '^[[:space:]]*pull_request:'; then
+if grep -q -E '^[[:space:]]*pull_request:' "$STRIPPED_FILE"; then
   ok "pull_request trigger present"
 else
   fail "workflow must trigger on pull_request (synchronize makes every new head start red)"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q 'synchronize'; then
+if grep -q 'synchronize' "$STRIPPED_FILE"; then
   ok "synchronize event covered"
 else
   fail "pull_request types must include synchronize"
