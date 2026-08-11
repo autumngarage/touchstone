@@ -133,7 +133,20 @@ echo ""
 echo "--- Test 2: status from inside a project ---"
 
 PROJECT_OUT="$TEST_DIR/project.out"
-(cd "$CURRENT_PROJECT" && run_touchstone "$FAKE_HOME" status) >"$PROJECT_OUT" 2>&1
+# Capture the exit code instead of letting `set -e` kill the script. A bare
+# invocation here dies with no output at all, which in CI reads as "the file
+# failed" with nothing to act on — observed on ubuntu-latest, where the run
+# ended at this line and reported nothing.
+PROJECT_EXIT=0
+(cd "$CURRENT_PROJECT" && run_touchstone "$FAKE_HOME" status) >"$PROJECT_OUT" 2>&1 \
+  || PROJECT_EXIT=$?
+if [ "$PROJECT_EXIT" -ne 0 ]; then
+  echo "FAIL: 'touchstone status' inside a project exited $PROJECT_EXIT" >&2
+  echo "  ---- output ----" >&2
+  sed 's/^/    /' "$PROJECT_OUT" >&2 || true
+  echo "  ----------------" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 assert_contains "$PROJECT_OUT" "^project: *${CURRENT_PROJECT}"
 assert_contains "$PROJECT_OUT" "^touchstone: *${CURRENT_VERSION}"
