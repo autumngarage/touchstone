@@ -227,6 +227,10 @@ fi
 # rather than a page size we silently truncate at.
 OPEN_PR_SCAN_LIMIT="${TOUCHSTONE_OPEN_PR_SCAN_LIMIT:-200}"
 REMOTE_DELETABLE=()
+# The OID each deletable branch was CLASSIFIED at, index-aligned with
+# REMOTE_DELETABLE. Deletion is leased on this, not on whatever the branch
+# points at later — only this commit was proven merged (PR #715 review).
+REMOTE_DELETABLE_OIDS=()
 REMOTE_HAS_PR=()
 REMOTE_UNIQUE_NO_PR=()
 
@@ -291,10 +295,13 @@ if [ "$REMOTE_TOO" -eq 1 ] && [ "$REMOTE_SKIPPED" -eq 0 ]; then
     remote_oid="$(git rev-parse --verify --quiet "refs/remotes/origin/$remote_branch" 2>/dev/null || echo "")"
     if git merge-base --is-ancestor "origin/$remote_branch" "$DEFAULT_REF" 2>/dev/null; then
       REMOTE_DELETABLE+=("$remote_branch")
+      REMOTE_DELETABLE_OIDS+=("$remote_oid")
     elif [ -n "$remote_oid" ] && is_recorded_squash "$remote_branch" "$remote_oid"; then
       REMOTE_DELETABLE+=("$remote_branch")
+      REMOTE_DELETABLE_OIDS+=("$remote_oid")
     elif is_fully_applied "$DEFAULT_REF" "origin/$remote_branch"; then
       REMOTE_DELETABLE+=("$remote_branch")
+      REMOTE_DELETABLE_OIDS+=("$remote_oid")
     else
       REMOTE_UNIQUE_NO_PR+=("$remote_branch")
     fi
@@ -367,8 +374,13 @@ if [ "${#SQUASH_MERGED_LOCAL[@]}" -gt 0 ]; then
 fi
 
 if [ "$REMOTE_TOO" -eq 1 ] && [ "${#REMOTE_DELETABLE[@]}" -gt 0 ]; then
-  REPO_SLUG="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)"
-  for b in "${REMOTE_DELETABLE[@]}"; do
+  # No repository slug is needed any more. Deletion goes through
+  # `git push --force-with-lease`, which is the only spelling that carries an
+  # expected-OID precondition; the REST endpoint it replaced had none, which is
+  # why it is gone rather than kept as a fallback.
+  for _rd_i in "${!REMOTE_DELETABLE[@]}"; do
+    b="${REMOTE_DELETABLE[$_rd_i]}"
+    classified_oid="${REMOTE_DELETABLE_OIDS[$_rd_i]}"
     # Classification happened from one snapshot taken earlier; a stacked PR
     # opened since would still be in REMOTE_DELETABLE and deleting its base
     # closes it (PR #715 review). Re-ask immediately before the destructive
@@ -396,51 +408,47 @@ if [ "$REMOTE_TOO" -eq 1 ] && [ "${#REMOTE_DELETABLE[@]}" -gt 0 ]; then
       echo "    SKIPPED remote (PR(s) $own_pr opened FROM it since the scan): origin/$b"
       continue
     fi
-    # Resolve the AUTHORITATIVE tip, not the cached tracking ref. Commits pushed
-    # since this script's fetch would leave refs/remotes/origin/<b> naming an
-    # older commit while the delete removes the branch at its current
-    # server-side tip, so a restore command built from the stale ref would
-    # silently fail to recover what was actually deleted (PR #715 review).
-    deleted_sha=""
-    if [ -n "$REPO_SLUG" ]; then
-      deleted_sha="$(gh api "/repos/$REPO_SLUG/git/refs/heads/$b" --jq '.object.sha' 2>/dev/null || true)"
-    fi
-    if [ -z "$deleted_sha" ]; then
-      deleted_sha="$(git ls-remote origin "refs/heads/$b" 2>/dev/null | awk 'NR==1{print $1}')"
-    fi
-    if [ -z "$deleted_sha" ]; then
-      echo "    SKIPPED remote (could not resolve its SHA, so deletion would be unrecoverable): origin/$b" >&2
+    # Lease on the OID this branch was CLASSIFIED at, not on whatever it points
+    # at now. Only that commit was proven merged, squash-merged, or fully
+    # applied; commits pushed since have been proven nothing. Capturing the
+    # current tip and leasing on THAT would delete unreviewed work by design,
+    # and would print a restore command naming an object this checkout does not
+    # even have. Leasing on the classified OID makes an advance abort instead
+    # (PR #715 review).
+    if [ -z "$classified_oid" ]; then
+      echo "    SKIPPED remote (no classified OID, so deletion could not be leased): origin/$b" >&2
       continue
     fi
 
-    # Print the recovery command BEFORE the destructive request, not after.
-    # If the server processes the delete but the response is lost, an
-    # after-the-fact print never runs: the retry sees the ref already gone,
-    # reports SKIPPED, and the only record of what was removed dies with the
-    # connection. Emitting first makes a lost response survivable (PR #715
-    # review).
-    restore_cmd="$(printf 'git push origin %s:refs/heads/%s' "$deleted_sha" "$(printf '%q' "$b")")"
-    echo "    deleting remote: origin/$b (at ${deleted_sha:0:12})"
-    echo "      restore with: $restore_cmd"
+    # Recovery is printed BEFORE the destructive request. If the server
+    # processes the delete but the response is lost, an after-the-fact print
+    # never runs and the record dies with the connection.
+    echo "    deleting remote: origin/$b (classified at ${classified_oid:0:12})"
+    printf '      restore with: git push origin %s:refs/heads/%s\n' \
+      "$classified_oid" "$(printf '%q' "$b")"
 
-    # Conditional delete. `--force-with-lease=<ref>:<expect>` gives ref
-    # deletion compare-and-swap semantics: if origin/$b advanced between the
-    # SHA capture above and this push, the push is REJECTED rather than
-    # removing a newer tip that the printed restore command could not recover.
-    # The REST DELETE has no such precondition, which is why it is no longer
-    # the primary path (PR #715 review).
-    if git push --force-with-lease="refs/heads/$b:$deleted_sha" \
+    if git push --force-with-lease="refs/heads/$b:$classified_oid" \
       origin ":refs/heads/$b" >/dev/null 2>&1; then
       echo "    deleted remote: origin/$b"
-    elif git ls-remote --exit-code origin "refs/heads/$b" >/dev/null 2>&1; then
-      # The ref still exists, so the lease genuinely failed — it moved, or the
-      # push was rejected. Leave it alone; the next run re-resolves the tip.
-      echo "    SKIPPED remote (ref moved or delete rejected since its SHA was captured): origin/$b" >&2
     else
-      # The ref is gone. Either the delete landed and we lost the response, or
-      # something else removed it. Either way it is deleted, and the restore
-      # command above is the record.
-      echo "    deleted remote: origin/$b (confirmed absent after an unclear result)"
+      # The lease failed. Distinguish "the branch moved" from "we could not
+      # look". `git ls-remote --exit-code` returns 2 specifically for no
+      # matching ref; any other nonzero is an inspection failure, and calling
+      # that "absent" would report a live branch as deleted.
+      ls_rc=0
+      git ls-remote --exit-code origin "refs/heads/$b" >/dev/null 2>&1 || ls_rc=$?
+      case "$ls_rc" in
+        0)
+          echo "    SKIPPED remote (advanced past its classified OID, so it is no longer proven merged): origin/$b" >&2
+          ;;
+        2)
+          echo "    deleted remote: origin/$b (confirmed absent; the delete landed despite an unclear response)"
+          ;;
+        *)
+          echo "    UNKNOWN remote result (delete rejected and the ref could not be inspected, rc=$ls_rc): origin/$b" >&2
+          echo "      re-run to re-resolve; the restore command above still applies if it was removed" >&2
+          ;;
+      esac
     fi
   done
 fi

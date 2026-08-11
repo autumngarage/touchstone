@@ -3483,15 +3483,28 @@ echo "==> Test: remote deletion is conditional and recoverable"
 # branch advanced after its SHA was captured, the push is rejected rather than
 # removing a tip the printed restore command cannot recover. The REST DELETE
 # has no such precondition (PR #715 review).
-if ! grep -q -- '--force-with-lease="refs/heads/\$b:\$deleted_sha"' \
+if ! grep -q -- '--force-with-lease="refs/heads/\$b:\$classified_oid"' \
   "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
-  echo "FAIL: remote deletion must be conditional on the captured SHA" >&2
+  echo "FAIL: deletion must be leased on the CLASSIFIED oid — the commit proven" >&2
+  echo "      merged — not on whatever the branch points at at delete time" >&2
+  exit 1
+fi
+# An advanced branch must abort, not be deleted: commits pushed after
+# classification were proven nothing.
+if ! grep -q 'no longer proven merged' "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
+  echo "FAIL: a branch that advanced past its classified OID must be skipped" >&2
+  exit 1
+fi
+# ls-remote --exit-code returns 2 for "no matching ref"; any other nonzero is an
+# inspection failure. Reporting those as absence would call a live branch deleted.
+if ! grep -q 'UNKNOWN remote result' "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
+  echo "FAIL: an inspection failure must not be reported as a confirmed deletion" >&2
   exit 1
 fi
 # The recovery line must be emitted BEFORE the destructive request: if the
 # server processes the delete but the response is lost, an after-the-fact print
 # never runs and the record of what was removed is gone with the connection.
-if ! awk '/restore with: \$restore_cmd/{seen=1} /force-with-lease/{if(!seen) exit 1} END{exit !seen}' \
+if ! awk '/restore with: git push origin/{seen=1} /force-with-lease/{if(!seen) exit 1} END{exit !seen}' \
   "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
   echo "FAIL: the restore command must be printed before the delete is attempted" >&2
   exit 1
