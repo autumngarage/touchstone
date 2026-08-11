@@ -2928,8 +2928,21 @@ if [ "$BYPASS_REVIEW" != true ] || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-rev
     # that do not exist.
     if [ "$final_signal_status" -eq 3 ] && [ -n "$PR_ANSWERED_FINDINGS_BLOCK_REASON" ]; then
       echo "       Blocking condition: $PR_ANSWERED_FINDINGS_BLOCK_REASON." >&2
-      report_review_round_economics "$PR_NUMBER"
-      print_batch_fix_guidance
+      case "$PR_ANSWERED_FINDINGS_BLOCK_REASON" in
+        *body-only*)
+          # Batch guidance says "do NOT request another review of an unchanged
+          # head" — the correct rule for thread-backed findings and the exact
+          # opposite of the body-only recovery. Printing both in one error
+          # gives the driver contradictory instructions (PR #755 review).
+          echo "       A body-only finding has no thread to answer; the ONLY path forward is:" >&2
+          echo "         bash scripts/open-pr.sh --fresh-review" >&2
+          echo "       then rerun the merge gate once the fresh review lands." >&2
+          ;;
+        *)
+          report_review_round_economics "$PR_NUMBER"
+          print_batch_fix_guidance
+          ;;
+      esac
     elif [ -n "${PR_TRIGGERED_REVIEW_INSPECTION_ERROR:-}" ]; then
       echo "       Inspection detail: $PR_TRIGGERED_REVIEW_INSPECTION_ERROR" >&2
     fi
