@@ -868,9 +868,27 @@ jobs:
             # a GET): git permits '&' and '#' in branch names, and raw
             # interpolation would corrupt the query.
             pushed_ref="${GITHUB_REF_NAME:?}"
-            pr_rows="$(gh api --paginate -X GET "repos/$REPO/pulls" \
-              -f state=open -f base="$pushed_ref" -F per_page=100 \
-              --jq '.[] | [(.number | tostring), (.head.sha // "")] | @tsv')"
+            # Discovery is the one fallible call that precedes ANY per-head
+            # invalidation: heads that cannot be enumerated cannot be given
+            # pending or failing runs, so a discovery death would leave every
+            # pre-push green merge-eligible on a stale base OID (PR #753
+            # review, round 11). Retry transient failures; persistent failure
+            # still kills the run loudly — that residual is inherent, since
+            # there is no head list to invalidate without discovery.
+            pr_rows=""
+            for discovery_attempt in 1 2 3; do
+              if pr_rows="$(gh api --paginate -X GET "repos/$REPO/pulls" \
+                -f state=open -f base="$pushed_ref" -F per_page=100 \
+                --jq '.[] | [(.number | tostring), (.head.sha // "")] | @tsv')"; then
+                break
+              fi
+              if [ "$discovery_attempt" -eq 3 ]; then
+                echo "::error::open-PR discovery for base '$pushed_ref' failed after $discovery_attempt attempts; affected heads keep their pre-push verdicts until the next event re-evaluates them" >&2
+                exit 1
+              fi
+              echo "::warning::open-PR discovery for base '$pushed_ref' failed (attempt $discovery_attempt); retrying" >&2
+              sleep $((5 * discovery_attempt))
+            done
             total_open="$(printf '%s\n' "$pr_rows" | sed '/^$/d' | wc -l | tr -d ' ')"
             if [ "$total_open" -eq 0 ]; then
               echo "No open PRs target '$pushed_ref'; nothing to evaluate."

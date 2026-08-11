@@ -278,6 +278,16 @@ else
   fail "publish_sweep_overflow must re-read the PR (pulls/<n>) and confirm it is still open at the listed head and pushed base before posting"
 fi
 
+# Discovery is the one fallible call preceding ANY per-head invalidation in
+# the base-push sweep: a transient failure there would leave every pre-push
+# green merge-eligible on a stale base OID with no pending run posted
+# (PR #753 review, round 11). It must be retried, not single-shot.
+if grep -q -F 'discovery_attempt' "$STRIPPED_FILE"; then
+  ok "base-push PR discovery retries transient failures before giving up"
+else
+  fail "the sweep's open-PR discovery call must retry (discovery_attempt loop) — a single-shot failure preserves every stale green"
+fi
+
 echo "==> Triggers"
 if grep -q -E '^[[:space:]]*pull_request_review:' "$STRIPPED_FILE"; then
   ok "pull_request_review trigger present"
