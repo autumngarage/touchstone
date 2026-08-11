@@ -95,8 +95,23 @@ if printf '%s\n' "$STRIPPED" | grep -q -F 'touchstone/review-request-intent'; th
 else
   fail "workflow must read the 'touchstone/review-request-intent' commit status for base binding"
 fi
+if printf '%s\n' "$STRIPPED" | grep -q -F 'Reviewed commit:'; then
+  ok "accepts the trusted result-comment channel (parity with merge-pr.sh)"
+else
+  fail "workflow must accept the trusted 'Reviewed commit:' comment channel merge-pr.sh accepts"
+fi
 
 echo "==> Triggers"
+if printf '%s\n' "$STRIPPED" | grep -q -E '^[[:space:]]*pull_request_review:'; then
+  ok "pull_request_review trigger present"
+else
+  fail "workflow must trigger on pull_request_review (formal review submission fires no issue_comment)"
+fi
+if printf '%s\n' "$STRIPPED" | grep -q -E '^[[:space:]]*push:'; then
+  ok "push trigger present"
+else
+  fail "workflow must trigger on push (base-branch advance stales bindings with no PR-scoped event)"
+fi
 if printf '%s\n' "$STRIPPED" | grep -q -E '^[[:space:]]*issue_comment:'; then
   ok "issue_comment trigger present"
 else
