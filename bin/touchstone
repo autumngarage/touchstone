@@ -56,6 +56,8 @@ touchstone_root_is_checkout() {
 # Source shared libraries.
 source "$TOUCHSTONE_ROOT/lib/auto-update.sh"
 source "$TOUCHSTONE_ROOT/lib/colors.sh"
+# shellcheck source=lib/sed-inplace.sh
+source "$TOUCHSTONE_ROOT/lib/sed-inplace.sh"
 source "$TOUCHSTONE_ROOT/lib/ui.sh"
 source "$TOUCHSTONE_ROOT/lib/claude-md-touchstone-ref.sh"
 source "$TOUCHSTONE_ROOT/lib/status.sh"
@@ -1558,10 +1560,10 @@ cmd_adr() {
 
       # Copy template and fill in.
       cp "$TOUCHSTONE_ROOT/templates/adr/0000-template.md" "$filename"
-      sed -i '' "s/NNNN/$padded/g" "$filename"
+      touchstone_sed_inplace "s/NNNN/$padded/g" "$filename"
       escaped_title="$(escape_sed_replacement "$title")"
-      sed -i '' "s/TITLE/$escaped_title/g" "$filename"
-      sed -i '' "s/DATE/$today/g" "$filename"
+      touchstone_sed_inplace "s/TITLE/$escaped_title/g" "$filename"
+      touchstone_sed_inplace "s/DATE/$today/g" "$filename"
 
       tk_ok "Created: $filename"
       ;;
