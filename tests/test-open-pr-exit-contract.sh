@@ -1603,6 +1603,59 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# Cases 45a/45b (#760): the review-round budget. Three spent trusted rounds on
+# a PR mean the fourth request is refused with the legitimate exits named —
+# past a small number of rounds, findings historically stop being defects in
+# the diff (#706 closed after 6; #755 spent 7 on a 60-line core). The
+# override spends a round deliberately, with the reason recorded in the
+# PR-visible request comment.
+echo "==> Case 45a: the fourth review round is refused with the exits named"
+OUT="$TEST_DIR/case45a.out"
+RC=0
+reset_open_pr_logs
+CASE45_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CASE45_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\tstale-head-1\tCOMMENTED\t2026-08-01T00:00:01Z\nchatgpt-codex-connector[bot]\tstale-head-2\tCOMMENTED\t2026-08-01T01:00:01Z\nchatgpt-codex-connector[bot]\tstale-head-3\tDISMISSED\t2026-08-01T02:00:01Z')"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE45_HEAD" \
+  GH_HEAD_REVIEWS="$CASE45_REVIEWS" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'review round(s); the budget is 3 (#760)' "$OUT" \
+  && grep -q 'Merge if answered' "$OUT" \
+  && grep -q 'Split the PR' "$OUT" \
+  && grep -q 'preserving the corpus' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: three spent rounds must refuse the fourth request with the exits" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 45b: the override spends the round with a durable reason"
+OUT="$TEST_DIR/case45b.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE45_HEAD" \
+  GH_HEAD_REVIEWS="$CASE45_REVIEWS" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr --round-budget-override "post-rebase re-review after base moved" >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'Round budget (3) exceeded deliberately: post-rebase re-review' "$OUT" \
+  && grep -q 'Round-budget override: post-rebase re-review' "$TEST_DIR/review-request.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: the override must spend the round and record the reason durably" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 43: review bound to another commit does not license the new head"
 OUT="$TEST_DIR/case43.out"
 RC=0

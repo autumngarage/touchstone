@@ -480,6 +480,12 @@ trusted_review_exists_for_head() {
   OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR=""
   OPEN_PR_HEAD_REVIEW_DISMISSED_AT=""
   OPEN_PR_HEAD_REVIEW_LIVE_AT=""
+  # Spent review rounds on this PR: every submitted trusted review, at ANY
+  # head — the same formal-review definition merge-pr.sh's
+  # report_review_rounds uses (the two unify when #734 thins the gate).
+  # PENDING is unsubmitted and costs nothing; DISMISSED was still a spent
+  # round. Consumed by the round-budget gate (#760).
+  OPEN_PR_TRUSTED_REVIEW_ROUNDS=0
   local submitted
   if ! reviews_tsv="$(gh api --paginate "repos/$REPO_FULL_NAME/pulls/$pr_number/reviews" \
     --jq '.[] | [(.user.login // ""), (.commit_id // ""), (.state // ""), (.submitted_at // "")] | @tsv' 2>&1)"; then
@@ -490,6 +496,8 @@ trusted_review_exists_for_head() {
   while IFS=$'\t' read -r login commit state submitted || [ -n "$login" ]; do
     [ -n "$login" ] || continue
     csv_contains "$OPEN_PR_TRUSTED_REVIEW_AUTHORS" "$login" || continue
+    [ "$state" = "PENDING" ] && continue
+    OPEN_PR_TRUSTED_REVIEW_ROUNDS=$((OPEN_PR_TRUSTED_REVIEW_ROUNDS + 1))
     [ "$commit" = "$head_sha" ] || continue
     # A DISMISSED review is revoked evidence. The merge gate refuses it, so
     # letting it satisfy request idempotency here would suppress the only
@@ -507,7 +515,6 @@ trusted_review_exists_for_head() {
         fi
         continue
         ;;
-      PENDING) continue ;;
     esac
     found=0
     if [ -z "$OPEN_PR_HEAD_REVIEW_LIVE_AT" ] \
@@ -885,6 +892,36 @@ request_pr_triggered_review() {
     echo "==> --fresh-review: forcing a new review request for head $head_sha despite existing evidence."
   fi
 
+  # Round-budget gate (#760). By this point every idempotent skip has passed:
+  # a real request WILL be posted. Spending it is the expensive act — each
+  # round costs full review latency (#649), and past a small number of rounds
+  # the findings historically stop being defects in the diff and start being
+  # hardening of whatever the reviewer is looking at (#706: closed after 6;
+  # #755: 7 rounds for a 60-line core). The budget forces the stop-and-decide
+  # moment the process otherwise never has.
+  #
+  # An unknown round count (lookup failure, status 2 above) does not refuse:
+  # this is friction control, not an authorization boundary — the merge gate
+  # owns authorization.
+  ROUND_BUDGET="${TOUCHSTONE_REVIEW_ROUND_BUDGET:-3}"
+  if [ "${OPEN_PR_TRUSTED_REVIEW_ROUNDS:-0}" -ge "$ROUND_BUDGET" ] \
+    && [ -z "$ROUND_BUDGET_OVERRIDE" ]; then
+    echo "ERROR: PR #$pr_number has already spent $OPEN_PR_TRUSTED_REVIEW_ROUNDS review round(s); the budget is $ROUND_BUDGET (#760)." >&2
+    echo "       Requesting another round is usually the wrong move. The legitimate exits:" >&2
+    echo "         1. Merge if answered — every thread resolved satisfies the gate (issue #751);" >&2
+    echo "            run: bash scripts/merge-pr.sh $pr_number" >&2
+    echo "         2. Split the PR — the diff is carrying more than one concern." >&2
+    echo "         3. Close it, preserving the corpus on the tracking issue (the #706 pattern)." >&2
+    echo "       Findings that harden a component the plan deletes belong on the owning" >&2
+    echo "       issue, not in this diff (principles/git-workflow.md)." >&2
+    echo "       To spend the round anyway, state why:" >&2
+    echo "         bash scripts/open-pr.sh --round-budget-override \"<reason>\"" >&2
+    return 1
+  fi
+  if [ -n "$ROUND_BUDGET_OVERRIDE" ] && [ "${OPEN_PR_TRUSTED_REVIEW_ROUNDS:-0}" -ge "$ROUND_BUDGET" ]; then
+    echo "==> Round budget ($ROUND_BUDGET) exceeded deliberately: $ROUND_BUDGET_OVERRIDE"
+  fi
+
   if [ -z "$intent_at" ]; then
     if ! intent_at="$(
       gh api -X POST "repos/$REPO_FULL_NAME/statuses/$head_sha" \
@@ -903,6 +940,11 @@ request_pr_triggered_review() {
   fi
 
   body="$(printf '@codex review\n\nPlease report every finding for this exact head in this single review pass -- findings\naddressed one per round each cost a full review cycle (issue #649).\n\n%s' "$marker")"
+  if [ -n "$ROUND_BUDGET_OVERRIDE" ]; then
+    # The override reason is part of the durable record: whoever audits the
+    # PR sees who chose to spend a past-budget round and why (#760).
+    body="$(printf '%s\n\nRound-budget override: %s' "$body" "$ROUND_BUDGET_OVERRIDE")"
+  fi
   if ! trigger_at="$(gh api -X POST "repos/$REPO_FULL_NAME/issues/$pr_number/comments" \
     -f body="$body" --jq '.created_at')"; then
     echo "ERROR: failed to request GitHub Codex review for PR #$pr_number." >&2
@@ -1120,6 +1162,12 @@ BASE_OVERRIDE=""
 # fresh review" and this script answers "already reviewed". Bounded: it spends
 # exactly one request, and nothing advertises it except the body-only block.
 FRESH_REVIEW=false
+# --round-budget-override "<reason>": the review-round budget (#760) refuses
+# to request review round N+1 (default 3) on one PR. Past budget the
+# legitimate exits are merge-if-answered, split the PR, or close it
+# preserving the corpus — spending another round requires a stated reason,
+# recorded in the PR-visible request comment.
+ROUND_BUDGET_OVERRIDE=""
 POSITIONAL=()
 
 while [ "$#" -gt 0 ]; do
@@ -1139,6 +1187,14 @@ while [ "$#" -gt 0 ]; do
     --fresh-review)
       FRESH_REVIEW=true
       shift
+      ;;
+    --round-budget-override)
+      if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "ERROR: --round-budget-override requires a reason." >&2
+        exit 1
+      fi
+      ROUND_BUDGET_OVERRIDE="$2"
+      shift 2
       ;;
     --base)
       if [ "$#" -lt 2 ]; then

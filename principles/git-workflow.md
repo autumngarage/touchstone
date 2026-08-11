@@ -93,6 +93,52 @@ inline threads): nothing can be resolved to answer it, so the gate directs
 `bash scripts/open-pr.sh --fresh-review` — the bounded override of per-head
 idempotency — as the only path forward on that unchanged head.
 
+### Babysitting a PR: the round discipline
+
+Reviews are the most expensive resource in the loop — each round costs full
+review latency (#649), and the history is unambiguous about what unbounded
+rounds produce: #706 was closed unmerged after six (rounds 3–6 each contained
+defects created by the previous fix), and #755 spent seven rounds and +936
+lines on a ~60-line core change, most of it fortifying a component the plan
+deletes. The discipline below is enforced by `open-pr.sh`, not merely stated.
+
+**Classify every finding before touching anything.** Four dispositions, in
+the order to consider them:
+
+1. **Fix here** — a defect in this diff, or one this diff created. Fix it in
+   the batch.
+2. **Fix and audit the class** — the finding is one instance of a shape.
+   Grep for siblings before responding (`principles/audit-weak-points.md`);
+   the class audit has found extra live bugs repeatedly.
+3. **Push back with evidence** — the finding is factually wrong. Quote the
+   file, cite the precedent, resolve without changing code. Never comply with
+   a wrong finding to save a round.
+4. **Real, but not this PR's to fix** — route it to the owning issue with a
+   comment, resolve the thread with the link. The load-bearing case: **never
+   fix a finding by hardening a component the plan deletes.** Check the plan
+   of record before fortifying anything the reviewer points at.
+
+**The loop.** One review request per head (`open-pr.sh`; it is idempotent —
+an unchanged reviewed head is never re-requested, except a body-only finding
+via `--fresh-review`). When findings land: classify each, fix categories 1–2
+in ONE batch commit, answer every thread, `--all-resolved-check`, then rerun
+the merge gate — answered findings satisfy it (issue #751); do not request
+another review.
+
+**The budget: three rounds per PR.** `open-pr.sh` refuses the fourth request.
+Past budget, the legitimate exits are:
+
+- **Merge if answered** — all threads resolved satisfies the gate;
+- **Split the PR** — the diff is carrying more than one concern, and each
+  fragment restarts with a fresh budget it will rarely need;
+- **Close it, preserving the corpus** on the tracking issue (the #706
+  pattern) — correct when successive fixes keep creating defects.
+
+Spending a fourth round is possible with
+`--round-budget-override "<reason>"`; the reason is recorded in the
+PR-visible request comment, so past-budget rounds are always someone's
+explicit, auditable decision.
+
 Draft PRs are early coordination surfaces, not semantic-review requests.
 `open-pr.sh --draft` creates or updates a draft without requiring the final PR
 body protocol, emitting review-intent evidence, posting a review request, or
