@@ -185,7 +185,27 @@ case "$1 $2" in
     echo "${GH_PR_AUTHOR:-alice}"
     ;;
   "api --paginate")
-    # No prior durable review-request records.
+    case "${3:-}" in
+      */pulls/*/reviews*)
+        # Formal reviews at the PR (issue #751 per-head idempotency).
+        if [ "${GH_HEAD_REVIEWS_FAIL:-0}" = "1" ]; then
+          echo "review listing unavailable" >&2
+          exit 1
+        fi
+        if [ -n "${GH_HEAD_REVIEWS:-}" ]; then
+          printf '%s\n' "$GH_HEAD_REVIEWS"
+        fi
+        ;;
+      */statuses | */statuses\?*)
+        # Durable review-request records; empty by default.
+        if [ -n "${GH_REQUEST_STATUS_RECORDS:-}" ]; then
+          printf '%s\n' "$GH_REQUEST_STATUS_RECORDS"
+        fi
+        ;;
+      *)
+        # No other prior records.
+        ;;
+    esac
     ;;
   "api -X")
     printf '%s\n' "$*" >>"$GH_REVIEW_REQUEST_LOG"
@@ -214,6 +234,12 @@ case "$1 $2" in
       printf '%s\t%s\n' "${GH_CREATED_PR_BASE:-${GH_EXISTING_PR_BASE:-main}}" "$(git rev-parse "${GH_CREATED_PR_BASE:-${GH_EXISTING_PR_BASE:-main}}")"
       exit 0
     fi
+    case "$api_path" in
+      repos/autumngarage/touchstone/collaborators/*/permission)
+        echo "write"
+        exit 0
+        ;;
+    esac
     case "$api_path:$jq_expr" in
       "repos/autumngarage/touchstone/pulls/777:.body // \"\"")
         echo "${GH_PR_BODY:-}"
@@ -306,6 +332,9 @@ run_open_pr() {
       GH_REQUIRE_REPO_FOR_MERGED_AT="${GH_REQUIRE_REPO_FOR_MERGED_AT:-0}" \
       GH_PR_HEAD_OID="${GH_PR_HEAD_OID:-existing-pr-head}" \
       GH_PR_IS_CROSS_REPO="${GH_PR_IS_CROSS_REPO:-false}" \
+      GH_HEAD_REVIEWS="${GH_HEAD_REVIEWS:-}" \
+      GH_HEAD_REVIEWS_FAIL="${GH_HEAD_REVIEWS_FAIL:-0}" \
+      GH_REQUEST_STATUS_RECORDS="${GH_REQUEST_STATUS_RECORDS:-}" \
       GIT_PUSH_PLAIN_EXIT="${GIT_PUSH_PLAIN_EXIT:-0}" \
       GIT_PUSH_LEASE_EXIT="${GIT_PUSH_LEASE_EXIT:-0}" \
       GIT_PUSH_LOG="$TEST_DIR/git-push.log" \
@@ -1263,6 +1292,88 @@ if [ "$RC" != "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: expected unknown observed head to refuse the retry" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Cases 42-44 (issue #751): the review request is idempotent per head. A
+# trusted formal review already bound to the exact current head (with its
+# durable request evidence in place) means the head is reviewed — a second
+# invocation must say so and must NOT post another @codex request. A review
+# bound to a DIFFERENT commit gives no such license: the new head requests
+# normally. A failed review lookup is reported as inspection failure and
+# falls back to the evidence-based idempotency — never treated as "reviewed"
+# or "not reviewed".
+# ---------------------------------------------------------------------------
+echo "==> Case 42: reviewed unchanged head is not re-requested"
+OUT="$TEST_DIR/case42.out"
+RC=0
+reset_open_pr_logs
+CASE42_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CASE42_BASE_SHA="$(git -C "$REPO_DIR" rev-parse main)"
+CASE42_RECORDS="$(printf 'touchstone/review-request-intent\t2026-08-01T00:00:00Z\thenrymodisett\tpr=777 base=%s\ntouchstone/review-request-complete\t2026-08-01T00:00:05Z\thenrymodisett\tpr=777 base=%s intent=2026-08-01T00:00:00Z trigger=2026-08-01T00:00:05Z' \
+  "$CASE42_BASE_SHA" "$CASE42_BASE_SHA")"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s' "$CASE42_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'is already reviewed: a trusted formal review exists for this exact head; not re-requesting' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected reviewed unchanged head to skip the review request" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 43: review bound to another commit does not license the new head"
+OUT="$TEST_DIR/case43.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_HEAD" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s' "$CASE42_BASE_SHA")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && ! grep -q 'is already reviewed' "$OUT" \
+  && grep -q 'Requested GitHub Codex review' "$OUT" \
+  && grep -q 'issues/777/comments' "$TEST_DIR/review-request.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected a new head to request review despite an old-commit review" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 44: failed review lookup reports itself and falls back to request evidence"
+OUT="$TEST_DIR/case44.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
+  GH_HEAD_REVIEWS_FAIL=1 \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'could not determine whether head' "$OUT" \
+  && ! grep -q 'is already reviewed' "$OUT" \
+  && grep -q 'review already requested for head' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected lookup failure to be visible and fall back to request evidence" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))

@@ -15,7 +15,7 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 **Humans approve plans. Agents write and ship code. GitHub reviews code.**
 
-That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar. Because approval never comes from a person, the merge gate is: required checks green, a clean review from a trusted author bound to this exact head and base, no active `CHANGES_REQUESTED`, and every review thread resolved. An untrusted, stale, or non-clean review fails the gate even with nothing left open. Local hooks are fast feedback; branch protection is the real boundary; emergency paths are audited.
+That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar. Because approval never comes from a person, the merge gate is: required checks green, a clean review from a trusted author bound to this exact head and base, no active `CHANGES_REQUESTED`, and every review thread resolved. An untrusted or stale review fails the gate even with nothing left open; a non-clean review whose threads are all resolved satisfies it — answered findings do not require re-review of an unchanged head. Local hooks are fast feedback; branch protection is the real boundary; emergency paths are audited.
 
 Judging a capability, "is it useful?" is not the test: **does it constrain the agent, or merely serve it?** Automating what you can already do (retrying a push, recovering a moved base) belongs in the project, not here: you are the recovery mechanism.
 

@@ -37,7 +37,8 @@ Agentic PR Review Loop
   | - required checks run
   | - the configured reviewer reviews the exact head
   | - the driver answers every comment and resolves its thread
-  | - a clean, fully-answered head merges
+  | - a fully-answered head merges (clean verdict, or
+  |   findings with every thread resolved)
   |
   v
 Approval Gate

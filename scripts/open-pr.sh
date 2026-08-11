@@ -76,6 +76,8 @@ ORPHAN_PR_NUMBER=""
 BODY_FILE=""
 PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=true
 PR_TRIGGERED_REVIEW_PROVIDER="github-codex"
+OPEN_PR_TRUSTED_REVIEW_AUTHORS="chatgpt-codex-connector,chatgpt-codex-connector[bot]"
+OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR=""
 OPEN_PR_REVIEW_CONFIG_ERROR=""
 OPEN_PR_REVIEW_REQUEST_COUNT=0
 REPO_FULL_NAME=""
@@ -245,6 +247,60 @@ truthy() {
   esac
 }
 
+trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+csv_contains() {
+  local csv="$1"
+  local wanted="$2"
+  local item
+  local -a csv_items
+
+  if [ -n "$csv" ]; then
+    IFS=',' read -r -a csv_items <<<"$csv"
+    for item in "${csv_items[@]}"; do
+      item="$(trim "$item")"
+      if [ "$item" = "$wanted" ]; then
+        return 0
+      fi
+    done
+  fi
+  return 1
+}
+
+# Issue #751: the review request is idempotent PER HEAD. A trusted formal
+# review already bound to the exact current head means the head is reviewed;
+# asking again re-runs a non-deterministic oracle on unchanged input and
+# manufactures new findings (measured: four reviews at one byte-identical
+# head on PR #715).
+#
+# Returns 0 when at least one trusted formal review has commit_id == head,
+# 1 when none does, 2 when the lookup failed. A failed lookup is reported in
+# OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR and is never collapsed into 0 or 1.
+trusted_review_exists_for_head() {
+  local pr_number="$1"
+  local head_sha="$2"
+  local reviews_tsv login commit
+
+  OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR=""
+  if ! reviews_tsv="$(gh api --paginate "repos/$REPO_FULL_NAME/pulls/$pr_number/reviews" \
+    --jq '.[] | [(.user.login // ""), (.commit_id // "")] | @tsv' 2>&1)"; then
+    OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR="$reviews_tsv"
+    return 2
+  fi
+  while IFS=$'\t' read -r login commit || [ -n "$login" ]; do
+    [ -n "$login" ] || continue
+    csv_contains "$OPEN_PR_TRUSTED_REVIEW_AUTHORS" "$login" || continue
+    [ "$commit" = "$head_sha" ] || continue
+    return 0
+  done <<<"$reviews_tsv"
+  return 1
+}
+
 load_open_pr_review_request_config() {
   local base_branch="$1"
   local trusted_ref=""
@@ -313,6 +369,8 @@ load_open_pr_review_request_config() {
       esac
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "provider" ]; then
       PR_TRIGGERED_REVIEW_PROVIDER="$value"
+    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "trusted_review_authors" ]; then
+      OPEN_PR_TRUSTED_REVIEW_AUTHORS="$(toml_normalize_array "$value")"
     fi
   }
 
@@ -345,6 +403,7 @@ request_pr_triggered_review() {
   local head_sha base_revision base_branch base_sha marker request_records context created_at _creator creator_permission description request_pr request_base request_intent_at request_trigger_at body trigger_at attempt=1
   local completion_head completion_revision completion_branch completion_base
   local intent_at="" completion_records="" matching_request=false conflicting_bases=""
+  local head_review_status
   local max_attempts="${TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS:-10}"
   local retry_interval="${TOUCHSTONE_PR_HEAD_CONVERGENCE_INTERVAL:-1}"
 
@@ -507,6 +566,30 @@ request_pr_triggered_review() {
   fi
   if [ -n "$intent_at" ] && printf '%s\n' "$completion_records" | cut -f1 | grep -Fxq "$intent_at"; then
     matching_request=true
+  fi
+  # Per-head idempotency (issue #751): when a trusted formal review already
+  # exists for this exact head, the head is reviewed — do not re-request.
+  # The skip requires matching durable request evidence too, because the
+  # merge gate refuses heads without it (review-request-legacy-head); a
+  # review without evidence must still fall through and record the request,
+  # or open-pr.sh and merge-pr.sh would each point at the other forever.
+  head_review_status=0
+  trusted_review_exists_for_head "$pr_number" "$head_sha" || head_review_status=$?
+  if [ "$head_review_status" -eq 2 ]; then
+    # Inspection failure is not a "no": say so and continue with the durable
+    # request-evidence checks, which are themselves idempotent.
+    echo "WARNING: could not determine whether head $head_sha already has a trusted review:" >&2
+    printf '%s\n' "$OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR" | sed 's/^/         /' >&2
+    echo "         Falling back to durable request-evidence checks." >&2
+  fi
+  if [ "$head_review_status" -eq 0 ] && [ "$matching_request" = true ]; then
+    echo "==> Head $head_sha is already reviewed: a trusted formal review exists for this exact head; not re-requesting (issue #751)."
+    return 0
+  fi
+  if [ "$head_review_status" -eq 0 ]; then
+    echo "==> Head $head_sha already has a trusted formal review, but no durable request"
+    echo "    evidence binds this head to base $base_sha; recording the request so the"
+    echo "    merge gate can bind it."
   fi
   if [ "$matching_request" = true ]; then
     echo "==> GitHub Codex review already requested for head $head_sha at base $base_sha."

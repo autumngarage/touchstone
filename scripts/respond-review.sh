@@ -20,7 +20,7 @@
 #                                "Fixed in <sha>." line to the reply.
 #   --all-resolved-check         Exit 0 when no unresolved review threads
 #                                remain on the PR; otherwise list them and
-#                                exit 1. Use before re-requesting review.
+#                                exit 1. Use before re-running the merge gate.
 #
 # Transient GraphQL failures (gateway HTML instead of JSON, rate blips) are
 # retried up to 3 times with a short delay before failing closed.
