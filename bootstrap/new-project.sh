@@ -24,6 +24,8 @@ set -euo pipefail
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../lib/safe-write.sh
 source "$TOUCHSTONE_ROOT/lib/safe-write.sh"
+# shellcheck source=lib/sed-inplace.sh
+source "$TOUCHSTONE_ROOT/lib/sed-inplace.sh"
 # shellcheck source=../lib/install-hooks.sh
 source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
 # shellcheck source=../lib/touchstone-block.sh
@@ -1248,19 +1250,25 @@ if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ]; then
   # Apply to project-owned AI instruction files.
   if [ -n "$INPUT_NAME" ]; then
     ESCAPED_NAME="$(escape_sed_replacement "$INPUT_NAME")"
-    sed -i '' "s/{{PROJECT_NAME}}/$ESCAPED_NAME/g" "$PROJECT_DIR/CLAUDE.md" 2>/dev/null || true
-    sed -i '' "s/{{PROJECT_NAME}}/$ESCAPED_NAME/g" "$PROJECT_DIR/AGENTS.md" 2>/dev/null || true
-    sed -i '' "s/{{PROJECT_NAME}}/$ESCAPED_NAME/g" "$PROJECT_DIR/GEMINI.md" 2>/dev/null || true
+    for placeholder_file in CLAUDE.md AGENTS.md GEMINI.md; do
+      if [ -f "$PROJECT_DIR/$placeholder_file" ]; then
+        touchstone_sed_inplace "s/{{PROJECT_NAME}}/$ESCAPED_NAME/g" "$PROJECT_DIR/$placeholder_file"
+      fi
+    done
   fi
 
   if [ -n "$INPUT_DESC" ]; then
     ESCAPED_DESC="$(escape_sed_replacement "$INPUT_DESC")"
-    sed -i '' "s/{{PROJECT_DESCRIPTION[^}]*}}/$ESCAPED_DESC/g" "$PROJECT_DIR/CLAUDE.md" 2>/dev/null || true
+    if [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
+      touchstone_sed_inplace "s/{{PROJECT_DESCRIPTION[^}]*}}/$ESCAPED_DESC/g" "$PROJECT_DIR/CLAUDE.md"
+    fi
   fi
 
   if [ -n "$INPUT_TEST" ]; then
     ESCAPED_TEST="$(escape_sed_replacement "$INPUT_TEST")"
-    sed -i '' "s/{{TEST_COMMAND[^}]*}}/$ESCAPED_TEST/g" "$PROJECT_DIR/CLAUDE.md" 2>/dev/null || true
+    if [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
+      touchstone_sed_inplace "s/{{TEST_COMMAND[^}]*}}/$ESCAPED_TEST/g" "$PROJECT_DIR/CLAUDE.md"
+    fi
   fi
 
   if [ -t 0 ]; then

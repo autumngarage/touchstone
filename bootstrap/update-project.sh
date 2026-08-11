@@ -22,6 +22,8 @@ set -euo pipefail
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../lib/safe-write.sh
 source "$TOUCHSTONE_ROOT/lib/safe-write.sh"
+# shellcheck source=lib/sed-inplace.sh
+source "$TOUCHSTONE_ROOT/lib/sed-inplace.sh"
 # shellcheck source=../lib/install-hooks.sh
 source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
 # shellcheck source=../lib/touchstone-block.sh
@@ -699,7 +701,7 @@ if [ -f "$TOUCHSTONE_ROOT/templates/GEMINI.md" ]; then
     "$PROJECT_DIR/GEMINI.md"
   if [ "$DRY_RUN" = false ] && [ "$gemini_md_was_present" = false ] && [ -f "$PROJECT_DIR/GEMINI.md" ]; then
     escaped_project_name="$(printf '%s' "$(basename "$PROJECT_DIR")" | sed 's/[\\/&]/\\&/g')"
-    sed -i '' "s/{{PROJECT_NAME}}/$escaped_project_name/g" "$PROJECT_DIR/GEMINI.md" 2>/dev/null || true
+    touchstone_sed_inplace "s/{{PROJECT_NAME}}/$escaped_project_name/g" "$PROJECT_DIR/GEMINI.md"
   fi
 fi
 

@@ -140,6 +140,8 @@ jobs:
 LEGACY_V2
 # shellcheck source=../lib/sha256.sh
 source "$TOUCHSTONE_ROOT/lib/sha256.sh"
+# shellcheck source=lib/sed-inplace.sh
+source "$TOUCHSTONE_ROOT/lib/sed-inplace.sh"
 if [ "$(touchstone_sha256_file "$LEGACY_CI_FIXTURE")" != "5b599e26ff5bcc02ee8c0626cabdd3be7c30e0885ad72c6dd1408139c5dec9aa" ]; then
   echo "FAIL: legacy CI fixture heredoc no longer matches the shipped v2 fingerprint" >&2
   exit 1
@@ -1873,7 +1875,7 @@ printf '{"scripts":{"lint":"echo lint","test":"echo test"}}\n' >"$PROJECT_DOCTOR
 printf '{}\n' >"$PROJECT_DOCTOR_MONO/apps/tsapp/package.json"
 # autodetect declares no explicit profile — must be detected from manifest (Cargo.toml).
 printf '[package]\nname = "autodetected"\nversion = "0.0.0"\n' >"$PROJECT_DOCTOR_MONO/packages/autodetect/Cargo.toml"
-sed -i '' 's|^targets=.*|targets=web:apps/web:node,api:services/api:rust,tsapp:apps/tsapp:typescript,autodetect:packages/autodetect|' "$PROJECT_DOCTOR_MONO/.touchstone-config"
+touchstone_sed_inplace 's|^targets=.*|targets=web:apps/web:node,api:services/api:rust,tsapp:apps/tsapp:typescript,autodetect:packages/autodetect|' "$PROJECT_DOCTOR_MONO/.touchstone-config"
 if (cd "$PROJECT_DOCTOR_MONO" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-monorepo.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-monorepo.txt" "target web:"
   assert_contains "$TEST_DIR/doctor-monorepo.txt" "target api:"
@@ -1900,7 +1902,7 @@ PROJECT_DOCTOR_ALIAS_KEY="$TEST_DIR/test-project-doctor-alias-key"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_ALIAS_KEY" --no-register --type python >/dev/null
 # Prepend a stale project_type=generic and keep the real profile=python after it
 # to exercise the last-write-wins tie-breaker.
-sed -i '' 's|^project_type=.*|project_type=generic|' "$PROJECT_DOCTOR_ALIAS_KEY/.touchstone-config"
+touchstone_sed_inplace 's|^project_type=.*|project_type=generic|' "$PROJECT_DOCTOR_ALIAS_KEY/.touchstone-config"
 printf 'profile=python\n' >>"$PROJECT_DOCTOR_ALIAS_KEY/.touchstone-config"
 if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
   echo "SKIP: ruff on minimal PATH; cannot test project_type/profile last-wins doctor case on this machine" >&2
@@ -1925,7 +1927,7 @@ fi
 # pre-push failed for every dev on the team.
 PROJECT_DOCTOR_BAD_PROFILE="$TEST_DIR/test-project-doctor-bad-profile"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_BAD_PROFILE" --no-register >/dev/null
-sed -i '' 's|^project_type=.*|project_type=kotlin|' "$PROJECT_DOCTOR_BAD_PROFILE/.touchstone-config"
+touchstone_sed_inplace 's|^project_type=.*|project_type=kotlin|' "$PROJECT_DOCTOR_BAD_PROFILE/.touchstone-config"
 if (cd "$PROJECT_DOCTOR_BAD_PROFILE" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-bad-profile.txt" 2>&1; then
   echo "FAIL: doctor --project should exit nonzero when project_type is not a dispatcher-accepted profile" >&2
   ERRORS=$((ERRORS + 1))
@@ -1938,7 +1940,7 @@ fi
 PROJECT_DOCTOR_BAD_TARGET="$TEST_DIR/test-project-doctor-bad-target"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_BAD_TARGET" --no-register >/dev/null
 mkdir -p "$PROJECT_DOCTOR_BAD_TARGET/apps/mobile"
-sed -i '' 's|^targets=.*|targets=mobile:apps/mobile:kotlin|' "$PROJECT_DOCTOR_BAD_TARGET/.touchstone-config"
+touchstone_sed_inplace 's|^targets=.*|targets=mobile:apps/mobile:kotlin|' "$PROJECT_DOCTOR_BAD_TARGET/.touchstone-config"
 if (cd "$PROJECT_DOCTOR_BAD_TARGET" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-bad-target.txt" 2>&1; then
   echo "FAIL: doctor --project should exit nonzero when a target profile is unknown" >&2
   ERRORS=$((ERRORS + 1))
@@ -1973,7 +1975,7 @@ fi
 PROJECT_DOCTOR_ALIAS="$TEST_DIR/test-project-doctor-alias"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_ALIAS" --no-register >/dev/null
 printf '{}\n' >"$PROJECT_DOCTOR_ALIAS/package.json"
-sed -i '' 's|^project_type=.*|project_type=typescript|' "$PROJECT_DOCTOR_ALIAS/.touchstone-config"
+touchstone_sed_inplace 's|^project_type=.*|project_type=typescript|' "$PROJECT_DOCTOR_ALIAS/.touchstone-config"
 if (cd "$PROJECT_DOCTOR_ALIAS" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-alias.txt" 2>&1; then
   # No lint script in package.json — the node-profile lint-script check must fire,
   # not a literal 'typescript' profile branch that would no-op.
@@ -1992,8 +1994,8 @@ fi
 PROJECT_DOCTOR_PY_OVERRIDE="$TEST_DIR/test-project-doctor-python-override"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_PY_OVERRIDE" --no-register --type python >/dev/null
 # Set lint_command and test_command to custom values to suppress profile-default checks.
-sed -i '' 's|^lint_command=.*|lint_command=echo "custom lint"|' "$PROJECT_DOCTOR_PY_OVERRIDE/.touchstone-config"
-sed -i '' 's|^test_command=.*|test_command=echo "custom test"|' "$PROJECT_DOCTOR_PY_OVERRIDE/.touchstone-config"
+touchstone_sed_inplace 's|^lint_command=.*|lint_command=echo "custom lint"|' "$PROJECT_DOCTOR_PY_OVERRIDE/.touchstone-config"
+touchstone_sed_inplace 's|^test_command=.*|test_command=echo "custom test"|' "$PROJECT_DOCTOR_PY_OVERRIDE/.touchstone-config"
 if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
   echo "SKIP: ruff on minimal PATH; cannot test override-suppresses-ruff-check on this machine" >&2
 else
