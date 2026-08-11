@@ -2731,67 +2731,58 @@ if [ "$CLAIM_CHECK_SUBSTITUTED" = true ]; then
 
 }Claim-substitution: hosted claim-check never executed (Actions infrastructure incident); ${CLAIM_SUBSTITUTION_KIND:-every open referenced issue confirmed assigned to the PR author by direct API read against the trusted base revision} (issue #658)."
 fi
-# Deleting this branch closes anything stacked on it. GitHub marks a PR whose
-# base branch disappears as CLOSED — not merged — and its review threads go
-# with it. Observed on arpeggio 2026-08-10: merging one PR silently closed two
-# dependents, and recovery needed the base branch recreated at its exact
-# recorded head OID before GitHub would reopen them (issue #713).
+# Never delete the branch as part of the merge.
 #
-# `principles/git-workflow.md` warns about this in prose, but advice cannot
-# stop a single unconditional command, and the check is one query.
+# `gh pr merge --delete-branch` removes the base branch of anything stacked on
+# it, and GitHub marks those PRs CLOSED -- not merged -- discarding their review
+# threads. Observed on arpeggio 2026-08-10: one merge silently closed two
+# dependents, and recovery needed the branch recreated at its exact recorded
+# head OID before GitHub would reopen them (issue #713).
 #
-# Retaining the branch is chosen over refusing the merge: it preserves the
-# dependents automatically, costs nothing but a branch that
-# `cleanup-branches.sh` will collect once nothing points at it, and does not
-# block a merge whose review evidence is already clean.
+# An earlier version of this fix queried for dependents and skipped the deletion
+# only when it found some. Review showed that is not safe (PR #715):
 #
-# Fails safe: if the query cannot be answered, keep the branch. An extra
-# branch is recoverable; a silently closed PR with its threads is not.
-DELETE_BRANCH_FLAG="--delete-branch"
-if [ -n "$PR_HEAD_BRANCH" ] && [ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ]; then
-  dependent_prs=""
-  if dependent_prs="$(gh pr list --repo "$REPO_OWNER/$REPO_NAME" --state open \
-    --base "$PR_HEAD_BRANCH" --json number --jq '[.[].number] | join(", ")' 2>&1)"; then
-    if [ -n "$dependent_prs" ]; then
-      DELETE_BRANCH_FLAG=""
-      echo "==> Retaining branch '$PR_HEAD_BRANCH': PR(s) $dependent_prs are based on it."
-      echo "    Deleting it would close them as CLOSED (not merged) and discard their"
-      echo "    review threads. Retarget them, then delete the branch:"
-      echo "      gh pr edit <n> --base $PR_BASE_REF"
-      echo "      git push origin --delete $PR_HEAD_BRANCH"
-    fi
-  else
-    DELETE_BRANCH_FLAG=""
-    echo "WARNING: could not determine whether any PR is based on '$PR_HEAD_BRANCH':" >&2
-    printf '%s\n' "$dependent_prs" | sed 's/^/         /' >&2
-    echo "         Retaining the branch. Delete it manually once nothing depends on it." >&2
-  fi
+#   - the lookup and the deletion are not atomic, so a stacked PR opened in
+#     between is still closed by a decision made from a stale snapshot; and
+#   - `gh pr list` paginates at 30 by default, so a large stack could report
+#     "no dependents" while dependents exist.
+#
+# Both disappear if the merge simply never deletes. Branch cleanup is not
+# time-critical and does not need to be atomic with the merge, so it moves to
+# `cleanup-branches.sh`, which now refuses to delete a branch that is serving as
+# some open PR's base. An extra remote branch is trivially recoverable; a
+# silently closed PR with its review threads is not.
+if [ -n "$PR_HEAD_BRANCH" ]; then
+  echo "==> Leaving branch '$PR_HEAD_BRANCH' on the remote after merge."
+  echo "    Deleting it here would close any PR stacked on it. Collect it with:"
+  echo "      bash scripts/cleanup-branches.sh --remote-too"
 fi
 
 if [ -n "$MERGE_BODY" ]; then
-  # shellcheck disable=SC2086 # DELETE_BRANCH_FLAG is one flag or empty.
-  gh pr merge "$PR_NUMBER" --squash $DELETE_BRANCH_FLAG --match-head-commit "$REVIEWED_HEAD_OID" \
+  gh pr merge "$PR_NUMBER" --squash --match-head-commit "$REVIEWED_HEAD_OID" \
     --body "$MERGE_BODY" || gh_merge_exit=$?
 else
-  # shellcheck disable=SC2086 # DELETE_BRANCH_FLAG is one flag or empty.
-  gh pr merge "$PR_NUMBER" --squash $DELETE_BRANCH_FLAG --match-head-commit "$REVIEWED_HEAD_OID" \
+  gh pr merge "$PR_NUMBER" --squash --match-head-commit "$REVIEWED_HEAD_OID" \
     || gh_merge_exit=$?
 fi
 
-# `gh pr merge --delete-branch` does the squash AND tries to delete the
-# local feature branch. The local-delete fails when the branch is checked
-# out in the current worktree (the common case for parallel-worktree work).
-# When that happens, the remote merge succeeded server-side — only the
-# local cleanup didn't. Verify by asking the API; if MERGED, treat as
-# success with a warning so the script doesn't claim the PR failed.
+# `gh pr merge` can exit nonzero after the server-side merge already succeeded —
+# a network blip on the response, or a post-merge step failing locally. Ask the
+# API rather than trusting the exit code, so the script never reports a failure
+# for a PR that is merged.
+#
+# This used to be dominated by one specific case: `--delete-branch` failing to
+# remove a local branch that was checked out in a sibling worktree. That flag is
+# gone (issue #713), so the local-delete failure no longer occurs, but the
+# general "exited nonzero yet merged" check stays because the underlying race
+# does not depend on it.
 if [ "$gh_merge_exit" -ne 0 ]; then
   pr_state="$(gh pr view "$PR_NUMBER" --json state --jq '.state' 2>/dev/null || echo "")"
   if [ "$pr_state" = "MERGED" ]; then
     echo "WARNING: gh pr merge exited $gh_merge_exit, but PR #$PR_NUMBER is MERGED on GitHub."
-    echo "         Likely cause: local feature branch is checked out in a worktree,"
-    echo "         or stale worktree metadata still records it there. Remote branch is gone."
-    echo "         Use 'git worktree remove <path>' or 'bash scripts/cleanup-worktrees.sh --execute' for normal cleanup."
-    echo "         If the directory was deleted directly, run 'git worktree prune' from a remaining checkout."
+    echo "         The merge succeeded server-side; only the command's own exit was unhappy."
+    echo "         The remote branch is retained by design — collect it with:"
+    echo "           bash scripts/cleanup-branches.sh --remote-too"
   else
     echo "ERROR: gh pr merge exited $gh_merge_exit and PR #$PR_NUMBER is not MERGED." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="gh-pr-merge"

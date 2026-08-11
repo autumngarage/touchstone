@@ -239,7 +239,12 @@ if [ "$REMOTE_TOO" -eq 1 ]; then
   # PRs" if we swallow the error, and would mark every remote branch as
   # deletable. Without a confirmed open-PR set we cannot safely classify.
   GH_PR_ERR=""
-  if ! OPEN_PR_BRANCHES="$(gh pr list --state open --limit 200 --json headRefName --jq '.[].headRefName' 2>&1)"; then
+  # Collect BOTH the head and the base of every open PR. A merged parent branch
+  # that is still serving as another PR's base has no open PR of its own, so a
+  # head-only scan classified it as deletable and deleting it closed the
+  # dependents -- the exact loss merge-pr.sh now avoids by never deleting
+  # (issue #713, PR #715 review).
+  if ! OPEN_PR_BRANCHES="$(gh pr list --state open --limit 200 --json headRefName,baseRefName --jq '.[] | .headRefName, .baseRefName' 2>&1)"; then
     GH_PR_ERR="$OPEN_PR_BRANCHES"
     REMOTE_SKIPPED=1
     echo ""
@@ -250,6 +255,7 @@ fi
 
 if [ "$REMOTE_TOO" -eq 1 ] && [ "$REMOTE_SKIPPED" -eq 0 ]; then
 
+  # True when the branch is either the head OR the base of an open PR.
   has_open_pr() {
     local b="$1"
     [ -z "$OPEN_PR_BRANCHES" ] && return 1

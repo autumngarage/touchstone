@@ -2993,15 +2993,18 @@ GH_PR_MERGE_FAIL_LOCAL=true \
   GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
   run_merge_pr "$TEST_DIR/output-gh-local-fail.txt" 123
 rc=$?
+# The worktree-specific guidance is gone with --delete-branch (issue #713); what
+# must survive is the general contract: a nonzero exit on an already-MERGED PR
+# degrades to a warning rather than reporting a failed merge.
 if [ "$rc" = "0" ] \
   && grep -q 'WARNING: gh pr merge exited 1, but PR #123 is MERGED on GitHub.' "$TEST_DIR/output-gh-local-fail.txt" \
-  && grep -q 'git worktree remove <path>' "$TEST_DIR/output-gh-local-fail.txt" \
-  && grep -q 'git worktree prune' "$TEST_DIR/output-gh-local-fail.txt" \
+  && grep -q 'merge succeeded server-side' "$TEST_DIR/output-gh-local-fail.txt" \
+  && grep -q 'cleanup-branches.sh --remote-too' "$TEST_DIR/output-gh-local-fail.txt" \
   && grep -q '==> Done\.' "$TEST_DIR/output-gh-local-fail.txt" \
   && ! grep -q '^ERROR:' "$TEST_DIR/output-gh-local-fail.txt"; then
-  echo "==> PASS: local-delete failure on MERGED PR degrades to warning"
+  echo "==> PASS: nonzero exit on an already-MERGED PR degrades to warning"
 else
-  echo "FAIL: gh local-delete failure should warn, not error, when PR is MERGED" >&2
+  echo "FAIL: a nonzero exit on a MERGED PR must warn, not error" >&2
   echo "    rc=$rc" >&2
   cat "$TEST_DIR/output-gh-local-fail.txt" >&2
   exit 1
@@ -3375,62 +3378,47 @@ fi
 # Stacked PRs must survive the merge (issue #713).
 #
 # `gh pr merge --delete-branch` removes the base branch of anything stacked on
-# it, and GitHub marks those PRs CLOSED -- not merged -- discarding their
-# review threads. Observed on arpeggio 2026-08-10: one merge silently closed
-# two dependents, and recovery required recreating the branch at its exact
-# recorded head OID before GitHub would reopen them.
+# it, and GitHub marks those PRs CLOSED -- not merged -- discarding their review
+# threads. Observed on arpeggio 2026-08-10.
 #
-# The branch is retained rather than the merge refused: review evidence is
-# already clean by this point, so blocking would be a worse trade than leaving
-# a branch for cleanup-branches.sh to collect.
+# The first fix queried for dependents and skipped deletion when it found some.
+# Review showed that is unsafe (PR #715): the lookup and the deletion are not
+# atomic, so a PR opened in between is still closed from a stale snapshot, and
+# `gh pr list` paginates at 30 so a large stack can report "none". The merge now
+# never deletes at all, which removes both failure modes rather than narrowing
+# them. Cleanup moves to cleanup-branches.sh, which refuses to delete a branch
+# serving as an open PR's base.
 # ---------------------------------------------------------------------------
-run_dependents_case() {
+run_retention_case() {
   reset_case_files
   install_preflight_counter_fixture
   write_pr_triggered_config true 0 0
-  GH_DEPENDENT_PRS="$1" \
-    PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls-dependents" \
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls-retention" \
     GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/1' \
-    run_merge_pr "$2" 123
+    run_merge_pr "$1" 123
   rm -rf "${TEST_DIR:?}/lib"
 }
 
-echo "==> Test: a branch with dependent PRs is retained, not deleted"
-DEP_OUT="$TEST_DIR/output-dependents.txt"
-run_dependents_case "27, 28" "$DEP_OUT"
+echo "==> Test: the merge never deletes the branch"
+RETAIN_OUT="$TEST_DIR/output-retention.txt"
+run_retention_case "$RETAIN_OUT"
 if ! grep -q -- '--delete-branch' "$TEST_DIR/gh-merge-args" \
-  && grep -q 'Retaining branch' "$DEP_OUT" \
-  && grep -q '27, 28' "$DEP_OUT"; then
-  echo "==> PASS: dependent PRs keep their base branch"
+  && grep -q 'Leaving branch' "$RETAIN_OUT" \
+  && grep -q 'cleanup-branches.sh --remote-too' "$RETAIN_OUT"; then
+  echo "==> PASS: branch retained unconditionally, with cleanup named"
 else
-  echo "FAIL: a branch with dependent PRs must be retained, and the reason reported" >&2
+  echo "FAIL: merge must never pass --delete-branch, and must say how to collect the branch" >&2
   cat "$TEST_DIR/gh-merge-args" >&2
-  tail -25 "$DEP_OUT" >&2
+  tail -25 "$RETAIN_OUT" >&2
   exit 1
 fi
 
-echo "==> Test: a branch with no dependents is still deleted"
-NODEP_OUT="$TEST_DIR/output-no-dependents.txt"
-run_dependents_case "" "$NODEP_OUT"
-if grep -q -- '--delete-branch' "$TEST_DIR/gh-merge-args"; then
-  echo "==> PASS: ordinary merges still clean up their branch"
+echo "==> Test: cleanup-branches protects branches serving as an open PR base"
+if grep -q 'headRefName,baseRefName' "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" \
+  && grep -q '.headRefName, .baseRefName' "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
+  echo "==> PASS: remote cleanup scan collects bases as well as heads"
 else
-  echo "FAIL: nothing depended on the branch but it was retained anyway" >&2
-  cat "$TEST_DIR/gh-merge-args" >&2
-  tail -25 "$NODEP_OUT" >&2
-  exit 1
-fi
-
-echo "==> Test: an unanswerable dependent query retains the branch"
-FAILDEP_OUT="$TEST_DIR/output-dependents-fail.txt"
-run_dependents_case "__FAIL__" "$FAILDEP_OUT"
-if ! grep -q -- '--delete-branch' "$TEST_DIR/gh-merge-args" \
-  && grep -q 'could not determine whether any PR is based on' "$FAILDEP_OUT"; then
-  echo "==> PASS: unanswerable dependent query fails safe"
-else
-  echo "FAIL: an unanswerable dependent query must retain the branch and say so" >&2
-  cat "$TEST_DIR/gh-merge-args" >&2
-  tail -25 "$FAILDEP_OUT" >&2
+  echo "FAIL: cleanup-branches.sh must treat an open PR base as protected" >&2
   exit 1
 fi
 
