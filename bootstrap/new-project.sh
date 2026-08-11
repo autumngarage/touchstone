@@ -942,7 +942,9 @@ echo "==> Copying templates (project-owned, won't be auto-updated):"
 copy_file "$TOUCHSTONE_ROOT/templates/CLAUDE.md" "$PROJECT_DIR/CLAUDE.md"
 CLAUDE_MD_CREATED="$LAST_COPY_CREATED"
 copy_file "$TOUCHSTONE_ROOT/templates/AGENTS.md" "$PROJECT_DIR/AGENTS.md"
+AGENTS_MD_CREATED="$LAST_COPY_CREATED"
 copy_file "$TOUCHSTONE_ROOT/templates/GEMINI.md" "$PROJECT_DIR/GEMINI.md"
+GEMINI_MD_CREATED="$LAST_COPY_CREATED"
 # AGENTS.md is project-owned (copy_file skips when present), but the touchstone
 # steering block inside it is touchstone-owned. Apply or refresh the block so
 # non-Claude reviewers (Codex/Gemini) see the steering content directly — they
@@ -1247,11 +1249,24 @@ MONOREPO="$(detect_monorepo "$PROJECT_DIR")"
 TARGETS="$(detect_targets "$PROJECT_DIR")"
 
 if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ]; then
-  # Apply to project-owned AI instruction files.
+  # Placeholder substitution applies ONLY to instruction files this run created.
+  #
+  # These files are project-owned: copy_file skips them when they already exist,
+  # and LAST_COPY_CREATED records which side of that it took. Bootstrapping a
+  # pre-existing directory sets INPUT_NAME from the directory basename even when
+  # nothing was copied, so an untouched project-owned CLAUDE.md that happens to
+  # contain `{{PROJECT_NAME}}` would be rewritten with no backup.
+  #
+  # That path was dormant only because `sed -i ''` was a silent no-op on GNU
+  # sed. Making the substitution work (#719) also makes this reachable on Linux
+  # and Git Bash, so the guard has to land in the same change (PR #747 review).
   if [ -n "$INPUT_NAME" ]; then
     ESCAPED_NAME="$(escape_sed_replacement "$INPUT_NAME")"
-    for placeholder_file in CLAUDE.md AGENTS.md GEMINI.md; do
-      if [ -f "$PROJECT_DIR/$placeholder_file" ]; then
+    for placeholder_entry in "CLAUDE.md:$CLAUDE_MD_CREATED" \
+      "AGENTS.md:$AGENTS_MD_CREATED" "GEMINI.md:$GEMINI_MD_CREATED"; do
+      placeholder_file="${placeholder_entry%%:*}"
+      placeholder_created="${placeholder_entry##*:}"
+      if [ "$placeholder_created" = "true" ] && [ -f "$PROJECT_DIR/$placeholder_file" ]; then
         touchstone_sed_inplace "s/{{PROJECT_NAME}}/$ESCAPED_NAME/g" "$PROJECT_DIR/$placeholder_file"
       fi
     done
@@ -1259,14 +1274,14 @@ if [ -n "$INPUT_NAME" ] || [ -n "$INPUT_DESC" ] || [ -n "$INPUT_TEST" ]; then
 
   if [ -n "$INPUT_DESC" ]; then
     ESCAPED_DESC="$(escape_sed_replacement "$INPUT_DESC")"
-    if [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
+    if [ "$CLAUDE_MD_CREATED" = "true" ] && [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
       touchstone_sed_inplace "s/{{PROJECT_DESCRIPTION[^}]*}}/$ESCAPED_DESC/g" "$PROJECT_DIR/CLAUDE.md"
     fi
   fi
 
   if [ -n "$INPUT_TEST" ]; then
     ESCAPED_TEST="$(escape_sed_replacement "$INPUT_TEST")"
-    if [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
+    if [ "$CLAUDE_MD_CREATED" = "true" ] && [ -f "$PROJECT_DIR/CLAUDE.md" ]; then
       touchstone_sed_inplace "s/{{TEST_COMMAND[^}]*}}/$ESCAPED_TEST/g" "$PROJECT_DIR/CLAUDE.md"
     fi
   fi

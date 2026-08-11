@@ -400,6 +400,39 @@ if grep -q '{{PROJECT_NAME}}' "$PROJECT/GEMINI.md" 2>/dev/null; then
 fi
 assert_contains "$PROJECT/CLAUDE.md" "test-project"
 assert_contains "$PROJECT/AGENTS.md" "test-project"
+
+# Placeholder substitution must touch ONLY files this bootstrap created.
+#
+# copy_file skips project-owned instruction files that already exist, but a
+# non-interactive bootstrap still derives INPUT_NAME from the directory
+# basename — so a hand-written CLAUDE.md that happens to contain the literal
+# {{PROJECT_NAME}} would be rewritten with no backup. The path was dormant only
+# because `sed -i ''` silently did nothing on GNU sed; fixing that (#719) makes
+# it reachable, so this pins the guard (PR #747 review).
+echo "==> Test: bootstrap leaves pre-existing instruction files untouched"
+PROJECT_PREEXISTING="$TEST_DIR/preexisting-instructions"
+mkdir -p "$PROJECT_PREEXISTING"
+PREEXISTING_BODY='# Hand written
+
+Owned by the project. Mentions {{PROJECT_NAME}} on purpose, as documentation
+of the template placeholder. Bootstrap must not rewrite this.'
+for f in CLAUDE.md AGENTS.md GEMINI.md; do
+  printf '%s\n' "$PREEXISTING_BODY" >"$PROJECT_PREEXISTING/$f"
+done
+(cd "$PROJECT_PREEXISTING" && git init -q 2>/dev/null || true)
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_PREEXISTING" \
+  >"$TEST_DIR/preexisting.log" 2>&1 || true
+for f in CLAUDE.md AGENTS.md GEMINI.md; do
+  if ! grep -q '{{PROJECT_NAME}}' "$PROJECT_PREEXISTING/$f" 2>/dev/null; then
+    echo "FAIL: bootstrap rewrote pre-existing project-owned $f" >&2
+    echo "      it is not touchstone's to edit; copy_file skipped it" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+  if ! grep -q 'Hand written' "$PROJECT_PREEXISTING/$f" 2>/dev/null; then
+    echo "FAIL: pre-existing $f lost its original content during bootstrap" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+done
 assert_contains "$PROJECT/GEMINI.md" "test-project"
 assert_contains "$PROJECT/GEMINI.md" "PR-visible reviewer"
 # Touchstone steering content must reach non-Claude reviewers via AGENTS.md.
