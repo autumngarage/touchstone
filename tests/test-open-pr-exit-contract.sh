@@ -1464,6 +1464,26 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# Every read of an object from the TRUSTED BASE must disable replacement
+# objects. A `refs/replace/<oid>` entry makes cat-file, archive, and show
+# transparently serve a substituted object while the displayed OID is unchanged
+# — so the extracted merge gate, or the review policy governing it, could be
+# attacker-supplied with the reviewed SHA printed beside it. This code exists to
+# take authorization out of the PR's control, so it must not read through a
+# redirection the PR can add (PR #707 review).
+echo "==> Trusted-base object reads disable replacement objects"
+unprotected="$(grep -nE '(^|[^_A-Z])git (show|archive|cat-file)' \
+  "$TOUCHSTONE_ROOT/scripts/open-pr.sh" \
+  | grep -vE 'GIT_NO_REPLACE_OBJECTS' \
+  | grep -vE '^[0-9]+:[[:space:]]*#' || true)"
+if [ -n "$unprotected" ]; then
+  echo "    FAIL: object read without GIT_NO_REPLACE_OBJECTS=1:" >&2
+  printf '%s\n' "$unprotected" | sed 's/^/      /' >&2
+  ERRORS=$((ERRORS + 1))
+else
+  echo "    PASS"
+fi
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------

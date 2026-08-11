@@ -144,14 +144,22 @@ materialize_trusted_merge_authorizer() {
   # Check presence before archiving: `git archive` fails on an unmatched
   # pathspec, so without this the precise diagnosis is lost in a generic
   # extraction error.
-  if ! git cat-file -e "$base_oid:scripts/merge-pr.sh" 2>/dev/null; then
+  #
+  # GIT_NO_REPLACE_OBJECTS=1 on every object read here. A `refs/replace/<oid>`
+  # entry in the checkout makes both `git cat-file` and `git archive`
+  # transparently serve the REPLACEMENT object while the displayed base OID is
+  # unchanged — so the extracted "trusted base gate" would be attacker-supplied
+  # merge-pr.sh with the reviewed SHA still printed beside it. This function
+  # exists to take the authorization logic out of the PR's control, so it must
+  # not read through a redirection the PR can add (PR #707 review).
+  if ! GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "$base_oid:scripts/merge-pr.sh" 2>/dev/null; then
     echo "ERROR: base $base_branch (${base_oid:0:12}) has no scripts/merge-pr.sh." >&2
     echo "       The merge gate must come from the base, and this base does not carry one." >&2
     echo "       Land the Touchstone delivery scripts on $base_branch first." >&2
     return 1
   fi
 
-  if ! git archive "$base_oid" scripts/merge-pr.sh lib 2>/dev/null | tar -x -C "$bundle" 2>/dev/null; then
+  if ! GIT_NO_REPLACE_OBJECTS=1 git archive "$base_oid" scripts/merge-pr.sh lib 2>/dev/null | tar -x -C "$bundle" 2>/dev/null; then
     echo "ERROR: could not extract scripts/merge-pr.sh and lib/ from base $base_branch (${base_oid:0:12})." >&2
     echo "       Refusing to authorize a merge with the gate from this worktree." >&2
     return 1
@@ -364,8 +372,10 @@ load_open_pr_review_request_config() {
     return 1
   fi
 
+  # Same reasoning as the gate extraction above: this reads review POLICY from
+  # the trusted base, so a replacement object must not be able to supply it.
   for rel in .touchstone-review.toml .codex-review.toml; do
-    if ! git cat-file -e "$trusted_ref:$rel" 2>/dev/null; then
+    if ! GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "$trusted_ref:$rel" 2>/dev/null; then
       continue
     fi
     if ! config_tmp="$(mktemp -t touchstone-open-pr-review-config.XXXXXX)"; then
@@ -373,7 +383,7 @@ load_open_pr_review_request_config() {
       echo "       source: $trusted_ref:$rel" >&2
       return 1
     fi
-    if ! git show "$trusted_ref:$rel" >"$config_tmp" 2>/dev/null; then
+    if ! GIT_NO_REPLACE_OBJECTS=1 git show "$trusted_ref:$rel" >"$config_tmp" 2>/dev/null; then
       rm -f "$config_tmp"
       echo "ERROR: Failed to extract trusted review request policy." >&2
       echo "       source: $trusted_ref:$rel" >&2
