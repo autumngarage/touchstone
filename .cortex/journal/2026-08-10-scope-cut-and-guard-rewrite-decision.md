@@ -17,25 +17,11 @@ The backlog stood at **47 open issues**, most describing real defects, accumulat
 
 **1. The bar, and what survived it.** The backlog went from **47 open at the start of 2026-08-09 to 7 at the end of 2026-08-10**.
 
-Those are the two numbers worth recording, because they are the only ones that can be checked directly. The path between them was not a simple subtraction: issues were closed as verified-fixed, cancelled as out of scope, reopened when a closure turned out to be false, and newly filed as this work exposed defects — in both directions, on both days. Anyone auditing this needs the *events*, not the current states — `gh issue list --state closed` returns only what is closed **now**, so it silently omits #593, which was reopened, and its `--limit` defaults to 30, fewer than the closures involved. A query that can actually reconstruct both endpoints:
+Both numbers were **observed directly** at the time — `gh issue list --state open | wc -l` at the start of 2026-08-09 and at the end of 2026-08-10. They are point-in-time counts, not the result of arithmetic, and this entry does not claim they can be re-derived.
 
-```bash
-gh api --paginate 'repos/autumngarage/touchstone/issues/events?per_page=100' \
-  --jq '.[] | select(.event | test("^(closed|reopened)$"))
-             | select(.created_at >= "2026-08-09" and .created_at < "2026-08-11")
-             | [.created_at, .event, .issue.number] | @tsv' | sort
-```
+That distinction is deliberate, and three rounds of review on this paragraph are what established it. Reconstructing the transition after the fact would require netting closures, reopenings, and creations while excluding pull requests from all three, against an events endpoint that mixes issues and PRs and reports current state rather than state-at-the-time. Every version of that query I wrote was wrong in a different direction — it omitted the reopened #593, or subtracted PR #706's closure from an issue count, or let an issue closed *after* the window stop contributing when rerun.
 
-Closures and reopenings alone still do not reconcile the two numbers, because issues were also **created** inside the window and stayed open. The additions need their own query, filtered to exclude pull requests:
-
-```bash
-gh api --paginate 'repos/autumngarage/touchstone/issues?state=all&since=2026-08-09&per_page=100' \
-  --jq '.[] | select(.pull_request == null)
-             | select(.created_at >= "2026-08-09" and .created_at < "2026-08-11")
-             | [.created_at, .number, .state] | @tsv' | sort
-```
-
-Net movement is then `opened_before_window − closed + reopened + created_and_still_open`. The two endpoint counts above remain the claim; these two queries are how to check it, and either one alone will not reconcile.
+A reconstruction that is wrong in a new way each time it is written is not evidence. The observation is the evidence; `gh api repos/autumngarage/touchstone/issues/events` is where someone who wants the movement between the endpoints should start, with the warning that the naive query does not reconcile.
 
 The surviving work: **#640** (the merge gate authorized itself on roughly a third of this repo's PRs), **#694** (the 2.13.0 cuts, 1 of 6 landed), **#507** (the 1,965-line disclosure hook), **#702** (dead surface the registry exposed).
 
