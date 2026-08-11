@@ -121,6 +121,12 @@ if printf '%s\n' "$STRIPPED" | grep -q 'known_sha' \
 else
   fail "sweep/status paths must pass their known SHA so pending publishes before the fallible PR lookup"
 fi
+if printf '%s\n' "$STRIPPED" | grep -q 'PR_EVENT_HEAD_SHA' \
+  && printf '%s\n' "$STRIPPED" | grep -q 'evaluate_pr "\$PR_NUMBER" "\${PR_EVENT_HEAD_SHA:-}"'; then
+  ok "pull_request events pass the payload head — the known-SHA enumeration is closed by construction"
+else
+  fail "the generic path must pass the pull_request payload head as known_sha (retarget with unchanged head)"
+fi
 
 echo "==> Trusted-author allowlist is never PR-controlled"
 if printf '%s\n' "$STRIPPED" | grep -q -F 'chatgpt-codex-connector,chatgpt-codex-connector[bot]'; then

@@ -225,6 +225,13 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+      # The payload head, present on pull_request and pull_request_review
+      # events and empty on issue comments. Passed as known_sha so the prior
+      # verdict at that head is neutralized before the fallible coordinate
+      # lookup — a retarget (edited) with an unchanged head otherwise leaves
+      # the old base's green merge-eligible if the lookup fails
+      # (PR #753 review, round 8).
+      PR_EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       # status-event coordinates, passed through env and never interpolated
       # into the script: a status context is free text writable by any
       # statuses:write holder. Empty for every other event.
@@ -935,5 +942,9 @@ jobs:
               fi
             fi
           else
-            evaluate_pr "$PR_NUMBER"
+            # With this, every event family either passes its known SHA
+            # (sweep: sweep_head; status: status_sha; pull_request*: the
+            # payload head) or provably has none (issue comments). The
+            # known-SHA enumeration is closed by construction.
+            evaluate_pr "$PR_NUMBER" "${PR_EVENT_HEAD_SHA:-}"
           fi
