@@ -69,6 +69,18 @@ commit_all() {
   fi
 }
 
+# Fast-forward the base branch over the chore/touchstone-* branch a
+# branch-creating update left checked out. Updates refuse non-default
+# checkouts (#772), so multi-update flows must return to base between runs.
+return_to_base_branch() {
+  local repo="$1"
+  local base="$2"
+  local update_branch
+  update_branch="$(git -C "$repo" branch --show-current)"
+  git -C "$repo" checkout -q "$base"
+  git -C "$repo" merge -q --ff-only "$update_branch"
+}
+
 PROJECT="$TEST_DIR/test-project"
 
 # --------------------------------------------------------------------------
@@ -328,6 +340,8 @@ else
   echo "    PASS: project-owned script mode was preserved"
 fi
 
+return_to_base_branch "$PROJECT" "$BASE_BRANCH"
+
 # --------------------------------------------------------------------------
 # Test 2b: --in-place updates the current feature branch without creating a
 # chore/touchstone-* branch. This is the explicit escape hatch for drivers that
@@ -401,9 +415,12 @@ echo "--- Step 3b2: Retired worker files are reported, never deleted ---"
 RETIRED_WORKER_PROJECT="$TEST_DIR/retired-worker-project"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$RETIRED_WORKER_PROJECT" --no-register >/dev/null
 configure_git "$RETIRED_WORKER_PROJECT"
-# A project still carrying the engine Touchstone retired in 2.13.0.
+# A project still carrying the engine Touchstone retired in 2.13.0. Managed
+# content must be genuinely stale: a stamp-only difference no longer triggers
+# an update (#773).
 printf '#!/usr/bin/env bash\necho worker\n' >"$RETIRED_WORKER_PROJECT/scripts/worker.sh"
 chmod +x "$RETIRED_WORKER_PROJECT/scripts/worker.sh"
+printf '# stale managed drift\n' >>"$RETIRED_WORKER_PROJECT/lib/toml.sh"
 echo "0000000000000000000000000000000000000005" >"$RETIRED_WORKER_PROJECT/.touchstone-version"
 commit_all "$RETIRED_WORKER_PROJECT" "simulate project carrying the retired worker engine"
 
@@ -431,6 +448,10 @@ printf '\nlib/\n' >>"$IGNORED_MANAGED_PROJECT/.gitignore"
 git -C "$IGNORED_MANAGED_PROJECT" rm --cached -r lib >/dev/null
 echo "0000000000000000000000000000000000000005" >"$IGNORED_MANAGED_PROJECT/.touchstone-version"
 commit_all "$IGNORED_MANAGED_PROJECT" "simulate repo ignoring Touchstone lib files"
+# Genuine managed drift in the now-ignored lib copy (#773: stamp-only
+# differences no longer trigger an update). Ignored files are invisible to
+# the dirty check, so the update must still overwrite and force-stage this.
+printf '# stale managed drift\n' >>"$IGNORED_MANAGED_PROJECT/lib/preflight.sh"
 
 (cd "$IGNORED_MANAGED_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/update-ignored-managed-output.txt" 2>&1
 
@@ -470,6 +491,7 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SCRIPT_SYNC_PROJECT" --no-reg
 configure_git "$SCRIPT_SYNC_PROJECT"
 commit_all "$SCRIPT_SYNC_PROJECT" "initial script sync test project"
 git -C "$SCRIPT_SYNC_PROJECT" checkout -q -b feature/script-sync-guard
+printf '# stale managed drift\n' >>"$SCRIPT_SYNC_PROJECT/lib/toml.sh"
 echo "0000000000000000000000000000000000000014" >"$SCRIPT_SYNC_PROJECT/.touchstone-version"
 commit_all "$SCRIPT_SYNC_PROJECT" "simulate stale script sync touchstone state"
 
@@ -742,6 +764,9 @@ echo "--- Step 4: Verify project-owned files are untouched ---"
 
 echo "# my project context" >>"$PROJECT/CLAUDE.md"
 printf '{"custom": true}\n' >"$PROJECT/.markdownlint.json"
+# Managed drift so the update actually runs (#773: stamp-only differences no
+# longer trigger one) — the point is that it must not touch project-owned files.
+rm "$PROJECT/scripts/touchstone-run.sh"
 echo "0000000000000000000000000000000000000001" >"$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate project-owned customization"
 CLAUDE_CHECKSUM="$(md5 -q "$PROJECT/CLAUDE.md" 2>/dev/null || md5sum "$PROJECT/CLAUDE.md" | awk '{print $1}')"
@@ -768,6 +793,8 @@ fi
 
 assert_not_exists "$PROJECT/CLAUDE.md.bak"
 
+return_to_base_branch "$PROJECT" "$BASE_BRANCH"
+
 # Existing projects from before Gemini support should receive GEMINI.md once,
 # but the file remains project-owned after that.
 rm -f "$PROJECT/GEMINI.md"
@@ -784,6 +811,8 @@ if ! git -C "$PROJECT" log -1 --name-only --pretty=format: | grep -qx 'GEMINI.md
   echo "FAIL: update commit must include GEMINI.md when adding the project-owned Gemini instructions" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+return_to_base_branch "$PROJECT" "$BASE_BRANCH"
 
 # --------------------------------------------------------------------------
 # An EXISTING GEMINI.md with a stale managed block must be refreshed and
@@ -824,6 +853,8 @@ if ! git -C "$PROJECT" diff --quiet -- GEMINI.md; then
   echo "FAIL: GEMINI.md still has unstaged changes after the update commit" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+return_to_base_branch "$PROJECT" "$BASE_BRANCH"
 
 # --------------------------------------------------------------------------
 # A pre-existing gitignored, untracked GEMINI.md must NOT be force-staged.
@@ -1228,6 +1259,7 @@ chmod +x "$SHIP_FAIL_BIN/gh"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SHIP_FAIL_PROJECT" --no-register --type generic >/dev/null
 configure_git "$SHIP_FAIL_PROJECT"
 commit_all "$SHIP_FAIL_PROJECT" "initial ship-fail project"
+rm "$SHIP_FAIL_PROJECT/scripts/claim-issue.sh"
 echo "0000000000000000000000000000000000000013" >"$SHIP_FAIL_PROJECT/.touchstone-version"
 commit_all "$SHIP_FAIL_PROJECT" "simulate stale ship-fail state"
 
@@ -1264,6 +1296,7 @@ CHECK_PROJECT="$TEST_DIR/check-project"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$CHECK_PROJECT" --no-register >/dev/null
 configure_git "$CHECK_PROJECT"
 commit_all "$CHECK_PROJECT" "initial check project"
+rm "$CHECK_PROJECT/scripts/claim-issue.sh"
 echo "0000000000000000000000000000000000000003" >"$CHECK_PROJECT/.touchstone-version"
 commit_all "$CHECK_PROJECT" "simulate old check project"
 CHECK_BRANCH="$(git -C "$CHECK_PROJECT" rev-parse --abbrev-ref HEAD)"
@@ -1302,6 +1335,8 @@ exit 0
 EOF
 cp "$SHIP_REFUSAL_PROJECT/.git/hooks/pre-commit" "$SHIP_REFUSAL_PROJECT/.git/hooks/pre-push"
 chmod +x "$SHIP_REFUSAL_PROJECT/.git/hooks/pre-commit" "$SHIP_REFUSAL_PROJECT/.git/hooks/pre-push"
+SHIP_REFUSAL_BRANCH="$(git -C "$SHIP_REFUSAL_PROJECT" branch --show-current)"
+rm "$SHIP_REFUSAL_PROJECT/scripts/claim-issue.sh"
 printf 'stale-version\n' >"$SHIP_REFUSAL_PROJECT/.touchstone-version"
 commit_all "$SHIP_REFUSAL_PROJECT" "force stale version"
 SHIP_REFUSAL_OUT="$TEST_DIR/ship-refusal-output.txt"
@@ -1320,7 +1355,10 @@ assert_not_contains "$SHIP_REFUSAL_OUT" 'Shipping update via scripts/open-pr.sh'
 # flagged on update — the fixed template never reaches existing projects, so
 # the update warning is the migration surface (PR #638 review). A real
 # (non-dry-run) update is required: dry runs and up-to-date projects exit
-# before the hook section runs.
+# before the hook section runs. The refused --ship above left the checkout on
+# its chore/touchstone-* branch; return to the default branch first (#772),
+# where scripts/claim-issue.sh is still missing, keeping content stale.
+git -C "$SHIP_REFUSAL_PROJECT" checkout -q "$SHIP_REFUSAL_BRANCH"
 printf '#!/usr/bin/env bash\ngit config --unset-all core.hooksPath 2>/dev/null || true\n' \
   >"$SHIP_REFUSAL_PROJECT/setup.sh"
 printf 'stale-version-2\n' >"$SHIP_REFUSAL_PROJECT/.touchstone-version"
@@ -1329,6 +1367,134 @@ LEGACY_SETUP_OUT="$TEST_DIR/legacy-setup-output.txt"
 (cd "$SHIP_REFUSAL_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$LEGACY_SETUP_OUT" 2>&1 || true
 assert_contains "$LEGACY_SETUP_OUT" 'legacy core.hooksPath reset'
+
+# --------------------------------------------------------------------------
+# #772: a branch-creating update must fork from the default branch. On a
+# feature-branch checkout it refuses with the exact remedy instead of carrying
+# the feature's commits into the chore PR (arpeggio#35, convoy#234).
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 8: update refuses to branch from a non-default checkout (#772) ---"
+
+OFFDEFAULT_PROJECT="$TEST_DIR/off-default-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$OFFDEFAULT_PROJECT" --no-register >/dev/null
+configure_git "$OFFDEFAULT_PROJECT"
+commit_all "$OFFDEFAULT_PROJECT" "initial off-default project"
+OFFDEFAULT_BASE="$(git -C "$OFFDEFAULT_PROJECT" branch --show-current)"
+# Genuine staleness on the default branch, inherited by the feature branch.
+rm "$OFFDEFAULT_PROJECT/scripts/claim-issue.sh"
+echo "0000000000000000000000000000000000000017" >"$OFFDEFAULT_PROJECT/.touchstone-version"
+commit_all "$OFFDEFAULT_PROJECT" "simulate stale state on default branch"
+git -C "$OFFDEFAULT_PROJECT" checkout -q -b feature/in-flight
+printf 'feature work\n' >"$OFFDEFAULT_PROJECT/feature.txt"
+commit_all "$OFFDEFAULT_PROJECT" "feature commit that must not ship in a chore PR"
+OFFDEFAULT_FEATURE_HEAD="$(git -C "$OFFDEFAULT_PROJECT" rev-parse HEAD)"
+
+OFFDEFAULT_RC=0
+(cd "$OFFDEFAULT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/off-default-output.txt" 2>&1 || OFFDEFAULT_RC=$?
+
+if [ "$OFFDEFAULT_RC" = "0" ]; then
+  echo "FAIL: update must refuse to create a chore/touchstone-* branch from a feature-branch checkout (#772)" >&2
+  cat "$TEST_DIR/off-default-output.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/off-default-output.txt" "git checkout $OFFDEFAULT_BASE && git pull --rebase"
+if git -C "$OFFDEFAULT_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
+  echo "FAIL: refused off-default update still created a chore/touchstone-* branch" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ "$(git -C "$OFFDEFAULT_PROJECT" branch --show-current)" != "feature/in-flight" ]; then
+  echo "FAIL: refused off-default update moved the checkout off the feature branch" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ "$(git -C "$OFFDEFAULT_PROJECT" rev-parse HEAD)" != "$OFFDEFAULT_FEATURE_HEAD" ]; then
+  echo "FAIL: refused off-default update changed the feature branch head" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Same project from the default branch: the update proceeds, forks from the
+# default-branch head, and never contains the feature commit.
+git -C "$OFFDEFAULT_PROJECT" checkout -q "$OFFDEFAULT_BASE"
+OFFDEFAULT_BASE_HEAD="$(git -C "$OFFDEFAULT_PROJECT" rev-parse HEAD)"
+(cd "$OFFDEFAULT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/off-default-ok-output.txt" 2>&1
+assert_contains "$TEST_DIR/off-default-ok-output.txt" 'Creating update branch: chore/touchstone-'
+assert_contains "$TEST_DIR/off-default-ok-output.txt" 'Committed: chore: update touchstone to'
+if [ "$(git -C "$OFFDEFAULT_PROJECT" rev-parse HEAD^)" != "$OFFDEFAULT_BASE_HEAD" ]; then
+  echo "FAIL: default-branch update commit should fork from the default-branch head" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if git -C "$OFFDEFAULT_PROJECT" log --format=%H | grep -q "$OFFDEFAULT_FEATURE_HEAD"; then
+  echo "FAIL: chore update branch contains the feature branch's commit (#772)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
+# #773: the arpeggio state — every managed file byte-identical to the
+# installed touchstone, but the stamp records a different identity (a build
+# SHA). The tree must NOT read as stale: no "Needs update", no update branch,
+# no stale-guard refusal. Genuinely stale content must still be refused.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 9: stamp identity differs but content matches -> not stale (#773) ---"
+
+STAMP_PROJECT="$TEST_DIR/stamp-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$STAMP_PROJECT" --no-register >/dev/null
+configure_git "$STAMP_PROJECT"
+commit_all "$STAMP_PROJECT" "initial stamp project"
+STAMP_BRANCH="$(git -C "$STAMP_PROJECT" branch --show-current)"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$STAMP_PROJECT/.touchstone-version"
+commit_all "$STAMP_PROJECT" "simulate sha-stamped content-identical tree"
+
+(cd "$STAMP_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/stamp-check-output.txt" 2>&1
+assert_contains "$TEST_DIR/stamp-check-output.txt" 'Already up to date'
+assert_not_contains "$TEST_DIR/stamp-check-output.txt" 'Needs update'
+
+(cd "$STAMP_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/stamp-update-output.txt" 2>&1
+assert_contains "$TEST_DIR/stamp-update-output.txt" 'Already up to date'
+if git -C "$STAMP_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
+  echo "FAIL: content-identical tree must not produce an update branch (#773)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ "$(tr -d '[:space:]' <"$STAMP_PROJECT/.touchstone-version")" != "ffffffffffffffffffffffffffffffffffffffff" ]; then
+  echo "FAIL: content-identical tree must not have its stamp rewritten outside a reviewable update" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# The stale-guard path that blocked every arpeggio PR: a workflow script on a
+# feature branch must NOT refuse when only the stamp identity differs.
+# Fork explicitly from the sha-stamped base branch: without this, code that
+# creates an update branch above (the pre-#773 behavior) leaves HEAD on the
+# chore branch with a rewritten stamp, and this sub-case would pass for the
+# wrong reason instead of exercising the identity mismatch.
+git -C "$STAMP_PROJECT" checkout -q "$STAMP_BRANCH"
+git -C "$STAMP_PROJECT" checkout -q -b feature/stamp-work
+STAMP_GUARD_OUT="$TEST_DIR/stamp-guard-output.txt"
+# rc is not discriminating here (merge-pr's usage error and a guard refusal
+# both exit 2); the output assertions below carry the regression.
+(
+  cd "$STAMP_PROJECT"
+  PATH="$SCRIPT_SYNC_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    TOUCHSTONE_BIN="$TOUCHSTONE_ROOT/bin/touchstone" \
+    TOUCHSTONE_SCRIPT_SYNC_FAKE_LOG="$TEST_DIR/stamp-guard.log" \
+    bash scripts/merge-pr.sh not-a-pr
+) >"$STAMP_GUARD_OUT" 2>&1 || true
+
+assert_not_contains "$STAMP_GUARD_OUT" 'project-local workflow files are stale'
+assert_contains "$STAMP_GUARD_OUT" 'Usage: bash scripts/merge-pr.sh <pr-number>'
+
+# Genuinely stale managed content must still read as stale.
+git -C "$STAMP_PROJECT" checkout -q "$STAMP_BRANCH"
+printf '# genuinely stale managed drift\n' >>"$STAMP_PROJECT/lib/toml.sh"
+commit_all "$STAMP_PROJECT" "simulate genuinely stale managed content"
+
+(cd "$STAMP_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/stamp-stale-check-output.txt" 2>&1
+assert_contains "$TEST_DIR/stamp-stale-check-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/stamp-stale-check-output.txt" 'Already up to date'
 
 # --------------------------------------------------------------------------
 # Results

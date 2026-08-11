@@ -54,6 +54,9 @@ make_stale_project() {
   bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$project" --no-register >/dev/null
   configure_git "$project"
   commit_all "$project" "initial project"
+  # Genuine managed drift, committed: a stamp-only difference no longer
+  # counts as stale (touchstone#773).
+  printf '# simulate stale managed content\n' >>"$project/lib/events.sh"
   printf '%s\n' "$old_id" >"$project/.touchstone-version"
   commit_all "$project" "simulate stale touchstone"
 }
