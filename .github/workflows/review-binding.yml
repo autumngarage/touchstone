@@ -925,6 +925,19 @@ jobs:
                 ;;
             esac
             status_sha="${STATUS_SHA:?}"
+            # Neutralize BEFORE discovery: the commits/<sha>/pulls lookup
+            # below is itself fallible, and a failure there under set -e must
+            # not leave a prior green standing after a status event changed
+            # this head's evidence (PR #753 review, round 10). The SHA is in
+            # hand before any API call — so the pending run posts first, and
+            # every later failure in this path fails closed behind it.
+            gh api -X POST "repos/$REPO/check-runs" \
+              -f name=review-binding \
+              -f head_sha="$status_sha" \
+              -f status=in_progress \
+              -f "output[title]=Evaluating review binding" \
+              -f "output[summary]=A review-request status changed the evidence for head \`$status_sha\`. If this run dies before completing, the check stays non-green (fail closed)." \
+              --jq '.id' >/dev/null
             # Re-evaluate every open PR whose head IS this commit. Naturally
             # bounded: two or more PRs sharing the head fail closed under the
             # shared-head guard, so the fan-out stays tiny by construction.

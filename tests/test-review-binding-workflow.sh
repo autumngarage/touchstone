@@ -127,6 +127,15 @@ if grep -q 'known_sha' "$STRIPPED_FILE" \
 else
   fail "sweep/status paths must pass their known SHA so pending publishes before the fallible PR lookup"
 fi
+# The status path must neutralize BEFORE its own discovery lookup too — the
+# commits/<sha>/pulls call is fallible and precedes evaluate_pr entirely
+# (PR #753 review, round 10). Assert the pending POST sits between the
+# status_sha assignment and the pulls discovery, by file order.
+if awk '/status_sha="\$\{STATUS_SHA/{a=NR} /check-runs/{if (a && !b) b=NR} /commits\/\$status_sha\/pulls/{c=NR} END{exit !(a && b && c && a<b && b<c)}' "$STRIPPED_FILE"; then
+  ok "status path posts pending on STATUS_SHA before PR discovery"
+else
+  fail "the status fan-out must neutralize the prior verdict before its fallible discovery lookup"
+fi
 if grep -q 'PR_EVENT_HEAD_SHA' "$STRIPPED_FILE" \
   && grep -q 'evaluate_pr "\$PR_NUMBER" "\${PR_EVENT_HEAD_SHA:-}"' "$STRIPPED_FILE"; then
   ok "pull_request events pass the payload head — the known-SHA enumeration is closed by construction"
