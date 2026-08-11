@@ -168,8 +168,17 @@ touchstone_block_apply() {
     return 0
   fi
 
-  # Atomic replace; preserve the file's permissions.
-  cat "$out_file" >"$target"
+  # Replace preserving the file's permissions — and PROPAGATE the write's
+  # status. A readable-but-unwritable target (mode 0444) fails this redirect,
+  # and the cleanup below must not launder that into success: callers commit
+  # version bumps on this function's word, and a stale managed block behind a
+  # reported success is exactly the silent-failure class (PR #703 review).
+  local write_status=0
+  cat "$out_file" >"$target" || write_status=$?
   rm -f "$block_file" "$out_file"
+  if [ "$write_status" -ne 0 ]; then
+    echo "ERROR: touchstone_block_apply: could not write the managed block to $target (status $write_status)." >&2
+    return 1
+  fi
   return 0
 }

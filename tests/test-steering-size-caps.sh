@@ -106,6 +106,19 @@ registry_collect_entry() {
   # first-wins, letting a second contradictory declaration borrow the first
   # one's valid values — a second `bin/touchstone` table with job = "vibes"
   # passed the whole suite (PR #703 review). Record the collision instead.
+  #
+  # The repeat must be detected at the TABLE level, not only per key: a
+  # capability split across two headers with disjoint keys (job in one table,
+  # why in the other) has no repeated key, yet merges into one valid-looking
+  # record from ambiguous TOML (PR #703 review, follow-up). A table is
+  # re-entered when its section returns after another section intervened.
+  if [ "$(cat "$REG_SCRATCH/last_section" 2>/dev/null)" != "$p" ]; then
+    if [ -f "$REG_SCRATCH/seen_sections" ] && grep -Fxq "$p" "$REG_SCRATCH/seen_sections"; then
+      printf 'duplicate\t<repeated table header>\n' >>"$f"
+    fi
+    printf '%s\n' "$p" >>"$REG_SCRATCH/seen_sections"
+    printf '%s' "$p" >"$REG_SCRATCH/last_section"
+  fi
   if [ -f "$f" ] && awk -F'\t' -v k="$key" '$1 == k { found = 1 } END { exit !found }' "$f"; then
     printf 'duplicate\t%s\n' "$key" >>"$f"
   fi
@@ -131,6 +144,10 @@ registry_validate_entries() {
   mkdir -p "$REG_SCRATCH/entries"
   REG_ENTRIES_DIR="$REG_SCRATCH/entries"
   : >"$REG_SCRATCH/paths.raw"
+  # Table-repeat tracking is per-parse state: without the reset, sections seen
+  # in one fixture's validation would read as repeats in the next.
+  : >"$REG_SCRATCH/seen_sections"
+  : >"$REG_SCRATCH/last_section"
 
   toml_parse "$REGISTRY_FILE" registry_collect_entry
   sort -u "$REG_SCRATCH/paths.raw" >"$REG_SCRATCH/declared"
@@ -331,6 +348,16 @@ else
 job = "constrain"
 why = "Forces shipping through the PR path and hands off to the merge gate."'
 
+  # A capability split across REPEATED table headers with disjoint keys has no
+  # repeated key, yet is ambiguous TOML that first-wins parsing merges into one
+  # valid-looking record (PR #703 review, follow-up).
+  reject_case "a repeated table header with disjoint keys" "$VALID_ANCHOR
+[\"lib/x.sh\"]
+job = \"support\"
+serves = \"scripts/open-pr.sh\"
+[\"scripts/open-pr.sh\"]
+why = \"a second header for an already-declared capability\"" "more than once"
+
   reject_case "an unknown job" "$VALID_ANCHOR
 [\"lib/x.sh\"]
 job = \"vibes\"
@@ -422,8 +449,10 @@ why = \"A second path that differs only by slash versus percent sign.\"" "unknow
     echo "  NOTE: an empty registry validates vacuously; surface parity is what catches it"
   fi
 
-  # Restore the real registry's parse for anything downstream.
-  registry_validate_entries "$REGISTRY" "$REG_DIR" >/dev/null || true
+  # No restore-parse: nothing downstream reads the restored entries — the
+  # remainder of the file consumes only $ERRORS — and reparsing the full real
+  # ledger cost ~19 seconds of a guard lib/preflight.sh selects for every
+  # governed-path change (PR #703 review).
 fi
 
 if [ "$ERRORS" -gt 0 ]; then

@@ -212,6 +212,26 @@ echo "$rendered" | grep -qF "No band-aids" \
 echo "$rendered" | grep -qF "scripts/open-pr.sh --auto-merge" \
   || fail "rendered block missing lifecycle commands"
 
+# --- Case 10: a failed replacement write is a FAILURE, not a silent success --
+# A readable-but-unwritable target (0444) fails the final redirect; the
+# cleanup after it must not launder that into return 0 — update-project
+# commits version bumps on this function's word (PR #703 review).
+RO_TARGET="$TEST_DIR/readonly-target.md"
+printf '# Project\n\n<!-- touchstone:begin -->\nstale\n<!-- touchstone:end -->\n' >"$RO_TARGET"
+# Ensure the content WOULD change, then drop write permission.
+chmod 0444 "$RO_TARGET"
+if [ -w "$RO_TARGET" ]; then
+  echo "  SKIP: platform ignores mode 0444 (no unwritable-file precondition)"
+else
+  RO_STATUS=0
+  touchstone_block_apply "$RO_TARGET" "$TOUCHSTONE_ROOT" 2>/dev/null || RO_STATUS=$?
+  if [ "$RO_STATUS" -eq 0 ]; then
+    fail "block_apply reported success while the target was unwritable"
+  fi
+  grep -qF 'stale' "$RO_TARGET" || fail "unwritable target was somehow modified"
+fi
+chmod 0644 "$RO_TARGET" 2>/dev/null || true
+
 # --- Done -------------------------------------------------------------------
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
