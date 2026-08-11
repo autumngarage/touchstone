@@ -503,6 +503,22 @@ jobs:
             esac
           }
 
+          # Run "$@" in a subshell that PRESERVES errexit and report the status
+          # via ISOLATED_RC. The obvious `if ! evaluate_pr` form suppresses
+          # set -e through the entire function body (bash ignores re-enables
+          # inside any tested context), so an inner API failure could fall
+          # through to a successful return — an isolation wrapper that records
+          # no failure (PR #753 review, round 6). The subshell below is NOT a
+          # tested command, so its internal set -e is honored.
+          ISOLATED_RC=0
+          run_isolated() {
+            ISOLATED_RC=0
+            set +e
+            ( set -e; "$@" )
+            ISOLATED_RC=$?
+            set -e
+          }
+
           evaluate_pr() {
             local pr_number="$1"
             # Live PR coordinates, not the event payload: comment events carry
@@ -843,16 +859,25 @@ jobs:
                 seen=$((seen + 1))
                 if [ "$seen" -le "$MAX_BASE_SWEEP_PRS" ]; then
                   # Isolated: one PR's API failure must not strand the REST of
-                  # the sweep with stale verdicts under set -e. The failed
-                  # entry's own run stays in_progress/absent (visibly not
-                  # green), the failure is annotated, and later heads still
-                  # get their re-evaluation (PR #753 review, round 5).
-                  if ! evaluate_pr "$pr"; then
+                  # the sweep with stale verdicts under set -e — and the
+                  # isolation must not itself suppress errexit inside the
+                  # evaluation (PR #753 review, rounds 5 and 6). The failed
+                  # entry's own run stays visibly non-green, the failure is
+                  # annotated, and later heads still get their re-evaluation.
+                  run_isolated evaluate_pr "$pr"
+                  if [ "$ISOLATED_RC" -ne 0 ]; then
                     echo "::error::sweep evaluation failed for PR #$pr; its check-run is not green and the sweep continued"
                     sweep_failures=$((sweep_failures + 1))
                   fi
                 else
-                  publish_sweep_overflow "$pr" "$sweep_head" "$pushed_ref"
+                  # The overflow publisher is fallible API too: unwrapped, one
+                  # failure strands every LATER overflow head with its stale
+                  # success (PR #753 review, round 6).
+                  run_isolated publish_sweep_overflow "$pr" "$sweep_head" "$pushed_ref"
+                  if [ "$ISOLATED_RC" -ne 0 ]; then
+                    echo "::error::overflow invalidation failed for PR #$pr; continuing with the rest"
+                    sweep_failures=$((sweep_failures + 1))
+                  fi
                 fi
               done <<<"$pr_rows"
               if [ "${sweep_failures:-0}" -gt 0 ]; then
@@ -885,7 +910,8 @@ jobs:
             else
               while read -r pr; do
                 [ -n "$pr" ] || continue
-                if ! evaluate_pr "$pr"; then
+                run_isolated evaluate_pr "$pr"
+                if [ "$ISOLATED_RC" -ne 0 ]; then
                   echo "::error::status-event evaluation failed for PR #$pr; continuing with the rest"
                   status_failures=$((status_failures + 1))
                 fi

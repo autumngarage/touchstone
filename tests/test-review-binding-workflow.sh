@@ -95,6 +95,22 @@ else
   fail "the base-push sweep must isolate per-PR failures — an early API error strands later heads on stale verdicts"
 fi
 
+# The isolation must not suppress errexit inside the evaluation: bash ignores
+# set -e (including re-enables) throughout any if/||-tested context, so
+# `if ! evaluate_pr` lets inner API failures fall through to a successful
+# return. The run_isolated helper runs the subshell OUTSIDE any tested
+# context (PR #753 review, round 6).
+if printf '%s\n' "$STRIPPED" | grep -q 'run_isolated()'; then
+  ok "errexit-preserving isolation helper present"
+else
+  fail "isolation must preserve errexit (run_isolated); a tested-context call suppresses set -e inside evaluate_pr"
+fi
+if printf '%s\n' "$STRIPPED" | grep -qE 'if ! (evaluate_pr|publish_sweep_overflow)'; then
+  fail "evaluate_pr/publish_sweep_overflow must never be invoked in a tested context — that suppresses errexit through the whole function"
+else
+  ok "no tested-context invocations of the fallible sweep functions"
+fi
+
 echo "==> Trusted-author allowlist is never PR-controlled"
 if printf '%s\n' "$STRIPPED" | grep -q -F 'chatgpt-codex-connector,chatgpt-codex-connector[bot]'; then
   ok "fallback allowlist hardcoded in env (merge-pr.sh's built-in default)"
