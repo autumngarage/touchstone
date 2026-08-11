@@ -19,6 +19,12 @@ name: validate
 # required is tracked in #727, which must first pin the required run to a
 # workflow definition outside the PR's control. Until then this reports; it
 # does not enforce.
+#
+# The suite runs as a matrix: ubuntu-latest and windows-latest. convoy runs on
+# Windows, and GitHub Actions' own `shell: bash` on windows-latest IS Git Bash,
+# so shipping bash means being in that contract (#742, scoped by decision 3 on
+# #744). The Windows leg runs the same full fast tier as Linux — no paths
+# filter, no spot checks — because a spot check is not support.
 
 on:
   pull_request:
@@ -35,18 +41,51 @@ concurrency:
   group: validate-${{ github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   validate:
-    name: validate
-    runs-on: ubuntu-latest
-    # Derived from measurement, not from a round number. The suite ran 1,233s
-    # on a comparable Linux runner even with test-bootstrap.sh excluded, and
-    # test-bootstrap.sh alone exceeds five minutes — so a full green run is
-    # ~30 minutes. The loop deliberately continues past individual failures,
-    # which makes an under-set timeout worse than useless: Actions would kill
-    # it mid-suite and the later test files would never report at all.
-    timeout-minutes: 60
+    name: validate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform's failure must not cancel the other's run: each leg's
+      # results are independent evidence, and the Windows leg exists precisely
+      # to surface failures the Linux leg cannot see.
+      fail-fast: false
+      matrix:
+        include:
+          # Derived from measurement, not from a round number. The suite ran
+          # 1,233s on a comparable Linux runner even with test-bootstrap.sh
+          # excluded, and test-bootstrap.sh alone exceeds five minutes — so a
+          # full green run is ~30 minutes. The loop deliberately continues past
+          # individual failures, which makes an under-set timeout worse than
+          # useless: Actions would kill it mid-suite and the later test files
+          # would never report at all.
+          - os: ubuntu-latest
+            timeout: 60
+          # Fork-heavy bash is several times slower under MSYS2 than on Linux
+          # (process creation is emulated, not native), so the ~30-minute Linux
+          # measurement scales up rather than across. Same rationale as above:
+          # an under-set timeout kills the run mid-suite and hides every test
+          # after the cut.
+          - os: windows-latest
+            timeout: 180
+    timeout-minutes: ${{ matrix.timeout }}
     steps:
+      # Git for Windows on the runner image checks out with CRLF translation
+      # enabled, and actions/checkout clones using the runner's git config.
+      # A shell script with CRLF endings fails with cryptic errors like
+      # "$'\r': command not found" — 43 test files would go red for one
+      # configuration reason. Setting this before checkout keeps the working
+      # tree byte-identical to the repository.
+      - name: Force LF line endings before checkout
+        if: runner.os == 'Windows'
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -54,13 +93,30 @@ jobs:
           # clone is fine, but the tests need a usable git identity.
           fetch-depth: 0
 
+      # Belt to the braces above: prove the checkout actually produced LF
+      # bytes on disk. If CRLF leaked anyway (an image change, a checkout
+      # action change), fail here with one clear message instead of letting
+      # the whole suite fail cryptically.
+      - name: Verify the checkout kept LF line endings
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          for f in bin/touchstone tests/test-preflight.sh lib/sed-inplace.sh; do
+            if head -1 "$f" | od -c | grep -q '\\r'; then
+              printf '%s\n' "::error file=$f::CRLF line endings leaked into the checkout despite core.autocrlf=false — every shell script would fail with a carriage-return 'command not found'. Fix the line-ending configuration; do not chase per-test failures."
+              exit 1
+            fi
+          done
+          echo "LF endings confirmed"
+
       - name: Configure git identity
         run: |
           git config --global user.email "ci@touchstone.invalid"
           git config --global user.name "Touchstone CI"
           git config --global init.defaultBranch main
 
-      - name: Install test dependencies
+      - name: Install test dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           # jq is used by the hook tests; shellcheck and shfmt by preflight.
           sudo apt-get update -qq
@@ -80,6 +136,31 @@ jobs:
           #   ModuleNotFoundError: No module named 'pre_commit'
           # pipx builds an isolated venv and a shim pinned to that venv's
           # interpreter, so the console script always resolves.
+          pipx install pre-commit
+          pre-commit --version
+
+      - name: Install test dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          set -euo pipefail
+          # jq ships with Git Bash on the runner image — verify, don't install.
+          command -v jq
+          jq --version
+          # ShellCheck comes from chocolatey; its shim directory is already on
+          # PATH. (Wording note: a comment must not START with "shellcheck",
+          # or ShellCheck itself parses it as a malformed directive — #745's
+          # guard-vs-prose class in a new costume.)
+          choco install shellcheck -y
+          shellcheck --version
+          # shfmt has no choco package worth trusting; take the release binary
+          # directly, same pinned version as the Linux leg.
+          mkdir -p "$HOME/bin"
+          curl -fsSL -o "$HOME/bin/shfmt.exe" \
+            https://github.com/mvdan/sh/releases/download/v3.10.0/shfmt_v3.10.0_windows_amd64.exe
+          cygpath -w "$HOME/bin" >>"$GITHUB_PATH"
+          "$HOME/bin/shfmt.exe" --version
+          # pipx is preinstalled on the windows image; same pre-commit
+          # rationale as the Linux leg — it is a requirement of the suite.
           pipx install pre-commit
           pre-commit --version
 
