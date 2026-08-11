@@ -1819,8 +1819,10 @@ wait_for_pr_triggered_review() {
               echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2
             fi
             echo "       Blocking condition: a body-only trusted result (no resolvable inline threads; the finding, if any, is in the review body)." >&2
-            echo "       Thread resolution cannot answer a finding that never became a thread." >&2
-            echo "       Address the finding, then request a fresh review of this head:" >&2
+            echo "       Thread resolution cannot answer a result that produced no threads." >&2
+            echo "       Open the review URL above: if the body carries a finding, address" >&2
+            echo "       it; if the review reported nothing new, no code change is needed." >&2
+            echo "       Either way, request a fresh review of this head:" >&2
             echo "         bash scripts/open-pr.sh --fresh-review" >&2
             echo "       (--fresh-review overrides the per-head idempotency, which would" >&2
             echo "       otherwise skip the re-request because this head is already reviewed.)" >&2
@@ -2947,7 +2949,7 @@ if [ "$BYPASS_REVIEW" != true ] || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-rev
           # head" — the correct rule for thread-backed findings and the exact
           # opposite of the body-only recovery. Printing both in one error
           # gives the driver contradictory instructions (PR #755 review).
-          echo "       A body-only finding has no thread to answer; the ONLY path forward is:" >&2
+          echo "       A body-only result has no thread to answer; the ONLY path forward is:" >&2
           echo "         bash scripts/open-pr.sh --fresh-review" >&2
           echo "       then rerun the merge gate once the fresh review lands." >&2
           ;;

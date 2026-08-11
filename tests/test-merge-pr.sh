@@ -150,7 +150,18 @@ case "${1:-} ${2:-}" in
         fi
         ;;
       isDraft) echo "${GH_IS_DRAFT:-false}" ;;
-      reviewDecision) echo "${GH_REVIEW_DECISION:-}" ;;
+      reviewDecision)
+        # Sequenced decisions: GH_REVIEW_DECISION_AFTER takes over from the
+        # second read onward (requires GH_REVIEW_DECISION_READS_FILE), so a
+        # run can pass the pre-review feedback gate and then hit an active
+        # CHANGES_REQUESTED inside the answered-findings check (issue #767).
+        decision_read="$(increment_counter_file "${GH_REVIEW_DECISION_READS_FILE:-}")"
+        if [ -n "${GH_REVIEW_DECISION_AFTER:-}" ] && [ "$decision_read" -ge 2 ]; then
+          echo "$GH_REVIEW_DECISION_AFTER"
+        else
+          echo "${GH_REVIEW_DECISION:-}"
+        fi
+        ;;
       mergeStateStatus,mergeable)
         merge_state_attempt="$(increment_counter_file "${GH_MERGE_ATTEMPTS_FILE:-}")"
         if [ -n "${GH_MERGE_STATE_IMMEDIATE:-}" ]; then
@@ -1005,6 +1016,8 @@ run_merge_pr() {
     GH_BASE_REF_CALLS_FILE="$TEST_DIR/gh-base-ref-calls" \
     GH_IS_DRAFT="${GH_IS_DRAFT:-false}" \
     GH_REVIEW_DECISION="${GH_REVIEW_DECISION:-}" \
+    GH_REVIEW_DECISION_AFTER="${GH_REVIEW_DECISION_AFTER:-}" \
+    GH_REVIEW_DECISION_READS_FILE="${GH_REVIEW_DECISION_READS_FILE:-}" \
     GH_UNRESOLVED_THREADS="${GH_UNRESOLVED_THREADS:-}" \
     GH_UNRESOLVED_THREADS_SECOND="${GH_UNRESOLVED_THREADS_SECOND:-}" \
     GH_GRAPHQL_FAIL="${GH_GRAPHQL_FAIL:-false}" \
@@ -1564,14 +1577,31 @@ else
   cat "$TEST_DIR/output-pr-triggered-changes-requested-resolved.txt" >&2
   exit 1
 fi
-# Issue #767: with zero open threads the diagnostic must not ASSERT a body
-# finding — here the block is the verdict itself, and the old text sent the
-# driver hunting review boilerplate for a finding that does not exist.
-if ! grep -q 'is in the review body itself' "$TEST_DIR/output-pr-triggered-changes-requested-resolved.txt"; then
+# Issue #767: when the refusal happens INSIDE the answered-findings check
+# (decision flips to CHANGES_REQUESTED after the pre-review feedback gate
+# passed) with zero open threads, report_review_round_economics runs — and
+# its zero-thread diagnostic must not ASSERT a body finding it never
+# verified: the block here is the verdict, and the old text sent the driver
+# hunting review boilerplate for a finding that does not exist.
+echo "==> Test: late CHANGES_REQUESTED with zero open threads reports honestly (issue #767)"
+reset_case_files
+rm -f "$TEST_DIR/gh-review-decision-reads"
+write_pr_triggered_config true 0 0
+if GH_REVIEW_DECISION="" GH_REVIEW_DECISION_AFTER="CHANGES_REQUESTED" \
+  GH_REVIEW_DECISION_READS_FILE="$TEST_DIR/gh-review-decision-reads" \
+  GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/findings\t2' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-late-changes-requested.txt" 123; then
+  echo "FAIL: a late CHANGES_REQUESTED unexpectedly satisfied the merge gate" >&2
+  exit 1
+fi
+if grep -q 'Blocking condition: an active CHANGES_REQUESTED review decision' "$TEST_DIR/output-pr-triggered-late-changes-requested.txt" \
+  && grep -q 'findings_open=0 (no unresolved inline threads). The blocking' "$TEST_DIR/output-pr-triggered-late-changes-requested.txt" \
+  && ! grep -q 'is in the review body itself' "$TEST_DIR/output-pr-triggered-late-changes-requested.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: zero-thread diagnostic does not assert an unverified body finding (issue #767)"
 else
-  echo "FAIL: zero-thread refusal must not claim the finding lives in the review body" >&2
-  cat "$TEST_DIR/output-pr-triggered-changes-requested-resolved.txt" >&2
+  echo "FAIL: the zero-thread refusal must name the verdict, not an unverified body finding" >&2
+  cat "$TEST_DIR/output-pr-triggered-late-changes-requested.txt" >&2
   exit 1
 fi
 
@@ -2051,7 +2081,7 @@ if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t20
   exit 1
 fi
 if grep -q 'Blocking condition: a body-only trusted result (no resolvable inline threads; the finding, if any, is in the review body)' "$TEST_DIR/output-pr-triggered-body-only.txt" \
-  && grep -q 'Thread resolution cannot answer a finding that never became a thread' "$TEST_DIR/output-pr-triggered-body-only.txt" \
+  && grep -q 'Thread resolution cannot answer a result that produced no threads' "$TEST_DIR/output-pr-triggered-body-only.txt" \
   && grep -q '"status":"findings-body-only"' "$TEST_DIR/merge-events.ndjson" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: body-only review findings still require a fresh review"
