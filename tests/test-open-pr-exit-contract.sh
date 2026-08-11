@@ -1378,6 +1378,7 @@ OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
 
 if [ "$RC" = "0" ] \
   && ! grep -q 'is already reviewed' "$OUT" \
+  && grep -q 'posting a fresh request intent' "$OUT" \
   && [ -s "$TEST_DIR/review-request.log" ]; then
   echo "    PASS"
 else

@@ -623,9 +623,17 @@ request_pr_triggered_review() {
       # Skipping here would strand the head: the merge gate refuses dismissed
       # evidence, so no rerun of either script could ever produce a usable
       # result (PR #755 review). A revoked answer consumes its request.
+      #
+      # Consuming it must also RETIRE the old intent: the dismissal postdates
+      # that intent forever, so reusing it would make every ordinary rerun in
+      # the replacement window fire yet another request — a review-cycle spam
+      # loop (PR #755 review, round 7). A fresh intent postdates the
+      # dismissal, so the next rerun sees dismissed_at < intent_at and the
+      # normal idempotent skip holds while the replacement review is awaited.
       echo "==> The review request for head $head_sha was answered by a review that was later"
       echo "    DISMISSED (at $OPEN_PR_HEAD_REVIEW_DISMISSED_AT). Revoked evidence consumes its"
-      echo "    request; requesting a fresh review."
+      echo "    request; posting a fresh request intent and requesting a fresh review."
+      intent_at=""
     else
       echo "==> GitHub Codex review already requested for head $head_sha at base $base_sha."
       return 0
