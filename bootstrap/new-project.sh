@@ -949,7 +949,40 @@ GEMINI_MD_CREATED="$LAST_COPY_CREATED"
 # steering block inside it is touchstone-owned. Apply or refresh the block so
 # non-Claude reviewers (Codex/Gemini) see the steering content directly — they
 # don't resolve the @-imports CLAUDE.md uses to pull in TOUCHSTONE.md.
-touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT" || true
+#
+# A failure here (orphaned sentinel, symlinked target) must be loud: bootstrap
+# has no rollback boundary to fail into, so it continues, but silently
+# swallowing the error left the file on stale steering with no trace
+# (PR #703 review — same class as the update-time `|| true`).
+if ! touchstone_block_apply "$PROJECT_DIR/AGENTS.md" "$TOUCHSTONE_ROOT"; then
+  echo "WARNING: could not refresh the touchstone-managed steering block in AGENTS.md (see the reason above)." >&2
+  echo "         Repair the '<!-- touchstone:steering:start/end -->' markers, then run touchstone update." >&2
+fi
+# GEMINI.md carries the same managed block and was never refreshed here, so
+# Gemini agents read whatever steering the template shipped with (PR #703
+# review). Same contract, same treatment — with one difference from the update
+# flow: bootstrap can run against an existing repository and has no guaranteed
+# commit to recover from, so an in-place rewrite of a project-owned file must
+# leave a .bak first (PR #703 review). `copy_file` skips GEMINI.md as
+# project-owned, so without this the block rewrite would be unrecoverable.
+if [ -f "$PROJECT_DIR/GEMINI.md" ]; then
+  gemini_backup="$(next_backup_path "$PROJECT_DIR/GEMINI.md")"
+  cp "$PROJECT_DIR/GEMINI.md" "$gemini_backup"
+  if touchstone_block_apply "$PROJECT_DIR/GEMINI.md" "$TOUCHSTONE_ROOT"; then
+    # Nothing changed — don't leave a spurious .bak behind.
+    if cmp -s "$PROJECT_DIR/GEMINI.md" "$gemini_backup"; then
+      rm -f "$gemini_backup"
+    else
+      echo "    refreshed (managed block, previous content backed up as $(basename "$gemini_backup")): GEMINI.md"
+    fi
+  else
+    # The apply refused to touch the file, so the backup is redundant — but
+    # the failure must not be silent (PR #703 review, same class as above).
+    rm -f "$gemini_backup"
+    echo "WARNING: could not refresh the touchstone-managed steering block in GEMINI.md (see the reason above)." >&2
+    echo "         Repair the '<!-- touchstone:steering:start/end -->' markers, then run touchstone update." >&2
+  fi
+fi
 copy_file "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-commit-config.yaml"
 copy_file "$TOUCHSTONE_ROOT/templates/.markdownlint.json" "$PROJECT_DIR/.markdownlint.json"
 copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"

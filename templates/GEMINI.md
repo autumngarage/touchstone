@@ -15,7 +15,13 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar. Because approval never comes from a person, the merge gate is: required checks green, a clean review from a trusted author bound to this exact head and base, no active `CHANGES_REQUESTED`, and every review thread resolved. An untrusted, stale, or non-clean review fails the gate even with nothing left open. Local hooks are fast feedback; branch protection is the real boundary; emergency paths are audited.
 
-Judging a capability, "is it useful?" is not the test: **does it constrain the agent, or merely serve it?** Automating what you can already do (retrying a push, recovering a moved base) belongs in the project, not here: you are the recovery mechanism.
+To hold those lines, Touchstone does three things and nothing else:
+
+1. **Constrain** — you cannot commit to the default branch, skip validation, merge without exact-head review, or bypass hooks silently.
+2. **Make state legible** — what happened lives in git, PRs, and issues, verifiable without trusting your narration.
+3. **Carry the contract** — the same rules reach every project and every agent, automatically.
+
+Before adding anything here, name which of the three it serves; if you cannot, it does not belong. "Is it useful?" is not the test: **does it constrain the agent, or merely serve it?** Automating what you can already do (retrying a push, recovering a moved base) belongs in the project, not here: you are the recovery mechanism.
 
 ## Agent Roles And Fallbacks
 

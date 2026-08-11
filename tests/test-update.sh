@@ -778,6 +778,182 @@ if ! git -C "$PROJECT" log -1 --name-only --pretty=format: | grep -qx 'GEMINI.md
 fi
 
 # --------------------------------------------------------------------------
+# An EXISTING GEMINI.md with a stale managed block must be refreshed and
+# staged. The case above only covers adding the file for the first time, so it
+# passed even with the refresh conditional and its staging flag deleted --
+# neither propagation bug had CI coverage (PR #703 review).
+#
+# The block is also refreshed independently of AGENTS.md: a project can ship
+# GEMINI.md without AGENTS.md, update never backfills a missing AGENTS.md, and
+# nesting the refresh under that check stranded such projects permanently.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 4a-bis: existing stale GEMINI.md block is refreshed and staged ---"
+
+# awk, not python3: the fast tier is the "is this safe to push" gate and has
+# to run on a stock macOS checkout, where python3 is not guaranteed to be
+# installed (PR #703 review). Replaces the managed block's contents with a
+# stale marker, leaving the markers themselves in place.
+awk '
+  /<!-- touchstone:steering:start -->/ { print; print "STALE-GEMINI-BLOCK-MARKER"; inblock = 1; next }
+  /<!-- touchstone:steering:end -->/   { print; inblock = 0; next }
+  !inblock { print }
+' "$PROJECT/GEMINI.md" >"$PROJECT/GEMINI.md.stale" \
+  && mv "$PROJECT/GEMINI.md.stale" "$PROJECT/GEMINI.md"
+rm -f "$PROJECT/AGENTS.md"
+echo "0000000000000000000000000000000000000002" >"$PROJECT/.touchstone-version"
+commit_all "$PROJECT" "simulate stale gemini block, no AGENTS.md"
+
+(cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
+
+assert_not_contains "$PROJECT/GEMINI.md" "STALE-GEMINI-BLOCK-MARKER"
+assert_contains "$PROJECT/GEMINI.md" "Required Delivery Workflow"
+if ! git -C "$PROJECT" log -1 --name-only --pretty=format: | grep -qx 'GEMINI.md'; then
+  echo "FAIL: refreshed GEMINI.md must be staged into the update commit, not left dirty" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if ! git -C "$PROJECT" diff --quiet -- GEMINI.md; then
+  echo "FAIL: GEMINI.md still has unstaged changes after the update commit" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
+# A pre-existing gitignored, untracked GEMINI.md must NOT be force-staged.
+# The clean-worktree check cannot see ignored files, so the update proceeded
+# and `git add -f` published deliberately-ignored private local steering
+# content into the update commit (PR #703 review). The block still refreshes
+# on disk; the file stays untracked, as its owner chose.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 4a-ter: ignored untracked GEMINI.md stays untracked through update ---"
+
+GEMIGNORE_PROJECT="$TEST_DIR/gemini-ignored-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GEMIGNORE_PROJECT" --no-register >/dev/null
+configure_git "$GEMIGNORE_PROJECT"
+commit_all "$GEMIGNORE_PROJECT" "initial gemini-ignored project"
+git -C "$GEMIGNORE_PROJECT" rm -q GEMINI.md
+printf 'GEMINI.md\n' >>"$GEMIGNORE_PROJECT/.gitignore"
+echo "0000000000000000000000000000000000000003" >"$GEMIGNORE_PROJECT/.touchstone-version"
+commit_all "$GEMIGNORE_PROJECT" "ignore local gemini instructions"
+# Private local file with a STALE managed block, so the refresh must touch it.
+cat >"$GEMIGNORE_PROJECT/GEMINI.md" <<'EOF_IGNORED_GEMINI'
+# Local Gemini instructions
+
+PRIVATE-LOCAL-GEMINI-NOTE: deliberately ignored, must never be committed.
+
+<!-- touchstone:steering:start -->
+STALE-IGNORED-GEMINI-BLOCK
+<!-- touchstone:steering:end -->
+EOF_IGNORED_GEMINI
+
+if ! (cd "$GEMIGNORE_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/gemini-ignored-update.txt" 2>&1; then
+  echo "FAIL: update should succeed with an ignored untracked GEMINI.md present" >&2
+  cat "$TEST_DIR/gemini-ignored-update.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ -n "$(git -C "$GEMIGNORE_PROJECT" ls-files -- GEMINI.md)" ]; then
+  echo "FAIL: ignored untracked GEMINI.md was force-staged by the update (publishes private local content)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if git -C "$GEMIGNORE_PROJECT" log -1 --name-only --pretty=format: | grep -qx 'GEMINI.md'; then
+  echo "FAIL: the update commit included the deliberately-ignored GEMINI.md" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$GEMIGNORE_PROJECT/GEMINI.md" "PRIVATE-LOCAL-GEMINI-NOTE"
+assert_not_contains "$GEMIGNORE_PROJECT/GEMINI.md" "STALE-IGNORED-GEMINI-BLOCK"
+assert_contains "$GEMIGNORE_PROJECT/GEMINI.md" "Required Delivery Workflow"
+assert_contains "$TEST_DIR/gemini-ignored-update.txt" "left unstaged"
+
+# --------------------------------------------------------------------------
+# An EXISTING GEMINI.md must be inside the update's rollback boundary. It was
+# in the planned-write set only when initially absent, so when a later update
+# step failed, rollback restored everything EXCEPT the refreshed GEMINI.md,
+# returning the user to the original branch with a dirty file (PR #703
+# review). A read-only .touchstone-manifest forces a deterministic failure
+# after the block refresh but before the commit.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 4a-quater: failed update rolls back the refreshed GEMINI.md ---"
+
+GEMROLLBACK_PROJECT="$TEST_DIR/gemini-rollback-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GEMROLLBACK_PROJECT" --no-register >/dev/null
+configure_git "$GEMROLLBACK_PROJECT"
+awk '
+  /<!-- touchstone:steering:start -->/ { print; print "STALE-GEMINI-ROLLBACK-MARKER"; inblock = 1; next }
+  /<!-- touchstone:steering:end -->/   { print; inblock = 0; next }
+  !inblock { print }
+' "$GEMROLLBACK_PROJECT/GEMINI.md" >"$GEMROLLBACK_PROJECT/GEMINI.md.stale" \
+  && mv "$GEMROLLBACK_PROJECT/GEMINI.md.stale" "$GEMROLLBACK_PROJECT/GEMINI.md"
+echo "0000000000000000000000000000000000000004" >"$GEMROLLBACK_PROJECT/.touchstone-version"
+commit_all "$GEMROLLBACK_PROJECT" "stale gemini block before failing update"
+GEMROLLBACK_BRANCH="$(git -C "$GEMROLLBACK_PROJECT" rev-parse --abbrev-ref HEAD)"
+chmod 444 "$GEMROLLBACK_PROJECT/.touchstone-manifest"
+
+if (cd "$GEMROLLBACK_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/gemini-rollback-update.txt" 2>&1; then
+  echo "FAIL: update against a read-only .touchstone-manifest should fail" >&2
+  cat "$TEST_DIR/gemini-rollback-update.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+chmod 644 "$GEMROLLBACK_PROJECT/.touchstone-manifest"
+assert_contains "$GEMROLLBACK_PROJECT/GEMINI.md" "STALE-GEMINI-ROLLBACK-MARKER"
+if [ "$(tr -d '[:space:]' <"$GEMROLLBACK_PROJECT/.touchstone-version")" != "0000000000000000000000000000000000000004" ]; then
+  echo "FAIL: failed update advanced .touchstone-version" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ "$(git -C "$GEMROLLBACK_PROJECT" rev-parse --abbrev-ref HEAD)" != "$GEMROLLBACK_BRANCH" ]; then
+  echo "FAIL: failed update left the project off its original branch" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if git -C "$GEMROLLBACK_PROJECT" status --porcelain | grep -q 'GEMINI.md'; then
+  echo "FAIL: failed update left GEMINI.md dirty — the refreshed file is outside the rollback boundary" >&2
+  git -C "$GEMROLLBACK_PROJECT" status --porcelain >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
+# A GEMINI.md whose managed block cannot be refreshed (orphaned sentinel)
+# must FAIL the update. `|| true` swallowed the failure and the update
+# committed the new .touchstone-version anyway, so automated sync treated the
+# project as current and never retried while Gemini stayed on a stale or
+# malformed contract (PR #703 review).
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 4a-quinquies: orphaned GEMINI.md sentinel fails the update, version not advanced ---"
+
+GEMSENTINEL_PROJECT="$TEST_DIR/gemini-sentinel-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GEMSENTINEL_PROJECT" --no-register >/dev/null
+configure_git "$GEMSENTINEL_PROJECT"
+grep -v 'touchstone:steering:end' "$GEMSENTINEL_PROJECT/GEMINI.md" \
+  >"$GEMSENTINEL_PROJECT/GEMINI.md.orphaned" \
+  && mv "$GEMSENTINEL_PROJECT/GEMINI.md.orphaned" "$GEMSENTINEL_PROJECT/GEMINI.md"
+echo "0000000000000000000000000000000000000005" >"$GEMSENTINEL_PROJECT/.touchstone-version"
+commit_all "$GEMSENTINEL_PROJECT" "orphaned gemini sentinel"
+GEMSENTINEL_BRANCH="$(git -C "$GEMSENTINEL_PROJECT" rev-parse --abbrev-ref HEAD)"
+
+if (cd "$GEMSENTINEL_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/gemini-sentinel-update.txt" 2>&1; then
+  echo "FAIL: update should fail when the GEMINI.md managed block cannot be refreshed" >&2
+  cat "$TEST_DIR/gemini-sentinel-update.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/gemini-sentinel-update.txt" "orphaned"
+assert_contains "$TEST_DIR/gemini-sentinel-update.txt" "could not refresh the touchstone-managed steering block in GEMINI.md"
+if [ "$(tr -d '[:space:]' <"$GEMSENTINEL_PROJECT/.touchstone-version")" != "0000000000000000000000000000000000000005" ]; then
+  echo "FAIL: block-apply failure still advanced .touchstone-version — automated sync will never retry" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ "$(git -C "$GEMSENTINEL_PROJECT" rev-parse --abbrev-ref HEAD)" != "$GEMSENTINEL_BRANCH" ]; then
+  echo "FAIL: failed update left the project off its original branch" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ "$(git -C "$GEMSENTINEL_PROJECT" log -1 --pretty=%s)" != "orphaned gemini sentinel" ]; then
+  echo "FAIL: block-apply failure still created an update commit" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
 # Test 3b: pre-existing AGENTS.md without the steering block gets the
 # touchstone-managed block injected on update. This is the migration path
 # for projects bootstrapped before the block existed — without it, non-

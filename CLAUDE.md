@@ -20,6 +20,7 @@ The block above is the canonical universal contract: agent roles, the 14 daily-r
 - **Self-tests are mandatory.** Run every `tests/test-*.sh` script before pushing. This is the fast default tier and must not spend live model/provider quota. Slow opt-in probes live under `tests/slow-*.sh` and are run explicitly when validating model-steering behavior.
 - **Parallel agent work is isolated.** Use `principles/agent-swarms.md` for slice manifests and parent orchestration. Use `scripts/spawn-worktree.sh` to create branch/worktree slices and `scripts/cleanup-worktrees.sh` for dry-run-first teardown.
 - **Release completeness.** A touchstone release is not done until GitHub Releases, the Homebrew tap, `origin/main`, and the locally installed brew package all agree on the same version.
+- **Nothing ships unjustified.** Every file under `bin/`, `bootstrap/`, `hooks/`, `lib/`, and `scripts/` must declare a mission job in `capabilities.toml`, and `tests/test-steering-size-caps.sh` fails if it does not. Adding a capability means writing down which of the three jobs it serves — constrain, make state legible, or carry the contract — in the same diff. If you cannot name one, do not add the file. A capability that is kept only until its removal lands is marked `cut` with a tracking issue, so the debt is reported on every test run instead of quietly becoming normal.
 
 ## Testing
 
@@ -46,6 +47,7 @@ Lint is not part of the test suite. The full lint suite runs at pre-commit and v
 ```
 touchstone/
 ├── TOUCHSTONE.md   # Lean steering router — universal contract for all drivers
+├── capabilities.toml # Scope ledger — every shipped file declares its mission job (repo-only, not synced)
 ├── principles/     # Universal docs (touchstone-owned, synced to all projects)
 ├── skills/         # User-scoped Claude Code skills (touchstone-owned, installed to ~/.claude/skills/)
 ├── templates/      # Starter files (copied once at bootstrap, then project-owned)
@@ -66,6 +68,7 @@ touchstone/
 | File | Purpose |
 |------|---------|
 | `TOUCHSTONE.md` | Canonical steering router — drives CLAUDE.md (@-import) and AGENTS.md/GEMINI.md (managed block) |
+| `capabilities.toml` | Scope ledger — every file under `bin/`, `bootstrap/`, `hooks/`, `lib/`, `scripts/` declares which mission job it serves |
 | `bootstrap/new-project.sh` | Spin up a new project with all touchstone files |
 | `bootstrap/update-project.sh` | Pull latest touchstone files into an existing project |
 | `bootstrap/sync-all.sh` | Update all registered projects at once |

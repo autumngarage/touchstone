@@ -895,6 +895,38 @@ if ! grep -q 'tests (touchstone scoped self-tests)' "$OUT"; then
 fi
 echo "==> PASS: issue-claim helper runs its fixture consumers without the full suite"
 
+echo "==> Test: governed-path deletion selects the capability registry guard while staying scoped"
+REPO="$TEST_DIR/repo-touchstone-governed-registry"
+LOG="$TEST_DIR/touchstone-governed-registry.log"
+OUT="$TEST_DIR/touchstone-governed-registry.out"
+new_touchstone_self_repo "$REPO"
+(
+  cd "$REPO"
+  git rm -q scripts/issue-claim-check.sh
+  git commit -q -m "delete governed helper"
+)
+: >"$LOG"
+run_preflight "$REPO" "$OUT" "$LOG"
+# Deleting (or renaming) a file under a governed directory can strand a stale
+# capabilities.toml declaration, and only the registry guard catches that. An
+# explicitly mapped path must select the guard IN ADDITION to its own
+# consumers — its own mapping alone let the deletion through with the fast
+# tier green (PR #703 review).
+assert_log_contains "$LOG" '^self:test-steering-size-caps.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-cleanup-worktree.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-exit-contract.sh$'
+assert_log_contains "$LOG" '^self:test-open-pr-linked-issues.sh$'
+# Still the scoped lane, not the full-suite fallback — a fallback would run
+# the registry guard for the vacuous reason that it runs everything, and the
+# assertion above would prove nothing about the governed-path mapping.
+assert_log_not_contains "$LOG" '^self:test-other.sh$'
+if ! grep -q 'tests (touchstone scoped self-tests)' "$OUT"; then
+  echo "FAIL: governed-path deletion did not stay in the scoped self-test lane" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "==> PASS: governed-path deletion adds the registry guard to its scoped selection"
+
 echo "==> Test: Touchstone issue-claim workflow runs installation and consistency consumers"
 REPO="$TEST_DIR/repo-touchstone-issue-claim-workflow"
 LOG="$TEST_DIR/touchstone-issue-claim-workflow.log"

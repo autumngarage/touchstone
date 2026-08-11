@@ -80,7 +80,15 @@ touchstone_sync_planned_write_paths() {
       printf '.swiftlint.yml\n'
     fi
 
-    if [ -f "$touchstone_root/templates/GEMINI.md" ] && [ ! -f "$project_dir/GEMINI.md" ]; then
+    # GEMINI.md is written in both directions: copied from the template when
+    # absent, and rewritten in place by the managed-block refresh when
+    # present. An existing file must be in the planned-write set BEFORE the
+    # rollback snapshot is taken, or a failed update returns the user to the
+    # original branch with the refreshed file stranded outside the rollback
+    # boundary as a dirty diff (PR #703 review).
+    if [ -f "$project_dir/GEMINI.md" ]; then
+      printf 'GEMINI.md\n'
+    elif [ -f "$touchstone_root/templates/GEMINI.md" ]; then
       printf 'GEMINI.md\n'
     fi
 
