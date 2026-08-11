@@ -423,7 +423,7 @@ request_pr_triggered_review() {
   local expected_head_sha="$2"
   local head_sha base_revision base_branch base_sha marker request_records context created_at _creator creator_permission description request_pr request_base request_intent_at request_trigger_at body trigger_at attempt=1
   local completion_head completion_revision completion_branch completion_base
-  local intent_at="" completion_records="" matching_request=false conflicting_bases=""
+  local intent_at="" completion_records="" matching_request=false conflicting_bases="" matching_trigger_at=""
   local head_review_status
   local max_attempts="${TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS:-10}"
   local retry_interval="${TOUCHSTONE_PR_HEAD_CONVERGENCE_INTERVAL:-1}"
@@ -615,11 +615,18 @@ request_pr_triggered_review() {
     echo "    merge gate can bind it."
   fi
   if [ "$matching_request" = true ] && [ "${FRESH_REVIEW:-false}" != true ]; then
+    matching_trigger_at="$(printf '%s\n' "$completion_records" \
+      | awk -F'\t' -v i="$intent_at" '$1 == i { print $2; exit }')"
     if [ "$head_review_status" -ne 0 ] \
       && [ -n "${OPEN_PR_HEAD_REVIEW_DISMISSED_AT:-}" ] \
-      && [ -n "$intent_at" ] \
-      && [[ "$OPEN_PR_HEAD_REVIEW_DISMISSED_AT" > "$intent_at" ]]; then
+      && [ -n "$matching_trigger_at" ] \
+      && [[ "$OPEN_PR_HEAD_REVIEW_DISMISSED_AT" > "$matching_trigger_at" ]]; then
       # The durable request was answered — and the answer was then dismissed.
+      # "Answered" is anchored to the completed request's TRIGGER timestamp,
+      # not its intent: a review submitted between intent and trigger predates
+      # the @codex ask, so it was never this request's answer, and the real
+      # answer is still in flight — consuming the request then would fire an
+      # unnecessary replacement while it works (PR #755 review, round 8).
       # Skipping here would strand the head: the merge gate refuses dismissed
       # evidence, so no rerun of either script could ever produce a usable
       # result (PR #755 review). A revoked answer consumes its request.

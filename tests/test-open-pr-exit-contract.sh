@@ -1372,7 +1372,7 @@ reset_open_pr_logs
 OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
   GH_PR_HEAD_OID="$CASE42_HEAD" \
   GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
-  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s\tDISMISSED\t2026-08-01T00:00:03Z' "$CASE42_HEAD")" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s\tDISMISSED\t2026-08-01T00:00:07Z' "$CASE42_HEAD")" \
   GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
@@ -1383,6 +1383,34 @@ if [ "$RC" = "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: a dismissed review must not satisfy per-head idempotency" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Case 42d (PR #755 review, round 8): a review submitted BETWEEN the request
+# intent and its @codex trigger predates the ask — it was never this
+# request's answer, so its later dismissal must NOT consume the request. The
+# real answer is still in flight; the correct behavior is the ordinary
+# idempotent skip, not a replacement request.
+echo "==> Case 42d: a dismissed pre-trigger review does not consume the request"
+OUT="$TEST_DIR/case42d.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s\tDISMISSED\t2026-08-01T00:00:03Z' "$CASE42_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'already requested for head' "$OUT" \
+  && ! grep -q 'posting a fresh request intent' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a pre-trigger dismissal must leave the in-flight request alone" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))

@@ -1275,7 +1275,7 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
           submittedAt
           url
           commit { oid }
-          comments { totalCount }
+          comments(first: 1) { totalCount }
         }
         pageInfo {
           hasNextPage

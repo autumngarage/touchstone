@@ -188,5 +188,9 @@ VERIFY="$(graphql_with_retry \
   || fail "could not verify thread resolution for $THREAD_ID."
 [ "$VERIFY" = "true" ] || fail "thread $THREAD_ID is still unresolved after the mutation."
 
-echo "==> Replied and resolved. Re-request review with a fresh exact head when all threads are answered:"
-echo "    bash scripts/respond-review.sh $PR_NUMBER --all-resolved-check && bash scripts/open-pr.sh --auto-merge"
+# Answered findings satisfy the gate on an unchanged head (issue #751) — the
+# next step after resolving every thread is the MERGE GATE, never another
+# review request of the same head (PR #755 review, round 8).
+echo "==> Replied and resolved. When every thread is answered, rerun the merge gate:"
+echo "    bash scripts/respond-review.sh $PR_NUMBER --all-resolved-check && bash scripts/merge-pr.sh $PR_NUMBER"
+echo "    (Pushed new commits instead? Then request one review for the new head: bash scripts/open-pr.sh)"
