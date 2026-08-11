@@ -117,7 +117,12 @@ print_orphan_warning() {
       # deletes the head branch, and if any PR is stacked on it those get
       # closed with their review threads (issue #713). Route recovery through
       # the same non-deleting merge path the gate uses (PR #715 review).
-      echo "==>   bash scripts/merge-pr.sh $ORPHAN_PR_NUMBER               (if review passed)"
+      # Absolute, derived from this script's own location. A relative path is
+      # only correct when the operator happens to be at the repository root;
+      # invoked from a subdirectory the printed command fails with
+      # "No such file or directory" and the orphaned PR stays orphaned
+      # (PR #715 review).
+      echo "==>   bash ${SCRIPT_DIR:-scripts}/merge-pr.sh $ORPHAN_PR_NUMBER    (if review passed)"
       echo "==>   gh pr close $ORPHAN_PR_NUMBER                              (if abandoning)"
     fi
   } >&2

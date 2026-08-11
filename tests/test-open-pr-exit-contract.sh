@@ -367,7 +367,7 @@ GH_PR_STATE="OPEN" GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 MERGE_PR_EXIT=1 \
 if [ "$RC" != "0" ] \
   && grep -q 'ORPHAN RISK: PR opened but not merged' "$OUT" \
   && grep -q 'https://example.test/touchstone/pull/123' "$OUT" \
-  && grep -q 'bash scripts/merge-pr.sh 123' "$OUT" \
+  && grep -qE 'bash [^ ]*/merge-pr\.sh 123' "$OUT" \
   && ! grep -q -- '--delete-branch' "$OUT" \
   && grep -q 'gh pr close 123' "$OUT"; then
   echo "    PASS"

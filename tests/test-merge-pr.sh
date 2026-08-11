@@ -3504,7 +3504,14 @@ fi
 # The recovery line must be emitted BEFORE the destructive request: if the
 # server processes the delete but the response is lost, an after-the-fact print
 # never runs and the record of what was removed is gone with the connection.
-if ! awk '/restore with: git push origin/{seen=1} /force-with-lease/{if(!seen) exit 1} END{exit !seen}' \
+# Skip comment lines. The script EXPLAINS the lease before performing it, so a
+# naive scan finds `force-with-lease` in prose above the recovery print and
+# concludes the ordering is wrong — the same fire-on-its-own-rationale class as
+# #745, which this file has now hit three times.
+if ! awk '/^[[:space:]]*#/{next}
+          /restore with: git push origin/{seen=1}
+          /git push --force-with-lease/{if(!seen) exit 1}
+          END{exit !seen}' \
   "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
   echo "FAIL: the restore command must be printed before the delete is attempted" >&2
   exit 1

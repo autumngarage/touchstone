@@ -427,8 +427,9 @@ if [ "$REMOTE_TOO" -eq 1 ] && [ "${#REMOTE_DELETABLE[@]}" -gt 0 ]; then
     printf '      restore with: git push origin %s:refs/heads/%s\n' \
       "$classified_oid" "$(printf '%q' "$b")"
 
-    if git push --force-with-lease="refs/heads/$b:$classified_oid" \
-      origin ":refs/heads/$b" >/dev/null 2>&1; then
+    push_err=""
+    if push_err="$(git push --force-with-lease="refs/heads/$b:$classified_oid" \
+      origin ":refs/heads/$b" 2>&1)"; then
       echo "    deleted remote: origin/$b"
     else
       # The lease failed. Distinguish "the branch moved" from "we could not
@@ -439,7 +440,20 @@ if [ "$REMOTE_TOO" -eq 1 ] && [ "${#REMOTE_DELETABLE[@]}" -gt 0 ]; then
       git ls-remote --exit-code origin "refs/heads/$b" >/dev/null 2>&1 || ls_rc=$?
       case "$ls_rc" in
         0)
-          echo "    SKIPPED remote (advanced past its classified OID, so it is no longer proven merged): origin/$b" >&2
+          # The ref exists, but exit 0 says nothing about WHICH commit it points
+          # at — a permission failure, ruleset, or pre-push hook rejects the
+          # push while the branch sits exactly where it was. Compare the OIDs
+          # rather than inferring an advance, and keep the push's own message,
+          # which is the only thing that explains a rejection (PR #715 review).
+          current_oid="$(git ls-remote origin "refs/heads/$b" 2>/dev/null | awk 'NR==1{print $1}')"
+          if [ -n "$current_oid" ] && [ "$current_oid" != "$classified_oid" ]; then
+            echo "    SKIPPED remote (advanced to ${current_oid:0:12}, past its classified OID, so it is no longer proven merged): origin/$b" >&2
+          else
+            echo "    SKIPPED remote (delete rejected while still at its classified OID): origin/$b" >&2
+            if [ -n "$push_err" ]; then
+              printf '%s\n' "$push_err" | sed 's/^/      /' >&2
+            fi
+          fi
           ;;
         2)
           echo "    deleted remote: origin/$b (confirmed absent; the delete landed despite an unclear response)"
