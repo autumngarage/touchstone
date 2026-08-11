@@ -96,7 +96,12 @@ jobs:
           bash tests/test-sed-inplace.sh
 
   validate:
-    name: validate (${{ matrix.os }})
+    # Advisory legs live in their own check NAMESPACE: merge-pr.sh excludes
+    # names matching ^validate-advisory from its failing-check gate, which is
+    # the only exclusion that also covers dependency-install failures and job
+    # timeouts — a step-level exit 0 cannot (PR #758 review). Graduation to
+    # enforcing = flipping advisory to false, which renames the check back.
+    name: ${{ matrix.advisory && 'validate-advisory' || 'validate' }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       # One platform's failure must not cancel the other's run: each leg's
