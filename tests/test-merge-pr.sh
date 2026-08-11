@@ -3478,6 +3478,26 @@ else
   exit 1
 fi
 
+echo "==> Test: remote deletion is conditional and recoverable"
+# --force-with-lease=<ref>:<expect> gives ref DELETION compare-and-swap: if the
+# branch advanced after its SHA was captured, the push is rejected rather than
+# removing a tip the printed restore command cannot recover. The REST DELETE
+# has no such precondition (PR #715 review).
+if ! grep -q -- '--force-with-lease="refs/heads/\$b:\$deleted_sha"' \
+  "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
+  echo "FAIL: remote deletion must be conditional on the captured SHA" >&2
+  exit 1
+fi
+# The recovery line must be emitted BEFORE the destructive request: if the
+# server processes the delete but the response is lost, an after-the-fact print
+# never runs and the record of what was removed is gone with the connection.
+if ! awk '/restore with: \$restore_cmd/{seen=1} /force-with-lease/{if(!seen) exit 1} END{exit !seen}' \
+  "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
+  echo "FAIL: the restore command must be printed before the delete is attempted" >&2
+  exit 1
+fi
+echo "==> PASS: deletion is leased on the captured SHA and recovery is printed first"
+
 echo "==> Test: cleanup-branches re-checks a branch's OWN open PRs before deleting"
 if grep -q -- '--head "\$b"' "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
   echo "==> PASS: pre-delete re-check covers head references, not only bases"

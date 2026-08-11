@@ -396,17 +396,11 @@ if [ "$REMOTE_TOO" -eq 1 ] && [ "${#REMOTE_DELETABLE[@]}" -gt 0 ]; then
       echo "    SKIPPED remote (PR(s) $own_pr opened FROM it since the scan): origin/$b"
       continue
     fi
-    # The two lookups above narrow the race but cannot close it: GitHub offers
-    # no compare-and-delete for refs, so a PR created between the last check and
-    # this call is still lost. The principle that applies is therefore
-    # recoverability, not atomicity — capture the SHA first and print it, so a
-    # branch deleted inside that window can be restored exactly (PR #715
-    # review).
     # Resolve the AUTHORITATIVE tip, not the cached tracking ref. Commits pushed
     # since this script's fetch would leave refs/remotes/origin/<b> naming an
-    # older commit, while the DELETE below removes the branch at its current
-    # server-side tip — so a restore command built from the stale ref would
-    # silently fail to recover the commits actually deleted (PR #715 review).
+    # older commit while the delete removes the branch at its current
+    # server-side tip, so a restore command built from the stale ref would
+    # silently fail to recover what was actually deleted (PR #715 review).
     deleted_sha=""
     if [ -n "$REPO_SLUG" ]; then
       deleted_sha="$(gh api "/repos/$REPO_SLUG/git/refs/heads/$b" --jq '.object.sha' 2>/dev/null || true)"
@@ -418,16 +412,35 @@ if [ "$REMOTE_TOO" -eq 1 ] && [ "${#REMOTE_DELETABLE[@]}" -gt 0 ]; then
       echo "    SKIPPED remote (could not resolve its SHA, so deletion would be unrecoverable): origin/$b" >&2
       continue
     fi
-    if [ -n "$REPO_SLUG" ] && gh api -X DELETE "/repos/$REPO_SLUG/git/refs/heads/$b" >/dev/null 2>&1; then
+
+    # Print the recovery command BEFORE the destructive request, not after.
+    # If the server processes the delete but the response is lost, an
+    # after-the-fact print never runs: the retry sees the ref already gone,
+    # reports SKIPPED, and the only record of what was removed dies with the
+    # connection. Emitting first makes a lost response survivable (PR #715
+    # review).
+    restore_cmd="$(printf 'git push origin %s:refs/heads/%s' "$deleted_sha" "$(printf '%q' "$b")")"
+    echo "    deleting remote: origin/$b (at ${deleted_sha:0:12})"
+    echo "      restore with: $restore_cmd"
+
+    # Conditional delete. `--force-with-lease=<ref>:<expect>` gives ref
+    # deletion compare-and-swap semantics: if origin/$b advanced between the
+    # SHA capture above and this push, the push is REJECTED rather than
+    # removing a newer tip that the printed restore command could not recover.
+    # The REST DELETE has no such precondition, which is why it is no longer
+    # the primary path (PR #715 review).
+    if git push --force-with-lease="refs/heads/$b:$deleted_sha" \
+      origin ":refs/heads/$b" >/dev/null 2>&1; then
       echo "    deleted remote: origin/$b"
-      printf '      restore with: git push origin %s:refs/heads/%s\n' \
-        "$deleted_sha" "$(printf '%q' "$b")"
-    elif git push origin --delete -- "$b" 2>&1; then
-      echo "    deleted remote (via git push fallback): origin/$b"
-      printf '      restore with: git push origin %s:refs/heads/%s\n' \
-        "$deleted_sha" "$(printf '%q' "$b")"
+    elif git ls-remote --exit-code origin "refs/heads/$b" >/dev/null 2>&1; then
+      # The ref still exists, so the lease genuinely failed — it moved, or the
+      # push was rejected. Leave it alone; the next run re-resolves the tip.
+      echo "    SKIPPED remote (ref moved or delete rejected since its SHA was captured): origin/$b" >&2
     else
-      echo "    SKIPPED remote (both gh api and git push --delete failed): origin/$b" >&2
+      # The ref is gone. Either the delete landed and we lost the response, or
+      # something else removed it. Either way it is deleted, and the restore
+      # command above is the record.
+      echo "    deleted remote: origin/$b (confirmed absent after an unclear result)"
     fi
   done
 fi
