@@ -104,8 +104,9 @@ The import below loads every Claude Code session in this repo. The file
 behind it is touchstone-owned and refreshes on every `touchstone update`.
 TOUCHSTONE.md contains the universal contract: agent roles, the daily-
 reminder engineering principles, the never-commit-on-main rule, the
-required delivery workflow, memory hygiene, and a routing table to deeper
-docs (`principles/git-workflow.md`, `.cortex/protocol.md`, etc.).
+required delivery workflow, and a routing table that points to deeper docs
+rather than inlining them (`principles/git-workflow.md`,
+`principles/memory-hygiene.md`, `.cortex/protocol.md`, etc.).
 
 @TOUCHSTONE.md
 

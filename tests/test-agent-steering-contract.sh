@@ -142,6 +142,41 @@ assert_not_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md
 assert_not_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
   "issue #558"
 
+# Memory hygiene moved out of TOUCHSTONE.md into a routed principle to buy
+# header room. Routing content out is only safe if the route itself is pinned:
+# without these assertions the row, the file, or the copy in the managed blocks
+# could each disappear while the whole suite stayed green, and every driver
+# would silently lose the guidance.
+echo "==> memory hygiene is routed, not inlined, and the route is intact"
+assert_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "principles/memory-hygiene.md"
+for file in "$TOUCHSTONE_ROOT/AGENTS.md" "$TOUCHSTONE_ROOT/GEMINI.md" \
+  "$TOUCHSTONE_ROOT/templates/AGENTS.md" "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
+  assert_contains "$file" "principles/memory-hygiene.md"
+done
+# The index downstream projects receive must list it, or they get an
+# incomplete catalog immediately after bootstrap.
+assert_contains "$TOUCHSTONE_ROOT/principles/README.md" "memory-hygiene.md"
+# The routed doc has to actually carry the rules the router promises.
+assert_contains "$TOUCHSTONE_ROOT/principles/memory-hygiene.md" "cached guidance, not canonical truth"
+assert_contains "$TOUCHSTONE_ROOT/principles/memory-hygiene.md" "YYYY-MM-DD"
+assert_contains "$TOUCHSTONE_ROOT/principles/memory-hygiene.md" "canonical owner"
+assert_contains "$TOUCHSTONE_ROOT/principles/memory-hygiene.md" "timestamped backup"
+
+# The purpose statement is the contract's thesis; if it is ever reduced back to
+# a vague "reviewed and tested" line, the division of labour that every other
+# rule depends on stops being stated anywhere.
+echo "==> the three-role purpose is stated in every driver's contract"
+for file in "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$TOUCHSTONE_ROOT/AGENTS.md" \
+  "$TOUCHSTONE_ROOT/GEMINI.md" "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
+  "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
+  assert_contains "$file" "Humans approve plans"
+  assert_contains "$file" "GitHub reviews code"
+  # The gate's conditions are load-bearing: an incomplete list here has already
+  # been read as licence to drop the unlisted checks.
+  assert_contains "$file" "CHANGES_REQUESTED"
+  assert_contains "$file" "trusted author"
+done
+
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
   echo "==> FAIL: $ERRORS agent steering contract check(s) failed"

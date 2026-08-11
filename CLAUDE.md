@@ -10,7 +10,7 @@ Codex and other AGENTS.md-native tools read `AGENTS.md`; Gemini CLI reads `GEMIN
 
 @TOUCHSTONE.md
 
-The block above is the canonical universal contract: agent roles, the 14 daily-reminder engineering principles, the never-commit-on-main rule, the required delivery workflow, memory hygiene, and a routing table to deeper docs. Codex and Gemini agents read the same content via the `<!-- touchstone:steering -->` managed block in `AGENTS.md` / `GEMINI.md`.
+The block above is the canonical universal contract: agent roles, the 14 daily-reminder engineering principles, the never-commit-on-main rule, the required delivery workflow, and a routing table that points to deeper docs (memory hygiene among them) rather than inlining them. Codex and Gemini agents read the same content via the `<!-- touchstone:steering -->` managed block in `AGENTS.md` / `GEMINI.md`.
 
 ## Touchstone-Specific Principles
 
