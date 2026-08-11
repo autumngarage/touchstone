@@ -1589,6 +1589,53 @@ if [ ! -f "$HOOKS_PROJECT/$HOOKS_PATH/pre-commit" ] && [ ! -f "$HOOKS_PROJECT/.g
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "--- Step 11: probe soundness for metadata paths and the index blob (PR #780 round 2) ---"
+
+# (a) A symlinked .touchstone-manifest is never current.
+MSYM_PROJECT="$TEST_DIR/p780b-manifest-symlink"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$MSYM_PROJECT" --no-register >/dev/null
+configure_git "$MSYM_PROJECT"
+commit_all "$MSYM_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$MSYM_PROJECT/.touchstone-version"
+mv "$MSYM_PROJECT/.touchstone-manifest" "$MSYM_PROJECT/.touchstone-manifest.real"
+ln -s ".touchstone-manifest.real" "$MSYM_PROJECT/.touchstone-manifest"
+commit_all "$MSYM_PROJECT" "symlinked manifest"
+(cd "$MSYM_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780b-msym-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780b-msym-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780b-msym-output.txt" 'Already up to date'
+
+# (b) An untracked-but-byte-identical .claude/settings.json is not current.
+MTRACK_PROJECT="$TEST_DIR/p780b-settings-untracked"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$MTRACK_PROJECT" --no-register >/dev/null
+configure_git "$MTRACK_PROJECT"
+commit_all "$MTRACK_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$MTRACK_PROJECT/.touchstone-version"
+commit_all "$MTRACK_PROJECT" "sha stamp"
+git -C "$MTRACK_PROJECT" rm -q --cached .claude/settings.json
+git -C "$MTRACK_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "untrack settings"
+(cd "$MTRACK_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780b-mtrack-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780b-mtrack-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780b-mtrack-output.txt" 'Already up to date'
+
+# (c) A stale STAGED blob under clean working-tree bytes is not current —
+# committing after a green probe would commit the stale blob.
+BLOB_PROJECT="$TEST_DIR/p780b-staged-blob"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$BLOB_PROJECT" --no-register >/dev/null
+configure_git "$BLOB_PROJECT"
+commit_all "$BLOB_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$BLOB_PROJECT/.touchstone-version"
+commit_all "$BLOB_PROJECT" "sha stamp"
+cp "$BLOB_PROJECT/lib/toml.sh" "$TEST_DIR/toml-good.sh"
+printf '# stale staged content\n' >>"$BLOB_PROJECT/lib/toml.sh"
+git -C "$BLOB_PROJECT" add lib/toml.sh
+cp "$TEST_DIR/toml-good.sh" "$BLOB_PROJECT/lib/toml.sh"
+(cd "$BLOB_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780b-blob-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780b-blob-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780b-blob-output.txt" 'Already up to date'
+
 # --------------------------------------------------------------------------
 # Results
 # --------------------------------------------------------------------------

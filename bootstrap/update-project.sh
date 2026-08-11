@@ -298,6 +298,22 @@ touchstone_manifest_entries() {
   # since the user-scope migration (surfaced by PR #780's ledger probe).
 }
 
+# One soundness predicate for every managed path the content probe accepts:
+# not a symlink (the writer would replace it), safe destination (no symlinked
+# ancestors — the writer would refuse), tracked in the index (clean clones
+# would miss it), and index blob identical to the working tree (a stale
+# staged blob would commit stale content right past a green probe). The
+# probe's per-file byte comparison means nothing without these
+# (PR #780 review, rounds 1-2).
+managed_path_is_sound() {
+  local rel="$1"
+  local dst="$PROJECT_DIR/$rel"
+  [ ! -L "$dst" ] || return 1
+  touchstone_ensure_safe_dest "$dst" "$PROJECT_DIR" true >/dev/null 2>&1 || return 1
+  git -C "$PROJECT_DIR" ls-files --error-unmatch "$rel" >/dev/null 2>&1 || return 1
+  git -C "$PROJECT_DIR" diff --quiet -- "$rel" || return 1
+}
+
 managed_content_is_current() {
   local src dst skill_name
 
@@ -305,6 +321,7 @@ managed_content_is_current() {
   # surface anything else as a loud failure.
   [ -f "$PROJECT_DIR/.touchstone-manifest" ] || return 1
   [ -r "$PROJECT_DIR/.touchstone-manifest" ] || return 1
+  managed_path_is_sound ".touchstone-manifest" || return 1
 
   # A retirement the update would still apply is a pending change.
   local manifest_entries
@@ -320,15 +337,9 @@ managed_content_is_current() {
   fi
 
   while IFS=$'\t' read -r src dst; do
-    # A symlinked destination (or symlinked ancestor) is a tree the writer
-    # would refuse or replace, never "current"; and bytes on disk are not
-    # enough — an untracked managed file is missing from clean clones, and
-    # the update's force-stage is what heals it (PR #780 review).
-    [ ! -L "$dst" ] || return 1
-    touchstone_ensure_safe_dest "$dst" "$PROJECT_DIR" true >/dev/null 2>&1 || return 1
+    managed_path_is_sound "${dst#"$PROJECT_DIR"/}" || return 1
     [ -f "$dst" ] || return 1
     cmp -s "$src" "$dst" || return 1
-    git -C "$PROJECT_DIR" ls-files --error-unmatch "${dst#"$PROJECT_DIR"/}" >/dev/null 2>&1 || return 1
     case "$dst" in
       "$PROJECT_DIR"/scripts/*.sh)
         # The update chmods managed scripts; a missing execute bit is a change.
@@ -338,7 +349,7 @@ managed_content_is_current() {
   done < <(managed_file_pairs)
 
   if [ -f "$TOUCHSTONE_ROOT/templates/claude-settings.json" ]; then
-    [ ! -L "$PROJECT_DIR/.claude/settings.json" ] || return 1
+    managed_path_is_sound ".claude/settings.json" || return 1
     cmp -s "$TOUCHSTONE_ROOT/templates/claude-settings.json" "$PROJECT_DIR/.claude/settings.json" || return 1
   fi
 
@@ -367,7 +378,11 @@ managed_content_is_current() {
     done
   fi
 
+  managed_path_is_sound "AGENTS.md" || return 1
   steering_block_is_current "$PROJECT_DIR/AGENTS.md" || return 1
+  if [ -f "$PROJECT_DIR/GEMINI.md" ]; then
+    managed_path_is_sound "GEMINI.md" || return 1
+  fi
   steering_block_is_current "$PROJECT_DIR/GEMINI.md" || return 1
 
   return 0
@@ -424,12 +439,20 @@ unique_branch_name() {
 resolve_default_branch() {
   local default_branch=""
 
-  default_branch="$(git -C "$PROJECT_DIR" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null \
-    | sed 's#^origin/##' || true)"
-  if [ -z "$default_branch" ] \
-    && command -v gh >/dev/null 2>&1 \
+  # The LIVE remote answer outranks the cached symbolic ref: after a
+  # default-branch rename, refs/remotes/origin/HEAD keeps pointing at the
+  # former default until someone runs git remote set-head, and trusting the
+  # cache would authorize an update from the renamed-away branch
+  # (PR #780 review, round 2 P1). The cache is the fallback for offline/gh-
+  # less runs — best local knowledge, with the refusal below still guarding
+  # any checkout that does not match it.
+  if command -v gh >/dev/null 2>&1 \
     && git -C "$PROJECT_DIR" remote get-url origin >/dev/null 2>&1; then
     default_branch="$(cd "$PROJECT_DIR" && gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
+  fi
+  if [ -z "$default_branch" ]; then
+    default_branch="$(git -C "$PROJECT_DIR" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null \
+      | sed 's#^origin/##' || true)"
   fi
   # init.defaultBranch is deliberately NOT consulted: it names the preferred
   # branch for NEWLY initialized repos, not this repo's default — a feature
