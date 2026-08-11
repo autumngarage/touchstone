@@ -77,6 +77,24 @@ else
   ok "no pull_request_target trigger"
 fi
 
+# `opened` is load-bearing for the shared-head guard: an already-green commit
+# opened as a SECOND PR inherits the first PR's commit-level check unless the
+# opened event re-evaluates it (PR #753 review, round 5). Mutation: removing
+# `opened` from the types list must fail here.
+if printf '%s\n' "$STRIPPED" | grep -qE 'types:[[:space:]]*\[opened,'; then
+  ok "pull_request trigger covers opened (shared-head guard reachable on sibling creation)"
+else
+  fail "pull_request types must include opened — without it a sibling PR at a green commit inherits the check"
+fi
+
+# One PR's evaluation failure must not strand the rest of a sweep with stale
+# verdicts (set -e aborts the loop otherwise).
+if printf '%s\n' "$STRIPPED" | grep -q 'sweep_failures'; then
+  ok "sweep isolates per-PR evaluation failures and fails the run afterward"
+else
+  fail "the base-push sweep must isolate per-PR failures — an early API error strands later heads on stale verdicts"
+fi
+
 echo "==> Trusted-author allowlist is never PR-controlled"
 if printf '%s\n' "$STRIPPED" | grep -q -F 'chatgpt-codex-connector,chatgpt-codex-connector[bot]'; then
   ok "fallback allowlist hardcoded in env (merge-pr.sh's built-in default)"

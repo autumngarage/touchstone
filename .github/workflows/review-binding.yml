@@ -164,7 +164,11 @@ on:
   issue_comment:
     types: [created, edited, deleted]
   pull_request:
-    types: [synchronize, reopened, edited]
+    # `opened` is load-bearing for the shared-head guard: an already-green
+    # commit opened as a SECOND PR would inherit the first PR's commit-level
+    # check without it, since no other event fires for the sibling
+    # (PR #753 review, round 5).
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: ['**']
   status:
@@ -833,15 +837,28 @@ jobs:
                 echo "WARNING: $total_open open PRs target '$pushed_ref'; fully re-evaluating the first $MAX_BASE_SWEEP_PRS and failing the rest closed." >&2
               fi
               seen=0
+              sweep_failures=0
               while IFS=$'\t' read -r pr sweep_head; do
                 [ -n "$pr" ] || continue
                 seen=$((seen + 1))
                 if [ "$seen" -le "$MAX_BASE_SWEEP_PRS" ]; then
-                  evaluate_pr "$pr"
+                  # Isolated: one PR's API failure must not strand the REST of
+                  # the sweep with stale verdicts under set -e. The failed
+                  # entry's own run stays in_progress/absent (visibly not
+                  # green), the failure is annotated, and later heads still
+                  # get their re-evaluation (PR #753 review, round 5).
+                  if ! evaluate_pr "$pr"; then
+                    echo "::error::sweep evaluation failed for PR #$pr; its check-run is not green and the sweep continued"
+                    sweep_failures=$((sweep_failures + 1))
+                  fi
                 else
                   publish_sweep_overflow "$pr" "$sweep_head" "$pushed_ref"
                 fi
               done <<<"$pr_rows"
+              if [ "${sweep_failures:-0}" -gt 0 ]; then
+                echo "::error::$sweep_failures sweep evaluation(s) failed; failing the sweep run itself"
+                exit 1
+              fi
             fi
           elif [ "${GITHUB_EVENT_NAME:-}" = "status" ]; then
             # A review-request status write changes this check's inputs on an
@@ -868,8 +885,14 @@ jobs:
             else
               while read -r pr; do
                 [ -n "$pr" ] || continue
-                evaluate_pr "$pr"
+                if ! evaluate_pr "$pr"; then
+                  echo "::error::status-event evaluation failed for PR #$pr; continuing with the rest"
+                  status_failures=$((status_failures + 1))
+                fi
               done <<<"$status_prs"
+              if [ "${status_failures:-0}" -gt 0 ]; then
+                exit 1
+              fi
             fi
           else
             evaluate_pr "$PR_NUMBER"
