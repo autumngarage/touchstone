@@ -35,9 +35,11 @@ name: validate
 # hold other work hostage until the discovery cycle (port or loud-skip each
 # platform failure) has actually finished. Flipping it to enforcing is the
 # two-line removal of `advisory: true` + `continue-on-error`, tracked as the
-# closing act of #742. The subset ALREADY proven on Windows keeps enforcing
-# separately in the windows-proven job — advisory for the unproven remainder
-# must never downgrade established coverage.
+# closing act of #742 (the advisory tolerance is a step-level exit 0 — job
+# continue-on-error keeps the workflow green but the check still fails, which
+# the merge gate blocks on). The subset ALREADY proven on Windows keeps
+# enforcing separately in the windows-proven job — advisory for the unproven
+# remainder must never downgrade established coverage.
 
 on:
   pull_request:
@@ -122,9 +124,6 @@ jobs:
             timeout: 180
             advisory: true
     timeout-minutes: ${{ matrix.timeout }}
-    # See the header: advisory legs report loudly but cannot block. Remove
-    # together with `advisory: true` above once the Windows leg is green.
-    continue-on-error: ${{ matrix.advisory }}
     steps:
       # Git for Windows on the runner image checks out with CRLF translation
       # enabled, and actions/checkout clones using the runner's git config.
@@ -240,6 +239,14 @@ jobs:
           if [ "$failed" -ne 0 ]; then
             echo "$failed test file(s) failed"
             if [ "${{ matrix.advisory }}" = "true" ]; then
+              # The advisory tolerance lives HERE, in the step, not in
+              # job-level continue-on-error: that keeps the WORKFLOW green but
+              # the job's check still reports failure, which the merge gate
+              # blocks on — the advisory leg was still freezing merges
+              # (observed live on this PR). Exiting 0 after the loud record is
+              # the only level at which "cannot block" is actually true. The
+              # ::error annotations above and this summary are the loudness;
+              # #742's baseline comment tracks the failing list.
               {
                 echo "## ADVISORY leg red — discovery mode (#742)"
                 echo ""
@@ -248,6 +255,8 @@ jobs:
                 echo "is either a portability bug to fix or a platform limitation to"
                 echo "loud-skip (see tests/test-sed-inplace.sh for the pattern)."
               } >>"$GITHUB_STEP_SUMMARY"
+              echo "ADVISORY: $failed failure(s) recorded; not blocking (see #742)."
+              exit 0
             fi
             exit 1
           fi
