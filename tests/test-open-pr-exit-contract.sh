@@ -1333,6 +1333,33 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# Case 42b (PR #755 review): --fresh-review overrides the per-head idempotency.
+# Without it, a BODY-ONLY finding deadlocks: the merge gate cannot accept it
+# via thread resolution and says "request a fresh review", while this script
+# answers "already reviewed" and requests nothing. The flag must spend a real
+# request on the identical evidence state that Case 42 skips.
+echo "==> Case 42b: --fresh-review forces a request on a reviewed unchanged head"
+OUT="$TEST_DIR/case42b.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s' "$CASE42_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr --fresh-review >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q -- '--fresh-review: forcing a new review request' "$OUT" \
+  && [ -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: --fresh-review must override the idempotent skip and post a request" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 43: review bound to another commit does not license the new head"
 OUT="$TEST_DIR/case43.out"
 RC=0

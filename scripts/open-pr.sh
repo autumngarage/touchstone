@@ -582,8 +582,10 @@ request_pr_triggered_review() {
     printf '%s\n' "$OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR" | sed 's/^/         /' >&2
     echo "         Falling back to durable request-evidence checks." >&2
   fi
-  if [ "$head_review_status" -eq 0 ] && [ "$matching_request" = true ]; then
+  if [ "$head_review_status" -eq 0 ] && [ "$matching_request" = true ] \
+    && [ "${FRESH_REVIEW:-false}" != true ]; then
     echo "==> Head $head_sha is already reviewed: a trusted formal review exists for this exact head; not re-requesting (issue #751)."
+    echo "    (If the merge gate reported a BODY-ONLY finding, re-run with --fresh-review.)"
     return 0
   fi
   if [ "$head_review_status" -eq 0 ]; then
@@ -591,9 +593,12 @@ request_pr_triggered_review() {
     echo "    evidence binds this head to base $base_sha; recording the request so the"
     echo "    merge gate can bind it."
   fi
-  if [ "$matching_request" = true ]; then
+  if [ "$matching_request" = true ] && [ "${FRESH_REVIEW:-false}" != true ]; then
     echo "==> GitHub Codex review already requested for head $head_sha at base $base_sha."
     return 0
+  fi
+  if [ "${FRESH_REVIEW:-false}" = true ]; then
+    echo "==> --fresh-review: forcing a new review request for head $head_sha despite existing evidence."
   fi
 
   if [ -z "$intent_at" ]; then
@@ -823,6 +828,14 @@ DRAFT_FLAG=""
 AUTO_MERGE=false
 CLEANUP_WORKTREE=false
 BASE_OVERRIDE=""
+# --fresh-review: force a new review request even when the head already has a
+# trusted review and matching durable evidence. This is the escape hatch for
+# BODY-ONLY findings (PR #755 review): the merge gate cannot accept them via
+# thread resolution, and the per-head idempotency would otherwise skip the
+# re-request — leaving the driver in a loop where the gate says "request a
+# fresh review" and this script answers "already reviewed". Bounded: it spends
+# exactly one request, and nothing advertises it except the body-only block.
+FRESH_REVIEW=false
 POSITIONAL=()
 
 while [ "$#" -gt 0 ]; do
@@ -837,6 +850,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --cleanup-worktree)
       CLEANUP_WORKTREE=true
+      shift
+      ;;
+    --fresh-review)
+      FRESH_REVIEW=true
       shift
       ;;
     --base)

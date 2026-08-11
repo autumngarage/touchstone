@@ -2055,6 +2055,74 @@ else
   exit 1
 fi
 
+# PR #755 round 3 (i): a same-second FORMAL-REVIEW tie must not launder a
+# body-only blocker through a thread-backed neighbour. Two COMMENTED reviews at
+# one timestamp — one with zero inline comments, one with two — aggregate as
+# body-only: resolving the neighbour's threads cannot acknowledge the finding
+# that never became one.
+echo "==> Test: same-second review tie with a body-only member blocks (PR #755)"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/body-only\t0\nchatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/threaded\t2' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-tie-body-only.txt" 123; then
+  echo "FAIL: a tie containing a body-only blocker unexpectedly satisfied the gate" >&2
+  exit 1
+fi
+if grep -q 'Blocking condition: a body-only trusted finding (no resolvable inline threads)' "$TEST_DIR/output-pr-triggered-tie-body-only.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: a body-only member poisons the whole same-second tie"
+else
+  echo "FAIL: the tie must aggregate as body-only when any blocking member has no threads" >&2
+  cat "$TEST_DIR/output-pr-triggered-tie-body-only.txt" >&2
+  exit 1
+fi
+
+# PR #755 round 3 (j): the cross-surface version. A thread-backed non-clean
+# review tied with a non-clean comment at the same second must block — the
+# comment constituent is body-only by construction, and attributing the tie to
+# the review would let its thread's resolution merge over the comment finding.
+echo "==> Test: cross-surface same-second tie with a non-clean comment blocks (PR #755)"
+reset_case_files
+write_pr_triggered_config true 0 0
+if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:00:00Z\thttps://example.test/review/threaded\t1' \
+  GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/tied-finding\tCodex Review: Found a blocking issue. **Reviewed commit:** `pr-head-oi`' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-cross-tie.txt" 123; then
+  echo "FAIL: a cross-surface tie with a non-clean comment unexpectedly satisfied the gate" >&2
+  exit 1
+fi
+if grep -q 'Blocking condition: a body-only trusted finding (no resolvable inline threads)' "$TEST_DIR/output-pr-triggered-cross-tie.txt" \
+  && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
+  echo "==> PASS: a non-clean comment constituent poisons the cross-surface tie"
+else
+  echo "FAIL: cross-surface ties must stay blocked while any constituent is body-only" >&2
+  cat "$TEST_DIR/output-pr-triggered-cross-tie.txt" >&2
+  exit 1
+fi
+
+# PR #755 round 3 (k): the final revalidation can change the accepted outcome,
+# and the lifecycle record must follow. The wait phase accepts a CLEAN comment
+# and emits review_clean; a newer thread-backed findings review arrives during
+# deterministic verification; the final gate authorizes via answered findings
+# and must emit the corrective review_findings_resolved.
+echo "==> Test: outcome change during verification emits the corrective event (PR #755)"
+reset_case_files
+write_pr_triggered_config true 0 0
+GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/clean\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
+  GH_TRUSTED_REVIEWS='' \
+  GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:01:00Z\thttps://example.test/review/late-findings\t1' \
+  run_merge_pr "$TEST_DIR/output-pr-triggered-outcome-change.txt" 123
+if grep -q 'Revalidated trusted PR-visible AI result for head pr-head-oid (findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-outcome-change.txt" \
+  && grep -q '"event":"review_clean"' "$TEST_DIR/merge-events.ndjson" \
+  && grep -q '"event":"review_findings_resolved"' "$TEST_DIR/merge-events.ndjson" \
+  && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
+  echo "==> PASS: the corrected final outcome is emitted, not just the initial one"
+else
+  echo "FAIL: an outcome change at final revalidation must emit the corrective event" >&2
+  cat "$TEST_DIR/output-pr-triggered-outcome-change.txt" >&2
+  grep 'review_' "$TEST_DIR/merge-events.ndjson" >&2 || true
+  exit 1
+fi
+
 # Issue #751 as bounded by PR #755 review: a non-clean COMMENT result is
 # body-only — it raises no resolvable threads, so zero unresolved threads is
 # not an answer to it. It must block (pre-#751 rule for this class), classify

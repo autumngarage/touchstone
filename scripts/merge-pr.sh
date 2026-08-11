@@ -1246,6 +1246,7 @@ latest_trusted_pr_review_result() {
   local query reviews author commit_oid state submitted_at url inline_count
   local candidate_clean candidate_detail
   local latest_submitted_at="" latest_clean=false latest_detail="" latest_inline=0
+  local latest_tie_poisoned=false
 
   if [ -z "$REPO_OWNER" ] || [ -z "$REPO_NAME" ]; then
     PR_TRIGGERED_REVIEW_INSPECTION_ERROR="formal reviews: repository identity is unavailable"
@@ -1310,14 +1311,24 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
       latest_clean="$candidate_clean"
       latest_detail="$candidate_detail"
       latest_inline="$inline_count"
+      latest_tie_poisoned=false
       continue
+    fi
+    # Same-second reviews merge into one verdict. Answerability does NOT merge
+    # by max(): a body-only non-clean member has no thread whose resolution
+    # could acknowledge it, so if ANY blocking member of the tie is body-only
+    # the aggregate is body-only — otherwise resolving a neighbour's thread
+    # would authorize a merge over an unacknowledged blocker (PR #755 review).
+    if { [ "$latest_clean" != true ] && [ "$latest_inline" -eq 0 ]; } \
+      || { [ "$candidate_clean" != true ] && [ "$inline_count" -eq 0 ]; }; then
+      latest_tie_poisoned=true
     fi
     if [ "$candidate_clean" != true ]; then
       latest_clean=false
     fi
-    # Same-second reviews merge into one verdict; threads from any of them can
-    # answer it, so the inline count is the max across the tie.
-    if [ "$inline_count" -gt "$latest_inline" ]; then
+    if [ "$latest_tie_poisoned" = true ]; then
+      latest_inline=0
+    elif [ "$inline_count" -gt "$latest_inline" ]; then
       latest_inline="$inline_count"
     fi
     latest_detail="$latest_detail; $candidate_detail"
@@ -1505,15 +1516,18 @@ trusted_pr_clean_signal() {
       PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT="$review_inline"
       return 0
     fi
-    # Same-second tie with a blocking part: attribute the signal to the surface
-    # that is actually blocking. A clean review tied with a non-clean comment
-    # means the comment is the blocker — and it is body-only by construction.
-    if [ "$review_clean" != true ]; then
-      PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="review"
-      PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT="$review_inline"
-    else
+    # Same-second tie with a blocking part. A non-clean COMMENT constituent is
+    # body-only by construction, and a body-only blocker poisons the whole tie
+    # — attributing the signal to a thread-backed review here would let its
+    # thread's resolution authorize a merge over the unacknowledged comment
+    # finding (PR #755 review). Only a tie whose sole blocker is the formal
+    # review keeps the review's answerability.
+    if [ "$comment_clean" != true ]; then
       PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="comment"
       PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT=0
+    else
+      PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="review"
+      PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT="$review_inline"
     fi
     return 3
   fi
@@ -1783,7 +1797,9 @@ wait_for_pr_triggered_review() {
             echo "       Blocking condition: a body-only trusted finding (no resolvable inline threads)." >&2
             echo "       Thread resolution cannot answer a finding that never became a thread." >&2
             echo "       Address the finding, then request a fresh review of this head:" >&2
-            echo "         bash scripts/open-pr.sh" >&2
+            echo "         bash scripts/open-pr.sh --fresh-review" >&2
+            echo "       (--fresh-review overrides the per-head idempotency, which would" >&2
+            echo "       otherwise skip the re-request because this head is already reviewed.)" >&2
             TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-body-only-findings"
             exit 1
           fi
@@ -2804,11 +2820,17 @@ run_merge_review() {
   echo "==> Trusted PR-visible review covers the current head and base."
   # The lifecycle event must match the outcome: emitting review_clean for a
   # gate satisfied by answered findings would tell event consumers a clean
-  # review occurred when it did not (PR #755 review).
+  # review occurred when it did not (PR #755 review). The emitted kind is
+  # recorded because the FINAL revalidation can change the accepted outcome —
+  # a newer result arriving during deterministic verification — and event
+  # consumers must then receive the corrected final event, not be left with
+  # a stale one (PR #755 review, round 3).
   if [ "${PR_TRIGGERED_REVIEW_SATISFIED_KIND:-clean}" = "findings-resolved" ]; then
     touchstone_emit_event review_findings_resolved pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+    PR_TRIGGERED_REVIEW_EMITTED_KIND="findings-resolved"
   else
     touchstone_emit_event review_clean pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+    PR_TRIGGERED_REVIEW_EMITTED_KIND="clean"
   fi
   return 0
 }
@@ -2877,7 +2899,7 @@ if [ "$BYPASS_REVIEW" != true ] || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-rev
           || [ "${PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT:-0}" -eq 0 ]; }; then
         # Same body-only rule as the wait loop: resolving threads cannot answer
         # a finding that never became one (PR #755 review).
-        PR_ANSWERED_FINDINGS_BLOCK_REASON="a body-only trusted finding (no resolvable inline threads); request a fresh review of this head"
+        PR_ANSWERED_FINDINGS_BLOCK_REASON="a body-only trusted finding (no resolvable inline threads); request a fresh review of this head with: bash scripts/open-pr.sh --fresh-review"
       elif [ "$final_answered_status" -eq 0 ]; then
         final_gate_satisfied=true
         final_answered_findings=true
@@ -2905,6 +2927,13 @@ if [ "$BYPASS_REVIEW" != true ] || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-rev
   fi
   if [ "$final_answered_findings" = true ]; then
     echo "==> Revalidated trusted PR-visible AI result for head $REVIEWED_HEAD_OID (findings; all threads resolved)."
+    if [ "${PR_TRIGGERED_REVIEW_EMITTED_KIND:-}" = "clean" ]; then
+      # The wait phase accepted a clean result and emitted review_clean, but a
+      # newer thread-backed findings result arrived during verification and the
+      # gate is now satisfied via answered findings. Correct the record.
+      touchstone_emit_event review_findings_resolved pr_number="$PR_NUMBER" head_sha="$REVIEWED_HEAD_OID"
+      PR_TRIGGERED_REVIEW_EMITTED_KIND="findings-resolved"
+    fi
   else
     if ! persist_pr_clean_review_result \
       "$REVIEWED_HEAD_OID" \
@@ -2915,6 +2944,13 @@ if [ "$BYPASS_REVIEW" != true ] || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-rev
       exit 1
     fi
     echo "==> Revalidated latest trusted PR-visible AI result for head $REVIEWED_HEAD_OID."
+    if [ "${PR_TRIGGERED_REVIEW_EMITTED_KIND:-}" = "findings-resolved" ]; then
+      # The mirror correction: answered findings satisfied the wait phase, but
+      # a fresh clean review arrived during verification and the final outcome
+      # is clean.
+      touchstone_emit_event review_clean pr_number="$PR_NUMBER" head_sha="$REVIEWED_HEAD_OID"
+      PR_TRIGGERED_REVIEW_EMITTED_KIND="clean"
+    fi
   fi
   if [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ]; then
     echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
