@@ -36,7 +36,7 @@ touchstone_sed_inplace 's/X/Y/' "$TEST_DIR/b1.txt" "$TEST_DIR/b2.txt"
 [ "$(cat "$TEST_DIR/b1.txt")" = "Y" ] || fail "b1 not rewritten"
 [ "$(cat "$TEST_DIR/b2.txt")" = "Y" ] || fail "b2 not rewritten"
 
-echo "==> file mode is preserved (cat >, not mv)"
+echo "==> file mode is carried onto the replacement before the rename"
 printf 'keep\n' >"$TEST_DIR/mode.txt"
 chmod 0741 "$TEST_DIR/mode.txt"
 touchstone_sed_inplace 's/keep/kept/' "$TEST_DIR/mode.txt"
@@ -72,9 +72,34 @@ rc=0
 touchstone_sed_inplace 's/a/b/' 2>/dev/null || rc=$?
 [ "$rc" -eq 2 ] || fail "no files should exit 2, got $rc"
 
-echo "==> no temp files are left behind"
-leaked="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'touchstone-sed.*' 2>/dev/null | wc -l | tr -d ' ')"
+echo "==> no temp files are left behind, in the target dir or TMPDIR"
+leaked="$(find "$TEST_DIR" "${TMPDIR:-/tmp}" -maxdepth 1 -name '*touchstone-sed.*' 2>/dev/null | wc -l | tr -d ' ')"
 [ "$leaked" = "0" ] || fail "$leaked touchstone-sed temp file(s) leaked"
+
+# The replacement is a rename, and rename(2) is only atomic within a
+# filesystem — so the temp must be a sibling of the target, not in $TMPDIR.
+# A temp on another device silently degrades `mv` to copy-then-delete and
+# reopens exactly the torn-write window this design closes.
+echo "==> the shim never writes its temp into TMPDIR"
+if ! grep -q 'mktemp "\$dir/' "$TOUCHSTONE_ROOT/lib/sed-inplace.sh"; then
+  fail "temp file is no longer created beside the target — rename is not atomic across filesystems"
+fi
+# Comment lines are excluded deliberately: the shim *explains* why it avoids
+# $TMPDIR, so a naive grep matches its own rationale.
+if grep -v '^[[:space:]]*#' "$TOUCHSTONE_ROOT/lib/sed-inplace.sh" | grep -q 'TMPDIR'; then
+  fail "lib/sed-inplace.sh uses TMPDIR in code; the temp must be a sibling of the target"
+fi
+
+echo "==> a read-only directory fails loudly instead of destroying the file"
+mkdir -p "$TEST_DIR/ro"
+printf 'precious\n' >"$TEST_DIR/ro/keep.txt"
+chmod 0500 "$TEST_DIR/ro"
+rc=0
+touchstone_sed_inplace 's/precious/gone/' "$TEST_DIR/ro/keep.txt" 2>"$TEST_DIR/err4" || rc=$?
+chmod 0700 "$TEST_DIR/ro"
+[ "$rc" -ne 0 ] || fail "unwritable directory should exit nonzero"
+[ "$(cat "$TEST_DIR/ro/keep.txt")" = "precious" ] \
+  || fail "file destroyed when its directory was unwritable — got: $(cat "$TEST_DIR/ro/keep.txt")"
 
 # --------------------------------------------------------------------------
 # Guardrail for the class, not just the instance (principles/audit-weak-points).
@@ -94,9 +119,14 @@ leaked="$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'touchstone-sed.*' 2>/dev/nul
 # alone — bootstrap/migrate-from-toolkit.sh uses it deliberately and removes
 # its own backup. This check therefore flags what is actually broken rather
 # than every in-place spelling.
+# Comment lines are filtered out: prose explaining why the broken spelling is
+# broken necessarily contains the broken spelling, and a guard that fires on
+# its own rationale is the false-positive class tracked in #745. Match on
+# `path:line:` followed by a non-comment character.
 echo "==> no space-separated 'sed -i' survives anywhere in the tree"
 offenders="$(cd "$TOUCHSTONE_ROOT" && git grep -nE "sed +-i +" -- \
-  ':!lib/sed-inplace.sh' ':!tests/test-sed-inplace.sh' || true)"
+  ':!lib/sed-inplace.sh' ':!tests/test-sed-inplace.sh' \
+  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
 if [ -n "$offenders" ]; then
   fail "non-portable space-separated \`sed -i\` reintroduced:"
   printf '%s\n' "$offenders" | sed 's/^/    /' >&2

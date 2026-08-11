@@ -6,20 +6,26 @@ on:
       - ".github/workflows/windows-git-bash.yml"
       - "bootstrap/new-project.sh"
       - "bootstrap/update-project.sh"
+      - "bin/touchstone"
       - "lib/preflight.sh"
+      - "lib/sed-inplace.sh"
       - "lib/sha256.sh"
       - "scripts/merge-pr.sh"
       - "tests/test-preflight.sh"
+      - "tests/test-sed-inplace.sh"
   push:
     branches: [main]
     paths:
       - ".github/workflows/windows-git-bash.yml"
       - "bootstrap/new-project.sh"
       - "bootstrap/update-project.sh"
+      - "bin/touchstone"
       - "lib/preflight.sh"
+      - "lib/sed-inplace.sh"
       - "lib/sha256.sh"
       - "scripts/merge-pr.sh"
       - "tests/test-preflight.sh"
+      - "tests/test-sed-inplace.sh"
 
 permissions:
   contents: read
@@ -38,3 +44,15 @@ jobs:
           command -v sha256sum
           bash -n lib/sha256.sh lib/preflight.sh scripts/merge-pr.sh
           bash tests/test-preflight.sh
+
+      # Git for Windows ships GNU sed, which is the userland the BSD-only
+      # `sed -i ''` spelling broke on (#719). This is the environment the shim
+      # exists for, so the shim's own suite has to run here — including its
+      # guardrail that the broken spelling cannot return.
+      - name: Exercise the portable in-place sed shim
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed --version | head -1
+          bash -n lib/sed-inplace.sh bin/touchstone
+          bash tests/test-sed-inplace.sh

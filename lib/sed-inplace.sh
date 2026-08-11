@@ -14,12 +14,45 @@
 # rather than like macOS — a BSD-only spelling breaks two of the three
 # platforms Touchstone supports.
 #
-# So this helper does not use -i at all. It writes through a temp file and
-# copies the bytes back, which also preserves the destination's mode, owner
-# and inode — `mv` would replace all three with the temp file's.
+# So this helper does not use -i at all. It writes a temp file and renames it
+# over the target, which is the standard safe-replace idiom: the rename is
+# atomic, so an interrupted or failing write can never leave the destination
+# truncated or half-rewritten. A reader either sees the old file or the new
+# one.
+#
+# Two details make that guarantee real rather than nominal:
+#
+#   * The temp file is created in the SAME DIRECTORY as the target, not in
+#     $TMPDIR. rename(2) is only atomic within a filesystem; a temp in /tmp
+#     would make `mv` a copy-then-delete across devices and reintroduce the
+#     torn-write window this is here to close.
+#   * The target's mode is copied onto the temp file BEFORE the rename, so
+#     permissions survive. The inode does not, which is the accepted trade —
+#     these are config and instruction files, not anything holding an open
+#     descriptor across the write.
 #
 # Failures are loud. The call sites this replaced ended in `2>/dev/null ||
 # true`, so every one of them had been silently doing nothing on Linux.
+
+# Read a file's permission bits as an octal string, portably. `stat` is one of
+# the sharpest BSD/GNU splits in the userland: GNU spells it `-c '%a'`, BSD
+# spells it `-f '%OLp'`, and each rejects the other's flag. Git for Windows
+# ships the GNU spelling. Try GNU first, fall back to BSD, fail loudly if
+# neither answers with something that looks like a mode.
+_touchstone_sed_file_mode() {
+  local file="$1" mode
+
+  mode="$(stat -c '%a' "$file" 2>/dev/null)" \
+    || mode="$(stat -f '%OLp' "$file" 2>/dev/null)" \
+    || return 1
+
+  case "$mode" in
+    [0-7] | [0-7][0-7] | [0-7][0-7][0-7] | [0-7][0-7][0-7][0-7]) ;;
+    *) return 1 ;;
+  esac
+
+  printf '%s\n' "$mode"
+}
 
 # touchstone_sed_inplace <sed-script> <file> [file...]
 #   Applies one sed script in place to each file. Every file must exist and be
@@ -40,7 +73,7 @@ touchstone_sed_inplace() {
     return 2
   fi
 
-  local file tmp
+  local file tmp dir mode
   for file in "$@"; do
     if [ ! -f "$file" ]; then
       echo "ERROR: touchstone_sed_inplace: not a regular file: $file" >&2
@@ -52,8 +85,12 @@ touchstone_sed_inplace() {
       return 1
     fi
 
-    tmp="$(mktemp "${TMPDIR:-/tmp}/touchstone-sed.XXXXXX")" || {
-      echo "ERROR: touchstone_sed_inplace: could not create a temp file." >&2
+    # Same directory as the target: rename(2) is only atomic within one
+    # filesystem, so a temp in $TMPDIR would silently degrade `mv` into
+    # copy-then-delete and reopen the torn-write window.
+    dir="$(dirname "$file")"
+    tmp="$(mktemp "$dir/.touchstone-sed.XXXXXX")" || {
+      echo "ERROR: touchstone_sed_inplace: could not create a temp file in $dir." >&2
       return 1
     }
 
@@ -64,12 +101,26 @@ touchstone_sed_inplace() {
       return 1
     fi
 
-    if ! cat "$tmp" >"$file"; then
+    # Carry the target's permissions onto the replacement before the rename.
+    # chmod --reference is GNU-only, so read the mode portably instead.
+    if ! mode="$(_touchstone_sed_file_mode "$file")"; then
       rm -f "$tmp"
-      echo "ERROR: touchstone_sed_inplace: could not write back to $file" >&2
+      echo "ERROR: touchstone_sed_inplace: could not read the mode of $file" >&2
+      return 1
+    fi
+    if ! chmod "$mode" "$tmp"; then
+      rm -f "$tmp"
+      echo "ERROR: touchstone_sed_inplace: could not set mode $mode on the replacement for $file" >&2
       return 1
     fi
 
-    rm -f "$tmp"
+    # Atomic. The original is never truncated: either the rename succeeds and
+    # the new content is fully in place, or it fails and the original is
+    # untouched.
+    if ! mv -f "$tmp" "$file"; then
+      rm -f "$tmp"
+      echo "ERROR: touchstone_sed_inplace: could not replace $file" >&2
+      return 1
+    fi
   done
 }
