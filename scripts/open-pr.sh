@@ -489,7 +489,6 @@ trusted_review_exists_for_head() {
   OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR=""
   OPEN_PR_HEAD_REVIEW_DISMISSED_AT=""
   OPEN_PR_HEAD_REVIEW_LIVE_AT=""
-  OPEN_PR_HEAD_REVIEW_STATE=""
   # Spent review rounds on this PR: every submitted trusted review, at ANY
   # head — the same formal-review definition merge-pr.sh's
   # report_review_rounds uses (the two unify when #734 thins the gate).
@@ -499,13 +498,12 @@ trusted_review_exists_for_head() {
   # Comment-channel answer state for THIS head (the channel formal-review
   # lookup cannot see; clean results normally arrive here). AT is the latest
   # trusted result comment naming this exact head by merge-pr.sh's canonical
-  # 10-char marker; CLEAN mirrors merge-pr.sh's verdict rule (latest wins,
-  # same-second ties collapse to non-clean). LOOKUP_ERROR nonempty means the
+  # 10-char marker (verdict classification stays in the filter for the test
+  # tier; the gate owns verdict semantics — #734). LOOKUP_ERROR nonempty means the
   # comment inspection FAILED — unknown, not absent — and every stall
   # classification/recovery consumer must suppress rather than act on
   # incomplete GitHub state (PR #781 review).
   OPEN_PR_HEAD_RESULT_COMMENT_AT=""
-  OPEN_PR_HEAD_RESULT_COMMENT_CLEAN=false
   OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR=""
   local submitted
   if ! reviews_tsv="$(gh api --paginate "repos/$REPO_FULL_NAME/pulls/$pr_number/reviews" \
@@ -541,7 +539,6 @@ trusted_review_exists_for_head() {
     if [ -z "$OPEN_PR_HEAD_REVIEW_LIVE_AT" ] \
       || [[ "$submitted" > "$OPEN_PR_HEAD_REVIEW_LIVE_AT" ]]; then
       OPEN_PR_HEAD_REVIEW_LIVE_AT="$submitted"
-      OPEN_PR_HEAD_REVIEW_STATE="$state"
     fi
   done <<<"$reviews_tsv"
   # Comment-delivered results ("Reviewed commit:" issue comments from a
@@ -560,12 +557,12 @@ trusted_review_exists_for_head() {
   # not count as an answer here either. Lookup failure records the error and
   # leaves the round count partial: friction control, not authorization.
   OPEN_PR_RESULT_COMMENT_JQ='.[] | select((.body // "") | contains("Reviewed commit:")) | [(.user.login // ""), (((.body // "") | (capture("Reviewed commit:[^`]*`(?<sha>[0-9a-fA-F]{7,40})`")? | .sha) // "")), (.created_at // ""), (if ((.body // "") | (startswith("Codex Review: Didn'\''t find any major issues.") or startswith("Codex Review: No major issues."))) then "clean" else "non-clean" end)] | @tsv'
-  local result_comment_rows comment_login comment_result_sha comment_result_at comment_result_verdict
+  local result_comment_rows comment_login comment_result_sha comment_result_at
   local head_short_lc comment_sha_lc
   head_short_lc="$(printf '%.10s' "$head_sha" | tr '[:upper:]' '[:lower:]')"
   if result_comment_rows="$(gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments" \
     --jq "$OPEN_PR_RESULT_COMMENT_JQ" 2>&1)"; then
-    while IFS=$'\t' read -r comment_login comment_result_sha comment_result_at comment_result_verdict; do
+    while IFS=$'\t' read -r comment_login comment_result_sha comment_result_at _; do
       [ -n "$comment_login" ] || continue
       csv_contains "$OPEN_PR_TRUSTED_REVIEW_AUTHORS" "$comment_login" || continue
       OPEN_PR_TRUSTED_REVIEW_ROUNDS=$((OPEN_PR_TRUSTED_REVIEW_ROUNDS + 1))
@@ -575,11 +572,6 @@ trusted_review_exists_for_head() {
       if [ -z "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ] \
         || [[ "$comment_result_at" > "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ]]; then
         OPEN_PR_HEAD_RESULT_COMMENT_AT="$comment_result_at"
-        OPEN_PR_HEAD_RESULT_COMMENT_CLEAN=false
-        [ "$comment_result_verdict" = "clean" ] && OPEN_PR_HEAD_RESULT_COMMENT_CLEAN=true
-      elif [ "$comment_result_at" = "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ] \
-        && [ "$comment_result_verdict" != "clean" ]; then
-        OPEN_PR_HEAD_RESULT_COMMENT_CLEAN=false
       fi
     done <<<"$result_comment_rows"
   else
@@ -604,34 +596,6 @@ open_pr_utc_epoch() {
 # the sanctioned recovery (--fresh-review, which retires the stale request)
 # and never fires a request itself. Returns 1 only for a malformed threshold,
 # which refuses loudly rather than silently disabling the report.
-# Inline-thread count of the latest live trusted formal review at a head —
-# merge-pr.sh's answerability datum (a COMMENTED review with zero inline
-# comments is body-only; the merge gate rejects it). Fetched lazily, only
-# when the budget refusal must decide whether that review is a mergeable
-# answer (PR #781 review, round 2). Prints the count; prints nothing and
-# returns 1 on lookup failure so callers stay conservative.
-fetch_head_review_inline_count() {
-  local pr_number="$1" head_sha="$2"
-  local rows row_login row_state row_submitted row_oid row_count
-  local best_at="" best_count=""
-  rows="$(gh api graphql \
-    -F owner="${REPO_FULL_NAME%%/*}" -F name="${REPO_FULL_NAME##*/}" -F number="$pr_number" \
-    -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviews(last:100){nodes{author{login} state submittedAt commit{oid} comments(first:1){totalCount}}}}}}' \
-    --jq '.data.repository.pullRequest.reviews.nodes[] | [(.author.login // ""), (.state // ""), (.submittedAt // ""), (.commit.oid // ""), ((.comments.totalCount // 0) | tostring)] | @tsv' 2>/dev/null)" || return 1
-  while IFS=$'\t' read -r row_login row_state row_submitted row_oid row_count; do
-    [ -n "$row_login" ] || continue
-    csv_contains "$OPEN_PR_TRUSTED_REVIEW_AUTHORS" "$row_login" || continue
-    [ "$row_oid" = "$head_sha" ] || continue
-    case "$row_state" in DISMISSED | PENDING) continue ;; esac
-    if [ -z "$best_at" ] || [[ "$row_submitted" > "$best_at" ]]; then
-      best_at="$row_submitted"
-      best_count="$row_count"
-    fi
-  done <<<"$rows"
-  [ -n "$best_count" ] || return 1
-  printf '%s\n' "$best_count"
-}
-
 report_unanswered_request_stall() {
   local trigger_at="$1"
   local stall_minutes="${TOUCHSTONE_REVIEW_STALL_MINUTES:-$OPEN_PR_REVIEW_STALL_DEFAULT_MINUTES}"
@@ -1096,42 +1060,28 @@ request_pr_triggered_review() {
   if [ "${OPEN_PR_TRUSTED_REVIEW_ROUNDS:-0}" -ge "$ROUND_BUDGET" ] \
     && [ -z "$ROUND_BUDGET_OVERRIDE" ]; then
     echo "ERROR: PR #$pr_number has already spent $OPEN_PR_TRUSTED_REVIEW_ROUNDS review round(s); the budget is $ROUND_BUDGET (#760)." >&2
-    # Would the merge gate ACCEPT what this head currently carries? false
-    # routes to the deadlock exit; true or unknown keeps the ordinary exits
-    # (unknown = a lookup failed; never claim a deadlock on incomplete
-    # state). A post-trigger COMMENTED formal review is only mergeable when
-    # findings materialized as inline threads — zero inline is body-only and
-    # the merge gate rejects it (PR #781 review, round 2).
-    head_mergeable_answer=false
-    if [ -n "$OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR" ]; then
-      head_mergeable_answer=unknown
+    # Does ANY post-trigger answer exist for this head, on either channel?
+    # That is the one predicate this side can compute soundly. Whether the
+    # merge gate ACCEPTS that answer (clean vs body-only, same-second ties,
+    # an active CHANGES_REQUESTED) is the gate's own verdict — three review
+    # rounds of trying to mirror it here each found another divergence, and
+    # replicating the reviewer-semantics layer in a second place is exactly
+    # what #734 exists to delete. So: no answer at all -> the deadlock exit
+    # is certain; an answer exists -> the exits text states both outcomes
+    # conditionally instead of guessing the gate's verdict; lookups failed
+    # -> unknown, conservative (PR #781 review, rounds 2-3).
+    head_answer_state=none
+    if [ -n "$OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR" ] || [ "$head_review_status" -eq 2 ]; then
+      head_answer_state=unknown
+    elif [ "$formal_answer_post_trigger" = true ]; then
+      head_answer_state=answered
     elif [ -n "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ] \
       && { [ -z "$matching_trigger_at" ] \
-        || [[ "$OPEN_PR_HEAD_RESULT_COMMENT_AT" > "$matching_trigger_at" ]]; } \
-      && [ "$OPEN_PR_HEAD_RESULT_COMMENT_CLEAN" = true ]; then
-      head_mergeable_answer=true
-    elif [ "$head_review_status" -eq 2 ]; then
-      head_mergeable_answer=unknown
-    elif [ "$formal_answer_post_trigger" = true ]; then
-      case "${OPEN_PR_HEAD_REVIEW_STATE:-}" in
-        APPROVED | CHANGES_REQUESTED)
-          # APPROVED satisfies the gate outright; CHANGES_REQUESTED's remedy
-          # is answering threads and clearing the decision, not a fresh
-          # request — both keep the ordinary exits.
-          head_mergeable_answer=true
-          ;;
-        *)
-          inline_count="$(fetch_head_review_inline_count "$pr_number" "$head_sha")" || inline_count=""
-          if [ -z "$inline_count" ]; then
-            head_mergeable_answer=unknown
-          elif [ "$inline_count" -gt 0 ]; then
-            head_mergeable_answer=true
-          fi
-          ;;
-      esac
+        || [[ "$OPEN_PR_HEAD_RESULT_COMMENT_AT" > "$matching_trigger_at" ]]; }; then
+      head_answer_state=answered
     fi
     if [ "$matching_request" != true ] || [ "$request_consumed_by_dismissal" = true ] \
-      || [ "$head_mergeable_answer" = false ]; then
+      || [ "$head_answer_state" = none ]; then
       # The budget/evidence deadlock (#775): this head has no reviewer answer
       # the merge gate accepts (no request recorded, its answer was dismissed,
       # or the request was never answered — the #759 stall), so "run
@@ -1156,6 +1106,10 @@ request_pr_triggered_review() {
       echo "       Requesting another round is usually the wrong move. The legitimate exits:" >&2
       echo "         1. Merge if answered — every thread resolved satisfies the gate (issue #751);" >&2
       echo "            run: bash scripts/merge-pr.sh $pr_number" >&2
+      echo "            If the gate REFUSES the current answer (a body-only result, a" >&2
+      echo "            same-second tie, or an active CHANGES_REQUESTED), its remedy needs a" >&2
+      echo "            fresh review — past budget that is the override below, with the" >&2
+      echo "            gate's refusal as the reason." >&2
       echo "         2. Split the PR — the diff is carrying more than one concern." >&2
       echo "         3. Close it, preserving the corpus on the tracking issue (the #706 pattern)." >&2
       echo "       Findings that harden a component the plan deletes belong on the owning" >&2

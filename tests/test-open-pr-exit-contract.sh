@@ -211,17 +211,6 @@ case "$1 $2" in
   "api user")
     echo "${GH_PR_AUTHOR:-alice}"
     ;;
-  "api graphql")
-    # Inline-count fetch (PR #781 round 2): post-jq TSV rows of
-    # login<TAB>state<TAB>submittedAt<TAB>oid<TAB>count.
-    if [ "${GH_HEAD_REVIEW_INLINE_FAIL:-0}" = "1" ]; then
-      echo "graphql unavailable" >&2
-      exit 1
-    fi
-    if [ -n "${GH_HEAD_REVIEW_INLINE_ROWS:-}" ]; then
-      printf '%s\n' "$GH_HEAD_REVIEW_INLINE_ROWS"
-    fi
-    ;;
   "api --paginate")
     case "${3:-}" in
       */pulls/*/reviews*)
@@ -400,8 +389,6 @@ run_open_pr() {
       GH_REQUEST_STATUS_RECORDS="${GH_REQUEST_STATUS_RECORDS:-}" \
       GH_RESULT_COMMENT_AUTHORS="${GH_RESULT_COMMENT_AUTHORS:-}" \
       GH_RESULT_COMMENTS_FAIL="${GH_RESULT_COMMENTS_FAIL:-0}" \
-      GH_HEAD_REVIEW_INLINE_ROWS="${GH_HEAD_REVIEW_INLINE_ROWS:-}" \
-      GH_HEAD_REVIEW_INLINE_FAIL="${GH_HEAD_REVIEW_INLINE_FAIL:-0}" \
       GIT_PUSH_PLAIN_EXIT="${GIT_PUSH_PLAIN_EXIT:-0}" \
       GIT_PUSH_LEASE_EXIT="${GIT_PUSH_LEASE_EXIT:-0}" \
       GIT_PUSH_LOG="$TEST_DIR/git-push.log" \
@@ -1687,7 +1674,6 @@ OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
   GH_PR_HEAD_OID="$CASE45_HEAD" \
   GH_REQUEST_STATUS_RECORDS="$CASE45E_RECORDS" \
   GH_HEAD_REVIEWS="$CASE45E_REVIEWS" \
-  GH_HEAD_REVIEW_INLINE_ROWS="$(printf 'chatgpt-codex-connector[bot]\tCOMMENTED\t2026-08-01T02:00:01Z\t%s\t2' "$CASE45_HEAD")" \
   GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
   run_open_pr --fresh-review >"$OUT" 2>&1 || RC=$?
 
@@ -1695,6 +1681,7 @@ if [ "$RC" != "0" ] \
   && grep -q 'review round(s); the budget is 3 (#760)' "$OUT" \
   && grep -q 'Merge if answered' "$OUT" \
   && grep -q "run: bash scripts/merge-pr.sh 777" "$OUT" \
+  && grep -q 'If the gate REFUSES' "$OUT" \
   && grep -q 'Split the PR' "$OUT" \
   && grep -q 'preserving the corpus' "$OUT" \
   && ! grep -q 'budget/evidence deadlock' "$OUT" \
@@ -2081,10 +2068,12 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-# Case 45g (PR #781 review): a NON-CLEAN comment answer is body-only — the
-# merge gate rejects it — so at budget it must take the deadlock exit, not
-# advertise merge-pr.sh.
-echo "==> Case 45g: a non-clean comment answer at budget takes the deadlock exit"
+# Case 45g (PR #781 rounds 2-3): a NON-CLEAN comment answer means the
+# reviewer DID answer — whether the merge gate accepts it is the gate's own
+# verdict, so the refusal prints the conditional exits (merge if accepted;
+# override with the gate's refusal as the reason otherwise), never a
+# confident deadlock claim and never an unconditional merge recommendation.
+echo "==> Case 45g: a non-clean comment answer at budget gets the conditional exits"
 OUT="$TEST_DIR/case45g.out"
 RC=0
 reset_open_pr_logs
@@ -2097,21 +2086,23 @@ OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
   run_open_pr --fresh-review >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" != "0" ] \
-  && grep -q 'budget/evidence deadlock' "$OUT" \
-  && ! grep -q 'run: bash scripts/merge-pr.sh' "$OUT" \
+  && grep -q 'Merge if answered' "$OUT" \
+  && grep -q 'If the gate REFUSES' "$OUT" \
+  && grep -q -- '--round-budget-override' "$OUT" \
+  && ! grep -q 'budget/evidence deadlock' "$OUT" \
   && [ ! -s "$TEST_DIR/review-request.log" ]; then
   echo "    PASS"
 else
-  echo "    FAIL: a body-only comment answer must not be advertised as mergeable" >&2
+  echo "    FAIL: an answered head must get the conditional exits, not a deadlock claim" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
-# Case 45h (PR #781 round 2): a post-trigger COMMENTED formal review with
-# ZERO inline comments is body-only — the merge gate rejects it — so at
-# budget the refusal must take the deadlock exit, not advertise merge-pr.sh.
-echo "==> Case 45h: a body-only formal review at budget takes the deadlock exit"
+# Case 45h (PR #781 rounds 2-3): a post-trigger COMMENTED formal review is
+# an ANSWER; whether it carries mergeable inline threads or is body-only is
+# the merge gate's verdict, so the refusal prints the conditional exits.
+echo "==> Case 45h: a post-trigger formal answer at budget gets the conditional exits"
 OUT="$TEST_DIR/case45h.out"
 RC=0
 reset_open_pr_logs
@@ -2120,17 +2111,17 @@ OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
   GH_PR_HEAD_OID="$CASE46_HEAD" \
   GH_REQUEST_STATUS_RECORDS="$CASE46_RECORDS" \
   GH_HEAD_REVIEWS="$CASE45H_REVIEWS" \
-  GH_HEAD_REVIEW_INLINE_ROWS="$(printf 'chatgpt-codex-connector[bot]\tCOMMENTED\t2026-08-01T02:00:01Z\t%s\t0' "$CASE46_HEAD")" \
   GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
   run_open_pr --fresh-review >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" != "0" ] \
-  && grep -q 'budget/evidence deadlock' "$OUT" \
-  && ! grep -q 'run: bash scripts/merge-pr.sh' "$OUT" \
+  && grep -q 'Merge if answered' "$OUT" \
+  && grep -q 'If the gate REFUSES' "$OUT" \
+  && ! grep -q 'budget/evidence deadlock' "$OUT" \
   && [ ! -s "$TEST_DIR/review-request.log" ]; then
   echo "    PASS"
 else
-  echo "    FAIL: a zero-inline formal review must not be advertised as mergeable" >&2
+  echo "    FAIL: a formal answer must get the conditional exits, not a deadlock claim" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
