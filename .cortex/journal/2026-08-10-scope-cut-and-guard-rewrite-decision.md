@@ -17,7 +17,16 @@ The backlog stood at **47 open issues**, most describing real defects, accumulat
 
 **1. The bar, and what survived it.** The backlog went from **47 open at the start of 2026-08-09 to 7 at the end of 2026-08-10**.
 
-Those are the two numbers worth recording, because they are the only ones that can be checked directly. The path between them was not a simple subtraction: issues were closed as verified-fixed, cancelled as out of scope, reopened when a closure turned out to be false, and newly filed as this work exposed defects — in both directions, on both days. Anyone auditing this should count `gh issue list --state closed` by date rather than trust a chain of arithmetic here.
+Those are the two numbers worth recording, because they are the only ones that can be checked directly. The path between them was not a simple subtraction: issues were closed as verified-fixed, cancelled as out of scope, reopened when a closure turned out to be false, and newly filed as this work exposed defects — in both directions, on both days. Anyone auditing this needs the *events*, not the current states — `gh issue list --state closed` returns only what is closed **now**, so it silently omits #593, which was reopened, and its `--limit` defaults to 30, fewer than the closures involved. A query that can actually reconstruct both endpoints:
+
+```bash
+gh api --paginate 'repos/autumngarage/touchstone/issues/events?per_page=100' \
+  --jq '.[] | select(.event | test("^(closed|reopened)$"))
+             | select(.created_at >= "2026-08-09" and .created_at < "2026-08-11")
+             | [.created_at, .event, .issue.number] | @tsv' | sort
+```
+
+That returns every close and reopen in the window with its timestamp, so the net movement is derivable rather than asserted. The two endpoint counts above remain the claim; this is how to check it.
 
 The surviving work: **#640** (the merge gate authorized itself on roughly a third of this repo's PRs), **#694** (the 2.13.0 cuts, 1 of 6 landed), **#507** (the 1,965-line disclosure hook), **#702** (dead surface the registry exposed).
 
