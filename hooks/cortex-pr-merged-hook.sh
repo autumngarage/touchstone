@@ -223,7 +223,24 @@ merge_journal_pr_synchronously() {
     if [ "$merge_state" = "CLEAN" ] && [ "$mergeable" = "MERGEABLE" ] \
       && [ "$merge_requested" = false ]; then
       merge_requested=true
-      if gh pr merge "$pr_number" --squash --delete-branch \
+      # Repository-level deleteBranchOnMerge deletes the head server-side after
+      # this merge regardless of the flags passed, which would close any PR
+      # based on the journal branch. merge-pr.sh refuses under that setting; a
+      # direct merge here must not quietly bypass that (PR #715 review).
+      journal_auto_delete="$(gh repo view --json deleteBranchOnMerge --jq '.deleteBranchOnMerge' 2>/dev/null || echo "unknown")"
+      if [ "$journal_auto_delete" != "false" ]; then
+        log "cortex-pr-merged-hook: refusing to merge journal PR #${pr_number} —"
+        log "  deleteBranchOnMerge is '${journal_auto_delete}' for this repository, so GitHub"
+        log "  would delete the journal branch server-side and close anything based on it."
+        log "  Turn it off with: gh repo edit --delete-branch-on-merge=false"
+        log "  Recovery: merge ${pr_url} once the setting is corrected."
+        return 1
+      fi
+      # No --delete-branch. It removes the head branch, which closes any PR
+      # stacked on it along with its review threads (issue #713). Journal PRs
+      # are usually leaves, but the flag is the hazard regardless of who is
+      # holding it, and cleanup-branches.sh collects the ref safely later.
+      if gh pr merge "$pr_number" --squash \
         --match-head-commit "$expected_head" >/dev/null 2>&1; then
         :
       else

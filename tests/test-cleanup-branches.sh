@@ -223,7 +223,106 @@ if grep -q "deleted remote" "$FAIL_OUTPUT"; then
   exit 1
 fi
 
+# --- Post-lease verification is ONE inspection request, and never
+# manufactures a definite answer from a degenerate reply (PR #715 review).
+# Scenario: the remote branch advanced after classification, so the leased
+# delete is rejected. The single ls-remote reply reports the advanced OID.
+# The earlier two-call shape asked once for existence and AGAIN for the OID;
+# a transient empty second reply produced current_oid="" which was misread
+# as "still at its classified OID" — a definite answer the remote never gave.
+echo "==> Test: post-lease verification uses one ls-remote and reports the advance"
+
+git checkout -q main
+git push -q origin main:refs/heads/feat/remote-advanced
+
+VERIFY_BIN="$TEST_DIR/verify-bin"
+mkdir -p "$VERIFY_BIN"
+cat >"$VERIFY_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  "repo view --json defaultBranchRef --jq .defaultBranchRef.name")
+    echo "main"
+    ;;
+  "pr list --state open --limit 200 --json number --jq length")
+    echo "0"
+    ;;
+  "pr list --state open --limit 200 --json headRefName,baseRefName "*)
+    :
+    ;;
+  "pr list --state open --base "*)
+    :
+    ;;
+  "pr list --state open --head "*)
+    :
+    ;;
+  *)
+    echo "unexpected gh args: $*" >&2
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "$VERIFY_BIN/gh"
+
+# git wrapper: reject the leased delete (the branch "moved"), answer the FIRST
+# ls-remote with the advanced OID, and answer any LATER ls-remote with a
+# degenerate success — exit 0, no payload — the transient shape that the old
+# two-call verification misread as "still at its classified OID".
+REAL_GIT="$(command -v git)"
+cat >"$VERIFY_BIN/git" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" = "push" ]; then
+  case " \$* " in
+    *" --force-with-lease="*)
+      echo "remote rejected (stale info)" >&2
+      exit 1
+      ;;
+  esac
+fi
+if [ "\${1:-}" = "ls-remote" ]; then
+  n=0
+  [ -f "\${LS_REMOTE_COUNT_FILE:?}" ] && n="\$(cat "\$LS_REMOTE_COUNT_FILE")"
+  n=\$((n + 1))
+  printf '%s\n' "\$n" >"\$LS_REMOTE_COUNT_FILE"
+  if [ "\$n" -eq 1 ]; then
+    printf '%s\trefs/heads/%s\n' "\${LS_REMOTE_ADVANCED_OID:?}" "feat/remote-advanced"
+  fi
+  exit 0
+fi
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$VERIFY_BIN/git"
+
+VERIFY_OUT="$TEST_DIR/verify-output.txt"
+rm -f "$TEST_DIR/ls-remote-count"
+PATH="$VERIFY_BIN:$PATH" \
+  LS_REMOTE_COUNT_FILE="$TEST_DIR/ls-remote-count" \
+  LS_REMOTE_ADVANCED_OID="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" \
+  bash "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" --remote-too --execute \
+  >"$VERIFY_OUT" 2>&1
+
+verify_fail() {
+  echo "FAIL: $1" >&2
+  echo "---- verification script output ----" >&2
+  cat "$VERIFY_OUT" >&2
+  exit 1
+}
+
+if ! grep -q "advanced to deadbeefdead" "$VERIFY_OUT"; then
+  verify_fail "a rejected delete on an advanced branch must report the advance it saw"
+fi
+if grep -q "still at its classified OID" "$VERIFY_OUT"; then
+  verify_fail "verification claimed 'still at classified OID' — a definite answer the remote reply did not support"
+fi
+if [ "$(cat "$TEST_DIR/ls-remote-count")" != "1" ]; then
+  verify_fail "verification must be a single ls-remote request (saw $(cat "$TEST_DIR/ls-remote-count"))"
+fi
+if ! git ls-remote --exit-code origin refs/heads/feat/remote-advanced >/dev/null 2>&1; then
+  verify_fail "the advanced remote branch must survive the rejected delete"
+fi
+
 echo "==> PASS: squash, multi-squash, and rebase-merged branches force-deleted;"
 echo "         unique, add-then-reverted, and rename-half branches preserved;"
 echo "         --help covers full safety block;"
-echo "         remote cleanup fails closed when gh pr list errors"
+echo "         remote cleanup fails closed when gh pr list errors;"
+echo "         post-lease verification is one request and reports the advance"

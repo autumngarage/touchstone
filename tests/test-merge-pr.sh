@@ -89,6 +89,19 @@ case "${1:-} ${2:-}" in
     case "${4:-}" in
       defaultBranchRef) echo "main" ;;
       nameWithOwner) echo "${GH_REPO_FULL_NAME:-autumngarage/touchstone}" ;;
+      # merge-pr.sh inspects this before claiming the branch is retained:
+      # a repository with deleteBranchOnMerge enabled removes the head
+      # server-side regardless of the flags we pass (PR #715 review).
+      deleteBranchOnMerge)
+        # __UNKNOWN__ simulates the query itself failing (API, auth, or
+        # permission), which is what merge-pr.sh must treat as unreadable
+        # rather than as a benign default.
+        if [ "${GH_DELETE_BRANCH_ON_MERGE:-false}" = "__UNKNOWN__" ]; then
+          echo "gh: could not read repository settings" >&2
+          exit 1
+        fi
+        echo "${GH_DELETE_BRANCH_ON_MERGE:-false}"
+        ;;
       *)
         echo "unexpected gh repo view args: $*" >&2
         exit 1
@@ -214,6 +227,21 @@ case "${1:-} ${2:-}" in
     fi
     echo "commented"
     ;;
+  "pr list")
+    # Dependent-PR lookup used before deciding whether to delete the branch
+    # (issue #713). Any other `pr list` shape falls through to the generic
+    # handler below.
+    case "$*" in
+      *--base*)
+        if [ "${GH_DEPENDENT_PRS:-}" = "__FAIL__" ]; then
+          echo "gh: could not list pull requests" >&2
+          exit 1
+        fi
+        printf '%s\n' "${GH_DEPENDENT_PRS:-}"
+        exit 0
+        ;;
+    esac
+    ;;
   "pr merge")
     if [ "${4:-}" = "--disable-auto" ]; then
       printf 'disable-auto\n' >>"$GH_MERGE_ARGS_FILE"
@@ -221,14 +249,22 @@ case "${1:-} ${2:-}" in
     fi
     printf '%s\n' "$*" > "$GH_MERGE_ARGS_FILE"
     expected_head="${GH_EXPECT_MERGE_HEAD:-pr-head-oid}"
-    if [ "${4:-} ${5:-} ${6:-} ${7:-}" != "--squash --delete-branch --match-head-commit $expected_head" ]; then
+    # --delete-branch is omitted when another open PR is based on this branch,
+    # because deleting it would close the dependents (issue #713).
+    if [ "${4:-} ${5:-} ${6:-} ${7:-}" = "--squash --delete-branch --match-head-commit $expected_head" ]; then
+      merge_head_arg="$7"
+      body_flag_pos=8
+    elif [ "${4:-} ${5:-} ${6:-}" = "--squash --match-head-commit $expected_head" ]; then
+      merge_head_arg="$6"
+      body_flag_pos=7
+    else
       echo "unexpected gh pr merge args: $*" >&2
       exit 1
     fi
-    if [ "${8:-}" = "--body" ]; then
-      printf '%s\n' "${9:-}" > "$GH_MERGE_BODY_FILE"
+    if [ "$(eval printf '%s' "\${$body_flag_pos:-}")" = "--body" ]; then
+      eval "printf '%s\\n' \"\${$((body_flag_pos + 1)):-}\"" > "$GH_MERGE_BODY_FILE"
     fi
-    echo "$7" > "$GH_MERGE_HEAD_FILE"
+    echo "$merge_head_arg" > "$GH_MERGE_HEAD_FILE"
     # GH_MERGE_LEAVES_OPEN=true models a required-checks merge queue: the
     # command is accepted (auto-merge armed) but the PR does not merge.
     if [ -n "${GH_MERGED_MARKER:-}" ] && [ "${GH_MERGE_LEAVES_OPEN:-false}" != "true" ]; then
@@ -946,6 +982,7 @@ run_merge_pr() {
     GH_RUN_JOBS_FAIL="${GH_RUN_JOBS_FAIL:-false}" \
     GH_ANNOTATIONS_FAIL="${GH_ANNOTATIONS_FAIL:-false}" \
     GH_MERGE_LEAVES_OPEN="${GH_MERGE_LEAVES_OPEN:-false}" \
+    GH_DEPENDENT_PRS="${GH_DEPENDENT_PRS:-}" \
     GIT_CLAIM_CHECKER_SHOW_FAIL="${GIT_CLAIM_CHECKER_SHOW_FAIL:-false}" \
     CLAIM_DIRECT_BYPASS="${CLAIM_DIRECT_BYPASS:-false}" \
     CLAIM_DIRECT_EXIT="${CLAIM_DIRECT_EXIT:-0}" \
@@ -2969,15 +3006,23 @@ GH_PR_MERGE_FAIL_LOCAL=true \
   GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
   run_merge_pr "$TEST_DIR/output-gh-local-fail.txt" 123
 rc=$?
+# The worktree-specific guidance is gone with --delete-branch (issue #713); what
+# must survive is the general contract: a nonzero exit on an already-MERGED PR
+# degrades to a warning rather than reporting a failed merge.
+#
+# The cleanup hint is copy-pasted by a human in an unknown cwd, so it must be
+# the absolute path derived from SCRIPT_DIR, rendered with %q — a relative
+# "bash scripts/..." fails from any subdirectory (PR #715 review).
+CLEANUP_HINT="bash $(printf '%q' "$MERGE_SCRIPT_DIR/cleanup-branches.sh") --remote-too"
 if [ "$rc" = "0" ] \
   && grep -q 'WARNING: gh pr merge exited 1, but PR #123 is MERGED on GitHub.' "$TEST_DIR/output-gh-local-fail.txt" \
-  && grep -q 'git worktree remove <path>' "$TEST_DIR/output-gh-local-fail.txt" \
-  && grep -q 'git worktree prune' "$TEST_DIR/output-gh-local-fail.txt" \
+  && grep -q 'merge succeeded server-side' "$TEST_DIR/output-gh-local-fail.txt" \
+  && grep -qF "$CLEANUP_HINT" "$TEST_DIR/output-gh-local-fail.txt" \
   && grep -q '==> Done\.' "$TEST_DIR/output-gh-local-fail.txt" \
   && ! grep -q '^ERROR:' "$TEST_DIR/output-gh-local-fail.txt"; then
-  echo "==> PASS: local-delete failure on MERGED PR degrades to warning"
+  echo "==> PASS: nonzero exit on an already-MERGED PR degrades to warning"
 else
-  echo "FAIL: gh local-delete failure should warn, not error, when PR is MERGED" >&2
+  echo "FAIL: a nonzero exit on a MERGED PR must warn, not error" >&2
   echo "    rc=$rc" >&2
   cat "$TEST_DIR/output-gh-local-fail.txt" >&2
   exit 1
@@ -3346,5 +3391,174 @@ else
   grep 'graphql' "$RR_GH_LOG" | head -3 >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+# ---------------------------------------------------------------------------
+# Stacked PRs must survive the merge (issue #713).
+#
+# `gh pr merge --delete-branch` removes the base branch of anything stacked on
+# it, and GitHub marks those PRs CLOSED -- not merged -- discarding their review
+# threads. Observed on arpeggio 2026-08-10.
+#
+# The first fix queried for dependents and skipped deletion when it found some.
+# Review showed that is unsafe (PR #715): the lookup and the deletion are not
+# atomic, so a PR opened in between is still closed from a stale snapshot, and
+# `gh pr list` paginates at 30 so a large stack can report "none". The merge now
+# never deletes at all, which removes both failure modes rather than narrowing
+# them. Cleanup moves to cleanup-branches.sh, which refuses to delete a branch
+# serving as an open PR's base.
+# ---------------------------------------------------------------------------
+run_retention_case() {
+  reset_case_files
+  install_preflight_counter_fixture
+  write_pr_triggered_config true 0 0
+  local rc=0
+  PREFLIGHT_CALLS_FILE="$TEST_DIR/preflight-calls-retention" \
+    GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\t2026-06-23T00:00:00Z\thttps://example.test/review/1' \
+    run_merge_pr "$1" 123 || rc=$?
+  rm -rf "${TEST_DIR:?}/lib"
+  # Return the MERGE's status, not the cleanup's. Without this the refusal
+  # cases below silently read as successes.
+  return "$rc"
+}
+
+echo "==> Test: the merge never deletes the branch"
+RETAIN_OUT="$TEST_DIR/output-retention.txt"
+run_retention_case "$RETAIN_OUT"
+if ! grep -q -- '--delete-branch' "$TEST_DIR/gh-merge-args" \
+  && grep -q 'Leaving branch' "$RETAIN_OUT" \
+  && grep -qF "$CLEANUP_HINT" "$RETAIN_OUT"; then
+  echo "==> PASS: branch retained unconditionally, with cleanup named absolutely"
+else
+  echo "FAIL: merge must never pass --delete-branch, and must say how to collect the branch" >&2
+  cat "$TEST_DIR/gh-merge-args" >&2
+  tail -25 "$RETAIN_OUT" >&2
+  exit 1
+fi
+
+# Retention is a claim about the REPOSITORY, not just about our flags. With
+# deleteBranchOnMerge enabled, GitHub deletes the head server-side after every
+# merge, so "Leaving branch ... on the remote" would be a false statement — and
+# at least one downstream project has the setting on (PR #715 review).
+# There is no safe merge under repository-level auto-delete. Checking for
+# dependents first is a negative snapshot, not a transactional guard: a PR
+# opened between the lookup and the merge still has its base deleted. So the
+# requirement is stated rather than approximated — Touchstone refuses to merge
+# into a repository that deletes head branches on merge (PR #715 review).
+echo "==> Test: repository-level auto-delete refuses the merge outright"
+AUTODEL_OUT="$TEST_DIR/output-autodelete.txt"
+AUTODEL_RC=0
+GH_DELETE_BRANCH_ON_MERGE=true run_retention_case "$AUTODEL_OUT" || AUTODEL_RC=$?
+if [ "$AUTODEL_RC" -ne 0 ] \
+  && grep -q 'deleteBranchOnMerge enabled' "$AUTODEL_OUT" \
+  && grep -q 'delete-branch-on-merge=false' "$AUTODEL_OUT" \
+  && ! grep -q -- '--squash' "$TEST_DIR/gh-merge-args" 2>/dev/null; then
+  echo "==> PASS: refuses under auto-delete and never reaches the merge call"
+else
+  echo "FAIL: deleteBranchOnMerge enabled must refuse the merge outright" >&2
+  echo "      rc=$AUTODEL_RC" >&2
+  cat "$TEST_DIR/gh-merge-args" 2>/dev/null >&2
+  tail -25 "$AUTODEL_OUT" >&2
+  exit 1
+fi
+
+echo "==> Test: an unreadable auto-delete setting also fails closed"
+AUTODEL_ERR_OUT="$TEST_DIR/output-autodelete-err.txt"
+ERR_RC=0
+GH_DELETE_BRANCH_ON_MERGE="__UNKNOWN__" run_retention_case "$AUTODEL_ERR_OUT" || ERR_RC=$?
+if [ "$ERR_RC" -ne 0 ] && grep -q 'fails closed\|unknown' "$AUTODEL_ERR_OUT"; then
+  echo "==> PASS: an unreadable setting is refused, not assumed benign"
+else
+  echo "FAIL: an unreadable deleteBranchOnMerge must fail closed" >&2
+  echo "      rc=$ERR_RC" >&2
+  tail -25 "$AUTODEL_ERR_OUT" >&2
+  exit 1
+fi
+
+echo "==> Test: cleanup-branches protects branches serving as an open PR base"
+if grep -q 'headRefName,baseRefName' "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" \
+  && grep -q '.headRefName, .baseRefName' "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
+  echo "==> PASS: remote cleanup scan collects bases as well as heads"
+else
+  echo "FAIL: cleanup-branches.sh must treat an open PR base as protected" >&2
+  exit 1
+fi
+
+echo "==> Test: remote deletion is conditional and recoverable"
+# --force-with-lease=<ref>:<expect> gives ref DELETION compare-and-swap: if the
+# branch advanced after its SHA was captured, the push is rejected rather than
+# removing a tip the printed restore command cannot recover. The REST DELETE
+# has no such precondition (PR #715 review).
+if ! grep -q -- '--force-with-lease="refs/heads/\$b:\$classified_oid"' \
+  "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
+  echo "FAIL: deletion must be leased on the CLASSIFIED oid — the commit proven" >&2
+  echo "      merged — not on whatever the branch points at at delete time" >&2
+  exit 1
+fi
+# An advanced branch must abort, not be deleted: commits pushed after
+# classification were proven nothing.
+if ! grep -q 'no longer proven merged' "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
+  echo "FAIL: a branch that advanced past its classified OID must be skipped" >&2
+  exit 1
+fi
+# ls-remote --exit-code returns 2 for "no matching ref"; any other nonzero is an
+# inspection failure. Reporting those as absence would call a live branch deleted.
+if ! grep -q 'UNKNOWN remote result' "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
+  echo "FAIL: an inspection failure must not be reported as a confirmed deletion" >&2
+  exit 1
+fi
+# The recovery line must be emitted BEFORE the destructive request: if the
+# server processes the delete but the response is lost, an after-the-fact print
+# never runs and the record of what was removed is gone with the connection.
+# Skip comment lines. The script EXPLAINS the lease before performing it, so a
+# naive scan finds `force-with-lease` in prose above the recovery print and
+# concludes the ordering is wrong — the same fire-on-its-own-rationale class as
+# #745, which this file has now hit three times.
+if ! awk '/^[[:space:]]*#/{next}
+          /restore with: git push origin/{seen=1}
+          /git push --force-with-lease/{if(!seen) exit 1}
+          END{exit !seen}' \
+  "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
+  echo "FAIL: the restore command must be printed before the delete is attempted" >&2
+  exit 1
+fi
+echo "==> PASS: deletion is leased on the captured SHA and recovery is printed first"
+
+echo "==> Test: cleanup-branches re-checks a branch's OWN open PRs before deleting"
+if grep -q -- '--head "\$b"' "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
+  echo "==> PASS: pre-delete re-check covers head references, not only bases"
+else
+  echo "FAIL: a PR opened WITH this branch as its head is invisible to a --base query," >&2
+  echo "      so cleanup would delete the source branch of an active PR" >&2
+  exit 1
+fi
+
+echo "==> Test: merge reports repository-level branch deletion truthfully"
+if grep -q 'deleteBranchOnMerge' "$TOUCHSTONE_ROOT/scripts/merge-pr.sh"; then
+  echo "==> PASS: repo-level auto-delete is inspected before claiming retention"
+else
+  echo "FAIL: omitting --delete-branch does not retain the branch when the repository" >&2
+  echo "      has deleteBranchOnMerge enabled; merge-pr.sh must inspect it" >&2
+  exit 1
+fi
+
+# Guardrail for the class, not the instance (principles/audit-weak-points.md).
+# `gh pr merge --delete-branch` closes every PR stacked on the branch it
+# removes. Fixing merge-pr.sh alone left the same flag live in the journal hook
+# and in open-pr.sh's recovery banner, so the whole shipped surface is checked.
+echo "==> Test: no shipped script merges with --delete-branch"
+# Comment and echo/printf lines are excluded: warning text and rationale about
+# the flag necessarily contain the flag, and a guard that fires on its own
+# error message is the false-positive class tracked in #745. What is checked is
+# the flag reaching a command as an argument.
+offenders="$(cd "$TOUCHSTONE_ROOT" && git grep -n -- '--delete-branch' -- \
+  'bin/*' 'lib/*' 'scripts/*' 'hooks/*' \
+  | grep -vE ':[[:space:]]*(#|echo |printf )' \
+  | grep -v 'delete-branch-on-merge' || true)"
+if [ -n "$offenders" ]; then
+  echo "FAIL: --delete-branch reintroduced (issue #713) — it closes stacked PRs:" >&2
+  printf '%s\n' "$offenders" | sed 's/^/    /' >&2
+  exit 1
+fi
+echo "==> PASS: --delete-branch appears nowhere in the shipped surface"
 
 echo "==> PASS: merge gate requires deterministic checks plus exact-revision PR review"

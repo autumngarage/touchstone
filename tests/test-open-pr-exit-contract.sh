@@ -356,7 +356,7 @@ run_open_pr() {
       GH_PR_READY_LOG="$TEST_DIR/pr-ready.log" \
       GH_REVIEW_REQUEST_LOG="$TEST_DIR/review-request.log" \
       TOUCHSTONE_EVENTS_FILE="$TEST_DIR/open-pr-events.ndjson" \
-      bash "$SCRIPT_DIR/open-pr.sh" "$@"
+      bash "${OPEN_PR_SCRIPT_DIR:-$SCRIPT_DIR}/open-pr.sh" "$@"
   )
 }
 
@@ -401,15 +401,54 @@ RC=0
 GH_PR_STATE="OPEN" GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 MERGE_PR_EXIT=1 \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
+# The recovery banner must NOT advertise `--delete-branch`: an operator
+# following the printed command deletes the head branch and closes any PR
+# stacked on it (issue #713, PR #715 review). Recovery routes through the same
+# non-deleting merge path the gate uses.
 if [ "$RC" != "0" ] \
   && grep -q 'ORPHAN RISK: PR opened but not merged' "$OUT" \
   && grep -q 'https://example.test/touchstone/pull/123' "$OUT" \
-  && grep -q 'gh pr merge 123 --squash --delete-branch' "$OUT" \
+  && grep -qE 'bash [^ ]*/merge-pr\.sh 123' "$OUT" \
+  && ! grep -q -- '--delete-branch' "$OUT" \
   && grep -q 'gh pr close 123' "$OUT"; then
   echo "    PASS"
 else
   echo "    FAIL: expected nonzero exit + orphan banner + PR URL + recovery hints" >&2
   echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 2b: the orphan-recovery hint must survive a script path with spaces.
+# The hint is copy-pasted by a human in an unknown shell: printed unquoted,
+# the path splits into words and the advertised recovery never invokes
+# merge-pr.sh (PR #715 review). The contract is printf %q rendering, so the
+# expected fragment is computed with the same %q.
+# ---------------------------------------------------------------------------
+echo "==> Case 2b: orphan recovery hint shell-quotes a spaced script path"
+SPACED_SCRIPT_DIR="$TEST_DIR/scripts with space"
+mkdir -p "$SPACED_SCRIPT_DIR"
+cp "$SCRIPT_DIR/open-pr.sh" "$SPACED_SCRIPT_DIR/open-pr.sh"
+cp "$SCRIPT_DIR/issue-claim-check.sh" "$SPACED_SCRIPT_DIR/issue-claim-check.sh"
+cp "$SCRIPT_DIR/merge-pr.sh" "$SPACED_SCRIPT_DIR/merge-pr.sh"
+chmod +x "$SPACED_SCRIPT_DIR/open-pr.sh" "$SPACED_SCRIPT_DIR/issue-claim-check.sh" \
+  "$SPACED_SCRIPT_DIR/merge-pr.sh"
+
+OUT="$TEST_DIR/case2b.out"
+RC=0
+GH_PR_STATE="OPEN" GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 MERGE_PR_EXIT=1 \
+  OPEN_PR_SCRIPT_DIR="$SPACED_SCRIPT_DIR" \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+EXPECTED_HINT="bash $(printf '%q' "$SPACED_SCRIPT_DIR/merge-pr.sh") 123"
+if [ "$RC" != "0" ] \
+  && grep -q 'ORPHAN RISK: PR opened but not merged' "$OUT" \
+  && grep -qF "$EXPECTED_HINT" "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: recovery hint must shell-quote the spaced merge-pr.sh path" >&2
+  echo "    rc=$RC  expected fragment: $EXPECTED_HINT" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
@@ -842,10 +881,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Case 17: a new stacked PR explains how to produce child-only history.
+# Case 17: a new stacked PR states where the merge actually lands. Merges
+# retain the head branch (issue #713, PR #715), so the old "squash orphans
+# stacked children" warning must be gone; what must be said instead is that
+# --auto-merge here merges into the PARENT branch, and children need
+# retargeting + a rebase after their parent lands.
 # ---------------------------------------------------------------------------
 git -C "$REPO_DIR" commit --allow-empty -m $'exercise stacked warning\n\nProtocol: yes' >/dev/null 2>&1
-echo "==> Case 17: new stacked PR recovery preserves an independent slice"
+echo "==> Case 17: new stacked PR names its real merge target"
 OUT="$TEST_DIR/case11.out"
 RC=0
 GH_PR_STATE="MERGED" GH_MERGED_AT="2026-07-29T12:00:00Z" GH_HAS_EXISTING_PR=0 \
@@ -854,21 +897,23 @@ GH_PR_STATE="MERGED" GH_MERGED_AT="2026-07-29T12:00:00Z" GH_HAS_EXISTING_PR=0 \
   run_open_pr --base feature/parent >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" = "0" ] \
-  && grep -q 'rebase/cherry-pick child-only commits onto main' "$OUT" \
-  && grep -q 'rerun without --base to open an independent PR' "$OUT" \
-  && ! grep -q 'gh pr edit' "$OUT"; then
+  && grep -q 'merges this PR into feature/parent, not main' "$OUT" \
+  && grep -q 'rebase once their parent lands' "$OUT" \
+  && ! grep -q 'orphans' "$OUT" \
+  && ! grep -q 'To ship straight to main' "$OUT"; then
   echo "    PASS"
 else
-  echo "    FAIL: expected new-stack recovery to require child-only history" >&2
+  echo "    FAIL: expected new-stack note to name the parent-branch merge target" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
 # ---------------------------------------------------------------------------
-# Case 18: an existing stacked PR must also be retargeted on GitHub.
+# Case 18: an existing stacked PR additionally gets the concrete retarget
+# command for shipping straight to the default branch instead.
 # ---------------------------------------------------------------------------
-echo "==> Case 18: existing stacked PR recovery retargets the PR"
+echo "==> Case 18: existing stacked PR gets its concrete retarget command"
 OUT="$TEST_DIR/case12.out"
 RC=0
 GH_PR_STATE="MERGED" GH_MERGED_AT="2026-07-29T12:10:00Z" \
@@ -877,12 +922,12 @@ GH_PR_STATE="MERGED" GH_MERGED_AT="2026-07-29T12:10:00Z" \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
 if [ "$RC" = "0" ] \
-  && grep -q 'rebase/cherry-pick child-only commits onto main' "$OUT" \
-  && grep -q 'gh pr edit 777 --base main' "$OUT" \
-  && ! grep -q 'rerun without --base to open an independent PR' "$OUT"; then
+  && grep -q 'merges this PR into feature/parent, not main' "$OUT" \
+  && grep -q 'To ship straight to main instead: gh pr edit 777 --base main' "$OUT" \
+  && ! grep -q 'orphans' "$OUT"; then
   echo "    PASS"
 else
-  echo "    FAIL: expected existing-stack recovery to include explicit PR retarget" >&2
+  echo "    FAIL: expected existing-stack note to include the explicit PR retarget" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))

@@ -13,7 +13,7 @@ Every change goes through a feature branch + PR + PR-visible review loop where c
 - Opening a PR via `scripts/open-pr.sh`
 - Watching PR comments, requested changes, checks, or reviewer errors
 - Hitting `no-commit-to-branch` and need to recover work onto a branch
-- Stacked PRs (`--base <branch>`) — there's a gotcha that orphans children on squash-merge
+- Stacked PRs (`--base <branch>`) — merges retain the head branch; children need retargeting after the parent lands
 - Fanning out parallel work across worktrees
 - Cleaning up branches or worktrees
 - Emergency push (`--no-verify`) — needs disclosure in the next PR
@@ -46,5 +46,5 @@ Your unstaged changes carry over. The trigger is *edit time*, not commit time �
 - **Push after every commit.** Local commits are not durable; pushed commits survive a `reset --hard` slip.
 - **Foreground diagnosis.** Use `bash scripts/open-pr.sh --auto-merge` directly when interactive output is useful.
 - **Issue-closing trailers.** `Closes-issue: #123` in the commit body — `open-pr.sh` injects `Closes #123` into the PR body, auto-closing on merge.
-- **Stacked PRs + `--auto-merge` = orphaned children.** If you stack, drop `--auto-merge` and merge manually with merge-commit/rebase (not squash).
+- **Stacked PRs survive squash-merge now.** Merges retain the head branch, so children stay open; after the parent lands, retarget each child at the resolved default branch (`gh pr edit <n> --base "$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)"`) and rebase it. Branch *deletion* is what closes PRs based on a branch — leave deletion to `cleanup-branches.sh`.
 - **Emergency bypass** uses `merge-pr.sh --bypass-with-disclosure="<reason>"`, not raw `gh pr merge --admin`.

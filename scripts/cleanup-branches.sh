@@ -223,7 +223,14 @@ if [ "${#MERGED_LOCAL[@]}" -eq 0 ] && [ "${#SQUASH_MERGED_LOCAL[@]}" -eq 0 ] && 
 fi
 
 # REMOTE branches.
+# Enumeration cap for the open-PR scan. Deliberately a cap we can DETECT hitting
+# rather than a page size we silently truncate at.
+OPEN_PR_SCAN_LIMIT="${TOUCHSTONE_OPEN_PR_SCAN_LIMIT:-200}"
 REMOTE_DELETABLE=()
+# The OID each deletable branch was CLASSIFIED at, index-aligned with
+# REMOTE_DELETABLE. Deletion is leased on this, not on whatever the branch
+# points at later — only this commit was proven merged (PR #715 review).
+REMOTE_DELETABLE_OIDS=()
 REMOTE_HAS_PR=()
 REMOTE_UNIQUE_NO_PR=()
 
@@ -239,7 +246,24 @@ if [ "$REMOTE_TOO" -eq 1 ]; then
   # PRs" if we swallow the error, and would mark every remote branch as
   # deletable. Without a confirmed open-PR set we cannot safely classify.
   GH_PR_ERR=""
-  if ! OPEN_PR_BRANCHES="$(gh pr list --state open --limit 200 --json headRefName --jq '.[].headRefName' 2>&1)"; then
+  # Collect BOTH the head and the base of every open PR. A merged parent branch
+  # that is still serving as another PR's base has no open PR of its own, so a
+  # head-only scan classified it as deletable and deleting it closed the
+  # dependents -- the exact loss merge-pr.sh now avoids by never deleting
+  # (issue #713, PR #715 review).
+  # --limit is a hard cap, not a page size: at exactly the cap we cannot know
+  # whether more open PRs exist, and a branch that is the base of an omitted PR
+  # would look unreferenced and be deleted, closing that PR (PR #715 review).
+  # Count PRs, not ref lines, because each PR contributes two lines.
+  OPEN_PR_COUNT="$(gh pr list --state open --limit "$OPEN_PR_SCAN_LIMIT" --json number --jq 'length' 2>/dev/null || echo "")"
+  if [ -n "$OPEN_PR_COUNT" ] && [ "$OPEN_PR_COUNT" -ge "$OPEN_PR_SCAN_LIMIT" ]; then
+    REMOTE_SKIPPED=1
+    echo ""
+    echo "  ERROR: $OPEN_PR_COUNT open PRs reached the $OPEN_PR_SCAN_LIMIT scan cap — skipping remote cleanup." >&2
+    echo "    Cannot prove a branch is unreferenced from a truncated list, and deleting" >&2
+    echo "    the base of an omitted PR would close it. Raise TOUCHSTONE_OPEN_PR_SCAN_LIMIT" >&2
+    echo "    above the open-PR count and rerun." >&2
+  elif ! OPEN_PR_BRANCHES="$(gh pr list --state open --limit "$OPEN_PR_SCAN_LIMIT" --json headRefName,baseRefName --jq '.[] | .headRefName, .baseRefName' 2>&1)"; then
     GH_PR_ERR="$OPEN_PR_BRANCHES"
     REMOTE_SKIPPED=1
     echo ""
@@ -250,6 +274,7 @@ fi
 
 if [ "$REMOTE_TOO" -eq 1 ] && [ "$REMOTE_SKIPPED" -eq 0 ]; then
 
+  # True when the branch is either the head OR the base of an open PR.
   has_open_pr() {
     local b="$1"
     [ -z "$OPEN_PR_BRANCHES" ] && return 1
@@ -270,10 +295,13 @@ if [ "$REMOTE_TOO" -eq 1 ] && [ "$REMOTE_SKIPPED" -eq 0 ]; then
     remote_oid="$(git rev-parse --verify --quiet "refs/remotes/origin/$remote_branch" 2>/dev/null || echo "")"
     if git merge-base --is-ancestor "origin/$remote_branch" "$DEFAULT_REF" 2>/dev/null; then
       REMOTE_DELETABLE+=("$remote_branch")
+      REMOTE_DELETABLE_OIDS+=("$remote_oid")
     elif [ -n "$remote_oid" ] && is_recorded_squash "$remote_branch" "$remote_oid"; then
       REMOTE_DELETABLE+=("$remote_branch")
+      REMOTE_DELETABLE_OIDS+=("$remote_oid")
     elif is_fully_applied "$DEFAULT_REF" "origin/$remote_branch"; then
       REMOTE_DELETABLE+=("$remote_branch")
+      REMOTE_DELETABLE_OIDS+=("$remote_oid")
     else
       REMOTE_UNIQUE_NO_PR+=("$remote_branch")
     fi
@@ -346,14 +374,109 @@ if [ "${#SQUASH_MERGED_LOCAL[@]}" -gt 0 ]; then
 fi
 
 if [ "$REMOTE_TOO" -eq 1 ] && [ "${#REMOTE_DELETABLE[@]}" -gt 0 ]; then
-  REPO_SLUG="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)"
-  for b in "${REMOTE_DELETABLE[@]}"; do
-    if [ -n "$REPO_SLUG" ] && gh api -X DELETE "/repos/$REPO_SLUG/git/refs/heads/$b" >/dev/null 2>&1; then
+  # No repository slug is needed any more. Deletion goes through
+  # `git push --force-with-lease`, which is the only spelling that carries an
+  # expected-OID precondition; the REST endpoint it replaced had none, which is
+  # why it is gone rather than kept as a fallback.
+  for _rd_i in "${!REMOTE_DELETABLE[@]}"; do
+    b="${REMOTE_DELETABLE[$_rd_i]}"
+    classified_oid="${REMOTE_DELETABLE_OIDS[$_rd_i]}"
+    # Classification happened from one snapshot taken earlier; a stacked PR
+    # opened since would still be in REMOTE_DELETABLE and deleting its base
+    # closes it (PR #715 review). Re-ask immediately before the destructive
+    # call. GitHub offers no compare-and-delete for refs, so this narrows the
+    # window rather than eliminating it — which is why it fails closed on any
+    # inspection error instead of assuming "probably none".
+    if ! dependents="$(gh pr list --state open --base "$b" --limit "$OPEN_PR_SCAN_LIMIT" --json number --jq '[.[].number] | join(", ")' 2>&1)"; then
+      echo "    SKIPPED remote (could not re-check dependents): origin/$b — $dependents" >&2
+      continue
+    fi
+    # A branch is referenced by an open PR in two ways, and only one of them is
+    # a --base match. If a PR was opened WITH $b as its head since the snapshot,
+    # a --base query reports nothing and we would delete the source branch of an
+    # active PR, closing it. `gh pr list` documents --head separately for exactly
+    # this reason, so both references have to be re-checked (PR #715 review).
+    if ! own_pr="$(gh pr list --state open --head "$b" --limit "$OPEN_PR_SCAN_LIMIT" --json number --jq '[.[].number] | join(", ")' 2>&1)"; then
+      echo "    SKIPPED remote (could not re-check its own open PRs): origin/$b — $own_pr" >&2
+      continue
+    fi
+    if [ -n "$dependents" ]; then
+      echo "    SKIPPED remote (PR(s) $dependents opened against it since the scan): origin/$b"
+      continue
+    fi
+    if [ -n "$own_pr" ]; then
+      echo "    SKIPPED remote (PR(s) $own_pr opened FROM it since the scan): origin/$b"
+      continue
+    fi
+    # Lease on the OID this branch was CLASSIFIED at, not on whatever it points
+    # at now. Only that commit was proven merged, squash-merged, or fully
+    # applied; commits pushed since have been proven nothing. Capturing the
+    # current tip and leasing on THAT would delete unreviewed work by design,
+    # and would print a restore command naming an object this checkout does not
+    # even have. Leasing on the classified OID makes an advance abort instead
+    # (PR #715 review).
+    if [ -z "$classified_oid" ]; then
+      echo "    SKIPPED remote (no classified OID, so deletion could not be leased): origin/$b" >&2
+      continue
+    fi
+
+    # Recovery is printed BEFORE the destructive request. If the server
+    # processes the delete but the response is lost, an after-the-fact print
+    # never runs and the record dies with the connection.
+    echo "    deleting remote: origin/$b (classified at ${classified_oid:0:12})"
+    printf '      restore with: git push origin %s:refs/heads/%s\n' \
+      "$classified_oid" "$(printf '%q' "$b")"
+
+    push_err=""
+    if push_err="$(git push --force-with-lease="refs/heads/$b:$classified_oid" \
+      origin ":refs/heads/$b" 2>&1)"; then
       echo "    deleted remote: origin/$b"
-    elif git push origin --delete -- "$b" 2>&1; then
-      echo "    deleted remote (via git push fallback): origin/$b"
     else
-      echo "    SKIPPED remote (both gh api and git push --delete failed): origin/$b" >&2
+      # The lease failed. Distinguish "the branch moved" from "we could not
+      # look". `git ls-remote --exit-code` returns 2 specifically for no
+      # matching ref; any other nonzero is an inspection failure, and calling
+      # that "absent" would report a live branch as deleted.
+      #
+      # ONE request answers both "does the ref exist?" and "where does it
+      # point?". An earlier shape asked twice — existence first, OID second —
+      # and a transient failure on the second lookup produced an empty OID
+      # that the comparison below misread as "still at its classified OID": a
+      # definite answer manufactured from an inspection failure (PR #715
+      # review). Stderr stays attached so a failed lookup shows git's own
+      # diagnostic instead of discarding it.
+      ls_rc=0
+      ls_out="$(git ls-remote --exit-code origin "refs/heads/$b")" || ls_rc=$?
+      case "$ls_rc" in
+        0)
+          # The ref exists, but existence alone says nothing about WHICH
+          # commit it points at — a permission failure, ruleset, or pre-push
+          # hook rejects the push while the branch sits exactly where it was.
+          # Compare the OIDs rather than inferring an advance, and keep the
+          # push's own message, which is the only thing that explains a
+          # rejection (PR #715 review).
+          current_oid="$(printf '%s\n' "$ls_out" | awk 'NR==1{print $1}')"
+          if [ -z "$current_oid" ]; then
+            # Exit 0 with output we cannot parse is still an inspection
+            # failure. Never collapse "could not tell" into a definite answer.
+            echo "    UNKNOWN remote result (ref reported present but its OID could not be read): origin/$b" >&2
+            echo "      re-run to re-resolve; the restore command above still applies if it was removed" >&2
+          elif [ "$current_oid" != "$classified_oid" ]; then
+            echo "    SKIPPED remote (advanced to ${current_oid:0:12}, past its classified OID, so it is no longer proven merged): origin/$b" >&2
+          else
+            echo "    SKIPPED remote (delete rejected while still at its classified OID): origin/$b" >&2
+            if [ -n "$push_err" ]; then
+              printf '%s\n' "$push_err" | sed 's/^/      /' >&2
+            fi
+          fi
+          ;;
+        2)
+          echo "    deleted remote: origin/$b (confirmed absent; the delete landed despite an unclear response)"
+          ;;
+        *)
+          echo "    UNKNOWN remote result (delete rejected and the ref could not be inspected, rc=$ls_rc): origin/$b" >&2
+          echo "      re-run to re-resolve; the restore command above still applies if it was removed" >&2
+          ;;
+      esac
     fi
   done
 fi

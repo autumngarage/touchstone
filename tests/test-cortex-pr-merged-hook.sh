@@ -252,6 +252,16 @@ cat >"$FAKEBIN/gh" <<'EOF'
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_GH_LOG"
 if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then
+  # The hook refuses to merge when the repository deletes head branches on
+  # merge, since GitHub would remove the journal branch server-side and close
+  # anything based on it (PR #715 review). Answer the setting query distinctly
+  # from the identity query.
+  case "$*" in
+    *deleteBranchOnMerge*)
+      printf '%s\n' "${FAKE_GH_DELETE_BRANCH_ON_MERGE:-false}"
+      exit 0
+      ;;
+  esac
   printf '%s\n' 'autumngarage/example'
   exit 0
 fi
@@ -724,7 +734,7 @@ if ! grep -q "pr create" "$Q_GH_LOG" \
 fi
 Q_JOURNAL_HEAD="$(git -C "$Q" rev-parse "$Q_BRANCH")"
 if grep -q -- "--auto" "$Q_GH_LOG" \
-  || ! grep -q "pr merge 777 --squash --delete-branch --match-head-commit $Q_JOURNAL_HEAD" "$Q_GH_LOG"; then
+  || ! grep -q "pr merge 777 --squash --match-head-commit $Q_JOURNAL_HEAD" "$Q_GH_LOG"; then
   echo "FAIL [Q]: hook did not synchronously merge the exact journal head" >&2
   cat "$Q_GH_LOG" >&2
   exit 1
@@ -772,7 +782,7 @@ if grep -q -- "--auto" "$Q2_GH_LOG"; then
   exit 1
 fi
 if ! grep -q "pr view 777 --json state,headRefOid,mergeStateStatus,mergeable,statusCheckRollup" "$Q2_GH_LOG" \
-  || ! grep -q "pr merge 777 --squash --delete-branch --match-head-commit $Q2_JOURNAL_HEAD" "$Q2_GH_LOG"; then
+  || ! grep -q "pr merge 777 --squash --match-head-commit $Q2_JOURNAL_HEAD" "$Q2_GH_LOG"; then
   echo "FAIL [Q2]: synchronous fallback did not poll and merge the exact journal head" >&2
   cat "$Q2_GH_LOG" >&2
   exit 1
