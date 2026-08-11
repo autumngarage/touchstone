@@ -238,6 +238,9 @@ case "$1 $2" in
           echo "comment listing unavailable" >&2
           exit 1
         fi
+        if [ "${GH_RESULT_COMMENTS_FAIL:-0}" = "silent" ]; then
+          exit 1
+        fi
         if [ -n "${GH_RESULT_COMMENT_AUTHORS:-}" ]; then
           printf '%s\n' "$GH_RESULT_COMMENT_AUTHORS"
         fi
@@ -2158,6 +2161,32 @@ fi
 # the request from dismissal consumption — merge-pr.sh ignores the dismissed
 # formal review and can accept the comment, so at budget the refusal keeps
 # the conditional exits and the idempotent skip does not replace the request.
+# Case 46i-b (PR #781 override round 2): the SAME suppression must hold when
+# the lookup dies with no diagnostic at all — status, not string emptiness,
+# is the tri-state.
+echo "==> Case 46i-b: a silent comment-lookup failure still suppresses stall classification"
+OUT="$TEST_DIR/case46ib.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE46_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE46_RECORDS" \
+  GH_RESULT_COMMENTS_FAIL=silent \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'comment-result lookup failed' "$OUT" \
+  && ! grep -q 'unanswered for' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a silent lookup failure must not read as confirmed absence" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 46k: a comment answer shields the request from dismissal consumption"
 OUT="$TEST_DIR/case46k.out"
 RC=0

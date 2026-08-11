@@ -505,6 +505,7 @@ trusted_review_exists_for_head() {
   # incomplete GitHub state (PR #781 review).
   OPEN_PR_HEAD_RESULT_COMMENT_AT=""
   OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR=""
+  OPEN_PR_RESULT_COMMENT_LOOKUP_OK=false
   local submitted
   if ! reviews_tsv="$(gh api --paginate "repos/$REPO_FULL_NAME/pulls/$pr_number/reviews" \
     --jq '.[] | [(.user.login // ""), (.commit_id // ""), (.state // ""), (.submitted_at // "")] | @tsv' 2>&1)"; then
@@ -560,8 +561,13 @@ trusted_review_exists_for_head() {
   local result_comment_rows comment_login comment_result_sha comment_result_at
   local head_short_lc comment_sha_lc
   head_short_lc="$(printf '%.10s' "$head_sha" | tr '[:upper:]' '[:lower:]')"
+  # Success is an explicit status, never inferred from the diagnostic
+  # string: a killed gh or silent wrapper exits nonzero with EMPTY stderr,
+  # and empty-diagnostic-means-success would read that failure as a
+  # confirmed absence of answers (PR #781 review, override round 2).
   if result_comment_rows="$(gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments" \
     --jq "$OPEN_PR_RESULT_COMMENT_JQ" 2>&1)"; then
+    OPEN_PR_RESULT_COMMENT_LOOKUP_OK=true
     while IFS=$'\t' read -r comment_login comment_result_sha comment_result_at _; do
       [ -n "$comment_login" ] || continue
       csv_contains "$OPEN_PR_TRUSTED_REVIEW_AUTHORS" "$comment_login" || continue
@@ -575,7 +581,7 @@ trusted_review_exists_for_head() {
       fi
     done <<<"$result_comment_rows"
   else
-    OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR="$result_comment_rows"
+    OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR="${result_comment_rows:-comment lookup failed with no diagnostic}"
   fi
   return "$found"
 }
@@ -964,7 +970,7 @@ request_pr_triggered_review() {
     if { [ -z "${OPEN_PR_HEAD_REVIEW_LIVE_AT:-}" ] \
       || ! [[ "$OPEN_PR_HEAD_REVIEW_LIVE_AT" > "$matching_trigger_at" ]]; } \
       && [ "$comment_answer_shields" != true ] \
-      && [ -z "$OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR" ]; then
+      && [ "$OPEN_PR_RESULT_COMMENT_LOOKUP_OK" = true ]; then
       request_consumed_by_dismissal=true
     fi
   fi
@@ -1014,7 +1020,7 @@ request_pr_triggered_review() {
       # lookup is unknown, not absence, and must not spend a review cycle on
       # incomplete GitHub state; an answer PREDATING this request's trigger
       # answered an earlier ask, not this one (PR #781 review).
-      if [ -n "$OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR" ]; then
+      if [ "$OPEN_PR_RESULT_COMMENT_LOOKUP_OK" != true ]; then
         echo "WARNING: comment-result lookup failed; stall detection (#759) skipped this run:"
         echo "         $OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR"
       elif [ "$head_review_status" -ne 2 ] \
@@ -1030,7 +1036,7 @@ request_pr_triggered_review() {
   if [ "${FRESH_REVIEW:-false}" = true ]; then
     if [ "$matching_request" = true ] && [ "$head_review_status" -ne 2 ] \
       && [ "$formal_answer_post_trigger" != true ] \
-      && [ -z "$OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR" ] \
+      && [ "$OPEN_PR_RESULT_COMMENT_LOOKUP_OK" = true ] \
       && { [ -z "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ] \
         || ! [[ "$OPEN_PR_HEAD_RESULT_COMMENT_AT" > "$matching_trigger_at" ]]; }; then
       # Stall recovery (#759): the durable request for this exact head was
@@ -1083,7 +1089,7 @@ request_pr_triggered_review() {
     # conditionally instead of guessing the gate's verdict; lookups failed
     # -> unknown, conservative (PR #781 review, rounds 2-3).
     head_answer_state=none
-    if [ -n "$OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR" ] || [ "$head_review_status" -eq 2 ]; then
+    if [ "$OPEN_PR_RESULT_COMMENT_LOOKUP_OK" != true ] || [ "$head_review_status" -eq 2 ]; then
       head_answer_state=unknown
     elif [ "$formal_answer_post_trigger" = true ]; then
       head_answer_state=answered
