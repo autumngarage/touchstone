@@ -520,13 +520,27 @@ jobs:
           }
 
           evaluate_pr() {
-            local pr_number="$1"
+            local pr_number="$1" known_sha="${2:-}"
+            # Sweep and status paths already KNOW the affected SHA before any
+            # fallible call — so the previous verdict at that SHA is
+            # neutralized FIRST, and a coordinate-lookup failure below can no
+            # longer leave a stale green standing (PR #753 review, round 7).
+            # Comment/PR events pass no SHA: for them the lookup below is
+            # genuinely the earliest the head can be known.
+            if [ -n "$known_sha" ]; then
+              gh api -X POST "repos/$REPO/check-runs" \
+                -f name=review-binding \
+                -f head_sha="$known_sha" \
+                -f status=in_progress \
+                -f "output[title]=Evaluating review binding" \
+                -f "output[summary]=An event invalidated the previous verdict for head \`$known_sha\` (PR #$pr_number). If this run dies before completing, the check stays non-green (fail closed)." \
+                --jq '.id' >/dev/null
+            fi
             # Live PR coordinates, not the event payload: comment events carry
             # no head SHA, and idempotence means evaluating the PR as it is
-            # now. This one read is the only fallible call before the pending
-            # run below neutralizes the previous verdict; if IT fails, the
-            # job errors without publishing (the head cannot be known any
-            # earlier for comment/status events).
+            # now. For known-SHA callers the previous verdict is already
+            # neutralized above; for the rest, a failure here errors the job
+            # without publishing (the head cannot be known any earlier).
             local pr_json pr_state head_sha base_oid base_ref
             pr_json="$(gh api "repos/$REPO/pulls/$pr_number")"
             pr_state="$(jq -r '.state // ""' <<<"$pr_json")"
@@ -864,7 +878,7 @@ jobs:
                   # evaluation (PR #753 review, rounds 5 and 6). The failed
                   # entry's own run stays visibly non-green, the failure is
                   # annotated, and later heads still get their re-evaluation.
-                  run_isolated evaluate_pr "$pr"
+                  run_isolated evaluate_pr "$pr" "$sweep_head"
                   if [ "$ISOLATED_RC" -ne 0 ]; then
                     echo "::error::sweep evaluation failed for PR #$pr; its check-run is not green and the sweep continued"
                     sweep_failures=$((sweep_failures + 1))
@@ -910,7 +924,7 @@ jobs:
             else
               while read -r pr; do
                 [ -n "$pr" ] || continue
-                run_isolated evaluate_pr "$pr"
+                run_isolated evaluate_pr "$pr" "$status_sha"
                 if [ "$ISOLATED_RC" -ne 0 ]; then
                   echo "::error::status-event evaluation failed for PR #$pr; continuing with the rest"
                   status_failures=$((status_failures + 1))

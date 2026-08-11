@@ -111,6 +111,17 @@ else
   ok "no tested-context invocations of the fallible sweep functions"
 fi
 
+# Sweep/status paths know the affected SHA before any fallible call; the
+# previous verdict at that SHA must be neutralized FIRST, or a coordinate
+# lookup failure leaves a stale green standing (PR #753 review, round 7).
+if printf '%s\n' "$STRIPPED" | grep -q 'known_sha' \
+  && printf '%s\n' "$STRIPPED" | grep -q 'evaluate_pr "\$pr" "\$sweep_head"' \
+  && printf '%s\n' "$STRIPPED" | grep -q 'evaluate_pr "\$pr" "\$status_sha"'; then
+  ok "known-SHA callers neutralize the prior verdict before coordinate lookup"
+else
+  fail "sweep/status paths must pass their known SHA so pending publishes before the fallible PR lookup"
+fi
+
 echo "==> Trusted-author allowlist is never PR-controlled"
 if printf '%s\n' "$STRIPPED" | grep -q -F 'chatgpt-codex-connector,chatgpt-codex-connector[bot]'; then
   ok "fallback allowlist hardcoded in env (merge-pr.sh's built-in default)"
