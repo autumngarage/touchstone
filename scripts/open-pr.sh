@@ -159,7 +159,14 @@ materialize_trusted_merge_authorizer() {
     return 1
   fi
 
-  if ! GIT_NO_REPLACE_OBJECTS=1 git archive "$base_oid" scripts/merge-pr.sh lib 2>/dev/null | tar -x -C "$bundle" 2>/dev/null; then
+  # Archive the whole scripts/ tree, not just merge-pr.sh. A base gate older
+  # than e5617d0 invokes siblings — scripts/codex-review.sh among them — and
+  # those historical gates treat a MISSING sibling as "skipping review" and
+  # proceed to merge. Bundling only merge-pr.sh therefore hands the first
+  # upgrade PR a gate that is materially weaker than the one committed on the
+  # base, which is the opposite of what extracting from the base is for
+  # (PR #707 review).
+  if ! GIT_NO_REPLACE_OBJECTS=1 git archive "$base_oid" scripts lib 2>/dev/null | tar -x -C "$bundle" 2>/dev/null; then
     echo "ERROR: could not extract scripts/merge-pr.sh and lib/ from base $base_branch (${base_oid:0:12})." >&2
     echo "       Refusing to authorize a merge with the gate from this worktree." >&2
     return 1
