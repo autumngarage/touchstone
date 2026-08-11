@@ -99,11 +99,27 @@ _status_behind_count() {
 # --- file-age helpers --------------------------------------------------------
 # Portable mtime in epoch seconds. macOS/BSD use `stat -f %m`; GNU/Linux uses
 # `stat -c %Y`. Returns empty string when the file is missing or stat fails.
+#
+# Order and validation both matter here, and getting either wrong is silent.
+# GNU's `-f` is --file-system, NOT a format flag: `stat -f %m <file>` on Linux
+# treats `%m` and <file> as two filesystem operands, SUCCEEDS for the real one,
+# and prints a human-readable block beginning `  File: "..."`. The old
+# BSD-first order therefore never reached the GNU branch on Linux, and returned
+# that prose as an "mtime" — which `$((now - mtime))` then evaluated as an
+# expression, failing with `File: unbound variable` and taking every
+# `touchstone status` on Linux down with it.
+#
+# So: try the GNU spelling first, fall back to BSD, and require the result to
+# be digits. A stat that "succeeds" with the wrong shape is the failure mode,
+# not a stat that errors.
 _status_file_mtime() {
   local file="$1"
   [ -e "$file" ] || return 0
   local mtime
-  mtime="$(stat -f %m "$file" 2>/dev/null || stat -c %Y "$file" 2>/dev/null || true)"
+  mtime="$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null || true)"
+  case "$mtime" in
+    '' | *[!0-9]*) return 0 ;;
+  esac
   printf '%s' "$mtime"
 }
 

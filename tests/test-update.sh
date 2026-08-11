@@ -1005,7 +1005,11 @@ SHIP_FAIL_OUT="$TEST_DIR/ship-fail-output.txt"
 SHIP_FAIL_RC=0
 (
   cd "$SHIP_FAIL_PROJECT"
-  PATH="$SHIP_FAIL_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  # Prepend rather than replace. This case wants everything working EXCEPT gh,
+  # and a hardcoded system PATH drops wherever pre-commit lives — on
+  # ubuntu-latest that is not /usr/bin, so the run died on hook readiness before
+  # it ever reached the fake gh, and the assertion failed for the wrong reason.
+  PATH="$SHIP_FAIL_BIN:$PATH" \
     bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --ship
 ) >"$SHIP_FAIL_OUT" 2>&1 || SHIP_FAIL_RC=$?
 

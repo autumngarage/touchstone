@@ -132,8 +132,46 @@ assert_contains "$ALL_OUT" "4 projects total"
 echo ""
 echo "--- Test 2: status from inside a project ---"
 
+# _status_file_mtime must return digits or nothing — never prose.
+#
+# GNU's `-f` is --file-system, not a format flag, so `stat -f %m <file>` on
+# Linux SUCCEEDS and prints a human-readable block beginning `  File: "..."`.
+# A BSD-first order therefore never reached the GNU branch there and returned
+# that text as an mtime, which `$((now - mtime))` evaluated as an expression:
+# every `touchstone status` on Linux died with `File: unbound variable`.
+# Asserting the shape catches the whole class, since the failure mode is a stat
+# that succeeds with the wrong output rather than one that errors.
+echo "--- Test 1b: file mtime helper returns an epoch, not prose ---"
+MTIME_PROBE="$TEST_DIR/mtime-probe.txt"
+printf 'probe\n' >"$MTIME_PROBE"
+MTIME_VALUE="$(
+  # shellcheck disable=SC1090
+  eval "$(sed -n '/^_status_file_mtime()/,/^}/p' "$TOUCHSTONE_ROOT/lib/status.sh")"
+  _status_file_mtime "$MTIME_PROBE"
+)"
+case "$MTIME_VALUE" in
+  '' | *[!0-9]*)
+    echo "FAIL: _status_file_mtime returned non-numeric output: '$MTIME_VALUE'" >&2
+    echo "      arithmetic on this value fails under set -u" >&2
+    ERRORS=$((ERRORS + 1))
+    ;;
+esac
+
 PROJECT_OUT="$TEST_DIR/project.out"
-(cd "$CURRENT_PROJECT" && run_touchstone "$FAKE_HOME" status) >"$PROJECT_OUT" 2>&1
+# Capture the exit code instead of letting `set -e` kill the script. A bare
+# invocation here dies with no output at all, which in CI reads as "the file
+# failed" with nothing to act on — observed on ubuntu-latest, where the run
+# ended at this line and reported nothing.
+PROJECT_EXIT=0
+(cd "$CURRENT_PROJECT" && run_touchstone "$FAKE_HOME" status) >"$PROJECT_OUT" 2>&1 \
+  || PROJECT_EXIT=$?
+if [ "$PROJECT_EXIT" -ne 0 ]; then
+  echo "FAIL: 'touchstone status' inside a project exited $PROJECT_EXIT" >&2
+  echo "  ---- output ----" >&2
+  sed 's/^/    /' "$PROJECT_OUT" >&2 || true
+  echo "  ----------------" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 assert_contains "$PROJECT_OUT" "^project: *${CURRENT_PROJECT}"
 assert_contains "$PROJECT_OUT" "^touchstone: *${CURRENT_VERSION}"
