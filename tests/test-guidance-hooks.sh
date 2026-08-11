@@ -85,6 +85,63 @@ mkjson() {
 }
 
 # ----------------------------------------------------------------------
+# Hook wiring must not depend on the working directory.
+#
+# Claude Code runs PreToolUse hooks in the cwd at event time, which is NOT
+# necessarily the project root: a session started in a subdirectory, or a tool
+# call with its own workdir, both shift it. A relative `bash scripts/x.sh`
+# then fails with "No such file or directory" -> bash exits 127 -> Claude Code
+# classes that as a NON-BLOCKING error and RUNS THE TOOL CALL ANYWAY.
+#
+# So a broken hook path is not a noisy guard, it is an absent one, and it is
+# silent apart from one line in the transcript. Observed live in arpeggio,
+# where both guards had been inert; all five registered projects were wired
+# the same way.
+#
+# The property under test is "resolves from anywhere", not "mentions a
+# variable" -- so each command is actually executed from a different cwd.
+# ----------------------------------------------------------------------
+echo "==> hook wiring is cwd-independent"
+
+for settings_file in "$TOUCHSTONE_ROOT/templates/claude-settings.json" \
+  "$TOUCHSTONE_ROOT/.claude/settings.json"; do
+  settings_label="${settings_file#"$TOUCHSTONE_ROOT"/}"
+  if [ ! -f "$settings_file" ]; then
+    echo "  FAIL: $settings_label is missing" >&2
+    FAIL=$((FAIL + 1))
+    continue
+  fi
+  while IFS= read -r hook_command; do
+    [ -n "$hook_command" ] || continue
+    case "$hook_command" in
+      *'$CLAUDE_PROJECT_DIR'* | /*) ;;
+      *)
+        echo "  FAIL: $settings_label wires a cwd-dependent hook: $hook_command" >&2
+        echo "        A relative path exits 127 off-root, which Claude Code treats as" >&2
+        echo "        non-blocking -- the guard silently does not run." >&2
+        FAIL=$((FAIL + 1))
+        continue
+        ;;
+    esac
+    # Functional check: run it from a directory that is not the project root
+    # with CLAUDE_PROJECT_DIR set, and require it to actually resolve. 127
+    # means the script was never found; anything else means it ran and made a
+    # decision.
+    hook_exit=0
+    (cd "$TMPDIR" && printf '%s' "$(mkjson "ls -la" "$TMPDIR")" \
+      | CLAUDE_PROJECT_DIR="$TOUCHSTONE_ROOT" eval "$hook_command") >/dev/null 2>&1 \
+      || hook_exit=$?
+    if [ "$hook_exit" -eq 127 ]; then
+      echo "  FAIL: $settings_label hook did not resolve off-root: $hook_command" >&2
+      FAIL=$((FAIL + 1))
+    else
+      echo "  OK: resolves off-root — $hook_command"
+      PASS=$((PASS + 1))
+    fi
+  done < <(jq -r '.hooks.PreToolUse[]?.hooks[]?.command // empty' "$settings_file")
+done
+
+# ----------------------------------------------------------------------
 # branch-guard
 # ----------------------------------------------------------------------
 echo "==> branch-guard"
