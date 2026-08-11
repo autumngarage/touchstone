@@ -927,7 +927,6 @@ touchstone_preflight_touchstone_scoped_self_test_files() {
           break
         }
         touchstone_preflight_add_existing_self_tests "$output_file" \
-          tests/test-cortex-pr-merged-hook.sh \
           tests/test-merge-pr.sh || {
           mapping_status=1
           break
@@ -1008,7 +1007,7 @@ touchstone_preflight_delivery_only_path() {
     scripts/branch-guard.sh)
       return 0
       ;;
-    scripts/emergency-disclosure.sh | scripts/cortex-pr-merged-hook.sh)
+    scripts/emergency-disclosure.sh)
       return 0
       ;;
     scripts/touchstone-run.sh | scripts/open-pr.sh | scripts/merge-pr.sh)

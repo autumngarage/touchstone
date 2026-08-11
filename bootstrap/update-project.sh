@@ -529,6 +529,10 @@ remove_retired_managed_file() {
 echo "==> Updating touchstone-owned files:"
 
 remove_retired_managed_file "lib/review-comment.sh"
+# Journal hook retired with the Cortex pause (issue #730): merge-pr.sh no
+# longer invokes it, so a leftover copy would be dead code that still pushes
+# HEAD:main on a manual run.
+remove_retired_managed_file "scripts/cortex-pr-merged-hook.sh"
 # Worker engine retired in 2.13.0 (issue #694). Touchstone stops managing
 # these files and NOTIFIES; it does not delete them. Automatic deletion of a
 # project's tracked files has to reason about dirty worktrees, staged edits,
@@ -568,7 +572,6 @@ fi
 # Scripts
 update_file "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" "$PROJECT_DIR/scripts/branch-guard.sh"
 update_file "$TOUCHSTONE_ROOT/hooks/emergency-disclosure.sh" "$PROJECT_DIR/scripts/emergency-disclosure.sh"
-update_file "$TOUCHSTONE_ROOT/hooks/cortex-pr-merged-hook.sh" "$PROJECT_DIR/scripts/cortex-pr-merged-hook.sh"
 update_file "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_DIR/scripts/touchstone-run.sh"
 update_file "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
 update_file "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
@@ -769,7 +772,6 @@ write_touchstone_manifest() {
     fi
     printf 'scripts/branch-guard.sh\n'
     printf 'scripts/emergency-disclosure.sh\n'
-    printf 'scripts/cortex-pr-merged-hook.sh\n'
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'

@@ -273,7 +273,7 @@ assert_not_exists "$PROJECT/scripts/conductor-review.sh"
 assert_not_exists "$PROJECT/scripts/codex-review.sh"
 assert_exists "$PROJECT/scripts/branch-guard.sh"
 assert_exists "$PROJECT/scripts/emergency-disclosure.sh"
-assert_exists "$PROJECT/scripts/cortex-pr-merged-hook.sh"
+assert_not_exists "$PROJECT/scripts/cortex-pr-merged-hook.sh"
 assert_exists "$PROJECT/lib/toml.sh"
 assert_exists "$PROJECT/lib/codex-auth.sh"
 assert_exists "$PROJECT/lib/script-sync-guard.sh"
@@ -327,7 +327,7 @@ assert_contains "$PROJECT/.touchstone-manifest" '^\.github/workflows/issue-claim
 assert_contains "$PROJECT/.touchstone-manifest" '^\.claude/settings\.json$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/branch-guard\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/emergency-disclosure\.sh$'
-assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cortex-pr-merged-hook\.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^scripts/cortex-pr-merged-hook\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/open-pr.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/claim-issue.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/issue-claim-check.sh$'

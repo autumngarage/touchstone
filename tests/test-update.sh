@@ -120,7 +120,11 @@ chmod +x \
   "$RETIREMENT_PROJECT/scripts/conductor-review.sh" \
   "$RETIREMENT_PROJECT/scripts/codex-review.sh"
 printf '# retired helper\n' >"$RETIREMENT_PROJECT/lib/review-comment.sh"
-printf 'scripts/conductor-review.sh\r\nscripts/codex-review.sh\r\nlib/review-comment.sh\n' >>"$RETIREMENT_PROJECT/.touchstone-manifest"
+# Journal hook retired with the Cortex pause (issue #730): a project that
+# still carries the previously managed copy must have it removed, and its
+# manifest entry dropped, by a single update run.
+printf '# retired journal hook\n' >"$RETIREMENT_PROJECT/scripts/cortex-pr-merged-hook.sh"
+printf 'scripts/conductor-review.sh\r\nscripts/codex-review.sh\r\nlib/review-comment.sh\nscripts/cortex-pr-merged-hook.sh\n' >>"$RETIREMENT_PROJECT/.touchstone-manifest"
 awk 'BEGIN { for (i = 0; i < 10000; i++) printf "legacy/extra/%d\n", i }' \
   >>"$RETIREMENT_PROJECT/.touchstone-manifest"
 cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_RETIRED_REVIEW_HOOKS'
@@ -187,6 +191,8 @@ assert_not_exists "$RETIREMENT_PROJECT/scripts/codex-review.sh"
 assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/conductor-review\.sh$'
 assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/codex-review\.sh$'
 assert_not_exists "$RETIREMENT_PROJECT/lib/review-comment.sh"
+assert_not_exists "$RETIREMENT_PROJECT/scripts/cortex-pr-merged-hook.sh"
+assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/cortex-pr-merged-hook\.sh$'
 assert_not_exists "$HOME/.claude/skills/conductor-delegation"
 assert_exists "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md"
 assert_contains "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md" 'retired skill'
@@ -243,6 +249,7 @@ assert_exists "$PROJECT/lib/script-sync-guard.sh"
 assert_exists "$PROJECT/lib/sha256.sh"
 assert_exists "$PROJECT/lib/preflight.sh"
 assert_not_exists "$PROJECT/lib/review-comment.sh"
+assert_not_exists "$PROJECT/scripts/cortex-pr-merged-hook.sh"
 assert_exists "$PROJECT/.touchstone-manifest"
 assert_contains "$PROJECT/.touchstone-manifest" '^TOUCHSTONE.md$'
 assert_contains "$PROJECT/.touchstone-manifest" '^\.github/workflows/issue-claim-check\.yml$'
@@ -258,6 +265,7 @@ assert_contains "$PROJECT/.touchstone-manifest" '^lib/script-sync-guard\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/sha256\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/preflight\.sh$'
 assert_not_contains "$PROJECT/.touchstone-manifest" '^lib/review-comment\.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^scripts/cortex-pr-merged-hook\.sh$'
 if grep -qxF '.markdownlint.json' "$PROJECT/.touchstone-manifest"; then
   echo "FAIL: .markdownlint.json must remain project-owned" >&2
   ERRORS=$((ERRORS + 1))
