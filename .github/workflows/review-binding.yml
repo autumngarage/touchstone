@@ -8,8 +8,10 @@
 #           review whose commit oid equals the head, or the reviewer's result
 #           comment naming the head — the same two channels the local merge
 #           gate accepts), AND the review-request base binding recorded on
-#           that head matches the PR's current base oid, AND the evidence does
-#           not predate the request that bound that base. Findings may exist
+#           that head matches the PR's current base oid, AND the evidence
+#           strictly postdates the request that bound that base (same-second
+#           ties fail closed — second precision cannot prove ordering, the
+#           same rule merge-pr.sh applies). Findings may exist
 #           and be severe — the check is still green. This check never means
 #           "approved" (trap 6, decision 2 on #744): the reviewer has emitted
 #           zero APPROVED verdicts in 96 reviews, so gating on approval would
@@ -17,9 +19,9 @@
 #           are enforced by required conversation resolution, a separate gate.
 #   RED   = no trusted review evidence at this head, or the base binding is
 #           absent/conflicting or no longer matches the PR's current base, or
-#           the only evidence is from an untrusted author, or all evidence
-#           predates the request that bound the current base. The output
-#           summary says which.
+#           the only evidence is from an untrusted author, or no evidence
+#           strictly postdates the request that bound the current base. The
+#           output summary says which.
 #
 # Idempotent per head+base (issue #751): the conclusion is a pure function of
 # (head oid, base oid, evidence at that head), and it is monotone — new events
@@ -50,9 +52,11 @@
 #   relax this to an ancestry check later.
 #
 # Triggers, and why each exists:
-#   - pull_request_review (submitted): a formal review submission is delivered
-#     through this event, not issue_comment — without it a finding-bearing
-#     review that posts no separate comment would never re-evaluate.
+#   - pull_request_review (submitted, dismissed): a formal review submission
+#     is delivered through this event, not issue_comment — without it a
+#     finding-bearing review that posts no separate comment would never
+#     re-evaluate, leaving a required check red forever. Dismissal changes
+#     the evidence surface too, so it re-evaluates as well.
 #   - issue_comment (created), filtered to PR comments: the reviewer's result
 #     comment channel, and the "@codex review" request itself.
 #   - pull_request (synchronize, reopened, edited): synchronize makes every
@@ -60,8 +64,11 @@
 #   - push (branches): when a base branch advances, the bindings of every open
 #     PR targeting it go stale under exact-oid semantics while none of the
 #     PR-scoped events fire — so a push re-evaluates every open PR whose base
-#     ref is the pushed branch. Push runs execute the pushed branch's copy of
-#     this file, a surface writable only by collaborators.
+#     ref is the pushed branch (capped at MAX_BASE_SWEEP_PRS so one push can
+#     never become an unbounded API storm). This re-evaluation is what keeps
+#     the exact-OID base binding honest between head pushes. Push runs execute
+#     the pushed branch's copy of this file, a surface writable only by
+#     collaborators.
 #
 # Trap 7 (see the header of validate.yml): this workflow executes no
 # PR-controlled code — there is no checkout of PR code AT ALL, no third-party
@@ -83,7 +90,7 @@ name: review-binding
 
 on:
   pull_request_review:
-    types: [submitted]
+    types: [submitted, dismissed]
   issue_comment:
     types: [created]
   pull_request:
@@ -129,6 +136,11 @@ jobs:
       # live in the workflow definition, never in PR-controlled files.
       TRUSTED_REVIEW_AUTHORS: "chatgpt-codex-connector,chatgpt-codex-connector[bot]"
       INTENT_STATUS_CONTEXT: touchstone/review-request-intent
+      # Upper bound on how many open PRs one base push re-evaluates. The
+      # observed open-PR count here is single-digit; 50 is an order of
+      # magnitude of headroom, and the cap exists so a pathological PR
+      # pileup cannot turn one push into an unbounded API storm.
+      MAX_BASE_SWEEP_PRS: "50"
     steps:
       - name: Evaluate binding and publish the check-run
         run: |
@@ -260,13 +272,16 @@ jobs:
               evidence="${evidence}${evidence:+$'\n'}$created_at"$'\t'"result comment by @$author at $created_at"
             done <<<"$comments_tsv"
 
-            # Count evidence; when the binding is valid, only evidence at or
-            # after the earliest matching request counts (freshness).
+            # Count evidence; when the binding is valid, only evidence
+            # STRICTLY after the earliest matching request counts. Same-second
+            # ties fail closed: GitHub timestamps have second precision, and
+            # "same second" cannot prove the evidence followed the request —
+            # the same rule merge-pr.sh applies.
             local total_evidence=0 qualifying=0 latest_ts="" latest_detail="" ts detail
             while IFS=$'\t' read -r ts detail || [ -n "$ts" ]; do
               [ -n "$ts" ] || continue
               total_evidence=$((total_evidence + 1))
-              if [ "$binding_ok" = true ] && [ -n "$threshold" ] && [[ "$ts" < "$threshold" ]]; then
+              if [ "$binding_ok" = true ] && [ -n "$threshold" ] && ! [[ "$ts" > "$threshold" ]]; then
                 continue
               fi
               qualifying=$((qualifying + 1))
@@ -283,7 +298,7 @@ jobs:
                 add_reason "no trusted-author review evidence (formal review or result comment) exists for head \`$head_sha\`"
               fi
             elif [ "$binding_ok" = true ] && [ "$qualifying" -eq 0 ]; then
-              add_reason "all trusted review evidence at head \`$head_sha\` predates the request that bound base \`$base_oid\` (earliest matching request: $threshold), so it may have reviewed a different diff"
+              add_reason "no trusted review evidence at head \`$head_sha\` strictly postdates the request that bound base \`$base_oid\` (earliest matching request: $threshold; same-second ties fail closed), so it may have reviewed a different diff"
             fi
 
             local external_id=""
@@ -298,7 +313,7 @@ jobs:
             if [ -z "$reasons" ]; then
               conclusion="success"
               title="Reviewed at this head, bound to the current base"
-              summary="Trusted review evidence exists for the exact current head, at or after the request that bound the PR's current base.$coords"$'\n'"- evidence: $latest_detail (qualifying evidence at this head: $qualifying)"$'\n'"- request bound this base at: $threshold$footer"
+              summary="Trusted review evidence exists for the exact current head, strictly after the request that bound the PR's current base.$coords"$'\n'"- evidence: $latest_detail (qualifying evidence at this head: $qualifying)"$'\n'"- request bound this base at: $threshold$footer"
             else
               conclusion="failure"
               title="Not reviewed at this head+base"
@@ -323,6 +338,11 @@ jobs:
             # PR targeting it; none of the PR-scoped events fire, so fan out.
             pushed_ref="${GITHUB_REF_NAME:?}"
             pr_list="$(gh api --paginate "repos/$REPO/pulls?state=open&base=$pushed_ref&per_page=100" --jq '.[].number')"
+            total_open="$(printf '%s\n' "$pr_list" | sed '/^$/d' | wc -l | tr -d ' ')"
+            if [ "$total_open" -gt "$MAX_BASE_SWEEP_PRS" ]; then
+              echo "WARNING: $total_open open PRs target '$pushed_ref'; re-evaluating only the first $MAX_BASE_SWEEP_PRS." >&2
+              pr_list="$(head -n "$MAX_BASE_SWEEP_PRS" <<<"$pr_list")"
+            fi
             if [ -z "$pr_list" ]; then
               echo "No open PRs target '$pushed_ref'; nothing to evaluate."
             else

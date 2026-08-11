@@ -100,6 +100,11 @@ if printf '%s\n' "$STRIPPED" | grep -q -F 'Reviewed commit:'; then
 else
   fail "workflow must accept the trusted 'Reviewed commit:' comment channel merge-pr.sh accepts"
 fi
+if printf '%s\n' "$STRIPPED" | grep -q -F 'earliest_matching_intent_at'; then
+  ok "freshness anchored to the earliest base-bound request intent"
+else
+  fail "workflow must anchor evidence freshness to the earliest matching review-request intent (earliest_matching_intent_at)"
+fi
 
 echo "==> Triggers"
 if printf '%s\n' "$STRIPPED" | grep -q -E '^[[:space:]]*pull_request_review:'; then
@@ -111,6 +116,11 @@ if printf '%s\n' "$STRIPPED" | grep -q -E '^[[:space:]]*push:'; then
   ok "push trigger present"
 else
   fail "workflow must trigger on push (base-branch advance stales bindings with no PR-scoped event)"
+fi
+if printf '%s\n' "$STRIPPED" | grep -q -F 'MAX_BASE_SWEEP_PRS'; then
+  ok "push fan-out bounded by MAX_BASE_SWEEP_PRS"
+else
+  fail "the push fan-out must be bounded by a named MAX_BASE_SWEEP_PRS cap"
 fi
 if printf '%s\n' "$STRIPPED" | grep -q -E '^[[:space:]]*issue_comment:'; then
   ok "issue_comment trigger present"
