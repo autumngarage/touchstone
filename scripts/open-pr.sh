@@ -88,6 +88,15 @@ OPEN_PR_TRUSTED_REVIEW_AUTHORS="chatgpt-codex-connector,chatgpt-codex-connector[
 OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR=""
 OPEN_PR_REVIEW_CONFIG_ERROR=""
 OPEN_PR_REVIEW_REQUEST_COUNT=0
+# Review-stall threshold (#759), minutes, env-overridable via
+# TOUCHSTONE_REVIEW_STALL_MINUTES. A durable request whose @codex trigger has
+# gone unanswered this long is reported as possibly skipped by the reviewer —
+# observed 2026-08-11: a re-request unanswered for 40+ minutes while the same
+# reviewer served other PRs in the window, and an empty re-trigger commit drew
+# no review either. The threshold gates only the report and the --fresh-review
+# advertisement; absence of an answer is a heuristic, not evidence, so no
+# request is ever fired from it automatically.
+OPEN_PR_REVIEW_STALL_DEFAULT_MINUTES=30
 # The exact base OID request_pr_triggered_review validated (GitHub's base SHA,
 # cross-checked against a refreshed origin/<base>). The merge authorizer is
 # extracted at THIS commit, not at whatever origin/<base> resolves to later —
@@ -539,6 +548,48 @@ trusted_review_exists_for_head() {
   return "$found"
 }
 
+# ISO8601 UTC (2026-08-11T13:13:52Z) -> epoch seconds. BSD date first, GNU
+# fallback (the touchstone_sync_timestamp_epoch pattern). Prints nothing and
+# fails when neither form parses.
+open_pr_utc_epoch() {
+  local ts="$1"
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$ts" '+%s' 2>/dev/null \
+    || date -u -d "$ts" '+%s' 2>/dev/null
+}
+
+# Stall report (#759): without it, "already requested" is indistinguishable
+# from "will never be answered" — the reviewer can skip a pushed head with no
+# error surfaced anywhere on the PR, and the recovery gesture the guidance
+# implied (an empty commit) draws no review either. Advisory only: it names
+# the sanctioned recovery (--fresh-review, which retires the stale request)
+# and never fires a request itself. Returns 1 only for a malformed threshold,
+# which refuses loudly rather than silently disabling the report.
+report_unanswered_request_stall() {
+  local trigger_at="$1"
+  local stall_minutes="${TOUCHSTONE_REVIEW_STALL_MINUTES:-$OPEN_PR_REVIEW_STALL_DEFAULT_MINUTES}"
+  local trigger_epoch now_epoch age_minutes
+
+  case "$stall_minutes" in
+    '' | *[!0-9]*)
+      echo "ERROR: TOUCHSTONE_REVIEW_STALL_MINUTES must be a non-negative integer; got '$stall_minutes' (#759)." >&2
+      return 1
+      ;;
+  esac
+  if ! trigger_epoch="$(open_pr_utc_epoch "$trigger_at")" || [ -z "$trigger_epoch" ]; then
+    echo "WARNING: cannot parse review-request trigger timestamp '$trigger_at'; stall detection (#759) skipped." >&2
+    return 0
+  fi
+  now_epoch="$(date -u '+%s')"
+  [ "$now_epoch" -ge "$trigger_epoch" ] || return 0
+  age_minutes=$(((now_epoch - trigger_epoch) / 60))
+  [ "$age_minutes" -ge "$stall_minutes" ] || return 0
+  echo "    The request has been unanswered for $age_minutes minute(s) (trigger $trigger_at),"
+  echo "    past the stall threshold of $stall_minutes minute(s) (TOUCHSTONE_REVIEW_STALL_MINUTES)."
+  echo "    The reviewer may have skipped this head (#759); an empty commit does not recover"
+  echo "    it. Retire this request and re-ask for the SAME head without a new commit:"
+  echo "      bash scripts/open-pr.sh --fresh-review"
+}
+
 load_open_pr_review_request_config() {
   local base_branch="$1"
   local trusted_ref="" trusted_oid=""
@@ -899,11 +950,31 @@ request_pr_triggered_review() {
       intent_at=""
     else
       echo "==> GitHub Codex review already requested for head $head_sha at base $base_sha."
+      # An unanswered request is only "in flight" until the stall threshold;
+      # past it, absence must be distinguishable from latency (#759). Only a
+      # definite no-review answer (status 1) reports — a failed lookup
+      # (status 2) proves nothing about the reviewer.
+      if [ "$head_review_status" -eq 1 ] && [ -n "$matching_trigger_at" ]; then
+        report_unanswered_request_stall "$matching_trigger_at" || return 1
+      fi
       return 0
     fi
   fi
   if [ "${FRESH_REVIEW:-false}" = true ]; then
-    echo "==> --fresh-review: forcing a new review request for head $head_sha despite existing evidence."
+    if [ "$matching_request" = true ] && [ "$head_review_status" -eq 1 ]; then
+      # Stall recovery (#759): the durable request for this exact head was
+      # never answered, and the replacement ask must not reuse its intent —
+      # matching_trigger_at anchors to the intent, so the stall clock would
+      # keep dating the new request from the trigger the reviewer skipped.
+      # Retire it the way dismissal-consumption retires consumed requests: a
+      # fresh intent postdates the stall, the completion record binds the new
+      # trigger to it, and the ordinary idempotent skip resumes.
+      echo "==> --fresh-review: the review request for head $head_sha was never answered (#759);"
+      echo "    retiring the stale request record and posting a fresh request intent."
+      intent_at=""
+    else
+      echo "==> --fresh-review: forcing a new review request for head $head_sha despite existing evidence."
+    fi
   fi
 
   # Round-budget gate (#760). By this point every idempotent skip has passed:
@@ -930,15 +1001,36 @@ request_pr_triggered_review() {
   if [ "${OPEN_PR_TRUSTED_REVIEW_ROUNDS:-0}" -ge "$ROUND_BUDGET" ] \
     && [ -z "$ROUND_BUDGET_OVERRIDE" ]; then
     echo "ERROR: PR #$pr_number has already spent $OPEN_PR_TRUSTED_REVIEW_ROUNDS review round(s); the budget is $ROUND_BUDGET (#760)." >&2
-    echo "       Requesting another round is usually the wrong move. The legitimate exits:" >&2
-    echo "         1. Merge if answered — every thread resolved satisfies the gate (issue #751);" >&2
-    echo "            run: bash scripts/merge-pr.sh $pr_number" >&2
-    echo "         2. Split the PR — the diff is carrying more than one concern." >&2
-    echo "         3. Close it, preserving the corpus on the tracking issue (the #706 pattern)." >&2
-    echo "       Findings that harden a component the plan deletes belong on the owning" >&2
-    echo "       issue, not in this diff (principles/git-workflow.md)." >&2
-    echo "       To spend the round anyway, state why:" >&2
-    echo "         bash scripts/open-pr.sh --round-budget-override \"<reason>\"" >&2
+    if [ "$matching_request" != true ] || [ "$request_consumed_by_dismissal" = true ]; then
+      # The budget/evidence deadlock (#775): this head carries no durable
+      # request evidence the merge gate accepts (none recorded, or its answer
+      # was dismissed), so "run merge-pr.sh" would bounce straight back here —
+      # an error naming an unavailable remedy costs a full round-trip to
+      # discover. The head-advances that create this state (rebase after the
+      # base moved, a fix commit answering a finding) are this tooling's own
+      # instructions, so the refusal names the one exit that exists.
+      echo "       Head $head_sha carries no durable review-request evidence the merge gate" >&2
+      echo "       can accept, so 'merge if answered' is NOT available: the merge gate would" >&2
+      echo "       refuse this head and send you back here — the budget/evidence deadlock" >&2
+      echo "       (#775). A head advanced by rebase or a finding-fix after the budget was" >&2
+      echo "       spent is following this tooling's own instructions; the sanctioned path" >&2
+      echo "       is to spend the round deliberately:" >&2
+      echo "         bash scripts/open-pr.sh --round-budget-override \\" >&2
+      echo "           \"head advanced by rebase/fix after budget spent; prior rounds reviewed the substance\"" >&2
+      echo "       Adjust the reason to what actually happened — it is recorded in the" >&2
+      echo "       PR-visible request comment. Splitting the PR or closing it (the #706" >&2
+      echo "       pattern) remain available if the diff outgrew what prior rounds reviewed." >&2
+    else
+      echo "       Requesting another round is usually the wrong move. The legitimate exits:" >&2
+      echo "         1. Merge if answered — every thread resolved satisfies the gate (issue #751);" >&2
+      echo "            run: bash scripts/merge-pr.sh $pr_number" >&2
+      echo "         2. Split the PR — the diff is carrying more than one concern." >&2
+      echo "         3. Close it, preserving the corpus on the tracking issue (the #706 pattern)." >&2
+      echo "       Findings that harden a component the plan deletes belong on the owning" >&2
+      echo "       issue, not in this diff (principles/git-workflow.md)." >&2
+      echo "       To spend the round anyway, state why:" >&2
+      echo "         bash scripts/open-pr.sh --round-budget-override \"<reason>\"" >&2
+    fi
     return 1
   fi
   if [ -n "$ROUND_BUDGET_OVERRIDE" ] && [ "${OPEN_PR_TRUSTED_REVIEW_ROUNDS:-0}" -ge "$ROUND_BUDGET" ]; then
@@ -1115,7 +1207,10 @@ Options:
                       Mutually exclusive with --auto-merge.
   --base <branch>     Target a non-default base branch.
   --fresh-review      Force a new review request even when this head already has
-                      trusted review evidence (the body-only-finding escape).
+                      trusted review evidence (the body-only-finding escape). On a
+                      requested-but-unanswered head it retires the stale request
+                      record and re-asks without a new commit (the #759 stall
+                      recovery).
   --round-budget-override <reason>
                       Spend a review round past the per-PR budget (#760). The
                       reason is recorded in the PR-visible request comment.
@@ -1187,8 +1282,11 @@ BASE_OVERRIDE=""
 # BODY-ONLY findings (PR #755 review): the merge gate cannot accept them via
 # thread resolution, and the per-head idempotency would otherwise skip the
 # re-request — leaving the driver in a loop where the gate says "request a
-# fresh review" and this script answers "already reviewed". Bounded: it spends
-# exactly one request, and nothing advertises it except the body-only block.
+# fresh review" and this script answers "already reviewed". It is also the
+# stall recovery (#759): on a requested-but-unanswered head it retires the
+# stale request record and re-asks without a new commit. Bounded: it spends
+# exactly one request, and nothing advertises it except the body-only block
+# and the stall report.
 FRESH_REVIEW=false
 # --round-budget-override "<reason>": the review-round budget (#760) refuses
 # to request review round N+1 (default 3) on one PR. Past budget the
