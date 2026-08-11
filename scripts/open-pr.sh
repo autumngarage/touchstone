@@ -495,6 +495,9 @@ trusted_review_exists_for_head() {
   # PENDING is unsubmitted and costs nothing; DISMISSED was still a spent
   # round. Consumed by the round-budget gate (#760).
   OPEN_PR_TRUSTED_REVIEW_ROUNDS=0
+  # True when a trusted "Reviewed commit:" comment names this exact head —
+  # the comment-channel answer formal-review lookup cannot see.
+  OPEN_PR_HEAD_RESULT_COMMENT=false
   local submitted
   if ! reviews_tsv="$(gh api --paginate "repos/$REPO_FULL_NAME/pulls/$pr_number/reviews" \
     --jq '.[] | [(.user.login // ""), (.commit_id // ""), (.state // ""), (.submitted_at // "")] | @tsv' 2>&1)"; then
@@ -536,13 +539,27 @@ trusted_review_exists_for_head() {
   # supported result channel, so a budget that ignored them would be
   # evadable by channel (PR #765 review). Lookup failure leaves the count
   # partial rather than refusing — friction control, not authorization.
-  local result_comment_logins comment_login
+  local result_comment_logins comment_login comment_result_sha
+  # Each row is login<TAB>reviewed-sha (sha empty when the body carries no
+  # backticked commit). The sha matters beyond round counting: a trusted
+  # comment result naming THIS head is the reviewer's answer — merge-pr.sh's
+  # comment channel accepts it, and clean results normally arrive this way —
+  # so the stall report and the stall-recovery retirement must not treat such
+  # a head as unanswered (#759; caught by pre-PR adversarial verification).
   if result_comment_logins="$(gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments" \
-    --jq '.[] | select((.body // "") | contains("Reviewed commit:")) | (.user.login // "")' 2>/dev/null)"; then
-    while IFS= read -r comment_login; do
+    --jq '.[] | select((.body // "") | contains("Reviewed commit:")) | [(.user.login // ""), (((.body // "") | capture("Reviewed commit:[^`]*`(?<sha>[0-9a-fA-F]{7,40})`")? .sha) // "")] | @tsv' 2>/dev/null)"; then
+    while IFS=$'\t' read -r comment_login comment_result_sha; do
       [ -n "$comment_login" ] || continue
       csv_contains "$OPEN_PR_TRUSTED_REVIEW_AUTHORS" "$comment_login" || continue
       OPEN_PR_TRUSTED_REVIEW_ROUNDS=$((OPEN_PR_TRUSTED_REVIEW_ROUNDS + 1))
+      case "$comment_result_sha" in
+        '') ;;
+        *)
+          case "$head_sha" in
+            "$comment_result_sha"*) OPEN_PR_HEAD_RESULT_COMMENT=true ;;
+          esac
+          ;;
+      esac
     done <<<"$result_comment_logins"
   fi
   return "$found"
@@ -954,14 +971,17 @@ request_pr_triggered_review() {
       # past it, absence must be distinguishable from latency (#759). Only a
       # definite no-review answer (status 1) reports — a failed lookup
       # (status 2) proves nothing about the reviewer.
-      if [ "$head_review_status" -eq 1 ] && [ -n "$matching_trigger_at" ]; then
+      if [ "$head_review_status" -eq 1 ] \
+        && [ "${OPEN_PR_HEAD_RESULT_COMMENT:-false}" != true ] \
+        && [ -n "$matching_trigger_at" ]; then
         report_unanswered_request_stall "$matching_trigger_at" || return 1
       fi
       return 0
     fi
   fi
   if [ "${FRESH_REVIEW:-false}" = true ]; then
-    if [ "$matching_request" = true ] && [ "$head_review_status" -eq 1 ]; then
+    if [ "$matching_request" = true ] && [ "$head_review_status" -eq 1 ] \
+      && [ "${OPEN_PR_HEAD_RESULT_COMMENT:-false}" != true ]; then
       # Stall recovery (#759): the durable request for this exact head was
       # never answered, and the replacement ask must not reuse its intent —
       # matching_trigger_at anchors to the intent, so the stall clock would
@@ -1001,16 +1021,20 @@ request_pr_triggered_review() {
   if [ "${OPEN_PR_TRUSTED_REVIEW_ROUNDS:-0}" -ge "$ROUND_BUDGET" ] \
     && [ -z "$ROUND_BUDGET_OVERRIDE" ]; then
     echo "ERROR: PR #$pr_number has already spent $OPEN_PR_TRUSTED_REVIEW_ROUNDS review round(s); the budget is $ROUND_BUDGET (#760)." >&2
-    if [ "$matching_request" != true ] || [ "$request_consumed_by_dismissal" = true ]; then
-      # The budget/evidence deadlock (#775): this head carries no durable
-      # request evidence the merge gate accepts (none recorded, or its answer
-      # was dismissed), so "run merge-pr.sh" would bounce straight back here —
+    if [ "$matching_request" != true ] || [ "$request_consumed_by_dismissal" = true ] \
+      || { [ "$head_review_status" -eq 1 ] \
+        && [ "${OPEN_PR_HEAD_RESULT_COMMENT:-false}" != true ]; }; then
+      # The budget/evidence deadlock (#775): this head has no reviewer answer
+      # the merge gate accepts (no request recorded, its answer was dismissed,
+      # or the request was never answered — the #759 stall), so "run
+      # merge-pr.sh" would bounce straight back here —
       # an error naming an unavailable remedy costs a full round-trip to
       # discover. The head-advances that create this state (rebase after the
       # base moved, a fix commit answering a finding) are this tooling's own
       # instructions, so the refusal names the one exit that exists.
-      echo "       Head $head_sha carries no durable review-request evidence the merge gate" >&2
-      echo "       can accept, so 'merge if answered' is NOT available: the merge gate would" >&2
+      echo "       Head $head_sha has no reviewer answer the merge gate can accept (no" >&2
+      echo "       request recorded, answer dismissed, or request never answered), so" >&2
+      echo "       'merge if answered' is NOT available: the merge gate would" >&2
       echo "       refuse this head and send you back here — the budget/evidence deadlock" >&2
       echo "       (#775). A head advanced by rebase or a finding-fix after the budget was" >&2
       echo "       spent is following this tooling's own instructions; the sanctioned path" >&2

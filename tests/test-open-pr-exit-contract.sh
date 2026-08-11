@@ -1950,6 +1950,90 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# Case 46f (#759, pre-PR verifier finding): a trusted "Reviewed commit:"
+# ISSUE COMMENT naming this head IS the reviewer's answer — clean results
+# normally arrive on this channel — so the stall report must not declare the
+# head unanswered no matter how old the trigger is.
+echo "==> Case 46f: a comment-channel answer suppresses the stall report"
+OUT="$TEST_DIR/case46f.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE46_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE46_RECORDS" \
+  GH_RESULT_COMMENT_AUTHORS="$(printf 'chatgpt-codex-connector[bot]\t%.10s' "$CASE46_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'review already requested for head' "$OUT" \
+  && ! grep -q 'unanswered for' "$OUT" \
+  && ! grep -q -- '--fresh-review' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a head answered on the comment channel must not be reported stalled" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Case 46g: --fresh-review on that comment-answered head must take the
+# "despite existing evidence" branch, not retire a request that WAS answered.
+echo "==> Case 46g: fresh-review on a comment-answered head is not stall retirement"
+OUT="$TEST_DIR/case46g.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE46_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE46_RECORDS" \
+  GH_RESULT_COMMENT_AUTHORS="$(printf 'chatgpt-codex-connector[bot]\t%.10s' "$CASE46_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr --fresh-review >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'despite existing evidence' "$OUT" \
+  && ! grep -q 'never answered (#759)' "$OUT" \
+  && [ -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: fresh-review must not claim a comment-answered request was never answered" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Case 45f (#775 x #759, pre-PR verifier finding): at the stall x budget
+# intersection, the stall report sends the driver to --fresh-review; the
+# budget refusal that follows must recognize the head is still unanswered and
+# print the deadlock exit (override), not bounce to merge-pr.sh for a head it
+# just declared unanswered. One comment round is spent by a stale-sha result;
+# two more by stale formal reviews.
+echo "==> Case 45f: budget refusal on a stalled unanswered head names the override"
+OUT="$TEST_DIR/case45f.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE46_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE46_RECORDS" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\tstale-head-1\tCOMMENTED\t2026-08-01T00:00:01Z\nchatgpt-codex-connector[bot]\tstale-head-2\tCOMMENTED\t2026-08-01T01:00:01Z')" \
+  GH_RESULT_COMMENT_AUTHORS=$'chatgpt-codex-connector[bot]\tdeadbeef00' \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr --fresh-review >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'budget/evidence deadlock' "$OUT" \
+  && grep -q -- '--round-budget-override' "$OUT" \
+  && ! grep -q 'run: bash scripts/merge-pr.sh' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: the budget refusal must not point a stalled unanswered head at merge-pr" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # ---------------------------------------------------------------------------
 # Cases 21-23: review policy is validated before any publish step, and draft
 # coordination never depends on it. Commit a malformed .touchstone-review.toml
