@@ -84,6 +84,8 @@ ORPHAN_PR_NUMBER=""
 BODY_FILE=""
 PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=true
 PR_TRIGGERED_REVIEW_PROVIDER="github-codex"
+OPEN_PR_TRUSTED_REVIEW_AUTHORS="chatgpt-codex-connector,chatgpt-codex-connector[bot]"
+OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR=""
 OPEN_PR_REVIEW_CONFIG_ERROR=""
 OPEN_PR_REVIEW_REQUEST_COUNT=0
 # The exact base OID request_pr_triggered_review validated (GitHub's base SHA,
@@ -436,6 +438,86 @@ truthy() {
   esac
 }
 
+trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+csv_contains() {
+  local csv="$1"
+  local wanted="$2"
+  local item
+  local -a csv_items
+
+  if [ -n "$csv" ]; then
+    IFS=',' read -r -a csv_items <<<"$csv"
+    for item in "${csv_items[@]}"; do
+      item="$(trim "$item")"
+      if [ "$item" = "$wanted" ]; then
+        return 0
+      fi
+    done
+  fi
+  return 1
+}
+
+# Issue #751: the review request is idempotent PER HEAD. A trusted formal
+# review already bound to the exact current head means the head is reviewed;
+# asking again re-runs a non-deterministic oracle on unchanged input and
+# manufactures new findings (measured: four reviews at one byte-identical
+# head on PR #715).
+#
+# Returns 0 when at least one trusted formal review has commit_id == head,
+# 1 when none does, 2 when the lookup failed. A failed lookup is reported in
+# OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR and is never collapsed into 0 or 1.
+trusted_review_exists_for_head() {
+  local pr_number="$1"
+  local head_sha="$2"
+  local reviews_tsv login commit
+
+  OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR=""
+  OPEN_PR_HEAD_REVIEW_DISMISSED_AT=""
+  OPEN_PR_HEAD_REVIEW_LIVE_AT=""
+  local submitted
+  if ! reviews_tsv="$(gh api --paginate "repos/$REPO_FULL_NAME/pulls/$pr_number/reviews" \
+    --jq '.[] | [(.user.login // ""), (.commit_id // ""), (.state // ""), (.submitted_at // "")] | @tsv' 2>&1)"; then
+    OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR="$reviews_tsv"
+    return 2
+  fi
+  local found=1
+  while IFS=$'\t' read -r login commit state submitted || [ -n "$login" ]; do
+    [ -n "$login" ] || continue
+    csv_contains "$OPEN_PR_TRUSTED_REVIEW_AUTHORS" "$login" || continue
+    [ "$commit" = "$head_sha" ] || continue
+    # A DISMISSED review is revoked evidence. The merge gate refuses it, so
+    # letting it satisfy request idempotency here would suppress the only
+    # re-request that could produce valid evidence — open-pr.sh saying
+    # "already reviewed" while merge-pr.sh says "not reviewed", forever
+    # (PR #755 review). PENDING has not been submitted and proves nothing.
+    # The dismissal timestamp is kept so the EVIDENCE skip below can tell
+    # "requested, awaiting the answer" (skip is correct) from "requested,
+    # answered, answer revoked" (a re-request is the only way forward).
+    case "$state" in
+      DISMISSED)
+        if [ -z "$OPEN_PR_HEAD_REVIEW_DISMISSED_AT" ] \
+          || [[ "$submitted" > "$OPEN_PR_HEAD_REVIEW_DISMISSED_AT" ]]; then
+          OPEN_PR_HEAD_REVIEW_DISMISSED_AT="$submitted"
+        fi
+        continue
+        ;;
+      PENDING) continue ;;
+    esac
+    found=0
+    if [ -z "$OPEN_PR_HEAD_REVIEW_LIVE_AT" ] \
+      || [[ "$submitted" > "$OPEN_PR_HEAD_REVIEW_LIVE_AT" ]]; then
+      OPEN_PR_HEAD_REVIEW_LIVE_AT="$submitted"
+    fi
+  done <<<"$reviews_tsv"
+  return "$found"
+}
+
 load_open_pr_review_request_config() {
   local base_branch="$1"
   local trusted_ref="" trusted_oid=""
@@ -519,6 +601,8 @@ load_open_pr_review_request_config() {
       esac
     elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "provider" ]; then
       PR_TRIGGERED_REVIEW_PROVIDER="$value"
+    elif [ "$section" = "review.pr_triggered" ] && [ "$key" = "trusted_review_authors" ]; then
+      OPEN_PR_TRUSTED_REVIEW_AUTHORS="$(toml_normalize_array "$value")"
     fi
   }
 
@@ -550,7 +634,8 @@ request_pr_triggered_review() {
   local expected_head_sha="$2"
   local head_sha base_revision base_branch base_sha marker request_records context created_at _creator creator_permission description request_pr request_base request_intent_at request_trigger_at body trigger_at attempt=1
   local completion_head completion_revision completion_branch completion_base
-  local intent_at="" completion_records="" matching_request=false conflicting_bases=""
+  local intent_at="" completion_records="" matching_request=false conflicting_bases="" matching_trigger_at="" request_consumed_by_dismissal=false
+  local head_review_status
   local max_attempts="${TOUCHSTONE_PR_HEAD_CONVERGENCE_ATTEMPTS:-10}"
   local retry_interval="${TOUCHSTONE_PR_HEAD_CONVERGENCE_INTERVAL:-1}"
 
@@ -718,9 +803,86 @@ request_pr_triggered_review() {
   if [ -n "$intent_at" ] && printf '%s\n' "$completion_records" | cut -f1 | grep -Fxq "$intent_at"; then
     matching_request=true
   fi
-  if [ "$matching_request" = true ]; then
-    echo "==> GitHub Codex review already requested for head $head_sha at base $base_sha."
+  # Per-head idempotency (issue #751): when a trusted formal review already
+  # exists for this exact head, the head is reviewed — do not re-request.
+  # The skip requires matching durable request evidence too, because the
+  # merge gate refuses heads without it (review-request-legacy-head); a
+  # review without evidence must still fall through and record the request,
+  # or open-pr.sh and merge-pr.sh would each point at the other forever.
+  head_review_status=0
+  trusted_review_exists_for_head "$pr_number" "$head_sha" || head_review_status=$?
+  if [ "$head_review_status" -eq 2 ]; then
+    # Inspection failure is not a "no": say so and continue with the durable
+    # request-evidence checks, which are themselves idempotent.
+    echo "WARNING: could not determine whether head $head_sha already has a trusted review:" >&2
+    printf '%s\n' "$OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR" | sed 's/^/         /' >&2
+    echo "         Falling back to durable request-evidence checks." >&2
+  fi
+  # A dismissal that postdates the completed request's TRIGGER consumed that
+  # request — its answer was revoked. This must be known BEFORE the
+  # reviewed-head skip: an older still-live review on the same head would
+  # otherwise satisfy that skip and make the consumption branch unreachable,
+  # stranding the gate between a rejected dismissed answer and an older
+  # review that predates the request (PR #755 review, round 9).
+  matching_trigger_at="$(printf '%s\n' "$completion_records" \
+    | awk -F'\t' -v i="$intent_at" '$1 == i { print $2; exit }')"
+  request_consumed_by_dismissal=false
+  if [ -n "${OPEN_PR_HEAD_REVIEW_DISMISSED_AT:-}" ] \
+    && [ -n "$matching_trigger_at" ] \
+    && [[ "$OPEN_PR_HEAD_REVIEW_DISMISSED_AT" > "$matching_trigger_at" ]]; then
+    # A dismissal only consumes the request when NO live post-trigger answer
+    # exists: multiple exact-head reviews are supported, and if a valid
+    # non-dismissed review also postdates the trigger, the request WAS
+    # answered — merge-pr.sh authorizes from it, and re-requesting would
+    # spend a full review cycle for nothing, the anti-goal of this change
+    # (PR #755 review, round 10).
+    if [ -z "${OPEN_PR_HEAD_REVIEW_LIVE_AT:-}" ] \
+      || ! [[ "$OPEN_PR_HEAD_REVIEW_LIVE_AT" > "$matching_trigger_at" ]]; then
+      request_consumed_by_dismissal=true
+    fi
+  fi
+
+  if [ "$head_review_status" -eq 0 ] && [ "$matching_request" = true ] \
+    && [ "${FRESH_REVIEW:-false}" != true ] \
+    && [ "$request_consumed_by_dismissal" != true ]; then
+    echo "==> Head $head_sha is already reviewed: a trusted formal review exists for this exact head; not re-requesting (issue #751)."
+    echo "    (If the merge gate reported a BODY-ONLY finding, re-run with --fresh-review.)"
     return 0
+  fi
+  if [ "$head_review_status" -eq 0 ]; then
+    echo "==> Head $head_sha already has a trusted formal review, but no durable request"
+    echo "    evidence binds this head to base $base_sha; recording the request so the"
+    echo "    merge gate can bind it."
+  fi
+  if [ "$matching_request" = true ] && [ "${FRESH_REVIEW:-false}" != true ]; then
+    if [ "$request_consumed_by_dismissal" = true ]; then
+      # The durable request was answered — and the answer was then dismissed.
+      # "Answered" is anchored to the completed request's TRIGGER timestamp,
+      # not its intent: a review submitted between intent and trigger predates
+      # the @codex ask, so it was never this request's answer, and the real
+      # answer is still in flight — consuming the request then would fire an
+      # unnecessary replacement while it works (PR #755 review, round 8).
+      # Skipping here would strand the head: the merge gate refuses dismissed
+      # evidence, so no rerun of either script could ever produce a usable
+      # result (PR #755 review). A revoked answer consumes its request.
+      #
+      # Consuming it must also RETIRE the old intent: the dismissal postdates
+      # that intent forever, so reusing it would make every ordinary rerun in
+      # the replacement window fire yet another request — a review-cycle spam
+      # loop (PR #755 review, round 7). A fresh intent postdates the
+      # dismissal, so the next rerun sees dismissed_at < intent_at and the
+      # normal idempotent skip holds while the replacement review is awaited.
+      echo "==> The review request for head $head_sha was answered by a review that was later"
+      echo "    DISMISSED (at $OPEN_PR_HEAD_REVIEW_DISMISSED_AT). Revoked evidence consumes its"
+      echo "    request; posting a fresh request intent and requesting a fresh review."
+      intent_at=""
+    else
+      echo "==> GitHub Codex review already requested for head $head_sha at base $base_sha."
+      return 0
+    fi
+  fi
+  if [ "${FRESH_REVIEW:-false}" = true ]; then
+    echo "==> --fresh-review: forcing a new review request for head $head_sha despite existing evidence."
   fi
 
   if [ -z "$intent_at" ]; then
@@ -950,6 +1112,14 @@ DRAFT_FLAG=""
 AUTO_MERGE=false
 CLEANUP_WORKTREE=false
 BASE_OVERRIDE=""
+# --fresh-review: force a new review request even when the head already has a
+# trusted review and matching durable evidence. This is the escape hatch for
+# BODY-ONLY findings (PR #755 review): the merge gate cannot accept them via
+# thread resolution, and the per-head idempotency would otherwise skip the
+# re-request — leaving the driver in a loop where the gate says "request a
+# fresh review" and this script answers "already reviewed". Bounded: it spends
+# exactly one request, and nothing advertises it except the body-only block.
+FRESH_REVIEW=false
 POSITIONAL=()
 
 while [ "$#" -gt 0 ]; do
@@ -964,6 +1134,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --cleanup-worktree)
       CLEANUP_WORKTREE=true
+      shift
+      ;;
+    --fresh-review)
+      FRESH_REVIEW=true
       shift
       ;;
     --base)

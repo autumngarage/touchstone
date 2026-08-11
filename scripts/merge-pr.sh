@@ -217,9 +217,13 @@ fi
 # must not change the exit path, and partial output states its own limits.
 print_batch_fix_guidance() {
   echo "       Address EVERY finding above in ONE batch (single fix commit or series)," >&2
-  echo "       answer each thread, then request one fresh exact-head review. One round" >&2
-  echo "       per finding pays full review latency per finding; one round per batch" >&2
-  echo "       pays it once (issue #649)." >&2
+  echo "       reply to and resolve every thread (scripts/respond-review.sh), then re-run" >&2
+  echo "       the merge gate: a trusted exact-head review whose threads are all resolved" >&2
+  echo "       satisfies it (issue #751). Do NOT request another review of an unchanged" >&2
+  echo "       head — the reviewer is non-deterministic, so re-asking manufactures new" >&2
+  echo "       findings. Fix commits move the head; ship them with scripts/open-pr.sh so" >&2
+  echo "       the new head gets its one review. One round per batch, not per finding" >&2
+  echo "       (issue #649)." >&2
 }
 
 report_review_rounds() {
@@ -1090,6 +1094,63 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | [.id, .path, ((.line // .startLine // "") | tostring), (.isOutdated | tostring), (.comments.nodes[0].author.login // ""), (.comments.nodes[0].url // ""), ((.comments.nodes[0].body // "") | gsub("[\r\n\t]"; " ") | .[0:240])] | @tsv'
 }
 
+# Issue #751: a trusted review AT THE CURRENT HEAD whose findings have all been
+# answered — every inline thread resolved, no active CHANGES_REQUESTED —
+# satisfies the review gate even when that review's verdict text is non-clean.
+# The reviewer is non-deterministic: re-reviewing a byte-identical head yields
+# new findings each time it is asked (measured: four reviews at one head on
+# PR #715), so a gate that demands "latest result is clean" cannot terminate.
+# Resolved findings are answered findings.
+#
+# This helper reports ONLY the answered-findings conditions. Head binding,
+# author trust, and request freshness are the callers' responsibility and are
+# already enforced before it runs: reviews at a stale head never reach it,
+# untrusted authors never reach it, and heads with no trusted review at all
+# fail earlier for lack of a result.
+#
+# STATED BOUNDARY (PR #755 review, round 5): inline threads are the findings
+# ledger. A review that mixes an actionable finding into its body prose
+# alongside unrelated inline comments is not machine-detectable without prose
+# interpretation, which this platform is deleting rather than extending
+# (#734) — and treating any non-empty body as blocking would mean the
+# answered path never applies, reinstating the measured non-termination
+# (four reviews of one unchanged head, issue #751). The reviewer-facing
+# request explicitly asks for every finding in the reviewed pass; findings
+# that become threads are answerable, and the review-binding check (#726)
+# records the review either way.
+#
+# Returns:
+#   0 — satisfied: no CHANGES_REQUESTED and zero unresolved threads
+#   1 — definitively blocked; PR_ANSWERED_FINDINGS_BLOCK_REASON says why
+#   2 — could not tell; PR_ANSWERED_FINDINGS_INSPECTION_ERROR has the detail.
+#       Inspection failure is never collapsed into a definite answer.
+PR_ANSWERED_FINDINGS_BLOCK_REASON=""
+PR_ANSWERED_FINDINGS_INSPECTION_ERROR=""
+pr_answered_findings_state() {
+  local review_decision threads
+
+  PR_ANSWERED_FINDINGS_BLOCK_REASON=""
+  PR_ANSWERED_FINDINGS_INSPECTION_ERROR=""
+
+  if ! review_decision="$(gh pr view "$PR_NUMBER" --json reviewDecision --jq '.reviewDecision // empty' 2>&1)"; then
+    PR_ANSWERED_FINDINGS_INSPECTION_ERROR="review decision: $review_decision"
+    return 2
+  fi
+  if [ "$review_decision" = "CHANGES_REQUESTED" ]; then
+    PR_ANSWERED_FINDINGS_BLOCK_REASON="an active CHANGES_REQUESTED review decision"
+    return 1
+  fi
+  if ! threads="$(unresolved_review_threads)"; then
+    PR_ANSWERED_FINDINGS_INSPECTION_ERROR="unresolved review threads could not be inspected via GitHub GraphQL"
+    return 2
+  fi
+  if [ -n "$threads" ]; then
+    PR_ANSWERED_FINDINGS_BLOCK_REASON="unresolved review thread(s)"
+    return 1
+  fi
+  return 0
+}
+
 current_pr_head_or_die() {
   local phase="$1"
   local observed_head
@@ -1185,7 +1246,7 @@ require_review_revision_unchanged() {
     echo "       current base:        $CURRENT_REVIEW_BASE_OID" >&2
     echo "       reviewed merge base: $REVIEWED_MERGE_BASE_OID" >&2
     echo "       current merge base:  $CURRENT_REVIEW_MERGE_BASE_OID" >&2
-    echo "       Update the branch and request a fresh exact-head review, then rerun the merge gate." >&2
+    echo "       Update the branch and re-run scripts/open-pr.sh so the new head is reviewed, then rerun the merge gate." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="review-base-changed"
     return 1
   fi
@@ -1193,9 +1254,10 @@ require_review_revision_unchanged() {
 
 latest_trusted_pr_review_result() {
   local expected_head="$1"
-  local query reviews author commit_oid state submitted_at url
+  local query reviews author commit_oid state submitted_at url inline_count
   local candidate_clean candidate_detail
-  local latest_submitted_at="" latest_clean=false latest_detail=""
+  local latest_submitted_at="" latest_clean=false latest_detail="" latest_inline=0
+  local latest_tie_poisoned=false
 
   if [ -z "$REPO_OWNER" ] || [ -z "$REPO_NAME" ]; then
     PR_TRIGGERED_REVIEW_INSPECTION_ERROR="formal reviews: repository identity is unavailable"
@@ -1213,6 +1275,7 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
           submittedAt
           url
           commit { oid }
+          comments(first: 1) { totalCount }
         }
         pageInfo {
           hasNextPage
@@ -1228,16 +1291,25 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     -F name="$REPO_NAME" \
     -F number="$PR_NUMBER" \
     -f query="$query" \
-    --jq '.data.repository.pullRequest.reviews.nodes[] | [(.author.login // ""), (.commit.oid // ""), (.state // ""), (.submittedAt // ""), (.url // "")] | @tsv' 2>&1)"; then
+    --jq '.data.repository.pullRequest.reviews.nodes[] | [(.author.login // ""), (.commit.oid // ""), (.state // ""), (.submittedAt // ""), (.url // ""), ((.comments.totalCount // 0) | tostring)] | @tsv' 2>&1)"; then
     PR_TRIGGERED_REVIEW_INSPECTION_ERROR="formal reviews: $reviews"
     return 2
   fi
 
-  while IFS="$(printf '\t')" read -r author commit_oid state submitted_at url || [ -n "$author" ]; do
+  while IFS="$(printf '\t')" read -r author commit_oid state submitted_at url inline_count || [ -n "$author" ]; do
     [ -n "$author" ] || continue
     csv_contains "$PR_TRIGGERED_REVIEW_TRUSTED_REVIEW_AUTHORS" "$author" || continue
     [ "$commit_oid" = "$expected_head" ] || continue
     [ -n "$submitted_at" ] || continue
+    # A dismissed review is invalidated evidence. It is neither a clean verdict
+    # nor a live blocking one, so it must not select as the latest result —
+    # letting one through would allow the answered-findings path to authorize a
+    # merge from a review GitHub explicitly revoked (PR #755 review).
+    [ "$state" = "DISMISSED" ] && continue
+    # Inline-comment count: the findings that materialized as resolvable
+    # threads. Non-numeric or absent (older fixtures, defensive) reads as 0,
+    # which fails closed — body-only results cannot take the answered path.
+    case "$inline_count" in '' | *[!0-9]*) inline_count=0 ;; esac
     candidate_clean=false
     [ "$state" = "APPROVED" ] && candidate_clean=true
     candidate_detail="formal review by @$author ($state) at $submitted_at"
@@ -1249,10 +1321,26 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
       latest_submitted_at="$submitted_at"
       latest_clean="$candidate_clean"
       latest_detail="$candidate_detail"
+      latest_inline="$inline_count"
+      latest_tie_poisoned=false
       continue
+    fi
+    # Same-second reviews merge into one verdict. Answerability does NOT merge
+    # by max(): a body-only non-clean member has no thread whose resolution
+    # could acknowledge it, so if ANY blocking member of the tie is body-only
+    # the aggregate is body-only — otherwise resolving a neighbour's thread
+    # would authorize a merge over an unacknowledged blocker (PR #755 review).
+    if { [ "$latest_clean" != true ] && [ "$latest_inline" -eq 0 ]; } \
+      || { [ "$candidate_clean" != true ] && [ "$inline_count" -eq 0 ]; }; then
+      latest_tie_poisoned=true
     fi
     if [ "$candidate_clean" != true ]; then
       latest_clean=false
+    fi
+    if [ "$latest_tie_poisoned" = true ]; then
+      latest_inline=0
+    elif [ "$inline_count" -gt "$latest_inline" ]; then
+      latest_inline="$inline_count"
     fi
     latest_detail="$latest_detail; $candidate_detail"
   done <<<"$reviews"
@@ -1261,6 +1349,7 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP="$latest_submitted_at"
   PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN="$latest_clean"
   PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL="$latest_detail"
+  PR_TRIGGERED_REVIEW_CANDIDATE_INLINE_COUNT="$latest_inline"
   return 0
 }
 
@@ -1329,6 +1418,9 @@ latest_trusted_pr_comment_result() {
   PR_TRIGGERED_REVIEW_CANDIDATE_TIMESTAMP="$latest_created_at"
   PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN="$latest_clean"
   PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL="$latest_detail"
+  # Issue comments have no inline threads; a non-clean comment result is
+  # body-only by construction and can never take the answered-findings path.
+  PR_TRIGGERED_REVIEW_CANDIDATE_INLINE_COUNT=0
   return 0
 }
 
@@ -1341,9 +1433,17 @@ trusted_pr_clean_signal() {
   local comment_found=false comment_timestamp="" comment_clean=false comment_detail=""
   local review_same_second=false comment_same_second=false
   local review_inspection_error="" comment_inspection_error=""
+  local review_inline=0
 
   PR_TRIGGERED_REVIEW_INSPECTION_ERROR=""
   PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP=""
+  # Which surface produced the signal, and how many of its findings exist as
+  # resolvable inline threads. The answered-findings path (issue #751) may only
+  # apply when the blocking findings could actually be answered by resolving
+  # threads — a body-only result has none, so resolving threads proves nothing
+  # about it (PR #755 review).
+  PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL=""
+  PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT=0
   if [ -z "$expected_base" ]; then
     PR_TRIGGERED_REVIEW_INSPECTION_ERROR="review evidence is not bound to the current base revision"
     return 2
@@ -1358,6 +1458,7 @@ trusted_pr_clean_signal() {
       review_found=true
       review_clean="$PR_TRIGGERED_REVIEW_CANDIDATE_CLEAN"
       review_detail="$PR_TRIGGERED_REVIEW_CANDIDATE_DETAIL"
+      review_inline="${PR_TRIGGERED_REVIEW_CANDIDATE_INLINE_COUNT:-0}"
     elif [ -n "$request_timestamp" ] && [ "$review_timestamp" = "$request_timestamp" ]; then
       review_same_second=true
     fi
@@ -1406,31 +1507,54 @@ trusted_pr_clean_signal() {
     if [[ "$review_timestamp" > "$comment_timestamp" ]]; then
       PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$review_timestamp"
       PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail"
+      PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="review"
+      PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT="$review_inline"
       [ "$review_clean" = true ] && return 0
       return 3
     fi
     if [[ "$comment_timestamp" > "$review_timestamp" ]]; then
       PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$comment_timestamp"
       PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$comment_detail"
+      PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="comment"
+      PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT=0
       [ "$comment_clean" = true ] && return 0
       return 3
     fi
     PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$review_timestamp"
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail; $comment_detail"
     if [ "$review_clean" = true ] && [ "$comment_clean" = true ]; then
+      PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="review"
+      PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT="$review_inline"
       return 0
+    fi
+    # Same-second tie with a blocking part. A non-clean COMMENT constituent is
+    # body-only by construction, and a body-only blocker poisons the whole tie
+    # — attributing the signal to a thread-backed review here would let its
+    # thread's resolution authorize a merge over the unacknowledged comment
+    # finding (PR #755 review). Only a tie whose sole blocker is the formal
+    # review keeps the review's answerability.
+    if [ "$comment_clean" != true ]; then
+      PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="comment"
+      PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT=0
+    else
+      PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="review"
+      PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT="$review_inline"
     fi
     return 3
   fi
   if [ "$review_found" = true ]; then
     PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$review_timestamp"
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$review_detail"
+    PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="review"
+    PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT="$review_inline"
     [ "$review_clean" = true ] && return 0
     return 3
   fi
   if [ "$comment_found" = true ]; then
     PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP="$comment_timestamp"
     PR_TRIGGERED_REVIEW_SIGNAL_DETAIL="$comment_detail"
+    PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL="comment"
+    PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT=0
     [ "$comment_clean" = true ] && return 0
     return 3
   fi
@@ -1517,7 +1641,7 @@ wait_for_pr_triggered_review() {
   local expected_head="$1"
   local phase="$2"
   local timeout_sec poll_sec start_epoch now_epoch elapsed observed_head observed_revision observed_branch observed_base sleep_seconds
-  local last_inspection_error="" last_review_inspection_error="" request_status signal_status
+  local last_inspection_error="" last_review_inspection_error="" request_status signal_status answered_status
   local ambiguity_request_appended=false
 
   if [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then
@@ -1634,6 +1758,7 @@ wait_for_pr_triggered_review() {
             wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
             request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
             result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
+          PR_TRIGGERED_REVIEW_SATISFIED_KIND="clean"
           return 0
         fi
         if [ "$signal_status" -eq 2 ]; then
@@ -1651,20 +1776,95 @@ wait_for_pr_triggered_review() {
           fi
           last_review_inspection_error="$PR_TRIGGERED_REVIEW_INSPECTION_ERROR"
         elif [ "$signal_status" -eq 3 ]; then
-          now_epoch="$(date +%s)"
-          elapsed=$((now_epoch - start_epoch))
-          touchstone_emit_event review_result \
-            worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
-            pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=findings \
-            wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
-            request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
-            result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
-          echo "ERROR: Trusted PR-visible AI review is not clean for PR #$PR_NUMBER head $expected_head." >&2
-          [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2
-          report_review_round_economics "$PR_NUMBER"
-          print_batch_fix_guidance
-          TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-findings"
-          exit 1
+          # Issue #751: a non-clean result at the exact current head does not
+          # block by itself. When every inline thread is resolved and no
+          # CHANGES_REQUESTED is active, the findings are answered and the
+          # gate is satisfied — requiring a fresh review of the same head
+          # asks a non-deterministic oracle the same question again and
+          # cannot terminate.
+          answered_status=0
+          pr_answered_findings_state || answered_status=$?
+          if [ "$answered_status" -eq 0 ] \
+            && { [ "$PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL" != "review" ] \
+              || [ "${PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT:-0}" -eq 0 ]; }; then
+            # Body-only findings: the blocking result raised no inline threads
+            # (a comment-channel verdict, or a formal review with no inline
+            # comments). Zero unresolved threads proves nothing about whether
+            # it was answered — the pre-#751 rule stands for this class: a
+            # fresh review of this head is the only durable acknowledgement
+            # (PR #755 review).
+            now_epoch="$(date +%s)"
+            elapsed=$((now_epoch - start_epoch))
+            touchstone_emit_event review_result \
+              worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
+              pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=findings-body-only \
+              wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
+              request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
+              result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
+            echo "ERROR: Trusted PR-visible AI review is not clean for PR #$PR_NUMBER head $expected_head." >&2
+            if [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ]; then
+              echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2
+            fi
+            echo "       Blocking condition: a body-only trusted finding (no resolvable inline threads)." >&2
+            echo "       Thread resolution cannot answer a finding that never became a thread." >&2
+            echo "       Address the finding, then request a fresh review of this head:" >&2
+            echo "         bash scripts/open-pr.sh --fresh-review" >&2
+            echo "       (--fresh-review overrides the per-head idempotency, which would" >&2
+            echo "       otherwise skip the re-request because this head is already reviewed.)" >&2
+            TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-body-only-findings"
+            exit 1
+          fi
+          if [ "$answered_status" -eq 0 ]; then
+            PR_TRIGGERED_REVIEWED_HEAD_OID="$expected_head"
+            if [ -n "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" ]; then
+              PR_TRIGGERED_REVIEWED_BASE_OID="$observed_base"
+              PR_TRIGGERED_REVIEW_BASE_BOUND=true
+            else
+              PR_TRIGGERED_REVIEWED_BASE_OID=""
+            fi
+            echo "==> Trusted PR-visible AI review found for PR #$PR_NUMBER head $expected_head (findings; all threads resolved)."
+            echo "    reviewed_base=$observed_base"
+            echo "    Answered findings satisfy the review gate: the latest trusted result reports"
+            echo "    findings, but every inline thread is resolved and no CHANGES_REQUESTED is"
+            echo "    active. Re-review of an unchanged head is not required (issue #751)."
+            if [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ]; then
+              echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
+            fi
+            now_epoch="$(date +%s)"
+            elapsed=$((now_epoch - start_epoch))
+            touchstone_emit_event review_result \
+              worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
+              pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=findings-resolved \
+              wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
+              request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
+              result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
+            PR_TRIGGERED_REVIEW_SATISFIED_KIND="findings-resolved"
+            return 0
+          fi
+          if [ "$answered_status" -eq 2 ]; then
+            # Could not tell whether the findings are answered. This is an
+            # inspection failure, not a verdict — keep polling and report it
+            # as such if the wait times out.
+            last_review_inspection_error="answered-findings check: $PR_ANSWERED_FINDINGS_INSPECTION_ERROR"
+          else
+            now_epoch="$(date +%s)"
+            elapsed=$((now_epoch - start_epoch))
+            touchstone_emit_event review_result \
+              worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
+              pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=findings \
+              wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
+              request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
+              result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
+            echo "ERROR: Trusted PR-visible AI review is not clean for PR #$PR_NUMBER head $expected_head." >&2
+            if [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ]; then
+              echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2
+            fi
+            echo "       Blocking condition: $PR_ANSWERED_FINDINGS_BLOCK_REASON." >&2
+            report_review_round_economics "$PR_NUMBER"
+            print_batch_fix_guidance
+            TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-findings"
+            exit 1
+          fi
         else
           last_review_inspection_error=""
         fi
@@ -1812,7 +2012,7 @@ load_pr_review_request_timestamp() {
     echo "ERROR: PR #$PR_NUMBER head $expected_head has trusted review requests for multiple base revisions." >&2
     echo "       current base:  $expected_base" >&2
     echo "       prior base(s): $conflicting_bases" >&2
-    echo "       Update the PR head, then request a fresh review so old in-flight results cannot authorize the new base." >&2
+    echo "       Update the PR head, then re-run scripts/open-pr.sh so the new head is reviewed — old in-flight results cannot authorize the new base." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="review-request-base-conflict"
     return 3
   fi
@@ -2532,7 +2732,7 @@ run_merge_review() {
       echo "ERROR: Refusing reviewer bypass for PR #$PR_NUMBER because the reviewed head does not contain the current base." >&2
       echo "       current base: $current_base_oid" >&2
       echo "       merge base:   $current_merge_base" >&2
-      echo "       Update the PR branch and obtain a fresh exact-head review." >&2
+      echo "       Update the PR branch and re-run scripts/open-pr.sh so the new head is reviewed." >&2
       TOUCHSTONE_MERGE_FAILURE_REASON="review-base-behind"
       exit 1
     elif load_pr_review_request_timestamp "$pr_head_oid" "$current_base_oid" \
@@ -2541,7 +2741,7 @@ run_merge_review() {
     else
       echo "ERROR: Refusing reviewer bypass for PR #$PR_NUMBER." >&2
       echo "       No trusted PR-visible review matches branch '$pr_head_branch' at head '$pr_head_oid' and base '$current_base_oid'." >&2
-      echo "       Obtain a fresh exact-head PR review before using --bypass-with-disclosure." >&2
+      echo "       Run scripts/open-pr.sh to request the exact-head review before using --bypass-with-disclosure." >&2
       exit 1
     fi
     REVIEWED_BASE_OID="$current_base_oid"
@@ -2623,13 +2823,26 @@ run_merge_review() {
     echo "       reviewed base: ${PR_TRIGGERED_REVIEWED_BASE_OID:-<missing>}" >&2
     echo "       current base:  $REVIEWED_BASE_OID" >&2
     echo "       merge base:    $REVIEWED_MERGE_BASE_OID" >&2
-    echo "       Update the PR branch and obtain a fresh exact-head review." >&2
+    echo "       Update the PR branch and re-run scripts/open-pr.sh so the new head is reviewed." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="review-base-unreviewed"
     return 1
   fi
 
   echo "==> Trusted PR-visible review covers the current head and base."
-  touchstone_emit_event review_clean pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+  # The lifecycle event must match the outcome: emitting review_clean for a
+  # gate satisfied by answered findings would tell event consumers a clean
+  # review occurred when it did not (PR #755 review). The emitted kind is
+  # recorded because the FINAL revalidation can change the accepted outcome —
+  # a newer result arriving during deterministic verification — and event
+  # consumers must then receive the corrected final event, not be left with
+  # a stale one (PR #755 review, round 3).
+  if [ "${PR_TRIGGERED_REVIEW_SATISFIED_KIND:-clean}" = "findings-resolved" ]; then
+    touchstone_emit_event review_findings_resolved pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+    PR_TRIGGERED_REVIEW_EMITTED_KIND="findings-resolved"
+  else
+    touchstone_emit_event review_clean pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
+    PR_TRIGGERED_REVIEW_EMITTED_KIND="clean"
+  fi
   return 0
 }
 
@@ -2680,32 +2893,92 @@ if [ "$BYPASS_REVIEW" != true ] || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-rev
     trusted_pr_clean_signal "$REVIEWED_HEAD_OID" "$REVIEWED_BASE_OID" "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
       || final_signal_status=$?
   fi
-  if [ "$final_request_loaded" != true ] || [ "$final_signal_status" -ne 0 ]; then
+  # Issue #751: a non-clean latest result at the reviewed head still satisfies
+  # the gate when its findings are answered (all threads resolved, no
+  # CHANGES_REQUESTED). Only a clean result persists clean-review evidence —
+  # the status context asserts the verdict was clean, and it was not.
+  final_gate_satisfied=false
+  final_answered_findings=false
+  if [ "$final_request_loaded" = true ]; then
+    if [ "$final_signal_status" -eq 0 ]; then
+      final_gate_satisfied=true
+    elif [ "$final_signal_status" -eq 3 ]; then
+      final_answered_status=0
+      pr_answered_findings_state || final_answered_status=$?
+      if [ "$final_answered_status" -eq 0 ] \
+        && { [ "$PR_TRIGGERED_REVIEW_SIGNAL_CHANNEL" != "review" ] \
+          || [ "${PR_TRIGGERED_REVIEW_SIGNAL_INLINE_COUNT:-0}" -eq 0 ]; }; then
+        # Same body-only rule as the wait loop: resolving threads cannot answer
+        # a finding that never became one (PR #755 review).
+        PR_ANSWERED_FINDINGS_BLOCK_REASON="a body-only trusted finding (no resolvable inline threads); request a fresh review of this head with: bash scripts/open-pr.sh --fresh-review"
+      elif [ "$final_answered_status" -eq 0 ]; then
+        final_gate_satisfied=true
+        final_answered_findings=true
+      elif [ "$final_answered_status" -eq 2 ]; then
+        PR_TRIGGERED_REVIEW_INSPECTION_ERROR="answered-findings check: $PR_ANSWERED_FINDINGS_INSPECTION_ERROR"
+      fi
+    fi
+  fi
+  if [ "$final_gate_satisfied" != true ]; then
     echo "ERROR: The latest trusted PR-visible AI result is not clean for reviewed head $REVIEWED_HEAD_OID." >&2
     echo "       A newer review result may have arrived during preflight; resolve it and rerun the merge gate." >&2
     # Round economics and batch guidance describe FINDINGS (status 3). An
     # evidence-load failure or inspection error is a state problem; printing
     # findings_open=0 there would misdirect the driver to hunt for findings
     # that do not exist.
-    if [ "$final_signal_status" -eq 3 ]; then
-      report_review_round_economics "$PR_NUMBER"
-      print_batch_fix_guidance
+    if [ "$final_signal_status" -eq 3 ] && [ -n "$PR_ANSWERED_FINDINGS_BLOCK_REASON" ]; then
+      echo "       Blocking condition: $PR_ANSWERED_FINDINGS_BLOCK_REASON." >&2
+      case "$PR_ANSWERED_FINDINGS_BLOCK_REASON" in
+        *body-only*)
+          # Batch guidance says "do NOT request another review of an unchanged
+          # head" — the correct rule for thread-backed findings and the exact
+          # opposite of the body-only recovery. Printing both in one error
+          # gives the driver contradictory instructions (PR #755 review).
+          echo "       A body-only finding has no thread to answer; the ONLY path forward is:" >&2
+          echo "         bash scripts/open-pr.sh --fresh-review" >&2
+          echo "       then rerun the merge gate once the fresh review lands." >&2
+          ;;
+        *)
+          report_review_round_economics "$PR_NUMBER"
+          print_batch_fix_guidance
+          ;;
+      esac
     elif [ -n "${PR_TRIGGERED_REVIEW_INSPECTION_ERROR:-}" ]; then
       echo "       Inspection detail: $PR_TRIGGERED_REVIEW_INSPECTION_ERROR" >&2
     fi
     TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-stale"
     exit 1
   fi
-  if ! persist_pr_clean_review_result \
-    "$REVIEWED_HEAD_OID" \
-    "$REVIEWED_BASE_OID" \
-    "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
-    "$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"; then
-    TOUCHSTONE_MERGE_FAILURE_REASON="review-result-persistence"
-    exit 1
+  if [ "$final_answered_findings" = true ]; then
+    echo "==> Revalidated trusted PR-visible AI result for head $REVIEWED_HEAD_OID (findings; all threads resolved)."
+    if [ "${PR_TRIGGERED_REVIEW_EMITTED_KIND:-}" = "clean" ]; then
+      # The wait phase accepted a clean result and emitted review_clean, but a
+      # newer thread-backed findings result arrived during verification and the
+      # gate is now satisfied via answered findings. Correct the record.
+      touchstone_emit_event review_findings_resolved pr_number="$PR_NUMBER" head_sha="$REVIEWED_HEAD_OID"
+      PR_TRIGGERED_REVIEW_EMITTED_KIND="findings-resolved"
+    fi
+  else
+    if ! persist_pr_clean_review_result \
+      "$REVIEWED_HEAD_OID" \
+      "$REVIEWED_BASE_OID" \
+      "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
+      "$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"; then
+      TOUCHSTONE_MERGE_FAILURE_REASON="review-result-persistence"
+      exit 1
+    fi
+    echo "==> Revalidated latest trusted PR-visible AI result for head $REVIEWED_HEAD_OID."
+    if [ "${PR_TRIGGERED_REVIEW_EMITTED_KIND:-}" = "findings-resolved" ]; then
+      # The mirror correction: answered findings satisfied the wait phase, but
+      # a fresh clean review arrived during verification and the final outcome
+      # is clean.
+      touchstone_emit_event review_clean pr_number="$PR_NUMBER" head_sha="$REVIEWED_HEAD_OID"
+      PR_TRIGGERED_REVIEW_EMITTED_KIND="clean"
+    fi
   fi
-  echo "==> Revalidated latest trusted PR-visible AI result for head $REVIEWED_HEAD_OID."
-  [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
+  if [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ]; then
+    echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
+  fi
 fi
 if [ "$BYPASS_REVIEW" != true ] || [ -n "$BYPASS_MARKER_SOURCE" ]; then
   require_review_revision_unchanged "$REVIEWED_HEAD_OID" "final merge authorization" || exit $?

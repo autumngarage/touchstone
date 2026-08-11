@@ -83,7 +83,15 @@ Project-local high-risk scripts such as `scripts/open-pr.sh` and `scripts/merge-
 The PR is the only semantic review surface. `open-pr.sh` posts one review
 request for each exact head and records durable head/base-bound request
 evidence. The driving CLI watches the PR, fixes actionable findings, pushes a
-new head, and repeats until the latest trusted review is clean.
+new head, and repeats until the head's trusted review is answered — a clean
+verdict, or findings with every thread resolved. Re-review of an unchanged
+head is never required for thread-backed findings: the reviewer is
+non-deterministic, so re-asking about the same commit manufactures new
+findings instead of confirming the old ones. A new head gets exactly one new
+review. The one exception is a body-only finding (a non-clean verdict with no
+inline threads): nothing can be resolved to answer it, so the gate directs
+`bash scripts/open-pr.sh --fresh-review` — the bounded override of per-head
+idempotency — as the only path forward on that unchanged head.
 
 Draft PRs are early coordination surfaces, not semantic-review requests.
 `open-pr.sh --draft` creates or updates a draft without requiring the final PR
@@ -103,7 +111,7 @@ Answer each review finding with the canonical response command instead of
 hand-rolling API calls: `bash scripts/respond-review.sh <pr> --comment-id
 <id> --body-file <file> [--fix-commit <sha>]` posts the threaded reply,
 resolves the thread, and verifies the resolution stuck (with bounded retries
-for transient API failures). Before re-requesting review, gate on
+for transient API failures). Before re-running the merge gate, gate on
 `bash scripts/respond-review.sh <pr> --all-resolved-check`, which lists any
 remaining unresolved threads and exits nonzero. It then runs deterministic
 preflight and revalidates review immediately before merging with

@@ -212,7 +212,27 @@ case "$1 $2" in
     echo "${GH_PR_AUTHOR:-alice}"
     ;;
   "api --paginate")
-    # No prior durable review-request records.
+    case "${3:-}" in
+      */pulls/*/reviews*)
+        # Formal reviews at the PR (issue #751 per-head idempotency).
+        if [ "${GH_HEAD_REVIEWS_FAIL:-0}" = "1" ]; then
+          echo "review listing unavailable" >&2
+          exit 1
+        fi
+        if [ -n "${GH_HEAD_REVIEWS:-}" ]; then
+          printf '%s\n' "$GH_HEAD_REVIEWS"
+        fi
+        ;;
+      */statuses | */statuses\?*)
+        # Durable review-request records; empty by default.
+        if [ -n "${GH_REQUEST_STATUS_RECORDS:-}" ]; then
+          printf '%s\n' "$GH_REQUEST_STATUS_RECORDS"
+        fi
+        ;;
+      *)
+        # No other prior records.
+        ;;
+    esac
     ;;
   "api -X")
     printf '%s\n' "$*" >>"$GH_REVIEW_REQUEST_LOG"
@@ -241,6 +261,12 @@ case "$1 $2" in
       printf '%s\t%s\n' "${GH_CREATED_PR_BASE:-${GH_EXISTING_PR_BASE:-main}}" "$(git rev-parse "${GH_CREATED_PR_BASE:-${GH_EXISTING_PR_BASE:-main}}")"
       exit 0
     fi
+    case "$api_path" in
+      repos/autumngarage/touchstone/collaborators/*/permission)
+        echo "write"
+        exit 0
+        ;;
+    esac
     case "$api_path:$jq_expr" in
       "repos/autumngarage/touchstone/pulls/777:.body // \"\"")
         echo "${GH_PR_BODY:-}"
@@ -345,6 +371,9 @@ run_open_pr() {
       GH_REQUIRE_REPO_FOR_MERGED_AT="${GH_REQUIRE_REPO_FOR_MERGED_AT:-0}" \
       GH_PR_HEAD_OID="${GH_PR_HEAD_OID:-existing-pr-head}" \
       GH_PR_IS_CROSS_REPO="${GH_PR_IS_CROSS_REPO:-false}" \
+      GH_HEAD_REVIEWS="${GH_HEAD_REVIEWS:-}" \
+      GH_HEAD_REVIEWS_FAIL="${GH_HEAD_REVIEWS_FAIL:-0}" \
+      GH_REQUEST_STATUS_RECORDS="${GH_REQUEST_STATUS_RECORDS:-}" \
       GIT_PUSH_PLAIN_EXIT="${GIT_PUSH_PLAIN_EXIT:-0}" \
       GIT_PUSH_LEASE_EXIT="${GIT_PUSH_LEASE_EXIT:-0}" \
       GIT_PUSH_LOG="$TEST_DIR/git-push.log" \
@@ -1396,6 +1425,225 @@ if [ "$RC" != "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: expected unknown observed head to refuse the retry" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Cases 42-44 (issue #751): the review request is idempotent per head. A
+# trusted formal review already bound to the exact current head (with its
+# durable request evidence in place) means the head is reviewed — a second
+# invocation must say so and must NOT post another @codex request. A review
+# bound to a DIFFERENT commit gives no such license: the new head requests
+# normally. A failed review lookup is reported as inspection failure and
+# falls back to the evidence-based idempotency — never treated as "reviewed"
+# or "not reviewed".
+# ---------------------------------------------------------------------------
+echo "==> Case 42: reviewed unchanged head is not re-requested"
+OUT="$TEST_DIR/case42.out"
+RC=0
+reset_open_pr_logs
+CASE42_HEAD="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CASE42_BASE_SHA="$(git -C "$REPO_DIR" rev-parse main)"
+CASE42_RECORDS="$(printf 'touchstone/review-request-intent\t2026-08-01T00:00:00Z\thenrymodisett\tpr=777 base=%s\ntouchstone/review-request-complete\t2026-08-01T00:00:05Z\thenrymodisett\tpr=777 base=%s intent=2026-08-01T00:00:00Z trigger=2026-08-01T00:00:05Z' \
+  "$CASE42_BASE_SHA" "$CASE42_BASE_SHA")"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s' "$CASE42_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'is already reviewed: a trusted formal review exists for this exact head; not re-requesting' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected reviewed unchanged head to skip the review request" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Case 42b (PR #755 review): --fresh-review overrides the per-head idempotency.
+# Without it, a BODY-ONLY finding deadlocks: the merge gate cannot accept it
+# via thread resolution and says "request a fresh review", while this script
+# answers "already reviewed" and requests nothing. The flag must spend a real
+# request on the identical evidence state that Case 42 skips.
+echo "==> Case 42b: --fresh-review forces a request on a reviewed unchanged head"
+OUT="$TEST_DIR/case42b.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s' "$CASE42_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr --fresh-review >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q -- '--fresh-review: forcing a new review request' "$OUT" \
+  && [ -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: --fresh-review must override the idempotent skip and post a request" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Case 42c (PR #755 review, round 5): a DISMISSED review is revoked evidence
+# and must NOT satisfy request idempotency. The merge gate refuses dismissed
+# reviews, so a state-blind skip here would suppress the only re-request that
+# could produce valid evidence — open-pr.sh saying "already reviewed" while
+# merge-pr.sh says "not reviewed", until timeout.
+echo "==> Case 42c: a dismissed review does not suppress the review request"
+OUT="$TEST_DIR/case42c.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s\tDISMISSED\t2026-08-01T00:00:07Z' "$CASE42_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && ! grep -q 'is already reviewed' "$OUT" \
+  && grep -q 'posting a fresh request intent' "$OUT" \
+  && [ -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a dismissed review must not satisfy per-head idempotency" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Case 42d (PR #755 review, round 8): a review submitted BETWEEN the request
+# intent and its @codex trigger predates the ask — it was never this
+# request's answer, so its later dismissal must NOT consume the request. The
+# real answer is still in flight; the correct behavior is the ordinary
+# idempotent skip, not a replacement request.
+echo "==> Case 42d: a dismissed pre-trigger review does not consume the request"
+OUT="$TEST_DIR/case42d.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s\tDISMISSED\t2026-08-01T00:00:03Z' "$CASE42_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'already requested for head' "$OUT" \
+  && ! grep -q 'posting a fresh request intent' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a pre-trigger dismissal must leave the in-flight request alone" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Case 42e (PR #755 review, round 9): a post-trigger dismissal must consume
+# the request even when an OLDER live review shares the head — the
+# reviewed-head skip would otherwise fire first and strand the gate between
+# a rejected dismissed answer and a review that predates the request.
+echo "==> Case 42e: consumption wins over the reviewed-head skip"
+OUT="$TEST_DIR/case42e.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s\tCOMMENTED\t2026-07-31T00:00:00Z\nchatgpt-codex-connector[bot]\t%s\tDISMISSED\t2026-08-01T00:00:07Z' "$CASE42_HEAD" "$CASE42_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'posting a fresh request intent' "$OUT" \
+  && ! grep -q 'is already reviewed' "$OUT" \
+  && [ -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: an older live review must not shadow a consumed request" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Case 42f (PR #755 review, round 10): the mirror of 42e — a LIVE
+# post-trigger answer plus a dismissed post-trigger review on the same head.
+# The request WAS answered; the dismissal of a sibling must not consume it,
+# or a plain rerun spends a full review cycle for nothing.
+echo "==> Case 42f: a live post-trigger answer shields the request from consumption"
+OUT="$TEST_DIR/case42f.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s\tCOMMENTED\t2026-08-01T00:00:09Z\nchatgpt-codex-connector[bot]\t%s\tDISMISSED\t2026-08-01T00:00:07Z' "$CASE42_HEAD" "$CASE42_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'is already reviewed' "$OUT" \
+  && ! grep -q 'posting a fresh request intent' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a live post-trigger answer must prevent dismissal consumption" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 43: review bound to another commit does not license the new head"
+OUT="$TEST_DIR/case43.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_HEAD" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s' "$CASE42_BASE_SHA")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && ! grep -q 'is already reviewed' "$OUT" \
+  && grep -q 'Requested GitHub Codex review' "$OUT" \
+  && grep -q 'issues/777/comments' "$TEST_DIR/review-request.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected a new head to request review despite an old-commit review" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 44: failed review lookup reports itself and falls back to request evidence"
+OUT="$TEST_DIR/case44.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
+  GH_HEAD_REVIEWS_FAIL=1 \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'could not determine whether head' "$OUT" \
+  && ! grep -q 'is already reviewed' "$OUT" \
+  && grep -q 'review already requested for head' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected lookup failure to be visible and fall back to request evidence" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
