@@ -1636,6 +1636,20 @@ cp "$TEST_DIR/toml-good.sh" "$BLOB_PROJECT/lib/toml.sh"
 assert_contains "$TEST_DIR/p780b-blob-output.txt" 'Needs update'
 assert_not_contains "$TEST_DIR/p780b-blob-output.txt" 'Already up to date'
 
+# (d) A Gemini-only project (no AGENTS.md, by design never backfilled) with
+# current content must read Already up to date — not loop stamp-only updates.
+NOAGENTS_PROJECT="$TEST_DIR/p780b-no-agents"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$NOAGENTS_PROJECT" --no-register >/dev/null
+configure_git "$NOAGENTS_PROJECT"
+commit_all "$NOAGENTS_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$NOAGENTS_PROJECT/.touchstone-version"
+git -C "$NOAGENTS_PROJECT" rm -q AGENTS.md
+git -C "$NOAGENTS_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "gemini-only project"
+(cd "$NOAGENTS_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780b-noagents-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780b-noagents-output.txt" 'Already up to date'
+assert_not_contains "$TEST_DIR/p780b-noagents-output.txt" 'Needs update'
+
 # --------------------------------------------------------------------------
 # Results
 # --------------------------------------------------------------------------

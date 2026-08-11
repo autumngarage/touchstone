@@ -378,7 +378,13 @@ managed_content_is_current() {
     done
   fi
 
-  managed_path_is_sound "AGENTS.md" || return 1
+  # Both steering files are backfill-exempt here: a Gemini-only project
+  # omits AGENTS.md by design, and soundness applies only to files that
+  # exist — an unconditional check would recreate the stamp-only update
+  # loop for those projects (PR #780 review, round 3).
+  if [ -f "$PROJECT_DIR/AGENTS.md" ]; then
+    managed_path_is_sound "AGENTS.md" || return 1
+  fi
   steering_block_is_current "$PROJECT_DIR/AGENTS.md" || return 1
   if [ -f "$PROJECT_DIR/GEMINI.md" ]; then
     managed_path_is_sound "GEMINI.md" || return 1
