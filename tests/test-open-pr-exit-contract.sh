@@ -69,11 +69,13 @@ cat >"$REPO_DIR/scripts/merge-pr.sh" <<'BASEGATE'
 # Trusted base copy of the merge gate. Scenarios drive the stub that the
 # worktree copy delegates to, so this file only has to prove WHICH copy ran.
 #
-# The capability marker below is load-bearing, not decoration: open-pr.sh
+# The capability markers below are load-bearing, not decoration: open-pr.sh
 # refuses to authorize with a base gate that predates the PR-visible review
-# requirement, and a fixture without it represents a legacy gate. Named
-# functions rather than a version string so the check tracks the capability
-# itself: require_pr_feedback_clear / wait_for_pr_triggered_review.
+# requirement or PR-base binding, and a fixture without them represents a
+# legacy gate. Named functions rather than a version string so the check
+# tracks the capabilities themselves:
+# require_pr_feedback_clear / wait_for_pr_triggered_review /
+# current_pr_base_revision.
 printf 'trusted-base-gate\n' >>"${MERGE_STUB_LOG:-/dev/null}"
 exec bash "${MERGE_STUB_DELEGATE:?merge stub delegate not set}" "$@"
 BASEGATE
@@ -275,6 +277,12 @@ chmod +x "$FAKE_BIN/gh"
 
 # Stub git push so the script doesn't try to talk to a real remote.
 # We wrap real git via $REAL_GIT for everything else.
+#
+# GIT_ADVANCE_REF_AFTER_MERGE_BASE / GIT_ADVANCE_REF_TO simulate a concurrent
+# actor moving a remote-tracking ref mid-run (Case 4e): after any `git
+# merge-base` call — the last git read request_pr_triggered_review makes while
+# validating the base — the named ref is advanced, the way a concurrent fetch
+# lands a base that moved after review admission was checked.
 REAL_GIT="$(command -v git)"
 cat >"$FAKE_BIN/git" <<EOF
 #!/usr/bin/env bash
@@ -294,6 +302,12 @@ if [ "\${1:-}" = "push" ]; then
     exit "\${GIT_PUSH_PLAIN_EXIT}"
   fi
   exit 0
+fi
+if [ "\${1:-}" = "merge-base" ] && [ -n "\${GIT_ADVANCE_REF_AFTER_MERGE_BASE:-}" ]; then
+  rc=0
+  "$REAL_GIT" "\$@" || rc=\$?
+  "$REAL_GIT" update-ref "\$GIT_ADVANCE_REF_AFTER_MERGE_BASE" "\$GIT_ADVANCE_REF_TO"
+  exit "\$rc"
 fi
 exec "$REAL_GIT" "\$@"
 EOF
@@ -1494,31 +1508,185 @@ fi
 # executed. Running it would let the very PR that introduces the review gate
 # merge without one — "run the gate from the base" is only a safety property
 # while the base's gate is at least as strong as the contract (PR #707 review).
+#
+# This case drives open-pr.sh for real against such a base, exactly like
+# Case 4 does for an absent gate: a base branch whose committed merge-pr.sh
+# carries none of the capability markers, with a feature branch stacked on it
+# so review admission (base-ancestry) passes and the run reaches the
+# authorizer. The refusal must fire BEFORE the legacy gate executes.
 echo "==> Case 4c: a legacy base gate without the review requirement is refused"
-LEGACY_DIR="$TEST_DIR/legacy-base"
-rm -rf "$LEGACY_DIR"
-git clone -q "$REPO_DIR" "$LEGACY_DIR" 2>/dev/null
-cat >"$LEGACY_DIR/scripts/merge-pr.sh" <<'LEGACYGATE'
+OUT="$TEST_DIR/case4c.out"
+RC=0
+reset_open_pr_logs
+: >"$TEST_DIR/gate-provenance.log"
+CASE4C_RESTORE="$(git -C "$REPO_DIR" branch --show-current)"
+git -C "$REPO_DIR" checkout -q -b base/legacy-gate base/no-gate
+mkdir -p "$REPO_DIR/scripts" "$REPO_DIR/lib"
+cat >"$REPO_DIR/scripts/merge-pr.sh" <<'LEGACYGATE'
 #!/usr/bin/env bash
-# A gate from before the PR-visible review requirement: it merges directly.
+# A gate from before the PR-visible review era: it merges directly, with no
+# review wait and no base binding. If this ever runs, the capability check
+# has regressed.
+printf 'legacy-base-gate\n' >>"${MERGE_STUB_LOG:-/dev/null}"
 gh pr merge "$1" --squash
 LEGACYGATE
-(
-  cd "$LEGACY_DIR"
-  git add scripts/merge-pr.sh
-  git -c user.email=t@e.co -c user.name=T commit -qm "legacy gate" 2>/dev/null
-) >/dev/null 2>&1
-LEGACY_OUT="$TEST_DIR/legacy.out"
-if grep -q 'require_pr_feedback_clear\|wait_for_pr_triggered_review' \
-  "$LEGACY_DIR/scripts/merge-pr.sh" 2>/dev/null; then
+chmod +x "$REPO_DIR/scripts/merge-pr.sh"
+printf '# legacy base library\n' >"$REPO_DIR/lib/.keep.sh"
+git -C "$REPO_DIR" add scripts/merge-pr.sh lib/.keep.sh
+git -C "$REPO_DIR" commit -qm "legacy gate" >/dev/null 2>&1
+git -C "$REPO_DIR" checkout -q -b feat/legacy-child
+printf 'legacy change\n' >>"$REPO_DIR/file.txt"
+git -C "$REPO_DIR" add file.txt
+git -C "$REPO_DIR" commit -qm "change stacked on legacy base" >/dev/null 2>&1
+if grep -q 'require_pr_feedback_clear\|wait_for_pr_triggered_review\|current_pr_base_revision' \
+  "$REPO_DIR/scripts/merge-pr.sh" 2>/dev/null; then
   echo "    FAIL: the legacy fixture accidentally carries a capability marker" >&2
   ERRORS=$((ERRORS + 1))
-else
-  echo "    PASS: legacy fixture has no review capability, as intended"
 fi
-# The refusal itself is asserted through open-pr.sh's own check, which greps for
-# the same markers; a fixture lacking them is exactly what it must reject.
-: >"$LEGACY_OUT"
+GH_PR_STATE="OPEN" GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 \
+  GH_CREATED_PR_BASE="base/legacy-gate" \
+  run_open_pr --base base/legacy-gate >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" checkout -q "$CASE4C_RESTORE"
+
+if [ "$RC" != "0" ] \
+  && grep -q 'predates the' "$OUT" \
+  && grep -q 'PR-visible review requirement' "$OUT" \
+  && ! grep -q 'legacy-base-gate' "$TEST_DIR/gate-provenance.log" \
+  && grep -q 'ORPHAN RISK: PR opened but not merged' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected nonzero exit + legacy-gate refusal + gate never executed" >&2
+  echo "    rc=$RC" >&2
+  echo "    provenance: $(tr '\n' ' ' <"$TEST_DIR/gate-provenance.log")" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# A base gate that waits for review but predates PR-base binding
+# (current_pr_base_revision, c38e5d6) reviews against origin/<default branch>
+# rather than the PR's actual base — a stacked PR would be authorized against
+# the wrong diff. It must be refused even though it carries the review-wait
+# pair (PR #707 review).
+echo "==> Case 4d: a base gate with review wait but no PR-base binding is refused"
+OUT="$TEST_DIR/case4d.out"
+RC=0
+reset_open_pr_logs
+: >"$TEST_DIR/gate-provenance.log"
+CASE4D_RESTORE="$(git -C "$REPO_DIR" branch --show-current)"
+git -C "$REPO_DIR" checkout -q -b base/prebinding-gate base/no-gate
+mkdir -p "$REPO_DIR/scripts" "$REPO_DIR/lib"
+cat >"$REPO_DIR/scripts/merge-pr.sh" <<'PREBINDINGGATE'
+#!/usr/bin/env bash
+# A gate from after the review requirement but before PR-base binding: it
+# carries the review-wait pair yet always reviews against the default branch.
+# If this ever runs, a stacked PR can merge on the wrong diff.
+require_pr_feedback_clear() { :; }
+wait_for_pr_triggered_review() { :; }
+printf 'prebinding-base-gate\n' >>"${MERGE_STUB_LOG:-/dev/null}"
+exit 0
+PREBINDINGGATE
+chmod +x "$REPO_DIR/scripts/merge-pr.sh"
+printf '# pre-binding base library\n' >"$REPO_DIR/lib/.keep.sh"
+git -C "$REPO_DIR" add scripts/merge-pr.sh lib/.keep.sh
+git -C "$REPO_DIR" commit -qm "pre-binding gate" >/dev/null 2>&1
+git -C "$REPO_DIR" checkout -q -b feat/prebinding-child
+printf 'prebinding change\n' >>"$REPO_DIR/file.txt"
+git -C "$REPO_DIR" add file.txt
+git -C "$REPO_DIR" commit -qm "change stacked on pre-binding base" >/dev/null 2>&1
+if grep -q 'current_pr_base_revision' "$REPO_DIR/scripts/merge-pr.sh" 2>/dev/null; then
+  echo "    FAIL: the pre-binding fixture accidentally carries the base-binding marker" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+GH_PR_STATE="OPEN" GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 \
+  GH_CREATED_PR_BASE="base/prebinding-gate" \
+  run_open_pr --base base/prebinding-gate >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" checkout -q "$CASE4D_RESTORE"
+
+if [ "$RC" != "0" ] \
+  && grep -q "lacks 'current_pr_base_revision'" "$OUT" \
+  && ! grep -q 'prebinding-base-gate' "$TEST_DIR/gate-provenance.log" \
+  && grep -q 'ORPHAN RISK: PR opened but not merged' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected refusal naming current_pr_base_revision + gate never executed" >&2
+  echo "    rc=$RC" >&2
+  echo "    provenance: $(tr '\n' ' ' <"$TEST_DIR/gate-provenance.log")" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# The authorizer must be extracted at the exact base OID the review request
+# was validated against, not at whatever origin/<base> is cached as by
+# extraction time. refs/remotes/origin/<base> is shared mutable state any
+# concurrent process can refresh; if the base advances between validation and
+# extraction (a stacked parent landing, a concurrent merge), following the
+# ref would run a gate from a commit the review admission never saw
+# (PR #707 review). The git wrapper simulates the concurrent fetch by
+# advancing the remote-tracking ref right after the base-ancestry check — the
+# last git read of the validation.
+echo "==> Case 4e: gate extraction binds to the validated base OID, not the moved ref"
+OUT="$TEST_DIR/case4e.out"
+RC=0
+reset_open_pr_logs
+: >"$TEST_DIR/gate-provenance.log"
+CASE4E_RESTORE="$(git -C "$REPO_DIR" branch --show-current)"
+git -C "$REPO_DIR" checkout -q -b base/toctou-gate base/no-gate
+mkdir -p "$REPO_DIR/scripts" "$REPO_DIR/lib"
+cat >"$REPO_DIR/scripts/merge-pr.sh" <<'VALIDATEDGATE'
+#!/usr/bin/env bash
+# The base gate at the revision review admission validated. Capability
+# markers so the legacy refusal is not what decides this case:
+# require_pr_feedback_clear / wait_for_pr_triggered_review /
+# current_pr_base_revision.
+printf 'validated-gate\n' >>"${MERGE_STUB_LOG:-/dev/null}"
+exec bash "${MERGE_STUB_DELEGATE:?merge stub delegate not set}" "$@"
+VALIDATEDGATE
+chmod +x "$REPO_DIR/scripts/merge-pr.sh"
+printf '# toctou base library\n' >"$REPO_DIR/lib/.keep.sh"
+git -C "$REPO_DIR" add scripts/merge-pr.sh lib/.keep.sh
+git -C "$REPO_DIR" commit -qm "toctou validated gate" >/dev/null 2>&1
+TOCTOU_VALIDATED_OID="$(git -C "$REPO_DIR" rev-parse base/toctou-gate)"
+git -C "$REPO_DIR" checkout -q -b feat/toctou-child
+printf 'toctou change\n' >>"$REPO_DIR/file.txt"
+git -C "$REPO_DIR" add file.txt
+git -C "$REPO_DIR" commit -qm "change stacked on toctou base" >/dev/null 2>&1
+# The base as it looks AFTER it advanced: same capability markers, different
+# gate. If this one runs, extraction followed the moved ref.
+git -C "$REPO_DIR" checkout -q -b base/toctou-advanced base/toctou-gate
+cat >"$REPO_DIR/scripts/merge-pr.sh" <<'ADVANCEDGATE'
+#!/usr/bin/env bash
+# A base gate that landed after review admission was validated. Capability
+# markers so the capability check accepts it:
+# require_pr_feedback_clear / wait_for_pr_triggered_review /
+# current_pr_base_revision.
+printf 'advanced-gate\n' >>"${MERGE_STUB_LOG:-/dev/null}"
+exec bash "${MERGE_STUB_DELEGATE:?merge stub delegate not set}" "$@"
+ADVANCEDGATE
+git -C "$REPO_DIR" add scripts/merge-pr.sh
+git -C "$REPO_DIR" commit -qm "toctou advanced gate" >/dev/null 2>&1
+TOCTOU_ADVANCED_OID="$(git -C "$REPO_DIR" rev-parse base/toctou-advanced)"
+git -C "$REPO_DIR" checkout -q feat/toctou-child
+GH_PR_STATE="MERGED" GH_MERGED_AT="2026-08-11T00:00:00Z" GH_HAS_EXISTING_PR=0 \
+  GH_CREATED_PR_BASE="base/toctou-gate" \
+  GIT_ADVANCE_REF_AFTER_MERGE_BASE="refs/remotes/origin/base/toctou-gate" \
+  GIT_ADVANCE_REF_TO="$TOCTOU_ADVANCED_OID" \
+  run_open_pr --base base/toctou-gate >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" checkout -q "$CASE4E_RESTORE"
+
+if [ "$RC" = "0" ] \
+  && grep -q 'validated-gate' "$TEST_DIR/gate-provenance.log" \
+  && ! grep -q 'advanced-gate' "$TEST_DIR/gate-provenance.log" \
+  && grep -q "Merge gate materialized from base/toctou-gate @ ${TOCTOU_VALIDATED_OID:0:12}" "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected the gate from the VALIDATED base OID, not the moved ref" >&2
+  echo "    rc=$RC" >&2
+  echo "    validated: $TOCTOU_VALIDATED_OID" >&2
+  echo "    advanced:  $TOCTOU_ADVANCED_OID" >&2
+  echo "    provenance: $(tr '\n' ' ' <"$TEST_DIR/gate-provenance.log")" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 # ---------------------------------------------------------------------------
 # Summary

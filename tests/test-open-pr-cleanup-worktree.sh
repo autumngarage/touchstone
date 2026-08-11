@@ -141,6 +141,16 @@ printf 'base\n' >"$REPO_DIR/file.txt"
 mkdir -p "$REPO_DIR/scripts" "$REPO_DIR/lib"
 cat >"$REPO_DIR/scripts/merge-pr.sh" <<'BASEGATE'
 #!/usr/bin/env bash
+# Trusted base copy of the merge gate. Scenarios drive the stub that this
+# copy delegates to.
+#
+# The capability markers below are load-bearing, not decoration: open-pr.sh
+# refuses to authorize with a base gate that predates the PR-visible review
+# requirement or PR-base binding, and a fixture without them represents a
+# legacy gate. Named functions rather than a version string so the check
+# tracks the capabilities themselves:
+# require_pr_feedback_clear / wait_for_pr_triggered_review /
+# current_pr_base_revision.
 exec bash "${MERGE_STUB_DELEGATE:?merge stub delegate not set}" "$@"
 BASEGATE
 chmod +x "$REPO_DIR/scripts/merge-pr.sh"

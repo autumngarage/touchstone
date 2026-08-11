@@ -78,6 +78,13 @@ PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=true
 PR_TRIGGERED_REVIEW_PROVIDER="github-codex"
 OPEN_PR_REVIEW_CONFIG_ERROR=""
 OPEN_PR_REVIEW_REQUEST_COUNT=0
+# The exact base OID request_pr_triggered_review validated (GitHub's base SHA,
+# cross-checked against a refreshed origin/<base>). The merge authorizer is
+# extracted at THIS commit, not at whatever origin/<base> resolves to later —
+# otherwise the base can advance between review validation and gate extraction
+# and the gate would come from a different revision than the one the review
+# was admitted against (PR #707 review).
+OPEN_PR_VALIDATED_BASE_SHA=""
 REPO_FULL_NAME=""
 
 on_exit() {
@@ -121,15 +128,25 @@ TRUSTED_MERGE_BASE_OID=""
 
 materialize_trusted_merge_authorizer() {
   local base_branch="$1"
-  local base_oid remote_ref bundle
+  local validated_oid="$2"
+  local base_oid bundle
 
-  remote_ref="refs/remotes/origin/$base_branch"
-  if ! base_oid="$(git rev-parse --verify --quiet "$remote_ref^{commit}" 2>/dev/null)"; then
+  # Extract at the exact base OID request_pr_triggered_review validated, not
+  # at origin/<base> as currently cached. Resolving the branch name again here
+  # would reopen a TOCTOU window: the base can advance between review
+  # validation and gate extraction (a stacked parent landing, a concurrent
+  # merge), and the authorizer would then come from a different commit than
+  # the one the review admission was checked against (PR #707 review).
+  # `git archive` accepts any commit, so binding to the OID costs nothing.
+  if ! base_oid="$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify --quiet \
+    "$validated_oid^{commit}" 2>/dev/null)"; then
     git fetch --quiet --no-tags origin "$base_branch" >/dev/null 2>&1 || true
-    if ! base_oid="$(git rev-parse --verify --quiet "$remote_ref^{commit}" 2>/dev/null)"; then
-      echo "ERROR: cannot resolve the trusted base '$base_branch' to materialize the merge gate." >&2
-      echo "       The gate must come from reviewed, already-merged code, not from this branch." >&2
-      echo "       Fetch the base and rerun:" >&2
+    if ! base_oid="$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify --quiet \
+      "$validated_oid^{commit}" 2>/dev/null)"; then
+      echo "ERROR: cannot resolve the validated base revision of '$base_branch' to materialize the merge gate." >&2
+      echo "       validated base: $validated_oid" >&2
+      echo "       The gate must come from the reviewed base commit the review request was" >&2
+      echo "       admitted against, not from this branch. Fetch the base and rerun:" >&2
       echo "         git fetch origin $base_branch" >&2
       return 1
     fi
@@ -185,22 +202,35 @@ materialize_trusted_merge_authorizer() {
   # present would therefore let the first upgrade PR — the one whose whole
   # purpose is to introduce the review gate — merge without one.
   #
+  # A base predating c38e5d6 has the review wait but reviews against
+  # origin/<default branch> instead of the PR's actual base
+  # (current_pr_base_revision): a stacked PR targeting a feature branch would
+  # be authorized against the wrong diff and base revision. The gate is only
+  # as strong as the contract with BOTH capabilities — the review-wait pair
+  # AND PR-base binding — so all three names are required, not any-of.
+  #
   # "Run the gate from the base" is only a safety property while the base's
   # gate is at least as strong as the contract being enforced. Where it is not,
   # this fails closed with a migration path rather than silently executing a
   # weaker authorizer (PR #707 review).
-  if ! grep -q 'require_pr_feedback_clear\|wait_for_pr_triggered_review' \
-    "$bundle/scripts/merge-pr.sh" 2>/dev/null; then
+  local capability
+  for capability in \
+    require_pr_feedback_clear \
+    wait_for_pr_triggered_review \
+    current_pr_base_revision; do
+    if grep -q "$capability" "$bundle/scripts/merge-pr.sh" 2>/dev/null; then
+      continue
+    fi
     echo "ERROR: the merge gate on base $base_branch (${base_oid:0:12}) predates the" >&2
-    echo "       PR-visible review requirement — it can merge without waiting for a" >&2
-    echo "       trusted exact-head review." >&2
+    echo "       PR-visible review requirement — it lacks '$capability', so it cannot" >&2
+    echo "       enforce a trusted exact-head review bound to this PR's actual base." >&2
     echo "       Refusing to authorize with it. Running it would let this very PR" >&2
     echo "       merge without the review gate it is meant to introduce." >&2
     echo "       Migration: land the Touchstone delivery scripts on $base_branch first," >&2
     echo "         git switch $base_branch && touchstone update --ship" >&2
     echo "       then reopen this PR against the updated base." >&2
     return 1
-  fi
+  done
 
   TRUSTED_MERGE_SCRIPT="$bundle/scripts/merge-pr.sh"
   TRUSTED_MERGE_BASE_OID="$base_oid"
@@ -212,7 +242,16 @@ materialize_trusted_merge_authorizer() {
 resolve_merge_authorizer() {
   local base_branch="$1"
 
-  if ! materialize_trusted_merge_authorizer "$base_branch"; then
+  # Invariant: --auto-merge always runs request_pr_triggered_review first, and
+  # that call validates the PR's base OID before returning. No validated OID
+  # here means the sequencing broke — refuse rather than fall back to
+  # extracting at whatever origin/<base> happens to be cached as.
+  if [ -z "$OPEN_PR_VALIDATED_BASE_SHA" ]; then
+    echo "ERROR: no validated base revision is available to materialize the merge gate." >&2
+    echo "       request_pr_triggered_review must validate the PR base before auto-merge." >&2
+    return 1
+  fi
+  if ! materialize_trusted_merge_authorizer "$base_branch" "$OPEN_PR_VALIDATED_BASE_SHA"; then
     return 1
   fi
   echo "==> Merge gate materialized from $base_branch @ ${TRUSTED_MERGE_BASE_OID:0:12} (not this worktree)."
@@ -380,7 +419,7 @@ truthy() {
 
 load_open_pr_review_request_config() {
   local base_branch="$1"
-  local trusted_ref=""
+  local trusted_ref="" trusted_oid=""
   local config_file="" config_tmp="" rel
   local remote_ref="refs/remotes/origin/$base_branch"
   local local_ref="refs/heads/$base_branch"
@@ -404,21 +443,34 @@ load_open_pr_review_request_config() {
     return 1
   fi
 
+  # Pin the chosen ref to a commit OID and read every object through the OID.
+  # A ref name is shared mutable state: a concurrent fetch can move it between
+  # the refresh above and the reads below, so ref-relative reads could serve
+  # policy from a commit this function never chose — the same
+  # validate-then-re-resolve window the merge-gate extraction closes by
+  # binding to the validated base OID (PR #707 review).
+  if ! trusted_oid="$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify --quiet \
+    "$trusted_ref^{commit}")"; then
+    echo "ERROR: Could not pin trusted review request policy base '$base_branch' to a commit." >&2
+    echo "       ref: $trusted_ref" >&2
+    return 1
+  fi
+
   # Same reasoning as the gate extraction above: this reads review POLICY from
   # the trusted base, so a replacement object must not be able to supply it.
   for rel in .touchstone-review.toml .codex-review.toml; do
-    if ! GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "$trusted_ref:$rel" 2>/dev/null; then
+    if ! GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "$trusted_oid:$rel" 2>/dev/null; then
       continue
     fi
     if ! config_tmp="$(mktemp -t touchstone-open-pr-review-config.XXXXXX)"; then
       echo "ERROR: Failed to create a temporary trusted review request policy file." >&2
-      echo "       source: $trusted_ref:$rel" >&2
+      echo "       source: $trusted_ref@$trusted_oid:$rel" >&2
       return 1
     fi
-    if ! GIT_NO_REPLACE_OBJECTS=1 git show "$trusted_ref:$rel" >"$config_tmp" 2>/dev/null; then
+    if ! GIT_NO_REPLACE_OBJECTS=1 git show "$trusted_oid:$rel" >"$config_tmp" 2>/dev/null; then
       rm -f "$config_tmp"
       echo "ERROR: Failed to extract trusted review request policy." >&2
-      echo "       source: $trusted_ref:$rel" >&2
+      echo "       source: $trusted_ref@$trusted_oid:$rel" >&2
       return 1
     fi
     config_file="$config_tmp"
@@ -566,6 +618,10 @@ request_pr_triggered_review() {
     echo "       No review request was recorded or submitted." >&2
     return 1
   fi
+  # Base fully validated: GitHub's base SHA matches a freshly fetched
+  # origin/<base> and the head contains it. Publish it so the merge authorizer
+  # is extracted at this exact commit (see OPEN_PR_VALIDATED_BASE_SHA above).
+  OPEN_PR_VALIDATED_BASE_SHA="$base_sha"
   marker="<!-- touchstone:pr-review-request provider=github-codex pr=$pr_number head=$head_sha base=$base_sha -->"
   if ! request_records="$(
     gh api --paginate "repos/$REPO_FULL_NAME/commits/$head_sha/statuses?per_page=100" \
