@@ -18,24 +18,28 @@
 #           brick the repo. Required approvals stay zero; unresolved findings
 #           are enforced by required conversation resolution, a separate gate.
 #   RED   = no trusted review evidence at this head, or the base binding is
-#           absent/conflicting or no longer matches the PR's current base, or
-#           the only evidence is from an untrusted author, or no evidence
-#           strictly postdates the request that bound the current base. The
-#           output summary says which.
+#           absent, conflicting, from an untrusted creator, or no longer
+#           matching the PR's current base, or the only evidence is from an
+#           untrusted author, or no evidence strictly postdates the request
+#           that bound the current base, or the head is simultaneously the
+#           head of multiple open PRs. The output summary says which.
 #
-# Idempotent per head+base (issue #751): the conclusion is a pure function of
-# (head oid, base oid, evidence at that head), and it is monotone — new events
-# can only add evidence, never remove it, so a green verdict cannot flip red
-# while head and base stand still. The freshness bound is the EARLIEST
-# successful request intent binding the current base, deliberately not the
-# latest: measuring against the latest would let a re-request flip green back
-# to red on a byte-identical head, the exact non-termination #751 measured.
-# Re-requesting can never raise the earliest-intent bar, and re-reviewing only
-# adds evidence at the same oid.
+# Idempotent per head+base+evidence (issue #751): the conclusion is a pure
+# function of (head oid, base oid, live evidence at that head). The freshness
+# bound is the EARLIEST successful request intent binding the current base,
+# deliberately not the latest: measuring against the latest would let a
+# re-request flip green back to red on a byte-identical head, the exact
+# non-termination #751 measured. Re-requesting can never raise the
+# earliest-intent bar, and re-reviewing only adds evidence at the same oid.
+# Evidence REMOVAL is different from re-requesting: a result comment that is
+# edited or deleted takes accepted evidence away, and the check deliberately
+# re-evaluates fail-closed on those events (see the issue_comment types
+# below) — green flips red because the evidence is gone, not because the
+# bar moved.
 #
 # Evidence sources (mirrors scripts/merge-pr.sh):
 #   - formal reviews: GET /repos/{o}/{r}/pulls/{n}/reviews where commit_id ==
-#     current head and user.login is on the trusted allowlist below;
+#     current head and user.login is on the trusted allowlist;
 #   - result comments: trusted-author issue comments carrying
 #     "Reviewed commit:" plus the backticked short head, resolved through the
 #     commits API to the exact current head — the same comment channel
@@ -44,12 +48,30 @@
 #   - base binding: the "touchstone/review-request-intent" commit status that
 #     scripts/open-pr.sh posts on the head, whose description carries
 #     "pr=<n> base=<oid>"; that oid is compared to the PR's current base oid,
-#     and its created_at anchors the freshness bound above. Commit statuses
-#     require push access, so this surface is not internet-writable; reviews
-#     and comments on a public repo ARE, which is why the author allowlist is
-#     hardcoded in this file's env and never read from PR-controlled files.
+#     and its created_at anchors the freshness bound above. Status creation
+#     proves only statuses:write — a GitHub App can hold that without push
+#     access — so an intent status counts only when its CREATOR resolves to
+#     a write+ collaborator, the same rule merge-pr.sh enforces; an intent
+#     status for this PR from any other creator is a red reason, never a
+#     binding.
+#   - trusted-author allowlist: read per PR from the review config
+#     (.touchstone-review.toml, then .codex-review.toml — merge-pr.sh's
+#     filenames and precedence) at the PR's CURRENT BASE oid, which is
+#     collaborator-writable content; the PR head's copy of the config is
+#     never read. When no config file exists at that base, the built-in
+#     default hardcoded in this file's env applies — the same default
+#     merge-pr.sh carries. Reviews and comments on a public repo are
+#     internet-writable, which is why the allowlist may never come from
+#     PR-controlled files.
 #   Exact-oid base semantics are inherited from the local merge gate; #734 may
 #   relax this to an ancestry check later.
+#
+# Shared heads fail closed: check-runs attach to the COMMIT, not the PR, and
+# external_id plays no part in required-check matching — so when one commit
+# is simultaneously the head of several open PRs, a green published for the
+# reviewed PR would satisfy the required check on every sibling. Whenever
+# evaluation sees the head shared by more than one open PR, it publishes red
+# for that head until the heads diverge.
 #
 # Triggers, and why each exists:
 #   - pull_request_review (submitted, dismissed): a formal review submission
@@ -57,18 +79,22 @@
 #     finding-bearing review that posts no separate comment would never
 #     re-evaluate, leaving a required check red forever. Dismissal changes
 #     the evidence surface too, so it re-evaluates as well.
-#   - issue_comment (created), filtered to PR comments: the reviewer's result
-#     comment channel, and the "@codex review" request itself.
+#   - issue_comment (created, edited, deleted), filtered to PR comments: the
+#     reviewer's result comment channel, and the "@codex review" request
+#     itself. edited/deleted exist because editing the marker out of (or
+#     deleting) the only accepted result comment removes the evidence — the
+#     check must re-evaluate fail-closed, not keep a green frozen on the
+#     head.
 #   - pull_request (synchronize, reopened, edited): synchronize makes every
 #     new head start red; edited catches base retargeting.
 #   - push (branches): when a base branch advances, the bindings of every open
 #     PR targeting it go stale under exact-oid semantics while none of the
 #     PR-scoped events fire — so a push re-evaluates every open PR whose base
-#     ref is the pushed branch (capped at MAX_BASE_SWEEP_PRS so one push can
-#     never become an unbounded API storm). This re-evaluation is what keeps
-#     the exact-OID base binding honest between head pushes. Push runs execute
-#     the pushed branch's copy of this file, a surface writable only by
-#     collaborators.
+#     ref is the pushed branch. The first MAX_BASE_SWEEP_PRS get a full
+#     evaluation; every PR past the cap gets an explicit fail-closed red
+#     (never a silently retained pre-push verdict) and recovers on its next
+#     PR-scoped event. Push runs execute the pushed branch's copy of this
+#     file, a surface writable only by collaborators.
 #
 # Trap 7 (see the header of validate.yml): this workflow executes no
 # PR-controlled code — there is no checkout of PR code AT ALL, no third-party
@@ -92,7 +118,7 @@ on:
   pull_request_review:
     types: [submitted, dismissed]
   issue_comment:
-    types: [created]
+    types: [created, edited, deleted]
   pull_request:
     types: [synchronize, reopened, edited]
   push:
@@ -106,18 +132,30 @@ permissions:
 
 # A newer evaluation for the same PR (or same pushed ref) supersedes an
 # in-flight one. Safe to cancel: every run re-reads live PR state, and the
-# verdict is idempotent per head+base, so the surviving run publishes the
-# same conclusion the cancelled one would have.
+# verdict is idempotent per (head, base, evidence), so the surviving run
+# publishes the conclusion the cancelled one would have.
+#
+# PR-scoped and push-scoped runs live in DIFFERENT groups, so they can run
+# concurrently against the same PR, and a PR-scoped run that read its
+# coordinates before a base push could otherwise publish a verdict for the
+# superseded base AFTER the push-triggered run published for the new one.
+# Two guards close that: evaluate_pr re-reads the live head+base immediately
+# before publishing and skips the POST when they moved (the move itself
+# fired an event whose run owns the new coordinates); and a move landing in
+# the sub-second gap between that recheck and the POST still loses, because
+# the event it fires starts a fresh run whose POST postdates this one — and
+# branch protection reads the newest run of the name.
 concurrency:
   group: review-binding-${{ github.event.pull_request.number || github.event.issue.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # Deliberately NOT named "review-binding": the job's own check-run is named
-  # after the job, and a job named review-binding would go green on every
-  # successful run — even one that just published a FAILURE verdict — leaving
-  # two same-named check-runs racing for what branch protection reads. The
-  # only check-run named "review-binding" is the one this job POSTs.
+  # Deliberately NOT named "review-binding" — neither this job KEY nor any
+  # name: property: GitHub names a job's own check-run after the job, and a
+  # job named review-binding would go green on every successful run — even
+  # one that just published a FAILURE verdict — leaving two same-named
+  # check-runs racing for what branch protection reads. The only check-run
+  # named "review-binding" is the one this job POSTs.
   evaluate:
     name: evaluate
     if: >-
@@ -131,25 +169,30 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       REPO: ${{ github.repository }}
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
-      # Trusted review authors, hardcoded here on purpose: the review/comment
-      # surface of a public repo is internet-writable, so the allowlist must
-      # live in the workflow definition, never in PR-controlled files.
+      # FALLBACK trusted-author allowlist, byte-identical to merge-pr.sh's
+      # built-in default. The live allowlist is loaded per PR from the review
+      # config at the PR's current base oid (see load_trusted_authors); this
+      # value applies only when no config file exists at that base. It stays
+      # hardcoded here because it may never come from PR-controlled files.
       TRUSTED_REVIEW_AUTHORS: "chatgpt-codex-connector,chatgpt-codex-connector[bot]"
       INTENT_STATUS_CONTEXT: touchstone/review-request-intent
-      # Upper bound on how many open PRs one base push re-evaluates. The
-      # observed open-PR count here is single-digit; 50 is an order of
-      # magnitude of headroom, and the cap exists so a pathological PR
-      # pileup cannot turn one push into an unbounded API storm.
+      # Upper bound on how many open PRs one base push FULLY re-evaluates.
+      # The observed open-PR count here is single-digit; 50 is an order of
+      # magnitude of headroom. PRs past the cap are not skipped silently:
+      # they get an explicit fail-closed red (publish_sweep_overflow), so
+      # the cap bounds API cost without ever retaining a stale verdict.
       MAX_BASE_SWEEP_PRS: "50"
     steps:
       - name: Evaluate binding and publish the check-run
         run: |
           set -euo pipefail
 
+          # Reads TRUSTED_AUTHORS_EFFECTIVE from the calling evaluate_pr via
+          # dynamic scoping — the per-PR allowlist, not the env fallback.
           author_is_trusted() {
             local candidate="$1" item
             local -a items
-            IFS=',' read -r -a items <<<"$TRUSTED_REVIEW_AUTHORS"
+            IFS=',' read -r -a items <<<"$TRUSTED_AUTHORS_EFFECTIVE"
             for item in "${items[@]}"; do
               if [ "$item" = "$candidate" ]; then
                 return 0
@@ -161,6 +204,107 @@ jobs:
           # Appends to the caller's local 'reasons' via dynamic scoping.
           add_reason() {
             reasons="${reasons}${reasons:+$'\n'}- $1"
+          }
+
+          # Sets TRUSTED_AUTHORS_EFFECTIVE / TRUSTED_AUTHORS_SOURCE in the
+          # caller (dynamic scoping): the [review.pr_triggered]
+          # trusted_review_authors array from the first review-config file
+          # present at the PR's current BASE oid — merge-pr.sh's filenames,
+          # precedence, and built-in default. Base-branch content is
+          # collaborator-writable only; the PR head's copy is never read.
+          # A file present with the key absent keeps the default (as
+          # merge-pr.sh does); a key present but empty trusts nobody (fail
+          # closed). 404 falls through; any other read failure aborts the
+          # job before any POST.
+          load_trusted_authors() {
+            local base_oid_arg="$1" cfg_path raw err_file value
+            TRUSTED_AUTHORS_EFFECTIVE="$TRUSTED_REVIEW_AUTHORS"
+            TRUSTED_AUTHORS_SOURCE="built-in default"
+            for cfg_path in .touchstone-review.toml .codex-review.toml; do
+              err_file="$(mktemp)"
+              if raw="$(gh api -H "Accept: application/vnd.github.raw+json" \
+                "repos/$REPO/contents/$cfg_path?ref=$base_oid_arg" 2>"$err_file")"; then
+                rm -f "$err_file"
+              elif grep -q "HTTP 404" "$err_file"; then
+                rm -f "$err_file"
+                continue
+              else
+                echo "ERROR: could not read $cfg_path at base $base_oid_arg; not publishing." >&2
+                cat "$err_file" >&2
+                rm -f "$err_file"
+                exit 1
+              fi
+              # Minimal extraction of one key from trusted collaborator
+              # content — deliberately not a second TOML parser (lib/toml.sh
+              # stays the canonical one): find the key inside
+              # [review.pr_triggered], join a multi-line array to its closing
+              # bracket, and take the double-quoted tokens as the items.
+              if value="$(printf '%s\n' "$raw" | awk '
+                /^[[:space:]]*#/ { next }
+                /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+                  section = $0
+                  gsub(/[^][A-Za-z0-9._-]/, "", section)
+                  gsub(/[][]/, "", section)
+                  next
+                }
+                section == "review.pr_triggered" && /^[[:space:]]*trusted_review_authors[[:space:]]*=/ {
+                  line = $0
+                  sub(/^[^=]*=/, "", line)
+                  buf = line
+                  while (buf !~ /\]/ && (getline line) > 0) buf = buf " " line
+                  print buf
+                  found = 1
+                  exit
+                }
+                END { exit (found ? 0 : 3) }
+              ')"; then
+                TRUSTED_AUTHORS_EFFECTIVE="$(printf '%s\n' "$value" \
+                  | grep -o '"[^"]*"' | tr -d '"' | paste -sd, - || true)"
+                TRUSTED_AUTHORS_SOURCE="$cfg_path @ base $base_oid_arg"
+              fi
+              return 0
+            done
+          }
+
+          # Commit statuses can be written by principals holding only
+          # statuses:write (e.g. a GitHub App) — status creation alone does
+          # not prove push access. Resolve each accepted intent-status
+          # creator to their live collaborator permission and require
+          # write/maintain/admin, exactly as merge-pr.sh does. HTTP 404 is a
+          # definitive "not a collaborator" (untrusted — a red reason, fail
+          # closed); any other lookup failure is an inspection failure and
+          # aborts the job before any POST.
+          CREATOR_PERM_CACHE="|"
+          creator_has_push_access() {
+            local login="$1" perm err_file
+            [ -n "$login" ] || return 1
+            case "$CREATOR_PERM_CACHE" in
+              *"|$login=trusted|"*) return 0 ;;
+              *"|$login=untrusted|"*) return 1 ;;
+            esac
+            err_file="$(mktemp)"
+            if perm="$(gh api "repos/$REPO/collaborators/$login/permission" \
+              --jq '.permission' 2>"$err_file")"; then
+              rm -f "$err_file"
+            elif grep -q "HTTP 404" "$err_file"; then
+              rm -f "$err_file"
+              perm="none"
+            else
+              echo "ERROR: could not resolve collaborator permission for '$login'; not publishing." >&2
+              cat "$err_file" >&2
+              rm -f "$err_file"
+              exit 1
+            fi
+            case "$perm" in
+              admin | maintain | write)
+                CREATOR_PERM_CACHE="${CREATOR_PERM_CACHE}${login}=trusted|"
+                return 0
+                ;;
+              *)
+                CREATOR_PERM_CACHE="${CREATOR_PERM_CACHE}${login}=untrusted|"
+                return 1
+                ;;
+            esac
           }
 
           evaluate_pr() {
@@ -185,18 +329,31 @@ jobs:
               return 0
             fi
 
+            local TRUSTED_AUTHORS_EFFECTIVE="" TRUSTED_AUTHORS_SOURCE=""
+            load_trusted_authors "$base_oid"
+
+            # Shared heads: check-runs attach to the commit, not the PR, so a
+            # verdict for one PR satisfies a required check on every open PR
+            # sharing this head. Fail closed until the heads diverge.
+            local co_head_prs co_head_count
+            co_head_prs="$(gh api --paginate "repos/$REPO/commits/$head_sha/pulls?per_page=100" \
+              --jq ".[] | select(.state == \"open\" and .head.sha == \"$head_sha\") | .number" \
+              | sort -un | sed 's/^/#/' | paste -sd' ' -)"
+            co_head_count="$(printf '%s\n' "$co_head_prs" | wc -w | tr -d ' ')"
+
             # Base binding recorded on the head by scripts/open-pr.sh. The
             # earliest intent binding the CURRENT base anchors freshness:
             # evidence older than the first request for this base may have
             # reviewed a different diff (a spontaneous review of the same
             # head against an earlier base carries no base identity).
-            local statuses_tsv bound_bases earliest_matching_intent_at
-            local context status_state created_at description request_pr request_base
+            local statuses_tsv bound_bases earliest_matching_intent_at untrusted_intent_creators
+            local context status_state created_at status_creator description request_pr request_base
             statuses_tsv="$(gh api --paginate "repos/$REPO/commits/$head_sha/statuses?per_page=100" \
-              --jq '.[] | [(.context // ""), (.state // ""), (.created_at // ""), ((.description // "") | gsub("[\r\n\t]"; " "))] | @tsv')"
+              --jq '.[] | [(.context // ""), (.state // ""), (.created_at // ""), (.creator.login // ""), ((.description // "") | gsub("[\r\n\t]"; " "))] | @tsv')"
             bound_bases=""
             earliest_matching_intent_at=""
-            while IFS=$'\t' read -r context status_state created_at description || [ -n "$context" ]; do
+            untrusted_intent_creators=""
+            while IFS=$'\t' read -r context status_state created_at status_creator description || [ -n "$context" ]; do
               [ "$context" = "$INTENT_STATUS_CONTEXT" ] || continue
               [ "$status_state" = "success" ] || continue
               case "$description" in
@@ -207,6 +364,13 @@ jobs:
               request_pr="${request_pr%% base=*}"
               request_base="${description#* base=}"
               [ "$request_pr" = "$pr_number" ] || continue
+              if ! creator_has_push_access "$status_creator"; then
+                case ",$untrusted_intent_creators," in
+                  *",$status_creator,"*) ;;
+                  *) untrusted_intent_creators="${untrusted_intent_creators}${untrusted_intent_creators:+,}${status_creator:-<unknown>}" ;;
+                esac
+                continue
+              fi
               case ",$bound_bases," in
                 *",$request_base,"*) ;;
                 *) bound_bases="${bound_bases}${bound_bases:+,}$request_base" ;;
@@ -219,8 +383,14 @@ jobs:
             done <<<"$statuses_tsv"
 
             local reasons="" binding_ok=false threshold=""
+            if [ "$co_head_count" -gt 1 ]; then
+              add_reason "head \`$head_sha\` is simultaneously the head of $co_head_count open PRs ($co_head_prs): check-runs bind to commits, not PRs, so one PR's verdict would satisfy every sibling's required check — failing closed until the heads diverge"
+            fi
+            if [ -n "$untrusted_intent_creators" ]; then
+              add_reason "head \`$head_sha\` carries \`$INTENT_STATUS_CONTEXT\` status(es) for PR #$pr_number from creator(s) without push access (\`$untrusted_intent_creators\`) — status creation proves only statuses:write, so these cannot bind a base (the same write+ creator rule merge-pr.sh enforces)"
+            fi
             if [ -z "$bound_bases" ]; then
-              add_reason "no base binding: no successful \`$INTENT_STATUS_CONTEXT\` status on head \`$head_sha\` records \`pr=$pr_number base=<oid>\`"
+              add_reason "no base binding: no successful \`$INTENT_STATUS_CONTEXT\` status on head \`$head_sha\` from a write+ collaborator records \`pr=$pr_number base=<oid>\`"
             elif [ "${bound_bases#*,}" != "$bound_bases" ]; then
               add_reason "conflicting base bindings on head \`$head_sha\`: \`$bound_bases\` (current base \`$base_ref\` is at \`$base_oid\`)"
             elif [ "$bound_bases" != "$base_oid" ]; then
@@ -293,7 +463,7 @@ jobs:
 
             if [ "$total_evidence" -eq 0 ]; then
               if [ "$untrusted_reviews" -gt 0 ]; then
-                add_reason "the only review evidence at head \`$head_sha\` is from untrusted author(s) ($untrusted_reviews review(s) not on the allowlist: $TRUSTED_REVIEW_AUTHORS)"
+                add_reason "the only review evidence at head \`$head_sha\` is from untrusted author(s) ($untrusted_reviews review(s) not on the allowlist: ${TRUSTED_AUTHORS_EFFECTIVE:-<empty>})"
               else
                 add_reason "no trusted-author review evidence (formal review or result comment) exists for head \`$head_sha\`"
               fi
@@ -308,7 +478,7 @@ jobs:
             esac
 
             local coords footer conclusion title summary
-            coords=$'\n'"- head: \`$head_sha\`"$'\n'"- current base: \`$base_ref\` @ \`$base_oid\`"
+            coords=$'\n'"- head: \`$head_sha\`"$'\n'"- current base: \`$base_ref\` @ \`$base_oid\`"$'\n'"- trusted authors: \`${TRUSTED_AUTHORS_EFFECTIVE:-<none>}\` ($TRUSTED_AUTHORS_SOURCE)"
             footer=$'\n\n'"This check answers \"was this exact artifact reviewed\", never \"was it approved\"; unresolved findings are enforced by required conversation resolution, not here (#726)."
             if [ -z "$reasons" ]; then
               conclusion="success"
@@ -318,6 +488,22 @@ jobs:
               conclusion="failure"
               title="Not reviewed at this head+base"
               summary="This head+base pair has no binding trusted-review evidence:"$'\n\n'"$reasons"$'\n'"$coords"$'\n\n'"To turn this green, request a trusted review for this exact head (bash scripts/open-pr.sh) and let it complete.$footer"
+            fi
+
+            # Publish-time revalidation (cross-concurrency guard, see the
+            # concurrency comment): if head or base moved — or the PR closed
+            # — since this evaluation read them, skip publishing; the move
+            # itself fired an event whose run owns the new coordinates, and
+            # publishing here would let a verdict for superseded coordinates
+            # land after (and above) the newer run's.
+            local live_json live_state live_head live_base
+            live_json="$(gh api "repos/$REPO/pulls/$pr_number")"
+            live_state="$(jq -r '.state // ""' <<<"$live_json")"
+            live_head="$(jq -r '.head.sha // ""' <<<"$live_json")"
+            live_base="$(jq -r '.base.sha // ""' <<<"$live_json")"
+            if [ "$live_state" != "open" ] || [ "$live_head" != "$head_sha" ] || [ "$live_base" != "$base_oid" ]; then
+              echo "PR #$pr_number moved during evaluation (now state=$live_state head=$live_head base=$live_base; evaluated head=$head_sha base=$base_oid); skipping publish — the run for the new coordinates supersedes this one."
+              return 0
             fi
 
             local run_id
@@ -333,23 +519,50 @@ jobs:
             echo "Published check-run review-binding id=$run_id pr=#$pr_number conclusion=$conclusion head=$head_sha bound_base=${external_id:-<none>}"
           }
 
+          # Fail-closed marker for a sweep past MAX_BASE_SWEEP_PRS: an
+          # omitted PR must not keep its pre-push verdict standing (the push
+          # staled its exact-oid binding), so it gets an explicit red rather
+          # than silence. Its next PR-scoped event re-evaluates it fully.
+          publish_sweep_overflow() {
+            local pr_number="$1" head_sha="$2" run_id
+            run_id="$(gh api -X POST "repos/$REPO/check-runs" \
+              -f name=review-binding \
+              -f head_sha="$head_sha" \
+              -f status=completed \
+              -f conclusion=failure \
+              -f "output[title]=Base advanced; not re-evaluated (sweep cap)" \
+              -f "output[summary]=The base branch this PR targets advanced, which stales its exact-oid base binding, but more than $MAX_BASE_SWEEP_PRS open PRs target the pushed branch and this PR fell past the cap. Failing closed instead of leaving the pre-push verdict standing. Any event on this PR (a comment, a review, a head push, a base edit) re-evaluates it fully." \
+              --jq '.id')"
+            echo "Published fail-closed overflow check-run id=$run_id pr=#$pr_number head=$head_sha (past MAX_BASE_SWEEP_PRS=$MAX_BASE_SWEEP_PRS)"
+          }
+
           if [ "${GITHUB_EVENT_NAME:-}" = "push" ]; then
             # A base-branch push silently stales the bindings of every open
             # PR targeting it; none of the PR-scoped events fire, so fan out.
+            # The ref travels as a URL-encoded query parameter (gh api -f on
+            # a GET): git permits '&' and '#' in branch names, and raw
+            # interpolation would corrupt the query.
             pushed_ref="${GITHUB_REF_NAME:?}"
-            pr_list="$(gh api --paginate "repos/$REPO/pulls?state=open&base=$pushed_ref&per_page=100" --jq '.[].number')"
-            total_open="$(printf '%s\n' "$pr_list" | sed '/^$/d' | wc -l | tr -d ' ')"
-            if [ "$total_open" -gt "$MAX_BASE_SWEEP_PRS" ]; then
-              echo "WARNING: $total_open open PRs target '$pushed_ref'; re-evaluating only the first $MAX_BASE_SWEEP_PRS." >&2
-              pr_list="$(head -n "$MAX_BASE_SWEEP_PRS" <<<"$pr_list")"
-            fi
-            if [ -z "$pr_list" ]; then
+            pr_rows="$(gh api --paginate -X GET "repos/$REPO/pulls" \
+              -f state=open -f base="$pushed_ref" -F per_page=100 \
+              --jq '.[] | [(.number | tostring), (.head.sha // "")] | @tsv')"
+            total_open="$(printf '%s\n' "$pr_rows" | sed '/^$/d' | wc -l | tr -d ' ')"
+            if [ "$total_open" -eq 0 ]; then
               echo "No open PRs target '$pushed_ref'; nothing to evaluate."
             else
-              while IFS= read -r pr; do
+              if [ "$total_open" -gt "$MAX_BASE_SWEEP_PRS" ]; then
+                echo "WARNING: $total_open open PRs target '$pushed_ref'; fully re-evaluating the first $MAX_BASE_SWEEP_PRS and failing the rest closed." >&2
+              fi
+              seen=0
+              while IFS=$'\t' read -r pr sweep_head; do
                 [ -n "$pr" ] || continue
-                evaluate_pr "$pr"
-              done <<<"$pr_list"
+                seen=$((seen + 1))
+                if [ "$seen" -le "$MAX_BASE_SWEEP_PRS" ]; then
+                  evaluate_pr "$pr"
+                else
+                  publish_sweep_overflow "$pr" "$sweep_head"
+                fi
+              done <<<"$pr_rows"
             fi
           else
             evaluate_pr "$PR_NUMBER"
