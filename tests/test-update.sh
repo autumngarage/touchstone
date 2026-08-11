@@ -954,6 +954,52 @@ if [ "$(git -C "$GEMSENTINEL_PROJECT" log -1 --pretty=%s)" != "orphaned gemini s
 fi
 
 # --------------------------------------------------------------------------
+# A project with BOTH driver files carrying stale managed blocks must have
+# BOTH refreshed by one update run, into one update commit. In the wild
+# (autumngarage/arpeggio, 2.12.0 -> 2.13.0) update refreshed AGENTS.md and
+# silently left GEMINI.md steering Gemini toward removed `touchstone worker`
+# commands — exactly the driver divergence the shared block exists to prevent
+# (#762). The GEMINI-only case above (Step 4a-bis) removes AGENTS.md first,
+# so it cannot catch a regression that couples GEMINI.md's refresh to
+# AGENTS.md's or drops one file when both are present.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 4a-sexies: stale AGENTS.md and GEMINI.md blocks are both refreshed by one update ---"
+
+BOTHDRIVERS_PROJECT="$TEST_DIR/both-drivers-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$BOTHDRIVERS_PROJECT" --no-register >/dev/null
+configure_git "$BOTHDRIVERS_PROJECT"
+for driver_file in AGENTS.md GEMINI.md; do
+  awk '
+    /<!-- touchstone:steering:start -->/ { print; print "STALE-BOTH-DRIVERS-MARKER"; inblock = 1; next }
+    /<!-- touchstone:steering:end -->/   { print; inblock = 0; next }
+    !inblock { print }
+  ' "$BOTHDRIVERS_PROJECT/$driver_file" >"$BOTHDRIVERS_PROJECT/$driver_file.stale" \
+    && mv "$BOTHDRIVERS_PROJECT/$driver_file.stale" "$BOTHDRIVERS_PROJECT/$driver_file"
+done
+echo "0000000000000000000000000000000000000006" >"$BOTHDRIVERS_PROJECT/.touchstone-version"
+commit_all "$BOTHDRIVERS_PROJECT" "stale blocks in both driver files"
+
+(cd "$BOTHDRIVERS_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
+
+for driver_file in AGENTS.md GEMINI.md; do
+  assert_not_contains "$BOTHDRIVERS_PROJECT/$driver_file" "STALE-BOTH-DRIVERS-MARKER"
+  assert_contains "$BOTHDRIVERS_PROJECT/$driver_file" "Required Delivery Workflow"
+  if ! git -C "$BOTHDRIVERS_PROJECT" log -1 --name-only --pretty=format: | grep -qx "$driver_file"; then
+    echo "FAIL: refreshed $driver_file must be staged into the same update commit" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+done
+# The refreshed blocks must be IDENTICAL across driver files — a generator
+# that leaves them different reintroduces the divergence #762 documents.
+BOTHDRIVERS_AGENTS_BLOCK="$(awk '/<!-- touchstone:steering:start -->/,/<!-- touchstone:steering:end -->/' "$BOTHDRIVERS_PROJECT/AGENTS.md")"
+BOTHDRIVERS_GEMINI_BLOCK="$(awk '/<!-- touchstone:steering:start -->/,/<!-- touchstone:steering:end -->/' "$BOTHDRIVERS_PROJECT/GEMINI.md")"
+if [ "$BOTHDRIVERS_AGENTS_BLOCK" != "$BOTHDRIVERS_GEMINI_BLOCK" ]; then
+  echo "FAIL: AGENTS.md and GEMINI.md managed blocks diverge after update" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
 # Test 3b: pre-existing AGENTS.md without the steering block gets the
 # touchstone-managed block injected on update. This is the migration path
 # for projects bootstrapped before the block existed — without it, non-
