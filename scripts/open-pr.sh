@@ -951,8 +951,20 @@ request_pr_triggered_review() {
     # answered — merge-pr.sh authorizes from it, and re-requesting would
     # spend a full review cycle for nothing, the anti-goal of this change
     # (PR #755 review, round 10).
-    if [ -z "${OPEN_PR_HEAD_REVIEW_LIVE_AT:-}" ] \
-      || ! [[ "$OPEN_PR_HEAD_REVIEW_LIVE_AT" > "$matching_trigger_at" ]]; then
+    # The shield covers BOTH channels: a trusted comment result naming this
+    # head also answers the request — merge-pr.sh ignores the dismissed
+    # formal review and can accept the comment — and an errored comment
+    # lookup proves nothing, so consumption stays conservative
+    # (PR #781 review, override round).
+    comment_answer_shields=false
+    if [ -n "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ] \
+      && [[ "$OPEN_PR_HEAD_RESULT_COMMENT_AT" > "$matching_trigger_at" ]]; then
+      comment_answer_shields=true
+    fi
+    if { [ -z "${OPEN_PR_HEAD_REVIEW_LIVE_AT:-}" ] \
+      || ! [[ "$OPEN_PR_HEAD_REVIEW_LIVE_AT" > "$matching_trigger_at" ]]; } \
+      && [ "$comment_answer_shields" != true ] \
+      && [ -z "$OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR" ]; then
       request_consumed_by_dismissal=true
     fi
   fi

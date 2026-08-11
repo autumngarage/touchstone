@@ -2154,6 +2154,34 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# Case 46k (PR #781 override round): a post-trigger comment answer shields
+# the request from dismissal consumption — merge-pr.sh ignores the dismissed
+# formal review and can accept the comment, so at budget the refusal keeps
+# the conditional exits and the idempotent skip does not replace the request.
+echo "==> Case 46k: a comment answer shields the request from dismissal consumption"
+OUT="$TEST_DIR/case46k.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE46_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE46_RECORDS" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s\tDISMISSED\t2026-08-01T00:00:07Z' "$CASE46_HEAD")" \
+  GH_RESULT_COMMENT_AUTHORS="$(printf 'chatgpt-codex-connector[bot]\t%.10s\t2026-08-01T02:00:00Z\tclean' "$CASE46_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && ! grep -q 'posting a fresh request intent' "$OUT" \
+  && grep -q 'review already requested for head' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a comment answer must shield the request from dismissal consumption" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 45f: budget refusal on a stalled unanswered head names the override"
 OUT="$TEST_DIR/case45f.out"
 RC=0
