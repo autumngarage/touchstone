@@ -417,6 +417,50 @@ EVEN_BACKSLASH_COMMIT='git commit -m "\\$(git push --no''-verify)"'
 assert "blocks protected substitution after an even backslash run" "2" \
   "$(run_hook "$EMERGENCY" "$(mkjson "$EVEN_BACKSLASH_COMMIT")")"
 
+# A protected push must be anchored by at least one LITERAL token.
+#
+# Every part of the classification can be inferred from an expansion, because a
+# bare "$x" could expand to anything. Fail-closed per word, catastrophic in
+# combination: in `cp "$src" "$dst"` the first variable inferred `git`, the
+# second inferred `push`, a dynamic-arg rule then manufactured the bypass flag,
+# and an ordinary copy was reported as an unaudited protected push. Every
+# two-variable command was blocked this way.
+#
+# Inference still fills in unknowns, but it can no longer supply the whole
+# invocation on its own.
+FP_CASES="cp \"\$src\" \"\$dst\"
+diff \"\$OLD\" \"\$NEW\"
+grep \"\$pat\" \"\$file\"
+mv \"\$1\" \"\$2\"
+install \"\$a\" \"\$b\" \"\$c\""
+while IFS= read -r fp_case; do
+  [ -n "$fp_case" ] || continue
+  assert "allows benign multi-variable command: $fp_case" "0" \
+    "$(run_hook "$EMERGENCY" "$(mkjson "$fp_case")")"
+done <<EOF
+$FP_CASES
+EOF
+
+# ...while every shape carrying a literal anchor is still blocked. These are the
+# cases that would break if the anchor rule were too strict.
+assert "blocks a fully literal protected push" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git push --no-veri""fy origin main")")"
+assert "blocks when only the executable is hidden" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "GIT=git; \$GIT push --no-veri""fy origin main")")"
+assert "blocks when only the subcommand is hidden" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "SUB=push; git \$SUB --no-veri""fy origin main")")"
+assert "blocks when only the flag is hidden" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "F=--no-veri""fy; git push \$F origin main")")"
+assert "blocks a path-qualified git" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "/usr/bin/git push --no-veri""fy origin main")")"
+assert "blocks behind an env prefix" "2" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "env FOO=1 git push --no-veri""fy origin main")")"
+
+# `-n` on `git push` is --dry-run, not --no-verify (that is `git commit`), so it
+# must stay allowed. Pinned because the two are easy to conflate.
+assert "allows 'git push -n' (dry run, not a bypass)" "0" \
+  "$(run_hook "$EMERGENCY" "$(mkjson "git push -n origin main")")"
+
 # 8. with env var, allowed (and logged)
 EXIT_ALLOWED=0
 printf '%s' "$(mkjson "git push --no-verify origin feat/test")" \

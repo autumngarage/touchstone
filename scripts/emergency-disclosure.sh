@@ -720,6 +720,23 @@ segment_has_bypass_words() {
   local seen_dynamic_push_arg=false
   local requires_alias_lookup=false
   local variable_name="" assigned_value=""
+  # At least one LITERAL token of a protected push must appear in the segment.
+  #
+  # Every part of this classification can be inferred from an expansion, because
+  # a bare "$x" could expand to anything. That is fail-closed per word and
+  # catastrophic in combination: in `cp "$src" "$dst"`, "$src" infers git,
+  # "$dst" infers push, seen_dynamic_push_arg then manufactures the bypass
+  # flag, and an entirely ordinary copy is reported as an unaudited protected
+  # push. Every two-variable command was blocked this way — `diff "$OLD"
+  # "$NEW"`, `grep "$pat" "$file"`, `mv "$1" "$2"`.
+  #
+  # Inference stays, but it can no longer supply the whole invocation. Something
+  # in the segment must literally say git, push, or a bypass flag before the
+  # unknowns are allowed to fill in the rest. A command in which all three are
+  # simultaneously hidden behind expansions is not a mistake anyone makes; it is
+  # the shape of a deliberate evasion, and this hook is not the boundary for
+  # those -- branch protection and required checks are.
+  local literal_anchor=false
 
   while IFS= read -r word; do
     if [ "$expect_redirection_target" = "true" ]; then
@@ -732,6 +749,7 @@ segment_has_bypass_words() {
       case "$word" in
         git | */git | __touchstone_shell_composed__:*)
           seen_git=true
+          literal_anchor=true
           ;;
         *)
           if word_may_expand_to "$word" "git"; then
@@ -774,11 +792,13 @@ segment_has_bypass_words() {
             push_candidate_dynamic=true
           else
             subcommand="$word"
+            literal_anchor=true
           fi
           ;;
       esac
     elif word_is_bypass_option "$word"; then
       seen_no_verify=true
+      literal_anchor=true
     elif [ "$subcommand" = "push" ]; then
       variable_name="$(exact_variable_name "$word")"
       if [ -n "$variable_name" ] \
@@ -813,6 +833,12 @@ segment_has_bypass_words() {
   if [ -n "$subcommand" ] && [ "$subcommand" != "push" ]; then
     requires_alias_lookup=true
   fi
+  # Refuse to report a protected push that was inferred end to end. Without
+  # this the classifier fabricates one out of any two expansions.
+  if [ "$literal_anchor" = "false" ]; then
+    return 1
+  fi
+
   if [ -n "$subcommand" ] \
     && { [ "$seen_no_verify" = "true" ] || [ "$requires_alias_lookup" = "true" ]; }; then
     push_subcommand="$subcommand"
