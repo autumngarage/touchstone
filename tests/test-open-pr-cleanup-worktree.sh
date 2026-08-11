@@ -134,7 +134,28 @@ git -C "$REPO_DIR" config user.email "touchstone@example.com"
 mkdir -p "$REPO_DIR/.github"
 printf '## Summary\n' >"$REPO_DIR/.github/pull_request_template.md"
 printf 'base\n' >"$REPO_DIR/file.txt"
-git -C "$REPO_DIR" add .github/pull_request_template.md file.txt
+# open-pr.sh materializes the merge gate from the base revision (issue #640),
+# so the fixture must carry scripts/merge-pr.sh and lib/ in history the way a
+# bootstrapped project does. The base copy delegates to the stub the scenarios
+# actually control.
+mkdir -p "$REPO_DIR/scripts" "$REPO_DIR/lib"
+cat >"$REPO_DIR/scripts/merge-pr.sh" <<'BASEGATE'
+#!/usr/bin/env bash
+# Trusted base copy of the merge gate. Scenarios drive the stub that this
+# copy delegates to.
+#
+# The capability markers below are load-bearing, not decoration: open-pr.sh
+# refuses to authorize with a base gate that predates the PR-visible review
+# requirement or PR-base binding, and a fixture without them represents a
+# legacy gate. Named functions rather than a version string so the check
+# tracks the capabilities themselves:
+# require_pr_feedback_clear / wait_for_pr_triggered_review /
+# current_pr_base_revision.
+exec bash "${MERGE_STUB_DELEGATE:?merge stub delegate not set}" "$@"
+BASEGATE
+chmod +x "$REPO_DIR/scripts/merge-pr.sh"
+printf '# placeholder library shipped on the base revision\n' >"$REPO_DIR/lib/.keep.sh"
+git -C "$REPO_DIR" add .github/pull_request_template.md file.txt scripts/merge-pr.sh lib/.keep.sh
 git -C "$REPO_DIR" commit -m "base" >/dev/null 2>&1
 git -C "$REPO_DIR" push -u origin main >/dev/null 2>&1
 
@@ -151,6 +172,7 @@ OUT="$TEST_DIR/case1.out"
 (
   cd "$FEATURE_DIR"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    MERGE_STUB_DELEGATE="$SCRIPT_DIR/merge-pr.sh" \
     bash "$SCRIPT_DIR/open-pr.sh" --cleanup-worktree
 ) >"$OUT" 2>&1 || RC=$?
 
@@ -170,6 +192,7 @@ OUT="$TEST_DIR/case2.out"
 (
   cd "$FEATURE_DIR"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    MERGE_STUB_DELEGATE="$SCRIPT_DIR/merge-pr.sh" \
     bash "$SCRIPT_DIR/open-pr.sh" --auto-merge --cleanup-worktree
 ) >"$OUT" 2>&1 || RC=$?
 
@@ -199,6 +222,7 @@ OUT="$TEST_DIR/case3.out"
   cd "$EXISTING_FEATURE_DIR"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     GH_HAS_EXISTING_PR=1 \
+    MERGE_STUB_DELEGATE="$SCRIPT_DIR/merge-pr.sh" \
     bash "$SCRIPT_DIR/open-pr.sh" --auto-merge --cleanup-worktree
 ) >"$OUT" 2>&1 || RC=$?
 
