@@ -74,7 +74,13 @@ jobs:
           # `update --ship` stops at "effective hooks are not ready" — so the
           # ship-failure case never reaches the step it means to exercise and
           # fails for an unrelated reason.
-          python3 -m pip install --quiet --disable-pip-version-check pre-commit
+          #
+          # Installed with pipx, not `pip --user`. The latter put a shim on PATH
+          # whose interpreter could not import its own package:
+          #   ModuleNotFoundError: No module named 'pre_commit'
+          # pipx builds an isolated venv and a shim pinned to that venv's
+          # interpreter, so the console script always resolves.
+          pipx install pre-commit
           pre-commit --version
 
       # No `env:` block here, deliberately. Setting TOUCHSTONE_NO_AUTO_UPDATE=1
