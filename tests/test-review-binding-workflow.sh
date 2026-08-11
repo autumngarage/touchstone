@@ -5,13 +5,15 @@
 # issue #726).
 #
 # WHAT THIS FILE IS, PLAINLY: static structural assertions over the workflow
-# TEXT — greps plus one awk pass over the YAML. It executes none of the
-# workflow's bash, stubs none of its API calls, and simulates no GitHub
-# events; it therefore proves textual invariants only (triggers subscribed,
-# no code-execution surfaces, the safety markers present) and cannot prove
-# the workflow computes correct verdicts. The workflow's dynamic behavior —
-# check-run publication and verdict correctness — is proven by its live runs
-# in CI on real PRs, not by anything in this file.
+# TEXT — greps plus awk passes over the YAML — plus parity tests for the two
+# PURE helper functions the workflow marks for extraction
+# (parse_trusted_review_authors and record_untrusted_creator), which are
+# extracted verbatim from the workflow text and executed against fixtures —
+# the parser with lib/toml.sh itself as the oracle. Nothing here executes
+# the workflow's API-driven bash, stubs its gh calls, or simulates GitHub
+# events; the workflow's dynamic behavior — check-run publication and
+# verdict correctness — is proven by its live runs in CI on real PRs, not
+# by anything in this file.
 #
 # The workflow publishes the "review-binding" check-run that will eventually
 # gate merges, so its safety properties are load-bearing:
@@ -19,9 +21,13 @@
 #     actions at all, and no pull_request_target trigger;
 #   - the trusted-author allowlist may never come from PR-controlled files:
 #     the fallback default lives in the workflow env, and the live list is
-#     read from the review config at the PR's current BASE oid;
+#     read from the review config at the PR's current BASE oid with
+#     lib/toml.sh-equivalent parsing (a divergent parser silently changes
+#     the authorization policy);
 #   - intent statuses must be creator-validated (statuses:write alone must
-#     not bind a base) and evidence removal must re-evaluate;
+#     not bind a base) and evidence removal must re-evaluate — including
+#     removal followed by an inspection failure, which is why a pending run
+#     must neutralize the previous verdict before inspection begins;
 #   - it must hold checks:write, and the only check-run named
 #     "review-binding" must be the one it POSTs — a job or step of the same
 #     name would publish a second, always-green run racing for what branch
@@ -51,6 +57,9 @@ if [ ! -f "$WORKFLOW" ]; then
   echo "FAIL: workflow not found: $WORKFLOW" >&2
   exit 1
 fi
+
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 # Strip comment-only lines (YAML comments and the bash comments inside the
 # run block) before scanning for dangerous strings.
@@ -133,10 +142,15 @@ else
 fi
 
 echo "==> Binding evidence sources"
-if printf '%s\n' "$STRIPPED" | grep -q -F 'touchstone/review-request-intent'; then
+if printf '%s\n' "$STRIPPED" | grep -q -E 'touchstone/review-request-intent($|[^A-Za-z0-9-])'; then
   ok "reads the touchstone/review-request-intent base binding"
 else
   fail "workflow must read the 'touchstone/review-request-intent' commit status for base binding"
+fi
+if printf '%s\n' "$STRIPPED" | grep -q -E 'touchstone/review-request-complete($|[^A-Za-z0-9-])'; then
+  ok "reads the touchstone/review-request-complete trigger record (merge-pr.sh parity)"
+else
+  fail "workflow must read the 'touchstone/review-request-complete' status: an intent-anchored freshness bar accepts in-flight reviews of the previous base"
 fi
 if printf '%s\n' "$STRIPPED" | grep -q -F 'collaborators/$login/permission'; then
   ok "intent-status creators resolved to collaborator permission (statuses:write alone cannot bind)"
@@ -153,15 +167,25 @@ if printf '%s\n' "$STRIPPED" | grep -q -F 'Reviewed commit:'; then
 else
   fail "workflow must accept the trusted 'Reviewed commit:' comment channel merge-pr.sh accepts"
 fi
-if printf '%s\n' "$STRIPPED" | grep -q -F 'earliest_matching_intent_at'; then
-  ok "freshness anchored to the earliest base-bound request intent"
+if printf '%s\n' "$STRIPPED" | grep -q -F 'earliest_matching_trigger_at'; then
+  ok "freshness anchored to the earliest completed request's trigger timestamp"
 else
-  fail "workflow must anchor evidence freshness to the earliest matching review-request intent (earliest_matching_intent_at)"
+  fail "workflow must anchor evidence freshness to the earliest completed request's trigger (earliest_matching_trigger_at) — the intent timestamp accepts a review already in flight for the previous base"
 fi
 
 echo "==> Publication discipline"
+if printf '%s\n' "$STRIPPED" | grep -q -F -- '-f status=in_progress'; then
+  ok "pending run posted before fallible inspection (a mid-inspection death cannot leave a stale success standing)"
+else
+  fail "workflow must POST an in_progress review-binding run before fallible inspection so an inspection failure invalidates the prior verdict"
+fi
+if printf '%s\n' "$STRIPPED" | grep -q -F -- '-X PATCH "repos/$REPO/check-runs/$run_id"'; then
+  ok "verdict completes the pending run in place (PATCH to completed)"
+else
+  fail "workflow must PATCH its pending check-run to completed with the verdict"
+fi
 if printf '%s\n' "$STRIPPED" | grep -q -F 'live_head'; then
-  ok "publish-time revalidation present (stale coordinates skip the POST)"
+  ok "publish-time revalidation present (stale coordinates never publish a verdict)"
 else
   fail "workflow must re-read live head/base before publishing so a stale evaluation cannot overwrite a newer verdict"
 fi
@@ -169,6 +193,23 @@ if printf '%s\n' "$STRIPPED" | grep -q -F 'publish_sweep_overflow'; then
   ok "sweep overflow fails closed (no PR past the cap keeps a stale verdict)"
 else
   fail "PRs past MAX_BASE_SWEEP_PRS must get an explicit fail-closed check-run (publish_sweep_overflow)"
+fi
+# The overflow helper must revalidate live PR coordinates before publishing:
+# a PR retargeted or advanced during the sweep already got a correct verdict
+# from its own PR-scoped event, and a stale overflow failure would bury it.
+# Extracted structurally (function start to its closing brace) so the
+# assertion cannot pass on a mention elsewhere in the file.
+OVERFLOW_BODY="$(awk '
+  /^          publish_sweep_overflow\(\) \{/ { grab = 1 }
+  grab { print }
+  grab && /^          \}$/ { exit }
+' "$WORKFLOW")"
+if [ -z "$OVERFLOW_BODY" ]; then
+  fail "could not extract publish_sweep_overflow() from the workflow (extraction guard — a vacuous pass is a fail)"
+elif printf '%s\n' "$OVERFLOW_BODY" | grep -q -F 'pulls/$pr_number'; then
+  ok "sweep-overflow revalidates live PR coordinates before publishing its fail-closed verdict"
+else
+  fail "publish_sweep_overflow must re-read the PR (pulls/<n>) and confirm it is still open at the listed head and pushed base before posting"
 fi
 
 echo "==> Triggers"
@@ -186,6 +227,11 @@ if printf '%s\n' "$STRIPPED" | grep -q -F 'MAX_BASE_SWEEP_PRS'; then
   ok "push fan-out bounded by MAX_BASE_SWEEP_PRS"
 else
   fail "the push fan-out must be bounded by a named MAX_BASE_SWEEP_PRS cap"
+fi
+if printf '%s\n' "$STRIPPED" | grep -q -E '^[[:space:]]*status:[[:space:]]*$'; then
+  ok "status trigger present (review-request status writes re-evaluate the head)"
+else
+  fail "workflow must trigger on status — adding a review-request status fires no PR-scoped event, leaving a prior green standing"
 fi
 if printf '%s\n' "$STRIPPED" | grep -q -E '^[[:space:]]*issue_comment:'; then
   ok "issue_comment trigger present"
@@ -216,6 +262,167 @@ if [ -n "$OTHER_SECRETS" ]; then
   fail "workflow references secrets beyond GITHUB_TOKEN: $OTHER_SECRETS"
 else
   ok "no secret referenced beyond the built-in GITHUB_TOKEN"
+fi
+
+# ---------------------------------------------------------------------------
+# Extracted-function parity: the workflow marks its two PURE helpers with
+# ">>> parity-tested:" / "<<< parity-tested:" comment fences. They are
+# extracted verbatim (so what runs here is byte-identical to what runs in
+# CI) and executed against fixtures. The allowlist parser is proven against
+# lib/toml.sh — the canonical parser merge-pr.sh uses — because a divergent
+# parser silently changes the authorization policy: a single-quoted array
+# a collaborator legitimately wrote would block every review, and quoted
+# text in an inline comment would join the allowlist.
+# ---------------------------------------------------------------------------
+echo "==> Extracted-function parity"
+
+extract_marked() {
+  awk -v start="$1" -v stop="$2" '
+    index($0, start) { grab = 1; next }
+    index($0, stop) { grab = 0 }
+    grab { print }
+  ' "$WORKFLOW"
+}
+
+PARSER_SNIPPET="$(extract_marked '>>> parity-tested: parse_trusted_review_authors' '<<< parity-tested: parse_trusted_review_authors')"
+if [ -z "$PARSER_SNIPPET" ] || ! printf '%s\n' "$PARSER_SNIPPET" | grep -q 'parse_trusted_review_authors()'; then
+  fail "could not extract parse_trusted_review_authors between its parity markers (extraction guard — a vacuous pass is a fail)"
+elif [ ! -f "$TOUCHSTONE_ROOT/lib/toml.sh" ]; then
+  fail "lib/toml.sh not found; cannot prove allowlist-parser parity"
+else
+  printf '%s\n' "$PARSER_SNIPPET" >"$TMP_DIR/parser.sh"
+  # shellcheck source=/dev/null
+  . "$TMP_DIR/parser.sh"
+  # shellcheck source=/dev/null
+  . "$TOUCHSTONE_ROOT/lib/toml.sh"
+
+  ORACLE_FOUND=0
+  ORACLE_VALUE=""
+  oracle_callback() {
+    if [ "$1" = "review.pr_triggered" ] && [ "$2" = "trusted_review_authors" ]; then
+      ORACLE_VALUE="$(toml_normalize_array "$3")"
+      ORACLE_FOUND=1
+    fi
+  }
+
+  parity_case() {
+    local label="$1" fixture="$2" parser_out parser_status=0
+    ORACLE_FOUND=0
+    ORACLE_VALUE=""
+    toml_parse "$fixture" oracle_callback
+    parser_out="$(parse_trusted_review_authors <"$fixture")" || parser_status=$?
+    if [ "$ORACLE_FOUND" -eq 0 ]; then
+      if [ "$parser_status" -eq 3 ]; then
+        ok "parity ($label): both parsers report the key absent"
+      else
+        fail "parity ($label): lib/toml.sh reports the key absent but the workflow parser exited $parser_status with output '$parser_out'"
+      fi
+      return 0
+    fi
+    if [ "$parser_status" -ne 0 ]; then
+      fail "parity ($label): workflow parser exited $parser_status where lib/toml.sh found '$ORACLE_VALUE'"
+      return 0
+    fi
+    if [ "$parser_out" = "$ORACLE_VALUE" ]; then
+      ok "parity ($label): '$parser_out'"
+    else
+      fail "parity ($label): workflow parser -> '$parser_out', lib/toml.sh -> '$ORACLE_VALUE'"
+    fi
+  }
+
+  cat >"$TMP_DIR/f-double.toml" <<'EOF'
+[review]
+preflight_required = true
+
+[review.pr_triggered]
+provider = "github-codex"
+trusted_review_authors = ["alice", "bob[bot]"]
+timeout_sec = 5
+EOF
+  parity_case "double-quoted array" "$TMP_DIR/f-double.toml"
+
+  cat >"$TMP_DIR/f-single.toml" <<'EOF'
+[review.pr_triggered]
+trusted_review_authors = ['custom-reviewer']
+EOF
+  parity_case "single-quoted array" "$TMP_DIR/f-single.toml"
+
+  cat >"$TMP_DIR/f-comment.toml" <<'EOF'
+[review.pr_triggered]
+trusted_review_authors = ["alice"] # later maybe add "mallory"
+EOF
+  parity_case "inline comment with quoted text" "$TMP_DIR/f-comment.toml"
+
+  cat >"$TMP_DIR/f-multiline.toml" <<'EOF'
+[review.pr_triggered]
+trusted_review_authors = [
+  "alice", # primary
+  'bob', # comment with "quotes"
+]
+EOF
+  parity_case "multiline array with per-line comments" "$TMP_DIR/f-multiline.toml"
+
+  cat >"$TMP_DIR/f-hash.toml" <<'EOF'
+[review.pr_triggered]
+trusted_review_authors = ["a#b", "c"]
+EOF
+  parity_case "hash inside a quoted item" "$TMP_DIR/f-hash.toml"
+
+  cat >"$TMP_DIR/f-bare.toml" <<'EOF'
+[review.pr_triggered]
+trusted_review_authors = [alice, bob]
+EOF
+  parity_case "bare (unquoted) items" "$TMP_DIR/f-bare.toml"
+
+  cat >"$TMP_DIR/f-empty.toml" <<'EOF'
+[review.pr_triggered]
+trusted_review_authors = []
+EOF
+  parity_case "empty array (trusts nobody)" "$TMP_DIR/f-empty.toml"
+
+  cat >"$TMP_DIR/f-lastwins.toml" <<'EOF'
+[review.pr_triggered]
+trusted_review_authors = ["first"]
+trusted_review_authors = ["second"]
+EOF
+  parity_case "duplicate key (last wins)" "$TMP_DIR/f-lastwins.toml"
+
+  cat >"$TMP_DIR/f-absent.toml" <<'EOF'
+[review]
+preflight_required = true
+EOF
+  parity_case "key absent (default retained)" "$TMP_DIR/f-absent.toml"
+
+  cat >"$TMP_DIR/f-wrongsection.toml" <<'EOF'
+[review]
+trusted_review_authors = ["nope"]
+EOF
+  parity_case "key in the wrong section" "$TMP_DIR/f-wrongsection.toml"
+fi
+
+RECORDER_SNIPPET="$(extract_marked '>>> parity-tested: record_untrusted_creator' '<<< parity-tested: record_untrusted_creator')"
+if [ -z "$RECORDER_SNIPPET" ] || ! printf '%s\n' "$RECORDER_SNIPPET" | grep -q 'record_untrusted_creator()'; then
+  fail "could not extract record_untrusted_creator between its parity markers (extraction guard — a vacuous pass is a fail)"
+else
+  printf '%s\n' "$RECORDER_SNIPPET" >"$TMP_DIR/recorder.sh"
+  # shellcheck source=/dev/null
+  . "$TMP_DIR/recorder.sh"
+  untrusted_request_creators=""
+  record_untrusted_creator ""
+  if [ "$untrusted_request_creators" = "<unknown>" ]; then
+    ok "first empty-login creator recorded as <unknown> (regression: raw ',,' dedup silently dropped it)"
+  else
+    fail "the FIRST empty-login creator must be recorded as <unknown>; got '$untrusted_request_creators' — normalization must precede deduplication"
+  fi
+  record_untrusted_creator ""
+  record_untrusted_creator "mallory"
+  record_untrusted_creator "mallory"
+  record_untrusted_creator ""
+  if [ "$untrusted_request_creators" = "<unknown>,mallory" ]; then
+    ok "labels deduplicate after normalization: '$untrusted_request_creators'"
+  else
+    fail "expected '<unknown>,mallory' after repeated records; got '$untrusted_request_creators'"
+  fi
 fi
 
 if [ "$ERRORS" -gt 0 ]; then
