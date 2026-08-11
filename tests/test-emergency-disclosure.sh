@@ -105,6 +105,53 @@ assert_blocked "repo-configured alias push" "git p --no-verify"
 assert_blocked "dash-C with literal push" "git -C $REPO push --no-verify"
 assert_blocked "cd compound push" "cd $REPO && git commit -m 'x' && git push --no-verify"
 
+# Composed executables — an ANSI-C-quoted word carries its own decoded text.
+#
+# Treating EVERY composed word as git meant a benign `$'cp' "$src" "$dst"` both
+# set seen_git and set the literal anchor, so its two variables were inferred as
+# the push subcommand and the bypass flag. The two-variable false-positive class
+# therefore survived for any composed executable (PR #725 review).
+#
+# Both directions are pinned deliberately: a future narrowing must not fix the
+# false positive by dropping the true positive.
+# These run WITHOUT a cwd field, which is the condition that makes the bug
+# reachable. With a resolvable repository context the classifier never needs to
+# infer, so the harness above cannot see this class at all — and the guard's
+# real-world false positives all occur exactly when context is ambiguous.
+run_guard_no_cwd() {
+  local cmd="$1" rc=0
+  printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
+    "$(printf '%s' "$cmd" | jq -Rs .)" \
+    | (env -u TOUCHSTONE_EMERGENCY bash "$GUARD") \
+      >"$TEST_DIR/guard-out.txt" 2>"$TEST_DIR/guard-err.txt" || rc=$?
+  return "$rc"
+}
+
+assert_allowed_no_cwd() {
+  local label="$1" cmd="$2" rc=0
+  run_guard_no_cwd "$cmd" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    fail "benign command blocked with no cwd ($label, rc=$rc): $cmd"
+    sed 's/^/    /' "$TEST_DIR/guard-err.txt" >&2
+  fi
+}
+
+assert_blocked_no_cwd() {
+  local label="$1" cmd="$2" rc=0
+  run_guard_no_cwd "$cmd" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    fail "protected push allowed with no cwd ($label): $cmd"
+  fi
+}
+
+echo "==> Composed executables are decoded, not assumed to be git"
+assert_allowed_no_cwd "composed cp, two variables" "\$'cp' \"\$src\" \"\$dst\""
+assert_allowed_no_cwd "composed diff, two variables" "\$'diff' \"\$OLD\" \"\$NEW\""
+# Both directions pinned: a future narrowing must not fix the false positive by
+# dropping the true positive.
+assert_blocked_no_cwd "composed git bypass push" "\$'git' push --no-verify"
+assert_blocked_no_cwd "plain git bypass push, no cwd" "git push --no-verify"
+
 if [ "$ERRORS" != 0 ]; then
   echo "==> FAIL: $ERRORS emergency-disclosure contract case(s) regressed" >&2
   exit 1
