@@ -177,6 +177,31 @@ materialize_trusted_merge_authorizer() {
     return 1
   fi
 
+  # Capability check on the EXTRACTED gate, not just its existence.
+  #
+  # A base predating 2f7c09a carries a merge-pr.sh with no PR-visible review
+  # gate at all: it can reach `gh pr merge` without ever waiting for a trusted
+  # exact-head review result. Executing whatever historical gate happens to be
+  # present would therefore let the first upgrade PR — the one whose whole
+  # purpose is to introduce the review gate — merge without one.
+  #
+  # "Run the gate from the base" is only a safety property while the base's
+  # gate is at least as strong as the contract being enforced. Where it is not,
+  # this fails closed with a migration path rather than silently executing a
+  # weaker authorizer (PR #707 review).
+  if ! grep -q 'require_pr_feedback_clear\|wait_for_pr_triggered_review' \
+    "$bundle/scripts/merge-pr.sh" 2>/dev/null; then
+    echo "ERROR: the merge gate on base $base_branch (${base_oid:0:12}) predates the" >&2
+    echo "       PR-visible review requirement — it can merge without waiting for a" >&2
+    echo "       trusted exact-head review." >&2
+    echo "       Refusing to authorize with it. Running it would let this very PR" >&2
+    echo "       merge without the review gate it is meant to introduce." >&2
+    echo "       Migration: land the Touchstone delivery scripts on $base_branch first," >&2
+    echo "         git switch $base_branch && touchstone update --ship" >&2
+    echo "       then reopen this PR against the updated base." >&2
+    return 1
+  fi
+
   TRUSTED_MERGE_SCRIPT="$bundle/scripts/merge-pr.sh"
   TRUSTED_MERGE_BASE_OID="$base_oid"
   return 0

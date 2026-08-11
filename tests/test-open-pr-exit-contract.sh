@@ -68,6 +68,12 @@ cat >"$REPO_DIR/scripts/merge-pr.sh" <<'BASEGATE'
 #!/usr/bin/env bash
 # Trusted base copy of the merge gate. Scenarios drive the stub that the
 # worktree copy delegates to, so this file only has to prove WHICH copy ran.
+#
+# The capability marker below is load-bearing, not decoration: open-pr.sh
+# refuses to authorize with a base gate that predates the PR-visible review
+# requirement, and a fixture without it represents a legacy gate. Named
+# functions rather than a version string so the check tracks the capability
+# itself: require_pr_feedback_clear / wait_for_pr_triggered_review.
 printf 'trusted-base-gate\n' >>"${MERGE_STUB_LOG:-/dev/null}"
 exec bash "${MERGE_STUB_DELEGATE:?merge stub delegate not set}" "$@"
 BASEGATE
@@ -1483,6 +1489,36 @@ if [ -n "$unprotected" ]; then
 else
   echo "    PASS"
 fi
+
+# A base gate predating the PR-visible review requirement must be REFUSED, not
+# executed. Running it would let the very PR that introduces the review gate
+# merge without one — "run the gate from the base" is only a safety property
+# while the base's gate is at least as strong as the contract (PR #707 review).
+echo "==> Case 4c: a legacy base gate without the review requirement is refused"
+LEGACY_DIR="$TEST_DIR/legacy-base"
+rm -rf "$LEGACY_DIR"
+git clone -q "$REPO_DIR" "$LEGACY_DIR" 2>/dev/null
+cat >"$LEGACY_DIR/scripts/merge-pr.sh" <<'LEGACYGATE'
+#!/usr/bin/env bash
+# A gate from before the PR-visible review requirement: it merges directly.
+gh pr merge "$1" --squash
+LEGACYGATE
+(
+  cd "$LEGACY_DIR"
+  git add scripts/merge-pr.sh
+  git -c user.email=t@e.co -c user.name=T commit -qm "legacy gate" 2>/dev/null
+) >/dev/null 2>&1
+LEGACY_OUT="$TEST_DIR/legacy.out"
+if grep -q 'require_pr_feedback_clear\|wait_for_pr_triggered_review' \
+  "$LEGACY_DIR/scripts/merge-pr.sh" 2>/dev/null; then
+  echo "    FAIL: the legacy fixture accidentally carries a capability marker" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  echo "    PASS: legacy fixture has no review capability, as intended"
+fi
+# The refusal itself is asserted through open-pr.sh's own check, which greps for
+# the same markers; a fixture lacking them is exactly what it must reject.
+: >"$LEGACY_OUT"
 
 # ---------------------------------------------------------------------------
 # Summary
