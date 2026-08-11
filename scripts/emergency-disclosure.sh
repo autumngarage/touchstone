@@ -746,17 +746,47 @@ segment_has_bypass_words() {
       expect_redirection_target=true
       continue
     elif [ "$seen_git" = "false" ]; then
+      composed_executable=""
       case "$word" in
-        git | */git | __touchstone_shell_composed__:*)
-          seen_git=true
-          literal_anchor=true
-          ;;
-        *)
-          if word_may_expand_to "$word" "git"; then
-            seen_git=true
-          fi
+        __touchstone_shell_composed__:*)
+          composed_executable="${word#__touchstone_shell_composed__:}"
+          composed_executable="$(printf '%b' "$composed_executable")"
           ;;
       esac
+      if [ -n "$composed_executable" ]; then
+        # A composed word carries its own decoded text, so decode it and check
+        # rather than assuming every composed executable is git. Treating them
+        # all as git made a benign `$'cp' "$src" "$dst"` infer its two
+        # variables as the push subcommand and the bypass flag, so the
+        # false-positive class this change targets survived for any
+        # ANSI-C-quoted executable (PR #725 review).
+        case "$composed_executable" in
+          git | */git)
+            seen_git=true
+            literal_anchor=true
+            ;;
+          *)
+            # Decoded to something else. It may still EXPAND to git at runtime,
+            # which is worth following — but it is not a literal anchor, so it
+            # cannot license inferring the remaining words as git arguments.
+            if word_may_expand_to "$composed_executable" "git"; then
+              seen_git=true
+            fi
+            ;;
+        esac
+      else
+        case "$word" in
+          git | */git)
+            seen_git=true
+            literal_anchor=true
+            ;;
+          *)
+            if word_may_expand_to "$word" "git"; then
+              seen_git=true
+            fi
+            ;;
+        esac
+      fi
     elif [ "$expect_global_option_value" = "true" ]; then
       expect_global_option_value=false
     elif [ -z "$subcommand" ]; then
