@@ -35,7 +35,9 @@ name: validate
 # hold other work hostage until the discovery cycle (port or loud-skip each
 # platform failure) has actually finished. Flipping it to enforcing is the
 # two-line removal of `advisory: true` + `continue-on-error`, tracked as the
-# closing act of #742.
+# closing act of #742. The subset ALREADY proven on Windows keeps enforcing
+# separately in the windows-proven job — advisory for the unproven remainder
+# must never downgrade established coverage.
 
 on:
   pull_request:
@@ -57,6 +59,40 @@ defaults:
     shell: bash
 
 jobs:
+  # The Windows checks that are ALREADY PROVEN stay enforcing while the full
+  # matrix leg below is advisory. The deleted windows-git-bash.yml enforced
+  # these on windows-latest for weeks; making the unported remainder advisory
+  # must not un-prove them (PR #758 review). This is a ratchet: as the #742
+  # discovery cycle ports tests, they graduate into this list, and when the
+  # full leg flips to enforcing this job dissolves into it.
+  windows-proven:
+    name: windows-proven
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Force LF line endings before checkout
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure git identity
+        run: |
+          git config --global user.email "ci@touchstone.invalid"
+          git config --global user.name "Touchstone CI"
+          git config --global init.defaultBranch main
+
+      - name: Proven Windows subset — sha256/preflight and the sed shim
+        run: |
+          set -euo pipefail
+          command -v sha256sum
+          bash -n lib/sha256.sh lib/preflight.sh scripts/merge-pr.sh lib/sed-inplace.sh bin/touchstone
+          bash tests/test-preflight.sh
+          sed --version | head -1
+          bash tests/test-sed-inplace.sh
+
   validate:
     name: validate (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
