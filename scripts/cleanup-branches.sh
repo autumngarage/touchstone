@@ -379,8 +379,21 @@ if [ "$REMOTE_TOO" -eq 1 ] && [ "${#REMOTE_DELETABLE[@]}" -gt 0 ]; then
       echo "    SKIPPED remote (could not re-check dependents): origin/$b — $dependents" >&2
       continue
     fi
+    # A branch is referenced by an open PR in two ways, and only one of them is
+    # a --base match. If a PR was opened WITH $b as its head since the snapshot,
+    # a --base query reports nothing and we would delete the source branch of an
+    # active PR, closing it. `gh pr list` documents --head separately for exactly
+    # this reason, so both references have to be re-checked (PR #715 review).
+    if ! own_pr="$(gh pr list --state open --head "$b" --limit "$OPEN_PR_SCAN_LIMIT" --json number --jq '[.[].number] | join(", ")' 2>&1)"; then
+      echo "    SKIPPED remote (could not re-check its own open PRs): origin/$b — $own_pr" >&2
+      continue
+    fi
     if [ -n "$dependents" ]; then
       echo "    SKIPPED remote (PR(s) $dependents opened against it since the scan): origin/$b"
+      continue
+    fi
+    if [ -n "$own_pr" ]; then
+      echo "    SKIPPED remote (PR(s) $own_pr opened FROM it since the scan): origin/$b"
       continue
     fi
     if [ -n "$REPO_SLUG" ] && gh api -X DELETE "/repos/$REPO_SLUG/git/refs/heads/$b" >/dev/null 2>&1; then

@@ -223,7 +223,11 @@ merge_journal_pr_synchronously() {
     if [ "$merge_state" = "CLEAN" ] && [ "$mergeable" = "MERGEABLE" ] \
       && [ "$merge_requested" = false ]; then
       merge_requested=true
-      if gh pr merge "$pr_number" --squash --delete-branch \
+      # No --delete-branch. It removes the head branch, which closes any PR
+      # stacked on it along with its review threads (issue #713). Journal PRs
+      # are usually leaves, but the flag is the hazard regardless of who is
+      # holding it, and cleanup-branches.sh collects the ref safely later.
+      if gh pr merge "$pr_number" --squash \
         --match-head-commit "$expected_head" >/dev/null 2>&1; then
         :
       else

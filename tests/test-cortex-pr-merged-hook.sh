@@ -724,7 +724,7 @@ if ! grep -q "pr create" "$Q_GH_LOG" \
 fi
 Q_JOURNAL_HEAD="$(git -C "$Q" rev-parse "$Q_BRANCH")"
 if grep -q -- "--auto" "$Q_GH_LOG" \
-  || ! grep -q "pr merge 777 --squash --delete-branch --match-head-commit $Q_JOURNAL_HEAD" "$Q_GH_LOG"; then
+  || ! grep -q "pr merge 777 --squash --match-head-commit $Q_JOURNAL_HEAD" "$Q_GH_LOG"; then
   echo "FAIL [Q]: hook did not synchronously merge the exact journal head" >&2
   cat "$Q_GH_LOG" >&2
   exit 1
@@ -772,7 +772,7 @@ if grep -q -- "--auto" "$Q2_GH_LOG"; then
   exit 1
 fi
 if ! grep -q "pr view 777 --json state,headRefOid,mergeStateStatus,mergeable,statusCheckRollup" "$Q2_GH_LOG" \
-  || ! grep -q "pr merge 777 --squash --delete-branch --match-head-commit $Q2_JOURNAL_HEAD" "$Q2_GH_LOG"; then
+  || ! grep -q "pr merge 777 --squash --match-head-commit $Q2_JOURNAL_HEAD" "$Q2_GH_LOG"; then
   echo "FAIL [Q2]: synchronous fallback did not poll and merge the exact journal head" >&2
   cat "$Q2_GH_LOG" >&2
   exit 1

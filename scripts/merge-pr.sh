@@ -2753,9 +2753,40 @@ fi
 # some open PR's base. An extra remote branch is trivially recoverable; a
 # silently closed PR with its review threads is not.
 if [ -n "$PR_HEAD_BRANCH" ]; then
-  echo "==> Leaving branch '$PR_HEAD_BRANCH' on the remote after merge."
-  echo "    Deleting it here would close any PR stacked on it. Collect it with:"
-  echo "      bash scripts/cleanup-branches.sh --remote-too"
+  # Omitting --delete-branch only keeps the ref if the REPOSITORY does not
+  # delete it for us. `deleteBranchOnMerge` is a repo-level setting that removes
+  # the head branch server-side after every merge, regardless of what this
+  # script asks for — and it is enabled on at least one downstream project. So
+  # this must report what will actually happen rather than what it intended
+  # (PR #715 review).
+  repo_auto_delete="$(gh repo view --json deleteBranchOnMerge --jq '.deleteBranchOnMerge' 2>/dev/null || echo "unknown")"
+
+  case "$repo_auto_delete" in
+    false)
+      echo "==> Leaving branch '$PR_HEAD_BRANCH' on the remote after merge."
+      echo "    Deleting it here would close any PR stacked on it. Collect it with:"
+      echo "      bash scripts/cleanup-branches.sh --remote-too"
+      ;;
+    true)
+      echo "WARNING: this repository has deleteBranchOnMerge enabled, so GitHub will"
+      echo "         delete '$PR_HEAD_BRANCH' server-side after this merge. Omitting"
+      echo "         --delete-branch does NOT retain it."
+      if [ -n "${REVIEWED_HEAD_OID:-}" ]; then
+        echo "         Restore the ref if a stacked PR needs it:"
+        echo "           git push origin $REVIEWED_HEAD_OID:refs/heads/$PR_HEAD_BRANCH"
+      fi
+      echo "         Turn the setting off to keep stacked bases intact:"
+      echo "           gh repo edit --delete-branch-on-merge=false"
+      ;;
+    *)
+      echo "WARNING: could not read this repository's deleteBranchOnMerge setting, so"
+      echo "         whether '$PR_HEAD_BRANCH' survives this merge is unknown."
+      if [ -n "${REVIEWED_HEAD_OID:-}" ]; then
+        echo "         Restore the ref if it disappears and a stacked PR needs it:"
+        echo "           git push origin $REVIEWED_HEAD_OID:refs/heads/$PR_HEAD_BRANCH"
+      fi
+      ;;
+  esac
 fi
 
 if [ -n "$MERGE_BODY" ]; then

@@ -89,6 +89,10 @@ case "${1:-} ${2:-}" in
     case "${4:-}" in
       defaultBranchRef) echo "main" ;;
       nameWithOwner) echo "${GH_REPO_FULL_NAME:-autumngarage/touchstone}" ;;
+      # merge-pr.sh inspects this before claiming the branch is retained:
+      # a repository with deleteBranchOnMerge enabled removes the head
+      # server-side regardless of the flags we pass (PR #715 review).
+      deleteBranchOnMerge) echo "${GH_DELETE_BRANCH_ON_MERGE:-false}" ;;
       *)
         echo "unexpected gh repo view args: $*" >&2
         exit 1
@@ -3413,6 +3417,25 @@ else
   exit 1
 fi
 
+# Retention is a claim about the REPOSITORY, not just about our flags. With
+# deleteBranchOnMerge enabled, GitHub deletes the head server-side after every
+# merge, so "Leaving branch ... on the remote" would be a false statement — and
+# at least one downstream project has the setting on (PR #715 review).
+echo "==> Test: repository-level auto-delete is reported instead of claiming retention"
+AUTODEL_OUT="$TEST_DIR/output-autodelete.txt"
+GH_DELETE_BRANCH_ON_MERGE=true run_retention_case "$AUTODEL_OUT"
+if grep -q 'deleteBranchOnMerge enabled' "$AUTODEL_OUT" \
+  && grep -q 'does NOT retain it' "$AUTODEL_OUT" \
+  && grep -q 'git push origin' "$AUTODEL_OUT" \
+  && ! grep -q 'Leaving branch' "$AUTODEL_OUT"; then
+  echo "==> PASS: auto-delete is disclosed with a ref-restore recovery line"
+else
+  echo "FAIL: with deleteBranchOnMerge enabled the merge must say the branch will NOT" >&2
+  echo "      survive, and must print how to restore the ref" >&2
+  tail -25 "$AUTODEL_OUT" >&2
+  exit 1
+fi
+
 echo "==> Test: cleanup-branches protects branches serving as an open PR base"
 if grep -q 'headRefName,baseRefName' "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" \
   && grep -q '.headRefName, .baseRefName' "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
@@ -3421,5 +3444,43 @@ else
   echo "FAIL: cleanup-branches.sh must treat an open PR base as protected" >&2
   exit 1
 fi
+
+echo "==> Test: cleanup-branches re-checks a branch's OWN open PRs before deleting"
+if grep -q -- '--head "\$b"' "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh"; then
+  echo "==> PASS: pre-delete re-check covers head references, not only bases"
+else
+  echo "FAIL: a PR opened WITH this branch as its head is invisible to a --base query," >&2
+  echo "      so cleanup would delete the source branch of an active PR" >&2
+  exit 1
+fi
+
+echo "==> Test: merge reports repository-level branch deletion truthfully"
+if grep -q 'deleteBranchOnMerge' "$TOUCHSTONE_ROOT/scripts/merge-pr.sh"; then
+  echo "==> PASS: repo-level auto-delete is inspected before claiming retention"
+else
+  echo "FAIL: omitting --delete-branch does not retain the branch when the repository" >&2
+  echo "      has deleteBranchOnMerge enabled; merge-pr.sh must inspect it" >&2
+  exit 1
+fi
+
+# Guardrail for the class, not the instance (principles/audit-weak-points.md).
+# `gh pr merge --delete-branch` closes every PR stacked on the branch it
+# removes. Fixing merge-pr.sh alone left the same flag live in the journal hook
+# and in open-pr.sh's recovery banner, so the whole shipped surface is checked.
+echo "==> Test: no shipped script merges with --delete-branch"
+# Comment and echo/printf lines are excluded: warning text and rationale about
+# the flag necessarily contain the flag, and a guard that fires on its own
+# error message is the false-positive class tracked in #745. What is checked is
+# the flag reaching a command as an argument.
+offenders="$(cd "$TOUCHSTONE_ROOT" && git grep -n -- '--delete-branch' -- \
+  'bin/*' 'lib/*' 'scripts/*' 'hooks/*' \
+  | grep -vE ':[[:space:]]*(#|echo |printf )' \
+  | grep -v 'delete-branch-on-merge' || true)"
+if [ -n "$offenders" ]; then
+  echo "FAIL: --delete-branch reintroduced (issue #713) — it closes stacked PRs:" >&2
+  printf '%s\n' "$offenders" | sed 's/^/    /' >&2
+  exit 1
+fi
+echo "==> PASS: --delete-branch appears nowhere in the shipped surface"
 
 echo "==> PASS: merge gate requires deterministic checks plus exact-revision PR review"

@@ -360,10 +360,15 @@ RC=0
 GH_PR_STATE="OPEN" GH_MERGED_AT="" GH_HAS_EXISTING_PR=0 MERGE_PR_EXIT=1 \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
+# The recovery banner must NOT advertise `--delete-branch`: an operator
+# following the printed command deletes the head branch and closes any PR
+# stacked on it (issue #713, PR #715 review). Recovery routes through the same
+# non-deleting merge path the gate uses.
 if [ "$RC" != "0" ] \
   && grep -q 'ORPHAN RISK: PR opened but not merged' "$OUT" \
   && grep -q 'https://example.test/touchstone/pull/123' "$OUT" \
-  && grep -q 'gh pr merge 123 --squash --delete-branch' "$OUT" \
+  && grep -q 'bash scripts/merge-pr.sh 123' "$OUT" \
+  && ! grep -q -- '--delete-branch' "$OUT" \
   && grep -q 'gh pr close 123' "$OUT"; then
   echo "    PASS"
 else
