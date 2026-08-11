@@ -253,6 +253,51 @@ steering_block_is_current() {
 # decided by the content the update would actually write, never by the stamp
 # alone. Fail closed: any missing, differing, or unrefreshable managed
 # artifact keeps the tree stale.
+# One enumeration serves the writer AND the content probe: a manifest that
+# omits entries the writer would emit is stale content — doctor validates
+# only listed paths, so an incomplete ledger hides files from it
+# (PR #780 review).
+touchstone_manifest_entries() {
+  local f
+  printf '# Managed by touchstone. These paths may be updated by `touchstone update`.\n'
+  printf '.touchstone-manifest\n'
+  printf '.touchstone-version\n'
+  printf 'TOUCHSTONE.md\n'
+  printf '.github/workflows/issue-claim-check.yml\n'
+  if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
+    for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
+      printf 'principles/%s\n' "$(basename "$f")"
+    done
+  fi
+  printf 'scripts/branch-guard.sh\n'
+  printf 'scripts/emergency-disclosure.sh\n'
+    printf 'scripts/touchstone-run.sh\n'
+  printf 'scripts/open-pr.sh\n'
+  printf 'scripts/merge-pr.sh\n'
+  printf 'scripts/claim-issue.sh\n'
+  printf 'scripts/respond-review.sh\n'
+  printf 'scripts/issue-claim-check.sh\n'
+  printf 'scripts/cleanup-branches.sh\n'
+  printf 'scripts/spawn-worktree.sh\n'
+  printf 'scripts/cleanup-worktrees.sh\n'
+  printf 'lib/toml.sh\n'
+  printf 'lib/events.sh\n'
+  printf 'lib/codex-auth.sh\n'
+  printf 'lib/script-sync-guard.sh\n'
+  printf 'lib/sha256.sh\n'
+  printf 'lib/preflight.sh\n'
+  printf 'lib/preflight-scope.sh\n'
+  if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
+    printf 'scripts/run-pytest-in-venv.sh\n'
+  fi
+  printf '.claude/settings.json\n'
+  # Touchstone-bundled skills are user-scoped (~/.claude/skills); the update
+  # ships nothing into <project>/.claude/skills, so the ledger must not
+  # claim those paths. The old enumeration here manifested files the copy
+  # pass never wrote — phantom entries every downstream manifest carried
+  # since the user-scope migration (surfaced by PR #780's ledger probe).
+}
+
 managed_content_is_current() {
   local src dst skill_name
 
@@ -269,9 +314,21 @@ managed_content_is_current() {
     return 1
   fi
 
+  # The ledger itself must match what the writer would emit today.
+  if ! diff -q <(touchstone_manifest_entries) <(printf '%s\n' "$manifest_entries") >/dev/null 2>&1; then
+    return 1
+  fi
+
   while IFS=$'\t' read -r src dst; do
+    # A symlinked destination (or symlinked ancestor) is a tree the writer
+    # would refuse or replace, never "current"; and bytes on disk are not
+    # enough — an untracked managed file is missing from clean clones, and
+    # the update's force-stage is what heals it (PR #780 review).
+    [ ! -L "$dst" ] || return 1
+    touchstone_ensure_safe_dest "$dst" "$PROJECT_DIR" true >/dev/null 2>&1 || return 1
     [ -f "$dst" ] || return 1
     cmp -s "$src" "$dst" || return 1
+    git -C "$PROJECT_DIR" ls-files --error-unmatch "${dst#"$PROJECT_DIR"/}" >/dev/null 2>&1 || return 1
     case "$dst" in
       "$PROJECT_DIR"/scripts/*.sh)
         # The update chmods managed scripts; a missing execute bit is a change.
@@ -281,6 +338,7 @@ managed_content_is_current() {
   done < <(managed_file_pairs)
 
   if [ -f "$TOUCHSTONE_ROOT/templates/claude-settings.json" ]; then
+    [ ! -L "$PROJECT_DIR/.claude/settings.json" ] || return 1
     cmp -s "$TOUCHSTONE_ROOT/templates/claude-settings.json" "$PROJECT_DIR/.claude/settings.json" || return 1
   fi
 
@@ -323,6 +381,18 @@ fi
 if managed_content_is_current; then
   echo "==> Already up to date."
   echo "    Stamp identity differs ($OLD_SHA vs $CURRENT_SHA), but every managed file matches; nothing to update."
+  # User-scoped skills and git hooks live OUTSIDE the project tree, so the
+  # content probe says nothing about them — the identity-mismatch path used
+  # to reach their reconciliation and this early exit must too, or a deleted
+  # skills bundle / missing hook silently stays broken behind "up to date"
+  # (PR #780 review). --check stays read-only.
+  if [ "$CHECK_ONLY" != true ] && [ "$DRY_RUN" = false ]; then
+    if [ -d "$TOUCHSTONE_ROOT/skills" ]; then
+      touchstone_install_skills "$TOUCHSTONE_ROOT" || true
+      touchstone_uninstall_legacy_project_skills "$PROJECT_DIR" || true
+    fi
+    touchstone_install_hooks "$PROJECT_DIR" || true
+  fi
   exit 0
 fi
 
@@ -361,14 +431,20 @@ resolve_default_branch() {
     && git -C "$PROJECT_DIR" remote get-url origin >/dev/null 2>&1; then
     default_branch="$(cd "$PROJECT_DIR" && gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
   fi
-  if [ -z "$default_branch" ]; then
-    local configured
-    configured="$(git -C "$PROJECT_DIR" config --get init.defaultBranch 2>/dev/null | tr -d '[:space:]' || true)"
-    if [ -n "$configured" ] && git -C "$PROJECT_DIR" show-ref --verify --quiet "refs/heads/$configured"; then
-      default_branch="$configured"
-    elif git -C "$PROJECT_DIR" show-ref --verify --quiet refs/heads/main; then
+  # init.defaultBranch is deliberately NOT consulted: it names the preferred
+  # branch for NEWLY initialized repos, not this repo's default — a feature
+  # branch bearing that name would be accepted and the fork would carry its
+  # commits, recreating the exact #772 contamination (PR #780 review, P1).
+  # Without authoritative remote metadata, only a repo with NO origin gets a
+  # local heuristic, and only when it is unambiguous.
+  if [ -z "$default_branch" ] \
+    && ! git -C "$PROJECT_DIR" remote get-url origin >/dev/null 2>&1; then
+    local has_main=false has_master=false
+    git -C "$PROJECT_DIR" show-ref --verify --quiet refs/heads/main && has_main=true
+    git -C "$PROJECT_DIR" show-ref --verify --quiet refs/heads/master && has_master=true
+    if [ "$has_main" = true ] && [ "$has_master" = false ]; then
       default_branch="main"
-    elif git -C "$PROJECT_DIR" show-ref --verify --quiet refs/heads/master; then
+    elif [ "$has_master" = true ] && [ "$has_main" = false ]; then
       default_branch="master"
     fi
   fi
@@ -927,50 +1003,7 @@ fi
 write_touchstone_manifest() {
   local manifest="$PROJECT_DIR/.touchstone-manifest"
   ensure_safe_dest "$manifest" || true
-  {
-    printf '# Managed by touchstone. These paths may be updated by `touchstone update`.\n'
-    printf '.touchstone-manifest\n'
-    printf '.touchstone-version\n'
-    printf 'TOUCHSTONE.md\n'
-    printf '.github/workflows/issue-claim-check.yml\n'
-    if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
-      for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
-        printf 'principles/%s\n' "$(basename "$f")"
-      done
-    fi
-    printf 'scripts/branch-guard.sh\n'
-    printf 'scripts/emergency-disclosure.sh\n'
-    printf 'scripts/touchstone-run.sh\n'
-    printf 'scripts/open-pr.sh\n'
-    printf 'scripts/merge-pr.sh\n'
-    printf 'scripts/claim-issue.sh\n'
-    printf 'scripts/respond-review.sh\n'
-    printf 'scripts/issue-claim-check.sh\n'
-    printf 'scripts/cleanup-branches.sh\n'
-    printf 'scripts/spawn-worktree.sh\n'
-    printf 'scripts/cleanup-worktrees.sh\n'
-    printf 'lib/toml.sh\n'
-    printf 'lib/events.sh\n'
-    printf 'lib/codex-auth.sh\n'
-    printf 'lib/script-sync-guard.sh\n'
-    printf 'lib/sha256.sh\n'
-    printf 'lib/preflight.sh\n'
-    printf 'lib/preflight-scope.sh\n'
-    if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
-      printf 'scripts/run-pytest-in-venv.sh\n'
-    fi
-    printf '.claude/settings.json\n'
-    if [ -d "$TOUCHSTONE_ROOT/.claude/skills" ]; then
-      for skill_dir in "$TOUCHSTONE_ROOT/.claude/skills/"touchstone-*/; do
-        [ -d "$skill_dir" ] || continue
-        skill_name="$(basename "$skill_dir")"
-        for f in "$skill_dir"*; do
-          [ -f "$f" ] || continue
-          printf '.claude/skills/%s/%s\n' "$skill_name" "$(basename "$f")"
-        done
-      done
-    fi
-  } >"$manifest"
+  touchstone_manifest_entries >"$manifest"
 }
 
 stage_touchstone_manifest_paths() {

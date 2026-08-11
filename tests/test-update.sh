@@ -1496,6 +1496,99 @@ commit_all "$STAMP_PROJECT" "simulate genuinely stale managed content"
 assert_contains "$TEST_DIR/stamp-stale-check-output.txt" 'Needs update'
 assert_not_contains "$TEST_DIR/stamp-stale-check-output.txt" 'Already up to date'
 
+echo "--- Step 10: probe hardening — default-branch authority, symlinks, ledger, tracking (PR #780 review) ---"
+
+# (a) P1: init.defaultBranch must not be trusted. A remoteless repo whose
+# init.defaultBranch names the checked-out FEATURE branch must still refuse:
+# the authoritative-or-unambiguous rule resolves 'main', not the config.
+P780_PROJECT="$TEST_DIR/p780-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$P780_PROJECT" --no-register >/dev/null
+configure_git "$P780_PROJECT"
+commit_all "$P780_PROJECT" "initial p780 project"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$P780_PROJECT/.touchstone-version"
+commit_all "$P780_PROJECT" "sha stamp so identity differs"
+git -C "$P780_PROJECT" config init.defaultBranch work
+git -C "$P780_PROJECT" checkout -q -b work
+printf 'wip\n' >"$P780_PROJECT/feature-note.txt"
+git -C "$P780_PROJECT" add feature-note.txt
+git -C "$P780_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "feature wip"
+printf '# drift so the update has work\n' >>"$P780_PROJECT/lib/toml.sh"
+git -C "$P780_PROJECT" add lib/toml.sh
+git -C "$P780_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "stale managed content"
+(cd "$P780_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780-initdefault-output.txt" 2>&1 || true
+assert_contains "$TEST_DIR/p780-initdefault-output.txt" "refusing to create an update branch from 'work'"
+if git -C "$P780_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
+  echo "FAIL: init.defaultBranch must not authorize forking from a feature branch (PR #780 P1)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+git -C "$P780_PROJECT" checkout -q main
+
+# (b) A symlinked managed destination is never "current" — the writer would
+# refuse or replace it, so the probe must report Needs update.
+SYML_PROJECT="$TEST_DIR/p780-symlink"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SYML_PROJECT" --no-register >/dev/null
+configure_git "$SYML_PROJECT"
+commit_all "$SYML_PROJECT" "initial symlink project"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$SYML_PROJECT/.touchstone-version"
+mv "$SYML_PROJECT/scripts/open-pr.sh" "$SYML_PROJECT/scripts/open-pr.real.sh"
+ln -s "open-pr.real.sh" "$SYML_PROJECT/scripts/open-pr.sh"
+commit_all "$SYML_PROJECT" "sha stamp + symlinked managed script"
+(cd "$SYML_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780-symlink-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780-symlink-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780-symlink-output.txt" 'Already up to date'
+
+# (c) An outdated ledger is stale content even when every file matches.
+LEDGER_PROJECT="$TEST_DIR/p780-ledger"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$LEDGER_PROJECT" --no-register >/dev/null
+configure_git "$LEDGER_PROJECT"
+commit_all "$LEDGER_PROJECT" "initial ledger project"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$LEDGER_PROJECT/.touchstone-version"
+grep -v '^scripts/open-pr\.sh$' "$LEDGER_PROJECT/.touchstone-manifest" >"$LEDGER_PROJECT/.touchstone-manifest.tmp"
+mv "$LEDGER_PROJECT/.touchstone-manifest.tmp" "$LEDGER_PROJECT/.touchstone-manifest"
+commit_all "$LEDGER_PROJECT" "sha stamp + manifest missing an entry"
+(cd "$LEDGER_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780-ledger-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780-ledger-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780-ledger-output.txt" 'Already up to date'
+
+# (d) Correct bytes but untracked in the index is not current — clean clones
+# would miss the file; the update's force-stage is the heal.
+UNTRACKED_PROJECT="$TEST_DIR/p780-untracked"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$UNTRACKED_PROJECT" --no-register >/dev/null
+configure_git "$UNTRACKED_PROJECT"
+commit_all "$UNTRACKED_PROJECT" "initial untracked project"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$UNTRACKED_PROJECT/.touchstone-version"
+commit_all "$UNTRACKED_PROJECT" "sha stamp"
+# rm --cached stages the removal; a plain commit keeps the file untracked
+# (commit_all would re-add it and defeat the fixture).
+git -C "$UNTRACKED_PROJECT" rm -q --cached scripts/open-pr.sh
+git -C "$UNTRACKED_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "untrack managed script"
+(cd "$UNTRACKED_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780-untracked-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780-untracked-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780-untracked-output.txt" 'Already up to date'
+
+# (e) The content-current early exit still reconciles state OUTSIDE the
+# project tree: a deleted effective hook is reinstalled by a plain update run
+# that changes nothing in the project.
+HOOKS_PROJECT="$TEST_DIR/p780-hooks"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$HOOKS_PROJECT" --no-register >/dev/null
+configure_git "$HOOKS_PROJECT"
+commit_all "$HOOKS_PROJECT" "initial hooks project"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$HOOKS_PROJECT/.touchstone-version"
+commit_all "$HOOKS_PROJECT" "sha stamp only"
+HOOKS_PATH="$(git -C "$HOOKS_PROJECT" config core.hooksPath || echo .git/hooks)"
+rm -f "$HOOKS_PROJECT/$HOOKS_PATH/pre-commit" "$HOOKS_PROJECT/.git/hooks/pre-commit" 2>/dev/null || true
+(cd "$HOOKS_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780-hooks-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780-hooks-output.txt" 'Already up to date'
+if [ ! -f "$HOOKS_PROJECT/$HOOKS_PATH/pre-commit" ] && [ ! -f "$HOOKS_PROJECT/.git/hooks/pre-commit" ]; then
+  echo "FAIL: content-current early exit must still reinstall missing git hooks (PR #780 review)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # --------------------------------------------------------------------------
 # Results
 # --------------------------------------------------------------------------
