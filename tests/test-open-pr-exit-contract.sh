@@ -1360,6 +1360,33 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# Case 42c (PR #755 review, round 5): a DISMISSED review is revoked evidence
+# and must NOT satisfy request idempotency. The merge gate refuses dismissed
+# reviews, so a state-blind skip here would suppress the only re-request that
+# could produce valid evidence — open-pr.sh saying "already reviewed" while
+# merge-pr.sh says "not reviewed", until timeout.
+echo "==> Case 42c: a dismissed review does not suppress the review request"
+OUT="$TEST_DIR/case42c.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s\tDISMISSED\t2026-08-01T00:00:03Z' "$CASE42_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && ! grep -q 'is already reviewed' "$OUT" \
+  && [ -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a dismissed review must not satisfy per-head idempotency" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 43: review bound to another commit does not license the new head"
 OUT="$TEST_DIR/case43.out"
 RC=0

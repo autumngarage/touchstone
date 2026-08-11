@@ -1108,6 +1108,17 @@ query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
 # untrusted authors never reach it, and heads with no trusted review at all
 # fail earlier for lack of a result.
 #
+# STATED BOUNDARY (PR #755 review, round 5): inline threads are the findings
+# ledger. A review that mixes an actionable finding into its body prose
+# alongside unrelated inline comments is not machine-detectable without prose
+# interpretation, which this platform is deleting rather than extending
+# (#734) — and treating any non-empty body as blocking would mean the
+# answered path never applies, reinstating the measured non-termination
+# (four reviews of one unchanged head, issue #751). The reviewer-facing
+# request explicitly asks for every finding in the reviewed pass; findings
+# that become threads are answerable, and the review-binding check (#726)
+# records the review either way.
+#
 # Returns:
 #   0 — satisfied: no CHANGES_REQUESTED and zero unresolved threads
 #   1 — definitively blocked; PR_ANSWERED_FINDINGS_BLOCK_REASON says why

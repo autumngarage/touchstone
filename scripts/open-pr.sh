@@ -287,18 +287,39 @@ trusted_review_exists_for_head() {
   local reviews_tsv login commit
 
   OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR=""
+  OPEN_PR_HEAD_REVIEW_DISMISSED_AT=""
+  local submitted
   if ! reviews_tsv="$(gh api --paginate "repos/$REPO_FULL_NAME/pulls/$pr_number/reviews" \
-    --jq '.[] | [(.user.login // ""), (.commit_id // "")] | @tsv' 2>&1)"; then
+    --jq '.[] | [(.user.login // ""), (.commit_id // ""), (.state // ""), (.submitted_at // "")] | @tsv' 2>&1)"; then
     OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR="$reviews_tsv"
     return 2
   fi
-  while IFS=$'\t' read -r login commit || [ -n "$login" ]; do
+  local found=1
+  while IFS=$'\t' read -r login commit state submitted || [ -n "$login" ]; do
     [ -n "$login" ] || continue
     csv_contains "$OPEN_PR_TRUSTED_REVIEW_AUTHORS" "$login" || continue
     [ "$commit" = "$head_sha" ] || continue
-    return 0
+    # A DISMISSED review is revoked evidence. The merge gate refuses it, so
+    # letting it satisfy request idempotency here would suppress the only
+    # re-request that could produce valid evidence — open-pr.sh saying
+    # "already reviewed" while merge-pr.sh says "not reviewed", forever
+    # (PR #755 review). PENDING has not been submitted and proves nothing.
+    # The dismissal timestamp is kept so the EVIDENCE skip below can tell
+    # "requested, awaiting the answer" (skip is correct) from "requested,
+    # answered, answer revoked" (a re-request is the only way forward).
+    case "$state" in
+      DISMISSED)
+        if [ -z "$OPEN_PR_HEAD_REVIEW_DISMISSED_AT" ] \
+          || [[ "$submitted" > "$OPEN_PR_HEAD_REVIEW_DISMISSED_AT" ]]; then
+          OPEN_PR_HEAD_REVIEW_DISMISSED_AT="$submitted"
+        fi
+        continue
+        ;;
+      PENDING) continue ;;
+    esac
+    found=0
   done <<<"$reviews_tsv"
-  return 1
+  return "$found"
 }
 
 load_open_pr_review_request_config() {
@@ -594,8 +615,21 @@ request_pr_triggered_review() {
     echo "    merge gate can bind it."
   fi
   if [ "$matching_request" = true ] && [ "${FRESH_REVIEW:-false}" != true ]; then
-    echo "==> GitHub Codex review already requested for head $head_sha at base $base_sha."
-    return 0
+    if [ "$head_review_status" -ne 0 ] \
+      && [ -n "${OPEN_PR_HEAD_REVIEW_DISMISSED_AT:-}" ] \
+      && [ -n "$intent_at" ] \
+      && [[ "$OPEN_PR_HEAD_REVIEW_DISMISSED_AT" > "$intent_at" ]]; then
+      # The durable request was answered — and the answer was then dismissed.
+      # Skipping here would strand the head: the merge gate refuses dismissed
+      # evidence, so no rerun of either script could ever produce a usable
+      # result (PR #755 review). A revoked answer consumes its request.
+      echo "==> The review request for head $head_sha was answered by a review that was later"
+      echo "    DISMISSED (at $OPEN_PR_HEAD_REVIEW_DISMISSED_AT). Revoked evidence consumes its"
+      echo "    request; requesting a fresh review."
+    else
+      echo "==> GitHub Codex review already requested for head $head_sha at base $base_sha."
+      return 0
+    fi
   fi
   if [ "${FRESH_REVIEW:-false}" = true ]; then
     echo "==> --fresh-review: forcing a new review request for head $head_sha despite existing evidence."
