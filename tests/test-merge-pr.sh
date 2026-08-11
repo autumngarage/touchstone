@@ -3009,10 +3009,15 @@ rc=$?
 # The worktree-specific guidance is gone with --delete-branch (issue #713); what
 # must survive is the general contract: a nonzero exit on an already-MERGED PR
 # degrades to a warning rather than reporting a failed merge.
+#
+# The cleanup hint is copy-pasted by a human in an unknown cwd, so it must be
+# the absolute path derived from SCRIPT_DIR, rendered with %q — a relative
+# "bash scripts/..." fails from any subdirectory (PR #715 review).
+CLEANUP_HINT="bash $(printf '%q' "$MERGE_SCRIPT_DIR/cleanup-branches.sh") --remote-too"
 if [ "$rc" = "0" ] \
   && grep -q 'WARNING: gh pr merge exited 1, but PR #123 is MERGED on GitHub.' "$TEST_DIR/output-gh-local-fail.txt" \
   && grep -q 'merge succeeded server-side' "$TEST_DIR/output-gh-local-fail.txt" \
-  && grep -q 'cleanup-branches.sh --remote-too' "$TEST_DIR/output-gh-local-fail.txt" \
+  && grep -qF "$CLEANUP_HINT" "$TEST_DIR/output-gh-local-fail.txt" \
   && grep -q '==> Done\.' "$TEST_DIR/output-gh-local-fail.txt" \
   && ! grep -q '^ERROR:' "$TEST_DIR/output-gh-local-fail.txt"; then
   echo "==> PASS: nonzero exit on an already-MERGED PR degrades to warning"
@@ -3421,8 +3426,8 @@ RETAIN_OUT="$TEST_DIR/output-retention.txt"
 run_retention_case "$RETAIN_OUT"
 if ! grep -q -- '--delete-branch' "$TEST_DIR/gh-merge-args" \
   && grep -q 'Leaving branch' "$RETAIN_OUT" \
-  && grep -q 'cleanup-branches.sh --remote-too' "$RETAIN_OUT"; then
-  echo "==> PASS: branch retained unconditionally, with cleanup named"
+  && grep -qF "$CLEANUP_HINT" "$RETAIN_OUT"; then
+  echo "==> PASS: branch retained unconditionally, with cleanup named absolutely"
 else
   echo "FAIL: merge must never pass --delete-branch, and must say how to collect the branch" >&2
   cat "$TEST_DIR/gh-merge-args" >&2

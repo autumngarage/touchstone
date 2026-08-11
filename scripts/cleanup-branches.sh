@@ -436,17 +436,31 @@ if [ "$REMOTE_TOO" -eq 1 ] && [ "${#REMOTE_DELETABLE[@]}" -gt 0 ]; then
       # look". `git ls-remote --exit-code` returns 2 specifically for no
       # matching ref; any other nonzero is an inspection failure, and calling
       # that "absent" would report a live branch as deleted.
+      #
+      # ONE request answers both "does the ref exist?" and "where does it
+      # point?". An earlier shape asked twice — existence first, OID second —
+      # and a transient failure on the second lookup produced an empty OID
+      # that the comparison below misread as "still at its classified OID": a
+      # definite answer manufactured from an inspection failure (PR #715
+      # review). Stderr stays attached so a failed lookup shows git's own
+      # diagnostic instead of discarding it.
       ls_rc=0
-      git ls-remote --exit-code origin "refs/heads/$b" >/dev/null 2>&1 || ls_rc=$?
+      ls_out="$(git ls-remote --exit-code origin "refs/heads/$b")" || ls_rc=$?
       case "$ls_rc" in
         0)
-          # The ref exists, but exit 0 says nothing about WHICH commit it points
-          # at — a permission failure, ruleset, or pre-push hook rejects the
-          # push while the branch sits exactly where it was. Compare the OIDs
-          # rather than inferring an advance, and keep the push's own message,
-          # which is the only thing that explains a rejection (PR #715 review).
-          current_oid="$(git ls-remote origin "refs/heads/$b" 2>/dev/null | awk 'NR==1{print $1}')"
-          if [ -n "$current_oid" ] && [ "$current_oid" != "$classified_oid" ]; then
+          # The ref exists, but existence alone says nothing about WHICH
+          # commit it points at — a permission failure, ruleset, or pre-push
+          # hook rejects the push while the branch sits exactly where it was.
+          # Compare the OIDs rather than inferring an advance, and keep the
+          # push's own message, which is the only thing that explains a
+          # rejection (PR #715 review).
+          current_oid="$(printf '%s\n' "$ls_out" | awk 'NR==1{print $1}')"
+          if [ -z "$current_oid" ]; then
+            # Exit 0 with output we cannot parse is still an inspection
+            # failure. Never collapse "could not tell" into a definite answer.
+            echo "    UNKNOWN remote result (ref reported present but its OID could not be read): origin/$b" >&2
+            echo "      re-run to re-resolve; the restore command above still applies if it was removed" >&2
+          elif [ "$current_oid" != "$classified_oid" ]; then
             echo "    SKIPPED remote (advanced to ${current_oid:0:12}, past its classified OID, so it is no longer proven merged): origin/$b" >&2
           else
             echo "    SKIPPED remote (delete rejected while still at its classified OID): origin/$b" >&2

@@ -27,13 +27,21 @@
 #   GitHub to merge. Keeping the merge in-band lets us positively confirm that
 #   authorization before reporting success.
 #
-# ⚠ Stacked PRs — read this before using --base:
+# Stacked PRs — read this before using --base:
 #   Stacking a PR on another PR's branch is useful when work naturally
 #   splits into a chain (parent PR ships primitive, child PR ships the
-#   consumer that depends on it). GitHub does NOT auto-rebase the child
-#   onto main when the parent squash-merges; it closes the child's branch
-#   instead. So stacked PRs work well with a merge commit or rebase merge,
-#   but the `--auto-merge` default (squash) will orphan the child.
+#   consumer that depends on it). merge-pr.sh retains the head branch after
+#   every merge (and refuses to merge when the repository's
+#   deleteBranchOnMerge setting would delete it server-side), so
+#   squash-merging the parent no longer closes stacked children: the child
+#   PR stays open, still based on the retained parent branch. The child does
+#   not follow the parent to the default branch by itself — after the parent
+#   lands, retarget it (gh pr edit <n> --base <default>) and rebase it onto
+#   the default branch so the parent's already-squashed commits drop out of
+#   its diff. Branch DELETION is what endangers a stack: GitHub closes open
+#   PRs whose base branch disappears (issue #713), which is why the merge
+#   path keeps the branch and leaves deletion to cleanup-branches.sh, which
+#   refuses while dependents exist.
 #
 #   Prefer independent PRs against the default branch when slices can ship
 #   separately; rebase or cherry-pick child-only commits onto the default
@@ -121,8 +129,10 @@ print_orphan_warning() {
       # only correct when the operator happens to be at the repository root;
       # invoked from a subdirectory the printed command fails with
       # "No such file or directory" and the orphaned PR stays orphaned
-      # (PR #715 review).
-      echo "==>   bash ${SCRIPT_DIR:-scripts}/merge-pr.sh $ORPHAN_PR_NUMBER    (if review passed)"
+      # (PR #715 review). Rendered with %q so a checkout path containing
+      # spaces or shell metacharacters survives copy-paste as one word.
+      printf '==>   bash %q %s    (if review passed)\n' \
+        "${SCRIPT_DIR:-scripts}/merge-pr.sh" "$ORPHAN_PR_NUMBER"
       echo "==>   gh pr close $ORPHAN_PR_NUMBER                              (if abandoning)"
     fi
   } >&2
@@ -869,19 +879,20 @@ if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
   exit 1
 fi
 
-# Warn when stacking + auto-merge combine — the user is likely about to
-# orphan their stack. --auto-merge squashes the parent, which closes (not
-# rebases) stacked children.
+# Stacking + --auto-merge means THIS PR squash-merges into $BASE_BRANCH, not
+# into $DEFAULT_BRANCH. That is no longer dangerous — merge-pr.sh retains the
+# head branch after merge (and refuses under repository-level auto-delete), so
+# the old warning that squash orphans stacked children is obsolete (issue
+# #713, PR #715 review) — but it is worth saying out loud, because "merged"
+# here does not mean "landed on $DEFAULT_BRANCH".
 if [ "$BASE_BRANCH" != "$DEFAULT_BRANCH" ] && [ "$AUTO_MERGE" = true ]; then
-  echo "WARNING: base $BASE_BRANCH with --auto-merge stacks this PR on another branch" >&2
-  echo "         AND will squash-merge it, which orphans any later stacked children." >&2
-  echo "         Either drop --auto-merge (open stack, merge manually in order)" >&2
-  echo "         or rebase/cherry-pick child-only commits onto $DEFAULT_BRANCH." >&2
+  echo "NOTE: base $BASE_BRANCH + --auto-merge merges this PR into $BASE_BRANCH, not $DEFAULT_BRANCH." >&2
+  echo "      Head branches are retained on merge, so this cannot close a stacked child;" >&2
+  echo "      children stay based on the retained branch and need retargeting" >&2
+  echo "      (gh pr edit <n> --base ...) plus a rebase once their parent lands." >&2
   if [ -n "$EXISTING_PR_URL" ]; then
     EXISTING_PR_NUMBER="$(basename "$EXISTING_PR_URL")"
-    echo "         Then retarget the existing PR: gh pr edit $EXISTING_PR_NUMBER --base $DEFAULT_BRANCH" >&2
-  else
-    echo "         Then rerun without --base to open an independent PR." >&2
+    echo "      To ship straight to $DEFAULT_BRANCH instead: gh pr edit $EXISTING_PR_NUMBER --base $DEFAULT_BRANCH" >&2
   fi
 fi
 

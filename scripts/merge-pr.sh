@@ -2773,7 +2773,10 @@ if [ -n "$PR_HEAD_BRANCH" ]; then
     false)
       echo "==> Leaving branch '$PR_HEAD_BRANCH' on the remote after merge."
       echo "    Deleting it here would close any PR stacked on it. Collect it with:"
-      echo "      bash scripts/cleanup-branches.sh --remote-too"
+      # Printed for a human in an unknown cwd: derive the path from SCRIPT_DIR
+      # (absolute) and render it with %q so it survives copy-paste even when
+      # the checkout path contains spaces (PR #715 review).
+      printf '      bash %q --remote-too\n' "$SCRIPT_DIR/cleanup-branches.sh"
       ;;
     true)
       echo "ERROR: this repository has deleteBranchOnMerge enabled." >&2
@@ -2824,7 +2827,8 @@ if [ "$gh_merge_exit" -ne 0 ]; then
     echo "WARNING: gh pr merge exited $gh_merge_exit, but PR #$PR_NUMBER is MERGED on GitHub."
     echo "         The merge succeeded server-side; only the command's own exit was unhappy."
     echo "         The remote branch is retained by design — collect it with:"
-    echo "           bash scripts/cleanup-branches.sh --remote-too"
+    # Absolute + shell-quoted for an unknown cwd (PR #715 review).
+    printf '           bash %q --remote-too\n' "$SCRIPT_DIR/cleanup-branches.sh"
   else
     echo "ERROR: gh pr merge exited $gh_merge_exit and PR #$PR_NUMBER is not MERGED." >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="gh-pr-merge"
