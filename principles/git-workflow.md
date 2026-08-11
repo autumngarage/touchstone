@@ -120,10 +120,14 @@ the order to consider them:
 
 **The loop.** One review request per head (`open-pr.sh`; it is idempotent —
 an unchanged reviewed head is never re-requested, except a body-only finding
-via `--fresh-review`). When findings land: classify each, fix categories 1–2
-in ONE batch commit, answer every thread, `--all-resolved-check`, then rerun
-the merge gate — answered findings satisfy it (issue #751); do not request
-another review.
+via `--fresh-review`). When findings land, classify each first. If every
+finding resolves **without moving the head** (dispositions 3–4), answer every
+thread, `--all-resolved-check`, then rerun the merge gate — answered findings
+satisfy it (issue #751); do not request another review. If any fix lands as a
+commit (dispositions 1–2), batch ALL of them into ONE commit, answer every
+thread, and ship the new head through `open-pr.sh` — the new head gets its
+one review, and that request is the budget's next round. Never re-request an
+unchanged head; never leave a changed head without review evidence.
 
 **The budget: three rounds per PR.** `open-pr.sh` refuses the fourth request.
 Past budget, the legitimate exits are:

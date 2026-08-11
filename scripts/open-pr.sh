@@ -522,6 +522,20 @@ trusted_review_exists_for_head() {
       OPEN_PR_HEAD_REVIEW_LIVE_AT="$submitted"
     fi
   done <<<"$reviews_tsv"
+  # Comment-delivered results ("Reviewed commit:" issue comments from a
+  # trusted author) are spent rounds too: merge-pr.sh counts them as a
+  # supported result channel, so a budget that ignored them would be
+  # evadable by channel (PR #765 review). Lookup failure leaves the count
+  # partial rather than refusing — friction control, not authorization.
+  local result_comment_logins comment_login
+  if result_comment_logins="$(gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments" \
+    --jq '.[] | select((.body // "") | contains("Reviewed commit:")) | (.user.login // "")' 2>/dev/null)"; then
+    while IFS= read -r comment_login; do
+      [ -n "$comment_login" ] || continue
+      csv_contains "$OPEN_PR_TRUSTED_REVIEW_AUTHORS" "$comment_login" || continue
+      OPEN_PR_TRUSTED_REVIEW_ROUNDS=$((OPEN_PR_TRUSTED_REVIEW_ROUNDS + 1))
+    done <<<"$result_comment_logins"
+  fi
   return "$found"
 }
 
@@ -904,6 +918,15 @@ request_pr_triggered_review() {
   # this is friction control, not an authorization boundary — the merge gate
   # owns authorization.
   ROUND_BUDGET="${TOUCHSTONE_REVIEW_ROUND_BUDGET:-3}"
+  # A malformed budget must fail loudly, not silently disable the cap: the
+  # numeric -ge below would print a diagnostic and evaluate false, letting
+  # every request through (PR #765 review).
+  case "$ROUND_BUDGET" in
+    '' | *[!0-9]*)
+      echo "ERROR: TOUCHSTONE_REVIEW_ROUND_BUDGET must be a non-negative integer; got '$ROUND_BUDGET' (#760)." >&2
+      return 1
+      ;;
+  esac
   if [ "${OPEN_PR_TRUSTED_REVIEW_ROUNDS:-0}" -ge "$ROUND_BUDGET" ] \
     && [ -z "$ROUND_BUDGET_OVERRIDE" ]; then
     echo "ERROR: PR #$pr_number has already spent $OPEN_PR_TRUSTED_REVIEW_ROUNDS review round(s); the budget is $ROUND_BUDGET (#760)." >&2
@@ -1091,6 +1114,11 @@ Options:
   --draft             Create or update a draft without final body protocol, review, or merge.
                       Mutually exclusive with --auto-merge.
   --base <branch>     Target a non-default base branch.
+  --fresh-review      Force a new review request even when this head already has
+                      trusted review evidence (the body-only-finding escape).
+  --round-budget-override <reason>
+                      Spend a review round past the per-PR budget (#760). The
+                      reason is recorded in the PR-visible request comment.
   -h, --help          Show this help.
 EOF
 }

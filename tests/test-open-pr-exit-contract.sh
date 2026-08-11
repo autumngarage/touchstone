@@ -229,6 +229,14 @@ case "$1 $2" in
           printf '%s\n' "$GH_REQUEST_STATUS_RECORDS"
         fi
         ;;
+      */issues/*/comments*)
+        # Comment-channel review results: logins that posted a trusted
+        # "Reviewed commit:" comment (the jq filter runs in the real
+        # script; the stub serves post-filter logins, one per line).
+        if [ -n "${GH_RESULT_COMMENT_AUTHORS:-}" ]; then
+          printf '%s\n' "$GH_RESULT_COMMENT_AUTHORS"
+        fi
+        ;;
       *)
         # No other prior records.
         ;;
@@ -374,6 +382,7 @@ run_open_pr() {
       GH_HEAD_REVIEWS="${GH_HEAD_REVIEWS:-}" \
       GH_HEAD_REVIEWS_FAIL="${GH_HEAD_REVIEWS_FAIL:-0}" \
       GH_REQUEST_STATUS_RECORDS="${GH_REQUEST_STATUS_RECORDS:-}" \
+      GH_RESULT_COMMENT_AUTHORS="${GH_RESULT_COMMENT_AUTHORS:-}" \
       GIT_PUSH_PLAIN_EXIT="${GIT_PUSH_PLAIN_EXIT:-0}" \
       GIT_PUSH_LEASE_EXIT="${GIT_PUSH_LEASE_EXIT:-0}" \
       GIT_PUSH_LOG="$TEST_DIR/git-push.log" \
@@ -1651,6 +1660,56 @@ if [ "$RC" = "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: the override must spend the round and record the reason durably" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Case 45c (PR #765 review): a malformed budget must refuse loudly, not
+# silently disable the cap — bash's numeric -ge prints a diagnostic but
+# evaluates false inside `if`, which would let every request through.
+echo "==> Case 45c: a malformed TOUCHSTONE_REVIEW_ROUND_BUDGET refuses loudly"
+OUT="$TEST_DIR/case45c.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE45_HEAD" \
+  TOUCHSTONE_REVIEW_ROUND_BUDGET="three" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'TOUCHSTONE_REVIEW_ROUND_BUDGET must be a non-negative integer' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a non-integer budget must refuse the request explicitly" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Case 45d (PR #765 review): comment-delivered results ("Reviewed commit:"
+# issue comments from a trusted author) are spent rounds — merge-pr.sh
+# counts that channel, so a budget reading only /pulls/N/reviews would be
+# evadable by channel. Three trusted result comments, zero formal reviews:
+# the fourth request is refused.
+echo "==> Case 45d: comment-channel review results count toward the budget"
+OUT="$TEST_DIR/case45d.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE45_HEAD" \
+  GH_RESULT_COMMENT_AUTHORS=$'chatgpt-codex-connector[bot]\nchatgpt-codex-connector[bot]\nchatgpt-codex-connector[bot]' \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'review round(s); the budget is 3 (#760)' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: trusted result comments must spend rounds like formal reviews" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
