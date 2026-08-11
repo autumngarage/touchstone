@@ -9,8 +9,9 @@
 #
 # Thin wrapper around `bin/touchstone release` so all four autumn-garage
 # tools expose the same scripts/release.sh interface. Touchstone owns the
-# real release logic in lib/release.sh (VERSION bump, --no-verify commit,
-# tag, push, gh release create, async tap bump via release.yml).
+# real release logic in lib/release.sh (VERSION bump shipped via a release
+# PR through the merge gate, tag on the squash-merged main commit,
+# gh release create, async tap bump via release.yml).
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

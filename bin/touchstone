@@ -1723,7 +1723,17 @@ cmd_release() {
       --major) bump_type="major"; shift ;;
       --minor) bump_type="minor"; shift ;;
       --patch) bump_type="patch"; shift ;;
-      *) echo "Usage: touchstone release [--major|--minor|--patch]" >&2; exit 1 ;;
+      --finalize)
+        # Recovery entry: tag + publish for a release whose PR merged after
+        # the one-command flow stalled at the merge gate.
+        if [ -z "${2:-}" ]; then
+          echo "Usage: touchstone release --finalize vX.Y.Z" >&2
+          exit 1
+        fi
+        touchstone_release_finalize "$2"
+        return
+        ;;
+      *) echo "Usage: touchstone release [--major|--minor|--patch|--finalize vX.Y.Z]" >&2; exit 1 ;;
     esac
   done
 
@@ -1786,7 +1796,8 @@ cmd_help() {
   printf "    ${BOLD}touchstone changelog${RESET} [N]          Show last N releases (default 10)\n"
   printf "    ${BOLD}touchstone skills${RESET}                 List Claude Code skills\n"
   printf "    ${BOLD}touchstone skills${RESET} check           Validate skill files\n"
-  printf "    ${BOLD}touchstone release${RESET} [--patch]      Cut a new touchstone release\n"
+  printf "    ${BOLD}touchstone release${RESET} [--patch]      Cut a new touchstone release (via a release PR)\n"
+  printf "    ${BOLD}touchstone release${RESET} --finalize vX.Y.Z  Tag + publish after a stalled release PR merges\n"
   printf "    ${BOLD}touchstone help${RESET}                   Show this help\n"
   echo ""
   echo "  ${BOLD}Environment:${RESET}"

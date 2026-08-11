@@ -85,7 +85,8 @@ _touchstone() {
           _arguments \
             '--major[Major version bump]' \
             '--minor[Minor version bump (default)]' \
-            '--patch[Patch version bump]'
+            '--patch[Patch version bump]' \
+            '--finalize[Tag + publish after a stalled release PR merges]:version:'
           ;;
       esac
       ;;
