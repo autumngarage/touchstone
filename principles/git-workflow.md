@@ -141,14 +141,14 @@ A stacked PR is a PR whose base branch is another open PR's branch instead of th
 
 **Merges retain the head branch.** `merge-pr.sh` never deletes the head branch as part of a merge, and refuses to merge at all in a repository whose `deleteBranchOnMerge` setting would delete it server-side (issue #713, PR #715). So squash-merging the parent — the `--auto-merge` default — no longer closes stacked children: the child PR stays open, still based on the retained parent branch. The old rule "never squash-merge a stack" is obsolete. Branch deletion moved to `cleanup-branches.sh`, which refuses to delete any branch serving as an open PR's base or head.
 
-**Children still need retargeting after the parent lands.** Nothing rebases a child automatically. After the parent merges to the default branch:
+**Children still need retargeting after the parent lands.** Nothing rebases a child automatically. After the parent merges to the default branch (resolve it once — `DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)` — downstream repositories are not all `main`):
 
-1. Retarget the child at the default branch: `gh pr edit <child> --base main`.
-2. Rebase the child so the parent's commits (already squashed onto main) drop out of its diff: `git rebase --onto main <parent-branch> <child-branch>`, then push.
+1. Retarget the child at the default branch: `gh pr edit <child> --base "$DEFAULT"`.
+2. Rebase the child so the parent's commits (already squashed onto the default branch) drop out of its diff: `git rebase --onto "$DEFAULT" <parent-branch> <child-branch>`, then push.
 
 Merge a chain in order, parent first, repeating both steps for each next child.
 
-**Deletion is what orphans a stack.** If a head branch is deleted while open PRs are based on it, those PRs can be closed-without-merge with their review discussion abandoned — this fired on sentinel PRs #49/#50/#51 (2026-04-16) and is the reason the merge path retains branches (issue #713). GitHub documents an auto-retarget of children onto the merged PR's base for the branch-deleted-after-its-PR-merged case, but the observed closures are why Touchstone keeps the branch instead of gambling on it. The child's commits survive a deletion either way; recover a closed child by re-opening the work as a fresh PR against current `main` — if the parent's squashed content is already on main, the child's diff is just the child-only changes.
+**Deletion is what orphans a stack.** If a head branch is deleted while open PRs are based on it, those PRs can be closed-without-merge with their review discussion abandoned — this fired on sentinel PRs #49/#50/#51 (2026-04-16) and is the reason the merge path retains branches (issue #713). GitHub documents an auto-retarget of children onto the merged PR's base for the branch-deleted-after-its-PR-merged case, but the observed closures are why Touchstone keeps the branch instead of gambling on it. The child's commits survive a deletion either way; recover a closed child by re-opening the work as a fresh PR against the current default branch — if the parent's squashed content is already on main, the child's diff is just the child-only changes.
 
 **Bundling is still often simpler.** When the user says "ship it all," default to one PR with all the commits. Reviewers reason more cleanly about one coherent story than a chain, and one squash beats orchestrating a chain in order. Use a stack only when a child truly depends on an unmerged parent and must be reviewable separately.
 

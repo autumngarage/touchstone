@@ -46,5 +46,5 @@ Your unstaged changes carry over. The trigger is *edit time*, not commit time �
 - **Push after every commit.** Local commits are not durable; pushed commits survive a `reset --hard` slip.
 - **Foreground diagnosis.** Use `bash scripts/open-pr.sh --auto-merge` directly when interactive output is useful.
 - **Issue-closing trailers.** `Closes-issue: #123` in the commit body — `open-pr.sh` injects `Closes #123` into the PR body, auto-closing on merge.
-- **Stacked PRs survive squash-merge now.** Merges retain the head branch, so children stay open; after the parent lands, retarget each child (`gh pr edit <n> --base main`) and rebase it. Branch *deletion* is what closes PRs based on a branch — leave deletion to `cleanup-branches.sh`.
+- **Stacked PRs survive squash-merge now.** Merges retain the head branch, so children stay open; after the parent lands, retarget each child at the resolved default branch (`gh pr edit <n> --base "$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)"`) and rebase it. Branch *deletion* is what closes PRs based on a branch — leave deletion to `cleanup-branches.sh`.
 - **Emergency bypass** uses `merge-pr.sh --bypass-with-disclosure="<reason>"`, not raw `gh pr merge --admin`.
