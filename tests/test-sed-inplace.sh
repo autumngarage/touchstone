@@ -17,10 +17,26 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 source "$TOUCHSTONE_ROOT/lib/sed-inplace.sh"
 
 ERRORS=0
+SKIPPED=0
 
 fail() {
   echo "FAIL: $1" >&2
   ERRORS=$((ERRORS + 1))
+}
+
+# Three cases below need the OS to express a precondition that Windows cannot:
+# NTFS through MSYS2 does not honour Unix permission bits, Git Bash silently
+# creates a copy instead of a symlink unless developer mode is on, and a
+# directory mode of 0500 does not stop writes there.
+#
+# Asserting anyway reports a platform limitation as a shim defect — which is
+# what the first Windows run of this file did. Skipping silently is worse: it
+# lets a real regression hide behind "green on Windows". So each of those cases
+# PROVES its precondition first, and says out loud when the platform cannot
+# provide one. A skip is a visible gap in coverage, never a pass.
+skip() {
+  echo "  SKIP — platform cannot establish the precondition: $1"
+  SKIPPED=$((SKIPPED + 1))
 }
 
 echo "==> substitution actually rewrites the file"
@@ -39,9 +55,15 @@ touchstone_sed_inplace 's/X/Y/' "$TEST_DIR/b1.txt" "$TEST_DIR/b2.txt"
 echo "==> file mode is carried onto the replacement before the rename"
 printf 'keep\n' >"$TEST_DIR/mode.txt"
 chmod 0741 "$TEST_DIR/mode.txt"
-touchstone_sed_inplace 's/keep/kept/' "$TEST_DIR/mode.txt"
-mode="$(ls -l "$TEST_DIR/mode.txt" | cut -c1-10)"
-[ "$mode" = "-rwxr----x" ] || fail "mode not preserved, got $mode"
+before="$(ls -l "$TEST_DIR/mode.txt" | cut -c1-10)"
+if [ "$before" != "-rwxr----x" ]; then
+  skip "chmod 0741 did not take (got $before) — filesystem has no Unix mode bits"
+else
+  touchstone_sed_inplace 's/keep/kept/' "$TEST_DIR/mode.txt"
+  mode="$(ls -l "$TEST_DIR/mode.txt" | cut -c1-10)"
+  [ "$mode" = "-rwxr----x" ] || fail "mode not preserved, got $mode"
+  [ "$(cat "$TEST_DIR/mode.txt")" = "kept" ] || fail "mode case did not rewrite content"
+fi
 
 echo "==> a missing file is a loud failure, not a silent no-op"
 rc=0
@@ -51,11 +73,15 @@ grep -q "not a regular file" "$TEST_DIR/err1" || fail "missing file should name 
 
 echo "==> a symlink target is refused"
 printf 'real\n' >"$TEST_DIR/real.txt"
-ln -s "$TEST_DIR/real.txt" "$TEST_DIR/link.txt"
-rc=0
-touchstone_sed_inplace 's/real/hacked/' "$TEST_DIR/link.txt" 2>"$TEST_DIR/err2" || rc=$?
-[ "$rc" -ne 0 ] || fail "symlink should be refused"
-[ "$(cat "$TEST_DIR/real.txt")" = "real" ] || fail "symlink target was rewritten through the link"
+ln -s "$TEST_DIR/real.txt" "$TEST_DIR/link.txt" 2>/dev/null || true
+if [ ! -L "$TEST_DIR/link.txt" ]; then
+  skip "ln -s produced a copy, not a symlink — no symlink support here"
+else
+  rc=0
+  touchstone_sed_inplace 's/real/hacked/' "$TEST_DIR/link.txt" 2>"$TEST_DIR/err2" || rc=$?
+  [ "$rc" -ne 0 ] || fail "symlink should be refused"
+  [ "$(cat "$TEST_DIR/real.txt")" = "real" ] || fail "symlink target was rewritten through the link"
+fi
 
 echo "==> a bad sed script fails loudly and leaves the file intact"
 printf 'original\n' >"$TEST_DIR/bad.txt"
@@ -94,12 +120,20 @@ echo "==> a read-only directory fails loudly instead of destroying the file"
 mkdir -p "$TEST_DIR/ro"
 printf 'precious\n' >"$TEST_DIR/ro/keep.txt"
 chmod 0500 "$TEST_DIR/ro"
-rc=0
-touchstone_sed_inplace 's/precious/gone/' "$TEST_DIR/ro/keep.txt" 2>"$TEST_DIR/err4" || rc=$?
-chmod 0700 "$TEST_DIR/ro"
-[ "$rc" -ne 0 ] || fail "unwritable directory should exit nonzero"
-[ "$(cat "$TEST_DIR/ro/keep.txt")" = "precious" ] \
-  || fail "file destroyed when its directory was unwritable — got: $(cat "$TEST_DIR/ro/keep.txt")"
+# Prove the directory really is unwritable before asserting on that basis.
+# Windows honours the chmod call but not its meaning, so a write still lands.
+if touch "$TEST_DIR/ro/.writable-probe" 2>/dev/null; then
+  rm -f "$TEST_DIR/ro/.writable-probe"
+  chmod 0700 "$TEST_DIR/ro"
+  skip "chmod 0500 on a directory does not prevent writes here"
+else
+  rc=0
+  touchstone_sed_inplace 's/precious/gone/' "$TEST_DIR/ro/keep.txt" 2>"$TEST_DIR/err4" || rc=$?
+  chmod 0700 "$TEST_DIR/ro"
+  [ "$rc" -ne 0 ] || fail "unwritable directory should exit nonzero"
+  [ "$(cat "$TEST_DIR/ro/keep.txt")" = "precious" ] \
+    || fail "file destroyed when its directory was unwritable — got: $(cat "$TEST_DIR/ro/keep.txt")"
+fi
 
 # --------------------------------------------------------------------------
 # Guardrail for the class, not just the instance (principles/audit-weak-points).
@@ -136,5 +170,13 @@ echo ""
 if [ "$ERRORS" -ne 0 ]; then
   echo "FAIL: $ERRORS assertion(s) failed" >&2
   exit 1
+fi
+if [ "$SKIPPED" -ne 0 ]; then
+  # Reported, never hidden: a skip means this platform left a real property
+  # unverified, and the log should say which one rather than read as a clean
+  # pass. The substantive cases — substitution, atomicity, loud failure, and
+  # the class guardrail — never skip on any platform.
+  echo "==> PASS with $SKIPPED case(s) not applicable on this platform"
+  exit 0
 fi
 echo "==> PASS: portable in-place sed, and the BSD-only spelling cannot return"
