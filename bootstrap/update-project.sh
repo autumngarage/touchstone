@@ -314,6 +314,21 @@ managed_path_is_sound() {
   git -C "$PROJECT_DIR" diff --quiet -- "$rel" || return 1
 }
 
+# Steering files may legitimately live untracked or gitignored
+# (stage_refreshed_steering_file supports exactly that), so their soundness
+# drops the tracking requirement: never a symlink, safe destination, and —
+# only when tracked — index blob equal to the working tree
+# (PR #780 review, override round).
+steering_path_is_sound() {
+  local rel="$1"
+  local dst="$PROJECT_DIR/$rel"
+  [ ! -L "$dst" ] || return 1
+  touchstone_ensure_safe_dest "$dst" "$PROJECT_DIR" true >/dev/null 2>&1 || return 1
+  if git -C "$PROJECT_DIR" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
+    git -C "$PROJECT_DIR" diff --quiet -- "$rel" || return 1
+  fi
+}
+
 managed_content_is_current() {
   local src dst skill_name
 
@@ -322,6 +337,11 @@ managed_content_is_current() {
   [ -f "$PROJECT_DIR/.touchstone-manifest" ] || return 1
   [ -r "$PROJECT_DIR/.touchstone-manifest" ] || return 1
   managed_path_is_sound ".touchstone-manifest" || return 1
+  # The stamp's VALUE differs by definition in the identity-mismatch case;
+  # its soundness (tracked, unsymlinked, index==worktree) must not — an
+  # untracked marker leaves clean clones unable to recognize a bootstrapped
+  # project (PR #780 review, override round).
+  managed_path_is_sound ".touchstone-version" || return 1
 
   # A retirement the update would still apply is a pending change.
   local manifest_entries
@@ -383,11 +403,11 @@ managed_content_is_current() {
   # exist — an unconditional check would recreate the stamp-only update
   # loop for those projects (PR #780 review, round 3).
   if [ -f "$PROJECT_DIR/AGENTS.md" ]; then
-    managed_path_is_sound "AGENTS.md" || return 1
+    steering_path_is_sound "AGENTS.md" || return 1
   fi
   steering_block_is_current "$PROJECT_DIR/AGENTS.md" || return 1
   if [ -f "$PROJECT_DIR/GEMINI.md" ]; then
-    managed_path_is_sound "GEMINI.md" || return 1
+    steering_path_is_sound "GEMINI.md" || return 1
   fi
   steering_block_is_current "$PROJECT_DIR/GEMINI.md" || return 1
 
@@ -454,7 +474,12 @@ resolve_default_branch() {
   # any checkout that does not match it.
   if command -v gh >/dev/null 2>&1 \
     && git -C "$PROJECT_DIR" remote get-url origin >/dev/null 2>&1; then
-    default_branch="$(cd "$PROJECT_DIR" && gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
+    # Pinned to origin explicitly: an argument-less gh repo view honors the
+    # GH_REPO environment override, which could point the default-branch
+    # authority at an arbitrary repository whose default matches the local
+    # feature branch (PR #780 review, override round P1).
+    default_branch="$(cd "$PROJECT_DIR" \
+      && gh repo view "$(git remote get-url origin)" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
   fi
   if [ -z "$default_branch" ]; then
     default_branch="$(git -C "$PROJECT_DIR" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null \

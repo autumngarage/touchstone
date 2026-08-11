@@ -1643,12 +1643,77 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$NOAGENTS_PROJECT" --no-regist
 configure_git "$NOAGENTS_PROJECT"
 commit_all "$NOAGENTS_PROJECT" "initial"
 echo "ffffffffffffffffffffffffffffffffffffffff" >"$NOAGENTS_PROJECT/.touchstone-version"
+commit_all "$NOAGENTS_PROJECT" "sha stamp"
 git -C "$NOAGENTS_PROJECT" rm -q AGENTS.md
 git -C "$NOAGENTS_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "gemini-only project"
 (cd "$NOAGENTS_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
   >"$TEST_DIR/p780b-noagents-output.txt" 2>&1
 assert_contains "$TEST_DIR/p780b-noagents-output.txt" 'Already up to date'
 assert_not_contains "$TEST_DIR/p780b-noagents-output.txt" 'Needs update'
+
+# (e) An untracked .touchstone-version is not current — clean clones could
+# not recognize a bootstrapped project.
+VSTAMP_PROJECT="$TEST_DIR/p780c-version-untracked"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$VSTAMP_PROJECT" --no-register >/dev/null
+configure_git "$VSTAMP_PROJECT"
+commit_all "$VSTAMP_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$VSTAMP_PROJECT/.touchstone-version"
+commit_all "$VSTAMP_PROJECT" "sha stamp"
+git -C "$VSTAMP_PROJECT" rm -q --cached .touchstone-version
+git -C "$VSTAMP_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "untrack stamp"
+(cd "$VSTAMP_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780c-vstamp-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780c-vstamp-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780c-vstamp-output.txt" 'Already up to date'
+
+# (f) An UNTRACKED but block-current AGENTS.md is a supported layout
+# (stage_refreshed_steering_file) — it must still read Already up to date.
+STRACK_PROJECT="$TEST_DIR/p780c-steering-untracked"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$STRACK_PROJECT" --no-register >/dev/null
+configure_git "$STRACK_PROJECT"
+commit_all "$STRACK_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$STRACK_PROJECT/.touchstone-version"
+commit_all "$STRACK_PROJECT" "sha stamp"
+git -C "$STRACK_PROJECT" rm -q --cached AGENTS.md
+git -C "$STRACK_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "untrack steering"
+(cd "$STRACK_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780c-strack-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780c-strack-output.txt" 'Already up to date'
+assert_not_contains "$TEST_DIR/p780c-strack-output.txt" 'Needs update'
+
+# (g) The default-branch authority lookup pins the origin repository
+# explicitly, so a GH_REPO env override cannot redirect it: a PATH-injected
+# fake gh records its argv, and the recorded call must carry the origin URL.
+GHPIN_PROJECT="$TEST_DIR/p780c-ghpin"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GHPIN_PROJECT" --no-register >/dev/null
+configure_git "$GHPIN_PROJECT"
+commit_all "$GHPIN_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$GHPIN_PROJECT/.touchstone-version"
+printf '# drift\n' >>"$GHPIN_PROJECT/lib/toml.sh"
+commit_all "$GHPIN_PROJECT" "stamp + drift so the update reaches the branch guard"
+GHPIN_ORIGIN="$TEST_DIR/p780c-ghpin-origin.git"
+git init -q --bare "$GHPIN_ORIGIN"
+git -C "$GHPIN_PROJECT" remote add origin "$GHPIN_ORIGIN"
+GHPIN_BIN="$TEST_DIR/p780c-ghpin-bin"
+mkdir -p "$GHPIN_BIN"
+cat >"$GHPIN_BIN/gh" <<'FAKEGH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GHPIN_LOG:?}"
+echo "main"
+FAKEGH
+chmod +x "$GHPIN_BIN/gh"
+GHPIN_LOG="$TEST_DIR/p780c-ghpin.log"
+: >"$GHPIN_LOG"
+(cd "$GHPIN_PROJECT" && PATH="$GHPIN_BIN:$PATH" GHPIN_LOG="$GHPIN_LOG" GH_REPO="evil/other-repo" \
+  bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780c-ghpin-output.txt" 2>&1 || true
+if grep -q "repo view $GHPIN_ORIGIN" "$GHPIN_LOG"; then
+  echo "    PASS: gh repo view is pinned to the origin repository"
+else
+  echo "FAIL: the default-branch lookup must pass origin explicitly (GH_REPO must not redirect it)" >&2
+  cat "$GHPIN_LOG" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 # --------------------------------------------------------------------------
 # Results
