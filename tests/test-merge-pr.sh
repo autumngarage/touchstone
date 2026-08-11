@@ -3782,4 +3782,19 @@ if [ -n "$offenders" ]; then
 fi
 echo "==> PASS: --delete-branch appears nowhere in the shipped surface"
 
+# Advisory checks (the validate-advisory namespace) must not block the merge:
+# a discovery leg's dep-install failure or timeout is not evidence about the
+# PR (#742, PR #758 review). The filter is name-scoped and narrow.
+echo "==> Test: a failing validate-advisory check does not block the merge gate"
+if printf 'validate-advisory (windows-latest)\tFAILURE\thttps://example.test/x\nvalidate (ubuntu-latest)\tSUCCESS\t\n' \
+  | awk -F'\t' '$1 !~ /^validate-advisory/' | grep -q 'validate-advisory'; then
+  echo "FAIL: the advisory filter must drop validate-advisory rows" >&2
+  exit 1
+fi
+if ! grep -q 'validate-advisory' "$TOUCHSTONE_ROOT/scripts/merge-pr.sh"; then
+  echo "FAIL: merge-pr.sh must exclude the validate-advisory namespace from failing checks" >&2
+  exit 1
+fi
+echo "==> PASS: advisory-namespace failures are excluded from the blocking set"
+
 echo "==> PASS: merge gate requires deterministic checks plus exact-revision PR review"

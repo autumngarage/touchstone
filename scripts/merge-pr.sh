@@ -1045,10 +1045,17 @@ Fail-open evidence: $BYPASS_MARKER_EVIDENCE"
 }
 
 failed_checks() {
+  # Checks whose NAME declares them advisory (the "validate-advisory" prefix)
+  # never block the merge: an advisory leg exists to run discovery against a
+  # platform that is not yet proven, and a step-level exit 0 cannot cover
+  # dependency-install failures or a job timeout — only a name-scoped
+  # exclusion is failure-mode-complete (#742, PR #758 review). The advisory
+  # namespace is deliberately narrow and greppable; a leg graduates by being
+  # renamed back into the enforcing namespace, never by widening this filter.
   gh pr checks "$PR_NUMBER" \
     --json name,bucket,state,link \
     --template '{{range .}}{{if eq .bucket "fail"}}{{.name}}{{"\t"}}{{.state}}{{"\t"}}{{.link}}{{"\n"}}{{end}}{{end}}' \
-    2>/dev/null || true
+    2>/dev/null | awk -F'\t' '$1 !~ /^validate-advisory/' || true
 }
 
 unresolved_review_threads() {
