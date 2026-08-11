@@ -26,7 +26,16 @@ gh api --paginate 'repos/autumngarage/touchstone/issues/events?per_page=100' \
              | [.created_at, .event, .issue.number] | @tsv' | sort
 ```
 
-That returns every close and reopen in the window with its timestamp, so the net movement is derivable rather than asserted. The two endpoint counts above remain the claim; this is how to check it.
+Closures and reopenings alone still do not reconcile the two numbers, because issues were also **created** inside the window and stayed open. The additions need their own query, filtered to exclude pull requests:
+
+```bash
+gh api --paginate 'repos/autumngarage/touchstone/issues?state=all&since=2026-08-09&per_page=100' \
+  --jq '.[] | select(.pull_request == null)
+             | select(.created_at >= "2026-08-09" and .created_at < "2026-08-11")
+             | [.created_at, .number, .state] | @tsv' | sort
+```
+
+Net movement is then `opened_before_window − closed + reopened + created_and_still_open`. The two endpoint counts above remain the claim; these two queries are how to check it, and either one alone will not reconcile.
 
 The surviving work: **#640** (the merge gate authorized itself on roughly a third of this repo's PRs), **#694** (the 2.13.0 cuts, 1 of 6 landed), **#507** (the 1,965-line disclosure hook), **#702** (dead surface the registry exposed).
 
