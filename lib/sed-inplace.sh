@@ -54,6 +54,21 @@ _touchstone_sed_file_mode() {
   printf '%s\n' "$mode"
 }
 
+# Read a file's owner as `uid:gid`, portably. Same BSD/GNU split as the mode:
+# GNU wants `-c`, BSD wants `-f`, and the format specifier happens to agree.
+_touchstone_sed_file_owner() {
+  local file="$1" owner
+
+  owner="$(stat -c '%u:%g' "$file" 2>/dev/null)" \
+    || owner="$(stat -f '%u:%g' "$file" 2>/dev/null)" \
+    || return 1
+
+  case "$owner" in
+    [0-9]*:[0-9]*) printf '%s\n' "$owner" ;;
+    *) return 1 ;;
+  esac
+}
+
 # touchstone_sed_inplace <sed-script> <file> [file...]
 #   Applies one sed script in place to each file. Every file must exist and be
 #   a regular file; callers that legitimately tolerate a missing file must test
@@ -85,42 +100,71 @@ touchstone_sed_inplace() {
       return 1
     fi
 
-    # Same directory as the target: rename(2) is only atomic within one
-    # filesystem, so a temp in $TMPDIR would silently degrade `mv` into
-    # copy-then-delete and reopen the torn-write window.
-    dir="$(dirname "$file")"
-    tmp="$(mktemp "$dir/.touchstone-sed.XXXXXX")" || {
-      echo "ERROR: touchstone_sed_inplace: could not create a temp file in $dir." >&2
-      return 1
-    }
+    # Each file is rewritten inside a SUBSHELL that owns a cleanup trap for its
+    # own temp. A trap installed in this sourced function would belong to the
+    # caller's process and clobber whatever EXIT/INT/TERM handler the bootstrap
+    # scripts already rely on; a subshell's traps are its own, and a signal
+    # delivered to the process group reaches it too — so an interrupt between
+    # mktemp and the rename cleans up instead of leaving a stray
+    # `.touchstone-sed.*` beside the target (PR #747 review).
+    (
+      tmp=""
+      trap 'if [ -n "$tmp" ]; then rm -f "$tmp"; fi' EXIT INT TERM
 
-    if ! sed "$script" "$file" >"$tmp"; then
-      rm -f "$tmp"
-      echo "ERROR: touchstone_sed_inplace: sed failed on $file" >&2
-      echo "       script: $script" >&2
-      return 1
-    fi
+      # Same directory as the target: rename(2) is only atomic within one
+      # filesystem, so a temp in $TMPDIR would silently degrade `mv` into
+      # copy-then-delete and reopen the torn-write window.
+      dir="$(dirname "$file")"
+      tmp="$(mktemp "$dir/.touchstone-sed.XXXXXX")" || {
+        echo "ERROR: touchstone_sed_inplace: could not create a temp file in $dir." >&2
+        exit 1
+      }
 
-    # Carry the target's permissions onto the replacement before the rename.
-    # chmod --reference is GNU-only, so read the mode portably instead.
-    if ! mode="$(_touchstone_sed_file_mode "$file")"; then
-      rm -f "$tmp"
-      echo "ERROR: touchstone_sed_inplace: could not read the mode of $file" >&2
-      return 1
-    fi
-    if ! chmod "$mode" "$tmp"; then
-      rm -f "$tmp"
-      echo "ERROR: touchstone_sed_inplace: could not set mode $mode on the replacement for $file" >&2
-      return 1
-    fi
+      if ! sed "$script" "$file" >"$tmp"; then
+        echo "ERROR: touchstone_sed_inplace: sed failed on $file" >&2
+        echo "       script: $script" >&2
+        exit 1
+      fi
 
-    # Atomic. The original is never truncated: either the rename succeeds and
-    # the new content is fully in place, or it fails and the original is
-    # untouched.
-    if ! mv -f "$tmp" "$file"; then
-      rm -f "$tmp"
-      echo "ERROR: touchstone_sed_inplace: could not replace $file" >&2
-      return 1
-    fi
+      # Carry the target's permissions onto the replacement before the rename.
+      # chmod --reference is GNU-only, so read the mode portably instead.
+      if ! mode="$(_touchstone_sed_file_mode "$file")"; then
+        echo "ERROR: touchstone_sed_inplace: could not read the mode of $file" >&2
+        exit 1
+      fi
+      if ! chmod "$mode" "$tmp"; then
+        echo "ERROR: touchstone_sed_inplace: could not set mode $mode on the replacement for $file" >&2
+        exit 1
+      fi
+
+      # Ownership does not ride along with the rename the way it did with the
+      # previous truncate-and-copy, so a privileged run against a file owned by
+      # another UID would silently hand it to the invoking user. Only act when
+      # the owner actually differs, and fail rather than change it silently.
+      if owner="$(_touchstone_sed_file_owner "$file")" \
+        && tmp_owner="$(_touchstone_sed_file_owner "$tmp")"; then
+        if [ "$owner" != "$tmp_owner" ] && ! chown "$owner" "$tmp" 2>/dev/null; then
+          echo "ERROR: touchstone_sed_inplace: $file is owned by $owner and the" >&2
+          echo "       replacement could not be given the same owner. Refusing to" >&2
+          echo "       rewrite it, because the rename would transfer ownership to" >&2
+          echo "       $tmp_owner. Original left untouched." >&2
+          exit 1
+        fi
+      else
+        echo "ERROR: touchstone_sed_inplace: could not read ownership for $file" >&2
+        exit 1
+      fi
+
+      # Atomic. The original is never truncated: either the rename succeeds and
+      # the new content is fully in place, or it fails and the original is
+      # untouched.
+      if ! mv -f "$tmp" "$file"; then
+        echo "ERROR: touchstone_sed_inplace: could not replace $file" >&2
+        exit 1
+      fi
+
+      # Renamed away; nothing left for the trap to remove.
+      tmp=""
+    ) || return 1
   done
 }

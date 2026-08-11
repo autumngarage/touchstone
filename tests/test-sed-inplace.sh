@@ -106,6 +106,30 @@ leaked="$(find "$TEST_DIR" "${TMPDIR:-/tmp}" -maxdepth 1 -name '*touchstone-sed.
 # filesystem — so the temp must be a sibling of the target, not in $TMPDIR.
 # A temp on another device silently degrades `mv` to copy-then-delete and
 # reopens exactly the torn-write window this design closes.
+echo "==> an interrupt between mktemp and rename leaves no stray temp"
+printf 'slow\n' >"$TEST_DIR/interrupt.txt"
+(
+  # shellcheck disable=SC1090
+  source "$TOUCHSTONE_ROOT/lib/sed-inplace.sh"
+  touchstone_sed_inplace 's/slow/fast/' "$TEST_DIR/interrupt.txt"
+) &
+worker=$!
+kill -TERM "$worker" 2>/dev/null || true
+wait "$worker" 2>/dev/null || true
+strays="$(find "$TEST_DIR" -maxdepth 1 -name '.touchstone-sed.*' 2>/dev/null | wc -l | tr -d ' ')"
+[ "$strays" = "0" ] || fail "$strays stray temp file(s) survived a TERM"
+# Whichever side of the rename the signal landed on, the file must be readable
+# and hold one of the two valid contents — never empty, never partial.
+content="$(cat "$TEST_DIR/interrupt.txt")"
+case "$content" in
+  slow | fast) ;;
+  *) fail "interrupted rewrite left the file as: '$content'" ;;
+esac
+
+echo "==> ownership is preserved, or the rewrite refuses"
+grep -q '_touchstone_sed_file_owner' "$TOUCHSTONE_ROOT/lib/sed-inplace.sh" \
+  || fail "no owner check: a privileged rewrite would silently transfer ownership"
+
 echo "==> the shim never writes its temp into TMPDIR"
 if ! grep -q 'mktemp "\$dir/' "$TOUCHSTONE_ROOT/lib/sed-inplace.sh"; then
   fail "temp file is no longer created beside the target — rename is not atomic across filesystems"
@@ -158,7 +182,13 @@ fi
 # its own rationale is the false-positive class tracked in #745. Match on
 # `path:line:` followed by a non-comment character.
 echo "==> no space-separated 'sed -i' survives anywhere in the tree"
+# Scoped to executable shell sources. A repository-wide grep also matches
+# documentation that legitimately quotes the broken spelling while explaining
+# it — a README or principle would then fail the fast tier despite introducing
+# no executable use, which is the false-positive class this guard is supposed
+# to avoid rather than commit (PR #747 review).
 offenders="$(cd "$TOUCHSTONE_ROOT" && git grep -nE "sed +-i +" -- \
+  'bin/*' 'lib/*' 'scripts/*' 'hooks/*' 'bootstrap/*' 'tests/*.sh' \
   ':!lib/sed-inplace.sh' ':!tests/test-sed-inplace.sh' \
   | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)"
 if [ -n "$offenders" ]; then
