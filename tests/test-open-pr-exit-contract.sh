@@ -211,6 +211,17 @@ case "$1 $2" in
   "api user")
     echo "${GH_PR_AUTHOR:-alice}"
     ;;
+  "api graphql")
+    # Inline-count fetch (PR #781 round 2): post-jq TSV rows of
+    # login<TAB>state<TAB>submittedAt<TAB>oid<TAB>count.
+    if [ "${GH_HEAD_REVIEW_INLINE_FAIL:-0}" = "1" ]; then
+      echo "graphql unavailable" >&2
+      exit 1
+    fi
+    if [ -n "${GH_HEAD_REVIEW_INLINE_ROWS:-}" ]; then
+      printf '%s\n' "$GH_HEAD_REVIEW_INLINE_ROWS"
+    fi
+    ;;
   "api --paginate")
     case "${3:-}" in
       */pulls/*/reviews*)
@@ -389,6 +400,8 @@ run_open_pr() {
       GH_REQUEST_STATUS_RECORDS="${GH_REQUEST_STATUS_RECORDS:-}" \
       GH_RESULT_COMMENT_AUTHORS="${GH_RESULT_COMMENT_AUTHORS:-}" \
       GH_RESULT_COMMENTS_FAIL="${GH_RESULT_COMMENTS_FAIL:-0}" \
+      GH_HEAD_REVIEW_INLINE_ROWS="${GH_HEAD_REVIEW_INLINE_ROWS:-}" \
+      GH_HEAD_REVIEW_INLINE_FAIL="${GH_HEAD_REVIEW_INLINE_FAIL:-0}" \
       GIT_PUSH_PLAIN_EXIT="${GIT_PUSH_PLAIN_EXIT:-0}" \
       GIT_PUSH_LEASE_EXIT="${GIT_PUSH_LEASE_EXIT:-0}" \
       GIT_PUSH_LOG="$TEST_DIR/git-push.log" \
@@ -1466,7 +1479,7 @@ CASE42_RECORDS="$(printf 'touchstone/review-request-intent\t2026-08-01T00:00:00Z
 OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
   GH_PR_HEAD_OID="$CASE42_HEAD" \
   GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
-  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s' "$CASE42_HEAD")" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s\tCOMMENTED\t2026-08-01T00:00:06Z' "$CASE42_HEAD")" \
   GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
@@ -1493,7 +1506,7 @@ reset_open_pr_logs
 OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
   GH_PR_HEAD_OID="$CASE42_HEAD" \
   GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
-  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s' "$CASE42_HEAD")" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s\tCOMMENTED\t2026-08-01T00:00:06Z' "$CASE42_HEAD")" \
   GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
   run_open_pr --fresh-review >"$OUT" 2>&1 || RC=$?
 
@@ -1674,6 +1687,7 @@ OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
   GH_PR_HEAD_OID="$CASE45_HEAD" \
   GH_REQUEST_STATUS_RECORDS="$CASE45E_RECORDS" \
   GH_HEAD_REVIEWS="$CASE45E_REVIEWS" \
+  GH_HEAD_REVIEW_INLINE_ROWS="$(printf 'chatgpt-codex-connector[bot]\tCOMMENTED\t2026-08-01T02:00:01Z\t%s\t2' "$CASE45_HEAD")" \
   GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
   run_open_pr --fresh-review >"$OUT" 2>&1 || RC=$?
 
@@ -2094,6 +2108,61 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# Case 45h (PR #781 round 2): a post-trigger COMMENTED formal review with
+# ZERO inline comments is body-only — the merge gate rejects it — so at
+# budget the refusal must take the deadlock exit, not advertise merge-pr.sh.
+echo "==> Case 45h: a body-only formal review at budget takes the deadlock exit"
+OUT="$TEST_DIR/case45h.out"
+RC=0
+reset_open_pr_logs
+CASE45H_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\tstale-head-1\tCOMMENTED\t2026-08-01T00:00:01Z\nchatgpt-codex-connector[bot]\tstale-head-2\tCOMMENTED\t2026-08-01T01:00:01Z\nchatgpt-codex-connector[bot]\t%s\tCOMMENTED\t2026-08-01T02:00:01Z' "$CASE46_HEAD")"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE46_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE46_RECORDS" \
+  GH_HEAD_REVIEWS="$CASE45H_REVIEWS" \
+  GH_HEAD_REVIEW_INLINE_ROWS="$(printf 'chatgpt-codex-connector[bot]\tCOMMENTED\t2026-08-01T02:00:01Z\t%s\t0' "$CASE46_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr --fresh-review >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'budget/evidence deadlock' "$OUT" \
+  && ! grep -q 'run: bash scripts/merge-pr.sh' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a zero-inline formal review must not be advertised as mergeable" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Case 46j (PR #781 round 2): a formal review that PREDATES the request
+# trigger answered an older ask — the reviewed-head skip must not hide the
+# stalled replacement request.
+echo "==> Case 46j: a pre-trigger formal review does not hide the stalled request"
+OUT="$TEST_DIR/case46j.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE46_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE46_RECORDS" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s\tCOMMENTED\t2026-07-31T00:00:00Z' "$CASE46_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && ! grep -q 'is already reviewed' "$OUT" \
+  && grep -q 'unanswered for' "$OUT" \
+  && grep -q -- '--fresh-review' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a pre-trigger formal review must not report the head as already reviewed" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 45f: budget refusal on a stalled unanswered head names the override"
 OUT="$TEST_DIR/case45f.out"
 RC=0
@@ -2468,6 +2537,7 @@ else
     {"user":{"login":"chatgpt-codex-connector[bot]"},"created_at":"2026-08-01T02:00:00Z","body":"Codex Review: Didn'"'"'t find any major issues. Bravo.\n\n**Reviewed commit:** `abc1234de0`"},
     {"user":{"login":"chatgpt-codex-connector[bot]"},"created_at":"2026-08-01T03:00:00Z","body":"### Codex Review\n\nHere are findings.\n\n**Reviewed commit:** `abc1234de0`"},
     {"user":{"login":"chatgpt-codex-connector[bot]"},"created_at":"2026-08-01T04:00:00Z","body":"Reviewed commit: coming soon, no sha here"},
+    {"user":{"login":"chatgpt-codex-connector[bot]"},"created_at":"2026-08-01T05:30:00Z","body":"You have reached your Codex usage limits for security reviews."},
     {"user":{"login":"someone"},"created_at":"2026-08-01T05:00:00Z","body":"unrelated"}
   ]'
   CASE47_OUT="$(printf '%s' "$CASE47_JSON" | jq -r "$OPEN_PR_RESULT_COMMENT_JQ" 2>&1)" || CASE47_OUT="JQ_FAILED: $CASE47_OUT"
@@ -2476,7 +2546,9 @@ else
     ERRORS=$((ERRORS + 1))
   elif printf '%s\n' "$CASE47_OUT" | grep -q $'^chatgpt-codex-connector\[bot\]\tabc1234de0\t2026-08-01T02:00:00Z\tclean$' \
     && printf '%s\n' "$CASE47_OUT" | grep -q $'^chatgpt-codex-connector\[bot\]\tabc1234de0\t2026-08-01T03:00:00Z\tnon-clean$' \
-    && printf '%s\n' "$CASE47_OUT" | grep -q $'^chatgpt-codex-connector\[bot\]\t\t2026-08-01T04:00:00Z\tnon-clean$'; then
+    && printf '%s\n' "$CASE47_OUT" | grep -q $'^chatgpt-codex-connector\[bot\]\t\t2026-08-01T04:00:00Z\tnon-clean$' \
+    && ! printf '%s\n' "$CASE47_OUT" | grep -q 'usage limits' \
+    && [ "$(printf '%s\n' "$CASE47_OUT" | grep -c .)" = "3" ]; then
     echo "    PASS"
   else
     echo "    FAIL: live jq filter misclassified the fixture comments" >&2
