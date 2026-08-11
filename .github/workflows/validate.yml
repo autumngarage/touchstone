@@ -7,9 +7,18 @@ name: validate
 # Nothing independently verified it, and `required_status_checks` was empty —
 # so "bad code cannot reach main" was enforced by nothing.
 #
-# This job is what branch protection should require. It is deliberately the
-# same command a developer runs locally, with no CI-only variations: one code
-# path, so a green run here means the same thing as a green run there.
+# It is deliberately the same command a developer runs locally, with no CI-only
+# variations: one code path, so a green run here means the same thing as a green
+# run there.
+#
+# NOT YET SAFE TO REQUIRE. A `pull_request` run evaluates the workflow
+# definition proposed BY the pull request, so once `validate` is a required
+# status check, a PR can edit this file down to a job named `validate` that
+# exits 0 and satisfy its own gate. With no human reading diffs, the checks are
+# the entire quality bar, so a self-editable gate is not a gate. Making this
+# required is tracked in #727, which must first pin the required run to a
+# workflow definition outside the PR's control. Until then this reports; it
+# does not enforce.
 
 on:
   pull_request:
@@ -30,7 +39,13 @@ jobs:
   validate:
     name: validate
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Derived from measurement, not from a round number. The suite ran 1,233s
+    # on a comparable Linux runner even with test-bootstrap.sh excluded, and
+    # test-bootstrap.sh alone exceeds five minutes — so a full green run is
+    # ~30 minutes. The loop deliberately continues past individual failures,
+    # which makes an under-set timeout worse than useless: Actions would kill
+    # it mid-suite and the later test files would never report at all.
+    timeout-minutes: 60
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -55,12 +70,14 @@ jobs:
           sudo install -m 0755 /tmp/shfmt /usr/local/bin/shfmt
           shfmt --version
 
+      # No `env:` block here, deliberately. Setting TOUCHSTONE_NO_AUTO_UPDATE=1
+      # for the whole loop disables the very behaviour tests/test-auto-update.sh
+      # asserts, so that file fails with "expected brew upgrade followed by CLI
+      # re-exec" on every run. The tests already fake their own updater and
+      # sync, and the fast tier is green locally with neither variable set — so
+      # exporting them here was a CI-only variation of exactly the kind the
+      # header of this file rules out. One code path.
       - name: Run the fast tier
-        env:
-          # The tests must not reach for the network or a live model, and must
-          # not try to auto-update themselves mid-run.
-          TOUCHSTONE_NO_AUTO_UPDATE: "1"
-          TOUCHSTONE_NO_AUTO_PROJECT_SYNC: "1"
         run: |
           set -euo pipefail
           failed=0
