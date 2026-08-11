@@ -15,7 +15,7 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 **Humans approve plans. Agents write and ship code. GitHub reviews code.**
 
-That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar. Because approval never comes from a person, the merge gate is: required checks green, no active `CHANGES_REQUESTED`, every review thread resolved, and the head bound to the base it was reviewed against. Local hooks are fast feedback; branch protection is the real boundary; emergency paths are audited.
+That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar. Because approval never comes from a person, the merge gate is: required checks green, a clean review from a trusted author bound to this exact head and base, no active `CHANGES_REQUESTED`, and every review thread resolved. An untrusted, stale, or non-clean review fails the gate even with nothing left open. Local hooks are fast feedback; branch protection is the real boundary; emergency paths are audited.
 
 Judging a capability, "is it useful?" is not the test: **does it constrain the agent, or merely serve it?** Automating what you can already do (retrying a push, recovering a moved base) belongs in the project, not here: you are the recovery mechanism.
 
@@ -79,7 +79,7 @@ Do not bypass the PR/review/merge path with a direct default-branch push except 
 | write, trust, or audit agent memory — it is a cache, not truth | `principles/memory-hygiene.md` |
 | write a `.cortex/` artifact or see a Tier-1 trigger fire | `.cortex/protocol.md` |
 
-Claude Code agents: the Touchstone-bundled user-scoped skills (`touchstone-git-workflow`, `touchstone-pre-impl`, `cortex-protocol`, `touchstone-audit-weak-points`, `touchstone-agent-swarms`, `memory-audit`) provide the same routing surface as this table, with descriptions in your session header. Trust whichever surface fires first.
+Claude Code agents: the bundled `touchstone-*` and `memory-audit` skills mirror this table in your session header. Trust whichever surface fires first.
 
 ## Orientation
 

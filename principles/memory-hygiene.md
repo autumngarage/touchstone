@@ -17,7 +17,7 @@ ago reads exactly like a flag that still exists.
 - **Date and source every claim.** If a memory mentions a command, flag, file
   path, version, or workflow, include the date (`YYYY-MM-DD`) and the canonical
   source you checked. A memory with no date cannot be aged out.
-- **Check the fact's owner, not the nearest document.** Repositories routinely
+- **Check the fact's canonical owner, not the nearest document.** Repositories routinely
   carry contradictory checked-in prose, so "the repo" is not a single voice. A
   flag is settled by `--help` or the parser; a version by the version file; a
   command by the script that runs it. Prose describing any of those is a
@@ -60,13 +60,17 @@ remembered command, path, or version turns out to be stale during real work —
 one wrong memory usually means a cohort written in the same session is also
 wrong.
 
-Deleting memory is a destructive action on user-owned content, so it follows
-the same rule as any other: **ask before removing, and leave a way back.** Take
-a timestamped backup of what you are about to change and get explicit approval
-for the deletions, whether you are running the skill or auditing by hand. A
-memory that is merely *stale* is corrected in place with a fresh date and
-source; deletion is for memory that was wrong to record at all. Drivers without
-the skill owe the same consent and backup, not a faster path.
+Memory is user-owned content, so **every** edit to it — correction as much as
+deletion — needs explicit approval and a timestamped backup first. Overwriting
+a memory in place destroys what was there just as surely as removing the file;
+"I only corrected it" is not a lesser act if the previous text is gone and the
+user never agreed to the change. Drivers without the `memory-audit` skill owe
+the same consent and backup by hand, not a faster path.
+
+Within that, the two outcomes are still distinct and should be proposed as
+different things: memory that is merely *stale* is **corrected** in place with
+a fresh date and source, while memory that was wrong to record at all is
+**deleted**. Say which one you are proposing and why.
 
 Related: `principles/documentation-ownership.md` covers the same question for
 docs — who owns a fact, and where it should live so it has exactly one home.
