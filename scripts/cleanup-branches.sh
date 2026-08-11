@@ -223,6 +223,9 @@ if [ "${#MERGED_LOCAL[@]}" -eq 0 ] && [ "${#SQUASH_MERGED_LOCAL[@]}" -eq 0 ] && 
 fi
 
 # REMOTE branches.
+# Enumeration cap for the open-PR scan. Deliberately a cap we can DETECT hitting
+# rather than a page size we silently truncate at.
+OPEN_PR_SCAN_LIMIT="${TOUCHSTONE_OPEN_PR_SCAN_LIMIT:-200}"
 REMOTE_DELETABLE=()
 REMOTE_HAS_PR=()
 REMOTE_UNIQUE_NO_PR=()
@@ -244,7 +247,19 @@ if [ "$REMOTE_TOO" -eq 1 ]; then
   # head-only scan classified it as deletable and deleting it closed the
   # dependents -- the exact loss merge-pr.sh now avoids by never deleting
   # (issue #713, PR #715 review).
-  if ! OPEN_PR_BRANCHES="$(gh pr list --state open --limit 200 --json headRefName,baseRefName --jq '.[] | .headRefName, .baseRefName' 2>&1)"; then
+  # --limit is a hard cap, not a page size: at exactly the cap we cannot know
+  # whether more open PRs exist, and a branch that is the base of an omitted PR
+  # would look unreferenced and be deleted, closing that PR (PR #715 review).
+  # Count PRs, not ref lines, because each PR contributes two lines.
+  OPEN_PR_COUNT="$(gh pr list --state open --limit "$OPEN_PR_SCAN_LIMIT" --json number --jq 'length' 2>/dev/null || echo "")"
+  if [ -n "$OPEN_PR_COUNT" ] && [ "$OPEN_PR_COUNT" -ge "$OPEN_PR_SCAN_LIMIT" ]; then
+    REMOTE_SKIPPED=1
+    echo ""
+    echo "  ERROR: $OPEN_PR_COUNT open PRs reached the $OPEN_PR_SCAN_LIMIT scan cap — skipping remote cleanup." >&2
+    echo "    Cannot prove a branch is unreferenced from a truncated list, and deleting" >&2
+    echo "    the base of an omitted PR would close it. Raise TOUCHSTONE_OPEN_PR_SCAN_LIMIT" >&2
+    echo "    above the open-PR count and rerun." >&2
+  elif ! OPEN_PR_BRANCHES="$(gh pr list --state open --limit "$OPEN_PR_SCAN_LIMIT" --json headRefName,baseRefName --jq '.[] | .headRefName, .baseRefName' 2>&1)"; then
     GH_PR_ERR="$OPEN_PR_BRANCHES"
     REMOTE_SKIPPED=1
     echo ""
@@ -354,6 +369,20 @@ fi
 if [ "$REMOTE_TOO" -eq 1 ] && [ "${#REMOTE_DELETABLE[@]}" -gt 0 ]; then
   REPO_SLUG="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)"
   for b in "${REMOTE_DELETABLE[@]}"; do
+    # Classification happened from one snapshot taken earlier; a stacked PR
+    # opened since would still be in REMOTE_DELETABLE and deleting its base
+    # closes it (PR #715 review). Re-ask immediately before the destructive
+    # call. GitHub offers no compare-and-delete for refs, so this narrows the
+    # window rather than eliminating it — which is why it fails closed on any
+    # inspection error instead of assuming "probably none".
+    if ! dependents="$(gh pr list --state open --base "$b" --limit "$OPEN_PR_SCAN_LIMIT" --json number --jq '[.[].number] | join(", ")' 2>&1)"; then
+      echo "    SKIPPED remote (could not re-check dependents): origin/$b — $dependents" >&2
+      continue
+    fi
+    if [ -n "$dependents" ]; then
+      echo "    SKIPPED remote (PR(s) $dependents opened against it since the scan): origin/$b"
+      continue
+    fi
     if [ -n "$REPO_SLUG" ] && gh api -X DELETE "/repos/$REPO_SLUG/git/refs/heads/$b" >/dev/null 2>&1; then
       echo "    deleted remote: origin/$b"
     elif git push origin --delete -- "$b" 2>&1; then
