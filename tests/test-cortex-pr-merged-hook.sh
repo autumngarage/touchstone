@@ -252,6 +252,16 @@ cat >"$FAKEBIN/gh" <<'EOF'
 set -euo pipefail
 printf '%s\n' "$*" >> "$FAKE_GH_LOG"
 if [ "${1:-}" = "repo" ] && [ "${2:-}" = "view" ]; then
+  # The hook refuses to merge when the repository deletes head branches on
+  # merge, since GitHub would remove the journal branch server-side and close
+  # anything based on it (PR #715 review). Answer the setting query distinctly
+  # from the identity query.
+  case "$*" in
+    *deleteBranchOnMerge*)
+      printf '%s\n' "${FAKE_GH_DELETE_BRANCH_ON_MERGE:-false}"
+      exit 0
+      ;;
+  esac
   printf '%s\n' 'autumngarage/example'
   exit 0
 fi

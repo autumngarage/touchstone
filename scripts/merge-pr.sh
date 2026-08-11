@@ -2754,11 +2754,19 @@ fi
 # silently closed PR with its review threads is not.
 if [ -n "$PR_HEAD_BRANCH" ]; then
   # Omitting --delete-branch only keeps the ref if the REPOSITORY does not
-  # delete it for us. `deleteBranchOnMerge` is a repo-level setting that removes
-  # the head branch server-side after every merge, regardless of what this
-  # script asks for — and it is enabled on at least one downstream project. So
-  # this must report what will actually happen rather than what it intended
-  # (PR #715 review).
+  # delete it for us. `deleteBranchOnMerge` removes the head branch server-side
+  # after every merge regardless of what this script asks for.
+  #
+  # There is no safe way to merge under that setting. Checking for dependents
+  # first does not help: `gh pr list` is a filter, not a transactional guard, so
+  # a PR opened between the lookup and the merge still has its base deleted and
+  # is closed with its review threads. That is the same negative-snapshot
+  # authorization this change removed from the explicit deletion path, and it is
+  # no safer here (PR #715 review).
+  #
+  # So the requirement is stated plainly rather than approximated: Touchstone
+  # will not merge into a repository that deletes head branches on merge. The
+  # fix is one command, and it is the repository's setting to change.
   repo_auto_delete="$(gh repo view --json deleteBranchOnMerge --jq '.deleteBranchOnMerge' 2>/dev/null || echo "unknown")"
 
   case "$repo_auto_delete" in
@@ -2768,51 +2776,26 @@ if [ -n "$PR_HEAD_BRANCH" ]; then
       echo "      bash scripts/cleanup-branches.sh --remote-too"
       ;;
     true)
-      # A warning printed before an unavoidable deletion is not retention. If
-      # anything is stacked on this branch, GitHub will delete the base out from
-      # under it and close those PRs with their review threads — so refuse the
-      # merge instead of narrating the loss (PR #715 review).
-      if ! auto_delete_dependents="$(gh pr list --state open --base "$PR_HEAD_BRANCH" \
-        --limit "${OPEN_PR_SCAN_LIMIT:-200}" --json number --jq '[.[].number] | join(", ")' 2>&1)"; then
-        echo "ERROR: this repository has deleteBranchOnMerge enabled, and the open PRs" >&2
-        echo "       stacked on '$PR_HEAD_BRANCH' could not be inspected:" >&2
-        echo "       $auto_delete_dependents" >&2
-        echo "       Refusing to merge: GitHub would delete the branch server-side and" >&2
-        echo "       any dependent PR would be closed. Fix the inspection, or run:" >&2
-        echo "         gh repo edit --delete-branch-on-merge=false" >&2
-        TOUCHSTONE_MERGE_FAILURE_REASON="auto-delete-dependents-unknown"
-        exit 1
-      fi
-      if [ -n "$auto_delete_dependents" ]; then
-        echo "ERROR: this repository has deleteBranchOnMerge enabled, so GitHub will delete" >&2
-        echo "       '$PR_HEAD_BRANCH' server-side after this merge — and PR(s)" >&2
-        echo "       $auto_delete_dependents are based on it. Merging would close them" >&2
-        echo "       along with their review threads." >&2
-        echo "       Refusing. Either retarget those PRs, or turn the setting off:" >&2
-        echo "         gh repo edit --delete-branch-on-merge=false" >&2
-        TOUCHSTONE_MERGE_FAILURE_REASON="auto-delete-would-close-dependents"
-        exit 1
-      fi
-      echo "WARNING: this repository has deleteBranchOnMerge enabled, so GitHub will"
-      echo "         delete '$PR_HEAD_BRANCH' server-side after this merge. Omitting"
-      echo "         --delete-branch does NOT retain it."
-      echo "         No open PR is based on it, so nothing is closed by that."
-      if [ -n "${REVIEWED_HEAD_OID:-}" ]; then
-        echo "         Restore the ref if you need it back:"
-        printf '           git push origin %s:refs/heads/%s\n' \
-          "$REVIEWED_HEAD_OID" "$(printf '%q' "$PR_HEAD_BRANCH")"
-      fi
-      echo "         Turn the setting off to keep stacked bases intact:"
-      echo "           gh repo edit --delete-branch-on-merge=false"
+      echo "ERROR: this repository has deleteBranchOnMerge enabled." >&2
+      echo "       GitHub will delete '$PR_HEAD_BRANCH' server-side after any merge," >&2
+      echo "       and omitting --delete-branch does not prevent it. Any PR stacked on" >&2
+      echo "       this branch would be closed along with its review threads." >&2
+      echo "       Refusing to merge. Turn the setting off:" >&2
+      echo "         gh repo edit --delete-branch-on-merge=false" >&2
+      echo "       Branch cleanup belongs to scripts/cleanup-branches.sh, which checks" >&2
+      echo "       dependents and records a restore command before removing anything." >&2
+      TOUCHSTONE_MERGE_FAILURE_REASON="auto-delete-enabled"
+      exit 1
       ;;
     *)
-      echo "WARNING: could not read this repository's deleteBranchOnMerge setting, so"
-      echo "         whether '$PR_HEAD_BRANCH' survives this merge is unknown."
-      if [ -n "${REVIEWED_HEAD_OID:-}" ]; then
-        echo "         Restore the ref if it disappears and a stacked PR needs it:"
-        printf '           git push origin %s:refs/heads/%s\n' \
-          "$REVIEWED_HEAD_OID" "$(printf '%q' "$PR_HEAD_BRANCH")"
-      fi
+      echo "ERROR: could not read this repository's deleteBranchOnMerge setting, so" >&2
+      echo "       whether GitHub will delete '$PR_HEAD_BRANCH' after this merge is" >&2
+      echo "       unknown. An API, auth, or permission failure here is indistinguishable" >&2
+      echo "       from the setting being enabled, so this fails closed rather than" >&2
+      echo "       merging with unknown destructive behaviour." >&2
+      echo "       Confirm with: gh repo view --json deleteBranchOnMerge" >&2
+      TOUCHSTONE_MERGE_FAILURE_REASON="auto-delete-unknown"
+      exit 1
       ;;
   esac
 fi

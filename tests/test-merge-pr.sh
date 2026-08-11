@@ -92,7 +92,16 @@ case "${1:-} ${2:-}" in
       # merge-pr.sh inspects this before claiming the branch is retained:
       # a repository with deleteBranchOnMerge enabled removes the head
       # server-side regardless of the flags we pass (PR #715 review).
-      deleteBranchOnMerge) echo "${GH_DELETE_BRANCH_ON_MERGE:-false}" ;;
+      deleteBranchOnMerge)
+        # __UNKNOWN__ simulates the query itself failing (API, auth, or
+        # permission), which is what merge-pr.sh must treat as unreadable
+        # rather than as a benign default.
+        if [ "${GH_DELETE_BRANCH_ON_MERGE:-false}" = "__UNKNOWN__" ]; then
+          echo "gh: could not read repository settings" >&2
+          exit 1
+        fi
+        echo "${GH_DELETE_BRANCH_ON_MERGE:-false}"
+        ;;
       *)
         echo "unexpected gh repo view args: $*" >&2
         exit 1
@@ -3425,52 +3434,36 @@ fi
 # deleteBranchOnMerge enabled, GitHub deletes the head server-side after every
 # merge, so "Leaving branch ... on the remote" would be a false statement — and
 # at least one downstream project has the setting on (PR #715 review).
-echo "==> Test: repository-level auto-delete is reported instead of claiming retention"
+# There is no safe merge under repository-level auto-delete. Checking for
+# dependents first is a negative snapshot, not a transactional guard: a PR
+# opened between the lookup and the merge still has its base deleted. So the
+# requirement is stated rather than approximated — Touchstone refuses to merge
+# into a repository that deletes head branches on merge (PR #715 review).
+echo "==> Test: repository-level auto-delete refuses the merge outright"
 AUTODEL_OUT="$TEST_DIR/output-autodelete.txt"
-GH_DELETE_BRANCH_ON_MERGE=true run_retention_case "$AUTODEL_OUT"
-if grep -q 'deleteBranchOnMerge enabled' "$AUTODEL_OUT" \
-  && grep -q 'does NOT retain it' "$AUTODEL_OUT" \
-  && grep -q 'git push origin' "$AUTODEL_OUT" \
-  && ! grep -q 'Leaving branch' "$AUTODEL_OUT"; then
-  echo "==> PASS: auto-delete is disclosed with a ref-restore recovery line"
+AUTODEL_RC=0
+GH_DELETE_BRANCH_ON_MERGE=true run_retention_case "$AUTODEL_OUT" || AUTODEL_RC=$?
+if [ "$AUTODEL_RC" -ne 0 ] \
+  && grep -q 'deleteBranchOnMerge enabled' "$AUTODEL_OUT" \
+  && grep -q 'delete-branch-on-merge=false' "$AUTODEL_OUT" \
+  && ! grep -q -- '--squash' "$TEST_DIR/gh-merge-args" 2>/dev/null; then
+  echo "==> PASS: refuses under auto-delete and never reaches the merge call"
 else
-  echo "FAIL: with deleteBranchOnMerge enabled the merge must say the branch will NOT" >&2
-  echo "      survive, and must print how to restore the ref" >&2
+  echo "FAIL: deleteBranchOnMerge enabled must refuse the merge outright" >&2
+  echo "      rc=$AUTODEL_RC" >&2
+  cat "$TEST_DIR/gh-merge-args" 2>/dev/null >&2
   tail -25 "$AUTODEL_OUT" >&2
   exit 1
 fi
 
-# Disclosure is enough only while nothing is stacked. With dependents present,
-# a warning printed before an unavoidable server-side deletion is not retention
-# — the dependent PRs are closed with their review threads either way, so the
-# merge has to refuse rather than narrate the loss (PR #715 review).
-echo "==> Test: auto-delete plus stacked dependents refuses the merge"
-AUTODEL_DEPS_OUT="$TEST_DIR/output-autodelete-deps.txt"
-DEPS_RC=0
-GH_DELETE_BRANCH_ON_MERGE=true GH_DEPENDENT_PRS="4242, 4243" \
-  run_retention_case "$AUTODEL_DEPS_OUT" || DEPS_RC=$?
-if [ "$DEPS_RC" -ne 0 ] \
-  && grep -q '4242, 4243' "$AUTODEL_DEPS_OUT" \
-  && grep -q 'delete-branch-on-merge=false' "$AUTODEL_DEPS_OUT" \
-  && ! grep -q -- '--squash' "$TEST_DIR/gh-merge-args" 2>/dev/null; then
-  echo "==> PASS: refuses, names the dependents, and never reaches the merge call"
-else
-  echo "FAIL: deleteBranchOnMerge with dependents must refuse to merge" >&2
-  echo "      rc=$DEPS_RC" >&2
-  cat "$TEST_DIR/gh-merge-args" 2>/dev/null >&2
-  tail -25 "$AUTODEL_DEPS_OUT" >&2
-  exit 1
-fi
-
-echo "==> Test: auto-delete with an unreadable dependent list fails closed"
+echo "==> Test: an unreadable auto-delete setting also fails closed"
 AUTODEL_ERR_OUT="$TEST_DIR/output-autodelete-err.txt"
 ERR_RC=0
-GH_DELETE_BRANCH_ON_MERGE=true GH_DEPENDENT_PRS="__FAIL__" \
-  run_retention_case "$AUTODEL_ERR_OUT" || ERR_RC=$?
-if [ "$ERR_RC" -ne 0 ] && grep -q 'could not be inspected' "$AUTODEL_ERR_OUT"; then
-  echo "==> PASS: an unreadable dependent list is refused, not assumed empty"
+GH_DELETE_BRANCH_ON_MERGE="__UNKNOWN__" run_retention_case "$AUTODEL_ERR_OUT" || ERR_RC=$?
+if [ "$ERR_RC" -ne 0 ] && grep -q 'fails closed\|unknown' "$AUTODEL_ERR_OUT"; then
+  echo "==> PASS: an unreadable setting is refused, not assumed benign"
 else
-  echo "FAIL: deleteBranchOnMerge with an uninspectable dependent list must fail closed" >&2
+  echo "FAIL: an unreadable deleteBranchOnMerge must fail closed" >&2
   echo "      rc=$ERR_RC" >&2
   tail -25 "$AUTODEL_ERR_OUT" >&2
   exit 1

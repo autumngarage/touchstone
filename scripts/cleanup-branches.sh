@@ -402,9 +402,17 @@ if [ "$REMOTE_TOO" -eq 1 ] && [ "${#REMOTE_DELETABLE[@]}" -gt 0 ]; then
     # recoverability, not atomicity — capture the SHA first and print it, so a
     # branch deleted inside that window can be restored exactly (PR #715
     # review).
-    deleted_sha="$(git rev-parse --verify --quiet "refs/remotes/origin/$b" 2>/dev/null || true)"
-    if [ -z "$deleted_sha" ] && [ -n "$REPO_SLUG" ]; then
+    # Resolve the AUTHORITATIVE tip, not the cached tracking ref. Commits pushed
+    # since this script's fetch would leave refs/remotes/origin/<b> naming an
+    # older commit, while the DELETE below removes the branch at its current
+    # server-side tip — so a restore command built from the stale ref would
+    # silently fail to recover the commits actually deleted (PR #715 review).
+    deleted_sha=""
+    if [ -n "$REPO_SLUG" ]; then
       deleted_sha="$(gh api "/repos/$REPO_SLUG/git/refs/heads/$b" --jq '.object.sha' 2>/dev/null || true)"
+    fi
+    if [ -z "$deleted_sha" ]; then
+      deleted_sha="$(git ls-remote origin "refs/heads/$b" 2>/dev/null | awk 'NR==1{print $1}')"
     fi
     if [ -z "$deleted_sha" ]; then
       echo "    SKIPPED remote (could not resolve its SHA, so deletion would be unrecoverable): origin/$b" >&2
