@@ -495,9 +495,17 @@ trusted_review_exists_for_head() {
   # PENDING is unsubmitted and costs nothing; DISMISSED was still a spent
   # round. Consumed by the round-budget gate (#760).
   OPEN_PR_TRUSTED_REVIEW_ROUNDS=0
-  # True when a trusted "Reviewed commit:" comment names this exact head —
-  # the comment-channel answer formal-review lookup cannot see.
-  OPEN_PR_HEAD_RESULT_COMMENT=false
+  # Comment-channel answer state for THIS head (the channel formal-review
+  # lookup cannot see; clean results normally arrive here). AT is the latest
+  # trusted result comment naming this exact head by merge-pr.sh's canonical
+  # 10-char marker; CLEAN mirrors merge-pr.sh's verdict rule (latest wins,
+  # same-second ties collapse to non-clean). LOOKUP_ERROR nonempty means the
+  # comment inspection FAILED — unknown, not absent — and every stall
+  # classification/recovery consumer must suppress rather than act on
+  # incomplete GitHub state (PR #781 review).
+  OPEN_PR_HEAD_RESULT_COMMENT_AT=""
+  OPEN_PR_HEAD_RESULT_COMMENT_CLEAN=false
+  OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR=""
   local submitted
   if ! reviews_tsv="$(gh api --paginate "repos/$REPO_FULL_NAME/pulls/$pr_number/reviews" \
     --jq '.[] | [(.user.login // ""), (.commit_id // ""), (.state // ""), (.submitted_at // "")] | @tsv' 2>&1)"; then
@@ -539,28 +547,41 @@ trusted_review_exists_for_head() {
   # supported result channel, so a budget that ignored them would be
   # evadable by channel (PR #765 review). Lookup failure leaves the count
   # partial rather than refusing — friction control, not authorization.
-  local result_comment_logins comment_login comment_result_sha
-  # Each row is login<TAB>reviewed-sha (sha empty when the body carries no
-  # backticked commit). The sha matters beyond round counting: a trusted
-  # comment result naming THIS head is the reviewer's answer — merge-pr.sh's
-  # comment channel accepts it, and clean results normally arrive this way —
-  # so the stall report and the stall-recovery retirement must not treat such
-  # a head as unanswered (#759; caught by pre-PR adversarial verification).
-  if result_comment_logins="$(gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments" \
-    --jq '.[] | select((.body // "") | contains("Reviewed commit:")) | [(.user.login // ""), (((.body // "") | capture("Reviewed commit:[^`]*`(?<sha>[0-9a-fA-F]{7,40})`")? .sha) // "")] | @tsv' 2>/dev/null)"; then
-    while IFS=$'\t' read -r comment_login comment_result_sha; do
+  # Each row is login<TAB>reviewed-sha<TAB>created-at<TAB>verdict. The jq
+  # program lives in ONE single-quoted assignment so the test tier can eval
+  # this exact line and exercise the real filter with real jq — the P1 on
+  # PR #781 was an uncompilable filter that stub-served fixtures never ran.
+  # A row is kept even when the body carries no backticked commit (empty sha)
+  # so round counting never depends on the capture. The head answer requires
+  # the canonical 10-char short exactly, as merge-pr.sh's matcher does — a
+  # 7-char or full-length sha would be rejected by the merge gate, so it must
+  # not count as an answer here either. Lookup failure records the error and
+  # leaves the round count partial: friction control, not authorization.
+  OPEN_PR_RESULT_COMMENT_JQ='.[] | [(.user.login // ""), (((.body // "") | (capture("Reviewed commit:[^`]*`(?<sha>[0-9a-fA-F]{7,40})`")? | .sha) // "")), (.created_at // ""), (if ((.body // "") | (startswith("Codex Review: Didn'\''t find any major issues.") or startswith("Codex Review: No major issues."))) then "clean" else "non-clean" end)] | @tsv'
+  local result_comment_rows comment_login comment_result_sha comment_result_at comment_result_verdict
+  local head_short_lc comment_sha_lc
+  head_short_lc="$(printf '%.10s' "$head_sha" | tr '[:upper:]' '[:lower:]')"
+  if result_comment_rows="$(gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments" \
+    --jq "$OPEN_PR_RESULT_COMMENT_JQ" 2>&1)"; then
+    while IFS=$'\t' read -r comment_login comment_result_sha comment_result_at comment_result_verdict; do
       [ -n "$comment_login" ] || continue
       csv_contains "$OPEN_PR_TRUSTED_REVIEW_AUTHORS" "$comment_login" || continue
       OPEN_PR_TRUSTED_REVIEW_ROUNDS=$((OPEN_PR_TRUSTED_REVIEW_ROUNDS + 1))
-      case "$comment_result_sha" in
-        '') ;;
-        *)
-          case "$head_sha" in
-            "$comment_result_sha"*) OPEN_PR_HEAD_RESULT_COMMENT=true ;;
-          esac
-          ;;
-      esac
-    done <<<"$result_comment_logins"
+      comment_sha_lc="$(printf '%s' "$comment_result_sha" | tr '[:upper:]' '[:lower:]')"
+      [ -n "$comment_sha_lc" ] && [ "$comment_sha_lc" = "$head_short_lc" ] || continue
+      [ -n "$comment_result_at" ] || continue
+      if [ -z "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ] \
+        || [[ "$comment_result_at" > "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ]]; then
+        OPEN_PR_HEAD_RESULT_COMMENT_AT="$comment_result_at"
+        OPEN_PR_HEAD_RESULT_COMMENT_CLEAN=false
+        [ "$comment_result_verdict" = "clean" ] && OPEN_PR_HEAD_RESULT_COMMENT_CLEAN=true
+      elif [ "$comment_result_at" = "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ] \
+        && [ "$comment_result_verdict" != "clean" ]; then
+        OPEN_PR_HEAD_RESULT_COMMENT_CLEAN=false
+      fi
+    done <<<"$result_comment_rows"
+  else
+    OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR="$result_comment_rows"
   fi
   return "$found"
 }
@@ -971,9 +992,17 @@ request_pr_triggered_review() {
       # past it, absence must be distinguishable from latency (#759). Only a
       # definite no-review answer (status 1) reports — a failed lookup
       # (status 2) proves nothing about the reviewer.
-      if [ "$head_review_status" -eq 1 ] \
-        && [ "${OPEN_PR_HEAD_RESULT_COMMENT:-false}" != true ] \
-        && [ -n "$matching_trigger_at" ]; then
+      # Stall classification needs COMPLETE answer state: a failed comment
+      # lookup is unknown, not absence, and must not spend a review cycle on
+      # incomplete GitHub state; an answer PREDATING this request's trigger
+      # answered an earlier ask, not this one (PR #781 review).
+      if [ -n "$OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR" ]; then
+        echo "WARNING: comment-result lookup failed; stall detection (#759) skipped this run:"
+        echo "         $OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR"
+      elif [ "$head_review_status" -eq 1 ] \
+        && [ -n "$matching_trigger_at" ] \
+        && { [ -z "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ] \
+          || ! [[ "$OPEN_PR_HEAD_RESULT_COMMENT_AT" > "$matching_trigger_at" ]]; }; then
         report_unanswered_request_stall "$matching_trigger_at" || return 1
       fi
       return 0
@@ -981,7 +1010,9 @@ request_pr_triggered_review() {
   fi
   if [ "${FRESH_REVIEW:-false}" = true ]; then
     if [ "$matching_request" = true ] && [ "$head_review_status" -eq 1 ] \
-      && [ "${OPEN_PR_HEAD_RESULT_COMMENT:-false}" != true ]; then
+      && [ -z "$OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR" ] \
+      && { [ -z "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ] \
+        || ! [[ "$OPEN_PR_HEAD_RESULT_COMMENT_AT" > "$matching_trigger_at" ]]; }; then
       # Stall recovery (#759): the durable request for this exact head was
       # never answered, and the replacement ask must not reuse its intent —
       # matching_trigger_at anchors to the intent, so the stall clock would
@@ -1023,7 +1054,10 @@ request_pr_triggered_review() {
     echo "ERROR: PR #$pr_number has already spent $OPEN_PR_TRUSTED_REVIEW_ROUNDS review round(s); the budget is $ROUND_BUDGET (#760)." >&2
     if [ "$matching_request" != true ] || [ "$request_consumed_by_dismissal" = true ] \
       || { [ "$head_review_status" -eq 1 ] \
-        && [ "${OPEN_PR_HEAD_RESULT_COMMENT:-false}" != true ]; }; then
+        && [ -z "$OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR" ] \
+        && { [ -z "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ] \
+          || ! [[ "$OPEN_PR_HEAD_RESULT_COMMENT_AT" > "$matching_trigger_at" ]] \
+          || [ "$OPEN_PR_HEAD_RESULT_COMMENT_CLEAN" != true ]; }; }; then
       # The budget/evidence deadlock (#775): this head has no reviewer answer
       # the merge gate accepts (no request recorded, its answer was dismissed,
       # or the request was never answered — the #759 stall), so "run

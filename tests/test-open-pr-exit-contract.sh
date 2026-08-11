@@ -230,9 +230,14 @@ case "$1 $2" in
         fi
         ;;
       */issues/*/comments*)
-        # Comment-channel review results: logins that posted a trusted
-        # "Reviewed commit:" comment (the jq filter runs in the real
-        # script; the stub serves post-filter logins, one per line).
+        # Comment-channel review results: post-filter TSV rows of
+        # login<TAB>reviewed-sha<TAB>created-at<TAB>verdict (later fields
+        # may be absent — the script treats them as empty). The REAL jq
+        # filter is exercised separately by Case 47 against actual jq.
+        if [ "${GH_RESULT_COMMENTS_FAIL:-0}" = "1" ]; then
+          echo "comment listing unavailable" >&2
+          exit 1
+        fi
         if [ -n "${GH_RESULT_COMMENT_AUTHORS:-}" ]; then
           printf '%s\n' "$GH_RESULT_COMMENT_AUTHORS"
         fi
@@ -383,6 +388,7 @@ run_open_pr() {
       GH_HEAD_REVIEWS_FAIL="${GH_HEAD_REVIEWS_FAIL:-0}" \
       GH_REQUEST_STATUS_RECORDS="${GH_REQUEST_STATUS_RECORDS:-}" \
       GH_RESULT_COMMENT_AUTHORS="${GH_RESULT_COMMENT_AUTHORS:-}" \
+      GH_RESULT_COMMENTS_FAIL="${GH_RESULT_COMMENTS_FAIL:-0}" \
       GIT_PUSH_PLAIN_EXIT="${GIT_PUSH_PLAIN_EXIT:-0}" \
       GIT_PUSH_LEASE_EXIT="${GIT_PUSH_LEASE_EXIT:-0}" \
       GIT_PUSH_LOG="$TEST_DIR/git-push.log" \
@@ -1961,7 +1967,7 @@ reset_open_pr_logs
 OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
   GH_PR_HEAD_OID="$CASE46_HEAD" \
   GH_REQUEST_STATUS_RECORDS="$CASE46_RECORDS" \
-  GH_RESULT_COMMENT_AUTHORS="$(printf 'chatgpt-codex-connector[bot]\t%.10s' "$CASE46_HEAD")" \
+  GH_RESULT_COMMENT_AUTHORS="$(printf 'chatgpt-codex-connector[bot]\t%.10s\t2026-08-01T02:00:00Z\tclean' "$CASE46_HEAD")" \
   GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
   run_open_pr >"$OUT" 2>&1 || RC=$?
 
@@ -1987,7 +1993,7 @@ reset_open_pr_logs
 OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
   GH_PR_HEAD_OID="$CASE46_HEAD" \
   GH_REQUEST_STATUS_RECORDS="$CASE46_RECORDS" \
-  GH_RESULT_COMMENT_AUTHORS="$(printf 'chatgpt-codex-connector[bot]\t%.10s' "$CASE46_HEAD")" \
+  GH_RESULT_COMMENT_AUTHORS="$(printf 'chatgpt-codex-connector[bot]\t%.10s\t2026-08-01T02:00:00Z\tclean' "$CASE46_HEAD")" \
   GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
   run_open_pr --fresh-review >"$OUT" 2>&1 || RC=$?
 
@@ -2009,6 +2015,85 @@ fi
 # print the deadlock exit (override), not bounce to merge-pr.sh for a head it
 # just declared unanswered. One comment round is spent by a stale-sha result;
 # two more by stale formal reviews.
+# Case 46h (PR #781 review): an answer that PREDATES this request's trigger
+# answered an earlier ask — it must not suppress the stall report for the
+# newest request.
+echo "==> Case 46h: a pre-trigger comment answer does not suppress the stall report"
+OUT="$TEST_DIR/case46h.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE46_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE46_RECORDS" \
+  GH_RESULT_COMMENT_AUTHORS="$(printf 'chatgpt-codex-connector[bot]\t%.10s\t2026-07-31T00:00:00Z\tclean' "$CASE46_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'unanswered for' "$OUT" \
+  && grep -q -- '--fresh-review' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: an answer predating the trigger must not suppress the stall report" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Case 46i (PR #781 review): a FAILED comment lookup is unknown, not absence.
+# Stall classification must suppress with a visible warning instead of
+# recommending a recovery that spends a review cycle on incomplete state.
+echo "==> Case 46i: comment lookup failure suppresses stall classification loudly"
+OUT="$TEST_DIR/case46i.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE46_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE46_RECORDS" \
+  GH_RESULT_COMMENTS_FAIL=1 \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'comment-result lookup failed' "$OUT" \
+  && ! grep -q 'unanswered for' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a failed comment lookup must suppress stall classification with a warning" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Case 45g (PR #781 review): a NON-CLEAN comment answer is body-only — the
+# merge gate rejects it — so at budget it must take the deadlock exit, not
+# advertise merge-pr.sh.
+echo "==> Case 45g: a non-clean comment answer at budget takes the deadlock exit"
+OUT="$TEST_DIR/case45g.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE46_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE46_RECORDS" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\tstale-head-1\tCOMMENTED\t2026-08-01T00:00:01Z\nchatgpt-codex-connector[bot]\tstale-head-2\tCOMMENTED\t2026-08-01T01:00:01Z')" \
+  GH_RESULT_COMMENT_AUTHORS="$(printf 'chatgpt-codex-connector[bot]\t%.10s\t2026-08-01T02:00:00Z\tnon-clean' "$CASE46_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr --fresh-review >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'budget/evidence deadlock' "$OUT" \
+  && ! grep -q 'run: bash scripts/merge-pr.sh' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a body-only comment answer must not be advertised as mergeable" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 45f: budget refusal on a stalled unanswered head names the override"
 OUT="$TEST_DIR/case45f.out"
 RC=0
@@ -2017,7 +2102,7 @@ OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
   GH_PR_HEAD_OID="$CASE46_HEAD" \
   GH_REQUEST_STATUS_RECORDS="$CASE46_RECORDS" \
   GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\tstale-head-1\tCOMMENTED\t2026-08-01T00:00:01Z\nchatgpt-codex-connector[bot]\tstale-head-2\tCOMMENTED\t2026-08-01T01:00:01Z')" \
-  GH_RESULT_COMMENT_AUTHORS=$'chatgpt-codex-connector[bot]\tdeadbeef00' \
+  GH_RESULT_COMMENT_AUTHORS=$'chatgpt-codex-connector[bot]\tdeadbeef00\t2026-08-01T02:00:00Z\tclean' \
   GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
   run_open_pr --fresh-review >"$OUT" 2>&1 || RC=$?
 
@@ -2364,6 +2449,40 @@ else
   echo "    provenance: $(tr '\n' ' ' <"$TEST_DIR/gate-provenance.log")" >&2
   cat "$OUT" >&2
   ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Case 47 (PR #781 review, P1): the LIVE comment-result jq program must
+# compile and classify with real jq — the stub serves post-filter rows, so
+# without this the filter itself is never executed and an uncompilable
+# program silently zeroes comment rounds and answers.
+# ---------------------------------------------------------------------------
+echo "==> Case 47: the live comment-result jq filter compiles and classifies"
+CASE47_JQ_LINE="$(grep "^  OPEN_PR_RESULT_COMMENT_JQ=" "$SCRIPT_DIR/open-pr.sh" || true)"
+if [ -z "$CASE47_JQ_LINE" ]; then
+  echo "    FAIL: could not extract OPEN_PR_RESULT_COMMENT_JQ from open-pr.sh (extraction guard)" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  eval "${CASE47_JQ_LINE#  }"
+  CASE47_JSON='[
+    {"user":{"login":"chatgpt-codex-connector[bot]"},"created_at":"2026-08-01T02:00:00Z","body":"Codex Review: Didn'"'"'t find any major issues. Bravo.\n\n**Reviewed commit:** `abc1234de0`"},
+    {"user":{"login":"chatgpt-codex-connector[bot]"},"created_at":"2026-08-01T03:00:00Z","body":"### Codex Review\n\nHere are findings.\n\n**Reviewed commit:** `abc1234de0`"},
+    {"user":{"login":"chatgpt-codex-connector[bot]"},"created_at":"2026-08-01T04:00:00Z","body":"Reviewed commit: coming soon, no sha here"},
+    {"user":{"login":"someone"},"created_at":"2026-08-01T05:00:00Z","body":"unrelated"}
+  ]'
+  CASE47_OUT="$(printf '%s' "$CASE47_JSON" | jq -r "$OPEN_PR_RESULT_COMMENT_JQ" 2>&1)" || CASE47_OUT="JQ_FAILED: $CASE47_OUT"
+  if printf '%s' "$CASE47_OUT" | grep -q '^JQ_FAILED'; then
+    echo "    FAIL: the live jq program does not run: $CASE47_OUT" >&2
+    ERRORS=$((ERRORS + 1))
+  elif printf '%s\n' "$CASE47_OUT" | grep -q $'^chatgpt-codex-connector\[bot\]\tabc1234de0\t2026-08-01T02:00:00Z\tclean$' \
+    && printf '%s\n' "$CASE47_OUT" | grep -q $'^chatgpt-codex-connector\[bot\]\tabc1234de0\t2026-08-01T03:00:00Z\tnon-clean$' \
+    && printf '%s\n' "$CASE47_OUT" | grep -q $'^chatgpt-codex-connector\[bot\]\t\t2026-08-01T04:00:00Z\tnon-clean$'; then
+    echo "    PASS"
+  else
+    echo "    FAIL: live jq filter misclassified the fixture comments" >&2
+    printf '%s\n' "$CASE47_OUT" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
 fi
 
 # ---------------------------------------------------------------------------
