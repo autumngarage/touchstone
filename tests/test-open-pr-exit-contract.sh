@@ -1443,6 +1443,33 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# Case 42f (PR #755 review, round 10): the mirror of 42e — a LIVE
+# post-trigger answer plus a dismissed post-trigger review on the same head.
+# The request WAS answered; the dismissal of a sibling must not consume it,
+# or a plain rerun spends a full review cycle for nothing.
+echo "==> Case 42f: a live post-trigger answer shields the request from consumption"
+OUT="$TEST_DIR/case42f.out"
+RC=0
+reset_open_pr_logs
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE42_HEAD" \
+  GH_REQUEST_STATUS_RECORDS="$CASE42_RECORDS" \
+  GH_HEAD_REVIEWS="$(printf 'chatgpt-codex-connector[bot]\t%s\tCOMMENTED\t2026-08-01T00:00:09Z\nchatgpt-codex-connector[bot]\t%s\tDISMISSED\t2026-08-01T00:00:07Z' "$CASE42_HEAD" "$CASE42_HEAD")" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'is already reviewed' "$OUT" \
+  && ! grep -q 'posting a fresh request intent' "$OUT" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a live post-trigger answer must prevent dismissal consumption" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo "==> Case 43: review bound to another commit does not license the new head"
 OUT="$TEST_DIR/case43.out"
 RC=0

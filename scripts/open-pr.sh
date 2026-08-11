@@ -288,6 +288,7 @@ trusted_review_exists_for_head() {
 
   OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR=""
   OPEN_PR_HEAD_REVIEW_DISMISSED_AT=""
+  OPEN_PR_HEAD_REVIEW_LIVE_AT=""
   local submitted
   if ! reviews_tsv="$(gh api --paginate "repos/$REPO_FULL_NAME/pulls/$pr_number/reviews" \
     --jq '.[] | [(.user.login // ""), (.commit_id // ""), (.state // ""), (.submitted_at // "")] | @tsv' 2>&1)"; then
@@ -318,6 +319,10 @@ trusted_review_exists_for_head() {
       PENDING) continue ;;
     esac
     found=0
+    if [ -z "$OPEN_PR_HEAD_REVIEW_LIVE_AT" ] \
+      || [[ "$submitted" > "$OPEN_PR_HEAD_REVIEW_LIVE_AT" ]]; then
+      OPEN_PR_HEAD_REVIEW_LIVE_AT="$submitted"
+    fi
   done <<<"$reviews_tsv"
   return "$found"
 }
@@ -615,7 +620,16 @@ request_pr_triggered_review() {
   if [ -n "${OPEN_PR_HEAD_REVIEW_DISMISSED_AT:-}" ] \
     && [ -n "$matching_trigger_at" ] \
     && [[ "$OPEN_PR_HEAD_REVIEW_DISMISSED_AT" > "$matching_trigger_at" ]]; then
-    request_consumed_by_dismissal=true
+    # A dismissal only consumes the request when NO live post-trigger answer
+    # exists: multiple exact-head reviews are supported, and if a valid
+    # non-dismissed review also postdates the trigger, the request WAS
+    # answered — merge-pr.sh authorizes from it, and re-requesting would
+    # spend a full review cycle for nothing, the anti-goal of this change
+    # (PR #755 review, round 10).
+    if [ -z "${OPEN_PR_HEAD_REVIEW_LIVE_AT:-}" ] \
+      || ! [[ "$OPEN_PR_HEAD_REVIEW_LIVE_AT" > "$matching_trigger_at" ]]; then
+      request_consumed_by_dismissal=true
+    fi
   fi
 
   if [ "$head_review_status" -eq 0 ] && [ "$matching_request" = true ] \
