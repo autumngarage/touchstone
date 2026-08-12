@@ -251,6 +251,23 @@ jobs:
       # they get an explicit fail-closed red (publish_sweep_overflow), so
       # the cap bounds API cost without ever retaining a stale verdict.
       MAX_BASE_SWEEP_PRS: "50"
+      # Upper bound on how many labels (author logins, PR numbers, base oids)
+      # any one variable-length list renders into the check-run summary; the
+      # remainder becomes an exact "(+N more)" count. See
+      # render_bounded_labels for why an unbounded render is a merge-gate
+      # denial of service.
+      #
+      # Derived the way MAX_BASE_SWEEP_PRS is. From below: the observed count
+      # of distinct untrusted review authors on a real PR is 1 (#802), and the
+      # legitimate ceiling is "the humans and bots that could review one PR" —
+      # single digit. From above: a GitHub login is at most 39 characters (44
+      # with a "[bot]" suffix), so 20 labels plus separators render under 900
+      # bytes, and the four bounded lists together stay under 5% of GitHub's
+      # 65535-character check-summary limit (and under 3% of Linux's 128 KiB
+      # cap on one argv entry, which is how the summary reaches gh api).
+      # 20 therefore clears legitimate traffic twice over while keeping the
+      # worst case comfortably publishable.
+      MAX_RENDERED_LABELS: "20"
     steps:
       - name: Evaluate binding and publish the check-run
         run: |
@@ -258,9 +275,32 @@ jobs:
 
           # Reads TRUSTED_AUTHORS_EFFECTIVE from the calling evaluate_pr via
           # dynamic scoping — the per-PR allowlist, not the env fallback.
+          #
+          # SYNTHETIC PLACEHOLDERS ARE REJECTED BEFORE THE COMPARISON. This
+          # workflow substitutes `<...>` placeholders wherever GitHub returns
+          # no value — <unknown> for a deleted account's null .user, <none>
+          # for an absent status field — so a missing value still occupies its
+          # own TSV column instead of shifting every column after it. A GitHub
+          # login is [A-Za-z0-9-] with an optional "[bot]" suffix and is never
+          # empty, so no real principal can contain `<` or `>`: rejecting that
+          # whole namespace here excludes every present and future placeholder
+          # by construction, rather than one literal at a time.
+          #
+          # It happens HERE, not by filtering the allowlist at load time,
+          # because TRUSTED_AUTHORS_EFFECTIVE is parsed from
+          # .touchstone-review.toml and that parser accepts arbitrary entries.
+          # A config listing `<unknown>` would otherwise make a formal review —
+          # or a matching result comment — from a DELETED account into trusted
+          # evidence and turn this required check GREEN for a review GitHub can
+          # no longer attribute to anyone. A load-time filter is defeated by
+          # the next config or the next sentinel; the invariant belongs at the
+          # comparison, where nothing can route around it. (PR #808, round 2.)
           author_is_trusted() {
             local candidate="$1" item
             local -a items
+            case "$candidate" in
+              '' | *'<'* | *'>'*) return 1 ;;
+            esac
             IFS=',' read -r -a items <<<"$TRUSTED_AUTHORS_EFFECTIVE"
             for item in "${items[@]}"; do
               if [ "$item" = "$candidate" ]; then
@@ -274,6 +314,54 @@ jobs:
           add_reason() {
             reasons="${reasons}${reasons:+$'\n'}- $1"
           }
+
+          # >>> parity-tested: render_bounded_labels >>>
+          # Renders a $sep-joined label list for the check-run summary: the
+          # first MAX_RENDERED_LABELS labels verbatim, then "(+N more)" for
+          # the exact remainder. Empty in, empty out (callers rely on that to
+          # keep their own :- fallbacks reachable).
+          #
+          # EVERY variable-length list this workflow prints into the summary
+          # goes through here. The summary reaches GitHub as one
+          # `-f output[summary]=...` argument, and its inputs are GitHub API
+          # responses: on a public repository the reviews, comments and PRs at
+          # a head are open to anyone, so the number of distinct untrusted
+          # review authors — and of PRs sharing a head — is ATTACKER-
+          # CONTROLLED. Past GitHub's 65535-character summary limit (or the
+          # host's cap on a single argv entry) the final PATCH fails, the
+          # pending run is never completed, and this required check stays
+          # PENDING forever: a merge-gate denial of service whose input size
+          # the attacker chooses (PR #808 review, round 2). Truncating the
+          # render keeps the verdict publishable for any input the API can
+          # return, and the exact remainder count keeps it honest — the
+          # operator still learns how many were found.
+          #
+          # The one summary list deliberately NOT bounded is the trusted
+          # allowlist echoed in the coordinates block: it is read from the
+          # review config at the PR's BASE oid, so its length is set by merged
+          # code, never by anyone who can open a PR or submit a review.
+          render_bounded_labels() {
+            local list="$1" sep="${2:-,}"
+            local rendered="" total extra i
+            local -a labels
+            [ -n "$list" ] || return 0
+            # Split ONCE (linear) rather than peeling the head off a shrinking
+            # string (quadratic): the flood this cap exists to survive is
+            # exactly the input that would make the quadratic form crawl, so
+            # the mitigation must not carry its own cost curve. `read` stops
+            # at the first newline, which no label can contain — logins, PR
+            # numbers and commit oids are newline-free, and the row filters
+            # gsub newlines out of every free-text field before bash sees it.
+            IFS="$sep" read -r -a labels <<<"$list"
+            total=${#labels[@]}
+            for ((i = 0; i < total && i < MAX_RENDERED_LABELS; i++)); do
+              rendered="${rendered}${rendered:+$sep}${labels[i]}"
+            done
+            extra=$((total - i))
+            [ "$extra" -le 0 ] || rendered="$rendered (+$extra more)"
+            printf '%s' "$rendered"
+          }
+          # <<< parity-tested: render_bounded_labels <<<
 
           # >>> parity-tested: record_untrusted_creator >>>
           # Appends the normalized label for an untrusted review-request
@@ -294,6 +382,87 @@ jobs:
             esac
           }
           # <<< parity-tested: record_untrusted_creator <<<
+
+          # >>> parity-tested: untrusted_review_authors >>>
+          # Records the distinct authors of the formal reviews found AT THE
+          # CURRENT HEAD whose author is outside the allowlist, and renders
+          # the failure reason that names them.
+          #
+          # The reason names the authors OBSERVED, never the allowlist
+          # (issue #804). Printing the trusted set in this slot told the
+          # operator that the trusted reviewer had been rejected as
+          # untrusted — the same list then reappeared two lines later as
+          # `trusted authors:` — and invited the fix "add this author to
+          # .touchstone-review.toml" for an author already on it. That
+          # points away from the real cause, which is almost always "this
+          # head has not been reviewed yet; request a review". The allowlist
+          # is still echoed exactly once, in the coordinates block.
+          #
+          # record_untrusted_review_author appends to the caller's
+          # untrusted_review_authors list (dynamic scoping) once per author,
+          # normalizing an empty login to <unknown> BEFORE deduplication for
+          # the same reason record_untrusted_creator does: a raw empty
+          # string turns the dedup pattern into ",," which matches the empty
+          # list and silently drops the first such author.
+          # tests/test-review-binding-workflow.sh extracts both functions
+          # verbatim and regression-tests the #804 confusion.
+          record_untrusted_review_author() {
+            local author_label="${1:-<unknown>}"
+            case ",$untrusted_review_authors," in
+              *",$author_label,"*) ;;
+              *) untrusted_review_authors="${untrusted_review_authors}${untrusted_review_authors:+,}$author_label" ;;
+            esac
+          }
+
+          # The author list is rendered through render_bounded_labels: it is
+          # one distinct login per untrusted reviewer, and on a public PR
+          # anyone may submit a review, so its length is attacker-controlled
+          # and must never be copied verbatim into the check-run summary.
+          untrusted_review_authors_reason() {
+            local head="$1" count="$2" authors="$3" rendered
+            rendered="$(render_bounded_labels "$authors" ",")"
+            printf "the only review evidence at head \`%s\` is from untrusted author(s) (%s review(s) from \`%s\`, not on the allowlist)" \
+              "$head" "$count" "${rendered:-<unknown>}"
+          }
+          # <<< parity-tested: untrusted_review_authors <<<
+
+          # >>> parity-tested: evidence_row_filters >>>
+          # The jq row filters for the two evidence channels, hoisted out of
+          # their gh calls so the test can run REAL jq over them.
+          #
+          # Tab is IFS whitespace, so `read` collapses runs of tabs and drops
+          # leading ones: any empty field ahead of the LAST one shifts every
+          # field after it. `.user` is null for a deleted account (and
+          # `.commit_id` for a review whose commit is gone), so the previous
+          # `(.user.login // "")` emitted an empty first field, sliding the
+          # commit oid into $author and the state into $commit_oid. The head
+          # comparison then dropped the row before the recorder ran, so the
+          # check reported "no trusted-author review evidence" for a head
+          # that had review evidence — and record_untrusted_review_author's
+          # <unknown> normalization was unreachable in production. Dropping
+          # a row can only REMOVE evidence, so the check stayed fail-closed;
+          # what broke was the reported CAUSE, the exact defect #804/#805
+          # exist to fix. Every non-last field is therefore sentinel-filled
+          # nonempty, as statuses_tsv already is.
+          #
+          # The evidence TIMESTAMPS are deliberately left empty-able:
+          #   - submitted_at is last, so an empty value shifts nothing, and
+          #     `[ -n "$submitted_at" ]` is what keeps an unsubmitted
+          #     (PENDING, submitted_at null) review out of the evidence list.
+          #   - created_at feeds the freshness comparison. A "<none>" in a
+          #     timestamp slot sorts ABOVE every real ISO-8601 value, so a
+          #     sentinel would CLEAR the freshness bar rather than fail it;
+          #     an empty created_at instead shifts the body out of the
+          #     "Reviewed commit:" match, which fails closed. GitHub never
+          #     omits either field — the guards are belt-and-braces — but a
+          #     sentinel must never be the more dangerous of the two.
+          #
+          # tests/test-review-binding-workflow.sh extracts these filters and
+          # the reviews loop verbatim and runs jq over a fixture review whose
+          # "user" is null.
+          REVIEWS_ROW_JQ='.[] | [((.user.login // "") | if . == "" then "<unknown>" else . end), ((.commit_id // "") | if . == "" then "<none>" else . end), ((.state // "") | if . == "" then "<none>" else . end), (.submitted_at // "")] | @tsv'
+          COMMENTS_ROW_JQ='.[] | [((.user.login // "") | if . == "" then "<unknown>" else . end), (.created_at // ""), ((.body // "") | gsub("[\r\n\t]"; " "))] | @tsv'
+          # <<< parity-tested: evidence_row_filters <<<
 
           # >>> parity-tested: parse_trusted_review_authors >>>
           # Reads a review-config TOML document on stdin and prints the
@@ -677,15 +846,15 @@ jobs:
 
             local reasons="" binding_ok=false threshold=""
             if [ "$co_head_count" -gt 1 ]; then
-              add_reason "head \`$head_sha\` is simultaneously the head of $co_head_count open PRs ($co_head_prs): check-runs bind to commits, not PRs, so one PR's verdict would satisfy every sibling's required check — failing closed until the heads diverge"
+              add_reason "head \`$head_sha\` is simultaneously the head of $co_head_count open PRs ($(render_bounded_labels "$co_head_prs" " ")): check-runs bind to commits, not PRs, so one PR's verdict would satisfy every sibling's required check — failing closed until the heads diverge"
             fi
             if [ -n "$untrusted_request_creators" ]; then
-              add_reason "head \`$head_sha\` carries review-request status(es) (\`$INTENT_STATUS_CONTEXT\` / \`$COMPLETE_STATUS_CONTEXT\`) for PR #$pr_number from creator(s) without push access (\`$untrusted_request_creators\`) — status creation proves only statuses:write, so these cannot bind a base (the same write+ creator rule merge-pr.sh enforces)"
+              add_reason "head \`$head_sha\` carries review-request status(es) (\`$INTENT_STATUS_CONTEXT\` / \`$COMPLETE_STATUS_CONTEXT\`) for PR #$pr_number from creator(s) without push access (\`$(render_bounded_labels "$untrusted_request_creators" ",")\`) — status creation proves only statuses:write, so these cannot bind a base (the same write+ creator rule merge-pr.sh enforces)"
             fi
             if [ -z "$bound_bases" ]; then
               add_reason "no base binding: no successful \`$INTENT_STATUS_CONTEXT\` status on head \`$head_sha\` from a write+ collaborator records \`pr=$pr_number base=<oid>\`"
             elif [ "${bound_bases#*,}" != "$bound_bases" ]; then
-              add_reason "conflicting base bindings on head \`$head_sha\`: \`$bound_bases\` (current base \`$base_ref\` is at \`$base_oid\`)"
+              add_reason "conflicting base bindings on head \`$head_sha\`: \`$(render_bounded_labels "$bound_bases" ",")\` (current base \`$base_ref\` is at \`$base_oid\`)"
             elif [ "$bound_bases" != "$base_oid" ]; then
               add_reason "base binding mismatch: review was requested against base \`$bound_bases\`, but PR #$pr_number now targets \`$base_ref\` at \`$base_oid\`"
             elif [ -z "$earliest_matching_trigger_at" ]; then
@@ -697,10 +866,15 @@ jobs:
 
             # Trusted review evidence bound to the exact current head.
             # Channel 1: formal reviews whose commit oid equals the head.
-            local evidence="" untrusted_reviews=0
+            local evidence="" untrusted_reviews=0 untrusted_review_authors=""
             local reviews_tsv author commit_oid review_state submitted_at
             reviews_tsv="$(gh api --paginate "repos/$REPO/pulls/$pr_number/reviews?per_page=100" \
-              --jq '.[] | [(.user.login // ""), (.commit_id // ""), (.state // ""), (.submitted_at // "")] | @tsv')"
+              --jq "$REVIEWS_ROW_JQ")"
+            # >>> parity-tested: reviews_channel_loop >>>
+            # $author arrives sentinel-filled from REVIEWS_ROW_JQ, so the
+            # emptiness guard below is defence in depth, not the mechanism:
+            # a deleted-account review reaches record_untrusted_review_author
+            # as the literal <unknown>, is counted, and is NAMED.
             while IFS=$'\t' read -r author commit_oid review_state submitted_at || [ -n "$author" ]; do
               [ -n "$author" ] || continue
               [ "$commit_oid" = "$head_sha" ] || continue
@@ -709,8 +883,10 @@ jobs:
                 evidence="${evidence}${evidence:+$'\n'}$submitted_at"$'\t'"formal review by @$author ($review_state) at $submitted_at"
               else
                 untrusted_reviews=$((untrusted_reviews + 1))
+                record_untrusted_review_author "$author"
               fi
             done <<<"$reviews_tsv"
+            # <<< parity-tested: reviews_channel_loop <<<
 
             # Channel 2: the reviewer's result comment naming the exact head
             # (same surface merge-pr.sh accepts). Verdict-agnostic: clean or
@@ -720,7 +896,7 @@ jobs:
             local comments_tsv head_short comment_head_resolved=false resolved_commit="" body
             head_short="$(printf '%.10s' "$head_sha")"
             comments_tsv="$(gh api --paginate "repos/$REPO/issues/$pr_number/comments?per_page=100" \
-              --jq '.[] | [(.user.login // ""), (.created_at // ""), ((.body // "") | gsub("[\r\n\t]"; " "))] | @tsv')"
+              --jq "$COMMENTS_ROW_JQ")"
             while IFS=$'\t' read -r author created_at body || [ -n "$author" ]; do
               [ -n "$author" ] || continue
               author_is_trusted "$author" || continue
@@ -758,7 +934,9 @@ jobs:
 
             if [ "$total_evidence" -eq 0 ]; then
               if [ "$untrusted_reviews" -gt 0 ]; then
-                add_reason "the only review evidence at head \`$head_sha\` is from untrusted author(s) ($untrusted_reviews review(s) not on the allowlist: ${TRUSTED_AUTHORS_EFFECTIVE:-<empty>})"
+                local untrusted_reason
+                untrusted_reason="$(untrusted_review_authors_reason "$head_sha" "$untrusted_reviews" "$untrusted_review_authors")"
+                add_reason "$untrusted_reason"
               else
                 add_reason "no trusted-author review evidence (formal review or result comment) exists for head \`$head_sha\`"
               fi
