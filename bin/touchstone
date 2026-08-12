@@ -1840,7 +1840,10 @@ shift 2>/dev/null || true
 if project_root_for_drift="$(touchstone_find_project_root 2>/dev/null)"; then
   project_id_for_drift="$(tr -d '[:space:]' <"$project_root_for_drift/.touchstone-version" 2>/dev/null || true)"
   installed_id_for_drift="$(touchstone_installed_id)"
-  if touchstone_auto_project_sync_should_sync "$project_id_for_drift" "$installed_id_for_drift"; then
+  # Pass the tree: the 2-arg form is identity-only, so a content-current
+  # project with a differing stamp kept emitting [touchstone drift] warnings
+  # while update, status, and auto-sync all called it current (PR #787).
+  if touchstone_auto_project_sync_should_sync "$project_id_for_drift" "$installed_id_for_drift" "$project_root_for_drift"; then
     touchstone_sync_warn_if_drift_skipped "$project_root_for_drift" "$installed_id_for_drift" || true
   fi
 fi

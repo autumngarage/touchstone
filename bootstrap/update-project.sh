@@ -897,6 +897,10 @@ fi
 # overwrite a hand-edited copy. They stay out of .touchstone-manifest so future
 # updates do not clobber project-owned customization.
 PROJECT_OWNED_ADDED_PATHS=()
+# Project-owned slots this run CREATED. They legitimately appear in the
+# update commit; a slot that already existed does not (PR #787 review).
+SCOPE_CREATED_SLOTS=()
+
 add_project_template_if_missing() {
   local src="$1" dst="$2"
   local rel_path
@@ -913,6 +917,7 @@ add_project_template_if_missing() {
     return 0
   fi
 
+  SCOPE_CREATED_SLOTS+=("$rel_path")
   if ! ensure_safe_dest "$dst"; then
     SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1))
     return 0
@@ -1147,36 +1152,19 @@ echo "      diff $TOUCHSTONE_ROOT/templates/GEMINI.md ./GEMINI.md"
 echo "      diff $TOUCHSTONE_ROOT/templates/pre-commit-config.yaml ./.pre-commit-config.yaml"
 echo "      diff $TOUCHSTONE_ROOT/templates/touchstone-review.toml ./.touchstone-review.toml"
 
-# #772 problem 3: a branch-creating update must not leave the worktree
-# parked on chore/touchstone-* — the next unattended actor in that checkout
-# would commit onto the sweep's branch. The default-branch guard above
-# guarantees ORIGINAL_BRANCH is the default branch, so returning there is
-# always returning to where the caller started. In-place runs never moved
-# the checkout; the rollback path restores it on failure before this runs.
-# Carried-over dirty files (the "unrelated dirty paths" the update allows)
-# ride back with the checkout: the only committed delta between the two
-# branches is managed paths, which the dirty set cannot overlap.
-restore_original_checkout() {
-  local current
-  [ "$IN_PLACE" != true ] || return 0
-  [ -n "$ORIGINAL_BRANCH" ] || return 0
-  [ -n "$UPDATE_BRANCH" ] || return 0
-  current="$(git -C "$PROJECT_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-  [ "$current" = "$UPDATE_BRANCH" ] || return 0
-  if ! git -C "$PROJECT_DIR" checkout -q "$ORIGINAL_BRANCH" 2>/dev/null; then
-    echo "WARNING: could not return the checkout to '$ORIGINAL_BRANCH'; still on '$UPDATE_BRANCH'." >&2
-    echo "         Fix: git -C \"$PROJECT_DIR\" checkout $ORIGINAL_BRANCH" >&2
-    return 1
-  fi
-  echo "==> Checkout returned to '$ORIGINAL_BRANCH' (update commit stays on $UPDATE_BRANCH)."
+# The command that ships the update branch. The checkout is left on that
+# branch (returning it is deferred — see the checkout-restoration issue), so
+# open-pr.sh operates on it directly.
+# Positive GitHub evidence for the update branch's PR state, shared by both
+# ship paths so identical real states never classify differently.
+current_update_pr_state() {
+  command -v gh >/dev/null 2>&1 || return 0
+  (cd "$PROJECT_DIR" && gh pr view "$UPDATE_BRANCH" --json state 2>/dev/null || true) \
+    | sed -nE 's/.*"state"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -1
 }
 
-# The command that ships the update branch AFTER the checkout was returned
-# to the original branch. open-pr.sh operates on the current branch, so the
-# documented flow must include the checkout step or it refuses on the
-# default branch.
 manual_ship_command() {
-  printf 'git checkout %s && bash scripts/open-pr.sh --auto-merge' "$UPDATE_BRANCH"
+  printf 'bash scripts/open-pr.sh --auto-merge'
 }
 
 # #772 problem 2 (arpeggio#35): a touchstone update PR touches a KNOWN write
@@ -1190,10 +1178,17 @@ manual_ship_command() {
 update_commit_scope_violations() {
   local scope_tmp path planned allowed
   scope_tmp="$(mktemp -t touchstone-update-scope.XXXXXX)"
+  # The allowlist is what this run actually writes: every entry of the
+  # manifest it just regenerated (exact files — the planned-write set used
+  # to carry directory-wide entries like `principles/`, which admitted any
+  # staged descendant) plus the project-owned template slots this run
+  # created (an unconditional lint-file exemption absorbed a pre-staged edit
+  # to an EXISTING .markdownlint.json). PR #787 review.
   {
-    touchstone_sync_planned_write_paths "$PROJECT_DIR" "$TOUCHSTONE_ROOT"
-    printf '.markdownlint.json\n'
-    printf '.swiftlint.yml\n'
+    if [ -f "$PROJECT_DIR/.touchstone-manifest" ]; then
+      tr -d '\r' <"$PROJECT_DIR/.touchstone-manifest"
+    fi
+    printf '%s\n' "${SCOPE_CREATED_SLOTS[@]:-}"
   } >"$scope_tmp"
   git -C "$PROJECT_DIR" diff --name-only "$ORIGINAL_HEAD" HEAD \
     | while IFS= read -r path; do
@@ -1202,7 +1197,7 @@ update_commit_scope_violations() {
       while IFS= read -r planned; do
         [ -n "$planned" ] || continue
         case "$planned" in \#*) continue ;; esac
-        if touchstone_sync_paths_overlap "$path" "$planned"; then
+        if [ "$path" = "$planned" ]; then
           allowed=true
           break
         fi
@@ -1225,7 +1220,6 @@ if [ "$DRY_RUN" = false ]; then
       echo "    The push would bypass deterministic pre-push validation." >&2
       echo "    Diagnose with: touchstone doctor --project" >&2
       echo "    branch: $UPDATE_BRANCH (left for manual ship after repair)" >&2
-      restore_original_checkout || true
       echo "    Ship after repair:  cd $PROJECT_DIR && $(manual_ship_command)" >&2
       exit 1
     fi
@@ -1233,7 +1227,6 @@ if [ "$DRY_RUN" = false ]; then
       echo ""
       echo "==> --ship requested but scripts/open-pr.sh is missing or not executable."
       echo "    branch: $UPDATE_BRANCH (left for manual ship)"
-      restore_original_checkout || true
       exit 1
     fi
 
@@ -1247,8 +1240,11 @@ if [ "$DRY_RUN" = false ]; then
       echo "==> Opening the update PR for human review WITHOUT auto-merge..."
       SCOPE_SHIP_RC=0
       (cd "$PROJECT_DIR" && bash scripts/open-pr.sh) || SCOPE_SHIP_RC=$?
-      restore_original_checkout || true
-      if [ "$SCOPE_SHIP_RC" -eq 0 ]; then
+      if [ "$SCOPE_SHIP_RC" -eq 0 ] || [ "$(current_update_pr_state)" = "OPEN" ]; then
+        # A nonzero exit AFTER the PR was created (e.g. the review request
+        # failed) is still an armed PR. Classifying by positive GitHub
+        # evidence keeps the guard path and the normal path agreeing on the
+        # same real state (PR #787 review).
         echo "==> Ship result: armed — the PR exists for human review and is NOT merged." >&2
         echo "    After reviewing the extra paths, merge with:" >&2
         echo "      cd $PROJECT_DIR && $(manual_ship_command)" >&2
@@ -1271,7 +1267,6 @@ if [ "$DRY_RUN" = false ]; then
       # is classified below instead of being lumped into one failure bucket.
       echo ""
       echo "==> Ship result: merged."
-      restore_original_checkout || true
       exit 0
     fi
 
@@ -1292,7 +1287,6 @@ if [ "$DRY_RUN" = false ]; then
       echo ""
       echo "==> Ship result: merged (open-pr.sh exited $SHIP_RC on a post-merge step; see errors above)."
       [ -z "$SHIP_PR_URL" ] || echo "    PR: $SHIP_PR_URL"
-      restore_original_checkout || true
       exit 0
     fi
     if [ "$SHIP_PR_STATE" = "OPEN" ]; then
@@ -1300,7 +1294,6 @@ if [ "$DRY_RUN" = false ]; then
       echo "==> Ship result: armed — the update PR exists but is NOT merged (review pending," >&2
       echo "    merge-gate refusal, or an error after PR creation; see output above)." >&2
       [ -z "$SHIP_PR_URL" ] || echo "    PR: $SHIP_PR_URL" >&2
-      restore_original_checkout || true
       echo "    Finish the merge:  cd $PROJECT_DIR && $(manual_ship_command)" >&2
       exit "$TOUCHSTONE_UPDATE_ARMED_EXIT"
     fi
@@ -1308,7 +1301,6 @@ if [ "$DRY_RUN" = false ]; then
     echo "==> Ship failed (see errors above). No open PR found for the update branch."
     echo "==> Ship result: stuck. The update commit is preserved on:"
     echo "    branch: $UPDATE_BRANCH"
-    restore_original_checkout || true
     echo "    Re-ship when ready:  cd $PROJECT_DIR && $(manual_ship_command)"
     exit 1
   else
@@ -1319,7 +1311,6 @@ if [ "$DRY_RUN" = false ]; then
       echo "    git diff ${ORIGINAL_HEAD:-$ORIGINAL_BRANCH}...HEAD"
       echo "    bash scripts/open-pr.sh --auto-merge"
     else
-      restore_original_checkout || true
       echo "==> Done. Review the update branch:"
       echo "    branch: $UPDATE_BRANCH"
       echo "    git diff ${ORIGINAL_HEAD:-$ORIGINAL_BRANCH}...$UPDATE_BRANCH"

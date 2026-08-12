@@ -434,6 +434,20 @@ touchstone_auto_project_sync_should_sync() {
   return 0
 }
 
+# Repair state that lives outside the project tree for a content-current
+# project. Deliberately narrow: it runs update-project.sh, whose
+# content-current early exit reconciles hooks and skills and then stops
+# before any project write. Failures are non-fatal — this is ambient repair
+# on someone else's command, never that command's business.
+touchstone_auto_project_reconcile_external() {
+  local project_dir="${1:-}"
+
+  [ -n "$project_dir" ] || return 0
+  [ -d "$project_dir" ] || return 0
+  git -C "$project_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  (cd "$project_dir" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1 || true
+}
+
 touchstone_auto_project_sync_command_skips() {
   local command="${1:-}" subcommand="${2:-}"
 
@@ -492,6 +506,13 @@ touchstone_auto_project_sync() {
   [ -n "$installed_id" ] || return 0
 
   if ! touchstone_auto_project_sync_should_sync "$project_id" "$installed_id" "$project_dir"; then
+    # No sync to claim — but git hooks and user-scoped skills live OUTSIDE
+    # the probed project content, so a content-current tree can still have a
+    # deleted hook. update-project.sh's own early exit is the ONE code path
+    # that repairs them; invoking it here keeps an automatically managed
+    # project gated instead of silently ungated until someone runs the
+    # update by hand (PR #787 review).
+    touchstone_auto_project_reconcile_external "$project_dir"
     return 0
   fi
 
