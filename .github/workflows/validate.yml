@@ -171,39 +171,70 @@ jobs:
           git config --global user.name "Touchstone CI"
           git config --global init.defaultBranch main
 
-      - name: Install test dependencies (Linux)
-        if: runner.os == 'Linux'
+      # Everything this job needs that it does NOT fetch. No network, so this
+      # step cannot fail for a reason outside this repository — which is why it
+      # is a separate step from the one below: the two failure MEANINGS are
+      # different, and a reader who cannot tell them apart goes looking for a
+      # bug in the diff. jq is on both images (Git Bash carries it on
+      # windows-latest), so this verifies rather than installs. Hard check: a
+      # missing jq fails here with one clear line instead of surfacing later as
+      # an unrelated hook-test failure.
+      #
+      # Both legs run the same step. After the shellcheck/shfmt deletion there
+      # was nothing platform-specific left to branch on, and two near-identical
+      # steps are two places for a fix to land in one of.
+      - name: Verify runner-image tools
         run: |
           set -euo pipefail
-          # jq is used by the hook tests and ships on the runner image —
-          # verify, don't install. Hard check: a missing jq must fail here
-          # with one clear line, not surface later as a test failure.
           command -v jq
           jq --version
-          # pre-commit is a REQUIREMENT of the suite, not a lint convenience.
-          # bootstrap and update install git hooks through it, and without it
-          # `update --ship` stops at "effective hooks are not ready" — so the
-          # ship-failure case never reaches the step it means to exercise and
-          # fails for an unrelated reason.
-          #
-          # Installed with pipx, not `pip --user`. The latter put a shim on PATH
-          # whose interpreter could not import its own package:
-          #   ModuleNotFoundError: No module named 'pre_commit'
-          # pipx builds an isolated venv and a shim pinned to that venv's
-          # interpreter, so the console script always resolves.
-          pipx install pre-commit
-          pre-commit --version
 
-      - name: Install test dependencies (Windows)
-        if: runner.os == 'Windows'
+      # The ONLY job-time fetch left, and the only step here that can go red for
+      # something that is not a verdict about this repository's code.
+      #
+      # pre-commit is a REQUIREMENT of the suite, not a lint convenience.
+      # bootstrap and update install git hooks through it, and without it
+      # `update --ship` stops at "effective hooks are not ready" — so the
+      # ship-failure case never reaches the step it means to exercise and
+      # fails for an unrelated reason.
+      #
+      # Installed with pipx, not `pip --user`. The latter put a shim on PATH
+      # whose interpreter could not import its own package:
+      #   ModuleNotFoundError: No module named 'pre_commit'
+      # pipx builds an isolated venv and a shim pinned to that venv's
+      # interpreter, so the console script always resolves. pipx is preinstalled
+      # on both runner images.
+      #
+      # PINNED. Unpinned, the required check's verdict depends on whichever
+      # release PyPI serves this morning — a version nobody in this repository
+      # chose, arriving without a diff. 4.6.2 is what CI already resolved to,
+      # so the pin records reality rather than changing it.
+      #
+      # INFRASTRUCTURE labelling, and what it is NOT: this step still exits 1,
+      # the check still goes red, and the merge still blocks. A run that could
+      # not evaluate a single assertion must never report success. All that
+      # changes is that the failure SAYS what it is — in the step name, in an
+      # ::error annotation, and in the job summary — so an operator does not
+      # spend a round-trip proving their diff is innocent (#742).
+      - name: Provision pre-commit from PyPI (INFRASTRUCTURE — a failure here is not a test verdict)
         run: |
           set -euo pipefail
-          # jq ships with Git Bash on the runner image — verify, don't install.
-          command -v jq
-          jq --version
-          # pipx is preinstalled on the windows image; same pre-commit
-          # rationale as the Linux leg — it is a requirement of the suite.
-          pipx install pre-commit
+          if ! pipx install "pre-commit==4.6.2"; then
+            printf '%s\n' "::error title=INFRASTRUCTURE — dependency provisioning failed::pipx could not install pre-commit==4.6.2 from PyPI on ${{ matrix.os }}. No test in this repository was evaluated; this is NOT a verdict about the code under review. Re-run the job once PyPI is reachable. The check stays red and blocking on purpose."
+            {
+              echo "## INFRASTRUCTURE failure — not a test verdict"
+              echo ""
+              echo "Installing pre-commit==4.6.2 from PyPI failed on ${{ matrix.os }}."
+              echo ""
+              echo "PyPI is a third-party service sitting on the merge path. When it is"
+              echo "unavailable this step cannot run, and **no assertion in this repository"
+              echo "was evaluated** — nothing about the diff under review is implicated."
+              echo ""
+              echo "Re-run the job. This check remains red and blocking by design: a run"
+              echo "that could not prove the tests passed must never report success (#742)."
+            } >>"$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           pre-commit --version
 
       # No `env:` block here, deliberately. Setting TOUCHSTONE_NO_AUTO_UPDATE=1
