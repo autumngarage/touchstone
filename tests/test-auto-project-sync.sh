@@ -301,6 +301,48 @@ if ! touchstone_auto_project_sync_should_sync "000000000000000000000000000000000
 fi
 
 echo ""
+echo "--- 'touchstone review --dry-run' syncs, because it is not a dry run ---"
+# `review` is a retired shim: cmd_retired_review runs cmd_preflight with no
+# arguments, so --dry-run and -n are discarded before anything reads them and
+# the command does exactly what a bare `touchstone review` does. An exemption
+# keyed on those flags promised a read-only invocation that does not exist
+# (#737 round-2 review). Asserted through the sync itself rather than the skip
+# table: the table can be made to say anything, the update run cannot.
+REVIEW_FLAG_HOME="$TEST_DIR/home-review-flag"
+mkdir -p "$REVIEW_FLAG_HOME"
+for review_flag in "" --dry-run -n; do
+  review_slug="${review_flag:-bare}"
+  review_project="$TEST_DIR/project-review-${review_slug#--}"
+  review_log="$TEST_DIR/review-${review_slug#--}.log"
+  review_out="$TEST_DIR/review-${review_slug#--}.out"
+  make_project "$review_project" "2.10.0"
+  (
+    cd "$review_project"
+    HOME="$REVIEW_FLAG_HOME" \
+      PATH="$SHIP_ROOT/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+      TOUCHSTONE_ROOT="$SHIP_ROOT" \
+      TOUCHSTONE_AUTO_PROJECT_SYNC_SHIP_LOG="$review_log" \
+      bash -c 'source "$1"; shift; touchstone_auto_project_sync review "$@"' \
+      _ "$SHIP_AUTO_UPDATE_LIB" ${review_flag:+"$review_flag"}
+  ) >"$review_out" 2>&1
+  if [ ! -s "$review_log" ]; then
+    echo "FAIL: 'touchstone review $review_flag' must run the project sync — the flag is discarded by the command, so it cannot mean 'change nothing'" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+  assert_version_equals "$review_project" "2.11.0"
+done
+# The command-level skip list still holds: a command that really does nothing
+# to the project must not be dragged into a sync by this change.
+if ! touchstone_auto_project_sync_command_skips status; then
+  echo "FAIL: 'touchstone status' must stay exempt from auto project sync" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if touchstone_auto_project_sync_command_skips run validate; then
+  echo "FAIL: 'touchstone run validate' must still auto-sync" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo ""
 echo "--- non-touchstone project: no-op ---"
 PLAIN_HOME="$TEST_DIR/home-plain"
 PLAIN_PROJECT="$TEST_DIR/project-plain"

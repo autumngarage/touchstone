@@ -16,7 +16,7 @@ stage_touchstone_libs() {
   local touchstone_root="$1" script_dir="$2" lib_dir module
   lib_dir="$script_dir/../lib"
   mkdir -p "$lib_dir"
-  for module in preflight.sh sha256.sh toml.sh events.sh; do
+  for module in preflight.sh sha256.sh toml.sh; do
     if [ -f "$touchstone_root/lib/$module" ]; then
       cp "$touchstone_root/lib/$module" "$lib_dir/$module"
     fi

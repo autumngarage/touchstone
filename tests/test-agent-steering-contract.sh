@@ -77,8 +77,20 @@ done
 
 echo "==> canonical git workflow describes the PR-visible review loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Agentic PR Review Loop"
-assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "review_result"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "scripts/open-pr.sh --auto-merge"
+# #801 review: this doc promised the gate emits `review_requested` and
+# `review_result` events and that review latency is measurable from them.
+# lib/events.sh and every emit call were deleted in #737, so the promise became
+# false in a doc that ships to every project. A shipped principle may not
+# describe a mechanism no shipped code provides — assert the absence, because
+# nothing else notices when a capability is cut and its documentation is not.
+assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "review_requested"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "review_result"
+if grep -rn "review_requested\|review_result" "$TOUCHSTONE_ROOT/principles/" >/dev/null 2>&1; then
+  echo "FAIL: principles/ still promises review telemetry events that no shipped code emits" >&2
+  grep -rn "review_requested\|review_result" "$TOUCHSTONE_ROOT/principles/" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Codex merge review"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "codex exec --full-auto"
 

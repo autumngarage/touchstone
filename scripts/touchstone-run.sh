@@ -586,11 +586,26 @@ run_profile_action() {
   esac
 }
 
+# Dispatch one action across the configured targets.
+#
+# APPLICABILITY IS THE CALLER'S ("are targets configured?"), not this exit
+# status. The two meanings shared one status: "no targets, use the root
+# profile" and "targets configured, one of them is missing" both returned
+# nonzero, so a config naming a directory that is not there produced a warning,
+# a fall-through, and a green `validate` that linted, built and tested nothing
+# — the false green this runner exists to prevent (#801 review).
+#
+# A nonzero return now means one thing: the dispatch did not happen for every
+# configured target.
 run_targets_action() {
   local action="$1" entry name path profile
+  local missing=0
   local -a target_entries=()
 
-  [ -n "$TARGETS" ] || return 1
+  if [ -z "$TARGETS" ]; then
+    warn "run_targets_action called with no configured targets"
+    return 1
+  fi
 
   IFS=',' read -r -a target_entries <<<"$TARGETS"
   for entry in "${target_entries[@]}"; do
@@ -609,12 +624,19 @@ run_targets_action() {
 
     if [ ! -d "$path" ]; then
       warn "target '$name' path not found: $path"
+      missing=$((missing + 1))
       continue
     fi
 
     info "target $name ($profile) — $action"
     (cd "$path" && run_profile_action "$profile" "$action")
   done
+
+  if [ "$missing" -gt 0 ]; then
+    warn "configured target path missing — refusing a green '$action' that ran nothing for it"
+    return 1
+  fi
+  return 0
 }
 
 run_action() {
@@ -626,7 +648,13 @@ run_action() {
     return 0
   fi
 
-  if run_targets_action "$action"; then
+  # Applicability is decided here, by the config, so run_targets_action's exit
+  # status can mean failure and only failure. Calling it as a plain command
+  # also keeps errexit live inside it: under `if run_targets_action ...` a
+  # failing target action was neutered and masked by a later passing one
+  # (#801 review).
+  if [ -n "$TARGETS" ]; then
+    run_targets_action "$action"
     return 0
   fi
 

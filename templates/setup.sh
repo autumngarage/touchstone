@@ -825,8 +825,9 @@ else
   fi
   install_profile_devtools "$ROOT_PROFILE_RESOLVED"
   # Monorepo targets declared in .touchstone-config also need their dev tools —
-  # touchstone-run.sh / doctor validate them per-target, so missing tools would
-  # re-create the same silent-skip failure mode this block is meant to close.
+  # touchstone-run.sh dispatches per target, and its lint action skips a missing
+  # linter while still exiting 0. `touchstone doctor` reports that gap only for
+  # the root profile, so installing them here is what closes it per target.
   install_configured_target_devtools
 fi
 

@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+#
+# lib/retired-managed.sh — the canonical set of Touchstone-managed paths that
+# have been retired, and the single code path that removes them from a project.
+#
+# BOTH entrypoints have to retire. `touchstone update` always did.
+# `touchstone init` did not, and init regenerates .touchstone-manifest from
+# scratch — so an init-ed project kept every retired file on disk AND lost the
+# ledger entries that make a file reachable. The result was permanent: on
+# disk, absent from the manifest, invisible to every future `touchstone
+# update` (#737 round-2 review). Sharing one list and one remover is the fix —
+# a retirement added below reaches both entrypoints or neither.
+
+if ! declare -F touchstone_ensure_safe_ancestors >/dev/null 2>&1; then
+  # shellcheck source=safe-write.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/safe-write.sh"
+fi
+# ONE comparator for "does the working tree match the index", not two.
+# lib/sync-content.sh already answers that by object id, and this file asks the
+# same question immediately before an `rm` — the single most destructive moment
+# Touchstone has. Both entrypoints that source this file source it after their
+# own libs, so the guard makes the extra load free for update-project.sh.
+if ! declare -F touchstone_content_index_blob_matches_worktree >/dev/null 2>&1; then
+  # shellcheck source=sync-content.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sync-content.sh"
+fi
+
+# The retired set, one project-relative path per line.
+#
+#   lib/review-comment.sh          - local review comment plumbing, no consumer
+#   scripts/cortex-pr-merged-hook.sh - journal hook retired with the Cortex
+#                                    pause (#730); merge-pr.sh no longer calls
+#                                    it, so a leftover copy is dead code that
+#                                    still pushes HEAD:main on a manual run
+#   scripts/spawn-worktree.sh      - wrapper around plain `git worktree add`
+#   scripts/cleanup-worktrees.sh   - wrapper around plain `git worktree remove`
+#   lib/events.sh                  - NDJSON telemetry whose only reader was the
+#                                    worker engine removed in PR #697
+#   lib/codex-auth.sh              - subscription auth with no runtime consumer
+#   scripts/run-pytest-in-venv.sh  - duplicated what touchstone-run.sh already
+#                                    dispatches through find_python_bin
+#
+# Adding an entry retires the file in init and update alike. The matching copy
+# call in bootstrap/update-project.sh and bootstrap/new-project.sh must be
+# deleted in the SAME commit, or the copy pass re-creates what this removes.
+# lib/sync-discipline.sh must list the same paths in its planned write set so
+# a failed update can roll the deletion back; tests/test-sync-scope-aware.sh
+# fails when the two drift.
+touchstone_retired_managed_paths() {
+  printf 'lib/review-comment.sh\n'
+  printf 'scripts/cortex-pr-merged-hook.sh\n'
+  printf 'scripts/spawn-worktree.sh\n'
+  printf 'scripts/cleanup-worktrees.sh\n'
+  printf 'lib/events.sh\n'
+  printf 'lib/codex-auth.sh\n'
+  printf 'scripts/run-pytest-in-venv.sh\n'
+}
+
+# Does retirement have anything to do for this path in this project? True only
+# when Touchstone's ledger still claims the path AND the file is really there.
+# Callers use it to decide whether a retirement section has anything to report
+# before printing a header, and to collect the set worth cross-checking against
+# project-owned steering.
+touchstone_retired_managed_file_applies() {
+  local project_dir="$1" rel_path="$2"
+  local manifest="$project_dir/.touchstone-manifest"
+  local manifest_entries=""
+
+  [ -f "$manifest" ] || return 1
+  # CRLF tolerance: a manifest checked out with core.autocrlf carries \r,
+  # which a plain fixed-string match would never equal. Read into a variable
+  # rather than piping: grep -q exits at the first match, tr takes SIGPIPE,
+  # and pipefail would turn a successful MATCH into a nonzero pipeline.
+  manifest_entries="$(tr -d '\r' <"$manifest")" || return 1
+  grep -qxF "$rel_path" <<<"$manifest_entries" || return 1
+  # -L as well as -e. A DANGLING symlink at a retired path fails -e, and
+  # skipping the remover for it is permanent: init and update both regenerate
+  # .touchstone-manifest without the path, so no later run ever reaches the
+  # link again — and it reactivates the retired script the moment its target
+  # reappears. Presence here means "a directory entry occupies this path",
+  # which is exactly what the remover below is equipped to inspect (#801
+  # review, round 3; same predicate shape as
+  # touchstone_content_template_slot_occupied).
+  [ -e "$project_dir/$rel_path" ] || [ -L "$project_dir/$rel_path" ]
+}
+
+# Remove one retired managed file from a project.
+#
+# Exit status is the outcome, so each caller can keep its own counters without
+# this function knowing about them:
+#   0  removed
+#   1  nothing to do (not in the ledger, or already gone)
+#   2  refused: unsafe path
+#   3  refused: left in place (untracked, or carrying uncommitted edits)
+#   4  would remove (dry run)
+#   5  failed: the removal was attempted and did not happen
+#
+# INVARIANT: nothing in this body may rely on `set -e`. Every caller invokes it
+# in a status-capturing conditional, which makes errexit inert here — so a bare
+# failing command would fall through to the success message instead of
+# aborting. Each fallible command below is checked explicitly.
+touchstone_remove_retired_managed_file() {
+  local project_dir="$1" rel_path="$2" dry_run="${3:-false}"
+  local target="$project_dir/$rel_path"
+
+  touchstone_retired_managed_file_applies "$project_dir" "$rel_path" || return 1
+
+  # Only the ancestor half of the write guard. touchstone_ensure_safe_dest
+  # removes a symlink sitting at the final component so a managed copy can land
+  # on a real file; called here it unlinked first and asked questions never —
+  # the `! -f` test then saw the hole it had just made and called that a
+  # refusal, with the link gone, the ownership and dirty-state checks below
+  # still unrun, and the path missing from the caller's staged set (#801
+  # review). Removal inspects the final component itself, further down.
+  if ! touchstone_ensure_safe_ancestors "$target" "$project_dir"; then
+    echo "    ! refusing to remove unsafe retired path: $target" >&2
+    return 2
+  fi
+  # -L is asked separately because -f follows the link: a symlink to a regular
+  # file passes -f and is indistinguishable from the managed copy. A symlink
+  # goes through the same tracked-and-clean gate as every other retired path —
+  # `rm` then unlinks the link and never touches what it points at, and git
+  # restores it — while anything that is neither a symlink nor a regular file
+  # (a directory, a socket) is refused untouched.
+  if [ ! -L "$target" ] && [ ! -f "$target" ]; then
+    echo "    ! refusing to remove unsafe retired path: $target" >&2
+    return 2
+  fi
+  if ! git -C "$project_dir" ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1; then
+    echo "    ! leaving untracked retired file in place: $target" >&2
+    echo "      Touchstone will stop managing it; remove it manually after preserving any local changes." >&2
+    return 3
+  fi
+  # Never destroy local work: a retired file carrying uncommitted edits is
+  # left in place with an explicit notice. Retirement removes Touchstone's
+  # managed copy, it does not discard a project's modifications.
+  #
+  # Worktree cleanliness is decided by OBJECT ID, never by `git diff`. The
+  # assume-unchanged and skip-worktree bits tell git to stop consulting the
+  # working tree for a path, so `git diff --quiet` answers "clean" over a file
+  # that has been edited — and this is the last question asked before `rm`
+  # deletes the only copy of those edits. diff reports change HINTS; the index
+  # blob against a hash of the working file is the content itself (#801
+  # review, round 3).
+  #
+  # Index vs HEAD is a tree-to-tree comparison, which those bits do not
+  # affect, so `--cached` stays truthful for the staged half: a staged
+  # customization must neither be deleted nor swept into Touchstone's own
+  # update commit.
+  local worktree_matches_index=true index_matches_head=true
+  touchstone_content_index_blob_matches_worktree "$project_dir" "$rel_path" \
+    || worktree_matches_index=false
+  git -C "$project_dir" diff --cached --quiet -- "$rel_path" 2>/dev/null \
+    || index_matches_head=false
+  if [ "$worktree_matches_index" = false ] || [ "$index_matches_head" = false ]; then
+    echo "    ! leaving locally modified retired file in place: $target" >&2
+    echo "      It has uncommitted changes (worktree or index); Touchstone no longer manages it." >&2
+    echo "      Commit or discard them, then delete the file when you are ready." >&2
+    return 3
+  fi
+  if [ "$dry_run" = true ]; then
+    echo "    - would remove retired managed file: $target"
+    return 4
+  fi
+  # Announcing a removal that did not happen is the one outcome retirement
+  # cannot survive: the caller records the retirement, the manifest is
+  # regenerated without the entry, and the file that is still on disk becomes
+  # unreachable by every later update — the exact permanence retirement exists
+  # to prevent. An unwritable directory or an immutable file makes `rm` fail,
+  # and errexit is inert here (see the invariant above), so it is checked
+  # (#801 review).
+  if ! rm -f "$target"; then
+    echo "    ! failed to remove retired managed file: $target" >&2
+    return 5
+  fi
+  echo "    - removed retired managed file: $target"
+  return 0
+}
+
+# Retirement removes Touchstone's managed copy of a script. It cannot touch the
+# project's own steering docs, and no future sync ever will — CLAUDE.md,
+# AGENTS.md, and GEMINI.md are project-owned, so a project whose AGENTS.md says
+# "use scripts/spawn-worktree.sh to fan out worktrees" keeps instructing agents
+# to run a file that is gone, forever, with nothing to correct it. A notice is
+# the only mechanism available (#737 round-2 review).
+#
+# Same contract as update-project.sh's report_retired_worker_files: name the
+# file, name the reference, change nothing. Rewriting project-owned prose to
+# match a Touchstone decision is exactly the automation this release removes.
+#
+# Usage: touchstone_report_retired_steering_references <project_dir> [rel_path...]
+# where the rel_paths are the retirements that applied in THIS run — the notice
+# belongs to the moment the surface goes away, not to every subsequent sync.
+touchstone_report_retired_steering_references() {
+  local project_dir="$1"
+  shift
+  local doc rel found=false
+
+  [ "$#" -gt 0 ] || return 0
+  for doc in CLAUDE.md AGENTS.md GEMINI.md; do
+    [ -f "$project_dir/$doc" ] || continue
+    for rel in "$@"; do
+      grep -qF -- "$rel" "$project_dir/$doc" 2>/dev/null || continue
+      if [ "$found" = false ]; then
+        echo "    ! project-owned steering still points at retired touchstone surfaces:"
+        found=true
+      fi
+      echo "      - $doc names $rel"
+    done
+  done
+  [ "$found" = true ] || return 0
+  echo "      These files are project-owned; touchstone will never rewrite them."
+  echo "      Edit the instructions yourself, or agents will keep invoking what is gone."
+}

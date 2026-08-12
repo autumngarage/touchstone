@@ -35,12 +35,6 @@ if [ -f "$SCRIPT_SYNC_GUARD" ]; then
   touchstone_script_sync_guard "$0" "$@"
 fi
 PREFLIGHT_SCRIPT="$SCRIPT_DIR/../lib/preflight.sh"
-if [ -f "$SCRIPT_DIR/../lib/events.sh" ]; then
-  # shellcheck source=../lib/events.sh
-  source "$SCRIPT_DIR/../lib/events.sh"
-else
-  touchstone_emit_event() { :; }
-fi
 if [ -f "$PREFLIGHT_SCRIPT" ]; then
   # shellcheck source=../lib/preflight.sh
   source "$PREFLIGHT_SCRIPT"
@@ -48,7 +42,6 @@ fi
 REVIEWED_HEAD_OID=""
 PR_HEAD_BRANCH=""
 BYPASS_REVIEW=false
-TOUCHSTONE_MERGE_FAILURE_REASON="nonzero-exit"
 PREFLIGHT_REQUIRED=true
 PR_TRIGGERED_REVIEW_PROVIDER="github-codex"
 PR_TRIGGERED_REVIEW_REQUEST_ON_PUSH=true
@@ -83,7 +76,6 @@ PREFLIGHT_CACHE_KEY=""
 PREFLIGHT_CACHE_FILE=""
 PREFLIGHT_CACHE_INPUTS=""
 PR_WORKTREE_PATH=""
-REVIEW_EVENT_WORKTREE_PATH="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
 REPO_FULL_NAME=""
 REPO_OWNER=""
 REPO_NAME=""
@@ -99,9 +91,6 @@ on_merge_exit() {
     for tmp_file in "${MERGE_REVIEW_CONFIG_TMP_FILES[@]}"; do
       rm -f "$tmp_file" 2>/dev/null || true
     done
-  fi
-  if [ "$rc" -ne 0 ]; then
-    touchstone_emit_event failed phase=merge reason="$TOUCHSTONE_MERGE_FAILURE_REASON" pr_number="$PR_NUMBER"
   fi
   return "$rc"
 }
@@ -428,7 +417,6 @@ load_merge_review_config() {
   if [ -n "$config_error" ]; then
     echo "ERROR: Invalid trusted review config: $config_error" >&2
     echo "       source: $config_file" >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="trusted-review-config"
     return 1
   fi
 }
@@ -446,7 +434,6 @@ resolve_merge_review_config_file() {
       if ! tmp="$(mktemp -t touchstone-merge-review-config.XXXXXX)"; then
         echo "ERROR: Failed to create a temporary file for trusted review config." >&2
         echo "       source: $trusted_base:$rel" >&2
-        TOUCHSTONE_MERGE_FAILURE_REASON="trusted-review-config"
         return 1
       fi
       if git show "$trusted_base:$rel" >"$tmp" 2>/dev/null; then
@@ -457,7 +444,6 @@ resolve_merge_review_config_file() {
       rm -f "$tmp"
       echo "ERROR: Failed to extract trusted review config." >&2
       echo "       source: $trusted_base:$rel" >&2
-      TOUCHSTONE_MERGE_FAILURE_REASON="trusted-review-config"
       return 1
     done
     return 0
@@ -910,26 +896,23 @@ cleanup_pr_worktree_after_merge() {
   fi
   if [ -z "$default_worktree" ] || [ "$default_worktree" = "$pr_worktree" ]; then
     echo "WARNING: No separate default-branch worktree is available to remove merged PR worktree '$pr_worktree'." >&2
-    echo "         Run 'bash scripts/cleanup-worktrees.sh --execute' after moving to a different worktree." >&2
+    echo "         Move to a different worktree, then: git worktree remove '$pr_worktree'" >&2
     return 0
   fi
 
   dirty_status="$(git -C "$pr_worktree" status --porcelain 2>/dev/null || printf 'status-failed\n')"
   if [ -n "$dirty_status" ]; then
     echo "WARNING: Merged PR worktree '$pr_worktree' has uncommitted changes; leaving it in place." >&2
-    echo "         Inspect it, then run 'bash scripts/cleanup-worktrees.sh --execute' when it is clean." >&2
+    echo "         Inspect it, then run 'git worktree remove $pr_worktree' when it is clean." >&2
     return 0
   fi
 
   echo "==> Removing merged PR worktree '$pr_worktree' ..."
-  touchstone_emit_event cleanup_started worktree_path="$pr_worktree"
   if git -C "$default_worktree" worktree remove "$pr_worktree"; then
     echo "==> Merged PR worktree removed."
-    touchstone_emit_event cleanup_done worktree_path="$pr_worktree" result=removed
   else
     echo "WARNING: Could not remove merged PR worktree '$pr_worktree'." >&2
-    echo "         Run 'bash scripts/cleanup-worktrees.sh --execute' from $default_worktree to inspect and clean up." >&2
-    touchstone_emit_event cleanup_done worktree_path="$pr_worktree" result=failed
+    echo "         Inspect it, then run 'git -C $default_worktree worktree remove $pr_worktree'." >&2
   fi
 }
 
@@ -1145,13 +1128,11 @@ current_pr_head_or_die() {
   if ! observed_head="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>&1)"; then
     echo "ERROR: Could not inspect PR #$PR_NUMBER head commit ($phase): $observed_head" >&2
     echo "       Refusing to merge without exact-head confirmation." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="head-not-updated"
     exit 1
   fi
   if [ -z "$observed_head" ]; then
     echo "ERROR: GitHub returned an empty head commit for PR #$PR_NUMBER ($phase)." >&2
     echo "       Refusing to merge without exact-head confirmation." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="head-not-updated"
     exit 1
   fi
   printf '%s' "$observed_head"
@@ -1169,25 +1150,21 @@ inspect_review_revision() {
   if ! github_revision="$(current_pr_base_revision 2>&1)"; then
     echo "ERROR: Could not inspect PR #$PR_NUMBER base revision ($phase): $github_revision" >&2
     echo "       Refusing to authorize a merge against an unknown base." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="review-base-inspection"
     return 1
   fi
   IFS="$(printf '\t')" read -r github_branch github_base <<<"$github_revision"
   if [ -z "$github_branch" ] || [ -z "$github_base" ]; then
     echo "ERROR: GitHub returned an empty base revision for PR #$PR_NUMBER ($phase)." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="review-base-inspection"
     return 1
   fi
   if [ "$github_branch" != "$PR_BASE_BRANCH" ]; then
     echo "ERROR: PR #$PR_NUMBER was retargeted while inspecting the reviewed revision ($phase)." >&2
     echo "       reviewed base branch: $PR_BASE_BRANCH" >&2
     echo "       current base branch:  $github_branch" >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="review-base-changed"
     return 1
   fi
   if ! local_base="$(git rev-parse --verify "$base_ref^{commit}" 2>&1)"; then
     echo "ERROR: Could not resolve $base_ref while inspecting the reviewed revision ($phase): $local_base" >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="review-base-inspection"
     return 1
   fi
   if [ "$github_base" != "$local_base" ]; then
@@ -1195,12 +1172,10 @@ inspect_review_revision() {
     echo "       GitHub base: $github_base" >&2
     echo "       local base:  $local_base" >&2
     echo "       Refresh and rerun the merge gate so review uses one base revision." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="review-base-changed"
     return 1
   fi
   if ! merge_base="$(git merge-base "$base_ref" "$expected_head" 2>&1)"; then
     echo "ERROR: Could not compute the merge base for PR #$PR_NUMBER ($phase): $merge_base" >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="review-base-inspection"
     return 1
   fi
 
@@ -1216,12 +1191,10 @@ require_review_revision_unchanged() {
 
   if [ -z "$REVIEWED_BASE_OID" ] || [ -z "$REVIEWED_MERGE_BASE_OID" ]; then
     echo "ERROR: No reviewed base revision was recorded for PR #$PR_NUMBER ($phase)." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="missing-reviewed-base"
     return 1
   fi
 
   if ! refresh_pr_base_ref "for reviewed-revision validation"; then
-    TOUCHSTONE_MERGE_FAILURE_REASON="review-base-inspection"
     return 1
   fi
   inspect_review_revision "$expected_head" "$base_ref" "$phase" || return $?
@@ -1234,7 +1207,6 @@ require_review_revision_unchanged() {
     echo "       reviewed merge base: $REVIEWED_MERGE_BASE_OID" >&2
     echo "       current merge base:  $CURRENT_REVIEW_MERGE_BASE_OID" >&2
     echo "       Update the branch and re-run scripts/open-pr.sh so the new head is reviewed, then rerun the merge gate." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="review-base-changed"
     return 1
   fi
 }
@@ -1634,22 +1606,18 @@ wait_for_pr_triggered_review() {
   if [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then
     echo "ERROR: Unsupported [review.pr_triggered].provider: $PR_TRIGGERED_REVIEW_PROVIDER" >&2
     echo "       Supported provider: github-codex" >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
     exit 1
   fi
   if ! is_nonnegative_integer "$PR_TRIGGERED_REVIEW_TIMEOUT_SEC"; then
     echo "ERROR: [review.pr_triggered].timeout_sec must be a non-negative integer." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
     exit 2
   fi
   if ! is_nonnegative_integer "$PR_TRIGGERED_REVIEW_POLL_SEC"; then
     echo "ERROR: [review.pr_triggered].poll_sec must be a non-negative integer." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
     exit 2
   fi
   if [ "$PR_TRIGGERED_REVIEW_TIMEOUT_SEC" -gt 0 ] && [ "$PR_TRIGGERED_REVIEW_POLL_SEC" -eq 0 ]; then
     echo "ERROR: [review.pr_triggered].poll_sec must be positive when timeout_sec is positive." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
     exit 2
   fi
 
@@ -1677,7 +1645,6 @@ wait_for_pr_triggered_review() {
       echo "       expected: $expected_head" >&2
       echo "       actual:   $observed_head" >&2
       echo "       Rerun the merge gate on the current head." >&2
-      TOUCHSTONE_MERGE_FAILURE_REASON="head-not-updated"
       exit 1
     fi
 
@@ -1690,7 +1657,6 @@ wait_for_pr_triggered_review() {
           echo "ERROR: PR #$PR_NUMBER was retargeted while waiting for PR-triggered AI review." >&2
           echo "       expected base branch: $PR_BASE_BRANCH" >&2
           echo "       actual base branch:   $observed_branch" >&2
-          TOUCHSTONE_MERGE_FAILURE_REASON="review-base-changed"
           exit 1
         fi
       else
@@ -1724,7 +1690,6 @@ wait_for_pr_triggered_review() {
             "$observed_base" \
             "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
             "$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"; then
-            TOUCHSTONE_MERGE_FAILURE_REASON="review-result-persistence"
             exit 1
           fi
           PR_TRIGGERED_REVIEWED_HEAD_OID="$expected_head"
@@ -1737,15 +1702,6 @@ wait_for_pr_triggered_review() {
           echo "==> Trusted PR-visible AI review found for PR #$PR_NUMBER head $expected_head."
           echo "    reviewed_base=$observed_base"
           [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
-          now_epoch="$(date +%s)"
-          elapsed=$((now_epoch - start_epoch))
-          touchstone_emit_event review_result \
-            worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
-            pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=clean \
-            wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
-            request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
-            result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
-          PR_TRIGGERED_REVIEW_SATISFIED_KIND="clean"
           return 0
         fi
         if [ "$signal_status" -eq 2 ]; then
@@ -1780,14 +1736,6 @@ wait_for_pr_triggered_review() {
             # it was answered — the pre-#751 rule stands for this class: a
             # fresh review of this head is the only durable acknowledgement
             # (PR #755 review).
-            now_epoch="$(date +%s)"
-            elapsed=$((now_epoch - start_epoch))
-            touchstone_emit_event review_result \
-              worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
-              pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=findings-body-only \
-              wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
-              request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
-              result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
             echo "ERROR: Trusted PR-visible AI review is not clean for PR #$PR_NUMBER head $expected_head." >&2
             if [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ]; then
               echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2
@@ -1800,7 +1748,6 @@ wait_for_pr_triggered_review() {
             echo "         bash scripts/open-pr.sh --fresh-review" >&2
             echo "       (--fresh-review overrides the per-head idempotency, which would" >&2
             echo "       otherwise skip the re-request because this head is already reviewed.)" >&2
-            TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-body-only-findings"
             exit 1
           fi
           if [ "$answered_status" -eq 0 ]; then
@@ -1819,15 +1766,6 @@ wait_for_pr_triggered_review() {
             if [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ]; then
               echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
             fi
-            now_epoch="$(date +%s)"
-            elapsed=$((now_epoch - start_epoch))
-            touchstone_emit_event review_result \
-              worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
-              pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=findings-resolved \
-              wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
-              request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
-              result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
-            PR_TRIGGERED_REVIEW_SATISFIED_KIND="findings-resolved"
             return 0
           fi
           if [ "$answered_status" -eq 2 ]; then
@@ -1836,14 +1774,6 @@ wait_for_pr_triggered_review() {
             # as such if the wait times out.
             last_review_inspection_error="answered-findings check: $PR_ANSWERED_FINDINGS_INSPECTION_ERROR"
           else
-            now_epoch="$(date +%s)"
-            elapsed=$((now_epoch - start_epoch))
-            touchstone_emit_event review_result \
-              worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
-              pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=findings \
-              wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
-              request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
-              result_at="$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"
             echo "ERROR: Trusted PR-visible AI review is not clean for PR #$PR_NUMBER head $expected_head." >&2
             if [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ]; then
               echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2
@@ -1851,7 +1781,6 @@ wait_for_pr_triggered_review() {
             echo "       Blocking condition: $PR_ANSWERED_FINDINGS_BLOCK_REASON." >&2
             report_review_round_economics "$PR_NUMBER"
             print_batch_fix_guidance
-            TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-findings"
             exit 1
           fi
         else
@@ -1873,45 +1802,27 @@ wait_for_pr_triggered_review() {
   done
 
   if [ -n "$last_inspection_error" ]; then
-    touchstone_emit_event review_result \
-      worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
-      pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=inspection-error \
-      wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
-      request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"
     echo "ERROR: Failed to inspect PR #$PR_NUMBER head or base revision while waiting for PR-triggered AI review." >&2
     echo "       phase: $phase" >&2
     echo "       last gh error: $(printf '%s' "$last_inspection_error" | tr '\n' ' ')" >&2
     echo "       Verify GitHub authentication and API availability, then rerun the merge gate." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-inspection"
     exit 1
   fi
 
   if [ -n "$last_review_inspection_error" ]; then
-    touchstone_emit_event review_result \
-      worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
-      pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=inspection-error \
-      wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
-      request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"
     echo "ERROR: Failed to inspect trusted PR-visible AI review evidence for PR #$PR_NUMBER." >&2
     echo "       phase: $phase" >&2
     echo "       last gh error: $(printf '%s' "$last_review_inspection_error" | tr '\n' ' ')" >&2
     echo "       Verify GitHub authentication and API availability, then rerun the merge gate." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-inspection"
     exit 1
   fi
 
-  touchstone_emit_event review_result \
-    worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
-    pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$observed_base" status=timeout \
-    wait_seconds="$elapsed" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT" \
-    request_at="$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"
   echo "ERROR: Timed out waiting for trusted PR-visible AI review for PR #$PR_NUMBER." >&2
   echo "       phase: $phase" >&2
   echo "       expected head: $expected_head" >&2
   echo "       provider: $PR_TRIGGERED_REVIEW_PROVIDER" >&2
   echo "       Confirm GitHub Codex automatic reviews are enabled, or comment '@codex review' on the PR." >&2
   echo "       Then rerun: bash scripts/open-pr.sh --auto-merge" >&2
-  TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-timeout"
   exit 1
 }
 
@@ -1983,7 +1894,6 @@ load_pr_review_request_timestamp() {
       *)
         echo "ERROR: PR #$PR_NUMBER head $expected_head has review-request status from untrusted creator '$_creator'." >&2
         echo "       Update the PR head so untrusted status records cannot authorize or suppress review." >&2
-        TOUCHSTONE_MERGE_FAILURE_REASON="review-request-untrusted-creator"
         return 3
         ;;
     esac
@@ -2002,7 +1912,6 @@ load_pr_review_request_timestamp() {
     echo "       current base:  $expected_base" >&2
     echo "       prior base(s): $conflicting_bases" >&2
     echo "       Update the PR head, then re-run scripts/open-pr.sh so the new head is reviewed — old in-flight results cannot authorize the new base." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="review-request-base-conflict"
     return 3
   fi
 
@@ -2037,24 +1946,20 @@ request_pr_triggered_review() {
   fi
   if [ "$PR_TRIGGERED_REVIEW_PROVIDER" != "github-codex" ]; then
     echo "ERROR: request_on_push only supports [review.pr_triggered].provider = \"github-codex\"." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-config"
     return 1
   fi
   if ! observed_head="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')"; then
     echo "ERROR: Failed to resolve PR #$PR_NUMBER head before requesting review ($phase)." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
   if [ "$observed_head" != "$expected_head" ]; then
     echo "ERROR: Refusing to request review for PR #$PR_NUMBER before its head converges." >&2
     echo "       expected: $expected_head" >&2
     echo "       actual:   ${observed_head:-<empty>}" >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
   if ! observed_revision="$(current_pr_base_revision 2>&1)"; then
     echo "ERROR: Failed to resolve PR #$PR_NUMBER base before requesting review ($phase): $observed_revision" >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
   IFS="$(printf '\t')" read -r observed_branch observed_base <<<"$observed_revision"
@@ -2062,7 +1967,6 @@ request_pr_triggered_review() {
     echo "ERROR: Refusing to request review for PR #$PR_NUMBER after its base changed." >&2
     echo "       expected: $PR_BASE_BRANCH@$expected_base" >&2
     echo "       actual:   ${observed_branch:-<empty>}@${observed_base:-<empty>}" >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
 
@@ -2077,7 +1981,6 @@ request_pr_triggered_review() {
         echo "ERROR: PR #$PR_NUMBER head $expected_head has no durable review-request evidence." >&2
         echo "       The merge gate did not create or advance this head, so legacy review state is ambiguous." >&2
         echo "       Run scripts/open-pr.sh against the current head to request review." >&2
-        TOUCHSTONE_MERGE_FAILURE_REASON="review-request-legacy-head"
         return 3
       fi
     else
@@ -2099,13 +2002,11 @@ request_pr_triggered_review() {
         --jq '.created_at'
     )"; then
       echo "ERROR: Failed to record review-request intent for PR #$PR_NUMBER ($phase)." >&2
-      TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
       return 1
     fi
   fi
   if [ -z "$PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP" ]; then
     echo "ERROR: GitHub returned no timestamp for review-request intent." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
 
@@ -2113,22 +2014,18 @@ request_pr_triggered_review() {
   if ! trigger_at="$(gh api -X POST "repos/$REPO_FULL_NAME/issues/$PR_NUMBER/comments" \
     -f body="$body" --jq '.created_at')"; then
     echo "ERROR: Failed to request GitHub Codex review for PR #$PR_NUMBER ($phase)." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
   if [ -z "$trigger_at" ]; then
     echo "ERROR: GitHub returned no timestamp for the review trigger comment." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
   if ! completion_head="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid')"; then
     echo "ERROR: Failed to revalidate PR #$PR_NUMBER head after requesting review ($phase)." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
   if ! completion_revision="$(current_pr_base_revision 2>&1)"; then
     echo "ERROR: Failed to revalidate PR #$PR_NUMBER base after requesting review ($phase): $completion_revision" >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
   IFS="$(printf '\t')" read -r completion_branch completion_base <<<"$completion_revision"
@@ -2138,7 +2035,6 @@ request_pr_triggered_review() {
     echo "ERROR: PR #$PR_NUMBER revision changed while review was being requested ($phase)." >&2
     echo "       requested: $PR_BASE_BRANCH@$expected_base head=$expected_head" >&2
     echo "       current:   ${completion_branch:-<empty>}@${completion_base:-<empty>} head=${completion_head:-<empty>}" >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
   if ! created_at="$(gh api -X POST "repos/$REPO_FULL_NAME/statuses/$expected_head" \
@@ -2147,20 +2043,14 @@ request_pr_triggered_review() {
     -f description="pr=$PR_NUMBER base=$expected_base intent=$PR_TRIGGERED_REVIEW_REQUEST_INTENT_TIMESTAMP trigger=$trigger_at" \
     --jq '.created_at')"; then
     echo "ERROR: Failed to record durable review-request evidence for PR #$PR_NUMBER ($phase)." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
   if [ -z "$created_at" ]; then
     echo "ERROR: GitHub returned no timestamp for durable review-request evidence." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-request"
     return 1
   fi
   PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP="$trigger_at"
   PR_TRIGGERED_REVIEW_REQUEST_COUNT=$((PR_TRIGGERED_REVIEW_REQUEST_COUNT + 1))
-  touchstone_emit_event review_requested \
-    worktree_path="$REVIEW_EVENT_WORKTREE_PATH" \
-    pr_number="$PR_NUMBER" head_sha="$expected_head" base_sha="$expected_base" \
-    phase="$phase" request_count="$PR_TRIGGERED_REVIEW_REQUEST_COUNT"
   echo "==> Requested GitHub Codex review for head $expected_head at base $expected_base ($phase)."
 }
 
@@ -2197,19 +2087,16 @@ require_pr_feedback_clear() {
   if ! is_draft="$(gh pr view "$PR_NUMBER" --json isDraft --jq '.isDraft' 2>&1)"; then
     echo "ERROR: Could not inspect draft state for PR #$PR_NUMBER: $is_draft" >&2
     echo "       Refusing to merge without draft-state confirmation." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-state"
     exit 1
   fi
   if [ -z "$is_draft" ]; then
     echo "ERROR: GitHub returned an empty draft state for PR #$PR_NUMBER." >&2
     echo "       Refusing to merge without draft-state confirmation." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-state"
     exit 1
   fi
   if [ "$is_draft" = "true" ]; then
     echo "ERROR: PR #$PR_NUMBER is still a draft; refusing to merge." >&2
     echo "       Mark it ready for review, then rerun: bash scripts/open-pr.sh --auto-merge" >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-blocked"
     exit 1
   fi
 
@@ -2217,13 +2104,11 @@ require_pr_feedback_clear() {
     if ! observed_head="$(gh pr view "$PR_NUMBER" --json headRefOid --jq '.headRefOid' 2>&1)"; then
       echo "ERROR: Could not inspect PR #$PR_NUMBER head commit: $observed_head" >&2
       echo "       Refusing to merge without exact-head confirmation." >&2
-      TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-state"
       exit 1
     fi
     if [ -z "$observed_head" ]; then
       echo "ERROR: GitHub returned an empty head commit for PR #$PR_NUMBER." >&2
       echo "       Refusing to merge without exact-head confirmation." >&2
-      TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-state"
       exit 1
     fi
     if [ "$observed_head" != "$expected_head" ]; then
@@ -2231,7 +2116,6 @@ require_pr_feedback_clear() {
       echo "       expected: $expected_head" >&2
       echo "       actual:   $observed_head" >&2
       echo "       Rerun the merge gate on the current head." >&2
-      TOUCHSTONE_MERGE_FAILURE_REASON="head-not-updated"
       exit 1
     fi
   fi
@@ -2239,13 +2123,11 @@ require_pr_feedback_clear() {
   if ! review_decision="$(gh pr view "$PR_NUMBER" --json reviewDecision --jq '.reviewDecision // empty' 2>&1)"; then
     echo "ERROR: Could not inspect review decision for PR #$PR_NUMBER: $review_decision" >&2
     echo "       Refusing to merge without review-decision confirmation." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-state"
     exit 1
   fi
   if [ "$review_decision" = "CHANGES_REQUESTED" ]; then
     echo "ERROR: PR #$PR_NUMBER has an active CHANGES_REQUESTED review decision." >&2
     echo "       Address the requested changes, push fixes, and rerun: bash scripts/open-pr.sh --auto-merge" >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-blocked"
     exit 1
   fi
 
@@ -2255,7 +2137,6 @@ require_pr_feedback_clear() {
       echo "       Repository name could not be resolved from 'gh repo view --json nameWithOwner'." >&2
     fi
     echo "       Refusing to merge without thread-level review state." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-state"
     exit 1
   }
 
@@ -2273,7 +2154,6 @@ require_pr_feedback_clear() {
     # driver needs to answer each thread.
     report_review_round_economics "$PR_NUMBER"
     print_batch_fix_guidance
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-feedback-blocked"
     exit 1
   fi
 
@@ -2452,7 +2332,6 @@ attempt_claim_check_substitution() {
     rm -f "$trusted_checker"
     echo "ERROR: claim-check never executed AND direct API claim verification failed:" >&2
     printf '%s\n' "$direct_output" | sed 's/^/       /' >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="claim-verification-failed"
     exit 1
   fi
   rm -f "$trusted_checker"
@@ -2502,7 +2381,6 @@ print_failed_checks_and_exit() {
       fi
     fi
   done <<<"$failed_checks"
-  TOUCHSTONE_MERGE_FAILURE_REASON="check-failed"
   exit 1
 }
 
@@ -2557,7 +2435,6 @@ wait_for_clean_merge_state() {
           echo "ERROR: PR #$PR_NUMBER is $STATE — has conflicts or is out of date with base." >&2
           echo "       Claim substitution does not waive merge-state requirements." >&2
           echo "       Rebase or resolve conflicts on the PR branch before merging." >&2
-          TOUCHSTONE_MERGE_FAILURE_REASON="not-mergeable"
           exit 1
         fi
         echo "==> Claim substituted, but merge state is $STATE/$MERGEABLE — continuing to wait for an authorizing state."
@@ -2569,7 +2446,6 @@ wait_for_clean_merge_state() {
       echo "ERROR: PR #$PR_NUMBER is $STATE — has conflicts or is out of date with base." >&2
       echo "       Final merge state: mergeStateStatus=$STATE mergeable=$MERGEABLE." >&2
       echo "       Rebase or resolve conflicts on the PR branch before merging." >&2
-      TOUCHSTONE_MERGE_FAILURE_REASON="not-mergeable"
       exit 1
     fi
     if [ "$attempt" -lt "$max_attempts" ]; then
@@ -2587,7 +2463,6 @@ wait_for_clean_merge_state() {
   echo "ERROR: PR #$PR_NUMBER is not cleanly mergeable (state=$STATE mergeable=$MERGEABLE)." >&2
   echo "       Required checks may still be pending; waited $max_attempts merge-state attempts." >&2
   echo "       Inspect manually: gh pr view $PR_NUMBER --web" >&2
-  TOUCHSTONE_MERGE_FAILURE_REASON="not-mergeable"
   exit 1
 }
 
@@ -2609,7 +2484,6 @@ wait_for_pr_head() {
 
   echo "ERROR: PR #$PR_NUMBER head did not update to reviewed commit $expected_head." >&2
   echo "       Last observed head: ${actual_head:-unknown}" >&2
-  TOUCHSTONE_MERGE_FAILURE_REASON="head-not-updated"
   exit 1
 }
 
@@ -2636,22 +2510,18 @@ run_preflight_gate() {
   if preflight_cache_prepare "$base_ref" "$event_mode" && preflight_cache_hit; then
     cache_key_short="$(preflight_cache_short_key)"
     echo "==> Deterministic preflight clean (cached=true, key=$cache_key_short; $label, diff vs $base_ref)."
-    touchstone_emit_event preflight_clean pr_number="$PR_NUMBER" head_sha="$head_sha" cached=true cache_key="$PREFLIGHT_CACHE_KEY"
     return 0
   fi
 
   echo "==> Running deterministic preflight $label (diff vs $base_ref) ..."
-  touchstone_emit_event preflight_started pr_number="$PR_NUMBER" mode="$event_mode" cached=false
   if touchstone_preflight_main_sanitized --diff "$base_ref" "$(git rev-parse --show-toplevel)"; then
     head_sha="$(git rev-parse HEAD 2>/dev/null || echo "")"
     write_preflight_clean_cache
     if [ -n "$PREFLIGHT_CACHE_KEY" ]; then
       cache_key_short="$(preflight_cache_short_key)"
       echo "==> Deterministic preflight clean (cached=false, key=$cache_key_short)."
-      touchstone_emit_event preflight_clean pr_number="$PR_NUMBER" head_sha="$head_sha" cached=false cache_key="$PREFLIGHT_CACHE_KEY"
     else
       echo "==> Deterministic preflight clean (cached=false)."
-      touchstone_emit_event preflight_clean pr_number="$PR_NUMBER" head_sha="$head_sha" cached=false
     fi
     return 0
   fi
@@ -2659,8 +2529,6 @@ run_preflight_gate() {
   echo "ERROR: Deterministic preflight failed; refusing to merge." >&2
   echo "       Fix the preflight failure or set TOUCHSTONE_NO_PREFLIGHT=1 for an emergency bypass." >&2
   head_sha="$(git rev-parse HEAD 2>/dev/null || echo "")"
-  touchstone_emit_event preflight_blocked pr_number="$PR_NUMBER" head_sha="$head_sha"
-  TOUCHSTONE_MERGE_FAILURE_REASON="preflight-blocked"
   return 1
 }
 
@@ -2691,7 +2559,6 @@ run_merge_review() {
     echo "       reviewed head: $PR_TRIGGERED_REVIEWED_HEAD_OID" >&2
     echo "       current head:  $pr_head_oid" >&2
     echo "       Rerun the merge gate on the current head." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="head-not-updated"
     exit 1
   fi
   current_branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
@@ -2722,7 +2589,6 @@ run_merge_review() {
       echo "       current base: $current_base_oid" >&2
       echo "       merge base:   $current_merge_base" >&2
       echo "       Update the PR branch and re-run scripts/open-pr.sh so the new head is reviewed." >&2
-      TOUCHSTONE_MERGE_FAILURE_REASON="review-base-behind"
       exit 1
     elif load_pr_review_request_timestamp "$pr_head_oid" "$current_base_oid" \
       && trusted_pr_clean_signal "$pr_head_oid" "$current_base_oid" "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP"; then
@@ -2735,7 +2601,6 @@ run_merge_review() {
     fi
     REVIEWED_BASE_OID="$current_base_oid"
     REVIEWED_MERGE_BASE_OID="$current_merge_base"
-    touchstone_emit_event review_bypass pr_number="$PR_NUMBER" head_sha="$pr_head_oid" reason="$BYPASS_REASON" marker="$BYPASS_MARKER_SOURCE" evidence="$BYPASS_MARKER_EVIDENCE"
     print_bypass_banner
     record_bypass_comment
     return 0
@@ -2813,25 +2678,10 @@ run_merge_review() {
     echo "       current base:  $REVIEWED_BASE_OID" >&2
     echo "       merge base:    $REVIEWED_MERGE_BASE_OID" >&2
     echo "       Update the PR branch and re-run scripts/open-pr.sh so the new head is reviewed." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="review-base-unreviewed"
     return 1
   fi
 
   echo "==> Trusted PR-visible review covers the current head and base."
-  # The lifecycle event must match the outcome: emitting review_clean for a
-  # gate satisfied by answered findings would tell event consumers a clean
-  # review occurred when it did not (PR #755 review). The emitted kind is
-  # recorded because the FINAL revalidation can change the accepted outcome —
-  # a newer result arriving during deterministic verification — and event
-  # consumers must then receive the corrected final event, not be left with
-  # a stale one (PR #755 review, round 3).
-  if [ "${PR_TRIGGERED_REVIEW_SATISFIED_KIND:-clean}" = "findings-resolved" ]; then
-    touchstone_emit_event review_findings_resolved pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
-    PR_TRIGGERED_REVIEW_EMITTED_KIND="findings-resolved"
-  else
-    touchstone_emit_event review_clean pr_number="$PR_NUMBER" head_sha="$pr_head_oid"
-    PR_TRIGGERED_REVIEW_EMITTED_KIND="clean"
-  fi
   return 0
 }
 
@@ -2841,12 +2691,10 @@ load_merge_review_config
 # 1. Sanity check the PR exists and is open.
 if ! PR_STATE="$(gh pr view "$PR_NUMBER" --json state --jq '.state')"; then
   echo "ERROR: Failed to inspect PR #$PR_NUMBER state with gh." >&2
-  TOUCHSTONE_MERGE_FAILURE_REASON="pr-state"
   exit 1
 fi
 if [ "$PR_STATE" != "OPEN" ]; then
   echo "ERROR: PR #$PR_NUMBER is not open (state: $PR_STATE)." >&2
-  TOUCHSTONE_MERGE_FAILURE_REASON="pr-not-open"
   exit 1
 fi
 
@@ -2935,35 +2783,19 @@ if [ "$BYPASS_REVIEW" != true ] || [ "$BYPASS_MARKER_SOURCE" = "pr-triggered-rev
     elif [ -n "${PR_TRIGGERED_REVIEW_INSPECTION_ERROR:-}" ]; then
       echo "       Inspection detail: $PR_TRIGGERED_REVIEW_INSPECTION_ERROR" >&2
     fi
-    TOUCHSTONE_MERGE_FAILURE_REASON="pr-triggered-review-stale"
     exit 1
   fi
   if [ "$final_answered_findings" = true ]; then
     echo "==> Revalidated trusted PR-visible AI result for head $REVIEWED_HEAD_OID (findings; all threads resolved)."
-    if [ "${PR_TRIGGERED_REVIEW_EMITTED_KIND:-}" = "clean" ]; then
-      # The wait phase accepted a clean result and emitted review_clean, but a
-      # newer thread-backed findings result arrived during verification and the
-      # gate is now satisfied via answered findings. Correct the record.
-      touchstone_emit_event review_findings_resolved pr_number="$PR_NUMBER" head_sha="$REVIEWED_HEAD_OID"
-      PR_TRIGGERED_REVIEW_EMITTED_KIND="findings-resolved"
-    fi
   else
     if ! persist_pr_clean_review_result \
       "$REVIEWED_HEAD_OID" \
       "$REVIEWED_BASE_OID" \
       "$PR_TRIGGERED_REVIEW_REQUEST_TIMESTAMP" \
       "$PR_TRIGGERED_REVIEW_SIGNAL_TIMESTAMP"; then
-      TOUCHSTONE_MERGE_FAILURE_REASON="review-result-persistence"
       exit 1
     fi
     echo "==> Revalidated latest trusted PR-visible AI result for head $REVIEWED_HEAD_OID."
-    if [ "${PR_TRIGGERED_REVIEW_EMITTED_KIND:-}" = "findings-resolved" ]; then
-      # The mirror correction: answered findings satisfied the wait phase, but
-      # a fresh clean review arrived during verification and the final outcome
-      # is clean.
-      touchstone_emit_event review_clean pr_number="$PR_NUMBER" head_sha="$REVIEWED_HEAD_OID"
-      PR_TRIGGERED_REVIEW_EMITTED_KIND="clean"
-    fi
   fi
   if [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ]; then
     echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
@@ -2977,7 +2809,6 @@ fi
 echo "==> Squash-merging PR #$PR_NUMBER ..."
 if [ -z "$REVIEWED_HEAD_OID" ]; then
   echo "ERROR: Cannot merge PR #$PR_NUMBER because no reviewed head commit was recorded." >&2
-  TOUCHSTONE_MERGE_FAILURE_REASON="missing-reviewed-head"
   exit 1
 fi
 gh_merge_exit=0
@@ -3049,7 +2880,6 @@ if [ -n "$PR_HEAD_BRANCH" ]; then
       echo "         gh repo edit --delete-branch-on-merge=false" >&2
       echo "       Branch cleanup belongs to scripts/cleanup-branches.sh, which checks" >&2
       echo "       dependents and records a restore command before removing anything." >&2
-      TOUCHSTONE_MERGE_FAILURE_REASON="auto-delete-enabled"
       exit 1
       ;;
     *)
@@ -3059,7 +2889,6 @@ if [ -n "$PR_HEAD_BRANCH" ]; then
       echo "       from the setting being enabled, so this fails closed rather than" >&2
       echo "       merging with unknown destructive behaviour." >&2
       echo "       Confirm with: gh repo view --json deleteBranchOnMerge" >&2
-      TOUCHSTONE_MERGE_FAILURE_REASON="auto-delete-unknown"
       exit 1
       ;;
   esac
@@ -3093,7 +2922,6 @@ if [ "$gh_merge_exit" -ne 0 ]; then
     printf '           bash %q --remote-too\n' "$SCRIPT_DIR/cleanup-branches.sh"
   else
     echo "ERROR: gh pr merge exited $gh_merge_exit and PR #$PR_NUMBER is not MERGED." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="gh-pr-merge"
     exit "$gh_merge_exit"
   fi
 fi
@@ -3119,13 +2947,9 @@ if [ "$CLAIM_CHECK_SUBSTITUTED" = true ]; then
     echo "       The claim-check is required by branch protection; claim substitution can" >&2
     echo "       satisfy Touchstone's gate but cannot update GitHub's required-check status." >&2
     echo "       Rerun the hosted claim-check when Actions recovers, then merge normally." >&2
-    TOUCHSTONE_MERGE_FAILURE_REASON="claim-substitution-required-check"
     exit 1
   fi
 fi
-
-MERGED_AT="$(gh pr view "$PR_NUMBER" --json mergedAt --jq '.mergedAt // empty' 2>/dev/null || echo "")"
-touchstone_emit_event merged pr_number="$PR_NUMBER" merged_at="$MERGED_AT" head_sha="$REVIEWED_HEAD_OID"
 
 # Record squash-merge metadata for cleanup-branches.sh. The merge has
 # succeeded on GitHub; this is best-effort persistence for later cleanup.

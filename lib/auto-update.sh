@@ -486,20 +486,26 @@ touchstone_auto_project_reconcile_external() {
   return 0
 }
 
+# Which `touchstone <command>` invocations skip the per-project auto-sync?
+# The verdict depends on the command alone: any flag the command itself
+# discards must not change whether managed files get rewritten.
 touchstone_auto_project_sync_command_skips() {
-  local command="${1:-}" subcommand="${2:-}"
+  local command="${1:-}"
 
   case "$command" in
-    "" | help | -h | --help | version | --version | status | list | ls | diff | changelog | doctor | detect | skills | update | update-all | sync | new | init | migrate-from-toolkit | release)
+    "" | help | -h | --help | version | --version | status | list | ls | diff | changelog | doctor | detect | skills | update | update-all | sync | new | init | release)
       return 0
       ;;
   esac
 
-  case "$command:$subcommand" in
-    adr:list | review:--dry-run | review:-n | worker:*)
-      return 0
-      ;;
-  esac
+  # No argument-dependent exemptions remain. `review` is a retired shim:
+  # cmd_retired_review calls cmd_preflight with no arguments, so `--dry-run`
+  # and `-n` are discarded before anything reads them and the invocation runs
+  # the same full preflight a bare `touchstone review` does. Exempting them
+  # promised a read-only invocation that does not exist, and made the sync
+  # gate treat two identical commands differently. #737 dropped the `adr:list`
+  # and `worker:*` entries with their commands; the review dry-run pair went
+  # with the second-pass review that found the flags were already dead.
 
   return 1
 }

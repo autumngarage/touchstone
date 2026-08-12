@@ -18,18 +18,25 @@
 #
 # Call this BEFORE any mkdir/cp/redirect so the ancestor check also protects the
 # directory creation.
+#
+# A caller that REMOVES a path instead of writing one wants the first rule and
+# not the second — see touchstone_ensure_safe_ancestors below.
 
-# touchstone_ensure_safe_dest <dst> <root> [dry_run]
-#   dst      absolute path that is about to be written
-#   root     trusted boundary; ancestor symlinks are checked from dst up to (but
-#            not including) root. The root itself is the user's chosen location
-#            and is not second-guessed.
-#   dry_run  "true" to skip the actual symlink removal (still reports/decides)
-# Returns 0 when it is safe to write to "$dst", 1 when the write must be skipped.
-touchstone_ensure_safe_dest() {
+# touchstone_ensure_safe_ancestors <dst> <root>
+#   The ancestor half of the guard, on its own. A caller that is about to
+#   REMOVE a path needs the traversal refusal but must not get the
+#   final-component symlink replacement below: that unlink is a write-side
+#   affordance, and firing it before the caller's own ownership and
+#   dirty-state checks destroyed the link those checks existed to protect
+#   (#801 review). Ancestors are checked from dst up to (but not including)
+#   root; root itself is the user's chosen location and is not second-guessed.
+# Returns 0 when no ancestor between dst and root is a symlink, 1 otherwise.
+#
+# Callers invoke this in a conditional, so `set -e` is inert inside it. Nothing
+# here relies on errexit: the body is `dirname` and file tests only.
+touchstone_ensure_safe_ancestors() {
   local dst="$1"
   local root="$2"
-  local dry_run="${3:-false}"
   local parent next
 
   parent="$(dirname "$dst")"
@@ -42,6 +49,22 @@ touchstone_ensure_safe_dest() {
     [ "$next" = "$parent" ] && break
     parent="$next"
   done
+  return 0
+}
+
+# touchstone_ensure_safe_dest <dst> <root> [dry_run]
+#   dst      absolute path that is about to be written
+#   root     trusted boundary; see touchstone_ensure_safe_ancestors.
+#   dry_run  "true" to skip the actual symlink removal (still reports/decides)
+# Returns 0 when it is safe to write to "$dst", 1 when the write must be skipped.
+touchstone_ensure_safe_dest() {
+  local dst="$1"
+  local root="$2"
+  local dry_run="${3:-false}"
+
+  if ! touchstone_ensure_safe_ancestors "$dst" "$root"; then
+    return 1
+  fi
 
   if [ -L "$dst" ]; then
     echo "    ! replacing unexpected symlink with managed file: $dst" >&2

@@ -32,6 +32,8 @@ source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
 source "$TOUCHSTONE_ROOT/lib/touchstone-block.sh"
 # shellcheck source=../lib/install-skills.sh
 source "$TOUCHSTONE_ROOT/lib/install-skills.sh"
+# shellcheck source=../lib/retired-managed.sh
+source "$TOUCHSTONE_ROOT/lib/retired-managed.sh"
 
 REGISTER=true
 
@@ -543,11 +545,15 @@ append_profile_gitignore_entries() {
 }
 
 # Resolve the project profile exactly like scripts/touchstone-run.sh:load_config
-# and bin/touchstone:cmd_doctor_project do, so per-profile flags here dispatch
-# against the same profile the runner and doctor would use:
+# does, so per-profile flags here dispatch against the same profile the runner
+# would use:
 #   - project_type= and profile= are aliases for the same slot, last-write-wins
 #   - empty or "auto" -> detect from manifest files
 #   - "generic" with a detected non-generic profile -> upgrade to the detected
+#
+# The runner is the only thing to stay in lock-step with. #737 removed
+# bin/touchstone's copy of this resolution; doctor now asks the runner
+# (`touchstone-run.sh detect`) instead of re-deriving a profile of its own.
 resolve_project_type_from_config() {
   local dir="$1" line value candidate result=""
 
@@ -809,6 +815,7 @@ FILES_ADDED=0
 FILES_EXISTING=0
 FILES_UPDATED=0
 FILES_UNCHANGED=0
+FILES_RETIRED=0
 
 # Create directory if needed.
 mkdir -p "$PROJECT_DIR"
@@ -914,18 +921,11 @@ write_touchstone_manifest() {
     printf 'scripts/respond-review.sh\n'
     printf 'scripts/issue-claim-check.sh\n'
     printf 'scripts/cleanup-branches.sh\n'
-    printf 'scripts/spawn-worktree.sh\n'
-    printf 'scripts/cleanup-worktrees.sh\n'
     printf 'lib/toml.sh\n'
-    printf 'lib/events.sh\n'
-    printf 'lib/codex-auth.sh\n'
     printf 'lib/script-sync-guard.sh\n'
     printf 'lib/sha256.sh\n'
     printf 'lib/preflight.sh\n'
     printf 'lib/preflight-scope.sh\n'
-    if [ "$INPUT_TYPE" = "python" ]; then
-      printf 'scripts/run-pytest-in-venv.sh\n'
-    fi
     printf '.claude/settings.json\n'
   } >"$manifest_tmp"
   if copy_file_force "$manifest_tmp" "$PROJECT_DIR/.touchstone-manifest"; then
@@ -985,7 +985,6 @@ fi
 copy_file "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-commit-config.yaml"
 copy_file "$TOUCHSTONE_ROOT/templates/.markdownlint.json" "$PROJECT_DIR/.markdownlint.json"
 copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
-copy_file "$TOUCHSTONE_ROOT/templates/.worktreeinclude.example" "$PROJECT_DIR/.worktreeinclude.example"
 copy_file "$TOUCHSTONE_ROOT/templates/pull_request_template.md" "$PROJECT_DIR/.github/pull_request_template.md"
 if [ -f "$PROJECT_DIR/.codex-review.toml" ] && [ ! -f "$PROJECT_DIR/.touchstone-review.toml" ]; then
   echo "    exists (legacy, skipped): .codex-review.toml"
@@ -994,6 +993,55 @@ else
 fi
 copy_file "$TOUCHSTONE_ROOT/templates/setup.sh" "$PROJECT_DIR/setup.sh"
 chmod +x "$PROJECT_DIR/setup.sh" 2>/dev/null || true
+
+# Retire what touchstone no longer manages, BEFORE the copy pass runs and
+# BEFORE write_touchstone_manifest regenerates the ledger without these paths.
+# Order is the whole point: the remover only touches a file the manifest still
+# claims, so retiring after the rewrite would find nothing to retire — which is
+# exactly the bug this fixes. `touchstone init` used to skip retirement
+# entirely, deleting the manifest entries while leaving the files on disk, and
+# a file that is on disk but absent from the ledger is unreachable by every
+# future `touchstone update` (#737 round-2 review).
+#
+# Same list and same remover as bootstrap/update-project.sh (lib/retired-managed.sh).
+retire_unmanaged_files() {
+  local rel header_printed=false rc
+  local retired_paths=()
+
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    touchstone_retired_managed_file_applies "$PROJECT_DIR" "$rel" || continue
+    if [ "$header_printed" = false ]; then
+      echo ""
+      echo "==> Retiring files touchstone no longer manages:"
+      header_printed=true
+    fi
+    retired_paths+=("$rel")
+    rc=0
+    touchstone_remove_retired_managed_file "$PROJECT_DIR" "$rel" false || rc=$?
+    case "$rc" in
+      0) FILES_RETIRED=$((FILES_RETIRED + 1)) ;;
+      5)
+        # Fail closed, same reasoning as bootstrap/update-project.sh: init is
+        # about to rewrite .touchstone-manifest without this entry, and a file
+        # that survives on disk while leaving the ledger is unreachable by
+        # every later update. Retirement runs before any file is copied, so
+        # stopping here leaves the project as it was found.
+        echo "ERROR: could not remove retired managed file: $PROJECT_DIR/$rel" >&2
+        echo "       Retirement drops it from .touchstone-manifest, so leaving it on disk" >&2
+        echo "       would put it beyond the reach of every later update." >&2
+        echo "       Make the path writable, then rerun: touchstone init" >&2
+        exit 1
+        ;;
+    esac
+  done < <(touchstone_retired_managed_paths)
+
+  # The project's own steering may still tell agents to run what just went
+  # away. Touchstone cannot fix project-owned prose, so it says so once, here.
+  touchstone_report_retired_steering_references "$PROJECT_DIR" \
+    ${retired_paths[@]+"${retired_paths[@]}"}
+}
+retire_unmanaged_files
 
 echo ""
 echo "==> Copying principles (touchstone-owned, will be auto-updated):"
@@ -1023,16 +1071,12 @@ copy_file_force "$TOUCHSTONE_ROOT/scripts/claim-issue.sh" "$PROJECT_DIR/scripts/
 copy_file_force "$TOUCHSTONE_ROOT/scripts/respond-review.sh" "$PROJECT_DIR/scripts/respond-review.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$PROJECT_DIR/scripts/issue-claim-check.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
-copy_file_force "$TOUCHSTONE_ROOT/scripts/spawn-worktree.sh" "$PROJECT_DIR/scripts/spawn-worktree.sh"
-copy_file_force "$TOUCHSTONE_ROOT/scripts/cleanup-worktrees.sh" "$PROJECT_DIR/scripts/cleanup-worktrees.sh"
 chmod +x "$PROJECT_DIR/scripts/"*.sh
 
 echo ""
 echo "==> Copying libraries (touchstone-owned, will be auto-updated):"
 mkdir -p "$PROJECT_DIR/lib"
 copy_file_force "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
-copy_file_force "$TOUCHSTONE_ROOT/lib/events.sh" "$PROJECT_DIR/lib/events.sh"
-copy_file_force "$TOUCHSTONE_ROOT/lib/codex-auth.sh" "$PROJECT_DIR/lib/codex-auth.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/script-sync-guard.sh" "$PROJECT_DIR/lib/script-sync-guard.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/sha256.sh" "$PROJECT_DIR/lib/sha256.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PROJECT_DIR/lib/preflight.sh"
@@ -1358,15 +1402,6 @@ else
   echo "==> .touchstone-config already exists; left unchanged."
 fi
 
-# Keep the legacy pytest helper only for Python projects. Generic ecosystem
-# tasks should go through scripts/touchstone-run.sh.
-if [ "$INPUT_TYPE" = "python" ]; then
-  echo ""
-  echo "==> Copying Python helper:"
-  copy_file_force "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
-  chmod +x "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" 2>/dev/null || true
-fi
-
 # Swift profile on fresh bootstrap: scaffold Package.swift + Sources/ + Tests/
 # so `swift build` and `swift test` work immediately. Never overwrites — the
 # _has_any_swift_sources guard makes re-init on a real Swift project a no-op.
@@ -1558,6 +1593,9 @@ if [ "$FILES_UPDATED" -gt 0 ]; then
 fi
 if [ "$FILES_EXISTING" -gt 0 ]; then
   printf ', %d already present' "$FILES_EXISTING"
+fi
+if [ "$FILES_RETIRED" -gt 0 ]; then
+  printf ', %d retired' "$FILES_RETIRED"
 fi
 printf '\n'
 printf '    version:  %s\n' "$TOUCHSTONE_SHA"

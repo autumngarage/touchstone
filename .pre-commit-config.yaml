@@ -14,7 +14,7 @@ repos:
       - id: trailing-whitespace
         exclude: ^\.cortex/(journal|doctrine)/
       - id: end-of-file-fixer
-        exclude: ^(\.cortex/(journal|doctrine)/|docs/adr/0001-hybrid-pinned-script-shims\.md$|prototypes/)
+        exclude: ^(\.cortex/(journal|doctrine)/|prototypes/)
       - id: check-yaml
       - id: check-added-large-files
         args: ['--maxkb=500']

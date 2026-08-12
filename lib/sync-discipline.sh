@@ -34,22 +34,25 @@ touchstone_sync_planned_write_paths() {
     printf 'scripts/respond-review.sh\n'
     printf 'scripts/issue-claim-check.sh\n'
     printf 'scripts/cleanup-branches.sh\n'
-    printf 'scripts/spawn-worktree.sh\n'
-    printf 'scripts/cleanup-worktrees.sh\n'
     printf 'lib/toml.sh\n'
-    printf 'lib/events.sh\n'
-    printf 'lib/codex-auth.sh\n'
     printf 'lib/script-sync-guard.sh\n'
     printf 'lib/sha256.sh\n'
     printf 'lib/preflight.sh\n'
     printf 'lib/preflight-scope.sh\n'
 
-    # Retired managed files that remove_retired_managed_file deletes during
-    # update. They must stay in the planned write set: the rollback snapshot
-    # is taken from this list, so a deletion outside it could not be undone
-    # by a failed update's restore.
+    # Retired managed files that the retirement pass deletes during init and
+    # update. They must stay in the planned write set: the rollback snapshot is
+    # taken from this list, so a deletion outside it could not be undone by a
+    # failed update's restore. lib/retired-managed.sh is the canonical list;
+    # this block must mirror it, and tests/test-sync-scope-aware.sh derives its
+    # assertions from that list so the two cannot drift.
     printf 'lib/review-comment.sh\n'
     printf 'scripts/cortex-pr-merged-hook.sh\n'
+    printf 'scripts/spawn-worktree.sh\n'
+    printf 'scripts/cleanup-worktrees.sh\n'
+    printf 'lib/events.sh\n'
+    printf 'lib/codex-auth.sh\n'
+    printf 'scripts/run-pytest-in-venv.sh\n'
 
     # Legacy project-scoped copies of these Touchstone-owned skills are
     # removed during update now that the bundle installs at user scope. Keep
@@ -62,10 +65,6 @@ touchstone_sync_planned_write_paths() {
     printf '.claude/skills/touchstone-audit-weak-points/\n'
     printf '.claude/skills/cortex-protocol/\n'
     printf '.claude/skills/memory-audit/\n'
-
-    if [ "$project_type" = "python" ] || [ -f "$project_dir/scripts/run-pytest-in-venv.sh" ]; then
-      printf 'scripts/run-pytest-in-venv.sh\n'
-    fi
 
     if [ -d "$touchstone_root/.claude/skills" ]; then
       local skill_dir skill_name f

@@ -18,7 +18,7 @@ The block above is the canonical universal contract: agent roles, the 14 daily-r
 - **User-scoped skills propagate too.** Files under `skills/` are installed to `~/.claude/skills/` on user machines by `lib/install-skills.sh`. Project-scoped skills under `.claude/skills/` are project-owned and stay in the source repo.
 - **Templates are starting points.** Files in `templates/` are copied once at bootstrap time and then owned by the project. Changes to templates only affect *new* projects.
 - **Self-tests are mandatory.** Run every `tests/test-*.sh` script before pushing. This is the fast default tier and must not spend live model/provider quota. Slow opt-in probes live under `tests/slow-*.sh` and are run explicitly when validating model-steering behavior.
-- **Parallel agent work is isolated.** Use `principles/agent-swarms.md` for slice manifests and parent orchestration. Use `scripts/spawn-worktree.sh` to create branch/worktree slices and `scripts/cleanup-worktrees.sh` for dry-run-first teardown.
+- **Parallel agent work is isolated.** Use `principles/agent-swarms.md` for slice manifests and parent orchestration. Fan out with plain `git worktree add` and tear down with `git worktree remove` — Touchstone ships no wrapper around them.
 - **Release completeness.** A touchstone release is not done until GitHub Releases, the Homebrew tap, `origin/main`, and the locally installed brew package all agree on the same version.
 - **Nothing ships unjustified.** Every file under `bin/`, `bootstrap/`, `hooks/`, `lib/`, and `scripts/` must declare a mission job in `capabilities.toml`, and `tests/test-steering-size-caps.sh` fails if it does not. Adding a capability means writing down which of the three jobs it serves — constrain, make state legible, or carry the contract — in the same diff. If you cannot name one, do not add the file. A capability that is kept only until its removal lands is marked `cut` with a tracking issue, so the debt is reported on every test run instead of quietly becoming normal.
 
@@ -74,8 +74,6 @@ touchstone/
 | `bootstrap/sync-all.sh` | Update all registered projects at once |
 | `lib/touchstone-block.sh` | Renders TOUCHSTONE.md into the managed block of AGENTS.md/GEMINI.md |
 | `lib/install-skills.sh` | Installs user-scoped skill bundle from `skills/` to `~/.claude/skills/` |
-| `scripts/spawn-worktree.sh` | Create an isolated branch/worktree for parallel file-writing agent slices |
-| `scripts/cleanup-worktrees.sh` | Dry-run-first cleanup for clean merged-or-equivalent worktrees |
 | `lib/release.sh` | Release automation for GitHub Releases and the Homebrew tap |
 | `VERSION` | Current semver version |
 | `~/.touchstone-projects` | Registry of all bootstrapped projects |

@@ -88,7 +88,7 @@ touchstone_content_project_type() {
 # consumed by both update-project.sh's copy pass and the content probe, so
 # the two can never disagree about what "managed" means.
 touchstone_content_managed_file_pairs() {
-  local project_dir="$1" touchstone_root="$2" project_type="$3"
+  local project_dir="$1" touchstone_root="$2"
   local f
 
   # Principles
@@ -119,21 +119,13 @@ touchstone_content_managed_file_pairs() {
   printf '%s\t%s\n' "$touchstone_root/scripts/respond-review.sh" "$project_dir/scripts/respond-review.sh"
   printf '%s\t%s\n' "$touchstone_root/scripts/issue-claim-check.sh" "$project_dir/scripts/issue-claim-check.sh"
   printf '%s\t%s\n' "$touchstone_root/scripts/cleanup-branches.sh" "$project_dir/scripts/cleanup-branches.sh"
-  printf '%s\t%s\n' "$touchstone_root/scripts/spawn-worktree.sh" "$project_dir/scripts/spawn-worktree.sh"
-  printf '%s\t%s\n' "$touchstone_root/scripts/cleanup-worktrees.sh" "$project_dir/scripts/cleanup-worktrees.sh"
 
   # Libraries used by touchstone-owned scripts.
   printf '%s\t%s\n' "$touchstone_root/lib/toml.sh" "$project_dir/lib/toml.sh"
-  printf '%s\t%s\n' "$touchstone_root/lib/events.sh" "$project_dir/lib/events.sh"
-  printf '%s\t%s\n' "$touchstone_root/lib/codex-auth.sh" "$project_dir/lib/codex-auth.sh"
   printf '%s\t%s\n' "$touchstone_root/lib/script-sync-guard.sh" "$project_dir/lib/script-sync-guard.sh"
   printf '%s\t%s\n' "$touchstone_root/lib/sha256.sh" "$project_dir/lib/sha256.sh"
   printf '%s\t%s\n' "$touchstone_root/lib/preflight.sh" "$project_dir/lib/preflight.sh"
   printf '%s\t%s\n' "$touchstone_root/lib/preflight-scope.sh" "$project_dir/lib/preflight-scope.sh"
-
-  if [ "$project_type" = "python" ] || [ -f "$project_dir/scripts/run-pytest-in-venv.sh" ]; then
-    printf '%s\t%s\n' "$touchstone_root/scripts/run-pytest-in-venv.sh" "$project_dir/scripts/run-pytest-in-venv.sh"
-  fi
 }
 
 # One enumeration serves the writer AND the content probe: a manifest that
@@ -141,7 +133,7 @@ touchstone_content_managed_file_pairs() {
 # only listed paths, so an incomplete ledger hides files from it
 # (PR #780 review).
 touchstone_content_manifest_entries() {
-  local project_dir="$1" touchstone_root="$2" project_type="$3"
+  local project_dir="$1" touchstone_root="$2"
   local f
   printf '# Managed by touchstone. These paths may be updated by `touchstone update`.\n'
   printf '.touchstone-manifest\n'
@@ -162,18 +154,11 @@ touchstone_content_manifest_entries() {
   printf 'scripts/respond-review.sh\n'
   printf 'scripts/issue-claim-check.sh\n'
   printf 'scripts/cleanup-branches.sh\n'
-  printf 'scripts/spawn-worktree.sh\n'
-  printf 'scripts/cleanup-worktrees.sh\n'
   printf 'lib/toml.sh\n'
-  printf 'lib/events.sh\n'
-  printf 'lib/codex-auth.sh\n'
   printf 'lib/script-sync-guard.sh\n'
   printf 'lib/sha256.sh\n'
   printf 'lib/preflight.sh\n'
   printf 'lib/preflight-scope.sh\n'
-  if [ "$project_type" = "python" ] || [ -f "$project_dir/scripts/run-pytest-in-venv.sh" ]; then
-    printf 'scripts/run-pytest-in-venv.sh\n'
-  fi
   printf '.claude/settings.json\n'
   # Touchstone-bundled skills are user-scoped (~/.claude/skills); the update
   # ships nothing into <project>/.claude/skills, so the ledger must not
@@ -190,9 +175,22 @@ touchstone_content_manifest_entries() {
 # same conversion `git add` would perform (PR #780 review, round 3 P2).
 touchstone_content_index_blob_matches_worktree() {
   local project_dir="$1" rel="$2"
-  local index_blob worktree_blob
+  local index_blob worktree_blob link_target
   index_blob="$(git -C "$project_dir" rev-parse --verify --quiet ":$rel")" || return 1
-  worktree_blob="$(git -C "$project_dir" hash-object --path="$rel" -- "$project_dir/$rel" 2>/dev/null)" || return 1
+  if [ -L "$project_dir/$rel" ]; then
+    # git stores a symlink as a blob holding its TARGET PATH, while
+    # `git hash-object -- <link>` opens the link and hashes what it points at
+    # — so hashing the file would report every tracked, unmodified symlink as
+    # modified. Hash the link text, which is the byte sequence a clean clone
+    # receives. --path is deliberately absent: no attribute filter applies to
+    # a symlink blob (#801 review, round 3). Every caller in this file rejects
+    # symlinks before asking, so this branch exists for the retirement remover
+    # in lib/retired-managed.sh, which must inspect one.
+    link_target="$(readlink "$project_dir/$rel")" || return 1
+    worktree_blob="$(printf '%s' "$link_target" | git -C "$project_dir" hash-object -t blob --stdin)" || return 1
+  else
+    worktree_blob="$(git -C "$project_dir" hash-object --path="$rel" -- "$project_dir/$rel" 2>/dev/null)" || return 1
+  fi
   [ "$index_blob" = "$worktree_blob" ]
 }
 
@@ -303,7 +301,7 @@ touchstone_content_is_current() {
   fi
 
   # The ledger itself must match what the writer would emit today.
-  if ! diff -q <(touchstone_content_manifest_entries "$project_dir" "$touchstone_root" "$project_type") \
+  if ! diff -q <(touchstone_content_manifest_entries "$project_dir" "$touchstone_root") \
     <(printf '%s\n' "$manifest_entries") >/dev/null 2>&1; then
     return 1
   fi
@@ -318,7 +316,7 @@ touchstone_content_is_current() {
         [ -x "$dst" ] || return 1
         ;;
     esac
-  done < <(touchstone_content_managed_file_pairs "$project_dir" "$touchstone_root" "$project_type")
+  done < <(touchstone_content_managed_file_pairs "$project_dir" "$touchstone_root")
 
   if [ -f "$touchstone_root/templates/claude-settings.json" ]; then
     touchstone_content_managed_path_is_sound "$project_dir" ".claude/settings.json" || return 1

@@ -237,7 +237,6 @@ assert_exists "$PROJECT/GEMINI.md"
 assert_exists "$PROJECT/.pre-commit-config.yaml"
 assert_exists "$PROJECT/.markdownlint.json"
 assert_exists "$PROJECT/.gitignore"
-assert_exists "$PROJECT/.worktreeinclude.example"
 assert_exists "$PROJECT/.github/pull_request_template.md"
 assert_exists "$PROJECT/.github/workflows/issue-claim-check.yml"
 assert_exists "$PROJECT/.touchstone-review.toml"
@@ -275,7 +274,7 @@ assert_exists "$PROJECT/scripts/branch-guard.sh"
 assert_exists "$PROJECT/scripts/emergency-disclosure.sh"
 assert_not_exists "$PROJECT/scripts/cortex-pr-merged-hook.sh"
 assert_exists "$PROJECT/lib/toml.sh"
-assert_exists "$PROJECT/lib/codex-auth.sh"
+assert_not_exists "$PROJECT/lib/codex-auth.sh"
 assert_exists "$PROJECT/lib/script-sync-guard.sh"
 assert_exists "$PROJECT/lib/sha256.sh"
 assert_exists "$PROJECT/lib/preflight.sh"
@@ -286,17 +285,16 @@ assert_exists "$PROJECT/scripts/merge-pr.sh"
 assert_exists "$PROJECT/scripts/claim-issue.sh"
 assert_exists "$PROJECT/scripts/issue-claim-check.sh"
 assert_exists "$PROJECT/scripts/cleanup-branches.sh"
-assert_exists "$PROJECT/scripts/spawn-worktree.sh"
-assert_exists "$PROJECT/scripts/cleanup-worktrees.sh"
+assert_not_exists "$PROJECT/scripts/spawn-worktree.sh"
+assert_not_exists "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_not_exists "$PROJECT/scripts/run-pytest-in-venv.sh"
+assert_not_exists "$PROJECT/lib/events.sh"
 assert_executable "$PROJECT/scripts/touchstone-run.sh"
 assert_executable "$PROJECT/scripts/open-pr.sh"
 assert_executable "$PROJECT/scripts/merge-pr.sh"
 assert_executable "$PROJECT/scripts/claim-issue.sh"
 assert_executable "$PROJECT/scripts/issue-claim-check.sh"
 assert_executable "$PROJECT/scripts/cleanup-branches.sh"
-assert_executable "$PROJECT/scripts/spawn-worktree.sh"
-assert_executable "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_not_contains "$PROJECT/.pre-commit-config.yaml" 'conductor-review.sh'
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'touchstone-run.sh validate'
 assert_contains "$PROJECT/.pre-commit-config.yaml" "args: \\['-d', '-i', '2', '-ci', '-bn'\\]"
@@ -304,9 +302,6 @@ if ! diff -q "$TOUCHSTONE_ROOT/templates/.markdownlint.json" "$PROJECT/.markdown
   echo "FAIL: bootstrapped markdownlint config must match the referenced template" >&2
   ERRORS=$((ERRORS + 1))
 fi
-assert_contains "$PROJECT/.worktreeinclude.example" '^# Allowlist of gitignored files to copy into spawned worktrees\.$'
-assert_contains "$PROJECT/.worktreeinclude.example" '^# \.env\.local$'
-assert_contains "$PROJECT/.worktreeinclude.example" '^# \.vscode/settings\.json$'
 # Cortex append-only exclusions: trailing-whitespace and end-of-file-fixer
 # must skip .cortex/journal/ and .cortex/doctrine/ per Cortex Protocol §4.
 # Two assertions — one per hook — to catch accidental one-sided fixes.
@@ -331,10 +326,11 @@ assert_not_contains "$PROJECT/.touchstone-manifest" '^scripts/cortex-pr-merged-h
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/open-pr.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/claim-issue.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/issue-claim-check.sh$'
-assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
-assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/toml\.sh$'
-assert_contains "$PROJECT/.touchstone-manifest" '^lib/codex-auth\.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^lib/codex-auth\.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^lib/events\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/script-sync-guard\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/sha256\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/preflight\.sh$'
@@ -560,9 +556,11 @@ assert_contains "$PROJECT_NODE/.touchstone-config" '^project_type=node$'
 
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_PYTHON" --no-register --type python
 assert_exists "$PROJECT_PYTHON/scripts/touchstone-run.sh"
-assert_exists "$PROJECT_PYTHON/scripts/run-pytest-in-venv.sh"
+# #737 retired the pytest wrapper: touchstone-run.sh already resolves the venv
+# via find_python_bin, so a Python bootstrap must not ship a second path.
+assert_not_exists "$PROJECT_PYTHON/scripts/run-pytest-in-venv.sh"
 assert_contains "$PROJECT_PYTHON/.touchstone-config" '^project_type=python$'
-assert_contains "$PROJECT_PYTHON/.touchstone-manifest" '^scripts/run-pytest-in-venv.sh$'
+assert_not_contains "$PROJECT_PYTHON/.touchstone-manifest" '^scripts/run-pytest-in-venv.sh$'
 
 # Swift profile on fresh bootstrap must scaffold a complete SPM package so
 # `swift build` / `swift test` work immediately without the user hand-writing
@@ -915,37 +913,6 @@ if grep -q 'PROJECT_SETUP_RAN' "$TEST_DIR/touchstone-init-existing-setup.txt"; t
   echo "FAIL: touchstone init ran a pre-existing setup.sh" >&2
   ERRORS=$((ERRORS + 1))
 fi
-
-# Pytest wrapper should use project virtualenvs instead of system python.
-PYTEST_WRAPPER_PROJECT="$TEST_DIR/pytest-wrapper"
-mkdir -p "$PYTEST_WRAPPER_PROJECT"
-if (cd "$PYTEST_WRAPPER_PROJECT" && "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" tests) >"$TEST_DIR/pytest-missing-venv.txt" 2>&1; then
-  echo "FAIL: expected run-pytest-in-venv.sh to fail without a venv" >&2
-  ERRORS=$((ERRORS + 1))
-else
-  assert_contains "$TEST_DIR/pytest-missing-venv.txt" 'no project virtualenv found'
-  assert_contains "$TEST_DIR/pytest-missing-venv.txt" 'bash setup.sh'
-fi
-
-mkdir -p "$PYTEST_WRAPPER_PROJECT/.venv/bin"
-cat >"$PYTEST_WRAPPER_PROJECT/.venv/bin/python" <<'FAKEPYTHON'
-#!/usr/bin/env bash
-if [ "$1" = "-c" ] && [[ "$2" == *"sys.version_info"* ]]; then
-  exit 0
-fi
-printf '%s\n' "$@" > "$PWD/pytest-args.txt"
-if [ "$1" = "-m" ] && [ "$2" = "pytest" ]; then
-  exit 0
-fi
-exit 1
-FAKEPYTHON
-chmod +x "$PYTEST_WRAPPER_PROJECT/.venv/bin/python"
-
-(cd "$PYTEST_WRAPPER_PROJECT" && "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" tests/unit -x)
-assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^-m$'
-assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^pytest$'
-assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^tests/unit$'
-assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^-x$'
 
 # setup.sh --deps-only should support uv projects at the repo root and in agent/.
 FAKE_BIN="$TEST_DIR/fake-bin"
@@ -1520,6 +1487,258 @@ assert_not_contains "$TEST_DIR/reinit-output.txt" 'Fill in project details'
 assert_contains "$TEST_DIR/reinit-diff-output.txt" '^--- .codex-review.toml (project)'
 assert_contains "$TEST_DIR/reinit-diff-output.txt" '^+++ templates/touchstone-review.toml (touchstone template)'
 
+# ---------------------------------------------------------------------------
+# #737 round 2: init must retire what it stops recording.
+#
+# init regenerates .touchstone-manifest from scratch, WITHOUT the retired
+# entries. An init that dropped the entries and left the files on disk stranded
+# them permanently: `touchstone update` only retires a path its ledger still
+# claims, so nothing could ever reach them again. init and update now run the
+# same retirement (lib/retired-managed.sh) — one init over a project carrying
+# all five must remove all five.
+# ---------------------------------------------------------------------------
+PROJECT_INIT_RETIRE="$TEST_DIR/test-project-init-retire"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_INIT_RETIRE" --no-register >/dev/null
+git -C "$PROJECT_INIT_RETIRE" config user.email "touchstone-test@example.com"
+git -C "$PROJECT_INIT_RETIRE" config user.name "Touchstone Test"
+
+# A project last synced before the cut: every convenience on disk, tracked,
+# clean, and claimed by the manifest — the only state retirement acts on.
+INIT_RETIRED_PATHS="scripts/spawn-worktree.sh scripts/cleanup-worktrees.sh scripts/run-pytest-in-venv.sh lib/events.sh lib/codex-auth.sh"
+mkdir -p "$PROJECT_INIT_RETIRE/scripts" "$PROJECT_INIT_RETIRE/lib"
+for retired_rel in $INIT_RETIRED_PATHS; do
+  printf '#!/usr/bin/env bash\n# pre-#737 managed copy\n' >"$PROJECT_INIT_RETIRE/$retired_rel"
+  printf '%s\n' "$retired_rel" >>"$PROJECT_INIT_RETIRE/.touchstone-manifest"
+done
+# Project-OWNED steering naming one of them. No sync rewrites this file, so the
+# notice is the only thing that keeps the instruction from outliving the script.
+printf '\n## Parallel work\n\nUse `scripts/spawn-worktree.sh` to create branch slices.\n' \
+  >>"$PROJECT_INIT_RETIRE/AGENTS.md"
+git -C "$PROJECT_INIT_RETIRE" add -A
+git -C "$PROJECT_INIT_RETIRE" commit --no-verify -q -m "simulate a project synced before #737"
+
+# Fixture precondition: the files really are present, tracked, and manifested
+# before init runs. Without this the assertions below would also pass against a
+# project that never had them.
+for retired_rel in $INIT_RETIRED_PATHS; do
+  assert_exists "$PROJECT_INIT_RETIRE/$retired_rel"
+  assert_contains "$PROJECT_INIT_RETIRE/.touchstone-manifest" "^$retired_rel\$"
+done
+
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
+  "$PROJECT_INIT_RETIRE" --no-register </dev/null \
+  >"$TEST_DIR/init-retire-output.txt" 2>&1
+
+for retired_rel in $INIT_RETIRED_PATHS; do
+  assert_not_exists "$PROJECT_INIT_RETIRE/$retired_rel"
+  assert_not_contains "$PROJECT_INIT_RETIRE/.touchstone-manifest" "^$retired_rel\$"
+done
+assert_contains "$TEST_DIR/init-retire-output.txt" '^==> Retiring files touchstone no longer manages:'
+assert_contains "$TEST_DIR/init-retire-output.txt" 'removed retired managed file: .*scripts/spawn-worktree.sh'
+assert_contains "$TEST_DIR/init-retire-output.txt" '5 retired'
+# The steering notice fires on init too, names the file and the reference...
+assert_contains "$TEST_DIR/init-retire-output.txt" 'project-owned steering still points at retired touchstone surfaces'
+assert_contains "$TEST_DIR/init-retire-output.txt" 'AGENTS.md names scripts/spawn-worktree.sh'
+# ...and leaves the project's own prose exactly as written.
+assert_contains "$PROJECT_INIT_RETIRE/AGENTS.md" 'Use `scripts/spawn-worktree.sh` to create branch slices.'
+
+# ---------------------------------------------------------------------------
+# Retirement remover: WHAT IS AT THE RETIRED PATH decides the outcome.
+#
+# Folded in from a standalone test file (#801 review, round 3) — one contract
+# does not get a third suite. This half lives with init because the bug being
+# pinned is init's own write-side guard: touchstone_ensure_safe_dest replaces a
+# final-component symlink so a managed copy can land on a real file. Reused as
+# the REMOVAL guard it unlinked the link first, and the `! -f` test then saw
+# the hole it had just made, reported "unsafe retired path", and returned
+# before the ownership and dirty-state checks that exist to protect exactly
+# that file. The link was already gone. The status-contract half (tracked,
+# untracked, modified, dry-run, unmanifested, failed rm) lives in
+# tests/test-update.sh, next to the entrypoint that turns those statuses into
+# counters, manifest entries, and staged deletions.
+# ---------------------------------------------------------------------------
+phase "retirement remover: path-shape contract"
+
+# shellcheck source=../lib/retired-managed.sh
+source "$TOUCHSTONE_ROOT/lib/retired-managed.sh"
+
+RETIRE_REL="lib/events.sh"
+
+# A git project whose ledger claims one retired path. Called plainly, never in
+# a command substitution, so errexit stays live over the fixture's own git
+# calls.
+retire_fixture() {
+  local dir="$1"
+  mkdir -p "$dir/lib"
+  git init -q -b main "$dir"
+  git -C "$dir" config user.email "touchstone-test@example.com"
+  git -C "$dir" config user.name "Touchstone Test"
+  printf '%s\n' "$RETIRE_REL" >"$dir/.touchstone-manifest"
+  printf 'placeholder\n' >"$dir/README.md"
+  git -C "$dir" add .touchstone-manifest README.md
+  git -C "$dir" commit -q -m "initial"
+}
+
+# Status capture is this function's documented contract: every caller invokes
+# it in a status-capturing conditional, and its body is written so that
+# nothing relies on errexit.
+RETIRE_RC=0
+retire_run() {
+  local dir="$1" dry="${2:-false}"
+  RETIRE_RC=0
+  touchstone_remove_retired_managed_file "$dir" "$RETIRE_REL" "$dry" \
+    >"$TEST_DIR/retire-out.txt" 2>&1 || RETIRE_RC=$?
+}
+
+retire_expect_rc() {
+  local label="$1" expected="$2"
+  if [ "$RETIRE_RC" != "$expected" ]; then
+    echo "FAIL: $label: expected exit $expected, got $RETIRE_RC" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+}
+
+# An untracked SYMLINK at the retired path survives, unfollowed.
+RETIRE_SYMLINK_UNTRACKED="$TEST_DIR/retire-symlink-untracked"
+retire_fixture "$RETIRE_SYMLINK_UNTRACKED"
+printf '# my own telemetry\n' >"$RETIRE_SYMLINK_UNTRACKED/lib/my-telemetry.sh"
+ln -s "my-telemetry.sh" "$RETIRE_SYMLINK_UNTRACKED/$RETIRE_REL"
+retire_run "$RETIRE_SYMLINK_UNTRACKED"
+retire_expect_rc "untracked symlink" 3
+if [ ! -L "$RETIRE_SYMLINK_UNTRACKED/$RETIRE_REL" ]; then
+  echo "FAIL: untracked symlink: the link itself should still be there, unfollowed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_exists "$RETIRE_SYMLINK_UNTRACKED/lib/my-telemetry.sh"
+assert_contains "$TEST_DIR/retire-out.txt" 'leaving untracked retired file in place'
+assert_not_contains "$TEST_DIR/retire-out.txt" 'replacing unexpected symlink with managed file'
+
+# A tracked, clean symlink is removed like any other managed copy — the link,
+# never what it points at. Cleanliness is decided by object id, and git stores
+# a symlink as a blob holding its target path, so the comparator has to hash
+# the link text rather than open the link (#801 review, round 3).
+RETIRE_SYMLINK_TRACKED="$TEST_DIR/retire-symlink-tracked"
+retire_fixture "$RETIRE_SYMLINK_TRACKED"
+printf '# shared telemetry\n' >"$RETIRE_SYMLINK_TRACKED/lib/shared-telemetry.sh"
+ln -s "shared-telemetry.sh" "$RETIRE_SYMLINK_TRACKED/$RETIRE_REL"
+git -C "$RETIRE_SYMLINK_TRACKED" add "$RETIRE_REL" "lib/shared-telemetry.sh"
+git -C "$RETIRE_SYMLINK_TRACKED" commit -q -m "add retired symlink"
+retire_run "$RETIRE_SYMLINK_TRACKED"
+retire_expect_rc "tracked symlink" 0
+if [ -L "$RETIRE_SYMLINK_TRACKED/$RETIRE_REL" ]; then
+  echo "FAIL: tracked symlink: the link should be removed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_exists "$RETIRE_SYMLINK_TRACKED/lib/shared-telemetry.sh"
+
+# A DANGLING symlink is still a path retirement has to answer for (#801
+# review, round 3). The applicability predicate asked only `-e`, which a
+# dangling link fails, so init and update skipped the remover and then
+# regenerated .touchstone-manifest WITHOUT the path — nothing would ever reach
+# the link again, and it reactivates the retired script the moment its target
+# reappears.
+RETIRE_SYMLINK_DANGLING="$TEST_DIR/retire-symlink-dangling"
+retire_fixture "$RETIRE_SYMLINK_DANGLING"
+ln -s "gone-telemetry.sh" "$RETIRE_SYMLINK_DANGLING/$RETIRE_REL"
+assert_not_exists "$RETIRE_SYMLINK_DANGLING/lib/gone-telemetry.sh"
+if ! touchstone_retired_managed_file_applies "$RETIRE_SYMLINK_DANGLING" "$RETIRE_REL"; then
+  echo "FAIL: dangling symlink: retirement must still apply to a manifested dangling link" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+retire_run "$RETIRE_SYMLINK_DANGLING"
+retire_expect_rc "dangling symlink" 3
+assert_contains "$TEST_DIR/retire-out.txt" 'leaving untracked retired file in place'
+if [ ! -L "$RETIRE_SYMLINK_DANGLING/$RETIRE_REL" ]; then
+  echo "FAIL: dangling symlink: an untracked link must be left in place, not silently dropped" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+# Tracked and clean, the same dangling link is removed rather than stranded.
+RETIRE_DANGLING_TRACKED="$TEST_DIR/retire-symlink-dangling-tracked"
+retire_fixture "$RETIRE_DANGLING_TRACKED"
+ln -s "gone-telemetry.sh" "$RETIRE_DANGLING_TRACKED/$RETIRE_REL"
+git -C "$RETIRE_DANGLING_TRACKED" add "$RETIRE_REL"
+git -C "$RETIRE_DANGLING_TRACKED" commit -q -m "add dangling retired symlink"
+retire_run "$RETIRE_DANGLING_TRACKED"
+retire_expect_rc "dangling symlink tracked" 0
+if [ -L "$RETIRE_DANGLING_TRACKED/$RETIRE_REL" ]; then
+  echo "FAIL: dangling symlink tracked: the link should be removed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# A directory at the retired path is refused untouched.
+RETIRE_DIRECTORY="$TEST_DIR/retire-directory"
+retire_fixture "$RETIRE_DIRECTORY"
+mkdir -p "$RETIRE_DIRECTORY/$RETIRE_REL"
+printf 'keep\n' >"$RETIRE_DIRECTORY/$RETIRE_REL/inner.txt"
+retire_run "$RETIRE_DIRECTORY"
+retire_expect_rc "directory" 2
+assert_exists "$RETIRE_DIRECTORY/$RETIRE_REL/inner.txt"
+assert_contains "$TEST_DIR/retire-out.txt" 'refusing to remove unsafe retired path'
+
+# ---------------------------------------------------------------------------
+# #801 review: a retirement that cannot delete the file must stop the init.
+#
+# init regenerates .touchstone-manifest without the retired entries. If a failed
+# `rm` is treated as a success, the file stays on disk while its ledger entry
+# disappears — the exact unreachable state retirement exists to prevent, and one
+# no later `touchstone update` can retry. Fail closed instead: retirement runs
+# before any file is copied, so stopping leaves the project as it was found.
+#
+# `rm` is shadowed rather than the directory made read-only: root would ignore
+# the permission bits and this assertion must hold for every tester.
+# ---------------------------------------------------------------------------
+PROJECT_INIT_RM_FAILS="$TEST_DIR/test-project-init-rm-fails"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
+  "$PROJECT_INIT_RM_FAILS" --no-register >/dev/null
+git -C "$PROJECT_INIT_RM_FAILS" config user.email "touchstone-test@example.com"
+git -C "$PROJECT_INIT_RM_FAILS" config user.name "Touchstone Test"
+mkdir -p "$PROJECT_INIT_RM_FAILS/lib"
+printf '# pre-#737 managed copy\n' >"$PROJECT_INIT_RM_FAILS/lib/events.sh"
+printf 'lib/events.sh\n' >>"$PROJECT_INIT_RM_FAILS/.touchstone-manifest"
+git -C "$PROJECT_INIT_RM_FAILS" add -A
+git -C "$PROJECT_INIT_RM_FAILS" commit --no-verify -q -m "carry a retired managed file"
+
+RM_FAIL_BIN="$TEST_DIR/rm-fail-bin"
+mkdir -p "$RM_FAIL_BIN"
+REAL_RM_PATH=""
+for rm_candidate in /bin/rm /usr/bin/rm; do
+  if [ -x "$rm_candidate" ]; then
+    REAL_RM_PATH="$rm_candidate"
+    break
+  fi
+done
+if [ -z "$REAL_RM_PATH" ]; then
+  echo "FAIL: no real rm(1) to delegate to; cannot prove retirement failure propagation" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+cat >"$RM_FAIL_BIN/rm" <<FAKE_RM
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in
+    */lib/events.sh)
+      echo "rm: \$arg: Operation not permitted" >&2
+      exit 1
+      ;;
+  esac
+done
+exec "$REAL_RM_PATH" "\$@"
+FAKE_RM
+chmod +x "$RM_FAIL_BIN/rm"
+cp "$HOOKS_FAKE_BIN/pre-commit" "$RM_FAIL_BIN/pre-commit"
+
+if PATH="$RM_FAIL_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
+  "$PROJECT_INIT_RM_FAILS" --no-register </dev/null \
+  >"$TEST_DIR/init-rm-fails-output.txt" 2>&1; then
+  echo "FAIL: init should exit nonzero when a retired managed file cannot be removed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/init-rm-fails-output.txt" 'failed to remove retired managed file'
+assert_contains "$TEST_DIR/init-rm-fails-output.txt" '^ERROR: could not remove retired managed file'
+assert_not_contains "$TEST_DIR/init-rm-fails-output.txt" 'removed retired managed file: .*lib/events.sh'
+# The file is still there, so the ledger entry that reaches it must be too.
+assert_exists "$PROJECT_INIT_RM_FAILS/lib/events.sh"
+assert_contains "$PROJECT_INIT_RM_FAILS/.touchstone-manifest" '^lib/events\.sh$'
+
 # Reconcile in a repo where setup.sh was deleted must NOT re-run setup (no dev-tool installs
 # during a repair). Bootstrap, delete setup.sh, rerun init — verify backfill without invocation.
 PROJECT_REINIT_SETUP="$TEST_DIR/test-project-reinit-setup"
@@ -1780,27 +1999,6 @@ else
   assert_contains "$TEST_DIR/doctor-broken.txt" 'git hooks NOT installed'
 fi
 
-# doctor shares the test-presence heuristic with --scaffold-tests — the same
-# "dir exists != tests exist" class bug applies. An empty tests/ directory
-# (or one with only __init__.py) must not be reported as "tests: found".
-PROJECT_DOCTOR_EMPTY_PY="$TEST_DIR/test-project-doctor-empty-python"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_EMPTY_PY" --no-register --type python >/dev/null
-mkdir -p "$PROJECT_DOCTOR_EMPTY_PY/tests"
-: >"$PROJECT_DOCTOR_EMPTY_PY/tests/__init__.py"
-RUFF_STUB_EMPTY_PY="$TEST_DIR/ruff-stub-empty-py"
-mkdir -p "$RUFF_STUB_EMPTY_PY"
-cat >"$RUFF_STUB_EMPTY_PY/ruff" <<'RUFFSTUBEMPTYPY'
-#!/usr/bin/env bash
-exit 0
-RUFFSTUBEMPTYPY
-chmod +x "$RUFF_STUB_EMPTY_PY/ruff"
-(cd "$PROJECT_DOCTOR_EMPTY_PY" && PATH="$RUFF_STUB_EMPTY_PY:$PATH" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-empty-py.txt" 2>&1 || true
-if grep -q "tests: found for profile 'python'" "$TEST_DIR/doctor-empty-py.txt"; then
-  echo "FAIL: doctor must not report 'tests: found' when only tests/__init__.py exists" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-assert_contains "$TEST_DIR/doctor-empty-py.txt" "tests: not found for profile 'python'"
-
 # doctor must flag a pre-push hook whose content isn't the pre-commit-framework
 # shim — another framework silently replacing the file is the same class of
 # failure as hook files being absent outright. The replacement here is executable,
@@ -1899,195 +2097,326 @@ else
   assert_contains "$TEST_DIR/doctor-hook-unexec.txt" 'not executable'
 fi
 
-# Python profile: tests folder and ruff availability must both be reported by doctor.
-PROJECT_DOCTOR_PY_WITH="$TEST_DIR/test-project-doctor-python-with"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_PY_WITH" --no-register --type python >/dev/null
-mkdir -p "$PROJECT_DOCTOR_PY_WITH/tests"
-printf 'def test_smoke():\n    assert True\n' >"$PROJECT_DOCTOR_PY_WITH/tests/test_smoke.py"
+# #737 removed the doctor profile mirror: the block that re-derived
+# touchstone-run.sh's profile resolution, validated profile names, walked
+# configured targets, and guessed at test presence. It was a second copy of
+# the dispatcher's logic that had to be hand-kept in lock-step, and the runner
+# is the authority on all of it. What survived the cut is the one thing the
+# runner cannot report on itself: a linter that is not installed, which
+# `touchstone run lint` skips while exiting 0 (asserted below). This case
+# pins the boundary — with targets configured, doctor defers to the runner
+# instead of walking them, and it never renders a verdict on an unknown
+# profile.
+PROJECT_DOCTOR_NO_MIRROR="$TEST_DIR/test-project-doctor-no-profile-mirror"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_NO_MIRROR" --no-register --type python >/dev/null
+touchstone_sed_inplace 's|^project_type=.*|project_type=kotlin|' "$PROJECT_DOCTOR_NO_MIRROR/.touchstone-config"
+mkdir -p "$PROJECT_DOCTOR_NO_MIRROR/apps/mobile"
+touchstone_sed_inplace 's|^targets=.*|targets=mobile:apps/mobile:kotlin|' "$PROJECT_DOCTOR_NO_MIRROR/.touchstone-config"
+if (cd "$PROJECT_DOCTOR_NO_MIRROR" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-no-mirror.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-no-mirror.txt" 'Project is fully armed'
+else
+  echo "FAIL: doctor --project must stay structural — an unknown profile is the runner's verdict, not doctor's" >&2
+  cat "$TEST_DIR/doctor-no-mirror.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_not_contains "$TEST_DIR/doctor-no-mirror.txt" 'unknown project_type'
+assert_not_contains "$TEST_DIR/doctor-no-mirror.txt" 'tests: '
+assert_not_contains "$TEST_DIR/doctor-no-mirror.txt" 'ruff'
+assert_not_contains "$TEST_DIR/doctor-no-mirror.txt" 'target mobile'
+assert_contains "$TEST_DIR/doctor-no-mirror.txt" 'lint: dispatched per target'
+
+# ---------------------------------------------------------------------------
+# #801 review: a configured target that is not on disk must FAIL validation.
+#
+# `targets=api:services/api:python` with no services/api used to warn once per
+# action and let the loop return 0, so `touchstone run validate` — what the
+# pre-push hook runs — exited 0 having linted, typechecked, built and tested
+# nothing at all. doctor was worse: a configured `targets` suppressed its one
+# remaining lint check outright, so it reported the project fully armed.
+#
+# Both halves are asserted on EXIT STATUS, not output text: the bug was
+# precisely a success exit alongside plausible warnings.
+# ---------------------------------------------------------------------------
+PROJECT_MISSING_TARGET="$TEST_DIR/test-project-missing-target"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_MISSING_TARGET" --no-register >/dev/null
+# A `generic` target profile keeps the positive control below deterministic:
+# it has no default command to shell out to, so the only thing under test is
+# whether the dispatch happened at all.
+touchstone_sed_inplace 's|^targets=.*|targets=api:services/api:generic|' "$PROJECT_MISSING_TARGET/.touchstone-config"
+# Precondition: the configured directory is genuinely absent.
+assert_not_exists "$PROJECT_MISSING_TARGET/services/api"
+assert_contains "$PROJECT_MISSING_TARGET/.touchstone-config" '^targets=api:services/api:generic$'
+
+if (cd "$PROJECT_MISSING_TARGET" && bash scripts/touchstone-run.sh validate) \
+  >"$TEST_DIR/run-missing-target.txt" 2>&1; then
+  echo "FAIL: 'touchstone-run.sh validate' must exit nonzero when a configured target is missing" >&2
+  cat "$TEST_DIR/run-missing-target.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/run-missing-target.txt" "refusing a green 'lint' that ran nothing for it"
+
+if (cd "$PROJECT_MISSING_TARGET" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) \
+  >"$TEST_DIR/doctor-missing-target.txt" 2>&1; then
+  echo "FAIL: doctor --project must exit nonzero when a configured target path is missing" >&2
+  cat "$TEST_DIR/doctor-missing-target.txt" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-missing-target.txt" "configured target 'api' path not found: services/api"
+  assert_not_contains "$TEST_DIR/doctor-missing-target.txt" 'Project is fully armed'
+fi
+# Creating the directory clears both verdicts — the check is structural, so it
+# must stop complaining the moment the structure is right.
+mkdir -p "$PROJECT_MISSING_TARGET/services/api"
+if ! (cd "$PROJECT_MISSING_TARGET" && bash scripts/touchstone-run.sh validate) \
+  >"$TEST_DIR/run-present-target.txt" 2>&1; then
+  echo "FAIL: validate should pass once the configured target directory exists" >&2
+  cat "$TEST_DIR/run-present-target.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_not_contains "$TEST_DIR/run-present-target.txt" 'path not found'
+
+# A green validate that linted nothing is the trap the lint action's graceful
+# skip creates: `run_python_action lint` prints "ruff not installed; skipped"
+# and exits 0. doctor is the only surface that reports it, so a Python project
+# with no ruff on PATH must be a counted issue, not a clean bill of health.
+PROJECT_DOCTOR_LINT_GAP="$TEST_DIR/test-project-doctor-lint-gap"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_LINT_GAP" --no-register --type python >/dev/null
+if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
+  echo "SKIP: ruff on minimal PATH; cannot test the ruff-absent doctor case on this machine" >&2
+else
+  # Keep touchstone reachable by absolute path; drop ruff from PATH.
+  if (cd "$PROJECT_DOCTOR_LINT_GAP" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-lint-gap.txt" 2>&1; then
+    echo "FAIL: doctor --project must exit nonzero when the profile's linter is unreachable" >&2
+    cat "$TEST_DIR/doctor-lint-gap.txt" >&2
+    ERRORS=$((ERRORS + 1))
+  else
+    assert_contains "$TEST_DIR/doctor-lint-gap.txt" 'ruff not on PATH'
+    assert_contains "$TEST_DIR/doctor-lint-gap.txt" 'still exits 0'
+  fi
+fi
+
+# The same project with ruff reachable is clean — the check reports the gap,
+# it does not just always fire on Python.
 RUFF_STUB_BIN="$TEST_DIR/ruff-stub-bin"
 mkdir -p "$RUFF_STUB_BIN"
-cat >"$RUFF_STUB_BIN/ruff" <<'RUFFSTUB'
-#!/usr/bin/env bash
-exit 0
-RUFFSTUB
+printf '#!/usr/bin/env bash\nexit 0\n' >"$RUFF_STUB_BIN/ruff"
 chmod +x "$RUFF_STUB_BIN/ruff"
-if (cd "$PROJECT_DOCTOR_PY_WITH" && PATH="$RUFF_STUB_BIN:$PATH" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-py-with.txt" 2>&1; then
-  assert_contains "$TEST_DIR/doctor-py-with.txt" "tests: found for profile 'python'"
-  assert_contains "$TEST_DIR/doctor-py-with.txt" 'ruff: on PATH'
+if (cd "$PROJECT_DOCTOR_LINT_GAP" && PATH="$RUFF_STUB_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-lint-ok.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-lint-ok.txt" 'ruff: on PATH'
+  assert_contains "$TEST_DIR/doctor-lint-ok.txt" 'Project is fully armed'
 else
-  echo "FAIL: doctor --project on a Python project with tests and ruff should exit 0" >&2
+  echo "FAIL: doctor --project should exit 0 on a Python project with ruff reachable" >&2
+  cat "$TEST_DIR/doctor-lint-ok.txt" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
-# Python profile with no tests directory and no ruff on PATH — doctor must
-# nudge on tests (informational, no issue++) and warn+count on ruff.
-PROJECT_DOCTOR_PY_WITHOUT="$TEST_DIR/test-project-doctor-python-without"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_PY_WITHOUT" --no-register --type python >/dev/null
-if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
-  echo "SKIP: ruff on minimal PATH; cannot test ruff-absent doctor case on this machine" >&2
+# An explicit lint_command bypasses the profile default, so the linter's
+# absence is not a gap — doctor must not manufacture an issue there.
+touchstone_sed_inplace 's|^lint_command=.*|lint_command=echo linted|' "$PROJECT_DOCTOR_LINT_GAP/.touchstone-config"
+if (cd "$PROJECT_DOCTOR_LINT_GAP" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-lint-override.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-lint-override.txt" 'lint: overridden via .touchstone-config'
+  assert_not_contains "$TEST_DIR/doctor-lint-override.txt" 'ruff not on PATH'
 else
-  # Keep touchstone reachable by its absolute path; drop ruff from PATH.
-  if (cd "$PROJECT_DOCTOR_PY_WITHOUT" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-py-without.txt" 2>&1; then
-    echo "FAIL: doctor --project on a Python project with no ruff should exit nonzero" >&2
-    ERRORS=$((ERRORS + 1))
-  else
-    assert_contains "$TEST_DIR/doctor-py-without.txt" "tests: not found for profile 'python'"
-    assert_contains "$TEST_DIR/doctor-py-without.txt" 'ruff not on PATH'
-  fi
-fi
-
-# Monorepo projects where targets drive validate: doctor must run test/lint
-# checks per target, not on the root profile. The root profile check would
-# miss gaps inside apps/services/packages that the runner actually dispatches
-# to at pre-push time. Also exercise profile aliases (ts -> node, py -> python)
-# and empty/auto profiles that must be resolved by manifest detection so each
-# target hits the same dispatcher branch touchstone-run.sh would use.
-PROJECT_DOCTOR_MONO="$TEST_DIR/test-project-doctor-monorepo"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_MONO" --no-register >/dev/null
-mkdir -p "$PROJECT_DOCTOR_MONO/apps/web" "$PROJECT_DOCTOR_MONO/services/api" "$PROJECT_DOCTOR_MONO/apps/tsapp" "$PROJECT_DOCTOR_MONO/packages/autodetect"
-printf '[package]\nname = "api"\nversion = "0.0.0"\n' >"$PROJECT_DOCTOR_MONO/services/api/Cargo.toml"
-printf '{"scripts":{"lint":"echo lint","test":"echo test"}}\n' >"$PROJECT_DOCTOR_MONO/apps/web/package.json"
-# tsapp declares "typescript" profile (alias for node) but has no lint script.
-printf '{}\n' >"$PROJECT_DOCTOR_MONO/apps/tsapp/package.json"
-# autodetect declares no explicit profile — must be detected from manifest (Cargo.toml).
-printf '[package]\nname = "autodetected"\nversion = "0.0.0"\n' >"$PROJECT_DOCTOR_MONO/packages/autodetect/Cargo.toml"
-touchstone_sed_inplace 's|^targets=.*|targets=web:apps/web:node,api:services/api:rust,tsapp:apps/tsapp:typescript,autodetect:packages/autodetect|' "$PROJECT_DOCTOR_MONO/.touchstone-config"
-if (cd "$PROJECT_DOCTOR_MONO" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-monorepo.txt" 2>&1; then
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target web:"
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target api:"
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" 'target web: package.json: lint script configured'
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target web: tests: not found for profile 'node'"
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target api: tests: not found for profile 'rust'"
-  # 'typescript' alias must resolve to node — the lint-script check is the
-  # node-profile branch, and tsapp has no lint script so the dim-line fires.
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target tsapp: package.json has no 'lint' script"
-  # Auto-detected profile from Cargo.toml must be rust.
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target autodetect: tests: not found for profile 'rust'"
-else
-  # Per-target lines must appear even if doctor exits nonzero for other reasons.
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target web:"
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target api:"
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target tsapp: package.json has no 'lint' script"
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target autodetect: tests: not found for profile 'rust'"
-fi
-
-# touchstone-run.sh's load_config treats project_type and profile as the same
-# slot with last-write-wins semantics. Doctor must select the same profile
-# the runner would, so a config with both keys must resolve to the final one.
-PROJECT_DOCTOR_ALIAS_KEY="$TEST_DIR/test-project-doctor-alias-key"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_ALIAS_KEY" --no-register --type python >/dev/null
-# Prepend a stale project_type=generic and keep the real profile=python after it
-# to exercise the last-write-wins tie-breaker.
-touchstone_sed_inplace 's|^project_type=.*|project_type=generic|' "$PROJECT_DOCTOR_ALIAS_KEY/.touchstone-config"
-printf 'profile=python\n' >>"$PROJECT_DOCTOR_ALIAS_KEY/.touchstone-config"
-if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
-  echo "SKIP: ruff on minimal PATH; cannot test project_type/profile last-wins doctor case on this machine" >&2
-else
-  if (cd "$PROJECT_DOCTOR_ALIAS_KEY" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-alias-key.txt" 2>&1; then
-    echo "FAIL: doctor --project on a Python-via-profile= project with no ruff should exit nonzero" >&2
-    ERRORS=$((ERRORS + 1))
-  else
-    # The later "profile=python" must win over "project_type=generic"; missing
-    # ruff should fire, not a generic-profile no-op.
-    assert_contains "$TEST_DIR/doctor-alias-key.txt" 'ruff not on PATH'
-    if grep -q "profile 'generic'" "$TEST_DIR/doctor-alias-key.txt"; then
-      echo "FAIL: doctor selected generic when last-write-wins should have selected python" >&2
-      ERRORS=$((ERRORS + 1))
-    fi
-  fi
-fi
-
-# Unknown root profile: touchstone-run.sh returns an error for project_type
-# values outside the dispatcher's accepted set. doctor must flag the same —
-# otherwise a typo like project_type=kotlin would silently pass doctor while
-# pre-push failed for every dev on the team.
-PROJECT_DOCTOR_BAD_PROFILE="$TEST_DIR/test-project-doctor-bad-profile"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_BAD_PROFILE" --no-register >/dev/null
-touchstone_sed_inplace 's|^project_type=.*|project_type=kotlin|' "$PROJECT_DOCTOR_BAD_PROFILE/.touchstone-config"
-if (cd "$PROJECT_DOCTOR_BAD_PROFILE" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-bad-profile.txt" 2>&1; then
-  echo "FAIL: doctor --project should exit nonzero when project_type is not a dispatcher-accepted profile" >&2
-  ERRORS=$((ERRORS + 1))
-else
-  assert_contains "$TEST_DIR/doctor-bad-profile.txt" "unknown project_type 'kotlin'"
-fi
-
-# Unknown target profile: same rule at the target level. touchstone-run.sh's
-# run_profile_action returns 1 on an unknown target profile, so doctor flags it.
-PROJECT_DOCTOR_BAD_TARGET="$TEST_DIR/test-project-doctor-bad-target"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_BAD_TARGET" --no-register >/dev/null
-mkdir -p "$PROJECT_DOCTOR_BAD_TARGET/apps/mobile"
-touchstone_sed_inplace 's|^targets=.*|targets=mobile:apps/mobile:kotlin|' "$PROJECT_DOCTOR_BAD_TARGET/.touchstone-config"
-if (cd "$PROJECT_DOCTOR_BAD_TARGET" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-bad-target.txt" 2>&1; then
-  echo "FAIL: doctor --project should exit nonzero when a target profile is unknown" >&2
-  ERRORS=$((ERRORS + 1))
-else
-  assert_contains "$TEST_DIR/doctor-bad-target.txt" "target 'mobile': unknown profile 'kotlin'"
-fi
-
-# Auto-detected targets (apps/packages/services exist on disk but .touchstone-config
-# targets= is empty) must NOT cause per-target doctor checks — touchstone-run.sh's
-# run_targets_action requires config-loaded TARGETS to dispatch, so anything
-# doctor checks beyond the root profile would be gaps validate never exercises.
-PROJECT_DOCTOR_AUTO_TARGETS="$TEST_DIR/test-project-doctor-auto-targets"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_AUTO_TARGETS" --no-register >/dev/null
-mkdir -p "$PROJECT_DOCTOR_AUTO_TARGETS/apps/web" "$PROJECT_DOCTOR_AUTO_TARGETS/services/api"
-printf '{}\n' >"$PROJECT_DOCTOR_AUTO_TARGETS/apps/web/package.json"
-printf '[package]\nname = "api"\nversion = "0.0.0"\n' >"$PROJECT_DOCTOR_AUTO_TARGETS/services/api/Cargo.toml"
-# Leave targets= empty in .touchstone-config — new-project.sh only fills it when
-# the apps/services dirs exist at bootstrap time.
-if (cd "$PROJECT_DOCTOR_AUTO_TARGETS" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-auto-targets.txt" 2>&1; then
-  if grep -q 'target web:\|target api:' "$TEST_DIR/doctor-auto-targets.txt"; then
-    echo "FAIL: doctor must not emit per-target lines when .touchstone-config targets= is empty — runner won't dispatch those" >&2
-    ERRORS=$((ERRORS + 1))
-  fi
-else
-  echo "FAIL: doctor --project should exit 0 on a clean project even with auto-detected target dirs" >&2
+  echo "FAIL: a configured lint_command must not be reported as a missing linter" >&2
+  cat "$TEST_DIR/doctor-lint-override.txt" >&2
   ERRORS=$((ERRORS + 1))
 fi
 
-# Root profile aliases: touchstone-run.sh accepts project_type=typescript / ts
-# as equivalent to node, so doctor must normalize the same way — otherwise a
-# root config using the alias would silently skip the lint-script check.
-PROJECT_DOCTOR_ALIAS="$TEST_DIR/test-project-doctor-alias"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_ALIAS" --no-register >/dev/null
-printf '{}\n' >"$PROJECT_DOCTOR_ALIAS/package.json"
-touchstone_sed_inplace 's|^project_type=.*|project_type=typescript|' "$PROJECT_DOCTOR_ALIAS/.touchstone-config"
-if (cd "$PROJECT_DOCTOR_ALIAS" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-alias.txt" 2>&1; then
-  # No lint script in package.json — the node-profile lint-script check must fire,
-  # not a literal 'typescript' profile branch that would no-op.
-  assert_contains "$TEST_DIR/doctor-alias.txt" "package.json has no 'lint' script"
-  if grep -q "profile 'typescript'" "$TEST_DIR/doctor-alias.txt"; then
-    echo "FAIL: doctor should normalize 'typescript' to 'node' before profile checks" >&2
-    ERRORS=$((ERRORS + 1))
-  fi
+# ---------------------------------------------------------------------------
+# #801 review: doctor must fail when the validation runner cannot answer.
+#
+# Doctor asks scripts/touchstone-run.sh for the profile rather than
+# re-implementing detection. The old call piped detect through sed and head,
+# which threw the runner's exit status away (head always succeeds) and sent its
+# diagnostics to /dev/null. A runner that is unreadable, syntactically broken,
+# or otherwise nonzero produced an empty profile, fell through the case
+# default, and doctor reported the project fully armed while `touchstone run`
+# could not dispatch validation at all.
+# ---------------------------------------------------------------------------
+PROJECT_DOCTOR_RUNNER_BROKEN="$TEST_DIR/test-project-doctor-runner-broken"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_RUNNER_BROKEN" --no-register >/dev/null
+# Precondition: this project is healthy while its runner answers.
+if (cd "$PROJECT_DOCTOR_RUNNER_BROKEN" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-runner-ok.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-runner-ok.txt" 'Project is fully armed'
 else
-  assert_contains "$TEST_DIR/doctor-alias.txt" "package.json has no 'lint' script"
+  echo "FAIL: fixture precondition — doctor should be clean before the runner is broken" >&2
+  cat "$TEST_DIR/doctor-runner-ok.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+printf '#!/usr/bin/env bash\necho "touchstone-run: cannot read config" >&2\nexit 3\n' \
+  >"$PROJECT_DOCTOR_RUNNER_BROKEN/scripts/touchstone-run.sh"
+if (cd "$PROJECT_DOCTOR_RUNNER_BROKEN" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-runner-broken.txt" 2>&1; then
+  echo "FAIL: doctor --project must exit nonzero when touchstone-run.sh detect fails" >&2
+  cat "$TEST_DIR/doctor-runner-broken.txt" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-runner-broken.txt" 'detect failed'
+  assert_contains "$TEST_DIR/doctor-runner-broken.txt" 'cannot dispatch validation'
+  # The runner's own diagnostic is surfaced, not swallowed.
+  assert_contains "$TEST_DIR/doctor-runner-broken.txt" 'touchstone-run: cannot read config'
+  assert_not_contains "$TEST_DIR/doctor-runner-broken.txt" 'Project is fully armed'
+fi
+# A runner that exits 0 but names no profile is the same gap: doctor has no
+# answer to check the linter against, and must say so rather than fall through.
+printf '#!/usr/bin/env bash\nprintf "monorepo=false\\n"\n' \
+  >"$PROJECT_DOCTOR_RUNNER_BROKEN/scripts/touchstone-run.sh"
+if (cd "$PROJECT_DOCTOR_RUNNER_BROKEN" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-runner-silent.txt" 2>&1; then
+  echo "FAIL: doctor --project must exit nonzero when touchstone-run.sh names no project_type" >&2
+  cat "$TEST_DIR/doctor-runner-silent.txt" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-runner-silent.txt" 'named no project_type'
+  assert_not_contains "$TEST_DIR/doctor-runner-silent.txt" 'Project is fully armed'
+fi
+# Class recurrence (#801 review, round 3): the applicability predicate was
+# `[ -f "$runner" ]`, which a DANGLING SYMLINK fails — so a project whose
+# managed runner points at nothing skipped the check entirely and passed as
+# healthy, the same predicate-misses-symlinks shape as the retirement
+# applicability test. Present-but-unusable is not the same answer as absent.
+rm -f "$PROJECT_DOCTOR_RUNNER_BROKEN/scripts/touchstone-run.sh"
+ln -s "touchstone-run-gone.sh" "$PROJECT_DOCTOR_RUNNER_BROKEN/scripts/touchstone-run.sh"
+assert_not_exists "$PROJECT_DOCTOR_RUNNER_BROKEN/scripts/touchstone-run-gone.sh"
+if (cd "$PROJECT_DOCTOR_RUNNER_BROKEN" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-runner-dangling.txt" 2>&1; then
+  echo "FAIL: doctor --project must exit nonzero when the managed runner is a dangling symlink" >&2
+  cat "$TEST_DIR/doctor-runner-dangling.txt" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-runner-dangling.txt" 'detect failed'
+  assert_not_contains "$TEST_DIR/doctor-runner-dangling.txt" 'Project is fully armed'
 fi
 
-# Python project that overrides lint_command in .touchstone-config must NOT
-# have a missing ruff counted as an issue — the project's custom lint never
-# invokes ruff, so ruff's absence isn't a gap.
-PROJECT_DOCTOR_PY_OVERRIDE="$TEST_DIR/test-project-doctor-python-override"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_PY_OVERRIDE" --no-register --type python >/dev/null
-# Set lint_command and test_command to custom values to suppress profile-default checks.
-touchstone_sed_inplace 's|^lint_command=.*|lint_command=echo "custom lint"|' "$PROJECT_DOCTOR_PY_OVERRIDE/.touchstone-config"
-touchstone_sed_inplace 's|^test_command=.*|test_command=echo "custom test"|' "$PROJECT_DOCTOR_PY_OVERRIDE/.touchstone-config"
-if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
-  echo "SKIP: ruff on minimal PATH; cannot test override-suppresses-ruff-check on this machine" >&2
+# ---------------------------------------------------------------------------
+# #801 review, round 4: a configured dispatch must not skip the runner check.
+#
+# An override changes WHICH command the runner executes, not WHETHER the
+# runner can execute. Both configured-dispatch answers — a `*_command`
+# override and the `targets` branch — returned before doctor ever invoked
+# `touchstone-run.sh detect`, so a syntactically broken managed runner still
+# produced "Project is fully armed" while every validation invocation died
+# before it reached the override.
+#
+# Both halves assert on EXIT STATUS: the bug is a success exit alongside
+# plausible output. The `lint:` assertions pin WHICH branch answered — each of
+# those strings is emitted from exactly one place in bin/touchstone, so their
+# absence proves the runner check ran first rather than the override.
+# ---------------------------------------------------------------------------
+DOCTOR_BROKEN_RUNNER='#!/usr/bin/env bash\necho "touchstone-run: cannot read config" >&2\nexit 3\n'
+
+# (a) lint_command override + broken runner.
+PROJECT_DOCTOR_OVERRIDE_BROKEN="$TEST_DIR/test-project-doctor-override-broken-runner"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_OVERRIDE_BROKEN" --no-register >/dev/null
+printf 'lint_command=echo linted\n' >>"$PROJECT_DOCTOR_OVERRIDE_BROKEN/.touchstone-config"
+printf '%b' "$DOCTOR_BROKEN_RUNNER" >"$PROJECT_DOCTOR_OVERRIDE_BROKEN/scripts/touchstone-run.sh"
+if (cd "$PROJECT_DOCTOR_OVERRIDE_BROKEN" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-override-broken-runner.txt" 2>&1; then
+  echo "FAIL: doctor --project must exit nonzero when the runner is broken, even with lint_command configured" >&2
+  cat "$TEST_DIR/doctor-override-broken-runner.txt" >&2
+  ERRORS=$((ERRORS + 1))
 else
-  if (cd "$PROJECT_DOCTOR_PY_OVERRIDE" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-py-override.txt" 2>&1; then
-    assert_contains "$TEST_DIR/doctor-py-override.txt" 'Project is fully armed'
-    assert_contains "$TEST_DIR/doctor-py-override.txt" 'lint: overridden via .touchstone-config'
-    assert_contains "$TEST_DIR/doctor-py-override.txt" 'tests: overridden via .touchstone-config'
-    if grep -q 'ruff not on PATH' "$TEST_DIR/doctor-py-override.txt"; then
-      echo "FAIL: doctor should not count missing ruff as an issue when lint_command is overridden" >&2
-      ERRORS=$((ERRORS + 1))
-    fi
-  else
-    echo "FAIL: doctor --project on a Python project with lint override should exit 0" >&2
-    ERRORS=$((ERRORS + 1))
-  fi
+  assert_contains "$TEST_DIR/doctor-override-broken-runner.txt" 'detect failed'
+  # The runner was genuinely invoked — its own diagnostic reached the report.
+  assert_contains "$TEST_DIR/doctor-override-broken-runner.txt" 'touchstone-run: cannot read config'
+  assert_not_contains "$TEST_DIR/doctor-override-broken-runner.txt" 'lint: overridden via .touchstone-config'
+  assert_not_contains "$TEST_DIR/doctor-override-broken-runner.txt" 'Project is fully armed'
 fi
+
+# (b) targets branch + broken runner. The target directory EXISTS, so the
+# structural target check passes and the only thing that can fail the run is
+# the runner check the branch used to precede.
+PROJECT_DOCTOR_TARGETS_BROKEN="$TEST_DIR/test-project-doctor-targets-broken-runner"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_TARGETS_BROKEN" --no-register >/dev/null
+mkdir -p "$PROJECT_DOCTOR_TARGETS_BROKEN/services/api"
+printf 'targets=api:services/api:generic\n' >>"$PROJECT_DOCTOR_TARGETS_BROKEN/.touchstone-config"
+printf '%b' "$DOCTOR_BROKEN_RUNNER" >"$PROJECT_DOCTOR_TARGETS_BROKEN/scripts/touchstone-run.sh"
+if (cd "$PROJECT_DOCTOR_TARGETS_BROKEN" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-targets-broken-runner.txt" 2>&1; then
+  echo "FAIL: doctor --project must exit nonzero when the runner is broken, even with targets configured" >&2
+  cat "$TEST_DIR/doctor-targets-broken-runner.txt" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-targets-broken-runner.txt" 'detect failed'
+  assert_contains "$TEST_DIR/doctor-targets-broken-runner.txt" 'touchstone-run: cannot read config'
+  assert_not_contains "$TEST_DIR/doctor-targets-broken-runner.txt" 'lint: dispatched per target'
+  assert_not_contains "$TEST_DIR/doctor-targets-broken-runner.txt" 'Project is fully armed'
+fi
+
+# ---------------------------------------------------------------------------
+# #801 review, round 4: doctor's targets branch follows the FINAL assignment.
+#
+# scripts/touchstone-run.sh:load_config takes the last assignment, so
+# `targets=api:services/api` followed by `targets=` dispatches the ROOT
+# profile. Doctor asked "is any assignment nonempty", entered the per-target
+# branch anyway, found the final (empty) value structurally fine, and
+# suppressed the root lint check — a false green on a project whose root
+# profile the runner will actually use.
+#
+# The runner here answers successfully but names no project_type, which is a
+# root-path-only verdict: it makes the two branches distinguishable by exit
+# status without depending on any linter's presence on PATH.
+# ---------------------------------------------------------------------------
+DOCTOR_SILENT_RUNNER='#!/usr/bin/env bash\nprintf "monorepo=false\\n"\n'
+
+PROJECT_DOCTOR_TARGETS_CLEARED="$TEST_DIR/test-project-doctor-targets-cleared"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_TARGETS_CLEARED" --no-register >/dev/null
+printf 'targets=api:services/api:generic\ntargets=\n' >>"$PROJECT_DOCTOR_TARGETS_CLEARED/.touchstone-config"
+printf '%b' "$DOCTOR_SILENT_RUNNER" >"$PROJECT_DOCTOR_TARGETS_CLEARED/scripts/touchstone-run.sh"
+if (cd "$PROJECT_DOCTOR_TARGETS_CLEARED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-targets-cleared.txt" 2>&1; then
+  echo "FAIL: doctor --project must use the root profile when the final 'targets=' assignment is empty" >&2
+  cat "$TEST_DIR/doctor-targets-cleared.txt" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  # The root path was taken: only it renders a verdict on project_type.
+  assert_contains "$TEST_DIR/doctor-targets-cleared.txt" 'named no project_type'
+  assert_not_contains "$TEST_DIR/doctor-targets-cleared.txt" 'lint: dispatched per target'
+  assert_not_contains "$TEST_DIR/doctor-targets-cleared.txt" 'Project is fully armed'
+fi
+
+# Control: the mirrored config, whose FINAL assignment is nonempty, must still
+# take the per-target branch. Without this, a helper that simply never reports
+# a targets override would pass the case above for the wrong reason. The
+# configured directory is absent, so the branch is proven by the structural
+# failure only it can produce.
+PROJECT_DOCTOR_TARGETS_SET="$TEST_DIR/test-project-doctor-targets-set-last"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_TARGETS_SET" --no-register >/dev/null
+printf 'targets=\ntargets=api:services/api:generic\n' >>"$PROJECT_DOCTOR_TARGETS_SET/.touchstone-config"
+assert_not_exists "$PROJECT_DOCTOR_TARGETS_SET/services/api"
+if (cd "$PROJECT_DOCTOR_TARGETS_SET" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-targets-set-last.txt" 2>&1; then
+  echo "FAIL: doctor --project must take the per-target branch when the final 'targets=' assignment is nonempty" >&2
+  cat "$TEST_DIR/doctor-targets-set-last.txt" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-targets-set-last.txt" "configured target 'api' path not found: services/api"
+  assert_not_contains "$TEST_DIR/doctor-targets-set-last.txt" 'named no project_type'
+  assert_not_contains "$TEST_DIR/doctor-targets-set-last.txt" 'Project is fully armed'
+fi
+
+# ---------------------------------------------------------------------------
+# #801 review, round 5: the SAME assignment-precedence class, for command keys.
+#
+# `lint_command=echo linted` followed by `lint_command=` clears the override in
+# the runner, so validation dispatches the profile linter — but doctor asked
+# "is any assignment nonempty", reported the override, and returned before
+# checking that the profile linter is reachable. A project whose profile linter
+# is missing then reports fully armed while validation lints nothing.
+#
+# Asserted on which BRANCH doctor took, not on whether a linter happens to be
+# installed on this machine: the "overridden via" line is emitted only by the
+# override path, so its absence proves the fallthrough without depending on
+# PATH. That matters because the profile-linter probe SKIPs when the tool is
+# absent, which would make a presence-based assertion vacuous.
+# ---------------------------------------------------------------------------
+PROJECT_DOCTOR_CMD_CLEARED="$TEST_DIR/test-project-doctor-cmd-cleared"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_CMD_CLEARED" --no-register >/dev/null
+printf 'lint_command=echo linted\nlint_command=\n' >>"$PROJECT_DOCTOR_CMD_CLEARED/.touchstone-config"
+(cd "$PROJECT_DOCTOR_CMD_CLEARED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-cmd-cleared.txt" 2>&1 || true
+assert_not_contains "$TEST_DIR/doctor-cmd-cleared.txt" 'lint: overridden via .touchstone-config'
+
+# Control: the mirrored config, whose FINAL assignment is nonempty, MUST still
+# report the override. Without it, a predicate that never reports an override
+# would pass the case above for entirely the wrong reason.
+PROJECT_DOCTOR_CMD_SET="$TEST_DIR/test-project-doctor-cmd-set-last"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_CMD_SET" --no-register >/dev/null
+printf 'lint_command=\nlint_command=echo linted\n' >>"$PROJECT_DOCTOR_CMD_SET/.touchstone-config"
+(cd "$PROJECT_DOCTOR_CMD_SET" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-cmd-set-last.txt" 2>&1 || true
+assert_contains "$TEST_DIR/doctor-cmd-set-last.txt" 'lint: overridden via .touchstone-config'
 
 # Generic profile doctor must NOT count missing tests as an issue — a fresh
 # generic project with no test_command configured stays fully armed.
@@ -2095,7 +2424,6 @@ fi
 if (cd "$PROJECT_DOCTOR_HOOK_DRIFT" && printf '#!/usr/bin/env bash\n# File generated by pre-commit: https://pre-commit.com\nARGS=(hook-impl --config=.pre-commit-config.yaml --hook-type=pre-push)\n' >.git/hooks/pre-push); then :; fi
 if (cd "$PROJECT_DOCTOR_HOOK_DRIFT" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-generic.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-generic.txt" 'Project is fully armed'
-  assert_contains "$TEST_DIR/doctor-generic.txt" "tests: profile is 'generic'"
 else
   echo "FAIL: doctor --project should exit 0 on a clean generic project even without tests" >&2
   ERRORS=$((ERRORS + 1))
@@ -2117,8 +2445,91 @@ if (cd "$PROJECT_DOCTOR_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT
   echo "FAIL: doctor --project should exit nonzero on a legacy .toolkit-version repo" >&2
   ERRORS=$((ERRORS + 1))
 else
-  assert_contains "$TEST_DIR/doctor-legacy.txt" 'touchstone migrate-from-toolkit'
+  assert_contains "$TEST_DIR/doctor-legacy.txt" 'Legacy toolkit state'
+  assert_contains "$TEST_DIR/doctor-legacy.txt" 'still present: \.toolkit-version'
+  assert_not_contains "$TEST_DIR/doctor-legacy.txt" 'touchstone migrate-from-toolkit'
+  # #801 review: the deleted migrator renamed all THREE legacy dotfiles and
+  # rewrote the path references recorded inside the manifest. Instructions that
+  # stop at version+manifest look complete and are not: nothing reads
+  # .toolkit-config, so project_type, targets, and every command override
+  # silently revert to defaults. Every surface that reports the legacy state
+  # prints the whole recipe (lib/legacy-toolkit.sh).
+  assert_contains "$TEST_DIR/doctor-legacy.txt" 'git mv \.toolkit-config \.touchstone-config'
+  assert_contains "$TEST_DIR/doctor-legacy.txt" 'toolkit-run\.sh -> touchstone-run\.sh'
 fi
+
+# The same recipe, in full, from `touchstone init` — the other command a legacy
+# project is told to run.
+PROJECT_INIT_LEGACY="$TEST_DIR/test-project-init-legacy"
+mkdir -p "$PROJECT_INIT_LEGACY"
+echo "legacy-sha" >"$PROJECT_INIT_LEGACY/.toolkit-version"
+if (cd "$PROJECT_INIT_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup --no-register) >"$TEST_DIR/init-legacy.txt" 2>&1; then
+  echo "FAIL: touchstone init should exit nonzero on a legacy .toolkit-version repo" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/init-legacy.txt" 'Legacy toolkit state in'
+  assert_contains "$TEST_DIR/init-legacy.txt" 'git mv \.toolkit-config \.touchstone-config'
+  assert_contains "$TEST_DIR/init-legacy.txt" 'toolkit-run\.sh -> touchstone-run\.sh'
+fi
+
+# ---------------------------------------------------------------------------
+# #801 review, round 3: a PARTIAL migration is still a legacy project.
+#
+# State detection keyed on .toolkit-version alone, so a repo that renamed that
+# one file and kept .toolkit-config read as normally Touchstone-managed. init
+# then wrote a default .touchstone-config over it and took project_type,
+# targets, and every command override with it — silently, and with the
+# migration looking finished. Each legacy name is proved individually: a probe
+# that aborts on the first would say nothing about the other two.
+# ---------------------------------------------------------------------------
+for legacy_leftover in .toolkit-config .toolkit-manifest; do
+  PROJECT_PARTIAL_LEGACY="$TEST_DIR/test-project-partial-legacy${legacy_leftover}"
+  PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
+    "$PROJECT_PARTIAL_LEGACY" --no-register >/dev/null
+  printf 'project_type=python\ntargets=api:services/api:python\n' \
+    >"$PROJECT_PARTIAL_LEGACY/$legacy_leftover"
+  # Precondition: the renamed file really is gone, so only the leftover can
+  # be what triggers the refusal.
+  assert_not_exists "$PROJECT_PARTIAL_LEGACY/.toolkit-version"
+
+  if (cd "$PROJECT_PARTIAL_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup --no-register) \
+    >"$TEST_DIR/init-partial-legacy.txt" 2>&1; then
+    echo "FAIL: touchstone init must refuse a repo that still carries $legacy_leftover" >&2
+    cat "$TEST_DIR/init-partial-legacy.txt" >&2
+    ERRORS=$((ERRORS + 1))
+  else
+    assert_contains "$TEST_DIR/init-partial-legacy.txt" 'Legacy toolkit state in'
+    assert_contains "$TEST_DIR/init-partial-legacy.txt" "still present: ${legacy_leftover//./\\.}"
+  fi
+  # The legacy overrides init would have overwritten are untouched.
+  assert_contains "$PROJECT_PARTIAL_LEGACY/$legacy_leftover" '^targets=api:services/api:python$'
+
+  # Class recurrence: bare `touchstone doctor` picks project vs installation
+  # mode, and that routing keyed on .toolkit-version alone too — a repo with
+  # only this leftover and no .touchstone-version was sent to installation
+  # mode, where doctor reports on the install and never mentions the project
+  # it is standing in.
+  rm -f "$PROJECT_PARTIAL_LEGACY/.touchstone-version"
+  if (cd "$PROJECT_PARTIAL_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor) \
+    >"$TEST_DIR/doctor-bare-partial-legacy.txt" 2>&1; then
+    echo "FAIL: bare 'touchstone doctor' must refuse a repo that still carries $legacy_leftover" >&2
+    cat "$TEST_DIR/doctor-bare-partial-legacy.txt" >&2
+    ERRORS=$((ERRORS + 1))
+  else
+    assert_contains "$TEST_DIR/doctor-bare-partial-legacy.txt" 'Legacy toolkit state'
+  fi
+
+  if (cd "$PROJECT_PARTIAL_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) \
+    >"$TEST_DIR/doctor-partial-legacy.txt" 2>&1; then
+    echo "FAIL: doctor --project must refuse a repo that still carries $legacy_leftover" >&2
+    cat "$TEST_DIR/doctor-partial-legacy.txt" >&2
+    ERRORS=$((ERRORS + 1))
+  else
+    assert_contains "$TEST_DIR/doctor-partial-legacy.txt" 'Legacy toolkit state'
+    assert_contains "$TEST_DIR/doctor-partial-legacy.txt" "still present: ${legacy_leftover//./\\.}"
+    assert_not_contains "$TEST_DIR/doctor-partial-legacy.txt" 'Project is fully armed'
+  fi
+done
 
 # Both .toolkit-version and .touchstone-version is an in-flight migration conflict —
 # neither doctor nor init may report healthy in that state.

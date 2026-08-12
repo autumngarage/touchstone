@@ -59,6 +59,10 @@ source "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
 source "$TOUCHSTONE_ROOT/lib/sha256.sh"
 # shellcheck source=../lib/sync-content.sh
 source "$TOUCHSTONE_ROOT/lib/sync-content.sh"
+# shellcheck source=../lib/retired-managed.sh
+source "$TOUCHSTONE_ROOT/lib/retired-managed.sh"
+# shellcheck source=../lib/legacy-toolkit.sh
+source "$TOUCHSTONE_ROOT/lib/legacy-toolkit.sh"
 PROJECT_DIR="$(pwd)"
 DRY_RUN=false
 CHECK_ONLY=false
@@ -119,15 +123,21 @@ if [ "$IN_PLACE" = true ] && [ -n "$REQUESTED_BRANCH" ]; then
   exit 1
 fi
 
+# Refuse any surviving legacy dotfile before anything else. All three names
+# are checked, not just .toolkit-version: a project that renamed that one file
+# and kept .toolkit-config is half-migrated, and updating it would carry the
+# managed set forward while project_type, targets and every command override
+# stayed unread (#801 review, round 3).
+LEGACY_REFUSAL=""
+if LEGACY_REFUSAL="$(touchstone_legacy_toolkit_refusal "$PROJECT_DIR" "touchstone update")"; then
+  echo "ERROR: Legacy toolkit state in $PROJECT_DIR" >&2
+  echo "       This project was bootstrapped before the toolkit -> touchstone rename." >&2
+  printf '%s\n' "$LEGACY_REFUSAL" | sed 's/^/       /' >&2
+  exit 1
+fi
+
 # Verify we're in a project with .touchstone-version.
 if [ ! -f "$PROJECT_DIR/.touchstone-version" ]; then
-  if [ -f "$PROJECT_DIR/.toolkit-version" ]; then
-    echo "ERROR: Legacy .toolkit-version found in $PROJECT_DIR" >&2
-    echo "       This project was bootstrapped before the toolkit -> touchstone rename." >&2
-    echo "       Run: touchstone migrate-from-toolkit" >&2
-    echo "       Then re-run: touchstone update" >&2
-    exit 1
-  fi
   echo "ERROR: No .touchstone-version file found in $PROJECT_DIR" >&2
   echo "       This project hasn't been bootstrapped with Touchstone." >&2
   echo "       Run: $(dirname "$0")/new-project.sh $PROJECT_DIR" >&2
@@ -207,11 +217,11 @@ fi
 # compares against — writer and probe can never disagree about what
 # "managed" means.
 managed_file_pairs() {
-  touchstone_content_managed_file_pairs "$PROJECT_DIR" "$TOUCHSTONE_ROOT" "$PROJECT_TYPE"
+  touchstone_content_managed_file_pairs "$PROJECT_DIR" "$TOUCHSTONE_ROOT"
 }
 
 touchstone_manifest_entries() {
-  touchstone_content_manifest_entries "$PROJECT_DIR" "$TOUCHSTONE_ROOT" "$PROJECT_TYPE"
+  touchstone_content_manifest_entries "$PROJECT_DIR" "$TOUCHSTONE_ROOT"
 }
 
 project_template_slot_occupied() {
@@ -797,59 +807,59 @@ report_retired_worker_files() {
   fi
 }
 
+# Thin wrapper over the shared remover (lib/retired-managed.sh), bound to this
+# run's PROJECT_DIR / DRY_RUN and mapping its outcome onto the update counters.
+# The logic itself is shared with `touchstone init`: both entrypoints must
+# retire the same set, or an init strands the files it stops recording.
 remove_retired_managed_file() {
-  local rel_path="$1"
-  local manifest="$PROJECT_DIR/.touchstone-manifest"
-  local target="$PROJECT_DIR/$rel_path"
-
-  [ -f "$manifest" ] || return 0
-  # CRLF tolerance: a manifest checked out with core.autocrlf carries \r,
-  # which a plain fixed-string match would never equal. Read into a variable
-  # rather than piping: grep -q exits at the first match, tr takes SIGPIPE,
-  # and pipefail would turn a successful MATCH into a nonzero pipeline.
-  local manifest_entries=""
-  manifest_entries="$(tr -d '\r' <"$manifest")" || return 0
-  grep -qxF "$rel_path" <<<"$manifest_entries" || return 0
-  [ -e "$target" ] || return 0
-  if ! ensure_safe_dest "$target" || [ ! -f "$target" ]; then
-    echo "    ! refusing to remove unsafe retired path: $target" >&2
-    SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1))
-    return 0
-  fi
-  if ! git -C "$PROJECT_DIR" ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1; then
-    echo "    ! leaving untracked retired file in place: $target" >&2
-    echo "      Touchstone will stop managing it; remove it manually after preserving any local changes." >&2
-    return 0
-  fi
-  # Never destroy local work: a retired file carrying uncommitted edits is
-  # left in place with an explicit notice. Retirement removes Touchstone's
-  # managed copy, it does not discard a project's modifications.
-  # Worktree OR index: a staged customization must neither be deleted nor
-  # swept into Touchstone's own update commit.
-  if ! git -C "$PROJECT_DIR" diff --quiet -- "$rel_path" 2>/dev/null \
-    || ! git -C "$PROJECT_DIR" diff --cached --quiet -- "$rel_path" 2>/dev/null; then
-    echo "    ! leaving locally modified retired file in place: $target" >&2
-    echo "      It has uncommitted changes (worktree or index); Touchstone no longer manages it." >&2
-    echo "      Commit or discard them, then delete the file when you are ready." >&2
-    return 0
-  fi
-  if [ "$DRY_RUN" = true ]; then
-    echo "    - would remove retired managed file: $target"
-  else
-    RETIRED_MANAGED_PATHS+=("$rel_path")
-    rm -f "$target"
-    echo "    - removed retired managed file: $target"
-  fi
-  UPDATED=$((UPDATED + 1))
+  local rel_path="$1" dry=false rc=0
+  [ "$DRY_RUN" = true ] && dry=true
+  touchstone_remove_retired_managed_file "$PROJECT_DIR" "$rel_path" "$dry" || rc=$?
+  case "$rc" in
+    0)
+      RETIRED_MANAGED_PATHS+=("$rel_path")
+      UPDATED=$((UPDATED + 1))
+      ;;
+    4) UPDATED=$((UPDATED + 1)) ;;
+    2) SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1)) ;;
+    5)
+      # Fail closed. Continuing would regenerate .touchstone-manifest without
+      # this entry while the file is still on disk, which is precisely the
+      # unreachable state retirement exists to prevent — and no later update
+      # could retry it. Exiting here lands inside the rollback boundary, so
+      # nothing is committed and .touchstone-version is not advanced.
+      echo "ERROR: could not remove retired managed file: $PROJECT_DIR/$rel_path" >&2
+      echo "       Retirement drops it from .touchstone-manifest, so leaving it on disk" >&2
+      echo "       would put it beyond the reach of every later update." >&2
+      echo "       Make the path writable, then rerun: touchstone update" >&2
+      exit 1
+      ;;
+    *) : ;;
+  esac
+  return 0
 }
 
 echo "==> Updating touchstone-owned files:"
 
-remove_retired_managed_file "lib/review-comment.sh"
-# Journal hook retired with the Cortex pause (issue #730): merge-pr.sh no
-# longer invokes it, so a leftover copy would be dead code that still pushes
-# HEAD:main on a manual run.
-remove_retired_managed_file "scripts/cortex-pr-merged-hook.sh"
+# Retirement runs before the copy pass: a path listed in
+# touchstone_retired_managed_paths whose update_file call still existed would be
+# deleted and re-created in the same run, so the list and the deleted copy calls
+# must land in one commit. The list and the removal live in
+# lib/retired-managed.sh because `touchstone init` retires exactly the same set
+# — init regenerates .touchstone-manifest without these entries, so an init that
+# skipped retirement would strand the files past the reach of any later update.
+RETIRED_APPLICABLE_PATHS=()
+while IFS= read -r retired_rel_path; do
+  [ -n "$retired_rel_path" ] || continue
+  if touchstone_retired_managed_file_applies "$PROJECT_DIR" "$retired_rel_path"; then
+    RETIRED_APPLICABLE_PATHS+=("$retired_rel_path")
+  fi
+  remove_retired_managed_file "$retired_rel_path"
+done < <(touchstone_retired_managed_paths)
+# The project's own steering may still tell agents to run what just went away.
+# Touchstone cannot fix project-owned prose, so it says so once, here.
+touchstone_report_retired_steering_references "$PROJECT_DIR" \
+  ${RETIRED_APPLICABLE_PATHS[@]+"${RETIRED_APPLICABLE_PATHS[@]}"}
 # Worker engine retired in 2.13.0 (issue #694). Touchstone stops managing
 # these files and NOTIFIES; it does not delete them. Automatic deletion of a
 # project's tracked files has to reason about dirty worktrees, staged edits,
@@ -1104,7 +1114,6 @@ if [ "$SKIPPED_UNSAFE" -gt 0 ]; then
   echo "==> WARNING: $SKIPPED_UNSAFE managed path(s) skipped — destination traverses a symlink (see warnings above)." >&2
 fi
 echo "==> Workflow scripts: project-local copies from Touchstone-managed files"
-echo "    Prototype shim runner available for evaluation: touchstone run-script <script>"
 
 # Reinstall pre-commit hook shims so a drifted or empty .git/hooks/ gets repaired.
 # The helper is idempotent; it skips silently when there's nothing to do.

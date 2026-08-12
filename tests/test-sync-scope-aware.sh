@@ -11,6 +11,8 @@ unset TOUCHSTONE_NO_AUTO_UPDATE TOUCHSTONE_NO_AUTO_PROJECT_SYNC TOUCHSTONE_FORCE
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=../lib/sync-discipline.sh
 source "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
+# shellcheck source=../lib/retired-managed.sh
+source "$TOUCHSTONE_ROOT/lib/retired-managed.sh"
 TEST_DIR="$(mktemp -d -t touchstone-test-sync-scope.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
@@ -56,7 +58,7 @@ make_stale_project() {
   commit_all "$project" "initial project"
   # Genuine managed drift, committed: a stamp-only difference no longer
   # counts as stale (touchstone#773).
-  printf '# simulate stale managed content\n' >>"$project/lib/events.sh"
+  printf '# simulate stale managed content\n' >>"$project/lib/toml.sh"
   printf '%s\n' "$old_id" >"$project/.touchstone-version"
   commit_all "$project" "simulate stale touchstone"
 }
@@ -92,8 +94,15 @@ assert_contains "$TEST_DIR/planned.out" "scripts/claim-issue.sh"
 assert_contains "$TEST_DIR/planned.out" "scripts/issue-claim-check.sh"
 assert_not_contains "$TEST_DIR/planned.out" "scripts/conductor-review.sh"
 assert_not_contains "$TEST_DIR/planned.out" "scripts/codex-review.sh"
-assert_contains "$TEST_DIR/planned.out" "lib/codex-auth.sh"
-assert_contains "$TEST_DIR/planned.out" "lib/review-comment.sh"
+# Retired managed files stay in the planned write set so the rollback snapshot
+# covers the deletions the retirement pass performs (#737). Derived from the
+# canonical list rather than re-typed: sync-discipline.sh keeps its own copy of
+# these paths, and a retirement added to lib/retired-managed.sh without the
+# matching planned-write entry would delete a file no rollback could restore.
+while IFS= read -r retired_rel; do
+  [ -n "$retired_rel" ] || continue
+  assert_contains "$TEST_DIR/planned.out" "^$retired_rel\$"
+done < <(touchstone_retired_managed_paths)
 assert_contains "$TEST_DIR/planned.out" "lib/script-sync-guard.sh"
 assert_contains "$TEST_DIR/planned.out" "lib/sha256.sh"
 assert_contains "$TEST_DIR/planned.out" "lib/preflight-scope.sh"
@@ -113,17 +122,17 @@ assert_contains "$OVERLAP_PROJECT/.git/touchstone/sync-skips.jsonl" '"reason":"d
 assert_contains "$OVERLAP_PROJECT/.git/touchstone/sync-skips.jsonl" '"command":"touchstone update"'
 
 echo ""
-echo "--- dirty managed auth helper refuses sync without losing local content ---"
-AUTH_OVERLAP_PROJECT="$TEST_DIR/auth-overlap-project"
-make_stale_project "$AUTH_OVERLAP_PROJECT" "0000000000000000000000000000000000000107"
-printf '\n# preserve local auth edit\n' >>"$AUTH_OVERLAP_PROJECT/lib/codex-auth.sh"
-if (cd "$AUTH_OVERLAP_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/auth-overlap.out" 2>&1; then
-  echo "FAIL: expected dirty auth helper to refuse sync" >&2
+echo "--- dirty managed library refuses sync without losing local content ---"
+LIB_OVERLAP_PROJECT="$TEST_DIR/lib-overlap-project"
+make_stale_project "$LIB_OVERLAP_PROJECT" "0000000000000000000000000000000000000107"
+printf '\n# preserve local lib edit\n' >>"$LIB_OVERLAP_PROJECT/lib/sha256.sh"
+if (cd "$LIB_OVERLAP_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/lib-overlap.out" 2>&1; then
+  echo "FAIL: expected dirty managed library to refuse sync" >&2
   ERRORS=$((ERRORS + 1))
 fi
-assert_contains "$TEST_DIR/auth-overlap.out" "Dirty paths overlap planned touchstone writes"
-assert_contains "$TEST_DIR/auth-overlap.out" "lib/codex-auth.sh"
-assert_contains "$AUTH_OVERLAP_PROJECT/lib/codex-auth.sh" "# preserve local auth edit"
+assert_contains "$TEST_DIR/lib-overlap.out" "Dirty paths overlap planned touchstone writes"
+assert_contains "$TEST_DIR/lib-overlap.out" "lib/sha256.sh"
+assert_contains "$LIB_OVERLAP_PROJECT/lib/sha256.sh" "# preserve local lib edit"
 
 echo ""
 echo "--- dirty issue-claim workflow refuses sync ---"
