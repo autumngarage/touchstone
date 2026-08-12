@@ -11,14 +11,38 @@ name: validate
 # variations: one code path, so a green run here means the same thing as a green
 # run there.
 #
-# NOT YET SAFE TO REQUIRE. A `pull_request` run evaluates the workflow
-# definition proposed BY the pull request, so once `validate` is a required
-# status check, a PR can edit this file down to a job named `validate` that
-# exits 0 and satisfy its own gate. With no human reading diffs, the checks are
-# the entire quality bar, so a self-editable gate is not a gate. Making this
-# required is tracked in #727, which must first pin the required run to a
-# workflow definition outside the PR's control. Until then this reports; it
-# does not enforce.
+# THIS ENFORCES. `validate (ubuntu-latest)` is a required status check on
+# `main`, with `strict: true`, since #727 closed. A red run blocks the merge.
+# (An earlier version of this header said the opposite — "this reports; it does
+# not enforce" — and stayed on disk after the change it described had shipped.
+# A comment that outlives its claim is not documentation, it is a decoy.)
+#
+# A `pull_request` run evaluates the workflow definition proposed BY the pull
+# request, so this file is one of the things a PR can edit — and with no human
+# reading diffs, the checks are the entire quality bar. Nothing here is
+# ordinary CI config: every relaxation of this file is a change to the merge
+# gate, and reads as one. tests/test-validate-workflow.sh holds the properties
+# that would otherwise be one deleted line from silently gone.
+#
+# DEPENDENCY CONTRACT. The required job may depend on the runner image, this
+# repository, and github.com. Nothing else. Anything no test executes is not
+# installed here.
+#
+# That is not hygiene, it is availability of the merge gate. On 2026-08-12 two
+# third-party 503s — chocolatey's community feed on the Windows leg (#803), a
+# release download on the REQUIRED Linux leg (#808) — turned the gate red while
+# fetching shellcheck and shfmt. No test ran either time, and the required
+# failure had to be diagnosed by hand before anything could merge. Nothing in
+# this repository has ever invoked either binary: every reference under `tests/`
+# is a fake binary prepended to PATH or a grep over config text, and
+# lib/preflight.sh skips a missing linter with a visible line. The lint suite
+# runs at pre-commit and via `pre-commit run --all-files` — a different gate, on
+# a different machine, off the merge path. So the gate's availability was
+# pledged to two CDNs for nothing (#742).
+#
+# Before adding an install step here, name the test that executes the binary.
+# If you cannot name one, the dependency belongs at pre-commit time, not on the
+# merge boundary.
 #
 # The suite runs as a matrix: ubuntu-latest and windows-latest. convoy runs on
 # Windows, and GitHub Actions' own `shell: bash` on windows-latest IS Git Bash,
@@ -26,20 +50,27 @@ name: validate
 # #744). The Windows leg runs the same full fast tier as Linux — no paths
 # filter, no spot checks — because a spot check is not support.
 #
-# The Windows leg is ADVISORY (continue-on-error) until it has been observed
-# green. This is trap 1's local-gate cousin: scripts/merge-pr.sh blocks on ANY
-# failing check, required or not, so an unproven leg that can go red for
-# platform reasons would freeze every merge in the repository the moment this
-# lands on main. Advisory is not silent — a red run still writes ::error
-# annotations per failed test and a step summary naming #742 — it just cannot
-# hold other work hostage until the discovery cycle (port or loud-skip each
-# platform failure) has actually finished. Flipping it to enforcing is the
-# two-line removal of `advisory: true` + `continue-on-error`, tracked as the
-# closing act of #742 (the advisory tolerance is a step-level exit 0 — job
-# continue-on-error keeps the workflow green but the check still fails, which
-# the merge gate blocks on). The subset ALREADY proven on Windows keeps
-# enforcing separately in the windows-proven job — advisory for the unproven
-# remainder must never downgrade established coverage.
+# The Windows leg is ADVISORY until it has been observed green. This is trap 1's
+# local-gate cousin: scripts/merge-pr.sh blocks on ANY failing check, required
+# or not, so an unproven leg that can go red for platform reasons would freeze
+# every merge in the repository the moment this lands on main. Advisory is not
+# silent — a red run still writes ::error annotations per failed test and a step
+# summary naming #742 — it just cannot hold other work hostage until the
+# discovery cycle (port or loud-skip each platform failure) has actually
+# finished.
+#
+# The tolerance is a step-level `exit 0`, NOT job-level continue-on-error: the
+# latter keeps the WORKFLOW green while the check itself still reports failure,
+# which the merge gate blocks on. This file has never carried a
+# continue-on-error key; earlier prose here said it did.
+# tests/test-validate-workflow.sh now asserts both halves — the required job
+# carries no continue-on-error, and every `exit 0` in the fast tier sits inside
+# the matrix.advisory guard. Flipping the leg to enforcing is the one-line
+# `advisory: true` -> `false`, which also renames its check back to
+# `validate (windows-latest)`; that is the closing act of #742. The subset
+# ALREADY proven on Windows keeps enforcing separately in the windows-proven
+# job — advisory for the unproven remainder must never downgrade established
+# coverage.
 
 on:
   pull_request:
@@ -171,53 +202,70 @@ jobs:
           git config --global user.name "Touchstone CI"
           git config --global init.defaultBranch main
 
-      - name: Install test dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          # jq is used by the hook tests; shellcheck and shfmt by preflight.
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq jq shellcheck
-          curl -fsSL -o /tmp/shfmt \
-            https://github.com/mvdan/sh/releases/download/v3.10.0/shfmt_v3.10.0_linux_amd64
-          sudo install -m 0755 /tmp/shfmt /usr/local/bin/shfmt
-          shfmt --version
-          # pre-commit is a REQUIREMENT of the suite, not a lint convenience.
-          # bootstrap and update install git hooks through it, and without it
-          # `update --ship` stops at "effective hooks are not ready" — so the
-          # ship-failure case never reaches the step it means to exercise and
-          # fails for an unrelated reason.
-          #
-          # Installed with pipx, not `pip --user`. The latter put a shim on PATH
-          # whose interpreter could not import its own package:
-          #   ModuleNotFoundError: No module named 'pre_commit'
-          # pipx builds an isolated venv and a shim pinned to that venv's
-          # interpreter, so the console script always resolves.
-          pipx install pre-commit
-          pre-commit --version
-
-      - name: Install test dependencies (Windows)
-        if: runner.os == 'Windows'
+      # Everything this job needs that it does NOT fetch. No network, so this
+      # step cannot fail for a reason outside this repository — which is why it
+      # is a separate step from the one below: the two failure MEANINGS are
+      # different, and a reader who cannot tell them apart goes looking for a
+      # bug in the diff. jq is on both images (Git Bash carries it on
+      # windows-latest), so this verifies rather than installs. Hard check: a
+      # missing jq fails here with one clear line instead of surfacing later as
+      # an unrelated hook-test failure.
+      #
+      # Both legs run the same step. After the shellcheck/shfmt deletion there
+      # was nothing platform-specific left to branch on, and two near-identical
+      # steps are two places for a fix to land in one of.
+      - name: Verify runner-image tools
         run: |
           set -euo pipefail
-          # jq ships with Git Bash on the runner image — verify, don't install.
           command -v jq
           jq --version
-          # ShellCheck comes from chocolatey; its shim directory is already on
-          # PATH. (Wording note: a comment must not START with "shellcheck",
-          # or ShellCheck itself parses it as a malformed directive — #745's
-          # guard-vs-prose class in a new costume.)
-          choco install shellcheck -y
-          shellcheck --version
-          # shfmt has no choco package worth trusting; take the release binary
-          # directly, same pinned version as the Linux leg.
-          mkdir -p "$HOME/bin"
-          curl -fsSL -o "$HOME/bin/shfmt.exe" \
-            https://github.com/mvdan/sh/releases/download/v3.10.0/shfmt_v3.10.0_windows_amd64.exe
-          cygpath -w "$HOME/bin" >>"$GITHUB_PATH"
-          "$HOME/bin/shfmt.exe" --version
-          # pipx is preinstalled on the windows image; same pre-commit
-          # rationale as the Linux leg — it is a requirement of the suite.
-          pipx install pre-commit
+
+      # The ONLY job-time fetch left, and the only step here that can go red for
+      # something that is not a verdict about this repository's code.
+      #
+      # pre-commit is a REQUIREMENT of the suite, not a lint convenience.
+      # bootstrap and update install git hooks through it, and without it
+      # `update --ship` stops at "effective hooks are not ready" — so the
+      # ship-failure case never reaches the step it means to exercise and
+      # fails for an unrelated reason.
+      #
+      # Installed with pipx, not `pip --user`. The latter put a shim on PATH
+      # whose interpreter could not import its own package:
+      #   ModuleNotFoundError: No module named 'pre_commit'
+      # pipx builds an isolated venv and a shim pinned to that venv's
+      # interpreter, so the console script always resolves. pipx is preinstalled
+      # on both runner images.
+      #
+      # PINNED. Unpinned, the required check's verdict depends on whichever
+      # release PyPI serves this morning — a version nobody in this repository
+      # chose, arriving without a diff. 4.6.2 is what CI already resolved to,
+      # so the pin records reality rather than changing it.
+      #
+      # INFRASTRUCTURE labelling, and what it is NOT: this step still exits 1,
+      # the check still goes red, and the merge still blocks. A run that could
+      # not evaluate a single assertion must never report success. All that
+      # changes is that the failure SAYS what it is — in the step name, in an
+      # ::error annotation, and in the job summary — so an operator does not
+      # spend a round-trip proving their diff is innocent (#742).
+      - name: Provision pre-commit from PyPI (INFRASTRUCTURE — a failure here is not a test verdict)
+        run: |
+          set -euo pipefail
+          if ! pipx install "pre-commit==4.6.2"; then
+            printf '%s\n' "::error title=INFRASTRUCTURE — dependency provisioning failed::pipx could not install pre-commit==4.6.2 from PyPI on ${{ matrix.os }}. No test in this repository was evaluated; this is NOT a verdict about the code under review. Re-run the job once PyPI is reachable. The check stays red and blocking on purpose."
+            {
+              echo "## INFRASTRUCTURE failure — not a test verdict"
+              echo ""
+              echo "Installing pre-commit==4.6.2 from PyPI failed on ${{ matrix.os }}."
+              echo ""
+              echo "PyPI is a third-party service sitting on the merge path. When it is"
+              echo "unavailable this step cannot run, and **no assertion in this repository"
+              echo "was evaluated** — nothing about the diff under review is implicated."
+              echo ""
+              echo "Re-run the job. This check remains red and blocking by design: a run"
+              echo "that could not prove the tests passed must never report success (#742)."
+            } >>"$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
           pre-commit --version
 
       # No `env:` block here, deliberately. Setting TOUCHSTONE_NO_AUTO_UPDATE=1
