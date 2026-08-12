@@ -447,6 +447,35 @@ echo "PASS: an already-published release is left untouched on rerun"
 
 # --- Static: the direct-push-to-main invocation is gone ---------------------
 
+# --- Scenario 7: dirty local main must not fail a published release --------
+# The tag and GitHub release are already out; a dirty worktree that blocks
+# the post-publication fast-forward gets guidance, not a nonzero exit
+# (PR #784 review).
+setup_project "$TEST_DIR/dirty-finalize"
+export FAKE_GH_AUTH_STATUS_RC=0
+git -C "$PROJECT" checkout -q -b release/v1.2.4
+printf '1.2.4\n' >"$PROJECT/VERSION"
+printf '1.2.4\n' >"$PROJECT/.touchstone-version"
+git -C "$PROJECT" add VERSION .touchstone-version
+git -C "$PROJECT" commit -q -m "v1.2.4"
+(cd "$PROJECT" && FAKE_OPENPR_MODE=merge bash scripts/open-pr.sh --auto-merge) >/dev/null
+git -C "$PROJECT" checkout -q main
+printf 'uncommitted\n' >"$PROJECT/local-edit.txt"
+git -C "$PROJECT" add local-edit.txt
+run_finalize "$PROJECT" v1.2.4
+
+if [ "$RELEASE_STATUS" -ne 0 ]; then
+  echo "FAIL: a dirty main worktree must not fail a release that already published" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+if ! grep -q 'Sync it manually' "$OUT"; then
+  echo "FAIL: the guarded sync must print manual-recovery guidance" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+echo "PASS: dirty local main gets guidance, not a failed published release"
+
 if grep -En 'push[^#]*origin +main' "$REPO_ROOT/lib/release.sh"; then
   echo "FAIL: lib/release.sh must not push origin main directly (issue #729)" >&2
   exit 1

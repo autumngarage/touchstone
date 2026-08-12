@@ -235,7 +235,13 @@ touchstone_release_finalize() {
   # local cleanup must never fail the release — fall back to detaching at
   # the released commit and say what was skipped.
   if git -C "$TOUCHSTONE_ROOT" checkout -q main 2>/dev/null; then
-    git -C "$TOUCHSTONE_ROOT" pull --rebase -q origin main
+    # Best-effort: the tag and GitHub release are already published, so a
+    # failed sync here (dirty worktree, transient fetch error) must not
+    # turn a completed release into a nonzero exit (PR #784 review).
+    if ! git -C "$TOUCHSTONE_ROOT" pull --rebase -q origin main 2>/dev/null; then
+      tk_dim "local main could not be fast-forwarded (dirty worktree or fetch failure)"
+      tk_dim "  Sync it manually: git checkout main && git pull --rebase origin main"
+    fi
   elif git -C "$TOUCHSTONE_ROOT" checkout -q --detach "$merge_sha" 2>/dev/null; then
     tk_dim "main is checked out in another worktree; left this one detached at ${tag}"
     tk_dim "  Sync it where it lives: git checkout main && git pull --rebase origin main"
