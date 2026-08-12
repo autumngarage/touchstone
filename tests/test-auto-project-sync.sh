@@ -47,6 +47,34 @@ assert_not_contains() {
   fi
 }
 
+# A branch-creating sync commits on chore/touchstone-* and RETURNS the
+# checkout to base (#772 problem 3), so the advanced stamp lives on that
+# branch, not in the worktree. Resolve the branch and read the stamp there.
+newest_update_branch() {
+  git -C "$1" for-each-ref --sort=-committerdate \
+    --format='%(refname:short)' 'refs/heads/chore/touchstone-*' | head -1
+}
+
+assert_version_equals_on_update_branch() {
+  local project="$1" expected="$2"
+  local branch actual
+  branch="$(newest_update_branch "$project")"
+  if [ -z "$branch" ]; then
+    echo "FAIL: expected $project to have a chore/touchstone-* update branch" >&2
+    ERRORS=$((ERRORS + 1))
+    return
+  fi
+  actual="$(git -C "$project" show "$branch:.touchstone-version" 2>/dev/null | tr -d '[:space:]')"
+  if [ "$actual" != "$expected" ]; then
+    echo "FAIL: expected $project/.touchstone-version on $branch to be '$expected', got '$actual'" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+  if git -C "$project" branch --show-current | grep -q '^chore/touchstone-'; then
+    echo "FAIL: sync must not leave $project parked on its update branch (#772)" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+}
+
 assert_version_equals() {
   local project="$1" expected="$2"
   local actual
@@ -164,11 +192,7 @@ CLEAN_OUT="$TEST_DIR/clean.out"
 (cd "$CLEAN_PROJECT" && run_touchstone "$CLEAN_HOME" run validate) >"$CLEAN_OUT" 2>&1
 assert_contains "$CLEAN_OUT" "auto-synced touchstone 0000000000000000000000000000000000000001 -> $CURRENT_ID"
 assert_contains "$CLEAN_OUT" "generic project has no default 'lint' command"
-assert_version_equals "$CLEAN_PROJECT" "$CURRENT_ID"
-if ! git -C "$CLEAN_PROJECT" branch --show-current | grep -q '^chore/touchstone-'; then
-  echo "FAIL: expected auto-sync to leave project on a chore/touchstone-* update branch" >&2
-  ERRORS=$((ERRORS + 1))
-fi
+assert_version_equals_on_update_branch "$CLEAN_PROJECT" "$CURRENT_ID"
 
 echo ""
 echo "--- drift + unrelated dirty tree: sync proceeds, subcommand proceeds ---"
@@ -182,7 +206,7 @@ DIRTY_OUT="$TEST_DIR/dirty.out"
 assert_contains "$DIRTY_OUT" "Proceeding with sync past unrelated dirty paths: README.md"
 assert_contains "$DIRTY_OUT" "auto-synced touchstone $DIRTY_OLD -> $CURRENT_ID"
 assert_contains "$DIRTY_OUT" "generic project has no default 'lint' command"
-assert_version_equals "$DIRTY_PROJECT" "$CURRENT_ID"
+assert_version_equals_on_update_branch "$DIRTY_PROJECT" "$CURRENT_ID"
 
 echo ""
 echo "--- drift + overlapping dirty tree: warning, no sync, subcommand proceeds ---"

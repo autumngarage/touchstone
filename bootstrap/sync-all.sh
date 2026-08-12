@@ -15,6 +15,11 @@
 #   crontab -e
 #   0 9 * * 1  touchstone update-all --pull-first
 #
+# Exit codes (tri-state, #731): 0 = every project succeeded (with --ship:
+# every shipped PR MERGED) or was skipped; 20 = no hard failures but at
+# least one --ship PR is armed and NOT merged; 1 = at least one project
+# failed. The summary line counts the three states separately.
+#
 set -euo pipefail
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -100,13 +105,22 @@ fi
 
 # Check-only mode: report which projects need update, then exit.
 if [ "$CHECK_ONLY" = true ]; then
-  CURRENT_ID="$(
-    if [ -d "$TOUCHSTONE_ROOT/.git" ]; then
-      git -C "$TOUCHSTONE_ROOT" rev-parse HEAD
-    else
-      cat "$TOUCHSTONE_ROOT/VERSION" 2>/dev/null | tr -d '[:space:]'
-    fi
-  )"
+  # The verdict is the SHARED content predicate (#731) — the same one behind
+  # `touchstone update --check`, auto-sync, and `touchstone status` — so the
+  # fleet listing can never disagree with the per-project check. Raw stamp
+  # identity survives only as display detail. Sourced lazily: only --check
+  # needs the probe, and minimal fixtures exercise the fan-out path without
+  # a lib/ directory.
+  SYNC_CONTENT_LIB="$TOUCHSTONE_ROOT/lib/sync-content.sh"
+  if [ ! -f "$SYNC_CONTENT_LIB" ]; then
+    echo "ERROR: $SYNC_CONTENT_LIB is missing; cannot compute the shared content verdict." >&2
+    echo "       Restore it with a full touchstone install (brew reinstall touchstone," >&2
+    echo "       or git -C <touchstone-checkout> checkout lib/sync-content.sh)." >&2
+    exit 1
+  fi
+  # shellcheck source=../lib/sync-content.sh
+  source "$SYNC_CONTENT_LIB"
+  CURRENT_ID="$(touchstone_content_installed_id "$TOUCHSTONE_ROOT")"
   BEHIND=0
   TOTAL=0
   for project_dir in ${PROJECTS[@]+"${PROJECTS[@]}"}; do
@@ -118,6 +132,8 @@ if [ "$CHECK_ONLY" = true ]; then
     proj_id="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
     if [ "$proj_id" = "$CURRENT_ID" ]; then
       echo "  ✓ $(basename "$project_dir") — up to date"
+    elif touchstone_content_is_current "$project_dir" "$TOUCHSTONE_ROOT" 2>/dev/null; then
+      echo "  ✓ $(basename "$project_dir") — up to date (content matches; stamp $proj_id differs from $CURRENT_ID)"
     else
       echo "  ! $(basename "$project_dir") — needs update"
       BEHIND=$((BEHIND + 1))
@@ -132,8 +148,16 @@ if [ "$CHECK_ONLY" = true ]; then
   exit 0
 fi
 
+# Tri-state fan-out tally (#731). update-project.sh's documented ship
+# contract: exit 0 = update applied and (with --ship) the PR is MERGED;
+# exit 20 = the PR is armed but NOT merged (review pending, merge-gate or
+# diff-scope refusal); anything else = stuck. "Succeeded" must never absorb
+# an armed-but-unmerged PR — these tallies feed automation, not a banner.
+UPDATE_ARMED_EXIT=20
+
 TOTAL=0
 SUCCESS=0
+ARMED=0
 SKIPPED=0
 FAILED=0
 
@@ -154,8 +178,13 @@ for project_dir in ${PROJECTS[@]+"${PROJECTS[@]}"}; do
   update_args=()
   [ -z "$DRY_RUN" ] || update_args+=("$DRY_RUN")
   [ -z "$SHIP" ] || update_args+=("$SHIP")
-  if (cd "$project_dir" && bash "$UPDATE_SCRIPT" ${update_args[@]+"${update_args[@]}"} </dev/null); then
+  project_rc=0
+  (cd "$project_dir" && bash "$UPDATE_SCRIPT" ${update_args[@]+"${update_args[@]}"} </dev/null) || project_rc=$?
+  if [ "$project_rc" -eq 0 ]; then
     SUCCESS=$((SUCCESS + 1))
+  elif [ -n "$SHIP" ] && [ "$project_rc" -eq "$UPDATE_ARMED_EXIT" ]; then
+    echo "==> ARMED (PR open, not merged): $project_dir"
+    ARMED=$((ARMED + 1))
   else
     echo "==> FAILED: $project_dir"
     FAILED=$((FAILED + 1))
@@ -164,9 +193,14 @@ done
 
 echo ""
 echo "================================================================"
-echo "==> Update-all complete: $SUCCESS/$TOTAL succeeded, $SKIPPED skipped, $FAILED failed"
+echo "==> Update-all complete: $SUCCESS/$TOTAL succeeded, $ARMED armed (PR open, not merged), $SKIPPED skipped, $FAILED failed"
 echo "================================================================"
 
 if [ "$FAILED" -gt 0 ]; then
   exit 1
+fi
+# Armed is not success: propagate the tri-state so automated callers see
+# that at least one PR still needs a merge (same code update-project uses).
+if [ "$ARMED" -gt 0 ]; then
+  exit "$UPDATE_ARMED_EXIT"
 fi

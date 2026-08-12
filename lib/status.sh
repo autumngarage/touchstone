@@ -52,14 +52,16 @@ _status_display_id() {
 # Count touchstone commits between the project's recorded version and the
 # current touchstone HEAD. Mirrors the OLD_SHA/CURRENT_SHA logic in
 # bootstrap/update-project.sh:
-#   - same id            -> "current"
-#   - reachable history  -> integer count of commits ahead
-#   - non-SHA / GC'd     -> "?"
-#   - non-git touchstone -> "?" (brew install: no history to walk)
+#   - same id              -> "current"
+#   - content-current tree -> "current" (shared verdict, #731; needs the
+#                             optional project_dir argument)
+#   - reachable history    -> integer count of commits ahead
+#   - non-SHA / GC'd       -> "?"
+#   - non-git touchstone   -> "?" (brew install: no history to walk)
 #
 # Echoes the display string. Never errors.
 _status_behind_count() {
-  local recorded="$1" current="$2"
+  local recorded="$1" current="$2" project_dir="${3:-}"
   if [ -z "$recorded" ]; then
     printf '?'
     return 0
@@ -75,6 +77,20 @@ _status_behind_count() {
       printf 'current'
       return 0
     fi
+  fi
+  # Shared content verdict (#731): a stamp that differs while every managed
+  # file matches the installed touchstone is CURRENT — `touchstone update`
+  # would change nothing, and update --check / auto-sync / sync-all --check
+  # all say so. Status must give the same answer or the operator chases
+  # updates that do not exist. The raw ids stay visible in the VERSION
+  # column / per-project block as display detail. Guarded: standalone
+  # sourcings of this file without lib/sync-content.sh keep identity-only
+  # behavior.
+  if [ -n "$project_dir" ] \
+    && command -v touchstone_content_is_current >/dev/null 2>&1 \
+    && touchstone_content_is_current "$project_dir" "$TOUCHSTONE_ROOT" 2>/dev/null; then
+    printf 'current'
+    return 0
   fi
   if ! touchstone_root_is_checkout; then
     printf '?'
@@ -367,7 +383,7 @@ status_print_project() {
   recorded="$(_status_read_project_version "$project_dir")"
   current_id="$(touchstone_current_id)"
   current_version="$(touchstone_version_str)"
-  behind="$(_status_behind_count "$recorded" "$current_id")"
+  behind="$(_status_behind_count "$recorded" "$current_id" "$project_dir")"
   mtime="$(_status_file_mtime "$project_dir/.touchstone-version")"
   age_long="$(_status_age_long "$mtime")"
   display_recorded="$(_status_display_id "$recorded")"
@@ -417,7 +433,7 @@ status_print_project_json() {
     recorded="$(_status_read_project_version "$project_dir")"
   fi
   recorded_short="$(_status_display_id "$recorded")"
-  behind="$(_status_behind_count "$recorded" "$current_id")"
+  behind="$(_status_behind_count "$recorded" "$current_id" "$project_dir")"
   drift_state="$(_status_drift_state "$behind")"
   if [ ! -f "$version_file" ]; then
     drift_state="not_touchstone_project"
@@ -668,7 +684,7 @@ _status_render_row() {
       recorded='(empty)'
       behind='?'
     else
-      behind="$(_status_behind_count "$recorded" "$status_current_id")"
+      behind="$(_status_behind_count "$recorded" "$status_current_id" "$project_dir")"
     fi
     version_col="$(_status_display_id "$recorded")"
     behind_col="$behind"

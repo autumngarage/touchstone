@@ -61,14 +61,25 @@ make_stale_project() {
   commit_all "$project" "simulate stale touchstone"
 }
 
+# A branch-creating update commits the advanced stamp on chore/touchstone-*
+# and returns the checkout to base (#772 problem 3), so read the stamp from
+# the update branch when one exists and from the worktree otherwise
+# (--in-place and already-current flows).
 assert_version_current() {
-  local project="$1" current_id
+  local project="$1" current_id update_branch actual
   if [ -d "$TOUCHSTONE_ROOT/.git" ]; then
     current_id="$(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD)"
   else
     current_id="$(tr -d '[:space:]' <"$TOUCHSTONE_ROOT/VERSION")"
   fi
-  if [ "$(tr -d '[:space:]' <"$project/.touchstone-version")" != "$current_id" ]; then
+  update_branch="$(git -C "$project" for-each-ref --sort=-committerdate \
+    --format='%(refname:short)' 'refs/heads/chore/touchstone-*' 2>/dev/null | head -1)"
+  if [ -n "$update_branch" ]; then
+    actual="$(git -C "$project" show "$update_branch:.touchstone-version" 2>/dev/null | tr -d '[:space:]')"
+  else
+    actual="$(tr -d '[:space:]' <"$project/.touchstone-version")"
+  fi
+  if [ "$actual" != "$current_id" ]; then
     echo "FAIL: expected $project to update to current touchstone id" >&2
     ERRORS=$((ERRORS + 1))
   fi

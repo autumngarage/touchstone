@@ -1351,7 +1351,7 @@ cmd_doctor() {
         proj_version="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
         local name
         name="$(basename "$project_dir")"
-        if [ "$(_status_behind_count "$proj_version" "$current_id")" = "current" ]; then
+        if [ "$(_status_behind_count "$proj_version" "$current_id" "$project_dir")" = "current" ]; then
           tk_ok "$name — up to date"
         else
           tk_warn "$name — needs update (run: touchstone update-all)"
@@ -1417,7 +1417,7 @@ cmd_list() {
     if [ -d "$project_dir" ]; then
       local proj_version
       proj_version="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "none")"
-      if [ "$(_status_behind_count "$proj_version" "$current_id")" = "current" ]; then
+      if [ "$(_status_behind_count "$proj_version" "$current_id" "$project_dir")" = "current" ]; then
         tk_ok "$name  ${DIM}$project_dir${RESET}"
       else
         tk_warn "$name  ${DIM}$project_dir${RESET}  ${YELLOW}(needs update)${RESET}"

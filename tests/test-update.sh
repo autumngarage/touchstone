@@ -69,16 +69,38 @@ commit_all() {
   fi
 }
 
-# Fast-forward the base branch over the chore/touchstone-* branch a
-# branch-creating update left checked out. Updates refuse non-default
-# checkouts (#772), so multi-update flows must return to base between runs.
-return_to_base_branch() {
+# A branch-creating update returns the checkout to the base branch itself
+# (#772 problem 3) and leaves the commit on a chore/touchstone-* branch.
+# Multi-update flows fast-forward the base over that branch so the worktree
+# reflects the update, then delete it so the next run's branch naming and
+# the "newest update branch" lookup stay unambiguous.
+merge_update_branch() {
   local repo="$1"
-  local base="$2"
   local update_branch
-  update_branch="$(git -C "$repo" branch --show-current)"
-  git -C "$repo" checkout -q "$base"
+  update_branch="$(git -C "$repo" for-each-ref --sort=-committerdate \
+    --format='%(refname:short)' 'refs/heads/chore/touchstone-*' | head -1)"
+  if [ -z "$update_branch" ]; then
+    echo "FAIL: expected a chore/touchstone-* update branch to merge" >&2
+    ERRORS=$((ERRORS + 1))
+    return 1
+  fi
   git -C "$repo" merge -q --ff-only "$update_branch"
+  git -C "$repo" branch -q -D "$update_branch"
+}
+
+# Tolerant sibling of merge_update_branch: brings a branch-creating update's
+# content into the worktree when one was produced, and does nothing when the
+# update legitimately created no branch (content already current, --in-place,
+# or a refusal). Sections that assert ON FILES after an update use this; the
+# strict helper stays for sections asserting branch creation itself.
+settle_update() {
+  local repo="$1"
+  local update_branch
+  update_branch="$(git -C "$repo" for-each-ref --sort=-committerdate \
+    --format='%(refname:short)' 'refs/heads/chore/touchstone-*' | head -1)"
+  [ -n "$update_branch" ] || return 0
+  git -C "$repo" merge -q --ff-only "$update_branch" 2>/dev/null || return 0
+  git -C "$repo" branch -q -D "$update_branch"
 }
 
 PROJECT="$TEST_DIR/test-project"
@@ -104,6 +126,7 @@ echo "    Initial .touchstone-version: $INITIAL_SHA"
 echo ""
 echo "--- Step 2: Update with no changes (should report up to date) ---"
 (cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") 2>&1 | tee "$TEST_DIR/update-output-1.txt"
+settle_update "$PROJECT"
 
 if grep -q "Already up to date" "$TEST_DIR/update-output-1.txt"; then
   echo "    PASS: correctly reported up to date"
@@ -235,14 +258,27 @@ commit_all "$PROJECT" "simulate old touchstone state"
 
 (cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") 2>&1 | tee "$TEST_DIR/update-output-2.txt"
 
+# #772 problem 3: a branch-creating update commits on chore/touchstone-* and
+# RETURNS the checkout to the branch the caller started on. An unattended
+# sweep must never park the worktree on its own update branch, where the
+# user's next commits would land.
 UPDATE_BRANCH="$(git -C "$PROJECT" rev-parse --abbrev-ref HEAD)"
-if [ "$UPDATE_BRANCH" = "$BASE_BRANCH" ]; then
-  echo "FAIL: update did not switch to a chore/touchstone branch" >&2
+if [ "$UPDATE_BRANCH" != "$BASE_BRANCH" ]; then
+  echo "FAIL: update must return the checkout to '$BASE_BRANCH', left it on '$UPDATE_BRANCH' (#772)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if ! git -C "$PROJECT" for-each-ref --format='%(refname:short)' 'refs/heads/chore/touchstone-*' | grep -q .; then
+  echo "FAIL: update must still leave its commit on a chore/touchstone-* branch" >&2
   ERRORS=$((ERRORS + 1))
 fi
 assert_contains "$TEST_DIR/update-output-2.txt" 'Creating update branch: chore/touchstone-'
 assert_contains "$TEST_DIR/update-output-2.txt" 'Committed: chore: update touchstone to'
 assert_contains "$TEST_DIR/update-output-2.txt" 'bash scripts/open-pr.sh'
+assert_contains "$TEST_DIR/update-output-2.txt" "Checkout returned to '$BASE_BRANCH'"
+
+# The update's content lives on the chore branch; bring it into the worktree
+# so the file/manifest assertions below inspect what the update produced.
+merge_update_branch "$PROJECT"
 assert_exists "$PROJECT/TOUCHSTONE.md"
 assert_exists "$PROJECT/.github/workflows/issue-claim-check.yml"
 assert_contains "$PROJECT/.github/workflows/issue-claim-check.yml" 'claim-check-${{ github.event.pull_request.number || github.ref }}'
@@ -339,8 +375,6 @@ if [ -x "$PROJECT/scripts/project-owned.sh" ]; then
 else
   echo "    PASS: project-owned script mode was preserved"
 fi
-
-return_to_base_branch "$PROJECT" "$BASE_BRANCH"
 
 # --------------------------------------------------------------------------
 # Test 2b: --in-place updates the current feature branch without creating a
@@ -454,6 +488,7 @@ commit_all "$IGNORED_MANAGED_PROJECT" "simulate repo ignoring Touchstone lib fil
 printf '# stale managed drift\n' >>"$IGNORED_MANAGED_PROJECT/lib/preflight.sh"
 
 (cd "$IGNORED_MANAGED_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/update-ignored-managed-output.txt" 2>&1
+settle_update "$IGNORED_MANAGED_PROJECT"
 
 assert_contains "$TEST_DIR/update-ignored-managed-output.txt" 'Committed: chore: update touchstone to'
 if git -C "$IGNORED_MANAGED_PROJECT" ls-files --error-unmatch lib/preflight.sh >/dev/null 2>&1; then
@@ -773,6 +808,7 @@ CLAUDE_CHECKSUM="$(md5 -q "$PROJECT/CLAUDE.md" 2>/dev/null || md5sum "$PROJECT/C
 MARKDOWNLINT_CHECKSUM="$(md5 -q "$PROJECT/.markdownlint.json" 2>/dev/null || md5sum "$PROJECT/.markdownlint.json" | awk '{print $1}')"
 
 (cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
+settle_update "$PROJECT"
 
 CLAUDE_CHECKSUM_AFTER="$(md5 -q "$PROJECT/CLAUDE.md" 2>/dev/null || md5sum "$PROJECT/CLAUDE.md" | awk '{print $1}')"
 MARKDOWNLINT_CHECKSUM_AFTER="$(md5 -q "$PROJECT/.markdownlint.json" 2>/dev/null || md5sum "$PROJECT/.markdownlint.json" | awk '{print $1}')"
@@ -793,8 +829,6 @@ fi
 
 assert_not_exists "$PROJECT/CLAUDE.md.bak"
 
-return_to_base_branch "$PROJECT" "$BASE_BRANCH"
-
 # Existing projects from before Gemini support should receive GEMINI.md once,
 # but the file remains project-owned after that.
 rm -f "$PROJECT/GEMINI.md"
@@ -802,6 +836,7 @@ echo "0000000000000000000000000000000000000001" >"$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate pre-gemini project"
 
 (cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
+settle_update "$PROJECT"
 
 assert_exists "$PROJECT/GEMINI.md"
 assert_contains "$PROJECT/GEMINI.md" "Gemini CLI"
@@ -811,8 +846,6 @@ if ! git -C "$PROJECT" log -1 --name-only --pretty=format: | grep -qx 'GEMINI.md
   echo "FAIL: update commit must include GEMINI.md when adding the project-owned Gemini instructions" >&2
   ERRORS=$((ERRORS + 1))
 fi
-
-return_to_base_branch "$PROJECT" "$BASE_BRANCH"
 
 # --------------------------------------------------------------------------
 # An EXISTING GEMINI.md with a stale managed block must be refreshed and
@@ -842,6 +875,7 @@ echo "0000000000000000000000000000000000000002" >"$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate stale gemini block, no AGENTS.md"
 
 (cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
+settle_update "$PROJECT"
 
 assert_not_contains "$PROJECT/GEMINI.md" "STALE-GEMINI-BLOCK-MARKER"
 assert_contains "$PROJECT/GEMINI.md" "Required Delivery Workflow"
@@ -853,8 +887,6 @@ if ! git -C "$PROJECT" diff --quiet -- GEMINI.md; then
   echo "FAIL: GEMINI.md still has unstaged changes after the update commit" >&2
   ERRORS=$((ERRORS + 1))
 fi
-
-return_to_base_branch "$PROJECT" "$BASE_BRANCH"
 
 # --------------------------------------------------------------------------
 # A pre-existing gitignored, untracked GEMINI.md must NOT be force-staged.
@@ -891,11 +923,22 @@ if ! (cd "$GEMIGNORE_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project
   cat "$TEST_DIR/gemini-ignored-update.txt" >&2
   ERRORS=$((ERRORS + 1))
 fi
-if [ -n "$(git -C "$GEMIGNORE_PROJECT" ls-files -- GEMINI.md)" ]; then
+# The update commit lives on the chore branch and the checkout has returned
+# to base (#772 problem 3), so both assertions must name that branch — HEAD
+# here is the fixture commit that REMOVED GEMINI.md, which would otherwise
+# report a false positive.
+GEMIGNORE_UPDATE_BRANCH="$(git -C "$GEMIGNORE_PROJECT" for-each-ref --sort=-committerdate \
+  --format='%(refname:short)' 'refs/heads/chore/touchstone-*' | head -1)"
+if [ -z "$GEMIGNORE_UPDATE_BRANCH" ]; then
+  echo "FAIL: expected an update branch for the ignored-GEMINI project" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ -n "$(git -C "$GEMIGNORE_PROJECT" ls-files -- GEMINI.md)" ] \
+  || [ -n "$(git -C "$GEMIGNORE_PROJECT" ls-tree --name-only "${GEMIGNORE_UPDATE_BRANCH:-HEAD}" -- GEMINI.md)" ]; then
   echo "FAIL: ignored untracked GEMINI.md was force-staged by the update (publishes private local content)" >&2
   ERRORS=$((ERRORS + 1))
 fi
-if git -C "$GEMIGNORE_PROJECT" log -1 --name-only --pretty=format: | grep -qx 'GEMINI.md'; then
+if git -C "$GEMIGNORE_PROJECT" log -1 --name-only --pretty=format: "${GEMIGNORE_UPDATE_BRANCH:-HEAD}" | grep -qx 'GEMINI.md'; then
   echo "FAIL: the update commit included the deliberately-ignored GEMINI.md" >&2
   ERRORS=$((ERRORS + 1))
 fi
@@ -1020,6 +1063,7 @@ echo "0000000000000000000000000000000000000006" >"$BOTHDRIVERS_PROJECT/.touchsto
 commit_all "$BOTHDRIVERS_PROJECT" "stale blocks in both driver files"
 
 (cd "$BOTHDRIVERS_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
+settle_update "$BOTHDRIVERS_PROJECT"
 
 for driver_file in AGENTS.md GEMINI.md; do
   assert_not_contains "$BOTHDRIVERS_PROJECT/$driver_file" "STALE-BOTH-DRIVERS-MARKER"
@@ -1060,6 +1104,7 @@ echo "0000000000000000000000000000000000000002" >"$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate pre-block AGENTS.md state"
 
 (cd "$PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
+settle_update "$PROJECT"
 
 assert_contains "$PROJECT/AGENTS.md" "touchstone:steering:start"
 assert_contains "$PROJECT/AGENTS.md" "touchstone:steering:end"
@@ -1190,6 +1235,7 @@ echo "0000000000000000000000000000000000000010" >"$SWIFT_UPDATE_PROJECT/.touchst
 commit_all "$SWIFT_UPDATE_PROJECT" "simulate pre-swiftlint-template swift project"
 
 (cd "$SWIFT_UPDATE_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/swift-update-output.txt" 2>&1
+settle_update "$SWIFT_UPDATE_PROJECT"
 
 assert_contains "$TEST_DIR/swift-update-output.txt" 'added (project-owned).*\.swiftlint\.yml'
 assert_exists "$SWIFT_UPDATE_PROJECT/.swiftlint.yml"
@@ -1224,6 +1270,7 @@ echo "0000000000000000000000000000000000000011" >"$SWIFT_HAND_EDITED_PROJECT/.to
 commit_all "$SWIFT_HAND_EDITED_PROJECT" "simulate stale touchstone state"
 
 (cd "$SWIFT_HAND_EDITED_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
+settle_update "$SWIFT_HAND_EDITED_PROJECT"
 
 assert_contains "$SWIFT_HAND_EDITED_PROJECT/.swiftlint.yml" '^SENTINEL_HAND_EDITED_SWIFTLINT$'
 
@@ -1237,6 +1284,7 @@ echo "0000000000000000000000000000000000000012" >"$NON_SWIFT_UPDATE_PROJECT/.tou
 commit_all "$NON_SWIFT_UPDATE_PROJECT" "simulate stale python touchstone state"
 
 (cd "$NON_SWIFT_UPDATE_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1
+settle_update "$NON_SWIFT_UPDATE_PROJECT"
 
 assert_not_exists "$NON_SWIFT_UPDATE_PROJECT/.swiftlint.yml"
 
@@ -1275,12 +1323,18 @@ SHIP_FAIL_RC=0
     bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --ship
 ) >"$SHIP_FAIL_OUT" 2>&1 || SHIP_FAIL_RC=$?
 
+# The update BRANCH is preserved (the work is not lost) but the CHECKOUT
+# still returns to base: a failed ship is more likely than a successful one
+# to be unattended and forgotten, and a worktree parked on the sweep's
+# branch is exactly #772 problem 3. The re-ship guidance names the branch.
 if [ "$SHIP_FAIL_RC" != "0" ] \
   && grep -q 'Ship failed' "$SHIP_FAIL_OUT" \
-  && git -C "$SHIP_FAIL_PROJECT" branch --show-current | grep -q '^chore/touchstone-'; then
-  echo "    PASS: --ship failure preserved branch and returned nonzero"
+  && git -C "$SHIP_FAIL_PROJECT" branch --list 'chore/touchstone-*' | grep -q . \
+  && ! git -C "$SHIP_FAIL_PROJECT" branch --show-current | grep -q '^chore/touchstone-' \
+  && grep -q 'git checkout chore/touchstone-' "$SHIP_FAIL_OUT"; then
+  echo "    PASS: --ship failure preserved the branch, returned to base, and named the re-ship path"
 else
-  echo "FAIL: --ship failure should preserve branch and exit nonzero" >&2
+  echo "FAIL: --ship failure should preserve the branch, return to base, and exit nonzero" >&2
   echo "    rc=$SHIP_FAIL_RC" >&2
   cat "$SHIP_FAIL_OUT" >&2
   ERRORS=$((ERRORS + 1))
@@ -1366,6 +1420,7 @@ commit_all "$SHIP_REFUSAL_PROJECT" "legacy setup fixture"
 LEGACY_SETUP_OUT="$TEST_DIR/legacy-setup-output.txt"
 (cd "$SHIP_REFUSAL_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$LEGACY_SETUP_OUT" 2>&1 || true
+settle_update "$SHIP_REFUSAL_PROJECT"
 assert_contains "$LEGACY_SETUP_OUT" 'legacy core.hooksPath reset'
 
 # --------------------------------------------------------------------------
@@ -1393,6 +1448,7 @@ OFFDEFAULT_FEATURE_HEAD="$(git -C "$OFFDEFAULT_PROJECT" rev-parse HEAD)"
 OFFDEFAULT_RC=0
 (cd "$OFFDEFAULT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$TEST_DIR/off-default-output.txt" 2>&1 || OFFDEFAULT_RC=$?
+settle_update "$OFFDEFAULT_PROJECT"
 
 if [ "$OFFDEFAULT_RC" = "0" ]; then
   echo "FAIL: update must refuse to create a chore/touchstone-* branch from a feature-branch checkout (#772)" >&2
@@ -1419,6 +1475,7 @@ git -C "$OFFDEFAULT_PROJECT" checkout -q "$OFFDEFAULT_BASE"
 OFFDEFAULT_BASE_HEAD="$(git -C "$OFFDEFAULT_PROJECT" rev-parse HEAD)"
 (cd "$OFFDEFAULT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$TEST_DIR/off-default-ok-output.txt" 2>&1
+settle_update "$OFFDEFAULT_PROJECT"
 assert_contains "$TEST_DIR/off-default-ok-output.txt" 'Creating update branch: chore/touchstone-'
 assert_contains "$TEST_DIR/off-default-ok-output.txt" 'Committed: chore: update touchstone to'
 if [ "$(git -C "$OFFDEFAULT_PROJECT" rev-parse HEAD^)" != "$OFFDEFAULT_BASE_HEAD" ]; then
@@ -1454,6 +1511,7 @@ assert_not_contains "$TEST_DIR/stamp-check-output.txt" 'Needs update'
 
 (cd "$STAMP_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$TEST_DIR/stamp-update-output.txt" 2>&1
+settle_update "$STAMP_PROJECT"
 assert_contains "$TEST_DIR/stamp-update-output.txt" 'Already up to date'
 if git -C "$STAMP_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
   echo "FAIL: content-identical tree must not produce an update branch (#773)" >&2
@@ -1517,6 +1575,7 @@ git -C "$P780_PROJECT" add lib/toml.sh
 git -C "$P780_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "stale managed content"
 (cd "$P780_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$TEST_DIR/p780-initdefault-output.txt" 2>&1 || true
+settle_update "$P780_PROJECT"
 assert_contains "$TEST_DIR/p780-initdefault-output.txt" "refusing to create an update branch from 'work'"
 if git -C "$P780_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
   echo "FAIL: init.defaultBranch must not authorize forking from a feature branch (PR #780 P1)" >&2
@@ -1583,6 +1642,7 @@ HOOKS_PATH="$(git -C "$HOOKS_PROJECT" config core.hooksPath || echo .git/hooks)"
 rm -f "$HOOKS_PROJECT/$HOOKS_PATH/pre-commit" "$HOOKS_PROJECT/.git/hooks/pre-commit" 2>/dev/null || true
 (cd "$HOOKS_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$TEST_DIR/p780-hooks-output.txt" 2>&1
+settle_update "$HOOKS_PROJECT"
 assert_contains "$TEST_DIR/p780-hooks-output.txt" 'Already up to date'
 if [ ! -f "$HOOKS_PROJECT/$HOOKS_PATH/pre-commit" ] && [ ! -f "$HOOKS_PROJECT/.git/hooks/pre-commit" ]; then
   echo "FAIL: content-current early exit must still reinstall missing git hooks (PR #780 review)" >&2
@@ -1778,6 +1838,7 @@ git -C "$UPONLY_REMOTE" symbolic-ref HEAD "refs/heads/$UPONLY_BASE"
 git -C "$UPONLY_PROJECT" remote add upstream "$UPONLY_REMOTE"
 (cd "$UPONLY_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$TEST_DIR/p780d-uponly-output.txt" 2>&1 || true
+settle_update "$UPONLY_PROJECT"
 assert_contains "$TEST_DIR/p780d-uponly-output.txt" 'could not resolve the default branch'
 assert_contains "$TEST_DIR/p780d-uponly-output.txt" 'git remote set-head upstream --auto'
 if git -C "$UPONLY_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
@@ -1791,6 +1852,7 @@ git -C "$UPONLY_PROJECT" fetch -q upstream
 git -C "$UPONLY_PROJECT" remote set-head upstream --auto >/dev/null
 (cd "$UPONLY_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$TEST_DIR/p780d-uponly-ok-output.txt" 2>&1
+settle_update "$UPONLY_PROJECT"
 assert_contains "$TEST_DIR/p780d-uponly-ok-output.txt" 'Creating update branch: chore/touchstone-'
 
 # (c) P1: a local default branch AHEAD of the remote default carries
@@ -1816,6 +1878,7 @@ commit_all "$AHEAD_PROJECT" "unpushed local commit on the default branch"
 AHEAD_HEAD="$(git -C "$AHEAD_PROJECT" rev-parse HEAD)"
 (cd "$AHEAD_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$TEST_DIR/p780d-ahead-output.txt" 2>&1 || true
+settle_update "$AHEAD_PROJECT"
 assert_contains "$TEST_DIR/p780d-ahead-output.txt" "local '$AHEAD_BASE' has commits that origin/$AHEAD_BASE does not"
 assert_contains "$TEST_DIR/p780d-ahead-output.txt" "git push origin $AHEAD_BASE"
 if git -C "$AHEAD_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
@@ -1831,6 +1894,7 @@ fi
 git -C "$AHEAD_PROJECT" push --no-verify -q origin "$AHEAD_BASE"
 (cd "$AHEAD_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$TEST_DIR/p780d-ahead-ok-output.txt" 2>&1
+settle_update "$AHEAD_PROJECT"
 assert_contains "$TEST_DIR/p780d-ahead-ok-output.txt" 'Creating update branch: chore/touchstone-'
 
 # (d) P2: an add-if-missing template slot occupied by a SYMLINK is
@@ -1856,6 +1920,7 @@ printf '# drift\n' >>"$TSYM_PROJECT/lib/toml.sh"
 commit_all "$TSYM_PROJECT" "custom config target + drift"
 (cd "$TSYM_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$TEST_DIR/p780d-tsym-update-output.txt" 2>&1
+settle_update "$TSYM_PROJECT"
 if [ ! -L "$TSYM_PROJECT/.markdownlint.json" ]; then
   echo "FAIL: the update replaced a project-owned symlinked .markdownlint.json with the template (PR #780 round 3 P2)" >&2
   ERRORS=$((ERRORS + 1))
@@ -1934,6 +1999,89 @@ commit_all "$GDIR_PROJECT" "gemini slot is a directory"
   >"$TEST_DIR/p780d-gdir-output.txt" 2>&1
 assert_contains "$TEST_DIR/p780d-gdir-output.txt" 'Already up to date'
 assert_not_contains "$TEST_DIR/p780d-gdir-output.txt" 'Needs update'
+
+echo "--- Step 14: diff-scope guard and tri-state ship reporting (#731) ---"
+
+# (a) The diff-scope guard (#772 problem 2, the arpeggio#35 signal) is the
+# detection half of the auto-merge refusal: any path in the update commit that
+# the planned-write set does not cover is a violation. Extracted and executed
+# as the REAL function against a controlled repo — a stubbed reimplementation
+# would assert nothing about the shipped code.
+SCOPE_FN_PROJECT="$TEST_DIR/p731-scope-fn"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SCOPE_FN_PROJECT" --no-register >/dev/null
+configure_git "$SCOPE_FN_PROJECT"
+commit_all "$SCOPE_FN_PROJECT" "initial scope-fn project"
+SCOPE_FN_BASE="$(git -C "$SCOPE_FN_PROJECT" rev-parse HEAD)"
+# One managed path (allowed) and one foreign path (a violation) in the commit.
+printf '# managed drift\n' >>"$SCOPE_FN_PROJECT/lib/toml.sh"
+printf 'stowaway\n' >"$SCOPE_FN_PROJECT/src-feature.txt"
+git -C "$SCOPE_FN_PROJECT" add lib/toml.sh src-feature.txt
+git -C "$SCOPE_FN_PROJECT" -c user.name=T -c user.email=t@e.invalid \
+  commit --no-verify -qm "managed change plus a stowaway"
+
+SCOPE_FN_OUT="$TEST_DIR/p731-scope-fn.txt"
+(
+  # shellcheck disable=SC1090
+  . "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
+  # Consumed by the extracted function below, which shellcheck cannot see
+  # through the eval.
+  # shellcheck disable=SC2034
+  PROJECT_DIR="$SCOPE_FN_PROJECT"
+  # shellcheck disable=SC2034
+  ORIGINAL_HEAD="$SCOPE_FN_BASE"
+  eval "$(awk '/^update_commit_scope_violations\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh")"
+  update_commit_scope_violations
+) >"$SCOPE_FN_OUT" 2>&1
+
+if grep -qx 'src-feature.txt' "$SCOPE_FN_OUT" && ! grep -qx 'lib/toml.sh' "$SCOPE_FN_OUT"; then
+  echo "    PASS: the diff-scope guard names the unmanaged path and clears the managed one"
+else
+  echo "FAIL: diff-scope guard must report src-feature.txt and only it (#772 problem 2)" >&2
+  cat "$SCOPE_FN_OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (b) The guard must be WIRED to the ship path and refuse auto-merge there —
+# detection without the refusal ships the stowaway.
+if grep -q 'SCOPE_VIOLATIONS="$(update_commit_scope_violations)"' "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" \
+  && awk '/SCOPE_VIOLATIONS="\$\(update_commit_scope_violations\)"/{f=1} f&&/open-pr\.sh/{print; exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'open-pr\.sh' \
+  && ! awk '/SCOPE_VIOLATIONS="\$\(update_commit_scope_violations\)"/{f=1} f&&/open-pr\.sh/{print; exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q '\-\-auto-merge'; then
+  echo "    PASS: a scope violation ships without --auto-merge (PR opens for human review)"
+else
+  echo "FAIL: the scope-violation path must open a PR WITHOUT --auto-merge" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (c) Tri-state (#731): "armed but not merged" has its own documented exit
+# code, and sync-all counts it separately — a fleet summary that folds an
+# armed PR into "succeeded" is the reporting bug this issue exists to fix.
+if grep -q 'UPDATE_SHIP_ARMED_EXIT=20' "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" \
+  || grep -qE '^#   20 ' "$TOUCHSTONE_ROOT/bootstrap/update-project.sh"; then
+  echo "    PASS: update-project documents a distinct armed-but-not-merged exit"
+else
+  echo "FAIL: the armed-but-not-merged state needs its own documented exit code" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if grep -q 'ARMED=' "$TOUCHSTONE_ROOT/bootstrap/sync-all.sh" \
+  && grep -q 'armed (PR open, not merged)' "$TOUCHSTONE_ROOT/bootstrap/sync-all.sh"; then
+  echo "    PASS: sync-all tallies armed separately from succeeded"
+else
+  echo "FAIL: sync-all must report armed-but-unmerged separately from succeeded (#731)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (d) All four staleness surfaces consume ONE verdict — the arpeggio no-op
+# loop came from update --check and auto-sync disagreeing.
+for consumer in lib/auto-update.sh lib/status.sh bootstrap/sync-all.sh bootstrap/update-project.sh; do
+  if ! grep -q 'sync-content\.sh' "$TOUCHSTONE_ROOT/$consumer"; then
+    echo "FAIL: $consumer must consume the shared content verdict (lib/sync-content.sh)" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+done
+echo "    PASS: all four staleness surfaces consume the shared content verdict"
 
 # --------------------------------------------------------------------------
 # Results

@@ -15,13 +15,24 @@
 #   TOUCHSTONE_UPDATE_INTERVAL   — seconds between checks (default: 3600 = 1 hour)
 #
 
+TOUCHSTONE_AUTO_UPDATE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOUCHSTONE_SYNC_DISCIPLINE_PATH="$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
 if [ ! -f "$TOUCHSTONE_SYNC_DISCIPLINE_PATH" ]; then
-  TOUCHSTONE_AUTO_UPDATE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   TOUCHSTONE_SYNC_DISCIPLINE_PATH="$TOUCHSTONE_AUTO_UPDATE_LIB_DIR/sync-discipline.sh"
 fi
 # shellcheck source=sync-discipline.sh
 source "$TOUCHSTONE_SYNC_DISCIPLINE_PATH"
+
+# Shared content-currency verdict (#731) — the same predicate behind
+# `touchstone update --check`, `update-all --check`, and `touchstone status`.
+# Prefer the installed root's copy so a fixture root can override it; fall
+# back to this file's sibling for roots that predate the module.
+TOUCHSTONE_SYNC_CONTENT_LIB_PATH="$TOUCHSTONE_ROOT/lib/sync-content.sh"
+if [ ! -f "$TOUCHSTONE_SYNC_CONTENT_LIB_PATH" ]; then
+  TOUCHSTONE_SYNC_CONTENT_LIB_PATH="$TOUCHSTONE_AUTO_UPDATE_LIB_DIR/sync-content.sh"
+fi
+# shellcheck source=sync-content.sh
+source "$TOUCHSTONE_SYNC_CONTENT_LIB_PATH"
 
 TOUCHSTONE_UPDATE_INTERVAL="${TOUCHSTONE_UPDATE_INTERVAL:-3600}"
 TOUCHSTONE_STATE_DIR="${TOUCHSTONE_STATE_DIR:-$HOME/.touchstone}"
@@ -389,8 +400,14 @@ touchstone_semver_major_minor() {
   return 1
 }
 
+# Decide whether auto-sync should run. Identity drift is only the trigger;
+# with a project_dir the CONTENT verdict decides (#731): a SHA-stamped but
+# byte-identical tree used to re-run a no-op update — and print
+# '==> auto-synced'/'auto-shipped' lines for syncs that did not happen — on
+# every non-readonly CLI call, forever, because the no-op never rewrites the
+# stamp. The 2-arg form stays identity-only for callers without a tree.
 touchstone_auto_project_sync_should_sync() {
-  local project_id="$1" installed_id="$2"
+  local project_id="$1" installed_id="$2" project_dir="${3:-}"
   local project_mm installed_mm
 
   [ -n "$project_id" ] || return 1
@@ -399,12 +416,21 @@ touchstone_auto_project_sync_should_sync() {
 
   if project_mm="$(touchstone_semver_major_minor "$project_id")" \
     && installed_mm="$(touchstone_semver_major_minor "$installed_id")"; then
-    [ "$project_mm" != "$installed_mm" ]
-    return
+    # Patch-only semver drift never auto-syncs; this throttle is auto-sync
+    # policy layered on top of the shared verdict, not a currency claim.
+    [ "$project_mm" != "$installed_mm" ] || return 1
   fi
 
-  # Source checkouts record git SHAs instead of semver. Any SHA drift means the
-  # managed project files may differ, so keep the existing sync-on-drift rule.
+  # Source checkouts record git SHAs instead of semver, so any drift lands
+  # here. The shared content probe gives the same verdict `touchstone update
+  # --check` would: content-current means nothing to sync, regardless of the
+  # stamp. Probe cost is paid only on identity drift, and it replaces a full
+  # update-project.sh subprocess run.
+  if [ -n "$project_dir" ] \
+    && touchstone_content_is_current "$project_dir" "$TOUCHSTONE_ROOT" 2>/dev/null; then
+    return 1
+  fi
+
   return 0
 }
 
@@ -465,7 +491,7 @@ touchstone_auto_project_sync() {
   [ -n "$project_id" ] || return 0
   [ -n "$installed_id" ] || return 0
 
-  if ! touchstone_auto_project_sync_should_sync "$project_id" "$installed_id"; then
+  if ! touchstone_auto_project_sync_should_sync "$project_id" "$installed_id" "$project_dir"; then
     return 0
   fi
 
@@ -506,26 +532,43 @@ touchstone_auto_project_sync() {
     update_args+=("--ship")
   elif touchstone_auto_project_ship_enabled "$project_dir"; then
     echo "==> touchstone auto-sync will create a local update branch only." >&2
-    echo "    Ship it later with: cd \"$project_dir\" && bash scripts/open-pr.sh --auto-merge" >&2
+    echo "    Ship it later with: cd \"$project_dir\" && git checkout <chore/touchstone-branch> && bash scripts/open-pr.sh --auto-merge" >&2
   fi
 
   # Invariant: after any non-readonly `touchstone <subcmd>` in a
   # touchstone-aware project, the project's principles/hooks/scripts match the
-  # installed Touchstone id, or the user opted out, or the tree was dirty.
-  if (cd "$project_dir" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" ${update_args[@]+"${update_args[@]}"}) >"$log_file" 2>&1; then
+  # installed Touchstone CONTENT, or the user opted out, or the tree was dirty.
+  local sync_rc=0
+  (cd "$project_dir" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" ${update_args[@]+"${update_args[@]}"}) >"$log_file" 2>&1 \
+    || sync_rc=$?
+  if [ "$sync_rc" -eq 0 ]; then
     rm -f "$log_file"
     if [ "$ship_update" = true ]; then
+      # update-project.sh --ship exits 0 only on positive merge evidence
+      # (its documented tri-state contract), so "auto-shipped" here means
+      # the PR actually landed.
       echo "==> auto-shipped touchstone $project_id -> $installed_id" >&2
     else
       echo "==> auto-synced touchstone $project_id -> $installed_id" >&2
-      echo "    Ship the update with: cd \"$project_dir\" && bash scripts/open-pr.sh --auto-merge" >&2
+      echo "    Ship the update with: cd \"$project_dir\" && git checkout <chore/touchstone-branch> && bash scripts/open-pr.sh --auto-merge" >&2
     fi
+    return 0
+  fi
+
+  # Tri-state contract (bootstrap/update-project.sh): 20 = the update PR is
+  # armed but NOT merged. Not a success ("auto-shipped" would be a lie) and
+  # not a failure (the sync itself landed on its branch) — report it as what
+  # it is so a human finishes the merge.
+  if [ "$sync_rc" -eq 20 ]; then
+    echo "==> touchstone auto-sync armed an update PR for $project_dir ($project_id -> $installed_id) but it is NOT merged." >&2
+    echo "    Review pending or auto-merge refused; details: $log_file" >&2
+    echo "    Finish it: cd \"$project_dir\" && git checkout <chore/touchstone-branch> && bash scripts/open-pr.sh --auto-merge" >&2
     return 0
   fi
 
   echo "WARNING: touchstone auto-sync failed for $project_dir; continuing. Log: $log_file" >&2
   echo "         Retry: cd \"$project_dir\" && touchstone update --ship" >&2
-  echo "         If an update branch was created, ship it with: cd \"$project_dir\" && bash scripts/open-pr.sh --auto-merge" >&2
+  echo "         If an update branch was created, ship it with: cd \"$project_dir\" && git checkout <chore/touchstone-branch> && bash scripts/open-pr.sh --auto-merge" >&2
   touchstone_sync_log_skip "$project_dir" "$project_id" "$installed_id" "auto-sync-failed" "" "touchstone $command"
   return 0
 }

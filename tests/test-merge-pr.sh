@@ -3664,11 +3664,13 @@ else
 fi
 
 # Propagation: the script must reach downstream projects through every
-# distribution surface — bootstrap copy, update sync, the sync-discipline
-# planned-write boundary, and preflight's delivery-only classification.
+# distribution surface — bootstrap copy, the update's managed enumeration
+# (lib/sync-content.sh since #731, consumed by update-project.sh for both
+# the copy pass and the staleness probe), the sync-discipline planned-write
+# boundary, and preflight's delivery-only classification.
 for propagation_file in \
   "bootstrap/new-project.sh" \
-  "bootstrap/update-project.sh" \
+  "lib/sync-content.sh" \
   "lib/sync-discipline.sh" \
   "lib/preflight.sh"; do
   if ! grep -q 'scripts/respond-review\.sh' "$TOUCHSTONE_ROOT/$propagation_file"; then
