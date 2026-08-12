@@ -333,6 +333,44 @@ jobs:
           }
           # <<< parity-tested: untrusted_review_authors <<<
 
+          # >>> parity-tested: evidence_row_filters >>>
+          # The jq row filters for the two evidence channels, hoisted out of
+          # their gh calls so the test can run REAL jq over them.
+          #
+          # Tab is IFS whitespace, so `read` collapses runs of tabs and drops
+          # leading ones: any empty field ahead of the LAST one shifts every
+          # field after it. `.user` is null for a deleted account (and
+          # `.commit_id` for a review whose commit is gone), so the previous
+          # `(.user.login // "")` emitted an empty first field, sliding the
+          # commit oid into $author and the state into $commit_oid. The head
+          # comparison then dropped the row before the recorder ran, so the
+          # check reported "no trusted-author review evidence" for a head
+          # that had review evidence — and record_untrusted_review_author's
+          # <unknown> normalization was unreachable in production. Dropping
+          # a row can only REMOVE evidence, so the check stayed fail-closed;
+          # what broke was the reported CAUSE, the exact defect #804/#805
+          # exist to fix. Every non-last field is therefore sentinel-filled
+          # nonempty, as statuses_tsv already is.
+          #
+          # The evidence TIMESTAMPS are deliberately left empty-able:
+          #   - submitted_at is last, so an empty value shifts nothing, and
+          #     `[ -n "$submitted_at" ]` is what keeps an unsubmitted
+          #     (PENDING, submitted_at null) review out of the evidence list.
+          #   - created_at feeds the freshness comparison. A "<none>" in a
+          #     timestamp slot sorts ABOVE every real ISO-8601 value, so a
+          #     sentinel would CLEAR the freshness bar rather than fail it;
+          #     an empty created_at instead shifts the body out of the
+          #     "Reviewed commit:" match, which fails closed. GitHub never
+          #     omits either field — the guards are belt-and-braces — but a
+          #     sentinel must never be the more dangerous of the two.
+          #
+          # tests/test-review-binding-workflow.sh extracts these filters and
+          # the reviews loop verbatim and runs jq over a fixture review whose
+          # "user" is null.
+          REVIEWS_ROW_JQ='.[] | [((.user.login // "") | if . == "" then "<unknown>" else . end), ((.commit_id // "") | if . == "" then "<none>" else . end), ((.state // "") | if . == "" then "<none>" else . end), (.submitted_at // "")] | @tsv'
+          COMMENTS_ROW_JQ='.[] | [((.user.login // "") | if . == "" then "<unknown>" else . end), (.created_at // ""), ((.body // "") | gsub("[\r\n\t]"; " "))] | @tsv'
+          # <<< parity-tested: evidence_row_filters <<<
+
           # >>> parity-tested: parse_trusted_review_authors >>>
           # Reads a review-config TOML document on stdin and prints the
           # [review.pr_triggered] trusted_review_authors array as a comma-
@@ -738,7 +776,12 @@ jobs:
             local evidence="" untrusted_reviews=0 untrusted_review_authors=""
             local reviews_tsv author commit_oid review_state submitted_at
             reviews_tsv="$(gh api --paginate "repos/$REPO/pulls/$pr_number/reviews?per_page=100" \
-              --jq '.[] | [(.user.login // ""), (.commit_id // ""), (.state // ""), (.submitted_at // "")] | @tsv')"
+              --jq "$REVIEWS_ROW_JQ")"
+            # >>> parity-tested: reviews_channel_loop >>>
+            # $author arrives sentinel-filled from REVIEWS_ROW_JQ, so the
+            # emptiness guard below is defence in depth, not the mechanism:
+            # a deleted-account review reaches record_untrusted_review_author
+            # as the literal <unknown>, is counted, and is NAMED.
             while IFS=$'\t' read -r author commit_oid review_state submitted_at || [ -n "$author" ]; do
               [ -n "$author" ] || continue
               [ "$commit_oid" = "$head_sha" ] || continue
@@ -750,6 +793,7 @@ jobs:
                 record_untrusted_review_author "$author"
               fi
             done <<<"$reviews_tsv"
+            # <<< parity-tested: reviews_channel_loop <<<
 
             # Channel 2: the reviewer's result comment naming the exact head
             # (same surface merge-pr.sh accepts). Verdict-agnostic: clean or
@@ -759,7 +803,7 @@ jobs:
             local comments_tsv head_short comment_head_resolved=false resolved_commit="" body
             head_short="$(printf '%.10s' "$head_sha")"
             comments_tsv="$(gh api --paginate "repos/$REPO/issues/$pr_number/comments?per_page=100" \
-              --jq '.[] | [(.user.login // ""), (.created_at // ""), ((.body // "") | gsub("[\r\n\t]"; " "))] | @tsv')"
+              --jq "$COMMENTS_ROW_JQ")"
             while IFS=$'\t' read -r author created_at body || [ -n "$author" ]; do
               [ -n "$author" ] || continue
               author_is_trusted "$author" || continue
