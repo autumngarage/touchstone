@@ -443,7 +443,7 @@ echo "==> Test: no dispatch function is called in a conditional context"
 # set -e inside a function invoked as `f || x`, `if f`, `f && x` or `! f`, and
 # hands that suppression down to everything the function calls — including a
 # subshell that sets -e itself.
-DISPATCH_FNS='run_action|run_validate|run_targets_action|run_target_profile|run_profile_action|run_declared_command|run_isolated'
+DISPATCH_FNS='run_action|run_validate|run_validate_constituents|run_targets_validate|run_targets_action|run_target_profile|run_profile_action|run_declared_command|run_isolated'
 CONDITIONAL_HITS="$(
   grep -nE "((^|[[:space:]])(if|while|until|!)[[:space:]]+($DISPATCH_FNS)[[:space:]]|($DISPATCH_FNS)[^#]*(\|\||&&))" "$RUNNER" \
     | grep -vE '^[0-9]+:[[:space:]]*#' || true
@@ -490,6 +490,29 @@ fi
 assert_contains "$MISSING_TOOL_OUT" 'declared test_command is not runnable here (exit 127)'
 assert_contains "$MISSING_TOOL_OUT" 'Or declare a runnable command: test_command=<command> in .touchstone-config'
 assert_contains "$MISSING_TOOL_OUT" 'test verdict: ran=0 skipped=0 failed=1'
+
+echo "==> Test: a command that ran and exited 127 still counts as run"
+
+# Exit 127 is raised by the declared command's own shell, so it does not prove
+# the command never started: a script that does real work and then returns 127
+# reports the same code. Deciding "nothing ran" from the exit code alone
+# published ran=0 for a run that visibly validated, plus a missing-tool remedy
+# for a tool that was never missing.
+RAN_127_PROJECT="$TEST_DIR/declared-ran-then-127"
+mkdir -p "$RAN_127_PROJECT"
+git -C "$RAN_127_PROJECT" init -q
+printf 'test_command=bash check.sh\n' >"$RAN_127_PROJECT/.touchstone-config"
+printf 'printf "check.sh did real work\\n"\nexit 127\n' >"$RAN_127_PROJECT/check.sh"
+RAN_127_OUT="$TEST_DIR/declared-ran-then-127.out"
+run_runner "$RAN_127_PROJECT" "$RAN_127_OUT" test
+if [ "$RUNNER_EXIT" -eq 0 ]; then
+  echo "FAIL: a declared command exiting 127 must still fail the run" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$RAN_127_OUT" 'check.sh did real work'
+assert_contains "$RAN_127_OUT" 'declared test_command failed (exit 127): bash check.sh'
+assert_not_contains "$RAN_127_OUT" 'is not runnable here (exit 127)'
+assert_contains "$RAN_127_OUT" 'test verdict: ran=1 skipped=0 failed=1'
 
 echo "==> Test: an undeclared generic project still runs, and says nothing ran"
 
@@ -653,6 +676,72 @@ fi
 assert_contains "$TARGET_PARTIAL_OUT" 'no declared command ran for: lint$'
 assert_contains "$TARGET_PARTIAL_OUT" "DEPRECATED: target 'beta': no lint_command"
 assert_contains "$TARGET_PARTIAL_OUT" 'A target declares its own commands in its own .touchstone-config'
+
+echo "==> Test: a target's own validate_command is the target's validate"
+
+# validate is not exempt from declaration-first. A monorepo target that states
+# validate_command in its own config had that command ignored entirely: the
+# root saw no validate_command, fell through to lint/typecheck/test, and each
+# constituent found no per-target declaration of its own. The declared
+# validation suite never ran, and require_declared failed a project that had
+# declared exactly what it was asked to.
+TARGET_VALIDATE_PROJECT="$TEST_DIR/targets-validate-declared"
+mkdir -p "$TARGET_VALIDATE_PROJECT/packages/alpha" "$TARGET_VALIDATE_PROJECT/packages/beta"
+git -C "$TARGET_VALIDATE_PROJECT" init -q
+printf 'require_declared=true\nproject_type=generic\ntargets=alpha:packages/alpha:generic,beta:packages/beta:generic\n' \
+  >"$TARGET_VALIDATE_PROJECT/.touchstone-config"
+printf 'validate_command=echo alpha-declared-validate-ran\n' \
+  >"$TARGET_VALIDATE_PROJECT/packages/alpha/.touchstone-config"
+printf 'validate_command=echo beta-declared-validate-ran\n' \
+  >"$TARGET_VALIDATE_PROJECT/packages/beta/.touchstone-config"
+TARGET_VALIDATE_OUT="$TEST_DIR/targets-validate-declared.out"
+run_runner "$TARGET_VALIDATE_PROJECT" "$TARGET_VALIDATE_OUT" validate
+if [ "$RUNNER_EXIT" -ne 0 ]; then
+  echo "FAIL: per-target validate_command declarations must satisfy require_declared" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TARGET_VALIDATE_OUT" 'alpha-declared-validate-ran'
+assert_contains "$TARGET_VALIDATE_OUT" 'beta-declared-validate-ran'
+assert_contains "$TARGET_VALIDATE_OUT" 'validate verdict: ran=2 skipped=0 failed=0'
+
+echo "==> Test: targets without a declared validate still run the constituents"
+
+# The fallback is per target, not per run: one target's validate_command must
+# not silence the constituent actions its undeclaring siblings still need.
+TARGET_MIXED_PROJECT="$TEST_DIR/targets-validate-mixed"
+mkdir -p "$TARGET_MIXED_PROJECT/packages/alpha" "$TARGET_MIXED_PROJECT/packages/beta"
+git -C "$TARGET_MIXED_PROJECT" init -q
+printf 'require_declared=true\nproject_type=generic\ntargets=alpha:packages/alpha:generic,beta:packages/beta:generic\n' \
+  >"$TARGET_MIXED_PROJECT/.touchstone-config"
+printf 'validate_command=echo alpha-declared-validate-ran\n' \
+  >"$TARGET_MIXED_PROJECT/packages/alpha/.touchstone-config"
+printf 'lint_command=echo beta-declared-lint-ran\ntypecheck_command=true\ntest_command=echo beta-declared-test-ran\n' \
+  >"$TARGET_MIXED_PROJECT/packages/beta/.touchstone-config"
+TARGET_MIXED_OUT="$TEST_DIR/targets-validate-mixed.out"
+run_runner "$TARGET_MIXED_PROJECT" "$TARGET_MIXED_OUT" validate
+if [ "$RUNNER_EXIT" -ne 0 ]; then
+  echo "FAIL: a mix of target-level validate and constituent declarations must pass" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TARGET_MIXED_OUT" 'alpha-declared-validate-ran'
+assert_contains "$TARGET_MIXED_OUT" 'beta-declared-lint-ran'
+assert_contains "$TARGET_MIXED_OUT" 'beta-declared-test-ran'
+assert_contains "$TARGET_MIXED_OUT" 'validate verdict: ran=4 skipped=0 failed=0'
+
+echo "==> Test: a failing target validate_command fails the run"
+
+# Dispatching validate through the target's declaration must not soften what a
+# declaration means: its exit code is the answer, here as everywhere else.
+printf 'validate_command=exit 7\n' \
+  >"$TARGET_VALIDATE_PROJECT/packages/alpha/.touchstone-config"
+TARGET_VALIDATE_FAIL_OUT="$TEST_DIR/targets-validate-fail.out"
+run_runner "$TARGET_VALIDATE_PROJECT" "$TARGET_VALIDATE_FAIL_OUT" validate
+if [ "$RUNNER_EXIT" -eq 0 ]; then
+  echo "FAIL: a failing target validate_command must fail the run" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TARGET_VALIDATE_FAIL_OUT" "target 'alpha' failed 'validate' (exit 7)"
+assert_contains "$TARGET_VALIDATE_FAIL_OUT" 'validate verdict: ran=2 skipped=0 failed=1'
 
 echo "==> Test: the detection fallback dispatches each package manager unchanged"
 

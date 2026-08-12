@@ -1960,6 +1960,46 @@ else
   assert_contains "$TEST_DIR/doctor-monorepo.txt" "target autodetect: tests: not found for profile 'rust'"
 fi
 
+# A target declares its own commands in its own .touchstone-config, and
+# touchstone-run.sh:run_target_profile consults that declaration before it
+# detects anything. Doctor's override booleans read only the root config, so a
+# target with a declared lint_command still had its profile heuristics applied:
+# a Python target with a declared alternative linter reported "ruff not on
+# PATH" and counted an issue for a tool the run never invokes. The suppression
+# is per target — an undeclaring sibling must still be checked.
+PROJECT_DOCTOR_TARGET_DECL="$TEST_DIR/test-project-doctor-target-declared"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_TARGET_DECL" --no-register >/dev/null
+mkdir -p "$PROJECT_DOCTOR_TARGET_DECL/apps/declared" "$PROJECT_DOCTOR_TARGET_DECL/apps/plain"
+printf '[project]\nname = "declared"\n' >"$PROJECT_DOCTOR_TARGET_DECL/apps/declared/pyproject.toml"
+printf 'lint_command=echo declared-lint\ntest_command=echo declared-test\n' \
+  >"$PROJECT_DOCTOR_TARGET_DECL/apps/declared/.touchstone-config"
+printf '{}\n' >"$PROJECT_DOCTOR_TARGET_DECL/apps/plain/package.json"
+touchstone_sed_inplace 's|^targets=.*|targets=declared:apps/declared:python,plain:apps/plain:node|' "$PROJECT_DOCTOR_TARGET_DECL/.touchstone-config"
+(cd "$PROJECT_DOCTOR_TARGET_DECL" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) \
+  >"$TEST_DIR/doctor-target-declared.txt" 2>&1 || true
+assert_contains "$TEST_DIR/doctor-target-declared.txt" 'target declared: lint: overridden via .touchstone-config'
+assert_contains "$TEST_DIR/doctor-target-declared.txt" 'target declared: tests: overridden via .touchstone-config'
+# Machine-independent regression: whichever way the ruff probe resolves, the
+# pre-fix run printed one of "target declared: ruff: on PATH" / "target
+# declared: ruff not on PATH". Neither may appear once the target declares.
+assert_not_contains "$TEST_DIR/doctor-target-declared.txt" 'target declared: ruff'
+# The undeclaring sibling is still checked — suppression is per target.
+assert_contains "$TEST_DIR/doctor-target-declared.txt" "target plain: package.json has no 'lint' script"
+assert_contains "$TEST_DIR/doctor-target-declared.txt" "target plain: tests: not found for profile 'node'"
+# An unknown target profile is still flagged even when the target declares its
+# own commands: a declaration for one action does not make the profile valid
+# for the actions it did not declare.
+printf 'validate_command=echo declared-validate\n' \
+  >"$PROJECT_DOCTOR_TARGET_DECL/apps/declared/.touchstone-config"
+touchstone_sed_inplace 's|^targets=.*|targets=declared:apps/declared:kotlin|' "$PROJECT_DOCTOR_TARGET_DECL/.touchstone-config"
+if (cd "$PROJECT_DOCTOR_TARGET_DECL" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) \
+  >"$TEST_DIR/doctor-target-declared-bad-profile.txt" 2>&1; then
+  echo "FAIL: a target declaration must not suppress the unknown-profile diagnostic" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-target-declared-bad-profile.txt" "target 'declared': unknown profile 'kotlin'"
+fi
+
 # touchstone-run.sh's load_config treats project_type and profile as the same
 # slot with last-write-wins semantics. Doctor must select the same profile
 # the runner would, so a config with both keys must resolve to the final one.

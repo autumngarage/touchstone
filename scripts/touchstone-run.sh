@@ -401,17 +401,17 @@ configured_command_for_action() {
 }
 
 # Declaration applies at every level, so a target declares its own commands in
-# its own config file. Reads one key out of the config file in the current
-# directory without disturbing the root config the process already loaded.
-declared_command_here() {
-  local action="$1" key line parsed_key value=""
+# its own config file. Reads one key out of the config file in $1 without
+# disturbing the root config the process already loaded.
+declared_command_in() {
+  local dir="$1" action="$2" key line parsed_key value=""
 
   case "$action" in build_if_distinct) return 0 ;; esac
   # An absolute TOUCHSTONE_CONFIG_FILE names the root's config specifically. A
   # target must not re-read it and adopt the root's commands as its own.
   case "$CONFIG_FILE" in /*) return 0 ;; esac
   key="${action}_command"
-  [ -f "$CONFIG_FILE" ] || return 0
+  [ -f "$dir/$CONFIG_FILE" ] || return 0
 
   while IFS= read -r line || [ -n "$line" ]; do
     line="$(trim "$line")"
@@ -421,7 +421,7 @@ declared_command_here() {
     parsed_key="$(trim "${line%%=*}")"
     [ "$parsed_key" = "$key" ] || continue
     value="$(trim "${line#*=}")"
-  done <"$CONFIG_FILE"
+  done <"$dir/$CONFIG_FILE"
 
   # typecheck_command=auto asks for detection, so it is not a declaration.
   if [ "$action" = typecheck ] && [ "$value" = auto ]; then
@@ -430,15 +430,42 @@ declared_command_here() {
   printf '%s\n' "$value"
 }
 
+# Same question, asked from inside the target's own directory — the shape the
+# dispatcher uses, since run_target_profile has already cd'd there.
+declared_command_here() {
+  declared_command_in "." "$1"
+}
+
+# Whether a declaration can be shown, before it is dispatched, to have nothing
+# to execute. This has to be decided in advance: after the fact, exit 127 is
+# raised by the declared command's own shell, so `test_command=bash check.sh`
+# where check.sh does real work and then exits 127 is indistinguishable from a
+# command that never started. Only the narrow, unambiguous case is claimed —
+# a bare leading word (no path-free metacharacters, no assignment prefix) that
+# resolves to nothing. Anything else is dispatched and owns its exit status.
+declared_command_head_missing() {
+  local command="$1" head
+
+  head="${command%%[[:space:]]*}"
+  case "$head" in
+    "" | *[^[:alnum:]_./+-]*) return 1 ;;
+  esac
+  command -v -- "$head" >/dev/null 2>&1 && return 1
+  return 0
+}
+
 # A declaration is a promise: the command runs and its exit code is the answer.
-# A missing binary (127) is a broken declaration, not an absent one, so it
-# fails loudly instead of reporting the "ok ... skipped" that made a green
-# required check compatible with nothing having run.
+# A declaration with no command to run is a broken declaration, not an absent
+# one, so it fails loudly instead of reporting the "ok ... skipped" that made a
+# green required check compatible with nothing having run.
 run_declared_command() {
-  local action="$1" command="$2" status=0
+  local action="$1" command="$2" status=0 head_missing=false
 
   RUN_STATUS=0
   RUN_DECLARED=$((RUN_DECLARED + 1))
+  if declared_command_head_missing "$command"; then
+    head_missing=true
+  fi
   # The only conditional-context call left in the dispatch chain, and it is
   # safe because run_shell_command's body is a single meaningful command:
   # there is no second step for a suppressed errexit to let through.
@@ -448,9 +475,9 @@ run_declared_command() {
   fi
 
   RUN_FAILED=$((RUN_FAILED + 1))
-  if [ "$status" -eq 127 ]; then
-    # 127 means the command was dispatched but never executed, so it does not
-    # count toward ran — it is a broken declaration, reported as a failure.
+  if [ "$status" -eq 127 ] && [ "$head_missing" = true ]; then
+    # Non-execution was established before dispatch, so nothing ran and this
+    # does not count toward ran — a broken declaration, reported as a failure.
     RUN_RAN=$((RUN_RAN - 1))
     warn "declared ${action}_command is not runnable here (exit 127): $command"
     warn "  Fix: install the missing tool, then rerun: bash scripts/touchstone-run.sh $action"
@@ -915,22 +942,10 @@ run_action() {
   return 0
 }
 
-run_validate() {
-  local configured
-
+# Validate as the sum of its constituents — the deprecated path taken only
+# where no validate_command was declared for the scope being validated.
+run_validate_constituents() {
   RUN_STATUS=0
-
-  if should_skip_feature_push_validate; then
-    RUN_DEFERRED=true
-    skip "feature-branch pre-push validate; the merge gate runs full validation"
-    return 0
-  fi
-
-  configured="$(configured_command_for_action validate)"
-  if [ -n "$configured" ]; then
-    run_declared_command validate "$configured"
-    return 0
-  fi
 
   # Each constituent stashes its status in RUN_STATUS; validate stops at the
   # first failure. Checking the stash instead of `run_action lint || return`
@@ -952,6 +967,97 @@ run_validate() {
     return 0
   fi
   run_action test
+  return 0
+}
+
+# Split TARGETS into the targets that declare a validate_command of their own
+# and those that do not. A target whose directory is missing lands in the
+# fallback list so run_targets_action still reports the broken declaration.
+VALIDATE_DECLARED_TARGETS=""
+VALIDATE_FALLBACK_TARGETS=""
+split_targets_by_validate_declaration() {
+  local entry path declared
+  local -a entries=()
+
+  VALIDATE_DECLARED_TARGETS=""
+  VALIDATE_FALLBACK_TARGETS=""
+
+  IFS=',' read -r -a entries <<<"$TARGETS" || true
+  for entry in "${entries[@]}"; do
+    entry="$(trim "$entry")"
+    [ -z "$entry" ] && continue
+    path="${entry#*:}"
+    path="${path%%:*}"
+
+    declared=""
+    if [ -d "$path" ]; then
+      declared="$(declared_command_in "$path" validate)"
+    fi
+
+    if [ -n "$declared" ]; then
+      [ -n "$VALIDATE_DECLARED_TARGETS" ] && VALIDATE_DECLARED_TARGETS="${VALIDATE_DECLARED_TARGETS},"
+      VALIDATE_DECLARED_TARGETS="${VALIDATE_DECLARED_TARGETS}${entry}"
+    else
+      [ -n "$VALIDATE_FALLBACK_TARGETS" ] && VALIDATE_FALLBACK_TARGETS="${VALIDATE_FALLBACK_TARGETS},"
+      VALIDATE_FALLBACK_TARGETS="${VALIDATE_FALLBACK_TARGETS}${entry}"
+    fi
+  done
+  return 0
+}
+
+# Declaration applies at every level, and validate is not an exception: a
+# target that declares validate_command in its own config gets that command
+# dispatched, exactly as the root does. Only targets that declare none fall
+# back to the constituent actions — otherwise a target's declared validation
+# suite is never executed, and require_declared fails a project that declared
+# precisely what it was asked to.
+run_targets_validate() {
+  local all_targets="$TARGETS" status=0
+
+  split_targets_by_validate_declaration
+
+  if [ -n "$VALIDATE_DECLARED_TARGETS" ]; then
+    TARGETS="$VALIDATE_DECLARED_TARGETS"
+    run_targets_action validate
+    TARGETS="$all_targets"
+    status="$RUN_STATUS"
+  fi
+
+  # Validate stops at the first failure, the same as its constituent chain.
+  if [ "$status" -eq 0 ] && [ -n "$VALIDATE_FALLBACK_TARGETS" ]; then
+    TARGETS="$VALIDATE_FALLBACK_TARGETS"
+    run_validate_constituents
+    TARGETS="$all_targets"
+    status="$RUN_STATUS"
+  fi
+
+  RUN_STATUS="$status"
+  return 0
+}
+
+run_validate() {
+  local configured
+
+  RUN_STATUS=0
+
+  if should_skip_feature_push_validate; then
+    RUN_DEFERRED=true
+    skip "feature-branch pre-push validate; the merge gate runs full validation"
+    return 0
+  fi
+
+  configured="$(configured_command_for_action validate)"
+  if [ -n "$configured" ]; then
+    run_declared_command validate "$configured"
+    return 0
+  fi
+
+  if [ -n "$TARGETS" ]; then
+    run_targets_validate
+    return 0
+  fi
+
+  run_validate_constituents
   return 0
 }
 

@@ -876,10 +876,15 @@ cmd_doctor_project() {
   fi
 
   # 7a. Test presence — informational nudge, not a blocking issue.
+  # Declaration applies at every level (scripts/touchstone-run.sh:run_target_profile
+  # consults the target's own config first), so a target's own override
+  # suppresses that target's profile heuristics just as a root override
+  # suppresses the root's — otherwise doctor reports a gap the runner never hits.
   if [ "$tests_overridden" = true ]; then
     tk_dim "tests: overridden via .touchstone-config"
   elif [ -n "$targets" ]; then
-    _touchstone_doctor_foreach_target "$project_dir" "$targets" _touchstone_doctor_check_tests
+    _touchstone_doctor_foreach_target "$project_dir" "$targets" _touchstone_doctor_check_tests \
+      tests test_command validate_command
   else
     _touchstone_doctor_check_tests "$project_dir" "$profile" ""
   fi
@@ -889,7 +894,8 @@ cmd_doctor_project() {
   if [ "$lint_overridden" = true ]; then
     tk_dim "lint: overridden via .touchstone-config"
   elif [ -n "$targets" ]; then
-    _touchstone_doctor_foreach_target "$project_dir" "$targets" _touchstone_doctor_check_lint
+    _touchstone_doctor_foreach_target "$project_dir" "$targets" _touchstone_doctor_check_lint \
+      lint lint_command validate_command
   else
     _touchstone_doctor_check_lint "$project_dir" "$profile" ""
   fi
@@ -1077,11 +1083,30 @@ _touchstone_normalize_profile() {
   esac
 }
 
+# Report whether .touchstone-config in $1 assigns any of the given keys.
+_touchstone_config_has_any_override() {
+  local dir="$1" key
+  shift
+  for key in "$@"; do
+    if _touchstone_config_has_override "$dir" "$key"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Iterate over targets (format: name:path:profile,name:path:profile,...) and
 # invoke the given check function for each. The check function is called with
 # (absolute_target_dir, target_profile, "target NAME: ").
+#
+# $4 names the check for output ("lint"/"tests"); $5.. are the config keys that
+# make it moot. A target that declares any of them has stated what to run, so
+# the runner never reaches the profile default and doctor must not report on a
+# tool the run will not touch.
 _touchstone_doctor_foreach_target() {
-  local project_dir="$1" targets_csv="$2" check_fn="$3"
+  local project_dir="$1" targets_csv="$2" check_fn="$3" check_label="$4"
+  shift 4
+  local -a override_keys=("$@")
   local entry name rest target_path target_profile target_dir
   local -a entries=()
 
@@ -1120,10 +1145,18 @@ _touchstone_doctor_foreach_target() {
     target_profile="$(_touchstone_normalize_profile "$target_profile")"
 
     # Same validity gate as the root profile — touchstone-run.sh warns and
-    # returns 1 on an unknown target profile, so doctor must flag it here.
+    # returns 1 on an unknown target profile, so doctor must flag it here. This
+    # stays ahead of the override check below: a declaration for one action
+    # does not make the profile valid for the actions it did not declare.
     if ! _touchstone_profile_is_valid "$target_profile"; then
       tk_warn "target '$name': unknown profile '$target_profile' — touchstone-run.sh will reject it"
       issues=$((issues + 1))
+      continue
+    fi
+
+    if [ "${#override_keys[@]}" -gt 0 ] \
+      && _touchstone_config_has_any_override "$target_dir" "${override_keys[@]}"; then
+      tk_dim "target ${name}: ${check_label}: overridden via .touchstone-config"
       continue
     fi
 
