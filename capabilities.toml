@@ -74,6 +74,10 @@ why = "Refuses to ship when a project's vendored delivery scripts have drifted f
 job = "constrain"
 why = "Bounds which paths a sync may write, so propagation cannot silently overwrite project-owned files."
 
+["lib/sync-content.sh"]
+job = "legible"
+why = "Computes the one read-only content-currency verdict so update --check, auto-sync, sync-all --check, and status report the same truthful staleness state (#731)."
+
 ["lib/safe-write.sh"]
 job = "constrain"
 why = "Refuses to clobber a project-owned file during bootstrap or update."

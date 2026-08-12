@@ -1935,6 +1935,434 @@ commit_all "$GDIR_PROJECT" "gemini slot is a directory"
 assert_contains "$TEST_DIR/p780d-gdir-output.txt" 'Already up to date'
 assert_not_contains "$TEST_DIR/p780d-gdir-output.txt" 'Needs update'
 
+echo "--- Step 14: diff-scope guard and tri-state ship reporting (#731) ---"
+
+# (a) The diff-scope guard (#772 problem 2, the arpeggio#35 signal) is the
+# detection half of the auto-merge refusal: any path in the update commit that
+# the planned-write set does not cover is a violation. Extracted and executed
+# as the REAL function against a controlled repo — a stubbed reimplementation
+# would assert nothing about the shipped code.
+SCOPE_FN_PROJECT="$TEST_DIR/p731-scope-fn"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SCOPE_FN_PROJECT" --no-register >/dev/null
+configure_git "$SCOPE_FN_PROJECT"
+commit_all "$SCOPE_FN_PROJECT" "initial scope-fn project"
+SCOPE_FN_BASE="$(git -C "$SCOPE_FN_PROJECT" rev-parse HEAD)"
+# One managed path (allowed) and one foreign path (a violation) in the commit.
+printf '# managed drift\n' >>"$SCOPE_FN_PROJECT/lib/toml.sh"
+printf 'stowaway\n' >"$SCOPE_FN_PROJECT/src-feature.txt"
+git -C "$SCOPE_FN_PROJECT" add lib/toml.sh src-feature.txt
+git -C "$SCOPE_FN_PROJECT" -c user.name=T -c user.email=t@e.invalid \
+  commit --no-verify -qm "managed change plus a stowaway"
+
+SCOPE_FN_OUT="$TEST_DIR/p731-scope-fn.txt"
+(
+  # shellcheck disable=SC1090
+  . "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
+  PROJECT_DIR="$SCOPE_FN_PROJECT"
+  ORIGINAL_HEAD="$SCOPE_FN_BASE"
+  eval "$(awk '/^update_commit_scope_violations\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh")"
+  update_commit_scope_violations
+) >"$SCOPE_FN_OUT" 2>&1
+
+if grep -qx 'src-feature.txt' "$SCOPE_FN_OUT" && ! grep -qx 'lib/toml.sh' "$SCOPE_FN_OUT"; then
+  echo "    PASS: the diff-scope guard names the unmanaged path and clears the managed one"
+else
+  echo "FAIL: diff-scope guard must report src-feature.txt and only it (#772 problem 2)" >&2
+  cat "$SCOPE_FN_OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (b) The guard must be WIRED to the ship path and refuse auto-merge there —
+# detection without the refusal ships the stowaway.
+if grep -q 'SCOPE_VIOLATIONS="$(update_commit_scope_violations)"' "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" \
+  && awk '/SCOPE_VIOLATIONS="\$\(update_commit_scope_violations\)"/{f=1} f&&/open-pr\.sh/{print; exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'open-pr\.sh' \
+  && ! awk '/SCOPE_VIOLATIONS="\$\(update_commit_scope_violations\)"/{f=1} f&&/open-pr\.sh/{print; exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q '\-\-auto-merge'; then
+  echo "    PASS: a scope violation ships without --auto-merge (PR opens for human review)"
+else
+  echo "FAIL: the scope-violation path must open a PR WITHOUT --auto-merge" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (c) Tri-state (#731): "armed but not merged" has its own documented exit
+# code, and sync-all counts it separately — a fleet summary that folds an
+# armed PR into "succeeded" is the reporting bug this issue exists to fix.
+if grep -q 'UPDATE_SHIP_ARMED_EXIT=20' "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" \
+  || grep -qE '^#   20 ' "$TOUCHSTONE_ROOT/bootstrap/update-project.sh"; then
+  echo "    PASS: update-project documents a distinct armed-but-not-merged exit"
+else
+  echo "FAIL: the armed-but-not-merged state needs its own documented exit code" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if grep -q 'ARMED=' "$TOUCHSTONE_ROOT/bootstrap/sync-all.sh" \
+  && grep -q 'armed (PR open, not merged)' "$TOUCHSTONE_ROOT/bootstrap/sync-all.sh"; then
+  echo "    PASS: sync-all tallies armed separately from succeeded"
+else
+  echo "FAIL: sync-all must report armed-but-unmerged separately from succeeded (#731)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (d) All four staleness surfaces consume ONE verdict — the arpeggio no-op
+# loop came from update --check and auto-sync disagreeing.
+for consumer in lib/auto-update.sh lib/status.sh bootstrap/sync-all.sh bootstrap/update-project.sh; do
+  if ! grep -q 'sync-content\.sh' "$TOUCHSTONE_ROOT/$consumer"; then
+    echo "FAIL: $consumer must consume the shared content verdict (lib/sync-content.sh)" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+done
+echo "    PASS: all four staleness surfaces consume the shared content verdict"
+
+echo "--- Step 15: scope-guard precision and external reconciliation (PR #787) ---"
+
+# (a) The allowlist is what THIS run writes, not the broad planned/rollback
+# set: a pre-staged edit to an ALREADY-PRESENT project-owned lint file is a
+# violation, and directory-wide entries no longer admit arbitrary staged
+# descendants under principles/.
+SCOPE_PRECISION_PROJECT="$TEST_DIR/p787-scope-precision"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SCOPE_PRECISION_PROJECT" --no-register >/dev/null
+configure_git "$SCOPE_PRECISION_PROJECT"
+commit_all "$SCOPE_PRECISION_PROJECT" "initial scope-precision project"
+SCOPE_PRECISION_BASE="$(git -C "$SCOPE_PRECISION_PROJECT" rev-parse HEAD)"
+printf '{"stowaway": true}\n' >"$SCOPE_PRECISION_PROJECT/.markdownlint.json"
+printf 'stowaway\n' >"$SCOPE_PRECISION_PROJECT/principles/not-managed.md"
+git -C "$SCOPE_PRECISION_PROJECT" add .markdownlint.json principles/not-managed.md
+git -C "$SCOPE_PRECISION_PROJECT" -c user.name=T -c user.email=t@e.invalid \
+  commit --no-verify -qm "pre-staged edits to an existing lint file and a principles descendant"
+
+SCOPE_PRECISION_OUT="$TEST_DIR/p787-scope-precision.txt"
+(
+  # shellcheck disable=SC1090
+  . "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
+  # shellcheck disable=SC2034
+  PROJECT_DIR="$SCOPE_PRECISION_PROJECT"
+  # shellcheck disable=SC2034
+  ORIGINAL_HEAD="$SCOPE_PRECISION_BASE"
+  # No slot was created by this simulated run.
+  # shellcheck disable=SC2034
+  SCOPE_CREATED_SLOTS=()
+  eval "$(awk '/^update_commit_scope_violations\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh")"
+  update_commit_scope_violations
+) >"$SCOPE_PRECISION_OUT" 2>&1
+
+if grep -qx '.markdownlint.json' "$SCOPE_PRECISION_OUT" \
+  && grep -qx 'principles/not-managed.md' "$SCOPE_PRECISION_OUT"; then
+  echo "    PASS: an existing lint file and an unmanaged principles descendant are both violations"
+else
+  echo "FAIL: the scope guard must not blanket-allow lint files or principles/ descendants (PR #787)" >&2
+  cat "$SCOPE_PRECISION_OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (b) Both ship paths classify PR state from the same positive evidence, so
+# an opened-but-nonzero scope-review PR reads armed, never stuck.
+if grep -q 'current_update_pr_state()' "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" \
+  && awk '/SCOPE_VIOLATIONS="\$\(update_commit_scope_violations\)"/{f=1} f&&/current_update_pr_state/{print; exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'current_update_pr_state'; then
+  echo "    PASS: the scope-review path classifies PR state from positive evidence"
+else
+  echo "FAIL: the scope-violation ship path must reuse the OPEN/MERGED classification (PR #787)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (c) A content-current tree still gets its OUTSIDE-the-tree state repaired:
+# auto-sync skips the sync but must not skip hook/skill reconciliation.
+if grep -q 'touchstone_auto_project_reconcile_external' "$TOUCHSTONE_ROOT/lib/auto-update.sh" \
+  && awk '/if ! touchstone_auto_project_sync_should_sync/{f=1} f&&/touchstone_auto_project_reconcile_external/{print; exit}' \
+    "$TOUCHSTONE_ROOT/lib/auto-update.sh" | grep -q 'reconcile_external'; then
+  echo "    PASS: the content-current skip still reconciles hooks and user-scoped skills"
+else
+  echo "FAIL: skipping the sync must not skip external-state reconciliation (PR #787)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (d) The drift warning consults the same verdict as everything else.
+if grep -q 'touchstone_auto_project_sync_should_sync "$project_id_for_drift" "$installed_id_for_drift" "$project_root_for_drift"' \
+  "$TOUCHSTONE_ROOT/bin/touchstone"; then
+  echo "    PASS: the drift warning gate passes the project tree"
+else
+  echo "FAIL: the drift-warning gate must pass the project root (PR #787)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "--- Step 16: round-2 corrections (PR #787) ---"
+
+# (a) A managed-block refresh of an EXISTING steering file is legitimate
+# content, not a scope violation — otherwise every --ship refuses auto-merge
+# for a routine steering update.
+STEER_SCOPE_PROJECT="$TEST_DIR/p787b-steering-scope"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$STEER_SCOPE_PROJECT" --no-register >/dev/null
+configure_git "$STEER_SCOPE_PROJECT"
+commit_all "$STEER_SCOPE_PROJECT" "initial steering-scope project"
+STEER_SCOPE_BASE="$(git -C "$STEER_SCOPE_PROJECT" rev-parse HEAD)"
+printf 'refreshed by the managed block\n' >>"$STEER_SCOPE_PROJECT/AGENTS.md"
+git -C "$STEER_SCOPE_PROJECT" add AGENTS.md
+git -C "$STEER_SCOPE_PROJECT" -c user.name=T -c user.email=t@e.invalid \
+  commit --no-verify -qm "steering refresh"
+
+STEER_SCOPE_OUT="$TEST_DIR/p787b-steering-scope.txt"
+(
+  # shellcheck disable=SC1090
+  . "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
+  # shellcheck disable=SC2034
+  PROJECT_DIR="$STEER_SCOPE_PROJECT"
+  # shellcheck disable=SC2034
+  ORIGINAL_HEAD="$STEER_SCOPE_BASE"
+  # The run staged a refreshed AGENTS.md, exactly as the updater records it.
+  # shellcheck disable=SC2034
+  SCOPE_CREATED_SLOTS=("AGENTS.md")
+  eval "$(awk '/^update_commit_scope_violations\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh")"
+  update_commit_scope_violations
+) >"$STEER_SCOPE_OUT" 2>&1
+
+if [ ! -s "$STEER_SCOPE_OUT" ]; then
+  echo "    PASS: a refreshed steering file is not a scope violation"
+else
+  echo "FAIL: a managed-block steering refresh must not read as foreign content (PR #787)" >&2
+  cat "$STEER_SCOPE_OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (b) The updater records the steering file it refreshed, so the allowlist
+# above reflects a real run rather than a hand-built fixture.
+if awk '/stage_refreshed_steering_file\(\) \{/{f=1} f{print} f&&/^  \}$/{exit}' \
+  "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'SCOPE_CREATED_SLOTS+=('; then
+  echo "    PASS: staging a refreshed steering file records it for the scope guard"
+else
+  echo "FAIL: stage_refreshed_steering_file must record the path for the scope guard (PR #787)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (c) Ambient reconciliation runs ONLY for a content-current tree. A policy
+# skip (the patch-only throttle) leaves content stale, and reconciling there
+# would create and commit an update branch, bypassing the throttle.
+if awk '/^touchstone_auto_project_reconcile_external\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+  "$TOUCHSTONE_ROOT/lib/auto-update.sh" | grep -q 'touchstone_content_is_current'; then
+  echo "    PASS: reconciliation is gated on the content-current verdict"
+else
+  echo "FAIL: reconciliation must run only for a content-current tree (PR #787 round 2 P1)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (d) A failed repair is non-fatal but never silent.
+if awk '/^touchstone_auto_project_reconcile_external\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+  "$TOUCHSTONE_ROOT/lib/auto-update.sh" | grep -q 'could not reconcile hooks/skills'; then
+  echo "    PASS: a failed ambient repair is reported with context"
+else
+  echo "FAIL: a failed hook/skill repair must be surfaced, not swallowed (PR #787)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "--- Step 17: round-3 corrections (PR #787) ---"
+
+# (a) The IDENTITY-EQUAL early exit — the normal released state, and the most
+# common path of all — must also reconcile hooks. It previously returned
+# before any reconciliation, so a deleted hook stayed silently unrepaired.
+IDHOOK_PROJECT="$TEST_DIR/p787c-identity-hooks"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$IDHOOK_PROJECT" --no-register >/dev/null
+configure_git "$IDHOOK_PROJECT"
+commit_all "$IDHOOK_PROJECT" "initial identity-hooks project"
+IDHOOK_PATH="$(git -C "$IDHOOK_PROJECT" config core.hooksPath || echo .git/hooks)"
+rm -f "$IDHOOK_PROJECT/$IDHOOK_PATH/pre-commit" "$IDHOOK_PROJECT/.git/hooks/pre-commit" 2>/dev/null || true
+(cd "$IDHOOK_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p787c-identity-hooks.txt" 2>&1
+assert_contains "$TEST_DIR/p787c-identity-hooks.txt" 'Already up to date'
+if [ -f "$IDHOOK_PROJECT/$IDHOOK_PATH/pre-commit" ] || [ -f "$IDHOOK_PROJECT/.git/hooks/pre-commit" ]; then
+  echo "    PASS: the identity-equal exit reinstalls a deleted hook"
+else
+  echo "FAIL: an identity-equal update must still reconcile hooks (PR #787 round 3 P1)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (b) A legitimate RETIREMENT deletes a tracked managed file and drops it from
+# the regenerated manifest — the scope guard must not call that foreign.
+RETIRE_SCOPE_PROJECT="$TEST_DIR/p787c-retire-scope"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$RETIRE_SCOPE_PROJECT" --no-register >/dev/null
+configure_git "$RETIRE_SCOPE_PROJECT"
+commit_all "$RETIRE_SCOPE_PROJECT" "initial retire-scope project"
+printf 'legacy\n' >"$RETIRE_SCOPE_PROJECT/lib/review-comment.sh"
+git -C "$RETIRE_SCOPE_PROJECT" add lib/review-comment.sh
+git -C "$RETIRE_SCOPE_PROJECT" -c user.name=T -c user.email=t@e.invalid \
+  commit --no-verify -qm "carry a retired managed file"
+# The base must be the state where the file EXISTS, or add-then-delete cancels
+# out in the diff and the assertion passes vacuously on any code.
+RETIRE_SCOPE_BASE="$(git -C "$RETIRE_SCOPE_PROJECT" rev-parse HEAD)"
+git -C "$RETIRE_SCOPE_PROJECT" rm -q lib/review-comment.sh
+git -C "$RETIRE_SCOPE_PROJECT" -c user.name=T -c user.email=t@e.invalid \
+  commit --no-verify -qm "retire it"
+
+RETIRE_SCOPE_OUT="$TEST_DIR/p787c-retire-scope.txt"
+(
+  # shellcheck disable=SC1090
+  . "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
+  # shellcheck disable=SC2034
+  PROJECT_DIR="$RETIRE_SCOPE_PROJECT"
+  # shellcheck disable=SC2034
+  ORIGINAL_HEAD="$RETIRE_SCOPE_BASE"
+  # shellcheck disable=SC2034
+  SCOPE_CREATED_SLOTS=()
+  # The updater records what it retired; the guard must consult it.
+  # shellcheck disable=SC2034
+  RETIRED_MANAGED_PATHS=("lib/review-comment.sh")
+  eval "$(awk '/^update_commit_scope_violations\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh")"
+  update_commit_scope_violations
+) >"$RETIRE_SCOPE_OUT" 2>&1
+
+if [ ! -s "$RETIRE_SCOPE_OUT" ]; then
+  echo "    PASS: a recorded retirement is not a scope violation"
+else
+  echo "FAIL: retiring a managed file must not read as foreign content (PR #787 round 3)" >&2
+  cat "$RETIRE_SCOPE_OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (c) Rename detection must not fold a foreign source path out of sight.
+if grep -q 'diff --no-renames --name-only' "$TOUCHSTONE_ROOT/bootstrap/update-project.sh"; then
+  echo "    PASS: the scope diff disables rename folding"
+else
+  echo "FAIL: the scope guard must compare with rename detection disabled (PR #787 round 3)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (d) An OPEN PR on the deterministic branch name counts only when it points
+# at THIS head — otherwise another clone's PR is reported as ours.
+if awk '/^current_update_pr_state\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+  "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'headRefOid' \
+  && awk '/^current_update_pr_state\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'rev-parse HEAD'; then
+  echo "    PASS: PR-state classification is bound to the update head"
+else
+  echo "FAIL: armed/merged classification must require the PR head to match (PR #787 round 3)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (e) init and project doctor consult the same verdict as everything else.
+if ! grep -q '_status_behind_count "$installed_id" "$current_id")' "$TOUCHSTONE_ROOT/bin/touchstone"; then
+  echo "    PASS: init and project doctor pass the project tree"
+else
+  echo "FAIL: init/doctor must pass the project tree to the staleness verdict (PR #787 round 3)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "--- Step 18: override-round corrections (PR #787) ---"
+
+# (a) P1: the early-exit reconciliation must not touch the WORKING TREE. A
+# legacy project-scoped skill directory is tracked content; deleting it here
+# would run before require_clean_git_repo, with no snapshot, branch, or
+# commit — an unrecoverable destructive action on a user's modified files.
+LEGACY_SKILL_PROJECT="$TEST_DIR/p787d-legacy-skill"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$LEGACY_SKILL_PROJECT" --no-register >/dev/null
+configure_git "$LEGACY_SKILL_PROJECT"
+mkdir -p "$LEGACY_SKILL_PROJECT/.claude/skills/touchstone-git-workflow"
+printf 'local edits\n' >"$LEGACY_SKILL_PROJECT/.claude/skills/touchstone-git-workflow/SKILL.md"
+commit_all "$LEGACY_SKILL_PROJECT" "carry a legacy project-scoped skill"
+(cd "$LEGACY_SKILL_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p787d-legacy-skill.txt" 2>&1 || true
+assert_contains "$TEST_DIR/p787d-legacy-skill.txt" 'Already up to date'
+if [ -f "$LEGACY_SKILL_PROJECT/.claude/skills/touchstone-git-workflow/SKILL.md" ]; then
+  echo "    PASS: the identity-equal exit leaves tracked project files alone"
+else
+  echo "FAIL: early-exit reconciliation must not delete tracked project content (PR #787 P1)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if awk '/^reconcile_external_state\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+  "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'uninstall_legacy_project_skills'; then
+  echo "FAIL: reconcile_external_state must touch only state outside the working tree" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  echo "    PASS: project-scoped skill retirement stays on the branch-and-commit path"
+fi
+
+# (b) A failed external repair must propagate, or the ambient wrapper cannot
+# report it and an ungated project looks like a successful no-op.
+if awk '/^reconcile_external_state\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+  "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'return "$rc"' \
+  && grep -q 'reconcile_external_state || exit 1' "$TOUCHSTONE_ROOT/bootstrap/update-project.sh"; then
+  echo "    PASS: reconciliation failure propagates out of both early exits"
+else
+  echo "FAIL: a failed hook/skill install must not exit 0 (PR #787 override round)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (c) An existing PR on the deterministic branch counts only when it targets
+# the intended base — a stacked PR would otherwise merge the update elsewhere.
+if awk '/^current_update_pr_state\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+  "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'baseRefName' \
+  && awk '/^current_update_pr_state\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'ORIGINAL_BRANCH'; then
+  echo "    PASS: PR-state classification is bound to head AND intended base"
+else
+  echo "FAIL: armed/merged classification must validate the PR base (PR #787 override round)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "--- Step 19: the steering exemption requires a sole author (PR #787) ---"
+
+# A steering file carrying PRE-EXISTING project-owned changes must NOT be
+# exempted from the diff-scope guard: exempting the whole path would let
+# those unrelated edits auto-merge under the touchstone commit (reachable
+# with TOUCHSTONE_FORCE_OVERLAP=1). Not exempting is the safe direction --
+# the guard opens the PR for human review instead.
+SOLE_AUTHOR_PROJECT="$TEST_DIR/p787e-sole-author"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SOLE_AUTHOR_PROJECT" --no-register >/dev/null
+configure_git "$SOLE_AUTHOR_PROJECT"
+commit_all "$SOLE_AUTHOR_PROJECT" "initial sole-author project"
+# Stage an unrelated project-owned edit inside the steering file.
+printf '\nPROJECT-OWNED EDIT THAT MUST NOT RIDE ALONG\n' >>"$SOLE_AUTHOR_PROJECT/AGENTS.md"
+git -C "$SOLE_AUTHOR_PROJECT" add AGENTS.md
+SOLE_AUTHOR_OUT="$TEST_DIR/p787e-sole-author.txt"
+(
+  cd "$SOLE_AUTHOR_PROJECT"
+  # shellcheck disable=SC1090
+  . "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check
+) >"$SOLE_AUTHOR_OUT" 2>&1 || true
+
+# The cleanliness probe is what the exemption keys on; assert it directly so
+# the case does not depend on reaching a full ship path.
+if (
+  cd "$SOLE_AUTHOR_PROJECT"
+  git diff --cached --quiet -- AGENTS.md
+); then
+  echo "FAIL: fixture did not stage the project-owned steering edit" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  echo "    PASS: fixture carries a staged project-owned steering edit"
+fi
+if grep -q 'was_clean' "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" \
+  && awk '/stage_refreshed_steering_file\(\) \{/{f=1} f{print} f&&/^  \}$/{exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'was_clean" = true'; then
+  echo "    PASS: the steering exemption is gated on the file being otherwise clean"
+else
+  echo "FAIL: a steering file with pre-existing changes must not be exempted wholesale (PR #787)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "--- Step 20: expected hook states are not update failures (PR #787) ---"
+
+# lib/install-hooks.sh uses exit codes to report STATE: 2 = pre-commit absent,
+# 4 = core.hooksPath configured and project hooks deliberately preserved. Both
+# are documented, expected configurations. Treating them as failure made every
+# identity-equal and content-current update exit 1 and marked otherwise-current
+# projects failed in update-all.
+if awk '/^reconcile_external_state\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+  "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -qE '0 \| 1 \| 2 \| 4'; then
+  echo "    PASS: documented hook states (1, 2, 4) do not fail the update; only 3 does"
+else
+  echo "FAIL: expected hook states must not be treated as install failures (PR #787 round 6)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if grep -qE '^#   4  core\.hooksPath is configured' "$TOUCHSTONE_ROOT/lib/install-hooks.sh" \
+  && grep -qE '^#   2 ' "$TOUCHSTONE_ROOT/lib/install-hooks.sh"; then
+  echo "    PASS: those codes are the library's documented contract, not a guess"
+else
+  echo "FAIL: install-hooks must document the status codes update-project relies on" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # --------------------------------------------------------------------------
 # Results
 # --------------------------------------------------------------------------
