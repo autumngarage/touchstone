@@ -2010,113 +2010,167 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
     echo "       manually (fetch, merge or rebase), then rerun." >&2
     exit 1
   fi
-  # Exact-content integration evidence. git cherry's patch-ids ignore
-  # whitespace, which is behaviorally significant in Python, YAML, and shell
-  # continuations — a remote commit differing only in whitespace would count
-  # as incorporated and its content would be forced away. Instead, every
-  # remote-only commit must have a content-identical twin among the
-  # local-only commits.
+  # Ordered content-incorporation evidence (issues #721, #685; PR #807 review).
   #
-  # The fingerprint digests, for every path a commit touches, the tuple
-  # (destination mode, POST-image blob id, change status, path), sorted so
-  # git's path enumeration order cannot vary the digest. The post-image blob
-  # id is exactly the bytes the commit produced: identical after a rebase,
-  # different for any different content, and well defined for binary paths.
-  # Pre-image ids and modes are excluded — they name the parent, which is
-  # precisely what a rebase changes.
+  # git cherry's patch-ids ignore whitespace, which is behaviorally significant
+  # in Python, YAML, and shell continuations, so it cannot be the evidence. Three
+  # weaker identities were tried before this one; they are recorded here so they
+  # are not tried again.
   #
-  # Patch TEXT is deliberately NOT the input (issue #721). Hashing a patch
-  # forces a choice between two failures: keep the `@@ -a,b +c,d @@` hunk
-  # coordinates and every rebase looks like different content, or strip them
-  # — as this did — and the patch loses its only remaining location
-  # identity, so the same textual edit applied to two different occurrences
-  # of a repeated block digests identically. That collision made the guard
-  # rate an unincorporated remote commit as present and force it away, in
-  # the one code path whose entire job is preventing that. Patch text also
-  # renders binary changes as a "Binary files differ" placeholder, collapsing
-  # two different binary blobs into one fingerprint (issue #685).
-  open_pr_exact_content_fingerprint() {
-    local commit="$1" raw_text projection
-    if ! raw_text="$(GIT_NO_REPLACE_OBJECTS=1 git diff-tree --no-commit-id -r --raw --no-abbrev "$commit" 2>&1)"; then
-      echo "ERROR: could not compute the change list for commit ${commit:0:12}:" >&2
-      printf '%s\n' "$raw_text" | sed 's/^/       /' >&2
-      return 1
+  #   - Patch TEXT. Keep the `@@ -a,b +c,d @@` coordinates and every rebase
+  #     reads as different content; strip them and the patch loses its only
+  #     remaining location identity, so the same edit applied to two different
+  #     occurrences of a repeated block digests identically (issue #721). Patch
+  #     text also renders a binary change as a "Binary files differ"
+  #     placeholder, collapsing two different blobs into one id (issue #685).
+  #   - The POST-IMAGE blob per path. Byte-exact and binary-safe, but it names
+  #     the resulting FILE, not the change. Rebase a commit onto a new parent
+  #     that edited ANOTHER PART of the same file and the delta is byte-identical
+  #     while the post-image differs — a routine reconciled rebase that no
+  #     amount of fetching and rebasing can ever make publishable. And because
+  #     post-images are states rather than transitions, an unordered pool of
+  #     them lets a remote `X -> Y -> Z` be satisfied by a local `X -> Z -> Y`:
+  #     both pools contain Y and Z, both remote commits find a twin, and the
+  #     retry force-pushes away the remote head's final Z content.
+  #   - `git patch-id --stable` over `git diff-tree -p --binary`. Measured
+  #     against all three shapes on git 2.55: it IS stable across the rebase,
+  #     but it collides on the #721 repeated-block edit (line numbers are
+  #     exactly what it discards) and on whitespace-only differences (it strips
+  #     whitespace), so adopting it would reintroduce both defects this guard
+  #     exists to prevent.
+  #
+  # The question being asked is not "does some local commit look like this
+  # remote commit" but "is this remote commit's change already present at the
+  # matching point of the local history". Ask git that directly: a three-way
+  # merge of the remote commit into a local candidate, based at the remote
+  # commit's OWN parent. If applying the remote delta changes nothing, the
+  # content is incorporated — whatever the line numbers, whatever the parent,
+  # binary included. Whitespace is content to a merge, so a whitespace-only
+  # variant conflicts and is refused. The merge honors the repository's own
+  # merge attributes, deliberately: the reference frame for "did this land" is
+  # the same one `git merge` and `git rebase` use in this repository.
+  #
+  # The scan is ORDERED: remote-only commits are walked oldest-first and each
+  # consumes the earliest not-yet-consumed local-only commit that carries it, so
+  # a reordered local history runs out of candidates instead of matching an
+  # out-of-order twin. Matching against the final local HEAD instead would be
+  # wrong in the other direction — a later remote commit that overwrites an
+  # earlier one's lines makes the earlier one legitimately absent from HEAD — so
+  # the correspondence is pairwise, in order.
+  #
+  # Invariant: greedy earliest-match can only ever over-refuse. It may consume a
+  # candidate that a later remote commit would also have accepted, but it can
+  # never accept a sequence that ordered matching would reject. Over-refusal
+  # costs a manual reconcile; over-acceptance costs someone's work.
+  #
+  # 0 = the remote change is already present in this local candidate
+  # 1 = it is not (different content, or a conflicting three-way merge)
+  # 2 = the question could not be answered; the caller must fail closed
+  #
+  # Every command's status is handled explicitly here, so the errexit
+  # suspension that the caller's `|| status=$?` imposes changes nothing.
+  open_pr_change_already_present() {
+    local base_tree="$1" candidate="$2" change="$3"
+    local candidate_tree merged merged_tree merge_status=0
+    if ! candidate_tree="$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify "${candidate}^{tree}" 2>&1)"; then
+      echo "ERROR: could not resolve the tree of local commit ${candidate:0:12}:" >&2
+      printf '%s\n' "$candidate_tree" | sed 's/^/       /' >&2
+      return 2
     fi
-    # An empty change list carries no provable content; the caller refuses.
-    [ -n "$raw_text" ] || return 2
-    # Raw format: ":srcmode dstmode srcsha dstsha status<TAB>path".
-    projection="$(printf '%s\n' "$raw_text" \
-      | awk -F'\t' '{
-          split($1, meta, " ")
-          printf "%s %s %s\t%s\n", meta[2], meta[4], meta[5], $2
-        }' \
-      | LC_ALL=C sort)"
-    # A non-empty change list that projects to nothing means the raw format
-    # is not the one this parser was written against. Hashing the empty
-    # stream would hand every such commit the SAME digest — a universal
-    # collision in the one comparison that must never collide. Refuse.
-    if [ -z "$projection" ]; then
-      echo "ERROR: the change list for commit ${commit:0:12} did not parse as git raw format;" >&2
-      echo "       content identity cannot be established." >&2
-      return 1
+    merged="$(GIT_NO_REPLACE_OBJECTS=1 git merge-tree --write-tree \
+      --merge-base="$base_tree" "$candidate" "$change" 2>&1)" || merge_status=$?
+    if [ "$merge_status" -gt 1 ]; then
+      echo "ERROR: could not test whether ${change:0:12} is already present in ${candidate:0:12}:" >&2
+      printf '%s\n' "$merged" | sed 's/^/       /' >&2
+      echo "       Integration evidence needs 'git merge-tree --write-tree' (git 2.38+)." >&2
+      echo "       Upgrade git, or reconcile and publish this branch by hand." >&2
+      return 2
     fi
-    printf '%s\n' "$projection" | touchstone_sha256_stream
+    # Exit 1 is a conflicted merge: the remote delta does not apply cleanly on
+    # top of this candidate, so this candidate does not carry it.
+    [ "$merge_status" -eq 0 ] || return 1
+    merged_tree="${merged%%$'\n'*}"
+    # A clean merge whose first output line is not an object id means the output
+    # shape is not the one this reader was written against. Comparing it would
+    # silently answer "not present" for every commit, turning the guard into a
+    # blanket refusal nobody could diagnose. Say so instead.
+    case "$merged_tree" in
+      "" | *[!0-9a-f]*)
+        echo "ERROR: 'git merge-tree --write-tree' did not return a tree id for ${change:0:12}:" >&2
+        printf '%s\n' "$merged" | sed 's/^/       /' >&2
+        return 2
+        ;;
+    esac
+    [ "$merged_tree" = "$candidate_tree" ]
   }
-  if [ ! -f "$SCRIPT_DIR/../lib/sha256.sh" ]; then
-    echo "ERROR: push rejected and lib/sha256.sh is missing; cannot prove remote history" >&2
-    echo "       is incorporated. Refusing to force-push." >&2
-    exit 1
-  fi
-  # shellcheck source=../lib/sha256.sh
-  source "$SCRIPT_DIR/../lib/sha256.sh"
-  if ! REMOTE_ONLY_COMMITS="$(GIT_NO_REPLACE_OBJECTS=1 git rev-list "$EXISTING_PR_HEAD_SHA" --not "$PUSHED_HEAD_SHA" 2>&1)"; then
+  # Both histories oldest-first and in topological order: the correspondence
+  # below is about the order changes were APPLIED, not about commit dates.
+  if ! REMOTE_ONLY_COMMITS="$(GIT_NO_REPLACE_OBJECTS=1 git rev-list --topo-order --reverse "$EXISTING_PR_HEAD_SHA" --not "$PUSHED_HEAD_SHA" 2>&1)"; then
     echo "ERROR: push rejected and the observed PR head's history could not be traversed:" >&2
     printf '%s\n' "$REMOTE_ONLY_COMMITS" | sed 's/^/       /' >&2
     echo "       Cannot prove the remote history is incorporated; refusing to force-push." >&2
     exit 1
   fi
   if [ -n "$REMOTE_ONLY_COMMITS" ]; then
-    if ! LOCAL_ONLY_COMMITS="$(GIT_NO_REPLACE_OBJECTS=1 git rev-list "$PUSHED_HEAD_SHA" --not "$EXISTING_PR_HEAD_SHA" 2>&1)"; then
+    if ! LOCAL_ONLY_COMMITS="$(GIT_NO_REPLACE_OBJECTS=1 git rev-list --topo-order --reverse "$PUSHED_HEAD_SHA" --not "$EXISTING_PR_HEAD_SHA" 2>&1)"; then
       echo "ERROR: push rejected and the local branch history could not be traversed:" >&2
       printf '%s\n' "$LOCAL_ONLY_COMMITS" | sed 's/^/       /' >&2
       echo "       Cannot prove the remote history is incorporated; refusing to force-push." >&2
       exit 1
     fi
-    LOCAL_CONTENT_FINGERPRINTS=" "
-    for local_commit in $LOCAL_ONLY_COMMITS; do
-      fp_status=0
-      local_fp="$(open_pr_exact_content_fingerprint "$local_commit")" || fp_status=$?
-      # Status 2 (empty change list) just contributes no twin; hard errors abort.
-      if [ "$fp_status" -eq 1 ]; then
-        echo "       Refusing to force-push without complete integration evidence." >&2
-        exit 1
-      fi
-      [ "$fp_status" -eq 0 ] && LOCAL_CONTENT_FINGERPRINTS="${LOCAL_CONTENT_FINGERPRINTS}${local_fp} "
-    done
+    if ! OPEN_PR_EMPTY_TREE="$(git hash-object -t tree /dev/null 2>&1)"; then
+      echo "ERROR: push rejected and the empty tree id could not be computed:" >&2
+      printf '%s\n' "$OPEN_PR_EMPTY_TREE" | sed 's/^/       /' >&2
+      echo "       Refusing to force-push without complete integration evidence." >&2
+      exit 1
+    fi
+    LOCAL_ONLY_LIST=()
+    LOCAL_ONLY_COUNT=0
+    while IFS= read -r local_commit; do
+      [ -n "$local_commit" ] || continue
+      LOCAL_ONLY_LIST[LOCAL_ONLY_COUNT]="$local_commit"
+      LOCAL_ONLY_COUNT=$((LOCAL_ONLY_COUNT + 1))
+    done <<<"$LOCAL_ONLY_COMMITS"
+    LOCAL_ONLY_CURSOR=0
     for remote_commit in $REMOTE_ONLY_COMMITS; do
-      fp_status=0
-      remote_fp="$(open_pr_exact_content_fingerprint "$remote_commit")" || fp_status=$?
-      if [ "$fp_status" -ne 0 ]; then
-        echo "ERROR: push rejected and remote commit ${remote_commit:0:12} has no provable content." >&2
-        echo "       Refusing to force-push without complete integration evidence." >&2
+      # A commit's delta is written against its own first parent. A root commit
+      # has none, so its delta is "everything" and the empty tree is the honest
+      # base. Merge commits never reach here — they are refused above.
+      if ! REMOTE_BASE_TREE="$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify --quiet "${remote_commit}^1^{tree}" 2>/dev/null)"; then
+        REMOTE_BASE_TREE="$OPEN_PR_EMPTY_TREE"
+      fi
+      REMOTE_COMMIT_INCORPORATED=false
+      LOCAL_ONLY_PROBE="$LOCAL_ONLY_CURSOR"
+      while [ "$LOCAL_ONLY_PROBE" -lt "$LOCAL_ONLY_COUNT" ]; do
+        PRESENT_STATUS=0
+        open_pr_change_already_present \
+          "$REMOTE_BASE_TREE" "${LOCAL_ONLY_LIST[LOCAL_ONLY_PROBE]}" "$remote_commit" \
+          || PRESENT_STATUS=$?
+        LOCAL_ONLY_PROBE=$((LOCAL_ONLY_PROBE + 1))
+        if [ "$PRESENT_STATUS" -eq 2 ]; then
+          echo "       Refusing to force-push without complete integration evidence." >&2
+          exit 1
+        fi
+        if [ "$PRESENT_STATUS" -eq 0 ]; then
+          REMOTE_COMMIT_INCORPORATED=true
+          # Consume the candidate: each remote occurrence needs its OWN local
+          # occurrence, and later remote commits may only match later local
+          # ones. Remote histories can carry the same change twice (add X,
+          # revert X, add X again); a shared candidate would let both
+          # occurrences claim one twin and force real content away.
+          LOCAL_ONLY_CURSOR="$LOCAL_ONLY_PROBE"
+          break
+        fi
+      done
+      if [ "$REMOTE_COMMIT_INCORPORATED" != true ]; then
+        echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} carries commit ${remote_commit:0:12}" >&2
+        echo "       whose changes are not in this checkout's history byte-for-byte and in order" >&2
+        echo "       (whitespace differences count, and a local history that applies the same" >&2
+        echo "       changes in a different order is not the same history). Forcing would" >&2
+        echo "       delete them. Fetch and reconcile (rebase or merge), then rerun; refusing" >&2
+        echo "       to overwrite unseen work." >&2
         exit 1
       fi
-      case "$LOCAL_CONTENT_FINGERPRINTS" in
-        *" $remote_fp "*)
-          # Consume the twin: each remote occurrence needs its OWN local
-          # occurrence. Remote histories can carry the same content change
-          # twice (add X, revert X, add X again); set-membership would let
-          # both occurrences claim one local twin and force away real content.
-          LOCAL_CONTENT_FINGERPRINTS="${LOCAL_CONTENT_FINGERPRINTS/ ${remote_fp} / }"
-          ;;
-        *)
-          echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} carries commit ${remote_commit:0:12}" >&2
-          echo "       whose changes are not in this checkout's history byte-for-byte (whitespace" >&2
-          echo "       differences count). Forcing would delete them. Fetch and reconcile" >&2
-          echo "       (rebase or merge), then rerun; refusing to overwrite unseen work." >&2
-          exit 1
-          ;;
-      esac
     done
   fi
   echo "==> Push rejected; PR $EXISTING_PR_URL exists and every observed-head change is incorporated locally."

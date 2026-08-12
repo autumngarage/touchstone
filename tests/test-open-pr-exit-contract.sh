@@ -1835,6 +1835,117 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Case 58: a rebase onto a parent that edits the same file still ships"
+OUT="$TEST_DIR/case58.out"
+RC=0
+reset_open_pr_logs
+# Post-image blob identity rejected the most ordinary reconciled rebase there
+# is (PR #807 review): the new parent edits ANOTHER PART of the same file, so
+# the rebased commit's delta is byte-identical while its whole-file post-image
+# is not. Nothing the operator can do — fetch, rebase, rerun — clears that
+# refusal, which makes the guard unusable rather than safe.
+CASE58_BASE="$(git -C "$REPO_DIR" rev-parse HEAD)"
+{
+  echo "header line 1"
+  echo "header line 2"
+  awk 'BEGIN { for (i = 3; i <= 40; i++) printf "body line %d\n", i }'
+} >"$REPO_DIR/case58.txt"
+git -C "$REPO_DIR" add case58.txt
+git -C "$REPO_DIR" commit -q -m "add a file with a top and a bottom"
+CASE58_SHARED="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CASE58_OLD_BLOB="$(git -C "$REPO_DIR" rev-parse HEAD:case58.txt)"
+CASE58_FEATURE_BLOB="$(sed 's/^body line 38$/body line 38 EDITED-BY-FEATURE/' "$REPO_DIR/case58.txt" \
+  | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE58_MAIN_BLOB="$(sed 's/^header line 1$/header line 1 EDITED-BY-MAIN/' "$REPO_DIR/case58.txt" \
+  | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE58_BOTH_BLOB="$(sed -e 's/^header line 1$/header line 1 EDITED-BY-MAIN/' \
+  -e 's/^body line 38$/body line 38 EDITED-BY-FEATURE/' "$REPO_DIR/case58.txt" \
+  | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE58_FEATURE_TREE="$(git -C "$REPO_DIR" ls-tree HEAD | sed "s/$CASE58_OLD_BLOB/$CASE58_FEATURE_BLOB/" | git -C "$REPO_DIR" mktree)"
+CASE58_MAIN_TREE="$(git -C "$REPO_DIR" ls-tree HEAD | sed "s/$CASE58_OLD_BLOB/$CASE58_MAIN_BLOB/" | git -C "$REPO_DIR" mktree)"
+CASE58_BOTH_TREE="$(git -C "$REPO_DIR" ls-tree HEAD | sed "s/$CASE58_OLD_BLOB/$CASE58_BOTH_BLOB/" | git -C "$REPO_DIR" mktree)"
+CASE58_REMOTE="$(git -C "$REPO_DIR" commit-tree "$CASE58_FEATURE_TREE" -p "$CASE58_SHARED" -m "feat: edit the bottom")"
+CASE58_NEW_PARENT="$(git -C "$REPO_DIR" commit-tree "$CASE58_MAIN_TREE" -p "$CASE58_SHARED" -m "chore: edit the top")"
+CASE58_LOCAL="$(git -C "$REPO_DIR" commit-tree "$CASE58_BOTH_TREE" -p "$CASE58_NEW_PARENT" -m "feat: edit the bottom (rebased)")"
+git -C "$REPO_DIR" reset -q --hard "$CASE58_LOCAL"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE58_REMOTE" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+# The post-images genuinely differ — that is the whole point of the case, and
+# asserting it here keeps the fixture honest if someone "simplifies" it later.
+if [ "$(git -C "$REPO_DIR" rev-parse "$CASE58_REMOTE:case58.txt")" \
+  = "$(git -C "$REPO_DIR" rev-parse "$CASE58_LOCAL:case58.txt")" ]; then
+  echo "    FAIL: fixture no longer differs in its post-image blob" >&2
+  ERRORS=$((ERRORS + 1))
+elif [ "$RC" = "0" ] \
+  && grep -q 'every observed-head change is incorporated locally' "$OUT" \
+  && grep -q -- "--force-with-lease=feat/test:$CASE58_REMOTE" "$TEST_DIR/git-push.log" \
+  && grep -q -- "$CASE58_LOCAL:refs/heads/feat/test" "$TEST_DIR/git-push.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: a reconciled rebase must be publishable, not permanently refused" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" "$TEST_DIR/git-push.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+git -C "$REPO_DIR" reset -q --hard "$CASE58_BASE"
+
+echo "==> Case 59: the same states in the wrong order refuse the guarded retry"
+OUT="$TEST_DIR/case59.out"
+RC=0
+reset_open_pr_logs
+# Remote applied X -> Y -> Z; this checkout applied X -> Z -> Y, so local HEAD
+# is Y and the remote head's final Z content exists nowhere locally. An
+# unordered pool of per-commit evidence found a twin for both Y and Z and
+# force-pushed Z away — the exact defect class issue #721 exists to prevent,
+# reintroduced by the fix for it. Ordered correspondence runs out of
+# candidates instead.
+CASE59_BASE="$(git -C "$REPO_DIR" rev-parse HEAD)"
+printf 'state-seed\n' >"$REPO_DIR/case59.txt"
+git -C "$REPO_DIR" add case59.txt
+git -C "$REPO_DIR" commit -q -m "add case59.txt"
+CASE59_SHARED="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CASE59_SEED_BLOB="$(git -C "$REPO_DIR" rev-parse HEAD:case59.txt)"
+case59_tree() {
+  local blob
+  blob="$(printf '%s\n' "$1" | git -C "$REPO_DIR" hash-object -w --stdin)"
+  git -C "$REPO_DIR" ls-tree "$CASE59_SHARED" \
+    | sed "s/$CASE59_SEED_BLOB/$blob/" \
+    | git -C "$REPO_DIR" mktree
+}
+CASE59_TREE_X="$(case59_tree state-x)"
+CASE59_TREE_Y="$(case59_tree state-y)"
+CASE59_TREE_Z="$(case59_tree state-z)"
+CASE59_RX="$(git -C "$REPO_DIR" commit-tree "$CASE59_TREE_X" -p "$CASE59_SHARED" -m "remote X")"
+CASE59_RY="$(git -C "$REPO_DIR" commit-tree "$CASE59_TREE_Y" -p "$CASE59_RX" -m "remote Y")"
+CASE59_RZ="$(git -C "$REPO_DIR" commit-tree "$CASE59_TREE_Z" -p "$CASE59_RY" -m "remote Z")"
+CASE59_LX="$(git -C "$REPO_DIR" commit-tree "$CASE59_TREE_X" -p "$CASE59_SHARED" -m "local X")"
+CASE59_LZ="$(git -C "$REPO_DIR" commit-tree "$CASE59_TREE_Z" -p "$CASE59_LX" -m "local Z")"
+CASE59_LY="$(git -C "$REPO_DIR" commit-tree "$CASE59_TREE_Y" -p "$CASE59_LZ" -m "local Y")"
+git -C "$REPO_DIR" reset -q --hard "$CASE59_LY"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE59_RZ" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE59_BASE"
+
+# Naming the commit pins WHICH remote change had no ordered counterpart: the
+# final Z. A blanket refusal that named X or Y would mean something else broke.
+if [ "$RC" != "0" ] \
+  && grep -q "carries commit ${CASE59_RZ:0:12}" "$OUT" \
+  && grep -q 'whose changes are not in this checkout' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a reordered local history must not force away the remote's final state" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" "$TEST_DIR/git-push.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # ---------------------------------------------------------------------------
 # Cases 42-44 (issue #751): the review request is idempotent per head. A
 # trusted formal review already bound to the exact current head (with its
