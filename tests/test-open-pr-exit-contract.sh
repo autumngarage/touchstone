@@ -342,6 +342,22 @@ if [ "\${1:-}" = "push" ]; then
   fi
   exit 0
 fi
+
+# GIT_REVERT_RANGE_REVLIST_FAIL simulates an unreadable ancestor for exactly
+# the traversal the revert-vs-closing-reference guard performs (a plain
+# two-dot range ending at HEAD; every other rev-list there passes --not). The
+# guard used to read that range through a process substitution, which throws
+# the traversal status away — the loop saw empty output and the branch read as
+# "no reverts here".
+if [ "\${1:-}" = "rev-list" ] && [ "\${GIT_REVERT_RANGE_REVLIST_FAIL:-0}" = "1" ]; then
+  case " \$* " in
+    *" --not "*) ;;
+    *..HEAD*)
+      echo "fatal: bad object (simulated unreadable ancestor)" >&2
+      exit 128
+      ;;
+  esac
+fi
 if [ "\${1:-}" = "merge-base" ] && [ -n "\${GIT_ADVANCE_REF_AFTER_MERGE_BASE:-}" ]; then
   rc=0
   "$REAL_GIT" "\$@" || rc=\$?
@@ -389,6 +405,7 @@ run_open_pr() {
       GH_REQUEST_STATUS_RECORDS="${GH_REQUEST_STATUS_RECORDS:-}" \
       GH_RESULT_COMMENT_AUTHORS="${GH_RESULT_COMMENT_AUTHORS:-}" \
       GH_RESULT_COMMENTS_FAIL="${GH_RESULT_COMMENTS_FAIL:-0}" \
+      GIT_REVERT_RANGE_REVLIST_FAIL="${GIT_REVERT_RANGE_REVLIST_FAIL:-0}" \
       GIT_PUSH_PLAIN_EXIT="${GIT_PUSH_PLAIN_EXIT:-0}" \
       GIT_PUSH_LEASE_EXIT="${GIT_PUSH_LEASE_EXIT:-0}" \
       GIT_PUSH_LOG="$TEST_DIR/git-push.log" \
@@ -1439,6 +1456,487 @@ else
   echo "    FAIL: expected unknown observed head to refuse the retry" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Cases 48-50 (issue #714): a closing reference records an INTENT, written
+# early in a PR's life; nothing re-checks that the intent survived to the
+# merged tree. PR #680 carried `Closes #593` on its first commit and reverted
+# that fix on its fifth — the squash merge kept the trailer, GitHub closed
+# #593, and the bug read as resolved for two days while it was still live.
+# ---------------------------------------------------------------------------
+echo "==> Case 48: a revert of an earlier commit's fix blocks its closing reference"
+OUT="$TEST_DIR/case48.out"
+RC=0
+reset_open_pr_logs
+CASE714_BASE="$(git -C "$REPO_DIR" rev-parse HEAD)"
+printf 'the fix\n' >"$REPO_DIR/case714-fix.txt"
+git -C "$REPO_DIR" add case714-fix.txt
+git -C "$REPO_DIR" commit -q -m "fix: the UNSTABLE tolerance" -m "Closes-issue: #52"
+CASE714_FIX="$(git -C "$REPO_DIR" rev-parse HEAD)"
+printf 'unrelated\n' >"$REPO_DIR/case714-other.txt"
+git -C "$REPO_DIR" add case714-other.txt
+git -C "$REPO_DIR" commit -q -m "chore: unrelated follow-up"
+git -C "$REPO_DIR" revert --no-edit "$CASE714_FIX" >/dev/null
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+# The refusal has to land BEFORE the push: nothing about this branch should
+# reach the remote while its closing reference is unverified.
+if [ "$RC" != "0" ] \
+  && grep -q 'closes issue(s) that a revert in the same PR may have undone' "$OUT" \
+  && grep -q 'Unconfirmed closing reference(s): #52' "$OUT" \
+  && [ ! -s "$TEST_DIR/git-push.log" ] \
+  && [ ! -s "$TEST_DIR/pr-create.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a reverted fix must not ship its closing reference" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 49: the recorded audit verdict ships the reference it names"
+OUT="$TEST_DIR/case49.out"
+RC=0
+reset_open_pr_logs
+git -C "$REPO_DIR" commit -q --allow-empty \
+  -m "chore: audit closing refs against revert" \
+  -m "[skip-revert-trailer-check] #52 verified present in HEAD"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'shipping unverified closing reference(s): #52' "$OUT" \
+  && [ -s "$TEST_DIR/pr-create.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a recorded audit verdict must ship, and must say what it waived" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 49b: the audit verdict survives a range larger than a pipe buffer"
+OUT="$TEST_DIR/case49b.out"
+RC=0
+reset_open_pr_logs
+# `git log <range> | grep -q` under `set -o pipefail` reports 141 when grep
+# matches early and git log is left holding more output than the pipe buffer
+# takes: the match reads as NO match, and the documented escape silently stops
+# working on exactly the long-lived branches most likely to carry a revert.
+# The token goes on the NEWEST commit (git log emits newest-first) with ~190KB
+# of message behind it, which makes the SIGPIPE deterministic rather than
+# racy — two commits, no 300-commit fixture.
+{
+  echo "chore: a commit with a very large message body"
+  echo
+  awk 'BEGIN { for (i = 0; i < 4000; i++) print "padding padding padding padding padding padding" }'
+} >"$TEST_DIR/big-commit-message.txt"
+git -C "$REPO_DIR" commit -q --allow-empty -F "$TEST_DIR/big-commit-message.txt"
+git -C "$REPO_DIR" commit -q --allow-empty \
+  -m "chore: audit closing refs against revert" \
+  -m "[skip-revert-trailer-check] #52 verified present in HEAD"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE714_BASE"
+
+if [ "$RC" = "0" ] \
+  && grep -q 'shipping unverified closing reference(s): #52' "$OUT" \
+  && [ -s "$TEST_DIR/pr-create.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a large commit-message range must not swallow the audit verdict" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 50: a revert that carries its own closing reference is self-consistent"
+OUT="$TEST_DIR/case50.out"
+RC=0
+reset_open_pr_logs
+printf 'the bad feature\n' >"$REPO_DIR/case714-bad.txt"
+git -C "$REPO_DIR" add case714-bad.txt
+git -C "$REPO_DIR" commit -q -m "feat: the bad feature"
+git -C "$REPO_DIR" revert --no-edit HEAD >/dev/null
+git -C "$REPO_DIR" commit -q --amend \
+  -m "revert(feat): back out the bad feature" \
+  -m "Closes-issue: #52"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE714_BASE"
+
+# The revert IS the fix here, so the reference needs no separate verdict —
+# and the guard must not force one, or every revert-shaped PR would be
+# taught to reach for the waiver token.
+if [ "$RC" = "0" ] \
+  && grep -q 'every closing reference is carried by a revert itself' "$OUT" \
+  && ! grep -q 'may have undone' "$OUT" \
+  && [ -s "$TEST_DIR/pr-create.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a self-consistent revert must ship without a waiver" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Cases 53-57 (issue #714, PR #807 review): the four holes the first cut of
+# the revert guard left open. Each one made the guard return success on a
+# branch whose closing reference would still auto-close a live issue.
+# ---------------------------------------------------------------------------
+echo "==> Case 53: an unreadable branch history fails the revert guard closed"
+OUT="$TEST_DIR/case53.out"
+RC=0
+reset_open_pr_logs
+# `while ... done < <(git rev-list ...)` discards the traversal status: a
+# corrupt ancestor produced empty output, the loop found no revert, and the
+# guard reported a clean branch. A check that could not run is not a clean
+# check — capture and validate the revision list BEFORE iterating.
+GIT_REVERT_RANGE_REVLIST_FAIL=1 \
+  OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q "history for the revert-vs-closing-reference" "$OUT" \
+  && [ ! -s "$TEST_DIR/git-push.log" ] \
+  && [ ! -s "$TEST_DIR/pr-create.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: an unreadable history must not read as 'no revert here'" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 54: a revert that is itself reverted needs a fresh verdict"
+OUT="$TEST_DIR/case54.out"
+RC=0
+reset_open_pr_logs
+# C2 reverts a bad C1 and carries `Closes-issue: #52` — self-consistent, the
+# revert IS the fix. C3 then reverts C2, putting the bad change back. Treating
+# every reference on any revert as permanently self-consistent shipped #52
+# anyway and merge auto-closed an issue whose fix had been undone twice.
+printf 'the bad change\n' >"$REPO_DIR/case54-bad.txt"
+git -C "$REPO_DIR" add case54-bad.txt
+git -C "$REPO_DIR" commit -q -m "feat: the bad change"
+CASE54_C1="$(git -C "$REPO_DIR" rev-parse HEAD)"
+git -C "$REPO_DIR" revert --no-edit "$CASE54_C1" >/dev/null
+{
+  printf 'Revert "feat: the bad change"\n\n'
+  printf 'This reverts commit %s.\n\n' "$CASE54_C1"
+  printf 'Closes-issue: #52\n'
+} >"$TEST_DIR/case54-c2.msg"
+git -C "$REPO_DIR" commit -q --amend -F "$TEST_DIR/case54-c2.msg"
+CASE54_C2="$(git -C "$REPO_DIR" rev-parse HEAD)"
+git -C "$REPO_DIR" revert --no-edit "$CASE54_C2" >/dev/null
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE714_BASE"
+
+if [ "$RC" != "0" ] \
+  && grep -q 'Reverted revert(s) restored the change behind: #52' "$OUT" \
+  && [ ! -s "$TEST_DIR/git-push.log" ] \
+  && [ ! -s "$TEST_DIR/pr-create.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a reverted revert must not keep its closing reference" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 55: a closing reference persisted in the PR body is judged too"
+OUT="$TEST_DIR/case55.out"
+RC=0
+reset_open_pr_logs
+# The diagnostic tells the operator to write `Refs #N` instead of `Closes #N`.
+# On an EXISTING PR that empties the commit-borne set while `Closes #52` stays
+# in the PR body, which is what merge actually reads — the guard passed and
+# GitHub closed the issue anyway.
+printf 'temporary\n' >"$REPO_DIR/case55-bad.txt"
+git -C "$REPO_DIR" add case55-bad.txt
+git -C "$REPO_DIR" commit -q -m "feat: temporary" -m "Refs #52"
+git -C "$REPO_DIR" revert --no-edit HEAD >/dev/null
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$(git -C "$REPO_DIR" rev-parse HEAD)" \
+  GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE714_BASE"
+
+if [ "$RC" != "0" ] \
+  && grep -q 'Persisted in the PR body, where merge reads it: #52' "$OUT" \
+  && grep -q 'Unconfirmed closing reference(s): #52' "$OUT" \
+  && [ ! -s "$TEST_DIR/git-push.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: commit bodies are not the only source of closing references" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 56: a verdict authorizes only the issues it named"
+OUT="$TEST_DIR/case56.out"
+RC=0
+reset_open_pr_logs
+# An unconditional substring check made the first waiver on a branch a
+# permanent bypass: a verdict naming only #52 also authorized a later
+# `Closes #99` nobody ever audited.
+printf 'the fix\n' >"$REPO_DIR/case56-fix.txt"
+git -C "$REPO_DIR" add case56-fix.txt
+git -C "$REPO_DIR" commit -q -m "fix: the tolerance" -m "Closes-issue: #52"
+CASE56_FIX="$(git -C "$REPO_DIR" rev-parse HEAD)"
+printf 'unrelated\n' >"$REPO_DIR/case56-other.txt"
+git -C "$REPO_DIR" add case56-other.txt
+git -C "$REPO_DIR" commit -q -m "chore: unrelated follow-up"
+git -C "$REPO_DIR" revert --no-edit "$CASE56_FIX" >/dev/null
+git -C "$REPO_DIR" commit -q --allow-empty \
+  -m "chore: audit closing refs against revert" \
+  -m "[skip-revert-trailer-check] #52 verified present in HEAD"
+printf 'later\n' >"$REPO_DIR/case56-later.txt"
+git -C "$REPO_DIR" add case56-later.txt
+git -C "$REPO_DIR" commit -q -m "feat: work added after the audit" -m "Closes-issue: #99"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE714_BASE"
+
+if [ "$RC" != "0" ] \
+  && grep -q 'do not authorize: #99' "$OUT" \
+  && [ ! -s "$TEST_DIR/git-push.log" ] \
+  && [ ! -s "$TEST_DIR/pr-create.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a verdict naming #52 must not authorize an unaudited #99" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 57: a verdict written before a later revert is not honored"
+OUT="$TEST_DIR/case57.out"
+RC=0
+reset_open_pr_logs
+# The other half of the same hole: reverts added AFTER the verdict stayed
+# waived, so an audit of yesterday's branch authorized today's revert.
+printf 'the fix\n' >"$REPO_DIR/case57-fix.txt"
+git -C "$REPO_DIR" add case57-fix.txt
+git -C "$REPO_DIR" commit -q -m "fix: the tolerance" -m "Closes-issue: #52"
+CASE57_FIX="$(git -C "$REPO_DIR" rev-parse HEAD)"
+printf 'unrelated\n' >"$REPO_DIR/case57-other.txt"
+git -C "$REPO_DIR" add case57-other.txt
+git -C "$REPO_DIR" commit -q -m "chore: unrelated follow-up"
+CASE57_OTHER="$(git -C "$REPO_DIR" rev-parse HEAD)"
+git -C "$REPO_DIR" revert --no-edit "$CASE57_FIX" >/dev/null
+git -C "$REPO_DIR" commit -q --allow-empty \
+  -m "chore: audit closing refs against revert" \
+  -m "[skip-revert-trailer-check] #52 verified present in HEAD"
+git -C "$REPO_DIR" revert --no-edit "$CASE57_OTHER" >/dev/null
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE714_BASE"
+
+if [ "$RC" != "0" ] \
+  && grep -q 'Verdict(s) that predate a later revert on this branch are not honored' "$OUT" \
+  && grep -q 'Unconfirmed closing reference(s): #52' "$OUT" \
+  && [ ! -s "$TEST_DIR/git-push.log" ] \
+  && [ ! -s "$TEST_DIR/pr-create.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a verdict that predates a later revert must not waive it" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
+# Cases 51-52 (issue #721): the force-push integration evidence must identify
+# CONTENT, not patch text. Hashing a patch with its hunk coordinates stripped
+# leaves the patch with no location identity, so the same textual edit made to
+# two different occurrences of a repeated block fingerprints identically — and
+# the guard force-pushes away a remote commit it never incorporated.
+# ---------------------------------------------------------------------------
+echo "==> Case 51: an identical edit at a different offset refuses the guarded retry"
+OUT="$TEST_DIR/case51.out"
+RC=0
+reset_open_pr_logs
+CASE51_BASE="$(git -C "$REPO_DIR" rev-parse HEAD)"
+awk 'BEGIN { for (i = 0; i < 40; i++) print "same" }' >"$REPO_DIR/repeat.txt"
+git -C "$REPO_DIR" add repeat.txt
+git -C "$REPO_DIR" commit -q -m "add a block of identical lines"
+CASE51_SHARED="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CASE51_OLD_BLOB="$(git -C "$REPO_DIR" rev-parse HEAD:repeat.txt)"
+# Two commits that insert the SAME line into the SAME file, one near the top
+# and one near the bottom of a block of identical lines. With three lines of
+# context on either side the patch TEXT of the two is byte-identical once hunk
+# coordinates are stripped; only the resulting blob tells them apart.
+CASE51_TOP_BLOB="$(awk 'NR == 10 { print "MARKER" } { print }' "$REPO_DIR/repeat.txt" \
+  | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE51_BOTTOM_BLOB="$(awk 'NR == 30 { print "MARKER" } { print }' "$REPO_DIR/repeat.txt" \
+  | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE51_TOP_TREE="$(git -C "$REPO_DIR" ls-tree HEAD | sed "s/$CASE51_OLD_BLOB/$CASE51_TOP_BLOB/" | git -C "$REPO_DIR" mktree)"
+CASE51_BOTTOM_TREE="$(git -C "$REPO_DIR" ls-tree HEAD | sed "s/$CASE51_OLD_BLOB/$CASE51_BOTTOM_BLOB/" | git -C "$REPO_DIR" mktree)"
+CASE51_REMOTE="$(git -C "$REPO_DIR" commit-tree "$CASE51_TOP_TREE" -p "$CASE51_SHARED" -m "insert marker")"
+CASE51_LOCAL="$(git -C "$REPO_DIR" commit-tree "$CASE51_BOTTOM_TREE" -p "$CASE51_SHARED" -m "insert marker")"
+git -C "$REPO_DIR" reset -q --hard "$CASE51_LOCAL"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE51_REMOTE" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'whose changes are not in this checkout' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: an unincorporated remote edit at another offset must not be forced away" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" "$TEST_DIR/git-push.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 52: the same content reached through a different parent still authorizes"
+OUT="$TEST_DIR/case52.out"
+RC=0
+reset_open_pr_logs
+# The complementary invariant, so "refuse everything" cannot pass Case 51:
+# a real rebase produces the same content under a different parent, and the
+# guarded resume exists precisely to publish it. The extra local no-op commit
+# also exercises the empty-change-list path, which contributes no twin.
+CASE52_REMOTE="$(git -C "$REPO_DIR" commit-tree "$CASE51_TOP_TREE" -p "$CASE51_SHARED" -m "insert marker (remote)")"
+CASE52_NOOP="$(git -C "$REPO_DIR" commit-tree "$(git -C "$REPO_DIR" rev-parse "$CASE51_SHARED^{tree}")" -p "$CASE51_SHARED" -m "no-op rebase artifact")"
+CASE52_LOCAL="$(git -C "$REPO_DIR" commit-tree "$CASE51_TOP_TREE" -p "$CASE52_NOOP" -m "insert marker (rebased)")"
+git -C "$REPO_DIR" reset -q --hard "$CASE52_LOCAL"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE52_REMOTE" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE51_BASE"
+
+if [ "$RC" = "0" ] \
+  && grep -q 'every observed-head change is incorporated locally' "$OUT" \
+  && grep -q -- "--force-with-lease=feat/test:$CASE52_REMOTE" "$TEST_DIR/git-push.log" \
+  && grep -q -- "$CASE52_LOCAL:refs/heads/feat/test" "$TEST_DIR/git-push.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: a rebased twin of the same content must still authorize the resume" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" "$TEST_DIR/git-push.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 58: a rebase onto a parent that edits the same file still ships"
+OUT="$TEST_DIR/case58.out"
+RC=0
+reset_open_pr_logs
+# Post-image blob identity rejected the most ordinary reconciled rebase there
+# is (PR #807 review): the new parent edits ANOTHER PART of the same file, so
+# the rebased commit's delta is byte-identical while its whole-file post-image
+# is not. Nothing the operator can do — fetch, rebase, rerun — clears that
+# refusal, which makes the guard unusable rather than safe.
+CASE58_BASE="$(git -C "$REPO_DIR" rev-parse HEAD)"
+{
+  echo "header line 1"
+  echo "header line 2"
+  awk 'BEGIN { for (i = 3; i <= 40; i++) printf "body line %d\n", i }'
+} >"$REPO_DIR/case58.txt"
+git -C "$REPO_DIR" add case58.txt
+git -C "$REPO_DIR" commit -q -m "add a file with a top and a bottom"
+CASE58_SHARED="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CASE58_OLD_BLOB="$(git -C "$REPO_DIR" rev-parse HEAD:case58.txt)"
+CASE58_FEATURE_BLOB="$(sed 's/^body line 38$/body line 38 EDITED-BY-FEATURE/' "$REPO_DIR/case58.txt" \
+  | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE58_MAIN_BLOB="$(sed 's/^header line 1$/header line 1 EDITED-BY-MAIN/' "$REPO_DIR/case58.txt" \
+  | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE58_BOTH_BLOB="$(sed -e 's/^header line 1$/header line 1 EDITED-BY-MAIN/' \
+  -e 's/^body line 38$/body line 38 EDITED-BY-FEATURE/' "$REPO_DIR/case58.txt" \
+  | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE58_FEATURE_TREE="$(git -C "$REPO_DIR" ls-tree HEAD | sed "s/$CASE58_OLD_BLOB/$CASE58_FEATURE_BLOB/" | git -C "$REPO_DIR" mktree)"
+CASE58_MAIN_TREE="$(git -C "$REPO_DIR" ls-tree HEAD | sed "s/$CASE58_OLD_BLOB/$CASE58_MAIN_BLOB/" | git -C "$REPO_DIR" mktree)"
+CASE58_BOTH_TREE="$(git -C "$REPO_DIR" ls-tree HEAD | sed "s/$CASE58_OLD_BLOB/$CASE58_BOTH_BLOB/" | git -C "$REPO_DIR" mktree)"
+CASE58_REMOTE="$(git -C "$REPO_DIR" commit-tree "$CASE58_FEATURE_TREE" -p "$CASE58_SHARED" -m "feat: edit the bottom")"
+CASE58_NEW_PARENT="$(git -C "$REPO_DIR" commit-tree "$CASE58_MAIN_TREE" -p "$CASE58_SHARED" -m "chore: edit the top")"
+CASE58_LOCAL="$(git -C "$REPO_DIR" commit-tree "$CASE58_BOTH_TREE" -p "$CASE58_NEW_PARENT" -m "feat: edit the bottom (rebased)")"
+git -C "$REPO_DIR" reset -q --hard "$CASE58_LOCAL"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE58_REMOTE" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+# The post-images genuinely differ — that is the whole point of the case, and
+# asserting it here keeps the fixture honest if someone "simplifies" it later.
+if [ "$(git -C "$REPO_DIR" rev-parse "$CASE58_REMOTE:case58.txt")" \
+  = "$(git -C "$REPO_DIR" rev-parse "$CASE58_LOCAL:case58.txt")" ]; then
+  echo "    FAIL: fixture no longer differs in its post-image blob" >&2
+  ERRORS=$((ERRORS + 1))
+elif [ "$RC" = "0" ] \
+  && grep -q 'every observed-head change is incorporated locally' "$OUT" \
+  && grep -q -- "--force-with-lease=feat/test:$CASE58_REMOTE" "$TEST_DIR/git-push.log" \
+  && grep -q -- "$CASE58_LOCAL:refs/heads/feat/test" "$TEST_DIR/git-push.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: a reconciled rebase must be publishable, not permanently refused" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" "$TEST_DIR/git-push.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+git -C "$REPO_DIR" reset -q --hard "$CASE58_BASE"
+
+echo "==> Case 59: the same states in the wrong order refuse the guarded retry"
+OUT="$TEST_DIR/case59.out"
+RC=0
+reset_open_pr_logs
+# Remote applied X -> Y -> Z; this checkout applied X -> Z -> Y, so local HEAD
+# is Y and the remote head's final Z content exists nowhere locally. An
+# unordered pool of per-commit evidence found a twin for both Y and Z and
+# force-pushed Z away — the exact defect class issue #721 exists to prevent,
+# reintroduced by the fix for it. Ordered correspondence runs out of
+# candidates instead.
+CASE59_BASE="$(git -C "$REPO_DIR" rev-parse HEAD)"
+printf 'state-seed\n' >"$REPO_DIR/case59.txt"
+git -C "$REPO_DIR" add case59.txt
+git -C "$REPO_DIR" commit -q -m "add case59.txt"
+CASE59_SHARED="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CASE59_SEED_BLOB="$(git -C "$REPO_DIR" rev-parse HEAD:case59.txt)"
+case59_tree() {
+  local blob
+  blob="$(printf '%s\n' "$1" | git -C "$REPO_DIR" hash-object -w --stdin)"
+  git -C "$REPO_DIR" ls-tree "$CASE59_SHARED" \
+    | sed "s/$CASE59_SEED_BLOB/$blob/" \
+    | git -C "$REPO_DIR" mktree
+}
+CASE59_TREE_X="$(case59_tree state-x)"
+CASE59_TREE_Y="$(case59_tree state-y)"
+CASE59_TREE_Z="$(case59_tree state-z)"
+CASE59_RX="$(git -C "$REPO_DIR" commit-tree "$CASE59_TREE_X" -p "$CASE59_SHARED" -m "remote X")"
+CASE59_RY="$(git -C "$REPO_DIR" commit-tree "$CASE59_TREE_Y" -p "$CASE59_RX" -m "remote Y")"
+CASE59_RZ="$(git -C "$REPO_DIR" commit-tree "$CASE59_TREE_Z" -p "$CASE59_RY" -m "remote Z")"
+CASE59_LX="$(git -C "$REPO_DIR" commit-tree "$CASE59_TREE_X" -p "$CASE59_SHARED" -m "local X")"
+CASE59_LZ="$(git -C "$REPO_DIR" commit-tree "$CASE59_TREE_Z" -p "$CASE59_LX" -m "local Z")"
+CASE59_LY="$(git -C "$REPO_DIR" commit-tree "$CASE59_TREE_Y" -p "$CASE59_LZ" -m "local Y")"
+git -C "$REPO_DIR" reset -q --hard "$CASE59_LY"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE59_RZ" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE59_BASE"
+
+# Naming the commit pins WHICH remote change had no ordered counterpart: the
+# final Z. A blanket refusal that named X or Y would mean something else broke.
+if [ "$RC" != "0" ] \
+  && grep -q "carries commit ${CASE59_RZ:0:12}" "$OUT" \
+  && grep -q 'whose changes are not in this checkout' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a reordered local history must not force away the remote's final state" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" "$TEST_DIR/git-push.log" >&2
   ERRORS=$((ERRORS + 1))
 fi
 

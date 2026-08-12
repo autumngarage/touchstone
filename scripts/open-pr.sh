@@ -1250,17 +1250,13 @@ find_base_merge_commit() {
   return 1
 }
 
-find_issue_closing_refs() {
-  local base_branch="$1"
-  local merge_base
-  if ! merge_base="$(find_base_merge_commit "$base_branch")"; then
-    echo "WARNING: could not find merge-base for $base_branch; skipping linked-issue detection" >&2
-    return 0
-  fi
-
-  # Invariant: only commits unique to this PR branch are scanned; base-branch
-  # history must not contribute stale issue references to new PR bodies.
-  git log "$merge_base..HEAD" --format='%b' | awk '
+# The closing-reference grammar, applied to a stream of commit-message BODIES
+# on stdin. Both readers below share it: the PR-body builder that turns
+# references into `Closes #N` lines, and the revert guard that has to judge
+# those same references. One grammar, or the guard would police references the
+# body builder never emits (and miss the ones it does).
+closing_refs_in_bodies() {
+  awk '
     {
       line = tolower($0)
       should_scan = 0
@@ -1282,6 +1278,364 @@ find_issue_closing_refs() {
       }
     }
   '
+}
+
+find_issue_closing_refs() {
+  local base_branch="$1"
+  local merge_base
+  if ! merge_base="$(find_base_merge_commit "$base_branch")"; then
+    echo "WARNING: could not find merge-base for $base_branch; skipping linked-issue detection" >&2
+    return 0
+  fi
+
+  # Invariant: only commits unique to this PR branch are scanned; base-branch
+  # history must not contribute stale issue references to new PR bodies.
+  git log "$merge_base..HEAD" --format='%b' | closing_refs_in_bodies
+}
+
+# A commit is a revert when its message carries one of the two markers git and
+# this repo's convention actually produce: a `Revert "..."` / `revert(scope):` /
+# `revert:` subject, or the `This reverts commit <sha>` line `git revert`
+# writes into the body. Deliberately anchored — "reverting", "revert-safe",
+# and a prose mention of a revert are not reverts.
+#
+# Takes the message rather than the commit id so the caller reads each commit
+# ONCE and asks every question of that one string: classification, closing
+# references, revert target, and waiver verdict can then never disagree about
+# what a commit said.
+#
+# The body read is a here-string, never `git log ... | grep -q`. Under
+# `set -o pipefail` an early-exiting `grep -q` makes git log die of SIGPIPE
+# and the pipeline reports 141 — a MATCH would read as "no match" and the
+# revert would go undetected. Verified reproducible on bash 3.2 with a
+# 300-commit range. A here-string has no pipeline, so grep's status is the
+# only status.
+message_is_revert() {
+  local message="$1" subject="${1%%$'\n'*}"
+  case "$subject" in
+    [Rr]evert | [Rr]evert[\ \"\(!:]*) return 0 ;;
+  esac
+  if grep -Eq '^[[:space:]]*This reverts commit [0-9a-f]{7,64}' <<<"$message"; then
+    return 0
+  fi
+  return 1
+}
+
+# The commit id(s) a revert names as its target. `git revert` writes
+# `This reverts commit <sha>` into the body; a hand-written `revert(scope):`
+# subject may name nothing at all, and a revert whose target cannot be read
+# has to be treated as "could have reverted anything" (issue #714, PR #807
+# review). BRE intervals rather than an awk `{7,64}` — awk interval support is
+# not universal, sed's is.
+revert_targets_in_message() {
+  sed -n 's/^[[:space:]]*This reverts commit \([0-9a-f]\{7,64\}\).*$/\1/p' <<<"$1"
+}
+
+# The issue numbers a waiver verdict names, read from the LINE carrying the
+# token and nowhere else. A verdict authorizes the issues it audited, not
+# every issue that happens to appear in the same commit message — otherwise a
+# `Closes #99` elsewhere in the waiver commit would authorize itself.
+waived_refs_in_message() {
+  awk -v token="$REVERT_TRAILER_SKIP_TOKEN" '
+    index($0, token) > 0 {
+      rest = $0
+      while (match(rest, /#[0-9]+/)) {
+        print substr(rest, RSTART + 1, RLENGTH - 1)
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+    }
+  ' <<<"$1"
+}
+
+# Issue #714. A closing reference is written against an INTENT, early in a
+# PR's life, and nothing re-checks that the intent survived to the merged
+# tree. PR #680 carried `Closes #593` on its first commit and reverted that
+# fix on its fifth; the squash merge kept the trailer, GitHub closed #593,
+# and the bug read as resolved for two days while it was still live. The
+# failure is invisible by construction — the issue closes, the PR merges
+# green — so the only place to catch it is before the trailer ships.
+#
+# The rule: if this branch reverts anything, every closing reference it
+# carries needs a human verdict. A reference carried by the REVERT commit
+# itself is self-consistent (the revert IS the fix) and needs no verdict;
+# a reference carried by some other commit is exactly the #680 shape and
+# blocks the push.
+#
+# Three holes in the first cut of that rule, all found in PR #807 review, are
+# closed here and are the reason this walks the range commit by commit:
+#
+#   - A revert is only self-consistent while it STANDS. C2 reverts C1 and
+#     carries `Closes #52`; C3 reverts C2; the bad change is back and #52
+#     would still auto-close. Revert targets and their order are tracked, and
+#     a closing-reference-carrying revert that is itself reverted needs a
+#     fresh verdict. A later revert that names no target could have undone
+#     anything, so it invalidates every older revert's references too.
+#   - The waiver token authorizes the issues it AUDITED, not every issue that
+#     ever appears on the branch. Each verdict is bound to the issue numbers
+#     on its own token line, and is honored only where it is NEWER than both
+#     the commit that introduced the reference and every revert on the branch
+#     — otherwise the first waiver ever written becomes a permanent silent
+#     bypass, covering reverts and closing references added after it.
+#   - For an EXISTING PR the closing reference may live only in the PR BODY,
+#     which is where merge actually reads it. Rewording the commit trailer to
+#     `Refs #N` empties the commit-borne set while GitHub still auto-closes on
+#     merge, so the persisted body is a second source this has to judge. (A
+#     NEW PR's body is generated below from these same commit bodies through
+#     the same grammar, so it cannot carry a reference the commits do not.)
+#
+# This exits rather than returning a status, and is called as a bare
+# statement, so errexit stays armed for every git read it performs: a check
+# that could not run must not read as a clean check.
+REVERT_TRAILER_SKIP_TOKEN='[skip-revert-trailer-check]'
+assert_closing_refs_survive_reverts() {
+  local base_branch="$1" pr_number="${2:-}"
+  local merge_base range commit message body ref target
+  local index=0 count=0 probe newest_revert_index=-1
+  local revert_shas="" undone_indices=" " unconfirmed="" unauthorized=""
+  local waived="" waived_so_far=" " all_waiver_named=" " undone_refs=""
+  local body_only_refs="" pr_body="" refs_seen=false stale_verdict=false
+  local -a range_sha=() range_refs=() range_targets=() range_waived=()
+  local -a range_is_revert=() range_has_token=()
+
+  # An unresolvable merge base warns rather than refusing, matching
+  # find_issue_closing_refs above: when the range cannot be computed this
+  # script also injects no `Closes #N` lines of its own, so the residual
+  # exposure is a closing reference the operator wrote into the final commit
+  # body by hand. Loud, and not silent — but deliberately not fatal, because
+  # refusing here would change a degradation path that has nothing to do
+  # with reverts.
+  if ! merge_base="$(find_base_merge_commit "$base_branch")"; then
+    echo "WARNING: could not find merge-base for $base_branch; the revert-vs-closing-reference" >&2
+    echo "         check (issue #714) did NOT run. Closing references on this branch are" >&2
+    echo "         unverified against later reverts." >&2
+    return 0
+  fi
+
+  # Captured and validated BEFORE the loop, never streamed in from a process
+  # substitution: `while ... done < <(git rev-list ...)` throws the traversal
+  # status away, so a corrupt or unreadable ancestor would let the loop see
+  # partial or empty output and the guard would return success as though the
+  # branch had no revert. A check that could not run must fail closed.
+  # `--topo-order` makes "newer" mean parent-before-child rather than
+  # whatever the commit dates claim, which is what the waiver recency rule
+  # below is actually asking about. Index 0 is the NEWEST commit.
+  if ! range="$(git rev-list --topo-order "$merge_base..HEAD" 2>&1)"; then
+    echo "ERROR: could not traverse this branch's history for the revert-vs-closing-reference" >&2
+    echo "       check (issue #714):" >&2
+    printf '%s\n' "$range" | sed 's/^/       /' >&2
+    echo "       Refusing to push closing references that could not be judged." >&2
+    exit 1
+  fi
+
+  while IFS= read -r commit; do
+    [ -n "$commit" ] || continue
+    if ! message="$(git log -1 --format=%B "$commit" 2>&1)"; then
+      echo "ERROR: could not read commit ${commit:0:12} for the revert-vs-closing-reference" >&2
+      echo "       check (issue #714):" >&2
+      printf '%s\n' "$message" | sed 's/^/       /' >&2
+      exit 1
+    fi
+    # Closing references are read from the BODY only, exactly like the PR body
+    # builder above: one grammar over one text, or the guard would police
+    # references the body never emits and miss the ones it does.
+    if ! body="$(git log -1 --format=%b "$commit" 2>&1)"; then
+      echo "ERROR: could not read the body of commit ${commit:0:12} for the" >&2
+      echo "       revert-vs-closing-reference check (issue #714):" >&2
+      printf '%s\n' "$body" | sed 's/^/       /' >&2
+      exit 1
+    fi
+    range_sha[index]="$commit"
+    range_refs[index]="$(closing_refs_in_bodies <<<"$body")"
+    range_targets[index]="$(revert_targets_in_message "$message")"
+    if message_is_revert "$message"; then
+      range_is_revert[index]=1
+      revert_shas="${revert_shas}${commit} "
+      [ "$newest_revert_index" -ge 0 ] || newest_revert_index="$index"
+    else
+      range_is_revert[index]=0
+    fi
+    case "$message" in
+      *"$REVERT_TRAILER_SKIP_TOKEN"*)
+        range_has_token[index]=1
+        range_waived[index]="$(waived_refs_in_message "$message")"
+        ;;
+      *)
+        range_has_token[index]=0
+        range_waived[index]=""
+        ;;
+    esac
+    index=$((index + 1))
+  done <<<"$range"
+  count="$index"
+
+  # No revert in this branch's own history: the #714 shape cannot exist.
+  [ -n "$revert_shas" ] || return 0
+
+  # A revert is undone when a NEWER revert names it as its target — or when a
+  # newer revert names no target at all, which could have undone anything.
+  index=0
+  while [ "$index" -lt "$count" ]; do
+    if [ "${range_is_revert[index]}" = 1 ]; then
+      probe=0
+      while [ "$probe" -lt "$index" ]; do
+        if [ "${range_is_revert[probe]}" = 1 ]; then
+          if [ -z "${range_targets[probe]}" ]; then
+            undone_indices="${undone_indices}${index} "
+            break
+          fi
+          while IFS= read -r target; do
+            [ -n "$target" ] || continue
+            case "${range_sha[index]}" in
+              "$target"*)
+                undone_indices="${undone_indices}${index} "
+                break
+                ;;
+            esac
+          done <<<"${range_targets[probe]}"
+          case "$undone_indices" in
+            *" $index "*) break ;;
+          esac
+        fi
+        probe=$((probe + 1))
+      done
+    fi
+    index=$((index + 1))
+  done
+
+  # Newest first, so every waiver already collected is strictly NEWER than the
+  # commit currently being judged. A commit's own verdict is added only after
+  # its own references are judged, so a waiver can never authorize itself.
+  index=0
+  while [ "$index" -lt "$count" ]; do
+    while IFS= read -r ref; do
+      [ -n "$ref" ] || continue
+      refs_seen=true
+      if [ "${range_is_revert[index]}" = 1 ]; then
+        case "$undone_indices" in
+          *" $index "*)
+            case " $undone_refs " in
+              *" #$ref "*) ;;
+              *) undone_refs="${undone_refs}#${ref} " ;;
+            esac
+            ;;
+          # The revert IS the fix and it still stands: self-consistent.
+          *) continue ;;
+        esac
+      fi
+      case "$waived_so_far" in
+        *" $ref "*)
+          case " $waived " in
+            *" #$ref "*) ;;
+            *) waived="${waived}#${ref} " ;;
+          esac
+          continue
+          ;;
+      esac
+      case " $unconfirmed " in
+        *" #$ref "*) ;;
+        *) unconfirmed="${unconfirmed}#${ref} " ;;
+      esac
+    done <<<"${range_refs[index]}"
+    if [ "${range_has_token[index]}" = 1 ]; then
+      while IFS= read -r ref; do
+        [ -n "$ref" ] || continue
+        all_waiver_named="${all_waiver_named}${ref} "
+        # A verdict written before the newest revert audited a branch that no
+        # longer exists; it cannot speak for what the later revert did.
+        if [ "$newest_revert_index" -ge 0 ] && [ "$index" -lt "$newest_revert_index" ]; then
+          waived_so_far="${waived_so_far}${ref} "
+        else
+          stale_verdict=true
+        fi
+      done <<<"${range_waived[index]}"
+    fi
+    index=$((index + 1))
+  done
+
+  # The persisted PR body, judged only once a revert is known to exist so the
+  # ordinary path spends no extra API call. It has no position in history, so
+  # it imposes no recency constraint of its own — any verdict that outranks
+  # every revert may authorize it.
+  if [ -n "$pr_number" ]; then
+    if ! pr_body="$(gh_pr_view "$pr_number" --json body --jq '.body // ""' 2>/dev/null)"; then
+      echo "ERROR: could not read PR #$pr_number's body, so closing references persisted" >&2
+      echo "       there cannot be judged against this branch's reverts (issue #714)." >&2
+      echo "       Merging closes whatever the BODY says, whatever the commits say." >&2
+      exit 1
+    fi
+    while IFS= read -r ref; do
+      [ -n "$ref" ] || continue
+      refs_seen=true
+      case "$waived_so_far" in
+        *" $ref "*)
+          case " $waived " in
+            *" #$ref "*) ;;
+            *) waived="${waived}#${ref} " ;;
+          esac
+          continue
+          ;;
+      esac
+      case " $body_only_refs " in
+        *" #$ref "*) ;;
+        *) body_only_refs="${body_only_refs}#${ref} " ;;
+      esac
+      case " $unconfirmed " in
+        *" #$ref "*) ;;
+        *) unconfirmed="${unconfirmed}#${ref} " ;;
+      esac
+    done <<<"$(closing_refs_in_bodies <<<"$pr_body")"
+  fi
+
+  if [ -z "$unconfirmed" ]; then
+    if [ -n "$waived" ]; then
+      echo "==> $REVERT_TRAILER_SKIP_TOKEN verdict(s) cover this branch's closing reference(s);"
+      echo "    shipping unverified closing reference(s): ${waived% }"
+      return 0
+    fi
+    # Silent when the branch carries no closing reference at all: a revert
+    # with nothing to close is the ordinary case and needs no commentary.
+    if [ "$refs_seen" = true ]; then
+      echo "==> Revert commit(s) present; every closing reference is carried by a revert itself."
+    fi
+    return 0
+  fi
+
+  for ref in $unconfirmed; do
+    case "$all_waiver_named" in
+      *" ${ref#\#} "*) ;;
+      *) unauthorized="${unauthorized}${ref} " ;;
+    esac
+  done
+
+  echo "ERROR: this branch closes issue(s) that a revert in the same PR may have undone." >&2
+  echo "       Unconfirmed closing reference(s): ${unconfirmed% }" >&2
+  if [ -n "$undone_refs" ]; then
+    echo "       Reverted revert(s) restored the change behind: ${undone_refs% }" >&2
+  fi
+  if [ -n "$body_only_refs" ]; then
+    echo "       Persisted in the PR body, where merge reads it: ${body_only_refs% }" >&2
+  fi
+  if [ -n "$unauthorized" ]; then
+    echo "       $REVERT_TRAILER_SKIP_TOKEN verdict(s) on this branch do not authorize: ${unauthorized% }" >&2
+  fi
+  if [ "$stale_verdict" = true ]; then
+    echo "       Verdict(s) that predate a later revert on this branch are not honored." >&2
+  fi
+  echo "       Reverting commit(s) on this branch:" >&2
+  for commit in $revert_shas; do
+    printf '         %s\n' "$(git log -1 --format='%h %s' "$commit")" >&2
+  done
+  echo "       A closing reference records an intent, not a result. Merging as-is would" >&2
+  echo "       auto-close the issue(s) above while the merged tree may no longer contain" >&2
+  echo "       the fix — the issue reads resolved and the bug stays live (issue #714)." >&2
+  echo "       Resolve before shipping:" >&2
+  echo "         - fix did NOT survive: drop the closing reference (rebase -i, reword the" >&2
+  echo "           commit, or write 'Refs #N' instead of 'Closes #N')" >&2
+  echo "         - revert is unrelated and the fix IS present: record that verdict where" >&2
+  echo "           a reader can see it —" >&2
+  echo "           git commit --allow-empty -m 'chore: audit closing refs against revert' \\" >&2
+  echo "             -m '$REVERT_TRAILER_SKIP_TOKEN ${unconfirmed% } verified present in HEAD'" >&2
+  exit 1
 }
 
 usage() {
@@ -1517,6 +1871,16 @@ if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
   exit 1
 fi
 
+# Judge closing references against this branch's reverts BEFORE the push, so a
+# refusal leaves the remote exactly as it was. Runs on every invocation —
+# draft, update, and final shipping alike: a draft's trailers are the same
+# trailers the squash message will carry, and one code path is the only way
+# the check cannot be routed around by picking a mode. An existing PR's number
+# goes with it: merge auto-closes what the persisted BODY says, so the body is
+# a source of closing references the commit trailers can no longer speak for.
+assert_closing_refs_survive_reverts "$BASE_BRANCH" \
+  "${EXISTING_PR_URL:+$(basename "$EXISTING_PR_URL")}"
+
 # Stacking + --auto-merge means THIS PR squash-merges into $BASE_BRANCH, not
 # into $DEFAULT_BRANCH. That is no longer dangerous — merge-pr.sh retains the
 # head branch after merge (and refuses under repository-level auto-delete), so
@@ -1633,81 +1997,167 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
     echo "       manually (fetch, merge or rebase), then rerun." >&2
     exit 1
   fi
-  # Exact-content integration evidence. git cherry's patch-ids ignore
-  # whitespace, which is behaviorally significant in Python, YAML, and shell
-  # continuations — a remote commit differing only in whitespace would count
-  # as incorporated and its content would be forced away. Instead, every
-  # remote-only commit must have a whitespace-EXACT patch twin among the
-  # local-only commits: hunk headers and index lines are normalized out
-  # (rebases renumber them), everything else must match byte-for-byte.
-  open_pr_exact_patch_fingerprint() {
-    local commit="$1" patch_text
-    if ! patch_text="$(GIT_NO_REPLACE_OBJECTS=1 git diff-tree --no-commit-id --full-index -p -U3 "$commit" 2>&1)"; then
-      echo "ERROR: could not compute the patch for commit ${commit:0:12}:" >&2
-      printf '%s\n' "$patch_text" | sed 's/^/       /' >&2
-      return 1
+  # Ordered content-incorporation evidence (issues #721, #685; PR #807 review).
+  #
+  # git cherry's patch-ids ignore whitespace, which is behaviorally significant
+  # in Python, YAML, and shell continuations, so it cannot be the evidence. Three
+  # weaker identities were tried before this one; they are recorded here so they
+  # are not tried again.
+  #
+  #   - Patch TEXT. Keep the `@@ -a,b +c,d @@` coordinates and every rebase
+  #     reads as different content; strip them and the patch loses its only
+  #     remaining location identity, so the same edit applied to two different
+  #     occurrences of a repeated block digests identically (issue #721). Patch
+  #     text also renders a binary change as a "Binary files differ"
+  #     placeholder, collapsing two different blobs into one id (issue #685).
+  #   - The POST-IMAGE blob per path. Byte-exact and binary-safe, but it names
+  #     the resulting FILE, not the change. Rebase a commit onto a new parent
+  #     that edited ANOTHER PART of the same file and the delta is byte-identical
+  #     while the post-image differs — a routine reconciled rebase that no
+  #     amount of fetching and rebasing can ever make publishable. And because
+  #     post-images are states rather than transitions, an unordered pool of
+  #     them lets a remote `X -> Y -> Z` be satisfied by a local `X -> Z -> Y`:
+  #     both pools contain Y and Z, both remote commits find a twin, and the
+  #     retry force-pushes away the remote head's final Z content.
+  #   - `git patch-id --stable` over `git diff-tree -p --binary`. Measured
+  #     against all three shapes on git 2.55: it IS stable across the rebase,
+  #     but it collides on the #721 repeated-block edit (line numbers are
+  #     exactly what it discards) and on whitespace-only differences (it strips
+  #     whitespace), so adopting it would reintroduce both defects this guard
+  #     exists to prevent.
+  #
+  # The question being asked is not "does some local commit look like this
+  # remote commit" but "is this remote commit's change already present at the
+  # matching point of the local history". Ask git that directly: a three-way
+  # merge of the remote commit into a local candidate, based at the remote
+  # commit's OWN parent. If applying the remote delta changes nothing, the
+  # content is incorporated — whatever the line numbers, whatever the parent,
+  # binary included. Whitespace is content to a merge, so a whitespace-only
+  # variant conflicts and is refused. The merge honors the repository's own
+  # merge attributes, deliberately: the reference frame for "did this land" is
+  # the same one `git merge` and `git rebase` use in this repository.
+  #
+  # The scan is ORDERED: remote-only commits are walked oldest-first and each
+  # consumes the earliest not-yet-consumed local-only commit that carries it, so
+  # a reordered local history runs out of candidates instead of matching an
+  # out-of-order twin. Matching against the final local HEAD instead would be
+  # wrong in the other direction — a later remote commit that overwrites an
+  # earlier one's lines makes the earlier one legitimately absent from HEAD — so
+  # the correspondence is pairwise, in order.
+  #
+  # Invariant: greedy earliest-match can only ever over-refuse. It may consume a
+  # candidate that a later remote commit would also have accepted, but it can
+  # never accept a sequence that ordered matching would reject. Over-refusal
+  # costs a manual reconcile; over-acceptance costs someone's work.
+  #
+  # 0 = the remote change is already present in this local candidate
+  # 1 = it is not (different content, or a conflicting three-way merge)
+  # 2 = the question could not be answered; the caller must fail closed
+  #
+  # Every command's status is handled explicitly here, so the errexit
+  # suspension that the caller's `|| status=$?` imposes changes nothing.
+  open_pr_change_already_present() {
+    local base_tree="$1" candidate="$2" change="$3"
+    local candidate_tree merged merged_tree merge_status=0
+    if ! candidate_tree="$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify "${candidate}^{tree}" 2>&1)"; then
+      echo "ERROR: could not resolve the tree of local commit ${candidate:0:12}:" >&2
+      printf '%s\n' "$candidate_tree" | sed 's/^/       /' >&2
+      return 2
     fi
-    # An empty patch carries no provable content; the caller refuses.
-    [ -n "$patch_text" ] || return 2
-    printf '%s\n' "$patch_text" \
-      | sed -e '/^index /d' -e 's/^@@ .*@@/@@/' \
-      | touchstone_sha256_stream
+    merged="$(GIT_NO_REPLACE_OBJECTS=1 git merge-tree --write-tree \
+      --merge-base="$base_tree" "$candidate" "$change" 2>&1)" || merge_status=$?
+    if [ "$merge_status" -gt 1 ]; then
+      echo "ERROR: could not test whether ${change:0:12} is already present in ${candidate:0:12}:" >&2
+      printf '%s\n' "$merged" | sed 's/^/       /' >&2
+      echo "       Integration evidence needs 'git merge-tree --write-tree' (git 2.38+)." >&2
+      echo "       Upgrade git, or reconcile and publish this branch by hand." >&2
+      return 2
+    fi
+    # Exit 1 is a conflicted merge: the remote delta does not apply cleanly on
+    # top of this candidate, so this candidate does not carry it.
+    [ "$merge_status" -eq 0 ] || return 1
+    merged_tree="${merged%%$'\n'*}"
+    # A clean merge whose first output line is not an object id means the output
+    # shape is not the one this reader was written against. Comparing it would
+    # silently answer "not present" for every commit, turning the guard into a
+    # blanket refusal nobody could diagnose. Say so instead.
+    case "$merged_tree" in
+      "" | *[!0-9a-f]*)
+        echo "ERROR: 'git merge-tree --write-tree' did not return a tree id for ${change:0:12}:" >&2
+        printf '%s\n' "$merged" | sed 's/^/       /' >&2
+        return 2
+        ;;
+    esac
+    [ "$merged_tree" = "$candidate_tree" ]
   }
-  if [ ! -f "$SCRIPT_DIR/../lib/sha256.sh" ]; then
-    echo "ERROR: push rejected and lib/sha256.sh is missing; cannot prove remote history" >&2
-    echo "       is incorporated. Refusing to force-push." >&2
-    exit 1
-  fi
-  # shellcheck source=../lib/sha256.sh
-  source "$SCRIPT_DIR/../lib/sha256.sh"
-  if ! REMOTE_ONLY_COMMITS="$(GIT_NO_REPLACE_OBJECTS=1 git rev-list "$EXISTING_PR_HEAD_SHA" --not "$PUSHED_HEAD_SHA" 2>&1)"; then
+  # Both histories oldest-first and in topological order: the correspondence
+  # below is about the order changes were APPLIED, not about commit dates.
+  if ! REMOTE_ONLY_COMMITS="$(GIT_NO_REPLACE_OBJECTS=1 git rev-list --topo-order --reverse "$EXISTING_PR_HEAD_SHA" --not "$PUSHED_HEAD_SHA" 2>&1)"; then
     echo "ERROR: push rejected and the observed PR head's history could not be traversed:" >&2
     printf '%s\n' "$REMOTE_ONLY_COMMITS" | sed 's/^/       /' >&2
     echo "       Cannot prove the remote history is incorporated; refusing to force-push." >&2
     exit 1
   fi
   if [ -n "$REMOTE_ONLY_COMMITS" ]; then
-    if ! LOCAL_ONLY_COMMITS="$(GIT_NO_REPLACE_OBJECTS=1 git rev-list "$PUSHED_HEAD_SHA" --not "$EXISTING_PR_HEAD_SHA" 2>&1)"; then
+    if ! LOCAL_ONLY_COMMITS="$(GIT_NO_REPLACE_OBJECTS=1 git rev-list --topo-order --reverse "$PUSHED_HEAD_SHA" --not "$EXISTING_PR_HEAD_SHA" 2>&1)"; then
       echo "ERROR: push rejected and the local branch history could not be traversed:" >&2
       printf '%s\n' "$LOCAL_ONLY_COMMITS" | sed 's/^/       /' >&2
       echo "       Cannot prove the remote history is incorporated; refusing to force-push." >&2
       exit 1
     fi
-    LOCAL_PATCH_FINGERPRINTS=" "
-    for local_commit in $LOCAL_ONLY_COMMITS; do
-      fp_status=0
-      local_fp="$(open_pr_exact_patch_fingerprint "$local_commit")" || fp_status=$?
-      # Status 2 (empty patch) just contributes no twin; hard errors abort.
-      if [ "$fp_status" -eq 1 ]; then
-        echo "       Refusing to force-push without complete integration evidence." >&2
-        exit 1
-      fi
-      [ "$fp_status" -eq 0 ] && LOCAL_PATCH_FINGERPRINTS="${LOCAL_PATCH_FINGERPRINTS}${local_fp} "
-    done
+    if ! OPEN_PR_EMPTY_TREE="$(git hash-object -t tree /dev/null 2>&1)"; then
+      echo "ERROR: push rejected and the empty tree id could not be computed:" >&2
+      printf '%s\n' "$OPEN_PR_EMPTY_TREE" | sed 's/^/       /' >&2
+      echo "       Refusing to force-push without complete integration evidence." >&2
+      exit 1
+    fi
+    LOCAL_ONLY_LIST=()
+    LOCAL_ONLY_COUNT=0
+    while IFS= read -r local_commit; do
+      [ -n "$local_commit" ] || continue
+      LOCAL_ONLY_LIST[LOCAL_ONLY_COUNT]="$local_commit"
+      LOCAL_ONLY_COUNT=$((LOCAL_ONLY_COUNT + 1))
+    done <<<"$LOCAL_ONLY_COMMITS"
+    LOCAL_ONLY_CURSOR=0
     for remote_commit in $REMOTE_ONLY_COMMITS; do
-      fp_status=0
-      remote_fp="$(open_pr_exact_patch_fingerprint "$remote_commit")" || fp_status=$?
-      if [ "$fp_status" -ne 0 ]; then
-        echo "ERROR: push rejected and remote commit ${remote_commit:0:12} has no provable patch content." >&2
-        echo "       Refusing to force-push without complete integration evidence." >&2
+      # A commit's delta is written against its own first parent. A root commit
+      # has none, so its delta is "everything" and the empty tree is the honest
+      # base. Merge commits never reach here — they are refused above.
+      if ! REMOTE_BASE_TREE="$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify --quiet "${remote_commit}^1^{tree}" 2>/dev/null)"; then
+        REMOTE_BASE_TREE="$OPEN_PR_EMPTY_TREE"
+      fi
+      REMOTE_COMMIT_INCORPORATED=false
+      LOCAL_ONLY_PROBE="$LOCAL_ONLY_CURSOR"
+      while [ "$LOCAL_ONLY_PROBE" -lt "$LOCAL_ONLY_COUNT" ]; do
+        PRESENT_STATUS=0
+        open_pr_change_already_present \
+          "$REMOTE_BASE_TREE" "${LOCAL_ONLY_LIST[LOCAL_ONLY_PROBE]}" "$remote_commit" \
+          || PRESENT_STATUS=$?
+        LOCAL_ONLY_PROBE=$((LOCAL_ONLY_PROBE + 1))
+        if [ "$PRESENT_STATUS" -eq 2 ]; then
+          echo "       Refusing to force-push without complete integration evidence." >&2
+          exit 1
+        fi
+        if [ "$PRESENT_STATUS" -eq 0 ]; then
+          REMOTE_COMMIT_INCORPORATED=true
+          # Consume the candidate: each remote occurrence needs its OWN local
+          # occurrence, and later remote commits may only match later local
+          # ones. Remote histories can carry the same change twice (add X,
+          # revert X, add X again); a shared candidate would let both
+          # occurrences claim one twin and force real content away.
+          LOCAL_ONLY_CURSOR="$LOCAL_ONLY_PROBE"
+          break
+        fi
+      done
+      if [ "$REMOTE_COMMIT_INCORPORATED" != true ]; then
+        echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} carries commit ${remote_commit:0:12}" >&2
+        echo "       whose changes are not in this checkout's history byte-for-byte and in order" >&2
+        echo "       (whitespace differences count, and a local history that applies the same" >&2
+        echo "       changes in a different order is not the same history). Forcing would" >&2
+        echo "       delete them. Fetch and reconcile (rebase or merge), then rerun; refusing" >&2
+        echo "       to overwrite unseen work." >&2
         exit 1
       fi
-      case "$LOCAL_PATCH_FINGERPRINTS" in
-        *" $remote_fp "*)
-          # Consume the twin: each remote occurrence needs its OWN local
-          # occurrence. Remote histories can carry the same patch twice
-          # (add X, revert X, add X again); set-membership would let both
-          # occurrences claim one local twin and force away real content.
-          LOCAL_PATCH_FINGERPRINTS="${LOCAL_PATCH_FINGERPRINTS/ ${remote_fp} / }"
-          ;;
-        *)
-          echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} carries commit ${remote_commit:0:12}" >&2
-          echo "       whose changes are not in this checkout's history byte-for-byte (whitespace" >&2
-          echo "       differences count). Forcing would delete them. Fetch and reconcile" >&2
-          echo "       (rebase or merge), then rerun; refusing to overwrite unseen work." >&2
-          exit 1
-          ;;
-      esac
     done
   fi
   echo "==> Push rejected; PR $EXISTING_PR_URL exists and every observed-head change is incorporated locally."
