@@ -983,6 +983,23 @@ fi
 # content that CLAUDE.md gets for free via @-imports.
 AGENTS_PRINCIPLES_TOUCHED=false
 GEMINI_PRINCIPLES_TOUCHED=false
+# Whether each steering file was otherwise clean BEFORE this run touched it.
+# The scope exemption for a refreshed steering file may only apply when the
+# update is the sole author of its diff: with TOUCHSTONE_FORCE_OVERLAP=1 a
+# file can carry staged project-owned edits, and exempting the whole path
+# would let those ride into an auto-merged touchstone commit
+# (PR #787 review). Computed here because the refresh itself dirties them.
+steering_file_was_clean() {
+  local rel="$1"
+  [ -e "$PROJECT_DIR/$rel" ] || return 0
+  git -C "$PROJECT_DIR" ls-files --error-unmatch "$rel" >/dev/null 2>&1 || return 1
+  git -C "$PROJECT_DIR" diff --quiet -- "$rel" 2>/dev/null || return 1
+  git -C "$PROJECT_DIR" diff --cached --quiet -- "$rel" 2>/dev/null || return 1
+}
+AGENTS_WAS_CLEAN=false
+GEMINI_WAS_CLEAN=false
+steering_file_was_clean "AGENTS.md" && AGENTS_WAS_CLEAN=true
+steering_file_was_clean "GEMINI.md" && GEMINI_WAS_CLEAN=true
 
 # A block-apply failure (orphaned sentinel, symlinked target, missing render
 # source) must FAIL the update. Swallowing it with `|| true` committed the
@@ -1138,10 +1155,24 @@ if [ "$DRY_RUN" = false ]; then
       git -C "$PROJECT_DIR" add -f -- "$rel"
       # A managed-block refresh of an existing steering file is exactly what
       # this update is for. It is project-owned so it is absent from the
-      # manifest, and without recording it here the scope guard reported a
-      # normal refresh as foreign content and refused every auto-merge
-      # (PR #787 review, round 2).
-      SCOPE_CREATED_SLOTS+=("$rel")
+      # manifest, and without recording it the scope guard reported a normal
+      # refresh as foreign content and refused every auto-merge (round 2).
+      # But exempt it ONLY when the file was otherwise clean before this run:
+      # under TOUCHSTONE_FORCE_OVERLAP=1 it can carry staged project-owned
+      # edits, and a whole-path exemption would auto-merge those under the
+      # touchstone commit (round 5). Not exempting is the safe direction --
+      # the guard then opens the PR for human review instead.
+      local was_clean=false
+      case "$rel" in
+        AGENTS.md) was_clean="$AGENTS_WAS_CLEAN" ;;
+        GEMINI.md) was_clean="$GEMINI_WAS_CLEAN" ;;
+      esac
+      if [ "$was_clean" = true ]; then
+        SCOPE_CREATED_SLOTS+=("$rel")
+      else
+        echo "    NOTE: $rel carried pre-existing changes; not exempting it from the"
+        echo "          diff-scope guard, so this update will open a PR for review."
+      fi
     else
       echo "    NOTE: $rel is untracked (gitignored?); refreshed managed block left unstaged, not published."
     fi

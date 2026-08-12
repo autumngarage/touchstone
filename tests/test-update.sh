@@ -2300,6 +2300,47 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "--- Step 19: the steering exemption requires a sole author (PR #787) ---"
+
+# A steering file carrying PRE-EXISTING project-owned changes must NOT be
+# exempted from the diff-scope guard: exempting the whole path would let
+# those unrelated edits auto-merge under the touchstone commit (reachable
+# with TOUCHSTONE_FORCE_OVERLAP=1). Not exempting is the safe direction --
+# the guard opens the PR for human review instead.
+SOLE_AUTHOR_PROJECT="$TEST_DIR/p787e-sole-author"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SOLE_AUTHOR_PROJECT" --no-register >/dev/null
+configure_git "$SOLE_AUTHOR_PROJECT"
+commit_all "$SOLE_AUTHOR_PROJECT" "initial sole-author project"
+# Stage an unrelated project-owned edit inside the steering file.
+printf '\nPROJECT-OWNED EDIT THAT MUST NOT RIDE ALONG\n' >>"$SOLE_AUTHOR_PROJECT/AGENTS.md"
+git -C "$SOLE_AUTHOR_PROJECT" add AGENTS.md
+SOLE_AUTHOR_OUT="$TEST_DIR/p787e-sole-author.txt"
+(
+  cd "$SOLE_AUTHOR_PROJECT"
+  # shellcheck disable=SC1090
+  . "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check
+) >"$SOLE_AUTHOR_OUT" 2>&1 || true
+
+# The cleanliness probe is what the exemption keys on; assert it directly so
+# the case does not depend on reaching a full ship path.
+if (
+  cd "$SOLE_AUTHOR_PROJECT"
+  git diff --cached --quiet -- AGENTS.md
+); then
+  echo "FAIL: fixture did not stage the project-owned steering edit" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  echo "    PASS: fixture carries a staged project-owned steering edit"
+fi
+if grep -q 'was_clean' "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" \
+  && awk '/stage_refreshed_steering_file\(\) \{/{f=1} f{print} f&&/^  \}$/{exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'was_clean" = true'; then
+  echo "    PASS: the steering exemption is gated on the file being otherwise clean"
+else
+  echo "FAIL: a steering file with pre-existing changes must not be exempted wholesale (PR #787)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # --------------------------------------------------------------------------
 # Results
 # --------------------------------------------------------------------------
