@@ -487,10 +487,21 @@ touchstone_auto_project_reconcile_external() {
 }
 
 touchstone_auto_project_sync_command_skips() {
-  local command="${1:-}"
+  local command="${1:-}" subcommand="${2:-}"
 
   case "$command" in
     "" | help | -h | --help | version | --version | status | list | ls | diff | changelog | doctor | detect | skills | update | update-all | sync | new | init | release)
+      return 0
+      ;;
+  esac
+
+  # `review` still dispatches (to a deterministic preflight), and its dry-run
+  # flags still mean "inspect, change nothing" — a read-only invocation must
+  # not rewrite the project's managed files as a side effect. #737 dropped the
+  # `adr:list` and `worker:*` entries that shared this block because those
+  # commands no longer exist; these two do.
+  case "$command:$subcommand" in
+    review:--dry-run | review:-n)
       return 0
       ;;
   esac

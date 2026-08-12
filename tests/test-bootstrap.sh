@@ -1833,12 +1833,15 @@ else
 fi
 
 # #737 removed the doctor profile mirror: the block that re-derived
-# touchstone-run.sh's profile resolution and re-checked per-profile test
-# presence and linter availability. It was a second copy of the dispatcher's
-# logic that had to be hand-kept in lock-step, and it constrained nothing —
-# pre-push already runs the real dispatcher. doctor keeps the structural
-# checks (hooks, manifest, review policy, registry) and must not grow the
-# mirror back.
+# touchstone-run.sh's profile resolution, validated profile names, walked
+# configured targets, and guessed at test presence. It was a second copy of
+# the dispatcher's logic that had to be hand-kept in lock-step, and the runner
+# is the authority on all of it. What survived the cut is the one thing the
+# runner cannot report on itself: a linter that is not installed, which
+# `touchstone run lint` skips while exiting 0 (asserted below). This case
+# pins the boundary — with targets configured, doctor defers to the runner
+# instead of walking them, and it never renders a verdict on an unknown
+# profile.
 PROJECT_DOCTOR_NO_MIRROR="$TEST_DIR/test-project-doctor-no-profile-mirror"
 PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_NO_MIRROR" --no-register --type python >/dev/null
 touchstone_sed_inplace 's|^project_type=.*|project_type=kotlin|' "$PROJECT_DOCTOR_NO_MIRROR/.touchstone-config"
@@ -1855,6 +1858,54 @@ assert_not_contains "$TEST_DIR/doctor-no-mirror.txt" 'unknown project_type'
 assert_not_contains "$TEST_DIR/doctor-no-mirror.txt" 'tests: '
 assert_not_contains "$TEST_DIR/doctor-no-mirror.txt" 'ruff'
 assert_not_contains "$TEST_DIR/doctor-no-mirror.txt" 'target mobile'
+assert_contains "$TEST_DIR/doctor-no-mirror.txt" 'lint: dispatched per target'
+
+# A green validate that linted nothing is the trap the lint action's graceful
+# skip creates: `run_python_action lint` prints "ruff not installed; skipped"
+# and exits 0. doctor is the only surface that reports it, so a Python project
+# with no ruff on PATH must be a counted issue, not a clean bill of health.
+PROJECT_DOCTOR_LINT_GAP="$TEST_DIR/test-project-doctor-lint-gap"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_LINT_GAP" --no-register --type python >/dev/null
+if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
+  echo "SKIP: ruff on minimal PATH; cannot test the ruff-absent doctor case on this machine" >&2
+else
+  # Keep touchstone reachable by absolute path; drop ruff from PATH.
+  if (cd "$PROJECT_DOCTOR_LINT_GAP" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-lint-gap.txt" 2>&1; then
+    echo "FAIL: doctor --project must exit nonzero when the profile's linter is unreachable" >&2
+    cat "$TEST_DIR/doctor-lint-gap.txt" >&2
+    ERRORS=$((ERRORS + 1))
+  else
+    assert_contains "$TEST_DIR/doctor-lint-gap.txt" 'ruff not on PATH'
+    assert_contains "$TEST_DIR/doctor-lint-gap.txt" 'still exits 0'
+  fi
+fi
+
+# The same project with ruff reachable is clean — the check reports the gap,
+# it does not just always fire on Python.
+RUFF_STUB_BIN="$TEST_DIR/ruff-stub-bin"
+mkdir -p "$RUFF_STUB_BIN"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$RUFF_STUB_BIN/ruff"
+chmod +x "$RUFF_STUB_BIN/ruff"
+if (cd "$PROJECT_DOCTOR_LINT_GAP" && PATH="$RUFF_STUB_BIN:/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-lint-ok.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-lint-ok.txt" 'ruff: on PATH'
+  assert_contains "$TEST_DIR/doctor-lint-ok.txt" 'Project is fully armed'
+else
+  echo "FAIL: doctor --project should exit 0 on a Python project with ruff reachable" >&2
+  cat "$TEST_DIR/doctor-lint-ok.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# An explicit lint_command bypasses the profile default, so the linter's
+# absence is not a gap — doctor must not manufacture an issue there.
+touchstone_sed_inplace 's|^lint_command=.*|lint_command=echo linted|' "$PROJECT_DOCTOR_LINT_GAP/.touchstone-config"
+if (cd "$PROJECT_DOCTOR_LINT_GAP" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-lint-override.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-lint-override.txt" 'lint: overridden via .touchstone-config'
+  assert_not_contains "$TEST_DIR/doctor-lint-override.txt" 'ruff not on PATH'
+else
+  echo "FAIL: a configured lint_command must not be reported as a missing linter" >&2
+  cat "$TEST_DIR/doctor-lint-override.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
 
 # Generic profile doctor must NOT count missing tests as an issue — a fresh
 # generic project with no test_command configured stays fully armed.

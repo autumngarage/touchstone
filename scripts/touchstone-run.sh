@@ -43,9 +43,9 @@ clear_git_hook_env() {
   unset PRE_COMMIT_REMOTE_URL
 }
 
-# Tests source this script with TOUCHSTONE_RUN_SOURCE_ONLY=1 to call helpers
-# directly without running the action dispatcher at the bottom. They pass
-# TOUCHSTONE_RUN_TEST_REPO_ROOT
+# tests/test-find-python-bin.sh sources this script with
+# TOUCHSTONE_RUN_SOURCE_ONLY=1 to call helpers directly without running the
+# action dispatcher at the bottom. Tests pass TOUCHSTONE_RUN_TEST_REPO_ROOT
 # to fix REPO_ROOT explicitly so they can construct fixture filesystems
 # without needing a real git repo.
 if [ "${TOUCHSTONE_RUN_SOURCE_ONLY:-0}" = "1" ]; then

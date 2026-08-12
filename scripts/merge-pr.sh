@@ -1702,8 +1702,6 @@ wait_for_pr_triggered_review() {
           echo "==> Trusted PR-visible AI review found for PR #$PR_NUMBER head $expected_head."
           echo "    reviewed_base=$observed_base"
           [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ] && echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
-          now_epoch="$(date +%s)"
-          elapsed=$((now_epoch - start_epoch))
           return 0
         fi
         if [ "$signal_status" -eq 2 ]; then
@@ -1738,8 +1736,6 @@ wait_for_pr_triggered_review() {
             # it was answered — the pre-#751 rule stands for this class: a
             # fresh review of this head is the only durable acknowledgement
             # (PR #755 review).
-            now_epoch="$(date +%s)"
-            elapsed=$((now_epoch - start_epoch))
             echo "ERROR: Trusted PR-visible AI review is not clean for PR #$PR_NUMBER head $expected_head." >&2
             if [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ]; then
               echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2
@@ -1770,8 +1766,6 @@ wait_for_pr_triggered_review() {
             if [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ]; then
               echo "    $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL"
             fi
-            now_epoch="$(date +%s)"
-            elapsed=$((now_epoch - start_epoch))
             return 0
           fi
           if [ "$answered_status" -eq 2 ]; then
@@ -1780,8 +1774,6 @@ wait_for_pr_triggered_review() {
             # as such if the wait times out.
             last_review_inspection_error="answered-findings check: $PR_ANSWERED_FINDINGS_INSPECTION_ERROR"
           else
-            now_epoch="$(date +%s)"
-            elapsed=$((now_epoch - start_epoch))
             echo "ERROR: Trusted PR-visible AI review is not clean for PR #$PR_NUMBER head $expected_head." >&2
             if [ -n "$PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" ]; then
               echo "       $PR_TRIGGERED_REVIEW_SIGNAL_DETAIL" >&2

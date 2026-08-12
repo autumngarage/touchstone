@@ -301,6 +301,27 @@ if ! touchstone_auto_project_sync_should_sync "000000000000000000000000000000000
 fi
 
 echo ""
+echo "--- read-only subcommands are exempt from auto project sync ---"
+# A dry-run is a promise that nothing changes. Auto-sync rewrites managed
+# files, so the exemption is part of that promise, not a convenience (#737).
+for dry_flag in --dry-run -n; do
+  if ! touchstone_auto_project_sync_command_skips review "$dry_flag"; then
+    echo "FAIL: 'touchstone review $dry_flag' must not trigger an auto project sync" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+done
+# The exemption is scoped to the dry-run flags: a mutating invocation of the
+# same command still syncs, or the skip list would silently widen.
+if touchstone_auto_project_sync_command_skips review; then
+  echo "FAIL: a plain 'touchstone review' must still auto-sync" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if touchstone_auto_project_sync_command_skips run validate; then
+  echo "FAIL: 'touchstone run validate' must still auto-sync" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo ""
 echo "--- non-touchstone project: no-op ---"
 PLAIN_HOME="$TEST_DIR/home-plain"
 PLAIN_PROJECT="$TEST_DIR/project-plain"

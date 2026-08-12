@@ -646,7 +646,16 @@ cmd_doctor_project() {
     issues=$((issues + 1))
   fi
 
-  # 7. Autumn Garage siblings — orientation-only, never blocking.
+  # 7. Lint reachability. scripts/touchstone-run.sh's lint action is graceful
+  # when a linter is absent — "ruff not installed; skipped" and exit 0 — so a
+  # green pre-push is compatible with nothing having been linted. Graceful is
+  # the right runtime behavior; invisible is not, and no other surface reports
+  # it. #737 removed the doctor profile mirror, and this check is deliberately
+  # not that: it asks the runner which profile it resolved instead of
+  # re-deriving one, so it cannot drift from the dispatcher.
+  _touchstone_doctor_check_lint_reachable "$project_dir" || issues=$((issues + 1))
+
+  # 8. Autumn Garage siblings — orientation-only, never blocking.
   # Autumn Garage Doctrine 0001 forbids code imports across the trio, so this
   # check is file-contract only: shell out to the sibling CLI for a version
   # string and look at the project-local marker directory. Absence is normal.
@@ -664,6 +673,88 @@ cmd_doctor_project() {
   echo ""
   return 1
 }
+
+# Report whether .touchstone-config assigns a non-empty value to the given key.
+# Used to suppress the lint-reachability check when the project has overridden
+# the runner's default dispatch — otherwise doctor false-positives on a config
+# that never reaches the profile linter at all.
+_touchstone_config_has_override() {
+  local dir="$1" key="$2"
+  [ -f "$dir/.touchstone-config" ] || return 1
+  # Match "key = value" where value has at least one non-space character.
+  # Skips commented-out lines ("# key=...") and empty assignments ("key=").
+  grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[^[:space:]#]" "$dir/.touchstone-config"
+}
+
+# Is the profile's linter actually reachable? `touchstone run lint` exits 0
+# when it is not, so this is the only place a project learns that its lint
+# gate has been a no-op. Returns 1 when a real gap is found (the caller counts
+# it as an issue), 0 otherwise — including when the check does not apply.
+#
+# The profile comes from `touchstone-run.sh detect`, i.e. the dispatcher's own
+# answer. Doctor must never re-implement that resolution: the mirror #737
+# removed had to be hand-kept in lock-step with the runner and silently rotted
+# when it wasn't.
+_touchstone_doctor_check_lint_reachable() {
+  local project_dir="$1" runner profile
+
+  runner="$project_dir/scripts/touchstone-run.sh"
+  [ -f "$runner" ] || return 0
+
+  # A configured lint_command/validate_command short-circuits the dispatcher
+  # entirely (configured_command_for_action), so no profile default runs.
+  if _touchstone_config_has_override "$project_dir" lint_command \
+    || _touchstone_config_has_override "$project_dir" validate_command; then
+    tk_dim "lint: overridden via .touchstone-config"
+    return 0
+  fi
+  # Config-declared targets make the runner dispatch per-target and never use
+  # the root profile. Say so rather than reporting a root answer that does not
+  # describe what runs — checking each target would require the profile mirror.
+  if _touchstone_config_has_override "$project_dir" targets; then
+    tk_dim "lint: dispatched per target; verify each with 'touchstone run lint'"
+    return 0
+  fi
+
+  profile="$(cd "$project_dir" && bash "$runner" detect 2>/dev/null | sed -n 's/^project_type=//p' | head -1)"
+  case "$profile" in
+    python)
+      if command -v ruff >/dev/null 2>&1; then
+        tk_ok "ruff: on PATH"
+      else
+        tk_warn "ruff not on PATH — 'touchstone run lint' skips it and still exits 0"
+        tk_dim "  Fix: brew install ruff   (or: uv tool install ruff)"
+        return 1
+      fi
+      ;;
+    swift)
+      if command -v swift-format >/dev/null 2>&1; then
+        tk_ok "swift-format: on PATH"
+      else
+        tk_warn "swift-format not on PATH — 'touchstone run lint' skips it and still exits 0"
+        tk_dim "  Fix: brew install swift-format"
+        return 1
+      fi
+      ;;
+    node)
+      # Informational, not an issue: a package.json without a lint script is a
+      # project decision, not a broken toolchain.
+      if [ -f "$project_dir/package.json" ] && grep -q '"lint"[[:space:]]*:' "$project_dir/package.json"; then
+        tk_ok "package.json: lint script configured"
+      else
+        tk_dim "package.json has no 'lint' script — 'touchstone run lint' skips it and still exits 0"
+        tk_dim "  Fix: add a \"lint\" entry under \"scripts\" in package.json"
+      fi
+      ;;
+    *)
+      # rust ships fmt/clippy with the toolchain, go vet is built in, and
+      # generic has no profile linter to be missing.
+      :
+      ;;
+  esac
+  return 0
+}
+
 # Report presence + version of a sibling CLI in the Autumn Garage trio.
 # File-contract only — no code imports, no reading sibling config beyond a
 # presence check on the marker directory. Resolve the CLI path once; a 3s

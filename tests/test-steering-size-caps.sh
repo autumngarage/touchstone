@@ -197,6 +197,16 @@ registry_validate_entries() {
             constrain | legible | carry) ;;
             *) problem "$path serves '$dep' (job='$dep_job'); support must bottom out in a mission job" ;;
           esac
+          # A serves edge is a claim about the code, not a label. bin/touchstone
+          # kept its edge to lib/sed-inplace.sh after it stopped sourcing the
+          # file (#737 review): the registry still read as valid while
+          # describing a dependency that no longer existed. Requiring the
+          # consumer to mention the capability by filename is a low bar that a
+          # deleted `source` or dispatch cannot clear.
+          if [ -f "$TOUCHSTONE_ROOT/$dep" ] \
+            && ! grep -qF "$(basename "$path")" "$TOUCHSTONE_ROOT/$dep"; then
+            problem "$path serves '$dep', but $dep never references $(basename "$path"); drop the edge or restore the use"
+          fi
         done
         [ "$serves_count" -gt 0 ] \
           || problem "$path is support but names no consumers (serves must list at least one)"
@@ -387,6 +397,15 @@ why = \"A support helper serving only another support helper.\"
 job = \"support\"
 serves = [\"lib/a.sh\"]
 why = \"The other half of a support cycle that reaches no mission job.\"" "must bottom out in a mission job"
+
+  reject_case "a serves edge the consumer does not use" "$VALID_ANCHOR
+[\"scripts/branch-guard.sh\"]
+job = \"constrain\"
+why = \"Blocks commits on the default branch before the first tracked edit.\"
+[\"lib/toml.sh\"]
+job = \"support\"
+serves = [\"scripts/branch-guard.sh\"]
+why = \"A support helper claiming a consumer that never references it.\"" "never references toml.sh"
 
   reject_case "a self-referential mirror" "$VALID_ANCHOR
 [\"scripts/branch-guard.sh\"]

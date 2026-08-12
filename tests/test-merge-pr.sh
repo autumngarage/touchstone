@@ -1486,6 +1486,8 @@ fi
 # WITHOUT a fresh review — answered findings are answered. The reviewer is
 # non-deterministic, so requiring a new clean verdict at the same head cannot
 # terminate. The non-clean result must NOT persist clean-review evidence.
+# The negative carries as much weight as the positives: authorizing on
+# answered findings must not be reported as a clean review.
 echo "==> Test: findings review with all threads resolved satisfies the merge gate (issue #751)"
 reset_case_files
 write_pr_triggered_config true 0 0
@@ -1496,7 +1498,7 @@ if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid (fin
   && grep -q 'Revalidated trusted PR-visible AI result for head pr-head-oid (findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-findings-resolved.txt" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
   && ! grep -q 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records" 2>/dev/null \
-  && ! grep -q 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records" 2>/dev/null; then
+  && ! grep -q 'Revalidated latest trusted PR-visible AI result' "$TEST_DIR/output-pr-triggered-findings-resolved.txt"; then
   echo "==> PASS: answered findings satisfy the merge gate without a fresh review"
 else
   echo "FAIL: findings review with all threads resolved should satisfy the merge gate" >&2
@@ -2168,11 +2170,17 @@ else
 fi
 
 # PR #755 round 3 (k): the final revalidation can change the accepted outcome,
-# and the lifecycle record must follow. The wait phase accepts a CLEAN comment
-# and emits review_clean; a newer thread-backed findings review arrives during
-# deterministic verification; the final gate authorizes via answered findings
-# and must emit the corrective review_findings_resolved.
-echo "==> Test: outcome change during verification emits the corrective event (PR #755)"
+# and what the gate reports must follow. The wait phase accepts a CLEAN comment
+# and persists clean-review evidence for it; a newer thread-backed findings
+# review arrives during deterministic verification; the final gate authorizes
+# via answered findings and must say so — a merge reported as clean-reviewed
+# when the latest trusted result raised findings misstates the authorization.
+#
+# Three discriminators, since both outcomes merge and the merge itself proves
+# nothing: the corrected findings line is present, the clean line for the
+# initial outcome is absent, and clean-review evidence is recorded exactly
+# once (by the wait phase) — the findings branch persists none.
+echo "==> Test: outcome change during verification reports the corrected outcome (PR #755)"
 reset_case_files
 write_pr_triggered_config true 0 0
 GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://example.test/comment/clean\tCodex Review: No major issues. **Reviewed commit:** `pr-head-oi`' \
@@ -2180,11 +2188,14 @@ GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://examp
   GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:01:00Z\thttps://example.test/review/late-findings\t1' \
   run_merge_pr "$TEST_DIR/output-pr-triggered-outcome-change.txt" 123
 if grep -q 'Revalidated trusted PR-visible AI result for head pr-head-oid (findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-outcome-change.txt" \
+  && ! grep -q 'Revalidated latest trusted PR-visible AI result' "$TEST_DIR/output-pr-triggered-outcome-change.txt" \
+  && [ "$(grep -c 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records" 2>/dev/null || echo 0)" -eq 1 ] \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
-  echo "==> PASS: the corrected final outcome is emitted, not just the initial one"
+  echo "==> PASS: the corrected final outcome is reported, not just the initial one"
 else
-  echo "FAIL: an outcome change at final revalidation must emit the corrective event" >&2
+  echo "FAIL: an outcome change at final revalidation must report the corrected outcome" >&2
   cat "$TEST_DIR/output-pr-triggered-outcome-change.txt" >&2
+  grep 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records" >&2 || true
   exit 1
 fi
 
