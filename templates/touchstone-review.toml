@@ -3,6 +3,14 @@
 # Deterministic checks run locally. Semantic review is PR-visible and bound to
 # the exact GitHub head and base revisions.
 
+# Which tracker holds this project's issues. Undeclared means GitHub, so an
+# existing project needs no edit here. See principles/git-workflow.md for what
+# each adapter verifies and what it leaves to you.
+#
+# [issues]
+# tracker = "linear"     # "github" (default) | "linear"
+# key_prefix = "CON"     # linear only; restricts references to one team's keys
+
 [review]
 preflight_required = true
 

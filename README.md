@@ -168,7 +168,7 @@ When you run `touchstone new`, these files get created in your project:
 - `CLAUDE.md` — Claude Code instructions with `{{PLACEHOLDERS}}` to fill in
 - `AGENTS.md` — Codex/agent instructions plus the AI review rubric with project-specific priorities
 - `GEMINI.md` — Gemini CLI instructions that point at the shared authoring/review workflow
-- `.touchstone-review.toml` — required PR-visible review policy
+- `.touchstone-review.toml` — required PR-visible review policy, plus the optional `[issues]` tracker declaration (undeclared means GitHub)
 - `.touchstone-config` — Project profile, workflow choices, and optional lint/test/build command overrides
 - `.pre-commit-config.yaml` — Pre-commit hooks including fast branch checks and direct default-branch guardrails
 - `.gitignore` — Sensible defaults

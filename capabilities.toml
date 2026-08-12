@@ -120,6 +120,11 @@ job = "support"
 serves = ["lib/preflight.sh", "scripts/merge-pr.sh", "scripts/open-pr.sh", "bin/touchstone"]
 why = "Minimal TOML reader for .touchstone-config and .touchstone-review.toml."
 
+["lib/issue-tracker.sh"]
+job = "support"
+serves = ["scripts/claim-issue.sh", "scripts/issue-claim-check.sh"]
+why = "Resolves which tracker holds a project's issues and what a reference to one looks like, so the claim discipline is not GitHub-only."
+
 ["lib/sha256.sh"]
 job = "support"
 serves = ["lib/preflight.sh", "scripts/merge-pr.sh", "scripts/open-pr.sh", "bin/touchstone", "bootstrap/update-project.sh"]

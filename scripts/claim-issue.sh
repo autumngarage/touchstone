@@ -3,33 +3,68 @@
 # scripts/claim-issue.sh — deterministically claim an issue before dispatch.
 #
 # Usage:
-#   bash scripts/claim-issue.sh <issue-number> [<dispatch-comment>]
+#   bash scripts/claim-issue.sh <issue-ref> [<dispatch-comment>]
+#
+# The tracker is declared per project in .touchstone-review.toml ([issues]);
+# undeclared means GitHub. Only the GitHub adapter can perform the claim, so
+# other trackers print the protocol the agent must carry out by hand.
 #
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ISSUE_TRACKER_LIB="$SCRIPT_DIR/../lib/issue-tracker.sh"
+
 usage() {
-  echo "Usage: bash scripts/claim-issue.sh <issue-number> [<dispatch-comment>]" >&2
+  echo "Usage: bash scripts/claim-issue.sh <issue-ref> [<dispatch-comment>]" >&2
 }
 
 log() {
   echo "==> $*" >&2
 }
 
+if [ ! -f "$ISSUE_TRACKER_LIB" ]; then
+  echo "ERROR: issue-tracker library not found at $ISSUE_TRACKER_LIB." >&2
+  echo "       Run: touchstone update" >&2
+  exit 2
+fi
+# shellcheck source=../lib/issue-tracker.sh
+source "$ISSUE_TRACKER_LIB"
+
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
   usage
   exit 2
 fi
 
-ISSUE_NUMBER="$1"
-if ! [[ "$ISSUE_NUMBER" =~ ^[0-9]+$ ]]; then
+# Project root first, working directory second: the script ships next to the
+# policy it must obey, and cwd may be anywhere under it.
+if ! issue_tracker_load "$SCRIPT_DIR/.." "$PWD"; then
+  exit 2
+fi
+
+if ! ISSUE_REF="$(issue_tracker_normalize_ref "$1")"; then
+  echo "ERROR: '$1' is not a $ISSUE_TRACKER issue reference; expected $(issue_tracker_ref_hint)." >&2
   usage
   exit 2
 fi
+ISSUE_NUMBER="$ISSUE_REF"
 
 DISPATCH_COMMENT="${2-}"
 COMMENT_PROVIDED=0
 if [ "$#" -eq 2 ]; then
   COMMENT_PROVIDED=1
+fi
+
+if ! issue_tracker_has_claim_transport; then
+  CURRENT_BRANCH="$(git branch --show-current 2>/dev/null || true)"
+  if [ -z "$CURRENT_BRANCH" ]; then
+    CURRENT_BRANCH="(detached-head)"
+  fi
+  echo "MANUAL CLAIM REQUIRED: Touchstone has no $ISSUE_TRACKER claim transport; do these three steps in $ISSUE_TRACKER before editing:" >&2
+  echo "  1. Assign $ISSUE_REF to yourself." >&2
+  echo "  2. Comment on $ISSUE_REF: \"Dispatched: branch \`$CURRENT_BRANCH\`, agent \`${TOUCHSTONE_AGENT_LABEL:-$(whoami)}\`.\"" >&2
+  echo "  3. Reference it from the PR body as: $(issue_tracker_closing_ref "$ISSUE_REF")" >&2
+  echo "     Touchstone verifies none of these three steps for you." >&2
+  exit 0
 fi
 
 if ! command -v gh >/dev/null 2>&1; then

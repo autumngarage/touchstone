@@ -917,6 +917,7 @@ write_touchstone_manifest() {
     printf 'scripts/spawn-worktree.sh\n'
     printf 'scripts/cleanup-worktrees.sh\n'
     printf 'lib/toml.sh\n'
+    printf 'lib/issue-tracker.sh\n'
     printf 'lib/events.sh\n'
     printf 'lib/codex-auth.sh\n'
     printf 'lib/script-sync-guard.sh\n'
@@ -1031,6 +1032,7 @@ echo ""
 echo "==> Copying libraries (touchstone-owned, will be auto-updated):"
 mkdir -p "$PROJECT_DIR/lib"
 copy_file_force "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
+copy_file_force "$TOUCHSTONE_ROOT/lib/issue-tracker.sh" "$PROJECT_DIR/lib/issue-tracker.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/events.sh" "$PROJECT_DIR/lib/events.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/codex-auth.sh" "$PROJECT_DIR/lib/codex-auth.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/script-sync-guard.sh" "$PROJECT_DIR/lib/script-sync-guard.sh"

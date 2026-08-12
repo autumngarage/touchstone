@@ -52,9 +52,9 @@ Project-local high-risk scripts such as `scripts/open-pr.sh` and `scripts/merge-
 
 **Concise commit messages.** Lead with *what* changed in the subject line. Use the body to explain *why* when the why isn't obvious from the diff. The PR description handles the broader narrative; commit messages are the per-step record.
 
-**Issue-closing trailers.** When a commit is meant to resolve a GitHub issue, add a body trailer such as `Closes-issue: #123` (or `Closes: #123`, `Fixes: #123`, `Refs: #123`). `scripts/open-pr.sh` scans commits unique to the branch and injects a `Closes #123` line into the PR body, so the issue auto-closes when the PR merges.
+**Issue-closing trailers.** When a commit is meant to resolve an issue, add a body trailer in the tracker's syntax — under GitHub, `Closes-issue: #123` (or `Closes: #123`, `Fixes: #123`, `Refs: #123`); under Linear, `Fixes CON-123`. Under GitHub, `scripts/open-pr.sh` scans commits unique to the branch and injects a `Closes #123` line into the PR body, so the issue auto-closes when the PR merges. See [Which tracker holds the issues](#claiming-issues-before-agent-dispatch) for the per-tracker table.
 
-**Issue reconciliation before PR.** Treat issue state as part of delivery, not cleanup after the fact. Before opening the PR, make a short ledger of every issue you touched: fixed, partially fixed, made stale, or investigated and left open. Fixed issues must be represented by closing trailers or explicit `Closes #N` lines in the PR body. Partial fixes get `Refs #N` plus an issue comment that names what landed and what remains. Stale issues get a comment with the commit/test evidence before closing. The invariant is simple: after a merge, a reader scanning GitHub issues should not have to infer whether a shipped fix was forgotten, partial, or unrelated.
+**Issue reconciliation before PR.** Treat issue state as part of delivery, not cleanup after the fact. Before opening the PR, make a short ledger of every issue you touched: fixed, partially fixed, made stale, or investigated and left open. Fixed issues must be represented by closing trailers or explicit closing references in the PR body. Partial fixes get a `Refs` reference plus an issue comment that names what landed and what remains. Stale issues get a comment with the commit/test evidence before closing. The invariant is simple: after a merge, a reader scanning the tracker should not have to infer whether a shipped fix was forgotten, partial, or unrelated.
 
 **Stage explicit file paths.** Avoid `git add -A` or `git add .` — they accidentally stage sensitive files (`.env`, credentials) or large binaries. Naming files makes intent visible at the staging step.
 
@@ -212,15 +212,37 @@ Merge a chain in order, parent first, repeating both steps for each next child.
 
 ## Claiming issues before agent dispatch
 
-Before spawning a coding agent — Claude Code subagent, Codex CLI, or any other — to work on a GitHub issue, **claim it first**. Set the assignee, post a one-line dispatch comment, then spawn the agent. The cost is ten seconds per issue; the cost of skipping it is two agents picking up the same issue and shipping competing PRs.
+Before spawning a coding agent — Claude Code subagent, Codex CLI, or any other — to work on a tracker issue, **claim it first**. Set the assignee, post a one-line dispatch comment, then spawn the agent. The cost is ten seconds per issue; the cost of skipping it is two agents picking up the same issue and shipping competing PRs.
+
+**Which tracker holds the issues.**
+
+The discipline is tracker-neutral; the transport is not. A project declares its tracker once, in `.touchstone-review.toml`:
+
+```toml
+[issues]
+tracker = "linear"     # "github" (default) | "linear"
+key_prefix = "CON"     # linear only; restricts references to one team's keys
+```
+
+A project that declares nothing is a GitHub project. That is what every project was before the declaration existed, and nothing about it changes.
+
+| | GitHub (default) | Linear |
+|---|---|---|
+| Reference syntax | `123` or `#123` | `CON-123` |
+| Closing reference in the PR body | `Closes #123`, `Closes-issue: #123` | `Fixes CON-123` |
+| `scripts/claim-issue.sh <ref>` | assigns you, posts the dispatch comment, backs off on a race | prints the three steps to perform in Linear, then exits 0 |
+| `scripts/issue-claim-check.sh` | fails when a referenced open issue is not assigned to the PR author | lists the references it found and names what you must confirm |
+| `scripts/open-pr.sh` linked-issue injection | injects `Closes #N` from commit trailers | none — put `Fixes CON-N` in the PR body yourself |
+
+Touchstone has no Linear API transport, so under Linear none of the claim state is verified for you. What the scripts still do deterministically is refuse the wrong reference shape (`claim-issue.sh 123` under Linear, `claim-issue.sh CON-1` under GitHub) and fail closed on an `[issues].tracker` value they do not implement, so a typo cannot silently fall back to GitHub and check nothing.
 
 **The mechanical steps.**
 
 ```bash
-bash scripts/claim-issue.sh <n>
+bash scripts/claim-issue.sh <ref>
 ```
 
-Under the hood this uses the same GitHub API flow (claim + dispatch comment), equivalent to:
+Under the GitHub tracker this uses the GitHub API flow (claim + dispatch comment), equivalent to:
 
 ```bash
 gh issue edit <n> --add-assignee @me
@@ -241,12 +263,12 @@ The discipline is small. The recovery from skipping it is large.
 
 **When to unassign.**
 
-If you decide not to ship — the work turns out to be wrong, the approach pivots, the agent stalls and you stand it down — unassign with `gh issue edit <n> --remove-assignee @me` and post a "stood down — <reason>" comment. Leaving stale assignments is worse than no assignment at all; readers will assume the issue is being worked when it isn't.
+If you decide not to ship — the work turns out to be wrong, the approach pivots, the agent stalls and you stand it down — drop the assignment (under GitHub, `gh issue edit <n> --remove-assignee @me`) and post a "stood down — <reason>" comment. Leaving stale assignments is worse than no assignment at all; readers will assume the issue is being worked when it isn't.
 
 **When this rule does NOT apply.**
 
 - **Issues you're proposing or analyzing, not implementing.** You're researching whether something is even worth doing — no claim. Claim only when an agent (or you) is actively starting implementation.
-- **Drive-by fixes during unrelated work.** A one-line typo fix on the way to something else doesn't need a claim — but if it warrants its own commit, it warrants a `Closes-issue:` trailer at minimum.
+- **Drive-by fixes during unrelated work.** A one-line typo fix on the way to something else doesn't need a claim — but if it warrants its own commit, it warrants a closing trailer at minimum.
 
 **For multi-issue bundles.**
 
@@ -261,6 +283,8 @@ Three layers back the convention so a missed claim doesn't reach merge silently:
 - **`.github/workflows/issue-claim-check.yml`** runs on every `pull_request` open/edit/synchronize. It parses `Closes #N` / `Fixes #N` / `Resolves #N` / `Closes-issue: #N` from the PR body, fetches each open referenced issue, and fails the check if the PR author is not in the issue's assignees. The failure posts a comment on the PR explaining what to fix.
 
 The local check is the fast path: it stops the common mistake before a PR exists or before merge review runs. The CI check is the hard backstop: even if an agent bypasses the local script, a PR that tries to close an unclaimed issue fails its checks and won't auto-merge.
+
+The last two layers enforce ownership only where Touchstone speaks the tracker's API, which today means GitHub. Under any other declared tracker they report the references they found and exit 0 — assignment is unanswerable without an API, and failing every PR on an unanswerable question would only teach agents to reach for `[skip-claim-check]`. The CI workflow reads the tracker declaration from the PR's **base**, alongside the helper it runs, so a PR cannot redeclare its way out of the GitHub check.
 
 **Bypass token: `[skip-claim-check]`.**
 

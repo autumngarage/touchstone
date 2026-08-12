@@ -56,7 +56,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 - **Preserve compatibility at boundaries** — public API/config/schema/CLI/hook/template changes need a compatibility or migration plan.
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers).
 - **Isolate file-writing subagents** — parallel agents use dedicated worktrees and disjoint file ownership by default.
-- **File issues for bugs** — open a GitHub issue when you find a bug, in this project or in an autumngarage tool. Don't silently work around it.
+- **File issues for bugs** — open a tracker issue when you find a bug, in this project or in an autumngarage tool. Don't silently work around it.
 - **Escalate delivery friction upstream** — if Touchstone or the configured PR reviewer causes workflow drag (excessive latency, weak parallelization, brittle review/merge behavior, or other delivery inefficiency), file an actionable upstream issue with repro steps and impact instead of normalizing the pain.
 
 ## Never commit on the default branch
@@ -69,9 +69,9 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 
 1. **Pull.** `git pull --rebase` on the default branch.
 2. **Branch.** Before any edit that might become a commit.
-3. **Claim issues before implementation.** If the work starts from a GitHub issue, claim it before editing or dispatching an agent: `bash scripts/claim-issue.sh <n>`. Claim every issue in a multi-issue bundle so two agents do not ship competing fixes.
+3. **Claim issues before implementation.** If the work starts from a tracker issue, claim it before editing or dispatching an agent: `bash scripts/claim-issue.sh <ref>`. Claim every issue in a multi-issue bundle so two agents do not ship competing fixes.
 4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
-5. **Reconcile issues.** Before opening the PR, list every GitHub issue found, claimed, fixed, partially fixed, or made stale by the work. Fully fixed issues get closing trailers (`Closes-issue: #123` or `Closes #123`) so merge auto-closes them; partial/stale issues get a comment explaining the evidence or remaining gap. Do not leave fixed issues open silently.
+5. **Reconcile issues.** Before opening the PR, list every tracker issue found, claimed, fixed, partially fixed, or made stale by the work. Fully fixed issues get a closing reference in the PR body, in your tracker's syntax, so merge closes them; partial/stale issues get a comment explaining the evidence or remaining gap. Do not leave fixed issues open silently.
 6. **Ship.** `bash scripts/open-pr.sh --auto-merge` opens the PR, requests review, and merges when the gate passes. If it stops, fix what it names and rerun.
 7. **Answer every piece of PR feedback before merging.** Whoever reviews (hosted AI, bot, or colleague), reply to each comment and resolve the thread; unresolved threads and `CHANGES_REQUESTED` block the merge. `bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file>` replies and resolves in one step; `--all-resolved-check` proves none remain.
 8. **Clean up after merge.** Delete the local branch if it persists.
@@ -82,7 +82,7 @@ Do not bypass the PR/review/merge path with a direct default-branch push except 
 
 | When you're about to... | Read |
 |---|---|
-| commit, branch, open a PR, run review, merge, recover from `no-commit-to-branch`, work with stacked PRs, or fan out worktrees | `principles/git-workflow.md` |
+| commit, branch, claim or reference a tracker issue, open a PR, run review, merge, recover from `no-commit-to-branch`, work with stacked PRs, or fan out worktrees | `principles/git-workflow.md` |
 | understand the AI-authored change lifecycle or PR review loop architecture | `principles/ai-delivery-architecture.md` |
 | start a non-trivial code change | `principles/pre-implementation-checklist.md` |
 | understand the *why* of a daily-reminder rule | `principles/engineering-principles.md` |

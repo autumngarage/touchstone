@@ -124,6 +124,7 @@ touchstone_content_managed_file_pairs() {
 
   # Libraries used by touchstone-owned scripts.
   printf '%s\t%s\n' "$touchstone_root/lib/toml.sh" "$project_dir/lib/toml.sh"
+  printf '%s\t%s\n' "$touchstone_root/lib/issue-tracker.sh" "$project_dir/lib/issue-tracker.sh"
   printf '%s\t%s\n' "$touchstone_root/lib/events.sh" "$project_dir/lib/events.sh"
   printf '%s\t%s\n' "$touchstone_root/lib/codex-auth.sh" "$project_dir/lib/codex-auth.sh"
   printf '%s\t%s\n' "$touchstone_root/lib/script-sync-guard.sh" "$project_dir/lib/script-sync-guard.sh"
@@ -165,6 +166,7 @@ touchstone_content_manifest_entries() {
   printf 'scripts/spawn-worktree.sh\n'
   printf 'scripts/cleanup-worktrees.sh\n'
   printf 'lib/toml.sh\n'
+  printf 'lib/issue-tracker.sh\n'
   printf 'lib/events.sh\n'
   printf 'lib/codex-auth.sh\n'
   printf 'lib/script-sync-guard.sh\n'

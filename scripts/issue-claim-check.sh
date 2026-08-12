@@ -6,7 +6,15 @@
 #   bash scripts/issue-claim-check.sh --body-file <file> [--author <login>]
 #   bash scripts/issue-claim-check.sh --pr-number <number> [--comment-pr]
 #
+# Ownership is only verifiable where Touchstone speaks the tracker's API. The
+# GitHub adapter enforces; other trackers report the references they found and
+# name what a human must confirm, so a Linear project keeps the discipline
+# without this check failing every PR it cannot judge.
+#
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ISSUE_TRACKER_LIB="$SCRIPT_DIR/../lib/issue-tracker.sh"
 
 usage() {
   cat >&2 <<'EOF'
@@ -95,7 +103,9 @@ resolved_repo_name() {
   printf '%s' "$resolved" | tr '[:upper:]' '[:lower:]'
 }
 
-extract_issue_refs() {
+# GitHub adapter: same-repo `#N` refs behind a closing keyword, cross-repo
+# refs skipped.
+extract_github_issue_refs() {
   local body_file="$1"
   local refs_file="$2"
   local match normalized issue_number target_repo comparison_repo
@@ -124,6 +134,31 @@ extract_issue_refs() {
       printf '%s\n' "$issue_number" >>"$refs_file"
     fi
   done < <(grep -Eoi "\\b${closing_keywords}:?[[:space:]]*([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+\\b" "$body_file" || true)
+}
+
+# Non-GitHub adapter: closing keyword plus one reference in the declared
+# tracker's grammar, upper-cased so CON-7 and con-7 are one issue. The grammar
+# is interpolated into these patterns, so issue_tracker_load must keep
+# key_prefix free of regex metacharacters.
+extract_tracker_issue_refs() {
+  local body_file="$1"
+  local refs_file="$2"
+  local match ref
+  local closing_keywords="(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)"
+
+  while IFS= read -r match; do
+    ref="$(printf '%s' "$match" | grep -Eoi "$(issue_tracker_ref_regex)\$" || true)"
+    [ -n "$ref" ] || continue
+    printf '%s\n' "$ref" | tr '[:lower:]' '[:upper:]' >>"$refs_file"
+  done < <(grep -Eoi "\\b${closing_keywords}:?[[:space:]]*$(issue_tracker_ref_regex)\\b" "$body_file" || true)
+}
+
+extract_issue_refs() {
+  if [ "$ISSUE_TRACKER" = "github" ]; then
+    extract_github_issue_refs "$@"
+    return 0
+  fi
+  extract_tracker_issue_refs "$@"
 }
 
 format_assignee_label() {
@@ -254,7 +289,26 @@ if [ "$COMMENT_PR" = true ] && [ -z "$PR_NUMBER" ]; then
   exit 2
 fi
 
-require_gh
+if [ ! -f "$ISSUE_TRACKER_LIB" ]; then
+  echo "ERROR: issue-tracker library not found at $ISSUE_TRACKER_LIB." >&2
+  echo "       Run: touchstone update" >&2
+  exit 2
+fi
+# shellcheck source=../lib/issue-tracker.sh
+source "$ISSUE_TRACKER_LIB"
+
+# Project root first: in CI this script runs from a checkout of the PR's base,
+# so its own root is the trusted policy, and the PR cannot redeclare the
+# tracker to dodge the check.
+if ! issue_tracker_load "$SCRIPT_DIR/.." "$PWD"; then
+  exit 2
+fi
+
+# The PR itself always lives on GitHub; only the issues may not. gh is
+# required to read a PR body, and to read issues under the GitHub adapter.
+if [ "$ISSUE_TRACKER" = "github" ] || [ -n "$PR_NUMBER" ]; then
+  require_gh
+fi
 
 # shellcheck disable=SC2329  # invoked by EXIT trap.
 cleanup() {
@@ -293,6 +347,19 @@ extract_issue_refs "$BODY_FILE" "$issue_refs_file"
 
 if [ ! -s "$issue_refs_file" ]; then
   echo "No closing issue references found in PR body; nothing to enforce."
+  exit 0
+fi
+
+# Fail open, loudly, rather than fail closed on an unanswerable question: with
+# no API for this tracker there is no assignee to compare against, and
+# blocking every PR would teach agents to reach for [skip-claim-check].
+if [ "$ISSUE_TRACKER" != "github" ]; then
+  echo "==> Tracker '$ISSUE_TRACKER' has no claim-verification transport; assignment is not checked here."
+  while IFS= read -r tracker_ref; do
+    [ -n "$tracker_ref" ] || continue
+    echo "    referenced: $tracker_ref"
+  done < <(sort -u "$issue_refs_file")
+  echo "    Confirm in $ISSUE_TRACKER that each reference above is assigned to you and carries a dispatch comment."
   exit 0
 fi
 

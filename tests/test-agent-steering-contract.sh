@@ -47,7 +47,12 @@ for file in \
   assert_contains "$file" "scripts/respond-review.sh"
   assert_not_contains "$file" "touchstone worker"
   assert_contains "$file" "Claim issues before implementation"
-  assert_contains "$file" "bash scripts/claim-issue.sh <n>"
+  assert_contains "$file" "bash scripts/claim-issue.sh <ref>"
+  # The discipline is stated tracker-neutrally (#743): a Linear-tracked
+  # project reads the same steps, and only principles/git-workflow.md carries
+  # per-tracker syntax.
+  assert_not_contains "$file" "starts from a GitHub issue"
+  assert_not_contains "$file" "list every GitHub issue"
   assert_contains "$file" "Reconcile issues"
   assert_contains "$file" "Do not leave fixed issues open silently"
 done
