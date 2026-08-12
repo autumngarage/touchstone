@@ -13,7 +13,7 @@
 #   %REPO_B%    a second git repository whose path contains a space
 #   %TEST_ROOT% the parent of both repositories
 #
-# Ground truth is NOT recorded here. tests/test-emergency-corpus.sh runs
+# Ground truth is NOT recorded here. tests/test-emergency-disclosure.sh runs
 # every command under real Bash with a fake `git` on PATH that records
 # protected pushes without contacting a remote, and that execution is the
 # oracle. Recording expectations here would only pin one parser's opinion;
@@ -837,4 +837,84 @@ printf '%s' "$(printf '%s' '%FILLER%'; git push --no-verify origin main)"
 %%CASE large-input-benign-prose
 %%EXPECT allow
 printf '%s' '%FILLER% git push --no-verify origin main'
+%%END
+
+# --- PR #810 review round 1: shapes the bounded guard allowed -----------------
+#
+# Every case below executes a protected push under real Bash and was blocked by
+# the 2,021-line emulator this guard replaces. Each one was a regression against
+# the no-weaker claim, not a pre-existing hole: the triage that produced them
+# ran all fourteen against `git show origin/main:scripts/emergency-disclosure.sh`
+# and that guard blocked all fourteen.
+
+%%CASE git-alias-with-quoted-value
+%%EXPECT block
+git quoted-push --no-verify origin main
+%%END
+
+%%CASE config-include-contributes-alias
+%%EXPECT block
+git -c include.path=%TEST_ROOT%/include-alias.cfg included-push --no-verify origin main
+%%END
+
+%%CASE heredoc-into-shell-git-alias
+%%EXPECT block
+git shell-git <<'EOF'
+git push --no-verify origin main
+EOF
+%%END
+
+%%CASE env-split-string-payload
+%%EXPECT block
+env -S 'git push --no-verify origin main'
+%%END
+
+%%CASE text-producer-piped-to-interpreter
+%%EXPECT block
+printf 'git push --no-verify origin main' | bash
+%%END
+
+%%CASE arithmetic-expansion-nested-substitution
+%%EXPECT block
+echo $(( $(git push --no-verify origin main) + 1 ))
+%%END
+
+%%CASE arithmetic-command-nested-substitution
+%%EXPECT block
+(( total = $(git push --no-verify origin main) + 1 ))
+%%END
+
+%%CASE parameter-expansion-nested-substitution
+%%EXPECT block
+echo ${unset_fixture:-$(git push --no-verify origin main)}
+%%END
+
+%%CASE assigned-payload-through-eval
+%%EXPECT block
+cmd='git push --no-verify origin main'; eval "$cmd"
+%%END
+
+%%CASE assigned-payload-through-shell-c
+%%EXPECT block
+cmd='git push --no-verify origin main'; bash -c "$cmd"
+%%END
+
+%%CASE source-file-written-by-same-call
+%%EXPECT block
+printf '%s\n' 'git push --no-verify origin main' > %TEST_ROOT%/sourced-push.sh; source %TEST_ROOT%/sourced-push.sh
+%%END
+
+%%CASE foreign-interpreter-split-inputs
+%%EXPECT block
+awk -v a=git -v b='push --no-verify origin main' 'BEGIN { system(a " " b) }'
+%%END
+
+%%CASE dynamic-executable-through-env-wrapper
+%%EXPECT block
+GIT=git; env "$GIT" push --no-verify origin main
+%%END
+
+%%CASE dynamic-executable-through-sudo-wrapper
+%%EXPECT block
+GIT=git; sudo "$GIT" push --no-verify origin main
 %%END
