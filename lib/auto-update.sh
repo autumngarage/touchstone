@@ -441,11 +441,39 @@ touchstone_auto_project_sync_should_sync() {
 # on someone else's command, never that command's business.
 touchstone_auto_project_reconcile_external() {
   local project_dir="${1:-}"
+  local reconcile_log reconcile_rc=0
 
   [ -n "$project_dir" ] || return 0
   [ -d "$project_dir" ] || return 0
   git -C "$project_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-  (cd "$project_dir" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1 || true
+
+  # ONLY for a CONTENT-CURRENT tree. should_sync returns false for two very
+  # different reasons: content is current (nothing to do but reconcile), or
+  # policy declined (the patch-only semver throttle) while content is STALE.
+  # In the second case update-project.sh would not take its early exit — it
+  # would create and commit an update branch, bypassing the throttle it was
+  # told to respect (PR #787 review, round 2). Re-probing here is the same
+  # verdict the caller computed; it is cheap and it keeps this helper honest
+  # regardless of which skip sent us here.
+  touchstone_content_is_current "$project_dir" "$TOUCHSTONE_ROOT" 2>/dev/null || return 0
+
+  # Non-fatal, but never silent: a failed hook or skill repair leaves the
+  # project ungated, and swallowing the diagnostics made that invisible and
+  # self-repeating (PR #787 review, round 2).
+  reconcile_log="$(mktemp -t touchstone-reconcile.XXXXXX 2>/dev/null || true)"
+  if [ -z "$reconcile_log" ]; then
+    (cd "$project_dir" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1 || true
+    return 0
+  fi
+  (cd "$project_dir" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$reconcile_log" 2>&1 \
+    || reconcile_rc=$?
+  if [ "$reconcile_rc" -ne 0 ]; then
+    echo "WARNING: touchstone could not reconcile hooks/skills for $project_dir (exit $reconcile_rc)." >&2
+    echo "         The project may be ungated. Diagnose with: cd $project_dir && touchstone update" >&2
+    tail -5 "$reconcile_log" 2>/dev/null | sed 's/^/         /' >&2
+  fi
+  rm -f "$reconcile_log"
+  return 0
 }
 
 touchstone_auto_project_sync_command_skips() {

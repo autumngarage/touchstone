@@ -897,8 +897,10 @@ fi
 # overwrite a hand-edited copy. They stay out of .touchstone-manifest so future
 # updates do not clobber project-owned customization.
 PROJECT_OWNED_ADDED_PATHS=()
-# Project-owned slots this run CREATED. They legitimately appear in the
-# update commit; a slot that already existed does not (PR #787 review).
+# Project-owned paths this run legitimately wrote: template slots it
+# CREATED (a slot that already existed does not qualify) and steering files
+# whose managed block it refreshed and staged. Both are absent from the
+# manifest, so the scope guard needs them named explicitly (PR #787 review).
 SCOPE_CREATED_SLOTS=()
 
 add_project_template_if_missing() {
@@ -1118,6 +1120,12 @@ if [ "$DRY_RUN" = false ]; then
     local rel="$1"
     if git -C "$PROJECT_DIR" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
       git -C "$PROJECT_DIR" add -f -- "$rel"
+      # A managed-block refresh of an existing steering file is exactly what
+      # this update is for. It is project-owned so it is absent from the
+      # manifest, and without recording it here the scope guard reported a
+      # normal refresh as foreign content and refused every auto-merge
+      # (PR #787 review, round 2).
+      SCOPE_CREATED_SLOTS+=("$rel")
     else
       echo "    NOTE: $rel is untracked (gitignored?); refreshed managed block left unstaged, not published."
     fi

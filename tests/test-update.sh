@@ -2087,6 +2087,75 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "--- Step 16: round-2 corrections (PR #787) ---"
+
+# (a) A managed-block refresh of an EXISTING steering file is legitimate
+# content, not a scope violation — otherwise every --ship refuses auto-merge
+# for a routine steering update.
+STEER_SCOPE_PROJECT="$TEST_DIR/p787b-steering-scope"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$STEER_SCOPE_PROJECT" --no-register >/dev/null
+configure_git "$STEER_SCOPE_PROJECT"
+commit_all "$STEER_SCOPE_PROJECT" "initial steering-scope project"
+STEER_SCOPE_BASE="$(git -C "$STEER_SCOPE_PROJECT" rev-parse HEAD)"
+printf 'refreshed by the managed block\n' >>"$STEER_SCOPE_PROJECT/AGENTS.md"
+git -C "$STEER_SCOPE_PROJECT" add AGENTS.md
+git -C "$STEER_SCOPE_PROJECT" -c user.name=T -c user.email=t@e.invalid \
+  commit --no-verify -qm "steering refresh"
+
+STEER_SCOPE_OUT="$TEST_DIR/p787b-steering-scope.txt"
+(
+  # shellcheck disable=SC1090
+  . "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
+  # shellcheck disable=SC2034
+  PROJECT_DIR="$STEER_SCOPE_PROJECT"
+  # shellcheck disable=SC2034
+  ORIGINAL_HEAD="$STEER_SCOPE_BASE"
+  # The run staged a refreshed AGENTS.md, exactly as the updater records it.
+  # shellcheck disable=SC2034
+  SCOPE_CREATED_SLOTS=("AGENTS.md")
+  eval "$(awk '/^update_commit_scope_violations\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh")"
+  update_commit_scope_violations
+) >"$STEER_SCOPE_OUT" 2>&1
+
+if [ ! -s "$STEER_SCOPE_OUT" ]; then
+  echo "    PASS: a refreshed steering file is not a scope violation"
+else
+  echo "FAIL: a managed-block steering refresh must not read as foreign content (PR #787)" >&2
+  cat "$STEER_SCOPE_OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (b) The updater records the steering file it refreshed, so the allowlist
+# above reflects a real run rather than a hand-built fixture.
+if awk '/stage_refreshed_steering_file\(\) \{/{f=1} f{print} f&&/^  \}$/{exit}' \
+  "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'SCOPE_CREATED_SLOTS+=('; then
+  echo "    PASS: staging a refreshed steering file records it for the scope guard"
+else
+  echo "FAIL: stage_refreshed_steering_file must record the path for the scope guard (PR #787)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (c) Ambient reconciliation runs ONLY for a content-current tree. A policy
+# skip (the patch-only throttle) leaves content stale, and reconciling there
+# would create and commit an update branch, bypassing the throttle.
+if awk '/^touchstone_auto_project_reconcile_external\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+  "$TOUCHSTONE_ROOT/lib/auto-update.sh" | grep -q 'touchstone_content_is_current'; then
+  echo "    PASS: reconciliation is gated on the content-current verdict"
+else
+  echo "FAIL: reconciliation must run only for a content-current tree (PR #787 round 2 P1)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (d) A failed repair is non-fatal but never silent.
+if awk '/^touchstone_auto_project_reconcile_external\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+  "$TOUCHSTONE_ROOT/lib/auto-update.sh" | grep -q 'could not reconcile hooks/skills'; then
+  echo "    PASS: a failed ambient repair is reported with context"
+else
+  echo "FAIL: a failed hook/skill repair must be surfaced, not swallowed (PR #787)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # --------------------------------------------------------------------------
 # Results
 # --------------------------------------------------------------------------
