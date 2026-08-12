@@ -326,6 +326,17 @@ managed_path_is_sound() {
   touchstone_ensure_safe_dest "$dst" "$PROJECT_DIR" true >/dev/null 2>&1 || return 1
   git -C "$PROJECT_DIR" ls-files --error-unmatch "$rel" >/dev/null 2>&1 || return 1
   index_blob_matches_worktree "$rel" || return 1
+  # Blob OIDs deliberately omit the mode: an executable working file over a
+  # 100644 stage entry hashes identically, and a clean clone would receive a
+  # non-executable script (PR #780 review). The stage mode must carry the
+  # same executable bit the working tree has.
+  local stage_mode
+  stage_mode="$(git -C "$PROJECT_DIR" ls-files --stage -- "$rel" | awk '{print $1; exit}')"
+  if [ -x "$dst" ]; then
+    [ "$stage_mode" = "100755" ] || return 1
+  else
+    [ "$stage_mode" != "100755" ] || return 1
+  fi
 }
 
 # Steering files may legitimately live untracked or gitignored
@@ -430,14 +441,26 @@ managed_content_is_current() {
   # omits AGENTS.md by design, and soundness applies only to files that
   # exist — an unconditional check would recreate the stamp-only update
   # loop for those projects (PR #780 review, round 3).
-  if [ -f "$PROJECT_DIR/AGENTS.md" ]; then
-    steering_path_is_sound "AGENTS.md" || return 1
+  # An occupied non-file slot (e.g. a GEMINI.md directory) is project-owned:
+  # the template writer and the block writer both leave it untouched, so the
+  # probe must agree or every check loops a stamp-only update
+  # (PR #780 review). Only regular files get soundness + block probing.
+  if [ -e "$PROJECT_DIR/AGENTS.md" ] && [ ! -f "$PROJECT_DIR/AGENTS.md" ] && [ ! -L "$PROJECT_DIR/AGENTS.md" ]; then
+    :
+  else
+    if [ -f "$PROJECT_DIR/AGENTS.md" ]; then
+      steering_path_is_sound "AGENTS.md" || return 1
+    fi
+    steering_block_is_current "$PROJECT_DIR/AGENTS.md" || return 1
   fi
-  steering_block_is_current "$PROJECT_DIR/AGENTS.md" || return 1
-  if [ -f "$PROJECT_DIR/GEMINI.md" ]; then
-    steering_path_is_sound "GEMINI.md" || return 1
+  if [ -e "$PROJECT_DIR/GEMINI.md" ] && [ ! -f "$PROJECT_DIR/GEMINI.md" ] && [ ! -L "$PROJECT_DIR/GEMINI.md" ]; then
+    :
+  else
+    if [ -f "$PROJECT_DIR/GEMINI.md" ]; then
+      steering_path_is_sound "GEMINI.md" || return 1
+    fi
+    steering_block_is_current "$PROJECT_DIR/GEMINI.md" || return 1
   fi
-  steering_block_is_current "$PROJECT_DIR/GEMINI.md" || return 1
 
   return 0
 }
@@ -669,9 +692,14 @@ require_default_branch_checkout() {
   # fetch) — then require HEAD to introduce nothing beyond it.
   if [ -n "$auth_remote" ]; then
     remote_ref="refs/remotes/$auth_remote/$default_branch"
-    git -C "$PROJECT_DIR" fetch --quiet --no-tags "$auth_remote" \
-      "+refs/heads/$default_branch:$remote_ref" >/dev/null 2>&1 || true
-    if ! git -C "$PROJECT_DIR" rev-parse --verify --quiet "$remote_ref^{commit}" >/dev/null; then
+    # A failed fetch fails CLOSED even when a cached tracking ref exists:
+    # the cache can predate a remote force-push, and trusting it would
+    # carry commits the authoritative branch no longer has
+    # (PR #780 review). The ancestor check below only means anything
+    # against a ref refreshed THIS run.
+    if ! git -C "$PROJECT_DIR" fetch --quiet --no-tags "$auth_remote" \
+      "+refs/heads/$default_branch:$remote_ref" >/dev/null 2>&1 \
+      || ! git -C "$PROJECT_DIR" rev-parse --verify --quiet "$remote_ref^{commit}" >/dev/null; then
       echo "ERROR: cannot verify local '$default_branch' against $auth_remote; refusing to branch from HEAD." >&2
       echo "       The fetch failed and no $remote_ref exists locally, so unpushed local commits" >&2
       echo "       could ride into the update PR undetected." >&2

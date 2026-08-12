@@ -1865,6 +1865,60 @@ elif [ "$(readlink "$TSYM_PROJECT/.markdownlint.json")" != ".markdownlint.custom
 fi
 assert_not_contains "$TEST_DIR/p780d-tsym-update-output.txt" 'replacing unexpected symlink with managed file: .*\.markdownlint\.json'
 
+echo "--- Step 13: terminal-round probes (PR #780) ---"
+
+# (a) A failed remote fetch fails closed even with a cached tracking ref.
+FCLOSED_PROJECT="$TEST_DIR/p780d-fetch-closed"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$FCLOSED_PROJECT" --no-register >/dev/null
+configure_git "$FCLOSED_PROJECT"
+commit_all "$FCLOSED_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$FCLOSED_PROJECT/.touchstone-version"
+printf '# drift\n' >>"$FCLOSED_PROJECT/lib/toml.sh"
+commit_all "$FCLOSED_PROJECT" "stamp + drift"
+FCLOSED_ORIGIN="$TEST_DIR/p780d-origin.git"
+git init -q --bare "$FCLOSED_ORIGIN"
+git -C "$FCLOSED_PROJECT" remote add origin "$FCLOSED_ORIGIN"
+git -C "$FCLOSED_PROJECT" push -q origin main
+git -C "$FCLOSED_PROJECT" fetch -q origin
+rm -rf "$FCLOSED_ORIGIN"
+(cd "$FCLOSED_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780d-fclosed-output.txt" 2>&1 || true
+assert_contains "$TEST_DIR/p780d-fclosed-output.txt" 'refusing to branch from HEAD'
+if git -C "$FCLOSED_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
+  echo "FAIL: an unreachable remote with a cached ref must not authorize branching (PR #780 P1)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (b) An executable working file over a 100644 stage entry is not current.
+MODE_PROJECT="$TEST_DIR/p780d-mode"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$MODE_PROJECT" --no-register >/dev/null
+configure_git "$MODE_PROJECT"
+commit_all "$MODE_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$MODE_PROJECT/.touchstone-version"
+commit_all "$MODE_PROJECT" "sha stamp"
+git -C "$MODE_PROJECT" update-index --chmod=-x scripts/open-pr.sh
+git -C "$MODE_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "drop exec bit in index"
+(cd "$MODE_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780d-mode-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780d-mode-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780d-mode-output.txt" 'Already up to date'
+
+# (c) A GEMINI.md DIRECTORY is an occupied project-owned slot — current, not
+# a stamp-only update loop.
+GDIR_PROJECT="$TEST_DIR/p780d-gemini-dir"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GDIR_PROJECT" --no-register >/dev/null
+configure_git "$GDIR_PROJECT"
+commit_all "$GDIR_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$GDIR_PROJECT/.touchstone-version"
+rm -f "$GDIR_PROJECT/GEMINI.md"
+mkdir "$GDIR_PROJECT/GEMINI.md"
+printf 'x\n' >"$GDIR_PROJECT/GEMINI.md/readme"
+commit_all "$GDIR_PROJECT" "gemini slot is a directory"
+(cd "$GDIR_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780d-gdir-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780d-gdir-output.txt" 'Already up to date'
+assert_not_contains "$TEST_DIR/p780d-gdir-output.txt" 'Needs update'
+
 # --------------------------------------------------------------------------
 # Results
 # --------------------------------------------------------------------------
