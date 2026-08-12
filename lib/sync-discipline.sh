@@ -40,10 +40,12 @@ touchstone_sync_planned_write_paths() {
     printf 'lib/preflight.sh\n'
     printf 'lib/preflight-scope.sh\n'
 
-    # Retired managed files that remove_retired_managed_file deletes during
-    # update. They must stay in the planned write set: the rollback snapshot
-    # is taken from this list, so a deletion outside it could not be undone
-    # by a failed update's restore.
+    # Retired managed files that the retirement pass deletes during init and
+    # update. They must stay in the planned write set: the rollback snapshot is
+    # taken from this list, so a deletion outside it could not be undone by a
+    # failed update's restore. lib/retired-managed.sh is the canonical list;
+    # this block must mirror it, and tests/test-sync-scope-aware.sh derives its
+    # assertions from that list so the two cannot drift.
     printf 'lib/review-comment.sh\n'
     printf 'scripts/cortex-pr-merged-hook.sh\n'
     printf 'scripts/spawn-worktree.sh\n'

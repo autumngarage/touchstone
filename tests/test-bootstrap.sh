@@ -1474,6 +1474,61 @@ assert_not_contains "$TEST_DIR/reinit-output.txt" 'Fill in project details'
 assert_contains "$TEST_DIR/reinit-diff-output.txt" '^--- .codex-review.toml (project)'
 assert_contains "$TEST_DIR/reinit-diff-output.txt" '^+++ templates/touchstone-review.toml (touchstone template)'
 
+# ---------------------------------------------------------------------------
+# #737 round 2: init must retire what it stops recording.
+#
+# init regenerates .touchstone-manifest from scratch, WITHOUT the retired
+# entries. An init that dropped the entries and left the files on disk stranded
+# them permanently: `touchstone update` only retires a path its ledger still
+# claims, so nothing could ever reach them again. init and update now run the
+# same retirement (lib/retired-managed.sh) — one init over a project carrying
+# all five must remove all five.
+# ---------------------------------------------------------------------------
+PROJECT_INIT_RETIRE="$TEST_DIR/test-project-init-retire"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_INIT_RETIRE" --no-register >/dev/null
+git -C "$PROJECT_INIT_RETIRE" config user.email "touchstone-test@example.com"
+git -C "$PROJECT_INIT_RETIRE" config user.name "Touchstone Test"
+
+# A project last synced before the cut: every convenience on disk, tracked,
+# clean, and claimed by the manifest — the only state retirement acts on.
+INIT_RETIRED_PATHS="scripts/spawn-worktree.sh scripts/cleanup-worktrees.sh scripts/run-pytest-in-venv.sh lib/events.sh lib/codex-auth.sh"
+mkdir -p "$PROJECT_INIT_RETIRE/scripts" "$PROJECT_INIT_RETIRE/lib"
+for retired_rel in $INIT_RETIRED_PATHS; do
+  printf '#!/usr/bin/env bash\n# pre-#737 managed copy\n' >"$PROJECT_INIT_RETIRE/$retired_rel"
+  printf '%s\n' "$retired_rel" >>"$PROJECT_INIT_RETIRE/.touchstone-manifest"
+done
+# Project-OWNED steering naming one of them. No sync rewrites this file, so the
+# notice is the only thing that keeps the instruction from outliving the script.
+printf '\n## Parallel work\n\nUse `scripts/spawn-worktree.sh` to create branch slices.\n' \
+  >>"$PROJECT_INIT_RETIRE/AGENTS.md"
+git -C "$PROJECT_INIT_RETIRE" add -A
+git -C "$PROJECT_INIT_RETIRE" commit --no-verify -q -m "simulate a project synced before #737"
+
+# Fixture precondition: the files really are present, tracked, and manifested
+# before init runs. Without this the assertions below would also pass against a
+# project that never had them.
+for retired_rel in $INIT_RETIRED_PATHS; do
+  assert_exists "$PROJECT_INIT_RETIRE/$retired_rel"
+  assert_contains "$PROJECT_INIT_RETIRE/.touchstone-manifest" "^$retired_rel\$"
+done
+
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
+  "$PROJECT_INIT_RETIRE" --no-register </dev/null \
+  >"$TEST_DIR/init-retire-output.txt" 2>&1
+
+for retired_rel in $INIT_RETIRED_PATHS; do
+  assert_not_exists "$PROJECT_INIT_RETIRE/$retired_rel"
+  assert_not_contains "$PROJECT_INIT_RETIRE/.touchstone-manifest" "^$retired_rel\$"
+done
+assert_contains "$TEST_DIR/init-retire-output.txt" '^==> Retiring files touchstone no longer manages:'
+assert_contains "$TEST_DIR/init-retire-output.txt" 'removed retired managed file: .*scripts/spawn-worktree.sh'
+assert_contains "$TEST_DIR/init-retire-output.txt" '5 retired'
+# The steering notice fires on init too, names the file and the reference...
+assert_contains "$TEST_DIR/init-retire-output.txt" 'project-owned steering still points at retired touchstone surfaces'
+assert_contains "$TEST_DIR/init-retire-output.txt" 'AGENTS.md names scripts/spawn-worktree.sh'
+# ...and leaves the project's own prose exactly as written.
+assert_contains "$PROJECT_INIT_RETIRE/AGENTS.md" 'Use `scripts/spawn-worktree.sh` to create branch slices.'
+
 # Reconcile in a repo where setup.sh was deleted must NOT re-run setup (no dev-tool installs
 # during a repair). Bootstrap, delete setup.sh, rerun init — verify backfill without invocation.
 PROJECT_REINIT_SETUP="$TEST_DIR/test-project-reinit-setup"

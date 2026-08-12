@@ -101,8 +101,9 @@ actual="$(run_touchstone_lookup "$tmp/local")"
 assert_eq "local checkout local venv" ".venv/bin/python" "$actual"
 
 # ---------------------------------------------------------------------------
-# Case 4: PYTEST_PYTHON overrides everything, and a non-executable override is
-# rejected instead of silently falling through to the venv.
+# Case 4: PYTEST_PYTHON overrides everything, and a broken override — absent
+# (4a) or present-but-not-executable (4b) — is rejected instead of silently
+# falling through to the venv.
 # ---------------------------------------------------------------------------
 echo "==> Case 4: PYTEST_PYTHON override wins, and a broken override fails closed"
 mkdir -p "$tmp/override/bin" "$tmp/override/.venv/bin" "$tmp/override/.git"
@@ -114,12 +115,37 @@ chmod +x "$tmp/override/bin/python-override"
 actual="$(PYTEST_PYTHON="$tmp/override/bin/python-override" run_touchstone_lookup "$tmp/override")"
 assert_eq "PYTEST_PYTHON override" "$tmp/override/bin/python-override" "$actual"
 
-err_file="$tmp/override.err"
+# 4a. An override pointing at nothing at all.
+err_file="$tmp/override-missing.err"
 if PYTEST_PYTHON="$tmp/override/bin/does-not-exist" \
-  run_touchstone_lookup "$tmp/override" >"$tmp/override.out" 2>"$err_file"; then
+  run_touchstone_lookup "$tmp/override" >"$tmp/override-missing.out" 2>"$err_file"; then
+  fail "an absent PYTEST_PYTHON should fail rather than fall back to the venv"
+fi
+assert_contains "PYTEST_PYTHON absent error" "$(cat "$err_file")" \
+  "ERROR: PYTEST_PYTHON is set but not executable:"
+
+# 4b. An override that EXISTS but is not executable — a distinct rejection from
+# 4a, and the one the case name claims. find_python_bin gates on `command -v`,
+# which rejects both, so a fixture that only ever pointed at a missing path
+# tested absence twice and left non-executability unproven (#737 round-2
+# review). Assert the fixture shape first: without this the case silently
+# degrades back into a second absence test the moment the path is wrong.
+nonexec="$tmp/override/bin/python-nonexec"
+printf '#!/usr/bin/env bash\n' >"$nonexec"
+chmod 644 "$nonexec"
+[ -f "$nonexec" ] || fail "fixture: $nonexec must exist to test non-executability"
+if [ -x "$nonexec" ]; then
+  fail "fixture: $nonexec must NOT be executable"
+fi
+
+err_file="$tmp/override-nonexec.err"
+if PYTEST_PYTHON="$nonexec" \
+  run_touchstone_lookup "$tmp/override" >"$tmp/override-nonexec.out" 2>"$err_file"; then
   fail "a non-executable PYTEST_PYTHON should fail rather than fall back to the venv"
 fi
-assert_contains "PYTEST_PYTHON error" "$(cat "$err_file")" \
-  "ERROR: PYTEST_PYTHON is set but not executable:"
+assert_contains "PYTEST_PYTHON non-executable error" "$(cat "$err_file")" \
+  "ERROR: PYTEST_PYTHON is set but not executable: $nonexec"
+# The venv is right there and readable; the point is that it was NOT used.
+assert_eq "non-executable override does not fall back to the venv" "" "$(cat "$tmp/override-nonexec.out")"
 
 echo "==> PASS: find_python_bin worktree-aware lookup (#171)"

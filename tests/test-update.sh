@@ -160,6 +160,12 @@ repos:
         entry: bash scripts/conductor-review.sh
         language: system
 EOF_RETIRED_REVIEW_HOOKS
+# Project-OWNED steering that still tells agents to run one of the scripts the
+# update is about to delete. AGENTS.md is never rewritten by any sync, so a
+# notice is the only mechanism touchstone has to keep the instruction from
+# outliving the script forever (#737 round-2 review).
+printf '\n## Parallel work\n\nFan out with `bash scripts/spawn-worktree.sh <slice>` and tear down after.\n' \
+  >>"$RETIREMENT_PROJECT/AGENTS.md"
 mkdir -p "$HOME/.claude/skills/conductor-delegation"
 printf 'retired skill\n' >"$HOME/.claude/skills/conductor-delegation/SKILL.md"
 PREVIOUS_TOUCHSTONE_SHA="$(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD^)"
@@ -230,6 +236,18 @@ assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/cleanup
 assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/run-pytest-in-venv\.sh$'
 assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^lib/events\.sh$'
 assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^lib/codex-auth\.sh$'
+# The retirement is silent about the project's own steering unless it says so:
+# AGENTS.md still instructs agents to run a script that no longer exists, and
+# no future sync can fix project-owned prose. Notice, never rewrite.
+assert_contains "$TEST_DIR/update-retirement-output.txt" \
+  'project-owned steering still points at retired touchstone surfaces'
+assert_contains "$TEST_DIR/update-retirement-output.txt" \
+  'AGENTS.md names scripts/spawn-worktree.sh'
+assert_contains "$TEST_DIR/update-retirement-output.txt" \
+  'touchstone will never rewrite them'
+# ...and the prose itself is left exactly as the project wrote it.
+assert_contains "$RETIREMENT_PROJECT/AGENTS.md" \
+  'Fan out with `bash scripts/spawn-worktree.sh <slice>` and tear down after.'
 assert_not_exists "$HOME/.claude/skills/conductor-delegation"
 assert_exists "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md"
 assert_contains "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md" 'retired skill'

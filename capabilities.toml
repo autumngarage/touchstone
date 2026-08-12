@@ -77,6 +77,11 @@ why = "Computes the one read-only content-currency verdict so update --check, au
 job = "constrain"
 why = "Refuses to clobber a project-owned file during bootstrap or update."
 
+["lib/retired-managed.sh"]
+job = "support"
+serves = ["bootstrap/new-project.sh", "bootstrap/update-project.sh"]
+why = "One retired-path list and one remover shared by init and update, so a retirement cannot delete a manifest entry in one entrypoint while leaving the file stranded in the other (#737)."
+
 ["lib/status.sh"]
 job = "legible"
 why = "Reports delivery state from git and GitHub so the operator can verify it without trusting the agent."
