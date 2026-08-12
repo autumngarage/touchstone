@@ -1878,6 +1878,12 @@ commit_all "$FCLOSED_PROJECT" "stamp + drift"
 FCLOSED_ORIGIN="$TEST_DIR/p780d-origin.git"
 git init -q --bare "$FCLOSED_ORIGIN"
 git -C "$FCLOSED_PROJECT" remote add origin "$FCLOSED_ORIGIN"
+# Use the project's ACTUAL branch name and make the remote agree with it.
+# Hardcoding "main" breaks on a runner whose init.defaultBranch is master:
+# the bare remote's HEAD would point at a nonexistent ref, resolve_default_branch
+# would fail BEFORE the fetch guard under test, and the broad refusal assertion
+# would still match -- a pass for the wrong reason (PR #792 review).
+FCLOSED_BRANCH="$(git -C "$FCLOSED_PROJECT" branch --show-current)"
 # --no-verify: the fixture project carries touchstone's installed pre-push
 # hook, which runs the whole validation tier. Inside a test that IS the
 # validation tier that is environment-dependent (it rejected this push on
@@ -1885,11 +1891,14 @@ git -C "$FCLOSED_PROJECT" remote add origin "$FCLOSED_ORIGIN"
 # test -- the fixture only needs the ref present on the bare remote.
 # HEAD:main also drops the assumption that the project's branch is named
 # main, which depends on the runner's init.defaultBranch.
-git -C "$FCLOSED_PROJECT" push -q --no-verify origin HEAD:main
+git -C "$FCLOSED_PROJECT" push -q --no-verify origin "HEAD:$FCLOSED_BRANCH"
+git -C "$FCLOSED_ORIGIN" symbolic-ref HEAD "refs/heads/$FCLOSED_BRANCH"
 git -C "$FCLOSED_PROJECT" fetch -q origin
+git -C "$FCLOSED_PROJECT" remote set-head origin "$FCLOSED_BRANCH"
 rm -rf "$FCLOSED_ORIGIN"
 (cd "$FCLOSED_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$TEST_DIR/p780d-fclosed-output.txt" 2>&1 || true
+assert_contains "$TEST_DIR/p780d-fclosed-output.txt" 'cannot verify local'
 assert_contains "$TEST_DIR/p780d-fclosed-output.txt" 'refusing to branch from HEAD'
 if git -C "$FCLOSED_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
   echo "FAIL: an unreachable remote with a cached ref must not authorize branching (PR #780 P1)" >&2
