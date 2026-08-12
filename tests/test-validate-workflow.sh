@@ -89,6 +89,11 @@ extract_job() {
 
 # Extract one step block by its `- name:` line, up to the next step at the
 # same indentation (or the end of the job).
+#
+# Reads $2 so callers can bind the search to the REQUIRED JOB's body rather
+# than the whole workflow. Scanning the whole file would let a step of the
+# same name in any other job satisfy an assertion about the required one --
+# the same scoping defect the matrix parser below had.
 extract_step() {
   awk -v want="$1" '
     /^      - name: / {
@@ -98,7 +103,7 @@ extract_step() {
       if (grab) next
     }
     grab { print }
-  ' "$WORKFLOW"
+  ' "$2"
 }
 
 strip_comments() {
@@ -177,12 +182,16 @@ fi
 # ---------------------------------------------------------------------------
 echo "==> (d) The required context is literally '$REQUIRED_CONTEXT'"
 MATRIX="$TMP_DIR/matrix.txt"
+# Bound to $JOB_BODY, NOT the whole workflow. Scanning every matrix.include in
+# the file lets a decoy entry in an unrelated job satisfy this assertion while
+# the required leg is flipped to advisory: true -- the required context would
+# stop existing and this check would still pass.
 awk '
   /^        include:[[:space:]]*$/ { in_inc = 1; next }
   /^    [A-Za-z]/ { in_inc = 0 }
   in_inc && /^          - os:[[:space:]]*/ { os = $NF; next }
   in_inc && /^            advisory:[[:space:]]*/ { printf "%s %s\n", os, $NF; next }
-' "$WORKFLOW" >"$MATRIX"
+' "$JOB_BODY" >"$MATRIX"
 if [ ! -s "$MATRIX" ]; then
   fail "could not parse the matrix include entries (parser guard — a vacuous pass is a fail)"
 elif grep -q -F -x 'ubuntu-latest false' "$MATRIX"; then
@@ -201,7 +210,7 @@ fi
 # ---------------------------------------------------------------------------
 echo "==> (e) The fast-tier exit 0 tolerance is guarded by matrix.advisory"
 FAST_TIER="$TMP_DIR/fast-tier-step.txt"
-extract_step "Run the fast tier" >"$FAST_TIER"
+extract_step "Run the fast tier" "$JOB_BODY" >"$FAST_TIER"
 if [ ! -s "$FAST_TIER" ]; then
   fail "could not extract the 'Run the fast tier' step (extraction guard — a vacuous pass is a fail)"
 else
@@ -211,20 +220,37 @@ else
   else
     fail "the advisory guard must be exactly '$ADVISORY_GUARD'. A negated or loosened condition (\"!= true\", a default, a matrix rename) hands the required leg a tolerance that turns a red suite green."
   fi
-  # Walk the step's bash and prove every `exit 0` sits inside that guard.
-  UNGUARDED="$(awk '
+  # Walk the step's bash and prove every `exit 0` sits inside a block whose
+  # condition is EXACTLY the safe guard.
+  #
+  # Matching "contains matrix.advisory" is not enough: an inverted condition
+  # (`!= "true"`) contains it too, and the exact-literal grep above is
+  # satisfied by the safe guard appearing anywhere else in the step. Both
+  # checks would pass while the required leg gained a tolerance that turns a
+  # red suite green. So each enclosing condition is recorded verbatim and
+  # compared for equality, and `else`/`elif` clears the current frame --
+  # the negative branch of the safe guard is the advisory-false path, where
+  # an `exit 0` is exactly the bug.
+  UNGUARDED="$(awk -v guard="$ADVISORY_GUARD" '
     {
       line = $0
       sub(/^[[:space:]]+/, "", line)
+      sub(/[[:space:]]+$/, "", line)
       if (line ~ /^#/) next
       if (line ~ /^(if |for |while |case )/) {
         depth++
-        if (line ~ /matrix\.advisory/) adv = depth
-      } else if (line ~ /^(fi|done|esac)$/) {
-        if (adv && depth == adv) adv = 0
-        depth--
+        cond[depth] = line
+      } else if (line ~ /^(elif |else$|else[[:space:]])/) {
+        cond[depth] = ""
+      } else if (line ~ /^(fi|done|esac)([[:space:]]|;|$)/) {
+        cond[depth] = ""
+        if (depth > 0) depth--
       }
-      if (line ~ /^exit 0([[:space:]]|$)/ && adv == 0) print NR ": " line
+      if (line ~ /^exit 0([[:space:]]|;|$)/) {
+        guarded = 0
+        for (i = 1; i <= depth; i++) if (cond[i] == guard) guarded = 1
+        if (!guarded) print NR ": " line
+      }
     }
   ' "$FAST_TIER")"
   if [ -n "$UNGUARDED" ]; then

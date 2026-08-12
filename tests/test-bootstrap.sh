@@ -745,6 +745,19 @@ assert_not_exists "$PROJECT_CI_OFF/.github/workflows/validate.yml"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_CI_GITHUB" --no-register --ci github >/dev/null
 assert_exists "$PROJECT_CI_GITHUB/.github/workflows/validate.yml"
 assert_contains "$PROJECT_CI_GITHUB/.github/workflows/validate.yml" 'scripts/touchstone-run.sh validate'
+# The starter workflow's dependency install must be version-pinned (#742).
+# Asserted on the BOOTSTRAPPED COPY, which is what a new project actually
+# receives — asserting on templates/ would still pass if the copy path broke.
+# tests/test-validate-workflow.sh guards this repo's own workflow and hardcodes
+# that path, so without this assertion the template could revert to an unpinned
+# `pipx install pre-commit` with every other check still green, and every newly
+# bootstrapped project would resolve an arbitrary pre-commit release.
+if grep -qE '^[[:space:]]*run:[[:space:]]*pipx install[[:space:]]+"?pre-commit"?[[:space:]]*$' \
+  "$PROJECT_CI_GITHUB/.github/workflows/validate.yml"; then
+  echo "FAIL: the bootstrapped validate.yml installs pre-commit unpinned — a new project would resolve an arbitrary release" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$PROJECT_CI_GITHUB/.github/workflows/validate.yml" 'pipx install "pre-commit=='
 # The workflow is project-owned — absent from the manifest so touchstone update
 # leaves the user's CI customizations alone.
 if grep -q '^.github/workflows/validate\.yml$' "$PROJECT_CI_GITHUB/.touchstone-manifest"; then
