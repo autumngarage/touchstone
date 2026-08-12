@@ -89,8 +89,8 @@ Touchstone ships through GitHub Releases and the `autumngarage/homebrew-touchsto
 Release flow:
 
 1. Merge code to `main`.
-2. Run `TOUCHSTONE_NO_AUTO_UPDATE=1 bin/touchstone release --patch` or `--minor` / `--major`. The helper bumps `VERSION`, commits, tags, pushes `main` and the tag, and runs `gh release create`.
-3. Verify the release helper pushed the release commit to `origin/main` and pushed the matching tag.
+2. Run `TOUCHSTONE_NO_AUTO_UPDATE=1 bin/touchstone release --patch` or `--minor` / `--major`. The helper bumps `VERSION` on a `release/vX.Y.Z` branch, ships the bump through the PR merge gate (`scripts/open-pr.sh --auto-merge` — required checks plus exact-head review; never a direct push to `main`), then tags the squash-merged `main` commit, pushes the tag, and runs `gh release create`. If the release PR stalls, the helper stops fail-closed and prints the resume commands (`bash scripts/open-pr.sh --auto-merge` from the release branch, then `bin/touchstone release --finalize vX.Y.Z` once merged).
+3. Verify the release PR merged to `origin/main` and the pushed tag points at the squash-merged `main` commit (not the release-branch head).
 4. The release-published event triggers `.github/workflows/release.yml`, which calls the shared `homebrew-bump.yml` reusable workflow in `autumngarage/autumn-garage` (pinned `@v1`) to rewrite the tap formula's `url` + `sha256` and commit directly to the tap's `main` — no hand-editing, no local tap clone. Watch with `gh run list --workflow=release.yml --repo autumngarage/touchstone`. Manual escape hatch: `gh workflow run release.yml -f tag_name=vX.Y.Z` re-bumps for an existing tag.
 5. Verify the shipped artifact (after the workflow completes, ~30s):
    - `git status --short --branch` is clean and not ahead of `origin/main`

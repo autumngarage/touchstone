@@ -3,8 +3,11 @@
 #
 # Two-step flow (machine handles only the deterministic half):
 #   1. Human runs `bin/touchstone release --patch | --minor | --major` on
-#      main, which bumps VERSION, commits, tags, pushes, and creates the
-#      GitHub Release.
+#      main. The helper bumps VERSION on a release/vX.Y.Z branch, ships it
+#      through the PR boundary (scripts/open-pr.sh --auto-merge; required
+#      checks + exact-head review), then tags the squash-merged main commit
+#      and creates the GitHub Release. If it stops after the merge, resume
+#      with `bin/touchstone release --finalize vX.Y.Z`.
 #   2. The `release.published` event below fires; the shared workflow in
 #      autumngarage/autumn-garage rewrites Formula/touchstone.rb's `url`
 #      + `sha256` and commits to the tap's main directly. Users running

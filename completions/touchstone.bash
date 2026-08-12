@@ -33,7 +33,7 @@ _touchstone() {
       COMPREPLY=( $(compgen -W "list" -- "$cur") )
       ;;
     release)
-      COMPREPLY=( $(compgen -W "--major --minor --patch" -- "$cur") )
+      COMPREPLY=( $(compgen -W "--major --minor --patch --finalize" -- "$cur") )
       ;;
   esac
 }
