@@ -2272,6 +2272,109 @@ else
   assert_not_contains "$TEST_DIR/doctor-runner-dangling.txt" 'Project is fully armed'
 fi
 
+# ---------------------------------------------------------------------------
+# #801 review, round 4: a configured dispatch must not skip the runner check.
+#
+# An override changes WHICH command the runner executes, not WHETHER the
+# runner can execute. Both configured-dispatch answers — a `*_command`
+# override and the `targets` branch — returned before doctor ever invoked
+# `touchstone-run.sh detect`, so a syntactically broken managed runner still
+# produced "Project is fully armed" while every validation invocation died
+# before it reached the override.
+#
+# Both halves assert on EXIT STATUS: the bug is a success exit alongside
+# plausible output. The `lint:` assertions pin WHICH branch answered — each of
+# those strings is emitted from exactly one place in bin/touchstone, so their
+# absence proves the runner check ran first rather than the override.
+# ---------------------------------------------------------------------------
+DOCTOR_BROKEN_RUNNER='#!/usr/bin/env bash\necho "touchstone-run: cannot read config" >&2\nexit 3\n'
+
+# (a) lint_command override + broken runner.
+PROJECT_DOCTOR_OVERRIDE_BROKEN="$TEST_DIR/test-project-doctor-override-broken-runner"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_OVERRIDE_BROKEN" --no-register >/dev/null
+printf 'lint_command=echo linted\n' >>"$PROJECT_DOCTOR_OVERRIDE_BROKEN/.touchstone-config"
+printf '%b' "$DOCTOR_BROKEN_RUNNER" >"$PROJECT_DOCTOR_OVERRIDE_BROKEN/scripts/touchstone-run.sh"
+if (cd "$PROJECT_DOCTOR_OVERRIDE_BROKEN" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-override-broken-runner.txt" 2>&1; then
+  echo "FAIL: doctor --project must exit nonzero when the runner is broken, even with lint_command configured" >&2
+  cat "$TEST_DIR/doctor-override-broken-runner.txt" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-override-broken-runner.txt" 'detect failed'
+  # The runner was genuinely invoked — its own diagnostic reached the report.
+  assert_contains "$TEST_DIR/doctor-override-broken-runner.txt" 'touchstone-run: cannot read config'
+  assert_not_contains "$TEST_DIR/doctor-override-broken-runner.txt" 'lint: overridden via .touchstone-config'
+  assert_not_contains "$TEST_DIR/doctor-override-broken-runner.txt" 'Project is fully armed'
+fi
+
+# (b) targets branch + broken runner. The target directory EXISTS, so the
+# structural target check passes and the only thing that can fail the run is
+# the runner check the branch used to precede.
+PROJECT_DOCTOR_TARGETS_BROKEN="$TEST_DIR/test-project-doctor-targets-broken-runner"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_TARGETS_BROKEN" --no-register >/dev/null
+mkdir -p "$PROJECT_DOCTOR_TARGETS_BROKEN/services/api"
+printf 'targets=api:services/api:generic\n' >>"$PROJECT_DOCTOR_TARGETS_BROKEN/.touchstone-config"
+printf '%b' "$DOCTOR_BROKEN_RUNNER" >"$PROJECT_DOCTOR_TARGETS_BROKEN/scripts/touchstone-run.sh"
+if (cd "$PROJECT_DOCTOR_TARGETS_BROKEN" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-targets-broken-runner.txt" 2>&1; then
+  echo "FAIL: doctor --project must exit nonzero when the runner is broken, even with targets configured" >&2
+  cat "$TEST_DIR/doctor-targets-broken-runner.txt" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-targets-broken-runner.txt" 'detect failed'
+  assert_contains "$TEST_DIR/doctor-targets-broken-runner.txt" 'touchstone-run: cannot read config'
+  assert_not_contains "$TEST_DIR/doctor-targets-broken-runner.txt" 'lint: dispatched per target'
+  assert_not_contains "$TEST_DIR/doctor-targets-broken-runner.txt" 'Project is fully armed'
+fi
+
+# ---------------------------------------------------------------------------
+# #801 review, round 4: doctor's targets branch follows the FINAL assignment.
+#
+# scripts/touchstone-run.sh:load_config takes the last assignment, so
+# `targets=api:services/api` followed by `targets=` dispatches the ROOT
+# profile. Doctor asked "is any assignment nonempty", entered the per-target
+# branch anyway, found the final (empty) value structurally fine, and
+# suppressed the root lint check — a false green on a project whose root
+# profile the runner will actually use.
+#
+# The runner here answers successfully but names no project_type, which is a
+# root-path-only verdict: it makes the two branches distinguishable by exit
+# status without depending on any linter's presence on PATH.
+# ---------------------------------------------------------------------------
+DOCTOR_SILENT_RUNNER='#!/usr/bin/env bash\nprintf "monorepo=false\\n"\n'
+
+PROJECT_DOCTOR_TARGETS_CLEARED="$TEST_DIR/test-project-doctor-targets-cleared"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_TARGETS_CLEARED" --no-register >/dev/null
+printf 'targets=api:services/api:generic\ntargets=\n' >>"$PROJECT_DOCTOR_TARGETS_CLEARED/.touchstone-config"
+printf '%b' "$DOCTOR_SILENT_RUNNER" >"$PROJECT_DOCTOR_TARGETS_CLEARED/scripts/touchstone-run.sh"
+if (cd "$PROJECT_DOCTOR_TARGETS_CLEARED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-targets-cleared.txt" 2>&1; then
+  echo "FAIL: doctor --project must use the root profile when the final 'targets=' assignment is empty" >&2
+  cat "$TEST_DIR/doctor-targets-cleared.txt" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  # The root path was taken: only it renders a verdict on project_type.
+  assert_contains "$TEST_DIR/doctor-targets-cleared.txt" 'named no project_type'
+  assert_not_contains "$TEST_DIR/doctor-targets-cleared.txt" 'lint: dispatched per target'
+  assert_not_contains "$TEST_DIR/doctor-targets-cleared.txt" 'Project is fully armed'
+fi
+
+# Control: the mirrored config, whose FINAL assignment is nonempty, must still
+# take the per-target branch. Without this, a helper that simply never reports
+# a targets override would pass the case above for the wrong reason. The
+# configured directory is absent, so the branch is proven by the structural
+# failure only it can produce.
+PROJECT_DOCTOR_TARGETS_SET="$TEST_DIR/test-project-doctor-targets-set-last"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_TARGETS_SET" --no-register >/dev/null
+printf 'targets=\ntargets=api:services/api:generic\n' >>"$PROJECT_DOCTOR_TARGETS_SET/.touchstone-config"
+assert_not_exists "$PROJECT_DOCTOR_TARGETS_SET/services/api"
+if (cd "$PROJECT_DOCTOR_TARGETS_SET" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-targets-set-last.txt" 2>&1; then
+  echo "FAIL: doctor --project must take the per-target branch when the final 'targets=' assignment is nonempty" >&2
+  cat "$TEST_DIR/doctor-targets-set-last.txt" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-targets-set-last.txt" "configured target 'api' path not found: services/api"
+  assert_not_contains "$TEST_DIR/doctor-targets-set-last.txt" 'named no project_type'
+  assert_not_contains "$TEST_DIR/doctor-targets-set-last.txt" 'Project is fully armed'
+fi
+
 # Generic profile doctor must NOT count missing tests as an issue — a fresh
 # generic project with no test_command configured stays fully armed.
 # (Reuses the PROJECT_DOCTOR repo which was bootstrapped clean above.)

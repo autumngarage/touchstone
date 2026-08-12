@@ -763,7 +763,7 @@ _touchstone_config_value() {
 # removed had to be hand-kept in lock-step with the runner and silently rotted
 # when it wasn't.
 _touchstone_doctor_check_lint_reachable() {
-  local project_dir="$1" runner profile
+  local project_dir="$1" runner profile configured_targets
 
   runner="$project_dir/scripts/touchstone-run.sh"
   # Absent runner: the check does not apply. PRESENT but not a regular file
@@ -773,6 +773,30 @@ _touchstone_doctor_check_lint_reachable() {
   # detect call below, which reports the breakage instead of hiding it.
   if [ ! -e "$runner" ] && [ ! -L "$runner" ]; then
     return 0
+  fi
+
+  # Can the runner run at all? This has to be answered BEFORE any
+  # configured-dispatch early return below. An override changes WHICH command
+  # the runner executes, not WHETHER the runner can execute: with a
+  # lint_command set or targets declared, doctor returned before ever invoking
+  # detect, so a syntactically broken managed runner still reported "Project
+  # is fully armed" while every validation invocation died before it reached
+  # the override (#801 review, round 4).
+  #
+  # The old pipeline threw the answer's exit status away — head(1) always
+  # succeeds — and sent every diagnostic to /dev/null, so an unreadable runner
+  # produced an empty profile, fell through the case default, and let doctor
+  # call the project healthy while `touchstone run` could not dispatch
+  # validation at all (#801 review). Status and output are captured, then
+  # checked.
+  local detect_output=""
+  if ! detect_output="$(cd "$project_dir" && bash "$runner" detect 2>&1)"; then
+    tk_warn "scripts/touchstone-run.sh detect failed — 'touchstone run' cannot dispatch validation"
+    if [ -n "$detect_output" ]; then
+      tk_dim "  $(printf '%s\n' "$detect_output" | tail -1)"
+    fi
+    tk_dim "  Fix: touchstone init  (reconciles the managed runner)"
+    return 1
   fi
 
   # A configured lint_command/validate_command short-circuits the dispatcher
@@ -793,28 +817,24 @@ _touchstone_doctor_check_lint_reachable() {
   # exited 0 having run nothing (#801 review). "Is this directory there" is
   # structural — it cannot drift from the dispatcher the way a re-derived
   # profile can.
-  if _touchstone_config_has_override "$project_dir" targets; then
+  #
+  # Applicability is the FINAL assignment — the one scripts/touchstone-run.sh's
+  # last-assignment-wins parser leaves in TARGETS, and therefore the one
+  # run_action dispatches on. "Is any assignment non-empty" answered a
+  # different question: `targets=api:services/api` followed by `targets=` runs
+  # the ROOT profile, yet doctor entered this branch, found the final empty
+  # value structurally fine, and suppressed the root lint check — a Python
+  # project with no ruff on PATH came back fully armed (#801 review, round 4).
+  configured_targets="$(_touchstone_config_value "$project_dir" targets)"
+  if [ -n "$configured_targets" ]; then
     _touchstone_doctor_check_target_paths "$project_dir" || return 1
     tk_dim "lint: dispatched per target; verify each with 'touchstone run lint'"
     return 0
   fi
 
-  # The profile is whatever the runner says it is, but the runner has to
-  # actually answer. The old pipeline threw the answer's exit status away —
-  # head(1) always succeeds — and sent every diagnostic to /dev/null, so an
-  # unreadable or syntactically broken scripts/touchstone-run.sh produced an
-  # empty profile, fell through the case default, and let doctor call the
-  # project healthy while `touchstone run` could not dispatch validation at
-  # all (#801 review). Status and output are captured, then checked.
-  local detect_output=""
-  if ! detect_output="$(cd "$project_dir" && bash "$runner" detect 2>&1)"; then
-    tk_warn "scripts/touchstone-run.sh detect failed — 'touchstone run' cannot dispatch validation"
-    if [ -n "$detect_output" ]; then
-      tk_dim "  $(printf '%s\n' "$detect_output" | tail -1)"
-    fi
-    tk_dim "  Fix: touchstone init  (reconciles the managed runner)"
-    return 1
-  fi
+  # The profile is whatever the runner says it is. An answer that names none
+  # leaves doctor nothing to check the linter against, so it says so rather
+  # than falling through the case default.
   profile="$(printf '%s\n' "$detect_output" | sed -n 's/^project_type=//p' | head -1)"
   if [ -z "$profile" ]; then
     tk_warn "scripts/touchstone-run.sh detect named no project_type — 'touchstone run' cannot dispatch validation"
