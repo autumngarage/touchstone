@@ -1306,11 +1306,16 @@ find_issue_closing_refs() {
   git log "$merge_base..HEAD" --format='%b' | closing_refs_in_bodies
 }
 
-# A commit is a revert when it carries one of the two markers git and this
-# repo's convention actually produce: a `Revert "..."` / `revert(scope):` /
+# A commit is a revert when its message carries one of the two markers git and
+# this repo's convention actually produce: a `Revert "..."` / `revert(scope):` /
 # `revert:` subject, or the `This reverts commit <sha>` line `git revert`
 # writes into the body. Deliberately anchored — "reverting", "revert-safe",
 # and a prose mention of a revert are not reverts.
+#
+# Takes the message rather than the commit id so the caller reads each commit
+# ONCE and asks every question of that one string: classification, closing
+# references, revert target, and waiver verdict can then never disagree about
+# what a commit said.
 #
 # The body read is a here-string, never `git log ... | grep -q`. Under
 # `set -o pipefail` an early-exiting `grep -q` makes git log die of SIGPIPE
@@ -1318,17 +1323,41 @@ find_issue_closing_refs() {
 # revert would go undetected. Verified reproducible on bash 3.2 with a
 # 300-commit range. A here-string has no pipeline, so grep's status is the
 # only status.
-commit_is_revert() {
-  local commit="$1" subject body
-  subject="$(git log -1 --format=%s "$commit")"
+message_is_revert() {
+  local message="$1" subject="${1%%$'\n'*}"
   case "$subject" in
     [Rr]evert | [Rr]evert[\ \"\(!:]*) return 0 ;;
   esac
-  body="$(git log -1 --format=%B "$commit")"
-  if grep -Eq '^[[:space:]]*This reverts commit [0-9a-f]{7,64}' <<<"$body"; then
+  if grep -Eq '^[[:space:]]*This reverts commit [0-9a-f]{7,64}' <<<"$message"; then
     return 0
   fi
   return 1
+}
+
+# The commit id(s) a revert names as its target. `git revert` writes
+# `This reverts commit <sha>` into the body; a hand-written `revert(scope):`
+# subject may name nothing at all, and a revert whose target cannot be read
+# has to be treated as "could have reverted anything" (issue #714, PR #807
+# review). BRE intervals rather than an awk `{7,64}` — awk interval support is
+# not universal, sed's is.
+revert_targets_in_message() {
+  sed -n 's/^[[:space:]]*This reverts commit \([0-9a-f]\{7,64\}\).*$/\1/p' <<<"$1"
+}
+
+# The issue numbers a waiver verdict names, read from the LINE carrying the
+# token and nowhere else. A verdict authorizes the issues it audited, not
+# every issue that happens to appear in the same commit message — otherwise a
+# `Closes #99` elsewhere in the waiver commit would authorize itself.
+waived_refs_in_message() {
+  awk -v token="$REVERT_TRAILER_SKIP_TOKEN" '
+    index($0, token) > 0 {
+      rest = $0
+      while (match(rest, /#[0-9]+/)) {
+        print substr(rest, RSTART + 1, RLENGTH - 1)
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+    }
+  ' <<<"$1"
 }
 
 # Issue #714. A closing reference is written against an INTENT, early in a
@@ -1345,15 +1374,41 @@ commit_is_revert() {
 # a reference carried by some other commit is exactly the #680 shape and
 # blocks the push.
 #
+# Three holes in the first cut of that rule, all found in PR #807 review, are
+# closed here and are the reason this walks the range commit by commit:
+#
+#   - A revert is only self-consistent while it STANDS. C2 reverts C1 and
+#     carries `Closes #52`; C3 reverts C2; the bad change is back and #52
+#     would still auto-close. Revert targets and their order are tracked, and
+#     a closing-reference-carrying revert that is itself reverted needs a
+#     fresh verdict. A later revert that names no target could have undone
+#     anything, so it invalidates every older revert's references too.
+#   - The waiver token authorizes the issues it AUDITED, not every issue that
+#     ever appears on the branch. Each verdict is bound to the issue numbers
+#     on its own token line, and is honored only where it is NEWER than both
+#     the commit that introduced the reference and every revert on the branch
+#     — otherwise the first waiver ever written becomes a permanent silent
+#     bypass, covering reverts and closing references added after it.
+#   - For an EXISTING PR the closing reference may live only in the PR BODY,
+#     which is where merge actually reads it. Rewording the commit trailer to
+#     `Refs #N` empties the commit-borne set while GitHub still auto-closes on
+#     merge, so the persisted body is a second source this has to judge. (A
+#     NEW PR's body is generated below from these same commit bodies through
+#     the same grammar, so it cannot carry a reference the commits do not.)
+#
 # This exits rather than returning a status, and is called as a bare
 # statement, so errexit stays armed for every git read it performs: a check
 # that could not run must not read as a clean check.
 REVERT_TRAILER_SKIP_TOKEN='[skip-revert-trailer-check]'
 assert_closing_refs_survive_reverts() {
-  local base_branch="$1"
-  local merge_base commit ref range_messages
-  local revert_shas="" revert_refs="" revert_ref_list="" non_revert_refs="" unconfirmed=""
-  local -a non_revert_commits=()
+  local base_branch="$1" pr_number="${2:-}"
+  local merge_base range commit message body ref target
+  local index=0 count=0 probe newest_revert_index=-1
+  local revert_shas="" undone_indices=" " unconfirmed="" unauthorized=""
+  local waived="" waived_so_far=" " all_waiver_named=" " undone_refs=""
+  local body_only_refs="" pr_body="" refs_seen=false stale_verdict=false
+  local -a range_sha=() range_refs=() range_targets=() range_waived=()
+  local -a range_is_revert=() range_has_token=()
 
   # An unresolvable merge base warns rather than refusing, matching
   # find_issue_closing_refs above: when the range cannot be computed this
@@ -1369,55 +1424,216 @@ assert_closing_refs_survive_reverts() {
     return 0
   fi
 
+  # Captured and validated BEFORE the loop, never streamed in from a process
+  # substitution: `while ... done < <(git rev-list ...)` throws the traversal
+  # status away, so a corrupt or unreadable ancestor would let the loop see
+  # partial or empty output and the guard would return success as though the
+  # branch had no revert. A check that could not run must fail closed.
+  # `--topo-order` makes "newer" mean parent-before-child rather than
+  # whatever the commit dates claim, which is what the waiver recency rule
+  # below is actually asking about. Index 0 is the NEWEST commit.
+  if ! range="$(git rev-list --topo-order "$merge_base..HEAD" 2>&1)"; then
+    echo "ERROR: could not traverse this branch's history for the revert-vs-closing-reference" >&2
+    echo "       check (issue #714):" >&2
+    printf '%s\n' "$range" | sed 's/^/       /' >&2
+    echo "       Refusing to push closing references that could not be judged." >&2
+    exit 1
+  fi
+
   while IFS= read -r commit; do
     [ -n "$commit" ] || continue
-    if commit_is_revert "$commit"; then
-      revert_shas="${revert_shas}${commit} "
-    else
-      non_revert_commits+=("$commit")
+    if ! message="$(git log -1 --format=%B "$commit" 2>&1)"; then
+      echo "ERROR: could not read commit ${commit:0:12} for the revert-vs-closing-reference" >&2
+      echo "       check (issue #714):" >&2
+      printf '%s\n' "$message" | sed 's/^/       /' >&2
+      exit 1
     fi
-  done < <(git rev-list "$merge_base..HEAD")
+    # Closing references are read from the BODY only, exactly like the PR body
+    # builder above: one grammar over one text, or the guard would police
+    # references the body never emits and miss the ones it does.
+    if ! body="$(git log -1 --format=%b "$commit" 2>&1)"; then
+      echo "ERROR: could not read the body of commit ${commit:0:12} for the" >&2
+      echo "       revert-vs-closing-reference check (issue #714):" >&2
+      printf '%s\n' "$body" | sed 's/^/       /' >&2
+      exit 1
+    fi
+    range_sha[index]="$commit"
+    range_refs[index]="$(closing_refs_in_bodies <<<"$body")"
+    range_targets[index]="$(revert_targets_in_message "$message")"
+    if message_is_revert "$message"; then
+      range_is_revert[index]=1
+      revert_shas="${revert_shas}${commit} "
+      [ "$newest_revert_index" -ge 0 ] || newest_revert_index="$index"
+    else
+      range_is_revert[index]=0
+    fi
+    case "$message" in
+      *"$REVERT_TRAILER_SKIP_TOKEN"*)
+        range_has_token[index]=1
+        range_waived[index]="$(waived_refs_in_message "$message")"
+        ;;
+      *)
+        range_has_token[index]=0
+        range_waived[index]=""
+        ;;
+    esac
+    index=$((index + 1))
+  done <<<"$range"
+  count="$index"
 
   # No revert in this branch's own history: the #714 shape cannot exist.
   [ -n "$revert_shas" ] || return 0
 
-  # shellcheck disable=SC2086  # deliberate word splitting over a SHA list.
-  revert_ref_list="$(git log --no-walk --format='%b' $revert_shas | closing_refs_in_bodies)"
-  revert_refs=" $(printf '%s' "$revert_ref_list" | tr '\n' ' ') "
-  if [ "${#non_revert_commits[@]}" -gt 0 ]; then
-    non_revert_refs="$(git log --no-walk --format='%b' "${non_revert_commits[@]}" | closing_refs_in_bodies)"
+  # A revert is undone when a NEWER revert names it as its target — or when a
+  # newer revert names no target at all, which could have undone anything.
+  index=0
+  while [ "$index" -lt "$count" ]; do
+    if [ "${range_is_revert[index]}" = 1 ]; then
+      probe=0
+      while [ "$probe" -lt "$index" ]; do
+        if [ "${range_is_revert[probe]}" = 1 ]; then
+          if [ -z "${range_targets[probe]}" ]; then
+            undone_indices="${undone_indices}${index} "
+            break
+          fi
+          while IFS= read -r target; do
+            [ -n "$target" ] || continue
+            case "${range_sha[index]}" in
+              "$target"*)
+                undone_indices="${undone_indices}${index} "
+                break
+                ;;
+            esac
+          done <<<"${range_targets[probe]}"
+          case "$undone_indices" in
+            *" $index "*) break ;;
+          esac
+        fi
+        probe=$((probe + 1))
+      done
+    fi
+    index=$((index + 1))
+  done
+
+  # Newest first, so every waiver already collected is strictly NEWER than the
+  # commit currently being judged. A commit's own verdict is added only after
+  # its own references are judged, so a waiver can never authorize itself.
+  index=0
+  while [ "$index" -lt "$count" ]; do
+    while IFS= read -r ref; do
+      [ -n "$ref" ] || continue
+      refs_seen=true
+      if [ "${range_is_revert[index]}" = 1 ]; then
+        case "$undone_indices" in
+          *" $index "*)
+            case " $undone_refs " in
+              *" #$ref "*) ;;
+              *) undone_refs="${undone_refs}#${ref} " ;;
+            esac
+            ;;
+          # The revert IS the fix and it still stands: self-consistent.
+          *) continue ;;
+        esac
+      fi
+      case "$waived_so_far" in
+        *" $ref "*)
+          case " $waived " in
+            *" #$ref "*) ;;
+            *) waived="${waived}#${ref} " ;;
+          esac
+          continue
+          ;;
+      esac
+      case " $unconfirmed " in
+        *" #$ref "*) ;;
+        *) unconfirmed="${unconfirmed}#${ref} " ;;
+      esac
+    done <<<"${range_refs[index]}"
+    if [ "${range_has_token[index]}" = 1 ]; then
+      while IFS= read -r ref; do
+        [ -n "$ref" ] || continue
+        all_waiver_named="${all_waiver_named}${ref} "
+        # A verdict written before the newest revert audited a branch that no
+        # longer exists; it cannot speak for what the later revert did.
+        if [ "$newest_revert_index" -ge 0 ] && [ "$index" -lt "$newest_revert_index" ]; then
+          waived_so_far="${waived_so_far}${ref} "
+        else
+          stale_verdict=true
+        fi
+      done <<<"${range_waived[index]}"
+    fi
+    index=$((index + 1))
+  done
+
+  # The persisted PR body, judged only once a revert is known to exist so the
+  # ordinary path spends no extra API call. It has no position in history, so
+  # it imposes no recency constraint of its own — any verdict that outranks
+  # every revert may authorize it.
+  if [ -n "$pr_number" ]; then
+    if ! pr_body="$(gh_pr_view "$pr_number" --json body --jq '.body // ""' 2>/dev/null)"; then
+      echo "ERROR: could not read PR #$pr_number's body, so closing references persisted" >&2
+      echo "       there cannot be judged against this branch's reverts (issue #714)." >&2
+      echo "       Merging closes whatever the BODY says, whatever the commits say." >&2
+      exit 1
+    fi
+    while IFS= read -r ref; do
+      [ -n "$ref" ] || continue
+      refs_seen=true
+      case "$waived_so_far" in
+        *" $ref "*)
+          case " $waived " in
+            *" #$ref "*) ;;
+            *) waived="${waived}#${ref} " ;;
+          esac
+          continue
+          ;;
+      esac
+      case " $body_only_refs " in
+        *" #$ref "*) ;;
+        *) body_only_refs="${body_only_refs}#${ref} " ;;
+      esac
+      case " $unconfirmed " in
+        *" #$ref "*) ;;
+        *) unconfirmed="${unconfirmed}#${ref} " ;;
+      esac
+    done <<<"$(closing_refs_in_bodies <<<"$pr_body")"
   fi
 
-  while IFS= read -r ref; do
-    [ -n "$ref" ] || continue
-    case "$revert_refs" in
-      *" $ref "*) continue ;;
-    esac
-    unconfirmed="${unconfirmed}#${ref} "
-  done <<<"$non_revert_refs"
-
   if [ -z "$unconfirmed" ]; then
+    if [ -n "$waived" ]; then
+      echo "==> $REVERT_TRAILER_SKIP_TOKEN verdict(s) cover this branch's closing reference(s);"
+      echo "    shipping unverified closing reference(s): ${waived% }"
+      return 0
+    fi
     # Silent when the branch carries no closing reference at all: a revert
     # with nothing to close is the ordinary case and needs no commentary.
-    if [ -n "$revert_ref_list" ] || [ -n "$non_revert_refs" ]; then
+    if [ "$refs_seen" = true ]; then
       echo "==> Revert commit(s) present; every closing reference is carried by a revert itself."
     fi
     return 0
   fi
 
-  # Same SIGPIPE-under-pipefail hazard as commit_is_revert, and worse here:
-  # a swallowed match would leave the operator with a refusal that the
-  # documented escape cannot clear, on exactly the long-lived branches most
-  # likely to contain a revert.
-  range_messages="$(git log "$merge_base..HEAD" --format='%B')"
-  if grep -Fq "$REVERT_TRAILER_SKIP_TOKEN" <<<"$range_messages"; then
-    echo "==> $REVERT_TRAILER_SKIP_TOKEN found in this branch's history;"
-    echo "    shipping unverified closing reference(s): ${unconfirmed% }"
-    return 0
-  fi
+  for ref in $unconfirmed; do
+    case "$all_waiver_named" in
+      *" ${ref#\#} "*) ;;
+      *) unauthorized="${unauthorized}${ref} " ;;
+    esac
+  done
 
   echo "ERROR: this branch closes issue(s) that a revert in the same PR may have undone." >&2
   echo "       Unconfirmed closing reference(s): ${unconfirmed% }" >&2
+  if [ -n "$undone_refs" ]; then
+    echo "       Reverted revert(s) restored the change behind: ${undone_refs% }" >&2
+  fi
+  if [ -n "$body_only_refs" ]; then
+    echo "       Persisted in the PR body, where merge reads it: ${body_only_refs% }" >&2
+  fi
+  if [ -n "$unauthorized" ]; then
+    echo "       $REVERT_TRAILER_SKIP_TOKEN verdict(s) on this branch do not authorize: ${unauthorized% }" >&2
+  fi
+  if [ "$stale_verdict" = true ]; then
+    echo "       Verdict(s) that predate a later revert on this branch are not honored." >&2
+  fi
   echo "       Reverting commit(s) on this branch:" >&2
   for commit in $revert_shas; do
     printf '         %s\n' "$(git log -1 --format='%h %s' "$commit")" >&2
@@ -1672,8 +1888,11 @@ fi
 # refusal leaves the remote exactly as it was. Runs on every invocation —
 # draft, update, and final shipping alike: a draft's trailers are the same
 # trailers the squash message will carry, and one code path is the only way
-# the check cannot be routed around by picking a mode.
-assert_closing_refs_survive_reverts "$BASE_BRANCH"
+# the check cannot be routed around by picking a mode. An existing PR's number
+# goes with it: merge auto-closes what the persisted BODY says, so the body is
+# a source of closing references the commit trailers can no longer speak for.
+assert_closing_refs_survive_reverts "$BASE_BRANCH" \
+  "${EXISTING_PR_URL:+$(basename "$EXISTING_PR_URL")}"
 
 # Stacking + --auto-merge means THIS PR squash-merges into $BASE_BRANCH, not
 # into $DEFAULT_BRANCH. That is no longer dangerous — merge-pr.sh retains the
