@@ -11,12 +11,15 @@
 #   bash scripts/touchstone-run.sh validate
 #
 # Declaration first. A declared ${action}_command runs and its exit code is the
-# verdict — there is no skip path for a declaration. Repo-layout detection is a
-# deprecated fallback for projects that declare nothing: every task it does not
-# run reports SKIP, and each run ends with a `ran=/skipped=/failed=` verdict so
-# a zero exit cannot mean "nothing ran". Set require_declared=true in
-# .touchstone-config (or TOUCHSTONE_RUN_REQUIRE_DECLARED=1) to fail a run in
-# which no declared command executed.
+# verdict — there is no skip path for a declaration. Declaration applies at
+# every level: a target declares its own commands in its own config file.
+# Repo-layout detection is a deprecated fallback for projects that declare
+# nothing: every task it does not run reports SKIP, and each run ends with a
+# `ran=/skipped=/failed=` verdict so a zero exit cannot mean "nothing ran".
+#
+# Set require_declared=true in .touchstone-config to fail a run in which any
+# action it dispatched had no declared command of its own.
+# TOUCHSTONE_RUN_REQUIRE_DECLARED=1 can turn that gate on, never off.
 #
 set -euo pipefail
 
@@ -88,6 +91,30 @@ RUN_FAILED=0
 RUN_DECLARED=0
 RUN_DEFERRED=false
 DETECTION_FALLBACK_ACTIONS=""
+
+# Actions this run dispatched without a declared command of their own. This is
+# a list, not a count, because require_declared has to be answered per action:
+# a composite `validate` in which lint was declared and test silently skipped
+# is the same "green check proves nothing" hole as declaring nothing at all.
+RUN_UNDECLARED_ACTIONS=""
+
+# The status-stash calling convention, and why it is not optional here.
+#
+# bash ignores `set -e` inside a shell function invoked in a conditional
+# context — `f || rc=$?`, `if f`, `f && x`, `! f` — and that suppression is
+# inherited by everything the function goes on to run, including a subshell
+# that sets -e itself. So a dispatcher written as `run_action ... || rc=$?`
+# turns errexit off for every profile body underneath it, and a step that
+# fails halfway through one is masked by the next step's success. That is the
+# exact laundering this runner exists to stop, so no function in the dispatch
+# chain is ever called in a conditional context: each returns 0 and reports its
+# real status in RUN_STATUS. tests/test-run-script.sh enforces that
+# structurally, because the shape reintroduces the bug silently.
+RUN_STATUS=0
+
+# run_isolated hands its subshell's outcome counters back through this file.
+RUN_COUNTERS_FILE=""
+RUN_FINISHED=false
 
 info() { printf '==> %s\n' "$*"; }
 skip() {
@@ -195,11 +222,31 @@ load_config() {
   done <"$CONFIG_FILE"
 }
 
-# Opt-in strictness for projects whose validate is a required check: a run in
-# which no declared command executed is a failure, not a warning. Off by
-# default so already-bootstrapped projects that declare nothing keep working.
+# Opt-in strictness for projects whose validate is a required check: an action
+# the run dispatched without a declared command is a failure, not a warning.
+# Off by default so already-bootstrapped projects that declare nothing keep
+# working.
+#
+# Config wins over ambient environment. The variable can turn the gate ON for a
+# project that has not declared it yet, but it can never turn it OFF for a
+# project that declared require_declared=true — a strictness setting any
+# exported variable can downgrade is not a gate.
 require_declared_enabled() {
-  truthy "${TOUCHSTONE_RUN_REQUIRE_DECLARED:-${REQUIRE_DECLARED:-false}}"
+  if truthy "${REQUIRE_DECLARED:-false}"; then
+    return 0
+  fi
+  truthy "${TOUCHSTONE_RUN_REQUIRE_DECLARED:-false}"
+}
+
+# require_declared is answered per action, not once per process, so every
+# action the run dispatched has to answer for itself. build_if_distinct is a
+# validate-time extra rather than a promised task, so it is never demanded.
+record_undeclared_action() {
+  local action="$1"
+
+  case "$action" in build_if_distinct) return 0 ;; esac
+  case " $RUN_UNDECLARED_ACTIONS " in *" $action "*) return 0 ;; esac
+  RUN_UNDECLARED_ACTIONS="$RUN_UNDECLARED_ACTIONS $action"
 }
 
 detect_node_package_manager() {
@@ -301,6 +348,47 @@ run_shell_command() {
     bash -c "$command"
 }
 
+# The one place a profile body executes. Nothing above it is called in a
+# conditional context, so the subshell's `set -e` is genuinely in force here:
+# the first failing step aborts the body and becomes the status instead of
+# being masked by a later step's success. The counters the subshell increments
+# would die with it, so an EXIT trap — which fires on the errexit abort too and
+# leaves the exit status alone — hands them back to the parent.
+#
+# Never call this in a conditional context, and never nest it: the counters
+# file is a single slot.
+run_isolated() {
+  local ran skipped failed declared
+
+  RUN_STATUS=0
+  : >"$RUN_COUNTERS_FILE"
+  set +e
+  (
+    set -e
+    trap 'printf "%s %s %s %s\n" "$RUN_RAN" "$RUN_SKIPPED" "$RUN_FAILED" "$RUN_DECLARED" >"$RUN_COUNTERS_FILE"' EXIT
+    "$@"
+  )
+  RUN_STATUS=$?
+  set -e
+
+  if read -r ran skipped failed declared <"$RUN_COUNTERS_FILE"; then
+    RUN_RAN="$ran"
+    RUN_SKIPPED="$skipped"
+    RUN_FAILED="$failed"
+    RUN_DECLARED="$declared"
+    return 0
+  fi
+
+  # The verdict is this runner's product. Reporting numbers it cannot stand
+  # behind would be the same lie in a new place, so a lost handoff fails.
+  warn "internal: the isolated '$1' run lost its outcome counters"
+  RUN_FAILED=$((RUN_FAILED + 1))
+  if [ "$RUN_STATUS" -eq 0 ]; then
+    RUN_STATUS=1
+  fi
+  return 0
+}
+
 configured_command_for_action() {
   case "$1" in
     lint) printf '%s\n' "$LINT_COMMAND" ;;
@@ -312,6 +400,36 @@ configured_command_for_action() {
   esac
 }
 
+# Declaration applies at every level, so a target declares its own commands in
+# its own config file. Reads one key out of the config file in the current
+# directory without disturbing the root config the process already loaded.
+declared_command_here() {
+  local action="$1" key line parsed_key value=""
+
+  case "$action" in build_if_distinct) return 0 ;; esac
+  # An absolute TOUCHSTONE_CONFIG_FILE names the root's config specifically. A
+  # target must not re-read it and adopt the root's commands as its own.
+  case "$CONFIG_FILE" in /*) return 0 ;; esac
+  key="${action}_command"
+  [ -f "$CONFIG_FILE" ] || return 0
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="$(trim "$line")"
+    [ -z "$line" ] && continue
+    case "$line" in \#*) continue ;; esac
+    case "$line" in *=*) ;; *) continue ;; esac
+    parsed_key="$(trim "${line%%=*}")"
+    [ "$parsed_key" = "$key" ] || continue
+    value="$(trim "${line#*=}")"
+  done <"$CONFIG_FILE"
+
+  # typecheck_command=auto asks for detection, so it is not a declaration.
+  if [ "$action" = typecheck ] && [ "$value" = auto ]; then
+    value=""
+  fi
+  printf '%s\n' "$value"
+}
+
 # A declaration is a promise: the command runs and its exit code is the answer.
 # A missing binary (127) is a broken declaration, not an absent one, so it
 # fails loudly instead of reporting the "ok ... skipped" that made a green
@@ -319,7 +437,11 @@ configured_command_for_action() {
 run_declared_command() {
   local action="$1" command="$2" status=0
 
+  RUN_STATUS=0
   RUN_DECLARED=$((RUN_DECLARED + 1))
+  # The only conditional-context call left in the dispatch chain, and it is
+  # safe because run_shell_command's body is a single meaningful command:
+  # there is no second step for a suppressed errexit to let through.
   run_shell_command "$command" || status=$?
   if [ "$status" -eq 0 ]; then
     return 0
@@ -336,19 +458,26 @@ run_declared_command() {
   else
     warn "declared ${action}_command failed (exit $status): $command"
   fi
-  return "$status"
+  RUN_STATUS="$status"
+  return 0
 }
 
 # Detection guesses a command from repo layout instead of reading one. It stays
 # only as a deprecated fallback for projects that declare nothing, and it says
 # so once per action, naming the key that replaces it.
 note_detection_fallback() {
-  local action="$1"
+  local action="$1" scope="${2:-}" label=""
 
   case "$action" in build_if_distinct) return 0 ;; esac
-  case " $DETECTION_FALLBACK_ACTIONS " in *" $action "*) return 0 ;; esac
-  DETECTION_FALLBACK_ACTIONS="$DETECTION_FALLBACK_ACTIONS $action"
-  warn "DEPRECATED: no ${action}_command in $CONFIG_FILE — guessing '$action' from repo layout. Declare it: ${action}_command=<command>"
+  if [ -n "$scope" ]; then
+    # Per-target notices carry the target's name and are not deduplicated:
+    # each target is separately undeclared, and each runs in its own subshell.
+    label="target '$scope': "
+  else
+    case " $DETECTION_FALLBACK_ACTIONS " in *" $action "*) return 0 ;; esac
+    DETECTION_FALLBACK_ACTIONS="$DETECTION_FALLBACK_ACTIONS $action"
+  fi
+  warn "DEPRECATED: ${label}no ${action}_command in $CONFIG_FILE — guessing '$action' from repo layout. Declare it: ${action}_command=<command>"
 }
 
 run_node_script() {
@@ -666,11 +795,30 @@ run_profile_action() {
   esac
 }
 
+# One target, inside run_isolated's `set -e` subshell. The cd lives in here
+# too, so a failure can never leave the parent in the wrong directory, and the
+# target's own declaration is consulted before anything is detected.
+run_target_profile() {
+  local path="$1" profile="$2" action="$3" name="$4" configured
+
+  cd "$path"
+  configured="$(declared_command_here "$action")"
+  if [ -n "$configured" ]; then
+    run_declared_command "$action" "$configured"
+    return "$RUN_STATUS"
+  fi
+
+  note_detection_fallback "$action" "$name"
+  run_profile_action "$profile" "$action"
+}
+
 run_targets_action() {
-  local action="$1" entry name path profile status failures=0
+  local action="$1" entry name path profile failures=0
+  local declared_before failed_before dispatched=0 declared_targets=0
   local -a target_entries=()
 
-  IFS=',' read -r -a target_entries <<<"$TARGETS"
+  RUN_STATUS=0
+  IFS=',' read -r -a target_entries <<<"$TARGETS" || true
   for entry in "${target_entries[@]}"; do
     entry="$(trim "$entry")"
     [ -z "$entry" ] && continue
@@ -686,6 +834,10 @@ run_targets_action() {
     fi
 
     if [ ! -d "$path" ]; then
+      # A declared target whose directory is gone is a broken declaration, the
+      # same as a declared command that cannot run: the promise names
+      # something that is not there. Only explicitly declared targets reach
+      # this loop — detect_targets output feeds `detect`, never dispatch.
       RUN_FAILED=$((RUN_FAILED + 1))
       failures=$((failures + 1))
       warn "declared target '$name' path not found: $path"
@@ -694,43 +846,57 @@ run_targets_action() {
     fi
 
     info "target $name ($profile) — $action"
-    # No subshell: the outcome counters must survive the dispatch, and a
-    # failing target must fail the run. `if run_targets_action` used to hide
-    # that — a failed target was masked by the next target's success, or fell
-    # through to the root profile's "no default command" skip.
-    cd "$path" || return 1
-    status=0
-    run_profile_action "$profile" "$action" || status=$?
-    cd "$REPO_ROOT" || return 1
-    if [ "$status" -ne 0 ]; then
-      RUN_FAILED=$((RUN_FAILED + 1))
+    dispatched=$((dispatched + 1))
+    declared_before="$RUN_DECLARED"
+    failed_before="$RUN_FAILED"
+    run_isolated run_target_profile "$path" "$profile" "$action" "$name"
+    if [ "$RUN_DECLARED" -gt "$declared_before" ]; then
+      declared_targets=$((declared_targets + 1))
+    fi
+    if [ "$RUN_STATUS" -ne 0 ]; then
       failures=$((failures + 1))
-      warn "target '$name' failed '$action' (exit $status)"
+      # Count each failed task once: a declared target already counted itself.
+      if [ "$RUN_FAILED" -eq "$failed_before" ]; then
+        RUN_FAILED=$((RUN_FAILED + 1))
+      fi
+      warn "target '$name' failed '$action' (exit $RUN_STATUS)"
     fi
   done
 
+  # The action counts as declared only when every dispatched target ran a
+  # command it declared itself; one declaring target does not vouch for the
+  # rest, for the same reason one declared constituent does not vouch for a
+  # composite validate.
+  if [ "$dispatched" -eq 0 ] || [ "$declared_targets" -ne "$dispatched" ]; then
+    record_undeclared_action "$action"
+  fi
+
+  RUN_STATUS=0
   if [ "$failures" -ne 0 ]; then
-    return 1
+    RUN_STATUS=1
   fi
   return 0
 }
 
 run_action() {
-  local action="$1" configured profile status=0
+  local action="$1" configured profile failed_before
+
+  RUN_STATUS=0
 
   # Declaration first: nothing is detected when the project has stated what to
   # run, and the declared command's exit code is the whole answer.
   configured="$(configured_command_for_action "$action")"
   if [ -n "$configured" ]; then
-    run_declared_command "$action" "$configured" || status=$?
-    return "$status"
+    run_declared_command "$action" "$configured"
+    return 0
   fi
 
   if [ -n "$TARGETS" ]; then
-    run_targets_action "$action" || status=$?
-    return "$status"
+    run_targets_action "$action"
+    return 0
   fi
 
+  record_undeclared_action "$action"
   note_detection_fallback "$action"
 
   profile="${PROJECT_TYPE:-auto}"
@@ -741,15 +907,18 @@ run_action() {
     profile="$(detect_profile ".")"
   fi
 
-  run_profile_action "$profile" "$action" || status=$?
-  if [ "$status" -ne 0 ]; then
+  failed_before="$RUN_FAILED"
+  run_isolated run_profile_action "$profile" "$action"
+  if [ "$RUN_STATUS" -ne 0 ] && [ "$RUN_FAILED" -eq "$failed_before" ]; then
     RUN_FAILED=$((RUN_FAILED + 1))
   fi
-  return "$status"
+  return 0
 }
 
 run_validate() {
-  local configured status=0
+  local configured
+
+  RUN_STATUS=0
 
   if should_skip_feature_push_validate; then
     RUN_DEFERRED=true
@@ -759,18 +928,30 @@ run_validate() {
 
   configured="$(configured_command_for_action validate)"
   if [ -n "$configured" ]; then
-    run_declared_command validate "$configured" || status=$?
-    return "$status"
+    run_declared_command validate "$configured"
+    return 0
   fi
 
-  run_action lint || return "$?"
-  run_action typecheck || return "$?"
+  # Each constituent stashes its status in RUN_STATUS; validate stops at the
+  # first failure. Checking the stash instead of `run_action lint || return`
+  # is what keeps errexit live inside the profile bodies underneath.
+  run_action lint
+  if [ "$RUN_STATUS" -ne 0 ]; then
+    return 0
+  fi
+  run_action typecheck
+  if [ "$RUN_STATUS" -ne 0 ]; then
+    return 0
+  fi
   # Node targets with distinct typecheck + build scripts: run the bundler too.
   # Other profiles no-op because their typecheck already runs the compiler.
   # Distinctness is per-target, so this flows through run_targets_action just
   # like every other action — no special-casing for monorepo vs single-package.
-  run_action build_if_distinct || return "$?"
-  run_action test || return "$?"
+  run_action build_if_distinct
+  if [ "$RUN_STATUS" -ne 0 ]; then
+    return 0
+  fi
+  run_action test
   return 0
 }
 
@@ -778,8 +959,9 @@ run_validate() {
 # process ends, so "the check was green" and "a task ran" stop being the same
 # claim.
 finish() {
-  local action="$1" status="$2"
+  local action="$1" status="$2" undeclared
 
+  RUN_FINISHED=true
   printf '==> %s verdict: ran=%d skipped=%d failed=%d\n' \
     "$action" "$RUN_RAN" "$RUN_SKIPPED" "$RUN_FAILED"
 
@@ -793,9 +975,15 @@ finish() {
     exit 0
   fi
 
-  if require_declared_enabled && [ "$RUN_DECLARED" -eq 0 ]; then
-    warn "require_declared=true and no declared command ran for '$action'."
-    warn "  Fix: declare it in $CONFIG_FILE: ${action}_command=<command>"
+  if require_declared_enabled && [ -n "$RUN_UNDECLARED_ACTIONS" ]; then
+    warn "require_declared=true, but no declared command ran for:$RUN_UNDECLARED_ACTIONS"
+    # shellcheck disable=SC2086 # the list is space-separated action names
+    for undeclared in $RUN_UNDECLARED_ACTIONS; do
+      warn "  Fix: declare it in $CONFIG_FILE: ${undeclared}_command=<command>"
+    done
+    if [ -n "$TARGETS" ]; then
+      warn "  A target declares its own commands in its own $CONFIG_FILE."
+    fi
     exit 1
   fi
 
@@ -847,20 +1035,36 @@ print_detection() {
   fi
 }
 
+# Cleans up the counters slot, and makes an errexit abort legible: without
+# this, a failure outside the dispatch chain would end the process with no
+# verdict and no explanation, which is the silence this runner exists to break.
+on_exit() {
+  local status="$?"
+
+  if [ -n "$RUN_COUNTERS_FILE" ]; then
+    rm -f "$RUN_COUNTERS_FILE"
+  fi
+  if [ "$RUN_FINISHED" != true ] && [ "$status" -ne 0 ]; then
+    warn "the runner aborted before reporting a verdict (exit $status)"
+  fi
+  return 0
+}
+
 load_config
 
-ACTION_STATUS=0
+RUN_COUNTERS_FILE="$(mktemp "${TMPDIR:-/tmp}/touchstone-run-counters.XXXXXX")"
+trap on_exit EXIT
 
 case "$ACTION" in
   -h | --help) usage ;;
   detect) print_detection ;;
   lint | typecheck | build | test)
-    run_action "$ACTION" || ACTION_STATUS=$?
-    finish "$ACTION" "$ACTION_STATUS"
+    run_action "$ACTION"
+    finish "$ACTION" "$RUN_STATUS"
     ;;
   validate)
-    run_validate || ACTION_STATUS=$?
-    finish validate "$ACTION_STATUS"
+    run_validate
+    finish validate "$RUN_STATUS"
     ;;
   *)
     echo "ERROR: unknown touchstone-run action '$ACTION'" >&2

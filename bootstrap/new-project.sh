@@ -1349,7 +1349,8 @@ if [ ! -f "$PROJECT_DIR/.touchstone-config" ]; then
     printf 'build_command=\n'
     printf 'test_command=%s\n' "$INPUT_TEST"
     printf 'validate_command=\n'
-    printf '# Set require_declared=true to fail validate when no declared command ran.\n'
+    printf '# Set require_declared=true to fail any action that ran no declared command.\n'
+    printf '# It is answered per action, and each target declares its own commands.\n'
     printf '# validate_lane=auto chooses affected/smoke only when safely configured; otherwise full.\n'
     printf 'validate_lane=auto\n'
     printf 'validate_affected_command=\n'
