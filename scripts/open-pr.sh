@@ -88,6 +88,15 @@ OPEN_PR_TRUSTED_REVIEW_AUTHORS="chatgpt-codex-connector,chatgpt-codex-connector[
 OPEN_PR_HEAD_REVIEW_LOOKUP_ERROR=""
 OPEN_PR_REVIEW_CONFIG_ERROR=""
 OPEN_PR_REVIEW_REQUEST_COUNT=0
+# Review-stall threshold (#759), minutes, env-overridable via
+# TOUCHSTONE_REVIEW_STALL_MINUTES. A durable request whose @codex trigger has
+# gone unanswered this long is reported as possibly skipped by the reviewer —
+# observed 2026-08-11: a re-request unanswered for 40+ minutes while the same
+# reviewer served other PRs in the window, and an empty re-trigger commit drew
+# no review either. The threshold gates only the report and the --fresh-review
+# advertisement; absence of an answer is a heuristic, not evidence, so no
+# request is ever fired from it automatically.
+OPEN_PR_REVIEW_STALL_DEFAULT_MINUTES=30
 # The exact base OID request_pr_triggered_review validated (GitHub's base SHA,
 # cross-checked against a refreshed origin/<base>). The merge authorizer is
 # extracted at THIS commit, not at whatever origin/<base> resolves to later —
@@ -486,6 +495,17 @@ trusted_review_exists_for_head() {
   # PENDING is unsubmitted and costs nothing; DISMISSED was still a spent
   # round. Consumed by the round-budget gate (#760).
   OPEN_PR_TRUSTED_REVIEW_ROUNDS=0
+  # Comment-channel answer state for THIS head (the channel formal-review
+  # lookup cannot see; clean results normally arrive here). AT is the latest
+  # trusted result comment naming this exact head by merge-pr.sh's canonical
+  # 10-char marker (verdict classification stays in the filter for the test
+  # tier; the gate owns verdict semantics — #734). LOOKUP_ERROR nonempty means the
+  # comment inspection FAILED — unknown, not absent — and every stall
+  # classification/recovery consumer must suppress rather than act on
+  # incomplete GitHub state (PR #781 review).
+  OPEN_PR_HEAD_RESULT_COMMENT_AT=""
+  OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR=""
+  OPEN_PR_RESULT_COMMENT_LOOKUP_OK=false
   local submitted
   if ! reviews_tsv="$(gh api --paginate "repos/$REPO_FULL_NAME/pulls/$pr_number/reviews" \
     --jq '.[] | [(.user.login // ""), (.commit_id // ""), (.state // ""), (.submitted_at // "")] | @tsv' 2>&1)"; then
@@ -527,16 +547,85 @@ trusted_review_exists_for_head() {
   # supported result channel, so a budget that ignored them would be
   # evadable by channel (PR #765 review). Lookup failure leaves the count
   # partial rather than refusing — friction control, not authorization.
-  local result_comment_logins comment_login
-  if result_comment_logins="$(gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments" \
-    --jq '.[] | select((.body // "") | contains("Reviewed commit:")) | (.user.login // "")' 2>/dev/null)"; then
-    while IFS= read -r comment_login; do
+  # Each row is login<TAB>reviewed-sha<TAB>created-at<TAB>verdict. The jq
+  # program lives in ONE single-quoted assignment so the test tier can eval
+  # this exact line and exercise the real filter with real jq — the P1 on
+  # PR #781 was an uncompilable filter that stub-served fixtures never ran.
+  # A row is kept even when the body carries no backticked commit (empty sha)
+  # so round counting never depends on the capture. The head answer requires
+  # the canonical 10-char short exactly, as merge-pr.sh's matcher does — a
+  # 7-char or full-length sha would be rejected by the merge gate, so it must
+  # not count as an answer here either. Lookup failure records the error and
+  # leaves the round count partial: friction control, not authorization.
+  OPEN_PR_RESULT_COMMENT_JQ='.[] | select((.body // "") | contains("Reviewed commit:")) | [(.user.login // ""), (((.body // "") | (capture("Reviewed commit:[^`]*`(?<sha>[0-9a-fA-F]{7,40})`")? | .sha) // "")), (.created_at // ""), (if ((.body // "") | (startswith("Codex Review: Didn'\''t find any major issues.") or startswith("Codex Review: No major issues."))) then "clean" else "non-clean" end)] | @tsv'
+  local result_comment_rows comment_login comment_result_sha comment_result_at
+  local head_short_lc comment_sha_lc
+  head_short_lc="$(printf '%.10s' "$head_sha" | tr '[:upper:]' '[:lower:]')"
+  # Success is an explicit status, never inferred from the diagnostic
+  # string: a killed gh or silent wrapper exits nonzero with EMPTY stderr,
+  # and empty-diagnostic-means-success would read that failure as a
+  # confirmed absence of answers (PR #781 review, override round 2).
+  if result_comment_rows="$(gh api --paginate "repos/$REPO_FULL_NAME/issues/$pr_number/comments" \
+    --jq "$OPEN_PR_RESULT_COMMENT_JQ" 2>&1)"; then
+    OPEN_PR_RESULT_COMMENT_LOOKUP_OK=true
+    while IFS=$'\t' read -r comment_login comment_result_sha comment_result_at _; do
       [ -n "$comment_login" ] || continue
       csv_contains "$OPEN_PR_TRUSTED_REVIEW_AUTHORS" "$comment_login" || continue
       OPEN_PR_TRUSTED_REVIEW_ROUNDS=$((OPEN_PR_TRUSTED_REVIEW_ROUNDS + 1))
-    done <<<"$result_comment_logins"
+      comment_sha_lc="$(printf '%s' "$comment_result_sha" | tr '[:upper:]' '[:lower:]')"
+      [ -n "$comment_sha_lc" ] && [ "$comment_sha_lc" = "$head_short_lc" ] || continue
+      [ -n "$comment_result_at" ] || continue
+      if [ -z "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ] \
+        || [[ "$comment_result_at" > "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ]]; then
+        OPEN_PR_HEAD_RESULT_COMMENT_AT="$comment_result_at"
+      fi
+    done <<<"$result_comment_rows"
+  else
+    OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR="${result_comment_rows:-comment lookup failed with no diagnostic}"
   fi
   return "$found"
+}
+
+# ISO8601 UTC (2026-08-11T13:13:52Z) -> epoch seconds. BSD date first, GNU
+# fallback (the touchstone_sync_timestamp_epoch pattern). Prints nothing and
+# fails when neither form parses.
+open_pr_utc_epoch() {
+  local ts="$1"
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$ts" '+%s' 2>/dev/null \
+    || date -u -d "$ts" '+%s' 2>/dev/null
+}
+
+# Stall report (#759): without it, "already requested" is indistinguishable
+# from "will never be answered" — the reviewer can skip a pushed head with no
+# error surfaced anywhere on the PR, and the recovery gesture the guidance
+# implied (an empty commit) draws no review either. Advisory only: it names
+# the sanctioned recovery (--fresh-review, which retires the stale request)
+# and never fires a request itself. Returns 1 only for a malformed threshold,
+# which refuses loudly rather than silently disabling the report.
+report_unanswered_request_stall() {
+  local trigger_at="$1"
+  local stall_minutes="${TOUCHSTONE_REVIEW_STALL_MINUTES:-$OPEN_PR_REVIEW_STALL_DEFAULT_MINUTES}"
+  local trigger_epoch now_epoch age_minutes
+
+  case "$stall_minutes" in
+    '' | *[!0-9]*)
+      echo "ERROR: TOUCHSTONE_REVIEW_STALL_MINUTES must be a non-negative integer; got '$stall_minutes' (#759)." >&2
+      return 1
+      ;;
+  esac
+  if ! trigger_epoch="$(open_pr_utc_epoch "$trigger_at")" || [ -z "$trigger_epoch" ]; then
+    echo "WARNING: cannot parse review-request trigger timestamp '$trigger_at'; stall detection (#759) skipped." >&2
+    return 0
+  fi
+  now_epoch="$(date -u '+%s')"
+  [ "$now_epoch" -ge "$trigger_epoch" ] || return 0
+  age_minutes=$(((now_epoch - trigger_epoch) / 60))
+  [ "$age_minutes" -ge "$stall_minutes" ] || return 0
+  echo "    The request has been unanswered for $age_minutes minute(s) (trigger $trigger_at),"
+  echo "    past the stall threshold of $stall_minutes minute(s) (TOUCHSTONE_REVIEW_STALL_MINUTES)."
+  echo "    The reviewer may have skipped this head (#759); an empty commit does not recover"
+  echo "    it. Retire this request and re-ask for the SAME head without a new commit:"
+  echo "      bash scripts/open-pr.sh --fresh-review"
 }
 
 load_open_pr_review_request_config() {
@@ -847,6 +936,17 @@ request_pr_triggered_review() {
   # review that predates the request (PR #755 review, round 9).
   matching_trigger_at="$(printf '%s\n' "$completion_records" \
     | awk -F'\t' -v i="$intent_at" '$1 == i { print $2; exit }')"
+  # A formal review only answers THIS request when it postdates the
+  # request's trigger: after --fresh-review re-asks on an unchanged head, the
+  # older review answered an older ask, and merge-pr.sh rejects pre-trigger
+  # results — the reviewed-head skip must not hide the stalled replacement
+  # (PR #781 review, round 2).
+  formal_answer_post_trigger=false
+  if [ -n "${OPEN_PR_HEAD_REVIEW_LIVE_AT:-}" ] \
+    && { [ -z "$matching_trigger_at" ] \
+      || [[ "$OPEN_PR_HEAD_REVIEW_LIVE_AT" > "$matching_trigger_at" ]]; }; then
+    formal_answer_post_trigger=true
+  fi
   request_consumed_by_dismissal=false
   if [ -n "${OPEN_PR_HEAD_REVIEW_DISMISSED_AT:-}" ] \
     && [ -n "$matching_trigger_at" ] \
@@ -857,15 +957,28 @@ request_pr_triggered_review() {
     # answered — merge-pr.sh authorizes from it, and re-requesting would
     # spend a full review cycle for nothing, the anti-goal of this change
     # (PR #755 review, round 10).
-    if [ -z "${OPEN_PR_HEAD_REVIEW_LIVE_AT:-}" ] \
-      || ! [[ "$OPEN_PR_HEAD_REVIEW_LIVE_AT" > "$matching_trigger_at" ]]; then
+    # The shield covers BOTH channels: a trusted comment result naming this
+    # head also answers the request — merge-pr.sh ignores the dismissed
+    # formal review and can accept the comment — and an errored comment
+    # lookup proves nothing, so consumption stays conservative
+    # (PR #781 review, override round).
+    comment_answer_shields=false
+    if [ -n "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ] \
+      && [[ "$OPEN_PR_HEAD_RESULT_COMMENT_AT" > "$matching_trigger_at" ]]; then
+      comment_answer_shields=true
+    fi
+    if { [ -z "${OPEN_PR_HEAD_REVIEW_LIVE_AT:-}" ] \
+      || ! [[ "$OPEN_PR_HEAD_REVIEW_LIVE_AT" > "$matching_trigger_at" ]]; } \
+      && [ "$comment_answer_shields" != true ] \
+      && [ "$OPEN_PR_RESULT_COMMENT_LOOKUP_OK" = true ]; then
       request_consumed_by_dismissal=true
     fi
   fi
 
   if [ "$head_review_status" -eq 0 ] && [ "$matching_request" = true ] \
     && [ "${FRESH_REVIEW:-false}" != true ] \
-    && [ "$request_consumed_by_dismissal" != true ]; then
+    && [ "$request_consumed_by_dismissal" != true ] \
+    && [ "$formal_answer_post_trigger" = true ]; then
     echo "==> Head $head_sha is already reviewed: a trusted formal review exists for this exact head; not re-requesting (issue #751)."
     echo "    (If the merge gate reported a BODY-ONLY finding, re-run with --fresh-review.)"
     return 0
@@ -899,11 +1012,46 @@ request_pr_triggered_review() {
       intent_at=""
     else
       echo "==> GitHub Codex review already requested for head $head_sha at base $base_sha."
+      # An unanswered request is only "in flight" until the stall threshold;
+      # past it, absence must be distinguishable from latency (#759). Only a
+      # definite no-review answer (status 1) reports — a failed lookup
+      # (status 2) proves nothing about the reviewer.
+      # Stall classification needs COMPLETE answer state: a failed comment
+      # lookup is unknown, not absence, and must not spend a review cycle on
+      # incomplete GitHub state; an answer PREDATING this request's trigger
+      # answered an earlier ask, not this one (PR #781 review).
+      if [ "$OPEN_PR_RESULT_COMMENT_LOOKUP_OK" != true ]; then
+        echo "WARNING: comment-result lookup failed; stall detection (#759) skipped this run:"
+        echo "         $OPEN_PR_RESULT_COMMENT_LOOKUP_ERROR"
+      elif [ "$head_review_status" -ne 2 ] \
+        && [ "$formal_answer_post_trigger" != true ] \
+        && [ -n "$matching_trigger_at" ] \
+        && { [ -z "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ] \
+          || ! [[ "$OPEN_PR_HEAD_RESULT_COMMENT_AT" > "$matching_trigger_at" ]]; }; then
+        report_unanswered_request_stall "$matching_trigger_at" || return 1
+      fi
       return 0
     fi
   fi
   if [ "${FRESH_REVIEW:-false}" = true ]; then
-    echo "==> --fresh-review: forcing a new review request for head $head_sha despite existing evidence."
+    if [ "$matching_request" = true ] && [ "$head_review_status" -ne 2 ] \
+      && [ "$formal_answer_post_trigger" != true ] \
+      && [ "$OPEN_PR_RESULT_COMMENT_LOOKUP_OK" = true ] \
+      && { [ -z "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ] \
+        || ! [[ "$OPEN_PR_HEAD_RESULT_COMMENT_AT" > "$matching_trigger_at" ]]; }; then
+      # Stall recovery (#759): the durable request for this exact head was
+      # never answered, and the replacement ask must not reuse its intent —
+      # matching_trigger_at anchors to the intent, so the stall clock would
+      # keep dating the new request from the trigger the reviewer skipped.
+      # Retire it the way dismissal-consumption retires consumed requests: a
+      # fresh intent postdates the stall, the completion record binds the new
+      # trigger to it, and the ordinary idempotent skip resumes.
+      echo "==> --fresh-review: the review request for head $head_sha was never answered (#759);"
+      echo "    retiring the stale request record and posting a fresh request intent."
+      intent_at=""
+    else
+      echo "==> --fresh-review: forcing a new review request for head $head_sha despite existing evidence."
+    fi
   fi
 
   # Round-budget gate (#760). By this point every idempotent skip has passed:
@@ -930,15 +1078,63 @@ request_pr_triggered_review() {
   if [ "${OPEN_PR_TRUSTED_REVIEW_ROUNDS:-0}" -ge "$ROUND_BUDGET" ] \
     && [ -z "$ROUND_BUDGET_OVERRIDE" ]; then
     echo "ERROR: PR #$pr_number has already spent $OPEN_PR_TRUSTED_REVIEW_ROUNDS review round(s); the budget is $ROUND_BUDGET (#760)." >&2
-    echo "       Requesting another round is usually the wrong move. The legitimate exits:" >&2
-    echo "         1. Merge if answered — every thread resolved satisfies the gate (issue #751);" >&2
-    echo "            run: bash scripts/merge-pr.sh $pr_number" >&2
-    echo "         2. Split the PR — the diff is carrying more than one concern." >&2
-    echo "         3. Close it, preserving the corpus on the tracking issue (the #706 pattern)." >&2
-    echo "       Findings that harden a component the plan deletes belong on the owning" >&2
-    echo "       issue, not in this diff (principles/git-workflow.md)." >&2
-    echo "       To spend the round anyway, state why:" >&2
-    echo "         bash scripts/open-pr.sh --round-budget-override \"<reason>\"" >&2
+    # Does ANY post-trigger answer exist for this head, on either channel?
+    # That is the one predicate this side can compute soundly. Whether the
+    # merge gate ACCEPTS that answer (clean vs body-only, same-second ties,
+    # an active CHANGES_REQUESTED) is the gate's own verdict — three review
+    # rounds of trying to mirror it here each found another divergence, and
+    # replicating the reviewer-semantics layer in a second place is exactly
+    # what #734 exists to delete. So: no answer at all -> the deadlock exit
+    # is certain; an answer exists -> the exits text states both outcomes
+    # conditionally instead of guessing the gate's verdict; lookups failed
+    # -> unknown, conservative (PR #781 review, rounds 2-3).
+    head_answer_state=none
+    if [ "$OPEN_PR_RESULT_COMMENT_LOOKUP_OK" != true ] || [ "$head_review_status" -eq 2 ]; then
+      head_answer_state=unknown
+    elif [ "$formal_answer_post_trigger" = true ]; then
+      head_answer_state=answered
+    elif [ -n "$OPEN_PR_HEAD_RESULT_COMMENT_AT" ] \
+      && { [ -z "$matching_trigger_at" ] \
+        || [[ "$OPEN_PR_HEAD_RESULT_COMMENT_AT" > "$matching_trigger_at" ]]; }; then
+      head_answer_state=answered
+    fi
+    if [ "$matching_request" != true ] || [ "$request_consumed_by_dismissal" = true ] \
+      || [ "$head_answer_state" = none ]; then
+      # The budget/evidence deadlock (#775): this head has no reviewer answer
+      # the merge gate accepts (no request recorded, its answer was dismissed,
+      # or the request was never answered — the #759 stall), so "run
+      # merge-pr.sh" would bounce straight back here —
+      # an error naming an unavailable remedy costs a full round-trip to
+      # discover. The head-advances that create this state (rebase after the
+      # base moved, a fix commit answering a finding) are this tooling's own
+      # instructions, so the refusal names the one exit that exists.
+      echo "       Head $head_sha has no reviewer answer the merge gate can accept (no" >&2
+      echo "       request recorded, answer dismissed, or request never answered), so" >&2
+      echo "       'merge if answered' is NOT available: the merge gate would" >&2
+      echo "       refuse this head and send you back here — the budget/evidence deadlock" >&2
+      echo "       (#775). A head advanced by rebase or a finding-fix after the budget was" >&2
+      echo "       spent is following this tooling's own instructions; the sanctioned path" >&2
+      echo "       is to spend the round deliberately:" >&2
+      echo "         bash scripts/open-pr.sh --round-budget-override \\" >&2
+      echo "           \"head advanced by rebase/fix after budget spent; prior rounds reviewed the substance\"" >&2
+      echo "       Adjust the reason to what actually happened — it is recorded in the" >&2
+      echo "       PR-visible request comment. Splitting the PR or closing it (the #706" >&2
+      echo "       pattern) remain available if the diff outgrew what prior rounds reviewed." >&2
+    else
+      echo "       Requesting another round is usually the wrong move. The legitimate exits:" >&2
+      echo "         1. Merge if answered — every thread resolved satisfies the gate (issue #751);" >&2
+      echo "            run: bash scripts/merge-pr.sh $pr_number" >&2
+      echo "            If the gate REFUSES the current answer (a body-only result, a" >&2
+      echo "            same-second tie, or an active CHANGES_REQUESTED), its remedy needs a" >&2
+      echo "            fresh review — past budget that is the override below, with the" >&2
+      echo "            gate's refusal as the reason." >&2
+      echo "         2. Split the PR — the diff is carrying more than one concern." >&2
+      echo "         3. Close it, preserving the corpus on the tracking issue (the #706 pattern)." >&2
+      echo "       Findings that harden a component the plan deletes belong on the owning" >&2
+      echo "       issue, not in this diff (principles/git-workflow.md)." >&2
+      echo "       To spend the round anyway, state why:" >&2
+      echo "         bash scripts/open-pr.sh --round-budget-override \"<reason>\"" >&2
+    fi
     return 1
   fi
   if [ -n "$ROUND_BUDGET_OVERRIDE" ] && [ "${OPEN_PR_TRUSTED_REVIEW_ROUNDS:-0}" -ge "$ROUND_BUDGET" ]; then
@@ -1115,7 +1311,10 @@ Options:
                       Mutually exclusive with --auto-merge.
   --base <branch>     Target a non-default base branch.
   --fresh-review      Force a new review request even when this head already has
-                      trusted review evidence (the body-only-finding escape).
+                      trusted review evidence (the body-only-finding escape). On a
+                      requested-but-unanswered head it retires the stale request
+                      record and re-asks without a new commit (the #759 stall
+                      recovery).
   --round-budget-override <reason>
                       Spend a review round past the per-PR budget (#760). The
                       reason is recorded in the PR-visible request comment.
@@ -1187,8 +1386,11 @@ BASE_OVERRIDE=""
 # BODY-ONLY findings (PR #755 review): the merge gate cannot accept them via
 # thread resolution, and the per-head idempotency would otherwise skip the
 # re-request — leaving the driver in a loop where the gate says "request a
-# fresh review" and this script answers "already reviewed". Bounded: it spends
-# exactly one request, and nothing advertises it except the body-only block.
+# fresh review" and this script answers "already reviewed". It is also the
+# stall recovery (#759): on a requested-but-unanswered head it retires the
+# stale request record and re-asks without a new commit. Bounded: it spends
+# exactly one request, and nothing advertises it except the body-only block
+# and the stall report.
 FRESH_REVIEW=false
 # --round-budget-override "<reason>": the review-round budget (#760) refuses
 # to request review round N+1 (default 3) on one PR. Past budget the
