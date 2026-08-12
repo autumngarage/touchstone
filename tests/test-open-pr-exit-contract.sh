@@ -1573,6 +1573,83 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Cases 51-52 (issue #721): the force-push integration evidence must identify
+# CONTENT, not patch text. Hashing a patch with its hunk coordinates stripped
+# leaves the patch with no location identity, so the same textual edit made to
+# two different occurrences of a repeated block fingerprints identically — and
+# the guard force-pushes away a remote commit it never incorporated.
+# ---------------------------------------------------------------------------
+echo "==> Case 51: an identical edit at a different offset refuses the guarded retry"
+OUT="$TEST_DIR/case51.out"
+RC=0
+reset_open_pr_logs
+CASE51_BASE="$(git -C "$REPO_DIR" rev-parse HEAD)"
+awk 'BEGIN { for (i = 0; i < 40; i++) print "same" }' >"$REPO_DIR/repeat.txt"
+git -C "$REPO_DIR" add repeat.txt
+git -C "$REPO_DIR" commit -q -m "add a block of identical lines"
+CASE51_SHARED="$(git -C "$REPO_DIR" rev-parse HEAD)"
+CASE51_OLD_BLOB="$(git -C "$REPO_DIR" rev-parse HEAD:repeat.txt)"
+# Two commits that insert the SAME line into the SAME file, one near the top
+# and one near the bottom of a block of identical lines. With three lines of
+# context on either side the patch TEXT of the two is byte-identical once hunk
+# coordinates are stripped; only the resulting blob tells them apart.
+CASE51_TOP_BLOB="$(awk 'NR == 10 { print "MARKER" } { print }' "$REPO_DIR/repeat.txt" \
+  | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE51_BOTTOM_BLOB="$(awk 'NR == 30 { print "MARKER" } { print }' "$REPO_DIR/repeat.txt" \
+  | git -C "$REPO_DIR" hash-object -w --stdin)"
+CASE51_TOP_TREE="$(git -C "$REPO_DIR" ls-tree HEAD | sed "s/$CASE51_OLD_BLOB/$CASE51_TOP_BLOB/" | git -C "$REPO_DIR" mktree)"
+CASE51_BOTTOM_TREE="$(git -C "$REPO_DIR" ls-tree HEAD | sed "s/$CASE51_OLD_BLOB/$CASE51_BOTTOM_BLOB/" | git -C "$REPO_DIR" mktree)"
+CASE51_REMOTE="$(git -C "$REPO_DIR" commit-tree "$CASE51_TOP_TREE" -p "$CASE51_SHARED" -m "insert marker")"
+CASE51_LOCAL="$(git -C "$REPO_DIR" commit-tree "$CASE51_BOTTOM_TREE" -p "$CASE51_SHARED" -m "insert marker")"
+git -C "$REPO_DIR" reset -q --hard "$CASE51_LOCAL"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE51_REMOTE" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q 'whose changes are not in this checkout' "$OUT" \
+  && ! grep -q -- '--force-with-lease' "$TEST_DIR/git-push.log" \
+  && [ ! -s "$TEST_DIR/review-request.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: an unincorporated remote edit at another offset must not be forced away" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" "$TEST_DIR/git-push.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 52: the same content reached through a different parent still authorizes"
+OUT="$TEST_DIR/case52.out"
+RC=0
+reset_open_pr_logs
+# The complementary invariant, so "refuse everything" cannot pass Case 51:
+# a real rebase produces the same content under a different parent, and the
+# guarded resume exists precisely to publish it. The extra local no-op commit
+# also exercises the empty-change-list path, which contributes no twin.
+CASE52_REMOTE="$(git -C "$REPO_DIR" commit-tree "$CASE51_TOP_TREE" -p "$CASE51_SHARED" -m "insert marker (remote)")"
+CASE52_NOOP="$(git -C "$REPO_DIR" commit-tree "$(git -C "$REPO_DIR" rev-parse "$CASE51_SHARED^{tree}")" -p "$CASE51_SHARED" -m "no-op rebase artifact")"
+CASE52_LOCAL="$(git -C "$REPO_DIR" commit-tree "$CASE51_TOP_TREE" -p "$CASE52_NOOP" -m "insert marker (rebased)")"
+git -C "$REPO_DIR" reset -q --hard "$CASE52_LOCAL"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=1 GH_PR_IS_DRAFT=false \
+  GH_PR_HEAD_OID="$CASE52_REMOTE" \
+  GIT_PUSH_PLAIN_EXIT=1 GH_PR_BODY=$'Closes #52\n\nProtocol: yes' \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE51_BASE"
+
+if [ "$RC" = "0" ] \
+  && grep -q 'every observed-head change is incorporated locally' "$OUT" \
+  && grep -q -- "--force-with-lease=feat/test:$CASE52_REMOTE" "$TEST_DIR/git-push.log" \
+  && grep -q -- "$CASE52_LOCAL:refs/heads/feat/test" "$TEST_DIR/git-push.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: a rebased twin of the same content must still authorize the resume" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" "$TEST_DIR/git-push.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # Cases 42-44 (issue #751): the review request is idempotent per head. A
 # trusted formal review already bound to the exact current head (with its
 # durable request evidence in place) means the head is reviewed — a second

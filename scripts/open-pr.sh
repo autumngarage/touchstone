@@ -1795,21 +1795,53 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
   # whitespace, which is behaviorally significant in Python, YAML, and shell
   # continuations — a remote commit differing only in whitespace would count
   # as incorporated and its content would be forced away. Instead, every
-  # remote-only commit must have a whitespace-EXACT patch twin among the
-  # local-only commits: hunk headers and index lines are normalized out
-  # (rebases renumber them), everything else must match byte-for-byte.
-  open_pr_exact_patch_fingerprint() {
-    local commit="$1" patch_text
-    if ! patch_text="$(GIT_NO_REPLACE_OBJECTS=1 git diff-tree --no-commit-id --full-index -p -U3 "$commit" 2>&1)"; then
-      echo "ERROR: could not compute the patch for commit ${commit:0:12}:" >&2
-      printf '%s\n' "$patch_text" | sed 's/^/       /' >&2
+  # remote-only commit must have a content-identical twin among the
+  # local-only commits.
+  #
+  # The fingerprint digests, for every path a commit touches, the tuple
+  # (destination mode, POST-image blob id, change status, path), sorted so
+  # git's path enumeration order cannot vary the digest. The post-image blob
+  # id is exactly the bytes the commit produced: identical after a rebase,
+  # different for any different content, and well defined for binary paths.
+  # Pre-image ids and modes are excluded — they name the parent, which is
+  # precisely what a rebase changes.
+  #
+  # Patch TEXT is deliberately NOT the input (issue #721). Hashing a patch
+  # forces a choice between two failures: keep the `@@ -a,b +c,d @@` hunk
+  # coordinates and every rebase looks like different content, or strip them
+  # — as this did — and the patch loses its only remaining location
+  # identity, so the same textual edit applied to two different occurrences
+  # of a repeated block digests identically. That collision made the guard
+  # rate an unincorporated remote commit as present and force it away, in
+  # the one code path whose entire job is preventing that. Patch text also
+  # renders binary changes as a "Binary files differ" placeholder, collapsing
+  # two different binary blobs into one fingerprint (issue #685).
+  open_pr_exact_content_fingerprint() {
+    local commit="$1" raw_text projection
+    if ! raw_text="$(GIT_NO_REPLACE_OBJECTS=1 git diff-tree --no-commit-id -r --raw --no-abbrev "$commit" 2>&1)"; then
+      echo "ERROR: could not compute the change list for commit ${commit:0:12}:" >&2
+      printf '%s\n' "$raw_text" | sed 's/^/       /' >&2
       return 1
     fi
-    # An empty patch carries no provable content; the caller refuses.
-    [ -n "$patch_text" ] || return 2
-    printf '%s\n' "$patch_text" \
-      | sed -e '/^index /d' -e 's/^@@ .*@@/@@/' \
-      | touchstone_sha256_stream
+    # An empty change list carries no provable content; the caller refuses.
+    [ -n "$raw_text" ] || return 2
+    # Raw format: ":srcmode dstmode srcsha dstsha status<TAB>path".
+    projection="$(printf '%s\n' "$raw_text" \
+      | awk -F'\t' '{
+          split($1, meta, " ")
+          printf "%s %s %s\t%s\n", meta[2], meta[4], meta[5], $2
+        }' \
+      | LC_ALL=C sort)"
+    # A non-empty change list that projects to nothing means the raw format
+    # is not the one this parser was written against. Hashing the empty
+    # stream would hand every such commit the SAME digest — a universal
+    # collision in the one comparison that must never collide. Refuse.
+    if [ -z "$projection" ]; then
+      echo "ERROR: the change list for commit ${commit:0:12} did not parse as git raw format;" >&2
+      echo "       content identity cannot be established." >&2
+      return 1
+    fi
+    printf '%s\n' "$projection" | touchstone_sha256_stream
   }
   if [ ! -f "$SCRIPT_DIR/../lib/sha256.sh" ]; then
     echo "ERROR: push rejected and lib/sha256.sh is missing; cannot prove remote history" >&2
@@ -1831,32 +1863,32 @@ if [ "$PUSH_STATUS" -ne 0 ]; then
       echo "       Cannot prove the remote history is incorporated; refusing to force-push." >&2
       exit 1
     fi
-    LOCAL_PATCH_FINGERPRINTS=" "
+    LOCAL_CONTENT_FINGERPRINTS=" "
     for local_commit in $LOCAL_ONLY_COMMITS; do
       fp_status=0
-      local_fp="$(open_pr_exact_patch_fingerprint "$local_commit")" || fp_status=$?
-      # Status 2 (empty patch) just contributes no twin; hard errors abort.
+      local_fp="$(open_pr_exact_content_fingerprint "$local_commit")" || fp_status=$?
+      # Status 2 (empty change list) just contributes no twin; hard errors abort.
       if [ "$fp_status" -eq 1 ]; then
         echo "       Refusing to force-push without complete integration evidence." >&2
         exit 1
       fi
-      [ "$fp_status" -eq 0 ] && LOCAL_PATCH_FINGERPRINTS="${LOCAL_PATCH_FINGERPRINTS}${local_fp} "
+      [ "$fp_status" -eq 0 ] && LOCAL_CONTENT_FINGERPRINTS="${LOCAL_CONTENT_FINGERPRINTS}${local_fp} "
     done
     for remote_commit in $REMOTE_ONLY_COMMITS; do
       fp_status=0
-      remote_fp="$(open_pr_exact_patch_fingerprint "$remote_commit")" || fp_status=$?
+      remote_fp="$(open_pr_exact_content_fingerprint "$remote_commit")" || fp_status=$?
       if [ "$fp_status" -ne 0 ]; then
-        echo "ERROR: push rejected and remote commit ${remote_commit:0:12} has no provable patch content." >&2
+        echo "ERROR: push rejected and remote commit ${remote_commit:0:12} has no provable content." >&2
         echo "       Refusing to force-push without complete integration evidence." >&2
         exit 1
       fi
-      case "$LOCAL_PATCH_FINGERPRINTS" in
+      case "$LOCAL_CONTENT_FINGERPRINTS" in
         *" $remote_fp "*)
           # Consume the twin: each remote occurrence needs its OWN local
-          # occurrence. Remote histories can carry the same patch twice
-          # (add X, revert X, add X again); set-membership would let both
-          # occurrences claim one local twin and force away real content.
-          LOCAL_PATCH_FINGERPRINTS="${LOCAL_PATCH_FINGERPRINTS/ ${remote_fp} / }"
+          # occurrence. Remote histories can carry the same content change
+          # twice (add X, revert X, add X again); set-membership would let
+          # both occurrences claim one local twin and force away real content.
+          LOCAL_CONTENT_FINGERPRINTS="${LOCAL_CONTENT_FINGERPRINTS/ ${remote_fp} / }"
           ;;
         *)
           echo "ERROR: push rejected and the observed PR head ${EXISTING_PR_HEAD_SHA:0:12} carries commit ${remote_commit:0:12}" >&2
