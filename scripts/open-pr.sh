@@ -408,8 +408,39 @@ verify_pr_merged() {
 # about to be created, --pr-number <n> for one already on GitHub. Both honor
 # the same token, so it means one thing wherever it appears.
 #
-# find_issue_closing_refs is defined further down; both are called only from
-# the main flow, which runs after every definition in this file.
+# What GitHub would close if this branch merged, as issue numbers.
+#
+# Deliberately NOT find_issue_closing_refs, which answers a different
+# question — which references the PR body's Linked Issues section should
+# carry — and reads `%b`, commit BODIES only. GitHub is not that narrow:
+# `gh pr merge --squash` builds the default-branch commit message out of the
+# branch's commits, subject lines included, and open-pr.sh hands the last
+# subject over as the PR title besides. So a commit whose SUBJECT is
+# `Fixes #50` closes GitHub #50 on merge while a body-only scan reports
+# nothing to refuse (#743 review round 4). This reads `%B` — subject and body
+# — through the same grammar scripts/issue-claim-check.sh applies to the PR
+# body, so the two channels of one guard refuse the same thing, including its
+# cross-repository exemption.
+#
+# find_base_merge_commit is defined further down; every caller of this runs
+# from the main flow, which is after every definition in this file.
+find_wrong_tracker_closing_refs() {
+  local base_branch="$1"
+  local merge_base
+  if ! merge_base="$(find_base_merge_commit "$base_branch")"; then
+    echo "WARNING: could not find merge-base for $base_branch; skipping wrong-tracker reference detection" >&2
+    return 0
+  fi
+
+  # Invariant: only commits unique to this PR branch are scanned. A reference
+  # already on the base branch was merged under whatever rules applied then
+  # and is not this branch's to answer for.
+  git log "$merge_base..HEAD" --format='%B' \
+    | issue_tracker_github_closing_refs "$REPO_FULL_NAME" \
+    | sed -E 's/.*#([0-9]+)$/\1/' \
+    | sort -u
+}
+
 enforce_tracker_commit_trailers() {
   local label="$1"
   shift
@@ -420,7 +451,7 @@ enforce_tracker_commit_trailers() {
   [ "$ISSUE_TRACKER" != "github" ] || return 0
 
   echo "==> Checking commit messages for GitHub closing references ($label) ..."
-  wrong_tracker_refs="$(find_issue_closing_refs "$BASE_BRANCH")"
+  wrong_tracker_refs="$(find_wrong_tracker_closing_refs "$BASE_BRANCH")"
   [ -n "$wrong_tracker_refs" ] || return 0
 
   while [ "$#" -gt 1 ]; do

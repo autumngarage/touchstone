@@ -916,6 +916,107 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "==> Case 25: a GitHub closing reference in a commit SUBJECT blocks the PR"
+# Regression for the #743 review, round 4. The guard read `git log --format=%b`
+# — commit BODIES — so a reference carried by the SUBJECT was invisible to it.
+# It is not invisible to GitHub: `gh pr merge --squash` builds the
+# default-branch commit message out of the branch's commits, subject lines
+# included, and open-pr.sh hands the last subject over as the PR title
+# besides. The body below deliberately carries no reference at all, so the
+# subject is the only channel under test.
+git -C "$REPO_DIR" switch main >/dev/null 2>&1
+git -C "$REPO_DIR" switch -c feat/linear-subject-reference >/dev/null 2>&1
+printf 'subject-only\n' >>"$REPO_DIR/file.txt"
+git -C "$REPO_DIR" add file.txt
+git -C "$REPO_DIR" commit -m "Fixes #50" -m "This body carries no closing reference." >/dev/null 2>&1
+OUT="$TEST_DIR/linear-subject-reference.out"
+RC=0
+: >"$TEST_DIR/gh-calls.log"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+    bash "$SCRIPT_DIR/open-pr.sh"
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q "commits on this branch close GitHub issues, but this project's issues live in linear" "$OUT" \
+  && grep -q '^         #50$' "$OUT" \
+  && ! grep -q '^pr create' "$TEST_DIR/gh-calls.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected a subject-carried GitHub closing reference to block before gh pr create" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 26: an explicit cross-repository reference is accepted under another tracker"
+# Regression for the #743 review, round 4. `Fixes another-org/other-project#50`
+# closes an issue in ANOTHER repository; it is not a closing reference against
+# this one, which is why the GitHub adapter has always skipped that exact form
+# (Case 7 above). Refusing it here made a legitimate cross-repository fix
+# reach for [skip-claim-check] — a bypass that would then wave through the
+# same-repo references it was never meant to cover.
+BODY="$TEST_DIR/linear-cross-repo.md"
+printf 'Fixes another-org/other-project#50\n' >"$BODY"
+OUT="$TEST_DIR/linear-cross-repo.out"
+RC=0
+: >"$TEST_DIR/gh-calls.log"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_REPO="outriderintel/outrider" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+    bash "$SCRIPT_DIR/issue-claim-check.sh" --body-file "$BODY" --author alice
+) >"$OUT" 2>&1 || RC=$?
+
+# The no-transport promise still holds: the repository came from the
+# environment, so judging the qualified reference cost no API call.
+if [ "$RC" = "0" ] \
+  && grep -q 'No closing issue references found' "$OUT" \
+  && ! grep -q 'closes GitHub issues' "$OUT" \
+  && [ ! -s "$TEST_DIR/gh-calls.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected a cross-repository reference to be accepted under a linear tracker" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 27: same-repository references stay refused, qualified or not"
+# The other direction, and the reason Case 26 is an exemption rather than a
+# hole: exempting the cross-repository FORM must not exempt a reference that
+# names this repository, spelled either way.
+BODY="$TEST_DIR/linear-same-repo.md"
+printf 'Fixes #50\nCloses outriderintel/outrider#51\n' >"$BODY"
+OUT="$TEST_DIR/linear-same-repo.out"
+RC=0
+: >"$TEST_DIR/gh-calls.log"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_REPO="outriderintel/outrider" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+    bash "$SCRIPT_DIR/issue-claim-check.sh" --body-file "$BODY" --author alice
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "1" ] \
+  && grep -q "this PR body closes GitHub issues, but this project's issues live in linear" "$OUT" \
+  && grep -q '^         Fixes #50$' "$OUT" \
+  && grep -q '^         Closes outriderintel/outrider#51$' "$OUT" \
+  && ! grep -q 'No closing issue references found' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected unqualified and current-repository references to stay refused" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 if [ "$ERRORS" = "0" ]; then
   echo "==> PASS: open-pr.sh injects issue-closing keywords and preflights claim ownership"
   exit 0

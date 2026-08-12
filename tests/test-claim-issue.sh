@@ -405,6 +405,59 @@ else
   assert_no_gh_calls "case 15: an unreadable declaration must fail before any transport runs"
 fi
 
+echo "==> Case 16: a malformed tracker ASSIGNMENT fails closed too"
+# Sibling of Case 15, and the same silent retrack one character further along
+# (#743 review round 4). `tracker "linear"` carries no `=`, so lib/toml.sh
+# reads no key/value pair from it, never invokes the callback, and the load
+# would return success with ISSUE_TRACKER=github — a Linear project quietly
+# handed GitHub's grammar, closing-reference injection included. Validating
+# section headers alone left this open.
+# No key_prefix here on purpose: it would be rejected on its own as a prefix
+# under a github tracker, masking the silent retrack behind a different
+# refusal. The declaration under test must be the ONLY thing wrong.
+reset_case
+write_fixture_config '[issues]
+tracker "linear"'
+OUT="$TEST_DIR/case16.out"
+if run_fixture_claim "$OUT" CON-42; then
+  fail "case 16 expected exit 2"
+else
+  rc=$?
+  assert_eq "case 16 rc" "2" "$rc"
+  assert_file_contains "$OUT" "unreadable line in [issues] at"
+  assert_file_contains "$OUT" "is not the GitHub default"
+  # The discriminating assertion. Exit 2 alone is satisfied by the bug: a
+  # silently-GitHub project refuses `CON-42` for being the wrong reference
+  # shape, with the same status and a message that blames the caller for the
+  # file's typo.
+  assert_file_not_contains "$OUT" "is not a github issue reference"
+  assert_no_gh_calls "case 16: an unreadable declaration must fail before any transport runs"
+fi
+
+echo "==> Case 17: a wrapped array in [issues] is not a malformed assignment"
+# The guard above must judge what lib/toml.sh judges, not more. toml_parse
+# consumes an array's continuation lines as array content rather than as
+# key/value pairs, so refusing them for having no `=` would reject valid TOML
+# that parses cleanly today.
+reset_case
+write_fixture_config '[issues]
+tracker = "linear"
+key_prefix = "CON"
+labels = [
+  "bug",
+  "chore",
+]'
+OUT="$TEST_DIR/case17.out"
+if run_fixture_claim "$OUT" CON-42; then
+  fail "case 17 expected exit 3"
+else
+  rc=$?
+  assert_eq "case 17 rc" "3" "$rc"
+  assert_file_contains "$OUT" "Assign CON-42 to yourself"
+  assert_file_not_contains "$OUT" "unreadable line in [issues] at"
+  assert_no_gh_calls "case 17: the linear claim path must not invoke gh at all"
+fi
+
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
   echo "==> FAIL: $ERRORS case(s) failed"
@@ -412,4 +465,4 @@ if [ "$ERRORS" -gt 0 ]; then
 fi
 
 echo ""
-echo "==> PASS: claim-issue.sh behaves correctly across 15 cases"
+echo "==> PASS: claim-issue.sh behaves correctly across 17 cases"

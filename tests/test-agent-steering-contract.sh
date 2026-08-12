@@ -96,6 +96,26 @@ assert_contains "$GIT_WORKFLOW_MD" '**Issue-closing trailers (GitHub only).**'
 assert_not_contains "$GIT_WORKFLOW_MD" 'under Linear, `Fixes CON-123`'
 assert_contains "$GIT_WORKFLOW_MD" 'Put the closing reference in the **PR body** yourself'
 
+echo "==> the bug-filing doc separates the project's tracker from the upstream GitHub repos"
+# The steering routes "hit a bug in an upstream tool" straight here, and this
+# doc used to answer with `gh issue create` unconditionally: a Linear project
+# following it would record its OWN bugs in a GitHub repository nobody
+# watches, closing them with `Closes #<n>` syntax the delivery scripts now
+# refuse (#743 review round 4). Round 2's sweep missed the class because it
+# grepped closing syntax and not command names.
+#
+# The fix is a distinction, not a rename, so both halves are asserted: project
+# bugs follow the declared tracker, and autumngarage bugs stay on GitHub
+# because those repositories are GitHub repositories whatever the consuming
+# project declares.
+UPSTREAM_BUGS_MD="$TOUCHSTONE_ROOT/principles/file-upstream-bugs.md"
+assert_not_contains "$UPSTREAM_BUGS_MD" 'When you find a bug, file a GitHub issue.'
+assert_not_contains "$UPSTREAM_BUGS_MD" 'close it via the PR with a `Closes #<n>` trailer'
+assert_contains "$UPSTREAM_BUGS_MD" "File it in the project's declared tracker."
+assert_contains "$UPSTREAM_BUGS_MD" '`[issues].tracker`'
+assert_contains "$UPSTREAM_BUGS_MD" 'gh issue create --repo autumngarage/<tool>'
+assert_contains "$UPSTREAM_BUGS_MD" 'whatever tracker your own project declares'
+
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"
 # CLAUDE.md uses @TOUCHSTONE.md (Claude Code resolves @-imports transitively),
 # so the contract phrases are inlined into agent context via TOUCHSTONE.md

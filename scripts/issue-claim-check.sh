@@ -187,18 +187,31 @@ extract_issue_refs() {
   extract_tracker_issue_refs "$@"
 }
 
-# Every closing reference GitHub itself acts on, whatever this project
-# declares: its nine closing keywords with an optional owner/repo prefix, plus
-# Touchstone's own `Closes-issue:` trailer, which scripts/open-pr.sh renders
-# as `Closes #N`. Under a non-GitHub tracker these are not "no reference
-# found" — they are a merge that closes a GitHub issue the project does not
-# track.
+# Every closing reference in this body that GitHub would act on against THIS
+# repository, whatever the project declares. Under a non-GitHub tracker these
+# are not "no reference found" — they are a merge that closes a GitHub issue
+# the project does not track.
+#
+# `Fixes another-org/other-project#50` is not one of them. It closes an issue
+# in another repository, which the GitHub adapter above has always skipped
+# (Case 7 in tests/test-open-pr-linked-issues.sh) and which no tracker
+# declaration here can change. Refusing it made a legitimate cross-repository
+# fix reach for `[skip-claim-check]`, a bypass that would then wave through
+# the same-repo references it was never meant to cover (#743 review round 4).
 github_closing_refs_in() {
   local body_file="$1"
-  local closing_keywords="(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved|closes-issue)"
+  local comparison_repo=""
 
-  grep -Eoi "\\b${closing_keywords}:?[[:space:]]*([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+\\b" \
-    "$body_file" | sort -u || true
+  # Resolving the repository costs a gh round-trip, and only a QUALIFIED
+  # reference needs it: an unqualified `#N` closes an issue here by
+  # definition. Probing first keeps the promise the exit-3 path makes — a
+  # Linear project whose body carries no qualified reference still reaches no
+  # transport at all.
+  if grep -Eqi "\\b${ISSUE_TRACKER_GITHUB_CLOSING_KEYWORDS}:?[[:space:]]*${ISSUE_TRACKER_GITHUB_REPO_PATTERN}#[0-9]+\\b" "$body_file"; then
+    comparison_repo="$(resolved_repo_name 2>/dev/null || true)"
+  fi
+
+  issue_tracker_github_closing_refs "$comparison_repo" <"$body_file"
 }
 
 format_assignee_label() {
