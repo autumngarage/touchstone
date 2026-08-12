@@ -455,6 +455,28 @@ why = \"A second path that differs only by slash versus percent sign.\"" "unknow
   # governed-path change (PR #703 review).
 fi
 
+# Touchstone must obey the conventions it ships. templates/gitignore has
+# shipped '.claude/worktrees/' to every project since the agent-swarm workflow
+# landed; the repo root lacked the rule, so its OWN dirty-tree guards refused
+# whenever an agent worktree existed -- 'touchstone release' aborted with
+# "Working tree is dirty" during a routine release, and open-pr.sh warned on
+# every run in that state (PR #794). Assert BOTH sides so neither can drift.
+echo ""
+echo "==> Self-conformance: agent worktrees are ignored"
+if git -C "$TOUCHSTONE_ROOT" check-ignore -q ".claude/worktrees/probe-slice/file.txt"; then
+  echo "    OK: the repository root ignores paths under .claude/worktrees/"
+else
+  echo "FAIL: touchstone's own .gitignore must ignore .claude/worktrees/ (PR #794)" >&2
+  echo "      Its dirty-tree guards refuse while any agent worktree exists." >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if grep -qxF '.claude/worktrees/' "$TOUCHSTONE_ROOT/templates/gitignore"; then
+  echo "    OK: templates/gitignore still ships the same rule to projects"
+else
+  echo "FAIL: templates/gitignore must ship .claude/worktrees/ to every project (PR #794)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
   echo "==> FAIL: $ERRORS scope-guardrail check(s) failed"
