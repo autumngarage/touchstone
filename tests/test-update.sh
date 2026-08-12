@@ -2341,6 +2341,28 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "--- Step 20: expected hook states are not update failures (PR #787) ---"
+
+# lib/install-hooks.sh uses exit codes to report STATE: 2 = pre-commit absent,
+# 4 = core.hooksPath configured and project hooks deliberately preserved. Both
+# are documented, expected configurations. Treating them as failure made every
+# identity-equal and content-current update exit 1 and marked otherwise-current
+# projects failed in update-all.
+if awk '/^reconcile_external_state\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+  "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -qE '0 \| 2 \| 4'; then
+  echo "    PASS: documented hook states (2, 4) do not fail the update"
+else
+  echo "FAIL: expected hook states must not be treated as install failures (PR #787 round 6)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if grep -qE '^#   4  core\.hooksPath is configured' "$TOUCHSTONE_ROOT/lib/install-hooks.sh" \
+  && grep -qE '^#   2 ' "$TOUCHSTONE_ROOT/lib/install-hooks.sh"; then
+  echo "    PASS: those codes are the library's documented contract, not a guess"
+else
+  echo "FAIL: install-hooks must document the status codes update-project relies on" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # --------------------------------------------------------------------------
 # Results
 # --------------------------------------------------------------------------
