@@ -475,6 +475,60 @@ fi
 assert_contains "$TARGET_GHOST_OUT" "declared target 'ghost' path not found: packages/ghost"
 assert_contains "$TARGET_GHOST_OUT" "drop 'ghost' from targets= in .touchstone-config"
 
+echo "==> Test: a targets list that parses to no entries fails the run"
+
+# `targets=,` survives load_config's trim as a non-empty value and then parses
+# to zero entries, so every dispatch loop had nothing to iterate: validate's
+# split left both groups empty, neither branch ran, and the run reported
+# 'ran=0 skipped=0 failed=0' and exited 0 — a malformed config greening a
+# required check. finish()'s NOTHING RAN notice cannot catch this: it is a
+# warning on the exit-0 path by design, so that a project which declares
+# nothing keeps exiting 0.
+EMPTY_TARGETS_PROJECT="$TEST_DIR/targets-empty-list"
+mkdir -p "$EMPTY_TARGETS_PROJECT"
+git -C "$EMPTY_TARGETS_PROJECT" init -q
+printf 'require_declared=true\nproject_type=generic\ntargets=,\n' \
+  >"$EMPTY_TARGETS_PROJECT/.touchstone-config"
+EMPTY_TARGETS_OUT="$TEST_DIR/targets-empty-list.out"
+run_runner "$EMPTY_TARGETS_PROJECT" "$EMPTY_TARGETS_OUT" validate
+if [ "$RUNNER_EXIT" -eq 0 ]; then
+  echo "FAIL: a targets= value that names no target must fail validate" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$EMPTY_TARGETS_OUT" 'declared targets= names no target: ,'
+assert_contains "$EMPTY_TARGETS_OUT" 'validate verdict: ran=0 skipped=0 failed=1'
+
+# The same value is rejected with require_declared off, and for a single action
+# as well as the composite. The strict gate is not what fails this: a targets
+# value the runner cannot parse is malformed however strict the project asked
+# to be, so the rejection belongs to the declaration, not to the gate.
+printf 'project_type=generic\ntargets= , \n' >"$EMPTY_TARGETS_PROJECT/.touchstone-config"
+EMPTY_TARGETS_LINT_OUT="$TEST_DIR/targets-empty-list-lint.out"
+run_runner "$EMPTY_TARGETS_PROJECT" "$EMPTY_TARGETS_LINT_OUT" lint
+if [ "$RUNNER_EXIT" -eq 0 ]; then
+  echo "FAIL: a targets= value naming no target must fail lint without require_declared" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$EMPTY_TARGETS_LINT_OUT" 'declared targets= names no target: ,'
+assert_contains "$EMPTY_TARGETS_LINT_OUT" 'lint verdict: ran=0 skipped=0 failed=1'
+
+# The control that keeps the rejection about naming nothing rather than about
+# punctuation: empty entries are still dropped, so a trailing delimiter names
+# the target before it and the run proceeds normally.
+mkdir -p "$EMPTY_TARGETS_PROJECT/packages/alpha"
+printf 'require_declared=true\nproject_type=generic\ntargets=alpha:packages/alpha:generic,\n' \
+  >"$EMPTY_TARGETS_PROJECT/.touchstone-config"
+printf 'validate_command=echo trailing-delimiter-target-ran\n' \
+  >"$EMPTY_TARGETS_PROJECT/packages/alpha/.touchstone-config"
+TRAILING_DELIM_OUT="$TEST_DIR/targets-trailing-delimiter.out"
+run_runner "$EMPTY_TARGETS_PROJECT" "$TRAILING_DELIM_OUT" validate
+if [ "$RUNNER_EXIT" -ne 0 ]; then
+  echo "FAIL: a trailing delimiter must still name the target before it (got $RUNNER_EXIT)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TRAILING_DELIM_OUT" 'trailing-delimiter-target-ran'
+assert_contains "$TRAILING_DELIM_OUT" 'validate verdict: ran=1 skipped=0 failed=0'
+
 echo "==> Test: a declared command that is not runnable fails with the remedy"
 
 MISSING_TOOL_PROJECT="$TEST_DIR/declared-missing-tool"
@@ -513,6 +567,72 @@ assert_contains "$RAN_127_OUT" 'check.sh did real work'
 assert_contains "$RAN_127_OUT" 'declared test_command failed (exit 127): bash check.sh'
 assert_not_contains "$RAN_127_OUT" 'is not runnable here (exit 127)'
 assert_contains "$RAN_127_OUT" 'test verdict: ran=1 skipped=0 failed=1'
+
+echo "==> Test: a declaration whose head cannot be executed does not count as run"
+
+# The other non-execution the shell reports with a code of its own: a head that
+# names a path which exists and cannot be executed stops with 126, not 127. The
+# preflight predicted only 127, so this case skipped the not-runnable branch and
+# published 'ran=1' for a process that never started.
+NON_EXEC_PROJECT="$TEST_DIR/declared-non-executable"
+mkdir -p "$NON_EXEC_PROJECT"
+git -C "$NON_EXEC_PROJECT" init -q
+printf 'test_command=./check.sh\n' >"$NON_EXEC_PROJECT/.touchstone-config"
+printf 'printf "non-executable check.sh started\\n"\n' >"$NON_EXEC_PROJECT/check.sh"
+chmod 0644 "$NON_EXEC_PROJECT/check.sh"
+# Stated rather than assumed: on a filesystem that cannot drop the execute bit
+# the fixture would silently exercise a different case, so the precondition
+# fails loudly instead of quietly passing.
+if [ -x "$NON_EXEC_PROJECT/check.sh" ]; then
+  echo "FAIL: fixture precondition: chmod 0644 left check.sh executable on this platform" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+NON_EXEC_OUT="$TEST_DIR/declared-non-executable.out"
+run_runner "$NON_EXEC_PROJECT" "$NON_EXEC_OUT" test
+if [ "$RUNNER_EXIT" -eq 0 ]; then
+  echo "FAIL: a declared command whose head is not executable must fail the run" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$NON_EXEC_OUT" 'declared test_command is not runnable here (exit 126): ./check.sh'
+assert_not_contains "$NON_EXEC_OUT" 'non-executable check.sh started'
+assert_contains "$NON_EXEC_OUT" 'test verdict: ran=0 skipped=0 failed=1'
+
+# A directory head is the same non-execution, established the same way.
+printf 'test_command=./tools\n' >"$NON_EXEC_PROJECT/.touchstone-config"
+mkdir -p "$NON_EXEC_PROJECT/tools"
+NON_EXEC_DIR_OUT="$TEST_DIR/declared-directory-head.out"
+run_runner "$NON_EXEC_PROJECT" "$NON_EXEC_DIR_OUT" test
+if [ "$RUNNER_EXIT" -eq 0 ]; then
+  echo "FAIL: a declared command whose head is a directory must fail the run" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$NON_EXEC_DIR_OUT" 'declared test_command is not runnable here (exit 126): ./tools'
+assert_contains "$NON_EXEC_DIR_OUT" 'test verdict: ran=0 skipped=0 failed=1'
+
+echo "==> Test: a command that ran and exited 126 still counts as run"
+
+# The counter-case that keeps the two cases above from reclassifying real runs.
+# 126 is also just an exit code, and a script the shell did launch owns it:
+# deciding "nothing ran" from the code alone would publish ran=0 for a run that
+# visibly did work — the exit-127 mistake in a new place. Which is why the
+# preflight predicts the exact code and the verdict only believes it when the
+# observed status matches.
+RAN_126_PROJECT="$TEST_DIR/declared-ran-then-126"
+mkdir -p "$RAN_126_PROJECT"
+git -C "$RAN_126_PROJECT" init -q
+printf 'test_command=./exits126.sh\n' >"$RAN_126_PROJECT/.touchstone-config"
+printf 'printf "exits126.sh did real work\\n"\nexit 126\n' >"$RAN_126_PROJECT/exits126.sh"
+chmod +x "$RAN_126_PROJECT/exits126.sh"
+RAN_126_OUT="$TEST_DIR/declared-ran-then-126.out"
+run_runner "$RAN_126_PROJECT" "$RAN_126_OUT" test
+if [ "$RUNNER_EXIT" -eq 0 ]; then
+  echo "FAIL: a declared command exiting 126 must still fail the run" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$RAN_126_OUT" 'exits126.sh did real work'
+assert_contains "$RAN_126_OUT" 'declared test_command failed (exit 126): ./exits126.sh'
+assert_not_contains "$RAN_126_OUT" 'is not runnable here (exit 126)'
+assert_contains "$RAN_126_OUT" 'test verdict: ran=1 skipped=0 failed=1'
 
 echo "==> Test: an undeclared generic project still runs, and says nothing ran"
 

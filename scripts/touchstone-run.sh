@@ -467,21 +467,46 @@ declared_typecheck_auto_here() {
 }
 
 # Whether a declaration can be shown, before it is dispatched, to have nothing
-# to execute. This has to be decided in advance: after the fact, exit 127 is
-# raised by the declared command's own shell, so `test_command=bash check.sh`
-# where check.sh does real work and then exits 127 is indistinguishable from a
-# command that never started. Only the narrow, unambiguous case is claimed —
-# a bare leading word (no path-free metacharacters, no assignment prefix) that
-# resolves to nothing. Anything else is dispatched and owns its exit status.
-declared_command_head_missing() {
+# to execute — and which exit code the shell will report when it tries. This
+# has to be decided in advance: after the fact, both non-execution codes are
+# also raised by the declared command's own shell, so `test_command=bash
+# check.sh` where check.sh does real work and then exits 127 (or 126) is
+# indistinguishable from a command that never started. Only the narrow,
+# unambiguous cases are claimed — a bare leading word (no path-free
+# metacharacters, no assignment prefix) that resolves to nothing (127), or a
+# head naming a path that exists and cannot be executed: a directory, or a file
+# without the execute bit (126). Anything else is dispatched and owns its exit
+# status.
+#
+# Prints the exit code the shell will report for the non-execution, and nothing
+# at all when the declaration is dispatchable.
+declared_command_unrunnable_code() {
   local command="$1" head
 
   head="${command%%[[:space:]]*}"
   case "$head" in
-    "" | *[^[:alnum:]_./+-]*) return 1 ;;
+    "" | *[^[:alnum:]_./+-]*) return 0 ;;
   esac
-  command -v -- "$head" >/dev/null 2>&1 && return 1
-  return 0
+
+  # A head containing a slash is resolved by the shell as a path, so the path's
+  # own attributes decide the answer. `command -v` reports such a head as
+  # unresolvable exactly like an absent tool, but the shell that runs it stops
+  # with 126, not 127 — the code has to be predicted, not assumed.
+  case "$head" in
+    */*)
+      if [ -d "$head" ]; then
+        printf '126\n'
+        return 0
+      fi
+      if [ -e "$head" ] && [ ! -x "$head" ]; then
+        printf '126\n'
+        return 0
+      fi
+      ;;
+  esac
+
+  command -v -- "$head" >/dev/null 2>&1 && return 0
+  printf '127\n'
 }
 
 # A declaration is a promise: the command runs and its exit code is the answer.
@@ -489,13 +514,11 @@ declared_command_head_missing() {
 # one, so it fails loudly instead of reporting the "ok ... skipped" that made a
 # green required check compatible with nothing having run.
 run_declared_command() {
-  local action="$1" command="$2" status=0 head_missing=false
+  local action="$1" command="$2" status=0 unrunnable_code=""
 
   RUN_STATUS=0
   RUN_DECLARED=$((RUN_DECLARED + 1))
-  if declared_command_head_missing "$command"; then
-    head_missing=true
-  fi
+  unrunnable_code="$(declared_command_unrunnable_code "$command")"
   # The only conditional-context call left in the dispatch chain, and it is
   # safe because run_shell_command's body is a single meaningful command:
   # there is no second step for a suppressed errexit to let through.
@@ -505,12 +528,19 @@ run_declared_command() {
   fi
 
   RUN_FAILED=$((RUN_FAILED + 1))
-  if [ "$status" -eq 127 ] && [ "$head_missing" = true ]; then
+  if [ -n "$unrunnable_code" ] && [ "$status" -eq "$unrunnable_code" ]; then
     # Non-execution was established before dispatch, so nothing ran and this
     # does not count toward ran — a broken declaration, reported as a failure.
+    # The observed status has to be the one the preflight predicted: a command
+    # that genuinely ran and chose to exit 126 came from a head the preflight
+    # cleared, so it keeps its place in ran.
     RUN_RAN=$((RUN_RAN - 1))
-    warn "declared ${action}_command is not runnable here (exit 127): $command"
-    warn "  Fix: install the missing tool, then rerun: bash scripts/touchstone-run.sh $action"
+    warn "declared ${action}_command is not runnable here (exit $status): $command"
+    if [ "$unrunnable_code" -eq 126 ]; then
+      warn "  Fix: make it executable (chmod +x), or declare its interpreter: ${action}_command=bash <script>"
+    else
+      warn "  Fix: install the missing tool, then rerun: bash scripts/touchstone-run.sh $action"
+    fi
     warn "  Or declare a runnable command: ${action}_command=<command> in $CONFIG_FILE"
   else
     warn "declared ${action}_command failed (exit $status): $command"
@@ -909,16 +939,55 @@ run_target_profile() {
   run_profile_action "$profile" "$action"
 }
 
+# The one parser for the declared targets list, so its two readers cannot
+# disagree about what `targets=` contains. Entries are trimmed and empty ones
+# dropped, which keeps a trailing delimiter tolerant: `targets=alpha:apps/alpha,`
+# still names one target. A value that survives load_config's trim and still
+# parses to no entry at all names nothing, and the callers below reject it —
+# this parser only reports what it parsed.
+TARGET_ENTRIES=()
+parse_target_entries() {
+  local raw="$1" entry
+  local -a fields=()
+
+  TARGET_ENTRIES=()
+  IFS=',' read -r -a fields <<<"$raw" || true
+  for entry in ${fields[@]+"${fields[@]}"}; do
+    entry="$(trim "$entry")"
+    if [ -n "$entry" ]; then
+      TARGET_ENTRIES+=("$entry")
+    fi
+  done
+  return 0
+}
+
 run_targets_action() {
   local action="$1" entry name path profile failures=0
   local declared_before failed_before dispatched=0 declared_targets=0
-  local -a target_entries=()
+  local -a entries=()
 
   RUN_STATUS=0
-  IFS=',' read -r -a target_entries <<<"$TARGETS" || true
-  for entry in "${target_entries[@]}"; do
-    entry="$(trim "$entry")"
-    [ -z "$entry" ] && continue
+  parse_target_entries "$TARGETS"
+  entries=(${TARGET_ENTRIES[@]+"${TARGET_ENTRIES[@]}"})
+
+  # `targets=,` — any value that is only delimiters and whitespace — is a
+  # declaration that names no target: broken, not absent, exactly like a
+  # declared target whose directory is gone. It is rejected as invalid
+  # configuration rather than folded into require_declared, because a value the
+  # runner cannot parse is malformed whether or not the project asked for
+  # strictness. finish()'s NOTHING RAN notice cannot cover this: it is a warning
+  # on the exit-0 path, by design, so that every project which declares nothing
+  # keeps exiting 0 — a warning can never fail a malformed config.
+  if [ "${#entries[@]}" -eq 0 ]; then
+    RUN_FAILED=$((RUN_FAILED + 1))
+    RUN_STATUS=1
+    warn "declared targets= names no target: $TARGETS"
+    warn "  Fix: list them as name:path[:profile], comma-separated, in $CONFIG_FILE"
+    warn "  Or remove targets= entirely to fall back to repo-layout detection"
+    return 0
+  fi
+
+  for entry in ${entries[@]+"${entries[@]}"}; do
     name="${entry%%:*}"
     path="${entry#*:}"
     profile="${path#*:}"
@@ -1052,10 +1121,9 @@ split_targets_by_validate_declaration() {
   VALIDATE_DECLARED_TARGETS=""
   VALIDATE_FALLBACK_TARGETS=""
 
-  IFS=',' read -r -a entries <<<"$TARGETS" || true
-  for entry in "${entries[@]}"; do
-    entry="$(trim "$entry")"
-    [ -z "$entry" ] && continue
+  parse_target_entries "$TARGETS"
+  entries=(${TARGET_ENTRIES[@]+"${TARGET_ENTRIES[@]}"})
+  for entry in ${entries[@]+"${entries[@]}"}; do
     path="${entry#*:}"
     path="${path%%:*}"
 
@@ -1085,6 +1153,15 @@ run_targets_validate() {
   local all_targets="$TARGETS" status=0
 
   split_targets_by_validate_declaration
+
+  # A targets value that names no target lands in neither group, so validate
+  # would dispatch nothing and still report success — the one action whose
+  # split can leave both sides empty. Hand it to the dispatcher, which is the
+  # single place a broken targets declaration is reported.
+  if [ -z "$VALIDATE_DECLARED_TARGETS" ] && [ -z "$VALIDATE_FALLBACK_TARGETS" ]; then
+    run_targets_action validate
+    return 0
+  fi
 
   if [ -n "$VALIDATE_DECLARED_TARGETS" ]; then
     TARGETS="$VALIDATE_DECLARED_TARGETS"
