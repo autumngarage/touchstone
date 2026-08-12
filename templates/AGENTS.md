@@ -116,7 +116,7 @@ Use the normal lifecycle unless the user asks for a different flow:
 7. The PR is the review surface. Do not treat PR creation as completion: answer every piece of PR feedback and resolve the thread — whoever left it — before merging.
 8. Clean up the feature branch if it still exists locally.
 
-File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md` for slice manifests, file ownership, concurrency caps, and cleanup; use `scripts/spawn-worktree.sh` and `scripts/cleanup-worktrees.sh` for local setup and teardown.
+File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md` for slice manifests, file ownership, concurrency caps, and cleanup; use `git worktree add` and `git worktree remove` for local setup and teardown.
 
 ### Testing
 

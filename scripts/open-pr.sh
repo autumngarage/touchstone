@@ -59,12 +59,6 @@ if [ -f "$SCRIPT_SYNC_GUARD" ]; then
 fi
 PREFLIGHT_SCRIPT="$SCRIPT_DIR/../lib/preflight.sh"
 ISSUE_CLAIM_CHECK_SCRIPT="$SCRIPT_DIR/issue-claim-check.sh"
-if [ -f "$SCRIPT_DIR/../lib/events.sh" ]; then
-  # shellcheck source=../lib/events.sh
-  source "$SCRIPT_DIR/../lib/events.sh"
-else
-  touchstone_emit_event() { :; }
-fi
 if [ -f "$PREFLIGHT_SCRIPT" ]; then
   # shellcheck source=../lib/preflight.sh
   source "$PREFLIGHT_SCRIPT"
@@ -298,7 +292,6 @@ print_orphan_warning() {
     && verify_pr_merged "$ORPHAN_PR_NUMBER" quiet >/dev/null 2>&1; then
     return 0
   fi
-  touchstone_emit_event failed phase=open-pr reason=orphan-risk pr_number="$ORPHAN_PR_NUMBER"
   {
     echo ""
     echo "==> ORPHAN RISK: PR opened but not merged. Resolve manually:"
@@ -1202,9 +1195,6 @@ request_pr_triggered_review() {
     return 1
   fi
   OPEN_PR_REVIEW_REQUEST_COUNT=$((OPEN_PR_REVIEW_REQUEST_COUNT + 1))
-  touchstone_emit_event review_requested \
-    worktree_path="$REPO_ROOT" pr_number="$pr_number" head_sha="$head_sha" base_sha="$base_sha" \
-    phase=open-pr request_count="$OPEN_PR_REVIEW_REQUEST_COUNT"
   echo "==> Requested GitHub Codex review for head $head_sha at base $base_sha."
 }
 
@@ -1224,7 +1214,7 @@ default_branch_worktree_path() {
 # Called after a successful auto-merge when --cleanup-worktree is set.
 # The cleanup is a best-effort convenience: failures are reported but do
 # not fail the script — the merge already happened, and a leftover
-# worktree is recoverable via `scripts/cleanup-worktrees.sh`.
+# worktree is recoverable with `git worktree remove`.
 cleanup_feature_worktree() {
   local current_path default_path
   current_path="$(git rev-parse --show-toplevel)"
@@ -1240,14 +1230,11 @@ cleanup_feature_worktree() {
   fi
 
   echo "==> Removing feature worktree $current_path (from $default_path) ..."
-  touchstone_emit_event cleanup_started worktree_path="$current_path"
   if (cd "$default_path" && git worktree remove "$current_path"); then
     echo "==> Worktree removed."
-    touchstone_emit_event cleanup_done worktree_path="$current_path" result=removed
   else
     echo "WARNING: git worktree remove failed for $current_path." >&2
-    echo "         Run 'bash scripts/cleanup-worktrees.sh' from $default_path to inspect and clean up." >&2
-    touchstone_emit_event cleanup_done worktree_path="$current_path" result=failed
+    echo "         Inspect it, then run 'git -C $default_path worktree remove $current_path'." >&2
   fi
 }
 
@@ -1948,13 +1935,6 @@ echo "$PR_URL"
 # from here on is a stuck-PR risk.
 ORPHAN_PR_URL="$PR_URL"
 ORPHAN_PR_NUMBER="$(basename "$PR_URL")"
-HEAD_SHA="$(git rev-parse HEAD)"
-touchstone_emit_event pr_opened \
-  pr_url="$PR_URL" \
-  pr_number="$ORPHAN_PR_NUMBER" \
-  branch="$CURRENT_BRANCH" \
-  base_branch="$BASE_BRANCH" \
-  head_sha="$HEAD_SHA"
 
 if [ -n "$DRAFT_FLAG" ]; then
   echo "    Opened as draft; no semantic review was requested."

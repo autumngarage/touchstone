@@ -694,12 +694,12 @@ new_fixture_repo "$REPO"
   cd "$REPO"
   mkdir -p lib scripts principles .claude/skills/touchstone-git-workflow
   printf '2.99.0\n' >.touchstone-version
-  printf '# shared subscription auth boundary\n' >lib/codex-auth.sh
+  printf '# touchstone managed\n' >lib/toml.sh
   printf '# touchstone managed\n' >lib/preflight.sh
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho managed\n' >scripts/merge-pr.sh
   printf '# Principle\n' >principles/git-workflow.md
   printf '# Skill\n' >.claude/skills/touchstone-git-workflow/SKILL.md
-  git add .touchstone-version lib/codex-auth.sh lib/preflight.sh scripts/merge-pr.sh principles/git-workflow.md .claude/skills/touchstone-git-workflow/SKILL.md
+  git add .touchstone-version lib/toml.sh lib/preflight.sh scripts/merge-pr.sh principles/git-workflow.md .claude/skills/touchstone-git-workflow/SKILL.md
   git commit -q -m "touchstone delivery-only bump"
 )
 : >"$LOG"
@@ -1111,7 +1111,7 @@ add_release_lane_baseline() {
   (
     cd "$1"
     local t
-    for t in test-release test-run-script test-auto-update test-status; do
+    for t in test-release test-auto-update test-status; do
       cp tests/test-other.sh "tests/${t}.sh"
       chmod +x "tests/${t}.sh"
     done
@@ -1144,7 +1144,6 @@ if ! grep -q 'version-only release lane (VERSION = .touchstone-version = 9.99.1)
 fi
 assert_log_contains "$LOG" '^self:test-release.sh$'
 assert_log_contains "$LOG" '^self:test-update.sh$'
-assert_log_contains "$LOG" '^self:test-run-script.sh$'
 assert_log_contains "$LOG" '^self:test-auto-update.sh$'
 assert_log_contains "$LOG" '^self:test-status.sh$'
 assert_log_not_contains "$LOG" '^self:test-other.sh$'

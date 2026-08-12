@@ -124,8 +124,8 @@ if [ ! -f "$PROJECT_DIR/.touchstone-version" ]; then
   if [ -f "$PROJECT_DIR/.toolkit-version" ]; then
     echo "ERROR: Legacy .toolkit-version found in $PROJECT_DIR" >&2
     echo "       This project was bootstrapped before the toolkit -> touchstone rename." >&2
-    echo "       Run: touchstone migrate-from-toolkit" >&2
-    echo "       Then re-run: touchstone update" >&2
+    echo "       Rename the legacy dotfiles yourself (.toolkit-version -> .touchstone-version," >&2
+    echo "       .toolkit-manifest -> .touchstone-manifest), then re-run: touchstone update" >&2
     exit 1
   fi
   echo "ERROR: No .touchstone-version file found in $PROJECT_DIR" >&2
@@ -207,11 +207,11 @@ fi
 # compares against — writer and probe can never disagree about what
 # "managed" means.
 managed_file_pairs() {
-  touchstone_content_managed_file_pairs "$PROJECT_DIR" "$TOUCHSTONE_ROOT" "$PROJECT_TYPE"
+  touchstone_content_managed_file_pairs "$PROJECT_DIR" "$TOUCHSTONE_ROOT"
 }
 
 touchstone_manifest_entries() {
-  touchstone_content_manifest_entries "$PROJECT_DIR" "$TOUCHSTONE_ROOT" "$PROJECT_TYPE"
+  touchstone_content_manifest_entries "$PROJECT_DIR" "$TOUCHSTONE_ROOT"
 }
 
 project_template_slot_occupied() {
@@ -850,6 +850,18 @@ remove_retired_managed_file "lib/review-comment.sh"
 # longer invokes it, so a leftover copy would be dead code that still pushes
 # HEAD:main on a manual run.
 remove_retired_managed_file "scripts/cortex-pr-merged-hook.sh"
+# Conveniences retired in #737. Each was a wrapper or a dead boundary, not a
+# constraint: the worktree scripts wrapped plain `git worktree`, lib/events.sh
+# emitted NDJSON telemetry whose only reader was the removed worker engine,
+# lib/codex-auth.sh had no runtime consumer left, and run-pytest-in-venv.sh
+# duplicated what scripts/touchstone-run.sh already dispatches. Retirement and
+# the deleted copy calls above must stay in the same commit — an update_file
+# entry left behind would re-copy the file on the next sync.
+remove_retired_managed_file "scripts/spawn-worktree.sh"
+remove_retired_managed_file "scripts/cleanup-worktrees.sh"
+remove_retired_managed_file "lib/events.sh"
+remove_retired_managed_file "lib/codex-auth.sh"
+remove_retired_managed_file "scripts/run-pytest-in-venv.sh"
 # Worker engine retired in 2.13.0 (issue #694). Touchstone stops managing
 # these files and NOTIFIES; it does not delete them. Automatic deletion of a
 # project's tracked files has to reason about dirty worktrees, staged edits,
@@ -1104,7 +1116,6 @@ if [ "$SKIPPED_UNSAFE" -gt 0 ]; then
   echo "==> WARNING: $SKIPPED_UNSAFE managed path(s) skipped — destination traverses a symlink (see warnings above)." >&2
 fi
 echo "==> Workflow scripts: project-local copies from Touchstone-managed files"
-echo "    Prototype shim runner available for evaluation: touchstone run-script <script>"
 
 # Reinstall pre-commit hook shims so a drifted or empty .git/hooks/ gets repaired.
 # The helper is idempotent; it skips silently when there's nothing to do.

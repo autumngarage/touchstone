@@ -272,7 +272,7 @@ File-writing subagents must use isolated worktrees unless explicitly waived. The
 
 The default for a single driver is one branch at a time in the main checkout. When you have N genuinely independent tasks — changes that touch disjoint files and don't logically depend on each other — `git worktree` lets them run concurrently without stepping on each other. The common case is an AI assistant being asked to "do these three things in parallel"; the right move is three branches in three worktrees, not three half-done edits interleaved on one branch.
 
-For the full fan-out playbook — slice manifests, file ownership, parent orchestration, concurrency caps, `.worktreeinclude`, and cleanup rules — see [agent-swarms.md](agent-swarms.md). This section defines the git workflow default; the swarm guide defines the operating model.
+For the full fan-out playbook — slice manifests, file ownership, parent orchestration, concurrency caps, and cleanup rules — see [agent-swarms.md](agent-swarms.md). This section defines the git workflow default; the swarm guide defines the operating model.
 
 **The primitive.** From the main checkout, `git worktree add ../<project>-<slug> -b <type>/<slug>` creates a second working tree on a new branch, sharing the same `.git`. Work in it the same way you'd work anywhere — the only difference is that the main checkout stays free to run tests, start another worktree, or keep serving the user's questions while the other tasks run.
 
@@ -293,7 +293,7 @@ For the full fan-out playbook — slice manifests, file ownership, parent orches
 **Cleanup.** Two paths, pick whichever fits the moment:
 
 - **Inline (preferred for fire-and-forget).** Pass `--cleanup-worktree` alongside `--auto-merge` to `scripts/open-pr.sh`. After the PR squash-merges, the helper removes the current feature worktree itself by invoking `git worktree remove` from the default-branch worktree. The worktree is gone before the script returns, so there's nothing to come back to. Failures here are reported as warnings — the merge already happened, cleanup is best-effort.
-- **Deferred sweep.** From the main checkout, run `scripts/cleanup-worktrees.sh` (dry-run by default) to preview and `--execute` to remove clean merged-or-equivalent worktrees. Use this when several worktrees accumulated across sessions, or when the inline cleanup couldn't run (dirty tree, etc.).
+- **Deferred sweep.** From the main checkout, `git worktree list` shows what accumulated and `git worktree remove <path>` removes each one. Use this when several worktrees piled up across sessions, or when the inline cleanup couldn't run (dirty tree, etc.).
 
 Routine shipping is a single foreground command:
 
@@ -321,7 +321,7 @@ deletes, checkouts, or merge cleanup. If that already happened, run
 `git worktree prune` from a remaining checkout to drop records for missing
 paths, then retry the blocked command.
 
-`scripts/cleanup-branches.sh` already refuses to delete branches currently checked out in worktrees, so it won't fight you — but it also won't remove the worktree directories themselves; that is what `cleanup-worktrees.sh` and the inline `--cleanup-worktree` flag are for.
+`scripts/cleanup-branches.sh` already refuses to delete branches currently checked out in worktrees, so it won't fight you — but it also won't remove the worktree directories themselves; that is what `git worktree remove` and the inline `--cleanup-worktree` flag are for.
 
 ## Emergency path
 

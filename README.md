@@ -125,7 +125,6 @@ bash setup.sh --deps-only
 | Command | What it does |
 |---------|-------------|
 | `touchstone init [--no-setup]` | Add touchstone to the current project |
-| `touchstone migrate-from-toolkit` | Migrate a project from the legacy `.toolkit-*` files before re-running `touchstone init` |
 | `touchstone init --gitbutler` | Add touchstone with optional GitButler workflow setup |
 | `touchstone init --ci github` | Add `.github/workflows/validate.yml` that runs pre-commit hygiene and `touchstone run validate` on every PR |
 | `touchstone init --scaffold-tests` | Write one placeholder smoke test for Python, Node, or Go projects (Rust and Swift already ship scaffolds via `cargo init` / `swift package init`) |
@@ -146,8 +145,6 @@ bash setup.sh --deps-only
 | `touchstone update-all --pull-first` | Pull latest touchstone first, then update all projects |
 | `touchstone sync` | Deprecated alias for `touchstone update-all` |
 | `touchstone diff` | Compare core project-owned files against the latest templates |
-| `touchstone adr "Title"` | Create an Architecture Decision Record |
-| `touchstone adr list` | List project ADRs |
 | `touchstone list` | Show registered projects |
 | `touchstone unregister <name>` | Remove a project from the registry |
 | `touchstone status` | Dashboard of registered project health |
@@ -172,7 +169,6 @@ When you run `touchstone new`, these files get created in your project:
 - `.touchstone-config` — Project profile, workflow choices, and optional lint/test/build command overrides
 - `.pre-commit-config.yaml` — Pre-commit hooks including fast branch checks and direct default-branch guardrails
 - `.gitignore` — Sensible defaults
-- `.worktreeinclude.example` — Starter allowlist for ignored local files to copy into spawned worktrees
 - `.github/pull_request_template.md` — PR checklist
 - `setup.sh` — One-command setup for dev tools, hooks, and project dependencies
 
@@ -184,7 +180,6 @@ When you run `touchstone new`, these files get created in your project:
 - `scripts/open-pr.sh` — Push + create PR via `gh`
 - `scripts/merge-pr.sh` — exact-head review gate + deterministic preflight + squash-merge + sync main
 - `scripts/cleanup-branches.sh` — Safe branch hygiene
-- `scripts/run-pytest-in-venv.sh` — Legacy Python helper copied for Python profiles
 
 `setup.sh` installs dependencies for the detected project profile. It supports Node package managers, SwiftPM, Cargo, Go modules, and Python `requirements.txt`/`uv.lock`/`pyproject.toml` at the repo root and under `agent/`. `touchstone run validate` uses `.touchstone-config` to run profile-aware lint/typecheck/test commands.
 
@@ -192,7 +187,7 @@ When you run `touchstone new`, these files get created in your project:
 
 Touchstone enforces a test **runner**, not a test **suite**. The pre-push hook invokes `scripts/touchstone-run.sh validate`, which dispatches lint/typecheck/build/test per profile — but every profile silently skips when the underlying tool or test file is absent (correct runtime UX: a fresh scaffold shouldn't reject pushes just because the first test hasn't been written yet). Consequence: a repo with zero test files passes the gate.
 
-`touchstone doctor` is where those gaps become visible. It reports per-profile test presence, profile-specific linter availability (`ruff`, `swift-format`), pre-push hook integrity, and unknown profile values — in lock-step with the runner's dispatcher so doctor never claims more coverage than `validate` actually runs. Use `touchstone init --scaffold-tests` to seed a placeholder smoke test (Python, Node, and Go; Rust and Swift already get tests from `cargo init` / `swift package init`) and `touchstone init --ci github` to add a GitHub Actions workflow that runs the same `validate` path CI-side.
+`touchstone doctor` reports the structural state a project can actually be held to: hooks installed, manifest present, review policy required, registry membership. It does not re-derive the runner's profile dispatch — that mirror had to be kept in lock-step by hand and was removed in #737. Use `touchstone init --scaffold-tests` to seed a placeholder smoke test (Python, Node, and Go; Rust and Swift already get tests from `cargo init` / `swift package init`) and `touchstone init --ci github` to add a GitHub Actions workflow that runs the same `validate` path CI-side.
 
 ### Keeping projects up to date
 
@@ -294,10 +289,9 @@ touchstone/
 ├── bin/             # touchstone CLI entry point
 ├── lib/             # shared bash helpers (toml.sh, preflight.sh, etc.)
 ├── completions/     # shell completion scripts
-├── docs/            # design docs and ADRs
 ├── audits/          # periodic codebase audits
 ├── feedback/        # operator-captured incident notes
-├── prototypes/      # speculative scripts not yet promoted to scripts/
+├── prototypes/      # design experiments, not shipped to projects
 └── tests/           # self-tests
 ```
 

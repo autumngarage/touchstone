@@ -34,11 +34,7 @@ touchstone_sync_planned_write_paths() {
     printf 'scripts/respond-review.sh\n'
     printf 'scripts/issue-claim-check.sh\n'
     printf 'scripts/cleanup-branches.sh\n'
-    printf 'scripts/spawn-worktree.sh\n'
-    printf 'scripts/cleanup-worktrees.sh\n'
     printf 'lib/toml.sh\n'
-    printf 'lib/events.sh\n'
-    printf 'lib/codex-auth.sh\n'
     printf 'lib/script-sync-guard.sh\n'
     printf 'lib/sha256.sh\n'
     printf 'lib/preflight.sh\n'
@@ -50,6 +46,11 @@ touchstone_sync_planned_write_paths() {
     # by a failed update's restore.
     printf 'lib/review-comment.sh\n'
     printf 'scripts/cortex-pr-merged-hook.sh\n'
+    printf 'scripts/spawn-worktree.sh\n'
+    printf 'scripts/cleanup-worktrees.sh\n'
+    printf 'lib/events.sh\n'
+    printf 'lib/codex-auth.sh\n'
+    printf 'scripts/run-pytest-in-venv.sh\n'
 
     # Legacy project-scoped copies of these Touchstone-owned skills are
     # removed during update now that the bundle installs at user scope. Keep
@@ -62,10 +63,6 @@ touchstone_sync_planned_write_paths() {
     printf '.claude/skills/touchstone-audit-weak-points/\n'
     printf '.claude/skills/cortex-protocol/\n'
     printf '.claude/skills/memory-audit/\n'
-
-    if [ "$project_type" = "python" ] || [ -f "$project_dir/scripts/run-pytest-in-venv.sh" ]; then
-      printf 'scripts/run-pytest-in-venv.sh\n'
-    fi
 
     if [ -d "$touchstone_root/.claude/skills" ]; then
       local skill_dir skill_name f

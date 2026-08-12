@@ -136,7 +136,20 @@ printf '# retired helper\n' >"$RETIREMENT_PROJECT/lib/review-comment.sh"
 # still carries the previously managed copy must have it removed, and its
 # manifest entry dropped, by a single update run.
 printf '# retired journal hook\n' >"$RETIREMENT_PROJECT/scripts/cortex-pr-merged-hook.sh"
-printf 'scripts/conductor-review.sh\r\nscripts/codex-review.sh\r\nlib/review-comment.sh\nscripts/cortex-pr-merged-hook.sh\n' >>"$RETIREMENT_PROJECT/.touchstone-manifest"
+# Conveniences retired in #737. A project last synced before the cut still
+# carries all five as tracked, manifested, managed files. One update run must
+# delete every one of them AND drop its manifest entry; a copy call left
+# behind in update-project.sh would re-create the file in the same run.
+printf '#!/usr/bin/env bash\necho retired worktree spawner\n' >"$RETIREMENT_PROJECT/scripts/spawn-worktree.sh"
+printf '#!/usr/bin/env bash\necho retired worktree cleanup\n' >"$RETIREMENT_PROJECT/scripts/cleanup-worktrees.sh"
+printf '#!/usr/bin/env bash\necho retired pytest wrapper\n' >"$RETIREMENT_PROJECT/scripts/run-pytest-in-venv.sh"
+printf '# retired NDJSON telemetry\n' >"$RETIREMENT_PROJECT/lib/events.sh"
+printf '# retired subscription auth helper\n' >"$RETIREMENT_PROJECT/lib/codex-auth.sh"
+chmod +x \
+  "$RETIREMENT_PROJECT/scripts/spawn-worktree.sh" \
+  "$RETIREMENT_PROJECT/scripts/cleanup-worktrees.sh" \
+  "$RETIREMENT_PROJECT/scripts/run-pytest-in-venv.sh"
+printf 'scripts/conductor-review.sh\r\nscripts/codex-review.sh\r\nlib/review-comment.sh\nscripts/cortex-pr-merged-hook.sh\nscripts/spawn-worktree.sh\nscripts/cleanup-worktrees.sh\nscripts/run-pytest-in-venv.sh\nlib/events.sh\nlib/codex-auth.sh\n' >>"$RETIREMENT_PROJECT/.touchstone-manifest"
 awk 'BEGIN { for (i = 0; i < 10000; i++) printf "legacy/extra/%d\n", i }' \
   >>"$RETIREMENT_PROJECT/.touchstone-manifest"
 cat >"$RETIREMENT_PROJECT/.pre-commit-config.yaml" <<'EOF_RETIRED_REVIEW_HOOKS'
@@ -205,6 +218,18 @@ assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/codex-r
 assert_not_exists "$RETIREMENT_PROJECT/lib/review-comment.sh"
 assert_not_exists "$RETIREMENT_PROJECT/scripts/cortex-pr-merged-hook.sh"
 assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/cortex-pr-merged-hook\.sh$'
+# #737: retired and de-manifested in the same run, so the next sync cannot
+# re-copy them.
+assert_not_exists "$RETIREMENT_PROJECT/scripts/spawn-worktree.sh"
+assert_not_exists "$RETIREMENT_PROJECT/scripts/cleanup-worktrees.sh"
+assert_not_exists "$RETIREMENT_PROJECT/scripts/run-pytest-in-venv.sh"
+assert_not_exists "$RETIREMENT_PROJECT/lib/events.sh"
+assert_not_exists "$RETIREMENT_PROJECT/lib/codex-auth.sh"
+assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/spawn-worktree\.sh$'
+assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees\.sh$'
+assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^scripts/run-pytest-in-venv\.sh$'
+assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^lib/events\.sh$'
+assert_not_contains "$RETIREMENT_PROJECT/.touchstone-manifest" '^lib/codex-auth\.sh$'
 assert_not_exists "$HOME/.claude/skills/conductor-delegation"
 assert_exists "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md"
 assert_contains "$HOME/.claude/skills/.touchstone-retired/conductor-delegation/SKILL.md" 'retired skill'
@@ -252,11 +277,11 @@ assert_contains "$TEST_DIR/update-output-2.txt" 'added (project-owned).*\.markdo
 assert_exists "$PROJECT/scripts/touchstone-run.sh"
 assert_exists "$PROJECT/scripts/claim-issue.sh"
 assert_exists "$PROJECT/scripts/issue-claim-check.sh"
-assert_exists "$PROJECT/scripts/spawn-worktree.sh"
-assert_exists "$PROJECT/scripts/cleanup-worktrees.sh"
+assert_not_exists "$PROJECT/scripts/spawn-worktree.sh"
+assert_not_exists "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_exists "$PROJECT/lib/toml.sh"
-assert_exists "$PROJECT/lib/events.sh"
-assert_exists "$PROJECT/lib/codex-auth.sh"
+assert_not_exists "$PROJECT/lib/events.sh"
+assert_not_exists "$PROJECT/lib/codex-auth.sh"
 assert_exists "$PROJECT/lib/script-sync-guard.sh"
 assert_exists "$PROJECT/lib/sha256.sh"
 assert_exists "$PROJECT/lib/preflight.sh"
@@ -268,11 +293,11 @@ assert_contains "$PROJECT/.touchstone-manifest" '^\.github/workflows/issue-claim
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/touchstone-run.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/claim-issue.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/issue-claim-check.sh$'
-assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
-assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/toml\.sh$'
-assert_contains "$PROJECT/.touchstone-manifest" '^lib/events\.sh$'
-assert_contains "$PROJECT/.touchstone-manifest" '^lib/codex-auth\.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^lib/events\.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^lib/codex-auth\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/script-sync-guard\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/sha256\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/preflight\.sh$'

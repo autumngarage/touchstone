@@ -237,7 +237,6 @@ assert_exists "$PROJECT/GEMINI.md"
 assert_exists "$PROJECT/.pre-commit-config.yaml"
 assert_exists "$PROJECT/.markdownlint.json"
 assert_exists "$PROJECT/.gitignore"
-assert_exists "$PROJECT/.worktreeinclude.example"
 assert_exists "$PROJECT/.github/pull_request_template.md"
 assert_exists "$PROJECT/.github/workflows/issue-claim-check.yml"
 assert_exists "$PROJECT/.touchstone-review.toml"
@@ -275,7 +274,7 @@ assert_exists "$PROJECT/scripts/branch-guard.sh"
 assert_exists "$PROJECT/scripts/emergency-disclosure.sh"
 assert_not_exists "$PROJECT/scripts/cortex-pr-merged-hook.sh"
 assert_exists "$PROJECT/lib/toml.sh"
-assert_exists "$PROJECT/lib/codex-auth.sh"
+assert_not_exists "$PROJECT/lib/codex-auth.sh"
 assert_exists "$PROJECT/lib/script-sync-guard.sh"
 assert_exists "$PROJECT/lib/sha256.sh"
 assert_exists "$PROJECT/lib/preflight.sh"
@@ -286,17 +285,16 @@ assert_exists "$PROJECT/scripts/merge-pr.sh"
 assert_exists "$PROJECT/scripts/claim-issue.sh"
 assert_exists "$PROJECT/scripts/issue-claim-check.sh"
 assert_exists "$PROJECT/scripts/cleanup-branches.sh"
-assert_exists "$PROJECT/scripts/spawn-worktree.sh"
-assert_exists "$PROJECT/scripts/cleanup-worktrees.sh"
+assert_not_exists "$PROJECT/scripts/spawn-worktree.sh"
+assert_not_exists "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_not_exists "$PROJECT/scripts/run-pytest-in-venv.sh"
+assert_not_exists "$PROJECT/lib/events.sh"
 assert_executable "$PROJECT/scripts/touchstone-run.sh"
 assert_executable "$PROJECT/scripts/open-pr.sh"
 assert_executable "$PROJECT/scripts/merge-pr.sh"
 assert_executable "$PROJECT/scripts/claim-issue.sh"
 assert_executable "$PROJECT/scripts/issue-claim-check.sh"
 assert_executable "$PROJECT/scripts/cleanup-branches.sh"
-assert_executable "$PROJECT/scripts/spawn-worktree.sh"
-assert_executable "$PROJECT/scripts/cleanup-worktrees.sh"
 assert_not_contains "$PROJECT/.pre-commit-config.yaml" 'conductor-review.sh'
 assert_contains "$PROJECT/.pre-commit-config.yaml" 'touchstone-run.sh validate'
 assert_contains "$PROJECT/.pre-commit-config.yaml" "args: \\['-d', '-i', '2', '-ci', '-bn'\\]"
@@ -304,9 +302,6 @@ if ! diff -q "$TOUCHSTONE_ROOT/templates/.markdownlint.json" "$PROJECT/.markdown
   echo "FAIL: bootstrapped markdownlint config must match the referenced template" >&2
   ERRORS=$((ERRORS + 1))
 fi
-assert_contains "$PROJECT/.worktreeinclude.example" '^# Allowlist of gitignored files to copy into spawned worktrees\.$'
-assert_contains "$PROJECT/.worktreeinclude.example" '^# \.env\.local$'
-assert_contains "$PROJECT/.worktreeinclude.example" '^# \.vscode/settings\.json$'
 # Cortex append-only exclusions: trailing-whitespace and end-of-file-fixer
 # must skip .cortex/journal/ and .cortex/doctrine/ per Cortex Protocol §4.
 # Two assertions — one per hook — to catch accidental one-sided fixes.
@@ -331,10 +326,11 @@ assert_not_contains "$PROJECT/.touchstone-manifest" '^scripts/cortex-pr-merged-h
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/open-pr.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/claim-issue.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^scripts/issue-claim-check.sh$'
-assert_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
-assert_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^scripts/spawn-worktree.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^scripts/cleanup-worktrees.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/toml\.sh$'
-assert_contains "$PROJECT/.touchstone-manifest" '^lib/codex-auth\.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^lib/codex-auth\.sh$'
+assert_not_contains "$PROJECT/.touchstone-manifest" '^lib/events\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/script-sync-guard\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/sha256\.sh$'
 assert_contains "$PROJECT/.touchstone-manifest" '^lib/preflight\.sh$'
@@ -560,9 +556,11 @@ assert_contains "$PROJECT_NODE/.touchstone-config" '^project_type=node$'
 
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_PYTHON" --no-register --type python
 assert_exists "$PROJECT_PYTHON/scripts/touchstone-run.sh"
-assert_exists "$PROJECT_PYTHON/scripts/run-pytest-in-venv.sh"
+# #737 retired the pytest wrapper: touchstone-run.sh already resolves the venv
+# via find_python_bin, so a Python bootstrap must not ship a second path.
+assert_not_exists "$PROJECT_PYTHON/scripts/run-pytest-in-venv.sh"
 assert_contains "$PROJECT_PYTHON/.touchstone-config" '^project_type=python$'
-assert_contains "$PROJECT_PYTHON/.touchstone-manifest" '^scripts/run-pytest-in-venv.sh$'
+assert_not_contains "$PROJECT_PYTHON/.touchstone-manifest" '^scripts/run-pytest-in-venv.sh$'
 
 # Swift profile on fresh bootstrap must scaffold a complete SPM package so
 # `swift build` / `swift test` work immediately without the user hand-writing
@@ -902,37 +900,6 @@ if grep -q 'PROJECT_SETUP_RAN' "$TEST_DIR/touchstone-init-existing-setup.txt"; t
   echo "FAIL: touchstone init ran a pre-existing setup.sh" >&2
   ERRORS=$((ERRORS + 1))
 fi
-
-# Pytest wrapper should use project virtualenvs instead of system python.
-PYTEST_WRAPPER_PROJECT="$TEST_DIR/pytest-wrapper"
-mkdir -p "$PYTEST_WRAPPER_PROJECT"
-if (cd "$PYTEST_WRAPPER_PROJECT" && "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" tests) >"$TEST_DIR/pytest-missing-venv.txt" 2>&1; then
-  echo "FAIL: expected run-pytest-in-venv.sh to fail without a venv" >&2
-  ERRORS=$((ERRORS + 1))
-else
-  assert_contains "$TEST_DIR/pytest-missing-venv.txt" 'no project virtualenv found'
-  assert_contains "$TEST_DIR/pytest-missing-venv.txt" 'bash setup.sh'
-fi
-
-mkdir -p "$PYTEST_WRAPPER_PROJECT/.venv/bin"
-cat >"$PYTEST_WRAPPER_PROJECT/.venv/bin/python" <<'FAKEPYTHON'
-#!/usr/bin/env bash
-if [ "$1" = "-c" ] && [[ "$2" == *"sys.version_info"* ]]; then
-  exit 0
-fi
-printf '%s\n' "$@" > "$PWD/pytest-args.txt"
-if [ "$1" = "-m" ] && [ "$2" = "pytest" ]; then
-  exit 0
-fi
-exit 1
-FAKEPYTHON
-chmod +x "$PYTEST_WRAPPER_PROJECT/.venv/bin/python"
-
-(cd "$PYTEST_WRAPPER_PROJECT" && "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" tests/unit -x)
-assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^-m$'
-assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^pytest$'
-assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^tests/unit$'
-assert_contains "$PYTEST_WRAPPER_PROJECT/pytest-args.txt" '^-x$'
 
 # setup.sh --deps-only should support uv projects at the repo root and in agent/.
 FAKE_BIN="$TEST_DIR/fake-bin"
@@ -1767,27 +1734,6 @@ else
   assert_contains "$TEST_DIR/doctor-broken.txt" 'git hooks NOT installed'
 fi
 
-# doctor shares the test-presence heuristic with --scaffold-tests — the same
-# "dir exists != tests exist" class bug applies. An empty tests/ directory
-# (or one with only __init__.py) must not be reported as "tests: found".
-PROJECT_DOCTOR_EMPTY_PY="$TEST_DIR/test-project-doctor-empty-python"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_EMPTY_PY" --no-register --type python >/dev/null
-mkdir -p "$PROJECT_DOCTOR_EMPTY_PY/tests"
-: >"$PROJECT_DOCTOR_EMPTY_PY/tests/__init__.py"
-RUFF_STUB_EMPTY_PY="$TEST_DIR/ruff-stub-empty-py"
-mkdir -p "$RUFF_STUB_EMPTY_PY"
-cat >"$RUFF_STUB_EMPTY_PY/ruff" <<'RUFFSTUBEMPTYPY'
-#!/usr/bin/env bash
-exit 0
-RUFFSTUBEMPTYPY
-chmod +x "$RUFF_STUB_EMPTY_PY/ruff"
-(cd "$PROJECT_DOCTOR_EMPTY_PY" && PATH="$RUFF_STUB_EMPTY_PY:$PATH" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-empty-py.txt" 2>&1 || true
-if grep -q "tests: found for profile 'python'" "$TEST_DIR/doctor-empty-py.txt"; then
-  echo "FAIL: doctor must not report 'tests: found' when only tests/__init__.py exists" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-assert_contains "$TEST_DIR/doctor-empty-py.txt" "tests: not found for profile 'python'"
-
 # doctor must flag a pre-push hook whose content isn't the pre-commit-framework
 # shim — another framework silently replacing the file is the same class of
 # failure as hook files being absent outright. The replacement here is executable,
@@ -1886,195 +1832,29 @@ else
   assert_contains "$TEST_DIR/doctor-hook-unexec.txt" 'not executable'
 fi
 
-# Python profile: tests folder and ruff availability must both be reported by doctor.
-PROJECT_DOCTOR_PY_WITH="$TEST_DIR/test-project-doctor-python-with"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_PY_WITH" --no-register --type python >/dev/null
-mkdir -p "$PROJECT_DOCTOR_PY_WITH/tests"
-printf 'def test_smoke():\n    assert True\n' >"$PROJECT_DOCTOR_PY_WITH/tests/test_smoke.py"
-RUFF_STUB_BIN="$TEST_DIR/ruff-stub-bin"
-mkdir -p "$RUFF_STUB_BIN"
-cat >"$RUFF_STUB_BIN/ruff" <<'RUFFSTUB'
-#!/usr/bin/env bash
-exit 0
-RUFFSTUB
-chmod +x "$RUFF_STUB_BIN/ruff"
-if (cd "$PROJECT_DOCTOR_PY_WITH" && PATH="$RUFF_STUB_BIN:$PATH" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-py-with.txt" 2>&1; then
-  assert_contains "$TEST_DIR/doctor-py-with.txt" "tests: found for profile 'python'"
-  assert_contains "$TEST_DIR/doctor-py-with.txt" 'ruff: on PATH'
+# #737 removed the doctor profile mirror: the block that re-derived
+# touchstone-run.sh's profile resolution and re-checked per-profile test
+# presence and linter availability. It was a second copy of the dispatcher's
+# logic that had to be hand-kept in lock-step, and it constrained nothing —
+# pre-push already runs the real dispatcher. doctor keeps the structural
+# checks (hooks, manifest, review policy, registry) and must not grow the
+# mirror back.
+PROJECT_DOCTOR_NO_MIRROR="$TEST_DIR/test-project-doctor-no-profile-mirror"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_NO_MIRROR" --no-register --type python >/dev/null
+touchstone_sed_inplace 's|^project_type=.*|project_type=kotlin|' "$PROJECT_DOCTOR_NO_MIRROR/.touchstone-config"
+mkdir -p "$PROJECT_DOCTOR_NO_MIRROR/apps/mobile"
+touchstone_sed_inplace 's|^targets=.*|targets=mobile:apps/mobile:kotlin|' "$PROJECT_DOCTOR_NO_MIRROR/.touchstone-config"
+if (cd "$PROJECT_DOCTOR_NO_MIRROR" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-no-mirror.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-no-mirror.txt" 'Project is fully armed'
 else
-  echo "FAIL: doctor --project on a Python project with tests and ruff should exit 0" >&2
+  echo "FAIL: doctor --project must stay structural — an unknown profile is the runner's verdict, not doctor's" >&2
+  cat "$TEST_DIR/doctor-no-mirror.txt" >&2
   ERRORS=$((ERRORS + 1))
 fi
-
-# Python profile with no tests directory and no ruff on PATH — doctor must
-# nudge on tests (informational, no issue++) and warn+count on ruff.
-PROJECT_DOCTOR_PY_WITHOUT="$TEST_DIR/test-project-doctor-python-without"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_PY_WITHOUT" --no-register --type python >/dev/null
-if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
-  echo "SKIP: ruff on minimal PATH; cannot test ruff-absent doctor case on this machine" >&2
-else
-  # Keep touchstone reachable by its absolute path; drop ruff from PATH.
-  if (cd "$PROJECT_DOCTOR_PY_WITHOUT" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-py-without.txt" 2>&1; then
-    echo "FAIL: doctor --project on a Python project with no ruff should exit nonzero" >&2
-    ERRORS=$((ERRORS + 1))
-  else
-    assert_contains "$TEST_DIR/doctor-py-without.txt" "tests: not found for profile 'python'"
-    assert_contains "$TEST_DIR/doctor-py-without.txt" 'ruff not on PATH'
-  fi
-fi
-
-# Monorepo projects where targets drive validate: doctor must run test/lint
-# checks per target, not on the root profile. The root profile check would
-# miss gaps inside apps/services/packages that the runner actually dispatches
-# to at pre-push time. Also exercise profile aliases (ts -> node, py -> python)
-# and empty/auto profiles that must be resolved by manifest detection so each
-# target hits the same dispatcher branch touchstone-run.sh would use.
-PROJECT_DOCTOR_MONO="$TEST_DIR/test-project-doctor-monorepo"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_MONO" --no-register >/dev/null
-mkdir -p "$PROJECT_DOCTOR_MONO/apps/web" "$PROJECT_DOCTOR_MONO/services/api" "$PROJECT_DOCTOR_MONO/apps/tsapp" "$PROJECT_DOCTOR_MONO/packages/autodetect"
-printf '[package]\nname = "api"\nversion = "0.0.0"\n' >"$PROJECT_DOCTOR_MONO/services/api/Cargo.toml"
-printf '{"scripts":{"lint":"echo lint","test":"echo test"}}\n' >"$PROJECT_DOCTOR_MONO/apps/web/package.json"
-# tsapp declares "typescript" profile (alias for node) but has no lint script.
-printf '{}\n' >"$PROJECT_DOCTOR_MONO/apps/tsapp/package.json"
-# autodetect declares no explicit profile — must be detected from manifest (Cargo.toml).
-printf '[package]\nname = "autodetected"\nversion = "0.0.0"\n' >"$PROJECT_DOCTOR_MONO/packages/autodetect/Cargo.toml"
-touchstone_sed_inplace 's|^targets=.*|targets=web:apps/web:node,api:services/api:rust,tsapp:apps/tsapp:typescript,autodetect:packages/autodetect|' "$PROJECT_DOCTOR_MONO/.touchstone-config"
-if (cd "$PROJECT_DOCTOR_MONO" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-monorepo.txt" 2>&1; then
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target web:"
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target api:"
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" 'target web: package.json: lint script configured'
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target web: tests: not found for profile 'node'"
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target api: tests: not found for profile 'rust'"
-  # 'typescript' alias must resolve to node — the lint-script check is the
-  # node-profile branch, and tsapp has no lint script so the dim-line fires.
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target tsapp: package.json has no 'lint' script"
-  # Auto-detected profile from Cargo.toml must be rust.
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target autodetect: tests: not found for profile 'rust'"
-else
-  # Per-target lines must appear even if doctor exits nonzero for other reasons.
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target web:"
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target api:"
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target tsapp: package.json has no 'lint' script"
-  assert_contains "$TEST_DIR/doctor-monorepo.txt" "target autodetect: tests: not found for profile 'rust'"
-fi
-
-# touchstone-run.sh's load_config treats project_type and profile as the same
-# slot with last-write-wins semantics. Doctor must select the same profile
-# the runner would, so a config with both keys must resolve to the final one.
-PROJECT_DOCTOR_ALIAS_KEY="$TEST_DIR/test-project-doctor-alias-key"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_ALIAS_KEY" --no-register --type python >/dev/null
-# Prepend a stale project_type=generic and keep the real profile=python after it
-# to exercise the last-write-wins tie-breaker.
-touchstone_sed_inplace 's|^project_type=.*|project_type=generic|' "$PROJECT_DOCTOR_ALIAS_KEY/.touchstone-config"
-printf 'profile=python\n' >>"$PROJECT_DOCTOR_ALIAS_KEY/.touchstone-config"
-if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
-  echo "SKIP: ruff on minimal PATH; cannot test project_type/profile last-wins doctor case on this machine" >&2
-else
-  if (cd "$PROJECT_DOCTOR_ALIAS_KEY" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-alias-key.txt" 2>&1; then
-    echo "FAIL: doctor --project on a Python-via-profile= project with no ruff should exit nonzero" >&2
-    ERRORS=$((ERRORS + 1))
-  else
-    # The later "profile=python" must win over "project_type=generic"; missing
-    # ruff should fire, not a generic-profile no-op.
-    assert_contains "$TEST_DIR/doctor-alias-key.txt" 'ruff not on PATH'
-    if grep -q "profile 'generic'" "$TEST_DIR/doctor-alias-key.txt"; then
-      echo "FAIL: doctor selected generic when last-write-wins should have selected python" >&2
-      ERRORS=$((ERRORS + 1))
-    fi
-  fi
-fi
-
-# Unknown root profile: touchstone-run.sh returns an error for project_type
-# values outside the dispatcher's accepted set. doctor must flag the same —
-# otherwise a typo like project_type=kotlin would silently pass doctor while
-# pre-push failed for every dev on the team.
-PROJECT_DOCTOR_BAD_PROFILE="$TEST_DIR/test-project-doctor-bad-profile"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_BAD_PROFILE" --no-register >/dev/null
-touchstone_sed_inplace 's|^project_type=.*|project_type=kotlin|' "$PROJECT_DOCTOR_BAD_PROFILE/.touchstone-config"
-if (cd "$PROJECT_DOCTOR_BAD_PROFILE" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-bad-profile.txt" 2>&1; then
-  echo "FAIL: doctor --project should exit nonzero when project_type is not a dispatcher-accepted profile" >&2
-  ERRORS=$((ERRORS + 1))
-else
-  assert_contains "$TEST_DIR/doctor-bad-profile.txt" "unknown project_type 'kotlin'"
-fi
-
-# Unknown target profile: same rule at the target level. touchstone-run.sh's
-# run_profile_action returns 1 on an unknown target profile, so doctor flags it.
-PROJECT_DOCTOR_BAD_TARGET="$TEST_DIR/test-project-doctor-bad-target"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_BAD_TARGET" --no-register >/dev/null
-mkdir -p "$PROJECT_DOCTOR_BAD_TARGET/apps/mobile"
-touchstone_sed_inplace 's|^targets=.*|targets=mobile:apps/mobile:kotlin|' "$PROJECT_DOCTOR_BAD_TARGET/.touchstone-config"
-if (cd "$PROJECT_DOCTOR_BAD_TARGET" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-bad-target.txt" 2>&1; then
-  echo "FAIL: doctor --project should exit nonzero when a target profile is unknown" >&2
-  ERRORS=$((ERRORS + 1))
-else
-  assert_contains "$TEST_DIR/doctor-bad-target.txt" "target 'mobile': unknown profile 'kotlin'"
-fi
-
-# Auto-detected targets (apps/packages/services exist on disk but .touchstone-config
-# targets= is empty) must NOT cause per-target doctor checks — touchstone-run.sh's
-# run_targets_action requires config-loaded TARGETS to dispatch, so anything
-# doctor checks beyond the root profile would be gaps validate never exercises.
-PROJECT_DOCTOR_AUTO_TARGETS="$TEST_DIR/test-project-doctor-auto-targets"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_AUTO_TARGETS" --no-register >/dev/null
-mkdir -p "$PROJECT_DOCTOR_AUTO_TARGETS/apps/web" "$PROJECT_DOCTOR_AUTO_TARGETS/services/api"
-printf '{}\n' >"$PROJECT_DOCTOR_AUTO_TARGETS/apps/web/package.json"
-printf '[package]\nname = "api"\nversion = "0.0.0"\n' >"$PROJECT_DOCTOR_AUTO_TARGETS/services/api/Cargo.toml"
-# Leave targets= empty in .touchstone-config — new-project.sh only fills it when
-# the apps/services dirs exist at bootstrap time.
-if (cd "$PROJECT_DOCTOR_AUTO_TARGETS" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-auto-targets.txt" 2>&1; then
-  if grep -q 'target web:\|target api:' "$TEST_DIR/doctor-auto-targets.txt"; then
-    echo "FAIL: doctor must not emit per-target lines when .touchstone-config targets= is empty — runner won't dispatch those" >&2
-    ERRORS=$((ERRORS + 1))
-  fi
-else
-  echo "FAIL: doctor --project should exit 0 on a clean project even with auto-detected target dirs" >&2
-  ERRORS=$((ERRORS + 1))
-fi
-
-# Root profile aliases: touchstone-run.sh accepts project_type=typescript / ts
-# as equivalent to node, so doctor must normalize the same way — otherwise a
-# root config using the alias would silently skip the lint-script check.
-PROJECT_DOCTOR_ALIAS="$TEST_DIR/test-project-doctor-alias"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_ALIAS" --no-register >/dev/null
-printf '{}\n' >"$PROJECT_DOCTOR_ALIAS/package.json"
-touchstone_sed_inplace 's|^project_type=.*|project_type=typescript|' "$PROJECT_DOCTOR_ALIAS/.touchstone-config"
-if (cd "$PROJECT_DOCTOR_ALIAS" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-alias.txt" 2>&1; then
-  # No lint script in package.json — the node-profile lint-script check must fire,
-  # not a literal 'typescript' profile branch that would no-op.
-  assert_contains "$TEST_DIR/doctor-alias.txt" "package.json has no 'lint' script"
-  if grep -q "profile 'typescript'" "$TEST_DIR/doctor-alias.txt"; then
-    echo "FAIL: doctor should normalize 'typescript' to 'node' before profile checks" >&2
-    ERRORS=$((ERRORS + 1))
-  fi
-else
-  assert_contains "$TEST_DIR/doctor-alias.txt" "package.json has no 'lint' script"
-fi
-
-# Python project that overrides lint_command in .touchstone-config must NOT
-# have a missing ruff counted as an issue — the project's custom lint never
-# invokes ruff, so ruff's absence isn't a gap.
-PROJECT_DOCTOR_PY_OVERRIDE="$TEST_DIR/test-project-doctor-python-override"
-PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_PY_OVERRIDE" --no-register --type python >/dev/null
-# Set lint_command and test_command to custom values to suppress profile-default checks.
-touchstone_sed_inplace 's|^lint_command=.*|lint_command=echo "custom lint"|' "$PROJECT_DOCTOR_PY_OVERRIDE/.touchstone-config"
-touchstone_sed_inplace 's|^test_command=.*|test_command=echo "custom test"|' "$PROJECT_DOCTOR_PY_OVERRIDE/.touchstone-config"
-if PATH="/usr/bin:/bin" command -v ruff >/dev/null 2>&1; then
-  echo "SKIP: ruff on minimal PATH; cannot test override-suppresses-ruff-check on this machine" >&2
-else
-  if (cd "$PROJECT_DOCTOR_PY_OVERRIDE" && PATH="/usr/bin:/bin" TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-py-override.txt" 2>&1; then
-    assert_contains "$TEST_DIR/doctor-py-override.txt" 'Project is fully armed'
-    assert_contains "$TEST_DIR/doctor-py-override.txt" 'lint: overridden via .touchstone-config'
-    assert_contains "$TEST_DIR/doctor-py-override.txt" 'tests: overridden via .touchstone-config'
-    if grep -q 'ruff not on PATH' "$TEST_DIR/doctor-py-override.txt"; then
-      echo "FAIL: doctor should not count missing ruff as an issue when lint_command is overridden" >&2
-      ERRORS=$((ERRORS + 1))
-    fi
-  else
-    echo "FAIL: doctor --project on a Python project with lint override should exit 0" >&2
-    ERRORS=$((ERRORS + 1))
-  fi
-fi
+assert_not_contains "$TEST_DIR/doctor-no-mirror.txt" 'unknown project_type'
+assert_not_contains "$TEST_DIR/doctor-no-mirror.txt" 'tests: '
+assert_not_contains "$TEST_DIR/doctor-no-mirror.txt" 'ruff'
+assert_not_contains "$TEST_DIR/doctor-no-mirror.txt" 'target mobile'
 
 # Generic profile doctor must NOT count missing tests as an issue — a fresh
 # generic project with no test_command configured stays fully armed.
@@ -2082,7 +1862,6 @@ fi
 if (cd "$PROJECT_DOCTOR_HOOK_DRIFT" && printf '#!/usr/bin/env bash\n# File generated by pre-commit: https://pre-commit.com\nARGS=(hook-impl --config=.pre-commit-config.yaml --hook-type=pre-push)\n' >.git/hooks/pre-push); then :; fi
 if (cd "$PROJECT_DOCTOR_HOOK_DRIFT" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-generic.txt" 2>&1; then
   assert_contains "$TEST_DIR/doctor-generic.txt" 'Project is fully armed'
-  assert_contains "$TEST_DIR/doctor-generic.txt" "tests: profile is 'generic'"
 else
   echo "FAIL: doctor --project should exit 0 on a clean generic project even without tests" >&2
   ERRORS=$((ERRORS + 1))
@@ -2104,7 +1883,8 @@ if (cd "$PROJECT_DOCTOR_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT
   echo "FAIL: doctor --project should exit nonzero on a legacy .toolkit-version repo" >&2
   ERRORS=$((ERRORS + 1))
 else
-  assert_contains "$TEST_DIR/doctor-legacy.txt" 'touchstone migrate-from-toolkit'
+  assert_contains "$TEST_DIR/doctor-legacy.txt" 'Legacy .toolkit-version found'
+  assert_not_contains "$TEST_DIR/doctor-legacy.txt" 'touchstone migrate-from-toolkit'
 fi
 
 # Both .toolkit-version and .touchstone-version is an in-flight migration conflict —

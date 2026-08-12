@@ -15,7 +15,6 @@ _touchstone() {
     'list:Show registered projects'
     'unregister:Remove a project from the registry'
     'diff:Compare project files against latest templates'
-    'adr:Create or list Architecture Decision Records'
     'release:Cut a new touchstone release (maintainer)'
     'help:Show help'
   )
@@ -65,7 +64,6 @@ _touchstone() {
         doctor)
           _arguments \
             '--project[Check per-project health]' \
-            '--require-capability[Require a project-local workflow capability]:capability:' \
             '--installation[Check touchstone installation health]'
           ;;
         unregister)
@@ -75,11 +73,6 @@ _touchstone() {
             projects=(${(f)"$(cat "$HOME/.touchstone-projects" 2>/dev/null)"})
           fi
           _describe 'project' projects
-          ;;
-        adr)
-          _arguments \
-            '1:subcommand:(list)' \
-            '*:title:'
           ;;
         release)
           _arguments \

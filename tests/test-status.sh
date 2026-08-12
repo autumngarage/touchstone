@@ -178,7 +178,6 @@ assert_contains "$PROJECT_OUT" "^touchstone: *${CURRENT_VERSION}"
 assert_contains "$PROJECT_OUT" "^latest: *${CURRENT_VERSION} (current)"
 assert_contains "$PROJECT_OUT" "^last update: *"
 assert_contains "$PROJECT_OUT" "^workflow scripts: project-local copies from .touchstone-manifest"
-assert_contains "$PROJECT_OUT" "^script runner: *touchstone run-script"
 
 # --------------------------------------------------------------------------
 # Test 3: bare `touchstone status` in a non-touchstone dir exits nonzero
@@ -269,82 +268,43 @@ assert_contains "$COMMENT_OUT" "1 projects total"
 assert_not_contains "$COMMENT_OUT" "leading comment"
 
 # --------------------------------------------------------------------------
-# Test 7: status --json exposes drift and capability state for callers
+# Test 7: `status --json` and `doctor --require-capability` are gone (#737)
+#
+# The JSON view and the capability registry existed to describe one
+# capability — the worktree spawn/cleanup scripts. Those scripts were
+# deleted, so both surfaces are removed rather than left reporting an
+# empty set. Anything that still answers here is a resurrected surface.
 # --------------------------------------------------------------------------
 echo ""
-echo "--- Test 7: status --json project capability state ---"
+echo "--- Test 7: retired status --json / doctor --require-capability ---"
 
-CURRENT_JSON_OUT="$TEST_DIR/current-json.out"
-(cd "$CURRENT_PROJECT" && run_touchstone "$FAKE_HOME" status --json) >"$CURRENT_JSON_OUT" 2>&1
-
-assert_contains "$CURRENT_JSON_OUT" '"installed_touchstone"'
-assert_contains "$CURRENT_JSON_OUT" '"project_touchstone"'
-assert_contains "$CURRENT_JSON_OUT" '"drift"'
-assert_contains "$CURRENT_JSON_OUT" '"workflow_scripts"'
-assert_contains "$CURRENT_JSON_OUT" '"implementation": "project-local-copy"'
-assert_contains "$CURRENT_JSON_OUT" '"pinned_shim_runner": "touchstone run-script"'
-assert_contains "$CURRENT_JSON_OUT" '"state": "up_to_date"'
-assert_contains "$CURRENT_JSON_OUT" '"worktree-lifecycle"'
-assert_contains "$CURRENT_JSON_OUT" '"installed_state": "supported"'
-assert_contains "$CURRENT_JSON_OUT" '"project_state": "available"'
-
-PARENT_GIT_INSTALL_ROOT="$TEST_DIR/homebrew/Cellar/touchstone/$CURRENT_VERSION/libexec"
-mkdir -p "$PARENT_GIT_INSTALL_ROOT"
-git -C "$TEST_DIR/homebrew" init >/dev/null 2>&1
-git -C "$TEST_DIR/homebrew" config user.name "Touchstone Test"
-git -C "$TEST_DIR/homebrew" config user.email "touchstone@example.com"
-printf 'parent git repo\n' >"$TEST_DIR/homebrew/README.md"
-git -C "$TEST_DIR/homebrew" add README.md
-git -C "$TEST_DIR/homebrew" commit -m "parent repo" >/dev/null 2>&1
-cp -R "$TOUCHSTONE_ROOT/bin" "$PARENT_GIT_INSTALL_ROOT/bin"
-cp -R "$TOUCHSTONE_ROOT/lib" "$PARENT_GIT_INSTALL_ROOT/lib"
-cp "$TOUCHSTONE_ROOT/VERSION" "$PARENT_GIT_INSTALL_ROOT/VERSION"
-
-PARENT_GIT_JSON_OUT="$TEST_DIR/parent-git-json.out"
-(
-  cd "$CURRENT_PROJECT"
-  HOME="$FAKE_HOME" \
-    NO_COLOR=1 \
-    TOUCHSTONE_NO_AUTO_UPDATE=1 \
-    bash "$PARENT_GIT_INSTALL_ROOT/bin/touchstone" status --json
-) >"$PARENT_GIT_JSON_OUT" 2>&1
-
-assert_contains "$PARENT_GIT_JSON_OUT" "\"id\": \"$CURRENT_VERSION\""
-assert_contains "$PARENT_GIT_JSON_OUT" '"state": "up_to_date"'
-assert_contains "$PARENT_GIT_JSON_OUT" '"installed_state": "supported"'
-assert_not_contains "$PARENT_GIT_JSON_OUT" "installed_cli_too_old"
-
-OLD_CAPABILITY_PROJECT="$TEST_DIR/proj-old-capability"
-mkdir -p "$OLD_CAPABILITY_PROJECT"
-OLD_WORKTREE_BOUNDARY_ID="$(git -C "$TOUCHSTONE_ROOT" rev-parse d596930^)"
-printf '%s\n' "$OLD_WORKTREE_BOUNDARY_ID" >"$OLD_CAPABILITY_PROJECT/.touchstone-version"
-
-OLD_JSON_OUT="$TEST_DIR/old-json.out"
-(cd "$OLD_CAPABILITY_PROJECT" && run_touchstone "$FAKE_HOME" status --json) >"$OLD_JSON_OUT" 2>&1
-
-assert_contains "$OLD_JSON_OUT" '"state": "project_files_outdated"'
-assert_contains "$OLD_JSON_OUT" '"name": "worktree-lifecycle"'
-assert_contains "$OLD_JSON_OUT" '"project_state": "project_files_too_old"'
-assert_contains "$OLD_JSON_OUT" '"remediation": "touchstone update"'
-
-# --------------------------------------------------------------------------
-# Test 8: doctor --project --require-capability fails on project-file drift
-# --------------------------------------------------------------------------
-echo ""
-echo "--- Test 8: doctor required capability gates old project files ---"
-
-REQUIRE_OUT="$TEST_DIR/require-capability.out"
+RETIRED_JSON_OUT="$TEST_DIR/retired-json.out"
 set +e
-(cd "$OLD_CAPABILITY_PROJECT" && run_touchstone "$FAKE_HOME" doctor --project --require-capability worktree-lifecycle) >"$REQUIRE_OUT" 2>&1
-REQUIRE_EXIT=$?
+(cd "$CURRENT_PROJECT" && run_touchstone "$FAKE_HOME" status --json) >"$RETIRED_JSON_OUT" 2>&1
+RETIRED_JSON_EXIT=$?
 set -e
-
-if [ "$REQUIRE_EXIT" -eq 0 ]; then
-  echo "FAIL: required capability should fail when project files predate it" >&2
+if [ "$RETIRED_JSON_EXIT" -eq 0 ]; then
+  echo "FAIL: status --json should be rejected after #737 removed it" >&2
   ERRORS=$((ERRORS + 1))
 fi
-assert_contains "$REQUIRE_OUT" "Project Touchstone files are too old for capability 'worktree-lifecycle'"
-assert_contains "$REQUIRE_OUT" "touchstone update"
+assert_contains "$RETIRED_JSON_OUT" "unknown argument '--json'"
+assert_not_contains "$RETIRED_JSON_OUT" "pinned_shim_runner"
+assert_not_contains "$RETIRED_JSON_OUT" "worktree-lifecycle"
+
+RETIRED_CAP_OUT="$TEST_DIR/retired-capability.out"
+set +e
+(cd "$CURRENT_PROJECT" && run_touchstone "$FAKE_HOME" doctor --project --require-capability worktree-lifecycle) >"$RETIRED_CAP_OUT" 2>&1
+RETIRED_CAP_EXIT=$?
+set -e
+if [ "$RETIRED_CAP_EXIT" -eq 0 ]; then
+  echo "FAIL: doctor --require-capability should be rejected after #737 removed it" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$RETIRED_CAP_OUT" "unknown argument '--require-capability'"
+
+RETIRED_HELP_OUT="$TEST_DIR/retired-help.out"
+(cd "$CURRENT_PROJECT" && run_touchstone "$FAKE_HOME" status --help) >"$RETIRED_HELP_OUT" 2>&1
+assert_not_contains "$RETIRED_HELP_OUT" "--json"
 
 # --------------------------------------------------------------------------
 # Results

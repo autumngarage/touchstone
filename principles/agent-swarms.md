@@ -93,14 +93,14 @@ follow-up slice.
 The parent session owns the coordination boundary:
 
 - creates or approves the slice manifest
-- spawns worktrees with `scripts/spawn-worktree.sh`
+- spawns worktrees with `git worktree add`
 - owns shared files: lockfiles, schemas, generated indexes, changelogs,
   version files, route manifests, API indexes, and release notes
 - integrates worker outputs
 - runs final deterministic tests
 - invokes the final review path
 - opens or routes PRs
-- cleans up worktrees with `scripts/cleanup-worktrees.sh`
+- cleans up worktrees with `git worktree remove`
 
 Workers own only their slice:
 
@@ -158,29 +158,22 @@ Squash or fix them before opening or marking a PR ready.
 
 ## Worktree Hygiene
 
-Use the helper scripts when they are available:
+Git already provides the primitive; use it directly:
 
 ```bash
-bash scripts/spawn-worktree.sh feat/my-slice
-bash scripts/cleanup-worktrees.sh
-bash scripts/cleanup-worktrees.sh --execute
+git worktree add -b feat/my-slice ../app-my-slice
+git worktree list
+git worktree remove ../app-my-slice
 ```
-
-`scripts/spawn-worktree.sh` creates a new branch in an isolated worktree and
-copies explicitly allowlisted ignored local files from `.worktreeinclude`.
-
-`scripts/cleanup-worktrees.sh` is dry-run by default. It lists worktrees,
-checks dirty status, verifies merged-or-equivalent branches, previews
-`git worktree prune`, and removes only clean candidates when asked to execute.
 
 Deleting a worktree directory is not the same as `git worktree remove <path>`.
 `rm -rf ../app-slice` removes files but can leave stale records under Git's
 shared worktree metadata, so Git may still think a branch is checked out there
 and refuse later checkouts, branch deletes, or merges. For normal cleanup, use
-`git worktree remove <path>` or `bash scripts/cleanup-worktrees.sh --execute`.
-If someone already deleted the directory directly, run `git worktree prune`
-from a remaining checkout to remove metadata for missing paths, then rerun the
-failed checkout, merge, or cleanup command.
+`git worktree remove <path>`. If someone already deleted the directory
+directly, run `git worktree prune` from a remaining checkout to remove
+metadata for missing paths, then rerun the failed checkout, merge, or cleanup
+command.
 
 Rules:
 
@@ -194,25 +187,12 @@ Rules:
 
 Git worktrees contain tracked files. They do not bring along `.env`, local
 config, generated certificates, dependency directories, editor state, or other
-ignored local files.
+ignored local files. Copy the ones a slice needs explicitly, and name them in
+the slice manifest so the parent knows what left the original checkout.
 
-Use `.worktreeinclude` to allowlist ignored files that should be copied into
-new worktrees. The file uses gitignore-style patterns. Blank lines and `#`
-comments are ignored. Only ignored files should be copied; tracked files are
-already present in the worktree.
-
-Example:
-
-```gitignore
-# Local non-secret config needed for tests
-.env.test
-config/local.dev.json
-certs/dev/*.pem
-```
-
-Do not auto-copy secrets without explicit opt-in. If a secret is needed, the
-person or agent launching the worker must name it in `.worktreeinclude` and
-understand that it will be duplicated into another directory.
+Do not copy secrets without explicit opt-in. A secret carried into a worktree
+is duplicated into another directory on disk; the person or agent launching
+the worker owns that decision.
 
 Never symlink dependency or build artifact directories across worktrees:
 
@@ -227,10 +207,6 @@ Those directories carry platform artifacts, absolute shebangs, interpreter
 paths, lock state, and installer side effects. Sharing them across concurrent
 worktrees can corrupt installs or make tests pass for the wrong checkout.
 Recreate dependencies per worktree or use the project's normal setup command.
-
-If `scripts/setup-worktree-local.sh` exists, `scripts/spawn-worktree.sh` runs
-it from inside the new worktree. That hook is project-owned. Touchstone does
-not ship a default one because local setup varies by stack.
 
 ## Cloud And Vendor Parallel
 

@@ -862,7 +862,6 @@ reset_case_files() {
     "$TEST_DIR"/gh-graphql-calls* "$TEST_DIR"/gh-head-ref-calls* "$TEST_DIR"/gh-base-ref-calls* \
     "$TEST_DIR"/gh-reviews-graphql-calls* "$TEST_DIR"/gh-reactions-calls* \
     "$TEST_DIR"/gh-comments-calls* "$TEST_DIR"/gh-request-lookup-calls*
-  rm -f "$TEST_DIR/merge-events.ndjson"
   rm -f "$TEST_DIR/gh-merge-attempts"
   rm -f "$TEST_DIR/revision-changed-after-trigger"
   rm -rf "$GIT_PATH_ROOT"
@@ -957,8 +956,6 @@ run_merge_pr() {
   local base_ref_name="${GH_BASE_REF_NAME:-main}"
   local request_created_at="${GH_REQUEST_CREATED_AT:-1969-01-01T00:00:00Z}"
   shift
-  mkdir -p "$TEST_DIR/lib"
-  cp "$TOUCHSTONE_ROOT/lib/events.sh" "$TEST_DIR/lib/events.sh"
   PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
     GIT_PATH_ROOT="$GIT_PATH_ROOT" \
     GH_CHECKOUT_FILE="$TEST_DIR/gh-checkout" \
@@ -1086,7 +1083,6 @@ run_merge_pr() {
     PREFLIGHT_CALLS_FILE="${PREFLIGHT_CALLS_FILE:-}" \
     TEST_CURRENT_WORKTREE="${TEST_CURRENT_WORKTREE:-$DEFAULT_FAKE_WORKTREE}" \
     TOUCHSTONE_REVIEW_LOG="$TEST_DIR/touchstone-review-log" \
-    TOUCHSTONE_EVENTS_FILE="$TEST_DIR/merge-events.ndjson" \
     TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS="${TOUCHSTONE_FAIL_OPEN_BYPASS_WINDOW_HOURS:-24}" \
     TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT="${TOUCHSTONE_PR_TRIGGERED_REVIEW_REQUEST_COUNT:-0}" \
     bash "$MERGE_SCRIPT_DIR/merge-pr.sh" "$@" >"$output_file" 2>&1
@@ -1500,9 +1496,7 @@ if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid (fin
   && grep -q 'Revalidated trusted PR-visible AI result for head pr-head-oid (findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-findings-resolved.txt" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
   && ! grep -q 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records" 2>/dev/null \
-  && grep -q '"status":"findings-resolved"' "$TEST_DIR/merge-events.ndjson" \
-  && grep -q 'review_findings_resolved' "$TEST_DIR/merge-events.ndjson" \
-  && ! grep -q '"event":"review_clean"' "$TEST_DIR/merge-events.ndjson"; then
+  && ! grep -q 'touchstone/review-result-clean' "$TEST_DIR/gh-status-records" 2>/dev/null; then
   echo "==> PASS: answered findings satisfy the merge gate without a fresh review"
 else
   echo "FAIL: findings review with all threads resolved should satisfy the merge gate" >&2
@@ -1712,7 +1706,6 @@ GH_REQUEST_RECORDS=$'touchstone/review-request-intent\t2026-06-22T00:00:00Z\then
 if grep -q 'Requested GitHub Codex review for head pr-head-oid at base base-oid' "$TEST_DIR/output-pr-triggered-orphan-intent.txt" \
   && grep -q 'touchstone/review-request-complete' "$TEST_DIR/gh-status-records" \
   && ! grep -q 'touchstone/review-request-intent' "$TEST_DIR/gh-status-records" \
-  && grep -q '"event":"review_requested".*"request_count":1' "$TEST_DIR/merge-events.ndjson" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
   echo "==> PASS: an orphaned intent is retried without moving the freshness boundary"
 else
@@ -1952,8 +1945,7 @@ if grep -q 'formal review by @chatgpt-codex-connector\[bot\] (APPROVED) at 1970-
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head" \
   && grep -q $'touchstone/review-result-clean\t.*\tv=1 pr=123 base=base-oid req=1969-01-01T00:00:00Z result=1970-01-01T00:00:02Z$' \
     "$TEST_DIR/gh-status-records" \
-  && grep -q '"result_at":"1970-01-01T00:00:02Z"' \
-    "$TEST_DIR/merge-events.ndjson"; then
+  ; then
   echo "==> PASS: durable evidence records the timestamp of the selected clean signal"
 else
   echo "FAIL: durable evidence recorded an unselected review-result timestamp" >&2
@@ -2082,7 +2074,6 @@ if GH_TRUSTED_REVIEWS=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t20
 fi
 if grep -q 'Blocking condition: a body-only trusted result (no resolvable inline threads; the finding, if any, is in the review body)' "$TEST_DIR/output-pr-triggered-body-only.txt" \
   && grep -q 'Thread resolution cannot answer a result that produced no threads' "$TEST_DIR/output-pr-triggered-body-only.txt" \
-  && grep -q '"status":"findings-body-only"' "$TEST_DIR/merge-events.ndjson" \
   && [ ! -f "$TEST_DIR/gh-merge-head" ]; then
   echo "==> PASS: body-only review findings still require a fresh review"
 else
@@ -2189,14 +2180,11 @@ GH_ISSUE_COMMENTS=$'chatgpt-codex-connector\t2026-06-23T00:00:00Z\thttps://examp
   GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tCOMMENTED\t2026-06-23T00:01:00Z\thttps://example.test/review/late-findings\t1' \
   run_merge_pr "$TEST_DIR/output-pr-triggered-outcome-change.txt" 123
 if grep -q 'Revalidated trusted PR-visible AI result for head pr-head-oid (findings; all threads resolved)' "$TEST_DIR/output-pr-triggered-outcome-change.txt" \
-  && grep -q '"event":"review_clean"' "$TEST_DIR/merge-events.ndjson" \
-  && grep -q '"event":"review_findings_resolved"' "$TEST_DIR/merge-events.ndjson" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
   echo "==> PASS: the corrected final outcome is emitted, not just the initial one"
 else
   echo "FAIL: an outcome change at final revalidation must emit the corrective event" >&2
   cat "$TEST_DIR/output-pr-triggered-outcome-change.txt" >&2
-  grep 'review_' "$TEST_DIR/merge-events.ndjson" >&2 || true
   exit 1
 fi
 
@@ -2480,10 +2468,6 @@ GH_TRUSTED_REVIEWS_SECOND=$'chatgpt-codex-connector[bot]\tpr-head-oid\tAPPROVED\
   run_merge_pr "$TEST_DIR/output-pr-triggered-delayed.txt" 123
 if grep -q 'Trusted PR-visible AI review found for PR #123 head pr-head-oid' "$TEST_DIR/output-pr-triggered-delayed.txt" \
   && [ "$(cat "$TEST_DIR/gh-reviews-graphql-calls" 2>/dev/null || echo 0)" -ge 2 ] \
-  && grep -q "\"event\":\"review_result\".*\"worktree_path\":\"$DEFAULT_FAKE_WORKTREE\".*\"base_sha\":\"base-oid\".*\"status\":\"clean\".*\"wait_seconds\":[0-9][0-9]*.*\"request_count\":1" \
-    "$TEST_DIR/merge-events.ndjson" \
-  && grep -q '"request_at":"1969-01-01T00:00:00Z".*"result_at":"2026-06-23T00:00:00Z"' \
-    "$TEST_DIR/merge-events.ndjson" \
   && grep -q '^pr-head-oid$' "$TEST_DIR/gh-merge-head"; then
   echo "==> PASS: delayed PR-triggered review is polled until available"
 else
@@ -3356,7 +3340,7 @@ EOF
 )"
 GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" run_merge_pr "$TEST_DIR/output-worktree-dirty.txt" 123
 if grep -q "WARNING: Merged PR worktree '$DIRTY_FEATURE_WORKTREE' has uncommitted changes; leaving it in place." "$TEST_DIR/output-worktree-dirty.txt" \
-  && grep -q "cleanup-worktrees.sh --execute" "$TEST_DIR/output-worktree-dirty.txt" \
+  && grep -q "git worktree remove $DIRTY_FEATURE_WORKTREE" "$TEST_DIR/output-worktree-dirty.txt" \
   && [ ! -f "$TEST_DIR/git-worktree-remove" ]; then
   echo "==> PASS: dirty merged feature worktree was preserved"
 else

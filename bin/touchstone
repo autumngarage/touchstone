@@ -8,7 +8,6 @@
 #                                      Add touchstone to the current project
 #   touchstone run <task>                  Run profile task: lint, test, build, typecheck, validate
 #   touchstone preflight                   Run deterministic review preflight checks
-#   touchstone run-script <name>           Prototype runner for pinned project-local script shims
 #   touchstone update                     Update current project to latest touchstone
 #   touchstone update --in-place          Update on the current branch
 #   touchstone update --dry-run           Show what would change without applying
@@ -18,7 +17,7 @@
 #   touchstone update-all --ship          Ship registered project updates through PRs
 #   touchstone update-all --pull-first    Pull latest touchstone, then update all projects
 #   touchstone sync                       Deprecated alias for update-all
-#   touchstone status [--json]            Show status of the current project
+#   touchstone status                     Show status of the current project
 #   touchstone status --all               Show version distribution across registered projects
 #   touchstone version                    Show installed version
 #   touchstone --version                  Show installed version
@@ -56,8 +55,6 @@ touchstone_root_is_checkout() {
 # Source shared libraries.
 source "$TOUCHSTONE_ROOT/lib/auto-update.sh"
 source "$TOUCHSTONE_ROOT/lib/colors.sh"
-# shellcheck source=lib/sed-inplace.sh
-source "$TOUCHSTONE_ROOT/lib/sed-inplace.sh"
 source "$TOUCHSTONE_ROOT/lib/ui.sh"
 source "$TOUCHSTONE_ROOT/lib/claude-md-touchstone-ref.sh"
 source "$TOUCHSTONE_ROOT/lib/status.sh"
@@ -96,10 +93,6 @@ touchstone_current_id_short() {
   else
     touchstone_version_str
   fi
-}
-
-escape_sed_replacement() {
-  printf '%s' "$1" | sed 's/[\\/&]/\\&/g'
 }
 
 # --------------------------------------------------------------------------
@@ -250,8 +243,8 @@ cmd_init() {
   case "$init_state" in
     legacy-toolkit)
       tk_fail "Legacy .toolkit-version found in $project_dir"
-      tk_dim "Run: touchstone migrate-from-toolkit"
-      tk_dim "Then re-run: touchstone init"
+      tk_dim "Rename .toolkit-version to .touchstone-version (and .toolkit-manifest"
+      tk_dim "to .touchstone-manifest), then re-run: touchstone init"
       return 1
       ;;
     outdated)
@@ -305,10 +298,6 @@ cmd_update_all() {
   exec bash "$TOUCHSTONE_ROOT/bootstrap/sync-all.sh" "$@"
 }
 
-cmd_migrate_from_toolkit() {
-  exec bash "$TOUCHSTONE_ROOT/bootstrap/migrate-from-toolkit.sh" "$@"
-}
-
 cmd_retired_review() {
   echo "WARNING: touchstone review is retired; running deterministic preflight instead." >&2
   echo "         Semantic review is requested automatically after scripts/open-pr.sh pushes the PR." >&2
@@ -339,28 +328,10 @@ cmd_preflight() {
   exec bash "$TOUCHSTONE_ROOT/lib/preflight.sh" "$@"
 }
 
-run_script_usage() {
-  cat >&2 <<'EOF'
-Usage: touchstone run-script <script> [--project-version <id>] [--project <path>] [--require-capability <name>] [--] [args...]
-
-Prototype dispatcher for project-local shims. The caller declares the
-Touchstone script contract it was reviewed against; the installed CLI must
-satisfy that contract before the shared implementation runs.
-EOF
-}
-
-run_script_path() {
-  case "$1" in
-    cleanup-branches)   printf '%s/scripts/cleanup-branches.sh\n' "$TOUCHSTONE_ROOT" ;;
-    cleanup-worktrees)  printf '%s/scripts/cleanup-worktrees.sh\n' "$TOUCHSTONE_ROOT" ;;
-    touchstone-run|run) printf '%s/scripts/touchstone-run.sh\n' "$TOUCHSTONE_ROOT" ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-run_script_version_satisfies() {
+# Is $2 (current) >= $1 (required)? Both are dotted semver, with an
+# optional leading "v". Nonzero when either side is unparseable, so a
+# malformed release tag never reads as "you are current".
+touchstone_version_at_least() {
   local required="${1#v}" current="${2#v}"
   awk -v required="$required" -v current="$current" '
     function parse_version(version, parts, count, i) {
@@ -396,141 +367,6 @@ run_script_version_satisfies() {
     }'
 }
 
-run_script_installed_satisfies_version() {
-  local required="$1" current_id current_version
-  [ -n "$required" ] || return 0
-  current_id="$(touchstone_current_id)"
-  current_version="$(touchstone_version_str)"
-
-  [ "$required" = "$current_id" ] && return 0
-  [ -n "$current_version" ] \
-    && { [ "$required" = "$current_version" ] || [ "$required" = "v$current_version" ]; } \
-    && return 0
-  [ -n "$current_version" ] \
-    && run_script_version_satisfies "$required" "$current_version" \
-    && return 0
-
-  if git -C "$TOUCHSTONE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
-     && git -C "$TOUCHSTONE_ROOT" rev-parse --verify "$required^{commit}" >/dev/null 2>&1 \
-     && git -C "$TOUCHSTONE_ROOT" rev-parse --verify "$current_id^{commit}" >/dev/null 2>&1; then
-    git -C "$TOUCHSTONE_ROOT" merge-base --is-ancestor "$required" "$current_id" >/dev/null 2>&1
-    return $?
-  fi
-
-  return 1
-}
-
-cmd_run_script() {
-  local script_name="${1:-}"
-  local project_dir="" project_version="" required_capability="" script_path=""
-  local requested_project_dir
-  local current_id current_version
-  local -a script_args=()
-
-  case "$script_name" in
-    "")
-      run_script_usage
-      return 2
-      ;;
-    -h|--help)
-      run_script_usage
-      return 0
-      ;;
-  esac
-  shift
-
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --project-version)
-        if [ "$#" -lt 2 ]; then
-          echo "ERROR: --project-version requires a Touchstone id or version." >&2
-          return 2
-        fi
-        project_version="$2"
-        shift 2
-        ;;
-      --project)
-        if [ "$#" -lt 2 ]; then
-          echo "ERROR: --project requires a path." >&2
-          return 2
-        fi
-        project_dir="$2"
-        shift 2
-        ;;
-      --require-capability)
-        if [ "$#" -lt 2 ]; then
-          echo "ERROR: --require-capability requires a capability name." >&2
-          return 2
-        fi
-        required_capability="$2"
-        shift 2
-        ;;
-      --)
-        shift
-        script_args=("$@")
-        break
-        ;;
-      --*)
-        echo "ERROR: unknown run-script option: $1" >&2
-        run_script_usage
-        return 2
-        ;;
-      *)
-        script_args+=("$1")
-        shift
-        ;;
-    esac
-  done
-
-  if ! script_path="$(run_script_path "$script_name")"; then
-    echo "ERROR: unknown Touchstone script '$script_name'." >&2
-    echo "Known scripts: cleanup-branches cleanup-worktrees touchstone-run" >&2
-    return 2
-  fi
-  if [ ! -f "$script_path" ]; then
-    echo "ERROR: Touchstone script implementation missing: $script_path" >&2
-    return 1
-  fi
-
-  if [ -z "$project_dir" ]; then
-    project_dir="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-  fi
-  requested_project_dir="$project_dir"
-  if ! project_dir="$(cd "$requested_project_dir" 2>/dev/null && pwd)"; then
-    echo "ERROR: project directory not found: $requested_project_dir" >&2
-    return 1
-  fi
-  if [ -z "$project_version" ] && [ -f "$project_dir/.touchstone-version" ]; then
-    project_version="$(tr -d '[:space:]' < "$project_dir/.touchstone-version" 2>/dev/null || true)"
-  fi
-  if [ -z "$project_version" ]; then
-    echo "ERROR: run-script requires a project version contract." >&2
-    echo "  script:  $script_name" >&2
-    echo "  project: $project_dir" >&2
-    echo "  Fix: pass --project-version, or run from a project with .touchstone-version." >&2
-    return 1
-  fi
-
-  if ! run_script_installed_satisfies_version "$project_version"; then
-    current_id="$(touchstone_current_id)"
-    current_version="$(touchstone_version_str)"
-    echo "ERROR: installed Touchstone does not satisfy the project script contract." >&2
-    echo "  script:           $script_name" >&2
-    echo "  project requires: $(_status_display_id "$project_version")" >&2
-    echo "  installed id:     $(_status_display_id "$current_id")" >&2
-    [ -n "$current_version" ] && echo "  installed version: $current_version" >&2
-    echo "  Fix: touchstone update, or install a Touchstone version that satisfies the project contract." >&2
-    return 1
-  fi
-
-  if [ -n "$required_capability" ]; then
-    status_require_project_capability "$project_dir" "$required_capability" >&2 || return $?
-  fi
-
-  cd "$project_dir"
-  exec bash "$script_path" "${script_args[@]+"${script_args[@]}"}"
-}
-
 cmd_detect() {
   exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" detect
 }
@@ -560,7 +396,6 @@ cmd_version() {
 cmd_status() {
   # Two views, one entrypoint:
   #   touchstone status         -> single-project block for $(pwd)
-  #   touchstone status --json  -> machine-readable single-project block
   #   touchstone status --all   -> registry walk with the version-distribution table
   #
   # This intentionally narrows the old `touchstone status` (which always
@@ -569,15 +404,12 @@ cmd_status() {
   # old behavior remains reachable via `--all`; `touchstone list` is
   # the registry-only listing without the version-distribution math.
   local mode="project"
-  local json=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --all|-a) mode="all"; shift ;;
-      --json) json=true; shift ;;
       -h|--help)
-        echo "Usage: touchstone status [--json|--all]"
+        echo "Usage: touchstone status [--all]"
         echo "  (no flag)  Show status for the current working directory"
-        echo "  --json     Show machine-readable status for the current working directory"
         echo "  --all      Show version distribution across registered projects"
         return 0
         ;;
@@ -586,16 +418,7 @@ cmd_status() {
   done
 
   if [ "$mode" = "all" ]; then
-    if [ "$json" = true ]; then
-      echo "ERROR: touchstone status --json is only supported for the current project, not --all" >&2
-      return 1
-    fi
     status_print_all
-    return $?
-  fi
-
-  if [ "$json" = true ]; then
-    status_print_project_json "$(pwd)"
     return $?
   fi
 
@@ -643,7 +466,7 @@ cmd_doctor_project() {
   if [ ! -f "$project_dir/.touchstone-version" ]; then
     if [ -f "$project_dir/.toolkit-version" ]; then
       tk_fail "Legacy .toolkit-version found"
-      tk_dim "  Fix: touchstone migrate-from-toolkit"
+      tk_dim "  Fix: rename .toolkit-version to .touchstone-version, then: touchstone init"
       echo ""
       return 1
     fi
@@ -823,77 +646,7 @@ cmd_doctor_project() {
     issues=$((issues + 1))
   fi
 
-  # 7. Profile-aware test-surface and tooling gap checks.
-  # touchstone-run.sh validate silently skips when test files / linters are
-  # absent (correct runtime UX). doctor is where those gaps become visible.
-  #
-  # Read profile + targets from .touchstone-config directly rather than from
-  # `touchstone-run.sh detect`. detect() auto-populates targets by walking
-  # apps/packages/services when config has none, but the runner's
-  # run_targets_action bails unless config-loaded TARGETS is non-empty — so
-  # a doctor that trusts detect output would check per-target profiles the
-  # runner never actually dispatches to.
-  local profile="" targets=""
-  # touchstone-run.sh:load_config treats project_type and profile as the same
-  # config slot with last-write-wins semantics — mirror that here so a config
-  # with both keys selects the same profile doctor and validate use.
-  profile="$(_touchstone_config_get "$project_dir" "project_type profile")"
-  targets="$(_touchstone_config_get "$project_dir" "targets")"
-
-  # Match the runner's profile resolution precisely:
-  #   empty/auto -> manifest detection
-  #   literal "generic" but manifest detects a typed profile -> upgrade to detected
-  #   else -> use as-declared (to be normalized below)
-  if [ -z "$profile" ] || [ "$profile" = "auto" ]; then
-    profile="$(_touchstone_detect_profile_dir "$project_dir")"
-  elif [ "$profile" = "generic" ]; then
-    local detected
-    detected="$(_touchstone_detect_profile_dir "$project_dir")"
-    [ "$detected" != "generic" ] && profile="$detected"
-  fi
-  profile="$(_touchstone_normalize_profile "$profile")"
-
-  # Any profile value outside the dispatcher's accepted set is an error the
-  # runner will surface at pre-push — flag it here so doctor doesn't report
-  # green on a config the runner will reject.
-  if ! _touchstone_profile_is_valid "$profile"; then
-    tk_warn "unknown project_type '$profile' in .touchstone-config — touchstone-run.sh will reject it"
-    tk_dim "  Valid profiles: node, python, rust, swift, go, generic, auto"
-    issues=$((issues + 1))
-  fi
-
-  # Root-level overrides short-circuit the dispatcher entirely (configured_command_for_action
-  # in touchstone-run.sh), so neither per-root nor per-target profile defaults run.
-  local tests_overridden=false lint_overridden=false
-  if _touchstone_config_has_override "$project_dir" test_command \
-     || _touchstone_config_has_override "$project_dir" validate_command; then
-    tests_overridden=true
-  fi
-  if _touchstone_config_has_override "$project_dir" lint_command \
-     || _touchstone_config_has_override "$project_dir" validate_command; then
-    lint_overridden=true
-  fi
-
-  # 7a. Test presence — informational nudge, not a blocking issue.
-  if [ "$tests_overridden" = true ]; then
-    tk_dim "tests: overridden via .touchstone-config"
-  elif [ -n "$targets" ]; then
-    _touchstone_doctor_foreach_target "$project_dir" "$targets" _touchstone_doctor_check_tests
-  else
-    _touchstone_doctor_check_tests "$project_dir" "$profile" ""
-  fi
-
-  # 7b. Profile lint tool availability — a real gap when missing because the
-  # runtime graceful-skip means lint issues merge uncaught.
-  if [ "$lint_overridden" = true ]; then
-    tk_dim "lint: overridden via .touchstone-config"
-  elif [ -n "$targets" ]; then
-    _touchstone_doctor_foreach_target "$project_dir" "$targets" _touchstone_doctor_check_lint
-  else
-    _touchstone_doctor_check_lint "$project_dir" "$profile" ""
-  fi
-
-  # 8. Autumn Garage siblings — orientation-only, never blocking.
+  # 7. Autumn Garage siblings — orientation-only, never blocking.
   # Autumn Garage Doctrine 0001 forbids code imports across the trio, so this
   # check is file-contract only: shell out to the sibling CLI for a version
   # string and look at the project-local marker directory. Absence is normal.
@@ -990,261 +743,12 @@ _touchstone_doctor_check_sibling() {
   return 0
 }
 
-# Report whether .touchstone-config assigns a non-empty value to the given key.
-# Used to suppress profile-default doctor checks when a project has overridden
-# the runner's behavior — otherwise doctor false-positives on correct configs.
-_touchstone_config_has_override() {
-  local dir="$1" key="$2"
-  [ -f "$dir/.touchstone-config" ] || return 1
-  # Match "key = value" where value has at least one non-space character.
-  # Skips commented-out lines ("# key=...") and empty assignments ("key=").
-  grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[^[:space:]#]" "$dir/.touchstone-config"
-}
-
-# Read a raw value from .touchstone-config. Empty string when absent.
-# Trims whitespace around both key and value so "key = value" and "key=value"
-# both match, consistent with scripts/touchstone-run.sh:load_config.
-# Matches scripts/touchstone-run.sh:load_config semantics: when the same key
-# appears multiple times, the last non-empty assignment wins (for project_type
-# the runner treats project_type and profile as aliases — pass a space-
-# separated list of keys in "$2" to preserve that behavior).
-_touchstone_config_get() {
-  local dir="$1" keys="$2" line value candidate k
-  local result=""
-  [ -f "$dir/.touchstone-config" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line#"${line%%[![:space:]]*}"}"
-    case "$line" in \#*|"") continue ;; esac
-    case "$line" in *=*) ;; *) continue ;; esac
-    candidate="${line%%=*}"
-    candidate="${candidate#"${candidate%%[![:space:]]*}"}"
-    candidate="${candidate%"${candidate##*[![:space:]]}"}"
-    for k in $keys; do
-      if [ "$candidate" = "$k" ]; then
-        value="${line#*=}"
-        value="${value#"${value%%[![:space:]]*}"}"
-        value="${value%"${value##*[![:space:]]}"}"
-        result="$value"
-        break
-      fi
-    done
-  done < "$dir/.touchstone-config"
-  printf '%s' "$result"
-}
-
-# Validate a profile name against the set scripts/touchstone-run.sh actually
-# dispatches on. run_profile_action treats anything outside this set as an
-# "unknown project_type" error, so doctor must flag the same.
-_touchstone_profile_is_valid() {
-  case "$1" in
-    node|python|rust|swift|go|generic) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-# Auto-detect a project profile from manifest files. Must stay in lock-step
-# with scripts/touchstone-run.sh:detect_profile so per-target doctor checks
-# mirror what the runner actually dispatches to at pre-push time.
-_touchstone_detect_profile_dir() {
-  local dir="$1"
-  if [ -f "$dir/pnpm-workspace.yaml" ]; then
-    printf 'node\n'
-  elif [ -f "$dir/package.json" ] || [ -f "$dir/tsconfig.json" ]; then
-    printf 'node\n'
-  elif [ -f "$dir/Cargo.toml" ]; then
-    printf 'rust\n'
-  elif [ -f "$dir/Package.swift" ]; then
-    printf 'swift\n'
-  elif [ -f "$dir/go.mod" ]; then
-    printf 'go\n'
-  elif [ -f "$dir/uv.lock" ] || [ -f "$dir/pyproject.toml" ] || [ -f "$dir/requirements.txt" ]; then
-    printf 'python\n'
-  else
-    printf 'generic\n'
-  fi
-}
-
-# Normalize profile aliases to the canonical names the doctor check helpers
-# switch on. Mirrors the set scripts/touchstone-run.sh:run_profile_action
-# actually accepts — only typescript/ts map to node; run_profile_action
-# rejects py/rs/golang as unknown (those aliases only exist at the
-# new-project.sh input layer, never in a live .touchstone-config).
-_touchstone_normalize_profile() {
-  case "$1" in
-    typescript|ts) printf 'node\n' ;;
-    *) printf '%s\n' "$1" ;;
-  esac
-}
-
-# Iterate over targets (format: name:path:profile,name:path:profile,...) and
-# invoke the given check function for each. The check function is called with
-# (absolute_target_dir, target_profile, "target NAME: ").
-_touchstone_doctor_foreach_target() {
-  local project_dir="$1" targets_csv="$2" check_fn="$3"
-  local entry name rest target_path target_profile target_dir
-  local -a entries=()
-
-  IFS=',' read -r -a entries <<< "$targets_csv"
-  for entry in "${entries[@]}"; do
-    entry="${entry#"${entry%%[![:space:]]*}"}"
-    entry="${entry%"${entry##*[![:space:]]}"}"
-    [ -z "$entry" ] && continue
-    name="${entry%%:*}"
-    rest="${entry#*:}"
-    target_path="${rest%%:*}"
-    target_profile="${rest#*:}"
-    # When only two fields are present (no explicit profile), rest%%:* and
-    # rest#*: both return the same string — treat as empty so auto-detect fires.
-    [ "$target_profile" = "$target_path" ] && target_profile=""
-
-    if [[ "$target_path" = /* ]]; then
-      target_dir="$target_path"
-    else
-      target_dir="$project_dir/$target_path"
-    fi
-
-    if [ ! -d "$target_dir" ]; then
-      tk_warn "target '$name' path not found: $target_path"
-      issues=$((issues + 1))
-      continue
-    fi
-
-    # Auto-detect + alias-normalize so targets like "web:apps/web:auto" or
-    # "web:apps/web:ts" are checked against the same profile touchstone-run.sh
-    # would dispatch to — otherwise doctor reports green on a target whose
-    # lint/test gaps the runner actually exercises.
-    if [ -z "$target_profile" ] || [ "$target_profile" = "auto" ]; then
-      target_profile="$(_touchstone_detect_profile_dir "$target_dir")"
-    fi
-    target_profile="$(_touchstone_normalize_profile "$target_profile")"
-
-    # Same validity gate as the root profile — touchstone-run.sh warns and
-    # returns 1 on an unknown target profile, so doctor must flag it here.
-    if ! _touchstone_profile_is_valid "$target_profile"; then
-      tk_warn "target '$name': unknown profile '$target_profile' — touchstone-run.sh will reject it"
-      issues=$((issues + 1))
-      continue
-    fi
-
-    "$check_fn" "$target_dir" "$target_profile" "target ${name}: "
-  done
-}
-
-# Per-profile test-presence check. Writes one line to the doctor output.
-# Does not increment issues — missing tests are informational, not blocking.
-# Always returns 0 so set -e in the caller doesn't halt on the final guard.
-_touchstone_doctor_check_tests() {
-  local dir="$1" profile="$2" label="$3"
-  if _touchstone_profile_has_tests "$profile" "$dir"; then
-    tk_ok "${label}tests: found for profile '$profile'"
-  elif [ "$profile" = "generic" ]; then
-    tk_dim "${label}tests: profile is 'generic' — touchstone runs whatever test_command you set"
-  else
-    tk_dim "${label}tests: not found for profile '$profile' (runner will skip, not fail)"
-    if [ -z "$label" ]; then
-      tk_dim "  See: touchstone run test  |  create one test to get real coverage"
-    fi
-  fi
-  return 0
-}
-
-# Per-profile lint tool check. Increments caller's `issues` var when a real gap
-# is detected (relies on dynamic-scope inheritance of locals; the caller is
-# cmd_doctor_project which declares `local issues=0`).
-# Always returns 0 so set -e in the caller doesn't halt on the final guard.
-_touchstone_doctor_check_lint() {
-  local dir="$1" profile="$2" label="$3"
-  case "$profile" in
-    python)
-      if command -v ruff >/dev/null 2>&1; then
-        tk_ok "${label}ruff: on PATH"
-      else
-        tk_warn "${label}ruff not on PATH — lint silently skips on every pre-push"
-        tk_dim "  Fix: brew install ruff   (or: uv tool install ruff)"
-        issues=$((issues + 1))
-      fi
-      ;;
-    node)
-      if [ -f "$dir/package.json" ] && grep -q '"lint"[[:space:]]*:' "$dir/package.json"; then
-        tk_ok "${label}package.json: lint script configured"
-      else
-        tk_dim "${label}package.json has no 'lint' script — lint silently skips on every pre-push"
-        if [ -z "$label" ]; then
-          tk_dim "  Fix: add a \"lint\" entry under \"scripts\" in package.json"
-        fi
-      fi
-      ;;
-    swift)
-      if command -v swift-format >/dev/null 2>&1; then
-        tk_ok "${label}swift-format: on PATH"
-      else
-        tk_warn "${label}swift-format not on PATH — lint silently skips on every pre-push"
-        tk_dim "  Fix: brew install swift-format"
-        issues=$((issues + 1))
-      fi
-      ;;
-    rust|go|generic|*)
-      : # rust tools ship with rustup; go vet is built-in; generic has no default
-      ;;
-  esac
-  return 0
-}
-
-# Profile-aware test-presence heuristic. Matches typical layout conventions
-# without running the language's test discovery — speed matters here, and the
-# check is a nudge, not an authoritative answer.
-#
-# Every profile's check must look for test FILES, never just the convention
-# directory — an empty tests/ (or one with only helpers) is not tests.
-# Reporting an empty directory as "tests found" would preserve the silent-skip
-# gap this check exists to close.
-_touchstone_profile_has_tests() {
-  local profile="$1" dir="$2" matches
-  case "$profile" in
-    python)
-      matches="$(find "$dir" -maxdepth 3 -type f \
-        \( -name 'test_*.py' -o -name '*_test.py' \) -print -quit 2>/dev/null || true)"
-      [ -n "$matches" ]
-      ;;
-    node)
-      # Kept in sync with bootstrap/new-project.sh:_profile_has_any_tests_node.
-      # Covers .test.{ts,tsx,js,jsx} and .spec.{ts,tsx,js,jsx} — React/TS
-      # projects commonly declare "*.spec.tsx" files under src/.
-      matches="$(find "$dir" -maxdepth 4 -type f \
-        \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.test.js' -o -name '*.test.jsx' \
-           -o -name '*.spec.ts' -o -name '*.spec.tsx' -o -name '*.spec.js' -o -name '*.spec.jsx' \) \
-        -print -quit 2>/dev/null || true)"
-      [ -n "$matches" ]
-      ;;
-    rust)
-      # Rust: tests/*.rs are integration tests; #[test] attributes live in src/.
-      matches="$(find "$dir/tests" -maxdepth 2 -type f -name '*.rs' -print -quit 2>/dev/null || true)"
-      [ -n "$matches" ] && return 0
-      [ -d "$dir/src" ] && grep -rlq '#\[test\]' "$dir/src" 2>/dev/null
-      ;;
-    swift)
-      matches="$(find "$dir/Tests" -maxdepth 3 -type f -name '*.swift' -print -quit 2>/dev/null || true)"
-      [ -n "$matches" ]
-      ;;
-    go)
-      matches="$(find "$dir" -maxdepth 4 -type f -name '*_test.go' -print -quit 2>/dev/null || true)"
-      [ -n "$matches" ]
-      ;;
-    generic|*)
-      return 1 # caller handles the 'generic' case before the not-found branch
-      ;;
-  esac
-}
-
 touchstone_doctor_usage() {
   cat <<'EOF'
 Usage: touchstone doctor [--project|--installation]
-       touchstone doctor --require-capability <name>
 
   (no flag)             Check the current project, or installation health outside a project
   --project             Check project health and delivery policy
-  --require-capability <name>
-                        Require a project-local Touchstone workflow capability
   --installation        Check Touchstone installation health
 
 Exit codes:
@@ -1257,7 +761,6 @@ EOF
 cmd_doctor() {
   local project_mode=false
   local installation_mode=false
-  local required_capability=""
 
   if [ "$#" -eq 0 ]; then
     if touchstone_find_project_root >/dev/null 2>&1 || [ -f "$(pwd)/.touchstone-version" ] || [ -f "$(pwd)/.toolkit-version" ]; then
@@ -1271,15 +774,6 @@ cmd_doctor() {
     case "$1" in
       --project) project_mode=true; shift ;;
       --installation) installation_mode=true; shift ;;
-      --require-capability)
-        if [ "$#" -lt 2 ]; then
-          echo "ERROR: --require-capability requires a capability name" >&2
-          exit 1
-        fi
-        required_capability="$2"
-        project_mode=true
-        shift 2
-        ;;
       -h|--help)
         touchstone_doctor_usage
         return 0
@@ -1294,10 +788,6 @@ cmd_doctor() {
   fi
 
   if [ "$project_mode" = true ]; then
-    if [ -n "$required_capability" ]; then
-      status_require_project_capability "$(touchstone_find_project_root 2>/dev/null || pwd)" "$required_capability"
-      return $?
-    fi
     cmd_doctor_project
     return $?
   fi
@@ -1380,7 +870,7 @@ cmd_doctor() {
   if [ -n "$latest" ]; then
     if [ "$version" = "$latest" ]; then
       tk_ok "v${latest} — you're current"
-    elif run_script_version_satisfies "$latest" "$version"; then
+    elif touchstone_version_at_least "$latest" "$version"; then
       tk_ok "v${version} — newer than latest GitHub release v${latest}"
     else
       tk_warn "v${latest} available (you have v${version}). Run: brew upgrade touchstone"
@@ -1513,66 +1003,6 @@ cmd_diff() {
     tk_ok "All project-owned files match templates."
   fi
   echo ""
-}
-
-cmd_adr() {
-  local subcmd="${1:-}"
-  shift 2>/dev/null || true
-
-  case "$subcmd" in
-    list)
-      tk_header "Architecture Decision Records"
-      if [ -d "docs/adr" ] && ls docs/adr/*.md >/dev/null 2>&1; then
-        for f in docs/adr/[0-9]*.md; do
-          local num title
-          num="$(basename "$f" .md | grep -o '^[0-9]*')"
-          title="$(head -1 "$f" | sed 's/^#* *//' | sed "s/^ADR-$num: //")"
-          printf "  ${BOLD}ADR-%s${RESET}: %s\n" "$num" "$title"
-        done
-      else
-        tk_dim "No ADRs found. Create one with: touchstone adr \"Title of decision\""
-      fi
-      echo ""
-      ;;
-    "")
-      echo "Usage:" >&2
-      echo "  touchstone adr \"Title of decision\"    Create a new ADR" >&2
-      echo "  touchstone adr list                    List all ADRs" >&2
-      exit 1
-      ;;
-    *)
-      # Create a new ADR. The subcmd and remaining args form the title.
-      local title="$subcmd $*"
-      title="$(echo "$title" | sed 's/[[:space:]]*$//')"
-
-      mkdir -p docs/adr
-
-      # Find next number.
-      local last_num=0
-      if ls docs/adr/[0-9]*.md >/dev/null 2>&1; then
-        last_num="$(ls docs/adr/[0-9]*.md | sed 's/.*\///' | grep -o '^[0-9]*' | sort -n | tail -1)"
-      fi
-      local next_num=$((10#$last_num + 1))
-      local padded
-      padded="$(printf "%04d" "$next_num")"
-
-      local slug
-      slug="$(echo "$title" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-')"
-      local filename="docs/adr/${padded}-${slug}.md"
-
-      local today
-      today="$(date +%Y-%m-%d)"
-
-      # Copy template and fill in.
-      cp "$TOUCHSTONE_ROOT/templates/adr/0000-template.md" "$filename"
-      touchstone_sed_inplace "s/NNNN/$padded/g" "$filename"
-      escaped_title="$(escape_sed_replacement "$title")"
-      touchstone_sed_inplace "s/TITLE/$escaped_title/g" "$filename"
-      touchstone_sed_inplace "s/DATE/$today/g" "$filename"
-
-      tk_ok "Created: $filename"
-      ;;
-  esac
 }
 
 cmd_skills() {
@@ -1771,21 +1201,17 @@ cmd_help() {
   printf "    ${BOLD}touchstone detect${RESET}                 Show detected project profile\n"
   printf "    ${BOLD}touchstone run${RESET} <task>             Run lint, typecheck, build, test, or validate\n"
   printf "    ${BOLD}touchstone preflight${RESET}              Run deterministic review preflight checks\n"
-  printf "    ${BOLD}touchstone run-script${RESET} <name>      Prototype runner for pinned script shims\n"
   printf "    ${BOLD}touchstone update${RESET}                 Create a branch + commit for touchstone updates\n"
   printf "    ${BOLD}touchstone update${RESET} --in-place      Commit touchstone updates on the current branch\n"
   printf "    ${BOLD}touchstone update${RESET} --dry-run       Preview what would change\n"
   printf "    ${BOLD}touchstone update${RESET} --check         Report whether this project needs update\n"
   printf "    ${BOLD}touchstone update${RESET} --ship          Push, open PR, review, and auto-merge\n"
-  printf "    ${BOLD}touchstone migrate-from-toolkit${RESET}   One-shot rename of legacy .toolkit-* files (pre-1.0.0 projects)\n"
   printf "    ${BOLD}touchstone update-all${RESET}             Update all registered projects\n"
   printf "    ${BOLD}touchstone update-all${RESET} --ship      Ship registered project updates through PRs\n"
   printf "    ${BOLD}touchstone update-all${RESET} --check     Report which projects need update\n"
   printf "    ${BOLD}touchstone update-all${RESET} --pull-first Pull latest touchstone first\n"
   printf "    ${BOLD}touchstone sync${RESET}                   Deprecated alias for update-all\n"
   printf "    ${BOLD}touchstone diff${RESET}                   Compare project files vs templates\n"
-  printf "    ${BOLD}touchstone adr${RESET} \"Title\"            Create an Architecture Decision Record\n"
-  printf "    ${BOLD}touchstone adr${RESET} list               List all ADRs\n"
   echo ""
   echo "  ${BOLD}Registry commands:${RESET}"
   printf "    ${BOLD}touchstone list${RESET}                   Show registered projects\n"
@@ -1859,11 +1285,9 @@ case "$COMMAND" in
   init)         cmd_init "$@" ;;
   run)          cmd_run "$@" ;;
   preflight)    cmd_preflight "$@" ;;
-  run-script)   cmd_run_script "$@" ;;
   detect)       cmd_detect ;;
   update)       cmd_update "$@" ;;
   update-all)   cmd_update_all "$@" ;;
-  migrate-from-toolkit) cmd_migrate_from_toolkit "$@" ;;
   migrate-review-config) cmd_retired_review_migration "$@" ;;
   review)       cmd_retired_review "$@" ;;
   review-stats) cmd_retired_review_stats "$@" ;;
@@ -1872,7 +1296,6 @@ case "$COMMAND" in
   list|ls)      cmd_list ;;
   unregister)   cmd_unregister "$@" ;;
   diff)         cmd_diff ;;
-  adr)          cmd_adr "$@" ;;
   skills)       cmd_skills "$@" ;;
   changelog)    cmd_changelog "$@" ;;
   release)      cmd_release "$@" ;;

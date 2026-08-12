@@ -914,18 +914,11 @@ write_touchstone_manifest() {
     printf 'scripts/respond-review.sh\n'
     printf 'scripts/issue-claim-check.sh\n'
     printf 'scripts/cleanup-branches.sh\n'
-    printf 'scripts/spawn-worktree.sh\n'
-    printf 'scripts/cleanup-worktrees.sh\n'
     printf 'lib/toml.sh\n'
-    printf 'lib/events.sh\n'
-    printf 'lib/codex-auth.sh\n'
     printf 'lib/script-sync-guard.sh\n'
     printf 'lib/sha256.sh\n'
     printf 'lib/preflight.sh\n'
     printf 'lib/preflight-scope.sh\n'
-    if [ "$INPUT_TYPE" = "python" ]; then
-      printf 'scripts/run-pytest-in-venv.sh\n'
-    fi
     printf '.claude/settings.json\n'
   } >"$manifest_tmp"
   if copy_file_force "$manifest_tmp" "$PROJECT_DIR/.touchstone-manifest"; then
@@ -985,7 +978,6 @@ fi
 copy_file "$TOUCHSTONE_ROOT/templates/pre-commit-config.yaml" "$PROJECT_DIR/.pre-commit-config.yaml"
 copy_file "$TOUCHSTONE_ROOT/templates/.markdownlint.json" "$PROJECT_DIR/.markdownlint.json"
 copy_file "$TOUCHSTONE_ROOT/templates/gitignore" "$PROJECT_DIR/.gitignore"
-copy_file "$TOUCHSTONE_ROOT/templates/.worktreeinclude.example" "$PROJECT_DIR/.worktreeinclude.example"
 copy_file "$TOUCHSTONE_ROOT/templates/pull_request_template.md" "$PROJECT_DIR/.github/pull_request_template.md"
 if [ -f "$PROJECT_DIR/.codex-review.toml" ] && [ ! -f "$PROJECT_DIR/.touchstone-review.toml" ]; then
   echo "    exists (legacy, skipped): .codex-review.toml"
@@ -1023,16 +1015,12 @@ copy_file_force "$TOUCHSTONE_ROOT/scripts/claim-issue.sh" "$PROJECT_DIR/scripts/
 copy_file_force "$TOUCHSTONE_ROOT/scripts/respond-review.sh" "$PROJECT_DIR/scripts/respond-review.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$PROJECT_DIR/scripts/issue-claim-check.sh"
 copy_file_force "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
-copy_file_force "$TOUCHSTONE_ROOT/scripts/spawn-worktree.sh" "$PROJECT_DIR/scripts/spawn-worktree.sh"
-copy_file_force "$TOUCHSTONE_ROOT/scripts/cleanup-worktrees.sh" "$PROJECT_DIR/scripts/cleanup-worktrees.sh"
 chmod +x "$PROJECT_DIR/scripts/"*.sh
 
 echo ""
 echo "==> Copying libraries (touchstone-owned, will be auto-updated):"
 mkdir -p "$PROJECT_DIR/lib"
 copy_file_force "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
-copy_file_force "$TOUCHSTONE_ROOT/lib/events.sh" "$PROJECT_DIR/lib/events.sh"
-copy_file_force "$TOUCHSTONE_ROOT/lib/codex-auth.sh" "$PROJECT_DIR/lib/codex-auth.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/script-sync-guard.sh" "$PROJECT_DIR/lib/script-sync-guard.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/sha256.sh" "$PROJECT_DIR/lib/sha256.sh"
 copy_file_force "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PROJECT_DIR/lib/preflight.sh"
@@ -1356,15 +1344,6 @@ if [ ! -f "$PROJECT_DIR/.touchstone-config" ]; then
   echo "==> Wrote .touchstone-config: project_type=$INPUT_TYPE"
 else
   echo "==> .touchstone-config already exists; left unchanged."
-fi
-
-# Keep the legacy pytest helper only for Python projects. Generic ecosystem
-# tasks should go through scripts/touchstone-run.sh.
-if [ "$INPUT_TYPE" = "python" ]; then
-  echo ""
-  echo "==> Copying Python helper:"
-  copy_file_force "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
-  chmod +x "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" 2>/dev/null || true
 fi
 
 # Swift profile on fresh bootstrap: scaffold Package.swift + Sources/ + Tests/

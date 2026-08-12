@@ -487,16 +487,10 @@ touchstone_auto_project_reconcile_external() {
 }
 
 touchstone_auto_project_sync_command_skips() {
-  local command="${1:-}" subcommand="${2:-}"
+  local command="${1:-}"
 
   case "$command" in
-    "" | help | -h | --help | version | --version | status | list | ls | diff | changelog | doctor | detect | skills | update | update-all | sync | new | init | migrate-from-toolkit | release)
-      return 0
-      ;;
-  esac
-
-  case "$command:$subcommand" in
-    adr:list | review:--dry-run | review:-n | worker:*)
+    "" | help | -h | --help | version | --version | status | list | ls | diff | changelog | doctor | detect | skills | update | update-all | sync | new | init | release)
       return 0
       ;;
   esac

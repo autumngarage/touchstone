@@ -749,8 +749,8 @@ touchstone_preflight_add_literal_self_test_consumers() {
 # Release lane (issue #628): a diff of EXACTLY {VERSION, .touchstone-version}
 # holding the same valid X.Y.Z is the deterministic release bump every
 # `touchstone release` produces. Its demonstrated consumers are the version
-# readers — release, update, run-script/version-contract, auto-update, and
-# status — not the entire suite. Anything looser (either file alone, value
+# readers — release, update, auto-update, and status — not the entire
+# suite. Anything looser (either file alone, value
 # mismatch, invalid semver, any extra path) falls through to the per-path
 # mapping, where these paths are intentionally unmapped and fail closed to
 # the full suite.
@@ -770,7 +770,6 @@ touchstone_preflight_version_only_release_lane() {
   touchstone_preflight_add_existing_self_tests "$output_file" \
     tests/test-release.sh \
     tests/test-update.sh \
-    tests/test-run-script.sh \
     tests/test-auto-update.sh \
     tests/test-status.sh || return 1
   touchstone_preflight_info "scoped self-tests: version-only release lane (VERSION = .touchstone-version = $version_value)"
@@ -1016,13 +1015,10 @@ touchstone_preflight_delivery_only_path() {
     scripts/claim-issue.sh | scripts/respond-review.sh | scripts/issue-claim-check.sh)
       return 0
       ;;
-    scripts/cleanup-branches.sh | scripts/spawn-worktree.sh)
+    scripts/cleanup-branches.sh)
       return 0
       ;;
-    scripts/cleanup-worktrees.sh | scripts/run-pytest-in-venv.sh)
-      return 0
-      ;;
-    lib/toml.sh | lib/events.sh | lib/codex-auth.sh | lib/script-sync-guard.sh)
+    lib/toml.sh | lib/script-sync-guard.sh)
       return 0
       ;;
     lib/sha256.sh | lib/preflight.sh | lib/preflight-scope.sh)

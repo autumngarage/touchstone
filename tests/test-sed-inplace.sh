@@ -174,9 +174,9 @@ fi
 #                          script and there is no input file.
 #
 # An ATTACHED suffix (`sed -i.bak`) means the same thing to both and is left
-# alone — bootstrap/migrate-from-toolkit.sh uses it deliberately and removes
-# its own backup. This check therefore flags what is actually broken rather
-# than every in-place spelling.
+# alone — a caller that writes its own backup and removes it is portable.
+# This check therefore flags what is actually broken rather than every
+# in-place spelling.
 # Comment lines are filtered out: prose explaining why the broken spelling is
 # broken necessarily contains the broken spelling, and a guard that fires on
 # its own rationale is the false-positive class tracked in #745. Match on
