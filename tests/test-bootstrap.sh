@@ -2375,6 +2375,36 @@ else
   assert_not_contains "$TEST_DIR/doctor-targets-set-last.txt" 'Project is fully armed'
 fi
 
+# ---------------------------------------------------------------------------
+# #801 review, round 5: the SAME assignment-precedence class, for command keys.
+#
+# `lint_command=echo linted` followed by `lint_command=` clears the override in
+# the runner, so validation dispatches the profile linter — but doctor asked
+# "is any assignment nonempty", reported the override, and returned before
+# checking that the profile linter is reachable. A project whose profile linter
+# is missing then reports fully armed while validation lints nothing.
+#
+# Asserted on which BRANCH doctor took, not on whether a linter happens to be
+# installed on this machine: the "overridden via" line is emitted only by the
+# override path, so its absence proves the fallthrough without depending on
+# PATH. That matters because the profile-linter probe SKIPs when the tool is
+# absent, which would make a presence-based assertion vacuous.
+# ---------------------------------------------------------------------------
+PROJECT_DOCTOR_CMD_CLEARED="$TEST_DIR/test-project-doctor-cmd-cleared"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_CMD_CLEARED" --no-register >/dev/null
+printf 'lint_command=echo linted\nlint_command=\n' >>"$PROJECT_DOCTOR_CMD_CLEARED/.touchstone-config"
+(cd "$PROJECT_DOCTOR_CMD_CLEARED" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-cmd-cleared.txt" 2>&1 || true
+assert_not_contains "$TEST_DIR/doctor-cmd-cleared.txt" 'lint: overridden via .touchstone-config'
+
+# Control: the mirrored config, whose FINAL assignment is nonempty, MUST still
+# report the override. Without it, a predicate that never reports an override
+# would pass the case above for entirely the wrong reason.
+PROJECT_DOCTOR_CMD_SET="$TEST_DIR/test-project-doctor-cmd-set-last"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_CMD_SET" --no-register >/dev/null
+printf 'lint_command=\nlint_command=echo linted\n' >>"$PROJECT_DOCTOR_CMD_SET/.touchstone-config"
+(cd "$PROJECT_DOCTOR_CMD_SET" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-cmd-set-last.txt" 2>&1 || true
+assert_contains "$TEST_DIR/doctor-cmd-set-last.txt" 'lint: overridden via .touchstone-config'
+
 # Generic profile doctor must NOT count missing tests as an issue — a fresh
 # generic project with no test_command configured stays fully armed.
 # (Reuses the PROJECT_DOCTOR repo which was bootstrapped clean above.)

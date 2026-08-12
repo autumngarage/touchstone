@@ -680,16 +680,22 @@ cmd_doctor_project() {
   return 1
 }
 
-# Report whether .touchstone-config assigns a non-empty value to the given key.
-# Used to suppress the lint-reachability check when the project has overridden
-# the runner's default dispatch — otherwise doctor false-positives on a config
-# that never reaches the profile linter at all.
+# Report whether .touchstone-config's FINAL assignment to the given key is
+# non-empty. Used to suppress the lint-reachability check when the project has
+# overridden the runner's default dispatch — otherwise doctor false-positives
+# on a config that never reaches the profile linter at all.
+#
+# Must read the LAST assignment, because that is what scripts/touchstone-run.sh
+# load_config uses. A grep for "any non-empty assignment" answers a different
+# question: with `lint_command=ruff` followed by `lint_command=`, the runner
+# clears the override and dispatches the profile linter, while the grep still
+# reports an override and suppresses the check — so a Python project with no
+# ruff reports fully armed while validation silently lints nothing.
 _touchstone_config_has_override() {
-  local dir="$1" key="$2"
+  local dir="$1" key="$2" value
   [ -f "$dir/.touchstone-config" ] || return 1
-  # Match "key = value" where value has at least one non-space character.
-  # Skips commented-out lines ("# key=...") and empty assignments ("key=").
-  grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[^[:space:]#]" "$dir/.touchstone-config"
+  value="$(_touchstone_config_value "$dir" "$key")"
+  [ -n "$value" ]
 }
 
 # Does every path named by .touchstone-config's `targets` exist as a directory?
