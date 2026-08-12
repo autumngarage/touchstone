@@ -2248,6 +2248,58 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "--- Step 18: override-round corrections (PR #787) ---"
+
+# (a) P1: the early-exit reconciliation must not touch the WORKING TREE. A
+# legacy project-scoped skill directory is tracked content; deleting it here
+# would run before require_clean_git_repo, with no snapshot, branch, or
+# commit — an unrecoverable destructive action on a user's modified files.
+LEGACY_SKILL_PROJECT="$TEST_DIR/p787d-legacy-skill"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$LEGACY_SKILL_PROJECT" --no-register >/dev/null
+configure_git "$LEGACY_SKILL_PROJECT"
+mkdir -p "$LEGACY_SKILL_PROJECT/.claude/skills/touchstone-git-workflow"
+printf 'local edits\n' >"$LEGACY_SKILL_PROJECT/.claude/skills/touchstone-git-workflow/SKILL.md"
+commit_all "$LEGACY_SKILL_PROJECT" "carry a legacy project-scoped skill"
+(cd "$LEGACY_SKILL_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p787d-legacy-skill.txt" 2>&1 || true
+assert_contains "$TEST_DIR/p787d-legacy-skill.txt" 'Already up to date'
+if [ -f "$LEGACY_SKILL_PROJECT/.claude/skills/touchstone-git-workflow/SKILL.md" ]; then
+  echo "    PASS: the identity-equal exit leaves tracked project files alone"
+else
+  echo "FAIL: early-exit reconciliation must not delete tracked project content (PR #787 P1)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if awk '/^reconcile_external_state\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+  "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'uninstall_legacy_project_skills'; then
+  echo "FAIL: reconcile_external_state must touch only state outside the working tree" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  echo "    PASS: project-scoped skill retirement stays on the branch-and-commit path"
+fi
+
+# (b) A failed external repair must propagate, or the ambient wrapper cannot
+# report it and an ungated project looks like a successful no-op.
+if awk '/^reconcile_external_state\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+  "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'return "$rc"' \
+  && grep -q 'reconcile_external_state || exit 1' "$TOUCHSTONE_ROOT/bootstrap/update-project.sh"; then
+  echo "    PASS: reconciliation failure propagates out of both early exits"
+else
+  echo "FAIL: a failed hook/skill install must not exit 0 (PR #787 override round)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (c) An existing PR on the deterministic branch counts only when it targets
+# the intended base — a stacked PR would otherwise merge the update elsewhere.
+if awk '/^current_update_pr_state\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+  "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'baseRefName' \
+  && awk '/^current_update_pr_state\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'ORIGINAL_BRANCH'; then
+  echo "    PASS: PR-state classification is bound to head AND intended base"
+else
+  echo "FAIL: armed/merged classification must validate the PR base (PR #787 override round)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # --------------------------------------------------------------------------
 # Results
 # --------------------------------------------------------------------------

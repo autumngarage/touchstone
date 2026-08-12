@@ -228,25 +228,36 @@ managed_content_is_current() {
 # and the identity-equal exit is the NORMAL released state, i.e. the most
 # common path of all (PR #787 review, round 3). --check stays read-only.
 reconcile_external_state() {
+  local rc=0
   [ "$CHECK_ONLY" != true ] || return 0
   [ "$DRY_RUN" = false ] || return 0
+  # STRICTLY outside the working tree: the user-scoped skills bundle
+  # (~/.claude/skills) and the effective git hooks. Project-scoped legacy
+  # skill retirement deletes TRACKED files under <project>/.claude/skills,
+  # so it stays in the normal branch-and-commit path where the clean-tree
+  # check, rollback snapshot, and update commit protect it — an early exit
+  # runs before require_clean_git_repo and would rm -rf a user's modified
+  # files with no recovery path (PR #787 review, override round P1).
   if [ -d "$TOUCHSTONE_ROOT/skills" ]; then
-    touchstone_install_skills "$TOUCHSTONE_ROOT" || true
-    touchstone_uninstall_legacy_project_skills "$PROJECT_DIR" || true
+    touchstone_install_skills "$TOUCHSTONE_ROOT" || rc=1
   fi
-  touchstone_install_hooks "$PROJECT_DIR" || true
+  touchstone_install_hooks "$PROJECT_DIR" || rc=1
+  # Status is propagated, not swallowed: the ambient auto-sync wrapper reports
+  # a failed repair only if it can see one, and an ungated project must not
+  # look like a successful no-op (PR #787 review, override round).
+  return "$rc"
 }
 
 if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
   echo "==> Already up to date."
-  reconcile_external_state
+  reconcile_external_state || exit 1
   exit 0
 fi
 
 if managed_content_is_current; then
   echo "==> Already up to date."
   echo "    Stamp identity differs ($OLD_SHA vs $CURRENT_SHA), but every managed file matches; nothing to update."
-  reconcile_external_state
+  reconcile_external_state || exit 1
   exit 0
 fi
 
@@ -1171,12 +1182,20 @@ echo "      diff $TOUCHSTONE_ROOT/templates/touchstone-review.toml ./.touchstone
 # Positive GitHub evidence for the update branch's PR state, shared by both
 # ship paths so identical real states never classify differently.
 current_update_pr_state() {
-  local pr_json pr_state pr_head local_head
+  local pr_json pr_state pr_head pr_base local_head
   command -v gh >/dev/null 2>&1 || return 0
-  pr_json="$(cd "$PROJECT_DIR" && gh pr view "$UPDATE_BRANCH" --json state,headRefOid 2>/dev/null || true)"
+  pr_json="$(cd "$PROJECT_DIR" && gh pr view "$UPDATE_BRANCH" --json state,headRefOid,baseRefName 2>/dev/null || true)"
   pr_state="$(printf '%s\n' "$pr_json" | sed -nE 's/.*"state"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -1)"
   pr_head="$(printf '%s\n' "$pr_json" | sed -nE 's/.*"headRefOid"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -1)"
+  pr_base="$(printf '%s\n' "$pr_json" | sed -nE 's/.*"baseRefName"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -1)"
   [ -n "$pr_state" ] || return 0
+  # An existing PR on this branch may target a stacked or otherwise
+  # non-default base. Accepting it as evidence for THIS update would point
+  # the suggested retry at that PR and merge the update into the wrong
+  # branch (PR #787 review, override round).
+  if [ -n "$pr_base" ] && [ -n "${ORIGINAL_BRANCH:-}" ] && [ "$pr_base" != "$ORIGINAL_BRANCH" ]; then
+    return 0
+  fi
   # The update-branch name is deterministic, so another clone or an earlier
   # run can leave an OPEN PR pointing at a DIFFERENT head. Claiming this
   # update is armed on that evidence reports someone else's PR as ours
