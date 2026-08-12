@@ -11,7 +11,6 @@ principles/pre-implementation-checklist.md
 principles/README.md
 scripts/branch-guard.sh
 scripts/emergency-disclosure.sh
-scripts/cortex-pr-merged-hook.sh
 scripts/touchstone-run.sh
 scripts/open-pr.sh
 scripts/merge-pr.sh

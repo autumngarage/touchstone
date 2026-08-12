@@ -27,7 +27,6 @@ touchstone_sync_planned_write_paths() {
     printf 'principles/\n'
     printf 'scripts/branch-guard.sh\n'
     printf 'scripts/emergency-disclosure.sh\n'
-    printf 'scripts/cortex-pr-merged-hook.sh\n'
     printf 'scripts/touchstone-run.sh\n'
     printf 'scripts/open-pr.sh\n'
     printf 'scripts/merge-pr.sh\n'
@@ -44,7 +43,13 @@ touchstone_sync_planned_write_paths() {
     printf 'lib/sha256.sh\n'
     printf 'lib/preflight.sh\n'
     printf 'lib/preflight-scope.sh\n'
+
+    # Retired managed files that remove_retired_managed_file deletes during
+    # update. They must stay in the planned write set: the rollback snapshot
+    # is taken from this list, so a deletion outside it could not be undone
+    # by a failed update's restore.
     printf 'lib/review-comment.sh\n'
+    printf 'scripts/cortex-pr-merged-hook.sh\n'
 
     # Legacy project-scoped copies of these Touchstone-owned skills are
     # removed during update now that the bundle installs at user scope. Keep

@@ -837,20 +837,6 @@ checkout_default_ref_for_cleanup() {
     return 1
   fi
 
-  # A failed targeted cortex hook intentionally leaves the sibling default
-  # worktree on its journal recovery branch, so no worktree currently holds
-  # the default branch. Claiming it here would relocate the default checkout
-  # into this feature worktree (and then block this worktree's removal);
-  # detach instead so the sibling resumes its role once recovered.
-  if [ "${CORTEX_HOOK_RECOVERY_ACTIVE:-false}" = true ]; then
-    echo "==> Default-branch worktree is on a journal recovery branch; detaching here instead of claiming $DEFAULT_BRANCH ..."
-    if git checkout --detach "$DEFAULT_BRANCH"; then
-      return 0
-    fi
-    echo "WARNING: Could not detach this worktree at $DEFAULT_BRANCH; leaving local branch '$branch' intact." >&2
-    return 1
-  fi
-
   if git checkout "$DEFAULT_BRANCH"; then
     return 0
   fi
@@ -919,18 +905,6 @@ cleanup_pr_worktree_after_merge() {
 
   current_worktree="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
   default_worktree="$(worktree_path_for_branch "$DEFAULT_BRANCH" | head -n 1)"
-  # During hook recovery the sibling default worktree sits on its journal
-  # recovery branch, so no worktree holds the default branch — but that
-  # sibling still exists and anchors the removal fine. Without this, cleanup
-  # would fall back to the feature worktree itself and refuse, stranding
-  # every clean merged worktree behind a journal hiccup.
-  if { [ -z "$default_worktree" ] || [ ! -d "$default_worktree" ]; } \
-    && [ "${CORTEX_HOOK_RECOVERY_ACTIVE:-false}" = true ] \
-    && [ -n "${CORTEX_HOOK_PROJECT_DIR:-}" ] \
-    && [ -d "$CORTEX_HOOK_PROJECT_DIR" ] \
-    && [ "$CORTEX_HOOK_PROJECT_DIR" != "$pr_worktree" ]; then
-    default_worktree="$CORTEX_HOOK_PROJECT_DIR"
-  fi
   if [ -z "$default_worktree" ] || [ ! -d "$default_worktree" ]; then
     default_worktree="$current_worktree"
   fi
@@ -3160,70 +3134,6 @@ record_squash_merge "$PR_HEAD_BRANCH" "$PR_NUMBER" "$REVIEWED_HEAD_OID" "$SQUASH
 
 # 5. Sync local default branch.
 sync_default_branch_after_merge
-
-# 6. Cortex post-merge hook (T1.9). Fires only when the project meets the
-# activation criteria documented in scripts/cortex-pr-merged-hook.sh.
-# Activation is the hook's job — we always invoke and let it self-gate.
-# The hook may produce a follow-up journal branch/PR; the journal commit
-# is created with --no-verify so it doesn't recurse through this script's
-# review gates. Failures inside the hook surface as visible stderr; we
-# don't fail the overall merge over a journal-write hiccup.
-CORTEX_HOOK_SCRIPT=""
-CORTEX_HOOK_RECOVERY_ACTIVE=false
-for candidate_hook in \
-  "$SCRIPT_DIR/cortex-pr-merged-hook.sh" \
-  "$(git rev-parse --show-toplevel 2>/dev/null)/scripts/cortex-pr-merged-hook.sh"; do
-  if [ -n "$candidate_hook" ] && [ -f "$candidate_hook" ]; then
-    CORTEX_HOOK_SCRIPT="$candidate_hook"
-    break
-  fi
-done
-
-if [ -n "$CORTEX_HOOK_SCRIPT" ]; then
-  # The hook self-gates on its worktree being on the default branch. When
-  # shipping runs from a feature worktree whose sibling holds the default
-  # branch (synced above by sync_default_branch_after_merge), point the hook
-  # at that worktree explicitly so T1.9 journals fire instead of silently
-  # skipping (issue #613). The hook is invoked ONLY when a default-branch
-  # worktree's HEAD IS the squash-merge commit: it journals `--since HEAD~1`
-  # under this PR's number, so an unverified target — sync failed, squash
-  # OID unavailable, worktree already advanced — must skip the invocation
-  # entirely. A cwd fallback is not safe either: when merging from the
-  # default-branch worktree itself with a failed pull, the cwd passes the
-  # hook's branch gate and would journal the stale pre-merge HEAD.
-  CORTEX_HOOK_PROJECT_DIR="$(worktree_path_for_branch "$DEFAULT_BRANCH" | head -n 1)"
-  if [ -n "$SQUASH_COMMIT_OID" ] \
-    && [ -d "$CORTEX_HOOK_PROJECT_DIR" ] \
-    && [ "$(git -C "$CORTEX_HOOK_PROJECT_DIR" rev-parse HEAD 2>/dev/null)" = "$SQUASH_COMMIT_OID" ]; then
-    hook_status=0
-    TOUCHSTONE_MERGED_PR="$PR_NUMBER" \
-      TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR="$CORTEX_HOOK_PROJECT_DIR" \
-      bash "$CORTEX_HOOK_SCRIPT" || hook_status=$?
-    if [ "$hook_status" -ne 0 ]; then
-      echo "WARNING: cortex-pr-merged-hook exited $hook_status (see above)." >&2
-      echo "         The PR merged cleanly; only the auto-draft journal step had a problem." >&2
-      # A failed hook intentionally leaves its target worktree on the journal
-      # recovery branch. Cleanup below must not claim the default branch in
-      # this worktree while the sibling is mid-recovery.
-      if [ "$CORTEX_HOOK_PROJECT_DIR" != "$(git rev-parse --show-toplevel 2>/dev/null)" ]; then
-        CORTEX_HOOK_RECOVERY_ACTIVE=true
-      fi
-    fi
-  else
-    echo "WARNING: skipping cortex-pr-merged-hook: no default-branch worktree is at the exact merge commit ${SQUASH_COMMIT_OID:-<unknown>}." >&2
-    echo "         Sync the default branch, then journal manually if needed:" >&2
-    if [ -n "$CORTEX_HOOK_PROJECT_DIR" ] && [ -d "$CORTEX_HOOK_PROJECT_DIR" ]; then
-      # Anchor everything to the SURVIVING default-branch worktree: the
-      # command is typically run after this script finishes, and the feature
-      # worktree it started from may already be cleaned up — a relative
-      # scripts/ path would be gone, and a bare invocation from elsewhere
-      # would silently fail the hook's branch gate.
-      echo "         TOUCHSTONE_MERGED_PR=$PR_NUMBER TOUCHSTONE_CORTEX_HOOK_PROJECT_DIR=\"$CORTEX_HOOK_PROJECT_DIR\" bash \"$CORTEX_HOOK_PROJECT_DIR/scripts/cortex-pr-merged-hook.sh\"" >&2
-    else
-      echo "         (from the synced default-branch worktree) TOUCHSTONE_MERGED_PR=$PR_NUMBER bash scripts/cortex-pr-merged-hook.sh" >&2
-    fi
-  fi
-fi
 
 cleanup_local_pr_branch_after_merge
 cleanup_pr_worktree_after_merge

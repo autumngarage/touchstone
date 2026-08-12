@@ -104,7 +104,6 @@ new_touchstone_self_repo() {
       test-agent-steering-contract \
       test-bootstrap \
       test-claim-issue \
-      test-cortex-pr-merged-hook \
       test-dogfood \
       test-merge-pr \
       test-open-pr-cleanup-worktree \
@@ -970,7 +969,7 @@ assert_log_contains "$LOG" '^self:test-update.sh$'
 assert_log_not_contains "$LOG" '^self:test-other.sh$'
 echo "==> PASS: open-PR helper includes its discovered update integration consumer"
 
-echo "==> Test: Touchstone merge helper runs merge and post-merge hook consumers"
+echo "==> Test: Touchstone merge helper runs merge and update consumers"
 REPO="$TEST_DIR/repo-touchstone-merge-helper"
 LOG="$TEST_DIR/touchstone-merge-helper.log"
 OUT="$TEST_DIR/touchstone-merge-helper.out"
@@ -983,11 +982,13 @@ new_touchstone_self_repo "$REPO"
 )
 : >"$LOG"
 run_preflight "$REPO" "$OUT" "$LOG"
-assert_log_contains "$LOG" '^self:test-cortex-pr-merged-hook.sh$'
 assert_log_contains "$LOG" '^self:test-merge-pr.sh$'
 assert_log_contains "$LOG" '^self:test-update.sh$'
+# Journal hook retired (issue #730): the merge-helper mapping must not
+# select the removed hook test.
+assert_log_not_contains "$LOG" '^self:test-cortex-pr-merged-hook.sh$'
 assert_log_not_contains "$LOG" '^self:test-other.sh$'
-echo "==> PASS: merge helper runs merge, hook, and update integration consumers"
+echo "==> PASS: merge helper runs merge and update integration consumers"
 
 echo "==> Test: Touchstone unknown diffs keep full self-test fallback"
 REPO="$TEST_DIR/repo-touchstone-full-fallback"

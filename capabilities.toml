@@ -60,10 +60,6 @@ why = "Blocks a commit whose target worktree is on the default branch, at the to
 job = "constrain"
 why = "Refuses an unaudited protected push and appends the audit record before authorizing the documented emergency path."
 
-["hooks/cortex-pr-merged-hook.sh"]
-job = "legible"
-why = "Drafts the Cortex journal entry on merge so what shipped is recorded outside the agent's narration."
-
 # ------------------------------------------------------------------ libraries
 
 ["lib/preflight.sh"]
@@ -208,8 +204,3 @@ why = "Installed copy of the branch guard that Touchstone runs against itself."
 job = "mirror"
 mirrors = "hooks/emergency-disclosure.sh"
 why = "Installed copy of the disclosure guard that Touchstone runs against itself."
-
-["scripts/cortex-pr-merged-hook.sh"]
-job = "mirror"
-mirrors = "hooks/cortex-pr-merged-hook.sh"
-why = "Installed copy of the journal hook that Touchstone runs against itself."
