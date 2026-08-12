@@ -398,9 +398,11 @@ if [ "$ISSUE_TRACKER" != "github" ]; then
     echo "       GitHub acts on these references whatever the project declares, so merging" >&2
     echo "       would close GitHub issues this project does not track:" >&2
     printf '%s\n' "$foreign_refs" | sed 's/^/         /' >&2
-    echo "       Remedy: rewrite each one in $ISSUE_TRACKER syntax — for example:" >&2
+    echo "       Remedy: rewrite each one in $ISSUE_TRACKER syntax, in the PR BODY — for example:" >&2
     echo "         $(issue_tracker_closing_example)" >&2
-    echo "       in the commit body and in the PR body, then re-run." >&2
+    echo "       The PR body is the only place a $ISSUE_TRACKER reference is read from; Touchstone" >&2
+    echo "       injects nothing for $ISSUE_TRACKER, so a reference left in a commit message" >&2
+    echo "       reconciles nothing. Then re-run." >&2
     echo "       Deliberate cross-tracker close? Add [skip-claim-check] to the PR body as a" >&2
     echo "       documented bypass." >&2
     exit 1

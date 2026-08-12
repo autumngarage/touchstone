@@ -390,10 +390,95 @@ verify_pr_merged() {
   return 1
 }
 
+# GitHub auto-closes issues from two channels, and a project whose issues live
+# elsewhere must be refused on both. The claim preflight below owns the PR
+# BODY. This owns the COMMIT MESSAGES, which `gh pr merge --squash` carries
+# into the default branch when no explicit merge body is supplied — dropping
+# the PR-body injection alone would leave that channel live under a green
+# preflight (#743 review).
+#
+# It runs from run_issue_claim_preflight, the one helper both the new-PR and
+# the existing-PR path call, because scanning only where a PR is CREATED left
+# the update path unguarded: a later push could add `Fixes #50` to a commit on
+# a Linear project and merge behind an unchanged, still-passing PR body (#743
+# review round 3). One scan, both entry points.
+#
+# The arguments are the claim check's own, and they name where the documented
+# [skip-claim-check] bypass would be written: --body-file <file> for a PR body
+# about to be created, --pr-number <n> for one already on GitHub. Both honor
+# the same token, so it means one thing wherever it appears.
+#
+# find_issue_closing_refs is defined further down; both are called only from
+# the main flow, which runs after every definition in this file.
+enforce_tracker_commit_trailers() {
+  local label="$1"
+  shift
+  local body_file="" pr_number="" bypass_body="" bypass_source=""
+  local wrong_tracker_refs="" wrong_tracker_ref=""
+
+  # A GitHub project keeps GitHub's grammar: it closes the issues it tracks.
+  [ "$ISSUE_TRACKER" != "github" ] || return 0
+
+  echo "==> Checking commit messages for GitHub closing references ($label) ..."
+  wrong_tracker_refs="$(find_issue_closing_refs "$BASE_BRANCH")"
+  [ -n "$wrong_tracker_refs" ] || return 0
+
+  while [ "$#" -gt 1 ]; do
+    case "$1" in
+      --body-file) body_file="$2" ;;
+      --pr-number) pr_number="$2" ;;
+    esac
+    shift
+  done
+
+  if [ -n "$body_file" ] && [ -f "$body_file" ]; then
+    bypass_source="the PR body about to be created"
+    bypass_body="$(cat "$body_file")"
+  elif [ -n "$pr_number" ]; then
+    bypass_source="PR #$pr_number's body"
+    # Fail closed on an unreadable body: the bypass is what PERMITS the merge,
+    # so "could not tell" must not read as "bypassed".
+    if ! bypass_body="$(gh pr view "$pr_number" --json body --jq '.body // ""')"; then
+      echo "ERROR: could not read PR #$pr_number's body to check for the [skip-claim-check] bypass." >&2
+      echo "       This branch's commit messages close GitHub issues and this project's issues" >&2
+      echo "       live in $ISSUE_TRACKER, so the bypass is the only thing that would allow it." >&2
+      exit 1
+    fi
+  fi
+
+  if [ -n "$bypass_body" ] && grep -Eqi '\[skip-claim-check\]' <<<"$bypass_body"; then
+    echo "    [skip-claim-check] found in $bypass_source; the GitHub closing references in this"
+    echo "    branch's commit messages are a documented cross-tracker close, not a mistake."
+    return 0
+  fi
+
+  echo "ERROR: commits on this branch close GitHub issues, but this project's issues live in $ISSUE_TRACKER." >&2
+  echo "       GitHub acts on closing references in the squash commit message whatever this" >&2
+  echo "       project declares, so merging would close GitHub issues it does not track:" >&2
+  while IFS= read -r wrong_tracker_ref; do
+    [ -n "$wrong_tracker_ref" ] || continue
+    echo "         #$wrong_tracker_ref" >&2
+  done <<<"$wrong_tracker_refs"
+  echo "       Remedy: take the GitHub closing syntax out of those commit messages" >&2
+  echo "       (git commit --amend, or git rebase -i for older commits), and write the" >&2
+  echo "       closing reference into the PR BODY in $ISSUE_TRACKER syntax — for example:" >&2
+  echo "         $(issue_tracker_closing_example)" >&2
+  echo "       Touchstone injects nothing for $ISSUE_TRACKER: a reference left in a commit" >&2
+  echo "       message never reaches the PR body, so it reconciles nothing." >&2
+  echo "       Deliberate cross-tracker close? Add [skip-claim-check] to the PR body as a" >&2
+  echo "       documented bypass." >&2
+  exit 1
+}
+
 run_issue_claim_preflight() {
   local label="$1"
   local rc=0
   shift
+
+  # Ahead of the missing-helper guard below: refusing another tracker's
+  # closing references in this branch's commit messages needs no helper, and
+  # must not become optional when one is absent.
+  enforce_tracker_commit_trailers "$label" "$@"
 
   if [ ! -f "$ISSUE_CLAIM_CHECK_SCRIPT" ]; then
     echo "ERROR: issue-claim-check.sh not found at $ISSUE_CLAIM_CHECK_SCRIPT." >&2
@@ -1486,6 +1571,20 @@ if [ -n "$DRAFT_FLAG" ] && [ "$AUTO_MERGE" = true ]; then
   exit 1
 fi
 
+# Which tracker holds this project's issues decides whether GitHub closing
+# syntax may be injected at all, and whether this branch's commit messages
+# carrying it are a refusal. Project root first, working directory second —
+# the same precedence scripts/issue-claim-check.sh uses, so the two scripts
+# never read different declarations for one PR.
+#
+# Loaded here, ahead of the push and of BOTH the new-PR and existing-PR paths:
+# every consumer below is on one side or the other of that split, and a
+# declaration this Touchstone cannot honor must stop the run before a head is
+# published rather than after (#743 review round 3).
+if ! issue_tracker_load "$SCRIPT_DIR/.." "$PWD"; then
+  exit 2
+fi
+
 # Discover an existing PR before selecting trusted review-request policy. An
 # existing stacked PR keeps its GitHub base even when a later invocation omits
 # --base, so the repository default is not necessarily its authorization
@@ -1878,14 +1977,6 @@ fi
 
 COMMIT_BODY="$(git log -1 --format=%b)"
 
-# Which tracker holds this project's issues decides whether GitHub closing
-# syntax may be injected at all. Project root first, working directory second
-# — the same precedence scripts/issue-claim-check.sh uses, so the two scripts
-# never read different declarations for one PR.
-if ! issue_tracker_load "$SCRIPT_DIR/.." "$PWD"; then
-  exit 2
-fi
-
 # `Closes #N` is GitHub's grammar and GitHub acts on it whatever this project
 # declares. Injecting it into the PR body of a project whose issues live
 # elsewhere would close an unrelated GitHub issue on merge (#743 review), so
@@ -1969,32 +2060,6 @@ BODY_FILE="$(mktemp -t touchstone-pr-body.XXXXXX.md)"
     fi
   fi
 } >"$BODY_FILE"
-
-# GitHub auto-closes issues from two channels, and a project whose issues live
-# elsewhere must be refused on both. The claim preflight below owns the PR
-# BODY. This owns the COMMIT MESSAGES, which `gh pr merge --squash` carries
-# into the default branch when no explicit merge body is supplied — dropping
-# the injection alone would leave that channel live under a green preflight
-# (#743 review). Both honor the same documented [skip-claim-check] bypass, and
-# this one reads it from the composed body so the token means one thing.
-if [ "$ISSUE_TRACKER" != "github" ] && ! grep -Eqi '\[skip-claim-check\]' "$BODY_FILE"; then
-  WRONG_TRACKER_REFS="$(find_issue_closing_refs "$BASE_BRANCH")"
-  if [ -n "$WRONG_TRACKER_REFS" ]; then
-    echo "ERROR: commits on this branch close GitHub issues, but this project's issues live in $ISSUE_TRACKER." >&2
-    echo "       GitHub acts on closing references in the squash commit message whatever this" >&2
-    echo "       project declares, so merging would close GitHub issues it does not track:" >&2
-    while IFS= read -r wrong_tracker_ref; do
-      [ -n "$wrong_tracker_ref" ] || continue
-      echo "         #$wrong_tracker_ref" >&2
-    done <<<"$WRONG_TRACKER_REFS"
-    echo "       Remedy: rewrite each one in $ISSUE_TRACKER syntax — for example:" >&2
-    echo "         $(issue_tracker_closing_example)" >&2
-    echo "       in the commit body (git commit --amend, or git rebase -i for older commits)." >&2
-    echo "       Deliberate cross-tracker close? Add [skip-claim-check] to the PR body as a" >&2
-    echo "       documented bypass." >&2
-    exit 1
-  fi
-fi
 
 run_issue_claim_preflight "new PR body" --body-file "$BODY_FILE"
 

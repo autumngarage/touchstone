@@ -74,6 +74,28 @@ echo "==> the tracker declaration is discoverable from the files a project owns"
 assert_contains "$TOUCHSTONE_ROOT/templates/touchstone-review.toml" '# tracker = "linear"'
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'Which tracker holds the issues'
 
+echo "==> the bundled git-workflow skill gives the same per-tracker instruction"
+# skills/ is installed USER-scoped by lib/install-skills.sh, so this file
+# auto-applies in every project on the machine, Linear-tracked ones included.
+# An unconditional `Closes-issue: #123` there steers the agent straight into
+# the wrong-tracker path open-pr.sh now refuses — a blocked delivery, or a
+# bypass (#743 review round 3). The steering and the skill must agree.
+SKILL_MD="$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md"
+assert_contains "$SKILL_MD" '[issues].tracker'
+assert_contains "$SKILL_MD" 'Fixes CON-123'
+assert_contains "$SKILL_MD" 'claim-issue.sh <ref>'
+assert_not_contains "$SKILL_MD" '**Issue-closing trailers.**'
+
+echo "==> the routing doc does not present a Linear commit trailer as sufficient"
+# Touchstone has no Linear transport and injects nothing for it, so a `Fixes
+# CON-123` trailer in a commit message reaches no PR body and reconciles
+# nothing. Documenting it as the Linear equivalent of `Closes-issue: #123`
+# manufactures a reconciliation that never happens (#743 review round 3).
+GIT_WORKFLOW_MD="$TOUCHSTONE_ROOT/principles/git-workflow.md"
+assert_contains "$GIT_WORKFLOW_MD" '**Issue-closing trailers (GitHub only).**'
+assert_not_contains "$GIT_WORKFLOW_MD" 'under Linear, `Fixes CON-123`'
+assert_contains "$GIT_WORKFLOW_MD" 'Put the closing reference in the **PR body** yourself'
+
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"
 # CLAUDE.md uses @TOUCHSTONE.md (Claude Code resolves @-imports transitively),
 # so the contract phrases are inlined into agent context via TOUCHSTONE.md

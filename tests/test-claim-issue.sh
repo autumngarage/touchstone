@@ -3,7 +3,7 @@
 # tests/test-claim-issue.sh — deterministic unit tests for claim-issue.sh.
 #
 # Cases 1-7 exercise the GitHub adapter against the repository's own checkout.
-# Cases 8-13 exercise which adapter runs at all: the [issues] declaration is
+# Cases 8-15 exercise which adapter runs at all: the [issues] declaration is
 # read from the script's own project root, so those cases need a fixture tree
 # whose declaration can change between them (#743).
 #
@@ -359,6 +359,52 @@ else
   assert_file_contains "$OUT" "key_prefix applies to the linear tracker only"
 fi
 
+echo "==> Case 14: a lowercase Linear key is canonicalized, not refused"
+# `con-42` is the same issue as `CON-42`: lowercase keys are what branch names
+# and copied references look like, and scripts/issue-claim-check.sh already
+# extracts closing references case-insensitively. Validating the raw input
+# before canonicalizing refused here exactly what the claim checker accepts
+# there (#743 review round 3).
+reset_case
+write_fixture_config '[issues]
+tracker = "linear"
+key_prefix = "CON"'
+OUT="$TEST_DIR/case14.out"
+if run_fixture_claim "$OUT" con-42; then
+  fail "case 14 expected exit 3"
+else
+  rc=$?
+  assert_eq "case 14 rc" "3" "$rc"
+  assert_file_contains "$OUT" "Assign CON-42 to yourself"
+  assert_file_contains "$OUT" "Fixes CON-42"
+  assert_no_gh_calls "case 14: the linear claim path must not invoke gh at all"
+fi
+
+echo "==> Case 15: a malformed [issues] header fails closed, it does not mean GitHub"
+# The header below never closes, so lib/toml.sh ignores it, the tracker key
+# lands in the empty section, and the callback drops it. Returning success
+# with the GitHub default here would let one missing bracket retrack a Linear
+# project — closing-reference injection included (#743 review round 3). A
+# policy that cannot be read is not a policy that says "github".
+reset_case
+write_fixture_config '[issues
+tracker = "linear"
+key_prefix = "CON"'
+OUT="$TEST_DIR/case15.out"
+if run_fixture_claim "$OUT" CON-42; then
+  fail "case 15 expected exit 2"
+else
+  rc=$?
+  assert_eq "case 15 rc" "2" "$rc"
+  assert_file_contains "$OUT" "unclosed section header at"
+  assert_file_contains "$OUT" "will not read that as a GitHub project"
+  # Exit 2 alone would be satisfied by the bug: a silently-GitHub project
+  # refuses `CON-42` as the wrong reference shape, with the same status and a
+  # message that blames the caller for the file's typo.
+  assert_file_not_contains "$OUT" "is not a github issue reference"
+  assert_no_gh_calls "case 15: an unreadable declaration must fail before any transport runs"
+fi
+
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
   echo "==> FAIL: $ERRORS case(s) failed"
@@ -366,4 +412,4 @@ if [ "$ERRORS" -gt 0 ]; then
 fi
 
 echo ""
-echo "==> PASS: claim-issue.sh behaves correctly across 13 cases"
+echo "==> PASS: claim-issue.sh behaves correctly across 15 cases"

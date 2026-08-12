@@ -61,7 +61,15 @@ case "$1 $2" in
     issue_number="${api_path##*/}"
     if [[ "$api_path" == */pulls/* ]]; then
       case "$jq_expr" in
-        '.body // ""') cat "$FAKE_PR_BODY_FILE" ;;
+        '.body // ""')
+          # An open PR with no body is the ordinary case; only the cases that
+          # assert on a body set FAKE_PR_BODY_FILE.
+          if [ -n "${FAKE_PR_BODY_FILE:-}" ]; then
+            cat "$FAKE_PR_BODY_FILE"
+          else
+            echo ""
+          fi
+          ;;
         '.user.login // empty') echo "alice" ;;
         '[.base.ref, .base.sha] | @tsv')
           printf 'main\t%s\n' "$(git rev-parse main)"
@@ -113,7 +121,14 @@ case "$1 $2" in
     esac
     ;;
   "pr list")
-    echo ""
+    # Default: no PR for this branch, so every case takes the create path.
+    # GH_HAS_EXISTING_PR=1 routes a case through the update path instead.
+    if [ "${GH_HAS_EXISTING_PR:-0}" = "1" ]; then
+      printf 'https://example.test/touchstone/pull/4242\tmain\t%s\tfalse\tfalse\n' \
+        "$(git rev-parse HEAD)"
+    else
+      echo ""
+    fi
     ;;
   "pr create")
     prev=""
@@ -138,6 +153,14 @@ case "$1 $2" in
     done
     case "$json_fields" in
       headRefOid) git rev-parse HEAD ;;
+      isDraft) echo false ;;
+      body)
+        if [ -n "${FAKE_PR_BODY_FILE:-}" ]; then
+          cat "$FAKE_PR_BODY_FILE"
+        else
+          echo ""
+        fi
+        ;;
       state,mergedAt) printf '{"state":"MERGED","mergedAt":"2026-07-29T00:00:02Z"}\n' ;;
       *) echo "unexpected gh pr view args: $*" >&2; exit 1 ;;
     esac
@@ -814,6 +837,79 @@ if [ "$RC" = "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: expected the bypass to ship a body free of injected GitHub closing syntax" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 23: a wrong-tracker commit trailer blocks an UPDATE to an open PR"
+# Regression for the #743 review, round 3. Scanning commit messages only where
+# a PR is CREATED left the update path unguarded: the existing-PR branch runs
+# the body checker and exits before the create path is ever reached, so a
+# later push could add `Closes-issue: #50` to a commit while the unchanged PR
+# body still passed, and the squash merge would close GitHub #50 anyway. The
+# scan now runs from run_issue_claim_preflight, which BOTH paths call.
+make_case_branch feat/linear-existing-pr-trailer "Closes-issue: #50"
+OUT="$TEST_DIR/linear-existing-pr-trailer.out"
+RC=0
+: >"$TEST_DIR/gh-calls.log"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+    GH_HAS_EXISTING_PR=1 \
+    bash "$SCRIPT_DIR/open-pr.sh"
+) >"$OUT" 2>&1 || RC=$?
+
+# The first two assertions are what makes this a test of the UPDATE path and
+# not a second copy of Case 21: open-pr announced the already-open PR, and the
+# scan ran under the existing-PR label. `pr create` never being called is the
+# third: nothing here went through the create path.
+if [ "$RC" != "0" ] \
+  && grep -q '^==> PR already open for feat/linear-existing-pr-trailer' "$OUT" \
+  && grep -q '^==> Checking commit messages for GitHub closing references (existing PR #4242) \.\.\.$' "$OUT" \
+  && grep -q "commits on this branch close GitHub issues, but this project's issues live in linear" "$OUT" \
+  && grep -q '^         #50$' "$OUT" \
+  && ! grep -q '^pr create' "$TEST_DIR/gh-calls.log" \
+  && ! grep -q 'statuses/' "$TEST_DIR/gh-calls.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected an existing-PR update to be refused before the review request" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 24: the open PR's own body carries the bypass for that update"
+# The bypass has to be readable where it is actually written. On the update
+# path the PR body lives on GitHub, not in the commit that carries the
+# reference — here the commit message has no token at all and the open PR's
+# body has it, which is the only combination that proves the fetch happened.
+PR_BODY_WITH_TOKEN="$TEST_DIR/existing-pr-body-bypass.md"
+printf 'Deliberate cross-tracker close.\n\n[skip-claim-check]\n' >"$PR_BODY_WITH_TOKEN"
+make_case_branch feat/linear-existing-pr-bypass "Closes-issue: #50"
+OUT="$TEST_DIR/linear-existing-pr-bypass.out"
+RC=0
+: >"$TEST_DIR/gh-calls.log"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+    GH_HAS_EXISTING_PR=1 \
+    FAKE_PR_BODY_FILE="$PR_BODY_WITH_TOKEN" \
+    bash "$SCRIPT_DIR/open-pr.sh"
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q '^==> PR already open for feat/linear-existing-pr-bypass' "$OUT" \
+  && grep -q "\[skip-claim-check\] found in PR #4242's body" "$OUT" \
+  && ! grep -q "commits on this branch close GitHub issues" "$OUT" \
+  && ! grep -q '^pr create' "$TEST_DIR/gh-calls.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected the open PR's body to supply the documented bypass" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   cat "$TEST_DIR/gh-calls.log" >&2
