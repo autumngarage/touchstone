@@ -127,6 +127,14 @@ else
   CURRENT_LABEL="$CURRENT_SHA"
 fi
 
+# Project type steers per-profile managed files. Read early: the staleness
+# probe and the copy pass below both depend on it.
+PROJECT_TYPE="generic"
+if [ -f "$PROJECT_DIR/.touchstone-config" ]; then
+  PROJECT_TYPE="$(grep '^project_type=' "$PROJECT_DIR/.touchstone-config" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)"
+  PROJECT_TYPE="${PROJECT_TYPE:-generic}"
+fi
+
 echo "==> Updating project: $PROJECT_DIR"
 echo "    Touchstone: $OLD_SHA -> $CURRENT_SHA"
 
@@ -165,8 +173,318 @@ if [ -n "$RETIRED_REVIEW_SHIM_ENTRIES" ]; then
   fi
 fi
 
+# Single source of truth for touchstone-owned file copies: src<TAB>dst lines
+# consumed by both the copy pass and the content-staleness probe, so the two
+# can never disagree about what "managed" means.
+managed_file_pairs() {
+  local f
+
+  # Principles
+  if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
+    for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
+      printf '%s\t%s\n' "$f" "$PROJECT_DIR/principles/$(basename "$f")"
+    done
+  fi
+
+  # TOUCHSTONE.md — canonical lean-router steering doc, imported by CLAUDE.md
+  # (@TOUCHSTONE.md) and inlined into AGENTS.md/GEMINI.md by touchstone_block_apply.
+  if [ -f "$TOUCHSTONE_ROOT/TOUCHSTONE.md" ]; then
+    printf '%s\t%s\n' "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$PROJECT_DIR/TOUCHSTONE.md"
+  fi
+
+  # Required deterministic backstop for the issue-claim workflow. General CI
+  # validate.yml remains opt-in and project-owned; this workflow is part of the
+  # documented Touchstone delivery contract.
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/templates/ci/issue-claim-check.yml" "$PROJECT_DIR/.github/workflows/issue-claim-check.yml"
+
+  # Scripts
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" "$PROJECT_DIR/scripts/branch-guard.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/hooks/emergency-disclosure.sh" "$PROJECT_DIR/scripts/emergency-disclosure.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_DIR/scripts/touchstone-run.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/scripts/claim-issue.sh" "$PROJECT_DIR/scripts/claim-issue.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/scripts/respond-review.sh" "$PROJECT_DIR/scripts/respond-review.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$PROJECT_DIR/scripts/issue-claim-check.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/scripts/spawn-worktree.sh" "$PROJECT_DIR/scripts/spawn-worktree.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/scripts/cleanup-worktrees.sh" "$PROJECT_DIR/scripts/cleanup-worktrees.sh"
+
+  # Libraries used by touchstone-owned scripts.
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/lib/events.sh" "$PROJECT_DIR/lib/events.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/lib/codex-auth.sh" "$PROJECT_DIR/lib/codex-auth.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/lib/script-sync-guard.sh" "$PROJECT_DIR/lib/script-sync-guard.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/lib/sha256.sh" "$PROJECT_DIR/lib/sha256.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PROJECT_DIR/lib/preflight.sh"
+  printf '%s\t%s\n' "$TOUCHSTONE_ROOT/lib/preflight-scope.sh" "$PROJECT_DIR/lib/preflight-scope.sh"
+
+  if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
+    printf '%s\t%s\n' "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
+  fi
+}
+
+# Would touchstone_block_apply change this steering file? Runs the exact
+# writer against a throwaway copy so probe and writer can never diverge.
+# Fail closed: anything the writer would refuse (orphaned sentinel, symlink)
+# reads as stale so the real update surfaces the error loudly.
+steering_block_is_current() {
+  local target="$1" tmp status=0
+
+  [ -e "$target" ] || return 0
+  [ -L "$target" ] && return 1
+  [ -f "$target" ] || return 1
+
+  tmp="$(mktemp -t touchstone-block-probe.XXXXXX)"
+  cp "$target" "$tmp"
+  touchstone_block_apply "$tmp" "$TOUCHSTONE_ROOT" >/dev/null 2>&1 || status=$?
+  if [ "$status" -eq 0 ] && cmp -s "$tmp" "$target"; then
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+# #773: .touchstone-version is derived state. A source-checkout sync stamps a
+# git SHA while a brew install compares its release semver, so the identities
+# can disagree over a byte-identical tree — and the stale-guard then blocks
+# every PR while `touchstone update` reports nothing to update. Staleness is
+# decided by the content the update would actually write, never by the stamp
+# alone. Fail closed: any missing, differing, or unrefreshable managed
+# artifact keeps the tree stale.
+# One enumeration serves the writer AND the content probe: a manifest that
+# omits entries the writer would emit is stale content — doctor validates
+# only listed paths, so an incomplete ledger hides files from it
+# (PR #780 review).
+touchstone_manifest_entries() {
+  local f
+  printf '# Managed by touchstone. These paths may be updated by `touchstone update`.\n'
+  printf '.touchstone-manifest\n'
+  printf '.touchstone-version\n'
+  printf 'TOUCHSTONE.md\n'
+  printf '.github/workflows/issue-claim-check.yml\n'
+  if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
+    for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
+      printf 'principles/%s\n' "$(basename "$f")"
+    done
+  fi
+  printf 'scripts/branch-guard.sh\n'
+  printf 'scripts/emergency-disclosure.sh\n'
+  printf 'scripts/touchstone-run.sh\n'
+  printf 'scripts/open-pr.sh\n'
+  printf 'scripts/merge-pr.sh\n'
+  printf 'scripts/claim-issue.sh\n'
+  printf 'scripts/respond-review.sh\n'
+  printf 'scripts/issue-claim-check.sh\n'
+  printf 'scripts/cleanup-branches.sh\n'
+  printf 'scripts/spawn-worktree.sh\n'
+  printf 'scripts/cleanup-worktrees.sh\n'
+  printf 'lib/toml.sh\n'
+  printf 'lib/events.sh\n'
+  printf 'lib/codex-auth.sh\n'
+  printf 'lib/script-sync-guard.sh\n'
+  printf 'lib/sha256.sh\n'
+  printf 'lib/preflight.sh\n'
+  printf 'lib/preflight-scope.sh\n'
+  if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
+    printf 'scripts/run-pytest-in-venv.sh\n'
+  fi
+  printf '.claude/settings.json\n'
+  # Touchstone-bundled skills are user-scoped (~/.claude/skills); the update
+  # ships nothing into <project>/.claude/skills, so the ledger must not
+  # claim those paths. The old enumeration here manifested files the copy
+  # pass never wrote — phantom entries every downstream manifest carried
+  # since the user-scope migration (surfaced by PR #780's ledger probe).
+}
+
+# Index equality is decided by OBJECT IDs, never `git diff --quiet`: the
+# assume-unchanged and skip-worktree bits mark an index entry "not changing",
+# so diff-based checks report clean while the indexed blob — the bytes a
+# clean clone actually receives — differs from the working tree. Hashing the
+# working-tree file with the path's attribute filters applied compares the
+# same conversion `git add` would perform (PR #780 review, round 3 P2).
+index_blob_matches_worktree() {
+  local rel="$1"
+  local index_blob worktree_blob
+  index_blob="$(git -C "$PROJECT_DIR" rev-parse --verify --quiet ":$rel")" || return 1
+  worktree_blob="$(git -C "$PROJECT_DIR" hash-object --path="$rel" -- "$PROJECT_DIR/$rel" 2>/dev/null)" || return 1
+  [ "$index_blob" = "$worktree_blob" ]
+}
+
+# One soundness predicate for every managed path the content probe accepts:
+# not a symlink (the writer would replace it), safe destination (no symlinked
+# ancestors — the writer would refuse), tracked in the index (clean clones
+# would miss it), and index blob identical to the working tree (a stale
+# staged blob would commit stale content right past a green probe). The
+# probe's per-file byte comparison means nothing without these
+# (PR #780 review, rounds 1-2).
+managed_path_is_sound() {
+  local rel="$1"
+  local dst="$PROJECT_DIR/$rel"
+  [ ! -L "$dst" ] || return 1
+  touchstone_ensure_safe_dest "$dst" "$PROJECT_DIR" true >/dev/null 2>&1 || return 1
+  git -C "$PROJECT_DIR" ls-files --error-unmatch "$rel" >/dev/null 2>&1 || return 1
+  index_blob_matches_worktree "$rel" || return 1
+  # Blob OIDs deliberately omit the mode: an executable working file over a
+  # 100644 stage entry hashes identically, and a clean clone would receive a
+  # non-executable script (PR #780 review). The stage mode must carry the
+  # same executable bit the working tree has.
+  local stage_mode
+  stage_mode="$(git -C "$PROJECT_DIR" ls-files --stage -- "$rel" | awk '{print $1; exit}')"
+  if [ -x "$dst" ]; then
+    [ "$stage_mode" = "100755" ] || return 1
+  else
+    [ "$stage_mode" != "100755" ] || return 1
+  fi
+}
+
+# Steering files may legitimately live untracked or gitignored
+# (stage_refreshed_steering_file supports exactly that), so their soundness
+# drops the tracking requirement: never a symlink, safe destination, and —
+# only when tracked — index blob equal to the working tree
+# (PR #780 review, override round).
+steering_path_is_sound() {
+  local rel="$1"
+  local dst="$PROJECT_DIR/$rel"
+  [ ! -L "$dst" ] || return 1
+  touchstone_ensure_safe_dest "$dst" "$PROJECT_DIR" true >/dev/null 2>&1 || return 1
+  if git -C "$PROJECT_DIR" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
+    index_blob_matches_worktree "$rel" || return 1
+  fi
+}
+
+# An add-if-missing template slot counts as occupied when ANY directory
+# entry exists there — regular file, symlink to a file, dangling symlink, or
+# directory. Occupied means project-owned and hands-off for both the writer
+# (add_project_template_if_missing) and the content probe; `-f` alone
+# follows symlinks and made the two disagree (PR #780 review, round 3 P2).
+project_template_slot_occupied() {
+  [ -e "$1" ] || [ -L "$1" ]
+}
+
+managed_content_is_current() {
+  local src dst skill_name
+
+  # The manifest must be a rewritable regular file; let the real update
+  # surface anything else as a loud failure.
+  [ -f "$PROJECT_DIR/.touchstone-manifest" ] || return 1
+  [ -r "$PROJECT_DIR/.touchstone-manifest" ] || return 1
+  managed_path_is_sound ".touchstone-manifest" || return 1
+  # The stamp's VALUE differs by definition in the identity-mismatch case;
+  # its soundness (tracked, unsymlinked, index==worktree) must not — an
+  # untracked marker leaves clean clones unable to recognize a bootstrapped
+  # project (PR #780 review, override round).
+  managed_path_is_sound ".touchstone-version" || return 1
+
+  # A retirement the update would still apply is a pending change.
+  local manifest_entries
+  manifest_entries="$(tr -d '\r' <"$PROJECT_DIR/.touchstone-manifest" 2>/dev/null)" || return 1
+  if grep -qxF "lib/review-comment.sh" <<<"$manifest_entries" \
+    && [ -e "$PROJECT_DIR/lib/review-comment.sh" ]; then
+    return 1
+  fi
+
+  # The ledger itself must match what the writer would emit today.
+  if ! diff -q <(touchstone_manifest_entries) <(printf '%s\n' "$manifest_entries") >/dev/null 2>&1; then
+    return 1
+  fi
+
+  while IFS=$'\t' read -r src dst; do
+    managed_path_is_sound "${dst#"$PROJECT_DIR"/}" || return 1
+    [ -f "$dst" ] || return 1
+    cmp -s "$src" "$dst" || return 1
+    case "$dst" in
+      "$PROJECT_DIR"/scripts/*.sh)
+        # The update chmods managed scripts; a missing execute bit is a change.
+        [ -x "$dst" ] || return 1
+        ;;
+    esac
+  done < <(managed_file_pairs)
+
+  if [ -f "$TOUCHSTONE_ROOT/templates/claude-settings.json" ]; then
+    managed_path_is_sound ".claude/settings.json" || return 1
+    cmp -s "$TOUCHSTONE_ROOT/templates/claude-settings.json" "$PROJECT_DIR/.claude/settings.json" || return 1
+  fi
+
+  # Project-owned templates the update would ADD when missing (their content
+  # is never compared: present means project-owned, hands off). Presence is
+  # ANY directory entry — regular file, symlink (even dangling), directory —
+  # matching project_template_slot_occupied exactly: `-f` follows symlinks,
+  # so a symlinked config read as "present" here while the writer replaced
+  # it, and a dangling one read as "missing" while the writer skips it —
+  # probe and writer must never disagree (PR #780 review, round 3 P2).
+  if [ -f "$TOUCHSTONE_ROOT/templates/.markdownlint.json" ] \
+    && ! project_template_slot_occupied "$PROJECT_DIR/.markdownlint.json"; then
+    return 1
+  fi
+  if [ "$PROJECT_TYPE" = "swift" ] \
+    && [ -f "$TOUCHSTONE_ROOT/templates/swift/.swiftlint.yml" ] \
+    && ! project_template_slot_occupied "$PROJECT_DIR/.swiftlint.yml"; then
+    return 1
+  fi
+  if [ -f "$TOUCHSTONE_ROOT/templates/GEMINI.md" ] \
+    && ! project_template_slot_occupied "$PROJECT_DIR/GEMINI.md"; then
+    return 1
+  fi
+
+  # Legacy project-scoped skill copies the update would remove.
+  if [ -d "$TOUCHSTONE_ROOT/skills" ] && [ -d "$PROJECT_DIR/.claude/skills" ]; then
+    for skill_name in "${_TOUCHSTONE_BUNDLED_SKILL_NAMES[@]}"; do
+      if [ -d "$PROJECT_DIR/.claude/skills/$skill_name" ]; then
+        return 1
+      fi
+    done
+  fi
+
+  # Both steering files are backfill-exempt here: a Gemini-only project
+  # omits AGENTS.md by design, and soundness applies only to files that
+  # exist — an unconditional check would recreate the stamp-only update
+  # loop for those projects (PR #780 review, round 3).
+  # An occupied non-file slot (e.g. a GEMINI.md directory) is project-owned:
+  # the template writer and the block writer both leave it untouched, so the
+  # probe must agree or every check loops a stamp-only update
+  # (PR #780 review). Only regular files get soundness + block probing.
+  if [ -e "$PROJECT_DIR/AGENTS.md" ] && [ ! -f "$PROJECT_DIR/AGENTS.md" ] && [ ! -L "$PROJECT_DIR/AGENTS.md" ]; then
+    :
+  else
+    if [ -f "$PROJECT_DIR/AGENTS.md" ]; then
+      steering_path_is_sound "AGENTS.md" || return 1
+    fi
+    steering_block_is_current "$PROJECT_DIR/AGENTS.md" || return 1
+  fi
+  if [ -e "$PROJECT_DIR/GEMINI.md" ] && [ ! -f "$PROJECT_DIR/GEMINI.md" ] && [ ! -L "$PROJECT_DIR/GEMINI.md" ]; then
+    :
+  else
+    if [ -f "$PROJECT_DIR/GEMINI.md" ]; then
+      steering_path_is_sound "GEMINI.md" || return 1
+    fi
+    steering_block_is_current "$PROJECT_DIR/GEMINI.md" || return 1
+  fi
+
+  return 0
+}
+
 if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
   echo "==> Already up to date."
+  exit 0
+fi
+
+if managed_content_is_current; then
+  echo "==> Already up to date."
+  echo "    Stamp identity differs ($OLD_SHA vs $CURRENT_SHA), but every managed file matches; nothing to update."
+  # User-scoped skills and git hooks live OUTSIDE the project tree, so the
+  # content probe says nothing about them — the identity-mismatch path used
+  # to reach their reconciliation and this early exit must too, or a deleted
+  # skills bundle / missing hook silently stays broken behind "up to date"
+  # (PR #780 review). --check stays read-only.
+  if [ "$CHECK_ONLY" != true ] && [ "$DRY_RUN" = false ]; then
+    if [ -d "$TOUCHSTONE_ROOT/skills" ]; then
+      touchstone_install_skills "$TOUCHSTONE_ROOT" || true
+      touchstone_uninstall_legacy_project_skills "$PROJECT_DIR" || true
+    fi
+    touchstone_install_hooks "$PROJECT_DIR" || true
+  fi
   exit 0
 fi
 
@@ -193,6 +511,215 @@ unique_branch_name() {
   done
 
   printf '%s' "$candidate"
+}
+
+# The single remote whose metadata may name the default branch: 'origin'
+# when it exists, else the ONLY remote. A repo tracking a differently named
+# remote (e.g. 'upstream') HAS authoritative metadata, so treating "no
+# origin" as "remoteless" and guessing from local branch names could bless
+# the checked-out branch and fork its commits into the update PR; several
+# remotes with none named origin is ambiguous and fails closed
+# (PR #780 review, round 3 P1).
+authoritative_remote() {
+  local remotes
+  remotes="$(git -C "$PROJECT_DIR" remote 2>/dev/null || true)"
+  [ -n "$remotes" ] || return 1
+  if grep -qxF "origin" <<<"$remotes"; then
+    printf 'origin\n'
+    return 0
+  fi
+  if [ "$(printf '%s\n' "$remotes" | grep -c .)" -eq 1 ]; then
+    printf '%s\n' "$remotes"
+    return 0
+  fi
+  return 1
+}
+
+# gh's positional <repository> accepts HOST/OWNER/REPO — but handing it the
+# raw git remote URL makes gh treat an SSH host ALIAS (git@github-work:o/r)
+# as the API hostname and query https://github-work/..., so the live lookup
+# always fails and the authority silently degrades to the cached ref
+# (PR #780 review, round 3 P1). Parse the remote ourselves and canonicalize
+# ssh hosts through `ssh -G`, whose effective `hostname` is the host ssh
+# would actually connect to; http(s)/git hosts are already canonical.
+# Unparseable remotes (local paths, exotic schemes) return nonzero: no gh
+# query, cached-ref fallback.
+remote_repo_selector() {
+  local url="$1"
+  local rest host path is_ssh=false resolved
+
+  case "$url" in
+    ssh://*)
+      is_ssh=true
+      rest="${url#ssh://}"
+      rest="${rest#*@}"
+      host="${rest%%/*}"
+      path="${rest#*/}"
+      [ "$host" != "$rest" ] || return 1
+      host="${host%%:*}"
+      ;;
+    http://* | https://* | git://*)
+      rest="${url#*://}"
+      rest="${rest#*@}"
+      host="${rest%%/*}"
+      path="${rest#*/}"
+      [ "$host" != "$rest" ] || return 1
+      host="${host%%:*}"
+      ;;
+    *://* | /* | ./* | ../*)
+      return 1
+      ;;
+    *:*)
+      # scp-like [user@]host:owner/repo — a '/' before the ':' is a local
+      # path, not a host.
+      is_ssh=true
+      rest="${url#*@}"
+      host="${rest%%:*}"
+      path="${rest#*:}"
+      case "$host" in */* | "") return 1 ;; esac
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  path="${path#/}"
+  path="${path%/}"
+  path="${path%.git}"
+  [ -n "$host" ] && [ -n "$path" ] || return 1
+  case "$path" in
+    */*) ;;
+    *) return 1 ;;
+  esac
+
+  if [ "$is_ssh" = true ] && command -v ssh >/dev/null 2>&1; then
+    resolved="$(ssh -G "$host" 2>/dev/null | awk '$1 == "hostname" { print $2; exit }' || true)"
+    [ -n "$resolved" ] && host="$resolved"
+  fi
+
+  printf '%s/%s\n' "$host" "$path"
+}
+
+resolve_default_branch() {
+  local default_branch="" remote="" remote_url="" selector=""
+
+  remote="$(authoritative_remote)" || remote=""
+
+  # The LIVE remote answer outranks the cached symbolic ref: after a
+  # default-branch rename, refs/remotes/<remote>/HEAD keeps pointing at the
+  # former default until someone runs git remote set-head, and trusting the
+  # cache would authorize an update from the renamed-away branch
+  # (PR #780 review, round 2 P1). The cache is the fallback for offline/gh-
+  # less runs — best local knowledge, with the refusal below still guarding
+  # any checkout that does not match it.
+  if [ -n "$remote" ] && command -v gh >/dev/null 2>&1; then
+    remote_url="$(git -C "$PROJECT_DIR" remote get-url "$remote" 2>/dev/null || true)"
+    # Pinned via an explicit positional selector: an argument-less gh repo
+    # view honors the GH_REPO environment override, which could point the
+    # default-branch authority at an arbitrary repository whose default
+    # matches the local feature branch (PR #780 review, override round P1).
+    if [ -n "$remote_url" ] && selector="$(remote_repo_selector "$remote_url")"; then
+      default_branch="$(gh repo view "$selector" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
+    fi
+  fi
+  if [ -z "$default_branch" ] && [ -n "$remote" ]; then
+    default_branch="$(git -C "$PROJECT_DIR" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)"
+    default_branch="${default_branch#"$remote"/}"
+  fi
+  # init.defaultBranch is deliberately NOT consulted: it names the preferred
+  # branch for NEWLY initialized repos, not this repo's default — a feature
+  # branch bearing that name would be accepted and the fork would carry its
+  # commits, recreating the exact #772 contamination (PR #780 review, P1).
+  # Without authoritative remote metadata, only a repo with NO remotes AT
+  # ALL gets a local heuristic, and only when it is unambiguous.
+  if [ -z "$default_branch" ] \
+    && [ -z "$(git -C "$PROJECT_DIR" remote 2>/dev/null || true)" ]; then
+    local has_main=false has_master=false
+    git -C "$PROJECT_DIR" show-ref --verify --quiet refs/heads/main && has_main=true
+    git -C "$PROJECT_DIR" show-ref --verify --quiet refs/heads/master && has_master=true
+    if [ "$has_main" = true ] && [ "$has_master" = false ]; then
+      default_branch="main"
+    elif [ "$has_master" = true ] && [ "$has_main" = false ]; then
+      default_branch="master"
+    fi
+  fi
+
+  printf '%s\n' "$default_branch"
+}
+
+# #772: a chore/touchstone-* update branch forks from HEAD, so on any checkout
+# that is not the default branch the fork carries that branch's commits into
+# the update PR (arpeggio#35 auto-merged a feature branch's four commits under
+# a version-bump title; convoy#234 was closed for the same carry-in). Require
+# the default branch and refuse otherwise — never switch the user's worktree.
+require_default_branch_checkout() {
+  local default_branch auth_remote="" remote_ref=""
+  default_branch="$(resolve_default_branch)"
+  auth_remote="$(authoritative_remote)" || auth_remote=""
+
+  if [ -z "$default_branch" ]; then
+    echo "ERROR: could not resolve the default branch for $PROJECT_DIR; refusing to branch from HEAD." >&2
+    if [ -n "$auth_remote" ]; then
+      echo "       Fix: git remote set-head $auth_remote --auto" >&2
+    elif [ -n "$(git -C "$PROJECT_DIR" remote 2>/dev/null || true)" ]; then
+      echo "       Several remotes and none named 'origin': touchstone cannot pick the authority." >&2
+      echo "       Fix: git remote rename <primary-remote> origin" >&2
+    else
+      echo "       No remote and no unambiguous local main/master branch." >&2
+    fi
+    echo "       Then rerun: touchstone update" >&2
+    echo "       To update the current branch in place instead: touchstone update --in-place" >&2
+    touchstone_sync_log_skip "$PROJECT_DIR" "$OLD_SHA" "$CURRENT_SHA" "no-default-branch" "" "touchstone update"
+    exit 1
+  fi
+
+  if [ "$ORIGINAL_BRANCH" != "$default_branch" ]; then
+    echo "ERROR: refusing to create an update branch from '$ORIGINAL_BRANCH' (default branch: $default_branch)." >&2
+    echo "       A chore/touchstone-* branch forked here would carry this branch's commits into the update PR." >&2
+    echo "       Fix: git checkout $default_branch && git pull --rebase" >&2
+    echo "       Then rerun: touchstone update" >&2
+    echo "       To update the current branch in place instead: touchstone update --in-place" >&2
+    touchstone_sync_log_skip "$PROJECT_DIR" "$OLD_SHA" "$CURRENT_SHA" "off-default-branch" "" "touchstone update"
+    exit 1
+  fi
+
+  # Name equality is not history equality: a local default branch carrying
+  # unpushed commits (an accidental commit on main, divergence after a
+  # remote force-push) would fork those commits into the update PR despite
+  # the name check above (PR #780 review, round 3 P1). Refresh only the
+  # remote-tracking ref — the cached copy may be stale, and the user's local
+  # branch is never touched (same pattern as open-pr.sh's review-policy
+  # fetch) — then require HEAD to introduce nothing beyond it.
+  if [ -n "$auth_remote" ]; then
+    remote_ref="refs/remotes/$auth_remote/$default_branch"
+    # A failed fetch fails CLOSED even when a cached tracking ref exists:
+    # the cache can predate a remote force-push, and trusting it would
+    # carry commits the authoritative branch no longer has
+    # (PR #780 review). The ancestor check below only means anything
+    # against a ref refreshed THIS run.
+    if ! git -C "$PROJECT_DIR" fetch --quiet --no-tags "$auth_remote" \
+      "+refs/heads/$default_branch:$remote_ref" >/dev/null 2>&1 \
+      || ! git -C "$PROJECT_DIR" rev-parse --verify --quiet "$remote_ref^{commit}" >/dev/null; then
+      echo "ERROR: cannot verify local '$default_branch' against $auth_remote; refusing to branch from HEAD." >&2
+      echo "       The fetch failed and no $remote_ref exists locally, so unpushed local commits" >&2
+      echo "       could ride into the update PR undetected." >&2
+      echo "       Fix: git fetch $auth_remote $default_branch" >&2
+      echo "       Then rerun: touchstone update" >&2
+      echo "       To update the current branch in place instead: touchstone update --in-place" >&2
+      touchstone_sync_log_skip "$PROJECT_DIR" "$OLD_SHA" "$CURRENT_SHA" "default-branch-unverifiable" "" "touchstone update"
+      exit 1
+    fi
+    if ! git -C "$PROJECT_DIR" merge-base --is-ancestor HEAD "$remote_ref" 2>/dev/null; then
+      echo "ERROR: local '$default_branch' has commits that $auth_remote/$default_branch does not; refusing to branch from HEAD." >&2
+      echo "       A chore/touchstone-* branch forked here would carry those commits into the update PR." >&2
+      echo "       Fix: git push $auth_remote $default_branch   (if they are meant to ship)" >&2
+      echo "       Or move them aside: git branch <slug> && git reset --hard $auth_remote/$default_branch" >&2
+      echo "       Then rerun: touchstone update" >&2
+      echo "       To update the current branch in place instead: touchstone update --in-place" >&2
+      touchstone_sync_log_skip "$PROJECT_DIR" "$OLD_SHA" "$CURRENT_SHA" "default-branch-ahead-of-remote" "" "touchstone update"
+      exit 1
+    fi
+  fi
 }
 
 relative_project_path() {
@@ -381,6 +908,8 @@ if [ "$DRY_RUN" = false ]; then
     ROLLBACK_STARTED=true
     echo "==> Applying update on current branch: $UPDATE_BRANCH"
   else
+    require_default_branch_checkout
+
     if [ -n "$REQUESTED_BRANCH" ]; then
       UPDATE_BRANCH="$REQUESTED_BRANCH"
       if git -C "$PROJECT_DIR" show-ref --verify --quiet "refs/heads/$UPDATE_BRANCH"; then
@@ -541,59 +1070,15 @@ remove_retired_managed_file "scripts/cortex-pr-merged-hook.sh"
 # release removes. One notice, the project owner decides.
 report_retired_worker_files
 
-# Principles
-if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
-  if [ "$DRY_RUN" = false ]; then
-    mkdir -p "$PROJECT_DIR/principles"
-  fi
-  for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
-    update_file "$f" "$PROJECT_DIR/principles/$(basename "$f")"
-  done
+if [ -d "$TOUCHSTONE_ROOT/principles" ] && [ "$DRY_RUN" = false ]; then
+  mkdir -p "$PROJECT_DIR/principles"
 fi
 
-# TOUCHSTONE.md — canonical lean-router steering doc, imported by CLAUDE.md
-# (@TOUCHSTONE.md) and inlined into AGENTS.md/GEMINI.md by touchstone_block_apply.
-if [ -f "$TOUCHSTONE_ROOT/TOUCHSTONE.md" ]; then
-  update_file "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$PROJECT_DIR/TOUCHSTONE.md"
-fi
-
-# Required deterministic backstop for the issue-claim workflow. General CI
-# validate.yml remains opt-in and project-owned; this workflow is part of the
-# documented Touchstone delivery contract.
-update_file "$TOUCHSTONE_ROOT/templates/ci/issue-claim-check.yml" "$PROJECT_DIR/.github/workflows/issue-claim-check.yml"
-
-# Read project type (default: generic for backward compatibility).
-PROJECT_TYPE="generic"
-if [ -f "$PROJECT_DIR/.touchstone-config" ]; then
-  PROJECT_TYPE="$(grep '^project_type=' "$PROJECT_DIR/.touchstone-config" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)"
-  PROJECT_TYPE="${PROJECT_TYPE:-generic}"
-fi
-
-# Scripts
-update_file "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" "$PROJECT_DIR/scripts/branch-guard.sh"
-update_file "$TOUCHSTONE_ROOT/hooks/emergency-disclosure.sh" "$PROJECT_DIR/scripts/emergency-disclosure.sh"
-update_file "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_DIR/scripts/touchstone-run.sh"
-update_file "$TOUCHSTONE_ROOT/scripts/open-pr.sh" "$PROJECT_DIR/scripts/open-pr.sh"
-update_file "$TOUCHSTONE_ROOT/scripts/merge-pr.sh" "$PROJECT_DIR/scripts/merge-pr.sh"
-update_file "$TOUCHSTONE_ROOT/scripts/claim-issue.sh" "$PROJECT_DIR/scripts/claim-issue.sh"
-update_file "$TOUCHSTONE_ROOT/scripts/respond-review.sh" "$PROJECT_DIR/scripts/respond-review.sh"
-update_file "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$PROJECT_DIR/scripts/issue-claim-check.sh"
-update_file "$TOUCHSTONE_ROOT/scripts/cleanup-branches.sh" "$PROJECT_DIR/scripts/cleanup-branches.sh"
-update_file "$TOUCHSTONE_ROOT/scripts/spawn-worktree.sh" "$PROJECT_DIR/scripts/spawn-worktree.sh"
-update_file "$TOUCHSTONE_ROOT/scripts/cleanup-worktrees.sh" "$PROJECT_DIR/scripts/cleanup-worktrees.sh"
-
-# Libraries used by touchstone-owned scripts.
-update_file "$TOUCHSTONE_ROOT/lib/toml.sh" "$PROJECT_DIR/lib/toml.sh"
-update_file "$TOUCHSTONE_ROOT/lib/events.sh" "$PROJECT_DIR/lib/events.sh"
-update_file "$TOUCHSTONE_ROOT/lib/codex-auth.sh" "$PROJECT_DIR/lib/codex-auth.sh"
-update_file "$TOUCHSTONE_ROOT/lib/script-sync-guard.sh" "$PROJECT_DIR/lib/script-sync-guard.sh"
-update_file "$TOUCHSTONE_ROOT/lib/sha256.sh" "$PROJECT_DIR/lib/sha256.sh"
-update_file "$TOUCHSTONE_ROOT/lib/preflight.sh" "$PROJECT_DIR/lib/preflight.sh"
-update_file "$TOUCHSTONE_ROOT/lib/preflight-scope.sh" "$PROJECT_DIR/lib/preflight-scope.sh"
-
-if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
-  update_file "$TOUCHSTONE_ROOT/scripts/run-pytest-in-venv.sh" "$PROJECT_DIR/scripts/run-pytest-in-venv.sh"
-fi
+# The copy pass consumes the same managed_file_pairs enumeration the
+# content-staleness probe compares against, so they cannot drift apart.
+while IFS=$'\t' read -r pair_src pair_dst; do
+  update_file "$pair_src" "$pair_dst"
+done < <(managed_file_pairs)
 
 # Claude Code settings — wires the branch-guard and emergency-disclosure
 # PreToolUse hooks. The settings file is touchstone-owned (overwritten on
@@ -660,15 +1145,19 @@ add_project_template_if_missing() {
   local rel_path
   rel_path="$(relative_project_path "$dst")"
 
-  if ! ensure_safe_dest "$dst"; then
-    SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1))
+  if project_template_slot_occupied "$dst"; then
+    # Hand-edited, already-shipped, or deliberately symlinked — leave alone.
+    # update_file handles touchstone-owned files; this helper exists
+    # precisely so project-owned additions skip when present, even if the
+    # on-disk content differs. Checked BEFORE ensure_safe_dest: that guard
+    # REPLACES a final-component symlink, which would rip out a
+    # project-owned symlinked config the probe correctly reports as present
+    # (PR #780 review, round 3 P2).
     return 0
   fi
 
-  if [ -f "$dst" ]; then
-    # Hand-edited or already-shipped — leave alone. update_file handles
-    # touchstone-owned files; this helper exists precisely so project-owned
-    # additions skip when present, even if the on-disk content differs.
+  if ! ensure_safe_dest "$dst"; then
+    SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1))
     return 0
   fi
 
@@ -759,50 +1248,7 @@ fi
 write_touchstone_manifest() {
   local manifest="$PROJECT_DIR/.touchstone-manifest"
   ensure_safe_dest "$manifest" || true
-  {
-    printf '# Managed by touchstone. These paths may be updated by `touchstone update`.\n'
-    printf '.touchstone-manifest\n'
-    printf '.touchstone-version\n'
-    printf 'TOUCHSTONE.md\n'
-    printf '.github/workflows/issue-claim-check.yml\n'
-    if [ -d "$TOUCHSTONE_ROOT/principles" ]; then
-      for f in "$TOUCHSTONE_ROOT/principles/"*.md; do
-        printf 'principles/%s\n' "$(basename "$f")"
-      done
-    fi
-    printf 'scripts/branch-guard.sh\n'
-    printf 'scripts/emergency-disclosure.sh\n'
-    printf 'scripts/touchstone-run.sh\n'
-    printf 'scripts/open-pr.sh\n'
-    printf 'scripts/merge-pr.sh\n'
-    printf 'scripts/claim-issue.sh\n'
-    printf 'scripts/respond-review.sh\n'
-    printf 'scripts/issue-claim-check.sh\n'
-    printf 'scripts/cleanup-branches.sh\n'
-    printf 'scripts/spawn-worktree.sh\n'
-    printf 'scripts/cleanup-worktrees.sh\n'
-    printf 'lib/toml.sh\n'
-    printf 'lib/events.sh\n'
-    printf 'lib/codex-auth.sh\n'
-    printf 'lib/script-sync-guard.sh\n'
-    printf 'lib/sha256.sh\n'
-    printf 'lib/preflight.sh\n'
-    printf 'lib/preflight-scope.sh\n'
-    if [ "$PROJECT_TYPE" = "python" ] || [ -f "$PROJECT_DIR/scripts/run-pytest-in-venv.sh" ]; then
-      printf 'scripts/run-pytest-in-venv.sh\n'
-    fi
-    printf '.claude/settings.json\n'
-    if [ -d "$TOUCHSTONE_ROOT/.claude/skills" ]; then
-      for skill_dir in "$TOUCHSTONE_ROOT/.claude/skills/"touchstone-*/; do
-        [ -d "$skill_dir" ] || continue
-        skill_name="$(basename "$skill_dir")"
-        for f in "$skill_dir"*; do
-          [ -f "$f" ] || continue
-          printf '.claude/skills/%s/%s\n' "$skill_name" "$(basename "$f")"
-        done
-      done
-    fi
-  } >"$manifest"
+  touchstone_manifest_entries >"$manifest"
 }
 
 stage_touchstone_manifest_paths() {

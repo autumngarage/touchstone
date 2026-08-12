@@ -69,6 +69,18 @@ commit_all() {
   fi
 }
 
+# Fast-forward the base branch over the chore/touchstone-* branch a
+# branch-creating update left checked out. Updates refuse non-default
+# checkouts (#772), so multi-update flows must return to base between runs.
+return_to_base_branch() {
+  local repo="$1"
+  local base="$2"
+  local update_branch
+  update_branch="$(git -C "$repo" branch --show-current)"
+  git -C "$repo" checkout -q "$base"
+  git -C "$repo" merge -q --ff-only "$update_branch"
+}
+
 PROJECT="$TEST_DIR/test-project"
 
 # --------------------------------------------------------------------------
@@ -328,6 +340,8 @@ else
   echo "    PASS: project-owned script mode was preserved"
 fi
 
+return_to_base_branch "$PROJECT" "$BASE_BRANCH"
+
 # --------------------------------------------------------------------------
 # Test 2b: --in-place updates the current feature branch without creating a
 # chore/touchstone-* branch. This is the explicit escape hatch for drivers that
@@ -401,9 +415,12 @@ echo "--- Step 3b2: Retired worker files are reported, never deleted ---"
 RETIRED_WORKER_PROJECT="$TEST_DIR/retired-worker-project"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$RETIRED_WORKER_PROJECT" --no-register >/dev/null
 configure_git "$RETIRED_WORKER_PROJECT"
-# A project still carrying the engine Touchstone retired in 2.13.0.
+# A project still carrying the engine Touchstone retired in 2.13.0. Managed
+# content must be genuinely stale: a stamp-only difference no longer triggers
+# an update (#773).
 printf '#!/usr/bin/env bash\necho worker\n' >"$RETIRED_WORKER_PROJECT/scripts/worker.sh"
 chmod +x "$RETIRED_WORKER_PROJECT/scripts/worker.sh"
+printf '# stale managed drift\n' >>"$RETIRED_WORKER_PROJECT/lib/toml.sh"
 echo "0000000000000000000000000000000000000005" >"$RETIRED_WORKER_PROJECT/.touchstone-version"
 commit_all "$RETIRED_WORKER_PROJECT" "simulate project carrying the retired worker engine"
 
@@ -431,6 +448,10 @@ printf '\nlib/\n' >>"$IGNORED_MANAGED_PROJECT/.gitignore"
 git -C "$IGNORED_MANAGED_PROJECT" rm --cached -r lib >/dev/null
 echo "0000000000000000000000000000000000000005" >"$IGNORED_MANAGED_PROJECT/.touchstone-version"
 commit_all "$IGNORED_MANAGED_PROJECT" "simulate repo ignoring Touchstone lib files"
+# Genuine managed drift in the now-ignored lib copy (#773: stamp-only
+# differences no longer trigger an update). Ignored files are invisible to
+# the dirty check, so the update must still overwrite and force-stage this.
+printf '# stale managed drift\n' >>"$IGNORED_MANAGED_PROJECT/lib/preflight.sh"
 
 (cd "$IGNORED_MANAGED_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$TEST_DIR/update-ignored-managed-output.txt" 2>&1
 
@@ -470,6 +491,7 @@ bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SCRIPT_SYNC_PROJECT" --no-reg
 configure_git "$SCRIPT_SYNC_PROJECT"
 commit_all "$SCRIPT_SYNC_PROJECT" "initial script sync test project"
 git -C "$SCRIPT_SYNC_PROJECT" checkout -q -b feature/script-sync-guard
+printf '# stale managed drift\n' >>"$SCRIPT_SYNC_PROJECT/lib/toml.sh"
 echo "0000000000000000000000000000000000000014" >"$SCRIPT_SYNC_PROJECT/.touchstone-version"
 commit_all "$SCRIPT_SYNC_PROJECT" "simulate stale script sync touchstone state"
 
@@ -742,6 +764,9 @@ echo "--- Step 4: Verify project-owned files are untouched ---"
 
 echo "# my project context" >>"$PROJECT/CLAUDE.md"
 printf '{"custom": true}\n' >"$PROJECT/.markdownlint.json"
+# Managed drift so the update actually runs (#773: stamp-only differences no
+# longer trigger one) — the point is that it must not touch project-owned files.
+rm "$PROJECT/scripts/touchstone-run.sh"
 echo "0000000000000000000000000000000000000001" >"$PROJECT/.touchstone-version"
 commit_all "$PROJECT" "simulate project-owned customization"
 CLAUDE_CHECKSUM="$(md5 -q "$PROJECT/CLAUDE.md" 2>/dev/null || md5sum "$PROJECT/CLAUDE.md" | awk '{print $1}')"
@@ -768,6 +793,8 @@ fi
 
 assert_not_exists "$PROJECT/CLAUDE.md.bak"
 
+return_to_base_branch "$PROJECT" "$BASE_BRANCH"
+
 # Existing projects from before Gemini support should receive GEMINI.md once,
 # but the file remains project-owned after that.
 rm -f "$PROJECT/GEMINI.md"
@@ -784,6 +811,8 @@ if ! git -C "$PROJECT" log -1 --name-only --pretty=format: | grep -qx 'GEMINI.md
   echo "FAIL: update commit must include GEMINI.md when adding the project-owned Gemini instructions" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+return_to_base_branch "$PROJECT" "$BASE_BRANCH"
 
 # --------------------------------------------------------------------------
 # An EXISTING GEMINI.md with a stale managed block must be refreshed and
@@ -824,6 +853,8 @@ if ! git -C "$PROJECT" diff --quiet -- GEMINI.md; then
   echo "FAIL: GEMINI.md still has unstaged changes after the update commit" >&2
   ERRORS=$((ERRORS + 1))
 fi
+
+return_to_base_branch "$PROJECT" "$BASE_BRANCH"
 
 # --------------------------------------------------------------------------
 # A pre-existing gitignored, untracked GEMINI.md must NOT be force-staged.
@@ -1228,6 +1259,7 @@ chmod +x "$SHIP_FAIL_BIN/gh"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SHIP_FAIL_PROJECT" --no-register --type generic >/dev/null
 configure_git "$SHIP_FAIL_PROJECT"
 commit_all "$SHIP_FAIL_PROJECT" "initial ship-fail project"
+rm "$SHIP_FAIL_PROJECT/scripts/claim-issue.sh"
 echo "0000000000000000000000000000000000000013" >"$SHIP_FAIL_PROJECT/.touchstone-version"
 commit_all "$SHIP_FAIL_PROJECT" "simulate stale ship-fail state"
 
@@ -1264,6 +1296,7 @@ CHECK_PROJECT="$TEST_DIR/check-project"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$CHECK_PROJECT" --no-register >/dev/null
 configure_git "$CHECK_PROJECT"
 commit_all "$CHECK_PROJECT" "initial check project"
+rm "$CHECK_PROJECT/scripts/claim-issue.sh"
 echo "0000000000000000000000000000000000000003" >"$CHECK_PROJECT/.touchstone-version"
 commit_all "$CHECK_PROJECT" "simulate old check project"
 CHECK_BRANCH="$(git -C "$CHECK_PROJECT" rev-parse --abbrev-ref HEAD)"
@@ -1302,6 +1335,8 @@ exit 0
 EOF
 cp "$SHIP_REFUSAL_PROJECT/.git/hooks/pre-commit" "$SHIP_REFUSAL_PROJECT/.git/hooks/pre-push"
 chmod +x "$SHIP_REFUSAL_PROJECT/.git/hooks/pre-commit" "$SHIP_REFUSAL_PROJECT/.git/hooks/pre-push"
+SHIP_REFUSAL_BRANCH="$(git -C "$SHIP_REFUSAL_PROJECT" branch --show-current)"
+rm "$SHIP_REFUSAL_PROJECT/scripts/claim-issue.sh"
 printf 'stale-version\n' >"$SHIP_REFUSAL_PROJECT/.touchstone-version"
 commit_all "$SHIP_REFUSAL_PROJECT" "force stale version"
 SHIP_REFUSAL_OUT="$TEST_DIR/ship-refusal-output.txt"
@@ -1320,7 +1355,10 @@ assert_not_contains "$SHIP_REFUSAL_OUT" 'Shipping update via scripts/open-pr.sh'
 # flagged on update — the fixed template never reaches existing projects, so
 # the update warning is the migration surface (PR #638 review). A real
 # (non-dry-run) update is required: dry runs and up-to-date projects exit
-# before the hook section runs.
+# before the hook section runs. The refused --ship above left the checkout on
+# its chore/touchstone-* branch; return to the default branch first (#772),
+# where scripts/claim-issue.sh is still missing, keeping content stale.
+git -C "$SHIP_REFUSAL_PROJECT" checkout -q "$SHIP_REFUSAL_BRANCH"
 printf '#!/usr/bin/env bash\ngit config --unset-all core.hooksPath 2>/dev/null || true\n' \
   >"$SHIP_REFUSAL_PROJECT/setup.sh"
 printf 'stale-version-2\n' >"$SHIP_REFUSAL_PROJECT/.touchstone-version"
@@ -1329,6 +1367,557 @@ LEGACY_SETUP_OUT="$TEST_DIR/legacy-setup-output.txt"
 (cd "$SHIP_REFUSAL_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$LEGACY_SETUP_OUT" 2>&1 || true
 assert_contains "$LEGACY_SETUP_OUT" 'legacy core.hooksPath reset'
+
+# --------------------------------------------------------------------------
+# #772: a branch-creating update must fork from the default branch. On a
+# feature-branch checkout it refuses with the exact remedy instead of carrying
+# the feature's commits into the chore PR (arpeggio#35, convoy#234).
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 8: update refuses to branch from a non-default checkout (#772) ---"
+
+OFFDEFAULT_PROJECT="$TEST_DIR/off-default-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$OFFDEFAULT_PROJECT" --no-register >/dev/null
+configure_git "$OFFDEFAULT_PROJECT"
+commit_all "$OFFDEFAULT_PROJECT" "initial off-default project"
+OFFDEFAULT_BASE="$(git -C "$OFFDEFAULT_PROJECT" branch --show-current)"
+# Genuine staleness on the default branch, inherited by the feature branch.
+rm "$OFFDEFAULT_PROJECT/scripts/claim-issue.sh"
+echo "0000000000000000000000000000000000000017" >"$OFFDEFAULT_PROJECT/.touchstone-version"
+commit_all "$OFFDEFAULT_PROJECT" "simulate stale state on default branch"
+git -C "$OFFDEFAULT_PROJECT" checkout -q -b feature/in-flight
+printf 'feature work\n' >"$OFFDEFAULT_PROJECT/feature.txt"
+commit_all "$OFFDEFAULT_PROJECT" "feature commit that must not ship in a chore PR"
+OFFDEFAULT_FEATURE_HEAD="$(git -C "$OFFDEFAULT_PROJECT" rev-parse HEAD)"
+
+OFFDEFAULT_RC=0
+(cd "$OFFDEFAULT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/off-default-output.txt" 2>&1 || OFFDEFAULT_RC=$?
+
+if [ "$OFFDEFAULT_RC" = "0" ]; then
+  echo "FAIL: update must refuse to create a chore/touchstone-* branch from a feature-branch checkout (#772)" >&2
+  cat "$TEST_DIR/off-default-output.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/off-default-output.txt" "git checkout $OFFDEFAULT_BASE && git pull --rebase"
+if git -C "$OFFDEFAULT_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
+  echo "FAIL: refused off-default update still created a chore/touchstone-* branch" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ "$(git -C "$OFFDEFAULT_PROJECT" branch --show-current)" != "feature/in-flight" ]; then
+  echo "FAIL: refused off-default update moved the checkout off the feature branch" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ "$(git -C "$OFFDEFAULT_PROJECT" rev-parse HEAD)" != "$OFFDEFAULT_FEATURE_HEAD" ]; then
+  echo "FAIL: refused off-default update changed the feature branch head" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# Same project from the default branch: the update proceeds, forks from the
+# default-branch head, and never contains the feature commit.
+git -C "$OFFDEFAULT_PROJECT" checkout -q "$OFFDEFAULT_BASE"
+OFFDEFAULT_BASE_HEAD="$(git -C "$OFFDEFAULT_PROJECT" rev-parse HEAD)"
+(cd "$OFFDEFAULT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/off-default-ok-output.txt" 2>&1
+assert_contains "$TEST_DIR/off-default-ok-output.txt" 'Creating update branch: chore/touchstone-'
+assert_contains "$TEST_DIR/off-default-ok-output.txt" 'Committed: chore: update touchstone to'
+if [ "$(git -C "$OFFDEFAULT_PROJECT" rev-parse HEAD^)" != "$OFFDEFAULT_BASE_HEAD" ]; then
+  echo "FAIL: default-branch update commit should fork from the default-branch head" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if git -C "$OFFDEFAULT_PROJECT" log --format=%H | grep -q "$OFFDEFAULT_FEATURE_HEAD"; then
+  echo "FAIL: chore update branch contains the feature branch's commit (#772)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
+# #773: the arpeggio state — every managed file byte-identical to the
+# installed touchstone, but the stamp records a different identity (a build
+# SHA). The tree must NOT read as stale: no "Needs update", no update branch,
+# no stale-guard refusal. Genuinely stale content must still be refused.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 9: stamp identity differs but content matches -> not stale (#773) ---"
+
+STAMP_PROJECT="$TEST_DIR/stamp-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$STAMP_PROJECT" --no-register >/dev/null
+configure_git "$STAMP_PROJECT"
+commit_all "$STAMP_PROJECT" "initial stamp project"
+STAMP_BRANCH="$(git -C "$STAMP_PROJECT" branch --show-current)"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$STAMP_PROJECT/.touchstone-version"
+commit_all "$STAMP_PROJECT" "simulate sha-stamped content-identical tree"
+
+(cd "$STAMP_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/stamp-check-output.txt" 2>&1
+assert_contains "$TEST_DIR/stamp-check-output.txt" 'Already up to date'
+assert_not_contains "$TEST_DIR/stamp-check-output.txt" 'Needs update'
+
+(cd "$STAMP_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/stamp-update-output.txt" 2>&1
+assert_contains "$TEST_DIR/stamp-update-output.txt" 'Already up to date'
+if git -C "$STAMP_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
+  echo "FAIL: content-identical tree must not produce an update branch (#773)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ "$(tr -d '[:space:]' <"$STAMP_PROJECT/.touchstone-version")" != "ffffffffffffffffffffffffffffffffffffffff" ]; then
+  echo "FAIL: content-identical tree must not have its stamp rewritten outside a reviewable update" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# The stale-guard path that blocked every arpeggio PR: a workflow script on a
+# feature branch must NOT refuse when only the stamp identity differs.
+# Fork explicitly from the sha-stamped base branch: without this, code that
+# creates an update branch above (the pre-#773 behavior) leaves HEAD on the
+# chore branch with a rewritten stamp, and this sub-case would pass for the
+# wrong reason instead of exercising the identity mismatch.
+git -C "$STAMP_PROJECT" checkout -q "$STAMP_BRANCH"
+git -C "$STAMP_PROJECT" checkout -q -b feature/stamp-work
+STAMP_GUARD_OUT="$TEST_DIR/stamp-guard-output.txt"
+# rc is not discriminating here (merge-pr's usage error and a guard refusal
+# both exit 2); the output assertions below carry the regression.
+(
+  cd "$STAMP_PROJECT"
+  PATH="$SCRIPT_SYNC_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    TOUCHSTONE_BIN="$TOUCHSTONE_ROOT/bin/touchstone" \
+    TOUCHSTONE_SCRIPT_SYNC_FAKE_LOG="$TEST_DIR/stamp-guard.log" \
+    bash scripts/merge-pr.sh not-a-pr
+) >"$STAMP_GUARD_OUT" 2>&1 || true
+
+assert_not_contains "$STAMP_GUARD_OUT" 'project-local workflow files are stale'
+assert_contains "$STAMP_GUARD_OUT" 'Usage: bash scripts/merge-pr.sh <pr-number>'
+
+# Genuinely stale managed content must still read as stale.
+git -C "$STAMP_PROJECT" checkout -q "$STAMP_BRANCH"
+printf '# genuinely stale managed drift\n' >>"$STAMP_PROJECT/lib/toml.sh"
+commit_all "$STAMP_PROJECT" "simulate genuinely stale managed content"
+
+(cd "$STAMP_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/stamp-stale-check-output.txt" 2>&1
+assert_contains "$TEST_DIR/stamp-stale-check-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/stamp-stale-check-output.txt" 'Already up to date'
+
+echo "--- Step 10: probe hardening — default-branch authority, symlinks, ledger, tracking (PR #780 review) ---"
+
+# (a) P1: init.defaultBranch must not be trusted. A remoteless repo whose
+# init.defaultBranch names the checked-out FEATURE branch must still refuse:
+# the authoritative-or-unambiguous rule resolves 'main', not the config.
+P780_PROJECT="$TEST_DIR/p780-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$P780_PROJECT" --no-register >/dev/null
+configure_git "$P780_PROJECT"
+commit_all "$P780_PROJECT" "initial p780 project"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$P780_PROJECT/.touchstone-version"
+commit_all "$P780_PROJECT" "sha stamp so identity differs"
+git -C "$P780_PROJECT" config init.defaultBranch work
+git -C "$P780_PROJECT" checkout -q -b work
+printf 'wip\n' >"$P780_PROJECT/feature-note.txt"
+git -C "$P780_PROJECT" add feature-note.txt
+git -C "$P780_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "feature wip"
+printf '# drift so the update has work\n' >>"$P780_PROJECT/lib/toml.sh"
+git -C "$P780_PROJECT" add lib/toml.sh
+git -C "$P780_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "stale managed content"
+(cd "$P780_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780-initdefault-output.txt" 2>&1 || true
+assert_contains "$TEST_DIR/p780-initdefault-output.txt" "refusing to create an update branch from 'work'"
+if git -C "$P780_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
+  echo "FAIL: init.defaultBranch must not authorize forking from a feature branch (PR #780 P1)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+git -C "$P780_PROJECT" checkout -q main
+
+# (b) A symlinked managed destination is never "current" — the writer would
+# refuse or replace it, so the probe must report Needs update.
+SYML_PROJECT="$TEST_DIR/p780-symlink"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SYML_PROJECT" --no-register >/dev/null
+configure_git "$SYML_PROJECT"
+commit_all "$SYML_PROJECT" "initial symlink project"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$SYML_PROJECT/.touchstone-version"
+mv "$SYML_PROJECT/scripts/open-pr.sh" "$SYML_PROJECT/scripts/open-pr.real.sh"
+ln -s "open-pr.real.sh" "$SYML_PROJECT/scripts/open-pr.sh"
+commit_all "$SYML_PROJECT" "sha stamp + symlinked managed script"
+(cd "$SYML_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780-symlink-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780-symlink-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780-symlink-output.txt" 'Already up to date'
+
+# (c) An outdated ledger is stale content even when every file matches.
+LEDGER_PROJECT="$TEST_DIR/p780-ledger"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$LEDGER_PROJECT" --no-register >/dev/null
+configure_git "$LEDGER_PROJECT"
+commit_all "$LEDGER_PROJECT" "initial ledger project"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$LEDGER_PROJECT/.touchstone-version"
+grep -v '^scripts/open-pr\.sh$' "$LEDGER_PROJECT/.touchstone-manifest" >"$LEDGER_PROJECT/.touchstone-manifest.tmp"
+mv "$LEDGER_PROJECT/.touchstone-manifest.tmp" "$LEDGER_PROJECT/.touchstone-manifest"
+commit_all "$LEDGER_PROJECT" "sha stamp + manifest missing an entry"
+(cd "$LEDGER_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780-ledger-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780-ledger-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780-ledger-output.txt" 'Already up to date'
+
+# (d) Correct bytes but untracked in the index is not current — clean clones
+# would miss the file; the update's force-stage is the heal.
+UNTRACKED_PROJECT="$TEST_DIR/p780-untracked"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$UNTRACKED_PROJECT" --no-register >/dev/null
+configure_git "$UNTRACKED_PROJECT"
+commit_all "$UNTRACKED_PROJECT" "initial untracked project"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$UNTRACKED_PROJECT/.touchstone-version"
+commit_all "$UNTRACKED_PROJECT" "sha stamp"
+# rm --cached stages the removal; a plain commit keeps the file untracked
+# (commit_all would re-add it and defeat the fixture).
+git -C "$UNTRACKED_PROJECT" rm -q --cached scripts/open-pr.sh
+git -C "$UNTRACKED_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "untrack managed script"
+(cd "$UNTRACKED_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780-untracked-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780-untracked-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780-untracked-output.txt" 'Already up to date'
+
+# (e) The content-current early exit still reconciles state OUTSIDE the
+# project tree: a deleted effective hook is reinstalled by a plain update run
+# that changes nothing in the project.
+HOOKS_PROJECT="$TEST_DIR/p780-hooks"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$HOOKS_PROJECT" --no-register >/dev/null
+configure_git "$HOOKS_PROJECT"
+commit_all "$HOOKS_PROJECT" "initial hooks project"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$HOOKS_PROJECT/.touchstone-version"
+commit_all "$HOOKS_PROJECT" "sha stamp only"
+HOOKS_PATH="$(git -C "$HOOKS_PROJECT" config core.hooksPath || echo .git/hooks)"
+rm -f "$HOOKS_PROJECT/$HOOKS_PATH/pre-commit" "$HOOKS_PROJECT/.git/hooks/pre-commit" 2>/dev/null || true
+(cd "$HOOKS_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780-hooks-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780-hooks-output.txt" 'Already up to date'
+if [ ! -f "$HOOKS_PROJECT/$HOOKS_PATH/pre-commit" ] && [ ! -f "$HOOKS_PROJECT/.git/hooks/pre-commit" ]; then
+  echo "FAIL: content-current early exit must still reinstall missing git hooks (PR #780 review)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "--- Step 11: probe soundness for metadata paths and the index blob (PR #780 round 2) ---"
+
+# (a) A symlinked .touchstone-manifest is never current.
+MSYM_PROJECT="$TEST_DIR/p780b-manifest-symlink"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$MSYM_PROJECT" --no-register >/dev/null
+configure_git "$MSYM_PROJECT"
+commit_all "$MSYM_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$MSYM_PROJECT/.touchstone-version"
+mv "$MSYM_PROJECT/.touchstone-manifest" "$MSYM_PROJECT/.touchstone-manifest.real"
+ln -s ".touchstone-manifest.real" "$MSYM_PROJECT/.touchstone-manifest"
+commit_all "$MSYM_PROJECT" "symlinked manifest"
+(cd "$MSYM_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780b-msym-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780b-msym-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780b-msym-output.txt" 'Already up to date'
+
+# (b) An untracked-but-byte-identical .claude/settings.json is not current.
+MTRACK_PROJECT="$TEST_DIR/p780b-settings-untracked"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$MTRACK_PROJECT" --no-register >/dev/null
+configure_git "$MTRACK_PROJECT"
+commit_all "$MTRACK_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$MTRACK_PROJECT/.touchstone-version"
+commit_all "$MTRACK_PROJECT" "sha stamp"
+git -C "$MTRACK_PROJECT" rm -q --cached .claude/settings.json
+git -C "$MTRACK_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "untrack settings"
+(cd "$MTRACK_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780b-mtrack-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780b-mtrack-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780b-mtrack-output.txt" 'Already up to date'
+
+# (c) A stale STAGED blob under clean working-tree bytes is not current —
+# committing after a green probe would commit the stale blob.
+BLOB_PROJECT="$TEST_DIR/p780b-staged-blob"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$BLOB_PROJECT" --no-register >/dev/null
+configure_git "$BLOB_PROJECT"
+commit_all "$BLOB_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$BLOB_PROJECT/.touchstone-version"
+commit_all "$BLOB_PROJECT" "sha stamp"
+cp "$BLOB_PROJECT/lib/toml.sh" "$TEST_DIR/toml-good.sh"
+printf '# stale staged content\n' >>"$BLOB_PROJECT/lib/toml.sh"
+git -C "$BLOB_PROJECT" add lib/toml.sh
+cp "$TEST_DIR/toml-good.sh" "$BLOB_PROJECT/lib/toml.sh"
+(cd "$BLOB_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780b-blob-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780b-blob-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780b-blob-output.txt" 'Already up to date'
+
+# (d) A Gemini-only project (no AGENTS.md, by design never backfilled) with
+# current content must read Already up to date — not loop stamp-only updates.
+NOAGENTS_PROJECT="$TEST_DIR/p780b-no-agents"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$NOAGENTS_PROJECT" --no-register >/dev/null
+configure_git "$NOAGENTS_PROJECT"
+commit_all "$NOAGENTS_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$NOAGENTS_PROJECT/.touchstone-version"
+commit_all "$NOAGENTS_PROJECT" "sha stamp"
+git -C "$NOAGENTS_PROJECT" rm -q AGENTS.md
+git -C "$NOAGENTS_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "gemini-only project"
+(cd "$NOAGENTS_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780b-noagents-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780b-noagents-output.txt" 'Already up to date'
+assert_not_contains "$TEST_DIR/p780b-noagents-output.txt" 'Needs update'
+
+# (e) An untracked .touchstone-version is not current — clean clones could
+# not recognize a bootstrapped project.
+VSTAMP_PROJECT="$TEST_DIR/p780c-version-untracked"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$VSTAMP_PROJECT" --no-register >/dev/null
+configure_git "$VSTAMP_PROJECT"
+commit_all "$VSTAMP_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$VSTAMP_PROJECT/.touchstone-version"
+commit_all "$VSTAMP_PROJECT" "sha stamp"
+git -C "$VSTAMP_PROJECT" rm -q --cached .touchstone-version
+git -C "$VSTAMP_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "untrack stamp"
+(cd "$VSTAMP_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780c-vstamp-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780c-vstamp-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780c-vstamp-output.txt" 'Already up to date'
+
+# (f) An UNTRACKED but block-current AGENTS.md is a supported layout
+# (stage_refreshed_steering_file) — it must still read Already up to date.
+STRACK_PROJECT="$TEST_DIR/p780c-steering-untracked"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$STRACK_PROJECT" --no-register >/dev/null
+configure_git "$STRACK_PROJECT"
+commit_all "$STRACK_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$STRACK_PROJECT/.touchstone-version"
+commit_all "$STRACK_PROJECT" "sha stamp"
+git -C "$STRACK_PROJECT" rm -q --cached AGENTS.md
+git -C "$STRACK_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "untrack steering"
+(cd "$STRACK_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780c-strack-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780c-strack-output.txt" 'Already up to date'
+assert_not_contains "$TEST_DIR/p780c-strack-output.txt" 'Needs update'
+
+# (g) The default-branch authority lookup pins the repository explicitly
+# AND canonicalizes ssh host aliases before querying gh: handing gh the raw
+# ssh remote made it treat the alias as the API host (PR #780 round 3 P1).
+# A PATH-injected fake ssh maps github-work -> github.com, the fake gh
+# records its argv, and the recorded selector must be the canonical
+# HOST/OWNER/REPO — never the raw URL, never the GH_REPO override.
+GHPIN_PROJECT="$TEST_DIR/p780c-ghpin"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GHPIN_PROJECT" --no-register >/dev/null
+configure_git "$GHPIN_PROJECT"
+commit_all "$GHPIN_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$GHPIN_PROJECT/.touchstone-version"
+printf '# drift\n' >>"$GHPIN_PROJECT/lib/toml.sh"
+commit_all "$GHPIN_PROJECT" "stamp + drift so the update reaches the branch guard"
+git -C "$GHPIN_PROJECT" remote add origin "git@github-work:owner/repo.git"
+GHPIN_BASE="$(git -C "$GHPIN_PROJECT" branch --show-current)"
+GHPIN_BIN="$TEST_DIR/p780c-ghpin-bin"
+mkdir -p "$GHPIN_BIN"
+cat >"$GHPIN_BIN/gh" <<'FAKEGH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${GHPIN_LOG:?}"
+echo "${GHPIN_DEFAULT:?}"
+FAKEGH
+chmod +x "$GHPIN_BIN/gh"
+# Fake ssh: answers the alias canonicalization query (-G) the way an ssh
+# config mapping github-work to github.com would; any real connection
+# attempt (git fetch) fails fast so the test stays offline.
+cat >"$GHPIN_BIN/ssh" <<'FAKESSH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-G" ] && [ "${2:-}" = "github-work" ]; then
+  echo "hostname github.com"
+  exit 0
+fi
+exit 255
+FAKESSH
+chmod +x "$GHPIN_BIN/ssh"
+GHPIN_LOG="$TEST_DIR/p780c-ghpin.log"
+: >"$GHPIN_LOG"
+(cd "$GHPIN_PROJECT" && PATH="$GHPIN_BIN:$PATH" GHPIN_LOG="$GHPIN_LOG" \
+  GHPIN_DEFAULT="$GHPIN_BASE" GH_REPO="evil/other-repo" \
+  bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780c-ghpin-output.txt" 2>&1 || true
+if grep -q "repo view github.com/owner/repo " "$GHPIN_LOG"; then
+  echo "    PASS: gh repo view receives the canonical host/owner/repo selector"
+else
+  echo "FAIL: the default-branch lookup must resolve the ssh alias and pass a canonical selector (not the raw URL, not GH_REPO)" >&2
+  cat "$GHPIN_LOG" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_not_contains "$GHPIN_LOG" "github-work"
+# The unreachable remote also exercises the ahead-guard's fail-closed
+# branch: the tracking-ref refresh fails, no cached ref exists, so the
+# update must refuse rather than fork unverifiable local history.
+assert_contains "$TEST_DIR/p780c-ghpin-output.txt" "cannot verify local '$GHPIN_BASE' against origin"
+if git -C "$GHPIN_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
+  echo "FAIL: an unverifiable default branch must not produce an update branch (PR #780 round 3)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "--- Step 12: round-3 hardening — index flags, remote authority, ahead-of-remote, template symlinks (PR #780 round 3) ---"
+
+# (a) P2: skip-worktree must not hide a stale index blob. The indexed bytes
+# are what a clean clone receives; `git diff --quiet` honors the flag and
+# reports clean, so the probe must compare object IDs instead.
+SKIPWT_PROJECT="$TEST_DIR/p780d-skip-worktree"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SKIPWT_PROJECT" --no-register >/dev/null
+configure_git "$SKIPWT_PROJECT"
+commit_all "$SKIPWT_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$SKIPWT_PROJECT/.touchstone-version"
+commit_all "$SKIPWT_PROJECT" "sha stamp"
+cp "$SKIPWT_PROJECT/lib/toml.sh" "$TEST_DIR/p780d-toml-good.sh"
+printf '# stale indexed blob\n' >>"$SKIPWT_PROJECT/lib/toml.sh"
+git -C "$SKIPWT_PROJECT" add lib/toml.sh
+git -C "$SKIPWT_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "stale blob"
+cp "$TEST_DIR/p780d-toml-good.sh" "$SKIPWT_PROJECT/lib/toml.sh"
+git -C "$SKIPWT_PROJECT" update-index --skip-worktree lib/toml.sh
+(cd "$SKIPWT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780d-skipwt-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780d-skipwt-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780d-skipwt-output.txt" 'Already up to date'
+
+# (b) P1: a repo whose only remote is named 'upstream' has authoritative
+# metadata — the absence of 'origin' must not fall back to guessing from
+# local branch names, which would bless the checked-out branch.
+UPONLY_PROJECT="$TEST_DIR/p780d-upstream-only"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$UPONLY_PROJECT" --no-register >/dev/null
+configure_git "$UPONLY_PROJECT"
+commit_all "$UPONLY_PROJECT" "initial"
+UPONLY_BASE="$(git -C "$UPONLY_PROJECT" branch --show-current)"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$UPONLY_PROJECT/.touchstone-version"
+printf '# drift\n' >>"$UPONLY_PROJECT/lib/toml.sh"
+commit_all "$UPONLY_PROJECT" "stamp + drift"
+UPONLY_REMOTE="$TEST_DIR/p780d-upstream.git"
+git init -q --bare "$UPONLY_REMOTE"
+git -C "$UPONLY_REMOTE" symbolic-ref HEAD "refs/heads/$UPONLY_BASE"
+git -C "$UPONLY_PROJECT" remote add upstream "$UPONLY_REMOTE"
+(cd "$UPONLY_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780d-uponly-output.txt" 2>&1 || true
+assert_contains "$TEST_DIR/p780d-uponly-output.txt" 'could not resolve the default branch'
+assert_contains "$TEST_DIR/p780d-uponly-output.txt" 'git remote set-head upstream --auto'
+if git -C "$UPONLY_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
+  echo "FAIL: a local branch-name heuristic must not authorize an update when a remote exists (PR #780 round 3 P1)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+# Positive control: once the remote metadata exists and histories agree,
+# the same non-origin remote authorizes the update.
+git -C "$UPONLY_PROJECT" push --no-verify -q upstream "$UPONLY_BASE"
+git -C "$UPONLY_PROJECT" fetch -q upstream
+git -C "$UPONLY_PROJECT" remote set-head upstream --auto >/dev/null
+(cd "$UPONLY_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780d-uponly-ok-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780d-uponly-ok-output.txt" 'Creating update branch: chore/touchstone-'
+
+# (c) P1: a local default branch AHEAD of the remote default carries
+# unpushed commits into the chore PR — the name check alone must not
+# authorize the fork.
+AHEAD_PROJECT="$TEST_DIR/p780d-ahead"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$AHEAD_PROJECT" --no-register >/dev/null
+configure_git "$AHEAD_PROJECT"
+commit_all "$AHEAD_PROJECT" "initial"
+AHEAD_BASE="$(git -C "$AHEAD_PROJECT" branch --show-current)"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$AHEAD_PROJECT/.touchstone-version"
+commit_all "$AHEAD_PROJECT" "sha stamp"
+AHEAD_REMOTE="$TEST_DIR/p780d-ahead-origin.git"
+git init -q --bare "$AHEAD_REMOTE"
+git -C "$AHEAD_REMOTE" symbolic-ref HEAD "refs/heads/$AHEAD_BASE"
+git -C "$AHEAD_PROJECT" remote add origin "$AHEAD_REMOTE"
+git -C "$AHEAD_PROJECT" push --no-verify -q origin "$AHEAD_BASE"
+git -C "$AHEAD_PROJECT" remote set-head origin --auto >/dev/null
+# The unpushed commit doubles as genuine staleness so the update reaches
+# the branch guard.
+printf '# drift\n' >>"$AHEAD_PROJECT/lib/toml.sh"
+commit_all "$AHEAD_PROJECT" "unpushed local commit on the default branch"
+AHEAD_HEAD="$(git -C "$AHEAD_PROJECT" rev-parse HEAD)"
+(cd "$AHEAD_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780d-ahead-output.txt" 2>&1 || true
+assert_contains "$TEST_DIR/p780d-ahead-output.txt" "local '$AHEAD_BASE' has commits that origin/$AHEAD_BASE does not"
+assert_contains "$TEST_DIR/p780d-ahead-output.txt" "git push origin $AHEAD_BASE"
+if git -C "$AHEAD_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
+  echo "FAIL: an ahead-of-remote default branch must not produce an update branch (PR #780 round 3 P1)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ "$(git -C "$AHEAD_PROJECT" rev-parse HEAD)" != "$AHEAD_HEAD" ]; then
+  echo "FAIL: the ahead-of-remote refusal must not move the local branch" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+# Positive control: pushing the commits clears the divergence and the same
+# run proceeds.
+git -C "$AHEAD_PROJECT" push --no-verify -q origin "$AHEAD_BASE"
+(cd "$AHEAD_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780d-ahead-ok-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780d-ahead-ok-output.txt" 'Creating update branch: chore/touchstone-'
+
+# (d) P2: an add-if-missing template slot occupied by a SYMLINK is
+# project-owned for the probe AND the writer. A dangling symlink reads as
+# occupied (not "Needs update"), and a genuine update must leave a
+# symlinked config untouched instead of replacing it with the template.
+TSYM_PROJECT="$TEST_DIR/p780d-template-symlink"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$TSYM_PROJECT" --no-register >/dev/null
+configure_git "$TSYM_PROJECT"
+commit_all "$TSYM_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$TSYM_PROJECT/.touchstone-version"
+rm "$TSYM_PROJECT/.markdownlint.json"
+ln -s ".markdownlint.custom.json" "$TSYM_PROJECT/.markdownlint.json"
+commit_all "$TSYM_PROJECT" "sha stamp + dangling markdownlint symlink"
+(cd "$TSYM_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780d-tsym-check-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780d-tsym-check-output.txt" 'Already up to date'
+assert_not_contains "$TEST_DIR/p780d-tsym-check-output.txt" 'Needs update'
+# Resolve the symlink to a real project-owned config and force a genuine
+# update: the writer must keep hands off the symlink.
+printf '{ "default": false }\n' >"$TSYM_PROJECT/.markdownlint.custom.json"
+printf '# drift\n' >>"$TSYM_PROJECT/lib/toml.sh"
+commit_all "$TSYM_PROJECT" "custom config target + drift"
+(cd "$TSYM_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780d-tsym-update-output.txt" 2>&1
+if [ ! -L "$TSYM_PROJECT/.markdownlint.json" ]; then
+  echo "FAIL: the update replaced a project-owned symlinked .markdownlint.json with the template (PR #780 round 3 P2)" >&2
+  ERRORS=$((ERRORS + 1))
+elif [ "$(readlink "$TSYM_PROJECT/.markdownlint.json")" != ".markdownlint.custom.json" ]; then
+  echo "FAIL: the update rewrote where the project-owned .markdownlint.json symlink points" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_not_contains "$TEST_DIR/p780d-tsym-update-output.txt" 'replacing unexpected symlink with managed file: .*\.markdownlint\.json'
+
+echo "--- Step 13: terminal-round probes (PR #780) ---"
+
+# (a) A failed remote fetch fails closed even with a cached tracking ref.
+FCLOSED_PROJECT="$TEST_DIR/p780d-fetch-closed"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$FCLOSED_PROJECT" --no-register >/dev/null
+configure_git "$FCLOSED_PROJECT"
+commit_all "$FCLOSED_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$FCLOSED_PROJECT/.touchstone-version"
+printf '# drift\n' >>"$FCLOSED_PROJECT/lib/toml.sh"
+commit_all "$FCLOSED_PROJECT" "stamp + drift"
+FCLOSED_ORIGIN="$TEST_DIR/p780d-origin.git"
+git init -q --bare "$FCLOSED_ORIGIN"
+git -C "$FCLOSED_PROJECT" remote add origin "$FCLOSED_ORIGIN"
+git -C "$FCLOSED_PROJECT" push -q origin main
+git -C "$FCLOSED_PROJECT" fetch -q origin
+rm -rf "$FCLOSED_ORIGIN"
+(cd "$FCLOSED_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780d-fclosed-output.txt" 2>&1 || true
+assert_contains "$TEST_DIR/p780d-fclosed-output.txt" 'refusing to branch from HEAD'
+if git -C "$FCLOSED_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
+  echo "FAIL: an unreachable remote with a cached ref must not authorize branching (PR #780 P1)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (b) An executable working file over a 100644 stage entry is not current.
+MODE_PROJECT="$TEST_DIR/p780d-mode"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$MODE_PROJECT" --no-register >/dev/null
+configure_git "$MODE_PROJECT"
+commit_all "$MODE_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$MODE_PROJECT/.touchstone-version"
+commit_all "$MODE_PROJECT" "sha stamp"
+git -C "$MODE_PROJECT" update-index --chmod=-x scripts/open-pr.sh
+git -C "$MODE_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "drop exec bit in index"
+(cd "$MODE_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780d-mode-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780d-mode-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780d-mode-output.txt" 'Already up to date'
+
+# (c) A GEMINI.md DIRECTORY is an occupied project-owned slot — current, not
+# a stamp-only update loop.
+GDIR_PROJECT="$TEST_DIR/p780d-gemini-dir"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GDIR_PROJECT" --no-register >/dev/null
+configure_git "$GDIR_PROJECT"
+commit_all "$GDIR_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$GDIR_PROJECT/.touchstone-version"
+rm -f "$GDIR_PROJECT/GEMINI.md"
+mkdir "$GDIR_PROJECT/GEMINI.md"
+printf 'x\n' >"$GDIR_PROJECT/GEMINI.md/readme"
+commit_all "$GDIR_PROJECT" "gemini slot is a directory"
+(cd "$GDIR_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780d-gdir-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780d-gdir-output.txt" 'Already up to date'
+assert_not_contains "$TEST_DIR/p780d-gdir-output.txt" 'Needs update'
 
 # --------------------------------------------------------------------------
 # Results
