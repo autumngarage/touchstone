@@ -1878,7 +1878,14 @@ commit_all "$FCLOSED_PROJECT" "stamp + drift"
 FCLOSED_ORIGIN="$TEST_DIR/p780d-origin.git"
 git init -q --bare "$FCLOSED_ORIGIN"
 git -C "$FCLOSED_PROJECT" remote add origin "$FCLOSED_ORIGIN"
-git -C "$FCLOSED_PROJECT" push -q origin main
+# --no-verify: the fixture project carries touchstone's installed pre-push
+# hook, which runs the whole validation tier. Inside a test that IS the
+# validation tier that is environment-dependent (it rejected this push on
+# ubuntu CI while passing locally) and proves nothing about the guard under
+# test -- the fixture only needs the ref present on the bare remote.
+# HEAD:main also drops the assumption that the project's branch is named
+# main, which depends on the runner's init.defaultBranch.
+git -C "$FCLOSED_PROJECT" push -q --no-verify origin HEAD:main
 git -C "$FCLOSED_PROJECT" fetch -q origin
 rm -rf "$FCLOSED_ORIGIN"
 (cd "$FCLOSED_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
