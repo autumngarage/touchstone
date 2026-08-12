@@ -66,6 +66,14 @@ echo "==> the shipped project template states the claim step tracker-neutrally"
 assert_not_contains "$TOUCHSTONE_ROOT/templates/AGENTS.md" "Claim every GitHub issue"
 assert_contains "$TOUCHSTONE_ROOT/templates/AGENTS.md" "bash scripts/claim-issue.sh <ref>"
 
+echo "==> the tracker declaration is discoverable from the files a project owns"
+# The steering states the discipline without naming a tracker, so the two
+# places that DO name one have to carry the whole transport story: the policy
+# file a project edits, and the routing doc the steering table points at
+# (#743). Neither is reachable by an agent that only reads the managed block.
+assert_contains "$TOUCHSTONE_ROOT/templates/touchstone-review.toml" '# tracker = "linear"'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'Which tracker holds the issues'
+
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"
 # CLAUDE.md uses @TOUCHSTONE.md (Claude Code resolves @-imports transitively),
 # so the contract phrases are inlined into agent context via TOUCHSTONE.md

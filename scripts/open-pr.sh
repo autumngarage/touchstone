@@ -59,9 +59,22 @@ if [ -f "$SCRIPT_SYNC_GUARD" ]; then
 fi
 PREFLIGHT_SCRIPT="$SCRIPT_DIR/../lib/preflight.sh"
 ISSUE_CLAIM_CHECK_SCRIPT="$SCRIPT_DIR/issue-claim-check.sh"
+ISSUE_TRACKER_LIB="$SCRIPT_DIR/../lib/issue-tracker.sh"
 # Wire contract published in scripts/issue-claim-check.sh: 3 means "closing
 # references found, but this tracker has no verification transport".
 ISSUE_CLAIM_CHECK_UNVERIFIABLE_RC=3
+if [ -f "$ISSUE_TRACKER_LIB" ]; then
+  # shellcheck source=../lib/issue-tracker.sh
+  source "$ISSUE_TRACKER_LIB"
+else
+  # Fail CLOSED, for the same reason lib/preflight.sh does: without the
+  # declaration this script cannot tell a GitHub project from a Linear one,
+  # and the GitHub default it would fall back to is exactly the assumption
+  # that closes an untracked issue on merge.
+  echo "ERROR: lib/issue-tracker.sh is missing; this project's issue tracker cannot be resolved." >&2
+  echo "       Re-sync Touchstone files (touchstone update) before shipping." >&2
+  exit 1
+fi
 if [ -f "$SCRIPT_DIR/../lib/events.sh" ]; then
   # shellcheck source=../lib/events.sh
   source "$SCRIPT_DIR/../lib/events.sh"
@@ -1864,7 +1877,24 @@ else
 fi
 
 COMMIT_BODY="$(git log -1 --format=%b)"
-LINKED_ISSUES="$(find_issue_closing_refs "$BASE_BRANCH")"
+
+# Which tracker holds this project's issues decides whether GitHub closing
+# syntax may be injected at all. Project root first, working directory second
+# — the same precedence scripts/issue-claim-check.sh uses, so the two scripts
+# never read different declarations for one PR.
+if ! issue_tracker_load "$SCRIPT_DIR/.." "$PWD"; then
+  exit 2
+fi
+
+# `Closes #N` is GitHub's grammar and GitHub acts on it whatever this project
+# declares. Injecting it into the PR body of a project whose issues live
+# elsewhere would close an unrelated GitHub issue on merge (#743 review), so
+# the injection is GitHub-only. The references themselves are not dropped
+# quietly: the refusal below names every one of them.
+LINKED_ISSUES=""
+if [ "$ISSUE_TRACKER" = "github" ]; then
+  LINKED_ISSUES="$(find_issue_closing_refs "$BASE_BRANCH")"
+fi
 
 # ---------------------------------------------------------------------------
 # Sentinel-cycle PR body: when the current branch was authored by a sentinel
@@ -1939,6 +1969,32 @@ BODY_FILE="$(mktemp -t touchstone-pr-body.XXXXXX.md)"
     fi
   fi
 } >"$BODY_FILE"
+
+# GitHub auto-closes issues from two channels, and a project whose issues live
+# elsewhere must be refused on both. The claim preflight below owns the PR
+# BODY. This owns the COMMIT MESSAGES, which `gh pr merge --squash` carries
+# into the default branch when no explicit merge body is supplied — dropping
+# the injection alone would leave that channel live under a green preflight
+# (#743 review). Both honor the same documented [skip-claim-check] bypass, and
+# this one reads it from the composed body so the token means one thing.
+if [ "$ISSUE_TRACKER" != "github" ] && ! grep -Eqi '\[skip-claim-check\]' "$BODY_FILE"; then
+  WRONG_TRACKER_REFS="$(find_issue_closing_refs "$BASE_BRANCH")"
+  if [ -n "$WRONG_TRACKER_REFS" ]; then
+    echo "ERROR: commits on this branch close GitHub issues, but this project's issues live in $ISSUE_TRACKER." >&2
+    echo "       GitHub acts on closing references in the squash commit message whatever this" >&2
+    echo "       project declares, so merging would close GitHub issues it does not track:" >&2
+    while IFS= read -r wrong_tracker_ref; do
+      [ -n "$wrong_tracker_ref" ] || continue
+      echo "         #$wrong_tracker_ref" >&2
+    done <<<"$WRONG_TRACKER_REFS"
+    echo "       Remedy: rewrite each one in $ISSUE_TRACKER syntax — for example:" >&2
+    echo "         $(issue_tracker_closing_example)" >&2
+    echo "       in the commit body (git commit --amend, or git rebase -i for older commits)." >&2
+    echo "       Deliberate cross-tracker close? Add [skip-claim-check] to the PR body as a" >&2
+    echo "       documented bypass." >&2
+    exit 1
+  fi
+fi
 
 run_issue_claim_preflight "new PR body" --body-file "$BODY_FILE"
 

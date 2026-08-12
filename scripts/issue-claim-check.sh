@@ -11,6 +11,11 @@
 # name what a human must confirm, so a Linear project keeps the discipline
 # without this check failing every PR it cannot judge.
 #
+# Unverifiable is not the same as unenforced. GitHub's own closing syntax is
+# refused under any other tracker, because GitHub acts on it whatever the
+# project declares — that reference is verifiably wrong, not merely
+# unreadable.
+#
 # Exit codes are a contract every caller branches on — scripts/open-pr.sh,
 # scripts/merge-pr.sh's trusted-base substitution, and the CI workflow — and
 # they cross revisions (merge-pr runs the BASE revision of this file), so
@@ -19,7 +24,9 @@
 #   0  verified: every open referenced issue is assigned to the PR author,
 #      or there was nothing to enforce, or the documented [skip-claim-check]
 #      bypass was honored.
-#   1  refuted: a referenced open issue is not assigned to the PR author.
+#   1  refuted: a referenced open issue is not assigned to the PR author, or
+#      the body carries a closing reference in a tracker's syntax this
+#      project does not use — GitHub would act on it anyway.
 #   2  usage or environment error, including a tracker declaration this
 #      Touchstone cannot honor.
 #   3  UNVERIFIABLE: closing references were found, but this project's
@@ -178,6 +185,20 @@ extract_issue_refs() {
     return 0
   fi
   extract_tracker_issue_refs "$@"
+}
+
+# Every closing reference GitHub itself acts on, whatever this project
+# declares: its nine closing keywords with an optional owner/repo prefix, plus
+# Touchstone's own `Closes-issue:` trailer, which scripts/open-pr.sh renders
+# as `Closes #N`. Under a non-GitHub tracker these are not "no reference
+# found" — they are a merge that closes a GitHub issue the project does not
+# track.
+github_closing_refs_in() {
+  local body_file="$1"
+  local closing_keywords="(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved|closes-issue)"
+
+  grep -Eoi "\\b${closing_keywords}:?[[:space:]]*([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+\\b" \
+    "$body_file" | sort -u || true
 }
 
 format_assignee_label() {
@@ -363,6 +384,28 @@ comment_file=""
 trap 'rm -f "$issue_refs_file" "$failures_file" "$comment_file"; cleanup' EXIT
 
 extract_issue_refs "$BODY_FILE" "$issue_refs_file"
+
+# Refuse another tracker's closing syntax BEFORE either exit below. "No
+# closing issue references found" would be literally true here and still
+# wrong: this body references nothing in the declared tracker, yet GitHub
+# closes the numbered issue on merge regardless. Placed ahead of the
+# unverifiable branch too, so a body carrying both grammars is refused rather
+# than waved through as merely unverifiable.
+if [ "$ISSUE_TRACKER" != "github" ]; then
+  foreign_refs="$(github_closing_refs_in "$BODY_FILE")"
+  if [ -n "$foreign_refs" ]; then
+    echo "ERROR: this PR body closes GitHub issues, but this project's issues live in $ISSUE_TRACKER." >&2
+    echo "       GitHub acts on these references whatever the project declares, so merging" >&2
+    echo "       would close GitHub issues this project does not track:" >&2
+    printf '%s\n' "$foreign_refs" | sed 's/^/         /' >&2
+    echo "       Remedy: rewrite each one in $ISSUE_TRACKER syntax — for example:" >&2
+    echo "         $(issue_tracker_closing_example)" >&2
+    echo "       in the commit body and in the PR body, then re-run." >&2
+    echo "       Deliberate cross-tracker close? Add [skip-claim-check] to the PR body as a" >&2
+    echo "       documented bypass." >&2
+    exit 1
+  fi
+fi
 
 if [ ! -s "$issue_refs_file" ]; then
   echo "No closing issue references found in PR body; nothing to enforce."

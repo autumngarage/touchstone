@@ -2,9 +2,16 @@
 #
 # tests/test-claim-issue.sh — deterministic unit tests for claim-issue.sh.
 #
+# Cases 1-7 exercise the GitHub adapter against the repository's own checkout.
+# Cases 8-13 exercise which adapter runs at all: the [issues] declaration is
+# read from the script's own project root, so those cases need a fixture tree
+# whose declaration can change between them (#743).
+#
 set -euo pipefail
 
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=stage-touchstone-libs.sh
+source "$(dirname "${BASH_SOURCE[0]}")/stage-touchstone-libs.sh"
 TEST_DIR="$(mktemp -d -t touchstone-test-claim-issue.XXXXXX)"
 trap 'rm -rf "$TEST_DIR"' EXIT
 
@@ -226,6 +233,132 @@ else
   assert_file_contains "$OUT" "not authenticated"
 fi
 
+# ---------------------------------------------------------------------------
+# Which adapter runs: the [issues] declaration decides, and it is read from the
+# script's own project root. The fixture mirrors the shipped layout (scripts/
+# next to lib/) so the lookup being exercised is the one downstream projects
+# and the CI base checkout actually use.
+# ---------------------------------------------------------------------------
+FIXTURE="$TEST_DIR/project"
+mkdir -p "$FIXTURE/scripts"
+cp "$TOUCHSTONE_ROOT/scripts/claim-issue.sh" "$FIXTURE/scripts/"
+stage_touchstone_libs "$TOUCHSTONE_ROOT" "$FIXTURE/scripts"
+
+write_fixture_config() {
+  printf '%s\n' "$1" >"$FIXTURE/.touchstone-review.toml"
+}
+
+# Runs the fixture copy from a cwd that carries no declaration of its own, so
+# a case that passes is one where the project root supplied the tracker.
+run_fixture_claim() {
+  local output_file="$1"
+  shift
+  (
+    cd "$TEST_DIR" || exit 2
+    PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+      GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+      GH_COMMENT_LOG="$TEST_DIR/gh-comments.log" \
+      GH_ASSIGNEE_VIEW_COUNT_FILE="$TEST_DIR/gh-assignee-views.count" \
+      GH_USER_LOGIN="${GH_USER_LOGIN:-me}" \
+      GH_PRE_ASSIGNEES="${GH_PRE_ASSIGNEES:-}" \
+      GH_POST_ASSIGNEES="${GH_POST_ASSIGNEES:-}" \
+      bash "$FIXTURE/scripts/claim-issue.sh" "$@"
+  ) >"$output_file" 2>&1
+}
+
+assert_no_gh_calls() {
+  local why="$1"
+  if [ -s "$TEST_DIR/gh-calls.log" ]; then
+    fail "$why; gh was invoked:"
+    sed 's/^/    | /' "$TEST_DIR/gh-calls.log" >&2
+  fi
+}
+
+echo "==> Case 8: no [issues] declaration keeps the GitHub claim path"
+reset_case
+write_fixture_config '[review]
+preflight_required = true'
+OUT="$TEST_DIR/case8.out"
+GH_PRE_ASSIGNEES="" GH_POST_ASSIGNEES="me"
+if run_fixture_claim "$OUT" 108 "dispatch: case8"; then
+  assert_file_contains "$TEST_DIR/gh-calls.log" "issue edit 108 --add-assignee @me"
+  assert_file_contains "$TEST_DIR/gh-calls.log" "issue comment 108 --body dispatch: case8"
+else
+  fail "case 8 expected exit 0"
+  cat "$OUT" >&2
+fi
+
+echo "==> Case 9: a linear project claims without touching gh"
+reset_case
+write_fixture_config '[issues]
+tracker = "linear"
+key_prefix = "CON"'
+OUT="$TEST_DIR/case9.out"
+if run_fixture_claim "$OUT" CON-7; then
+  fail "case 9 expected exit 3"
+else
+  rc=$?
+  # Exit 3, never 0: nothing was claimed, and a dispatching agent branches on
+  # this. Exiting 0 would let a scripted claim silently no-op (#743 review).
+  assert_eq "case 9 rc" "3" "$rc"
+  assert_file_contains "$OUT" "MANUAL CLAIM REQUIRED"
+  assert_file_contains "$OUT" "Assign CON-7 to yourself"
+  assert_file_contains "$OUT" "Fixes CON-7"
+  assert_file_contains "$OUT" "Exit 3 (manual action required): nothing has been claimed yet."
+  assert_no_gh_calls "case 9: the linear claim path must not invoke gh at all"
+fi
+
+echo "==> Case 10: a linear project refuses a GitHub-shaped reference"
+reset_case
+OUT="$TEST_DIR/case10.out"
+if run_fixture_claim "$OUT" 743; then
+  fail "case 10 expected exit 2"
+else
+  rc=$?
+  assert_eq "case 10 rc" "2" "$rc"
+  assert_file_contains "$OUT" "is not a linear issue reference; expected a Linear issue key like CON-123"
+fi
+
+echo "==> Case 11: key_prefix pins references to one team"
+reset_case
+OUT="$TEST_DIR/case11.out"
+if run_fixture_claim "$OUT" ABC-7; then
+  fail "case 11 expected exit 2"
+else
+  rc=$?
+  assert_eq "case 11 rc" "2" "$rc"
+  assert_file_contains "$OUT" "expected a Linear issue key like CON-123"
+fi
+
+echo "==> Case 12: an unimplemented tracker fails closed with the remedy"
+reset_case
+write_fixture_config '[issues]
+tracker = "jira"'
+OUT="$TEST_DIR/case12.out"
+if run_fixture_claim "$OUT" 12; then
+  fail "case 12 expected exit 2"
+else
+  rc=$?
+  assert_eq "case 12 rc" "2" "$rc"
+  assert_file_contains "$OUT" "unknown issue tracker 'jira'"
+  assert_file_contains "$OUT" 'Set [issues].tracker = "github" or [issues].tracker = "linear"'
+  assert_no_gh_calls "case 12: an unhonorable declaration must fail before any transport runs"
+fi
+
+echo "==> Case 13: key_prefix under GitHub is a declaration error, not a no-op"
+reset_case
+write_fixture_config '[issues]
+tracker = "github"
+key_prefix = "CON"'
+OUT="$TEST_DIR/case13.out"
+if run_fixture_claim "$OUT" 12; then
+  fail "case 13 expected exit 2"
+else
+  rc=$?
+  assert_eq "case 13 rc" "2" "$rc"
+  assert_file_contains "$OUT" "key_prefix applies to the linear tracker only"
+fi
+
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
   echo "==> FAIL: $ERRORS case(s) failed"
@@ -233,4 +366,4 @@ if [ "$ERRORS" -gt 0 ]; then
 fi
 
 echo ""
-echo "==> PASS: claim-issue.sh behaves correctly across 7 cases"
+echo "==> PASS: claim-issue.sh behaves correctly across 13 cases"

@@ -531,9 +531,197 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
-# This case declares a non-GitHub tracker in the repository, so it must stay
-# LAST: every case above reads the same checkout and expects GitHub semantics.
-echo "==> Case 15: an unverifiable tracker reports, and does not block, open-pr"
+# The next four cases vary the [issues] declaration the STAGED claim checker
+# reads. It resolves policy from its own project root ($TEST_DIR) before $PWD
+# — the precedence a CI base checkout depends on — so each case writes the
+# declaration there and clears it again; leaving one in place would silently
+# retrack every case that follows.
+write_staged_tracker_config() {
+  printf '%s\n' "$1" >"$TEST_DIR/.touchstone-review.toml"
+}
+
+echo "==> Case 15: a tracker declaration this Touchstone cannot honor fails closed"
+write_staged_tracker_config '[issues]
+tracker = "jira"'
+BODY="$TEST_DIR/jira-body.md"
+printf 'Closes #50\n' >"$BODY"
+OUT="$TEST_DIR/jira.out"
+RC=0
+: >"$TEST_DIR/gh-calls.log"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+    bash "$SCRIPT_DIR/issue-claim-check.sh" --body-file "$BODY" --author alice
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "2" ] \
+  && grep -q "unknown issue tracker 'jira'" "$OUT" \
+  && ! grep -q 'api repos/' "$TEST_DIR/gh-calls.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected an unhonorable declaration to fail before any transport runs" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 16: a non-GitHub tracker reports its references and verifies nothing"
+write_staged_tracker_config '[issues]
+tracker = "linear"
+key_prefix = "CON"'
+BODY="$TEST_DIR/linear-body.md"
+printf 'Some prose.\n\nFixes CON-42\nfixes con-42\n' >"$BODY"
+OUT="$TEST_DIR/linear-body.out"
+RC=0
+: >"$TEST_DIR/gh-calls.log"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+    bash "$SCRIPT_DIR/issue-claim-check.sh" --body-file "$BODY" --author alice
+) >"$OUT" 2>&1 || RC=$?
+
+# Exit 3, never 0: references were found and NOTHING was verified, so callers
+# (open-pr, the CI workflow, merge-pr's substitution) each decide in the open
+# what an unverifiable claim means rather than reading a green check.
+if [ "$RC" = "3" ] \
+  && grep -q 'has no claim-verification transport' "$OUT" \
+  && grep -q 'referenced: CON-42' "$OUT" \
+  && [ "$(grep -c 'referenced: CON-42' "$OUT")" = "1" ] \
+  && grep -q 'Exit 3 (unverifiable): this check enforced nothing for those references.' "$OUT" \
+  && [ ! -s "$TEST_DIR/gh-calls.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected an unverifiable tracker to report refs, dedupe them, and skip gh" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 17: GitHub closing syntax under another tracker is refused, not ignored"
+# Regression for the #743 review: a commit trailer such as `Closes-issue: #50`
+# survives into the PR body of a Linear project, and GitHub closes issue #50
+# on merge whatever the project declares. Reporting "no closing issue
+# references found" here was a clean preflight in front of a live auto-close.
+BODY="$TEST_DIR/linear-github-syntax.md"
+printf 'Fixes CON-42\n\nCloses-issue: #50\n' >"$BODY"
+OUT="$TEST_DIR/linear-github-syntax.out"
+RC=0
+: >"$TEST_DIR/gh-calls.log"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+    bash "$SCRIPT_DIR/issue-claim-check.sh" --body-file "$BODY" --author alice
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "1" ] \
+  && grep -q "this PR body closes GitHub issues, but this project's issues live in linear" "$OUT" \
+  && grep -q 'Closes-issue: #50' "$OUT" \
+  && grep -q 'Fixes CON-123' "$OUT" \
+  && ! grep -q 'No closing issue references found' "$OUT" \
+  && [ ! -s "$TEST_DIR/gh-calls.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected wrong-tracker closing syntax to be refused with a rewrite remedy" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 18: an explicit github declaration keeps the enforcing adapter"
+write_staged_tracker_config '[issues]
+tracker = "github"'
+BODY="$TEST_DIR/declared-github.md"
+printf 'Closes #50\n' >"$BODY"
+OUT="$TEST_DIR/declared-github.out"
+RC=0
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    bash "$SCRIPT_DIR/issue-claim-check.sh" --body-file "$BODY" --author alice
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "1" ] \
+  && grep -q 'Issue claim check failed' "$OUT" \
+  && grep -q 'bash scripts/claim-issue.sh 50' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected a declared github tracker to enforce assignment" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+rm -f "$TEST_DIR/.touchstone-review.toml"
+
+echo "==> Case 19: the CI backstop decides what an unverifiable check means"
+# The workflow is the last caller of the exit-code contract, and the only one
+# that can turn "nothing was enforced" into a green required check. Run its
+# actual shell step against a stub helper so the mapping is executed, not
+# merely read: 3 passes WITH a notice, and every other status is untouched.
+WORKFLOW="$TOUCHSTONE_ROOT/.github/workflows/issue-claim-check.yml"
+STEP_SCRIPT="$TEST_DIR/claim-check-step.sh"
+awk '
+  /^        run: \|$/ { collecting = 1; next }
+  collecting { sub(/^          /, ""); print }
+' "$WORKFLOW" >"$STEP_SCRIPT"
+STEP_DIR="$TEST_DIR/workflow-step"
+mkdir -p "$STEP_DIR/.touchstone-claim-base/scripts"
+run_workflow_step() {
+  local helper_exit="$1" out="$2"
+  cat >"$STEP_DIR/.touchstone-claim-base/scripts/issue-claim-check.sh" <<EOF
+#!/usr/bin/env bash
+echo "stub trusted-base helper"
+exit $helper_exit
+EOF
+  (
+    cd "$STEP_DIR" || exit 2
+    PR_NUMBER=1 bash "$STEP_SCRIPT"
+  ) >"$out" 2>&1
+}
+
+STEP_ERRORS=0
+if [ ! -s "$STEP_SCRIPT" ]; then
+  echo "    could not extract the claim-check workflow step from $WORKFLOW" >&2
+  STEP_ERRORS=$((STEP_ERRORS + 1))
+fi
+while read -r helper_rc expected_rc notice; do
+  [ -n "$helper_rc" ] || continue
+  RC=0
+  run_workflow_step "$helper_rc" "$TEST_DIR/step-$helper_rc.out" || RC=$?
+  if [ "$RC" != "$expected_rc" ]; then
+    echo "    helper exit $helper_rc: expected step rc $expected_rc, got $RC" >&2
+    STEP_ERRORS=$((STEP_ERRORS + 1))
+  fi
+  if [ "$notice" = "notice" ]; then
+    grep -q '::notice::Claim ownership was NOT verified' "$TEST_DIR/step-$helper_rc.out" || {
+      echo "    helper exit $helper_rc: expected the not-verified notice" >&2
+      STEP_ERRORS=$((STEP_ERRORS + 1))
+    }
+  elif grep -q '::notice::' "$TEST_DIR/step-$helper_rc.out"; then
+    echo "    helper exit $helper_rc: must not print the unverifiable notice" >&2
+    STEP_ERRORS=$((STEP_ERRORS + 1))
+  fi
+  # helper exit, expected step exit, whether the not-verified notice is due.
+done <<'STEP_MAPPINGS'
+3 0 notice
+1 1 silent
+0 0 silent
+2 2 silent
+STEP_MAPPINGS
+if [ "$STEP_ERRORS" = "0" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: the workflow step mismapped the claim-check exit contract" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# The remaining cases declare a non-GitHub tracker in the repository itself,
+# so they must stay LAST: every case above reads the same checkout and expects
+# GitHub semantics.
+echo "==> Case 20: an unverifiable tracker reports, and does not block, open-pr"
 git -C "$REPO_DIR" switch main >/dev/null 2>&1
 printf '[issues]\ntracker = "linear"\nkey_prefix = "CON"\n' >"$REPO_DIR/.touchstone-review.toml"
 git -C "$REPO_DIR" add .touchstone-review.toml
@@ -562,6 +750,70 @@ if [ "$RC" = "0" ] \
   echo "    PASS"
 else
   echo "    FAIL: expected an unverifiable tracker to ship with an explicit not-verified notice" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 21: a GitHub closing trailer under another tracker blocks the PR"
+# Regression for the #743 review, second channel: `gh pr merge --squash`
+# carries the branch's commit messages into the default branch when no merge
+# body is supplied, so GitHub auto-closes #50 from the trailer alone. Before
+# the fix this branch shipped, and open-pr additionally injected `Closes #50`
+# into the PR body while the claim preflight reported nothing to enforce.
+make_case_branch feat/linear-github-trailer "Closes-issue: #50"
+OUT="$TEST_DIR/linear-github-trailer.out"
+RC=0
+: >"$TEST_DIR/gh-calls.log"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+    bash "$SCRIPT_DIR/open-pr.sh"
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" != "0" ] \
+  && grep -q "commits on this branch close GitHub issues, but this project's issues live in linear" "$OUT" \
+  && grep -q '^         #50$' "$OUT" \
+  && grep -q 'Fixes CON-123' "$OUT" \
+  && ! grep -q '^Closes #50$' "$OUT" \
+  && ! grep -q '^pr create' "$TEST_DIR/gh-calls.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected a wrong-tracker commit trailer to block before gh pr create" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 22: the documented bypass ships without injecting GitHub syntax"
+# The bypass proves the injection itself is gone rather than merely unreached:
+# the body still carries the author's own `Closes-issue: #50` line from the
+# commit message, and must NOT carry the `Closes #50` line open-pr synthesizes
+# for GitHub projects — the line GitHub would act on.
+make_case_branch feat/linear-github-trailer-bypass "Closes-issue: #50
+
+[skip-claim-check]"
+OUT="$TEST_DIR/linear-github-trailer-bypass.out"
+RC=0
+: >"$TEST_DIR/gh-calls.log"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+    bash "$SCRIPT_DIR/open-pr.sh"
+) >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q '^pr create' "$TEST_DIR/gh-calls.log" \
+  && grep -q '^Closes-issue: #50$' "$OUT" \
+  && ! grep -q '^Closes #50$' "$OUT" \
+  && ! grep -q '^## Linked Issues$' "$OUT"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected the bypass to ship a body free of injected GitHub closing syntax" >&2
   echo "    rc=$RC" >&2
   cat "$OUT" >&2
   cat "$TEST_DIR/gh-calls.log" >&2

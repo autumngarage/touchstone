@@ -231,10 +231,12 @@ A project that declares nothing is a GitHub project. That is what every project 
 | Reference syntax | `123` or `#123` | `CON-123` |
 | Closing reference in the PR body | `Closes #123`, `Closes-issue: #123` | `Fixes CON-123` |
 | `scripts/claim-issue.sh <ref>` | assigns you, posts the dispatch comment, backs off on a race | claims nothing: prints the three steps to perform in Linear, then exits **3** |
-| `scripts/issue-claim-check.sh` | fails when a referenced open issue is not assigned to the PR author | verifies nothing: lists the references it found, names what you must confirm, then exits **3** |
-| `scripts/open-pr.sh` linked-issue injection | injects `Closes #N` from commit trailers | none — put `Fixes CON-N` in the PR body yourself |
+| `scripts/issue-claim-check.sh` | fails when a referenced open issue is not assigned to the PR author | verifies nothing: lists the references it found, names what you must confirm, then exits **3** — but a GitHub `#N` closing reference in the body is refused outright (exit **1**) |
+| `scripts/open-pr.sh` linked-issue injection | injects `Closes #N` from commit trailers | none — put `Fixes CON-N` in the PR body yourself; a branch whose commits carry GitHub closing references is refused before the PR is created |
 
 Touchstone has no Linear API transport, so under Linear none of the claim state is verified for you. What the scripts still do deterministically is refuse the wrong reference shape (`claim-issue.sh 123` under Linear, `claim-issue.sh CON-1` under GitHub) and fail closed on an `[issues].tracker` value they do not implement, so a typo cannot silently fall back to GitHub and check nothing.
+
+**Wrong-tracker closing references are refused, not ignored.** GitHub acts on `Closes #123` whatever a project declares — from the PR body, and from the squash commit message that `gh pr merge --squash` builds out of the branch's commits. So under a non-GitHub tracker such a reference is not "no issue referenced"; it is a merge that closes an issue the project does not track. `open-pr.sh` refuses the commit-message channel and `issue-claim-check.sh` refuses the PR-body channel, each naming the rewrite (`Fixes CON-123`). A deliberate cross-tracker close is still available through the documented `[skip-claim-check]` bypass in the PR body, which both honor.
 
 **Exit 3 means "not done, and not verified."** Both scripts publish it as a distinct status rather than exiting 0, because a scripted dispatch cannot tell "claimed" from "you must claim this by hand" if both are success, and a green check that verified nothing is a lie in the merge gate. Who reads it, and what each decides:
 
