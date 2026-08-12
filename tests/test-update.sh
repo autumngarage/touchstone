@@ -2349,8 +2349,8 @@ echo "--- Step 20: expected hook states are not update failures (PR #787) ---"
 # identity-equal and content-current update exit 1 and marked otherwise-current
 # projects failed in update-all.
 if awk '/^reconcile_external_state\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
-  "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -qE '0 \| 2 \| 4'; then
-  echo "    PASS: documented hook states (2, 4) do not fail the update"
+  "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -qE '0 \| 1 \| 2 \| 4'; then
+  echo "    PASS: documented hook states (1, 2, 4) do not fail the update; only 3 does"
 else
   echo "FAIL: expected hook states must not be treated as install failures (PR #787 round 6)" >&2
   ERRORS=$((ERRORS + 1))

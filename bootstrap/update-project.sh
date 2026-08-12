@@ -242,16 +242,19 @@ reconcile_external_state() {
     touchstone_install_skills "$TOUCHSTONE_ROOT" || rc=1
   fi
   # touchstone_install_hooks uses its exit code to report STATE, not just
-  # failure: 2 (pre-commit absent) and 4 (core.hooksPath configured, project
-  # hooks preserved) are expected, documented configurations that print their
-  # own guidance. Treating them as failure made every identity-equal and
-  # content-current update exit 1, marked otherwise-current projects failed in
-  # update-all, and made ambient reconciliation warn on every write-capable
-  # command (PR #787 review, round 6). Only genuine install errors propagate.
+  # failure. Its documented contract (lib/install-hooks.sh header):
+  #   0 installed   1 no .pre-commit-config.yaml, nothing to do
+  #   2 pre-commit CLI missing (gap, reported)   3 an install FAILED
+  #   4 core.hooksPath configured, project hooks preserved
+  # Only 3 is a genuine failure. Treating the expected states as failures made
+  # every identity-equal and content-current update exit 1, marked healthy
+  # projects failed in update-all, and made ambient reconciliation warn on
+  # every write-capable command (PR #787 review, rounds 6 and 7). Unknown
+  # codes stay failures so a future addition is loud rather than ignored.
   local hooks_rc=0
   touchstone_install_hooks "$PROJECT_DIR" || hooks_rc=$?
   case "$hooks_rc" in
-    0 | 2 | 4) ;;
+    0 | 1 | 2 | 4) ;;
     *) rc=1 ;;
   esac
   # Status is propagated, not swallowed: the ambient auto-sync wrapper reports

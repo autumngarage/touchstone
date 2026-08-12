@@ -462,7 +462,17 @@ touchstone_auto_project_reconcile_external() {
   # self-repeating (PR #787 review, round 2).
   reconcile_log="$(mktemp -t touchstone-reconcile.XXXXXX 2>/dev/null || true)"
   if [ -z "$reconcile_log" ]; then
-    (cd "$project_dir" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1 || true
+    # No log is available (full or unwritable temp dir), but the STATUS still
+    # is. Discarding it forced every failure to success and left the project
+    # silently ungated -- the exact hole the logged path was added to close
+    # (PR #787 review, round 7). Warn with the diagnose command instead.
+    (cd "$project_dir" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >/dev/null 2>&1 \
+      || reconcile_rc=$?
+    if [ "$reconcile_rc" -ne 0 ]; then
+      echo "WARNING: touchstone could not reconcile hooks/skills for $project_dir (exit $reconcile_rc)." >&2
+      echo "         Diagnostics unavailable (could not create a temp log)." >&2
+      echo "         Diagnose with: cd $project_dir && touchstone update" >&2
+    fi
     return 0
   fi
   (cd "$project_dir" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") >"$reconcile_log" 2>&1 \
