@@ -5,12 +5,15 @@
 # issue #726).
 #
 # WHAT THIS FILE IS, PLAINLY: static structural assertions over the workflow
-# TEXT — greps plus awk passes over the YAML — plus parity tests for the two
+# TEXT — greps plus awk passes over the YAML — plus parity tests for the
 # PURE helper functions the workflow marks for extraction
-# (parse_trusted_review_authors and record_untrusted_creator), which are
-# extracted verbatim from the workflow text and executed against fixtures —
-# the parser with lib/toml.sh itself as the oracle. Nothing here executes
-# the workflow's API-driven bash, stubs its gh calls, or simulates GitHub
+# (parse_trusted_review_authors, record_untrusted_creator, and the
+# untrusted_review_authors pair), which are extracted verbatim from the
+# workflow text and executed against fixtures — the parser with lib/toml.sh
+# itself as the oracle. The last section additionally renders the failure
+# summary from the workflow's own verbatim coords/footer/summary lines to
+# assert what the operator actually reads. Nothing here executes the
+# workflow's API-driven bash, stubs its gh calls, or simulates GitHub
 # events; the workflow's dynamic behavior — check-run publication and
 # verdict correctness — is proven by its live runs in CI on real PRs, not
 # by anything in this file.
@@ -498,6 +501,157 @@ else
     ok "labels deduplicate after normalization: '$untrusted_request_creators'"
   else
     fail "expected '<unknown>,mallory' after repeated records; got '$untrusted_request_creators'"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Regression, issue #804: the untrusted-review failure must name the authors
+# of the reviews FOUND at this head, never the trusted allowlist. Observed on
+# PR #802: three reviews by `henrymodisett` were reported as
+# "3 review(s) not on the allowlist: chatgpt-codex-connector,..." — the
+# allowlist, printed again two lines down as `trusted authors:`. That tells
+# the operator the trusted reviewer was rejected as untrusted and invites
+# them to allowlist an author already on the list, pointing away from the
+# real cause ("this head has not been reviewed yet").
+#
+# The assertion is ANCHORED to the untrusted clause, not to the summary: the
+# allowlist legitimately appears in the summary's coordinates block, so a
+# bare "summary must not contain chatgpt-codex-connector" would be false and
+# a bare "summary must contain henrymodisett" would be satisfiable by text
+# that is not the clause. The allowlist-hit count below is the standing
+# proof that the anchoring is load-bearing rather than decorative.
+# ---------------------------------------------------------------------------
+echo "==> Untrusted-review failure names the authors found, not the allowlist (#804)"
+
+UNTRUSTED_SNIPPET="$(extract_marked '>>> parity-tested: untrusted_review_authors' '<<< parity-tested: untrusted_review_authors')"
+ADD_REASON_BODY="$(awk '
+  /^          add_reason\(\) \{/ { grab = 1 }
+  grab { print }
+  grab && /^          \}$/ { exit }
+' "$WORKFLOW")"
+COORDS_LINE="$(grep -F 'coords=$' "$WORKFLOW" || true)"
+FOOTER_LINE="$(grep -F 'footer=$' "$WORKFLOW" || true)"
+SUMMARY_LINE="$(grep -F 'summary="This head+base pair' "$WORKFLOW" || true)"
+
+RENDER_EXTRACTION_OK=true
+# Extraction guards: every piece below is lifted verbatim out of the
+# workflow, so a missing or ambiguous match must fail loudly rather than
+# render a summary CI would never produce.
+require_extract() {
+  local label="$1" value="$2" want_lines="$3" got
+  if [ -z "$value" ]; then
+    fail "could not extract the $label from the workflow (extraction guard — a vacuous pass is a fail)"
+    RENDER_EXTRACTION_OK=false
+    return 0
+  fi
+  if [ "$want_lines" = "any" ]; then
+    return 0
+  fi
+  printf '%s\n' "$value" >"$TMP_DIR/extract-lines.txt"
+  got="$(wc -l <"$TMP_DIR/extract-lines.txt" | tr -d ' ')"
+  if [ "$got" -ne "$want_lines" ]; then
+    fail "the $label extraction matched $got workflow lines, expected $want_lines — the assembled summary would not be what CI renders"
+    RENDER_EXTRACTION_OK=false
+  fi
+}
+require_extract "untrusted_review_authors fence" "$UNTRUSTED_SNIPPET" any
+require_extract "add_reason body" "$ADD_REASON_BODY" any
+require_extract "coords line" "$COORDS_LINE" 1
+require_extract "footer line" "$FOOTER_LINE" 1
+require_extract "failure summary line" "$SUMMARY_LINE" 1
+if [ "$RENDER_EXTRACTION_OK" = true ]; then
+  printf '%s\n' "$UNTRUSTED_SNIPPET" >"$TMP_DIR/fence-check.txt"
+  if ! grep -q 'untrusted_review_authors_reason()' "$TMP_DIR/fence-check.txt"; then
+    fail "the untrusted_review_authors fence must define untrusted_review_authors_reason() (extraction guard — a vacuous pass is a fail)"
+    RENDER_EXTRACTION_OK=false
+  fi
+fi
+
+if [ "$RENDER_EXTRACTION_OK" = true ]; then
+  printf '%s\n%s\n' "$UNTRUSTED_SNIPPET" "$ADD_REASON_BODY" >"$TMP_DIR/untrusted.sh"
+  # shellcheck source=/dev/null
+  . "$TMP_DIR/untrusted.sh"
+
+  # Three reviews, one distinct author — PR #802's exact shape.
+  untrusted_review_authors=""
+  record_untrusted_review_author "henrymodisett"
+  record_untrusted_review_author "henrymodisett"
+  record_untrusted_review_author "henrymodisett"
+  if [ "$untrusted_review_authors" = "henrymodisett" ]; then
+    ok "distinct authors deduplicate across repeated reviews: '$untrusted_review_authors'"
+  else
+    fail "expected 'henrymodisett' after three reviews by the same author; got '$untrusted_review_authors'"
+  fi
+  record_untrusted_review_author ""
+  if [ "$untrusted_review_authors" = "henrymodisett,<unknown>" ]; then
+    ok "an empty login normalizes to <unknown> before dedup"
+  else
+    fail "expected 'henrymodisett,<unknown>'; got '$untrusted_review_authors' — normalization must precede deduplication"
+  fi
+
+  # Assemble the failure summary exactly as evaluate_pr does, from the
+  # workflow's own lines. The fixture variables below are read by those
+  # sourced lines, not by this file, so shellcheck cannot see the use.
+  # shellcheck disable=SC2034
+  {
+    head_sha="2258adf8b068d94ce873ff15c4563696f6a676e6"
+    base_ref="main"
+    base_oid="f7722cc9d0e1b2a3c4d5e6f708192a3b4c5d6e7f"
+    TRUSTED_AUTHORS_EFFECTIVE="chatgpt-codex-connector,chatgpt-codex-connector[bot]"
+    TRUSTED_AUTHORS_SOURCE="workflow default"
+    untrusted_review_authors="henrymodisett"
+    untrusted_reviews=3
+    reasons=""
+  }
+  untrusted_reason="$(untrusted_review_authors_reason "$head_sha" "$untrusted_reviews" "$untrusted_review_authors")"
+  add_reason "$untrusted_reason"
+  printf '%s\n%s\n%s\n' "$COORDS_LINE" "$FOOTER_LINE" "$SUMMARY_LINE" >"$TMP_DIR/render.sh"
+  # shellcheck source=/dev/null
+  . "$TMP_DIR/render.sh"
+  # $summary is assigned by the sourced workflow line above.
+  # shellcheck disable=SC2154
+  printf '%s\n' "$summary" >"$TMP_DIR/summary.txt"
+
+  # ANCHOR: isolate the untrusted clause. Every content assertion below reads
+  # this file, never the summary.
+  grep -F 'is from untrusted author(s)' "$TMP_DIR/summary.txt" >"$TMP_DIR/untrusted-clause.txt" || true
+  CLAUSE_LINES="$(wc -l <"$TMP_DIR/untrusted-clause.txt" | tr -d ' ')"
+  if [ "$CLAUSE_LINES" -ne 1 ]; then
+    fail "expected exactly one untrusted-author clause in the summary; found $CLAUSE_LINES (anchor guard — a vacuous pass is a fail)"
+  else
+    ok "untrusted clause isolated from the summary"
+    if grep -q -F 'henrymodisett' "$TMP_DIR/untrusted-clause.txt"; then
+      ok "the clause names the author of the reviews actually found"
+    else
+      fail "the untrusted-author clause must name the authors found at this head (expected 'henrymodisett'); got: $(cat "$TMP_DIR/untrusted-clause.txt")"
+    fi
+    if grep -q -F 'chatgpt-codex-connector' "$TMP_DIR/untrusted-clause.txt"; then
+      fail "the untrusted-author clause names an ALLOWLISTED author (#804) — it is printing the trusted allowlist where it means the offending authors; got: $(cat "$TMP_DIR/untrusted-clause.txt")"
+    else
+      ok "the clause names no allowlisted author"
+    fi
+    if grep -q -F '3 review(s)' "$TMP_DIR/untrusted-clause.txt"; then
+      ok "the clause keeps the review count"
+    else
+      fail "the untrusted-author clause must keep the review count ('3 review(s)'); got: $(cat "$TMP_DIR/untrusted-clause.txt")"
+    fi
+  fi
+
+  # Standing proof that anchoring is required: the allowlist DOES appear in
+  # the summary — once, in the coordinates block. If this ever reads 0 the
+  # assertions above have gone vacuous (a naive assert_not_contains over the
+  # whole summary would then pass for the wrong reason); if it reads 2 the
+  # clause is echoing the allowlist again, which is the #804 defect.
+  ALLOWLIST_HITS="$(grep -c -F 'chatgpt-codex-connector' "$TMP_DIR/summary.txt" || true)"
+  if [ "$ALLOWLIST_HITS" -eq 1 ]; then
+    ok "the allowlist appears exactly once in the summary (the 'trusted authors:' coordinate), so the clause assertion is anchored, not vacuous"
+  else
+    fail "expected the allowlist on exactly 1 summary line (the coordinates block); found $ALLOWLIST_HITS"
+  fi
+  if grep -q -F -- '- trusted authors: `chatgpt-codex-connector' "$TMP_DIR/summary.txt"; then
+    ok "the coordinates block still echoes the trusted allowlist"
+  else
+    fail "the summary must still echo '- trusted authors:' in its coordinates block"
   fi
 fi
 

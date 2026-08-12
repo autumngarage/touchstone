@@ -295,6 +295,44 @@ jobs:
           }
           # <<< parity-tested: record_untrusted_creator <<<
 
+          # >>> parity-tested: untrusted_review_authors >>>
+          # Records the distinct authors of the formal reviews found AT THE
+          # CURRENT HEAD whose author is outside the allowlist, and renders
+          # the failure reason that names them.
+          #
+          # The reason names the authors OBSERVED, never the allowlist
+          # (issue #804). Printing the trusted set in this slot told the
+          # operator that the trusted reviewer had been rejected as
+          # untrusted — the same list then reappeared two lines later as
+          # `trusted authors:` — and invited the fix "add this author to
+          # .touchstone-review.toml" for an author already on it. That
+          # points away from the real cause, which is almost always "this
+          # head has not been reviewed yet; request a review". The allowlist
+          # is still echoed exactly once, in the coordinates block.
+          #
+          # record_untrusted_review_author appends to the caller's
+          # untrusted_review_authors list (dynamic scoping) once per author,
+          # normalizing an empty login to <unknown> BEFORE deduplication for
+          # the same reason record_untrusted_creator does: a raw empty
+          # string turns the dedup pattern into ",," which matches the empty
+          # list and silently drops the first such author.
+          # tests/test-review-binding-workflow.sh extracts both functions
+          # verbatim and regression-tests the #804 confusion.
+          record_untrusted_review_author() {
+            local author_label="${1:-<unknown>}"
+            case ",$untrusted_review_authors," in
+              *",$author_label,"*) ;;
+              *) untrusted_review_authors="${untrusted_review_authors}${untrusted_review_authors:+,}$author_label" ;;
+            esac
+          }
+
+          untrusted_review_authors_reason() {
+            local head="$1" count="$2" authors="$3"
+            printf "the only review evidence at head \`%s\` is from untrusted author(s) (%s review(s) from \`%s\`, not on the allowlist)" \
+              "$head" "$count" "${authors:-<unknown>}"
+          }
+          # <<< parity-tested: untrusted_review_authors <<<
+
           # >>> parity-tested: parse_trusted_review_authors >>>
           # Reads a review-config TOML document on stdin and prints the
           # [review.pr_triggered] trusted_review_authors array as a comma-
@@ -697,7 +735,7 @@ jobs:
 
             # Trusted review evidence bound to the exact current head.
             # Channel 1: formal reviews whose commit oid equals the head.
-            local evidence="" untrusted_reviews=0
+            local evidence="" untrusted_reviews=0 untrusted_review_authors=""
             local reviews_tsv author commit_oid review_state submitted_at
             reviews_tsv="$(gh api --paginate "repos/$REPO/pulls/$pr_number/reviews?per_page=100" \
               --jq '.[] | [(.user.login // ""), (.commit_id // ""), (.state // ""), (.submitted_at // "")] | @tsv')"
@@ -709,6 +747,7 @@ jobs:
                 evidence="${evidence}${evidence:+$'\n'}$submitted_at"$'\t'"formal review by @$author ($review_state) at $submitted_at"
               else
                 untrusted_reviews=$((untrusted_reviews + 1))
+                record_untrusted_review_author "$author"
               fi
             done <<<"$reviews_tsv"
 
@@ -758,7 +797,9 @@ jobs:
 
             if [ "$total_evidence" -eq 0 ]; then
               if [ "$untrusted_reviews" -gt 0 ]; then
-                add_reason "the only review evidence at head \`$head_sha\` is from untrusted author(s) ($untrusted_reviews review(s) not on the allowlist: ${TRUSTED_AUTHORS_EFFECTIVE:-<empty>})"
+                local untrusted_reason
+                untrusted_reason="$(untrusted_review_authors_reason "$head_sha" "$untrusted_reviews" "$untrusted_review_authors")"
+                add_reason "$untrusted_reason"
               else
                 add_reason "no trusted-author review evidence (formal review or result comment) exists for head \`$head_sha\`"
               fi
