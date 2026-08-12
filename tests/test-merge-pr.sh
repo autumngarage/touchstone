@@ -3484,9 +3484,29 @@ case "${1:-} ${2:-}" in
     ;;
   "api --paginate")
     case "$*" in
-      *"pulls/77/comments"*) printf '%s\n' "${RR_EXISTING_REPLIES:-}" ;;
+      *"pulls/77/comments"*)
+        # Model authorship the way GitHub does: RR_EXISTING_REPLIES rows are
+        # "<login><TAB><body>", and this stub applies whichever selector the
+        # script actually asked for. A script that does NOT constrain the
+        # author therefore sees a foreign reply too — which is exactly the
+        # #722 hole, and what makes the foreign-marker case fail on old code.
+        while IFS=$'\t' read -r rr_login rr_body; do
+          [ -n "$rr_login" ] || continue
+          case " $* " in
+            *"select((.user.login"*)
+              case " $* " in
+                *"== \"$rr_login\""*) printf '%s\n' "$rr_body" ;;
+              esac
+              ;;
+            *) printf '%s\n' "$rr_body" ;;
+          esac
+        done <<<"${RR_EXISTING_REPLIES:-}"
+        ;;
       *) echo "unexpected paginated api: $*" >&2; exit 1 ;;
     esac
+    ;;
+  "api user")
+    printf '%s\n' "${RR_AUTHENTICATED_LOGIN:-touchstone-driver}"
     ;;
   "api repos/PRNUM-tools/PRNUM-example/pulls/77/comments/9001/replies")
     echo "5555"
@@ -3554,15 +3574,34 @@ fi
 # Rerun after a posted reply: the marker suppresses a duplicate post.
 RC=0
 RR_THREADS_OUTPUT="THREAD_NODE_1" \
-  RR_EXISTING_REPLIES="prior reply body
-<!-- touchstone:respond-review comment=9001 -->" \
+  RR_EXISTING_REPLIES="$(printf 'touchstone-driver\tprior reply body <!-- touchstone:respond-review comment=9001 -->')" \
   run_respond_review 77 --comment-id 9001 --body-file "$RR_BODY_FILE" >"$RR_OUT" 2>&1 || RC=$?
 if [ "$RC" = 0 ] \
   && grep -q 'already posted (marker found); skipping the reply step' "$RR_OUT" \
+  && grep -q 'matched our own reply as @touchstone-driver' "$RR_OUT" \
   && ! grep -q 'replies' "$RR_GH_LOG"; then
   echo "    PASS: rerun is idempotent after a posted reply"
 else
   echo "FAIL: respond-review idempotent rerun (rc=$RC)" >&2
+  cat "$RR_OUT" >&2
+  exit 1
+fi
+
+# #722: the marker is trivially predictable from the comment ID, so a marker
+# in SOMEONE ELSE'S reply must not satisfy idempotency. It used to: the reply
+# was skipped and the thread resolved anyway, marking a finding answered with
+# no answer written — and --all-resolved-check then called the PR clean.
+RC=0
+RR_THREADS_OUTPUT="THREAD_NODE_1" \
+  RR_EXISTING_REPLIES="$(printf 'someone-else\tlooks answered <!-- touchstone:respond-review comment=9001 -->')" \
+  run_respond_review 77 --comment-id 9001 --body-file "$RR_BODY_FILE" >"$RR_OUT" 2>&1 || RC=$?
+if [ "$RC" = 0 ] \
+  && ! grep -q 'already posted' "$RR_OUT" \
+  && grep -q 'reply id: 5555' "$RR_OUT" \
+  && grep -q 'comments/9001/replies' "$RR_GH_LOG"; then
+  echo "    PASS: a foreign-authored marker does not suppress the real reply (#722)"
+else
+  echo "FAIL: respond-review must post its own reply when the marker is not ours (#722)" >&2
   cat "$RR_OUT" >&2
   exit 1
 fi
