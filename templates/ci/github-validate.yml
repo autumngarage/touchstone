@@ -54,9 +54,25 @@ jobs:
       # Swift:
       #   - uses: swift-actions/setup-swift@v2
 
+      # Pinned. Unpinned, this job's verdict depends on whichever release PyPI
+      # serves that morning — a version nobody chose, arriving with no diff.
+      # Bump it deliberately; that bump is then a reviewable change like any
+      # other. (Touchstone's own validate workflow pins the same version.)
       - name: Install pre-commit
-        run: pipx install pre-commit
+        run: pipx install "pre-commit==4.6.2"
 
+      # This clones and builds every hook repo in .pre-commit-config.yaml at
+      # job time, so each one is a third-party service on your merge path. If
+      # this check is required, a bad minute at any of those hosts blocks every
+      # merge — and the failure arrives looking like a code failure. Two such
+      # outages hit Touchstone's own required check in a single day
+      # (autumngarage/touchstone#742).
+      #
+      # Cheapest fix, when it starts costing you: cache pre-commit's hook
+      # environments (actions/cache on ~/.cache/pre-commit, keyed by a hash of
+      # .pre-commit-config.yaml). Do not answer an infrastructure failure by
+      # making the check non-blocking — a check that goes green when it could
+      # not look is worse than no check.
       - name: Run pre-commit hygiene
         run: pre-commit run --all-files --hook-stage pre-commit --show-diff-on-failure
 
