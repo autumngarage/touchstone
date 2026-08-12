@@ -164,10 +164,31 @@ fi
 # (c) The remaining job-time fetch is labelled as infrastructure.
 # ---------------------------------------------------------------------------
 echo "==> (c) The provisioning step is labelled INFRASTRUCTURE"
-if grep -q -E '^      - name: .*INFRASTRUCTURE' "$STRIPPED_FILE"; then
-  ok "provisioning step name carries the INFRASTRUCTURE label"
+# Tie the label to the step that actually performs the fetch, inside the
+# REQUIRED job. A whole-file grep for "a step named INFRASTRUCTURE" is
+# satisfied by a decoy label on any step in any job, so the provisioning step
+# could lose its label with this check still green.
+FETCH_STEPS="$TMP_DIR/fetch-step-names.txt"
+awk '
+  /^      - name: / { name = $0; sub(/^      - name: /, "", name); next }
+  /pipx install/ { if (name != "") print name }
+' "$JOB_BODY" >"$FETCH_STEPS"
+if [ ! -s "$FETCH_STEPS" ]; then
+  fail "no step in the required job runs 'pipx install' (parser guard — a vacuous pass is a fail)"
 else
-  fail "no step named with 'INFRASTRUCTURE' — the one step that can fail for a reason that is not a test verdict must say so in its NAME, which is the only part a reader sees without opening the log"
+  unlabelled=0
+  while IFS= read -r step_name; do
+    case "$step_name" in
+      *INFRASTRUCTURE*) ;;
+      *)
+        fail "the step that fetches a dependency is not labelled INFRASTRUCTURE: '$step_name' — the one step that can fail for a reason that is not a test verdict must say so in its NAME, which is the only part a reader sees without opening the log"
+        unlabelled=$((unlabelled + 1))
+        ;;
+    esac
+  done <"$FETCH_STEPS"
+  if [ "$unlabelled" -eq 0 ]; then
+    ok "every dependency-fetching step in the required job carries the INFRASTRUCTURE label"
+  fi
 fi
 # The label must not have bought itself a softer failure. Fail-closed is the
 # property; the label is presentation.
@@ -199,7 +220,10 @@ elif grep -q -F -x 'ubuntu-latest false' "$MATRIX"; then
 else
   fail "the ubuntu-latest matrix entry must set advisory: false. The job name is \"\${{ matrix.advisory && 'validate-advisory' || 'validate' }} (\${{ matrix.os }})\", so advisory: true renames the check to 'validate-advisory (ubuntu-latest)' and branch protection's required context '$REQUIRED_CONTEXT' silently stops existing — a green merge gate with nothing behind it. Parsed: $(tr '\n' ';' <"$MATRIX")"
 fi
-if grep -q -F "name: \${{ matrix.advisory && 'validate-advisory' || 'validate' }} (\${{ matrix.os }})" "$STRIPPED_FILE"; then
+# Bound to $JOB_BODY: another job retaining or copying this expression while
+# the required job is renamed would satisfy a whole-file grep, and branch
+# protection would stop receiving '$REQUIRED_CONTEXT' with this check green.
+if grep -q -F "name: \${{ matrix.advisory && 'validate-advisory' || 'validate' }} (\${{ matrix.os }})" "$JOB_BODY"; then
   ok "job name expression resolves to '$REQUIRED_CONTEXT' for the non-advisory ubuntu leg"
 else
   fail "the required job's name: expression changed — branch protection matches '$REQUIRED_CONTEXT' as a literal string, so any rename un-requires the check without failing anything"
