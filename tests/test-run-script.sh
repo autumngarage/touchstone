@@ -568,6 +568,44 @@ done <<EOF_COMPAT
 $COMPAT_CASES
 EOF_COMPAT
 
+echo "==> Test: an undeclared Node project skips an absent package manager"
+
+# The profile sweep above uses an empty package.json, so it never reached
+# dispatch. A real declaration-free Node project has scripts, and its
+# package.json names the manager to run them with — on a host without that
+# manager the fallback dispatched anyway and exited 127, which failed
+# validation for a project that declared nothing and asked for nothing. Every
+# other profile treats an absent toolchain as a skip; this one now does too.
+NODE_ABSENT_PM_PROJECT="$TEST_DIR/undeclared-node-absent-manager"
+mkdir -p "$NODE_ABSENT_PM_PROJECT"
+printf '{"packageManager":"pnpm@9.0.0","scripts":{"lint":"exit 0"}}\n' \
+  >"$NODE_ABSENT_PM_PROJECT/package.json"
+NODE_ABSENT_PM_OUT="$TEST_DIR/undeclared-node-absent-manager.out"
+run_runner_minimal "$NODE_ABSENT_PM_PROJECT" "$NODE_ABSENT_PM_OUT" lint
+if [ "$RUNNER_EXIT" -ne 0 ]; then
+  echo "FAIL: an undeclared Node project must skip an absent package manager (got $RUNNER_EXIT)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$NODE_ABSENT_PM_OUT" 'SKIP pnpm not installed'
+assert_contains "$NODE_ABSENT_PM_OUT" 'lint verdict: ran=0 skipped=1 failed=0'
+
+# The other half of the same boundary, on the identical fixture and PATH: the
+# skip belongs to the fallback alone. Declaring the very command the fallback
+# just skipped must still fail loudly — a declaration is a promise that
+# something ran, and softening that is the whole bug this runner exists to fix.
+printf 'project_type=node\nlint_command=pnpm lint\n' \
+  >"$NODE_ABSENT_PM_PROJECT/.touchstone-config"
+NODE_DECLARED_PM_OUT="$TEST_DIR/declared-node-absent-manager.out"
+run_runner_minimal "$NODE_ABSENT_PM_PROJECT" "$NODE_DECLARED_PM_OUT" lint
+if [ "$RUNNER_EXIT" -eq 0 ]; then
+  echo "FAIL: a declared command naming an absent package manager must fail the run" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$NODE_DECLARED_PM_OUT" 'declared lint_command is not runnable here (exit 127): pnpm lint'
+assert_not_contains "$NODE_DECLARED_PM_OUT" 'SKIP pnpm not installed'
+assert_contains "$NODE_DECLARED_PM_OUT" 'lint verdict: ran=0 skipped=0 failed=1'
+rm -f "$NODE_ABSENT_PM_PROJECT/.touchstone-config"
+
 echo "==> Test: require_declared turns an unproven validate into a failure"
 
 STRICT_PROJECT="$TEST_DIR/require-declared"
@@ -742,6 +780,65 @@ if [ "$RUNNER_EXIT" -eq 0 ]; then
 fi
 assert_contains "$TARGET_VALIDATE_FAIL_OUT" "target 'alpha' failed 'validate' (exit 7)"
 assert_contains "$TARGET_VALIDATE_FAIL_OUT" 'validate verdict: ran=2 skipped=0 failed=1'
+
+echo "==> Test: a target's own typecheck_command=auto reaches that target"
+
+# typecheck_command=auto asks for detection rather than naming a command, so it
+# is not a declaration — but it is still an instruction. Reading a target's
+# config through declared_command_in returned "" for it, and the profile body
+# then consulted TYPECHECK_COMMAND_AUTO, which still held the ROOT config's
+# answer. A target that asked for detection with pyright installed reported
+# "no Python typecheck_command configured" and typechecked nothing.
+TYPECHECK_AUTO_BIN="$TEST_DIR/typecheck-auto-bin"
+mkdir -p "$TYPECHECK_AUTO_BIN"
+cat >"$TYPECHECK_AUTO_BIN/pyright" <<'FAKE_PYRIGHT'
+#!/usr/bin/env bash
+printf 'pyright-ran-in %s\n' "${PWD##*/}"
+exit 0
+FAKE_PYRIGHT
+chmod +x "$TYPECHECK_AUTO_BIN/pyright"
+
+# Root declares no typecheck_command at all, so TYPECHECK_COMMAND_AUTO loads
+# false; only the 'auto' target asks for detection. 'plain' is the control —
+# it must still skip, which is what proves the mode reached one target rather
+# than the process.
+TYPECHECK_AUTO_PROJECT="$TEST_DIR/targets-typecheck-auto"
+mkdir -p "$TYPECHECK_AUTO_PROJECT/packages/auto" "$TYPECHECK_AUTO_PROJECT/packages/plain"
+git -C "$TYPECHECK_AUTO_PROJECT" init -q
+printf 'project_type=generic\ntargets=auto:packages/auto:python,plain:packages/plain:python\n' \
+  >"$TYPECHECK_AUTO_PROJECT/.touchstone-config"
+printf 'typecheck_command=auto\n' >"$TYPECHECK_AUTO_PROJECT/packages/auto/.touchstone-config"
+TYPECHECK_AUTO_OUT="$TEST_DIR/targets-typecheck-auto.out"
+RUNNER_EXIT=0
+(
+  cd "$TYPECHECK_AUTO_PROJECT"
+  PATH="$TYPECHECK_AUTO_BIN:$PATH" bash "$RUNNER" typecheck
+) >"$TYPECHECK_AUTO_OUT" 2>&1 || RUNNER_EXIT=$?
+if [ "$RUNNER_EXIT" -ne 0 ]; then
+  echo "FAIL: a target-level typecheck_command=auto must typecheck cleanly (got $RUNNER_EXIT)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TYPECHECK_AUTO_OUT" 'pyright-ran-in auto'
+assert_contains "$TYPECHECK_AUTO_OUT" 'SKIP no Python typecheck_command configured'
+assert_not_contains "$TYPECHECK_AUTO_OUT" 'pyright-ran-in plain'
+assert_contains "$TYPECHECK_AUTO_OUT" 'typecheck verdict: ran=1 skipped=1 failed=0'
+
+# auto is detection, not a declaration: require_declared must still demand a
+# real command for it, or "declare what you run" would have a spelling that
+# opts out of the gate.
+printf 'require_declared=true\nproject_type=generic\ntargets=auto:packages/auto:python\n' \
+  >"$TYPECHECK_AUTO_PROJECT/.touchstone-config"
+TYPECHECK_AUTO_STRICT_OUT="$TEST_DIR/targets-typecheck-auto-strict.out"
+RUNNER_EXIT=0
+(
+  cd "$TYPECHECK_AUTO_PROJECT"
+  PATH="$TYPECHECK_AUTO_BIN:$PATH" bash "$RUNNER" typecheck
+) >"$TYPECHECK_AUTO_STRICT_OUT" 2>&1 || RUNNER_EXIT=$?
+if [ "$RUNNER_EXIT" -eq 0 ]; then
+  echo "FAIL: typecheck_command=auto must not satisfy require_declared" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TYPECHECK_AUTO_STRICT_OUT" 'require_declared=true, but no declared command ran for: typecheck'
 
 echo "==> Test: the detection fallback dispatches each package manager unchanged"
 

@@ -745,6 +745,15 @@ assert_not_exists "$PROJECT_CI_OFF/.github/workflows/validate.yml"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_CI_GITHUB" --no-register --ci github >/dev/null
 assert_exists "$PROJECT_CI_GITHUB/.github/workflows/validate.yml"
 assert_contains "$PROJECT_CI_GITHUB/.github/workflows/validate.yml" 'scripts/touchstone-run.sh validate'
+# A required check's starter comment is the first thing someone reads when CI
+# goes red, so it must not misdirect them. It used to say anything the runner
+# cannot run reports SKIP; that is true only of the undeclared fallback. A
+# declared command naming a missing binary deliberately exits nonzero, and that
+# is what turns this check red — the remedy is the toolchain block, not a
+# theory about skips.
+assert_not_contains "$PROJECT_CI_GITHUB/.github/workflows/validate.yml" 'anything it cannot run reports SKIP'
+assert_contains "$PROJECT_CI_GITHUB/.github/workflows/validate.yml" 'the job FAILS here'
+assert_contains "$PROJECT_CI_GITHUB/.github/workflows/validate.yml" 'only to the deprecated fallback'
 # The workflow is project-owned — absent from the manifest so touchstone update
 # leaves the user's CI customizations alone.
 if grep -q '^.github/workflows/validate\.yml$' "$PROJECT_CI_GITHUB/.touchstone-manifest"; then
@@ -1999,6 +2008,47 @@ if (cd "$PROJECT_DOCTOR_TARGET_DECL" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE
 else
   assert_contains "$TEST_DIR/doctor-target-declared-bad-profile.txt" "target 'declared': unknown profile 'kotlin'"
 fi
+
+# "Did this scope declare a command?" must be answered the way the runner
+# answers it. touchstone-run.sh takes the LAST assignment of a key, so
+# `lint_command=ruff` followed by `lint_command=` means fallback detection —
+# but doctor grepped for any non-empty assignment, called that an override, and
+# suppressed the very issue the run would hit. Doctor now sources
+# scripts/touchstone-run.sh and calls declared_command_in, so there is one
+# parser and no way for the two to drift.
+#
+# 'kept' is the control in the opposite direction: cleared then declared is a
+# real override. It also proves the check can still see a declaration at all,
+# so 'flip' passing is not the vacuous pass of a helper that never reports one.
+PROJECT_DOCTOR_LAST_ASSIGN="$TEST_DIR/test-project-doctor-last-assignment"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_LAST_ASSIGN" --no-register >/dev/null
+mkdir -p "$PROJECT_DOCTOR_LAST_ASSIGN/apps/flip" "$PROJECT_DOCTOR_LAST_ASSIGN/apps/kept"
+printf '{}\n' >"$PROJECT_DOCTOR_LAST_ASSIGN/apps/flip/package.json"
+printf '{}\n' >"$PROJECT_DOCTOR_LAST_ASSIGN/apps/kept/package.json"
+printf 'lint_command=echo declared-lint\nlint_command=\n' \
+  >"$PROJECT_DOCTOR_LAST_ASSIGN/apps/flip/.touchstone-config"
+printf 'lint_command=\nlint_command=echo declared-lint\n' \
+  >"$PROJECT_DOCTOR_LAST_ASSIGN/apps/kept/.touchstone-config"
+touchstone_sed_inplace 's|^targets=.*|targets=flip:apps/flip:node,kept:apps/kept:node|' "$PROJECT_DOCTOR_LAST_ASSIGN/.touchstone-config"
+(cd "$PROJECT_DOCTOR_LAST_ASSIGN" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) \
+  >"$TEST_DIR/doctor-last-assignment.txt" 2>&1 || true
+assert_not_contains "$TEST_DIR/doctor-last-assignment.txt" 'target flip: lint: overridden via .touchstone-config'
+assert_contains "$TEST_DIR/doctor-last-assignment.txt" "target flip: package.json has no 'lint' script"
+assert_contains "$TEST_DIR/doctor-last-assignment.txt" 'target kept: lint: overridden via .touchstone-config'
+assert_not_contains "$TEST_DIR/doctor-last-assignment.txt" "target kept: package.json has no 'lint' script"
+
+# The same helper answers the ROOT-level override question, so the same drift
+# lived there too — a root config whose lint_command was set and later cleared
+# suppressed the whole lint section. One helper, one fix, both scopes.
+PROJECT_DOCTOR_ROOT_LAST="$TEST_DIR/test-project-doctor-root-last-assignment"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_ROOT_LAST" --no-register >/dev/null
+printf '{}\n' >"$PROJECT_DOCTOR_ROOT_LAST/package.json"
+touchstone_sed_inplace 's|^project_type=.*|project_type=node|' "$PROJECT_DOCTOR_ROOT_LAST/.touchstone-config"
+printf 'lint_command=echo declared-lint\nlint_command=\n' >>"$PROJECT_DOCTOR_ROOT_LAST/.touchstone-config"
+(cd "$PROJECT_DOCTOR_ROOT_LAST" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) \
+  >"$TEST_DIR/doctor-root-last-assignment.txt" 2>&1 || true
+assert_not_contains "$TEST_DIR/doctor-root-last-assignment.txt" 'lint: overridden via .touchstone-config'
+assert_contains "$TEST_DIR/doctor-root-last-assignment.txt" "package.json has no 'lint' script"
 
 # touchstone-run.sh's load_config treats project_type and profile as the same
 # slot with last-write-wins semantics. Doctor must select the same profile

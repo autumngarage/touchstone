@@ -54,11 +54,13 @@ clear_git_hook_env() {
   unset PRE_COMMIT_REMOTE_URL
 }
 
-# tests/test-find-python-bin.sh sources this script with
-# TOUCHSTONE_RUN_SOURCE_ONLY=1 to call helpers directly without running the
-# action dispatcher at the bottom. Tests pass TOUCHSTONE_RUN_TEST_REPO_ROOT
-# to fix REPO_ROOT explicitly so they can construct fixture filesystems
-# without needing a real git repo.
+# TOUCHSTONE_RUN_SOURCE_ONLY=1 loads this script for its helpers alone, without
+# running the action dispatcher at the bottom. Two callers rely on it:
+# tests/test-find-python-bin.sh, and `touchstone doctor --project`, which calls
+# declared_command_in so it reports the config the same way the runner reads it
+# instead of pattern-matching the file a second time.
+# Tests pass TOUCHSTONE_RUN_TEST_REPO_ROOT to fix REPO_ROOT explicitly so they
+# can construct fixture filesystems without needing a real git repo.
 if [ "${TOUCHSTONE_RUN_SOURCE_ONLY:-0}" = "1" ]; then
   REPO_ROOT="${TOUCHSTONE_RUN_TEST_REPO_ROOT:-$(pwd)}"
 else
@@ -400,17 +402,15 @@ configured_command_for_action() {
   esac
 }
 
-# Declaration applies at every level, so a target declares its own commands in
-# its own config file. Reads one key out of the config file in $1 without
-# disturbing the root config the process already loaded.
-declared_command_in() {
-  local dir="$1" action="$2" key line parsed_key value=""
+# The one reader for a config file that is not the root's. Effective value =
+# last assignment wins, both sides trimmed — the same rule load_config applies
+# to the root config, so "what would the runner use?" has a single answer no
+# matter who is asking. bin/touchstone's doctor sources this file to call
+# declared_command_in for exactly that reason: a second parser elsewhere drifts
+# from this one and reports a config the runner does not agree with.
+config_value_in() {
+  local dir="$1" key="$2" line parsed_key value=""
 
-  case "$action" in build_if_distinct) return 0 ;; esac
-  # An absolute TOUCHSTONE_CONFIG_FILE names the root's config specifically. A
-  # target must not re-read it and adopt the root's commands as its own.
-  case "$CONFIG_FILE" in /*) return 0 ;; esac
-  key="${action}_command"
   [ -f "$dir/$CONFIG_FILE" ] || return 0
 
   while IFS= read -r line || [ -n "$line" ]; do
@@ -423,8 +423,34 @@ declared_command_in() {
     value="$(trim "${line#*=}")"
   done <"$dir/$CONFIG_FILE"
 
-  # typecheck_command=auto asks for detection, so it is not a declaration.
-  if [ "$action" = typecheck ] && [ "$value" = auto ]; then
+  printf '%s\n' "$value"
+}
+
+# typecheck_command=auto asks for detection instead of naming a command, so it
+# is an instruction rather than a declaration. That distinction is defined once,
+# here, because both readers need it and they must not disagree:
+# declared_command_in has to report auto as "nothing declared", and the
+# dispatcher has to still honour the instruction it carries.
+declared_typecheck_auto_in() {
+  local dir="$1"
+
+  case "$CONFIG_FILE" in /*) return 1 ;; esac
+  [ "$(config_value_in "$dir" typecheck_command)" = auto ]
+}
+
+# Declaration applies at every level, so a target declares its own commands in
+# its own config file. Reads one key out of the config file in $1 without
+# disturbing the root config the process already loaded.
+declared_command_in() {
+  local dir="$1" action="$2" value
+
+  case "$action" in build_if_distinct) return 0 ;; esac
+  # An absolute TOUCHSTONE_CONFIG_FILE names the root's config specifically. A
+  # target must not re-read it and adopt the root's commands as its own.
+  case "$CONFIG_FILE" in /*) return 0 ;; esac
+
+  value="$(config_value_in "$dir" "${action}_command")"
+  if [ "$action" = typecheck ] && declared_typecheck_auto_in "$dir"; then
     value=""
   fi
   printf '%s\n' "$value"
@@ -434,6 +460,10 @@ declared_command_in() {
 # dispatcher uses, since run_target_profile has already cd'd there.
 declared_command_here() {
   declared_command_in "." "$1"
+}
+
+declared_typecheck_auto_here() {
+  declared_typecheck_auto_in "."
 }
 
 # Whether a declaration can be shown, before it is dispatched, to have nothing
@@ -508,7 +538,7 @@ note_detection_fallback() {
 }
 
 run_node_script() {
-  local script="$1" package_manager command
+  local script="$1" package_manager binary command
 
   has_package_script "$script" || return 1
 
@@ -517,12 +547,41 @@ run_node_script() {
     package_manager="$(detect_node_package_manager ".")"
   fi
 
+  # The binary is read out of the same arm that builds the command, so the
+  # thing checked below is always the thing about to be executed — including
+  # the catch-all, where an unrecognized package_manager falls back to npm.
   case "$package_manager" in
-    pnpm) command="pnpm $script" ;;
-    yarn) command="yarn $script" ;;
-    bun) command="bun run $script" ;;
-    npm | *) command="npm run $script" ;;
+    pnpm)
+      binary="pnpm"
+      command="pnpm $script"
+      ;;
+    yarn)
+      binary="yarn"
+      command="yarn $script"
+      ;;
+    bun)
+      binary="bun"
+      command="bun run $script"
+      ;;
+    npm | *)
+      binary="npm"
+      command="npm run $script"
+      ;;
   esac
+
+  # Fallback path only. run_node_script is reached solely through
+  # run_node_action, which the dispatcher enters only for an action with no
+  # declared command, so an absent package manager here is an absent toolchain
+  # — the same thing every other profile skips on ("cargo not installed",
+  # "swift not installed"). A declaration-free Node project must not start
+  # failing because the manager its package.json names was never installed.
+  #
+  # This must never widen to declared commands: run_declared_command dispatches
+  # those, and a declared command that cannot run stays a loud failure.
+  if ! command -v "$binary" >/dev/null 2>&1; then
+    skip "$binary not installed"
+    return 0
+  fi
 
   run_shell_command "$command"
 }
@@ -833,6 +892,17 @@ run_target_profile() {
   if [ -n "$configured" ]; then
     run_declared_command "$action" "$configured"
     return "$RUN_STATUS"
+  fi
+
+  # A target that says typecheck_command=auto has asked THIS target for
+  # detection. That is not a declaration, so it falls through to the profile
+  # body — but the profile body reads TYPECHECK_COMMAND_AUTO, which still holds
+  # whatever the ROOT config said, so the target's instruction was dropped and
+  # a target with pyright installed reported "no Python typecheck_command
+  # configured". Carry it in here; run_isolated's subshell is what keeps it
+  # from leaking into the next target.
+  if [ "$action" = typecheck ] && declared_typecheck_auto_here; then
+    TYPECHECK_COMMAND_AUTO=true
   fi
 
   note_detection_fallback "$action" "$name"

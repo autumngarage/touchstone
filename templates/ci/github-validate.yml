@@ -2,12 +2,18 @@
 # checks and `scripts/touchstone-run.sh validate` path that gate local pre-push.
 # A CI failure here means the same thing a pre-push rejection would mean locally.
 #
-# `touchstone-run.sh validate` runs the commands declared in
-# .touchstone-config; anything it cannot run reports SKIP and the run ends with
-# a `ran=/skipped=/failed=` verdict. Install your profile's toolchain in the
-# block below before the validate step, and set require_declared=true in
-# .touchstone-config so a run that declared nothing fails here instead of
-# passing on gaps pre-push would catch.
+# `touchstone-run.sh validate` runs the commands declared in .touchstone-config,
+# and a declared command's exit code is the whole verdict. If a declared command
+# names a binary this runner cannot execute, the job FAILS here — it is not
+# skipped, because a declaration is a promise that something ran. SKIP belongs
+# only to the deprecated fallback, where a project that declared nothing had no
+# work to find. So when this check goes red, read the closing
+# `ran=/skipped=/failed=` verdict line: a broken declaration is a missing tool
+# in the toolchain block below, not something to declare away.
+#
+# Install your profile's toolchain in the block below before the validate step,
+# and set require_declared=true in .touchstone-config so a run that declared
+# nothing fails here instead of passing on gaps pre-push would catch.
 
 name: validate
 

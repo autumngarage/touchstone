@@ -997,24 +997,51 @@ _touchstone_doctor_check_sibling() {
   return 0
 }
 
-# Report whether .touchstone-config assigns a non-empty value to the given key.
-# Used to suppress profile-default doctor checks when a project has overridden
-# the runner's behavior — otherwise doctor false-positives on correct configs.
+# Report whether .touchstone-config declares a command for the given
+# "<action>_command" key. Used to suppress profile-default doctor checks when a
+# project has overridden the runner's behavior — otherwise doctor
+# false-positives on correct configs.
+#
+# The runner is the authority on what counts as a declaration, so this asks it
+# rather than matching the file again. A grep for "any non-empty assignment"
+# answered a different question than the runner does: the runner takes the LAST
+# assignment, so `lint_command=ruff` followed by `lint_command=` means fallback
+# detection, while the grep called it an override and doctor suppressed the
+# missing-ruff issue the run would actually hit. Sourcing
+# scripts/touchstone-run.sh for declared_command_in keeps one parser, and with
+# it the runner's other rules for free (typecheck_command=auto is detection,
+# not a declaration).
+#
+# The source runs in a subshell so the runner's globals and `set -euo pipefail`
+# cannot reach this process. TOUCHSTONE_CONFIG_FILE is pinned to the relative
+# default because doctor inspects `.touchstone-config` specifically; an
+# inherited absolute value would make declared_command_in report nothing.
 _touchstone_config_has_override() {
-  local dir="$1" key="$2"
+  local dir="$1" key="$2" value
+
   [ -f "$dir/.touchstone-config" ] || return 1
-  # Match "key = value" where value has at least one non-space character.
-  # Skips commented-out lines ("# key=...") and empty assignments ("key=").
-  grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[^[:space:]#]" "$dir/.touchstone-config"
+  # A broken install has no runner to consult. Report "not overridden" so
+  # doctor errs toward showing a check rather than silently hiding one.
+  [ -f "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" ] || return 1
+
+  value="$(
+    TOUCHSTONE_RUN_SOURCE_ONLY=1 TOUCHSTONE_CONFIG_FILE=.touchstone-config \
+      bash -c 'source "$1" || exit 1; declared_command_in "$2" "$3"' \
+      touchstone-doctor "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" \
+      "$dir" "${key%_command}"
+  )" || return 1
+
+  [ -n "$value" ]
 }
 
 # Read a raw value from .touchstone-config. Empty string when absent.
 # Trims whitespace around both key and value so "key = value" and "key=value"
 # both match, consistent with scripts/touchstone-run.sh:load_config.
 # Matches scripts/touchstone-run.sh:load_config semantics: when the same key
-# appears multiple times, the last non-empty assignment wins (for project_type
-# the runner treats project_type and profile as aliases — pass a space-
-# separated list of keys in "$2" to preserve that behavior).
+# appears multiple times, the last assignment wins — an empty one included, so
+# a key that is set and later cleared reads as cleared (for project_type the
+# runner treats project_type and profile as aliases — pass a space-separated
+# list of keys in "$2" to preserve that behavior).
 _touchstone_config_get() {
   local dir="$1" keys="$2" line value candidate k
   local result=""
