@@ -824,8 +824,9 @@ cmd_doctor_project() {
   fi
 
   # 7. Profile-aware test-surface and tooling gap checks.
-  # touchstone-run.sh validate silently skips when test files / linters are
-  # absent (correct runtime UX). doctor is where those gaps become visible.
+  # touchstone-run.sh validate reports a SKIP (exit 0) when an undeclared
+  # action's test files / linters are absent. doctor is where those gaps
+  # become visible before the next run.
   #
   # Read profile + targets from .touchstone-config directly rather than from
   # `touchstone-run.sh detect`. detect() auto-populates targets by walking
@@ -883,8 +884,8 @@ cmd_doctor_project() {
     _touchstone_doctor_check_tests "$project_dir" "$profile" ""
   fi
 
-  # 7b. Profile lint tool availability — a real gap when missing because the
-  # runtime graceful-skip means lint issues merge uncaught.
+  # 7b. Profile lint tool availability — a real gap when missing because an
+  # undeclared action's skip still exits 0, so lint issues merge uncaught.
   if [ "$lint_overridden" = true ]; then
     tk_dim "lint: overridden via .touchstone-config"
   elif [ -n "$targets" ]; then
@@ -1159,7 +1160,7 @@ _touchstone_doctor_check_lint() {
       if command -v ruff >/dev/null 2>&1; then
         tk_ok "${label}ruff: on PATH"
       else
-        tk_warn "${label}ruff not on PATH — lint silently skips on every pre-push"
+        tk_warn "${label}ruff not on PATH — lint skips (SKIP, not run) on every pre-push"
         tk_dim "  Fix: brew install ruff   (or: uv tool install ruff)"
         issues=$((issues + 1))
       fi
@@ -1168,7 +1169,7 @@ _touchstone_doctor_check_lint() {
       if [ -f "$dir/package.json" ] && grep -q '"lint"[[:space:]]*:' "$dir/package.json"; then
         tk_ok "${label}package.json: lint script configured"
       else
-        tk_dim "${label}package.json has no 'lint' script — lint silently skips on every pre-push"
+        tk_dim "${label}package.json has no 'lint' script — lint skips (SKIP, not run) on every pre-push"
         if [ -z "$label" ]; then
           tk_dim "  Fix: add a \"lint\" entry under \"scripts\" in package.json"
         fi
@@ -1178,7 +1179,7 @@ _touchstone_doctor_check_lint() {
       if command -v swift-format >/dev/null 2>&1; then
         tk_ok "${label}swift-format: on PATH"
       else
-        tk_warn "${label}swift-format not on PATH — lint silently skips on every pre-push"
+        tk_warn "${label}swift-format not on PATH — lint skips (SKIP, not run) on every pre-push"
         tk_dim "  Fix: brew install swift-format"
         issues=$((issues + 1))
       fi

@@ -22,11 +22,57 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local file="$1" needle="$2"
+  if grep -q -- "$needle" "$file" 2>/dev/null; then
+    echo "FAIL: expected '$file' to NOT contain '$needle'" >&2
+    echo "  ---- file content ----" >&2
+    sed 's/^/    /' "$file" >&2 || true
+    echo "  ----------------------" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+}
+
 run_touchstone() {
   HOME="$TEST_DIR/home" \
     NO_COLOR=1 \
     TOUCHSTONE_NO_AUTO_UPDATE=1 \
     bash "$TOUCHSTONE_BIN" "$@"
+}
+
+RUNNER="$TOUCHSTONE_ROOT/scripts/touchstone-run.sh"
+
+# Run the task runner inside $1 and record its exit code in RUNNER_EXIT.
+RUNNER_EXIT=0
+run_runner() {
+  local project="$1" out="$2"
+  shift 2
+  RUNNER_EXIT=0
+  (
+    cd "$project"
+    PATH="$RUNNER_FAKE_BIN:$PATH" bash "$RUNNER" "$@"
+  ) >"$out" 2>&1 || RUNNER_EXIT=$?
+}
+
+# A project that declares node scripts, with a package manager whose behavior
+# the test controls: it fails inside any directory named *-fail or */alpha.
+RUNNER_FAKE_BIN="$TEST_DIR/declaration-fake-bin"
+mkdir -p "$RUNNER_FAKE_BIN"
+cat >"$RUNNER_FAKE_BIN/pnpm" <<'FAKE_PNPM'
+#!/usr/bin/env bash
+case "$PWD" in
+  *-fail | */alpha) exit 3 ;;
+esac
+exit 0
+FAKE_PNPM
+chmod +x "$RUNNER_FAKE_BIN/pnpm"
+
+make_node_project() {
+  local dir="$1"
+  mkdir -p "$dir"
+  git -C "$dir" init -q
+  printf '{"packageManager":"pnpm@9.0.0","scripts":{"lint":"exit 3"}}\n' >"$dir/package.json"
+  printf 'project_type=node\n' >"$dir/.touchstone-config"
 }
 
 mkdir -p "$TEST_DIR/home"
@@ -147,7 +193,7 @@ git -C "$VALIDATE_PROJECT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/or
     PRE_COMMIT_REMOTE_BRANCH=refs/heads/feature/test \
     bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" validate
 ) >"$FEATURE_PUSH_OUT" 2>&1
-assert_contains "$FEATURE_PUSH_OUT" 'feature-branch pre-push validate skipped'
+assert_contains "$FEATURE_PUSH_OUT" 'SKIP feature-branch pre-push validate'
 if [ -d "$FEATURE_PUSH_SENTINEL" ]; then
   echo "FAIL: feature-branch pre-push validate should not run configured validate command" >&2
   ERRORS=$((ERRORS + 1))
@@ -268,6 +314,119 @@ if [ "$HIGH_RISK_EXIT" -eq 0 ]; then
 fi
 assert_contains "$HIGH_RISK_OUT" "unknown Touchstone script 'open-pr'"
 assert_contains "$HIGH_RISK_OUT" 'Known scripts: cleanup-branches cleanup-worktrees touchstone-run'
+
+echo "==> Test: a failing package script fails instead of reporting 'no script'"
+
+# Regression for the laundering that made a green required check compatible
+# with nothing having run: run_node_action inferred script *presence* from the
+# exit code, so `pnpm lint` exiting 3 was reported as an absent script.
+NODE_FAIL_PROJECT="$TEST_DIR/node-lint-fail"
+make_node_project "$NODE_FAIL_PROJECT"
+NODE_FAIL_OUT="$TEST_DIR/node-lint-fail.out"
+run_runner "$NODE_FAIL_PROJECT" "$NODE_FAIL_OUT" lint
+if [ "$RUNNER_EXIT" -eq 0 ]; then
+  echo "FAIL: a failing package.json lint script must fail the run" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_not_contains "$NODE_FAIL_OUT" "no package.json 'lint' script"
+assert_contains "$NODE_FAIL_OUT" 'lint verdict: ran=1 skipped=0 failed=1'
+
+echo "==> Test: a failing declared target fails the run"
+
+# Regression for `if run_targets_action`: the conditional disabled set -e for
+# the whole target loop, so a failed target was masked by a later target's
+# success — and a failure in the last target fell through to the root profile's
+# "no default command" skip, which exited 0.
+TARGET_FAIL_PROJECT="$TEST_DIR/targets-fail"
+mkdir -p "$TARGET_FAIL_PROJECT"
+git -C "$TARGET_FAIL_PROJECT" init -q
+make_node_project "$TARGET_FAIL_PROJECT/packages/alpha"
+make_node_project "$TARGET_FAIL_PROJECT/packages/beta"
+printf 'project_type=generic\ntargets=alpha:packages/alpha:node,beta:packages/beta:node\n' \
+  >"$TARGET_FAIL_PROJECT/.touchstone-config"
+TARGET_FAIL_OUT="$TEST_DIR/targets-fail.out"
+run_runner "$TARGET_FAIL_PROJECT" "$TARGET_FAIL_OUT" lint
+if [ "$RUNNER_EXIT" -eq 0 ]; then
+  echo "FAIL: a failing target must fail the run even when a later target passes" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TARGET_FAIL_OUT" "target 'alpha' failed 'lint' (exit 3)"
+assert_not_contains "$TARGET_FAIL_OUT" "generic project has no default 'lint' command"
+
+echo "==> Test: a declared target whose path is gone fails the run"
+
+TARGET_GHOST_PROJECT="$TEST_DIR/targets-ghost"
+mkdir -p "$TARGET_GHOST_PROJECT"
+git -C "$TARGET_GHOST_PROJECT" init -q
+printf 'project_type=generic\ntargets=ghost:packages/ghost:node\n' \
+  >"$TARGET_GHOST_PROJECT/.touchstone-config"
+TARGET_GHOST_OUT="$TEST_DIR/targets-ghost.out"
+run_runner "$TARGET_GHOST_PROJECT" "$TARGET_GHOST_OUT" lint
+if [ "$RUNNER_EXIT" -eq 0 ]; then
+  echo "FAIL: a declared target with a missing path must fail the run" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TARGET_GHOST_OUT" "declared target 'ghost' path not found: packages/ghost"
+assert_contains "$TARGET_GHOST_OUT" "drop 'ghost' from targets= in .touchstone-config"
+
+echo "==> Test: a declared command that is not runnable fails with the remedy"
+
+MISSING_TOOL_PROJECT="$TEST_DIR/declared-missing-tool"
+mkdir -p "$MISSING_TOOL_PROJECT"
+git -C "$MISSING_TOOL_PROJECT" init -q
+printf 'test_command=touchstone-no-such-tool-xyz --run\n' >"$MISSING_TOOL_PROJECT/.touchstone-config"
+MISSING_TOOL_OUT="$TEST_DIR/declared-missing-tool.out"
+run_runner "$MISSING_TOOL_PROJECT" "$MISSING_TOOL_OUT" test
+if [ "$RUNNER_EXIT" -eq 0 ]; then
+  echo "FAIL: a declared command whose binary is missing must fail the run" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$MISSING_TOOL_OUT" 'declared test_command is not runnable here (exit 127)'
+assert_contains "$MISSING_TOOL_OUT" 'Or declare a runnable command: test_command=<command> in .touchstone-config'
+assert_contains "$MISSING_TOOL_OUT" 'test verdict: ran=0 skipped=0 failed=1'
+
+echo "==> Test: an undeclared project still runs, and says nothing ran"
+
+# Backward compatibility at a shipped boundary: projects bootstrapped before
+# declaration-first keep exiting 0. What changes is that the run reports what
+# it did — SKIP per task, a verdict line, and a warning that a green result
+# here proves nothing.
+UNDECLARED_PROJECT="$TEST_DIR/undeclared"
+mkdir -p "$UNDECLARED_PROJECT"
+git -C "$UNDECLARED_PROJECT" init -q
+UNDECLARED_OUT="$TEST_DIR/undeclared.out"
+run_runner "$UNDECLARED_PROJECT" "$UNDECLARED_OUT" validate
+if [ "$RUNNER_EXIT" -ne 0 ]; then
+  echo "FAIL: a project that declares nothing must keep working (exit 0)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$UNDECLARED_OUT" "SKIP generic project has no default 'lint' command"
+assert_contains "$UNDECLARED_OUT" 'validate verdict: ran=0 skipped=3 failed=0'
+assert_contains "$UNDECLARED_OUT" "NOTHING RAN: 'validate' executed no command"
+assert_contains "$UNDECLARED_OUT" "DEPRECATED: no lint_command in .touchstone-config"
+
+echo "==> Test: require_declared turns an unproven validate into a failure"
+
+STRICT_PROJECT="$TEST_DIR/require-declared"
+mkdir -p "$STRICT_PROJECT"
+git -C "$STRICT_PROJECT" init -q
+printf 'require_declared=true\n' >"$STRICT_PROJECT/.touchstone-config"
+STRICT_OUT="$TEST_DIR/require-declared.out"
+run_runner "$STRICT_PROJECT" "$STRICT_OUT" validate
+if [ "$RUNNER_EXIT" -eq 0 ]; then
+  echo "FAIL: require_declared=true must fail a validate in which nothing was declared" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$STRICT_OUT" "require_declared=true and no declared command ran for 'validate'"
+
+printf 'require_declared=true\nvalidate_command=true\n' >"$STRICT_PROJECT/.touchstone-config"
+STRICT_OK_OUT="$TEST_DIR/require-declared-ok.out"
+run_runner "$STRICT_PROJECT" "$STRICT_OK_OUT" validate
+if [ "$RUNNER_EXIT" -ne 0 ]; then
+  echo "FAIL: require_declared=true must pass once a declared command runs" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$STRICT_OK_OUT" 'validate verdict: ran=1 skipped=0 failed=0'
 
 echo ""
 if [ "$ERRORS" -eq 0 ]; then

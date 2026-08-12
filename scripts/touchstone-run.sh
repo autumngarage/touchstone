@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# scripts/touchstone-run.sh — run project profile tasks from .touchstone-config.
+# scripts/touchstone-run.sh — run project tasks declared in .touchstone-config.
 #
 # Usage:
 #   bash scripts/touchstone-run.sh detect
@@ -9,6 +9,14 @@
 #   bash scripts/touchstone-run.sh build
 #   bash scripts/touchstone-run.sh test
 #   bash scripts/touchstone-run.sh validate
+#
+# Declaration first. A declared ${action}_command runs and its exit code is the
+# verdict — there is no skip path for a declaration. Repo-layout detection is a
+# deprecated fallback for projects that declare nothing: every task it does not
+# run reports SKIP, and each run ends with a `ran=/skipped=/failed=` verdict so
+# a zero exit cannot mean "nothing ran". Set require_declared=true in
+# .touchstone-config (or TOUCHSTONE_RUN_REQUIRE_DECLARED=1) to fail a run in
+# which no declared command executed.
 #
 set -euo pipefail
 
@@ -68,13 +76,30 @@ TYPECHECK_COMMAND_AUTO=false
 BUILD_COMMAND=""
 TEST_COMMAND=""
 VALIDATE_COMMAND=""
+REQUIRE_DECLARED=""
+
+# Outcome accounting. Every task the dispatcher touches lands in exactly one
+# bucket, and finish() reports all three, so a zero exit can no longer mean
+# "nothing was linted and nothing was tested". RUN_RAN is incremented in
+# run_shell_command — the one place a task is actually executed.
+RUN_RAN=0
+RUN_SKIPPED=0
+RUN_FAILED=0
+RUN_DECLARED=0
+RUN_DEFERRED=false
+DETECTION_FALLBACK_ACTIONS=""
 
 info() { printf '==> %s\n' "$*"; }
-ok() { printf '  OK %s\n' "$*"; }
+skip() {
+  RUN_SKIPPED=$((RUN_SKIPPED + 1))
+  printf '  SKIP %s\n' "$*"
+}
 warn() { printf '  ! %s\n' "$*" >&2; }
 
 usage() {
-  sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
+  # Lines 3-11 are the title and the usage list; the contract note below them
+  # is for readers of this file, not for --help.
+  sed -n '3,11p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 trim() {
@@ -165,8 +190,16 @@ load_config() {
       build_command) BUILD_COMMAND="$value" ;;
       test_command) TEST_COMMAND="$value" ;;
       validate_command) VALIDATE_COMMAND="$value" ;;
+      require_declared) REQUIRE_DECLARED="$value" ;;
     esac
   done <"$CONFIG_FILE"
+}
+
+# Opt-in strictness for projects whose validate is a required check: a run in
+# which no declared command executed is a failure, not a warning. Off by
+# default so already-bootstrapped projects that declare nothing keep working.
+require_declared_enabled() {
+  truthy "${TOUCHSTONE_RUN_REQUIRE_DECLARED:-${REQUIRE_DECLARED:-false}}"
 }
 
 detect_node_package_manager() {
@@ -256,6 +289,7 @@ has_package_script() {
 run_shell_command() {
   local command="$1"
   info "$command"
+  RUN_RAN=$((RUN_RAN + 1))
   env \
     -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
     -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR -u GIT_NAMESPACE \
@@ -276,6 +310,45 @@ configured_command_for_action() {
     validate) printf '%s\n' "$VALIDATE_COMMAND" ;;
     *) printf '\n' ;;
   esac
+}
+
+# A declaration is a promise: the command runs and its exit code is the answer.
+# A missing binary (127) is a broken declaration, not an absent one, so it
+# fails loudly instead of reporting the "ok ... skipped" that made a green
+# required check compatible with nothing having run.
+run_declared_command() {
+  local action="$1" command="$2" status=0
+
+  RUN_DECLARED=$((RUN_DECLARED + 1))
+  run_shell_command "$command" || status=$?
+  if [ "$status" -eq 0 ]; then
+    return 0
+  fi
+
+  RUN_FAILED=$((RUN_FAILED + 1))
+  if [ "$status" -eq 127 ]; then
+    # 127 means the command was dispatched but never executed, so it does not
+    # count toward ran — it is a broken declaration, reported as a failure.
+    RUN_RAN=$((RUN_RAN - 1))
+    warn "declared ${action}_command is not runnable here (exit 127): $command"
+    warn "  Fix: install the missing tool, then rerun: bash scripts/touchstone-run.sh $action"
+    warn "  Or declare a runnable command: ${action}_command=<command> in $CONFIG_FILE"
+  else
+    warn "declared ${action}_command failed (exit $status): $command"
+  fi
+  return "$status"
+}
+
+# Detection guesses a command from repo layout instead of reading one. It stays
+# only as a deprecated fallback for projects that declare nothing, and it says
+# so once per action, naming the key that replaces it.
+note_detection_fallback() {
+  local action="$1"
+
+  case "$action" in build_if_distinct) return 0 ;; esac
+  case " $DETECTION_FALLBACK_ACTIONS " in *" $action "*) return 0 ;; esac
+  DETECTION_FALLBACK_ACTIONS="$DETECTION_FALLBACK_ACTIONS $action"
+  warn "DEPRECATED: no ${action}_command in $CONFIG_FILE — guessing '$action' from repo layout. Declare it: ${action}_command=<command>"
 }
 
 run_node_script() {
@@ -408,10 +481,15 @@ run_node_action() {
 
   case "$action" in
     lint | typecheck | build | test)
-      if run_node_script "$action"; then
+      # Presence is checked before dispatch, never inferred from the exit
+      # code: `if run_node_script ...` reported a *failing* npm script as an
+      # absent one and returned 0, which is the laundering this runner exists
+      # to stop.
+      if ! has_package_script "$action"; then
+        skip "no package.json '$action' script"
         return 0
       fi
-      ok "no package.json '$action' script; skipped"
+      run_node_script "$action"
       ;;
     build_if_distinct)
       # Bundler builds (webpack/vite/esbuild/turbopack) catch errors typecheck
@@ -436,35 +514,37 @@ run_python_action() {
       if command -v ruff >/dev/null 2>&1; then
         run_shell_command "ruff check ."
       else
-        ok "ruff not installed; skipped"
+        skip "ruff not installed"
       fi
       ;;
     typecheck)
       if [ "$TYPECHECK_COMMAND_AUTO" != true ]; then
-        ok "no Python typecheck_command configured; skipped"
+        skip "no Python typecheck_command configured"
       elif command -v pyright >/dev/null 2>&1; then
         run_shell_command "pyright"
       elif command -v mypy >/dev/null 2>&1; then
         run_shell_command "mypy ."
       else
-        ok "pyright/mypy not installed; skipped"
+        skip "pyright/mypy not installed"
       fi
       ;;
     build)
-      ok "no default Python build command; set build_command in .touchstone-config"
+      skip "no default Python build command; set build_command in $CONFIG_FILE"
       ;;
     test)
       if python_bin="$(find_python_bin)"; then
         local pytest_rc=0
         run_shell_command "$python_bin -m pytest" || pytest_rc=$?
-        # pytest exit 5 = no tests collected. Treat like absent linters — skip, don't fail.
+        # pytest exit 5 = no tests collected. The command ran but proved
+        # nothing, so it counts as a skip, not as a task that ran.
         if [ "$pytest_rc" -eq 5 ]; then
-          ok "pytest found no tests; skipped"
+          RUN_RAN=$((RUN_RAN - 1))
+          skip "pytest found no tests"
         elif [ "$pytest_rc" -ne 0 ]; then
           return "$pytest_rc"
         fi
       else
-        ok "python not found; skipped"
+        skip "python not found"
       fi
       ;;
     build_if_distinct)
@@ -481,7 +561,7 @@ run_rust_action() {
   local action="$1"
 
   if ! command -v cargo >/dev/null 2>&1; then
-    ok "cargo not installed; skipped"
+    skip "cargo not installed"
     return 0
   fi
 
@@ -490,12 +570,12 @@ run_rust_action() {
       if cargo fmt --version >/dev/null 2>&1; then
         run_shell_command "cargo fmt -- --check"
       else
-        ok "cargo fmt not installed; skipped"
+        skip "cargo fmt not installed"
       fi
       if cargo clippy --version >/dev/null 2>&1; then
         run_shell_command "cargo clippy --all-targets --all-features -- -D warnings"
       else
-        ok "cargo clippy not installed; skipped"
+        skip "cargo clippy not installed"
       fi
       ;;
     typecheck) run_shell_command "cargo check --all-targets --all-features" ;;
@@ -515,7 +595,7 @@ run_swift_action() {
   local action="$1"
 
   if ! command -v swift >/dev/null 2>&1; then
-    ok "swift not installed; skipped"
+    skip "swift not installed"
     return 0
   fi
 
@@ -524,7 +604,7 @@ run_swift_action() {
       if command -v swift-format >/dev/null 2>&1; then
         run_shell_command "swift-format lint -r ."
       else
-        ok "swift-format not installed; skipped"
+        skip "swift-format not installed"
       fi
       ;;
     typecheck | build) run_shell_command "swift build" ;;
@@ -543,7 +623,7 @@ run_go_action() {
   local action="$1"
 
   if ! command -v go >/dev/null 2>&1; then
-    ok "go not installed; skipped"
+    skip "go not installed"
     return 0
   fi
 
@@ -577,7 +657,7 @@ run_profile_action() {
       if [ "$action" = "build_if_distinct" ]; then
         return 0
       fi
-      ok "generic project has no default '$action' command; set ${action}_command in .touchstone-config"
+      skip "generic project has no default '$action' command; set ${action}_command in $CONFIG_FILE"
       ;;
     *)
       warn "unknown project_type '$profile' for action '$action'"
@@ -587,10 +667,8 @@ run_profile_action() {
 }
 
 run_targets_action() {
-  local action="$1" entry name path profile
+  local action="$1" entry name path profile status failures=0
   local -a target_entries=()
-
-  [ -n "$TARGETS" ] || return 1
 
   IFS=',' read -r -a target_entries <<<"$TARGETS"
   for entry in "${target_entries[@]}"; do
@@ -608,27 +686,52 @@ run_targets_action() {
     fi
 
     if [ ! -d "$path" ]; then
-      warn "target '$name' path not found: $path"
+      RUN_FAILED=$((RUN_FAILED + 1))
+      failures=$((failures + 1))
+      warn "declared target '$name' path not found: $path"
+      warn "  Fix: restore $path, or drop '$name' from targets= in $CONFIG_FILE"
       continue
     fi
 
     info "target $name ($profile) — $action"
-    (cd "$path" && run_profile_action "$profile" "$action")
+    # No subshell: the outcome counters must survive the dispatch, and a
+    # failing target must fail the run. `if run_targets_action` used to hide
+    # that — a failed target was masked by the next target's success, or fell
+    # through to the root profile's "no default command" skip.
+    cd "$path" || return 1
+    status=0
+    run_profile_action "$profile" "$action" || status=$?
+    cd "$REPO_ROOT" || return 1
+    if [ "$status" -ne 0 ]; then
+      RUN_FAILED=$((RUN_FAILED + 1))
+      failures=$((failures + 1))
+      warn "target '$name' failed '$action' (exit $status)"
+    fi
   done
+
+  if [ "$failures" -ne 0 ]; then
+    return 1
+  fi
+  return 0
 }
 
 run_action() {
-  local action="$1" configured profile
+  local action="$1" configured profile status=0
 
+  # Declaration first: nothing is detected when the project has stated what to
+  # run, and the declared command's exit code is the whole answer.
   configured="$(configured_command_for_action "$action")"
   if [ -n "$configured" ]; then
-    run_shell_command "$configured"
-    return 0
+    run_declared_command "$action" "$configured" || status=$?
+    return "$status"
   fi
 
-  if run_targets_action "$action"; then
-    return 0
+  if [ -n "$TARGETS" ]; then
+    run_targets_action "$action" || status=$?
+    return "$status"
   fi
+
+  note_detection_fallback "$action"
 
   profile="${PROJECT_TYPE:-auto}"
   if [ "$profile" = "auto" ] || [ -z "$profile" ]; then
@@ -638,31 +741,71 @@ run_action() {
     profile="$(detect_profile ".")"
   fi
 
-  run_profile_action "$profile" "$action"
+  run_profile_action "$profile" "$action" || status=$?
+  if [ "$status" -ne 0 ]; then
+    RUN_FAILED=$((RUN_FAILED + 1))
+  fi
+  return "$status"
 }
 
 run_validate() {
-  local configured
+  local configured status=0
 
   if should_skip_feature_push_validate; then
-    ok "feature-branch pre-push validate skipped; merge gate runs full validation"
+    RUN_DEFERRED=true
+    skip "feature-branch pre-push validate; the merge gate runs full validation"
     return 0
   fi
 
   configured="$(configured_command_for_action validate)"
   if [ -n "$configured" ]; then
-    run_shell_command "$configured"
-    return 0
+    run_declared_command validate "$configured" || status=$?
+    return "$status"
   fi
 
-  run_action lint
-  run_action typecheck
+  run_action lint || return "$?"
+  run_action typecheck || return "$?"
   # Node targets with distinct typecheck + build scripts: run the bundler too.
   # Other profiles no-op because their typecheck already runs the compiler.
   # Distinctness is per-target, so this flows through run_targets_action just
   # like every other action — no special-casing for monorepo vs single-package.
-  run_action build_if_distinct
-  run_action test
+  run_action build_if_distinct || return "$?"
+  run_action test || return "$?"
+  return 0
+}
+
+# The single exit point for every action. It states what happened before the
+# process ends, so "the check was green" and "a task ran" stop being the same
+# claim.
+finish() {
+  local action="$1" status="$2"
+
+  printf '==> %s verdict: ran=%d skipped=%d failed=%d\n' \
+    "$action" "$RUN_RAN" "$RUN_SKIPPED" "$RUN_FAILED"
+
+  if [ "$status" -ne 0 ]; then
+    exit "$status"
+  fi
+
+  # A deferred pre-push validate is a policy decision, not an unrun task: the
+  # merge gate runs this same validate against the exact merged head.
+  if [ "$RUN_DEFERRED" = true ]; then
+    exit 0
+  fi
+
+  if require_declared_enabled && [ "$RUN_DECLARED" -eq 0 ]; then
+    warn "require_declared=true and no declared command ran for '$action'."
+    warn "  Fix: declare it in $CONFIG_FILE: ${action}_command=<command>"
+    exit 1
+  fi
+
+  if [ "$RUN_RAN" -eq 0 ]; then
+    warn "NOTHING RAN: '$action' executed no command, so this result proves nothing."
+    warn "  Fix: declare it in $CONFIG_FILE: ${action}_command=<command>"
+    warn "  Then set require_declared=true in $CONFIG_FILE to fail this instead of warning."
+  fi
+
+  exit 0
 }
 
 print_detection() {
@@ -706,11 +849,19 @@ print_detection() {
 
 load_config
 
+ACTION_STATUS=0
+
 case "$ACTION" in
   -h | --help) usage ;;
   detect) print_detection ;;
-  lint | typecheck | build | test) run_action "$ACTION" ;;
-  validate) run_validate ;;
+  lint | typecheck | build | test)
+    run_action "$ACTION" || ACTION_STATUS=$?
+    finish "$ACTION" "$ACTION_STATUS"
+    ;;
+  validate)
+    run_validate || ACTION_STATUS=$?
+    finish validate "$ACTION_STATUS"
+    ;;
   *)
     echo "ERROR: unknown touchstone-run action '$ACTION'" >&2
     usage >&2

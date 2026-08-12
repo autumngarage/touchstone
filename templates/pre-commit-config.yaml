@@ -77,8 +77,9 @@ repos:
         pass_filenames: false
 
   # ── Project profile checks ─────────────────────────────────────────────
-  # scripts/touchstone-run.sh reads .touchstone-config and dispatches to the
-  # appropriate Node/TypeScript, Swift, Rust, Python, Go, or monorepo commands.
+  # scripts/touchstone-run.sh runs the commands declared in .touchstone-config;
+  # an undeclared action falls back to deprecated repo-layout detection and
+  # reports SKIP for whatever it cannot run.
   - repo: local
     hooks:
       - id: touchstone-validate

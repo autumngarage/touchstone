@@ -169,7 +169,7 @@ When you run `touchstone new`, these files get created in your project:
 - `AGENTS.md` — Codex/agent instructions plus the AI review rubric with project-specific priorities
 - `GEMINI.md` — Gemini CLI instructions that point at the shared authoring/review workflow
 - `.touchstone-review.toml` — required PR-visible review policy
-- `.touchstone-config` — Project profile, workflow choices, and optional lint/test/build command overrides
+- `.touchstone-config` — Declared lint/typecheck/build/test/validate commands, project profile, and workflow choices
 - `.pre-commit-config.yaml` — Pre-commit hooks including fast branch checks and direct default-branch guardrails
 - `.gitignore` — Sensible defaults
 - `.worktreeinclude.example` — Starter allowlist for ignored local files to copy into spawned worktrees
@@ -180,7 +180,7 @@ When you run `touchstone new`, these files get created in your project:
 - `.touchstone-version` — The touchstone revision this project has applied
 - `.touchstone-manifest` — The visible list of touchstone-managed paths
 - `principles/*.md` — Universal engineering principles
-- `scripts/touchstone-run.sh` — Profile-aware runner for Node/TypeScript, Swift, Rust, Python, Go, and monorepos
+- `scripts/touchstone-run.sh` — Task runner for the commands declared in `.touchstone-config`, with deprecated repo-layout detection as the fallback
 - `scripts/open-pr.sh` — Push + create PR via `gh`
 - `scripts/merge-pr.sh` — exact-head review gate + deterministic preflight + squash-merge + sync main
 - `scripts/cleanup-branches.sh` — Safe branch hygiene
@@ -190,7 +190,7 @@ When you run `touchstone new`, these files get created in your project:
 
 ### What the gates actually enforce
 
-Touchstone enforces a test **runner**, not a test **suite**. The pre-push hook invokes `scripts/touchstone-run.sh validate`, which dispatches lint/typecheck/build/test per profile — but every profile silently skips when the underlying tool or test file is absent (correct runtime UX: a fresh scaffold shouldn't reject pushes just because the first test hasn't been written yet). Consequence: a repo with zero test files passes the gate.
+Touchstone enforces a test **runner**, not a test **suite**. The pre-push hook invokes `scripts/touchstone-run.sh validate`, which runs the commands declared in `.touchstone-config` — a declared command runs and its exit code is the verdict, including a missing binary. A project that declares nothing falls back to deprecated repo-layout detection, which skips when the underlying tool or test file is absent (a fresh scaffold shouldn't reject pushes just because the first test hasn't been written yet). Every skip is reported as `SKIP` and each run ends with a `ran=/skipped=/failed=` verdict, so a repo with zero test files still passes the gate but can no longer look like it ran something. Set `require_declared=true` in `.touchstone-config` to make that a failure once `validate` is a required check.
 
 `touchstone doctor` is where those gaps become visible. It reports per-profile test presence, profile-specific linter availability (`ruff`, `swift-format`), pre-push hook integrity, and unknown profile values — in lock-step with the runner's dispatcher so doctor never claims more coverage than `validate` actually runs. Use `touchstone init --scaffold-tests` to seed a placeholder smoke test (Python, Node, and Go; Rust and Swift already get tests from `cargo init` / `swift package init`) and `touchstone init --ci github` to add a GitHub Actions workflow that runs the same `validate` path CI-side.
 

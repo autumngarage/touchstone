@@ -2,10 +2,12 @@
 # checks and `scripts/touchstone-run.sh validate` path that gate local pre-push.
 # A CI failure here means the same thing a pre-push rejection would mean locally.
 #
-# `touchstone-run.sh validate` silently skips when profile linters/tests are
-# absent (correct runtime UX). In CI that's useless — install your profile's
-# toolchain in the block below before the validate step, or CI will pass on
-# gaps pre-push would catch.
+# `touchstone-run.sh validate` runs the commands declared in
+# .touchstone-config; anything it cannot run reports SKIP and the run ends with
+# a `ran=/skipped=/failed=` verdict. Install your profile's toolchain in the
+# block below before the validate step, and set require_declared=true in
+# .touchstone-config so a run that declared nothing fails here instead of
+# passing on gaps pre-push would catch.
 
 name: validate
 

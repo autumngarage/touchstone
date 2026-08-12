@@ -16,3 +16,6 @@ typecheck_command=
 build_command=
 test_command=
 validate_command=for t in tests/test-*.sh; do bash "$t" || exit 1; done
+# Touchstone declares its validate command, so it holds itself to the strict
+# contract: a run in which no declared command executed is a failure.
+require_declared=true

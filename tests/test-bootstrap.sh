@@ -1204,7 +1204,7 @@ printf 'project_type=python\n' >"$PYTHON_PARTIAL_PROJECT/.touchstone-config"
 printf '[project]\nname = "partial"\nversion = "0.0.0"\n' >"$PYTHON_PARTIAL_PROJECT/pyproject.toml"
 : >"$RUNNER_LOG"
 (cd "$PYTHON_PARTIAL_PROJECT" && PATH="$RUNNER_FAKE_BIN:$PATH" RUNNER_LOG="$RUNNER_LOG" bash scripts/touchstone-run.sh typecheck) >"$TEST_DIR/python-partial-typecheck.out"
-assert_contains "$TEST_DIR/python-partial-typecheck.out" 'no Python typecheck_command configured; skipped'
+assert_contains "$TEST_DIR/python-partial-typecheck.out" 'SKIP no Python typecheck_command configured'
 if grep -qE '^(pyright|mypy)\|' "$RUNNER_LOG"; then
   echo "FAIL: Python typecheck must not default to whole-project pyright/mypy without typecheck_command" >&2
   ERRORS=$((ERRORS + 1))
@@ -1467,7 +1467,9 @@ mkdir -p "$PROJECT_PYTEST_EMPTY/scripts"
 cp "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" "$PROJECT_PYTEST_EMPTY/scripts/touchstone-run.sh"
 printf 'project_type=python\n' >"$PROJECT_PYTEST_EMPTY/.touchstone-config"
 if (cd "$PROJECT_PYTEST_EMPTY" && PATH="$PYTEST_FAKE_BIN:$PATH" PYTEST_PYTHON=python3 bash scripts/touchstone-run.sh test) >"$TEST_DIR/pytest-empty-output.txt" 2>&1; then
-  assert_contains "$TEST_DIR/pytest-empty-output.txt" 'pytest found no tests; skipped'
+  assert_contains "$TEST_DIR/pytest-empty-output.txt" 'SKIP pytest found no tests'
+  # pytest ran but collected nothing, so the verdict must not claim a task ran.
+  assert_contains "$TEST_DIR/pytest-empty-output.txt" 'test verdict: ran=0 skipped=1 failed=0'
 else
   echo "FAIL: pytest exit 5 must be a graceful skip, not a failure" >&2
   ERRORS=$((ERRORS + 1))
