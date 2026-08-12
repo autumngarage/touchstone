@@ -47,6 +47,14 @@ assert_file_empty() {
   fi
 }
 
+assert_file_empty_of() {
+  local why="$1" file="$2" needle="$3"
+  if grep -qF -- "$needle" "$file"; then
+    fail "$why; got:"
+    sed -e 's/^/    | /' "$file" >&2
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Fixture: a project tree carrying the shipped scripts, libs, and a gh stub
 # that records every invocation.
@@ -172,10 +180,13 @@ key_prefix = "CON"'
 OUT="$TEST_DIR/case2.out"
 RC=0
 run_fixture claim-issue.sh "$OUT" CON-7 || RC=$?
-assert_eq "case 2 rc" "0" "$RC"
+# Exit 3, never 0: nothing was claimed, and a dispatching agent branches on
+# this. Exiting 0 would let a scripted claim silently no-op (#743 review).
+assert_eq "case 2 rc" "3" "$RC"
 assert_file_contains "$OUT" "MANUAL CLAIM REQUIRED"
 assert_file_contains "$OUT" "Assign CON-7 to yourself"
 assert_file_contains "$OUT" "Fixes CON-7"
+assert_file_contains "$OUT" "Exit 3 (manual action required): nothing has been claimed yet."
 assert_file_empty "$GH_LOG" "case 2: the linear claim path must not invoke gh at all"
 
 # ---------------------------------------------------------------------------
@@ -240,9 +251,13 @@ printf 'Some prose.\n\nFixes CON-42\nfixes con-42\n' >"$BODY"
 OUT="$TEST_DIR/case7.out"
 RC=0
 run_fixture issue-claim-check.sh "$OUT" --body-file "$BODY" --author alice || RC=$?
-assert_eq "case 7 rc" "0" "$RC"
+# Exit 3, never 0: references were found and NOTHING was verified, so callers
+# (open-pr, the CI workflow, merge-pr's substitution) each decide in the open
+# what an unverifiable claim means rather than reading a green check.
+assert_eq "case 7 rc" "3" "$RC"
 assert_file_contains "$OUT" "has no claim-verification transport"
 assert_file_contains "$OUT" "referenced: CON-42"
+assert_file_contains "$OUT" "Exit 3 (unverifiable): this check enforced nothing for those references."
 assert_eq "case 7 dedupes case-variant refs" "1" "$(grep -c 'referenced: CON-42' "$OUT")"
 assert_file_empty "$GH_LOG" "case 7: a body-file check under linear must not invoke gh"
 
@@ -284,6 +299,59 @@ echo "==> Case 10: the shipped template documents the declaration"
 assert_file_contains "$TOUCHSTONE_ROOT/templates/touchstone-review.toml" '# tracker = "linear"'
 assert_file_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" 'Which tracker holds the issues'
 
+# ---------------------------------------------------------------------------
+echo "==> Case 11: the CI backstop decides what an unverifiable check means"
+# ---------------------------------------------------------------------------
+# The workflow is the last caller of the exit-code contract, and the only one
+# that can turn "nothing was enforced" into a green required check. Run its
+# actual shell step against a stub helper so the mapping is executed, not
+# merely read: 3 passes WITH a notice, and every other status is untouched.
+WORKFLOW="$TOUCHSTONE_ROOT/.github/workflows/issue-claim-check.yml"
+STEP_SCRIPT="$TEST_DIR/claim-check-step.sh"
+awk '
+  /^        run: \|$/ { collecting = 1; next }
+  collecting { sub(/^          /, ""); print }
+' "$WORKFLOW" >"$STEP_SCRIPT"
+if [ ! -s "$STEP_SCRIPT" ]; then
+  fail "case 11: could not extract the claim-check workflow step from $WORKFLOW"
+fi
+
+STEP_DIR="$TEST_DIR/workflow-step"
+mkdir -p "$STEP_DIR/.touchstone-claim-base/scripts"
+run_workflow_step() {
+  local helper_exit="$1" out="$2"
+  cat >"$STEP_DIR/.touchstone-claim-base/scripts/issue-claim-check.sh" <<EOF
+#!/usr/bin/env bash
+echo "stub trusted-base helper"
+exit $helper_exit
+EOF
+  (
+    cd "$STEP_DIR" || exit 2
+    PR_NUMBER=1 bash "$STEP_SCRIPT"
+  ) >"$out" 2>&1
+}
+
+RC=0
+run_workflow_step 3 "$TEST_DIR/step-unverifiable.out" || RC=$?
+assert_eq "case 11 unverifiable rc" "0" "$RC"
+assert_file_contains "$TEST_DIR/step-unverifiable.out" "::notice::Claim ownership was NOT verified"
+
+RC=0
+run_workflow_step 1 "$TEST_DIR/step-refuted.out" || RC=$?
+assert_eq "case 11 refuted rc" "1" "$RC"
+assert_file_empty_of "case 11: a refuted claim must not print the unverifiable notice" \
+  "$TEST_DIR/step-refuted.out" "::notice::"
+
+RC=0
+run_workflow_step 0 "$TEST_DIR/step-verified.out" || RC=$?
+assert_eq "case 11 verified rc" "0" "$RC"
+assert_file_empty_of "case 11: a verified claim must not print the unverifiable notice" \
+  "$TEST_DIR/step-verified.out" "::notice::"
+
+RC=0
+run_workflow_step 2 "$TEST_DIR/step-error.out" || RC=$?
+assert_eq "case 11 environment-error rc" "2" "$RC"
+
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
   echo "==> FAIL: $ERRORS case(s) failed"
@@ -291,4 +359,4 @@ if [ "$ERRORS" -gt 0 ]; then
 fi
 
 echo ""
-echo "==> PASS: issue discipline dispatches on the declared tracker across 10 cases"
+echo "==> PASS: issue discipline dispatches on the declared tracker across 11 cases"

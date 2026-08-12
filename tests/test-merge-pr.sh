@@ -89,6 +89,9 @@ case "${1:-} ${2:-}" in
     case "${4:-}" in
       defaultBranchRef) echo "main" ;;
       nameWithOwner) echo "${GH_REPO_FULL_NAME:-autumngarage/touchstone}" ;;
+      # The real trusted-base claim verifier resolves the API host from the
+      # repository URL when no GH_HOST/GITHUB_SERVER_URL is set.
+      url) echo "https://github.com/${GH_REPO_FULL_NAME:-autumngarage/touchstone}" ;;
       # merge-pr.sh inspects this before claiming the branch is retained:
       # a repository with deleteBranchOnMerge enabled removes the head
       # server-side regardless of the flags we pass (PR #715 review).
@@ -344,6 +347,20 @@ case "${1:-} ${2:-}" in
         fi
         ;;
       */pulls/*)
+        # The REAL trusted-base claim verifier (see GIT_CLAIM_TRUSTED_TREE)
+        # reads the PR body and author through this same endpoint. Answer
+        # those before the base-revision bookkeeping below so the verifier's
+        # reads do not perturb merge-pr's own base-ref call counters.
+        case "$*" in
+          *'.body'*)
+            printf '%s\n' "${GH_CLAIM_PR_BODY:-}"
+            exit 0
+            ;;
+          *'.user.login'*)
+            printf '%s\n' "${GH_CLAIM_PR_AUTHOR:-alice}"
+            exit 0
+            ;;
+        esac
         base_ref_call_count=1
         if [ -n "${GH_BASE_REF_CALLS_FILE:-}" ]; then
           if [ -f "$GH_BASE_REF_CALLS_FILE" ]; then
@@ -365,6 +382,17 @@ case "${1:-} ${2:-}" in
         else
           printf '%s\t%s\n' "${GH_BASE_REF_NAME:-main}" "${GH_BASE_REF_OID:-base-oid}"
         fi
+        ;;
+      */issues/*)
+        # Issue reads belong to the real trusted-base claim verifier only.
+        case "$*" in
+          *'.state'*) printf '%s\n' "${GH_CLAIM_ISSUE_STATE:-open}" ;;
+          *assignees*) printf '%s\n' "${GH_CLAIM_ISSUE_ASSIGNEES:-}" ;;
+          *)
+            echo "unexpected gh issues api args: $*" >&2
+            exit 1
+            ;;
+        esac
         ;;
       */commits/*)
         if [[ "$*" = *".commit.committer.date"* ]]; then
@@ -625,6 +653,29 @@ emit_untracked_path() {
   printf '%s\0' "$(untracked_path_for_hash)"
 }
 
+# Every trusted-base read must disable replacement objects: a local
+# refs/replace entry for the base SHA would otherwise substitute the content
+# merge-pr.sh calls trusted (touchstone#677). Enforcing it here makes every
+# staged path a regression for the missing env, not just the verifier itself.
+require_no_replace_objects() {
+  if [ "${GIT_NO_REPLACE_OBJECTS:-}" != "1" ]; then
+    echo "trusted-base read ran with replacement objects enabled (touchstone#677)" >&2
+    exit 97
+  fi
+}
+
+# Serve one path out of the fixture tree that stands in for the base commit.
+# A path the fixture does not carry must fail like `git show` on a missing
+# object, so optional-file handling in the staging code stays exercised.
+serve_trusted_tree_path() {
+  local rel="$1"
+  if [ ! -f "$GIT_CLAIM_TRUSTED_TREE/$rel" ]; then
+    echo "fatal: path '$rel' does not exist in the fixture base tree" >&2
+    exit 128
+  fi
+  cat "$GIT_CLAIM_TRUSTED_TREE/$rel"
+}
+
 trusted_touchstone_config_file() {
   if [ -n "${GIT_TRUSTED_TOUCHSTONE_CONFIG_FRESH_FILE:-}" ] \
     && [ -n "${GIT_FETCH_MAIN_FILE:-}" ] \
@@ -756,6 +807,26 @@ case "$*" in
   show\ origin/*:.codex-review.toml)
     cat "$GIT_TRUSTED_LEGACY_CONFIG_FILE"
     ;;
+  ls-tree\ -r\ --name-only\ *)
+    # Only the substitution staging walks a tree, and only in trusted-tree
+    # mode; anything else reaching here is an unexpected git call.
+    require_no_replace_objects
+    [ -n "${GIT_CLAIM_TRUSTED_TREE:-}" ] || {
+      echo "unexpected git args: $*" >&2
+      exit 1
+    }
+    (cd "$GIT_CLAIM_TRUSTED_TREE" && find "${5:-.}" -type f 2>/dev/null | sed 's|^\./||' | sort)
+    ;;
+  show\ *:lib/* | show\ *:.touchstone-review.toml | show\ *:.codex-review.toml)
+    # Reached only in trusted-tree mode: the `show origin/*:` review-policy
+    # cases above match first for merge-pr's own policy reads.
+    require_no_replace_objects
+    [ -n "${GIT_CLAIM_TRUSTED_TREE:-}" ] || {
+      echo "unexpected git args: $*" >&2
+      exit 1
+    }
+    serve_trusted_tree_path "${2#*:}"
+    ;;
   show\ *:scripts/issue-claim-check.sh)
     # Trusted-base claim verifier for the issue #658 substitution fixtures.
     # CLAIM_DIRECT_BYPASS=true emits the documented [skip-claim-check]
@@ -764,9 +835,13 @@ case "$*" in
     # refs/replace entry for the base SHA would otherwise substitute the
     # executed verifier (touchstone#677). Mirroring real git here makes
     # every substitution fixture a regression for the missing env.
-    if [ "${GIT_NO_REPLACE_OBJECTS:-}" != "1" ]; then
-      echo "trusted-base read ran with replacement objects enabled (touchstone#677)" >&2
-      exit 97
+    require_no_replace_objects
+    if [ -n "${GIT_CLAIM_TRUSTED_TREE:-}" ]; then
+      # Trusted-tree mode serves the REAL shipped verifier and everything it
+      # imports out of a fixture tree, so the substitution is exercised
+      # against the actual script rather than a stub that has no imports.
+      serve_trusted_tree_path "${2#*:}"
+      exit 0
     fi
     if [ "${GIT_CLAIM_CHECKER_SHOW_FAIL:-false}" = "true" ]; then
       echo "trusted claim checker unavailable" >&2
@@ -997,6 +1072,11 @@ run_merge_pr() {
     GIT_CLAIM_CHECKER_SHOW_FAIL="${GIT_CLAIM_CHECKER_SHOW_FAIL:-false}" \
     CLAIM_DIRECT_BYPASS="${CLAIM_DIRECT_BYPASS:-false}" \
     CLAIM_DIRECT_EXIT="${CLAIM_DIRECT_EXIT:-0}" \
+    GIT_CLAIM_TRUSTED_TREE="${GIT_CLAIM_TRUSTED_TREE:-}" \
+    GH_CLAIM_PR_BODY="${GH_CLAIM_PR_BODY:-}" \
+    GH_CLAIM_PR_AUTHOR="${GH_CLAIM_PR_AUTHOR:-alice}" \
+    GH_CLAIM_ISSUE_STATE="${GH_CLAIM_ISSUE_STATE:-open}" \
+    GH_CLAIM_ISSUE_ASSIGNEES="${GH_CLAIM_ISSUE_ASSIGNEES:-}" \
     GH_REPO_FULL_NAME="${GH_REPO_FULL_NAME:-autumngarage/touchstone}" \
     GH_PR_VIEW_FAIL_FIELD="${GH_PR_VIEW_FAIL_FIELD:-}" \
     GH_HEAD_REF_FAIL_AFTER="${GH_HEAD_REF_FAIL_AFTER:-}" \
@@ -2886,6 +2966,125 @@ if grep -q 'has failed check(s); stopping automerge' "$TEST_DIR/output-claim-plu
 else
   echo "FAIL: expected the normal failed-check block" >&2
   cat "$TEST_DIR/output-claim-plus-other.txt" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Issue #743: the substitution runs the REAL trusted-base verifier, which is
+# no longer one self-contained file. The fixtures below serve an actual base
+# TREE through the fake git, so staging has to produce something the shipped
+# scripts/issue-claim-check.sh can actually run: its lib/ imports and the
+# [issues] declaration that decides which tracker gets verified.
+# ---------------------------------------------------------------------------
+CLAIM_TREE_GITHUB="$TEST_DIR/trusted-base-github"
+CLAIM_TREE_LINEAR="$TEST_DIR/trusted-base-linear"
+for claim_tree in "$CLAIM_TREE_GITHUB" "$CLAIM_TREE_LINEAR"; do
+  mkdir -p "$claim_tree/scripts" "$claim_tree/lib"
+  cp "$TOUCHSTONE_ROOT/scripts/issue-claim-check.sh" "$claim_tree/scripts/issue-claim-check.sh"
+  cp "$TOUCHSTONE_ROOT/lib/issue-tracker.sh" "$TOUCHSTONE_ROOT/lib/toml.sh" "$claim_tree/lib/"
+done
+# The GitHub tree declares nothing on purpose: that is the pre-declaration
+# state every project starts in, and it must still resolve to GitHub.
+printf '[issues]\ntracker = "linear"\nkey_prefix = "CON"\n' >"$CLAIM_TREE_LINEAR/.touchstone-review.toml"
+
+# A PR-head working tree that declares a tracker the base does not. Running
+# merge-pr from here proves the declaration comes from the base: a PR must not
+# be able to redeclare its way out of the verification that authorizes its own
+# substitution.
+CLAIM_PR_HEAD_TREE="$TEST_DIR/pr-head-declares-linear"
+mkdir -p "$CLAIM_PR_HEAD_TREE"
+printf '[issues]\ntracker = "linear"\nkey_prefix = "CON"\n' >"$CLAIM_PR_HEAD_TREE/.touchstone-review.toml"
+
+echo "==> Test: substitution runs the real trusted-base verifier, imports and all"
+reset_case_files
+if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
+  GH_PR_STATE="MERGED" GH_MERGED_AT="2026-08-07T02:00:00Z" \
+  GH_FAILED_CHECKS="$CLAIM_INFRA_CHECKS" \
+  GH_CLAIM_RUN_REAL_STEPS=0 \
+  GIT_CLAIM_TRUSTED_TREE="$CLAIM_TREE_GITHUB" \
+  GH_CLAIM_PR_BODY="Closes #77" \
+  GH_CLAIM_PR_AUTHOR="alice" \
+  GH_CLAIM_ISSUE_ASSIGNEES="alice" \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  run_merge_pr "$TEST_DIR/output-claim-real-verifier.txt" 123; then
+  # "All referenced issues are claimed by the PR author." is emitted by the
+  # shipped verifier and by nothing else in this harness, so it is only
+  # reachable if the staged tree let the real script load lib/issue-tracker.sh
+  # and reach its GitHub adapter.
+  if grep -q 'All referenced issues are claimed by the PR author.' "$TEST_DIR/output-claim-real-verifier.txt" \
+    && grep -q '==> Checking issue #77' "$TEST_DIR/output-claim-real-verifier.txt" \
+    && grep -q 'confirmed assigned to the PR author by direct API read' "$TEST_DIR/output-claim-real-verifier.txt"; then
+    echo "==> PASS: the staged trusted base carries the verifier's dependencies"
+  else
+    echo "FAIL: expected the real trusted-base verifier to run to a verdict" >&2
+    cat "$TEST_DIR/output-claim-real-verifier.txt" >&2
+    exit 1
+  fi
+else
+  echo "FAIL: substitution with a real trusted-base verifier should merge" >&2
+  cat "$TEST_DIR/output-claim-real-verifier.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: the staged tracker declaration comes from the base, not the PR head"
+reset_case_files
+if (
+  cd "$CLAIM_PR_HEAD_TREE" || exit 1
+  GH_MERGE_STATE="UNSTABLE MERGEABLE" \
+    GH_PR_STATE="MERGED" GH_MERGED_AT="2026-08-07T02:00:00Z" \
+    GH_FAILED_CHECKS="$CLAIM_INFRA_CHECKS" \
+    GH_CLAIM_RUN_REAL_STEPS=0 \
+    GIT_CLAIM_TRUSTED_TREE="$CLAIM_TREE_GITHUB" \
+    GH_CLAIM_PR_BODY="Closes #77" \
+    GH_CLAIM_PR_AUTHOR="alice" \
+    GH_CLAIM_ISSUE_ASSIGNEES="alice" \
+    GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+    run_merge_pr "$TEST_DIR/output-claim-base-declaration.txt" 123
+); then
+  if grep -q '==> Checking issue #77' "$TEST_DIR/output-claim-base-declaration.txt" \
+    && ! grep -q 'no claim-verification transport' "$TEST_DIR/output-claim-base-declaration.txt"; then
+    echo "==> PASS: a PR-head declaration cannot redirect the trusted verification"
+  else
+    echo "FAIL: the PR head's tracker declaration leaked into the trusted verification" >&2
+    cat "$TEST_DIR/output-claim-base-declaration.txt" >&2
+    exit 1
+  fi
+else
+  echo "FAIL: base-declaration substitution should merge" >&2
+  cat "$TEST_DIR/output-claim-base-declaration.txt" >&2
+  exit 1
+fi
+
+echo "==> Test: substitution under an unverifiable tracker discloses NOT verified"
+reset_case_files
+if GH_MERGE_STATE="UNSTABLE MERGEABLE" \
+  GH_PR_STATE="MERGED" GH_MERGED_AT="2026-08-07T02:00:00Z" \
+  GH_FAILED_CHECKS="$CLAIM_INFRA_CHECKS" \
+  GH_CLAIM_RUN_REAL_STEPS=0 \
+  GIT_CLAIM_TRUSTED_TREE="$CLAIM_TREE_LINEAR" \
+  GH_CLAIM_PR_BODY="Fixes CON-9" \
+  GH_CLAIM_PR_AUTHOR="alice" \
+  GH_TRUSTED_REVIEWS="$CLEAN_TRUSTED_REVIEW" \
+  run_merge_pr "$TEST_DIR/output-claim-unverifiable.txt" 123; then
+  # Exit 3 from the trusted verifier is neither a pass nor a failure: the
+  # hosted check could not have checked more, so the merge proceeds — but the
+  # disclosure must say the claim was NOT verified, on the PR and in the
+  # squash body, and must never read as a completed verification.
+  if grep -q 'NOT verified' "$TEST_DIR/output-claim-unverifiable.txt" \
+    && grep -q 'referenced: CON-9' "$TEST_DIR/output-claim-unverifiable.txt" \
+    && grep -q 'NOT verified' "$TEST_DIR/gh-merge-body" \
+    && grep -q 'NOT verified' "$TEST_DIR/gh-comment" \
+    && ! grep -q 'confirmed assigned to the PR author' "$TEST_DIR/gh-merge-body"; then
+    echo "==> PASS: an unverifiable tracker substitutes without claiming verification"
+  else
+    echo "FAIL: expected an explicit NOT-verified disclosure" >&2
+    cat "$TEST_DIR/output-claim-unverifiable.txt" >&2
+    cat "$TEST_DIR/gh-merge-body" >&2
+    exit 1
+  fi
+else
+  echo "FAIL: an unverifiable tracker must not block the substitution" >&2
+  cat "$TEST_DIR/output-claim-unverifiable.txt" >&2
   exit 1
 fi
 

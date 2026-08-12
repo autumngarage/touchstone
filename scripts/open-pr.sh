@@ -59,6 +59,9 @@ if [ -f "$SCRIPT_SYNC_GUARD" ]; then
 fi
 PREFLIGHT_SCRIPT="$SCRIPT_DIR/../lib/preflight.sh"
 ISSUE_CLAIM_CHECK_SCRIPT="$SCRIPT_DIR/issue-claim-check.sh"
+# Wire contract published in scripts/issue-claim-check.sh: 3 means "closing
+# references found, but this tracker has no verification transport".
+ISSUE_CLAIM_CHECK_UNVERIFIABLE_RC=3
 if [ -f "$SCRIPT_DIR/../lib/events.sh" ]; then
   # shellcheck source=../lib/events.sh
   source "$SCRIPT_DIR/../lib/events.sh"
@@ -376,6 +379,7 @@ verify_pr_merged() {
 
 run_issue_claim_preflight() {
   local label="$1"
+  local rc=0
   shift
 
   if [ ! -f "$ISSUE_CLAIM_CHECK_SCRIPT" ]; then
@@ -385,7 +389,18 @@ run_issue_claim_preflight() {
   fi
 
   echo "==> Running local issue claim preflight ($label) ..."
-  bash "$ISSUE_CLAIM_CHECK_SCRIPT" "$@"
+  bash "$ISSUE_CLAIM_CHECK_SCRIPT" "$@" || rc=$?
+  # Exit 3 is issue-claim-check.sh's documented "unverifiable" status: it found
+  # closing references but this project's tracker has no verification
+  # transport. Shipping is still allowed — there is no question to answer, and
+  # blocking would only train agents to reach for [skip-claim-check] — but the
+  # preflight must not report a verification it did not perform.
+  if [ "$rc" -eq "$ISSUE_CLAIM_CHECK_UNVERIFIABLE_RC" ]; then
+    echo "    Claim ownership was NOT verified: this project's tracker has no verification transport."
+    echo "    Confirming the references above is yours to do; continuing."
+    return 0
+  fi
+  return "$rc"
 }
 
 find_pr_body_protocol_checker() {

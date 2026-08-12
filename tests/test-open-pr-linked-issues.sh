@@ -531,6 +531,43 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# This case declares a non-GitHub tracker in the repository, so it must stay
+# LAST: every case above reads the same checkout and expects GitHub semantics.
+echo "==> Case 15: an unverifiable tracker reports, and does not block, open-pr"
+git -C "$REPO_DIR" switch main >/dev/null 2>&1
+printf '[issues]\ntracker = "linear"\nkey_prefix = "CON"\n' >"$REPO_DIR/.touchstone-review.toml"
+git -C "$REPO_DIR" add .touchstone-review.toml
+git -C "$REPO_DIR" commit -m "declare the linear tracker" >/dev/null 2>&1
+git -C "$REPO_DIR" push origin main >/dev/null 2>&1
+make_case_branch feat/linear-claim-check "Fixes CON-9"
+OUT="$TEST_DIR/linear-claim-check.out"
+RC=0
+: >"$TEST_DIR/gh-calls.log"
+(
+  cd "$REPO_DIR"
+  PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+    GH_CALL_LOG="$TEST_DIR/gh-calls.log" \
+    bash "$SCRIPT_DIR/open-pr.sh"
+) >"$OUT" 2>&1 || RC=$?
+
+# Exit 3 from the claim check is "found references, verified nothing". open-pr
+# must neither die on it (it is not a failure) nor swallow it (it is not a
+# pass): it ships, and says out loud that nothing was verified.
+if [ "$RC" = "0" ] \
+  && grep -q "Tracker 'linear' has no claim-verification transport" "$OUT" \
+  && grep -q 'referenced: CON-9' "$OUT" \
+  && grep -q 'Claim ownership was NOT verified' "$OUT" \
+  && ! grep -q 'pass: @alice is assigned' "$OUT" \
+  && grep -q '^pr create' "$TEST_DIR/gh-calls.log"; then
+  echo "    PASS"
+else
+  echo "    FAIL: expected an unverifiable tracker to ship with an explicit not-verified notice" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  cat "$TEST_DIR/gh-calls.log" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 if [ "$ERRORS" = "0" ]; then
   echo "==> PASS: open-pr.sh injects issue-closing keywords and preflights claim ownership"
   exit 0

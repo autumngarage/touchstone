@@ -230,11 +230,22 @@ A project that declares nothing is a GitHub project. That is what every project 
 |---|---|---|
 | Reference syntax | `123` or `#123` | `CON-123` |
 | Closing reference in the PR body | `Closes #123`, `Closes-issue: #123` | `Fixes CON-123` |
-| `scripts/claim-issue.sh <ref>` | assigns you, posts the dispatch comment, backs off on a race | prints the three steps to perform in Linear, then exits 0 |
-| `scripts/issue-claim-check.sh` | fails when a referenced open issue is not assigned to the PR author | lists the references it found and names what you must confirm |
+| `scripts/claim-issue.sh <ref>` | assigns you, posts the dispatch comment, backs off on a race | claims nothing: prints the three steps to perform in Linear, then exits **3** |
+| `scripts/issue-claim-check.sh` | fails when a referenced open issue is not assigned to the PR author | verifies nothing: lists the references it found, names what you must confirm, then exits **3** |
 | `scripts/open-pr.sh` linked-issue injection | injects `Closes #N` from commit trailers | none — put `Fixes CON-N` in the PR body yourself |
 
 Touchstone has no Linear API transport, so under Linear none of the claim state is verified for you. What the scripts still do deterministically is refuse the wrong reference shape (`claim-issue.sh 123` under Linear, `claim-issue.sh CON-1` under GitHub) and fail closed on an `[issues].tracker` value they do not implement, so a typo cannot silently fall back to GitHub and check nothing.
+
+**Exit 3 means "not done, and not verified."** Both scripts publish it as a distinct status rather than exiting 0, because a scripted dispatch cannot tell "claimed" from "you must claim this by hand" if both are success, and a green check that verified nothing is a lie in the merge gate. Who reads it, and what each decides:
+
+| Caller | On exit 3 |
+|---|---|
+| you, or an agent dispatching work | the claim has **not** happened — perform the three steps in the tracker before editing |
+| `scripts/open-pr.sh` | prints that ownership was not verified, then continues — there is no question it could answer locally |
+| `.github/workflows/issue-claim-check.yml` | emits a run notice saying nothing was enforced, then passes the check |
+| `scripts/merge-pr.sh` claim substitution | substitutes, and discloses the result as **NOT verified** on the PR and in the squash body |
+
+Everything downstream of exit 3 is an explicit decision written where you can read it, not a default hidden inside the script.
 
 **The mechanical steps.**
 
@@ -284,7 +295,9 @@ Three layers back the convention so a missed claim doesn't reach merge silently:
 
 The local check is the fast path: it stops the common mistake before a PR exists or before merge review runs. The CI check is the hard backstop: even if an agent bypasses the local script, a PR that tries to close an unclaimed issue fails its checks and won't auto-merge.
 
-The last two layers enforce ownership only where Touchstone speaks the tracker's API, which today means GitHub. Under any other declared tracker they report the references they found and exit 0 — assignment is unanswerable without an API, and failing every PR on an unanswerable question would only teach agents to reach for `[skip-claim-check]`. The CI workflow reads the tracker declaration from the PR's **base**, alongside the helper it runs, so a PR cannot redeclare its way out of the GitHub check.
+The last two layers enforce ownership only where Touchstone speaks the tracker's API, which today means GitHub. Under any other declared tracker they report the references they found and exit 3 — assignment is unanswerable without an API, and failing every PR on an unanswerable question would only teach agents to reach for `[skip-claim-check]` — leaving the "pass it anyway" decision to each caller, in the open. The CI workflow reads the tracker declaration from the PR's **base**, alongside the helper it runs, so a PR cannot redeclare its way out of the GitHub check.
+
+`merge-pr.sh`'s claim substitution (issue #658, for a hosted check that failed without executing a step) reads from the same base revision, and reads *all* of it: the helper, the `lib/` modules it sources, and the `[issues]` declaration are staged out of the base commit into one tree before the helper runs. Staging only the helper would either break on its imports or resolve the tracker declaration from the PR's own working tree — the exact self-authorization the base-revision rule exists to prevent.
 
 **Bypass token: `[skip-claim-check]`.**
 

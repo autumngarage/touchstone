@@ -9,7 +9,20 @@
 # undeclared means GitHub. Only the GitHub adapter can perform the claim, so
 # other trackers print the protocol the agent must carry out by hand.
 #
+# Exit codes:
+#   0  claimed: the issue is assigned to you and the dispatch comment is posted.
+#   1  refused: someone else holds the claim, the issue is closed, or a
+#      concurrent claim won the race.
+#   2  usage or environment error, including a tracker declaration this
+#      Touchstone cannot honor.
+#   3  MANUAL ACTION REQUIRED: nothing was claimed, because this project's
+#      tracker has no claim transport. A scripted dispatch must stop here and
+#      surface the protocol; exiting 0 would let an agent read "you must do
+#      this by hand" as "done".
+#
 set -euo pipefail
+
+MANUAL_CLAIM_REQUIRED_RC=3
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ISSUE_TRACKER_LIB="$SCRIPT_DIR/../lib/issue-tracker.sh"
@@ -64,7 +77,8 @@ if ! issue_tracker_has_claim_transport; then
   echo "  2. Comment on $ISSUE_REF: \"Dispatched: branch \`$CURRENT_BRANCH\`, agent \`${TOUCHSTONE_AGENT_LABEL:-$(whoami)}\`.\"" >&2
   echo "  3. Reference it from the PR body as: $(issue_tracker_closing_ref "$ISSUE_REF")" >&2
   echo "     Touchstone verifies none of these three steps for you." >&2
-  exit 0
+  echo "     Exit $MANUAL_CLAIM_REQUIRED_RC (manual action required): nothing has been claimed yet." >&2
+  exit "$MANUAL_CLAIM_REQUIRED_RC"
 fi
 
 if ! command -v gh >/dev/null 2>&1; then

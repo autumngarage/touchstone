@@ -35,4 +35,17 @@ jobs:
             echo "Trusted base helper is unavailable; skipping transition run instead of executing PR-controlled code."
             exit 0
           fi
-          bash "$helper" --pr-number "$PR_NUMBER" --comment-pr
+          rc=0
+          bash "$helper" --pr-number "$PR_NUMBER" --comment-pr || rc=$?
+          # Exit 3 means the helper found closing references but this project's
+          # tracker has no verification transport, so it checked nothing. That
+          # is a green check that verified nothing: allowed, because there is
+          # no question the runner could answer, but never silent. Deciding it
+          # here — rather than returning 0 from the helper — keeps the "nothing
+          # was enforced" state visible in the run and readable by every other
+          # caller of the same exit code.
+          if [ "$rc" -eq 3 ]; then
+            echo "::notice::Claim ownership was NOT verified: this project's issue tracker has no verification transport. The references the helper listed are yours to confirm."
+            exit 0
+          fi
+          exit "$rc"

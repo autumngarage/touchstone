@@ -57,6 +57,15 @@ for file in \
   assert_contains "$file" "Do not leave fixed issues open silently"
 done
 
+echo "==> the shipped project template states the claim step tracker-neutrally"
+# templates/AGENTS.md becomes a project's own file, and that project may run on
+# any tracker: instructing it to claim "every GitHub issue" with a bare `<n>`
+# is refused outright under a declared Linear tracker (#743). Touchstone's own
+# AGENTS.md is free to name GitHub — its plan of record genuinely lives in
+# GitHub issues — which is why only the template is asserted here.
+assert_not_contains "$TOUCHSTONE_ROOT/templates/AGENTS.md" "Claim every GitHub issue"
+assert_contains "$TOUCHSTONE_ROOT/templates/AGENTS.md" "bash scripts/claim-issue.sh <ref>"
+
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"
 # CLAUDE.md uses @TOUCHSTONE.md (Claude Code resolves @-imports transitively),
 # so the contract phrases are inlined into agent context via TOUCHSTONE.md

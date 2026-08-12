@@ -11,7 +11,26 @@
 # name what a human must confirm, so a Linear project keeps the discipline
 # without this check failing every PR it cannot judge.
 #
+# Exit codes are a contract every caller branches on — scripts/open-pr.sh,
+# scripts/merge-pr.sh's trusted-base substitution, and the CI workflow — and
+# they cross revisions (merge-pr runs the BASE revision of this file), so
+# treat them as a wire format:
+#
+#   0  verified: every open referenced issue is assigned to the PR author,
+#      or there was nothing to enforce, or the documented [skip-claim-check]
+#      bypass was honored.
+#   1  refuted: a referenced open issue is not assigned to the PR author.
+#   2  usage or environment error, including a tracker declaration this
+#      Touchstone cannot honor.
+#   3  UNVERIFIABLE: closing references were found, but this project's
+#      tracker has no verification transport, so nothing was checked. It is
+#      not a pass; a caller that maps it to green must say so out loud.
+#
 set -euo pipefail
+
+# Wire contract above. Named here so the branch that returns it reads as the
+# documented state and not as a bare number.
+ISSUE_CLAIM_CHECK_UNVERIFIABLE_RC=3
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ISSUE_TRACKER_LIB="$SCRIPT_DIR/../lib/issue-tracker.sh"
@@ -350,17 +369,20 @@ if [ ! -s "$issue_refs_file" ]; then
   exit 0
 fi
 
-# Fail open, loudly, rather than fail closed on an unanswerable question: with
-# no API for this tracker there is no assignee to compare against, and
-# blocking every PR would teach agents to reach for [skip-claim-check].
+# Unverifiable, not passed. With no API for this tracker there is no assignee
+# to compare against; blocking every PR outright would teach agents to reach
+# for [skip-claim-check], and exiting 0 would report a verification that never
+# happened. Exit 3 instead, and let each caller decide — visibly — what an
+# unverifiable claim means for it.
 if [ "$ISSUE_TRACKER" != "github" ]; then
-  echo "==> Tracker '$ISSUE_TRACKER' has no claim-verification transport; assignment is not checked here."
+  echo "==> Tracker '$ISSUE_TRACKER' has no claim-verification transport; assignment is NOT checked here."
   while IFS= read -r tracker_ref; do
     [ -n "$tracker_ref" ] || continue
     echo "    referenced: $tracker_ref"
   done < <(sort -u "$issue_refs_file")
   echo "    Confirm in $ISSUE_TRACKER that each reference above is assigned to you and carries a dispatch comment."
-  exit 0
+  echo "    Exit $ISSUE_CLAIM_CHECK_UNVERIFIABLE_RC (unverifiable): this check enforced nothing for those references."
+  exit "$ISSUE_CLAIM_CHECK_UNVERIFIABLE_RC"
 fi
 
 if [ -z "$current_repo" ]; then

@@ -2291,6 +2291,11 @@ require_pr_feedback_clear() {
 # blocks, and the substitution is disclosed on the PR and in output.
 CLAIM_CHECK_SUBSTITUTED=false
 CLAIM_SUBSTITUTION_KIND=""
+# Wire contract published in scripts/issue-claim-check.sh: 3 means "closing
+# references found, but this tracker has no verification transport". It is
+# read here from the BASE revision of that script, so it is a cross-revision
+# number, not a shared variable.
+CLAIM_CHECK_UNVERIFIABLE_RC=3
 
 check_run_never_executed() {
   local link="$1" run_id="" job_id="" real_steps=""
@@ -2429,8 +2434,53 @@ non_claim_checks_outstanding() {
   return 1
 }
 
+# Stage the trusted claim verifier AS A TREE, not as a lone file.
+#
+# scripts/issue-claim-check.sh is no longer self-contained: it sources
+# ../lib/issue-tracker.sh (which sources ../lib/toml.sh) relative to its own
+# directory, and it resolves the project's [issues] declaration from its own
+# project root. Extracting the script alone into a bare temp file left both
+# lookups pointing at whatever happens to sit next to $TMPDIR, which killed
+# the whole issue #658 recovery path the moment the dependency landed
+# (issue #743 review).
+#
+# Everything the verifier reads is taken from the BASE revision, for the same
+# reason the verifier itself is: a PR must not be able to edit the code, the
+# libraries, OR the tracker declaration that authorize its own substitution.
+stage_trusted_claim_checker() {
+  local base_sha="$1" stage="$2" path=""
+
+  mkdir -p "$stage/scripts" || return 1
+  # GIT_NO_REPLACE_OBJECTS: a local refs/replace entry for the GitHub base
+  # SHA would make git show read the replacement, so the "trusted" tree
+  # could differ from what GitHub actually has at that commit.
+  GIT_NO_REPLACE_OBJECTS=1 git show "$base_sha:scripts/issue-claim-check.sh" \
+    >"$stage/scripts/issue-claim-check.sh" 2>/dev/null || return 1
+
+  # The base's whole lib/, not a hand-listed subset: an import list here would
+  # silently rot the next time the verifier picks up a module, and this path
+  # only fails in an infrastructure incident, where nobody is watching.
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    mkdir -p "$stage/${path%/*}" || return 1
+    GIT_NO_REPLACE_OBJECTS=1 git show "$base_sha:$path" >"$stage/$path" 2>/dev/null || return 1
+  done < <(GIT_NO_REPLACE_OBJECTS=1 git ls-tree -r --name-only "$base_sha" lib 2>/dev/null || true)
+
+  # The declaration decides WHICH tracker gets verified, so it comes from the
+  # base too. A base that declares nothing is a GitHub project — write that
+  # down rather than letting the loader fall through to $PWD, which is the
+  # PR's own working tree.
+  if ! GIT_NO_REPLACE_OBJECTS=1 git show "$base_sha:.touchstone-review.toml" \
+    >"$stage/.touchstone-review.toml" 2>/dev/null \
+    && ! GIT_NO_REPLACE_OBJECTS=1 git show "$base_sha:.codex-review.toml" \
+      >"$stage/.touchstone-review.toml" 2>/dev/null; then
+    printf '# The trusted base revision declares no review policy; defaults apply.\n' \
+      >"$stage/.touchstone-review.toml" || return 1
+  fi
+}
+
 attempt_claim_check_substitution() {
-  local failed_checks="$1" direct_output="" base_revision="" base_sha="" trusted_checker=""
+  local failed_checks="$1" direct_output="" base_revision="" base_sha="" trusted_stage="" direct_rc=0
 
   failed_checks_are_only_unexecuted_claim_checks "$failed_checks" || return 1
   # Execute the claim verifier FROM THE TRUSTED BASE REVISION, mirroring the
@@ -2440,28 +2490,28 @@ attempt_claim_check_substitution() {
   base_revision="$(current_pr_base_revision 2>/dev/null)" || return 1
   base_sha="${base_revision##*	}"
   [ -n "$base_sha" ] || return 1
-  trusted_checker="$(mktemp -t touchstone-claim-checker.XXXXXX)" || return 1
-  # GIT_NO_REPLACE_OBJECTS: a local refs/replace entry for the GitHub base
-  # SHA would make git show read the replacement, so the "trusted" checker
-  # could differ from what GitHub actually has at that commit.
-  if ! GIT_NO_REPLACE_OBJECTS=1 git show "$base_sha:scripts/issue-claim-check.sh" >"$trusted_checker" 2>/dev/null; then
-    rm -f "$trusted_checker"
+  trusted_stage="$(mktemp -d -t touchstone-claim-checker.XXXXXX)" || return 1
+  if ! stage_trusted_claim_checker "$base_sha" "$trusted_stage"; then
+    rm -rf "$trusted_stage"
     return 1
   fi
-  if ! direct_output="$(bash "$trusted_checker" --pr-number "$PR_NUMBER" 2>&1)"; then
-    rm -f "$trusted_checker"
+  direct_output="$(bash "$trusted_stage/scripts/issue-claim-check.sh" --pr-number "$PR_NUMBER" 2>&1)" || direct_rc=$?
+  rm -rf "$trusted_stage"
+  if [ "$direct_rc" -ne 0 ] && [ "$direct_rc" -ne "$CLAIM_CHECK_UNVERIFIABLE_RC" ]; then
     echo "ERROR: claim-check never executed AND direct API claim verification failed:" >&2
     printf '%s\n' "$direct_output" | sed 's/^/       /' >&2
     TOUCHSTONE_MERGE_FAILURE_REASON="claim-verification-failed"
     exit 1
   fi
-  rm -f "$trusted_checker"
   echo "==> claim-check failed without executing a step (hosted-runner infrastructure class)."
-  # The verifier can succeed two different ways, and the disclosure must say
-  # which: a completed assignment verification, or the documented
-  # [skip-claim-check] exception the PR body carries. Calling a bypass
-  # "verified" would hide that the merge used the exception.
-  if printf '%s' "$direct_output" | grep -q '\[skip-claim-check\] token found'; then
+  # The verifier can finish three different ways, and the disclosure must say
+  # which: a completed assignment verification, the documented
+  # [skip-claim-check] exception the PR body carries, or a tracker whose claim
+  # state Touchstone cannot read at all. Calling either of the last two
+  # "verified" would hide what the merge actually relied on.
+  if [ "$direct_rc" -eq "$CLAIM_CHECK_UNVERIFIABLE_RC" ]; then
+    CLAIM_SUBSTITUTION_KIND="NOT verified — this project's issue tracker has no claim-verification transport, so the trusted-base verifier reported the references and checked no assignment (the hosted check could not have checked more)"
+  elif printf '%s' "$direct_output" | grep -q '\[skip-claim-check\] token found'; then
     CLAIM_SUBSTITUTION_KIND="documented [skip-claim-check] bypass honored by the trusted-base verifier"
   else
     CLAIM_SUBSTITUTION_KIND="every open referenced issue confirmed assigned to the PR author by direct API read against the trusted base revision"

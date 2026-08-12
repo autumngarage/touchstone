@@ -37,6 +37,7 @@ touchstone_sync_planned_write_paths() {
     printf 'scripts/spawn-worktree.sh\n'
     printf 'scripts/cleanup-worktrees.sh\n'
     printf 'lib/toml.sh\n'
+    printf 'lib/issue-tracker.sh\n'
     printf 'lib/events.sh\n'
     printf 'lib/codex-auth.sh\n'
     printf 'lib/script-sync-guard.sh\n'

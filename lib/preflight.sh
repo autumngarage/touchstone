@@ -1025,6 +1025,9 @@ touchstone_preflight_delivery_only_path() {
     lib/toml.sh | lib/events.sh | lib/codex-auth.sh | lib/script-sync-guard.sh)
       return 0
       ;;
+    lib/issue-tracker.sh)
+      return 0
+      ;;
     lib/sha256.sh | lib/preflight.sh | lib/preflight-scope.sh)
       return 0
       ;;

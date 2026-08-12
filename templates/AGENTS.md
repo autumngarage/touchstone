@@ -109,7 +109,7 @@ Use the normal lifecycle unless the user asks for a different flow:
 
 1. Pull/rebase the default branch.
 2. Branch before editing.
-3. Claim every GitHub issue you are actively implementing with `bash scripts/claim-issue.sh <n>` before editing or dispatching an agent.
+3. Claim every tracker issue you are actively implementing with `bash scripts/claim-issue.sh <ref>` before editing or dispatching an agent. The reference syntax is your tracker's (`123` under GitHub, `CON-123` under Linear); exit 3 means the claim is yours to perform by hand.
 4. Make the change, stage explicit file paths, and commit with a concise message.
 5. Reconcile issue state before opening the PR: fixed issues get closing trailers/PR body lines; partial or stale issues get an issue comment with evidence and remaining gaps.
 6. Ship with `bash scripts/open-pr.sh --auto-merge`. If it stops, fix the cause it names and run it again.

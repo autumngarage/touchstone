@@ -97,6 +97,53 @@ assert_contains "$TEST_DIR/planned.out" "lib/review-comment.sh"
 assert_contains "$TEST_DIR/planned.out" "lib/script-sync-guard.sh"
 assert_contains "$TEST_DIR/planned.out" "lib/sha256.sh"
 assert_contains "$TEST_DIR/planned.out" "lib/preflight-scope.sh"
+assert_contains "$TEST_DIR/planned.out" "lib/issue-tracker.sh"
+
+echo ""
+echo "--- every managed path is covered by the sync and preflight ledgers ---"
+# Three enumerations describe the same set of Touchstone-owned files: what an
+# update copies and manifests (lib/sync-content.sh), what sync reserves for
+# the dirty-overlap check and the rollback snapshot
+# (touchstone_sync_planned_write_paths), and what preflight recognizes as a
+# delivery-only diff (lib/preflight.sh). A file added to the first and
+# forgotten in the others loses its overlap check, its rollback coverage, and
+# its delivery-only classification — silently, and only in the direction
+# nobody notices. lib/issue-tracker.sh shipped in exactly that state
+# (issue #743 review), so derive the comparison here instead of trusting the
+# next author to remember three lists.
+LEDGER_GAPS="$TEST_DIR/ledger-gaps.out"
+(
+  # shellcheck source=../lib/sync-content.sh
+  source "$TOUCHSTONE_ROOT/lib/sync-content.sh"
+  # shellcheck source=../lib/preflight.sh
+  source "$TOUCHSTONE_ROOT/lib/preflight.sh"
+  planned_file="$TEST_DIR/ledger-planned.txt"
+  touchstone_sync_planned_write_paths "$CLEAN_PROJECT" "$TOUCHSTONE_ROOT" >"$planned_file"
+  {
+    touchstone_content_managed_file_pairs "$CLEAN_PROJECT" "$TOUCHSTONE_ROOT" generic \
+      | awk -F'\t' '{print $2}' | sed "s|^$CLEAN_PROJECT/||"
+    touchstone_content_manifest_entries "$CLEAN_PROJECT" "$TOUCHSTONE_ROOT" generic | grep -v '^#'
+  } | sort -u | while IFS= read -r managed_path; do
+    [ -n "$managed_path" ] || continue
+    covered=false
+    while IFS= read -r planned_path; do
+      [ -n "$planned_path" ] || continue
+      if touchstone_sync_paths_overlap "$managed_path" "$planned_path"; then
+        covered=true
+        break
+      fi
+    done <"$planned_file"
+    [ "$covered" = true ] || printf 'missing from planned writes: %s\n' "$managed_path"
+    touchstone_preflight_delivery_only_path "$managed_path" \
+      || printf 'not classified delivery-only: %s\n' "$managed_path"
+  done
+) >"$LEDGER_GAPS" 2>&1
+if [ -s "$LEDGER_GAPS" ]; then
+  echo "FAIL: managed paths are missing from a ledger that must cover them:" >&2
+  sed 's/^/    /' "$LEDGER_GAPS" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 echo ""
 echo "--- dirty path inside owned set: sync refuses with overlap list ---"
 OVERLAP_PROJECT="$TEST_DIR/overlap-project"
