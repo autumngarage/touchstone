@@ -1,18 +1,41 @@
 #!/usr/bin/env bash
 #
-# hooks/emergency-disclosure.sh — Claude Code PreToolUse hook that blocks
-# `git push --no-verify` invocations unless TOUCHSTONE_EMERGENCY=1 is set
-# in the environment, in which case it logs the bypass for the next PR
-# to disclose. Wired via .claude/settings.json from templates/.
+# hooks/emergency-disclosure.sh — Claude Code PreToolUse hook that refuses a
+# protected push (a `git push` carrying a hook-bypass flag) unless
+# TOUCHSTONE_EMERGENCY=1 authorizes it, in which case the bypass is appended
+# to .touchstone/emergency-bypass.log for the next PR to disclose.
 #
-# --no-verify bypasses pre-push hooks (default-branch
-# checks). Routine pushes should not bypass these — the emergency path
-# is documented in principles/git-workflow.md and convention requires
-# the next PR to include an "Emergency-bypass disclosure" section.
+# THE CONTRACT (issue #507)
 #
-# Override path: set TOUCHSTONE_EMERGENCY=1 for the session. The bypass
-# is appended to .touchstone/emergency-bypass.log so a follow-up PR
-# template (or a future bin/touchstone status check) can surface it.
+# This guard does not try to prove a command IS a protected push across every
+# spelling of one. That inversion is what grew the previous implementation to
+# 2,021 lines of shell emulation, and the corpus in
+# tests/fixtures/emergency-corpus.txt shows it still produced false positives
+# on ordinary prose the same week it was patched.
+#
+# Instead the guard proves a command is in a shape it can reason about:
+#
+#   1. The command is tokenized ONCE, by the lexer below, into words that
+#      carry their quoting and expansion facts. Quoted text is data. It is
+#      never re-scanned as code, which is what makes prose safe to write.
+#   2. A segment carrying a bypass flag whose command word is not git is
+#      REFUSED, naming the command word and the flag. Not guessed at.
+#   3. A git segment whose subcommand, config options, or arguments are
+#      assembled by expansion is REFUSED. Not resolved.
+#   4. Anything the lexer cannot tokenize is REFUSED.
+#
+# "Unrecognized" means no, not "scan harder". A whitelist can only ever block
+# more than the shape it recognizes, which is how the corpus proves this guard
+# is no weaker than the emulator it replaces.
+#
+# NON-GOALS, stated so they are not rediscovered:
+#
+#   - No TOCTOU claim. A PreToolUse hook inspects a string; it cannot bind
+#     that string to what the shell later executes. Branch protection and
+#     required checks are the real boundary. This is fast feedback.
+#   - No completeness claim. The grammar deliberately refuses constructs it
+#     could probably handle — dynamic subcommands, foreign execution
+#     wrappers, a directory change in the same call. Refusing is the point.
 #
 # Hook protocol:
 #   stdin   — JSON describing the tool call
@@ -21,23 +44,23 @@
 #
 set -euo pipefail
 
-# Classify bytes, not glyphs — but ONLY inside the awk tokenizers: macOS
-# awk aborts with "towc: multibyte conversion failure" on non-UTF-8-clean
-# input (em dashes in commit-message heredocs were enough — issue #637),
-# so each awk below runs under LC_ALL=C where multibyte content is opaque
-# bytes that never match shell metacharacters. The shell-level boundary
-# checks deliberately KEEP the session locale: under a global C locale
-# every byte of a non-ASCII letter would satisfy [^[:alnum:]_], so a
-# benign argument like "égit" would tokenize as "git" and misclassify.
+BYPASS_FLAG="--no-verify"
+TAB="$(printf '\t')"
 
 input="$(cat)"
 
-# Avoid jq only when neither a literal bypass fragment nor shell expansion can
-# produce the protected flag. Expanded commands must take the conservative
-# parser path because separate values can assemble the flag at runtime.
-if ! printf '%s' "$input" | grep -q -- '--no-verify' \
-  && ! printf '%s' "$input" | grep -q -- '--no-' \
-  && ! printf '%s' "$input" | grep -qE '(\\|\$|`|git)'; then
+# A protected push needs a git invocation, the push subcommand, or the bypass
+# flag to be nameable somewhere in the text. A command whose raw bytes carry
+# none of those substrings cannot assemble one out of anything this hook can
+# see, and the emulator it replaces reached the same verdict by a longer route.
+#
+# The here-string matters more here than anywhere else in this file. As a
+# pipeline under `set -o pipefail`, a MATCH on a large input returns 141 —
+# grep exits first, the producer takes SIGPIPE — and `! …` turns that into
+# "no match", so the hook would exit 0 and allow the very command it just
+# recognized. Input size is the trigger, so it fires on large payloads and
+# never on a small fixture (issue #806).
+if ! grep -qE 'git|push|--no' <<<"$input"; then
   exit 0
 fi
 if ! command -v jq >/dev/null 2>&1; then
@@ -49,1939 +72,1585 @@ command="$(printf '%s' "$input" | jq -r '.tool_input.command // ""')"
 session_cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"
 tool_workdir="$(printf '%s' "$input" | jq -r '.tool_input.workdir // ""')"
 
-# Early allow, proof-based (issue #637): a protected push needs either the
-# word `push` or a git invocation that could resolve an alias to it
-# (`alias.p=push` makes `git p --no-verify` a push with no literal
-# "push"). A command whose raw text carries no `push` substring, no `git`
-# substring, AND none of the characters that could splice or expand
-# either at runtime (quotes, dollar, backtick, backslash) provably cannot
-# reach a protected push, so the shell emulation below — and any bug in
-# it — never runs for plain non-git calls. Anything mentioning git goes
-# through the parser, where the builtin-cannot-be-aliased exemption keeps
-# benign `git status`/`git add` cheap and alias chains are resolved.
-case "$command" in
-  *push* | *git* | *\$* | *\`* | *\\* | *\'* | *\"*) ;;
-  *)
-    exit 0
-    ;;
-esac
-
-# Remove comments using shell token boundaries while preserving newlines, so a
-# later physical line remains executable input. A # inside a word or quotes is
-# data, not a comment opener.
-without_shell_comments() {
-  LC_ALL=C awk '
-    {
-      line = $0 "\n"
-      comment = 0
-      previous = ""
-      for (i = 1; i <= length(line); i++) {
-        char = substr(line, i, 1)
-        if (comment) {
-          if (char == "\n") {
-            printf "\n"
-            comment = 0
-          }
-        } else if (escaped) {
-          printf "%s", char
-          escaped = 0
-        } else if (char == "\\" && quote != "\047") {
-          printf "%s", char
-          escaped = 1
-        } else if (quote == "") {
-          if (char == "\"" || char == "\047") {
-            quote = char
-            printf "%s", char
-          } else if (char == "#" && (previous == "" || previous ~ /[[:space:];&|()]/)) {
-            comment = 1
-          } else {
-            printf "%s", char
-          }
-        } else {
-          printf "%s", char
-          if (char == quote) {
-            quote = ""
-          }
-        }
-        previous = char
-      }
-    }
-  '
-}
-
-# Split only on shell control operators outside quotes. The authorization
-# boundary is an executable command segment, not arbitrary prose inside an
-# argument such as an issue body.
-shell_segments() {
-  LC_ALL=C awk '
-    function emit() {
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", segment)
-      if (segment != "") {
-        print segment
-      }
-      segment = ""
-    }
-    {
-      line = $0 "\n"
-      for (i = 1; i <= length(line); i++) {
-        char = substr(line, i, 1)
-        if (escaped) {
-          if (char != "\n") {
-            segment = segment "\\" char
-          }
-          escaped = 0
-        } else if (char == "\\" && quote != "\047") {
-          escaped = 1
-        } else if (quote == "") {
-          if (char == "\"" || char == "\047") {
-            quote = char
-            segment = segment char
-          } else if (char == "(") {
-            group_depth++
-            segment = segment char
-          } else if (char == ")" && group_depth > 0) {
-            group_depth--
-            segment = segment char
-          } else if (char == "{") {
-            brace_depth++
-            segment = segment char
-          } else if (char == "}" && brace_depth > 0) {
-            brace_depth--
-            segment = segment char
-          } else if (group_depth == 0 && brace_depth == 0 && (char == ";" || char == "&" || char == "|" || char == "\n")) {
-            emit()
-          } else {
-            segment = segment char
-          }
-        } else {
-          segment = segment char
-          if (char == quote) {
-            quote = ""
-          }
-        }
-      }
-    }
-    END { emit() }
-  '
-}
-
-# Preserve double-quoted text so executable command substitutions remain
-# visible, while masking single-quoted literals that the shell never executes.
-without_single_quoted_literals() {
-  LC_ALL=C awk '
-    {
-      line = $0 "\n"
-      for (i = 1; i <= length(line); i++) {
-        char = substr(line, i, 1)
-        if (escaped) {
-          printf "%s", char
-          escaped = 0
-        } else if (char == "\\" && quote != "\047") {
-          printf "%s", char
-          escaped = 1
-        } else if (quote == "") {
-          if (char == "\047") {
-            quote = char
-            printf " "
-          } else {
-            if (char == "\"") {
-              quote = char
-            }
-            printf "%s", char
-          }
-        } else if (quote == "\047") {
-          printf " "
-          if (char == quote) {
-            quote = ""
-          }
-        } else {
-          printf "%s", char
-          if (char == quote) {
-            quote = ""
-          }
-        }
-      }
-    }
-  '
-}
-
-# Quoted heredocs are literal. Unquoted heredocs expand command substitutions,
-# so retain only those executable regions and mask the surrounding prose.
-without_heredoc_bodies() {
-  LC_ALL=C awk '
-    function print_executable_substitutions(line, output, i, char, next_char) {
-      output = ""
-      body_escaped = 0
-      substitution_escaped = 0
-      backtick_escaped = 0
-      for (i = 1; i <= length(line); i++) {
-        char = substr(line, i, 1)
-        next_char = substr(line, i + 1, 1)
-        if (substitution_depth > 0) {
-          output = output char
-          if (substitution_escaped) {
-            substitution_escaped = 0
-          } else if (char == "\\" && substitution_quote != "\047") {
-            substitution_escaped = 1
-          } else if (substitution_quote != "") {
-            if (char == substitution_quote) {
-              substitution_quote = ""
-            }
-          } else if (char == "\"" || char == "\047") {
-            substitution_quote = char
-          } else if (char == "(") {
-            substitution_depth++
-          } else if (char == ")") {
-            substitution_depth--
-          }
-        } else if (backtick_substitution) {
-          output = output char
-          if (backtick_escaped) {
-            backtick_escaped = 0
-          } else if (char == "\\") {
-            backtick_escaped = 1
-          } else if (char == "`") {
-            backtick_substitution = 0
-          }
-        } else if (body_escaped) {
-          output = output " "
-          body_escaped = 0
-        } else if (char == "\\") {
-          output = output " "
-          body_escaped = 1
-        } else if (char == "$" && next_char == "(") {
-          output = output "$("
-          substitution_depth = 1
-          i++
-        } else if (char == "`") {
-          output = output char
-          backtick_substitution = 1
-        } else {
-          output = output " "
-        }
-      }
-      print output
-    }
-    {
-      line = $0
-      if (heredoc_delimiter != "") {
-        comparison = line
-        if (strip_tabs) {
-          sub(/^\t+/, "", comparison)
-        }
-        if (comparison == heredoc_delimiter) {
-          heredoc_delimiter = ""
-          strip_tabs = 0
-          heredoc_expands = 0
-          substitution_depth = 0
-          substitution_quote = ""
-          backtick_substitution = 0
-        } else if (heredoc_expands) {
-          print_executable_substitutions(line)
-        }
-        next
-      }
-
-      print line
-      quote = ""
-      escaped = 0
-      for (i = 1; i <= length(line); i++) {
-        char = substr(line, i, 1)
-        if (escaped) {
-          escaped = 0
-        } else if (char == "\\" && quote != "\047") {
-          escaped = 1
-        } else if (quote != "") {
-          if (char == quote) {
-            quote = ""
-          }
-        } else if (arithmetic_depth > 0) {
-          if (char == "(") {
-            arithmetic_depth++
-          } else if (char == ")") {
-            arithmetic_depth--
-          }
-        } else if (char == "$" && substr(line, i + 1, 2) == "((") {
-          arithmetic_depth = 2
-          i += 2
-        } else if (char == "(" && substr(line, i + 1, 1) == "(") {
-          arithmetic_depth = 2
-          i++
-        } else if (char == "\"" || char == "\047") {
-          quote = char
-        } else if (char == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[[:space:];|&()]/)) {
-          break
-        } else if (char == "<" && substr(line, i + 1, 1) == "<") {
-          j = i + 2
-          strip_tabs = substr(line, j, 1) == "-"
-          if (strip_tabs) {
-            j++
-          }
-          while (substr(line, j, 1) ~ /[[:space:]]/) {
-            j++
-          }
-          token = ""
-          delimiter_quote = ""
-          delimiter_escaped = 0
-          delimiter_quoted = 0
-          while (j <= length(line)) {
-            delimiter_char = substr(line, j, 1)
-            if (delimiter_escaped) {
-              token = token delimiter_char
-              delimiter_escaped = 0
-            } else if (delimiter_char == "\\" && delimiter_quote != "\047") {
-              delimiter_quoted = 1
-              delimiter_escaped = 1
-            } else if (delimiter_quote != "") {
-              if (delimiter_char == delimiter_quote) {
-                delimiter_quote = ""
-              } else {
-                token = token delimiter_char
-              }
-            } else if (delimiter_char == "\"" || delimiter_char == "\047") {
-              delimiter_quoted = 1
-              delimiter_quote = delimiter_char
-            } else if (delimiter_char ~ /[[:space:];|&()<>]/) {
-              break
-            } else {
-              token = token delimiter_char
-            }
-            j++
-          }
-          if (token != "") {
-            heredoc_delimiter = token
-            heredoc_expands = !delimiter_quoted
-          }
-          break
-        }
-      }
-    }
-  '
-}
-
-# Heredoc bodies are data by default, but become shell code when redirected to
-# a shell interpreter or sourced from standard input.
-shell_stdin_heredoc_payloads() {
-  LC_ALL=C awk '
-    {
-      line = $0
-      if (delimiter != "") {
-        comparison = line
-        if (strip_tabs) {
-          sub(/^\t+/, "", comparison)
-        }
-        if (comparison == delimiter) {
-          delimiter = ""
-          executes = 0
-          strip_tabs = 0
-        } else if (executes) {
-          print line
-        }
-        next
-      }
-
-      quote = ""
-      escaped = 0
-      for (i = 1; i <= length(line); i++) {
-        char = substr(line, i, 1)
-        if (escaped) {
-          escaped = 0
-        } else if (char == "\\" && quote != "\047") {
-          escaped = 1
-        } else if (quote != "") {
-          if (char == quote) {
-            quote = ""
-          }
-        } else if (arithmetic_depth > 0) {
-          if (char == "(") {
-            arithmetic_depth++
-          } else if (char == ")") {
-            arithmetic_depth--
-          }
-        } else if (char == "$" && substr(line, i + 1, 2) == "((") {
-          arithmetic_depth = 2
-          i += 2
-        } else if (char == "(" && substr(line, i + 1, 1) == "(") {
-          arithmetic_depth = 2
-          i++
-        } else if (char == "\"" || char == "\047") {
-          quote = char
-        } else if (char == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[[:space:];|&()]/)) {
-          break
-        } else if (char == "<" && substr(line, i + 1, 1) == "<" && substr(line, i + 2, 1) != "<") {
-          header = substr(line, 1, i - 1)
-          static_data = header ~ /^[[:space:]]*([^[:space:]]*\/)?cat([[:space:]]|$)/ \
-            && header !~ /[;&|()]/
-          executes = !static_data
-          j = i + 2
-          strip_tabs = substr(line, j, 1) == "-"
-          if (strip_tabs) {
-            j++
-          }
-          while (substr(line, j, 1) ~ /[[:space:]]/) {
-            j++
-          }
-          delimiter = ""
-          delimiter_quote = ""
-          while (j <= length(line)) {
-            delimiter_char = substr(line, j, 1)
-            if (delimiter_quote != "") {
-              if (delimiter_char == delimiter_quote) {
-                delimiter_quote = ""
-              } else {
-                delimiter = delimiter delimiter_char
-              }
-            } else if (delimiter_char == "\"" || delimiter_char == "\047") {
-              delimiter_quote = delimiter_char
-            } else if (delimiter_char == "\\") {
-              j++
-              delimiter = delimiter substr(line, j, 1)
-            } else if (delimiter_char ~ /[[:space:];|&()<>]/) {
-              break
-            } else {
-              delimiter = delimiter delimiter_char
-            }
-            j++
-          }
-          break
-        }
-      }
-    }
-  '
-}
-
-shell_words() {
-  LC_ALL=C awk '
-    function emit() {
-      if (token_started) {
-        if (token ~ /\{[^}]*([,]|\.\.)[^}]*\}/) {
-          token_shell_expansion = 1
-        }
-        if (token_shell_expansion) {
-          print "__touchstone_shell_expanded__:" token
-        } else if (shell_composed_quote) {
-          print "__touchstone_shell_composed__:" token
-        } else {
-          print token
-        }
-      }
-      token = ""
-      token_started = 0
-      shell_composed_quote = 0
-      token_quoted = 0
-      token_shell_expansion = 0
-    }
-    function emit_redirection() {
-      if (token_started && !(token ~ /^[0-9]+$/ && !token_quoted)) {
-        emit()
-      } else {
-        token = ""
-        token_started = 0
-        shell_composed_quote = 0
-        token_quoted = 0
-        token_shell_expansion = 0
-      }
-      print "__touchstone_redirection__"
-    }
-    {
-      line = $0 "\n"
-      for (i = 1; i <= length(line); i++) {
-        char = substr(line, i, 1)
-        if (escaped) {
-          if (char != "\n") {
-            token = token char
-            token_started = 1
-          }
-          escaped = 0
-        } else if (char == "\\" && quote != "\047") {
-          escaped = 1
-          token_started = 1
-        } else if (quote == "") {
-          if (char == "$" && (substr(line, i + 1, 1) == "\"" || substr(line, i + 1, 1) == "\047")) {
-            quote = substr(line, i + 1, 1)
-            shell_composed_quote = 1
-            token_quoted = 1
-            token_started = 1
-            i++
-          } else if (char == "\"" || char == "\047") {
-            quote = char
-            token_quoted = 1
-            token_started = 1
-          } else if (char == "<" || char == ">") {
-            emit_redirection()
-            while (substr(line, i + 1, 1) ~ /[<>&|]/) {
-              i++
-            }
-          } else if (char == "(" || char == ")") {
-            emit()
-            print char
-          } else if (char ~ /[[:space:]]/) {
-            emit()
-          } else {
-            token = token char
-            token_started = 1
-            if (char == "[" || char == "]" || char == "*" || char == "?") {
-              token_shell_expansion = 1
-            }
-          }
-        } else if (char == quote) {
-          quote = ""
-        } else {
-          token = token char
-          token_started = 1
-        }
-      }
-    }
-    END { emit() }
-  '
-}
-
-word_may_expand_to() {
-  local word="$1"
-  local expected="$2"
-  local static=""
-
-  case "$word" in
-    *'$'* | *'`'*) ;;
-    *) return 1 ;;
-  esac
-
-  if printf '%s' "$word" | grep -qE '\$(\$|[0-9]+|[-*@#?!])'; then
-    return 0
-  fi
-
-  static="$(printf '%s' "$word" \
-    | sed -E 's/\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$\([^)]*\)|`[^`]*`//g')"
-  static="${static##*/}"
-  [ -z "$static" ] && return 0
-
-  awk -v static="$static" -v expected="$expected" '
-    BEGIN {
-      position = 1
-      for (i = 1; i <= length(static); i++) {
-        found = index(substr(expected, position), substr(static, i, 1))
-        if (found == 0) {
-          exit 1
-        }
-        position += found
-      }
-    }
-  '
-}
-
-segment_may_compose_no_verify() {
-  local segment="$1"
-
-  printf '%s' "$segment" \
-    | grep -qE -- '--no-[^[:space:]]*(\$|`).*ify([[:space:]]|$)'
-}
-
-# Shell word splitting can turn one lexical word into a complete invocation,
-# for example git${IFS}pu${x}sh${IFS}--no-veri${x}fy. Keep this fallback
-# deliberately bounded: require static anchors for both Git and the protected
-# option, then ask only whether removing expansions preserves the protected
-# invocation in order. This classifies uncertainty without evaluating Bash.
-segment_may_expand_to_protected_invocation() {
-  local segment="$1"
-  local word="" static=""
-
-  while IFS= read -r word; do
-    case "$word" in
-      __touchstone_shell_expanded__:*)
-        word="${word#__touchstone_shell_expanded__:}"
-        ;;
-    esac
-    case "$word" in
-      *'$'* | *'`'*) ;;
-      *) continue ;;
-    esac
-    static="$(printf '%s' "$word" \
-      | sed -E 's/\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$\([^)]*\)|`[^`]*`//g')"
-    case "$static" in
-      *git*--no-veri*)
-        if word_may_expand_to "$word" "gitpush--no-verify"; then
-          return 0
-        fi
-        ;;
-    esac
-  done < <(printf '%s' "$segment" | shell_words)
-
-  return 1
-}
-
-word_is_shell_expanded_option() {
-  local word="$1"
-
-  case "$word" in
-    __touchstone_shell_expanded__:-* | __touchstone_shell_expanded__:\{* | __touchstone_shell_expanded__:\[* | __touchstone_shell_expanded__:\** | __touchstone_shell_expanded__:\?*)
-      return 0
-      ;;
-  esac
-  return 1
-}
-
-word_is_bypass_option() {
-  local word="$1"
-
-  case "$word" in
-    __touchstone_shell_composed__:*)
-      word="${word#__touchstone_shell_composed__:}"
-      word="$(printf '%b' "$word")"
-      ;;
-  esac
-
-  case "$word" in
-    --no-veri | --no-verif | --no-verify)
-      return 0
-      ;;
-  esac
-  return 1
-}
-
-simple_assignment_record() {
-  local segment="$1"
-  local word="" assignment="" word_count=0
-
-  while IFS= read -r word; do
-    word_count=$((word_count + 1))
-    if [ "$word_count" -eq 1 ] && [ "$word" = "export" ]; then
-      continue
-    fi
-    case "$word" in
-      [A-Za-z_][A-Za-z0-9_]*=*)
-        [ -z "$assignment" ] || return 0
-        assignment="$word"
-        ;;
-      *)
-        return 0
-        ;;
-    esac
-  done < <(printf '%s' "$segment" | shell_words)
-
-  if [ -n "$assignment" ]; then
-    printf '%s\t%s' "${assignment%%=*}" "${assignment#*=}"
-  fi
-}
-
-remember_simple_assignment() {
-  local name="$1" value="$2" filtered=""
-
-  if [ -n "$known_assignments" ]; then
-    filtered="$(printf '%s\n' "$known_assignments" | awk -F '\t' -v name="$name" '$1 != name')"
-  fi
-  if [ -n "$filtered" ]; then
-    known_assignments="$(printf '%s\n%s\t%s' "$filtered" "$name" "$value")"
-  else
-    known_assignments="$(printf '%s\t%s' "$name" "$value")"
-  fi
-}
-
-known_assignment_value() {
-  local name="$1"
-
-  printf '%s\n' "$known_assignments" \
-    | awk -F '\t' -v name="$name" '$1 == name { sub(/^[^\t]*\t/, ""); print; found=1 } END { exit !found }'
-}
-
-exact_variable_name() {
-  local word="$1" name=""
-
-  case "$word" in
-    \$\{[A-Za-z_][A-Za-z0-9_]*\})
-      name="${word#\$\{}"
-      name="${name%\}}"
-      ;;
-    '$'[A-Za-z_][A-Za-z0-9_]*)
-      name="${word#\$}"
-      ;;
-  esac
-  [ -n "$name" ] && printf '%s' "$name"
-}
-
-segment_invokes_assigned_bypass() {
-  local segment="$1"
-  local command_word="" variable_name="" assigned_value=""
-
-  command_word="$(printf '%s' "$segment" | shell_words | sed -n '1p')"
-  variable_name="$(exact_variable_name "$command_word")"
-  [ -n "$variable_name" ] || return 1
-  assigned_value="$(known_assignment_value "$variable_name")" || return 1
-  segment_has_bypass_words "$assigned_value"
-}
-
-segment_has_bypass_words() {
-  local segment="$1"
-  local word=""
-  local seen_git=false
-  local subcommand=""
-  local expect_global_option_value=false
-  local expect_redirection_target=false
-  local seen_no_verify=false
-  local seen_dynamic_push_arg=false
-  local requires_alias_lookup=false
-  local variable_name="" assigned_value=""
-  # At least one LITERAL token of a protected push must appear in the segment.
-  #
-  # Every part of this classification can be inferred from an expansion, because
-  # a bare "$x" could expand to anything. That is fail-closed per word and
-  # catastrophic in combination: in `cp "$src" "$dst"`, "$src" infers git,
-  # "$dst" infers push, seen_dynamic_push_arg then manufactures the bypass
-  # flag, and an entirely ordinary copy is reported as an unaudited protected
-  # push. Every two-variable command was blocked this way — `diff "$OLD"
-  # "$NEW"`, `grep "$pat" "$file"`, `mv "$1" "$2"`.
-  #
-  # Inference stays, but it can no longer supply the whole invocation. Something
-  # in the segment must literally say git, push, or a bypass flag before the
-  # unknowns are allowed to fill in the rest. A command in which all three are
-  # simultaneously hidden behind expansions is not a mistake anyone makes; it is
-  # the shape of a deliberate evasion, and this hook is not the boundary for
-  # those -- branch protection and required checks are.
-  local literal_anchor=false
-
-  while IFS= read -r word; do
-    if [ "$expect_redirection_target" = "true" ]; then
-      expect_redirection_target=false
-      continue
-    elif [ "$word" = "__touchstone_redirection__" ]; then
-      expect_redirection_target=true
-      continue
-    elif [ "$seen_git" = "false" ]; then
-      composed_executable=""
-      case "$word" in
-        __touchstone_shell_composed__:*)
-          composed_executable="${word#__touchstone_shell_composed__:}"
-          composed_executable="$(printf '%b' "$composed_executable")"
-          ;;
-      esac
-      if [ -n "$composed_executable" ]; then
-        # A composed word carries its own decoded text, so decode it and check
-        # rather than assuming every composed executable is git. Treating them
-        # all as git made a benign `$'cp' "$src" "$dst"` infer its two
-        # variables as the push subcommand and the bypass flag, so the
-        # false-positive class this change targets survived for any
-        # ANSI-C-quoted executable (PR #725 review).
-        case "$composed_executable" in
-          git | */git)
-            seen_git=true
-            literal_anchor=true
-            ;;
-          *)
-            # Decoded to something else. It may still EXPAND to git at runtime,
-            # which is worth following — but it is not a literal anchor, so it
-            # cannot license inferring the remaining words as git arguments.
-            if word_may_expand_to "$composed_executable" "git"; then
-              seen_git=true
-            fi
-            ;;
-        esac
+cwd="$session_cwd"
+if [ -n "$tool_workdir" ]; then
+  case "$tool_workdir" in
+    /*) cwd="$tool_workdir" ;;
+    *)
+      if [ -n "$session_cwd" ]; then
+        cwd="$session_cwd/$tool_workdir"
       else
-        case "$word" in
-          git | */git)
-            seen_git=true
-            literal_anchor=true
-            ;;
-          *)
-            if word_may_expand_to "$word" "git"; then
-              seen_git=true
-            fi
-            ;;
-        esac
+        cwd="$tool_workdir"
       fi
-    elif [ "$expect_global_option_value" = "true" ]; then
-      expect_global_option_value=false
-    elif [ -z "$subcommand" ]; then
-      case "$word" in
-        __touchstone_shell_composed__:*)
-          word="${word#__touchstone_shell_composed__:}"
-          word="$(printf '%b' "$word")"
-          ;;
-      esac
-      case "$word" in
-        -C | -c | --git-dir | --work-tree | --namespace)
-          expect_global_option_value=true
-          ;;
-        --no-pager | --paginate | -P | -p)
-          ;;
-        -*)
-          ;;
-        *)
-          variable_name="$(exact_variable_name "$word")"
-          if [ -n "$variable_name" ] \
-            && assigned_value="$(known_assignment_value "$variable_name")" \
-            && [ "$(printf '%s' "$assigned_value" | shell_words | sed -n '1p')" = "push" ]; then
-            subcommand="push"
-            if text_has_bypass_option "$assigned_value"; then
-              seen_no_verify=true
-              push_candidate_dynamic=true
-            fi
-          elif word_may_expand_to "$word" "push"; then
-            # An unresolved subcommand expansion can emit both "push" and
-            # following options through shell word splitting.
-            subcommand="push"
-            seen_dynamic_push_arg=true
-            push_candidate_dynamic=true
-          else
-            subcommand="$word"
-            literal_anchor=true
-          fi
-          ;;
-      esac
-    elif word_is_bypass_option "$word"; then
-      seen_no_verify=true
-      literal_anchor=true
-    elif [ "$subcommand" = "push" ]; then
-      variable_name="$(exact_variable_name "$word")"
-      if [ -n "$variable_name" ] \
-        && assigned_value="$(known_assignment_value "$variable_name")"; then
-        if word_is_bypass_option "$assigned_value"; then
-          seen_no_verify=true
-        else
-          case "$assigned_value" in
-            *'$'* | *'`'*) seen_dynamic_push_arg=true ;;
-          esac
-        fi
-      else
-        if word_is_shell_expanded_option "$word"; then
-          seen_dynamic_push_arg=true
-        else
-          case "$word" in
-            *'$'* | *'`'*) seen_dynamic_push_arg=true ;;
-          esac
-        fi
-      fi
-    fi
-  done < <(printf '%s' "$segment" | shell_words)
-
-  if [ "$subcommand" = "push" ] && [ "$seen_dynamic_push_arg" = "true" ]; then
-    seen_no_verify=true
-  fi
-  if [ "$subcommand" = "push" ] && [ "$seen_no_verify" = "false" ] \
-    && segment_may_compose_no_verify "$segment"; then
-    seen_no_verify=true
-  fi
-
-  if [ -n "$subcommand" ] && [ "$subcommand" != "push" ]; then
-    requires_alias_lookup=true
-  fi
-  # Refuse to report a protected push that was inferred end to end. Without
-  # this the classifier fabricates one out of any two expansions.
-  if [ "$literal_anchor" = "false" ]; then
-    return 1
-  fi
-
-  if [ -n "$subcommand" ] \
-    && { [ "$seen_no_verify" = "true" ] || [ "$requires_alias_lookup" = "true" ]; }; then
-    push_subcommand="$subcommand"
-    push_candidate_has_bypass="$seen_no_verify"
-    return 0
-  fi
-
-  return 1
-}
-
-text_has_bypass_option() {
-  local text="$1"
-  local word=""
-
-  while IFS= read -r word; do
-    if word_is_bypass_option "$word"; then
-      return 0
-    fi
-  done < <(printf '%s' "$text" | shell_words)
-
-  return 1
-}
-
-segment_may_mutate_parent_directory() {
-  local segment="$1"
-  local word=""
-
-  while IFS= read -r word; do
-    case "$word" in
-      if | then | elif | else | while | until | do | ! | time | command | builtin | "(" | ")")
-        ;;
-      [A-Za-z_][A-Za-z0-9_]*=*)
-        ;;
-      eval | source | .)
-        return 0
-        ;;
-      -*)
-        ;;
-      *)
-        return 1
-        ;;
-    esac
-  done < <(printf '%s' "$segment" | shell_words)
-
-  return 1
-}
-
-static_data_sink_segment() {
-  local segment="$1"
-  local word="" command_word="" executable_segment=""
-
-  while IFS= read -r word; do
-    [ -n "$command_word" ] || command_word="$word"
-  done < <(printf '%s' "$segment" | shell_words)
-  executable_segment="$(printf '%s' "$segment" | without_single_quoted_literals)"
-
-  case "$command_word" in
-    echo | printf)
-      printf '%s' "$executable_segment" \
-        | grep -qE '(^|[^\\])\$\(|(^|[^\\])`|[;&|<>]' && return 1
-      return 0
-      ;;
-    cat)
-      printf '%s' "$executable_segment" \
-        | grep -qE '^[[:space:]]*cat[[:space:]]*<<<[[:space:]]*$'
-      return
-      ;;
-    gh)
-      printf '%s' "$executable_segment" \
-        | grep -qE '(^|[^\\])\$\(|(^|[^\\])`|[;&|<>]' && return 1
-      printf '%s' "$segment" | grep -qE '(^|[[:space:]])(issue|pr)[[:space:]]+(create|comment)([[:space:]]|$)'
-      return
       ;;
   esac
-  return 1
-}
+fi
+[ -n "$cwd" ] || cwd="$(pwd)"
 
-plain_git_push_without_bypass() {
-  local segment="$1"
-  local word="" seen_git=false seen_push=false command_seen=false
+# ------------------------------------------------------------------ the lexer
+#
+# One pass, one set of rules, emitting a flat token stream:
+#
+#   W  <flags> <literal>   a word; flags record what the shell will do to it
+#   RT <flags> <literal>   a redirection target, never a command word
+#   R  <operator>          a redirection operator
+#   HD <q|u> <body>        a heredoc body belonging to the segment before it
+#   OP <operator>          a control operator, or ( ) { } punctuation
+#   SUB open | SUB close   a command substitution; its contents are code
+#   VX <body>              the body of a value expansion that contains a
+#                          command substitution; only the substitutions in it
+#                          are code
+#   ERR <reason>           the input left the grammar
+#
+# Word flags: d = the value depends on an expansion, g = pathname or brace
+# expansion, q = the word was quoted, a = it contains an ANSI-C ($'...')
+# string.
+#
+# `literal` holds only the statically known characters: an expansion
+# contributes nothing to it, a quoted character contributes itself. That one
+# choice is what makes `--no-verify` inside a sentence a different word from
+# `--no-verify` as an argument, and it is why prose stops being executable.
+#
+# Newlines and tabs inside a literal are escaped so one token is one line;
+# `printf %b` reverses it, which is safe because backslashes are doubled.
+#
+# LC_ALL=C classifies bytes, not glyphs: macOS awk aborts with "towc:
+# multibyte conversion failure" on input that is not UTF-8 clean, and an em
+# dash in a commit-message heredoc was enough to trigger it (issue #637).
+lex() {
+  LC_ALL=C awk '
+    function enc(s) {
+      gsub(/\\/, "\\\\", s); gsub(/\t/, "\\t", s); gsub(/\n/, "\\n", s)
+      return s
+    }
+    function addf(f) { if (index(wflags, f) == 0) wflags = wflags f }
+    function addvar(v) { wvars = (wvars == "" ? v : wvars " " v) }
+    # The body of a value expansion — $((…)), ((…)), ${…}. It is skipped as a
+    # command list, correctly, but a command substitution written inside one
+    # still executes, so the body is emitted for a substitutions-only walk.
+    # Emitted only when there is something to walk, which keeps ${PWD} and
+    # $((i + 1)) — the overwhelming majority — free.
+    function emitvx(body) {
+      if (index(body, "$(") > 0 || index(body, "`") > 0)
+        printf "VX\t%s\n", enc(body)
+    }
+    function emitw(   kind) {
+      if (wstarted) {
+        kind = redirect_target ? "RT" : "W"
+        redirect_target = 0
+        # Every field carries a one-character tag so none of them is ever
+        # empty. `read` with a tab IFS collapses runs of tabs, so an empty
+        # literal — which is exactly what a bare `$var` produces — would
+        # otherwise shift the variable names into the literal field.
+        printf "%s\t%s\tL%s\tV%s\n", kind, (wflags == "" ? "-" : wflags), enc(wlit), wvars
+      }
+      wlit = ""; wflags = ""; wstarted = 0; wvars = ""
+    }
+    # A control operator ends any pending redirection: the word after `(` in
+    # `-m <(cmd)` is a command word, not the redirection target. Leaving the
+    # flag set swallowed the first word of every process substitution.
+    function emitop(o) { emitw(); redirect_target = 0; printf "OP\t%s\n", o }
+    function push_state(term) {
+      sp++
+      st_lit[sp] = wlit; st_flags[sp] = wflags; st_started[sp] = wstarted
+      st_vars[sp] = wvars; st_redirect[sp] = redirect_target
+      st_quote[sp] = q; st_paren[sp] = paren; st_term[sp] = term
+      wlit = ""; wflags = ""; wstarted = 0; wvars = ""; q = ""; paren = 0
+      # The substitution is its own command list; a redirection pending
+      # outside it does not consume the first word inside it.
+      redirect_target = 0
+    }
+    function pop_state() {
+      wlit = st_lit[sp]; wflags = st_flags[sp]; wstarted = st_started[sp]
+      wvars = st_vars[sp]; redirect_target = st_redirect[sp]
+      q = st_quote[sp]; paren = st_paren[sp]
+      sp--
+    }
+    { S = S $0 "\n" }
+    END {
+      n = length(S); p = 1; sp = 0; paren = 0; q = ""; hn = 0
+      while (p <= n) {
+        c = substr(S, p, 1); d = substr(S, p + 1, 1)
 
-  while IFS= read -r word; do
-    if [ "$seen_git" = "false" ]; then
-      case "$word" in
-        if | then | elif | else | while | until | do | ! | time | command | builtin | "(" | ")" | "{" | "}")
-          [ "$command_seen" = "false" ] || return 1
-          ;;
-        [A-Za-z_][A-Za-z0-9_]*=*)
-          [ "$command_seen" = "false" ] || return 1
-          ;;
-        git | */git)
-          seen_git=true
-          command_seen=true
-          ;;
-        *)
-          return 1
-          ;;
-      esac
-    elif [ "$seen_push" = "false" ]; then
-      case "$word" in
-        push) seen_push=true ;;
-        -C | -c | --git-dir | --work-tree | --namespace) ;;
-        -*) ;;
-        *) return 1 ;;
-      esac
-    elif word_is_bypass_option "$word"; then
-      return 1
-    fi
-  done < <(printf '%s' "$segment" | shell_words)
-  [ "$seen_push" = "true" ]
-}
-
-# Git refuses to run an alias that shadows a builtin, so a builtin
-# subcommand can never resolve to push regardless of which repository's
-# configuration applies — directory-context ambiguity is irrelevant for
-# these names. push itself is intentionally absent.
-git_subcommand_is_builtin() {
-  case "$1" in
-    add | am | apply | archive | bisect | blame | branch | cat-file | checkout | \
-      cherry | cherry-pick | clean | clone | commit | config | count-objects | \
-      describe | diff | difftool | fetch | for-each-ref | fsck | gc | grep | \
-      init | log | ls-files | ls-remote | ls-tree | merge | mv | notes | pull | \
-      rebase | reflog | remote | reset | restore | rev-list | rev-parse | \
-      revert | rm | shortlog | show | show-ref | sparse-checkout | stash | \
-      status | submodule | switch | symbolic-ref | tag | update-ref | worktree)
-      return 0
-      ;;
-  esac
-  return 1
-}
-
-plain_git_builtin_non_push() {
-  local segment="$1"
-  local word="" seen_git=false command_seen=false expect_global_value=false executable_segment=""
-
-  executable_segment="$(printf '%s' "$segment" | without_single_quoted_literals)"
-  if printf '%s' "$executable_segment" \
-    | grep -qE '[$`]|[<>]\('; then
-    return 1
-  fi
-
-  while IFS= read -r word; do
-    if [ "$seen_git" = "false" ]; then
-      case "$word" in
-        if | then | elif | else | while | until | do | ! | time | command | builtin | env | "(" | ")" | "{" | "}")
-          [ "$command_seen" = "false" ] || return 1
-          ;;
-        [A-Za-z_][A-Za-z0-9_]*=*)
-          [ "$command_seen" = "false" ] || return 1
-          ;;
-        git | */git)
-          seen_git=true
-          command_seen=true
-          ;;
-        *)
-          return 1
-          ;;
-      esac
-    elif [ "$expect_global_value" = "true" ]; then
-      expect_global_value=false
-    else
-      case "$word" in
-        -C | -c | --git-dir | --work-tree | --namespace | --config-env)
-          expect_global_value=true
-          ;;
-        --no-pager | --paginate | -P | -p | --bare | --no-replace-objects)
-          ;;
-        -*)
-          ;;
-        commit | commit-tree)
-          return 0
-          ;;
-        *)
-          return 1
-          ;;
-      esac
-    fi
-  done < <(printf '%s' "$segment" | shell_words)
-
-  return 1
-}
-
-segment_is_static_nonprotected() {
-  local segment="$1"
-  local first_word=""
-
-  static_data_sink_segment "$segment" && return 0
-  segment_is_safe_code_carrier "$segment" && return 0
-  plain_git_push_without_bypass "$segment" && return 0
-  plain_git_builtin_non_push "$segment" && return 0
-  [ -n "$(simple_assignment_record "$segment")" ] && return 0
-  first_word="$(printf '%s' "$segment" | shell_words | sed -n '1p')"
-  case "$first_word" in
-    alias | true | :)
-      return 0
-      ;;
-  esac
-  return 1
-}
-
-# Print code strings carried by explicit shell execution boundaries. The caller
-# classifies these payloads; quoted text is not executable merely
-# because it appears somewhere inside a shell command.
-segment_code_payloads() {
-  local segment="$1"
-  local word="" seen_shell=false expect_payload=false
-  local seen_eval=false seen_trap=false seen_source=false seen_stdin_redirection=false
-  local words=()
-
-  while IFS= read -r word; do
-    words[${#words[@]}]="$word"
-  done < <(printf '%s' "$segment" | shell_words)
-
-  # Bash 3.2 + set -u treats an empty array's "${words[@]}" as unbound; the
-  # ${arr[@]+...} idiom expands to nothing instead of dying mid-classification
-  # (issue #637 — the crash left classification in garbage state and
-  # escalated benign commands to protected-push verdicts).
-  for word in ${words[@]+"${words[@]}"}; do
-    if [ "$expect_payload" = "true" ]; then
-      printf '%s\n' "$word"
-      expect_payload=false
-      continue
-    fi
-    if [ "$seen_eval" = "true" ]; then
-      printf '%s\n' "$word"
-      seen_eval=false
-      continue
-    fi
-    if [ "$seen_trap" = "true" ]; then
-      case "$word" in
-        -*)
+        if (q == "\047") {
+          if (c == "\047") { q = "" } else { wlit = wlit c }
+          p++; continue
+        }
+        if (c == "\\") {
+          if (d == "\n") { p += 2; continue }
+          if (d == "") { p++; continue }
+          if (q == "\"" && d != "\"" && d != "\\" && d != "$" && d != "`") {
+            wlit = wlit c d
+          } else {
+            wlit = wlit d
+          }
+          wstarted = 1; p += 2; continue
+        }
+        if (c == "$") {
+          if (d == "(" && substr(S, p + 2, 1) == "(") {
+            # Arithmetic expansion is a value, never a command list. Skipping
+            # it is why $((1 << 2)) is not misread as a heredoc. The body is
+            # still handed on: a value is not a command, but a command
+            # substitution inside one runs (PR #810 review).
+            p += 3; depth = 2; vstart = p
+            while (p <= n && depth > 0) {
+              ch = substr(S, p, 1)
+              if (ch == "(") depth++
+              else if (ch == ")") depth--
+              p++
+            }
+            emitvx(substr(S, vstart, p - 2 - vstart))
+            addf("d"); wstarted = 1; continue
+          }
+          if (d == "(") { push_state(")"); printf "SUB\topen\n"; p += 2; continue }
+          if (d == "`") { push_state("`"); printf "SUB\topen\n"; p += 2; continue }
+          if (d == "{") {
+            p += 2; depth = 1; name = ""; vstart = p
+            while (p <= n && depth > 0) {
+              ch = substr(S, p, 1)
+              if (ch == "{") depth++
+              else if (ch == "}") depth--
+              else if (depth == 1) name = name ch
+              p++
+            }
+            # Only a bare ${NAME} names a variable this hook can resolve; any
+            # operator inside the braces makes the value unknowable — but an
+            # operator is also what lets ${x:-$(cmd)} run a command.
+            emitvx(substr(S, vstart, p - 1 - vstart))
+            if (name ~ /^[A-Za-z_][A-Za-z0-9_]*$/) addvar(name)
+            addf("d"); wstarted = 1; continue
+          }
+          if (d == "\047") {
+            # ANSI-C quoting carries its own escapes; the caller decodes them.
+            p += 2
+            while (p <= n) {
+              ch = substr(S, p, 1)
+              if (ch == "\\") { wlit = wlit ch substr(S, p + 1, 1); p += 2; continue }
+              if (ch == "\047") { p++; break }
+              wlit = wlit ch; p++
+            }
+            addf("a"); addf("q"); wstarted = 1; continue
+          }
+          if (d == "\"") { q = "\""; addf("q"); wstarted = 1; p += 2; continue }
+          if (d ~ /[A-Za-z_0-9@*#?!$-]/) {
+            p++; name = d; p++
+            if (d ~ /[A-Za-z_]/) {
+              while (p <= n && substr(S, p, 1) ~ /[A-Za-z0-9_]/) { name = name substr(S, p, 1); p++ }
+              addvar(name)
+            }
+            addf("d"); wstarted = 1; continue
+          }
+          wlit = wlit c; wstarted = 1; p++; continue
+        }
+        if (sp > 0 && paren == 0 \
+          && ((c == ")" && st_term[sp] == ")") || (c == "`" && st_term[sp] == "`"))) {
+          emitw(); printf "SUB\tclose\n"; pop_state(); addf("d"); wstarted = 1; p++; continue
+        }
+        if (c == "`") { push_state("`"); printf "SUB\topen\n"; p++; continue }
+        if (q == "\"") {
+          if (c == "\"") { q = ""; wstarted = 1; p++; continue }
+          wlit = wlit c; wstarted = 1; p++; continue
+        }
+        if (c == "\"") { q = "\""; addf("q"); wstarted = 1; p++; continue }
+        if (c == "\047") { q = "\047"; addf("q"); wstarted = 1; p++; continue }
+        if (c == "#" && !wstarted && (p == 1 || substr(S, p - 1, 1) ~ /[[:space:];&|()]/)) {
+          while (p <= n && substr(S, p, 1) != "\n") p++
           continue
-          ;;
-      esac
-      printf '%s\n' "$word"
-      seen_trap=false
-      continue
+        }
+        if (c == "\n") {
+          emitw()
+          p++
+          for (k = 1; k <= hn; k++) {
+            body = ""
+            while (p <= n) {
+              e = index(substr(S, p), "\n")
+              if (e == 0) { line = substr(S, p); p = n + 1 } else { line = substr(S, p, e - 1); p += e }
+              cmp = line
+              if (h_strip[k]) sub(/^\t+/, "", cmp)
+              if (cmp == h_delim[k]) break
+              body = body line "\n"
+            }
+            printf "HD\t%s\t%s\n", (h_quoted[k] ? "q" : "u"), enc(body)
+          }
+          hn = 0
+          printf "OP\tnl\n"
+          continue
+        }
+        if ((c == "<" || c == ">") && d == "(") {
+          # Process substitution. Its body is a command list like any other,
+          # so it is walked as code rather than treated as a redirection.
+          push_state(")"); printf "SUB\topen\n"; p += 2; continue
+        }
+        if (c == "<" || c == ">") {
+          if (wstarted && wflags == "" && wlit ~ /^[0-9]+$/) {
+            wlit = ""; wstarted = 0
+          } else {
+            emitw()
+          }
+          p++
+          if (c == "<" && substr(S, p, 1) == "<") {
+            p++
+            if (substr(S, p, 1) == "<") { p++; printf "R\t<<<\n"; redirect_target = 1; continue }
+            strip = 0
+            if (substr(S, p, 1) == "-") { strip = 1; p++ }
+            while (p <= n && substr(S, p, 1) ~ /[ \t]/) p++
+            delim = ""; quoted = 0
+            while (p <= n) {
+              ch = substr(S, p, 1)
+              if (ch == "\047" || ch == "\"") {
+                quoted = 1; term = ch; p++
+                while (p <= n && substr(S, p, 1) != term) { delim = delim substr(S, p, 1); p++ }
+                p++; continue
+              }
+              if (ch == "\\") { quoted = 1; delim = delim substr(S, p + 1, 1); p += 2; continue }
+              if (ch ~ /[ \t\n;&|()<>]/) break
+              delim = delim ch; p++
+            }
+            if (delim != "") { hn++; h_delim[hn] = delim; h_quoted[hn] = quoted; h_strip[hn] = strip }
+            continue
+          }
+          if (substr(S, p, 1) ~ /[>&|]/) p++
+          printf "R\t%s\n", c
+          redirect_target = 1
+          continue
+        }
+        if (c == "(" && d == "(" && !wstarted) {
+          # An arithmetic command, `(( … ))`. Its body is an expression, not a
+          # command list, and skipping it is why `(( v = 1 << 2 ))` does not
+          # register `2))` as a heredoc delimiter and swallow the lines after
+          # it — which silently hid every following command.
+          p += 2; depth = 2; vstart = p
+          while (p <= n && depth > 0) {
+            ch = substr(S, p, 1)
+            if (ch == "(") depth++
+            else if (ch == ")") depth--
+            p++
+          }
+          emitvx(substr(S, vstart, p - 2 - vstart))
+          continue
+        }
+        if (c == "(") { if (sp > 0) paren++; emitop("("); p++; continue }
+        if (c == ")") { if (sp > 0 && paren > 0) paren--; emitop(")"); p++; continue }
+        if (c == ";") { if (d == ";") { emitop(";;"); p += 2 } else { emitop(";"); p++ }; continue }
+        if (c == "&") { if (d == "&") { emitop("&&"); p += 2 } else { emitop("&"); p++ }; continue }
+        if (c == "|") {
+          if (d == "|") { emitop("||"); p += 2 } \
+          else if (d == "&") { emitop("|"); p += 2 } \
+          else { emitop("|"); p++ }
+          continue
+        }
+        if (c ~ /[ \t]/) { emitw(); p++; continue }
+        if (!wstarted && (c == "{" || c == "}")) { emitop(c); p++; continue }
+        if (c == "*" || c == "?" || c == "[") { addf("g"); wstarted = 1; p++; continue }
+        if (c == "{") {
+          # Brace expansion contributes nothing statically knowable.
+          j = p + 1; depth = 1; inner = ""
+          while (j <= n && depth > 0) {
+            ch = substr(S, j, 1)
+            if (ch == "{") depth++
+            else if (ch == "}") { depth--; if (depth == 0) break }
+            inner = inner ch; j++
+          }
+          if (depth == 0 && (index(inner, ",") > 0 || index(inner, "..") > 0)) {
+            addf("g"); wstarted = 1; p = j + 1; continue
+          }
+          wlit = wlit c; wstarted = 1; p++; continue
+        }
+        wlit = wlit c; wstarted = 1; p++
+      }
+      emitw()
+      if (q != "") printf "ERR\tan unterminated quote\n"
+      if (sp > 0) printf "ERR\tan unterminated command substitution\n"
+    }
+  '
+}
+
+decode() { printf '%b' "$1"; }
+
+# `printf -v` writes into a variable without forking. `$(decode …)` costs a
+# subshell per call, and the scans below run once per token: on a 96 KiB payload
+# that is thousands of forks, and this hook is synchronous — a PreToolUse hook
+# that takes 25 seconds freezes the driving CLI for 25 seconds (PR #810 review).
+# Token text is decoded once, at load, through this.
+#
+# The result lands in DECODED, cleared first, and the clearing is load-bearing:
+# bash 3.2 — macOS's system bash, so the common case, not a fringe one — does
+# NOT write the target of `printf -v` when the formatted result is empty. It
+# leaves whatever was there, which is the PREVIOUS decode. An empty literal is
+# exactly what a bare `$var` produces, so every `"$GIT"` silently inherited the
+# text of the word before it. Clearing first makes the no-write path correct by
+# construction rather than relying on the write happening.
+DECODED=""
+decode_into() {
+  DECODED=""
+  [ -n "$1" ] || return 0
+  printf -v DECODED '%b' "$1"
+}
+
+# ------------------------------------------------------------------ predicates
+#
+# Every text test below reads from a here-string, never from a pipe.
+#
+# `producer | grep -q PATTERN` under `set -o pipefail` returns 141 when grep
+# matches early and the producer is still writing: grep exits on the first
+# match, the producer takes SIGPIPE, and pipefail surfaces the signal. A match
+# then reads as a failure, so `if producer | grep -q HOSTILE` is false exactly
+# when the pattern was found. The trigger is input size, not content, so it is
+# invisible on small fixtures and fires on the large command strings and
+# heredoc payloads where this guard matters most (issue #806). A here-string
+# is not a pipeline: the status is grep's alone.
+matches() {
+  grep -qE -- "$1" <<<"$2"
+}
+matches_fixed_line() {
+  grep -Fqx -- "$1" <<<"$2"
+}
+
+# The bypass flag in every spelling the shell can produce, without a table of
+# spellings: the statically known characters of the word must appear, in
+# order, inside "--no-verify". Expansions and globs have already deleted
+# themselves from the word, so `--no-*`, `--no-{veri,verify}` and
+# `--no-$(printf ver)ify` all qualify, while `--no-pager`, `--no-edit`,
+# `--no-verify-nothing` and a sentence that merely contains the flag do not.
+is_subsequence_of() {
+  local lit="$1" rest="$2" i=0 ch=""
+  [ -n "$lit" ] || return 1
+  while [ "$i" -lt "${#lit}" ]; do
+    ch="${lit:$i:1}"
+    case "$rest" in
+      *"$ch"*) rest="${rest#*"$ch"}" ;;
+      *) return 1 ;;
+    esac
+    i=$((i + 1))
+  done
+  return 0
+}
+
+is_bypass_flag() {
+  case "$1" in --no*) ;; *) return 1 ;; esac
+  is_subsequence_of "$1" "--no-verify"
+}
+
+# Does a TEXT — as opposed to a shell word — carry a bypass flag as one of its
+# whitespace-separated tokens? Used where the consumer re-splits what it is
+# given, so one shell word may hold several of the consumer's arguments.
+text_carries_bypass_token() {
+  local token=""
+  while IFS= read -r token; do
+    if is_bypass_flag "$token"; then
+      return 0
     fi
-    case "$word" in
-      eval)
-        seen_eval=true
-        ;;
-      trap)
-        seen_trap=true
-        ;;
-      source | .)
-        seen_source=true
-        ;;
-      /dev/stdin)
-        if [ "$seen_source" = "true" ]; then
-          seen_shell=true
-        fi
-        ;;
-      sh | */sh | bash | */bash | dash | */dash | ksh | */ksh | zsh | */zsh | su | */su)
-        seen_shell=true
-        ;;
-      -*c*)
-        if [ "$seen_shell" = "true" ]; then
-          expect_payload=true
-        fi
-        ;;
-      __touchstone_redirection__)
-        if [ "$seen_shell" = "true" ] \
-          && printf '%s' "$segment" | grep -q '<<<'; then
-          seen_stdin_redirection=true
-        fi
-        ;;
-      *)
-        if [ "$seen_stdin_redirection" = "true" ]; then
-          printf '%s\n' "$word"
-          seen_stdin_redirection=false
-        fi
+  done <<<"$(printf '%s' "$1" | tr " $TAB" '\n\n')"
+  return 1
+}
+
+# Word splitting can turn one lexical word into a whole invocation, as in
+# git${IFS}pu${x}sh${IFS}--no-veri${x}fy. Require static anchors for both git
+# and the flag, then ask only whether the surviving characters still spell a
+# protected push in order.
+is_spliced_protected_push() {
+  local flags="$1" lit="$2"
+  case "$flags" in *d*) ;; *) return 1 ;; esac
+  case "$lit" in *git*) ;; *) return 1 ;; esac
+  case "$lit" in *--no*) ;; *) return 1 ;; esac
+  is_subsequence_of "$lit" "gitpush--no-verify"
+}
+
+word_is_git() {
+  case "$1" in
+    git | */git) return 0 ;;
+  esac
+  return 1
+}
+
+# Consumers that write their standard input somewhere instead of executing it.
+# Every other consumer is treated as an interpreter, so an unknown one fails
+# closed rather than silently turning a payload into data.
+word_is_data_sink() {
+  case "${1##*/}" in
+    cat | tee | gh | git) return 0 ;;
+  esac
+  return 1
+}
+
+word_is_interpreter() {
+  case "${1##*/}" in
+    sh | bash | zsh | ksh | dash | ash | csh | tcsh) return 0 ;;
+  esac
+  return 1
+}
+
+# Wrappers that run the rest of the segment as another identity, on another
+# host, or in another root. Their `-c` argument is a shell payload too, and
+# their alias and config context is not the one this hook can inspect.
+word_is_foreign_context() {
+  case "${1##*/}" in
+    sudo | su | doas | runuser | ssh | chroot | docker | podman | kubectl | nsenter) return 0 ;;
+  esac
+  return 1
+}
+
+# Interpreters whose language this hook does not read. It cannot tell what
+# they will execute, only that the text handed to them names a push.
+word_is_foreign_interpreter() {
+  case "${1##*/}" in
+    awk | gawk | mawk | perl | python | python2 | python3 | ruby | node | php | tclsh | expect) return 0 ;;
+  esac
+  return 1
+}
+
+git_builtins=""
+git_builtins_loaded=false
+# Derived from git, never curated. A hand-written subset of git's own command
+# surface is a maintenance treadmill by construction, and every builtin
+# missing from the old subset was misread as a possible push alias (#776).
+subcommand_is_git_builtin() {
+  if [ "$git_builtins_loaded" = "false" ]; then
+    git_builtins="$(git --list-cmds=builtins 2>/dev/null || true)"
+    git_builtins_loaded=true
+  fi
+  [ -n "$git_builtins" ] || return 1
+  matches_fixed_line "$1" "$git_builtins"
+}
+
+names_git_push() {
+  case "$1" in *git*) ;; *) return 1 ;; esac
+  case "$1" in *push*) return 0 ;; esac
+  return 1
+}
+
+# git splits an alias value with ITS OWN rules (alias.c, `split_cmdline`), not
+# the shell's: unquoted whitespace separates words, `'` and `"` toggle quoting,
+# and a backslash escapes the next character unless it is inside single quotes.
+# Nothing is expanded. Splitting the raw value on whitespace instead leaves the
+# quote characters attached to the word, which is how `alias.x = pu'sh'` — a
+# real push once git dequotes it — read as a subcommand named `pu'sh'` and was
+# allowed (PR #810 review). Exits nonzero on the unterminated quote that makes
+# git itself reject the alias.
+git_split_cmdline() {
+  LC_ALL=C awk -v s="$1" '
+    BEGIN {
+      n = length(s); quoted = ""; word = ""; started = 0
+      for (p = 1; p <= n; p++) {
+        c = substr(s, p, 1)
+        if (quoted == "" && c ~ /[ \t\n]/) {
+          if (started) { print word }
+          word = ""; started = 0; continue
+        }
+        if (quoted == "" && (c == "\047" || c == "\"")) {
+          quoted = c; started = 1; continue
+        }
+        if (c == quoted) { quoted = ""; continue }
+        if (c == "\\" && quoted != "\047") {
+          p++
+          if (p > n) exit 1
+          c = substr(s, p, 1)
+        }
+        word = word c; started = 1
+      }
+      if (quoted != "") exit 1
+      if (started) print word
+    }'
+}
+
+# Config keys that can contribute a git alias to THIS invocation. `alias.*` is
+# the obvious one, but an include pulls in a whole file and that file can carry
+# an `[alias]` section: `git -c include.path=<file> x --no-verify` reached a
+# real push while the key test only looked for `alias.` (PR #810 review). Git
+# config section and variable names are case-insensitive.
+config_key_defines_alias() {
+  case "$(printf '%s' "${1%%=*}" | tr '[:upper:]' '[:lower:]')" in
+    alias.* | include.* | includeif.*) return 0 ;;
+  esac
+  return 1
+}
+
+# For a payload this hook cannot read — a string the shell assembles at
+# runtime — any one of these is enough to refuse. Requiring all of them would
+# miss `eval "git $sub --no-verify"`, where the expansion is exactly the word
+# that would have completed the phrase.
+mentions_any_push_token() {
+  case "$1" in
+    *git* | *push* | *--no*) return 0 ;;
+  esac
+  return 1
+}
+
+# ------------------------------------------------------------------ verdict
+refuse() {
+  echo "emergency-disclosure: refusing this call — $1" >&2
+  exit 2
+}
+
+push_count=0
+push_description=""
+push_authorizable=false
+context_ambiguous=false
+definition_seen=false
+
+# The audit names a repository, so what matters is whether the context was
+# already unresolvable when the push was reached. A `cd` AFTER the push cannot
+# move the repository the push already targeted.
+record_push() {
+  push_count=$((push_count + 1))
+  if [ "$push_count" -eq 1 ]; then
+    push_description="$1"
+    if [ "$2" = "true" ] && [ "$context_ambiguous" = "false" ] \
+      && [ "$definition_seen" = "false" ] && [ "$resolved_expansion_used" = "false" ]; then
+      push_authorizable=true
+    else
+      push_authorizable=false
+    fi
+  else
+    push_authorizable=false
+  fi
+}
+
+# Reading a variable this command assigned is good enough to decide whether a
+# push is protected — `branch=feat/test; git push origin "$branch"` is provably
+# not one. It is NOT good enough to authorize a bypass: this hook does not
+# model execution order, so a variable assigned in a branch it cannot evaluate
+# would resolve to the wrong value. Deciding may use the resolution;
+# authorizing may not.
+resolved_expansion_used=false
+
+# ---- what the command told us about itself --------------------------------
+# Assignments, git aliases configured in this very command, and alias names
+# that route to git. All three are facts the command states outright; reading
+# them is not the same as predicting what the shell will do.
+asg_values=""
+asg_unknown=""
+remember_assignment() {
+  asg_values="$1=$2
+$asg_values"
+}
+# `x+=t` appends to a value this hook may not have seen, so the variable stops
+# being a stated fact. Forgetting it is what keeps `x=gi; x+=t; "$x" push
+# --no-verify` in the hidden-executable class instead of resolving to `gi`.
+forget_assignment() {
+  asg_unknown="$asg_unknown$1
+"
+}
+assignment_value() {
+  local name="$1" line=""
+  if [ -n "$asg_unknown" ] && matches_fixed_line "$name" "$asg_unknown"; then
+    return 1
+  fi
+  while IFS= read -r line; do
+    if [ "${line%%=*}" = "$name" ]; then
+      printf '%s' "${line#*=}"
+      return 0
+    fi
+  done <<<"$asg_values"
+  return 1
+}
+
+command_git_aliases=""
+remember_command_git_alias() {
+  command_git_aliases="$command_git_aliases$1=$2
+"
+}
+command_git_alias_value() {
+  local name="$1" line=""
+  while IFS= read -r line; do
+    if [ "${line%%=*}" = "$name" ]; then
+      printf '%s' "${line#*=}"
+      return 0
+    fi
+  done <<<"$command_git_aliases"
+  return 1
+}
+
+push_routing_names=""
+remember_push_routing_name() {
+  push_routing_names="$1=$2
+$push_routing_names"
+}
+# Returns the alias body if this name was defined in the call as one that runs
+# git push.
+push_routing_value() {
+  local name="$1" line=""
+  [ -n "$push_routing_names" ] || return 1
+  while IFS= read -r line; do
+    if [ "${line%%=*}" = "$name" ]; then
+      printf '%s' "${line#*=}"
+      return 0
+    fi
+  done <<<"$push_routing_names"
+  return 1
+}
+
+# ------------------------------------------------------------------ the walk
+tk_kind=()
+tk_a=()
+tk_b=()
+tk_c=()
+tk_count=0
+tk_index=0
+payload_depth=0
+
+load_tokens() {
+  tk_kind=()
+  tk_a=()
+  tk_b=()
+  tk_c=()
+  local k="" a="" b="" c=""
+  while IFS="$TAB" read -r k a b c; do
+    case "$k" in
+      W | RT)
+        b="${b#L}"
+        c="${c#V}"
         ;;
     esac
-  done
+    tk_kind[${#tk_kind[@]}]="$k"
+    tk_a[${#tk_a[@]}]="$a"
+    tk_b[${#tk_b[@]}]="$b"
+    tk_c[${#tk_c[@]}]="$c"
+  done < <(printf '%s' "$1" | lex)
+  tk_count="${#tk_kind[@]}"
+  tk_index=0
 }
 
-payload_has_protected_push() {
-  local payload="$1"
-  local nested_segment=""
+# An explicit code carrier — `bash -c`, `eval`, `trap`, a heredoc reaching an
+# interpreter — hands us another command list. Lex and walk it as one.
+classify_payload() {
+  local payload="$1" context="$2"
+  local saved_kind=() saved_a=() saved_b=() saved_c=() saved_index=0 saved_count=0
 
-  while IFS= read -r nested_segment; do
-    push_subcommand=""
-    push_candidate_has_bypass=false
-    if segment_has_bypass_words "$nested_segment" \
-      && [ "$push_subcommand" = "push" ] \
-      && [ "$push_candidate_has_bypass" = "true" ]; then
-      return 0
-    fi
-  done < <(printf '%s\n' "$payload" | without_heredoc_bodies | without_shell_comments | shell_segments)
-  return 1
+  payload_depth=$((payload_depth + 1))
+  if [ "$payload_depth" -gt 4 ]; then
+    refuse "the call nests executable payloads deeper than this hook will follow"
+  fi
+  saved_kind=(${tk_kind[@]+"${tk_kind[@]}"})
+  saved_a=(${tk_a[@]+"${tk_a[@]}"})
+  saved_b=(${tk_b[@]+"${tk_b[@]}"})
+  saved_c=(${tk_c[@]+"${tk_c[@]}"})
+  saved_index="$tk_index"
+  saved_count="$tk_count"
+
+  load_tokens "$payload"
+  walk "$context" "all"
+
+  tk_kind=(${saved_kind[@]+"${saved_kind[@]}"})
+  tk_a=(${saved_a[@]+"${saved_a[@]}"})
+  tk_b=(${saved_b[@]+"${saved_b[@]}"})
+  tk_c=(${saved_c[@]+"${saved_c[@]}"})
+  tk_index="$saved_index"
+  tk_count="$saved_count"
+  payload_depth=$((payload_depth - 1))
+  return 0
 }
 
-segment_has_protected_code_payload() {
-  local segment="$1"
-  local payload=""
+# git is the authority on its own aliases. Ask it; do not model it.
+resolve_git_subcommand() {
+  local name="$1" has_bypass="$2" cmd="$3" context="$4"
+  local seen="" value="" next="" hops=0 word="" alias_bypass=false skip_value=false
+  local alias_words=""
 
-  while IFS= read -r payload; do
-    [ -n "$payload" ] || continue
-    if payload_has_protected_push "$payload"; then
-      return 0
-    fi
-  done < <(segment_code_payloads "$segment")
-  return 1
-}
-
-segment_is_safe_code_carrier() {
-  local segment="$1"
-  local payload="" payload_count=0
-
-  while IFS= read -r payload; do
-    [ -n "$payload" ] || continue
-    payload_count=$((payload_count + 1))
-    static_data_sink_segment "$payload" || return 1
-  done < <(segment_code_payloads "$segment")
-  [ "$payload_count" -gt 0 ]
-}
-
-segment_push_forwarding_function_name() {
-  local segment="$1"
-  local header="" name="" body="" body_segment=""
-
-  header="${segment%%\{*}"
-  if ! printf '%s' "$header" \
-    | grep -qE '^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(\(\))?[[:space:]]*$'; then
+  if subcommand_is_git_builtin "$name"; then
+    # git refuses an alias that shadows a builtin, so no repository's config
+    # can turn this into a push — directory ambiguity is irrelevant here.
     return 0
   fi
-  name="$(printf '%s' "$header" \
-    | sed -E 's/^[[:space:]]*function[[:space:]]+//; s/[[:space:]]*(\(\))?[[:space:]]*$//')"
-  body="${segment#*\{}"
-  body="${body%\}*}"
+  if [ "$context_ambiguous" = "true" ] || [ "$context" != "direct" ]; then
+    refuse "\`$cmd $name\` is not a git builtin, so it may be an alias, and this call changes the repository context before it runs"
+  fi
 
-  while IFS= read -r body_segment; do
-    if printf '%s' "$body_segment" | grep -qE '(\$@|\$\*)' \
-      && segment_has_bypass_words "$body_segment" \
-      && [ "$push_subcommand" = "push" ]; then
-      printf '%s' "$name"
-      return 0
+  while [ "$hops" -lt 8 ]; do
+    hops=$((hops + 1))
+    case "$seen" in
+      *"|$name|"*) refuse "\`$cmd $name\` expands through a loop of git aliases" ;;
+    esac
+    seen="$seen|$name|"
+
+    if ! value="$(command_git_alias_value "$name")"; then
+      value="$(git -C "$cwd" config --get "alias.$name" 2>/dev/null || true)"
     fi
-  done < <(printf '%s' "$body" | shell_segments)
-}
-
-segment_git_push_alias_name() {
-  local segment="$1"
-  local word="" seen_git=false seen_config=false alias_name="" expect_value=false
-
-  while IFS= read -r word; do
-    if [ "$seen_git" = "false" ]; then
-      case "$word" in
-        git | */git) seen_git=true ;;
-      esac
-    elif [ "$seen_config" = "false" ]; then
-      case "$word" in
-        config) seen_config=true ;;
-        -*) ;;
-        *) return 0 ;;
-      esac
-    elif [ "$expect_value" = "true" ]; then
-      case "$word" in
-        push | "push "*)
-          printf '%s' "$alias_name"
-          return 0
-          ;;
-      esac
-      return 0
-    else
-      case "$word" in
-        alias.*)
-          alias_name="${word#alias.}"
-          expect_value=true
-          ;;
-      esac
-    fi
-  done < <(printf '%s' "$segment" | shell_words)
-}
-
-resolve_git_alias_chain() {
-  local cwd="$1"
-  local current="$2"
-  local depth=0
-  local seen=""
-  local expansion="" word="" next=""
-  local expect_global_value=false
-  local found_subcommand=false
-
-  alias_resolution_kind="none"
-  alias_resolution_has_bypass=false
-  alias_resolution_context_ambiguous=false
-  alias_resolution_routes_push=false
-
-  while [ "$depth" -lt 16 ]; do
-    depth=$((depth + 1))
-    if printf '%s\n' "$seen" | grep -Fqx "$current"; then
-      alias_resolution_kind="ambiguous"
-      return 0
-    fi
-    if [ -n "$seen" ]; then
-      seen="$(printf '%s\n%s' "$seen" "$current")"
-    else
-      seen="$current"
-    fi
-
-    expansion="$(git -C "$cwd" config --get "alias.$current" 2>/dev/null || true)"
-    if [ -z "$expansion" ]; then
-      alias_resolution_kind="none"
-      return 0
-    fi
-    case "$expansion" in
-      !*)
-        alias_resolution_kind="shell"
-        if payload_has_protected_push "${expansion#!}"; then
-          alias_resolution_has_bypass=true
-          alias_resolution_routes_push=true
-        elif printf '%s' "${expansion#!}" \
-          | grep -qE '(^|[[:space:]])(git[[:space:]]+)?push([[:space:]]|$)'; then
-          alias_resolution_routes_push=true
+    [ -n "$value" ] || return 0
+    case "$value" in
+      '!'*)
+        # A shell alias runs arbitrary code. Refuse only when it names a push:
+        # `!echo "$@"` cannot become one however it is called.
+        if matches '(^|[^[:alnum:]_])push([^[:alnum:]_]|$)' "$value"; then
+          refuse "\`$cmd $name\` is a shell alias (\`$value\`) that names a push, so what it runs cannot be checked"
         fi
         return 0
         ;;
     esac
 
+    # An alias expansion is itself `[global options] subcommand …`. Skip the
+    # harmless global options to reach the subcommand, and refuse the ones that
+    # move the repository or redefine config out from under the lookup.
+    if ! alias_words="$(git_split_cmdline "$value")"; then
+      refuse "\`$cmd $name\` expands to a git alias git itself cannot parse (\`$value\`)"
+    fi
     next=""
-    expect_global_value=false
-    found_subcommand=false
+    alias_bypass=false
+    skip_value=false
     while IFS= read -r word; do
-      if [ "$expect_global_value" = "true" ]; then
-        expect_global_value=false
+      [ -n "$word" ] || continue
+      if [ "$skip_value" = "true" ]; then
+        skip_value=false
         continue
       fi
-      if [ "$found_subcommand" = "false" ]; then
-        case "$word" in
-          -C | -c | --git-dir | --work-tree | --namespace | --config-env)
-            expect_global_value=true
-            case "$word" in
-              -C | -c | --git-dir | --work-tree | --namespace | --config-env)
-                alias_resolution_context_ambiguous=true
-                ;;
-            esac
-            ;;
-          -C* | -c* | --git-dir=* | --work-tree=* | --namespace=* | --config-env=*)
-            alias_resolution_context_ambiguous=true
-            ;;
-          --no-pager | --paginate | -P | -p | --bare | --no-replace-objects | --literal-pathspecs | --glob-pathspecs | --noglob-pathspecs | --icase-pathspecs)
-            ;;
-          -*)
-            alias_resolution_context_ambiguous=true
-            ;;
-          *)
-            next="$word"
-            found_subcommand=true
-            ;;
-        esac
-      elif word_is_bypass_option "$word"; then
-        alias_resolution_has_bypass=true
+      if [ -n "$next" ]; then
+        if is_bypass_flag "$word"; then
+          alias_bypass=true
+        fi
+        continue
       fi
-    done < <(printf '%s' "$expansion" | shell_words)
+      case "$word" in
+        -C | --git-dir | --work-tree | --namespace | -c | --config-env)
+          refuse "\`$cmd $name\` expands to a git alias that changes repository or config context (\`$value\`)"
+          ;;
+        --no-pager | --paginate | -P | -p | --bare | --no-replace-objects | --literal-pathspecs | --glob-pathspecs | --noglob-pathspecs | --icase-pathspecs) ;;
+        -*)
+          refuse "\`$cmd $name\` expands to a git alias with an option this hook does not model (\`$value\`)"
+          ;;
+        *) next="$word" ;;
+      esac
+    done <<<"$alias_words"
 
-    if [ "$expect_global_value" = "true" ] || [ -z "$next" ]; then
-      alias_resolution_kind="ambiguous"
-      return 0
+    if [ -z "$next" ]; then
+      refuse "\`$cmd $name\` expands to a git alias with no subcommand (\`$value\`)"
     fi
     if [ "$next" = "push" ]; then
-      alias_resolution_kind="push"
+      if [ "$has_bypass" = "true" ] || [ "$alias_bypass" = "true" ]; then
+        record_push "$cmd $name (a git alias for \`$value\`)" false
+      fi
       return 0
     fi
-    current="$next"
+    name="$next"
+  done
+  refuse "\`$cmd $name\` expands through more git aliases than this hook will follow"
+}
+
+seg_flags=()
+seg_lits=()
+seg_vars=()
+seg_texts=()
+
+# The statically known text of word $1, with ANSI-C escapes resolved. Computed
+# once per word when the segment loads and read from `seg_texts` thereafter.
+decode_word_text() {
+  local index="$1"
+  decode_into "${seg_lits[$index]}"
+  case "${seg_flags[$index]}" in
+    *a*) decode_into "$DECODED" ;;
+  esac
+  seg_texts[$index]="$DECODED"
+}
+
+# A word that is exactly one reference to a variable this command assigned:
+# `$name`, `${name}` or `"$name"`. Its value is then a fact the command
+# stated, not a guess about the shell.
+word_known_value() {
+  # Assign in separate statements: bash expands every word of a `local` line
+  # before the builtin runs, so `local i="$1" v="${arr[$i]}"` reads the OUTER
+  # i — unset here, which killed the lookup under `set -u`.
+  local index="$1"
+  local vars
+  vars="${seg_vars[$index]}"
+  case "${seg_flags[$index]}" in *d*) ;; *) return 1 ;; esac
+  [ -n "$vars" ] || return 1
+  case "$vars" in *" "*) return 1 ;; esac
+  [ -z "${seg_texts[$index]}" ] || return 1
+  # Callers run this in a command substitution, so they — not this function —
+  # set `resolved_expansion_used`; an assignment made here would be lost with
+  # the subshell.
+  assignment_value "$vars"
+}
+
+classify_git() {
+  local cmd="$1" start="$2" count="$3" has_bypass="$4" bypass_spelling="$5" context="$6"
+  local i="$start" flags="" lit="" value="" word=""
+  local subcommand="" subcommand_flags="" subcommand_found=false
+  local safe_globals_only=true dynamic_argument=false authorizable=false
+
+  while [ "$i" -lt "$count" ]; do
+    flags="${seg_flags[$i]}"
+    lit="${seg_texts[$i]}"
+    case "$lit" in
+      -C | --git-dir | --work-tree | --namespace)
+        context_ambiguous=true
+        safe_globals_only=false
+        i=$((i + 2))
+        continue
+        ;;
+      -c | --config-env)
+        safe_globals_only=false
+        i=$((i + 1))
+        if [ "$i" -lt "$count" ]; then
+          case "${seg_flags[$i]}" in
+            *d* | *g*) refuse "\`git $lit\` is given a value assembled at runtime, and a config value can define an alias that pushes" ;;
+          esac
+          value="${seg_texts[$i]}"
+          if config_key_defines_alias "$value"; then
+            refuse "\`git $lit $value\` can define a git alias for this call, so the subcommand cannot be resolved"
+          fi
+        fi
+        i=$((i + 1))
+        continue
+        ;;
+      -C* | --git-dir=* | --work-tree=* | --namespace=*)
+        context_ambiguous=true
+        safe_globals_only=false
+        ;;
+      -c* | --config-env=*)
+        safe_globals_only=false
+        if config_key_defines_alias "${lit#-c}" || config_key_defines_alias "${lit#*=}"; then
+          refuse "\`git $lit\` can define a git alias for this call, so the subcommand cannot be resolved"
+        fi
+        ;;
+      --exec-path*)
+        refuse "\`git --exec-path\` redirects git's own command lookup, so the subcommand cannot be resolved"
+        ;;
+      --no-pager | --paginate | -P | -p | --bare | --no-replace-objects | --literal-pathspecs | --glob-pathspecs | --noglob-pathspecs | --icase-pathspecs) ;;
+      -*)
+        safe_globals_only=false
+        context_ambiguous=true
+        ;;
+      *)
+        subcommand="$lit"
+        subcommand_flags="$flags"
+        subcommand_found=true
+        break
+        ;;
+    esac
+    i=$((i + 1))
   done
 
-  alias_resolution_kind="ambiguous"
+  if [ "$subcommand_found" = "false" ]; then
+    return 0
+  fi
+  case "$subcommand_flags" in
+    *d* | *g*)
+      if value="$(word_known_value "$i")"; then
+        resolved_expansion_used=true
+        # The command assigned this variable itself, so the subcommand is a
+        # stated fact. `sub=push; git "$sub" …` resolves to push. An unquoted
+        # value also word-splits, so `args='push --no-verify'; git $args`
+        # supplies the subcommand AND the flag from one expansion.
+        subcommand="${value%%[ $TAB]*}"
+        while IFS= read -r word; do
+          if is_bypass_flag "$word"; then
+            has_bypass=true
+            bypass_spelling="$word"
+          fi
+        done <<<"$(printf '%s' "$value" | tr " $TAB" '\n\n')"
+      else
+        refuse "the git subcommand is built by expansion, so this call cannot be shown to be anything other than a push"
+      fi
+      ;;
+  esac
+  if [ "$subcommand" != "push" ]; then
+    resolve_git_subcommand "$subcommand" "$has_bypass" "$cmd" "$context"
+    return 0
+  fi
+
+  # `git config alias.NAME push …` teaches this command's own alias table.
+  i=$((i + 1))
+  while [ "$i" -lt "$count" ]; do
+    case "${seg_flags[$i]}" in
+      *d* | *g*)
+        if value="$(word_known_value "$i")"; then
+          resolved_expansion_used=true
+          if is_bypass_flag "$value"; then
+            has_bypass=true
+            bypass_spelling="$value"
+          fi
+        else
+          dynamic_argument=true
+        fi
+        ;;
+    esac
+    i=$((i + 1))
+  done
+
+  if [ "$has_bypass" = "true" ]; then
+    if [ "$context" = "direct" ] && [ "$safe_globals_only" = "true" ] \
+      && [ "$dynamic_argument" = "false" ]; then
+      authorizable=true
+    fi
+    record_push "$cmd push … $bypass_spelling" "$authorizable"
+    return 0
+  fi
+  if [ "$dynamic_argument" = "true" ]; then
+    refuse "\`$cmd push\` is given an argument assembled at runtime, which could be \`$BYPASS_FLAG\`"
+  fi
+  return 0
 }
 
-segment_invokes_named_bypass() {
-  local segment="$1"
-  local protected_names="$2"
-  local word="" command_word="" seen_no_verify=false
-
-  while IFS= read -r word; do
-    if [ -z "$command_word" ]; then
-      command_word="$word"
-    elif word_is_bypass_option "$word"; then
-      seen_no_verify=true
-    fi
-  done < <(printf '%s' "$segment" | shell_words)
-
-  [ "$seen_no_verify" = "true" ] || return 1
-  printf '%s\n' "$protected_names" | grep -Fqx "$command_word"
+# The subcommand word of a git segment: the first word that is not a global
+# option, with the value-taking options stepped over. Needed before the heredoc
+# decision, which cannot be made without knowing what git will do with stdin.
+git_subcommand_text() {
+  local i="$1" count="$2" lit=""
+  while [ "$i" -lt "$count" ]; do
+    lit="${seg_texts[$i]}"
+    case "$lit" in
+      -C | --git-dir | --work-tree | --namespace | -c | --config-env)
+        i=$((i + 2))
+        continue
+        ;;
+      -*) ;;
+      *)
+        printf '%s' "$lit"
+        return 0
+        ;;
+    esac
+    i=$((i + 1))
+  done
+  return 1
 }
 
-segment_bypass_alias_name() {
-  local segment="$1"
-  local word="" alias_name="" alias_value="" seen_alias=false
+# Does this segment's standard input get written somewhere rather than run?
+#
+# For `git` that depends on the subcommand. A builtin that reads stdin writes
+# it out — `git commit -F -`, `git hash-object --stdin`. A subcommand that is
+# not a builtin may be a `!shell` alias, and a shell alias EXECUTES the stdin
+# it inherits: with `alias.x = !bash`, `git x <<'EOF'` runs the heredoc. This
+# hook classified every git heredoc as data, which hid exactly that shape
+# (PR #810 review). Unresolvable means not-data, so it fails closed.
+segment_stdin_is_data() {
+  local cmd="$1" start="$2" count="$3" sub=""
+  word_is_data_sink "$cmd" || return 1
+  word_is_git "$cmd" || return 0
+  sub="$(git_subcommand_text "$start" "$count")" || return 1
+  subcommand_is_git_builtin "$sub"
+}
 
-  while IFS= read -r word; do
-    if [ "$seen_alias" = "false" ]; then
-      [ "$word" = "alias" ] || return 0
-      seen_alias=true
-      continue
+# `git config alias.NAME VALUE` in this command defines an alias that a later
+# segment can use before any repository config would show it.
+record_git_config_alias() {
+  local start="$1" count="$2" i="$1" lit="" name="" value=""
+  [ "$((start + 2))" -lt "$count" ] || return 0
+  [ "${seg_texts[$start]}" = "config" ] || return 0
+  i=$((start + 1))
+  while [ "$i" -lt "$count" ]; do
+    lit="${seg_texts[$i]}"
+    case "$lit" in
+      alias.*)
+        name="${lit#alias.}"
+        if [ "$((i + 1))" -lt "$count" ]; then
+          value="${seg_texts[$((i + 1))]}"
+          remember_command_git_alias "$name" "$value"
+        fi
+        return 0
+        ;;
+    esac
+    i=$((i + 1))
+  done
+  return 0
+}
+
+classify_segment() {
+  local seg="$1" heredocs="$2" herestring="$3" context="$4"
+  local pipe_git="$5" pipe_interpreter="$6"
+  local flags="" lit="" vars="" i=0 count=0 start=0
+  local cmd="" cmd_flags="" cmd_base=""
+  local has_bypass=false bypass_spelling="" payload="" payload_flags=""
+  local hd_kind="" hd_body="" body="" value="" name="" combined=""
+  local segment_names_git=false payload_consumed=false file_argument=false
+  # Bash's dynamic scoping is load-bearing here: a nested payload walk gets
+  # its own segment arrays, and returning restores this one's. Without the
+  # `local`, classifying a heredoc payload would clobber the segment that
+  # carried it.
+  local seg_flags seg_lits seg_vars seg_texts
+
+  seg_flags=()
+  seg_lits=()
+  seg_vars=()
+  seg_texts=()
+  while IFS="$TAB" read -r flags lit vars; do
+    [ -n "$flags" ] || continue
+    seg_flags[${#seg_flags[@]}]="$flags"
+    seg_lits[${#seg_lits[@]}]="${lit#L}"
+    seg_vars[${#seg_vars[@]}]="${vars#V}"
+  done <<<"$seg"
+  count="${#seg_flags[@]}"
+  i=0
+  while [ "$i" -lt "$count" ]; do
+    decode_word_text "$i"
+    i=$((i + 1))
+  done
+  i=0
+
+  # Keywords, transparent shell wrappers, and assignments precede the command
+  # word. `command`/`builtin`/`exec` are transparent: they do not change the
+  # process's directory or identity, so what follows is still this segment.
+  while [ "$i" -lt "$count" ]; do
+    lit="${seg_texts[$i]}"
+    case "$lit" in
+      if | then | elif | else | fi | while | until | do | done | 'case' | 'esac' | 'in' | '!' | coproc | command | builtin | exec | export | local | declare | typeset)
+        i=$((i + 1))
+        continue
+        ;;
+      time)
+        i=$((i + 1))
+        if [ "$i" -lt "$count" ] && [ "${seg_texts[$i]}" = "-p" ]; then
+          i=$((i + 1))
+        fi
+        continue
+        ;;
+      function)
+        definition_seen=true
+        return 0
+        ;;
+      [A-Za-z_]*+=*)
+        # Checked before the plain-assignment case, which would otherwise
+        # match `x+=t` and record a variable named `x+`, leaving `x` looking
+        # like the value it had before the append.
+        forget_assignment "${lit%%+=*}"
+        i=$((i + 1))
+        continue
+        ;;
+      [A-Za-z_]*=*)
+        name="${lit%%=*}"
+        case "$name" in
+          GIT_DIR | GIT_WORK_TREE | GIT_COMMON_DIR | GIT_CEILING_DIRECTORIES | HOME | XDG_CONFIG_HOME | CDPATH | PATH | GIT_CONFIG*)
+            context_ambiguous=true
+            ;;
+        esac
+        case "${seg_flags[$i]}" in
+          *d* | *g*) forget_assignment "$name" ;;
+          *) remember_assignment "$name" "${lit#*=}" ;;
+        esac
+        i=$((i + 1))
+        continue
+        ;;
+    esac
+    break
+  done
+  [ "$i" -lt "$count" ] || return 0
+
+  cmd_flags="${seg_flags[$i]}"
+  cmd="${seg_texts[$i]}"
+  cmd_base="${cmd##*/}"
+  start=$((i + 1))
+
+  # The bypass flag is looked for across the whole segment, so no wrapper can
+  # hide one behind its own options. `git` anywhere in the segment is what
+  # makes a stray flag reachable by a push.
+  i=0
+  while [ "$i" -lt "$count" ]; do
+    lit="${seg_texts[$i]}"
+    if [ "$has_bypass" = "false" ] && is_bypass_flag "$lit"; then
+      has_bypass=true
+      bypass_spelling="$lit"
     fi
-    case "$word" in
-      [A-Za-z_][A-Za-z0-9_]*=*)
-        alias_name="${word%%=*}"
-        alias_value="${word#*=}"
-        if printf '%s' "$alias_value" \
-          | grep -qE '(^|[[:space:]])([^[:space:]]*/)?git([[:space:]]+[^[:space:]]+)*[[:space:]]+push([[:space:]]|$)'; then
-          printf '%s' "$alias_name"
+    case "$lit" in *git*) segment_names_git=true ;; esac
+    # A wrapper can be handed the git executable through a variable this call
+    # assigned: `GIT=git; env "$GIT" push --no-verify` leaves no word spelling
+    # `git`, so the bypass-flag-beside-git rule below never fired — the same
+    # gap reached git through `sudo`, `nice` and `nohup` (PR #810 review).
+    # Resolving here only DECIDES whether git is named; it never authorizes.
+    if [ "$segment_names_git" = "false" ]; then
+      case "${seg_flags[$i]}" in
+        *d* | *g*)
+          if value="$(word_known_value "$i")"; then
+            case "$value" in *git*) segment_names_git=true ;; esac
+          fi
+          ;;
+      esac
+    fi
+    i=$((i + 1))
+  done
+  [ "$pipe_git" = "true" ] && segment_names_git=true
+
+  # A heredoc or here-string reaching an interpreter is a code payload; one
+  # reaching a data sink is text. An unquoted delimiter still expands, so a
+  # substitution inside it is code even when the consumer only writes it out —
+  # but only the substitution is, which is why the body is walked in
+  # substitutions-only mode rather than treated as a script.
+  while IFS="$TAB" read -r hd_kind hd_body; do
+    [ -n "$hd_kind" ] || continue
+    body="$(decode "$hd_body")"
+    if segment_stdin_is_data "$cmd" "$start" "$count" \
+      && [ "$pipe_interpreter" != "true" ]; then
+      if [ "$hd_kind" = "u" ]; then
+        classify_text_substitutions "$body"
+      fi
+    else
+      classify_payload "$body" "nested"
+    fi
+  done <<<"$heredocs"
+  if [ -n "$herestring" ]; then
+    body="$(decode "$herestring")"
+    if word_is_interpreter "$cmd" || word_is_foreign_context "$cmd" \
+      || [ "$cmd_base" = "source" ] || [ "$cmd_base" = "." ] \
+      || [ "$pipe_interpreter" = "true" ]; then
+      classify_payload "$body" "nested"
+    elif ! segment_stdin_is_data "$cmd" "$start" "$count"; then
+      classify_payload "$body" "nested"
+    else
+      classify_text_substitutions "$body"
+    fi
+  fi
+
+  # A segment whose standard output feeds an interpreter is writing a program,
+  # and its statically known words are that program's text. This is the same
+  # relationship a heredoc has with the interpreter it is fed to, only through
+  # a pipe — `printf 'git push --no-verify' | bash` runs the push, and only
+  # heredoc and here-string bodies were being treated as payloads
+  # (PR #810 review).
+  if [ "$pipe_interpreter" = "true" ]; then
+    i="$start"
+    while [ "$i" -lt "$count" ]; do
+      lit="${seg_texts[$i]}"
+      if mentions_any_push_token "$lit"; then
+        classify_payload "$lit" "nested"
+      fi
+      i=$((i + 1))
+    done
+  fi
+
+  case "$cmd_base" in
+    cd | pushd | popd)
+      context_ambiguous=true
+      return 0
+      ;;
+    alias | unalias)
+      # An alias body runs later, under a name this hook cannot follow back to
+      # its definition. Record the names that route to git rather than
+      # refusing every definition: defining one and never calling it is
+      # harmless, and calling one is what matters.
+      definition_seen=true
+      i="$start"
+      while [ "$i" -lt "$count" ]; do
+        lit="${seg_texts[$i]}"
+        case "$lit" in
+          [A-Za-z_]*=*)
+            if names_git_push "${lit#*=}"; then
+              remember_push_routing_name "${lit%%=*}" "${lit#*=}"
+            fi
+            ;;
+        esac
+        i=$((i + 1))
+      done
+      return 0
+      ;;
+    eval | trap)
+      context_ambiguous=true
+      i="$start"
+      while [ "$i" -lt "$count" ]; do
+        case "${seg_texts[$i]}" in
+          -*)
+            i=$((i + 1))
+            continue
+            ;;
+        esac
+        payload_flags="${seg_flags[$i]}"
+        payload="${seg_texts[$i]}"
+        case "$payload_flags" in
+          *d* | *g*)
+            # `cmd='git push --no-verify'; eval "$cmd"` states its own payload.
+            # Reading the value back is not a prediction about the shell — the
+            # command wrote it down. Without this the static literal of `"$cmd"`
+            # is empty, so the token test below had nothing to refuse and the
+            # push ran (PR #810 review).
+            if value="$(word_known_value "$i")"; then
+              resolved_expansion_used=true
+              classify_payload "$value" "nested"
+            elif mentions_any_push_token "$payload"; then
+              refuse "\`$cmd_base\` runs a string assembled at runtime, so what it runs cannot be checked"
+            fi
+            ;;
+          *) classify_payload "$payload" "nested" ;;
+        esac
+        break
+      done
+      return 0
+      ;;
+    source | .)
+      context_ambiguous=true
+      if [ "$has_bypass" = "true" ]; then
+        refuse "\`$cmd_base\` executes a file this hook cannot read, and the call carries \`$bypass_spelling\`"
+      fi
+      # The file may have been written by an earlier segment of this same call:
+      # `printf '%s\n' 'git push --no-verify' > f; source f`. The bypass flag is
+      # then in the file's text and not in this segment, so the check above
+      # cannot see it. This is the whole-call test the interpreter-file branch
+      # below already applies, which `source` was missing (PR #810 review).
+      if [ "$command_names_protected_push" = "true" ]; then
+        refuse "\`$cmd_base\` executes a file this hook cannot read, and this call also writes protected push text"
+      fi
+      return 0
+      ;;
+  esac
+
+  # An alias defined in this call is a protected push when the call supplies
+  # the bypass flag, and also when the alias body already carries one — then
+  # the invocation needs no flag of its own.
+  if value="$(push_routing_value "$cmd_base")"; then
+    if [ "$has_bypass" = "true" ]; then
+      refuse "\`$cmd_base\` was defined in this call as an alias for \`$value\`, and the call carries \`$bypass_spelling\`"
+    fi
+    while IFS= read -r name; do
+      if is_bypass_flag "$name"; then
+        refuse "\`$cmd_base\` was defined in this call as an alias for \`$value\`, which already carries \`$name\`"
+      fi
+    done <<<"$(printf '%s' "$value" | tr " $TAB" '\n\n')"
+  fi
+
+  # An interpreter invoked with -c carries its argument as code wherever it
+  # sits in the segment: `xargs -I{} sh -c '…'` is the same payload as
+  # `sh -c '…'`, and `su user -c '…'` is one too.
+  i="$start"
+  while [ "$i" -lt "$count" ]; do
+    lit="${seg_texts[$i]}"
+    name="${seg_texts[$((i - 1))]}"
+    if { word_is_interpreter "$name" || word_is_foreign_context "$name"; } \
+      && [ "${lit#-}" != "$lit" ] && [ "${lit%c}" != "$lit" ] \
+      && [ "$((i + 1))" -lt "$count" ]; then
+      payload_flags="${seg_flags[$((i + 1))]}"
+      payload="${seg_texts[$((i + 1))]}"
+      payload_consumed=true
+      case "$payload_flags" in
+        *d* | *g*)
+          # Same stated-fact resolution as `eval`: `cmd='git push --no-verify';
+          # bash -c "$cmd"` carries its payload in this call's own assignment
+          # table (PR #810 review).
+          if value="$(word_known_value "$((i + 1))")"; then
+            resolved_expansion_used=true
+            classify_payload "$value" "nested"
+          elif mentions_any_push_token "$payload"; then
+            refuse "\`$name $lit\` runs a string assembled at runtime, so what it runs cannot be checked"
+          fi
+          ;;
+        *) classify_payload "$payload" "nested" ;;
+      esac
+      break
+    fi
+    i=$((i + 1))
+  done
+
+  # `env -S 'cmd args'` splits its string into a command line and runs it, so
+  # the string is a payload and not an argument: the flag stays inside one
+  # lexical word, which is why the bypass scan never saw it (PR #810 review).
+  if [ "$cmd_base" = "env" ]; then
+    i="$start"
+    while [ "$i" -lt "$count" ]; do
+      lit="${seg_texts[$i]}"
+      payload=""
+      payload_flags=""
+      case "$lit" in
+        -S)
+          if [ "$((i + 1))" -lt "$count" ]; then
+            i=$((i + 1))
+            payload_flags="${seg_flags[$i]}"
+            payload="${seg_texts[$i]}"
+          fi
+          ;;
+        -S?*)
+          payload_flags="${seg_flags[$i]}"
+          payload="${lit#-S}"
+          ;;
+        --split-string=*)
+          payload_flags="${seg_flags[$i]}"
+          payload="${lit#--split-string=}"
+          ;;
+      esac
+      if [ -n "$payload" ]; then
+        case "$payload_flags" in
+          *d* | *g*)
+            if mentions_any_push_token "$payload"; then
+              refuse "\`env -S\` runs a string assembled at runtime, so what it runs cannot be checked"
+            fi
+            ;;
+          *) classify_payload "$payload" "nested" ;;
+        esac
+      fi
+      i=$((i + 1))
+    done
+  fi
+
+  if word_is_git "$cmd"; then
+    record_git_config_alias "$start" "$count"
+    classify_git "$cmd" "$start" "$count" "$has_bypass" "$bypass_spelling" "$context"
+    return 0
+  fi
+
+  # A command word this command assigned itself is a stated fact, not a guess.
+  # A single word replaces the command word and classification continues, so
+  # `GIT=git; $GIT push --no-verify` is still read as the push it is. A value
+  # with spaces is a whole command list of its own.
+  if value="$(word_known_value "$((start - 1))")"; then
+    resolved_expansion_used=true
+    case "$value" in
+      *[[:space:]]*)
+        classify_payload "$value" "nested"
+        return 0
+        ;;
+      *)
+        cmd="$value"
+        cmd_base="${cmd##*/}"
+        cmd_flags="-"
+        if word_is_git "$cmd"; then
+          record_git_config_alias "$start" "$count"
+          classify_git "$cmd" "$start" "$count" "$has_bypass" "$bypass_spelling" "$context"
           return 0
         fi
         ;;
     esac
-  done < <(printf '%s' "$segment" | shell_words)
-}
+  fi
 
-segment_invokes_bypass_alias() {
-  local segment="$1"
-  local protected_aliases="$2"
-  local word="" command_word="" seen_no_verify=false
+  if is_spliced_protected_push "$cmd_flags" "$cmd"; then
+    refuse "the command word is spliced together by expansions and still spells a protected push (\`$cmd\`)"
+  fi
 
-  while IFS= read -r word; do
-    if [ -z "$command_word" ]; then
-      command_word="$word"
-    elif word_is_bypass_option "$word"; then
-      seen_no_verify=true
-    fi
-  done < <(printf '%s' "$segment" | shell_words)
-
-  [ "$seen_no_verify" = "true" ] || return 1
-  printf '%s\n' "$protected_aliases" | grep -Fqx "$command_word"
-}
-
-segment_uses_external_execution_wrapper() {
-  local segment="$1"
-  local word=""
-
-  while IFS= read -r word; do
-    case "$word" in
-      sudo | */sudo | su | */su | runuser | */runuser | doas | */doas | ssh | */ssh | \
-        docker | */docker | podman | */podman | kubectl | */kubectl)
-        return 0
-        ;;
-      git | */git | __touchstone_shell_composed__:*)
-        return 1
+  # A command word this hook cannot see the value of, in a call that carries a
+  # bypass flag, is the hidden-executable shape: `"$GIT" push --no-verify`.
+  # There is no visible `git` to key on, which is exactly the point.
+  if [ "$has_bypass" = "true" ]; then
+    case "$cmd_flags" in
+      *d* | *g*)
+        refuse "the command word is built by expansion and this call carries \`$bypass_spelling\`, so what it runs cannot be checked"
         ;;
     esac
-  done < <(printf '%s' "$segment" | shell_words)
+  fi
 
-  return 1
+  # An interpreter handed a file cannot be read from here. Refuse only when
+  # the call also carries git push text — which is the shape of writing a
+  # script and running it in the same call.
+  if word_is_interpreter "$cmd" && [ "$payload_consumed" = "false" ]; then
+    i="$start"
+    while [ "$i" -lt "$count" ]; do
+      case "${seg_texts[$i]}" in
+        -*) ;;
+        *) file_argument=true ;;
+      esac
+      i=$((i + 1))
+    done
+    if [ "$file_argument" = "true" ] && [ "$command_names_git_push" = "true" ]; then
+      refuse "\`$cmd\` runs a file this hook cannot read, and this call also writes git push text"
+    fi
+  fi
+
+  if word_is_foreign_interpreter "$cmd"; then
+    combined=""
+    i="$start"
+    while [ "$i" -lt "$count" ]; do
+      lit="${seg_texts[$i]}"
+      if names_git_push "$lit"; then
+        refuse "\`$cmd\` is given a program in a language this hook does not read, and that program names a git push"
+      fi
+      combined="$combined $lit"
+      i=$((i + 1))
+    done
+    # A foreign interpreter builds its command out of everything it is handed.
+    # `awk -v a=git -v b='push --no-verify' 'BEGIN { system(a " " b) }'` runs
+    # the push while no single word names one, so the per-word test above found
+    # nothing (PR #810 review). Program and supplied values are read together.
+    #
+    # The bypass flag is then looked for among the tokens the INTERPRETER will
+    # see, not among this shell's words. That is what separates
+    # `-v b='push --no-verify'` — one shell word carrying a bypass token — from
+    # `python script.py égit push --no-verify-nothing`, whose words jointly
+    # spell git and push and carry no bypass flag at all.
+    if names_git_push "$combined" && text_carries_bypass_token "$combined"; then
+      refuse "\`$cmd\` is given a program and values in a language this hook does not read, and together they name a protected push"
+    fi
+  fi
+
+  if [ "$has_bypass" = "true" ] && [ "$segment_names_git" = "true" ]; then
+    # Name the command word and the flag that were actually read. This hook
+    # says nothing about a push it did not see: what it saw is a bypass flag
+    # handed to something other than git, and what it cannot tell is where
+    # that flag ends up.
+    refuse "\`$cmd\` is not a git invocation, but this call carries \`$bypass_spelling\` alongside git, so where that flag ends up cannot be checked; invoke git directly"
+  fi
+  if word_is_foreign_context "$cmd" && [ "$segment_names_git" = "true" ]; then
+    refuse "\`$cmd\` runs git as another identity, host, or root, whose alias and config context this hook cannot inspect"
+  fi
+  return 0
 }
 
-segment_cd_target() {
-  local segment="$1"
-  local token=""
-  local normalized=""
-  local assignment_name=""
-  local expect_target=false
-  local parse_options=false
+# Only the command substitutions inside a text are code; the surrounding
+# characters are the data the consumer will write out.
+classify_text_substitutions() {
+  local text="$1"
+  local saved_kind=() saved_a=() saved_b=() saved_c=() saved_index=0 saved_count=0
 
-  while IFS= read -r token; do
-    if [ "$expect_target" = "true" ]; then
-      if [ "$parse_options" = "true" ]; then
-        case "$token" in
-          --)
-            parse_options=false
-            continue
-            ;;
-          -*)
-            printf '%s' "${token#-}" | grep -qE '^[LPq]+$' && continue
-            ;;
+  payload_depth=$((payload_depth + 1))
+  if [ "$payload_depth" -gt 4 ]; then
+    refuse "the call nests executable payloads deeper than this hook will follow"
+  fi
+  saved_kind=(${tk_kind[@]+"${tk_kind[@]}"})
+  saved_a=(${tk_a[@]+"${tk_a[@]}"})
+  saved_b=(${tk_b[@]+"${tk_b[@]}"})
+  saved_c=(${tk_c[@]+"${tk_c[@]}"})
+  saved_index="$tk_index"
+  saved_count="$tk_count"
+
+  load_tokens "$text"
+  walk "nested" "substitutions"
+
+  tk_kind=(${saved_kind[@]+"${saved_kind[@]}"})
+  tk_a=(${saved_a[@]+"${saved_a[@]}"})
+  tk_b=(${saved_b[@]+"${saved_b[@]}"})
+  tk_c=(${saved_c[@]+"${saved_c[@]}"})
+  tk_index="$saved_index"
+  tk_count="$saved_count"
+  payload_depth=$((payload_depth - 1))
+  return 0
+}
+
+# Does the rest of this pipeline name git, or run an interpreter? An upstream
+# segment can hand a bypass flag or a script to a downstream one.
+pipeline_lookahead() {
+  local i="$tk_index" saw_git=false saw_interpreter=false first=true text=""
+  while [ "$i" -lt "$tk_count" ]; do
+    case "${tk_kind[$i]}" in
+      OP)
+        case "${tk_a[$i]}" in
+          '|') first=true ;;
+          *) break ;;
         esac
-      fi
-      printf '%s' "$token"
-      return 0
-    fi
-    normalized="$(printf '%s' "$token" | sed -E 's/^[({]+//')"
-    case "$normalized" in
-      if | then | elif | else | while | until | do | ! | command | builtin | "")
         ;;
-      *=*)
-        assignment_name="${normalized%%=*}"
-        printf '%s' "$assignment_name" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*$' || return 0
-        ;;
-      cd)
-        expect_target=true
-        parse_options=true
-        ;;
-      *)
-        return
+      W | RT)
+        decode_into "${tk_b[$i]}"
+        text="$DECODED"
+        case "$text" in *git*) saw_git=true ;; esac
+        if [ "$first" = "true" ]; then
+          if word_is_interpreter "$text"; then
+            saw_interpreter=true
+          fi
+          first=false
+        fi
         ;;
     esac
-  done < <(printf '%s' "$segment" | shell_words)
-
-  if [ "$expect_target" = "true" ]; then
-    printf '%s' "${HOME:-__touchstone_home_unset__}"
-  fi
+    i=$((i + 1))
+  done
+  printf '%s %s' "$saw_git" "$saw_interpreter"
 }
 
-segment_runs_bypass_push() {
-  local segment="$1"
-  local segment_executable=""
+walk() {
+  local context="$1" mode="$2"
+  local seg="" heredocs="" herestring="" redirection="" word_count=0
+  local k="" a="" b="" c="" pipe_git=false pipe_interpreter=false look=""
+  local vx_body=""
 
-  if [ "$command_dynamic_protected" = "true" ]; then
-    push_context="nested"
-    return 0
-  fi
-
-  if segment_invokes_assigned_bypass "$segment"; then
-    push_context="nested"
-    push_subcommand="push"
-    return 0
-  fi
-
-  if segment_may_expand_to_protected_invocation "$segment"; then
-    push_context="nested"
-    push_subcommand="push"
-    push_candidate_has_bypass=true
-    push_candidate_dynamic=true
-    return 0
-  fi
-
-  segment_executable="$(printf '%s' "$segment" | without_single_quoted_literals)"
-
-  if segment_has_bypass_words "$segment"; then
-    if [ "$push_candidate_dynamic" = "true" ] \
-      || printf '%s' "$segment_executable" \
-      | grep -qE '(^|[^\\])\$\(|(^|[^\\])`|^[[:space:]]*\(|^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*(\(\))?[[:space:]]*\{'; then
-      push_context="nested"
-    else
-      push_context="direct"
-    fi
-    return 0
-  fi
-
-  if printf '%s' "$segment_executable" \
-    | grep -qE '(^|[^\\])\$\(|(^|[^\\])`' \
-    && printf '%s' "$segment_executable" \
-    | tr '\n' ' ' \
-      | grep -qE 'git.*push.*--no-verify'; then
-    push_context="nested"
-    return 0
-  fi
-
-  if segment_has_protected_code_payload "$segment"; then
-    push_context="nested"
-    push_subcommand="push"
-    return 0
-  fi
-
-  return 1
-}
-
-push_segment=""
-push_context=""
-push_subcommand=""
-push_candidate_has_bypass=false
-push_candidate_dynamic=false
-selected_push_context=""
-selected_push_subcommand=""
-selected_preceding_cd=""
-selected_directory_context_ambiguous=false
-non_push_candidate_segments=()
-non_push_candidate_contexts=()
-non_push_candidate_subcommands=()
-non_push_candidate_has_bypass=()
-non_push_candidate_preceding_cd=()
-non_push_candidate_cd_count=()
-non_push_candidate_directory_ambiguous=()
-preceding_cd=""
-ambiguous_cd_scope=false
-command_dynamic_protected=false
-command_sets_cdpath=false
-command_sets_git_context=false
-command_changes_directory_ambiguously=false
-cd_chain_proven=false
-cd_count=0
-protected_aliases=""
-configured_push_aliases=""
-protected_functions=""
-known_assignments=""
-multiple_protected_pushes=false
-preceding_parent_directory_mutator=false
-segment_count=0
-only_segment=""
-command_executable_text="$(printf '%s' "$command" | without_shell_comments | without_single_quoted_literals)"
-if segment_uses_external_execution_wrapper "$command" \
-  && printf '%s' "$command" | grep -qE '(^|[^[:alnum:]_])git([^[:alnum:]_]|$)' \
-  && printf '%s' "$command" | grep -qE -- '--no-veri(f(y)?)?([^[:alnum:]_]|$)'; then
-  command_dynamic_protected=true
-fi
-if printf '%s' "$command_executable_text" \
-  | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?CDPATH='; then
-  command_sets_cdpath=true
-fi
-if [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ] || [ -n "${GIT_COMMON_DIR:-}" ] \
-  || printf '%s' "$command_executable_text" \
-  | grep -qE '(^|[;&|()[:space:]])(export[[:space:]]+)?(GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_CEILING_DIRECTORIES|GIT_CONFIG_[A-Z0-9_]+|HOME|XDG_CONFIG_HOME)='; then
-  command_sets_git_context=true
-fi
-if printf '%s' "$command_executable_text" \
-  | grep -qE '(^|[;&|()[:space:]])(pushd|popd|chroot)([;&|()[:space:]]|$)' \
-  || printf '%s' "$command_executable_text" \
-  | grep -qE '(^|[;&|()[:space:]])(env|sudo)([^;&|)]*)[[:space:]](-C|-D|--chdir)(=|[[:space:]]|$)'; then
-  command_changes_directory_ambiguously=true
-fi
-if printf '%s' "$command_executable_text" | grep -qE '\(' \
-  && printf '%s' "$command_executable_text" \
-  | grep -qE '(^|[;&|()[:space:]])cd([;&|()[:space:]]|$)'; then
-  ambiguous_cd_scope=true
-fi
-if printf '%s' "$command_executable_text" \
-  | tr '\n' ' ' \
-  | grep -qE '(^|[;&|()[:space:]])cd([[:space:]]+[^;&|)]*)?[[:space:]]*&&.*git.*push'; then
-  cd_chain_proven=true
-fi
-if printf '%s' "$command_executable_text" | grep -qE '(^|[^\\])\$[{A-Za-z_]' \
-  && printf '%s' "$command_executable_text" | grep -qE 'push([^[:alnum:]_]|$)' \
-  && printf '%s' "$command_executable_text" | grep -q -- '--no-verify'; then
-  if printf '%s' "$command_executable_text" | grep -qE 'git([^[:alnum:]_]|$)' \
-    || printf '%s' "$command_executable_text" \
-    | grep -qE '("?\\)?\$[{]?[A-Za-z_][A-Za-z0-9_]*[}]?"?[[:space:]]+push([^[:alnum:]_]|$)'; then
-    command_dynamic_protected=true
-  fi
-fi
-while IFS= read -r stdin_payload; do
-  if [ -n "$stdin_payload" ] && payload_has_protected_push "$stdin_payload"; then
-    command_dynamic_protected=true
-    break
-  fi
-done < <(printf '%s\n' "$command" | shell_stdin_heredoc_payloads)
-while IFS= read -r segment; do
-  segment_count=$((segment_count + 1))
-  only_segment="$segment"
-
-  if segment_may_mutate_parent_directory "$segment"; then
-    preceding_parent_directory_mutator=true
-  fi
-
-  assignment_record="$(simple_assignment_record "$segment")"
-  if [ -n "$assignment_record" ]; then
-    assignment_name="${assignment_record%%	*}"
-    assignment_value="${assignment_record#*	}"
-    remember_simple_assignment "$assignment_name" "$assignment_value"
-  fi
-
-  if segment_has_protected_code_payload "$segment"; then
-    command_dynamic_protected=true
-  fi
-
-  function_name="$(segment_push_forwarding_function_name "$segment")"
-  if [ -n "$function_name" ]; then
-    if [ -n "$protected_functions" ]; then
-      protected_functions="$(printf '%s\n%s' "$protected_functions" "$function_name")"
-    else
-      protected_functions="$function_name"
-    fi
-  elif [ -n "$protected_functions" ] \
-    && segment_invokes_named_bypass "$segment" "$protected_functions"; then
-    command_dynamic_protected=true
-  fi
-
-  configured_alias_name="$(segment_git_push_alias_name "$segment")"
-  if [ -n "$configured_alias_name" ]; then
-    if [ -n "$configured_push_aliases" ]; then
-      configured_push_aliases="$(printf '%s\n%s' "$configured_push_aliases" "$configured_alias_name")"
-    else
-      configured_push_aliases="$configured_alias_name"
-    fi
-  fi
-
-  alias_name="$(segment_bypass_alias_name "$segment")"
-  if [ -n "$alias_name" ]; then
-    if [ -n "$protected_aliases" ]; then
-      protected_aliases="$(printf '%s\n%s' "$protected_aliases" "$alias_name")"
-    else
-      protected_aliases="$alias_name"
-    fi
-  elif [ -n "$protected_aliases" ] \
-    && segment_invokes_bypass_alias "$segment" "$protected_aliases"; then
-    command_dynamic_protected=true
-  fi
-
-  cd_target="$(segment_cd_target "$segment")"
-  if [ -n "$cd_target" ]; then
-    cd_count=$((cd_count + 1))
-    if [ "$cd_count" -gt 1 ]; then
-      # Multiple directory changes can belong to different conditional chains.
-      # Refuse to guess which one controls the eventual push.
-      ambiguous_cd_scope=true
-    fi
-    if printf '%s' "$segment" | grep -qE '^[[:space:]]*\('; then
-      ambiguous_cd_scope=true
-    fi
-    if printf '%s' "$cd_target" | grep -qE '^/' || [ -z "$preceding_cd" ]; then
-      preceding_cd="$cd_target"
-    else
-      preceding_cd="$preceding_cd/$cd_target"
-    fi
-  fi
-
-  push_context=""
-  push_subcommand=""
-  push_candidate_has_bypass=false
-  push_candidate_dynamic=false
-  if segment_runs_bypass_push "$segment"; then
-    if [ -n "$push_subcommand" ] && [ "$push_subcommand" != "push" ]; then
-      candidate_index="${#non_push_candidate_segments[@]}"
-      non_push_candidate_segments[$candidate_index]="$segment"
-      non_push_candidate_contexts[$candidate_index]="$push_context"
-      non_push_candidate_subcommands[$candidate_index]="$push_subcommand"
-      non_push_candidate_has_bypass[$candidate_index]="$push_candidate_has_bypass"
-      non_push_candidate_preceding_cd[$candidate_index]="$preceding_cd"
-      non_push_candidate_cd_count[$candidate_index]="$cd_count"
-      non_push_candidate_directory_ambiguous[$candidate_index]="$preceding_parent_directory_mutator"
-      continue
-    fi
-    if [ -n "$push_segment" ]; then
-      multiple_protected_pushes=true
-      continue
-    fi
-    push_segment="$segment"
-    selected_push_context="$push_context"
-    selected_push_subcommand="$push_subcommand"
-    selected_preceding_cd="$preceding_cd"
-    selected_directory_context_ambiguous="$preceding_parent_directory_mutator"
-  fi
-done < <(printf '%s\n' "$command" | without_heredoc_bodies | without_shell_comments | shell_segments)
-
-if [ "${#non_push_candidate_segments[@]}" -gt 0 ]; then
-  candidate_cwd="$session_cwd"
-  if [ -n "$tool_workdir" ]; then
-    if printf '%s' "$tool_workdir" | grep -qE '^/'; then
-      candidate_cwd="$tool_workdir"
-    elif [ -n "$session_cwd" ]; then
-      candidate_cwd="$session_cwd/$tool_workdir"
-    else
-      candidate_cwd="$tool_workdir"
-    fi
-  fi
-  [ -n "$candidate_cwd" ] || candidate_cwd="$(pwd)"
-
-  for candidate_index in "${!non_push_candidate_segments[@]}"; do
-    candidate_segment="${non_push_candidate_segments[$candidate_index]}"
-    candidate_subcommand="${non_push_candidate_subcommands[$candidate_index]}"
-    if [ -n "$configured_push_aliases" ] \
-      && printf '%s\n' "$configured_push_aliases" | grep -Fqx "$candidate_subcommand" \
-      && [ "${non_push_candidate_has_bypass[$candidate_index]}" = "true" ]; then
-      if [ -n "$push_segment" ]; then
-        multiple_protected_pushes=true
-        continue
-      fi
-      push_segment="$candidate_segment"
-      selected_push_context="nested"
-      selected_push_subcommand="$candidate_subcommand"
-      selected_preceding_cd="${non_push_candidate_preceding_cd[$candidate_index]}"
-      selected_directory_context_ambiguous=true
-      continue
-    fi
-    if [ "$command_sets_git_context" = "true" ] \
-      || [ "$command_changes_directory_ambiguously" = "true" ] \
-      || [ "${non_push_candidate_cd_count[$candidate_index]}" -gt 0 ] \
-      || segment_uses_external_execution_wrapper "$candidate_segment" \
-      || printf '%s' "$candidate_segment" \
-      | grep -qE '(^|[[:space:]])(-C|-c|--config-env|--git-dir|--work-tree|--namespace|--bare|--exec-path)(=|[[:space:]]|$)'; then
-      # A builtin subcommand cannot be an alias in ANY repository, so an
-      # unresolvable directory context cannot turn it into a push — unless
-      # the segment carries bypass words or redirects git's own executable
-      # lookup (--exec-path), in which case stay conservative (issue #637:
-      # this path blocked every `git -C <worktree> status` and every
-      # cd-compound `git commit`).
-      if git_subcommand_is_builtin "$candidate_subcommand" \
-        && [ "${non_push_candidate_has_bypass[$candidate_index]}" != "true" ] \
-        && ! printf '%s' "$candidate_segment" \
-        | grep -qE '(^|[[:space:]])--exec-path(=|[[:space:]]|$)'; then
-        continue
-      fi
-      # Alias configuration depends on repository and execution identity. A
-      # composed context cannot be confirmed without executing the shell.
-      push_segment="$candidate_segment"
-      selected_push_context="nested"
-      selected_push_subcommand="$candidate_subcommand"
-      multiple_protected_pushes=true
-      continue
-    fi
-    resolve_git_alias_chain "$candidate_cwd" "$candidate_subcommand"
-    case "$alias_resolution_kind" in
-      push)
-        if [ "${non_push_candidate_has_bypass[$candidate_index]}" != "true" ] \
-          && [ "$alias_resolution_has_bypass" != "true" ]; then
-          continue
-        fi
-        if [ -n "$push_segment" ]; then
-          multiple_protected_pushes=true
-          continue
-        fi
-        push_segment="$candidate_segment"
-        selected_push_context="${non_push_candidate_contexts[$candidate_index]}"
-        selected_push_subcommand="$candidate_subcommand"
-        selected_preceding_cd="${non_push_candidate_preceding_cd[$candidate_index]}"
-        selected_directory_context_ambiguous="${non_push_candidate_directory_ambiguous[$candidate_index]}"
-        if [ "$alias_resolution_context_ambiguous" = "true" ]; then
-          selected_directory_context_ambiguous=true
-        fi
+  while [ "$tk_index" -lt "$tk_count" ]; do
+    k="${tk_kind[$tk_index]}"
+    a="${tk_a[$tk_index]}"
+    b="${tk_b[$tk_index]}"
+    c="${tk_c[$tk_index]}"
+    tk_index=$((tk_index + 1))
+    case "$k" in
+      W)
+        # Same tagging as the token stream, for the same reason.
+        seg="$seg$a${TAB}L$b${TAB}V$c
+"
+        word_count=$((word_count + 1))
         ;;
-      shell)
-        if [ "$alias_resolution_routes_push" = "true" ] \
-          && { [ "$alias_resolution_has_bypass" = "true" ] \
-            || [ "${non_push_candidate_has_bypass[$candidate_index]}" = "true" ]; }; then
-          if [ -n "$push_segment" ]; then
-            multiple_protected_pushes=true
-            continue
+      RT)
+        if [ "$redirection" = "<<<" ]; then
+          herestring="$b"
+        fi
+        redirection=""
+        ;;
+      R) redirection="$a" ;;
+      HD)
+        heredocs="$heredocs$a$TAB$b
+"
+        ;;
+      SUB)
+        if [ "$a" = "open" ]; then
+          # A substitution's contents are code in every mode, including the
+          # substitutions-only walk of an unquoted heredoc body.
+          walk "nested" "all"
+        else
+          if [ "$mode" = "all" ]; then
+            classify_segment "$seg" "$heredocs" "$herestring" "$context" false false
           fi
-          push_segment="$candidate_segment"
-          selected_push_context="nested"
-          selected_push_subcommand="$candidate_subcommand"
-          selected_preceding_cd="${non_push_candidate_preceding_cd[$candidate_index]}"
-          selected_directory_context_ambiguous="${non_push_candidate_directory_ambiguous[$candidate_index]}"
+          return 0
         fi
         ;;
-      ambiguous)
-        push_segment="$candidate_segment"
-        selected_push_context="nested"
-        selected_push_subcommand="$candidate_subcommand"
-        selected_preceding_cd="${non_push_candidate_preceding_cd[$candidate_index]}"
-        selected_directory_context_ambiguous=true
+      VX)
+        # A value expansion is not a command list, but the substitutions
+        # written inside it run. Walk those and nothing else.
+        decode_into "$a"
+        vx_body="$DECODED"
+        classify_text_substitutions "$vx_body"
+        ;;
+      ERR) refuse "$a left the shapes this hook can read" ;;
+      OP)
+        if [ "$a" = "(" ]; then
+          if [ "$word_count" -eq 1 ]; then
+            # `name ()` opens a function definition, it does not call one.
+            definition_seen=true
+          elif [ "$word_count" -eq 0 ]; then
+            context_ambiguous=true
+          fi
+        fi
+        pipe_git=false
+        pipe_interpreter=false
+        if [ "$a" = "|" ]; then
+          look="$(pipeline_lookahead)"
+          pipe_git="${look%% *}"
+          pipe_interpreter="${look##* }"
+        fi
+        if [ "$mode" = "all" ]; then
+          classify_segment "$seg" "$heredocs" "$herestring" "$context" \
+            "$pipe_git" "$pipe_interpreter"
+        fi
+        seg=""
+        heredocs=""
+        herestring=""
+        word_count=0
         ;;
     esac
   done
-fi
-
-# The supported authorization subset is deliberately narrower than Bash.
-# Protected atoms outside a static data sink or classified code carrier are
-# dynamic: they may be joined by pipelines, generated files, xargs/find, or
-# another interpreter, so no repository can be audited safely.
-command_classifiable_text="$(
-  printf '%s\n' "$command" \
-    | without_heredoc_bodies \
-    | without_shell_comments
-)"
-if [ -z "$push_segment" ] \
-  && printf '%s' "$command_classifiable_text" | grep -qE '(^|[^[:alnum:]_])git([^[:alnum:]_]|$)' \
-  && printf '%s' "$command_classifiable_text" | grep -qE '(^|[^[:alnum:]_])push([^[:alnum:]_]|$)' \
-  && printf '%s' "$command_classifiable_text" | grep -qE -- '--no-veri(f(y)?)?([^[:alnum:]_]|$)'; then
-  fallback_dynamic=false
-  while IFS= read -r fallback_segment; do
-    if ! segment_is_static_nonprotected "$fallback_segment"; then
-      fallback_dynamic=true
-      break
-    fi
-  done < <(printf '%s\n' "$command_classifiable_text" | shell_segments)
-  if [ "$fallback_dynamic" = "false" ]; then
-    exit 0
+  if [ "$mode" = "all" ]; then
+    classify_segment "$seg" "$heredocs" "$herestring" "$context" false false
   fi
-  push_segment="${only_segment:-$command_classifiable_text}"
-  selected_push_context="nested"
-  selected_push_subcommand="push"
-  selected_directory_context_ambiguous=true
+  return 0
+}
+
+# Does the call anywhere carry the text of a git push? Used only to decide
+# whether an unreadable script is worth refusing, never on its own.
+command_names_git_push=false
+if names_git_push "$command"; then
+  command_names_git_push=true
 fi
 
-if [ -z "$push_segment" ]; then
+# The same question with the bypass flag required. Used where a file is written
+# by one segment and executed by another, so the flag is never a word of the
+# segment that runs it — strict enough that `source .venv/bin/activate && git
+# push origin main`, which names a push and no bypass, stays allowed.
+command_names_protected_push=false
+if [ "$command_names_git_push" = "true" ]; then
+  case "$command" in
+    *--no*) command_names_protected_push=true ;;
+  esac
+fi
+
+# A repository redirection inherited from the environment is just as real as
+# one written in the command, and the audit would name the wrong repository.
+if [ -n "${GIT_DIR:-}" ] || [ -n "${GIT_WORK_TREE:-}" ] || [ -n "${GIT_COMMON_DIR:-}" ]; then
+  context_ambiguous=true
+fi
+
+load_tokens "$command"
+walk "direct" "all"
+
+# ------------------------------------------------------------------ the answer
+if [ "$push_count" -eq 0 ]; then
   exit 0
 fi
 
-push_context="$selected_push_context"
-push_subcommand="$selected_push_subcommand"
-
-if [ "$multiple_protected_pushes" = "true" ]; then
-  echo "emergency-disclosure: multiple protected push segments require separate audited tool calls; bypass blocked" >&2
+if [ "$push_count" -gt 1 ]; then
+  echo "emergency-disclosure: this call runs $push_count protected pushes; run them as separate audited calls" >&2
   exit 2
-fi
-
-if [ "$push_context" != "direct" ] || [ "$ambiguous_cd_scope" = "true" ] \
-  || [ "$command_sets_git_context" = "true" ] \
-  || [ "$command_changes_directory_ambiguously" = "true" ] \
-  || [ "$selected_directory_context_ambiguous" = "true" ]; then
-  echo "emergency-disclosure: cannot safely resolve protected push repository context; bypass blocked" >&2
-  exit 2
-fi
-
-# The tool workdir is the command execution context. Resolve a relative
-# workdir from the driver session cwd, matching the command runner.
-cwd="$session_cwd"
-if [ -n "$tool_workdir" ]; then
-  if printf '%s' "$tool_workdir" | grep -qE '^/'; then
-    cwd="$tool_workdir"
-  elif [ -n "$session_cwd" ]; then
-    cwd="$session_cwd/$tool_workdir"
-  else
-    cwd="$tool_workdir"
-  fi
-fi
-if [ -z "$cwd" ]; then
-  cwd="$(pwd)"
-fi
-if [ ! -d "$cwd" ]; then
-  echo "emergency-disclosure: cannot record emergency bypass: execution workdir does not exist: $cwd" >&2
-  exit 2
-fi
-execution_cwd="$cwd"
-cwd="$(cd "$cwd" && pwd -P)"
-
-push_cwd="$cwd"
-if [ -n "$selected_preceding_cd" ]; then
-  if [ "$cd_chain_proven" != "true" ]; then
-    echo "emergency-disclosure: cannot prove preceding cd gates the push; bypass blocked" >&2
-    exit 2
-  fi
-  case "$selected_preceding_cd" in
-    '~'* | __touchstone_shell_expanded__:* | __touchstone_shell_composed__:*)
-      echo "emergency-disclosure: cannot safely resolve an expanded cd target; bypass blocked" >&2
-      exit 2
-      ;;
-  esac
-  if ! printf '%s' "$selected_preceding_cd" | grep -qE '^/' \
-    && { [ -n "${CDPATH:-}" ] || [ "$command_sets_cdpath" = "true" ]; }; then
-    echo "emergency-disclosure: cannot safely resolve relative cd with CDPATH; bypass blocked" >&2
-    exit 2
-  fi
-  logical_push_cwd=""
-  physical_push_cwd=""
-  logical_push_cwd="$(
-    cd "$execution_cwd" \
-      && cd -L -- "$selected_preceding_cd" \
-      && pwd -P
-  )" || true
-  physical_push_cwd="$(
-    cd "$execution_cwd" \
-      && cd -P -- "$selected_preceding_cd" \
-      && pwd -P
-  )" || true
-  if [ -z "$logical_push_cwd" ] || [ -z "$physical_push_cwd" ] \
-    || [ "$logical_push_cwd" != "$physical_push_cwd" ]; then
-    echo "emergency-disclosure: cannot safely resolve logical/physical cd context; bypass blocked" >&2
-    exit 2
-  fi
-  push_cwd="$logical_push_cwd"
-fi
-
-git_c_target=""
-seen_git=false
-expect_git_c_target=false
-ambiguous_git_context=false
-while IFS= read -r git_word; do
-  if [ "$expect_git_c_target" = "true" ]; then
-    case "$git_word" in
-      '~'* | __touchstone_shell_expanded__:* | __touchstone_shell_composed__:*)
-        ambiguous_git_context=true
-        ;;
-      *)
-        if printf '%s' "$git_word" | grep -qE '^/' || [ -z "$git_c_target" ]; then
-          git_c_target="$git_word"
-        else
-          git_c_target="$git_c_target/$git_word"
-        fi
-        ;;
-    esac
-    expect_git_c_target=false
-  elif [ "$seen_git" = "false" ]; then
-    case "$git_word" in
-      git | */git | __touchstone_shell_composed__:*)
-        seen_git=true
-        ;;
-    esac
-  elif [ "$seen_git" = "true" ] && [ "$git_word" = "-C" ]; then
-    expect_git_c_target=true
-  elif [ "$seen_git" = "true" ] && [ "$git_word" = "$push_subcommand" ]; then
-    break
-  elif [ "$seen_git" = "true" ]; then
-    case "$git_word" in
-      --no-pager | --paginate | -P | -p)
-        ;;
-      -*)
-        ambiguous_git_context=true
-        ;;
-    esac
-  fi
-done < <(printf '%s' "$push_segment" | shell_words)
-if [ "$expect_git_c_target" = "true" ] || [ "$ambiguous_git_context" = "true" ]; then
-  echo "emergency-disclosure: cannot safely resolve Git global option context; bypass blocked" >&2
-  exit 2
-fi
-if [ -n "$git_c_target" ]; then
-  if printf '%s' "$git_c_target" | grep -qE '^/'; then
-    push_cwd="$git_c_target"
-  else
-    push_cwd="$push_cwd/$git_c_target"
-  fi
-fi
-
-if [ "$push_subcommand" != "push" ]; then
-  resolve_git_alias_chain "$push_cwd" "$push_subcommand"
-  case "$alias_resolution_kind" in
-    push)
-      if [ "$alias_resolution_context_ambiguous" = "true" ]; then
-        push_context="nested"
-      fi
-      ;;
-    shell)
-      push_context="nested"
-      ;;
-    none)
-      exit 0
-      ;;
-    ambiguous)
-      echo "emergency-disclosure: cannot safely resolve Git alias chain; bypass blocked" >&2
-      exit 2
-      ;;
-  esac
 fi
 
 if [ "${TOUCHSTONE_EMERGENCY:-0}" != "1" ]; then
   cat >&2 <<EOF
-==> Blocked by Touchstone emergency-disclosure: 'git push --no-verify'
+==> Blocked by Touchstone emergency-disclosure: $push_description
 
-  --no-verify bypasses pre-push hooks (default-branch
-  checks). Routine pushes should not bypass these.
+  $BYPASS_FLAG bypasses pre-push hooks (default-branch checks).
+  Routine pushes should not bypass these.
 
   This is the documented emergency path. To use it:
     1. Set TOUCHSTONE_EMERGENCY=1 in the environment for this push.
@@ -1993,27 +1662,30 @@ EOF
   exit 2
 fi
 
-if [ "$push_context" != "direct" ]; then
-  echo "emergency-disclosure: cannot safely resolve shell-based Git alias context; bypass blocked" >&2
+if [ "$push_authorizable" != "true" ]; then
+  echo "emergency-disclosure: the emergency path audits a push in this call's own working directory, and this call wraps the push in a directory change, a definition, or another execution context — so the repository it would push cannot be resolved. Run the push on its own." >&2
   exit 2
 fi
 
-audit_repo="$(git -C "$push_cwd" rev-parse --show-toplevel 2>/dev/null || true)"
+if [ ! -d "$cwd" ]; then
+  echo "emergency-disclosure: cannot record the emergency bypass: working directory does not exist: $cwd" >&2
+  exit 2
+fi
+audit_repo="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null || true)"
 if [ -z "$audit_repo" ]; then
-  echo "emergency-disclosure: cannot resolve pushed repository from '$push_cwd'; bypass blocked" >&2
+  echo "emergency-disclosure: cannot resolve the repository from '$cwd'; bypass blocked" >&2
   exit 2
 fi
 
-# Audit persistence is part of emergency authorization. Never allow an
-# emergency bypass when its required recovery evidence cannot be recorded.
+# Audit persistence is part of the authorization, not a side effect of it.
 log_dir="$audit_repo/.touchstone"
 log_file="$log_dir/emergency-bypass.log"
 if ! mkdir -p "$log_dir"; then
-  echo "emergency-disclosure: cannot create emergency audit directory: $log_dir" >&2
+  echo "emergency-disclosure: cannot create the emergency audit directory: $log_dir" >&2
   exit 2
 fi
-if ! printf '%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$push_segment" >>"$log_file"; then
-  echo "emergency-disclosure: cannot append emergency audit log: $log_file" >&2
+if ! printf '%s\t%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$command" >>"$log_file"; then
+  echo "emergency-disclosure: cannot append the emergency audit log: $log_file" >&2
   exit 2
 fi
 

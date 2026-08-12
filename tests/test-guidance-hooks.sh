@@ -906,133 +906,71 @@ else
   FAIL=$((FAIL + 1))
 fi
 
-# A command-local cd and git -C both change the repository being pushed. Audit
-# evidence must follow that target rather than the caller's tool workdir.
-rm -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
-CD_EMERGENCY_JSON="$(mkjson "cd $EMERGENCY_TARGET && git push --no-verify origin feat/test" "$TMPDIR")"
-printf '%s' "$CD_EMERGENCY_JSON" \
-  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
-if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
-  echo "  OK: emergency log follows preceding cd"
-  PASS=$((PASS + 1))
-else
-  echo "  FAIL: emergency log did not follow preceding cd" >&2
-  FAIL=$((FAIL + 1))
-fi
-
-rm -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
-GIT_C_EMERGENCY_JSON="$(mkjson "git -C $EMERGENCY_TARGET push --no-verify origin feat/test" "$TMPDIR")"
-printf '%s' "$GIT_C_EMERGENCY_JSON" \
-  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
-if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
-  echo "  OK: emergency log follows git -C target"
-  PASS=$((PASS + 1))
-else
-  echo "  FAIL: emergency log did not follow git -C target" >&2
-  FAIL=$((FAIL + 1))
-fi
-
+# The emergency path audits ONE repository, so it authorizes only a push it can
+# attribute: one in the tool call's own working directory. A call that moves the
+# repository first — cd, git -C, an argument-less cd to HOME, a command- or
+# builtin-wrapped cd — is refused outright rather than audited against a
+# repository resolved by re-implementing cd (issue #507).
+#
+# This narrows the authorized path deliberately. The guard's block/allow verdict
+# is unchanged: every one of these was, and still is, blocked without
+# TOUCHSTONE_EMERGENCY=1. What changed is that authorizing them no longer
+# depends on out-parsing the shell's own directory resolution — CDPATH, logical
+# versus physical paths, symlinks and dash-prefixed targets were each a source
+# of defects here. Run the push from the repository's own directory instead.
 QUOTED_C_TARGET="$TMPDIR/repo with spaces"
 mkdir -p "$QUOTED_C_TARGET"
 git -C "$QUOTED_C_TARGET" init --quiet --initial-branch=main
-QUOTED_GIT_C_JSON="$(mkjson "git -C \"$QUOTED_C_TARGET\" push --no-verify origin feat/test" "$TMPDIR")"
-printf '%s' "$QUOTED_GIT_C_JSON" \
-  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
-if [ -f "$QUOTED_C_TARGET/.touchstone/emergency-bypass.log" ]; then
-  echo "  OK: emergency log follows quoted git -C target"
-  PASS=$((PASS + 1))
-else
-  echo "  FAIL: emergency log did not follow quoted git -C target" >&2
-  FAIL=$((FAIL + 1))
-fi
-
-rm -f "$QUOTED_C_TARGET/.touchstone/emergency-bypass.log"
-QUOTED_CD_JSON="$(mkjson "cd \"$QUOTED_C_TARGET\" && git push --no-verify origin feat/test" "$TMPDIR")"
-printf '%s' "$QUOTED_CD_JSON" \
-  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
-if [ -f "$QUOTED_C_TARGET/.touchstone/emergency-bypass.log" ]; then
-  echo "  OK: emergency log follows quoted cd target"
-  PASS=$((PASS + 1))
-else
-  echo "  FAIL: emergency log did not follow quoted cd target" >&2
-  FAIL=$((FAIL + 1))
-fi
-
-for cd_option in -P --; do
-  rm -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
-  OPTION_CD_JSON="$(mkjson "cd $cd_option $EMERGENCY_TARGET && git push --no-verify origin feat/test" "$TMPDIR")"
-  printf '%s' "$OPTION_CD_JSON" \
-    | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
-  if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
-    echo "  OK: emergency log follows cd $cd_option target"
-    PASS=$((PASS + 1))
-  else
-    echo "  FAIL: emergency log did not follow cd $cd_option target" >&2
-    FAIL=$((FAIL + 1))
-  fi
-done
-
 DASH_CD_TARGET="$TMPDIR/-P"
 mkdir -p "$DASH_CD_TARGET"
 git -C "$DASH_CD_TARGET" init --quiet --initial-branch=main
-DASH_CD_JSON="$(mkjson "cd -- -P && git push --no-verify origin feat/test" "$TMPDIR")"
-printf '%s' "$DASH_CD_JSON" \
-  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
-if [ -f "$DASH_CD_TARGET/.touchstone/emergency-bypass.log" ]; then
-  echo "  OK: emergency log follows a dash-prefixed cd target after --"
-  PASS=$((PASS + 1))
-else
-  echo "  FAIL: emergency log did not follow a dash-prefixed cd target after --" >&2
-  FAIL=$((FAIL + 1))
-fi
 
-rm -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
-COMMAND_CD_JSON="$(mkjson "command cd $EMERGENCY_TARGET && git push --no-verify origin feat/test" "$TMPDIR")"
-printf '%s' "$COMMAND_CD_JSON" \
-  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
-if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
-  echo "  OK: emergency log follows command-wrapped cd"
+assert_unattributable_push() {
+  # $1 = label, $2 = command, $3 = target repo that must NOT be audited,
+  # $4 (optional) = HOME for the call
+  local label="$1" cmd="$2" target="$3" home="${4:-$HOME}" rc=0
+  rm -f "$target/.touchstone/emergency-bypass.log" \
+    "$TMPDIR/.touchstone/emergency-bypass.log"
+  printf '%s' "$(mkjson "$cmd" "$TMPDIR")" \
+    | HOME="$home" TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1 || rc=$?
+  if [ "$rc" -ne 2 ]; then
+    echo "  FAIL: $label: expected the emergency path to refuse (exit 2), got $rc" >&2
+    FAIL=$((FAIL + 1))
+    return
+  fi
+  if [ -f "$target/.touchstone/emergency-bypass.log" ] \
+    || [ -f "$TMPDIR/.touchstone/emergency-bypass.log" ]; then
+    echo "  FAIL: $label: refused authorization still wrote an audit record" >&2
+    FAIL=$((FAIL + 1))
+    return
+  fi
+  echo "  OK: $label"
   PASS=$((PASS + 1))
-else
-  echo "  FAIL: emergency log did not follow command-wrapped cd" >&2
-  FAIL=$((FAIL + 1))
-fi
+}
 
-rm -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
-ASSIGNMENT_CD_JSON="$(mkjson "X=1 cd $EMERGENCY_TARGET && git push --no-verify origin feat/test" "$TMPDIR")"
-printf '%s' "$ASSIGNMENT_CD_JSON" \
-  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
-if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
-  echo "  OK: emergency log follows assignment-prefixed cd"
-  PASS=$((PASS + 1))
-else
-  echo "  FAIL: emergency log did not follow assignment-prefixed cd" >&2
-  FAIL=$((FAIL + 1))
-fi
-
-rm -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
-BUILTIN_CD_JSON="$(mkjson "builtin cd $EMERGENCY_TARGET && git push --no-verify origin feat/test" "$TMPDIR")"
-printf '%s' "$BUILTIN_CD_JSON" \
-  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
-if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
-  echo "  OK: emergency log follows builtin-wrapped cd"
-  PASS=$((PASS + 1))
-else
-  echo "  FAIL: emergency log did not follow builtin-wrapped cd" >&2
-  FAIL=$((FAIL + 1))
-fi
-
-rm -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log"
-HOME_CD_JSON="$(mkjson "cd && git push --no-verify origin feat/test" "$TMPDIR")"
-printf '%s' "$HOME_CD_JSON" \
-  | HOME="$EMERGENCY_TARGET" TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
-if [ -f "$EMERGENCY_TARGET/.touchstone/emergency-bypass.log" ]; then
-  echo "  OK: emergency log follows argument-less cd to HOME"
-  PASS=$((PASS + 1))
-else
-  echo "  FAIL: emergency log did not follow argument-less cd to HOME" >&2
-  FAIL=$((FAIL + 1))
-fi
+assert_unattributable_push "refuses to audit a push behind a preceding cd" \
+  "cd $EMERGENCY_TARGET && git push --no-verify origin feat/test" "$EMERGENCY_TARGET"
+assert_unattributable_push "refuses to audit a push behind git -C" \
+  "git -C $EMERGENCY_TARGET push --no-verify origin feat/test" "$EMERGENCY_TARGET"
+assert_unattributable_push "refuses to audit a push behind a quoted git -C" \
+  "git -C \"$QUOTED_C_TARGET\" push --no-verify origin feat/test" "$QUOTED_C_TARGET"
+assert_unattributable_push "refuses to audit a push behind a quoted cd" \
+  "cd \"$QUOTED_C_TARGET\" && git push --no-verify origin feat/test" "$QUOTED_C_TARGET"
+for cd_option in -P --; do
+  assert_unattributable_push "refuses to audit a push behind cd $cd_option" \
+    "cd $cd_option $EMERGENCY_TARGET && git push --no-verify origin feat/test" \
+    "$EMERGENCY_TARGET"
+done
+assert_unattributable_push "refuses to audit a push behind a dash-prefixed cd target" \
+  "cd -- -P && git push --no-verify origin feat/test" "$DASH_CD_TARGET"
+assert_unattributable_push "refuses to audit a push behind a command-wrapped cd" \
+  "command cd $EMERGENCY_TARGET && git push --no-verify origin feat/test" "$EMERGENCY_TARGET"
+assert_unattributable_push "refuses to audit a push behind an assignment-prefixed cd" \
+  "X=1 cd $EMERGENCY_TARGET && git push --no-verify origin feat/test" "$EMERGENCY_TARGET"
+assert_unattributable_push "refuses to audit a push behind a builtin-wrapped cd" \
+  "builtin cd $EMERGENCY_TARGET && git push --no-verify origin feat/test" "$EMERGENCY_TARGET"
+assert_unattributable_push "refuses to audit a push behind an argument-less cd" \
+  "cd && git push --no-verify origin feat/test" "$EMERGENCY_TARGET" "$EMERGENCY_TARGET"
 
 SUBSHELL_SCOPE_JSON="$(mkjson "(cd $EMERGENCY_TARGET && git status); git push --no-verify origin feat/test" "$TMPDIR")"
 EXIT_SUBSHELL_SCOPE=0
@@ -1148,16 +1086,17 @@ ZSH_Q_DECOY="$TMPDIR/-q"
 mkdir -p "$ZSH_Q_TARGET" "$ZSH_Q_DECOY"
 git -C "$ZSH_Q_TARGET" init --quiet --initial-branch=main
 git -C "$ZSH_Q_DECOY" init --quiet --initial-branch=main
-ZSH_Q_CD_JSON="$(mkjson "cd -q $ZSH_Q_TARGET && git push --no-verify origin feat/test" "$TMPDIR")"
-printf '%s' "$ZSH_Q_CD_JSON" \
-  | TOUCHSTONE_EMERGENCY=1 bash "$EMERGENCY" >/dev/null 2>&1
-if [ -f "$ZSH_Q_TARGET/.touchstone/emergency-bypass.log" ] \
-  && [ ! -f "$ZSH_Q_DECOY/.touchstone/emergency-bypass.log" ]; then
-  echo "  OK: emergency log skips zsh cd -q and follows its target"
-  PASS=$((PASS + 1))
-else
-  echo "  FAIL: zsh cd -q audit evidence did not follow its target" >&2
+# Same narrowing as above: whether `-q` is a zsh cd option or a directory named
+# `-q` depends on the shell, and guessing wrong audits the wrong repository.
+# The emergency path refuses instead of choosing.
+assert_unattributable_push "refuses to audit a push behind an ambiguous cd -q" \
+  "cd -q $ZSH_Q_TARGET && git push --no-verify origin feat/test" "$ZSH_Q_TARGET"
+if [ -f "$ZSH_Q_DECOY/.touchstone/emergency-bypass.log" ]; then
+  echo "  FAIL: ambiguous cd -q wrote audit evidence to the decoy repository" >&2
   FAIL=$((FAIL + 1))
+else
+  echo "  OK: ambiguous cd -q wrote no audit evidence to the decoy repository"
+  PASS=$((PASS + 1))
 fi
 
 SUBSTITUTION_SCOPE_JSON="$(mkjson "echo \$(cd $EMERGENCY_TARGET && git push --no-verify origin feat/test)" "$TMPDIR")"
@@ -1586,15 +1525,15 @@ FAKE_NICE
     "push_now() { git push --no-verify origin main; }; push_now"
   assert_case "sudo-wrapper" ambiguous \
     "sudo git push --no-verify origin main"
-  assert_case "nice-wrapper" repo-a \
+  assert_case "nice-wrapper" ambiguous \
     "nice -n 5 git push --no-verify origin main"
-  assert_case "nohup-wrapper" repo-a \
+  assert_case "nohup-wrapper" ambiguous \
     "nohup git push --no-verify origin main"
   assert_case "git-global-option" repo-a \
     "git --no-pager push --no-verify origin main"
-  assert_case "quoted-git-c" repo-b \
+  assert_case "quoted-git-c" ambiguous \
     "git -C \"$REPO_B\" push --no-verify origin main"
-  assert_case "preceding-direct-cd" repo-b \
+  assert_case "preceding-direct-cd" ambiguous \
     "cd \"$REPO_B\" && git push --no-verify origin main"
   assert_case "subshell-cd-before-outer-push" ambiguous \
     "(cd \"$REPO_B\" && git status); git push --no-verify origin main"
@@ -1642,17 +1581,17 @@ FAKE_NICE
     "$(printf '%s\n' "printf '%s' \$((1 << 2))" "git push --no-verify origin main")"
   assert_case "multiple-conditional-directory-chains" ambiguous \
     "cd \"$REPO_B\" && printf ok; false && cd \"$REPO_A\"; git push --no-verify origin main"
-  assert_case "git-push-alias" repo-a \
+  assert_case "git-push-alias" ambiguous \
     "git p --no-verify origin main"
   assert_case "unquoted-shell-comment" none \
     "printf ok # git push --no-verify origin main"
-  assert_case "command-wrapped-cd" repo-b \
+  assert_case "command-wrapped-cd" ambiguous \
     "command cd \"$REPO_B\" && git push --no-verify origin main"
-  assert_case "builtin-wrapped-cd" repo-b \
+  assert_case "builtin-wrapped-cd" ambiguous \
     "builtin cd \"$REPO_B\" && git push --no-verify origin main"
   ansi_git_command="\$'git' push --no-verify origin main"
   assert_case "ansi-c-quoted-git" repo-a "$ansi_git_command"
-  assert_case "argument-less-cd" repo-b \
+  assert_case "argument-less-cd" ambiguous \
     "cd && git push --no-verify origin main" "$REPO_B"
   runtime_alias_command="$(printf '%s\n' \
     "shopt -s expand_aliases" \
@@ -1661,7 +1600,7 @@ FAKE_NICE
   assert_case "runtime-shell-alias" ambiguous "$runtime_alias_command"
   assert_case "non-push-before-literal-push" repo-a \
     "git commit --no-verify -m fixture; git push --no-verify origin main"
-  assert_case "non-push-before-git-push-alias" repo-a \
+  assert_case "non-push-before-git-push-alias" ambiguous \
     "git commit --no-verify -m fixture; git p --no-verify origin main"
   assert_case "composed-git-executable" repo-a \
     'g${x}it push --no-verify origin main'
@@ -1685,13 +1624,13 @@ FAKE_NICE
     "git push>/dev/null --no-verify"
   assert_case "fd-redirection-before-push" repo-a \
     "git 2>/dev/null push --no-verify"
-  assert_case "positional-git-executable" repo-a \
+  assert_case "positional-git-executable" ambiguous \
     'set -- git; "$1" push --no-verify origin main'
   assert_case "positional-push-subcommand" ambiguous \
     'set -- push; git "$1" --no-verify origin main'
-  assert_case "assignment-prefixed-cd" repo-b \
+  assert_case "assignment-prefixed-cd" ambiguous \
     "X=1 cd \"$REPO_B\" && git push --no-verify origin main"
-  assert_case "assembled-variable-bypass-flag" repo-a \
+  assert_case "assembled-variable-bypass-flag" ambiguous \
     'p=--no; q=-verify; git push "$p$q" origin main'
   assert_case "multiple-protected-pushes" ambiguous \
     "git -C \"$REPO_A\" push --no-verify origin one; git -C \"$REPO_B\" push --no-verify origin two"
@@ -1707,9 +1646,9 @@ FAKE_NICE
     "pushd \"$REPO_B\" >/dev/null && git push --no-verify origin main"
   assert_case "env-chdir-repository-redirection" ambiguous \
     "env -C \"$REPO_B\" git push --no-verify origin main"
-  assert_case "brace-expanded-bypass-flag" repo-a \
+  assert_case "brace-expanded-bypass-flag" ambiguous \
     "git push --no-{veri,verify} origin main"
-  assert_case "pathname-expanded-bypass-flag" repo-a \
+  assert_case "pathname-expanded-bypass-flag" ambiguous \
     "git push --no-* origin main"
   assert_case "eval-directory-redirection" ambiguous \
     "eval 'cd \"$REPO_B\"'; git push --no-verify origin main"
@@ -1728,9 +1667,14 @@ FAKE_NICE
   for prefix in "${matrix_prefixes[@]}"; do
     matrix_index=$((matrix_index + 1))
     expected="repo-a"
-    # Identity-changing wrappers cannot inherit the caller's auditable
-    # repository context, even when the wrapped command is otherwise static.
-    [ "$prefix" = "sudo " ] && expected="ambiguous"
+    # Wrappers that hand the push to another process cannot inherit the
+    # caller's auditable repository context, even when the wrapped command is
+    # otherwise static. The guard blocks all of them without authorization;
+    # what differs is that the emergency path will not audit a push it did not
+    # run itself.
+    case "$prefix" in
+      "sudo " | "nice -n 1 " | "nohup ") expected="ambiguous" ;;
+    esac
     assert_case "matrix-prefix-$matrix_index" "$expected" \
       "${prefix}git push --no-verify origin matrix-$matrix_index"
   done
@@ -1742,7 +1686,9 @@ FAKE_NICE
     # The hook detects `-c` but deliberately fails closed because its audit
     # resolver does not model config-option arity.
     [ "$matrix_index" -eq 2 ] && expected="ambiguous"
-    [ "$matrix_index" -eq 3 ] && expected="repo-b"
+    # `git -C <other repo>` moves the repository, so the emergency path
+    # refuses to attribute the audit rather than resolving the path itself.
+    [ "$matrix_index" -eq 3 ] && expected="ambiguous"
     assert_case "matrix-global-option-$matrix_index" "$expected" \
       "git $global_option push --no-verify origin matrix-$matrix_index"
   done
