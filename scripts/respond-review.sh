@@ -153,12 +153,23 @@ REPLY_BODY="$REPLY_BODY
 
 $REPLY_MARKER"
 
+# The marker only proves idempotency for OUR OWN prior run. Selecting replies
+# by in_reply_to_id alone let any participant's comment carrying the (trivially
+# predictable) marker satisfy the check — the script would then skip posting
+# the driver's actual answer and resolve the thread anyway, so a finding could
+# be marked answered without the answer ever being written, and
+# --all-resolved-check would call the PR clean (#722). Authorship is therefore
+# part of the predicate: the reply must be ours.
+REPLY_AUTHOR="$(gh api user --jq '.login' 2>&1)" \
+  || fail "could not resolve the authenticated user for reply idempotency: $REPLY_AUTHOR"
+[ -n "$REPLY_AUTHOR" ] || fail "GitHub returned no authenticated login; refusing to trust the idempotency marker."
 EXISTING_REPLY="$(gh api --paginate \
   "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/comments" \
-  --jq ".[] | select(.in_reply_to_id == $COMMENT_ID) | .body" 2>&1)" \
+  --jq ".[] | select(.in_reply_to_id == $COMMENT_ID) | select((.user.login // \"\") == \"$REPLY_AUTHOR\") | .body" 2>&1)" \
   || fail "could not inspect existing replies for comment $COMMENT_ID: $EXISTING_REPLY"
 if printf '%s' "$EXISTING_REPLY" | grep -qF "$REPLY_MARKER"; then
   echo "==> Reply for comment $COMMENT_ID already posted (marker found); skipping the reply step."
+  echo "    matched our own reply as @$REPLY_AUTHOR."
 else
   echo "==> Replying to review comment $COMMENT_ID on PR #$PR_NUMBER ..."
   REPLY_ID="$(gh api "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/comments/$COMMENT_ID/replies" \
