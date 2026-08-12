@@ -15,6 +15,15 @@ if ! declare -F touchstone_ensure_safe_ancestors >/dev/null 2>&1; then
   # shellcheck source=safe-write.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/safe-write.sh"
 fi
+# ONE comparator for "does the working tree match the index", not two.
+# lib/sync-content.sh already answers that by object id, and this file asks the
+# same question immediately before an `rm` — the single most destructive moment
+# Touchstone has. Both entrypoints that source this file source it after their
+# own libs, so the guard makes the extra load free for update-project.sh.
+if ! declare -F touchstone_content_index_blob_matches_worktree >/dev/null 2>&1; then
+  # shellcheck source=sync-content.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/sync-content.sh"
+fi
 
 # The retired set, one project-relative path per line.
 #
@@ -64,7 +73,15 @@ touchstone_retired_managed_file_applies() {
   # and pipefail would turn a successful MATCH into a nonzero pipeline.
   manifest_entries="$(tr -d '\r' <"$manifest")" || return 1
   grep -qxF "$rel_path" <<<"$manifest_entries" || return 1
-  [ -e "$project_dir/$rel_path" ]
+  # -L as well as -e. A DANGLING symlink at a retired path fails -e, and
+  # skipping the remover for it is permanent: init and update both regenerate
+  # .touchstone-manifest without the path, so no later run ever reaches the
+  # link again — and it reactivates the retired script the moment its target
+  # reappears. Presence here means "a directory entry occupies this path",
+  # which is exactly what the remover below is equipped to inspect (#801
+  # review, round 3; same predicate shape as
+  # touchstone_content_template_slot_occupied).
+  [ -e "$project_dir/$rel_path" ] || [ -L "$project_dir/$rel_path" ]
 }
 
 # Remove one retired managed file from a project.
@@ -117,10 +134,25 @@ touchstone_remove_retired_managed_file() {
   # Never destroy local work: a retired file carrying uncommitted edits is
   # left in place with an explicit notice. Retirement removes Touchstone's
   # managed copy, it does not discard a project's modifications.
-  # Worktree OR index: a staged customization must neither be deleted nor
-  # swept into Touchstone's own update commit.
-  if ! git -C "$project_dir" diff --quiet -- "$rel_path" 2>/dev/null \
-    || ! git -C "$project_dir" diff --cached --quiet -- "$rel_path" 2>/dev/null; then
+  #
+  # Worktree cleanliness is decided by OBJECT ID, never by `git diff`. The
+  # assume-unchanged and skip-worktree bits tell git to stop consulting the
+  # working tree for a path, so `git diff --quiet` answers "clean" over a file
+  # that has been edited — and this is the last question asked before `rm`
+  # deletes the only copy of those edits. diff reports change HINTS; the index
+  # blob against a hash of the working file is the content itself (#801
+  # review, round 3).
+  #
+  # Index vs HEAD is a tree-to-tree comparison, which those bits do not
+  # affect, so `--cached` stays truthful for the staged half: a staged
+  # customization must neither be deleted nor swept into Touchstone's own
+  # update commit.
+  local worktree_matches_index=true index_matches_head=true
+  touchstone_content_index_blob_matches_worktree "$project_dir" "$rel_path" \
+    || worktree_matches_index=false
+  git -C "$project_dir" diff --cached --quiet -- "$rel_path" 2>/dev/null \
+    || index_matches_head=false
+  if [ "$worktree_matches_index" = false ] || [ "$index_matches_head" = false ]; then
     echo "    ! leaving locally modified retired file in place: $target" >&2
     echo "      It has uncommitted changes (worktree or index); Touchstone no longer manages it." >&2
     echo "      Commit or discard them, then delete the file when you are ready." >&2

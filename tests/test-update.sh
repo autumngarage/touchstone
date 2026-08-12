@@ -260,6 +260,223 @@ if ! git -C "$RETIREMENT_PROJECT" diff --quiet \
 fi
 
 # --------------------------------------------------------------------------
+# Test 1b': the retirement remover's OUTCOME CONTRACT, at the helper level.
+#
+# Folded in from a standalone test file (#801 review, round 3) — one contract
+# does not get a third suite. This half lives here because update is the
+# entrypoint that turns these exit statuses into counters, manifest entries,
+# and staged deletions. The path-shape half (symlinks, dangling links,
+# directories) lives in tests/test-bootstrap.sh, next to the write-side guard
+# whose reuse caused that bug.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 2b': Retirement remover outcome contract ---"
+
+# shellcheck source=../lib/retired-managed.sh
+source "$TOUCHSTONE_ROOT/lib/retired-managed.sh"
+
+RETIRE_REL="lib/events.sh"
+
+# A git project whose ledger claims one retired path. Called plainly, never in
+# a command substitution, so errexit stays live over the fixture's git calls.
+retire_fixture() {
+  local dir="$1"
+  mkdir -p "$dir/lib"
+  git init -q -b main "$dir"
+  configure_git "$dir"
+  printf '%s\n' "$RETIRE_REL" >"$dir/.touchstone-manifest"
+  printf 'placeholder\n' >"$dir/README.md"
+  git -C "$dir" add .touchstone-manifest README.md
+  git -C "$dir" commit -q -m "initial"
+}
+
+retire_fixture_tracked_clean() {
+  local dir="$1"
+  retire_fixture "$dir"
+  printf '# retired telemetry\n' >"$dir/$RETIRE_REL"
+  git -C "$dir" add "$RETIRE_REL"
+  git -C "$dir" commit -q -m "add retired file"
+}
+
+# Status capture is this function's documented contract: every caller invokes
+# it in a status-capturing conditional, and its body is written so that
+# nothing inside relies on errexit.
+RETIRE_RC=0
+retire_run() {
+  local dir="$1" dry="${2:-false}"
+  RETIRE_RC=0
+  touchstone_remove_retired_managed_file "$dir" "$RETIRE_REL" "$dry" \
+    >"$TEST_DIR/retire-out.txt" 2>&1 || RETIRE_RC=$?
+}
+
+retire_expect_rc() {
+  local label="$1" expected="$2"
+  if [ "$RETIRE_RC" != "$expected" ]; then
+    echo "FAIL: $label: expected exit $expected, got $RETIRE_RC" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+}
+
+# Tracked and clean: removed, status 0.
+RETIRE_CLEAN="$TEST_DIR/retire-clean"
+retire_fixture_tracked_clean "$RETIRE_CLEAN"
+retire_run "$RETIRE_CLEAN"
+retire_expect_rc "tracked+clean" 0
+assert_not_exists "$RETIRE_CLEAN/$RETIRE_REL"
+assert_contains "$TEST_DIR/retire-out.txt" 'removed retired managed file'
+
+# Untracked: left in place, status 3.
+RETIRE_UNTRACKED="$TEST_DIR/retire-untracked"
+retire_fixture "$RETIRE_UNTRACKED"
+printf '# project-owned\n' >"$RETIRE_UNTRACKED/$RETIRE_REL"
+retire_run "$RETIRE_UNTRACKED"
+retire_expect_rc "untracked" 3
+assert_exists "$RETIRE_UNTRACKED/$RETIRE_REL"
+
+# Locally modified: left in place, status 3, edit intact.
+RETIRE_DIRTY="$TEST_DIR/retire-dirty"
+retire_fixture_tracked_clean "$RETIRE_DIRTY"
+printf '# local customization\n' >>"$RETIRE_DIRTY/$RETIRE_REL"
+retire_run "$RETIRE_DIRTY"
+retire_expect_rc "modified" 3
+assert_contains "$RETIRE_DIRTY/$RETIRE_REL" 'local customization'
+
+# Staged-only customization: left in place, status 3.
+RETIRE_STAGED="$TEST_DIR/retire-staged"
+retire_fixture_tracked_clean "$RETIRE_STAGED"
+printf '# staged customization\n' >>"$RETIRE_STAGED/$RETIRE_REL"
+git -C "$RETIRE_STAGED" add "$RETIRE_REL"
+retire_run "$RETIRE_STAGED"
+retire_expect_rc "staged" 3
+assert_contains "$RETIRE_STAGED/$RETIRE_REL" 'staged customization'
+
+# ------------------------------------------------------------------
+# REGRESSION (#801 review, round 3): local edits hidden behind
+# assume-unchanged / skip-worktree must SURVIVE.
+#
+# `git diff --quiet` reports change HINTS. Both index bits tell git to stop
+# consulting the working tree for a path, so diff answers "clean" over a file
+# that has been edited — and that answer was the last thing checked before
+# `rm` deleted the only copy of those edits. The comparison is now
+# worktree-hash against index blob, which is the content itself.
+#
+# Each bit is proved INDIVIDUALLY: a loop that aborted on the first would say
+# nothing about the second. The assertion that matters is the file CONTENT,
+# not the exit status — a refusal that still deleted the bytes would be no
+# better than the bug.
+# ------------------------------------------------------------------
+for retire_hide_bit in assume-unchanged skip-worktree; do
+  RETIRE_HIDDEN="$TEST_DIR/retire-hidden-$retire_hide_bit"
+  retire_fixture_tracked_clean "$RETIRE_HIDDEN"
+  printf '# customization the index bit hides\n' >>"$RETIRE_HIDDEN/$RETIRE_REL"
+  git -C "$RETIRE_HIDDEN" update-index "--$retire_hide_bit" "$RETIRE_REL"
+
+  # Fixture precondition: git itself now reports the edited file as clean.
+  # Without this the case would prove nothing about the bit.
+  if ! git -C "$RETIRE_HIDDEN" diff --quiet -- "$RETIRE_REL"; then
+    echo "FAIL: $retire_hide_bit: fixture precondition — git diff should report clean here" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+
+  retire_run "$RETIRE_HIDDEN"
+  retire_expect_rc "$retire_hide_bit" 3
+  assert_exists "$RETIRE_HIDDEN/$RETIRE_REL"
+  # The whole point: the bytes are still there.
+  assert_contains "$RETIRE_HIDDEN/$RETIRE_REL" 'customization the index bit hides'
+  assert_contains "$TEST_DIR/retire-out.txt" 'leaving locally modified retired file in place'
+  assert_not_contains "$TEST_DIR/retire-out.txt" 'removed retired managed file'
+done
+
+# Dry run reports without removing, status 4.
+RETIRE_DRY="$TEST_DIR/retire-dry"
+retire_fixture_tracked_clean "$RETIRE_DRY"
+retire_run "$RETIRE_DRY" true
+retire_expect_rc "dry run" 4
+assert_exists "$RETIRE_DRY/$RETIRE_REL"
+assert_contains "$TEST_DIR/retire-out.txt" 'would remove retired managed file'
+
+# Not claimed by the ledger: nothing to do, status 1.
+RETIRE_UNMANIFESTED="$TEST_DIR/retire-unmanifested"
+retire_fixture "$RETIRE_UNMANIFESTED"
+: >"$RETIRE_UNMANIFESTED/.touchstone-manifest"
+printf '# project-owned\n' >"$RETIRE_UNMANIFESTED/$RETIRE_REL"
+retire_run "$RETIRE_UNMANIFESTED"
+retire_expect_rc "unmanifested" 1
+assert_exists "$RETIRE_UNMANIFESTED/$RETIRE_REL"
+
+# A failed `rm` is reported as a failure, never as a removal (#801 review).
+# Both callers invoke this function in a status-capturing conditional, which
+# makes `set -e` inert inside it, so an unchecked `rm` fell through to the
+# success message and returned 0 — and the caller then dropped the manifest
+# entry that was the only way a later update could retry.
+#
+# `rm` is shadowed rather than the directory made read-only: root ignores the
+# permission bits and this has to hold for every tester.
+RETIRE_RM_FAILS="$TEST_DIR/retire-rm-fails"
+retire_fixture_tracked_clean "$RETIRE_RM_FAILS"
+RETIRE_FAKE_BIN="$TEST_DIR/retire-fake-bin"
+mkdir -p "$RETIRE_FAKE_BIN"
+RETIRE_REAL_RM=""
+for retire_rm_candidate in /bin/rm /usr/bin/rm; do
+  if [ -x "$retire_rm_candidate" ]; then
+    RETIRE_REAL_RM="$retire_rm_candidate"
+    break
+  fi
+done
+if [ -z "$RETIRE_REAL_RM" ]; then
+  echo "FAIL: no real rm(1) to delegate to; cannot prove retirement failure propagation" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+cat >"$RETIRE_FAKE_BIN/rm" <<RETIRE_FAKE_RM
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in
+    *"\$TOUCHSTONE_RM_REFUSE_SUFFIX")
+      [ -n "\${TOUCHSTONE_RM_REFUSE_SUFFIX:-}" ] || break
+      echo "rm: \$arg: Operation not permitted" >&2
+      exit 1
+      ;;
+  esac
+done
+exec "$RETIRE_REAL_RM" "\$@"
+RETIRE_FAKE_RM
+chmod +x "$RETIRE_FAKE_BIN/rm"
+
+RETIRE_RC=0
+(
+  export PATH="$RETIRE_FAKE_BIN:$PATH"
+  export TOUCHSTONE_RM_REFUSE_SUFFIX="/$RETIRE_REL"
+  touchstone_remove_retired_managed_file "$RETIRE_RM_FAILS" "$RETIRE_REL" false
+) >"$TEST_DIR/retire-out.txt" 2>&1 || RETIRE_RC=$?
+retire_expect_rc "failed rm" 5
+assert_exists "$RETIRE_RM_FAILS/$RETIRE_REL"
+assert_contains "$TEST_DIR/retire-out.txt" 'failed to remove retired managed file'
+assert_not_contains "$TEST_DIR/retire-out.txt" '^    - removed retired managed file'
+
+# The fake rm must actually be able to fail, or the case above proves nothing.
+RETIRE_SANITY="$TEST_DIR/retire-fake-rm-sanity"
+retire_fixture "$RETIRE_SANITY"
+printf 'x\n' >"$RETIRE_SANITY/$RETIRE_REL"
+printf 'y\n' >"$RETIRE_SANITY/lib/other.sh"
+if ! (
+  export PATH="$RETIRE_FAKE_BIN:$PATH"
+  export TOUCHSTONE_RM_REFUSE_SUFFIX="/$RETIRE_REL"
+  rm -f "$RETIRE_SANITY/lib/other.sh"
+); then
+  echo "FAIL: fake rm sanity: unrelated removals must still work" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_not_exists "$RETIRE_SANITY/lib/other.sh"
+if (
+  export PATH="$RETIRE_FAKE_BIN:$PATH"
+  export TOUCHSTONE_RM_REFUSE_SUFFIX="/$RETIRE_REL"
+  rm -f "$RETIRE_SANITY/$RETIRE_REL"
+) 2>/dev/null; then
+  echo "FAIL: fake rm sanity: the refused path should have failed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# --------------------------------------------------------------------------
 # Test 1c: a retired file that cannot be deleted FAILS the update (#801 review).
 #
 # The updater regenerates .touchstone-manifest without the retired entries. A
@@ -355,7 +572,7 @@ if (cd "$LEGACY_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh")
   echo "FAIL: update should refuse to run on a legacy .toolkit-version project" >&2
   ERRORS=$((ERRORS + 1))
 fi
-assert_contains "$TEST_DIR/update-legacy.txt" '^ERROR: Legacy .toolkit-version found'
+assert_contains "$TEST_DIR/update-legacy.txt" '^ERROR: Legacy toolkit state in'
 assert_contains "$TEST_DIR/update-legacy.txt" 'git mv \.toolkit-config \.touchstone-config'
 assert_contains "$TEST_DIR/update-legacy.txt" 'toolkit-run\.sh -> touchstone-run\.sh'
 # Naming the file is not enough; the recipe has to say what skipping it costs.
@@ -363,6 +580,41 @@ assert_contains "$TEST_DIR/update-legacy.txt" 'silently revert'
 # Refusing is all it does — the migration itself is the project's to commit.
 assert_exists "$LEGACY_PROJECT/.toolkit-config"
 assert_not_exists "$LEGACY_PROJECT/.touchstone-version"
+
+# --------------------------------------------------------------------------
+# Test 1e: a PARTIALLY migrated project is still refused (#801 review, r3).
+#
+# State detection used to key on .toolkit-version alone. Rename that one file
+# and the project reads as normally Touchstone-managed while .toolkit-config
+# sits on disk unread — project_type, targets, and every command override
+# silently back to defaults, with the migration looking finished. All three
+# legacy names are checked, and the refusal says which ones are left.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 2e: A partially migrated .toolkit-* project is refused ---"
+
+PARTIAL_LEGACY_PROJECT="$TEST_DIR/partial-legacy-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PARTIAL_LEGACY_PROJECT" --no-register >/dev/null
+configure_git "$PARTIAL_LEGACY_PROJECT"
+# The half-done rename: .toolkit-version is gone, .toolkit-config is not.
+printf 'project_type=python\ntargets=api:services/api:python\n' \
+  >"$PARTIAL_LEGACY_PROJECT/.toolkit-config"
+commit_all "$PARTIAL_LEGACY_PROJECT" "simulate a half-finished toolkit rename"
+assert_not_exists "$PARTIAL_LEGACY_PROJECT/.toolkit-version"
+
+if (cd "$PARTIAL_LEGACY_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-partial-legacy.txt" 2>&1; then
+  echo "FAIL: update must refuse a project that still carries .toolkit-config" >&2
+  cat "$TEST_DIR/update-partial-legacy.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/update-partial-legacy.txt" '^ERROR: Legacy toolkit state in'
+assert_contains "$TEST_DIR/update-partial-legacy.txt" 'still present: \.toolkit-config'
+# It is a CONFLICT, not a plain legacy project: touchstone is already installed.
+assert_contains "$TEST_DIR/update-partial-legacy.txt" 'Migration conflict: legacy toolkit dotfiles remain'
+# The overrides the half-migration would have lost are still on disk, unread
+# and untouched — refusing is the whole behavior.
+assert_contains "$PARTIAL_LEGACY_PROJECT/.toolkit-config" '^targets=api:services/api:python$'
 
 # --------------------------------------------------------------------------
 # Test 2: committed local touchstone-owned changes update on a review branch.

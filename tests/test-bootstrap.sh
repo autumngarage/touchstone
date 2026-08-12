@@ -1530,6 +1530,139 @@ assert_contains "$TEST_DIR/init-retire-output.txt" 'AGENTS.md names scripts/spaw
 assert_contains "$PROJECT_INIT_RETIRE/AGENTS.md" 'Use `scripts/spawn-worktree.sh` to create branch slices.'
 
 # ---------------------------------------------------------------------------
+# Retirement remover: WHAT IS AT THE RETIRED PATH decides the outcome.
+#
+# Folded in from a standalone test file (#801 review, round 3) — one contract
+# does not get a third suite. This half lives with init because the bug being
+# pinned is init's own write-side guard: touchstone_ensure_safe_dest replaces a
+# final-component symlink so a managed copy can land on a real file. Reused as
+# the REMOVAL guard it unlinked the link first, and the `! -f` test then saw
+# the hole it had just made, reported "unsafe retired path", and returned
+# before the ownership and dirty-state checks that exist to protect exactly
+# that file. The link was already gone. The status-contract half (tracked,
+# untracked, modified, dry-run, unmanifested, failed rm) lives in
+# tests/test-update.sh, next to the entrypoint that turns those statuses into
+# counters, manifest entries, and staged deletions.
+# ---------------------------------------------------------------------------
+phase "retirement remover: path-shape contract"
+
+# shellcheck source=../lib/retired-managed.sh
+source "$TOUCHSTONE_ROOT/lib/retired-managed.sh"
+
+RETIRE_REL="lib/events.sh"
+
+# A git project whose ledger claims one retired path. Called plainly, never in
+# a command substitution, so errexit stays live over the fixture's own git
+# calls.
+retire_fixture() {
+  local dir="$1"
+  mkdir -p "$dir/lib"
+  git init -q -b main "$dir"
+  git -C "$dir" config user.email "touchstone-test@example.com"
+  git -C "$dir" config user.name "Touchstone Test"
+  printf '%s\n' "$RETIRE_REL" >"$dir/.touchstone-manifest"
+  printf 'placeholder\n' >"$dir/README.md"
+  git -C "$dir" add .touchstone-manifest README.md
+  git -C "$dir" commit -q -m "initial"
+}
+
+# Status capture is this function's documented contract: every caller invokes
+# it in a status-capturing conditional, and its body is written so that
+# nothing relies on errexit.
+RETIRE_RC=0
+retire_run() {
+  local dir="$1" dry="${2:-false}"
+  RETIRE_RC=0
+  touchstone_remove_retired_managed_file "$dir" "$RETIRE_REL" "$dry" \
+    >"$TEST_DIR/retire-out.txt" 2>&1 || RETIRE_RC=$?
+}
+
+retire_expect_rc() {
+  local label="$1" expected="$2"
+  if [ "$RETIRE_RC" != "$expected" ]; then
+    echo "FAIL: $label: expected exit $expected, got $RETIRE_RC" >&2
+    ERRORS=$((ERRORS + 1))
+  fi
+}
+
+# An untracked SYMLINK at the retired path survives, unfollowed.
+RETIRE_SYMLINK_UNTRACKED="$TEST_DIR/retire-symlink-untracked"
+retire_fixture "$RETIRE_SYMLINK_UNTRACKED"
+printf '# my own telemetry\n' >"$RETIRE_SYMLINK_UNTRACKED/lib/my-telemetry.sh"
+ln -s "my-telemetry.sh" "$RETIRE_SYMLINK_UNTRACKED/$RETIRE_REL"
+retire_run "$RETIRE_SYMLINK_UNTRACKED"
+retire_expect_rc "untracked symlink" 3
+if [ ! -L "$RETIRE_SYMLINK_UNTRACKED/$RETIRE_REL" ]; then
+  echo "FAIL: untracked symlink: the link itself should still be there, unfollowed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_exists "$RETIRE_SYMLINK_UNTRACKED/lib/my-telemetry.sh"
+assert_contains "$TEST_DIR/retire-out.txt" 'leaving untracked retired file in place'
+assert_not_contains "$TEST_DIR/retire-out.txt" 'replacing unexpected symlink with managed file'
+
+# A tracked, clean symlink is removed like any other managed copy — the link,
+# never what it points at. Cleanliness is decided by object id, and git stores
+# a symlink as a blob holding its target path, so the comparator has to hash
+# the link text rather than open the link (#801 review, round 3).
+RETIRE_SYMLINK_TRACKED="$TEST_DIR/retire-symlink-tracked"
+retire_fixture "$RETIRE_SYMLINK_TRACKED"
+printf '# shared telemetry\n' >"$RETIRE_SYMLINK_TRACKED/lib/shared-telemetry.sh"
+ln -s "shared-telemetry.sh" "$RETIRE_SYMLINK_TRACKED/$RETIRE_REL"
+git -C "$RETIRE_SYMLINK_TRACKED" add "$RETIRE_REL" "lib/shared-telemetry.sh"
+git -C "$RETIRE_SYMLINK_TRACKED" commit -q -m "add retired symlink"
+retire_run "$RETIRE_SYMLINK_TRACKED"
+retire_expect_rc "tracked symlink" 0
+if [ -L "$RETIRE_SYMLINK_TRACKED/$RETIRE_REL" ]; then
+  echo "FAIL: tracked symlink: the link should be removed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_exists "$RETIRE_SYMLINK_TRACKED/lib/shared-telemetry.sh"
+
+# A DANGLING symlink is still a path retirement has to answer for (#801
+# review, round 3). The applicability predicate asked only `-e`, which a
+# dangling link fails, so init and update skipped the remover and then
+# regenerated .touchstone-manifest WITHOUT the path — nothing would ever reach
+# the link again, and it reactivates the retired script the moment its target
+# reappears.
+RETIRE_SYMLINK_DANGLING="$TEST_DIR/retire-symlink-dangling"
+retire_fixture "$RETIRE_SYMLINK_DANGLING"
+ln -s "gone-telemetry.sh" "$RETIRE_SYMLINK_DANGLING/$RETIRE_REL"
+assert_not_exists "$RETIRE_SYMLINK_DANGLING/lib/gone-telemetry.sh"
+if ! touchstone_retired_managed_file_applies "$RETIRE_SYMLINK_DANGLING" "$RETIRE_REL"; then
+  echo "FAIL: dangling symlink: retirement must still apply to a manifested dangling link" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+retire_run "$RETIRE_SYMLINK_DANGLING"
+retire_expect_rc "dangling symlink" 3
+assert_contains "$TEST_DIR/retire-out.txt" 'leaving untracked retired file in place'
+if [ ! -L "$RETIRE_SYMLINK_DANGLING/$RETIRE_REL" ]; then
+  echo "FAIL: dangling symlink: an untracked link must be left in place, not silently dropped" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+# Tracked and clean, the same dangling link is removed rather than stranded.
+RETIRE_DANGLING_TRACKED="$TEST_DIR/retire-symlink-dangling-tracked"
+retire_fixture "$RETIRE_DANGLING_TRACKED"
+ln -s "gone-telemetry.sh" "$RETIRE_DANGLING_TRACKED/$RETIRE_REL"
+git -C "$RETIRE_DANGLING_TRACKED" add "$RETIRE_REL"
+git -C "$RETIRE_DANGLING_TRACKED" commit -q -m "add dangling retired symlink"
+retire_run "$RETIRE_DANGLING_TRACKED"
+retire_expect_rc "dangling symlink tracked" 0
+if [ -L "$RETIRE_DANGLING_TRACKED/$RETIRE_REL" ]; then
+  echo "FAIL: dangling symlink tracked: the link should be removed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# A directory at the retired path is refused untouched.
+RETIRE_DIRECTORY="$TEST_DIR/retire-directory"
+retire_fixture "$RETIRE_DIRECTORY"
+mkdir -p "$RETIRE_DIRECTORY/$RETIRE_REL"
+printf 'keep\n' >"$RETIRE_DIRECTORY/$RETIRE_REL/inner.txt"
+retire_run "$RETIRE_DIRECTORY"
+retire_expect_rc "directory" 2
+assert_exists "$RETIRE_DIRECTORY/$RETIRE_REL/inner.txt"
+assert_contains "$TEST_DIR/retire-out.txt" 'refusing to remove unsafe retired path'
+
+# ---------------------------------------------------------------------------
 # #801 review: a retirement that cannot delete the file must stop the init.
 #
 # init regenerates .touchstone-manifest without the retired entries. If a failed
@@ -1979,6 +2112,56 @@ assert_not_contains "$TEST_DIR/doctor-no-mirror.txt" 'ruff'
 assert_not_contains "$TEST_DIR/doctor-no-mirror.txt" 'target mobile'
 assert_contains "$TEST_DIR/doctor-no-mirror.txt" 'lint: dispatched per target'
 
+# ---------------------------------------------------------------------------
+# #801 review: a configured target that is not on disk must FAIL validation.
+#
+# `targets=api:services/api:python` with no services/api used to warn once per
+# action and let the loop return 0, so `touchstone run validate` — what the
+# pre-push hook runs — exited 0 having linted, typechecked, built and tested
+# nothing at all. doctor was worse: a configured `targets` suppressed its one
+# remaining lint check outright, so it reported the project fully armed.
+#
+# Both halves are asserted on EXIT STATUS, not output text: the bug was
+# precisely a success exit alongside plausible warnings.
+# ---------------------------------------------------------------------------
+PROJECT_MISSING_TARGET="$TEST_DIR/test-project-missing-target"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_MISSING_TARGET" --no-register >/dev/null
+# A `generic` target profile keeps the positive control below deterministic:
+# it has no default command to shell out to, so the only thing under test is
+# whether the dispatch happened at all.
+touchstone_sed_inplace 's|^targets=.*|targets=api:services/api:generic|' "$PROJECT_MISSING_TARGET/.touchstone-config"
+# Precondition: the configured directory is genuinely absent.
+assert_not_exists "$PROJECT_MISSING_TARGET/services/api"
+assert_contains "$PROJECT_MISSING_TARGET/.touchstone-config" '^targets=api:services/api:generic$'
+
+if (cd "$PROJECT_MISSING_TARGET" && bash scripts/touchstone-run.sh validate) \
+  >"$TEST_DIR/run-missing-target.txt" 2>&1; then
+  echo "FAIL: 'touchstone-run.sh validate' must exit nonzero when a configured target is missing" >&2
+  cat "$TEST_DIR/run-missing-target.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/run-missing-target.txt" "refusing a green 'lint' that ran nothing for it"
+
+if (cd "$PROJECT_MISSING_TARGET" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) \
+  >"$TEST_DIR/doctor-missing-target.txt" 2>&1; then
+  echo "FAIL: doctor --project must exit nonzero when a configured target path is missing" >&2
+  cat "$TEST_DIR/doctor-missing-target.txt" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-missing-target.txt" "configured target 'api' path not found: services/api"
+  assert_not_contains "$TEST_DIR/doctor-missing-target.txt" 'Project is fully armed'
+fi
+# Creating the directory clears both verdicts — the check is structural, so it
+# must stop complaining the moment the structure is right.
+mkdir -p "$PROJECT_MISSING_TARGET/services/api"
+if ! (cd "$PROJECT_MISSING_TARGET" && bash scripts/touchstone-run.sh validate) \
+  >"$TEST_DIR/run-present-target.txt" 2>&1; then
+  echo "FAIL: validate should pass once the configured target directory exists" >&2
+  cat "$TEST_DIR/run-present-target.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_not_contains "$TEST_DIR/run-present-target.txt" 'path not found'
+
 # A green validate that linted nothing is the trap the lint action's graceful
 # skip creates: `run_python_action lint` prints "ruff not installed; skipped"
 # and exits 0. doctor is the only surface that reports it, so a Python project
@@ -2072,6 +2255,22 @@ else
   assert_contains "$TEST_DIR/doctor-runner-silent.txt" 'named no project_type'
   assert_not_contains "$TEST_DIR/doctor-runner-silent.txt" 'Project is fully armed'
 fi
+# Class recurrence (#801 review, round 3): the applicability predicate was
+# `[ -f "$runner" ]`, which a DANGLING SYMLINK fails — so a project whose
+# managed runner points at nothing skipped the check entirely and passed as
+# healthy, the same predicate-misses-symlinks shape as the retirement
+# applicability test. Present-but-unusable is not the same answer as absent.
+rm -f "$PROJECT_DOCTOR_RUNNER_BROKEN/scripts/touchstone-run.sh"
+ln -s "touchstone-run-gone.sh" "$PROJECT_DOCTOR_RUNNER_BROKEN/scripts/touchstone-run.sh"
+assert_not_exists "$PROJECT_DOCTOR_RUNNER_BROKEN/scripts/touchstone-run-gone.sh"
+if (cd "$PROJECT_DOCTOR_RUNNER_BROKEN" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-runner-dangling.txt" 2>&1; then
+  echo "FAIL: doctor --project must exit nonzero when the managed runner is a dangling symlink" >&2
+  cat "$TEST_DIR/doctor-runner-dangling.txt" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-runner-dangling.txt" 'detect failed'
+  assert_not_contains "$TEST_DIR/doctor-runner-dangling.txt" 'Project is fully armed'
+fi
 
 # Generic profile doctor must NOT count missing tests as an issue — a fresh
 # generic project with no test_command configured stays fully armed.
@@ -2100,7 +2299,8 @@ if (cd "$PROJECT_DOCTOR_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT
   echo "FAIL: doctor --project should exit nonzero on a legacy .toolkit-version repo" >&2
   ERRORS=$((ERRORS + 1))
 else
-  assert_contains "$TEST_DIR/doctor-legacy.txt" 'Legacy .toolkit-version found'
+  assert_contains "$TEST_DIR/doctor-legacy.txt" 'Legacy toolkit state'
+  assert_contains "$TEST_DIR/doctor-legacy.txt" 'still present: \.toolkit-version'
   assert_not_contains "$TEST_DIR/doctor-legacy.txt" 'touchstone migrate-from-toolkit'
   # #801 review: the deleted migrator renamed all THREE legacy dotfiles and
   # rewrote the path references recorded inside the manifest. Instructions that
@@ -2121,10 +2321,69 @@ if (cd "$PROJECT_INIT_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/b
   echo "FAIL: touchstone init should exit nonzero on a legacy .toolkit-version repo" >&2
   ERRORS=$((ERRORS + 1))
 else
-  assert_contains "$TEST_DIR/init-legacy.txt" 'Legacy .toolkit-version found'
+  assert_contains "$TEST_DIR/init-legacy.txt" 'Legacy toolkit state in'
   assert_contains "$TEST_DIR/init-legacy.txt" 'git mv \.toolkit-config \.touchstone-config'
   assert_contains "$TEST_DIR/init-legacy.txt" 'toolkit-run\.sh -> touchstone-run\.sh'
 fi
+
+# ---------------------------------------------------------------------------
+# #801 review, round 3: a PARTIAL migration is still a legacy project.
+#
+# State detection keyed on .toolkit-version alone, so a repo that renamed that
+# one file and kept .toolkit-config read as normally Touchstone-managed. init
+# then wrote a default .touchstone-config over it and took project_type,
+# targets, and every command override with it — silently, and with the
+# migration looking finished. Each legacy name is proved individually: a probe
+# that aborts on the first would say nothing about the other two.
+# ---------------------------------------------------------------------------
+for legacy_leftover in .toolkit-config .toolkit-manifest; do
+  PROJECT_PARTIAL_LEGACY="$TEST_DIR/test-project-partial-legacy${legacy_leftover}"
+  PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
+    "$PROJECT_PARTIAL_LEGACY" --no-register >/dev/null
+  printf 'project_type=python\ntargets=api:services/api:python\n' \
+    >"$PROJECT_PARTIAL_LEGACY/$legacy_leftover"
+  # Precondition: the renamed file really is gone, so only the leftover can
+  # be what triggers the refusal.
+  assert_not_exists "$PROJECT_PARTIAL_LEGACY/.toolkit-version"
+
+  if (cd "$PROJECT_PARTIAL_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup --no-register) \
+    >"$TEST_DIR/init-partial-legacy.txt" 2>&1; then
+    echo "FAIL: touchstone init must refuse a repo that still carries $legacy_leftover" >&2
+    cat "$TEST_DIR/init-partial-legacy.txt" >&2
+    ERRORS=$((ERRORS + 1))
+  else
+    assert_contains "$TEST_DIR/init-partial-legacy.txt" 'Legacy toolkit state in'
+    assert_contains "$TEST_DIR/init-partial-legacy.txt" "still present: ${legacy_leftover//./\\.}"
+  fi
+  # The legacy overrides init would have overwritten are untouched.
+  assert_contains "$PROJECT_PARTIAL_LEGACY/$legacy_leftover" '^targets=api:services/api:python$'
+
+  # Class recurrence: bare `touchstone doctor` picks project vs installation
+  # mode, and that routing keyed on .toolkit-version alone too — a repo with
+  # only this leftover and no .touchstone-version was sent to installation
+  # mode, where doctor reports on the install and never mentions the project
+  # it is standing in.
+  rm -f "$PROJECT_PARTIAL_LEGACY/.touchstone-version"
+  if (cd "$PROJECT_PARTIAL_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor) \
+    >"$TEST_DIR/doctor-bare-partial-legacy.txt" 2>&1; then
+    echo "FAIL: bare 'touchstone doctor' must refuse a repo that still carries $legacy_leftover" >&2
+    cat "$TEST_DIR/doctor-bare-partial-legacy.txt" >&2
+    ERRORS=$((ERRORS + 1))
+  else
+    assert_contains "$TEST_DIR/doctor-bare-partial-legacy.txt" 'Legacy toolkit state'
+  fi
+
+  if (cd "$PROJECT_PARTIAL_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) \
+    >"$TEST_DIR/doctor-partial-legacy.txt" 2>&1; then
+    echo "FAIL: doctor --project must refuse a repo that still carries $legacy_leftover" >&2
+    cat "$TEST_DIR/doctor-partial-legacy.txt" >&2
+    ERRORS=$((ERRORS + 1))
+  else
+    assert_contains "$TEST_DIR/doctor-partial-legacy.txt" 'Legacy toolkit state'
+    assert_contains "$TEST_DIR/doctor-partial-legacy.txt" "still present: ${legacy_leftover//./\\.}"
+    assert_not_contains "$TEST_DIR/doctor-partial-legacy.txt" 'Project is fully armed'
+  fi
+done
 
 # Both .toolkit-version and .touchstone-version is an in-flight migration conflict —
 # neither doctor nor init may report healthy in that state.

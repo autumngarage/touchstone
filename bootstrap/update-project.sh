@@ -123,14 +123,21 @@ if [ "$IN_PLACE" = true ] && [ -n "$REQUESTED_BRANCH" ]; then
   exit 1
 fi
 
+# Refuse any surviving legacy dotfile before anything else. All three names
+# are checked, not just .toolkit-version: a project that renamed that one file
+# and kept .toolkit-config is half-migrated, and updating it would carry the
+# managed set forward while project_type, targets and every command override
+# stayed unread (#801 review, round 3).
+LEGACY_REFUSAL=""
+if LEGACY_REFUSAL="$(touchstone_legacy_toolkit_refusal "$PROJECT_DIR" "touchstone update")"; then
+  echo "ERROR: Legacy toolkit state in $PROJECT_DIR" >&2
+  echo "       This project was bootstrapped before the toolkit -> touchstone rename." >&2
+  printf '%s\n' "$LEGACY_REFUSAL" | sed 's/^/       /' >&2
+  exit 1
+fi
+
 # Verify we're in a project with .touchstone-version.
 if [ ! -f "$PROJECT_DIR/.touchstone-version" ]; then
-  if [ -f "$PROJECT_DIR/.toolkit-version" ]; then
-    echo "ERROR: Legacy .toolkit-version found in $PROJECT_DIR" >&2
-    echo "       This project was bootstrapped before the toolkit -> touchstone rename." >&2
-    touchstone_legacy_toolkit_migration_steps "touchstone update" | sed 's/^/       /' >&2
-    exit 1
-  fi
   echo "ERROR: No .touchstone-version file found in $PROJECT_DIR" >&2
   echo "       This project hasn't been bootstrapped with Touchstone." >&2
   echo "       Run: $(dirname "$0")/new-project.sh $PROJECT_DIR" >&2

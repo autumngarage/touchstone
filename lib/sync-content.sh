@@ -175,9 +175,22 @@ touchstone_content_manifest_entries() {
 # same conversion `git add` would perform (PR #780 review, round 3 P2).
 touchstone_content_index_blob_matches_worktree() {
   local project_dir="$1" rel="$2"
-  local index_blob worktree_blob
+  local index_blob worktree_blob link_target
   index_blob="$(git -C "$project_dir" rev-parse --verify --quiet ":$rel")" || return 1
-  worktree_blob="$(git -C "$project_dir" hash-object --path="$rel" -- "$project_dir/$rel" 2>/dev/null)" || return 1
+  if [ -L "$project_dir/$rel" ]; then
+    # git stores a symlink as a blob holding its TARGET PATH, while
+    # `git hash-object -- <link>` opens the link and hashes what it points at
+    # — so hashing the file would report every tracked, unmodified symlink as
+    # modified. Hash the link text, which is the byte sequence a clean clone
+    # receives. --path is deliberately absent: no attribute filter applies to
+    # a symlink blob (#801 review, round 3). Every caller in this file rejects
+    # symlinks before asking, so this branch exists for the retirement remover
+    # in lib/retired-managed.sh, which must inspect one.
+    link_target="$(readlink "$project_dir/$rel")" || return 1
+    worktree_blob="$(printf '%s' "$link_target" | git -C "$project_dir" hash-object -t blob --stdin)" || return 1
+  else
+    worktree_blob="$(git -C "$project_dir" hash-object --path="$rel" -- "$project_dir/$rel" 2>/dev/null)" || return 1
+  fi
   [ "$index_blob" = "$worktree_blob" ]
 }
 

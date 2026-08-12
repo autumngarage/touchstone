@@ -217,18 +217,27 @@ cmd_init() {
     setup_existed=true
   fi
 
-  # State detection: fresh | current | outdated | legacy-toolkit. Determines
-  # whether init bootstraps or reconciles files in place.
+  # State detection: fresh | current | outdated. Determines whether init
+  # bootstraps or reconciles files in place.
   local project_dir installed_id current_id init_state="fresh"
+  local legacy_refusal="" legacy_step
   project_dir="$(pwd)"
 
-  if [ -f "$project_dir/.toolkit-version" ] && [ -f "$project_dir/.touchstone-version" ]; then
-    tk_fail "Migration conflict: both .toolkit-version and .touchstone-version are present in $project_dir"
-    tk_dim "  Fix: rm .toolkit-version   (touchstone has already been installed here)"
+  # Legacy state is decided by ALL THREE legacy dotfiles, never by
+  # .toolkit-version alone: a project that renamed that one file and still has
+  # .toolkit-config read as normally managed here, and this function then went
+  # on to write a default .touchstone-config over its targets and command
+  # overrides (#801 review, round 3). One helper answers for init, update and
+  # doctor alike.
+  if legacy_refusal="$(touchstone_legacy_toolkit_refusal "$project_dir" "touchstone init")"; then
+    tk_fail "Legacy toolkit state in $project_dir"
+    while IFS= read -r legacy_step; do
+      tk_dim "$legacy_step"
+    done <<<"$legacy_refusal"
     return 1
-  elif [ -f "$project_dir/.toolkit-version" ]; then
-    init_state="legacy-toolkit"
-  elif [ -f "$project_dir/.touchstone-version" ]; then
+  fi
+
+  if [ -f "$project_dir/.touchstone-version" ]; then
     installed_id="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "")"
     current_id="$(touchstone_current_id)"
     # Pass the tree so init consults the same content verdict as status,
@@ -243,14 +252,6 @@ cmd_init() {
   fi
 
   case "$init_state" in
-    legacy-toolkit)
-      tk_fail "Legacy .toolkit-version found in $project_dir"
-      local legacy_step
-      while IFS= read -r legacy_step; do
-        tk_dim "$legacy_step"
-      done < <(touchstone_legacy_toolkit_migration_steps "touchstone init")
-      return 1
-      ;;
     outdated)
       tk_header "Touchstone init — reconciling"
       tk_dim "  installed: ${installed_id:0:12}"
@@ -459,24 +460,22 @@ cmd_doctor_project() {
 
   tk_header "Touchstone Project Doctor — $(basename "$project_dir")"
 
-  # 1. Is this a touchstone-managed project? Reject migration-conflict state first —
-  # a project with both files is mid-migration and must not be reported healthy.
-  if [ -f "$project_dir/.toolkit-version" ] && [ -f "$project_dir/.touchstone-version" ]; then
-    tk_fail "Migration conflict: both .toolkit-version and .touchstone-version present"
-    tk_dim "  Fix: rm .toolkit-version   (touchstone has already been installed)"
+  # 1. Is this a touchstone-managed project? Any surviving legacy dotfile is
+  # rejected first — mid-migration is mid-migration whether the project has
+  # .touchstone-version yet or not, and it must never be reported healthy.
+  # Keying that on .toolkit-version alone let a repo that renamed only that
+  # file pass as normally managed with .toolkit-config still unread (#801
+  # review, round 3).
+  local legacy_refusal="" legacy_step
+  if legacy_refusal="$(touchstone_legacy_toolkit_refusal "$project_dir" "touchstone init")"; then
+    tk_fail "Legacy toolkit state"
+    while IFS= read -r legacy_step; do
+      tk_dim "  $legacy_step"
+    done <<<"$legacy_refusal"
     echo ""
     return 1
   fi
   if [ ! -f "$project_dir/.touchstone-version" ]; then
-    if [ -f "$project_dir/.toolkit-version" ]; then
-      tk_fail "Legacy .toolkit-version found"
-      local legacy_step
-      while IFS= read -r legacy_step; do
-        tk_dim "  $legacy_step"
-      done < <(touchstone_legacy_toolkit_migration_steps "touchstone init")
-      echo ""
-      return 1
-    fi
     tk_fail "Not a touchstone project (no .touchstone-version)"
     tk_dim "  Fix: touchstone init"
     echo ""
@@ -693,6 +692,67 @@ _touchstone_config_has_override() {
   grep -Eq "^[[:space:]]*${key}[[:space:]]*=[[:space:]]*[^[:space:]#]" "$dir/.touchstone-config"
 }
 
+# Does every path named by .touchstone-config's `targets` exist as a directory?
+# Structural only — no profile resolution, no linter probing, nothing that
+# duplicates scripts/touchstone-run.sh. The entry format is
+# name:path[:profile], comma separated, and a bare `name` means the path is
+# the name; this parse mirrors run_targets_action's exactly.
+# Returns 1 when any configured target directory is missing.
+_touchstone_doctor_check_target_paths() {
+  local project_dir="$1" targets entry name path target_dir missing=0
+  local -a entries=()
+
+  targets="$(_touchstone_config_value "$project_dir" targets)"
+  [ -n "$targets" ] || return 0
+
+  IFS=',' read -r -a entries <<<"$targets"
+  for entry in "${entries[@]}"; do
+    entry="${entry#"${entry%%[![:space:]]*}"}"
+    entry="${entry%"${entry##*[![:space:]]}"}"
+    [ -n "$entry" ] || continue
+    name="${entry%%:*}"
+    path="${entry#*:}"
+    path="${path%%:*}"
+    if [[ "$path" = /* ]]; then
+      target_dir="$path"
+    else
+      target_dir="$project_dir/$path"
+    fi
+    [ -d "$target_dir" ] && continue
+    tk_warn "configured target '$name' path not found: $path"
+    missing=$((missing + 1))
+  done
+
+  [ "$missing" -eq 0 ] && return 0
+  tk_dim "  'touchstone run validate' fails on it; nothing is linted, built or tested there."
+  tk_dim "  Fix: create the directory, or correct 'targets=' in .touchstone-config"
+  return 1
+}
+
+# The raw value .touchstone-config assigns to a key, or the empty string.
+# Last assignment wins, matching scripts/touchstone-run.sh:load_config, so
+# doctor reads the same value the dispatcher will.
+_touchstone_config_value() {
+  local dir="$1" key="$2" line line_key value=""
+  [ -f "$dir/.touchstone-config" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    case "$line" in
+      '' | \#*) continue ;;
+      *=*) ;;
+      *) continue ;;
+    esac
+    line_key="${line%%=*}"
+    line_key="${line_key%"${line_key##*[![:space:]]}"}"
+    [ "$line_key" = "$key" ] || continue
+    value="${line#*=}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+  done <"$dir/.touchstone-config"
+  printf '%s' "$value"
+}
+
 # Is the profile's linter actually reachable? `touchstone run lint` exits 0
 # when it is not, so this is the only place a project learns that its lint
 # gate has been a no-op. Returns 1 when a real gap is found (the caller counts
@@ -706,7 +766,14 @@ _touchstone_doctor_check_lint_reachable() {
   local project_dir="$1" runner profile
 
   runner="$project_dir/scripts/touchstone-run.sh"
-  [ -f "$runner" ] || return 0
+  # Absent runner: the check does not apply. PRESENT but not a regular file
+  # (a dangling symlink, a directory) is a different answer, and `-f` alone
+  # conflated them — the same predicate-misses-symlinks class as the retirement
+  # applicability test (#801 review, round 3). Falling through hands it to the
+  # detect call below, which reports the breakage instead of hiding it.
+  if [ ! -e "$runner" ] && [ ! -L "$runner" ]; then
+    return 0
+  fi
 
   # A configured lint_command/validate_command short-circuits the dispatcher
   # entirely (configured_command_for_action), so no profile default runs.
@@ -717,8 +784,17 @@ _touchstone_doctor_check_lint_reachable() {
   fi
   # Config-declared targets make the runner dispatch per-target and never use
   # the root profile. Say so rather than reporting a root answer that does not
-  # describe what runs — checking each target would require the profile mirror.
+  # describe what runs — checking each target's PROFILE would require the
+  # mirror #737 removed.
+  #
+  # Its EXISTENCE is a different question, and one doctor must not skip: this
+  # branch suppressed the only remaining lint check, so `targets=api:missing`
+  # got a clean bill of health from doctor while `touchstone run validate`
+  # exited 0 having run nothing (#801 review). "Is this directory there" is
+  # structural — it cannot drift from the dispatcher the way a re-derived
+  # profile can.
   if _touchstone_config_has_override "$project_dir" targets; then
+    _touchstone_doctor_check_target_paths "$project_dir" || return 1
     tk_dim "lint: dispatched per target; verify each with 'touchstone run lint'"
     return 0
   fi
@@ -882,7 +958,14 @@ cmd_doctor() {
   local installation_mode=false
 
   if [ "$#" -eq 0 ]; then
-    if touchstone_find_project_root >/dev/null 2>&1 || [ -f "$(pwd)/.touchstone-version" ] || [ -f "$(pwd)/.toolkit-version" ]; then
+    # Same class as the state detection above (#801 review, round 3): keying
+    # the legacy half on .toolkit-version alone sent a half-migrated repo —
+    # that file renamed, .toolkit-config still there — to INSTALLATION mode,
+    # where bare `touchstone doctor` reports on the install and never mentions
+    # the project it is standing in. One helper decides "legacy" everywhere.
+    if touchstone_find_project_root >/dev/null 2>&1 \
+      || [ -f "$(pwd)/.touchstone-version" ] \
+      || [ -n "$(touchstone_legacy_toolkit_present "$(pwd)")" ]; then
       project_mode=true
     else
       installation_mode=true
