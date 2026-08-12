@@ -174,13 +174,12 @@ jobs:
       - name: Install test dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
-          # jq is used by the hook tests; shellcheck and shfmt by preflight.
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq jq shellcheck
-          curl -fsSL -o /tmp/shfmt \
-            https://github.com/mvdan/sh/releases/download/v3.10.0/shfmt_v3.10.0_linux_amd64
-          sudo install -m 0755 /tmp/shfmt /usr/local/bin/shfmt
-          shfmt --version
+          set -euo pipefail
+          # jq is used by the hook tests and ships on the runner image —
+          # verify, don't install. Hard check: a missing jq must fail here
+          # with one clear line, not surface later as a test failure.
+          command -v jq
+          jq --version
           # pre-commit is a REQUIREMENT of the suite, not a lint convenience.
           # bootstrap and update install git hooks through it, and without it
           # `update --ship` stops at "effective hooks are not ready" — so the
@@ -202,19 +201,6 @@ jobs:
           # jq ships with Git Bash on the runner image — verify, don't install.
           command -v jq
           jq --version
-          # ShellCheck comes from chocolatey; its shim directory is already on
-          # PATH. (Wording note: a comment must not START with "shellcheck",
-          # or ShellCheck itself parses it as a malformed directive — #745's
-          # guard-vs-prose class in a new costume.)
-          choco install shellcheck -y
-          shellcheck --version
-          # shfmt has no choco package worth trusting; take the release binary
-          # directly, same pinned version as the Linux leg.
-          mkdir -p "$HOME/bin"
-          curl -fsSL -o "$HOME/bin/shfmt.exe" \
-            https://github.com/mvdan/sh/releases/download/v3.10.0/shfmt_v3.10.0_windows_amd64.exe
-          cygpath -w "$HOME/bin" >>"$GITHUB_PATH"
-          "$HOME/bin/shfmt.exe" --version
           # pipx is preinstalled on the windows image; same pre-commit
           # rationale as the Linux leg — it is a requirement of the suite.
           pipx install pre-commit
