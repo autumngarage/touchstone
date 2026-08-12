@@ -236,7 +236,11 @@ cmd_init() {
   elif [ -f "$project_dir/.touchstone-version" ]; then
     installed_id="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "")"
     current_id="$(touchstone_current_id)"
-    if [ "$(_status_behind_count "$installed_id" "$current_id")" = "current" ]; then
+    # Pass the tree so init consults the same content verdict as status,
+    # doctor, update and auto-sync — a content-current project with a
+    # differing stamp otherwise entered the outdated reconciliation flow
+    # while status called it current (PR #787 review, round 3).
+    if [ "$(_status_behind_count "$installed_id" "$current_id" "$project_dir")" = "current" ]; then
       init_state="current"
     else
       init_state="outdated"
@@ -652,7 +656,8 @@ cmd_doctor_project() {
   local installed_id current_id
   installed_id="$(cat "$project_dir/.touchstone-version" 2>/dev/null | tr -d '[:space:]' || echo "")"
   current_id="$(touchstone_current_id)"
-  if [ "$(_status_behind_count "$installed_id" "$current_id")" = "current" ]; then
+  # Same verdict as every other surface (PR #787 review, round 3).
+  if [ "$(_status_behind_count "$installed_id" "$current_id" "$project_dir")" = "current" ]; then
     tk_ok "touchstone version matches: ${installed_id:0:12}"
   else
     tk_warn "touchstone out of date (installed ${installed_id:0:12}, current ${current_id:0:12})"

@@ -2156,6 +2156,98 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+echo "--- Step 17: round-3 corrections (PR #787) ---"
+
+# (a) The IDENTITY-EQUAL early exit — the normal released state, and the most
+# common path of all — must also reconcile hooks. It previously returned
+# before any reconciliation, so a deleted hook stayed silently unrepaired.
+IDHOOK_PROJECT="$TEST_DIR/p787c-identity-hooks"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$IDHOOK_PROJECT" --no-register >/dev/null
+configure_git "$IDHOOK_PROJECT"
+commit_all "$IDHOOK_PROJECT" "initial identity-hooks project"
+IDHOOK_PATH="$(git -C "$IDHOOK_PROJECT" config core.hooksPath || echo .git/hooks)"
+rm -f "$IDHOOK_PROJECT/$IDHOOK_PATH/pre-commit" "$IDHOOK_PROJECT/.git/hooks/pre-commit" 2>/dev/null || true
+(cd "$IDHOOK_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p787c-identity-hooks.txt" 2>&1
+assert_contains "$TEST_DIR/p787c-identity-hooks.txt" 'Already up to date'
+if [ -f "$IDHOOK_PROJECT/$IDHOOK_PATH/pre-commit" ] || [ -f "$IDHOOK_PROJECT/.git/hooks/pre-commit" ]; then
+  echo "    PASS: the identity-equal exit reinstalls a deleted hook"
+else
+  echo "FAIL: an identity-equal update must still reconcile hooks (PR #787 round 3 P1)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (b) A legitimate RETIREMENT deletes a tracked managed file and drops it from
+# the regenerated manifest — the scope guard must not call that foreign.
+RETIRE_SCOPE_PROJECT="$TEST_DIR/p787c-retire-scope"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$RETIRE_SCOPE_PROJECT" --no-register >/dev/null
+configure_git "$RETIRE_SCOPE_PROJECT"
+commit_all "$RETIRE_SCOPE_PROJECT" "initial retire-scope project"
+printf 'legacy\n' >"$RETIRE_SCOPE_PROJECT/lib/review-comment.sh"
+git -C "$RETIRE_SCOPE_PROJECT" add lib/review-comment.sh
+git -C "$RETIRE_SCOPE_PROJECT" -c user.name=T -c user.email=t@e.invalid \
+  commit --no-verify -qm "carry a retired managed file"
+# The base must be the state where the file EXISTS, or add-then-delete cancels
+# out in the diff and the assertion passes vacuously on any code.
+RETIRE_SCOPE_BASE="$(git -C "$RETIRE_SCOPE_PROJECT" rev-parse HEAD)"
+git -C "$RETIRE_SCOPE_PROJECT" rm -q lib/review-comment.sh
+git -C "$RETIRE_SCOPE_PROJECT" -c user.name=T -c user.email=t@e.invalid \
+  commit --no-verify -qm "retire it"
+
+RETIRE_SCOPE_OUT="$TEST_DIR/p787c-retire-scope.txt"
+(
+  # shellcheck disable=SC1090
+  . "$TOUCHSTONE_ROOT/lib/sync-discipline.sh"
+  # shellcheck disable=SC2034
+  PROJECT_DIR="$RETIRE_SCOPE_PROJECT"
+  # shellcheck disable=SC2034
+  ORIGINAL_HEAD="$RETIRE_SCOPE_BASE"
+  # shellcheck disable=SC2034
+  SCOPE_CREATED_SLOTS=()
+  # The updater records what it retired; the guard must consult it.
+  # shellcheck disable=SC2034
+  RETIRED_MANAGED_PATHS=("lib/review-comment.sh")
+  eval "$(awk '/^update_commit_scope_violations\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh")"
+  update_commit_scope_violations
+) >"$RETIRE_SCOPE_OUT" 2>&1
+
+if [ ! -s "$RETIRE_SCOPE_OUT" ]; then
+  echo "    PASS: a recorded retirement is not a scope violation"
+else
+  echo "FAIL: retiring a managed file must not read as foreign content (PR #787 round 3)" >&2
+  cat "$RETIRE_SCOPE_OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (c) Rename detection must not fold a foreign source path out of sight.
+if grep -q 'diff --no-renames --name-only' "$TOUCHSTONE_ROOT/bootstrap/update-project.sh"; then
+  echo "    PASS: the scope diff disables rename folding"
+else
+  echo "FAIL: the scope guard must compare with rename detection disabled (PR #787 round 3)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (d) An OPEN PR on the deterministic branch name counts only when it points
+# at THIS head — otherwise another clone's PR is reported as ours.
+if awk '/^current_update_pr_state\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+  "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'headRefOid' \
+  && awk '/^current_update_pr_state\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' \
+    "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" | grep -q 'rev-parse HEAD'; then
+  echo "    PASS: PR-state classification is bound to the update head"
+else
+  echo "FAIL: armed/merged classification must require the PR head to match (PR #787 round 3)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# (e) init and project doctor consult the same verdict as everything else.
+if ! grep -q '_status_behind_count "$installed_id" "$current_id")' "$TOUCHSTONE_ROOT/bin/touchstone"; then
+  echo "    PASS: init and project doctor pass the project tree"
+else
+  echo "FAIL: init/doctor must pass the project tree to the staleness verdict (PR #787 round 3)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
 # --------------------------------------------------------------------------
 # Results
 # --------------------------------------------------------------------------

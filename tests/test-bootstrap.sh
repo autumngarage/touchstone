@@ -2133,6 +2133,11 @@ PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$
 git -C "$PROJECT_OUTDATED" config user.email test@touchstone
 git -C "$PROJECT_OUTDATED" config user.name test-committer
 echo "0000000000000000000000000000000000000001" >"$PROJECT_OUTDATED/.touchstone-version"
+# Genuinely stale CONTENT, not just an old stamp: init now consults the shared
+# content verdict (#731), so a byte-identical tree with a differing stamp is
+# correctly "current" and would never enter the reconciliation flow this case
+# exists to cover (PR #787 review, round 3).
+printf '# simulate stale managed content\n' >>"$PROJECT_OUTDATED/lib/toml.sh"
 (cd "$PROJECT_OUTDATED" && git commit --no-verify -am "pin to old touchstone" >/dev/null)
 OUTDATED_INIT_BRANCH="$(git -C "$PROJECT_OUTDATED" branch --show-current)"
 mkdir -p "$PROJECT_OUTDATED/.claude"
@@ -2158,6 +2163,8 @@ PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$
 git -C "$PROJECT_OUTDATED_SHIP" config user.email test@touchstone
 git -C "$PROJECT_OUTDATED_SHIP" config user.name test-committer
 echo "0000000000000000000000000000000000000001" >"$PROJECT_OUTDATED_SHIP/.touchstone-version"
+# Genuinely stale content, same reason as the case above (PR #787 round 3).
+printf '# simulate stale managed content\n' >>"$PROJECT_OUTDATED_SHIP/lib/toml.sh"
 (cd "$PROJECT_OUTDATED_SHIP" && git commit --no-verify -am "pin to old touchstone" >/dev/null)
 # Stub gh so any accidental shipping attempt fails fast without real network.
 GH_STUB_BIN="$TEST_DIR/gh-stub-bin"

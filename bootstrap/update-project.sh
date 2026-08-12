@@ -222,26 +222,31 @@ managed_content_is_current() {
   touchstone_content_is_current "$PROJECT_DIR" "$TOUCHSTONE_ROOT"
 }
 
+# User-scoped skills and git hooks live OUTSIDE the project tree, so no
+# content probe says anything about them. BOTH early exits must reconcile
+# them or a deleted hook stays silently unrepaired behind "up to date" —
+# and the identity-equal exit is the NORMAL released state, i.e. the most
+# common path of all (PR #787 review, round 3). --check stays read-only.
+reconcile_external_state() {
+  [ "$CHECK_ONLY" != true ] || return 0
+  [ "$DRY_RUN" = false ] || return 0
+  if [ -d "$TOUCHSTONE_ROOT/skills" ]; then
+    touchstone_install_skills "$TOUCHSTONE_ROOT" || true
+    touchstone_uninstall_legacy_project_skills "$PROJECT_DIR" || true
+  fi
+  touchstone_install_hooks "$PROJECT_DIR" || true
+}
+
 if [ "$OLD_SHA" = "$CURRENT_SHA" ]; then
   echo "==> Already up to date."
+  reconcile_external_state
   exit 0
 fi
 
 if managed_content_is_current; then
   echo "==> Already up to date."
   echo "    Stamp identity differs ($OLD_SHA vs $CURRENT_SHA), but every managed file matches; nothing to update."
-  # User-scoped skills and git hooks live OUTSIDE the project tree, so the
-  # content probe says nothing about them — the identity-mismatch path used
-  # to reach their reconciliation and this early exit must too, or a deleted
-  # skills bundle / missing hook silently stays broken behind "up to date"
-  # (PR #780 review). --check stays read-only.
-  if [ "$CHECK_ONLY" != true ] && [ "$DRY_RUN" = false ]; then
-    if [ -d "$TOUCHSTONE_ROOT/skills" ]; then
-      touchstone_install_skills "$TOUCHSTONE_ROOT" || true
-      touchstone_uninstall_legacy_project_skills "$PROJECT_DIR" || true
-    fi
-    touchstone_install_hooks "$PROJECT_DIR" || true
-  fi
+  reconcile_external_state
   exit 0
 fi
 
@@ -1166,9 +1171,22 @@ echo "      diff $TOUCHSTONE_ROOT/templates/touchstone-review.toml ./.touchstone
 # Positive GitHub evidence for the update branch's PR state, shared by both
 # ship paths so identical real states never classify differently.
 current_update_pr_state() {
+  local pr_json pr_state pr_head local_head
   command -v gh >/dev/null 2>&1 || return 0
-  (cd "$PROJECT_DIR" && gh pr view "$UPDATE_BRANCH" --json state 2>/dev/null || true) \
-    | sed -nE 's/.*"state"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -1
+  pr_json="$(cd "$PROJECT_DIR" && gh pr view "$UPDATE_BRANCH" --json state,headRefOid 2>/dev/null || true)"
+  pr_state="$(printf '%s\n' "$pr_json" | sed -nE 's/.*"state"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -1)"
+  pr_head="$(printf '%s\n' "$pr_json" | sed -nE 's/.*"headRefOid"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -1)"
+  [ -n "$pr_state" ] || return 0
+  # The update-branch name is deterministic, so another clone or an earlier
+  # run can leave an OPEN PR pointing at a DIFFERENT head. Claiming this
+  # update is armed on that evidence reports someone else's PR as ours
+  # (PR #787 review, round 3). Positive evidence means same branch AND same
+  # head; anything else is not evidence about this update.
+  local_head="$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "$pr_head" ] && [ -n "$local_head" ] && [ "$pr_head" != "$local_head" ]; then
+    return 0
+  fi
+  printf '%s\n' "$pr_state"
 }
 
 manual_ship_command() {
@@ -1197,8 +1215,17 @@ update_commit_scope_violations() {
       tr -d '\r' <"$PROJECT_DIR/.touchstone-manifest"
     fi
     printf '%s\n' "${SCOPE_CREATED_SLOTS[@]:-}"
+    # A retirement deletes a tracked managed file and drops it from the
+    # regenerated manifest, so the manifest alone cannot vouch for it — the
+    # legitimate deletion would read as foreign content and refuse every
+    # auto-merge (PR #787 review, round 3). Today's cortex-pr-merged-hook
+    # and lib/review-comment.sh retirements hit this on real syncs.
+    printf '%s\n' "${RETIRED_MANAGED_PATHS[@]:-}"
   } >"$scope_tmp"
-  git -C "$PROJECT_DIR" diff --name-only "$ORIGINAL_HEAD" HEAD \
+  # --no-renames: rename detection folds "foreign.txt -> scripts/claim-issue.sh"
+  # into the destination path alone, hiding the foreign source from the guard
+  # (PR #787 review, round 3 — demonstrated with R100 in --name-status).
+  git -C "$PROJECT_DIR" diff --no-renames --name-only "$ORIGINAL_HEAD" HEAD \
     | while IFS= read -r path; do
       [ -n "$path" ] || continue
       allowed=false
@@ -1283,12 +1310,13 @@ if [ "$DRY_RUN" = false ]; then
     # post-creation error) — that is ARMED, not stuck, and conflating the
     # two made 'sync failed' reporting dishonest. Positive evidence only:
     # query GitHub for the update branch's PR state.
-    SHIP_PR_STATE=""
+    # Same head-binding rule as the scope path: a deterministic branch name
+    # can carry another clone's PR (PR #787 review, round 3).
+    SHIP_PR_STATE="$(current_update_pr_state)"
     SHIP_PR_URL=""
-    if command -v gh >/dev/null 2>&1; then
-      SHIP_PR_JSON="$(cd "$PROJECT_DIR" && gh pr view "$UPDATE_BRANCH" --json state,url 2>/dev/null || true)"
-      SHIP_PR_STATE="$(printf '%s\n' "$SHIP_PR_JSON" | sed -nE 's/.*"state"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -1)"
-      SHIP_PR_URL="$(printf '%s\n' "$SHIP_PR_JSON" | sed -nE 's/.*"url"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -1)"
+    if [ -n "$SHIP_PR_STATE" ] && command -v gh >/dev/null 2>&1; then
+      SHIP_PR_URL="$(cd "$PROJECT_DIR" && gh pr view "$UPDATE_BRANCH" --json url 2>/dev/null || true \
+        | sed -nE 's/.*"url"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' | head -1)"
     fi
     if [ "$SHIP_PR_STATE" = "MERGED" ]; then
       # The merge itself landed; open-pr.sh failed on a follow-up step.
