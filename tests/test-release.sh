@@ -9,6 +9,11 @@
 #      not the release-branch head, and never a direct push to main.
 #   3. A stalled release PR fails closed: no tag, no release, resume
 #      commands named.
+#   4. --finalize run from a worktree that cannot check out main still
+#      succeeds: detach fallback, no post-publication failure.
+#   5. An existing draft GitHub release is published (drafts never emit
+#      release.published), not reported as already complete.
+#   6. An already-published release makes a rerun a no-op.
 #
 set -euo pipefail
 
@@ -33,7 +38,14 @@ case "${1:-} ${2:-}" in
     fi
     exit 1
     ;;
-  "release view") exit 1 ;;
+  "release view")
+    case "${FAKE_GH_RELEASE_STATE:-absent}" in
+      draft) printf 'true\n' && exit 0 ;;
+      published) printf 'false\n' && exit 0 ;;
+    esac
+    exit 1
+    ;;
+  "release edit") exit 0 ;;
   "release create") exit 0 ;;
 esac
 exit 1
@@ -101,6 +113,20 @@ run_release() {
     # shellcheck source=../lib/release.sh
     source "$REPO_ROOT/lib/release.sh"
     touchstone_release patch
+  ) >"$OUT" 2>&1
+  RELEASE_STATUS=$?
+  set -e
+}
+
+run_finalize() {
+  local root="$1" version="$2"
+  set +e
+  (
+    export TOUCHSTONE_ROOT="$root"
+    export PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
+    # shellcheck source=../lib/release.sh
+    source "$REPO_ROOT/lib/release.sh"
+    touchstone_release_finalize "$version"
   ) >"$OUT" 2>&1
   RELEASE_STATUS=$?
   set -e
@@ -293,6 +319,131 @@ if [ "$(git -C "$PROJECT" branch --show-current)" != "release/v1.2.4" ]; then
 fi
 
 echo "PASS: stalled release PR fails closed — no tag, no release, resume commands named"
+
+# --- Scenario 4: --finalize from a worktree that cannot own main ------------
+# main stays checked out in the primary working copy; finalize runs from a
+# linked worktree on the release branch. The tag and GitHub release are
+# published before the local-main cleanup, so an impossible
+# `git checkout main` here must not turn a completed release into a failure.
+
+setup_project "$TEST_DIR/wt-finalize"
+export FAKE_GH_AUTH_STATUS_RC=0
+
+# Manufacture the merged release PR: bump on the release branch, then let
+# the fake open-pr.sh simulate the squash-merge onto origin/main.
+git -C "$PROJECT" checkout -q -b release/v1.2.4
+printf '1.2.4\n' >"$PROJECT/VERSION"
+printf '1.2.4\n' >"$PROJECT/.touchstone-version"
+git -C "$PROJECT" add VERSION .touchstone-version
+git -C "$PROJECT" commit -q -m "v1.2.4"
+(cd "$PROJECT" && FAKE_OPENPR_MODE=merge bash scripts/open-pr.sh --auto-merge) >/dev/null
+
+git -C "$PROJECT" checkout -q main
+WT="$TEST_DIR/wt-finalize/wt"
+git -C "$PROJECT" worktree add -q "$WT" release/v1.2.4
+run_finalize "$WT" v1.2.4
+
+MERGE_SHA="$(cat "$FAKE_MERGE_SHA_FILE")"
+
+if [ "$RELEASE_STATUS" -ne 0 ]; then
+  echo "FAIL: finalize must succeed when main is checked out in another worktree" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+
+if [ "$(git --git-dir="$ORIGIN" rev-parse 'refs/tags/v1.2.4^{commit}' 2>/dev/null)" != "$MERGE_SHA" ]; then
+  echo "FAIL: worktree finalize must still push the tag at the squash-merged main commit" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+
+if ! grep -q '^release create v1.2.4 ' "$FAKE_GH_LOG"; then
+  echo "FAIL: worktree finalize must create the GitHub release" >&2
+  cat "$FAKE_GH_LOG" >&2
+  exit 1
+fi
+
+if [ "$(git -C "$PROJECT" branch --show-current)" != "main" ]; then
+  echo "FAIL: finalize must not steal main from the worktree that owns it" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+
+if [ -n "$(git -C "$WT" branch --show-current)" ] \
+  || [ "$(git -C "$WT" rev-parse HEAD)" != "$MERGE_SHA" ]; then
+  echo "FAIL: the release worktree should end detached at the released commit" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+
+if git -C "$PROJECT" show-ref --verify --quiet refs/heads/release/v1.2.4; then
+  echo "FAIL: local release branch should be deleted after worktree finalize" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+
+if ! grep -qi 'another worktree' "$OUT"; then
+  echo "FAIL: finalize should say why it left this worktree detached" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+
+echo "PASS: --finalize completes from a worktree that cannot own main (detach fallback)"
+
+# --- Scenario 5: an existing draft release gets published, not skipped ------
+# A draft release never emits release.published, so treating mere existence
+# as success would leave the Homebrew tap stale.
+
+setup_project "$TEST_DIR/draft-release"
+export FAKE_GH_AUTH_STATUS_RC=0
+export FAKE_OPENPR_MODE=merge
+export FAKE_GH_RELEASE_STATE=draft
+run_release
+unset FAKE_OPENPR_MODE FAKE_GH_RELEASE_STATE
+
+if [ "$RELEASE_STATUS" -ne 0 ]; then
+  echo "FAIL: release with an existing draft must succeed by publishing it" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+
+if ! grep -Eq '^release edit v1.2.4 .*--draft=false' "$FAKE_GH_LOG"; then
+  echo "FAIL: finalize must publish the existing draft (drafts never fire release.published)" >&2
+  cat "$FAKE_GH_LOG" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+
+if grep -q '^release create ' "$FAKE_GH_LOG"; then
+  echo "FAIL: finalize must not create a second release when a draft exists" >&2
+  cat "$FAKE_GH_LOG" >&2
+  exit 1
+fi
+
+echo "PASS: an existing draft GitHub release is published so the tap bump workflow fires"
+
+# --- Scenario 6: an already-published release makes a rerun a no-op ---------
+
+setup_project "$TEST_DIR/published-release"
+export FAKE_GH_AUTH_STATUS_RC=0
+export FAKE_OPENPR_MODE=merge
+export FAKE_GH_RELEASE_STATE=published
+run_release
+unset FAKE_OPENPR_MODE FAKE_GH_RELEASE_STATE
+
+if [ "$RELEASE_STATUS" -ne 0 ]; then
+  echo "FAIL: rerun against an already-published release must succeed" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+
+if grep -Eq '^release (create|edit) ' "$FAKE_GH_LOG"; then
+  echo "FAIL: an already-published release must be left untouched on rerun" >&2
+  cat "$FAKE_GH_LOG" >&2
+  exit 1
+fi
+
+echo "PASS: an already-published release is left untouched on rerun"
 
 # --- Static: the direct-push-to-main invocation is gone ---------------------
 

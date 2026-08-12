@@ -210,8 +210,17 @@ touchstone_release_finalize() {
   # reusable workflow in autumngarage/autumn-garage — the tap formula's
   # `url` + `sha256` get rewritten and committed to the tap's `main`
   # automatically (no local clone, no manual SHA computation).
-  if gh release view "$tag" --repo "$TOUCHSTONE_RELEASE_REPO" >/dev/null 2>&1; then
-    tk_ok "GitHub release ${tag} already exists"
+  # Mere existence of a release object is not success: a draft never emits
+  # release.published, so the tap bump would silently not run — publish it.
+  local release_is_draft
+  if release_is_draft="$(gh release view "$tag" --repo "$TOUCHSTONE_RELEASE_REPO" \
+    --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+    if [ "$release_is_draft" = "true" ]; then
+      gh release edit "$tag" --repo "$TOUCHSTONE_RELEASE_REPO" --draft=false
+      tk_ok "Published existing draft GitHub release ${tag}"
+    else
+      tk_ok "GitHub release ${tag} already exists"
+    fi
   else
     gh release create "$tag" \
       --repo "$TOUCHSTONE_RELEASE_REPO" \
@@ -220,13 +229,24 @@ touchstone_release_finalize() {
     tk_ok "GitHub release created"
   fi
 
-  # Leave the operator on an up-to-date main. The local release branch is
-  # merged; the remote one is retained by merge-pr.sh for stacked-PR safety
-  # and cleaned up later by cleanup-branches.sh.
-  git -C "$TOUCHSTONE_ROOT" checkout -q main
-  git -C "$TOUCHSTONE_ROOT" pull --rebase -q origin main
+  # Leave the operator on an up-to-date main when this working copy can own
+  # it. main may be checked out in another worktree (e.g. --finalize run
+  # from a release worktree); the tag and release are already published, so
+  # local cleanup must never fail the release — fall back to detaching at
+  # the released commit and say what was skipped.
+  if git -C "$TOUCHSTONE_ROOT" checkout -q main 2>/dev/null; then
+    git -C "$TOUCHSTONE_ROOT" pull --rebase -q origin main
+  elif git -C "$TOUCHSTONE_ROOT" checkout -q --detach "$merge_sha" 2>/dev/null; then
+    tk_dim "main is checked out in another worktree; left this one detached at ${tag}"
+    tk_dim "  Sync it where it lives: git checkout main && git pull --rebase origin main"
+  else
+    tk_dim "Could not switch this worktree off ${release_branch}; sync main manually."
+  fi
+  # The local release branch is merged; the remote one is retained by
+  # merge-pr.sh for stacked-PR safety and cleaned up by cleanup-branches.sh.
   if git -C "$TOUCHSTONE_ROOT" show-ref --verify --quiet "refs/heads/${release_branch}"; then
-    git -C "$TOUCHSTONE_ROOT" branch -q -D "$release_branch"
+    git -C "$TOUCHSTONE_ROOT" branch -q -D "$release_branch" 2>/dev/null \
+      || tk_dim "Local branch ${release_branch} is still checked out in another worktree; delete it there."
   fi
 
   echo ""
