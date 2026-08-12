@@ -8,13 +8,14 @@
 # TEXT — greps plus awk passes over the YAML — plus parity tests for the
 # PURE fragments the workflow marks for extraction between
 # ">>> parity-tested:" fences (parse_trusted_review_authors,
-# record_untrusted_creator, the untrusted_review_authors pair, the
-# evidence_row_filters jq constants, and the reviews_channel_loop), which
-# are extracted verbatim from the workflow text and executed against
-# fixtures — the parser with lib/toml.sh itself as the oracle, the row
-# filters with real jq. The last two sections additionally render the
-# failure summary from the workflow's own verbatim coords/footer/summary
-# lines to assert what the operator actually reads. Nothing here executes
+# record_untrusted_creator, the untrusted_review_authors pair,
+# render_bounded_labels, the evidence_row_filters jq constants, and the
+# reviews_channel_loop), which are extracted verbatim from the workflow text
+# and executed against fixtures — the parser with lib/toml.sh itself as the
+# oracle, the row filters with real jq. The last four sections additionally
+# render the failure summary from the workflow's own verbatim
+# coords/footer/summary lines to assert what the operator actually reads,
+# including its total size under a hostile input. Nothing here executes
 # the workflow's API-driven bash, stubs its gh calls, or simulates GitHub
 # events; the workflow's dynamic behavior — check-run publication and
 # verdict correctness — is proven by its live runs in CI on real PRs, not
@@ -37,6 +38,13 @@
 #     "review-binding" must be the one it POSTs — a job or step of the same
 #     name would publish a second, always-green run racing for what branch
 #     protection reads;
+#   - the synthetic `<...>` placeholders it substitutes for values GitHub
+#     could not supply must stay OUTSIDE the trust namespace, whatever the
+#     config-supplied allowlist happens to contain;
+#   - the published summary must stay under GitHub's size limit for ANY input
+#     the API can return: it is a single gh api argument, several of its
+#     inputs are attacker-controlled on a public repo, and a rejected PATCH
+#     leaves this required check pending forever;
 #   - it must reference no secret beyond the built-in GITHUB_TOKEN.
 #
 # All grep assertions scan the workflow with comment lines stripped: the
@@ -506,6 +514,48 @@ else
   fi
 fi
 
+# render_bounded_labels is extracted (and its cap read out of the workflow
+# env) HERE rather than in its own section below, because
+# untrusted_review_authors_reason calls it: every summary the later sections
+# render needs it defined first. Its behavioral regression lives in the
+# "Rendered label lists are bounded" section at the end of this file; this
+# block only obtains it and guards the extraction.
+BOUNDED_SNIPPET="$(extract_marked '>>> parity-tested: render_bounded_labels' '<<< parity-tested: render_bounded_labels')"
+# Read from the workflow env, never hardcoded here: the boundary cases below
+# must exercise the number CI actually ships.
+MAX_RENDERED_LABELS="$(awk -F'"' '/^      MAX_RENDERED_LABELS:/ { print $2; exit }' "$WORKFLOW")"
+export MAX_RENDERED_LABELS
+BOUNDED_OK=true
+if [ -z "$BOUNDED_SNIPPET" ]; then
+  fail "could not extract render_bounded_labels between its parity markers (extraction guard — a vacuous pass is a fail)"
+  BOUNDED_OK=false
+else
+  printf '%s\n' "$BOUNDED_SNIPPET" >"$TMP_DIR/bounded.sh"
+  if ! grep -q -F 'render_bounded_labels() {' "$TMP_DIR/bounded.sh"; then
+    fail "the render_bounded_labels fence does not define render_bounded_labels() (extraction guard — a vacuous pass is a fail)"
+    BOUNDED_OK=false
+  fi
+  if ! grep -q -F 'MAX_RENDERED_LABELS' "$TMP_DIR/bounded.sh"; then
+    fail "render_bounded_labels must derive its cap from \$MAX_RENDERED_LABELS, not a literal — an inline number is a magic number and cannot be re-derived from the domain"
+    BOUNDED_OK=false
+  fi
+fi
+case "$MAX_RENDERED_LABELS" in
+  '' | *[!0-9]*)
+    fail "could not read a numeric MAX_RENDERED_LABELS out of the workflow env (got '$MAX_RENDERED_LABELS') — the cap must be a named workflow constant (extraction guard — a vacuous pass is a fail)"
+    BOUNDED_OK=false
+    ;;
+  0)
+    fail "MAX_RENDERED_LABELS must be positive; got '$MAX_RENDERED_LABELS'"
+    BOUNDED_OK=false
+    ;;
+esac
+if [ "$BOUNDED_OK" = true ]; then
+  # shellcheck source=/dev/null
+  . "$TMP_DIR/bounded.sh"
+  ok "render_bounded_labels extracted; cap MAX_RENDERED_LABELS=$MAX_RENDERED_LABELS read from the workflow env"
+fi
+
 # ---------------------------------------------------------------------------
 # Regression, issue #804: the untrusted-review failure must name the authors
 # of the reviews FOUND at this head, never the trusted allowlist. Observed on
@@ -905,6 +955,381 @@ EOF
     ok "submitted_at stays empty-able: it is the last field, and emptiness is what rejects an unsubmitted PENDING review"
   else
     fail "REVIEWS_ROW_JQ must leave submitted_at as '(.submitted_at // \"\")' — it is last (no shift possible) and '[ -n \"\$submitted_at\" ]' is what keeps a PENDING review out of the evidence list"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Regression, PR #808 review round 2 (P1): a synthetic placeholder must never
+# be a trusted author, even when the allowlist literally contains it.
+#
+# Round 1 made a deleted account's review parse as the literal <unknown> and
+# be NAMED as untrusted evidence. But author_is_trusted compared the candidate
+# against TRUSTED_AUTHORS_EFFECTIVE by plain string equality, and that list is
+# parsed from .touchstone-review.toml, whose parser accepts arbitrary entries.
+# A config containing `<unknown>` therefore made a formal review — or a
+# matching result comment, which passes through the same author_is_trusted
+# gate — from a DELETED account into trusted evidence, turning this REQUIRED
+# check green for a review GitHub can no longer attribute to anyone.
+#
+# The fix rejects the whole `<...>` namespace (impossible in a GitHub login)
+# inside author_is_trusted, BEFORE the comparison — not by filtering the
+# config at load time, which the next config or the next sentinel would route
+# around. The fixture below is the one the finding names: an allowlist that
+# explicitly contains <unknown>.
+#
+# It must ALSO remain true that the deleted-author review is counted and named
+# as UNTRUSTED evidence. Dropping the row instead of rejecting the sentinel
+# would pass the security assertion while silently undoing #804, so the
+# round-1 behaviour is re-asserted here under the hostile allowlist.
+# ---------------------------------------------------------------------------
+echo "==> A synthetic placeholder is never a trusted author, even when allowlisted (PR #808 review, round 2)"
+
+SENTINEL_OK=true
+# Extraction guards, independent of the section above: a fence this section
+# cannot find must FAIL here, not be swept into another section's gate.
+sentinel_guard() {
+  local label="$1" value="$2" needle="$3"
+  if [ -z "$value" ]; then
+    fail "could not extract the $label for the sentinel-trust regression (extraction guard — a vacuous pass is a fail)"
+    SENTINEL_OK=false
+    return 0
+  fi
+  printf '%s\n' "$value" >"$TMP_DIR/sentinel-guard.txt"
+  if ! grep -q -F "$needle" "$TMP_DIR/sentinel-guard.txt"; then
+    fail "the $label extraction does not contain '$needle' (extraction guard — a vacuous pass is a fail)"
+    SENTINEL_OK=false
+  fi
+}
+sentinel_guard "author_is_trusted body" "$TRUST_BODY" 'author_is_trusted() {'
+sentinel_guard "evidence_row_filters fence" "$FILTERS_SNIPPET" 'REVIEWS_ROW_JQ='
+sentinel_guard "reviews_channel_loop fence" "$LOOP_SNIPPET" 'record_untrusted_review_author "$author"'
+sentinel_guard "untrusted_review_authors fence" "$UNTRUSTED_SNIPPET" 'record_untrusted_review_author() {'
+if [ "$BOUNDED_OK" != true ]; then
+  fail "render_bounded_labels is unavailable, so the sentinel-trust summary cannot be rendered as CI would render it"
+  SENTINEL_OK=false
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  fail "jq not found; the deleted-author row cannot be produced from the workflow's own filter"
+  SENTINEL_OK=false
+fi
+
+if [ "$SENTINEL_OK" = true ]; then
+  printf '%s\n%s\n%s\n' "$TRUST_BODY" "$FILTERS_SNIPPET" "$UNTRUSTED_SNIPPET" \
+    >"$TMP_DIR/sentinel-defs.sh"
+  # shellcheck source=/dev/null
+  . "$TMP_DIR/sentinel-defs.sh"
+  printf '%s\n' "$LOOP_SNIPPET" >"$TMP_DIR/sentinel-reviews-loop.sh"
+
+  # THE FIXTURE THE FINDING NAMES: the placeholder is ON the allowlist. <none>
+  # rides along because the same substitution fills the commit-oid and state
+  # slots (and statuses_tsv's creator slot), so the guard must cover the
+  # NAMESPACE rather than the single literal that happens to be reachable
+  # today.
+  SENTINEL_ALLOWLIST="chatgpt-codex-connector,<unknown>,<none>"
+  TRUSTED_AUTHORS_EFFECTIVE="$SENTINEL_ALLOWLIST"
+
+  if author_is_trusted "<unknown>"; then
+    fail "an allowlist containing '<unknown>' must NOT make the placeholder a trusted author: a DELETED account's review would become trusted evidence and turn review-binding green for a review GitHub can no longer attribute to anyone (allowlist: '$SENTINEL_ALLOWLIST')"
+  else
+    ok "'<unknown>' is not trusted even when the allowlist literally contains it"
+  fi
+  if author_is_trusted "<none>"; then
+    fail "'<none>' must not be trusted either — the guard must reject the synthetic '<...>' namespace, not just the one '<unknown>' literal (allowlist: '$SENTINEL_ALLOWLIST')"
+  else
+    ok "'<none>' is not trusted either — the whole '<...>' namespace is outside the trust namespace"
+  fi
+  if author_is_trusted ""; then
+    fail "an empty candidate must never be trusted — a GitHub login is never empty"
+  else
+    ok "an empty candidate is not trusted"
+  fi
+  # CONTROL. Without this, the mutation "author_is_trusted always returns 1"
+  # would satisfy every assertion above while disabling the check entirely.
+  if author_is_trusted "chatgpt-codex-connector"; then
+    ok "a real login on the same allowlist is still trusted (the guard rejects the namespace, not everything)"
+  else
+    fail "a real allowlisted login must still be trusted; the sentinel guard must reject only the synthetic '<...>' namespace"
+  fi
+
+  # The workflow's own loop, verbatim, over a real deleted-author row produced
+  # by the workflow's own jq filter — under the hostile allowlist.
+  SENTINEL_HEAD="2258adf8b068d94ce873ff15c4563696f6a676e6"
+  cat >"$TMP_DIR/sentinel-reviews.json" <<EOF
+[
+  {
+    "user": null,
+    "commit_id": "$SENTINEL_HEAD",
+    "state": "COMMENTED",
+    "submitted_at": "2026-08-12T10:00:00Z"
+  }
+]
+EOF
+  # $REVIEWS_ROW_JQ is assigned by the sourced fence.
+  # shellcheck disable=SC2154
+  jq -r "$REVIEWS_ROW_JQ" "$TMP_DIR/sentinel-reviews.json" \
+    >"$TMP_DIR/sentinel-reviews.tsv"
+  # The loop's INPUTS, read by the sourced workflow lines rather than by this
+  # file, so shellcheck cannot see the use.
+  # shellcheck disable=SC2034
+  {
+    head_sha="$SENTINEL_HEAD"
+    evidence=""
+    untrusted_reviews=0
+    untrusted_review_authors=""
+    reviews_tsv="$(cat "$TMP_DIR/sentinel-reviews.tsv")"
+  }
+  # shellcheck source=/dev/null
+  . "$TMP_DIR/sentinel-reviews-loop.sh"
+  if [ -z "$evidence" ]; then
+    ok "a deleted-author review is not trusted evidence even with '<unknown>' allowlisted"
+  else
+    fail "SECURITY: with '<unknown>' on the allowlist a DELETED account's review entered the TRUSTED evidence list ('$evidence') — review-binding would publish success for a review GitHub can no longer attribute to anyone"
+  fi
+  if [ "$untrusted_reviews" -eq 1 ]; then
+    ok "the deleted-author review is still COUNTED as untrusted evidence (untrusted_reviews=1)"
+  else
+    fail "the deleted-author review must still be COUNTED as untrusted evidence under an allowlist containing '<unknown>'; untrusted_reviews=$untrusted_reviews — rejecting the sentinel must not drop the row, which would silently undo #804"
+  fi
+  if [ "$untrusted_review_authors" = "<unknown>" ]; then
+    ok "the deleted-author review is still NAMED (untrusted_review_authors='<unknown>')"
+  else
+    fail "expected untrusted_review_authors='<unknown>' under an allowlist containing '<unknown>'; got '$untrusted_review_authors' — the round-1 naming behaviour must survive the sentinel rejection"
+  fi
+
+  # The operator-visible clause, assembled from the workflow's own lines.
+  if [ "$RENDER_EXTRACTION_OK" = true ]; then
+    # Read by the sourced coords/summary workflow lines, not by this file.
+    # shellcheck disable=SC2034
+    {
+      base_ref="main"
+      base_oid="f7722cc9d0e1b2a3c4d5e6f708192a3b4c5d6e7f"
+      TRUSTED_AUTHORS_SOURCE=".touchstone-review.toml @ base f7722cc9"
+      reasons=""
+    }
+    printf '%s\n' "$ADD_REASON_BODY" >"$TMP_DIR/sentinel-reason.sh"
+    # shellcheck source=/dev/null
+    . "$TMP_DIR/sentinel-reason.sh"
+    add_reason "$(untrusted_review_authors_reason \
+      "$head_sha" "$untrusted_reviews" "$untrusted_review_authors")"
+    printf '%s\n%s\n%s\n' "$COORDS_LINE" "$FOOTER_LINE" "$SUMMARY_LINE" \
+      >"$TMP_DIR/sentinel-render.sh"
+    # shellcheck source=/dev/null
+    . "$TMP_DIR/sentinel-render.sh"
+    # $summary is assigned by the sourced workflow line above.
+    # shellcheck disable=SC2154
+    printf '%s\n' "$summary" >"$TMP_DIR/sentinel-summary.txt"
+    grep -F 'is from untrusted author(s)' "$TMP_DIR/sentinel-summary.txt" \
+      >"$TMP_DIR/sentinel-clause.txt" || true
+    SENTINEL_CLAUSE_LINES="$(wc -l <"$TMP_DIR/sentinel-clause.txt" | tr -d ' ')"
+    if [ "$SENTINEL_CLAUSE_LINES" -ne 1 ]; then
+      fail "expected exactly one untrusted-author clause for the allowlisted-sentinel case; found $SENTINEL_CLAUSE_LINES (anchor guard — a vacuous pass is a fail)"
+    else
+      # Count AND name in ONE assertion: untrusted_review_authors_reason
+      # renders `${rendered:-<unknown>}`, so a clause reading "<unknown>"
+      # alone is ALSO what an EMPTY author list prints — i.e. what a "just
+      # drop the row" fix would produce. Only "1 review(s) from `<unknown>`"
+      # is unique to the intended path.
+      if grep -q -F '1 review(s) from `<unknown>`' "$TMP_DIR/sentinel-clause.txt"; then
+        ok "the clause still counts the deleted-author review AND names it <unknown> under the hostile allowlist"
+      else
+        fail "the untrusted-author clause must read '1 review(s) from \`<unknown>\`' — '0 review(s) from \`<unknown>\`' is the empty-list FALLBACK firing, which is what dropping the row instead of rejecting the sentinel would produce; got: $(cat "$TMP_DIR/sentinel-clause.txt")"
+      fi
+      # Standing proof that the clause anchor is load-bearing under THIS
+      # fixture: the allowlist itself contains <unknown>, so the placeholder
+      # appears twice in the summary — once in the clause, once in the
+      # coordinates echo. A whole-summary grep would therefore pass even if
+      # the clause had gone empty, which is precisely why every content
+      # assertion above reads the isolated clause file.
+      SENTINEL_UNKNOWN_HITS="$(grep -c -F '<unknown>' "$TMP_DIR/sentinel-summary.txt" || true)"
+      if [ "$SENTINEL_UNKNOWN_HITS" -eq 2 ]; then
+        ok "'<unknown>' appears on exactly 2 summary lines (the clause and the allowlist echo), so the clause assertion is anchored, not vacuous"
+      else
+        fail "expected '<unknown>' on exactly 2 summary lines (the untrusted clause and the coordinates allowlist echo); found $SENTINEL_UNKNOWN_HITS"
+      fi
+      if grep -q -F -- "- trusted authors: \`$SENTINEL_ALLOWLIST\`" "$TMP_DIR/sentinel-summary.txt"; then
+        ok "the coordinates block echoes the configured allowlist verbatim, sentinel entry included — the operator can see WHY it was ignored"
+      else
+        fail "the coordinates block must echo the configured allowlist verbatim (expected '- trusted authors: \`$SENTINEL_ALLOWLIST\`')"
+      fi
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Regression, PR #808 review round 2 (P2): every variable-length list rendered
+# into the check-run summary is bounded.
+#
+# The summary reaches GitHub as ONE `-f output[summary]=...` argument. GitHub
+# rejects a check-run summary above 65535 characters (and a Linux host caps a
+# single argv entry at 128 KiB), so an unbounded list of distinct untrusted
+# review authors — attacker-controlled on a public repo, where anyone may
+# submit a review — fails the final PATCH, leaves the pending run
+# uncompleted, and holds this REQUIRED check at PENDING forever: a merge-gate
+# denial of service whose input size the attacker chooses.
+#
+# Both directions are asserted. At the cap every label renders verbatim (a
+# truncation-happy fix that hid real authors would be its own defect); past
+# it the render is bounded AND the remainder count is exact — a test that
+# only checked "truncation happened" would not prove the count is right.
+# ---------------------------------------------------------------------------
+echo "==> Rendered label lists are bounded (PR #808 review, round 2)"
+
+# GitHub's documented ceiling for the checks API output.summary field. The
+# assembled summary must stay under it for ANY input the API can return.
+GITHUB_CHECK_SUMMARY_MAX=65535
+
+# Wiring: each variable-length list the summary prints must go through the
+# helper, or the fence is dead text while production keeps its raw render.
+if grep -q -F -- 'render_bounded_labels "$authors" ","' "$STRIPPED_FILE"; then
+  ok "the untrusted-review-author clause renders through render_bounded_labels"
+else
+  fail "untrusted_review_authors_reason must render its author list through render_bounded_labels — that list is one login per untrusted reviewer and is attacker-controlled on a public PR"
+fi
+if grep -q -F -- 'render_bounded_labels "$untrusted_request_creators" ","' "$STRIPPED_FILE"; then
+  ok "the untrusted-request-creator reason renders through render_bounded_labels"
+else
+  fail "the untrusted-request-creator reason must render through render_bounded_labels — it is the same accumulator shape feeding the same summary argument"
+fi
+if grep -q -F -- 'render_bounded_labels "$co_head_prs" " "' "$STRIPPED_FILE"; then
+  ok "the shared-head PR list renders through render_bounded_labels"
+else
+  fail "the shared-head reason must render \$co_head_prs through render_bounded_labels — anyone can open a PR at a public repo's head, so its length is attacker-controlled too"
+fi
+if grep -q -F -- 'render_bounded_labels "$bound_bases" ","' "$STRIPPED_FILE"; then
+  ok "the conflicting-base-binding list renders through render_bounded_labels"
+else
+  fail "the conflicting-base-bindings reason must render \$bound_bases through render_bounded_labels"
+fi
+# Mutation guards: the raw renders these replaced must be gone, byte-exact.
+if grep -q -F -- 'open PRs ($co_head_prs)' "$STRIPPED_FILE"; then
+  fail "the shared-head reason still interpolates \$co_head_prs raw — an unbounded list copied verbatim into output[summary]"
+else
+  ok "no raw \$co_head_prs interpolation remains"
+fi
+if grep -q -F -- 'push access (\`$untrusted_request_creators\`)' "$STRIPPED_FILE"; then
+  fail "the untrusted-creator reason still interpolates \$untrusted_request_creators raw"
+else
+  ok "no raw \$untrusted_request_creators interpolation remains"
+fi
+if grep -q -F -- ': \`$bound_bases\` (current base' "$STRIPPED_FILE"; then
+  fail "the conflicting-base-bindings reason still interpolates \$bound_bases raw"
+else
+  ok "no raw \$bound_bases interpolation remains"
+fi
+
+if [ "$BOUNDED_OK" = true ]; then
+  # Labels are generated, never hardcoded, so the cases track whatever
+  # MAX_RENDERED_LABELS the workflow ships.
+  make_labels() {
+    seq 1 "$1" | sed "s/^/$2/" | paste -sd"$3" -
+  }
+
+  # (a) AT the cap: every label renders verbatim, no marker.
+  AT_CAP_INPUT="$(make_labels "$MAX_RENDERED_LABELS" author ,)"
+  AT_CAP_OUT="$(render_bounded_labels "$AT_CAP_INPUT" ",")"
+  if [ "$AT_CAP_OUT" = "$AT_CAP_INPUT" ]; then
+    ok "at the cap ($MAX_RENDERED_LABELS labels) every name renders verbatim, with no remainder marker"
+  else
+    fail "a list of exactly MAX_RENDERED_LABELS=$MAX_RENDERED_LABELS labels must render unchanged — truncating at or below the cap hides authors the operator needs. Got: '$AT_CAP_OUT'"
+  fi
+
+  # (b) OVER the cap: the first MAX_RENDERED_LABELS render, and the remainder
+  # is an exact count. The equality proves BOTH in one assertion.
+  OVER_EXTRA=7
+  OVER_INPUT="$(make_labels "$((MAX_RENDERED_LABELS + OVER_EXTRA))" author ,)"
+  OVER_OUT="$(render_bounded_labels "$OVER_INPUT" ",")"
+  OVER_EXPECTED="$AT_CAP_INPUT (+$OVER_EXTRA more)"
+  if [ "$OVER_OUT" = "$OVER_EXPECTED" ]; then
+    ok "over the cap the render is bounded to $MAX_RENDERED_LABELS labels and the remainder is exact: '(+$OVER_EXTRA more)'"
+  else
+    fail "expected '$OVER_EXPECTED'; got '$OVER_OUT' — past the cap the render must keep exactly MAX_RENDERED_LABELS labels AND report the exact remainder count"
+  fi
+  printf '%s\n' "$OVER_OUT" >"$TMP_DIR/over-cap.txt"
+  if grep -q -F "author$((MAX_RENDERED_LABELS + 1))" "$TMP_DIR/over-cap.txt"; then
+    fail "label $((MAX_RENDERED_LABELS + 1)) must not appear in a render capped at $MAX_RENDERED_LABELS"
+  else
+    ok "the first label past the cap is absent from the render"
+  fi
+
+  # (c) The space-separated shared-head PR list uses the same helper.
+  SPACE_EXTRA=3
+  SPACE_INPUT="$(make_labels "$((MAX_RENDERED_LABELS + SPACE_EXTRA))" '#' ' ')"
+  SPACE_OUT="$(render_bounded_labels "$SPACE_INPUT" " ")"
+  SPACE_EXPECTED="$(make_labels "$MAX_RENDERED_LABELS" '#' ' ') (+$SPACE_EXTRA more)"
+  if [ "$SPACE_OUT" = "$SPACE_EXPECTED" ]; then
+    ok "a space-separated list (the shared-head PR numbers) bounds on its own separator"
+  else
+    fail "expected '$SPACE_EXPECTED'; got '$SPACE_OUT' — the helper must honour the caller's separator"
+  fi
+
+  # (d) Degenerate inputs. Empty MUST stay empty: untrusted_review_authors_reason
+  # renders '${rendered:-<unknown>}', so a helper that returned "(+0 more)" or a
+  # stray separator for an empty list would disable that fallback.
+  EMPTY_OUT="$(render_bounded_labels "" ",")"
+  if [ -z "$EMPTY_OUT" ]; then
+    ok "an empty list renders empty (the reason clause's :-<unknown> fallback stays reachable)"
+  else
+    fail "an empty list must render as the empty string; got '$EMPTY_OUT'"
+  fi
+  SOLO_OUT="$(render_bounded_labels "henrymodisett" ",")"
+  if [ "$SOLO_OUT" = "henrymodisett" ]; then
+    ok "a single label renders unchanged"
+  else
+    fail "a single label must render unchanged; got '$SOLO_OUT'"
+  fi
+
+  # (e) End to end: a flood of distinct untrusted reviewers still produces a
+  # PUBLISHABLE summary. This is the failure the finding describes — the PATCH
+  # rejected, the pending run never completed, the required check stuck.
+  if [ "$RENDER_EXTRACTION_OK" = true ]; then
+    FLOOD_COUNT=5000
+    FLOOD_AUTHORS="$(make_labels "$FLOOD_COUNT" mallory-sockpuppet-account- ,)"
+    if [ "${#FLOOD_AUTHORS}" -gt "$GITHUB_CHECK_SUMMARY_MAX" ]; then
+      ok "the flood fixture is genuinely over the limit on its own (${#FLOOD_AUTHORS} chars > $GITHUB_CHECK_SUMMARY_MAX), so the bound below is doing real work"
+    else
+      fail "the flood fixture (${#FLOOD_AUTHORS} chars) does not exceed GitHub's $GITHUB_CHECK_SUMMARY_MAX-character summary limit — it cannot prove the unbounded render would fail the PATCH"
+    fi
+    # Read by the sourced coords/summary workflow lines, not by this file.
+    # shellcheck disable=SC2034
+    {
+      head_sha="2258adf8b068d94ce873ff15c4563696f6a676e6"
+      base_ref="main"
+      base_oid="f7722cc9d0e1b2a3c4d5e6f708192a3b4c5d6e7f"
+      TRUSTED_AUTHORS_EFFECTIVE="chatgpt-codex-connector,chatgpt-codex-connector[bot]"
+      TRUSTED_AUTHORS_SOURCE="workflow default"
+      reasons=""
+    }
+    # Sourced here rather than relying on an earlier section having run: a
+    # proof swept up in another section's gate is a vacuous proof.
+    printf '%s\n%s\n' "$UNTRUSTED_SNIPPET" "$ADD_REASON_BODY" \
+      >"$TMP_DIR/flood-defs.sh"
+    # shellcheck source=/dev/null
+    . "$TMP_DIR/flood-defs.sh"
+    add_reason "$(untrusted_review_authors_reason \
+      "$head_sha" "$FLOOD_COUNT" "$FLOOD_AUTHORS")"
+    printf '%s\n%s\n%s\n' "$COORDS_LINE" "$FOOTER_LINE" "$SUMMARY_LINE" \
+      >"$TMP_DIR/flood-render.sh"
+    # shellcheck source=/dev/null
+    . "$TMP_DIR/flood-render.sh"
+    # $summary is assigned by the sourced workflow line above.
+    # shellcheck disable=SC2154
+    printf '%s\n' "$summary" >"$TMP_DIR/flood-summary.txt"
+    if [ "${#summary}" -lt "$GITHUB_CHECK_SUMMARY_MAX" ]; then
+      ok "the assembled summary stays publishable under the flood (${#summary} chars < $GITHUB_CHECK_SUMMARY_MAX)"
+    else
+      fail "the assembled check-run summary is ${#summary} characters, at or over GitHub's $GITHUB_CHECK_SUMMARY_MAX-character output[summary] limit — the final PATCH would fail and the required check would stay PENDING forever"
+    fi
+    FLOOD_EXTRA="$((FLOOD_COUNT - MAX_RENDERED_LABELS))"
+    if grep -q -F "(+$FLOOD_EXTRA more)" "$TMP_DIR/flood-summary.txt"; then
+      ok "the summary reports the exact remainder: '(+$FLOOD_EXTRA more)' of $FLOOD_COUNT distinct authors"
+    else
+      fail "the summary must report the exact remainder '(+$FLOOD_EXTRA more)' — a bounded render that loses the count tells the operator less than the truth about how many untrusted authors were found"
+    fi
+    if grep -q -F 'mallory-sockpuppet-account-1,' "$TMP_DIR/flood-summary.txt"; then
+      ok "the first authors are still named (the bound truncates, it does not blank the list)"
+    else
+      fail "the bounded render must still NAME the first authors — replacing the whole list with a count would undo #804"
+    fi
   fi
 fi
 
