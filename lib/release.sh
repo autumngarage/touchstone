@@ -178,6 +178,20 @@ touchstone_release_finalize() {
     echo "  Refresh and rerun: git fetch origin && bin/touchstone release --finalize ${tag}" >&2
     return 1
   fi
+  # Invariant: this release has not been SUPERSEDED. The ancestor check
+  # accepts any historical merge commit, so finalizing a stalled older
+  # release after a newer one landed would publish the older tag and roll
+  # the Homebrew tap back for new installations (PR #784 review). Current
+  # origin/main must still carry exactly this version.
+  local main_version
+  main_version="$(git -C "$TOUCHSTONE_ROOT" show origin/main:VERSION 2>/dev/null | tr -d '[:space:]')"
+  if [ "$main_version" != "$new_version" ]; then
+    tk_fail "origin/main's VERSION is ${main_version:-unreadable}, not ${new_version}; this release is superseded."
+    echo "  A newer release landed after this one stalled. Do NOT finalize it:" >&2
+    echo "  publishing ${tag} now would dispatch the older tag to the tap bump." >&2
+    echo "  If the newer release is broken, roll forward with a new version instead." >&2
+    return 1
+  fi
   # Invariant: the merged commit carries exactly this version bump.
   local merged_version
   merged_version="$(git -C "$TOUCHSTONE_ROOT" show "${merge_sha}:VERSION" | tr -d '[:space:]')"

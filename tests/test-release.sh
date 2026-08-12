@@ -476,6 +476,43 @@ if ! grep -q 'Sync it manually' "$OUT"; then
 fi
 echo "PASS: dirty local main gets guidance, not a failed published release"
 
+# --- Scenario 8: a superseded release refuses to finalize -------------------
+# A stalled v1.2.4 must not publish after v1.2.5 landed on main: the older
+# tag would dispatch to the tap bump and roll new installs back
+# (PR #784 review).
+setup_project "$TEST_DIR/superseded-finalize"
+export FAKE_GH_AUTH_STATUS_RC=0
+git -C "$PROJECT" checkout -q -b release/v1.2.4
+printf '1.2.4\n' >"$PROJECT/VERSION"
+printf '1.2.4\n' >"$PROJECT/.touchstone-version"
+git -C "$PROJECT" add VERSION .touchstone-version
+git -C "$PROJECT" commit -q -m "v1.2.4"
+(cd "$PROJECT" && FAKE_OPENPR_MODE=merge bash scripts/open-pr.sh --auto-merge) >/dev/null
+git -C "$PROJECT" checkout -q main
+git -C "$PROJECT" pull -q --rebase origin main 2>/dev/null || git -C "$PROJECT" reset -q --hard origin/main
+printf '1.2.5\n' >"$PROJECT/VERSION"
+git -C "$PROJECT" add VERSION
+git -C "$PROJECT" commit -q -m "v1.2.5"
+git -C "$PROJECT" push -q origin main
+git -C "$PROJECT" fetch -q origin
+run_finalize "$PROJECT" v1.2.4
+
+if [ "$RELEASE_STATUS" -eq 0 ]; then
+  echo "FAIL: a superseded release must refuse to finalize" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+if ! grep -q 'superseded' "$OUT"; then
+  echo "FAIL: the refusal must name supersession" >&2
+  cat "$OUT" >&2
+  exit 1
+fi
+if git --git-dir="$ORIGIN" rev-parse 'refs/tags/v1.2.4' >/dev/null 2>&1; then
+  echo "FAIL: no tag may be pushed for a superseded release" >&2
+  exit 1
+fi
+echo "PASS: a superseded release refuses to finalize (no tag, no release)"
+
 if grep -En 'push[^#]*origin +main' "$REPO_ROOT/lib/release.sh"; then
   echo "FAIL: lib/release.sh must not push origin main directly (issue #729)" >&2
   exit 1
