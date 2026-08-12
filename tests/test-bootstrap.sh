@@ -1529,6 +1529,70 @@ assert_contains "$TEST_DIR/init-retire-output.txt" 'AGENTS.md names scripts/spaw
 # ...and leaves the project's own prose exactly as written.
 assert_contains "$PROJECT_INIT_RETIRE/AGENTS.md" 'Use `scripts/spawn-worktree.sh` to create branch slices.'
 
+# ---------------------------------------------------------------------------
+# #801 review: a retirement that cannot delete the file must stop the init.
+#
+# init regenerates .touchstone-manifest without the retired entries. If a failed
+# `rm` is treated as a success, the file stays on disk while its ledger entry
+# disappears — the exact unreachable state retirement exists to prevent, and one
+# no later `touchstone update` can retry. Fail closed instead: retirement runs
+# before any file is copied, so stopping leaves the project as it was found.
+#
+# `rm` is shadowed rather than the directory made read-only: root would ignore
+# the permission bits and this assertion must hold for every tester.
+# ---------------------------------------------------------------------------
+PROJECT_INIT_RM_FAILS="$TEST_DIR/test-project-init-rm-fails"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
+  "$PROJECT_INIT_RM_FAILS" --no-register >/dev/null
+git -C "$PROJECT_INIT_RM_FAILS" config user.email "touchstone-test@example.com"
+git -C "$PROJECT_INIT_RM_FAILS" config user.name "Touchstone Test"
+mkdir -p "$PROJECT_INIT_RM_FAILS/lib"
+printf '# pre-#737 managed copy\n' >"$PROJECT_INIT_RM_FAILS/lib/events.sh"
+printf 'lib/events.sh\n' >>"$PROJECT_INIT_RM_FAILS/.touchstone-manifest"
+git -C "$PROJECT_INIT_RM_FAILS" add -A
+git -C "$PROJECT_INIT_RM_FAILS" commit --no-verify -q -m "carry a retired managed file"
+
+RM_FAIL_BIN="$TEST_DIR/rm-fail-bin"
+mkdir -p "$RM_FAIL_BIN"
+REAL_RM_PATH=""
+for rm_candidate in /bin/rm /usr/bin/rm; do
+  if [ -x "$rm_candidate" ]; then
+    REAL_RM_PATH="$rm_candidate"
+    break
+  fi
+done
+if [ -z "$REAL_RM_PATH" ]; then
+  echo "FAIL: no real rm(1) to delegate to; cannot prove retirement failure propagation" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+cat >"$RM_FAIL_BIN/rm" <<FAKE_RM
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in
+    */lib/events.sh)
+      echo "rm: \$arg: Operation not permitted" >&2
+      exit 1
+      ;;
+  esac
+done
+exec "$REAL_RM_PATH" "\$@"
+FAKE_RM
+chmod +x "$RM_FAIL_BIN/rm"
+cp "$HOOKS_FAKE_BIN/pre-commit" "$RM_FAIL_BIN/pre-commit"
+
+if PATH="$RM_FAIL_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" \
+  "$PROJECT_INIT_RM_FAILS" --no-register </dev/null \
+  >"$TEST_DIR/init-rm-fails-output.txt" 2>&1; then
+  echo "FAIL: init should exit nonzero when a retired managed file cannot be removed" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/init-rm-fails-output.txt" 'failed to remove retired managed file'
+assert_contains "$TEST_DIR/init-rm-fails-output.txt" '^ERROR: could not remove retired managed file'
+assert_not_contains "$TEST_DIR/init-rm-fails-output.txt" 'removed retired managed file: .*lib/events.sh'
+# The file is still there, so the ledger entry that reaches it must be too.
+assert_exists "$PROJECT_INIT_RM_FAILS/lib/events.sh"
+assert_contains "$PROJECT_INIT_RM_FAILS/.touchstone-manifest" '^lib/events\.sh$'
+
 # Reconcile in a repo where setup.sh was deleted must NOT re-run setup (no dev-tool installs
 # during a repair). Bootstrap, delete setup.sh, rerun init — verify backfill without invocation.
 PROJECT_REINIT_SETUP="$TEST_DIR/test-project-reinit-setup"
@@ -1962,6 +2026,53 @@ else
   ERRORS=$((ERRORS + 1))
 fi
 
+# ---------------------------------------------------------------------------
+# #801 review: doctor must fail when the validation runner cannot answer.
+#
+# Doctor asks scripts/touchstone-run.sh for the profile rather than
+# re-implementing detection. The old call piped detect through sed and head,
+# which threw the runner's exit status away (head always succeeds) and sent its
+# diagnostics to /dev/null. A runner that is unreadable, syntactically broken,
+# or otherwise nonzero produced an empty profile, fell through the case
+# default, and doctor reported the project fully armed while `touchstone run`
+# could not dispatch validation at all.
+# ---------------------------------------------------------------------------
+PROJECT_DOCTOR_RUNNER_BROKEN="$TEST_DIR/test-project-doctor-runner-broken"
+PATH="$HOOKS_FAKE_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$PROJECT_DOCTOR_RUNNER_BROKEN" --no-register >/dev/null
+# Precondition: this project is healthy while its runner answers.
+if (cd "$PROJECT_DOCTOR_RUNNER_BROKEN" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-runner-ok.txt" 2>&1; then
+  assert_contains "$TEST_DIR/doctor-runner-ok.txt" 'Project is fully armed'
+else
+  echo "FAIL: fixture precondition — doctor should be clean before the runner is broken" >&2
+  cat "$TEST_DIR/doctor-runner-ok.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+printf '#!/usr/bin/env bash\necho "touchstone-run: cannot read config" >&2\nexit 3\n' \
+  >"$PROJECT_DOCTOR_RUNNER_BROKEN/scripts/touchstone-run.sh"
+if (cd "$PROJECT_DOCTOR_RUNNER_BROKEN" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-runner-broken.txt" 2>&1; then
+  echo "FAIL: doctor --project must exit nonzero when touchstone-run.sh detect fails" >&2
+  cat "$TEST_DIR/doctor-runner-broken.txt" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-runner-broken.txt" 'detect failed'
+  assert_contains "$TEST_DIR/doctor-runner-broken.txt" 'cannot dispatch validation'
+  # The runner's own diagnostic is surfaced, not swallowed.
+  assert_contains "$TEST_DIR/doctor-runner-broken.txt" 'touchstone-run: cannot read config'
+  assert_not_contains "$TEST_DIR/doctor-runner-broken.txt" 'Project is fully armed'
+fi
+# A runner that exits 0 but names no profile is the same gap: doctor has no
+# answer to check the linter against, and must say so rather than fall through.
+printf '#!/usr/bin/env bash\nprintf "monorepo=false\\n"\n' \
+  >"$PROJECT_DOCTOR_RUNNER_BROKEN/scripts/touchstone-run.sh"
+if (cd "$PROJECT_DOCTOR_RUNNER_BROKEN" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" doctor --project) >"$TEST_DIR/doctor-runner-silent.txt" 2>&1; then
+  echo "FAIL: doctor --project must exit nonzero when touchstone-run.sh names no project_type" >&2
+  cat "$TEST_DIR/doctor-runner-silent.txt" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/doctor-runner-silent.txt" 'named no project_type'
+  assert_not_contains "$TEST_DIR/doctor-runner-silent.txt" 'Project is fully armed'
+fi
+
 # Generic profile doctor must NOT count missing tests as an issue — a fresh
 # generic project with no test_command configured stays fully armed.
 # (Reuses the PROJECT_DOCTOR repo which was bootstrapped clean above.)
@@ -1991,6 +2102,28 @@ if (cd "$PROJECT_DOCTOR_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT
 else
   assert_contains "$TEST_DIR/doctor-legacy.txt" 'Legacy .toolkit-version found'
   assert_not_contains "$TEST_DIR/doctor-legacy.txt" 'touchstone migrate-from-toolkit'
+  # #801 review: the deleted migrator renamed all THREE legacy dotfiles and
+  # rewrote the path references recorded inside the manifest. Instructions that
+  # stop at version+manifest look complete and are not: nothing reads
+  # .toolkit-config, so project_type, targets, and every command override
+  # silently revert to defaults. Every surface that reports the legacy state
+  # prints the whole recipe (lib/legacy-toolkit.sh).
+  assert_contains "$TEST_DIR/doctor-legacy.txt" 'git mv \.toolkit-config \.touchstone-config'
+  assert_contains "$TEST_DIR/doctor-legacy.txt" 'toolkit-run\.sh -> touchstone-run\.sh'
+fi
+
+# The same recipe, in full, from `touchstone init` — the other command a legacy
+# project is told to run.
+PROJECT_INIT_LEGACY="$TEST_DIR/test-project-init-legacy"
+mkdir -p "$PROJECT_INIT_LEGACY"
+echo "legacy-sha" >"$PROJECT_INIT_LEGACY/.toolkit-version"
+if (cd "$PROJECT_INIT_LEGACY" && TOUCHSTONE_NO_AUTO_UPDATE=1 "$TOUCHSTONE_ROOT/bin/touchstone" init --no-setup --no-register) >"$TEST_DIR/init-legacy.txt" 2>&1; then
+  echo "FAIL: touchstone init should exit nonzero on a legacy .toolkit-version repo" >&2
+  ERRORS=$((ERRORS + 1))
+else
+  assert_contains "$TEST_DIR/init-legacy.txt" 'Legacy .toolkit-version found'
+  assert_contains "$TEST_DIR/init-legacy.txt" 'git mv \.toolkit-config \.touchstone-config'
+  assert_contains "$TEST_DIR/init-legacy.txt" 'toolkit-run\.sh -> touchstone-run\.sh'
 fi
 
 # Both .toolkit-version and .touchstone-version is an in-flight migration conflict —

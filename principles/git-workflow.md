@@ -307,9 +307,10 @@ a failing check, an unresolved review thread, a requested-changes decision, a
 moved base. Fix that and run it again; there is no separate recovery command
 and no background owner to reconcile with.
 
-The gate emits `review_requested` and `review_result` events carrying the
-request and result timestamps, request count, and wait time, so review latency
-is measurable without inferring it from logs.
+The gate keeps no telemetry of its own. Review timing is whatever GitHub
+already records — `gh pr view <n> --json reviews` carries the submission
+timestamps, and the PR timeline carries the requests — so nothing local has to
+be trusted or kept in sync to measure it.
 
 Touchstone does not repair changes autonomously. A project that wants shipping
 automation layered on top of this contract owns that automation itself.

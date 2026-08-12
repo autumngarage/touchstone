@@ -1005,7 +1005,7 @@ chmod +x "$PROJECT_DIR/setup.sh" 2>/dev/null || true
 #
 # Same list and same remover as bootstrap/update-project.sh (lib/retired-managed.sh).
 retire_unmanaged_files() {
-  local rel header_printed=false
+  local rel header_printed=false rc
   local retired_paths=()
 
   while IFS= read -r rel; do
@@ -1017,9 +1017,23 @@ retire_unmanaged_files() {
       header_printed=true
     fi
     retired_paths+=("$rel")
-    if touchstone_remove_retired_managed_file "$PROJECT_DIR" "$rel" false; then
-      FILES_RETIRED=$((FILES_RETIRED + 1))
-    fi
+    rc=0
+    touchstone_remove_retired_managed_file "$PROJECT_DIR" "$rel" false || rc=$?
+    case "$rc" in
+      0) FILES_RETIRED=$((FILES_RETIRED + 1)) ;;
+      5)
+        # Fail closed, same reasoning as bootstrap/update-project.sh: init is
+        # about to rewrite .touchstone-manifest without this entry, and a file
+        # that survives on disk while leaving the ledger is unreachable by
+        # every later update. Retirement runs before any file is copied, so
+        # stopping here leaves the project as it was found.
+        echo "ERROR: could not remove retired managed file: $PROJECT_DIR/$rel" >&2
+        echo "       Retirement drops it from .touchstone-manifest, so leaving it on disk" >&2
+        echo "       would put it beyond the reach of every later update." >&2
+        echo "       Make the path writable, then rerun: touchstone init" >&2
+        exit 1
+        ;;
+    esac
   done < <(touchstone_retired_managed_paths)
 
   # The project's own steering may still tell agents to run what just went

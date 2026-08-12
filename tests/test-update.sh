@@ -260,6 +260,111 @@ if ! git -C "$RETIREMENT_PROJECT" diff --quiet \
 fi
 
 # --------------------------------------------------------------------------
+# Test 1c: a retired file that cannot be deleted FAILS the update (#801 review).
+#
+# The updater regenerates .touchstone-manifest without the retired entries. A
+# removal that is announced but did not happen therefore strands the file: on
+# disk, absent from the ledger, unreachable by every later update — which is
+# precisely the permanence retirement exists to prevent. Failing closed inside
+# the rollback boundary leaves the ledger entry, so the next run can retry.
+#
+# `rm` is shadowed rather than the directory made read-only: root ignores the
+# permission bits, and this assertion has to hold for every tester.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 2c: A retired file that cannot be removed fails the update ---"
+
+RM_FAIL_PROJECT="$TEST_DIR/rm-fail-project"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$RM_FAIL_PROJECT" --no-register >/dev/null
+configure_git "$RM_FAIL_PROJECT"
+mkdir -p "$RM_FAIL_PROJECT/lib"
+printf '# retired NDJSON telemetry\n' >"$RM_FAIL_PROJECT/lib/events.sh"
+printf 'lib/events.sh\n' >>"$RM_FAIL_PROJECT/.touchstone-manifest"
+printf '%s\n' "$(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD^)" >"$RM_FAIL_PROJECT/.touchstone-version"
+commit_all "$RM_FAIL_PROJECT" "carry a retired managed file"
+
+RM_FAIL_BIN="$TEST_DIR/rm-fail-bin"
+mkdir -p "$RM_FAIL_BIN"
+REAL_RM_PATH=""
+for rm_candidate in /bin/rm /usr/bin/rm; do
+  if [ -x "$rm_candidate" ]; then
+    REAL_RM_PATH="$rm_candidate"
+    break
+  fi
+done
+if [ -z "$REAL_RM_PATH" ]; then
+  echo "FAIL: no real rm(1) to delegate to; cannot prove retirement failure propagation" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+cat >"$RM_FAIL_BIN/rm" <<FAKE_RM
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in
+    "$RM_FAIL_PROJECT/lib/events.sh")
+      echo "rm: \$arg: Operation not permitted" >&2
+      exit 1
+      ;;
+  esac
+done
+exec "$REAL_RM_PATH" "\$@"
+FAKE_RM
+chmod +x "$RM_FAIL_BIN/rm"
+
+# Fixture precondition: the file is present, tracked, and manifested.
+assert_exists "$RM_FAIL_PROJECT/lib/events.sh"
+assert_contains "$RM_FAIL_PROJECT/.touchstone-manifest" '^lib/events\.sh$'
+
+if (cd "$RM_FAIL_PROJECT" && PATH="$RM_FAIL_BIN:$PATH" bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --in-place) \
+  >"$TEST_DIR/update-rm-fail.txt" 2>&1; then
+  echo "FAIL: update should exit nonzero when a retired managed file cannot be removed" >&2
+  cat "$TEST_DIR/update-rm-fail.txt" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/update-rm-fail.txt" 'failed to remove retired managed file'
+assert_contains "$TEST_DIR/update-rm-fail.txt" '^ERROR: could not remove retired managed file'
+assert_not_contains "$TEST_DIR/update-rm-fail.txt" 'removed retired managed file: .*lib/events.sh'
+# The harm the failure prevents: the file survives, so the ledger entry that
+# makes it reachable must survive with it, and the version must not advance.
+assert_exists "$RM_FAIL_PROJECT/lib/events.sh"
+assert_contains "$RM_FAIL_PROJECT/.touchstone-manifest" '^lib/events\.sh$'
+assert_contains "$RM_FAIL_PROJECT/.touchstone-version" "$(git -C "$TOUCHSTONE_ROOT" rev-parse HEAD^)"
+
+# --------------------------------------------------------------------------
+# Test 1d: a legacy pre-v1.0.0 project gets the WHOLE migration (#801 review).
+#
+# The deleted bootstrap/migrate-from-toolkit.sh renamed all three legacy
+# dotfiles and rewrote the path references recorded inside the manifest.
+# Instructions naming only .toolkit-version and .toolkit-manifest look complete
+# and are not: nothing reads .toolkit-config, so project_type, targets, and
+# every command override silently revert to defaults.
+# --------------------------------------------------------------------------
+echo ""
+echo "--- Step 2d: Legacy .toolkit-* project gets the complete migration recipe ---"
+
+LEGACY_PROJECT="$TEST_DIR/legacy-toolkit-project"
+mkdir -p "$LEGACY_PROJECT"
+git -C "$LEGACY_PROJECT" init -q -b main
+configure_git "$LEGACY_PROJECT"
+printf 'legacy-sha\n' >"$LEGACY_PROJECT/.toolkit-version"
+printf '.toolkit-version\n.toolkit-manifest\nscripts/toolkit-run.sh\n' >"$LEGACY_PROJECT/.toolkit-manifest"
+printf 'project_type=python\n' >"$LEGACY_PROJECT/.toolkit-config"
+commit_all "$LEGACY_PROJECT" "simulate a pre-v1.0.0 toolkit project"
+
+if (cd "$LEGACY_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/update-legacy.txt" 2>&1; then
+  echo "FAIL: update should refuse to run on a legacy .toolkit-version project" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_contains "$TEST_DIR/update-legacy.txt" '^ERROR: Legacy .toolkit-version found'
+assert_contains "$TEST_DIR/update-legacy.txt" 'git mv \.toolkit-config \.touchstone-config'
+assert_contains "$TEST_DIR/update-legacy.txt" 'toolkit-run\.sh -> touchstone-run\.sh'
+# Naming the file is not enough; the recipe has to say what skipping it costs.
+assert_contains "$TEST_DIR/update-legacy.txt" 'silently revert'
+# Refusing is all it does — the migration itself is the project's to commit.
+assert_exists "$LEGACY_PROJECT/.toolkit-config"
+assert_not_exists "$LEGACY_PROJECT/.touchstone-version"
+
+# --------------------------------------------------------------------------
 # Test 2: committed local touchstone-owned changes update on a review branch.
 # --------------------------------------------------------------------------
 echo ""

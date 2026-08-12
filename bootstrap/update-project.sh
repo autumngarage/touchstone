@@ -61,6 +61,8 @@ source "$TOUCHSTONE_ROOT/lib/sha256.sh"
 source "$TOUCHSTONE_ROOT/lib/sync-content.sh"
 # shellcheck source=../lib/retired-managed.sh
 source "$TOUCHSTONE_ROOT/lib/retired-managed.sh"
+# shellcheck source=../lib/legacy-toolkit.sh
+source "$TOUCHSTONE_ROOT/lib/legacy-toolkit.sh"
 PROJECT_DIR="$(pwd)"
 DRY_RUN=false
 CHECK_ONLY=false
@@ -126,8 +128,7 @@ if [ ! -f "$PROJECT_DIR/.touchstone-version" ]; then
   if [ -f "$PROJECT_DIR/.toolkit-version" ]; then
     echo "ERROR: Legacy .toolkit-version found in $PROJECT_DIR" >&2
     echo "       This project was bootstrapped before the toolkit -> touchstone rename." >&2
-    echo "       Rename the legacy dotfiles yourself (.toolkit-version -> .touchstone-version," >&2
-    echo "       .toolkit-manifest -> .touchstone-manifest), then re-run: touchstone update" >&2
+    touchstone_legacy_toolkit_migration_steps "touchstone update" | sed 's/^/       /' >&2
     exit 1
   fi
   echo "ERROR: No .touchstone-version file found in $PROJECT_DIR" >&2
@@ -814,6 +815,18 @@ remove_retired_managed_file() {
       ;;
     4) UPDATED=$((UPDATED + 1)) ;;
     2) SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1)) ;;
+    5)
+      # Fail closed. Continuing would regenerate .touchstone-manifest without
+      # this entry while the file is still on disk, which is precisely the
+      # unreachable state retirement exists to prevent — and no later update
+      # could retry it. Exiting here lands inside the rollback boundary, so
+      # nothing is committed and .touchstone-version is not advanced.
+      echo "ERROR: could not remove retired managed file: $PROJECT_DIR/$rel_path" >&2
+      echo "       Retirement drops it from .touchstone-manifest, so leaving it on disk" >&2
+      echo "       would put it beyond the reach of every later update." >&2
+      echo "       Make the path writable, then rerun: touchstone update" >&2
+      exit 1
+      ;;
     *) : ;;
   esac
   return 0

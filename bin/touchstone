@@ -60,6 +60,8 @@ source "$TOUCHSTONE_ROOT/lib/claude-md-touchstone-ref.sh"
 source "$TOUCHSTONE_ROOT/lib/status.sh"
 # shellcheck source=../lib/install-hooks.sh
 source "$TOUCHSTONE_ROOT/lib/install-hooks.sh"
+# shellcheck source=../lib/legacy-toolkit.sh
+source "$TOUCHSTONE_ROOT/lib/legacy-toolkit.sh"
 
 # Auto-update check (throttled, non-blocking on failure). When an update
 # succeeds, re-exec so the current command runs against the upgraded files.
@@ -243,8 +245,10 @@ cmd_init() {
   case "$init_state" in
     legacy-toolkit)
       tk_fail "Legacy .toolkit-version found in $project_dir"
-      tk_dim "Rename .toolkit-version to .touchstone-version (and .toolkit-manifest"
-      tk_dim "to .touchstone-manifest), then re-run: touchstone init"
+      local legacy_step
+      while IFS= read -r legacy_step; do
+        tk_dim "$legacy_step"
+      done < <(touchstone_legacy_toolkit_migration_steps "touchstone init")
       return 1
       ;;
     outdated)
@@ -466,7 +470,10 @@ cmd_doctor_project() {
   if [ ! -f "$project_dir/.touchstone-version" ]; then
     if [ -f "$project_dir/.toolkit-version" ]; then
       tk_fail "Legacy .toolkit-version found"
-      tk_dim "  Fix: rename .toolkit-version to .touchstone-version, then: touchstone init"
+      local legacy_step
+      while IFS= read -r legacy_step; do
+        tk_dim "  $legacy_step"
+      done < <(touchstone_legacy_toolkit_migration_steps "touchstone init")
       echo ""
       return 1
     fi
@@ -716,7 +723,28 @@ _touchstone_doctor_check_lint_reachable() {
     return 0
   fi
 
-  profile="$(cd "$project_dir" && bash "$runner" detect 2>/dev/null | sed -n 's/^project_type=//p' | head -1)"
+  # The profile is whatever the runner says it is, but the runner has to
+  # actually answer. The old pipeline threw the answer's exit status away —
+  # head(1) always succeeds — and sent every diagnostic to /dev/null, so an
+  # unreadable or syntactically broken scripts/touchstone-run.sh produced an
+  # empty profile, fell through the case default, and let doctor call the
+  # project healthy while `touchstone run` could not dispatch validation at
+  # all (#801 review). Status and output are captured, then checked.
+  local detect_output=""
+  if ! detect_output="$(cd "$project_dir" && bash "$runner" detect 2>&1)"; then
+    tk_warn "scripts/touchstone-run.sh detect failed — 'touchstone run' cannot dispatch validation"
+    if [ -n "$detect_output" ]; then
+      tk_dim "  $(printf '%s\n' "$detect_output" | tail -1)"
+    fi
+    tk_dim "  Fix: touchstone init  (reconciles the managed runner)"
+    return 1
+  fi
+  profile="$(printf '%s\n' "$detect_output" | sed -n 's/^project_type=//p' | head -1)"
+  if [ -z "$profile" ]; then
+    tk_warn "scripts/touchstone-run.sh detect named no project_type — 'touchstone run' cannot dispatch validation"
+    tk_dim "  Fix: touchstone init  (reconciles the managed runner)"
+    return 1
+  fi
   case "$profile" in
     python)
       if command -v ruff >/dev/null 2>&1; then

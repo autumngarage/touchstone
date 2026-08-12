@@ -11,7 +11,7 @@
 # update` (#737 round-2 review). Sharing one list and one remover is the fix —
 # a retirement added below reaches both entrypoints or neither.
 
-if ! declare -F touchstone_ensure_safe_dest >/dev/null 2>&1; then
+if ! declare -F touchstone_ensure_safe_ancestors >/dev/null 2>&1; then
   # shellcheck source=safe-write.sh
   source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/safe-write.sh"
 fi
@@ -76,13 +76,36 @@ touchstone_retired_managed_file_applies() {
 #   2  refused: unsafe path
 #   3  refused: left in place (untracked, or carrying uncommitted edits)
 #   4  would remove (dry run)
+#   5  failed: the removal was attempted and did not happen
+#
+# INVARIANT: nothing in this body may rely on `set -e`. Every caller invokes it
+# in a status-capturing conditional, which makes errexit inert here — so a bare
+# failing command would fall through to the success message instead of
+# aborting. Each fallible command below is checked explicitly.
 touchstone_remove_retired_managed_file() {
   local project_dir="$1" rel_path="$2" dry_run="${3:-false}"
   local target="$project_dir/$rel_path"
 
   touchstone_retired_managed_file_applies "$project_dir" "$rel_path" || return 1
 
-  if ! touchstone_ensure_safe_dest "$target" "$project_dir" "$dry_run" || [ ! -f "$target" ]; then
+  # Only the ancestor half of the write guard. touchstone_ensure_safe_dest
+  # removes a symlink sitting at the final component so a managed copy can land
+  # on a real file; called here it unlinked first and asked questions never —
+  # the `! -f` test then saw the hole it had just made and called that a
+  # refusal, with the link gone, the ownership and dirty-state checks below
+  # still unrun, and the path missing from the caller's staged set (#801
+  # review). Removal inspects the final component itself, further down.
+  if ! touchstone_ensure_safe_ancestors "$target" "$project_dir"; then
+    echo "    ! refusing to remove unsafe retired path: $target" >&2
+    return 2
+  fi
+  # -L is asked separately because -f follows the link: a symlink to a regular
+  # file passes -f and is indistinguishable from the managed copy. A symlink
+  # goes through the same tracked-and-clean gate as every other retired path —
+  # `rm` then unlinks the link and never touches what it points at, and git
+  # restores it — while anything that is neither a symlink nor a regular file
+  # (a directory, a socket) is refused untouched.
+  if [ ! -L "$target" ] && [ ! -f "$target" ]; then
     echo "    ! refusing to remove unsafe retired path: $target" >&2
     return 2
   fi
@@ -107,7 +130,17 @@ touchstone_remove_retired_managed_file() {
     echo "    - would remove retired managed file: $target"
     return 4
   fi
-  rm -f "$target"
+  # Announcing a removal that did not happen is the one outcome retirement
+  # cannot survive: the caller records the retirement, the manifest is
+  # regenerated without the entry, and the file that is still on disk becomes
+  # unreachable by every later update — the exact permanence retirement exists
+  # to prevent. An unwritable directory or an immutable file makes `rm` fail,
+  # and errexit is inert here (see the invariant above), so it is checked
+  # (#801 review).
+  if ! rm -f "$target"; then
+    echo "    ! failed to remove retired managed file: $target" >&2
+    return 5
+  fi
   echo "    - removed retired managed file: $target"
   return 0
 }
