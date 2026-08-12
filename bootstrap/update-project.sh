@@ -271,7 +271,7 @@ touchstone_manifest_entries() {
   fi
   printf 'scripts/branch-guard.sh\n'
   printf 'scripts/emergency-disclosure.sh\n'
-    printf 'scripts/touchstone-run.sh\n'
+  printf 'scripts/touchstone-run.sh\n'
   printf 'scripts/open-pr.sh\n'
   printf 'scripts/merge-pr.sh\n'
   printf 'scripts/claim-issue.sh\n'
@@ -298,6 +298,20 @@ touchstone_manifest_entries() {
   # since the user-scope migration (surfaced by PR #780's ledger probe).
 }
 
+# Index equality is decided by OBJECT IDs, never `git diff --quiet`: the
+# assume-unchanged and skip-worktree bits mark an index entry "not changing",
+# so diff-based checks report clean while the indexed blob — the bytes a
+# clean clone actually receives — differs from the working tree. Hashing the
+# working-tree file with the path's attribute filters applied compares the
+# same conversion `git add` would perform (PR #780 review, round 3 P2).
+index_blob_matches_worktree() {
+  local rel="$1"
+  local index_blob worktree_blob
+  index_blob="$(git -C "$PROJECT_DIR" rev-parse --verify --quiet ":$rel")" || return 1
+  worktree_blob="$(git -C "$PROJECT_DIR" hash-object --path="$rel" -- "$PROJECT_DIR/$rel" 2>/dev/null)" || return 1
+  [ "$index_blob" = "$worktree_blob" ]
+}
+
 # One soundness predicate for every managed path the content probe accepts:
 # not a symlink (the writer would replace it), safe destination (no symlinked
 # ancestors — the writer would refuse), tracked in the index (clean clones
@@ -311,7 +325,7 @@ managed_path_is_sound() {
   [ ! -L "$dst" ] || return 1
   touchstone_ensure_safe_dest "$dst" "$PROJECT_DIR" true >/dev/null 2>&1 || return 1
   git -C "$PROJECT_DIR" ls-files --error-unmatch "$rel" >/dev/null 2>&1 || return 1
-  git -C "$PROJECT_DIR" diff --quiet -- "$rel" || return 1
+  index_blob_matches_worktree "$rel" || return 1
 }
 
 # Steering files may legitimately live untracked or gitignored
@@ -325,8 +339,17 @@ steering_path_is_sound() {
   [ ! -L "$dst" ] || return 1
   touchstone_ensure_safe_dest "$dst" "$PROJECT_DIR" true >/dev/null 2>&1 || return 1
   if git -C "$PROJECT_DIR" ls-files --error-unmatch "$rel" >/dev/null 2>&1; then
-    git -C "$PROJECT_DIR" diff --quiet -- "$rel" || return 1
+    index_blob_matches_worktree "$rel" || return 1
   fi
+}
+
+# An add-if-missing template slot counts as occupied when ANY directory
+# entry exists there — regular file, symlink to a file, dangling symlink, or
+# directory. Occupied means project-owned and hands-off for both the writer
+# (add_project_template_if_missing) and the content probe; `-f` alone
+# follows symlinks and made the two disagree (PR #780 review, round 3 P2).
+project_template_slot_occupied() {
+  [ -e "$1" ] || [ -L "$1" ]
 }
 
 managed_content_is_current() {
@@ -374,18 +397,23 @@ managed_content_is_current() {
   fi
 
   # Project-owned templates the update would ADD when missing (their content
-  # is never compared: present means project-owned, hands off).
+  # is never compared: present means project-owned, hands off). Presence is
+  # ANY directory entry — regular file, symlink (even dangling), directory —
+  # matching project_template_slot_occupied exactly: `-f` follows symlinks,
+  # so a symlinked config read as "present" here while the writer replaced
+  # it, and a dangling one read as "missing" while the writer skips it —
+  # probe and writer must never disagree (PR #780 review, round 3 P2).
   if [ -f "$TOUCHSTONE_ROOT/templates/.markdownlint.json" ] \
-    && [ ! -f "$PROJECT_DIR/.markdownlint.json" ]; then
+    && ! project_template_slot_occupied "$PROJECT_DIR/.markdownlint.json"; then
     return 1
   fi
   if [ "$PROJECT_TYPE" = "swift" ] \
     && [ -f "$TOUCHSTONE_ROOT/templates/swift/.swiftlint.yml" ] \
-    && [ ! -f "$PROJECT_DIR/.swiftlint.yml" ]; then
+    && ! project_template_slot_occupied "$PROJECT_DIR/.swiftlint.yml"; then
     return 1
   fi
   if [ -f "$TOUCHSTONE_ROOT/templates/GEMINI.md" ] \
-    && [ ! -f "$PROJECT_DIR/GEMINI.md" ]; then
+    && ! project_template_slot_occupied "$PROJECT_DIR/GEMINI.md"; then
     return 1
   fi
 
@@ -462,37 +490,127 @@ unique_branch_name() {
   printf '%s' "$candidate"
 }
 
+# The single remote whose metadata may name the default branch: 'origin'
+# when it exists, else the ONLY remote. A repo tracking a differently named
+# remote (e.g. 'upstream') HAS authoritative metadata, so treating "no
+# origin" as "remoteless" and guessing from local branch names could bless
+# the checked-out branch and fork its commits into the update PR; several
+# remotes with none named origin is ambiguous and fails closed
+# (PR #780 review, round 3 P1).
+authoritative_remote() {
+  local remotes
+  remotes="$(git -C "$PROJECT_DIR" remote 2>/dev/null || true)"
+  [ -n "$remotes" ] || return 1
+  if grep -qxF "origin" <<<"$remotes"; then
+    printf 'origin\n'
+    return 0
+  fi
+  if [ "$(printf '%s\n' "$remotes" | grep -c .)" -eq 1 ]; then
+    printf '%s\n' "$remotes"
+    return 0
+  fi
+  return 1
+}
+
+# gh's positional <repository> accepts HOST/OWNER/REPO — but handing it the
+# raw git remote URL makes gh treat an SSH host ALIAS (git@github-work:o/r)
+# as the API hostname and query https://github-work/..., so the live lookup
+# always fails and the authority silently degrades to the cached ref
+# (PR #780 review, round 3 P1). Parse the remote ourselves and canonicalize
+# ssh hosts through `ssh -G`, whose effective `hostname` is the host ssh
+# would actually connect to; http(s)/git hosts are already canonical.
+# Unparseable remotes (local paths, exotic schemes) return nonzero: no gh
+# query, cached-ref fallback.
+remote_repo_selector() {
+  local url="$1"
+  local rest host path is_ssh=false resolved
+
+  case "$url" in
+    ssh://*)
+      is_ssh=true
+      rest="${url#ssh://}"
+      rest="${rest#*@}"
+      host="${rest%%/*}"
+      path="${rest#*/}"
+      [ "$host" != "$rest" ] || return 1
+      host="${host%%:*}"
+      ;;
+    http://* | https://* | git://*)
+      rest="${url#*://}"
+      rest="${rest#*@}"
+      host="${rest%%/*}"
+      path="${rest#*/}"
+      [ "$host" != "$rest" ] || return 1
+      host="${host%%:*}"
+      ;;
+    *://* | /* | ./* | ../*)
+      return 1
+      ;;
+    *:*)
+      # scp-like [user@]host:owner/repo — a '/' before the ':' is a local
+      # path, not a host.
+      is_ssh=true
+      rest="${url#*@}"
+      host="${rest%%:*}"
+      path="${rest#*:}"
+      case "$host" in */* | "") return 1 ;; esac
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  path="${path#/}"
+  path="${path%/}"
+  path="${path%.git}"
+  [ -n "$host" ] && [ -n "$path" ] || return 1
+  case "$path" in
+    */*) ;;
+    *) return 1 ;;
+  esac
+
+  if [ "$is_ssh" = true ] && command -v ssh >/dev/null 2>&1; then
+    resolved="$(ssh -G "$host" 2>/dev/null | awk '$1 == "hostname" { print $2; exit }' || true)"
+    [ -n "$resolved" ] && host="$resolved"
+  fi
+
+  printf '%s/%s\n' "$host" "$path"
+}
+
 resolve_default_branch() {
-  local default_branch=""
+  local default_branch="" remote="" remote_url="" selector=""
+
+  remote="$(authoritative_remote)" || remote=""
 
   # The LIVE remote answer outranks the cached symbolic ref: after a
-  # default-branch rename, refs/remotes/origin/HEAD keeps pointing at the
+  # default-branch rename, refs/remotes/<remote>/HEAD keeps pointing at the
   # former default until someone runs git remote set-head, and trusting the
   # cache would authorize an update from the renamed-away branch
   # (PR #780 review, round 2 P1). The cache is the fallback for offline/gh-
   # less runs — best local knowledge, with the refusal below still guarding
   # any checkout that does not match it.
-  if command -v gh >/dev/null 2>&1 \
-    && git -C "$PROJECT_DIR" remote get-url origin >/dev/null 2>&1; then
-    # Pinned to origin explicitly: an argument-less gh repo view honors the
-    # GH_REPO environment override, which could point the default-branch
-    # authority at an arbitrary repository whose default matches the local
-    # feature branch (PR #780 review, override round P1).
-    default_branch="$(cd "$PROJECT_DIR" \
-      && gh repo view "$(git remote get-url origin)" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
+  if [ -n "$remote" ] && command -v gh >/dev/null 2>&1; then
+    remote_url="$(git -C "$PROJECT_DIR" remote get-url "$remote" 2>/dev/null || true)"
+    # Pinned via an explicit positional selector: an argument-less gh repo
+    # view honors the GH_REPO environment override, which could point the
+    # default-branch authority at an arbitrary repository whose default
+    # matches the local feature branch (PR #780 review, override round P1).
+    if [ -n "$remote_url" ] && selector="$(remote_repo_selector "$remote_url")"; then
+      default_branch="$(gh repo view "$selector" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null || true)"
+    fi
   fi
-  if [ -z "$default_branch" ]; then
-    default_branch="$(git -C "$PROJECT_DIR" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null \
-      | sed 's#^origin/##' || true)"
+  if [ -z "$default_branch" ] && [ -n "$remote" ]; then
+    default_branch="$(git -C "$PROJECT_DIR" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)"
+    default_branch="${default_branch#"$remote"/}"
   fi
   # init.defaultBranch is deliberately NOT consulted: it names the preferred
   # branch for NEWLY initialized repos, not this repo's default — a feature
   # branch bearing that name would be accepted and the fork would carry its
   # commits, recreating the exact #772 contamination (PR #780 review, P1).
-  # Without authoritative remote metadata, only a repo with NO origin gets a
-  # local heuristic, and only when it is unambiguous.
+  # Without authoritative remote metadata, only a repo with NO remotes AT
+  # ALL gets a local heuristic, and only when it is unambiguous.
   if [ -z "$default_branch" ] \
-    && ! git -C "$PROJECT_DIR" remote get-url origin >/dev/null 2>&1; then
+    && [ -z "$(git -C "$PROJECT_DIR" remote 2>/dev/null || true)" ]; then
     local has_main=false has_master=false
     git -C "$PROJECT_DIR" show-ref --verify --quiet refs/heads/main && has_main=true
     git -C "$PROJECT_DIR" show-ref --verify --quiet refs/heads/master && has_master=true
@@ -512,12 +630,20 @@ resolve_default_branch() {
 # a version-bump title; convoy#234 was closed for the same carry-in). Require
 # the default branch and refuse otherwise — never switch the user's worktree.
 require_default_branch_checkout() {
-  local default_branch
+  local default_branch auth_remote="" remote_ref=""
   default_branch="$(resolve_default_branch)"
+  auth_remote="$(authoritative_remote)" || auth_remote=""
 
   if [ -z "$default_branch" ]; then
     echo "ERROR: could not resolve the default branch for $PROJECT_DIR; refusing to branch from HEAD." >&2
-    echo "       Fix: git remote set-head origin --auto" >&2
+    if [ -n "$auth_remote" ]; then
+      echo "       Fix: git remote set-head $auth_remote --auto" >&2
+    elif [ -n "$(git -C "$PROJECT_DIR" remote 2>/dev/null || true)" ]; then
+      echo "       Several remotes and none named 'origin': touchstone cannot pick the authority." >&2
+      echo "       Fix: git remote rename <primary-remote> origin" >&2
+    else
+      echo "       No remote and no unambiguous local main/master branch." >&2
+    fi
     echo "       Then rerun: touchstone update" >&2
     echo "       To update the current branch in place instead: touchstone update --in-place" >&2
     touchstone_sync_log_skip "$PROJECT_DIR" "$OLD_SHA" "$CURRENT_SHA" "no-default-branch" "" "touchstone update"
@@ -532,6 +658,39 @@ require_default_branch_checkout() {
     echo "       To update the current branch in place instead: touchstone update --in-place" >&2
     touchstone_sync_log_skip "$PROJECT_DIR" "$OLD_SHA" "$CURRENT_SHA" "off-default-branch" "" "touchstone update"
     exit 1
+  fi
+
+  # Name equality is not history equality: a local default branch carrying
+  # unpushed commits (an accidental commit on main, divergence after a
+  # remote force-push) would fork those commits into the update PR despite
+  # the name check above (PR #780 review, round 3 P1). Refresh only the
+  # remote-tracking ref — the cached copy may be stale, and the user's local
+  # branch is never touched (same pattern as open-pr.sh's review-policy
+  # fetch) — then require HEAD to introduce nothing beyond it.
+  if [ -n "$auth_remote" ]; then
+    remote_ref="refs/remotes/$auth_remote/$default_branch"
+    git -C "$PROJECT_DIR" fetch --quiet --no-tags "$auth_remote" \
+      "+refs/heads/$default_branch:$remote_ref" >/dev/null 2>&1 || true
+    if ! git -C "$PROJECT_DIR" rev-parse --verify --quiet "$remote_ref^{commit}" >/dev/null; then
+      echo "ERROR: cannot verify local '$default_branch' against $auth_remote; refusing to branch from HEAD." >&2
+      echo "       The fetch failed and no $remote_ref exists locally, so unpushed local commits" >&2
+      echo "       could ride into the update PR undetected." >&2
+      echo "       Fix: git fetch $auth_remote $default_branch" >&2
+      echo "       Then rerun: touchstone update" >&2
+      echo "       To update the current branch in place instead: touchstone update --in-place" >&2
+      touchstone_sync_log_skip "$PROJECT_DIR" "$OLD_SHA" "$CURRENT_SHA" "default-branch-unverifiable" "" "touchstone update"
+      exit 1
+    fi
+    if ! git -C "$PROJECT_DIR" merge-base --is-ancestor HEAD "$remote_ref" 2>/dev/null; then
+      echo "ERROR: local '$default_branch' has commits that $auth_remote/$default_branch does not; refusing to branch from HEAD." >&2
+      echo "       A chore/touchstone-* branch forked here would carry those commits into the update PR." >&2
+      echo "       Fix: git push $auth_remote $default_branch   (if they are meant to ship)" >&2
+      echo "       Or move them aside: git branch <slug> && git reset --hard $auth_remote/$default_branch" >&2
+      echo "       Then rerun: touchstone update" >&2
+      echo "       To update the current branch in place instead: touchstone update --in-place" >&2
+      touchstone_sync_log_skip "$PROJECT_DIR" "$OLD_SHA" "$CURRENT_SHA" "default-branch-ahead-of-remote" "" "touchstone update"
+      exit 1
+    fi
   fi
 }
 
@@ -958,15 +1117,19 @@ add_project_template_if_missing() {
   local rel_path
   rel_path="$(relative_project_path "$dst")"
 
-  if ! ensure_safe_dest "$dst"; then
-    SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1))
+  if project_template_slot_occupied "$dst"; then
+    # Hand-edited, already-shipped, or deliberately symlinked — leave alone.
+    # update_file handles touchstone-owned files; this helper exists
+    # precisely so project-owned additions skip when present, even if the
+    # on-disk content differs. Checked BEFORE ensure_safe_dest: that guard
+    # REPLACES a final-component symlink, which would rip out a
+    # project-owned symlinked config the probe correctly reports as present
+    # (PR #780 review, round 3 P2).
     return 0
   fi
 
-  if [ -f "$dst" ]; then
-    # Hand-edited or already-shipped — leave alone. update_file handles
-    # touchstone-owned files; this helper exists precisely so project-owned
-    # additions skip when present, even if the on-disk content differs.
+  if ! ensure_safe_dest "$dst"; then
+    SKIPPED_UNSAFE=$((SKIPPED_UNSAFE + 1))
     return 0
   fi
 

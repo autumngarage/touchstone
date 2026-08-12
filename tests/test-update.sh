@@ -1681,9 +1681,12 @@ git -C "$STRACK_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-ve
 assert_contains "$TEST_DIR/p780c-strack-output.txt" 'Already up to date'
 assert_not_contains "$TEST_DIR/p780c-strack-output.txt" 'Needs update'
 
-# (g) The default-branch authority lookup pins the origin repository
-# explicitly, so a GH_REPO env override cannot redirect it: a PATH-injected
-# fake gh records its argv, and the recorded call must carry the origin URL.
+# (g) The default-branch authority lookup pins the repository explicitly
+# AND canonicalizes ssh host aliases before querying gh: handing gh the raw
+# ssh remote made it treat the alias as the API host (PR #780 round 3 P1).
+# A PATH-injected fake ssh maps github-work -> github.com, the fake gh
+# records its argv, and the recorded selector must be the canonical
+# HOST/OWNER/REPO — never the raw URL, never the GH_REPO override.
 GHPIN_PROJECT="$TEST_DIR/p780c-ghpin"
 bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$GHPIN_PROJECT" --no-register >/dev/null
 configure_git "$GHPIN_PROJECT"
@@ -1691,29 +1694,176 @@ commit_all "$GHPIN_PROJECT" "initial"
 echo "ffffffffffffffffffffffffffffffffffffffff" >"$GHPIN_PROJECT/.touchstone-version"
 printf '# drift\n' >>"$GHPIN_PROJECT/lib/toml.sh"
 commit_all "$GHPIN_PROJECT" "stamp + drift so the update reaches the branch guard"
-GHPIN_ORIGIN="$TEST_DIR/p780c-ghpin-origin.git"
-git init -q --bare "$GHPIN_ORIGIN"
-git -C "$GHPIN_PROJECT" remote add origin "$GHPIN_ORIGIN"
+git -C "$GHPIN_PROJECT" remote add origin "git@github-work:owner/repo.git"
+GHPIN_BASE="$(git -C "$GHPIN_PROJECT" branch --show-current)"
 GHPIN_BIN="$TEST_DIR/p780c-ghpin-bin"
 mkdir -p "$GHPIN_BIN"
 cat >"$GHPIN_BIN/gh" <<'FAKEGH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"${GHPIN_LOG:?}"
-echo "main"
+echo "${GHPIN_DEFAULT:?}"
 FAKEGH
 chmod +x "$GHPIN_BIN/gh"
+# Fake ssh: answers the alias canonicalization query (-G) the way an ssh
+# config mapping github-work to github.com would; any real connection
+# attempt (git fetch) fails fast so the test stays offline.
+cat >"$GHPIN_BIN/ssh" <<'FAKESSH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-G" ] && [ "${2:-}" = "github-work" ]; then
+  echo "hostname github.com"
+  exit 0
+fi
+exit 255
+FAKESSH
+chmod +x "$GHPIN_BIN/ssh"
 GHPIN_LOG="$TEST_DIR/p780c-ghpin.log"
 : >"$GHPIN_LOG"
-(cd "$GHPIN_PROJECT" && PATH="$GHPIN_BIN:$PATH" GHPIN_LOG="$GHPIN_LOG" GH_REPO="evil/other-repo" \
+(cd "$GHPIN_PROJECT" && PATH="$GHPIN_BIN:$PATH" GHPIN_LOG="$GHPIN_LOG" \
+  GHPIN_DEFAULT="$GHPIN_BASE" GH_REPO="evil/other-repo" \
   bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
   >"$TEST_DIR/p780c-ghpin-output.txt" 2>&1 || true
-if grep -q "repo view $GHPIN_ORIGIN" "$GHPIN_LOG"; then
-  echo "    PASS: gh repo view is pinned to the origin repository"
+if grep -q "repo view github.com/owner/repo " "$GHPIN_LOG"; then
+  echo "    PASS: gh repo view receives the canonical host/owner/repo selector"
 else
-  echo "FAIL: the default-branch lookup must pass origin explicitly (GH_REPO must not redirect it)" >&2
+  echo "FAIL: the default-branch lookup must resolve the ssh alias and pass a canonical selector (not the raw URL, not GH_REPO)" >&2
   cat "$GHPIN_LOG" >&2
   ERRORS=$((ERRORS + 1))
 fi
+assert_not_contains "$GHPIN_LOG" "github-work"
+# The unreachable remote also exercises the ahead-guard's fail-closed
+# branch: the tracking-ref refresh fails, no cached ref exists, so the
+# update must refuse rather than fork unverifiable local history.
+assert_contains "$TEST_DIR/p780c-ghpin-output.txt" "cannot verify local '$GHPIN_BASE' against origin"
+if git -C "$GHPIN_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
+  echo "FAIL: an unverifiable default branch must not produce an update branch (PR #780 round 3)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "--- Step 12: round-3 hardening — index flags, remote authority, ahead-of-remote, template symlinks (PR #780 round 3) ---"
+
+# (a) P2: skip-worktree must not hide a stale index blob. The indexed bytes
+# are what a clean clone receives; `git diff --quiet` honors the flag and
+# reports clean, so the probe must compare object IDs instead.
+SKIPWT_PROJECT="$TEST_DIR/p780d-skip-worktree"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$SKIPWT_PROJECT" --no-register >/dev/null
+configure_git "$SKIPWT_PROJECT"
+commit_all "$SKIPWT_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$SKIPWT_PROJECT/.touchstone-version"
+commit_all "$SKIPWT_PROJECT" "sha stamp"
+cp "$SKIPWT_PROJECT/lib/toml.sh" "$TEST_DIR/p780d-toml-good.sh"
+printf '# stale indexed blob\n' >>"$SKIPWT_PROJECT/lib/toml.sh"
+git -C "$SKIPWT_PROJECT" add lib/toml.sh
+git -C "$SKIPWT_PROJECT" -c user.name=T -c user.email=t@e.invalid commit --no-verify -qm "stale blob"
+cp "$TEST_DIR/p780d-toml-good.sh" "$SKIPWT_PROJECT/lib/toml.sh"
+git -C "$SKIPWT_PROJECT" update-index --skip-worktree lib/toml.sh
+(cd "$SKIPWT_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780d-skipwt-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780d-skipwt-output.txt" 'Needs update'
+assert_not_contains "$TEST_DIR/p780d-skipwt-output.txt" 'Already up to date'
+
+# (b) P1: a repo whose only remote is named 'upstream' has authoritative
+# metadata — the absence of 'origin' must not fall back to guessing from
+# local branch names, which would bless the checked-out branch.
+UPONLY_PROJECT="$TEST_DIR/p780d-upstream-only"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$UPONLY_PROJECT" --no-register >/dev/null
+configure_git "$UPONLY_PROJECT"
+commit_all "$UPONLY_PROJECT" "initial"
+UPONLY_BASE="$(git -C "$UPONLY_PROJECT" branch --show-current)"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$UPONLY_PROJECT/.touchstone-version"
+printf '# drift\n' >>"$UPONLY_PROJECT/lib/toml.sh"
+commit_all "$UPONLY_PROJECT" "stamp + drift"
+UPONLY_REMOTE="$TEST_DIR/p780d-upstream.git"
+git init -q --bare "$UPONLY_REMOTE"
+git -C "$UPONLY_REMOTE" symbolic-ref HEAD "refs/heads/$UPONLY_BASE"
+git -C "$UPONLY_PROJECT" remote add upstream "$UPONLY_REMOTE"
+(cd "$UPONLY_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780d-uponly-output.txt" 2>&1 || true
+assert_contains "$TEST_DIR/p780d-uponly-output.txt" 'could not resolve the default branch'
+assert_contains "$TEST_DIR/p780d-uponly-output.txt" 'git remote set-head upstream --auto'
+if git -C "$UPONLY_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
+  echo "FAIL: a local branch-name heuristic must not authorize an update when a remote exists (PR #780 round 3 P1)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+# Positive control: once the remote metadata exists and histories agree,
+# the same non-origin remote authorizes the update.
+git -C "$UPONLY_PROJECT" push --no-verify -q upstream "$UPONLY_BASE"
+git -C "$UPONLY_PROJECT" fetch -q upstream
+git -C "$UPONLY_PROJECT" remote set-head upstream --auto >/dev/null
+(cd "$UPONLY_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780d-uponly-ok-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780d-uponly-ok-output.txt" 'Creating update branch: chore/touchstone-'
+
+# (c) P1: a local default branch AHEAD of the remote default carries
+# unpushed commits into the chore PR — the name check alone must not
+# authorize the fork.
+AHEAD_PROJECT="$TEST_DIR/p780d-ahead"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$AHEAD_PROJECT" --no-register >/dev/null
+configure_git "$AHEAD_PROJECT"
+commit_all "$AHEAD_PROJECT" "initial"
+AHEAD_BASE="$(git -C "$AHEAD_PROJECT" branch --show-current)"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$AHEAD_PROJECT/.touchstone-version"
+commit_all "$AHEAD_PROJECT" "sha stamp"
+AHEAD_REMOTE="$TEST_DIR/p780d-ahead-origin.git"
+git init -q --bare "$AHEAD_REMOTE"
+git -C "$AHEAD_REMOTE" symbolic-ref HEAD "refs/heads/$AHEAD_BASE"
+git -C "$AHEAD_PROJECT" remote add origin "$AHEAD_REMOTE"
+git -C "$AHEAD_PROJECT" push --no-verify -q origin "$AHEAD_BASE"
+git -C "$AHEAD_PROJECT" remote set-head origin --auto >/dev/null
+# The unpushed commit doubles as genuine staleness so the update reaches
+# the branch guard.
+printf '# drift\n' >>"$AHEAD_PROJECT/lib/toml.sh"
+commit_all "$AHEAD_PROJECT" "unpushed local commit on the default branch"
+AHEAD_HEAD="$(git -C "$AHEAD_PROJECT" rev-parse HEAD)"
+(cd "$AHEAD_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780d-ahead-output.txt" 2>&1 || true
+assert_contains "$TEST_DIR/p780d-ahead-output.txt" "local '$AHEAD_BASE' has commits that origin/$AHEAD_BASE does not"
+assert_contains "$TEST_DIR/p780d-ahead-output.txt" "git push origin $AHEAD_BASE"
+if git -C "$AHEAD_PROJECT" branch --list 'chore/touchstone-*' | grep -q .; then
+  echo "FAIL: an ahead-of-remote default branch must not produce an update branch (PR #780 round 3 P1)" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+if [ "$(git -C "$AHEAD_PROJECT" rev-parse HEAD)" != "$AHEAD_HEAD" ]; then
+  echo "FAIL: the ahead-of-remote refusal must not move the local branch" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+# Positive control: pushing the commits clears the divergence and the same
+# run proceeds.
+git -C "$AHEAD_PROJECT" push --no-verify -q origin "$AHEAD_BASE"
+(cd "$AHEAD_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780d-ahead-ok-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780d-ahead-ok-output.txt" 'Creating update branch: chore/touchstone-'
+
+# (d) P2: an add-if-missing template slot occupied by a SYMLINK is
+# project-owned for the probe AND the writer. A dangling symlink reads as
+# occupied (not "Needs update"), and a genuine update must leave a
+# symlinked config untouched instead of replacing it with the template.
+TSYM_PROJECT="$TEST_DIR/p780d-template-symlink"
+bash "$TOUCHSTONE_ROOT/bootstrap/new-project.sh" "$TSYM_PROJECT" --no-register >/dev/null
+configure_git "$TSYM_PROJECT"
+commit_all "$TSYM_PROJECT" "initial"
+echo "ffffffffffffffffffffffffffffffffffffffff" >"$TSYM_PROJECT/.touchstone-version"
+rm "$TSYM_PROJECT/.markdownlint.json"
+ln -s ".markdownlint.custom.json" "$TSYM_PROJECT/.markdownlint.json"
+commit_all "$TSYM_PROJECT" "sha stamp + dangling markdownlint symlink"
+(cd "$TSYM_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh" --check) \
+  >"$TEST_DIR/p780d-tsym-check-output.txt" 2>&1
+assert_contains "$TEST_DIR/p780d-tsym-check-output.txt" 'Already up to date'
+assert_not_contains "$TEST_DIR/p780d-tsym-check-output.txt" 'Needs update'
+# Resolve the symlink to a real project-owned config and force a genuine
+# update: the writer must keep hands off the symlink.
+printf '{ "default": false }\n' >"$TSYM_PROJECT/.markdownlint.custom.json"
+printf '# drift\n' >>"$TSYM_PROJECT/lib/toml.sh"
+commit_all "$TSYM_PROJECT" "custom config target + drift"
+(cd "$TSYM_PROJECT" && bash "$TOUCHSTONE_ROOT/bootstrap/update-project.sh") \
+  >"$TEST_DIR/p780d-tsym-update-output.txt" 2>&1
+if [ ! -L "$TSYM_PROJECT/.markdownlint.json" ]; then
+  echo "FAIL: the update replaced a project-owned symlinked .markdownlint.json with the template (PR #780 round 3 P2)" >&2
+  ERRORS=$((ERRORS + 1))
+elif [ "$(readlink "$TSYM_PROJECT/.markdownlint.json")" != ".markdownlint.custom.json" ]; then
+  echo "FAIL: the update rewrote where the project-owned .markdownlint.json symlink points" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+assert_not_contains "$TEST_DIR/p780d-tsym-update-output.txt" 'replacing unexpected symlink with managed file: .*\.markdownlint\.json'
 
 # --------------------------------------------------------------------------
 # Results
