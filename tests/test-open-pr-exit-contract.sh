@@ -1449,6 +1449,130 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Cases 48-50 (issue #714): a closing reference records an INTENT, written
+# early in a PR's life; nothing re-checks that the intent survived to the
+# merged tree. PR #680 carried `Closes #593` on its first commit and reverted
+# that fix on its fifth — the squash merge kept the trailer, GitHub closed
+# #593, and the bug read as resolved for two days while it was still live.
+# ---------------------------------------------------------------------------
+echo "==> Case 48: a revert of an earlier commit's fix blocks its closing reference"
+OUT="$TEST_DIR/case48.out"
+RC=0
+reset_open_pr_logs
+CASE714_BASE="$(git -C "$REPO_DIR" rev-parse HEAD)"
+printf 'the fix\n' >"$REPO_DIR/case714-fix.txt"
+git -C "$REPO_DIR" add case714-fix.txt
+git -C "$REPO_DIR" commit -q -m "fix: the UNSTABLE tolerance" -m "Closes-issue: #52"
+CASE714_FIX="$(git -C "$REPO_DIR" rev-parse HEAD)"
+printf 'unrelated\n' >"$REPO_DIR/case714-other.txt"
+git -C "$REPO_DIR" add case714-other.txt
+git -C "$REPO_DIR" commit -q -m "chore: unrelated follow-up"
+git -C "$REPO_DIR" revert --no-edit "$CASE714_FIX" >/dev/null
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+# The refusal has to land BEFORE the push: nothing about this branch should
+# reach the remote while its closing reference is unverified.
+if [ "$RC" != "0" ] \
+  && grep -q 'closes issue(s) that a revert in the same PR may have undone' "$OUT" \
+  && grep -q 'Unconfirmed closing reference(s): #52' "$OUT" \
+  && [ ! -s "$TEST_DIR/git-push.log" ] \
+  && [ ! -s "$TEST_DIR/pr-create.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a reverted fix must not ship its closing reference" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 49: the recorded audit verdict ships the reference it names"
+OUT="$TEST_DIR/case49.out"
+RC=0
+reset_open_pr_logs
+git -C "$REPO_DIR" commit -q --allow-empty \
+  -m "chore: audit closing refs against revert" \
+  -m "[skip-revert-trailer-check] #52 verified present in HEAD"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+
+if [ "$RC" = "0" ] \
+  && grep -q 'shipping unverified closing reference(s): #52' "$OUT" \
+  && [ -s "$TEST_DIR/pr-create.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a recorded audit verdict must ship, and must say what it waived" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 49b: the audit verdict survives a range larger than a pipe buffer"
+OUT="$TEST_DIR/case49b.out"
+RC=0
+reset_open_pr_logs
+# `git log <range> | grep -q` under `set -o pipefail` reports 141 when grep
+# matches early and git log is left holding more output than the pipe buffer
+# takes: the match reads as NO match, and the documented escape silently stops
+# working on exactly the long-lived branches most likely to carry a revert.
+# The token goes on the NEWEST commit (git log emits newest-first) with ~190KB
+# of message behind it, which makes the SIGPIPE deterministic rather than
+# racy — two commits, no 300-commit fixture.
+{
+  echo "chore: a commit with a very large message body"
+  echo
+  awk 'BEGIN { for (i = 0; i < 4000; i++) print "padding padding padding padding padding padding" }'
+} >"$TEST_DIR/big-commit-message.txt"
+git -C "$REPO_DIR" commit -q --allow-empty -F "$TEST_DIR/big-commit-message.txt"
+git -C "$REPO_DIR" commit -q --allow-empty \
+  -m "chore: audit closing refs against revert" \
+  -m "[skip-revert-trailer-check] #52 verified present in HEAD"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE714_BASE"
+
+if [ "$RC" = "0" ] \
+  && grep -q 'shipping unverified closing reference(s): #52' "$OUT" \
+  && [ -s "$TEST_DIR/pr-create.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a large commit-message range must not swallow the audit verdict" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+echo "==> Case 50: a revert that carries its own closing reference is self-consistent"
+OUT="$TEST_DIR/case50.out"
+RC=0
+reset_open_pr_logs
+printf 'the bad feature\n' >"$REPO_DIR/case714-bad.txt"
+git -C "$REPO_DIR" add case714-bad.txt
+git -C "$REPO_DIR" commit -q -m "feat: the bad feature"
+git -C "$REPO_DIR" revert --no-edit HEAD >/dev/null
+git -C "$REPO_DIR" commit -q --amend \
+  -m "revert(feat): back out the bad feature" \
+  -m "Closes-issue: #52"
+OPEN_PR_AUTO_MERGE=0 GH_HAS_EXISTING_PR=0 GH_PR_BODY="Protocol: yes" \
+  run_open_pr >"$OUT" 2>&1 || RC=$?
+git -C "$REPO_DIR" reset -q --hard "$CASE714_BASE"
+
+# The revert IS the fix here, so the reference needs no separate verdict —
+# and the guard must not force one, or every revert-shaped PR would be
+# taught to reach for the waiver token.
+if [ "$RC" = "0" ] \
+  && grep -q 'every closing reference is carried by a revert itself' "$OUT" \
+  && ! grep -q 'may have undone' "$OUT" \
+  && [ -s "$TEST_DIR/pr-create.log" ]; then
+  echo "    PASS"
+else
+  echo "    FAIL: a self-consistent revert must ship without a waiver" >&2
+  echo "    rc=$RC" >&2
+  cat "$OUT" >&2
+  ERRORS=$((ERRORS + 1))
+fi
+
+# ---------------------------------------------------------------------------
 # Cases 42-44 (issue #751): the review request is idempotent per head. A
 # trusted formal review already bound to the exact current head (with its
 # durable request evidence in place) means the head is reviewed — a second

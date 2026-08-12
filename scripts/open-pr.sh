@@ -1263,17 +1263,13 @@ find_base_merge_commit() {
   return 1
 }
 
-find_issue_closing_refs() {
-  local base_branch="$1"
-  local merge_base
-  if ! merge_base="$(find_base_merge_commit "$base_branch")"; then
-    echo "WARNING: could not find merge-base for $base_branch; skipping linked-issue detection" >&2
-    return 0
-  fi
-
-  # Invariant: only commits unique to this PR branch are scanned; base-branch
-  # history must not contribute stale issue references to new PR bodies.
-  git log "$merge_base..HEAD" --format='%b' | awk '
+# The closing-reference grammar, applied to a stream of commit-message BODIES
+# on stdin. Both readers below share it: the PR-body builder that turns
+# references into `Closes #N` lines, and the revert guard that has to judge
+# those same references. One grammar, or the guard would police references the
+# body builder never emits (and miss the ones it does).
+closing_refs_in_bodies() {
+  awk '
     {
       line = tolower($0)
       should_scan = 0
@@ -1295,6 +1291,148 @@ find_issue_closing_refs() {
       }
     }
   '
+}
+
+find_issue_closing_refs() {
+  local base_branch="$1"
+  local merge_base
+  if ! merge_base="$(find_base_merge_commit "$base_branch")"; then
+    echo "WARNING: could not find merge-base for $base_branch; skipping linked-issue detection" >&2
+    return 0
+  fi
+
+  # Invariant: only commits unique to this PR branch are scanned; base-branch
+  # history must not contribute stale issue references to new PR bodies.
+  git log "$merge_base..HEAD" --format='%b' | closing_refs_in_bodies
+}
+
+# A commit is a revert when it carries one of the two markers git and this
+# repo's convention actually produce: a `Revert "..."` / `revert(scope):` /
+# `revert:` subject, or the `This reverts commit <sha>` line `git revert`
+# writes into the body. Deliberately anchored — "reverting", "revert-safe",
+# and a prose mention of a revert are not reverts.
+#
+# The body read is a here-string, never `git log ... | grep -q`. Under
+# `set -o pipefail` an early-exiting `grep -q` makes git log die of SIGPIPE
+# and the pipeline reports 141 — a MATCH would read as "no match" and the
+# revert would go undetected. Verified reproducible on bash 3.2 with a
+# 300-commit range. A here-string has no pipeline, so grep's status is the
+# only status.
+commit_is_revert() {
+  local commit="$1" subject body
+  subject="$(git log -1 --format=%s "$commit")"
+  case "$subject" in
+    [Rr]evert | [Rr]evert[\ \"\(!:]*) return 0 ;;
+  esac
+  body="$(git log -1 --format=%B "$commit")"
+  if grep -Eq '^[[:space:]]*This reverts commit [0-9a-f]{7,64}' <<<"$body"; then
+    return 0
+  fi
+  return 1
+}
+
+# Issue #714. A closing reference is written against an INTENT, early in a
+# PR's life, and nothing re-checks that the intent survived to the merged
+# tree. PR #680 carried `Closes #593` on its first commit and reverted that
+# fix on its fifth; the squash merge kept the trailer, GitHub closed #593,
+# and the bug read as resolved for two days while it was still live. The
+# failure is invisible by construction — the issue closes, the PR merges
+# green — so the only place to catch it is before the trailer ships.
+#
+# The rule: if this branch reverts anything, every closing reference it
+# carries needs a human verdict. A reference carried by the REVERT commit
+# itself is self-consistent (the revert IS the fix) and needs no verdict;
+# a reference carried by some other commit is exactly the #680 shape and
+# blocks the push.
+#
+# This exits rather than returning a status, and is called as a bare
+# statement, so errexit stays armed for every git read it performs: a check
+# that could not run must not read as a clean check.
+REVERT_TRAILER_SKIP_TOKEN='[skip-revert-trailer-check]'
+assert_closing_refs_survive_reverts() {
+  local base_branch="$1"
+  local merge_base commit ref range_messages
+  local revert_shas="" revert_refs="" revert_ref_list="" non_revert_refs="" unconfirmed=""
+  local -a non_revert_commits=()
+
+  # An unresolvable merge base warns rather than refusing, matching
+  # find_issue_closing_refs above: when the range cannot be computed this
+  # script also injects no `Closes #N` lines of its own, so the residual
+  # exposure is a closing reference the operator wrote into the final commit
+  # body by hand. Loud, and not silent — but deliberately not fatal, because
+  # refusing here would change a degradation path that has nothing to do
+  # with reverts.
+  if ! merge_base="$(find_base_merge_commit "$base_branch")"; then
+    echo "WARNING: could not find merge-base for $base_branch; the revert-vs-closing-reference" >&2
+    echo "         check (issue #714) did NOT run. Closing references on this branch are" >&2
+    echo "         unverified against later reverts." >&2
+    return 0
+  fi
+
+  while IFS= read -r commit; do
+    [ -n "$commit" ] || continue
+    if commit_is_revert "$commit"; then
+      revert_shas="${revert_shas}${commit} "
+    else
+      non_revert_commits+=("$commit")
+    fi
+  done < <(git rev-list "$merge_base..HEAD")
+
+  # No revert in this branch's own history: the #714 shape cannot exist.
+  [ -n "$revert_shas" ] || return 0
+
+  # shellcheck disable=SC2086  # deliberate word splitting over a SHA list.
+  revert_ref_list="$(git log --no-walk --format='%b' $revert_shas | closing_refs_in_bodies)"
+  revert_refs=" $(printf '%s' "$revert_ref_list" | tr '\n' ' ') "
+  if [ "${#non_revert_commits[@]}" -gt 0 ]; then
+    non_revert_refs="$(git log --no-walk --format='%b' "${non_revert_commits[@]}" | closing_refs_in_bodies)"
+  fi
+
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    case "$revert_refs" in
+      *" $ref "*) continue ;;
+    esac
+    unconfirmed="${unconfirmed}#${ref} "
+  done <<<"$non_revert_refs"
+
+  if [ -z "$unconfirmed" ]; then
+    # Silent when the branch carries no closing reference at all: a revert
+    # with nothing to close is the ordinary case and needs no commentary.
+    if [ -n "$revert_ref_list" ] || [ -n "$non_revert_refs" ]; then
+      echo "==> Revert commit(s) present; every closing reference is carried by a revert itself."
+    fi
+    return 0
+  fi
+
+  # Same SIGPIPE-under-pipefail hazard as commit_is_revert, and worse here:
+  # a swallowed match would leave the operator with a refusal that the
+  # documented escape cannot clear, on exactly the long-lived branches most
+  # likely to contain a revert.
+  range_messages="$(git log "$merge_base..HEAD" --format='%B')"
+  if grep -Fq "$REVERT_TRAILER_SKIP_TOKEN" <<<"$range_messages"; then
+    echo "==> $REVERT_TRAILER_SKIP_TOKEN found in this branch's history;"
+    echo "    shipping unverified closing reference(s): ${unconfirmed% }"
+    return 0
+  fi
+
+  echo "ERROR: this branch closes issue(s) that a revert in the same PR may have undone." >&2
+  echo "       Unconfirmed closing reference(s): ${unconfirmed% }" >&2
+  echo "       Reverting commit(s) on this branch:" >&2
+  for commit in $revert_shas; do
+    printf '         %s\n' "$(git log -1 --format='%h %s' "$commit")" >&2
+  done
+  echo "       A closing reference records an intent, not a result. Merging as-is would" >&2
+  echo "       auto-close the issue(s) above while the merged tree may no longer contain" >&2
+  echo "       the fix — the issue reads resolved and the bug stays live (issue #714)." >&2
+  echo "       Resolve before shipping:" >&2
+  echo "         - fix did NOT survive: drop the closing reference (rebase -i, reword the" >&2
+  echo "           commit, or write 'Refs #N' instead of 'Closes #N')" >&2
+  echo "         - revert is unrelated and the fix IS present: record that verdict where" >&2
+  echo "           a reader can see it —" >&2
+  echo "           git commit --allow-empty -m 'chore: audit closing refs against revert' \\" >&2
+  echo "             -m '$REVERT_TRAILER_SKIP_TOKEN ${unconfirmed% } verified present in HEAD'" >&2
+  exit 1
 }
 
 usage() {
@@ -1529,6 +1667,13 @@ if [ "$BASE_BRANCH" = "$CURRENT_BRANCH" ]; then
   echo "ERROR: --base $BASE_BRANCH cannot equal the current branch." >&2
   exit 1
 fi
+
+# Judge closing references against this branch's reverts BEFORE the push, so a
+# refusal leaves the remote exactly as it was. Runs on every invocation —
+# draft, update, and final shipping alike: a draft's trailers are the same
+# trailers the squash message will carry, and one code path is the only way
+# the check cannot be routed around by picking a mode.
+assert_closing_refs_survive_reverts "$BASE_BRANCH"
 
 # Stacking + --auto-merge means THIS PR squash-merges into $BASE_BRANCH, not
 # into $DEFAULT_BRANCH. That is no longer dangerous — merge-pr.sh retains the
