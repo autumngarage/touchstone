@@ -174,9 +174,97 @@ gh pr view <n> --json state,mergedAt --jq '{state, mergedAt}'
 
 ## Agentic PR Review Loop
 
-The PR is the only semantic review surface. Request one review per exact head. The driving CLI watches the PR, fixes actionable findings, pushes a new head, and repeats until the head's review is answered — a clean verdict, or findings with every thread resolved.
+The PR is the only semantic review surface. Request one ordinary review per exact head-and-base binding: head SHA, base ref, and base SHA. The driving CLI watches the PR, fixes actionable findings, pushes a new head, and repeats until the current binding's review is answered — a clean verdict, or findings with every thread resolved.
 
-**Never re-request review on an unchanged head** for thread-backed findings. The reviewer is non-deterministic, so re-asking about the same commit manufactures new findings instead of confirming the old ones. A new head gets exactly one new review. The one exception is a body-only finding — a non-clean verdict with no inline threads — where nothing can be resolved to answer it, so a fresh request on the unchanged head is the only path forward.
+### Review-request states and bounded recovery
+
+A request has distinct submitted, accepted, and completed states; its comment
+is not proof that the provider accepted or completed the job. Record the
+request URL, timestamp, exact head, base, and submission deadline. That
+deadline is at least 30 minutes after submission, or longer when the provider
+publishes a longer acceptance SLA. The 30-minute floor is the conservative
+recovery interval established by the dropped-request incident on Touchstone PR
+number 827. Then distinguish these states:
+
+1. **Submitted** — GitHub contains the request comment for the recorded head
+   and base.
+2. **Accepted** — the provider reacted to the request, exposed a task, or
+   emitted other provider-owned output. Record the earliest acceptance signal
+   and start a new completion deadline at least 30 minutes later, or later when
+   the provider publishes a longer completion SLA. Acceptance is not review
+   evidence.
+3. **Completed** — trusted review evidence covers the exact head. A clean
+   result may be a formal review or a provider-owned PR conversation comment;
+   findings may also appear in inline threads.
+4. **Explicitly failed** — the provider reports quota, no-review, or another
+   terminal error.
+5. **Unacknowledged** — the observation deadline passes with no
+   provider-owned signal.
+6. **Accepted but stalled** — the completion deadline measured from the
+   earliest acceptance signal passes without completed or explicitly failed
+   output.
+
+Watch the complete PR review surface: formal reviews, PR conversation comments,
+inline review threads, request-comment reactions, and any linked provider task.
+Polling formal reviews alone can miss a clean result posted as a conversation
+comment. A reaction or task proves only acceptance and never permits merge.
+
+The one-request-per-binding rule has one fail-closed recovery exception. If
+the original request is **unacknowledged** or accepted but stalled, the driving
+CLI may post exactly one replacement trigger on the unchanged binding after it:
+
+- reconfirms that the PR head and base match the original request;
+- adds a PR-visible audit note naming the original comment, state, observed
+  signals, relevant start and deadline, and elapsed interval;
+- re-fetches the complete PR review surface immediately before posting and
+  stops if the original request completed or explicitly failed; and
+- identifies the new comment as the sole replacement for that unchanged binding.
+
+After posting, wait for its `touchstone/review-request-v1` marker whose target
+URL names the replacement comment. Re-fetch the live head and base, then prove
+the marker and live binding both equal the pre-post head, base ref, and base
+SHA. A missing marker is a blocked upstream failure, not permission to retry.
+If either binding drifted during posting, edit the replacement into a
+non-trigger audit note and follow the base-change rule below.
+
+There is one other final posting race: the original can complete after the
+last evidence check but before the replacement comment exists. Capture the
+replacement comment ID. If the original completion predates the replacement,
+edit the replacement into a non-trigger audit note so it no longer begins with
+`@codex review`:
+
+```bash
+gh api -X PATCH repos/<owner>/<repo>/issues/comments/<replacement-comment-id> \
+  -f body='Recovery trigger withdrawn: <reason and observed binding>.'
+```
+
+The edit preserves the audit trail and invalidates the replacement marker.
+Verify the check reruns. It may fall back to the original marker only when that
+marker still matches the live binding; otherwise remain blocked. If the
+provider still completes the replacement, treat any resulting findings as
+review feedback; never discard them.
+
+The replacement must still produce trusted exact-head review evidence. If it
+also remains unacknowledged, stalls, or fails, file or update an upstream
+incident and remain blocked. Never loop replacement requests, synthesize review
+evidence, merge on acceptance alone, or use emergency bypass for ordinary
+review-provider friction.
+
+**Never re-request review for an unchanged head-and-base binding** for thread-backed findings. The reviewer is non-deterministic, so re-asking about the same binding manufactures new findings instead of confirming the old ones. A new head gets exactly one ordinary request for its current base. Three cases permit another request while the head stays unchanged:
+
+1. **The base binding changed** — if the base ref or base SHA differs from the
+   recorded request, that evidence is invalid. Before requesting against the
+   new base on an unchanged head, prove the earlier request is completed or explicitly failed. Provider results identify the head but not their request
+   or base, so a late old-base result can otherwise masquerade as new-base
+   evidence. If the earlier request is nonterminal, wait for terminal output or
+   integrate the current base into the branch to produce a genuinely new head;
+   then request review for that new head-and-base binding.
+   Never manufacture an empty head commit to force review.
+2. **Provider recovery** — use the single audited recovery trigger above only
+   after its applicable state deadline, with the original binding unchanged.
+3. **Body-only finding** — a non-clean verdict with no inline thread has
+   nothing resolvable to answer, so one fresh request on the unchanged binding
+   is the only path forward.
 
 ### Babysitting a PR: the round discipline
 

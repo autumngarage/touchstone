@@ -84,6 +84,43 @@ assert_not_contains "$GIT_WORKFLOW_GUIDE" \
 assert_not_contains "$GIT_WORKFLOW_GUIDE" \
   'Direct pushes to `main` are rejected by the server even for organization admins.'
 
+echo "==> review-request recovery is complete, bounded, and fail-closed"
+# PR #827 exposed two weak points: a provider can accept a request and then
+# stall, and a clean result can arrive as a conversation comment rather than a
+# formal review. The workflow must model both without turning retry into a loop
+# or allowing acceptance alone to stand in for exact-head evidence.
+for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
+  # Every agent-facing workflow needs the complete, copyable GitHub path. A
+  # recovery rule is useless if the driver cannot reliably request, answer,
+  # bind, and merge the ordinary review first.
+  assert_contains "$file" 'gh pr comment <n> --body "@codex review"'
+  assert_contains "$file" "headRefOid"
+  assert_contains "$file" "scripts/respond-review.sh"
+  assert_contains "$file" "--match-head-commit"
+  assert_contains "$file" "submitted, accepted, and completed states"
+  assert_contains "$file" "PR conversation comments"
+  assert_contains "$file" "accepted but stalled"
+  assert_contains "$file" "at least 30 minutes after submission"
+  assert_contains "$file" "earliest acceptance signal"
+  assert_contains "$file" "immediately before posting"
+  assert_contains "$file" 'wait for its `touchstone/review-request-v1` marker'
+  assert_contains "$file" "marker and live binding"
+  assert_contains "$file" "A missing marker"
+  assert_contains "$file" "non-trigger audit note"
+  assert_contains "$file" "fall back to the original marker"
+  assert_contains "$file" "exactly one replacement trigger"
+  assert_contains "$file" "exact head-and-base binding"
+  assert_contains "$file" "Three cases permit another request while the head stays unchanged"
+  assert_contains "$file" "base ref or base SHA"
+  assert_contains "$file" "earlier request is completed or explicitly failed"
+  assert_contains "$file" "integrate the current base into the branch"
+  assert_contains "$file" "results identify the head"
+  assert_contains "$file" "Never manufacture an empty"
+  assert_contains "$file" "trusted exact-head review evidence"
+  assert_contains "$file" "merge on acceptance alone"
+  assert_not_contains "$file" "retry until review"
+done
+
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"
 # CLAUDE.md uses @TOUCHSTONE.md (Claude Code resolves @-imports transitively),
 # so the contract phrases are inlined into agent context via TOUCHSTONE.md

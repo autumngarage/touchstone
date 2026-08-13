@@ -108,6 +108,20 @@ run_case "a second request after the prior result waits for new evidence" '
     "author_association":"MEMBER",
     "user":{"login":"driver"}
   }]' failure "no trusted exact-head"
+run_case "editing a raced replacement into an audit note restores the original binding" '
+  .statuses += [{
+    "context":"touchstone/review-request-v1",
+    "state":"success",
+    "description":"v1 p=42 r=88d050b1908057b53d38b42702ebc659e3d7f696 b=2222222222222222222222222222222222222222 c=102",
+    "creator":{"login":"github-actions[bot]"}
+  }]
+  | .issueComments += [{
+    "id":102,
+    "body":"Recovery trigger withdrawn: original request completed during posting.",
+    "created_at":"2026-08-13T10:02:00Z",
+    "author_association":"MEMBER",
+    "user":{"login":"driver"}
+  }]' success
 run_case "untrusted result comment is not review evidence" '.issueComments[1].user.login = "attacker"' failure "no trusted exact-head"
 run_case "an unresolved abbreviated SHA is never prefix-matched" '.issueComments[1].resolved_review_sha = ""' failure "no trusted exact-head"
 run_case "editing a clean result reopens it as a body finding" '.issueComments[1].updated_at = "2026-08-13T10:02:00Z"' failure "body-only"
