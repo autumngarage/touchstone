@@ -258,7 +258,9 @@ jobs:
               ;;
             push)
               pushed_ref="${GITHUB_REF#refs/heads/}"
-              numbers="$(gh api --paginate "repos/$REPO/pulls?state=open&base=$pushed_ref&per_page=100" --jq '.[].number')"
+              numbers="$(gh api --paginate --method GET "repos/$REPO/pulls" \
+                -f state=open -f "base=$pushed_ref" -f per_page=100 \
+                --jq '.[].number')"
               ;;
             *) exit 0 ;;
           esac

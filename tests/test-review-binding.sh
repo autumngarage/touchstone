@@ -229,6 +229,14 @@ if grep -Fq 'EVENT_PATH: ${{ github.event_path }}' "$WORKFLOW"; then
 else
   ok "event payload reads use the runner-provided path"
 fi
+if grep -Fq 'base=$pushed_ref&' "$WORKFLOW"; then
+  fail "push sweep must not interpolate a base ref into a query string"
+elif grep -Fq -- '--method GET "repos/$REPO/pulls"' "$WORKFLOW" \
+  && grep -Fq -- '-f "base=$pushed_ref"' "$WORKFLOW"; then
+  ok "push sweep URL-encodes arbitrary valid base refs through gh fields"
+else
+  fail "push sweep must pass the base ref as an encoded GET field"
+fi
 if grep -Eq '^[[:space:]]+(name: review-binding|review-binding:)$' "$WORKFLOW"; then
   fail "job/step must not publish a second review-binding check"
 else
