@@ -18,9 +18,9 @@ merging only after the required GitHub review and checks approve.
 
 @TOUCHSTONE.md
 
-The block above is the canonical universal contract: agent roles, the 14 daily-reminder engineering principles, the never-commit-on-main rule, the required delivery workflow, and a routing table that points to deeper docs rather than inlining them (`principles/git-workflow.md`, `principles/memory-hygiene.md`, `principles/pre-implementation-checklist.md`, `.cortex/protocol.md`, etc.). Codex and Gemini agents read the same content via the `<!-- touchstone:steering -->` managed block in `AGENTS.md` / `GEMINI.md`.
+The block above is the canonical universal contract: agent roles, the engineering principles, the never-commit-on-main rule, the required delivery workflow, and a routing table that points to deeper docs rather than inlining them (`principles/git-workflow.md`, `principles/memory-hygiene.md`, `principles/pre-implementation-checklist.md`, etc.). Codex and Gemini agents read the same content via the `<!-- touchstone:steering -->` managed block in `AGENTS.md` / `GEMINI.md`.
 
-The `~/.claude/skills/touchstone-*` skills (installed by `touchstone init`) provide the same routing surface as the table above, with descriptions in your session header.
+The `~/.claude/skills/touchstone-*` skills provide the same routing surface as the table above, with descriptions in your session header. Copy them into `~/.claude/skills/` from the touchstone repo's `skills/` directory.
 
 ## Testing
 
