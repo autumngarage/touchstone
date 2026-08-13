@@ -95,22 +95,10 @@ def answers_body_finding($id):
     $reviews[]
     | select((.body // "" | gsub("[[:space:]]"; "")) != "")
     | . as $finding
-    | [
-        $root.statuses[]?
-        | select(.context == "touchstone/review-edit-v1")
-        | select(.state == "success")
-        | select((.creator.login // "") == "github-actions[bot]")
-        | . as $edit_status
-        | (try ((.description // "")
-            | capture("^v1 p=(?<pr>[0-9]+) r=(?<review>[0-9]+)$"))
-           catch empty)
-        | select((.pr | tonumber) == $number and (.review | tostring) == ($finding.id | tostring))
-        | $edit_status.created_at
-      ] as $edit_times
-    | (($edit_times | max) // ($finding.submitted_at // "")) as $finding_at
+    | ($finding.updated_at // $finding.submitted_at // "") as $finding_at
     | select(
         (standard_codex_review_body | not)
-        or ($edit_times | length) > 0
+        or (($finding.updated_at // "") > ($finding.submitted_at // ""))
         or (any($root.reviewComments[]?;
           .in_reply_to_id == null
           and ((.pull_request_review_id // 0) | tostring) == ($finding.id | tostring)) | not)

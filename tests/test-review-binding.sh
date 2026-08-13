@@ -5,6 +5,7 @@ set -euo pipefail
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EVALUATOR="$TOUCHSTONE_ROOT/.github/review-binding/evaluate.jq"
 WORKFLOW="$TOUCHSTONE_ROOT/.github/workflows/review-binding.yml"
+SIGNAL_WORKFLOW="$TOUCHSTONE_ROOT/.github/workflows/review-evidence-signal.yml"
 SETUP="$TOUCHSTONE_ROOT/setup.sh"
 VALIDATE="$TOUCHSTONE_ROOT/.github/workflows/validate.yml"
 TMP_DIR="$(mktemp -d)"
@@ -137,6 +138,7 @@ INLINE_REVIEW='{
   "commit_id": "1111111111111111111111111111111111111111",
   "state": "COMMENTED",
   "submitted_at": "2026-08-13T10:01:00Z",
+  "updated_at": "2026-08-13T10:01:00Z",
   "user": {"login": "chatgpt-codex-connector[bot]"}
 }'
 INLINE_FINDING='{
@@ -211,18 +213,11 @@ run_case "unmarked later PR chatter does not answer a body finding" \
   failure "body-only"
 run_case "body-only finding with later re-review passes" \
   ".issueComments = [.issueComments[0]] | .reviews = [$BODY_REVIEW, $REREVIEW]" success
-REVIEW_EDIT_STATUS='{
-  "context": "touchstone/review-edit-v1",
-  "state": "success",
-  "description": "v1 p=42 r=400",
-  "created_at": "2026-08-13T10:02:30Z",
-  "creator": {"login": "github-actions[bot]"}
-}'
 run_case "editing a formal review body invalidates its older marked answer" \
-  ".statuses += [$REVIEW_EDIT_STATUS] | .issueComments = [.issueComments[0], $BODY_ANSWER] | .reviews = [$BODY_REVIEW]" \
+  ".issueComments = [.issueComments[0], $BODY_ANSWER] | .reviews = [($BODY_REVIEW | .updated_at = \"2026-08-13T10:02:30Z\")]" \
   failure "body-only"
 run_case "later re-review answers an edited formal review body" \
-  ".statuses += [$REVIEW_EDIT_STATUS] | .issueComments = [.issueComments[0]] | .reviews = [$BODY_REVIEW, $REREVIEW]" \
+  ".issueComments = [.issueComments[0]] | .reviews = [($BODY_REVIEW | .updated_at = \"2026-08-13T10:02:30Z\"), $REREVIEW]" \
   success
 RESULT_BODY_FINDING='{
   "id": 500,
@@ -283,8 +278,11 @@ for required in \
   'name: review-binding' \
   'checks: write' \
   'gh api --paginate' \
-  'pull_request_review_comment:' \
-  'types: [submitted, edited, dismissed]' \
+  'pull_request_target:' \
+  'workflow_run:' \
+  'workflows: [review evidence signal]' \
+  'api_reviews' \
+  'updatedAt' \
   'issue_comment:' \
   'types: [created, edited, deleted]' \
   'status=in_progress' \
@@ -294,14 +292,24 @@ for required in \
   'newest_run' \
   'BOOTSTRAP_BASE_SHA' \
   'GITHUB_EVENT_PATH' \
-  'known_head' \
-  'touchstone/review-edit-v1'; do
+  'known_head'; do
   if grep -Fq "$required" "$WORKFLOW"; then
     ok "workflow contains: $required"
   else
     fail "workflow missing required guardrail: $required"
   fi
 done
+if grep -Fq 'pull_request_review:' "$WORKFLOW" \
+  || grep -Fq 'pull_request_review_comment:' "$WORKFLOW"; then
+  fail "write-capable publisher must not run directly with read-only fork review tokens"
+elif grep -Fq 'pull_request_review:' "$SIGNAL_WORKFLOW" \
+  && grep -Fq 'pull_request_review_comment:' "$SIGNAL_WORKFLOW" \
+  && grep -Fq 'permissions: {}' "$SIGNAL_WORKFLOW" \
+  && ! grep -Eq '^[[:space:]]*uses:' "$SIGNAL_WORKFLOW"; then
+  ok "fork review events route through an inert default-branch workflow_run handoff"
+else
+  fail "review evidence signal must cover every review mutation without write access or actions"
+fi
 if grep -Fq 'EVENT_PATH: ${{ github.event_path }}' "$WORKFLOW"; then
   fail "workflow must use the runner-populated GITHUB_EVENT_PATH, not an empty context expression"
 else
@@ -399,12 +407,13 @@ if grep -Fq 'cancel-in-progress: false' "$WORKFLOW" \
 else
   fail "stale-run safety must use the newer-run guard without force-cancelling jobs"
 fi
-if grep -Fq 'EVENT_PENDING_ID="$pending_id"' "$WORKFLOW" \
-  && grep -Fq 'pending_id="$EVENT_PENDING_ID"' "$WORKFLOW" \
-  && ! grep -Fq 'publish_check "$pending_id" neutral' "$WORKFLOW"; then
-  ok "edited-review invalidation stays pending and is reused by evaluation"
+if grep -Fq 'updated_at: .updatedAt' "$WORKFLOW" \
+  && grep -Fq '$finding.updated_at // $finding.submitted_at' "$EVALUATOR" \
+  && ! grep -Fq 'touchstone/review-edit-v1' "$WORKFLOW" \
+  && ! grep -Fq 'touchstone/review-edit-v1' "$EVALUATOR"; then
+  ok "formal review edits use GitHub's authoritative updatedAt"
 else
-  fail "edited-review handling must not neutralize its check before reevaluation"
+  fail "formal review edit freshness must come from authoritative review data"
 fi
 REQUEST_BODY="$(awk '/^          establish_request_marker\(\) \{/{grab=1} grab{print} grab && /^          \}/{exit}' "$WORKFLOW")"
 if awk '

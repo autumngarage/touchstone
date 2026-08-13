@@ -14,12 +14,11 @@ on:
         type: number
   issue_comment:
     types: [created, edited, deleted]
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened, edited, closed]
-  pull_request_review:
-    types: [submitted, edited, dismissed]
-  pull_request_review_comment:
-    types: [created, edited, deleted]
+  workflow_run:
+    workflows: [review evidence signal]
+    types: [completed]
   status:
   push:
 
@@ -35,7 +34,7 @@ defaults:
     shell: bash
 
 concurrency:
-  group: review-binding-${{ github.event.pull_request.number || github.event.issue.number || github.event.sha || github.run_id }}
+  group: review-binding-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.head_sha || github.event.sha || github.run_id }}
   # Superseded runs finish neutral through the newer-check-run guard below.
   # Actions marks force-cancelled jobs red, creating a second false gate.
   cancel-in-progress: false
@@ -67,6 +66,26 @@ jobs:
           api_array() {
             local endpoint="$1" output="$2"
             gh api --paginate "$endpoint" | jq -s 'add // []' >"$output"
+          }
+
+          api_reviews() {
+            local number="$1" output="$2" owner repo
+            owner="${REPO%%/*}"
+            repo="${REPO#*/}"
+            # GraphQL variables are intentionally literal for gh to bind.
+            # shellcheck disable=SC2016
+            gh api graphql --paginate \
+              -f query='query($owner:String!,$repo:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviews(first:100,after:$endCursor){nodes{databaseId body state submittedAt updatedAt commit{oid} author{login}} pageInfo{hasNextPage endCursor}}}}}' \
+              -F owner="$owner" -F repo="$repo" -F number="$number" \
+              | jq -s '[.[].data.repository.pullRequest.reviews.nodes[] | {
+                  id: .databaseId,
+                  body: .body,
+                  state: .state,
+                  submitted_at: .submittedAt,
+                  updated_at: .updatedAt,
+                  commit_id: .commit.oid,
+                  user: {login: .author.login}
+                }]' >"$output"
           }
 
           decode_base64() {
@@ -160,27 +179,6 @@ jobs:
             EVENT_PENDING_ID="$pending_id"
           }
 
-          establish_review_edit_marker() {
-            [ "$EVENT_NAME" = pull_request_review ] || return 0
-            [ "$(jq -r '.action // ""' "$GITHUB_EVENT_PATH")" = edited ] || return 0
-
-            local number head review_id target pending_id description
-            number="$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
-            head="$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
-            review_id="$(jq -r '.review.id' "$GITHUB_EVENT_PATH")"
-            target="$(jq -r '.review.html_url' "$GITHUB_EVENT_PATH")"
-            pending_id="$(create_pending "$number" "$head" "known head \`$head\`; edited-review marker pending")"
-            description="v1 p=$number r=$review_id"
-            gh api -X POST "repos/$REPO/statuses/$head" \
-              -f state=success \
-              -f context=touchstone/review-edit-v1 \
-              -f description="$description" \
-              -f target_url="$target" >/dev/null
-            EVENT_PENDING_PR="$number"
-            EVENT_PENDING_HEAD="$head"
-            EVENT_PENDING_ID="$pending_id"
-          }
-
           evaluate_pr() {
             local number="$1"
             local known_head="${2:-}"
@@ -231,10 +229,10 @@ jobs:
 
             if ! api_array "repos/$REPO/commits/$head/statuses?per_page=100" "$tmp_dir/statuses-$number.json" \
               || ! api_array "repos/$REPO/issues/$number/comments?per_page=100" "$tmp_dir/issues-$number.json" \
-              || ! api_array "repos/$REPO/pulls/$number/reviews?per_page=100" "$tmp_dir/reviews-$number.json" \
+              || ! api_reviews "$number" "$tmp_dir/reviews-$number.json" \
               || ! api_array "repos/$REPO/pulls/$number/comments?per_page=100" "$tmp_dir/review-comments-$number.json" \
               || ! api_array "repos/$REPO/commits/$head/pulls?per_page=100" "$tmp_dir/head-pulls-$number.json"; then
-              publish_api_failure "$run_id" "a paginated REST request failed"
+              publish_api_failure "$run_id" "a paginated GitHub request failed"
               return 1
             fi
             if ! resolve_comment_heads "$tmp_dir/issues-$number.json" "$tmp_dir/issues-resolved-$number.json"; then
@@ -327,14 +325,13 @@ jobs:
           EVENT_PENDING_HEAD=""
           EVENT_PENDING_ID=""
           establish_request_marker
-          establish_review_edit_marker
 
           work_items=""
           case "$EVENT_NAME" in
             workflow_dispatch)
               work_items="$DISPATCH_PR"$'\t'
               ;;
-            pull_request)
+            pull_request_target)
               if [ "$(jq -r '.action // ""' "$GITHUB_EVENT_PATH")" = closed ]; then
                 event_head="$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
                 work_items="$(gh api --paginate "repos/$REPO/commits/$event_head/pulls?per_page=100" \
@@ -350,8 +347,14 @@ jobs:
                 work_items="$(jq -r '[.pull_request.number, .pull_request.head.sha] | @tsv' "$GITHUB_EVENT_PATH")"
               fi
               ;;
-            pull_request_review | pull_request_review_comment)
-              work_items="$(jq -r '[.pull_request.number, .pull_request.head.sha] | @tsv' "$GITHUB_EVENT_PATH")"
+            workflow_run)
+              [ "$(jq -r '.workflow_run.conclusion // ""' "$GITHUB_EVENT_PATH")" = success ] || exit 0
+              event_head="$(jq -r '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")"
+              work_items="$(jq -r '.workflow_run.pull_requests[]? | [.number, .head.sha] | @tsv' "$GITHUB_EVENT_PATH")"
+              if [ -z "$work_items" ]; then
+                work_items="$(gh api --paginate "repos/$REPO/commits/$event_head/pulls?per_page=100" \
+                  --jq '.[] | select(.state == "open") | [.number, .head.sha] | @tsv')"
+              fi
               ;;
             issue_comment)
               jq -e '.issue.pull_request != null' "$GITHUB_EVENT_PATH" >/dev/null || exit 0
