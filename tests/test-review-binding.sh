@@ -5,6 +5,8 @@ set -euo pipefail
 TOUCHSTONE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EVALUATOR="$TOUCHSTONE_ROOT/.github/review-binding/evaluate.jq"
 WORKFLOW="$TOUCHSTONE_ROOT/.github/workflows/review-binding.yml"
+SETUP="$TOUCHSTONE_ROOT/setup.sh"
+VALIDATE="$TOUCHSTONE_ROOT/.github/workflows/validate.yml"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -361,6 +363,13 @@ if grep -Fq 'EVENT_PENDING_ID="$pending_id"' "$WORKFLOW" \
   ok "edited-review invalidation stays pending and is reused by evaluation"
 else
   fail "edited-review handling must not neutralize its check before reevaluation"
+fi
+if grep -Fq 'brew_install_if_missing "jq" "jq"' "$SETUP" \
+  && grep -Fq 'runner-provided jq binary' "$VALIDATE" \
+  && ! grep -Eq 'apt(-get)?[[:space:]]+.*jq' "$VALIDATE"; then
+  ok "jq is declared by local setup without a CI network install"
+else
+  fail "review fixtures require jq through setup, while CI must use its runner binary"
 fi
 
 if [ "$ERRORS" -ne 0 ]; then
