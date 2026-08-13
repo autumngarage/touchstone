@@ -23,6 +23,17 @@ then removes the duplicated legacy branch protection. A repeated apply is a
 no-op. `rollback` restores captured protection before removing or replacing
 the managed ruleset, so neither direction introduces an unprotected interval.
 
+The checked-in pre-migration seed requires the historical local validation
+workflow. To use that seed after migration, first restore the exact workflow
+blob recorded in `rollbackPrerequisites` through a reviewed PR while the
+organization ruleset still protects the repository. Then run `rollback`.
+Rollback verifies every recorded prerequisite on `main` before changing GitHub
+policy, so it cannot install a required status context that no workflow can
+produce. While legacy branch protection exists, `backup` copies these
+prerequisites from the checked-in policy into the recovery artifact. Backups
+captured after migration omit them because they restore a managed ruleset
+rather than the legacy status-check gate.
+
 The required validation workflow is referenced by repository ID, path, branch,
 and full commit SHA in the separately protected `touchstone-workflows`
 repository. It must never be sourced from a repository the ruleset targets:

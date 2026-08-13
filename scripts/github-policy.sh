@@ -176,6 +176,19 @@ ruleset_update_payload() {
   jq '{name,target,enforcement,bypass_actors,conditions,rules}'
 }
 
+verify_rollback_prerequisites() {
+  local artifact="$1" prerequisite path expected_sha actual_sha
+  while IFS= read -r prerequisite; do
+    path="$(jq -r .path <<<"$prerequisite")"
+    expected_sha="$(jq -r .sha <<<"$prerequisite")"
+    if ! actual_sha="$(api "repos/$ORG/$REPOSITORY/contents/$path?ref=$BRANCH" --jq .sha)"; then
+      die "rollback prerequisite is missing from $BRANCH: $path"
+    fi
+    [ "$actual_sha" = "$expected_sha" ] \
+      || die "rollback prerequisite differs from the captured version: $path"
+  done < <(jq -c '.rollbackPrerequisites.repositoryFiles[]?' "$artifact")
+}
+
 restore_branch_protection() {
   local protection="$1"
   [ "$protection" != null ] || return 0
@@ -246,12 +259,19 @@ case "$COMMAND" in
     mkdir -p "$(dirname "$ARTIFACT")"
     branch="$(branch_protection_json)"
     managed="$(managed_ruleset_json)"
+    if [ "$branch" = null ]; then
+      rollback_prerequisites='{}'
+    else
+      rollback_prerequisites="$(jq -c '.rollbackPrerequisites // {}' "$POLICY")"
+    fi
     repository_rulesets="$(api "repos/$ORG/$REPOSITORY/rulesets?includes_parents=false")"
     effective_rulesets="$(api "repos/$ORG/$REPOSITORY/rulesets?includes_parents=true")"
     jq -n --argjson branch "$branch" --argjson managed "$managed" \
+      --argjson rollbackPrerequisites "$rollback_prerequisites" \
       --argjson repositoryRulesets "$repository_rulesets" --argjson effectiveRulesets "$effective_rulesets" \
       --arg org "$ORG" --arg repository "$REPOSITORY" --arg branchName "$BRANCH" \
       '{contractVersion:1,capturedAt:(now|todate),organization:$org,repository:$repository,branch:$branchName,
+        rollbackPrerequisites:$rollbackPrerequisites,
         branchProtection:$branch,repositoryRulesets:$repositoryRulesets,effectiveRulesets:$effectiveRulesets,
         managedOrganizationRuleset:$managed}' >"$ARTIFACT"
     echo "Wrote backup: $ARTIFACT"
@@ -313,6 +333,7 @@ case "$COMMAND" in
     if [ "$protection" = null ] && [ "$before" = null ]; then
       die "backup contains no branch protection or managed ruleset to restore"
     fi
+    verify_rollback_prerequisites "$ARTIFACT"
     restore_branch_protection "$protection"
     current="$(managed_ruleset_json)"
     if [ "$before" = null ] && [ "$current" != null ]; then

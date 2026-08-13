@@ -59,6 +59,13 @@ case "$method $endpoint" in
   "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/validate.yml?ref=776669cd7429e988a4e3e3cb7ef9d5a33a38e8ab")
     emit '{"type":"file"}'
     ;;
+  "GET repos/autumngarage/touchstone/contents/.github/workflows/validate.yml?ref=main")
+    if [ "${GH_FAKE_MISSING_ROLLBACK_FILE:-0}" = 1 ]; then
+      echo "gh: Not Found (HTTP 404)" >&2
+      exit 1
+    fi
+    emit "{\"type\":\"file\",\"sha\":\"${GH_FAKE_ROLLBACK_FILE_SHA:-c2dc082e0702090f3fc9de095d78a85ddde902a5}\"}"
+    ;;
   "GET repos/autumngarage/touchstone-workflows/compare/776669cd7429e988a4e3e3cb7ef9d5a33a38e8ab...776669cd7429e988a4e3e3cb7ef9d5a33a38e8ab")
     emit '{"status":"identical"}'
     ;;
@@ -190,6 +197,10 @@ jq -e '
   .contractVersion == 1
   and .workflowSource.repository == "touchstone-workflows"
   and .workflowSource.repository != .repository
+  and .rollbackPrerequisites.repositoryFiles == [{
+    path: ".github/workflows/validate.yml",
+    sha: "c2dc082e0702090f3fc9de095d78a85ddde902a5"
+  }]
   and .workflowSource.branchProtection == {
     enforce_admins:true,
     required_pull_request_reviews:true,
@@ -250,6 +261,10 @@ echo "==> Backup, apply, and idempotency"
 run_policy backup "$TMP_DIR/backup.json" "$POLICY"
 jq -e '.branchProtection.required_status_checks.checks | length == 2' "$TMP_DIR/backup.json" >/dev/null \
   || fail "backup omitted current required checks"
+jq -e '.rollbackPrerequisites.repositoryFiles[0].sha ==
+  "c2dc082e0702090f3fc9de095d78a85ddde902a5"' \
+  "$TMP_DIR/backup.json" >/dev/null \
+  || fail "backup omitted the legacy policy rollback prerequisite"
 run_policy apply "$POLICY"
 [ ! -f "$TMP_DIR/state/branch.json" ] || fail "apply left duplicate branch protection"
 [ "$(sed -n '1p' "$TMP_DIR/state/mutations.log")" = "POST org-ruleset" ] \
@@ -307,6 +322,24 @@ if run_policy rollback "$TMP_DIR/unprotected-backup.json" "$POLICY" >/dev/null 2
   fail "rollback accepted a backup with no protection to restore"
 fi
 ok "rollback cannot remove the gate using an unprotected backup"
+
+echo "==> Rollback prerequisites fail before policy mutation"
+init_branch
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_MISSING_ROLLBACK_FILE=1 \
+  "$SCRIPT" rollback "$BASELINE" "$POLICY" >/dev/null 2>&1; then
+  fail "rollback restored a status requirement whose workflow was absent"
+fi
+[ ! -s "$TMP_DIR/state/mutations.log" ] \
+  || fail "missing rollback prerequisite was detected after policy mutation"
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" \
+  GH_FAKE_ROLLBACK_FILE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  "$SCRIPT" rollback "$BASELINE" "$POLICY" >/dev/null 2>&1; then
+  fail "rollback accepted a different fallback workflow blob"
+fi
+[ ! -s "$TMP_DIR/state/mutations.log" ] \
+  || fail "mismatched rollback prerequisite was detected after policy mutation"
+run_policy rollback "$BASELINE" "$POLICY" >/dev/null
+ok "rollback requires the exact fallback workflow before restoring its check"
 
 echo "==> Failed verification retains old protection"
 init_branch

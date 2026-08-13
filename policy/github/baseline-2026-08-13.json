@@ -4,6 +4,14 @@
   "organization": "autumngarage",
   "repository": "touchstone",
   "branch": "main",
+  "rollbackPrerequisites": {
+    "repositoryFiles": [
+      {
+        "path": ".github/workflows/validate.yml",
+        "sha": "c2dc082e0702090f3fc9de095d78a85ddde902a5"
+      }
+    ]
+  },
   "branchProtection": {
     "required_status_checks": {
       "strict": true,
