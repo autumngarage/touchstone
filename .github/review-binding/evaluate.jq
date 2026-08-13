@@ -61,7 +61,7 @@ def answers_body_finding($id):
     | select(driver_answer and review_request)
     | {at: .created_at, id: .id, author: .user.login}
   ] | unique_by(.id) | sort_by(.at) as $requests
-| ($requests[0].at // "") as $threshold
+| ($requests[-1].at // "") as $threshold
 | [
     $root.reviews[]?
     | select(trusted($trusted))
@@ -196,7 +196,7 @@ def answers_body_finding($id):
       else "Review binding is incomplete"
       end),
     summary: (if ($reasons | length) == 0
-      then "Trusted review evidence covers head `\($head)` on base `\($base)` after request comment #\($requests[0].id). All \($inline_findings | length) inline and \($body_findings | length) body-only finding(s) have later qualifying answers. Thread resolution is enforced independently by GitHub conversation resolution."
+      then "Trusted review evidence covers head `\($head)` on base `\($base)` after request comment #\($requests[-1].id). All \($inline_findings | length) inline and \($body_findings | length) body-only finding(s) have later qualifying answers. Thread resolution is enforced independently by GitHub conversation resolution."
       else "Review binding failed closed:\n\n" + ($reasons | map("- " + .) | join("\n")) + "\n\nHead: `\($head)`\nBase: `\($base)`"
       end),
     reasons: $reasons,
