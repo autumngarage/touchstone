@@ -201,6 +201,36 @@ for file in "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$TOUCHSTONE_ROOT/AGENTS.md" \
   assert_contains "$file" "not an enforced gate"
 done
 
+# The post-strip rebuild must not reinterpret portability as another
+# propagation system. This is short enough to be auto-loaded because it is the
+# consumer invariant every adoption/update design has to preserve; the full
+# boundary and admission test stay routed out of the per-turn context.
+echo "==> every driver carries the set-and-forget consumer invariant"
+for file in "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$TOUCHSTONE_ROOT/AGENTS.md" \
+  "$TOUCHSTONE_ROOT/GEMINI.md" "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
+  "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
+  assert_contains "$file" "Adoption is set-and-forget"
+  assert_contains "$file" "stays correct without routine rewrites"
+  assert_contains "$file" "principles/product-contract.md"
+done
+assert_contains "$TOUCHSTONE_ROOT/principles/product-contract.md" \
+  "An adopted repository remains correct if Touchstone never rewrites it again"
+assert_contains "$TOUCHSTONE_ROOT/principles/product-contract.md" \
+  "Adoption is compilation"
+assert_contains "$TOUCHSTONE_ROOT/principles/product-contract.md" \
+  "Explicit non-goals"
+
+# PR #818's late exact-head review found a surviving architectural claim about
+# a deleted merge helper. The path-integrity test cannot catch prose-only names,
+# so pin the semantic correction directly.
+echo "==> active architecture names the real review-evidence consumer"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
+  "merge helper can verify"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
+  "review-binding"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
+  "can evaluate from GitHub"
+
 # Every surface that describes the merge gate must also say that review is not
 # part of what GitHub enforces.
 #

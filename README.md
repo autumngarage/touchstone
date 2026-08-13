@@ -7,7 +7,7 @@ One person cannot read everything many agents produce. Touchstone exists so that
 1. **Guidance prompts** — the steering an agent reads to know how to work: branch first, one concern per commit, answer every finding, reconcile issues, never bypass the gate.
 2. **Push tooling** — the small script surface that makes an agent use GitHub *correctly*.
 
-The goal is that any project gets the same dev flow by adopting Touchstone, and that the flow is industry-leading practice for GitHub and for agent-driven delivery.
+The goal is that every Autumn Garage project gets the same dev flow by adopting Touchstone, and that the flow is industry-leading practice for GitHub and agent-driven delivery. Adoption is **set-and-forget**: an adopted repository must remain correct if Touchstone never rewrites it again. V1 serves one operator's portfolio through public-quality interfaces; it does not build a speculative third-party platform. The durable boundary is defined in `principles/product-contract.md`.
 
 **What the second half ships today is narrower than that ambition.** The surviving scripts claim issues, answer review threads, and run a project's checks. **Nothing here opens a PR, binds a review to its head, or merges** — those are raw `git` and `gh`, documented below and in `principles/git-workflow.md`. Rebuilding that half as a thin CLI is the open work; until it lands, read "push tooling" as a goal, not an inventory.
 
@@ -34,7 +34,7 @@ touchstone/
 ├── TOUCHSTONE.md   # Canonical steering router — the universal contract for all drivers
 ├── principles/     # The judgment layer, routed to from TOUCHSTONE.md
 ├── skills/         # User-scoped Claude Code skills
-├── templates/      # Reference starter files
+├── templates/      # Legacy transition inputs; nothing copies them
 ├── hooks/          # branch-guard.sh — PreToolUse hook wired in .claude/settings.json
 ├── scripts/        # claim-issue, issue-claim-check, respond-review, touchstone-run
 ├── audits/         # Dated drift/health reports
@@ -42,7 +42,9 @@ touchstone/
 └── tests/          # Self-tests
 ```
 
-**There is no CLI, no bootstrap, and no auto-update right now.** They were deleted with the propagation channel, deliberately and first: cutting propagation is what froze the downstream projects safely in place on their existing committed copies. The replacement is a thin, Homebrew-distributed CLI that observes and sequences but never adjudicates.
+**There is no CLI, no bootstrap, and no auto-update right now.** They were deleted with the propagation channel, deliberately and first: cutting propagation is what froze the downstream projects safely in place on their existing committed copies. The replacement is a thin, Homebrew-distributed CLI and a full-SHA-pinned CI adapter around one versioned project contract. Project-type detection compiles an adoption proposal once; validation executes accepted declarations without guessing. Upgrading the installed tool never mutates repositories.
+
+The surviving `scripts/touchstone-run.sh` and `templates/` still describe the frozen pre-strip consumer shape. They are transition inputs, not the new architecture: AUT-282 replaces runtime detection with the declaration-only engine, AUT-283 replaces bootstrap/sync with plan-first adoption, and the consumer harness proves the boundary before any canary moves.
 
 **Known gap:** an AI reviewer can never file an `APPROVED` review — GitHub reserves formal approval for real user accounts — so `required_approving_review_count` cannot express "this was reviewed." The check-run that could express it was deleted alongside the local mirror it duplicated. Until it is rebuilt as a small required status check, review enforcement is advisory. This is known and accepted, not overlooked.
 
@@ -76,6 +78,7 @@ bash scripts/respond-review.sh <pr> --all-resolved-check
 - **[TOUCHSTONE.md](TOUCHSTONE.md)** — the universal contract every driver reads
 - **[git-workflow.md](principles/git-workflow.md)** — the full delivery sequence in raw `git` + `gh`
 - **[engineering-principles.md](principles/engineering-principles.md)** — the principles every change is reviewed against
+- **[product-contract.md](principles/product-contract.md)** — the durable product boundary, adoption/evolution contract, and anti-bloat admission test
 - **[ai-delivery-architecture.md](principles/ai-delivery-architecture.md)** — the AI-authored change lifecycle
 - **[pre-implementation-checklist.md](principles/pre-implementation-checklist.md)** — the gate before a non-trivial change
 - **[agent-swarms.md](principles/agent-swarms.md)** — parallel agents, slice manifests, worktree isolation
