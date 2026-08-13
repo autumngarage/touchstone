@@ -234,6 +234,14 @@ assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
 assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
   "not merely when its"
 
+# Linear owns volatile implementation order. The durable README may link to
+# that plan, but naming its current issue decomposition duplicates state and
+# becomes stale when work is split or reordered.
+echo "==> durable overview does not duplicate Linear issue mappings"
+assert_contains "$TOUCHSTONE_ROOT/README.md" "canonical Linear execution plan"
+assert_not_contains "$TOUCHSTONE_ROOT/README.md" "AUT-282"
+assert_not_contains "$TOUCHSTONE_ROOT/README.md" "AUT-283"
+
 # PR #818's late exact-head review found a surviving architectural claim about
 # a deleted merge helper. The path-integrity test cannot catch prose-only names,
 # so pin the semantic correction directly.
