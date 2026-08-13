@@ -26,7 +26,7 @@ repos:
   # Run the same shellcheck-py the downstream `templates/pre-commit-config.yaml`
   # pins, so any warning that would block a fresh scaffold's first push also
   # blocks ours. This closes the gap that bit us when sentinel's
-  # `touchstone update --ship` hit SC2120 in a script touchstone had just
+  # A managed-file update once hit SC2120 in a script touchstone had just
   # synced — touchstone's own tests use system shellcheck (a different
   # version) and silently passed. completions/ and prototypes/ aren't shipped
   # to downstream, so they're excluded from this hook (zsh syntax, prototype

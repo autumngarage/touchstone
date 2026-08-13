@@ -56,13 +56,24 @@ assert_under() {
   fi
 }
 
-# 9 KiB, raised deliberately from 8 KiB: main's reviewed Purpose section
-# (PR #746) plus the three-job scope contract left 8 KiB unreachable.
-# Derivation: TOUCHSTONE.md is inlined into AGENTS.md as the managed block; at
-# <= 9 KiB the rendered block stays under ~9.5 KiB, preserving >14 KiB of
-# project-tail headroom inside the 24 KiB AGENTS.md cap below.
-echo "==> TOUCHSTONE.md size cap (9 KiB — lean router)"
-assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 9216
+# 9.5 KiB, raised deliberately from 9 KiB (which was itself raised from 8 KiB
+# by PR #746's Purpose section).
+#
+# What earned the 256 bytes: the contract now has to state what GitHub
+# ACTUALLY enforces and, separately, that review is not part of it. The strip's
+# own review filed that omission as a P1 twice — a driver who reads the gate as
+# proof an unreviewed merge is impossible will not check, and merging an
+# unreviewed head is currently possible. Trimming that back to fit a round
+# number would restore the exact defect the cap is supposed to be protecting
+# clarity for.
+#
+# Derivation unchanged: TOUCHSTONE.md is inlined into AGENTS.md as the managed
+# block. At <= 9.5 KiB the rendered block stays under ~10 KiB, and AGENTS.md
+# sits near 16.4 KiB against its 24 KiB cap — roughly 8 KiB of project-tail
+# headroom, comfortably more than the >14 KiB claim this note used to make
+# about a smaller tail.
+echo "==> TOUCHSTONE.md size cap (9.5 KiB — lean router)"
+assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 9728
 
 echo "==> AGENTS.md size cap (24 KiB — leaves headroom under Codex's 32 KiB default)"
 assert_under "AGENTS.md" "$TOUCHSTONE_ROOT/AGENTS.md" 24576
@@ -178,6 +189,54 @@ if [ "$probe_hits" -eq 1 ] && [ ! -e "$TOUCHSTONE_ROOT/scripts/does-not-exist.sh
   echo "  OK: a reference to a deleted script is detected as missing"
 else
   fail "the path-integrity extractor did not detect an obviously missing script; the check above is dead"
+fi
+
+# =============================================================================
+# No file may instruct the reader to run the CLI, because no CLI ships.
+#
+# The path-integrity check above only reads markdown, so it could not see
+# setup.sh finishing with "Run `touchstone doctor`" after the same commit
+# deleted the block that installed the binary. A user on a fresh clone would
+# follow a successful setup straight into command-not-found.
+#
+# Matched by subcommand rather than by the bare word, so prose about the
+# project and the surviving scripts/touchstone-run.sh both stay legal. When
+# the CLI is rebuilt, delete this check in the commit that ships it.
+# =============================================================================
+
+echo ""
+echo "==> No file invokes a touchstone CLI subcommand"
+
+# POSIX ERE only. The first version of this check used `\b` for the trailing
+# word boundary, which glibc's ERE honours and BSD/macOS does not — so it
+# matched on CI and matched nothing locally. The suite went green on a
+# developer machine and red on the required check, which is the worst possible
+# split: local green is what people trust. Both boundaries are now bracket
+# expressions, which behave identically on both platforms.
+CLI_SUBCOMMANDS='doctor|status|update|update-all|new|init|version|release|list|diff|sync|changelog'
+CLI_PATTERN="(^|[^-/[:alnum:]])touchstone (${CLI_SUBCOMMANDS})([^[:alnum:]-]|$)"
+
+# The check must be able to fail, and must be proven to on THIS platform
+# before its silence is allowed to mean anything.
+probe_hit=0
+printf 'Run `touchstone doctor` to verify.\n' | grep -qE "$CLI_PATTERN" && probe_hit=1
+probe_miss=0
+printf 'bash scripts/touchstone-run.sh validate\n' | grep -qE "$CLI_PATTERN" || probe_miss=1
+if [ "$probe_hit" -eq 1 ] && [ "$probe_miss" -eq 1 ]; then
+  echo "  OK: the pattern matches a CLI invocation and spares touchstone-run.sh"
+else
+  fail "the CLI-reference pattern is not working on this platform (hit=$probe_hit spared=$probe_miss); its silence below proves nothing"
+fi
+
+cli_refs="$(
+  git -C "$TOUCHSTONE_ROOT" grep -nE "$CLI_PATTERN" \
+    -- ':!tests/test-steering-size-caps.sh' ':!audits' ':!feedback' 2>/dev/null || true
+)"
+if [ -n "$cli_refs" ]; then
+  printf '%s\n' "$cli_refs" >&2
+  fail "a file tells the reader to run a touchstone CLI subcommand, but no CLI ships"
+else
+  echo "  OK: nothing instructs the reader to run a CLI that does not exist"
 fi
 
 # Touchstone must obey the conventions it ships. templates/gitignore has

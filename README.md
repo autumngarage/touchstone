@@ -5,9 +5,11 @@
 One person cannot read everything many agents produce. Touchstone exists so that they do not have to. It ships two things, and both are the product:
 
 1. **Guidance prompts** — the steering an agent reads to know how to work: branch first, one concern per commit, answer every finding, reconcile issues, never bypass the gate.
-2. **Push scripts** — the tooling that makes an agent use GitHub *correctly*: open the PR properly, bind the review to the head that was actually reviewed, resolve threads, merge only when the gate really passes.
+2. **Push tooling** — the small script surface that makes an agent use GitHub *correctly*.
 
 The goal is that any project gets the same dev flow by adopting Touchstone, and that the flow is industry-leading practice for GitHub and for agent-driven delivery.
+
+**What the second half ships today is narrower than that ambition.** The surviving scripts claim issues, answer review threads, and run a project's checks. **Nothing here opens a PR, binds a review to its head, or merges** — those are raw `git` and `gh`, documented below and in `principles/git-workflow.md`. Rebuilding that half as a thin CLI is the open work; until it lands, read "push tooling" as a goal, not an inventory.
 
 ## Purpose
 
@@ -15,7 +17,7 @@ The goal is that any project gets the same dev flow by adopting Touchstone, and 
 
 Everything here exists to hold one of those three lines. To hold them, Touchstone does exactly three things:
 
-1. **Constrain** — you cannot commit to the default branch, merge without review, or bypass hooks silently.
+1. **Constrain** — you cannot commit to the default branch, merge on a red check, or merge with an unresolved thread. Reviewing the head you merge is required but unenforced; see the known gap below.
 2. **Make state legible** — what happened lives in git, PRs, and issues, verifiable without trusting an agent's narration.
 3. **Carry the contract** — the same rules reach every project and every agent.
 

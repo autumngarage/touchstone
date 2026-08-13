@@ -41,17 +41,20 @@ Agentic PR Review Loop
   |   findings with every thread resolved)
   |
   v
-Approval Gate
+Merge Gate
   |
-  | Required reviews approved
-  | Blocking comments resolved
-  | Required checks green
+  | ENFORCED by GitHub:
+  |   required checks green
+  |   every review thread resolved
+  |   no outstanding CHANGES_REQUESTED
+  | OWED by the driver, enforced by nothing:
+  |   a review of the exact head being merged
   |
   v
 Final Verification
   |
-  | merge helper runs deterministic checks and revalidates
-  | trusted PR review for the exact head and base
+  | the driver confirms state against GitHub rather than
+  | trusting an exit code; nothing local revalidates
   v
 Merge PR
   |
