@@ -90,9 +90,17 @@ echo "==> review-request recovery is complete, bounded, and fail-closed"
 # formal review. The workflow must model both without turning retry into a loop
 # or allowing acceptance alone to stand in for exact-head evidence.
 for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
+  # Every agent-facing workflow needs the complete, copyable GitHub path. A
+  # recovery rule is useless if the driver cannot reliably request, answer,
+  # bind, and merge the ordinary review first.
+  assert_contains "$file" 'gh pr comment <n> --body "@codex review"'
+  assert_contains "$file" "headRefOid"
+  assert_contains "$file" "scripts/respond-review.sh"
+  assert_contains "$file" "--match-head-commit"
   assert_contains "$file" "submitted, accepted, and completed states"
   assert_contains "$file" "PR conversation comments"
   assert_contains "$file" "accepted but stalled"
+  assert_contains "$file" "at least 30 minutes after submission"
   assert_contains "$file" "exactly one replacement trigger"
   assert_contains "$file" "two unchanged-head exceptions"
   assert_contains "$file" "trusted exact-head review evidence"

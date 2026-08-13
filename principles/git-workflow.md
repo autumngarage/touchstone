@@ -180,8 +180,11 @@ The PR is the only semantic review surface. Request one review per exact head. T
 
 A request has distinct submitted, accepted, and completed states; its comment
 is not proof that the provider accepted or completed the job. Record the
-request URL, timestamp, exact head, base, and a declared observation deadline,
-then distinguish these states:
+request URL, timestamp, exact head, base, and observation deadline. The
+deadline is at least 30 minutes after submission, or longer when the provider
+publishes a longer SLA. The 30-minute floor is the conservative recovery
+interval established by the dropped-request incident on Touchstone PR #827.
+Then distinguish these states:
 
 1. **Submitted** — GitHub contains the request comment for the recorded head
    and base.
