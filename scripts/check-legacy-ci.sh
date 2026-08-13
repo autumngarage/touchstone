@@ -17,14 +17,34 @@ if ! grep -q 'id:[[:space:]]*no-commit-to-branch' "$PRE_COMMIT" \
 fi
 
 found=0
+workflow_has_unguarded_precommit() {
+  awk '
+    function flush_step() {
+      if (has_pre_commit && !has_skip) unsafe = 1
+      has_pre_commit = 0
+      has_skip = 0
+    }
+    /^[[:space:]]*-[[:space:]]+(name|run|uses):/ { flush_step() }
+    {
+      trimmed = $0
+      sub(/^[[:space:]]*/, "", trimmed)
+      if (trimmed !~ /^#/ && $0 ~ /SKIP[^[:cntrl:]]*no-commit-to-branch|no-commit-to-branch[^[:cntrl:]]*SKIP/) {
+        has_skip = 1
+      }
+      if (trimmed !~ /^#/ && $0 ~ /pre-commit run --all-files --hook-stage pre-commit/) has_pre_commit = 1
+    }
+    END {
+      flush_step()
+      exit !unsafe
+    }
+  ' "$1"
+}
+
 for workflow in "$WORKFLOW_DIR"/*.yml "$WORKFLOW_DIR"/*.yaml; do
   [ -f "$workflow" ] || continue
   grep -q '^[[:space:]]*push:' "$workflow" || continue
   grep -Eq 'branches:.*(main|master)|-[[:space:]]*(main|master)' "$workflow" || continue
-  grep -q 'pre-commit run --all-files --hook-stage pre-commit' "$workflow" || continue
-  if grep -Eq 'SKIP[^[:cntrl:]]*no-commit-to-branch|no-commit-to-branch[^[:cntrl:]]*SKIP' "$workflow"; then
-    continue
-  fi
+  workflow_has_unguarded_precommit "$workflow" || continue
   printf 'LEGACY-CI-BRANCH-GUARD %s\n' "${workflow#"$ROOT/"}"
   found=$((found + 1))
 done

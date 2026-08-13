@@ -380,19 +380,57 @@ clear_git_hook_env() {
 }
 
 declared_command_unrunnable_code() {
-  local command="$1" directory="$2" head
+  local command="$1" directory="$2" head executable="" first_line shebang interpreter
+  local env_command word
+  local -a shebang_words
   head="${command%%[[:space:]]*}"
   case "$head" in "" | *[^[:alnum:]_./+-]*) return 0 ;; esac
   case "$head" in
     */*)
-      if [ -d "$directory/$head" ] || { [ -e "$directory/$head" ] && [ ! -x "$directory/$head" ]; }; then
+      case "$head" in /*) executable="$head" ;; *) executable="$directory/$head" ;; esac
+      if [ -d "$executable" ] || { [ -e "$executable" ] && [ ! -x "$executable" ]; }; then
         printf '126\n'
         return 0
       fi
       ;;
+    *) executable="$(cd "$directory" && command -v -- "$head" 2>/dev/null)" || true ;;
   esac
-  (cd "$directory" && command -v -- "$head" >/dev/null 2>&1) && return 0
-  printf '127\n'
+  if [ -z "$executable" ]; then
+    printf '127\n'
+    return 0
+  fi
+  case "$executable" in /*) ;; */*) executable="$directory/$executable" ;; *) return 0 ;; esac
+  if [ ! -e "$executable" ]; then
+    printf '127\n'
+    return 0
+  fi
+  [ -x "$executable" ] || return 0
+  IFS= read -r first_line <"$executable" || true
+  case "$first_line" in
+    '#!'*)
+      shebang="$(trim "${first_line#\#!}")"
+      read -r -a shebang_words <<<"$shebang"
+      interpreter="${shebang_words[0]:-}"
+      if [ -z "$interpreter" ] || ! command -v -- "$interpreter" >/dev/null 2>&1; then
+        printf 'missing-interpreter\n'
+        return 0
+      fi
+      case "${interpreter##*/}" in
+        env)
+          env_command=""
+          for word in "${shebang_words[@]:1}"; do
+            case "$word" in -S | -- | -* | *=*) continue ;; esac
+            env_command="$word"
+            break
+          done
+          if [ -z "$env_command" ] || ! command -v -- "$env_command" >/dev/null 2>&1; then
+            printf 'missing-interpreter\n'
+            return 0
+          fi
+          ;;
+      esac
+      ;;
+  esac
 }
 
 run_command() {
@@ -413,6 +451,13 @@ run_command() {
   RUN_COMMAND_STATUS="$status"
 }
 
+command_was_not_started() {
+  case "$1:$2" in
+    126:126 | 127:127 | missing-interpreter:126 | missing-interpreter:127) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 if [ -n "$SETUP_COMMAND" ]; then
   progress "==> setup (root): $SETUP_COMMAND"
   unrunnable="$(declared_command_unrunnable_code "$SETUP_COMMAND" "$PROJECT_ROOT")"
@@ -420,7 +465,9 @@ if [ -n "$SETUP_COMMAND" ]; then
   status="$RUN_COMMAND_STATUS"
   if [ "$status" -ne 0 ]; then
     reason="command-failed"
-    if [ -n "$unrunnable" ] && [ "$status" -eq "$unrunnable" ]; then reason="command-not-started"; fi
+    if command_was_not_started "$unrunnable" "$status"; then
+      reason="command-not-started"
+    fi
     progress "ERROR: setup failed on root (exit $status, $reason)"
     record_failure setup root "$status" "$reason"
     emit_report failed
@@ -447,7 +494,7 @@ while IFS="$(printf '\t')" read -r task_name task_target _task_required task_com
   fi
 
   reason="command-failed"
-  if [ -n "$unrunnable" ] && [ "$status" -eq "$unrunnable" ]; then
+  if command_was_not_started "$unrunnable" "$status"; then
     RAN=$((RAN - 1))
     reason="command-not-started"
   fi

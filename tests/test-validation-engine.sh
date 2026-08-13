@@ -109,6 +109,16 @@ for code in 126 127; do
   assert_contains "$TMP_DIR/owned-$code.out" '"reason":"command-failed"'
 done
 
+MISSING_INTERPRETER="$TMP_DIR/missing-interpreter"
+write_contract "$MISSING_INTERPRETER" "needs-missing-runtime"
+printf '#!/missing-touchstone-runtime\nexit 0\n' >"$MISSING_INTERPRETER/needs-missing-runtime"
+chmod +x "$MISSING_INTERPRETER/needs-missing-runtime"
+PATH="$MISSING_INTERPRETER:$PATH" run_capture \
+  "$MISSING_INTERPRETER" "$TMP_DIR/missing-interpreter.out" --json
+case "$RUN_STATUS" in 126 | 127) ;; *) fail "missing shebang interpreter did not retain the shell status" ;; esac
+assert_contains "$TMP_DIR/missing-interpreter.out" '"ran":0'
+assert_contains "$TMP_DIR/missing-interpreter.out" '"reason":"command-not-started"'
+
 echo "==> a later passing target cannot launder an earlier failure"
 MONOREPO="$TMP_DIR/monorepo"
 mkdir -p "$MONOREPO/services/api" "$MONOREPO/services/worker"
@@ -265,7 +275,19 @@ on:
   push:
     branches: [main]
 steps:
+  - name: unrelated
+    env:
+      SKIP: no-commit-to-branch
+    run: printf unrelated
   - run: pre-commit run --all-files --hook-stage pre-commit
+EOF
+cat >"$LEGACY/.github/workflows/comment-only.yml" <<'EOF'
+on:
+  push:
+    branches: [main]
+steps:
+  # pre-commit run --all-files --hook-stage pre-commit
+  - run: printf safe
 EOF
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/compat.out" 2>"$TMP_DIR/compat.err"
@@ -273,9 +295,16 @@ status=$?
 set -e
 [ "$status" -eq 3 ] || fail "legacy CI pairing was not detected"
 assert_contains "$TMP_DIR/compat.out" "LEGACY-CI-BRANCH-GUARD .github/workflows/validate.yml"
+assert_not_contains "$TMP_DIR/compat.out" "comment-only.yml"
 assert_contains "$TMP_DIR/compat.err" "SKIP=no-commit-to-branch"
-sed 's#pre-commit run#SKIP=no-commit-to-branch pre-commit run#' \
-  "$LEGACY/.github/workflows/validate.yml" >"$LEGACY/.github/workflows/repaired.yml"
+printf '\n# SKIP=no-commit-to-branch is not a repair\n' >>"$LEGACY/.github/workflows/validate.yml"
+set +e
+bash "$COMPAT" "$LEGACY" >"$TMP_DIR/comment-skip.out" 2>"$TMP_DIR/comment-skip.err"
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "comment SKIP incorrectly repaired legacy CI"
+sed 's#run: pre-commit run#env: {SKIP: no-commit-to-branch}\n    run: pre-commit run#' \
+  "$LEGACY/.github/workflows/validate.yml" >"$LEGACY/.github/workflows/fixed.yml"
 rm "$LEGACY/.github/workflows/validate.yml"
 bash "$COMPAT" "$LEGACY" || fail "repaired CI pairing still detected"
 
