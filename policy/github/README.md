@@ -6,7 +6,7 @@ pre-migration state and rollback seed; do not rewrite it after migration.
 
 ## Operations
 
-Policy operations require `gh`, `jq`, and `diff`. Touchstone's `setup.sh`
+Policy operations require `gh`, `git`, `jq`, and `diff`. Touchstone's `setup.sh`
 installs and verifies `jq` on macOS alongside the existing repository tools.
 
 Run every command from a clean, reviewed revision:
@@ -20,8 +20,9 @@ bash scripts/github-policy.sh verify
 bash scripts/github-policy.sh rollback policy/github/baseline-2026-08-13.json
 ```
 
-`dry-run` performs all source checks without mutation. The reviewed revision
-used for `dry-run` and `apply` must remove every rollback-prerequisite file.
+`dry-run` performs all source checks without mutation. The reviewed commit used
+for `dry-run` and `apply` must remove every rollback-prerequisite file, and
+`apply` refuses a dirty checkout before mutation.
 `apply` installs or updates the organization ruleset, verifies the effective
 repository rules, then removes the duplicated legacy branch protection. Merge
 the reviewed file removal immediately afterward and run `verify`; verification

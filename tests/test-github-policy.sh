@@ -3,7 +3,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SCRIPT="$ROOT/scripts/github-policy.sh"
+SOURCE_SCRIPT="$ROOT/scripts/github-policy.sh"
+SCRIPT="$SOURCE_SCRIPT"
 POLICY="$ROOT/policy/github/touchstone-main.json"
 BASELINE="$ROOT/policy/github/baseline-2026-08-13.json"
 ROLLBACK_VALIDATE="$ROOT/policy/github/rollback/validate.yml"
@@ -264,6 +265,19 @@ esac
 EOF
 chmod +x "$TMP_DIR/bin/gh"
 
+# Policy mutation requires a clean reviewed checkout. Run the current script
+# from a clean temporary repository so local development edits do not weaken
+# that production precondition or prevent the lifecycle fixtures from running.
+RUNNER_REPO="$TMP_DIR/policy-runner"
+mkdir -p "$RUNNER_REPO/scripts"
+cp "$SOURCE_SCRIPT" "$RUNNER_REPO/scripts/github-policy.sh"
+git -C "$RUNNER_REPO" init -q
+git -C "$RUNNER_REPO" symbolic-ref HEAD refs/heads/main
+git -C "$RUNNER_REPO" add scripts/github-policy.sh
+git -C "$RUNNER_REPO" -c user.name=Touchstone -c user.email=touchstone@example.invalid \
+  commit -qm "policy test runner"
+SCRIPT="$RUNNER_REPO/scripts/github-policy.sh"
+
 init_branch() {
   jq '{
     required_status_checks: .branchProtection.required_status_checks,
@@ -319,7 +333,7 @@ jq -e '
 ' "$POLICY" >/dev/null || fail "checked-in ruleset is missing a required invariant"
 [ "$(git hash-object "$ROLLBACK_VALIDATE")" = "c2dc082e0702090f3fc9de095d78a85ddde902a5" ] \
   || fail "durable rollback workflow differs from its recorded prerequisite blob"
-grep -Fq 'Policy operations require `gh`, `jq`, and `diff`.' "$POLICY_GUIDE" \
+grep -Fq 'Policy operations require `gh`, `git`, `jq`, and `diff`.' "$POLICY_GUIDE" \
   || fail "policy guide does not declare its jq runtime dependency"
 grep -Fq 'brew_install_if_missing "jq" "jq"' "$SETUP" \
   || fail "declared jq dependency is absent from setup"
@@ -339,15 +353,38 @@ grep -Fq 'diff -u -L current -L desired' "$SCRIPT" \
 ok "policy diff uses portable BSD/GNU label flags"
 
 echo "==> Apply requires reviewed removal of rollback-only files"
-jq --arg path "scripts/github-policy.sh" \
-  '.rollbackPrerequisites.repositoryFiles[0].path = $path' \
-  "$POLICY" >"$TMP_DIR/unremoved-workflow-policy.json"
-if run_policy apply "$TMP_DIR/unremoved-workflow-policy.json" >/dev/null 2>&1; then
-  fail "apply accepted a reviewed revision that retains its rollback-only file"
+REVIEWED_REPO="$TMP_DIR/reviewed-repo"
+mkdir -p "$REVIEWED_REPO/scripts" "$REVIEWED_REPO/policy/github" \
+  "$REVIEWED_REPO/.github/workflows"
+cp "$SCRIPT" "$REVIEWED_REPO/scripts/github-policy.sh"
+cp "$POLICY" "$REVIEWED_REPO/policy/github/touchstone-main.json"
+cp "$ROLLBACK_VALIDATE" "$REVIEWED_REPO/.github/workflows/validate.yml"
+git -C "$REVIEWED_REPO" init -q
+git -C "$REVIEWED_REPO" symbolic-ref HEAD refs/heads/main
+git -C "$REVIEWED_REPO" add scripts/github-policy.sh policy/github/touchstone-main.json \
+  .github/workflows/validate.yml
+git -C "$REVIEWED_REPO" -c user.name=Touchstone -c user.email=touchstone@example.invalid \
+  commit -qm baseline
+rm "$REVIEWED_REPO/.github/workflows/validate.yml"
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" \
+  "$REVIEWED_REPO/scripts/github-policy.sh" apply \
+  "$REVIEWED_REPO/policy/github/touchstone-main.json" >/dev/null 2>&1; then
+  fail "apply accepted an unstaged deletion absent only from the working tree"
 fi
 [ ! -s "$TMP_DIR/state/mutations.log" ] \
   || fail "apply checked rollback-only file removal after policy mutation"
-ok "apply requires the reviewed revision to remove rollback-only files"
+git -C "$REVIEWED_REPO" add .github/workflows/validate.yml
+git -C "$REVIEWED_REPO" -c user.name=Touchstone -c user.email=touchstone@example.invalid \
+  commit -qm "remove rollback workflow"
+touch "$REVIEWED_REPO/untracked-file"
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" \
+  "$REVIEWED_REPO/scripts/github-policy.sh" apply \
+  "$REVIEWED_REPO/policy/github/touchstone-main.json" >/dev/null 2>&1; then
+  fail "apply accepted a dirty checkout after the reviewed removal"
+fi
+[ ! -s "$TMP_DIR/state/mutations.log" ] \
+  || fail "apply checked checkout cleanliness after policy mutation"
+ok "apply requires committed removal and a clean reviewed checkout"
 
 echo "==> Required workflow source stays outside and protected from the target"
 jq '.workflowSource.repository = .repository' "$POLICY" >"$TMP_DIR/self-source-policy.json"

@@ -231,12 +231,19 @@ verify_rollback_prerequisites() {
 }
 
 verify_rollback_removal_planned() {
-  local prerequisite path
+  local prerequisite path committed
   while IFS= read -r prerequisite; do
     path="$(jq -r .path <<<"$prerequisite")" || return $?
-    [ ! -e "$ROOT/$path" ] \
+    committed="$(git -C "$ROOT" ls-tree -r --name-only HEAD -- "$path")" || return $?
+    [ -z "$committed" ] \
       || die "remove rollback prerequisite in the reviewed apply revision: $path"
   done < <(jq -c '.rollbackPrerequisites.repositoryFiles[]?' "$POLICY")
+}
+
+verify_clean_checkout() {
+  local status
+  status="$(git -C "$ROOT" status --porcelain --untracked-files=normal)" || return $?
+  [ -z "$status" ] || die "policy mutation requires a clean reviewed checkout"
 }
 
 verify_rollback_files_absent() {
@@ -351,6 +358,7 @@ POLICY="${1:-$DEFAULT_POLICY}"
 [ -f "$POLICY" ] || die "policy not found: $POLICY"
 
 need gh
+need git
 need jq
 need diff
 jq -e '.contractVersion == 1' "$POLICY" >/dev/null || die "unsupported policy contract"
@@ -406,6 +414,7 @@ case "$COMMAND" in
     echo "Wrote backup: $ARTIFACT"
     ;;
   apply)
+    verify_clean_checkout
     verify_rollback_removal_planned
     verify_source
     desired="$(jq -c '.managedRuleset' "$POLICY")"
