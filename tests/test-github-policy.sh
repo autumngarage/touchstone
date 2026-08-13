@@ -7,6 +7,8 @@ SCRIPT="$ROOT/scripts/github-policy.sh"
 POLICY="$ROOT/policy/github/touchstone-main.json"
 BASELINE="$ROOT/policy/github/baseline-2026-08-13.json"
 ROLLBACK_VALIDATE="$ROOT/policy/github/rollback/validate.yml"
+POLICY_GUIDE="$ROOT/policy/github/README.md"
+SETUP="$ROOT/setup.sh"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 mkdir -p "$TMP_DIR/bin" "$TMP_DIR/state"
@@ -243,6 +245,10 @@ jq -e '
 ' "$POLICY" >/dev/null || fail "checked-in ruleset is missing a required invariant"
 [ "$(git hash-object "$ROLLBACK_VALIDATE")" = "c2dc082e0702090f3fc9de095d78a85ddde902a5" ] \
   || fail "durable rollback workflow differs from its recorded prerequisite blob"
+grep -Fq 'Policy operations require `gh`, `jq`, and `diff`.' "$POLICY_GUIDE" \
+  || fail "policy guide does not declare its jq runtime dependency"
+grep -Fq 'brew_install_if_missing "jq" "jq"' "$SETUP" \
+  || fail "declared jq dependency is absent from setup"
 ok "ruleset expresses PR-only audited bypass and every native gate"
 
 echo "==> Read-only diff and dry-run"

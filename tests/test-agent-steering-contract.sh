@@ -57,6 +57,9 @@ for file in \
   assert_contains "$file" "bash scripts/claim-issue.sh <n>"
   assert_contains "$file" "Reconcile issues"
   assert_contains "$file" "Do not leave fixed issues open silently"
+  assert_contains "$file" "Do not infer adoption from this document"
+  assert_contains "$file" "missing enforcement is a rollout gap"
+  assert_not_contains "$file" "Review is an enforced gate."
 done
 
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"
@@ -80,6 +83,8 @@ for file in \
   assert_contains "$file" "Driving CLI"
   assert_contains "$file" "PR-visible reviewer"
   assert_contains "$file" "review runs asynchronously against the exact pushed head"
+  assert_contains "$file" "Do not infer adoption from this document"
+  assert_not_contains "$file" "Review is an enforced gate."
 done
 
 echo "==> canonical git workflow describes the PR-visible review loop"
@@ -292,10 +297,11 @@ for file in "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$TOUCHSTONE_ROOT/AGENTS.md" \
   "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
   assert_contains "$file" "Humans approve plans"
   assert_contains "$file" "GitHub reviews code"
-  # The gate's conditions are load-bearing: an incomplete list here has already
-  # been read as licence to drop the unlisted checks.
-  assert_contains "$file" "What GitHub enforces today"
-  assert_contains "$file" "every review thread is resolved"
+  # The adopted gate's conditions are load-bearing, but universal steering may
+  # not claim a repository has adopted them without inspecting effective rules.
+  assert_contains "$file" "GitHub's effective repository policy is the enforcement authority"
+  assert_contains "$file" "every thread must be resolved"
+  assert_contains "$file" "inspect the repository's effective rules"
   assert_contains "$file" 'required `review-binding` check'
 done
 

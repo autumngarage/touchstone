@@ -6,6 +6,9 @@ pre-migration state and rollback seed; do not rewrite it after migration.
 
 ## Operations
 
+Policy operations require `gh`, `jq`, and `diff`. Touchstone's `setup.sh`
+installs and verifies `jq` on macOS alongside the existing repository tools.
+
 Run every command from a clean, reviewed revision:
 
 ```bash

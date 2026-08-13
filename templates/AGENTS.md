@@ -26,15 +26,15 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar.
 
-**What GitHub enforces today**, and therefore what actually stops a bad merge: the protected validation workflow passes, the required `review-binding` check proves the exact head was reviewed and every finding answered, every review thread is resolved, and no outstanding `CHANGES_REQUESTED` review remains. Native rules reject direct and force pushes and branch deletion.
+**GitHub's effective repository policy is the enforcement authority.** Where the Touchstone policy has been installed and verified, the protected validation workflow and required `review-binding` check must pass, every finding must be answered, every thread must be resolved, and native rules reject direct and force pushes and branch deletion. Do not infer adoption from this document: inspect the repository's effective rules.
 
-**Review is an enforced gate.** The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so approval count does not represent it. The required `review-binding` check is the server-visible contract: request review on the exact pushed head and answer every finding. GitHub conversation resolution independently requires every thread closed.
+**Review is always required.** The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so approval count does not represent it. Where `review-binding` is required, GitHub binds trusted review evidence and answers to the exact head. Until that gate is installed and verified, exact-head review remains mandatory driver procedure and the missing enforcement is a rollout gap, not permission to skip it.
 
-Local hooks are fast feedback; the organization ruleset is the real boundary. Emergency admin bypass is limited to pull requests, where GitHub records it; there is no silent direct-push exemption.
+Local hooks are fast feedback; configured GitHub policy is the real boundary. An adopted policy limits emergency admin bypass to pull requests, where GitHub records it. A repository without that enforcement still does not authorize a driver to push directly.
 
 To hold those lines, Touchstone does three things and nothing else:
 
-1. **Constrain** — you cannot deliver directly to the default branch or merge an unvalidated, unreviewed, unanswered, stale-head, or unresolved change.
+1. **Constrain** — adopted GitHub policy blocks unsafe delivery; before adoption, the driver follows the same delivery contract and treats missing enforcement as a tracked gap.
 2. **Make state legible** — what happened lives in git, PRs, and issues, verifiable without trusting your narration.
 3. **Carry the contract** — the same rules reach every project and every agent, automatically.
 
@@ -86,7 +86,7 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 
 Every command above is the whole mechanism; there is no wrapper. `principles/git-workflow.md` carries the full sequence, including thread resolution.
 
-Direct default-branch pushes are never an emergency path. The only documented bypass remains PR-only; see `principles/git-workflow.md`.
+Never use a direct default-branch push as an emergency path. Repositories with the audited policy enforce PR-only bypass; elsewhere this remains mandatory procedure until adoption. See `principles/git-workflow.md`.
 
 ## Routing table — read these when the trigger fires
 
