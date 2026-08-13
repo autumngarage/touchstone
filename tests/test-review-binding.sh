@@ -290,17 +290,27 @@ if grep -Fq 'resolve_comment_heads' "$WORKFLOW" \
 else
   fail "result evidence must never prefix-match an abbreviated commit"
 fi
+PREINVALIDATE_LINE="$(grep -n 'preinvalidated_items=' "$WORKFLOW" | cut -d: -f1)"
+EVALUATE_LOOP_LINE="$(grep -n 'evaluate_pr \"\$number\" \"\$known_head\" \"\$pending_id\"' "$WORKFLOW" | cut -d: -f1)"
+if [ -n "$PREINVALIDATE_LINE" ] \
+  && [ -n "$EVALUATE_LOOP_LINE" ] \
+  && [ "$PREINVALIDATE_LINE" -lt "$EVALUATE_LOOP_LINE" ] \
+  && grep -Fq 'no expensive evidence read starts until every known' "$WORKFLOW"; then
+  ok "all known sweep heads are pre-invalidated before evidence evaluation"
+else
+  fail "sweeps need a complete pending-check pass before the evaluation pass"
+fi
 EVALUATE_BODY="$(awk '/^          evaluate_pr\(\) \{/{grab=1} grab{print} grab && /^          \}/{exit}' "$WORKFLOW")"
 if [ -z "$EVALUATE_BODY" ]; then
   fail "could not extract evaluate_pr for pending-order guard"
 elif awk '
-  /create_pending .*known_head/ { pending = NR }
+  /reached evaluation without a precreated pending check/ { pending = NR }
   /gh api "repos\/\$REPO\/pulls\/\$number"/ { lookup = NR; exit }
   END { exit !(pending && lookup && pending < lookup) }
 ' <<<"$EVALUATE_BODY"; then
-  ok "known event heads publish pending before the fallible PR lookup"
+  ok "known event heads require a precreated pending check before the fallible PR lookup"
 else
-  fail "evaluate_pr must neutralize a known head before reading live PR coordinates"
+  fail "evaluate_pr must reject a known head without pre-invalidation before reading live PR coordinates"
 fi
 if grep -Fq -- "[.number, .head.sha] | @tsv" "$WORKFLOW"; then
   ok "discovery paths carry each affected PR head into evaluation"

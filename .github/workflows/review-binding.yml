@@ -174,11 +174,13 @@ jobs:
           evaluate_pr() {
             local number="$1"
             local known_head="${2:-}"
+            local precreated_run="${3:-}"
             local pr_file="$tmp_dir/pr-$number.json"
-            local head base base_ref base_ref_hash run_id="" evaluator evidence verdict conclusion title summary
+            local head base base_ref base_ref_hash run_id="$precreated_run" evaluator evidence verdict conclusion title summary
 
-            if [ -n "$known_head" ]; then
-              run_id="$(create_pending "$number" "$known_head" "known head \`$known_head\`; base pending inspection")"
+            if [ -n "$known_head" ] && [ -z "$run_id" ]; then
+              echo "ERROR: known head $known_head reached evaluation without a precreated pending check." >&2
+              return 1
             fi
 
             if ! gh api "repos/$REPO/pulls/$number" >"$pr_file"; then
@@ -353,10 +355,26 @@ jobs:
           esac
 
           failures=0
+          preinvalidated_items="$tmp_dir/preinvalidated-items.tsv"
+          : >"$preinvalidated_items"
+          # Invariant: no expensive evidence read starts until every known
+          # affected head has a newer pending review-binding check.
           while IFS=$'\t' read -r number known_head || [ -n "$number" ]; do
             [ -n "$number" ] || continue
-            if ! evaluate_pr "$number" "$known_head"; then
+            pending_id=""
+            if [ -n "$known_head" ]; then
+              if ! pending_id="$(create_pending "$number" "$known_head" "known head \`$known_head\`; base pending inspection")"; then
+                echo "ERROR: could not neutralize known head $known_head for PR #$number." >&2
+                failures=$((failures + 1))
+              fi
+            fi
+            printf '%s\t%s\t%s\n' "$number" "$known_head" "$pending_id" >>"$preinvalidated_items"
+          done <<<"$work_items"
+
+          while IFS=$'\t' read -r number known_head pending_id || [ -n "$number" ]; do
+            [ -n "$number" ] || continue
+            if ! evaluate_pr "$number" "$known_head" "$pending_id"; then
               failures=$((failures + 1))
             fi
-          done <<<"$work_items"
+          done <"$preinvalidated_items"
           [ "$failures" -eq 0 ]
