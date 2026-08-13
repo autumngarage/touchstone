@@ -260,6 +260,12 @@ if grep -Eq '^[[:space:]]+(name: review-binding|review-binding:)$' "$WORKFLOW"; 
 else
   ok "manual check-run is the only review-binding identity"
 fi
+if grep -Fq 'cancel-in-progress: false' "$WORKFLOW" \
+  && grep -Fq 'newest_run' "$WORKFLOW"; then
+  ok "superseded runs self-neutralize without a red cancelled Actions job"
+else
+  fail "stale-run safety must use the newer-run guard without force-cancelling jobs"
+fi
 
 if [ "$ERRORS" -ne 0 ]; then
   echo "$ERRORS review-binding test(s) failed" >&2
