@@ -216,13 +216,19 @@ for required in \
   'contents/.github/review-binding/evaluate.jq?ref=$base' \
   'live_head' \
   'newest_run' \
-  'BOOTSTRAP_BASE_SHA'; do
+  'BOOTSTRAP_BASE_SHA' \
+  'GITHUB_EVENT_PATH'; do
   if grep -Fq "$required" "$WORKFLOW"; then
     ok "workflow contains: $required"
   else
     fail "workflow missing required guardrail: $required"
   fi
 done
+if grep -Fq 'EVENT_PATH: ${{ github.event_path }}' "$WORKFLOW"; then
+  fail "workflow must use the runner-populated GITHUB_EVENT_PATH, not an empty context expression"
+else
+  ok "event payload reads use the runner-provided path"
+fi
 if grep -Eq '^[[:space:]]+(name: review-binding|review-binding:)$' "$WORKFLOW"; then
   fail "job/step must not publish a second review-binding check"
 else
