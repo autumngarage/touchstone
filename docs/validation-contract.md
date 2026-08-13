@@ -39,8 +39,9 @@ task ran fails.
 Human output and `--json` both report ran, skipped, and failed counts. JSON is
 the stable automation boundary and identifies every failing task, target,
 status, and reason. Configuration is the only behavioral source of truth;
-ambient variables can select the project/config location but cannot supply or
-replace declarations.
+ambient variables cannot select another project, config, command, or target.
+Tests and adapters that need a different location pass the explicit
+`--project` or `--config` arguments.
 
 Missing, malformed, ambiguous, path-escaping, and unsupported-schema contracts
 fail closed. A repository that still has `.touchstone-config` receives an

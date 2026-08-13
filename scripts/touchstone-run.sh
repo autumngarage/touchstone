@@ -15,8 +15,8 @@ ACTION="${1:-validate}"
 if [ "$#" -gt 0 ]; then shift; fi
 
 JSON_MODE=false
-PROJECT_ARG="${TOUCHSTONE_PROJECT_ROOT:-}"
-CONFIG_ARG="${TOUCHSTONE_CONFIG_FILE:-.touchstone.toml}"
+PROJECT_ARG=""
+CONFIG_ARG=".touchstone.toml"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in

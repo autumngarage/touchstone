@@ -232,6 +232,21 @@ run_capture "$REPEAT" "$TMP_DIR/repeat-2.out"
 after="$(shasum -a 256 "$REPEAT/.touchstone.toml" | awk '{print $1}')"
 [ "$before" = "$after" ] || fail "validation mutated its declaration"
 
+echo "==> ambient variables cannot replace declarations"
+AMBIENT="$TMP_DIR/ambient"
+AMBIENT_OTHER="$TMP_DIR/ambient-other"
+write_contract "$AMBIENT" "printf declared > marker"
+write_contract "$AMBIENT_OTHER" "exit 44"
+set +e
+TOUCHSTONE_PROJECT_ROOT="$AMBIENT_OTHER" \
+  TOUCHSTONE_CONFIG_FILE="$AMBIENT_OTHER/.touchstone.toml" \
+  bash "$RUNNER" validate --project "$AMBIENT" \
+  >"$TMP_DIR/ambient.out" 2>"$TMP_DIR/ambient.err"
+ambient_status=$?
+set -e
+[ "$ambient_status" -eq 0 ] || fail "ambient variables replaced the explicit contract"
+[ "$(cat "$AMBIENT/marker")" = declared ] || fail "declared contract did not own the run"
+
 echo "==> runtime contains no project-type or package-manager detection"
 assert_not_contains "$RUNNER" "project_type"
 assert_not_contains "$RUNNER" "package_manager"
