@@ -144,20 +144,6 @@ if [ "$DEPS_ONLY" = false ]; then
   fi
 
   # --------------------------------------------------------------------------
-  # 2. Touchstone CLI
-  # --------------------------------------------------------------------------
-  info "Checking touchstone"
-  if command -v touchstone >/dev/null 2>&1; then
-    TOUCHSTONE_VERSION_SUMMARY="$(touchstone version 2>&1 | awk 'NF && !seen { sub(/^touchstone /, ""); print; seen = 1 }')"
-    ok "touchstone ${TOUCHSTONE_VERSION_SUMMARY:-installed}"
-  else
-    warn "Installing touchstone..."
-    brew tap autumngarage/touchstone 2>/dev/null || true
-    brew install touchstone
-    ok "touchstone installed"
-  fi
-
-  # --------------------------------------------------------------------------
   # 3. Dev tools (brew)
   # --------------------------------------------------------------------------
   info "Checking dev tools"
@@ -708,7 +694,7 @@ install_swift_devtools() {
     warn "Installing swiftlint..."
     brew install swiftlint 2>/dev/null && ok "swiftlint installed" || warn "swiftlint install failed"
   fi
-  # Note: Apple's swift-format (matches touchstone-run.sh and `touchstone doctor`),
+  # Note: Apple's swift-format (matches touchstone-run.sh),
   # NOT Nick Lockwood's swiftformat (different tool, different binary name).
   if command -v swift-format >/dev/null 2>&1; then
     ok "swift-format installed"
@@ -820,7 +806,7 @@ else
   install_profile_devtools "$ROOT_PROFILE_RESOLVED"
   # Monorepo targets declared in .touchstone-config also need their dev tools —
   # touchstone-run.sh dispatches per target, and its lint action skips a missing
-  # linter while still exiting 0. `touchstone doctor` reports that gap only for
+  # linter while still exiting 0. That gap is reported only for
   # the root profile, so installing them here is what closes it per target.
   install_configured_target_devtools
 fi
@@ -848,6 +834,6 @@ fi
 echo ""
 info "Setup complete"
 echo ""
-printf "  Run ${BOLD}touchstone doctor${RESET} to verify everything.\n"
-printf "  Run ${BOLD}touchstone status${RESET} to see project health.\n"
+printf "  Run ${BOLD}bash scripts/touchstone-run.sh validate${RESET} to run the checks.\n"
+printf "  Run ${BOLD}git status --short --branch${RESET} to see where the tree stands.\n"
 echo ""

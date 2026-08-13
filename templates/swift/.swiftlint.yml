@@ -1,4 +1,4 @@
-# Touchstone-managed default. Customize per-project; touchstone update
+# Touchstone-managed default. Customize per-project; a managed-file update
 # will not overwrite a hand-edited .swiftlint.yml.
 
 excluded:

@@ -31,7 +31,7 @@ assert_not_contains() {
 
 echo "==> TOUCHSTONE.md and managed AGENTS blocks expose the driver/reviewer contract"
 # TOUCHSTONE.md is the single source of truth. AGENTS.md and templates/AGENTS.md
-# inline its content via lib/touchstone-block.sh after `touchstone update`.
+# inline its content as a hand-maintained copy of the same block.
 for file in \
   "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
   "$TOUCHSTONE_ROOT/AGENTS.md" \
@@ -72,7 +72,7 @@ done
 
 echo "==> Gemini entry files name the driving CLI role inline"
 # GEMINI.md (and templates/GEMINI.md) carry the managed steering block inlined
-# via lib/touchstone-block.sh, so the contract phrases must appear directly.
+# as a hand-maintained copy, so the contract phrases must appear directly.
 for file in \
   "$TOUCHSTONE_ROOT/GEMINI.md" \
   "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do

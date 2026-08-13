@@ -572,7 +572,7 @@ run_profile_action() {
     go) run_go_action "$action" ;;
     generic | "")
       # build_if_distinct is a validate-time extra — silently no-op for generic
-      # so "touchstone run validate" doesn't print a scary "no default command"
+      # so a plain validate run does not print a scary "no default command"
       # line on every non-typed project.
       if [ "$action" = "build_if_distinct" ]; then
         return 0

@@ -195,9 +195,30 @@ fi
 
 echo ""
 echo "==> No file invokes a touchstone CLI subcommand"
-CLI_SUBCOMMANDS='doctor|status|update|update-all|new|init|version|release|list|diff|sync|changelog|run'
+
+# POSIX ERE only. The first version of this check used `\b` for the trailing
+# word boundary, which glibc's ERE honours and BSD/macOS does not — so it
+# matched on CI and matched nothing locally. The suite went green on a
+# developer machine and red on the required check, which is the worst possible
+# split: local green is what people trust. Both boundaries are now bracket
+# expressions, which behave identically on both platforms.
+CLI_SUBCOMMANDS='doctor|status|update|update-all|new|init|version|release|list|diff|sync|changelog'
+CLI_PATTERN="(^|[^-/[:alnum:]])touchstone (${CLI_SUBCOMMANDS})([^[:alnum:]-]|$)"
+
+# The check must be able to fail, and must be proven to on THIS platform
+# before its silence is allowed to mean anything.
+probe_hit=0
+printf 'Run `touchstone doctor` to verify.\n' | grep -qE "$CLI_PATTERN" && probe_hit=1
+probe_miss=0
+printf 'bash scripts/touchstone-run.sh validate\n' | grep -qE "$CLI_PATTERN" || probe_miss=1
+if [ "$probe_hit" -eq 1 ] && [ "$probe_miss" -eq 1 ]; then
+  echo "  OK: the pattern matches a CLI invocation and spares touchstone-run.sh"
+else
+  fail "the CLI-reference pattern is not working on this platform (hit=$probe_hit spared=$probe_miss); its silence below proves nothing"
+fi
+
 cli_refs="$(
-  git -C "$TOUCHSTONE_ROOT" grep -nE "(^|[^-/[:alnum:]])touchstone (${CLI_SUBCOMMANDS})\b" \
+  git -C "$TOUCHSTONE_ROOT" grep -nE "$CLI_PATTERN" \
     -- ':!tests/test-steering-size-caps.sh' ':!audits' ':!feedback' 2>/dev/null || true
 )"
 if [ -n "$cli_refs" ]; then
