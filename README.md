@@ -98,7 +98,10 @@ for test in tests/test-*.sh; do
 done
 ```
 
-The suite is deterministic, offline, and fetches nothing. `.github/workflows/validate.yml` runs the same loop as the required check with no third-party dependency of any kind — a required check that can go red because a package host had a bad minute is not a gate.
+The suite is deterministic, offline, and fetches nothing. The protected,
+immutable workflow pinned by `policy/github/touchstone-main.json` runs the same
+loop as the required check with no third-party dependency of any kind. The
+target repository carries no duplicate validation workflow.
 
 Lint is separate, at pre-commit: `shellcheck`, `shfmt`, `markdownlint`, `actionlint`.
 

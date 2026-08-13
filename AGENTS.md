@@ -132,7 +132,7 @@ for test in tests/test-*.sh; do
 done
 ```
 
-The suite must stay deterministic, offline, and free of live model/provider quota. `.github/workflows/validate.yml` runs the same loop as the required check and fetches nothing at all — a required check that can go red because a package host had a bad minute is not a gate (#742, #803, #808).
+The suite must stay deterministic, offline, and free of live model/provider quota. The protected workflow pinned by `policy/github/touchstone-main.json` runs the same loop as the required check and fetches nothing at all. Do not add a duplicate target-repository validation workflow — a required check that can go red because a package host had a bad minute is not a gate (#742, #803, #808).
 
 Lint is not part of the test suite. It runs at pre-commit and via `pre-commit run --all-files`: `shellcheck`, `shfmt`, `markdownlint`, and `actionlint`.
 
@@ -174,13 +174,12 @@ Style nits and theoretical refactors are **out of scope**.
 
 ### High-scrutiny paths
 
-Files: `.github/workflows/validate.yml`, `hooks/branch-guard.sh`, `scripts/respond-review.sh`, `TOUCHSTONE.md`
+Files: `policy/github/touchstone-main.json`, `hooks/branch-guard.sh`, `scripts/respond-review.sh`, `TOUCHSTONE.md`
 
 Flag any of the following:
 
-- **A new dependency on the merge path.** Before an install step enters `validate.yml`, a specific test must execute that binary. If none does, the dependency belongs at pre-commit time.
+- **A new dependency on the merge path.** The pinned external validation workflow must remain deterministic and offline. The target repository must not add a duplicate validation workflow.
 - **Unpinned actions.** Every GitHub Action must be pinned to a full commit SHA, not a tag. Only a SHA is immutable.
-- **A renamed required job.** The `validate (ubuntu-latest)` check name is configured as required on main; renaming it silently un-gates the branch.
 - **Missing error handling.** Scripts use `set -euo pipefail`. Commands that can fail legitimately must be guarded explicitly, never silently.
 - **Path assumptions.** Never assume the repo root is a specific directory. Derive paths from `$0` or `git rev-parse`.
 

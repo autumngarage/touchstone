@@ -7,7 +7,6 @@ EVALUATOR="$TOUCHSTONE_ROOT/.github/review-binding/evaluate.jq"
 WORKFLOW="$TOUCHSTONE_ROOT/.github/workflows/review-binding.yml"
 SIGNAL_WORKFLOW="$TOUCHSTONE_ROOT/.github/workflows/review-evidence-signal.yml"
 SETUP="$TOUCHSTONE_ROOT/setup.sh"
-VALIDATE="$TOUCHSTONE_ROOT/.github/workflows/validate.yml"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -436,12 +435,10 @@ if grep -Fq 'live_base_ref="$(jq -r .base.ref' "$WORKFLOW" \
 else
   fail "same-SHA base retargeting must cancel a stale evaluation"
 fi
-if grep -Fq 'brew_install_if_missing "jq" "jq"' "$SETUP" \
-  && grep -Fq 'runner-provided jq binary' "$VALIDATE" \
-  && ! grep -Eq 'apt(-get)?[[:space:]]+.*jq' "$VALIDATE"; then
-  ok "jq is declared by local setup without a CI network install"
+if grep -Fq 'brew_install_if_missing "jq" "jq"' "$SETUP"; then
+  ok "jq is declared by local setup for the review fixtures"
 else
-  fail "review fixtures require jq through setup, while CI must use its runner binary"
+  fail "review fixtures require jq through local setup"
 fi
 
 if [ "$ERRORS" -ne 0 ]; then
