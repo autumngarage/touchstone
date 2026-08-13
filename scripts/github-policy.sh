@@ -106,7 +106,22 @@ branch_protection_json() {
       require_code_owner_reviews: .required_pull_request_reviews.require_code_owner_reviews,
       required_approving_review_count: .required_pull_request_reviews.required_approving_review_count,
       require_last_push_approval: .required_pull_request_reviews.require_last_push_approval
-    } else null end),
+    }
+    + (if .required_pull_request_reviews.dismissal_restrictions then {
+        dismissal_restrictions: {
+          users: ([.required_pull_request_reviews.dismissal_restrictions.users[]?.login] | sort),
+          teams: ([.required_pull_request_reviews.dismissal_restrictions.teams[]?.slug] | sort),
+          apps: ([.required_pull_request_reviews.dismissal_restrictions.apps[]?.slug] | sort)
+        }
+      } else {} end)
+    + (if .required_pull_request_reviews.bypass_pull_request_allowances then {
+        bypass_pull_request_allowances: {
+          users: ([.required_pull_request_reviews.bypass_pull_request_allowances.users[]?.login] | sort),
+          teams: ([.required_pull_request_reviews.bypass_pull_request_allowances.teams[]?.slug] | sort),
+          apps: ([.required_pull_request_reviews.bypass_pull_request_allowances.apps[]?.slug] | sort)
+        }
+      } else {} end)
+    else null end),
     restrictions: (if .restrictions then {
       users: ([.restrictions.users[]?.login] | sort),
       teams: ([.restrictions.teams[]?.slug] | sort),

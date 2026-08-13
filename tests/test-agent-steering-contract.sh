@@ -68,6 +68,14 @@ assert_contains "$GIT_WORKFLOW_SKILL" "Where installed and verified as required"
 assert_contains "$GIT_WORKFLOW_SKILL" "missing enforcement as an adoption gap"
 assert_not_contains "$GIT_WORKFLOW_SKILL" 'Review is enforced by `review-binding`.'
 
+GIT_WORKFLOW_GUIDE="$TOUCHSTONE_ROOT/principles/git-workflow.md"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "Where the repository's effective policy requires \`review-binding\`"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "exact-head review remains mandatory driver procedure"
+assert_not_contains "$GIT_WORKFLOW_GUIDE" \
+  '**`review-binding` enforces the review contract.**'
+
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"
 # CLAUDE.md uses @TOUCHSTONE.md (Claude Code resolves @-imports transitively),
 # so the contract phrases are inlined into agent context via TOUCHSTONE.md

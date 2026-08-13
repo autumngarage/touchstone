@@ -92,7 +92,12 @@ The last one is the count of unresolved threads. Zero is the requirement.
 
 **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** GitHub's review API can support approval for authorized integrations, but that is not this adapter's observed contract. Do not expect an approval here or treat its absence as a stalled review.
 
-**`review-binding` enforces the review contract.** It fails unless trusted review evidence covers the exact current head after the bound request and every inline or body-only finding has a qualifying later answer. GitHub conversation resolution separately requires every inline thread closed.
+**Where the repository's effective policy requires `review-binding`, it enforces
+the review contract.** It fails unless trusted review evidence covers the exact
+current head after the bound request and every inline or body-only finding has
+a qualifying later answer. Until that check is installed and verified as
+required, exact-head review remains mandatory driver procedure. GitHub
+conversation resolution separately requires every inline thread closed.
 
 ## Answering findings
 

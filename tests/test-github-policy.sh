@@ -156,10 +156,33 @@ case "$method $endpoint" in
       echo "gh: restrictions must use login or slug strings (HTTP 422)" >&2
       exit 1
     }
+    jq -e '
+      .required_pull_request_reviews == null or
+      ([
+        .required_pull_request_reviews.dismissal_restrictions?,
+        .required_pull_request_reviews.bypass_pull_request_allowances?
+      ] | map(select(. != null)) |
+        all(.[]; ((.users + .teams + .apps) | all(.[]; type == "string"))))
+    ' <<<"$payload" >/dev/null || {
+      echo "gh: review exceptions must use login or slug strings (HTTP 422)" >&2
+      exit 1
+    }
     jq '{
       required_status_checks: .required_status_checks,
       enforce_admins: {enabled:.enforce_admins},
-      required_pull_request_reviews: .required_pull_request_reviews,
+      required_pull_request_reviews: (if .required_pull_request_reviews then
+        .required_pull_request_reviews
+        | if .dismissal_restrictions then .dismissal_restrictions = {
+            users: [.dismissal_restrictions.users[] | {login:.}],
+            teams: [.dismissal_restrictions.teams[] | {slug:.}],
+            apps: [.dismissal_restrictions.apps[] | {slug:.}]
+          } else . end
+        | if .bypass_pull_request_allowances then .bypass_pull_request_allowances = {
+            users: [.bypass_pull_request_allowances.users[] | {login:.}],
+            teams: [.bypass_pull_request_allowances.teams[] | {slug:.}],
+            apps: [.bypass_pull_request_allowances.apps[] | {slug:.}]
+          } else . end
+        else null end),
       restrictions: (if .restrictions then {
         users: [.restrictions.users[] | {login:.}],
         teams: [.restrictions.teams[] | {slug:.}],
@@ -350,22 +373,48 @@ jq '.restrictions = {
   users: [{login:"octocat"}],
   teams: [{slug:"release-engineers"}],
   apps: [{slug:"touchstone-bot"}]
+}
+| .required_pull_request_reviews.dismissal_restrictions = {
+  users: [{login:"review-admin"}],
+  teams: [{slug:"review-leads"}],
+  apps: [{slug:"review-bot"}]
+}
+| .required_pull_request_reviews.bypass_pull_request_allowances = {
+  users: [{login:"release-admin"}],
+  teams: [{slug:"release-engineers"}],
+  apps: [{slug:"touchstone-bot"}]
 }' "$TMP_DIR/state/branch.json" >"$TMP_DIR/state/restricted.json"
 mv "$TMP_DIR/state/restricted.json" "$TMP_DIR/state/branch.json"
 run_policy backup "$TMP_DIR/restricted-backup.json" "$POLICY" >/dev/null
 jq -e '.branchProtection.restrictions == {
   users:["octocat"],teams:["release-engineers"],apps:["touchstone-bot"]
+}
+and .branchProtection.required_pull_request_reviews.dismissal_restrictions == {
+  users:["review-admin"],teams:["review-leads"],apps:["review-bot"]
+}
+and .branchProtection.required_pull_request_reviews.bypass_pull_request_allowances == {
+  users:["release-admin"],teams:["release-engineers"],apps:["touchstone-bot"]
 }' "$TMP_DIR/restricted-backup.json" >/dev/null \
-  || fail "backup did not normalize restriction objects into writable strings"
+  || fail "backup did not normalize restriction and review-exception objects into writable strings"
 run_policy apply "$POLICY" >/dev/null
 run_policy rollback "$TMP_DIR/restricted-backup.json" "$POLICY" >/dev/null
 jq -e '.restrictions == {
   users:[{login:"octocat"}],
   teams:[{slug:"release-engineers"}],
   apps:[{slug:"touchstone-bot"}]
+}
+and .required_pull_request_reviews.dismissal_restrictions == {
+  users:[{login:"review-admin"}],
+  teams:[{slug:"review-leads"}],
+  apps:[{slug:"review-bot"}]
+}
+and .required_pull_request_reviews.bypass_pull_request_allowances == {
+  users:[{login:"release-admin"}],
+  teams:[{slug:"release-engineers"}],
+  apps:[{slug:"touchstone-bot"}]
 }' "$TMP_DIR/state/branch.json" >/dev/null \
-  || fail "rollback did not restore restricted branch protection"
-ok "restricted protection round-trips through backup and rollback"
+  || fail "rollback did not restore restricted branch protection and review exceptions"
+ok "restricted protection and review exceptions round-trip through backup and rollback"
 
 echo "==> Rollback refuses an unprotected backup"
 jq '.branchProtection = null | .managedOrganizationRuleset = null' \
