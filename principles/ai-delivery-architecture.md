@@ -43,11 +43,13 @@ Agentic PR Review Loop
   v
 Merge Gate
   |
-  | ENFORCED by GitHub:
+  | ENFORCED by GitHub when the repository's effective policy requires them:
   |   pinned required validation workflow green
   |   review-binding covers this head and every finding is answered
   |   every review thread resolved
   |   no outstanding CHANGES_REQUESTED
+  | Until adoption, the same exact-head review remains driver procedure;
+  | missing server-side constraints are a rollout gap.
   |
   v
 Final Verification
@@ -78,7 +80,12 @@ Human user
 - Feature-branch push is not the expensive gate. It should preserve cheap local guardrails without running full test suites or LLM review by default.
 - Merge is allowed only after PR-visible review and check approval: required checks green, a review bound to the current head with every thread answered, and no active `CHANGES_REQUESTED`.
 - The head binding is `gh pr merge --squash --match-head-commit <reviewed-sha>`. It is the whole mechanism — GitHub refuses the merge if the head moved, which is the race that would otherwise let an unreviewed commit in behind a passing review.
-- **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** `required_approving_review_count` therefore does not express this review contract. The required `review-binding` check binds trusted review evidence to the exact head and requires every finding answered.
+- **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.**
+  `required_approving_review_count` therefore does not express this review
+  contract. Where the repository's effective policy requires `review-binding`,
+  that check binds trusted review evidence to the exact head and requires every
+  finding answered. Until adoption, the same exact-head review remains
+  mandatory driver procedure.
 
 ## Driver AI Responsibilities
 
@@ -140,11 +147,16 @@ Rules:
 
 **Nothing local enforces this architecture right now.** The scripts that did — 5,399 lines of open-pr and merge-pr helpers — were deleted because 43% of them re-decided locally what GitHub decides at the merge button, and they never once read the server-side settings that already expressed the same rules.
 
-The enforced split is:
+Where the repository's effective policy contains the Touchstone ruleset, the
+enforcement split is:
 
 1. **GitHub enforces.** The organization ruleset refuses direct and force pushes, requires a PR, runs the pinned validation workflow, requires exact-head `review-binding`, and blocks unresolved threads.
 2. **Prose instructs.** `git-workflow.md` carries the full sequence in raw `git` and `gh`, including the head binding at merge and the thread-resolution mutation.
 3. **The driver executes and verifies.** It runs the commands, reads what GitHub actually reports, and does not trust an exit code that is known to lie in both directions.
+
+Before that policy is installed and verified, the prose and driver still carry
+the delivery procedure, but the missing server-side constraint remains a
+rollout gap rather than permission to skip review.
 
 ## Product Boundary
 

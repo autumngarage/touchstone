@@ -378,6 +378,12 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
   "review-binding"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
   "can evaluate from GitHub"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
+  "when the repository's effective policy requires them"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
+  "missing server-side constraints are a rollout gap"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
+  'The required `review-binding` check'
 
 # Every surface that describes the merge gate must name the server-side review
 # binding now that the previously documented gap is closed.
