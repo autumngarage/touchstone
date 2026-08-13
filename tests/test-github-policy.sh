@@ -146,8 +146,20 @@ case "$method $endpoint" in
     fi
     cat "$state/branch.json"
     ;;
+  "GET repos/autumngarage/touchstone/branches/main/protection/required_signatures")
+    if [ ! -f "$state/branch.json" ]; then
+      echo "gh: Branch not protected (HTTP 404)" >&2
+      exit 1
+    fi
+    emit "$(jq -c '.required_signatures // {enabled:false}' "$state/branch.json")"
+    ;;
   "PUT repos/autumngarage/touchstone/branches/main/protection")
     payload="$(cat)"
+    if [ -f "$state/branch.json" ]; then
+      current_signatures="$(jq -c '.required_signatures // {enabled:false}' "$state/branch.json")"
+    else
+      current_signatures='{"enabled":false}'
+    fi
     jq -e '
       .restrictions == null or
       ((.restrictions.users + .restrictions.teams + .restrictions.apps) |
@@ -167,7 +179,7 @@ case "$method $endpoint" in
       echo "gh: review exceptions must use login or slug strings (HTTP 422)" >&2
       exit 1
     }
-    jq '{
+    jq --argjson current_signatures "$current_signatures" '{
       required_status_checks: .required_status_checks,
       enforce_admins: {enabled:.enforce_admins},
       required_pull_request_reviews: (if .required_pull_request_reviews then
@@ -189,6 +201,7 @@ case "$method $endpoint" in
         apps: [.restrictions.apps[] | {slug:.}]
       } else null end),
       required_linear_history: {enabled:.required_linear_history},
+      required_signatures: $current_signatures,
       allow_force_pushes: {enabled:.allow_force_pushes},
       allow_deletions: {enabled:.allow_deletions},
       block_creations: {enabled:.block_creations},
@@ -197,6 +210,17 @@ case "$method $endpoint" in
       allow_fork_syncing: {enabled:.allow_fork_syncing}
     }' <<<"$payload" >"$state/branch.json"
     echo "PUT branch-protection" >>"$state/mutations.log"
+    ;;
+  "POST repos/autumngarage/touchstone/branches/main/protection/required_signatures")
+    jq '.required_signatures = {enabled:true}' "$state/branch.json" >"$state/branch-signed.json"
+    mv "$state/branch-signed.json" "$state/branch.json"
+    echo "POST required-signatures" >>"$state/mutations.log"
+    emit '{"enabled":true}'
+    ;;
+  "DELETE repos/autumngarage/touchstone/branches/main/protection/required_signatures")
+    jq '.required_signatures = {enabled:false}' "$state/branch.json" >"$state/branch-unsigned.json"
+    mv "$state/branch-unsigned.json" "$state/branch.json"
+    echo "DELETE required-signatures" >>"$state/mutations.log"
     ;;
   "DELETE repos/autumngarage/touchstone/branches/main/protection")
     rm -f "$state/branch.json"
@@ -233,6 +257,7 @@ init_branch() {
     required_pull_request_reviews: .branchProtection.required_pull_request_reviews,
     restrictions: .branchProtection.restrictions,
     required_linear_history: {enabled:.branchProtection.required_linear_history},
+    required_signatures: {enabled:(.branchProtection.required_signatures // false)},
     allow_force_pushes: {enabled:.branchProtection.allow_force_pushes},
     allow_deletions: {enabled:.branchProtection.allow_deletions},
     block_creations: {enabled:.branchProtection.block_creations},
@@ -336,6 +361,8 @@ echo "==> Backup, apply, and idempotency"
 run_policy backup "$TMP_DIR/backup.json" "$POLICY"
 jq -e '.branchProtection.required_status_checks.checks | length == 2' "$TMP_DIR/backup.json" >/dev/null \
   || fail "backup omitted current required checks"
+jq -e '.branchProtection.required_signatures == false' "$TMP_DIR/backup.json" >/dev/null \
+  || fail "backup omitted current signed-commit protection state"
 jq -e '.rollbackPrerequisites.repositoryFiles[0].sha ==
   "c2dc082e0702090f3fc9de095d78a85ddde902a5"' \
   "$TMP_DIR/backup.json" >/dev/null \
@@ -383,7 +410,9 @@ jq '.restrictions = {
   users: [{login:"release-admin"}],
   teams: [{slug:"release-engineers"}],
   apps: [{slug:"touchstone-bot"}]
-}' "$TMP_DIR/state/branch.json" >"$TMP_DIR/state/restricted.json"
+}
+| .required_signatures.enabled = true' \
+  "$TMP_DIR/state/branch.json" >"$TMP_DIR/state/restricted.json"
 mv "$TMP_DIR/state/restricted.json" "$TMP_DIR/state/branch.json"
 run_policy backup "$TMP_DIR/restricted-backup.json" "$POLICY" >/dev/null
 jq -e '.branchProtection.restrictions == {
@@ -394,7 +423,9 @@ and .branchProtection.required_pull_request_reviews.dismissal_restrictions == {
 }
 and .branchProtection.required_pull_request_reviews.bypass_pull_request_allowances == {
   users:["release-admin"],teams:["release-engineers"],apps:["touchstone-bot"]
-}' "$TMP_DIR/restricted-backup.json" >/dev/null \
+}
+and .branchProtection.required_signatures == true' \
+  "$TMP_DIR/restricted-backup.json" >/dev/null \
   || fail "backup did not normalize restriction and review-exception objects into writable strings"
 run_policy apply "$POLICY" >/dev/null
 run_policy rollback "$TMP_DIR/restricted-backup.json" "$POLICY" >/dev/null
@@ -412,9 +443,29 @@ and .required_pull_request_reviews.bypass_pull_request_allowances == {
   users:[{login:"release-admin"}],
   teams:[{slug:"release-engineers"}],
   apps:[{slug:"touchstone-bot"}]
-}' "$TMP_DIR/state/branch.json" >/dev/null \
+}
+and .required_signatures.enabled == true' \
+  "$TMP_DIR/state/branch.json" >/dev/null \
   || fail "rollback did not restore restricted branch protection and review exceptions"
-ok "restricted protection and review exceptions round-trip through backup and rollback"
+grep -qx 'POST required-signatures' "$TMP_DIR/state/mutations.log" \
+  || fail "rollback did not recreate signed-commit protection through its separate endpoint"
+ok "restricted protection, review exceptions, and signatures round-trip through backup and rollback"
+
+echo "==> Rollback removes signed-commit protection when the backup is unsigned"
+init_branch
+run_policy backup "$TMP_DIR/unsigned-backup.json" "$POLICY" >/dev/null
+jq 'del(.branchProtection.required_signatures)' \
+  "$TMP_DIR/unsigned-backup.json" >"$TMP_DIR/legacy-unsigned-backup.json"
+jq '.required_signatures.enabled = true' \
+  "$TMP_DIR/state/branch.json" >"$TMP_DIR/state/signed-branch.json"
+mv "$TMP_DIR/state/signed-branch.json" "$TMP_DIR/state/branch.json"
+: >"$TMP_DIR/state/mutations.log"
+run_policy rollback "$TMP_DIR/legacy-unsigned-backup.json" "$POLICY" >/dev/null
+jq -e '.required_signatures.enabled == false' "$TMP_DIR/state/branch.json" >/dev/null \
+  || fail "rollback retained signed-commit protection absent from the backup"
+grep -qx 'DELETE required-signatures' "$TMP_DIR/state/mutations.log" \
+  || fail "rollback did not remove signed-commit protection through its separate endpoint"
+ok "signed-commit protection is removed, including from a compatible older backup"
 
 echo "==> Rollback refuses an unprotected backup"
 jq '.branchProtection = null | .managedOrganizationRuleset = null' \

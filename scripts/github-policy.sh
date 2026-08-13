@@ -66,6 +66,10 @@ normalize_ruleset() {
   }'
 }
 
+normalize_branch_protection() {
+  jq -S 'if . == null then null else .required_signatures = (.required_signatures // false) end'
+}
+
 managed_ruleset_json() {
   local list ids count id
   list="$(api --paginate "orgs/$ORG/rulesets" | jq -s 'add // []')"
@@ -128,6 +132,7 @@ branch_protection_json() {
       apps: ([.restrictions.apps[]?.slug] | sort)
     } else null end),
     required_linear_history: (.required_linear_history.enabled // false),
+    required_signatures: (.required_signatures.enabled // false),
     allow_force_pushes: (.allow_force_pushes.enabled // false),
     allow_deletions: (.allow_deletions.enabled // false),
     block_creations: (.block_creations.enabled // false),
@@ -214,13 +219,13 @@ verify_policy_state() {
   fi
   actual_protection="$(branch_protection_json)" || return $?
   diff -u \
-    <(jq -S . <<<"$expected_protection") \
-    <(printf '%s\n' "$actual_protection") >/dev/null \
+    <(normalize_branch_protection <<<"$expected_protection") \
+    <(printf '%s\n' "$actual_protection") >&2 \
     || die "branch protection differs from expected policy state"
 }
 
 restore_branch_protection() {
-  local protection="$1"
+  local protection="$1" expected_signatures actual_signatures signature_endpoint
   [ "$protection" != null ] || return 0
   jq '{
     required_status_checks,
@@ -236,6 +241,14 @@ restore_branch_protection() {
     allow_fork_syncing
   }' <<<"$protection" \
     | api --method PUT "repos/$ORG/$REPOSITORY/branches/$BRANCH/protection" --input - >/dev/null
+  signature_endpoint="repos/$ORG/$REPOSITORY/branches/$BRANCH/protection/required_signatures"
+  expected_signatures="$(jq -r '.required_signatures // false' <<<"$protection")"
+  actual_signatures="$(api "$signature_endpoint" --jq '.enabled // false')"
+  if [ "$expected_signatures" = true ] && [ "$actual_signatures" != true ]; then
+    api --method POST "$signature_endpoint" >/dev/null
+  elif [ "$expected_signatures" != true ] && [ "$actual_signatures" = true ]; then
+    api --method DELETE "$signature_endpoint" >/dev/null
+  fi
 }
 
 restore_policy_state() {

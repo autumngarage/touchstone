@@ -35,6 +35,7 @@
     },
     "restrictions": null,
     "required_linear_history": false,
+    "required_signatures": false,
     "allow_force_pushes": false,
     "allow_deletions": false,
     "block_creations": false,
