@@ -42,7 +42,14 @@ for file in \
   assert_contains "$file" "Required Delivery Workflow"
   assert_contains "$file" "Before the first edit"
   assert_contains "$file" "principles/ai-delivery-architecture.md"
-  assert_contains "$file" "bash scripts/open-pr.sh --auto-merge"
+  # The mechanics must be stated as raw commands, not delegated to a wrapper.
+  # A steering doc that names only a script leaves an agent stranded the moment
+  # the script is absent — which is exactly what the strip made true.
+  assert_contains "$file" "gh pr create"
+  assert_contains "$file" "--match-head-commit"
+  # The silent-failure trap: a closing trailer in a commit body does nothing on
+  # a squash merge, because GitHub reads the PR body. Nothing warns you.
+  assert_contains "$file" "PR body"
   assert_contains "$file" "Answer every piece of PR feedback before merging"
   assert_contains "$file" "scripts/respond-review.sh"
   assert_not_contains "$file" "touchstone worker"
@@ -77,7 +84,13 @@ done
 
 echo "==> canonical git workflow describes the PR-visible review loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Agentic PR Review Loop"
-assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "scripts/open-pr.sh --auto-merge"
+# The canonical doc must carry the whole mechanism in raw commands: how to open
+# the PR, how to bind the review to the head being merged, and how to resolve a
+# thread. These are the four gaps that made the prose unusable without a wrapper.
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "gh pr create"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "@codex review"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "--match-head-commit"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "resolveReviewThread"
 # #801 review: this doc promised the gate emits `review_requested` and
 # `review_result` events and that review latency is measurable from them.
 # lib/events.sh and every emit call were deleted in #737, so the promise became
@@ -110,18 +123,11 @@ active_router_refs="$(grep -Rin "conductor" \
   "$TOUCHSTONE_ROOT/GEMINI.md" \
   "$TOUCHSTONE_ROOT/README.md" \
   "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
-  "$TOUCHSTONE_ROOT/bin" \
-  "$TOUCHSTONE_ROOT/bootstrap" \
-  "$TOUCHSTONE_ROOT/completions" \
   "$TOUCHSTONE_ROOT/hooks" \
-  "$TOUCHSTONE_ROOT/lib" \
   "$TOUCHSTONE_ROOT/principles" \
   "$TOUCHSTONE_ROOT/scripts" \
   "$TOUCHSTONE_ROOT/skills" \
   "$TOUCHSTONE_ROOT/templates" 2>/dev/null \
-  | grep -v 'bootstrap/update-project.sh:.*conductor-review' \
-  | grep -v 'lib/install-skills.sh:.*conductor-delegation' \
-  | grep -v 'lib/sync-discipline.sh:.*conductor-delegation' \
   || true)"
 if [ -n "$active_router_refs" ]; then
   printf '%s\n' "$active_router_refs" >&2

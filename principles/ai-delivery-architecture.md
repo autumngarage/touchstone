@@ -30,7 +30,7 @@ Commit
   v
 Ship
   |
-  | open-pr.sh --auto-merge pushes and opens the PR
+  | git push, then gh pr create (closing reference in the PR body)
   v
 Agentic PR Review Loop
   |
@@ -74,12 +74,9 @@ Human user
 - Touchstone does not invoke a local semantic reviewer or model router.
 - PR creation is the review coordination surface. It should happen early enough for CI and any PR-visible agentic reviewers to work against visible PR state.
 - Feature-branch push is not the expensive gate. It should preserve cheap local guardrails without running full test suites or LLM review by default.
-- Merge is allowed only after PR-visible review and check approval. The local merge helper gates on requested-changes review decisions and unresolved review threads, runs deterministic checks, and requires a trusted current-head GitHub review signal bound to the captured base revision.
-- A clean result observed after a durable request is persisted on the full
-  reviewed SHA before later deterministic gates run. The versioned schema,
-  trust checks, and rebase compatibility path are owned by
-  [Review Evidence Contract](review-evidence.md).
-- A deterministic check result may be reused only when the cache key includes the base ref, head commit, relevant config, and checker version/input boundary.
+- Merge is allowed only after PR-visible review and check approval: required checks green, a review bound to the current head with every thread answered, and no active `CHANGES_REQUESTED`.
+- The head binding is `gh pr merge --squash --match-head-commit <reviewed-sha>`. It is the whole mechanism — GitHub refuses the merge if the head moved, which is the race that would otherwise let an unreviewed commit in behind a passing review.
+- **An AI reviewer can never file an `APPROVED` review** — GitHub reserves formal approval for real user accounts. `required_approving_review_count` therefore cannot express "this was reviewed", and the only layer that can is a required status check published by a workflow. That check does not currently exist; until it is rebuilt, review enforcement is advisory.
 
 ## Driver AI Responsibilities
 
@@ -90,7 +87,7 @@ The driver AI is Claude Code, Codex, Gemini CLI, or another AGENTS.md-native cod
 - run focused checks during implementation
 - stage explicit file paths
 - commit coherent changes
-- ship with `bash scripts/open-pr.sh --auto-merge`
+- ship with `git push` + `gh pr create`, then request review on the exact head
 - answer every piece of PR feedback and resolve its thread
 - commit fixes for actionable feedback and ship again
 - explain the outcome to the user
@@ -138,20 +135,15 @@ Rules:
 
 ## Implementation Scope
 
-The scripts now enforce the core merge-time parts of this architecture:
+**Nothing local enforces this architecture right now.** The scripts that did — 5,399 lines of open-pr and merge-pr helpers — were deleted because 43% of them re-decided locally what GitHub decides at the merge button, and they never once read the server-side settings that already expressed the same rules.
 
-1. `bash scripts/open-pr.sh --auto-merge` is the shipping entry point; a plain `open-pr.sh` opens a PR without merging.
-2. `open-pr.sh --draft` creates or updates a review-free coordination surface; it does not run the final PR-body protocol or emit semantic-review intent, completion status, or request comments.
-3. Final shipping runs deterministic issue-claim and PR-body preflights before marking an existing draft ready and requesting exact-head review.
-4. When the gate stops, it names the blocking condition; the driver fixes that and ships again. Actionable review feedback is answered and its thread resolved before the next attempt.
-5. `merge-pr.sh` blocks draft PRs, active requested-changes decisions, unresolved review threads, and thread-state inspection failures before the final squash merge.
-6. `merge-pr.sh` binds the trusted GitHub review signal to the exact current head and base, rejects base or merge-base movement, and merges with `--match-head-commit`.
-7. Review and preflight markers should key on base/head/config so repeated operations reuse valid results without hiding stale state.
-8. Detached events record review request count and wait time so external latency remains observable.
-9. Docs, templates, tests, and issue guidance should describe the PR-visible review loop consistently.
-10. The merge helper records versioned clean-result evidence on the reviewed
-    commit so a fail-closed root-cause reset can prove a rewritten historical
-    review without treating a short SHA as authorization.
+What is left is the honest split:
+
+1. **GitHub enforces.** Branch protection refuses direct pushes and requires a PR. Required checks must be green. Required conversation resolution blocks unresolved threads.
+2. **Prose instructs.** `git-workflow.md` carries the full sequence in raw `git` and `gh`, including the head binding at merge and the thread-resolution mutation.
+3. **The driver executes and verifies.** It runs the commands, reads what GitHub actually reports, and does not trust an exit code that is known to lie in both directions.
+
+The one gap, stated plainly: the requirement that a review happened cannot currently be enforced at the GitHub layer, because an AI reviewer never files an approval and the check-run that expressed it was deleted alongside the local mirror it duplicated. Rebuilding it as a small required status check is the next piece of enforcement work.
 
 ## Product Boundary
 

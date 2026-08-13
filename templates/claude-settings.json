@@ -1,5 +1,5 @@
 {
-  "_comment": "Touchstone-owned Claude Code settings. Bootstrap copies this to .claude/settings.json; `bin/touchstone update` overwrites it. User-specific overrides go in .claude/settings.local.json (gitignored), which Claude Code merges on top of this file. Edit this file directly only if you understand it will be clobbered on the next update.",
+  "_comment": "Claude Code settings for a Touchstone-aligned project. The branch guard refuses `git commit` on the default branch at the tool boundary, before the commit is attempted. Copy hooks/branch-guard.sh from the touchstone repo to hooks/branch-guard.sh in this project — the command below must resolve, or the guard silently never runs. User-specific overrides go in .claude/settings.local.json (gitignored), which Claude Code merges on top of this file.",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,11 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR\"/scripts/branch-guard.sh"
-          },
-          {
-            "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR\"/scripts/emergency-disclosure.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/hooks/branch-guard.sh"
           }
         ]
       }

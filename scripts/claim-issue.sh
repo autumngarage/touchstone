@@ -143,7 +143,7 @@ else
     CURRENT_BRANCH="(detached-head)"
   fi
   AGENT_LABEL="${TOUCHSTONE_AGENT_LABEL:-$(whoami)}"
-  COMMENT_BODY="Dispatched: branch \`$CURRENT_BRANCH\`, agent \`${AGENT_LABEL}\` claiming this issue. PR will land via \`scripts/open-pr.sh --auto-merge\`."
+  COMMENT_BODY="Dispatched: branch \`$CURRENT_BRANCH\`, agent \`${AGENT_LABEL}\` claiming this issue. PR will land through the standard review-and-merge gate."
 fi
 
 if [ -n "$COMMENT_BODY" ]; then

@@ -4,8 +4,9 @@ This file steers Codex and other AGENTS.md-native coding agents. Claude Code rea
 
 <!-- touchstone:steering:start -->
 
-<!-- This block is generated from TOUCHSTONE.md. `touchstone update` refreshes it.
-     Edit content OUTSIDE the markers; touchstone will not touch project-owned content. -->
+<!-- This block is a hand-maintained copy of TOUCHSTONE.md. The renderer that
+     generated it (lib/touchstone-block.sh) was deleted; edit TOUCHSTONE.md first,
+     then mirror the change here. Edit content OUTSIDE the markers freely. -->
 
 ## Touchstone — Shared Agent Steering
 
@@ -15,7 +16,7 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 **Humans approve plans. Agents write and ship code. GitHub reviews code.**
 
-That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar. Because approval never comes from a person, the merge gate is: required checks green, an **answered** review from a trusted author bound to this exact head and base — a clean verdict, or findings with every thread resolved — and no active `CHANGES_REQUESTED`. An untrusted, stale, or dismissed review fails the gate even with nothing open; answered findings stand — only a body-only finding (no threads) needs `open-pr.sh --fresh-review`. Local hooks are fast feedback; branch protection is the real boundary; emergency paths are audited.
+That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar. Because approval never comes from a person, the merge gate is: required checks green, an **answered** review from a trusted author bound to this exact head and base — a clean verdict, or findings with every thread resolved — and no active `CHANGES_REQUESTED`. A stale or dismissed review fails the gate even with nothing open; answered findings stand — only a body-only finding (no threads) needs a fresh review request on the unchanged head. Note that an AI reviewer never files an `APPROVED` review — GitHub reserves that for real users — so the gate is the answered review, not an approval count. Local hooks are fast feedback; branch protection is the real boundary; emergency paths are disclosed by convention — nothing currently records or enforces a bypass, so treat that disclosure as owed, not as captured for you.
 
 To hold those lines, Touchstone does three things and nothing else:
 
@@ -64,9 +65,12 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 3. **Claim issues before implementation.** If the work starts from a GitHub issue, claim it before editing or dispatching an agent: `bash scripts/claim-issue.sh <n>`. Claim every issue in a multi-issue bundle so two agents do not ship competing fixes.
 4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
 5. **Reconcile issues.** Before opening the PR, list every GitHub issue found, claimed, fixed, partially fixed, or made stale by the work. Fully fixed issues get closing trailers (`Closes-issue: #123` or `Closes #123`) so merge auto-closes them; partial/stale issues get a comment explaining the evidence or remaining gap. Do not leave fixed issues open silently.
-6. **Ship.** `bash scripts/open-pr.sh --auto-merge` opens the PR, requests review, and merges when the gate passes. If it stops, fix what it names and rerun.
+6. **Ship.** `git push -u origin HEAD`, then `gh pr create`. Put the closing reference (`Closes #123`) in the **PR body** — squash-merge reads the body, not the commit. Request review by commenting `@codex review` on the PR.
 7. **Answer every piece of PR feedback before merging.** Whoever reviews (hosted AI, bot, or colleague), reply to each comment and resolve the thread; unresolved threads and `CHANGES_REQUESTED` block the merge. `bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file>` replies and resolves in one step; `--all-resolved-check` proves none remain.
-8. **Clean up after merge.** Delete the local branch if it persists.
+8. **Merge** with `gh pr merge <n> --squash --match-head-commit <sha>`, binding to the head the review actually saw. Its exit code lies in both directions — confirm against real state rather than trusting it.
+9. **Clean up after merge.** Delete the local branch if it persists.
+
+Every command above is the whole mechanism; there is no wrapper. `principles/git-workflow.md` carries the full sequence, including thread resolution.
 
 Do not bypass the PR/review/merge path with a direct default-branch push except through the documented emergency path in `principles/git-workflow.md`.
 
@@ -83,35 +87,31 @@ Do not bypass the PR/review/merge path with a direct default-branch push except 
 | audit a structural bug class after fixing one instance | `principles/audit-weak-points.md` |
 | hit a bug in an upstream tool (don't silently work around it) | `principles/file-upstream-bugs.md` |
 | write, trust, or audit agent memory — it is a cache, not truth | `principles/memory-hygiene.md` |
-| write a `.cortex/` artifact or see a Tier-1 trigger fire | `.cortex/protocol.md` |
 
 Claude Code agents: the bundled `touchstone-*` and `memory-audit` skills mirror this table in your session header. Trust whichever surface fires first.
-
-## Orientation
-
-If `.cortex/state.md` exists in the project, read it at session start for the current state of in-flight work.
 
 <!-- touchstone:steering:end -->
 
 ## Authoring Guide
 
-You are maintaining a shared engineering platform that provides universal principles, reusable scripts, deterministic validation, and a PR-visible review workflow for Henry's projects. Changes here propagate to downstream projects via `sync-all.sh`, so treat fixes here as platform changes, not isolated repo edits.
+You are maintaining the standard baseline for a solo developer directing many agents across many projects. Touchstone ships two things, and both are the product: the guidance prompts an agent reads, and the small script surface that makes the agent use GitHub correctly. A bug here is a bug in how every project ships.
 
 ### Git Workflow
 
 - Start each code change from a feature branch. Before editing tracked files, run `git branch --show-current`; if it reports `main` or `master`, branch with `git checkout -b <type>/<short-description>`.
 - Claim every GitHub issue you are actively implementing with `bash scripts/claim-issue.sh <n>` before editing or dispatching an agent.
 - Keep changes logically grouped. Stage explicit file paths, commit with a concise message, and avoid unrelated refactors.
-- Reconcile issue state before opening the PR: fixed issues get closing trailers/PR body lines; partial or stale issues get an issue comment with evidence and remaining gaps.
-- To ship a completed branch, run `bash scripts/open-pr.sh --auto-merge`. If it stops, fix the cause it names and run it again.
+- Reconcile issue state before opening the PR. Put `Closes #N` in the **PR body** — a commit trailer alone does not close anything on a squash merge.
+- Ship with `git push -u origin HEAD` then `gh pr create`; request review with `gh pr comment <n> --body "@codex review"`; merge with `gh pr merge <n> --squash --match-head-commit <reviewed-sha>`. There is no wrapper — `principles/git-workflow.md` carries the full sequence.
 - The PR is the review surface. Do not treat PR creation as completion: answer every piece of PR feedback and resolve its thread — whoever left it — before merging.
-- File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md` for slice manifests, file ownership, concurrency caps, and cleanup; use `git worktree add` and `git worktree remove` for local setup and teardown.
+- File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md`; use `git worktree add` and `git worktree remove` for setup and teardown.
 
 ### Touchstone-Specific Rules
 
-- Files in `principles/`, `hooks/`, and `scripts/` are touchstone-owned and copied into downstream projects by `update-project.sh`.
-- Files in `templates/` are copied once at bootstrap time and then project-owned; template changes affect new projects only.
-- `bootstrap/new-project.sh`, `bootstrap/update-project.sh`, `scripts/open-pr.sh`, and `scripts/merge-pr.sh` are high-risk. Preserve backup, clean-worktree, exact-head review, branch/commit, and guarded-merge behavior.
+- **A rule must live at the layer that can enforce it.** GitHub enforces, prose instructs, scripts observe and sequence. Nothing lives at two layers at once. Re-deciding locally what GitHub decides at the merge button is the specific mistake that grew this repo to 49,000 lines.
+- **Delete by default.** The burden of proof is on keeping. A change earns its way in when a real failure demanded it, not because a review round suggested it.
+- Files in `templates/` are the reference shape for a project's own files. Nothing copies them today — the bootstrap went out with the propagation channel.
+- Downstream projects are frozen on committed copies of the old scripts, deliberately. Do not try to fix them from here.
 - All shell must stay portable to macOS with standard tools: `bash`, `git`, `gh`, `sed`, and `awk`.
 
 ### Testing
@@ -125,58 +125,38 @@ for test in tests/test-*.sh; do
 done
 ```
 
-That is the fast default tier and must not spend live model/provider quota. Slow opt-in probes live under `tests/slow-*.sh`:
+The suite must stay deterministic, offline, and free of live model/provider quota. `.github/workflows/validate.yml` runs the same loop as the required check and fetches nothing at all — a required check that can go red because a package host had a bad minute is not a gate (#742, #803, #808).
 
-```bash
-for test in tests/slow-*.sh; do
-  echo "==> $test"
-  bash "$test" || exit 1
-done
-```
-
-Run the slow tier when changing live guidance-probe behavior or before release-level confidence checks. Fast tier is the "safe to push" gate; slow tier is the "safe to ship" gate.
-
-For focused bootstrap/update changes, at minimum run `bash tests/test-bootstrap.sh` and `bash tests/test-update.sh`, then run the broader suite before shipping.
-
-Lint is not part of the test suite. The full lint suite runs at pre-commit and via `pre-commit run --all-files`: `shellcheck`, `shfmt` for shell-script formatting, `markdownlint` for prose, and `actionlint` for `.github/workflows/`. `.pre-commit-config.yaml` and `.markdownlint.json` are the canonical config files; `actionlint` is repo-only and is not synced to downstream templates.
+Lint is not part of the test suite. It runs at pre-commit and via `pre-commit run --all-files`: `shellcheck`, `shfmt`, `markdownlint`, and `actionlint`.
 
 ### Architecture
 
 ```
 touchstone/
-├── capabilities.toml # Scope ledger — every shipped file declares its mission job (repo-only, not synced)
-├── principles/     # Universal docs (touchstone-owned, synced to all projects)
-├── templates/      # Starter files (copied once at bootstrap, then project-owned)
-├── hooks/          # Reusable git hooks (touchstone-owned, synced as scripts/* in projects)
-├── scripts/        # Helper scripts (touchstone-owned, synced)
-├── bootstrap/      # new-project.sh, update-project.sh, sync-all.sh
-├── bin/            # The `touchstone` CLI entry point (installed via brew or PATH)
-├── lib/            # Shared bash modules sourced by bin/touchstone and bootstrap (release, install-hooks, ui, colors, auto-update, agents-principles-block, claude-md-principles-ref)
-├── completions/    # Shell completion scripts for the touchstone CLI (bash, zsh)
-├── audits/         # Dated drift/health reports produced by the touchstone-audit skill (never auto-modified)
-├── feedback/       # Dated dogfooding bug reports and usage notes from downstream projects
-├── prototypes/     # Throwaway design experiments (e.g. UI banners) — not shipped to projects
-└── tests/          # Self-tests for bootstrap and update flows
+├── TOUCHSTONE.md   # Canonical steering router — the universal contract
+├── principles/     # The judgment layer, routed to from TOUCHSTONE.md
+├── skills/         # User-scoped Claude Code skills
+├── templates/      # Reference starter files (nothing copies them today)
+├── hooks/          # branch-guard.sh — PreToolUse hook wired in .claude/settings.json
+├── scripts/        # claim-issue, issue-claim-check, respond-review, touchstone-run
+├── audits/         # Dated drift/health reports (never auto-modified)
+├── feedback/       # Dated dogfooding notes from downstream projects
+└── tests/          # Self-tests
 ```
-
-### Nothing ships unjustified
-
-Every file under `bin/`, `bootstrap/`, `hooks/`, `lib/`, and `scripts/` must declare a mission job in `capabilities.toml`, and `tests/test-steering-size-caps.sh` fails if it does not. Adding a capability means writing down which of the three jobs it serves — constrain, make state legible, or carry the contract — in the same diff. If you cannot name one, do not add the file. A capability kept only until its removal lands is marked `cut` with a tracking issue, so the debt is reported on every test run instead of quietly becoming normal.
 
 ## Review Guide
 
-You are reviewing pull requests for the **touchstone** repo — a shared engineering platform whose files propagate to all downstream projects. A bug here becomes a bug everywhere.
+You are reviewing pull requests for the **touchstone** repo — the baseline that governs how every project ships. A bug here becomes a bug everywhere.
 
 ---
 
 ## What to prioritize (in order)
 
-1. **Bootstrap/update correctness.** `new-project.sh` and `update-project.sh` must never silently lose user data. For bootstrap, file overwrites without `.bak` backups are critical. For update, bypassing the clean-git branch/commit boundary, incorrect copy paths, or broken skip logic for project-owned files are critical bugs.
+1. **Layer violations.** Does the change re-implement something GitHub already decides — a merge condition, a review verdict, a branch rule? That is the mistake this repo exists to stop repeating. A script may observe and report what GitHub said; it may not adjudicate.
 2. **Script portability.** All scripts must work on macOS (zsh default) with standard tools (`bash`, `git`, `gh`, `sed`, `awk`). No Linux-only flags, no GNU-specific extensions without fallbacks.
-3. **Review authorization safety.** `open-pr.sh` requests review for the exact pushed head and base; `merge-pr.sh` must reject stale heads, base movement, requested changes, and unresolved threads. AI review supplements deterministic checks; it never replaces them.
-4. **Config parsing correctness.** Review policy is loaded from the trusted base revision, not the PR head. Changes must not let a PR weaken its own review requirement.
+3. **Prose accuracy.** Steering docs must not name a file that does not exist, or describe a mechanism nothing implements. Prose that instructs an agent to run a deleted script is worse than no prose — the agent follows it and the failure looks like the agent's fault.
+4. **Merge-gate integrity.** The required check must not gain a third-party network dependency. Head binding at merge (`--match-head-commit`) must not be dropped.
 5. **Principle accuracy.** Changes to `principles/*.md` should reflect genuinely universal engineering standards. Project-specific advice doesn't belong here.
-6. **Template quality.** `templates/` should have clear `{{PLACEHOLDER}}` markers and be immediately useful after bootstrap. No placeholder that requires understanding Touchstone's internals to fill in.
 
 Style nits and theoretical refactors are **out of scope**.
 
@@ -186,25 +166,20 @@ Style nits and theoretical refactors are **out of scope**.
 
 ### High-scrutiny paths
 
-Files: `bootstrap/new-project.sh`, `bootstrap/update-project.sh`, `scripts/open-pr.sh`, `scripts/merge-pr.sh`
+Files: `.github/workflows/validate.yml`, `hooks/branch-guard.sh`, `scripts/respond-review.sh`, `TOUCHSTONE.md`
 
 Flag any of the following:
 
-- **Silent overwrites.** `new-project.sh` may overwrite touchstone-owned files only through `copy_file_force`, which backs up existing content as `.bak`. `update-project.sh` must not create `.bak` files; instead it must require a clean git worktree, create a `chore/touchstone-*` branch, and commit the update as the review/recovery boundary. Project-owned files (CLAUDE.md, AGENTS.md, `.touchstone-review.toml`) must use `copy_file` (skip if exists) and must not be auto-updated.
-- **Missing error handling.** The bootstrap scripts use `set -euo pipefail`. New commands that can fail legitimately (network calls, optional tools) must be guarded with `|| true` or `set +e`.
-- **Path assumptions.** Never assume repo root is `~/Repos/touchstone`. Always derive paths from `$0` or `git rev-parse`.
-- **Registry corruption.** `~/.touchstone-projects` is append-only during bootstrap. Changes must not truncate it or write duplicate entries.
-
-### PR review gate
-
-- Review requests and accepted results must be bound to the full head and base revisions.
-- Review-author trust checks must fail closed when GitHub state cannot be inspected.
-- `.touchstone-review.toml` cannot disable required PR-visible review or per-push requests.
+- **A new dependency on the merge path.** Before an install step enters `validate.yml`, a specific test must execute that binary. If none does, the dependency belongs at pre-commit time.
+- **Unpinned actions.** Every GitHub Action must be pinned to a full commit SHA, not a tag. Only a SHA is immutable.
+- **A renamed required job.** The `validate (ubuntu-latest)` check name is configured as required on main; renaming it silently un-gates the branch.
+- **Missing error handling.** Scripts use `set -euo pipefail`. Commands that can fail legitimately must be guarded explicitly, never silently.
+- **Path assumptions.** Never assume the repo root is a specific directory. Derive paths from `$0` or `git rev-parse`.
 
 ### Self-tests
 
-- Every PR that changes `new-project.sh` or `update-project.sh` must verify `tests/test-bootstrap.sh` and `tests/test-update.sh` still pass.
-- New features should add assertions to existing tests, not create separate test files (avoid test fragmentation).
+- Every behavioral change needs an assertion that fails on the old code.
+- New assertions should join an existing test file rather than fragmenting into new ones.
 
 ---
 
@@ -214,6 +189,7 @@ Flag any of the following:
 - "You could refactor this for clarity" — only if the unclarity hides a bug.
 - Missing comments on straightforward shell commands.
 - Speculative future-proofing.
+- **Arguing a deleted file back in.** A finding that says "you might need this" is not evidence. Deletions are recoverable from git history; the admission test is a real failure, not a hypothetical.
 
 ---
 
@@ -225,11 +201,3 @@ Flag any of the following:
 4. **Tests** — do the self-tests pass?
 
 If there are zero blocking issues: "LGTM."
-
-## Current state (read this first)
-
-@.cortex/state.md
-
-## Cortex Protocol
-
-@.cortex/protocol.md

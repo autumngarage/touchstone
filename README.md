@@ -1,304 +1,100 @@
-```text
- _____                _         _
-|_   _|__  _   _  ___| |__  ___| |_ ___  _ __   ___
-  | |/ _ \| | | |/ __| '_ \/ __| __/ _ \| '_ \ / _ \
-  | | (_) | |_| | (__| | | \__ \ || (_) | | | |  __/
-  |_|\___/ \__,_|\___|_| |_|___/\__\___/|_| |_|\___|
-```
-
-> *Scaffolding + PR-visible agentic review for AI-assisted projects.*
->
-> by **[Autumn Garage](https://github.com/autumngarage/autumn-garage)** · alongside [Cortex](https://github.com/autumngarage/cortex) · [Sentinel](https://github.com/autumngarage/sentinel) · [Alchemist](https://github.com/autumngarage/alchemist) — issue-driven transmuter — open issue in, reviewed PR out.
-
 # Touchstone
 
-**Touchstone makes sure AI-written code actually gets reviewed and tested before it lands — in any project you install it into.**
+**The standard baseline for a solo developer directing many agents across many projects.**
 
-It does not review your code; GitHub and whatever reviewer you have configured do that. Touchstone is what makes the loop close: it stops the agent committing to your default branch, runs your local tests before anything merges, and refuses to merge while a review thread is unresolved, a review requests changes, or a required check is failing. Whether the review comes from a hosted AI reviewer, a bot, or a colleague, the rule is the same — respond to every comment, resolve its thread, then merge.
+One person cannot read everything many agents produce. Touchstone exists so that they do not have to. It ships two things, and both are the product:
 
-(The enforced signals are GitHub's own: unresolved review threads, the review decision, and required status checks. A comment left somewhere GitHub does not track as a thread — a plain issue comment, say — is not something any tool can verify you answered.)
+1. **Guidance prompts** — the steering an agent reads to know how to work: branch first, one concern per commit, answer every finding, reconcile issues, never bypass the gate.
+2. **Push scripts** — the tooling that makes an agent use GitHub *correctly*: open the PR properly, bind the review to the head that was actually reviewed, resolve threads, merge only when the gate really passes.
 
-It also helps you start a project folder, add the same useful project files every time, and keep those shared files updated later without copy-pasting between projects.
+The goal is that any project gets the same dev flow by adopting Touchstone, and that the flow is industry-leading practice for GitHub and for agent-driven delivery.
 
-It gives you:
-- starter instructions for Claude, Codex, and other AI coding tools
-- review rules so AI reviewers know what matters in your project
-- helper scripts for opening pull requests (PRs), merging PRs, cleaning branches, and running checks
-- a single setup command for dev tools, Git safety checks, and project dependencies
-- optional AI review before changes get merged into your main branch
+## Purpose
 
-You do not need to understand the internals to use it. Install it, run `touchstone new` or `touchstone init`, then follow the next steps printed in your terminal.
+**Humans approve plans. Agents write and ship code. GitHub reviews code.**
 
-## Install
+Everything here exists to hold one of those three lines. To hold them, Touchstone does exactly three things:
 
-Run this once in Terminal. This uses Homebrew, the Mac package manager. If `brew` is not found, install Homebrew first from https://brew.sh.
+1. **Constrain** — you cannot commit to the default branch, merge without review, or bypass hooks silently.
+2. **Make state legible** — what happened lives in git, PRs, and issues, verifiable without trusting an agent's narration.
+3. **Carry the contract** — the same rules reach every project and every agent.
 
-```bash
-brew tap autumngarage/touchstone
-brew install touchstone
+The operating rule that keeps it honest: **a rule must live at the layer that can actually enforce it.** GitHub enforces (rulesets, required checks). Prose instructs. Scripts observe and sequence — they never adjudicate. Nothing may live at two layers at once.
+
+## Current state — stripped, mid-rebuild
+
+Touchstone had grown to roughly 49,000 lines, most of it re-implementing what GitHub already does. 43% of the two shipping scripts re-decided locally what GitHub decides at the merge button, and no line of the codebase ever read the server-side branch protection settings that already expressed the same rules.
+
+That machinery has been deleted. What remains is the judgment layer plus a small script surface:
+
+```
+touchstone/
+├── TOUCHSTONE.md   # Canonical steering router — the universal contract for all drivers
+├── principles/     # The judgment layer, routed to from TOUCHSTONE.md
+├── skills/         # User-scoped Claude Code skills
+├── templates/      # Reference starter files
+├── hooks/          # branch-guard.sh — PreToolUse hook wired in .claude/settings.json
+├── scripts/        # claim-issue, issue-claim-check, respond-review, touchstone-run
+├── audits/         # Dated drift/health reports
+├── feedback/       # Dated dogfooding notes from downstream projects
+└── tests/          # Self-tests
 ```
 
-Requires `git` and `gh`, the GitHub command-line tool. Homebrew installs them automatically as dependencies.
+**There is no CLI, no bootstrap, and no auto-update right now.** They were deleted with the propagation channel, deliberately and first: cutting propagation is what froze the downstream projects safely in place on their existing committed copies. The replacement is a thin, Homebrew-distributed CLI that observes and sequences but never adjudicates.
 
-Check that it worked:
+**Known gap:** an AI reviewer can never file an `APPROVED` review — GitHub reserves formal approval for real user accounts — so `required_approving_review_count` cannot express "this was reviewed." The check-run that could express it was deleted alongside the local mirror it duplicated. Until it is rebuilt as a small required status check, review enforcement is advisory. This is known and accepted, not overlooked.
 
-```bash
-touchstone version
-```
+## Delivery
 
-## Start Here
-
-### Create a new project
+There is no wrapper. Ship with `git` and `gh` directly:
 
 ```bash
-touchstone new ~/Repos/my-new-project
-cd ~/Repos/my-new-project
-bash setup.sh
+git checkout -b fix/some-slug
+# ... edit, then stage explicit paths ...
+git commit -m "fix: what changed"
+git push -u origin HEAD
+gh pr create                      # put `Closes #123` in the PR BODY, not just the commit
+gh pr comment <n> --body "@codex review"
+# ... answer every finding, resolve every thread ...
+gh pr merge <n> --squash --match-head-commit "$(gh pr view <n> --json headRefOid --jq .headRefOid)"
+gh pr view <n> --json state,mergedAt      # confirm; the merge exit code lies in both directions
 ```
 
-Then open `CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` in your editor and fill in the placeholders. `CLAUDE.md` steers Claude Code. `AGENTS.md` steers Codex and other AGENTS.md-native tools, and also contains the AI review rubric. `GEMINI.md` steers Gemini CLI back to the same workflow.
+`principles/git-workflow.md` carries the full sequence, including thread resolution and the failure modes worth knowing about.
 
-### Add touchstone to an existing project
+Answering review findings is the one place a script genuinely earns its keep, because GitHub needs four API calls to reply-and-resolve correctly:
 
 ```bash
-cd ~/Repos/my-existing-project
-touchstone init
+bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file>
+bash scripts/respond-review.sh <pr> --all-resolved-check
 ```
 
-If you want setup to happen later:
+## Documentation
 
-```bash
-touchstone init --no-setup
-bash setup.sh
-```
+- **[TOUCHSTONE.md](TOUCHSTONE.md)** — the universal contract every driver reads
+- **[git-workflow.md](principles/git-workflow.md)** — the full delivery sequence in raw `git` + `gh`
+- **[engineering-principles.md](principles/engineering-principles.md)** — the principles every change is reviewed against
+- **[ai-delivery-architecture.md](principles/ai-delivery-architecture.md)** — the AI-authored change lifecycle
+- **[pre-implementation-checklist.md](principles/pre-implementation-checklist.md)** — the gate before a non-trivial change
+- **[agent-swarms.md](principles/agent-swarms.md)** — parallel agents, slice manifests, worktree isolation
+- **[audit-weak-points.md](principles/audit-weak-points.md)** — auditing a bug class after fixing one instance
+- **[documentation-ownership.md](principles/documentation-ownership.md)** — who owns which doc, and what not to duplicate
+- **[file-upstream-bugs.md](principles/file-upstream-bugs.md)** — don't silently work around an upstream bug
+- **[memory-hygiene.md](principles/memory-hygiene.md)** — agent memory is a cache, not truth
 
-### PR review
-
-Touchstone requests GitHub Codex review automatically for every ready PR head
-that enters final shipping. Draft PRs remain review-free coordination surfaces.
-The merge helper waits for trusted exact-head review, deterministic preflight,
-required checks, and resolved review threads before merging. No local model
-router or API key is required. Clean results are persisted on their full
-reviewed SHA for fail-closed recovery after a later rebase; see the
-[Review Evidence Contract](principles/review-evidence.md).
-
-Routine shipping is one command:
-
-```bash
-bash scripts/open-pr.sh --auto-merge
-```
-
-It opens the PR, requests review, and merges once the gate passes. If it stops, it names the blocking condition — fix that and run it again.
-
-See [hooks/README.md](hooks/README.md) for the review contract.
-
-### Choose a Git workflow
-
-Touchstone defaults to plain Git because it is the simplest path for new projects. During interactive setup, you can also choose GitButler if you want stacked branches, parallel work, undo history, and AI-agent savepoints.
-
-If you choose GitButler, `setup.sh` checks for the `but` CLI, shows the official installer command if it is missing, and asks before running `but setup` or adding the GitButler MCP server to Claude Code.
-
-## Everyday Commands
-
-```bash
-# Run the project's normal checks
-touchstone run validate
-
-# See whether this project needs newer Touchstone files
-touchstone update --check
-
-# Create a branch + commit with the Touchstone update
-touchstone update
-
-# Commit the Touchstone update on your current task branch
-touchstone update --in-place
-
-# Update all registered projects
-touchstone update-all
-
-# Re-run dependency setup later without reinstalling hooks/tools
-bash setup.sh --deps-only
-```
-
-## Commands
-
-| Command | What it does |
-|---------|-------------|
-| `touchstone init [--no-setup]` | Add touchstone to the current project |
-| `touchstone init --gitbutler` | Add touchstone with optional GitButler workflow setup |
-| `touchstone init --ci github` | Add `.github/workflows/validate.yml` that runs pre-commit hygiene and `touchstone run validate` on every PR |
-| `touchstone init --scaffold-tests` | Write one placeholder smoke test for Python, Node, or Go projects (Rust and Swift already ship scaffolds via `cargo init` / `swift package init`) |
-| `touchstone new <dir>` | Bootstrap a new project with principles, scripts, hooks, and templates |
-| `touchstone new <dir> --type node` | Bootstrap with an explicit Node/TypeScript, Swift, Rust, Go, Python, or generic profile |
-| `touchstone new <dir> --gitbutler` | Bootstrap with optional GitButler workflow setup |
-| `touchstone new <dir> --ci github` | Bootstrap with the opt-in GitHub Actions validate workflow |
-| `touchstone new <dir> --scaffold-tests` | Bootstrap with a placeholder smoke test for Python, Node, or Go projects |
-| `touchstone detect` | Show the detected project profile for the current repo |
-| `touchstone run <task>` | Run profile-aware `lint`, `typecheck`, `build`, `test`, or `validate` |
-| `touchstone update` | Create a branch and commit that updates the current project's touchstone-owned files |
-| `touchstone update --in-place` | Commit the update on the current branch instead of creating a chore branch |
-| `touchstone update --dry-run` | Preview what would change |
-| `touchstone update --check` | Report whether the current project needs an update |
-| `touchstone update --ship` | Push, open a PR, run the merge automation, and merge when clean |
-| `touchstone update-all` | Update all registered projects at once |
-| `touchstone update-all --check` | Report which registered projects need update |
-| `touchstone update-all --pull-first` | Pull latest touchstone first, then update all projects |
-| `touchstone sync` | Deprecated alias for `touchstone update-all` |
-| `touchstone diff` | Compare core project-owned files against the latest templates |
-| `touchstone list` | Show registered projects |
-| `touchstone unregister <name>` | Remove a project from the registry |
-| `touchstone status` | Dashboard of registered project health |
-| `touchstone version` | Show installed version and install method |
-| `touchstone changelog [N]` | Show the last N GitHub releases |
-| `touchstone doctor` | Health check — version, tools, project staleness |
-| `touchstone skills` | List Claude Code skills visible to the current repo and user |
-| `touchstone skills check` | Validate Claude Code skill frontmatter |
-| `touchstone release [--major\|--minor\|--patch]` | Cut a Touchstone release; maintainers only |
-
-## How it works
-
-### What you get in each project
-
-When you run `touchstone new`, these files get created in your project:
-
-**Project-owned** (yours to customize, never auto-updated):
-- `CLAUDE.md` — Claude Code instructions with `{{PLACEHOLDERS}}` to fill in
-- `AGENTS.md` — Codex/agent instructions plus the AI review rubric with project-specific priorities
-- `GEMINI.md` — Gemini CLI instructions that point at the shared authoring/review workflow
-- `.touchstone-review.toml` — required PR-visible review policy
-- `.touchstone-config` — Project profile, workflow choices, and optional lint/test/build command overrides
-- `.pre-commit-config.yaml` — Pre-commit hooks including fast branch checks and direct default-branch guardrails
-- `.gitignore` — Sensible defaults
-- `.github/pull_request_template.md` — PR checklist
-- `setup.sh` — One-command setup for dev tools, hooks, and project dependencies
-
-**Touchstone-owned** (auto-updated when you run `touchstone update` or `touchstone update-all`):
-- `.touchstone-version` — The touchstone revision this project has applied
-- `.touchstone-manifest` — The visible list of touchstone-managed paths
-- `principles/*.md` — Universal engineering principles
-- `scripts/touchstone-run.sh` — Profile-aware runner for Node/TypeScript, Swift, Rust, Python, Go, and monorepos
-- `scripts/open-pr.sh` — Push + create PR via `gh`
-- `scripts/merge-pr.sh` — exact-head review gate + deterministic preflight + squash-merge + sync main
-- `scripts/cleanup-branches.sh` — Safe branch hygiene
-
-`setup.sh` installs dependencies for the detected project profile. It supports Node package managers, SwiftPM, Cargo, Go modules, and Python `requirements.txt`/`uv.lock`/`pyproject.toml` at the repo root and under `agent/`. `touchstone run validate` uses `.touchstone-config` to run profile-aware lint/typecheck/test commands.
-
-### What the gates actually enforce
-
-Touchstone enforces a test **runner**, not a test **suite**. The pre-push hook invokes `scripts/touchstone-run.sh validate`, which dispatches lint/typecheck/build/test per profile — but every profile silently skips when the underlying tool or test file is absent (correct runtime UX: a fresh scaffold shouldn't reject pushes just because the first test hasn't been written yet). Consequence: a repo with zero test files passes the gate.
-
-`touchstone doctor` reports the structural state a project can actually be held to: hooks installed, manifest present, review policy required, registry membership — plus the one runtime gap the runner hides, whether the profile's linter is reachable at all (`touchstone run lint` skips a missing `ruff` or `swift-format` and still exits 0, so nothing else ever says the lint gate was a no-op). Doctor asks the runner which profile it resolved rather than re-deriving one; the hand-maintained profile mirror, which also reported per-profile test presence and unknown profile values, was removed in #737. Use `touchstone init --scaffold-tests` to seed a placeholder smoke test (Python, Node, and Go; Rust and Swift already get tests from `cargo init` / `swift package init`) and `touchstone init --ci github` to add a GitHub Actions workflow that runs the same `validate` path CI-side.
-
-### Keeping projects up to date
-
-When you improve Touchstone (add a principle, fix a script), run:
-
-```bash
-touchstone update-all
-```
-
-This updates touchstone-owned files across registered projects by creating reviewable update branches and commits. For one project, run `touchstone update --dry-run` to preview, `touchstone update --check` to check staleness, and `touchstone update` from a clean git worktree to create a `chore/touchstone-*` branch with the update committed. If a driving CLI already created a task branch, use `touchstone update --in-place` to commit the Touchstone update there. Project-owned files are never touched by `touchstone update`; use `touchstone diff` to review the core project-owned files against the latest templates.
-
-`touchstone sync` still works as a deprecated alias for `touchstone update-all`.
-
-Projects are auto-registered in `~/.touchstone-projects` when you bootstrap them.
-
-### Auto-update
-
-The `touchstone` CLI checks for new versions hourly. When a newer release exists, it upgrades with `brew upgrade touchstone` for Homebrew installs or `git pull --rebase` for git-clone installs before running your command. Disable with `TOUCHSTONE_NO_AUTO_UPDATE=1`.
-
-## What's included
-
-### Principles
-
-Universal engineering standards, extracted and battle-tested from production systems:
-
-- **[engineering-principles.md](principles/engineering-principles.md)** — No band-aids, narrow interfaces, no silent failures, every fix gets a test, derive don't persist, one code path, version data boundaries, separate behavior from tidying, recoverable irreversibles, compatibility at boundaries, audit weak-point classes
-- **[pre-implementation-checklist.md](principles/pre-implementation-checklist.md)** — Pre-flight questions that route back to the canonical principles
-- **[audit-weak-points.md](principles/audit-weak-points.md)** — Methodology: find one bug → audit the whole class → ranked fix → guardrail test
-- **[documentation-ownership.md](principles/documentation-ownership.md)** — Single canonical owner per volatile fact
-- **[ai-delivery-architecture.md](principles/ai-delivery-architecture.md)** — Human request → driver AI → PR → agentic review loop → approved merge
-- **[review-evidence.md](principles/review-evidence.md)** — Full-SHA clean-result evidence, trust checks, and rebase compatibility
-- **[git-workflow.md](principles/git-workflow.md)** — Feature branch → PR → review comments/checks → squash merge
-
-### AI Review Gate
-
-Every ready PR head that enters final shipping receives a GitHub Codex review
-request. Draft heads remain review-free until final shipping explicitly marks
-the PR ready. Touchstone binds the request and accepted result to the full head
-and base revisions, rejects stale reviews and unresolved threads, runs
-deterministic preflight, and revalidates authorization immediately before
-merge.
-
-Touchstone does not run a hidden local semantic reviewer, route model calls, or
-apply reviewer-authored edits. The driving CLI addresses findings with normal
-commits, which trigger a new exact-head review.
-
-Configure timeouts and trusted GitHub review authors in
-`.touchstone-review.toml`. Write the project review rubric in `AGENTS.md`. See
-[hooks/README.md](hooks/README.md) for the complete contract.
-
-### Agent Steering Contract
-
-The static steering contract runs in the normal self-test suite:
-
-```bash
-bash tests/test-agent-steering-contract.sh
-```
-
-That test guards the interpretability contract without spending model quota:
-Claude, Codex, and Gemini are interchangeable driving CLIs, and all drivers
-must converge on the same managed principles and branch → PR → review →
-approved merge lifecycle.
-
-Maintainer self-tests are split into a fast default tier and a slow opt-in tier. The fast tier is the pre-push contract and must not call live model/provider CLIs:
+## Testing
 
 ```bash
 for test in tests/test-*.sh; do
+  echo "==> $test"
   bash "$test" || exit 1
 done
 ```
 
-Live guidance probes live under `tests/slow-*.sh` and are run explicitly when changing model-steering behavior or before release-level confidence checks.
+The suite is deterministic, offline, and fetches nothing. `.github/workflows/validate.yml` runs the same loop as the required check with no third-party dependency of any kind — a required check that can go red because a package host had a bad minute is not a gate.
 
-### Claude Code Skills
+Lint is separate, at pre-commit: `shellcheck`, `shfmt`, `markdownlint`, `actionlint`.
 
-Touchstone owns Claude Code project skills under `.claude/skills/` for Touchstone maintenance work. These are part of this repo, not files that Touchstone copies into every downstream project:
-- `touchstone-audit` — audits Touchstone itself against its principles and current AI-tooling practices.
-- `memory-audit` — checks Claude Code memory for stale commands, dead paths, duplicate facts, and unsourced volatile guidance.
+## Contributing
 
-Run `touchstone skills` to list visible project and user skills, and `touchstone skills check` to validate their frontmatter.
-
-### Helper scripts
-
-- **open-pr.sh** — `git push` + `gh pr create` with your PR template. Idempotent.
-- **merge-pr.sh** — Sanity-check mergeability, block unresolved PR feedback, run AI review, squash-merge, delete branch, and sync main.
-- **cleanup-branches.sh** — Dry-run by default. Never deletes unmerged work.
-
-## Project structure
-
-```
-touchstone/
-├── .claude/         # Claude Code project skills for Touchstone maintenance
-├── principles/      # universal engineering docs
-├── skills/          # Claude Code skill definitions
-├── templates/       # starter files for new projects
-├── hooks/           # AI review hook
-├── scripts/         # helper scripts (open-pr, merge-pr, cleanup)
-├── bootstrap/       # new-project.sh, update-project.sh, sync-all.sh
-├── bin/             # touchstone CLI entry point
-├── lib/             # shared bash helpers (toml.sh, preflight.sh, etc.)
-├── completions/     # shell completion scripts
-├── audits/          # periodic codebase audits
-├── feedback/        # operator-captured incident notes
-├── prototypes/      # design experiments, not shipped to projects
-└── tests/           # self-tests
-```
-
-## Contributors
-
-Install Touchstone, bootstrap a project, and open a PR for improvements to principles, templates, scripts, hooks, or skills.
-
-## License
-
-MIT
+Open a PR for improvements to principles, templates, scripts, hooks, or skills. The same delivery workflow above applies here — Touchstone ships through its own gate.

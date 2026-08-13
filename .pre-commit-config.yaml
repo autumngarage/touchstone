@@ -46,7 +46,7 @@ repos:
         # and binary operators deterministic. Reject drift just like deterministic
         # preflight; omitting -d only prints formatted output and exits zero.
         args: ['-d', '-i', '2', '-ci', '-bn']
-        exclude: ^(bin/touchstone$|completions/|prototypes/)
+        exclude: ^(completions/|prototypes/)
 
   - repo: https://github.com/igorshubovych/markdownlint-cli
     rev: v0.46.0
