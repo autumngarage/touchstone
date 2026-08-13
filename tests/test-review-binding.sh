@@ -378,6 +378,23 @@ if grep -Fq 'EVENT_PENDING_ID="$pending_id"' "$WORKFLOW" \
 else
   fail "edited-review handling must not neutralize its check before reevaluation"
 fi
+REQUEST_BODY="$(awk '/^          establish_request_marker\(\) \{/{grab=1} grab{print} grab && /^          \}/{exit}' "$WORKFLOW")"
+if awk '
+  /create_pending/ { pending = NR }
+  /statuses\/\$head/ { marker = NR; exit }
+  END { exit !(pending && marker && pending < marker) }
+' <<<"$REQUEST_BODY" \
+  && grep -Fq 'work_items="$EVENT_PENDING_PR"' "$WORKFLOW"; then
+  ok "new review requests publish and retain pending before recording the marker"
+else
+  fail "request marker writes must never precede their invalidating pending check"
+fi
+if grep -Fq 'live_base_ref="$(jq -r .base.ref' "$WORKFLOW" \
+  && grep -Fq '"$live_base_ref" != "$base_ref"' "$WORKFLOW"; then
+  ok "publication revalidates base ref as well as base SHA"
+else
+  fail "same-SHA base retargeting must cancel a stale evaluation"
+fi
 if grep -Fq 'brew_install_if_missing "jq" "jq"' "$SETUP" \
   && grep -Fq 'runner-provided jq binary' "$VALIDATE" \
   && ! grep -Eq 'apt(-get)?[[:space:]]+.*jq' "$VALIDATE"; then
