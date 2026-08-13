@@ -133,6 +133,9 @@ case "$method $endpoint" in
   "GET repos/autumngarage/touchstone/rules/branches/main")
     if [ ! -f "$state/ruleset.json" ]; then
       emit '[]'
+    elif [ "${GH_FAKE_BAD_EFFECTIVE_ONCE:-0}" = 1 ] && [ ! -f "$state/bad-effective-used" ]; then
+      touch "$state/bad-effective-used"
+      jq '[.rules[] | select(.type != "workflows")]' "$state/ruleset.json"
     elif [ "${GH_FAKE_BAD_EFFECTIVE:-0}" = 1 ]; then
       jq '[.rules[] | select(.type != "workflows")]' "$state/ruleset.json"
     else
@@ -162,7 +165,7 @@ init_branch() {
     allow_fork_syncing: {enabled:.branchProtection.allow_fork_syncing}
   }' "$BASELINE" >"$TMP_DIR/state/branch.json"
   : >"$TMP_DIR/state/mutations.log"
-  rm -f "$TMP_DIR/state/ruleset.json"
+  rm -f "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/bad-effective-used"
 }
 
 run_policy() {
@@ -276,8 +279,27 @@ if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BAD_EFFECTIV
   fail "apply succeeded with a missing effective workflow rule"
 fi
 [ -f "$TMP_DIR/state/branch.json" ] || fail "failed verification removed old branch protection"
+[ ! -f "$TMP_DIR/state/ruleset.json" ] || fail "failed initial migration left its invalid ruleset installed"
 ! grep -q 'DELETE branch-protection' "$TMP_DIR/state/mutations.log" \
   || fail "failed verification reached destructive migration step"
 ok "failed replacement verification leaves the old gate intact"
+
+echo "==> Failed in-place update restores the prior ruleset"
+init_branch
+run_policy apply "$POLICY" >/dev/null
+jq '.managedRuleset.rules[] |= if .type == "required_status_checks" then
+  (.parameters.required_status_checks += [{context:"new-policy-check",integration_id:15368}]) else . end' \
+  "$POLICY" >"$TMP_DIR/updated-policy.json"
+: >"$TMP_DIR/state/mutations.log"
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BAD_EFFECTIVE_ONCE=1 \
+  "$SCRIPT" apply "$TMP_DIR/updated-policy.json" >/dev/null 2>&1; then
+  fail "in-place update succeeded after its effective-policy verification failed"
+fi
+[ ! -f "$TMP_DIR/state/branch.json" ] || fail "failed update recreated legacy protection unexpectedly"
+run_policy verify "$POLICY" >/dev/null \
+  || fail "failed update did not restore and verify the prior ruleset"
+diff -u <(printf 'PUT org-ruleset\nPUT org-ruleset\n') "$TMP_DIR/state/mutations.log" >/dev/null \
+  || fail "failed update did not restore the previous ruleset immediately"
+ok "failed in-place update restores and verifies the prior active gate"
 
 echo "==> PASS: audited GitHub policy lifecycle is safe and deterministic"

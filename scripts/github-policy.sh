@@ -149,20 +149,27 @@ verify_source() {
     || die "required workflow source branch is not protected as checked in"
 }
 
-verify_ruleset() {
-  local desired current effective types
-  desired="$(jq -S '.managedRuleset' "$POLICY" | normalize_ruleset)"
+verify_ruleset_against() {
+  local expected="$1" current effective types required
   current="$(managed_ruleset_json)"
   [ "$current" != null ] || die "managed organization ruleset is missing"
-  diff -u <(printf '%s\n' "$desired") <(normalize_ruleset <<<"$current") >/dev/null \
-    || die "managed organization ruleset differs from checked-in policy"
+  diff -u <(normalize_ruleset <<<"$expected") <(normalize_ruleset <<<"$current") >/dev/null \
+    || die "managed organization ruleset differs from expected policy"
   effective="$(api "repos/$ORG/$REPOSITORY/rules/branches/$BRANCH")"
   types="$(jq -r '[.[].type] | unique | sort | join(",")' <<<"$effective")"
-  for required in deletion non_fast_forward pull_request required_status_checks workflows; do
+  while IFS= read -r required; do
     jq -e --arg type "$required" 'any(.[]; .type == $type)' <<<"$effective" >/dev/null \
       || die "effective policy is missing $required"
-  done
+  done < <(jq -r '.rules[].type' <<<"$expected")
   echo "Verified effective rule types: $types"
+}
+
+verify_ruleset() {
+  verify_ruleset_against "$(jq -c '.managedRuleset' "$POLICY")"
+}
+
+ruleset_update_payload() {
+  jq '{name,target,enforcement,bypass_actors,conditions,rules}'
 }
 
 restore_branch_protection() {
@@ -249,20 +256,39 @@ case "$COMMAND" in
     verify_source
     desired="$(jq -c '.managedRuleset' "$POLICY")"
     current="$(managed_ruleset_json)"
+    legacy="$(branch_protection_json)"
+    created_id=""
+    previous_payload=""
+    updated=false
     if [ "$current" = null ]; then
-      jq -c '.managedRuleset' "$POLICY" \
-        | api --method POST "orgs/$ORG/rulesets" --input - >/dev/null
+      [ "$legacy" != null ] || die "no existing protection is present to guard initial migration"
+      created_id="$(jq -c '.managedRuleset' "$POLICY" \
+        | api --method POST "orgs/$ORG/rulesets" --input - --jq .id)"
     else
       ruleset_id="$(jq -r .id <<<"$current")"
       if ! diff -q \
         <(printf '%s\n' "$desired" | normalize_ruleset) \
         <(printf '%s\n' "$current" | normalize_ruleset) >/dev/null; then
+        previous_payload="$(ruleset_update_payload <<<"$current")"
         printf '%s\n' "$desired" \
           | api --method PUT "orgs/$ORG/rulesets/$ruleset_id" --input - >/dev/null
+        updated=true
       fi
     fi
-    verify_ruleset
-    if [ "$(branch_protection_json)" != null ]; then
+    if ! (verify_ruleset); then
+      if [ -n "$created_id" ]; then
+        [ "$(branch_protection_json)" != null ] \
+          || die "replacement failed while legacy branch protection was absent"
+        api --method DELETE "orgs/$ORG/rulesets/$created_id"
+      elif [ "$updated" = true ]; then
+        printf '%s\n' "$previous_payload" \
+          | api --method PUT "orgs/$ORG/rulesets/$ruleset_id" --input - >/dev/null
+        (verify_ruleset_against "$previous_payload") \
+          || die "replacement failed and prior ruleset could not be verified after restore"
+      fi
+      die "replacement ruleset failed verification; prior protection was restored"
+    fi
+    if [ "$legacy" != null ]; then
       api --method DELETE "repos/$ORG/$REPOSITORY/branches/$BRANCH/protection"
     fi
     "$0" verify "$POLICY"
@@ -288,7 +314,7 @@ case "$COMMAND" in
     if [ "$before" = null ] && [ "$current" != null ]; then
       api --method DELETE "orgs/$ORG/rulesets/$(jq -r .id <<<"$current")"
     elif [ "$before" != null ]; then
-      restore_payload="$(jq 'del(.id,.node_id,.source_type,.source,._links,.created_at,.updated_at)' <<<"$before")"
+      restore_payload="$(ruleset_update_payload <<<"$before")"
       if [ "$current" = null ]; then
         printf '%s\n' "$restore_payload" | api --method POST "orgs/$ORG/rulesets" --input - >/dev/null
       else
