@@ -35,3 +35,21 @@ delivery therefore remains PR-visible and GitHub-audited; direct and force
 pushes stay rejected. Never change that actor to `exempt`, and do not hand-edit
 the managed ruleset in GitHub's UI. Change desired state here, review it, and
 apply it with the script.
+
+## Live canary testing
+
+[`autumngarage/touchstone-policy-canary`](https://github.com/autumngarage/touchstone-policy-canary)
+is the permanent disposable-state target for live policy tests. Use it before a
+production policy migration when behavior depends on GitHub's live ruleset API
+or merge enforcement and cannot be proven by the offline suite alone. Do not
+use it for application development or as a required-workflow source.
+
+Derive a temporary canary policy from the reviewed production policy; do not
+commit a second desired-state file that can drift. Change only the target
+repository, ruleset name, and repository-name condition. Before each test,
+capture a fresh backup with `github-policy.sh backup`. Exercise the migration,
+effective-rule verification, blocked unsafe operation, and rollback paths as
+the change requires. Finish by rolling back the captured backup and verifying
+that the canary's `main` branch is protected and no canary organization ruleset
+remains. The canary's contents are expendable, but its protection baseline is
+not.
