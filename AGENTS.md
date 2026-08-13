@@ -18,7 +18,7 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar.
 
-**What GitHub enforces today**, and therefore what actually stops a bad merge: required checks green, every review thread resolved, and no direct push to the default branch.
+**What GitHub enforces today**, and therefore what actually stops a bad merge: required checks green, every review thread resolved, no outstanding `CHANGES_REQUESTED` review, and no direct push to the default branch. (An AI reviewer never files `CHANGES_REQUESTED`, so in practice that condition only fires for a human.)
 
 **Review is a required procedural step, not an enforced gate.** An AI reviewer never files an `APPROVED` review — GitHub reserves that for real users — and the check-run that bound a review to its head was deleted with the machinery it duplicated. Request review on the exact pushed head, answer every finding, and never merge a head no reviewer has seen. Nothing stops you if you do; until that enforcement is rebuilt, the rule holds because you keep it.
 

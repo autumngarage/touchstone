@@ -17,7 +17,7 @@ The goal is that any project gets the same dev flow by adopting Touchstone, and 
 
 Everything here exists to hold one of those three lines. To hold them, Touchstone does exactly three things:
 
-1. **Constrain** — you cannot commit to the default branch, merge without review, or bypass hooks silently.
+1. **Constrain** — you cannot commit to the default branch, merge on a red check, or merge with an unresolved thread. Reviewing the head you merge is required but unenforced; see the known gap below.
 2. **Make state legible** — what happened lives in git, PRs, and issues, verifiable without trusting an agent's narration.
 3. **Carry the contract** — the same rules reach every project and every agent.
 

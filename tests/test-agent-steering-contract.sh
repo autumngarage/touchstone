@@ -210,25 +210,74 @@ done
 # own to convince a driver that an unreviewed merge is impossible. It is not,
 # and a driver who believes it is will not check.
 #
-# Positive assertion, deliberately: a denylist of enforcement phrasings would
-# be endless and would pass the moment someone invented a new way to say it.
-# Requiring the caveat to be PRESENT fails whenever the gate is described
-# afresh without it. Delete this check in the commit that restores enforcement.
+# TWO checks, because either alone is insufficient — and the first version of
+# this guard shipped with only the positive half.
+#
+# I argued a denylist would be endless and would pass the moment someone
+# phrased enforcement a new way. That is true, and it is not a reason to omit
+# it: a file can carry the caveat in one paragraph and contradict it in
+# another, which is exactly what shipped — README.md said "you cannot merge
+# without review" twenty-seven lines above "review enforcement is advisory."
+# A reader who stops at the first statement is misled, and the caveat's
+# presence proved nothing about the rest of the file.
+#
+# So: the caveat must be PRESENT (catches a gate described afresh without it),
+# AND the known enforcement phrasings must be ABSENT (catches a contradiction
+# beside a compliant paragraph). Delete both in the commit that restores
+# enforcement.
+GATE_FILES="
+$TOUCHSTONE_ROOT/TOUCHSTONE.md
+$TOUCHSTONE_ROOT/AGENTS.md
+$TOUCHSTONE_ROOT/GEMINI.md
+$TOUCHSTONE_ROOT/templates/AGENTS.md
+$TOUCHSTONE_ROOT/templates/GEMINI.md
+$TOUCHSTONE_ROOT/README.md
+$TOUCHSTONE_ROOT/principles/git-workflow.md
+$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md
+$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md
+"
+
 echo "==> every gate description states that review is not enforced"
-for file in \
-  "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
-  "$TOUCHSTONE_ROOT/AGENTS.md" \
-  "$TOUCHSTONE_ROOT/GEMINI.md" \
-  "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
-  "$TOUCHSTONE_ROOT/templates/GEMINI.md" \
-  "$TOUCHSTONE_ROOT/README.md" \
-  "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
-  "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
-  "$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md"; do
-  if ! grep -qiE 'not an enforced gate|not currently enforce|nothing currently enforces|nothing enforces|is advisory|not enforced' "$file"; then
+for file in $GATE_FILES; do
+  [ -f "$file" ] || continue
+  if ! grep -qiE 'not an enforced gate|not currently enforce|nothing currently enforces|nothing enforces|is advisory|not enforced|but unenforced' "$file"; then
     fail "$(basename "$file") describes the merge gate without stating that review is unenforced"
   fi
 done
+
+echo "==> no gate description claims review is enforced"
+# Anchored on the specific claim: that merging without a review is prevented.
+#
+# POSIX ERE only. The first draft used `(is |)` — an empty alternation, which
+# BSD grep rejects outright, so the whole pattern failed to compile and matched
+# nothing. The probe below caught it immediately, which is the entire argument
+# for writing the probe: a guard that silently matches nothing looks identical
+# to a clean tree.
+CONTRADICTION='cannot[^.]*merge[^.]*without[^.]*review|merg[a-z]*[^.]*without[^.]*review[^.]*(blocked|prevented|refused)|without[^.]*review[^.]*cannot merge'
+for file in $GATE_FILES; do
+  [ -f "$file" ] || continue
+  hits="$(grep -inE "$CONTRADICTION" "$file" || true)"
+  if [ -n "$hits" ]; then
+    printf '%s\n' "$hits" >&2
+    fail "$(basename "$file") claims merging without review is prevented; it is not"
+  fi
+done
+
+# Both halves must be able to fail, on this platform, or their silence is not
+# evidence. The CLI-reference guard shipped without this and was broken.
+probe="$TEST_DIR/gate-probe.md"
+printf 'You cannot commit to main, merge without review, or bypass hooks.\n' >"$probe"
+if grep -qiE "$CONTRADICTION" "$probe"; then
+  echo "  OK: the contradiction pattern detects the claim it exists to catch"
+else
+  fail "the contradiction pattern does not match a known enforcement claim; the check above proves nothing"
+fi
+printf 'Review happens here.\n' >"$probe"
+if grep -qiE 'not an enforced gate|not currently enforce|nothing currently enforces|nothing enforces|is advisory|not enforced|but unenforced' "$probe"; then
+  fail "the caveat pattern matches text containing no caveat; the check above proves nothing"
+else
+  echo "  OK: the caveat pattern does not match a file lacking the caveat"
+fi
 
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
