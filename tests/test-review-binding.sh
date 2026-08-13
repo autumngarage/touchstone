@@ -144,6 +144,9 @@ run_case "answered finding passes even while thread gate remains separate" \
 run_case "same-second reply does not answer a finding" \
   ".issueComments = [.issueComments[0]] | .reviews = [$INLINE_REVIEW] | .reviewComments = [$INLINE_FINDING, ($INLINE_ANSWER | .created_at = \"2026-08-13T10:01:00Z\")]" \
   failure "inline finding"
+run_case "editing an inline finding after its reply requires a new answer" \
+  ".issueComments = [.issueComments[0]] | .reviews = [$INLINE_REVIEW] | .reviewComments = [($INLINE_FINDING | .updated_at = \"2026-08-13T10:03:00Z\"), $INLINE_ANSWER]" \
+  failure "inline finding"
 run_case "every finding needs its own answer" \
   ".issueComments = [.issueComments[0]] | .reviews = [$INLINE_REVIEW] | .reviewComments = [$INLINE_FINDING, ($INLINE_FINDING | .id = 302), $INLINE_ANSWER]" \
   failure "302"
@@ -186,6 +189,40 @@ run_case "unmarked later PR chatter does not answer a body finding" \
   failure "body-only"
 run_case "body-only finding with later re-review passes" \
   ".issueComments = [.issueComments[0]] | .reviews = [$BODY_REVIEW, $REREVIEW]" success
+REVIEW_EDIT_STATUS='{
+  "context": "touchstone/review-edit-v1",
+  "state": "success",
+  "description": "v1 p=42 r=400",
+  "created_at": "2026-08-13T10:02:30Z",
+  "creator": {"login": "github-actions[bot]"}
+}'
+run_case "editing a formal review body invalidates its older marked answer" \
+  ".statuses += [$REVIEW_EDIT_STATUS] | .issueComments = [.issueComments[0], $BODY_ANSWER] | .reviews = [$BODY_REVIEW]" \
+  failure "body-only"
+run_case "later re-review answers an edited formal review body" \
+  ".statuses += [$REVIEW_EDIT_STATUS] | .issueComments = [.issueComments[0]] | .reviews = [$BODY_REVIEW, $REREVIEW]" \
+  success
+RESULT_BODY_FINDING='{
+  "id": 500,
+  "body": "The rollback proof is incomplete. **Reviewed commit:** `1111111111`",
+  "created_at": "2026-08-13T10:01:00Z",
+  "updated_at": "2026-08-13T10:03:00Z",
+  "author_association": "NONE",
+  "user": {"login": "chatgpt-codex-connector[bot]"}
+}'
+RESULT_BODY_ANSWER='{
+  "id": 501,
+  "body": "Added the proof. <!-- touchstone:review-answer id=500 -->",
+  "created_at": "2026-08-13T10:02:00Z",
+  "author_association": "MEMBER",
+  "user": {"login": "driver"}
+}'
+run_case "editing a result-comment finding invalidates its older answer" \
+  ".issueComments = [.issueComments[0], $RESULT_BODY_FINDING, $RESULT_BODY_ANSWER]" \
+  failure "body-only"
+run_case "a new answer after the result-comment edit passes" \
+  ".issueComments = [.issueComments[0], $RESULT_BODY_FINDING, ($RESULT_BODY_ANSWER | .created_at = \"2026-08-13T10:04:00Z\")]" \
+  success
 
 echo "==> Rebuild is deterministic"
 first="$(jq -S -f "$EVALUATOR" "$TMP_DIR/base.json")"
@@ -219,7 +256,8 @@ for required in \
   'newest_run' \
   'BOOTSTRAP_BASE_SHA' \
   'GITHUB_EVENT_PATH' \
-  'known_head'; do
+  'known_head' \
+  'touchstone/review-edit-v1'; do
   if grep -Fq "$required" "$WORKFLOW"; then
     ok "workflow contains: $required"
   else

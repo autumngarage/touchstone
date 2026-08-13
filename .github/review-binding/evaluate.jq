@@ -77,13 +77,14 @@ def answers_body_finding($id):
     | select($finding.in_reply_to_id == null)
     | $reviews[]
     | select((.id | tostring) == ($finding.pull_request_review_id | tostring))
+    | ($finding.updated_at // $finding.created_at // "") as $finding_at
     | {
         id: $finding.id,
-        at: $finding.created_at,
+        at: $finding_at,
         author: $finding.user.login,
         answered: any($root.reviewComments[]?;
           ((.in_reply_to_id // 0) | tostring) == ($finding.id | tostring)
-          and (.created_at // "") > ($finding.created_at // "")
+          and (.created_at // "") > $finding_at
           and driver_answer)
       }
   ] | unique_by(.id) as $inline_findings
@@ -91,8 +92,22 @@ def answers_body_finding($id):
     $reviews[]
     | select((.body // "" | gsub("[[:space:]]"; "")) != "")
     | . as $finding
+    | [
+        $root.statuses[]?
+        | select(.context == "touchstone/review-edit-v1")
+        | select(.state == "success")
+        | select((.creator.login // "") == "github-actions[bot]")
+        | . as $edit_status
+        | (try ((.description // "")
+            | capture("^v1 p=(?<pr>[0-9]+) r=(?<review>[0-9]+)$"))
+           catch empty)
+        | select((.pr | tonumber) == $number and (.review | tostring) == ($finding.id | tostring))
+        | $edit_status.created_at
+      ] as $edit_times
+    | (($edit_times | max) // ($finding.submitted_at // "")) as $finding_at
     | select(
         (standard_codex_review_body | not)
+        or ($edit_times | length) > 0
         or (any($root.reviewComments[]?;
           .in_reply_to_id == null
           and ((.pull_request_review_id // 0) | tostring) == ($finding.id | tostring)) | not)
@@ -100,16 +115,16 @@ def answers_body_finding($id):
     | {
         kind: "review body",
         id: $finding.id,
-        at: $finding.submitted_at,
+        at: $finding_at,
         answered: (
           any($root.issueComments[]?;
-            (.created_at // "") > ($finding.submitted_at // "")
+            (.created_at // "") > $finding_at
             and driver_answer
             and answers_body_finding($finding.id))
           or any($reviews[]?;
-            (.submitted_at // "") > ($finding.submitted_at // ""))
+            (.submitted_at // "") > $finding_at)
           or any($result_comments[]?;
-            (.created_at // "") > ($finding.submitted_at // ""))
+            (.created_at // "") > $finding_at)
         )
       }
   ] as $review_body_findings
@@ -118,19 +133,20 @@ def answers_body_finding($id):
     | select(((.body // "") | contains("Didn't find any major issues")) | not)
     | select(standard_codex_review_body | not)
     | . as $finding
+    | ($finding.updated_at // $finding.created_at // "") as $finding_at
     | {
         kind: "result comment",
         id: $finding.id,
-        at: $finding.created_at,
+        at: $finding_at,
         answered: (
           any($root.issueComments[]?;
-            (.created_at // "") > ($finding.created_at // "")
+            (.created_at // "") > $finding_at
             and driver_answer
             and answers_body_finding($finding.id))
           or any($reviews[]?;
-            (.submitted_at // "") > ($finding.created_at // ""))
+            (.submitted_at // "") > $finding_at)
           or any($result_comments[]?;
-            (.created_at // "") > ($finding.created_at // ""))
+            (.created_at // "") > $finding_at)
         )
       }
   ] as $comment_body_findings

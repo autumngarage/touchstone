@@ -121,6 +121,26 @@ jobs:
               -f target_url="$target" >/dev/null
           }
 
+          establish_review_edit_marker() {
+            [ "$EVENT_NAME" = pull_request_review ] || return 0
+            [ "$(jq -r '.action // ""' "$GITHUB_EVENT_PATH")" = edited ] || return 0
+
+            local number head review_id target pending_id description
+            number="$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
+            head="$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
+            review_id="$(jq -r '.review.id' "$GITHUB_EVENT_PATH")"
+            target="$(jq -r '.review.html_url' "$GITHUB_EVENT_PATH")"
+            pending_id="$(create_pending "$number" "$head" "known head \`$head\`; edited-review marker pending")"
+            description="v1 p=$number r=$review_id"
+            gh api -X POST "repos/$REPO/statuses/$head" \
+              -f state=success \
+              -f context=touchstone/review-edit-v1 \
+              -f description="$description" \
+              -f target_url="$target" >/dev/null
+            publish_check "$pending_id" neutral "Edited-review marker recorded" \
+              "Review $review_id changed; the following evaluator run owns the rebuilt verdict for \`$head\`."
+          }
+
           evaluate_pr() {
             local number="$1"
             local known_head="${2:-}"
@@ -253,6 +273,7 @@ jobs:
           }
 
           establish_request_marker
+          establish_review_edit_marker
 
           work_items=""
           case "$EVENT_NAME" in
