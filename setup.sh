@@ -78,6 +78,7 @@ if [ "$DEPS_ONLY" = false ]; then
 
   brew_install_if_missing "git" "git"
   brew_install_if_missing "gh" "gh"
+  brew_install_if_missing "jq" "jq"
   brew_install_if_missing "pre-commit" "pre-commit"
   brew_install_if_missing "gitleaks" "gitleaks"
   brew_install_if_missing "shellcheck" "shellcheck"

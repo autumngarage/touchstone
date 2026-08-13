@@ -1,0 +1,21 @@
+name: review evidence signal
+
+# Fork review events have read-only tokens. This inert workflow lets the
+# review-binding publisher rebuild from the default branch through its
+# workflow_run event, which has write access but never executes PR code.
+
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+
+permissions: {}
+
+jobs:
+  signal:
+    name: route review evidence
+    runs-on: ubuntu-latest
+    steps:
+      - name: Complete trusted handoff
+        run: ":"

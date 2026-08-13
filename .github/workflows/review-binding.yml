@@ -1,0 +1,407 @@
+name: review-binding
+
+# Publishes exactly one manually-created `review-binding` check on the current
+# PR head. The job's own Actions check has a different name so it cannot race
+# the verdict branch protection reads. No PR code is checked out or executed:
+# the pure evaluator is downloaded from the PR's current base commit.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: Pull request number to rebuild
+        required: true
+        type: number
+  issue_comment:
+    types: [created, edited, deleted]
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, closed]
+  workflow_run:
+    workflows: [review evidence signal]
+    types: [completed]
+  status:
+  push:
+
+permissions:
+  checks: write
+  contents: read
+  pull-requests: read
+  issues: read
+  statuses: write
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: review-binding-${{ github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.head_sha || github.event.sha || github.run_id }}
+  # Superseded runs finish neutral through the newer-check-run guard below.
+  # Actions marks force-cancelled jobs red, creating a second false gate.
+  cancel-in-progress: false
+
+jobs:
+  evaluate:
+    name: evaluate review evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      EVENT_NAME: ${{ github.event_name }}
+      DISPATCH_PR: ${{ inputs.pull_request }}
+      TRUSTED_REVIEWERS: chatgpt-codex-connector,chatgpt-codex-connector[bot]
+      # The workflow and evaluator arrive together in the PR based on this
+      # commit, so that one non-required observation run cannot load its base
+      # evaluator. Delete this inert one-commit shim in the ruleset PR, before
+      # review-binding becomes required.
+      BOOTSTRAP_BASE_SHA: 89a09eae59817f71b975486436e86d673b7e0353
+    steps:
+      - name: Rebuild review-binding verdict
+        run: |
+          set -euo pipefail
+
+          tmp_dir="$(mktemp -d)"
+          trap 'rm -rf "$tmp_dir"' EXIT
+
+          api_array() {
+            local endpoint="$1" output="$2"
+            gh api --paginate "$endpoint" | jq -s 'add // []' >"$output"
+          }
+
+          api_reviews() {
+            local number="$1" output="$2" owner repo
+            owner="${REPO%%/*}"
+            repo="${REPO#*/}"
+            # GraphQL variables are intentionally literal for gh to bind.
+            # shellcheck disable=SC2016
+            gh api graphql --paginate \
+              -f query='query($owner:String!,$repo:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviews(first:100,after:$endCursor){nodes{databaseId body state submittedAt updatedAt commit{oid} author{login}} pageInfo{hasNextPage endCursor}}}}}' \
+              -F owner="$owner" -F repo="$repo" -F number="$number" \
+              | jq -s '[.[].data.repository.pullRequest.reviews.nodes[] | {
+                  id: .databaseId,
+                  body: .body,
+                  state: .state,
+                  submitted_at: .submittedAt,
+                  updated_at: .updatedAt,
+                  commit_id: .commit.oid,
+                  user: {login: .author.login}
+                }]' >"$output"
+          }
+
+          decode_base64() {
+            if base64 --help 2>&1 | grep -q -- '--decode'; then
+              base64 --decode
+            else
+              base64 -D
+            fi
+          }
+
+          resolve_comment_heads() {
+            local comments_file="$1" output="$2" id abbreviated resolved
+            printf '{}\n' >"$tmp_dir/resolved-heads.json"
+            while IFS=$'\t' read -r id abbreviated || [ -n "$id" ]; do
+              [ -n "$id" ] || continue
+              if [ "${#abbreviated}" -eq 40 ]; then
+                resolved="$abbreviated"
+              elif ! resolved="$(gh api "repos/$REPO/commits/$abbreviated" --jq .sha 2>/dev/null)"; then
+                echo "WARNING: trusted review comment $id names an unresolvable commit $abbreviated; ignoring that item." >&2
+                resolved=""
+              fi
+              jq --arg id "$id" --arg sha "$resolved" '. + {($id): $sha}' \
+                "$tmp_dir/resolved-heads.json" >"$tmp_dir/resolved-heads.next.json"
+              mv "$tmp_dir/resolved-heads.next.json" "$tmp_dir/resolved-heads.json"
+            done < <(jq -r --arg trusted "$TRUSTED_REVIEWERS" '
+              .[]
+              | (.user.login // "") as $login
+              | select(($trusted | split(",") | index($login)) != null)
+              | ((.body // "") | capture("Reviewed commit:[*]*[[:space:]]*`(?<sha>[0-9a-fA-F]{7,40})`")?) as $match
+              | select($match != null)
+              | [(.id | tostring), $match.sha] | @tsv
+            ' "$comments_file")
+            jq --slurpfile resolved "$tmp_dir/resolved-heads.json" \
+              'map(. + {resolved_review_sha: ($resolved[0][(.id | tostring)] // "")})' \
+              "$comments_file" >"$output"
+          }
+
+          publish_check() {
+            local run_id="$1" conclusion="$2" title="$3" summary="$4"
+            gh api -X PATCH "repos/$REPO/check-runs/$run_id" \
+              -f status=completed \
+              -f conclusion="$conclusion" \
+              -f "output[title]=$title" \
+              -f "output[summary]=${summary:0:60000}" >/dev/null
+          }
+
+          publish_api_failure() {
+            local run_id="$1" detail="$2"
+            publish_check "$run_id" failure "Review evidence could not be read" \
+              "The check failed closed because GitHub evidence collection was incomplete: $detail"
+          }
+
+          create_pending() {
+            local number="$1" head="$2" coordinates="$3"
+            gh api -X POST "repos/$REPO/check-runs" \
+              -f name=review-binding \
+              -f head_sha="$head" \
+              -f status=in_progress \
+              -f "output[title]=Reading authoritative review evidence" \
+              -f "output[summary]=PR #$number at $coordinates." \
+              --jq .id
+          }
+
+          establish_request_marker() {
+            [ "$EVENT_NAME" = issue_comment ] || return 0
+            [ "$(jq -r '.action // ""' "$GITHUB_EVENT_PATH")" = created ] || return 0
+            jq -e '(.comment.author_association // "") as $association |
+              (.issue.pull_request != null) and
+              ((.comment.body // "") | test("^[[:space:]]*@codex[[:space:]]+review([[:space:]]|$)"; "i")) and
+              (["OWNER", "MEMBER", "COLLABORATOR"] | index($association))' \
+              "$GITHUB_EVENT_PATH" >/dev/null || return 0
+
+            local number head base base_ref base_ref_hash comment description target pending_id
+            number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+            comment="$(jq -r '.comment.id' "$GITHUB_EVENT_PATH")"
+            target="$(jq -r '.comment.html_url' "$GITHUB_EVENT_PATH")"
+            gh api "repos/$REPO/pulls/$number" >"$tmp_dir/request-pr.json"
+            head="$(jq -r '.head.sha' "$tmp_dir/request-pr.json")"
+            base="$(jq -r '.base.sha' "$tmp_dir/request-pr.json")"
+            base_ref="$(jq -r '.base.ref' "$tmp_dir/request-pr.json")"
+            base_ref_hash="$(printf '%s' "$base_ref" | git hash-object --stdin)"
+            description="v1 p=$number r=$base_ref_hash b=$base c=$comment"
+            pending_id="$(create_pending "$number" "$head" "known head \`$head\`; review-request marker pending")"
+            gh api -X POST "repos/$REPO/statuses/$head" \
+              -f state=success \
+              -f context=touchstone/review-request-v1 \
+              -f description="$description" \
+              -f target_url="$target" >/dev/null
+            EVENT_PENDING_PR="$number"
+            EVENT_PENDING_HEAD="$head"
+            EVENT_PENDING_ID="$pending_id"
+          }
+
+          evaluate_pr() {
+            local number="$1"
+            local known_head="${2:-}"
+            local precreated_run="${3:-}"
+            local pr_file="$tmp_dir/pr-$number.json"
+            local head base base_ref base_ref_hash run_id="$precreated_run" evaluator evidence verdict conclusion title summary
+
+            if [ -n "$known_head" ] && [ -z "$run_id" ]; then
+              echo "ERROR: known head $known_head reached evaluation without a precreated pending check." >&2
+              return 1
+            fi
+
+            if ! gh api "repos/$REPO/pulls/$number" >"$pr_file"; then
+              if [ -n "$run_id" ]; then
+                publish_api_failure "$run_id" "the live PR coordinates could not be read"
+              fi
+              echo "Could not read PR #$number" >&2
+              return 1
+            fi
+            head="$(jq -r '.head.sha' "$pr_file")"
+            base="$(jq -r '.base.sha' "$pr_file")"
+            base_ref="$(jq -r '.base.ref' "$pr_file")"
+            base_ref_hash="$(printf '%s' "$base_ref" | git hash-object --stdin)"
+            if [ "$(jq -r '.state' "$pr_file")" != open ]; then
+              if [ -n "$run_id" ]; then
+                publish_check "$run_id" cancelled "Pull request is no longer open" \
+                  "PR #$number closed after this event identified head \`$known_head\`."
+              fi
+              return 0
+            fi
+            if [ -n "$known_head" ] && [ "$head" != "$known_head" ]; then
+              publish_check "$run_id" cancelled "The event head is no longer current" \
+                "Event head: \`$known_head\`. Live PR #$number head: \`$head\`. The newer coordinate event owns the verdict."
+              return 0
+            fi
+            if [ "$base" = "$BOOTSTRAP_BASE_SHA" ]; then
+              if [ -n "$run_id" ]; then
+                publish_check "$run_id" neutral "Bootstrap observation only" \
+                  "PR #$number is adding the evaluator to base \`$base\`; review-binding is not required yet."
+              fi
+              echo "PR #$number is the one-commit bootstrap; review-binding is not required yet."
+              return 0
+            fi
+
+            if [ -z "$run_id" ]; then
+              run_id="$(create_pending "$number" "$head" "head \`$head\` and base \`$base\`")"
+            fi
+
+            if ! api_array "repos/$REPO/commits/$head/statuses?per_page=100" "$tmp_dir/statuses-$number.json" \
+              || ! api_array "repos/$REPO/issues/$number/comments?per_page=100" "$tmp_dir/issues-$number.json" \
+              || ! api_reviews "$number" "$tmp_dir/reviews-$number.json" \
+              || ! api_array "repos/$REPO/pulls/$number/comments?per_page=100" "$tmp_dir/review-comments-$number.json" \
+              || ! api_array "repos/$REPO/commits/$head/pulls?per_page=100" "$tmp_dir/head-pulls-$number.json"; then
+              publish_api_failure "$run_id" "a paginated GitHub request failed"
+              return 1
+            fi
+            if ! resolve_comment_heads "$tmp_dir/issues-$number.json" "$tmp_dir/issues-resolved-$number.json"; then
+              publish_api_failure "$run_id" "a trusted review comment's abbreviated commit could not be resolved uniquely"
+              return 1
+            fi
+
+            evaluator="$tmp_dir/evaluate-$number.jq"
+            if ! gh api "repos/$REPO/contents/.github/review-binding/evaluate.jq?ref=$base" --jq .content \
+              | decode_base64 >"$evaluator"; then
+              publish_api_failure "$run_id" "the versioned evaluator could not be loaded from base $base"
+              return 1
+            fi
+
+            evidence="$tmp_dir/evidence-$number.json"
+            jq -n \
+              --slurpfile pr "$pr_file" \
+              --slurpfile statuses "$tmp_dir/statuses-$number.json" \
+              --slurpfile issueComments "$tmp_dir/issues-resolved-$number.json" \
+              --slurpfile reviews "$tmp_dir/reviews-$number.json" \
+              --slurpfile reviewComments "$tmp_dir/review-comments-$number.json" \
+              --slurpfile headPulls "$tmp_dir/head-pulls-$number.json" \
+              --arg trusted "$TRUSTED_REVIEWERS" \
+              --arg repo "$REPO" \
+              --arg baseRefHash "$base_ref_hash" \
+              '($pr[0]) as $pr |
+              ($statuses[0]) as $statuses |
+              ($issueComments[0]) as $issueComments |
+              ($reviews[0]) as $reviews |
+              ($reviewComments[0]) as $reviewComments |
+              ($headPulls[0]) as $headPulls |
+              {
+                contractVersion: 1,
+                complete: true,
+                trustedAuthors: ($trusted | split(",")),
+                pr: {
+                  number: $pr.number,
+                  state: $pr.state,
+                  headSha: $pr.head.sha,
+                  baseRef: $pr.base.ref,
+                  baseRefHash: $baseRefHash,
+                  baseSha: $pr.base.sha,
+                  openHeadPulls: [$headPulls[] | select(
+                    .state == "open"
+                    and .base.repo.full_name == $repo
+                    and .head.sha == $pr.head.sha
+                  ) | .number]
+                },
+                statuses: $statuses,
+                issueComments: $issueComments,
+                reviews: $reviews,
+                reviewComments: $reviewComments
+              }' >"$evidence"
+
+            if ! verdict="$(jq -f "$evaluator" "$evidence")"; then
+              publish_api_failure "$run_id" "the versioned evaluator rejected the evidence document"
+              return 1
+            fi
+            conclusion="$(jq -r .conclusion <<<"$verdict")"
+            title="$(jq -r .title <<<"$verdict")"
+            summary="$(jq -r .summary <<<"$verdict")"
+
+            if ! gh api "repos/$REPO/pulls/$number" >"$tmp_dir/live-pr-$number.json"; then
+              publish_api_failure "$run_id" "the live PR coordinates could not be revalidated before publication"
+              return 1
+            fi
+            live_head="$(jq -r .head.sha "$tmp_dir/live-pr-$number.json")"
+            live_base="$(jq -r .base.sha "$tmp_dir/live-pr-$number.json")"
+            live_base_ref="$(jq -r .base.ref "$tmp_dir/live-pr-$number.json")"
+            if [ "$live_head" != "$head" ] || [ "$live_base" != "$base" ] || [ "$live_base_ref" != "$base_ref" ]; then
+              publish_check "$run_id" cancelled "PR coordinates changed during evaluation" \
+                "Evaluated head/base: \`$head\` / \`$base_ref\` at \`$base\`. Live head/base: \`$live_head\` / \`$live_base_ref\` at \`$live_base\`. The coordinate-change event owns the new verdict."
+              return 0
+            fi
+
+            if ! newest_run="$(gh api "repos/$REPO/commits/$head/check-runs?check_name=review-binding&per_page=100" \
+              --jq '[.check_runs[].id] | max // 0')"; then
+              publish_api_failure "$run_id" "newer review-binding runs could not be inspected before publication"
+              return 1
+            fi
+            if [ "$newest_run" != "$run_id" ]; then
+              publish_check "$run_id" cancelled "A newer review-binding run owns this head" \
+                "Run $run_id did not publish its potentially stale verdict because check run $newest_run was created later for \`$head\`."
+              return 0
+            fi
+            publish_check "$run_id" "$conclusion" "$title" "$summary"
+          }
+
+          EVENT_PENDING_PR=""
+          EVENT_PENDING_HEAD=""
+          EVENT_PENDING_ID=""
+          establish_request_marker
+
+          work_items=""
+          case "$EVENT_NAME" in
+            workflow_dispatch)
+              work_items="$DISPATCH_PR"$'\t'
+              ;;
+            pull_request_target)
+              if [ "$(jq -r '.action // ""' "$GITHUB_EVENT_PATH")" = closed ]; then
+                event_head="$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
+                work_items="$(gh api --paginate "repos/$REPO/commits/$event_head/pulls?per_page=100" \
+                  --jq '.[] | select(.state == "open") | [.number, .head.sha] | @tsv')"
+              elif [ "$(jq -r '.action // ""' "$GITHUB_EVENT_PATH")" = synchronize ]; then
+                event_head="$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
+                before_head="$(jq -r '.before' "$GITHUB_EVENT_PATH")"
+                current_item="$(jq -r '[.pull_request.number, .pull_request.head.sha] | @tsv' "$GITHUB_EVENT_PATH")"
+                previous_items="$(gh api --paginate "repos/$REPO/commits/$before_head/pulls?per_page=100" \
+                  --jq '.[] | select(.state == "open") | [.number, .head.sha] | @tsv')"
+                work_items="$(printf '%s\n%s\n' "$current_item" "$previous_items" | awk 'NF && !seen[$0]++')"
+              else
+                work_items="$(jq -r '[.pull_request.number, .pull_request.head.sha] | @tsv' "$GITHUB_EVENT_PATH")"
+              fi
+              ;;
+            workflow_run)
+              [ "$(jq -r '.workflow_run.conclusion // ""' "$GITHUB_EVENT_PATH")" = success ] || exit 0
+              event_head="$(jq -r '.workflow_run.head_sha' "$GITHUB_EVENT_PATH")"
+              work_items="$(jq -r '.workflow_run.pull_requests[]? | [.number, .head.sha] | @tsv' "$GITHUB_EVENT_PATH")"
+              if [ -z "$work_items" ]; then
+                work_items="$(gh api --paginate "repos/$REPO/commits/$event_head/pulls?per_page=100" \
+                  --jq '.[] | select(.state == "open") | [.number, .head.sha] | @tsv')"
+              fi
+              ;;
+            issue_comment)
+              jq -e '.issue.pull_request != null' "$GITHUB_EVENT_PATH" >/dev/null || exit 0
+              if [ -n "$EVENT_PENDING_ID" ]; then
+                work_items="$EVENT_PENDING_PR"$'\t'"$EVENT_PENDING_HEAD"
+              else
+                work_items="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"$'\t'
+              fi
+              ;;
+            status)
+              [ "$(jq -r '.context // ""' "$GITHUB_EVENT_PATH")" = touchstone/review-request-v1 ] || exit 0
+              status_sha="$(jq -r '.sha' "$GITHUB_EVENT_PATH")"
+              work_items="$(gh api --paginate "repos/$REPO/commits/$status_sha/pulls?per_page=100" \
+                --jq '.[] | select(.state == "open") | [.number, .head.sha] | @tsv')"
+              ;;
+            push)
+              pushed_ref="${GITHUB_REF#refs/heads/}"
+              work_items="$(gh api --paginate --method GET "repos/$REPO/pulls" \
+                -f state=open -f "base=$pushed_ref" -f per_page=100 \
+                --jq '.[] | [.number, .head.sha] | @tsv')"
+              ;;
+            *) exit 0 ;;
+          esac
+
+          failures=0
+          preinvalidated_items="$tmp_dir/preinvalidated-items.tsv"
+          : >"$preinvalidated_items"
+          # Invariant: no expensive evidence read starts until every known
+          # affected head has a newer pending review-binding check.
+          while IFS=$'\t' read -r number known_head || [ -n "$number" ]; do
+            [ -n "$number" ] || continue
+            pending_id=""
+            if [ -n "$known_head" ]; then
+              if [ "$number" = "$EVENT_PENDING_PR" ] && [ "$known_head" = "$EVENT_PENDING_HEAD" ]; then
+                pending_id="$EVENT_PENDING_ID"
+              elif ! pending_id="$(create_pending "$number" "$known_head" "known head \`$known_head\`; base pending inspection")"; then
+                echo "ERROR: could not neutralize known head $known_head for PR #$number." >&2
+                failures=$((failures + 1))
+              fi
+            fi
+            printf '%s\t%s\t%s\n' "$number" "$known_head" "$pending_id" >>"$preinvalidated_items"
+          done <<<"$work_items"
+
+          while IFS=$'\t' read -r number known_head pending_id || [ -n "$number" ]; do
+            [ -n "$number" ] || continue
+            if ! evaluate_pr "$number" "$known_head" "$pending_id"; then
+              failures=$((failures + 1))
+            fi
+          done <"$preinvalidated_items"
+          [ "$failures" -eq 0 ]

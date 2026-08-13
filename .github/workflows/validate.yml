@@ -16,9 +16,11 @@ name: validate
 # while installing pre-commit from PyPI on every run, and on 2026-08-12 two
 # third-party 503s turned the required check red while fetching shellcheck and
 # shfmt — no test ran either time (#742, #803, #808). No surviving test invokes
-# pre-commit, jq, shellcheck or shfmt, so nothing is fetched at all: this job
-# cannot go red for a reason outside this repository. Lint runs at pre-commit
-# and via `pre-commit run --all-files` — a different gate, off the merge path.
+# pre-commit, shellcheck or shfmt, so nothing is fetched at all: this job cannot
+# go red for a reason outside this repository. The review-binding fixtures do
+# execute the runner-provided jq binary; `setup.sh` installs the same declared
+# local tool. Lint runs at pre-commit and via `pre-commit run --all-files` — a
+# different gate, off the merge path.
 #
 # Before adding an install step here, name the test that executes the binary.
 # If you cannot name one, the dependency belongs at pre-commit time.
