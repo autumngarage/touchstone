@@ -54,12 +54,12 @@ case "$method $endpoint" in
     emit '{"id":1333343261}'
     ;;
   "GET repos/autumngarage/touchstone-workflows/commits/main")
-    emit '{"sha":"776669c5666357bb36e4d38cc818298f579c6327"}'
+    emit '{"sha":"776669cd7429e988a4e3e3cb7ef9d5a33a38e8ab"}'
     ;;
-  "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/validate.yml?ref=776669c5666357bb36e4d38cc818298f579c6327")
+  "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/validate.yml?ref=776669cd7429e988a4e3e3cb7ef9d5a33a38e8ab")
     emit '{"type":"file"}'
     ;;
-  "GET repos/autumngarage/touchstone-workflows/compare/776669c5666357bb36e4d38cc818298f579c6327...776669c5666357bb36e4d38cc818298f579c6327")
+  "GET repos/autumngarage/touchstone-workflows/compare/776669cd7429e988a4e3e3cb7ef9d5a33a38e8ab...776669cd7429e988a4e3e3cb7ef9d5a33a38e8ab")
     emit '{"status":"identical"}'
     ;;
   "GET repos/autumngarage/touchstone-workflows/branches/main/protection")
@@ -201,6 +201,11 @@ run_policy dry-run "$POLICY" >"$TMP_DIR/dry-run.txt"
 grep -q 'Would install/replace organization ruleset' "$TMP_DIR/dry-run.txt" \
   || fail "dry-run did not describe the apply"
 ok "dry-run describes the change without mutating state"
+grep -Fq 'diff -u -L current -L desired' "$SCRIPT" \
+  || fail "policy diff does not use portable BSD/GNU label flags"
+! grep -Fq -- '--label' "$SCRIPT" \
+  || fail "policy diff uses GNU-only --label"
+ok "policy diff uses portable BSD/GNU label flags"
 
 echo "==> Required workflow source stays outside and protected from the target"
 jq '.workflowSource.repository = .repository' "$POLICY" >"$TMP_DIR/self-source-policy.json"

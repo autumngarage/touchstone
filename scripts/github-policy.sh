@@ -220,7 +220,7 @@ case "$COMMAND" in
     else
       current="$(normalize_ruleset <<<"$current")"
     fi
-    diff -u --label current --label desired \
+    diff -u -L current -L desired \
       <(printf '%s\n' "$current") <(printf '%s\n' "$desired") || [ "$?" -eq 1 ]
     ;;
   dry-run)

@@ -81,7 +81,7 @@
               "path": ".github/workflows/validate.yml",
               "ref": "refs/heads/main",
               "repository_id": 1333343261,
-              "sha": "776669c5666357bb36e4d38cc818298f579c6327"
+              "sha": "776669cd7429e988a4e3e3cb7ef9d5a33a38e8ab"
             }
           ]
         }
