@@ -209,6 +209,7 @@ for required in \
   'checks: write' \
   'gh api --paginate' \
   'pull_request_review_comment:' \
+  'types: [submitted, edited, dismissed]' \
   'issue_comment:' \
   'types: [created, edited, deleted]' \
   'status=in_progress' \

@@ -17,7 +17,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, edited, closed]
   pull_request_review:
-    types: [submitted, dismissed]
+    types: [submitted, edited, dismissed]
   pull_request_review_comment:
     types: [created, edited, deleted]
   status:
