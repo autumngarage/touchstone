@@ -36,16 +36,15 @@ explain that owner's decision; they may not recompute it.
 | Job | Authoritative owner | Stable interface | Proof |
 | --- | --- | --- | --- |
 | Prevent direct or bypassed default-branch delivery | GitHub repository ruleset | Audited ruleset definition | Direct-push and owner-bypass canaries are rejected |
-| Require deterministic project validation | GitHub required check | Stable check name backed by the pinned CI adapter | Passing, failing, missing, and canceled canaries produce the expected merge state |
+| Require deterministic project validation | GitHub organization ruleset required workflow | Ruleset-selected source repository, path, and full commit SHA | A PR cannot replace its own gate; passing, failing, missing, and canceled canaries produce the expected merge state |
 | Require review of the exact PR head | GitHub required `review-binding` check | Check name and versioned evidence contract | No-review, stale-head, moved-base, quota, and API-failure fixtures fail closed |
-| Require inline review findings to be answered | GitHub conversation resolution | GitHub review threads | An unresolved inline thread blocks; a replied-and-resolved thread passes |
-| Require body-only review findings to be answered | GitHub required `review-binding` check | Versioned evidence contract and check output | An unanswered finding without a thread blocks; a qualifying answer passes |
+| Require every review finding to be answered | GitHub required `review-binding` check | Versioned answer-evidence contract and check output | An unanswered inline or body-only finding blocks; a qualifying answer after the finding passes |
+| Require inline review threads to be resolved | GitHub conversation resolution | GitHub review thread state | An unresolved thread blocks even after a reply; resolution alone cannot satisfy the separate answer check |
 | Bind merge to the reviewed head | GitHub merge API | Expected head passed to the merge mutation | Moving the head before merge is rejected |
 | Claim and reconcile work | Configured tracker adapter | Tracker-neutral claim/reconcile contract | GitHub- and Linear-backed fixtures reach equivalent tracker state |
 | Carry agent steering | Repository instruction files | Versioned, marked Touchstone block plus project-owned guidance | Resolved-instruction fixtures and controlled behavioral trials show each supported driver loads and follows the contract |
 | Adopt and evolve a repository | Touchstone CLI adoption module | `.touchstone.toml` and reviewable plan/apply output | Fresh, current, repeat, old-compatible, and unsupported-schema fixtures |
 | Install and upgrade the local tool | Homebrew | Versioned formula and checksummed release | Install, upgrade, rollback, and no-project-mutation tests pass |
-| Integrate validation with CI | Full-SHA-pinned Touchstone CI adapter | Versioned action inputs/outputs and stable check name | Local/CI parity, SHA bump, rollback, and old-valid-v1 fixtures pass |
 
 The canonical Linear execution plan maps active issues to these jobs. Do not
 add an issue inventory here; issue state is volatile and Linear owns it.
@@ -57,8 +56,10 @@ a copy of Touchstone's implementation:
 
 - `.touchstone.toml` declares its schema version, exact validation commands,
   required tasks, runtime/setup requirements, and explicit monorepo targets.
-- A small workflow calls the versioned Touchstone CI adapter at a full commit
-  SHA. The CI adapter and Homebrew CLI execute the same validation semantics.
+- An organization ruleset requires a workflow selected from a protected
+  Touchstone source repository, path, and full commit SHA. A consumer PR cannot
+  replace that invocation. The required workflow and Homebrew CLI execute the
+  same validation semantics.
 - Root agent files remain project-owned. Touchstone owns only its marked block
   or import adapter; it never replaces the surrounding project guidance.
 - GitHub ruleset state is managed and verified through a separate policy
@@ -124,9 +125,11 @@ diff. Upgrade planning is read-only; applying refuses dirty or default-branch
 worktrees, never silently changes project-owned values, and never deletes an
 obsolete path without explicit authorization and a recovery plan.
 
-CI revisions are pinned to full commit SHAs. Standard dependency automation
-may propose a SHA bump PR. A moving tag, background sync, ordinary-command
-side effect, or fleet-wide rewrite is not an upgrade mechanism.
+Required-workflow revisions are pinned to full commit SHAs in organization
+ruleset policy. An upgrade is an audited policy diff with dry-run, verification,
+and rollback; it is not a consumer-repository bump. A moving tag, background
+sync, ordinary-command side effect, or fleet-wide rewrite is not an upgrade
+mechanism.
 
 ## Admission test
 
@@ -153,7 +156,7 @@ Touchstone does not provide:
 - a global project registry;
 - runtime project-type detection;
 - a second local interpretation of GitHub's merge policy;
-- a doctor command that mirrors the validator, consumer workflow, or GitHub;
+- a doctor command that mirrors the validator, required workflow, or GitHub;
 - automatic retirement or deletion of consumer files;
 - autonomous repair, general task orchestration, or worktree convenience
   wrappers.

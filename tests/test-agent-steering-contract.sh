@@ -233,6 +233,14 @@ assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
   "versioned operator journeys"
 assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
   "not merely when its"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "organization ruleset required workflow"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "A consumer PR cannot"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "resolution alone cannot satisfy"
+assert_not_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "A small workflow calls"
 
 # Linear owns volatile implementation order. The durable README may link to
 # that plan, but naming its current issue decomposition duplicates state and
