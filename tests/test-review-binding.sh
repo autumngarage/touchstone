@@ -92,6 +92,7 @@ run_case "shared head fails closed" '.pr.openHeadPulls = [42, 43]' failure "not 
 run_case "untrusted request marker creator fails" '.statuses[0].creator.login = "attacker"' failure "no trusted review request"
 run_case "edited-away request fails" '.issueComments[0].body = "never mind"' failure "no trusted review request"
 run_case "untrusted result comment is not review evidence" '.issueComments[1].user.login = "attacker"' failure "no trusted exact-head"
+run_case "editing a clean result reopens it as a body finding" '.issueComments[1].updated_at = "2026-08-13T10:02:00Z"' failure "body-only"
 
 echo "==> Provider and inspection failures"
 run_case "incomplete API evidence fails closed" '.complete = false' failure "collection was incomplete"
