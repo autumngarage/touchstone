@@ -217,7 +217,8 @@ for required in \
   'live_head' \
   'newest_run' \
   'BOOTSTRAP_BASE_SHA' \
-  'GITHUB_EVENT_PATH'; do
+  'GITHUB_EVENT_PATH' \
+  'known_head'; do
   if grep -Fq "$required" "$WORKFLOW"; then
     ok "workflow contains: $required"
   else
@@ -228,6 +229,23 @@ if grep -Fq 'EVENT_PATH: ${{ github.event_path }}' "$WORKFLOW"; then
   fail "workflow must use the runner-populated GITHUB_EVENT_PATH, not an empty context expression"
 else
   ok "event payload reads use the runner-provided path"
+fi
+EVALUATE_BODY="$(awk '/^          evaluate_pr\(\) \{/{grab=1} grab{print} grab && /^          \}/{exit}' "$WORKFLOW")"
+if [ -z "$EVALUATE_BODY" ]; then
+  fail "could not extract evaluate_pr for pending-order guard"
+elif awk '
+  /create_pending .*known_head/ { pending = NR }
+  /gh api "repos\/\$REPO\/pulls\/\$number"/ { lookup = NR; exit }
+  END { exit !(pending && lookup && pending < lookup) }
+' <<<"$EVALUATE_BODY"; then
+  ok "known event heads publish pending before the fallible PR lookup"
+else
+  fail "evaluate_pr must neutralize a known head before reading live PR coordinates"
+fi
+if grep -Fq -- "[.number, .head.sha] | @tsv" "$WORKFLOW"; then
+  ok "discovery paths carry each affected PR head into evaluation"
+else
+  fail "push/status discovery must preserve the affected head SHA"
 fi
 if grep -Fq 'base=$pushed_ref&' "$WORKFLOW"; then
   fail "push sweep must not interpolate a base ref into a query string"

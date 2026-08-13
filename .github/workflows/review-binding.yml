@@ -82,6 +82,17 @@ jobs:
               "The check failed closed because GitHub evidence collection was incomplete: $detail"
           }
 
+          create_pending() {
+            local number="$1" head="$2" coordinates="$3"
+            gh api -X POST "repos/$REPO/check-runs" \
+              -f name=review-binding \
+              -f head_sha="$head" \
+              -f status=in_progress \
+              -f "output[title]=Reading authoritative review evidence" \
+              -f "output[summary]=PR #$number at $coordinates." \
+              --jq .id
+          }
+
           establish_request_marker() {
             [ "$EVENT_NAME" = issue_comment ] || return 0
             [ "$(jq -r '.action // ""' "$GITHUB_EVENT_PATH")" = created ] || return 0
@@ -109,28 +120,47 @@ jobs:
 
           evaluate_pr() {
             local number="$1"
+            local known_head="${2:-}"
             local pr_file="$tmp_dir/pr-$number.json"
-            local head base run_id evaluator evidence verdict conclusion title summary
+            local head base run_id="" evaluator evidence verdict conclusion title summary
+
+            if [ -n "$known_head" ]; then
+              run_id="$(create_pending "$number" "$known_head" "known head \`$known_head\`; base pending inspection")"
+            fi
 
             if ! gh api "repos/$REPO/pulls/$number" >"$pr_file"; then
+              if [ -n "$run_id" ]; then
+                publish_api_failure "$run_id" "the live PR coordinates could not be read"
+              fi
               echo "Could not read PR #$number" >&2
               return 1
             fi
-            [ "$(jq -r '.state' "$pr_file")" = open ] || return 0
             head="$(jq -r '.head.sha' "$pr_file")"
             base="$(jq -r '.base.sha' "$pr_file")"
+            if [ "$(jq -r '.state' "$pr_file")" != open ]; then
+              if [ -n "$run_id" ]; then
+                publish_check "$run_id" cancelled "Pull request is no longer open" \
+                  "PR #$number closed after this event identified head \`$known_head\`."
+              fi
+              return 0
+            fi
+            if [ -n "$known_head" ] && [ "$head" != "$known_head" ]; then
+              publish_check "$run_id" cancelled "The event head is no longer current" \
+                "Event head: \`$known_head\`. Live PR #$number head: \`$head\`. The newer coordinate event owns the verdict."
+              return 0
+            fi
             if [ "$base" = "$BOOTSTRAP_BASE_SHA" ]; then
+              if [ -n "$run_id" ]; then
+                publish_check "$run_id" neutral "Bootstrap observation only" \
+                  "PR #$number is adding the evaluator to base \`$base\`; review-binding is not required yet."
+              fi
               echo "PR #$number is the one-commit bootstrap; review-binding is not required yet."
               return 0
             fi
 
-            run_id="$(gh api -X POST "repos/$REPO/check-runs" \
-              -f name=review-binding \
-              -f head_sha="$head" \
-              -f status=in_progress \
-              -f "output[title]=Reading authoritative review evidence" \
-              -f "output[summary]=PR #$number at head \`$head\` and base \`$base\`." \
-              --jq .id)"
+            if [ -z "$run_id" ]; then
+              run_id="$(create_pending "$number" "$head" "head \`$head\` and base \`$base\`")"
+            fi
 
             if ! api_array "repos/$REPO/commits/$head/statuses?per_page=100" "$tmp_dir/statuses-$number.json" \
               || ! api_array "repos/$REPO/issues/$number/comments?per_page=100" "$tmp_dir/issues-$number.json" \
@@ -231,44 +261,47 @@ jobs:
 
           establish_request_marker
 
-          numbers=""
+          work_items=""
           case "$EVENT_NAME" in
             workflow_dispatch)
-              numbers="$DISPATCH_PR"
+              work_items="$DISPATCH_PR"$'\t'
               ;;
             pull_request)
               if [ "$(jq -r '.action // ""' "$GITHUB_EVENT_PATH")" = closed ]; then
                 event_head="$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
-                numbers="$(gh api --paginate "repos/$REPO/commits/$event_head/pulls?per_page=100" --jq '.[] | select(.state == "open") | .number')"
+                work_items="$(gh api --paginate "repos/$REPO/commits/$event_head/pulls?per_page=100" \
+                  --jq '.[] | select(.state == "open") | [.number, .head.sha] | @tsv')"
               else
-                numbers="$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
+                work_items="$(jq -r '[.pull_request.number, .pull_request.head.sha] | @tsv' "$GITHUB_EVENT_PATH")"
               fi
               ;;
             pull_request_review | pull_request_review_comment)
-              numbers="$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")"
+              work_items="$(jq -r '[.pull_request.number, .pull_request.head.sha] | @tsv' "$GITHUB_EVENT_PATH")"
               ;;
             issue_comment)
               jq -e '.issue.pull_request != null' "$GITHUB_EVENT_PATH" >/dev/null || exit 0
-              numbers="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
+              work_items="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"$'\t'
               ;;
             status)
               [ "$(jq -r '.context // ""' "$GITHUB_EVENT_PATH")" = touchstone/review-request-v1 ] || exit 0
               status_sha="$(jq -r '.sha' "$GITHUB_EVENT_PATH")"
-              numbers="$(gh api --paginate "repos/$REPO/commits/$status_sha/pulls?per_page=100" --jq '.[] | select(.state == "open") | .number')"
+              work_items="$(gh api --paginate "repos/$REPO/commits/$status_sha/pulls?per_page=100" \
+                --jq '.[] | select(.state == "open") | [.number, .head.sha] | @tsv')"
               ;;
             push)
               pushed_ref="${GITHUB_REF#refs/heads/}"
-              numbers="$(gh api --paginate --method GET "repos/$REPO/pulls" \
+              work_items="$(gh api --paginate --method GET "repos/$REPO/pulls" \
                 -f state=open -f "base=$pushed_ref" -f per_page=100 \
-                --jq '.[].number')"
+                --jq '.[] | [.number, .head.sha] | @tsv')"
               ;;
             *) exit 0 ;;
           esac
 
           failures=0
-          for number in $numbers; do
-            if ! evaluate_pr "$number"; then
+          while IFS=$'\t' read -r number known_head || [ -n "$number" ]; do
+            [ -n "$number" ] || continue
+            if ! evaluate_pr "$number" "$known_head"; then
               failures=$((failures + 1))
             fi
-          done
+          done <<<"$work_items"
           [ "$failures" -eq 0 ]
