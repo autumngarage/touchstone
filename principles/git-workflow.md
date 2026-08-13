@@ -243,8 +243,12 @@ review-provider friction.
 **Never re-request review for an unchanged head-and-base binding** for thread-backed findings. The reviewer is non-deterministic, so re-asking about the same binding manufactures new findings instead of confirming the old ones. A new head gets exactly one ordinary request for its current base. Three cases permit another request while the head stays unchanged:
 
 1. **The base binding changed** — if the base ref or base SHA differs from the
-   recorded request, that evidence is invalid. Reconfirm the unchanged head
-   and current base, then make one ordinary request for the new binding.
+   recorded request, that evidence is invalid. Before requesting against the
+   new base on an unchanged head, prove the earlier request is completed or explicitly failed. Provider results identify the head but not their request
+   or base, so a late old-base result can otherwise masquerade as new-base
+   evidence. If the earlier request is nonterminal, wait for terminal output or
+   integrate the current base into the branch to produce a genuinely new head;
+   then request review for that new head-and-base binding.
    Never manufacture an empty head commit to force review.
 2. **Provider recovery** — use the single audited recovery trigger above only
    after its observation deadline, with the original binding unchanged.
