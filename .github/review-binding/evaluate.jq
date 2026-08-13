@@ -18,17 +18,15 @@ def review_request:
 
 def reviewed_sha:
   (.body // "") as $body
-  | ($body
-      | (capture("Reviewed commit:[*]*[[:space:]]*`(?<sha>[0-9a-fA-F]{7,40})`")? // {})
-      | (.sha // "")) as $labeled
-  | (if $labeled != "" then $labeled else
+  | (.resolved_review_sha // "") as $resolved
+  | (if ($resolved | test("^[0-9a-fA-F]{40}$")) then $resolved else
       ($body | (capture("/blob/(?<sha>[0-9a-fA-F]{40})/")? // {}) | (.sha // ""))
     end)
   | ascii_downcase;
 
 def binds_head($head):
   reviewed_sha as $reviewed
-  | ($reviewed | length) >= 7 and ($head | ascii_downcase | startswith($reviewed));
+  | $reviewed != "" and ($head | ascii_downcase) == $reviewed;
 
 def standard_codex_review_body:
   (.body // "") as $body

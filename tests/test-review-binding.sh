@@ -53,6 +53,7 @@ cat >"$TMP_DIR/base.json" <<EOF
     {
       "id": 101,
       "body": "Codex Review: Didn't find any major issues. Hooray!\n\n**Reviewed commit:** \`1111111111\`",
+      "resolved_review_sha": "$HEAD_SHA",
       "created_at": "2026-08-13T10:01:00Z",
       "author_association": "NONE",
       "user": {"login": "$REVIEWER"}
@@ -92,6 +93,7 @@ run_case "shared head fails closed" '.pr.openHeadPulls = [42, 43]' failure "not 
 run_case "untrusted request marker creator fails" '.statuses[0].creator.login = "attacker"' failure "no trusted review request"
 run_case "edited-away request fails" '.issueComments[0].body = "never mind"' failure "no trusted review request"
 run_case "untrusted result comment is not review evidence" '.issueComments[1].user.login = "attacker"' failure "no trusted exact-head"
+run_case "an unresolved abbreviated SHA is never prefix-matched" '.issueComments[1].resolved_review_sha = ""' failure "no trusted exact-head"
 run_case "editing a clean result reopens it as a body finding" '.issueComments[1].updated_at = "2026-08-13T10:02:00Z"' failure "body-only"
 run_case "body-only result binds through its full-SHA blob link" '
   .issueComments[1].body = "### 💡 Codex Review\n\nhttps://github.com/autumngarage/touchstone/blob/1111111111111111111111111111111111111111/path/file#L1\n\nFix this"' \
@@ -209,6 +211,7 @@ run_case "later re-review answers an edited formal review body" \
 RESULT_BODY_FINDING='{
   "id": 500,
   "body": "The rollback proof is incomplete. **Reviewed commit:** `1111111111`",
+  "resolved_review_sha": "1111111111111111111111111111111111111111",
   "created_at": "2026-08-13T10:01:00Z",
   "updated_at": "2026-08-13T10:03:00Z",
   "author_association": "NONE",
@@ -272,6 +275,20 @@ if grep -Fq 'EVENT_PATH: ${{ github.event_path }}' "$WORKFLOW"; then
   fail "workflow must use the runner-populated GITHUB_EVENT_PATH, not an empty context expression"
 else
   ok "event payload reads use the runner-provided path"
+fi
+if grep -Fq 'base64 --decode' "$WORKFLOW" \
+  && grep -Fq 'base64 -D' "$WORKFLOW" \
+  && grep -Fq 'decode_base64' "$WORKFLOW"; then
+  ok "base64 decoding selects GNU or BSD syntax explicitly"
+else
+  fail "evaluator download needs a GNU/BSD portable base64 decoder"
+fi
+if grep -Fq 'resolve_comment_heads' "$WORKFLOW" \
+  && grep -Fq 'resolved_review_sha' "$EVALUATOR" \
+  && ! grep -Fq 'startswith($reviewed)' "$EVALUATOR"; then
+  ok "abbreviated result SHAs resolve to full commits before exact comparison"
+else
+  fail "result evidence must never prefix-match an abbreviated commit"
 fi
 EVALUATE_BODY="$(awk '/^          evaluate_pr\(\) \{/{grab=1} grab{print} grab && /^          \}/{exit}' "$WORKFLOW")"
 if [ -z "$EVALUATE_BODY" ]; then

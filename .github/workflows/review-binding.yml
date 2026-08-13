@@ -69,6 +69,36 @@ jobs:
             gh api --paginate "$endpoint" | jq -s 'add // []' >"$output"
           }
 
+          decode_base64() {
+            if base64 --help 2>&1 | grep -q -- '--decode'; then
+              base64 --decode
+            else
+              base64 -D
+            fi
+          }
+
+          resolve_comment_heads() {
+            local comments_file="$1" output="$2" id abbreviated resolved
+            printf '{}\n' >"$tmp_dir/resolved-heads.json"
+            while IFS=$'\t' read -r id abbreviated || [ -n "$id" ]; do
+              [ -n "$id" ] || continue
+              resolved="$(gh api "repos/$REPO/commits/$abbreviated" --jq .sha)" || return 1
+              jq --arg id "$id" --arg sha "$resolved" '. + {($id): $sha}' \
+                "$tmp_dir/resolved-heads.json" >"$tmp_dir/resolved-heads.next.json"
+              mv "$tmp_dir/resolved-heads.next.json" "$tmp_dir/resolved-heads.json"
+            done < <(jq -r --arg trusted "$TRUSTED_REVIEWERS" '
+              .[]
+              | (.user.login // "") as $login
+              | select(($trusted | split(",") | index($login)) != null)
+              | ((.body // "") | capture("Reviewed commit:[*]*[[:space:]]*`(?<sha>[0-9a-fA-F]{7,39})`")?) as $match
+              | select($match != null)
+              | [(.id | tostring), $match.sha] | @tsv
+            ' "$comments_file")
+            jq --slurpfile resolved "$tmp_dir/resolved-heads.json" \
+              'map(. + {resolved_review_sha: ($resolved[0][(.id | tostring)] // "")})' \
+              "$comments_file" >"$output"
+          }
+
           publish_check() {
             local run_id="$1" conclusion="$2" title="$3" summary="$4"
             gh api -X PATCH "repos/$REPO/check-runs/$run_id" \
@@ -195,10 +225,14 @@ jobs:
               publish_api_failure "$run_id" "a paginated REST request failed"
               return 1
             fi
+            if ! resolve_comment_heads "$tmp_dir/issues-$number.json" "$tmp_dir/issues-resolved-$number.json"; then
+              publish_api_failure "$run_id" "a trusted review comment's abbreviated commit could not be resolved uniquely"
+              return 1
+            fi
 
             evaluator="$tmp_dir/evaluate-$number.jq"
             if ! gh api "repos/$REPO/contents/.github/review-binding/evaluate.jq?ref=$base" --jq .content \
-              | base64 --decode >"$evaluator"; then
+              | decode_base64 >"$evaluator"; then
               publish_api_failure "$run_id" "the versioned evaluator could not be loaded from base $base"
               return 1
             fi
@@ -207,7 +241,7 @@ jobs:
             jq -n \
               --slurpfile pr "$pr_file" \
               --slurpfile statuses "$tmp_dir/statuses-$number.json" \
-              --slurpfile issueComments "$tmp_dir/issues-$number.json" \
+              --slurpfile issueComments "$tmp_dir/issues-resolved-$number.json" \
               --slurpfile reviews "$tmp_dir/reviews-$number.json" \
               --slurpfile reviewComments "$tmp_dir/review-comments-$number.json" \
               --slurpfile headPulls "$tmp_dir/head-pulls-$number.json" \
