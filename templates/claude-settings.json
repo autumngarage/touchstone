@@ -1,5 +1,5 @@
 {
-  "_comment": "Claude Code settings for a Touchstone-aligned project. The branch guard refuses `git commit` on the default branch at the tool boundary, before the commit is attempted. Copy hooks/branch-guard.sh into the project alongside this file. User-specific overrides go in .claude/settings.local.json (gitignored), which Claude Code merges on top of this file.",
+  "_comment": "Claude Code settings for a Touchstone-aligned project. The branch guard refuses `git commit` on the default branch at the tool boundary, before the commit is attempted. Copy hooks/branch-guard.sh from the touchstone repo to hooks/branch-guard.sh in this project — the command below must resolve, or the guard silently never runs. User-specific overrides go in .claude/settings.local.json (gitignored), which Claude Code merges on top of this file.",
   "hooks": {
     "PreToolUse": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR\"/scripts/branch-guard.sh"
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/hooks/branch-guard.sh"
           }
         ]
       }

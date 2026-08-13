@@ -75,9 +75,15 @@ assert_under "templates/GEMINI.md" "$TOUCHSTONE_ROOT/templates/GEMINI.md" 24576
 # =============================================================================
 # Path integrity — the steering docs may not name a file that does not exist.
 #
-# Scanned: this repository's own steering surface. NOT templates/ — those
-# describe a downstream project's tree, so their paths are claims about a
-# different repository and asserting them here would be a category error.
+# Scanned: this repository's own steering surface AND templates/.
+#
+# templates/ was excluded at first, on the theory that a template describes a
+# downstream project's tree rather than this one. The reviewer of the strip PR
+# immediately found the hole that left: templates/AGENTS.md still told projects
+# to run a wrapper this repo had just deleted. The theory was wrong, because a
+# template may only name files Touchstone actually ships — nothing else can
+# arrive in the project. So the paths ARE claims about this repository, and
+# checking them here is the guardrail for that class.
 #
 # Detection is backtick-quoted paths under the governed prefixes. That is the
 # house style for every path in these documents, and it keeps the check precise
@@ -101,6 +107,7 @@ done < <(
       "$TOUCHSTONE_ROOT/README.md"
     find "$TOUCHSTONE_ROOT/principles" -name '*.md' -type f 2>/dev/null
     find "$TOUCHSTONE_ROOT/skills" -name 'SKILL.md' -type f 2>/dev/null
+    find "$TOUCHSTONE_ROOT/templates" -maxdepth 1 -name '*.md' -type f 2>/dev/null
   } | sort -u
 )
 

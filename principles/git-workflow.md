@@ -301,6 +301,8 @@ Do not substitute `rm -rf <worktree-dir>` for `git worktree remove <path>`. Dele
 
 ## Emergency path
 
-If a production bug requires immediate action and can't wait for the PR cycle, push directly with `git push --no-verify`. The next PR must include an "Emergency-bypass disclosure" section explaining what was bypassed and why. The convention — not the tooling — is what keeps the discipline.
+If a production bug requires immediate action and can't wait for the PR cycle, push directly with `git push --no-verify`. The next PR must include an "Emergency-bypass disclosure" section explaining what was bypassed and why.
+
+**This is procedural guidance, not an enforced constraint.** The disclosure hooks that used to detect and record a bypass were deleted, and nothing replaced them: no mechanism prevents a silent `--no-verify` push or writes one down. Branch protection still rejects a direct push to the default branch, so the bypass that remains is local-hook-only — but the disclosure itself now rests entirely on the operator choosing to make it. Do not read the rule as a guarantee that a bypass would be caught. If that guarantee is wanted back, it belongs at a layer that can actually enforce it — a push ruleset or a required check — not in a hook the bypass already skipped.
 
 Do not reach for the emergency path because the merge gate is inconvenient. A red required check, an unresolved thread, or a missing review are the gate working. The emergency path is for production incidents, and every use of it is a thing you will have to explain in writing.

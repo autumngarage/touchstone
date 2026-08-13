@@ -24,7 +24,7 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 **Humans approve plans. Agents write and ship code. GitHub reviews code.**
 
-That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar. Because approval never comes from a person, the merge gate is: required checks green, an **answered** review from a trusted author bound to this exact head and base — a clean verdict, or findings with every thread resolved — and no active `CHANGES_REQUESTED`. A stale or dismissed review fails the gate even with nothing open; answered findings stand — only a body-only finding (no threads) needs a fresh review request on the unchanged head. Note that an AI reviewer never files an `APPROVED` review — GitHub reserves that for real users — so the gate is the answered review, not an approval count. Local hooks are fast feedback; branch protection is the real boundary; emergency paths are audited.
+That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar. Because approval never comes from a person, the merge gate is: required checks green, an **answered** review from a trusted author bound to this exact head and base — a clean verdict, or findings with every thread resolved — and no active `CHANGES_REQUESTED`. A stale or dismissed review fails the gate even with nothing open; answered findings stand — only a body-only finding (no threads) needs a fresh review request on the unchanged head. Note that an AI reviewer never files an `APPROVED` review — GitHub reserves that for real users — so the gate is the answered review, not an approval count. Local hooks are fast feedback; branch protection is the real boundary; emergency paths are disclosed by convention — nothing currently records or enforces a bypass, so treat that disclosure as owed, not as captured for you.
 
 To hold those lines, Touchstone does three things and nothing else:
 
@@ -111,7 +111,7 @@ Use the normal lifecycle unless the user asks for a different flow:
 3. Claim every GitHub issue you are actively implementing with `bash scripts/claim-issue.sh <n>` before editing or dispatching an agent.
 4. Make the change, stage explicit file paths, and commit with a concise message.
 5. Reconcile issue state before opening the PR: fixed issues get closing trailers/PR body lines; partial or stale issues get an issue comment with evidence and remaining gaps.
-6. Ship with `bash scripts/open-pr.sh --auto-merge`. If it stops, fix the cause it names and run it again.
+6. Ship with `git push -u origin HEAD`, then `gh pr create` — put `Closes #123` in the **PR body**, since that is what squash-merge reads. Request review, answer every finding, then merge with `gh pr merge <n> --squash --match-head-commit <reviewed-sha>` and confirm the result rather than trusting the exit code.
 7. The PR is the review surface. Do not treat PR creation as completion: answer every piece of PR feedback and resolve the thread — whoever left it — before merging.
 8. Clean up the feature branch if it still exists locally.
 
