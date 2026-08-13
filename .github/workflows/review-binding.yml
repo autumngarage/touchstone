@@ -268,7 +268,11 @@ jobs:
                   baseRef: $pr.base.ref,
                   baseRefHash: $baseRefHash,
                   baseSha: $pr.base.sha,
-                  openHeadPulls: [$headPulls[] | select(.state == "open" and .base.repo.full_name == $repo) | .number]
+                  openHeadPulls: [$headPulls[] | select(
+                    .state == "open"
+                    and .base.repo.full_name == $repo
+                    and .head.sha == $pr.head.sha
+                  ) | .number]
                 },
                 statuses: $statuses,
                 issueComments: $issueComments,

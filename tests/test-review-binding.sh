@@ -317,6 +317,11 @@ if grep -Fq -- "[.number, .head.sha] | @tsv" "$WORKFLOW"; then
 else
   fail "push/status discovery must preserve the affected head SHA"
 fi
+if grep -Fq 'and .head.sha == $pr.head.sha' "$WORKFLOW"; then
+  ok "shared-head uniqueness excludes descendant stacked PRs"
+else
+  fail "uniqueness must compare each associated PR's current head exactly"
+fi
 if grep -Fq "'.before'" "$WORKFLOW" \
   && grep -Fq 'previous_items=' "$WORKFLOW"; then
   ok "synchronize rebuilds PRs left on the event's previous shared head"
