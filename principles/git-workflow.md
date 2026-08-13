@@ -174,7 +174,7 @@ gh pr view <n> --json state,mergedAt --jq '{state, mergedAt}'
 
 ## Agentic PR Review Loop
 
-The PR is the only semantic review surface. Request one review per exact head. The driving CLI watches the PR, fixes actionable findings, pushes a new head, and repeats until the head's review is answered — a clean verdict, or findings with every thread resolved.
+The PR is the only semantic review surface. Request one ordinary review per exact head-and-base binding: head SHA, base ref, and base SHA. The driving CLI watches the PR, fixes actionable findings, pushes a new head, and repeats until the current binding's review is answered — a clean verdict, or findings with every thread resolved.
 
 ### Review-request states and bounded recovery
 
@@ -205,9 +205,9 @@ inline review threads, request-comment reactions, and any linked provider task.
 Polling formal reviews alone can miss a clean result posted as a conversation
 comment. A reaction or task proves only acceptance and never permits merge.
 
-The one-request-per-head rule has one fail-closed recovery exception. If the
-original request is **unacknowledged** or accepted but stalled, the driving CLI
-may post exactly one replacement trigger on the unchanged head after it:
+The one-request-per-binding rule has one fail-closed recovery exception. If
+the original request is **unacknowledged** or accepted but stalled, the driving
+CLI may post exactly one replacement trigger on the unchanged binding after it:
 
 - reconfirms that the PR head and base match the original request;
 - adds a PR-visible audit note naming the original comment, state, observed
@@ -220,7 +220,17 @@ incident and remain blocked. Never loop replacement requests, synthesize review
 evidence, merge on acceptance alone, or use emergency bypass for ordinary
 review-provider friction.
 
-**Never re-request review on an unchanged head** for thread-backed findings. The reviewer is non-deterministic, so re-asking about the same commit manufactures new findings instead of confirming the old ones. A new head gets exactly one new review. There are only two unchanged-head exceptions: the single audited recovery trigger above for an unacknowledged or accepted-but-stalled provider request, and a body-only finding — a non-clean verdict with no inline threads — where nothing can be resolved to answer it, so a fresh request is the only path forward.
+**Never re-request review for an unchanged head-and-base binding** for thread-backed findings. The reviewer is non-deterministic, so re-asking about the same binding manufactures new findings instead of confirming the old ones. A new head gets exactly one ordinary request for its current base. Three cases permit another request while the head stays unchanged:
+
+1. **The base binding changed** — if the base ref or base SHA differs from the
+   recorded request, that evidence is invalid. Reconfirm the unchanged head
+   and current base, then make one ordinary request for the new binding.
+   Never manufacture an empty head commit to force review.
+2. **Provider recovery** — use the single audited recovery trigger above only
+   after its observation deadline, with the original binding unchanged.
+3. **Body-only finding** — a non-clean verdict with no inline thread has
+   nothing resolvable to answer, so one fresh request on the unchanged binding
+   is the only path forward.
 
 ### Babysitting a PR: the round discipline
 
