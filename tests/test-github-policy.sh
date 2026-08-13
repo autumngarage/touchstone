@@ -107,11 +107,24 @@ case "$method $endpoint" in
     cat "$state/branch.json"
     ;;
   "PUT repos/autumngarage/touchstone/branches/main/protection")
+    payload="$(cat)"
+    jq -e '
+      .restrictions == null or
+      ((.restrictions.users + .restrictions.teams + .restrictions.apps) |
+        all(.[]; type == "string"))
+    ' <<<"$payload" >/dev/null || {
+      echo "gh: restrictions must use login or slug strings (HTTP 422)" >&2
+      exit 1
+    }
     jq '{
       required_status_checks: .required_status_checks,
       enforce_admins: {enabled:.enforce_admins},
       required_pull_request_reviews: .required_pull_request_reviews,
-      restrictions: .restrictions,
+      restrictions: (if .restrictions then {
+        users: [.restrictions.users[] | {login:.}],
+        teams: [.restrictions.teams[] | {slug:.}],
+        apps: [.restrictions.apps[] | {slug:.}]
+      } else null end),
       required_linear_history: {enabled:.required_linear_history},
       allow_force_pushes: {enabled:.allow_force_pushes},
       allow_deletions: {enabled:.allow_deletions},
@@ -119,7 +132,7 @@ case "$method $endpoint" in
       required_conversation_resolution: {enabled:.required_conversation_resolution},
       lock_branch: {enabled:.lock_branch},
       allow_fork_syncing: {enabled:.allow_fork_syncing}
-    }' >"$state/branch.json"
+    }' <<<"$payload" >"$state/branch.json"
     echo "PUT branch-protection" >>"$state/mutations.log"
     ;;
   "DELETE repos/autumngarage/touchstone/branches/main/protection")
@@ -263,6 +276,29 @@ tail -2 "$TMP_DIR/state/mutations.log" >"$TMP_DIR/rollback-order.txt"
 diff -u <(printf 'PUT branch-protection\nDELETE org-ruleset\n') "$TMP_DIR/rollback-order.txt" >/dev/null \
   || fail "rollback created a protection gap"
 ok "rollback restores the captured gate before removing its replacement"
+
+echo "==> Restricted rollback uses the writable API shape"
+init_branch
+jq '.restrictions = {
+  users: [{login:"octocat"}],
+  teams: [{slug:"release-engineers"}],
+  apps: [{slug:"touchstone-bot"}]
+}' "$TMP_DIR/state/branch.json" >"$TMP_DIR/state/restricted.json"
+mv "$TMP_DIR/state/restricted.json" "$TMP_DIR/state/branch.json"
+run_policy backup "$TMP_DIR/restricted-backup.json" "$POLICY" >/dev/null
+jq -e '.branchProtection.restrictions == {
+  users:["octocat"],teams:["release-engineers"],apps:["touchstone-bot"]
+}' "$TMP_DIR/restricted-backup.json" >/dev/null \
+  || fail "backup did not normalize restriction objects into writable strings"
+run_policy apply "$POLICY" >/dev/null
+run_policy rollback "$TMP_DIR/restricted-backup.json" "$POLICY" >/dev/null
+jq -e '.restrictions == {
+  users:[{login:"octocat"}],
+  teams:[{slug:"release-engineers"}],
+  apps:[{slug:"touchstone-bot"}]
+}' "$TMP_DIR/state/branch.json" >/dev/null \
+  || fail "rollback did not restore restricted branch protection"
+ok "restricted protection round-trips through backup and rollback"
 
 echo "==> Rollback refuses an unprotected backup"
 jq '.branchProtection = null | .managedOrganizationRuleset = null' \

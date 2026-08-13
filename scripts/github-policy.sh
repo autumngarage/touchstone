@@ -107,7 +107,11 @@ branch_protection_json() {
       required_approving_review_count: .required_pull_request_reviews.required_approving_review_count,
       require_last_push_approval: .required_pull_request_reviews.require_last_push_approval
     } else null end),
-    restrictions: .restrictions,
+    restrictions: (if .restrictions then {
+      users: ([.restrictions.users[]?.login] | sort),
+      teams: ([.restrictions.teams[]?.slug] | sort),
+      apps: ([.restrictions.apps[]?.slug] | sort)
+    } else null end),
     required_linear_history: (.required_linear_history.enabled // false),
     allow_force_pushes: (.allow_force_pushes.enabled // false),
     allow_deletions: (.allow_deletions.enabled // false),
