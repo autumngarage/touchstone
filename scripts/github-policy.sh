@@ -210,6 +210,33 @@ verify_rollback_prerequisites() {
   done < <(jq -c '.rollbackPrerequisites.repositoryFiles[]?' "$artifact")
 }
 
+verify_rollback_removal_planned() {
+  local prerequisite path
+  while IFS= read -r prerequisite; do
+    path="$(jq -r .path <<<"$prerequisite")" || return $?
+    [ ! -e "$ROOT/$path" ] \
+      || die "remove rollback prerequisite in the reviewed apply revision: $path"
+  done < <(jq -c '.rollbackPrerequisites.repositoryFiles[]?' "$POLICY")
+}
+
+verify_rollback_files_absent() {
+  local prerequisite path error
+  while IFS= read -r prerequisite; do
+    path="$(jq -r .path <<<"$prerequisite")" || return $?
+    error="$(mktemp)" || return $?
+    if api "repos/$ORG/$REPOSITORY/contents/$path?ref=$BRANCH" >/dev/null 2>"$error"; then
+      rm -f "$error"
+      die "rollback prerequisite still exists on $BRANCH: $path"
+    fi
+    if ! grep -q 'HTTP 404' "$error"; then
+      cat "$error" >&2
+      rm -f "$error"
+      die "could not verify rollback prerequisite removal: $path"
+    fi
+    rm -f "$error"
+  done < <(jq -c '.rollbackPrerequisites.repositoryFiles[]?' "$POLICY")
+}
+
 verify_policy_state() {
   local expected_ruleset="$1" expected_protection="$2" actual_ruleset actual_protection
   actual_ruleset="$(managed_ruleset_json)" || return $?
@@ -330,6 +357,7 @@ case "$COMMAND" in
       <(printf '%s\n' "$current") <(printf '%s\n' "$desired") || [ "$?" -eq 1 ]
     ;;
   dry-run)
+    verify_rollback_removal_planned
     verify_source
     "$0" diff "$POLICY"
     echo "Would install/replace organization ruleset: $RULESET_NAME"
@@ -358,6 +386,7 @@ case "$COMMAND" in
     echo "Wrote backup: $ARTIFACT"
     ;;
   apply)
+    verify_rollback_removal_planned
     verify_source
     desired="$(jq -c '.managedRuleset' "$POLICY")"
     source_ruleset="$(managed_ruleset_json)"
@@ -386,13 +415,16 @@ case "$COMMAND" in
         || die "policy replacement failed and the complete prior state could not be restored"
       die "policy replacement failed; the complete prior policy state was restored"
     fi
-    echo "Applied and verified policy without legacy branch protection."
+    echo "Applied and verified GitHub policy without legacy branch protection."
+    echo "Merge the reviewed rollback-prerequisite removal, then run verify."
     ;;
   verify)
     verify_source
     verify_ruleset
     [ "$(branch_protection_json)" = null ] || die "legacy branch protection still duplicates the ruleset"
+    verify_rollback_files_absent
     echo "Verified legacy branch protection is absent."
+    echo "Verified rollback prerequisite files are absent from $BRANCH."
     ;;
   rollback)
     jq -e '.contractVersion == 1' "$ARTIFACT" >/dev/null || die "unsupported backup contract"

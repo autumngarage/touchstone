@@ -63,7 +63,8 @@ case "$method $endpoint" in
     emit '{"type":"file"}'
     ;;
   "GET repos/autumngarage/touchstone/contents/.github/workflows/validate.yml?ref=main")
-    if [ "${GH_FAKE_MISSING_ROLLBACK_FILE:-0}" = 1 ]; then
+    if [ "${GH_FAKE_MISSING_ROLLBACK_FILE:-0}" = 1 ] || \
+      [ -f "$state/local-workflow-absent" ]; then
       echo "gh: Not Found (HTTP 404)" >&2
       exit 1
     fi
@@ -273,7 +274,7 @@ init_branch() {
   : >"$TMP_DIR/state/mutations.log"
   rm -f "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/bad-effective-used" \
     "$TMP_DIR/state/branch-calls" "$TMP_DIR/state/org-mutation-failed" \
-    "$TMP_DIR/state/branch-put-failed"
+    "$TMP_DIR/state/branch-put-failed" "$TMP_DIR/state/local-workflow-absent"
 }
 
 run_policy() {
@@ -328,6 +329,17 @@ grep -Fq 'diff -u -L current -L desired' "$SCRIPT" \
 ! grep -Fq -- '--label' "$SCRIPT" \
   || fail "policy diff uses GNU-only --label"
 ok "policy diff uses portable BSD/GNU label flags"
+
+echo "==> Apply requires reviewed removal of rollback-only files"
+jq --arg path "scripts/github-policy.sh" \
+  '.rollbackPrerequisites.repositoryFiles[0].path = $path' \
+  "$POLICY" >"$TMP_DIR/unremoved-workflow-policy.json"
+if run_policy apply "$TMP_DIR/unremoved-workflow-policy.json" >/dev/null 2>&1; then
+  fail "apply accepted a reviewed revision that retains its rollback-only file"
+fi
+[ ! -s "$TMP_DIR/state/mutations.log" ] \
+  || fail "apply checked rollback-only file removal after policy mutation"
+ok "apply requires the reviewed revision to remove rollback-only files"
 
 echo "==> Required workflow source stays outside and protected from the target"
 jq '.workflowSource.repository = .repository' "$POLICY" >"$TMP_DIR/self-source-policy.json"
@@ -390,6 +402,14 @@ jq -e '.rules[] | select(.type == "pull_request") | .parameters.required_reviewe
   "$TMP_DIR/state/ruleset.json" >/dev/null \
   || fail "fake API did not exercise GitHub's required_reviewers default"
 ok "GitHub's empty required_reviewers default does not create false drift"
+
+if run_policy verify "$POLICY" >/dev/null 2>&1; then
+  fail "verify accepted a duplicate local validation workflow on main"
+fi
+touch "$TMP_DIR/state/local-workflow-absent"
+run_policy verify "$POLICY" >/dev/null
+ok "final verification requires rollback-only files to be absent from main"
+rm -f "$TMP_DIR/state/local-workflow-absent"
 
 echo "==> Rollback restores before removing replacement"
 run_policy rollback "$TMP_DIR/backup.json" "$POLICY"
@@ -523,6 +543,7 @@ if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BAD_EFFECTIV
   fail "in-place update succeeded after its effective-policy verification failed"
 fi
 [ ! -f "$TMP_DIR/state/branch.json" ] || fail "failed update recreated legacy protection unexpectedly"
+touch "$TMP_DIR/state/local-workflow-absent"
 run_policy verify "$POLICY" >/dev/null \
   || fail "failed update did not restore and verify the prior ruleset"
 diff -u <(printf 'PUT org-ruleset\nPUT org-ruleset\n') "$TMP_DIR/state/mutations.log" >/dev/null \
@@ -565,6 +586,7 @@ if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BAD_EFFECTIV
   "$SCRIPT" rollback "$TMP_DIR/post-migration-backup.json" "$POLICY" >/dev/null 2>&1; then
   fail "rollback update succeeded after effective-policy verification failed"
 fi
+touch "$TMP_DIR/state/local-workflow-absent"
 run_policy verify "$TMP_DIR/updated-policy.json" >/dev/null \
   || fail "failed rollback update did not restore the prior ruleset"
 diff -u <(printf 'PUT org-ruleset\nPUT org-ruleset\n') "$TMP_DIR/state/mutations.log" >/dev/null \
@@ -586,6 +608,7 @@ diff -u <(printf 'PUT branch-protection\nDELETE org-ruleset\nPOST org-ruleset\n'
   || fail "failed rollback deletion did not restore the previous ruleset immediately"
 tail -1 "$TMP_DIR/state/mutations.log" | grep -qx 'DELETE branch-protection' \
   || fail "failed rollback deletion did not restore the previous branch state"
+touch "$TMP_DIR/state/local-workflow-absent"
 run_policy verify "$POLICY" >/dev/null \
   || fail "failed rollback deletion did not verify the complete prior policy state"
 ok "failed rollback deletion restores the prior active gate"

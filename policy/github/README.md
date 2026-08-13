@@ -20,11 +20,14 @@ bash scripts/github-policy.sh verify
 bash scripts/github-policy.sh rollback policy/github/baseline-2026-08-13.json
 ```
 
-`dry-run` performs all source checks without mutation. `apply` installs or
-updates the organization ruleset, verifies the effective repository rules,
-then removes the duplicated legacy branch protection. A repeated apply is a
-no-op. `rollback` restores captured protection before removing or replacing
-the managed ruleset, so neither direction introduces an unprotected interval.
+`dry-run` performs all source checks without mutation. The reviewed revision
+used for `dry-run` and `apply` must remove every rollback-prerequisite file.
+`apply` installs or updates the organization ruleset, verifies the effective
+repository rules, then removes the duplicated legacy branch protection. Merge
+the reviewed file removal immediately afterward and run `verify`; verification
+fails until those files are absent from `main`. A repeated apply is a no-op.
+`rollback` restores captured protection before removing or replacing the
+managed ruleset, so neither direction introduces an unprotected interval.
 
 The checked-in pre-migration seed requires the historical local validation
 workflow. Its exact, non-running recovery payload is retained at
