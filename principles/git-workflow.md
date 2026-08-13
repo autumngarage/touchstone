@@ -218,21 +218,31 @@ CLI may post exactly one replacement trigger on the unchanged binding after it:
   signals, relevant start and deadline, and elapsed interval;
 - re-fetches the complete PR review surface immediately before posting and
   stops if the original request completed or explicitly failed; and
-- identifies the new comment as the sole replacement for that unchanged head.
+- identifies the new comment as the sole replacement for that unchanged binding.
 
-There is one final posting race: the original can complete after that recheck
-but before the replacement comment exists. Capture the replacement comment ID.
-If the original completion predates the replacement, edit the replacement into
-a non-trigger audit note so it no longer begins with `@codex review`:
+After posting, wait for its `touchstone/review-request-v1` marker whose target
+URL names the replacement comment. Re-fetch the live head and base, then prove
+the marker and live binding both equal the pre-post head, base ref, and base
+SHA. A missing marker is a blocked upstream failure, not permission to retry.
+If either binding drifted during posting, edit the replacement into a
+non-trigger audit note and follow the base-change rule below.
+
+There is one other final posting race: the original can complete after the
+last evidence check but before the replacement comment exists. Capture the
+replacement comment ID. If the original completion predates the replacement,
+edit the replacement into a non-trigger audit note so it no longer begins with
+`@codex review`:
 
 ```bash
 gh api -X PATCH repos/<owner>/<repo>/issues/comments/<replacement-comment-id> \
-  -f body='Recovery trigger withdrawn: original request completed during posting.'
+  -f body='Recovery trigger withdrawn: <reason and observed binding>.'
 ```
 
-The edit preserves the audit trail, so `review-binding` falls back to the original marker. Verify the check reruns and binds that original evidence.
-If the provider still completes the replacement, treat any resulting findings
-as review feedback; never discard them.
+The edit preserves the audit trail and invalidates the replacement marker.
+Verify the check reruns. It may fall back to the original marker only when that
+marker still matches the live binding; otherwise remain blocked. If the
+provider still completes the replacement, treat any resulting findings as
+review feedback; never discard them.
 
 The replacement must still produce trusted exact-head review evidence. If it
 also remains unacknowledged, stalls, or fails, file or update an upstream
@@ -251,7 +261,7 @@ review-provider friction.
    then request review for that new head-and-base binding.
    Never manufacture an empty head commit to force review.
 2. **Provider recovery** — use the single audited recovery trigger above only
-   after its observation deadline, with the original binding unchanged.
+   after its applicable state deadline, with the original binding unchanged.
 3. **Body-only finding** — a non-clean verdict with no inline thread has
    nothing resolvable to answer, so one fresh request on the unchanged binding
    is the only path forward.
