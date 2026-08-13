@@ -176,6 +176,47 @@ gh pr view <n> --json state,mergedAt --jq '{state, mergedAt}'
 
 The PR is the only semantic review surface. Request one review per exact head. The driving CLI watches the PR, fixes actionable findings, pushes a new head, and repeats until the head's review is answered — a clean verdict, or findings with every thread resolved.
 
+### Review-request states and bounded recovery
+
+A request has distinct submitted, accepted, and completed states; its comment
+is not proof that the provider accepted or completed the job. Record the
+request URL, timestamp, exact head, base, and a declared observation deadline,
+then distinguish these states:
+
+1. **Submitted** — GitHub contains the request comment for the recorded head
+   and base.
+2. **Accepted** — the provider reacted to the request, exposed a task, or
+   emitted other provider-owned output. Acceptance is not review evidence.
+3. **Completed** — trusted review evidence covers the exact head. A clean
+   result may be a formal review or a provider-owned PR conversation comment;
+   findings may also appear in inline threads.
+4. **Explicitly failed** — the provider reports quota, no-review, or another
+   terminal error.
+5. **Unacknowledged** — the observation deadline passes with no
+   provider-owned signal.
+6. **Accepted but stalled** — the provider accepted the request, but the
+   observation deadline passes without completed or explicitly failed output.
+
+Watch the complete PR review surface: formal reviews, PR conversation comments,
+inline review threads, request-comment reactions, and any linked provider task.
+Polling formal reviews alone can miss a clean result posted as a conversation
+comment. A reaction or task proves only acceptance and never permits merge.
+
+The one-request-per-head rule has one fail-closed recovery exception. If the
+original request is **unacknowledged** or accepted but stalled, the driving CLI
+may post exactly one replacement trigger on the unchanged head after it:
+
+- reconfirms that the PR head and base match the original request;
+- adds a PR-visible audit note naming the original comment, state, observed
+  signals, observation start and deadline, and elapsed interval; and
+- identifies the new comment as the sole replacement for that unchanged head.
+
+The replacement must still produce trusted exact-head review evidence. If it
+also remains unacknowledged, stalls, or fails, file or update an upstream
+incident and remain blocked. Never loop replacement requests, synthesize review
+evidence, merge on acceptance alone, or use emergency bypass for ordinary
+review-provider friction.
+
 **Never re-request review on an unchanged head** for thread-backed findings. The reviewer is non-deterministic, so re-asking about the same commit manufactures new findings instead of confirming the old ones. A new head gets exactly one new review. The one exception is a body-only finding — a non-clean verdict with no inline threads — where nothing can be resolved to answer it, so a fresh request on the unchanged head is the only path forward.
 
 ### Babysitting a PR: the round discipline
