@@ -4,6 +4,10 @@ This document owns Touchstone's durable product boundary. Linear owns the
 current implementation order and issue state; this file owns what the finished
 system must continue to mean after that plan changes.
 
+This is Touchstone project strategy, not universal engineering guidance. It is
+loaded only by this repository's project-specific agent instructions and must
+not be copied or routed into consumer projects.
+
 ## Outcome
 
 Touchstone is the standard delivery baseline for one person directing many
@@ -38,7 +42,7 @@ explain that owner's decision; they may not recompute it.
 | Require body-only review findings to be answered | GitHub required `review-binding` check | Versioned evidence contract and check output | An unanswered finding without a thread blocks; a qualifying answer passes |
 | Bind merge to the reviewed head | GitHub merge API | Expected head passed to the merge mutation | Moving the head before merge is rejected |
 | Claim and reconcile work | Configured tracker adapter | Tracker-neutral claim/reconcile contract | GitHub- and Linear-backed fixtures reach equivalent tracker state |
-| Carry agent steering | Repository instruction files | Versioned, marked Touchstone block plus project-owned guidance | Every supported driver loads the contract and every routed path resolves |
+| Carry agent steering | Repository instruction files | Versioned, marked Touchstone block plus project-owned guidance | Resolved-instruction fixtures and controlled behavioral trials show each supported driver loads and follows the contract |
 | Adopt and evolve a repository | Touchstone CLI adoption module | `.touchstone.toml` and reviewable plan/apply output | Fresh, current, repeat, old-compatible, and unsupported-schema fixtures |
 | Install and upgrade the local tool | Homebrew | Versioned formula and checksummed release | Install, upgrade, rollback, and no-project-mutation tests pass |
 | Integrate validation with CI | Full-SHA-pinned Touchstone CI adapter | Versioned action inputs/outputs and stable check name | Local/CI parity, SHA bump, rollback, and old-valid-v1 fixtures pass |
@@ -63,6 +67,22 @@ a copy of Touchstone's implementation:
 
 Touchstone does not vendor its CLI, general-purpose libraries, delivery
 wrappers, or an updater into consumer repositories.
+
+Steering confidence requires two proof lanes. Deterministic offline fixtures
+resolve the exact instruction set each supported driver receives, including
+imports, nested scope, truncation, and conflicts. Versioned behavioral trials
+then exercise real agents in disposable repositories against controls. Phrase
+presence alone is not compliance evidence, and behavioral evidence expires
+when the driver, model, or loading semantics change. Live-provider trials never
+run on the required merge path.
+
+Automated checks are also insufficient as a product verdict. Before a canary,
+versioned operator journeys exercise initial installation and adoption, normal
+delivery, failure recovery, compatible evolution, and rollback through the
+supported public interfaces. Their evidence records time, retries, user
+intervention, final external state, and whether Touchstone created avoidable
+work. A journey succeeds only when the product goal is met, not merely when its
+commands exit zero.
 
 ## Adoption is compilation
 

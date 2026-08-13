@@ -201,24 +201,38 @@ for file in "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$TOUCHSTONE_ROOT/AGENTS.md" \
   assert_contains "$file" "not an enforced gate"
 done
 
-# The post-strip rebuild must not reinterpret portability as another
-# propagation system. This is short enough to be auto-loaded because it is the
-# consumer invariant every adoption/update design has to preserve; the full
-# boundary and admission test stay routed out of the per-turn context.
-echo "==> every driver carries the set-and-forget consumer invariant"
-for file in "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$TOUCHSTONE_ROOT/AGENTS.md" \
-  "$TOUCHSTONE_ROOT/GEMINI.md" "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
+# Touchstone's product strategy must guide this repository without leaking
+# into the universal steering copied to consumer projects. Consumer agents own
+# their project's product scope; they must not be routed into our portfolio plan.
+echo "==> product strategy stays project-owned"
+for file in "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
+  "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
   "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
-  assert_contains "$file" "Adoption is set-and-forget"
-  assert_contains "$file" "stays correct without routine rewrites"
-  assert_contains "$file" "principles/product-contract.md"
+  assert_not_contains "$file" "product-contract.md"
+  assert_not_contains "$file" "Adoption is set-and-forget"
 done
-assert_contains "$TOUCHSTONE_ROOT/principles/product-contract.md" \
+for file in "$TOUCHSTONE_ROOT/AGENTS.md" "$TOUCHSTONE_ROOT/CLAUDE.md" \
+  "$TOUCHSTONE_ROOT/GEMINI.md"; do
+  assert_contains "$file" "docs/product-contract.md"
+done
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
   "An adopted repository remains correct if Touchstone never rewrites it again"
-assert_contains "$TOUCHSTONE_ROOT/principles/product-contract.md" \
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "not universal engineering guidance"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
   "Adoption is compilation"
-assert_contains "$TOUCHSTONE_ROOT/principles/product-contract.md" \
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
   "Explicit non-goals"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "Deterministic offline fixtures"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "presence alone is not compliance evidence"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "Live-provider trials never"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "versioned operator journeys"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "not merely when its"
 
 # PR #818's late exact-head review found a surviving architectural claim about
 # a deleted merge helper. The path-integrity test cannot catch prose-only names,

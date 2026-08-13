@@ -32,8 +32,6 @@ To hold those lines, Touchstone does three things and nothing else:
 
 Before adding anything here, name which of the three it serves; if you cannot, it does not belong. "Is it useful?" is not the test: **does it constrain the agent, or merely serve it?** Automating what you can already do (retrying a push, recovering a moved base) belongs in the project, not here: you are the recovery mechanism.
 
-**Adoption is set-and-forget.** An adopted repo stays correct without routine rewrites. Portability comes from versioned, compatible contracts—not vendored machinery or sync. `principles/product-contract.md` owns the boundary and admission test.
-
 ## Agent Roles And Fallbacks
 
 - **Driving CLI** — Claude Code, Codex, or Gemini CLI. Owns file edits, git state, tests, commits, PR creation, PR comment triage, fix commits, approval tracking, and merge. Drivers are interchangeable; driver fallback is shared-contract fallback — if one is unavailable, another reads the same files and continues.
@@ -88,7 +86,6 @@ Do not bypass the PR/review/merge path with a direct default-branch push except 
 |---|---|
 | commit, branch, open a PR, run review, merge, recover from `no-commit-to-branch`, work with stacked PRs, or fan out worktrees | `principles/git-workflow.md` |
 | understand the AI-authored change lifecycle or PR review loop architecture | `principles/ai-delivery-architecture.md` |
-| change scope, adoption, validation, distribution or upgrade | `principles/product-contract.md` |
 | start a non-trivial code change | `principles/pre-implementation-checklist.md` |
 | understand the *why* of a daily-reminder rule | `principles/engineering-principles.md` |
 | edit, write, or audit documentation | `principles/documentation-ownership.md` |
@@ -118,7 +115,7 @@ You are maintaining the standard baseline for a solo developer directing many ag
 ### Touchstone-Specific Rules
 
 - **A rule must live at the layer that can enforce it.** GitHub enforces, prose instructs, scripts observe and sequence. Nothing lives at two layers at once. Re-deciding locally what GitHub decides at the merge button is the specific mistake that grew this repo to 49,000 lines.
-- **Adoption must stay set-and-forget.** Consumer repositories carry declarations and narrow integration points, never copied Touchstone implementation. An adopted repository remains valid without routine rewrites; evolution is backward-compatible or an explicit reviewable upgrade.
+- **Adoption must stay set-and-forget.** Consumer repositories carry declarations and narrow integration points, never copied Touchstone implementation. An adopted repository remains valid without routine rewrites; evolution is backward-compatible or an explicit reviewable upgrade. `docs/product-contract.md` is the canonical boundary.
 - **Delete by default.** The burden of proof is on keeping. A change earns its way in when a real failure demanded it, not because a review round suggested it.
 - Files in `templates/` are legacy transition inputs for the frozen downstream shape, not the future adoption contract. Nothing copies them today; do not extend their detection, setup, or vendored-runner model.
 - Downstream projects are frozen on committed copies of the old scripts, deliberately. Do not try to fix them from here.
@@ -144,6 +141,7 @@ Lint is not part of the test suite. It runs at pre-commit and via `pre-commit ru
 ```
 touchstone/
 ├── TOUCHSTONE.md   # Canonical steering router — the universal contract
+├── docs/           # Touchstone-specific product contract and project documentation
 ├── principles/     # The judgment layer, routed to from TOUCHSTONE.md
 ├── skills/         # User-scoped Claude Code skills
 ├── templates/      # Legacy transition inputs (nothing copies them today)

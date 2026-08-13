@@ -151,14 +151,9 @@ The one gap, stated plainly: the requirement that a review happened cannot curre
 
 ## Product Boundary
 
-`product-contract.md` is the canonical owner of Touchstone's product jobs,
-consumer boundary, adoption/evolution model, and admission test. This document
-owns only the AI-authored delivery lifecycle.
-
-Within that lifecycle, Touchstone's supported core is policy distribution,
-deterministic validation, PR creation, current-revision review authorization,
-and guarded merge. Model providers and PR-visible reviewers are adapters around
-that contract.
+Touchstone's supported core is policy distribution, deterministic validation,
+PR creation, current-revision review authorization, and guarded merge. Model
+providers and PR-visible reviewers are adapters around that contract.
 
 Autonomous repair is not part of the contract. When the gate stops it names the
 blocking condition and the driver fixes it — Touchstone constrains the change,

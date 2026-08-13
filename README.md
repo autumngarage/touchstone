@@ -7,7 +7,7 @@ One person cannot read everything many agents produce. Touchstone exists so that
 1. **Guidance prompts** — the steering an agent reads to know how to work: branch first, one concern per commit, answer every finding, reconcile issues, never bypass the gate.
 2. **Push tooling** — the small script surface that makes an agent use GitHub *correctly*.
 
-The goal is that every Autumn Garage project gets the same dev flow by adopting Touchstone, and that the flow is industry-leading practice for GitHub and agent-driven delivery. Adoption is **set-and-forget**: an adopted repository must remain correct if Touchstone never rewrites it again. V1 serves one operator's portfolio through public-quality interfaces; it does not build a speculative third-party platform. The durable boundary is defined in `principles/product-contract.md`.
+The goal is that every Autumn Garage project gets the same dev flow by adopting Touchstone, and that the flow is industry-leading practice for GitHub and agent-driven delivery. Adoption is **set-and-forget**: an adopted repository must remain correct if Touchstone never rewrites it again. V1 serves one operator's portfolio through public-quality interfaces; it does not build a speculative third-party platform. The durable boundary is defined in `docs/product-contract.md`.
 
 **What the second half ships today is narrower than that ambition.** The surviving scripts claim issues, answer review threads, and run a project's checks. **Nothing here opens a PR, binds a review to its head, or merges** — those are raw `git` and `gh`, documented below and in `principles/git-workflow.md`. Rebuilding that half as a thin CLI is the open work; until it lands, read "push tooling" as a goal, not an inventory.
 
@@ -32,6 +32,7 @@ That machinery has been deleted. What remains is the judgment layer plus a small
 ```
 touchstone/
 ├── TOUCHSTONE.md   # Canonical steering router — the universal contract for all drivers
+├── docs/           # Touchstone-specific product contract and project documentation
 ├── principles/     # The judgment layer, routed to from TOUCHSTONE.md
 ├── skills/         # User-scoped Claude Code skills
 ├── templates/      # Legacy transition inputs; nothing copies them
@@ -78,7 +79,7 @@ bash scripts/respond-review.sh <pr> --all-resolved-check
 - **[TOUCHSTONE.md](TOUCHSTONE.md)** — the universal contract every driver reads
 - **[git-workflow.md](principles/git-workflow.md)** — the full delivery sequence in raw `git` + `gh`
 - **[engineering-principles.md](principles/engineering-principles.md)** — the principles every change is reviewed against
-- **[product-contract.md](principles/product-contract.md)** — the durable product boundary, adoption/evolution contract, and anti-bloat admission test
+- **[product-contract.md](docs/product-contract.md)** — the durable product boundary, adoption/evolution contract, and anti-bloat admission test
 - **[ai-delivery-architecture.md](principles/ai-delivery-architecture.md)** — the AI-authored change lifecycle
 - **[pre-implementation-checklist.md](principles/pre-implementation-checklist.md)** — the gate before a non-trivial change
 - **[agent-swarms.md](principles/agent-swarms.md)** — parallel agents, slice manifests, worktree isolation
