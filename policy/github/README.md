@@ -24,9 +24,11 @@ no-op. `rollback` restores captured protection before removing or replacing
 the managed ruleset, so neither direction introduces an unprotected interval.
 
 The checked-in pre-migration seed requires the historical local validation
-workflow. To use that seed after migration, first restore the exact workflow
-blob recorded in `rollbackPrerequisites` through a reviewed PR while the
-organization ruleset still protects the repository. Then run `rollback`.
+workflow. Its exact, non-running recovery payload is retained at
+`policy/github/rollback/validate.yml`. To use that seed after migration, copy
+the payload to `.github/workflows/validate.yml` and merge that restoration
+through a reviewed PR while the organization ruleset still protects the
+repository. Then run `rollback`.
 Rollback verifies every recorded prerequisite on `main` before changing GitHub
 policy, so it cannot install a required status context that no workflow can
 produce. While legacy branch protection exists, `backup` copies these

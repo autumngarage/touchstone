@@ -6,6 +6,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/scripts/github-policy.sh"
 POLICY="$ROOT/policy/github/touchstone-main.json"
 BASELINE="$ROOT/policy/github/baseline-2026-08-13.json"
+ROLLBACK_VALIDATE="$ROOT/policy/github/rollback/validate.yml"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 mkdir -p "$TMP_DIR/bin" "$TMP_DIR/state"
@@ -240,6 +241,8 @@ jq -e '
   and any(.managedRuleset.rules[]; .type == "deletion")
   and any(.managedRuleset.rules[]; .type == "non_fast_forward")
 ' "$POLICY" >/dev/null || fail "checked-in ruleset is missing a required invariant"
+[ "$(git hash-object "$ROLLBACK_VALIDATE")" = "c2dc082e0702090f3fc9de095d78a85ddde902a5" ] \
+  || fail "durable rollback workflow differs from its recorded prerequisite blob"
 ok "ruleset expresses PR-only audited bypass and every native gate"
 
 echo "==> Read-only diff and dry-run"
