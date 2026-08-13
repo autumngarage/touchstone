@@ -22,7 +22,10 @@ Every code change goes through a feature branch + PR + PR-visible review loop + 
 - The `no-commit-to-branch` hook in `.pre-commit-config.yaml` is configured with `--branch main --branch master`. It runs at `pre-commit` stage and refuses the commit outright. `git commit --no-verify` bypasses this local feedback only.
 - The GitHub organization ruleset requires the change to go through a PR. Direct pushes to `main` are rejected by the server even for organization admins.
 
-The layers are complementary: the tool-boundary hook catches the intent, the local hook catches the honest mistake before it becomes a commit, and the ruleset rejects direct pushes at the server.
+The layers are complementary: the tool-boundary hook catches the intent and
+the local hook catches the honest mistake before it becomes a commit. Where
+the repository's effective policy contains the Touchstone ruleset, GitHub also
+rejects direct pushes at the server.
 
 ## The lifecycle
 
@@ -315,7 +318,15 @@ Do not substitute `rm -rf <worktree-dir>` for `git worktree remove <path>`. Dele
 
 ## Emergency path
 
-If a production bug cannot wait for normal gates, it still goes through a PR. Include an "Emergency-bypass disclosure" section explaining the incident and bypass, then an organization admin may use GitHub's PR-only ruleset bypass (for example, `gh pr merge --admin --squash --match-head-commit <sha>`). GitHub records that bypass. Direct pushes remain rejected, including for admins.
+If a production bug cannot wait for normal gates, it still goes through a PR.
+First inspect the repository's effective policy. Where it exposes the audited
+PR-only organization-admin bypass, include an "Emergency-bypass disclosure"
+section explaining the incident and bypass, then an organization admin may use
+it (for example, `gh pr merge --admin --squash --match-head-commit <sha>`).
+GitHub records that bypass, and the adopted ruleset continues to reject direct
+pushes, including for admins. If the effective policy does not expose that
+bypass, do not infer it from this guide; the missing enforcement is a rollout
+gap and there is no audited Touchstone emergency path to use.
 
 `--no-verify` bypasses local hooks only; it cannot bypass the server ruleset. Never configure an `exempt` ruleset actor: exempt actions skip rule evaluation and do not create the required audit entry.
 

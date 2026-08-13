@@ -75,6 +75,12 @@ assert_contains "$GIT_WORKFLOW_GUIDE" \
   "exact-head review remains mandatory driver procedure"
 assert_not_contains "$GIT_WORKFLOW_GUIDE" \
   '**`review-binding` enforces the review contract.**'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "Where it exposes the audited"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "do not infer it from this guide"
+assert_not_contains "$GIT_WORKFLOW_GUIDE" \
+  "then an organization admin may use GitHub's PR-only ruleset bypass"
 
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"
 # CLAUDE.md uses @TOUCHSTONE.md (Claude Code resolves @-imports transitively),

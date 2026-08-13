@@ -70,6 +70,26 @@ normalize_branch_protection() {
   jq -S 'if . == null then null else .required_signatures = (.required_signatures // false) end'
 }
 
+signature_protection_enabled() {
+  local endpoint error raw status=0
+  endpoint="repos/$ORG/$REPOSITORY/branches/$BRANCH/protection/required_signatures"
+  error="$(mktemp)" || return $?
+  raw="$(api "$endpoint" --jq '.enabled // false' 2>"$error")" || status=$?
+  if [ "$status" -eq 0 ]; then
+    rm -f "$error"
+    printf '%s\n' "$raw"
+    return 0
+  fi
+  if grep -q 'HTTP 404' "$error"; then
+    rm -f "$error"
+    printf 'false\n'
+    return 0
+  fi
+  cat "$error" >&2
+  rm -f "$error"
+  return "$status"
+}
+
 managed_ruleset_json() {
   local list ids count id
   list="$(api --paginate "orgs/$ORG/rulesets" | jq -s 'add // []')" || return $?
@@ -272,7 +292,7 @@ restore_branch_protection() {
     || return $?
   signature_endpoint="repos/$ORG/$REPOSITORY/branches/$BRANCH/protection/required_signatures"
   expected_signatures="$(jq -r '.required_signatures // false' <<<"$protection")" || return $?
-  actual_signatures="$(api "$signature_endpoint" --jq '.enabled // false')" || return $?
+  actual_signatures="$(signature_protection_enabled)" || return $?
   if [ "$expected_signatures" = true ] && [ "$actual_signatures" != true ]; then
     api --method POST "$signature_endpoint" >/dev/null || return $?
   elif [ "$expected_signatures" != true ] && [ "$actual_signatures" = true ]; then

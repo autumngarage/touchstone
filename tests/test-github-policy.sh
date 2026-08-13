@@ -152,7 +152,15 @@ case "$method $endpoint" in
       echo "gh: Branch not protected (HTTP 404)" >&2
       exit 1
     fi
-    emit "$(jq -c '.required_signatures // {enabled:false}' "$state/branch.json")"
+    if [ "${GH_FAKE_SIGNATURE_ERROR:-0}" = 1 ]; then
+      echo "gh: signature protection unavailable (HTTP 503)" >&2
+      exit 1
+    fi
+    if ! jq -e '.required_signatures.enabled == true' "$state/branch.json" >/dev/null; then
+      echo "gh: Signature protection not enabled (HTTP 404)" >&2
+      exit 1
+    fi
+    emit '{"enabled":true}'
     ;;
   "PUT repos/autumngarage/touchstone/branches/main/protection")
     payload="$(cat)"
@@ -492,6 +500,19 @@ jq -e '.required_signatures.enabled == false' "$TMP_DIR/state/branch.json" >/dev
 grep -qx 'DELETE required-signatures' "$TMP_DIR/state/mutations.log" \
   || fail "rollback did not remove signed-commit protection through its separate endpoint"
 ok "signed-commit protection is removed, including from a compatible older backup"
+
+echo "==> Signature API failures retain the active replacement gate"
+init_branch
+run_policy apply "$POLICY" >/dev/null
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_SIGNATURE_ERROR=1 \
+  "$SCRIPT" rollback "$BASELINE" "$POLICY" >/dev/null 2>&1; then
+  fail "rollback accepted a failed signature-protection read"
+fi
+[ -f "$TMP_DIR/state/ruleset.json" ] \
+  || fail "signature API failure removed the surviving active ruleset"
+[ ! -f "$TMP_DIR/state/branch.json" ] \
+  || fail "signature API failure left a partially restored branch policy"
+ok "non-404 signature failures propagate without removing the active gate"
 
 echo "==> Rollback refuses an unprotected backup"
 jq '.branchProtection = null | .managedOrganizationRuleset = null' \
