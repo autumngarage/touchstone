@@ -96,6 +96,14 @@ Claude Code agents: the bundled `touchstone-*` and `memory-audit` skills mirror 
 
 <!-- touchstone:steering:end -->
 
+## Touchstone-Specific Product Guidance
+
+Adoption must stay set-and-forget. Consumer repositories carry declarations
+and narrow integration points, never copied Touchstone implementation. The
+canonical boundary and anti-bloat admission test live in
+`docs/product-contract.md`; they govern this repository, not consumer product
+scope.
+
 The shared steering above (agent roles, lifecycle, principles, routing table) is the universal contract — same content as Claude reads via `@TOUCHSTONE.md` in `CLAUDE.md` and Codex reads via the same managed block in `AGENTS.md`. Gemini CLI is a peer driving CLI; Claude Code and Codex are equivalent fallback drivers.
 
 For deep references on specific topics, read `principles/*.md` files via the routing table in the block above. For project-specific authoring rules and the AI Review Guide, also read `AGENTS.md`.

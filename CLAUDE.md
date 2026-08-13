@@ -17,8 +17,9 @@ The block above is the canonical universal contract: agent roles, the engineerin
 ## Touchstone-Specific Principles
 
 - **A rule must live at the layer that can enforce it.** GitHub enforces (rulesets, required checks). Prose instructs. Scripts observe and sequence — they never adjudicate. Nothing may live at two layers at once. Re-deciding locally what GitHub decides at the merge button is what grew this repo to 49,000 lines; it is the specific mistake to not repeat.
+- **Adoption must stay set-and-forget.** Consumer repositories carry declarations and narrow integration points, never copied Touchstone implementation. An adopted repository remains valid without routine rewrites; evolution is backward-compatible or an explicit reviewable upgrade. `docs/product-contract.md` is the canonical boundary.
 - **Delete by default.** The burden of proof is on keeping. A deletion is recoverable from git history; a file kept on "it might be useful" accretes tests, findings, and dependents. A change earns its way in when a real failure demanded it — not because a review round suggested it.
-- **Templates are starting points.** Files in `templates/` are copied once at project creation and then owned by the project. Nothing currently copies them: the bootstrap was deleted with the propagation channel. They are kept as the reference shape for what a project should carry.
+- **Templates are legacy transition inputs, not the future contract.** Nothing currently copies them. They describe the frozen downstream shape and remain available for the consumer audit; do not extend their detection, setup, or vendored-runner model. `docs/product-contract.md` defines the replacement boundary.
 - **Self-tests are mandatory.** Run every `tests/test-*.sh` before pushing. The suite must stay deterministic, offline, and free of live model/provider quota.
 - **Downstream projects are frozen, deliberately.** anima, vesper, arpeggio, and convoy carry committed copies of the old scripts. Deleting the bootstrap means no stripped release can reach them: they keep working exactly as they did. Re-adoption is a separate, later decision — do not "fix" them from here.
 
@@ -41,9 +42,10 @@ Lint is not part of the test suite. It runs at pre-commit and via `pre-commit ru
 ```
 touchstone/
 ├── TOUCHSTONE.md   # Canonical steering router — the universal contract for all drivers
+├── docs/           # Touchstone-specific product contract and project documentation
 ├── principles/     # The judgment layer — universal docs routed to from TOUCHSTONE.md
 ├── skills/         # User-scoped Claude Code skills
-├── templates/      # Reference starter files (nothing copies them today)
+├── templates/      # Legacy transition inputs (nothing copies them today)
 ├── hooks/          # branch-guard.sh — the PreToolUse hook wired in .claude/settings.json
 ├── scripts/        # The surviving script surface: claim-issue, issue-claim-check,
 │                   #   respond-review, touchstone-run
@@ -73,6 +75,6 @@ There is no wrapper. Ship with `git` and `gh` directly, as `TOUCHSTONE.md` and `
 
 The `touchstone` CLI, the bootstrap, the auto-update path, and the Homebrew release automation were all deleted. Nothing distributes Touchstone right now, and nothing needs to: the projects that use it are frozen on their committed copies.
 
-The rebuild is Homebrew-distributed and deliberately thin — it observes and sequences, never adjudicates. Restoring the tap-bump workflow is part of that work, not of this state.
+The rebuild is Homebrew-distributed and deliberately thin — it observes and sequences, never adjudicates. Homebrew upgrades the installed tool only; it never mutates repositories. Adoption compiles project facts into an explicit versioned contract, and already-correct consumers remain valid without routine sync. Restoring the tap-bump workflow is part of that work, not of this state.
 
 **Known gap while the rebuild is pending:** an AI reviewer can never file an `APPROVED` review — GitHub only lets real users do that — so `required_approving_review_count` cannot enforce that a review happened. The check-run that *could* enforce it went out with `review-binding.yml`. Until it is rebuilt as a small required check, review enforcement is advisory. This is known and accepted, not overlooked.

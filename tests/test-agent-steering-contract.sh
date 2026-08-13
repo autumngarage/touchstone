@@ -201,6 +201,66 @@ for file in "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$TOUCHSTONE_ROOT/AGENTS.md" \
   assert_contains "$file" "not an enforced gate"
 done
 
+# Touchstone's product strategy must guide this repository without leaking
+# into the universal steering copied to consumer projects. Consumer agents own
+# their project's product scope; they must not be routed into our portfolio plan.
+echo "==> product strategy stays project-owned"
+for file in "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
+  "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
+  "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
+  assert_not_contains "$file" "product-contract.md"
+  assert_not_contains "$file" "Adoption is set-and-forget"
+done
+for file in "$TOUCHSTONE_ROOT/AGENTS.md" "$TOUCHSTONE_ROOT/CLAUDE.md" \
+  "$TOUCHSTONE_ROOT/GEMINI.md"; do
+  assert_contains "$file" "docs/product-contract.md"
+done
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "An adopted repository remains correct if Touchstone never rewrites it again"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "not universal engineering guidance"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "Adoption is compilation"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "Explicit non-goals"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "Deterministic offline fixtures"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "presence alone is not compliance evidence"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "Live-provider trials never"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "versioned operator journeys"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "not merely when its"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "organization ruleset required workflow"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "A consumer PR cannot"
+assert_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "resolution alone cannot satisfy"
+assert_not_contains "$TOUCHSTONE_ROOT/docs/product-contract.md" \
+  "A small workflow calls"
+
+# Linear owns volatile implementation order. The durable README may link to
+# that plan, but naming its current issue decomposition duplicates state and
+# becomes stale when work is split or reordered.
+echo "==> durable overview does not duplicate Linear issue mappings"
+assert_contains "$TOUCHSTONE_ROOT/README.md" "canonical Linear execution plan"
+assert_not_contains "$TOUCHSTONE_ROOT/README.md" "AUT-282"
+assert_not_contains "$TOUCHSTONE_ROOT/README.md" "AUT-283"
+
+# PR #818's late exact-head review found a surviving architectural claim about
+# a deleted merge helper. The path-integrity test cannot catch prose-only names,
+# so pin the semantic correction directly.
+echo "==> active architecture names the real review-evidence consumer"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
+  "merge helper can verify"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
+  "review-binding"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
+  "can evaluate from GitHub"
+
 # Every surface that describes the merge gate must also say that review is not
 # part of what GitHub enforces.
 #

@@ -101,7 +101,8 @@ The configured GitHub reviewer is an asynchronous, PR-visible adapter.
 
 - Review the exact requested head and base revisions.
 - Publish findings where the driver and other maintainers can inspect them.
-- Produce durable authorship and timestamp evidence that the merge helper can verify.
+- Produce durable authorship, revision, and timestamp evidence that the
+  `review-binding` check can evaluate from GitHub.
 - Never mutate the local branch or own merge authority.
 
 ## Agent Swarms And Worktrees
