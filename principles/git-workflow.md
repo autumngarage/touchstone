@@ -217,7 +217,7 @@ incident and remain blocked. Never loop replacement requests, synthesize review
 evidence, merge on acceptance alone, or use emergency bypass for ordinary
 review-provider friction.
 
-**Never re-request review on an unchanged head** for thread-backed findings. The reviewer is non-deterministic, so re-asking about the same commit manufactures new findings instead of confirming the old ones. A new head gets exactly one new review. The one exception is a body-only finding — a non-clean verdict with no inline threads — where nothing can be resolved to answer it, so a fresh request on the unchanged head is the only path forward.
+**Never re-request review on an unchanged head** for thread-backed findings. The reviewer is non-deterministic, so re-asking about the same commit manufactures new findings instead of confirming the old ones. A new head gets exactly one new review. There are only two unchanged-head exceptions: the single audited recovery trigger above for an unacknowledged or accepted-but-stalled provider request, and a body-only finding — a non-clean verdict with no inline threads — where nothing can be resolved to answer it, so a fresh request is the only path forward.
 
 ### Babysitting a PR: the round discipline
 

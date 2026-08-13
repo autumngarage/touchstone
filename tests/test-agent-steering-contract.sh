@@ -94,6 +94,7 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   assert_contains "$file" "PR conversation comments"
   assert_contains "$file" "accepted but stalled"
   assert_contains "$file" "exactly one replacement trigger"
+  assert_contains "$file" "two unchanged-head exceptions"
   assert_contains "$file" "trusted exact-head review evidence"
   assert_contains "$file" "merge on acceptance alone"
   assert_not_contains "$file" "retry until review"
