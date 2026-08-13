@@ -24,7 +24,7 @@ Local hooks are fast feedback; branch protection is the real boundary; emergency
 
 To hold those lines, Touchstone does three things and nothing else:
 
-1. **Constrain** — you cannot commit to the default branch, skip validation, merge without exact-head review, or bypass hooks silently.
+1. **Constrain** — you cannot commit to the default branch, merge on a red check, or merge with an unresolved thread. Reviewing the head you merge is required but unenforced; see above.
 2. **Make state legible** — what happened lives in git, PRs, and issues, verifiable without trusting your narration.
 3. **Carry the contract** — the same rules reach every project and every agent, automatically.
 

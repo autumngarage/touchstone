@@ -56,13 +56,24 @@ assert_under() {
   fi
 }
 
-# 9 KiB, raised deliberately from 8 KiB: main's reviewed Purpose section
-# (PR #746) plus the three-job scope contract left 8 KiB unreachable.
-# Derivation: TOUCHSTONE.md is inlined into AGENTS.md as the managed block; at
-# <= 9 KiB the rendered block stays under ~9.5 KiB, preserving >14 KiB of
-# project-tail headroom inside the 24 KiB AGENTS.md cap below.
-echo "==> TOUCHSTONE.md size cap (9 KiB — lean router)"
-assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 9216
+# 9.5 KiB, raised deliberately from 9 KiB (which was itself raised from 8 KiB
+# by PR #746's Purpose section).
+#
+# What earned the 256 bytes: the contract now has to state what GitHub
+# ACTUALLY enforces and, separately, that review is not part of it. The strip's
+# own review filed that omission as a P1 twice — a driver who reads the gate as
+# proof an unreviewed merge is impossible will not check, and merging an
+# unreviewed head is currently possible. Trimming that back to fit a round
+# number would restore the exact defect the cap is supposed to be protecting
+# clarity for.
+#
+# Derivation unchanged: TOUCHSTONE.md is inlined into AGENTS.md as the managed
+# block. At <= 9.5 KiB the rendered block stays under ~10 KiB, and AGENTS.md
+# sits near 16.4 KiB against its 24 KiB cap — roughly 8 KiB of project-tail
+# headroom, comfortably more than the >14 KiB claim this note used to make
+# about a smaller tail.
+echo "==> TOUCHSTONE.md size cap (9.5 KiB — lean router)"
+assert_under "TOUCHSTONE.md" "$TOUCHSTONE_ROOT/TOUCHSTONE.md" 9728
 
 echo "==> AGENTS.md size cap (24 KiB — leaves headroom under Codex's 32 KiB default)"
 assert_under "AGENTS.md" "$TOUCHSTONE_ROOT/AGENTS.md" 24576

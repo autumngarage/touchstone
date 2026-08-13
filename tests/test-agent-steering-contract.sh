@@ -201,6 +201,35 @@ for file in "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$TOUCHSTONE_ROOT/AGENTS.md" \
   assert_contains "$file" "not an enforced gate"
 done
 
+# Every surface that describes the merge gate must also say that review is not
+# part of what GitHub enforces.
+#
+# This guard exists because the same defect was filed as a P1 twice on the
+# strip. Fixing the Purpose paragraph left the identical claim standing in the
+# three-jobs list, in git-workflow.md, and in the skill — each one enough on its
+# own to convince a driver that an unreviewed merge is impossible. It is not,
+# and a driver who believes it is will not check.
+#
+# Positive assertion, deliberately: a denylist of enforcement phrasings would
+# be endless and would pass the moment someone invented a new way to say it.
+# Requiring the caveat to be PRESENT fails whenever the gate is described
+# afresh without it. Delete this check in the commit that restores enforcement.
+echo "==> every gate description states that review is not enforced"
+for file in \
+  "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
+  "$TOUCHSTONE_ROOT/AGENTS.md" \
+  "$TOUCHSTONE_ROOT/GEMINI.md" \
+  "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
+  "$TOUCHSTONE_ROOT/templates/GEMINI.md" \
+  "$TOUCHSTONE_ROOT/README.md" \
+  "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
+  "$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md"; do
+  if ! grep -qiE 'not an enforced gate|not currently enforce|nothing currently enforces|nothing enforces|is advisory|not enforced' "$file"; then
+    fail "$(basename "$file") describes the merge gate without stating that review is unenforced"
+  fi
+done
+
 if [ "$ERRORS" -gt 0 ]; then
   echo ""
   echo "==> FAIL: $ERRORS agent steering contract check(s) failed"

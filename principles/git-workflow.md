@@ -31,7 +31,7 @@ The layers are complementary: the tool-boundary hook catches the intent, the loc
 3. **Check the tree before changing it.** Run `git status --short` and `git branch --show-current` before starting implementation. If the tree is dirty with unrelated user changes, do not stash them and do not auto-commit on the user's behalf. Ask how to proceed, or branch around the changes when the file surfaces are disjoint. `git stash` is hidden multi-agent state, not a coordination mechanism.
 4. **Loop: change → commit → push.** Each meaningful sub-task gets its own commit and push. Stage explicit file paths (not `git add -A`), write a concise message, push to the open branch.
 5. **Ship.** Push and open the PR — see "Opening a PR" below.
-6. **Answer every piece of PR feedback before merging.** Reply to each comment and resolve its thread, whoever left it. Unresolved threads and a `CHANGES_REQUESTED` decision both block the merge regardless of author.
+6. **Answer every piece of PR feedback before merging.** Reply to each comment and resolve its thread, whoever left it. Unresolved threads genuinely block the merge — `required_conversation_resolution` is on, so this one GitHub enforces.
 7. **Merge**, bound to the head the review actually saw — see "Merging" below.
 8. **Clean up after merge.** Delete the local feature branch once the PR is merged.
 
@@ -90,7 +90,9 @@ gh api graphql -f query='
 
 The last one is the count of unresolved threads. Zero is the requirement.
 
-**An AI reviewer never approves.** GitHub only lets real user accounts file an `APPROVED` review; a hosted AI reviewer always leaves a `COMMENT` review. So `required_approving_review_count` cannot express "this was reviewed" — do not expect an approval to appear, and do not treat its absence as a stalled review. What the gate needs is a review bound to the current head with every thread answered.
+**An AI reviewer never approves.** GitHub only lets real user accounts file an `APPROVED` review; a hosted AI reviewer always leaves a `COMMENT` review. So `required_approving_review_count` cannot express "this was reviewed" — do not expect an approval to appear, and do not treat its absence as a stalled review.
+
+**And nothing currently enforces that a review happened at all.** Branch protection can require the checks and the resolved threads listed above; it cannot require the review, because the only signal that could carry it was deleted with the machinery it duplicated. So a review bound to the current head with every thread answered is what you owe, not what you will be stopped for skipping. Merging an unreviewed head is possible; it is still wrong.
 
 ## Answering findings
 
@@ -305,4 +307,4 @@ If a production bug requires immediate action and can't wait for the PR cycle, p
 
 **This is procedural guidance, not an enforced constraint.** The disclosure hooks that used to detect and record a bypass were deleted, and nothing replaced them: no mechanism prevents a silent `--no-verify` push or writes one down. Branch protection still rejects a direct push to the default branch, so the bypass that remains is local-hook-only — but the disclosure itself now rests entirely on the operator choosing to make it. Do not read the rule as a guarantee that a bypass would be caught. If that guarantee is wanted back, it belongs at a layer that can actually enforce it — a push ruleset or a required check — not in a hook the bypass already skipped.
 
-Do not reach for the emergency path because the merge gate is inconvenient. A red required check, an unresolved thread, or a missing review are the gate working. The emergency path is for production incidents, and every use of it is a thing you will have to explain in writing.
+Do not reach for the emergency path because the merge gate is inconvenient. A red required check or an unresolved thread is the gate working. A missing review is not the gate stopping you — nothing stops you there — it is you noticing you have not done the thing you owe. The emergency path is for production incidents, and every use of it is a thing you will have to explain in writing.
