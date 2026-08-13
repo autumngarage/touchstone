@@ -57,7 +57,32 @@ for file in \
   assert_contains "$file" "bash scripts/claim-issue.sh <n>"
   assert_contains "$file" "Reconcile issues"
   assert_contains "$file" "Do not leave fixed issues open silently"
+  assert_contains "$file" "Do not infer adoption from this document"
+  assert_contains "$file" "missing enforcement is a rollout gap"
+  assert_not_contains "$file" "Review is an enforced gate."
 done
+
+GIT_WORKFLOW_SKILL="$TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md"
+assert_contains "$GIT_WORKFLOW_SKILL" "Inspect the repository's effective rules"
+assert_contains "$GIT_WORKFLOW_SKILL" "Where installed and verified as required"
+assert_contains "$GIT_WORKFLOW_SKILL" "missing enforcement as an adoption gap"
+assert_not_contains "$GIT_WORKFLOW_SKILL" 'Review is enforced by `review-binding`.'
+
+GIT_WORKFLOW_GUIDE="$TOUCHSTONE_ROOT/principles/git-workflow.md"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "Where the repository's effective policy requires \`review-binding\`"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "exact-head review remains mandatory driver procedure"
+assert_not_contains "$GIT_WORKFLOW_GUIDE" \
+  '**`review-binding` enforces the review contract.**'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "Where it exposes the audited"
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "do not infer it from this guide"
+assert_not_contains "$GIT_WORKFLOW_GUIDE" \
+  "then an organization admin may use GitHub's PR-only ruleset bypass"
+assert_not_contains "$GIT_WORKFLOW_GUIDE" \
+  'Direct pushes to `main` are rejected by the server even for organization admins.'
 
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"
 # CLAUDE.md uses @TOUCHSTONE.md (Claude Code resolves @-imports transitively),
@@ -80,6 +105,8 @@ for file in \
   assert_contains "$file" "Driving CLI"
   assert_contains "$file" "PR-visible reviewer"
   assert_contains "$file" "review runs asynchronously against the exact pushed head"
+  assert_contains "$file" "Do not infer adoption from this document"
+  assert_not_contains "$file" "Review is an enforced gate."
 done
 
 echo "==> canonical git workflow describes the PR-visible review loop"
@@ -292,16 +319,12 @@ for file in "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$TOUCHSTONE_ROOT/AGENTS.md" \
   "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
   assert_contains "$file" "Humans approve plans"
   assert_contains "$file" "GitHub reviews code"
-  # The gate's conditions are load-bearing: an incomplete list here has already
-  # been read as licence to drop the unlisted checks. What must be stated is
-  # what GitHub ACTUALLY enforces — and, separately, that review is not among
-  # it. Asserting the old "trusted author / CHANGES_REQUESTED" phrasing kept
-  # the contract describing a binding check that no longer exists, which is
-  # the P1 the strip's own review caught: a driver reads the gate as proof an
-  # unreviewed merge is impossible, and it is not.
-  assert_contains "$file" "What GitHub enforces today"
-  assert_contains "$file" "every review thread resolved"
-  assert_contains "$file" "not an enforced gate"
+  # The adopted gate's conditions are load-bearing, but universal steering may
+  # not claim a repository has adopted them without inspecting effective rules.
+  assert_contains "$file" "GitHub's effective repository policy is the enforcement authority"
+  assert_contains "$file" "every thread must be resolved"
+  assert_contains "$file" "inspect the repository's effective rules"
+  assert_contains "$file" 'required `review-binding` check'
 done
 
 # Touchstone's product strategy must guide this repository without leaking
@@ -363,92 +386,45 @@ assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
   "review-binding"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
   "can evaluate from GitHub"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
+  "when the repository's effective policy requires them"
+assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
+  "missing server-side constraints are a rollout gap"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" \
+  'The required `review-binding` check'
 
-# Every surface that describes the merge gate must also say that review is not
-# part of what GitHub enforces.
-#
-# This guard exists because the same defect was filed as a P1 twice on the
-# strip. Fixing the Purpose paragraph left the identical claim standing in the
-# three-jobs list, in git-workflow.md, and in the skill — each one enough on its
-# own to convince a driver that an unreviewed merge is impossible. It is not,
-# and a driver who believes it is will not check.
-#
-# TWO checks, because either alone is insufficient — and the first version of
-# this guard shipped with only the positive half.
-#
-# I argued a denylist would be endless and would pass the moment someone
-# phrased enforcement a new way. That is true, and it is not a reason to omit
-# it: a file can carry the caveat in one paragraph and contradict it in
-# another, which is exactly what shipped — README.md said "you cannot merge
-# without review" twenty-seven lines above "review enforcement is advisory."
-# A reader who stops at the first statement is misled, and the caveat's
-# presence proved nothing about the rest of the file.
-#
-# So: the caveat must be PRESENT (catches a gate described afresh without it),
-# AND the known enforcement phrasings must be ABSENT (catches a contradiction
-# beside a compliant paragraph). Delete both in the commit that restores
-# enforcement.
+# Every surface that describes the merge gate must name the server-side review
+# binding now that the previously documented gap is closed.
 GATE_FILES="
 $TOUCHSTONE_ROOT/TOUCHSTONE.md
 $TOUCHSTONE_ROOT/AGENTS.md
 $TOUCHSTONE_ROOT/GEMINI.md
 $TOUCHSTONE_ROOT/templates/AGENTS.md
 $TOUCHSTONE_ROOT/templates/GEMINI.md
+$TOUCHSTONE_ROOT/templates/CLAUDE.md
 $TOUCHSTONE_ROOT/README.md
 $TOUCHSTONE_ROOT/principles/git-workflow.md
 $TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md
 $TOUCHSTONE_ROOT/skills/touchstone-git-workflow/SKILL.md
 "
 
-echo "==> every gate description states that review is not enforced"
+echo "==> every gate description names enforced exact-head review binding"
 for file in $GATE_FILES; do
   [ -f "$file" ] || continue
-  if ! grep -qiE 'not an enforced gate|not currently enforce|nothing currently enforces|nothing enforces|is advisory|not enforced|but unenforced' "$file"; then
-    fail "$(basename "$file") describes the merge gate without stating that review is unenforced"
+  if ! grep -Fq 'review-binding' "$file"; then
+    fail "$(basename "$file") describes the merge gate without naming review-binding"
   fi
 done
 
-echo "==> no gate description claims review is enforced"
-# Anchored on the specific claim: that merging without a review is prevented.
-#
-# POSIX ERE only. The first draft used `(is |)` — an empty alternation, which
-# BSD grep rejects outright, so the whole pattern failed to compile and matched
-# nothing. The probe below caught it immediately, which is the entire argument
-# for writing the probe: a guard that silently matches nothing looks identical
-# to a clean tree.
-#
-# Round 4 found the pattern was still too narrow: it keyed on the phrase
-# "merge without review" and missed a whole vocabulary saying the same thing —
-# an "Approval Gate" stage, "Required reviews approved" as a gate condition,
-# and "merging only after the required GitHub review ... approve". Enforcement
-# has more synonyms than one pattern will ever enumerate, which is the known
-# weakness of the denylist half and the reason the positive half exists beside
-# it. This list is a floor, not a proof.
-CONTRADICTION='cannot[^.]*merge[^.]*without[^.]*review|merg[a-z]*[^.]*without[^.]*review[^.]*(blocked|prevented|refused)|without[^.]*review[^.]*cannot merge|[Aa]pproval [Gg]ate|[Rr]equired reviews approved|merging only after[^.]*review'
+echo "==> no gate description retains the superseded unenforced-review caveat"
 for file in $GATE_FILES; do
   [ -f "$file" ] || continue
-  hits="$(grep -inE "$CONTRADICTION" "$file" || true)"
+  hits="$(grep -inEi 'not an enforced gate|not currently enforce|nothing currently enforces|review enforcement is advisory|required but unenforced' "$file" || true)"
   if [ -n "$hits" ]; then
     printf '%s\n' "$hits" >&2
-    fail "$(basename "$file") claims merging without review is prevented; it is not"
+    fail "$(basename "$file") retains the superseded unenforced-review caveat"
   fi
 done
-
-# Both halves must be able to fail, on this platform, or their silence is not
-# evidence. The CLI-reference guard shipped without this and was broken.
-probe="$TEST_DIR/gate-probe.md"
-printf 'You cannot commit to main, merge without review, or bypass hooks.\n' >"$probe"
-if grep -qiE "$CONTRADICTION" "$probe"; then
-  echo "  OK: the contradiction pattern detects the claim it exists to catch"
-else
-  fail "the contradiction pattern does not match a known enforcement claim; the check above proves nothing"
-fi
-printf 'Review happens here.\n' >"$probe"
-if grep -qiE 'not an enforced gate|not currently enforce|nothing currently enforces|nothing enforces|is advisory|not enforced|but unenforced' "$probe"; then
-  fail "the caveat pattern matches text containing no caveat; the check above proves nothing"
-else
-  echo "  OK: the caveat pattern does not match a file lacking the caveat"
-fi
 
 if [ "$ERRORS" -gt 0 ]; then
   echo ""

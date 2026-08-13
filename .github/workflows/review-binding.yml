@@ -50,11 +50,6 @@ jobs:
       EVENT_NAME: ${{ github.event_name }}
       DISPATCH_PR: ${{ inputs.pull_request }}
       TRUSTED_REVIEWERS: chatgpt-codex-connector,chatgpt-codex-connector[bot]
-      # The workflow and evaluator arrive together in the PR based on this
-      # commit, so that one non-required observation run cannot load its base
-      # evaluator. Delete this inert one-commit shim in the ruleset PR, before
-      # review-binding becomes required.
-      BOOTSTRAP_BASE_SHA: 89a09eae59817f71b975486436e86d673b7e0353
     steps:
       - name: Rebuild review-binding verdict
         run: |
@@ -214,15 +209,6 @@ jobs:
                 "Event head: \`$known_head\`. Live PR #$number head: \`$head\`. The newer coordinate event owns the verdict."
               return 0
             fi
-            if [ "$base" = "$BOOTSTRAP_BASE_SHA" ]; then
-              if [ -n "$run_id" ]; then
-                publish_check "$run_id" neutral "Bootstrap observation only" \
-                  "PR #$number is adding the evaluator to base \`$base\`; review-binding is not required yet."
-              fi
-              echo "PR #$number is the one-commit bootstrap; review-binding is not required yet."
-              return 0
-            fi
-
             if [ -z "$run_id" ]; then
               run_id="$(create_pending "$number" "$head" "head \`$head\` and base \`$base\`")"
             fi

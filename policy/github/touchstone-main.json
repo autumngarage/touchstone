@@ -1,0 +1,99 @@
+{
+  "contractVersion": 1,
+  "organization": "autumngarage",
+  "repository": "touchstone",
+  "workflowSource": {
+    "repository": "touchstone-workflows",
+    "branchProtection": {
+      "enforce_admins": true,
+      "required_pull_request_reviews": true,
+      "required_conversation_resolution": true,
+      "allow_force_pushes": false,
+      "allow_deletions": false
+    }
+  },
+  "branch": "main",
+  "rollbackPrerequisites": {
+    "repositoryFiles": [
+      {
+        "path": ".github/workflows/validate.yml",
+        "sha": "c2dc082e0702090f3fc9de095d78a85ddde902a5"
+      }
+    ]
+  },
+  "managedRuleset": {
+    "name": "Touchstone policy v1: autumngarage/touchstone@main",
+    "target": "branch",
+    "enforcement": "active",
+    "bypass_actors": [
+      {
+        "actor_id": null,
+        "actor_type": "OrganizationAdmin",
+        "bypass_mode": "pull_request"
+      }
+    ],
+    "conditions": {
+      "repository_name": {
+        "include": [
+          "touchstone"
+        ],
+        "exclude": [],
+        "protected": false
+      },
+      "ref_name": {
+        "include": [
+          "~DEFAULT_BRANCH"
+        ],
+        "exclude": []
+      }
+    },
+    "rules": [
+      {
+        "type": "deletion"
+      },
+      {
+        "type": "non_fast_forward"
+      },
+      {
+        "type": "pull_request",
+        "parameters": {
+          "allowed_merge_methods": [
+            "squash"
+          ],
+          "dismiss_stale_reviews_on_push": false,
+          "require_code_owner_review": false,
+          "require_last_push_approval": false,
+          "required_approving_review_count": 0,
+          "required_review_thread_resolution": true
+        }
+      },
+      {
+        "type": "required_status_checks",
+        "parameters": {
+          "do_not_enforce_on_create": false,
+          "required_status_checks": [
+            {
+              "context": "review-binding",
+              "integration_id": 15368
+            }
+          ],
+          "strict_required_status_checks_policy": true
+        }
+      },
+      {
+        "type": "workflows",
+        "parameters": {
+          "do_not_enforce_on_create": false,
+          "workflows": [
+            {
+              "path": ".github/workflows/validate.yml",
+              "ref": "refs/heads/main",
+              "repository_id": 1333343261,
+              "sha": "776669cd7429e988a4e3e3cb7ef9d5a33a38e8ab"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

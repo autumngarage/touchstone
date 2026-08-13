@@ -33,7 +33,7 @@ for test in tests/test-*.sh; do
 done
 ```
 
-The suite is the "is this safe to push" gate — deterministic, offline, and fetching nothing. `.github/workflows/validate.yml` runs the same loop as the required check, with no third-party dependency of any kind: that is a deliberate property, because a required check that can go red because a package host had a bad minute is not a gate (#742, #803, #808).
+The suite is the "is this safe to push" gate — deterministic, offline, and fetching nothing. The protected workflow pinned by `policy/github/touchstone-main.json` runs the same loop as the required check, with no third-party dependency of any kind. The target repository carries no duplicate validation workflow. That is deliberate: a required check that can go red because a package host had a bad minute is not a gate (#742, #803, #808).
 
 Lint is not part of the test suite. It runs at pre-commit and via `pre-commit run --all-files`: `shellcheck`, `shfmt`, `markdownlint`, and `actionlint`. `.pre-commit-config.yaml` and `.markdownlint.json` are the canonical config.
 
@@ -77,4 +77,4 @@ The `touchstone` CLI, the bootstrap, the auto-update path, and the Homebrew rele
 
 The rebuild is Homebrew-distributed and deliberately thin — it observes and sequences, never adjudicates. Homebrew upgrades the installed tool only; it never mutates repositories. Adoption compiles project facts into an explicit versioned contract, and already-correct consumers remain valid without routine sync. Restoring the tap-bump workflow is part of that work, not of this state.
 
-**Known gap while the rebuild is pending:** an AI reviewer can never file an `APPROVED` review — GitHub only lets real users do that — so `required_approving_review_count` cannot enforce that a review happened. The check-run that *could* enforce it went out with `review-binding.yml`. Until it is rebuilt as a small required check, review enforcement is advisory. This is known and accepted, not overlooked.
+The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so GitHub approval count does not represent it. The required `review-binding` check binds trusted review evidence to the exact head and requires a later qualifying answer for every finding; GitHub independently requires every inline thread resolved.

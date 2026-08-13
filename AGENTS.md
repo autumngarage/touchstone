@@ -18,15 +18,15 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar.
 
-**What GitHub enforces today**, and therefore what actually stops a bad merge: required checks green, every review thread resolved, no outstanding `CHANGES_REQUESTED` review, and no direct push to the default branch. (An AI reviewer never files `CHANGES_REQUESTED`, so in practice that condition only fires for a human.)
+**GitHub's effective repository policy is the enforcement authority.** Where the Touchstone policy has been installed and verified, the protected validation workflow and required `review-binding` check must pass, every finding must be answered, every thread must be resolved, and native rules reject direct and force pushes and branch deletion. Do not infer adoption from this document: inspect the repository's effective rules.
 
-**Review is a required procedural step, not an enforced gate.** An AI reviewer never files an `APPROVED` review — GitHub reserves that for real users — and the check-run that bound a review to its head was deleted with the machinery it duplicated. Request review on the exact pushed head, answer every finding, and never merge a head no reviewer has seen. Nothing stops you if you do; until that enforcement is rebuilt, the rule holds because you keep it.
+**Review is always required.** The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so approval count does not represent it. Where `review-binding` is required, GitHub binds trusted review evidence and answers to the exact head. Until that gate is installed and verified, exact-head review remains mandatory driver procedure and the missing enforcement is a rollout gap, not permission to skip it.
 
-Local hooks are fast feedback; branch protection is the real boundary; emergency paths are disclosed by convention — nothing records or enforces a bypass, so treat that disclosure as owed, not as captured for you.
+Local hooks are fast feedback; configured GitHub policy is the real boundary. An adopted policy limits emergency admin bypass to pull requests, where GitHub records it. A repository without that enforcement still does not authorize a driver to push directly.
 
 To hold those lines, Touchstone does three things and nothing else:
 
-1. **Constrain** — you cannot commit to the default branch, merge on a red check, or merge with an unresolved thread. Reviewing the head you merge is required but unenforced; see above.
+1. **Constrain** — adopted GitHub policy blocks unsafe delivery; before adoption, the driver follows the same delivery contract and treats missing enforcement as a tracked gap.
 2. **Make state legible** — what happened lives in git, PRs, and issues, verifiable without trusting your narration.
 3. **Carry the contract** — the same rules reach every project and every agent, automatically.
 
@@ -78,7 +78,7 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 
 Every command above is the whole mechanism; there is no wrapper. `principles/git-workflow.md` carries the full sequence, including thread resolution.
 
-Do not bypass the PR/review/merge path with a direct default-branch push except through the documented emergency path in `principles/git-workflow.md`.
+Never use a direct default-branch push as an emergency path. Repositories with the audited policy enforce PR-only bypass; elsewhere this remains mandatory procedure until adoption. See `principles/git-workflow.md`.
 
 ## Routing table — read these when the trigger fires
 
@@ -119,7 +119,7 @@ You are maintaining the standard baseline for a solo developer directing many ag
 - **Delete by default.** The burden of proof is on keeping. A change earns its way in when a real failure demanded it, not because a review round suggested it.
 - Files in `templates/` are legacy transition inputs for the frozen downstream shape, not the future adoption contract. Nothing copies them today; do not extend their detection, setup, or vendored-runner model.
 - Downstream projects are frozen on committed copies of the old scripts, deliberately. Do not try to fix them from here.
-- All shell must stay portable to macOS with standard tools: `bash`, `git`, `gh`, `sed`, and `awk`.
+- All shell must stay portable to macOS. The base tool surface is `bash`, `git`, `gh`, `sed`, and `awk`; policy operations additionally use `jq`, which `setup.sh` installs and verifies.
 
 ### Testing
 
@@ -132,7 +132,7 @@ for test in tests/test-*.sh; do
 done
 ```
 
-The suite must stay deterministic, offline, and free of live model/provider quota. `.github/workflows/validate.yml` runs the same loop as the required check and fetches nothing at all — a required check that can go red because a package host had a bad minute is not a gate (#742, #803, #808).
+The suite must stay deterministic, offline, and free of live model/provider quota. The protected workflow pinned by `policy/github/touchstone-main.json` runs the same loop as the required check and fetches nothing at all. Do not add a duplicate target-repository validation workflow — a required check that can go red because a package host had a bad minute is not a gate (#742, #803, #808).
 
 Lint is not part of the test suite. It runs at pre-commit and via `pre-commit run --all-files`: `shellcheck`, `shfmt`, `markdownlint`, and `actionlint`.
 
@@ -174,13 +174,12 @@ Style nits and theoretical refactors are **out of scope**.
 
 ### High-scrutiny paths
 
-Files: `.github/workflows/validate.yml`, `hooks/branch-guard.sh`, `scripts/respond-review.sh`, `TOUCHSTONE.md`
+Files: `policy/github/touchstone-main.json`, `hooks/branch-guard.sh`, `scripts/respond-review.sh`, `TOUCHSTONE.md`
 
 Flag any of the following:
 
-- **A new dependency on the merge path.** Before an install step enters `validate.yml`, a specific test must execute that binary. If none does, the dependency belongs at pre-commit time.
+- **A new dependency on the merge path.** The pinned external validation workflow must remain deterministic and offline. The target repository must not add a duplicate validation workflow.
 - **Unpinned actions.** Every GitHub Action must be pinned to a full commit SHA, not a tag. Only a SHA is immutable.
-- **A renamed required job.** The `validate (ubuntu-latest)` check name is configured as required on main; renaming it silently un-gates the branch.
 - **Missing error handling.** Scripts use `set -euo pipefail`. Commands that can fail legitimately must be guarded explicitly, never silently.
 - **Path assumptions.** Never assume the repo root is a specific directory. Derive paths from `$0` or `git rev-parse`.
 
