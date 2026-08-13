@@ -107,6 +107,109 @@ fi
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Codex merge review"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "codex exec --full-auto"
 
+echo "==> branch guard does not feed grep -q from a pipe under pipefail"
+# A producer that receives SIGPIPE after grep finds an early match can make a
+# successful match report 141 under pipefail. In a branch guard that wrong
+# boolean fails open. Keep every guarded predicate on an already-materialized
+# value so grep alone owns the status.
+pipefail_grep_hits="$(
+  grep -nE '\|[[:space:]]*grep[[:space:]]+-[^|]*q' \
+    "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" || true
+)"
+if [ -n "$pipefail_grep_hits" ]; then
+  printf '%s\n' "$pipefail_grep_hits" >&2
+  fail "branch-guard.sh pipes a producer into grep -q under pipefail"
+fi
+
+# Exercise the hardened path with input much larger than a typical pipe
+# buffer. The fake jq consumes stdin fully before returning deterministic
+# fields, so this test adds no jq dependency to the offline required suite.
+FAKE_BIN="$TEST_DIR/bin"
+mkdir -p "$FAKE_BIN"
+cat >"$FAKE_BIN/jq" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+case "${2:-}" in
+  '.tool_input.command // ""') printf '%s\n' 'git commit' ;;
+  '.cwd // ""') printf '%s\n' "$FAKE_JQ_CWD" ;;
+  '.tool_input.workdir // ""') printf '\n' ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$FAKE_BIN/jq"
+
+GUARD_REPO="$TEST_DIR/branch-guard-repo"
+mkdir -p "$GUARD_REPO"
+git -C "$GUARD_REPO" init -q
+git -C "$GUARD_REPO" symbolic-ref HEAD refs/heads/main
+set +e
+{
+  printf '{"tool_name":"Bash","tool_input":{"command":"git commit '
+  awk 'BEGIN { for (i = 0; i < 1048576; i++) printf "x" }'
+  printf '"}}'
+} | PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  FAKE_JQ_CWD="$GUARD_REPO" \
+  bash "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" \
+  >"$TEST_DIR/branch-guard.out" 2>"$TEST_DIR/branch-guard.err"
+guard_status=$?
+set -e
+if [ "$guard_status" -ne 2 ]; then
+  sed -n '1,20p' "$TEST_DIR/branch-guard.err" >&2
+  fail "large git commit input on main must be blocked (status $guard_status)"
+fi
+
+echo "==> stacked-PR recovery uses the retained remote parent ref"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  'git fetch origin'
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  'git rebase --onto "origin/$DEFAULT" "origin/<parent-branch>" <child-branch>'
+assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" \
+  'git rebase --onto "$DEFAULT" <parent-branch> <child-branch>'
+
+# Prove the documented old-base anchor works in the exact recovery state: the
+# child exists, the local parent is gone, local main is stale, and the two
+# remote-tracking refs hold the authoritative old and new bases.
+STACK_REPO="$TEST_DIR/stacked-recovery-repo"
+mkdir -p "$STACK_REPO"
+git -C "$STACK_REPO" init -q
+git -C "$STACK_REPO" config user.email "test@touchstone.invalid"
+git -C "$STACK_REPO" config user.name "Touchstone Test"
+printf 'base\n' >"$STACK_REPO/base.txt"
+git -C "$STACK_REPO" add base.txt
+git -C "$STACK_REPO" commit -qm "base"
+git -C "$STACK_REPO" branch -M main
+base_oid="$(git -C "$STACK_REPO" rev-parse HEAD)"
+git -C "$STACK_REPO" checkout -qb parent
+printf 'parent\n' >"$STACK_REPO/parent.txt"
+git -C "$STACK_REPO" add parent.txt
+git -C "$STACK_REPO" commit -qm "parent"
+parent_oid="$(git -C "$STACK_REPO" rev-parse HEAD)"
+git -C "$STACK_REPO" update-ref refs/remotes/origin/parent "$parent_oid"
+git -C "$STACK_REPO" checkout -qb child
+printf 'child\n' >"$STACK_REPO/child.txt"
+git -C "$STACK_REPO" add child.txt
+git -C "$STACK_REPO" commit -qm "child"
+git -C "$STACK_REPO" checkout -q main
+git -C "$STACK_REPO" cherry-pick "$parent_oid" >/dev/null
+merged_main_oid="$(git -C "$STACK_REPO" rev-parse HEAD)"
+git -C "$STACK_REPO" update-ref refs/remotes/origin/main "$merged_main_oid"
+git -C "$STACK_REPO" checkout -q child
+git -C "$STACK_REPO" branch -f main "$base_oid"
+git -C "$STACK_REPO" branch -D parent >/dev/null
+git -C "$STACK_REPO" rebase --onto origin/main origin/parent child >/dev/null 2>&1
+if git -C "$STACK_REPO" show-ref --verify --quiet refs/heads/parent; then
+  fail "stacked recovery fixture must not retain a local parent branch"
+fi
+if ! git -C "$STACK_REPO" show-ref --verify --quiet refs/remotes/origin/parent; then
+  fail "stacked recovery fixture lost the retained remote parent ref"
+fi
+if [ ! -f "$STACK_REPO/child.txt" ] || [ ! -f "$STACK_REPO/parent.txt" ]; then
+  fail "remote-anchor rebase did not preserve merged parent and child content"
+fi
+if ! git -C "$STACK_REPO" merge-base --is-ancestor origin/main child; then
+  fail "stacked child was not rebased onto the fetched remote default branch"
+fi
+
 echo "==> canonical AI delivery architecture describes the PR review loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Agentic PR Review Loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "PR creation is not completion"

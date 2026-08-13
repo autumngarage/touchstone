@@ -218,10 +218,17 @@ A stacked PR is a PR whose base branch is another open PR's branch instead of th
 
 ```bash
 DEFAULT=$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)
+git fetch origin
 gh pr edit <child> --base "$DEFAULT"
-git rebase --onto "$DEFAULT" <parent-branch> <child-branch>
+git rebase --onto "origin/$DEFAULT" "origin/<parent-branch>" <child-branch>
 git push --force-with-lease
 ```
+
+Both rebase anchors come from the fetch: the new base is the merged remote
+default branch, and the old base is the retained remote-tracking parent ref.
+The local branches are disposable and may already be stale or gone after
+cleanup; the remote parent is retained until every child has been retargeted
+and rebased.
 
 Merge a chain in order, parent first, repeating both steps for each next child.
 
