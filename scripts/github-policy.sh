@@ -155,11 +155,11 @@ verify_source() {
 
 verify_ruleset_against() {
   local expected="$1" current effective types required
-  current="$(managed_ruleset_json)"
+  current="$(managed_ruleset_json)" || return $?
   [ "$current" != null ] || die "managed organization ruleset is missing"
   diff -u <(normalize_ruleset <<<"$expected") <(normalize_ruleset <<<"$current") >/dev/null \
     || die "managed organization ruleset differs from expected policy"
-  effective="$(api "repos/$ORG/$REPOSITORY/rules/branches/$BRANCH")"
+  effective="$(api "repos/$ORG/$REPOSITORY/rules/branches/$BRANCH")" || return $?
   types="$(jq -r '[.[].type] | unique | sort | join(",")' <<<"$effective")"
   while IFS= read -r required; do
     jq -e --arg type "$required" 'any(.[]; .type == $type)' <<<"$effective" >/dev/null \
@@ -189,18 +189,19 @@ verify_rollback_prerequisites() {
   done < <(jq -c '.rollbackPrerequisites.repositoryFiles[]?' "$artifact")
 }
 
-verify_rollback_state() {
-  local before="$1" artifact="$2" restored_managed restored expected
-  restored_managed="$(managed_ruleset_json)"
-  if [ "$before" = null ]; then
-    [ "$restored_managed" = null ] || die "rollback left the replacement ruleset installed"
+verify_policy_state() {
+  local expected_ruleset="$1" expected_protection="$2" actual_ruleset actual_protection
+  actual_ruleset="$(managed_ruleset_json)" || return $?
+  if [ "$expected_ruleset" = null ]; then
+    [ "$actual_ruleset" = null ] || die "managed ruleset exists when none was expected"
   else
-    verify_ruleset_against "$before"
+    verify_ruleset_against "$expected_ruleset" || return $?
   fi
-  restored="$(branch_protection_json)"
-  expected="$(jq -S .branchProtection "$artifact")"
-  diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$restored") >/dev/null \
-    || die "rollback branch protection does not match backup"
+  actual_protection="$(branch_protection_json)" || return $?
+  diff -u \
+    <(jq -S . <<<"$expected_protection") \
+    <(printf '%s\n' "$actual_protection") >/dev/null \
+    || die "branch protection differs from expected policy state"
 }
 
 restore_branch_protection() {
@@ -220,6 +221,38 @@ restore_branch_protection() {
     allow_fork_syncing
   }' <<<"$protection" \
     | api --method PUT "repos/$ORG/$REPOSITORY/branches/$BRANCH/protection" --input - >/dev/null
+}
+
+restore_policy_state() {
+  local expected_ruleset="$1" expected_protection="$2" current current_protection payload id
+  if [ "$expected_protection" != null ]; then
+    restore_branch_protection "$expected_protection" || return $?
+  fi
+  current="$(managed_ruleset_json)" || return $?
+  if [ "$expected_ruleset" = null ]; then
+    [ "$expected_protection" != null ] || die "refusing to restore an unprotected policy state"
+    if [ "$current" != null ]; then
+      api --method DELETE "orgs/$ORG/rulesets/$(jq -r .id <<<"$current")" || return $?
+    fi
+  else
+    payload="$(ruleset_update_payload <<<"$expected_ruleset")"
+    if [ "$current" = null ]; then
+      printf '%s\n' "$payload" \
+        | api --method POST "orgs/$ORG/rulesets" --input - >/dev/null || return $?
+    else
+      id="$(jq -r .id <<<"$current")"
+      printf '%s\n' "$payload" \
+        | api --method PUT "orgs/$ORG/rulesets/$id" --input - >/dev/null || return $?
+    fi
+    verify_ruleset_against "$expected_ruleset" || return $?
+  fi
+  if [ "$expected_protection" = null ]; then
+    current_protection="$(branch_protection_json)" || return $?
+    if [ "$current_protection" != null ]; then
+      api --method DELETE "repos/$ORG/$REPOSITORY/branches/$BRANCH/protection" || return $?
+    fi
+  fi
+  verify_policy_state "$expected_ruleset" "$expected_protection" || return $?
 }
 
 COMMAND="${1:-}"
@@ -293,43 +326,33 @@ case "$COMMAND" in
   apply)
     verify_source
     desired="$(jq -c '.managedRuleset' "$POLICY")"
-    current="$(managed_ruleset_json)"
-    legacy="$(branch_protection_json)"
-    created_id=""
-    previous_payload=""
-    updated=false
-    if [ "$current" = null ]; then
-      [ "$legacy" != null ] || die "no existing protection is present to guard initial migration"
-      created_id="$(jq -c '.managedRuleset' "$POLICY" \
-        | api --method POST "orgs/$ORG/rulesets" --input - --jq .id)"
-    else
-      ruleset_id="$(jq -r .id <<<"$current")"
-      if ! diff -q \
-        <(printf '%s\n' "$desired" | normalize_ruleset) \
-        <(printf '%s\n' "$current" | normalize_ruleset) >/dev/null; then
-        previous_payload="$(ruleset_update_payload <<<"$current")"
+    source_ruleset="$(managed_ruleset_json)"
+    source_protection="$(branch_protection_json)"
+    if [ "$source_ruleset" = null ] && [ "$source_protection" = null ]; then
+      die "no existing protection is present to guard policy replacement"
+    fi
+    if ! (
+      if [ "$source_ruleset" = null ]; then
         printf '%s\n' "$desired" \
-          | api --method PUT "orgs/$ORG/rulesets/$ruleset_id" --input - >/dev/null
-        updated=true
+          | api --method POST "orgs/$ORG/rulesets" --input - >/dev/null || exit $?
+      elif ! diff -q \
+        <(printf '%s\n' "$desired" | normalize_ruleset) \
+        <(printf '%s\n' "$source_ruleset" | normalize_ruleset) >/dev/null; then
+        printf '%s\n' "$desired" \
+          | api --method PUT "orgs/$ORG/rulesets/$(jq -r .id <<<"$source_ruleset")" --input - >/dev/null \
+          || exit $?
       fi
-    fi
-    if ! (verify_ruleset); then
-      if [ -n "$created_id" ]; then
-        [ "$(branch_protection_json)" != null ] \
-          || die "replacement failed while legacy branch protection was absent"
-        api --method DELETE "orgs/$ORG/rulesets/$created_id"
-      elif [ "$updated" = true ]; then
-        printf '%s\n' "$previous_payload" \
-          | api --method PUT "orgs/$ORG/rulesets/$ruleset_id" --input - >/dev/null
-        (verify_ruleset_against "$previous_payload") \
-          || die "replacement failed and prior ruleset could not be verified after restore"
+      verify_ruleset || exit $?
+      if [ "$source_protection" != null ]; then
+        api --method DELETE "repos/$ORG/$REPOSITORY/branches/$BRANCH/protection" || exit $?
       fi
-      die "replacement ruleset failed verification; prior protection was restored"
+      verify_policy_state "$desired" null || exit $?
+    ); then
+      (restore_policy_state "$source_ruleset" "$source_protection") \
+        || die "policy replacement failed and the complete prior state could not be restored"
+      die "policy replacement failed; the complete prior policy state was restored"
     fi
-    if [ "$legacy" != null ]; then
-      api --method DELETE "repos/$ORG/$REPOSITORY/branches/$BRANCH/protection"
-    fi
-    "$0" verify "$POLICY"
+    echo "Applied and verified policy without legacy branch protection."
     ;;
   verify)
     verify_source
@@ -348,45 +371,45 @@ case "$COMMAND" in
       die "backup contains no branch protection or managed ruleset to restore"
     fi
     verify_rollback_prerequisites "$ARTIFACT"
-    restore_branch_protection "$protection"
-    current="$(managed_ruleset_json)"
-    prior_ruleset_payload=""
-    prior_ruleset_id=""
-    ruleset_mutation="none"
-    if [ "$before" = null ] && [ "$current" != null ]; then
-      prior_ruleset_payload="$(ruleset_update_payload <<<"$current")"
-      prior_ruleset_id="$(jq -r .id <<<"$current")"
-      api --method DELETE "orgs/$ORG/rulesets/$prior_ruleset_id"
-      ruleset_mutation="deleted"
-    elif [ "$before" != null ]; then
-      restore_payload="$(ruleset_update_payload <<<"$before")"
-      if [ "$current" = null ]; then
-        printf '%s\n' "$restore_payload" | api --method POST "orgs/$ORG/rulesets" --input - >/dev/null
-        ruleset_mutation="created"
-      else
-        prior_ruleset_payload="$(ruleset_update_payload <<<"$current")"
-        prior_ruleset_id="$(jq -r .id <<<"$current")"
-        printf '%s\n' "$restore_payload" \
-          | api --method PUT "orgs/$ORG/rulesets/$prior_ruleset_id" --input - >/dev/null
-        ruleset_mutation="updated"
-      fi
+    source_ruleset="$(managed_ruleset_json)"
+    source_protection="$(branch_protection_json)"
+    if [ "$source_ruleset" = null ] && [ "$source_protection" = null ]; then
+      die "current policy state has no protection to preserve"
     fi
-    if ! (verify_rollback_state "$before" "$ARTIFACT"); then
-      case "$ruleset_mutation" in
-        updated)
-          printf '%s\n' "$prior_ruleset_payload" \
-            | api --method PUT "orgs/$ORG/rulesets/$prior_ruleset_id" --input - >/dev/null
-          ;;
-        deleted)
-          printf '%s\n' "$prior_ruleset_payload" \
-            | api --method POST "orgs/$ORG/rulesets" --input - >/dev/null
-          ;;
-      esac
-      if [ "$ruleset_mutation" = updated ] || [ "$ruleset_mutation" = deleted ]; then
-        (verify_ruleset_against "$prior_ruleset_payload") \
-          || die "rollback failed and the prior ruleset could not be verified after restore"
+    if ! (
+      if [ "$protection" != null ]; then
+        restore_branch_protection "$protection" || exit $?
+        verify_policy_state "$source_ruleset" "$protection" || exit $?
       fi
-      die "rollback failed verification; the prior managed ruleset was restored when one existed"
+      current="$(managed_ruleset_json)" || exit $?
+      if [ "$before" = null ]; then
+        [ "$protection" != null ] || die "rollback target contains no protection"
+        if [ "$current" != null ]; then
+          api --method DELETE "orgs/$ORG/rulesets/$(jq -r .id <<<"$current")" || exit $?
+        fi
+      else
+        restore_payload="$(ruleset_update_payload <<<"$before")"
+        if [ "$current" = null ]; then
+          printf '%s\n' "$restore_payload" \
+            | api --method POST "orgs/$ORG/rulesets" --input - >/dev/null || exit $?
+        else
+          printf '%s\n' "$restore_payload" \
+            | api --method PUT "orgs/$ORG/rulesets/$(jq -r .id <<<"$current")" --input - >/dev/null \
+            || exit $?
+        fi
+        verify_ruleset_against "$before" || exit $?
+      fi
+      if [ "$protection" = null ]; then
+        current_protection="$(branch_protection_json)" || exit $?
+        if [ "$current_protection" != null ]; then
+          api --method DELETE "repos/$ORG/$REPOSITORY/branches/$BRANCH/protection" || exit $?
+        fi
+      fi
+      verify_policy_state "$before" "$protection" || exit $?
+    ); then
+      (restore_policy_state "$source_ruleset" "$source_protection") \
+        || die "rollback failed and the complete prior policy state could not be restored"
+      die "rollback failed verification; the complete prior policy state was restored"
     fi
     echo "Rollback matches captured branch protection."
     ;;

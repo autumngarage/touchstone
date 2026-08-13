@@ -91,11 +91,21 @@ case "$method $endpoint" in
   "POST orgs/autumngarage/rulesets")
     jq '(.rules[] | select(.type == "pull_request") | .parameters.required_reviewers) = [] | . + {id:123}' >"$state/ruleset.json"
     echo "POST org-ruleset" >>"$state/mutations.log"
+    if [ "${GH_FAKE_FAIL_ORG_MUTATION_ONCE:-0}" = 1 ] && [ ! -f "$state/org-mutation-failed" ]; then
+      touch "$state/org-mutation-failed"
+      echo "gh: API unavailable after mutation (HTTP 503)" >&2
+      exit 1
+    fi
     emit "$(cat "$state/ruleset.json")"
     ;;
   "PUT orgs/autumngarage/rulesets/123")
     jq '(.rules[] | select(.type == "pull_request") | .parameters.required_reviewers) = [] | . + {id:123}' >"$state/ruleset.json"
     echo "PUT org-ruleset" >>"$state/mutations.log"
+    if [ "${GH_FAKE_FAIL_ORG_MUTATION_ONCE:-0}" = 1 ] && [ ! -f "$state/org-mutation-failed" ]; then
+      touch "$state/org-mutation-failed"
+      echo "gh: API unavailable after mutation (HTTP 503)" >&2
+      exit 1
+    fi
     emit "$(cat "$state/ruleset.json")"
     ;;
   "DELETE orgs/autumngarage/rulesets/123")
@@ -107,10 +117,15 @@ case "$method $endpoint" in
       echo "gh: API unavailable (HTTP 503)" >&2
       exit 1
     fi
-    if [ "${GH_FAKE_BRANCH_ERROR_ONCE:-0}" = 1 ] && [ ! -f "$state/branch-error-used" ]; then
-      touch "$state/branch-error-used"
-      echo "gh: API unavailable (HTTP 503)" >&2
-      exit 1
+    if [ -n "${GH_FAKE_BRANCH_ERROR_ON_CALL:-}" ]; then
+      branch_calls=0
+      [ ! -f "$state/branch-calls" ] || branch_calls="$(cat "$state/branch-calls")"
+      branch_calls=$((branch_calls + 1))
+      printf '%s\n' "$branch_calls" >"$state/branch-calls"
+      if [ "$branch_calls" -eq "$GH_FAKE_BRANCH_ERROR_ON_CALL" ]; then
+        echo "gh: API unavailable (HTTP 503)" >&2
+        exit 1
+      fi
     fi
     if [ ! -f "$state/branch.json" ]; then
       echo "gh: Branch not protected (HTTP 404)" >&2
@@ -191,7 +206,7 @@ init_branch() {
   }' "$BASELINE" >"$TMP_DIR/state/branch.json"
   : >"$TMP_DIR/state/mutations.log"
   rm -f "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/bad-effective-used" \
-    "$TMP_DIR/state/branch-error-used"
+    "$TMP_DIR/state/branch-calls" "$TMP_DIR/state/org-mutation-failed"
 }
 
 run_policy() {
@@ -377,6 +392,18 @@ diff -u <(printf 'PUT org-ruleset\nPUT org-ruleset\n') "$TMP_DIR/state/mutations
   || fail "failed update did not restore the previous ruleset immediately"
 ok "failed in-place update restores and verifies the prior active gate"
 
+echo "==> Ambiguous apply mutation restores the complete prior state"
+init_branch
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_FAIL_ORG_MUTATION_ONCE=1 \
+  "$SCRIPT" apply "$POLICY" >/dev/null 2>&1; then
+  fail "apply succeeded after an ambiguous organization-ruleset mutation"
+fi
+[ -f "$TMP_DIR/state/branch.json" ] \
+  || fail "ambiguous apply mutation did not preserve branch protection"
+[ ! -f "$TMP_DIR/state/ruleset.json" ] \
+  || fail "ambiguous apply mutation left an unverified ruleset installed"
+ok "ambiguous apply mutation restores and verifies the complete prior state"
+
 echo "==> Failed rollback update restores the prior ruleset"
 init_branch
 run_policy apply "$POLICY" >/dev/null
@@ -398,15 +425,19 @@ echo "==> Failed rollback deletion restores the prior ruleset"
 init_branch
 run_policy apply "$POLICY" >/dev/null
 : >"$TMP_DIR/state/mutations.log"
-if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BRANCH_ERROR_ONCE=1 \
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BRANCH_ERROR_ON_CALL=3 \
   "$SCRIPT" rollback "$BASELINE" "$POLICY" >/dev/null 2>&1; then
   fail "rollback deletion succeeded after branch verification failed"
 fi
 [ -f "$TMP_DIR/state/ruleset.json" ] \
   || fail "failed rollback deletion did not recreate the prior ruleset"
 diff -u <(printf 'PUT branch-protection\nDELETE org-ruleset\nPOST org-ruleset\n') \
-  "$TMP_DIR/state/mutations.log" >/dev/null \
+  <(head -3 "$TMP_DIR/state/mutations.log") >/dev/null \
   || fail "failed rollback deletion did not restore the previous ruleset immediately"
+tail -1 "$TMP_DIR/state/mutations.log" | grep -qx 'DELETE branch-protection' \
+  || fail "failed rollback deletion did not restore the previous branch state"
+run_policy verify "$POLICY" >/dev/null \
+  || fail "failed rollback deletion did not verify the complete prior policy state"
 ok "failed rollback deletion restores the prior active gate"
 
 echo "==> PASS: audited GitHub policy lifecycle is safe and deterministic"
