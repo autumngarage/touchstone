@@ -321,6 +321,19 @@ if grep -Fq 'resolve_comment_heads' "$WORKFLOW" \
 else
   fail "result evidence must never prefix-match an abbreviated commit"
 fi
+if grep -Fq '{7,40}' "$WORKFLOW" \
+  && grep -Fq '[ "${#abbreviated}" -eq 40 ]' "$WORKFLOW"; then
+  ok "full reviewed commit SHAs bypass abbreviation lookup"
+else
+  fail "collector must accept full reviewed commit SHAs directly"
+fi
+if grep -Fq 'ignoring that item' "$WORKFLOW" \
+  && grep -Fq 'resolved=""' "$WORKFLOW" \
+  && ! grep -Fq 'commits/$abbreviated" --jq .sha)" || return 1' "$WORKFLOW"; then
+  ok "one unresolvable historical abbreviation cannot poison newer evidence"
+else
+  fail "unresolvable historical abbreviations must invalidate only their own evidence item"
+fi
 PREINVALIDATE_LINE="$(grep -n 'preinvalidated_items=' "$WORKFLOW" | cut -d: -f1)"
 EVALUATE_LOOP_LINE="$(grep -n 'evaluate_pr \"\$number\" \"\$known_head\" \"\$pending_id\"' "$WORKFLOW" | cut -d: -f1)"
 if [ -n "$PREINVALIDATE_LINE" ] \

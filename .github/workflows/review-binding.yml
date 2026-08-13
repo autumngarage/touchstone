@@ -82,7 +82,12 @@ jobs:
             printf '{}\n' >"$tmp_dir/resolved-heads.json"
             while IFS=$'\t' read -r id abbreviated || [ -n "$id" ]; do
               [ -n "$id" ] || continue
-              resolved="$(gh api "repos/$REPO/commits/$abbreviated" --jq .sha)" || return 1
+              if [ "${#abbreviated}" -eq 40 ]; then
+                resolved="$abbreviated"
+              elif ! resolved="$(gh api "repos/$REPO/commits/$abbreviated" --jq .sha 2>/dev/null)"; then
+                echo "WARNING: trusted review comment $id names an unresolvable commit $abbreviated; ignoring that item." >&2
+                resolved=""
+              fi
               jq --arg id "$id" --arg sha "$resolved" '. + {($id): $sha}' \
                 "$tmp_dir/resolved-heads.json" >"$tmp_dir/resolved-heads.next.json"
               mv "$tmp_dir/resolved-heads.next.json" "$tmp_dir/resolved-heads.json"
@@ -90,7 +95,7 @@ jobs:
               .[]
               | (.user.login // "") as $login
               | select(($trusted | split(",") | index($login)) != null)
-              | ((.body // "") | capture("Reviewed commit:[*]*[[:space:]]*`(?<sha>[0-9a-fA-F]{7,39})`")?) as $match
+              | ((.body // "") | capture("Reviewed commit:[*]*[[:space:]]*`(?<sha>[0-9a-fA-F]{7,40})`")?) as $match
               | select($match != null)
               | [(.id | tostring), $match.sha] | @tsv
             ' "$comments_file")
