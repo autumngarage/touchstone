@@ -119,8 +119,9 @@ a whole.
 ### Pipeline Meta-Fixes Ship First
 
 If a lane changes the review/merge pipeline itself, ship that lane before other
-parallel lanes. Pipeline fixes include `scripts/merge-pr.sh`,
-`scripts/open-pr.sh`, `scripts/merge-pr.sh`, and pre-push hooks. Every
+parallel lanes. Pipeline fixes include the delivery prose in
+`principles/git-workflow.md`, `.github/workflows/`, `scripts/respond-review.sh`,
+and pre-commit hooks. Every
 other lane flows through that path at review/merge time, so leaving known
 pipeline bugs in place can invalidate otherwise-correct slice PRs.
 

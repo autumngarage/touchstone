@@ -266,17 +266,11 @@ if [ "$DEPS_ONLY" = false ]; then
   # 6. Check touchstone files
   # --------------------------------------------------------------------------
   info "Checking touchstone files"
-  # Skip update if this IS the Touchstone repo (it's the source, not a downstream project).
-  if [ -f "bin/touchstone" ] && [ -f "lib/auto-update.sh" ]; then
-    ok "this is the Touchstone repo — skipping self-update"
-  elif [ -f ".touchstone-version" ]; then
-    touchstone update --check 2>&1 | grep -E "Already|Needs update|Run: touchstone update" | head -5 | while read -r line; do
-      ok "$line"
-    done
-    ok "touchstone update status checked"
+  if [ -f "TOUCHSTONE.md" ] || [ -f "principles/git-workflow.md" ]; then
+    ok "touchstone steering present"
   else
-    warn "No .touchstone-version found — this project hasn't been bootstrapped."
-    warn "Run: touchstone new $(pwd)"
+    warn "No touchstone steering found in this project."
+    warn "Copy TOUCHSTONE.md and principles/ in from the touchstone repo."
   fi
 
   # --------------------------------------------------------------------------

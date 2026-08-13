@@ -12,8 +12,9 @@ When coding, follow the authoring guide. When explicitly reviewing a PR or runni
 
 <!-- touchstone:steering:start -->
 
-<!-- This block is generated from TOUCHSTONE.md. `touchstone update` refreshes it.
-     Edit content OUTSIDE the markers; touchstone will not touch project-owned content. -->
+<!-- This block is a hand-maintained copy of TOUCHSTONE.md. The renderer that
+     generated it (lib/touchstone-block.sh) was deleted; edit TOUCHSTONE.md first,
+     then mirror the change here. Edit content OUTSIDE the markers freely. -->
 
 ## Touchstone — Shared Agent Steering
 
@@ -23,7 +24,7 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 **Humans approve plans. Agents write and ship code. GitHub reviews code.**
 
-That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar. Because approval never comes from a person, the merge gate is: required checks green, an **answered** review from a trusted author bound to this exact head and base — a clean verdict, or findings with every thread resolved — and no active `CHANGES_REQUESTED`. An untrusted, stale, or dismissed review fails the gate even with nothing open; answered findings stand — only a body-only finding (no threads) needs `open-pr.sh --fresh-review`. Local hooks are fast feedback; branch protection is the real boundary; emergency paths are audited.
+That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar. Because approval never comes from a person, the merge gate is: required checks green, an **answered** review from a trusted author bound to this exact head and base — a clean verdict, or findings with every thread resolved — and no active `CHANGES_REQUESTED`. A stale or dismissed review fails the gate even with nothing open; answered findings stand — only a body-only finding (no threads) needs a fresh review request on the unchanged head. Note that an AI reviewer never files an `APPROVED` review — GitHub reserves that for real users — so the gate is the answered review, not an approval count. Local hooks are fast feedback; branch protection is the real boundary; emergency paths are audited.
 
 To hold those lines, Touchstone does three things and nothing else:
 
@@ -72,9 +73,12 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 3. **Claim issues before implementation.** If the work starts from a GitHub issue, claim it before editing or dispatching an agent: `bash scripts/claim-issue.sh <n>`. Claim every issue in a multi-issue bundle so two agents do not ship competing fixes.
 4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
 5. **Reconcile issues.** Before opening the PR, list every GitHub issue found, claimed, fixed, partially fixed, or made stale by the work. Fully fixed issues get closing trailers (`Closes-issue: #123` or `Closes #123`) so merge auto-closes them; partial/stale issues get a comment explaining the evidence or remaining gap. Do not leave fixed issues open silently.
-6. **Ship.** `bash scripts/open-pr.sh --auto-merge` opens the PR, requests review, and merges when the gate passes. If it stops, fix what it names and rerun.
+6. **Ship.** `git push -u origin HEAD`, then `gh pr create`. Put the closing reference (`Closes #123`) in the **PR body** — squash-merge reads the body, not the commit. Request review by commenting `@codex review` on the PR.
 7. **Answer every piece of PR feedback before merging.** Whoever reviews (hosted AI, bot, or colleague), reply to each comment and resolve the thread; unresolved threads and `CHANGES_REQUESTED` block the merge. `bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file>` replies and resolves in one step; `--all-resolved-check` proves none remain.
-8. **Clean up after merge.** Delete the local branch if it persists.
+8. **Merge** with `gh pr merge <n> --squash --match-head-commit <sha>`, binding to the head the review actually saw. Its exit code lies in both directions — confirm against real state rather than trusting it.
+9. **Clean up after merge.** Delete the local branch if it persists.
+
+Every command above is the whole mechanism; there is no wrapper. `principles/git-workflow.md` carries the full sequence, including thread resolution.
 
 Do not bypass the PR/review/merge path with a direct default-branch push except through the documented emergency path in `principles/git-workflow.md`.
 
@@ -91,13 +95,8 @@ Do not bypass the PR/review/merge path with a direct default-branch push except 
 | audit a structural bug class after fixing one instance | `principles/audit-weak-points.md` |
 | hit a bug in an upstream tool (don't silently work around it) | `principles/file-upstream-bugs.md` |
 | write, trust, or audit agent memory — it is a cache, not truth | `principles/memory-hygiene.md` |
-| write a `.cortex/` artifact or see a Tier-1 trigger fire | `.cortex/protocol.md` |
 
 Claude Code agents: the bundled `touchstone-*` and `memory-audit` skills mirror this table in your session header. Trust whichever surface fires first.
-
-## Orientation
-
-If `.cortex/state.md` exists in the project, read it at session start for the current state of in-flight work.
 
 <!-- touchstone:steering:end -->
 

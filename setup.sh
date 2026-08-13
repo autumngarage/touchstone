@@ -60,20 +60,6 @@ if [ "$DEPS_ONLY" = false ]; then
   fi
 
   # --------------------------------------------------------------------------
-  # 2. Touchstone CLI
-  # --------------------------------------------------------------------------
-  info "Checking touchstone"
-  if command -v touchstone >/dev/null 2>&1; then
-    TOUCHSTONE_VERSION_SUMMARY="$(touchstone version 2>&1 | awk 'NF && !seen { sub(/^touchstone /, ""); print; seen = 1 }')"
-    ok "touchstone ${TOUCHSTONE_VERSION_SUMMARY:-installed}"
-  else
-    warn "Installing touchstone..."
-    brew tap autumngarage/touchstone 2>/dev/null || true
-    brew install touchstone
-    ok "touchstone installed"
-  fi
-
-  # --------------------------------------------------------------------------
   # 3. Dev tools (brew)
   # --------------------------------------------------------------------------
   info "Checking dev tools"
@@ -98,24 +84,7 @@ if [ "$DEPS_ONLY" = false ]; then
   brew_install_if_missing "shfmt" "shfmt"
 
   # --------------------------------------------------------------------------
-  # 5. Sync touchstone files to latest
-  # --------------------------------------------------------------------------
-  info "Checking touchstone files"
-  # Skip update if this IS the Touchstone repo (it's the source, not a downstream project).
-  if [ -f "bin/touchstone" ] && [ -f "lib/auto-update.sh" ]; then
-    ok "this is the Touchstone repo — skipping self-update"
-  elif [ -f ".touchstone-version" ]; then
-    touchstone update --check 2>&1 | grep -E "Already|Needs update|Run: touchstone update" | head -5 | while read -r line; do
-      ok "$line"
-    done
-    ok "touchstone update status checked"
-  else
-    warn "No .touchstone-version found — this project hasn't been bootstrapped."
-    warn "Run: touchstone new $(pwd)"
-  fi
-
-  # --------------------------------------------------------------------------
-  # 6. Pre-commit hooks
+  # 5. Pre-commit hooks
   # --------------------------------------------------------------------------
   info "Setting up git hooks"
   if [ -f ".pre-commit-config.yaml" ]; then

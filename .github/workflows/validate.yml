@@ -1,200 +1,64 @@
 name: validate
 
-# The one check that proves the tests actually passed.
+# The required check. It answers exactly one question: did the test suite run
+# and pass on this exact commit?
 #
-# Before this existed, the entire 43-file fast tier ran only on the author's
-# machine, in the agent's own process, and was reported by that same agent.
-# Nothing independently verified it, and `required_status_checks` was empty —
-# so "bad code cannot reach main" was enforced by nothing.
+# Everything this workflow does NOT do is done by branch protection — refusing
+# pushes to main, requiring a PR, requiring a review, requiring conversation
+# resolution. Re-implementing any of that here is what grew the previous
+# 283-line version and the review-binding workflow beside it, both deleted.
 #
-# It is deliberately the same command a developer runs locally, with no CI-only
-# variations: one code path, so a green run here means the same thing as a green
-# run there.
-#
-# THIS ENFORCES. `validate (ubuntu-latest)` is a required status check on
-# `main`, with `strict: true`, since #727 closed. A red run blocks the merge.
-# (An earlier version of this header said the opposite — "this reports; it does
-# not enforce" — and stayed on disk after the change it described had shipped.
-# A comment that outlives its claim is not documentation, it is a decoy.)
-#
-# A `pull_request` run evaluates the workflow definition proposed BY the pull
-# request, so this file is one of the things a PR can edit — and with no human
-# reading diffs, the checks are the entire quality bar. Nothing here is
-# ordinary CI config: every relaxation of this file is a change to the merge
-# gate, and reads as one. tests/test-validate-workflow.sh holds the properties
-# that would otherwise be one deleted line from silently gone.
-#
-# DEPENDENCY CONTRACT. The required job may depend on the runner image, this
+# DEPENDENCY CONTRACT: this job may depend on the runner image, this
 # repository, and github.com. Nothing else. Anything no test executes is not
 # installed here.
 #
-# That is not hygiene, it is availability of the merge gate. On 2026-08-12 two
-# third-party 503s — chocolatey's community feed on the Windows leg (#803), a
-# release download on the REQUIRED Linux leg (#808) — turned the gate red while
-# fetching shellcheck and shfmt. No test ran either time, and the required
-# failure had to be diagnosed by hand before anything could merge. Nothing in
-# this repository has ever invoked either binary: every reference under `tests/`
-# is a fake binary prepended to PATH or a grep over config text, and
-# lib/preflight.sh skips a missing linter with a visible line. The lint suite
-# runs at pre-commit and via `pre-commit run --all-files` — a different gate, on
-# a different machine, off the merge path. So the gate's availability was
-# pledged to two CDNs for nothing (#742).
+# That contract is now actually kept. The old version preached it in a header
+# while installing pre-commit from PyPI on every run, and on 2026-08-12 two
+# third-party 503s turned the required check red while fetching shellcheck and
+# shfmt — no test ran either time (#742, #803, #808). No surviving test invokes
+# pre-commit, jq, shellcheck or shfmt, so nothing is fetched at all: this job
+# cannot go red for a reason outside this repository. Lint runs at pre-commit
+# and via `pre-commit run --all-files` — a different gate, off the merge path.
 #
 # Before adding an install step here, name the test that executes the binary.
-# If you cannot name one, the dependency belongs at pre-commit time, not on the
-# merge boundary.
+# If you cannot name one, the dependency belongs at pre-commit time.
 #
-# The suite runs as a matrix: ubuntu-latest and windows-latest. convoy runs on
-# Windows, and GitHub Actions' own `shell: bash` on windows-latest IS Git Bash,
-# so shipping bash means being in that contract (#742, scoped by decision 3 on
-# #744). The Windows leg runs the same full fast tier as Linux — no paths
-# filter, no spot checks — because a spot check is not support.
-#
-# The Windows leg is ADVISORY until it has been observed green. This is trap 1's
-# local-gate cousin: scripts/merge-pr.sh blocks on ANY failing check, required
-# or not, so an unproven leg that can go red for platform reasons would freeze
-# every merge in the repository the moment this lands on main. Advisory is not
-# silent — a red run still writes ::error annotations per failed test and a step
-# summary naming #742 — it just cannot hold other work hostage until the
-# discovery cycle (port or loud-skip each platform failure) has actually
-# finished.
-#
-# The tolerance is a step-level `exit 0`, NOT job-level continue-on-error: the
-# latter keeps the WORKFLOW green while the check itself still reports failure,
-# which the merge gate blocks on. This file has never carried a
-# continue-on-error key; earlier prose here said it did.
-# tests/test-validate-workflow.sh now asserts both halves — the required job
-# carries no continue-on-error, and every `exit 0` in the fast tier sits inside
-# the matrix.advisory guard. Flipping the leg to enforcing is the one-line
-# `advisory: true` -> `false`, which also renames its check back to
-# `validate (windows-latest)`; that is the closing act of #742. The subset
-# ALREADY proven on Windows keeps enforcing separately in the windows-proven
-# job — advisory for the unproven remainder must never downgrade established
-# coverage.
+# The job name must stay `validate (ubuntu-latest)` — that exact string is the
+# required status check configured on main. Renaming the job silently un-gates
+# the branch.
 
 on:
   pull_request:
   push:
     branches: [main]
 
-permissions:
-  contents: read
-
-# A newer push supersedes an in-flight run for the same ref. Without this,
-# a rebase-and-reship leaves the old run racing the new one, and the merge
-# gate can bind to whichever finishes last.
+# A newer push supersedes an in-flight run for the same ref. Without this, a
+# rebase-and-reship leaves the old run racing the new one, and the merge gate
+# can bind to whichever finishes last.
 concurrency:
   group: validate-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 defaults:
   run:
     shell: bash
 
 jobs:
-  # The Windows checks that are ALREADY PROVEN stay enforcing while the full
-  # matrix leg below is advisory. The deleted windows-git-bash.yml enforced
-  # these on windows-latest for weeks; making the unported remainder advisory
-  # must not un-prove them (PR #758 review). This is a ratchet: as the #742
-  # discovery cycle ports tests, they graduate into this list, and when the
-  # full leg flips to enforcing this job dissolves into it.
-  windows-proven:
-    name: windows-proven
-    runs-on: windows-latest
+  validate:
+    name: validate (ubuntu-latest)
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Force LF line endings before checkout
-        run: |
-          git config --global core.autocrlf false
-          git config --global core.eol lf
-
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Configure git identity
-        run: |
-          git config --global user.email "ci@touchstone.invalid"
-          git config --global user.name "Touchstone CI"
-          git config --global init.defaultBranch main
-
-      - name: Proven Windows subset — sha256/preflight and the sed shim
-        run: |
-          set -euo pipefail
-          command -v sha256sum
-          bash -n lib/sha256.sh lib/preflight.sh scripts/merge-pr.sh lib/sed-inplace.sh bin/touchstone
-          bash tests/test-preflight.sh
-          sed --version | head -1
-          bash tests/test-sed-inplace.sh
-
-  validate:
-    # Advisory legs live in their own check NAMESPACE: merge-pr.sh excludes
-    # names matching ^validate-advisory from its failing-check gate, which is
-    # the only exclusion that also covers dependency-install failures and job
-    # timeouts — a step-level exit 0 cannot (PR #758 review). Graduation to
-    # enforcing = flipping advisory to false, which renames the check back.
-    name: ${{ matrix.advisory && 'validate-advisory' || 'validate' }} (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      # One platform's failure must not cancel the other's run: each leg's
-      # results are independent evidence, and the Windows leg exists precisely
-      # to surface failures the Linux leg cannot see.
-      fail-fast: false
-      matrix:
-        include:
-          # Derived from measurement, not from a round number. The suite ran
-          # 1,233s on a comparable Linux runner even with test-bootstrap.sh
-          # excluded, and test-bootstrap.sh alone exceeds five minutes — so a
-          # full green run is ~30 minutes. The loop deliberately continues past
-          # individual failures, which makes an under-set timeout worse than
-          # useless: Actions would kill it mid-suite and the later test files
-          # would never report at all.
-          - os: ubuntu-latest
-            timeout: 60
-            advisory: false
-          # Fork-heavy bash is several times slower under MSYS2 than on Linux
-          # (process creation is emulated, not native), so the ~30-minute Linux
-          # measurement scales up rather than across. Same rationale as above:
-          # an under-set timeout kills the run mid-suite and hides every test
-          # after the cut.
-          - os: windows-latest
-            timeout: 180
-            advisory: true
-    timeout-minutes: ${{ matrix.timeout }}
-    steps:
-      # Git for Windows on the runner image checks out with CRLF translation
-      # enabled, and actions/checkout clones using the runner's git config.
-      # A shell script with CRLF endings fails with cryptic errors like
-      # "$'\r': command not found" — 43 test files would go red for one
-      # configuration reason. Setting this before checkout keeps the working
-      # tree byte-identical to the repository.
-      - name: Force LF line endings before checkout
-        if: runner.os == 'Windows'
-        run: |
-          git config --global core.autocrlf false
-          git config --global core.eol lf
-
-      - name: Checkout repository
+        # Pinned to a full commit SHA, not a tag: only a SHA is an immutable
+        # reference, and this action runs on the merge path.
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # The fast tier exercises real git history in temp repos; a shallow
-          # clone is fine, but the tests need a usable git identity.
+          # The suite exercises real git history in temp repos.
           fetch-depth: 0
-
-      # Belt to the braces above: prove the checkout actually produced LF
-      # bytes on disk. If CRLF leaked anyway (an image change, a checkout
-      # action change), fail here with one clear message instead of letting
-      # the whole suite fail cryptically.
-      - name: Verify the checkout kept LF line endings
-        if: runner.os == 'Windows'
-        run: |
-          set -euo pipefail
-          for f in bin/touchstone tests/test-preflight.sh lib/sed-inplace.sh; do
-            if head -1 "$f" | od -c | grep -q '\\r'; then
-              printf '%s\n' "::error file=$f::CRLF line endings leaked into the checkout despite core.autocrlf=false — every shell script would fail with a carriage-return 'command not found'. Fix the line-ending configuration; do not chase per-test failures."
-              exit 1
-            fi
-          done
-          echo "LF endings confirmed"
 
       - name: Configure git identity
         run: |
@@ -202,115 +66,22 @@ jobs:
           git config --global user.name "Touchstone CI"
           git config --global init.defaultBranch main
 
-      # Everything this job needs that it does NOT fetch. No network, so this
-      # step cannot fail for a reason outside this repository — which is why it
-      # is a separate step from the one below: the two failure MEANINGS are
-      # different, and a reader who cannot tell them apart goes looking for a
-      # bug in the diff. jq is on both images (Git Bash carries it on
-      # windows-latest), so this verifies rather than installs. Hard check: a
-      # missing jq fails here with one clear line instead of surfacing later as
-      # an unrelated hook-test failure.
-      #
-      # Both legs run the same step. After the shellcheck/shfmt deletion there
-      # was nothing platform-specific left to branch on, and two near-identical
-      # steps are two places for a fix to land in one of.
-      - name: Verify runner-image tools
+      - name: Run the test suite
         run: |
-          set -euo pipefail
-          command -v jq
-          jq --version
-
-      # The ONLY job-time fetch left, and the only step here that can go red for
-      # something that is not a verdict about this repository's code.
-      #
-      # pre-commit is a REQUIREMENT of the suite, not a lint convenience.
-      # bootstrap and update install git hooks through it, and without it
-      # `update --ship` stops at "effective hooks are not ready" — so the
-      # ship-failure case never reaches the step it means to exercise and
-      # fails for an unrelated reason.
-      #
-      # Installed with pipx, not `pip --user`. The latter put a shim on PATH
-      # whose interpreter could not import its own package:
-      #   ModuleNotFoundError: No module named 'pre_commit'
-      # pipx builds an isolated venv and a shim pinned to that venv's
-      # interpreter, so the console script always resolves. pipx is preinstalled
-      # on both runner images.
-      #
-      # PINNED. Unpinned, the required check's verdict depends on whichever
-      # release PyPI serves this morning — a version nobody in this repository
-      # chose, arriving without a diff. 4.6.2 is what CI already resolved to,
-      # so the pin records reality rather than changing it.
-      #
-      # INFRASTRUCTURE labelling, and what it is NOT: this step still exits 1,
-      # the check still goes red, and the merge still blocks. A run that could
-      # not evaluate a single assertion must never report success. All that
-      # changes is that the failure SAYS what it is — in the step name, in an
-      # ::error annotation, and in the job summary — so an operator does not
-      # spend a round-trip proving their diff is innocent (#742).
-      - name: Provision pre-commit from PyPI (INFRASTRUCTURE — a failure here is not a test verdict)
-        run: |
-          set -euo pipefail
-          if ! pipx install "pre-commit==4.6.2"; then
-            printf '%s\n' "::error title=INFRASTRUCTURE — dependency provisioning failed::pipx could not install pre-commit==4.6.2 from PyPI on ${{ matrix.os }}. No test in this repository was evaluated; this is NOT a verdict about the code under review. Re-run the job once PyPI is reachable. The check stays red and blocking on purpose."
-            {
-              echo "## INFRASTRUCTURE failure — not a test verdict"
-              echo ""
-              echo "Installing pre-commit==4.6.2 from PyPI failed on ${{ matrix.os }}."
-              echo ""
-              echo "PyPI is a third-party service sitting on the merge path. When it is"
-              echo "unavailable this step cannot run, and **no assertion in this repository"
-              echo "was evaluated** — nothing about the diff under review is implicated."
-              echo ""
-              echo "Re-run the job. This check remains red and blocking by design: a run"
-              echo "that could not prove the tests passed must never report success (#742)."
-            } >>"$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          pre-commit --version
-
-      # No `env:` block here, deliberately. Setting TOUCHSTONE_NO_AUTO_UPDATE=1
-      # for the whole loop disables the very behaviour tests/test-auto-update.sh
-      # asserts, so that file fails with "expected brew upgrade followed by CLI
-      # re-exec" on every run. The tests already fake their own updater and
-      # sync, and the fast tier is green locally with neither variable set — so
-      # exporting them here was a CI-only variation of exactly the kind the
-      # header of this file rules out. One code path.
-      - name: Run the fast tier
-        run: |
-          set -euo pipefail
+          set -uo pipefail
           failed=0
           for t in tests/test-*.sh; do
             echo "::group::$t"
             if bash "$t"; then
-              echo "::endgroup::"
+              echo "PASS $t"
             else
-              echo "::endgroup::"
-              echo "::error file=$t::$t failed"
+              echo "::error file=$t::test file failed"
               failed=$((failed + 1))
             fi
+            echo "::endgroup::"
           done
           if [ "$failed" -ne 0 ]; then
             echo "$failed test file(s) failed"
-            if [ "${{ matrix.advisory }}" = "true" ]; then
-              # The advisory tolerance lives HERE, in the step, not in
-              # job-level continue-on-error: that keeps the WORKFLOW green but
-              # the job's check still reports failure, which the merge gate
-              # blocks on — the advisory leg was still freezing merges
-              # (observed live on this PR). Exiting 0 after the loud record is
-              # the only level at which "cannot block" is actually true. The
-              # ::error annotations above and this summary are the loudness;
-              # #742's baseline comment tracks the failing list.
-              {
-                echo "## ADVISORY leg red — discovery mode (#742)"
-                echo ""
-                echo "$failed test file(s) failed on ${{ matrix.os }}. This leg cannot"
-                echo "block merges until it has been proven green; every failure above"
-                echo "is either a portability bug to fix or a platform limitation to"
-                echo "loud-skip (see tests/test-sed-inplace.sh for the pattern)."
-              } >>"$GITHUB_STEP_SUMMARY"
-              echo "ADVISORY: $failed failure(s) recorded; not blocking (see #742)."
-              exit 0
-            fi
             exit 1
           fi
-          echo "fast tier green"
+          echo "suite green"
