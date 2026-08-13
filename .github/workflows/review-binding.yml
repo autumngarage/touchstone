@@ -285,6 +285,13 @@ jobs:
                 event_head="$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
                 work_items="$(gh api --paginate "repos/$REPO/commits/$event_head/pulls?per_page=100" \
                   --jq '.[] | select(.state == "open") | [.number, .head.sha] | @tsv')"
+              elif [ "$(jq -r '.action // ""' "$GITHUB_EVENT_PATH")" = synchronize ]; then
+                event_head="$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")"
+                before_head="$(jq -r '.before' "$GITHUB_EVENT_PATH")"
+                current_item="$(jq -r '[.pull_request.number, .pull_request.head.sha] | @tsv' "$GITHUB_EVENT_PATH")"
+                previous_items="$(gh api --paginate "repos/$REPO/commits/$before_head/pulls?per_page=100" \
+                  --jq '.[] | select(.state == "open") | [.number, .head.sha] | @tsv')"
+                work_items="$(printf '%s\n%s\n' "$current_item" "$previous_items" | awk 'NF && !seen[$0]++')"
               else
                 work_items="$(jq -r '[.pull_request.number, .pull_request.head.sha] | @tsv' "$GITHUB_EVENT_PATH")"
               fi

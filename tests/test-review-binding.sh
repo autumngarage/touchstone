@@ -93,6 +93,9 @@ run_case "untrusted request marker creator fails" '.statuses[0].creator.login = 
 run_case "edited-away request fails" '.issueComments[0].body = "never mind"' failure "no trusted review request"
 run_case "untrusted result comment is not review evidence" '.issueComments[1].user.login = "attacker"' failure "no trusted exact-head"
 run_case "editing a clean result reopens it as a body finding" '.issueComments[1].updated_at = "2026-08-13T10:02:00Z"' failure "body-only"
+run_case "body-only result binds through its full-SHA blob link" '
+  .issueComments[1].body = "### 💡 Codex Review\n\nhttps://github.com/autumngarage/touchstone/blob/1111111111111111111111111111111111111111/path/file#L1\n\nFix this"' \
+  failure "body-only"
 
 echo "==> Provider and inspection failures"
 run_case "incomplete API evidence fails closed" '.complete = false' failure "collection was incomplete"
@@ -286,6 +289,12 @@ if grep -Fq -- "[.number, .head.sha] | @tsv" "$WORKFLOW"; then
   ok "discovery paths carry each affected PR head into evaluation"
 else
   fail "push/status discovery must preserve the affected head SHA"
+fi
+if grep -Fq "'.before'" "$WORKFLOW" \
+  && grep -Fq 'previous_items=' "$WORKFLOW"; then
+  ok "synchronize rebuilds PRs left on the event's previous shared head"
+else
+  fail "synchronize must fan out over open PRs associated with the previous head"
 fi
 if grep -Fq 'base=$pushed_ref&' "$WORKFLOW"; then
   fail "push sweep must not interpolate a base ref into a query string"
