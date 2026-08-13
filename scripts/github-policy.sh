@@ -56,6 +56,7 @@ normalize_ruleset() {
       | map(
           if .type == "pull_request" then
             (.parameters.allowed_merge_methods |= sort)
+            | (.parameters.required_reviewers = (.parameters.required_reviewers // []))
           elif .type == "required_status_checks" then
             (.parameters.required_status_checks |= sort_by([.context, (.integration_id // 0)]))
           elif .type == "workflows" then

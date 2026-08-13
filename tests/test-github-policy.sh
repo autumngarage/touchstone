@@ -82,12 +82,12 @@ case "$method $endpoint" in
     cat "$state/ruleset.json"
     ;;
   "POST orgs/autumngarage/rulesets")
-    jq '. + {id:123}' >"$state/ruleset.json"
+    jq '(.rules[] | select(.type == "pull_request") | .parameters.required_reviewers) = [] | . + {id:123}' >"$state/ruleset.json"
     echo "POST org-ruleset" >>"$state/mutations.log"
     emit "$(cat "$state/ruleset.json")"
     ;;
   "PUT orgs/autumngarage/rulesets/123")
-    jq '. + {id:123}' >"$state/ruleset.json"
+    jq '(.rules[] | select(.type == "pull_request") | .parameters.required_reviewers) = [] | . + {id:123}' >"$state/ruleset.json"
     echo "PUT org-ruleset" >>"$state/mutations.log"
     emit "$(cat "$state/ruleset.json")"
     ;;
@@ -247,6 +247,10 @@ run_policy apply "$POLICY"
 after_count="$(wc -l <"$TMP_DIR/state/mutations.log" | tr -d ' ')"
 [ "$before_count" = "$after_count" ] || fail "second apply changed remote state"
 ok "apply is ordered safely and a second apply is a no-op"
+jq -e '.rules[] | select(.type == "pull_request") | .parameters.required_reviewers == []' \
+  "$TMP_DIR/state/ruleset.json" >/dev/null \
+  || fail "fake API did not exercise GitHub's required_reviewers default"
+ok "GitHub's empty required_reviewers default does not create false drift"
 
 echo "==> Rollback restores before removing replacement"
 run_policy rollback "$TMP_DIR/backup.json" "$POLICY"
