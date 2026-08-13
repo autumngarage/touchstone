@@ -1,81 +1,96 @@
 #!/usr/bin/env bash
 #
-# scripts/touchstone-run.sh — run project profile tasks from .touchstone-config.
+# scripts/touchstone-run.sh — execute schema-v1 .touchstone.toml declarations.
 #
 # Usage:
-#   bash scripts/touchstone-run.sh detect
-#   bash scripts/touchstone-run.sh lint
-#   bash scripts/touchstone-run.sh typecheck
-#   bash scripts/touchstone-run.sh build
-#   bash scripts/touchstone-run.sh test
-#   bash scripts/touchstone-run.sh validate
+#   bash scripts/touchstone-run.sh validate [--json] [--project DIR] [--config FILE]
 #
-set -euo pipefail
+# This is the single validation engine used by the local CLI boundary and the
+# organization-required workflow. It executes declarations; it never detects a
+# project type, package manager, command, or target.
+
+set -uo pipefail
 
 ACTION="${1:-validate}"
-HOOK_PRE_COMMIT_REMOTE_BRANCH="${PRE_COMMIT_REMOTE_BRANCH:-}"
-HOOK_PRE_COMMIT_REMOTE_NAME="${PRE_COMMIT_REMOTE_NAME:-origin}"
+if [ "$#" -gt 0 ]; then shift; fi
 
-clear_git_hook_env() {
-  unset GIT_ALTERNATE_OBJECT_DIRECTORIES
-  unset GIT_CONFIG
-  unset GIT_CONFIG_PARAMETERS
-  unset GIT_CONFIG_COUNT
-  unset GIT_OBJECT_DIRECTORY
-  unset GIT_DIR
-  unset GIT_WORK_TREE
-  unset GIT_IMPLICIT_WORK_TREE
-  unset GIT_GRAFT_FILE
-  unset GIT_INDEX_FILE
-  unset GIT_NO_REPLACE_OBJECTS
-  unset GIT_REPLACE_REF_BASE
-  unset GIT_PREFIX
-  unset GIT_SHALLOW_FILE
-  unset GIT_COMMON_DIR
-  unset GIT_NAMESPACE
-  unset GIT_INTERNAL_GETTEXT_SH_SCHEME
-  unset PRE_COMMIT
-  unset PRE_COMMIT_FROM_REF
-  unset PRE_COMMIT_TO_REF
-  unset PRE_COMMIT_LOCAL_BRANCH
-  unset PRE_COMMIT_REMOTE_BRANCH
-  unset PRE_COMMIT_REMOTE_NAME
-  unset PRE_COMMIT_REMOTE_URL
-}
+JSON_MODE=false
+PROJECT_ARG="${TOUCHSTONE_PROJECT_ROOT:-}"
+CONFIG_ARG="${TOUCHSTONE_CONFIG_FILE:-.touchstone.toml}"
 
-# tests/test-find-python-bin.sh sources this script with
-# TOUCHSTONE_RUN_SOURCE_ONLY=1 to call helpers directly without running the
-# action dispatcher at the bottom. Tests pass TOUCHSTONE_RUN_TEST_REPO_ROOT
-# to fix REPO_ROOT explicitly so they can construct fixture filesystems
-# without needing a real git repo.
-if [ "${TOUCHSTONE_RUN_SOURCE_ONLY:-0}" = "1" ]; then
-  REPO_ROOT="${TOUCHSTONE_RUN_TEST_REPO_ROOT:-$(pwd)}"
-else
-  clear_git_hook_env
-  REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-  cd "$REPO_ROOT"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --json)
+      JSON_MODE=true
+      shift
+      ;;
+    --project)
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --project requires a directory" >&2
+        exit 2
+      }
+      PROJECT_ARG="$2"
+      shift 2
+      ;;
+    --config)
+      [ "$#" -ge 2 ] || {
+        echo "ERROR: --config requires a file" >&2
+        exit 2
+      }
+      CONFIG_ARG="$2"
+      shift 2
+      ;;
+    -h | --help)
+      sed -n '3,8p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *)
+      echo "ERROR: unknown argument '$1'" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ "$ACTION" != validate ]; then
+  echo "ERROR: schema-v1 supports only 'validate'; tasks come from .touchstone.toml" >&2
+  exit 2
 fi
 
-CONFIG_FILE="${TOUCHSTONE_CONFIG_FILE:-.touchstone-config}"
+if [ -n "$PROJECT_ARG" ]; then
+  PROJECT_ROOT="$(cd "$PROJECT_ARG" 2>/dev/null && pwd -P)" || {
+    echo "ERROR: project directory does not exist: $PROJECT_ARG" >&2
+    exit 2
+  }
+else
+  PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
+fi
 
-PROJECT_TYPE=""
-PACKAGE_MANAGER=""
-MONOREPO=""
-TARGETS=""
-LINT_COMMAND=""
-TYPECHECK_COMMAND=""
-TYPECHECK_COMMAND_AUTO=false
-BUILD_COMMAND=""
-TEST_COMMAND=""
-VALIDATE_COMMAND=""
+case "$CONFIG_ARG" in
+  /*) CONFIG_FILE="$CONFIG_ARG" ;;
+  *) CONFIG_FILE="$PROJECT_ROOT/$CONFIG_ARG" ;;
+esac
 
-info() { printf '==> %s\n' "$*"; }
-ok() { printf '  OK %s\n' "$*"; }
-warn() { printf '  ! %s\n' "$*" >&2; }
-
-usage() {
-  sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-validate.XXXXXX")" || {
+  echo "ERROR: could not create validation workspace" >&2
+  exit 2
 }
+TARGETS_FILE="$TMP_DIR/targets"
+TASKS_FILE="$TMP_DIR/tasks"
+FAILURES_FILE="$TMP_DIR/failures"
+: >"$TARGETS_FILE"
+: >"$TASKS_FILE"
+: >"$FAILURES_FILE"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+RAN=0
+SKIPPED=0
+FAILED=0
+EXIT_STATUS=0
+SCHEMA_VERSION=""
+RUNTIME=""
+SETUP_COMMAND=""
+VALIDATION_SEEN=false
 
 trim() {
   local value="$1"
@@ -84,664 +99,365 @@ trim() {
   printf '%s' "$value"
 }
 
-truthy() {
-  case "$(printf '%s' "${1:-false}" | tr '[:upper:]' '[:lower:]')" in
-    true | 1 | yes | on) return 0 ;;
-    *) return 1 ;;
-  esac
+human() {
+  if [ "$JSON_MODE" = false ]; then printf '%s\n' "$*"; fi
 }
 
-short_ref_name() {
-  local ref="$1"
-  local remote="${2:-origin}"
+progress() { printf '%s\n' "$*" >&2; }
 
-  case "$ref" in
-    refs/heads/*) ref="${ref#refs/heads/}" ;;
-    refs/remotes/"$remote"/*) ref="${ref#refs/remotes/$remote/}" ;;
-    "$remote"/*) ref="${ref#"$remote/"}" ;;
-  esac
-  printf '%s' "$ref"
+record_failure() {
+  local task="$1" target="$2" status="$3" reason="$4"
+  printf '%s\t%s\t%s\t%s\n' "$task" "$target" "$status" "$reason" >>"$FAILURES_FILE"
+  FAILED=$((FAILED + 1))
+  if [ "$EXIT_STATUS" -eq 0 ]; then EXIT_STATUS="$status"; fi
 }
 
-default_branch_for_remote() {
-  local remote="${1:-origin}"
-  local ref
+emit_report() {
+  local verdict="$1" first=true task target status reason
 
-  ref="$(git symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)"
-  if [ -n "$ref" ]; then
-    printf '%s\n' "${ref#"$remote/"}"
+  if [ "$JSON_MODE" = false ]; then
+    printf '==> validate verdict: %s ran=%d skipped=%d failed=%d\n' \
+      "$verdict" "$RAN" "$SKIPPED" "$FAILED"
     return 0
   fi
 
-  return 1
+  printf '{"schema":1,"verdict":"%s","ran":%d,"skipped":%d,"failed":%d,"failures":[' \
+    "$verdict" "$RAN" "$SKIPPED" "$FAILED"
+  while IFS="$(printf '\t')" read -r task target status reason; do
+    [ -n "$task" ] || continue
+    if [ "$first" = false ]; then printf ','; fi
+    first=false
+    printf '{"task":"%s","target":"%s","status":%s,"reason":"%s"}' \
+      "$task" "$target" "$status" "$reason"
+  done <"$FAILURES_FILE"
+  printf ']}\n'
 }
 
-should_skip_feature_push_validate() {
-  local remote_branch default_branch
-
-  truthy "${TOUCHSTONE_VALIDATE_SKIP_FEATURE_PUSH:-false}" || return 1
-  [ "$ACTION" = "validate" ] || return 1
-  [ -n "$HOOK_PRE_COMMIT_REMOTE_BRANCH" ] || return 1
-
-  remote_branch="$(short_ref_name "$HOOK_PRE_COMMIT_REMOTE_BRANCH" "$HOOK_PRE_COMMIT_REMOTE_NAME")"
-  [ -n "$remote_branch" ] || return 1
-  default_branch="$(default_branch_for_remote "$HOOK_PRE_COMMIT_REMOTE_NAME" || true)"
-  [ -n "$default_branch" ] || return 1
-
-  [ "$remote_branch" != "$default_branch" ] \
-    && [ "$remote_branch" != "main" ] \
-    && [ "$remote_branch" != "master" ]
+config_error() {
+  progress "ERROR: $*"
+  record_failure config root 2 malformed-config
+  emit_report failed
+  exit 2
 }
 
-load_config() {
-  local line key value
+parse_string() {
+  local raw character escaped=false closed=false output="" trailing="" index=1
+  raw="$(trim "$1")"
+  [ "${raw#\"}" != "$raw" ] || return 1
 
-  [ -f "$CONFIG_FILE" ] || return 0
-
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="$(trim "$line")"
-    [ -z "$line" ] && continue
-    case "$line" in \#*) continue ;; esac
-    case "$line" in *=*) ;; *) continue ;; esac
-
-    key="$(trim "${line%%=*}")"
-    value="$(trim "${line#*=}")"
-
-    case "$key" in
-      project_type | profile) PROJECT_TYPE="$value" ;;
-      package_manager) PACKAGE_MANAGER="$value" ;;
-      monorepo) MONOREPO="$value" ;;
-      targets) TARGETS="$value" ;;
-      lint_command) LINT_COMMAND="$value" ;;
-      typecheck_command)
-        if [ "$value" = "auto" ]; then
-          TYPECHECK_COMMAND=""
-          TYPECHECK_COMMAND_AUTO=true
-        else
-          TYPECHECK_COMMAND="$value"
-          TYPECHECK_COMMAND_AUTO=false
-        fi
-        ;;
-      build_command) BUILD_COMMAND="$value" ;;
-      test_command) TEST_COMMAND="$value" ;;
-      validate_command) VALIDATE_COMMAND="$value" ;;
-    esac
-  done <"$CONFIG_FILE"
-}
-
-detect_node_package_manager() {
-  local dir="${1:-.}" package_manager
-
-  if [ -f "$dir/package.json" ]; then
-    package_manager="$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"\([^@"]*\)@.*/\1/p' "$dir/package.json" | head -1)"
-    if [ -z "$package_manager" ]; then
-      package_manager="$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$dir/package.json" | head -1)"
+  while [ "$index" -lt "${#raw}" ]; do
+    character="${raw:$index:1}"
+    if [ "$escaped" = true ]; then
+      case "$character" in
+        '"' | '\') output="$output$character" ;;
+        *) return 1 ;;
+      esac
+      escaped=false
+    elif [ "$character" = '\' ]; then
+      escaped=true
+    elif [ "$character" = '"' ]; then
+      closed=true
+      trailing="$(trim "${raw:$((index + 1))}")"
+      case "$trailing" in "" | \#*) ;; *) return 1 ;; esac
+      break
+    else
+      case "$character" in
+        "$(printf '\t')" | "$(printf '\r')") return 1 ;;
+      esac
+      output="$output$character"
     fi
-    if [ -n "$package_manager" ]; then
-      printf '%s\n' "$package_manager"
-      return 0
-    fi
-  fi
-
-  if [ -f "$dir/pnpm-lock.yaml" ] || [ -f "$dir/pnpm-workspace.yaml" ]; then
-    printf 'pnpm\n'
-  elif [ -f "$dir/yarn.lock" ]; then
-    printf 'yarn\n'
-  elif [ -f "$dir/bun.lock" ] || [ -f "$dir/bun.lockb" ]; then
-    printf 'bun\n'
-  else
-    printf 'npm\n'
-  fi
-}
-
-detect_profile() {
-  local dir="${1:-.}"
-
-  if [ -f "$dir/pnpm-workspace.yaml" ]; then
-    printf 'node\n'
-  elif [ -f "$dir/package.json" ] || [ -f "$dir/tsconfig.json" ]; then
-    printf 'node\n'
-  elif [ -f "$dir/Cargo.toml" ]; then
-    printf 'rust\n'
-  elif [ -f "$dir/Package.swift" ]; then
-    printf 'swift\n'
-  elif [ -f "$dir/go.mod" ]; then
-    printf 'go\n'
-  elif [ -f "$dir/uv.lock" ] || [ -f "$dir/pyproject.toml" ] || [ -f "$dir/requirements.txt" ]; then
-    printf 'python\n'
-  else
-    printf 'generic\n'
-  fi
-}
-
-detect_monorepo() {
-  local dir="${1:-.}"
-
-  if [ -f "$dir/pnpm-workspace.yaml" ]; then
-    printf 'true\n'
-  elif [ -f "$dir/Cargo.toml" ] && grep -q '^\[workspace\]' "$dir/Cargo.toml" 2>/dev/null; then
-    printf 'true\n'
-  elif [ -f "$dir/package.json" ] && grep -q '"workspaces"' "$dir/package.json" 2>/dev/null; then
-    printf 'true\n'
-  else
-    printf 'false\n'
-  fi
-}
-
-detect_targets() {
-  local root="${1:-.}" base target_dir profile targets=""
-
-  for base in apps packages services; do
-    [ -d "$root/$base" ] || continue
-    for target_dir in "$root/$base"/*; do
-      [ -d "$target_dir" ] || continue
-      profile="$(detect_profile "$target_dir")"
-      [ "$profile" = "generic" ] && continue
-      if [ -n "$targets" ]; then
-        targets="${targets},"
-      fi
-      targets="${targets}$(basename "$target_dir"):$base/$(basename "$target_dir"):$profile"
-    done
+    index=$((index + 1))
   done
 
-  printf '%s\n' "$targets"
+  [ "$closed" = true ] && [ "$escaped" = false ] || return 1
+  PARSED_VALUE="$output"
 }
 
-has_package_script() {
-  local script="$1"
-  [ -f package.json ] || return 1
-  grep -Eq "\"$script\"[[:space:]]*:" package.json
+parse_scalar() {
+  local raw
+  raw="$(trim "${1%%#*}")"
+  [ -n "$raw" ] || return 1
+  PARSED_VALUE="$raw"
 }
 
-run_shell_command() {
-  local command="$1"
-  info "$command"
-  env \
-    -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE \
-    -u GIT_OBJECT_DIRECTORY -u GIT_COMMON_DIR -u GIT_NAMESPACE \
-    -u GIT_PREFIX -u GIT_INTERNAL_GETTEXT_SH_SCHEME \
-    -u PRE_COMMIT -u PRE_COMMIT_FROM_REF -u PRE_COMMIT_TO_REF \
-    -u PRE_COMMIT_LOCAL_BRANCH -u PRE_COMMIT_REMOTE_BRANCH \
-    -u PRE_COMMIT_REMOTE_NAME -u PRE_COMMIT_REMOTE_URL \
-    -u TOUCHSTONE_PREFLIGHT_ALREADY_RAN \
-    bash -c "$command"
+valid_identifier() {
+  case "$1" in "" | *[!A-Za-z0-9._-]*) return 1 ;; *) return 0 ;; esac
 }
 
-configured_command_for_action() {
-  case "$1" in
-    lint) printf '%s\n' "$LINT_COMMAND" ;;
-    typecheck) printf '%s\n' "$TYPECHECK_COMMAND" ;;
-    build) printf '%s\n' "$BUILD_COMMAND" ;;
-    test) printf '%s\n' "$TEST_COMMAND" ;;
-    validate) printf '%s\n' "$VALIDATE_COMMAND" ;;
-    *) printf '\n' ;;
-  esac
-}
-
-run_node_script() {
-  local script="$1" package_manager command
-
-  has_package_script "$script" || return 1
-
-  package_manager="${PACKAGE_MANAGER:-auto}"
-  if [ "$package_manager" = "auto" ] || [ -z "$package_manager" ]; then
-    package_manager="$(detect_node_package_manager ".")"
-  fi
-
-  case "$package_manager" in
-    pnpm) command="pnpm $script" ;;
-    yarn) command="yarn $script" ;;
-    bun) command="bun run $script" ;;
-    npm | *) command="npm run $script" ;;
-  esac
-
-  run_shell_command "$command"
-}
-
-find_python_bin() {
-  local candidate cwd parent_root parent_python
-
-  # Operator override wins over everything else.
-  if [ -n "${PYTEST_PYTHON:-}" ]; then
-    if command -v "$PYTEST_PYTHON" >/dev/null 2>&1; then
-      command -v "$PYTEST_PYTHON"
-      return 0
-    fi
-    echo "ERROR: PYTEST_PYTHON is set but not executable: $PYTEST_PYTHON" >&2
-    return 1
-  fi
-
-  for candidate in ".venv/bin/python" "agent/.venv/bin/python"; do
-    if [ -x "$candidate" ]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-
-  # Worktree fallback: when the current checkout is a worktree (.git is a
-  # file, not a directory), the venv lives in the parent repo. Resolve to
-  # the parent's .venv/bin/python — pinned deps are identical across
-  # worktrees, so the parent's interpreter is the right answer.
-  cwd="$(pwd)"
-  if parent_root="$(find_worktree_parent_root "$cwd")"; then
-    parent_python="$parent_root/.venv/bin/python"
-    if [ -x "$parent_python" ]; then
-      printf '%s\n' "$parent_python"
-      return 0
-    fi
-  fi
-
-  # No silent fallback to system python3: the project's pinned deps live
-  # in a venv. Running the test suite against a system interpreter would
-  # produce confusing ModuleNotFoundError noise that the operator can't
-  # diagnose from the failure alone (#171).
-  echo "ERROR: no project virtualenv found." >&2
-  echo "       Tried: $cwd/.venv/bin/python (this checkout)" >&2
-  if [ -n "${parent_root:-}" ]; then
-    echo "       Tried: $parent_root/.venv/bin/python (worktree parent)" >&2
-  fi
-  echo "       Run \`bash setup.sh\` in this checkout, OR push from the" >&2
-  echo "       parent checkout that has the venv set up." >&2
-  return 1
-}
-
-# Returns the absolute path of the parent repo's worktree root when $1 is
-# a worktree checkout (i.e. $1/.git is a regular file containing a
-# `gitdir:` pointer). Returns 1 when $1 is a normal checkout or when the
-# worktree metadata is malformed.
-find_worktree_parent_root() {
-  local checkout_root="$1" git_file gitdir gitdir_path search_dir
-
-  git_file="$checkout_root/.git"
-  if [ ! -f "$git_file" ]; then
-    return 1
-  fi
-  if [ ! -r "$git_file" ]; then
-    echo "       Worktree check failed: cannot read $git_file" >&2
-    return 1
-  fi
-
-  IFS= read -r gitdir <"$git_file" || {
-    echo "       Worktree check failed: cannot read gitdir from $git_file" >&2
-    return 1
-  }
-  case "$gitdir" in
-    gitdir:*) gitdir="${gitdir#gitdir:}" ;;
-    *) return 1 ;;
-  esac
-  gitdir="$(trim "$gitdir")"
-  if [ -z "$gitdir" ]; then
-    echo "       Worktree check failed: empty gitdir in $git_file" >&2
-    return 1
-  fi
-
-  case "$gitdir" in
-    /*) gitdir_path="$gitdir" ;;
-    *) gitdir_path="$checkout_root/$gitdir" ;;
-  esac
-  if [ ! -d "$gitdir_path" ]; then
-    echo "       Worktree check failed: gitdir does not exist: $gitdir_path" >&2
-    return 1
-  fi
-
-  search_dir="$(cd "$(dirname "$gitdir_path")" && pwd)"
-  while [ "$search_dir" != "/" ]; do
-    if [ "$(basename "$search_dir")" = ".git" ]; then
-      dirname "$search_dir"
-      return 0
-    fi
-    search_dir="$(dirname "$search_dir")"
-  done
-
-  echo "       Worktree check failed: no parent .git directory above $gitdir_path" >&2
-  return 1
-}
-
-# Allow tests to source the script just for its helpers without invoking
-# the action dispatcher below.
-if [ "${TOUCHSTONE_RUN_SOURCE_ONLY:-0}" = "1" ]; then
+valid_relative_path() {
+  local path="$1"
+  [ -n "$path" ] || return 1
+  case "$path" in /* | .. | ../* | */../* | */..) return 1 ;; esac
+  case "$path" in *"$(printf '\t')"* | *"$(printf '\r')"*) return 1 ;; esac
   return 0
+}
+
+SECTION=root
+BLOCK=""
+BLOCK_NAME=""
+BLOCK_PATH=""
+BLOCK_TARGET=""
+BLOCK_COMMAND=""
+BLOCK_REQUIRED=""
+SEEN_KEYS=""
+
+key_seen() {
+  case " $SEEN_KEYS " in
+    *" $1 "*) return 0 ;;
+    *)
+      SEEN_KEYS="$SEEN_KEYS $1"
+      return 1
+      ;;
+  esac
+}
+
+finalize_block() {
+  if [ "$BLOCK" = target ]; then
+    [ -n "$BLOCK_NAME" ] || config_error "target ending near line $LINE_NUMBER has no name"
+    [ -n "$BLOCK_PATH" ] || config_error "target '$BLOCK_NAME' has no path"
+    valid_identifier "$BLOCK_NAME" || config_error "invalid target name '$BLOCK_NAME'"
+    valid_relative_path "$BLOCK_PATH" || config_error "target '$BLOCK_NAME' path must stay inside the project"
+    if awk -F '\t' -v name="$BLOCK_NAME" '$1 == name { found=1 } END { exit !found }' "$TARGETS_FILE"; then
+      config_error "duplicate target '$BLOCK_NAME'"
+    fi
+    printf '%s\t%s\n' "$BLOCK_NAME" "$BLOCK_PATH" >>"$TARGETS_FILE"
+  elif [ "$BLOCK" = task ]; then
+    [ -n "$BLOCK_NAME" ] || config_error "task ending near line $LINE_NUMBER has no name"
+    [ -n "$BLOCK_TARGET" ] || config_error "task '$BLOCK_NAME' has no target"
+    [ -n "$BLOCK_REQUIRED" ] || config_error "task '$BLOCK_NAME' must declare required = true or false"
+    valid_identifier "$BLOCK_NAME" || config_error "invalid task name '$BLOCK_NAME'"
+    valid_identifier "$BLOCK_TARGET" || config_error "invalid target reference '$BLOCK_TARGET'"
+    case "$BLOCK_REQUIRED" in true | false) ;; *) config_error "task '$BLOCK_NAME' has invalid required value" ;; esac
+    if [ "$BLOCK_REQUIRED" = true ] && [ -z "$BLOCK_COMMAND" ]; then
+      config_error "required task '$BLOCK_NAME' has no command"
+    fi
+    if awk -F '\t' -v name="$BLOCK_NAME" '$1 == name { found=1 } END { exit !found }' "$TASKS_FILE"; then
+      config_error "duplicate task '$BLOCK_NAME'"
+    fi
+    printf '%s\t%s\t%s\t%s\n' \
+      "$BLOCK_NAME" "$BLOCK_TARGET" "$BLOCK_REQUIRED" "$BLOCK_COMMAND" >>"$TASKS_FILE"
+  fi
+
+  BLOCK=""
+  BLOCK_NAME=""
+  BLOCK_PATH=""
+  BLOCK_TARGET=""
+  BLOCK_COMMAND=""
+  BLOCK_REQUIRED=""
+  SEEN_KEYS=""
+}
+
+if [ ! -f "$CONFIG_FILE" ]; then
+  if [ "$CONFIG_ARG" = .touchstone.toml ] && [ -f "$PROJECT_ROOT/.touchstone-config" ]; then
+    config_error "legacy .touchstone-config is not a schema-v1 declaration; create .touchstone.toml from the validation contract"
+  fi
+  config_error "validation contract not found: $CONFIG_FILE"
 fi
 
-run_node_action() {
-  local action="$1"
+LINE_NUMBER=0
+while IFS= read -r line || [ -n "$line" ]; do
+  LINE_NUMBER=$((LINE_NUMBER + 1))
+  line="$(trim "$line")"
+  [ -n "$line" ] || continue
+  case "$line" in \#*) continue ;; esac
 
-  case "$action" in
-    lint | typecheck | build | test)
-      if run_node_script "$action"; then
-        return 0
-      fi
-      ok "no package.json '$action' script; skipped"
-      ;;
-    build_if_distinct)
-      # Bundler builds (webpack/vite/esbuild/turbopack) catch errors typecheck
-      # misses. Only fire when both scripts are declared — "build: tsc" (build
-      # IS typecheck) shouldn't double-run during validate.
-      if has_package_script typecheck && has_package_script build; then
-        run_node_script build
-      fi
-      ;;
-    *)
-      warn "unknown Node action: $action"
-      return 1
-      ;;
-  esac
-}
-
-run_python_action() {
-  local action="$1" python_bin
-
-  case "$action" in
-    lint)
-      if command -v ruff >/dev/null 2>&1; then
-        run_shell_command "ruff check ."
-      else
-        ok "ruff not installed; skipped"
-      fi
-      ;;
-    typecheck)
-      if [ "$TYPECHECK_COMMAND_AUTO" != true ]; then
-        ok "no Python typecheck_command configured; skipped"
-      elif command -v pyright >/dev/null 2>&1; then
-        run_shell_command "pyright"
-      elif command -v mypy >/dev/null 2>&1; then
-        run_shell_command "mypy ."
-      else
-        ok "pyright/mypy not installed; skipped"
-      fi
-      ;;
-    build)
-      ok "no default Python build command; set build_command in .touchstone-config"
-      ;;
-    test)
-      if python_bin="$(find_python_bin)"; then
-        local pytest_rc=0
-        run_shell_command "$python_bin -m pytest" || pytest_rc=$?
-        # pytest exit 5 = no tests collected. Treat like absent linters — skip, don't fail.
-        if [ "$pytest_rc" -eq 5 ]; then
-          ok "pytest found no tests; skipped"
-        elif [ "$pytest_rc" -ne 0 ]; then
-          return "$pytest_rc"
-        fi
-      else
-        ok "python not found; skipped"
-      fi
-      ;;
-    build_if_distinct)
-      : # no default Python build — nothing useful to add during validate
-      ;;
-    *)
-      warn "unknown Python action: $action"
-      return 1
-      ;;
-  esac
-}
-
-run_rust_action() {
-  local action="$1"
-
-  if ! command -v cargo >/dev/null 2>&1; then
-    ok "cargo not installed; skipped"
-    return 0
-  fi
-
-  case "$action" in
-    lint)
-      if cargo fmt --version >/dev/null 2>&1; then
-        run_shell_command "cargo fmt -- --check"
-      else
-        ok "cargo fmt not installed; skipped"
-      fi
-      if cargo clippy --version >/dev/null 2>&1; then
-        run_shell_command "cargo clippy --all-targets --all-features -- -D warnings"
-      else
-        ok "cargo clippy not installed; skipped"
-      fi
-      ;;
-    typecheck) run_shell_command "cargo check --all-targets --all-features" ;;
-    build) run_shell_command "cargo build --all" ;;
-    test) run_shell_command "cargo test --all" ;;
-    build_if_distinct)
-      : # cargo check already runs the full compiler — cargo build would repeat
-      ;;
-    *)
-      warn "unknown Rust action: $action"
-      return 1
-      ;;
-  esac
-}
-
-run_swift_action() {
-  local action="$1"
-
-  if ! command -v swift >/dev/null 2>&1; then
-    ok "swift not installed; skipped"
-    return 0
-  fi
-
-  case "$action" in
-    lint)
-      if command -v swift-format >/dev/null 2>&1; then
-        run_shell_command "swift-format lint -r ."
-      else
-        ok "swift-format not installed; skipped"
-      fi
-      ;;
-    typecheck | build) run_shell_command "swift build" ;;
-    test) run_shell_command "swift test" ;;
-    build_if_distinct)
-      : # swift typecheck IS swift build — running it again would repeat
-      ;;
-    *)
-      warn "unknown Swift action: $action"
-      return 1
-      ;;
-  esac
-}
-
-run_go_action() {
-  local action="$1"
-
-  if ! command -v go >/dev/null 2>&1; then
-    ok "go not installed; skipped"
-    return 0
-  fi
-
-  case "$action" in
-    lint) run_shell_command "go vet ./..." ;;
-    typecheck | build) run_shell_command "go build ./..." ;;
-    test) run_shell_command "go test ./..." ;;
-    build_if_distinct)
-      : # go typecheck IS go build — running it again would repeat
-      ;;
-    *)
-      warn "unknown Go action: $action"
-      return 1
-      ;;
-  esac
-}
-
-run_profile_action() {
-  local profile="$1" action="$2"
-
-  case "$profile" in
-    node | typescript | ts) run_node_action "$action" ;;
-    python) run_python_action "$action" ;;
-    rust) run_rust_action "$action" ;;
-    swift) run_swift_action "$action" ;;
-    go) run_go_action "$action" ;;
-    generic | "")
-      # build_if_distinct is a validate-time extra — silently no-op for generic
-      # so a plain validate run does not print a scary "no default command"
-      # line on every non-typed project.
-      if [ "$action" = "build_if_distinct" ]; then
-        return 0
-      fi
-      ok "generic project has no default '$action' command; set ${action}_command in .touchstone-config"
-      ;;
-    *)
-      warn "unknown project_type '$profile' for action '$action'"
-      return 1
-      ;;
-  esac
-}
-
-# Dispatch one action across the configured targets.
-#
-# APPLICABILITY IS THE CALLER'S ("are targets configured?"), not this exit
-# status. The two meanings shared one status: "no targets, use the root
-# profile" and "targets configured, one of them is missing" both returned
-# nonzero, so a config naming a directory that is not there produced a warning,
-# a fall-through, and a green `validate` that linted, built and tested nothing
-# — the false green this runner exists to prevent (#801 review).
-#
-# A nonzero return now means one thing: the dispatch did not happen for every
-# configured target.
-run_targets_action() {
-  local action="$1" entry name path profile
-  local missing=0
-  local -a target_entries=()
-
-  if [ -z "$TARGETS" ]; then
-    warn "run_targets_action called with no configured targets"
-    return 1
-  fi
-
-  IFS=',' read -r -a target_entries <<<"$TARGETS"
-  for entry in "${target_entries[@]}"; do
-    entry="$(trim "$entry")"
-    [ -z "$entry" ] && continue
-    name="${entry%%:*}"
-    path="${entry#*:}"
-    profile="${path#*:}"
-    path="${path%%:*}"
-    if [ "$path" = "$profile" ]; then
-      profile="auto"
-    fi
-    if [ "$profile" = "auto" ] || [ -z "$profile" ]; then
-      profile="$(detect_profile "$path")"
-    fi
-
-    if [ ! -d "$path" ]; then
-      warn "target '$name' path not found: $path"
-      missing=$((missing + 1))
+  section_line="$(trim "${line%%#*}")"
+  case "$section_line" in
+    '[validation]')
+      finalize_block
+      [ "$VALIDATION_SEEN" = false ] || config_error "duplicate [validation] section at line $LINE_NUMBER"
+      VALIDATION_SEEN=true
+      SECTION=validation
+      SEEN_KEYS=""
       continue
-    fi
+      ;;
+    '[[validation.targets]]')
+      finalize_block
+      SECTION=target
+      BLOCK=target
+      continue
+      ;;
+    '[[validation.tasks]]')
+      finalize_block
+      SECTION=task
+      BLOCK=task
+      continue
+      ;;
+    '['*) config_error "unsupported table at line $LINE_NUMBER: $section_line" ;;
+  esac
 
-    info "target $name ($profile) — $action"
-    (cd "$path" && run_profile_action "$profile" "$action")
-  done
+  case "$line" in *=*) ;; *) config_error "expected key = value at line $LINE_NUMBER" ;; esac
+  key="$(trim "${line%%=*}")"
+  raw_value="${line#*=}"
+  key_seen "$key" && config_error "duplicate key '$key' near line $LINE_NUMBER"
 
-  if [ "$missing" -gt 0 ]; then
-    warn "configured target path missing — refusing a green '$action' that ran nothing for it"
-    return 1
+  case "$SECTION:$key" in
+    root:schema)
+      parse_scalar "$raw_value" || config_error "schema must be an integer at line $LINE_NUMBER"
+      SCHEMA_VERSION="$PARSED_VALUE"
+      ;;
+    validation:runtime)
+      parse_string "$raw_value" || config_error "runtime must be a single-line basic string at line $LINE_NUMBER"
+      RUNTIME="$PARSED_VALUE"
+      ;;
+    validation:setup)
+      parse_string "$raw_value" || config_error "setup must be a single-line basic string at line $LINE_NUMBER"
+      SETUP_COMMAND="$PARSED_VALUE"
+      [ -n "$SETUP_COMMAND" ] || config_error "setup cannot be empty when declared"
+      ;;
+    target:name)
+      parse_string "$raw_value" || config_error "target name must be a single-line basic string at line $LINE_NUMBER"
+      BLOCK_NAME="$PARSED_VALUE"
+      ;;
+    target:path)
+      parse_string "$raw_value" || config_error "target path must be a single-line basic string at line $LINE_NUMBER"
+      BLOCK_PATH="$PARSED_VALUE"
+      ;;
+    task:name)
+      parse_string "$raw_value" || config_error "task name must be a single-line basic string at line $LINE_NUMBER"
+      BLOCK_NAME="$PARSED_VALUE"
+      ;;
+    task:target)
+      parse_string "$raw_value" || config_error "task target must be a single-line basic string at line $LINE_NUMBER"
+      BLOCK_TARGET="$PARSED_VALUE"
+      ;;
+    task:command)
+      parse_string "$raw_value" || config_error "task command must be a single-line basic string at line $LINE_NUMBER"
+      BLOCK_COMMAND="$PARSED_VALUE"
+      ;;
+    task:required)
+      parse_scalar "$raw_value" || config_error "task required must be true or false at line $LINE_NUMBER"
+      BLOCK_REQUIRED="$PARSED_VALUE"
+      ;;
+    *) config_error "unknown key '$key' in $SECTION at line $LINE_NUMBER" ;;
+  esac
+done <"$CONFIG_FILE"
+finalize_block
+
+[ "$SCHEMA_VERSION" = 1 ] || {
+  if [ -z "$SCHEMA_VERSION" ]; then config_error "missing schema = 1"; fi
+  config_error "unsupported schema '$SCHEMA_VERSION'; this runtime accepts schema 1"
+}
+[ "$VALIDATION_SEEN" = true ] || config_error "missing [validation] section"
+[ "$RUNTIME" = bash ] || config_error "schema 1 requires runtime = \"bash\""
+[ -s "$TARGETS_FILE" ] || config_error "schema 1 requires at least one explicit target"
+[ -s "$TASKS_FILE" ] || config_error "schema 1 requires at least one explicit task"
+
+while IFS="$(printf '\t')" read -r task_name task_target _task_required _task_command; do
+  if ! awk -F '\t' -v name="$task_target" '$1 == name { found=1 } END { exit !found }' "$TARGETS_FILE"; then
+    config_error "task '$task_name' references unknown target '$task_target'"
   fi
-  return 0
+done <"$TASKS_FILE"
+
+while IFS="$(printf '\t')" read -r target_name target_path; do
+  if [ ! -d "$PROJECT_ROOT/$target_path" ]; then
+    progress "ERROR: target '$target_name' path not found: $target_path"
+    record_failure target "$target_name" 2 missing-target
+    continue
+  fi
+  resolved_target="$(cd "$PROJECT_ROOT/$target_path" && pwd -P)"
+  case "$resolved_target" in
+    "$PROJECT_ROOT" | "$PROJECT_ROOT"/*) ;;
+    *)
+      progress "ERROR: target '$target_name' resolves outside the project: $target_path"
+      record_failure target "$target_name" 2 escaped-target
+      ;;
+  esac
+done <"$TARGETS_FILE"
+
+if [ "$FAILED" -ne 0 ]; then
+  emit_report failed
+  exit "$EXIT_STATUS"
+fi
+
+clear_git_hook_env() {
+  unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+  unset GIT_OBJECT_DIRECTORY GIT_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_GRAFT_FILE
+  unset GIT_INDEX_FILE GIT_NO_REPLACE_OBJECTS GIT_REPLACE_REF_BASE GIT_PREFIX GIT_SHALLOW_FILE
+  unset GIT_COMMON_DIR GIT_NAMESPACE GIT_INTERNAL_GETTEXT_SH_SCHEME PRE_COMMIT
+  unset PRE_COMMIT_FROM_REF PRE_COMMIT_TO_REF PRE_COMMIT_LOCAL_BRANCH PRE_COMMIT_REMOTE_BRANCH
+  unset PRE_COMMIT_REMOTE_NAME PRE_COMMIT_REMOTE_URL
 }
 
-run_action() {
-  local action="$1" configured profile
-
-  configured="$(configured_command_for_action "$action")"
-  if [ -n "$configured" ]; then
-    run_shell_command "$configured"
-    return 0
-  fi
-
-  # Applicability is decided here, by the config, so run_targets_action's exit
-  # status can mean failure and only failure. Calling it as a plain command
-  # also keeps errexit live inside it: under `if run_targets_action ...` a
-  # failing target action was neutered and masked by a later passing one
-  # (#801 review).
-  if [ -n "$TARGETS" ]; then
-    run_targets_action "$action"
-    return 0
-  fi
-
-  profile="${PROJECT_TYPE:-auto}"
-  if [ "$profile" = "auto" ] || [ -z "$profile" ]; then
-    profile="$(detect_profile ".")"
-  fi
-  if [ "$profile" = "generic" ] && [ "$(detect_profile ".")" != "generic" ]; then
-    profile="$(detect_profile ".")"
-  fi
-
-  run_profile_action "$profile" "$action"
+declared_command_unrunnable_code() {
+  local command="$1" directory="$2" head
+  head="${command%%[[:space:]]*}"
+  case "$head" in "" | *[^[:alnum:]_./+-]*) return 0 ;; esac
+  case "$head" in
+    */*)
+      if [ -d "$directory/$head" ] || { [ -e "$directory/$head" ] && [ ! -x "$directory/$head" ]; }; then
+        printf '126\n'
+        return 0
+      fi
+      ;;
+  esac
+  (cd "$directory" && command -v -- "$head" >/dev/null 2>&1) && return 0
+  printf '127\n'
 }
 
-run_validate() {
-  local configured
-
-  if should_skip_feature_push_validate; then
-    ok "feature-branch pre-push validate skipped; merge gate runs full validation"
-    return 0
+run_command() {
+  local command="$1" directory="$2" status
+  clear_git_hook_env
+  if [ "$JSON_MODE" = true ]; then
+    (cd "$directory" && bash -c "$command") >&2
+    status=$?
+  else
+    (cd "$directory" && bash -c "$command")
+    status=$?
   fi
-
-  configured="$(configured_command_for_action validate)"
-  if [ -n "$configured" ]; then
-    run_shell_command "$configured"
-    return 0
-  fi
-
-  run_action lint
-  run_action typecheck
-  # Node targets with distinct typecheck + build scripts: run the bundler too.
-  # Other profiles no-op because their typecheck already runs the compiler.
-  # Distinctness is per-target, so this flows through run_targets_action just
-  # like every other action — no special-casing for monorepo vs single-package.
-  run_action build_if_distinct
-  run_action test
+  RUN_COMMAND_STATUS="$status"
 }
 
-print_detection() {
-  local profile package_manager monorepo targets
-
-  profile="${PROJECT_TYPE:-auto}"
-  [ "$profile" = "auto" ] || [ -n "$profile" ] || profile="auto"
-  if [ "$profile" = "auto" ]; then
-    profile="$(detect_profile ".")"
+if [ -n "$SETUP_COMMAND" ]; then
+  progress "==> setup (root): $SETUP_COMMAND"
+  unrunnable="$(declared_command_unrunnable_code "$SETUP_COMMAND" "$PROJECT_ROOT")"
+  run_command "$SETUP_COMMAND" "$PROJECT_ROOT"
+  status="$RUN_COMMAND_STATUS"
+  if [ "$status" -ne 0 ]; then
+    reason="command-failed"
+    if [ -n "$unrunnable" ] && [ "$status" -eq "$unrunnable" ]; then reason="command-not-started"; fi
+    progress "ERROR: setup failed on root (exit $status, $reason)"
+    record_failure setup root "$status" "$reason"
+    emit_report failed
+    exit "$EXIT_STATUS"
   fi
-  if [ "$profile" = "generic" ] && [ "$(detect_profile ".")" != "generic" ]; then
-    profile="$(detect_profile ".")"
-  fi
+fi
 
-  package_manager="${PACKAGE_MANAGER:-auto}"
-  if [ "$package_manager" = "auto" ] || [ -z "$package_manager" ]; then
-    if [ "$profile" = "node" ]; then
-      package_manager="$(detect_node_package_manager ".")"
-    else
-      package_manager=""
-    fi
-  fi
-
-  monorepo="${MONOREPO:-auto}"
-  if [ "$monorepo" = "auto" ] || [ -z "$monorepo" ]; then
-    monorepo="$(detect_monorepo ".")"
+while IFS="$(printf '\t')" read -r task_name task_target _task_required task_command; do
+  target_path="$(awk -F '\t' -v name="$task_target" '$1 == name { print $2; exit }' "$TARGETS_FILE")"
+  if [ -z "$task_command" ]; then
+    SKIPPED=$((SKIPPED + 1))
+    human "  SKIP $task_name ($task_target): optional task has no command"
+    continue
   fi
 
-  targets="${TARGETS:-}"
-  if [ -z "$targets" ]; then
-    targets="$(detect_targets ".")"
+  progress "==> $task_name ($task_target): $task_command"
+  unrunnable="$(declared_command_unrunnable_code "$task_command" "$PROJECT_ROOT/$target_path")"
+  RAN=$((RAN + 1))
+  run_command "$task_command" "$PROJECT_ROOT/$target_path"
+  status="$RUN_COMMAND_STATUS"
+  if [ "$status" -eq 0 ]; then
+    human "  PASS $task_name ($task_target)"
+    continue
   fi
 
-  printf 'project_type=%s\n' "$profile"
-  [ -n "$package_manager" ] && printf 'package_manager=%s\n' "$package_manager"
-  printf 'monorepo=%s\n' "$monorepo"
-  if [ -n "$targets" ]; then
-    printf 'targets=%s\n' "$targets"
+  reason="command-failed"
+  if [ -n "$unrunnable" ] && [ "$status" -eq "$unrunnable" ]; then
+    RAN=$((RAN - 1))
+    reason="command-not-started"
   fi
-}
+  progress "ERROR: $task_name failed on $task_target (exit $status, $reason)"
+  record_failure "$task_name" "$task_target" "$status" "$reason"
+done <"$TASKS_FILE"
 
-load_config
+if [ "$RAN" -eq 0 ] && [ "$FAILED" -eq 0 ]; then
+  progress "ERROR: NOTHING RAN; required validation cannot pass without executing a task"
+  record_failure validation root 1 nothing-ran
+fi
 
-case "$ACTION" in
-  -h | --help) usage ;;
-  detect) print_detection ;;
-  lint | typecheck | build | test) run_action "$ACTION" ;;
-  validate) run_validate ;;
-  *)
-    echo "ERROR: unknown touchstone-run action '$ACTION'" >&2
-    usage >&2
-    exit 1
-    ;;
-esac
+if [ "$FAILED" -ne 0 ]; then
+  emit_report failed
+  exit "$EXIT_STATUS"
+fi
+emit_report passed
+exit 0

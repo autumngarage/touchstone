@@ -56,6 +56,8 @@ a copy of Touchstone's implementation:
 
 - `.touchstone.toml` declares its schema version, exact validation commands,
   required tasks, runtime/setup requirements, and explicit monorepo targets.
+  [The validation contract](validation-contract.md) owns the schema-v1 shape
+  and verdict semantics.
 - An organization ruleset requires a workflow selected from a protected
   Touchstone source repository, path, and full commit SHA. A consumer PR cannot
   replace that invocation. The required workflow and Homebrew CLI execute the
