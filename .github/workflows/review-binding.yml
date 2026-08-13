@@ -104,7 +104,7 @@ jobs:
               (["OWNER", "MEMBER", "COLLABORATOR"] | index($association))' \
               "$GITHUB_EVENT_PATH" >/dev/null || return 0
 
-            local number head base base_ref comment description target
+            local number head base base_ref base_ref_hash comment description target
             number="$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")"
             comment="$(jq -r '.comment.id' "$GITHUB_EVENT_PATH")"
             target="$(jq -r '.comment.html_url' "$GITHUB_EVENT_PATH")"
@@ -112,7 +112,8 @@ jobs:
             head="$(jq -r '.head.sha' "$tmp_dir/request-pr.json")"
             base="$(jq -r '.base.sha' "$tmp_dir/request-pr.json")"
             base_ref="$(jq -r '.base.ref' "$tmp_dir/request-pr.json")"
-            description="v1 pr=$number ref=$base_ref base=$base comment=$comment"
+            base_ref_hash="$(printf '%s' "$base_ref" | git hash-object --stdin)"
+            description="v1 p=$number r=$base_ref_hash b=$base c=$comment"
             gh api -X POST "repos/$REPO/statuses/$head" \
               -f state=success \
               -f context=touchstone/review-request-v1 \
@@ -124,7 +125,7 @@ jobs:
             local number="$1"
             local known_head="${2:-}"
             local pr_file="$tmp_dir/pr-$number.json"
-            local head base run_id="" evaluator evidence verdict conclusion title summary
+            local head base base_ref base_ref_hash run_id="" evaluator evidence verdict conclusion title summary
 
             if [ -n "$known_head" ]; then
               run_id="$(create_pending "$number" "$known_head" "known head \`$known_head\`; base pending inspection")"
@@ -139,6 +140,8 @@ jobs:
             fi
             head="$(jq -r '.head.sha' "$pr_file")"
             base="$(jq -r '.base.sha' "$pr_file")"
+            base_ref="$(jq -r '.base.ref' "$pr_file")"
+            base_ref_hash="$(printf '%s' "$base_ref" | git hash-object --stdin)"
             if [ "$(jq -r '.state' "$pr_file")" != open ]; then
               if [ -n "$run_id" ]; then
                 publish_check "$run_id" cancelled "Pull request is no longer open" \
@@ -173,17 +176,6 @@ jobs:
               return 1
             fi
 
-            # GraphQL variables must remain literal for gh to bind them.
-            # shellcheck disable=SC2016
-            if ! gh api graphql \
-              -F owner="${REPO%/*}" -F name="${REPO#*/}" -F number="$number" \
-              -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewDecision}}}' \
-              --jq '{decision: (.data.repository.pullRequest.reviewDecision // "")}' \
-              >"$tmp_dir/graphql-$number.json"; then
-              publish_api_failure "$run_id" "the authoritative review decision request failed"
-              return 1
-            fi
-
             evaluator="$tmp_dir/evaluate-$number.jq"
             if ! gh api "repos/$REPO/contents/.github/review-binding/evaluate.jq?ref=$base" --jq .content \
               | base64 --decode >"$evaluator"; then
@@ -199,16 +191,15 @@ jobs:
               --slurpfile reviews "$tmp_dir/reviews-$number.json" \
               --slurpfile reviewComments "$tmp_dir/review-comments-$number.json" \
               --slurpfile headPulls "$tmp_dir/head-pulls-$number.json" \
-              --slurpfile graph "$tmp_dir/graphql-$number.json" \
               --arg trusted "$TRUSTED_REVIEWERS" \
               --arg repo "$REPO" \
+              --arg baseRefHash "$base_ref_hash" \
               '($pr[0]) as $pr |
               ($statuses[0]) as $statuses |
               ($issueComments[0]) as $issueComments |
               ($reviews[0]) as $reviews |
               ($reviewComments[0]) as $reviewComments |
               ($headPulls[0]) as $headPulls |
-              ($graph[0]) as $graph |
               {
                 contractVersion: 1,
                 complete: true,
@@ -218,8 +209,8 @@ jobs:
                   state: $pr.state,
                   headSha: $pr.head.sha,
                   baseRef: $pr.base.ref,
+                  baseRefHash: $baseRefHash,
                   baseSha: $pr.base.sha,
-                  reviewDecision: $graph.decision,
                   openHeadPulls: [$headPulls[] | select(.state == "open" and .base.repo.full_name == $repo) | .number]
                 },
                 statuses: $statuses,

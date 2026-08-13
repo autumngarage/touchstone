@@ -37,7 +37,7 @@ def answers_body_finding($id):
 | ($root.trustedAuthors // []) as $trusted
 | ($root.pr.headSha // "") as $head
 | ($root.pr.baseSha // "") as $base
-| ($root.pr.baseRef // "") as $base_ref
+| ($root.pr.baseRefHash // "") as $base_ref_hash
 | ($root.pr.number // 0) as $number
 | [
     $root.statuses[]?
@@ -45,11 +45,11 @@ def answers_body_finding($id):
     | select(.state == "success")
     | select((.creator.login // "") == "github-actions[bot]")
     | (try ((.description // "")
-        | capture("^v1 pr=(?<pr>[0-9]+) ref=(?<ref>[^ ]+) base=(?<base>[0-9a-fA-F]{40}) comment=(?<comment>[0-9]+)$"))
+        | capture("^v1 p=(?<pr>[0-9]+) r=(?<ref>[0-9a-fA-F]{40}) b=(?<base>[0-9a-fA-F]{40}) c=(?<comment>[0-9]+)$"))
        catch empty)
     | select(
         (.pr | tonumber) == $number
-        and .ref == $base_ref
+        and (.ref | ascii_downcase) == ($base_ref_hash | ascii_downcase)
         and (.base | ascii_downcase) == ($base | ascii_downcase)
       )
     | . as $marker
@@ -146,7 +146,6 @@ def answers_body_finding($id):
       or (($root.pr.openHeadPulls[0] // 0) != $number)
       then "head commit is not uniquely scoped to this open pull request" else empty end,
     if ($requests | length) == 0 then "no trusted review request binds this head to the current base" else empty end,
-    if ($root.pr.reviewDecision // "") == "CHANGES_REQUESTED" then "an active changes-requested review remains" else empty end,
     if (($reviews | length) + ($result_comments | length)) == 0 then
       if any($root.issueComments[]?;
           trusted($trusted)

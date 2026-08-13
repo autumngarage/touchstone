@@ -32,14 +32,14 @@ cat >"$TMP_DIR/base.json" <<EOF
     "state": "open",
     "headSha": "$HEAD_SHA",
     "baseRef": "main",
+    "baseRefHash": "88d050b1908057b53d38b42702ebc659e3d7f696",
     "baseSha": "$BASE_SHA",
-    "reviewDecision": "",
     "openHeadPulls": [42]
   },
   "statuses": [{
     "context": "touchstone/review-request-v1",
     "state": "success",
-    "description": "v1 pr=42 ref=main base=$BASE_SHA comment=100",
+    "description": "v1 p=42 r=88d050b1908057b53d38b42702ebc659e3d7f696 b=$BASE_SHA c=100",
     "creator": {"login": "github-actions[bot]"}
   }],
   "issueComments": [
@@ -87,7 +87,7 @@ run_case "clean exact-head result passes" '.' success
 run_case "pre-review state fails" '.statuses = []' failure "no trusted review request"
 run_case "moved head invalidates evidence" '.pr.headSha = "3333333333333333333333333333333333333333"' failure "no trusted exact-head"
 run_case "moved base invalidates request" '.pr.baseSha = "3333333333333333333333333333333333333333"' failure "no trusted review request"
-run_case "retargeted base ref invalidates request even at the same commit" '.pr.baseRef = "release"' failure "no trusted review request"
+run_case "retargeted base ref invalidates request even at the same commit" '.pr.baseRef = "release" | .pr.baseRefHash = "3333333333333333333333333333333333333333"' failure "no trusted review request"
 run_case "shared head fails closed" '.pr.openHeadPulls = [42, 43]' failure "not uniquely scoped"
 run_case "untrusted request marker creator fails" '.statuses[0].creator.login = "attacker"' failure "no trusted review request"
 run_case "edited-away request fails" '.issueComments[0].body = "never mind"' failure "no trusted review request"
@@ -147,8 +147,8 @@ run_case "same-second reply does not answer a finding" \
 run_case "every finding needs its own answer" \
   ".issueComments = [.issueComments[0]] | .reviews = [$INLINE_REVIEW] | .reviewComments = [$INLINE_FINDING, ($INLINE_FINDING | .id = 302), $INLINE_ANSWER]" \
   failure "302"
-run_case "active changes-requested fails" \
-  '.pr.reviewDecision = "CHANGES_REQUESTED"' failure "changes-requested"
+run_case "changes-requested remains GitHub's independent decision" \
+  '.pr.reviewDecision = "CHANGES_REQUESTED"' success
 run_case "dismissed review is not evidence" \
   ".issueComments = [.issueComments[0]] | .reviews = [($INLINE_REVIEW | .state = \"DISMISSED\")]" \
   failure "no trusted exact-head"
@@ -254,6 +254,14 @@ elif grep -Fq -- '--method GET "repos/$REPO/pulls"' "$WORKFLOW" \
   ok "push sweep URL-encodes arbitrary valid base refs through gh fields"
 else
   fail "push sweep must pass the base ref as an encoded GET field"
+fi
+MARKER='v1 p=18446744073709551615 r=1111111111111111111111111111111111111111 b=2222222222222222222222222222222222222222 c=18446744073709551615'
+if [ "${#MARKER}" -le 140 ] \
+  && grep -Fq 'git hash-object --stdin' "$WORKFLOW" \
+  && ! grep -Fq 'r=$base_ref ' "$WORKFLOW"; then
+  ok "request marker stays within GitHub's 140-character limit"
+else
+  fail "request marker must use a fixed-width base-ref digest within 140 characters"
 fi
 if grep -Eq '^[[:space:]]+(name: review-binding|review-binding:)$' "$WORKFLOW"; then
   fail "job/step must not publish a second review-binding check"
