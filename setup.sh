@@ -292,6 +292,6 @@ fi
 echo ""
 info "Setup complete"
 echo ""
-printf "  Run ${BOLD}touchstone doctor${RESET} to verify everything.\n"
-printf "  Run ${BOLD}touchstone status${RESET} to see project health.\n"
+printf "  Run ${BOLD}bash scripts/touchstone-run.sh validate${RESET} to run the checks.\n"
+printf "  Run ${BOLD}git status --short --branch${RESET} to see where the tree stands.\n"
 echo ""

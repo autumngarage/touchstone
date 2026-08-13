@@ -190,9 +190,15 @@ for file in "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "$TOUCHSTONE_ROOT/AGENTS.md" \
   assert_contains "$file" "Humans approve plans"
   assert_contains "$file" "GitHub reviews code"
   # The gate's conditions are load-bearing: an incomplete list here has already
-  # been read as licence to drop the unlisted checks.
-  assert_contains "$file" "CHANGES_REQUESTED"
-  assert_contains "$file" "trusted author"
+  # been read as licence to drop the unlisted checks. What must be stated is
+  # what GitHub ACTUALLY enforces — and, separately, that review is not among
+  # it. Asserting the old "trusted author / CHANGES_REQUESTED" phrasing kept
+  # the contract describing a binding check that no longer exists, which is
+  # the P1 the strip's own review caught: a driver reads the gate as proof an
+  # unreviewed merge is impossible, and it is not.
+  assert_contains "$file" "What GitHub enforces today"
+  assert_contains "$file" "every review thread resolved"
+  assert_contains "$file" "not an enforced gate"
 done
 
 if [ "$ERRORS" -gt 0 ]; then

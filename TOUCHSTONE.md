@@ -6,7 +6,13 @@ You are an AI agent (Claude Code, Codex, or another driving CLI) working in a To
 
 **Humans approve plans. Agents write and ship code. GitHub reviews code.**
 
-That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar. Because approval never comes from a person, the merge gate is: required checks green, an **answered** review from a trusted author bound to this exact head and base — a clean verdict, or findings with every thread resolved — and no active `CHANGES_REQUESTED`. A stale or dismissed review fails the gate even with nothing open; answered findings stand — only a body-only finding (no threads) needs a fresh review request on the unchanged head. Note that an AI reviewer never files an `APPROVED` review — GitHub reserves that for real users — so the gate is the answered review, not an approval count. Local hooks are fast feedback; branch protection is the real boundary; emergency paths are disclosed by convention — nothing currently records or enforces a bypass, so treat that disclosure as owed, not as captured for you.
+That division is the entire product; everything Touchstone ships exists to hold one of those three lines in place. No human reads a diff as a merge precondition, so machines are the whole quality bar.
+
+**What GitHub enforces today**, and therefore what actually stops a bad merge: required checks green, every review thread resolved, and no direct push to the default branch.
+
+**Review is a required procedural step, not an enforced gate.** An AI reviewer never files an `APPROVED` review — GitHub reserves that for real users — and the check-run that bound a review to its head was deleted with the machinery it duplicated. Request review on the exact pushed head, answer every finding, and never merge a head no reviewer has seen. Nothing stops you if you do; until that enforcement is rebuilt, the rule holds because you keep it.
+
+Local hooks are fast feedback; branch protection is the real boundary; emergency paths are disclosed by convention — nothing records or enforces a bypass, so treat that disclosure as owed, not as captured for you.
 
 To hold those lines, Touchstone does three things and nothing else:
 

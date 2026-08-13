@@ -180,6 +180,33 @@ else
   fail "the path-integrity extractor did not detect an obviously missing script; the check above is dead"
 fi
 
+# =============================================================================
+# No file may instruct the reader to run the CLI, because no CLI ships.
+#
+# The path-integrity check above only reads markdown, so it could not see
+# setup.sh finishing with "Run `touchstone doctor`" after the same commit
+# deleted the block that installed the binary. A user on a fresh clone would
+# follow a successful setup straight into command-not-found.
+#
+# Matched by subcommand rather than by the bare word, so prose about the
+# project and the surviving scripts/touchstone-run.sh both stay legal. When
+# the CLI is rebuilt, delete this check in the commit that ships it.
+# =============================================================================
+
+echo ""
+echo "==> No file invokes a touchstone CLI subcommand"
+CLI_SUBCOMMANDS='doctor|status|update|update-all|new|init|version|release|list|diff|sync|changelog|run'
+cli_refs="$(
+  git -C "$TOUCHSTONE_ROOT" grep -nE "(^|[^-/[:alnum:]])touchstone (${CLI_SUBCOMMANDS})\b" \
+    -- ':!tests/test-steering-size-caps.sh' ':!audits' ':!feedback' 2>/dev/null || true
+)"
+if [ -n "$cli_refs" ]; then
+  printf '%s\n' "$cli_refs" >&2
+  fail "a file tells the reader to run a touchstone CLI subcommand, but no CLI ships"
+else
+  echo "  OK: nothing instructs the reader to run a CLI that does not exist"
+fi
+
 # Touchstone must obey the conventions it ships. templates/gitignore has
 # shipped '.claude/worktrees/' to every project since the agent-swarm workflow
 # landed; the repo root lacked the rule, so its OWN dirty-tree guards refused
