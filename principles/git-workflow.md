@@ -180,16 +180,19 @@ The PR is the only semantic review surface. Request one ordinary review per exac
 
 A request has distinct submitted, accepted, and completed states; its comment
 is not proof that the provider accepted or completed the job. Record the
-request URL, timestamp, exact head, base, and observation deadline. The
+request URL, timestamp, exact head, base, and submission deadline. That
 deadline is at least 30 minutes after submission, or longer when the provider
-publishes a longer SLA. The 30-minute floor is the conservative recovery
-interval established by the dropped-request incident on Touchstone PR #827.
-Then distinguish these states:
+publishes a longer acceptance SLA. The 30-minute floor is the conservative
+recovery interval established by the dropped-request incident on Touchstone PR
+number 827. Then distinguish these states:
 
 1. **Submitted** — GitHub contains the request comment for the recorded head
    and base.
 2. **Accepted** — the provider reacted to the request, exposed a task, or
-   emitted other provider-owned output. Acceptance is not review evidence.
+   emitted other provider-owned output. Record the earliest acceptance signal
+   and start a new completion deadline at least 30 minutes later, or later when
+   the provider publishes a longer completion SLA. Acceptance is not review
+   evidence.
 3. **Completed** — trusted review evidence covers the exact head. A clean
    result may be a formal review or a provider-owned PR conversation comment;
    findings may also appear in inline threads.
@@ -197,8 +200,9 @@ Then distinguish these states:
    terminal error.
 5. **Unacknowledged** — the observation deadline passes with no
    provider-owned signal.
-6. **Accepted but stalled** — the provider accepted the request, but the
-   observation deadline passes without completed or explicitly failed output.
+6. **Accepted but stalled** — the completion deadline measured from the
+   earliest acceptance signal passes without completed or explicitly failed
+   output.
 
 Watch the complete PR review surface: formal reviews, PR conversation comments,
 inline review threads, request-comment reactions, and any linked provider task.
@@ -211,8 +215,24 @@ CLI may post exactly one replacement trigger on the unchanged binding after it:
 
 - reconfirms that the PR head and base match the original request;
 - adds a PR-visible audit note naming the original comment, state, observed
-  signals, observation start and deadline, and elapsed interval; and
+  signals, relevant start and deadline, and elapsed interval;
+- re-fetches the complete PR review surface immediately before posting and
+  stops if the original request completed or explicitly failed; and
 - identifies the new comment as the sole replacement for that unchanged head.
+
+There is one final posting race: the original can complete after that recheck
+but before the replacement comment exists. Capture the replacement comment ID.
+If the original completion predates the replacement, edit the replacement into
+a non-trigger audit note so it no longer begins with `@codex review`:
+
+```bash
+gh api -X PATCH repos/<owner>/<repo>/issues/comments/<replacement-comment-id> \
+  -f body='Recovery trigger withdrawn: original request completed during posting.'
+```
+
+The edit preserves the audit trail, so `review-binding` falls back to the original marker. Verify the check reruns and binds that original evidence.
+If the provider still completes the replacement, treat any resulting findings
+as review feedback; never discard them.
 
 The replacement must still produce trusted exact-head review evidence. If it
 also remains unacknowledged, stalls, or fails, file or update an upstream
