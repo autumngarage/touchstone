@@ -107,6 +107,57 @@ fi
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Codex merge review"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "codex exec --full-auto"
 
+echo "==> branch guard does not feed grep -q from a pipe under pipefail"
+# A producer that receives SIGPIPE after grep finds an early match can make a
+# successful match report 141 under pipefail. In a branch guard that wrong
+# boolean fails open. Keep every guarded predicate on an already-materialized
+# value so grep alone owns the status.
+pipefail_grep_hits="$(
+  grep -nE '\|[[:space:]]*grep[[:space:]]+-[^|]*q' \
+    "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" || true
+)"
+if [ -n "$pipefail_grep_hits" ]; then
+  printf '%s\n' "$pipefail_grep_hits" >&2
+  fail "branch-guard.sh pipes a producer into grep -q under pipefail"
+fi
+
+# Exercise the hardened path with input much larger than a typical pipe
+# buffer. The fake jq consumes stdin fully before returning deterministic
+# fields, so this test adds no jq dependency to the offline required suite.
+FAKE_BIN="$TEST_DIR/bin"
+mkdir -p "$FAKE_BIN"
+cat >"$FAKE_BIN/jq" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+case "${2:-}" in
+  '.tool_input.command // ""') printf '%s\n' 'git commit' ;;
+  '.cwd // ""') printf '%s\n' "$FAKE_JQ_CWD" ;;
+  '.tool_input.workdir // ""') printf '\n' ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$FAKE_BIN/jq"
+
+GUARD_REPO="$TEST_DIR/branch-guard-repo"
+mkdir -p "$GUARD_REPO"
+git -C "$GUARD_REPO" init -q
+git -C "$GUARD_REPO" symbolic-ref HEAD refs/heads/main
+set +e
+{
+  printf '{"tool_name":"Bash","tool_input":{"command":"git commit '
+  awk 'BEGIN { for (i = 0; i < 1048576; i++) printf "x" }'
+  printf '"}}'
+} | PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin" \
+  FAKE_JQ_CWD="$GUARD_REPO" \
+  bash "$TOUCHSTONE_ROOT/hooks/branch-guard.sh" \
+  >"$TEST_DIR/branch-guard.out" 2>"$TEST_DIR/branch-guard.err"
+guard_status=$?
+set -e
+if [ "$guard_status" -ne 2 ]; then
+  sed -n '1,20p' "$TEST_DIR/branch-guard.err" >&2
+  fail "large git commit input on main must be blocked (status $guard_status)"
+fi
+
 echo "==> canonical AI delivery architecture describes the PR review loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "Agentic PR Review Loop"
 assert_contains "$TOUCHSTONE_ROOT/principles/ai-delivery-architecture.md" "PR creation is not completion"

@@ -32,7 +32,7 @@ input="$(cat)"
 # Fast path — bail on non-git-commit calls without the jq/git overhead.
 # Matches `git commit` with optional `-c key=value` / `-C <path>` flags
 # ahead of the subcommand; explicitly NOT matching `commit-tree`.
-if ! printf '%s' "$input" | grep -qE '"command"[[:space:]]*:[[:space:]]*"[^"]*\bgit([[:space:]]+-c[[:space:]]+[^[:space:]]+|[[:space:]]+-C[[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
+if ! grep -qE '"command"[[:space:]]*:[[:space:]]*"[^"]*\bgit([[:space:]]+-c[[:space:]]+[^[:space:]]+|[[:space:]]+-C[[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)' <<<"$input"; then
   exit 0
 fi
 
@@ -48,7 +48,7 @@ session_cwd="$(printf '%s' "$input" | jq -r '.cwd // ""')"
 tool_workdir="$(printf '%s' "$input" | jq -r '.tool_input.workdir // ""')"
 cwd="$session_cwd"
 if [ -n "$tool_workdir" ]; then
-  if printf '%s' "$tool_workdir" | grep -qE '^/'; then
+  if grep -qE '^/' <<<"$tool_workdir"; then
     cwd="$tool_workdir"
   elif [ -n "$session_cwd" ]; then
     cwd="$session_cwd/$tool_workdir"
@@ -62,7 +62,7 @@ fi
 # class is explicit — `\b` would match `commit-tree` because `-` is a
 # non-word char; we want `commit` followed by whitespace or end-of-string
 # only, so plumbing subcommands like `git commit-tree` pass through.
-if ! printf '%s' "$command" | grep -qE '\bgit([[:space:]]+-c[[:space:]]+[^[:space:]]+|[[:space:]]+-C[[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
+if ! grep -qE '\bgit([[:space:]]+-c[[:space:]]+[^[:space:]]+|[[:space:]]+-C[[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)' <<<"$command"; then
   exit 0
 fi
 
@@ -84,11 +84,9 @@ commit_segment=""
 commit_context_ambiguous=false
 while IFS= read -r segment; do
   trimmed="$(printf '%s' "$segment" | sed -E 's/^[[:space:]]+//')"
-  if printf '%s' "$trimmed" \
-    | grep -qE '^([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)*(env([[:space:]]+-[^[:space:]]+)*([[:space:]]+[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+)*[[:space:]]+)?git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)'; then
+  if grep -qE '^([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)*(env([[:space:]]+-[^[:space:]]+)*([[:space:]]+[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+)*[[:space:]]+)?git([[:space:]]+-[cC][[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$)' <<<"$trimmed"; then
     commit_segment="$trimmed"
-    if printf '%s' "$trimmed" \
-      | grep -qE '(^|[[:space:]])GIT_(DIR|WORK_TREE|NAMESPACE|OBJECT_DIRECTORY|COMMON_DIR)='; then
+    if grep -qE '(^|[[:space:]])GIT_(DIR|WORK_TREE|NAMESPACE|OBJECT_DIRECTORY|COMMON_DIR)=' <<<"$trimmed"; then
       commit_context_ambiguous=true
     fi
     break
