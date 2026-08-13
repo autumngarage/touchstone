@@ -350,6 +350,13 @@ if grep -Fq 'cancel-in-progress: false' "$WORKFLOW" \
 else
   fail "stale-run safety must use the newer-run guard without force-cancelling jobs"
 fi
+if grep -Fq 'EVENT_PENDING_ID="$pending_id"' "$WORKFLOW" \
+  && grep -Fq 'pending_id="$EVENT_PENDING_ID"' "$WORKFLOW" \
+  && ! grep -Fq 'publish_check "$pending_id" neutral' "$WORKFLOW"; then
+  ok "edited-review invalidation stays pending and is reused by evaluation"
+else
+  fail "edited-review handling must not neutralize its check before reevaluation"
+fi
 
 if [ "$ERRORS" -ne 0 ]; then
   echo "$ERRORS review-binding test(s) failed" >&2

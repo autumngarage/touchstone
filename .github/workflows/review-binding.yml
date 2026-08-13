@@ -167,8 +167,9 @@ jobs:
               -f context=touchstone/review-edit-v1 \
               -f description="$description" \
               -f target_url="$target" >/dev/null
-            publish_check "$pending_id" neutral "Edited-review marker recorded" \
-              "Review $review_id changed; the following evaluator run owns the rebuilt verdict for \`$head\`."
+            EVENT_PENDING_PR="$number"
+            EVENT_PENDING_HEAD="$head"
+            EVENT_PENDING_ID="$pending_id"
           }
 
           evaluate_pr() {
@@ -308,6 +309,9 @@ jobs:
             publish_check "$run_id" "$conclusion" "$title" "$summary"
           }
 
+          EVENT_PENDING_PR=""
+          EVENT_PENDING_HEAD=""
+          EVENT_PENDING_ID=""
           establish_request_marker
           establish_review_edit_marker
 
@@ -363,7 +367,9 @@ jobs:
             [ -n "$number" ] || continue
             pending_id=""
             if [ -n "$known_head" ]; then
-              if ! pending_id="$(create_pending "$number" "$known_head" "known head \`$known_head\`; base pending inspection")"; then
+              if [ "$number" = "$EVENT_PENDING_PR" ] && [ "$known_head" = "$EVENT_PENDING_HEAD" ]; then
+                pending_id="$EVENT_PENDING_ID"
+              elif ! pending_id="$(create_pending "$number" "$known_head" "known head \`$known_head\`; base pending inspection")"; then
                 echo "ERROR: could not neutralize known head $known_head for PR #$number." >&2
                 failures=$((failures + 1))
               fi
