@@ -2,7 +2,16 @@
   "contractVersion": 1,
   "organization": "autumngarage",
   "repository": "touchstone",
-  "workflowSourceRepository": "touchstone",
+  "workflowSource": {
+    "repository": "touchstone-workflows",
+    "branchProtection": {
+      "enforce_admins": true,
+      "required_pull_request_reviews": true,
+      "required_conversation_resolution": true,
+      "allow_force_pushes": false,
+      "allow_deletions": false
+    }
+  },
   "branch": "main",
   "managedRuleset": {
     "name": "Touchstone main delivery",
@@ -71,8 +80,8 @@
             {
               "path": ".github/workflows/validate.yml",
               "ref": "refs/heads/main",
-              "repository_id": 1206566358,
-              "sha": "f5610ee05393298fab17f1f1a70b57325f84a014"
+              "repository_id": 1333343261,
+              "sha": "776669c5666357bb36e4d38cc818298f579c6327"
             }
           ]
         }

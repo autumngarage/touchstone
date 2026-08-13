@@ -118,13 +118,15 @@ branch_protection_json() {
 }
 
 verify_source() {
-  local workflow repository_id path ref sha actual_id actual_sha
+  local workflow repository_id path ref sha actual_id actual_sha desired_protection actual_protection
   workflow="$(jq -cer '.managedRuleset.rules[] | select(.type == "workflows") | .parameters.workflows[]' "$POLICY")"
   repository_id="$(jq -r .repository_id <<<"$workflow")"
   path="$(jq -r .path <<<"$workflow")"
   ref="$(jq -r .ref <<<"$workflow")"
   sha="$(jq -r .sha <<<"$workflow")"
   [[ "$sha" =~ ^[0-9a-fA-F]{40}$ ]] || die "required workflow SHA is not a full commit ID"
+  [ "$WORKFLOW_SOURCE_REPOSITORY" != "$REPOSITORY" ] \
+    || die "required workflow source repository must differ from the target repository"
   actual_id="$(api "repos/$ORG/$WORKFLOW_SOURCE_REPOSITORY" --jq .id)"
   [ "$actual_id" = "$repository_id" ] || die "required workflow repository id is stale"
   actual_sha="$(api "repos/$ORG/$WORKFLOW_SOURCE_REPOSITORY/commits/${ref#refs/heads/}" --jq .sha)"
@@ -133,6 +135,17 @@ verify_source() {
   api "repos/$ORG/$WORKFLOW_SOURCE_REPOSITORY/compare/$sha...$actual_sha" --jq '.status == "ahead" or .status == "identical"' \
     | grep -qx true \
     || die "required workflow SHA $sha is not reachable from $ref"
+  desired_protection="$(jq -S '.workflowSource.branchProtection' "$POLICY")"
+  actual_protection="$(api "repos/$ORG/$WORKFLOW_SOURCE_REPOSITORY/branches/${ref#refs/heads/}/protection" \
+    | jq -S '{
+      enforce_admins: (.enforce_admins.enabled // false),
+      required_pull_request_reviews: (.required_pull_request_reviews != null),
+      required_conversation_resolution: (.required_conversation_resolution.enabled // false),
+      allow_force_pushes: (.allow_force_pushes.enabled // false),
+      allow_deletions: (.allow_deletions.enabled // false)
+    }')"
+  diff -u <(printf '%s\n' "$desired_protection") <(printf '%s\n' "$actual_protection") >/dev/null \
+    || die "required workflow source branch is not protected as checked in"
 }
 
 verify_ruleset() {
@@ -194,7 +207,7 @@ need diff
 jq -e '.contractVersion == 1' "$POLICY" >/dev/null || die "unsupported policy contract"
 ORG="$(policy_value .organization)"
 REPOSITORY="$(policy_value .repository)"
-WORKFLOW_SOURCE_REPOSITORY="$(policy_value .workflowSourceRepository)"
+WORKFLOW_SOURCE_REPOSITORY="$(policy_value .workflowSource.repository)"
 BRANCH="$(policy_value .branch)"
 RULESET_NAME="$(policy_value .managedRuleset.name)"
 

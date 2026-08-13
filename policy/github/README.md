@@ -24,9 +24,11 @@ no-op. `rollback` restores captured protection before removing or replacing
 the managed ruleset, so neither direction introduces an unprotected interval.
 
 The required validation workflow is referenced by repository ID, path, branch,
-and full commit SHA. To upgrade it, land the source workflow first, then change
-the SHA in a separately reviewed policy PR. A consumer PR cannot weaken or
-replace that pinned source.
+and full commit SHA in the separately protected `touchstone-workflows`
+repository. It must never be sourced from a repository the ruleset targets:
+GitHub excludes required workflows from running in their source repository. To
+upgrade it, land the source workflow first, then change the SHA in a separately
+reviewed policy PR. A target PR cannot weaken or replace that pinned source.
 
 The only bypass actor is `OrganizationAdmin` in `pull_request` mode. Emergency
 delivery therefore remains PR-visible and GitHub-audited; direct and force

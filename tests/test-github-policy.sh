@@ -50,17 +50,24 @@ emit() {
 }
 
 case "$method $endpoint" in
-  "GET repos/autumngarage/touchstone")
-    emit '{"id":1206566358}'
+  "GET repos/autumngarage/touchstone-workflows")
+    emit '{"id":1333343261}'
     ;;
-  "GET repos/autumngarage/touchstone/commits/main")
-    emit '{"sha":"f5610ee05393298fab17f1f1a70b57325f84a014"}'
+  "GET repos/autumngarage/touchstone-workflows/commits/main")
+    emit '{"sha":"776669c5666357bb36e4d38cc818298f579c6327"}'
     ;;
-  "GET repos/autumngarage/touchstone/contents/.github/workflows/validate.yml?ref=f5610ee05393298fab17f1f1a70b57325f84a014")
+  "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/validate.yml?ref=776669c5666357bb36e4d38cc818298f579c6327")
     emit '{"type":"file"}'
     ;;
-  "GET repos/autumngarage/touchstone/compare/f5610ee05393298fab17f1f1a70b57325f84a014...f5610ee05393298fab17f1f1a70b57325f84a014")
+  "GET repos/autumngarage/touchstone-workflows/compare/776669c5666357bb36e4d38cc818298f579c6327...776669c5666357bb36e4d38cc818298f579c6327")
     emit '{"status":"identical"}'
+    ;;
+  "GET repos/autumngarage/touchstone-workflows/branches/main/protection")
+    if [ "${GH_FAKE_SOURCE_UNPROTECTED:-0}" = 1 ]; then
+      emit '{"enforce_admins":{"enabled":false},"required_pull_request_reviews":null,"required_conversation_resolution":{"enabled":false},"allow_force_pushes":{"enabled":true},"allow_deletions":{"enabled":true}}'
+    else
+      emit '{"enforce_admins":{"enabled":true},"required_pull_request_reviews":{},"required_conversation_resolution":{"enabled":true},"allow_force_pushes":{"enabled":false},"allow_deletions":{"enabled":false}}'
+    fi
     ;;
   "GET orgs/autumngarage/rulesets")
     if [ "${GH_FAKE_DUPLICATE_RULESET:-0}" = 1 ]; then
@@ -165,12 +172,20 @@ run_policy() {
 echo "==> Checked-in policy invariants"
 jq -e '
   .contractVersion == 1
-  and .workflowSourceRepository == "touchstone"
+  and .workflowSource.repository == "touchstone-workflows"
+  and .workflowSource.repository != .repository
+  and .workflowSource.branchProtection == {
+    enforce_admins:true,
+    required_pull_request_reviews:true,
+    required_conversation_resolution:true,
+    allow_force_pushes:false,
+    allow_deletions:false
+  }
   and (.managedRuleset.bypass_actors == [{actor_id:null,actor_type:"OrganizationAdmin",bypass_mode:"pull_request"}])
   and any(.managedRuleset.rules[]; .type == "pull_request" and .parameters.required_review_thread_resolution == true)
   and any(.managedRuleset.rules[]; .type == "required_status_checks" and any(.parameters.required_status_checks[]; .context == "review-binding" and .integration_id == 15368))
   and any(.managedRuleset.rules[]; .type == "workflows" and any(.parameters.workflows[];
-    .repository_id == 1206566358
+    .repository_id == 1333343261
     and .path == ".github/workflows/validate.yml"
     and .ref == "refs/heads/main"
     and (.sha | test("^[0-9a-f]{40}$"))))
@@ -186,6 +201,17 @@ run_policy dry-run "$POLICY" >"$TMP_DIR/dry-run.txt"
 grep -q 'Would install/replace organization ruleset' "$TMP_DIR/dry-run.txt" \
   || fail "dry-run did not describe the apply"
 ok "dry-run describes the change without mutating state"
+
+echo "==> Required workflow source stays outside and protected from the target"
+jq '.workflowSource.repository = .repository' "$POLICY" >"$TMP_DIR/self-source-policy.json"
+if run_policy dry-run "$TMP_DIR/self-source-policy.json" >/dev/null 2>&1; then
+  fail "policy accepted the target repository as its own required-workflow source"
+fi
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_SOURCE_UNPROTECTED=1 \
+  "$SCRIPT" dry-run "$POLICY" >/dev/null 2>&1; then
+  fail "policy accepted an unprotected required-workflow source branch"
+fi
+ok "self-hosted or unprotected required-workflow sources fail closed"
 
 echo "==> Ambiguous and failed reads fail closed"
 if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_DUPLICATE_RULESET=1 \
