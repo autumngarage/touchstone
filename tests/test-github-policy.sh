@@ -81,7 +81,9 @@ case "$method $endpoint" in
     ;;
   "GET orgs/autumngarage/rulesets")
     if [ "${GH_FAKE_DUPLICATE_RULESET:-0}" = 1 ]; then
-      emit '[{"id":123,"name":"Touchstone main delivery"},{"id":124,"name":"Touchstone main delivery"}]'
+      emit '[{"id":123,"name":"Touchstone policy v1: autumngarage/touchstone@main"},{"id":124,"name":"Touchstone policy v1: autumngarage/touchstone@main"}]'
+    elif [ "${GH_FAKE_UNRELATED_NAME_COLLISION:-0}" = 1 ]; then
+      emit '[{"id":777,"name":"Touchstone main delivery"}]'
     elif [ -f "$state/ruleset.json" ]; then
       emit "$(jq '[{id:.id,name:.name}]' "$state/ruleset.json")"
     else
@@ -90,6 +92,9 @@ case "$method $endpoint" in
     ;;
   "GET orgs/autumngarage/rulesets/123")
     cat "$state/ruleset.json"
+    ;;
+  "GET orgs/autumngarage/rulesets/777")
+    emit '{"id":777,"name":"Touchstone main delivery","target":"branch","enforcement":"active","bypass_actors":[],"conditions":{"repository_name":{"include":["other-repository"],"exclude":[],"protected":false},"ref_name":{"include":["~DEFAULT_BRANCH"],"exclude":[]}},"rules":[{"type":"deletion"}]}'
     ;;
   "POST orgs/autumngarage/rulesets")
     jq '(.rules[] | select(.type == "pull_request") | .parameters.required_reviewers) = [] | . + {id:123}' >"$state/ruleset.json"
@@ -110,6 +115,11 @@ case "$method $endpoint" in
       exit 1
     fi
     emit "$(cat "$state/ruleset.json")"
+    ;;
+  "PUT orgs/autumngarage/rulesets/777")
+    cat >/dev/null
+    echo "PUT unrelated-ruleset" >>"$state/mutations.log"
+    emit '{"id":777}'
     ;;
   "DELETE orgs/autumngarage/rulesets/123")
     rm -f "$state/ruleset.json"
@@ -219,6 +229,7 @@ run_policy() {
 echo "==> Checked-in policy invariants"
 jq -e '
   .contractVersion == 1
+  and .managedRuleset.name == "Touchstone policy v1: autumngarage/touchstone@main"
   and .workflowSource.repository == "touchstone-workflows"
   and .workflowSource.repository != .repository
   and .rollbackPrerequisites.repositoryFiles == [{
@@ -286,6 +297,17 @@ if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BRANCH_ERROR
 fi
 [ ! -e "$TMP_DIR/failed-backup.json" ] || fail "failed backup left an artifact"
 ok "ambiguous rulesets and non-404 protection failures stop the operation"
+
+echo "==> Ruleset ownership is explicit"
+init_branch
+jq '.managedRuleset.name = "Touchstone main delivery"' "$POLICY" >"$TMP_DIR/unmarked-policy.json"
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_UNRELATED_NAME_COLLISION=1 \
+  "$SCRIPT" apply "$TMP_DIR/unmarked-policy.json" >/dev/null 2>&1; then
+  fail "unmarked policy adopted an unrelated same-name organization ruleset"
+fi
+[ ! -s "$TMP_DIR/state/mutations.log" ] \
+  || fail "unmarked policy mutated an unrelated same-name organization ruleset"
+ok "only the derived ownership marker identifies a mutable ruleset"
 
 echo "==> Backup, apply, and idempotency"
 run_policy backup "$TMP_DIR/backup.json" "$POLICY"

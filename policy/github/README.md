@@ -52,6 +52,12 @@ pushes stay rejected. Never change that actor to `exempt`, and do not hand-edit
 the managed ruleset in GitHub's UI. Change desired state here, review it, and
 apply it with the script.
 
+The managed ruleset name is its ownership marker. It is derived from the
+contract version, organization, repository, and branch; `github-policy.sh`
+refuses a policy whose name does not exactly match that marker. A generic or
+same-purpose organization ruleset without that marker is never treated as
+Touchstone-owned and is never updated or deleted by this script.
+
 ## Live canary testing
 
 [`autumngarage/touchstone-policy-canary`](https://github.com/autumngarage/touchstone-policy-canary)
@@ -62,10 +68,10 @@ use it for application development or as a required-workflow source.
 
 Derive a temporary canary policy from the reviewed production policy; do not
 commit a second desired-state file that can drift. Change only the target
-repository, ruleset name, and repository-name condition. Before each test,
-capture a fresh backup with `github-policy.sh backup`. Exercise the migration,
-effective-rule verification, blocked unsafe operation, and rollback paths as
-the change requires. Finish by rolling back the captured backup and verifying
-that the canary's `main` branch is protected and no canary organization ruleset
-remains. The canary's contents are expendable, but its protection baseline is
-not.
+repository, derived ownership-marker name, and repository-name condition.
+Before each test, capture a fresh backup with `github-policy.sh backup`.
+Exercise the migration, effective-rule verification, blocked unsafe operation,
+and rollback paths as the change requires. Finish by rolling back the captured
+backup and verifying that the canary's `main` branch is protected and no canary
+organization ruleset remains. The canary's contents are expendable, but its
+protection baseline is not.

@@ -22,7 +22,7 @@
     ]
   },
   "managedRuleset": {
-    "name": "Touchstone main delivery",
+    "name": "Touchstone policy v1: autumngarage/touchstone@main",
     "target": "branch",
     "enforcement": "active",
     "bypass_actors": [

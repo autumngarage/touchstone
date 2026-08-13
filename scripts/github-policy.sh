@@ -281,7 +281,11 @@ ORG="$(policy_value .organization)"
 REPOSITORY="$(policy_value .repository)"
 WORKFLOW_SOURCE_REPOSITORY="$(policy_value .workflowSource.repository)"
 BRANCH="$(policy_value .branch)"
+CONTRACT_VERSION="$(policy_value .contractVersion)"
 RULESET_NAME="$(policy_value .managedRuleset.name)"
+EXPECTED_RULESET_NAME="Touchstone policy v$CONTRACT_VERSION: $ORG/$REPOSITORY@$BRANCH"
+[ "$RULESET_NAME" = "$EXPECTED_RULESET_NAME" ] \
+  || die "managed ruleset name must be the ownership marker: $EXPECTED_RULESET_NAME"
 
 case "$COMMAND" in
   diff)
