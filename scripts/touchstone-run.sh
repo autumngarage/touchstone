@@ -9,7 +9,7 @@
 # organization-required workflow. It executes declarations; it never detects a
 # project type, package manager, command, or target.
 
-set -uo pipefail
+set -euo pipefail
 
 ACTION="${1:-validate}"
 if [ "$#" -gt 0 ]; then shift; fi
@@ -398,6 +398,10 @@ declared_command_unrunnable_code() {
 run_command() {
   local command="$1" directory="$2" status
   clear_git_hook_env
+  # This is the only intentionally fallible boundary. Disable errexit around
+  # the child process itself, capture its exact status, then restore errexit so
+  # parser/accounting failures cannot be mistaken for task outcomes.
+  set +e
   if [ "$JSON_MODE" = true ]; then
     (cd "$directory" && bash -c "$command") >&2
     status=$?
@@ -405,6 +409,7 @@ run_command() {
     (cd "$directory" && bash -c "$command")
     status=$?
   fi
+  set -e
   RUN_COMMAND_STATUS="$status"
 }
 
