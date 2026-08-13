@@ -5,7 +5,7 @@ description: Use when committing, branching, opening a PR, watching PR reviews/c
 
 # Touchstone Git Workflow
 
-Every change goes through a feature branch + PR + PR-visible review loop + squash-merge. Local hooks stop common mistakes; the GitHub ruleset rejects direct pushes to the default branch, including from admins.
+Every change goes through a feature branch + PR + PR-visible review loop + squash-merge. Local hooks stop common mistakes. Inspect the repository's effective rules before claiming server enforcement; do not infer ruleset adoption from this skill.
 
 **There is no wrapper.** Every command below is raw `git` or `gh`. Run them and verify what GitHub actually says.
 
@@ -18,7 +18,7 @@ Every change goes through a feature branch + PR + PR-visible review loop + squas
 - Stacked PRs — merges must retain the head branch; children need retargeting after the parent lands
 - Fanning out parallel work across worktrees
 - Cleaning up branches or worktrees
-- Emergency ruleset bypass — remains PR-only and needs disclosure in that PR
+- Emergency ruleset bypass — only where effective policy exposes a PR-only bypass, with disclosure in that PR
 
 For the full reference: read **`principles/git-workflow.md`** now.
 
@@ -52,9 +52,9 @@ Your unstaged changes carry over. The trigger is *edit time*, not commit time �
 - **Check the head you are binding.** A pre-commit hook can create a newer commit than the one you meant to push. Compare `git rev-parse HEAD` against `gh pr view <n> --json headRefOid` before requesting review or merging.
 - **`gh pr merge` exit codes lie in both directions** — nonzero after a successful merge, zero after merely arming auto-merge on a red check. Confirm with `gh pr view <n> --json state,mergedAt`.
 - **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** Do not wait for an approval from this adapter; the review-binding check represents its verdict.
-- **Review is enforced by `review-binding`.** Request review on the exact pushed head and answer every finding. GitHub conversation resolution independently requires every inline thread closed; neither signal substitutes for the other.
+- **Review is always required.** Where installed and verified as required, `review-binding` enforces exact-head review and answers to every finding, while GitHub conversation resolution independently requires every inline thread closed. Without those gates, follow the same review loop and treat missing enforcement as an adoption gap.
 - **Stacked PRs survive squash-merge** as long as the head branch is retained. After the parent lands, retarget each child at the resolved default branch (`gh pr edit <n> --base "$(gh repo view --json defaultBranchRef --jq .defaultBranchRef.name)"`) and rebase it. Branch *deletion* is what closes PRs based on a branch.
 - **Classify every review finding before touching anything:** fix here / fix + audit the class / push back with evidence / real-but-not-this-PR's → route to the owning issue and resolve with the link. Never fix a finding by hardening a component the plan deletes.
 - **One review request per head; answered findings satisfy the gate** (issue #751) — when the head is UNCHANGED, resolve threads and merge; do NOT re-request. Only a body-only finding needs a fresh request on the unchanged head. A fix commit moves the head: push it and request its one review.
 - **Round budget: three per PR.** A discipline now, not an enforced limit — the wrapper that refused a fourth request is gone. Past budget: merge-if-answered, split the PR, or close preserving the corpus (#706 pattern). Spending a fourth round is a decision to state out loud in the PR.
-- **Emergency bypass remains a PR.** Add an "Emergency-bypass disclosure" section, then an organization admin may use GitHub's PR-only audited ruleset bypass. Direct pushes stay rejected. It is for production incidents, not for an inconvenient gate.
+- **Emergency bypass remains a PR.** Where effective policy provides the audited PR-only admin bypass, add an "Emergency-bypass disclosure" section before using it. Missing enforcement does not authorize a direct push. Emergency bypass is for production incidents, not an inconvenient gate.
