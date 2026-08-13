@@ -44,11 +44,10 @@ Agentic PR Review Loop
 Merge Gate
   |
   | ENFORCED by GitHub:
-  |   required checks green
+  |   pinned required validation workflow green
+  |   review-binding covers this head and every finding is answered
   |   every review thread resolved
   |   no outstanding CHANGES_REQUESTED
-  | OWED by the driver, enforced by nothing:
-  |   a review of the exact head being merged
   |
   v
 Final Verification
@@ -69,17 +68,17 @@ Human user
 
 ## Required Invariants
 
-- Every change reaches `main` through a GitHub PR unless the documented emergency path is used.
+- Every change reaches `main` through a GitHub PR, including the documented emergency path.
 - PR creation is not completion. The driver remains accountable until every piece of PR feedback is answered and resolved, the PR is merged, and the merge is synced locally.
 - A draft PR is a review-free coordination surface. It does not emit semantic-review intent or consume an exact-head review until final shipping explicitly marks it ready.
-- The exact commit merged has passed deterministic checks after its last mutation.
+- The exact commit merged has passed the pinned deterministic validation workflow after its last mutation.
 - The exact commit merged has no unresolved blocking review comments, requested changes, or failing required checks.
 - Touchstone does not invoke a local semantic reviewer or model router.
 - PR creation is the review coordination surface. It should happen early enough for CI and any PR-visible agentic reviewers to work against visible PR state.
 - Feature-branch push is not the expensive gate. It should preserve cheap local guardrails without running full test suites or LLM review by default.
 - Merge is allowed only after PR-visible review and check approval: required checks green, a review bound to the current head with every thread answered, and no active `CHANGES_REQUESTED`.
 - The head binding is `gh pr merge --squash --match-head-commit <reviewed-sha>`. It is the whole mechanism — GitHub refuses the merge if the head moved, which is the race that would otherwise let an unreviewed commit in behind a passing review.
-- **An AI reviewer can never file an `APPROVED` review** — GitHub reserves formal approval for real user accounts. `required_approving_review_count` therefore cannot express "this was reviewed", and the only layer that can is a required status check published by a workflow. That check does not currently exist; until it is rebuilt, review enforcement is advisory.
+- **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** `required_approving_review_count` therefore does not express this review contract. The required `review-binding` check binds trusted review evidence to the exact head and requires every finding answered.
 
 ## Driver AI Responsibilities
 
@@ -141,13 +140,11 @@ Rules:
 
 **Nothing local enforces this architecture right now.** The scripts that did — 5,399 lines of open-pr and merge-pr helpers — were deleted because 43% of them re-decided locally what GitHub decides at the merge button, and they never once read the server-side settings that already expressed the same rules.
 
-What is left is the honest split:
+The enforced split is:
 
-1. **GitHub enforces.** Branch protection refuses direct pushes and requires a PR. Required checks must be green. Required conversation resolution blocks unresolved threads.
+1. **GitHub enforces.** The organization ruleset refuses direct and force pushes, requires a PR, runs the pinned validation workflow, requires exact-head `review-binding`, and blocks unresolved threads.
 2. **Prose instructs.** `git-workflow.md` carries the full sequence in raw `git` and `gh`, including the head binding at merge and the thread-resolution mutation.
 3. **The driver executes and verifies.** It runs the commands, reads what GitHub actually reports, and does not trust an exit code that is known to lie in both directions.
-
-The one gap, stated plainly: the requirement that a review happened cannot currently be enforced at the GitHub layer, because an AI reviewer never files an approval and the check-run that expressed it was deleted alongside the local mirror it duplicated. Rebuilding it as a small required status check is the next piece of enforcement work.
 
 ## Product Boundary
 

@@ -1,6 +1,6 @@
 # Git Workflow
 
-Normal code changes go through a feature branch + PR + PR-visible review loop + merge. Emergency bypasses are allowed only through the documented emergency path below, and must be disclosed in the next recovery PR. This discipline catches bugs before they land on the default branch and creates an audit trail for every change, while leaving a legible escape hatch for production incidents.
+Every code change goes through a feature branch + PR + PR-visible review loop + merge. The documented emergency bypass remains inside that PR and must be disclosed there. This discipline catches bugs before they land on the default branch and creates an audit trail for every change, while leaving a legible escape hatch for production incidents.
 
 **There is no wrapper.** Every step below is a raw `git` or `gh` command you can run and verify yourself. That is deliberate: the mechanics live here, in prose, so that any agent with a shell and `gh` can deliver correctly. Tooling may accelerate these commands later, but it may never become the only way to run them.
 
@@ -19,10 +19,10 @@ Normal code changes go through a feature branch + PR + PR-visible review loop + 
 **The mechanical guardrails** that back this rule:
 
 - `hooks/branch-guard.sh` runs as a Claude Code `PreToolUse` hook and refuses a `git commit` invocation on the default branch before the tool call runs at all.
-- The `no-commit-to-branch` hook in `.pre-commit-config.yaml` is configured with `--branch main --branch master`. It runs at `pre-commit` stage and refuses the commit outright. `git commit --no-verify` bypasses it; that's the documented emergency path, not a daily shortcut.
-- GitHub branch protection on the default branch requires the change to go through a PR. Direct pushes to `main` are rejected by the server even if the local hook was bypassed.
+- The `no-commit-to-branch` hook in `.pre-commit-config.yaml` is configured with `--branch main --branch master`. It runs at `pre-commit` stage and refuses the commit outright. `git commit --no-verify` bypasses this local feedback only.
+- The GitHub organization ruleset requires the change to go through a PR. Direct pushes to `main` are rejected by the server even for organization admins.
 
-The layers are complementary: the tool-boundary hook catches the intent, the local hook catches the honest mistake before it becomes a commit, and branch protection rejects direct pushes at the server.
+The layers are complementary: the tool-boundary hook catches the intent, the local hook catches the honest mistake before it becomes a commit, and the ruleset rejects direct pushes at the server.
 
 ## The lifecycle
 
@@ -90,9 +90,9 @@ gh api graphql -f query='
 
 The last one is the count of unresolved threads. Zero is the requirement.
 
-**An AI reviewer never approves.** GitHub only lets real user accounts file an `APPROVED` review; a hosted AI reviewer always leaves a `COMMENT` review. So `required_approving_review_count` cannot express "this was reviewed" — do not expect an approval to appear, and do not treat its absence as a stalled review.
+**The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** GitHub's review API can support approval for authorized integrations, but that is not this adapter's observed contract. Do not expect an approval here or treat its absence as a stalled review.
 
-**And nothing currently enforces that a review happened at all.** Branch protection can require the checks and the resolved threads listed above; it cannot require the review, because the only signal that could carry it was deleted with the machinery it duplicated. So a review bound to the current head with every thread answered is what you owe, not what you will be stopped for skipping. Merging an unreviewed head is possible; it is still wrong.
+**`review-binding` enforces the review contract.** It fails unless trusted review evidence covers the exact current head after the bound request and every inline or body-only finding has a qualifying later answer. GitHub conversation resolution separately requires every inline thread closed.
 
 ## Answering findings
 
@@ -272,7 +272,7 @@ Then start the agent. Not after.
 
 **Deterministic enforcement.** `.github/workflows/issue-claim-check.yml` runs on every `pull_request` open/edit/synchronize. It parses `Closes #N` / `Fixes #N` / `Resolves #N` / `Closes-issue: #N` from the PR body, fetches each open referenced issue, and fails the check if the PR author is not in the issue's assignees. The failure posts a comment on the PR explaining what to fix. `scripts/issue-claim-check.sh` is the same check, runnable locally before you push.
 
-**Bypass token: `[skip-claim-check]`.** For documented exemptions (drive-by typo fix, true emergency, sandbox PR you don't intend to merge), put the literal token in the PR body. The CI check sees the token and skips with a workflow-run note, leaving an audit trail. Like `git push --no-verify`, this is a documented escape hatch — not a daily shortcut.
+**Bypass token: `[skip-claim-check]`.** For documented exemptions (drive-by typo fix, true emergency, sandbox PR you don't intend to merge), put the literal token in the PR body. The CI check sees the token and skips with a workflow-run note, leaving an audit trail. This is a documented escape hatch, not a daily shortcut.
 
 ## Parallel work with worktrees
 
@@ -310,8 +310,8 @@ Do not substitute `rm -rf <worktree-dir>` for `git worktree remove <path>`. Dele
 
 ## Emergency path
 
-If a production bug requires immediate action and can't wait for the PR cycle, push directly with `git push --no-verify`. The next PR must include an "Emergency-bypass disclosure" section explaining what was bypassed and why.
+If a production bug cannot wait for normal gates, it still goes through a PR. Include an "Emergency-bypass disclosure" section explaining the incident and bypass, then an organization admin may use GitHub's PR-only ruleset bypass (for example, `gh pr merge --admin --squash --match-head-commit <sha>`). GitHub records that bypass. Direct pushes remain rejected, including for admins.
 
-**This is procedural guidance, not an enforced constraint.** The disclosure hooks that used to detect and record a bypass were deleted, and nothing replaced them: no mechanism prevents a silent `--no-verify` push or writes one down. Branch protection still rejects a direct push to the default branch, so the bypass that remains is local-hook-only — but the disclosure itself now rests entirely on the operator choosing to make it. Do not read the rule as a guarantee that a bypass would be caught. If that guarantee is wanted back, it belongs at a layer that can actually enforce it — a push ruleset or a required check — not in a hook the bypass already skipped.
+`--no-verify` bypasses local hooks only; it cannot bypass the server ruleset. Never configure an `exempt` ruleset actor: exempt actions skip rule evaluation and do not create the required audit entry.
 
-Do not reach for the emergency path because the merge gate is inconvenient. A red required check or an unresolved thread is the gate working. A missing review is not the gate stopping you — nothing stops you there — it is you noticing you have not done the thing you owe. The emergency path is for production incidents, and every use of it is a thing you will have to explain in writing.
+Do not reach for the emergency path because the merge gate is inconvenient. A red required check, missing review, or unresolved thread is the gate working. The emergency path is for production incidents, and every use remains both PR-visible and GitHub-audited.

@@ -1,0 +1,248 @@
+#!/usr/bin/env bash
+# Offline lifecycle tests for the audited GitHub policy migration.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SCRIPT="$ROOT/scripts/github-policy.sh"
+POLICY="$ROOT/policy/github/touchstone-main.json"
+BASELINE="$ROOT/policy/github/baseline-2026-08-13.json"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+mkdir -p "$TMP_DIR/bin" "$TMP_DIR/state"
+
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+
+ok() {
+  echo "  OK: $*"
+}
+
+cat >"$TMP_DIR/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+method=GET
+endpoint=""
+jq_filter=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    api) shift ;;
+    -H) shift 2 ;;
+    --method | -X) method="$2"; shift 2 ;;
+    --input) shift 2 ;;
+    --jq) jq_filter="$2"; shift 2 ;;
+    -*) shift ;;
+    *) endpoint="$1"; shift ;;
+  esac
+done
+[ -n "$endpoint" ] || exit 2
+state="$GH_FAKE_STATE"
+
+emit() {
+  local json="$1"
+  if [ -n "$jq_filter" ]; then
+    jq -r "$jq_filter" <<<"$json"
+  else
+    printf '%s\n' "$json"
+  fi
+}
+
+case "$method $endpoint" in
+  "GET repos/autumngarage/touchstone")
+    emit '{"id":1206566358}'
+    ;;
+  "GET repos/autumngarage/touchstone/commits/main")
+    emit '{"sha":"f5610ee05393298fab17f1f1a70b57325f84a014"}'
+    ;;
+  "GET repos/autumngarage/touchstone/contents/.github/workflows/validate.yml?ref=f5610ee05393298fab17f1f1a70b57325f84a014")
+    emit '{"type":"file"}'
+    ;;
+  "GET repos/autumngarage/touchstone/compare/f5610ee05393298fab17f1f1a70b57325f84a014...f5610ee05393298fab17f1f1a70b57325f84a014")
+    emit '{"status":"identical"}'
+    ;;
+  "GET orgs/autumngarage/rulesets")
+    if [ "${GH_FAKE_DUPLICATE_RULESET:-0}" = 1 ]; then
+      emit '[{"id":123,"name":"Touchstone main delivery"},{"id":124,"name":"Touchstone main delivery"}]'
+    elif [ -f "$state/ruleset.json" ]; then
+      emit "$(jq '[{id:.id,name:.name}]' "$state/ruleset.json")"
+    else
+      emit '[]'
+    fi
+    ;;
+  "GET orgs/autumngarage/rulesets/123")
+    cat "$state/ruleset.json"
+    ;;
+  "POST orgs/autumngarage/rulesets")
+    jq '. + {id:123}' >"$state/ruleset.json"
+    echo "POST org-ruleset" >>"$state/mutations.log"
+    emit "$(cat "$state/ruleset.json")"
+    ;;
+  "PUT orgs/autumngarage/rulesets/123")
+    jq '. + {id:123}' >"$state/ruleset.json"
+    echo "PUT org-ruleset" >>"$state/mutations.log"
+    emit "$(cat "$state/ruleset.json")"
+    ;;
+  "DELETE orgs/autumngarage/rulesets/123")
+    rm -f "$state/ruleset.json"
+    echo "DELETE org-ruleset" >>"$state/mutations.log"
+    ;;
+  "GET repos/autumngarage/touchstone/branches/main/protection")
+    if [ "${GH_FAKE_BRANCH_ERROR:-0}" = 1 ]; then
+      echo "gh: API unavailable (HTTP 503)" >&2
+      exit 1
+    fi
+    if [ ! -f "$state/branch.json" ]; then
+      echo "gh: Branch not protected (HTTP 404)" >&2
+      exit 1
+    fi
+    cat "$state/branch.json"
+    ;;
+  "PUT repos/autumngarage/touchstone/branches/main/protection")
+    jq '{
+      required_status_checks: .required_status_checks,
+      enforce_admins: {enabled:.enforce_admins},
+      required_pull_request_reviews: .required_pull_request_reviews,
+      restrictions: .restrictions,
+      required_linear_history: {enabled:.required_linear_history},
+      allow_force_pushes: {enabled:.allow_force_pushes},
+      allow_deletions: {enabled:.allow_deletions},
+      block_creations: {enabled:.block_creations},
+      required_conversation_resolution: {enabled:.required_conversation_resolution},
+      lock_branch: {enabled:.lock_branch},
+      allow_fork_syncing: {enabled:.allow_fork_syncing}
+    }' >"$state/branch.json"
+    echo "PUT branch-protection" >>"$state/mutations.log"
+    ;;
+  "DELETE repos/autumngarage/touchstone/branches/main/protection")
+    rm -f "$state/branch.json"
+    echo "DELETE branch-protection" >>"$state/mutations.log"
+    ;;
+  "GET repos/autumngarage/touchstone/rulesets?includes_parents=false" | \
+  "GET repos/autumngarage/touchstone/rulesets?includes_parents=true")
+    emit '[]'
+    ;;
+  "GET repos/autumngarage/touchstone/rules/branches/main")
+    if [ ! -f "$state/ruleset.json" ]; then
+      emit '[]'
+    elif [ "${GH_FAKE_BAD_EFFECTIVE:-0}" = 1 ]; then
+      jq '[.rules[] | select(.type != "workflows")]' "$state/ruleset.json"
+    else
+      jq '[.rules[]]' "$state/ruleset.json"
+    fi
+    ;;
+  *)
+    echo "unhandled fake gh call: $method $endpoint" >&2
+    exit 2
+    ;;
+esac
+EOF
+chmod +x "$TMP_DIR/bin/gh"
+
+init_branch() {
+  jq '{
+    required_status_checks: .branchProtection.required_status_checks,
+    enforce_admins: {enabled:.branchProtection.enforce_admins},
+    required_pull_request_reviews: .branchProtection.required_pull_request_reviews,
+    restrictions: .branchProtection.restrictions,
+    required_linear_history: {enabled:.branchProtection.required_linear_history},
+    allow_force_pushes: {enabled:.branchProtection.allow_force_pushes},
+    allow_deletions: {enabled:.branchProtection.allow_deletions},
+    block_creations: {enabled:.branchProtection.block_creations},
+    required_conversation_resolution: {enabled:.branchProtection.required_conversation_resolution},
+    lock_branch: {enabled:.branchProtection.lock_branch},
+    allow_fork_syncing: {enabled:.branchProtection.allow_fork_syncing}
+  }' "$BASELINE" >"$TMP_DIR/state/branch.json"
+  : >"$TMP_DIR/state/mutations.log"
+  rm -f "$TMP_DIR/state/ruleset.json"
+}
+
+run_policy() {
+  PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" "$SCRIPT" "$@"
+}
+
+echo "==> Checked-in policy invariants"
+jq -e '
+  .contractVersion == 1
+  and .workflowSourceRepository == "touchstone"
+  and (.managedRuleset.bypass_actors == [{actor_id:null,actor_type:"OrganizationAdmin",bypass_mode:"pull_request"}])
+  and any(.managedRuleset.rules[]; .type == "pull_request" and .parameters.required_review_thread_resolution == true)
+  and any(.managedRuleset.rules[]; .type == "required_status_checks" and any(.parameters.required_status_checks[]; .context == "review-binding" and .integration_id == 15368))
+  and any(.managedRuleset.rules[]; .type == "workflows" and any(.parameters.workflows[];
+    .repository_id == 1206566358
+    and .path == ".github/workflows/validate.yml"
+    and .ref == "refs/heads/main"
+    and (.sha | test("^[0-9a-f]{40}$"))))
+  and any(.managedRuleset.rules[]; .type == "deletion")
+  and any(.managedRuleset.rules[]; .type == "non_fast_forward")
+' "$POLICY" >/dev/null || fail "checked-in ruleset is missing a required invariant"
+ok "ruleset expresses PR-only audited bypass and every native gate"
+
+echo "==> Read-only diff and dry-run"
+init_branch
+run_policy dry-run "$POLICY" >"$TMP_DIR/dry-run.txt"
+[ ! -s "$TMP_DIR/state/mutations.log" ] || fail "dry-run mutated remote policy"
+grep -q 'Would install/replace organization ruleset' "$TMP_DIR/dry-run.txt" \
+  || fail "dry-run did not describe the apply"
+ok "dry-run describes the change without mutating state"
+
+echo "==> Ambiguous and failed reads fail closed"
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_DUPLICATE_RULESET=1 \
+  "$SCRIPT" diff "$POLICY" >/dev/null 2>&1; then
+  fail "duplicate managed ruleset names were treated as absence"
+fi
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BRANCH_ERROR=1 \
+  "$SCRIPT" backup "$TMP_DIR/failed-backup.json" "$POLICY" >/dev/null 2>&1; then
+  fail "branch-protection API failure was treated as absence"
+fi
+[ ! -e "$TMP_DIR/failed-backup.json" ] || fail "failed backup left an artifact"
+ok "ambiguous rulesets and non-404 protection failures stop the operation"
+
+echo "==> Backup, apply, and idempotency"
+run_policy backup "$TMP_DIR/backup.json" "$POLICY"
+jq -e '.branchProtection.required_status_checks.checks | length == 2' "$TMP_DIR/backup.json" >/dev/null \
+  || fail "backup omitted current required checks"
+run_policy apply "$POLICY"
+[ ! -f "$TMP_DIR/state/branch.json" ] || fail "apply left duplicate branch protection"
+[ "$(sed -n '1p' "$TMP_DIR/state/mutations.log")" = "POST org-ruleset" ] \
+  || fail "apply did not install ruleset first"
+[ "$(sed -n '2p' "$TMP_DIR/state/mutations.log")" = "DELETE branch-protection" ] \
+  || fail "apply removed branch protection before verified ruleset install"
+before_count="$(wc -l <"$TMP_DIR/state/mutations.log" | tr -d ' ')"
+jq '.rules |= reverse' "$TMP_DIR/state/ruleset.json" >"$TMP_DIR/state/reordered.json"
+mv "$TMP_DIR/state/reordered.json" "$TMP_DIR/state/ruleset.json"
+run_policy apply "$POLICY"
+after_count="$(wc -l <"$TMP_DIR/state/mutations.log" | tr -d ' ')"
+[ "$before_count" = "$after_count" ] || fail "second apply changed remote state"
+ok "apply is ordered safely and a second apply is a no-op"
+
+echo "==> Rollback restores before removing replacement"
+run_policy rollback "$TMP_DIR/backup.json" "$POLICY"
+[ -f "$TMP_DIR/state/branch.json" ] || fail "rollback did not restore branch protection"
+[ ! -f "$TMP_DIR/state/ruleset.json" ] || fail "rollback did not remove the replacement ruleset"
+tail -2 "$TMP_DIR/state/mutations.log" >"$TMP_DIR/rollback-order.txt"
+diff -u <(printf 'PUT branch-protection\nDELETE org-ruleset\n') "$TMP_DIR/rollback-order.txt" >/dev/null \
+  || fail "rollback created a protection gap"
+ok "rollback restores the captured gate before removing its replacement"
+
+echo "==> Rollback refuses an unprotected backup"
+jq '.branchProtection = null | .managedOrganizationRuleset = null' \
+  "$TMP_DIR/backup.json" >"$TMP_DIR/unprotected-backup.json"
+if run_policy rollback "$TMP_DIR/unprotected-backup.json" "$POLICY" >/dev/null 2>&1; then
+  fail "rollback accepted a backup with no protection to restore"
+fi
+ok "rollback cannot remove the gate using an unprotected backup"
+
+echo "==> Failed verification retains old protection"
+init_branch
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BAD_EFFECTIVE=1 \
+  "$SCRIPT" apply "$POLICY" >/dev/null 2>&1; then
+  fail "apply succeeded with a missing effective workflow rule"
+fi
+[ -f "$TMP_DIR/state/branch.json" ] || fail "failed verification removed old branch protection"
+! grep -q 'DELETE branch-protection' "$TMP_DIR/state/mutations.log" \
+  || fail "failed verification reached destructive migration step"
+ok "failed replacement verification leaves the old gate intact"
+
+echo "==> PASS: audited GitHub policy lifecycle is safe and deterministic"

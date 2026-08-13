@@ -1,12 +1,12 @@
 name: validate
 
-# The required check. It answers exactly one question: did the test suite run
-# and pass on this exact commit?
+# The organization ruleset pins an immutable revision of this required
+# workflow. It answers exactly one question: did the test suite run and pass
+# on this exact commit?
 #
-# Everything this workflow does NOT do is done by branch protection — refusing
-# pushes to main, requiring a PR, requiring a review, requiring conversation
-# resolution. Re-implementing any of that here is what grew the previous
-# 283-line version and the review-binding workflow beside it, both deleted.
+# Everything else is enforced by native rules and the separate review-binding
+# check. Re-implementing those decisions here is what grew the previous
+# 283-line workflow that was deleted.
 #
 # DEPENDENCY CONTRACT: this job may depend on the runner image, this
 # repository, and github.com. Nothing else. Anything no test executes is not
@@ -25,9 +25,8 @@ name: validate
 # Before adding an install step here, name the test that executes the binary.
 # If you cannot name one, the dependency belongs at pre-commit time.
 #
-# The job name must stay `validate (ubuntu-latest)` — that exact string is the
-# required status check configured on main. Renaming the job silently un-gates
-# the branch.
+# Keep the job name stable so runs remain legible and the stored rollback
+# policy can restore its historical status-check context exactly.
 
 on:
   pull_request:

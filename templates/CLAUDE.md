@@ -12,9 +12,9 @@ Claude Code is a **driving CLI** in this repo: it owns file edits, git state, te
 
 Semantic review is PR-visible and asynchronous. The driving CLI remains
 responsible for addressing review findings, validating each revised head, and
-reviewing the head it merges. Note that review itself is not enforced: GitHub
-holds the required checks and thread resolution, but nothing makes a review
-happen. That step holds because the driver keeps it.
+reviewing the head it merges. GitHub's required `review-binding` check binds
+trusted review evidence to that exact head and requires every finding answered;
+GitHub separately requires every inline thread resolved.
 
 ## Universal steering
 

@@ -290,7 +290,6 @@ for required in \
   'contents/.github/review-binding/evaluate.jq?ref=$base' \
   'live_head' \
   'newest_run' \
-  'BOOTSTRAP_BASE_SHA' \
   'GITHUB_EVENT_PATH' \
   'known_head'; do
   if grep -Fq "$required" "$WORKFLOW"; then
@@ -299,6 +298,11 @@ for required in \
     fail "workflow missing required guardrail: $required"
   fi
 done
+if grep -Fq 'BOOTSTRAP_BASE_SHA' "$WORKFLOW"; then
+  fail "required review-binding workflow still carries its one-head bootstrap bypass"
+else
+  ok "one-head bootstrap bypass is absent from the required gate"
+fi
 if grep -Fq 'pull_request_review:' "$WORKFLOW" \
   || grep -Fq 'pull_request_review_comment:' "$WORKFLOW"; then
   fail "write-capable publisher must not run directly with read-only fork review tokens"

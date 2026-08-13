@@ -9,7 +9,7 @@ One person cannot read everything many agents produce. Touchstone exists so that
 
 The goal is that every Autumn Garage project gets the same dev flow by adopting Touchstone, and that the flow is industry-leading practice for GitHub and agent-driven delivery. Adoption is **set-and-forget**: an adopted repository must remain correct if Touchstone never rewrites it again. V1 serves one operator's portfolio through public-quality interfaces; it does not build a speculative third-party platform. The durable boundary is defined in `docs/product-contract.md`.
 
-**What the second half ships today is narrower than that ambition.** The surviving scripts claim issues, answer review threads, and run a project's checks. **Nothing here opens a PR, binds a review to its head, or merges** — those are raw `git` and `gh`, documented below and in `principles/git-workflow.md`. Rebuilding that half as a thin CLI is the open work; until it lands, read "push tooling" as a goal, not an inventory.
+**What the second half ships today is narrower than that ambition.** The surviving repository machinery claims issues, answers review threads, binds review evidence to the current head, runs a project's checks, and manages this repository's audited GitHub policy. **Nothing here opens a PR or merges** — those remain raw `git` and `gh`, documented below and in `principles/git-workflow.md`. Rebuilding that sequencing as a thin CLI is the open work; until it lands, read "push tooling" as a goal, not a complete inventory.
 
 ## Purpose
 
@@ -17,7 +17,7 @@ The goal is that every Autumn Garage project gets the same dev flow by adopting 
 
 Everything here exists to hold one of those three lines. To hold them, Touchstone does exactly three things:
 
-1. **Constrain** — you cannot commit to the default branch, merge on a red check, or merge with an unresolved thread. Reviewing the head you merge is required but unenforced; see the known gap below.
+1. **Constrain** — GitHub rejects direct, forced, unvalidated, unreviewed, unanswered, stale-head, and unresolved delivery to the default branch.
 2. **Make state legible** — what happened lives in git, PRs, and issues, verifiable without trusting an agent's narration.
 3. **Carry the contract** — the same rules reach every project and every agent.
 
@@ -37,7 +37,8 @@ touchstone/
 ├── skills/         # User-scoped Claude Code skills
 ├── templates/      # Legacy transition inputs; nothing copies them
 ├── hooks/          # branch-guard.sh — PreToolUse hook wired in .claude/settings.json
-├── scripts/        # claim-issue, issue-claim-check, respond-review, touchstone-run
+├── policy/         # Audited desired GitHub policy and rollback baseline
+├── scripts/        # Issue, review, runner, and GitHub policy operations
 ├── audits/         # Dated drift/health reports
 ├── feedback/       # Dated dogfooding notes from downstream projects
 └── tests/          # Self-tests
@@ -47,7 +48,7 @@ touchstone/
 
 The surviving `scripts/touchstone-run.sh` and `templates/` still describe the frozen pre-strip consumer shape. They are historical inputs for the consumer audit, not the new architecture. Current replacement scope and sequencing live in the [canonical Linear execution plan](https://linear.app/autumngarage/document/touchstone-execution-plan-post-strip-baseline-cac4c56e593e), not this durable overview.
 
-**Known gap:** an AI reviewer can never file an `APPROVED` review — GitHub reserves formal approval for real user accounts — so `required_approving_review_count` cannot express "this was reviewed." The check-run that could express it was deleted alongside the local mirror it duplicated. Until it is rebuilt as a small required status check, review enforcement is advisory. This is known and accepted, not overlooked.
+The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so GitHub approval count does not represent it. The required `review-binding` check instead binds trusted review evidence to the exact head and requires a later qualifying answer for every finding; GitHub independently requires every inline thread resolved.
 
 ## Delivery
 
