@@ -72,13 +72,14 @@ normalize_branch_protection() {
 
 managed_ruleset_json() {
   local list ids count id
-  list="$(api --paginate "orgs/$ORG/rulesets" | jq -s 'add // []')"
-  ids="$(jq -c --arg name "$RULESET_NAME" '[.[] | select(.name == $name) | .id]' <<<"$list")"
-  count="$(jq -r length <<<"$ids")"
+  list="$(api --paginate "orgs/$ORG/rulesets" | jq -s 'add // []')" || return $?
+  ids="$(jq -c --arg name "$RULESET_NAME" '[.[] | select(.name == $name) | .id]' <<<"$list")" \
+    || return $?
+  count="$(jq -r length <<<"$ids")" || return $?
   if [ "$count" -eq 0 ]; then
     printf 'null\n'
   elif [ "$count" -eq 1 ]; then
-    id="$(jq -r '.[0]' <<<"$ids")"
+    id="$(jq -r '.[0]' <<<"$ids")" || return $?
     api "orgs/$ORG/rulesets/$id"
   else
     die "more than one organization ruleset is named $RULESET_NAME"
@@ -87,7 +88,7 @@ managed_ruleset_json() {
 
 branch_protection_json() {
   local raw error
-  error="$(mktemp)"
+  error="$(mktemp)" || return $?
   if ! raw="$(api "repos/$ORG/$REPOSITORY/branches/$BRANCH/protection" 2>"$error")"; then
     if grep -q 'HTTP 404' "$error"; then
       rm -f "$error"
@@ -240,14 +241,15 @@ restore_branch_protection() {
     lock_branch,
     allow_fork_syncing
   }' <<<"$protection" \
-    | api --method PUT "repos/$ORG/$REPOSITORY/branches/$BRANCH/protection" --input - >/dev/null
+    | api --method PUT "repos/$ORG/$REPOSITORY/branches/$BRANCH/protection" --input - >/dev/null \
+    || return $?
   signature_endpoint="repos/$ORG/$REPOSITORY/branches/$BRANCH/protection/required_signatures"
-  expected_signatures="$(jq -r '.required_signatures // false' <<<"$protection")"
-  actual_signatures="$(api "$signature_endpoint" --jq '.enabled // false')"
+  expected_signatures="$(jq -r '.required_signatures // false' <<<"$protection")" || return $?
+  actual_signatures="$(api "$signature_endpoint" --jq '.enabled // false')" || return $?
   if [ "$expected_signatures" = true ] && [ "$actual_signatures" != true ]; then
-    api --method POST "$signature_endpoint" >/dev/null
+    api --method POST "$signature_endpoint" >/dev/null || return $?
   elif [ "$expected_signatures" != true ] && [ "$actual_signatures" = true ]; then
-    api --method DELETE "$signature_endpoint" >/dev/null
+    api --method DELETE "$signature_endpoint" >/dev/null || return $?
   fi
 }
 
@@ -263,12 +265,12 @@ restore_policy_state() {
       api --method DELETE "orgs/$ORG/rulesets/$(jq -r .id <<<"$current")" || return $?
     fi
   else
-    payload="$(ruleset_update_payload <<<"$expected_ruleset")"
+    payload="$(ruleset_update_payload <<<"$expected_ruleset")" || return $?
     if [ "$current" = null ]; then
       printf '%s\n' "$payload" \
         | api --method POST "orgs/$ORG/rulesets" --input - >/dev/null || return $?
     else
-      id="$(jq -r .id <<<"$current")"
+      id="$(jq -r .id <<<"$current")" || return $?
       printf '%s\n' "$payload" \
         | api --method PUT "orgs/$ORG/rulesets/$id" --input - >/dev/null || return $?
     fi

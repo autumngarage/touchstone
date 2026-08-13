@@ -155,6 +155,11 @@ case "$method $endpoint" in
     ;;
   "PUT repos/autumngarage/touchstone/branches/main/protection")
     payload="$(cat)"
+    if [ "${GH_FAKE_FAIL_BRANCH_PUT_ONCE:-0}" = 1 ] && [ ! -f "$state/branch-put-failed" ]; then
+      touch "$state/branch-put-failed"
+      echo "gh: branch protection unavailable (HTTP 503)" >&2
+      exit 1
+    fi
     if [ -f "$state/branch.json" ]; then
       current_signatures="$(jq -c '.required_signatures // {enabled:false}' "$state/branch.json")"
     else
@@ -267,7 +272,8 @@ init_branch() {
   }' "$BASELINE" >"$TMP_DIR/state/branch.json"
   : >"$TMP_DIR/state/mutations.log"
   rm -f "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/bad-effective-used" \
-    "$TMP_DIR/state/branch-calls" "$TMP_DIR/state/org-mutation-failed"
+    "$TMP_DIR/state/branch-calls" "$TMP_DIR/state/org-mutation-failed" \
+    "$TMP_DIR/state/branch-put-failed"
 }
 
 run_policy() {
@@ -534,6 +540,19 @@ fi
 [ ! -f "$TMP_DIR/state/ruleset.json" ] \
   || fail "ambiguous apply mutation left an unverified ruleset installed"
 ok "ambiguous apply mutation restores and verifies the complete prior state"
+
+echo "==> Failed branch restore retains the active replacement gate"
+init_branch
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" \
+  GH_FAKE_BRANCH_ERROR_ON_CALL=2 GH_FAKE_FAIL_BRANCH_PUT_ONCE=1 \
+  "$SCRIPT" apply "$POLICY" >/dev/null 2>&1; then
+  fail "apply succeeded after verification and branch restoration both failed"
+fi
+[ ! -f "$TMP_DIR/state/branch.json" ] \
+  || fail "failed branch restore unexpectedly recreated legacy protection"
+[ -f "$TMP_DIR/state/ruleset.json" ] \
+  || fail "failed branch restore deleted the surviving active ruleset"
+ok "a failed branch restore cannot remove the surviving active ruleset"
 
 echo "==> Failed rollback update restores the prior ruleset"
 init_branch
