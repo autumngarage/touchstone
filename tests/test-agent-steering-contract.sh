@@ -81,6 +81,8 @@ assert_contains "$GIT_WORKFLOW_GUIDE" \
   "do not infer it from this guide"
 assert_not_contains "$GIT_WORKFLOW_GUIDE" \
   "then an organization admin may use GitHub's PR-only ruleset bypass"
+assert_not_contains "$GIT_WORKFLOW_GUIDE" \
+  'Direct pushes to `main` are rejected by the server even for organization admins.'
 
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"
 # CLAUDE.md uses @TOUCHSTONE.md (Claude Code resolves @-imports transitively),

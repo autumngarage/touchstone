@@ -20,7 +20,9 @@ Every code change goes through a feature branch + PR + PR-visible review loop + 
 
 - `hooks/branch-guard.sh` runs as a Claude Code `PreToolUse` hook and refuses a `git commit` invocation on the default branch before the tool call runs at all.
 - The `no-commit-to-branch` hook in `.pre-commit-config.yaml` is configured with `--branch main --branch master`. It runs at `pre-commit` stage and refuses the commit outright. `git commit --no-verify` bypasses this local feedback only.
-- The GitHub organization ruleset requires the change to go through a PR. Direct pushes to `main` are rejected by the server even for organization admins.
+- Where the repository's effective policy contains the Touchstone organization
+  ruleset, GitHub requires the change to go through a PR and rejects direct
+  pushes to `main`, including from organization admins.
 
 The layers are complementary: the tool-boundary hook catches the intent and
 the local hook catches the honest mistake before it becomes a commit. Where
