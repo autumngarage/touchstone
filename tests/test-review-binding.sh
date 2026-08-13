@@ -246,6 +246,21 @@ run_case "editing a result-comment finding invalidates its older answer" \
 run_case "a new answer after the result-comment edit passes" \
   ".issueComments = [.issueComments[0], $RESULT_BODY_FINDING, ($RESULT_BODY_ANSWER | .created_at = \"2026-08-13T10:04:00Z\")]" \
   success
+STANDARD_RESULT_EDIT='{
+  "id": 502,
+  "body": "### 💡 Codex Review\n\nThe newly edited result contains a finding.\n\n**Reviewed commit:** `1111111111`",
+  "resolved_review_sha": "1111111111111111111111111111111111111111",
+  "created_at": "2026-08-13T10:01:00Z",
+  "updated_at": "2026-08-13T10:03:00Z",
+  "author_association": "NONE",
+  "user": {"login": "chatgpt-codex-connector[bot]"}
+}'
+run_case "editing a standard-format result comment creates a fresh finding" \
+  ".issueComments = [.issueComments[0], $STANDARD_RESULT_EDIT]" \
+  failure "body-only"
+run_case "a later marked answer closes an edited standard-format result finding" \
+  ".issueComments = [.issueComments[0], $STANDARD_RESULT_EDIT, ($RESULT_BODY_ANSWER | .body = \"Fixed. <!-- touchstone:review-answer id=502 -->\" | .created_at = \"2026-08-13T10:04:00Z\")]" \
+  success
 
 echo "==> Rebuild is deterministic"
 first="$(jq -S -f "$EVALUATOR" "$TMP_DIR/base.json")"

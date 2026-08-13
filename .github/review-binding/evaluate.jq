@@ -134,10 +134,12 @@ def answers_body_finding($id):
 | [
     $result_comments[]
     | select(
-        (((.body // "") | contains("Didn't find any major issues")) | not)
+        (
+          (((.body // "") | contains("Didn't find any major issues")) | not)
+          and (standard_codex_review_body | not)
+        )
         or ((.updated_at // .created_at // "") > (.created_at // ""))
       )
-    | select(standard_codex_review_body | not)
     | . as $finding
     | ($finding.updated_at // $finding.created_at // "") as $finding_at
     | {
