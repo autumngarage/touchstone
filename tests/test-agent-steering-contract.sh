@@ -253,7 +253,15 @@ echo "==> no gate description claims review is enforced"
 # nothing. The probe below caught it immediately, which is the entire argument
 # for writing the probe: a guard that silently matches nothing looks identical
 # to a clean tree.
-CONTRADICTION='cannot[^.]*merge[^.]*without[^.]*review|merg[a-z]*[^.]*without[^.]*review[^.]*(blocked|prevented|refused)|without[^.]*review[^.]*cannot merge'
+#
+# Round 4 found the pattern was still too narrow: it keyed on the phrase
+# "merge without review" and missed a whole vocabulary saying the same thing —
+# an "Approval Gate" stage, "Required reviews approved" as a gate condition,
+# and "merging only after the required GitHub review ... approve". Enforcement
+# has more synonyms than one pattern will ever enumerate, which is the known
+# weakness of the denylist half and the reason the positive half exists beside
+# it. This list is a floor, not a proof.
+CONTRADICTION='cannot[^.]*merge[^.]*without[^.]*review|merg[a-z]*[^.]*without[^.]*review[^.]*(blocked|prevented|refused)|without[^.]*review[^.]*cannot merge|[Aa]pproval [Gg]ate|[Rr]equired reviews approved|merging only after[^.]*review'
 for file in $GATE_FILES; do
   [ -f "$file" ] || continue
   hits="$(grep -inE "$CONTRADICTION" "$file" || true)"
