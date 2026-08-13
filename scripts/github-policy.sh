@@ -189,6 +189,20 @@ verify_rollback_prerequisites() {
   done < <(jq -c '.rollbackPrerequisites.repositoryFiles[]?' "$artifact")
 }
 
+verify_rollback_state() {
+  local before="$1" artifact="$2" restored_managed restored expected
+  restored_managed="$(managed_ruleset_json)"
+  if [ "$before" = null ]; then
+    [ "$restored_managed" = null ] || die "rollback left the replacement ruleset installed"
+  else
+    verify_ruleset_against "$before"
+  fi
+  restored="$(branch_protection_json)"
+  expected="$(jq -S .branchProtection "$artifact")"
+  diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$restored") >/dev/null \
+    || die "rollback branch protection does not match backup"
+}
+
 restore_branch_protection() {
   local protection="$1"
   [ "$protection" != null ] || return 0
@@ -336,31 +350,44 @@ case "$COMMAND" in
     verify_rollback_prerequisites "$ARTIFACT"
     restore_branch_protection "$protection"
     current="$(managed_ruleset_json)"
+    prior_ruleset_payload=""
+    prior_ruleset_id=""
+    ruleset_mutation="none"
     if [ "$before" = null ] && [ "$current" != null ]; then
-      api --method DELETE "orgs/$ORG/rulesets/$(jq -r .id <<<"$current")"
+      prior_ruleset_payload="$(ruleset_update_payload <<<"$current")"
+      prior_ruleset_id="$(jq -r .id <<<"$current")"
+      api --method DELETE "orgs/$ORG/rulesets/$prior_ruleset_id"
+      ruleset_mutation="deleted"
     elif [ "$before" != null ]; then
       restore_payload="$(ruleset_update_payload <<<"$before")"
       if [ "$current" = null ]; then
         printf '%s\n' "$restore_payload" | api --method POST "orgs/$ORG/rulesets" --input - >/dev/null
+        ruleset_mutation="created"
       else
+        prior_ruleset_payload="$(ruleset_update_payload <<<"$current")"
+        prior_ruleset_id="$(jq -r .id <<<"$current")"
         printf '%s\n' "$restore_payload" \
-          | api --method PUT "orgs/$ORG/rulesets/$(jq -r .id <<<"$current")" --input - >/dev/null
+          | api --method PUT "orgs/$ORG/rulesets/$prior_ruleset_id" --input - >/dev/null
+        ruleset_mutation="updated"
       fi
     fi
-    restored_managed="$(managed_ruleset_json)"
-    if [ "$before" = null ]; then
-      [ "$restored_managed" = null ] || die "rollback left the replacement ruleset installed"
-    else
-      [ "$restored_managed" != null ] || die "rollback did not restore the captured ruleset"
-      diff -u \
-        <(normalize_ruleset <<<"$before") \
-        <(normalize_ruleset <<<"$restored_managed") >/dev/null \
-        || die "rollback managed ruleset does not match backup"
+    if ! (verify_rollback_state "$before" "$ARTIFACT"); then
+      case "$ruleset_mutation" in
+        updated)
+          printf '%s\n' "$prior_ruleset_payload" \
+            | api --method PUT "orgs/$ORG/rulesets/$prior_ruleset_id" --input - >/dev/null
+          ;;
+        deleted)
+          printf '%s\n' "$prior_ruleset_payload" \
+            | api --method POST "orgs/$ORG/rulesets" --input - >/dev/null
+          ;;
+      esac
+      if [ "$ruleset_mutation" = updated ] || [ "$ruleset_mutation" = deleted ]; then
+        (verify_ruleset_against "$prior_ruleset_payload") \
+          || die "rollback failed and the prior ruleset could not be verified after restore"
+      fi
+      die "rollback failed verification; the prior managed ruleset was restored when one existed"
     fi
-    restored="$(branch_protection_json)"
-    expected="$(jq -S .branchProtection "$ARTIFACT")"
-    diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$restored") >/dev/null \
-      || die "rollback branch protection does not match backup"
     echo "Rollback matches captured branch protection."
     ;;
   *)

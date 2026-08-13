@@ -107,6 +107,11 @@ case "$method $endpoint" in
       echo "gh: API unavailable (HTTP 503)" >&2
       exit 1
     fi
+    if [ "${GH_FAKE_BRANCH_ERROR_ONCE:-0}" = 1 ] && [ ! -f "$state/branch-error-used" ]; then
+      touch "$state/branch-error-used"
+      echo "gh: API unavailable (HTTP 503)" >&2
+      exit 1
+    fi
     if [ ! -f "$state/branch.json" ]; then
       echo "gh: Branch not protected (HTTP 404)" >&2
       exit 1
@@ -185,7 +190,8 @@ init_branch() {
     allow_fork_syncing: {enabled:.branchProtection.allow_fork_syncing}
   }' "$BASELINE" >"$TMP_DIR/state/branch.json"
   : >"$TMP_DIR/state/mutations.log"
-  rm -f "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/bad-effective-used"
+  rm -f "$TMP_DIR/state/ruleset.json" "$TMP_DIR/state/bad-effective-used" \
+    "$TMP_DIR/state/branch-error-used"
 }
 
 run_policy() {
@@ -370,5 +376,37 @@ run_policy verify "$POLICY" >/dev/null \
 diff -u <(printf 'PUT org-ruleset\nPUT org-ruleset\n') "$TMP_DIR/state/mutations.log" >/dev/null \
   || fail "failed update did not restore the previous ruleset immediately"
 ok "failed in-place update restores and verifies the prior active gate"
+
+echo "==> Failed rollback update restores the prior ruleset"
+init_branch
+run_policy apply "$POLICY" >/dev/null
+run_policy backup "$TMP_DIR/post-migration-backup.json" "$POLICY" >/dev/null
+run_policy apply "$TMP_DIR/updated-policy.json" >/dev/null
+: >"$TMP_DIR/state/mutations.log"
+rm -f "$TMP_DIR/state/bad-effective-used"
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BAD_EFFECTIVE_ONCE=1 \
+  "$SCRIPT" rollback "$TMP_DIR/post-migration-backup.json" "$POLICY" >/dev/null 2>&1; then
+  fail "rollback update succeeded after effective-policy verification failed"
+fi
+run_policy verify "$TMP_DIR/updated-policy.json" >/dev/null \
+  || fail "failed rollback update did not restore the prior ruleset"
+diff -u <(printf 'PUT org-ruleset\nPUT org-ruleset\n') "$TMP_DIR/state/mutations.log" >/dev/null \
+  || fail "failed rollback update did not restore the previous ruleset immediately"
+ok "failed rollback update restores and verifies the prior active gate"
+
+echo "==> Failed rollback deletion restores the prior ruleset"
+init_branch
+run_policy apply "$POLICY" >/dev/null
+: >"$TMP_DIR/state/mutations.log"
+if PATH="$TMP_DIR/bin:$PATH" GH_FAKE_STATE="$TMP_DIR/state" GH_FAKE_BRANCH_ERROR_ONCE=1 \
+  "$SCRIPT" rollback "$BASELINE" "$POLICY" >/dev/null 2>&1; then
+  fail "rollback deletion succeeded after branch verification failed"
+fi
+[ -f "$TMP_DIR/state/ruleset.json" ] \
+  || fail "failed rollback deletion did not recreate the prior ruleset"
+diff -u <(printf 'PUT branch-protection\nDELETE org-ruleset\nPOST org-ruleset\n') \
+  "$TMP_DIR/state/mutations.log" >/dev/null \
+  || fail "failed rollback deletion did not restore the previous ruleset immediately"
+ok "failed rollback deletion restores the prior active gate"
 
 echo "==> PASS: audited GitHub policy lifecycle is safe and deterministic"
