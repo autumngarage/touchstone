@@ -55,9 +55,9 @@ manager's offline, frozen/immutable mode; an unlocked project gets no generated
 install step. Yarn Classic and Berry are distinguished by the declared major
 version, with the lock format as the fallback when no version is declared. A
 child uses the root setup only when an explicit JSON, block YAML, or single-line
-flow YAML workspace glob proves membership. Duplicate script or workspace keys
-refuse as ambiguous rather than selecting a value different from the package
-manager.
+flow YAML workspace glob proves membership. Every workspace entry must be a
+string in the compiler's narrow, slash-aware glob subset; duplicate, mixed-type,
+or unsupported declarations refuse instead of compiling a partial view.
 Python tasks come from ruff, mypy, and pytest evidence in `pyproject.toml` or
 the test tree. A dependency-free portable parser verifies the complete
 `pyproject.toml` before any facts are derived and refuses TOML syntax it cannot
@@ -69,8 +69,9 @@ setup; required uv dev groups are named explicitly even when project defaults
 exclude them. Configuration or a test tree without the checker dependency refuses.
 Tool-only Python configuration without dependency facts refuses. Monorepo
 plans include executable root-level checks alongside explicit child targets.
-Swift, Rust, and Go commands disable automatic resolution, use offline Cargo,
-or disable both the Go proxy and checksum database. Every generated validation
+Swift and Go commands disable automatic resolution or both the Go proxy and
+checksum database. Rust requires a committed `Cargo.lock` and uses Cargo's
+frozen mode so validation cannot rewrite it or reach the network. Every generated validation
 path fails when required dependencies are not vendored or pre-provisioned;
 none may turn a package-host outage into a required-check failure. The accepted commands and setup are
 written explicitly to `.touchstone.toml`; later preset changes never rewrite

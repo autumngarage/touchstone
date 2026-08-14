@@ -851,6 +851,9 @@ node_workspace_patterns() {
         key[depth] = token
         state[depth] = "colon"
       } else {
+        if (kind[depth] == "object" && state[depth] == "value" &&
+            ((depth == 1 && key[depth] == "workspaces") ||
+             (depth == workspace_object && key[depth] == "packages"))) exit 2
         if (kind[depth] == "array" && state[depth] == "value" && depth == workspace_array) print token
         value_complete()
       }
@@ -880,8 +883,15 @@ node_workspace_patterns() {
         }
         if (character ~ /[[:space:]]/) continue
         if (character == "\"") { in_string = 1; token = ""; continue }
-        if (character == "{") { begin_container("object"); continue }
-        if (character == "[") { begin_container("array"); continue }
+        if (character == "{") {
+          if (depth == workspace_array && state[depth] == "value") exit 2
+          if (depth == workspace_object && key[depth] == "packages") exit 2
+          begin_container("object"); continue
+        }
+        if (character == "[") {
+          if (depth == workspace_array && state[depth] == "value") exit 2
+          begin_container("array"); continue
+        }
         if (character == ":") { state[depth] = "value"; continue }
         if (character == ",") {
           state[depth] = kind[depth] == "object" ? "key" : "value"
@@ -894,7 +904,12 @@ node_workspace_patterns() {
           delete kind[depth]; delete state[depth]; delete key[depth]
           depth--
           value_complete()
+          continue
         }
+        if ((depth == workspace_array && state[depth] == "value") ||
+            (kind[depth] == "object" && state[depth] == "value" &&
+             ((depth == 1 && key[depth] == "workspaces") ||
+              (depth == workspace_object && key[depth] == "packages")))) exit 2
       }
     }
   ' "$manifest"
@@ -987,7 +1002,7 @@ pnpm_workspace_patterns() {
 node_workspace_contains() {
   local relative="$1" patterns pattern candidate member=false pnpm_patterns
   if ! patterns="$(node_workspace_patterns)"; then
-    contract_refusal "root package.json repeats a workspace declaration; workspace membership is ambiguous"
+    contract_refusal "root package.json has a malformed, repeated, or unsupported workspace declaration"
   fi
   if [ -f "$PROJECT_ROOT/pnpm-workspace.yaml" ]; then
     if ! pnpm_patterns="$(pnpm_workspace_patterns)"; then
@@ -1445,7 +1460,11 @@ tasks_for_profile() {
     node) tasks_for_node "$directory" "$target" "$suffix" "$inherited_node_manager" "$workspace_member" ;;
     python) tasks_for_python "$directory" "$target" "$suffix" ;;
     swift) record_task "test$suffix" "$target" "swift test --disable-automatic-resolution --skip-update" ;;
-    rust) record_task "test$suffix" "$target" "cargo test --offline" ;;
+    rust)
+      [ -f "$directory/Cargo.lock" ] \
+        || contract_refusal "Rust target '$target' has no Cargo.lock; commit one or pass --task NAME=COMMAND"
+      record_task "test$suffix" "$target" "cargo test --frozen"
+      ;;
     go) record_task "test$suffix" "$target" "GOPROXY=off GOSUMDB=off go test ./..." ;;
     generic) contract_refusal "no supported project facts found; pass --task NAME=COMMAND for a manual declaration" ;;
     ambiguous:*) contract_refusal "ambiguous project facts for target '$target': ${profile#ambiguous:}" ;;

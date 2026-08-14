@@ -1038,7 +1038,8 @@ for profile in python swift rust go; do
       ;;
     rust)
       printf '%s\n' '[package]' 'name = "fixture"' >"$ADOPT_PROFILE/Cargo.toml"
-      expected_command='command = "cargo test --offline"'
+      printf '%s\n' 'version = 4' >"$ADOPT_PROFILE/Cargo.lock"
+      expected_command='command = "cargo test --frozen"'
       expected_setup=''
       ;;
     go)
@@ -1054,6 +1055,16 @@ for profile in python swift rust go; do
   assert_contains "$ADOPT_PROFILE/.touchstone.toml" "$expected_command"
   if [ -n "$expected_setup" ]; then assert_contains "$ADOPT_PROFILE/.touchstone.toml" "$expected_setup"; fi
 done
+
+ADOPT_RUST_NO_LOCK="$TMP_DIR/adopt-rust-no-lock"
+init_adoption_repo "$ADOPT_RUST_NO_LOCK"
+printf '%s\n' '[package]' 'name = "fixture"' >"$ADOPT_RUST_NO_LOCK/Cargo.toml"
+commit_adoption_repo "$ADOPT_RUST_NO_LOCK" "fixture"
+git -C "$ADOPT_RUST_NO_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-no-lock.out" adopt --dry-run --project "$ADOPT_RUST_NO_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Rust adoption without a lockfile was accepted"
+assert_contains "$TMP_DIR/adopt-rust-no-lock.out.err" "has no Cargo.lock"
+[ ! -e "$ADOPT_RUST_NO_LOCK/.touchstone.toml" ] || fail "Rust lockfile refusal mutated the repository"
 
 ADOPT_DIFF_RENDER_FAIL="$TMP_DIR/adopt-diff-render-fail"
 init_adoption_repo "$ADOPT_DIFF_RENDER_FAIL"
@@ -1323,7 +1334,7 @@ commit_adoption_repo "$ADOPT_DUPLICATE_WORKSPACES" "fixture"
 git -C "$ADOPT_DUPLICATE_WORKSPACES" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-duplicate-workspaces.out" adopt --dry-run --project "$ADOPT_DUPLICATE_WORKSPACES"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate root workspaces declaration produced a plan"
-assert_contains "$TMP_DIR/adopt-duplicate-workspaces.out.err" "repeats a workspace declaration"
+assert_contains "$TMP_DIR/adopt-duplicate-workspaces.out.err" "malformed, repeated, or unsupported workspace declaration"
 
 ADOPT_DUPLICATE_WORKSPACE_PACKAGES="$TMP_DIR/adopt-duplicate-workspace-packages"
 init_adoption_repo "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES"
@@ -1336,7 +1347,23 @@ commit_adoption_repo "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES" "fixture"
 git -C "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-duplicate-workspace-packages.out" adopt --dry-run --project "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate workspace packages declaration produced a plan"
-assert_contains "$TMP_DIR/adopt-duplicate-workspace-packages.out.err" "repeats a workspace declaration"
+assert_contains "$TMP_DIR/adopt-duplicate-workspace-packages.out.err" "malformed, repeated, or unsupported workspace declaration"
+
+ADOPT_NON_STRING_WORKSPACE="$TMP_DIR/adopt-non-string-workspace"
+init_adoption_repo "$ADOPT_NON_STRING_WORKSPACE"
+mkdir -p "$ADOPT_NON_STRING_WORKSPACE/apps/api"
+printf '%s\n' '{"packageManager":"npm@11.0.0","workspaces":["apps/*",1]}' \
+  >"$ADOPT_NON_STRING_WORKSPACE/package.json"
+printf '{}\n' >"$ADOPT_NON_STRING_WORKSPACE/package-lock.json"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_NON_STRING_WORKSPACE/apps/api/package.json"
+commit_adoption_repo "$ADOPT_NON_STRING_WORKSPACE" "fixture"
+git -C "$ADOPT_NON_STRING_WORKSPACE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-non-string-workspace.out" adopt --dry-run --project "$ADOPT_NON_STRING_WORKSPACE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "non-string workspace entry produced a partial plan"
+assert_contains "$TMP_DIR/adopt-non-string-workspace.out.err" "malformed, repeated, or unsupported workspace declaration"
+[ ! -e "$ADOPT_NON_STRING_WORKSPACE/.touchstone.toml" ] \
+  || fail "non-string workspace entry mutated the repository"
 
 ADOPT_LARGE="$TMP_DIR/adopt-large"
 init_adoption_repo "$ADOPT_LARGE"
