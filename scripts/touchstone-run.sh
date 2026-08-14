@@ -380,10 +380,27 @@ clear_git_hook_env() {
 }
 
 declared_command_unrunnable_code() {
-  local command="$1" directory="$2" head executable="" first_line shebang interpreter
+  local command="$1" directory="$2" remaining head assignment_name
+  local executable="" first_line shebang interpreter
   local env_command word
   local -a shebang_words
-  head="${command%%[[:space:]]*}"
+  remaining="$(trim "$command")"
+  while :; do
+    head="${remaining%%[[:space:]]*}"
+    case "$head" in
+      *=*)
+        assignment_name="${head%%=*}"
+        case "$assignment_name" in
+          [A-Za-z_]*)
+            case "$assignment_name" in *[!A-Za-z0-9_]*) break ;; esac
+            remaining="$(trim "${remaining#"$head"}")"
+            continue
+            ;;
+        esac
+        ;;
+    esac
+    break
+  done
   case "$head" in "" | *[^[:alnum:]_./+-]*) return 0 ;; esac
   case "$head" in
     */*)

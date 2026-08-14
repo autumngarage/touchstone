@@ -20,18 +20,40 @@ found=0
 workflow_has_unguarded_precommit() {
   awk '
     function flush_step() {
-      if (has_pre_commit && !has_skip) unsafe = 1
+      if (has_pre_commit && needs_step_env && !has_step_env) unsafe = 1
       has_pre_commit = 0
-      has_skip = 0
+      needs_step_env = 0
+      has_step_env = 0
+      exported_skip = 0
+      in_env = 0
     }
     /^[[:space:]]*-[[:space:]]+[A-Za-z_][A-Za-z0-9_-]*:/ { flush_step() }
     {
       trimmed = $0
       sub(/^[[:space:]]*/, "", trimmed)
-      if (trimmed !~ /^#/ && $0 ~ /SKIP[^[:cntrl:]]*no-commit-to-branch|no-commit-to-branch[^[:cntrl:]]*SKIP/) {
-        has_skip = 1
+      indent = index($0, substr(trimmed, 1, 1)) - 1
+      is_export = (trimmed !~ /^#/ && trimmed ~ /^export[[:space:]]+SKIP=[^[:cntrl:]]*no-commit-to-branch/)
+      is_pre_commit = (trimmed !~ /^#/ && $0 ~ /pre-commit run --all-files --hook-stage pre-commit/)
+      if (in_env && trimmed !~ /^($|#)/ && indent <= env_indent) in_env = 0
+      if (trimmed == "env:") {
+        in_env = 1
+        env_indent = indent
+      } else if (trimmed ~ /^-?[[:space:]]*env:[[:space:]]*\{[^}]*SKIP[^}]*no-commit-to-branch/) {
+        has_step_env = 1
+      } else if (in_env && trimmed ~ /^SKIP:[^#]*no-commit-to-branch/) {
+        has_step_env = 1
       }
-      if (trimmed !~ /^#/ && $0 ~ /pre-commit run --all-files --hook-stage pre-commit/) has_pre_commit = 1
+      if (is_export) {
+        exported_skip = 1
+      } else if (trimmed !~ /^($|#)/ && !is_pre_commit) {
+        exported_skip = 0
+      }
+      if (is_pre_commit) {
+        has_pre_commit = 1
+        if ($0 !~ /(^[[:space:]]*(-[[:space:]]*)?(run:[[:space:]]*)?|[;&|][[:space:]]*)SKIP=[^[:space:];|&]*no-commit-to-branch[^[:space:];|&]*[[:space:]]+pre-commit run/ && !exported_skip) {
+          needs_step_env = 1
+        }
+      }
     }
     END {
       flush_step()

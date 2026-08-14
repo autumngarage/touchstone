@@ -119,6 +119,13 @@ case "$RUN_STATUS" in 126 | 127) ;; *) fail "missing shebang interpreter did not
 assert_contains "$TMP_DIR/missing-interpreter.out" '"ran":0'
 assert_contains "$TMP_DIR/missing-interpreter.out" '"reason":"command-not-started"'
 
+ASSIGNMENT_COMMAND="$TMP_DIR/assignment-command"
+write_contract "$ASSIGNMENT_COMMAND" "FIRST=one SECOND=two missing-touchstone-command"
+run_capture "$ASSIGNMENT_COMMAND" "$TMP_DIR/assignment-command.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "assignment-prefixed unavailable command did not retain 127"
+assert_contains "$TMP_DIR/assignment-command.out" '"ran":0'
+assert_contains "$TMP_DIR/assignment-command.out" '"reason":"command-not-started"'
+
 echo "==> a later passing target cannot launder an earlier failure"
 MONOREPO="$TMP_DIR/monorepo"
 mkdir -p "$MONOREPO/services/api" "$MONOREPO/services/worker"
@@ -303,9 +310,41 @@ bash "$COMPAT" "$LEGACY" >"$TMP_DIR/comment-skip.out" 2>"$TMP_DIR/comment-skip.e
 status=$?
 set -e
 [ "$status" -eq 3 ] || fail "comment SKIP incorrectly repaired legacy CI"
+cat >"$LEGACY/.github/workflows/bare-assignment.yml" <<'EOF'
+on:
+  push:
+    branches: [main]
+steps:
+  - run: |
+      SKIP=no-commit-to-branch
+      pre-commit run --all-files --hook-stage pre-commit
+EOF
 sed 's#run: pre-commit run#env: {SKIP: no-commit-to-branch}\n    run: pre-commit run#' \
   "$LEGACY/.github/workflows/validate.yml" >"$LEGACY/.github/workflows/fixed.yml"
 rm "$LEGACY/.github/workflows/validate.yml"
+set +e
+bash "$COMPAT" "$LEGACY" >"$TMP_DIR/bare-assignment.out" 2>"$TMP_DIR/bare-assignment.err"
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "unexported SKIP assignment incorrectly repaired legacy CI"
+assert_contains "$TMP_DIR/bare-assignment.out" "bare-assignment.yml"
+rm "$LEGACY/.github/workflows/bare-assignment.yml"
+cat >"$LEGACY/.github/workflows/exported.yml" <<'EOF'
+on:
+  push:
+    branches: [main]
+steps:
+  - run: |
+      export SKIP=no-commit-to-branch
+      pre-commit run --all-files --hook-stage pre-commit
+EOF
+cat >"$LEGACY/.github/workflows/direct.yml" <<'EOF'
+on:
+  push:
+    branches: [main]
+steps:
+  - run: SKIP=no-commit-to-branch pre-commit run --all-files --hook-stage pre-commit
+EOF
 bash "$COMPAT" "$LEGACY" || fail "repaired CI pairing still detected"
 
 echo "==> local authoring guard remains installed"
