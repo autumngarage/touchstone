@@ -1055,7 +1055,7 @@ for profile in python swift rust go; do
       ;;
     go)
       printf '%s\n' 'module example.invalid/fixture' >"$ADOPT_PROFILE/go.mod"
-      expected_command='command = "GOPROXY=off GOSUMDB=off go test ./..."'
+      expected_command='command = "GOWORK=off GOPROXY=off GOSUMDB=off go test ./..."'
       expected_setup=''
       ;;
   esac
@@ -1123,6 +1123,16 @@ git -C "$ADOPT_GO_LOCAL" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-go-local.out" adopt --dry-run --project "$ADOPT_GO_LOCAL"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "checkout-external Go replacement was accepted"
 assert_contains "$TMP_DIR/adopt-go-local.out.err" 'declares a local replacement'
+
+ADOPT_GO_WORK="$TMP_DIR/adopt-go-work"
+init_adoption_repo "$ADOPT_GO_WORK"
+printf '%s\n' 'module example.invalid/fixture' 'go 1.24' >"$ADOPT_GO_WORK/go.mod"
+printf '%s\n' 'go 1.24' 'use ../shared' >"$ADOPT_GO_WORK/go.work"
+commit_adoption_repo "$ADOPT_GO_WORK" "fixture"
+git -C "$ADOPT_GO_WORK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-work.out" adopt --dry-run --project "$ADOPT_GO_WORK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "checkout-external go.work workspace was accepted"
+assert_contains "$TMP_DIR/adopt-go-work.out.err" 'declares a go.work workspace'
 
 ADOPT_NODE_IGNORED_LOCK="$TMP_DIR/adopt-node-ignored-lock"
 init_adoption_repo "$ADOPT_NODE_IGNORED_LOCK"
@@ -1296,12 +1306,52 @@ EOF
 chmod +x "$TMP_DIR/concurrent-git/git"
 PATH="$TMP_DIR/concurrent-git:$PATH" run_adoption "$TMP_DIR/adopt-concurrent-edit.out" adopt --project "$ADOPT_CONCURRENT_EDIT"
 [ "$ADOPTION_STATUS" -eq 6 ] || fail "concurrent managed-file edit was overwritten"
-assert_contains "$TMP_DIR/adopt-concurrent-edit.out.err" 'AGENTS.md changed during apply'
+assert_contains "$TMP_DIR/adopt-concurrent-edit.out.err" 'AGENTS.md changed since planning'
 assert_contains "$ADOPT_CONCURRENT_EDIT/AGENTS.md" 'CONCURRENT EDIT'
 [ ! -e "$ADOPT_CONCURRENT_EDIT/.touchstone.toml" ] || fail "concurrent edit failure retained the contract write"
 [ ! -e "$ADOPT_CONCURRENT_EDIT/.touchstone" ] || fail "concurrent edit failure retained managed files"
 [ -z "$(find "$ADOPT_CONCURRENT_EDIT" \( -name '.touchstone-write.*' -o -name '.touchstone-backup.*' \) -print -quit)" ] \
   || fail "concurrent edit failure retained transaction artifacts"
+
+ADOPT_CONCURRENT_COMMIT="$TMP_DIR/adopt-concurrent-commit"
+init_adoption_repo "$ADOPT_CONCURRENT_COMMIT"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_CONCURRENT_COMMIT/package.json"
+printf '{}\n' >"$ADOPT_CONCURRENT_COMMIT/package-lock.json"
+printf '%s\n' 'PROJECT INSTRUCTIONS' >"$ADOPT_CONCURRENT_COMMIT/AGENTS.md"
+commit_adoption_repo "$ADOPT_CONCURRENT_COMMIT" "fixture"
+git -C "$ADOPT_CONCURRENT_COMMIT" switch -q -c feat/adopt
+mkdir -p "$TMP_DIR/concurrent-commit-git"
+CONCURRENT_COMMIT_MARKER="$TMP_DIR/concurrent-commit-git/committed"
+CONCURRENT_COMMIT_TARGET="$ADOPT_CONCURRENT_COMMIT/AGENTS.md"
+CONCURRENT_COMMIT_REPO="$ADOPT_CONCURRENT_COMMIT"
+export CONCURRENT_COMMIT_MARKER CONCURRENT_COMMIT_TARGET CONCURRENT_COMMIT_REPO
+cat >"$TMP_DIR/concurrent-commit-git/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  *'status --porcelain=v1'*)
+    if [ ! -e "$CONCURRENT_COMMIT_MARKER" ]; then
+      printf '%s\n' 'CONCURRENT COMMIT' >>"$CONCURRENT_COMMIT_TARGET"
+      "$REAL_GIT" -C "$CONCURRENT_COMMIT_REPO" add AGENTS.md
+      "$REAL_GIT" -C "$CONCURRENT_COMMIT_REPO" commit -qm 'concurrent commit'
+      : >"$CONCURRENT_COMMIT_MARKER"
+    fi
+    ;;
+esac
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$TMP_DIR/concurrent-commit-git/git"
+PATH="$TMP_DIR/concurrent-commit-git:$PATH" run_adoption \
+  "$TMP_DIR/adopt-concurrent-commit.out" adopt --project "$ADOPT_CONCURRENT_COMMIT"
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "clean concurrent commit was overwritten"
+assert_contains "$TMP_DIR/adopt-concurrent-commit.out.err" 'AGENTS.md changed since planning'
+assert_contains "$ADOPT_CONCURRENT_COMMIT/AGENTS.md" 'CONCURRENT COMMIT'
+[ ! -e "$ADOPT_CONCURRENT_COMMIT/.touchstone.toml" ] \
+  || fail "concurrent commit failure retained the contract write"
+[ ! -e "$ADOPT_CONCURRENT_COMMIT/.touchstone" ] \
+  || fail "concurrent commit failure retained managed files"
+[ -z "$(git -C "$ADOPT_CONCURRENT_COMMIT" status --porcelain=v1)" ] \
+  || fail "concurrent commit refusal dirtied the checkout"
 
 ADOPT_PYPROJECT="$TMP_DIR/adopt-pyproject"
 init_adoption_repo "$ADOPT_PYPROJECT"

@@ -1954,9 +1954,11 @@ tasks_for_profile() {
       record_task "test$suffix" "$target" "cargo test --frozen"
       ;;
     go)
+      [ ! -f "$directory/go.work" ] \
+        || contract_refusal "Go target '$target' declares a go.work workspace this portable compiler cannot verify within the checkout; pass --task NAME=COMMAND"
       go_has_local_replace "$directory/go.mod" \
         && contract_refusal "Go target '$target' declares a local replacement this portable compiler cannot verify within the checkout; pass --task NAME=COMMAND"
-      record_task "test$suffix" "$target" "GOPROXY=off GOSUMDB=off go test ./..."
+      record_task "test$suffix" "$target" "GOWORK=off GOPROXY=off GOSUMDB=off go test ./..."
       ;;
     generic) contract_refusal "no supported project facts found; pass --task NAME=COMMAND for a manual declaration" ;;
     ambiguous:*) contract_refusal "ambiguous project facts for target '$target': ${profile#ambiguous:}" ;;
@@ -2410,7 +2412,7 @@ require_compiler_inputs_tracked() {
   local -a inputs=(
     .touchstone.toml .touchstone-config AGENTS.md CLAUDE.md GEMINI.md TOUCHSTONE.md
     package.json package-lock.json npm-shrinkwrap.json pnpm-lock.yaml pnpm-workspace.yaml yarn.lock bun.lock bun.lockb tsconfig.json
-    pyproject.toml setup.py setup.cfg uv.lock requirements.txt Package.swift Package.resolved Cargo.toml Cargo.lock go.mod go.sum
+    pyproject.toml setup.py setup.cfg uv.lock requirements.txt Package.swift Package.resolved Cargo.toml Cargo.lock go.mod go.sum go.work go.work.sum
   )
   for name in "${inputs[@]}"; do require_tracked_compiler_input "$name"; done
   for directory in apps packages services; do
@@ -2490,7 +2492,7 @@ current_branch_is_default() {
 }
 
 apply_plan() {
-  local action path ownership destination source parent temporary worktree_status default_status backup
+  local action path ownership destination source old_source parent temporary worktree_status default_status backup
   local expected_hash expected_mode current_hash current_mode
   local stage_file="$APPLY_STAGE_FILE" applied_file="$APPLY_APPLIED_FILE" directories_file="$APPLY_DIRECTORIES_FILE"
   [ -s "$CHANGES_FILE" ] || return 0
@@ -2513,6 +2515,7 @@ apply_plan() {
     safe_owned_path "$path"
     destination="$PROJECT_ROOT/$path"
     source="$NEW_ROOT/$path"
+    old_source="$OLD_ROOT/$path"
     parent="$(dirname "$destination")"
     record_missing_directories "$parent" "$directories_file"
     if ! mkdir -p "$parent"; then
@@ -2534,17 +2537,30 @@ apply_plan() {
           || operational_failure "could not clean transaction files after $path changed during staging"
         operational_failure "$path changed during staging"
       }
-      if ! expected_hash="$(git hash-object "$destination")"; then
+      if ! expected_hash="$(git hash-object "$old_source")"; then
         rm -f "$temporary"
         cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
           || operational_failure "could not clean transaction files after snapshotting $path failed"
-        operational_failure "could not snapshot $path before apply"
+        operational_failure "could not read the planned snapshot for $path"
       fi
-      if ! expected_mode="$(LC_ALL=C ls -ld "$destination" | awk '{ print $1 }')"; then
+      if ! expected_mode="$(LC_ALL=C ls -ld "$old_source" | awk '{ print $1 }')"; then
         rm -f "$temporary"
         cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
           || operational_failure "could not clean transaction files after snapshotting $path metadata failed"
-        operational_failure "could not snapshot $path metadata before apply"
+        operational_failure "could not read the planned metadata for $path"
+      fi
+      if ! current_hash="$(git hash-object "$destination")" \
+        || ! current_mode="$(LC_ALL=C ls -ld "$destination" | awk '{ print $1 }')"; then
+        rm -f "$temporary"
+        cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
+          || operational_failure "could not clean transaction files after rechecking $path failed"
+        operational_failure "could not recheck $path before apply"
+      fi
+      if [ "$current_hash" != "$expected_hash" ] || [ "$current_mode" != "$expected_mode" ]; then
+        rm -f "$temporary"
+        cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
+          || operational_failure "could not clean transaction files after $path changed since planning"
+        operational_failure "$path changed since planning"
       fi
     fi
     if ! printf '%s\t%s\t%s\t%s\t%s\n' "$action" "$destination" "$temporary" "$expected_hash" "$expected_mode" >>"$stage_file"; then
