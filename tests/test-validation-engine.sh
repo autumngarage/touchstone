@@ -995,7 +995,8 @@ for profile in python swift rust go; do
   init_adoption_repo "$ADOPT_PROFILE"
   case "$profile" in
     python)
-      printf '%s\n' '[tool.pytest.ini_options]' >"$ADOPT_PROFILE/pyproject.toml"
+      printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+        '[tool.pytest.ini_options]' >"$ADOPT_PROFILE/pyproject.toml"
       printf 'version = 1\n' >"$ADOPT_PROFILE/uv.lock"
       expected_command='command = "uv run --no-sync pytest"'
       expected_setup='setup = "uv sync --frozen"'
@@ -1034,6 +1035,17 @@ run_adoption "$TMP_DIR/adopt-pyproject.out" adopt --project "$ADOPT_PYPROJECT"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "installable pyproject adoption failed"
 assert_contains "$ADOPT_PYPROJECT/.touchstone.toml" 'setup = "python -m pip install -e ."'
 
+ADOPT_UNDECLARED_CHECKER="$TMP_DIR/adopt-undeclared-checker"
+init_adoption_repo "$ADOPT_UNDECLARED_CHECKER"
+mkdir -p "$ADOPT_UNDECLARED_CHECKER/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = []' \
+  >"$ADOPT_UNDECLARED_CHECKER/pyproject.toml"
+commit_adoption_repo "$ADOPT_UNDECLARED_CHECKER" "fixture"
+git -C "$ADOPT_UNDECLARED_CHECKER" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-undeclared-checker.out" adopt --dry-run --project "$ADOPT_UNDECLARED_CHECKER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "undeclared Python checker did not refuse"
+assert_contains "$TMP_DIR/adopt-undeclared-checker.out.err" "without an installed pytest dependency"
+
 ADOPT_TOOL_ONLY_PYTHON="$TMP_DIR/adopt-tool-only-python"
 init_adoption_repo "$ADOPT_TOOL_ONLY_PYTHON"
 printf '%s\n' '[tool.pytest.ini_options]' >"$ADOPT_TOOL_ONLY_PYTHON/pyproject.toml"
@@ -1047,7 +1059,8 @@ echo "==> adoption derives explicit monorepo targets"
 ADOPT_MONOREPO="$TMP_DIR/adopt-monorepo"
 init_adoption_repo "$ADOPT_MONOREPO"
 mkdir -p "$ADOPT_MONOREPO/apps/api" "$ADOPT_MONOREPO/packages/web"
-printf '%s\n' '{"packageManager":"pnpm@10.0.0"}' >"$ADOPT_MONOREPO/package.json"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0","scripts":{"lint":"eslint ."}}' \
+  >"$ADOPT_MONOREPO/package.json"
 printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_MONOREPO/pnpm-lock.yaml"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_MONOREPO/apps/api/package.json"
 printf '%s\n' '{"scripts":{"build":"node build.js"}}' >"$ADOPT_MONOREPO/packages/web/package.json"
@@ -1061,6 +1074,9 @@ assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "test-apps-api"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "build-packages-web"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run test"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run build"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "lint"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'target = "root"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run lint"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'setup = "pnpm install --frozen-lockfile"'
 bash "$RUNNER" validate --check-contract --project "$ADOPT_MONOREPO" >/dev/null
 
@@ -1086,8 +1102,11 @@ bash "$RUNNER" validate --check-contract --project "$ADOPT_LARGE" >/dev/null
 echo "==> adoption fails closed on ambiguous and unsupported contracts"
 ADOPT_AMBIGUOUS="$TMP_DIR/adopt-ambiguous"
 init_adoption_repo "$ADOPT_AMBIGUOUS"
+mkdir -p "$ADOPT_AMBIGUOUS/packages/child"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_AMBIGUOUS/package.json"
 printf '%s\n' '[tool.pytest.ini_options]' >"$ADOPT_AMBIGUOUS/pyproject.toml"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_AMBIGUOUS/packages/child/package.json"
 commit_adoption_repo "$ADOPT_AMBIGUOUS" "fixture"
 git -C "$ADOPT_AMBIGUOUS" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-ambiguous.out" adopt --dry-run --project "$ADOPT_AMBIGUOUS"

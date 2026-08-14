@@ -56,8 +56,11 @@ as ambiguous rather than selecting a value different from the package manager.
 Python tasks come from ruff, mypy, and pytest evidence in `pyproject.toml` or
 the test tree; their explicit setup uses `uv sync --frozen`, a requirements
 install, or an editable install only for an installable project declaration.
-Tool-only Python configuration without dependency facts refuses. Swift, Rust,
-and Go commands resolve
+Each emitted checker must also be present in dependency facts installed by that
+setup; configuration or a test tree without the checker dependency refuses.
+Tool-only Python configuration without dependency facts refuses. Monorepo
+plans include executable root-level checks alongside explicit child targets.
+Swift, Rust, and Go commands resolve
 their own package dependencies. The accepted commands and setup are written
 explicitly to `.touchstone.toml`; later preset changes never rewrite that file.
 

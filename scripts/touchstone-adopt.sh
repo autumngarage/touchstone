@@ -785,8 +785,65 @@ tasks_for_node() {
   [ "$found" = true ] || contract_refusal "Node target '$target' declares no validate, verify, lint, typecheck, test, or build script; pass --task NAME=COMMAND"
 }
 
+python_project_has_dependency() {
+  local file="$1" wanted="$2" include_dev="$3"
+  awk -v wanted="$wanted" -v include_dev="$include_dev" '
+    function trim(value) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      return value
+    }
+    function contains_dependency(value, pattern) {
+      pattern = "[\"\047][[:space:]]*" wanted "([<=>~![]|[\"\047])"
+      return tolower(value) ~ pattern
+    }
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*$/, "", section)
+      in_dependencies = 0
+      in_dev = 0
+      next
+    }
+    {
+      line = $0
+      sub(/[[:space:]]*#.*/, "", line)
+      if (section == "project") {
+        if (!in_dependencies && line ~ /^[[:space:]]*dependencies[[:space:]]*=/) {
+          in_dependencies = 1
+        }
+        if (in_dependencies && contains_dependency(line)) found = 1
+        if (in_dependencies && line ~ /\]/) in_dependencies = 0
+      } else if (section == "tool.poetry.dependencies") {
+        key = trim(substr(line, 1, index(line, "=") - 1))
+        gsub(/[\"\047]/, "", key)
+        if (tolower(key) == wanted) found = 1
+      } else if (include_dev == "true" && section == "dependency-groups") {
+        if (!in_dev && line ~ /^[[:space:]]*dev[[:space:]]*=/) in_dev = 1
+        if (in_dev && contains_dependency(line)) found = 1
+        if (in_dev && line ~ /\]/) in_dev = 0
+      } else if (include_dev == "true" && section == "tool.poetry.group.dev.dependencies") {
+        key = trim(substr(line, 1, index(line, "=") - 1))
+        gsub(/[\"\047]/, "", key)
+        if (tolower(key) == wanted) found = 1
+      }
+    }
+    END { exit !found }
+  ' "$file"
+}
+
+python_checker_declared() {
+  local directory="$1" checker="$2" include_dev=false
+  if [ -f "$directory/requirements.txt" ] \
+    && grep -Eqi "^[[:space:]]*${checker}([[:space:]<=>~!\[]|$)" "$directory/requirements.txt"; then
+    return 0
+  fi
+  [ -f "$directory/pyproject.toml" ] || return 1
+  if [ -f "$directory/uv.lock" ]; then include_dev=true; fi
+  python_project_has_dependency "$directory/pyproject.toml" "$checker" "$include_dev"
+}
+
 tasks_for_python() {
-  local directory="$1" target="$2" suffix="$3" prefix="python -m" found=false
+  local directory="$1" target="$2" suffix="$3" prefix="python -m" found=false evidence=false
   if [ -f "$directory/uv.lock" ]; then
     prefix="uv run --no-sync"
     record_setup "$directory" "uv sync --frozen"
@@ -799,16 +856,37 @@ tasks_for_python() {
       contract_refusal "Python target '$target' has tool configuration but no installable project or dependency declaration"
     fi
   fi
-  if [ -f "$directory/pyproject.toml" ] && grep -Eq '^\[tool\.ruff(\.|\])' "$directory/pyproject.toml"; then
+  evidence=false
+  if [ -f "$directory/pyproject.toml" ] && grep -Eq '^\[tool\.ruff(\.|\])' "$directory/pyproject.toml"; then evidence=true; fi
+  if python_checker_declared "$directory" ruff; then
+    evidence=true
+  elif [ "$evidence" = true ]; then
+    contract_refusal "Python target '$target' configures ruff without an installed ruff dependency"
+  fi
+  if [ "$evidence" = true ]; then
     record_task "lint$suffix" "$target" "$prefix ruff check ."
     found=true
   fi
-  if [ -f "$directory/pyproject.toml" ] && grep -Eq '^\[tool\.mypy(\.|\])' "$directory/pyproject.toml"; then
+  evidence=false
+  if [ -f "$directory/pyproject.toml" ] && grep -Eq '^\[tool\.mypy(\.|\])' "$directory/pyproject.toml"; then evidence=true; fi
+  if python_checker_declared "$directory" mypy; then
+    evidence=true
+  elif [ "$evidence" = true ]; then
+    contract_refusal "Python target '$target' configures mypy without an installed mypy dependency"
+  fi
+  if [ "$evidence" = true ]; then
     record_task "typecheck$suffix" "$target" "$prefix mypy ."
     found=true
   fi
-  if { [ -f "$directory/pyproject.toml" ] && grep -Eq '^\[tool\.pytest(\.|\])|["'\'' ]pytest(["'\''<=>~!, ]|$)' "$directory/pyproject.toml"; } \
-    || [ -d "$directory/tests" ]; then
+  evidence=false
+  if { [ -f "$directory/pyproject.toml" ] && grep -Eq '^\[tool\.pytest(\.|\])' "$directory/pyproject.toml"; } \
+    || [ -d "$directory/tests" ]; then evidence=true; fi
+  if python_checker_declared "$directory" pytest; then
+    evidence=true
+  elif [ "$evidence" = true ]; then
+    contract_refusal "Python target '$target' has pytest evidence without an installed pytest dependency"
+  fi
+  if [ "$evidence" = true ]; then
     record_task "test$suffix" "$target" "$prefix pytest"
     found=true
   fi
@@ -826,6 +904,29 @@ tasks_for_profile() {
     generic) contract_refusal "no supported project facts found; pass --task NAME=COMMAND for a manual declaration" ;;
     ambiguous:*) contract_refusal "ambiguous project facts for target '$target': ${profile#ambiguous:}" ;;
     *) contract_refusal "unsupported project profile '$profile'" ;;
+  esac
+}
+
+profile_has_tasks() {
+  local directory="$1" profile="$2" task
+  case "$profile" in
+    node)
+      for task in validate verify lint typecheck test build; do
+        if node_has_script "$directory/package.json" "$task"; then return 0; fi
+      done
+      return 1
+      ;;
+    python)
+      [ -d "$directory/tests" ] && return 0
+      [ -f "$directory/pyproject.toml" ] \
+        && grep -Eq '^\[tool\.(ruff|mypy|pytest)(\.|\])' "$directory/pyproject.toml" && return 0
+      for task in ruff mypy pytest; do
+        if python_checker_declared "$directory" "$task"; then return 0; fi
+      done
+      return 1
+      ;;
+    swift | rust | go) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
@@ -882,7 +983,7 @@ target_name_for_path() {
 }
 
 compile_detected() {
-  local base directory relative profile target suffix found_targets=false workspace_node_manager resolved_directory
+  local base directory relative profile target suffix found_targets=false workspace_node_manager resolved_directory root_profile
   node_package_manager "$PROJECT_ROOT" "" ""
   workspace_node_manager="$NODE_MANAGER"
   for base in apps packages services; do
@@ -906,6 +1007,15 @@ compile_detected() {
     done
   done
   if [ "$found_targets" = true ]; then
+    root_profile="$(detect_profile "$PROJECT_ROOT")"
+    case "$root_profile" in ambiguous:*)
+      contract_refusal "ambiguous project facts for target 'root': ${root_profile#ambiguous:}"
+      ;;
+    esac
+    if profile_has_tasks "$PROJECT_ROOT" "$root_profile"; then
+      record_target root . "$root_profile"
+      tasks_for_profile "$PROJECT_ROOT" root "$root_profile" ""
+    fi
     PROFILE=monorepo
     return 0
   fi
