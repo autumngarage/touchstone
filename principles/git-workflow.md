@@ -279,8 +279,10 @@ is not automatically this PR's bug.
 
 **Classify every finding before touching anything.** Four dispositions, in the order to consider them:
 
-1. **Fix here** — a defect in this diff, or one this diff created, that falls
-   inside the recorded acceptance criteria. Fix it in the batch.
+1. **Fix here** — any defect the diff creates, plus any defect that violates a
+   recorded acceptance criterion or invariant. Fix it in the batch. A scope
+   boundary never permits the PR to ship its own regression; fix or revert that
+   behavior here even when it falls outside the planned product change.
 2. **Fix and audit the class** — the in-scope finding is one instance of a
    shape. Grep for siblings before responding
    (`principles/audit-weak-points.md`); fix in-scope siblings and route any

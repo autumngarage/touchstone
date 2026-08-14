@@ -165,6 +165,8 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "Freeze the scope before the first review 
 assert_contains "$GIT_WORKFLOW_GUIDE" "map it to a recorded acceptance criterion or invariant"
 assert_contains "$GIT_WORKFLOW_GUIDE" "A plausible bug"
 assert_contains "$GIT_WORKFLOW_GUIDE" "is not automatically this PR's bug"
+assert_contains "$GIT_WORKFLOW_GUIDE" "A scope"
+assert_contains "$GIT_WORKFLOW_GUIDE" "boundary never permits the PR to ship its own regression"
 assert_contains "$GIT_WORKFLOW_GUIDE" "Repeated widening is a design signal"
 assert_contains "$GIT_WORKFLOW_GUIDE" "Do not grow the current PR one"
 assert_contains "$GIT_WORKFLOW_GUIDE" "scope containment is never permission to skip review"
