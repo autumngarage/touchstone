@@ -280,6 +280,16 @@ assert_contains "$TMP_DIR/env-literal-quotes.out" '"ran":0'
 assert_contains "$TMP_DIR/env-literal-quotes.out" '"reason":"command-not-started"'
 [ ! -e "$ENV_LITERAL_QUOTES/marker" ] || fail "literal-quote env body unexpectedly ran"
 
+ENV_UNSPLIT_ARGUMENT="$TMP_DIR/env-unsplit-argument"
+write_contract "$ENV_UNSPLIT_ARGUMENT" "./env-unsplit-argument-script || true"
+printf '#!/usr/bin/env bash -e\nprintf body-must-not-run > marker\n' >"$ENV_UNSPLIT_ARGUMENT/env-unsplit-argument-script"
+chmod +x "$ENV_UNSPLIT_ARGUMENT/env-unsplit-argument-script"
+run_capture "$ENV_UNSPLIT_ARGUMENT" "$TMP_DIR/env-unsplit-argument.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "ordinary env optional argument was split without -S"
+assert_contains "$TMP_DIR/env-unsplit-argument.out" '"ran":0'
+assert_contains "$TMP_DIR/env-unsplit-argument.out" '"reason":"command-not-started"'
+[ ! -e "$ENV_UNSPLIT_ARGUMENT/marker" ] || fail "unsplit env argument body unexpectedly ran"
+
 ENV_DASH_COMMAND="$TMP_DIR/env-dash-command"
 mkdir -p "$ENV_DASH_COMMAND/bin"
 write_contract "$ENV_DASH_COMMAND" "PATH=$ENV_DASH_COMMAND/bin ./env-dash-script"
@@ -697,6 +707,20 @@ on: {"push": {}}
 steps:
   - run: pre-commit run --all-files --hook-stage pre-commit
 EOF
+cat >"$LEGACY/.github/workflows/block-quoted-key.yml" <<'EOF'
+"on":
+  "push":
+    branches: [main]
+steps:
+  - run: pre-commit run --all-files --hook-stage pre-commit
+EOF
+cat >"$LEGACY/.github/workflows/non-executing-text.yml" <<'EOF'
+on:
+  push:
+    branches: [main]
+steps:
+  - run: printf '%s\n' 'pre-commit run --all-files --hook-stage pre-commit'
+EOF
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/compat.out" 2>"$TMP_DIR/compat.err"
 status=$?
@@ -715,6 +739,8 @@ assert_not_contains "$TMP_DIR/compat.out" "flow-filtered.yml"
 assert_contains "$TMP_DIR/compat.out" "flow-neighbor-filter.yml"
 assert_contains "$TMP_DIR/compat.out" "flow-multiline.yml"
 assert_contains "$TMP_DIR/compat.out" "flow-quoted-key.yml"
+assert_contains "$TMP_DIR/compat.out" "block-quoted-key.yml"
+assert_not_contains "$TMP_DIR/compat.out" "non-executing-text.yml"
 assert_contains "$TMP_DIR/compat.err" "SKIP=no-commit-to-branch"
 printf '\n# SKIP=no-commit-to-branch is not a repair\n' >>"$LEGACY/.github/workflows/validate.yml"
 set +e
@@ -741,6 +767,7 @@ rm "$LEGACY/.github/workflows/flow-trigger.yml"
 rm "$LEGACY/.github/workflows/flow-neighbor-filter.yml"
 rm "$LEGACY/.github/workflows/flow-multiline.yml"
 rm "$LEGACY/.github/workflows/flow-quoted-key.yml"
+rm "$LEGACY/.github/workflows/block-quoted-key.yml"
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/bare-assignment.out" 2>"$TMP_DIR/bare-assignment.err"
 status=$?

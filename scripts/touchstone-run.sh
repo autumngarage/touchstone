@@ -628,7 +628,7 @@ declared_command_unrunnable_code() {
   local command="$1" directory="$2" head
   local executable="" first_line shebang interpreter interpreter_path
   local child_path="$PATH" lookup_path
-  local env_command word env_index env_option_argument short_flags short_index short_flag
+  local env_command env_optional word env_index env_option_argument short_flags short_index short_flag
   local split_payload split_join_index env_split_replaced=false
   local env_directory env_effective_path env_utility_path default_exec_path env_interpreter=false
   local -a shebang_words
@@ -677,7 +677,6 @@ declared_command_unrunnable_code() {
           *) break ;;
         esac
       done
-      read -r -a shebang_words <<<"$shebang"
       read -r interpreter _ <<<"$shebang"
       case "$interpreter" in *"$(printf '\r')"*)
         printf 'missing-interpreter\n'
@@ -699,6 +698,15 @@ declared_command_unrunnable_code() {
       fi
       case "$env_interpreter" in
         true)
+          env_optional="${shebang#"$interpreter"}"
+          while :; do
+            case "$env_optional" in
+              ' '* | "$(printf '\t')"*) env_optional="${env_optional#?}" ;;
+              *) break ;;
+            esac
+          done
+          shebang_words=("$interpreter")
+          if [ -n "$env_optional" ]; then shebang_words+=("$env_optional"); fi
           env_command=""
           env_directory="$directory"
           env_effective_path="$child_path"
@@ -785,7 +793,7 @@ declared_command_unrunnable_code() {
                 env_effective_path="${word#PATH=}"
                 env_index=$((env_index + 1))
                 ;;
-              *=*)
+              [A-Za-z_]*=*)
                 env_index=$((env_index + 1))
                 ;;
               --)

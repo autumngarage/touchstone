@@ -341,7 +341,7 @@ workflow_pushes_default() {
         }
         next
       }
-      if (!in_on || content !~ /^push:/) next
+      if (!in_on || content !~ /^(push|"push"|\047push\047):/) next
 
       flush_push()
       in_push = 1
@@ -356,7 +356,7 @@ workflow_pushes_default() {
       ignored_master = 0
       in_branches = 0
       in_ignored = 0
-      sub(/^push:[[:space:]]*/, "", content)
+      sub(/^(push|"push"|\047push\047):[[:space:]]*/, "", content)
       if (content ~ /branches:[[:space:]]*/) {
         branches_seen = 1
         value = inline_filter_value(content, "branches")
@@ -378,6 +378,43 @@ workflow_pushes_default() {
 
 workflow_has_unguarded_precommit() {
   awk '
+    function segment_invokes_precommit(value) {
+      sub(/^[[:space:]]*/, "", value)
+      while (value ~ /^(if|then|do|while|until|!)[[:space:]]+/) {
+        sub(/^(if|then|do|while|until|!)[[:space:]]+/, "", value)
+      }
+      while (value ~ /^[A-Za-z_][A-Za-z0-9_]*=[^[:space:];|&]+[[:space:]]+/) {
+        sub(/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:];|&]+[[:space:]]+/, "", value)
+      }
+      return value ~ /^pre-commit run --all-files --hook-stage pre-commit([[:space:];|&]|$)/
+    }
+    function invokes_precommit(value, position, character, quote, escaped, segment) {
+      sub(/^(-[[:space:]]*)?run:[[:space:]]*/, "", value)
+      quote = ""
+      escaped = 0
+      segment = ""
+      for (position = 1; position <= length(value); position++) {
+        character = substr(value, position, 1)
+        if (escaped) {
+          segment = segment character
+          escaped = 0
+        } else if (quote != "") {
+          if (character == "\\") escaped = 1
+          else if (character == quote) quote = ""
+        } else if (character == "\"" || character == "\047") {
+          quote = character
+          segment = segment " quoted"
+        } else if (character == "\\") {
+          escaped = 1
+        } else if (character == ";" || character == "|" || character == "&") {
+          if (segment_invokes_precommit(segment)) return 1
+          segment = ""
+        } else {
+          segment = segment character
+        }
+      }
+      return segment_invokes_precommit(segment)
+    }
     function flush_step() {
       if (has_pre_commit && needs_step_env && !has_step_env) unsafe = 1
       has_pre_commit = 0
@@ -392,7 +429,7 @@ workflow_has_unguarded_precommit() {
       sub(/^[[:space:]]*/, "", trimmed)
       indent = index($0, substr(trimmed, 1, 1)) - 1
       is_export = (trimmed !~ /^#/ && trimmed ~ /^export[[:space:]]+SKIP=[^[:cntrl:]]*no-commit-to-branch/)
-      is_pre_commit = (trimmed !~ /^#/ && $0 ~ /pre-commit run --all-files --hook-stage pre-commit/)
+      is_pre_commit = (trimmed !~ /^#/ && invokes_precommit(trimmed))
       if (in_env && trimmed !~ /^($|#)/ && indent <= env_indent) in_env = 0
       if (trimmed == "env:") {
         in_env = 1
