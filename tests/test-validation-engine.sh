@@ -328,6 +328,16 @@ run_capture "$COMMAND_DEFAULT_PATH" "$TMP_DIR/command-nested-default-path.out" -
 [ "$RUN_STATUS" -eq 0 ] || fail "command -p default path did not reach a nested command builtin"
 [ "$(cat "$COMMAND_DEFAULT_PATH/marker")" = nested-default-path-ran ] || fail "nested command -p task did not run"
 
+COMMAND_CHILD_PATH="$TMP_DIR/command-child-path"
+write_contract "$COMMAND_CHILD_PATH" "PATH= command -p ./command-child-path-script || true"
+printf '#!/usr/bin/env sh\nprintf child-path-ran > marker\n' >"$COMMAND_CHILD_PATH/command-child-path-script"
+chmod +x "$COMMAND_CHILD_PATH/command-child-path-script"
+run_capture "$COMMAND_CHILD_PATH" "$TMP_DIR/command-child-path.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "command -p replaced the child environment PATH"
+assert_contains "$TMP_DIR/command-child-path.out" '"ran":0'
+assert_contains "$TMP_DIR/command-child-path.out" '"reason":"command-not-started"'
+[ ! -e "$COMMAND_CHILD_PATH/marker" ] || fail "command -p env-shebang body unexpectedly ran"
+
 NEGATED_COMMAND="$TMP_DIR/negated-command"
 write_contract "$NEGATED_COMMAND" "! missing-touchstone-command"
 run_capture "$NEGATED_COMMAND" "$TMP_DIR/negated-command.out" --json

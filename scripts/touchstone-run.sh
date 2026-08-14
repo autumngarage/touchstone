@@ -582,16 +582,17 @@ env_split_string_head() {
 
 declared_command_unrunnable_code() {
   local command="$1" directory="$2" head
-  local executable="" first_line shebang interpreter interpreter_path effective_path="$PATH"
+  local executable="" first_line shebang interpreter interpreter_path
+  local child_path="$PATH" lookup_path
   local env_command word env_index env_option_argument short_flags short_index short_flag
   local env_directory env_effective_path env_utility_path default_exec_path env_interpreter=false
   local -a shebang_words
   declared_command_head "$command" || return 0
   head="$COMMAND_HEAD"
+  if [ "$COMMAND_PATH_SET" = true ]; then child_path="$COMMAND_PATH_OVERRIDE"; fi
+  lookup_path="$child_path"
   if [ "$COMMAND_DEFAULT_PATH" = true ]; then
-    effective_path="$(system_default_exec_path)"
-  elif [ "$COMMAND_PATH_SET" = true ]; then
-    effective_path="$COMMAND_PATH_OVERRIDE"
+    lookup_path="$(system_default_exec_path)"
   fi
   [ -n "$head" ] || return 0
   case "$head" in
@@ -604,10 +605,10 @@ declared_command_unrunnable_code() {
       ;;
     *)
       if { [ "$COMMAND_HEAD_QUOTED" = true ] || [ "$COMMAND_HEAD_AFTER_ASSIGNMENT" = true ]; } \
-        && [ "$(cd "$directory" && PATH="$effective_path" type -t -- "$head" 2>/dev/null || true)" = keyword ]; then
-        executable="$(cd "$directory" && PATH="$effective_path" type -P -- "$head" 2>/dev/null)" || true
+        && [ "$(cd "$directory" && PATH="$lookup_path" type -t -- "$head" 2>/dev/null || true)" = keyword ]; then
+        executable="$(cd "$directory" && PATH="$lookup_path" type -P -- "$head" 2>/dev/null)" || true
       else
-        executable="$(cd "$directory" && PATH="$effective_path" command -v -- "$head" 2>/dev/null)" || true
+        executable="$(cd "$directory" && PATH="$lookup_path" command -v -- "$head" 2>/dev/null)" || true
       fi
       ;;
   esac
@@ -655,7 +656,7 @@ declared_command_unrunnable_code() {
         true)
           env_command=""
           env_directory="$directory"
-          env_effective_path="$effective_path"
+          env_effective_path="$child_path"
           env_utility_path=""
           default_exec_path="$(system_default_exec_path)"
           env_index=1
