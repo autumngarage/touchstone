@@ -379,28 +379,73 @@ clear_git_hook_env() {
   unset PRE_COMMIT_REMOTE_NAME PRE_COMMIT_REMOTE_URL
 }
 
-declared_command_unrunnable_code() {
-  local command="$1" directory="$2" remaining head assignment_name
-  local executable="" first_line shebang interpreter
-  local env_command word
-  local -a shebang_words
-  remaining="$(trim "$command")"
-  while :; do
-    head="${remaining%%[[:space:]]*}"
-    case "$head" in
+declared_command_head() {
+  local input="$1" character quote="" token="" assignment_name
+  local escaped=false index=0 length="${#1}"
+
+  while [ "$index" -lt "$length" ]; do
+    while [ "$index" -lt "$length" ]; do
+      character="${input:$index:1}"
+      case "$character" in ' ' | "$(printf '\t')") index=$((index + 1)) ;; *) break ;; esac
+    done
+    token=""
+    quote=""
+    escaped=false
+    while [ "$index" -lt "$length" ]; do
+      character="${input:$index:1}"
+      index=$((index + 1))
+      if [ "$escaped" = true ]; then
+        token="$token$character"
+        escaped=false
+      elif [ "$quote" = single ]; then
+        if [ "$character" = "'" ]; then quote=""; else token="$token$character"; fi
+      elif [ "$quote" = double ]; then
+        case "$character" in
+          '"') quote="" ;;
+          '\') escaped=true ;;
+          '$' | '`') return 1 ;;
+          *) token="$token$character" ;;
+        esac
+      else
+        case "$character" in
+          ' ' | "$(printf '\t')") break ;;
+          "'") quote=single ;;
+          '"') quote=double ;;
+          '\') escaped=true ;;
+          '$' | '`' | ';' | '&' | '|' | '(' | ')' | '<' | '>') return 1 ;;
+          '#')
+            if [ -z "$token" ]; then return 1; fi
+            token="$token$character"
+            ;;
+          *) token="$token$character" ;;
+        esac
+      fi
+    done
+    [ "$escaped" = false ] && [ -z "$quote" ] || return 1
+    [ -n "$token" ] || return 1
+    case "$token" in
       *=*)
-        assignment_name="${head%%=*}"
+        assignment_name="${token%%=*}"
         case "$assignment_name" in
           [A-Za-z_]*)
-            case "$assignment_name" in *[!A-Za-z0-9_]*) break ;; esac
-            remaining="$(trim "${remaining#"$head"}")"
-            continue
+            case "$assignment_name" in *[!A-Za-z0-9_]*) ;; *) continue ;; esac
             ;;
         esac
         ;;
     esac
-    break
+    COMMAND_HEAD="$token"
+    return 0
   done
+  return 1
+}
+
+declared_command_unrunnable_code() {
+  local command="$1" directory="$2" head
+  local executable="" first_line shebang interpreter
+  local env_command word
+  local -a shebang_words
+  declared_command_head "$command" || return 0
+  head="$COMMAND_HEAD"
   case "$head" in "" | *[^[:alnum:]_./+-]*) return 0 ;; esac
   case "$head" in
     */*)

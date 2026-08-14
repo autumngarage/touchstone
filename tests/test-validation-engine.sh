@@ -126,6 +126,13 @@ run_capture "$ASSIGNMENT_COMMAND" "$TMP_DIR/assignment-command.out" --json
 assert_contains "$TMP_DIR/assignment-command.out" '"ran":0'
 assert_contains "$TMP_DIR/assignment-command.out" '"reason":"command-not-started"'
 
+QUOTED_ASSIGNMENT="$TMP_DIR/quoted-assignment"
+write_contract "$QUOTED_ASSIGNMENT" "LABEL=\\\"two words\\\" missing-touchstone-command"
+run_capture "$QUOTED_ASSIGNMENT" "$TMP_DIR/quoted-assignment.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "quoted-assignment unavailable command did not retain 127"
+assert_contains "$TMP_DIR/quoted-assignment.out" '"ran":0'
+assert_contains "$TMP_DIR/quoted-assignment.out" '"reason":"command-not-started"'
+
 echo "==> a later passing target cannot launder an earlier failure"
 MONOREPO="$TMP_DIR/monorepo"
 mkdir -p "$MONOREPO/services/api" "$MONOREPO/services/worker"
