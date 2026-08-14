@@ -18,6 +18,8 @@ type = "github"
 uppercase `key_prefix`, such as `AUT`. Contracts without `[tracker]` retain the
 pre-declaration GitHub behavior for schema-1 compatibility; adoption and an
 explicit upgrade add the declaration rather than rewriting it implicitly.
+The adapter requires the top-level project schema to be exactly `1`; it never
+runs tracker operations against a missing or newer project contract.
 
 The validation engine ignores the known `[tracker]` table because the tracker
 adapter owns it. Both readers still reject unsupported schemas and malformed
