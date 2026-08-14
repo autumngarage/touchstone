@@ -62,11 +62,9 @@ repos:
       - id: actionlint
         files: ^\.github/workflows/.*\.ya?ml$
 
-  # Self-tests via the same touchstone-run.sh validate path downstream projects
-  # use. Touchstone's .touchstone-config sets validate_command to loop through
-  # tests/test-*.sh — this means any change to the validate dispatcher that
-  # breaks the downstream flow also breaks Touchstone's own pre-push, so the
-  # dogfood discipline catches regressions the templates would otherwise hide.
+  # Self-tests via the schema-v1 declaration engine used by the central
+  # required workflow. Touchstone's .touchstone.toml declares the complete
+  # tests/test-*.sh loop, so local and remote validation share one interpreter.
   - repo: local
     hooks:
       - id: touchstone-validate

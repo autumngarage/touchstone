@@ -38,7 +38,7 @@ touchstone/
 ├── templates/      # Legacy transition inputs; nothing copies them
 ├── hooks/          # branch-guard.sh — PreToolUse hook wired in .claude/settings.json
 ├── policy/         # Audited desired GitHub policy and rollback baseline
-├── scripts/        # Issue, review, runner, and GitHub policy operations
+├── scripts/        # Issue, review, validation, compatibility, and policy operations
 ├── audits/         # Dated drift/health reports
 ├── feedback/       # Dated dogfooding notes from downstream projects
 └── tests/          # Self-tests
@@ -46,13 +46,17 @@ touchstone/
 
 **There is no CLI, no bootstrap, and no auto-update right now.** They were deleted with the propagation channel, deliberately and first: cutting propagation is what froze the downstream projects safely in place on their existing committed copies. The replacement is a thin, Homebrew-distributed CLI plus an organization-required workflow pinned to an immutable Touchstone revision outside the consumer PR. Both execute one versioned project contract. Project-type detection compiles an adoption proposal once; validation executes accepted declarations without guessing. Upgrading the installed tool never mutates repositories.
 
-The surviving `scripts/touchstone-run.sh` and `templates/` still describe the frozen pre-strip consumer shape. They are historical inputs for the consumer audit, not the new architecture. Current replacement scope and sequencing live in the [canonical Linear execution plan](https://linear.app/autumngarage/document/touchstone-execution-plan-post-strip-baseline-cac4c56e593e), not this durable overview.
+The surviving `templates/` describe the frozen pre-strip consumer shape and are
+historical inputs for compatibility audits, not the new architecture.
+`scripts/touchstone-run.sh` is the declaration-only schema-v1 validation
+engine; its contract lives in [docs/validation-contract.md](docs/validation-contract.md).
+Current replacement scope and sequencing live in the [canonical Linear execution plan](https://linear.app/autumngarage/document/touchstone-execution-plan-post-strip-baseline-cac4c56e593e), not this durable overview.
 
 The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so GitHub approval count does not represent it. The required `review-binding` check instead binds trusted review evidence to the exact head and requires a later qualifying answer for every finding; GitHub independently requires every inline thread resolved.
 
 ## Delivery
 
-There is no wrapper. Ship with `git` and `gh` directly:
+There is no delivery wrapper. Ship with `git` and `gh` directly:
 
 ```bash
 git checkout -b fix/some-slug
@@ -100,8 +104,8 @@ done
 
 The suite is deterministic, offline, and fetches nothing. The protected,
 immutable workflow pinned by `policy/github/touchstone-main.json` runs the same
-loop as the required check with no third-party dependency of any kind. The
-target repository carries no duplicate validation workflow.
+schema-v1 engine as local validation with no unrelated toolchain dependency.
+The target repository carries no duplicate required workflow.
 
 Lint is separate, at pre-commit: `shellcheck`, `shfmt`, `markdownlint`, `actionlint`.
 

@@ -68,7 +68,10 @@ Touchstone-owned and is never updated or deleted by this script.
 is the permanent disposable-state target for live policy tests. Use it before a
 production policy migration when behavior depends on GitHub's live ruleset API
 or merge enforcement and cannot be proven by the offline suite alone. Do not
-use it for application development or as a required-workflow source.
+use it for application development or as a required-workflow source. Keep it
+long term as the fleet's scratch consumer for required-workflow validation as
+well: missing, malformed, passing, failing, canceled, local-workflow bypass,
+and source-revision upgrade/rollback scenarios all belong there.
 
 Derive a temporary canary policy from the reviewed production policy; do not
 commit a second desired-state file that can drift. Change only the target
