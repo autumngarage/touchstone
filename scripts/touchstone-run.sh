@@ -537,6 +537,11 @@ declared_command_unrunnable_code() {
   IFS= read -r first_line <"$executable" || true
   case "$first_line" in
     '#!'*)
+      case "$first_line" in *"$(printf '\r')"*)
+        printf 'missing-interpreter\n'
+        return 0
+        ;;
+      esac
       shebang="$(trim "${first_line#\#!}")"
       read -r -a shebang_words <<<"$shebang"
       interpreter="${shebang_words[0]:-}"
@@ -545,7 +550,7 @@ declared_command_unrunnable_code() {
         */*) interpreter_path="$directory/$interpreter" ;;
         *) interpreter_path="" ;;
       esac
-      if [ -z "$interpreter_path" ] || [ ! -x "$interpreter_path" ]; then
+      if [ -z "$interpreter_path" ] || [ -d "$interpreter_path" ] || [ ! -x "$interpreter_path" ]; then
         printf 'missing-interpreter\n'
         return 0
       fi
@@ -637,7 +642,12 @@ declared_command_unrunnable_code() {
                   case "$short_flag" in
                     0 | v) ;;
                     i) env_effective_path="$default_exec_path" ;;
-                    S) ;;
+                    S)
+                      env_option_argument="${short_flags:$((short_index + 1))}"
+                      if [ -n "$env_option_argument" ]; then env_command="$env_option_argument"; fi
+                      short_index="${#short_flags}"
+                      continue
+                      ;;
                     u | C | P | a)
                       env_option_argument="${short_flags:$((short_index + 1))}"
                       if [ -z "$env_option_argument" ]; then
@@ -665,6 +675,7 @@ declared_command_unrunnable_code() {
                   esac
                   short_index=$((short_index + 1))
                 done
+                [ -z "$env_command" ] || break
                 env_index=$((env_index + 1))
                 ;;
               *)

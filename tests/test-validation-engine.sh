@@ -149,6 +149,25 @@ run_capture "$RELATIVE_INTERPRETER" "$TMP_DIR/relative-interpreter.out" --json
 assert_contains "$TMP_DIR/relative-interpreter.out" '"ran":0'
 assert_contains "$TMP_DIR/relative-interpreter.out" '"reason":"command-not-started"'
 
+DIRECTORY_INTERPRETER="$TMP_DIR/directory-interpreter"
+mkdir -p "$DIRECTORY_INTERPRETER/interpreter-dir"
+write_contract "$DIRECTORY_INTERPRETER" "./directory-interpreter-script || true"
+printf '#!%s\nbody must not run\n' "$DIRECTORY_INTERPRETER/interpreter-dir" >"$DIRECTORY_INTERPRETER/directory-interpreter-script"
+chmod +x "$DIRECTORY_INTERPRETER/directory-interpreter-script"
+run_capture "$DIRECTORY_INTERPRETER" "$TMP_DIR/directory-interpreter.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "directory shebang interpreter was treated as executable"
+assert_contains "$TMP_DIR/directory-interpreter.out" '"ran":0'
+assert_contains "$TMP_DIR/directory-interpreter.out" '"reason":"command-not-started"'
+
+CRLF_INTERPRETER="$TMP_DIR/crlf-interpreter"
+write_contract "$CRLF_INTERPRETER" "./crlf-interpreter-script || true"
+printf '#!/bin/bash\r\nbody must not run\n' >"$CRLF_INTERPRETER/crlf-interpreter-script"
+chmod +x "$CRLF_INTERPRETER/crlf-interpreter-script"
+run_capture "$CRLF_INTERPRETER" "$TMP_DIR/crlf-interpreter.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "CRLF shebang interpreter was normalized into a valid path"
+assert_contains "$TMP_DIR/crlf-interpreter.out" '"ran":0'
+assert_contains "$TMP_DIR/crlf-interpreter.out" '"reason":"command-not-started"'
+
 ENV_OPTIONS="$TMP_DIR/env-options"
 write_contract "$ENV_OPTIONS" "./env-options-script"
 printf '#!/usr/bin/env -S -u FOO bash\nprintf env-ran > marker\n' >"$ENV_OPTIONS/env-options-script"
@@ -204,6 +223,15 @@ run_capture "$ENV_CLUSTERED_ARGUMENT" "$TMP_DIR/env-clustered-argument.out" --js
 [ "$RUN_STATUS" -eq 127 ] || fail "clustered env argument option laundered a missing interpreter"
 assert_contains "$TMP_DIR/env-clustered-argument.out" '"ran":0'
 assert_contains "$TMP_DIR/env-clustered-argument.out" '"reason":"command-not-started"'
+
+ENV_SPLIT_ATTACHED="$TMP_DIR/env-split-attached"
+write_contract "$ENV_SPLIT_ATTACHED" "./env-split-attached-script || true"
+printf '#!/usr/bin/env -Siv bash\nbody must not run\n' >"$ENV_SPLIT_ATTACHED/env-split-attached-script"
+chmod +x "$ENV_SPLIT_ATTACHED/env-split-attached-script"
+run_capture "$ENV_SPLIT_ATTACHED" "$TMP_DIR/env-split-attached.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "attached env split-string argument was parsed as flags"
+assert_contains "$TMP_DIR/env-split-attached.out" '"ran":0'
+assert_contains "$TMP_DIR/env-split-attached.out" '"reason":"command-not-started"'
 
 ENV_DASH_COMMAND="$TMP_DIR/env-dash-command"
 mkdir -p "$ENV_DASH_COMMAND/bin"
