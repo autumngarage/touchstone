@@ -11,8 +11,94 @@ WORKFLOW_DIR="$ROOT/.github/workflows"
 [ -f "$PRE_COMMIT" ] || exit 0
 [ -d "$WORKFLOW_DIR" ] || exit 0
 
-if ! grep -q 'id:[[:space:]]*no-commit-to-branch' "$PRE_COMMIT" \
-  || ! grep -q 'stages:[[:space:]]*\[pre-commit\]' "$PRE_COMMIT"; then
+guard_runs_precommit() {
+  awk '
+    function scalar(value) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      sub(/,$/, "", value)
+      if ((value ~ /^".*"$/) || (value ~ /^\047.*\047$/)) value = substr(value, 2, length(value) - 2)
+      return value
+    }
+    function list_has_precommit(value, count, values, item) {
+      value = scalar(value)
+      if (value !~ /^\[.*\]$/) return value == "pre-commit"
+      value = substr(value, 2, length(value) - 2)
+      count = split(value, values, ",")
+      for (item = 1; item <= count; item++) if (scalar(values[item]) == "pre-commit") return 1
+      return 0
+    }
+    function finish_guard() {
+      if (!in_guard) return
+      if (!current_stages_seen) guard_without_stages = 1
+      in_guard = 0
+      in_guard_stages = 0
+    }
+    {
+      trimmed = $0
+      sub(/^[[:space:]]*/, "", trimmed)
+      content = trimmed
+      sub(/[[:space:]]*#.*/, "", content)
+      indent = index($0, substr(trimmed, 1, 1)) - 1
+
+      if (in_guard && content ~ /^-[[:space:]]*/ && indent <= guard_indent) finish_guard()
+      if (in_guard_stages && content != "" && indent <= stages_indent) in_guard_stages = 0
+      if (in_default_stages && content != "" && indent <= default_indent) in_default_stages = 0
+
+      if (indent == 0 && content ~ /^default_stages:/) {
+        default_seen = 1
+        value = content
+        sub(/^default_stages:[[:space:]]*/, "", value)
+        if (value == "") {
+          in_default_stages = 1
+          default_indent = indent
+        } else if (list_has_precommit(value)) {
+          default_precommit = 1
+        }
+        next
+      }
+      if (in_default_stages && content ~ /^-[[:space:]]*/) {
+        value = content
+        sub(/^-[[:space:]]*/, "", value)
+        if (scalar(value) == "pre-commit") default_precommit = 1
+        next
+      }
+      if (content ~ /^-[[:space:]]*id:[[:space:]]*no-commit-to-branch[[:space:]]*$/) {
+        finish_guard()
+        in_guard = 1
+        guard_seen = 1
+        guard_indent = indent
+        current_stages_seen = 0
+        next
+      }
+      if (!in_guard) next
+      if (content ~ /^stages:/) {
+        current_stages_seen = 1
+        explicit_stages = 1
+        value = content
+        sub(/^stages:[[:space:]]*/, "", value)
+        if (value == "") {
+          in_guard_stages = 1
+          stages_indent = indent
+        } else if (list_has_precommit(value)) {
+          explicit_precommit = 1
+        }
+        next
+      }
+      if (in_guard_stages && content ~ /^-[[:space:]]*/) {
+        value = content
+        sub(/^-[[:space:]]*/, "", value)
+        if (scalar(value) == "pre-commit") explicit_precommit = 1
+      }
+    }
+    END {
+      finish_guard()
+      selected = explicit_precommit || (guard_without_stages && (!default_seen || default_precommit))
+      exit !(guard_seen && selected)
+    }
+  ' "$1"
+}
+
+if ! guard_runs_precommit "$PRE_COMMIT"; then
   exit 0
 fi
 

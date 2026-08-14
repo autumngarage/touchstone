@@ -140,6 +140,15 @@ run_capture "$QUOTED_ASSIGNMENT" "$TMP_DIR/quoted-assignment.out" --json
 assert_contains "$TMP_DIR/quoted-assignment.out" '"ran":0'
 assert_contains "$TMP_DIR/quoted-assignment.out" '"reason":"command-not-started"'
 
+PATH_ASSIGNMENT="$TMP_DIR/path-assignment"
+mkdir -p "$PATH_ASSIGNMENT/bin"
+printf '#!/bin/bash\nprintf path-ran > marker\n' >"$PATH_ASSIGNMENT/bin/declared-tool"
+chmod +x "$PATH_ASSIGNMENT/bin/declared-tool"
+write_contract "$PATH_ASSIGNMENT" "PATH=bin declared-tool"
+run_capture "$PATH_ASSIGNMENT" "$TMP_DIR/path-assignment.out" --json
+[ "$RUN_STATUS" -eq 0 ] || fail "literal PATH assignment was ignored during preflight"
+[ "$(cat "$PATH_ASSIGNMENT/marker")" = path-ran ] || fail "PATH-resolved tool did not run"
+
 QUOTED_EQUALS_HEAD="$TMP_DIR/quoted-equals-head"
 write_contract "$QUOTED_EQUALS_HEAD" "\\\"FAKE=assignment\\\" ignored-argument"
 printf '#!/usr/bin/env bash\nexit 127\n' >"$QUOTED_EQUALS_HEAD/FAKE=assignment"
@@ -460,6 +469,40 @@ steps:
   - run: SKIP=no-commit-to-branch pre-commit run --all-files --hook-stage pre-commit
 EOF
 bash "$COMPAT" "$LEGACY" || fail "repaired CI pairing still detected"
+
+STAGE_COLLISION="$TMP_DIR/stage-collision"
+mkdir -p "$STAGE_COLLISION/.github/workflows"
+cat >"$STAGE_COLLISION/.pre-commit-config.yaml" <<'EOF'
+repos:
+  - repo: local
+    hooks:
+      - id: no-commit-to-branch
+        stages: [pre-push]
+      - id: content-check
+        stages:
+          - pre-commit
+EOF
+cat >"$STAGE_COLLISION/.github/workflows/validate.yml" <<'EOF'
+on:
+  push:
+    branches: [main]
+steps:
+  - run: pre-commit run --all-files --hook-stage pre-commit
+EOF
+bash "$COMPAT" "$STAGE_COLLISION" || fail "unrelated pre-commit stage was attributed to branch guard"
+
+DEFAULT_STAGE="$TMP_DIR/default-stage"
+mkdir -p "$DEFAULT_STAGE/.github/workflows"
+cat >"$DEFAULT_STAGE/.pre-commit-config.yaml" <<'EOF'
+default_stages:
+  - pre-push
+repos:
+  - repo: local
+    hooks:
+      - id: no-commit-to-branch
+EOF
+cp "$STAGE_COLLISION/.github/workflows/validate.yml" "$DEFAULT_STAGE/.github/workflows/validate.yml"
+bash "$COMPAT" "$DEFAULT_STAGE" || fail "global default stage was ignored for branch guard"
 
 echo "==> local authoring guard remains installed"
 assert_contains "$ROOT/.pre-commit-config.yaml" "id: no-commit-to-branch"

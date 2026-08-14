@@ -390,6 +390,8 @@ declared_command_head() {
   local escaped=false assignment_candidate=true assignment_equals=false
   local token_quoted=false
   local index=0 length="${#1}"
+  COMMAND_PATH_SET=false
+  COMMAND_PATH_OVERRIDE=""
 
   while [ "$index" -lt "$length" ]; do
     while [ "$index" -lt "$length" ]; do
@@ -463,7 +465,15 @@ declared_command_head() {
     done
     [ "$escaped" = false ] && [ -z "$quote" ] || return 1
     [ -n "$token" ] || return 1
-    if [ "$assignment_candidate" = true ] && [ "$assignment_equals" = true ]; then continue; fi
+    if [ "$assignment_candidate" = true ] && [ "$assignment_equals" = true ]; then
+      case "$token" in
+        PATH=*)
+          COMMAND_PATH_SET=true
+          COMMAND_PATH_OVERRIDE="${token#PATH=}"
+          ;;
+      esac
+      continue
+    fi
     COMMAND_HEAD="$token"
     COMMAND_HEAD_QUOTED="$token_quoted"
     return 0
@@ -473,11 +483,12 @@ declared_command_head() {
 
 declared_command_unrunnable_code() {
   local command="$1" directory="$2" head
-  local executable="" first_line shebang interpreter
+  local executable="" first_line shebang interpreter effective_path="$PATH"
   local env_command word
   local -a shebang_words
   declared_command_head "$command" || return 0
   head="$COMMAND_HEAD"
+  if [ "$COMMAND_PATH_SET" = true ]; then effective_path="$COMMAND_PATH_OVERRIDE"; fi
   [ -n "$head" ] || return 0
   case "$head" in
     */*)
@@ -489,10 +500,10 @@ declared_command_unrunnable_code() {
       ;;
     *)
       if [ "$COMMAND_HEAD_QUOTED" = true ] \
-        && [ "$(cd "$directory" && type -t -- "$head" 2>/dev/null || true)" = keyword ]; then
-        executable="$(cd "$directory" && type -P -- "$head" 2>/dev/null)" || true
+        && [ "$(cd "$directory" && PATH="$effective_path" type -t -- "$head" 2>/dev/null || true)" = keyword ]; then
+        executable="$(cd "$directory" && PATH="$effective_path" type -P -- "$head" 2>/dev/null)" || true
       else
-        executable="$(cd "$directory" && command -v -- "$head" 2>/dev/null)" || true
+        executable="$(cd "$directory" && PATH="$effective_path" command -v -- "$head" 2>/dev/null)" || true
       fi
       ;;
   esac
@@ -512,7 +523,7 @@ declared_command_unrunnable_code() {
       shebang="$(trim "${first_line#\#!}")"
       read -r -a shebang_words <<<"$shebang"
       interpreter="${shebang_words[0]:-}"
-      if [ -z "$interpreter" ] || ! command -v -- "$interpreter" >/dev/null 2>&1; then
+      if [ -z "$interpreter" ] || ! PATH="$effective_path" command -v -- "$interpreter" >/dev/null 2>&1; then
         printf 'missing-interpreter\n'
         return 0
       fi
@@ -524,7 +535,7 @@ declared_command_unrunnable_code() {
             env_command="$word"
             break
           done
-          if [ -z "$env_command" ] || ! command -v -- "$env_command" >/dev/null 2>&1; then
+          if [ -z "$env_command" ] || ! PATH="$effective_path" command -v -- "$env_command" >/dev/null 2>&1; then
             printf 'missing-interpreter\n'
             return 0
           fi
