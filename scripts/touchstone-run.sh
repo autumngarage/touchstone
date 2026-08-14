@@ -228,6 +228,7 @@ finalize_block() {
     valid_identifier "$BLOCK_NAME" || config_error "invalid task name '$BLOCK_NAME'"
     valid_identifier "$BLOCK_TARGET" || config_error "invalid target reference '$BLOCK_TARGET'"
     case "$BLOCK_REQUIRED" in true | false) ;; *) config_error "task '$BLOCK_NAME' has invalid required value" ;; esac
+    if [ -z "$(trim "$BLOCK_COMMAND")" ]; then BLOCK_COMMAND=""; fi
     if [ "$BLOCK_REQUIRED" = true ] && [ -z "$BLOCK_COMMAND" ]; then
       config_error "required task '$BLOCK_NAME' has no command"
     fi
@@ -555,7 +556,8 @@ declared_command_unrunnable_code() {
                 ;;
             esac
           done
-          if [ -z "$env_command" ] || ! PATH="$effective_path" command -v -- "$env_command" >/dev/null 2>&1; then
+          if [ -z "$env_command" ] \
+            || ! (cd "$directory" && PATH="$effective_path" type -P -- "$env_command" >/dev/null 2>&1); then
             printf 'missing-interpreter\n'
             return 0
           fi

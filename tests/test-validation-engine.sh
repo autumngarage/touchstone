@@ -69,6 +69,27 @@ run_capture "$REQUIRED" "$TMP_DIR/required.out"
 [ "$RUN_STATUS" -eq 2 ] || fail "required missing command did not exit 2"
 assert_contains "$TMP_DIR/required.out.err" "required task 'test' has no command"
 
+WHITESPACE_REQUIRED="$TMP_DIR/whitespace-required"
+write_contract "$WHITESPACE_REQUIRED" "   "
+run_capture "$WHITESPACE_REQUIRED" "$TMP_DIR/whitespace-required.out" --json
+[ "$RUN_STATUS" -eq 2 ] || fail "whitespace-only required command did not exit 2"
+assert_contains "$TMP_DIR/whitespace-required.out.err" "required task 'test' has no command"
+assert_contains "$TMP_DIR/whitespace-required.out" '"ran":0'
+
+WHITESPACE_OPTIONAL="$TMP_DIR/whitespace-optional"
+write_contract "$WHITESPACE_OPTIONAL" "printf ran > marker"
+cat >>"$WHITESPACE_OPTIONAL/.touchstone.toml" <<'EOF'
+[[validation.tasks]]
+name = "whitespace"
+target = "root"
+required = false
+command = "   "
+EOF
+run_capture "$WHITESPACE_OPTIONAL" "$TMP_DIR/whitespace-optional.out"
+[ "$RUN_STATUS" -eq 0 ] || fail "whitespace-only optional command failed validation"
+assert_contains "$TMP_DIR/whitespace-optional.out" "SKIP whitespace (root)"
+assert_contains "$TMP_DIR/whitespace-optional.out" "ran=1 skipped=1 failed=0"
+
 OPTIONAL_ONLY="$TMP_DIR/optional-only"
 mkdir -p "$OPTIONAL_ONLY"
 cat >"$OPTIONAL_ONLY/.touchstone.toml" <<'EOF'
@@ -126,6 +147,16 @@ chmod +x "$ENV_OPTIONS/env-options-script"
 FOO=present run_capture "$ENV_OPTIONS" "$TMP_DIR/env-options.out" --json
 [ "$RUN_STATUS" -eq 0 ] || fail "env option arguments were mistaken for the interpreter"
 [ "$(cat "$ENV_OPTIONS/marker")" = env-ran ] || fail "env shebang script did not run"
+
+ENV_BUILTIN="$TMP_DIR/env-builtin"
+mkdir -p "$ENV_BUILTIN/empty"
+write_contract "$ENV_BUILTIN" "PATH=$ENV_BUILTIN/empty ./env-builtin-script"
+printf '#!/usr/bin/env echo\nbody must not run\n' >"$ENV_BUILTIN/env-builtin-script"
+chmod +x "$ENV_BUILTIN/env-builtin-script"
+run_capture "$ENV_BUILTIN" "$TMP_DIR/env-builtin.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "builtin-only env interpreter did not retain 127"
+assert_contains "$TMP_DIR/env-builtin.out" '"ran":0'
+assert_contains "$TMP_DIR/env-builtin.out" '"reason":"command-not-started"'
 
 ASSIGNMENT_COMMAND="$TMP_DIR/assignment-command"
 write_contract "$ASSIGNMENT_COMMAND" "FIRST=one SECOND=two missing-touchstone-command"
@@ -423,6 +454,11 @@ on: {pull_request: {}, push: {branches: [main]}}
 steps:
   - run: pre-commit run --all-files --hook-stage pre-commit
 EOF
+cat >"$LEGACY/.github/workflows/flow-filtered.yml" <<'EOF'
+on: {pull_request: {}, push: {branches: [release]}}
+steps:
+  - run: pre-commit run --all-files --hook-stage pre-commit
+EOF
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/compat.out" 2>"$TMP_DIR/compat.err"
 status=$?
@@ -437,6 +473,7 @@ assert_contains "$TMP_DIR/compat.out" "glob-default.yml"
 assert_not_contains "$TMP_DIR/compat.out" "excluded-defaults.yml"
 assert_contains "$TMP_DIR/compat.out" "class-default.yml"
 assert_contains "$TMP_DIR/compat.out" "flow-trigger.yml"
+assert_not_contains "$TMP_DIR/compat.out" "flow-filtered.yml"
 assert_contains "$TMP_DIR/compat.err" "SKIP=no-commit-to-branch"
 printf '\n# SKIP=no-commit-to-branch is not a repair\n' >>"$LEGACY/.github/workflows/validate.yml"
 set +e

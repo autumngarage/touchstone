@@ -198,6 +198,7 @@ workflow_pushes_default() {
     function flow_on_pushes_default(value, rest) {
       if (!match(value, /(^|[,{][[:space:]]*)push[[:space:]]*:/)) return 0
       rest = substr(value, RSTART + RLENGTH)
+      sub(/^[[:space:]]*/, "", rest)
       selected_main = 0
       selected_master = 0
       ignored_main = 0
