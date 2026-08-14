@@ -192,7 +192,7 @@ else
 fi
 
 # =============================================================================
-# No file may instruct the reader to run the CLI, because no CLI ships.
+# No file may instruct the reader to run a CLI subcommand that does not ship.
 #
 # The path-integrity check above only reads markdown, so it could not see
 # setup.sh finishing with "Run `touchstone doctor`" after the same commit
@@ -200,12 +200,13 @@ fi
 # follow a successful setup straight into command-not-found.
 #
 # Matched by subcommand rather than by the bare word, so prose about the
-# project and the surviving scripts/touchstone-run.sh both stay legal. When
-# the CLI is rebuilt, delete this check in the commit that ships it.
+# project and scripts/touchstone-run.sh both stay legal. The supported CLI
+# surface is deliberately narrow; this guard prevents deleted commands from
+# returning through prose while allowing validate, adopt, and upgrade.
 # =============================================================================
 
 echo ""
-echo "==> No file invokes a touchstone CLI subcommand"
+echo "==> No file invokes an unsupported touchstone CLI subcommand"
 
 # POSIX ERE only. The first version of this check used `\b` for the trailing
 # word boundary, which glibc's ERE honours and BSD/macOS does not — so it
@@ -234,9 +235,18 @@ cli_refs="$(
 )"
 if [ -n "$cli_refs" ]; then
   printf '%s\n' "$cli_refs" >&2
-  fail "a file tells the reader to run a touchstone CLI subcommand, but no CLI ships"
+  fail "a file tells the reader to run an unsupported touchstone CLI subcommand"
 else
-  echo "  OK: nothing instructs the reader to run a CLI that does not exist"
+  echo "  OK: nothing instructs the reader to run a CLI command that does not exist"
+fi
+
+if [ -x "$TOUCHSTONE_ROOT/bin/touchstone" ] \
+  && "$TOUCHSTONE_ROOT/bin/touchstone" --help | grep -qF 'touchstone validate' \
+  && "$TOUCHSTONE_ROOT/bin/touchstone" --help | grep -qF 'touchstone adopt' \
+  && "$TOUCHSTONE_ROOT/bin/touchstone" --help | grep -qF 'touchstone upgrade'; then
+  echo "  OK: the documented validate/adopt/upgrade surface is executable"
+else
+  fail "bin/touchstone does not expose the documented validate/adopt/upgrade surface"
 fi
 
 # Touchstone must obey the conventions it ships. templates/gitignore has

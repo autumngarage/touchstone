@@ -15,6 +15,7 @@ ACTION="${1:-validate}"
 if [ "$#" -gt 0 ]; then shift; fi
 
 JSON_MODE=false
+CHECK_CONTRACT=false
 PROJECT_ARG=""
 CONFIG_ARG=".touchstone.toml"
 
@@ -22,6 +23,10 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --json)
       JSON_MODE=true
+      shift
+      ;;
+    --check-contract)
+      CHECK_CONTRACT=true
       shift
       ;;
     --project)
@@ -349,6 +354,15 @@ while IFS="$(printf '\t')" read -r task_name task_target _task_required _task_co
     config_error "task '$task_name' references unknown target '$task_target'"
   fi
 done <"$TASKS_FILE"
+
+if [ "$CHECK_CONTRACT" = true ]; then
+  if [ "$JSON_MODE" = true ]; then
+    printf '{"schema":1,"verdict":"valid"}\n'
+  else
+    printf 'schema-v1 contract is valid\n'
+  fi
+  exit 0
+fi
 
 resolve_target() {
   local target_name="$1" target_path="$2" resolved_target

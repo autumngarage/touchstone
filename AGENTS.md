@@ -141,12 +141,13 @@ Lint is not part of the test suite. It runs at pre-commit and via `pre-commit ru
 ```
 touchstone/
 ├── TOUCHSTONE.md   # Canonical steering router — the universal contract
+├── bin/            # Thin validate/adopt/upgrade command dispatcher
 ├── docs/           # Touchstone-specific product contract and project documentation
 ├── principles/     # The judgment layer, routed to from TOUCHSTONE.md
 ├── skills/         # User-scoped Claude Code skills
 ├── templates/      # Legacy transition inputs (nothing copies them today)
 ├── hooks/          # branch-guard.sh — PreToolUse hook wired in .claude/settings.json
-├── scripts/        # claim-issue, issue-claim-check, respond-review, touchstone-run
+├── scripts/        # issue, review, validation, adoption, compatibility, and policy operations
 ├── audits/         # Dated drift/health reports (never auto-modified)
 ├── feedback/       # Dated dogfooding notes from downstream projects
 └── tests/          # Self-tests

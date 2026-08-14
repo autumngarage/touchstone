@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNNER="$ROOT/scripts/touchstone-run.sh"
 COMPAT="$ROOT/scripts/check-legacy-ci.sh"
+CLI="$ROOT/bin/touchstone"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -830,5 +831,283 @@ bash "$COMPAT" "$DEFAULT_STAGE" || fail "global default stage was ignored for br
 echo "==> local authoring guard remains installed"
 assert_contains "$ROOT/.pre-commit-config.yaml" "id: no-commit-to-branch"
 assert_contains "$ROOT/.pre-commit-config.yaml" "stages: [pre-commit]"
+
+init_adoption_repo() {
+  local directory="$1"
+  mkdir -p "$directory"
+  git -C "$directory" init -q -b main
+  git -C "$directory" config user.name "Touchstone Test"
+  git -C "$directory" config user.email "touchstone@example.invalid"
+}
+
+commit_adoption_repo() {
+  local directory="$1" message="$2"
+  git -C "$directory" add -A
+  git -C "$directory" commit -q -m "$message"
+}
+
+run_adoption() {
+  local output="$1"
+  shift
+  set +e
+  "$CLI" "$@" >"$output" 2>"$output.err"
+  ADOPTION_STATUS=$?
+  set -e
+}
+
+echo "==> adoption compiles a deterministic Node contract and marked steering"
+ADOPT_NODE="$TMP_DIR/adopt-node"
+init_adoption_repo "$ADOPT_NODE"
+cat >"$ADOPT_NODE/package.json" <<'EOF'
+{
+  "name": "fixture",
+  "scripts": {
+    "lint": "eslint .",
+    "test": "vitest run"
+  }
+}
+EOF
+printf '{}\n' >"$ADOPT_NODE/package-lock.json"
+printf '# Project-owned instructions\n\nKEEP a/old/ b/new/ PROSE\f\n' >"$ADOPT_NODE/AGENTS.md"
+chmod +x "$ADOPT_NODE/AGENTS.md"
+commit_adoption_repo "$ADOPT_NODE" "fixture"
+git -C "$ADOPT_NODE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-node-plan.json" adopt --dry-run --json --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "Node adoption dry-run failed"
+assert_contains "$TMP_DIR/adopt-node-plan.json" '"schema":1'
+assert_contains "$TMP_DIR/adopt-node-plan.json" '"status":"changes-required"'
+assert_contains "$TMP_DIR/adopt-node-plan.json" '"profile":"node"'
+assert_contains "$TMP_DIR/adopt-node-plan.json" '"path":".touchstone.toml","action":"create"'
+assert_contains "$TMP_DIR/adopt-node-plan.json" '"status":"separate-operation","required":true,"mutated":false'
+assert_contains "$TMP_DIR/adopt-node-plan.json" 'new file mode 100644'
+assert_contains "$TMP_DIR/adopt-node-plan.json" '\f'
+[ ! -e "$ADOPT_NODE/.touchstone.toml" ] || fail "dry-run mutated the repository"
+run_adoption "$TMP_DIR/adopt-node-plan-repeat.json" adopt --dry-run --json --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "repeated Node adoption dry-run failed"
+cmp -s "$TMP_DIR/adopt-node-plan.json" "$TMP_DIR/adopt-node-plan-repeat.json" \
+  || fail "identical repository facts produced different plans"
+run_adoption "$TMP_DIR/adopt-node-apply.out" adopt --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "Node adoption apply failed"
+assert_contains "$ADOPT_NODE/.touchstone.toml" 'command = "npm run lint"'
+assert_contains "$ADOPT_NODE/.touchstone.toml" 'command = "npm run test"'
+assert_contains "$ADOPT_NODE/AGENTS.md" "KEEP a/old/ b/new/ PROSE"
+[ -x "$ADOPT_NODE/AGENTS.md" ] || fail "adoption changed a project-owned steering file mode"
+assert_contains "$ADOPT_NODE/AGENTS.md" '<!-- touchstone:steering:start -->'
+assert_contains "$ADOPT_NODE/CLAUDE.md" '@.touchstone/TOUCHSTONE.md'
+assert_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" '.touchstone/principles/git-workflow.md'
+bash "$RUNNER" validate --check-contract --project "$ADOPT_NODE" >/dev/null
+commit_adoption_repo "$ADOPT_NODE" "adopt"
+run_adoption "$TMP_DIR/adopt-node-repeat.out" adopt --check --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "second adoption was not idempotent"
+assert_contains "$TMP_DIR/adopt-node-repeat.out" "adopt: current"
+run_adoption "$TMP_DIR/adopt-node-upgrade.out" upgrade --check --json --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "current schema-v1 upgrade was not a no-op"
+assert_contains "$TMP_DIR/adopt-node-upgrade.out" '"status":"current"'
+printf '\nold compatible steering\n' >>"$ADOPT_NODE/.touchstone/TOUCHSTONE.md"
+commit_adoption_repo "$ADOPT_NODE" "older steering"
+run_adoption "$TMP_DIR/adopt-node-preserved.out" adopt --check --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "adopt required an implicit compatible steering upgrade"
+run_adoption "$TMP_DIR/adopt-node-upgrade-needed.out" upgrade --check --json --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 3 ] || fail "explicit upgrade did not detect stale managed steering"
+assert_contains "$TMP_DIR/adopt-node-upgrade-needed.out" '"status":"changes-required"'
+run_adoption "$TMP_DIR/adopt-node-upgrade-apply.out" upgrade --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "explicit steering upgrade failed"
+assert_not_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" "old compatible steering"
+
+echo "==> adoption preserves accepted schema-v1 declarations"
+ADOPT_EXISTING="$TMP_DIR/adopt-existing"
+init_adoption_repo "$ADOPT_EXISTING"
+write_contract "$ADOPT_EXISTING" "printf should-not-run > adoption-marker"
+cp "$ADOPT_EXISTING/.touchstone.toml" "$TMP_DIR/accepted-contract.toml"
+commit_adoption_repo "$ADOPT_EXISTING" "fixture"
+git -C "$ADOPT_EXISTING" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-existing.out" adopt --project "$ADOPT_EXISTING"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "existing schema-v1 adoption failed"
+[ ! -e "$ADOPT_EXISTING/adoption-marker" ] || fail "adoption executed the validation contract while planning"
+cmp -s "$ADOPT_EXISTING/.touchstone.toml" "$TMP_DIR/accepted-contract.toml" \
+  || fail "adoption rewrote an accepted schema-v1 contract"
+
+echo "==> adoption ports explicit legacy commands without deleting legacy state"
+ADOPT_LEGACY="$TMP_DIR/adopt-legacy"
+init_adoption_repo "$ADOPT_LEGACY"
+cat >"$ADOPT_LEGACY/.touchstone-config" <<'EOF'
+project_type=generic
+validate_command=bash scripts/validate-project.sh --exact
+EOF
+mkdir -p "$ADOPT_LEGACY/scripts"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$ADOPT_LEGACY/scripts/validate-project.sh"
+chmod +x "$ADOPT_LEGACY/scripts/validate-project.sh"
+commit_adoption_repo "$ADOPT_LEGACY" "fixture"
+git -C "$ADOPT_LEGACY" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-legacy.out" adopt --project "$ADOPT_LEGACY"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "legacy adoption failed"
+assert_contains "$ADOPT_LEGACY/.touchstone.toml" 'command = "bash scripts/validate-project.sh --exact"'
+[ -f "$ADOPT_LEGACY/.touchstone-config" ] || fail "adoption deleted legacy config without authorization"
+
+echo "==> adoption supports explicit manual declarations"
+ADOPT_MANUAL="$TMP_DIR/adopt-manual"
+init_adoption_repo "$ADOPT_MANUAL"
+printf 'manual fixture\n' >"$ADOPT_MANUAL/README.md"
+commit_adoption_repo "$ADOPT_MANUAL" "fixture"
+git -C "$ADOPT_MANUAL" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-manual.out" adopt --project "$ADOPT_MANUAL" \
+  --task 'verify=bash scripts/check.sh --all'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "manual adoption failed"
+assert_contains "$ADOPT_MANUAL/.touchstone.toml" 'name = "verify"'
+assert_contains "$ADOPT_MANUAL/.touchstone.toml" 'command = "bash scripts/check.sh --all"'
+
+echo "==> adoption presets cover the supported portfolio runtimes"
+for profile in python swift rust go; do
+  ADOPT_PROFILE="$TMP_DIR/adopt-$profile"
+  init_adoption_repo "$ADOPT_PROFILE"
+  case "$profile" in
+    python)
+      printf '%s\n' '[tool.pytest.ini_options]' >"$ADOPT_PROFILE/pyproject.toml"
+      printf 'version = 1\n' >"$ADOPT_PROFILE/uv.lock"
+      expected_command='command = "uv run --no-sync pytest"'
+      ;;
+    swift)
+      printf '%s\n' '// swift-tools-version:6.2' >"$ADOPT_PROFILE/Package.swift"
+      expected_command='command = "swift test"'
+      ;;
+    rust)
+      printf '%s\n' '[package]' 'name = "fixture"' >"$ADOPT_PROFILE/Cargo.toml"
+      expected_command='command = "cargo test"'
+      ;;
+    go)
+      printf '%s\n' 'module example.invalid/fixture' >"$ADOPT_PROFILE/go.mod"
+      expected_command='command = "go test ./..."'
+      ;;
+  esac
+  commit_adoption_repo "$ADOPT_PROFILE" "fixture"
+  git -C "$ADOPT_PROFILE" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-$profile.out" adopt --project "$ADOPT_PROFILE"
+  [ "$ADOPTION_STATUS" -eq 0 ] || fail "$profile adoption failed"
+  assert_contains "$ADOPT_PROFILE/.touchstone.toml" "$expected_command"
+done
+
+echo "==> adoption derives explicit monorepo targets"
+ADOPT_MONOREPO="$TMP_DIR/adopt-monorepo"
+init_adoption_repo "$ADOPT_MONOREPO"
+mkdir -p "$ADOPT_MONOREPO/apps/api" "$ADOPT_MONOREPO/packages/web"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_MONOREPO/apps/api/package.json"
+printf '%s\n' '{"scripts":{"build":"node build.js"}}' >"$ADOPT_MONOREPO/packages/web/package.json"
+commit_adoption_repo "$ADOPT_MONOREPO" "fixture"
+git -C "$ADOPT_MONOREPO" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-monorepo.out" adopt --project "$ADOPT_MONOREPO"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "monorepo adoption failed"
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'path = "apps/api"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'path = "packages/web"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "test-apps-api"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "build-packages-web"'
+
+ADOPT_LARGE="$TMP_DIR/adopt-large"
+init_adoption_repo "$ADOPT_LARGE"
+mkdir -p "$ADOPT_LARGE/packages"
+index=1
+while [ "$index" -le 24 ]; do
+  mkdir -p "$ADOPT_LARGE/packages/unit-$index"
+  printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+    >"$ADOPT_LARGE/packages/unit-$index/package.json"
+  index=$((index + 1))
+done
+commit_adoption_repo "$ADOPT_LARGE" "fixture"
+git -C "$ADOPT_LARGE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-large.out" adopt --project "$ADOPT_LARGE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "large monorepo adoption failed"
+assert_contains "$ADOPT_LARGE/.touchstone.toml" 'path = "packages/unit-24"'
+task_count="$(grep -c '^\[\[validation.tasks\]\]$' "$ADOPT_LARGE/.touchstone.toml")"
+[ "$task_count" -eq 24 ] || fail "large monorepo did not derive all explicit tasks"
+
+echo "==> adoption fails closed on ambiguous and unsupported contracts"
+ADOPT_AMBIGUOUS="$TMP_DIR/adopt-ambiguous"
+init_adoption_repo "$ADOPT_AMBIGUOUS"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_AMBIGUOUS/package.json"
+printf '%s\n' '[tool.pytest.ini_options]' >"$ADOPT_AMBIGUOUS/pyproject.toml"
+commit_adoption_repo "$ADOPT_AMBIGUOUS" "fixture"
+git -C "$ADOPT_AMBIGUOUS" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-ambiguous.out" adopt --dry-run --project "$ADOPT_AMBIGUOUS"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "ambiguous adoption did not refuse"
+assert_contains "$TMP_DIR/adopt-ambiguous.out.err" "ambiguous project facts"
+[ ! -e "$ADOPT_AMBIGUOUS/.touchstone.toml" ] || fail "ambiguous adoption wrote a contract"
+
+ADOPT_MANAGER="$TMP_DIR/adopt-manager"
+init_adoption_repo "$ADOPT_MANAGER"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_MANAGER/package.json"
+printf '{}\n' >"$ADOPT_MANAGER/package-lock.json"
+commit_adoption_repo "$ADOPT_MANAGER" "fixture"
+git -C "$ADOPT_MANAGER" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-manager.out" adopt --dry-run --project "$ADOPT_MANAGER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "package manager conflict did not refuse"
+assert_contains "$TMP_DIR/adopt-manager.out.err" "conflicts with the 'npm' lockfile"
+
+ADOPT_BAD_JSON="$TMP_DIR/adopt-bad-json"
+init_adoption_repo "$ADOPT_BAD_JSON"
+printf '%s\n' '{"scripts":null,"dependencies":{"test":"1.0.0"}}' \
+  >"$ADOPT_BAD_JSON/package.json"
+commit_adoption_repo "$ADOPT_BAD_JSON" "fixture"
+git -C "$ADOPT_BAD_JSON" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-bad-json.out" adopt --dry-run --project "$ADOPT_BAD_JSON"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "non-object package scripts did not refuse"
+assert_contains "$TMP_DIR/adopt-bad-json.out.err" "scripts is not an object"
+printf '%s\n' '{"scripts":{"test":{}}}' >"$ADOPT_BAD_JSON/package.json"
+run_adoption "$TMP_DIR/adopt-bad-script.out" adopt --dry-run --project "$ADOPT_BAD_JSON"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "non-string package script did not refuse"
+assert_contains "$TMP_DIR/adopt-bad-script.out.err" "package.json is malformed"
+
+ADOPT_UNSUPPORTED="$TMP_DIR/adopt-unsupported"
+init_adoption_repo "$ADOPT_UNSUPPORTED"
+printf 'schema = 2\n' >"$ADOPT_UNSUPPORTED/.touchstone.toml"
+commit_adoption_repo "$ADOPT_UNSUPPORTED" "fixture"
+git -C "$ADOPT_UNSUPPORTED" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-unsupported.out" upgrade --check --json --project "$ADOPT_UNSUPPORTED"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unsupported schema did not refuse"
+assert_contains "$TMP_DIR/adopt-unsupported.out" '"status":"contract-refused"'
+assert_contains "$TMP_DIR/adopt-unsupported.out" "accepts schema 1"
+
+echo "==> adoption refuses default, dirty, and symlink-escaped writes"
+ADOPT_SAFETY="$TMP_DIR/adopt-safety"
+init_adoption_repo "$ADOPT_SAFETY"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_SAFETY/package.json"
+commit_adoption_repo "$ADOPT_SAFETY" "fixture"
+run_adoption "$TMP_DIR/adopt-default.out" adopt --project "$ADOPT_SAFETY"
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "default-branch apply did not refuse"
+assert_contains "$TMP_DIR/adopt-default.out.err" "non-default branch"
+[ ! -e "$ADOPT_SAFETY/.touchstone.toml" ] || fail "default-branch refusal partially wrote"
+git -C "$ADOPT_SAFETY" switch -q -c feat/adopt
+printf 'dirty\n' >>"$ADOPT_SAFETY/package.json"
+run_adoption "$TMP_DIR/adopt-dirty.out" adopt --project "$ADOPT_SAFETY"
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "dirty apply did not refuse"
+assert_contains "$TMP_DIR/adopt-dirty.out.err" "clean worktree"
+[ ! -e "$ADOPT_SAFETY/.touchstone.toml" ] || fail "dirty refusal partially wrote"
+
+ADOPT_SYMLINK="$TMP_DIR/adopt-symlink"
+ADOPT_OUTSIDE="$TMP_DIR/adopt-outside"
+init_adoption_repo "$ADOPT_SYMLINK"
+mkdir -p "$ADOPT_OUTSIDE"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_SYMLINK/package.json"
+ln -s "$ADOPT_OUTSIDE" "$ADOPT_SYMLINK/.touchstone"
+commit_adoption_repo "$ADOPT_SYMLINK" "fixture"
+git -C "$ADOPT_SYMLINK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-symlink.out" adopt --dry-run --project "$ADOPT_SYMLINK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "symlinked managed ancestor did not refuse"
+assert_contains "$TMP_DIR/adopt-symlink.out.err" "managed path traverses a symlink"
+[ -z "$(find "$ADOPT_OUTSIDE" -mindepth 1 -print -quit)" ] || fail "adoption wrote outside its boundary"
+
+ADOPT_MARKERS="$TMP_DIR/adopt-markers"
+init_adoption_repo "$ADOPT_MARKERS"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_MARKERS/package.json"
+cat >"$ADOPT_MARKERS/AGENTS.md" <<'EOF'
+<!-- touchstone:steering:end -->
+PROJECT PROSE MUST SURVIVE
+<!-- touchstone:steering:start -->
+EOF
+commit_adoption_repo "$ADOPT_MARKERS" "fixture"
+git -C "$ADOPT_MARKERS" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-markers.out" adopt --dry-run --project "$ADOPT_MARKERS"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "out-of-order steering markers did not refuse"
+assert_contains "$TMP_DIR/adopt-markers.out.err" "markers are out of order"
+assert_contains "$ADOPT_MARKERS/AGENTS.md" "PROJECT PROSE MUST SURVIVE"
 
 echo "validation engine tests passed"
