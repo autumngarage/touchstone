@@ -871,7 +871,8 @@ cat >"$ADOPT_NODE/package.json" <<'EOF'
   "name": "fixture",
   "scripts": {
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "postinstall": "curl https://example.invalid/install"
   }
 }
 EOF
@@ -900,7 +901,7 @@ run_adoption "$TMP_DIR/adopt-node-apply.out" adopt --project "$ADOPT_NODE"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "Node adoption apply failed"
 assert_contains "$ADOPT_NODE/.touchstone.toml" 'command = "npm run lint"'
 assert_contains "$ADOPT_NODE/.touchstone.toml" 'command = "npm run test"'
-assert_contains "$ADOPT_NODE/.touchstone.toml" 'setup = "npm ci --offline"'
+assert_contains "$ADOPT_NODE/.touchstone.toml" 'setup = "npm ci --offline --ignore-scripts"'
 assert_contains "$ADOPT_NODE/AGENTS.md" "KEEP a/old/ b/new/ PROSE"
 [ -x "$ADOPT_NODE/AGENTS.md" ] || fail "adoption changed a project-owned steering file mode"
 assert_contains "$ADOPT_NODE/AGENTS.md" '<!-- touchstone:steering:start -->'
@@ -1210,6 +1211,42 @@ PATH="$TMP_DIR/terminating-mv:$PATH" run_adoption "$TMP_DIR/adopt-signal-rollbac
 [ -z "$(git -C "$ADOPT_SIGNAL_ROLLBACK" status --porcelain=v1)" ] \
   || fail "terminated apply did not restore the clean checkout"
 
+ADOPT_CONCURRENT_EDIT="$TMP_DIR/adopt-concurrent-edit"
+init_adoption_repo "$ADOPT_CONCURRENT_EDIT"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_CONCURRENT_EDIT/package.json"
+printf '{}\n' >"$ADOPT_CONCURRENT_EDIT/package-lock.json"
+printf '%s\n' 'PROJECT INSTRUCTIONS' >"$ADOPT_CONCURRENT_EDIT/AGENTS.md"
+commit_adoption_repo "$ADOPT_CONCURRENT_EDIT" "fixture"
+git -C "$ADOPT_CONCURRENT_EDIT" switch -q -c feat/adopt
+mkdir -p "$TMP_DIR/concurrent-git"
+REAL_GIT="$(command -v git)"
+CONCURRENT_HASH_COUNT="$TMP_DIR/concurrent-git/count"
+CONCURRENT_TARGET="$ADOPT_CONCURRENT_EDIT/AGENTS.md"
+export REAL_GIT CONCURRENT_HASH_COUNT CONCURRENT_TARGET
+cat >"$TMP_DIR/concurrent-git/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  *'hash-object '*'AGENTS.md')
+    count=0
+    if [ -f "$CONCURRENT_HASH_COUNT" ]; then count="$(cat "$CONCURRENT_HASH_COUNT")"; fi
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$CONCURRENT_HASH_COUNT"
+    if [ "$count" -eq 2 ]; then printf '%s\n' 'CONCURRENT EDIT' >>"$CONCURRENT_TARGET"; fi
+    ;;
+esac
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$TMP_DIR/concurrent-git/git"
+PATH="$TMP_DIR/concurrent-git:$PATH" run_adoption "$TMP_DIR/adopt-concurrent-edit.out" adopt --project "$ADOPT_CONCURRENT_EDIT"
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "concurrent managed-file edit was overwritten"
+assert_contains "$TMP_DIR/adopt-concurrent-edit.out.err" 'AGENTS.md changed during apply'
+assert_contains "$ADOPT_CONCURRENT_EDIT/AGENTS.md" 'CONCURRENT EDIT'
+[ ! -e "$ADOPT_CONCURRENT_EDIT/.touchstone.toml" ] || fail "concurrent edit failure retained the contract write"
+[ ! -e "$ADOPT_CONCURRENT_EDIT/.touchstone" ] || fail "concurrent edit failure retained managed files"
+[ -z "$(find "$ADOPT_CONCURRENT_EDIT" \( -name '.touchstone-write.*' -o -name '.touchstone-backup.*' \) -print -quit)" ] \
+  || fail "concurrent edit failure retained transaction artifacts"
+
 ADOPT_PYPROJECT="$TMP_DIR/adopt-pyproject"
 init_adoption_repo "$ADOPT_PYPROJECT"
 printf '%s\n' '[project]' 'name = "\u0066ixture"' 'dependencies = [' '  "pytest",' ']' \
@@ -1432,7 +1469,7 @@ assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run build"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "lint"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'target = "root"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run lint"'
-assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'setup = "pnpm install --offline --frozen-lockfile"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'setup = "pnpm install --offline --frozen-lockfile --ignore-scripts"'
 bash "$RUNNER" validate --check-contract --project "$ADOPT_MONOREPO" >/dev/null
 
 ADOPT_NON_WORKSPACE_CHILD="$TMP_DIR/adopt-non-workspace-child"
@@ -1445,7 +1482,7 @@ commit_adoption_repo "$ADOPT_NON_WORKSPACE_CHILD" "fixture"
 git -C "$ADOPT_NON_WORKSPACE_CHILD" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-non-workspace-child.out" adopt --project "$ADOPT_NON_WORKSPACE_CHILD"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "non-workspace child adoption failed"
-assert_contains "$ADOPT_NON_WORKSPACE_CHILD/.touchstone.toml" 'setup = "(cd apps/api && npm ci --offline)"'
+assert_contains "$ADOPT_NON_WORKSPACE_CHILD/.touchstone.toml" 'setup = "(cd apps/api && npm ci --offline --ignore-scripts)"'
 
 ADOPT_WORKSPACE_CHILD="$TMP_DIR/adopt-workspace-child"
 init_adoption_repo "$ADOPT_WORKSPACE_CHILD"
@@ -1458,7 +1495,7 @@ commit_adoption_repo "$ADOPT_WORKSPACE_CHILD" "fixture"
 git -C "$ADOPT_WORKSPACE_CHILD" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-workspace-child.out" adopt --project "$ADOPT_WORKSPACE_CHILD"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "declared workspace child adoption failed"
-assert_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" 'setup = "npm ci --offline"'
+assert_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" 'setup = "npm ci --offline --ignore-scripts"'
 assert_not_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" '(cd apps/api'
 
 ADOPT_PNPM_AUTHORITY="$TMP_DIR/adopt-pnpm-authority"
@@ -1474,7 +1511,21 @@ commit_adoption_repo "$ADOPT_PNPM_AUTHORITY" "fixture"
 git -C "$ADOPT_PNPM_AUTHORITY" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-pnpm-authority.out" adopt --project "$ADOPT_PNPM_AUTHORITY"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "pnpm workspace authority adoption failed"
-assert_contains "$ADOPT_PNPM_AUTHORITY/.touchstone.toml" 'setup = "(cd apps/api && pnpm install --offline --frozen-lockfile)"'
+assert_contains "$ADOPT_PNPM_AUTHORITY/.touchstone.toml" 'setup = "(cd apps/api && pnpm install --offline --frozen-lockfile --ignore-scripts)"'
+
+ADOPT_PNPM_EXCLUSION="$TMP_DIR/adopt-pnpm-exclusion"
+init_adoption_repo "$ADOPT_PNPM_EXCLUSION"
+mkdir -p "$ADOPT_PNPM_EXCLUSION/apps/api"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0"}' >"$ADOPT_PNPM_EXCLUSION/package.json"
+printf '%s\n' 'packages:' '  - "!apps/api"' '  - "apps/*"' >"$ADOPT_PNPM_EXCLUSION/pnpm-workspace.yaml"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_EXCLUSION/pnpm-lock.yaml"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_PNPM_EXCLUSION/apps/api/package.json"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_EXCLUSION/apps/api/pnpm-lock.yaml"
+commit_adoption_repo "$ADOPT_PNPM_EXCLUSION" "fixture"
+git -C "$ADOPT_PNPM_EXCLUSION" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-exclusion.out" adopt --project "$ADOPT_PNPM_EXCLUSION"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "pnpm order-independent exclusion adoption failed"
+assert_contains "$ADOPT_PNPM_EXCLUSION/.touchstone.toml" 'setup = "(cd apps/api && pnpm install --offline --frozen-lockfile --ignore-scripts)"'
 
 ADOPT_CARGO_WORKSPACE="$TMP_DIR/adopt-cargo-workspace"
 init_adoption_repo "$ADOPT_CARGO_WORKSPACE"
@@ -1521,8 +1572,21 @@ git -C "$ADOPT_PNPM_FLOW_WORKSPACE" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-pnpm-flow-workspace.out" adopt --project "$ADOPT_PNPM_FLOW_WORKSPACE"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "flow-style pnpm workspace adoption failed"
 assert_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" 'path = "apps/api"'
-assert_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" 'setup = "pnpm install --offline --frozen-lockfile"'
+assert_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" 'setup = "pnpm install --offline --frozen-lockfile --ignore-scripts"'
 assert_not_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" '(cd apps/api'
+
+ADOPT_PNPM_QUOTED_KEY="$TMP_DIR/adopt-pnpm-quoted-key"
+init_adoption_repo "$ADOPT_PNPM_QUOTED_KEY"
+mkdir -p "$ADOPT_PNPM_QUOTED_KEY/apps/api"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0"}' >"$ADOPT_PNPM_QUOTED_KEY/package.json"
+printf '%s\n' '"packages": ["apps/*"]' >"$ADOPT_PNPM_QUOTED_KEY/pnpm-workspace.yaml"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_QUOTED_KEY/pnpm-lock.yaml"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_PNPM_QUOTED_KEY/apps/api/package.json"
+commit_adoption_repo "$ADOPT_PNPM_QUOTED_KEY" "fixture"
+git -C "$ADOPT_PNPM_QUOTED_KEY" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-quoted-key.out" adopt --dry-run --project "$ADOPT_PNPM_QUOTED_KEY"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "quoted pnpm workspace key was silently ignored"
+assert_contains "$TMP_DIR/adopt-pnpm-quoted-key.out.err" 'malformed, duplicate, or unsupported packages declarations'
 
 ADOPT_PNPM_NON_STRING="$TMP_DIR/adopt-pnpm-non-string"
 init_adoption_repo "$ADOPT_PNPM_NON_STRING"
@@ -1685,9 +1749,9 @@ for yarn_case in unlocked berry classic; do
   run_adoption "$TMP_DIR/adopt-yarn-$yarn_case.out" adopt --project "$ADOPT_YARN"
   [ "$ADOPTION_STATUS" -eq 0 ] || fail "$yarn_case Yarn adoption failed"
   if [ "$yarn_case" = berry ]; then
-    assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install --immutable --immutable-cache"'
+    assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install --immutable --immutable-cache --mode=skip-builds"'
   elif [ "$yarn_case" = classic ]; then
-    assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install --offline --frozen-lockfile"'
+    assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install --offline --frozen-lockfile --ignore-scripts"'
   else
     assert_not_contains "$ADOPT_YARN/.touchstone.toml" 'setup = '
   fi

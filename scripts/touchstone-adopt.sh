@@ -744,12 +744,12 @@ node_setup_command() {
   case "$manager" in
     npm)
       if [ -f "$directory/package-lock.json" ] || [ -f "$directory/npm-shrinkwrap.json" ]; then
-        printf 'npm ci --offline\n'
+        printf 'npm ci --offline --ignore-scripts\n'
       fi
       ;;
     pnpm)
       if [ -f "$directory/pnpm-lock.yaml" ]; then
-        printf 'pnpm install --offline --frozen-lockfile\n'
+        printf 'pnpm install --offline --frozen-lockfile --ignore-scripts\n'
       fi
       ;;
     yarn)
@@ -775,19 +775,19 @@ node_setup_command() {
                 if [ "$major" -eq 1 ]; then
                   [ "$lock_kind" != berry ] \
                     || contract_refusal "Yarn Classic packageManager '$spec' conflicts with a Berry lockfile"
-                  printf 'yarn install --offline --frozen-lockfile\n'
+                  printf 'yarn install --offline --frozen-lockfile --ignore-scripts\n'
                 else
                   [ "$major" -ge 2 ] \
                     || contract_refusal "unsupported Yarn packageManager version '$version'"
                   [ "$lock_kind" != classic ] \
                     || contract_refusal "Yarn Berry packageManager '$spec' conflicts with a Classic lockfile"
-                  printf 'yarn install --immutable --immutable-cache\n'
+                  printf 'yarn install --immutable --immutable-cache --mode=skip-builds\n'
                 fi
                 ;;
               yarn)
                 case "$lock_kind" in
-                  classic) printf 'yarn install --offline --frozen-lockfile\n' ;;
-                  berry) printf 'yarn install --immutable --immutable-cache\n' ;;
+                  classic) printf 'yarn install --offline --frozen-lockfile --ignore-scripts\n' ;;
+                  berry) printf 'yarn install --immutable --immutable-cache --mode=skip-builds\n' ;;
                   *) contract_refusal "yarn.lock format is ambiguous; declare packageManager with an exact Yarn version" ;;
                 esac
                 ;;
@@ -796,8 +796,8 @@ node_setup_command() {
             ;;
           1)
             case "$lock_kind" in
-              classic) printf 'yarn install --offline --frozen-lockfile\n' ;;
-              berry) printf 'yarn install --immutable --immutable-cache\n' ;;
+              classic) printf 'yarn install --offline --frozen-lockfile --ignore-scripts\n' ;;
+              berry) printf 'yarn install --immutable --immutable-cache --mode=skip-builds\n' ;;
               *) contract_refusal "yarn.lock format is ambiguous; declare packageManager with an exact Yarn version" ;;
             esac
             ;;
@@ -807,7 +807,7 @@ node_setup_command() {
       ;;
     bun)
       if [ -f "$directory/bun.lock" ] || [ -f "$directory/bun.lockb" ]; then
-        printf 'bun install --offline --frozen-lockfile\n'
+        printf 'bun install --offline --frozen-lockfile --ignore-scripts\n'
       fi
       ;;
   esac
@@ -1010,6 +1010,7 @@ pnpm_workspace_patterns() {
       }
       if (!closed || quote != "" || escaped) exit 2
     }
+    /^[[:space:]]*["\047]packages["\047][[:space:]]*:/ { exit 2 }
     /^packages:[[:space:]]*/ {
       packages_keys++
       if (packages_keys > 1) exit 2
@@ -1038,7 +1039,7 @@ pnpm_workspace_patterns() {
 }
 
 node_workspace_contains() {
-  local relative="$1" manager="$2" patterns pattern candidate member=false
+  local relative="$1" manager="$2" patterns pattern candidate included=false excluded=false
   if [ "$manager" = pnpm ]; then
     [ -f "$PROJECT_ROOT/pnpm-workspace.yaml" ] || return 1
     if ! patterns="$(pnpm_workspace_patterns)"; then
@@ -1054,14 +1055,14 @@ node_workspace_contains() {
       || contract_refusal "workspace pattern '$pattern' uses glob syntax this compiler cannot verify"
     case "$pattern" in
       !*)
-        if workspace_pattern_matches "$candidate" "$relative"; then member=false; fi
+        if workspace_pattern_matches "$candidate" "$relative"; then excluded=true; fi
         ;;
       *)
-        if workspace_pattern_matches "$pattern" "$relative"; then member=true; fi
+        if workspace_pattern_matches "$pattern" "$relative"; then included=true; fi
         ;;
     esac
   done <<<"$patterns"
-  [ "$member" = true ]
+  [ "$included" = true ] && [ "$excluded" = false ]
 }
 
 workspace_pattern_supported() {
@@ -2233,6 +2234,7 @@ current_branch_is_default() {
 
 apply_plan() {
   local action path ownership destination source parent temporary worktree_status default_status backup
+  local expected_hash expected_mode current_hash current_mode
   local stage_file="$APPLY_STAGE_FILE" applied_file="$APPLY_APPLIED_FILE" directories_file="$APPLY_DIRECTORIES_FILE"
   [ -s "$CHANGES_FILE" ] || return 0
   worktree_status="$(git -C "$PROJECT_ROOT" status --porcelain=v1)" \
@@ -2266,7 +2268,29 @@ apply_plan() {
         || operational_failure "could not clean transaction files after staging $path failed"
       operational_failure "could not stage $path"
     }
-    if ! printf '%s\t%s\t%s\n' "$action" "$destination" "$temporary" >>"$stage_file"; then
+    expected_hash=-
+    expected_mode=-
+    if [ "$action" = update ]; then
+      [ -f "$destination" ] && [ ! -L "$destination" ] || {
+        rm -f "$temporary"
+        cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
+          || operational_failure "could not clean transaction files after $path changed during staging"
+        operational_failure "$path changed during staging"
+      }
+      if ! expected_hash="$(git hash-object "$destination")"; then
+        rm -f "$temporary"
+        cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
+          || operational_failure "could not clean transaction files after snapshotting $path failed"
+        operational_failure "could not snapshot $path before apply"
+      fi
+      if ! expected_mode="$(LC_ALL=C ls -ld "$destination" | awk '{ print $1 }')"; then
+        rm -f "$temporary"
+        cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
+          || operational_failure "could not clean transaction files after snapshotting $path metadata failed"
+        operational_failure "could not snapshot $path metadata before apply"
+      fi
+    fi
+    if ! printf '%s\t%s\t%s\t%s\t%s\n' "$action" "$destination" "$temporary" "$expected_hash" "$expected_mode" >>"$stage_file"; then
       rm -f "$temporary"
       cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
         || operational_failure "could not clean transaction files after recording $path failed"
@@ -2287,7 +2311,7 @@ apply_plan() {
     fi
   done <"$CHANGES_FILE"
 
-  while IFS="$(printf '\t')" read -r action destination temporary; do
+  while IFS="$(printf '\t')" read -r action destination temporary expected_hash expected_mode; do
     path="${destination#"$PROJECT_ROOT"/}"
     backup=-
     if [ "$action" = update ]; then
@@ -2296,6 +2320,21 @@ apply_plan() {
           || operational_failure "could not roll back after $path changed during apply"
         operational_failure "$path changed during apply"
       }
+      if ! current_hash="$(git hash-object "$destination")"; then
+        rollback_apply "$applied_file" "$stage_file" "$directories_file" \
+          || operational_failure "could not roll back after rechecking $path failed"
+        operational_failure "could not recheck $path during apply"
+      fi
+      if ! current_mode="$(LC_ALL=C ls -ld "$destination" | awk '{ print $1 }')"; then
+        rollback_apply "$applied_file" "$stage_file" "$directories_file" \
+          || operational_failure "could not roll back after rechecking $path metadata failed"
+        operational_failure "could not recheck $path metadata during apply"
+      fi
+      if [ "$current_hash" != "$expected_hash" ] || [ "$current_mode" != "$expected_mode" ]; then
+        rollback_apply "$applied_file" "$stage_file" "$directories_file" \
+          || operational_failure "could not roll back after $path changed during apply"
+        operational_failure "$path changed during apply"
+      fi
       backup="$(mktemp "$(dirname "$destination")/.touchstone-backup.XXXXXX")" || {
         rollback_apply "$applied_file" "$stage_file" "$directories_file" \
           || operational_failure "could not roll back after staging $path failed"
@@ -2352,9 +2391,9 @@ record_missing_directories() {
 }
 
 cleanup_apply_artifacts() {
-  local stage_file="$1" applied_file="$2" directories_file="$3" action destination artifact failed=false directory
+  local stage_file="$1" applied_file="$2" directories_file="$3" action destination artifact expected_hash expected_mode failed=false directory
   if [ -f "$stage_file" ]; then
-    while IFS="$(printf '\t')" read -r action destination artifact; do
+    while IFS="$(printf '\t')" read -r action destination artifact expected_hash expected_mode; do
       [ -z "${artifact:-}" ] || [ ! -e "$artifact" ] || rm -f "$artifact" || failed=true
     done <"$stage_file"
   fi
