@@ -1092,6 +1092,89 @@ workspace_pattern_matches() {
   done
 }
 
+cargo_workspace_values() {
+  local key="$1" manifest="$PROJECT_ROOT/Cargo.toml"
+  [ -f "$manifest" ] || return 0
+  awk -v wanted="$key" '
+    function scan(raw, position, character) {
+      for (position = 1; position <= length(raw); position++) {
+        character = substr(raw, position, 1)
+        if (quote != "") {
+          if (quote == "\"" && character == "\\") exit 2
+          if (character == quote) { quote = ""; print token; token = ""; closed_scalar = 1; continue }
+          token = token character
+          continue
+        }
+        if (character == "#") return
+        if (finished) {
+          if (character ~ /[[:space:]]/) continue
+          exit 2
+        }
+        if (character == ",") {
+          if (!started || !closed_scalar) exit 2
+          closed_scalar = 0
+          continue
+        }
+        if (character ~ /[[:space:]]/) continue
+        if (!started && character == "[") { started = 1; continue }
+        if (started && character == "]") { collecting = 0; finished = 1; continue }
+        if (character == "\"" || character == "\047") {
+          if (!started || closed_scalar) exit 2
+          quote = character
+          continue
+        }
+        exit 2
+      }
+    }
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      if (collecting) exit 2
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*$/, "", section)
+      next
+    }
+    {
+      line = $0
+      if (!collecting) {
+        if (section != "workspace" || line !~ "^[[:space:]]*" wanted "[[:space:]]*=") next
+        keys++
+        if (keys > 1) exit 2
+        sub("^[[:space:]]*" wanted "[[:space:]]*=", "", line)
+        collecting = 1
+        started = 0
+        finished = 0
+        closed_scalar = 0
+      }
+      scan(line)
+      if (!collecting && (quote != "" || !started)) exit 2
+    }
+    END { if (collecting || quote != "") exit 2 }
+  ' "$manifest"
+}
+
+cargo_workspace_contains() {
+  local relative="$1" members excludes pattern member=false
+  if ! members="$(cargo_workspace_values members)"; then
+    contract_refusal "root Cargo.toml has a malformed or repeated workspace members declaration"
+  fi
+  if ! excludes="$(cargo_workspace_values exclude)"; then
+    contract_refusal "root Cargo.toml has a malformed or repeated workspace exclude declaration"
+  fi
+  while IFS= read -r pattern; do
+    [ -n "$pattern" ] || continue
+    workspace_pattern_supported "$pattern" \
+      || contract_refusal "Cargo workspace pattern '$pattern' uses glob syntax this compiler cannot verify"
+    if workspace_pattern_matches "$pattern" "$relative"; then member=true; fi
+  done <<<"$members"
+  while IFS= read -r pattern; do
+    [ -n "$pattern" ] || continue
+    workspace_pattern_supported "$pattern" \
+      || contract_refusal "Cargo workspace exclude '$pattern' uses glob syntax this compiler cannot verify"
+    if workspace_pattern_matches "$pattern" "$relative"; then member=false; fi
+  done <<<"$excludes"
+  [ "$member" = true ]
+}
+
 tasks_for_node() {
   local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" manager setup_directory setup_command task found=false
   [ -f "$directory/package.json" ] || contract_refusal "Node target '$target' has no package.json"
@@ -1614,10 +1697,12 @@ tasks_for_profile() {
       record_task "test$suffix" "$target" "swift test --disable-automatic-resolution --skip-update"
       ;;
     rust)
-      [ -f "$directory/Cargo.lock" ] \
-        || contract_refusal "Rust target '$target' has no Cargo.lock; commit one or pass --task NAME=COMMAND"
       local cargo_lock_path="Cargo.lock"
-      if [ "$directory" != "$PROJECT_ROOT" ]; then cargo_lock_path="${directory#"$PROJECT_ROOT"/}/Cargo.lock"; fi
+      if [ "$workspace_member" != true ] && [ "$directory" != "$PROJECT_ROOT" ]; then
+        cargo_lock_path="${directory#"$PROJECT_ROOT"/}/Cargo.lock"
+      fi
+      [ -f "$PROJECT_ROOT/$cargo_lock_path" ] \
+        || contract_refusal "Rust target '$target' has no Cargo.lock; commit one or pass --task NAME=COMMAND"
       git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$cargo_lock_path" >/dev/null 2>&1 \
         || contract_refusal "Rust target '$target' has no tracked Cargo.lock; commit it or pass --task NAME=COMMAND"
       record_task "test$suffix" "$target" "cargo test --frozen"
@@ -1727,6 +1812,7 @@ compile_detected() {
       record_target "$target" "$relative" "$profile"
       workspace_member=false
       if [ "$profile" = node ] && node_workspace_contains "$relative"; then workspace_member=true; fi
+      if [ "$profile" = rust ] && cargo_workspace_contains "$relative"; then workspace_member=true; fi
       tasks_for_profile "$directory" "$target" "$profile" "$suffix" "$workspace_node_manager" "$workspace_member"
       found_targets=true
     done

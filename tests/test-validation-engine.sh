@@ -1447,6 +1447,23 @@ run_adoption "$TMP_DIR/adopt-workspace-child.out" adopt --project "$ADOPT_WORKSP
 assert_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" 'setup = "npm ci --offline"'
 assert_not_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" '(cd apps/api'
 
+ADOPT_CARGO_WORKSPACE="$TMP_DIR/adopt-cargo-workspace"
+init_adoption_repo "$ADOPT_CARGO_WORKSPACE"
+mkdir -p "$ADOPT_CARGO_WORKSPACE/packages/core"
+printf '%s\n' '[workspace]' 'members = ["packages/unused", "packages/*"]' 'resolver = "2"' \
+  >"$ADOPT_CARGO_WORKSPACE/Cargo.toml"
+printf '%s\n' 'version = 4' >"$ADOPT_CARGO_WORKSPACE/Cargo.lock"
+printf '%s\n' '[package]' 'name = "core"' 'version = "0.1.0"' 'edition = "2024"' \
+  >"$ADOPT_CARGO_WORKSPACE/packages/core/Cargo.toml"
+commit_adoption_repo "$ADOPT_CARGO_WORKSPACE" "fixture"
+git -C "$ADOPT_CARGO_WORKSPACE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-cargo-workspace.out" adopt --project "$ADOPT_CARGO_WORKSPACE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "Cargo workspace adoption failed"
+assert_contains "$ADOPT_CARGO_WORKSPACE/.touchstone.toml" 'path = "packages/core"'
+assert_contains "$ADOPT_CARGO_WORKSPACE/.touchstone.toml" 'name = "test-packages-core"'
+assert_contains "$ADOPT_CARGO_WORKSPACE/.touchstone.toml" 'command = "cargo test --frozen"'
+bash "$RUNNER" validate --check-contract --project "$ADOPT_CARGO_WORKSPACE" >/dev/null
+
 ADOPT_UNSUPPORTED_WORKSPACE_GLOB="$TMP_DIR/adopt-unsupported-workspace-glob"
 init_adoption_repo "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB"
 mkdir -p "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/apps/api"
