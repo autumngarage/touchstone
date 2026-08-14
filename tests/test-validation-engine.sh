@@ -49,6 +49,20 @@ run_capture "$SMALL" "$TMP_DIR/small.out"
 [ "$(cat "$SMALL/marker")" = ran ] || fail "declared command did not run"
 assert_contains "$TMP_DIR/small.out" "ran=1 skipped=0 failed=0"
 
+echo "==> the known tracker table does not change validation semantics"
+TRACKER="$TMP_DIR/tracker"
+write_contract "$TRACKER" "printf tracker-ran > marker"
+sed '/^\[validation\]/i\
+[tracker]\
+schema = 1\
+type = "linear"\
+key_prefix = "AUT"\
+' "$TRACKER/.touchstone.toml" >"$TRACKER/with-tracker"
+mv "$TRACKER/with-tracker" "$TRACKER/.touchstone.toml"
+run_capture "$TRACKER" "$TMP_DIR/tracker.out"
+[ "$RUN_STATUS" -eq 0 ] || fail "known tracker table changed validation verdict"
+[ "$(cat "$TRACKER/marker")" = tracker-ran ] || fail "tracker table prevented the declared task"
+
 echo "==> optional undeclared task skips visibly"
 cat >>"$SMALL/.touchstone.toml" <<'EOF'
 [[validation.tasks]]

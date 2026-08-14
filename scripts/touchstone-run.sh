@@ -91,6 +91,7 @@ SCHEMA_VERSION=""
 RUNTIME=""
 SETUP_COMMAND=""
 VALIDATION_SEEN=false
+TRACKER_SEEN=false
 
 trim() {
   local value="$1"
@@ -272,6 +273,14 @@ while IFS= read -r line || [ -n "$line" ]; do
       SEEN_KEYS=""
       continue
       ;;
+    '[tracker]')
+      finalize_block
+      [ "$TRACKER_SEEN" = false ] || config_error "duplicate [tracker] section at line $LINE_NUMBER"
+      TRACKER_SEEN=true
+      SECTION=tracker
+      SEEN_KEYS=""
+      continue
+      ;;
     '[[validation.targets]]')
       finalize_block
       SECTION=target
@@ -305,6 +314,13 @@ while IFS= read -r line || [ -n "$line" ]; do
       parse_string "$raw_value" || config_error "setup must be a single-line basic string at line $LINE_NUMBER"
       SETUP_COMMAND="$PARSED_VALUE"
       [ -n "$(trim "$SETUP_COMMAND")" ] || config_error "setup cannot be empty when declared"
+      ;;
+    tracker:schema)
+      parse_scalar "$raw_value" || config_error "tracker schema must be an integer at line $LINE_NUMBER"
+      [ "$PARSED_VALUE" = 1 ] || config_error "unsupported tracker schema '$PARSED_VALUE'; this runtime accepts tracker schema 1"
+      ;;
+    tracker:type | tracker:key_prefix)
+      parse_string "$raw_value" || config_error "tracker $key must be a single-line basic string at line $LINE_NUMBER"
       ;;
     target:name)
       parse_string "$raw_value" || config_error "target name must be a single-line basic string at line $LINE_NUMBER"

@@ -55,9 +55,11 @@ An adopted repository contains declarations and narrow integration points, not
 a copy of Touchstone's implementation:
 
 - `.touchstone.toml` declares its schema version, exact validation commands,
-  required tasks, runtime/setup requirements, and explicit monorepo targets.
+  required tasks, runtime/setup requirements, explicit monorepo targets, and
+  its tracker once.
   [The validation contract](validation-contract.md) owns the schema-v1 shape
-  and verdict semantics.
+  and verdict semantics; [the tracker contract](tracker-contract.md) owns
+  claim/reconcile configuration, references, and outcomes.
 - An organization ruleset requires a workflow selected from a protected
   Touchstone source repository, path, and full commit SHA. A consumer PR cannot
   replace that invocation. The required workflow and Homebrew CLI execute the
