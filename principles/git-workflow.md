@@ -196,11 +196,17 @@ number 827. Then distinguish these states:
 3. **Completed** — trusted review evidence covers the exact head. A clean
    result may be a formal review or a provider-owned PR conversation comment;
    findings may also appear in inline threads.
-4. **Explicitly failed** — the provider reports quota, no-review, or another
-   terminal error.
-5. **Unacknowledged** — the observation deadline passes with no
+4. **Provisional quota signal** — the provider reports a security-review quota
+   or usage limit. This signal is never a blocker or a terminal review result;
+   treat it as acceptance and keep watching through the completion deadline
+   measured from the earliest provider-owned signal. It is not review evidence,
+   so merge remains gated until trusted evidence covers the exact head.
+5. **Explicitly failed** — the provider reports a terminal no-review result or
+   error other than a security-review quota notice and makes clear that the job
+   will not continue.
+6. **Unacknowledged** — the observation deadline passes with no
    provider-owned signal.
-6. **Accepted but stalled** — the completion deadline measured from the
+7. **Accepted but stalled** — the completion deadline measured from the
    earliest acceptance signal passes without completed or explicitly failed
    output.
 
