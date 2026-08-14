@@ -1075,9 +1075,52 @@ printf '%s\n' 'version = 4' >"$ADOPT_RUST_IGNORED_LOCK/Cargo.lock"
 git -C "$ADOPT_RUST_IGNORED_LOCK" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-rust-ignored-lock.out" adopt --dry-run --project "$ADOPT_RUST_IGNORED_LOCK"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "Rust adoption accepted a locally present ignored lockfile"
-assert_contains "$TMP_DIR/adopt-rust-ignored-lock.out.err" "has no tracked Cargo.lock"
+assert_contains "$TMP_DIR/adopt-rust-ignored-lock.out.err" "compiler input 'Cargo.lock' is not tracked"
 [ -z "$(git -C "$ADOPT_RUST_IGNORED_LOCK" status --porcelain=v1)" ] \
   || fail "ignored-lock refusal changed the clean checkout"
+
+ADOPT_NODE_IGNORED_LOCK="$TMP_DIR/adopt-node-ignored-lock"
+init_adoption_repo "$ADOPT_NODE_IGNORED_LOCK"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_NODE_IGNORED_LOCK/package.json"
+printf '%s\n' 'package-lock.json' >"$ADOPT_NODE_IGNORED_LOCK/.gitignore"
+commit_adoption_repo "$ADOPT_NODE_IGNORED_LOCK" "fixture"
+printf '%s\n' '{}' >"$ADOPT_NODE_IGNORED_LOCK/package-lock.json"
+git -C "$ADOPT_NODE_IGNORED_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-node-ignored-lock.out" adopt --dry-run --project "$ADOPT_NODE_IGNORED_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Node adoption accepted a locally present ignored lockfile"
+assert_contains "$TMP_DIR/adopt-node-ignored-lock.out.err" "compiler input 'package-lock.json' is not tracked"
+
+ADOPT_IGNORED_CONTRACT="$TMP_DIR/adopt-ignored-contract"
+init_adoption_repo "$ADOPT_IGNORED_CONTRACT"
+printf '%s\n' '.touchstone.toml' >"$ADOPT_IGNORED_CONTRACT/.gitignore"
+commit_adoption_repo "$ADOPT_IGNORED_CONTRACT" "fixture"
+write_contract "$ADOPT_IGNORED_CONTRACT" 'true'
+git -C "$ADOPT_IGNORED_CONTRACT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-ignored-contract.out" adopt --dry-run --project "$ADOPT_IGNORED_CONTRACT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "adoption preserved an ignored existing contract"
+assert_contains "$TMP_DIR/adopt-ignored-contract.out.err" "compiler input '.touchstone.toml' is not tracked"
+
+ADOPT_INPUT_SYMLINK="$TMP_DIR/adopt-input-symlink"
+ADOPT_INPUT_OUTSIDE="$TMP_DIR/adopt-input-outside.json"
+init_adoption_repo "$ADOPT_INPUT_SYMLINK"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_INPUT_OUTSIDE"
+ln -s "$ADOPT_INPUT_OUTSIDE" "$ADOPT_INPUT_SYMLINK/package.json"
+commit_adoption_repo "$ADOPT_INPUT_SYMLINK" "fixture"
+git -C "$ADOPT_INPUT_SYMLINK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-input-symlink.out" adopt --dry-run --project "$ADOPT_INPUT_SYMLINK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "adoption read a compiler input through a symlink"
+assert_contains "$TMP_DIR/adopt-input-symlink.out.err" "compiler input 'package.json' must be a regular file"
+
+ADOPT_SWIFT_REMOTE_NO_LOCK="$TMP_DIR/adopt-swift-remote-no-lock"
+init_adoption_repo "$ADOPT_SWIFT_REMOTE_NO_LOCK"
+printf '%s\n' '// swift-tools-version:6.2' 'import PackageDescription' \
+  'let package = Package(name: "Fixture", dependencies: [.package(url: "https://example.invalid/dependency", from: "1.0.0")])' \
+  >"$ADOPT_SWIFT_REMOTE_NO_LOCK/Package.swift"
+commit_adoption_repo "$ADOPT_SWIFT_REMOTE_NO_LOCK" "fixture"
+git -C "$ADOPT_SWIFT_REMOTE_NO_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-swift-remote-no-lock.out" adopt --dry-run --project "$ADOPT_SWIFT_REMOTE_NO_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Swift remote dependency without Package.resolved was accepted"
+assert_contains "$TMP_DIR/adopt-swift-remote-no-lock.out.err" 'remote dependencies but no Package.resolved'
 
 ADOPT_DIFF_RENDER_FAIL="$TMP_DIR/adopt-diff-render-fail"
 init_adoption_repo "$ADOPT_DIFF_RENDER_FAIL"

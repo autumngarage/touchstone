@@ -1508,12 +1508,28 @@ tasks_for_python() {
   [ "$found" = true ] || contract_refusal "Python target '$target' has no declared ruff, mypy, or pytest evidence; pass --task NAME=COMMAND"
 }
 
+swift_has_remote_dependency() {
+  local file="$1"
+  awk '
+    /\.package[[:space:]]*\(/ { in_package=1 }
+    in_package && /(^|[^A-Za-z])(url|id)[[:space:]]*:/ { found=1 }
+    in_package && /\)/ { in_package=0 }
+    END { exit !found }
+  ' "$file"
+}
+
 tasks_for_profile() {
   local directory="$1" target="$2" profile="$3" suffix="$4" inherited_node_manager="${5:-}" workspace_member="${6:-false}"
   case "$profile" in
     node) tasks_for_node "$directory" "$target" "$suffix" "$inherited_node_manager" "$workspace_member" ;;
     python) tasks_for_python "$directory" "$target" "$suffix" ;;
-    swift) record_task "test$suffix" "$target" "swift test --disable-automatic-resolution --skip-update" ;;
+    swift)
+      if swift_has_remote_dependency "$directory/Package.swift"; then
+        [ -f "$directory/Package.resolved" ] \
+          || contract_refusal "Swift target '$target' has remote dependencies but no Package.resolved; resolve and commit it or pass --task NAME=COMMAND"
+      fi
+      record_task "test$suffix" "$target" "swift test --disable-automatic-resolution --skip-update"
+      ;;
     rust)
       [ -f "$directory/Cargo.lock" ] \
         || contract_refusal "Rust target '$target' has no Cargo.lock; commit one or pass --task NAME=COMMAND"
@@ -1947,8 +1963,43 @@ validate_existing_contract() {
   [ "$status" -eq 0 ] || contract_refusal "existing .touchstone.toml is invalid: $validation_output"
 }
 
+require_tracked_compiler_input() {
+  local path="$1"
+  [ ! -L "$PROJECT_ROOT/$path" ] \
+    || contract_refusal "adoption compiler input '$path' must be a regular file inside the repository"
+  [ ! -e "$PROJECT_ROOT/$path" ] || git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 \
+    || contract_refusal "adoption compiler input '$path' is not tracked; commit it or remove it before planning"
+}
+
+require_compiler_inputs_tracked() {
+  local directory relative name
+  local -a inputs=(
+    .touchstone.toml .touchstone-config AGENTS.md CLAUDE.md GEMINI.md TOUCHSTONE.md
+    package.json package-lock.json npm-shrinkwrap.json pnpm-lock.yaml pnpm-workspace.yaml yarn.lock bun.lock bun.lockb tsconfig.json
+    pyproject.toml uv.lock requirements.txt Package.swift Package.resolved Cargo.toml Cargo.lock go.mod go.sum
+  )
+  for name in "${inputs[@]}"; do require_tracked_compiler_input "$name"; done
+  for directory in apps packages services; do
+    [ -d "$PROJECT_ROOT/$directory" ] || continue
+    for relative in "$PROJECT_ROOT/$directory"/*; do
+      [ -d "$relative" ] || continue
+      [ ! -L "$relative" ] || continue
+      relative="${relative#"$PROJECT_ROOT"/}"
+      for name in "${inputs[@]}"; do require_tracked_compiler_input "$relative/$name"; done
+    done
+  done
+  if [ -d "$PROJECT_ROOT/.touchstone" ]; then
+    while IFS= read -r relative; do
+      [ -n "$relative" ] || continue
+      relative="${relative#"$PROJECT_ROOT"/}"
+      require_tracked_compiler_input "$relative"
+    done < <(find "$PROJECT_ROOT/.touchstone" -type f -print)
+  fi
+}
+
 compile_plan() {
   local proposed_contract="$PLAN_ROOT/proposed-contract.toml" contract_existed=false
+  require_compiler_inputs_tracked
   if [ -f "$PROJECT_ROOT/.touchstone.toml" ]; then
     [ "${#MANUAL_TASK_ARGS[@]}" -eq 0 ] || contract_refusal "--task cannot replace an existing .touchstone.toml declaration"
     validate_existing_contract
