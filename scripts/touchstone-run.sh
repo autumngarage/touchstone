@@ -394,6 +394,7 @@ declared_command_head() {
   local index=0 length="${#1}"
   COMMAND_PATH_SET=false
   COMMAND_PATH_OVERRIDE=""
+  COMMAND_DEFAULT_PATH=false
   COMMAND_HEAD_AFTER_ASSIGNMENT=false
 
   while [ "$index" -lt "$length" ]; do
@@ -495,7 +496,10 @@ declared_command_head() {
                 COMMAND_HEAD_AFTER_ASSIGNMENT="$assignment_seen"
                 return 0
                 ;;
-              *) continue ;;
+              *)
+                COMMAND_DEFAULT_PATH=true
+                continue
+                ;;
             esac
             ;;
         esac
@@ -531,6 +535,17 @@ declared_command_head() {
     return 0
   done
   return 1
+}
+
+system_default_exec_path() {
+  local default_path=""
+  if [ -x /usr/bin/getconf ]; then
+    default_path="$(/usr/bin/getconf PATH 2>/dev/null || true)"
+  elif [ -x /bin/getconf ]; then
+    default_path="$(/bin/getconf PATH 2>/dev/null || true)"
+  fi
+  [ -n "$default_path" ] || default_path="/usr/bin:/bin"
+  printf '%s\n' "$default_path"
 }
 
 env_split_string_head() {
@@ -573,7 +588,11 @@ declared_command_unrunnable_code() {
   local -a shebang_words
   declared_command_head "$command" || return 0
   head="$COMMAND_HEAD"
-  if [ "$COMMAND_PATH_SET" = true ]; then effective_path="$COMMAND_PATH_OVERRIDE"; fi
+  if [ "$COMMAND_DEFAULT_PATH" = true ]; then
+    effective_path="$(system_default_exec_path)"
+  elif [ "$COMMAND_PATH_SET" = true ]; then
+    effective_path="$COMMAND_PATH_OVERRIDE"
+  fi
   [ -n "$head" ] || return 0
   case "$head" in
     */*)
@@ -638,14 +657,7 @@ declared_command_unrunnable_code() {
           env_directory="$directory"
           env_effective_path="$effective_path"
           env_utility_path=""
-          if [ -x /usr/bin/getconf ]; then
-            default_exec_path="$(/usr/bin/getconf PATH 2>/dev/null || true)"
-          elif [ -x /bin/getconf ]; then
-            default_exec_path="$(/bin/getconf PATH 2>/dev/null || true)"
-          else
-            default_exec_path=""
-          fi
-          [ -n "$default_exec_path" ] || default_exec_path="/usr/bin:/bin"
+          default_exec_path="$(system_default_exec_path)"
           env_index=1
           while [ "$env_index" -lt "${#shebang_words[@]}" ]; do
             word="${shebang_words[$env_index]}"

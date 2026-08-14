@@ -317,6 +317,17 @@ run_capture "$COMMAND_BUILTIN" "$TMP_DIR/command-query.out" --json
 [ "$RUN_STATUS" -eq 0 ] || fail "command query form was mistaken for an executable launch"
 assert_contains "$TMP_DIR/command-query.out" '"ran":1'
 
+COMMAND_DEFAULT_PATH="$TMP_DIR/command-default-path"
+write_contract "$COMMAND_DEFAULT_PATH" "PATH= command -p sh -c 'printf default-path-ran > marker'"
+run_capture "$COMMAND_DEFAULT_PATH" "$TMP_DIR/command-default-path.out" --json
+[ "$RUN_STATUS" -eq 0 ] || fail "command -p did not use the default utility path"
+[ "$(cat "$COMMAND_DEFAULT_PATH/marker")" = default-path-ran ] || fail "command -p task did not run"
+
+write_contract "$COMMAND_DEFAULT_PATH" "PATH= command -p command sh -c 'printf nested-default-path-ran > marker'"
+run_capture "$COMMAND_DEFAULT_PATH" "$TMP_DIR/command-nested-default-path.out" --json
+[ "$RUN_STATUS" -eq 0 ] || fail "command -p default path did not reach a nested command builtin"
+[ "$(cat "$COMMAND_DEFAULT_PATH/marker")" = nested-default-path-ran ] || fail "nested command -p task did not run"
+
 NEGATED_COMMAND="$TMP_DIR/negated-command"
 write_contract "$NEGATED_COMMAND" "! missing-touchstone-command"
 run_capture "$NEGATED_COMMAND" "$TMP_DIR/negated-command.out" --json
