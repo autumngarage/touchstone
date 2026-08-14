@@ -1208,6 +1208,27 @@ run_adoption "$TMP_DIR/adopt-remote-requirement.out" adopt --dry-run --project "
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "remote requirements reference produced an offline adoption plan"
 assert_contains "$TMP_DIR/adopt-remote-requirement.out.err" 'remote direct dependency reference'
 
+ADOPT_MARKED_REQUIREMENT="$TMP_DIR/adopt-marked-requirement"
+init_adoption_repo "$ADOPT_MARKED_REQUIREMENT"
+mkdir -p "$ADOPT_MARKED_REQUIREMENT/tests"
+printf '%s\n' 'pytest[testing]; python_version < "0"' >"$ADOPT_MARKED_REQUIREMENT/requirements.txt"
+commit_adoption_repo "$ADOPT_MARKED_REQUIREMENT" "fixture"
+git -C "$ADOPT_MARKED_REQUIREMENT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-marked-requirement.out" adopt --dry-run --project "$ADOPT_MARKED_REQUIREMENT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "environment-marked requirement produced a non-reproducible plan"
+assert_contains "$TMP_DIR/adopt-marked-requirement.out.err" 'environment-marked dependency'
+
+ADOPT_MARKED_PYPROJECT="$TMP_DIR/adopt-marked-pyproject"
+init_adoption_repo "$ADOPT_MARKED_PYPROJECT"
+mkdir -p "$ADOPT_MARKED_PYPROJECT/tests"
+printf '%s\n' '[project]' 'name = "fixture"' \
+  'dependencies = ["pytest; python_version < '\''0'\''"]' >"$ADOPT_MARKED_PYPROJECT/pyproject.toml"
+commit_adoption_repo "$ADOPT_MARKED_PYPROJECT" "fixture"
+git -C "$ADOPT_MARKED_PYPROJECT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-marked-pyproject.out" adopt --dry-run --project "$ADOPT_MARKED_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "environment-marked pyproject dependency produced a plan"
+assert_contains "$TMP_DIR/adopt-marked-pyproject.out.err" 'environment-marked dependency'
+
 ADOPT_REMOTE_PYPROJECT="$TMP_DIR/adopt-remote-pyproject"
 init_adoption_repo "$ADOPT_REMOTE_PYPROJECT"
 mkdir -p "$ADOPT_REMOTE_PYPROJECT/tests"
@@ -1407,6 +1428,19 @@ run_adoption "$TMP_DIR/adopt-pnpm-flow-workspace.out" adopt --project "$ADOPT_PN
 assert_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" 'path = "apps/api"'
 assert_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" 'setup = "pnpm install --offline --frozen-lockfile"'
 assert_not_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" '(cd apps/api'
+
+ADOPT_PNPM_NON_STRING="$TMP_DIR/adopt-pnpm-non-string"
+init_adoption_repo "$ADOPT_PNPM_NON_STRING"
+mkdir -p "$ADOPT_PNPM_NON_STRING/apps/api"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0"}' >"$ADOPT_PNPM_NON_STRING/package.json"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_NON_STRING/pnpm-lock.yaml"
+printf '%s\n' 'packages:' '  - apps/*' '  - 1' >"$ADOPT_PNPM_NON_STRING/pnpm-workspace.yaml"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_PNPM_NON_STRING/apps/api/package.json"
+commit_adoption_repo "$ADOPT_PNPM_NON_STRING" "fixture"
+git -C "$ADOPT_PNPM_NON_STRING" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-non-string.out" adopt --dry-run --project "$ADOPT_PNPM_NON_STRING"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "non-string pnpm workspace entry produced a plan"
+assert_contains "$TMP_DIR/adopt-pnpm-non-string.out.err" 'malformed, duplicate, or unsupported packages declarations'
 
 ADOPT_DUPLICATE_WORKSPACES="$TMP_DIR/adopt-duplicate-workspaces"
 init_adoption_repo "$ADOPT_DUPLICATE_WORKSPACES"
@@ -1671,6 +1705,18 @@ git -C "$ADOPT_TARGET_SYMLINK" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-target-symlink.out" adopt --dry-run --project "$ADOPT_TARGET_SYMLINK"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "symlinked monorepo target did not refuse"
 assert_contains "$TMP_DIR/adopt-target-symlink.out.err" "resolves outside the repository"
+
+ADOPT_IGNORED_TARGET_SYMLINK="$TMP_DIR/adopt-ignored-target-symlink"
+init_adoption_repo "$ADOPT_IGNORED_TARGET_SYMLINK"
+mkdir -p "$ADOPT_IGNORED_TARGET_SYMLINK/apps" "$ADOPT_IGNORED_TARGET_SYMLINK/modules/api"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_IGNORED_TARGET_SYMLINK/modules/api/package.json"
+printf '%s\n' 'apps/api' >"$ADOPT_IGNORED_TARGET_SYMLINK/.gitignore"
+commit_adoption_repo "$ADOPT_IGNORED_TARGET_SYMLINK" "fixture"
+ln -s ../modules/api "$ADOPT_IGNORED_TARGET_SYMLINK/apps/api"
+git -C "$ADOPT_IGNORED_TARGET_SYMLINK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-ignored-target-symlink.out" adopt --dry-run --project "$ADOPT_IGNORED_TARGET_SYMLINK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "ignored monorepo target symlink produced a plan"
+assert_contains "$TMP_DIR/adopt-ignored-target-symlink.out.err" "compiler input 'apps/api' is not tracked"
 
 ADOPT_MARKERS="$TMP_DIR/adopt-markers"
 init_adoption_repo "$ADOPT_MARKERS"

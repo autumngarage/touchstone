@@ -923,11 +923,19 @@ pnpm_workspace_patterns() {
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
       return value
     }
-    function emit_flow(raw, position, character, token, quote, escaped, closed, expect_value, bare_space, scalar_closed) {
+    function emit_scalar(raw, quoted, lowered) {
+      raw = trim(raw)
+      lowered = tolower(raw)
+      if (!quoted && (lowered ~ /^(null|true|false|yes|no|on|off|~)$/ ||
+          raw ~ /^[-+]?[0-9]+([.][0-9]+)?$/)) exit 2
+      print raw
+    }
+    function emit_flow(raw, position, character, token, quote, escaped, closed, expect_value, bare_space, scalar_closed, quoted) {
       raw = trim(raw)
       if (substr(raw, 1, 1) != "[") exit 2
       token = ""
       quote = ""
+      quoted = 0
       escaped = 0
       closed = 0
       expect_value = 1
@@ -950,12 +958,14 @@ pnpm_workspace_patterns() {
         if (character == "\"" || character == "\047") {
           if (!expect_value || trim(token) != "") exit 2
           quote = character
+          quoted = 1
           continue
         }
         if (character == ",") {
           if (expect_value || trim(token) == "") exit 2
-          print trim(token)
+          emit_scalar(token, quoted)
           token = ""
+          quoted = 0
           expect_value = 1
           bare_space = 0
           scalar_closed = 0
@@ -963,7 +973,7 @@ pnpm_workspace_patterns() {
         }
         if (character == "]") {
           if (quote != "") exit 2
-          if (trim(token) != "") print trim(token)
+          if (trim(token) != "") emit_scalar(token, quoted)
           else if (!expect_value) exit 2
           closed = 1
           continue
@@ -993,8 +1003,15 @@ pnpm_workspace_patterns() {
       value = $0
       sub(/^[[:space:]]*-[[:space:]]*/, "", value)
       sub(/[[:space:]]*#.*/, "", value)
-      gsub(/^[[:space:]\047\"]+|[[:space:]\047\"]+$/, "", value)
-      if (value != "") print value
+      value = trim(value)
+      quoted = 0
+      if (substr(value, 1, 1) == "\047" || substr(value, 1, 1) == "\"") {
+        quote = substr(value, 1, 1)
+        if (length(value) < 2 || substr(value, length(value), 1) != quote) exit 2
+        value = substr(value, 2, length(value) - 2)
+        quoted = 1
+      }
+      if (value != "") emit_scalar(value, quoted)
     }
   ' "$workspace"
 }
@@ -1377,6 +1394,44 @@ python_has_remote_reference() {
   return 1
 }
 
+python_has_environment_marker() {
+  local pyproject="$1" requirements="$2"
+  if [ -f "$requirements" ] && awk '
+    {
+      line = $0
+      sub(/[[:space:]]+#.*/, "", line)
+      if (line ~ /;/) found = 1
+    }
+    END { exit !found }
+  ' "$requirements"; then
+    return 0
+  fi
+  if [ -f "$pyproject" ] && awk '
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*$/, "", section)
+      dependency_value = 0
+      next
+    }
+    {
+      line = $0
+      sub(/[[:space:]]+#.*/, "", line)
+      if (section == "project" && line ~ /^[[:space:]]*dependencies[[:space:]]*=/) dependency_value = 1
+      if (section == "build-system" && line ~ /^[[:space:]]*requires[[:space:]]*=/) dependency_value = 1
+      if (section == "dependency-groups" && line ~ /^[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*=/) dependency_value = 1
+      if (section == "tool.poetry.dependencies" || dependency_value) {
+        if (line ~ /;/ || line ~ /(^|[^A-Za-z])markers[[:space:]]*=/) found = 1
+        if (dependency_value && line ~ /\]/) dependency_value = 0
+      }
+    }
+    END { exit !found }
+  ' "$pyproject"; then
+    return 0
+  fi
+  return 1
+}
+
 python_project_has_dependency() {
   local file="$1" wanted="$2" include_dev="$3"
   awk -v wanted="$wanted" -v include_dev="$include_dev" '
@@ -1452,6 +1507,9 @@ python_checker_declared() {
 tasks_for_python() {
   local directory="$1" target="$2" suffix="$3" prefix="python -m" found=false evidence=false
   if [ -f "$directory/pyproject.toml" ]; then validate_pyproject_document "$directory/pyproject.toml"; fi
+  if python_has_environment_marker "$directory/pyproject.toml" "$directory/requirements.txt"; then
+    contract_refusal "Python target '$target' contains an environment-marked dependency this portable compiler cannot verify; use unconditional locked dependencies or pass --task NAME=COMMAND"
+  fi
   if python_has_remote_reference "$directory/pyproject.toml" "$directory/requirements.txt"; then
     contract_refusal "Python target '$target' contains a remote direct dependency reference; vendor or lock it to an offline source, or pass --task NAME=COMMAND"
   fi
@@ -1967,12 +2025,17 @@ require_tracked_compiler_input() {
   local path="$1"
   [ ! -L "$PROJECT_ROOT/$path" ] \
     || contract_refusal "adoption compiler input '$path' must be a regular file inside the repository"
-  [ ! -e "$PROJECT_ROOT/$path" ] || git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 \
+  [ ! -e "$PROJECT_ROOT/$path" ] || require_tracked_compiler_path "$path"
+}
+
+require_tracked_compiler_path() {
+  local path="$1"
+  git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$path" >/dev/null 2>&1 \
     || contract_refusal "adoption compiler input '$path' is not tracked; commit it or remove it before planning"
 }
 
 require_compiler_inputs_tracked() {
-  local directory relative name
+  local directory relative name resolved_directory resolved_relative
   local -a inputs=(
     .touchstone.toml .touchstone-config AGENTS.md CLAUDE.md GEMINI.md TOUCHSTONE.md
     package.json package-lock.json npm-shrinkwrap.json pnpm-lock.yaml pnpm-workspace.yaml yarn.lock bun.lock bun.lockb tsconfig.json
@@ -1983,7 +2046,21 @@ require_compiler_inputs_tracked() {
     [ -d "$PROJECT_ROOT/$directory" ] || continue
     for relative in "$PROJECT_ROOT/$directory"/*; do
       [ -d "$relative" ] || continue
-      [ ! -L "$relative" ] || continue
+      if [ -L "$relative" ]; then
+        relative="${relative#"$PROJECT_ROOT"/}"
+        require_tracked_compiler_path "$relative"
+        resolved_directory="$(cd "$PROJECT_ROOT/$relative" 2>/dev/null && pwd -P)" \
+          || contract_refusal "could not resolve monorepo target $relative"
+        case "$resolved_directory" in
+          "$PROJECT_ROOT") continue ;;
+          "$PROJECT_ROOT"/*)
+            resolved_relative="${resolved_directory#"$PROJECT_ROOT"/}"
+            for name in "${inputs[@]}"; do require_tracked_compiler_input "$resolved_relative/$name"; done
+            continue
+            ;;
+          *) continue ;;
+        esac
+      fi
       relative="${relative#"$PROJECT_ROOT"/}"
       for name in "${inputs[@]}"; do require_tracked_compiler_input "$relative/$name"; done
     done
