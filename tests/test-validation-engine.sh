@@ -907,6 +907,16 @@ assert_contains "$ADOPT_NODE/AGENTS.md" "KEEP a/old/ b/new/ PROSE"
 assert_contains "$ADOPT_NODE/AGENTS.md" '<!-- touchstone:steering:start -->'
 assert_contains "$ADOPT_NODE/CLAUDE.md" '@.touchstone/TOUCHSTONE.md'
 assert_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" '.touchstone/principles/git-workflow.md'
+assert_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" 'Read `.touchstone/principles/audit-weak-points.md`.'
+assert_not_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" 'touchstone-audit-weak-points'
+assert_not_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" 'memory-audit'
+assert_contains "$ADOPT_NODE/.touchstone/principles/engineering-principles.md" \
+  'Follow the procedure in `.touchstone/principles/audit-weak-points.md`.'
+assert_not_contains "$ADOPT_NODE/.touchstone/principles/engineering-principles.md" \
+  'touchstone-audit-weak-points'
+assert_contains "$ADOPT_NODE/.touchstone/principles/memory-hygiene.md" 'Run this audit when a'
+assert_contains "$ADOPT_NODE/.touchstone/principles/memory-hygiene.md" 'Every driver owes'
+assert_not_contains "$ADOPT_NODE/.touchstone/principles/memory-hygiene.md" 'memory-audit'
 assert_not_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" 'scripts/claim-issue.sh'
 assert_not_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" 'scripts/respond-review.sh'
 assert_not_contains "$ADOPT_NODE/.touchstone/principles/git-workflow.md" 'bash scripts/'

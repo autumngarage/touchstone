@@ -2008,10 +2008,21 @@ plan_managed_file() {
   [ -f "$PROJECT_ROOT/$relative" ] || contract_refusal "managed path is not a regular file: $relative"
 }
 
+render_consumer_markdown() {
+  local source="$1" output="$2"
+  sed \
+    -e 's#Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers)\.#Read `principles/audit-weak-points.md`.#' \
+    -e '/^Claude Code agents: the bundled `touchstone-\*` and `memory-audit` skills mirror this table in your session header\. Trust whichever surface fires first\.$/d' \
+    -e 's#Use the `touchstone-audit-weak-points` skill\.#Follow the procedure in `principles/audit-weak-points.md`.#' \
+    -e 's#^Claude Code agents have the `memory-audit` skill for this\. Run it when a$#Run this audit when a#' \
+    -e 's#^user never agreed to the change\. Drivers without the `memory-audit` skill owe$#user never agreed to the change. Every driver owes#' \
+    -e 's#principles/#.touchstone/principles/#g' \
+    "$source" >"$output" || operational_failure "could not render consumer steering"
+}
+
 render_consumer_steering() {
   local output="$1"
-  sed 's#principles/#.touchstone/principles/#g' "$SCRIPT_ROOT/TOUCHSTONE.md" >"$output" \
-    || operational_failure "could not render consumer steering"
+  render_consumer_markdown "$SCRIPT_ROOT/TOUCHSTONE.md" "$output"
 }
 
 render_inline_block() {
@@ -2127,8 +2138,7 @@ plan_steering() {
     [ "$(basename "$file")" != README.md ] || continue
     relative=".touchstone/principles/$(basename "$file")"
     rendered_principle="$PLAN_ROOT/principle-$(basename "$file")"
-    sed 's#principles/#.touchstone/principles/#g' "$file" >"$rendered_principle" \
-      || operational_failure "could not render $(basename "$file")"
+    render_consumer_markdown "$file" "$rendered_principle"
     plan_managed_file "$relative" "$rendered_principle" "$refresh"
   done
   render_inline_block "$consumer" "$inline"
