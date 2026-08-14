@@ -13,7 +13,7 @@ fail() {
   exit 1
 }
 assert_contains() { grep -Fq "$2" "$1" || fail "$1 does not contain: $2"; }
-assert_not_contains() { ! grep -Fq "$2" "$1" || fail "$1 unexpectedly contains: $2"; }
+assert_not_contains() { ! grep -Fq -- "$2" "$1" || fail "$1 unexpectedly contains: $2"; }
 
 write_contract() {
   local dir="$1" command="$2" required="${3:-true}"
@@ -900,6 +900,10 @@ assert_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" '.touchstone/principles/
 assert_not_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" 'scripts/claim-issue.sh'
 assert_not_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" 'scripts/respond-review.sh'
 assert_not_contains "$ADOPT_NODE/.touchstone/principles/git-workflow.md" 'bash scripts/'
+assert_not_contains "$ADOPT_NODE/.touchstone/principles/git-workflow.md" 'hooks/branch-guard.sh'
+assert_not_contains "$ADOPT_NODE/.touchstone/principles/git-workflow.md" '.github/workflows/issue-claim-check.yml'
+assert_not_contains "$ADOPT_NODE/.touchstone/principles/git-workflow.md" '--all-resolved-check'
+assert_not_contains "$ADOPT_NODE/.touchstone/principles/agent-swarms.md" 'scripts/respond-review.sh'
 bash "$RUNNER" validate --check-contract --project "$ADOPT_NODE" >/dev/null
 commit_adoption_repo "$ADOPT_NODE" "adopt"
 run_adoption "$TMP_DIR/adopt-node-repeat.out" adopt --check --project "$ADOPT_NODE"
