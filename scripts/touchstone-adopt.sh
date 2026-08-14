@@ -1038,15 +1038,14 @@ pnpm_workspace_patterns() {
 }
 
 node_workspace_contains() {
-  local relative="$1" patterns pattern candidate member=false pnpm_patterns
-  if ! patterns="$(node_workspace_patterns)"; then
-    contract_refusal "root package.json has a malformed, repeated, or unsupported workspace declaration"
-  fi
-  if [ -f "$PROJECT_ROOT/pnpm-workspace.yaml" ]; then
-    if ! pnpm_patterns="$(pnpm_workspace_patterns)"; then
+  local relative="$1" manager="$2" patterns pattern candidate member=false
+  if [ "$manager" = pnpm ]; then
+    [ -f "$PROJECT_ROOT/pnpm-workspace.yaml" ] || return 1
+    if ! patterns="$(pnpm_workspace_patterns)"; then
       contract_refusal "pnpm-workspace.yaml has malformed, duplicate, or unsupported packages declarations"
     fi
-    patterns="${patterns}${patterns:+$LF}${pnpm_patterns}"
+  elif ! patterns="$(node_workspace_patterns)"; then
+    contract_refusal "root package.json has a malformed, repeated, or unsupported workspace declaration"
   fi
   while IFS= read -r pattern; do
     [ -n "$pattern" ] || continue
@@ -1813,7 +1812,7 @@ compile_detected() {
       suffix="-$target"
       record_target "$target" "$relative" "$profile"
       workspace_member=false
-      if [ "$profile" = node ] && node_workspace_contains "$relative"; then workspace_member=true; fi
+      if [ "$profile" = node ] && node_workspace_contains "$relative" "$workspace_node_manager"; then workspace_member=true; fi
       if [ "$profile" = rust ] && cargo_workspace_contains "$relative"; then workspace_member=true; fi
       tasks_for_profile "$directory" "$target" "$profile" "$suffix" "$workspace_node_manager" "$workspace_member"
       found_targets=true

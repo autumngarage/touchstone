@@ -1404,6 +1404,7 @@ mkdir -p "$ADOPT_MONOREPO/apps/api" "$ADOPT_MONOREPO/packages/web"
 printf '%s\n' '{"packageManager":"pnpm@10.0.0","workspaces":["apps/*","packages/*"],"scripts":{"lint":"eslint ."}}' \
   >"$ADOPT_MONOREPO/package.json"
 printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_MONOREPO/pnpm-lock.yaml"
+printf '%s\n' 'packages:' '  - apps/*' '  - packages/*' >"$ADOPT_MONOREPO/pnpm-workspace.yaml"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_MONOREPO/apps/api/package.json"
 printf '%s\n' '{"scripts":{"build":"node build.js"}}' >"$ADOPT_MONOREPO/packages/web/package.json"
 commit_adoption_repo "$ADOPT_MONOREPO" "fixture"
@@ -1447,6 +1448,21 @@ run_adoption "$TMP_DIR/adopt-workspace-child.out" adopt --project "$ADOPT_WORKSP
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "declared workspace child adoption failed"
 assert_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" 'setup = "npm ci --offline"'
 assert_not_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" '(cd apps/api'
+
+ADOPT_PNPM_AUTHORITY="$TMP_DIR/adopt-pnpm-authority"
+init_adoption_repo "$ADOPT_PNPM_AUTHORITY"
+mkdir -p "$ADOPT_PNPM_AUTHORITY/apps/api"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0","workspaces":["apps/*"]}' \
+  >"$ADOPT_PNPM_AUTHORITY/package.json"
+printf '%s\n' 'packages:' '  - packages/*' >"$ADOPT_PNPM_AUTHORITY/pnpm-workspace.yaml"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_AUTHORITY/pnpm-lock.yaml"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_PNPM_AUTHORITY/apps/api/package.json"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_AUTHORITY/apps/api/pnpm-lock.yaml"
+commit_adoption_repo "$ADOPT_PNPM_AUTHORITY" "fixture"
+git -C "$ADOPT_PNPM_AUTHORITY" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-authority.out" adopt --project "$ADOPT_PNPM_AUTHORITY"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "pnpm workspace authority adoption failed"
+assert_contains "$ADOPT_PNPM_AUTHORITY/.touchstone.toml" 'setup = "(cd apps/api && pnpm install --offline --frozen-lockfile)"'
 
 ADOPT_CARGO_WORKSPACE="$TMP_DIR/adopt-cargo-workspace"
 init_adoption_repo "$ADOPT_CARGO_WORKSPACE"
