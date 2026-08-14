@@ -31,7 +31,14 @@ usage() {
 
 json_escape() {
   printf '%s' "$1" | awk 'BEGIN { ORS="" }
-    { gsub(/\\/, "\\\\"); gsub(/\"/, "\\\""); gsub(/\t/, "\\t");
+    {
+      gsub(/\\/, "\\\\"); gsub(/\"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, "\\r")
+      for (code = 1; code < 32; code++) {
+        if (code == 9 || code == 13) continue
+        control = sprintf("%c", code)
+        replacement = sprintf("\\u%04x", code)
+        gsub(control, replacement)
+      }
       if (NR > 1) printf "\\n"; printf "%s", $0 }'
 }
 
