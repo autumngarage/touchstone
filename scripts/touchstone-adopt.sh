@@ -820,12 +820,22 @@ python_project_has_dependency() {
         if (!in_dev && line ~ /^[[:space:]]*dev[[:space:]]*=/) in_dev = 1
         if (in_dev && contains_dependency(line)) found = 1
         if (in_dev && line ~ /\]/) in_dev = 0
-      } else if (include_dev == "true" && section == "tool.poetry.group.dev.dependencies") {
-        key = trim(substr(line, 1, index(line, "=") - 1))
-        gsub(/[\"\047]/, "", key)
-        if (tolower(key) == wanted) found = 1
       }
     }
+    END { exit !found }
+  ' "$file"
+}
+
+python_has_uv_dev_group() {
+  local file="$1"
+  awk '
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*$/, "", section)
+      next
+    }
+    section == "dependency-groups" && /^[[:space:]]*dev[[:space:]]*=/ { found=1 }
     END { exit !found }
   ' "$file"
 }
@@ -850,7 +860,11 @@ tasks_for_python() {
   local directory="$1" target="$2" suffix="$3" prefix="python -m" found=false evidence=false
   if [ -f "$directory/uv.lock" ]; then
     prefix="uv run --no-sync"
-    record_setup "$directory" "uv sync --frozen"
+    if [ -f "$directory/pyproject.toml" ] && python_has_uv_dev_group "$directory/pyproject.toml"; then
+      record_setup "$directory" "uv sync --frozen --group dev"
+    else
+      record_setup "$directory" "uv sync --frozen"
+    fi
   elif [ -f "$directory/requirements.txt" ]; then
     record_setup "$directory" "python -m pip install -r requirements.txt"
   elif [ -f "$directory/pyproject.toml" ]; then
@@ -915,6 +929,7 @@ profile_has_tasks() {
   local directory="$1" profile="$2" task
   case "$profile" in
     node)
+      [ -f "$directory/package.json" ] || return 1
       for task in validate verify lint typecheck test build; do
         if node_has_script "$directory/package.json" "$task"; then return 0; fi
       done
@@ -1152,7 +1167,7 @@ render_claude_block() {
 
 merge_managed_block() {
   local destination="$1" block="$2" output="$3" default_heading="$4"
-  local begin_count end_count begin_line end_line in_block=false inserted=false line comparison
+  local begin_count end_count begin_line end_line in_block=false inserted=false line comparison terminated
   if [ ! -e "$destination" ]; then
     {
       printf '# %s\n\n' "$default_heading"
@@ -1182,7 +1197,14 @@ merge_managed_block() {
   if [ "$begin_line" -ge "$end_line" ]; then
     contract_refusal "steering markers are out of order in ${destination#"$PROJECT_ROOT"/}"
   fi
-  while IFS= read -r line || [ -n "$line" ]; do
+  while true; do
+    line=""
+    if IFS= read -r line; then
+      terminated=true
+    else
+      [ -n "$line" ] || break
+      terminated=false
+    fi
     comparison="${line%"$CR"}"
     if [ "$in_block" = true ]; then
       if [ "$comparison" = "$TOUCHSTONE_BLOCK_END" ]; then in_block=false; fi
@@ -1196,7 +1218,7 @@ merge_managed_block() {
       in_block=true
       continue
     fi
-    printf '%s\n' "$line" >>"$output"
+    if [ "$terminated" = true ]; then printf '%s\n' "$line" >>"$output"; else printf '%s' "$line" >>"$output"; fi
   done <"$destination"
 }
 

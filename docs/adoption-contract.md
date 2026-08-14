@@ -57,7 +57,8 @@ Python tasks come from ruff, mypy, and pytest evidence in `pyproject.toml` or
 the test tree; their explicit setup uses `uv sync --frozen`, a requirements
 install, or an editable install only for an installable project declaration.
 Each emitted checker must also be present in dependency facts installed by that
-setup; configuration or a test tree without the checker dependency refuses.
+setup; required uv dev groups are named explicitly even when project defaults
+exclude them. Configuration or a test tree without the checker dependency refuses.
 Tool-only Python configuration without dependency facts refuses. Monorepo
 plans include executable root-level checks alongside explicit child targets.
 Swift, Rust, and Go commands resolve

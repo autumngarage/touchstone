@@ -953,6 +953,12 @@ commit_adoption_repo "$ADOPT_NODE" "crlf markers"
 run_adoption "$TMP_DIR/adopt-node-crlf-check.out" adopt --check --json --project "$ADOPT_NODE"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "ordinary adopt rewrote CRLF managed markers"
 assert_contains "$TMP_DIR/adopt-node-crlf-check.out" '"status":"current"'
+printf 'PROJECT-SUFFIX' >>"$ADOPT_NODE/AGENTS.md"
+commit_adoption_repo "$ADOPT_NODE" "unterminated project suffix"
+run_adoption "$TMP_DIR/adopt-node-suffix-upgrade.out" upgrade --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "unterminated suffix upgrade failed"
+[ "$(tail -c 1 "$ADOPT_NODE/AGENTS.md")" = X ] \
+  || fail "upgrade added a newline to project-owned suffix"
 
 echo "==> adoption preserves accepted schema-v1 declarations"
 ADOPT_EXISTING="$TMP_DIR/adopt-existing"
@@ -1074,6 +1080,19 @@ run_adoption "$TMP_DIR/adopt-tool-only-python.out" adopt --dry-run --project "$A
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "tool-only Python project did not refuse"
 assert_contains "$TMP_DIR/adopt-tool-only-python.out.err" "no installable project or dependency declaration"
 
+ADOPT_UV_DEV="$TMP_DIR/adopt-uv-dev"
+init_adoption_repo "$ADOPT_UV_DEV"
+mkdir -p "$ADOPT_UV_DEV/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = []' \
+  '[tool.uv]' 'default-groups = []' '[dependency-groups]' 'dev = ["pytest"]' \
+  >"$ADOPT_UV_DEV/pyproject.toml"
+printf 'version = 1\n' >"$ADOPT_UV_DEV/uv.lock"
+commit_adoption_repo "$ADOPT_UV_DEV" "fixture"
+git -C "$ADOPT_UV_DEV" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-uv-dev.out" adopt --project "$ADOPT_UV_DEV"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "uv dev-group adoption failed"
+assert_contains "$ADOPT_UV_DEV/.touchstone.toml" 'setup = "uv sync --frozen --group dev"'
+
 echo "==> adoption derives explicit monorepo targets"
 ADOPT_MONOREPO="$TMP_DIR/adopt-monorepo"
 init_adoption_repo "$ADOPT_MONOREPO"
@@ -1102,6 +1121,7 @@ bash "$RUNNER" validate --check-contract --project "$ADOPT_MONOREPO" >/dev/null
 ADOPT_LARGE="$TMP_DIR/adopt-large"
 init_adoption_repo "$ADOPT_LARGE"
 mkdir -p "$ADOPT_LARGE/packages"
+printf '{}\n' >"$ADOPT_LARGE/tsconfig.json"
 index=1
 while [ "$index" -le 24 ]; do
   mkdir -p "$ADOPT_LARGE/packages/unit-$index"
