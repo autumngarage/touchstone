@@ -1419,7 +1419,7 @@ tasks_for_profile() {
     python) tasks_for_python "$directory" "$target" "$suffix" ;;
     swift) record_task "test$suffix" "$target" "swift test --disable-automatic-resolution --skip-update" ;;
     rust) record_task "test$suffix" "$target" "cargo test --offline" ;;
-    go) record_task "test$suffix" "$target" "GOPROXY=off go test ./..." ;;
+    go) record_task "test$suffix" "$target" "GOPROXY=off GOSUMDB=off go test ./..." ;;
     generic) contract_refusal "no supported project facts found; pass --task NAME=COMMAND for a manual declaration" ;;
     ambiguous:*) contract_refusal "ambiguous project facts for target '$target': ${profile#ambiguous:}" ;;
     *) contract_refusal "unsupported project profile '$profile'" ;;
@@ -1756,6 +1756,7 @@ plan_steering() {
   render_consumer_steering "$consumer"
   plan_managed_file .touchstone/TOUCHSTONE.md "$consumer" "$refresh"
   for file in "$SCRIPT_ROOT"/principles/*.md; do
+    [ "$(basename "$file")" != README.md ] || continue
     relative=".touchstone/principles/$(basename "$file")"
     rendered_principle="$PLAN_ROOT/principle-$(basename "$file")"
     sed 's#principles/#.touchstone/principles/#g' "$file" >"$rendered_principle" \
@@ -1779,7 +1780,8 @@ plan_steering() {
 }
 
 render_diff() {
-  local action path ownership status
+  local action path ownership diff_status renderer_status
+  local -a pipeline_status
   : >"$DIFF_FILE"
   while IFS="$(printf '\t')" read -r action path ownership; do
     [ -n "$path" ] || continue
@@ -1800,13 +1802,19 @@ render_diff() {
         -e 's#^--- a/old/#--- a/#' \
         -e 's#^+++ b/new/#+++ b/#' >>"$DIFF_FILE"
     fi
-    status=${PIPESTATUS[0]}
+    pipeline_status=("${PIPESTATUS[@]}")
+    diff_status=${pipeline_status[0]}
+    renderer_status=${pipeline_status[1]}
     set -e
-    case "$status" in 0 | 1) ;; *)
+    case "$diff_status" in 0 | 1) ;; *)
       echo "ERROR: could not render proposed diff for $path" >&2
       exit 6
       ;;
     esac
+    if [ "$renderer_status" -ne 0 ]; then
+      echo "ERROR: could not render proposed diff for $path" >&2
+      exit 6
+    fi
   done <"$CHANGES_FILE"
 }
 

@@ -913,6 +913,8 @@ assert_not_contains "$ADOPT_NODE/.touchstone/principles/git-workflow.md" 'hooks/
 assert_not_contains "$ADOPT_NODE/.touchstone/principles/git-workflow.md" '.github/workflows/issue-claim-check.yml'
 assert_not_contains "$ADOPT_NODE/.touchstone/principles/git-workflow.md" '--all-resolved-check'
 assert_not_contains "$ADOPT_NODE/.touchstone/principles/agent-swarms.md" 'scripts/respond-review.sh'
+[ ! -e "$ADOPT_NODE/.touchstone/principles/README.md" ] \
+  || fail "adoption copied the repository-only principles index"
 bash "$RUNNER" validate --check-contract --project "$ADOPT_NODE" >/dev/null
 commit_adoption_repo "$ADOPT_NODE" "adopt"
 run_adoption "$TMP_DIR/adopt-node-repeat.out" adopt --check --project "$ADOPT_NODE"
@@ -1041,7 +1043,7 @@ for profile in python swift rust go; do
       ;;
     go)
       printf '%s\n' 'module example.invalid/fixture' >"$ADOPT_PROFILE/go.mod"
-      expected_command='command = "GOPROXY=off go test ./..."'
+      expected_command='command = "GOPROXY=off GOSUMDB=off go test ./..."'
       expected_setup=''
       ;;
   esac
@@ -1052,6 +1054,27 @@ for profile in python swift rust go; do
   assert_contains "$ADOPT_PROFILE/.touchstone.toml" "$expected_command"
   if [ -n "$expected_setup" ]; then assert_contains "$ADOPT_PROFILE/.touchstone.toml" "$expected_setup"; fi
 done
+
+ADOPT_DIFF_RENDER_FAIL="$TMP_DIR/adopt-diff-render-fail"
+init_adoption_repo "$ADOPT_DIFF_RENDER_FAIL"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_DIFF_RENDER_FAIL/package.json"
+commit_adoption_repo "$ADOPT_DIFF_RENDER_FAIL" "fixture"
+git -C "$ADOPT_DIFF_RENDER_FAIL" switch -q -c feat/adopt
+mkdir -p "$TMP_DIR/failing-sed"
+REAL_SED="$(command -v sed)"
+export REAL_SED
+cat >"$TMP_DIR/failing-sed/sed" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *'diff --git'*) exit 9 ;;
+  *) exec "$REAL_SED" "$@" ;;
+esac
+EOF
+chmod +x "$TMP_DIR/failing-sed/sed"
+PATH="$TMP_DIR/failing-sed:$PATH" run_adoption "$TMP_DIR/adopt-diff-render-fail.out" adopt --dry-run --project "$ADOPT_DIFF_RENDER_FAIL"
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "failed diff renderer did not stop adoption planning"
+assert_contains "$TMP_DIR/adopt-diff-render-fail.out.err" 'could not render proposed diff'
+[ ! -e "$ADOPT_DIFF_RENDER_FAIL/.touchstone.toml" ] || fail "failed diff rendering mutated the repository"
 
 ADOPT_PYPROJECT="$TMP_DIR/adopt-pyproject"
 init_adoption_repo "$ADOPT_PYPROJECT"

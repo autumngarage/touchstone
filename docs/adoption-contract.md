@@ -70,9 +70,9 @@ exclude them. Configuration or a test tree without the checker dependency refuse
 Tool-only Python configuration without dependency facts refuses. Monorepo
 plans include executable root-level checks alongside explicit child targets.
 Swift, Rust, and Go commands disable automatic resolution, use offline Cargo,
-or disable the Go proxy. Every generated validation path fails when required
-dependencies are not vendored or pre-provisioned; none may turn a package-host
-outage into a required-check failure. The accepted commands and setup are
+or disable both the Go proxy and checksum database. Every generated validation
+path fails when required dependencies are not vendored or pre-provisioned;
+none may turn a package-host outage into a required-check failure. The accepted commands and setup are
 written explicitly to `.touchstone.toml`; later preset changes never rewrite
 that file.
 
