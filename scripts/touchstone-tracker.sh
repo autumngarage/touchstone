@@ -23,6 +23,7 @@ TRACKER_SECTION_SEEN=false
 TRACKER_SCHEMA_SEEN=false
 TRACKER_TYPE_SEEN=false
 TRACKER_KEYS=""
+ROOT_SCHEMA_SEEN=false
 
 usage() {
   sed -n '3,8p' "$0" | sed 's/^# \{0,1\}//' >&2
@@ -85,6 +86,9 @@ load_tracker() {
     [ -n "$line" ] || continue
     case "$line" in
       \[*\])
+        if [ "$line" = '[[tracker]]' ]; then
+          fail_input malformed-tracker-table "Use one ordinary [tracker] table, not [[tracker]]."
+        fi
         section="${line#\[}"
         section="${section%\]}"
         if [ "$section" = tracker ]; then
@@ -95,6 +99,26 @@ load_tracker() {
         ;;
       \[*) fail_input malformed-config "Close the section header at .touchstone.toml:$lineno." ;;
     esac
+    if [ -z "$section" ]; then
+      case "$line" in
+        schema=*)
+          key=schema
+          value="${line#*=}"
+          ;;
+        schema[[:space:]]*=*)
+          key=schema
+          value="${line#*=}"
+          ;;
+        *) continue ;;
+      esac
+      [ "$ROOT_SCHEMA_SEEN" = false ] \
+        || fail_input duplicate-project-schema "Keep exactly one top-level schema declaration."
+      value="$(trim "$value")"
+      [ "$value" = 1 ] \
+        || fail_input unsupported-project-schema "Set the top-level project schema to 1 before using this tracker adapter."
+      ROOT_SCHEMA_SEEN=true
+      continue
+    fi
     [ "$section" = tracker ] || continue
     case "$line" in
       *=*)
@@ -126,6 +150,8 @@ load_tracker() {
     esac
   done <"$config"
 
+  [ "$ROOT_SCHEMA_SEEN" = true ] \
+    || fail_input missing-project-schema "Add top-level schema = 1 to .touchstone.toml."
   case "$TRACKER" in github | linear) ;; *) fail_input unknown-tracker "Set [tracker].type to \"github\" or \"linear\"." ;; esac
   if [ "$TRACKER_SECTION_SEEN" = true ] && [ "$TRACKER_SCHEMA_SEEN" = false ]; then
     fail_input missing-tracker-schema "Add schema = 1 inside [tracker]."

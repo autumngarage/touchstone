@@ -194,6 +194,22 @@ printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 2' 'type = "github"' >"$TMP/
 run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
 assert_rc "$RUN_RC" 2
 assert_has "$TMP/out" 'unsupported-tracker-schema'
+printf '%s\n' '[tracker]' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone.toml"
+run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+assert_rc "$RUN_RC" 2
+assert_has "$TMP/out" 'missing-project-schema'
+printf '%s\n' 'schema = 2' '' '[tracker]' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone.toml"
+run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+assert_rc "$RUN_RC" 2
+assert_has "$TMP/out" 'unsupported-project-schema'
+printf '%s\n' 'schema = 1' 'schema = 1' '' '[tracker]' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone.toml"
+run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+assert_rc "$RUN_RC" 2
+assert_has "$TMP/out" 'duplicate-project-schema'
+printf '%s\n' 'schema = 1' '' '[[tracker]]' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone.toml"
+run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+assert_rc "$RUN_RC" 2
+assert_has "$TMP/out" 'malformed-tracker-table'
 printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 1' 'type = "linear"' 'key_prefix = "aut"' >"$TMP/github/.touchstone.toml"
 run_adapter "$TMP/out" claim AUT-1 --project "$TMP/github" --json
 assert_rc "$RUN_RC" 2
