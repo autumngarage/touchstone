@@ -59,6 +59,8 @@ for file in \
   assert_contains "$file" "Do not leave fixed issues open silently"
   assert_contains "$file" "Do not infer adoption from this document"
   assert_contains "$file" "missing enforcement is a rollout gap"
+  assert_contains "$file" "A security-review quota notice is never a blocker"
+  assert_contains "$file" "bounded stalled-request recovery"
   assert_not_contains "$file" "Review is an enforced gate."
 done
 
@@ -100,6 +102,8 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   assert_contains "$file" "submitted, accepted, and completed states"
   assert_contains "$file" "PR conversation comments"
   assert_contains "$file" "accepted but stalled"
+  assert_contains "$file" "Provisional quota signal"
+  assert_contains "$file" "never a blocker or a terminal review result"
   assert_contains "$file" "at least 30 minutes after submission"
   assert_contains "$file" "earliest acceptance signal"
   assert_contains "$file" "immediately before posting"

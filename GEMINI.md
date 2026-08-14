@@ -20,6 +20,8 @@ That division is the entire product; everything Touchstone ships exists to hold 
 
 **Review is always required.** The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so approval count does not represent it. Where `review-binding` is required, GitHub binds trusted review evidence and answers to the exact head. Until that gate is installed and verified, exact-head review remains mandatory driver procedure and the missing enforcement is a rollout gap, not permission to skip it.
 
+**A security-review quota notice is never a blocker.** It is provisional acceptance, not review evidence. Keep watching through the completion deadline, then use bounded stalled-request recovery.
+
 Local hooks are fast feedback; configured GitHub policy is the real boundary. An adopted policy limits emergency admin bypass to pull requests, where GitHub records it. A repository without that enforcement still does not authorize a driver to push directly.
 
 To hold those lines, Touchstone does three things and nothing else:
