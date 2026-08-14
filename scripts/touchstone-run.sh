@@ -389,10 +389,11 @@ clear_git_hook_env() {
 declared_command_head() {
   local input="$1" character quote="" token=""
   local escaped=false assignment_candidate=true assignment_equals=false
-  local token_quoted=false time_option_allowed=false
+  local token_quoted=false time_option_allowed=false assignment_seen=false
   local index=0 length="${#1}"
   COMMAND_PATH_SET=false
   COMMAND_PATH_OVERRIDE=""
+  COMMAND_HEAD_AFTER_ASSIGNMENT=false
 
   while [ "$index" -lt "$length" ]; do
     while [ "$index" -lt "$length" ]; do
@@ -466,10 +467,10 @@ declared_command_head() {
     done
     [ "$escaped" = false ] && [ -z "$quote" ] || return 1
     [ -n "$token" ] || return 1
-    if [ "$token_quoted" = false ] && [ "$token" = '!' ]; then
+    if [ "$assignment_seen" = false ] && [ "$token_quoted" = false ] && [ "$token" = '!' ]; then
       continue
     fi
-    if [ "$token_quoted" = false ] && [ "$token" = time ]; then
+    if [ "$assignment_seen" = false ] && [ "$token_quoted" = false ] && [ "$token" = time ]; then
       time_option_allowed=true
       continue
     fi
@@ -478,6 +479,8 @@ declared_command_head() {
       continue
     fi
     if [ "$assignment_candidate" = true ] && [ "$assignment_equals" = true ]; then
+      assignment_seen=true
+      time_option_allowed=false
       case "$token" in
         PATH=*)
           COMMAND_PATH_SET=true
@@ -488,6 +491,7 @@ declared_command_head() {
     fi
     COMMAND_HEAD="$token"
     COMMAND_HEAD_QUOTED="$token_quoted"
+    COMMAND_HEAD_AFTER_ASSIGNMENT="$assignment_seen"
     return 0
   done
   return 1
@@ -496,7 +500,7 @@ declared_command_head() {
 declared_command_unrunnable_code() {
   local command="$1" directory="$2" head
   local executable="" first_line shebang interpreter effective_path="$PATH"
-  local env_command word env_index env_option_argument
+  local env_command word env_index env_option_argument short_flags short_index short_flag
   local env_directory env_effective_path env_utility_path default_exec_path
   local -a shebang_words
   declared_command_head "$command" || return 0
@@ -512,7 +516,7 @@ declared_command_unrunnable_code() {
       fi
       ;;
     *)
-      if [ "$COMMAND_HEAD_QUOTED" = true ] \
+      if { [ "$COMMAND_HEAD_QUOTED" = true ] || [ "$COMMAND_HEAD_AFTER_ASSIGNMENT" = true ]; } \
         && [ "$(cd "$directory" && PATH="$effective_path" type -t -- "$head" 2>/dev/null || true)" = keyword ]; then
         executable="$(cd "$directory" && PATH="$effective_path" type -P -- "$head" 2>/dev/null)" || true
       else
@@ -617,7 +621,18 @@ declared_command_unrunnable_code() {
                 env_index=$((env_index + 1))
                 ;;
               -*)
-                return 0
+                short_flags="${word#-}"
+                short_index=0
+                while [ "$short_index" -lt "${#short_flags}" ]; do
+                  short_flag="${short_flags:$short_index:1}"
+                  case "$short_flag" in
+                    0 | v) ;;
+                    i) env_effective_path="$default_exec_path" ;;
+                    *) return 0 ;;
+                  esac
+                  short_index=$((short_index + 1))
+                done
+                env_index=$((env_index + 1))
                 ;;
               *)
                 env_command="$word"

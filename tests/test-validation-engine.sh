@@ -178,6 +178,15 @@ for env_header in '-S -v missing-touchstone-command' '-S - missing-touchstone-co
   assert_contains "$TMP_DIR/env-missing-$env_case.out" '"reason":"command-not-started"'
 done
 
+ENV_CLUSTERED="$TMP_DIR/env-clustered"
+write_contract "$ENV_CLUSTERED" "./env-clustered-script || true"
+printf '#!/usr/bin/env -S -iv missing-touchstone-command\nbody must not run\n' >"$ENV_CLUSTERED/env-clustered-script"
+chmod +x "$ENV_CLUSTERED/env-clustered-script"
+run_capture "$ENV_CLUSTERED" "$TMP_DIR/env-clustered.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "clustered env flags laundered a missing interpreter"
+assert_contains "$TMP_DIR/env-clustered.out" '"ran":0'
+assert_contains "$TMP_DIR/env-clustered.out" '"reason":"command-not-started"'
+
 ENV_BUILTIN="$TMP_DIR/env-builtin"
 mkdir -p "$ENV_BUILTIN/empty"
 write_contract "$ENV_BUILTIN" "PATH=$ENV_BUILTIN/empty ./env-builtin-script"
@@ -215,6 +224,13 @@ run_capture "$TIMED_COMMAND" "$TMP_DIR/timed-command.out" --json
 [ "$RUN_STATUS" -eq 127 ] || fail "time prefix laundered an unavailable command"
 assert_contains "$TMP_DIR/timed-command.out" '"ran":0'
 assert_contains "$TMP_DIR/timed-command.out" '"reason":"command-not-started"'
+
+ASSIGNMENT_TIMED="$TMP_DIR/assignment-timed"
+write_contract "$ASSIGNMENT_TIMED" "PATH= time true || true"
+run_capture "$ASSIGNMENT_TIMED" "$TMP_DIR/assignment-timed.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "assignment-prefixed external time was mistaken for a keyword"
+assert_contains "$TMP_DIR/assignment-timed.out" '"ran":0'
+assert_contains "$TMP_DIR/assignment-timed.out" '"reason":"command-not-started"'
 
 QUOTED_ASSIGNMENT="$TMP_DIR/quoted-assignment"
 write_contract "$QUOTED_ASSIGNMENT" "LABEL=\\\"two words\\\" missing-touchstone-command"
