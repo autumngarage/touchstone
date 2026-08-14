@@ -1503,6 +1503,28 @@ python_has_unverifiable_build_hook() {
   ' "$file"
 }
 
+python_poetry_build_system_valid() {
+  local file="$1"
+  awk '
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*$/, "", section)
+      in_requires = 0
+      next
+    }
+    section == "build-system" {
+      line = $0
+      sub(/[[:space:]]*#.*/, "", line)
+      if (line ~ /^[[:space:]]*build-backend[[:space:]]*=[[:space:]]*["\047]poetry[.]core[.]masonry[.]api["\047][[:space:]]*$/) backend=1
+      if (line ~ /^[[:space:]]*requires[[:space:]]*=/) in_requires=1
+      if (in_requires && tolower(line) ~ /["\047][[:space:]]*poetry-core([<=>~![]|["\047])/) requirement=1
+      if (in_requires && line ~ /\]/) in_requires=0
+    }
+    END { exit !(backend && requirement) }
+  ' "$file"
+}
+
 python_has_remote_reference() {
   local pyproject="$1" requirements="$2"
   if [ -f "$requirements" ] && awk '
@@ -1664,6 +1686,10 @@ python_checker_declared() {
 tasks_for_python() {
   local directory="$1" target="$2" suffix="$3" prefix="python -m" found=false evidence=false
   if [ -f "$directory/pyproject.toml" ]; then validate_pyproject_document "$directory/pyproject.toml"; fi
+  if [ -f "$directory/pyproject.toml" ] && grep -Eq '^\[tool\.poetry(\.|\])' "$directory/pyproject.toml" \
+    && ! python_poetry_build_system_valid "$directory/pyproject.toml"; then
+    contract_refusal "Python target '$target' declares Poetry metadata without a verified poetry-core build backend; pass --task NAME=COMMAND"
+  fi
   if python_has_unverifiable_build_hook "$directory"; then
     contract_refusal "Python target '$target' declares a project build hook this portable compiler cannot verify offline; pass --task NAME=COMMAND"
   fi

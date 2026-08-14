@@ -1459,7 +1459,9 @@ assert_contains "$TMP_DIR/adopt-tool-only-python.out.err" "no installable projec
 
 ADOPT_POETRY_OPTIONAL="$TMP_DIR/adopt-poetry-optional"
 init_adoption_repo "$ADOPT_POETRY_OPTIONAL"
-printf '%s\n' '[tool.poetry]' 'name = "fixture"' 'version = "0.1.0"' \
+printf '%s\n' '[build-system]' 'requires = ["poetry-core>=2"]' \
+  'build-backend = "poetry.core.masonry.api"' \
+  '[tool.poetry]' 'name = "fixture"' 'version = "0.1.0"' \
   '[tool.poetry.dependencies]' 'python = ">=3.11"' \
   'pytest = { version = "8", optional = true }' '[tool.pytest.ini_options]' \
   >"$ADOPT_POETRY_OPTIONAL/pyproject.toml"
@@ -1468,6 +1470,17 @@ git -C "$ADOPT_POETRY_OPTIONAL" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-poetry-optional.out" adopt --dry-run --project "$ADOPT_POETRY_OPTIONAL"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "optional Poetry checker was treated as installed"
 assert_contains "$TMP_DIR/adopt-poetry-optional.out.err" 'has pytest evidence without an installed pytest dependency'
+
+ADOPT_POETRY_NO_BACKEND="$TMP_DIR/adopt-poetry-no-backend"
+init_adoption_repo "$ADOPT_POETRY_NO_BACKEND"
+printf '%s\n' '[tool.poetry]' 'name = "fixture"' 'version = "0.1.0"' \
+  '[tool.poetry.dependencies]' 'python = ">=3.11"' 'pytest = "8"' \
+  >"$ADOPT_POETRY_NO_BACKEND/pyproject.toml"
+commit_adoption_repo "$ADOPT_POETRY_NO_BACKEND" "fixture"
+git -C "$ADOPT_POETRY_NO_BACKEND" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-poetry-no-backend.out" adopt --dry-run --project "$ADOPT_POETRY_NO_BACKEND"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Poetry project without its build backend was accepted"
+assert_contains "$TMP_DIR/adopt-poetry-no-backend.out.err" 'Poetry metadata without a verified poetry-core build backend'
 
 ADOPT_UV_DEV="$TMP_DIR/adopt-uv-dev"
 init_adoption_repo "$ADOPT_UV_DEV"
