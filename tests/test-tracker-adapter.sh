@@ -112,7 +112,7 @@ printf '%s\n' 'Fixes AUT-281' >"$TMP/body"
 run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/linear" --json
 assert_rc "$RUN_RC" 3
 assert_has "$TMP/out" '"status":"unverifiable"'
-printf '%s\n' 'Closes #281' >"$TMP/body"
+printf '%s\n' '[skip-claim-check]' 'Closes #281' >"$TMP/body"
 run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/linear"
 assert_rc "$RUN_RC" 2
 assert_has "$TMP/out" "Replace 'Closes #281' with 'Fixes AUT-281'"
@@ -194,6 +194,10 @@ printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 2' 'type = "github"' >"$TMP/
 run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
 assert_rc "$RUN_RC" 2
 assert_has "$TMP/out" 'unsupported-tracker-schema'
+printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 1' 'type = "linear"' 'key_prefix = "aut"' >"$TMP/github/.touchstone.toml"
+run_adapter "$TMP/out" claim AUT-1 --project "$TMP/github" --json
+assert_rc "$RUN_RC" 2
+assert_has "$TMP/out" 'invalid-key-prefix'
 printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 1' 'type = "github"' '[tracker]' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone.toml"
 run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
 assert_rc "$RUN_RC" 2

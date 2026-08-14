@@ -66,6 +66,12 @@ GitHub adapter reuses the surviving claim script and verifies close state;
 authentication errors, unavailable transports, and partial mutations never
 produce `verified`.
 
+GitHub's documented `[skip-claim-check]` token bypasses only the GitHub
+assignment guard for an exceptional PR. It does not bypass tracker selection,
+reference parsing, closing grammar, or reconciliation, and it has no implicit
+Linear equivalent. A tracker-specific exception must remain visible in that
+tracker and in the PR.
+
 Claim and reconciliation are delivery discipline, not merge adjudication. The
 future `touchstone pr` commands may sequence this adapter, but GitHub remains
 the authority for PR checks, review evidence, conversation resolution, and the
