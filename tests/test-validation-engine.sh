@@ -238,6 +238,28 @@ run_capture "$SETUP_FAIL" "$TMP_DIR/setup-fail.out" --json
 [ ! -e "$SETUP_FAIL/marker" ] || fail "task ran after setup failure"
 assert_contains "$TMP_DIR/setup-fail.out" '"task":"setup"'
 
+SETUP_ESCAPE="$TMP_DIR/setup-escape"
+SETUP_OUTSIDE="$TMP_DIR/setup-outside"
+mkdir -p "$SETUP_ESCAPE/target" "$SETUP_OUTSIDE"
+cat >"$SETUP_ESCAPE/.touchstone.toml" <<'EOF'
+schema = 1
+[validation]
+runtime = "bash"
+setup = "mv target original-target && ln -s ../setup-outside target"
+[[validation.targets]]
+name = "target"
+path = "target"
+[[validation.tasks]]
+name = "escape"
+target = "target"
+command = "printf escaped > marker"
+required = true
+EOF
+run_capture "$SETUP_ESCAPE" "$TMP_DIR/setup-escape.out" --json
+[ "$RUN_STATUS" -eq 2 ] || fail "setup-created target escape was not rejected"
+assert_contains "$TMP_DIR/setup-escape.out" '"reason":"escaped-target"'
+[ ! -e "$SETUP_OUTSIDE/marker" ] || fail "task ran outside project after setup"
+
 echo "==> malformed, repeated, escaping, missing, legacy, and newer states fail"
 for fixture in unsupported duplicate escape unknown; do
   dir="$TMP_DIR/$fixture"
@@ -372,6 +394,13 @@ on:
 steps:
   - run: pre-commit run --all-files --hook-stage pre-commit
 EOF
+cat >"$LEGACY/.github/workflows/class-default.yml" <<'EOF'
+on:
+  push:
+    branches: ['m[ai]in']
+steps:
+  - run: pre-commit run --all-files --hook-stage pre-commit
+EOF
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/compat.out" 2>"$TMP_DIR/compat.err"
 status=$?
@@ -384,6 +413,7 @@ assert_not_contains "$TMP_DIR/compat.out" "substring-branch.yml"
 assert_contains "$TMP_DIR/compat.out" "quoted-default.yml"
 assert_contains "$TMP_DIR/compat.out" "glob-default.yml"
 assert_not_contains "$TMP_DIR/compat.out" "excluded-defaults.yml"
+assert_contains "$TMP_DIR/compat.out" "class-default.yml"
 assert_contains "$TMP_DIR/compat.err" "SKIP=no-commit-to-branch"
 printf '\n# SKIP=no-commit-to-branch is not a repair\n' >>"$LEGACY/.github/workflows/validate.yml"
 set +e
@@ -405,6 +435,7 @@ sed 's#run: pre-commit run#env: {SKIP: no-commit-to-branch}\n    run: pre-commit
 rm "$LEGACY/.github/workflows/validate.yml"
 rm "$LEGACY/.github/workflows/quoted-default.yml"
 rm "$LEGACY/.github/workflows/glob-default.yml"
+rm "$LEGACY/.github/workflows/class-default.yml"
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/bare-assignment.out" 2>"$TMP_DIR/bare-assignment.err"
 status=$?

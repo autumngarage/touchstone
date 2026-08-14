@@ -26,7 +26,7 @@ workflow_pushes_default() {
       if ((value ~ /^".*"$/) || (value ~ /^\047.*\047$/)) value = substr(value, 2, length(value) - 2)
       return value
     }
-    function glob_matches(value, branch, position, character, next_character, regex) {
+    function glob_matches(value, branch, position, character, next_character, closing, class, regex) {
       value = trim_scalar(value)
       regex = "^"
       for (position = 1; position <= length(value); position++) {
@@ -37,10 +37,28 @@ workflow_pushes_default() {
           if (next_character == "*") position++
         } else if (character == "?") {
           regex = regex "."
+        } else if (character == "+") {
+          regex = regex "+"
+        } else if (character == "[") {
+          closing = index(substr(value, position + 1), "]")
+          if (!closing) {
+            regex = regex "\\["
+          } else {
+            class = substr(value, position + 1, closing - 1)
+            if (substr(class, 1, 1) == "!") class = "^" substr(class, 2)
+            regex = regex "[" class "]"
+            position += closing
+          }
+        } else if (character == "\\") {
+          if (position < length(value)) {
+            position++
+            character = substr(value, position, 1)
+          }
+          regex = regex "\\" character
         } else if (character == "." || character == "^" || character == "$" \
-          || character == "(" || character == ")" || character == "+" \
+          || character == "(" || character == ")" \
           || character == "{" || character == "}" || character == "|" \
-          || character == "[" || character == "]" || character == "\\") {
+          || character == "]") {
           regex = regex "\\" character
         } else {
           regex = regex character

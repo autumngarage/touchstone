@@ -349,20 +349,26 @@ while IFS="$(printf '\t')" read -r task_name task_target _task_required _task_co
   fi
 done <"$TASKS_FILE"
 
-while IFS="$(printf '\t')" read -r target_name target_path; do
+resolve_target() {
+  local target_name="$1" target_path="$2" resolved_target
   if [ ! -d "$PROJECT_ROOT/$target_path" ]; then
     progress "ERROR: target '$target_name' path not found: $target_path"
     record_failure target "$target_name" 2 missing-target
-    continue
+    return 1
   fi
   resolved_target="$(cd "$PROJECT_ROOT/$target_path" && pwd -P)"
   case "$resolved_target" in
-    "$PROJECT_ROOT" | "$PROJECT_ROOT"/*) ;;
+    "$PROJECT_ROOT" | "$PROJECT_ROOT"/*) RESOLVED_TARGET="$resolved_target" ;;
     *)
       progress "ERROR: target '$target_name' resolves outside the project: $target_path"
       record_failure target "$target_name" 2 escaped-target
+      return 1
       ;;
   esac
+}
+
+while IFS="$(printf '\t')" read -r target_name target_path; do
+  resolve_target "$target_name" "$target_path" || true
 done <"$TARGETS_FILE"
 
 if [ "$FAILED" -ne 0 ]; then
@@ -583,7 +589,9 @@ while IFS="$(printf '\t')" read -r task_name task_target _task_required task_com
   fi
 
   progress "==> $task_name ($task_target): $task_command"
-  unrunnable="$(declared_command_unrunnable_code "$task_command" "$PROJECT_ROOT/$target_path")"
+  if ! resolve_target "$task_target" "$target_path"; then continue; fi
+  target_directory="$RESOLVED_TARGET"
+  unrunnable="$(declared_command_unrunnable_code "$task_command" "$target_directory")"
   if [ -n "$unrunnable" ]; then
     status="$(unrunnable_status "$unrunnable")"
     progress "ERROR: $task_name failed on $task_target (exit $status, command-not-started)"
@@ -591,7 +599,7 @@ while IFS="$(printf '\t')" read -r task_name task_target _task_required task_com
     continue
   fi
   RAN=$((RAN + 1))
-  run_command "$task_command" "$PROJECT_ROOT/$target_path"
+  run_command "$task_command" "$target_directory"
   status="$RUN_COMMAND_STATUS"
   if [ "$status" -eq 0 ]; then
     human "  PASS $task_name ($task_target)"
