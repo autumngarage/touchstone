@@ -1039,16 +1039,22 @@ validate_pyproject_document() {
   local file="$1"
   awk '
     function invalid_document() { invalid = 1; exit 2 }
+    function hex_number(value, number, cursor, digit) {
+      number = 0
+      for (cursor = 1; cursor <= length(value); cursor++) {
+        digit = index("0123456789abcdef", tolower(substr(value, cursor, 1))) - 1
+        number = (number * 16) + digit
+      }
+      return number
+    }
     function valid_bare_value(value) {
       return value ~ /^(true|false|[+-]?(inf|nan))$/ \
-        || value ~ /^[+-]?[0-9][0-9_]*$/ \
-        || value ~ /^0x[0-9A-Fa-f][0-9A-Fa-f_]*$/ \
-        || value ~ /^0o[0-7][0-7_]*$/ \
-        || value ~ /^0b[01][01_]*$/ \
-        || value ~ /^[+-]?[0-9][0-9_]*\.[0-9][0-9_]*([eE][+-]?[0-9][0-9_]*)?$/ \
-        || value ~ /^[+-]?[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*$/ \
-        || value ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]([Tt][0-9:.+-]+([Zz])?)?$/ \
-        || value ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\.[0-9]+)?$/
+        || value ~ /^[+-]?(0|[1-9][0-9]*)$/ \
+        || value ~ /^0x[0-9A-Fa-f]+$/ \
+        || value ~ /^0o[0-7]+$/ \
+        || value ~ /^0b[01]+$/ \
+        || value ~ /^[+-]?(0|[1-9][0-9]*)\.[0-9]+([eE][+-]?[0-9]+)?$/ \
+        || value ~ /^[+-]?(0|[1-9][0-9]*)[eE][+-]?[0-9]+$/
     }
     function finish_bare() {
       if (!bare) return
@@ -1155,17 +1161,6 @@ validate_pyproject_document() {
     {
       sub(/\r$/, "")
       line = $0
-      if (multiline != "") {
-        for (position = 1; position <= length(line); position++) {
-          if (substr(line, position, 3) == multiline) {
-            multiline = ""
-            position += 2
-            break
-          }
-        }
-        if (multiline != "") next
-        line = substr(line, position + 1)
-      }
 
       if (depth == 0 && line ~ /^[[:space:]]*\[/) {
         if (!valid_table_header(line)) invalid_document()
@@ -1180,17 +1175,29 @@ validate_pyproject_document() {
       saw_content = depth > 0
       quote = ""
       escaped = 0
+      unicode_left = 0
+      unicode_hex = ""
       for (position = 1; position <= length(line); position++) {
         character = substr(line, position, 1)
-        if (multiline != "") {
-          if (substr(line, position, 3) == multiline) {
-            multiline = ""
-            position += 2
-          }
-          continue
-        }
         if (quote != "") {
-          if (quote == "\"" && escaped) { escaped = 0; continue }
+          if (quote == "\"" && unicode_left > 0) {
+            if (character !~ /^[0-9A-Fa-f]$/) invalid_document()
+            unicode_hex = unicode_hex character
+            unicode_left--
+            if (unicode_left == 0) {
+              unicode_value = hex_number(unicode_hex)
+              if (unicode_value > 1114111 || (unicode_value >= 55296 && unicode_value <= 57343)) invalid_document()
+              unicode_hex = ""
+            }
+            continue
+          }
+          if (quote == "\"" && escaped) {
+            if (character == "u") { unicode_left = 4; unicode_hex = "" }
+            else if (character == "U") { unicode_left = 8; unicode_hex = "" }
+            else if (character !~ /^[btnfr"\\]$/) invalid_document()
+            escaped = 0
+            continue
+          }
           if (quote == "\"" && character == "\\") { escaped = 1; continue }
           if (character == quote) { quote = ""; continue }
           continue
@@ -1202,13 +1209,7 @@ validate_pyproject_document() {
         }
         saw_content = 1
         if (substr(line, position, 3) == "\"\"\"" || substr(line, position, 3) == "\047\047\047") {
-          if (bare) invalid_document()
-          begin_scalar()
-          multiline = substr(line, position, 3)
-          position += 2
-          bare = 0
-          bare_space = 0
-          continue
+          invalid_document()
         }
         if (character == "\"" || character == "\047") {
           if (bare) invalid_document()
@@ -1267,17 +1268,17 @@ validate_pyproject_document() {
           bare_token = bare_token character
         }
       }
-      if (quote != "" || escaped) invalid_document()
+      if (quote != "" || escaped || unicode_left > 0) invalid_document()
       finish_bare()
       for (level = 1; level <= depth; level++) {
         if (kind[level] == "inline") invalid_document()
       }
-      if (depth == 0 && multiline == "" && saw_content) {
+      if (depth == 0 && saw_content) {
         if (!assignment || !assignment_value) invalid_document()
       }
     }
     END {
-      if (invalid || depth != 0 || multiline != "") exit 2
+      if (invalid || depth != 0) exit 2
     }
   ' "$file" >/dev/null 2>&1 \
     || contract_refusal "pyproject.toml is malformed or uses TOML syntax the portable adoption parser cannot verify; pass --task NAME=COMMAND for a manual contract"

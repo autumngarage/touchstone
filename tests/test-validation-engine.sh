@@ -1055,7 +1055,7 @@ done
 
 ADOPT_PYPROJECT="$TMP_DIR/adopt-pyproject"
 init_adoption_repo "$ADOPT_PYPROJECT"
-printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+printf '%s\n' '[project]' 'name = "\u0066ixture"' 'dependencies = ["pytest"]' \
   'authors = [{ name = "Touchstone", email = "test@example.invalid" }]' \
   >"$ADOPT_PYPROJECT/pyproject.toml"
 commit_adoption_repo "$ADOPT_PYPROJECT" "fixture"
@@ -1122,6 +1122,18 @@ printf '%s\n' '[project]' 'name = "fixture"' \
   >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
 run_adoption "$TMP_DIR/adopt-duplicate-inline-key.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate inline TOML key produced an adoption plan"
+printf '%s\n' '[project]' 'name = "bad\qescape"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
+run_adoption "$TMP_DIR/adopt-invalid-string-escape.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "invalid TOML string escape produced an adoption plan"
+printf '%s\n' '[project]' 'name = "bad\uD800scalar"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
+run_adoption "$TMP_DIR/adopt-invalid-unicode-scalar.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "invalid TOML Unicode scalar produced an adoption plan"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  '[tool.fixture]' 'mode = nope' >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
+run_adoption "$TMP_DIR/adopt-invalid-bare-value.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "invalid TOML bare value produced an adoption plan"
 
 ADOPT_UNDECLARED_CHECKER="$TMP_DIR/adopt-undeclared-checker"
 init_adoption_repo "$ADOPT_UNDECLARED_CHECKER"
