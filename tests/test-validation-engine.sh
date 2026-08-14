@@ -856,6 +856,13 @@ run_adoption() {
   set -e
 }
 
+ADOPT_NON_REPO="$TMP_DIR/adopt-non-repo"
+mkdir -p "$ADOPT_NON_REPO"
+run_adoption "$TMP_DIR/adopt-non-repo.out" adopt --dry-run --json --project "$ADOPT_NON_REPO"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "non-repository adoption did not refuse"
+assert_contains "$TMP_DIR/adopt-non-repo.out" '"status":"contract-refused"'
+assert_contains "$TMP_DIR/adopt-non-repo.out" "adoption requires a git repository"
+
 echo "==> adoption compiles a deterministic Node contract and marked steering"
 ADOPT_NODE="$TMP_DIR/adopt-node"
 init_adoption_repo "$ADOPT_NODE"
@@ -1045,6 +1052,18 @@ git -C "$ADOPT_UNDECLARED_CHECKER" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-undeclared-checker.out" adopt --dry-run --project "$ADOPT_UNDECLARED_CHECKER"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "undeclared Python checker did not refuse"
 assert_contains "$TMP_DIR/adopt-undeclared-checker.out.err" "without an installed pytest dependency"
+
+ADOPT_MIXED_PYTHON="$TMP_DIR/adopt-mixed-python"
+init_adoption_repo "$ADOPT_MIXED_PYTHON"
+mkdir -p "$ADOPT_MIXED_PYTHON/tests"
+printf '%s\n' 'requests==2.0.0' >"$ADOPT_MIXED_PYTHON/requirements.txt"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_MIXED_PYTHON/pyproject.toml"
+commit_adoption_repo "$ADOPT_MIXED_PYTHON" "fixture"
+git -C "$ADOPT_MIXED_PYTHON" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-mixed-python.out" adopt --dry-run --project "$ADOPT_MIXED_PYTHON"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "mixed Python setup accepted an uninstalled checker"
+assert_contains "$TMP_DIR/adopt-mixed-python.out.err" "without an installed pytest dependency"
 
 ADOPT_TOOL_ONLY_PYTHON="$TMP_DIR/adopt-tool-only-python"
 init_adoption_repo "$ADOPT_TOOL_ONLY_PYTHON"

@@ -102,13 +102,6 @@ PROJECT_ROOT="$(cd "$PROJECT_INPUT" 2>/dev/null && pwd -P)" || {
   echo "ERROR: project directory does not exist: $PROJECT_INPUT" >&2
   exit 2
 }
-GIT_ROOT="$(git -C "$PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -z "$GIT_ROOT" ]; then
-  echo "ERROR: adoption requires a git repository: $PROJECT_ROOT" >&2
-  exit 4
-fi
-GIT_ROOT="$(cd "$GIT_ROOT" && pwd -P)"
-PROJECT_ROOT="$GIT_ROOT"
 
 PLAN_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-adopt.XXXXXX")" || {
   echo "ERROR: could not create adoption workspace" >&2
@@ -251,6 +244,12 @@ operational_failure() {
   fi
   exit 6
 }
+
+GIT_ROOT="$(git -C "$PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$GIT_ROOT" ] || contract_refusal "adoption requires a git repository: $PROJECT_ROOT"
+GIT_ROOT="$(cd "$GIT_ROOT" 2>/dev/null && pwd -P)" \
+  || operational_failure "could not resolve git repository root: $GIT_ROOT"
+PROJECT_ROOT="$GIT_ROOT"
 
 record_target() {
   local name="$1" path="$2" profile="$3"
@@ -833,12 +832,17 @@ python_project_has_dependency() {
 
 python_checker_declared() {
   local directory="$1" checker="$2" include_dev=false
-  if [ -f "$directory/requirements.txt" ] \
-    && grep -Eqi "^[[:space:]]*${checker}([[:space:]<=>~!\[]|$)" "$directory/requirements.txt"; then
-    return 0
+  if [ -f "$directory/uv.lock" ]; then
+    include_dev=true
+    [ -f "$directory/pyproject.toml" ] || return 1
+    python_project_has_dependency "$directory/pyproject.toml" "$checker" "$include_dev"
+    return
+  fi
+  if [ -f "$directory/requirements.txt" ]; then
+    grep -Eqi "^[[:space:]]*${checker}([[:space:]<=>~!\[]|$)" "$directory/requirements.txt"
+    return
   fi
   [ -f "$directory/pyproject.toml" ] || return 1
-  if [ -f "$directory/uv.lock" ]; then include_dev=true; fi
   python_project_has_dependency "$directory/pyproject.toml" "$checker" "$include_dev"
 }
 
