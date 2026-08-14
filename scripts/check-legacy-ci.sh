@@ -17,6 +17,90 @@ if ! grep -q 'id:[[:space:]]*no-commit-to-branch' "$PRE_COMMIT" \
 fi
 
 found=0
+workflow_pushes_default() {
+  awk '
+    function flush_push() {
+      if (in_push && (default_branch || (!branches_seen && !tags_seen && !ignored_default))) found = 1
+      in_push = 0
+      in_branches = 0
+      in_ignored = 0
+    }
+    {
+      trimmed = $0
+      sub(/^[[:space:]]*/, "", trimmed)
+      indent = index($0, substr(trimmed, 1, 1)) - 1
+      content = trimmed
+      sub(/[[:space:]]*#.*/, "", content)
+
+      if (in_push && content != "" && indent <= push_indent) flush_push()
+      if (in_on && content != "" && indent <= on_indent) {
+        flush_push()
+        in_on = 0
+      }
+
+      if (content ~ /^on:[[:space:]]*$/) {
+        in_on = 1
+        on_indent = indent
+        next
+      }
+      if (content ~ /^on:[[:space:]]*(push|\[[^]]*push[^]]*\])[[:space:]]*$/) {
+        found = 1
+        next
+      }
+      if (in_push) {
+        if (content ~ /^branches:[[:space:]]*/) {
+          branches_seen = 1
+          in_branches = 1
+          in_ignored = 0
+          filter_indent = indent
+          if (content ~ /(main|master)/) default_branch = 1
+        } else if (content ~ /^branches-ignore:[[:space:]]*/) {
+          in_branches = 0
+          in_ignored = 1
+          filter_indent = indent
+          if (content ~ /(main|master)/) ignored_default = 1
+        } else if (content ~ /^tags(-ignore)?:/) {
+          tags_seen = 1
+          in_branches = 0
+          in_ignored = 0
+        } else if (content ~ /^-[[:space:]]*(main|master)[[:space:]]*$/ && indent > filter_indent) {
+          if (in_branches) default_branch = 1
+          if (in_ignored) ignored_default = 1
+        } else if (content != "" && indent <= filter_indent) {
+          in_branches = 0
+          in_ignored = 0
+        }
+        next
+      }
+      if (!in_on || content !~ /^push:/) next
+
+      flush_push()
+      in_push = 1
+      push_indent = indent
+      branches_seen = 0
+      default_branch = 0
+      tags_seen = 0
+      ignored_default = 0
+      in_branches = 0
+      in_ignored = 0
+      sub(/^push:[[:space:]]*/, "", content)
+      if (content ~ /branches:[^]}]*(main|master)/) {
+        branches_seen = 1
+        default_branch = 1
+      } else if (content ~ /branches:/) {
+        branches_seen = 1
+      }
+      if (content ~ /branches-ignore:[^]}]*(main|master)/) ignored_default = 1
+      if (content ~ /tags(-ignore)?:/) tags_seen = 1
+      next
+    }
+    END {
+      flush_push()
+      exit !found
+    }
+  ' "$1"
+}
+
 workflow_has_unguarded_precommit() {
   awk '
     function flush_step() {
@@ -64,8 +148,7 @@ workflow_has_unguarded_precommit() {
 
 for workflow in "$WORKFLOW_DIR"/*.yml "$WORKFLOW_DIR"/*.yaml; do
   [ -f "$workflow" ] || continue
-  grep -q '^[[:space:]]*push:' "$workflow" || continue
-  grep -Eq 'branches:.*(main|master)|-[[:space:]]*(main|master)' "$workflow" || continue
+  workflow_pushes_default "$workflow" || continue
   workflow_has_unguarded_precommit "$workflow" || continue
   printf 'LEGACY-CI-BRANCH-GUARD %s\n' "${workflow#"$ROOT/"}"
   found=$((found + 1))

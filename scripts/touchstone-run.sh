@@ -465,7 +465,7 @@ declared_command_unrunnable_code() {
   local -a shebang_words
   declared_command_head "$command" || return 0
   head="$COMMAND_HEAD"
-  case "$head" in "" | *[^[:alnum:]_./+-]*) return 0 ;; esac
+  [ -n "$head" ] || return 0
   case "$head" in
     */*)
       case "$head" in /*) executable="$head" ;; *) executable="$directory/$head" ;; esac

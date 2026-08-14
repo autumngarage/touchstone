@@ -143,6 +143,13 @@ PATH="$QUOTED_EQUALS_HEAD:$PATH" run_capture \
 assert_contains "$TMP_DIR/quoted-equals-head.out" '"ran":1'
 assert_contains "$TMP_DIR/quoted-equals-head.out" '"reason":"command-failed"'
 
+QUOTED_MISSING_HEAD="$TMP_DIR/quoted-missing-head"
+write_contract "$QUOTED_MISSING_HEAD" "\\\"missing tool\\\""
+run_capture "$QUOTED_MISSING_HEAD" "$TMP_DIR/quoted-missing-head.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "quoted missing command did not retain 127"
+assert_contains "$TMP_DIR/quoted-missing-head.out" '"ran":0'
+assert_contains "$TMP_DIR/quoted-missing-head.out" '"reason":"command-not-started"'
+
 echo "==> a later passing target cannot launder an earlier failure"
 MONOREPO="$TMP_DIR/monorepo"
 mkdir -p "$MONOREPO/services/api" "$MONOREPO/services/worker"
@@ -313,6 +320,15 @@ steps:
   # pre-commit run --all-files --hook-stage pre-commit
   - run: printf safe
 EOF
+cat >"$LEGACY/.github/workflows/mixed-trigger.yml" <<'EOF'
+on:
+  push:
+    branches: [release]
+  pull_request:
+    branches: [main]
+steps:
+  - run: pre-commit run --all-files --hook-stage pre-commit
+EOF
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/compat.out" 2>"$TMP_DIR/compat.err"
 status=$?
@@ -320,6 +336,7 @@ set -e
 [ "$status" -eq 3 ] || fail "legacy CI pairing was not detected"
 assert_contains "$TMP_DIR/compat.out" "LEGACY-CI-BRANCH-GUARD .github/workflows/validate.yml"
 assert_not_contains "$TMP_DIR/compat.out" "comment-only.yml"
+assert_not_contains "$TMP_DIR/compat.out" "mixed-trigger.yml"
 assert_contains "$TMP_DIR/compat.err" "SKIP=no-commit-to-branch"
 printf '\n# SKIP=no-commit-to-branch is not a repair\n' >>"$LEGACY/.github/workflows/validate.yml"
 set +e
