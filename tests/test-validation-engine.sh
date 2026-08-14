@@ -1076,6 +1076,33 @@ PATH="$TMP_DIR/failing-sed:$PATH" run_adoption "$TMP_DIR/adopt-diff-render-fail.
 assert_contains "$TMP_DIR/adopt-diff-render-fail.out.err" 'could not render proposed diff'
 [ ! -e "$ADOPT_DIFF_RENDER_FAIL/.touchstone.toml" ] || fail "failed diff rendering mutated the repository"
 
+ADOPT_APPLY_ROLLBACK="$TMP_DIR/adopt-apply-rollback"
+init_adoption_repo "$ADOPT_APPLY_ROLLBACK"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_APPLY_ROLLBACK/package.json"
+commit_adoption_repo "$ADOPT_APPLY_ROLLBACK" "fixture"
+git -C "$ADOPT_APPLY_ROLLBACK" switch -q -c feat/adopt
+mkdir -p "$TMP_DIR/failing-mv"
+REAL_MV="$(command -v mv)"
+MV_COUNT_FILE="$TMP_DIR/failing-mv/count"
+export REAL_MV MV_COUNT_FILE
+cat >"$TMP_DIR/failing-mv/mv" <<'EOF'
+#!/usr/bin/env bash
+count=0
+if [ -f "$MV_COUNT_FILE" ]; then count="$(cat "$MV_COUNT_FILE")"; fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$MV_COUNT_FILE"
+if [ "$count" -eq 2 ]; then exit 9; fi
+exec "$REAL_MV" "$@"
+EOF
+chmod +x "$TMP_DIR/failing-mv/mv"
+PATH="$TMP_DIR/failing-mv:$PATH" run_adoption "$TMP_DIR/adopt-apply-rollback.out" adopt --project "$ADOPT_APPLY_ROLLBACK"
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "partial apply failure did not report an operational error"
+assert_contains "$TMP_DIR/adopt-apply-rollback.out.err" 'all earlier writes were rolled back'
+[ ! -e "$ADOPT_APPLY_ROLLBACK/.touchstone.toml" ] || fail "failed apply retained an earlier contract write"
+[ ! -e "$ADOPT_APPLY_ROLLBACK/.touchstone" ] || fail "failed apply retained a managed directory"
+[ -z "$(git -C "$ADOPT_APPLY_ROLLBACK" status --porcelain=v1)" ] \
+  || fail "failed apply did not restore the clean checkout"
+
 ADOPT_PYPROJECT="$TMP_DIR/adopt-pyproject"
 init_adoption_repo "$ADOPT_PYPROJECT"
 printf '%s\n' '[project]' 'name = "\u0066ixture"' 'dependencies = ["pytest"]' \
@@ -1253,6 +1280,22 @@ run_adoption "$TMP_DIR/adopt-workspace-child.out" adopt --project "$ADOPT_WORKSP
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "declared workspace child adoption failed"
 assert_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" 'setup = "npm ci --offline"'
 assert_not_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" '(cd apps/api'
+
+ADOPT_UNSUPPORTED_WORKSPACE_GLOB="$TMP_DIR/adopt-unsupported-workspace-glob"
+init_adoption_repo "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB"
+mkdir -p "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/apps/api"
+printf '%s\n' '{"packageManager":"npm@11.0.0","workspaces":["{apps,packages}/*"]}' \
+  >"$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/package.json"
+printf '{}\n' >"$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/package-lock.json"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/apps/api/package.json"
+commit_adoption_repo "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB" "fixture"
+git -C "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-unsupported-workspace-glob.out" adopt --dry-run --project "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unsupported workspace glob produced an incomplete plan"
+assert_contains "$TMP_DIR/adopt-unsupported-workspace-glob.out.err" 'uses glob syntax this compiler cannot verify'
+[ ! -e "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/.touchstone.toml" ] \
+  || fail "unsupported workspace glob mutated the repository"
 
 ADOPT_PNPM_FLOW_WORKSPACE="$TMP_DIR/adopt-pnpm-flow-workspace"
 init_adoption_repo "$ADOPT_PNPM_FLOW_WORKSPACE"

@@ -997,19 +997,46 @@ node_workspace_contains() {
   fi
   while IFS= read -r pattern; do
     [ -n "$pattern" ] || continue
+    candidate="${pattern#!}"
+    workspace_pattern_supported "$candidate" \
+      || contract_refusal "workspace pattern '$pattern' uses glob syntax this compiler cannot verify"
     case "$pattern" in
       !*)
-        candidate="${pattern#!}"
-        # shellcheck disable=SC2254  # workspace declarations are glob patterns.
-        case "$relative" in $candidate) member=false ;; esac
+        if workspace_pattern_matches "$candidate" "$relative"; then member=false; fi
         ;;
       *)
-        # shellcheck disable=SC2254  # workspace declarations are glob patterns.
-        case "$relative" in $pattern) member=true ;; esac
+        if workspace_pattern_matches "$pattern" "$relative"; then member=true; fi
         ;;
     esac
   done <<<"$patterns"
   [ "$member" = true ]
+}
+
+workspace_pattern_supported() {
+  local pattern="$1" segment remainder
+  case "$pattern" in "" | /* | */ | *'{'* | *'}'* | *'['* | *']'* | *'?'* | *'\\'* | *'**'*) return 1 ;; esac
+  remainder="$pattern"
+  while :; do
+    segment="${remainder%%/*}"
+    case "$segment" in "" | *'*'*) [ "$segment" = '*' ] || return 1 ;; esac
+    [ "$remainder" != "$segment" ] || break
+    remainder="${remainder#*/}"
+  done
+}
+
+workspace_pattern_matches() {
+  local pattern="$1" relative="$2" pattern_segment relative_segment
+  while :; do
+    pattern_segment="${pattern%%/*}"
+    relative_segment="${relative%%/*}"
+    [ "$pattern_segment" = '*' ] || [ "$pattern_segment" = "$relative_segment" ] || return 1
+    if [ "$pattern" = "$pattern_segment" ] || [ "$relative" = "$relative_segment" ]; then
+      [ "$pattern" = "$pattern_segment" ] && [ "$relative" = "$relative_segment" ]
+      return
+    fi
+    pattern="${pattern#*/}"
+    relative="${relative#*/}"
+  done
 }
 
 tasks_for_node() {
@@ -1887,7 +1914,8 @@ current_branch_is_default() {
 }
 
 apply_plan() {
-  local action path ownership destination source parent temporary worktree_status default_status
+  local action path ownership destination source parent temporary worktree_status default_status backup
+  local stage_file="$PLAN_ROOT/apply-stage" applied_file="$PLAN_ROOT/apply-applied" directories_file="$PLAN_ROOT/apply-directories"
   [ -s "$CHANGES_FILE" ] || return 0
   worktree_status="$(git -C "$PROJECT_ROOT" status --porcelain=v1)" \
     || operational_failure "could not inspect worktree state"
@@ -1899,30 +1927,137 @@ apply_plan() {
     [ "$default_status" -eq 1 ] \
       || safety_refusal "apply requires a known default branch; set refs/remotes/origin/HEAD before applying"
   fi
+  : >"$stage_file"
+  : >"$applied_file"
+  : >"$directories_file"
   while IFS="$(printf '\t')" read -r action path ownership; do
     [ -n "$path" ] || continue
     safe_owned_path "$path"
     destination="$PROJECT_ROOT/$path"
     source="$NEW_ROOT/$path"
     parent="$(dirname "$destination")"
-    mkdir -p "$parent" || operational_failure "could not create $parent"
+    record_missing_directories "$parent" "$directories_file"
+    if ! mkdir -p "$parent"; then
+      cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
+        || operational_failure "could not clean transaction files after creating $parent failed"
+      operational_failure "could not create $parent"
+    fi
     temporary="$(mktemp "$parent/.touchstone-write.XXXXXX")" || {
+      cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
+        || operational_failure "could not clean transaction files after staging $path failed"
       operational_failure "could not stage $path"
     }
     if [ -e "$destination" ]; then
       if ! cp -p "$destination" "$temporary" || ! cat "$source" >"$temporary"; then
         rm -f "$temporary"
+        cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
+          || operational_failure "could not clean transaction files after staging $path failed"
         operational_failure "could not stage $path"
       fi
     elif ! cp -p "$source" "$temporary"; then
       rm -f "$temporary"
+      cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
+        || operational_failure "could not clean transaction files after staging $path failed"
       operational_failure "could not stage $path"
     fi
-    if ! mv "$temporary" "$destination"; then
+    if ! printf '%s\t%s\t%s\n' "$action" "$destination" "$temporary" >>"$stage_file"; then
       rm -f "$temporary"
-      operational_failure "could not apply $path"
+      cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
+        || operational_failure "could not clean transaction files after recording $path failed"
+      operational_failure "could not record staged write for $path"
     fi
   done <"$CHANGES_FILE"
+
+  while IFS="$(printf '\t')" read -r action destination temporary; do
+    path="${destination#"$PROJECT_ROOT"/}"
+    backup=-
+    if [ "$action" = update ]; then
+      [ -f "$destination" ] && [ ! -L "$destination" ] || {
+        rollback_apply "$applied_file" "$stage_file" "$directories_file" \
+          || operational_failure "could not roll back after $path changed during apply"
+        operational_failure "$path changed during apply"
+      }
+      backup="$(mktemp "$(dirname "$destination")/.touchstone-backup.XXXXXX")" || {
+        rollback_apply "$applied_file" "$stage_file" "$directories_file" \
+          || operational_failure "could not roll back after staging $path failed"
+        operational_failure "could not stage rollback data for $path"
+      }
+      if ! mv "$destination" "$backup"; then
+        rm -f "$backup"
+        rollback_apply "$applied_file" "$stage_file" "$directories_file" \
+          || operational_failure "could not roll back after backing up $path failed"
+        operational_failure "could not prepare $path for apply"
+      fi
+    elif [ -e "$destination" ] || [ -L "$destination" ]; then
+      rollback_apply "$applied_file" "$stage_file" "$directories_file" \
+        || operational_failure "could not roll back after $path appeared during apply"
+      operational_failure "$path appeared during apply"
+    fi
+    if ! printf '%s\t%s\t%s\n' "$action" "$destination" "$backup" >>"$applied_file"; then
+      if [ "$action" = update ]; then
+        mv "$backup" "$destination" \
+          || operational_failure "could not restore $path after transaction recording failed"
+      fi
+      rollback_apply "$applied_file" "$stage_file" "$directories_file" \
+        || operational_failure "could not roll back after transaction recording failed for $path"
+      operational_failure "could not record applied write for $path"
+    fi
+    if ! mv "$temporary" "$destination"; then
+      rollback_apply "$applied_file" "$stage_file" "$directories_file" \
+        || operational_failure "could not roll back failed apply of $path"
+      operational_failure "could not apply $path; all earlier writes were rolled back"
+    fi
+  done <"$stage_file"
+  cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
+    || operational_failure "adoption applied but temporary transaction files could not be removed"
+}
+
+record_missing_directories() {
+  local directory="$1" output="$2" missing="" entry
+  while [ "$directory" != "$PROJECT_ROOT" ] && [ ! -e "$directory" ]; do
+    missing="${missing}${missing:+$LF}${directory}"
+    directory="$(dirname "$directory")"
+  done
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    grep -Fqx "$entry" "$output" 2>/dev/null || printf '%s\n' "$entry" >>"$output"
+  done < <(printf '%s\n' "$missing" | awk '{ lines[NR] = $0 } END { for (line = NR; line >= 1; line--) print lines[line] }')
+}
+
+cleanup_apply_artifacts() {
+  local stage_file="$1" applied_file="$2" directories_file="$3" action destination artifact failed=false directory
+  if [ -f "$stage_file" ]; then
+    while IFS="$(printf '\t')" read -r action destination artifact; do
+      [ -z "${artifact:-}" ] || [ ! -e "$artifact" ] || rm -f "$artifact" || failed=true
+    done <"$stage_file"
+  fi
+  if [ -f "$applied_file" ]; then
+    while IFS="$(printf '\t')" read -r action destination artifact; do
+      [ "${artifact:-}" = - ] || [ -z "${artifact:-}" ] || [ ! -e "$artifact" ] || rm -f "$artifact" || failed=true
+    done <"$applied_file"
+  fi
+  if [ -f "$directories_file" ]; then
+    while IFS= read -r directory; do
+      [ ! -d "$directory" ] || rmdir "$directory" 2>/dev/null || true
+    done < <(awk '{ lines[NR] = $0 } END { for (line = NR; line >= 1; line--) print lines[line] }' "$directories_file")
+  fi
+  [ "$failed" = false ]
+}
+
+rollback_apply() {
+  local applied_file="$1" stage_file="$2" directories_file="$3" action destination backup failed=false
+  if [ -f "$applied_file" ]; then
+    while IFS="$(printf '\t')" read -r action destination backup; do
+      if [ "$action" = create ]; then
+        [ ! -e "$destination" ] || rm -f "$destination" || failed=true
+      else
+        [ ! -e "$destination" ] || rm -f "$destination" || failed=true
+        [ ! -e "$backup" ] || mv "$backup" "$destination" || failed=true
+      fi
+    done < <(awk '{ lines[NR] = $0 } END { for (line = NR; line >= 1; line--) print lines[line] }' "$applied_file")
+  fi
+  cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" || failed=true
+  [ "$failed" = false ]
 }
 
 compile_plan
