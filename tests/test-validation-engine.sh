@@ -836,6 +836,7 @@ init_adoption_repo() {
   local directory="$1"
   mkdir -p "$directory"
   git -C "$directory" init -q -b main
+  git -C "$directory" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
   git -C "$directory" config user.name "Touchstone Test"
   git -C "$directory" config user.email "touchstone@example.invalid"
 }
@@ -1055,6 +1056,17 @@ run_adoption "$TMP_DIR/adopt-manager.out" adopt --dry-run --project "$ADOPT_MANA
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "package manager conflict did not refuse"
 assert_contains "$TMP_DIR/adopt-manager.out.err" "conflicts with the 'npm' lockfile"
 
+ADOPT_ESCAPED_JSON="$TMP_DIR/adopt-escaped-json"
+init_adoption_repo "$ADOPT_ESCAPED_JSON"
+printf '%s\n' '{"packageManager":"p\u006epm@10.0.0","scr\u0069pts":{"te\u0073t":"node --test"}}' \
+  >"$ADOPT_ESCAPED_JSON/package.json"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_ESCAPED_JSON/pnpm-lock.yaml"
+commit_adoption_repo "$ADOPT_ESCAPED_JSON" "fixture"
+git -C "$ADOPT_ESCAPED_JSON" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-escaped-json.out" adopt --project "$ADOPT_ESCAPED_JSON"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "escaped JSON adoption failed"
+assert_contains "$ADOPT_ESCAPED_JSON/.touchstone.toml" 'command = "pnpm run test"'
+
 ADOPT_BAD_JSON="$TMP_DIR/adopt-bad-json"
 init_adoption_repo "$ADOPT_BAD_JSON"
 printf '%s\n' '{"scripts":null,"dependencies":{"test":"1.0.0"}}' \
@@ -1117,6 +1129,16 @@ run_adoption "$TMP_DIR/adopt-default.out" adopt --project "$ADOPT_SAFETY"
 [ "$ADOPTION_STATUS" -eq 5 ] || fail "default-branch apply did not refuse"
 assert_contains "$TMP_DIR/adopt-default.out.err" "non-default branch"
 [ ! -e "$ADOPT_SAFETY/.touchstone.toml" ] || fail "default-branch refusal partially wrote"
+ADOPT_UNKNOWN_DEFAULT="$TMP_DIR/adopt-unknown-default"
+init_adoption_repo "$ADOPT_UNKNOWN_DEFAULT"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_UNKNOWN_DEFAULT/package.json"
+commit_adoption_repo "$ADOPT_UNKNOWN_DEFAULT" "fixture"
+git -C "$ADOPT_UNKNOWN_DEFAULT" switch -q -c trunk
+git -C "$ADOPT_UNKNOWN_DEFAULT" symbolic-ref --delete refs/remotes/origin/HEAD
+run_adoption "$TMP_DIR/adopt-unknown-default.out" adopt --project "$ADOPT_UNKNOWN_DEFAULT"
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "unknown default branch did not refuse"
+assert_contains "$TMP_DIR/adopt-unknown-default.out.err" "known default branch"
+[ ! -e "$ADOPT_UNKNOWN_DEFAULT/.touchstone.toml" ] || fail "unknown default refusal partially wrote"
 git -C "$ADOPT_SAFETY" switch -q -c feat/adopt
 printf '\n' >>"$ADOPT_SAFETY/package.json"
 run_adoption "$TMP_DIR/adopt-dirty.out" adopt --project "$ADOPT_SAFETY"

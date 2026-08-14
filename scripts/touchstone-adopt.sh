@@ -435,6 +435,28 @@ validate_json_document() {
 json_object_has_key() {
   local file="$1" object="$2" wanted="$3"
   awk -v object="$object" -v wanted="$wanted" '
+    function hex_value(character, position) {
+      position = index("0123456789abcdef", tolower(character))
+      return position - 1
+    }
+    function decoded_unicode(hex, position, value) {
+      value = 0
+      for (position = 1; position <= 4; position++) {
+        value = (value * 16) + hex_value(substr(hex, position, 1))
+      }
+      if (value < 128) return sprintf("%c", value)
+      if (value < 2048) return sprintf("%c%c", 192 + int(value / 64), 128 + (value % 64))
+      return sprintf("%c%c%c", 224 + int(value / 4096),
+        128 + (int(value / 64) % 64), 128 + (value % 64))
+    }
+    function decoded_escape(character) {
+      if (character == "b") return sprintf("%c", 8)
+      if (character == "f") return sprintf("%c", 12)
+      if (character == "n") return "\n"
+      if (character == "r") return "\r"
+      if (character == "t") return "\t"
+      return character
+    }
     function finish_string() {
       pending = token
       token = ""
@@ -445,7 +467,21 @@ json_object_has_key() {
       for (i = 1; i <= length(line); i++) {
         c = substr(line, i, 1)
         if (in_string) {
-          if (escaped) escaped = 0
+          if (unicode_left > 0) {
+            unicode_hex = unicode_hex c
+            unicode_left--
+            if (unicode_left == 0) {
+              token = token decoded_unicode(unicode_hex)
+              unicode_hex = ""
+            }
+          }
+          else if (escaped) {
+            if (c == "u") {
+              unicode_left = 4
+              unicode_hex = ""
+            } else token = token decoded_escape(c)
+            escaped = 0
+          }
           else if (c == "\\") escaped = 1
           else if (c == "\"") finish_string()
           else token = token c
@@ -493,7 +529,7 @@ json_object_has_key() {
       }
     }
     END {
-      if (invalid || in_string || escaped || depth != 0 || seeking_object || seeking_value) exit 2
+      if (invalid || in_string || escaped || unicode_left > 0 || depth != 0 || seeking_object || seeking_value) exit 2
       exit !found
     }
   ' "$file"
@@ -510,6 +546,28 @@ node_has_script() {
 json_root_string_value() {
   local file="$1" wanted="$2"
   awk -v wanted="$wanted" '
+    function hex_value(character, position) {
+      position = index("0123456789abcdef", tolower(character))
+      return position - 1
+    }
+    function decoded_unicode(hex, position, value) {
+      value = 0
+      for (position = 1; position <= 4; position++) {
+        value = (value * 16) + hex_value(substr(hex, position, 1))
+      }
+      if (value < 128) return sprintf("%c", value)
+      if (value < 2048) return sprintf("%c%c", 192 + int(value / 64), 128 + (value % 64))
+      return sprintf("%c%c%c", 224 + int(value / 4096),
+        128 + (int(value / 64) % 64), 128 + (value % 64))
+    }
+    function decoded_escape(character) {
+      if (character == "b") return sprintf("%c", 8)
+      if (character == "f") return sprintf("%c", 12)
+      if (character == "n") return "\n"
+      if (character == "r") return "\r"
+      if (character == "t") return "\t"
+      return character
+    }
     function finish_string() {
       if (capturing_value) {
         value = token
@@ -524,7 +582,21 @@ json_root_string_value() {
       for (position = 1; position <= length(line); position++) {
         character = substr(line, position, 1)
         if (in_string) {
-          if (escaped) escaped = 0
+          if (unicode_left > 0) {
+            unicode_hex = unicode_hex character
+            unicode_left--
+            if (unicode_left == 0) {
+              token = token decoded_unicode(unicode_hex)
+              unicode_hex = ""
+            }
+          }
+          else if (escaped) {
+            if (character == "u") {
+              unicode_left = 4
+              unicode_hex = ""
+            } else token = token decoded_escape(character)
+            escaped = 0
+          }
           else if (character == "\\") escaped = 1
           else if (character == "\"") finish_string()
           else token = token character
@@ -563,7 +635,7 @@ json_root_string_value() {
       }
     }
     END {
-      if (invalid || in_string || escaped || depth != 0 || expecting_value) exit 2
+      if (invalid || in_string || escaped || unicode_left > 0 || depth != 0 || expecting_value) exit 2
       if (found) { print value; exit 0 }
       exit 1
     }
@@ -1063,16 +1135,23 @@ current_branch_is_default() {
   remote_default="$(git -C "$PROJECT_ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
   remote_default="${remote_default#origin/}"
   case "$branch" in main | master) return 0 ;; esac
-  [ -n "$remote_default" ] && [ "$branch" = "$remote_default" ]
+  [ -n "$remote_default" ] || return 2
+  [ "$branch" = "$remote_default" ]
 }
 
 apply_plan() {
-  local action path ownership destination source parent temporary worktree_status
+  local action path ownership destination source parent temporary worktree_status default_status
   [ -s "$CHANGES_FILE" ] || return 0
   worktree_status="$(git -C "$PROJECT_ROOT" status --porcelain=v1)" \
     || operational_failure "could not inspect worktree state"
   [ -z "$worktree_status" ] || safety_refusal "apply requires a clean worktree"
-  if current_branch_is_default; then safety_refusal "apply requires a non-default branch"; fi
+  if current_branch_is_default; then
+    safety_refusal "apply requires a non-default branch"
+  else
+    default_status=$?
+    [ "$default_status" -eq 1 ] \
+      || safety_refusal "apply requires a known default branch; set refs/remotes/origin/HEAD before applying"
+  fi
   while IFS="$(printf '\t')" read -r action path ownership; do
     [ -n "$path" ] || continue
     safe_owned_path "$path"
