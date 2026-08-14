@@ -1546,7 +1546,7 @@ assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run build"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "lint"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'target = "root"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run lint"'
-assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'setup = "pnpm install --offline --frozen-lockfile --ignore-scripts"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'setup = "pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile"'
 bash "$RUNNER" validate --check-contract --project "$ADOPT_MONOREPO" >/dev/null
 
 ADOPT_NON_WORKSPACE_CHILD="$TMP_DIR/adopt-non-workspace-child"
@@ -1588,7 +1588,7 @@ commit_adoption_repo "$ADOPT_PNPM_AUTHORITY" "fixture"
 git -C "$ADOPT_PNPM_AUTHORITY" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-pnpm-authority.out" adopt --project "$ADOPT_PNPM_AUTHORITY"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "pnpm workspace authority adoption failed"
-assert_contains "$ADOPT_PNPM_AUTHORITY/.touchstone.toml" 'setup = "(cd apps/api && pnpm install --offline --frozen-lockfile --ignore-scripts)"'
+assert_contains "$ADOPT_PNPM_AUTHORITY/.touchstone.toml" 'setup = "(cd apps/api && pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile)"'
 
 ADOPT_PNPM_EXCLUSION="$TMP_DIR/adopt-pnpm-exclusion"
 init_adoption_repo "$ADOPT_PNPM_EXCLUSION"
@@ -1602,7 +1602,7 @@ commit_adoption_repo "$ADOPT_PNPM_EXCLUSION" "fixture"
 git -C "$ADOPT_PNPM_EXCLUSION" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-pnpm-exclusion.out" adopt --project "$ADOPT_PNPM_EXCLUSION"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "pnpm order-independent exclusion adoption failed"
-assert_contains "$ADOPT_PNPM_EXCLUSION/.touchstone.toml" 'setup = "(cd apps/api && pnpm install --offline --frozen-lockfile --ignore-scripts)"'
+assert_contains "$ADOPT_PNPM_EXCLUSION/.touchstone.toml" 'setup = "(cd apps/api && pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile)"'
 
 ADOPT_CARGO_WORKSPACE="$TMP_DIR/adopt-cargo-workspace"
 init_adoption_repo "$ADOPT_CARGO_WORKSPACE"
@@ -1649,7 +1649,7 @@ git -C "$ADOPT_PNPM_FLOW_WORKSPACE" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-pnpm-flow-workspace.out" adopt --project "$ADOPT_PNPM_FLOW_WORKSPACE"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "flow-style pnpm workspace adoption failed"
 assert_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" 'path = "apps/api"'
-assert_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" 'setup = "pnpm install --offline --frozen-lockfile --ignore-scripts"'
+assert_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" 'setup = "pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile"'
 assert_not_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" '(cd apps/api'
 
 ADOPT_PNPM_QUOTED_KEY="$TMP_DIR/adopt-pnpm-quoted-key"

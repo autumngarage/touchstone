@@ -749,7 +749,7 @@ node_setup_command() {
       ;;
     pnpm)
       if [ -f "$directory/pnpm-lock.yaml" ]; then
-        printf 'pnpm install --offline --frozen-lockfile --ignore-scripts\n'
+        printf 'pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile\n'
       fi
       ;;
     yarn)
