@@ -274,8 +274,9 @@ Reviews are the most expensive resource in the loop — each round costs full re
 plan, its acceptance criteria, and the behavior or interfaces this PR is allowed
 to change. Babysitting authorizes the driver to make that approved change pass
 review; it does not authorize a broader product change. Before editing for any
-finding, map it to a recorded acceptance criterion or invariant. A plausible bug
-is not automatically this PR's bug.
+finding, map it to a recorded acceptance criterion or invariant, or to evidence
+that the diff created the defect. A plausible bug is not automatically this
+PR's bug.
 
 **Classify every finding before touching anything.** Four dispositions, in the order to consider them:
 
