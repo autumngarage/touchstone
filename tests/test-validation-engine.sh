@@ -1111,16 +1111,28 @@ run_adoption "$TMP_DIR/adopt-input-symlink.out" adopt --dry-run --project "$ADOP
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "adoption read a compiler input through a symlink"
 assert_contains "$TMP_DIR/adopt-input-symlink.out.err" "compiler input 'package.json' must be a regular file"
 
-ADOPT_SWIFT_REMOTE_NO_LOCK="$TMP_DIR/adopt-swift-remote-no-lock"
-init_adoption_repo "$ADOPT_SWIFT_REMOTE_NO_LOCK"
+ADOPT_SWIFT_REMOTE="$TMP_DIR/adopt-swift-remote"
+init_adoption_repo "$ADOPT_SWIFT_REMOTE"
 printf '%s\n' '// swift-tools-version:6.2' 'import PackageDescription' \
   'let package = Package(name: "Fixture", dependencies: [.package(url: "https://example.invalid/dependency", from: "1.0.0")])' \
-  >"$ADOPT_SWIFT_REMOTE_NO_LOCK/Package.swift"
-commit_adoption_repo "$ADOPT_SWIFT_REMOTE_NO_LOCK" "fixture"
-git -C "$ADOPT_SWIFT_REMOTE_NO_LOCK" switch -q -c feat/adopt
-run_adoption "$TMP_DIR/adopt-swift-remote-no-lock.out" adopt --dry-run --project "$ADOPT_SWIFT_REMOTE_NO_LOCK"
-[ "$ADOPTION_STATUS" -eq 4 ] || fail "Swift remote dependency without Package.resolved was accepted"
-assert_contains "$TMP_DIR/adopt-swift-remote-no-lock.out.err" 'remote dependencies but no Package.resolved'
+  >"$ADOPT_SWIFT_REMOTE/Package.swift"
+printf '%s\n' '{"version":3,"pins":[]}' >"$ADOPT_SWIFT_REMOTE/Package.resolved"
+commit_adoption_repo "$ADOPT_SWIFT_REMOTE" "fixture"
+git -C "$ADOPT_SWIFT_REMOTE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-swift-remote.out" adopt --dry-run --project "$ADOPT_SWIFT_REMOTE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Swift remote dependency with Package.resolved was accepted"
+assert_contains "$TMP_DIR/adopt-swift-remote.out.err" 'can fetch during validation'
+
+ADOPT_SWIFT_LOCAL_PATH="$TMP_DIR/adopt-swift-local-path"
+init_adoption_repo "$ADOPT_SWIFT_LOCAL_PATH"
+printf '%s\n' '// swift-tools-version:6.2' 'import PackageDescription' \
+  'let package = Package(name: "Fixture", dependencies: [.package(path: "../shared")])' \
+  >"$ADOPT_SWIFT_LOCAL_PATH/Package.swift"
+commit_adoption_repo "$ADOPT_SWIFT_LOCAL_PATH" "fixture"
+git -C "$ADOPT_SWIFT_LOCAL_PATH" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-swift-local-path.out" adopt --dry-run --project "$ADOPT_SWIFT_LOCAL_PATH"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Swift checkout-external path dependency was accepted"
+assert_contains "$TMP_DIR/adopt-swift-local-path.out.err" 'local package path this portable compiler cannot verify'
 
 ADOPT_DIFF_RENDER_FAIL="$TMP_DIR/adopt-diff-render-fail"
 init_adoption_repo "$ADOPT_DIFF_RENDER_FAIL"

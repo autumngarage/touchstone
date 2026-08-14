@@ -1675,11 +1675,12 @@ tasks_for_python() {
   [ "$found" = true ] || contract_refusal "Python target '$target' has no declared ruff, mypy, or pytest evidence; pass --task NAME=COMMAND"
 }
 
-swift_has_remote_dependency() {
-  local file="$1"
-  awk '
+swift_has_dependency_source() {
+  local file="$1" source="$2"
+  awk -v source="$source" '
     /\.package[[:space:]]*\(/ { in_package=1 }
-    in_package && /(^|[^A-Za-z])(url|id)[[:space:]]*:/ { found=1 }
+    in_package && source == "remote" && /(^|[^A-Za-z])(url|id)[[:space:]]*:/ { found=1 }
+    in_package && source == "path" && /(^|[^A-Za-z])path[[:space:]]*:/ { found=1 }
     in_package && /\)/ { in_package=0 }
     END { exit !found }
   ' "$file"
@@ -1691,10 +1692,10 @@ tasks_for_profile() {
     node) tasks_for_node "$directory" "$target" "$suffix" "$inherited_node_manager" "$workspace_member" ;;
     python) tasks_for_python "$directory" "$target" "$suffix" ;;
     swift)
-      if swift_has_remote_dependency "$directory/Package.swift"; then
-        [ -f "$directory/Package.resolved" ] \
-          || contract_refusal "Swift target '$target' has remote dependencies but no Package.resolved; resolve and commit it or pass --task NAME=COMMAND"
-      fi
+      swift_has_dependency_source "$directory/Package.swift" remote \
+        && contract_refusal "Swift target '$target' declares a remote package dependency that can fetch during validation; use checkout-local dependencies with a manual contract or pass --task NAME=COMMAND"
+      swift_has_dependency_source "$directory/Package.swift" path \
+        && contract_refusal "Swift target '$target' declares a local package path this portable compiler cannot verify; pass --task NAME=COMMAND"
       record_task "test$suffix" "$target" "swift test --disable-automatic-resolution --skip-update"
       ;;
     rust)
