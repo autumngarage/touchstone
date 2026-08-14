@@ -1338,8 +1338,10 @@ validate_pyproject_document() {
         next
       }
 
-      assignment = 0
-      assignment_value = 0
+      if (depth == 0) {
+        assignment = 0
+        assignment_value = 0
+      }
       bare = 0
       bare_space = 0
       saw_content = depth > 0

@@ -1200,7 +1200,7 @@ PATH="$TMP_DIR/terminating-mv:$PATH" run_adoption "$TMP_DIR/adopt-signal-rollbac
 
 ADOPT_PYPROJECT="$TMP_DIR/adopt-pyproject"
 init_adoption_repo "$ADOPT_PYPROJECT"
-printf '%s\n' '[project]' 'name = "\u0066ixture"' 'dependencies = ["pytest"]' \
+printf '%s\n' '[project]' 'name = "\u0066ixture"' 'dependencies = [' '  "pytest",' ']' \
   'authors = [{ name = "Touchstone", email = "test@example.invalid" }]' \
   '[project.urls]' 'Homepage = "https://example.invalid/project"' \
   >"$ADOPT_PYPROJECT/pyproject.toml"
@@ -1215,6 +1215,7 @@ chmod +x "$TMP_DIR/no-python/python3"
 PATH="$TMP_DIR/no-python:$PATH" run_adoption "$TMP_DIR/adopt-pyproject.out" adopt --project "$ADOPT_PYPROJECT"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "installable pyproject adoption failed"
 assert_contains "$ADOPT_PYPROJECT/.touchstone.toml" 'setup = "python -m pip install --no-index --no-build-isolation -e ."'
+assert_contains "$ADOPT_PYPROJECT/.touchstone.toml" 'command = "python -m pytest"'
 
 ADOPT_REQUIREMENTS="$TMP_DIR/adopt-requirements"
 init_adoption_repo "$ADOPT_REQUIREMENTS"
