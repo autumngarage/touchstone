@@ -162,8 +162,8 @@ def answers_body_finding($id):
       if any($root.issueComments[]?;
           trusted($trusted)
           and (.created_at // "") > $threshold
-          and ((.body // "") | test("usage limit|quota|try again later|could not review"; "i")))
-      then "the review provider reported quota or no-review instead of binding evidence"
+          and ((.body // "") | test("usage limit|quota|try again later"; "i")))
+      then "the security-review quota notice is provisional; continue waiting for trusted exact-head review evidence"
       else "no trusted exact-head review evidence postdates the bound request"
       end
     else empty end,

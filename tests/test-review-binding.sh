@@ -132,11 +132,11 @@ run_case "body-only result binds through its full-SHA blob link" '
 echo "==> Provider and inspection failures"
 run_case "incomplete API evidence fails closed" '.complete = false' failure "collection was incomplete"
 run_case "unsupported contract fails closed" '.contractVersion = 2' failure "contract version"
-run_case "quota response is explicit" '
+run_case "quota notice stays provisional and non-evidence" '
   .issueComments = [
     .issueComments[0],
     {"id":102,"body":"You have reached your Codex usage limits. Please try again later.","created_at":"2026-08-13T10:01:00Z","author_association":"NONE","user":{"login":"chatgpt-codex-connector[bot]"}}
-  ]' failure "quota or no-review"
+  ]' failure "quota notice is provisional"
 run_case "evidence beyond a 100-item page remains visible" '
   .issueComments = [.issueComments[0]]
     + [range(0; 150) as $i | {id:(1000+$i),body:"noise",created_at:"2026-08-13T10:00:30Z",author_association:"NONE",user:{login:"reader"}}]
