@@ -107,7 +107,28 @@ PLAN_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-adopt.XXXXXX")" || {
   echo "ERROR: could not create adoption workspace" >&2
   exit 6
 }
-trap 'rm -rf "$PLAN_ROOT"' EXIT
+APPLY_ACTIVE=false
+APPLY_STAGE_FILE="$PLAN_ROOT/apply-stage"
+APPLY_APPLIED_FILE="$PLAN_ROOT/apply-applied"
+APPLY_DIRECTORIES_FILE="$PLAN_ROOT/apply-directories"
+
+cleanup_on_exit() {
+  local status=$?
+  trap - EXIT HUP INT TERM
+  if [ "$APPLY_ACTIVE" = true ]; then
+    if ! rollback_apply "$APPLY_APPLIED_FILE" "$APPLY_STAGE_FILE" "$APPLY_DIRECTORIES_FILE"; then
+      echo "ERROR: interrupted adoption could not fully roll back its apply transaction" >&2
+      status=6
+    fi
+  fi
+  rm -rf "$PLAN_ROOT"
+  exit "$status"
+}
+
+trap cleanup_on_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 TARGETS_FILE="$PLAN_ROOT/targets"
 TASKS_FILE="$PLAN_ROOT/tasks"
 SETUPS_FILE="$PLAN_ROOT/setups"
@@ -1358,7 +1379,10 @@ python_has_remote_reference() {
       line = $0
       sub(/[[:space:]]+#.*/, "", line)
       line = tolower(line)
-      if (line ~ /(https?|ssh):\/\// || line ~ /git\+(https?|ssh):\/\// || line ~ /(^|[[:space:]"\047=])git@/) found = 1
+      if (line ~ /(https?|ssh|file):/ || line ~ /git\+(https?|ssh):/ ||
+          line ~ /(^|[[:space:]"\047=])git@/ ||
+          line ~ /(^|[[:space:]])(-f|--find-links|--index-url|--extra-index-url|--trusted-host|-e|--editable|-r|--requirement|-c|--constraint)([=[:space:]]|$)/ ||
+          line ~ /@[[:space:]]*(\/|[.][.]?\/)/ || line ~ /^[[:space:]]*(\/|[.][.]?\/)/) found = 1
     }
     END { exit !found }
   ' "$requirements"; then
@@ -1367,7 +1391,8 @@ python_has_remote_reference() {
   if [ -f "$pyproject" ] && awk '
     function remote(value) {
       value = tolower(value)
-      return value ~ /(https?|ssh):\/\// || value ~ /git\+(https?|ssh):\/\// || value ~ /(^|[[:space:]"\047=])git@/
+      return value ~ /(https?|ssh|file):/ || value ~ /git\+(https?|ssh):/ ||
+        value ~ /(^|[[:space:]"\047=])git@/ || value ~ /@[[:space:]]*(\/|[.][.]?\/)/
     }
     /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
       section = $0
@@ -1511,7 +1536,7 @@ tasks_for_python() {
     contract_refusal "Python target '$target' contains an environment-marked dependency this portable compiler cannot verify; use unconditional locked dependencies or pass --task NAME=COMMAND"
   fi
   if python_has_remote_reference "$directory/pyproject.toml" "$directory/requirements.txt"; then
-    contract_refusal "Python target '$target' contains a remote direct dependency reference; vendor or lock it to an offline source, or pass --task NAME=COMMAND"
+    contract_refusal "Python target '$target' contains a remote direct dependency reference or checkout-external source; use named dependencies from the offline lock source, or pass --task NAME=COMMAND"
   fi
   if [ -f "$directory/uv.lock" ]; then
     prefix="uv run --no-sync"
@@ -2120,7 +2145,7 @@ current_branch_is_default() {
 
 apply_plan() {
   local action path ownership destination source parent temporary worktree_status default_status backup
-  local stage_file="$PLAN_ROOT/apply-stage" applied_file="$PLAN_ROOT/apply-applied" directories_file="$PLAN_ROOT/apply-directories"
+  local stage_file="$APPLY_STAGE_FILE" applied_file="$APPLY_APPLIED_FILE" directories_file="$APPLY_DIRECTORIES_FILE"
   [ -s "$CHANGES_FILE" ] || return 0
   worktree_status="$(git -C "$PROJECT_ROOT" status --porcelain=v1)" \
     || operational_failure "could not inspect worktree state"
@@ -2135,6 +2160,7 @@ apply_plan() {
   : >"$stage_file"
   : >"$applied_file"
   : >"$directories_file"
+  APPLY_ACTIVE=true
   while IFS="$(printf '\t')" read -r action path ownership; do
     [ -n "$path" ] || continue
     safe_owned_path "$path"
@@ -2152,6 +2178,12 @@ apply_plan() {
         || operational_failure "could not clean transaction files after staging $path failed"
       operational_failure "could not stage $path"
     }
+    if ! printf '%s\t%s\t%s\n' "$action" "$destination" "$temporary" >>"$stage_file"; then
+      rm -f "$temporary"
+      cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
+        || operational_failure "could not clean transaction files after recording $path failed"
+      operational_failure "could not record staged write for $path"
+    fi
     if [ -e "$destination" ]; then
       if ! cp -p "$destination" "$temporary" || ! cat "$source" >"$temporary"; then
         rm -f "$temporary"
@@ -2164,12 +2196,6 @@ apply_plan() {
       cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
         || operational_failure "could not clean transaction files after staging $path failed"
       operational_failure "could not stage $path"
-    fi
-    if ! printf '%s\t%s\t%s\n' "$action" "$destination" "$temporary" >>"$stage_file"; then
-      rm -f "$temporary"
-      cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
-        || operational_failure "could not clean transaction files after recording $path failed"
-      operational_failure "could not record staged write for $path"
     fi
   done <"$CHANGES_FILE"
 
@@ -2187,25 +2213,23 @@ apply_plan() {
           || operational_failure "could not roll back after staging $path failed"
         operational_failure "could not stage rollback data for $path"
       }
-      if ! mv "$destination" "$backup"; then
-        rm -f "$backup"
-        rollback_apply "$applied_file" "$stage_file" "$directories_file" \
-          || operational_failure "could not roll back after backing up $path failed"
-        operational_failure "could not prepare $path for apply"
-      fi
+      rm -f "$backup" || operational_failure "could not prepare rollback path for $path"
     elif [ -e "$destination" ] || [ -L "$destination" ]; then
       rollback_apply "$applied_file" "$stage_file" "$directories_file" \
         || operational_failure "could not roll back after $path appeared during apply"
       operational_failure "$path appeared during apply"
     fi
     if ! printf '%s\t%s\t%s\n' "$action" "$destination" "$backup" >>"$applied_file"; then
-      if [ "$action" = update ]; then
-        mv "$backup" "$destination" \
-          || operational_failure "could not restore $path after transaction recording failed"
-      fi
       rollback_apply "$applied_file" "$stage_file" "$directories_file" \
         || operational_failure "could not roll back after transaction recording failed for $path"
       operational_failure "could not record applied write for $path"
+    fi
+    if [ "$action" = update ]; then
+      if ! mv "$destination" "$backup"; then
+        rollback_apply "$applied_file" "$stage_file" "$directories_file" \
+          || operational_failure "could not roll back after backing up $path failed"
+        operational_failure "could not prepare $path for apply"
+      fi
     fi
     if ! mv "$temporary" "$destination"; then
       rollback_apply "$applied_file" "$stage_file" "$directories_file" \
@@ -2213,8 +2237,18 @@ apply_plan() {
       operational_failure "could not apply $path; all earlier writes were rolled back"
     fi
   done <"$stage_file"
-  cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" \
-    || operational_failure "adoption applied but temporary transaction files could not be removed"
+  trap '' HUP INT TERM
+  if ! cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file"; then
+    APPLY_ACTIVE=false
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    operational_failure "adoption applied but temporary transaction files could not be removed"
+  fi
+  APPLY_ACTIVE=false
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 }
 
 record_missing_directories() {
@@ -2256,12 +2290,15 @@ rollback_apply() {
       if [ "$action" = create ]; then
         [ ! -e "$destination" ] || rm -f "$destination" || failed=true
       else
-        [ ! -e "$destination" ] || rm -f "$destination" || failed=true
-        [ ! -e "$backup" ] || mv "$backup" "$destination" || failed=true
+        if [ -e "$backup" ]; then
+          [ ! -e "$destination" ] || rm -f "$destination" || failed=true
+          mv "$backup" "$destination" || failed=true
+        fi
       fi
     done < <(awk '{ lines[NR] = $0 } END { for (line = NR; line >= 1; line--) print lines[line] }' "$applied_file")
   fi
   cleanup_apply_artifacts "$stage_file" "$applied_file" "$directories_file" || failed=true
+  : >"$applied_file" || failed=true
   [ "$failed" = false ]
 }
 

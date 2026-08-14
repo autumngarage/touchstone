@@ -1170,6 +1170,34 @@ assert_contains "$TMP_DIR/adopt-apply-rollback.out.err" 'all earlier writes were
 [ -z "$(git -C "$ADOPT_APPLY_ROLLBACK" status --porcelain=v1)" ] \
   || fail "failed apply did not restore the clean checkout"
 
+ADOPT_SIGNAL_ROLLBACK="$TMP_DIR/adopt-signal-rollback"
+init_adoption_repo "$ADOPT_SIGNAL_ROLLBACK"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_SIGNAL_ROLLBACK/package.json"
+commit_adoption_repo "$ADOPT_SIGNAL_ROLLBACK" "fixture"
+git -C "$ADOPT_SIGNAL_ROLLBACK" switch -q -c feat/adopt
+mkdir -p "$TMP_DIR/terminating-mv"
+SIGNAL_MV_COUNT_FILE="$TMP_DIR/terminating-mv/count"
+export SIGNAL_MV_COUNT_FILE
+cat >"$TMP_DIR/terminating-mv/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count=0
+if [ -f "$SIGNAL_MV_COUNT_FILE" ]; then count="$(cat "$SIGNAL_MV_COUNT_FILE")"; fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$SIGNAL_MV_COUNT_FILE"
+"$REAL_MV" "$@"
+if [ "$count" -eq 1 ]; then kill -TERM "$PPID"; fi
+EOF
+chmod +x "$TMP_DIR/terminating-mv/mv"
+PATH="$TMP_DIR/terminating-mv:$PATH" run_adoption "$TMP_DIR/adopt-signal-rollback.out" adopt --project "$ADOPT_SIGNAL_ROLLBACK"
+[ "$ADOPTION_STATUS" -eq 143 ] || fail "terminated apply did not preserve the signal exit status"
+[ ! -e "$ADOPT_SIGNAL_ROLLBACK/.touchstone.toml" ] || fail "terminated apply retained its contract write"
+[ ! -e "$ADOPT_SIGNAL_ROLLBACK/.touchstone" ] || fail "terminated apply retained a managed directory"
+[ -z "$(find "$ADOPT_SIGNAL_ROLLBACK" \( -name '.touchstone-write.*' -o -name '.touchstone-backup.*' \) -print -quit)" ] \
+  || fail "terminated apply retained transaction artifacts"
+[ -z "$(git -C "$ADOPT_SIGNAL_ROLLBACK" status --porcelain=v1)" ] \
+  || fail "terminated apply did not restore the clean checkout"
+
 ADOPT_PYPROJECT="$TMP_DIR/adopt-pyproject"
 init_adoption_repo "$ADOPT_PYPROJECT"
 printf '%s\n' '[project]' 'name = "\u0066ixture"' 'dependencies = ["pytest"]' \
@@ -1207,6 +1235,27 @@ git -C "$ADOPT_REMOTE_REQUIREMENT" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-remote-requirement.out" adopt --dry-run --project "$ADOPT_REMOTE_REQUIREMENT"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "remote requirements reference produced an offline adoption plan"
 assert_contains "$TMP_DIR/adopt-remote-requirement.out.err" 'remote direct dependency reference'
+
+ADOPT_FILE_REQUIREMENT="$TMP_DIR/adopt-file-requirement"
+init_adoption_repo "$ADOPT_FILE_REQUIREMENT"
+mkdir -p "$ADOPT_FILE_REQUIREMENT/tests"
+printf '%s\n' '--find-links file:///tmp/wheels' 'pytest==9.0.0' >"$ADOPT_FILE_REQUIREMENT/requirements.txt"
+commit_adoption_repo "$ADOPT_FILE_REQUIREMENT" "fixture"
+git -C "$ADOPT_FILE_REQUIREMENT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-file-requirement.out" adopt --dry-run --project "$ADOPT_FILE_REQUIREMENT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "checkout-external requirements source produced an adoption plan"
+assert_contains "$TMP_DIR/adopt-file-requirement.out.err" 'checkout-external source'
+
+ADOPT_FILE_PYPROJECT="$TMP_DIR/adopt-file-pyproject"
+init_adoption_repo "$ADOPT_FILE_PYPROJECT"
+mkdir -p "$ADOPT_FILE_PYPROJECT/tests"
+printf '%s\n' '[project]' 'name = "fixture"' \
+  'dependencies = ["pytest @ file:///tmp/pytest.whl"]' >"$ADOPT_FILE_PYPROJECT/pyproject.toml"
+commit_adoption_repo "$ADOPT_FILE_PYPROJECT" "fixture"
+git -C "$ADOPT_FILE_PYPROJECT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-file-pyproject.out" adopt --dry-run --project "$ADOPT_FILE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "checkout-external pyproject source produced an adoption plan"
+assert_contains "$TMP_DIR/adopt-file-pyproject.out.err" 'checkout-external source'
 
 ADOPT_MARKED_REQUIREMENT="$TMP_DIR/adopt-marked-requirement"
 init_adoption_repo "$ADOPT_MARKED_REQUIREMENT"
