@@ -304,7 +304,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     validation:setup)
       parse_string "$raw_value" || config_error "setup must be a single-line basic string at line $LINE_NUMBER"
       SETUP_COMMAND="$PARSED_VALUE"
-      [ -n "$SETUP_COMMAND" ] || config_error "setup cannot be empty when declared"
+      [ -n "$(trim "$SETUP_COMMAND")" ] || config_error "setup cannot be empty when declared"
       ;;
     target:name)
       parse_string "$raw_value" || config_error "target name must be a single-line basic string at line $LINE_NUMBER"

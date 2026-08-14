@@ -276,6 +276,17 @@ awk '{ print; if ($0 == "runtime = \"bash\"") print "setup = \"printf ready > pr
 mv "$SETUP/with-setup" "$SETUP/.touchstone.toml"
 run_capture "$SETUP" "$TMP_DIR/setup.out"
 [ "$RUN_STATUS" -eq 0 ] || fail "setup contract failed"
+
+SETUP_WHITESPACE="$TMP_DIR/setup-whitespace"
+write_contract "$SETUP_WHITESPACE" "printf task-ran > marker"
+awk '{ print; if ($0 == "runtime = \"bash\"") print "setup = \"   \"" }' \
+  "$SETUP_WHITESPACE/.touchstone.toml" >"$SETUP_WHITESPACE/with-setup"
+mv "$SETUP_WHITESPACE/with-setup" "$SETUP_WHITESPACE/.touchstone.toml"
+run_capture "$SETUP_WHITESPACE" "$TMP_DIR/setup-whitespace.out" --json
+[ "$RUN_STATUS" -eq 2 ] || fail "whitespace-only setup did not exit 2"
+assert_contains "$TMP_DIR/setup-whitespace.out.err" "setup cannot be empty when declared"
+[ ! -e "$SETUP_WHITESPACE/marker" ] || fail "task ran after malformed setup"
+
 SETUP_FAIL="$TMP_DIR/setup-fail"
 write_contract "$SETUP_FAIL" "printf should-not-run > marker"
 awk '{ print; if ($0 == "runtime = \"bash\"") print "setup = \"exit 7\"" }' \
