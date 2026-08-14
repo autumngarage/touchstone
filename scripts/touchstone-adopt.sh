@@ -583,6 +583,130 @@ json_object_has_key() {
   ' "$file"
 }
 
+json_object_has_local_path() {
+  local file="$1" object="$2"
+  awk -v object="$object" '
+    function hex_value(character, position) {
+      position = index("0123456789abcdef", tolower(character))
+      return position - 1
+    }
+    function decoded_unicode(hex, position, value) {
+      value = 0
+      for (position = 1; position <= 4; position++) {
+        value = (value * 16) + hex_value(substr(hex, position, 1))
+      }
+      if (value < 128) return sprintf("%c", value)
+      if (value < 2048) return sprintf("%c%c", 192 + int(value / 64), 128 + (value % 64))
+      return sprintf("%c%c%c", 224 + int(value / 4096),
+        128 + (int(value / 64) % 64), 128 + (value % 64))
+    }
+    function decoded_escape(character) {
+      if (character == "b") return sprintf("%c", 8)
+      if (character == "f") return sprintf("%c", 12)
+      if (character == "n") return "\n"
+      if (character == "r") return "\r"
+      if (character == "t") return "\t"
+      return character
+    }
+    function local_path(value, lower) {
+      lower = tolower(value)
+      return lower ~ /^(file|link):/ || value ~ /^(\/|~\/|[.][.]?\/)/ ||
+        value ~ /^[A-Za-z]:[\\\/]/ || value ~ /^\\\\/
+    }
+    function finish_string() {
+      if (capturing_value) {
+        if (local_path(token)) found = 1
+        capturing_value = 0
+      } else pending = token
+      token = ""
+      in_string = 0
+    }
+    {
+      line = $0 "\n"
+      for (position = 1; position <= length(line); position++) {
+        character = substr(line, position, 1)
+        if (in_string) {
+          if (unicode_left > 0) {
+            unicode_hex = unicode_hex character
+            unicode_left--
+            if (unicode_left == 0) {
+              token = token decoded_unicode(unicode_hex)
+              unicode_hex = ""
+            }
+          } else if (escaped) {
+            if (character == "u") {
+              unicode_left = 4
+              unicode_hex = ""
+            } else token = token decoded_escape(character)
+            escaped = 0
+          } else if (character == "\\") escaped = 1
+          else if (character == "\"") finish_string()
+          else token = token character
+          continue
+        }
+        if (seeking_object && character ~ /[[:space:]]/) continue
+        if (seeking_object && character != "{") { invalid = 1; seeking_object = 0 }
+        if (seeking_value && character ~ /[[:space:]]/) continue
+        if (seeking_value) {
+          if (character == "\"") {
+            seeking_value = 0
+            in_string = 1
+            capturing_value = 1
+            token = ""
+            continue
+          }
+          invalid = 1
+          seeking_value = 0
+        }
+        if (character == "\"") { in_string = 1; token = ""; continue }
+        if (character == ":") {
+          if (depth == 1 && pending == object) {
+            if (object_seen) invalid = 1
+            object_seen = 1
+            seeking_object = 1
+          } else if (object_depth > 0 && depth == object_depth) {
+            seeking_value = 1
+          }
+          pending = ""
+          continue
+        }
+        if (character == "{") {
+          depth++
+          if (seeking_object) { object_depth = depth; seeking_object = 0 }
+          pending = ""
+          continue
+        }
+        if (character == "}") {
+          if (depth <= 0) invalid = 1
+          if (depth == object_depth) object_depth = 0
+          depth--
+          pending = ""
+          continue
+        }
+        if (character !~ /[[:space:]]/) pending = ""
+      }
+    }
+    END {
+      if (invalid || in_string || escaped || unicode_left > 0 || depth != 0 || seeking_object || seeking_value) exit 2
+      exit !found
+    }
+  ' "$file"
+}
+
+node_has_local_dependency() {
+  local file="$1" object status
+  for object in dependencies devDependencies optionalDependencies peerDependencies; do
+    if json_object_has_local_path "$file" "$object"; then
+      return 0
+    else
+      status=$?
+    fi
+    [ "$status" -eq 1 ] \
+      || contract_refusal "package.json has a malformed or unsupported '$object' declaration"
+  done
+  return 1
+}
+
 node_has_script() {
   local file="$1" task="$2" status
   json_object_has_key "$file" scripts "$task" && return 0
@@ -1192,6 +1316,8 @@ tasks_for_node() {
   local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" manager setup_directory setup_command task found=false
   [ -f "$directory/package.json" ] || contract_refusal "Node target '$target' has no package.json"
   node_package_manager "$directory" "$inherited"
+  node_has_local_dependency "$directory/package.json" \
+    && contract_refusal "Node target '$target' declares a local file dependency this portable compiler cannot verify within the checkout; pass --task NAME=COMMAND"
   manager="$NODE_MANAGER"
   if [ "$workspace_member" = true ]; then setup_directory="$PROJECT_ROOT"; else setup_directory="$directory"; fi
   setup_command="$(node_setup_command "$manager" "$setup_directory")"
@@ -1499,8 +1625,7 @@ python_has_unverifiable_build_hook() {
       value = substr(value, 2, length(value) - 2)
       if (value != "setuptools.build_meta" && value != "setuptools.build_meta:__legacy__" &&
           value != "hatchling.build" && value != "flit_core.buildapi" &&
-          value != "poetry.core.masonry.api" && value != "uv_build" &&
-          value != "maturin" && value != "mesonpy" && value != "scikit_build_core.build") unsafe=1
+          value != "poetry.core.masonry.api" && value != "uv_build") unsafe=1
     }
     END { exit !unsafe }
   ' "$file"
@@ -1768,6 +1893,40 @@ swift_has_dependency_source() {
   ' "$file"
 }
 
+toml_has_local_path_reference() {
+  local file="$1"
+  awk '
+    {
+      line = $0
+      sub(/[[:space:]]*#.*/, "", line)
+      gsub(/[[:space:]"\047]/, "", line)
+      if (line ~ /(^|[,{])path=/) found=1
+    }
+    END { exit !found }
+  ' "$file"
+}
+
+go_has_local_replace() {
+  local file="$1"
+  awk '
+    function trim(value) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      return value
+    }
+    {
+      line = $0
+      sub(/[[:space:]]*\/\/.*/, "", line)
+      if (line !~ /=>/) next
+      replacement = substr(line, index(line, "=>") + 2)
+      replacement = trim(replacement)
+      gsub(/^["\047]|["\047]$/, "", replacement)
+      if (replacement ~ /^(\/|~\/|[.][.]?\/)/ ||
+          replacement ~ /^[A-Za-z]:[\\\/]/ || replacement ~ /^\\\\/) found=1
+    }
+    END { exit !found }
+  ' "$file"
+}
+
 tasks_for_profile() {
   local directory="$1" target="$2" profile="$3" suffix="$4" inherited_node_manager="${5:-}" workspace_member="${6:-false}"
   case "$profile" in
@@ -1783,6 +1942,8 @@ tasks_for_profile() {
     rust)
       local cargo_lock_path="Cargo.lock"
       validate_toml_document "$directory/Cargo.toml" Cargo.toml
+      toml_has_local_path_reference "$directory/Cargo.toml" \
+        && contract_refusal "Rust target '$target' declares a local path dependency this portable compiler cannot verify within the checkout; pass --task NAME=COMMAND"
       if [ "$workspace_member" != true ] && [ "$directory" != "$PROJECT_ROOT" ]; then
         cargo_lock_path="${directory#"$PROJECT_ROOT"/}/Cargo.lock"
       fi
@@ -1792,7 +1953,11 @@ tasks_for_profile() {
         || contract_refusal "Rust target '$target' has no tracked Cargo.lock; commit it or pass --task NAME=COMMAND"
       record_task "test$suffix" "$target" "cargo test --frozen"
       ;;
-    go) record_task "test$suffix" "$target" "GOPROXY=off GOSUMDB=off go test ./..." ;;
+    go)
+      go_has_local_replace "$directory/go.mod" \
+        && contract_refusal "Go target '$target' declares a local replacement this portable compiler cannot verify within the checkout; pass --task NAME=COMMAND"
+      record_task "test$suffix" "$target" "GOPROXY=off GOSUMDB=off go test ./..."
+      ;;
     generic) contract_refusal "no supported project facts found; pass --task NAME=COMMAND for a manual declaration" ;;
     ambiguous:*) contract_refusal "ambiguous project facts for target '$target': ${profile#ambiguous:}" ;;
     *) contract_refusal "unsupported project profile '$profile'" ;;
