@@ -382,6 +382,7 @@ clear_git_hook_env() {
 declared_command_head() {
   local input="$1" character quote="" token=""
   local escaped=false assignment_candidate=true assignment_equals=false
+  local token_quoted=false
   local index=0 length="${#1}"
 
   while [ "$index" -lt "$length" ]; do
@@ -394,11 +395,13 @@ declared_command_head() {
     escaped=false
     assignment_candidate=true
     assignment_equals=false
+    token_quoted=false
     while [ "$index" -lt "$length" ]; do
       character="${input:$index:1}"
       index=$((index + 1))
       if [ "$escaped" = true ]; then
         token="$token$character"
+        token_quoted=true
         if [ "$assignment_equals" = false ]; then assignment_candidate=false; fi
         escaped=false
       elif [ "$quote" = single ]; then
@@ -414,14 +417,17 @@ declared_command_head() {
         case "$character" in
           ' ' | "$(printf '\t')") break ;;
           "'")
+            token_quoted=true
             if [ "$assignment_equals" = false ]; then assignment_candidate=false; fi
             quote=single
             ;;
           '"')
+            token_quoted=true
             if [ "$assignment_equals" = false ]; then assignment_candidate=false; fi
             quote=double
             ;;
           '\')
+            token_quoted=true
             if [ "$assignment_equals" = false ]; then assignment_candidate=false; fi
             escaped=true
             ;;
@@ -453,6 +459,7 @@ declared_command_head() {
     [ -n "$token" ] || return 1
     if [ "$assignment_candidate" = true ] && [ "$assignment_equals" = true ]; then continue; fi
     COMMAND_HEAD="$token"
+    COMMAND_HEAD_QUOTED="$token_quoted"
     return 0
   done
   return 1
@@ -474,7 +481,14 @@ declared_command_unrunnable_code() {
         return 0
       fi
       ;;
-    *) executable="$(cd "$directory" && command -v -- "$head" 2>/dev/null)" || true ;;
+    *)
+      if [ "$COMMAND_HEAD_QUOTED" = true ] \
+        && [ "$(cd "$directory" && type -t -- "$head" 2>/dev/null || true)" = keyword ]; then
+        executable="$(cd "$directory" && type -P -- "$head" 2>/dev/null)" || true
+      else
+        executable="$(cd "$directory" && command -v -- "$head" 2>/dev/null)" || true
+      fi
+      ;;
   esac
   if [ -z "$executable" ]; then
     printf '127\n'

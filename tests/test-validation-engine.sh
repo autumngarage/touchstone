@@ -150,6 +150,13 @@ run_capture "$QUOTED_MISSING_HEAD" "$TMP_DIR/quoted-missing-head.out" --json
 assert_contains "$TMP_DIR/quoted-missing-head.out" '"ran":0'
 assert_contains "$TMP_DIR/quoted-missing-head.out" '"reason":"command-not-started"'
 
+QUOTED_KEYWORD="$TMP_DIR/quoted-keyword"
+write_contract "$QUOTED_KEYWORD" "\\\"if\\\""
+run_capture "$QUOTED_KEYWORD" "$TMP_DIR/quoted-keyword.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "quoted keyword command did not retain 127"
+assert_contains "$TMP_DIR/quoted-keyword.out" '"ran":0'
+assert_contains "$TMP_DIR/quoted-keyword.out" '"reason":"command-not-started"'
+
 echo "==> a later passing target cannot launder an earlier failure"
 MONOREPO="$TMP_DIR/monorepo"
 mkdir -p "$MONOREPO/services/api" "$MONOREPO/services/worker"
@@ -329,6 +336,21 @@ on:
 steps:
   - run: pre-commit run --all-files --hook-stage pre-commit
 EOF
+cat >"$LEGACY/.github/workflows/substring-branch.yml" <<'EOF'
+on:
+  push:
+    branches: [maintenance]
+steps:
+  - run: pre-commit run --all-files --hook-stage pre-commit
+EOF
+cat >"$LEGACY/.github/workflows/quoted-default.yml" <<'EOF'
+on:
+  push:
+    branches:
+      - 'main'
+steps:
+  - run: pre-commit run --all-files --hook-stage pre-commit
+EOF
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/compat.out" 2>"$TMP_DIR/compat.err"
 status=$?
@@ -337,6 +359,8 @@ set -e
 assert_contains "$TMP_DIR/compat.out" "LEGACY-CI-BRANCH-GUARD .github/workflows/validate.yml"
 assert_not_contains "$TMP_DIR/compat.out" "comment-only.yml"
 assert_not_contains "$TMP_DIR/compat.out" "mixed-trigger.yml"
+assert_not_contains "$TMP_DIR/compat.out" "substring-branch.yml"
+assert_contains "$TMP_DIR/compat.out" "quoted-default.yml"
 assert_contains "$TMP_DIR/compat.err" "SKIP=no-commit-to-branch"
 printf '\n# SKIP=no-commit-to-branch is not a repair\n' >>"$LEGACY/.github/workflows/validate.yml"
 set +e
@@ -356,6 +380,7 @@ EOF
 sed 's#run: pre-commit run#env: {SKIP: no-commit-to-branch}\n    run: pre-commit run#' \
   "$LEGACY/.github/workflows/validate.yml" >"$LEGACY/.github/workflows/fixed.yml"
 rm "$LEGACY/.github/workflows/validate.yml"
+rm "$LEGACY/.github/workflows/quoted-default.yml"
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/bare-assignment.out" 2>"$TMP_DIR/bare-assignment.err"
 status=$?

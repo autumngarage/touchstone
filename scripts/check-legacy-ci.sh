@@ -19,6 +19,35 @@ fi
 found=0
 workflow_pushes_default() {
   awk '
+    function trim_scalar(value) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      sub(/,$/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      if ((value ~ /^".*"$/) || (value ~ /^\047.*\047$/)) value = substr(value, 2, length(value) - 2)
+      return value
+    }
+    function is_default_scalar(value) {
+      value = trim_scalar(value)
+      return value == "main" || value == "master"
+    }
+    function list_has_default(value, count, values, item) {
+      value = trim_scalar(value)
+      if (value !~ /^\[.*\]$/) return is_default_scalar(value)
+      value = substr(value, 2, length(value) - 2)
+      count = split(value, values, ",")
+      for (item = 1; item <= count; item++) if (is_default_scalar(values[item])) return 1
+      return 0
+    }
+    function inline_filter_value(value, key, remainder, closing) {
+      remainder = value
+      sub("^.*" key ":[[:space:]]*", "", remainder)
+      if (remainder ~ /^\[/) {
+        closing = index(remainder, "]")
+        if (closing) return substr(remainder, 1, closing)
+      }
+      sub(/[,}].*$/, "", remainder)
+      return remainder
+    }
     function flush_push() {
       if (in_push && (default_branch || (!branches_seen && !tags_seen && !ignored_default))) found = 1
       in_push = 0
@@ -53,19 +82,27 @@ workflow_pushes_default() {
           in_branches = 1
           in_ignored = 0
           filter_indent = indent
-          if (content ~ /(main|master)/) default_branch = 1
+          value = content
+          sub(/^branches:[[:space:]]*/, "", value)
+          if (list_has_default(value)) default_branch = 1
         } else if (content ~ /^branches-ignore:[[:space:]]*/) {
           in_branches = 0
           in_ignored = 1
           filter_indent = indent
-          if (content ~ /(main|master)/) ignored_default = 1
+          value = content
+          sub(/^branches-ignore:[[:space:]]*/, "", value)
+          if (list_has_default(value)) ignored_default = 1
         } else if (content ~ /^tags(-ignore)?:/) {
           tags_seen = 1
           in_branches = 0
           in_ignored = 0
-        } else if (content ~ /^-[[:space:]]*(main|master)[[:space:]]*$/ && indent > filter_indent) {
-          if (in_branches) default_branch = 1
-          if (in_ignored) ignored_default = 1
+        } else if (content ~ /^-[[:space:]]*/ && indent > filter_indent) {
+          value = content
+          sub(/^-[[:space:]]*/, "", value)
+          if (is_default_scalar(value)) {
+            if (in_branches) default_branch = 1
+            if (in_ignored) ignored_default = 1
+          }
         } else if (content != "" && indent <= filter_indent) {
           in_branches = 0
           in_ignored = 0
@@ -84,13 +121,15 @@ workflow_pushes_default() {
       in_branches = 0
       in_ignored = 0
       sub(/^push:[[:space:]]*/, "", content)
-      if (content ~ /branches:[^]}]*(main|master)/) {
+      if (content ~ /branches:[[:space:]]*/) {
         branches_seen = 1
-        default_branch = 1
-      } else if (content ~ /branches:/) {
-        branches_seen = 1
+        value = inline_filter_value(content, "branches")
+        if (list_has_default(value)) default_branch = 1
       }
-      if (content ~ /branches-ignore:[^]}]*(main|master)/) ignored_default = 1
+      if (content ~ /branches-ignore:[[:space:]]*/) {
+        value = inline_filter_value(content, "branches-ignore")
+        if (list_has_default(value)) ignored_default = 1
+      }
       if (content ~ /tags(-ignore)?:/) tags_seen = 1
       next
     }
