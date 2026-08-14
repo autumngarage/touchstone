@@ -75,7 +75,25 @@ and source-revision upgrade/rollback scenarios all belong there.
 
 Derive a temporary canary policy from the reviewed production policy; do not
 commit a second desired-state file that can drift. Change only the target
-repository, derived ownership-marker name, and repository-name condition.
+repository, derived ownership-marker name, repository-name condition, and the
+rollback prerequisites. The production prerequisite records Touchstone's
+historical local workflow, which the canary has never carried; leaving it in the
+derived policy makes backup and rollback demand an unrelated file.
+
+```bash
+canary_policy="$(mktemp)"
+jq '
+  .repository = "touchstone-policy-canary"
+  | .rollbackPrerequisites.repositoryFiles = []
+  | .managedRuleset.name = "Touchstone policy v1: autumngarage/touchstone-policy-canary@main"
+  | .managedRuleset.conditions.repository_name.include = ["touchstone-policy-canary"]
+' policy/github/touchstone-main.json >"$canary_policy"
+```
+
+The empty canary prerequisite list is deliberate: rollback restores the fresh
+branch-protection backup captured from the canary itself, not Touchstone's
+historical status-check workflow.
+
 Before each test, capture a fresh backup with `github-policy.sh backup`.
 Exercise the migration, effective-rule verification, blocked unsafe operation,
 and rollback paths as the change requires. Finish by rolling back the captured

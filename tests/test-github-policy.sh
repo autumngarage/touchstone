@@ -58,9 +58,9 @@ case "$method $endpoint" in
     emit '{"id":1333343261}'
     ;;
   "GET repos/autumngarage/touchstone-workflows/commits/main")
-    emit '{"sha":"776669cd7429e988a4e3e3cb7ef9d5a33a38e8ab"}'
+    emit '{"sha":"8b29144eaacc25f1fcf71e1db7cd160bc3bb9085"}'
     ;;
-  "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/validate.yml?ref=776669cd7429e988a4e3e3cb7ef9d5a33a38e8ab")
+  "GET repos/autumngarage/touchstone-workflows/contents/.github/workflows/validate.yml?ref=8b29144eaacc25f1fcf71e1db7cd160bc3bb9085")
     emit '{"type":"file"}'
     ;;
   "GET repos/autumngarage/touchstone/contents/.github/workflows/validate.yml?ref=main")
@@ -71,7 +71,7 @@ case "$method $endpoint" in
     fi
     emit "{\"type\":\"file\",\"sha\":\"${GH_FAKE_ROLLBACK_FILE_SHA:-c2dc082e0702090f3fc9de095d78a85ddde902a5}\"}"
     ;;
-  "GET repos/autumngarage/touchstone-workflows/compare/776669cd7429e988a4e3e3cb7ef9d5a33a38e8ab...776669cd7429e988a4e3e3cb7ef9d5a33a38e8ab")
+  "GET repos/autumngarage/touchstone-workflows/compare/8b29144eaacc25f1fcf71e1db7cd160bc3bb9085...8b29144eaacc25f1fcf71e1db7cd160bc3bb9085")
     emit '{"status":"identical"}'
     ;;
   "GET repos/autumngarage/touchstone-workflows/branches/main/protection")
@@ -337,6 +337,10 @@ grep -Fq 'Policy operations require `gh`, `git`, `jq`, and `diff`.' "$POLICY_GUI
   || fail "policy guide does not declare its jq runtime dependency"
 grep -Fq 'brew_install_if_missing "jq" "jq"' "$SETUP" \
   || fail "declared jq dependency is absent from setup"
+grep -Fq '.rollbackPrerequisites.repositoryFiles = []' "$POLICY_GUIDE" \
+  || fail "canary derivation retained Touchstone-only rollback prerequisites"
+grep -Fq 'rollback restores the fresh' "$POLICY_GUIDE" \
+  || fail "canary guide does not name the source of rollback protection"
 ok "ruleset expresses PR-only audited bypass and every native gate"
 
 echo "==> Read-only diff and dry-run"
