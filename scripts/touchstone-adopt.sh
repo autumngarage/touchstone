@@ -1480,10 +1480,13 @@ python_has_unverifiable_build_hook() {
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
       return value
     }
-    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+    /^[[:space:]]*\[[^]]+\][[:space:]]*(#.*)?$/ {
       section = $0
       sub(/^[[:space:]]*\[/, "", section)
-      sub(/\][[:space:]]*$/, "", section)
+      sub(/\][[:space:]]*(#.*)?$/, "", section)
+      normalized_section = section
+      gsub(/[[:space:]"\047]/, "", normalized_section)
+      if (normalized_section ~ /^tool[.]hatch[.](build|metadata)[.]hooks([.]|$)/) unsafe=1
       next
     }
     section == "build-system" && /^[[:space:]]*backend-path[[:space:]]*=/ { unsafe=1 }
