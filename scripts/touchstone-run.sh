@@ -389,7 +389,7 @@ clear_git_hook_env() {
 declared_command_head() {
   local input="$1" character quote="" token=""
   local escaped=false assignment_candidate=true assignment_equals=false
-  local token_quoted=false time_option_allowed=false assignment_seen=false
+  local assignment_append=false token_quoted=false time_option_allowed=false assignment_seen=false
   local command_operand_expected=false command_options_allowed=false command_flags
   local index=0 length="${#1}"
   COMMAND_PATH_SET=false
@@ -407,6 +407,7 @@ declared_command_head() {
     escaped=false
     assignment_candidate=true
     assignment_equals=false
+    assignment_append=false
     token_quoted=false
     while [ "$index" -lt "$length" ]; do
       character="${input:$index:1}"
@@ -449,6 +450,15 @@ declared_command_head() {
             fi
             token="$token$character"
             ;;
+          '+')
+            if [ "$assignment_equals" = false ] && [ "$assignment_append" = false ] \
+              && [ -n "$token" ] && [ "$assignment_candidate" = true ]; then
+              assignment_append=true
+            elif [ "$assignment_equals" = false ]; then
+              assignment_candidate=false
+            fi
+            token="$token$character"
+            ;;
           '$' | '`' | ';' | '&' | '|' | '(' | ')' | '<' | '>') return 1 ;;
           '#')
             if [ -z "$token" ]; then return 1; fi
@@ -456,7 +466,9 @@ declared_command_head() {
             ;;
           *)
             if [ "$assignment_equals" = false ]; then
-              if [ -z "$token" ]; then
+              if [ "$assignment_append" = true ]; then
+                assignment_candidate=false
+              elif [ -z "$token" ]; then
                 case "$character" in [A-Za-z_]) ;; *) assignment_candidate=false ;; esac
               else
                 case "$character" in [A-Za-z0-9_]) ;; *) assignment_candidate=false ;; esac
@@ -517,6 +529,11 @@ declared_command_head() {
       assignment_seen=true
       time_option_allowed=false
       case "$token" in
+        PATH+=*)
+          if [ "$COMMAND_PATH_SET" = false ]; then COMMAND_PATH_OVERRIDE="$PATH"; fi
+          COMMAND_PATH_SET=true
+          COMMAND_PATH_OVERRIDE="$COMMAND_PATH_OVERRIDE${token#PATH+=}"
+          ;;
         PATH=*)
           COMMAND_PATH_SET=true
           COMMAND_PATH_OVERRIDE="${token#PATH=}"
@@ -611,7 +628,8 @@ declared_command_unrunnable_code() {
   local command="$1" directory="$2" head
   local executable="" first_line shebang interpreter interpreter_path
   local child_path="$PATH" lookup_path
-  local env_command env_payload word env_index env_option_argument short_flags short_index short_flag
+  local env_command word env_index env_option_argument short_flags short_index short_flag
+  local split_payload split_join_index env_split_replaced=false
   local env_directory env_effective_path env_utility_path default_exec_path env_interpreter=false
   local -a shebang_words
   declared_command_head "$command" || return 0
@@ -659,6 +677,7 @@ declared_command_unrunnable_code() {
           *) break ;;
         esac
       done
+      read -r -a shebang_words <<<"$shebang"
       read -r interpreter _ <<<"$shebang"
       case "$interpreter" in *"$(printf '\r')"*)
         printf 'missing-interpreter\n'
@@ -680,9 +699,6 @@ declared_command_unrunnable_code() {
       fi
       case "$env_interpreter" in
         true)
-          env_payload="${shebang#"$interpreter"}"
-          literal_words "$env_payload" || return 0
-          shebang_words=("$interpreter" "${LITERAL_WORDS[@]}")
           env_command=""
           env_directory="$directory"
           env_effective_path="$child_path"
@@ -692,7 +708,32 @@ declared_command_unrunnable_code() {
           while [ "$env_index" -lt "${#shebang_words[@]}" ]; do
             word="${shebang_words[$env_index]}"
             case "$word" in
-              -S | --split-string | -0 | --null | -v | --debug)
+              -S | --split-string)
+                split_payload=""
+                split_join_index=$((env_index + 1))
+                while [ "$split_join_index" -lt "${#shebang_words[@]}" ]; do
+                  if [ -n "$split_payload" ]; then split_payload="$split_payload "; fi
+                  split_payload="$split_payload${shebang_words[$split_join_index]}"
+                  split_join_index=$((split_join_index + 1))
+                done
+                literal_words "$split_payload" || return 0
+                shebang_words=("${LITERAL_WORDS[@]}")
+                env_index=0
+                continue
+                ;;
+              --split-string=*)
+                split_payload="${word#--split-string=}"
+                split_join_index=$((env_index + 1))
+                while [ "$split_join_index" -lt "${#shebang_words[@]}" ]; do
+                  split_payload="$split_payload ${shebang_words[$split_join_index]}"
+                  split_join_index=$((split_join_index + 1))
+                done
+                literal_words "$split_payload" || return 0
+                shebang_words=("${LITERAL_WORDS[@]}")
+                env_index=0
+                continue
+                ;;
+              -0 | --null | -v | --debug)
                 env_index=$((env_index + 1))
                 ;;
               - | -i | --ignore-environment)
@@ -763,9 +804,18 @@ declared_command_unrunnable_code() {
                     0 | v) ;;
                     i) env_effective_path="$default_exec_path" ;;
                     S)
-                      env_option_argument="${short_flags:$((short_index + 1))}"
-                      if [ -n "$env_option_argument" ]; then
-                        env_command="$env_option_argument"
+                      split_payload="${short_flags:$((short_index + 1))}"
+                      split_join_index=$((env_index + 1))
+                      while [ "$split_join_index" -lt "${#shebang_words[@]}" ]; do
+                        if [ -n "$split_payload" ]; then split_payload="$split_payload "; fi
+                        split_payload="$split_payload${shebang_words[$split_join_index]}"
+                        split_join_index=$((split_join_index + 1))
+                      done
+                      if [ -n "$split_payload" ]; then
+                        literal_words "$split_payload" || return 0
+                        shebang_words=("${LITERAL_WORDS[@]}")
+                        env_index=0
+                        env_split_replaced=true
                       fi
                       short_index="${#short_flags}"
                       continue
@@ -797,6 +847,10 @@ declared_command_unrunnable_code() {
                   esac
                   short_index=$((short_index + 1))
                 done
+                if [ "$env_split_replaced" = true ]; then
+                  env_split_replaced=false
+                  continue
+                fi
                 [ -z "$env_command" ] || break
                 env_index=$((env_index + 1))
                 ;;

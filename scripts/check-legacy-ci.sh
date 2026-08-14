@@ -218,8 +218,29 @@ workflow_pushes_default() {
       }
       return value
     }
+    function flow_brace_balance(value, depth, position, character, quote, escaped) {
+      depth = 0
+      quote = ""
+      escaped = 0
+      for (position = 1; position <= length(value); position++) {
+        character = substr(value, position, 1)
+        if (escaped) {
+          escaped = 0
+        } else if (quote != "") {
+          if (character == "\\") escaped = 1
+          else if (character == quote) quote = ""
+        } else if (character == "\"" || character == "\047") {
+          quote = character
+        } else if (character == "{") {
+          depth++
+        } else if (character == "}") {
+          depth--
+        }
+      }
+      return depth
+    }
     function flow_on_pushes_default(value, rest) {
-      if (!match(value, /(^|[,{][[:space:]]*)push[[:space:]]*:/)) return 0
+      if (!match(value, /(^|[,{][[:space:]]*)(push|"push"|\047push\047)[[:space:]]*:/)) return 0
       rest = substr(value, RSTART + RLENGTH)
       sub(/^[[:space:]]*/, "", rest)
       selected_main = 0
@@ -255,22 +276,37 @@ workflow_pushes_default() {
       content = trimmed
       sub(/[[:space:]]*#.*/, "", content)
 
+      if (in_flow_on) {
+        flow_value = flow_value " " content
+        flow_depth += flow_brace_balance(content)
+        if (flow_depth <= 0) {
+          if (flow_on_pushes_default(flow_value)) found = 1
+          in_flow_on = 0
+        }
+        next
+      }
       if (in_push && content != "" && indent <= push_indent) flush_push()
       if (in_on && content != "" && indent <= on_indent) {
         flush_push()
         in_on = 0
       }
 
-      if (content ~ /^on:[[:space:]]*$/) {
+      if (content ~ /^(on|"on"|\047on\047):[[:space:]]*$/) {
         in_on = 1
         on_indent = indent
         next
       }
-      if (content ~ /^on:[[:space:]]*\{/ && flow_on_pushes_default(content)) {
-        found = 1
+      if (content ~ /^(on|"on"|\047on\047):[[:space:]]*\{/) {
+        flow_value = substr(content, index(content, ":") + 1)
+        flow_depth = flow_brace_balance(flow_value)
+        if (flow_depth <= 0) {
+          if (flow_on_pushes_default(flow_value)) found = 1
+        } else {
+          in_flow_on = 1
+        }
         next
       }
-      if (content ~ /^on:[[:space:]]*/ && event_list_has_push(substr(content, index(content, ":") + 1))) {
+      if (content ~ /^(on|"on"|\047on\047):[[:space:]]*/ && event_list_has_push(substr(content, index(content, ":") + 1))) {
         found = 1
         next
       }

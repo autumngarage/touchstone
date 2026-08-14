@@ -270,6 +270,16 @@ run_capture "$ENV_SPLIT_DETACHED" "$TMP_DIR/env-split-detached.out" --json
 [ "$RUN_STATUS" -eq 0 ] || fail "quoted detached env split-string command was not decoded"
 [ "$(cat "$ENV_SPLIT_DETACHED/marker")" = split-detached-ran ] || fail "quoted detached env split-string command did not run"
 
+ENV_LITERAL_QUOTES="$TMP_DIR/env-literal-quotes"
+write_contract "$ENV_LITERAL_QUOTES" "./env-literal-quotes-script || true"
+printf '#!/usr/bin/env "bash"\nprintf body-must-not-run > marker\n' >"$ENV_LITERAL_QUOTES/env-literal-quotes-script"
+chmod +x "$ENV_LITERAL_QUOTES/env-literal-quotes-script"
+run_capture "$ENV_LITERAL_QUOTES" "$TMP_DIR/env-literal-quotes.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "ordinary env arguments were decoded without -S"
+assert_contains "$TMP_DIR/env-literal-quotes.out" '"ran":0'
+assert_contains "$TMP_DIR/env-literal-quotes.out" '"reason":"command-not-started"'
+[ ! -e "$ENV_LITERAL_QUOTES/marker" ] || fail "literal-quote env body unexpectedly ran"
+
 ENV_DASH_COMMAND="$TMP_DIR/env-dash-command"
 mkdir -p "$ENV_DASH_COMMAND/bin"
 write_contract "$ENV_DASH_COMMAND" "PATH=$ENV_DASH_COMMAND/bin ./env-dash-script"
@@ -382,6 +392,12 @@ write_contract "$PATH_ASSIGNMENT" "PATH=bin declared-tool"
 run_capture "$PATH_ASSIGNMENT" "$TMP_DIR/path-assignment.out" --json
 [ "$RUN_STATUS" -eq 0 ] || fail "literal PATH assignment was ignored during preflight"
 [ "$(cat "$PATH_ASSIGNMENT/marker")" = path-ran ] || fail "PATH-resolved tool did not run"
+
+PATH_APPEND="$TMP_DIR/path-append"
+write_contract "$PATH_APPEND" "PATH= PATH+=/bin sh -c 'printf path-append-ran > marker'"
+run_capture "$PATH_APPEND" "$TMP_DIR/path-append.out" --json
+[ "$RUN_STATUS" -eq 0 ] || fail "PATH append assignment was not modeled during preflight"
+[ "$(cat "$PATH_APPEND/marker")" = path-append-ran ] || fail "PATH append assignment task did not run"
 
 QUOTED_EQUALS_HEAD="$TMP_DIR/quoted-equals-head"
 write_contract "$QUOTED_EQUALS_HEAD" "\\\"FAKE=assignment\\\" ignored-argument"
@@ -670,6 +686,17 @@ on: {push: {}, pull_request: {branches: [release]}}
 steps:
   - run: pre-commit run --all-files --hook-stage pre-commit
 EOF
+cat >"$LEGACY/.github/workflows/flow-multiline.yml" <<'EOF'
+on: {pull_request: {},
+  push: {}}
+steps:
+  - run: pre-commit run --all-files --hook-stage pre-commit
+EOF
+cat >"$LEGACY/.github/workflows/flow-quoted-key.yml" <<'EOF'
+on: {"push": {}}
+steps:
+  - run: pre-commit run --all-files --hook-stage pre-commit
+EOF
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/compat.out" 2>"$TMP_DIR/compat.err"
 status=$?
@@ -686,6 +713,8 @@ assert_contains "$TMP_DIR/compat.out" "class-default.yml"
 assert_contains "$TMP_DIR/compat.out" "flow-trigger.yml"
 assert_not_contains "$TMP_DIR/compat.out" "flow-filtered.yml"
 assert_contains "$TMP_DIR/compat.out" "flow-neighbor-filter.yml"
+assert_contains "$TMP_DIR/compat.out" "flow-multiline.yml"
+assert_contains "$TMP_DIR/compat.out" "flow-quoted-key.yml"
 assert_contains "$TMP_DIR/compat.err" "SKIP=no-commit-to-branch"
 printf '\n# SKIP=no-commit-to-branch is not a repair\n' >>"$LEGACY/.github/workflows/validate.yml"
 set +e
@@ -710,6 +739,8 @@ rm "$LEGACY/.github/workflows/glob-default.yml"
 rm "$LEGACY/.github/workflows/class-default.yml"
 rm "$LEGACY/.github/workflows/flow-trigger.yml"
 rm "$LEGACY/.github/workflows/flow-neighbor-filter.yml"
+rm "$LEGACY/.github/workflows/flow-multiline.yml"
+rm "$LEGACY/.github/workflows/flow-quoted-key.yml"
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/bare-assignment.out" 2>"$TMP_DIR/bare-assignment.err"
 status=$?
