@@ -355,15 +355,6 @@ while IFS="$(printf '\t')" read -r task_name task_target _task_required _task_co
   fi
 done <"$TASKS_FILE"
 
-if [ "$CHECK_CONTRACT" = true ]; then
-  if [ "$JSON_MODE" = true ]; then
-    printf '{"schema":1,"verdict":"valid"}\n'
-  else
-    printf 'schema-v1 contract is valid\n'
-  fi
-  exit 0
-fi
-
 resolve_target() {
   local target_name="$1" target_path="$2" resolved_target
   if [ ! -d "$PROJECT_ROOT/$target_path" ]; then
@@ -389,6 +380,15 @@ done <"$TARGETS_FILE"
 if [ "$FAILED" -ne 0 ]; then
   emit_report failed
   exit "$EXIT_STATUS"
+fi
+
+if [ "$CHECK_CONTRACT" = true ]; then
+  if [ "$JSON_MODE" = true ]; then
+    printf '{"schema":1,"verdict":"valid"}\n'
+  else
+    printf 'schema-v1 contract is valid\n'
+  fi
+  exit 0
 fi
 
 clear_git_hook_env() {

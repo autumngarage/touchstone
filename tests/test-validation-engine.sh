@@ -897,6 +897,9 @@ assert_contains "$ADOPT_NODE/AGENTS.md" "KEEP a/old/ b/new/ PROSE"
 assert_contains "$ADOPT_NODE/AGENTS.md" '<!-- touchstone:steering:start -->'
 assert_contains "$ADOPT_NODE/CLAUDE.md" '@.touchstone/TOUCHSTONE.md'
 assert_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" '.touchstone/principles/git-workflow.md'
+assert_not_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" 'scripts/claim-issue.sh'
+assert_not_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" 'scripts/respond-review.sh'
+assert_not_contains "$ADOPT_NODE/.touchstone/principles/git-workflow.md" 'bash scripts/'
 bash "$RUNNER" validate --check-contract --project "$ADOPT_NODE" >/dev/null
 commit_adoption_repo "$ADOPT_NODE" "adopt"
 run_adoption "$TMP_DIR/adopt-node-repeat.out" adopt --check --project "$ADOPT_NODE"
@@ -1061,6 +1064,11 @@ printf '%s\n' '{"scripts":{"test":{}}}' >"$ADOPT_BAD_JSON/package.json"
 run_adoption "$TMP_DIR/adopt-bad-script.out" adopt --dry-run --project "$ADOPT_BAD_JSON"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "non-string package script did not refuse"
 assert_contains "$TMP_DIR/adopt-bad-script.out.err" "package.json is malformed"
+printf '%s\n' '{"scripts":{"test":"node --test"} "missingComma":true}' \
+  >"$ADOPT_BAD_JSON/package.json"
+run_adoption "$TMP_DIR/adopt-invalid-json.out" adopt --dry-run --project "$ADOPT_BAD_JSON"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "syntactically invalid package.json did not refuse"
+assert_contains "$TMP_DIR/adopt-invalid-json.out.err" "package.json is malformed"
 
 ADOPT_UNSUPPORTED="$TMP_DIR/adopt-unsupported"
 init_adoption_repo "$ADOPT_UNSUPPORTED"
@@ -1072,6 +1080,30 @@ run_adoption "$TMP_DIR/adopt-unsupported.out" upgrade --check --json --project "
 assert_contains "$TMP_DIR/adopt-unsupported.out" '"status":"contract-refused"'
 assert_contains "$TMP_DIR/adopt-unsupported.out" "accepts schema 1"
 
+ADOPT_MISSING_TARGET="$TMP_DIR/adopt-missing-target"
+init_adoption_repo "$ADOPT_MISSING_TARGET"
+cat >"$ADOPT_MISSING_TARGET/.touchstone.toml" <<'EOF'
+schema = 1
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "missing"
+path = "missing"
+
+[[validation.tasks]]
+name = "test"
+target = "missing"
+command = "true"
+required = true
+EOF
+commit_adoption_repo "$ADOPT_MISSING_TARGET" "fixture"
+git -C "$ADOPT_MISSING_TARGET" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-missing-target.out" adopt --dry-run --project "$ADOPT_MISSING_TARGET"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "existing contract with a missing target did not refuse"
+assert_contains "$TMP_DIR/adopt-missing-target.out.err" "path not found: missing"
+
 echo "==> adoption refuses default, dirty, and symlink-escaped writes"
 ADOPT_SAFETY="$TMP_DIR/adopt-safety"
 init_adoption_repo "$ADOPT_SAFETY"
@@ -1082,7 +1114,7 @@ run_adoption "$TMP_DIR/adopt-default.out" adopt --project "$ADOPT_SAFETY"
 assert_contains "$TMP_DIR/adopt-default.out.err" "non-default branch"
 [ ! -e "$ADOPT_SAFETY/.touchstone.toml" ] || fail "default-branch refusal partially wrote"
 git -C "$ADOPT_SAFETY" switch -q -c feat/adopt
-printf 'dirty\n' >>"$ADOPT_SAFETY/package.json"
+printf '\n' >>"$ADOPT_SAFETY/package.json"
 run_adoption "$TMP_DIR/adopt-dirty.out" adopt --project "$ADOPT_SAFETY"
 [ "$ADOPTION_STATUS" -eq 5 ] || fail "dirty apply did not refuse"
 assert_contains "$TMP_DIR/adopt-dirty.out.err" "clean worktree"
@@ -1100,6 +1132,18 @@ run_adoption "$TMP_DIR/adopt-symlink.out" adopt --dry-run --project "$ADOPT_SYML
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "symlinked managed ancestor did not refuse"
 assert_contains "$TMP_DIR/adopt-symlink.out.err" "managed path traverses a symlink"
 [ -z "$(find "$ADOPT_OUTSIDE" -mindepth 1 -print -quit)" ] || fail "adoption wrote outside its boundary"
+
+ADOPT_TARGET_SYMLINK="$TMP_DIR/adopt-target-symlink"
+ADOPT_TARGET_OUTSIDE="$TMP_DIR/adopt-target-outside"
+init_adoption_repo "$ADOPT_TARGET_SYMLINK"
+mkdir -p "$ADOPT_TARGET_SYMLINK/apps" "$ADOPT_TARGET_OUTSIDE"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_TARGET_OUTSIDE/package.json"
+ln -s "$ADOPT_TARGET_OUTSIDE" "$ADOPT_TARGET_SYMLINK/apps/external"
+commit_adoption_repo "$ADOPT_TARGET_SYMLINK" "fixture"
+git -C "$ADOPT_TARGET_SYMLINK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-target-symlink.out" adopt --dry-run --project "$ADOPT_TARGET_SYMLINK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "symlinked monorepo target did not refuse"
+assert_contains "$TMP_DIR/adopt-target-symlink.out.err" "resolves outside the repository"
 
 ADOPT_MARKERS="$TMP_DIR/adopt-markers"
 init_adoption_repo "$ADOPT_MARKERS"

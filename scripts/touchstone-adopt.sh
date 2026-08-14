@@ -322,6 +322,116 @@ detect_profile() {
   fi
 }
 
+validate_json_document() {
+  local file="$1"
+  awk '
+    function value_allowed() {
+      if (depth == 0) return root_state == "value"
+      if (kind[depth] == "object") return state[depth] == "value"
+      return state[depth] == "value_or_end" || state[depth] == "value"
+    }
+    function value_complete() {
+      if (depth == 0) root_state = "done"
+      else state[depth] = "comma_or_end"
+    }
+    function begin_value(token) {
+      if (!value_allowed()) { invalid = 1; return }
+      if (depth == 0 && token != "{") { invalid = 1; return }
+      if (token == "{") {
+        depth++
+        kind[depth] = "object"
+        state[depth] = "key_or_end"
+      } else if (token == "[") {
+        depth++
+        kind[depth] = "array"
+        state[depth] = "value_or_end"
+      } else value_complete()
+    }
+    function close_container(token, expected) {
+      expected = token == "}" ? "object" : "array"
+      if (depth == 0 || kind[depth] != expected) { invalid = 1; return }
+      if (expected == "object") {
+        if (state[depth] != "key_or_end" && state[depth] != "comma_or_end") {
+          invalid = 1
+          return
+        }
+      } else if (state[depth] != "value_or_end" && state[depth] != "comma_or_end") {
+        invalid = 1
+        return
+      }
+      delete kind[depth]
+      delete state[depth]
+      depth--
+      value_complete()
+    }
+    function accept(token) {
+      if (invalid) return
+      if (token == "string" && depth > 0 && kind[depth] == "object" &&
+          (state[depth] == "key_or_end" || state[depth] == "key")) {
+        state[depth] = "colon"
+      } else if (token == ":") {
+        if (depth == 0 || kind[depth] != "object" || state[depth] != "colon") invalid = 1
+        else state[depth] = "value"
+      } else if (token == ",") {
+        if (depth == 0 || state[depth] != "comma_or_end") invalid = 1
+        else if (kind[depth] == "object") state[depth] = "key"
+        else state[depth] = "value"
+      } else if (token == "}" || token == "]") close_container(token)
+      else begin_value(token)
+    }
+    function finish_raw() {
+      if (raw_token == "true" || raw_token == "false" || raw_token == "null" ||
+          raw_token ~ /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/) accept("scalar")
+      else invalid = 1
+      raw = 0
+      raw_token = ""
+    }
+    function punctuation(character) {
+      return character == "{" || character == "}" || character == "[" ||
+        character == "]" || character == ":" || character == ","
+    }
+    BEGIN { root_state = "value" }
+    {
+      line = $0 "\n"
+      for (position = 1; position <= length(line); position++) {
+        character = substr(line, position, 1)
+        if (raw) {
+          if (character ~ /[[:space:]]/ || punctuation(character)) {
+            finish_raw()
+            position--
+          } else raw_token = raw_token character
+          continue
+        }
+        if (in_string) {
+          if (unicode_left > 0) {
+            if (character !~ /^[0-9A-Fa-f]$/) invalid = 1
+            unicode_left--
+          } else if (escaped) {
+            if (character == "u") unicode_left = 4
+            else if (index("\"\\/bfnrt", character) == 0) invalid = 1
+            escaped = 0
+          } else if (character == "\\") escaped = 1
+          else if (character == "\"") {
+            in_string = 0
+            accept("string")
+          } else if (character ~ /[[:cntrl:]]/) invalid = 1
+          continue
+        }
+        if (character ~ /[[:space:]]/) continue
+        if (character == "\"") { in_string = 1; continue }
+        if (punctuation(character)) { accept(character); continue }
+        raw = 1
+        raw_token = character
+      }
+    }
+    END {
+      if (raw) finish_raw()
+      if (in_string || escaped || unicode_left > 0 || depth != 0 || root_state != "done") invalid = 1
+      exit invalid ? 1 : 0
+    }
+  ' "$file"
+}
+
 json_object_has_key() {
   local file="$1" object="$2" wanted="$3"
   awk -v object="$object" -v wanted="$wanted" '
@@ -463,6 +573,8 @@ json_root_string_value() {
 node_package_manager() {
   local directory="$1" inherited="${2:-}" fallback="${3-npm}" count=0 manager="" declared="" declaration_status
   if [ -f "$directory/package.json" ]; then
+    validate_json_document "$directory/package.json" \
+      || contract_refusal "package.json is malformed"
     if declared="$(json_root_string_value "$directory/package.json" packageManager)"; then
       declaration_status=0
     else
@@ -622,12 +734,18 @@ target_name_for_path() {
 }
 
 compile_detected() {
-  local base directory relative profile target suffix found_targets=false workspace_node_manager
+  local base directory relative profile target suffix found_targets=false workspace_node_manager resolved_directory
   workspace_node_manager="$(node_package_manager "$PROJECT_ROOT" "" "")"
   for base in apps packages services; do
     [ -d "$PROJECT_ROOT/$base" ] || continue
     for directory in "$PROJECT_ROOT/$base"/*; do
       [ -d "$directory" ] || continue
+      resolved_directory="$(cd "$directory" 2>/dev/null && pwd -P)" \
+        || contract_refusal "could not resolve monorepo target ${directory#"$PROJECT_ROOT"/}"
+      case "$resolved_directory" in "$PROJECT_ROOT"/*) ;; *)
+        contract_refusal "monorepo target ${directory#"$PROJECT_ROOT"/} resolves outside the repository"
+        ;;
+      esac
       profile="$(detect_profile "$directory")"
       [ "$profile" = generic ] && continue
       relative="${directory#"$PROJECT_ROOT"/}"

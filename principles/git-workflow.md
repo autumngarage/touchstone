@@ -106,16 +106,7 @@ conversation resolution separately requires every inline thread closed.
 
 ## Answering findings
 
-Answer each finding with the canonical response command instead of hand-rolling API calls:
-
-```bash
-bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file> [--fix-commit <sha>]
-bash scripts/respond-review.sh <pr> --all-resolved-check
-```
-
-It posts the threaded reply, resolves the thread, and verifies the resolution stuck, with bounded retries for transient API failures. GitHub needs four separate calls to do this correctly, which is why it is a script rather than a line of prose.
-
-The raw equivalent, if you need it: reply with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<id>/replies -f body=@<file>`, then resolve with the GraphQL mutation:
+Answer each finding on its exact thread. Reply with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<id>/replies -f body=@<file>`, then resolve with the GraphQL mutation:
 
 ```bash
 gh api graphql -f query='
@@ -364,20 +355,14 @@ Merge a chain in order, parent first, repeating both steps for each next child.
 
 Before spawning a coding agent — Claude Code subagent, Codex CLI, or any other — to work on a GitHub issue, **claim it first**. Set the assignee, post a one-line dispatch comment, then spawn the agent. The cost is ten seconds per issue; the cost of skipping it is two agents picking up the same issue and shipping competing PRs.
 
-**The mechanical steps.**
-
-```bash
-bash scripts/claim-issue.sh <n>
-```
-
-Under the hood this uses the same GitHub API flow (claim + dispatch comment), equivalent to:
+**The mechanical steps for a GitHub issue.**
 
 ```bash
 gh issue edit <n> --add-assignee @me
 gh issue comment <n> --body "Dispatched. Branch \`<branch>\`, worktree at \`<path>\`. <agent type> implementing."
 ```
 
-The script is preferred because it detects races — another assignee appearing between the API read and write — and exits non-zero so the dispatching agent knows not to start work.
+Re-read the assignees after the write and stop if another owner won the race. For a non-GitHub tracker, use its configured adapter to perform the same claim and dispatch transition.
 
 Then start the agent. Not after.
 
