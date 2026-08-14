@@ -923,6 +923,20 @@ assert_contains "$TMP_DIR/adopt-node-upgrade-needed.out" '"status":"changes-requ
 run_adoption "$TMP_DIR/adopt-node-upgrade-apply.out" upgrade --project "$ADOPT_NODE"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "explicit steering upgrade failed"
 assert_not_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" "old compatible steering"
+commit_adoption_repo "$ADOPT_NODE" "upgrade"
+awk '{ printf "%s\r\n", $0 }' "$ADOPT_NODE/AGENTS.md" >"$ADOPT_NODE/AGENTS.crlf"
+mv "$ADOPT_NODE/AGENTS.crlf" "$ADOPT_NODE/AGENTS.md"
+sed 's/Humans approve plans/Humans approve stale plans/' "$ADOPT_NODE/AGENTS.md" \
+  >"$ADOPT_NODE/AGENTS.stale"
+mv "$ADOPT_NODE/AGENTS.stale" "$ADOPT_NODE/AGENTS.md"
+commit_adoption_repo "$ADOPT_NODE" "crlf steering"
+run_adoption "$TMP_DIR/adopt-node-crlf-upgrade.out" upgrade --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "CRLF steering upgrade failed"
+[ "$(grep -cF '<!-- touchstone:steering:start -->' "$ADOPT_NODE/AGENTS.md")" -eq 1 ] \
+  || fail "CRLF upgrade duplicated the managed block"
+awk 'NR == 1 { exit substr($0, length($0), 1) != "\r" }' "$ADOPT_NODE/AGENTS.md" \
+  || fail "CRLF upgrade changed project-owned line endings"
+assert_contains "$ADOPT_NODE/AGENTS.md" "KEEP a/old/ b/new/ PROSE"
 
 echo "==> adoption preserves accepted schema-v1 declarations"
 ADOPT_EXISTING="$TMP_DIR/adopt-existing"
@@ -1066,6 +1080,19 @@ git -C "$ADOPT_ESCAPED_JSON" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-escaped-json.out" adopt --project "$ADOPT_ESCAPED_JSON"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "escaped JSON adoption failed"
 assert_contains "$ADOPT_ESCAPED_JSON/.touchstone.toml" 'command = "pnpm run test"'
+
+ADOPT_EMPTY_AGGREGATE="$TMP_DIR/adopt-empty-aggregate"
+init_adoption_repo "$ADOPT_EMPTY_AGGREGATE"
+printf '%s\n' '{"scripts":{"validate":"","verify":" \t","test":"node --test"}}' \
+  >"$ADOPT_EMPTY_AGGREGATE/package.json"
+printf '{}\n' >"$ADOPT_EMPTY_AGGREGATE/package-lock.json"
+commit_adoption_repo "$ADOPT_EMPTY_AGGREGATE" "fixture"
+git -C "$ADOPT_EMPTY_AGGREGATE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-empty-aggregate.out" adopt --project "$ADOPT_EMPTY_AGGREGATE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "empty aggregate adoption failed"
+assert_contains "$ADOPT_EMPTY_AGGREGATE/.touchstone.toml" 'command = "npm run test"'
+assert_not_contains "$ADOPT_EMPTY_AGGREGATE/.touchstone.toml" 'npm run validate'
+assert_not_contains "$ADOPT_EMPTY_AGGREGATE/.touchstone.toml" 'npm run verify'
 
 ADOPT_BAD_JSON="$TMP_DIR/adopt-bad-json"
 init_adoption_repo "$ADOPT_BAD_JSON"

@@ -458,7 +458,10 @@ json_object_has_key() {
       return character
     }
     function finish_string() {
-      pending = token
+      if (capturing_value) {
+        if (token ~ /[^[:space:]]/) found = 1
+        capturing_value = 0
+      } else pending = token
       token = ""
       in_string = 0
     }
@@ -492,9 +495,9 @@ json_object_has_key() {
         if (seeking_value && c ~ /[[:space:]]/) continue
         if (seeking_value) {
           if (c == "\"") {
-            found = 1
             seeking_value = 0
             in_string = 1
+            capturing_value = 1
             token = ""
             continue
           }
@@ -948,7 +951,7 @@ render_claude_block() {
 
 merge_managed_block() {
   local destination="$1" block="$2" output="$3" default_heading="$4"
-  local begin_count end_count begin_line end_line in_block=false inserted=false line
+  local begin_count end_count begin_line end_line in_block=false inserted=false line comparison
   if [ ! -e "$destination" ]; then
     {
       printf '# %s\n\n' "$default_heading"
@@ -957,8 +960,10 @@ merge_managed_block() {
     return 0
   fi
   [ -f "$destination" ] || contract_refusal "steering path is not a regular file: ${destination#"$PROJECT_ROOT"/}"
-  begin_count="$(grep -cFx "$TOUCHSTONE_BLOCK_BEGIN" "$destination" || true)"
-  end_count="$(grep -cFx "$TOUCHSTONE_BLOCK_END" "$destination" || true)"
+  begin_count="$(awk -v marker="$TOUCHSTONE_BLOCK_BEGIN" \
+    '{ line=$0; sub(/\r$/, "", line); if (line == marker) count++ } END { print count + 0 }' "$destination")"
+  end_count="$(awk -v marker="$TOUCHSTONE_BLOCK_END" \
+    '{ line=$0; sub(/\r$/, "", line); if (line == marker) count++ } END { print count + 0 }' "$destination")"
   if [ "$begin_count" -ne "$end_count" ] || [ "$begin_count" -gt 1 ]; then
     contract_refusal "steering markers are malformed in ${destination#"$PROJECT_ROOT"/}"
   fi
@@ -969,17 +974,20 @@ merge_managed_block() {
     cat "$block" >>"$output"
     return 0
   fi
-  begin_line="$(awk -v marker="$TOUCHSTONE_BLOCK_BEGIN" '$0 == marker { print NR }' "$destination")"
-  end_line="$(awk -v marker="$TOUCHSTONE_BLOCK_END" '$0 == marker { print NR }' "$destination")"
+  begin_line="$(awk -v marker="$TOUCHSTONE_BLOCK_BEGIN" \
+    '{ line=$0; sub(/\r$/, "", line); if (line == marker) print NR }' "$destination")"
+  end_line="$(awk -v marker="$TOUCHSTONE_BLOCK_END" \
+    '{ line=$0; sub(/\r$/, "", line); if (line == marker) print NR }' "$destination")"
   if [ "$begin_line" -ge "$end_line" ]; then
     contract_refusal "steering markers are out of order in ${destination#"$PROJECT_ROOT"/}"
   fi
   while IFS= read -r line || [ -n "$line" ]; do
+    comparison="${line%"$CR"}"
     if [ "$in_block" = true ]; then
-      if [ "$line" = "$TOUCHSTONE_BLOCK_END" ]; then in_block=false; fi
+      if [ "$comparison" = "$TOUCHSTONE_BLOCK_END" ]; then in_block=false; fi
       continue
     fi
-    if [ "$line" = "$TOUCHSTONE_BLOCK_BEGIN" ]; then
+    if [ "$comparison" = "$TOUCHSTONE_BLOCK_BEGIN" ]; then
       if [ "$inserted" = false ]; then
         cat "$block" >>"$output"
         inserted=true
