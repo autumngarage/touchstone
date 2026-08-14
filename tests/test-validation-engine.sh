@@ -126,6 +126,13 @@ run_capture "$ASSIGNMENT_COMMAND" "$TMP_DIR/assignment-command.out" --json
 assert_contains "$TMP_DIR/assignment-command.out" '"ran":0'
 assert_contains "$TMP_DIR/assignment-command.out" '"reason":"command-not-started"'
 
+FALLBACK_COMMAND="$TMP_DIR/fallback-command"
+write_contract "$FALLBACK_COMMAND" "missing-touchstone-command || true"
+run_capture "$FALLBACK_COMMAND" "$TMP_DIR/fallback-command.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "fallback laundered an unavailable command"
+assert_contains "$TMP_DIR/fallback-command.out" '"ran":0'
+assert_contains "$TMP_DIR/fallback-command.out" '"reason":"command-not-started"'
+
 QUOTED_ASSIGNMENT="$TMP_DIR/quoted-assignment"
 write_contract "$QUOTED_ASSIGNMENT" "LABEL=\\\"two words\\\" missing-touchstone-command"
 run_capture "$QUOTED_ASSIGNMENT" "$TMP_DIR/quoted-assignment.out" --json
@@ -351,6 +358,20 @@ on:
 steps:
   - run: pre-commit run --all-files --hook-stage pre-commit
 EOF
+cat >"$LEGACY/.github/workflows/glob-default.yml" <<'EOF'
+on:
+  push:
+    branches: ['**']
+steps:
+  - run: pre-commit run --all-files --hook-stage pre-commit
+EOF
+cat >"$LEGACY/.github/workflows/excluded-defaults.yml" <<'EOF'
+on:
+  push:
+    branches: ['**', '!main', '!master']
+steps:
+  - run: pre-commit run --all-files --hook-stage pre-commit
+EOF
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/compat.out" 2>"$TMP_DIR/compat.err"
 status=$?
@@ -361,6 +382,8 @@ assert_not_contains "$TMP_DIR/compat.out" "comment-only.yml"
 assert_not_contains "$TMP_DIR/compat.out" "mixed-trigger.yml"
 assert_not_contains "$TMP_DIR/compat.out" "substring-branch.yml"
 assert_contains "$TMP_DIR/compat.out" "quoted-default.yml"
+assert_contains "$TMP_DIR/compat.out" "glob-default.yml"
+assert_not_contains "$TMP_DIR/compat.out" "excluded-defaults.yml"
 assert_contains "$TMP_DIR/compat.err" "SKIP=no-commit-to-branch"
 printf '\n# SKIP=no-commit-to-branch is not a repair\n' >>"$LEGACY/.github/workflows/validate.yml"
 set +e
@@ -381,6 +404,7 @@ sed 's#run: pre-commit run#env: {SKIP: no-commit-to-branch}\n    run: pre-commit
   "$LEGACY/.github/workflows/validate.yml" >"$LEGACY/.github/workflows/fixed.yml"
 rm "$LEGACY/.github/workflows/validate.yml"
 rm "$LEGACY/.github/workflows/quoted-default.yml"
+rm "$LEGACY/.github/workflows/glob-default.yml"
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/bare-assignment.out" 2>"$TMP_DIR/bare-assignment.err"
 status=$?

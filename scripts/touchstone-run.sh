@@ -546,9 +546,10 @@ run_command() {
   RUN_COMMAND_STATUS="$status"
 }
 
-command_was_not_started() {
-  case "$1:$2" in
-    126:126 | 127:127 | missing-interpreter:126 | missing-interpreter:127) return 0 ;;
+unrunnable_status() {
+  case "$1" in
+    126 | 127) printf '%s\n' "$1" ;;
+    missing-interpreter) printf '127\n' ;;
     *) return 1 ;;
   esac
 }
@@ -556,15 +557,18 @@ command_was_not_started() {
 if [ -n "$SETUP_COMMAND" ]; then
   progress "==> setup (root): $SETUP_COMMAND"
   unrunnable="$(declared_command_unrunnable_code "$SETUP_COMMAND" "$PROJECT_ROOT")"
+  if [ -n "$unrunnable" ]; then
+    status="$(unrunnable_status "$unrunnable")"
+    progress "ERROR: setup failed on root (exit $status, command-not-started)"
+    record_failure setup root "$status" command-not-started
+    emit_report failed
+    exit "$EXIT_STATUS"
+  fi
   run_command "$SETUP_COMMAND" "$PROJECT_ROOT"
   status="$RUN_COMMAND_STATUS"
   if [ "$status" -ne 0 ]; then
-    reason="command-failed"
-    if command_was_not_started "$unrunnable" "$status"; then
-      reason="command-not-started"
-    fi
-    progress "ERROR: setup failed on root (exit $status, $reason)"
-    record_failure setup root "$status" "$reason"
+    progress "ERROR: setup failed on root (exit $status, command-failed)"
+    record_failure setup root "$status" command-failed
     emit_report failed
     exit "$EXIT_STATUS"
   fi
@@ -580,6 +584,12 @@ while IFS="$(printf '\t')" read -r task_name task_target _task_required task_com
 
   progress "==> $task_name ($task_target): $task_command"
   unrunnable="$(declared_command_unrunnable_code "$task_command" "$PROJECT_ROOT/$target_path")"
+  if [ -n "$unrunnable" ]; then
+    status="$(unrunnable_status "$unrunnable")"
+    progress "ERROR: $task_name failed on $task_target (exit $status, command-not-started)"
+    record_failure "$task_name" "$task_target" "$status" command-not-started
+    continue
+  fi
   RAN=$((RAN + 1))
   run_command "$task_command" "$PROJECT_ROOT/$target_path"
   status="$RUN_COMMAND_STATUS"
@@ -588,13 +598,8 @@ while IFS="$(printf '\t')" read -r task_name task_target _task_required task_com
     continue
   fi
 
-  reason="command-failed"
-  if command_was_not_started "$unrunnable" "$status"; then
-    RAN=$((RAN - 1))
-    reason="command-not-started"
-  fi
-  progress "ERROR: $task_name failed on $task_target (exit $status, $reason)"
-  record_failure "$task_name" "$task_target" "$status" "$reason"
+  progress "ERROR: $task_name failed on $task_target (exit $status, command-failed)"
+  record_failure "$task_name" "$task_target" "$status" command-failed
 done <"$TASKS_FILE"
 
 if [ "$RAN" -eq 0 ] && [ "$FAILED" -eq 0 ]; then

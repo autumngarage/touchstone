@@ -26,17 +26,52 @@ workflow_pushes_default() {
       if ((value ~ /^".*"$/) || (value ~ /^\047.*\047$/)) value = substr(value, 2, length(value) - 2)
       return value
     }
-    function is_default_scalar(value) {
+    function glob_matches(value, branch, position, character, next_character, regex) {
       value = trim_scalar(value)
-      return value == "main" || value == "master"
+      regex = "^"
+      for (position = 1; position <= length(value); position++) {
+        character = substr(value, position, 1)
+        next_character = substr(value, position + 1, 1)
+        if (character == "*") {
+          regex = regex ".*"
+          if (next_character == "*") position++
+        } else if (character == "?") {
+          regex = regex "."
+        } else if (character == "." || character == "^" || character == "$" \
+          || character == "(" || character == ")" || character == "+" \
+          || character == "{" || character == "}" || character == "|" \
+          || character == "[" || character == "]" || character == "\\") {
+          regex = regex "\\" character
+        } else {
+          regex = regex character
+        }
+      }
+      return branch ~ (regex "$")
     }
-    function list_has_default(value, count, values, item) {
+    function apply_branch_pattern(value, ignored, negative) {
       value = trim_scalar(value)
-      if (value !~ /^\[.*\]$/) return is_default_scalar(value)
+      negative = (substr(value, 1, 1) == "!")
+      if (negative) value = substr(value, 2)
+      if (glob_matches(value, "main")) {
+        if (ignored) ignored_main = 1
+        else selected_main = !negative
+      }
+      if (glob_matches(value, "master")) {
+        if (ignored) ignored_master = 1
+        else selected_master = !negative
+      }
+      default_branch = selected_main || selected_master
+      ignored_default = ignored_main && ignored_master
+    }
+    function apply_branch_list(value, ignored, count, values, item) {
+      value = trim_scalar(value)
+      if (value !~ /^\[.*\]$/) {
+        apply_branch_pattern(value, ignored)
+        return
+      }
       value = substr(value, 2, length(value) - 2)
       count = split(value, values, ",")
-      for (item = 1; item <= count; item++) if (is_default_scalar(values[item])) return 1
-      return 0
+      for (item = 1; item <= count; item++) apply_branch_pattern(values[item], ignored)
     }
     function inline_filter_value(value, key, remainder, closing) {
       remainder = value
@@ -84,14 +119,14 @@ workflow_pushes_default() {
           filter_indent = indent
           value = content
           sub(/^branches:[[:space:]]*/, "", value)
-          if (list_has_default(value)) default_branch = 1
+          apply_branch_list(value, 0)
         } else if (content ~ /^branches-ignore:[[:space:]]*/) {
           in_branches = 0
           in_ignored = 1
           filter_indent = indent
           value = content
           sub(/^branches-ignore:[[:space:]]*/, "", value)
-          if (list_has_default(value)) ignored_default = 1
+          apply_branch_list(value, 1)
         } else if (content ~ /^tags(-ignore)?:/) {
           tags_seen = 1
           in_branches = 0
@@ -99,10 +134,8 @@ workflow_pushes_default() {
         } else if (content ~ /^-[[:space:]]*/ && indent > filter_indent) {
           value = content
           sub(/^-[[:space:]]*/, "", value)
-          if (is_default_scalar(value)) {
-            if (in_branches) default_branch = 1
-            if (in_ignored) ignored_default = 1
-          }
+          if (in_branches) apply_branch_pattern(value, 0)
+          if (in_ignored) apply_branch_pattern(value, 1)
         } else if (content != "" && indent <= filter_indent) {
           in_branches = 0
           in_ignored = 0
@@ -118,17 +151,21 @@ workflow_pushes_default() {
       default_branch = 0
       tags_seen = 0
       ignored_default = 0
+      selected_main = 0
+      selected_master = 0
+      ignored_main = 0
+      ignored_master = 0
       in_branches = 0
       in_ignored = 0
       sub(/^push:[[:space:]]*/, "", content)
       if (content ~ /branches:[[:space:]]*/) {
         branches_seen = 1
         value = inline_filter_value(content, "branches")
-        if (list_has_default(value)) default_branch = 1
+        apply_branch_list(value, 0)
       }
       if (content ~ /branches-ignore:[[:space:]]*/) {
         value = inline_filter_value(content, "branches-ignore")
-        if (list_has_default(value)) ignored_default = 1
+        apply_branch_list(value, 1)
       }
       if (content ~ /tags(-ignore)?:/) tags_seen = 1
       next
