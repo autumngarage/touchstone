@@ -45,7 +45,13 @@ case "$1 ${2:-}" in
     elif [ -f "$GH_STATE" ]; then cat "$GH_STATE"
     fi
     ;;
-  "issue edit") printf '%s\n' henry >"$GH_STATE" ;;
+  "issue edit")
+    if [ "${GH_MODE:-ok}" = claim_control_error ]; then
+      printf 'claim failed\rwith control\fbyte\n' >&2
+      exit 1
+    fi
+    printf '%s\n' henry >"$GH_STATE"
+    ;;
   "issue comment")
     [ "${GH_MODE:-ok}" != comment_fail ] || exit 1
     printf '%s\n' 'https://github.com/autumngarage/current/issues/42#issuecomment-1'
@@ -85,6 +91,11 @@ GH_MODE=auth_fail run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
 assert_rc "$RUN_RC" 1
 assert_has "$TMP/out" '"status":"failed"'
 assert_not_has "$TMP/out" '"status":"verified"'
+: >"$GH_STATE"
+GH_MODE=claim_control_error run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+assert_rc "$RUN_RC" 1
+assert_json "$TMP/out"
+assert_has "$TMP/out" 'claim failed\rwith control\u000cbyte'
 
 echo "==> Linear claim exposes an exact MCP/API action without false verification"
 run_adapter "$TMP/out" claim aut-281 --project "$TMP/linear" --json
