@@ -762,12 +762,142 @@ node_command() {
   esac
 }
 
+node_workspace_patterns() {
+  local manifest="$PROJECT_ROOT/package.json"
+  [ -f "$manifest" ] || return 0
+  awk '
+    function decoded_escape(character) {
+      if (character == "b") return sprintf("%c", 8)
+      if (character == "f") return sprintf("%c", 12)
+      if (character == "n") return "\n"
+      if (character == "r") return "\r"
+      if (character == "t") return "\t"
+      return character
+    }
+    function decoded_unicode(value, number, cursor, digit) {
+      number = 0
+      for (cursor = 1; cursor <= 4; cursor++) {
+        digit = index("0123456789abcdef", tolower(substr(value, cursor, 1))) - 1
+        number = (number * 16) + digit
+      }
+      return number < 128 ? sprintf("%c", number) : "?"
+    }
+    function value_complete() {
+      if (depth < 1) return
+      state[depth] = "comma"
+    }
+    function begin_container(container, parent_depth, parent_key) {
+      parent_depth = depth
+      parent_key = key[parent_depth]
+      depth++
+      kind[depth] = container
+      state[depth] = container == "object" ? "key" : "value"
+      if (parent_depth == 1 && parent_key == "workspaces") {
+        if (container == "array") workspace_array = depth
+        else workspace_object = depth
+      } else if (parent_depth == workspace_object && parent_key == "packages" && container == "array") {
+        workspace_array = depth
+      }
+    }
+    function finish_string() {
+      if (kind[depth] == "object" && state[depth] == "key") {
+        key[depth] = token
+        state[depth] = "colon"
+      } else {
+        if (kind[depth] == "array" && state[depth] == "value" && depth == workspace_array) print token
+        value_complete()
+      }
+      token = ""
+      in_string = 0
+    }
+    {
+      line = $0 "\n"
+      for (position = 1; position <= length(line); position++) {
+        character = substr(line, position, 1)
+        if (in_string) {
+          if (unicode_left > 0) {
+            unicode_hex = unicode_hex character
+            unicode_left--
+            if (unicode_left == 0) {
+              token = token decoded_unicode(unicode_hex)
+              unicode_hex = ""
+            }
+          } else if (escaped) {
+            if (character == "u") { unicode_left = 4; unicode_hex = "" }
+            else token = token decoded_escape(character)
+            escaped = 0
+          } else if (character == "\\") escaped = 1
+          else if (character == "\"") finish_string()
+          else token = token character
+          continue
+        }
+        if (character ~ /[[:space:]]/) continue
+        if (character == "\"") { in_string = 1; token = ""; continue }
+        if (character == "{") { begin_container("object"); continue }
+        if (character == "[") { begin_container("array"); continue }
+        if (character == ":") { state[depth] = "value"; continue }
+        if (character == ",") {
+          state[depth] = kind[depth] == "object" ? "key" : "value"
+          key[depth] = ""
+          continue
+        }
+        if (character == "}" || character == "]") {
+          if (depth == workspace_array) workspace_array = 0
+          if (depth == workspace_object) workspace_object = 0
+          delete kind[depth]; delete state[depth]; delete key[depth]
+          depth--
+          value_complete()
+        }
+      }
+    }
+  ' "$manifest"
+}
+
+pnpm_workspace_patterns() {
+  local workspace="$PROJECT_ROOT/pnpm-workspace.yaml"
+  [ -f "$workspace" ] || return 0
+  awk '
+    /^[[:space:]]*packages:[[:space:]]*(#.*)?$/ { in_packages = 1; next }
+    in_packages && /^[^[:space:]-][^:]*:/ { exit }
+    in_packages && /^[[:space:]]*-[[:space:]]*/ {
+      value = $0
+      sub(/^[[:space:]]*-[[:space:]]*/, "", value)
+      sub(/[[:space:]]*#.*/, "", value)
+      gsub(/^[[:space:]\047\"]+|[[:space:]\047\"]+$/, "", value)
+      if (value != "") print value
+    }
+  ' "$workspace"
+}
+
+node_workspace_contains() {
+  local relative="$1" patterns pattern candidate member=false
+  patterns="$(node_workspace_patterns)"
+  if [ -f "$PROJECT_ROOT/pnpm-workspace.yaml" ]; then
+    patterns="${patterns}${patterns:+$LF}$(pnpm_workspace_patterns)"
+  fi
+  while IFS= read -r pattern; do
+    [ -n "$pattern" ] || continue
+    case "$pattern" in
+      !*)
+        candidate="${pattern#!}"
+        # shellcheck disable=SC2254  # workspace declarations are glob patterns.
+        case "$relative" in $candidate) member=false ;; esac
+        ;;
+      *)
+        # shellcheck disable=SC2254  # workspace declarations are glob patterns.
+        case "$relative" in $pattern) member=true ;; esac
+        ;;
+    esac
+  done <<<"$patterns"
+  [ "$member" = true ]
+}
+
 tasks_for_node() {
-  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" manager setup_directory task found=false
+  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" manager setup_directory task found=false
   [ -f "$directory/package.json" ] || contract_refusal "Node target '$target' has no package.json"
   node_package_manager "$directory" "$inherited"
   manager="$NODE_MANAGER"
-  if [ -n "$inherited" ]; then setup_directory="$PROJECT_ROOT"; else setup_directory="$directory"; fi
+  if [ "$workspace_member" = true ]; then setup_directory="$PROJECT_ROOT"; else setup_directory="$directory"; fi
   record_setup "$setup_directory" "$(node_setup_command "$manager" "$setup_directory")"
   for task in validate verify; do
     if node_has_script "$directory/package.json" "$task"; then
@@ -912,9 +1042,9 @@ tasks_for_python() {
 }
 
 tasks_for_profile() {
-  local directory="$1" target="$2" profile="$3" suffix="$4" inherited_node_manager="${5:-}"
+  local directory="$1" target="$2" profile="$3" suffix="$4" inherited_node_manager="${5:-}" workspace_member="${6:-false}"
   case "$profile" in
-    node) tasks_for_node "$directory" "$target" "$suffix" "$inherited_node_manager" ;;
+    node) tasks_for_node "$directory" "$target" "$suffix" "$inherited_node_manager" "$workspace_member" ;;
     python) tasks_for_python "$directory" "$target" "$suffix" ;;
     swift) record_task "test$suffix" "$target" "swift test" ;;
     rust) record_task "test$suffix" "$target" "cargo test" ;;
@@ -1002,7 +1132,7 @@ target_name_for_path() {
 }
 
 compile_detected() {
-  local base directory relative profile target suffix found_targets=false workspace_node_manager resolved_directory root_profile
+  local base directory relative profile target suffix found_targets=false workspace_node_manager resolved_directory root_profile workspace_member
   node_package_manager "$PROJECT_ROOT" "" ""
   workspace_node_manager="$NODE_MANAGER"
   for base in apps packages services; do
@@ -1021,7 +1151,9 @@ compile_detected() {
       target="$(target_name_for_path "$base-$(basename "$relative")")"
       suffix="-$target"
       record_target "$target" "$relative" "$profile"
-      tasks_for_profile "$directory" "$target" "$profile" "$suffix" "$workspace_node_manager"
+      workspace_member=false
+      if [ "$profile" = node ] && node_workspace_contains "$relative"; then workspace_member=true; fi
+      tasks_for_profile "$directory" "$target" "$profile" "$suffix" "$workspace_node_manager" "$workspace_member"
       found_targets=true
     done
   done
@@ -1184,10 +1316,11 @@ merge_managed_block() {
     contract_refusal "steering markers are malformed in ${destination#"$PROJECT_ROOT"/}"
   fi
   if [ "$begin_count" -eq 0 ]; then
-    cat "$destination" >"$output"
-    if [ -s "$output" ] && [ "$(tail -c 1 "$output" | wc -l | tr -d ' ')" -eq 0 ]; then printf '\n' >>"$output"; fi
-    printf '\n' >>"$output"
-    cat "$block" >>"$output"
+    cat "$block" >"$output"
+    if [ -s "$destination" ]; then
+      printf '\n' >>"$output"
+      cat "$destination" >>"$output"
+    fi
     return 0
   fi
   begin_line="$(awk -v marker="$TOUCHSTONE_BLOCK_BEGIN" \

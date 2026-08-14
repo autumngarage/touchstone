@@ -942,7 +942,8 @@ run_adoption "$TMP_DIR/adopt-node-crlf-upgrade.out" upgrade --project "$ADOPT_NO
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "CRLF steering upgrade failed"
 [ "$(grep -cF '<!-- touchstone:steering:start -->' "$ADOPT_NODE/AGENTS.md")" -eq 1 ] \
   || fail "CRLF upgrade duplicated the managed block"
-awk 'NR == 1 { exit substr($0, length($0), 1) != "\r" }' "$ADOPT_NODE/AGENTS.md" \
+awk '/Project-owned instructions/ { found=1; exit substr($0, length($0), 1) != "\r" } END { if (!found) exit 1 }' \
+  "$ADOPT_NODE/AGENTS.md" \
   || fail "CRLF upgrade changed project-owned line endings"
 assert_contains "$ADOPT_NODE/AGENTS.md" "KEEP a/old/ b/new/ PROSE"
 commit_adoption_repo "$ADOPT_NODE" "crlf upgrade"
@@ -959,6 +960,20 @@ run_adoption "$TMP_DIR/adopt-node-suffix-upgrade.out" upgrade --project "$ADOPT_
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "unterminated suffix upgrade failed"
 [ "$(tail -c 1 "$ADOPT_NODE/AGENTS.md")" = X ] \
   || fail "upgrade added a newline to project-owned suffix"
+
+ADOPT_FRESH_EOF="$TMP_DIR/adopt-fresh-eof"
+init_adoption_repo "$ADOPT_FRESH_EOF"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_FRESH_EOF/package.json"
+printf '{}\n' >"$ADOPT_FRESH_EOF/package-lock.json"
+printf 'PROJECT-EOF' >"$ADOPT_FRESH_EOF/AGENTS.md"
+commit_adoption_repo "$ADOPT_FRESH_EOF" "fixture"
+git -C "$ADOPT_FRESH_EOF" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-fresh-eof.out" adopt --project "$ADOPT_FRESH_EOF"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "marker-free unterminated steering adoption failed"
+[ "$(tail -c 11 "$ADOPT_FRESH_EOF/AGENTS.md")" = PROJECT-EOF ] \
+  || fail "initial adoption changed bytes in unterminated project-owned steering"
+[ "$(tail -c 1 "$ADOPT_FRESH_EOF/AGENTS.md")" = F ] \
+  || fail "initial adoption terminated an unterminated project-owned line"
 
 echo "==> adoption preserves accepted schema-v1 declarations"
 ADOPT_EXISTING="$TMP_DIR/adopt-existing"
@@ -1097,7 +1112,7 @@ echo "==> adoption derives explicit monorepo targets"
 ADOPT_MONOREPO="$TMP_DIR/adopt-monorepo"
 init_adoption_repo "$ADOPT_MONOREPO"
 mkdir -p "$ADOPT_MONOREPO/apps/api" "$ADOPT_MONOREPO/packages/web"
-printf '%s\n' '{"packageManager":"pnpm@10.0.0","scripts":{"lint":"eslint ."}}' \
+printf '%s\n' '{"packageManager":"pnpm@10.0.0","workspaces":["apps/*","packages/*"],"scripts":{"lint":"eslint ."}}' \
   >"$ADOPT_MONOREPO/package.json"
 printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_MONOREPO/pnpm-lock.yaml"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_MONOREPO/apps/api/package.json"
@@ -1117,6 +1132,31 @@ assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'target = "root"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run lint"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'setup = "pnpm install --frozen-lockfile"'
 bash "$RUNNER" validate --check-contract --project "$ADOPT_MONOREPO" >/dev/null
+
+ADOPT_NON_WORKSPACE_CHILD="$TMP_DIR/adopt-non-workspace-child"
+init_adoption_repo "$ADOPT_NON_WORKSPACE_CHILD"
+mkdir -p "$ADOPT_NON_WORKSPACE_CHILD/apps/api"
+printf '%s\n' '{"packageManager":"npm@11.0.0"}' >"$ADOPT_NON_WORKSPACE_CHILD/package.json"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_NON_WORKSPACE_CHILD/apps/api/package.json"
+commit_adoption_repo "$ADOPT_NON_WORKSPACE_CHILD" "fixture"
+git -C "$ADOPT_NON_WORKSPACE_CHILD" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-non-workspace-child.out" adopt --project "$ADOPT_NON_WORKSPACE_CHILD"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "non-workspace child adoption failed"
+assert_contains "$ADOPT_NON_WORKSPACE_CHILD/.touchstone.toml" 'setup = "(cd apps/api && npm install)"'
+
+ADOPT_WORKSPACE_CHILD="$TMP_DIR/adopt-workspace-child"
+init_adoption_repo "$ADOPT_WORKSPACE_CHILD"
+mkdir -p "$ADOPT_WORKSPACE_CHILD/apps/api"
+printf '%s\n' '{"packageManager":"npm@11.0.0","workspaces":["apps/*"]}' \
+  >"$ADOPT_WORKSPACE_CHILD/package.json"
+printf '{}\n' >"$ADOPT_WORKSPACE_CHILD/package-lock.json"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_WORKSPACE_CHILD/apps/api/package.json"
+commit_adoption_repo "$ADOPT_WORKSPACE_CHILD" "fixture"
+git -C "$ADOPT_WORKSPACE_CHILD" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-workspace-child.out" adopt --project "$ADOPT_WORKSPACE_CHILD"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "declared workspace child adoption failed"
+assert_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" 'setup = "npm ci"'
+assert_not_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" '(cd apps/api'
 
 ADOPT_LARGE="$TMP_DIR/adopt-large"
 init_adoption_repo "$ADOPT_LARGE"
