@@ -155,6 +155,23 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "gh pr create"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "@codex review"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "--match-head-commit"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "resolveReviewThread"
+
+echo "==> PR babysitting preserves approved scope"
+# PR #829 showed how individually reasonable findings can turn an exact-head
+# review loop into product expansion. The canonical workflow must make the
+# approved issue/plan the scope boundary and treat repeated widening as a design
+# signal, while retaining the exact-head review requirement.
+assert_contains "$GIT_WORKFLOW_GUIDE" "Freeze the scope before the first review request"
+assert_contains "$GIT_WORKFLOW_GUIDE" "map it to a recorded acceptance criterion or invariant"
+assert_contains "$GIT_WORKFLOW_GUIDE" "that the diff created the defect"
+assert_contains "$GIT_WORKFLOW_GUIDE" "A plausible bug"
+assert_contains "$GIT_WORKFLOW_GUIDE" "not automatically this"
+assert_contains "$GIT_WORKFLOW_GUIDE" "PR's bug"
+assert_contains "$GIT_WORKFLOW_GUIDE" "A scope"
+assert_contains "$GIT_WORKFLOW_GUIDE" "boundary never permits the PR to ship its own regression"
+assert_contains "$GIT_WORKFLOW_GUIDE" "Repeated widening is a design signal"
+assert_contains "$GIT_WORKFLOW_GUIDE" "Do not grow the current PR one"
+assert_contains "$GIT_WORKFLOW_GUIDE" "scope containment is never permission to skip review"
 # #801 review: this doc promised the gate emits `review_requested` and
 # `review_result` events and that review latency is measurable from them.
 # lib/events.sh and every emit call were deleted in #737, so the promise became

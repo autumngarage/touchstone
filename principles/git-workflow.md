@@ -270,12 +270,34 @@ review-provider friction.
 
 Reviews are the most expensive resource in the loop — each round costs full review latency (#649), and the history is unambiguous about what unbounded rounds produce: #706 was closed unmerged after six (rounds 3–6 each contained defects created by the previous fix), and #755 spent seven rounds and +936 lines on a ~60-line core change.
 
+**Freeze the scope before the first review request.** Record the approved issue or
+plan, its acceptance criteria, and the behavior or interfaces this PR is allowed
+to change. Babysitting authorizes the driver to make that approved change pass
+review; it does not authorize a broader product change. Before editing for any
+finding, map it to a recorded acceptance criterion or invariant, or to evidence
+that the diff created the defect. A plausible bug is not automatically this
+PR's bug.
+
 **Classify every finding before touching anything.** Four dispositions, in the order to consider them:
 
-1. **Fix here** — a defect in this diff, or one this diff created. Fix it in the batch.
-2. **Fix and audit the class** — the finding is one instance of a shape. Grep for siblings before responding (`principles/audit-weak-points.md`); the class audit has found extra live bugs repeatedly.
+1. **Fix here** — any defect the diff creates, plus any defect that violates a
+   recorded acceptance criterion or invariant. Fix it in the batch. A scope
+   boundary never permits the PR to ship its own regression; fix or revert that
+   behavior here even when it falls outside the planned product change.
+2. **Fix and audit the class** — the in-scope finding is one instance of a
+   shape. Grep for siblings before responding
+   (`principles/audit-weak-points.md`); fix in-scope siblings and route any
+   broader product behavior to its own issue rather than absorbing it here.
 3. **Push back with evidence** — the finding is factually wrong. Quote the file, cite the precedent, resolve without changing code. Never comply with a wrong finding to save a round.
 4. **Real, but not this PR's to fix** — route it to the owning issue with a comment, resolve the thread with the link. The load-bearing case: **never fix a finding by hardening a component the plan deletes.** Check the plan of record before fortifying anything the reviewer points at.
+
+**Repeated widening is a design signal, not an implementation queue.** If
+successive findings keep adding syntax, runtimes, project types, or public
+behavior, stop and compare the implementation with the frozen acceptance
+criteria. Narrow or replace the design, split an independently approved concern,
+or close the PR while preserving the findings. Do not grow the current PR one
+review comment at a time. Exact-head review remains required after any redesign;
+scope containment is never permission to skip review.
 
 **The loop.** If every finding resolves **without moving the head** (dispositions 3–4), answer every thread, prove none remain with `--all-resolved-check`, then merge — answered findings satisfy the gate (issue #751); do not request another review. If any fix lands as a commit (dispositions 1–2), batch ALL of them into ONE commit, answer every thread, push, and request one review for the new head.
 
