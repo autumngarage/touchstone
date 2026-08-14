@@ -133,6 +133,16 @@ run_capture "$QUOTED_ASSIGNMENT" "$TMP_DIR/quoted-assignment.out" --json
 assert_contains "$TMP_DIR/quoted-assignment.out" '"ran":0'
 assert_contains "$TMP_DIR/quoted-assignment.out" '"reason":"command-not-started"'
 
+QUOTED_EQUALS_HEAD="$TMP_DIR/quoted-equals-head"
+write_contract "$QUOTED_EQUALS_HEAD" "\\\"FAKE=assignment\\\" ignored-argument"
+printf '#!/usr/bin/env bash\nexit 127\n' >"$QUOTED_EQUALS_HEAD/FAKE=assignment"
+chmod +x "$QUOTED_EQUALS_HEAD/FAKE=assignment"
+PATH="$QUOTED_EQUALS_HEAD:$PATH" run_capture \
+  "$QUOTED_EQUALS_HEAD" "$TMP_DIR/quoted-equals-head.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "quoted equals command did not retain its exit"
+assert_contains "$TMP_DIR/quoted-equals-head.out" '"ran":1'
+assert_contains "$TMP_DIR/quoted-equals-head.out" '"reason":"command-failed"'
+
 echo "==> a later passing target cannot launder an earlier failure"
 MONOREPO="$TMP_DIR/monorepo"
 mkdir -p "$MONOREPO/services/api" "$MONOREPO/services/worker"

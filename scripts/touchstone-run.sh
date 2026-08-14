@@ -380,8 +380,9 @@ clear_git_hook_env() {
 }
 
 declared_command_head() {
-  local input="$1" character quote="" token="" assignment_name
-  local escaped=false index=0 length="${#1}"
+  local input="$1" character quote="" token=""
+  local escaped=false assignment_candidate=true assignment_equals=false
+  local index=0 length="${#1}"
 
   while [ "$index" -lt "$length" ]; do
     while [ "$index" -lt "$length" ]; do
@@ -391,11 +392,14 @@ declared_command_head() {
     token=""
     quote=""
     escaped=false
+    assignment_candidate=true
+    assignment_equals=false
     while [ "$index" -lt "$length" ]; do
       character="${input:$index:1}"
       index=$((index + 1))
       if [ "$escaped" = true ]; then
         token="$token$character"
+        if [ "$assignment_equals" = false ]; then assignment_candidate=false; fi
         escaped=false
       elif [ "$quote" = single ]; then
         if [ "$character" = "'" ]; then quote=""; else token="$token$character"; fi
@@ -409,30 +413,45 @@ declared_command_head() {
       else
         case "$character" in
           ' ' | "$(printf '\t')") break ;;
-          "'") quote=single ;;
-          '"') quote=double ;;
-          '\') escaped=true ;;
+          "'")
+            if [ "$assignment_equals" = false ]; then assignment_candidate=false; fi
+            quote=single
+            ;;
+          '"')
+            if [ "$assignment_equals" = false ]; then assignment_candidate=false; fi
+            quote=double
+            ;;
+          '\')
+            if [ "$assignment_equals" = false ]; then assignment_candidate=false; fi
+            escaped=true
+            ;;
+          '=')
+            if [ "$assignment_equals" = false ] && [ -n "$token" ] && [ "$assignment_candidate" = true ]; then
+              assignment_equals=true
+            fi
+            token="$token$character"
+            ;;
           '$' | '`' | ';' | '&' | '|' | '(' | ')' | '<' | '>') return 1 ;;
           '#')
             if [ -z "$token" ]; then return 1; fi
             token="$token$character"
             ;;
-          *) token="$token$character" ;;
+          *)
+            if [ "$assignment_equals" = false ]; then
+              if [ -z "$token" ]; then
+                case "$character" in [A-Za-z_]) ;; *) assignment_candidate=false ;; esac
+              else
+                case "$character" in [A-Za-z0-9_]) ;; *) assignment_candidate=false ;; esac
+              fi
+            fi
+            token="$token$character"
+            ;;
         esac
       fi
     done
     [ "$escaped" = false ] && [ -z "$quote" ] || return 1
     [ -n "$token" ] || return 1
-    case "$token" in
-      *=*)
-        assignment_name="${token%%=*}"
-        case "$assignment_name" in
-          [A-Za-z_]*)
-            case "$assignment_name" in *[!A-Za-z0-9_]*) ;; *) continue ;; esac
-            ;;
-        esac
-        ;;
-    esac
+    if [ "$assignment_candidate" = true ] && [ "$assignment_equals" = true ]; then continue; fi
     COMMAND_HEAD="$token"
     return 0
   done
