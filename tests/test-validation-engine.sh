@@ -1066,6 +1066,19 @@ run_adoption "$TMP_DIR/adopt-rust-no-lock.out" adopt --dry-run --project "$ADOPT
 assert_contains "$TMP_DIR/adopt-rust-no-lock.out.err" "has no Cargo.lock"
 [ ! -e "$ADOPT_RUST_NO_LOCK/.touchstone.toml" ] || fail "Rust lockfile refusal mutated the repository"
 
+ADOPT_RUST_IGNORED_LOCK="$TMP_DIR/adopt-rust-ignored-lock"
+init_adoption_repo "$ADOPT_RUST_IGNORED_LOCK"
+printf '%s\n' '[package]' 'name = "fixture"' >"$ADOPT_RUST_IGNORED_LOCK/Cargo.toml"
+printf '%s\n' 'Cargo.lock' >"$ADOPT_RUST_IGNORED_LOCK/.gitignore"
+commit_adoption_repo "$ADOPT_RUST_IGNORED_LOCK" "fixture"
+printf '%s\n' 'version = 4' >"$ADOPT_RUST_IGNORED_LOCK/Cargo.lock"
+git -C "$ADOPT_RUST_IGNORED_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-ignored-lock.out" adopt --dry-run --project "$ADOPT_RUST_IGNORED_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Rust adoption accepted a locally present ignored lockfile"
+assert_contains "$TMP_DIR/adopt-rust-ignored-lock.out.err" "has no tracked Cargo.lock"
+[ -z "$(git -C "$ADOPT_RUST_IGNORED_LOCK" status --porcelain=v1)" ] \
+  || fail "ignored-lock refusal changed the clean checkout"
+
 ADOPT_DIFF_RENDER_FAIL="$TMP_DIR/adopt-diff-render-fail"
 init_adoption_repo "$ADOPT_DIFF_RENDER_FAIL"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_DIFF_RENDER_FAIL/package.json"
@@ -1118,6 +1131,7 @@ ADOPT_PYPROJECT="$TMP_DIR/adopt-pyproject"
 init_adoption_repo "$ADOPT_PYPROJECT"
 printf '%s\n' '[project]' 'name = "\u0066ixture"' 'dependencies = ["pytest"]' \
   'authors = [{ name = "Touchstone", email = "test@example.invalid" }]' \
+  '[project.urls]' 'Homepage = "https://example.invalid/project"' \
   >"$ADOPT_PYPROJECT/pyproject.toml"
 commit_adoption_repo "$ADOPT_PYPROJECT" "fixture"
 git -C "$ADOPT_PYPROJECT" switch -q -c feat/adopt
@@ -1140,6 +1154,28 @@ git -C "$ADOPT_REQUIREMENTS" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-requirements.out" adopt --project "$ADOPT_REQUIREMENTS"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "requirements-backed adoption failed"
 assert_contains "$ADOPT_REQUIREMENTS/.touchstone.toml" 'setup = "python -m pip install --no-index -r requirements.txt"'
+
+ADOPT_REMOTE_REQUIREMENT="$TMP_DIR/adopt-remote-requirement"
+init_adoption_repo "$ADOPT_REMOTE_REQUIREMENT"
+mkdir -p "$ADOPT_REMOTE_REQUIREMENT/tests"
+printf '%s\n' 'pytest @ https://example.invalid/pytest.whl' >"$ADOPT_REMOTE_REQUIREMENT/requirements.txt"
+commit_adoption_repo "$ADOPT_REMOTE_REQUIREMENT" "fixture"
+git -C "$ADOPT_REMOTE_REQUIREMENT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-remote-requirement.out" adopt --dry-run --project "$ADOPT_REMOTE_REQUIREMENT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "remote requirements reference produced an offline adoption plan"
+assert_contains "$TMP_DIR/adopt-remote-requirement.out.err" 'remote direct dependency reference'
+
+ADOPT_REMOTE_PYPROJECT="$TMP_DIR/adopt-remote-pyproject"
+init_adoption_repo "$ADOPT_REMOTE_PYPROJECT"
+mkdir -p "$ADOPT_REMOTE_PYPROJECT/tests"
+printf '%s\n' '[project]' 'name = "fixture"' \
+  'dependencies = ["pytest @ https://example.invalid/pytest.whl"]' \
+  >"$ADOPT_REMOTE_PYPROJECT/pyproject.toml"
+commit_adoption_repo "$ADOPT_REMOTE_PYPROJECT" "fixture"
+git -C "$ADOPT_REMOTE_PYPROJECT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-remote-pyproject.out" adopt --dry-run --project "$ADOPT_REMOTE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "remote pyproject reference produced an offline adoption plan"
+assert_contains "$TMP_DIR/adopt-remote-pyproject.out.err" 'remote direct dependency reference'
 
 ADOPT_MALFORMED_PYPROJECT="$TMP_DIR/adopt-malformed-pyproject"
 init_adoption_repo "$ADOPT_MALFORMED_PYPROJECT"
@@ -1183,6 +1219,12 @@ printf '%s\n' '[project]' 'name = "fixture"' \
   >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
 run_adoption "$TMP_DIR/adopt-duplicate-inline-key.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate inline TOML key produced an adoption plan"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  'metadata = { x = 1, x.y = 2 }' \
+  >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
+run_adoption "$TMP_DIR/adopt-inline-prefix-collision.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "inline TOML scalar/prefix collision produced an adoption plan"
+assert_contains "$TMP_DIR/adopt-inline-prefix-collision.out.err" 'pyproject.toml is malformed'
 printf '%s\n' '[project]' 'name = "bad\qescape"' 'dependencies = ["pytest"]' \
   >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
 run_adoption "$TMP_DIR/adopt-invalid-string-escape.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"

@@ -1173,6 +1173,13 @@ validate_pyproject_document() {
       begin_value()
       scalar_value = 1
     }
+    function inline_key_conflicts(id, key_name, index_value, existing) {
+      for (index_value = 1; index_value <= inline_key_count[id]; index_value++) {
+        existing = inline_key_name[id, index_value]
+        if (key_name == existing || index(key_name, existing ".") == 1 || index(existing, key_name ".") == 1) return 1
+      }
+      return 0
+    }
     function push(container) {
       begin_value()
       depth++
@@ -1288,8 +1295,9 @@ validate_pyproject_document() {
             assignment = 1
           } else if (kind[depth] == "inline") {
             if (inline_state[depth] != "key" || !inline_key[depth]) invalid_document()
-            if (key_name !~ /^[A-Za-z0-9_.-]+$/ || inline_defined[inline_id[depth], key_name]) invalid_document()
-            inline_defined[inline_id[depth], key_name] = 1
+            if (key_name !~ /^[A-Za-z0-9_.-]+$/ || inline_key_conflicts(inline_id[depth], key_name)) invalid_document()
+            inline_key_count[inline_id[depth]]++
+            inline_key_name[inline_id[depth], inline_key_count[inline_id[depth]]] = key_name
             inline_state[depth] = "value"
             inline_had_entry[depth] = 1
           } else {
@@ -1324,6 +1332,49 @@ validate_pyproject_document() {
     }
   ' "$file" >/dev/null 2>&1 \
     || contract_refusal "pyproject.toml is malformed or uses TOML syntax the portable adoption parser cannot verify; pass --task NAME=COMMAND for a manual contract"
+}
+
+python_has_remote_reference() {
+  local pyproject="$1" requirements="$2"
+  if [ -f "$requirements" ] && awk '
+    {
+      line = $0
+      sub(/[[:space:]]+#.*/, "", line)
+      line = tolower(line)
+      if (line ~ /(https?|ssh):\/\// || line ~ /git\+(https?|ssh):\/\// || line ~ /(^|[[:space:]"\047=])git@/) found = 1
+    }
+    END { exit !found }
+  ' "$requirements"; then
+    return 0
+  fi
+  if [ -f "$pyproject" ] && awk '
+    function remote(value) {
+      value = tolower(value)
+      return value ~ /(https?|ssh):\/\// || value ~ /git\+(https?|ssh):\/\// || value ~ /(^|[[:space:]"\047=])git@/
+    }
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*$/, "", section)
+      dependency_value = 0
+      next
+    }
+    {
+      line = $0
+      sub(/[[:space:]]+#.*/, "", line)
+      if (section == "project" && line ~ /^[[:space:]]*dependencies[[:space:]]*=/) dependency_value = 1
+      if (section == "build-system" && line ~ /^[[:space:]]*requires[[:space:]]*=/) dependency_value = 1
+      if (section == "dependency-groups" && line ~ /^[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*=/) dependency_value = 1
+      if (section == "tool.poetry.dependencies" || dependency_value) {
+        if (remote(line)) found = 1
+        if (dependency_value && line ~ /\]/) dependency_value = 0
+      }
+    }
+    END { exit !found }
+  ' "$pyproject"; then
+    return 0
+  fi
+  return 1
 }
 
 python_project_has_dependency() {
@@ -1401,6 +1452,9 @@ python_checker_declared() {
 tasks_for_python() {
   local directory="$1" target="$2" suffix="$3" prefix="python -m" found=false evidence=false
   if [ -f "$directory/pyproject.toml" ]; then validate_pyproject_document "$directory/pyproject.toml"; fi
+  if python_has_remote_reference "$directory/pyproject.toml" "$directory/requirements.txt"; then
+    contract_refusal "Python target '$target' contains a remote direct dependency reference; vendor or lock it to an offline source, or pass --task NAME=COMMAND"
+  fi
   if [ -f "$directory/uv.lock" ]; then
     prefix="uv run --no-sync"
     if [ -f "$directory/pyproject.toml" ] && python_has_uv_dev_group "$directory/pyproject.toml"; then
@@ -1463,6 +1517,10 @@ tasks_for_profile() {
     rust)
       [ -f "$directory/Cargo.lock" ] \
         || contract_refusal "Rust target '$target' has no Cargo.lock; commit one or pass --task NAME=COMMAND"
+      local cargo_lock_path="Cargo.lock"
+      if [ "$directory" != "$PROJECT_ROOT" ]; then cargo_lock_path="${directory#"$PROJECT_ROOT"/}/Cargo.lock"; fi
+      git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$cargo_lock_path" >/dev/null 2>&1 \
+        || contract_refusal "Rust target '$target' has no tracked Cargo.lock; commit it or pass --task NAME=COMMAND"
       record_task "test$suffix" "$target" "cargo test --frozen"
       ;;
     go) record_task "test$suffix" "$target" "GOPROXY=off GOSUMDB=off go test ./..." ;;
