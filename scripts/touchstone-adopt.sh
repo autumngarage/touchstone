@@ -723,30 +723,22 @@ node_setup_command() {
   case "$manager" in
     npm)
       if [ -f "$directory/package-lock.json" ] || [ -f "$directory/npm-shrinkwrap.json" ]; then
-        printf 'npm ci\n'
-      else
-        printf 'npm install\n'
+        printf 'npm ci --offline\n'
       fi
       ;;
     pnpm)
       if [ -f "$directory/pnpm-lock.yaml" ]; then
-        printf 'pnpm install --frozen-lockfile\n'
-      else
-        printf 'pnpm install\n'
+        printf 'pnpm install --offline --frozen-lockfile\n'
       fi
       ;;
     yarn)
       if [ -f "$directory/yarn.lock" ]; then
-        printf 'yarn install --frozen-lockfile\n'
-      else
-        printf 'yarn install\n'
+        printf 'yarn install --immutable --immutable-cache\n'
       fi
       ;;
     bun)
       if [ -f "$directory/bun.lock" ] || [ -f "$directory/bun.lockb" ]; then
-        printf 'bun install --frozen-lockfile\n'
-      else
-        printf 'bun install\n'
+        printf 'bun install --offline --frozen-lockfile\n'
       fi
       ;;
   esac
@@ -801,6 +793,10 @@ node_workspace_patterns() {
     }
     function finish_string() {
       if (kind[depth] == "object" && state[depth] == "key") {
+        if (depth == 1 && token == "workspaces") {
+          workspace_keys++
+          if (workspace_keys > 1) exit 2
+        }
         key[depth] = token
         state[depth] = "colon"
       } else {
@@ -871,7 +867,9 @@ pnpm_workspace_patterns() {
 
 node_workspace_contains() {
   local relative="$1" patterns pattern candidate member=false
-  patterns="$(node_workspace_patterns)"
+  if ! patterns="$(node_workspace_patterns)"; then
+    contract_refusal "root package.json repeats the 'workspaces' key; workspace membership is ambiguous"
+  fi
   if [ -f "$PROJECT_ROOT/pnpm-workspace.yaml" ]; then
     patterns="${patterns}${patterns:+$LF}$(pnpm_workspace_patterns)"
   fi
@@ -893,12 +891,13 @@ node_workspace_contains() {
 }
 
 tasks_for_node() {
-  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" manager setup_directory task found=false
+  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" manager setup_directory setup_command task found=false
   [ -f "$directory/package.json" ] || contract_refusal "Node target '$target' has no package.json"
   node_package_manager "$directory" "$inherited"
   manager="$NODE_MANAGER"
   if [ "$workspace_member" = true ]; then setup_directory="$PROJECT_ROOT"; else setup_directory="$directory"; fi
-  record_setup "$setup_directory" "$(node_setup_command "$manager" "$setup_directory")"
+  setup_command="$(node_setup_command "$manager" "$setup_directory")"
+  if [ -n "$setup_command" ]; then record_setup "$setup_directory" "$setup_command"; fi
   for task in validate verify; do
     if node_has_script "$directory/package.json" "$task"; then
       record_task "$task$suffix" "$target" "$(node_command "$manager" "$task")"
@@ -912,6 +911,20 @@ tasks_for_node() {
     fi
   done
   [ "$found" = true ] || contract_refusal "Node target '$target' declares no validate, verify, lint, typecheck, test, or build script; pass --task NAME=COMMAND"
+}
+
+validate_pyproject_document() {
+  local file="$1"
+  command -v python3 >/dev/null 2>&1 \
+    || contract_refusal "Python project detection requires Python 3.11+ to validate pyproject.toml; pass --task NAME=COMMAND for a manual contract"
+  python3 - "$file" >/dev/null 2>&1 <<'PY' || contract_refusal "pyproject.toml is malformed or requires a Python 3.11+ TOML parser"
+import pathlib
+import sys
+import tomllib
+
+with pathlib.Path(sys.argv[1]).open("rb") as source:
+    tomllib.load(source)
+PY
 }
 
 python_project_has_dependency() {
@@ -988,18 +1001,19 @@ python_checker_declared() {
 
 tasks_for_python() {
   local directory="$1" target="$2" suffix="$3" prefix="python -m" found=false evidence=false
+  if [ -f "$directory/pyproject.toml" ]; then validate_pyproject_document "$directory/pyproject.toml"; fi
   if [ -f "$directory/uv.lock" ]; then
     prefix="uv run --no-sync"
     if [ -f "$directory/pyproject.toml" ] && python_has_uv_dev_group "$directory/pyproject.toml"; then
-      record_setup "$directory" "uv sync --frozen --group dev"
+      record_setup "$directory" "uv sync --offline --frozen --group dev"
     else
-      record_setup "$directory" "uv sync --frozen"
+      record_setup "$directory" "uv sync --offline --frozen"
     fi
   elif [ -f "$directory/requirements.txt" ]; then
-    record_setup "$directory" "python -m pip install -r requirements.txt"
+    record_setup "$directory" "python -m pip install --no-index -r requirements.txt"
   elif [ -f "$directory/pyproject.toml" ]; then
     if grep -Eq '^\[(project|build-system|tool\.poetry)\]' "$directory/pyproject.toml"; then
-      record_setup "$directory" "python -m pip install -e ."
+      record_setup "$directory" "python -m pip install --no-index --no-build-isolation -e ."
     else
       contract_refusal "Python target '$target' has tool configuration but no installable project or dependency declaration"
     fi
@@ -1046,9 +1060,9 @@ tasks_for_profile() {
   case "$profile" in
     node) tasks_for_node "$directory" "$target" "$suffix" "$inherited_node_manager" "$workspace_member" ;;
     python) tasks_for_python "$directory" "$target" "$suffix" ;;
-    swift) record_task "test$suffix" "$target" "swift test" ;;
-    rust) record_task "test$suffix" "$target" "cargo test" ;;
-    go) record_task "test$suffix" "$target" "go test ./..." ;;
+    swift) record_task "test$suffix" "$target" "swift test --disable-automatic-resolution --skip-update" ;;
+    rust) record_task "test$suffix" "$target" "cargo test --offline" ;;
+    go) record_task "test$suffix" "$target" "GOPROXY=off go test ./..." ;;
     generic) contract_refusal "no supported project facts found; pass --task NAME=COMMAND for a manual declaration" ;;
     ambiguous:*) contract_refusal "ambiguous project facts for target '$target': ${profile#ambiguous:}" ;;
     *) contract_refusal "unsupported project profile '$profile'" ;;

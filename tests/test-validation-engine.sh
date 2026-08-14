@@ -900,7 +900,7 @@ run_adoption "$TMP_DIR/adopt-node-apply.out" adopt --project "$ADOPT_NODE"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "Node adoption apply failed"
 assert_contains "$ADOPT_NODE/.touchstone.toml" 'command = "npm run lint"'
 assert_contains "$ADOPT_NODE/.touchstone.toml" 'command = "npm run test"'
-assert_contains "$ADOPT_NODE/.touchstone.toml" 'setup = "npm ci"'
+assert_contains "$ADOPT_NODE/.touchstone.toml" 'setup = "npm ci --offline"'
 assert_contains "$ADOPT_NODE/AGENTS.md" "KEEP a/old/ b/new/ PROSE"
 [ -x "$ADOPT_NODE/AGENTS.md" ] || fail "adoption changed a project-owned steering file mode"
 assert_contains "$ADOPT_NODE/AGENTS.md" '<!-- touchstone:steering:start -->'
@@ -1027,21 +1027,21 @@ for profile in python swift rust go; do
         '[tool.pytest.ini_options]' >"$ADOPT_PROFILE/pyproject.toml"
       printf 'version = 1\n' >"$ADOPT_PROFILE/uv.lock"
       expected_command='command = "uv run --no-sync pytest"'
-      expected_setup='setup = "uv sync --frozen"'
+      expected_setup='setup = "uv sync --offline --frozen"'
       ;;
     swift)
       printf '%s\n' '// swift-tools-version:6.2' >"$ADOPT_PROFILE/Package.swift"
-      expected_command='command = "swift test"'
+      expected_command='command = "swift test --disable-automatic-resolution --skip-update"'
       expected_setup=''
       ;;
     rust)
       printf '%s\n' '[package]' 'name = "fixture"' >"$ADOPT_PROFILE/Cargo.toml"
-      expected_command='command = "cargo test"'
+      expected_command='command = "cargo test --offline"'
       expected_setup=''
       ;;
     go)
       printf '%s\n' 'module example.invalid/fixture' >"$ADOPT_PROFILE/go.mod"
-      expected_command='command = "go test ./..."'
+      expected_command='command = "GOPROXY=off go test ./..."'
       expected_setup=''
       ;;
   esac
@@ -1061,7 +1061,28 @@ commit_adoption_repo "$ADOPT_PYPROJECT" "fixture"
 git -C "$ADOPT_PYPROJECT" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-pyproject.out" adopt --project "$ADOPT_PYPROJECT"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "installable pyproject adoption failed"
-assert_contains "$ADOPT_PYPROJECT/.touchstone.toml" 'setup = "python -m pip install -e ."'
+assert_contains "$ADOPT_PYPROJECT/.touchstone.toml" 'setup = "python -m pip install --no-index --no-build-isolation -e ."'
+
+ADOPT_REQUIREMENTS="$TMP_DIR/adopt-requirements"
+init_adoption_repo "$ADOPT_REQUIREMENTS"
+mkdir -p "$ADOPT_REQUIREMENTS/tests"
+printf '%s\n' 'pytest==9.0.0' >"$ADOPT_REQUIREMENTS/requirements.txt"
+commit_adoption_repo "$ADOPT_REQUIREMENTS" "fixture"
+git -C "$ADOPT_REQUIREMENTS" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-requirements.out" adopt --project "$ADOPT_REQUIREMENTS"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "requirements-backed adoption failed"
+assert_contains "$ADOPT_REQUIREMENTS/.touchstone.toml" 'setup = "python -m pip install --no-index -r requirements.txt"'
+
+ADOPT_MALFORMED_PYPROJECT="$TMP_DIR/adopt-malformed-pyproject"
+init_adoption_repo "$ADOPT_MALFORMED_PYPROJECT"
+mkdir -p "$ADOPT_MALFORMED_PYPROJECT/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest" "ruff"]' \
+  >"$ADOPT_MALFORMED_PYPROJECT/pyproject.toml"
+commit_adoption_repo "$ADOPT_MALFORMED_PYPROJECT" "fixture"
+git -C "$ADOPT_MALFORMED_PYPROJECT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-malformed-pyproject.out" adopt --dry-run --project "$ADOPT_MALFORMED_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed pyproject.toml produced an adoption plan"
+assert_contains "$TMP_DIR/adopt-malformed-pyproject.out.err" 'pyproject.toml is malformed'
 
 ADOPT_UNDECLARED_CHECKER="$TMP_DIR/adopt-undeclared-checker"
 init_adoption_repo "$ADOPT_UNDECLARED_CHECKER"
@@ -1106,7 +1127,7 @@ commit_adoption_repo "$ADOPT_UV_DEV" "fixture"
 git -C "$ADOPT_UV_DEV" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-uv-dev.out" adopt --project "$ADOPT_UV_DEV"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "uv dev-group adoption failed"
-assert_contains "$ADOPT_UV_DEV/.touchstone.toml" 'setup = "uv sync --frozen --group dev"'
+assert_contains "$ADOPT_UV_DEV/.touchstone.toml" 'setup = "uv sync --offline --frozen --group dev"'
 
 echo "==> adoption derives explicit monorepo targets"
 ADOPT_MONOREPO="$TMP_DIR/adopt-monorepo"
@@ -1130,7 +1151,7 @@ assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run build"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "lint"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'target = "root"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run lint"'
-assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'setup = "pnpm install --frozen-lockfile"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'setup = "pnpm install --offline --frozen-lockfile"'
 bash "$RUNNER" validate --check-contract --project "$ADOPT_MONOREPO" >/dev/null
 
 ADOPT_NON_WORKSPACE_CHILD="$TMP_DIR/adopt-non-workspace-child"
@@ -1138,11 +1159,12 @@ init_adoption_repo "$ADOPT_NON_WORKSPACE_CHILD"
 mkdir -p "$ADOPT_NON_WORKSPACE_CHILD/apps/api"
 printf '%s\n' '{"packageManager":"npm@11.0.0"}' >"$ADOPT_NON_WORKSPACE_CHILD/package.json"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_NON_WORKSPACE_CHILD/apps/api/package.json"
+printf '{}\n' >"$ADOPT_NON_WORKSPACE_CHILD/apps/api/package-lock.json"
 commit_adoption_repo "$ADOPT_NON_WORKSPACE_CHILD" "fixture"
 git -C "$ADOPT_NON_WORKSPACE_CHILD" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-non-workspace-child.out" adopt --project "$ADOPT_NON_WORKSPACE_CHILD"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "non-workspace child adoption failed"
-assert_contains "$ADOPT_NON_WORKSPACE_CHILD/.touchstone.toml" 'setup = "(cd apps/api && npm install)"'
+assert_contains "$ADOPT_NON_WORKSPACE_CHILD/.touchstone.toml" 'setup = "(cd apps/api && npm ci --offline)"'
 
 ADOPT_WORKSPACE_CHILD="$TMP_DIR/adopt-workspace-child"
 init_adoption_repo "$ADOPT_WORKSPACE_CHILD"
@@ -1155,8 +1177,21 @@ commit_adoption_repo "$ADOPT_WORKSPACE_CHILD" "fixture"
 git -C "$ADOPT_WORKSPACE_CHILD" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-workspace-child.out" adopt --project "$ADOPT_WORKSPACE_CHILD"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "declared workspace child adoption failed"
-assert_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" 'setup = "npm ci"'
+assert_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" 'setup = "npm ci --offline"'
 assert_not_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" '(cd apps/api'
+
+ADOPT_DUPLICATE_WORKSPACES="$TMP_DIR/adopt-duplicate-workspaces"
+init_adoption_repo "$ADOPT_DUPLICATE_WORKSPACES"
+mkdir -p "$ADOPT_DUPLICATE_WORKSPACES/apps/api"
+printf '%s\n' '{"workspaces":["apps/*"],"workspaces":[],"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_DUPLICATE_WORKSPACES/package.json"
+printf '{}\n' >"$ADOPT_DUPLICATE_WORKSPACES/package-lock.json"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_DUPLICATE_WORKSPACES/apps/api/package.json"
+commit_adoption_repo "$ADOPT_DUPLICATE_WORKSPACES" "fixture"
+git -C "$ADOPT_DUPLICATE_WORKSPACES" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-duplicate-workspaces.out" adopt --dry-run --project "$ADOPT_DUPLICATE_WORKSPACES"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate root workspaces declaration produced a plan"
+assert_contains "$TMP_DIR/adopt-duplicate-workspaces.out.err" "repeats the 'workspaces' key"
 
 ADOPT_LARGE="$TMP_DIR/adopt-large"
 init_adoption_repo "$ADOPT_LARGE"
@@ -1258,10 +1293,9 @@ for yarn_case in unlocked locked; do
   run_adoption "$TMP_DIR/adopt-yarn-$yarn_case.out" adopt --project "$ADOPT_YARN"
   [ "$ADOPTION_STATUS" -eq 0 ] || fail "$yarn_case Yarn adoption failed"
   if [ "$yarn_case" = locked ]; then
-    assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install --frozen-lockfile"'
+    assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install --immutable --immutable-cache"'
   else
-    assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install"'
-    assert_not_contains "$ADOPT_YARN/.touchstone.toml" 'frozen-lockfile'
+    assert_not_contains "$ADOPT_YARN/.touchstone.toml" 'setup = '
   fi
 done
 

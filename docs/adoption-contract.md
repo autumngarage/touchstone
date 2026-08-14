@@ -50,20 +50,26 @@ selecting one silently.
 Node tasks come only from non-empty declared package scripts. A declared
 `validate` or `verify` script is the single task; otherwise the adapter records
 the declared `lint`, `typecheck`, `test`, and `build` scripts in that order.
-The declaration installs Node dependencies with the detected package manager,
-using the lockfile's frozen mode when one exists. Duplicate script keys refuse
-as ambiguous rather than selecting a value different from the package manager.
+When a lockfile exists, the declaration prepares Node dependencies only in the
+manager's offline, frozen/immutable mode; an unlocked project gets no generated
+install step. A child uses the root setup only when an explicit workspace glob
+proves membership. Duplicate script or root `workspaces` keys refuse as
+ambiguous rather than selecting a value different from the package manager.
 Python tasks come from ruff, mypy, and pytest evidence in `pyproject.toml` or
-the test tree; their explicit setup uses `uv sync --frozen`, a requirements
-install, or an editable install only for an installable project declaration.
+the test tree. The complete `pyproject.toml` must parse before any facts are
+derived. Explicit setup uses offline uv, no-index requirements, or no-index
+editable installation only for an installable project declaration.
 Each emitted checker must also be present in dependency facts installed by that
 setup; required uv dev groups are named explicitly even when project defaults
 exclude them. Configuration or a test tree without the checker dependency refuses.
 Tool-only Python configuration without dependency facts refuses. Monorepo
 plans include executable root-level checks alongside explicit child targets.
-Swift, Rust, and Go commands resolve
-their own package dependencies. The accepted commands and setup are written
-explicitly to `.touchstone.toml`; later preset changes never rewrite that file.
+Swift, Rust, and Go commands disable automatic resolution, use offline Cargo,
+or disable the Go proxy. Every generated validation path fails when required
+dependencies are not vendored or pre-provisioned; none may turn a package-host
+outage into a required-check failure. The accepted commands and setup are
+written explicitly to `.touchstone.toml`; later preset changes never rewrite
+that file.
 
 ## Ownership and safety
 
