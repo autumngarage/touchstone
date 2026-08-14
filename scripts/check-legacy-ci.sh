@@ -187,6 +187,36 @@ workflow_pushes_default() {
       sub(/[,}].*$/, "", remainder)
       return remainder
     }
+    function event_list_has_push(value, count, values, item) {
+      value = trim_scalar(value)
+      if (value !~ /^\[.*\]$/) return value == "push"
+      value = substr(value, 2, length(value) - 2)
+      count = split(value, values, ",")
+      for (item = 1; item <= count; item++) if (trim_scalar(values[item]) == "push") return 1
+      return 0
+    }
+    function flow_on_pushes_default(value, rest) {
+      if (!match(value, /(^|[,{][[:space:]]*)push[[:space:]]*:/)) return 0
+      rest = substr(value, RSTART + RLENGTH)
+      selected_main = 0
+      selected_master = 0
+      ignored_main = 0
+      ignored_master = 0
+      default_branch = 0
+      ignored_default = 0
+      branches_seen = 0
+      tags_seen = 0
+      if (rest !~ /^\{/) return 1
+      if (rest ~ /branches:[[:space:]]*/) {
+        branches_seen = 1
+        apply_branch_list(inline_filter_value(rest, "branches"), 0)
+      }
+      if (rest ~ /branches-ignore:[[:space:]]*/) {
+        apply_branch_list(inline_filter_value(rest, "branches-ignore"), 1)
+      }
+      if (rest ~ /tags(-ignore)?:/) tags_seen = 1
+      return default_branch || (!branches_seen && !tags_seen && !ignored_default)
+    }
     function flush_push() {
       if (in_push && (default_branch || (!branches_seen && !tags_seen && !ignored_default))) found = 1
       in_push = 0
@@ -211,7 +241,11 @@ workflow_pushes_default() {
         on_indent = indent
         next
       }
-      if (content ~ /^on:[[:space:]]*(push|\[[^]]*push[^]]*\])[[:space:]]*$/) {
+      if (content ~ /^on:[[:space:]]*\{/ && flow_on_pushes_default(content)) {
+        found = 1
+        next
+      }
+      if (content ~ /^on:[[:space:]]*/ && event_list_has_push(substr(content, index(content, ":") + 1))) {
         found = 1
         next
       }

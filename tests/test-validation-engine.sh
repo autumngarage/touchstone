@@ -119,6 +119,14 @@ case "$RUN_STATUS" in 126 | 127) ;; *) fail "missing shebang interpreter did not
 assert_contains "$TMP_DIR/missing-interpreter.out" '"ran":0'
 assert_contains "$TMP_DIR/missing-interpreter.out" '"reason":"command-not-started"'
 
+ENV_OPTIONS="$TMP_DIR/env-options"
+write_contract "$ENV_OPTIONS" "./env-options-script"
+printf '#!/usr/bin/env -S -u FOO bash\nprintf env-ran > marker\n' >"$ENV_OPTIONS/env-options-script"
+chmod +x "$ENV_OPTIONS/env-options-script"
+FOO=present run_capture "$ENV_OPTIONS" "$TMP_DIR/env-options.out" --json
+[ "$RUN_STATUS" -eq 0 ] || fail "env option arguments were mistaken for the interpreter"
+[ "$(cat "$ENV_OPTIONS/marker")" = env-ran ] || fail "env shebang script did not run"
+
 ASSIGNMENT_COMMAND="$TMP_DIR/assignment-command"
 write_contract "$ASSIGNMENT_COMMAND" "FIRST=one SECOND=two missing-touchstone-command"
 run_capture "$ASSIGNMENT_COMMAND" "$TMP_DIR/assignment-command.out" --json
@@ -410,6 +418,11 @@ on:
 steps:
   - run: pre-commit run --all-files --hook-stage pre-commit
 EOF
+cat >"$LEGACY/.github/workflows/flow-trigger.yml" <<'EOF'
+on: {pull_request: {}, push: {branches: [main]}}
+steps:
+  - run: pre-commit run --all-files --hook-stage pre-commit
+EOF
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/compat.out" 2>"$TMP_DIR/compat.err"
 status=$?
@@ -423,6 +436,7 @@ assert_contains "$TMP_DIR/compat.out" "quoted-default.yml"
 assert_contains "$TMP_DIR/compat.out" "glob-default.yml"
 assert_not_contains "$TMP_DIR/compat.out" "excluded-defaults.yml"
 assert_contains "$TMP_DIR/compat.out" "class-default.yml"
+assert_contains "$TMP_DIR/compat.out" "flow-trigger.yml"
 assert_contains "$TMP_DIR/compat.err" "SKIP=no-commit-to-branch"
 printf '\n# SKIP=no-commit-to-branch is not a repair\n' >>"$LEGACY/.github/workflows/validate.yml"
 set +e
@@ -445,6 +459,7 @@ rm "$LEGACY/.github/workflows/validate.yml"
 rm "$LEGACY/.github/workflows/quoted-default.yml"
 rm "$LEGACY/.github/workflows/glob-default.yml"
 rm "$LEGACY/.github/workflows/class-default.yml"
+rm "$LEGACY/.github/workflows/flow-trigger.yml"
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/bare-assignment.out" 2>"$TMP_DIR/bare-assignment.err"
 status=$?

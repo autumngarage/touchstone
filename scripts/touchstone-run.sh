@@ -484,7 +484,7 @@ declared_command_head() {
 declared_command_unrunnable_code() {
   local command="$1" directory="$2" head
   local executable="" first_line shebang interpreter effective_path="$PATH"
-  local env_command word
+  local env_command word env_index
   local -a shebang_words
   declared_command_head "$command" || return 0
   head="$COMMAND_HEAD"
@@ -530,10 +530,30 @@ declared_command_unrunnable_code() {
       case "${interpreter##*/}" in
         env)
           env_command=""
-          for word in "${shebang_words[@]:1}"; do
-            case "$word" in -S | -- | -* | *=*) continue ;; esac
-            env_command="$word"
-            break
+          env_index=1
+          while [ "$env_index" -lt "${#shebang_words[@]}" ]; do
+            word="${shebang_words[$env_index]}"
+            case "$word" in
+              -S | --split-string | -i | --ignore-environment | -0 | --null | --debug)
+                env_index=$((env_index + 1))
+                ;;
+              -u | --unset | -C | --chdir)
+                env_index=$((env_index + 2))
+                ;;
+              --unset=* | --chdir=* | *=*)
+                env_index=$((env_index + 1))
+                ;;
+              --)
+                env_index=$((env_index + 1))
+                ;;
+              -*)
+                return 0
+                ;;
+              *)
+                env_command="$word"
+                break
+                ;;
+            esac
           done
           if [ -z "$env_command" ] || ! PATH="$effective_path" command -v -- "$env_command" >/dev/null 2>&1; then
             printf 'missing-interpreter\n'
