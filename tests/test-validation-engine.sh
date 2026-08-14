@@ -1103,6 +1103,26 @@ run_adoption "$TMP_DIR/adopt-malformed-inline.out" adopt --dry-run --project "$A
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed inline TOML table produced an adoption plan"
 assert_contains "$TMP_DIR/adopt-malformed-inline.out.err" 'pyproject.toml is malformed'
 
+ADOPT_DUPLICATE_PYPROJECT="$TMP_DIR/adopt-duplicate-pyproject"
+init_adoption_repo "$ADOPT_DUPLICATE_PYPROJECT"
+mkdir -p "$ADOPT_DUPLICATE_PYPROJECT/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  'dependencies = []' >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
+commit_adoption_repo "$ADOPT_DUPLICATE_PYPROJECT" "fixture"
+git -C "$ADOPT_DUPLICATE_PYPROJECT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-duplicate-pyproject.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate pyproject.toml key produced an adoption plan"
+assert_contains "$TMP_DIR/adopt-duplicate-pyproject.out.err" 'pyproject.toml is malformed'
+printf '%s\n' '[project]' 'name = "fixture"' '[project]' 'dependencies = ["pytest"]' \
+  >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
+run_adoption "$TMP_DIR/adopt-duplicate-table.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate pyproject.toml table produced an adoption plan"
+printf '%s\n' '[project]' 'name = "fixture"' \
+  'authors = [{ name = "first", name = "second" }]' \
+  >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
+run_adoption "$TMP_DIR/adopt-duplicate-inline-key.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate inline TOML key produced an adoption plan"
+
 ADOPT_UNDECLARED_CHECKER="$TMP_DIR/adopt-undeclared-checker"
 init_adoption_repo "$ADOPT_UNDECLARED_CHECKER"
 mkdir -p "$ADOPT_UNDECLARED_CHECKER/tests"

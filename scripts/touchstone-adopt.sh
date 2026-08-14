@@ -1058,6 +1058,48 @@ validate_pyproject_document() {
       bare_token = ""
       bare_is_value = 0
     }
+    function path_conflicts_with_value(path, existing) {
+      for (existing in defined_path) {
+        if (path == existing || index(path, existing ".") == 1 || index(existing, path ".") == 1) return 1
+      }
+      return 0
+    }
+    function record_key(scope, key_name, path, existing) {
+      if (key_name !~ /^[A-Za-z0-9_.-]+$/) invalid_document()
+      path = scope == "" ? key_name : scope "." key_name
+      if (path_conflicts_with_value(path) || table_kind[path] != "") invalid_document()
+      for (existing in table_kind) {
+        if (index(existing, path ".") == 1) invalid_document()
+      }
+      defined_path[path] = 1
+    }
+    function enter_table(value, table_name, is_array, path, existing) {
+      value = trim_toml(value)
+      sub(/[[:space:]]*#.*/, "", value)
+      value = trim_toml(value)
+      is_array = substr(value, 1, 2) == "[["
+      if (is_array) table_name = substr(value, 3, length(value) - 4)
+      else table_name = substr(value, 2, length(value) - 2)
+      table_name = trim_toml(table_name)
+      if (table_name !~ /^[A-Za-z0-9_.-]+$/ || path_conflicts_with_value(table_name)) invalid_document()
+      if (is_array) {
+        if (table_kind[table_name] == "table") invalid_document()
+        table_kind[table_name] = "array"
+        table_instance[table_name]++
+        current_table = table_name "#" table_instance[table_name]
+      } else {
+        if (table_kind[table_name] != "") invalid_document()
+        for (existing in table_kind) {
+          if (table_kind[existing] == "array" && (table_name == existing || index(table_name, existing ".") == 1)) invalid_document()
+        }
+        table_kind[table_name] = "table"
+        current_table = table_name
+      }
+    }
+    function trim_toml(value) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      return value
+    }
     function begin_value() {
       if (depth > 0 && kind[depth] == "array") {
         if (!expect_value[depth]) invalid_document()
@@ -1088,7 +1130,11 @@ validate_pyproject_document() {
       depth++
       kind[depth] = container
       if (container == "array") expect_value[depth] = 1
-      else inline_state[depth] = "key"
+      else {
+        inline_state[depth] = "key"
+        inline_serial++
+        inline_id[depth] = inline_serial
+      }
     }
     function pop(container) {
       if (depth < 1 || kind[depth] != container) invalid_document()
@@ -1099,6 +1145,7 @@ validate_pyproject_document() {
       delete inline_state[depth]
       delete inline_key[depth]
       delete inline_had_entry[depth]
+      delete inline_id[depth]
       depth--
     }
     function valid_table_header(value) {
@@ -1122,6 +1169,7 @@ validate_pyproject_document() {
 
       if (depth == 0 && line ~ /^[[:space:]]*\[/) {
         if (!valid_table_header(line)) invalid_document()
+        enter_table(line)
         next
       }
 
@@ -1189,12 +1237,16 @@ validate_pyproject_document() {
           continue
         }
         if (character == "=") {
+          key_name = bare_token
           finish_bare()
           if (depth == 0) {
             if (assignment) invalid_document()
+            record_key(current_table, key_name)
             assignment = 1
           } else if (kind[depth] == "inline") {
             if (inline_state[depth] != "key" || !inline_key[depth]) invalid_document()
+            if (key_name !~ /^[A-Za-z0-9_.-]+$/ || inline_defined[inline_id[depth], key_name]) invalid_document()
+            inline_defined[inline_id[depth], key_name] = 1
             inline_state[depth] = "value"
             inline_had_entry[depth] = 1
           } else {
