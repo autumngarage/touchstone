@@ -893,6 +893,7 @@ run_adoption "$TMP_DIR/adopt-node-apply.out" adopt --project "$ADOPT_NODE"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "Node adoption apply failed"
 assert_contains "$ADOPT_NODE/.touchstone.toml" 'command = "npm run lint"'
 assert_contains "$ADOPT_NODE/.touchstone.toml" 'command = "npm run test"'
+assert_contains "$ADOPT_NODE/.touchstone.toml" 'setup = "npm ci"'
 assert_contains "$ADOPT_NODE/AGENTS.md" "KEEP a/old/ b/new/ PROSE"
 [ -x "$ADOPT_NODE/AGENTS.md" ] || fail "adoption changed a project-owned steering file mode"
 assert_contains "$ADOPT_NODE/AGENTS.md" '<!-- touchstone:steering:start -->'
@@ -989,18 +990,22 @@ for profile in python swift rust go; do
       printf '%s\n' '[tool.pytest.ini_options]' >"$ADOPT_PROFILE/pyproject.toml"
       printf 'version = 1\n' >"$ADOPT_PROFILE/uv.lock"
       expected_command='command = "uv run --no-sync pytest"'
+      expected_setup='setup = "uv sync --frozen"'
       ;;
     swift)
       printf '%s\n' '// swift-tools-version:6.2' >"$ADOPT_PROFILE/Package.swift"
       expected_command='command = "swift test"'
+      expected_setup=''
       ;;
     rust)
       printf '%s\n' '[package]' 'name = "fixture"' >"$ADOPT_PROFILE/Cargo.toml"
       expected_command='command = "cargo test"'
+      expected_setup=''
       ;;
     go)
       printf '%s\n' 'module example.invalid/fixture' >"$ADOPT_PROFILE/go.mod"
       expected_command='command = "go test ./..."'
+      expected_setup=''
       ;;
   esac
   commit_adoption_repo "$ADOPT_PROFILE" "fixture"
@@ -1008,6 +1013,7 @@ for profile in python swift rust go; do
   run_adoption "$TMP_DIR/adopt-$profile.out" adopt --project "$ADOPT_PROFILE"
   [ "$ADOPTION_STATUS" -eq 0 ] || fail "$profile adoption failed"
   assert_contains "$ADOPT_PROFILE/.touchstone.toml" "$expected_command"
+  if [ -n "$expected_setup" ]; then assert_contains "$ADOPT_PROFILE/.touchstone.toml" "$expected_setup"; fi
 done
 
 echo "==> adoption derives explicit monorepo targets"
@@ -1028,6 +1034,8 @@ assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "test-apps-api"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "build-packages-web"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run test"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run build"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'setup = "pnpm install --frozen-lockfile"'
+bash "$RUNNER" validate --check-contract --project "$ADOPT_MONOREPO" >/dev/null
 
 ADOPT_LARGE="$TMP_DIR/adopt-large"
 init_adoption_repo "$ADOPT_LARGE"
@@ -1046,6 +1054,7 @@ run_adoption "$TMP_DIR/adopt-large.out" adopt --project "$ADOPT_LARGE"
 assert_contains "$ADOPT_LARGE/.touchstone.toml" 'path = "packages/unit-24"'
 task_count="$(grep -c '^\[\[validation.tasks\]\]$' "$ADOPT_LARGE/.touchstone.toml")"
 [ "$task_count" -eq 24 ] || fail "large monorepo did not derive all explicit tasks"
+bash "$RUNNER" validate --check-contract --project "$ADOPT_LARGE" >/dev/null
 
 echo "==> adoption fails closed on ambiguous and unsupported contracts"
 ADOPT_AMBIGUOUS="$TMP_DIR/adopt-ambiguous"
@@ -1069,6 +1078,25 @@ git -C "$ADOPT_MANAGER" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-manager.out" adopt --dry-run --project "$ADOPT_MANAGER"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "package manager conflict did not refuse"
 assert_contains "$TMP_DIR/adopt-manager.out.err" "conflicts with the 'npm' lockfile"
+run_adoption "$TMP_DIR/adopt-manager-json.out" adopt --dry-run --json --project "$ADOPT_MANAGER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "JSON package manager conflict did not refuse"
+assert_contains "$TMP_DIR/adopt-manager-json.out" '"status":"contract-refused"'
+assert_contains "$TMP_DIR/adopt-manager-json.out" "conflicts with the 'npm' lockfile"
+
+ADOPT_CHILD_MANAGER="$TMP_DIR/adopt-child-manager"
+init_adoption_repo "$ADOPT_CHILD_MANAGER"
+mkdir -p "$ADOPT_CHILD_MANAGER/packages/child"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0"}' >"$ADOPT_CHILD_MANAGER/package.json"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_CHILD_MANAGER/pnpm-lock.yaml"
+printf '%s\n' '{"packageManager":"npm@11.0.0","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_CHILD_MANAGER/packages/child/package.json"
+printf '{}\n' >"$ADOPT_CHILD_MANAGER/packages/child/package-lock.json"
+commit_adoption_repo "$ADOPT_CHILD_MANAGER" "fixture"
+git -C "$ADOPT_CHILD_MANAGER" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-child-manager.out" adopt --dry-run --json --project "$ADOPT_CHILD_MANAGER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "JSON child manager conflict did not refuse"
+assert_contains "$TMP_DIR/adopt-child-manager.out" '"status":"contract-refused"'
+assert_contains "$TMP_DIR/adopt-child-manager.out" "conflicts with workspace package manager 'pnpm'"
 
 ADOPT_ESCAPED_JSON="$TMP_DIR/adopt-escaped-json"
 init_adoption_repo "$ADOPT_ESCAPED_JSON"

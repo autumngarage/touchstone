@@ -47,13 +47,16 @@ targets, legacy explicit validation commands, and a generic manual task.
 Conflicting manifests or lockfiles fail with the competing facts instead of
 selecting one silently.
 
-Node tasks come only from declared package scripts. A declared `validate` or
-`verify` script is the single task; otherwise the adapter records the declared
-`lint`, `typecheck`, `test`, and `build` scripts in that order. Python tasks
-come from ruff, mypy, and pytest evidence in `pyproject.toml` or the test tree.
-The other adapters use their ecosystem test command. The accepted result is
-written explicitly to `.touchstone.toml`; later preset changes never rewrite
-that file.
+Node tasks come only from non-empty declared package scripts. A declared
+`validate` or `verify` script is the single task; otherwise the adapter records
+the declared `lint`, `typecheck`, `test`, and `build` scripts in that order.
+The declaration installs Node dependencies with the detected package manager,
+using the lockfile's frozen mode when one exists. Python tasks come from ruff,
+mypy, and pytest evidence in `pyproject.toml` or the test tree; their explicit
+setup uses `uv sync --frozen`, a requirements install, or an editable project
+install according to the detected facts. Swift, Rust, and Go commands resolve
+their own package dependencies. The accepted commands and setup are written
+explicitly to `.touchstone.toml`; later preset changes never rewrite that file.
 
 ## Ownership and safety
 

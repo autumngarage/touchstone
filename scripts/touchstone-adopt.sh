@@ -117,6 +117,7 @@ PLAN_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/touchstone-adopt.XXXXXX")" || {
 trap 'rm -rf "$PLAN_ROOT"' EXIT
 TARGETS_FILE="$PLAN_ROOT/targets"
 TASKS_FILE="$PLAN_ROOT/tasks"
+SETUPS_FILE="$PLAN_ROOT/setups"
 CHANGES_FILE="$PLAN_ROOT/changes"
 DIFF_FILE="$PLAN_ROOT/diff"
 OLD_ROOT="$PLAN_ROOT/old"
@@ -127,10 +128,12 @@ mkdir -p "$OLD_ROOT" "$NEW_ROOT" || {
 }
 : >"$TARGETS_FILE"
 : >"$TASKS_FILE"
+: >"$SETUPS_FILE"
 : >"$CHANGES_FILE"
 : >"$DIFF_FILE"
 
 PROFILE=unknown
+NODE_MANAGER=""
 PLAN_STATUS=current
 REFUSAL_REASON=""
 TAB=$'\t'
@@ -271,6 +274,24 @@ record_task() {
     contract_refusal "duplicate task '$name'"
   fi
   printf '%s\t%s\ttrue\t%s\n' "$name" "$target" "$command" >>"$TASKS_FILE"
+}
+
+record_setup() {
+  local directory="$1" command="$2" relative existing
+  relative="${directory#"$PROJECT_ROOT"/}"
+  [ "$directory" != "$PROJECT_ROOT" ] || relative=.
+  valid_relative_path "$relative" || contract_refusal "setup path escapes the repository: $relative"
+  case "$command" in "" | *"$TAB"* | *"$CR"* | *"$LF"*)
+    contract_refusal "setup for '$relative' must be a non-empty single-line command"
+    ;;
+  esac
+  existing="$(awk -F '\t' -v path="$relative" '$1 == path { print substr($0, index($0, "\t") + 1); exit }' "$SETUPS_FILE")"
+  if [ -n "$existing" ]; then
+    [ "$existing" = "$command" ] \
+      || contract_refusal "target '$relative' requires conflicting setup commands"
+    return 0
+  fi
+  printf '%s\t%s\n' "$relative" "$command" >>"$SETUPS_FILE"
 }
 
 legacy_value() {
@@ -691,7 +712,35 @@ node_package_manager() {
   if [ -n "$inherited" ] && [ -n "$manager" ] && [ "$inherited" != "$manager" ]; then
     contract_refusal "Node package manager '$manager' conflicts with workspace package manager '$inherited'"
   fi
-  printf '%s\n' "${manager:-${inherited:-$fallback}}"
+  NODE_MANAGER="${manager:-${inherited:-$fallback}}"
+}
+
+node_setup_command() {
+  local manager="$1" directory="$2"
+  case "$manager" in
+    npm)
+      if [ -f "$directory/package-lock.json" ] || [ -f "$directory/npm-shrinkwrap.json" ]; then
+        printf 'npm ci\n'
+      else
+        printf 'npm install\n'
+      fi
+      ;;
+    pnpm)
+      if [ -f "$directory/pnpm-lock.yaml" ]; then
+        printf 'pnpm install --frozen-lockfile\n'
+      else
+        printf 'pnpm install\n'
+      fi
+      ;;
+    yarn) printf 'yarn install --immutable\n' ;;
+    bun)
+      if [ -f "$directory/bun.lock" ] || [ -f "$directory/bun.lockb" ]; then
+        printf 'bun install --frozen-lockfile\n'
+      else
+        printf 'bun install\n'
+      fi
+      ;;
+  esac
 }
 
 node_command() {
@@ -705,9 +754,12 @@ node_command() {
 }
 
 tasks_for_node() {
-  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" manager task found=false
+  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" manager setup_directory task found=false
   [ -f "$directory/package.json" ] || contract_refusal "Node target '$target' has no package.json"
-  manager="$(node_package_manager "$directory" "$inherited")"
+  node_package_manager "$directory" "$inherited"
+  manager="$NODE_MANAGER"
+  if [ -n "$inherited" ]; then setup_directory="$PROJECT_ROOT"; else setup_directory="$directory"; fi
+  record_setup "$setup_directory" "$(node_setup_command "$manager" "$setup_directory")"
   for task in validate verify; do
     if node_has_script "$directory/package.json" "$task"; then
       record_task "$task$suffix" "$target" "$(node_command "$manager" "$task")"
@@ -725,7 +777,14 @@ tasks_for_node() {
 
 tasks_for_python() {
   local directory="$1" target="$2" suffix="$3" prefix="python -m" found=false
-  if [ -f "$directory/uv.lock" ]; then prefix="uv run --no-sync"; fi
+  if [ -f "$directory/uv.lock" ]; then
+    prefix="uv run --no-sync"
+    record_setup "$directory" "uv sync --frozen"
+  elif [ -f "$directory/requirements.txt" ]; then
+    record_setup "$directory" "python -m pip install -r requirements.txt"
+  elif [ -f "$directory/pyproject.toml" ]; then
+    record_setup "$directory" "python -m pip install -e ."
+  fi
   if [ -f "$directory/pyproject.toml" ] && grep -Eq '^\[tool\.ruff(\.|\])' "$directory/pyproject.toml"; then
     record_task "lint$suffix" "$target" "$prefix ruff check ."
     found=true
@@ -810,7 +869,8 @@ target_name_for_path() {
 
 compile_detected() {
   local base directory relative profile target suffix found_targets=false workspace_node_manager resolved_directory
-  workspace_node_manager="$(node_package_manager "$PROJECT_ROOT" "" "")"
+  node_package_manager "$PROJECT_ROOT" "" ""
+  workspace_node_manager="$NODE_MANAGER"
   for base in apps packages services; do
     [ -d "$PROJECT_ROOT/$base" ] || continue
     for directory in "$PROJECT_ROOT/$base"/*; do
@@ -848,11 +908,24 @@ toml_escape() {
 }
 
 render_contract() {
-  local output="$1" name path _profile task target required command
+  local output="$1" name path _profile task target required command setup_command="" setup_entry quoted_path
+  while IFS="$(printf '\t')" read -r path command; do
+    [ -n "$path" ] || continue
+    if [ "$path" = . ]; then
+      setup_entry="$command"
+    else
+      printf -v quoted_path '%q' "$path"
+      setup_entry="(cd $quoted_path && $command)"
+    fi
+    setup_command="${setup_command:+$setup_command && }$setup_entry"
+  done <"$SETUPS_FILE"
   {
     printf 'schema = 1\n\n'
     printf '[validation]\n'
     printf 'runtime = "bash"\n'
+    if [ -n "$setup_command" ]; then
+      printf 'setup = "%s"\n' "$(toml_escape "$setup_command")"
+    fi
     while IFS="$(printf '\t')" read -r name path _profile; do
       printf '\n[[validation.targets]]\n'
       printf 'name = "%s"\n' "$(toml_escape "$name")"
