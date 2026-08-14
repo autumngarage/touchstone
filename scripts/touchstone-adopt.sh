@@ -1457,6 +1457,39 @@ validate_pyproject_document() {
     || contract_refusal "pyproject.toml is malformed or uses TOML syntax the portable adoption parser cannot verify; pass --task NAME=COMMAND for a manual contract"
 }
 
+python_has_unverifiable_build_hook() {
+  local directory="$1" file
+  file="$directory/pyproject.toml"
+  [ ! -f "$directory/setup.py" ] || return 0
+  [ -f "$file" ] || return 1
+  awk '
+    function trim(value) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      return value
+    }
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*$/, "", section)
+      next
+    }
+    section == "build-system" && /^[[:space:]]*backend-path[[:space:]]*=/ { unsafe=1 }
+    section == "build-system" && /^[[:space:]]*build-backend[[:space:]]*=/ {
+      value = $0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]*#.*/, "", value)
+      value = trim(value)
+      if (value !~ /^"[^"]+"$/ && value !~ /^\047[^\047]+\047$/) { unsafe=1; next }
+      value = substr(value, 2, length(value) - 2)
+      if (value != "setuptools.build_meta" && value != "setuptools.build_meta:__legacy__" &&
+          value != "hatchling.build" && value != "flit_core.buildapi" &&
+          value != "poetry.core.masonry.api" && value != "uv_build" &&
+          value != "maturin" && value != "mesonpy" && value != "scikit_build_core.build") unsafe=1
+    }
+    END { exit !unsafe }
+  ' "$file"
+}
+
 python_has_remote_reference() {
   local pyproject="$1" requirements="$2"
   if [ -f "$requirements" ] && awk '
@@ -1617,6 +1650,9 @@ python_checker_declared() {
 tasks_for_python() {
   local directory="$1" target="$2" suffix="$3" prefix="python -m" found=false evidence=false
   if [ -f "$directory/pyproject.toml" ]; then validate_pyproject_document "$directory/pyproject.toml"; fi
+  if python_has_unverifiable_build_hook "$directory"; then
+    contract_refusal "Python target '$target' declares a project build hook this portable compiler cannot verify offline; pass --task NAME=COMMAND"
+  fi
   if python_has_environment_marker "$directory/pyproject.toml" "$directory/requirements.txt"; then
     contract_refusal "Python target '$target' contains an environment-marked dependency this portable compiler cannot verify; use unconditional locked dependencies or pass --task NAME=COMMAND"
   fi
@@ -2153,7 +2189,7 @@ require_compiler_inputs_tracked() {
   local -a inputs=(
     .touchstone.toml .touchstone-config AGENTS.md CLAUDE.md GEMINI.md TOUCHSTONE.md
     package.json package-lock.json npm-shrinkwrap.json pnpm-lock.yaml pnpm-workspace.yaml yarn.lock bun.lock bun.lockb tsconfig.json
-    pyproject.toml uv.lock requirements.txt Package.swift Package.resolved Cargo.toml Cargo.lock go.mod go.sum
+    pyproject.toml setup.py setup.cfg uv.lock requirements.txt Package.swift Package.resolved Cargo.toml Cargo.lock go.mod go.sum
   )
   for name in "${inputs[@]}"; do require_tracked_compiler_input "$name"; done
   for directory in apps packages services; do

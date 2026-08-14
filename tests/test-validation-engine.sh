@@ -1266,6 +1266,30 @@ PATH="$TMP_DIR/no-python:$PATH" run_adoption "$TMP_DIR/adopt-pyproject.out" adop
 assert_contains "$ADOPT_PYPROJECT/.touchstone.toml" 'setup = "python -m pip install --no-index --no-build-isolation -e ."'
 assert_contains "$ADOPT_PYPROJECT/.touchstone.toml" 'command = "python -m pytest"'
 
+ADOPT_PYTHON_BUILD_HOOK="$TMP_DIR/adopt-python-build-hook"
+init_adoption_repo "$ADOPT_PYTHON_BUILD_HOOK"
+printf '%s\n' '[build-system]' 'requires = []' 'build-backend = "fixture_backend"' \
+  'backend-path = ["."]' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_PYTHON_BUILD_HOOK/pyproject.toml"
+printf '%s\n' 'def build_wheel(*args, **kwargs):' '    raise RuntimeError("network hook")' \
+  >"$ADOPT_PYTHON_BUILD_HOOK/fixture_backend.py"
+commit_adoption_repo "$ADOPT_PYTHON_BUILD_HOOK" "fixture"
+git -C "$ADOPT_PYTHON_BUILD_HOOK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-python-build-hook.out" adopt --dry-run --project "$ADOPT_PYTHON_BUILD_HOOK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "project-local Python build hook was accepted"
+assert_contains "$TMP_DIR/adopt-python-build-hook.out.err" 'build hook this portable compiler cannot verify offline'
+
+ADOPT_PYTHON_SETUP_HOOK="$TMP_DIR/adopt-python-setup-hook"
+init_adoption_repo "$ADOPT_PYTHON_SETUP_HOOK"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_PYTHON_SETUP_HOOK/pyproject.toml"
+printf '%s\n' 'raise RuntimeError("network hook")' >"$ADOPT_PYTHON_SETUP_HOOK/setup.py"
+commit_adoption_repo "$ADOPT_PYTHON_SETUP_HOOK" "fixture"
+git -C "$ADOPT_PYTHON_SETUP_HOOK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-python-setup-hook.out" adopt --dry-run --project "$ADOPT_PYTHON_SETUP_HOOK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "setup.py Python build hook was accepted"
+assert_contains "$TMP_DIR/adopt-python-setup-hook.out.err" 'build hook this portable compiler cannot verify offline'
+
 ADOPT_REQUIREMENTS="$TMP_DIR/adopt-requirements"
 init_adoption_repo "$ADOPT_REQUIREMENTS"
 mkdir -p "$ADOPT_REQUIREMENTS/tests"
