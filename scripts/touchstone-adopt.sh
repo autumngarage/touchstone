@@ -584,8 +584,8 @@ json_object_has_key() {
 }
 
 json_object_has_local_path() {
-  local file="$1" object="$2"
-  awk -v object="$object" '
+  local file="$1" object="$2" match_mode="${3:-local}"
+  awk -v object="$object" -v match_mode="$match_mode" '
     function hex_value(character, position) {
       position = index("0123456789abcdef", tolower(character))
       return position - 1
@@ -615,7 +615,7 @@ json_object_has_local_path() {
     }
     function finish_string() {
       if (capturing_value) {
-        if (local_path(token)) found = 1
+        if (match_mode == "any" || local_path(token)) found = 1
         capturing_value = 0
       } else pending = token
       token = ""
@@ -705,6 +705,28 @@ node_has_local_dependency() {
       || contract_refusal "package.json has a malformed or unsupported '$object' declaration"
   done
   return 1
+}
+
+node_has_declared_dependency() {
+  local file="$1" object status
+  for object in dependencies devDependencies optionalDependencies peerDependencies; do
+    if json_object_has_local_path "$file" "$object" any; then
+      return 0
+    else
+      status=$?
+    fi
+    [ "$status" -eq 1 ] \
+      || contract_refusal "package.json has a malformed or unsupported '$object' declaration"
+  done
+  return 1
+}
+
+npm_lock_valid() {
+  local file="$1" compact
+  validate_json_document "$file" || return 1
+  compact="$(tr -d '[:space:]' <"$file")"
+  [ "$compact" = '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' ] \
+    || [ "$compact" = '{"lockfileVersion":2,"requires":true,"packages":{"":{}}}' ]
 }
 
 node_has_script() {
@@ -1313,13 +1335,35 @@ cargo_workspace_contains() {
 }
 
 tasks_for_node() {
-  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" manager setup_directory setup_command task found=false
+  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" manager setup_directory setup_command npm_lock task found=false
   [ -f "$directory/package.json" ] || contract_refusal "Node target '$target' has no package.json"
   node_package_manager "$directory" "$inherited"
+  for task in validate verify lint typecheck test build; do
+    if node_has_script "$directory/package.json" "$task"; then :; fi
+  done
   node_has_local_dependency "$directory/package.json" \
     && contract_refusal "Node target '$target' declares a local file dependency this portable compiler cannot verify within the checkout; pass --task NAME=COMMAND"
   manager="$NODE_MANAGER"
   if [ "$workspace_member" = true ]; then setup_directory="$PROJECT_ROOT"; else setup_directory="$directory"; fi
+  if [ "$manager" = npm ]; then
+    if [ -f "$setup_directory/package-lock.json" ]; then
+      npm_lock="$setup_directory/package-lock.json"
+    elif [ -f "$setup_directory/npm-shrinkwrap.json" ]; then
+      npm_lock="$setup_directory/npm-shrinkwrap.json"
+    fi
+    if [ -n "$npm_lock" ]; then
+      node_has_declared_dependency "$directory/package.json" \
+        && contract_refusal "Node target '$target' declares npm dependencies whose lock compatibility this portable compiler cannot verify; pass --task NAME=COMMAND"
+      if [ "$setup_directory" != "$directory" ]; then
+        node_has_declared_dependency "$setup_directory/package.json" \
+          && contract_refusal "Node workspace root declares npm dependencies whose lock compatibility this portable compiler cannot verify; pass --task NAME=COMMAND"
+      fi
+      npm_lock_valid "$npm_lock" \
+        || contract_refusal "Node target '$target' has an npm lockfile outside the dependency-free portable subset; regenerate a schema-v2/v3 lock or pass --task NAME=COMMAND"
+    elif node_has_declared_dependency "$directory/package.json"; then
+      contract_refusal "Node target '$target' declares npm dependencies without a portable lockfile; commit a compatible lock or pass --task NAME=COMMAND"
+    fi
+  fi
   setup_command="$(node_setup_command "$manager" "$setup_directory")"
   if [ -n "$setup_command" ]; then record_setup "$setup_directory" "$setup_command"; fi
   for task in validate verify; do
@@ -1738,6 +1782,27 @@ python_has_environment_marker() {
   return 1
 }
 
+validate_requirements_document() {
+  local file="$1"
+  awk '
+    function trim(value) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      return value
+    }
+    {
+      line = $0
+      sub(/[[:space:]]+#.*/, "", line)
+      line = trim(line)
+      if (line == "") next
+      name = "[A-Za-z0-9][A-Za-z0-9._-]*(\\[[A-Za-z0-9._,-]+\\])?"
+      version = "[A-Za-z0-9*+!._-]+"
+      comparison = "(===|==|!=|~=|<=|>=|<|>)[[:space:]]*" version
+      if (line !~ ("^" name "([[:space:]]*" comparison "([[:space:]]*,[[:space:]]*" comparison ")*)?$")) exit 2
+    }
+  ' "$file" >/dev/null 2>&1 \
+    || contract_refusal "requirements.txt is malformed or outside the portable named-requirement subset; pass --task NAME=COMMAND for a manual contract"
+}
+
 python_project_has_dependency() {
   local file="$1" wanted="$2" include_dev="$3"
   awk -v wanted="$wanted" -v include_dev="$include_dev" '
@@ -1829,6 +1894,9 @@ tasks_for_python() {
   if python_has_remote_reference "$directory/pyproject.toml" "$directory/requirements.txt"; then
     contract_refusal "Python target '$target' contains a remote direct dependency reference or checkout-external source; use named dependencies from the offline lock source, or pass --task NAME=COMMAND"
   fi
+  if [ -f "$directory/requirements.txt" ]; then
+    validate_requirements_document "$directory/requirements.txt"
+  fi
   if [ -f "$directory/uv.lock" ]; then
     prefix="uv run --no-sync"
     if [ -f "$directory/pyproject.toml" ] && python_has_uv_dev_group "$directory/pyproject.toml"; then
@@ -1893,6 +1961,19 @@ swift_has_dependency_source() {
   ' "$file"
 }
 
+validate_swift_manifest() {
+  local file="$1"
+  awk '
+    /^[[:space:]]*$/ { next }
+    count == 0 && /^\/\/ swift-tools-version:[[:space:]]*[0-9]+[.][0-9]+([.][0-9]+)?[[:space:]]*$/ { count++; next }
+    count == 1 && /^[[:space:]]*import[[:space:]]+PackageDescription[[:space:]]*$/ { count++; next }
+    count == 2 && /^[[:space:]]*let[[:space:]]+package[[:space:]]*=[[:space:]]*Package[(][[:space:]]*name:[[:space:]]*"[A-Za-z0-9._-]+"[[:space:]]*[)][[:space:]]*$/ { count++; next }
+    { invalid=1 }
+    END { exit invalid || count != 3 }
+  ' "$file" >/dev/null 2>&1 \
+    || contract_refusal "Package.swift is malformed or outside the portable static manifest subset; pass --task NAME=COMMAND for a manual contract"
+}
+
 toml_has_local_path_reference() {
   local file="$1"
   awk '
@@ -1927,6 +2008,53 @@ go_has_local_replace() {
   ' "$file"
 }
 
+validate_go_mod_document() {
+  local file="$1"
+  awk '
+    /^[[:space:]]*(\/\/.*)?$/ { next }
+    /^[[:space:]]*module[[:space:]]+[^[:space:]]+[[:space:]]*$/ {
+      if (module_seen) exit 2
+      module_seen=1
+      next
+    }
+    /^[[:space:]]*go[[:space:]]+[0-9]+[.][0-9]+([.][0-9]+)?[[:space:]]*$/ {
+      if (go_seen) exit 2
+      go_seen=1
+      next
+    }
+    { exit 2 }
+    END { if (!module_seen) exit 2 }
+  ' "$file" >/dev/null 2>&1 \
+    || contract_refusal "go.mod is malformed or outside the dependency-free portable subset; pass --task NAME=COMMAND for a manual contract"
+}
+
+validate_cargo_workspace_members() {
+  local members pattern manifest
+  if ! members="$(cargo_workspace_values members)"; then
+    contract_refusal "root Cargo.toml has a malformed or repeated workspace members declaration"
+  fi
+  while IFS= read -r pattern; do
+    [ -n "$pattern" ] || continue
+    workspace_pattern_supported "$pattern" \
+      || contract_refusal "Cargo workspace pattern '$pattern' uses glob syntax this compiler cannot verify"
+    case "$pattern" in *'*'*)
+      contract_refusal "Cargo workspace pattern '$pattern' requires expansion this portable compiler cannot verify; list exact tracked members or pass --task NAME=COMMAND"
+      ;;
+    esac
+    valid_relative_path "$pattern" \
+      || contract_refusal "Cargo workspace member '$pattern' escapes the repository"
+    manifest="$PROJECT_ROOT/$pattern/Cargo.toml"
+    [ -f "$manifest" ] && [ ! -L "$manifest" ] \
+      || contract_refusal "Cargo workspace member '$pattern' has no regular Cargo.toml"
+    git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$pattern/Cargo.toml" >/dev/null 2>&1 \
+      || contract_refusal "Cargo workspace member '$pattern' has no tracked Cargo.toml"
+    validate_toml_document "$manifest" "Cargo workspace member '$pattern' Cargo.toml"
+    toml_has_local_path_reference "$manifest" \
+      && contract_refusal "Cargo workspace member '$pattern' declares a local path dependency this portable compiler cannot verify; pass --task NAME=COMMAND"
+  done <<<"$members"
+  return 0
+}
+
 tasks_for_profile() {
   local directory="$1" target="$2" profile="$3" suffix="$4" inherited_node_manager="${5:-}" workspace_member="${6:-false}"
   case "$profile" in
@@ -1937,11 +2065,13 @@ tasks_for_profile() {
         && contract_refusal "Swift target '$target' declares a remote package dependency that can fetch during validation; use checkout-local dependencies with a manual contract or pass --task NAME=COMMAND"
       swift_has_dependency_source "$directory/Package.swift" path \
         && contract_refusal "Swift target '$target' declares a local package path this portable compiler cannot verify; pass --task NAME=COMMAND"
+      validate_swift_manifest "$directory/Package.swift"
       record_task "test$suffix" "$target" "swift test --disable-automatic-resolution --skip-update"
       ;;
     rust)
       local cargo_lock_path="Cargo.lock"
       validate_toml_document "$directory/Cargo.toml" Cargo.toml
+      if [ "$directory" = "$PROJECT_ROOT" ]; then validate_cargo_workspace_members; fi
       toml_has_local_path_reference "$directory/Cargo.toml" \
         && contract_refusal "Rust target '$target' declares a local path dependency this portable compiler cannot verify within the checkout; pass --task NAME=COMMAND"
       if [ "$workspace_member" != true ] && [ "$directory" != "$PROJECT_ROOT" ]; then
@@ -1958,6 +2088,7 @@ tasks_for_profile() {
         || contract_refusal "Go target '$target' declares a go.work workspace this portable compiler cannot verify within the checkout; pass --task NAME=COMMAND"
       go_has_local_replace "$directory/go.mod" \
         && contract_refusal "Go target '$target' declares a local replacement this portable compiler cannot verify within the checkout; pass --task NAME=COMMAND"
+      validate_go_mod_document "$directory/go.mod"
       record_task "test$suffix" "$target" "GOWORK=off GOPROXY=off GOSUMDB=off go test ./..."
       ;;
     generic) contract_refusal "no supported project facts found; pass --task NAME=COMMAND for a manual declaration" ;;

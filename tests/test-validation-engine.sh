@@ -876,7 +876,7 @@ cat >"$ADOPT_NODE/package.json" <<'EOF'
   }
 }
 EOF
-printf '{}\n' >"$ADOPT_NODE/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_NODE/package-lock.json"
 printf '# Project-owned instructions\n\nKEEP a/old/ b/new/ PROSE\f\n' >"$ADOPT_NODE/AGENTS.md"
 chmod +x "$ADOPT_NODE/AGENTS.md"
 commit_adoption_repo "$ADOPT_NODE" "fixture"
@@ -977,7 +977,7 @@ run_adoption "$TMP_DIR/adopt-node-suffix-upgrade.out" upgrade --project "$ADOPT_
 ADOPT_FRESH_EOF="$TMP_DIR/adopt-fresh-eof"
 init_adoption_repo "$ADOPT_FRESH_EOF"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_FRESH_EOF/package.json"
-printf '{}\n' >"$ADOPT_FRESH_EOF/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_FRESH_EOF/package-lock.json"
 printf 'PROJECT-EOF' >"$ADOPT_FRESH_EOF/AGENTS.md"
 commit_adoption_repo "$ADOPT_FRESH_EOF" "fixture"
 git -C "$ADOPT_FRESH_EOF" switch -q -c feat/adopt
@@ -1043,7 +1043,8 @@ for profile in python swift rust go; do
       expected_setup='setup = "uv sync --offline --frozen"'
       ;;
     swift)
-      printf '%s\n' '// swift-tools-version:6.2' >"$ADOPT_PROFILE/Package.swift"
+      printf '%s\n' '// swift-tools-version:6.2' 'import PackageDescription' \
+        'let package = Package(name: "Fixture")' >"$ADOPT_PROFILE/Package.swift"
       expected_command='command = "swift test --disable-automatic-resolution --skip-update"'
       expected_setup=''
       ;;
@@ -1066,6 +1067,25 @@ for profile in python swift rust go; do
   assert_contains "$ADOPT_PROFILE/.touchstone.toml" "$expected_command"
   if [ -n "$expected_setup" ]; then assert_contains "$ADOPT_PROFILE/.touchstone.toml" "$expected_setup"; fi
 done
+
+ADOPT_SWIFT_MALFORMED="$TMP_DIR/adopt-swift-malformed"
+init_adoption_repo "$ADOPT_SWIFT_MALFORMED"
+printf '%s\n' '// swift-tools-version:6.2' 'this is not Swift' \
+  >"$ADOPT_SWIFT_MALFORMED/Package.swift"
+commit_adoption_repo "$ADOPT_SWIFT_MALFORMED" "fixture"
+git -C "$ADOPT_SWIFT_MALFORMED" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-swift-malformed.out" adopt --dry-run --project "$ADOPT_SWIFT_MALFORMED"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed Swift manifest was accepted"
+assert_contains "$TMP_DIR/adopt-swift-malformed.out.err" 'Package.swift is malformed'
+
+ADOPT_GO_MALFORMED="$TMP_DIR/adopt-go-malformed"
+init_adoption_repo "$ADOPT_GO_MALFORMED"
+printf '%s\n' 'module example.invalid/fixture' 'this is invalid' >"$ADOPT_GO_MALFORMED/go.mod"
+commit_adoption_repo "$ADOPT_GO_MALFORMED" "fixture"
+git -C "$ADOPT_GO_MALFORMED" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-malformed.out" adopt --dry-run --project "$ADOPT_GO_MALFORMED"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed Go manifest was accepted"
+assert_contains "$TMP_DIR/adopt-go-malformed.out.err" 'go.mod is malformed'
 
 ADOPT_RUST_NO_LOCK="$TMP_DIR/adopt-rust-no-lock"
 init_adoption_repo "$ADOPT_RUST_NO_LOCK"
@@ -1150,12 +1170,23 @@ init_adoption_repo "$ADOPT_NODE_LOCAL"
 printf '%s\n' \
   '{"scripts":{"test":"node --test"},"dependencies":{"shared":"f\u0069le:../shared"}}' \
   >"$ADOPT_NODE_LOCAL/package.json"
-printf '{}\n' >"$ADOPT_NODE_LOCAL/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_NODE_LOCAL/package-lock.json"
 commit_adoption_repo "$ADOPT_NODE_LOCAL" "fixture"
 git -C "$ADOPT_NODE_LOCAL" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-node-local.out" adopt --dry-run --project "$ADOPT_NODE_LOCAL"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "checkout-external Node file dependency was accepted"
 assert_contains "$TMP_DIR/adopt-node-local.out.err" 'declares a local file dependency'
+
+ADOPT_NPM_BAD_LOCK="$TMP_DIR/adopt-npm-bad-lock"
+init_adoption_repo "$ADOPT_NPM_BAD_LOCK"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_NPM_BAD_LOCK/package.json"
+printf '{}\n' >"$ADOPT_NPM_BAD_LOCK/package-lock.json"
+commit_adoption_repo "$ADOPT_NPM_BAD_LOCK" "fixture"
+git -C "$ADOPT_NPM_BAD_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-npm-bad-lock.out" adopt --dry-run --project "$ADOPT_NPM_BAD_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unusable npm lockfile was accepted"
+assert_contains "$TMP_DIR/adopt-npm-bad-lock.out.err" \
+  'npm lockfile outside the dependency-free portable subset'
 
 ADOPT_IGNORED_CONTRACT="$TMP_DIR/adopt-ignored-contract"
 init_adoption_repo "$ADOPT_IGNORED_CONTRACT"
@@ -1280,7 +1311,7 @@ PATH="$TMP_DIR/terminating-mv:$PATH" run_adoption "$TMP_DIR/adopt-signal-rollbac
 ADOPT_CONCURRENT_EDIT="$TMP_DIR/adopt-concurrent-edit"
 init_adoption_repo "$ADOPT_CONCURRENT_EDIT"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_CONCURRENT_EDIT/package.json"
-printf '{}\n' >"$ADOPT_CONCURRENT_EDIT/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_CONCURRENT_EDIT/package-lock.json"
 printf '%s\n' 'PROJECT INSTRUCTIONS' >"$ADOPT_CONCURRENT_EDIT/AGENTS.md"
 commit_adoption_repo "$ADOPT_CONCURRENT_EDIT" "fixture"
 git -C "$ADOPT_CONCURRENT_EDIT" switch -q -c feat/adopt
@@ -1316,7 +1347,7 @@ assert_contains "$ADOPT_CONCURRENT_EDIT/AGENTS.md" 'CONCURRENT EDIT'
 ADOPT_CONCURRENT_COMMIT="$TMP_DIR/adopt-concurrent-commit"
 init_adoption_repo "$ADOPT_CONCURRENT_COMMIT"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_CONCURRENT_COMMIT/package.json"
-printf '{}\n' >"$ADOPT_CONCURRENT_COMMIT/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_CONCURRENT_COMMIT/package-lock.json"
 printf '%s\n' 'PROJECT INSTRUCTIONS' >"$ADOPT_CONCURRENT_COMMIT/AGENTS.md"
 commit_adoption_repo "$ADOPT_CONCURRENT_COMMIT" "fixture"
 git -C "$ADOPT_CONCURRENT_COMMIT" switch -q -c feat/adopt
@@ -1439,6 +1470,16 @@ git -C "$ADOPT_REQUIREMENTS" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-requirements.out" adopt --project "$ADOPT_REQUIREMENTS"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "requirements-backed adoption failed"
 assert_contains "$ADOPT_REQUIREMENTS/.touchstone.toml" 'setup = "python -m pip install --no-index -r requirements.txt"'
+
+ADOPT_BAD_REQUIREMENT="$TMP_DIR/adopt-bad-requirement"
+init_adoption_repo "$ADOPT_BAD_REQUIREMENT"
+mkdir -p "$ADOPT_BAD_REQUIREMENT/tests"
+printf '%s\n' 'pytest' 'not a valid requirement ???' >"$ADOPT_BAD_REQUIREMENT/requirements.txt"
+commit_adoption_repo "$ADOPT_BAD_REQUIREMENT" "fixture"
+git -C "$ADOPT_BAD_REQUIREMENT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-bad-requirement.out" adopt --dry-run --project "$ADOPT_BAD_REQUIREMENT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed requirements entry was accepted"
+assert_contains "$TMP_DIR/adopt-bad-requirement.out.err" 'requirements.txt is malformed'
 
 ADOPT_REMOTE_REQUIREMENT="$TMP_DIR/adopt-remote-requirement"
 init_adoption_repo "$ADOPT_REMOTE_REQUIREMENT"
@@ -1666,7 +1707,7 @@ init_adoption_repo "$ADOPT_NON_WORKSPACE_CHILD"
 mkdir -p "$ADOPT_NON_WORKSPACE_CHILD/apps/api"
 printf '%s\n' '{"packageManager":"npm@11.0.0"}' >"$ADOPT_NON_WORKSPACE_CHILD/package.json"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_NON_WORKSPACE_CHILD/apps/api/package.json"
-printf '{}\n' >"$ADOPT_NON_WORKSPACE_CHILD/apps/api/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_NON_WORKSPACE_CHILD/apps/api/package-lock.json"
 commit_adoption_repo "$ADOPT_NON_WORKSPACE_CHILD" "fixture"
 git -C "$ADOPT_NON_WORKSPACE_CHILD" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-non-workspace-child.out" adopt --project "$ADOPT_NON_WORKSPACE_CHILD"
@@ -1678,7 +1719,7 @@ init_adoption_repo "$ADOPT_WORKSPACE_CHILD"
 mkdir -p "$ADOPT_WORKSPACE_CHILD/apps/api"
 printf '%s\n' '{"packageManager":"npm@11.0.0","workspaces":["apps/*"]}' \
   >"$ADOPT_WORKSPACE_CHILD/package.json"
-printf '{}\n' >"$ADOPT_WORKSPACE_CHILD/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_WORKSPACE_CHILD/package-lock.json"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_WORKSPACE_CHILD/apps/api/package.json"
 commit_adoption_repo "$ADOPT_WORKSPACE_CHILD" "fixture"
 git -C "$ADOPT_WORKSPACE_CHILD" switch -q -c feat/adopt
@@ -1719,7 +1760,7 @@ assert_contains "$ADOPT_PNPM_EXCLUSION/.touchstone.toml" 'setup = "(cd apps/api 
 ADOPT_CARGO_WORKSPACE="$TMP_DIR/adopt-cargo-workspace"
 init_adoption_repo "$ADOPT_CARGO_WORKSPACE"
 mkdir -p "$ADOPT_CARGO_WORKSPACE/packages/core"
-printf '%s\n' '[workspace]' 'members = ["packages/unused", "packages/*"]' 'resolver = "2"' \
+printf '%s\n' '[workspace]' 'members = ["packages/core"]' 'resolver = "2"' \
   >"$ADOPT_CARGO_WORKSPACE/Cargo.toml"
 printf '%s\n' 'version = 4' >"$ADOPT_CARGO_WORKSPACE/Cargo.lock"
 printf '%s\n' '[package]' 'name = "core"' 'version = "0.1.0"' 'edition = "2024"' \
@@ -1733,12 +1774,25 @@ assert_contains "$ADOPT_CARGO_WORKSPACE/.touchstone.toml" 'name = "test-packages
 assert_contains "$ADOPT_CARGO_WORKSPACE/.touchstone.toml" 'command = "cargo test --frozen"'
 bash "$RUNNER" validate --check-contract --project "$ADOPT_CARGO_WORKSPACE" >/dev/null
 
+ADOPT_CARGO_MISSING_MEMBER="$TMP_DIR/adopt-cargo-missing-member"
+init_adoption_repo "$ADOPT_CARGO_MISSING_MEMBER"
+printf '%s\n' '[workspace]' 'members = ["crates/shared"]' 'resolver = "2"' \
+  >"$ADOPT_CARGO_MISSING_MEMBER/Cargo.toml"
+printf '%s\n' 'version = 4' >"$ADOPT_CARGO_MISSING_MEMBER/Cargo.lock"
+commit_adoption_repo "$ADOPT_CARGO_MISSING_MEMBER" "fixture"
+git -C "$ADOPT_CARGO_MISSING_MEMBER" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-cargo-missing-member.out" adopt --dry-run \
+  --project "$ADOPT_CARGO_MISSING_MEMBER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "missing Cargo workspace member was accepted"
+assert_contains "$TMP_DIR/adopt-cargo-missing-member.out.err" \
+  "Cargo workspace member 'crates/shared' has no regular Cargo.toml"
+
 ADOPT_UNSUPPORTED_WORKSPACE_GLOB="$TMP_DIR/adopt-unsupported-workspace-glob"
 init_adoption_repo "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB"
 mkdir -p "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/apps/api"
 printf '%s\n' '{"packageManager":"npm@11.0.0","workspaces":["{apps,packages}/*"]}' \
   >"$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/package.json"
-printf '{}\n' >"$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/package-lock.json"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' \
   >"$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/apps/api/package.json"
 commit_adoption_repo "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB" "fixture"
@@ -1808,7 +1862,7 @@ init_adoption_repo "$ADOPT_DUPLICATE_WORKSPACES"
 mkdir -p "$ADOPT_DUPLICATE_WORKSPACES/apps/api"
 printf '%s\n' '{"workspaces":["apps/*"],"workspaces":[],"scripts":{"test":"node --test"}}' \
   >"$ADOPT_DUPLICATE_WORKSPACES/package.json"
-printf '{}\n' >"$ADOPT_DUPLICATE_WORKSPACES/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_DUPLICATE_WORKSPACES/package-lock.json"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_DUPLICATE_WORKSPACES/apps/api/package.json"
 commit_adoption_repo "$ADOPT_DUPLICATE_WORKSPACES" "fixture"
 git -C "$ADOPT_DUPLICATE_WORKSPACES" switch -q -c feat/adopt
@@ -1821,7 +1875,7 @@ init_adoption_repo "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES"
 mkdir -p "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES/apps/api"
 printf '%s\n' '{"workspaces":{"packages":["apps/*"],"packages":[]},"scripts":{"test":"node --test"}}' \
   >"$ADOPT_DUPLICATE_WORKSPACE_PACKAGES/package.json"
-printf '{}\n' >"$ADOPT_DUPLICATE_WORKSPACE_PACKAGES/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_DUPLICATE_WORKSPACE_PACKAGES/package-lock.json"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_DUPLICATE_WORKSPACE_PACKAGES/apps/api/package.json"
 commit_adoption_repo "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES" "fixture"
 git -C "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES" switch -q -c feat/adopt
@@ -1834,7 +1888,7 @@ init_adoption_repo "$ADOPT_NON_STRING_WORKSPACE"
 mkdir -p "$ADOPT_NON_STRING_WORKSPACE/apps/api"
 printf '%s\n' '{"packageManager":"npm@11.0.0","workspaces":["apps/*",1]}' \
   >"$ADOPT_NON_STRING_WORKSPACE/package.json"
-printf '{}\n' >"$ADOPT_NON_STRING_WORKSPACE/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_NON_STRING_WORKSPACE/package-lock.json"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' \
   >"$ADOPT_NON_STRING_WORKSPACE/apps/api/package.json"
 commit_adoption_repo "$ADOPT_NON_STRING_WORKSPACE" "fixture"
@@ -1884,7 +1938,7 @@ ADOPT_MANAGER="$TMP_DIR/adopt-manager"
 init_adoption_repo "$ADOPT_MANAGER"
 printf '%s\n' '{"packageManager":"pnpm@10.0.0","scripts":{"test":"node --test"}}' \
   >"$ADOPT_MANAGER/package.json"
-printf '{}\n' >"$ADOPT_MANAGER/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_MANAGER/package-lock.json"
 commit_adoption_repo "$ADOPT_MANAGER" "fixture"
 git -C "$ADOPT_MANAGER" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-manager.out" adopt --dry-run --project "$ADOPT_MANAGER"
@@ -1902,7 +1956,7 @@ printf '%s\n' '{"packageManager":"pnpm@10.0.0"}' >"$ADOPT_CHILD_MANAGER/package.
 printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_CHILD_MANAGER/pnpm-lock.yaml"
 printf '%s\n' '{"packageManager":"npm@11.0.0","scripts":{"test":"node --test"}}' \
   >"$ADOPT_CHILD_MANAGER/packages/child/package.json"
-printf '{}\n' >"$ADOPT_CHILD_MANAGER/packages/child/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_CHILD_MANAGER/packages/child/package-lock.json"
 commit_adoption_repo "$ADOPT_CHILD_MANAGER" "fixture"
 git -C "$ADOPT_CHILD_MANAGER" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-child-manager.out" adopt --dry-run --json --project "$ADOPT_CHILD_MANAGER"
@@ -1925,7 +1979,7 @@ ADOPT_EMPTY_AGGREGATE="$TMP_DIR/adopt-empty-aggregate"
 init_adoption_repo "$ADOPT_EMPTY_AGGREGATE"
 printf '%s\n' '{"scripts":{"validate":"","verify":" \t","test":"node --test"}}' \
   >"$ADOPT_EMPTY_AGGREGATE/package.json"
-printf '{}\n' >"$ADOPT_EMPTY_AGGREGATE/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_EMPTY_AGGREGATE/package-lock.json"
 commit_adoption_repo "$ADOPT_EMPTY_AGGREGATE" "fixture"
 git -C "$ADOPT_EMPTY_AGGREGATE" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-empty-aggregate.out" adopt --project "$ADOPT_EMPTY_AGGREGATE"
