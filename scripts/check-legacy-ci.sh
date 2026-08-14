@@ -24,7 +24,7 @@ workflow_has_unguarded_precommit() {
       has_pre_commit = 0
       has_skip = 0
     }
-    /^[[:space:]]*-[[:space:]]+(name|run|uses):/ { flush_step() }
+    /^[[:space:]]*-[[:space:]]+[A-Za-z_][A-Za-z0-9_-]*:/ { flush_step() }
     {
       trimmed = $0
       sub(/^[[:space:]]*/, "", trimmed)

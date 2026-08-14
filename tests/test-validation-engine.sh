@@ -275,7 +275,7 @@ on:
   push:
     branches: [main]
 steps:
-  - name: unrelated
+  - id: unrelated
     env:
       SKIP: no-commit-to-branch
     run: printf unrelated
