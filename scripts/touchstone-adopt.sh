@@ -781,13 +781,13 @@ node_setup_command() {
                     || contract_refusal "unsupported Yarn packageManager version '$version'"
                   [ "$lock_kind" != classic ] \
                     || contract_refusal "Yarn Berry packageManager '$spec' conflicts with a Classic lockfile"
-                  printf 'yarn install --immutable --immutable-cache --mode=skip-builds\n'
+                  printf 'yarn install --immutable --immutable-cache --mode=skip-build\n'
                 fi
                 ;;
               yarn)
                 case "$lock_kind" in
                   classic) printf 'yarn install --offline --frozen-lockfile --ignore-scripts\n' ;;
-                  berry) printf 'yarn install --immutable --immutable-cache --mode=skip-builds\n' ;;
+                  berry) printf 'yarn install --immutable --immutable-cache --mode=skip-build\n' ;;
                   *) contract_refusal "yarn.lock format is ambiguous; declare packageManager with an exact Yarn version" ;;
                 esac
                 ;;
@@ -797,7 +797,7 @@ node_setup_command() {
           1)
             case "$lock_kind" in
               classic) printf 'yarn install --offline --frozen-lockfile --ignore-scripts\n' ;;
-              berry) printf 'yarn install --immutable --immutable-cache --mode=skip-builds\n' ;;
+              berry) printf 'yarn install --immutable --immutable-cache --mode=skip-build\n' ;;
               *) contract_refusal "yarn.lock format is ambiguous; declare packageManager with an exact Yarn version" ;;
             esac
             ;;
@@ -1211,8 +1211,8 @@ tasks_for_node() {
   [ "$found" = true ] || contract_refusal "Node target '$target' declares no validate, verify, lint, typecheck, test, or build script; pass --task NAME=COMMAND"
 }
 
-validate_pyproject_document() {
-  local file="$1"
+validate_toml_document() {
+  local file="$1" label="$2"
   awk '
     function invalid_document() { invalid = 1; exit 2 }
     function hex_number(value, number, cursor, digit) {
@@ -1467,7 +1467,7 @@ validate_pyproject_document() {
       if (invalid || depth != 0) exit 2
     }
   ' "$file" >/dev/null 2>&1 \
-    || contract_refusal "pyproject.toml is malformed or uses TOML syntax the portable adoption parser cannot verify; pass --task NAME=COMMAND for a manual contract"
+    || contract_refusal "$label is malformed or uses TOML syntax the portable adoption parser cannot verify; pass --task NAME=COMMAND for a manual contract"
 }
 
 python_has_unverifiable_build_hook() {
@@ -1688,7 +1688,9 @@ python_checker_declared() {
 
 tasks_for_python() {
   local directory="$1" target="$2" suffix="$3" prefix="python -m" found=false evidence=false
-  if [ -f "$directory/pyproject.toml" ]; then validate_pyproject_document "$directory/pyproject.toml"; fi
+  if [ -f "$directory/pyproject.toml" ]; then
+    validate_toml_document "$directory/pyproject.toml" pyproject.toml
+  fi
   if [ -f "$directory/pyproject.toml" ] && grep -Eq '^\[tool\.poetry(\.|\])' "$directory/pyproject.toml" \
     && ! python_poetry_build_system_valid "$directory/pyproject.toml"; then
     contract_refusal "Python target '$target' declares Poetry metadata without a verified poetry-core build backend; pass --task NAME=COMMAND"
@@ -1780,6 +1782,7 @@ tasks_for_profile() {
       ;;
     rust)
       local cargo_lock_path="Cargo.lock"
+      validate_toml_document "$directory/Cargo.toml" Cargo.toml
       if [ "$workspace_member" != true ] && [ "$directory" != "$PROJECT_ROOT" ]; then
         cargo_lock_path="${directory#"$PROJECT_ROOT"/}/Cargo.lock"
       fi

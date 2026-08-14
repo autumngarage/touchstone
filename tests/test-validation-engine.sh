@@ -1090,6 +1090,19 @@ assert_contains "$TMP_DIR/adopt-rust-ignored-lock.out.err" "compiler input 'Carg
 [ -z "$(git -C "$ADOPT_RUST_IGNORED_LOCK" status --porcelain=v1)" ] \
   || fail "ignored-lock refusal changed the clean checkout"
 
+ADOPT_RUST_MALFORMED="$TMP_DIR/adopt-rust-malformed"
+init_adoption_repo "$ADOPT_RUST_MALFORMED"
+printf '%s\n' '[package' 'name = "fixture"' >"$ADOPT_RUST_MALFORMED/Cargo.toml"
+printf '%s\n' 'version = 4' >"$ADOPT_RUST_MALFORMED/Cargo.lock"
+commit_adoption_repo "$ADOPT_RUST_MALFORMED" "fixture"
+git -C "$ADOPT_RUST_MALFORMED" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-malformed.out" adopt --dry-run --project "$ADOPT_RUST_MALFORMED"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed Cargo manifest was accepted"
+assert_contains "$TMP_DIR/adopt-rust-malformed.out.err" \
+  'Cargo.toml is malformed or uses TOML syntax the portable adoption parser cannot verify'
+[ ! -e "$ADOPT_RUST_MALFORMED/.touchstone.toml" ] \
+  || fail "malformed Cargo manifest refusal mutated the repository"
+
 ADOPT_NODE_IGNORED_LOCK="$TMP_DIR/adopt-node-ignored-lock"
 init_adoption_repo "$ADOPT_NODE_IGNORED_LOCK"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_NODE_IGNORED_LOCK/package.json"
@@ -1839,7 +1852,7 @@ for yarn_case in unlocked berry classic; do
   run_adoption "$TMP_DIR/adopt-yarn-$yarn_case.out" adopt --project "$ADOPT_YARN"
   [ "$ADOPTION_STATUS" -eq 0 ] || fail "$yarn_case Yarn adoption failed"
   if [ "$yarn_case" = berry ]; then
-    assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install --immutable --immutable-cache --mode=skip-builds"'
+    assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install --immutable --immutable-cache --mode=skip-build"'
   elif [ "$yarn_case" = classic ]; then
     assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install --offline --frozen-lockfile --ignore-scripts"'
   else
