@@ -148,6 +148,21 @@ FOO=present run_capture "$ENV_OPTIONS" "$TMP_DIR/env-options.out" --json
 [ "$RUN_STATUS" -eq 0 ] || fail "env option arguments were mistaken for the interpreter"
 [ "$(cat "$ENV_OPTIONS/marker")" = env-ran ] || fail "env shebang script did not run"
 
+for env_header in '-S -i bash' '-S -u PATH bash' '-S PATH=/bin bash'; do
+  case "$env_header" in
+    *'-i'*) env_case=clean ;;
+    *'-u'*) env_case="unset" ;;
+    *) env_case=assignment ;;
+  esac
+  ENV_CHANGED="$TMP_DIR/env-$env_case"
+  write_contract "$ENV_CHANGED" "PATH= ./env-changed-script"
+  printf '#!/usr/bin/env %s\nprintf env-changed > marker\n' "$env_header" >"$ENV_CHANGED/env-changed-script"
+  chmod +x "$ENV_CHANGED/env-changed-script"
+  run_capture "$ENV_CHANGED" "$TMP_DIR/env-$env_case.out" --json
+  [ "$RUN_STATUS" -eq 0 ] || fail "env $env_case PATH semantics rejected a runnable interpreter"
+  [ "$(cat "$ENV_CHANGED/marker")" = env-changed ] || fail "env $env_case script did not run"
+done
+
 ENV_BUILTIN="$TMP_DIR/env-builtin"
 mkdir -p "$ENV_BUILTIN/empty"
 write_contract "$ENV_BUILTIN" "PATH=$ENV_BUILTIN/empty ./env-builtin-script"
@@ -171,6 +186,13 @@ run_capture "$FALLBACK_COMMAND" "$TMP_DIR/fallback-command.out" --json
 [ "$RUN_STATUS" -eq 127 ] || fail "fallback laundered an unavailable command"
 assert_contains "$TMP_DIR/fallback-command.out" '"ran":0'
 assert_contains "$TMP_DIR/fallback-command.out" '"reason":"command-not-started"'
+
+NEGATED_COMMAND="$TMP_DIR/negated-command"
+write_contract "$NEGATED_COMMAND" "! missing-touchstone-command"
+run_capture "$NEGATED_COMMAND" "$TMP_DIR/negated-command.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "negation laundered an unavailable command"
+assert_contains "$TMP_DIR/negated-command.out" '"ran":0'
+assert_contains "$TMP_DIR/negated-command.out" '"reason":"command-not-started"'
 
 QUOTED_ASSIGNMENT="$TMP_DIR/quoted-assignment"
 write_contract "$QUOTED_ASSIGNMENT" "LABEL=\\\"two words\\\" missing-touchstone-command"

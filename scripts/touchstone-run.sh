@@ -466,6 +466,9 @@ declared_command_head() {
     done
     [ "$escaped" = false ] && [ -z "$quote" ] || return 1
     [ -n "$token" ] || return 1
+    if [ "$token_quoted" = false ] && [ "$token" = '!' ]; then
+      continue
+    fi
     if [ "$assignment_candidate" = true ] && [ "$assignment_equals" = true ]; then
       case "$token" in
         PATH=*)
@@ -485,7 +488,8 @@ declared_command_head() {
 declared_command_unrunnable_code() {
   local command="$1" directory="$2" head
   local executable="" first_line shebang interpreter effective_path="$PATH"
-  local env_command word env_index
+  local env_command word env_index env_option_argument
+  local env_directory env_effective_path default_exec_path
   local -a shebang_words
   declared_command_head "$command" || return 0
   head="$COMMAND_HEAD"
@@ -531,17 +535,61 @@ declared_command_unrunnable_code() {
       case "${interpreter##*/}" in
         env)
           env_command=""
+          env_directory="$directory"
+          env_effective_path="$effective_path"
+          if [ -x /usr/bin/getconf ]; then
+            default_exec_path="$(/usr/bin/getconf PATH 2>/dev/null || true)"
+          elif [ -x /bin/getconf ]; then
+            default_exec_path="$(/bin/getconf PATH 2>/dev/null || true)"
+          else
+            default_exec_path=""
+          fi
+          [ -n "$default_exec_path" ] || default_exec_path="/usr/bin:/bin"
           env_index=1
           while [ "$env_index" -lt "${#shebang_words[@]}" ]; do
             word="${shebang_words[$env_index]}"
             case "$word" in
-              -S | --split-string | -i | --ignore-environment | -0 | --null | --debug)
+              -S | --split-string | -0 | --null | --debug)
                 env_index=$((env_index + 1))
                 ;;
-              -u | --unset | -C | --chdir)
+              -i | --ignore-environment)
+                env_effective_path="$default_exec_path"
+                env_index=$((env_index + 1))
+                ;;
+              -u | --unset)
+                [ "$((env_index + 1))" -lt "${#shebang_words[@]}" ] || return 0
+                env_option_argument="${shebang_words[$((env_index + 1))]}"
+                if [ "$env_option_argument" = PATH ]; then env_effective_path="$default_exec_path"; fi
                 env_index=$((env_index + 2))
                 ;;
-              --unset=* | --chdir=* | *=*)
+              --unset=*)
+                if [ "${word#--unset=}" = PATH ]; then env_effective_path="$default_exec_path"; fi
+                env_index=$((env_index + 1))
+                ;;
+              -C | --chdir)
+                [ "$((env_index + 1))" -lt "${#shebang_words[@]}" ] || return 0
+                env_option_argument="${shebang_words[$((env_index + 1))]}"
+                case "$env_option_argument" in
+                  /*) env_directory="$env_option_argument" ;;
+                  *) env_directory="$directory/$env_option_argument" ;;
+                esac
+                [ -d "$env_directory" ] || return 0
+                env_index=$((env_index + 2))
+                ;;
+              --chdir=*)
+                env_option_argument="${word#--chdir=}"
+                case "$env_option_argument" in
+                  /*) env_directory="$env_option_argument" ;;
+                  *) env_directory="$directory/$env_option_argument" ;;
+                esac
+                [ -d "$env_directory" ] || return 0
+                env_index=$((env_index + 1))
+                ;;
+              PATH=*)
+                env_effective_path="${word#PATH=}"
+                env_index=$((env_index + 1))
+                ;;
+              *=*)
                 env_index=$((env_index + 1))
                 ;;
               --)
@@ -557,7 +605,7 @@ declared_command_unrunnable_code() {
             esac
           done
           if [ -z "$env_command" ] \
-            || ! (cd "$directory" && PATH="$effective_path" type -P -- "$env_command" >/dev/null 2>&1); then
+            || ! (cd "$env_directory" && PATH="$env_effective_path" type -P -- "$env_command" >/dev/null 2>&1); then
             printf 'missing-interpreter\n'
             return 0
           fi
