@@ -532,7 +532,11 @@ json_object_has_key() {
             object_seen = 1
             seeking_object = 1
           }
-          else if (object_depth > 0 && depth == object_depth && pending == wanted) seeking_value = 1
+          else if (object_depth > 0 && depth == object_depth && pending == wanted) {
+            wanted_seen++
+            if (wanted_seen > 1) duplicate = 1
+            seeking_value = 1
+          }
           pending = ""
           continue
         }
@@ -553,7 +557,7 @@ json_object_has_key() {
       }
     }
     END {
-      if (invalid || in_string || escaped || unicode_left > 0 || depth != 0 || seeking_object || seeking_value) exit 2
+      if (invalid || duplicate || in_string || escaped || unicode_left > 0 || depth != 0 || seeking_object || seeking_value) exit 2
       exit !found
     }
   ' "$file"
@@ -732,7 +736,13 @@ node_setup_command() {
         printf 'pnpm install\n'
       fi
       ;;
-    yarn) printf 'yarn install --immutable\n' ;;
+    yarn)
+      if [ -f "$directory/yarn.lock" ]; then
+        printf 'yarn install --frozen-lockfile\n'
+      else
+        printf 'yarn install\n'
+      fi
+      ;;
     bun)
       if [ -f "$directory/bun.lock" ] || [ -f "$directory/bun.lockb" ]; then
         printf 'bun install --frozen-lockfile\n'
@@ -783,7 +793,11 @@ tasks_for_python() {
   elif [ -f "$directory/requirements.txt" ]; then
     record_setup "$directory" "python -m pip install -r requirements.txt"
   elif [ -f "$directory/pyproject.toml" ]; then
-    record_setup "$directory" "python -m pip install -e ."
+    if grep -Eq '^\[(project|build-system|tool\.poetry)\]' "$directory/pyproject.toml"; then
+      record_setup "$directory" "python -m pip install -e ."
+    else
+      contract_refusal "Python target '$target' has tool configuration but no installable project or dependency declaration"
+    fi
   fi
   if [ -f "$directory/pyproject.toml" ] && grep -Eq '^\[tool\.ruff(\.|\])' "$directory/pyproject.toml"; then
     record_task "lint$suffix" "$target" "$prefix ruff check ."
@@ -793,7 +807,7 @@ tasks_for_python() {
     record_task "typecheck$suffix" "$target" "$prefix mypy ."
     found=true
   fi
-  if { [ -f "$directory/pyproject.toml" ] && grep -Eq '^\[tool\.pytest(\.|\])|["'\'' ]pytest([<=>~! ]|$)' "$directory/pyproject.toml"; } \
+  if { [ -f "$directory/pyproject.toml" ] && grep -Eq '^\[tool\.pytest(\.|\])|["'\'' ]pytest(["'\''<=>~!, ]|$)' "$directory/pyproject.toml"; } \
     || [ -d "$directory/tests" ]; then
     record_task "test$suffix" "$target" "$prefix pytest"
     found=true
@@ -1079,14 +1093,18 @@ managed_block_present() {
   safe_owned_path "$relative"
   [ -e "$destination" ] || return 1
   [ -f "$destination" ] || contract_refusal "steering path is not a regular file: $relative"
-  begin_count="$(grep -cFx "$TOUCHSTONE_BLOCK_BEGIN" "$destination" || true)"
-  end_count="$(grep -cFx "$TOUCHSTONE_BLOCK_END" "$destination" || true)"
+  begin_count="$(awk -v marker="$TOUCHSTONE_BLOCK_BEGIN" \
+    '{ line=$0; sub(/\r$/, "", line); if (line == marker) count++ } END { print count + 0 }' "$destination")"
+  end_count="$(awk -v marker="$TOUCHSTONE_BLOCK_END" \
+    '{ line=$0; sub(/\r$/, "", line); if (line == marker) count++ } END { print count + 0 }' "$destination")"
   if [ "$begin_count" -ne "$end_count" ] || [ "$begin_count" -gt 1 ]; then
     contract_refusal "steering markers are malformed in $relative"
   fi
   [ "$begin_count" -eq 1 ] || return 1
-  begin_line="$(awk -v marker="$TOUCHSTONE_BLOCK_BEGIN" '$0 == marker { print NR }' "$destination")"
-  end_line="$(awk -v marker="$TOUCHSTONE_BLOCK_END" '$0 == marker { print NR }' "$destination")"
+  begin_line="$(awk -v marker="$TOUCHSTONE_BLOCK_BEGIN" \
+    '{ line=$0; sub(/\r$/, "", line); if (line == marker) print NR }' "$destination")"
+  end_line="$(awk -v marker="$TOUCHSTONE_BLOCK_END" \
+    '{ line=$0; sub(/\r$/, "", line); if (line == marker) print NR }' "$destination")"
   [ "$begin_line" -lt "$end_line" ] || contract_refusal "steering markers are out of order in $relative"
   return 0
 }

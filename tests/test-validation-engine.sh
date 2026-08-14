@@ -938,6 +938,14 @@ run_adoption "$TMP_DIR/adopt-node-crlf-upgrade.out" upgrade --project "$ADOPT_NO
 awk 'NR == 1 { exit substr($0, length($0), 1) != "\r" }' "$ADOPT_NODE/AGENTS.md" \
   || fail "CRLF upgrade changed project-owned line endings"
 assert_contains "$ADOPT_NODE/AGENTS.md" "KEEP a/old/ b/new/ PROSE"
+commit_adoption_repo "$ADOPT_NODE" "crlf upgrade"
+awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }' "$ADOPT_NODE/AGENTS.md" \
+  >"$ADOPT_NODE/AGENTS.all-crlf"
+mv "$ADOPT_NODE/AGENTS.all-crlf" "$ADOPT_NODE/AGENTS.md"
+commit_adoption_repo "$ADOPT_NODE" "crlf markers"
+run_adoption "$TMP_DIR/adopt-node-crlf-check.out" adopt --check --json --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "ordinary adopt rewrote CRLF managed markers"
+assert_contains "$TMP_DIR/adopt-node-crlf-check.out" '"status":"current"'
 
 echo "==> adoption preserves accepted schema-v1 declarations"
 ADOPT_EXISTING="$TMP_DIR/adopt-existing"
@@ -1015,6 +1023,25 @@ for profile in python swift rust go; do
   assert_contains "$ADOPT_PROFILE/.touchstone.toml" "$expected_command"
   if [ -n "$expected_setup" ]; then assert_contains "$ADOPT_PROFILE/.touchstone.toml" "$expected_setup"; fi
 done
+
+ADOPT_PYPROJECT="$TMP_DIR/adopt-pyproject"
+init_adoption_repo "$ADOPT_PYPROJECT"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_PYPROJECT/pyproject.toml"
+commit_adoption_repo "$ADOPT_PYPROJECT" "fixture"
+git -C "$ADOPT_PYPROJECT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pyproject.out" adopt --project "$ADOPT_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "installable pyproject adoption failed"
+assert_contains "$ADOPT_PYPROJECT/.touchstone.toml" 'setup = "python -m pip install -e ."'
+
+ADOPT_TOOL_ONLY_PYTHON="$TMP_DIR/adopt-tool-only-python"
+init_adoption_repo "$ADOPT_TOOL_ONLY_PYTHON"
+printf '%s\n' '[tool.pytest.ini_options]' >"$ADOPT_TOOL_ONLY_PYTHON/pyproject.toml"
+commit_adoption_repo "$ADOPT_TOOL_ONLY_PYTHON" "fixture"
+git -C "$ADOPT_TOOL_ONLY_PYTHON" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-tool-only-python.out" adopt --dry-run --project "$ADOPT_TOOL_ONLY_PYTHON"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "tool-only Python project did not refuse"
+assert_contains "$TMP_DIR/adopt-tool-only-python.out.err" "no installable project or dependency declaration"
 
 echo "==> adoption derives explicit monorepo targets"
 ADOPT_MONOREPO="$TMP_DIR/adopt-monorepo"
@@ -1122,6 +1149,24 @@ assert_contains "$ADOPT_EMPTY_AGGREGATE/.touchstone.toml" 'command = "npm run te
 assert_not_contains "$ADOPT_EMPTY_AGGREGATE/.touchstone.toml" 'npm run validate'
 assert_not_contains "$ADOPT_EMPTY_AGGREGATE/.touchstone.toml" 'npm run verify'
 
+for yarn_case in unlocked locked; do
+  ADOPT_YARN="$TMP_DIR/adopt-yarn-$yarn_case"
+  init_adoption_repo "$ADOPT_YARN"
+  printf '%s\n' '{"packageManager":"yarn@4.14.1","scripts":{"test":"node --test"}}' \
+    >"$ADOPT_YARN/package.json"
+  if [ "$yarn_case" = locked ]; then printf '# yarn lockfile v1\n' >"$ADOPT_YARN/yarn.lock"; fi
+  commit_adoption_repo "$ADOPT_YARN" "fixture"
+  git -C "$ADOPT_YARN" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-yarn-$yarn_case.out" adopt --project "$ADOPT_YARN"
+  [ "$ADOPTION_STATUS" -eq 0 ] || fail "$yarn_case Yarn adoption failed"
+  if [ "$yarn_case" = locked ]; then
+    assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install --frozen-lockfile"'
+  else
+    assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install"'
+    assert_not_contains "$ADOPT_YARN/.touchstone.toml" 'frozen-lockfile'
+  fi
+done
+
 ADOPT_BAD_JSON="$TMP_DIR/adopt-bad-json"
 init_adoption_repo "$ADOPT_BAD_JSON"
 printf '%s\n' '{"scripts":null,"dependencies":{"test":"1.0.0"}}' \
@@ -1140,6 +1185,10 @@ printf '%s\n' '{"scripts":{"test":"node --test"} "missingComma":true}' \
 run_adoption "$TMP_DIR/adopt-invalid-json.out" adopt --dry-run --project "$ADOPT_BAD_JSON"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "syntactically invalid package.json did not refuse"
 assert_contains "$TMP_DIR/adopt-invalid-json.out.err" "package.json is malformed"
+printf '%s\n' '{"scripts":{"test":"node --test","test":""}}' >"$ADOPT_BAD_JSON/package.json"
+run_adoption "$TMP_DIR/adopt-duplicate-script.out" adopt --dry-run --project "$ADOPT_BAD_JSON"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate package script did not refuse"
+assert_contains "$TMP_DIR/adopt-duplicate-script.out.err" "package.json is malformed"
 
 ADOPT_UNSUPPORTED="$TMP_DIR/adopt-unsupported"
 init_adoption_repo "$ADOPT_UNSUPPORTED"

@@ -51,10 +51,13 @@ Node tasks come only from non-empty declared package scripts. A declared
 `validate` or `verify` script is the single task; otherwise the adapter records
 the declared `lint`, `typecheck`, `test`, and `build` scripts in that order.
 The declaration installs Node dependencies with the detected package manager,
-using the lockfile's frozen mode when one exists. Python tasks come from ruff,
-mypy, and pytest evidence in `pyproject.toml` or the test tree; their explicit
-setup uses `uv sync --frozen`, a requirements install, or an editable project
-install according to the detected facts. Swift, Rust, and Go commands resolve
+using the lockfile's frozen mode when one exists. Duplicate script keys refuse
+as ambiguous rather than selecting a value different from the package manager.
+Python tasks come from ruff, mypy, and pytest evidence in `pyproject.toml` or
+the test tree; their explicit setup uses `uv sync --frozen`, a requirements
+install, or an editable install only for an installable project declaration.
+Tool-only Python configuration without dependency facts refuses. Swift, Rust,
+and Go commands resolve
 their own package dependencies. The accepted commands and setup are written
 explicitly to `.touchstone.toml`; later preset changes never rewrite that file.
 
