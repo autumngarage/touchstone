@@ -195,6 +195,29 @@ workflow_pushes_default() {
       for (item = 1; item <= count; item++) if (trim_scalar(values[item]) == "push") return 1
       return 0
     }
+    function balanced_flow_mapping(value, depth, position, character, quote, escaped) {
+      if (substr(value, 1, 1) != "{") return value
+      depth = 0
+      quote = ""
+      escaped = 0
+      for (position = 1; position <= length(value); position++) {
+        character = substr(value, position, 1)
+        if (escaped) {
+          escaped = 0
+        } else if (quote != "") {
+          if (character == "\\") escaped = 1
+          else if (character == quote) quote = ""
+        } else if (character == "\"" || character == "\047") {
+          quote = character
+        } else if (character == "{") {
+          depth++
+        } else if (character == "}") {
+          depth--
+          if (depth == 0) return substr(value, 1, position)
+        }
+      }
+      return value
+    }
     function flow_on_pushes_default(value, rest) {
       if (!match(value, /(^|[,{][[:space:]]*)push[[:space:]]*:/)) return 0
       rest = substr(value, RSTART + RLENGTH)
@@ -208,6 +231,7 @@ workflow_pushes_default() {
       branches_seen = 0
       tags_seen = 0
       if (rest !~ /^\{/) return 1
+      rest = balanced_flow_mapping(rest)
       if (rest ~ /branches:[[:space:]]*/) {
         branches_seen = 1
         apply_branch_list(inline_filter_value(rest, "branches"), 0)

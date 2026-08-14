@@ -262,6 +262,14 @@ run_capture "$ENV_SPLIT_QUOTED" "$TMP_DIR/env-split-quoted.out" --json
 [ "$RUN_STATUS" -eq 0 ] || fail "quoted attached env split-string command was not decoded"
 [ "$(cat "$ENV_SPLIT_QUOTED/marker")" = split-quoted-ran ] || fail "quoted attached env split-string command did not run"
 
+ENV_SPLIT_DETACHED="$TMP_DIR/env-split-detached"
+write_contract "$ENV_SPLIT_DETACHED" "./env-split-detached-script"
+printf '#!/usr/bin/env -S "bash"\nprintf split-detached-ran > marker\n' >"$ENV_SPLIT_DETACHED/env-split-detached-script"
+chmod +x "$ENV_SPLIT_DETACHED/env-split-detached-script"
+run_capture "$ENV_SPLIT_DETACHED" "$TMP_DIR/env-split-detached.out" --json
+[ "$RUN_STATUS" -eq 0 ] || fail "quoted detached env split-string command was not decoded"
+[ "$(cat "$ENV_SPLIT_DETACHED/marker")" = split-detached-ran ] || fail "quoted detached env split-string command did not run"
+
 ENV_DASH_COMMAND="$TMP_DIR/env-dash-command"
 mkdir -p "$ENV_DASH_COMMAND/bin"
 write_contract "$ENV_DASH_COMMAND" "PATH=$ENV_DASH_COMMAND/bin ./env-dash-script"
@@ -657,6 +665,11 @@ on: {pull_request: {}, push: {branches: [release]}}
 steps:
   - run: pre-commit run --all-files --hook-stage pre-commit
 EOF
+cat >"$LEGACY/.github/workflows/flow-neighbor-filter.yml" <<'EOF'
+on: {push: {}, pull_request: {branches: [release]}}
+steps:
+  - run: pre-commit run --all-files --hook-stage pre-commit
+EOF
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/compat.out" 2>"$TMP_DIR/compat.err"
 status=$?
@@ -672,6 +685,7 @@ assert_not_contains "$TMP_DIR/compat.out" "excluded-defaults.yml"
 assert_contains "$TMP_DIR/compat.out" "class-default.yml"
 assert_contains "$TMP_DIR/compat.out" "flow-trigger.yml"
 assert_not_contains "$TMP_DIR/compat.out" "flow-filtered.yml"
+assert_contains "$TMP_DIR/compat.out" "flow-neighbor-filter.yml"
 assert_contains "$TMP_DIR/compat.err" "SKIP=no-commit-to-branch"
 printf '\n# SKIP=no-commit-to-branch is not a repair\n' >>"$LEGACY/.github/workflows/validate.yml"
 set +e
@@ -695,6 +709,7 @@ rm "$LEGACY/.github/workflows/quoted-default.yml"
 rm "$LEGACY/.github/workflows/glob-default.yml"
 rm "$LEGACY/.github/workflows/class-default.yml"
 rm "$LEGACY/.github/workflows/flow-trigger.yml"
+rm "$LEGACY/.github/workflows/flow-neighbor-filter.yml"
 set +e
 bash "$COMPAT" "$LEGACY" >"$TMP_DIR/bare-assignment.out" 2>"$TMP_DIR/bare-assignment.err"
 status=$?

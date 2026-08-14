@@ -548,43 +548,70 @@ system_default_exec_path() {
   printf '%s\n' "$default_path"
 }
 
-env_split_string_head() {
-  local input="$1" character quote="" token="" escaped=false index=0 length="${#1}"
+literal_words() {
+  local input="$1" character quote="" token=""
+  local escaped=false token_started=false index=0 length="${#1}"
+  LITERAL_WORDS=()
 
   while [ "$index" -lt "$length" ]; do
-    character="${input:$index:1}"
-    index=$((index + 1))
-    if [ "$escaped" = true ]; then
-      token="$token$character"
-      escaped=false
-    elif [ "$quote" = single ]; then
-      if [ "$character" = "'" ]; then quote=""; else token="$token$character"; fi
-    elif [ "$quote" = double ]; then
-      case "$character" in
-        '"') quote="" ;;
-        '\') escaped=true ;;
-        '$' | '`') return 1 ;;
-        *) token="$token$character" ;;
-      esac
-    else
-      case "$character" in
-        "'") quote=single ;;
-        '"') quote=double ;;
-        '\') escaped=true ;;
-        '$' | '`') return 1 ;;
-        *) token="$token$character" ;;
-      esac
-    fi
+    while [ "$index" -lt "$length" ]; do
+      character="${input:$index:1}"
+      case "$character" in ' ' | "$(printf '\t')") index=$((index + 1)) ;; *) break ;; esac
+    done
+    [ "$index" -lt "$length" ] || break
+    token=""
+    quote=""
+    escaped=false
+    token_started=false
+    while [ "$index" -lt "$length" ]; do
+      character="${input:$index:1}"
+      index=$((index + 1))
+      if [ "$escaped" = true ]; then
+        token="$token$character"
+        token_started=true
+        escaped=false
+      elif [ "$quote" = single ]; then
+        if [ "$character" = "'" ]; then quote=""; else token="$token$character"; fi
+      elif [ "$quote" = double ]; then
+        case "$character" in
+          '"') quote="" ;;
+          '\') escaped=true ;;
+          '$' | '`') return 1 ;;
+          *) token="$token$character" ;;
+        esac
+      else
+        case "$character" in
+          ' ' | "$(printf '\t')") break ;;
+          "'")
+            quote=single
+            token_started=true
+            ;;
+          '"')
+            quote=double
+            token_started=true
+            ;;
+          '\')
+            escaped=true
+            token_started=true
+            ;;
+          '$' | '`') return 1 ;;
+          *)
+            token="$token$character"
+            token_started=true
+            ;;
+        esac
+      fi
+    done
+    [ "$escaped" = false ] && [ -z "$quote" ] && [ "$token_started" = true ] || return 1
+    LITERAL_WORDS+=("$token")
   done
-  [ "$escaped" = false ] && [ -z "$quote" ] && [ -n "$token" ] || return 1
-  ENV_SPLIT_HEAD="$token"
 }
 
 declared_command_unrunnable_code() {
   local command="$1" directory="$2" head
   local executable="" first_line shebang interpreter interpreter_path
   local child_path="$PATH" lookup_path
-  local env_command word env_index env_option_argument short_flags short_index short_flag
+  local env_command env_payload word env_index env_option_argument short_flags short_index short_flag
   local env_directory env_effective_path env_utility_path default_exec_path env_interpreter=false
   local -a shebang_words
   declared_command_head "$command" || return 0
@@ -632,8 +659,7 @@ declared_command_unrunnable_code() {
           *) break ;;
         esac
       done
-      read -r -a shebang_words <<<"$shebang"
-      interpreter="${shebang_words[0]:-}"
+      read -r interpreter _ <<<"$shebang"
       case "$interpreter" in *"$(printf '\r')"*)
         printf 'missing-interpreter\n'
         return 0
@@ -654,6 +680,9 @@ declared_command_unrunnable_code() {
       fi
       case "$env_interpreter" in
         true)
+          env_payload="${shebang#"$interpreter"}"
+          literal_words "$env_payload" || return 0
+          shebang_words=("$interpreter" "${LITERAL_WORDS[@]}")
           env_command=""
           env_directory="$directory"
           env_effective_path="$child_path"
@@ -736,8 +765,7 @@ declared_command_unrunnable_code() {
                     S)
                       env_option_argument="${short_flags:$((short_index + 1))}"
                       if [ -n "$env_option_argument" ]; then
-                        env_split_string_head "$env_option_argument" || return 0
-                        env_command="$ENV_SPLIT_HEAD"
+                        env_command="$env_option_argument"
                       fi
                       short_index="${#short_flags}"
                       continue
