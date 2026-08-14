@@ -499,7 +499,7 @@ declared_command_head() {
 
 declared_command_unrunnable_code() {
   local command="$1" directory="$2" head
-  local executable="" first_line shebang interpreter effective_path="$PATH"
+  local executable="" first_line shebang interpreter interpreter_path effective_path="$PATH"
   local env_command word env_index env_option_argument short_flags short_index short_flag
   local env_directory env_effective_path env_utility_path default_exec_path
   local -a shebang_words
@@ -540,7 +540,12 @@ declared_command_unrunnable_code() {
       shebang="$(trim "${first_line#\#!}")"
       read -r -a shebang_words <<<"$shebang"
       interpreter="${shebang_words[0]:-}"
-      if [ -z "$interpreter" ] || ! PATH="$effective_path" command -v -- "$interpreter" >/dev/null 2>&1; then
+      case "$interpreter" in
+        /*) interpreter_path="$interpreter" ;;
+        */*) interpreter_path="$directory/$interpreter" ;;
+        *) interpreter_path="" ;;
+      esac
+      if [ -z "$interpreter_path" ] || [ ! -x "$interpreter_path" ]; then
         printf 'missing-interpreter\n'
         return 0
       fi
@@ -619,6 +624,10 @@ declared_command_unrunnable_code() {
                 ;;
               --)
                 env_index=$((env_index + 1))
+                if [ "$env_index" -lt "${#shebang_words[@]}" ]; then
+                  env_command="${shebang_words[$env_index]}"
+                fi
+                break
                 ;;
               -*)
                 short_flags="${word#-}"
@@ -628,6 +637,30 @@ declared_command_unrunnable_code() {
                   case "$short_flag" in
                     0 | v) ;;
                     i) env_effective_path="$default_exec_path" ;;
+                    S) ;;
+                    u | C | P | a)
+                      env_option_argument="${short_flags:$((short_index + 1))}"
+                      if [ -z "$env_option_argument" ]; then
+                        env_index=$((env_index + 1))
+                        [ "$env_index" -lt "${#shebang_words[@]}" ] || return 0
+                        env_option_argument="${shebang_words[$env_index]}"
+                      fi
+                      case "$short_flag" in
+                        u)
+                          if [ "$env_option_argument" = PATH ]; then env_effective_path="$default_exec_path"; fi
+                          ;;
+                        C)
+                          case "$env_option_argument" in
+                            /*) env_directory="$env_option_argument" ;;
+                            *) env_directory="$directory/$env_option_argument" ;;
+                          esac
+                          [ -d "$env_directory" ] || return 0
+                          ;;
+                        P) env_utility_path="$env_option_argument" ;;
+                      esac
+                      short_index="${#short_flags}"
+                      continue
+                      ;;
                     *) return 0 ;;
                   esac
                   short_index=$((short_index + 1))

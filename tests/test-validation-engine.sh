@@ -140,6 +140,15 @@ case "$RUN_STATUS" in 126 | 127) ;; *) fail "missing shebang interpreter did not
 assert_contains "$TMP_DIR/missing-interpreter.out" '"ran":0'
 assert_contains "$TMP_DIR/missing-interpreter.out" '"reason":"command-not-started"'
 
+RELATIVE_INTERPRETER="$TMP_DIR/relative-interpreter"
+write_contract "$RELATIVE_INTERPRETER" "./relative-interpreter-script || true"
+printf '#!bash\nbody must not run\n' >"$RELATIVE_INTERPRETER/relative-interpreter-script"
+chmod +x "$RELATIVE_INTERPRETER/relative-interpreter-script"
+run_capture "$RELATIVE_INTERPRETER" "$TMP_DIR/relative-interpreter.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "non-path shebang interpreter was resolved through PATH"
+assert_contains "$TMP_DIR/relative-interpreter.out" '"ran":0'
+assert_contains "$TMP_DIR/relative-interpreter.out" '"reason":"command-not-started"'
+
 ENV_OPTIONS="$TMP_DIR/env-options"
 write_contract "$ENV_OPTIONS" "./env-options-script"
 printf '#!/usr/bin/env -S -u FOO bash\nprintf env-ran > marker\n' >"$ENV_OPTIONS/env-options-script"
@@ -186,6 +195,25 @@ run_capture "$ENV_CLUSTERED" "$TMP_DIR/env-clustered.out" --json
 [ "$RUN_STATUS" -eq 127 ] || fail "clustered env flags laundered a missing interpreter"
 assert_contains "$TMP_DIR/env-clustered.out" '"ran":0'
 assert_contains "$TMP_DIR/env-clustered.out" '"reason":"command-not-started"'
+
+ENV_CLUSTERED_ARGUMENT="$TMP_DIR/env-clustered-argument"
+write_contract "$ENV_CLUSTERED_ARGUMENT" "./env-clustered-argument-script || true"
+printf '#!/usr/bin/env -S -iu PATH missing-touchstone-command\nbody must not run\n' >"$ENV_CLUSTERED_ARGUMENT/env-clustered-argument-script"
+chmod +x "$ENV_CLUSTERED_ARGUMENT/env-clustered-argument-script"
+run_capture "$ENV_CLUSTERED_ARGUMENT" "$TMP_DIR/env-clustered-argument.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "clustered env argument option laundered a missing interpreter"
+assert_contains "$TMP_DIR/env-clustered-argument.out" '"ran":0'
+assert_contains "$TMP_DIR/env-clustered-argument.out" '"reason":"command-not-started"'
+
+ENV_DASH_COMMAND="$TMP_DIR/env-dash-command"
+mkdir -p "$ENV_DASH_COMMAND/bin"
+write_contract "$ENV_DASH_COMMAND" "PATH=$ENV_DASH_COMMAND/bin ./env-dash-script"
+printf '#!/bin/bash\nprintf dash-ran > marker\n' >"$ENV_DASH_COMMAND/bin/-i"
+printf '#!/usr/bin/env -S -- -i\nbody must not run\n' >"$ENV_DASH_COMMAND/env-dash-script"
+chmod +x "$ENV_DASH_COMMAND/bin/-i" "$ENV_DASH_COMMAND/env-dash-script"
+run_capture "$ENV_DASH_COMMAND" "$TMP_DIR/env-dash-command.out" --json
+[ "$RUN_STATUS" -eq 0 ] || fail "env option terminator rejected a dash-prefixed command"
+[ "$(cat "$ENV_DASH_COMMAND/marker")" = dash-ran ] || fail "dash-prefixed env command did not run"
 
 ENV_BUILTIN="$TMP_DIR/env-builtin"
 mkdir -p "$ENV_BUILTIN/empty"
