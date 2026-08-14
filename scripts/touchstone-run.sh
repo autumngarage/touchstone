@@ -390,6 +390,7 @@ declared_command_head() {
   local input="$1" character quote="" token=""
   local escaped=false assignment_candidate=true assignment_equals=false
   local token_quoted=false time_option_allowed=false assignment_seen=false
+  local command_operand_expected=false command_options_allowed=false command_flags
   local index=0 length="${#1}"
   COMMAND_PATH_SET=false
   COMMAND_PATH_OVERRIDE=""
@@ -478,6 +479,36 @@ declared_command_head() {
       time_option_allowed=false
       continue
     fi
+    if [ "$command_operand_expected" = true ]; then
+      if [ "$command_options_allowed" = true ] && [ "$token_quoted" = false ]; then
+        case "$token" in
+          --)
+            command_options_allowed=false
+            continue
+            ;;
+          -?*)
+            command_flags="${token#-}"
+            case "$command_flags" in
+              *[!p]*)
+                COMMAND_HEAD="command"
+                COMMAND_HEAD_QUOTED=false
+                COMMAND_HEAD_AFTER_ASSIGNMENT="$assignment_seen"
+                return 0
+                ;;
+              *) continue ;;
+            esac
+            ;;
+        esac
+      fi
+      if [ "$token_quoted" = false ] && [ "$token" = command ]; then
+        command_options_allowed=true
+        continue
+      fi
+      COMMAND_HEAD="$token"
+      COMMAND_HEAD_QUOTED="$token_quoted"
+      COMMAND_HEAD_AFTER_ASSIGNMENT="$assignment_seen"
+      return 0
+    fi
     if [ "$assignment_candidate" = true ] && [ "$assignment_equals" = true ]; then
       assignment_seen=true
       time_option_allowed=false
@@ -489,6 +520,11 @@ declared_command_head() {
       esac
       continue
     fi
+    if [ "$token_quoted" = false ] && [ "$token" = command ]; then
+      command_operand_expected=true
+      command_options_allowed=true
+      continue
+    fi
     COMMAND_HEAD="$token"
     COMMAND_HEAD_QUOTED="$token_quoted"
     COMMAND_HEAD_AFTER_ASSIGNMENT="$assignment_seen"
@@ -497,11 +533,43 @@ declared_command_head() {
   return 1
 }
 
+env_split_string_head() {
+  local input="$1" character quote="" token="" escaped=false index=0 length="${#1}"
+
+  while [ "$index" -lt "$length" ]; do
+    character="${input:$index:1}"
+    index=$((index + 1))
+    if [ "$escaped" = true ]; then
+      token="$token$character"
+      escaped=false
+    elif [ "$quote" = single ]; then
+      if [ "$character" = "'" ]; then quote=""; else token="$token$character"; fi
+    elif [ "$quote" = double ]; then
+      case "$character" in
+        '"') quote="" ;;
+        '\') escaped=true ;;
+        '$' | '`') return 1 ;;
+        *) token="$token$character" ;;
+      esac
+    else
+      case "$character" in
+        "'") quote=single ;;
+        '"') quote=double ;;
+        '\') escaped=true ;;
+        '$' | '`') return 1 ;;
+        *) token="$token$character" ;;
+      esac
+    fi
+  done
+  [ "$escaped" = false ] && [ -z "$quote" ] && [ -n "$token" ] || return 1
+  ENV_SPLIT_HEAD="$token"
+}
+
 declared_command_unrunnable_code() {
   local command="$1" directory="$2" head
   local executable="" first_line shebang interpreter interpreter_path effective_path="$PATH"
   local env_command word env_index env_option_argument short_flags short_index short_flag
-  local env_directory env_effective_path env_utility_path default_exec_path
+  local env_directory env_effective_path env_utility_path default_exec_path env_interpreter=false
   local -a shebang_words
   declared_command_head "$command" || return 0
   head="$COMMAND_HEAD"
@@ -537,14 +605,20 @@ declared_command_unrunnable_code() {
   IFS= read -r first_line <"$executable" || true
   case "$first_line" in
     '#!'*)
-      case "$first_line" in *"$(printf '\r')"*)
+      shebang="${first_line#\#!}"
+      while :; do
+        case "$shebang" in
+          ' '* | "$(printf '\t')"*) shebang="${shebang#?}" ;;
+          *) break ;;
+        esac
+      done
+      read -r -a shebang_words <<<"$shebang"
+      interpreter="${shebang_words[0]:-}"
+      case "$interpreter" in *"$(printf '\r')"*)
         printf 'missing-interpreter\n'
         return 0
         ;;
       esac
-      shebang="$(trim "${first_line#\#!}")"
-      read -r -a shebang_words <<<"$shebang"
-      interpreter="${shebang_words[0]:-}"
       case "$interpreter" in
         /*) interpreter_path="$interpreter" ;;
         */*) interpreter_path="$directory/$interpreter" ;;
@@ -554,8 +628,12 @@ declared_command_unrunnable_code() {
         printf 'missing-interpreter\n'
         return 0
       fi
-      case "${interpreter##*/}" in
-        env)
+      if { [ -x /usr/bin/env ] && [ "$interpreter_path" -ef /usr/bin/env ]; } \
+        || { [ -x /bin/env ] && [ "$interpreter_path" -ef /bin/env ]; }; then
+        env_interpreter=true
+      fi
+      case "$env_interpreter" in
+        true)
           env_command=""
           env_directory="$directory"
           env_effective_path="$effective_path"
@@ -644,7 +722,10 @@ declared_command_unrunnable_code() {
                     i) env_effective_path="$default_exec_path" ;;
                     S)
                       env_option_argument="${short_flags:$((short_index + 1))}"
-                      if [ -n "$env_option_argument" ]; then env_command="$env_option_argument"; fi
+                      if [ -n "$env_option_argument" ]; then
+                        env_split_string_head "$env_option_argument" || return 0
+                        env_command="$ENV_SPLIT_HEAD"
+                      fi
                       short_index="${#short_flags}"
                       continue
                       ;;

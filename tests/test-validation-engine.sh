@@ -168,6 +168,15 @@ run_capture "$CRLF_INTERPRETER" "$TMP_DIR/crlf-interpreter.out" --json
 assert_contains "$TMP_DIR/crlf-interpreter.out" '"ran":0'
 assert_contains "$TMP_DIR/crlf-interpreter.out" '"reason":"command-not-started"'
 
+CRLF_ARGUMENT="$TMP_DIR/crlf-argument"
+write_contract "$CRLF_ARGUMENT" "./crlf-argument-script || true"
+printf '#!/bin/bash -e\r\nprintf body-may-not-run\n' >"$CRLF_ARGUMENT/crlf-argument-script"
+chmod +x "$CRLF_ARGUMENT/crlf-argument-script"
+run_capture "$CRLF_ARGUMENT" "$TMP_DIR/crlf-argument.out" --json
+[ "$RUN_STATUS" -eq 0 ] || fail "CR in a shebang argument was treated as part of the interpreter path"
+assert_contains "$TMP_DIR/crlf-argument.out" '"ran":1'
+assert_contains "$TMP_DIR/crlf-argument.out" '"verdict":"passed"'
+
 ENV_OPTIONS="$TMP_DIR/env-options"
 write_contract "$ENV_OPTIONS" "./env-options-script"
 printf '#!/usr/bin/env -S -u FOO bash\nprintf env-ran > marker\n' >"$ENV_OPTIONS/env-options-script"
@@ -175,6 +184,18 @@ chmod +x "$ENV_OPTIONS/env-options-script"
 FOO=present run_capture "$ENV_OPTIONS" "$TMP_DIR/env-options.out" --json
 [ "$RUN_STATUS" -eq 0 ] || fail "env option arguments were mistaken for the interpreter"
 [ "$(cat "$ENV_OPTIONS/marker")" = env-ran ] || fail "env shebang script did not run"
+
+CUSTOM_ENV="$TMP_DIR/custom-env"
+write_contract "$CUSTOM_ENV" "./custom-env-script"
+cat >"$CUSTOM_ENV/env" <<'EOF'
+#!/bin/bash
+exec /bin/bash "$@"
+EOF
+printf '#!%s/env\nprintf custom-env-ran > marker\n' "$CUSTOM_ENV" >"$CUSTOM_ENV/custom-env-script"
+chmod +x "$CUSTOM_ENV/env" "$CUSTOM_ENV/custom-env-script"
+run_capture "$CUSTOM_ENV" "$TMP_DIR/custom-env.out" --json
+[ "$RUN_STATUS" -eq 0 ] || fail "custom interpreter named env was parsed as the env utility"
+[ "$(cat "$CUSTOM_ENV/marker")" = custom-env-ran ] || fail "custom env-named interpreter did not run"
 
 for env_header in '-S -i bash' '-S -u PATH bash' '-S PATH=/bin bash'; do
   case "$env_header" in
@@ -233,6 +254,14 @@ run_capture "$ENV_SPLIT_ATTACHED" "$TMP_DIR/env-split-attached.out" --json
 assert_contains "$TMP_DIR/env-split-attached.out" '"ran":0'
 assert_contains "$TMP_DIR/env-split-attached.out" '"reason":"command-not-started"'
 
+ENV_SPLIT_QUOTED="$TMP_DIR/env-split-quoted"
+write_contract "$ENV_SPLIT_QUOTED" "./env-split-quoted-script"
+printf '#!/usr/bin/env -S"bash"\nprintf split-quoted-ran > marker\n' >"$ENV_SPLIT_QUOTED/env-split-quoted-script"
+chmod +x "$ENV_SPLIT_QUOTED/env-split-quoted-script"
+run_capture "$ENV_SPLIT_QUOTED" "$TMP_DIR/env-split-quoted.out" --json
+[ "$RUN_STATUS" -eq 0 ] || fail "quoted attached env split-string command was not decoded"
+[ "$(cat "$ENV_SPLIT_QUOTED/marker")" = split-quoted-ran ] || fail "quoted attached env split-string command did not run"
+
 ENV_DASH_COMMAND="$TMP_DIR/env-dash-command"
 mkdir -p "$ENV_DASH_COMMAND/bin"
 write_contract "$ENV_DASH_COMMAND" "PATH=$ENV_DASH_COMMAND/bin ./env-dash-script"
@@ -266,6 +295,27 @@ run_capture "$FALLBACK_COMMAND" "$TMP_DIR/fallback-command.out" --json
 [ "$RUN_STATUS" -eq 127 ] || fail "fallback laundered an unavailable command"
 assert_contains "$TMP_DIR/fallback-command.out" '"ran":0'
 assert_contains "$TMP_DIR/fallback-command.out" '"reason":"command-not-started"'
+
+COMMAND_BUILTIN="$TMP_DIR/command-builtin"
+write_contract "$COMMAND_BUILTIN" "command missing-touchstone-command || true"
+run_capture "$COMMAND_BUILTIN" "$TMP_DIR/command-builtin.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "command builtin laundered an unavailable command"
+assert_contains "$TMP_DIR/command-builtin.out" '"ran":0'
+assert_contains "$TMP_DIR/command-builtin.out" '"reason":"command-not-started"'
+
+for command_form in 'command -p missing-touchstone-command || true' \
+  'command -- missing-touchstone-command || true' \
+  'FIRST=one command missing-touchstone-command || true'; do
+  write_contract "$COMMAND_BUILTIN" "$command_form"
+  run_capture "$COMMAND_BUILTIN" "$TMP_DIR/command-builtin.out" --json
+  [ "$RUN_STATUS" -eq 127 ] || fail "command builtin option/assignment form laundered an unavailable command"
+  assert_contains "$TMP_DIR/command-builtin.out" '"ran":0'
+done
+
+write_contract "$COMMAND_BUILTIN" "command -v missing-touchstone-command || true"
+run_capture "$COMMAND_BUILTIN" "$TMP_DIR/command-query.out" --json
+[ "$RUN_STATUS" -eq 0 ] || fail "command query form was mistaken for an executable launch"
+assert_contains "$TMP_DIR/command-query.out" '"ran":1'
 
 NEGATED_COMMAND="$TMP_DIR/negated-command"
 write_contract "$NEGATED_COMMAND" "! missing-touchstone-command"
