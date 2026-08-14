@@ -1056,10 +1056,17 @@ done
 ADOPT_PYPROJECT="$TMP_DIR/adopt-pyproject"
 init_adoption_repo "$ADOPT_PYPROJECT"
 printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  'authors = [{ name = "Touchstone", email = "test@example.invalid" }]' \
   >"$ADOPT_PYPROJECT/pyproject.toml"
 commit_adoption_repo "$ADOPT_PYPROJECT" "fixture"
 git -C "$ADOPT_PYPROJECT" switch -q -c feat/adopt
-run_adoption "$TMP_DIR/adopt-pyproject.out" adopt --project "$ADOPT_PYPROJECT"
+mkdir -p "$TMP_DIR/no-python"
+cat >"$TMP_DIR/no-python/python3" <<'EOF'
+#!/usr/bin/env bash
+exit 99
+EOF
+chmod +x "$TMP_DIR/no-python/python3"
+PATH="$TMP_DIR/no-python:$PATH" run_adoption "$TMP_DIR/adopt-pyproject.out" adopt --project "$ADOPT_PYPROJECT"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "installable pyproject adoption failed"
 assert_contains "$ADOPT_PYPROJECT/.touchstone.toml" 'setup = "python -m pip install --no-index --no-build-isolation -e ."'
 
@@ -1083,6 +1090,18 @@ git -C "$ADOPT_MALFORMED_PYPROJECT" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-malformed-pyproject.out" adopt --dry-run --project "$ADOPT_MALFORMED_PYPROJECT"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed pyproject.toml produced an adoption plan"
 assert_contains "$TMP_DIR/adopt-malformed-pyproject.out.err" 'pyproject.toml is malformed'
+
+ADOPT_MALFORMED_INLINE="$TMP_DIR/adopt-malformed-inline-pyproject"
+init_adoption_repo "$ADOPT_MALFORMED_INLINE"
+mkdir -p "$ADOPT_MALFORMED_INLINE/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  'authors = [{ name = "Touchstone" email = "test@example.invalid" }]' \
+  >"$ADOPT_MALFORMED_INLINE/pyproject.toml"
+commit_adoption_repo "$ADOPT_MALFORMED_INLINE" "fixture"
+git -C "$ADOPT_MALFORMED_INLINE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-malformed-inline.out" adopt --dry-run --project "$ADOPT_MALFORMED_INLINE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed inline TOML table produced an adoption plan"
+assert_contains "$TMP_DIR/adopt-malformed-inline.out.err" 'pyproject.toml is malformed'
 
 ADOPT_UNDECLARED_CHECKER="$TMP_DIR/adopt-undeclared-checker"
 init_adoption_repo "$ADOPT_UNDECLARED_CHECKER"
@@ -1180,6 +1199,21 @@ run_adoption "$TMP_DIR/adopt-workspace-child.out" adopt --project "$ADOPT_WORKSP
 assert_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" 'setup = "npm ci --offline"'
 assert_not_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" '(cd apps/api'
 
+ADOPT_PNPM_FLOW_WORKSPACE="$TMP_DIR/adopt-pnpm-flow-workspace"
+init_adoption_repo "$ADOPT_PNPM_FLOW_WORKSPACE"
+mkdir -p "$ADOPT_PNPM_FLOW_WORKSPACE/apps/api"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0"}' >"$ADOPT_PNPM_FLOW_WORKSPACE/package.json"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_FLOW_WORKSPACE/pnpm-lock.yaml"
+printf '%s\n' "packages: ['apps/*']" >"$ADOPT_PNPM_FLOW_WORKSPACE/pnpm-workspace.yaml"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_PNPM_FLOW_WORKSPACE/apps/api/package.json"
+commit_adoption_repo "$ADOPT_PNPM_FLOW_WORKSPACE" "fixture"
+git -C "$ADOPT_PNPM_FLOW_WORKSPACE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-flow-workspace.out" adopt --project "$ADOPT_PNPM_FLOW_WORKSPACE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "flow-style pnpm workspace adoption failed"
+assert_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" 'path = "apps/api"'
+assert_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" 'setup = "pnpm install --offline --frozen-lockfile"'
+assert_not_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" '(cd apps/api'
+
 ADOPT_DUPLICATE_WORKSPACES="$TMP_DIR/adopt-duplicate-workspaces"
 init_adoption_repo "$ADOPT_DUPLICATE_WORKSPACES"
 mkdir -p "$ADOPT_DUPLICATE_WORKSPACES/apps/api"
@@ -1191,7 +1225,20 @@ commit_adoption_repo "$ADOPT_DUPLICATE_WORKSPACES" "fixture"
 git -C "$ADOPT_DUPLICATE_WORKSPACES" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-duplicate-workspaces.out" adopt --dry-run --project "$ADOPT_DUPLICATE_WORKSPACES"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate root workspaces declaration produced a plan"
-assert_contains "$TMP_DIR/adopt-duplicate-workspaces.out.err" "repeats the 'workspaces' key"
+assert_contains "$TMP_DIR/adopt-duplicate-workspaces.out.err" "repeats a workspace declaration"
+
+ADOPT_DUPLICATE_WORKSPACE_PACKAGES="$TMP_DIR/adopt-duplicate-workspace-packages"
+init_adoption_repo "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES"
+mkdir -p "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES/apps/api"
+printf '%s\n' '{"workspaces":{"packages":["apps/*"],"packages":[]},"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_DUPLICATE_WORKSPACE_PACKAGES/package.json"
+printf '{}\n' >"$ADOPT_DUPLICATE_WORKSPACE_PACKAGES/package-lock.json"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_DUPLICATE_WORKSPACE_PACKAGES/apps/api/package.json"
+commit_adoption_repo "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES" "fixture"
+git -C "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-duplicate-workspace-packages.out" adopt --dry-run --project "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate workspace packages declaration produced a plan"
+assert_contains "$TMP_DIR/adopt-duplicate-workspace-packages.out.err" "repeats a workspace declaration"
 
 ADOPT_LARGE="$TMP_DIR/adopt-large"
 init_adoption_repo "$ADOPT_LARGE"
@@ -1282,18 +1329,26 @@ assert_contains "$ADOPT_EMPTY_AGGREGATE/.touchstone.toml" 'command = "npm run te
 assert_not_contains "$ADOPT_EMPTY_AGGREGATE/.touchstone.toml" 'npm run validate'
 assert_not_contains "$ADOPT_EMPTY_AGGREGATE/.touchstone.toml" 'npm run verify'
 
-for yarn_case in unlocked locked; do
+for yarn_case in unlocked berry classic; do
   ADOPT_YARN="$TMP_DIR/adopt-yarn-$yarn_case"
   init_adoption_repo "$ADOPT_YARN"
-  printf '%s\n' '{"packageManager":"yarn@4.14.1","scripts":{"test":"node --test"}}' \
-    >"$ADOPT_YARN/package.json"
-  if [ "$yarn_case" = locked ]; then printf '# yarn lockfile v1\n' >"$ADOPT_YARN/yarn.lock"; fi
+  if [ "$yarn_case" = classic ]; then
+    printf '%s\n' '{"packageManager":"yarn@1.22.22","scripts":{"test":"node --test"}}' \
+      >"$ADOPT_YARN/package.json"
+    printf '# yarn lockfile v1\n' >"$ADOPT_YARN/yarn.lock"
+  else
+    printf '%s\n' '{"packageManager":"yarn@4.14.1","scripts":{"test":"node --test"}}' \
+      >"$ADOPT_YARN/package.json"
+    if [ "$yarn_case" = berry ]; then printf '__metadata:\n  version: 8\n' >"$ADOPT_YARN/yarn.lock"; fi
+  fi
   commit_adoption_repo "$ADOPT_YARN" "fixture"
   git -C "$ADOPT_YARN" switch -q -c feat/adopt
   run_adoption "$TMP_DIR/adopt-yarn-$yarn_case.out" adopt --project "$ADOPT_YARN"
   [ "$ADOPTION_STATUS" -eq 0 ] || fail "$yarn_case Yarn adoption failed"
-  if [ "$yarn_case" = locked ]; then
+  if [ "$yarn_case" = berry ]; then
     assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install --immutable --immutable-cache"'
+  elif [ "$yarn_case" = classic ]; then
+    assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install --offline --frozen-lockfile"'
   else
     assert_not_contains "$ADOPT_YARN/.touchstone.toml" 'setup = '
   fi

@@ -719,7 +719,7 @@ node_package_manager() {
 }
 
 node_setup_command() {
-  local manager="$1" directory="$2"
+  local manager="$1" directory="$2" declaration_status spec version major lock_kind=""
   case "$manager" in
     npm)
       if [ -f "$directory/package-lock.json" ] || [ -f "$directory/npm-shrinkwrap.json" ]; then
@@ -733,7 +733,55 @@ node_setup_command() {
       ;;
     yarn)
       if [ -f "$directory/yarn.lock" ]; then
-        printf 'yarn install --immutable --immutable-cache\n'
+        if grep -q '^# yarn lockfile v1' "$directory/yarn.lock"; then
+          lock_kind=classic
+        elif grep -q '^__metadata:' "$directory/yarn.lock"; then
+          lock_kind=berry
+        fi
+        if spec="$(json_root_string_value "$directory/package.json" packageManager)"; then
+          declaration_status=0
+        else
+          declaration_status=$?
+        fi
+        case "$declaration_status" in
+          0)
+            case "$spec" in
+              yarn@*)
+                version="${spec#yarn@}"
+                major="${version%%.*}"
+                printf '%s' "$major" | grep -Eq '^[0-9]+$' \
+                  || contract_refusal "unsupported Yarn packageManager version '$version'"
+                if [ "$major" -eq 1 ]; then
+                  [ "$lock_kind" != berry ] \
+                    || contract_refusal "Yarn Classic packageManager '$spec' conflicts with a Berry lockfile"
+                  printf 'yarn install --offline --frozen-lockfile\n'
+                else
+                  [ "$major" -ge 2 ] \
+                    || contract_refusal "unsupported Yarn packageManager version '$version'"
+                  [ "$lock_kind" != classic ] \
+                    || contract_refusal "Yarn Berry packageManager '$spec' conflicts with a Classic lockfile"
+                  printf 'yarn install --immutable --immutable-cache\n'
+                fi
+                ;;
+              yarn)
+                case "$lock_kind" in
+                  classic) printf 'yarn install --offline --frozen-lockfile\n' ;;
+                  berry) printf 'yarn install --immutable --immutable-cache\n' ;;
+                  *) contract_refusal "yarn.lock format is ambiguous; declare packageManager with an exact Yarn version" ;;
+                esac
+                ;;
+              *) contract_refusal "packageManager '$spec' conflicts with the 'yarn' lockfile" ;;
+            esac
+            ;;
+          1)
+            case "$lock_kind" in
+              classic) printf 'yarn install --offline --frozen-lockfile\n' ;;
+              berry) printf 'yarn install --immutable --immutable-cache\n' ;;
+              *) contract_refusal "yarn.lock format is ambiguous; declare packageManager with an exact Yarn version" ;;
+            esac
+            ;;
+          *) contract_refusal "package.json is malformed or packageManager is not a string" ;;
+        esac
       fi
       ;;
     bun)
@@ -796,6 +844,9 @@ node_workspace_patterns() {
         if (depth == 1 && token == "workspaces") {
           workspace_keys++
           if (workspace_keys > 1) exit 2
+        } else if (depth == workspace_object && token == "packages") {
+          workspace_package_keys++
+          if (workspace_package_keys > 1) exit 2
         }
         key[depth] = token
         state[depth] = "colon"
@@ -853,8 +904,76 @@ pnpm_workspace_patterns() {
   local workspace="$PROJECT_ROOT/pnpm-workspace.yaml"
   [ -f "$workspace" ] || return 0
   awk '
-    /^[[:space:]]*packages:[[:space:]]*(#.*)?$/ { in_packages = 1; next }
-    in_packages && /^[^[:space:]-][^:]*:/ { exit }
+    function trim(value) {
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      return value
+    }
+    function emit_flow(raw, position, character, token, quote, escaped, closed, expect_value, bare_space, scalar_closed) {
+      raw = trim(raw)
+      if (substr(raw, 1, 1) != "[") exit 2
+      token = ""
+      quote = ""
+      escaped = 0
+      closed = 0
+      expect_value = 1
+      bare_space = 0
+      scalar_closed = 0
+      for (position = 2; position <= length(raw); position++) {
+        character = substr(raw, position, 1)
+        if (quote != "") {
+          if (quote == "\"" && escaped) { token = token character; escaped = 0; continue }
+          if (quote == "\"" && character == "\\") { escaped = 1; continue }
+          if (character == quote) { quote = ""; expect_value = 0; scalar_closed = 1; continue }
+          token = token character
+          continue
+        }
+        if (closed) {
+          if (character == "#") return
+          if (character !~ /[[:space:]]/) exit 2
+          continue
+        }
+        if (character == "\"" || character == "\047") {
+          if (!expect_value || trim(token) != "") exit 2
+          quote = character
+          continue
+        }
+        if (character == ",") {
+          if (expect_value || trim(token) == "") exit 2
+          print trim(token)
+          token = ""
+          expect_value = 1
+          bare_space = 0
+          scalar_closed = 0
+          continue
+        }
+        if (character == "]") {
+          if (quote != "") exit 2
+          if (trim(token) != "") print trim(token)
+          else if (!expect_value) exit 2
+          closed = 1
+          continue
+        }
+        if (scalar_closed && character !~ /[[:space:]]/) exit 2
+        if (character ~ /[[:space:]]/) {
+          if (trim(token) != "") bare_space = 1
+          continue
+        }
+        if (bare_space) exit 2
+        token = token character
+        expect_value = 0
+      }
+      if (!closed || quote != "" || escaped) exit 2
+    }
+    /^packages:[[:space:]]*/ {
+      packages_keys++
+      if (packages_keys > 1) exit 2
+      value = $0
+      sub(/^packages:[[:space:]]*/, "", value)
+      if (value == "" || value ~ /^#/) in_packages = 1
+      else { emit_flow(value); in_packages = 0 }
+      next
+    }
+    in_packages && /^[^[:space:]#]/ { in_packages = 0 }
     in_packages && /^[[:space:]]*-[[:space:]]*/ {
       value = $0
       sub(/^[[:space:]]*-[[:space:]]*/, "", value)
@@ -866,12 +985,15 @@ pnpm_workspace_patterns() {
 }
 
 node_workspace_contains() {
-  local relative="$1" patterns pattern candidate member=false
+  local relative="$1" patterns pattern candidate member=false pnpm_patterns
   if ! patterns="$(node_workspace_patterns)"; then
-    contract_refusal "root package.json repeats the 'workspaces' key; workspace membership is ambiguous"
+    contract_refusal "root package.json repeats a workspace declaration; workspace membership is ambiguous"
   fi
   if [ -f "$PROJECT_ROOT/pnpm-workspace.yaml" ]; then
-    patterns="${patterns}${patterns:+$LF}$(pnpm_workspace_patterns)"
+    if ! pnpm_patterns="$(pnpm_workspace_patterns)"; then
+      contract_refusal "pnpm-workspace.yaml has malformed, duplicate, or unsupported packages declarations"
+    fi
+    patterns="${patterns}${patterns:+$LF}${pnpm_patterns}"
   fi
   while IFS= read -r pattern; do
     [ -n "$pattern" ] || continue
@@ -915,16 +1037,198 @@ tasks_for_node() {
 
 validate_pyproject_document() {
   local file="$1"
-  command -v python3 >/dev/null 2>&1 \
-    || contract_refusal "Python project detection requires Python 3.11+ to validate pyproject.toml; pass --task NAME=COMMAND for a manual contract"
-  python3 - "$file" >/dev/null 2>&1 <<'PY' || contract_refusal "pyproject.toml is malformed or requires a Python 3.11+ TOML parser"
-import pathlib
-import sys
-import tomllib
+  awk '
+    function invalid_document() { invalid = 1; exit 2 }
+    function valid_bare_value(value) {
+      return value ~ /^(true|false|[+-]?(inf|nan))$/ \
+        || value ~ /^[+-]?[0-9][0-9_]*$/ \
+        || value ~ /^0x[0-9A-Fa-f][0-9A-Fa-f_]*$/ \
+        || value ~ /^0o[0-7][0-7_]*$/ \
+        || value ~ /^0b[01][01_]*$/ \
+        || value ~ /^[+-]?[0-9][0-9_]*\.[0-9][0-9_]*([eE][+-]?[0-9][0-9_]*)?$/ \
+        || value ~ /^[+-]?[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*$/ \
+        || value ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]([Tt][0-9:.+-]+([Zz])?)?$/ \
+        || value ~ /^[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\.[0-9]+)?$/
+    }
+    function finish_bare() {
+      if (!bare) return
+      if (bare_is_value && !valid_bare_value(bare_token)) invalid_document()
+      bare = 0
+      bare_space = 0
+      bare_token = ""
+      bare_is_value = 0
+    }
+    function begin_value() {
+      if (depth > 0 && kind[depth] == "array") {
+        if (!expect_value[depth]) invalid_document()
+        expect_value[depth] = 0
+      } else if (depth > 0 && kind[depth] == "inline") {
+        if (inline_state[depth] != "value") invalid_document()
+        inline_state[depth] = "done"
+      } else if (depth == 0) {
+        if (!assignment || assignment_value) invalid_document()
+        assignment_value = 1
+      }
+    }
+    function begin_scalar() {
+      if (depth > 0 && kind[depth] == "inline" && inline_state[depth] == "key") {
+        inline_key[depth] = 1
+        scalar_value = 0
+        return
+      }
+      if (depth == 0 && !assignment) {
+        scalar_value = 0
+        return
+      }
+      begin_value()
+      scalar_value = 1
+    }
+    function push(container) {
+      begin_value()
+      depth++
+      kind[depth] = container
+      if (container == "array") expect_value[depth] = 1
+      else inline_state[depth] = "key"
+    }
+    function pop(container) {
+      if (depth < 1 || kind[depth] != container) invalid_document()
+      if (container == "inline" && inline_state[depth] != "done" \
+          && !(inline_state[depth] == "key" && !inline_key[depth] && !inline_had_entry[depth])) invalid_document()
+      delete kind[depth]
+      delete expect_value[depth]
+      delete inline_state[depth]
+      delete inline_key[depth]
+      delete inline_had_entry[depth]
+      depth--
+    }
+    function valid_table_header(value) {
+      return value ~ /^[[:space:]]*\[[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*\][[:space:]]*(#.*)?$/ \
+        || value ~ /^[[:space:]]*\[\[[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*\]\][[:space:]]*(#.*)?$/
+    }
+    {
+      sub(/\r$/, "")
+      line = $0
+      if (multiline != "") {
+        for (position = 1; position <= length(line); position++) {
+          if (substr(line, position, 3) == multiline) {
+            multiline = ""
+            position += 2
+            break
+          }
+        }
+        if (multiline != "") next
+        line = substr(line, position + 1)
+      }
 
-with pathlib.Path(sys.argv[1]).open("rb") as source:
-    tomllib.load(source)
-PY
+      if (depth == 0 && line ~ /^[[:space:]]*\[/) {
+        if (!valid_table_header(line)) invalid_document()
+        next
+      }
+
+      assignment = 0
+      assignment_value = 0
+      bare = 0
+      bare_space = 0
+      saw_content = depth > 0
+      quote = ""
+      escaped = 0
+      for (position = 1; position <= length(line); position++) {
+        character = substr(line, position, 1)
+        if (multiline != "") {
+          if (substr(line, position, 3) == multiline) {
+            multiline = ""
+            position += 2
+          }
+          continue
+        }
+        if (quote != "") {
+          if (quote == "\"" && escaped) { escaped = 0; continue }
+          if (quote == "\"" && character == "\\") { escaped = 1; continue }
+          if (character == quote) { quote = ""; continue }
+          continue
+        }
+        if (character == "#") break
+        if (character ~ /[[:space:]]/) {
+          if (bare) bare_space = 1
+          continue
+        }
+        saw_content = 1
+        if (substr(line, position, 3) == "\"\"\"" || substr(line, position, 3) == "\047\047\047") {
+          if (bare) invalid_document()
+          begin_scalar()
+          multiline = substr(line, position, 3)
+          position += 2
+          bare = 0
+          bare_space = 0
+          continue
+        }
+        if (character == "\"" || character == "\047") {
+          if (bare) invalid_document()
+          begin_scalar()
+          quote = character
+          bare = 0
+          bare_space = 0
+          continue
+        }
+        if (character == "[") { if (bare) invalid_document(); push("array"); continue }
+        if (character == "]") { finish_bare(); pop("array"); continue }
+        if (character == "{") { if (bare) invalid_document(); push("inline"); continue }
+        if (character == "}") { finish_bare(); pop("inline"); continue }
+        if (character == ",") {
+          finish_bare()
+          if (depth > 0 && kind[depth] == "array") {
+            if (expect_value[depth]) invalid_document()
+            expect_value[depth] = 1
+          } else if (depth > 0 && kind[depth] == "inline") {
+            if (inline_state[depth] != "done") invalid_document()
+            inline_state[depth] = "key"
+            inline_key[depth] = 0
+          }
+          bare = 0
+          bare_space = 0
+          continue
+        }
+        if (character == "=") {
+          finish_bare()
+          if (depth == 0) {
+            if (assignment) invalid_document()
+            assignment = 1
+          } else if (kind[depth] == "inline") {
+            if (inline_state[depth] != "key" || !inline_key[depth]) invalid_document()
+            inline_state[depth] = "value"
+            inline_had_entry[depth] = 1
+          } else {
+            invalid_document()
+          }
+          bare = 0
+          bare_space = 0
+          continue
+        }
+        if (!bare) {
+          begin_scalar()
+          bare = 1
+          bare_is_value = scalar_value
+          bare_token = character
+        } else if (bare_space) {
+          invalid_document()
+        } else {
+          bare_token = bare_token character
+        }
+      }
+      if (quote != "" || escaped) invalid_document()
+      finish_bare()
+      for (level = 1; level <= depth; level++) {
+        if (kind[level] == "inline") invalid_document()
+      }
+      if (depth == 0 && multiline == "" && saw_content) {
+        if (!assignment || !assignment_value) invalid_document()
+      }
+    }
+    END {
+      if (invalid || depth != 0 || multiline != "") exit 2
+    }
+  ' "$file" >/dev/null 2>&1 \
+    || contract_refusal "pyproject.toml is malformed or uses TOML syntax the portable adoption parser cannot verify; pass --task NAME=COMMAND for a manual contract"
 }
 
 python_project_has_dependency() {

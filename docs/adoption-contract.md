@@ -52,13 +52,18 @@ Node tasks come only from non-empty declared package scripts. A declared
 the declared `lint`, `typecheck`, `test`, and `build` scripts in that order.
 When a lockfile exists, the declaration prepares Node dependencies only in the
 manager's offline, frozen/immutable mode; an unlocked project gets no generated
-install step. A child uses the root setup only when an explicit workspace glob
-proves membership. Duplicate script or root `workspaces` keys refuse as
-ambiguous rather than selecting a value different from the package manager.
+install step. Yarn Classic and Berry are distinguished by the declared major
+version, with the lock format as the fallback when no version is declared. A
+child uses the root setup only when an explicit JSON, block YAML, or single-line
+flow YAML workspace glob proves membership. Duplicate script or workspace keys
+refuse as ambiguous rather than selecting a value different from the package
+manager.
 Python tasks come from ruff, mypy, and pytest evidence in `pyproject.toml` or
-the test tree. The complete `pyproject.toml` must parse before any facts are
-derived. Explicit setup uses offline uv, no-index requirements, or no-index
-editable installation only for an installable project declaration.
+the test tree. A dependency-free portable parser verifies the complete
+`pyproject.toml` before any facts are derived and refuses TOML syntax it cannot
+verify with a manual-task remedy. Explicit setup uses offline uv, no-index
+requirements, or no-index editable installation only for an installable
+project declaration.
 Each emitted checker must also be present in dependency facts installed by that
 setup; required uv dev groups are named explicitly even when project defaults
 exclude them. Configuration or a test tree without the checker dependency refuses.
