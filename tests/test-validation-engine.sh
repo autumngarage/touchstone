@@ -881,6 +881,8 @@ assert_contains "$TMP_DIR/adopt-node-plan.json" '"path":".touchstone.toml","acti
 assert_contains "$TMP_DIR/adopt-node-plan.json" '"status":"separate-operation","required":true,"mutated":false'
 assert_contains "$TMP_DIR/adopt-node-plan.json" 'new file mode 100644'
 assert_contains "$TMP_DIR/adopt-node-plan.json" '\f'
+assert_not_contains "$TMP_DIR/adopt-node-plan.json" 'old mode 100755'
+assert_not_contains "$TMP_DIR/adopt-node-plan.json" 'new mode 100644'
 [ ! -e "$ADOPT_NODE/.touchstone.toml" ] || fail "dry-run mutated the repository"
 run_adoption "$TMP_DIR/adopt-node-plan-repeat.json" adopt --dry-run --json --project "$ADOPT_NODE"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "repeated Node adoption dry-run failed"
@@ -990,6 +992,8 @@ echo "==> adoption derives explicit monorepo targets"
 ADOPT_MONOREPO="$TMP_DIR/adopt-monorepo"
 init_adoption_repo "$ADOPT_MONOREPO"
 mkdir -p "$ADOPT_MONOREPO/apps/api" "$ADOPT_MONOREPO/packages/web"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0"}' >"$ADOPT_MONOREPO/package.json"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_MONOREPO/pnpm-lock.yaml"
 printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_MONOREPO/apps/api/package.json"
 printf '%s\n' '{"scripts":{"build":"node build.js"}}' >"$ADOPT_MONOREPO/packages/web/package.json"
 commit_adoption_repo "$ADOPT_MONOREPO" "fixture"
@@ -1000,6 +1004,8 @@ assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'path = "apps/api"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'path = "packages/web"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "test-apps-api"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "build-packages-web"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run test"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run build"'
 
 ADOPT_LARGE="$TMP_DIR/adopt-large"
 init_adoption_repo "$ADOPT_LARGE"

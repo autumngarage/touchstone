@@ -461,7 +461,7 @@ json_root_string_value() {
 }
 
 node_package_manager() {
-  local directory="$1" count=0 manager="" declared="" declaration_status
+  local directory="$1" inherited="${2:-}" fallback="${3-npm}" count=0 manager="" declared="" declaration_status
   if [ -f "$directory/package.json" ]; then
     if declared="$(json_root_string_value "$directory/package.json" packageManager)"; then
       declaration_status=0
@@ -501,7 +501,10 @@ node_package_manager() {
     contract_refusal "packageManager '$declared' conflicts with the '$manager' lockfile"
   fi
   if [ -n "$declared" ]; then manager="$declared"; fi
-  printf '%s\n' "${manager:-npm}"
+  if [ -n "$inherited" ] && [ -n "$manager" ] && [ "$inherited" != "$manager" ]; then
+    contract_refusal "Node package manager '$manager' conflicts with workspace package manager '$inherited'"
+  fi
+  printf '%s\n' "${manager:-${inherited:-$fallback}}"
 }
 
 node_command() {
@@ -515,9 +518,9 @@ node_command() {
 }
 
 tasks_for_node() {
-  local directory="$1" target="$2" suffix="$3" manager task found=false
+  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" manager task found=false
   [ -f "$directory/package.json" ] || contract_refusal "Node target '$target' has no package.json"
-  manager="$(node_package_manager "$directory")"
+  manager="$(node_package_manager "$directory" "$inherited")"
   for task in validate verify; do
     if node_has_script "$directory/package.json" "$task"; then
       record_task "$task$suffix" "$target" "$(node_command "$manager" "$task")"
@@ -553,9 +556,9 @@ tasks_for_python() {
 }
 
 tasks_for_profile() {
-  local directory="$1" target="$2" profile="$3" suffix="$4"
+  local directory="$1" target="$2" profile="$3" suffix="$4" inherited_node_manager="${5:-}"
   case "$profile" in
-    node) tasks_for_node "$directory" "$target" "$suffix" ;;
+    node) tasks_for_node "$directory" "$target" "$suffix" "$inherited_node_manager" ;;
     python) tasks_for_python "$directory" "$target" "$suffix" ;;
     swift) record_task "test$suffix" "$target" "swift test" ;;
     rust) record_task "test$suffix" "$target" "cargo test" ;;
@@ -619,7 +622,8 @@ target_name_for_path() {
 }
 
 compile_detected() {
-  local base directory relative profile target suffix found_targets=false
+  local base directory relative profile target suffix found_targets=false workspace_node_manager
+  workspace_node_manager="$(node_package_manager "$PROJECT_ROOT" "" "")"
   for base in apps packages services; do
     [ -d "$PROJECT_ROOT/$base" ] || continue
     for directory in "$PROJECT_ROOT/$base"/*; do
@@ -630,7 +634,7 @@ compile_detected() {
       target="$(target_name_for_path "$base-$(basename "$relative")")"
       suffix="-$target"
       record_target "$target" "$relative" "$profile"
-      tasks_for_profile "$directory" "$target" "$profile" "$suffix"
+      tasks_for_profile "$directory" "$target" "$profile" "$suffix" "$workspace_node_manager"
       found_targets=true
     done
   done
@@ -697,13 +701,19 @@ plan_file() {
     || operational_failure "could not stage the plan for $relative"
   if [ -e "$destination" ]; then
     [ -f "$destination" ] || contract_refusal "managed path is not a regular file: $relative"
-    cp "$destination" "$old_file" || operational_failure "could not read $relative"
+    cp -p "$destination" "$old_file" || operational_failure "could not read $relative"
     action=update
   else
     : >"$old_file"
     action=create
   fi
-  cp "$proposed" "$new_file" || operational_failure "could not stage proposed content for $relative"
+  if [ -e "$destination" ]; then
+    if ! cp -p "$destination" "$new_file" || ! cat "$proposed" >"$new_file"; then
+      operational_failure "could not stage proposed content for $relative"
+    fi
+  else
+    cp -p "$proposed" "$new_file" || operational_failure "could not stage proposed content for $relative"
+  fi
   if cmp -s "$old_file" "$new_file"; then return 0; fi
   printf '%s\t%s\t%s\n' "$action" "$relative" "$ownership" >>"$CHANGES_FILE"
 }
