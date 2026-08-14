@@ -1457,6 +1457,18 @@ run_adoption "$TMP_DIR/adopt-tool-only-python.out" adopt --dry-run --project "$A
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "tool-only Python project did not refuse"
 assert_contains "$TMP_DIR/adopt-tool-only-python.out.err" "no installable project or dependency declaration"
 
+ADOPT_POETRY_OPTIONAL="$TMP_DIR/adopt-poetry-optional"
+init_adoption_repo "$ADOPT_POETRY_OPTIONAL"
+printf '%s\n' '[tool.poetry]' 'name = "fixture"' 'version = "0.1.0"' \
+  '[tool.poetry.dependencies]' 'python = ">=3.11"' \
+  'pytest = { version = "8", optional = true }' '[tool.pytest.ini_options]' \
+  >"$ADOPT_POETRY_OPTIONAL/pyproject.toml"
+commit_adoption_repo "$ADOPT_POETRY_OPTIONAL" "fixture"
+git -C "$ADOPT_POETRY_OPTIONAL" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-poetry-optional.out" adopt --dry-run --project "$ADOPT_POETRY_OPTIONAL"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "optional Poetry checker was treated as installed"
+assert_contains "$TMP_DIR/adopt-poetry-optional.out.err" 'has pytest evidence without an installed pytest dependency'
+
 ADOPT_UV_DEV="$TMP_DIR/adopt-uv-dev"
 init_adoption_repo "$ADOPT_UV_DEV"
 mkdir -p "$ADOPT_UV_DEV/tests"
@@ -1611,6 +1623,19 @@ git -C "$ADOPT_PNPM_QUOTED_KEY" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-pnpm-quoted-key.out" adopt --dry-run --project "$ADOPT_PNPM_QUOTED_KEY"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "quoted pnpm workspace key was silently ignored"
 assert_contains "$TMP_DIR/adopt-pnpm-quoted-key.out.err" 'malformed, duplicate, or unsupported packages declarations'
+
+ADOPT_PNPM_MALFORMED_TAIL="$TMP_DIR/adopt-pnpm-malformed-tail"
+init_adoption_repo "$ADOPT_PNPM_MALFORMED_TAIL"
+mkdir -p "$ADOPT_PNPM_MALFORMED_TAIL/apps/api"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0"}' >"$ADOPT_PNPM_MALFORMED_TAIL/package.json"
+printf '%s\n' 'packages: ["apps/*"]' 'catalog: [' >"$ADOPT_PNPM_MALFORMED_TAIL/pnpm-workspace.yaml"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_MALFORMED_TAIL/pnpm-lock.yaml"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_PNPM_MALFORMED_TAIL/apps/api/package.json"
+commit_adoption_repo "$ADOPT_PNPM_MALFORMED_TAIL" "fixture"
+git -C "$ADOPT_PNPM_MALFORMED_TAIL" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-malformed-tail.out" adopt --dry-run --project "$ADOPT_PNPM_MALFORMED_TAIL"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed trailing pnpm YAML was ignored"
+assert_contains "$TMP_DIR/adopt-pnpm-malformed-tail.out.err" 'malformed, duplicate, or unsupported packages declarations'
 
 ADOPT_PNPM_NON_STRING="$TMP_DIR/adopt-pnpm-non-string"
 init_adoption_repo "$ADOPT_PNPM_NON_STRING"

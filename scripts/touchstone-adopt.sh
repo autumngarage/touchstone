@@ -1034,7 +1034,20 @@ pnpm_workspace_patterns() {
         quoted = 1
       }
       if (value != "") emit_scalar(value, quoted)
+      next
     }
+    in_packages {
+      value = $0
+      sub(/[[:space:]]*#.*/, "", value)
+      if (trim(value) != "") exit 2
+      next
+    }
+    {
+      value = $0
+      sub(/[[:space:]]*#.*/, "", value)
+      if (trim(value) != "") exit 2
+    }
+    END { if (packages_keys != 1) exit 2 }
   ' "$workspace"
 }
 
@@ -1606,7 +1619,8 @@ python_project_has_dependency() {
       } else if (section == "tool.poetry.dependencies") {
         key = trim(substr(line, 1, index(line, "=") - 1))
         gsub(/[\"\047]/, "", key)
-        if (tolower(key) == wanted) found = 1
+        value = tolower(substr(line, index(line, "=") + 1))
+        if (tolower(key) == wanted && value !~ /(^|[, {])optional[[:space:]]*=[[:space:]]*true([, }]|$)/) found = 1
       } else if (include_dev == "true" && section == "dependency-groups") {
         if (!in_dev && line ~ /^[[:space:]]*dev[[:space:]]*=/) in_dev = 1
         if (in_dev && contains_dependency(line)) found = 1
