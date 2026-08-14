@@ -120,7 +120,7 @@ load_tracker() {
         ;;
       key_prefix)
         parse_string "$value" || fail_input malformed-config "Set [tracker].key_prefix to a single-line quoted string."
-        KEY_PREFIX="$(printf '%s' "$PARSED" | tr '[:lower:]' '[:upper:]')"
+        KEY_PREFIX="$PARSED"
         ;;
       *) fail_input unknown-tracker-key "Remove unsupported [tracker] key '$key'." ;;
     esac
