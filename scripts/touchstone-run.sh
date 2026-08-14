@@ -389,7 +389,7 @@ clear_git_hook_env() {
 declared_command_head() {
   local input="$1" character quote="" token=""
   local escaped=false assignment_candidate=true assignment_equals=false
-  local token_quoted=false
+  local token_quoted=false time_option_allowed=false
   local index=0 length="${#1}"
   COMMAND_PATH_SET=false
   COMMAND_PATH_OVERRIDE=""
@@ -469,6 +469,14 @@ declared_command_head() {
     if [ "$token_quoted" = false ] && [ "$token" = '!' ]; then
       continue
     fi
+    if [ "$token_quoted" = false ] && [ "$token" = time ]; then
+      time_option_allowed=true
+      continue
+    fi
+    if [ "$time_option_allowed" = true ] && [ "$token_quoted" = false ] && [ "$token" = -p ]; then
+      time_option_allowed=false
+      continue
+    fi
     if [ "$assignment_candidate" = true ] && [ "$assignment_equals" = true ]; then
       case "$token" in
         PATH=*)
@@ -489,7 +497,7 @@ declared_command_unrunnable_code() {
   local command="$1" directory="$2" head
   local executable="" first_line shebang interpreter effective_path="$PATH"
   local env_command word env_index env_option_argument
-  local env_directory env_effective_path default_exec_path
+  local env_directory env_effective_path env_utility_path default_exec_path
   local -a shebang_words
   declared_command_head "$command" || return 0
   head="$COMMAND_HEAD"
@@ -537,6 +545,7 @@ declared_command_unrunnable_code() {
           env_command=""
           env_directory="$directory"
           env_effective_path="$effective_path"
+          env_utility_path=""
           if [ -x /usr/bin/getconf ]; then
             default_exec_path="$(/usr/bin/getconf PATH 2>/dev/null || true)"
           elif [ -x /bin/getconf ]; then
@@ -549,10 +558,10 @@ declared_command_unrunnable_code() {
           while [ "$env_index" -lt "${#shebang_words[@]}" ]; do
             word="${shebang_words[$env_index]}"
             case "$word" in
-              -S | --split-string | -0 | --null | --debug)
+              -S | --split-string | -0 | --null | -v | --debug)
                 env_index=$((env_index + 1))
                 ;;
-              -i | --ignore-environment)
+              - | -i | --ignore-environment)
                 env_effective_path="$default_exec_path"
                 env_index=$((env_index + 1))
                 ;;
@@ -585,6 +594,18 @@ declared_command_unrunnable_code() {
                 [ -d "$env_directory" ] || return 0
                 env_index=$((env_index + 1))
                 ;;
+              -P)
+                [ "$((env_index + 1))" -lt "${#shebang_words[@]}" ] || return 0
+                env_utility_path="${shebang_words[$((env_index + 1))]}"
+                env_index=$((env_index + 2))
+                ;;
+              -a | --argv0)
+                [ "$((env_index + 1))" -lt "${#shebang_words[@]}" ] || return 0
+                env_index=$((env_index + 2))
+                ;;
+              --argv0=* | --default-signal | --default-signal=* | --ignore-signal | --ignore-signal=* | --block-signal | --block-signal=* | --list-signal-handling)
+                env_index=$((env_index + 1))
+                ;;
               PATH=*)
                 env_effective_path="${word#PATH=}"
                 env_index=$((env_index + 1))
@@ -604,6 +625,7 @@ declared_command_unrunnable_code() {
                 ;;
             esac
           done
+          if [ -n "$env_utility_path" ]; then env_effective_path="$env_utility_path"; fi
           if [ -z "$env_command" ] \
             || ! (cd "$env_directory" && PATH="$env_effective_path" type -P -- "$env_command" >/dev/null 2>&1); then
             printf 'missing-interpreter\n'

@@ -163,6 +163,21 @@ for env_header in '-S -i bash' '-S -u PATH bash' '-S PATH=/bin bash'; do
   [ "$(cat "$ENV_CHANGED/marker")" = env-changed ] || fail "env $env_case script did not run"
 done
 
+for env_header in '-S -v missing-touchstone-command' '-S - missing-touchstone-command'; do
+  case "$env_header" in
+    *'-v'*) env_case=debug ;;
+    *) env_case=bare-clean ;;
+  esac
+  ENV_MISSING="$TMP_DIR/env-missing-$env_case"
+  write_contract "$ENV_MISSING" "./env-missing-script"
+  printf '#!/usr/bin/env %s\nbody must not run\n' "$env_header" >"$ENV_MISSING/env-missing-script"
+  chmod +x "$ENV_MISSING/env-missing-script"
+  run_capture "$ENV_MISSING" "$TMP_DIR/env-missing-$env_case.out" --json
+  [ "$RUN_STATUS" -eq 127 ] || fail "env $env_case missing interpreter did not retain 127"
+  assert_contains "$TMP_DIR/env-missing-$env_case.out" '"ran":0'
+  assert_contains "$TMP_DIR/env-missing-$env_case.out" '"reason":"command-not-started"'
+done
+
 ENV_BUILTIN="$TMP_DIR/env-builtin"
 mkdir -p "$ENV_BUILTIN/empty"
 write_contract "$ENV_BUILTIN" "PATH=$ENV_BUILTIN/empty ./env-builtin-script"
@@ -193,6 +208,13 @@ run_capture "$NEGATED_COMMAND" "$TMP_DIR/negated-command.out" --json
 [ "$RUN_STATUS" -eq 127 ] || fail "negation laundered an unavailable command"
 assert_contains "$TMP_DIR/negated-command.out" '"ran":0'
 assert_contains "$TMP_DIR/negated-command.out" '"reason":"command-not-started"'
+
+TIMED_COMMAND="$TMP_DIR/timed-command"
+write_contract "$TIMED_COMMAND" "time -p missing-touchstone-command || true"
+run_capture "$TIMED_COMMAND" "$TMP_DIR/timed-command.out" --json
+[ "$RUN_STATUS" -eq 127 ] || fail "time prefix laundered an unavailable command"
+assert_contains "$TMP_DIR/timed-command.out" '"ran":0'
+assert_contains "$TMP_DIR/timed-command.out" '"reason":"command-not-started"'
 
 QUOTED_ASSIGNMENT="$TMP_DIR/quoted-assignment"
 write_contract "$QUOTED_ASSIGNMENT" "LABEL=\\\"two words\\\" missing-touchstone-command"
