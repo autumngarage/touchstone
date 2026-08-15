@@ -174,9 +174,12 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "rootCommentId: .c
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Replies are deliberately omitted"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Use the configured tracker"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "fail closed on"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Use the same configured tracker to release ownership"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Verify the claim no longer"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "there is no universal bypass token"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "scripts/claim-issue.sh"
 assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "scripts/issue-claim-check.sh"
+assert_not_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "gh issue edit <n> --remove-assignee"
 
 echo "==> PR babysitting preserves approved scope"
 # PR #829 showed how individually reasonable findings can turn an exact-head

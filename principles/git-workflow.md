@@ -404,7 +404,10 @@ Then start the agent. Not after.
 2. **No in-progress signal.** A reader scanning open issues can't tell which are actively being worked vs which are dormant. Triage decays.
 3. **Lost lineage.** The dispatch comment is the only record on the issue thread tying the work back to a specific agent, branch, and worktree. That breadcrumb matters months later.
 
-**When to unassign.** If you decide not to ship, unassign with `gh issue edit <n> --remove-assignee @me` and post a "stood down — <reason>" comment. Stale assignments are worse than no assignment at all.
+**When to stand down.** Use the same configured tracker to release ownership
+and publish a durable "stood down — <reason>" record. Verify the claim no longer
+names you. If that transition is unavailable or cannot be verified, fail closed
+and leave a visible recovery note; do not silently abandon stale ownership.
 
 **When this rule does NOT apply.**
 
