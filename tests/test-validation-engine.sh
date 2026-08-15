@@ -66,6 +66,10 @@ if [ -f .touchstone-go-selected-embed ]; then
   printf '%s/fixture.go\n%s/assets/secret.txt\n' "$PWD" "$PWD"
   exit 0
 fi
+if [ -f .touchstone-go-selected-c-source ]; then
+  printf '%s/fixture.go\n%s/answer.c\n' "$PWD" "$PWD"
+  exit 0
+fi
 find "$PWD" -type f -name '*.go' -print | awk 'NR == 1 { print; exit }'
 EOF
 chmod +x "$ADOPTION_BIN/go"
@@ -1367,6 +1371,24 @@ run_adoption "$TMP_DIR/adopt-rust-ignored-source.out" adopt --dry-run \
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "Rust target with only ignored source was accepted"
 assert_contains "$TMP_DIR/adopt-rust-ignored-source.out.err" 'has no tracked default src/lib.rs or src/main.rs'
 
+ADOPT_RUST_IGNORED_BIN="$TMP_DIR/adopt-rust-ignored-bin"
+init_adoption_repo "$ADOPT_RUST_IGNORED_BIN"
+mkdir -p "$ADOPT_RUST_IGNORED_BIN/src"
+printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+  '[[bin]]' 'name = "tool"' >"$ADOPT_RUST_IGNORED_BIN/Cargo.toml"
+printf '%s\n' 'version = 4' '' '[[package]]' 'name = "fixture"' \
+  'version = "0.1.0"' >"$ADOPT_RUST_IGNORED_BIN/Cargo.lock"
+printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_RUST_IGNORED_BIN/src/lib.rs"
+printf '%s\n' 'src/bin/' >"$ADOPT_RUST_IGNORED_BIN/.gitignore"
+commit_adoption_repo "$ADOPT_RUST_IGNORED_BIN" "fixture"
+mkdir -p "$ADOPT_RUST_IGNORED_BIN/src/bin"
+printf '%s\n' 'fn main() {}' >"$ADOPT_RUST_IGNORED_BIN/src/bin/tool.rs"
+git -C "$ADOPT_RUST_IGNORED_BIN" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-ignored-bin.out" adopt --dry-run \
+  --project "$ADOPT_RUST_IGNORED_BIN"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Rust package with an ignored bin target was accepted"
+assert_contains "$TMP_DIR/adopt-rust-ignored-bin.out.err" 'declares additional targets'
+
 ADOPT_GO_IGNORED_SOURCE="$TMP_DIR/adopt-go-ignored-source"
 init_adoption_repo "$ADOPT_GO_IGNORED_SOURCE"
 printf '%s\n' '*.go' >"$ADOPT_GO_IGNORED_SOURCE/.gitignore"
@@ -1449,6 +1471,22 @@ run_adoption "$TMP_DIR/adopt-go-embed.out" adopt --dry-run --project "$ADOPT_GO_
 assert_contains "$TMP_DIR/adopt-go-embed.out.err" \
   'Go target has no package selected by ./... under offline local-toolchain resolution'
 
+ADOPT_GO_C_SOURCE="$TMP_DIR/adopt-go-c-source"
+init_adoption_repo "$ADOPT_GO_C_SOURCE"
+printf '%s\n' 'module example.invalid/fixture' 'go 1.24' >"$ADOPT_GO_C_SOURCE/go.mod"
+printf '%s\n' 'package fixture' '/* void answer(void); */' 'import "C"' \
+  >"$ADOPT_GO_C_SOURCE/fixture.go"
+printf '%s\n' 'answer.c' >"$ADOPT_GO_C_SOURCE/.gitignore"
+printf '%s\n' 'selected' >"$ADOPT_GO_C_SOURCE/.touchstone-go-selected-c-source"
+commit_adoption_repo "$ADOPT_GO_C_SOURCE" "fixture"
+printf '%s\n' 'void answer(void) {}' >"$ADOPT_GO_C_SOURCE/answer.c"
+git -C "$ADOPT_GO_C_SOURCE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-c-source.out" adopt --dry-run \
+  --project "$ADOPT_GO_C_SOURCE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Go package with an ignored C input was accepted"
+assert_contains "$TMP_DIR/adopt-go-c-source.out.err" \
+  'Go target has no package selected by ./... under offline local-toolchain resolution'
+
 ADOPT_RUST_LOCAL="$TMP_DIR/adopt-rust-local"
 init_adoption_repo "$ADOPT_RUST_LOCAL"
 printf '%s\n' '[package]' 'name = "fixture"' '[dependencies]' \
@@ -1497,6 +1535,23 @@ for cargo_boundary in dotted-path dotted-build external-workspace registry-depen
   [ "$ADOPTION_STATUS" -eq 4 ] || fail "$cargo_boundary Cargo boundary was accepted"
   assert_contains "$TMP_DIR/adopt-cargo-$cargo_boundary.out.err" "$expected_cargo_boundary"
 done
+
+ADOPT_CARGO_DOTTED_WORKSPACE="$TMP_DIR/adopt-cargo-dotted-workspace"
+init_adoption_repo "$ADOPT_CARGO_DOTTED_WORKSPACE"
+printf '%s\n' 'workspace.members = ["member"]' >"$ADOPT_CARGO_DOTTED_WORKSPACE/Cargo.toml"
+printf '%s\n' 'version = 4' >"$ADOPT_CARGO_DOTTED_WORKSPACE/Cargo.lock"
+printf '%s\n' 'member/' >"$ADOPT_CARGO_DOTTED_WORKSPACE/.gitignore"
+commit_adoption_repo "$ADOPT_CARGO_DOTTED_WORKSPACE" "fixture"
+mkdir -p "$ADOPT_CARGO_DOTTED_WORKSPACE/member/src"
+printf '%s\n' '[package]' 'name = "member"' 'version = "0.1.0"' \
+  >"$ADOPT_CARGO_DOTTED_WORKSPACE/member/Cargo.toml"
+printf '%s\n' 'pub fn member() {}' >"$ADOPT_CARGO_DOTTED_WORKSPACE/member/src/lib.rs"
+git -C "$ADOPT_CARGO_DOTTED_WORKSPACE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-cargo-dotted-workspace.out" adopt --dry-run \
+  --project "$ADOPT_CARGO_DOTTED_WORKSPACE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "dotted Cargo workspace declaration was accepted"
+assert_contains "$TMP_DIR/adopt-cargo-dotted-workspace.out.err" \
+  'malformed or repeated workspace members declaration'
 
 ADOPT_GO_LOCAL="$TMP_DIR/adopt-go-local"
 init_adoption_repo "$ADOPT_GO_LOCAL"
@@ -2084,6 +2139,21 @@ run_adoption "$TMP_DIR/adopt-spaced-build-hook.out" adopt --dry-run \
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "spaced build-system hook header was accepted"
 assert_contains "$TMP_DIR/adopt-spaced-build-hook.out.err" 'project build hook'
 
+ADOPT_DOTTED_BUILD_HOOK="$TMP_DIR/adopt-dotted-build-hook"
+init_adoption_repo "$ADOPT_DOTTED_BUILD_HOOK"
+printf '%s\n' 'build-system.requires = ["setuptools"]' \
+  'build-system.build-backend = "backend"' 'build-system.backend-path = ["."]' \
+  '[project]' 'name = "fixture"' 'version = "0.1.0"' 'dependencies = ["ruff"]' \
+  >"$ADOPT_DOTTED_BUILD_HOOK/pyproject.toml"
+printf '%s\n' 'def build_wheel(*args, **kwargs):' '    raise RuntimeError("ran")' \
+  >"$ADOPT_DOTTED_BUILD_HOOK/backend.py"
+commit_adoption_repo "$ADOPT_DOTTED_BUILD_HOOK" "fixture"
+git -C "$ADOPT_DOTTED_BUILD_HOOK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-dotted-build-hook.out" adopt --dry-run \
+  --project "$ADOPT_DOTTED_BUILD_HOOK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "dotted build-system hook was accepted"
+assert_contains "$TMP_DIR/adopt-dotted-build-hook.out.err" 'project build hook'
+
 ADOPT_EXTRAS_BEFORE_URL="$TMP_DIR/adopt-extras-before-url"
 init_adoption_repo "$ADOPT_EXTRAS_BEFORE_URL"
 printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
@@ -2108,6 +2178,18 @@ run_adoption "$TMP_DIR/adopt-invalid-requirement.out" adopt --dry-run \
   --project "$ADOPT_INVALID_REQUIREMENT"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "invalid PEP 621 requirement produced a plan"
 assert_contains "$TMP_DIR/adopt-invalid-requirement.out.err" \
+  'outside the supported named-requirement subset'
+
+ADOPT_INVALID_SPECIFIER="$TMP_DIR/adopt-invalid-specifier"
+init_adoption_repo "$ADOPT_INVALID_SPECIFIER"
+printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+  'dependencies = ["ruff>=!"]' >"$ADOPT_INVALID_SPECIFIER/pyproject.toml"
+commit_adoption_repo "$ADOPT_INVALID_SPECIFIER" "fixture"
+git -C "$ADOPT_INVALID_SPECIFIER" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-invalid-specifier.out" adopt --dry-run \
+  --project "$ADOPT_INVALID_SPECIFIER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "invalid PEP 440 specifier produced a plan"
+assert_contains "$TMP_DIR/adopt-invalid-specifier.out.err" \
   'outside the supported named-requirement subset'
 
 ADOPT_UV_SOURCE="$TMP_DIR/adopt-uv-source"
@@ -2850,7 +2932,9 @@ for yarn_case in unlocked berry classic; do
     printf '%s\n' '{"name":"fixture","packageManager":"yarn@4.14.1","scripts":{"test":"node --test"}}' \
       >"$ADOPT_YARN/package.json"
     if [ "$yarn_case" = berry ]; then
-      printf '%s\n' '__metadata:' '  version: 8' '  cacheKey: 10c0' \
+      printf '%s\n' '# This file is generated by running "yarn install" inside your project.' \
+        '# Manual changes might be lost - proceed with caution!' '' \
+        '__metadata:' '  version: 8' '  cacheKey: 10c0' \
         '"fixture@workspace:.":' '  version: 0.0.0-use.local' \
         '  resolution: "fixture@workspace:."' '  languageName: unknown' \
         '  linkType: soft' >"$ADOPT_YARN/yarn.lock"
@@ -2871,6 +2955,34 @@ for yarn_case in unlocked berry classic; do
   else
     assert_not_contains "$ADOPT_YARN/.touchstone.toml" 'setup = '
   fi
+done
+
+for yarn_identity_case in key-resolution manifest-lock; do
+  ADOPT_YARN_IDENTITY="$TMP_DIR/adopt-yarn-$yarn_identity_case"
+  init_adoption_repo "$ADOPT_YARN_IDENTITY"
+  printf '%s\n' '{"name":"fixture","packageManager":"yarn@4.14.1","scripts":{"test":"node --test"}}' \
+    >"$ADOPT_YARN_IDENTITY/package.json"
+  if [ "$yarn_identity_case" = key-resolution ]; then
+    yarn_workspace_name=fixture
+    yarn_resolution_name=other
+  else
+    yarn_workspace_name=other
+    yarn_resolution_name=other
+  fi
+  printf '%s\n' '# This file is generated by running "yarn install" inside your project.' \
+    '# Manual changes might be lost - proceed with caution!' '' \
+    '__metadata:' '  version: 8' '  cacheKey: 10c0' \
+    "\"$yarn_workspace_name@workspace:.\":" '  version: 0.0.0-use.local' \
+    "  resolution: \"$yarn_resolution_name@workspace:.\"" \
+    '  languageName: unknown' '  linkType: soft' >"$ADOPT_YARN_IDENTITY/yarn.lock"
+  commit_adoption_repo "$ADOPT_YARN_IDENTITY" "fixture"
+  git -C "$ADOPT_YARN_IDENTITY" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-yarn-$yarn_identity_case.out" adopt --dry-run \
+    --project "$ADOPT_YARN_IDENTITY"
+  [ "$ADOPTION_STATUS" -eq 4 ] \
+    || fail "$yarn_identity_case Yarn workspace identity mismatch was accepted"
+  assert_contains "$TMP_DIR/adopt-yarn-$yarn_identity_case.out.err" \
+    'Yarn lockfile outside the dependency-free portable subset'
 done
 
 ADOPT_YARN_BAD_LOCK="$TMP_DIR/adopt-yarn-bad-lock"
