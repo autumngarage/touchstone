@@ -1,20 +1,15 @@
 #!/usr/bin/env bash
 #
-# scripts/touchstone-tracker.sh — tracker-neutral claim/reconcile adapter.
+# scripts/touchstone-tracker.sh — tracker-neutral claim adapter.
 #
 # Usage:
 #   bash scripts/touchstone-tracker.sh claim <issue> [--project DIR] [--json]
-#   bash scripts/touchstone-tracker.sh reconcile <issue> --disposition fixed|partial|stale \
-#     --body-file FILE [--note-file FILE] [--project DIR] [--json]
 
 set -euo pipefail
 
 OUTPUT_SCHEMA="touchstone.tracker/v1"
 JSON_MODE=false
 PROJECT_ARG=""
-BODY_FILE=""
-NOTE_FILE=""
-DISPOSITION=""
 OPERATION="${1:-}"
 REFERENCE="${2:-}"
 TRACKER=""
@@ -64,10 +59,6 @@ trim() {
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   printf '%s' "$value"
-}
-
-file_has_content() {
-  [ -f "$1" ] && grep -q '[^[:space:]]' "$1"
 }
 
 parse_string() {
@@ -171,91 +162,6 @@ normalize_reference() {
   esac
 }
 
-resolve_repo() {
-  local resolved remote
-  resolved="${GH_REPO:-}"
-  if [ -z "$resolved" ]; then
-    remote="$(git -C "$PROJECT_ROOT" remote get-url origin 2>/dev/null || true)"
-    case "$remote" in
-      http://* | https://*)
-        resolved="${remote#*://}"
-        resolved="${resolved#*/}"
-        resolved="${resolved%.git}"
-        ;;
-      git@*:*)
-        resolved="${remote#*:}"
-        resolved="${resolved%.git}"
-        ;;
-    esac
-  fi
-  if [ -z "$resolved" ] && command -v gh >/dev/null 2>&1; then
-    resolved="$(cd "$PROJECT_ROOT" && gh repo view --json nameWithOwner --jq '.nameWithOwner // empty' 2>/dev/null || true)"
-  fi
-  resolved="${resolved%.git}"
-  case "$resolved" in
-    */*/*) resolved="${resolved#*/}" ;;
-  esac
-  case "$resolved" in */*) CURRENT_REPO="$(printf '%s' "$resolved" | tr '[:upper:]' '[:lower:]')" ;; *) CURRENT_REPO="" ;; esac
-}
-
-absolute_input_file() {
-  local path="$1" directory
-  case "$path" in
-    /*) printf '%s\n' "$path" ;;
-    *)
-      directory="$(cd "$(dirname "$path")" 2>/dev/null && pwd -P)" || {
-        printf '%s\n' "$path"
-        return 0
-      }
-      printf '%s/%s\n' "$directory" "$(basename "$path")"
-      ;;
-  esac
-}
-
-same_repo_github_closers() {
-  local text="$1" match normalized target matches
-  matches="$(printf '%s\n' "$text" | grep -Eoi '\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved|closes-issue):?[[:space:]]*([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+\b' || true)"
-  [ -n "$matches" ] || return 0
-  while IFS= read -r match; do
-    normalized="$(printf '%s' "$match" | tr '[:upper:]' '[:lower:]')"
-    target="$(printf '%s' "$normalized" | sed -nE 's,^(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved|closes-issue):?[[:space:]]*([[:alnum:]_.-]+/[[:alnum:]_.-]+)#[0-9]+$,\2,p')"
-    if [ -z "$target" ] || { [ -n "$CURRENT_REPO" ] && [ "$target" = "$CURRENT_REPO" ]; }; then
-      printf '%s\n' "$match"
-    fi
-  done <<<"$matches"
-}
-
-validate_body() {
-  local text wrong expected refs_expected closing_pattern
-  [ -f "$BODY_FILE" ] || fail_input missing-body "Provide an existing --body-file."
-  text="$(<"$BODY_FILE")"
-  resolve_repo
-  if [ "$TRACKER" = linear ]; then
-    wrong="$(same_repo_github_closers "$text")"
-    [ -z "$wrong" ] || fail_input wrong-tracker-closing-syntax "Replace '$wrong' with 'Fixes $REFERENCE'; qualify cross-repository GitHub closes as owner/repo#N."
-    expected="Fixes $REFERENCE"
-  else
-    expected="Closes $REFERENCE"
-  fi
-  if [ "$DISPOSITION" = fixed ] && ! grep -Eqi "(^|[[:space:]])${expected// /[[:space:]]+}([[:space:]]|[.,;:!?)]|$)" <<<"$text"; then
-    fail_input missing-closing-reference "Add '$expected' to the PR body."
-  fi
-  if [ "$DISPOSITION" != fixed ]; then
-    refs_expected="Refs $REFERENCE"
-    if ! grep -Eqi "(^|[[:space:]])${refs_expected// /[[:space:]]+}([[:space:]]|[.,;:!?)]|$)" <<<"$text"; then
-      fail_input missing-reconciliation-reference "Add '$refs_expected' to the PR body; $DISPOSITION work must not auto-close on merge."
-    fi
-    if [ "$TRACKER" = github ]; then
-      closing_pattern="\\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved|closes-issue):?[[:space:]]*#${ISSUE_ID}\\b"
-    else
-      closing_pattern="\\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?[[:space:]]*${REFERENCE}\\b"
-    fi
-    if grep -Eqi "$closing_pattern" <<<"$text"; then
-      fail_input closing-nonfixed-issue "Replace the closing reference for $REFERENCE with '$refs_expected'."
-    fi
-  fi
-}
-
 claim_github() {
   local output rc partial
   if ! command -v gh >/dev/null 2>&1; then
@@ -280,87 +186,7 @@ claim_linear() {
   exit 3
 }
 
-reconcile_github() {
-  local note_url verified_url state verification_status
-  if [ "$DISPOSITION" = fixed ]; then
-    emit unverifiable closing-reference-pending "The PR body contains the closing reference for $REFERENCE; verify issue state after a default-branch merge."
-    exit 3
-  fi
-  file_has_content "$NOTE_FILE" || fail_input missing-note "Provide a non-empty --note-file for a $DISPOSITION reconciliation."
-  command -v gh >/dev/null 2>&1 || {
-    emit failed transport-unavailable "Install and authenticate the gh CLI."
-    exit 1
-  }
-  if [ -z "$CURRENT_REPO" ]; then
-    emit failed github-repository-unresolved "Resolve the repository through GH_REPO, the origin remote, or gh before retrying."
-    exit 1
-  fi
-  if ! note_url="$(cd "$PROJECT_ROOT" && gh issue comment "$ISSUE_ID" --body-file "$NOTE_FILE" 2>/dev/null)" || [ -z "$note_url" ]; then
-    emit failed github-comment-failed "No reconciliation comment was verified."
-    exit 1
-  fi
-  set +e
-  verified_url="$(cd "$PROJECT_ROOT" && gh api --paginate "repos/$CURRENT_REPO/issues/$ISSUE_ID/comments" \
-    --jq ".[] | select(.html_url == \"$note_url\") | .html_url" 2>/dev/null)"
-  verification_status=$?
-  set -e
-  if [ "$verification_status" -ne 0 ]; then
-    emit failed github-comment-verification-failed "The mutation returned $note_url, but reading the paginated issue timeline failed." true
-    exit 1
-  fi
-  if ! grep -Fxq "$note_url" <<<"$verified_url"; then
-    emit failed github-comment-unverified "The mutation returned $note_url, but the paginated issue timeline did not verify it." true
-    exit 1
-  fi
-  if [ "$DISPOSITION" = partial ]; then
-    set +e
-    state="$(cd "$PROJECT_ROOT" && gh issue view "$ISSUE_ID" --json state --jq '.state' 2>/dev/null)"
-    verification_status=$?
-    set -e
-    if [ "$verification_status" -ne 0 ]; then
-      emit failed github-open-verification-failed "The comment was created at $note_url, but reading $REFERENCE final state failed." true
-      exit 1
-    fi
-    if [ "$state" != OPEN ]; then
-      emit failed github-open-unverified "The comment was created at $note_url, but $REFERENCE was not verified open." true
-      exit 1
-    fi
-  elif [ "$DISPOSITION" = stale ]; then
-    if ! (cd "$PROJECT_ROOT" && gh issue close "$ISSUE_ID" >/dev/null 2>&1); then
-      emit failed github-close-failed "The comment was created at $note_url, but closing $REFERENCE failed; retry only the close after inspecting the issue." true
-      exit 1
-    fi
-    set +e
-    state="$(cd "$PROJECT_ROOT" && gh issue view "$ISSUE_ID" --json state --jq '.state' 2>/dev/null)"
-    verification_status=$?
-    set -e
-    if [ "$verification_status" -ne 0 ]; then
-      emit failed github-close-verification-failed "The comment and close mutations completed, but reading $REFERENCE final state failed." true
-      exit 1
-    fi
-    if [ "$state" != CLOSED ]; then
-      emit failed github-close-unverified "The comment was created at $note_url, but $REFERENCE was not verified closed." true
-      exit 1
-    fi
-  fi
-  emit verified reconciled "$note_url"
-}
-
-reconcile_linear() {
-  local action
-  case "$DISPOSITION" in
-    fixed) action="ensure the PR body retains 'Fixes $REFERENCE' and verify Linear links it to the PR" ;;
-    partial) action="post the --note-file contents to $REFERENCE and verify the issue remains open" ;;
-    stale) action="post the --note-file contents to $REFERENCE, close it, and verify its final state" ;;
-  esac
-  if [ "$DISPOSITION" != fixed ] && ! file_has_content "$NOTE_FILE"; then
-    fail_input missing-note "Provide a non-empty --note-file for a $DISPOSITION reconciliation."
-  fi
-  emit unverifiable linear-transport-unavailable "Use the Linear API/MCP to $action."
-  exit 3
-}
-
-case "$OPERATION" in claim | reconcile) ;; *)
+case "$OPERATION" in claim) ;; *)
   usage
   exit 2
   ;;
@@ -382,30 +208,6 @@ while [ "$#" -gt 0 ]; do
         exit 2
       }
       PROJECT_ARG="$2"
-      shift 2
-      ;;
-    --body-file)
-      [ "$#" -ge 2 ] || {
-        usage
-        exit 2
-      }
-      BODY_FILE="$2"
-      shift 2
-      ;;
-    --note-file)
-      [ "$#" -ge 2 ] || {
-        usage
-        exit 2
-      }
-      NOTE_FILE="$2"
-      shift 2
-      ;;
-    --disposition)
-      [ "$#" -ge 2 ] || {
-        usage
-        exit 2
-      }
-      DISPOSITION="$2"
       shift 2
       ;;
     -h | --help)
@@ -430,19 +232,9 @@ else
   PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd -P)"
 fi
 SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
-[ -z "$BODY_FILE" ] || BODY_FILE="$(absolute_input_file "$BODY_FILE")"
-[ -z "$NOTE_FILE" ] || NOTE_FILE="$(absolute_input_file "$NOTE_FILE")"
 
 validate_project_contract
 load_tracker
 normalize_reference
 
-if [ "$OPERATION" = claim ]; then
-  [ -z "$DISPOSITION$BODY_FILE$NOTE_FILE" ] || fail_input invalid-arguments "claim accepts only an issue, --project, and --json."
-  if [ "$TRACKER" = github ]; then claim_github; else claim_linear; fi
-else
-  case "$DISPOSITION" in fixed | partial | stale) ;; *) fail_input invalid-disposition "Use --disposition fixed, partial, or stale." ;; esac
-  [ -n "$BODY_FILE" ] || fail_input missing-body "Provide --body-file for reconciliation."
-  validate_body
-  if [ "$TRACKER" = github ]; then reconcile_github; else reconcile_linear; fi
-fi
+if [ "$TRACKER" = github ]; then claim_github; else claim_linear; fi
