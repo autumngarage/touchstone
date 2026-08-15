@@ -128,6 +128,9 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   assert_contains "$file" "split or close the PR"
   assert_not_contains "$file" "retry until review"
 done
+assert_contains "$GIT_WORKFLOW_GUIDE" "--paginate --slurp"
+assert_contains "$GIT_WORKFLOW_GUIDE" 'after:$endCursor'
+assert_contains "$GIT_WORKFLOW_GUIDE" "pageInfo { hasNextPage endCursor }"
 
 echo "==> Claude entry files import the TOUCHSTONE.md steering router"
 # CLAUDE.md uses @TOUCHSTONE.md (Claude Code resolves @-imports transitively),
