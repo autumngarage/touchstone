@@ -254,7 +254,7 @@ echo "==> PASS: claim-issue.sh behaves correctly across 7 cases"
   assert_rc() { [ "$1" -eq "$2" ] || fail "expected rc $2, got $1"; }
   assert_json() { jq -e '.schema == "touchstone.tracker/v1" and (.status == "verified" or .status == "unverifiable" or .status == "failed")' "$1" >/dev/null || fail "$1 is not a valid v1 tracker result"; }
 
-  mkdir -p "$TMP/bin" "$TMP/github" "$TMP/linear"
+  mkdir -p "$TMP/bin" "$TMP/github" "$TMP/linear" "$TMP/unresolved-linear"
   git -C "$TMP/github" init -q
   git -C "$TMP/linear" init -q
   git -C "$TMP/github" remote add origin git@github.com:autumngarage/current.git
@@ -264,8 +264,10 @@ echo "==> PASS: claim-issue.sh behaves correctly across 7 cases"
     '' '[[validation.tasks]]' 'name = "test"' 'target = "root"' \
     'command = "true"' 'required = true' >"$TMP/github/.touchstone.toml"
   cp "$TMP/github/.touchstone.toml" "$TMP/linear/.touchstone.toml"
+  cp "$TMP/github/.touchstone.toml" "$TMP/unresolved-linear/.touchstone.toml"
   printf '%s\n' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone-tracker.toml"
   printf '%s\n' 'schema = 1' 'type = "linear"' 'key_prefix = "AUT"' >"$TMP/linear/.touchstone-tracker.toml"
+  cp "$TMP/linear/.touchstone-tracker.toml" "$TMP/unresolved-linear/.touchstone-tracker.toml"
 
   cat >"$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -279,7 +281,10 @@ case "$1 ${2:-}" in
 		[ "${GH_MODE:-ok}" != comment_unverified ] || exit 0
 		printf '%s\n' 'https://github.com/autumngarage/current/issues/42#issuecomment-1'
 		;;
-  "repo view") printf '%s\n' autumngarage/current ;;
+  "repo view")
+		[ "${GH_MODE:-ok}" != repo_fail ] || exit 1
+		printf '%s\n' autumngarage/current
+		;;
   "issue view")
 		[ "${GH_MODE:-ok}" != state_fail ] || exit 1
 		if printf '%s\n' "$*" | grep -q -- '--json state'; then
@@ -386,11 +391,15 @@ EOF
   printf '%s\n' 'Fixes AUT-281' >"$TMP/body"
   run_adapter "$TMP/out" reconcile 42 --disposition fixed --body-file "$TMP/body" --project "$TMP/github"
   assert_rc "$RUN_RC" 2
-  assert_has "$TMP/out" "Replace 'Fixes AUT-281' with 'Closes #42'"
+  assert_has "$TMP/out" "Add 'Closes #42'"
+  printf '%s\n' 'This fixes CVE-2026-1234.' 'Closes #42' >"$TMP/body"
+  run_adapter "$TMP/out" reconcile 42 --disposition fixed --body-file "$TMP/body" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 3
+  assert_not_has "$TMP/out" 'wrong-tracker-closing-syntax'
   awk 'BEGIN { for (line = 1; line <= 4000; line++) print "Fixes AUT-123" }' >"$TMP/large-body"
   run_adapter "$TMP/out" reconcile 42 --disposition fixed --body-file "$TMP/large-body" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 2
-  assert_has "$TMP/out" '"reason":"wrong-tracker-closing-syntax"'
+  assert_has "$TMP/out" '"reason":"missing-closing-reference"'
   assert_json "$TMP/out"
 
   echo "==> cross-repository GitHub closes remain valid in Linear projects"
@@ -399,6 +408,9 @@ EOF
   assert_rc "$RUN_RC" 3
   assert_not_has "$TMP/out" 'wrong-tracker-closing-syntax'
   GH_REPO='' run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/linear" --json
+  assert_rc "$RUN_RC" 3
+  assert_not_has "$TMP/out" 'wrong-tracker-closing-syntax'
+  GH_REPO='' GH_MODE=repo_fail run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/unresolved-linear" --json
   assert_rc "$RUN_RC" 3
   assert_not_has "$TMP/out" 'wrong-tracker-closing-syntax'
   printf '%s\n' 'Fixes AUT-281' 'Closes autumngarage/current#77' >"$TMP/body"
