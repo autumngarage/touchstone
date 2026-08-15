@@ -1,22 +1,24 @@
 # Adoption Contract
 
-This document owns the public repository-adoption interface. The durable
-product boundary remains in [product-contract.md](product-contract.md), and the
-generated declaration is defined by
-[validation-contract.md](validation-contract.md).
+This document fixes the planned public repository-adoption interface before
+its AUT-283 implementation lands. The commands below are not available in the
+current release. The durable product boundary remains in
+[product-contract.md](product-contract.md), and the generated declaration is
+defined by [validation-contract.md](validation-contract.md).
 
-## Commands
+## Planned commands
 
-`touchstone adopt --check` reports whether the repository needs adoption.
-`touchstone adopt --dry-run` prints the complete proposed repository diff and
-reports remote policy as a separate operation. `touchstone adopt` applies that
-same diff only from a clean, non-default branch. All three modes accept
+`touchstone adopt --check` will report whether the repository needs adoption.
+`touchstone adopt --dry-run` will print the complete proposed repository diff
+and report remote policy as a separate operation. `touchstone adopt` will apply
+that same diff only from a clean, non-default branch. All three modes will accept
 `--json` and `--project DIR`; repeated `--task NAME=COMMAND` arguments select
 the explicit manual path.
 
-Exit classes are stable: 0 is success, 2 is invalid invocation, 3 means check
-found a required change, 4 is ambiguous or unsupported input, 5 is an apply
-safety refusal, and 6 is an operational failure.
+The interface reserves these exit classes: 0 is success, 2 is invalid
+invocation, 3 means check found a required change, 4 is ambiguous or
+unsupported input, 5 is an apply safety refusal, and 6 is an operational
+failure.
 
 ## V1 automatic scope
 
