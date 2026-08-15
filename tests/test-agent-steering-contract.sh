@@ -169,12 +169,13 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "threadId: .id"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "rootCommentId: .comments.nodes[0].databaseId"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Replies are deliberately omitted"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "claim_github_issue() ("
-assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "claim_added=false"
-assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "An existing self-assignment"
-assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "is re-read before dispatch"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "claim-candidate:pending"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "--paginate --slurp"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "issue comment ID is the claim token"
 assert_not_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "scripts/claim-issue.sh"
+assert_not_contains "$TOUCHSTONE_ROOT/templates/AGENTS.md" "scripts/claim-issue.sh"
 
-echo "==> portable claim sequence isolates contention and preserves prior ownership"
+echo "==> portable claim sequence serializes same-login dispatchers"
 CLAIM_SNIPPET="$TEST_DIR/claim-snippet.sh"
 awk '
   /^claim_github_issue\(\) \($/ { capture=1 }
@@ -192,28 +193,32 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$CLAIM_CALLS"
 case "$1 $2 ${3:-}" in
   'api user --jq') printf 'me\n' ;;
+  'repo view --json') printf 'owner/repo\n' ;;
   'issue view 123')
-    case "$*" in
-      *'--json state'*) printf 'OPEN\n' ;;
-      *'--json assignees'*)
-        reads="$(cat "$CLAIM_READS")"
-        reads=$((reads + 1))
-        printf '%s\n' "$reads" >"$CLAIM_READS"
-        case "$CLAIM_MODE:$reads" in
-          self:*) printf 'me\n' ;;
-          selfrace:1) printf 'me\n' ;;
-          selfrace:2) printf 'me\nother\n' ;;
-          other:*) printf 'other\n' ;;
-          race:1) : ;;
-          race:2) printf 'me\nother\n' ;;
-          success:1 | commentfail:1) : ;;
-          success:2 | commentfail:2) printf 'me\n' ;;
-        esac
+    reads="$(cat "$CLAIM_READS")"
+    reads=$((reads + 1))
+    printf '%s\n' "$reads" >"$CLAIM_READS"
+    case "$CLAIM_MODE:$reads" in
+      closed:1) printf 'CLOSED\t\n' ;;
+      owner:1) printf 'OPEN\tother\n' ;;
+      success:1 | success:2 | collision:1 | race:1 | race:2 | activefail:1 | activefail:2)
+        printf 'OPEN\t\n'
         ;;
+      success:3 | activefail:3) printf 'OPEN\tme\n' ;;
+      race:3) printf 'OPEN\tme\nother\n' ;;
+      *) exit 3 ;;
     esac
     ;;
+  'api --method POST')
+    case "$CLAIM_MODE" in collision) printf '101\n' ;; *) printf '100\n' ;; esac
+    ;;
+  'api --paginate --slurp') printf '100\n' ;;
+  'api --method PATCH')
+    if [ "$CLAIM_MODE" = activefail ] && [[ "$*" == *'claim-candidate:active'* ]]; then
+      exit 1
+    fi
+    ;;
   'issue edit 123') : ;;
-  'issue comment 123') [ "$CLAIM_MODE" != commentfail ] ;;
   *) exit 2 ;;
 esac
 EOF
@@ -226,33 +231,32 @@ PATH="$CLAIM_BIN:$PATH"
 
 : >"$CLAIM_CALLS"
 printf '0\n' >"$CLAIM_READS"
-CLAIM_MODE=self
+CLAIM_MODE=success
 export CLAIM_MODE
-claim_github_issue 123 branch path agent || fail "existing self-claim was not idempotent"
-assert_not_contains "$CLAIM_CALLS" "--add-assignee"
+claim_github_issue 123 branch path agent || fail "portable claim sequence rejected a stable claim"
+assert_contains "$CLAIM_CALLS" "--add-assignee me"
 assert_not_contains "$CLAIM_CALLS" "--remove-assignee"
-assert_contains "$CLAIM_CALLS" "issue comment 123"
-[ "$(cat "$CLAIM_READS")" -eq 2 ] || fail "existing self-claim was not reverified"
+assert_contains "$CLAIM_CALLS" "claim-candidate:active"
 
 : >"$CLAIM_CALLS"
 printf '0\n' >"$CLAIM_READS"
-CLAIM_MODE=selfrace
+CLAIM_MODE=collision
 export CLAIM_MODE
 if claim_github_issue 123 branch path agent; then
-  fail "portable claim sequence missed a race on an existing self-claim"
+  fail "portable claim sequence accepted a later same-login candidate"
 fi
 assert_not_contains "$CLAIM_CALLS" "issue edit 123"
-assert_not_contains "$CLAIM_CALLS" "issue comment 123"
+assert_contains "$CLAIM_CALLS" "claim-candidate:released"
 
 : >"$CLAIM_CALLS"
 printf '0\n' >"$CLAIM_READS"
-CLAIM_MODE=other
+CLAIM_MODE=owner
 export CLAIM_MODE
 if claim_github_issue 123 branch path agent; then
   fail "portable claim sequence accepted another owner"
 fi
 assert_not_contains "$CLAIM_CALLS" "issue edit 123"
-assert_not_contains "$CLAIM_CALLS" "issue comment 123"
+assert_not_contains "$CLAIM_CALLS" "--method POST"
 
 : >"$CLAIM_CALLS"
 printf '0\n' >"$CLAIM_READS"
@@ -263,26 +267,28 @@ if claim_github_issue 123 branch path agent; then
 fi
 assert_contains "$CLAIM_CALLS" "--add-assignee me"
 assert_contains "$CLAIM_CALLS" "--remove-assignee me"
-assert_not_contains "$CLAIM_CALLS" "issue comment 123"
+assert_contains "$CLAIM_CALLS" "claim-candidate:released"
 
 : >"$CLAIM_CALLS"
 printf '0\n' >"$CLAIM_READS"
-CLAIM_MODE=success
-export CLAIM_MODE
-claim_github_issue 123 branch path agent || fail "portable claim sequence rejected a stable claim"
-assert_contains "$CLAIM_CALLS" "--add-assignee me"
-assert_not_contains "$CLAIM_CALLS" "--remove-assignee me"
-assert_contains "$CLAIM_CALLS" "issue comment 123"
-
-: >"$CLAIM_CALLS"
-printf '0\n' >"$CLAIM_READS"
-CLAIM_MODE=commentfail
+CLAIM_MODE=activefail
 export CLAIM_MODE
 if claim_github_issue 123 branch path agent; then
-  fail "portable claim sequence accepted a missing dispatch comment"
+  fail "portable claim sequence accepted a missing active dispatch record"
 fi
 assert_contains "$CLAIM_CALLS" "--add-assignee me"
 assert_contains "$CLAIM_CALLS" "--remove-assignee me"
+assert_contains "$CLAIM_CALLS" "claim-candidate:active"
+assert_contains "$CLAIM_CALLS" "claim-candidate:released"
+
+: >"$CLAIM_CALLS"
+printf '0\n' >"$CLAIM_READS"
+CLAIM_MODE=closed
+export CLAIM_MODE
+if claim_github_issue 123 branch path agent; then
+  fail "portable claim sequence accepted a closed issue"
+fi
+assert_not_contains "$CLAIM_CALLS" "--method POST"
 PATH="$ORIGINAL_PATH"
 
 echo "==> PR babysitting preserves approved scope"

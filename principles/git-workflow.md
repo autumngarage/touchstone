@@ -392,7 +392,8 @@ Before spawning a coding agent — Claude Code subagent, Codex CLI, or any other
 **The portable GitHub sequence.** Run it as a function whose body is a
 subshell. A contention or API failure then returns nonzero without terminating
 the caller's interactive shell. Supply the issue, branch, worktree, and agent
-label as arguments.
+label as arguments. The issue comment ID is the claim token, so concurrent
+drivers sharing one GitHub login still have distinct, GitHub-visible identities.
 
 ```bash
 claim_github_issue() (
@@ -400,46 +401,101 @@ claim_github_issue() (
   branch="$2"
   worktree="$3"
   agent="$4"
-  claim_added=false
+  tab="$(printf '\t')"
+  pending_marker='<!-- touchstone:claim-candidate:pending -->'
+  active_marker='<!-- touchstone:claim-candidate:active -->'
+  released_marker='<!-- touchstone:claim-candidate:released -->'
   me="$(gh api user --jq .login)" || exit 1
   [ -n "$me" ] || exit 1
-  state="$(gh issue view "$issue" --json state --jq .state)" || exit 1
-  [ "$state" = OPEN ] || exit 1
-  owners="$(gh issue view "$issue" --json assignees --jq '.assignees[].login')" || exit 1
-  [ -z "$owners" ] || [ "$owners" = "$me" ] || exit 1
-  if [ "$owners" = "$me" ]; then
-    owners="$(gh issue view "$issue" --json assignees --jq '.assignees[].login')" || exit 1
-    [ "$owners" = "$me" ] || exit 1
-  else
-    gh issue edit "$issue" --add-assignee "$me" || exit 1
-    claim_added=true
-    owners="$(gh issue view "$issue" --json assignees --jq '.assignees[].login')" || {
-      gh issue edit "$issue" --remove-assignee "$me" >/dev/null 2>&1 || true
-      exit 1
-    }
-    if [ "$owners" != "$me" ]; then
-      gh issue edit "$issue" --remove-assignee "$me" >/dev/null 2>&1 || true
-      exit 1
-    fi
+  repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || exit 1
+  [ -n "$repo" ] || exit 1
+
+  snapshot="$(gh issue view "$issue" --json state,assignees \
+    --jq '.state + "\t" + ([.assignees[].login] | join("\n"))')" || exit 1
+  state="${snapshot%%"$tab"*}"
+  owners="${snapshot#*"$tab"}"
+  [ "$state" = OPEN ] && [ -z "$owners" ] || exit 1
+
+  pending_body="$(printf '%s\nClaim pending for branch `%s` at `%s` (%s). Do not dispatch yet.' \
+    "$pending_marker" "$branch" "$worktree" "$agent")"
+  candidate="$(gh api --method POST "repos/$repo/issues/$issue/comments" \
+    -f body="$pending_body" --jq .id)" || exit 1
+  [ -n "$candidate" ] || exit 1
+  release_candidate() {
+    local released_body
+    released_body="$(printf '%s\nClaim candidate %s released; no work was dispatched.' \
+      "$released_marker" "$candidate")"
+    gh api --method PATCH "repos/$repo/issues/comments/$candidate" \
+      -f body="$released_body" >/dev/null
+  }
+  rollback_candidate() {
+    gh issue edit "$issue" --remove-assignee "$me" >/dev/null 2>&1 || return 1
+    release_candidate
+  }
+
+  winner="$(gh api --paginate --slurp \
+    "repos/$repo/issues/$issue/comments?per_page=100" --jq '
+      [.[][] | select(
+        (.body | startswith("<!-- touchstone:claim-candidate:pending -->")) or
+        (.body | startswith("<!-- touchstone:claim-candidate:active -->"))
+      ) | .id] | min // empty
+    ')" || {
+    release_candidate >/dev/null 2>&1 || true
+    exit 1
+  }
+  if [ "$winner" != "$candidate" ]; then
+    release_candidate || exit 1
+    exit 1
   fi
-  gh issue comment "$issue" \
-    --body "Dispatched. Branch \`$branch\`, worktree at \`$worktree\`. $agent implementing." \
-    || {
-      [ "$claim_added" = false ] \
-        || gh issue edit "$issue" --remove-assignee "$me" >/dev/null 2>&1 || true
-      exit 1
-    }
+
+  snapshot="$(gh issue view "$issue" --json state,assignees \
+    --jq '.state + "\t" + ([.assignees[].login] | join("\n"))')" || {
+    release_candidate >/dev/null 2>&1 || true
+    exit 1
+  }
+  state="${snapshot%%"$tab"*}"
+  owners="${snapshot#*"$tab"}"
+  if [ "$state" != OPEN ] || [ -n "$owners" ]; then
+    release_candidate || exit 1
+    exit 1
+  fi
+
+  gh issue edit "$issue" --add-assignee "$me" || {
+    release_candidate >/dev/null 2>&1 || true
+    exit 1
+  }
+  snapshot="$(gh issue view "$issue" --json state,assignees \
+    --jq '.state + "\t" + ([.assignees[].login] | join("\n"))')" || {
+    rollback_candidate >/dev/null 2>&1 || true
+    exit 1
+  }
+  state="${snapshot%%"$tab"*}"
+  owners="${snapshot#*"$tab"}"
+  if [ "$state" != OPEN ] || [ "$owners" != "$me" ]; then
+    rollback_candidate >/dev/null 2>&1 || true
+    exit 1
+  fi
+
+  active_body="$(printf '%s\nDispatched. Branch `%s`, worktree at `%s`. %s implementing.' \
+    "$active_marker" "$branch" "$worktree" "$agent")"
+  gh api --method PATCH "repos/$repo/issues/comments/$candidate" \
+    -f body="$active_body" >/dev/null || {
+    rollback_candidate >/dev/null 2>&1 || true
+    exit 1
+  }
 )
 
 claim_github_issue <n> '<branch>' '<path>' '<agent type>'
 ```
 
-The first read avoids disturbing an existing owner. An existing self-assignment
-is re-read before dispatch but is never removed by this invocation. After a
-newly added claim, the second read detects a race; the losing agent removes only
-the assignment this invocation created and publishes no false dispatch signal.
-For a non-GitHub tracker, use its configured adapter to perform the same claim,
-verification, and dispatch transition.
+The earliest pending or active candidate comment wins. A later candidate marks
+only its own comment released and never touches the winner's assignment. The
+winner revalidates open/unassigned state, assigns the login, verifies sole
+ownership, and converts its own candidate into the dispatch record. A crash
+leaves a visible pending token that blocks duplicate work until a human releases
+it; it never silently erases another agent's claim. For a non-GitHub tracker,
+use its configured adapter to perform the same token, verification, and dispatch
+transition.
 
 Then start the agent. Not after.
 

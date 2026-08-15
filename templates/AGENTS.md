@@ -116,7 +116,7 @@ Use the normal lifecycle unless the user asks for a different flow:
 
 1. Pull/rebase the default branch.
 2. Branch before editing.
-3. Claim every GitHub issue you are actively implementing with `bash scripts/claim-issue.sh <n>` before editing or dispatching an agent.
+3. Claim every issue through the configured tracker's race-safe claim, verification, and dispatch sequence before editing or dispatching an agent.
 4. Make the change, stage explicit file paths, and commit with a concise message.
 5. Reconcile issue state before opening the PR: fixed issues get closing trailers/PR body lines; partial or stale issues get an issue comment with evidence and remaining gaps.
 6. Ship with `git push -u origin HEAD`, then `gh pr create` — put `Closes #123` in the **PR body**, since that is what squash-merge reads. Request review, answer every finding, then merge with `gh pr merge <n> --squash --match-head-commit <reviewed-sha>` and confirm the result rather than trusting the exit code.
