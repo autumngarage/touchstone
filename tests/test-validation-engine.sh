@@ -918,4 +918,155 @@ LEGACY_CONFIG="$TMP_DIR/legacy-config"
   grep -Fq 'legacy configuration is not a regular file' "$TMP_DIR/legacy-directory.out" || exit 24
 ) || fail "legacy adoption config changed frozen precedence or quoting"
 
+echo "==> adoption plan records stay consistent and fail closed"
+PLAN_RECORDS="$TMP_DIR/plan-records"
+mkdir -p "$PLAN_RECORDS/project/packages/web"
+(
+  PROJECT_ROOT="$PLAN_RECORDS/project"
+  TARGETS_FILE="$PLAN_RECORDS/targets"
+  TASKS_FILE="$PLAN_RECORDS/tasks"
+  SETUPS_FILE="$PLAN_RECORDS/setups"
+  # shellcheck disable=SC2034 # sourced record functions consume these delimiters.
+  TAB="$(printf '\t')"
+  # shellcheck disable=SC2034 # sourced record functions consume these delimiters.
+  CR="$(printf '\r')"
+  LF="$(printf '\nX')"
+  LF="${LF%X}"
+  : >"$TARGETS_FILE"
+  : >"$TASKS_FILE"
+  : >"$SETUPS_FILE"
+  contract_refusal() {
+    printf 'refused: %s\n' "$*" >&2
+    exit 4
+  }
+  operational_failure() {
+    printf 'failed: %s\n' "$*" >&2
+    exit 6
+  }
+  MANUAL_TASK_ARGS=('verify=true' 'lint=printf lint')
+  # shellcheck source=scripts/lib/touchstone-plan-records.sh
+  source "$ROOT/scripts/lib/touchstone-plan-records.sh"
+
+  compile_manual_plan "${MANUAL_TASK_ARGS[@]}"
+  [ "$PROFILE" = manual ] || exit 11
+  grep -Fqx $'root\t.\tmanual' "$TARGETS_FILE" || exit 12
+  grep -Fqx $'verify\troot\ttrue\ttrue' "$TASKS_FILE" || exit 13
+  grep -Fqx $'lint\troot\ttrue\tprintf lint' "$TASKS_FILE" || exit 14
+  record_plan_setup "$PROJECT_ROOT/packages/web" 'npm install --offline'
+  record_plan_setup "$PROJECT_ROOT/packages/web" 'npm install --offline'
+  grep -Fqx $'packages/web\tnpm install --offline' "$SETUPS_FILE" || exit 15
+  [ "$(wc -l <"$SETUPS_FILE" | tr -d '[:space:]')" -eq 1 ] || exit 16
+
+  set +e
+  (record_plan_task orphan missing true) >"$PLAN_RECORDS/orphan.out" 2>&1
+  orphan_status=$?
+  (record_plan_task verify root true) >"$PLAN_RECORDS/duplicate.out" 2>&1
+  duplicate_status=$?
+  (record_plan_setup "$PROJECT_ROOT/packages/web" 'npm ci') >"$PLAN_RECORDS/conflict.out" 2>&1
+  conflict_status=$?
+  (record_plan_task control root "printf $(printf '\033')") >"$PLAN_RECORDS/control.out" 2>&1
+  control_status=$?
+  (record_plan_target newline "packages${LF}web" manual) >"$PLAN_RECORDS/delimiter.out" 2>&1
+  delimiter_status=$?
+  set -e
+  [ "$orphan_status" -eq 4 ] || exit 17
+  [ "$duplicate_status" -eq 4 ] || exit 18
+  [ "$conflict_status" -eq 4 ] || exit 19
+  [ "$control_status" -eq 4 ] || exit 20
+  [ "$delimiter_status" -eq 4 ] || exit 21
+
+  mkdir -p "$PROJECT_ROOT/packages/back\\slash"
+  set +e
+  (record_plan_setup "$PROJECT_ROOT/packages/back\\slash" true) >"$PLAN_RECORDS/backslash.out" 2>&1
+  backslash_status=$?
+  set -e
+  [ "$backslash_status" -eq 4 ] || exit 31
+  grep -Fq "setup has invalid path 'packages/back\\slash'" "$PLAN_RECORDS/backslash.out" || exit 32
+
+  EMPTY_TARGETS="$PLAN_RECORDS/empty-manual-targets"
+  EMPTY_TASKS="$PLAN_RECORDS/empty-manual-tasks"
+  TARGETS_FILE="$EMPTY_TARGETS"
+  TASKS_FILE="$EMPTY_TASKS"
+  : >"$TARGETS_FILE"
+  : >"$TASKS_FILE"
+  set +e
+  (compile_manual_plan) >"$PLAN_RECORDS/empty-manual.out" 2>&1
+  empty_manual_status=$?
+  set -e
+  [ "$empty_manual_status" -eq 4 ] || exit 33
+  [ ! -s "$TARGETS_FILE" ] || exit 34
+  compile_manual_plan 'count-is-not-source=true'
+  grep -Fqx $'count-is-not-source\troot\ttrue\ttrue' "$TASKS_FILE" || exit 35
+  assert_not_contains "$ROOT/scripts/lib/touchstone-plan-records.sh" 'MANUAL_TASK_COUNT'
+  assert_not_contains "$ROOT/scripts/lib/touchstone-plan-records.sh" 'MANUAL_TASK_ARGS'
+
+  LARGE_TARGETS="$PLAN_RECORDS/large-targets"
+  LARGE_TASKS="$PLAN_RECORDS/large-tasks"
+  TARGETS_FILE="$LARGE_TARGETS"
+  TASKS_FILE="$LARGE_TASKS"
+  : >"$TARGETS_FILE"
+  : >"$TASKS_FILE"
+  record_plan_target root . manual
+  index=1
+  while [ "$index" -le 500 ]; do
+    record_plan_task "task-$index" root true
+    index=$((index + 1))
+  done
+  [ "$(wc -l <"$TASKS_FILE" | tr -d '[:space:]')" -eq 500 ] || exit 22
+
+  force_append_failure_after_lookup() {
+    local record_file="$1" output="$2"
+    shift 2
+    awk() {
+      local last status
+      command awk "$@"
+      status=$?
+      for last in "$@"; do :; done
+      if [ "$last" = "$record_file" ]; then
+        command rm -f "$record_file"
+        command mkdir "$record_file"
+      fi
+      return "$status"
+    }
+    set +e
+    ("$@") >"$output" 2>&1
+    append_status=$?
+    set -e
+    unset -f awk
+    [ "$append_status" -eq 6 ] || return 1
+  }
+
+  TARGETS_FILE="$PLAN_RECORDS/append-targets"
+  : >"$TARGETS_FILE"
+  force_append_failure_after_lookup "$TARGETS_FILE" "$PLAN_RECORDS/append-target.out" \
+    record_plan_target append-target . manual || exit 23
+  grep -Fq "could not record adoption target 'append-target'" "$PLAN_RECORDS/append-target.out" || exit 24
+
+  TARGETS_FILE="$PLAN_RECORDS/task-targets"
+  TASKS_FILE="$PLAN_RECORDS/append-tasks"
+  printf 'root\t.\tmanual\n' >"$TARGETS_FILE"
+  : >"$TASKS_FILE"
+  force_append_failure_after_lookup "$TASKS_FILE" "$PLAN_RECORDS/append-task.out" \
+    record_plan_task append-task root true || exit 25
+  grep -Fq "could not record adoption task 'append-task'" "$PLAN_RECORDS/append-task.out" || exit 26
+
+  SETUPS_FILE="$PLAN_RECORDS/append-setups"
+  : >"$SETUPS_FILE"
+  force_append_failure_after_lookup "$SETUPS_FILE" "$PLAN_RECORDS/append-setup.out" \
+    record_plan_setup "$PROJECT_ROOT/packages/web" true || exit 27
+  grep -Fq "could not record adoption setup for 'packages/web'" "$PLAN_RECORDS/append-setup.out" || exit 28
+
+  TARGETS_FILE="$PLAN_RECORDS/lookup-targets"
+  mkdir "$TARGETS_FILE"
+  set +e
+  (record_plan_target lookup-failure . manual) >"$PLAN_RECORDS/lookup.out" 2>&1
+  lookup_status=$?
+  set -e
+  [ "$lookup_status" -eq 6 ] || exit 29
+  grep -Fq "could not inspect adoption targets" "$PLAN_RECORDS/lookup.out" || {
+    cat "$PLAN_RECORDS/lookup.out" >&2
+    exit 30
+  }
+) || fail "adoption plan-record invariant failed"
+
 echo "validation engine tests passed"

@@ -13,7 +13,7 @@ valid_plan_identifier() {
 }
 
 valid_plan_path() {
-  case "$1" in "" | /* | .. | ../* | */../* | */..) return 1 ;; esac
+  case "$1" in "" | /* | .. | ../* | */../* | */.. | *\\*) return 1 ;; esac
 }
 
 plan_value_has_control_byte() {
@@ -106,12 +106,15 @@ record_plan_setup() {
 }
 
 compile_manual_plan() {
-  local argument name command
-  [ "${MANUAL_TASK_COUNT:-0}" -gt 0 ] \
+  local argument name command saw_task=false
+  for argument in "$@"; do
+    saw_task=true
+    case "$argument" in *=*) ;; *) contract_refusal "--task requires NAME=COMMAND" ;; esac
+  done
+  [ "$saw_task" = true ] \
     || contract_refusal "manual adoption requires at least one --task NAME=COMMAND"
   record_plan_target root . manual
-  for argument in "${MANUAL_TASK_ARGS[@]}"; do
-    case "$argument" in *=*) ;; *) contract_refusal "--task requires NAME=COMMAND" ;; esac
+  for argument in "$@"; do
     name="${argument%%=*}"
     command="${argument#*=}"
     record_plan_task "$name" root "$command"
