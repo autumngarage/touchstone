@@ -21,6 +21,34 @@ if [ -f .touchstone-uv-check-fail ]; then
 fi
 EOF
 chmod +x "$ADOPTION_BIN/uv"
+cat >"$ADOPTION_BIN/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$*" = "metadata --locked --offline --no-deps --format-version 1" ] || exit 8
+[ "${CARGO_NET_OFFLINE:-}" = true ] || exit 8
+if [ -f .touchstone-cargo-check-fail ]; then
+  echo "fixture lock is stale" >&2
+  exit 9
+fi
+printf '%s\n' '{"packages":[]}'
+EOF
+chmod +x "$ADOPTION_BIN/cargo"
+cat >"$ADOPTION_BIN/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$*" = "list ./..." ] || exit 8
+[ "${GOENV:-}" = off ] || exit 8
+[ "${GOTOOLCHAIN:-}" = local ] || exit 8
+[ "${GOWORK:-}" = off ] || exit 8
+[ "${GOPROXY:-}" = off ] || exit 8
+[ "${GOSUMDB:-}" = off ] || exit 8
+if [ -f .touchstone-go-list-fail ]; then
+  echo "./... matched no packages" >&2
+  exit 1
+fi
+printf '%s\n' 'example.invalid/fixture'
+EOF
+chmod +x "$ADOPTION_BIN/go"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -1075,7 +1103,8 @@ for profile in python swift rust go; do
       mkdir -p "$ADOPT_PROFILE/src"
       printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
         >"$ADOPT_PROFILE/Cargo.toml"
-      printf '%s\n' 'version = 4' >"$ADOPT_PROFILE/Cargo.lock"
+      printf '%s\n' 'version = 4' '' '[[package]]' 'name = "fixture"' \
+        'version = "0.1.0"' >"$ADOPT_PROFILE/Cargo.lock"
       printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_PROFILE/src/lib.rs"
       expected_command='command = "cargo test --frozen"'
       expected_setup=''
@@ -1083,7 +1112,7 @@ for profile in python swift rust go; do
     go)
       printf '%s\n' 'module example.invalid/fixture' >"$ADOPT_PROFILE/go.mod"
       printf '%s\n' 'package fixture' >"$ADOPT_PROFILE/fixture.go"
-      expected_command='command = "GOTOOLCHAIN=local GOWORK=off GOPROXY=off GOSUMDB=off go test ./..."'
+      expected_command='command = "GOENV=off GOTOOLCHAIN=local GOWORK=off GOPROXY=off GOSUMDB=off go test ./..."'
       expected_setup=''
       ;;
   esac
@@ -1171,6 +1200,73 @@ run_adoption "$TMP_DIR/adopt-rust-bad-lock.out" adopt --dry-run --project "$ADOP
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed Cargo.lock was accepted"
 assert_contains "$TMP_DIR/adopt-rust-bad-lock.out.err" 'Cargo.lock is malformed'
 
+ADOPT_RUST_INCOMPLETE_LOCK="$TMP_DIR/adopt-rust-incomplete-lock"
+init_adoption_repo "$ADOPT_RUST_INCOMPLETE_LOCK"
+mkdir -p "$ADOPT_RUST_INCOMPLETE_LOCK/src"
+printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+  >"$ADOPT_RUST_INCOMPLETE_LOCK/Cargo.toml"
+printf '%s\n' 'version = 4' >"$ADOPT_RUST_INCOMPLETE_LOCK/Cargo.lock"
+printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_RUST_INCOMPLETE_LOCK/src/lib.rs"
+commit_adoption_repo "$ADOPT_RUST_INCOMPLETE_LOCK" "fixture"
+git -C "$ADOPT_RUST_INCOMPLETE_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-incomplete-lock.out" adopt --dry-run \
+  --project "$ADOPT_RUST_INCOMPLETE_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "incomplete Cargo.lock was accepted"
+assert_contains "$TMP_DIR/adopt-rust-incomplete-lock.out.err" \
+  'Cargo.lock has incomplete package records'
+
+ADOPT_RUST_STALE_LOCK="$TMP_DIR/adopt-rust-stale-lock"
+init_adoption_repo "$ADOPT_RUST_STALE_LOCK"
+mkdir -p "$ADOPT_RUST_STALE_LOCK/src"
+printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+  >"$ADOPT_RUST_STALE_LOCK/Cargo.toml"
+printf '%s\n' 'version = 4' '' '[[package]]' 'name = "fixture"' \
+  'version = "0.1.0"' >"$ADOPT_RUST_STALE_LOCK/Cargo.lock"
+printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_RUST_STALE_LOCK/src/lib.rs"
+printf '%s\n' 'stale' >"$ADOPT_RUST_STALE_LOCK/.touchstone-cargo-check-fail"
+commit_adoption_repo "$ADOPT_RUST_STALE_LOCK" "fixture"
+git -C "$ADOPT_RUST_STALE_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-stale-lock.out" adopt --dry-run \
+  --project "$ADOPT_RUST_STALE_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Cargo's failed offline lock check was ignored"
+assert_contains "$TMP_DIR/adopt-rust-stale-lock.out.err" \
+  'Cargo.lock is incompatible with the verified manifests under offline metadata resolution: fixture lock is stale'
+
+for build_kind in default custom config; do
+  ADOPT_RUST_EXEC="$TMP_DIR/adopt-rust-$build_kind-execution"
+  init_adoption_repo "$ADOPT_RUST_EXEC"
+  mkdir -p "$ADOPT_RUST_EXEC/src"
+  printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+    >"$ADOPT_RUST_EXEC/Cargo.toml"
+  case "$build_kind" in
+    default) printf '%s\n' 'fn main() {}' >"$ADOPT_RUST_EXEC/build.rs" ;;
+    custom)
+      printf '%s\n' 'build = "compile.rs"' >>"$ADOPT_RUST_EXEC/Cargo.toml"
+      printf '%s\n' 'fn main() {}' >"$ADOPT_RUST_EXEC/compile.rs"
+      ;;
+    config)
+      mkdir -p "$ADOPT_RUST_EXEC/.cargo"
+      printf '%s\n' '[build]' 'rustc-wrapper = "./wrapper"' \
+        >"$ADOPT_RUST_EXEC/.cargo/config.toml"
+      ;;
+  esac
+  printf '%s\n' 'version = 4' '' '[[package]]' 'name = "fixture"' \
+    'version = "0.1.0"' >"$ADOPT_RUST_EXEC/Cargo.lock"
+  printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_RUST_EXEC/src/lib.rs"
+  commit_adoption_repo "$ADOPT_RUST_EXEC" "fixture"
+  git -C "$ADOPT_RUST_EXEC" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-rust-$build_kind-execution.out" adopt --dry-run \
+    --project "$ADOPT_RUST_EXEC"
+  [ "$ADOPTION_STATUS" -eq 4 ] \
+    || fail "Rust $build_kind execution hook was accepted"
+done
+assert_contains "$TMP_DIR/adopt-rust-default-execution.out.err" \
+  'has a build.rs program automatic validation cannot isolate'
+assert_contains "$TMP_DIR/adopt-rust-custom-execution.out.err" \
+  'declares a custom build program automatic validation cannot isolate'
+assert_contains "$TMP_DIR/adopt-rust-config-execution.out.err" \
+  'has project-controlled Cargo execution config'
+
 ADOPT_RUST_LOCK_VERSION="$TMP_DIR/adopt-rust-lock-version"
 init_adoption_repo "$ADOPT_RUST_LOCK_VERSION"
 mkdir -p "$ADOPT_RUST_LOCK_VERSION/src"
@@ -1191,7 +1287,8 @@ init_adoption_repo "$ADOPT_RUST_IGNORED_SOURCE"
 printf '%s\n' 'src/' >"$ADOPT_RUST_IGNORED_SOURCE/.gitignore"
 printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
   >"$ADOPT_RUST_IGNORED_SOURCE/Cargo.toml"
-printf '%s\n' 'version = 4' >"$ADOPT_RUST_IGNORED_SOURCE/Cargo.lock"
+printf '%s\n' 'version = 4' '' '[[package]]' 'name = "fixture"' \
+  'version = "0.1.0"' >"$ADOPT_RUST_IGNORED_SOURCE/Cargo.lock"
 commit_adoption_repo "$ADOPT_RUST_IGNORED_SOURCE" "fixture"
 mkdir -p "$ADOPT_RUST_IGNORED_SOURCE/src"
 printf '%s\n' 'pub fn local_only() {}' >"$ADOPT_RUST_IGNORED_SOURCE/src/lib.rs"
@@ -1212,6 +1309,33 @@ run_adoption "$TMP_DIR/adopt-go-ignored-source.out" adopt --dry-run \
   --project "$ADOPT_GO_IGNORED_SOURCE"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "Go target with only ignored source was accepted"
 assert_contains "$TMP_DIR/adopt-go-ignored-source.out.err" 'has no tracked Go source'
+
+ADOPT_GO_VENDOR_SOURCE="$TMP_DIR/adopt-go-vendor-source"
+init_adoption_repo "$ADOPT_GO_VENDOR_SOURCE"
+mkdir -p "$ADOPT_GO_VENDOR_SOURCE/vendor/example.invalid/fixture"
+printf '%s\n' 'module example.invalid/fixture' 'go 1.24' \
+  >"$ADOPT_GO_VENDOR_SOURCE/go.mod"
+printf '%s\n' 'package fixture' \
+  >"$ADOPT_GO_VENDOR_SOURCE/vendor/example.invalid/fixture/fixture.go"
+commit_adoption_repo "$ADOPT_GO_VENDOR_SOURCE" "fixture"
+git -C "$ADOPT_GO_VENDOR_SOURCE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-vendor-source.out" adopt --dry-run \
+  --project "$ADOPT_GO_VENDOR_SOURCE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Go target with only vendored source was accepted"
+assert_contains "$TMP_DIR/adopt-go-vendor-source.out.err" 'has no tracked Go source'
+
+ADOPT_GO_NO_PACKAGE="$TMP_DIR/adopt-go-no-package"
+init_adoption_repo "$ADOPT_GO_NO_PACKAGE"
+printf '%s\n' 'module example.invalid/fixture' 'go 1.24' >"$ADOPT_GO_NO_PACKAGE/go.mod"
+printf '%s\n' 'package fixture' >"$ADOPT_GO_NO_PACKAGE/fixture.go"
+printf '%s\n' 'fail' >"$ADOPT_GO_NO_PACKAGE/.touchstone-go-list-fail"
+commit_adoption_repo "$ADOPT_GO_NO_PACKAGE" "fixture"
+git -C "$ADOPT_GO_NO_PACKAGE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-no-package.out" adopt --dry-run \
+  --project "$ADOPT_GO_NO_PACKAGE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "failed offline Go package selection was ignored"
+assert_contains "$TMP_DIR/adopt-go-no-package.out.err" \
+  'Go target has no package selected by ./... under offline local-toolchain resolution: ./... matched no packages'
 
 ADOPT_RUST_LOCAL="$TMP_DIR/adopt-rust-local"
 init_adoption_repo "$ADOPT_RUST_LOCAL"
@@ -1888,12 +2012,16 @@ assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'path = "apps/api"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'path = "packages/web"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "test-apps-api"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "build-packages-web"'
-assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run test"'
-assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run build"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" \
+  'command = "COREPACK_ENABLE_NETWORK=0 pnpm run test"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" \
+  'command = "COREPACK_ENABLE_NETWORK=0 pnpm run build"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "lint"'
 assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'target = "root"'
-assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'command = "pnpm run lint"'
-assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'setup = "pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" \
+  'command = "COREPACK_ENABLE_NETWORK=0 pnpm run lint"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" \
+  'setup = "COREPACK_ENABLE_NETWORK=0 pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile"'
 bash "$RUNNER" validate --check-contract --project "$ADOPT_MONOREPO" >/dev/null
 
 ADOPT_NON_WORKSPACE_CHILD="$TMP_DIR/adopt-non-workspace-child"
@@ -1935,7 +2063,8 @@ commit_adoption_repo "$ADOPT_PNPM_AUTHORITY" "fixture"
 git -C "$ADOPT_PNPM_AUTHORITY" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-pnpm-authority.out" adopt --project "$ADOPT_PNPM_AUTHORITY"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "pnpm workspace authority adoption failed"
-assert_contains "$ADOPT_PNPM_AUTHORITY/.touchstone.toml" 'setup = "(cd apps/api && pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile)"'
+assert_contains "$ADOPT_PNPM_AUTHORITY/.touchstone.toml" \
+  'setup = "(cd apps/api && COREPACK_ENABLE_NETWORK=0 pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile)"'
 
 ADOPT_PNPM_EXCLUSION="$TMP_DIR/adopt-pnpm-exclusion"
 init_adoption_repo "$ADOPT_PNPM_EXCLUSION"
@@ -1949,14 +2078,16 @@ commit_adoption_repo "$ADOPT_PNPM_EXCLUSION" "fixture"
 git -C "$ADOPT_PNPM_EXCLUSION" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-pnpm-exclusion.out" adopt --project "$ADOPT_PNPM_EXCLUSION"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "pnpm order-independent exclusion adoption failed"
-assert_contains "$ADOPT_PNPM_EXCLUSION/.touchstone.toml" 'setup = "(cd apps/api && pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile)"'
+assert_contains "$ADOPT_PNPM_EXCLUSION/.touchstone.toml" \
+  'setup = "(cd apps/api && COREPACK_ENABLE_NETWORK=0 pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile)"'
 
 ADOPT_CARGO_WORKSPACE="$TMP_DIR/adopt-cargo-workspace"
 init_adoption_repo "$ADOPT_CARGO_WORKSPACE"
 mkdir -p "$ADOPT_CARGO_WORKSPACE/packages/core/src"
 printf '%s\n' '[workspace]' 'members = ["packages/core"]' 'resolver = "2"' \
   >"$ADOPT_CARGO_WORKSPACE/Cargo.toml"
-printf '%s\n' 'version = 4' >"$ADOPT_CARGO_WORKSPACE/Cargo.lock"
+printf '%s\n' 'version = 4' '' '[[package]]' 'name = "core"' \
+  'version = "0.1.0"' >"$ADOPT_CARGO_WORKSPACE/Cargo.lock"
 printf '%s\n' '[package]' 'name = "core"' 'version = "0.1.0"' 'edition = "2024"' \
   >"$ADOPT_CARGO_WORKSPACE/packages/core/Cargo.toml"
 printf '%s\n' 'pub fn core() {}' >"$ADOPT_CARGO_WORKSPACE/packages/core/src/lib.rs"
@@ -1976,7 +2107,9 @@ mkdir -p "$ADOPT_CARGO_ROOT_WORKSPACE/src" \
 printf '%s\n' '[package]' 'name = "root"' 'version = "0.1.0"' \
   '[workspace]' 'members = ["crates/bad"]' 'resolver = "2"' \
   >"$ADOPT_CARGO_ROOT_WORKSPACE/Cargo.toml"
-printf '%s\n' 'version = 4' >"$ADOPT_CARGO_ROOT_WORKSPACE/Cargo.lock"
+printf '%s\n' 'version = 4' '' '[[package]]' 'name = "root"' \
+  'version = "0.1.0"' '' '[[package]]' 'name = "bad"' 'version = "0.1.0"' \
+  >"$ADOPT_CARGO_ROOT_WORKSPACE/Cargo.lock"
 printf '%s\n' 'pub fn root() {}' >"$ADOPT_CARGO_ROOT_WORKSPACE/src/lib.rs"
 printf '%s\n' '[package]' 'name = "bad"' 'version = "0.1.0"' \
   >"$ADOPT_CARGO_ROOT_WORKSPACE/crates/bad/Cargo.toml"
@@ -2049,7 +2182,8 @@ git -C "$ADOPT_PNPM_FLOW_WORKSPACE" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-pnpm-flow-workspace.out" adopt --project "$ADOPT_PNPM_FLOW_WORKSPACE"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "flow-style pnpm workspace adoption failed"
 assert_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" 'path = "apps/api"'
-assert_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" 'setup = "pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile"'
+assert_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" \
+  'setup = "COREPACK_ENABLE_NETWORK=0 pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile"'
 assert_not_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" '(cd apps/api'
 
 ADOPT_PNPM_QUOTED_KEY="$TMP_DIR/adopt-pnpm-quoted-key"
@@ -2207,7 +2341,8 @@ commit_adoption_repo "$ADOPT_ESCAPED_JSON" "fixture"
 git -C "$ADOPT_ESCAPED_JSON" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-escaped-json.out" adopt --project "$ADOPT_ESCAPED_JSON"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "escaped JSON adoption failed"
-assert_contains "$ADOPT_ESCAPED_JSON/.touchstone.toml" 'command = "pnpm run test"'
+assert_contains "$ADOPT_ESCAPED_JSON/.touchstone.toml" \
+  'command = "COREPACK_ENABLE_NETWORK=0 pnpm run test"'
 
 ADOPT_EMPTY_AGGREGATE="$TMP_DIR/adopt-empty-aggregate"
 init_adoption_repo "$ADOPT_EMPTY_AGGREGATE"
@@ -2238,10 +2373,14 @@ for yarn_case in unlocked berry classic; do
   git -C "$ADOPT_YARN" switch -q -c feat/adopt
   run_adoption "$TMP_DIR/adopt-yarn-$yarn_case.out" adopt --project "$ADOPT_YARN"
   [ "$ADOPTION_STATUS" -eq 0 ] || fail "$yarn_case Yarn adoption failed"
+  assert_contains "$ADOPT_YARN/.touchstone.toml" \
+    'command = "COREPACK_ENABLE_NETWORK=0 yarn test"'
   if [ "$yarn_case" = berry ]; then
-    assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install --immutable --immutable-cache --mode=skip-build"'
+    assert_contains "$ADOPT_YARN/.touchstone.toml" \
+      'setup = "COREPACK_ENABLE_NETWORK=0 yarn install --immutable --immutable-cache --mode=skip-build"'
   elif [ "$yarn_case" = classic ]; then
-    assert_contains "$ADOPT_YARN/.touchstone.toml" 'setup = "yarn install --offline --frozen-lockfile --ignore-scripts"'
+    assert_contains "$ADOPT_YARN/.touchstone.toml" \
+      'setup = "COREPACK_ENABLE_NETWORK=0 yarn install --offline --frozen-lockfile --ignore-scripts"'
   else
     assert_not_contains "$ADOPT_YARN/.touchstone.toml" 'setup = '
   fi

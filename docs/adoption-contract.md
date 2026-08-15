@@ -52,8 +52,10 @@ Node tasks come only from non-empty declared package scripts. A declared
 the declared `lint`, `typecheck`, `test`, and `build` scripts in that order.
 When a dependency-free lockfile in the compiler's complete portable subset
 exists, the declaration prepares Node dependencies only in the manager's
-offline, frozen/immutable mode; dependency-bearing or unverifiable locks require
-a manual declaration, and an unlocked project gets no generated install step.
+offline, frozen/immutable mode; pnpm and Yarn commands also disable Corepack
+network access before resolving their declared runtimes. Dependency-bearing or
+unverifiable locks require a manual declaration, and an unlocked project gets
+no generated install step.
 Yarn Classic and Berry require an exact declared package-manager version, and
 project-controlled Yarn configuration requires a manual declaration. A
 child uses the root setup only when an explicit JSON, block YAML, or single-line
@@ -76,12 +78,14 @@ exclude them. Configuration or a test tree without the checker dependency refuse
 Tool-only Python configuration without dependency facts refuses. Monorepo
 plans include executable root-level checks alongside explicit child targets.
 Swift automatic adoption requires a static test target with tracked source.
-Go commands disable automatic toolchain selection, workspace discovery, the
-module proxy, and the checksum database, and require tracked Go source. Rust
-requires tracked default package source plus a committed, completely parsed
-`Cargo.lock`, verifies exact workspace and default-member declarations, and tests
-every verified workspace package in Cargo's frozen mode so validation cannot
-rewrite it or reach the network. Every generated validation
+Go commands disable persistent environment configuration, automatic toolchain
+selection, workspace discovery, the module proxy, and the checksum database;
+the Go tool must confirm offline that `./...` selects a package backed by tracked,
+non-excluded source. Rust requires tracked default package source plus a committed,
+completely parsed `Cargo.lock`; Cargo must confirm offline that the lock matches
+every verified manifest. Project-controlled Cargo execution config and build
+programs require a manual task. Workspace validation tests every verified package
+in frozen mode so it cannot rewrite the lock or reach the network. Every generated validation
 path fails when required dependencies are not vendored or pre-provisioned;
 none may turn a package-host outage into a required-check failure. The accepted commands and setup are
 written explicitly to `.touchstone.toml`; later preset changes never rewrite

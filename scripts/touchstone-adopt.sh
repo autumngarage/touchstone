@@ -943,7 +943,7 @@ node_setup_command() {
       ;;
     pnpm)
       if [ -f "$directory/pnpm-lock.yaml" ]; then
-        printf 'pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile\n'
+        printf 'COREPACK_ENABLE_NETWORK=0 pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile\n'
       fi
       ;;
     yarn)
@@ -973,19 +973,19 @@ node_setup_command() {
                 if [ "$major" -eq 1 ]; then
                   [ "$lock_kind" != berry ] \
                     || contract_refusal "Yarn Classic packageManager '$spec' conflicts with a Berry lockfile"
-                  printf 'yarn install --offline --frozen-lockfile --ignore-scripts\n'
+                  printf 'COREPACK_ENABLE_NETWORK=0 yarn install --offline --frozen-lockfile --ignore-scripts\n'
                 else
                   [ "$major" -ge 2 ] \
                     || contract_refusal "unsupported Yarn packageManager version '$version'"
                   [ "$lock_kind" != classic ] \
                     || contract_refusal "Yarn Berry packageManager '$spec' conflicts with a Classic lockfile"
-                  printf 'yarn install --immutable --immutable-cache --mode=skip-build\n'
+                  printf 'COREPACK_ENABLE_NETWORK=0 yarn install --immutable --immutable-cache --mode=skip-build\n'
                 fi
                 ;;
               yarn)
                 case "$lock_kind" in
-                  classic) printf 'yarn install --offline --frozen-lockfile --ignore-scripts\n' ;;
-                  berry) printf 'yarn install --immutable --immutable-cache --mode=skip-build\n' ;;
+                  classic) printf 'COREPACK_ENABLE_NETWORK=0 yarn install --offline --frozen-lockfile --ignore-scripts\n' ;;
+                  berry) printf 'COREPACK_ENABLE_NETWORK=0 yarn install --immutable --immutable-cache --mode=skip-build\n' ;;
                   *) contract_refusal "yarn.lock format is ambiguous; declare packageManager with an exact Yarn version" ;;
                 esac
                 ;;
@@ -1009,8 +1009,8 @@ node_command() {
   local manager="$1" task="$2"
   case "$manager" in
     npm) printf 'npm run %s\n' "$task" ;;
-    pnpm) printf 'pnpm run %s\n' "$task" ;;
-    yarn) printf 'yarn %s\n' "$task" ;;
+    pnpm) printf 'COREPACK_ENABLE_NETWORK=0 pnpm run %s\n' "$task" ;;
+    yarn) printf 'COREPACK_ENABLE_NETWORK=0 yarn %s\n' "$task" ;;
     bun) printf 'bun run %s\n' "$task" ;;
   esac
 }
@@ -2295,6 +2295,57 @@ validate_cargo_lock() {
     END { if (!version_seen) exit 2 }
   ' "$file" >/dev/null 2>&1 \
     || contract_refusal "Cargo.lock has no unique supported root lockfile version; regenerate it or pass --task NAME=COMMAND"
+  awk '
+    function finish_package() {
+      if (in_package && (!name_seen || !version_seen)) exit 2
+    }
+    /^[[:space:]]*\[\[package\]\][[:space:]]*$/ {
+      finish_package()
+      in_package=1
+      nested=0
+      name_seen=version_seen=0
+      packages++
+      next
+    }
+    in_package && /^[[:space:]]*\[/ { nested=1; next }
+    !in_package || nested { next }
+    /^[[:space:]]*name[[:space:]]*=[[:space:]]*"[A-Za-z0-9][A-Za-z0-9._-]*"[[:space:]]*$/ {
+      if (name_seen) exit 2
+      name_seen=1
+      next
+    }
+    /^[[:space:]]*name[[:space:]]*=/ { exit 2 }
+    /^[[:space:]]*version[[:space:]]*=[[:space:]]*"[^"]+"[[:space:]]*$/ {
+      if (version_seen) exit 2
+      version_seen=1
+      next
+    }
+    /^[[:space:]]*version[[:space:]]*=/ { exit 2 }
+    END {
+      finish_package()
+      if (!packages) exit 2
+    }
+  ' "$file" >/dev/null 2>&1 \
+    || contract_refusal "Cargo.lock has incomplete package records; regenerate it or pass --task NAME=COMMAND"
+}
+
+verify_cargo_lock_compatibility() {
+  local directory="$1" output detail
+  command -v cargo >/dev/null 2>&1 \
+    || contract_refusal "Rust automatic adoption requires Cargo to verify the lock offline; install Cargo or pass --task NAME=COMMAND"
+  if output="$(cd "$directory" \
+    && CARGO_NET_OFFLINE=true \
+      cargo metadata --locked --offline --no-deps --format-version 1 2>&1)"; then
+    return 0
+  fi
+  detail="$(printf '%s\n' "$output" | awk '
+    NF {
+      if (joined != "") joined=joined " "
+      joined=joined $0
+    }
+    END { print substr(joined, 1, 300) }
+  ')"
+  contract_refusal "Cargo.lock is incompatible with the verified manifests under offline metadata resolution${detail:+: $detail}; regenerate it or pass --task NAME=COMMAND"
 }
 
 rust_manifest_is_package() {
@@ -2303,6 +2354,7 @@ rust_manifest_is_package() {
 
 require_tracked_rust_source() {
   local directory="$1" relative source
+  reject_rust_execution_config "$directory"
   rust_manifest_is_package "$directory/Cargo.toml" || return 0
   if [ "$directory" = "$PROJECT_ROOT" ]; then relative=""; else relative="${directory#"$PROJECT_ROOT"/}/"; fi
   for source in src/lib.rs src/main.rs; do
@@ -2315,13 +2367,62 @@ require_tracked_rust_source() {
   contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' has no tracked default src/lib.rs or src/main.rs"
 }
 
+reject_rust_execution_config() {
+  local directory="$1" config
+  if [ -e "$directory/build.rs" ] || [ -L "$directory/build.rs" ]; then
+    contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' has a build.rs program automatic validation cannot isolate; pass --task NAME=COMMAND"
+  fi
+  awk '
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      section=$0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*$/, "", section)
+      next
+    }
+    section == "package" && /^[[:space:]]*build[[:space:]]*=/ {
+      line=$0
+      sub(/^[^=]*=[[:space:]]*/, "", line)
+      sub(/[[:space:]]*(#.*)?$/, "", line)
+      if (line != "false") unsafe=1
+    }
+    END { exit !unsafe }
+  ' "$directory/Cargo.toml" \
+    && contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' declares a custom build program automatic validation cannot isolate; pass --task NAME=COMMAND"
+  for config in "$directory/.cargo/config" "$directory/.cargo/config.toml"; do
+    if [ -e "$config" ] || [ -L "$config" ]; then
+      contract_refusal "Rust target '${directory#"$PROJECT_ROOT"/}' has project-controlled Cargo execution config; pass --task NAME=COMMAND"
+    fi
+  done
+}
+
 require_tracked_go_source() {
   local directory="$1" relative tracked_sources source
   if [ "$directory" = "$PROJECT_ROOT" ]; then relative=""; else relative="${directory#"$PROJECT_ROOT"/}"; fi
   if [ -n "$relative" ]; then
-    tracked_sources="$(git -C "$PROJECT_ROOT" ls-files -- "$relative" | awk '/[.]go$/')"
+    tracked_sources="$(git -C "$PROJECT_ROOT" ls-files -- "$relative" | awk -v prefix="$relative/" '
+      function selected(path, count, part, parts, base) {
+        path=substr(path, length(prefix) + 1)
+        count=split(path, parts, "/")
+        for (part=1; part<count; part++) {
+          if (parts[part] == "vendor" || parts[part] == "testdata" || parts[part] ~ /^[._]/) return 0
+        }
+        base=parts[count]
+        return base ~ /[.]go$/ && base !~ /^[._]/
+      }
+      selected($0)
+    ')"
   else
-    tracked_sources="$(git -C "$PROJECT_ROOT" ls-files | awk '/[.]go$/')"
+    tracked_sources="$(git -C "$PROJECT_ROOT" ls-files | awk '
+      function selected(path, count, part, parts, base) {
+        count=split(path, parts, "/")
+        for (part=1; part<count; part++) {
+          if (parts[part] == "vendor" || parts[part] == "testdata" || parts[part] ~ /^[._]/) return 0
+        }
+        base=parts[count]
+        return base ~ /[.]go$/ && base !~ /^[._]/
+      }
+      selected($0)
+    ')"
   fi
   [ -n "$tracked_sources" ] \
     || contract_refusal "Go target '${directory#"$PROJECT_ROOT"/}' has no tracked Go source"
@@ -2330,6 +2431,26 @@ require_tracked_go_source() {
     [ -f "$PROJECT_ROOT/$source" ] && [ ! -L "$PROJECT_ROOT/$source" ] \
       || contract_refusal "Go source '$source' is not a regular tracked file"
   done <<<"$tracked_sources"
+}
+
+verify_go_packages() {
+  local directory="$1" output detail
+  command -v go >/dev/null 2>&1 \
+    || contract_refusal "Go automatic adoption requires the Go tool to verify selected packages offline; install Go or pass --task NAME=COMMAND"
+  if output="$(cd "$directory" \
+    && GOENV=off GOTOOLCHAIN=local GOWORK=off GOPROXY=off GOSUMDB=off \
+      go list ./... 2>&1)"; then
+    [ -n "$(printf '%s' "$output" | awk 'NF { found=1 } END { if (found) print "yes" }')" ] \
+      && return 0
+  fi
+  detail="$(printf '%s\n' "$output" | awk '
+    NF {
+      if (joined != "") joined=joined " "
+      joined=joined $0
+    }
+    END { print substr(joined, 1, 300) }
+  ')"
+  contract_refusal "Go target has no package selected by ./... under offline local-toolchain resolution${detail:+: $detail}; pass --task NAME=COMMAND"
 }
 
 validate_cargo_workspace_members() {
@@ -2409,6 +2530,7 @@ tasks_for_profile() {
         || contract_refusal "Rust target '$target' has no tracked Cargo.lock; commit it or pass --task NAME=COMMAND"
       validate_cargo_lock "$PROJECT_ROOT/$cargo_lock_path"
       require_tracked_rust_source "$directory"
+      verify_cargo_lock_compatibility "$directory"
       record_task "test$suffix" "$target" "$cargo_command"
       ;;
     go)
@@ -2418,7 +2540,8 @@ tasks_for_profile() {
         && contract_refusal "Go target '$target' declares a local replacement this portable compiler cannot verify within the checkout; pass --task NAME=COMMAND"
       validate_go_mod_document "$directory/go.mod"
       require_tracked_go_source "$directory"
-      record_task "test$suffix" "$target" "GOTOOLCHAIN=local GOWORK=off GOPROXY=off GOSUMDB=off go test ./..."
+      verify_go_packages "$directory"
+      record_task "test$suffix" "$target" "GOENV=off GOTOOLCHAIN=local GOWORK=off GOPROXY=off GOSUMDB=off go test ./..."
       ;;
     generic) contract_refusal "no supported project facts found; pass --task NAME=COMMAND for a manual declaration" ;;
     ambiguous:*) contract_refusal "ambiguous project facts for target '$target': ${profile#ambiguous:}" ;;
