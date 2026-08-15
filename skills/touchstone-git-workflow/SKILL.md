@@ -39,7 +39,7 @@ Your unstaged changes carry over. The trigger is *edit time*, not commit time �
 3. Commit (explicit file paths, concise message, one concern per commit)
 4. `git push -u origin HEAD`, then `gh pr create` — **put `Closes #123` in the PR body**, not only the commit
 5. Request review: `gh pr comment <n> --body "@codex review"` — against the head that actually landed on the remote
-6. Answer findings with `bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file>`; prove none remain with `--all-resolved-check`
+6. Answer findings with GitHub's reply API, resolve each `PRRT_...` thread with `resolveReviewThread`, and query the complete thread surface to prove none remain
 7. `gh pr merge <n> --squash --match-head-commit <reviewed-sha>`, then confirm `state == MERGED`
 8. Clean up locally (`git branch -d <feature>`, or `-D` after confirming the content landed)
 

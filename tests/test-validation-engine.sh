@@ -1103,4 +1103,177 @@ run_transaction_case backup-rollback backup || fail "failed backup preparation d
   grep -Fq "$backup" "$applied" || exit 43
 ) || fail "rollback cleanup destroyed the only recoverable original"
 
+echo "==> public validate help stays on the versioned CLI boundary"
+bash "$ROOT/bin/touchstone" validate --help >"$TMP_DIR/validate-help.out"
+assert_contains "$TMP_DIR/validate-help.out" "touchstone validate"
+assert_not_contains "$TMP_DIR/validate-help.out" "scripts/touchstone-run.sh"
+bash "$ROOT/bin/touchstone" validate --json --help >"$TMP_DIR/validate-help-after-option.out"
+assert_contains "$TMP_DIR/validate-help-after-option.out" "touchstone validate"
+assert_not_contains "$TMP_DIR/validate-help-after-option.out" "scripts/touchstone-run.sh"
+
+echo "==> adoption core compiles manual tasks and refuses unavailable adapters"
+ADOPT_MANUAL="$TMP_DIR/adopt-manual"
+mkdir -p "$ADOPT_MANUAL"
+git -C "$ADOPT_MANUAL" init -q
+git -C "$ADOPT_MANUAL" config user.name fixture
+git -C "$ADOPT_MANUAL" config user.email fixture@example.com
+printf '%s\n' '# fixture' >"$ADOPT_MANUAL/README.md"
+git -C "$ADOPT_MANUAL" add README.md
+git -C "$ADOPT_MANUAL" commit -qm fixture
+git -C "$ADOPT_MANUAL" update-ref refs/remotes/origin/main HEAD
+git -C "$ADOPT_MANUAL" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+git -C "$ADOPT_MANUAL" switch -q -c feat/adopt
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_MANUAL/package.json"
+
+bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_MANUAL" \
+  --task 'verify=bash scripts/check.sh --all' >"$TMP_DIR/adopt-manual-plan.json"
+assert_contains "$TMP_DIR/adopt-manual-plan.json" '"profile":"manual"'
+assert_contains "$TMP_DIR/adopt-manual-plan.json" '"path":".touchstone.toml","action":"create"'
+assert_contains "$TMP_DIR/adopt-manual-plan.json" \
+  'command = \"bash scripts/check.sh --all\"'
+[ ! -e "$ADOPT_MANUAL/.touchstone.toml" ] || fail "adoption dry-run mutated the project"
+
+ADOPT_DIFF_HOME="$TMP_DIR/adopt-diff-home"
+mkdir -p "$ADOPT_DIFF_HOME"
+printf '%s\n' '*.md diff=touchstone-side-effect' >"$ADOPT_DIFF_HOME/attributes"
+cat >"$ADOPT_DIFF_HOME/textconv" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' ran >"$TMP_DIR/adopt-textconv-marker"
+cat "\$1"
+EOF
+chmod +x "$ADOPT_DIFF_HOME/textconv"
+git config --file "$ADOPT_DIFF_HOME/.gitconfig" core.attributesFile "$ADOPT_DIFF_HOME/attributes"
+git config --file "$ADOPT_DIFF_HOME/.gitconfig" diff.touchstone-side-effect.textconv "$ADOPT_DIFF_HOME/textconv"
+HOME="$ADOPT_DIFF_HOME" GIT_DIFF_OPTS=--unified=0 \
+  GIT_CONFIG_COUNT=3 GIT_CONFIG_KEY_0=color.ui GIT_CONFIG_VALUE_0=always \
+  GIT_CONFIG_KEY_1=diff.context GIT_CONFIG_VALUE_1=0 \
+  GIT_CONFIG_KEY_2=diff.algorithm GIT_CONFIG_VALUE_2=histogram \
+  bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_MANUAL" \
+  --task 'verify=bash scripts/check.sh --all' >"$TMP_DIR/adopt-manual-color.json"
+assert_not_contains "$TMP_DIR/adopt-manual-color.json" $'\033'
+[ ! -e "$TMP_DIR/adopt-textconv-marker" ] || fail "adoption plan executed an ambient textconv filter"
+cmp -s "$TMP_DIR/adopt-manual-plan.json" "$TMP_DIR/adopt-manual-color.json" \
+  || fail "Git diff configuration changed the versioned adoption plan"
+rm "$ADOPT_MANUAL/package.json"
+
+MANUAL_CONTROL_COMMAND="printf $(printf '\033')"
+set +e
+bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_MANUAL" \
+  --task "verify=$MANUAL_CONTROL_COMMAND" >"$TMP_DIR/adopt-manual-control.out" \
+  2>"$TMP_DIR/adopt-manual-control.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "manual command with a TOML-forbidden control byte was accepted"
+assert_contains "$TMP_DIR/adopt-manual-control.err" 'control byte forbidden in a TOML command'
+
+bash "$ROOT/bin/touchstone" adopt --project "$ADOPT_MANUAL" \
+  --task 'verify=bash scripts/check.sh --all' >"$TMP_DIR/adopt-manual-apply.out"
+assert_contains "$ADOPT_MANUAL/.touchstone.toml" \
+  'command = "bash scripts/check.sh --all"'
+assert_contains "$ADOPT_MANUAL/AGENTS.md" '<!-- touchstone:steering:start -->'
+bash "$ROOT/bin/touchstone" adopt --project "$ADOPT_MANUAL" \
+  >"$TMP_DIR/adopt-manual-repeat.out"
+assert_contains "$TMP_DIR/adopt-manual-repeat.out" 'adopt: current; no files changed'
+
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_MANUAL/package.json"
+bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_MANUAL" \
+  >"$TMP_DIR/adopt-manual-unread-manifest.out"
+assert_contains "$TMP_DIR/adopt-manual-unread-manifest.out" 'adopt: 0 file change(s) proposed'
+
+printf '%s\n' '# Preserved steering' 'OLD COMPATIBLE STEERING' \
+  >"$ADOPT_MANUAL/.touchstone/TOUCHSTONE.md"
+rm "$ADOPT_MANUAL/AGENTS.md"
+bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_MANUAL" \
+  >"$TMP_DIR/adopt-manual-preserved.json"
+assert_contains "$TMP_DIR/adopt-manual-preserved.json" 'OLD COMPATIBLE STEERING'
+assert_not_contains "$TMP_DIR/adopt-manual-preserved.json" \
+  'Humans approve plans. Agents write and ship code. GitHub reviews code.'
+
+ADOPT_HIDDEN_UNTRACKED="$TMP_DIR/adopt-hidden-untracked"
+mkdir -p "$ADOPT_HIDDEN_UNTRACKED"
+git -C "$ADOPT_HIDDEN_UNTRACKED" init -q -b main
+git -C "$ADOPT_HIDDEN_UNTRACKED" config user.name fixture
+git -C "$ADOPT_HIDDEN_UNTRACKED" config user.email fixture@example.com
+printf '%s\n' '# fixture' >"$ADOPT_HIDDEN_UNTRACKED/README.md"
+git -C "$ADOPT_HIDDEN_UNTRACKED" add README.md
+git -C "$ADOPT_HIDDEN_UNTRACKED" commit -qm fixture
+git -C "$ADOPT_HIDDEN_UNTRACKED" update-ref refs/remotes/origin/main HEAD
+git -C "$ADOPT_HIDDEN_UNTRACKED" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+git -C "$ADOPT_HIDDEN_UNTRACKED" switch -q -c feat/adopt
+printf '%s\n' 'must survive' >"$ADOPT_HIDDEN_UNTRACKED/untracked.txt"
+set +e
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=status.showUntrackedFiles GIT_CONFIG_VALUE_0=no \
+  bash "$ROOT/bin/touchstone" adopt --project "$ADOPT_HIDDEN_UNTRACKED" \
+  --task 'verify=true' >"$TMP_DIR/adopt-hidden-untracked.out" \
+  2>"$TMP_DIR/adopt-hidden-untracked.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "ambient status config hid an untracked apply input"
+assert_contains "$TMP_DIR/adopt-hidden-untracked.err" 'apply requires a clean worktree'
+[ ! -e "$ADOPT_HIDDEN_UNTRACKED/.touchstone.toml" ] \
+  || fail "hidden untracked apply partially wrote the project"
+[ "$(cat "$ADOPT_HIDDEN_UNTRACKED/untracked.txt")" = 'must survive' ] \
+  || fail "hidden untracked apply changed project-owned data"
+
+ADOPT_IGNORED_OUTPUT="$TMP_DIR/adopt-ignored-output"
+mkdir -p "$ADOPT_IGNORED_OUTPUT"
+git -C "$ADOPT_IGNORED_OUTPUT" init -q
+git -C "$ADOPT_IGNORED_OUTPUT" config user.name fixture
+git -C "$ADOPT_IGNORED_OUTPUT" config user.email fixture@example.com
+printf '%s\n' '.touchstone.toml' >"$ADOPT_IGNORED_OUTPUT/.gitignore"
+git -C "$ADOPT_IGNORED_OUTPUT" add .gitignore
+git -C "$ADOPT_IGNORED_OUTPUT" commit -qm fixture
+write_contract "$ADOPT_IGNORED_OUTPUT" true
+git -C "$ADOPT_IGNORED_OUTPUT" switch -q -c feat/adopt
+set +e
+bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_IGNORED_OUTPUT" \
+  >"$TMP_DIR/adopt-ignored-output.out" 2>"$TMP_DIR/adopt-ignored-output.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "ignored adoption output was accepted"
+assert_contains "$TMP_DIR/adopt-ignored-output.err" \
+  "compiler input '.touchstone.toml' is not tracked"
+
+ADOPT_SYMLINKED_OUTPUT="$TMP_DIR/adopt-symlinked-output"
+ADOPT_SYMLINKED_OUTSIDE="$TMP_DIR/adopt-symlinked-outside"
+mkdir -p "$ADOPT_SYMLINKED_OUTPUT" "$ADOPT_SYMLINKED_OUTSIDE"
+git -C "$ADOPT_SYMLINKED_OUTPUT" init -q
+git -C "$ADOPT_SYMLINKED_OUTPUT" config user.name fixture
+git -C "$ADOPT_SYMLINKED_OUTPUT" config user.email fixture@example.com
+printf '%s\n' '# fixture' >"$ADOPT_SYMLINKED_OUTPUT/README.md"
+ln -s "$ADOPT_SYMLINKED_OUTSIDE" "$ADOPT_SYMLINKED_OUTPUT/.touchstone"
+git -C "$ADOPT_SYMLINKED_OUTPUT" add README.md .touchstone
+git -C "$ADOPT_SYMLINKED_OUTPUT" commit -qm fixture
+git -C "$ADOPT_SYMLINKED_OUTPUT" update-ref refs/remotes/origin/main HEAD
+git -C "$ADOPT_SYMLINKED_OUTPUT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+git -C "$ADOPT_SYMLINKED_OUTPUT" switch -q -c feat/adopt
+set +e
+bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_SYMLINKED_OUTPUT" \
+  --task 'verify=true' >"$TMP_DIR/adopt-symlinked-output.out" \
+  2>"$TMP_DIR/adopt-symlinked-output.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "symlinked adoption output ancestor did not refuse"
+assert_contains "$TMP_DIR/adopt-symlinked-output.err" \
+  'managed path traverses a symlink: .touchstone'
+
+ADOPT_NODE_UNAVAILABLE="$TMP_DIR/adopt-node-unavailable"
+mkdir -p "$ADOPT_NODE_UNAVAILABLE"
+git -C "$ADOPT_NODE_UNAVAILABLE" init -q
+git -C "$ADOPT_NODE_UNAVAILABLE" config user.name fixture
+git -C "$ADOPT_NODE_UNAVAILABLE" config user.email fixture@example.com
+printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_NODE_UNAVAILABLE/package.json"
+git -C "$ADOPT_NODE_UNAVAILABLE" add package.json
+git -C "$ADOPT_NODE_UNAVAILABLE" commit -qm fixture
+git -C "$ADOPT_NODE_UNAVAILABLE" switch -q -c feat/adopt
+set +e
+bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_NODE_UNAVAILABLE" \
+  >"$TMP_DIR/adopt-node-unavailable.out" 2>"$TMP_DIR/adopt-node-unavailable.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "missing Node adapter did not refuse automatic adoption"
+assert_contains "$TMP_DIR/adopt-node-unavailable.err" \
+  'automatic node adoption is unavailable in this Touchstone build'
+
 echo "validation engine tests passed"

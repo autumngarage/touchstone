@@ -16,10 +16,11 @@ Every code change goes through a feature branch + PR + PR-visible review loop + 
 
 **If you've already pushed**, the standard ship path is broken. Don't try to rewrite history on the default branch. Disclose the slip in the next PR (see "Emergency path" below) and carry on — the commit is now part of history, and the audit trail captures what happened.
 
-**The mechanical guardrails** that back this rule:
-
-- `hooks/branch-guard.sh` runs as a Claude Code `PreToolUse` hook and refuses a `git commit` invocation on the default branch before the tool call runs at all.
-- The `no-commit-to-branch` hook in `.pre-commit-config.yaml` is configured with `--branch main --branch master`. It runs at `pre-commit` stage and refuses the commit outright. `git commit --no-verify` bypasses this local feedback only.
+**Local guardrails are optional feedback, not authority.** A repository may
+configure a driver hook or pre-commit hook that refuses commits on its default
+branch. Inspect the repository before relying on either integration; their
+absence never changes the branching rule, and `git commit --no-verify` bypasses
+pre-commit feedback only.
 - Where the repository's effective policy contains the Touchstone organization
   ruleset, GitHub requires the change to go through a PR and rejects direct
   pushes to `main`, including from organization admins.
@@ -82,15 +83,18 @@ What the merge gate says right now, in three commands:
 ```bash
 gh pr checks <n>                                          # required checks
 gh pr view <n> --json reviews --jq '.reviews[-1].state'   # latest review state
-gh api graphql -f query='
-  query($owner:String!, $repo:String!, $pr:Int!) {
+gh api graphql --paginate --slurp -f query='
+  query($owner:String!, $repo:String!, $pr:Int!, $endCursor:String) {
     repository(owner:$owner, name:$repo) {
       pullRequest(number:$pr) {
-        reviewThreads(first:100) { nodes { id isResolved } }
+        reviewThreads(first:100, after:$endCursor) {
+          nodes { id isResolved }
+          pageInfo { hasNextPage endCursor }
+        }
       }
     }
   }' -F owner=<owner> -F repo=<repo> -F pr=<n> \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)] | length'
+  --jq '[.[].data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)] | length'
 ```
 
 The last one is the count of unresolved threads. Zero is the requirement.
@@ -106,16 +110,7 @@ conversation resolution separately requires every inline thread closed.
 
 ## Answering findings
 
-Answer each finding with the canonical response command instead of hand-rolling API calls:
-
-```bash
-bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file> [--fix-commit <sha>]
-bash scripts/respond-review.sh <pr> --all-resolved-check
-```
-
-It posts the threaded reply, resolves the thread, and verifies the resolution stuck, with bounded retries for transient API failures. GitHub needs four separate calls to do this correctly, which is why it is a script rather than a line of prose.
-
-The raw equivalent, if you need it: reply with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<id>/replies -f body=@<file>`, then resolve with the GraphQL mutation:
+Answer each finding on its exact thread. Reply with `gh api repos/<owner>/<repo>/pulls/<n>/comments/<id>/replies -F body=@<file>`, then resolve with the GraphQL mutation:
 
 ```bash
 gh api graphql -f query='
@@ -305,7 +300,7 @@ or close the PR while preserving the findings. Do not grow the current PR one
 review comment at a time. Exact-head review remains required after any redesign;
 scope containment is never permission to skip review.
 
-**The loop.** If every finding resolves **without moving the head** (dispositions 3–4), answer every thread, prove none remain with `--all-resolved-check`, then merge — answered findings satisfy the gate (issue #751); do not request another review. If any fix lands as a commit (dispositions 1–2), batch ALL of them into ONE commit, answer every thread, push, and request one review for the new head.
+**The loop.** If every finding resolves **without moving the head** (dispositions 3–4), answer every thread, query the complete review-thread surface to prove none remain, then merge — answered findings satisfy the gate (issue #751); do not request another review. If any fix lands as a commit (dispositions 1–2), batch ALL of them into ONE commit, answer every thread, push, and request one review for the new head.
 
 **The budget: three rounds per PR.** This is a discipline, not an enforced limit — the wrapper that refused a fourth request is gone, and a rule enforced by a script you can decline to run was never a rule. Past three rounds, the legitimate exits are:
 
@@ -370,20 +365,14 @@ Merge a chain in order, parent first, repeating both steps for each next child.
 
 Before spawning a coding agent — Claude Code subagent, Codex CLI, or any other — to work on a GitHub issue, **claim it first**. Set the assignee, post a one-line dispatch comment, then spawn the agent. The cost is ten seconds per issue; the cost of skipping it is two agents picking up the same issue and shipping competing PRs.
 
-**The mechanical steps.**
-
-```bash
-bash scripts/claim-issue.sh <n>
-```
-
-Under the hood this uses the same GitHub API flow (claim + dispatch comment), equivalent to:
+**The mechanical steps for a GitHub issue.**
 
 ```bash
 gh issue edit <n> --add-assignee @me
 gh issue comment <n> --body "Dispatched. Branch \`<branch>\`, worktree at \`<path>\`. <agent type> implementing."
 ```
 
-The script is preferred because it detects races — another assignee appearing between the API read and write — and exits non-zero so the dispatching agent knows not to start work.
+Re-read the assignees after the write and stop if another owner won the race. For a non-GitHub tracker, use its configured adapter to perform the same claim and dispatch transition.
 
 Then start the agent. Not after.
 
@@ -402,9 +391,12 @@ Then start the agent. Not after.
 
 **For multi-issue bundles.** When one lane closes multiple issues, claim and comment on all of them with the same branch reference.
 
-**Deterministic enforcement.** `.github/workflows/issue-claim-check.yml` runs on every `pull_request` open/edit/synchronize. It parses `Closes #N` / `Fixes #N` / `Resolves #N` / `Closes-issue: #N` from the PR body, fetches each open referenced issue, and fails the check if the PR author is not in the issue's assignees. The failure posts a comment on the PR explaining what to fix. `scripts/issue-claim-check.sh` is the same check, runnable locally before you push.
-
-**Bypass token: `[skip-claim-check]`.** For documented exemptions (drive-by typo fix, true emergency, sandbox PR you don't intend to merge), put the literal token in the PR body. The CI check sees the token and skips with a workflow-run note, leaving an audit trail. This is a documented escape hatch, not a daily shortcut.
+**Enforcement is repository policy, not a prose assumption.** Where effective
+GitHub policy includes an issue-claim check, it may parse closing references,
+verify assignees, and document a repository-specific bypass. Inspect that
+policy and its help output before relying on either behavior. Without such a
+check, the claim-and-reconcile discipline remains mandatory driver procedure;
+there is no universal bypass token.
 
 ## Parallel work with worktrees
 
