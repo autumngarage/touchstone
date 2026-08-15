@@ -1,0 +1,7 @@
+driver	mode	runs	duration_seconds	input_tokens	cached_or_cache_read_tokens	cache_creation_tokens	output_tokens	reasoning_output_tokens	cost_usd
+codex	steered	3	235	763222	643584	0	8501	1497	not-reported
+codex	control	3	197	418126	364800	0	7138	1535	not-reported
+claude	steered	3	284	60	972088	77945	18553	not-reported	1.774821
+claude	control	3	245	72	1085996	59331	14915	not-reported	1.548544
+gemini	steered	3	7	NA	NA	NA	NA	NA	NA
+gemini	control	3	5	NA	NA	NA	NA	NA	NA

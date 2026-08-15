@@ -1,0 +1,13 @@
+field	value
+schema	touchstone.steering-eval/v1
+evaluation_date	2026-08-14
+structural_result	18/18 passed
+repeat_count	1
+confidence_threshold_percent	80
+minimum_control_delta_percent	1
+evidence_expiry_days	90
+expires_after	2026-11-12
+codex_version	codex-cli 0.147.0
+claude_version	2.1.232 (Claude Code); claude-opus-5
+gemini_versions	0.46.0 installed; 0.55.1 current npm retry
+raw_evidence_location	operator-selected output directory; intentionally not committed

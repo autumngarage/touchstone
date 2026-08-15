@@ -1,0 +1,19 @@
+schema	run_id	driver	version	mode	scenario	repeat	exit	duration_seconds	score	total	percent	outcome
+touchstone.steering-eval/v1	codex-steered-authoring-1	codex	codex-cli 0.147.0	steered	authoring	1	0	102	6	6	100	completed
+touchstone.steering-eval/v1	codex-steered-validation-1	codex	codex-cli 0.147.0	steered	validation	1	0	73	4	4	100	completed
+touchstone.steering-eval/v1	codex-steered-delivery-1	codex	codex-cli 0.147.0	steered	delivery	1	0	60	6	6	100	completed
+touchstone.steering-eval/v1	codex-control-authoring-1	codex	codex-cli 0.147.0	control	authoring	1	0	76	4	6	66	completed
+touchstone.steering-eval/v1	codex-control-validation-1	codex	codex-cli 0.147.0	control	validation	1	0	76	4	4	100	completed
+touchstone.steering-eval/v1	codex-control-delivery-1	codex	codex-cli 0.147.0	control	delivery	1	0	45	6	6	100	completed
+touchstone.steering-eval/v1	claude-steered-authoring-1	claude	2.1.232 (Claude Code)	steered	authoring	1	1	114	6	6	100	completed-nonzero
+touchstone.steering-eval/v1	claude-steered-validation-1	claude	2.1.232 (Claude Code)	steered	validation	1	0	87	4	4	100	completed
+touchstone.steering-eval/v1	claude-steered-delivery-1	claude	2.1.232 (Claude Code)	steered	delivery	1	0	83	6	6	100	completed
+touchstone.steering-eval/v1	claude-control-authoring-1	claude	2.1.232 (Claude Code)	control	authoring	1	1	108	4	6	66	completed-nonzero
+touchstone.steering-eval/v1	claude-control-validation-1	claude	2.1.232 (Claude Code)	control	validation	1	0	66	4	4	100	completed
+touchstone.steering-eval/v1	claude-control-delivery-1	claude	2.1.232 (Claude Code)	control	delivery	1	0	71	6	6	100	completed
+touchstone.steering-eval/v1	gemini-steered-authoring-1	gemini	0.55.1	steered	authoring	1	1	2	NA	NA	NA	infrastructure-unavailable
+touchstone.steering-eval/v1	gemini-steered-validation-1	gemini	0.55.1	steered	validation	1	1	3	NA	NA	NA	infrastructure-unavailable
+touchstone.steering-eval/v1	gemini-steered-delivery-1	gemini	0.55.1	steered	delivery	1	1	2	NA	NA	NA	infrastructure-unavailable
+touchstone.steering-eval/v1	gemini-control-authoring-1	gemini	0.55.1	control	authoring	1	1	2	NA	NA	NA	infrastructure-unavailable
+touchstone.steering-eval/v1	gemini-control-validation-1	gemini	0.55.1	control	validation	1	1	1	NA	NA	NA	infrastructure-unavailable
+touchstone.steering-eval/v1	gemini-control-delivery-1	gemini	0.55.1	control	delivery	1	1	2	NA	NA	NA	infrastructure-unavailable

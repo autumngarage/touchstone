@@ -113,6 +113,9 @@ bash scripts/respond-review.sh <pr> --all-resolved-check
 - **[git-workflow.md](principles/git-workflow.md)** — the full delivery sequence in raw `git` + `gh`
 - **[engineering-principles.md](principles/engineering-principles.md)** — the principles every change is reviewed against
 - **[product-contract.md](docs/product-contract.md)** — the durable product boundary, adoption/evolution contract, and anti-bloat admission test
+- **[adoption-contract.md](docs/adoption-contract.md)** — plan/apply modes, adapters, output schema, and write ownership
+- **[pr-cli-contract.md](docs/pr-cli-contract.md)** — PR commands, stable output, idempotency, and raw equivalents
+- **[steering-evaluation.md](docs/steering-evaluation.md)** — resolved-instruction fixtures, behavioral controls, and evidence expiry
 - **[ai-delivery-architecture.md](principles/ai-delivery-architecture.md)** — the AI-authored change lifecycle
 - **[pre-implementation-checklist.md](principles/pre-implementation-checklist.md)** — the gate before a non-trivial change
 - **[agent-swarms.md](principles/agent-swarms.md)** — parallel agents, slice manifests, worktree isolation

@@ -599,3 +599,133 @@ fi
 
 echo ""
 echo "==> PASS: agent steering contracts are explicit and testable"
+
+if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
+  (
+    # tests/test-steering-evaluation.sh — offline structural and harness contract.
+
+    set -euo pipefail
+
+    ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+    TMP="$(mktemp -d -t touchstone-steering-test.XXXXXX)"
+    trap 'rm -rf "$TMP"' EXIT
+    ERRORS=0
+
+    fail() {
+      echo "FAIL: $*" >&2
+      ERRORS=$((ERRORS + 1))
+    }
+    assert_has() { grep -qF -- "$2" "$1" || fail "expected $1 to contain: $2"; }
+
+    echo "==> resolved instruction fixtures match documented driver precedence"
+    bash "$ROOT/scripts/evaluate-steering.sh" structural --json >"$TMP/structural.json"
+    assert_has "$TMP/structural.json" '"schema":"touchstone.steering-eval/v1"'
+    assert_has "$TMP/structural.json" '"status":"passed"'
+    assert_has "$ROOT/evals/steering/v1/structural/codex/expected.txt" 'CODEX_API_OVERRIDE'
+    assert_has "$ROOT/evals/steering/v1/structural/claude/expected.txt" 'CLAUDE_IMPORTED'
+    assert_has "$ROOT/evals/steering/v1/structural/gemini/expected.txt" 'GEMINI_IMPORTED'
+
+    echo "==> instruction rubric is complete, unique, and mapped to evidence"
+    RUBRIC="$ROOT/evals/steering/v1/rubric.tsv"
+    SCENARIOS="$ROOT/evals/steering/v1/scenarios.tsv"
+    awk -F '\t' '
+  /^#/ { next }
+  NF != 10 { bad=1; print "bad rubric columns: " $0 > "/dev/stderr" }
+  $1 == "id" { next }
+  {
+    if (seen[$1]++) { bad=1; print "duplicate rubric id: " $1 > "/dev/stderr" }
+    for (column=1; column<=10; column++) if ($column == "") bad=1
+  }
+  END { exit bad }
+' "$RUBRIC" || fail "rubric is incomplete or duplicated"
+    for rule in branch-first preimplementation ambiguity stale-path validation no-silent-success head-binding findings security-quota product-boundary; do
+      grep -q -- "$rule" "$SCENARIOS" || fail "required behavioral rule is unmapped: $rule"
+    done
+    for scenario in authoring validation delivery; do
+      [ -x "$ROOT/evals/steering/v1/behavioral/$scenario/setup.sh" ] || fail "$scenario setup is not executable"
+      [ -x "$ROOT/evals/steering/v1/behavioral/$scenario/check.sh" ] || fail "$scenario check is not executable"
+    done
+
+    echo "==> live lane is bounded and records all supported drivers"
+    EVALUATOR="$ROOT/scripts/evaluate-steering.sh"
+    for needle in 'max_runs' 'scenario_timeout_seconds' 'claude_max_budget_usd' 'codex exec --json --ephemeral' 'claude --print --output-format stream-json' 'gemini --prompt' 'git-status.txt' 'summary.tsv'; do
+      assert_has "$EVALUATOR" "$needle"
+    done
+    if bash "$EVALUATOR" behavioral --output "$TMP/empty-option" \
+      --driver '' --driver codex --scenario validation --mode steered --repeat 1 \
+      >"$TMP/empty-option.out" 2>&1; then
+      fail "behavioral evaluator accepted an explicitly empty option value"
+    fi
+    [ ! -e "$TMP/empty-option" ] || fail "empty option parsing created evaluator output"
+    assert_has "$EVALUATOR" '"$ROOT/bin/touchstone" adopt'
+    assert_has "$EVALUATOR" 'output directory must be empty'
+    assert_has "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" 'quota'
+    assert_has "$ROOT/audits/2026-08-14-steering-evaluation.md" 'Behavioral results remain'
+    assert_has "$ROOT/audits/2026-08-14-steering-evaluation.md" 'infrastructure-unavailable'
+    assert_has "$ROOT/audits/2026-08-14-steering-evaluation.md" '2026-11-12'
+
+    mkdir -p "$TMP/quota-regression"
+    printf '%s\n' '# Delivery' '' \
+      'The security-review quota notice is provisional, not review evidence or a waiver.' \
+      'Continue waiting for review of current head 222222; answer and resolve inline finding 51.' \
+      'Answer body-only finding 61. Reject copied runners and background sync.' \
+      >"$TMP/quota-regression/DELIVERY.md"
+    quota_score="$(bash "$ROOT/evals/steering/v1/behavioral/delivery/check.sh" "$TMP/quota-regression" /dev/null)"
+    [ "$quota_score" = $'score\t6\t6' ] || fail "multiline non-blocking quota guidance scored incorrectly: $quota_score"
+
+    echo "==> behavioral orchestration is offline-testable without provider calls"
+    mkdir -p "$TMP/bin" "$TMP/evidence"
+    cat >"$TMP/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = --version ]; then printf '%s\n' 'codex-cli mock'; exit 0; fi
+repo=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -C ]; then repo="$2"; shift 2; else shift; fi
+done
+[ -n "$repo" ] || exit 2
+printf '%s\n' '# Result' '' 'Validation failed because no task ran. Declare a required command before retrying.' >"$repo/RESULT.md"
+printf '%s\n' '{"type":"item.completed","item":{"type":"command_execution","command":"touchstone validate"}}'
+EOF
+    chmod +x "$TMP/bin/codex"
+    PATH="$TMP/bin:$PATH" bash "$EVALUATOR" behavioral --output "$TMP/evidence" \
+      --driver codex --scenario validation --mode both --repeat 1 >"$TMP/behavioral.out"
+    assert_has "$TMP/evidence/manifest.tsv" $'schema\ttouchstone.steering-eval/v1'
+    [ "$(awk 'END { print NR }' "$TMP/evidence/summary.tsv")" -eq 3 ] || fail "behavioral summary did not contain two runs"
+    awk -F '\t' 'NR > 1 && $12 != 100 { exit 1 }' "$TMP/evidence/summary.tsv" \
+      || fail "mock behavioral runs were not scored reproducibly"
+    [ -f "$TMP/evidence/codex-steered-validation-1/events.jsonl" ] || fail "steered event evidence missing"
+    [ -f "$TMP/evidence/codex-control-validation-1/git-status.txt" ] || fail "control git evidence missing"
+    [ -f "$TMP/evidence/codex-steered-validation-1/repo/.touchstone/principles/pre-implementation-checklist.md" ] \
+      || fail "behavioral steered fixture omitted routed consumer guidance"
+    [ -s "$TMP/evidence/codex-steered-validation-1/repo/.git/touchstone-adopt.log" ] \
+      || fail "behavioral steered fixture omitted adoption evidence"
+
+    mkdir -p "$TMP/existing-evidence"
+    printf '%s\n' preserve >"$TMP/existing-evidence/sentinel"
+    if PATH="$TMP/bin:$PATH" bash "$EVALUATOR" behavioral --output "$TMP/existing-evidence" \
+      --driver codex --scenario validation --mode steered --repeat 1 >"$TMP/existing.out" 2>&1; then
+      fail "behavioral lane overwrote a non-empty evidence directory"
+    fi
+    [ "$(cat "$TMP/existing-evidence/sentinel")" = preserve ] \
+      || fail "behavioral lane changed existing evidence"
+
+    cat >"$TMP/bin/gemini" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then printf '%s\n' 'gemini mock'; exit 0; fi
+printf '%s\n' 'Error authenticating: account is not eligible' >&2
+exit 1
+EOF
+    chmod +x "$TMP/bin/gemini"
+    PATH="$TMP/bin:$PATH" bash "$EVALUATOR" behavioral --output "$TMP/unavailable-evidence" \
+      --driver gemini --scenario validation --mode steered --repeat 1 >"$TMP/unavailable.out"
+    awk -F '\t' 'NR == 2 && $13 == "infrastructure-unavailable" { found=1 } END { exit !found }' \
+      "$TMP/unavailable-evidence/summary.tsv" || fail "authentication failure was scored as agent behavior"
+
+    if [ "$ERRORS" -gt 0 ]; then
+      echo "==> FAIL: $ERRORS steering evaluation assertion(s) failed" >&2
+      exit 1
+    fi
+    echo "==> PASS: steering evaluation is versioned, bounded, and offline-testable"
+  )
+fi
