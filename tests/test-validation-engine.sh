@@ -1130,6 +1130,25 @@ assert_input_rejected file .touchstone.toml hidden-index-state
 git -C "$INPUT_REPO" update-index --no-skip-worktree .touchstone.toml
 git -C "$INPUT_REPO" show HEAD:.touchstone.toml >"$INPUT_REPO/.touchstone.toml"
 
+printf '.touchstone.toml filter=strip-unreviewed\n' >"$INPUT_REPO/.gitattributes"
+git -C "$INPUT_REPO" config filter.strip-unreviewed.clean "sed '/UNREVIEWED/d'"
+git -C "$INPUT_REPO" config filter.strip-unreviewed.smudge cat
+printf 'reviewed\n' >"$INPUT_REPO/.touchstone.toml"
+git -C "$INPUT_REPO" add .gitattributes .touchstone.toml
+git -C "$INPUT_REPO" commit -qm "filtered input"
+printf 'reviewed\nUNREVIEWED\n' >"$INPUT_REPO/.touchstone.toml"
+git -C "$INPUT_REPO" diff --quiet -- .touchstone.toml \
+  || fail "fixture clean filter did not hide the unreviewed bytes"
+assert_input_rejected file .touchstone.toml dirty
+git -C "$INPUT_REPO" show HEAD:.touchstone.toml >"$INPUT_REPO/.touchstone.toml"
+
+git -C "$INPUT_REPO" config core.fileMode false
+chmod +x "$INPUT_REPO/.touchstone.toml"
+git -C "$INPUT_REPO" diff --quiet -- .touchstone.toml \
+  || fail "fixture core.fileMode setting did not hide the mode change"
+assert_input_rejected file .touchstone.toml dirty
+chmod -x "$INPUT_REPO/.touchstone.toml"
+
 printf 'untracked\n' >"$INPUT_REPO/untracked.txt"
 assert_input_rejected file untracked.txt untracked
 rm "$INPUT_REPO/untracked.txt"

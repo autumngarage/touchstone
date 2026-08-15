@@ -38,37 +38,42 @@ touchstone_reject_staged_input() {
 }
 
 touchstone_reject_hidden_index_flags() {
-  local listing
+  local listing line tag
 
   listing="$(git -C "$1" ls-files -v -- "$2")" || {
     touchstone_input_error "$2" git-state-unavailable
     return 1
   }
-  if awk '
-    substr($0, 1, 1) == "S" || substr($0, 1, 1) ~ /[a-z]/ { hidden=1 }
-    END { exit hidden ? 0 : 1 }
-  ' <<EOF; then
+  while IFS= read -r line; do
+    tag="${line%% *}"
+    case "$tag" in
+      S | [a-z])
+        touchstone_input_error "$2" hidden-index-state
+        return 1
+        ;;
+    esac
+  done <<EOF
 $listing
 EOF
-    touchstone_input_error "$2" hidden-index-state
-    return 1
-  fi
 }
 
-touchstone_reject_dirty_input() {
-  local status
+touchstone_require_head_blob() {
+  local repository="$1" path="$2" expected_object="$3" expected_mode="$4"
+  local actual_object actual_mode
 
-  if git -C "$1" diff --quiet -- "$2"; then
-    status=0
+  actual_object="$(git -C "$repository" hash-object --no-filters -- "$path")" || {
+    touchstone_input_error "$path" git-state-unavailable
+    return 1
+  }
+  if [ -x "$repository/$path" ]; then
+    actual_mode=100755
   else
-    status=$?
+    actual_mode=100644
   fi
-  case "$status" in
-    0) return 0 ;;
-    1) touchstone_input_error "$2" dirty ;;
-    *) touchstone_input_error "$2" git-state-unavailable ;;
-  esac
-  return 1
+  if [ "$actual_object" != "$expected_object" ] || [ "$actual_mode" != "$expected_mode" ]; then
+    touchstone_input_error "$path" dirty
+    return 1
+  fi
 }
 
 touchstone_reject_untracked_input() {
@@ -89,7 +94,7 @@ touchstone_reject_untracked_input() {
 }
 
 touchstone_require_committed_file() {
-  local repository="$1" path="$2" entry metadata mode type
+  local repository="$1" path="$2" entry metadata mode type object
 
   touchstone_validate_input_path "$path" || return 1
   git -C "$repository" rev-parse --verify 'HEAD^{commit}' >/dev/null 2>&1 || {
@@ -112,7 +117,7 @@ touchstone_require_committed_file() {
   IFS="	" read -r metadata _ <<EOF
 $entry
 EOF
-  read -r mode type _ <<EOF
+  read -r mode type object <<EOF
 $metadata
 EOF
   if [ "$mode" = 120000 ]; then
@@ -135,14 +140,15 @@ EOF
     touchstone_input_error "$path" nonregular
     return 1
   fi
-  touchstone_reject_dirty_input "$repository" "$path" || return 1
+  touchstone_require_head_blob "$repository" "$path" "$object" "$mode" || return 1
 
   return 0
 }
 
 touchstone_require_committed_directory() {
   local repository="$1" path="$2" root_entry entries metadata child_path
-  local mode type
+  local mode type object paths actual_objects actual_object actual_mode
+  local expected_count=0 actual_count=0 tab
 
   touchstone_validate_input_path "$path" || return 1
   git -C "$repository" rev-parse --verify 'HEAD^{commit}' >/dev/null 2>&1 || {
@@ -195,9 +201,10 @@ EOF
   fi
 
   # Invariant: every accepted directory member is a regular HEAD blob whose
-  # checked-out bytes and mode still match the index and HEAD.
+  # raw checked-out bytes and executable bit match HEAD, independent of Git
+  # filters and worktree-diff configuration.
   while IFS="	" read -r metadata child_path; do
-    read -r mode type _ <<EOF
+    read -r mode type object <<EOF
 $metadata
 EOF
     touchstone_validate_input_path "$child_path" || return 1
@@ -215,11 +222,52 @@ EOF
       touchstone_input_error "$child_path" missing
       return 1
     fi
+    expected_count=$((expected_count + 1))
   done <<EOF
 $entries
 EOF
 
-  touchstone_reject_dirty_input "$repository" "$path" || return 1
+  tab="$(printf '\t')"
+  paths="$(
+    awk -F "$tab" '{ print $2 }' <<EOF
+$entries
+EOF
+  )" || {
+    touchstone_input_error "$path" git-state-unavailable
+    return 1
+  }
+  actual_objects="$(
+    git -C "$repository" hash-object --no-filters --stdin-paths <<EOF
+$paths
+EOF
+  )" || {
+    touchstone_input_error "$path" git-state-unavailable
+    return 1
+  }
+  while IFS="	" read -r metadata child_path <&3 \
+    && IFS= read -r actual_object <&4; do
+    read -r mode type object <<EOF
+$metadata
+EOF
+    if [ -x "$repository/$child_path" ]; then
+      actual_mode=100755
+    else
+      actual_mode=100644
+    fi
+    if [ "$actual_object" != "$object" ] || [ "$actual_mode" != "$mode" ]; then
+      touchstone_input_error "$child_path" dirty
+      return 1
+    fi
+    actual_count=$((actual_count + 1))
+  done 3<<EOF 4<<EOF_HASHES
+$entries
+EOF
+$actual_objects
+EOF_HASHES
+  if [ "$actual_count" -ne "$expected_count" ]; then
+    touchstone_input_error "$path" git-state-unavailable
+    return 1
+  fi
   touchstone_reject_untracked_input "$repository" "$path" || return 1
 
   return 0
