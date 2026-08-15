@@ -287,8 +287,8 @@ claim_linear() {
 reconcile_github() {
   local note_url verified_url state verification_status
   if [ "$DISPOSITION" = fixed ]; then
-    emit verified closing-reference-present "GitHub will reconcile $REFERENCE from the PR body when the PR merges."
-    return 0
+    emit unverifiable closing-reference-pending "The PR body contains the closing reference for $REFERENCE; verify issue state after a default-branch merge."
+    exit 3
   fi
   file_has_content "$NOTE_FILE" || fail_input missing-note "Provide a non-empty --note-file for a $DISPOSITION reconciliation."
   command -v gh >/dev/null 2>&1 || {

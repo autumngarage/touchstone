@@ -367,8 +367,10 @@ EOF
   echo "==> fixed GitHub and Linear work require their own closing grammar"
   printf '%s\n' 'Closes #42' >"$TMP/body"
   run_adapter "$TMP/out" reconcile 42 --disposition fixed --body-file "$TMP/body" --project "$TMP/github" --json
-  assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"reason":"closing-reference-present"'
+  assert_rc "$RUN_RC" 3
+  assert_has "$TMP/out" '"status":"unverifiable"'
+  assert_has "$TMP/out" '"reason":"closing-reference-pending"'
+  assert_has "$TMP/out" 'verify issue state after a default-branch merge'
   printf '%s\n' 'Fixes AUT-281' >"$TMP/body"
   run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/linear" --json
   assert_rc "$RUN_RC" 3

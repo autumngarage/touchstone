@@ -38,8 +38,9 @@ reconcile ISSUE --disposition fixed|partial|stale --body-file FILE
 Human and JSON output use the same three outcomes:
 
 - `verified` means the available authority was re-read after any mutation.
-- `unverifiable` means the requested policy is known but no usable transport
-  exists in this process. It is not success and exits 3.
+- `unverifiable` means the requested policy is known but the authority cannot
+  yet verify final state, or no usable transport exists in this process. It is
+  not success and exits 3.
 - `failed` means the input, transport, mutation, or verification failed. A
   response records `partial: true` when an earlier mutation succeeded.
 
@@ -56,6 +57,9 @@ GitHub issues use `#123`; Linear issues use the configured key, such as
 `AUT-123`. Fixed work must appear in the PR body using the configured tracker's
 closing grammar (`Closes #123` or `Fixes AUT-123`). The adapter rejects a
 same-repository wrong-tracker close and prints the concrete replacement.
+The body reference is a pending signal, not verified reconciliation: stacked
+PR merges do not close issues, so the driver verifies tracker state only after
+the default-branch merge.
 
 A qualified GitHub close such as `Closes owner/other#123` remains valid when it
 targets another repository. It does not change the current project's tracker
