@@ -270,7 +270,7 @@ validate_body() {
   fi
   if [ "$DISPOSITION" = fixed ]; then
     if [ "$TRACKER" = github ]; then
-      closing_pattern="(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?[[:space:]]*#${ISSUE_ID}([^[:alnum:]_]|$)"
+      closing_pattern="(^|[^[:alnum:]_])(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)[[:space:]]+#${ISSUE_ID}([^[:alnum:]_]|$)"
       grep -Eqi "$closing_pattern" <<<"$text" \
         || fail_input missing-closing-reference "Add '$expected' to the PR body."
     elif ! grep -Eqi "(^|[[:space:]])${expected// /[[:space:]]+}([[:space:]]|[.,;:!?)]|$)" <<<"$text"; then
