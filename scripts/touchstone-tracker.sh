@@ -235,18 +235,18 @@ validate_body() {
     [ -z "$wrong" ] || fail_input wrong-tracker-closing-syntax "Replace '$wrong' with 'Fixes $REFERENCE'; qualify cross-repository GitHub closes as owner/repo#N."
     expected="Fixes $REFERENCE"
   else
-    if printf '%s\n' "$text" | grep -Eqi '\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?[[:space:]]*[A-Za-z][A-Za-z0-9]*-[0-9]+\b'; then
-      wrong="$(printf '%s\n' "$text" | grep -Eio '\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?[[:space:]]*[A-Za-z][A-Za-z0-9]*-[0-9]+\b' | head -n 1)"
+    if grep -Eqi '\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?[[:space:]]*[A-Za-z][A-Za-z0-9]*-[0-9]+\b' <<<"$text"; then
+      wrong="$(grep -Eio '\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?[[:space:]]*[A-Za-z][A-Za-z0-9]*-[0-9]+\b' <<<"$text" | sed -n '1p')"
       fail_input wrong-tracker-closing-syntax "Replace '$wrong' with 'Closes $REFERENCE'."
     fi
     expected="Closes $REFERENCE"
   fi
-  if [ "$DISPOSITION" = fixed ] && ! printf '%s\n' "$text" | grep -Eqi "(^|[[:space:]])${expected// /[[:space:]]+}([[:space:]]|[.,;:!?)]|$)"; then
+  if [ "$DISPOSITION" = fixed ] && ! grep -Eqi "(^|[[:space:]])${expected// /[[:space:]]+}([[:space:]]|[.,;:!?)]|$)" <<<"$text"; then
     fail_input missing-closing-reference "Add '$expected' to the PR body."
   fi
   if [ "$DISPOSITION" != fixed ]; then
     refs_expected="Refs $REFERENCE"
-    if ! printf '%s\n' "$text" | grep -Eqi "(^|[[:space:]])${refs_expected// /[[:space:]]+}([[:space:]]|[.,;:!?)]|$)"; then
+    if ! grep -Eqi "(^|[[:space:]])${refs_expected// /[[:space:]]+}([[:space:]]|[.,;:!?)]|$)" <<<"$text"; then
       fail_input missing-reconciliation-reference "Add '$refs_expected' to the PR body; $DISPOSITION work must not auto-close on merge."
     fi
     if [ "$TRACKER" = github ]; then
@@ -254,7 +254,7 @@ validate_body() {
     else
       closing_pattern="\\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?[[:space:]]*${REFERENCE}\\b"
     fi
-    if printf '%s\n' "$text" | grep -Eqi "$closing_pattern"; then
+    if grep -Eqi "$closing_pattern" <<<"$text"; then
       fail_input closing-nonfixed-issue "Replace the closing reference for $REFERENCE with '$refs_expected'."
     fi
   fi
@@ -312,7 +312,7 @@ reconcile_github() {
     emit failed github-comment-verification-failed "The mutation returned $note_url, but reading the paginated issue timeline failed." true
     exit 1
   fi
-  if ! printf '%s\n' "$verified_url" | grep -Fxq "$note_url"; then
+  if ! grep -Fxq "$note_url" <<<"$verified_url"; then
     emit failed github-comment-unverified "The mutation returned $note_url, but the paginated issue timeline did not verify it." true
     exit 1
   fi
