@@ -69,6 +69,14 @@ issue remains open. Stale reconciliation posts the note, closes the issue as
 `not planned`, and verifies both state and reason. Unexpected state is exposed
 with a concrete remedy rather than hidden behind a local guess about PR text.
 
+Reconciliation is resumable across partial failures. GitHub notes carry a
+deterministic marker derived from the issue, disposition, and note content; a
+retry reuses the matching note. Before a stale close, and again afterward, the
+adapter reads GitHub's authoritative state. A retry that finds the requested
+`CLOSED/NOT_PLANNED` result succeeds without repeating the close. Provider
+failures retain a bounded, control-character-sanitized diagnostic so recovery
+does not discard the reason the operation failed.
+
 Linear reconciliation names the exact API/MCP action because the shell adapter
 has no Linear transport. The driving agent performs that action and verifies
 the returned Linear state.

@@ -281,16 +281,26 @@ case "$1 ${2:-}" in
   "auth status") [ "${GH_MODE:-ok}" != auth_fail ] ;;
 	"api user") printf '%s\n' henry ;;
   "api --paginate")
-		[ "${GH_MODE:-ok}" != timeline_fail ] || exit 1
+		if [ "${GH_MODE:-ok}" = timeline_fail ]; then
+      printf 'timeline unavailable\rpermission denied\n' >&2
+      exit 1
+		fi
 		[ "${GH_MODE:-ok}" != comment_unverified ] || exit 0
-		printf '%s\n' 'https://github.com/autumngarage/current/issues/42#issuecomment-1'
+		if [ -f "$GH_COMMENT_BODY" ]; then
+      marker="$(sed -n '/<!-- touchstone:reconcile-v1 /p' "$GH_COMMENT_BODY")"
+      case "$*" in *"$marker"*) printf '%s\n' 'https://github.com/autumngarage/current/issues/42#issuecomment-1' ;; esac
+    fi
 		;;
   "repo view")
 		[ "${GH_MODE:-ok}" != repo_fail ] || exit 1
 		printf '%s\n' autumngarage/current
 		;;
   "issue view")
-		[ "${GH_MODE:-ok}" != state_fail ] || exit 1
+		if [ "${GH_MODE:-ok}" = state_fail ] \
+      || { [ "${GH_MODE:-ok}" = post_close_state_fail ] && [ -f "$GH_CLOSED" ]; }; then
+      printf 'state read failed\rretry later\n' >&2
+      exit 1
+    fi
     if printf '%s\n' "$*" | grep -q -- '--json state,stateReason'; then
       if [ -f "$GH_CLOSED" ]; then
         printf 'CLOSED\t%s\n' "$(cat "$GH_CLOSED")"
@@ -312,11 +322,25 @@ case "$1 ${2:-}" in
     printf '%s\n' henry >"$GH_STATE"
     ;;
   "issue comment")
-    [ "${GH_MODE:-ok}" != comment_fail ] || exit 1
+    if [ "${GH_MODE:-ok}" = comment_fail ]; then
+      printf 'authentication expired\rlogin required\n' >&2
+      exit 1
+    fi
+    previous=""
+    for argument in "$@"; do
+      if [ "$previous" = --body-file ]; then
+        cp "$argument" "$GH_COMMENT_BODY"
+        break
+      fi
+      previous="$argument"
+    done
     printf '%s\n' 'https://github.com/autumngarage/current/issues/42#issuecomment-1'
     ;;
   "issue close")
-    [ "${GH_MODE:-ok}" != close_fail ] || exit 1
+    if [ "${GH_MODE:-ok}" = close_fail ]; then
+      printf 'close forbidden\rpermission required\n' >&2
+      exit 1
+    fi
     if [ "${GH_MODE:-ok}" = close_wrong_reason ]; then
       printf '%s\n' COMPLETED >"$GH_CLOSED"
     else
@@ -327,7 +351,7 @@ case "$1 ${2:-}" in
 esac
 EOF
   chmod +x "$TMP/bin/gh"
-  export PATH="$TMP/bin:$PATH" GH_REPO="autumngarage/current" GH_CALLS="$TMP/gh-calls" GH_STATE="$TMP/gh-state" GH_CLOSED="$TMP/gh-closed"
+  export PATH="$TMP/bin:$PATH" GH_REPO="autumngarage/current" GH_CALLS="$TMP/gh-calls" GH_STATE="$TMP/gh-state" GH_CLOSED="$TMP/gh-closed" GH_COMMENT_BODY="$TMP/gh-comment-body"
 
   run_adapter() {
     local output="$1"
@@ -458,49 +482,61 @@ EOF
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'Provide a non-empty --note-file'
   printf '%s\n' 'Evidence and remaining gap.' >"$TMP/note"
-  rm -f "$GH_CLOSED"
+  rm -f "$GH_CLOSED" "$GH_COMMENT_BODY"
   : >"$GH_CALLS"
   run_adapter "$TMP/out" reconcile 42 --disposition partial --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'issue comment 42 --repo github.com/autumngarage/current --body-file'
   assert_has "$GH_CALLS" 'api --paginate --hostname github.com repos/autumngarage/current/issues/42/comments'
   assert_has "$GH_CALLS" 'issue view 42 --repo github.com/autumngarage/current --json state,stateReason'
+  : >"$GH_CALLS"
+  run_adapter "$TMP/out" reconcile 42 --disposition partial --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 0
+  assert_not_has "$GH_CALLS" 'issue comment 42'
   printf '%s\n' 'Relative note from caller directory.' >"$TMP/relative-note"
-  relative_note_path="$(cd "$TMP" && pwd -P)/relative-note"
   caller_directory="$PWD"
   cd "$TMP"
   run_adapter "$TMP/out" reconcile 42 --disposition partial --note-file relative-note --project "$TMP/github" --json
   cd "$caller_directory"
   assert_rc "$RUN_RC" 0
-  assert_has "$GH_CALLS" "issue comment 42 --repo github.com/autumngarage/current --body-file $relative_note_path"
+  assert_has "$GH_COMMENT_BODY" 'Relative note from caller directory.'
+  rm -f "$GH_COMMENT_BODY"
   GH_MODE=comment_fail run_adapter "$TMP/out" reconcile 42 --disposition partial --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" '"reason":"github-comment-failed"'
+  assert_has "$TMP/out" 'authentication expired login required'
+  rm -f "$GH_COMMENT_BODY"
   GH_MODE=comment_unverified run_adapter "$TMP/out" reconcile 42 --disposition partial --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" '"reason":"github-comment-unverified"'
   assert_has "$TMP/out" '"partial":true'
+  rm -f "$GH_COMMENT_BODY"
   GH_MODE=timeline_fail run_adapter "$TMP/out" reconcile 42 --disposition partial --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 1
-  assert_has "$TMP/out" '"reason":"github-comment-verification-failed"'
+  assert_has "$TMP/out" '"reason":"github-comment-inspection-failed"'
+  assert_has "$TMP/out" 'timeline unavailable permission denied'
+  GH_MODE=ok run_adapter "$TMP/out" reconcile 42 --disposition partial --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 0
   printf '%s\n' COMPLETED >"$GH_CLOSED"
   run_adapter "$TMP/out" reconcile 42 --disposition partial --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" '"reason":"github-open-unverified"'
 
   echo "==> repository identity keeps mutation and verification on one host"
-  rm -f "$GH_CLOSED"
+  rm -f "$GH_CLOSED" "$GH_COMMENT_BODY"
   : >"$GH_CALLS"
   GH_HOST=github.com GH_REPO=github.enterprise.example/autumngarage/current \
     run_adapter "$TMP/out" reconcile 42 --disposition partial --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'issue comment 42 --repo github.enterprise.example/autumngarage/current --body-file'
   assert_has "$GH_CALLS" 'api --paginate --hostname github.enterprise.example repos/autumngarage/current/issues/42/comments'
+  rm -f "$GH_COMMENT_BODY"
   : >"$GH_CALLS"
   GH_HOST=github.enterprise.example GH_REPO=autumngarage/current \
     run_adapter "$TMP/out" reconcile 42 --disposition partial --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'issue comment 42 --repo github.enterprise.example/autumngarage/current --body-file'
+  rm -f "$GH_COMMENT_BODY"
   : >"$GH_CALLS"
   GH_HOST=github.com GH_REPO='' run_adapter "$TMP/out" reconcile 42 --disposition partial \
     --note-file "$TMP/note" --project "$TMP/enterprise" --json
@@ -508,7 +544,7 @@ EOF
   assert_has "$GH_CALLS" 'issue comment 42 --repo github.enterprise.example/autumngarage/current --body-file'
 
   echo "==> stale reconciliation closes as not planned and verifies the reason"
-  rm -f "$GH_CLOSED"
+  rm -f "$GH_CLOSED" "$GH_COMMENT_BODY"
   : >"$GH_CALLS"
   run_adapter "$TMP/out" reconcile 42 --disposition stale --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 0
@@ -519,10 +555,21 @@ EOF
   GH_MODE=close_fail run_adapter "$TMP/out" reconcile 42 --disposition stale --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" '"reason":"github-close-failed"'
+  assert_has "$TMP/out" 'close forbidden permission required'
   rm -f "$GH_CLOSED"
   GH_MODE=state_fail run_adapter "$TMP/out" reconcile 42 --disposition stale --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" '"reason":"github-state-verification-failed"'
+  assert_has "$TMP/out" 'state read failed retry later'
+  rm -f "$GH_CLOSED" "$GH_COMMENT_BODY"
+  : >"$GH_CALLS"
+  GH_MODE=post_close_state_fail run_adapter "$TMP/out" reconcile 42 --disposition stale --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" '"reason":"github-state-verification-failed"'
+  GH_MODE=ok run_adapter "$TMP/out" reconcile 42 --disposition stale --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 0
+  test "$(grep -c 'issue comment 42' "$GH_CALLS")" -eq 1 || fail "stale retry duplicated its comment"
+  test "$(grep -c 'issue close 42' "$GH_CALLS")" -eq 1 || fail "stale retry duplicated its close"
   rm -f "$GH_CLOSED"
   GH_MODE=close_wrong_reason run_adapter "$TMP/out" reconcile 42 --disposition stale --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 1

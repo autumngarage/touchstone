@@ -22,6 +22,12 @@ TRACKER_SCHEMA_SEEN=false
 TRACKER_TYPE_SEEN=false
 TRACKER_KEYS=""
 GITHUB_HOST="github.com"
+RECONCILE_NOTE_TEMP=""
+
+cleanup() {
+  [ -z "$RECONCILE_NOTE_TEMP" ] || rm -f -- "$RECONCILE_NOTE_TEMP"
+}
+trap cleanup EXIT
 
 usage() {
   sed -n '3,8p' "$0" | sed 's/^# \{0,1\}//' >&2
@@ -68,6 +74,19 @@ trim() {
 
 file_has_content() {
   [ -f "$1" ] && grep -q '[^[:space:]]' "$1"
+}
+
+clean_diagnostic() {
+  local cleaned
+  cleaned="$(printf '%s\n' "$1" | awk 'BEGIN { ORS="" }
+    {
+      for (code = 1; code < 32; code++) {
+        control = sprintf("%c", code)
+        gsub(control, " ")
+      }
+      if (NR > 1) printf " | "; printf "%s", $0
+    }')"
+  printf '%.2000s' "$cleaned"
 }
 
 parse_string() {
@@ -272,18 +291,44 @@ claim_linear() {
 }
 
 read_github_issue_state() {
-  local status=0
+  local output status=0
   set +e
-  GITHUB_STATE_ROW="$(cd "$PROJECT_ROOT" && gh issue view "$ISSUE_ID" \
+  output="$(cd "$PROJECT_ROOT" && gh issue view "$ISSUE_ID" \
     --repo "$GITHUB_HOST/$CURRENT_REPO" --json state,stateReason \
-    --jq '[.state,.stateReason] | @tsv' 2>/dev/null)"
+    --jq '[.state,.stateReason] | @tsv' 2>&1)"
   status=$?
   set -e
+  if [ "$status" -eq 0 ]; then
+    GITHUB_STATE_ROW="$output"
+    GITHUB_STATE_ERROR=""
+  else
+    GITHUB_STATE_ROW=""
+    GITHUB_STATE_ERROR="$(clean_diagnostic "$output")"
+  fi
+  return "$status"
+}
+
+read_reconciliation_comment() {
+  local marker="$1" output status=0
+  set +e
+  output="$(cd "$PROJECT_ROOT" && gh api --paginate --hostname "$GITHUB_HOST" \
+    "repos/$CURRENT_REPO/issues/$ISSUE_ID/comments" \
+    --jq ".[] | select((.body // \"\") | contains(\"$marker\")) | .html_url" 2>&1)"
+  status=$?
+  set -e
+  if [ "$status" -eq 0 ]; then
+    RECONCILIATION_COMMENT_URL="$(printf '%s\n' "$output" | sed -n '1p')"
+    RECONCILIATION_COMMENT_ERROR=""
+  else
+    RECONCILIATION_COMMENT_URL=""
+    RECONCILIATION_COMMENT_ERROR="$(clean_diagnostic "$output")"
+  fi
   return "$status"
 }
 
 reconcile_github() {
-  local note_url verified_url state state_reason verification_status
+  local note_url note_hash note_marker state state_reason
+  local comment_output comment_status close_output close_status
   command -v gh >/dev/null 2>&1 || {
     emit unverifiable transport-unavailable "Install and authenticate the gh CLI."
     exit 3
@@ -296,7 +341,7 @@ reconcile_github() {
 
   if [ "$DISPOSITION" = fixed ]; then
     if ! read_github_issue_state; then
-      emit failed github-close-verification-failed "Reading $REFERENCE final state failed."
+      emit failed github-close-verification-failed "Reading $REFERENCE final state failed: $GITHUB_STATE_ERROR"
       exit 1
     fi
     IFS="$(printf '\t')" read -r state state_reason <<<"$GITHUB_STATE_ROW"
@@ -313,45 +358,82 @@ reconcile_github() {
   fi
 
   file_has_content "$NOTE_FILE" || fail_input missing-note "Provide a non-empty --note-file for a $DISPOSITION reconciliation."
-  if ! note_url="$(cd "$PROJECT_ROOT" && gh issue comment "$ISSUE_ID" \
-    --repo "$GITHUB_HOST/$CURRENT_REPO" --body-file "$NOTE_FILE" 2>/dev/null)" || [ -z "$note_url" ]; then
-    emit failed github-comment-failed "No reconciliation comment was verified."
-    exit 1
-  fi
-  set +e
-  verified_url="$(cd "$PROJECT_ROOT" && gh api --paginate --hostname "$GITHUB_HOST" \
-    "repos/$CURRENT_REPO/issues/$ISSUE_ID/comments" \
-    --jq ".[] | select(.html_url == \"$note_url\") | .html_url" 2>/dev/null)"
-  verification_status=$?
-  set -e
-  if [ "$verification_status" -ne 0 ]; then
-    emit failed github-comment-verification-failed "The mutation returned $note_url, but reading the paginated issue timeline failed." true
-    exit 1
-  fi
-  if ! grep -Fxq "$note_url" <<<"$verified_url"; then
-    emit failed github-comment-unverified "The mutation returned $note_url, but the paginated issue timeline did not verify it." true
-    exit 1
-  fi
+  note_hash="$(git hash-object "$NOTE_FILE" 2>&1)" \
+    || fail_input unreadable-note "Could not hash --note-file: $(clean_diagnostic "$note_hash")"
+  note_marker="<!-- touchstone:reconcile-v1 issue=$ISSUE_ID disposition=$DISPOSITION note=$note_hash -->"
+  RECONCILE_NOTE_TEMP="$(mktemp "${TMPDIR:-/tmp}/touchstone-reconcile-note.XXXXXX")" \
+    || fail_input note-staging-failed "Could not create a temporary reconciliation note."
+  {
+    cat "$NOTE_FILE"
+    printf '\n\n%s\n' "$note_marker"
+  } >"$RECONCILE_NOTE_TEMP" || fail_input note-staging-failed "Could not stage the reconciliation note."
 
-  if [ "$DISPOSITION" = stale ]; then
-    if ! (cd "$PROJECT_ROOT" && gh issue close "$ISSUE_ID" \
-      --repo "$GITHUB_HOST/$CURRENT_REPO" --reason 'not planned' >/dev/null 2>&1); then
-      emit failed github-close-failed "The comment was created at $note_url, but closing $REFERENCE failed; inspect the issue before retrying only the close." true
+  if ! read_reconciliation_comment "$note_marker"; then
+    emit failed github-comment-inspection-failed "Reading existing reconciliation comments failed: $RECONCILIATION_COMMENT_ERROR"
+    exit 1
+  fi
+  note_url="$RECONCILIATION_COMMENT_URL"
+  if [ -z "$note_url" ]; then
+    set +e
+    comment_output="$(cd "$PROJECT_ROOT" && gh issue comment "$ISSUE_ID" \
+      --repo "$GITHUB_HOST/$CURRENT_REPO" --body-file "$RECONCILE_NOTE_TEMP" 2>&1)"
+    comment_status=$?
+    set -e
+    if [ "$comment_status" -ne 0 ]; then
+      emit failed github-comment-failed "Posting the reconciliation comment failed: $(clean_diagnostic "$comment_output")"
+      exit 1
+    fi
+    if ! read_reconciliation_comment "$note_marker"; then
+      emit failed github-comment-verification-failed "The comment mutation completed, but verification failed: $RECONCILIATION_COMMENT_ERROR" true
+      exit 1
+    fi
+    note_url="$RECONCILIATION_COMMENT_URL"
+    if [ -z "$note_url" ]; then
+      emit failed github-comment-unverified "The comment mutation completed, but its deterministic marker was not found." true
       exit 1
     fi
   fi
 
   if ! read_github_issue_state; then
-    emit failed github-state-verification-failed "The tracker mutation completed, but reading $REFERENCE final state failed." true
+    emit failed github-state-verification-failed "The reconciliation note exists at $note_url, but reading $REFERENCE failed: $GITHUB_STATE_ERROR" true
     exit 1
   fi
   IFS="$(printf '\t')" read -r state state_reason <<<"$GITHUB_STATE_ROW"
-  if [ "$DISPOSITION" = partial ] && [ "$state" != OPEN ]; then
-    emit failed github-open-unverified "The comment was created at $note_url, but $REFERENCE was not verified open; reopen it after inspecting the merge." true
+
+  if [ "$DISPOSITION" = partial ]; then
+    if [ "$state" != OPEN ]; then
+      emit failed github-open-unverified "The comment exists at $note_url, but $REFERENCE was not verified open; reopen it after inspecting the merge." true
+      exit 1
+    fi
+    emit verified reconciled "$note_url"
+    return 0
+  fi
+
+  if [ "$state" = CLOSED ] && [ "$state_reason" = NOT_PLANNED ]; then
+    emit verified reconciled "$note_url"
+    return 0
+  fi
+  if [ "$state" != OPEN ]; then
+    emit failed github-stale-state-mismatch "The comment exists at $note_url, but $REFERENCE is closed with reason '$state_reason'; inspect before changing its disposition." true
     exit 1
   fi
-  if [ "$DISPOSITION" = stale ] && { [ "$state" != CLOSED ] || [ "$state_reason" != NOT_PLANNED ]; }; then
-    emit failed github-stale-state-unverified "The comment was created at $note_url, but $REFERENCE was not verified closed as not planned." true
+
+  set +e
+  close_output="$(cd "$PROJECT_ROOT" && gh issue close "$ISSUE_ID" \
+    --repo "$GITHUB_HOST/$CURRENT_REPO" --reason 'not planned' 2>&1)"
+  close_status=$?
+  set -e
+  if [ "$close_status" -ne 0 ]; then
+    emit failed github-close-failed "The comment exists at $note_url, but closing $REFERENCE failed: $(clean_diagnostic "$close_output")" true
+    exit 1
+  fi
+  if ! read_github_issue_state; then
+    emit failed github-state-verification-failed "The close mutation completed, but reading $REFERENCE failed: $GITHUB_STATE_ERROR" true
+    exit 1
+  fi
+  IFS="$(printf '\t')" read -r state state_reason <<<"$GITHUB_STATE_ROW"
+  if [ "$state" != CLOSED ] || [ "$state_reason" != NOT_PLANNED ]; then
+    emit failed github-stale-state-unverified "The comment exists at $note_url, but $REFERENCE was not verified closed as not planned." true
     exit 1
   fi
   emit verified reconciled "$note_url"
