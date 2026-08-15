@@ -3,7 +3,7 @@
 # scripts/touchstone-run.sh — execute schema-v1 .touchstone.toml declarations.
 #
 # Usage:
-#   bash scripts/touchstone-run.sh validate [--json] [--project DIR] [--config FILE]
+#   bash scripts/touchstone-run.sh validate [--check-contract] [--json] [--project DIR] [--config FILE]
 #
 # This is the single validation engine used by the local CLI boundary and the
 # organization-required workflow. It executes declarations; it never detects a
@@ -15,6 +15,7 @@ ACTION="${1:-validate}"
 if [ "$#" -gt 0 ]; then shift; fi
 
 JSON_MODE=false
+CHECK_CONTRACT=false
 PROJECT_ARG=""
 CONFIG_ARG=".touchstone.toml"
 
@@ -22,6 +23,10 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --json)
       JSON_MODE=true
+      shift
+      ;;
+    --check-contract)
+      CHECK_CONTRACT=true
       shift
       ;;
     --project)
@@ -375,6 +380,15 @@ done <"$TARGETS_FILE"
 if [ "$FAILED" -ne 0 ]; then
   emit_report failed
   exit "$EXIT_STATUS"
+fi
+
+if [ "$CHECK_CONTRACT" = true ]; then
+  if [ "$JSON_MODE" = true ]; then
+    printf '{"schema":1,"verdict":"valid"}\n'
+  else
+    printf 'schema-v1 contract is valid\n'
+  fi
+  exit 0
 fi
 
 clear_git_hook_env() {

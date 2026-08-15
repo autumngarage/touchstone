@@ -145,6 +145,7 @@ GH_POST_ASSIGNEES="me"
 if run_claim_issue "$OUT" 101 "dispatch: case1"; then
   assert_file_contains "$TEST_DIR/gh-calls.log" "issue edit 101 --add-assignee @me"
   assert_file_contains "$TEST_DIR/gh-calls.log" "issue comment 101 --body dispatch: case1"
+  assert_file_contains "$OUT" "touchstone-claim-state: assignment-mutated"
 else
   fail "case 1 expected exit 0"
   cat "$OUT" >&2
