@@ -52,11 +52,14 @@ separate review units. Shared plumbing may land first; breadth is not evidence
 that the behaviors belong in one PR.
 
 For every retained input domain, map the effective discovery roots and the
-inputs execution will actually observe. Cover inherited and child-local
-configuration, missing and empty inputs, ignored and symlinked paths, malformed
-documents, and a representative normal case before the first review request.
-When static verification cannot prove the generated behavior will run from a
-clean checkout, refuse with a manual or explicit path instead of guessing.
+inputs execution will actually observe. Derive the fixture matrix from states
+that domain can express: cover a representative normal case plus missing,
+empty, and malformed inputs where applicable; for filesystem-backed domains,
+also cover inherited and child-local configuration plus ignored and symlinked
+paths where those states exist. Do not invent meaningless filesystem fixtures
+for API payloads, database records, or other non-filesystem declarations. When
+static verification cannot prove the generated behavior will run from a clean
+checkout, refuse with a manual or explicit path instead of guessing.
 
 The reviewability test is concrete: a reviewer should be able to falsify one
 named invariant across a bounded fixture matrix. If the matrix keeps acquiring

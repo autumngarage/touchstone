@@ -122,6 +122,10 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   assert_contains "$file" "Never manufacture an empty"
   assert_contains "$file" "trusted exact-head review evidence"
   assert_contains "$file" "merge on acceptance alone"
+  assert_contains "$file" "do not post a fourth request on the same"
+  assert_contains "$file" "implementation shape"
+  assert_contains "$file" "redesigned head produces another finding-bearing"
+  assert_contains "$file" "split or close the PR"
   assert_not_contains "$file" "retry until review"
 done
 
@@ -348,6 +352,9 @@ for file in \
   assert_contains "$file" "reviewable unit with adversarial boundary coverage"
   assert_contains "$file" "serial test discovery"
   assert_contains "$file" "effective"
+  assert_contains "$file" "where applicable"
+  assert_contains "$file" "domain can express"
+  assert_contains "$file" "non-filesystem"
   assert_contains "$file" "symlink"
   assert_contains "$file" "malformed"
 done
