@@ -264,6 +264,15 @@ assert_rc "$RUN_RC" 2
 assert_has "$TMP/out" 'invalid-project-contract'
 assert_not_has "$GH_CALLS" 'issue edit'
 
+echo "==> tracker selection cannot follow a configuration symlink"
+rm "$TMP/github/.touchstone.toml"
+ln -s "$TMP/linear/.touchstone.toml" "$TMP/github/.touchstone.toml"
+: >"$GH_CALLS"
+run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+assert_rc "$RUN_RC" 2
+assert_has "$TMP/out" 'unsafe-config'
+assert_not_has "$GH_CALLS" 'issue edit'
+
 if [ "$ERRORS" -gt 0 ]; then
   echo "==> FAIL: $ERRORS tracker adapter assertion(s) failed" >&2
   exit 1
