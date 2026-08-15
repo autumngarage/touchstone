@@ -42,13 +42,13 @@ Lint is not part of the test suite. It runs at pre-commit and via `pre-commit ru
 ```
 touchstone/
 ├── TOUCHSTONE.md   # Canonical steering router — the universal contract for all drivers
+├── bin/            # Thin validate/adopt/upgrade command dispatcher
 ├── docs/           # Touchstone-specific product contract and project documentation
 ├── principles/     # The judgment layer — universal docs routed to from TOUCHSTONE.md
 ├── skills/         # User-scoped Claude Code skills
 ├── templates/      # Legacy transition inputs (nothing copies them today)
 ├── hooks/          # branch-guard.sh — the PreToolUse hook wired in .claude/settings.json
-├── scripts/        # The surviving script surface: claim-issue, issue-claim-check,
-│                   #   respond-review, touchstone-run
+├── scripts/        # Issue, review, validation, adoption, compatibility, and policy operations
 ├── audits/         # Dated drift/health reports (never auto-modified)
 ├── feedback/       # Dated dogfooding notes from downstream projects
 └── tests/          # Self-tests
@@ -71,9 +71,12 @@ Release history lives in `git log` and `gh release list` — there is no `CHANGE
 
 There is no wrapper. Ship with `git` and `gh` directly, as `TOUCHSTONE.md` and `principles/git-workflow.md` describe. That is the current state by design: the acceptance test for the strip is that a change ships end-to-end on the bare commands, and whatever proves awkward is the specification for the CLI that replaces them.
 
-## Distribution — currently absent
+## Distribution — not yet released
 
-The `touchstone` CLI, the bootstrap, the auto-update path, and the Homebrew release automation were all deleted. Nothing distributes Touchstone right now, and nothing needs to: the projects that use it are frozen on their committed copies.
+The rebuilt `touchstone` CLI exists in this checkout for validation and
+plan-first adoption/upgrade, but Homebrew release automation has not been
+reinstated. Nothing distributes this revision yet, and the projects that use
+Touchstone remain frozen on their committed copies.
 
 The rebuild is Homebrew-distributed and deliberately thin — it observes and sequences, never adjudicates. Homebrew upgrades the installed tool only; it never mutates repositories. Adoption compiles project facts into an explicit versioned contract, and already-correct consumers remain valid without routine sync. Restoring the tap-bump workflow is part of that work, not of this state.
 

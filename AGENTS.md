@@ -70,11 +70,11 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 
 1. **Pull.** `git pull --rebase` on the default branch.
 2. **Branch.** Before any edit that might become a commit.
-3. **Claim issues before implementation.** If the work starts from a GitHub issue, claim it before editing or dispatching an agent: `bash scripts/claim-issue.sh <n>`. Claim every issue in a multi-issue bundle so two agents do not ship competing fixes.
+3. **Claim issues before implementation.** If the work starts from a GitHub issue, claim it before editing or dispatching an agent with `gh issue edit <n> --add-assignee @me`; use the configured tracker adapter for other trackers. Claim every issue in a multi-issue bundle so two agents do not ship competing fixes.
 4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
 5. **Reconcile issues.** Before opening the PR, list every GitHub issue found, claimed, fixed, partially fixed, or made stale by the work. Fully fixed issues get closing trailers (`Closes-issue: #123` or `Closes #123`) so merge auto-closes them; partial/stale issues get a comment explaining the evidence or remaining gap. Do not leave fixed issues open silently.
 6. **Ship.** `git push -u origin HEAD`, then `gh pr create`. Put the closing reference (`Closes #123`) in the **PR body** — squash-merge reads the body, not the commit. Request review by commenting `@codex review` on the PR.
-7. **Answer every piece of PR feedback before merging.** Whoever reviews (hosted AI, bot, or colleague), reply to each comment and resolve the thread; unresolved threads and `CHANGES_REQUESTED` block the merge. `bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file>` replies and resolves in one step; `--all-resolved-check` proves none remain.
+7. **Answer every piece of PR feedback before merging.** Whoever reviews (hosted AI, bot, or colleague), reply to each comment and resolve the thread through GitHub; unresolved threads and `CHANGES_REQUESTED` block the merge. Query the complete review-thread surface to prove none remain.
 8. **Merge** with `gh pr merge <n> --squash --match-head-commit <sha>`, binding to the head the review actually saw. Its exit code lies in both directions — confirm against real state rather than trusting it.
 9. **Clean up after merge.** Delete the local branch if it persists.
 
@@ -143,12 +143,13 @@ Lint is not part of the test suite. It runs at pre-commit and via `pre-commit ru
 ```
 touchstone/
 ├── TOUCHSTONE.md   # Canonical steering router — the universal contract
+├── bin/            # Thin validate/adopt/upgrade command dispatcher
 ├── docs/           # Touchstone-specific product contract and project documentation
 ├── principles/     # The judgment layer, routed to from TOUCHSTONE.md
 ├── skills/         # User-scoped Claude Code skills
 ├── templates/      # Legacy transition inputs (nothing copies them today)
 ├── hooks/          # branch-guard.sh — PreToolUse hook wired in .claude/settings.json
-├── scripts/        # claim-issue, issue-claim-check, respond-review, touchstone-run
+├── scripts/        # issue, review, validation, adoption, compatibility, and policy operations
 ├── audits/         # Dated drift/health reports (never auto-modified)
 ├── feedback/       # Dated dogfooding notes from downstream projects
 └── tests/          # Self-tests
