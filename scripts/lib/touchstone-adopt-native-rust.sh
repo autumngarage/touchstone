@@ -112,21 +112,45 @@ rust_manifest_is_package() {
   awk '/^[[:space:]]*\[package\][[:space:]]*$/ { found=1 } END { exit !found }' "$1"
 }
 
+rust_has_explicit_additional_target() {
+  awk '
+    {
+      line=$0
+      sub(/[[:space:]]*#.*/, "", line)
+      gsub(/[[:space:]"\047]/, "", line)
+      if (line ~ /^\[\[(bin|example|test|bench)\]\]$/ || line == "[lib]") found=1
+    }
+    END { exit !found }
+  ' "$1"
+}
+
 require_tracked_rust_source() {
-  local directory="$1" relative source
+  local directory="$1" relative source source_count=0
   reject_rust_execution_config "$directory"
   cargo_has_dependency_declaration "$directory/Cargo.toml" \
     && contract_refusal "Rust target '${directory#"$PROJECT_ROOT"/}' declares a dependency without a verified checkout-bound offline source; pass --task NAME=COMMAND"
   rust_manifest_is_package "$directory/Cargo.toml" || return 0
-  if [ "$directory" = "$PROJECT_ROOT" ]; then relative=""; else relative="${directory#"$PROJECT_ROOT"/}/"; fi
-  for source in src/lib.rs src/main.rs; do
-    if git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$relative$source" >/dev/null 2>&1; then
-      [ -f "$PROJECT_ROOT/$relative$source" ] && [ ! -L "$PROJECT_ROOT/$relative$source" ] \
-        || contract_refusal "Rust source '$relative$source' is not a regular tracked file"
-      return 0
+  rust_has_explicit_additional_target "$directory/Cargo.toml" \
+    && contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' declares additional targets this portable compiler cannot bind to one tracked source; pass --task NAME=COMMAND"
+  for source in src/bin examples tests benches; do
+    if [ -e "$directory/$source" ] || [ -L "$directory/$source" ]; then
+      contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' has additional target inputs in '$source' this portable compiler cannot bind; pass --task NAME=COMMAND"
     fi
   done
-  contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' has no tracked default src/lib.rs or src/main.rs"
+  if [ "$directory" = "$PROJECT_ROOT" ]; then relative=""; else relative="${directory#"$PROJECT_ROOT"/}/"; fi
+  for source in src/lib.rs src/main.rs; do
+    if [ -e "$directory/$source" ] || [ -L "$directory/$source" ]; then
+      source_count=$((source_count + 1))
+      git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$relative$source" >/dev/null 2>&1 \
+        || contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' has no tracked default src/lib.rs or src/main.rs"
+      [ -f "$PROJECT_ROOT/$relative$source" ] && [ ! -L "$PROJECT_ROOT/$relative$source" ] \
+        || contract_refusal "Rust source '$relative$source' is not a regular tracked file"
+    fi
+  done
+  [ "$source_count" -ne 0 ] \
+    || contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' has no tracked default src/lib.rs or src/main.rs"
+  [ "$source_count" -eq 1 ] \
+    || contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' has multiple default targets this portable compiler cannot bind; pass --task NAME=COMMAND"
 }
 
 reject_rust_execution_config() {

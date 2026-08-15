@@ -326,6 +326,10 @@ cargo_workspace_values() {
     }
     {
       line = $0
+      compact = line
+      sub(/[[:space:]]*#.*/, "", compact)
+      gsub(/[[:space:]"\047]/, "", compact)
+      if (section == "" && compact ~ "^workspace[.]" wanted "=") exit 2
       if (!collecting) {
         if (section != "workspace" || line !~ "^[[:space:]]*" wanted "[[:space:]]*=") next
         keys++
