@@ -1,6 +1,6 @@
 # Tracker Adapter Contract
 
-This document owns Touchstone's version-1 claim boundary.
+This document owns Touchstone's version-1 claim and reconciliation boundaries.
 The configured tracker owns issue state; the adapter only parses references,
 performs an available transport, and reports what it could verify.
 
@@ -26,11 +26,13 @@ selecting another tracker.
 
 ## Operations and outcomes
 
-`scripts/touchstone-tracker.sh` exposes the claim boundary that the versioned
+`scripts/touchstone-tracker.sh` exposes the effect boundary that the versioned
 CLI sequences:
 
 ```text
 claim ISSUE [--project DIR] [--json]
+reconcile ISSUE --disposition fixed|partial|stale
+  [--note-file FILE] [--project DIR] [--json]
 ```
 
 Human and JSON output use the same three outcomes:
@@ -49,7 +51,7 @@ Linear transport. A driving agent may perform that action through its Linear
 API/MCP and must use Linear's returned state—not the adapter's instruction—as
 verification.
 
-## Reference and claim rules
+## Reference and reconciliation rules
 
 GitHub issues use bare `123` or quoted `'#123'` at the shell; Linear issues use
 the configured key, such as `AUT-123`. The adapter rejects an issue reference
@@ -59,13 +61,25 @@ adapter reuses the surviving claim script and verifies assignment after its
 mutation; authentication errors, unavailable transports, and partial
 mutations never produce `verified`.
 
+The adapter does not parse or decide GitHub closing-reference grammar. GitHub
+owns that language and applies it at merge time. Fixed reconciliation observes
+the issue after default-branch delivery and requires `CLOSED/COMPLETED`.
+Partial reconciliation posts a substantive evidence note and verifies the
+issue remains open. Stale reconciliation posts the note, closes the issue as
+`not planned`, and verifies both state and reason. Unexpected state is exposed
+with a concrete remedy rather than hidden behind a local guess about PR text.
+
+Linear reconciliation names the exact API/MCP action because the shell adapter
+has no Linear transport. The driving agent performs that action and verifies
+the returned Linear state.
+
 GitHub's documented `[skip-claim-check]` token bypasses only the GitHub
 assignment guard for an exceptional PR. It does not bypass tracker selection,
-reference parsing or claim verification, and it has no implicit
+reference parsing, claim verification, or reconciliation, and it has no implicit
 Linear equivalent. A tracker-specific exception must remain visible in that
 tracker and in the PR.
 
-Claiming is delivery discipline, not merge adjudication. The future
+Claiming and reconciliation are delivery discipline, not merge adjudication. The future
 `touchstone pr` commands may sequence this adapter, but GitHub remains
 the authority for PR checks, review evidence, conversation resolution, and the
 merge result.
