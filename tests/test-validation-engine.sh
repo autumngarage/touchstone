@@ -1420,4 +1420,306 @@ run_transaction_case staging-cleanup-diagnostic staging-cleanup \
   [ -d "$backup_directory" ] || exit 44
 ) || fail "rollback cleanup destroyed the only recoverable original"
 
+echo "==> adoption rejects transaction delimiters in the project root"
+assert_not_contains "$ROOT/scripts/touchstone-adopt.sh" '${#MANUAL_TASK_ARGS[@]}'
+assert_contains "$ROOT/scripts/touchstone-adopt.sh" 'MANUAL_TASK_COUNT=$((MANUAL_TASK_COUNT + 1))'
+DELIMITED_PROJECT="$TMP_DIR/adopt-project"$'\t''tab'
+mkdir -p "$DELIMITED_PROJECT"
+set +e
+bash "$ROOT/scripts/touchstone-adopt.sh" adopt --dry-run --project "$DELIMITED_PROJECT" \
+  --task 'verify=true' >"$TMP_DIR/delimited-project.out" 2>"$TMP_DIR/delimited-project.err"
+delimited_status=$?
+set -e
+[ "$delimited_status" -eq 2 ] || fail "delimiter-bearing project root did not fail as input"
+assert_contains "$TMP_DIR/delimited-project.err" "tab or newline"
+
+bash "$ROOT/scripts/touchstone-adopt.sh" adopt --help >"$TMP_DIR/adopt-script-help.out"
+assert_contains "$TMP_DIR/adopt-script-help.out" "bash scripts/touchstone-adopt.sh adopt"
+
+echo "==> adoption core compiles manual tasks and refuses unavailable adapters"
+ADOPT_MANUAL="$TMP_DIR/adopt-manual"
+mkdir -p "$ADOPT_MANUAL"
+git -C "$ADOPT_MANUAL" init -q
+git -C "$ADOPT_MANUAL" config user.name fixture
+git -C "$ADOPT_MANUAL" config user.email fixture@example.com
+printf '%s\n' '# fixture' >"$ADOPT_MANUAL/README.md"
+git -C "$ADOPT_MANUAL" add README.md
+git -C "$ADOPT_MANUAL" commit -qm fixture
+git -C "$ADOPT_MANUAL" update-ref refs/remotes/origin/main HEAD
+git -C "$ADOPT_MANUAL" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+git -C "$ADOPT_MANUAL" switch -q -c feat/adopt
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_MANUAL/package.json"
+
+bash "$ROOT/scripts/touchstone-adopt.sh" adopt --dry-run --json --project "$ADOPT_MANUAL" \
+  --task 'verify=bash scripts/check.sh --all' >"$TMP_DIR/adopt-manual-plan.json"
+assert_contains "$TMP_DIR/adopt-manual-plan.json" '"profile":"manual"'
+assert_contains "$TMP_DIR/adopt-manual-plan.json" '"path":".touchstone.toml","action":"create"'
+assert_contains "$TMP_DIR/adopt-manual-plan.json" \
+  'command = \"bash scripts/check.sh --all\"'
+[ ! -e "$ADOPT_MANUAL/.touchstone.toml" ] || fail "adoption dry-run mutated the project"
+
+ADOPT_DIFF_HOME="$TMP_DIR/adopt-diff-home"
+mkdir -p "$ADOPT_DIFF_HOME"
+printf '%s\n' '*.md diff=touchstone-side-effect' >"$ADOPT_DIFF_HOME/attributes"
+cat >"$ADOPT_DIFF_HOME/textconv" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' ran >"$TMP_DIR/adopt-textconv-marker"
+cat "\$1"
+EOF
+chmod +x "$ADOPT_DIFF_HOME/textconv"
+git config --file "$ADOPT_DIFF_HOME/.gitconfig" core.attributesFile "$ADOPT_DIFF_HOME/attributes"
+git config --file "$ADOPT_DIFF_HOME/.gitconfig" diff.touchstone-side-effect.textconv "$ADOPT_DIFF_HOME/textconv"
+HOME="$ADOPT_DIFF_HOME" GIT_DIFF_OPTS=--unified=0 \
+  GIT_CONFIG_COUNT=3 GIT_CONFIG_KEY_0=color.ui GIT_CONFIG_VALUE_0=always \
+  GIT_CONFIG_KEY_1=diff.context GIT_CONFIG_VALUE_1=0 \
+  GIT_CONFIG_KEY_2=diff.algorithm GIT_CONFIG_VALUE_2=histogram \
+  bash "$ROOT/scripts/touchstone-adopt.sh" adopt --dry-run --json --project "$ADOPT_MANUAL" \
+  --task 'verify=bash scripts/check.sh --all' >"$TMP_DIR/adopt-manual-color.json"
+assert_not_contains "$TMP_DIR/adopt-manual-color.json" $'\033'
+[ ! -e "$TMP_DIR/adopt-textconv-marker" ] || fail "adoption plan executed an ambient textconv filter"
+cmp -s "$TMP_DIR/adopt-manual-plan.json" "$TMP_DIR/adopt-manual-color.json" \
+  || fail "Git diff configuration changed the versioned adoption plan"
+rm "$ADOPT_MANUAL/package.json"
+
+MANUAL_CONTROL_COMMAND="printf $(printf '\033')"
+set +e
+bash "$ROOT/scripts/touchstone-adopt.sh" adopt --dry-run --project "$ADOPT_MANUAL" \
+  --task "verify=$MANUAL_CONTROL_COMMAND" >"$TMP_DIR/adopt-manual-control.out" \
+  2>"$TMP_DIR/adopt-manual-control.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "manual command with a TOML-forbidden control byte was accepted"
+assert_contains "$TMP_DIR/adopt-manual-control.err" 'control byte forbidden in a TOML command'
+
+bash "$ROOT/scripts/touchstone-adopt.sh" adopt --project "$ADOPT_MANUAL" \
+  --task 'verify=bash scripts/check.sh --all' >"$TMP_DIR/adopt-manual-apply.out" \
+  2>"$TMP_DIR/adopt-manual-apply.err"
+assert_contains "$TMP_DIR/adopt-manual-apply.err" 'file change(s) accepted for apply'
+assert_contains "$TMP_DIR/adopt-manual-apply.err" 'diff --git'
+assert_contains "$ADOPT_MANUAL/.touchstone.toml" \
+  'command = "bash scripts/check.sh --all"'
+assert_contains "$ADOPT_MANUAL/AGENTS.md" '<!-- touchstone:steering:start -->'
+git -C "$ADOPT_MANUAL" add .touchstone.toml .touchstone AGENTS.md CLAUDE.md GEMINI.md
+git -C "$ADOPT_MANUAL" commit -qm 'adopt fixture'
+bash "$ROOT/scripts/touchstone-adopt.sh" adopt --project "$ADOPT_MANUAL" \
+  >"$TMP_DIR/adopt-manual-repeat.out"
+assert_contains "$TMP_DIR/adopt-manual-repeat.out" 'adopt: current; no files changed'
+
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_MANUAL/package.json"
+bash "$ROOT/scripts/touchstone-adopt.sh" adopt --dry-run --project "$ADOPT_MANUAL" \
+  >"$TMP_DIR/adopt-manual-unread-manifest.out"
+assert_contains "$TMP_DIR/adopt-manual-unread-manifest.out" 'adopt: 0 file change(s) proposed'
+
+printf '%s\n' '# Preserved steering' 'OLD COMPATIBLE STEERING' \
+  >"$ADOPT_MANUAL/.touchstone/TOUCHSTONE.md"
+rm "$ADOPT_MANUAL/AGENTS.md"
+bash "$ROOT/scripts/touchstone-adopt.sh" adopt --dry-run --json --project "$ADOPT_MANUAL" \
+  >"$TMP_DIR/adopt-manual-preserved.json"
+assert_contains "$TMP_DIR/adopt-manual-preserved.json" 'OLD COMPATIBLE STEERING'
+assert_not_contains "$TMP_DIR/adopt-manual-preserved.json" \
+  'Humans approve plans. Agents write and ship code. GitHub reviews code.'
+
+ADOPT_HIDDEN_UNTRACKED="$TMP_DIR/adopt-hidden-untracked"
+mkdir -p "$ADOPT_HIDDEN_UNTRACKED"
+git -C "$ADOPT_HIDDEN_UNTRACKED" init -q -b main
+git -C "$ADOPT_HIDDEN_UNTRACKED" config user.name fixture
+git -C "$ADOPT_HIDDEN_UNTRACKED" config user.email fixture@example.com
+printf '%s\n' '# fixture' >"$ADOPT_HIDDEN_UNTRACKED/README.md"
+git -C "$ADOPT_HIDDEN_UNTRACKED" add README.md
+git -C "$ADOPT_HIDDEN_UNTRACKED" commit -qm fixture
+git -C "$ADOPT_HIDDEN_UNTRACKED" update-ref refs/remotes/origin/main HEAD
+git -C "$ADOPT_HIDDEN_UNTRACKED" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+git -C "$ADOPT_HIDDEN_UNTRACKED" switch -q -c feat/adopt
+printf '%s\n' 'must survive' >"$ADOPT_HIDDEN_UNTRACKED/untracked.txt"
+set +e
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=status.showUntrackedFiles GIT_CONFIG_VALUE_0=no \
+  bash "$ROOT/scripts/touchstone-adopt.sh" adopt --project "$ADOPT_HIDDEN_UNTRACKED" \
+  --task 'verify=true' >"$TMP_DIR/adopt-hidden-untracked.out" \
+  2>"$TMP_DIR/adopt-hidden-untracked.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "ambient status config hid an untracked apply input"
+assert_contains "$TMP_DIR/adopt-hidden-untracked.err" 'apply requires a clean worktree'
+[ ! -e "$ADOPT_HIDDEN_UNTRACKED/.touchstone.toml" ] \
+  || fail "hidden untracked apply partially wrote the project"
+[ "$(cat "$ADOPT_HIDDEN_UNTRACKED/untracked.txt")" = 'must survive' ] \
+  || fail "hidden untracked apply changed project-owned data"
+
+ADOPT_IGNORED_OUTPUT="$TMP_DIR/adopt-ignored-output"
+mkdir -p "$ADOPT_IGNORED_OUTPUT"
+git -C "$ADOPT_IGNORED_OUTPUT" init -q
+git -C "$ADOPT_IGNORED_OUTPUT" config user.name fixture
+git -C "$ADOPT_IGNORED_OUTPUT" config user.email fixture@example.com
+printf '%s\n' '.touchstone.toml' >"$ADOPT_IGNORED_OUTPUT/.gitignore"
+git -C "$ADOPT_IGNORED_OUTPUT" add .gitignore
+git -C "$ADOPT_IGNORED_OUTPUT" commit -qm fixture
+write_contract "$ADOPT_IGNORED_OUTPUT" true
+git -C "$ADOPT_IGNORED_OUTPUT" switch -q -c feat/adopt
+set +e
+bash "$ROOT/scripts/touchstone-adopt.sh" adopt --dry-run --project "$ADOPT_IGNORED_OUTPUT" \
+  >"$TMP_DIR/adopt-ignored-output.out" 2>"$TMP_DIR/adopt-ignored-output.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "ignored adoption output was accepted"
+assert_contains "$TMP_DIR/adopt-ignored-output.err" \
+  "compiler input '.touchstone.toml' is not tracked"
+
+ADOPT_SYMLINKED_OUTPUT="$TMP_DIR/adopt-symlinked-output"
+ADOPT_SYMLINKED_OUTSIDE="$TMP_DIR/adopt-symlinked-outside"
+mkdir -p "$ADOPT_SYMLINKED_OUTPUT" "$ADOPT_SYMLINKED_OUTSIDE"
+git -C "$ADOPT_SYMLINKED_OUTPUT" init -q
+git -C "$ADOPT_SYMLINKED_OUTPUT" config user.name fixture
+git -C "$ADOPT_SYMLINKED_OUTPUT" config user.email fixture@example.com
+printf '%s\n' '# fixture' >"$ADOPT_SYMLINKED_OUTPUT/README.md"
+ln -s "$ADOPT_SYMLINKED_OUTSIDE" "$ADOPT_SYMLINKED_OUTPUT/.touchstone"
+git -C "$ADOPT_SYMLINKED_OUTPUT" add README.md .touchstone
+git -C "$ADOPT_SYMLINKED_OUTPUT" commit -qm fixture
+git -C "$ADOPT_SYMLINKED_OUTPUT" update-ref refs/remotes/origin/main HEAD
+git -C "$ADOPT_SYMLINKED_OUTPUT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+git -C "$ADOPT_SYMLINKED_OUTPUT" switch -q -c feat/adopt
+set +e
+bash "$ROOT/scripts/touchstone-adopt.sh" adopt --dry-run --project "$ADOPT_SYMLINKED_OUTPUT" \
+  --task 'verify=true' >"$TMP_DIR/adopt-symlinked-output.out" \
+  2>"$TMP_DIR/adopt-symlinked-output.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "symlinked adoption output ancestor did not refuse"
+assert_contains "$TMP_DIR/adopt-symlinked-output.err" \
+  'managed path traverses a symlink: .touchstone'
+
+ADOPT_NODE_UNAVAILABLE="$TMP_DIR/adopt-node-unavailable"
+mkdir -p "$ADOPT_NODE_UNAVAILABLE"
+git -C "$ADOPT_NODE_UNAVAILABLE" init -q
+git -C "$ADOPT_NODE_UNAVAILABLE" config user.name fixture
+git -C "$ADOPT_NODE_UNAVAILABLE" config user.email fixture@example.com
+printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_NODE_UNAVAILABLE/package.json"
+git -C "$ADOPT_NODE_UNAVAILABLE" add package.json
+git -C "$ADOPT_NODE_UNAVAILABLE" commit -qm fixture
+git -C "$ADOPT_NODE_UNAVAILABLE" switch -q -c feat/adopt
+set +e
+bash "$ROOT/scripts/touchstone-adopt.sh" adopt --dry-run --project "$ADOPT_NODE_UNAVAILABLE" \
+  >"$TMP_DIR/adopt-node-unavailable.out" 2>"$TMP_DIR/adopt-node-unavailable.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "missing Node adapter did not refuse automatic adoption"
+assert_contains "$TMP_DIR/adopt-node-unavailable.err" \
+  'automatic node adoption is unavailable in this Touchstone build'
+
+set +e
+/bin/bash "$ROOT/scripts/touchstone-adopt.sh" adopt --dry-run --project "$ADOPT_NODE_UNAVAILABLE" \
+  >"$TMP_DIR/adopt-node-bash3.out" 2>"$TMP_DIR/adopt-node-bash3.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "empty manual task state failed under macOS Bash"
+assert_contains "$TMP_DIR/adopt-node-bash3.err" \
+  'automatic node adoption is unavailable in this Touchstone build'
+
+echo "==> adoption keeps its workspace outside the project and classifies plan I/O failures"
+ADOPT_LOCAL_TMP="$TMP_DIR/adopt-local-tmp"
+mkdir -p "$ADOPT_LOCAL_TMP/local-tmp"
+git -C "$ADOPT_LOCAL_TMP" init -q -b main
+git -C "$ADOPT_LOCAL_TMP" config user.name fixture
+git -C "$ADOPT_LOCAL_TMP" config user.email fixture@example.com
+printf 'tracked\n' >"$ADOPT_LOCAL_TMP/local-tmp/.keep"
+git -C "$ADOPT_LOCAL_TMP" add local-tmp/.keep
+git -C "$ADOPT_LOCAL_TMP" commit -qm fixture
+git -C "$ADOPT_LOCAL_TMP" update-ref refs/remotes/origin/main HEAD
+git -C "$ADOPT_LOCAL_TMP" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+git -C "$ADOPT_LOCAL_TMP" switch -qc feat/adopt
+TMPDIR="$ADOPT_LOCAL_TMP/local-tmp" bash "$ROOT/scripts/touchstone-adopt.sh" adopt \
+  --project "$ADOPT_LOCAL_TMP" --task 'verify=true' \
+  >"$TMP_DIR/adopt-local-tmp.out" 2>"$TMP_DIR/adopt-local-tmp.err" \
+  || fail "project-local TMPDIR poisoned a clean adoption apply"
+assert_contains "$ADOPT_LOCAL_TMP/.touchstone.toml" 'command = "true"'
+
+ADOPT_IO_PROJECT="$TMP_DIR/adopt-io-project"
+ADOPT_IO_SHIMS="$TMP_DIR/adopt-io-shims"
+mkdir -p "$ADOPT_IO_PROJECT" "$ADOPT_IO_SHIMS"
+git -C "$ADOPT_IO_PROJECT" init -q -b main
+git -C "$ADOPT_IO_PROJECT" config user.name fixture
+git -C "$ADOPT_IO_PROJECT" config user.email fixture@example.com
+printf 'fixture\n' >"$ADOPT_IO_PROJECT/README.md"
+git -C "$ADOPT_IO_PROJECT" add README.md
+git -C "$ADOPT_IO_PROJECT" commit -qm fixture
+git -C "$ADOPT_IO_PROJECT" switch -qc feat/adopt
+REAL_MKTEMP="$(command -v mktemp)"
+cat >"$ADOPT_IO_SHIMS/mktemp" <<EOF
+#!/usr/bin/env bash
+created="\$("$REAL_MKTEMP" "\$@")" || exit 1
+mkdir "\$created/targets" || exit 1
+printf '%s\n' "\$created"
+EOF
+chmod +x "$ADOPT_IO_SHIMS/mktemp"
+set +e
+PATH="$ADOPT_IO_SHIMS:$PATH" bash "$ROOT/scripts/touchstone-adopt.sh" adopt --json \
+  --project "$ADOPT_IO_PROJECT" --task 'verify=true' >"$TMP_DIR/adopt-io.json"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "plan I/O failure escaped the operational exit class"
+assert_contains "$TMP_DIR/adopt-io.json" '"status":"operational-failure"'
+
+ADOPT_DIFF_READ_PROJECT="$TMP_DIR/adopt-diff-read-project"
+ADOPT_DIFF_READ_SHIMS="$TMP_DIR/adopt-diff-read-shims"
+mkdir -p "$ADOPT_DIFF_READ_PROJECT" "$ADOPT_DIFF_READ_SHIMS"
+git -C "$ADOPT_DIFF_READ_PROJECT" init -q -b main
+git -C "$ADOPT_DIFF_READ_PROJECT" config user.name fixture
+git -C "$ADOPT_DIFF_READ_PROJECT" config user.email fixture@example.com
+printf 'fixture\n' >"$ADOPT_DIFF_READ_PROJECT/README.md"
+git -C "$ADOPT_DIFF_READ_PROJECT" add README.md
+git -C "$ADOPT_DIFF_READ_PROJECT" commit -qm fixture
+git -C "$ADOPT_DIFF_READ_PROJECT" switch -qc feat/adopt
+REAL_CAT="$(command -v cat)"
+cat >"$ADOPT_DIFF_READ_SHIMS/cat" <<EOF
+#!/usr/bin/env bash
+case "\${1:-}" in */diff) exit 1 ;; esac
+exec "$REAL_CAT" "\$@"
+EOF
+chmod +x "$ADOPT_DIFF_READ_SHIMS/cat"
+set +e
+PATH="$ADOPT_DIFF_READ_SHIMS:$PATH" bash "$ROOT/scripts/touchstone-adopt.sh" adopt \
+  --dry-run --json --project "$ADOPT_DIFF_READ_PROJECT" --task 'verify=true' \
+  >"$TMP_DIR/adopt-diff-read.json"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "unreadable plan diff escaped the operational exit class"
+assert_contains "$TMP_DIR/adopt-diff-read.json" '"status":"operational-failure"'
+assert_contains "$TMP_DIR/adopt-diff-read.json" 'could not read adoption plan diff'
+set +e
+PATH="$ADOPT_DIFF_READ_SHIMS:$PATH" bash "$ROOT/scripts/touchstone-adopt.sh" adopt \
+  --json --project "$ADOPT_DIFF_READ_PROJECT" --task 'verify=true' \
+  >"$TMP_DIR/adopt-apply-diff-read.json"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "apply diff read escaped the operational exit class"
+assert_contains "$TMP_DIR/adopt-apply-diff-read.json" '"status":"operational-failure"'
+assert_contains "$TMP_DIR/adopt-apply-diff-read.json" 'could not read adoption plan diff'
+[ ! -e "$ADOPT_DIFF_READ_PROJECT/.touchstone.toml" ] \
+  || fail "apply wrote files after its plan diff became unreadable"
+
+ADOPT_WORKSPACE_PROJECT="$TMP_DIR/adopt-workspace-project"
+ADOPT_WORKSPACE_SHIMS="$TMP_DIR/adopt-workspace-shims"
+mkdir -p "$ADOPT_WORKSPACE_PROJECT" "$ADOPT_WORKSPACE_SHIMS"
+git -C "$ADOPT_WORKSPACE_PROJECT" init -q -b main
+git -C "$ADOPT_WORKSPACE_PROJECT" config user.name fixture
+git -C "$ADOPT_WORKSPACE_PROJECT" config user.email fixture@example.com
+printf 'fixture\n' >"$ADOPT_WORKSPACE_PROJECT/README.md"
+git -C "$ADOPT_WORKSPACE_PROJECT" add README.md
+git -C "$ADOPT_WORKSPACE_PROJECT" commit -qm fixture
+git -C "$ADOPT_WORKSPACE_PROJECT" switch -qc feat/adopt
+cat >"$ADOPT_WORKSPACE_SHIMS/mktemp" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$ADOPT_WORKSPACE_SHIMS/mktemp"
+set +e
+PATH="$ADOPT_WORKSPACE_SHIMS:$PATH" bash "$ROOT/scripts/touchstone-adopt.sh" adopt \
+  --dry-run --json --project "$ADOPT_WORKSPACE_PROJECT" --task 'verify=true' \
+  >"$TMP_DIR/adopt-workspace.json"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "workspace creation failure escaped the operational exit class"
+assert_contains "$TMP_DIR/adopt-workspace.json" '"status":"operational-failure"'
+assert_contains "$TMP_DIR/adopt-workspace.json" 'could not create adoption workspace'
+
 echo "validation engine tests passed"
