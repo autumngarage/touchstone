@@ -62,6 +62,16 @@ including unlocked projects where hooks can still run. Workspace children
 inherit root setup only when an explicit supported workspace pattern proves
 membership; ambiguous or unsupported declarations refuse.
 
+The Python adapter emits ruff only from installed dependency evidence, mypy
+only with tracked regular Python source, and pytest only with a tracked regular
+test under `tests/` that contains a statically recognizable top-level test.
+This portable collection subset excludes ignored runtime directories such as
+`.venv`. A complete TOML parser validates `pyproject.toml` before deriving any
+fact. uv setup requires a verified lock and uses offline, frozen, `--no-config`
+execution; requirements and editable-install paths use no-index setup. Remote
+references, environment markers, project build hooks, missing checker
+dependencies, and unverifiable configuration refuse with a manual-task remedy.
+
 ## Ownership and safety
 
 The applier owns only these boundaries:
