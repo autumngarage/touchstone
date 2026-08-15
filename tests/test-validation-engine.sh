@@ -863,6 +863,7 @@ mkdir -p "$COMPILER_MODEL/packages/web"
     exit 6
   }
   MANUAL_TASK_ARGS=('verify=true' 'lint=printf lint')
+  export MANUAL_TASK_ARGS
   # shellcheck source=scripts/lib/touchstone-adopt-compiler.sh
   source "$ROOT/scripts/lib/touchstone-adopt-compiler.sh"
   compile_manual_tasks
@@ -936,5 +937,87 @@ mkdir -p "$COMPILER_MODEL/packages/web"
   [ "$task_lookup_status" -eq 6 ] || exit 23
   [ "$setup_lookup_status" -eq 6 ] || exit 24
 ) || fail "adoption compiler accepted an invalid plan record"
+
+echo "==> legacy adapter preserves defaults and detects each target independently"
+LEGACY_COMPILER="$TMP_DIR/legacy-compiler"
+mkdir -p "$LEGACY_COMPILER/packages/api" "$LEGACY_COMPILER/packages/web"
+(
+  PROJECT_ROOT="$(cd "$LEGACY_COMPILER" && pwd -P)"
+  TARGETS_FILE="$TMP_DIR/legacy-targets"
+  TASKS_FILE="$TMP_DIR/legacy-tasks"
+  SETUPS_FILE="$TMP_DIR/legacy-setups"
+  TAB="$(printf '\t')"
+  CR="$(printf '\r')"
+  LF="$(printf '\nX')"
+  LF="${LF%X}"
+  export TAB CR LF
+  : >"$TARGETS_FILE"
+  : >"$TASKS_FILE"
+  : >"$SETUPS_FILE"
+  trim() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+  }
+  valid_identifier() { case "$1" in "" | *[!A-Za-z0-9._-]*) return 1 ;; esac }
+  valid_relative_path() { case "$1" in /* | ../* | */../* | */..) return 1 ;; *) return 0 ;; esac }
+  contract_refusal() {
+    printf 'refused: %s\n' "$*" >&2
+    exit 2
+  }
+  detect_profile() { case "$1" in *api) printf 'python\n' ;; *) printf 'node\n' ;; esac }
+  tasks_for_node() {
+    record_task "lint$3" "$2" "node-lint"
+    record_task "typecheck$3" "$2" "node-typecheck"
+    record_task "test$3" "$2" "node-test"
+    record_task "build$3" "$2" "node-build"
+  }
+  tasks_for_python() {
+    record_task "lint$3" "$2" "python-lint"
+    record_task "typecheck$3" "$2" "python -m mypy ."
+    record_task "test$3" "$2" "python-test"
+  }
+  # shellcheck source=scripts/lib/touchstone-adopt-compiler.sh
+  source "$ROOT/scripts/lib/touchstone-adopt-compiler.sh"
+  # shellcheck source=scripts/lib/touchstone-adopt-legacy.sh
+  source "$ROOT/scripts/lib/touchstone-adopt-legacy.sh"
+
+  printf '%s\n' 'project_type=node' 'profile=python' >"$PROJECT_ROOT/.touchstone-config"
+  [ "$(legacy_profile_value "$PROJECT_ROOT/.touchstone-config")" = python ] || exit 31
+  printf '%s\n' 'profile=python' 'project_type=node' >"$PROJECT_ROOT/.touchstone-config"
+  [ "$(legacy_profile_value "$PROJECT_ROOT/.touchstone-config")" = node ] || exit 32
+
+  printf '%s\n' 'project_type=node' 'test_command=custom-test' >"$PROJECT_ROOT/.touchstone-config"
+  compile_legacy
+  grep -Fq $'lint\troot\ttrue\tnode-lint' "$TASKS_FILE" || exit 21
+  grep -Fq $'typecheck\troot\ttrue\tnode-typecheck' "$TASKS_FILE" || exit 22
+  grep -Fq $'build\troot\ttrue\tnode-build' "$TASKS_FILE" || exit 23
+  grep -Fq $'test\troot\ttrue\tcustom-test' "$TASKS_FILE" || exit 24
+
+  : >"$TARGETS_FILE"
+  : >"$TASKS_FILE"
+  printf '%s\n' 'project_type=node' 'targets=api:packages/api,web:packages/web:node' >"$PROJECT_ROOT/.touchstone-config"
+  compile_legacy
+  grep -Fq $'api\tpackages/api\tpython' "$TARGETS_FILE" || exit 25
+  grep -Fq $'web\tpackages/web\tnode' "$TARGETS_FILE" || exit 26
+  grep -Fq $'typecheck-api\tapi\ttrue\tpython -m mypy .' "$TASKS_FILE" || exit 27
+
+  : >"$TARGETS_FILE"
+  : >"$TASKS_FILE"
+  printf '%s\n' 'project_type=python' 'typecheck_command=auto' >"$PROJECT_ROOT/.touchstone-config"
+  compile_legacy
+  grep -Fq $'typecheck\troot\ttrue\tpython -m mypy .' "$TASKS_FILE" || exit 28
+  ! grep -Fq $'\tauto' "$TASKS_FILE" || exit 29
+
+  : >"$TARGETS_FILE"
+  : >"$TASKS_FILE"
+  printf '%s\n' 'targets=root:packages/api:python' 'test_command=custom-test' >"$PROJECT_ROOT/.touchstone-config"
+  set +e
+  (compile_legacy) >/dev/null 2>&1
+  collision_status=$?
+  set -e
+  [ "$collision_status" -eq 2 ] || exit 30
+) || fail "legacy adapter changed validation coverage"
 
 echo "validation engine tests passed"
