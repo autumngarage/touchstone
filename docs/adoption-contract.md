@@ -41,11 +41,12 @@ GitHub policy: the plan always reports that as a separate operation.
 
 The plan model has one invariant: detectors can add proposed records, but only
 the generic applier can write them. Detection never runs during validation.
-The core compiler covers explicit manual tasks and legacy explicit validation
-commands. Automatic profile adapters are separate reviewable compiler units;
-when a detected adapter is unavailable, adoption refuses with the manual-task
-remedy instead of guessing. AUT-283 closes only after the Node, Python, Swift,
-Rust, Go, and monorepo adapters are installed and independently reviewed.
+The v1 adapters cover the project shapes in the Autumn Garage inventory: Node,
+Python, Swift, Rust, Go, explicit `apps/`, `packages/`, and `services/` targets,
+legacy explicit validation commands, and a generic manual task. Conflicting
+manifests or lockfiles fail with the competing facts instead of selecting one
+silently. If a packaged build omits an adapter, the compiler refuses with the
+manual-task remedy instead of guessing.
 
 Each adapter owns its runtime-specific evidence, offline setup, and generated
 task contract. The accepted commands and setup are written explicitly to

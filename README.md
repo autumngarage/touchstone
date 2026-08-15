@@ -51,10 +51,10 @@ delivery wrapper. Those older surfaces were deleted with the propagation
 channel, deliberately and first: cutting propagation froze downstream projects
 safely on their existing committed copies. The replacement architecture pairs
 the CLI with an organization-required workflow pinned to an immutable
-Touchstone revision outside the consumer PR. The adoption core compiles explicit
-manual tasks; project-type adapters arrive as separate reviewed compiler units
-and refuse when absent. Validation executes accepted declarations without
-guessing. Upgrading the installed tool never scans for or mutates projects.
+Touchstone revision outside the consumer PR. Independently reviewed profile
+adapters compile repository facts into an adoption proposal once; validation
+executes accepted declarations without guessing. Upgrading the installed tool
+never scans for or mutates projects.
 
 The surviving `templates/` describe the frozen pre-strip consumer shape and are
 historical inputs for compatibility audits, not the new architecture.

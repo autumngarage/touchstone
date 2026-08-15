@@ -4,15 +4,78 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNNER="$ROOT/scripts/touchstone-run.sh"
 COMPAT="$ROOT/scripts/check-legacy-ci.sh"
+CLI="$ROOT/bin/touchstone"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
+ADOPTION_BIN="$TMP_DIR/adoption-bin"
+mkdir -p "$ADOPTION_BIN"
+cat >"$ADOPTION_BIN/uv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$*" = "--version" ]; then
+  printf '%s\n' 'uv 0.8.14'
+  exit 0
+fi
+[ "$*" = "lock --check --offline --no-config" ] || exit 8
+[ "${UV_NO_PROGRESS:-}" = 1 ] || exit 8
+[ "${UV_PYTHON_DOWNLOADS:-}" = never ] || exit 8
+if [ -f .touchstone-uv-check-fail ]; then
+  echo "fixture lock is stale" >&2
+  exit 9
+fi
+EOF
+chmod +x "$ADOPTION_BIN/uv"
+cat >"$ADOPTION_BIN/cargo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$*" = "metadata --locked --offline --no-deps --format-version 1" ] || exit 8
+[ "${CARGO_NET_OFFLINE:-}" = true ] || exit 8
+if [ -f .touchstone-cargo-check-fail ]; then
+  echo "fixture lock is stale" >&2
+  exit 9
+fi
+printf '%s\n' '{"packages":[]}'
+EOF
+chmod +x "$ADOPTION_BIN/cargo"
+cat >"$ADOPTION_BIN/go" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${1:-}" = list ] || exit 8
+[ "${2:-}" = -f ] || exit 8
+last=""
+for argument in "$@"; do last="$argument"; done
+[ "$last" = "./..." ] || exit 8
+[ "${GOENV:-}" = off ] || exit 8
+[ "${GOTOOLCHAIN:-}" = local ] || exit 8
+[ "${GOWORK:-}" = off ] || exit 8
+[ "${GOPROXY:-}" = off ] || exit 8
+[ "${GOSUMDB:-}" = off ] || exit 8
+if [ -f .touchstone-go-list-fail ]; then
+  echo "./... matched no packages" >&2
+  exit 1
+fi
+if [ -f .touchstone-go-list-warning ]; then
+  printf '%s\n' 'go: warning: "./..." matched no packages'
+  exit 0
+fi
+if [ -f .touchstone-go-selected-untracked ]; then
+  printf '%s/generated.go\n' "$PWD"
+  exit 0
+fi
+if [ -f .touchstone-go-selected-embed ]; then
+  printf '%s/fixture.go\n%s/assets/secret.txt\n' "$PWD" "$PWD"
+  exit 0
+fi
+find "$PWD" -type f -name '*.go' -print | awk 'NR == 1 { print; exit }'
+EOF
+chmod +x "$ADOPTION_BIN/go"
 
 fail() {
   echo "FAIL: $*" >&2
   exit 1
 }
 assert_contains() { grep -Fq "$2" "$1" || fail "$1 does not contain: $2"; }
-assert_not_contains() { ! grep -Fq "$2" "$1" || fail "$1 unexpectedly contains: $2"; }
+assert_not_contains() { ! grep -Fq -- "$2" "$1" || fail "$1 unexpectedly contains: $2"; }
 
 write_contract() {
   local dir="$1" command="$2" required="${3:-true}"
@@ -831,476 +894,575 @@ echo "==> local authoring guard remains installed"
 assert_contains "$ROOT/.pre-commit-config.yaml" "id: no-commit-to-branch"
 assert_contains "$ROOT/.pre-commit-config.yaml" "stages: [pre-commit]"
 
-echo "==> adoption core compiles manual tasks and refuses unavailable adapters"
-ADOPT_MANUAL="$TMP_DIR/adopt-manual"
-mkdir -p "$ADOPT_MANUAL"
-git -C "$ADOPT_MANUAL" init -q
-git -C "$ADOPT_MANUAL" config user.name fixture
-git -C "$ADOPT_MANUAL" config user.email fixture@example.com
-printf '%s\n' '# fixture' >"$ADOPT_MANUAL/README.md"
-git -C "$ADOPT_MANUAL" add README.md
-git -C "$ADOPT_MANUAL" commit -qm fixture
-git -C "$ADOPT_MANUAL" update-ref refs/remotes/origin/main HEAD
-git -C "$ADOPT_MANUAL" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
-git -C "$ADOPT_MANUAL" switch -q -c feat/adopt
-
-bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_MANUAL" \
-  --task 'verify=bash scripts/check.sh --all' >"$TMP_DIR/adopt-manual-plan.json"
-assert_contains "$TMP_DIR/adopt-manual-plan.json" '"profile":"manual"'
-assert_contains "$TMP_DIR/adopt-manual-plan.json" '"path":".touchstone.toml","action":"create"'
-assert_contains "$TMP_DIR/adopt-manual-plan.json" \
-  'command = \"bash scripts/check.sh --all\"'
-[ ! -e "$ADOPT_MANUAL/.touchstone.toml" ] || fail "adoption dry-run mutated the project"
-
-GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=color.ui GIT_CONFIG_VALUE_0=always \
-  GIT_CONFIG_KEY_1=diff.context GIT_CONFIG_VALUE_1=0 \
-  bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_MANUAL" \
-  --task 'verify=bash scripts/check.sh --all' >"$TMP_DIR/adopt-manual-color.json"
-assert_not_contains "$TMP_DIR/adopt-manual-color.json" $'\033'
-cmp -s "$TMP_DIR/adopt-manual-plan.json" "$TMP_DIR/adopt-manual-color.json" \
-  || fail "Git diff configuration changed the versioned adoption plan"
-
-bash "$ROOT/bin/touchstone" adopt --project "$ADOPT_MANUAL" \
-  --task 'verify=bash scripts/check.sh --all' >"$TMP_DIR/adopt-manual-apply.out"
-assert_contains "$ADOPT_MANUAL/.touchstone.toml" \
-  'command = "bash scripts/check.sh --all"'
-assert_contains "$ADOPT_MANUAL/AGENTS.md" '<!-- touchstone:steering:start -->'
-bash "$ROOT/bin/touchstone" adopt --project "$ADOPT_MANUAL" \
-  >"$TMP_DIR/adopt-manual-repeat.out"
-assert_contains "$TMP_DIR/adopt-manual-repeat.out" 'adopt: current; no files changed'
-
-printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_MANUAL/package.json"
-bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_MANUAL" \
-  >"$TMP_DIR/adopt-manual-unread-manifest.out"
-assert_contains "$TMP_DIR/adopt-manual-unread-manifest.out" 'adopt: 0 file change(s) proposed'
-
-printf '%s\n' '# Preserved steering' 'OLD COMPATIBLE STEERING' \
-  >"$ADOPT_MANUAL/.touchstone/TOUCHSTONE.md"
-rm "$ADOPT_MANUAL/AGENTS.md"
-bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_MANUAL" \
-  >"$TMP_DIR/adopt-manual-preserved.json"
-assert_contains "$TMP_DIR/adopt-manual-preserved.json" 'OLD COMPATIBLE STEERING'
-assert_not_contains "$TMP_DIR/adopt-manual-preserved.json" \
-  'Humans approve plans. Agents write and ship code. GitHub reviews code.'
-
-ADOPT_IGNORED_OUTPUT="$TMP_DIR/adopt-ignored-output"
-mkdir -p "$ADOPT_IGNORED_OUTPUT"
-git -C "$ADOPT_IGNORED_OUTPUT" init -q
-git -C "$ADOPT_IGNORED_OUTPUT" config user.name fixture
-git -C "$ADOPT_IGNORED_OUTPUT" config user.email fixture@example.com
-printf '%s\n' '.touchstone.toml' >"$ADOPT_IGNORED_OUTPUT/.gitignore"
-git -C "$ADOPT_IGNORED_OUTPUT" add .gitignore
-git -C "$ADOPT_IGNORED_OUTPUT" commit -qm fixture
-write_contract "$ADOPT_IGNORED_OUTPUT" true
-git -C "$ADOPT_IGNORED_OUTPUT" switch -q -c feat/adopt
-set +e
-bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_IGNORED_OUTPUT" \
-  >"$TMP_DIR/adopt-ignored-output.out" 2>"$TMP_DIR/adopt-ignored-output.err"
-ADOPTION_STATUS=$?
-set -e
-[ "$ADOPTION_STATUS" -eq 4 ] || fail "ignored adoption output was accepted"
-assert_contains "$TMP_DIR/adopt-ignored-output.err" \
-  "compiler input '.touchstone.toml' is not tracked"
-
-ADOPT_SYMLINKED_OUTPUT="$TMP_DIR/adopt-symlinked-output"
-ADOPT_SYMLINKED_OUTSIDE="$TMP_DIR/adopt-symlinked-outside"
-mkdir -p "$ADOPT_SYMLINKED_OUTPUT" "$ADOPT_SYMLINKED_OUTSIDE"
-git -C "$ADOPT_SYMLINKED_OUTPUT" init -q
-git -C "$ADOPT_SYMLINKED_OUTPUT" config user.name fixture
-git -C "$ADOPT_SYMLINKED_OUTPUT" config user.email fixture@example.com
-printf '%s\n' '# fixture' >"$ADOPT_SYMLINKED_OUTPUT/README.md"
-ln -s "$ADOPT_SYMLINKED_OUTSIDE" "$ADOPT_SYMLINKED_OUTPUT/.touchstone"
-git -C "$ADOPT_SYMLINKED_OUTPUT" add README.md .touchstone
-git -C "$ADOPT_SYMLINKED_OUTPUT" commit -qm fixture
-git -C "$ADOPT_SYMLINKED_OUTPUT" update-ref refs/remotes/origin/main HEAD
-git -C "$ADOPT_SYMLINKED_OUTPUT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
-git -C "$ADOPT_SYMLINKED_OUTPUT" switch -q -c feat/adopt
-set +e
-bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_SYMLINKED_OUTPUT" \
-  --task 'verify=true' >"$TMP_DIR/adopt-symlinked-output.out" \
-  2>"$TMP_DIR/adopt-symlinked-output.err"
-ADOPTION_STATUS=$?
-set -e
-[ "$ADOPTION_STATUS" -eq 4 ] || fail "symlinked adoption output ancestor did not refuse"
-assert_contains "$TMP_DIR/adopt-symlinked-output.err" \
-  'managed path traverses a symlink: .touchstone'
-
-echo "==> Node adapter derives scripts and rejects project-controlled execution"
-init_node_adoption_repo() {
+init_adoption_repo() {
   local directory="$1"
   mkdir -p "$directory"
-  git -C "$directory" init -q
-  git -C "$directory" config user.name fixture
-  git -C "$directory" config user.email fixture@example.com
+  git -C "$directory" init -q -b main
+  git -C "$directory" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  git -C "$directory" config user.name "Touchstone Test"
+  git -C "$directory" config user.email "touchstone@example.invalid"
 }
 
-commit_node_adoption_repo() {
-  local directory="$1"
+commit_adoption_repo() {
+  local directory="$1" message="$2"
   git -C "$directory" add -A
-  git -C "$directory" commit -qm fixture
-  git -C "$directory" switch -q -c feat/adopt
+  git -C "$directory" commit -q -m "$message"
 }
 
+run_adoption() {
+  local output="$1"
+  shift
+  set +e
+  PATH="$ADOPTION_BIN:$PATH" "$CLI" "$@" >"$output" 2>"$output.err"
+  ADOPTION_STATUS=$?
+  set -e
+}
+
+ADOPT_NON_REPO="$TMP_DIR/adopt-non-repo"
+mkdir -p "$ADOPT_NON_REPO"
+run_adoption "$TMP_DIR/adopt-non-repo.out" adopt --dry-run --json --project "$ADOPT_NON_REPO"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "non-repository adoption did not refuse"
+assert_contains "$TMP_DIR/adopt-non-repo.out" '"status":"contract-refused"'
+assert_contains "$TMP_DIR/adopt-non-repo.out" "adoption requires a git repository"
+
+echo "==> adoption compiles a deterministic Node contract and marked steering"
 ADOPT_NODE="$TMP_DIR/adopt-node"
-init_node_adoption_repo "$ADOPT_NODE"
-printf '%s\n' \
-  '{"name":"fixture","version":"1.0.0","scripts":{"lint":"eslint .","test":"node --test","postinstall":"curl https://example.invalid"}}' \
-  >"$ADOPT_NODE/package.json"
+init_adoption_repo "$ADOPT_NODE"
+cat >"$ADOPT_NODE/package.json" <<'EOF'
+{
+  "name": "fixture",
+  "scripts": {
+    "lint": "eslint .",
+    "test": "vitest run",
+    "postinstall": "curl https://example.invalid/install"
+  }
+}
+EOF
 printf '%s\n' \
   '{"name":"fixture","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"fixture","version":"1.0.0"}}}' \
   >"$ADOPT_NODE/package-lock.json"
-commit_node_adoption_repo "$ADOPT_NODE"
-bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_NODE" \
-  >"$TMP_DIR/adopt-node-plan.json"
+printf '# Project-owned instructions\n\nKEEP a/old/ b/new/ PROSE\f\n' >"$ADOPT_NODE/AGENTS.md"
+chmod +x "$ADOPT_NODE/AGENTS.md"
+commit_adoption_repo "$ADOPT_NODE" "fixture"
+git -C "$ADOPT_NODE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-node-plan.json" adopt --dry-run --json --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "Node adoption dry-run failed"
+assert_contains "$TMP_DIR/adopt-node-plan.json" '"schema":1'
+assert_contains "$TMP_DIR/adopt-node-plan.json" '"status":"changes-required"'
 assert_contains "$TMP_DIR/adopt-node-plan.json" '"profile":"node"'
-assert_contains "$TMP_DIR/adopt-node-plan.json" 'command = \"npm run lint\"'
-assert_contains "$TMP_DIR/adopt-node-plan.json" 'command = \"npm run test\"'
-assert_contains "$TMP_DIR/adopt-node-plan.json" \
-  'setup = \"npm ci --offline --ignore-scripts\"'
-assert_not_contains "$TMP_DIR/adopt-node-plan.json" 'postinstall'
-
-ADOPT_PNPM_GENERATED="$TMP_DIR/adopt-pnpm-generated"
-init_node_adoption_repo "$ADOPT_PNPM_GENERATED"
-printf '%s\n' '{"packageManager":"pnpm@10.28.1","scripts":{"test":"node --test"}}' \
-  >"$ADOPT_PNPM_GENERATED/package.json"
-printf '%s\n' "lockfileVersion: '9.0'" 'settings:' \
-  '  autoInstallPeers: true' '  excludeLinksFromLockfile: false' \
-  'importers:' '  .: {}' >"$ADOPT_PNPM_GENERATED/pnpm-lock.yaml"
-commit_node_adoption_repo "$ADOPT_PNPM_GENERATED"
-bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_PNPM_GENERATED" \
-  >"$TMP_DIR/adopt-pnpm-generated.json"
-assert_contains "$TMP_DIR/adopt-pnpm-generated.json" \
-  'setup = \"COREPACK_ENABLE_NETWORK=0 pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile\"'
-
-ADOPT_YARN_GENERATED="$TMP_DIR/adopt-yarn-generated"
-init_node_adoption_repo "$ADOPT_YARN_GENERATED"
-printf '%s\n' '{"name":"fixture","packageManager":"yarn@4.14.1","scripts":{"test":"node --test"}}' \
-  >"$ADOPT_YARN_GENERATED/package.json"
-printf '%s\n' '__metadata:' '  version: 8' '  cacheKey: 10c0' \
-  '"fixture@workspace:.":' '  version: 0.0.0-use.local' \
-  '  resolution: "fixture@workspace:."' '  languageName: unknown' \
-  '  linkType: soft' >"$ADOPT_YARN_GENERATED/yarn.lock"
-commit_node_adoption_repo "$ADOPT_YARN_GENERATED"
-bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_YARN_GENERATED" \
-  >"$TMP_DIR/adopt-yarn-generated.json"
-assert_contains "$TMP_DIR/adopt-yarn-generated.json" \
-  'setup = \"COREPACK_ENABLE_NETWORK=0 yarn install --immutable --immutable-cache --mode=skip-build\"'
-
-ADOPT_SCOPED_MANAGER="$TMP_DIR/adopt-scoped-manager"
-init_node_adoption_repo "$ADOPT_SCOPED_MANAGER"
-printf '%s\n' '{"packageManager":"@evil/pm@1.0.0","scripts":{"test":"node --test"}}' \
-  >"$ADOPT_SCOPED_MANAGER/package.json"
-commit_node_adoption_repo "$ADOPT_SCOPED_MANAGER"
+assert_contains "$TMP_DIR/adopt-node-plan.json" '"path":".touchstone.toml","action":"create"'
+assert_contains "$TMP_DIR/adopt-node-plan.json" '"status":"separate-operation","required":true,"mutated":false'
+assert_contains "$TMP_DIR/adopt-node-plan.json" 'new file mode 100644'
+assert_contains "$TMP_DIR/adopt-node-plan.json" '\f'
+assert_not_contains "$TMP_DIR/adopt-node-plan.json" 'old mode 100755'
+assert_not_contains "$TMP_DIR/adopt-node-plan.json" 'new mode 100644'
+[ ! -e "$ADOPT_NODE/.touchstone.toml" ] || fail "dry-run mutated the repository"
 set +e
-bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_SCOPED_MANAGER" \
-  >"$TMP_DIR/adopt-scoped-manager.out" 2>"$TMP_DIR/adopt-scoped-manager.err"
+GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=color.ui GIT_CONFIG_VALUE_0=always \
+  GIT_CONFIG_KEY_1=diff.context GIT_CONFIG_VALUE_1=0 \
+  PATH="$ADOPTION_BIN:$PATH" "$CLI" adopt --dry-run --json --project "$ADOPT_NODE" \
+  >"$TMP_DIR/adopt-node-color.json" 2>"$TMP_DIR/adopt-node-color.json.err"
 ADOPTION_STATUS=$?
 set -e
-[ "$ADOPTION_STATUS" -eq 4 ] || fail "scoped packageManager declaration was accepted"
-assert_contains "$TMP_DIR/adopt-scoped-manager.err" "unsupported Node packageManager '@evil/pm'"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "colored Git configuration broke adoption planning"
+assert_not_contains "$TMP_DIR/adopt-node-color.json" $'\033'
+cmp -s "$TMP_DIR/adopt-node-plan.json" "$TMP_DIR/adopt-node-color.json" \
+  || fail "Git diff configuration changed the versioned adoption plan"
+run_adoption "$TMP_DIR/adopt-node-plan-repeat.json" adopt --dry-run --json --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "repeated Node adoption dry-run failed"
+cmp -s "$TMP_DIR/adopt-node-plan.json" "$TMP_DIR/adopt-node-plan-repeat.json" \
+  || fail "identical repository facts produced different plans"
+run_adoption "$TMP_DIR/adopt-node-apply.out" adopt --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "Node adoption apply failed"
+assert_contains "$ADOPT_NODE/.touchstone.toml" 'command = "npm run lint"'
+assert_contains "$ADOPT_NODE/.touchstone.toml" 'command = "npm run test"'
+assert_contains "$ADOPT_NODE/.touchstone.toml" 'setup = "npm ci --offline --ignore-scripts"'
+assert_contains "$ADOPT_NODE/AGENTS.md" "KEEP a/old/ b/new/ PROSE"
+[ -x "$ADOPT_NODE/AGENTS.md" ] || fail "adoption changed a project-owned steering file mode"
+assert_contains "$ADOPT_NODE/AGENTS.md" '<!-- touchstone:steering:start -->'
+assert_contains "$ADOPT_NODE/CLAUDE.md" '@.touchstone/TOUCHSTONE.md'
+assert_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" '.touchstone/principles/git-workflow.md'
+assert_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" 'Read `.touchstone/principles/audit-weak-points.md`.'
+assert_not_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" 'touchstone-audit-weak-points'
+assert_not_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" 'memory-audit'
+assert_contains "$ADOPT_NODE/.touchstone/principles/engineering-principles.md" \
+  'Follow the procedure in `.touchstone/principles/audit-weak-points.md`.'
+assert_not_contains "$ADOPT_NODE/.touchstone/principles/engineering-principles.md" \
+  'touchstone-audit-weak-points'
+assert_contains "$ADOPT_NODE/.touchstone/principles/memory-hygiene.md" 'Run this audit when a'
+assert_contains "$ADOPT_NODE/.touchstone/principles/memory-hygiene.md" 'Every driver owes'
+assert_not_contains "$ADOPT_NODE/.touchstone/principles/memory-hygiene.md" 'memory-audit'
+assert_not_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" 'scripts/claim-issue.sh'
+assert_not_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" 'scripts/respond-review.sh'
+assert_not_contains "$ADOPT_NODE/.touchstone/principles/git-workflow.md" 'bash scripts/'
+assert_not_contains "$ADOPT_NODE/.touchstone/principles/git-workflow.md" 'hooks/branch-guard.sh'
+assert_not_contains "$ADOPT_NODE/.touchstone/principles/git-workflow.md" '.github/workflows/issue-claim-check.yml'
+assert_not_contains "$ADOPT_NODE/.touchstone/principles/git-workflow.md" '--all-resolved-check'
+assert_not_contains "$ADOPT_NODE/.touchstone/principles/agent-swarms.md" 'scripts/respond-review.sh'
+[ ! -e "$ADOPT_NODE/.touchstone/principles/README.md" ] \
+  || fail "adoption copied the repository-only principles index"
+run_adoption "$TMP_DIR/adopt-node-untracked-repeat.out" adopt --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "immediate repeated adoption was not idempotent"
+assert_contains "$TMP_DIR/adopt-node-untracked-repeat.out" "adopt: current; no files changed"
+bash "$RUNNER" validate --check-contract --project "$ADOPT_NODE" >/dev/null
+commit_adoption_repo "$ADOPT_NODE" "adopt"
+run_adoption "$TMP_DIR/adopt-node-repeat.out" adopt --check --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "second adoption was not idempotent"
+assert_contains "$TMP_DIR/adopt-node-repeat.out" "adopt: current"
+run_adoption "$TMP_DIR/adopt-node-upgrade.out" upgrade --check --json --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "current schema-v1 upgrade was not a no-op"
+assert_contains "$TMP_DIR/adopt-node-upgrade.out" '"status":"current"'
+printf '\nold compatible steering\n' >>"$ADOPT_NODE/.touchstone/TOUCHSTONE.md"
+commit_adoption_repo "$ADOPT_NODE" "older steering"
+mv "$ADOPT_NODE/GEMINI.md" "$ADOPT_NODE/GEMINI.saved"
+run_adoption "$TMP_DIR/adopt-node-missing-block.out" adopt --dry-run --json \
+  --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "missing steering block could not be filled"
+assert_contains "$TMP_DIR/adopt-node-missing-block.out" 'old compatible steering'
+mv "$ADOPT_NODE/GEMINI.saved" "$ADOPT_NODE/GEMINI.md"
+run_adoption "$TMP_DIR/adopt-node-preserved.out" adopt --check --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "adopt required an implicit compatible steering upgrade"
+run_adoption "$TMP_DIR/adopt-node-upgrade-needed.out" upgrade --check --json --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 3 ] || fail "explicit upgrade did not detect stale managed steering"
+assert_contains "$TMP_DIR/adopt-node-upgrade-needed.out" '"status":"changes-required"'
+run_adoption "$TMP_DIR/adopt-node-upgrade-apply.out" upgrade --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "explicit steering upgrade failed"
+assert_not_contains "$ADOPT_NODE/.touchstone/TOUCHSTONE.md" "old compatible steering"
+commit_adoption_repo "$ADOPT_NODE" "upgrade"
+awk '{ printf "%s\r\n", $0 }' "$ADOPT_NODE/AGENTS.md" >"$ADOPT_NODE/AGENTS.crlf"
+mv "$ADOPT_NODE/AGENTS.crlf" "$ADOPT_NODE/AGENTS.md"
+sed 's/Humans approve plans/Humans approve stale plans/' "$ADOPT_NODE/AGENTS.md" \
+  >"$ADOPT_NODE/AGENTS.stale"
+mv "$ADOPT_NODE/AGENTS.stale" "$ADOPT_NODE/AGENTS.md"
+commit_adoption_repo "$ADOPT_NODE" "crlf steering"
+run_adoption "$TMP_DIR/adopt-node-crlf-upgrade.out" upgrade --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "CRLF steering upgrade failed"
+[ "$(grep -cF '<!-- touchstone:steering:start -->' "$ADOPT_NODE/AGENTS.md")" -eq 1 ] \
+  || fail "CRLF upgrade duplicated the managed block"
+awk '/Project-owned instructions/ { found=1; exit substr($0, length($0), 1) != "\r" } END { if (!found) exit 1 }' \
+  "$ADOPT_NODE/AGENTS.md" \
+  || fail "CRLF upgrade changed project-owned line endings"
+assert_contains "$ADOPT_NODE/AGENTS.md" "KEEP a/old/ b/new/ PROSE"
+commit_adoption_repo "$ADOPT_NODE" "crlf upgrade"
+awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }' "$ADOPT_NODE/AGENTS.md" \
+  >"$ADOPT_NODE/AGENTS.all-crlf"
+mv "$ADOPT_NODE/AGENTS.all-crlf" "$ADOPT_NODE/AGENTS.md"
+commit_adoption_repo "$ADOPT_NODE" "crlf markers"
+run_adoption "$TMP_DIR/adopt-node-crlf-check.out" adopt --check --json --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "ordinary adopt rewrote CRLF managed markers"
+assert_contains "$TMP_DIR/adopt-node-crlf-check.out" '"status":"current"'
+printf 'PROJECT-SUFFIX' >>"$ADOPT_NODE/AGENTS.md"
+commit_adoption_repo "$ADOPT_NODE" "unterminated project suffix"
+run_adoption "$TMP_DIR/adopt-node-suffix-upgrade.out" upgrade --project "$ADOPT_NODE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "unterminated suffix upgrade failed"
+[ "$(tail -c 1 "$ADOPT_NODE/AGENTS.md")" = X ] \
+  || fail "upgrade added a newline to project-owned suffix"
 
-ADOPT_DEV_ENGINES="$TMP_DIR/adopt-dev-engines"
-init_node_adoption_repo "$ADOPT_DEV_ENGINES"
-printf '%s\n' \
-  '{"devEngines":{"packageManager":{"name":"pnpm","version":"10.28.1","onFail":"error"}},"scripts":{"test":"node --test"}}' \
-  >"$ADOPT_DEV_ENGINES/package.json"
-commit_node_adoption_repo "$ADOPT_DEV_ENGINES"
-set +e
-bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_DEV_ENGINES" \
-  >"$TMP_DIR/adopt-dev-engines.out" 2>"$TMP_DIR/adopt-dev-engines.err"
-ADOPTION_STATUS=$?
-set -e
-[ "$ADOPTION_STATUS" -eq 4 ] || fail "devEngines package-manager policy was ignored"
-assert_contains "$TMP_DIR/adopt-dev-engines.err" 'declares devEngines runtime policy'
+ADOPT_FRESH_EOF="$TMP_DIR/adopt-fresh-eof"
+init_adoption_repo "$ADOPT_FRESH_EOF"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_FRESH_EOF/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_FRESH_EOF/package-lock.json"
+printf 'PROJECT-EOF' >"$ADOPT_FRESH_EOF/AGENTS.md"
+commit_adoption_repo "$ADOPT_FRESH_EOF" "fixture"
+git -C "$ADOPT_FRESH_EOF" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-fresh-eof.out" adopt --project "$ADOPT_FRESH_EOF"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "marker-free unterminated steering adoption failed"
+[ "$(tail -c 11 "$ADOPT_FRESH_EOF/AGENTS.md")" = PROJECT-EOF ] \
+  || fail "initial adoption changed bytes in unterminated project-owned steering"
+[ "$(tail -c 1 "$ADOPT_FRESH_EOF/AGENTS.md")" = F ] \
+  || fail "initial adoption terminated an unterminated project-owned line"
 
-for node_config in npmrc pnpmfile pnpmfile-unlocked; do
-  ADOPT_NODE_CONFIG="$TMP_DIR/adopt-node-config-$node_config"
-  init_node_adoption_repo "$ADOPT_NODE_CONFIG"
-  if [ "$node_config" = npmrc ]; then
-    printf '%s\n' '{"scripts":{"test":"node --test"}}' \
-      >"$ADOPT_NODE_CONFIG/package.json"
-    printf '%s\n' 'script-shell=./custom-shell.sh' >"$ADOPT_NODE_CONFIG/.npmrc"
-  else
-    printf '%s\n' '{"packageManager":"pnpm@10.0.0","scripts":{"test":"node --test"}}' \
-      >"$ADOPT_NODE_CONFIG/package.json"
-    printf '%s\n' 'module.exports = { hooks: {} }' >"$ADOPT_NODE_CONFIG/.pnpmfile.cjs"
-    if [ "$node_config" = pnpmfile ]; then
-      printf '%s\n' "lockfileVersion: '9.0'" >"$ADOPT_NODE_CONFIG/pnpm-lock.yaml"
-    fi
-  fi
-  commit_node_adoption_repo "$ADOPT_NODE_CONFIG"
-  set +e
-  bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_NODE_CONFIG" \
-    >"$TMP_DIR/adopt-node-config-$node_config.out" \
-    2>"$TMP_DIR/adopt-node-config-$node_config.err"
-  ADOPTION_STATUS=$?
-  set -e
-  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$node_config execution config was accepted"
-done
-assert_contains "$TMP_DIR/adopt-node-config-npmrc.err" 'project-controlled config'
-assert_contains "$TMP_DIR/adopt-node-config-pnpmfile.err" \
-  'project-controlled pnpm hook or config'
-assert_contains "$TMP_DIR/adopt-node-config-pnpmfile-unlocked.err" \
-  'project-controlled pnpm hook or config'
+echo "==> adoption preserves accepted schema-v1 declarations"
+ADOPT_EXISTING="$TMP_DIR/adopt-existing"
+init_adoption_repo "$ADOPT_EXISTING"
+write_contract "$ADOPT_EXISTING" "printf should-not-run > adoption-marker"
+cp "$ADOPT_EXISTING/.touchstone.toml" "$TMP_DIR/accepted-contract.toml"
+commit_adoption_repo "$ADOPT_EXISTING" "fixture"
+git -C "$ADOPT_EXISTING" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-existing.out" adopt --project "$ADOPT_EXISTING"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "existing schema-v1 adoption failed"
+[ ! -e "$ADOPT_EXISTING/adoption-marker" ] || fail "adoption executed the validation contract while planning"
+cmp -s "$ADOPT_EXISTING/.touchstone.toml" "$TMP_DIR/accepted-contract.toml" \
+  || fail "adoption rewrote an accepted schema-v1 contract"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_EXISTING/package.json"
+run_adoption "$TMP_DIR/adopt-existing-unread-manifest.out" adopt --dry-run \
+  --project "$ADOPT_EXISTING"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "unread untracked manifest blocked existing adoption"
+assert_contains "$TMP_DIR/adopt-existing-unread-manifest.out" \
+  'adopt: 0 file change(s) proposed'
 
-ADOPT_NPM_PRECEDENCE="$TMP_DIR/adopt-npm-precedence"
-init_node_adoption_repo "$ADOPT_NPM_PRECEDENCE"
-printf '%s\n' '{"scripts":{"test":"node --test"}}' \
-  >"$ADOPT_NPM_PRECEDENCE/package.json"
-printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' \
-  >"$ADOPT_NPM_PRECEDENCE/package-lock.json"
-printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{"dependencies":{"evil":"1.0.0"}}}}' \
-  >"$ADOPT_NPM_PRECEDENCE/npm-shrinkwrap.json"
-commit_node_adoption_repo "$ADOPT_NPM_PRECEDENCE"
-set +e
-bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_NPM_PRECEDENCE" \
-  >"$TMP_DIR/adopt-npm-precedence.out" 2>"$TMP_DIR/adopt-npm-precedence.err"
-ADOPTION_STATUS=$?
-set -e
-[ "$ADOPTION_STATUS" -eq 4 ] || fail "package lock hid the effective npm shrinkwrap"
-assert_contains "$TMP_DIR/adopt-npm-precedence.err" \
-  'npm lockfile outside the dependency-free portable subset'
-
-ADOPT_YARN_STANDALONE="$TMP_DIR/adopt-yarn-standalone"
-init_node_adoption_repo "$ADOPT_YARN_STANDALONE"
-mkdir -p "$ADOPT_YARN_STANDALONE/apps/api"
-printf '%s\n' \
-  '{"name":"fixture","packageManager":"yarn@4.14.1","workspaces":["packages/*"]}' \
-  >"$ADOPT_YARN_STANDALONE/package.json"
-printf '%s\n' '__metadata:' '  version: 8' '  cacheKey: 10c0' \
-  '"fixture@workspace:.":' '  version: 0.0.0-use.local' \
-  '  resolution: "fixture@workspace:."' '  languageName: unknown' \
-  '  linkType: soft' \
-  >"$ADOPT_YARN_STANDALONE/yarn.lock"
-printf '%s\n' '{"scripts":{"test":"node --test"}}' \
-  >"$ADOPT_YARN_STANDALONE/apps/api/package.json"
-commit_node_adoption_repo "$ADOPT_YARN_STANDALONE"
-bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_YARN_STANDALONE" \
-  >"$TMP_DIR/adopt-yarn-standalone.json"
-assert_contains "$TMP_DIR/adopt-yarn-standalone.json" \
-  'command = \"npm run test\"'
-assert_not_contains "$TMP_DIR/adopt-yarn-standalone.json" \
-  'command = \"COREPACK_ENABLE_NETWORK=0 yarn test\"'
-
-echo "==> Python adapter binds tasks to tracked executable evidence"
-PYTHON_TOOL_BIN="$TMP_DIR/python-tools"
-mkdir -p "$PYTHON_TOOL_BIN"
-cat >"$PYTHON_TOOL_BIN/uv" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [ "$*" = "--version" ]; then
-  printf '%s\n' 'uv 0.8.14'
-  exit 0
-fi
-[ "$*" = "lock --check --offline --no-config" ] || exit 8
-[ "${UV_NO_PROGRESS:-}" = 1 ] || exit 8
-[ "${UV_PYTHON_DOWNLOADS:-}" = never ] || exit 8
+echo "==> adoption ports explicit legacy commands without deleting legacy state"
+ADOPT_LEGACY="$TMP_DIR/adopt-legacy"
+init_adoption_repo "$ADOPT_LEGACY"
+cat >"$ADOPT_LEGACY/.touchstone-config" <<'EOF'
+project_type=generic
+validate_command=bash scripts/validate-project.sh --exact
 EOF
-chmod +x "$PYTHON_TOOL_BIN/uv"
-PATH="$PYTHON_TOOL_BIN:$PATH"
-export PATH
-ADOPT_PYTHON="$TMP_DIR/adopt-python"
-init_node_adoption_repo "$ADOPT_PYTHON"
-mkdir -p "$ADOPT_PYTHON/tests"
-printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
-  'requires-python = ">=3.11"' 'dependencies = ["pytest"]' \
-  >"$ADOPT_PYTHON/pyproject.toml"
-printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
-  '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
-  'source = { virtual = "." }' '' '[[package]]' 'name = "pytest"' \
-  'version = "9.0.0"' 'source = { registry = "https://pypi.org/simple" }' \
-  >"$ADOPT_PYTHON/uv.lock"
-printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_PYTHON/tests/test_fixture.py"
-commit_node_adoption_repo "$ADOPT_PYTHON"
-bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_PYTHON" \
-  >"$TMP_DIR/adopt-python-plan.json"
-assert_contains "$TMP_DIR/adopt-python-plan.json" '"profile":"python"'
-assert_contains "$TMP_DIR/adopt-python-plan.json" \
-  'uv 0.8.14'
-assert_contains "$TMP_DIR/adopt-python-plan.json" 'uv sync --no-config --offline --frozen'
-assert_contains "$TMP_DIR/adopt-python-plan.json" 'uv run --no-sync --no-config pytest'
+mkdir -p "$ADOPT_LEGACY/scripts"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$ADOPT_LEGACY/scripts/validate-project.sh"
+chmod +x "$ADOPT_LEGACY/scripts/validate-project.sh"
+commit_adoption_repo "$ADOPT_LEGACY" "fixture"
+git -C "$ADOPT_LEGACY" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-legacy.out" adopt --project "$ADOPT_LEGACY"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "legacy adoption failed"
+assert_contains "$ADOPT_LEGACY/.touchstone.toml" 'command = "bash scripts/validate-project.sh --exact"'
+[ -f "$ADOPT_LEGACY/.touchstone-config" ] || fail "adoption deleted legacy config without authorization"
 
-for python_evidence in ignored-test missing-source malformed-toml; do
-  ADOPT_PYTHON_EVIDENCE="$TMP_DIR/adopt-python-$python_evidence"
-  init_node_adoption_repo "$ADOPT_PYTHON_EVIDENCE"
-  case "$python_evidence" in
-    ignored-test)
-      mkdir -p "$ADOPT_PYTHON_EVIDENCE/.venv"
-      printf '%s\n' '[project]' 'name = "fixture"' 'requires-python = ">=3.11"' \
-        'dependencies = ["pytest"]' >"$ADOPT_PYTHON_EVIDENCE/pyproject.toml"
+echo "==> adoption supports explicit manual declarations"
+ADOPT_MANUAL="$TMP_DIR/adopt-manual"
+init_adoption_repo "$ADOPT_MANUAL"
+printf 'manual fixture\n' >"$ADOPT_MANUAL/README.md"
+commit_adoption_repo "$ADOPT_MANUAL" "fixture"
+git -C "$ADOPT_MANUAL" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-manual.out" adopt --project "$ADOPT_MANUAL" \
+  --task 'verify=bash scripts/check.sh --all'
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "manual adoption failed"
+assert_contains "$ADOPT_MANUAL/.touchstone.toml" 'name = "verify"'
+assert_contains "$ADOPT_MANUAL/.touchstone.toml" 'command = "bash scripts/check.sh --all"'
+
+echo "==> adoption presets cover the supported portfolio runtimes"
+for profile in python swift rust go; do
+  ADOPT_PROFILE="$TMP_DIR/adopt-$profile"
+  init_adoption_repo "$ADOPT_PROFILE"
+  case "$profile" in
+    python)
+      mkdir -p "$ADOPT_PROFILE/tests"
+      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+        'requires-python = ">=3.11"' 'dependencies = ["pytest"]' \
+        '[tool.pytest.ini_options]' >"$ADOPT_PROFILE/pyproject.toml"
       printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
         '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
         'source = { virtual = "." }' '' '[[package]]' 'name = "pytest"' \
-        'version = "9.0.0"' 'source = { registry = "https://pypi.org/simple" }' \
-        >"$ADOPT_PYTHON_EVIDENCE/uv.lock"
-      printf '%s\n' 'def test_hidden():' '    assert True' \
-        >"$ADOPT_PYTHON_EVIDENCE/.venv/test_hidden.py"
+        'version = "9.1.1"' 'source = { registry = "https://pypi.org/simple" }' \
+        >"$ADOPT_PROFILE/uv.lock"
+      printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_PROFILE/tests/test_fixture.py"
+      expected_command='uv run --no-sync --no-config pytest'
+      expected_setup='uv sync --no-config --offline --frozen'
       ;;
-    missing-source)
-      printf '%s\n' '[project]' 'name = "fixture"' 'requires-python = ">=3.11"' \
-        'dependencies = ["mypy"]' >"$ADOPT_PYTHON_EVIDENCE/pyproject.toml"
-      printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
-        '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
-        'source = { virtual = "." }' '' '[[package]]' 'name = "mypy"' \
-        'version = "1.20.2"' 'source = { registry = "https://pypi.org/simple" }' \
-        >"$ADOPT_PYTHON_EVIDENCE/uv.lock"
-      ;;
-    malformed-toml)
-      printf '%s\n' '[project' 'name = "broken"' >"$ADOPT_PYTHON_EVIDENCE/pyproject.toml"
-      ;;
-  esac
-  commit_node_adoption_repo "$ADOPT_PYTHON_EVIDENCE"
-  set +e
-  bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_PYTHON_EVIDENCE" \
-    >"$TMP_DIR/adopt-python-$python_evidence.out" \
-    2>"$TMP_DIR/adopt-python-$python_evidence.err"
-  ADOPTION_STATUS=$?
-  set -e
-  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$python_evidence produced an unsafe Python task"
-done
-assert_contains "$TMP_DIR/adopt-python-ignored-test.err" \
-  'no declared ruff, mypy, or pytest evidence'
-assert_contains "$TMP_DIR/adopt-python-missing-source.err" \
-  'mypy evidence but no tracked regular Python source'
-assert_contains "$TMP_DIR/adopt-python-malformed-toml.err" 'pyproject.toml is malformed'
-
-for python_boundary in vcs-url poetry-python poetry-platform spaced-build-hook extras-before-url invalid-requirement uv-source requirements-without-lock; do
-  ADOPT_PYTHON_BOUNDARY="$TMP_DIR/adopt-python-$python_boundary"
-  init_node_adoption_repo "$ADOPT_PYTHON_BOUNDARY"
-  case "$python_boundary" in
-    vcs-url)
-      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
-        'dependencies = ["evil @ git+git://example.invalid/repo.git"]' \
-        >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
-      expected_python_boundary='remote direct dependency reference'
-      ;;
-    poetry-python | poetry-platform)
-      marker_key="${python_boundary#poetry-}"
-      printf '%s\n' '[tool.poetry]' 'name = "fixture"' 'version = "0.1.0"' \
-        '[tool.poetry.dependencies]' \
-        "evil = { version = \"^1\", $marker_key = \"blocked\" }" \
-        '[build-system]' 'requires = ["poetry-core"]' \
-        'build-backend = "poetry.core.masonry.api"' \
-        >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
-      expected_python_boundary='environment-marked dependency'
-      ;;
-    spaced-build-hook)
-      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
-        'dependencies = ["ruff"]' '[ build-system ]' \
-        'requires = ["setuptools"]' 'build-backend = "setuptools.build_meta"' \
-        'backend-path = ["."]' >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
-      expected_python_boundary='project build hook'
-      ;;
-    extras-before-url)
-      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
-        'dependencies = [' '  "foo[bar]",' \
-        '  "evil @ https://example.invalid/package.whl",' ']' \
-        >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
-      expected_python_boundary='remote direct dependency reference'
-      ;;
-    invalid-requirement)
-      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
-        'dependencies = ["ruff", "not a requirement!"]' \
-        >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
-      expected_python_boundary='outside the supported named-requirement subset'
-      ;;
-    uv-source)
-      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
-        'requires-python = ">=3.11"' 'dependencies = ["evil"]' \
-        '[tool.uv.sources]' 'evil = { path = "../outside" }' \
-        >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
-      printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
-        '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
-        'source = { virtual = "." }' '' '[[package]]' 'name = "evil"' \
-        'version = "1.0.0"' 'source = { directory = "../outside" }' \
-        >"$ADOPT_PYTHON_BOUNDARY/uv.lock"
-      expected_python_boundary='declares a uv source mapping'
-      ;;
-    requirements-without-lock)
-      printf '%s\n' 'pytest==0.0.0' >"$ADOPT_PYTHON_BOUNDARY/requirements.txt"
-      expected_python_boundary='requires uv.lock and an exact uv runtime'
-      ;;
-  esac
-  commit_node_adoption_repo "$ADOPT_PYTHON_BOUNDARY"
-  set +e
-  bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_PYTHON_BOUNDARY" \
-    >"$TMP_DIR/adopt-python-$python_boundary.out" \
-    2>"$TMP_DIR/adopt-python-$python_boundary.err"
-  ADOPTION_STATUS=$?
-  set -e
-  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$python_boundary dependency boundary was accepted"
-  assert_contains "$TMP_DIR/adopt-python-$python_boundary.err" "$expected_python_boundary"
-done
-
-echo "==> native adapters require tracked buildable targets"
-NATIVE_TOOL_BIN="$TMP_DIR/native-tools"
-mkdir -p "$NATIVE_TOOL_BIN"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "{}\\n"' >"$NATIVE_TOOL_BIN/cargo"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "%s/fixture.go\\n" "$PWD"' >"$NATIVE_TOOL_BIN/go"
-chmod +x "$NATIVE_TOOL_BIN/cargo" "$NATIVE_TOOL_BIN/go"
-for native_profile in swift rust go; do
-  ADOPT_NATIVE="$TMP_DIR/adopt-native-$native_profile"
-  init_node_adoption_repo "$ADOPT_NATIVE"
-  case "$native_profile" in
     swift)
-      mkdir -p "$ADOPT_NATIVE/Tests/FixtureTests"
+      mkdir -p "$ADOPT_PROFILE/Tests/FixtureTests"
       printf '%s\n' '// swift-tools-version:6.2' 'import PackageDescription' \
         'let package = Package(' '  name: "Fixture",' '  targets: [' \
-        '    .testTarget(name: "FixtureTests")' '  ]' ')' >"$ADOPT_NATIVE/Package.swift"
+        '    .testTarget(name: "FixtureTests")' '  ]' ')' >"$ADOPT_PROFILE/Package.swift"
       printf '%s\n' 'import Testing' '@Test func passes() { #expect(Bool(true)) }' \
-        >"$ADOPT_NATIVE/Tests/FixtureTests/FixtureTests.swift"
-      expected_native_command='command = \"swift test --disable-automatic-resolution --skip-update\"'
+        >"$ADOPT_PROFILE/Tests/FixtureTests/FixtureTests.swift"
+      expected_command='command = "swift test --disable-automatic-resolution --skip-update"'
+      expected_setup=''
       ;;
     rust)
-      mkdir -p "$ADOPT_NATIVE/src"
+      mkdir -p "$ADOPT_PROFILE/src"
       printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
-        >"$ADOPT_NATIVE/Cargo.toml"
+        >"$ADOPT_PROFILE/Cargo.toml"
       printf '%s\n' 'version = 4' '' '[[package]]' 'name = "fixture"' \
-        'version = "0.1.0"' >"$ADOPT_NATIVE/Cargo.lock"
-      printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_NATIVE/src/lib.rs"
-      expected_native_command='command = \"cargo test --frozen\"'
+        'version = "0.1.0"' >"$ADOPT_PROFILE/Cargo.lock"
+      printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_PROFILE/src/lib.rs"
+      expected_command='command = "cargo test --frozen"'
+      expected_setup=''
       ;;
     go)
-      printf '%s\n' 'module example.invalid/fixture' >"$ADOPT_NATIVE/go.mod"
-      printf '%s\n' 'package fixture' >"$ADOPT_NATIVE/fixture.go"
-      expected_native_command='command = \"GOENV=off GOTOOLCHAIN=local GOWORK=off GOPROXY=off GOSUMDB=off go test ./...\"'
+      printf '%s\n' 'module example.invalid/fixture' >"$ADOPT_PROFILE/go.mod"
+      printf '%s\n' 'package fixture' >"$ADOPT_PROFILE/fixture.go"
+      expected_command='command = "GOENV=off GOTOOLCHAIN=local GOWORK=off GOPROXY=off GOSUMDB=off go test ./..."'
+      expected_setup=''
       ;;
   esac
-  commit_node_adoption_repo "$ADOPT_NATIVE"
-  set +e
-  PATH="$NATIVE_TOOL_BIN:$PATH" bash "$ROOT/bin/touchstone" adopt --dry-run --json \
-    --project "$ADOPT_NATIVE" \
-    >"$TMP_DIR/adopt-native-$native_profile.json" \
-    2>"$TMP_DIR/adopt-native-$native_profile.err"
-  ADOPTION_STATUS=$?
-  set -e
-  [ "$ADOPTION_STATUS" -eq 0 ] \
-    || fail "$native_profile adoption failed: $(cat "$TMP_DIR/adopt-native-$native_profile.err") $(cat "$TMP_DIR/adopt-native-$native_profile.json")"
-  assert_contains "$TMP_DIR/adopt-native-$native_profile.json" "$expected_native_command"
+  commit_adoption_repo "$ADOPT_PROFILE" "fixture"
+  git -C "$ADOPT_PROFILE" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-$profile.out" adopt --project "$ADOPT_PROFILE"
+  [ "$ADOPTION_STATUS" -eq 0 ] || fail "$profile adoption failed"
+  assert_contains "$ADOPT_PROFILE/.touchstone.toml" "$expected_command"
+  if [ -n "$expected_setup" ]; then assert_contains "$ADOPT_PROFILE/.touchstone.toml" "$expected_setup"; fi
 done
 
-ADOPT_RUST_UNTRACKED="$TMP_DIR/adopt-rust-untracked"
-init_node_adoption_repo "$ADOPT_RUST_UNTRACKED"
-mkdir -p "$ADOPT_RUST_UNTRACKED/src"
+ADOPT_SWIFT_MALFORMED="$TMP_DIR/adopt-swift-malformed"
+init_adoption_repo "$ADOPT_SWIFT_MALFORMED"
+printf '%s\n' '// swift-tools-version:6.2' 'this is not Swift' \
+  >"$ADOPT_SWIFT_MALFORMED/Package.swift"
+commit_adoption_repo "$ADOPT_SWIFT_MALFORMED" "fixture"
+git -C "$ADOPT_SWIFT_MALFORMED" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-swift-malformed.out" adopt --dry-run --project "$ADOPT_SWIFT_MALFORMED"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed Swift manifest was accepted"
+assert_contains "$TMP_DIR/adopt-swift-malformed.out.err" 'Package.swift is malformed'
+
+ADOPT_SWIFT_EMPTY="$TMP_DIR/adopt-swift-empty"
+init_adoption_repo "$ADOPT_SWIFT_EMPTY"
+printf '%s\n' '// swift-tools-version:6.2' 'import PackageDescription' \
+  'let package = Package(name: "Empty")' >"$ADOPT_SWIFT_EMPTY/Package.swift"
+commit_adoption_repo "$ADOPT_SWIFT_EMPTY" "fixture"
+git -C "$ADOPT_SWIFT_EMPTY" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-swift-empty.out" adopt --dry-run --project "$ADOPT_SWIFT_EMPTY"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Swift package without a buildable target was accepted"
+assert_contains "$TMP_DIR/adopt-swift-empty.out.err" 'portable buildable-target subset'
+
+ADOPT_GO_MALFORMED="$TMP_DIR/adopt-go-malformed"
+init_adoption_repo "$ADOPT_GO_MALFORMED"
+printf '%s\n' 'module example.invalid/fixture' 'this is invalid' >"$ADOPT_GO_MALFORMED/go.mod"
+commit_adoption_repo "$ADOPT_GO_MALFORMED" "fixture"
+git -C "$ADOPT_GO_MALFORMED" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-malformed.out" adopt --dry-run --project "$ADOPT_GO_MALFORMED"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed Go manifest was accepted"
+assert_contains "$TMP_DIR/adopt-go-malformed.out.err" 'go.mod is malformed'
+
+ADOPT_RUST_NO_LOCK="$TMP_DIR/adopt-rust-no-lock"
+init_adoption_repo "$ADOPT_RUST_NO_LOCK"
+printf '%s\n' '[package]' 'name = "fixture"' >"$ADOPT_RUST_NO_LOCK/Cargo.toml"
+commit_adoption_repo "$ADOPT_RUST_NO_LOCK" "fixture"
+git -C "$ADOPT_RUST_NO_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-no-lock.out" adopt --dry-run --project "$ADOPT_RUST_NO_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Rust adoption without a lockfile was accepted"
+assert_contains "$TMP_DIR/adopt-rust-no-lock.out.err" "has no Cargo.lock"
+[ ! -e "$ADOPT_RUST_NO_LOCK/.touchstone.toml" ] || fail "Rust lockfile refusal mutated the repository"
+
+ADOPT_RUST_IGNORED_LOCK="$TMP_DIR/adopt-rust-ignored-lock"
+init_adoption_repo "$ADOPT_RUST_IGNORED_LOCK"
+printf '%s\n' '[package]' 'name = "fixture"' >"$ADOPT_RUST_IGNORED_LOCK/Cargo.toml"
+printf '%s\n' 'Cargo.lock' >"$ADOPT_RUST_IGNORED_LOCK/.gitignore"
+commit_adoption_repo "$ADOPT_RUST_IGNORED_LOCK" "fixture"
+printf '%s\n' 'version = 4' >"$ADOPT_RUST_IGNORED_LOCK/Cargo.lock"
+git -C "$ADOPT_RUST_IGNORED_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-ignored-lock.out" adopt --dry-run --project "$ADOPT_RUST_IGNORED_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Rust adoption accepted a locally present ignored lockfile"
+assert_contains "$TMP_DIR/adopt-rust-ignored-lock.out.err" "compiler input 'Cargo.lock' is not tracked"
+[ -z "$(git -C "$ADOPT_RUST_IGNORED_LOCK" status --porcelain=v1)" ] \
+  || fail "ignored-lock refusal changed the clean checkout"
+
+ADOPT_RUST_MALFORMED="$TMP_DIR/adopt-rust-malformed"
+init_adoption_repo "$ADOPT_RUST_MALFORMED"
+printf '%s\n' '[package' 'name = "fixture"' >"$ADOPT_RUST_MALFORMED/Cargo.toml"
+printf '%s\n' 'version = 4' >"$ADOPT_RUST_MALFORMED/Cargo.lock"
+commit_adoption_repo "$ADOPT_RUST_MALFORMED" "fixture"
+git -C "$ADOPT_RUST_MALFORMED" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-malformed.out" adopt --dry-run --project "$ADOPT_RUST_MALFORMED"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed Cargo manifest was accepted"
+assert_contains "$TMP_DIR/adopt-rust-malformed.out.err" \
+  'Cargo.toml is malformed or uses TOML syntax the portable adoption parser cannot verify'
+[ ! -e "$ADOPT_RUST_MALFORMED/.touchstone.toml" ] \
+  || fail "malformed Cargo manifest refusal mutated the repository"
+
+ADOPT_RUST_BAD_LOCK="$TMP_DIR/adopt-rust-bad-lock"
+init_adoption_repo "$ADOPT_RUST_BAD_LOCK"
 printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
-  >"$ADOPT_RUST_UNTRACKED/Cargo.toml"
+  >"$ADOPT_RUST_BAD_LOCK/Cargo.toml"
+printf '%s\n' 'this is not TOML [' >"$ADOPT_RUST_BAD_LOCK/Cargo.lock"
+commit_adoption_repo "$ADOPT_RUST_BAD_LOCK" "fixture"
+git -C "$ADOPT_RUST_BAD_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-bad-lock.out" adopt --dry-run --project "$ADOPT_RUST_BAD_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed Cargo.lock was accepted"
+assert_contains "$TMP_DIR/adopt-rust-bad-lock.out.err" 'Cargo.lock is malformed'
+
+ADOPT_RUST_INCOMPLETE_LOCK="$TMP_DIR/adopt-rust-incomplete-lock"
+init_adoption_repo "$ADOPT_RUST_INCOMPLETE_LOCK"
+mkdir -p "$ADOPT_RUST_INCOMPLETE_LOCK/src"
+printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+  >"$ADOPT_RUST_INCOMPLETE_LOCK/Cargo.toml"
+printf '%s\n' 'version = 4' >"$ADOPT_RUST_INCOMPLETE_LOCK/Cargo.lock"
+printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_RUST_INCOMPLETE_LOCK/src/lib.rs"
+commit_adoption_repo "$ADOPT_RUST_INCOMPLETE_LOCK" "fixture"
+git -C "$ADOPT_RUST_INCOMPLETE_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-incomplete-lock.out" adopt --dry-run \
+  --project "$ADOPT_RUST_INCOMPLETE_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "incomplete Cargo.lock was accepted"
+assert_contains "$TMP_DIR/adopt-rust-incomplete-lock.out.err" \
+  'Cargo.lock has incomplete package records'
+
+ADOPT_RUST_STALE_LOCK="$TMP_DIR/adopt-rust-stale-lock"
+init_adoption_repo "$ADOPT_RUST_STALE_LOCK"
+mkdir -p "$ADOPT_RUST_STALE_LOCK/src"
+printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+  >"$ADOPT_RUST_STALE_LOCK/Cargo.toml"
 printf '%s\n' 'version = 4' '' '[[package]]' 'name = "fixture"' \
-  'version = "0.1.0"' >"$ADOPT_RUST_UNTRACKED/Cargo.lock"
-printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_RUST_UNTRACKED/src/lib.rs"
-printf '%s\n' 'src/' >"$ADOPT_RUST_UNTRACKED/.gitignore"
-commit_node_adoption_repo "$ADOPT_RUST_UNTRACKED"
-set +e
-bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_RUST_UNTRACKED" \
-  >"$TMP_DIR/adopt-rust-untracked.out" 2>"$TMP_DIR/adopt-rust-untracked.err"
-ADOPTION_STATUS=$?
-set -e
-[ "$ADOPTION_STATUS" -eq 4 ] || fail "Rust task without tracked source was accepted"
-assert_contains "$TMP_DIR/adopt-rust-untracked.err" \
-  'has no tracked default src/lib.rs or src/main.rs'
+  'version = "0.1.0"' >"$ADOPT_RUST_STALE_LOCK/Cargo.lock"
+printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_RUST_STALE_LOCK/src/lib.rs"
+printf '%s\n' 'stale' >"$ADOPT_RUST_STALE_LOCK/.touchstone-cargo-check-fail"
+commit_adoption_repo "$ADOPT_RUST_STALE_LOCK" "fixture"
+git -C "$ADOPT_RUST_STALE_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-stale-lock.out" adopt --dry-run \
+  --project "$ADOPT_RUST_STALE_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Cargo's failed offline lock check was ignored"
+assert_contains "$TMP_DIR/adopt-rust-stale-lock.out.err" \
+  'Cargo.lock is incompatible with the verified manifests under offline metadata resolution: fixture lock is stale'
+
+for build_kind in default custom config; do
+  ADOPT_RUST_EXEC="$TMP_DIR/adopt-rust-$build_kind-execution"
+  init_adoption_repo "$ADOPT_RUST_EXEC"
+  mkdir -p "$ADOPT_RUST_EXEC/src"
+  printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+    >"$ADOPT_RUST_EXEC/Cargo.toml"
+  case "$build_kind" in
+    default) printf '%s\n' 'fn main() {}' >"$ADOPT_RUST_EXEC/build.rs" ;;
+    custom)
+      printf '%s\n' 'build = "compile.rs"' >>"$ADOPT_RUST_EXEC/Cargo.toml"
+      printf '%s\n' 'fn main() {}' >"$ADOPT_RUST_EXEC/compile.rs"
+      ;;
+    config)
+      mkdir -p "$ADOPT_RUST_EXEC/.cargo"
+      printf '%s\n' '[build]' 'rustc-wrapper = "./wrapper"' \
+        >"$ADOPT_RUST_EXEC/.cargo/config.toml"
+      ;;
+  esac
+  printf '%s\n' 'version = 4' '' '[[package]]' 'name = "fixture"' \
+    'version = "0.1.0"' >"$ADOPT_RUST_EXEC/Cargo.lock"
+  printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_RUST_EXEC/src/lib.rs"
+  commit_adoption_repo "$ADOPT_RUST_EXEC" "fixture"
+  git -C "$ADOPT_RUST_EXEC" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-rust-$build_kind-execution.out" adopt --dry-run \
+    --project "$ADOPT_RUST_EXEC"
+  [ "$ADOPTION_STATUS" -eq 4 ] \
+    || fail "Rust $build_kind execution hook was accepted"
+done
+assert_contains "$TMP_DIR/adopt-rust-default-execution.out.err" \
+  'has a build.rs program automatic validation cannot isolate'
+assert_contains "$TMP_DIR/adopt-rust-custom-execution.out.err" \
+  'declares a custom build program automatic validation cannot isolate'
+assert_contains "$TMP_DIR/adopt-rust-config-execution.out.err" \
+  'inherits project-controlled Cargo execution config'
+
+ADOPT_RUST_ANCESTOR_CONFIG="$TMP_DIR/adopt-rust-ancestor-config"
+init_adoption_repo "$ADOPT_RUST_ANCESTOR_CONFIG"
+mkdir -p "$ADOPT_RUST_ANCESTOR_CONFIG/.cargo" \
+  "$ADOPT_RUST_ANCESTOR_CONFIG/apps/demo/src"
+printf '%s\n' '[build]' 'rustc-wrapper = "./wrapper"' \
+  >"$ADOPT_RUST_ANCESTOR_CONFIG/.cargo/config.toml"
+printf '%s\n' '[package]' 'name = "demo"' 'version = "0.1.0"' \
+  >"$ADOPT_RUST_ANCESTOR_CONFIG/apps/demo/Cargo.toml"
+printf '%s\n' 'version = 4' '' '[[package]]' 'name = "demo"' \
+  'version = "0.1.0"' >"$ADOPT_RUST_ANCESTOR_CONFIG/apps/demo/Cargo.lock"
+printf '%s\n' 'pub fn demo() {}' >"$ADOPT_RUST_ANCESTOR_CONFIG/apps/demo/src/lib.rs"
+commit_adoption_repo "$ADOPT_RUST_ANCESTOR_CONFIG" "fixture"
+git -C "$ADOPT_RUST_ANCESTOR_CONFIG" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-ancestor-config.out" adopt --dry-run \
+  --project "$ADOPT_RUST_ANCESTOR_CONFIG"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "ancestor Cargo execution config was accepted"
+assert_contains "$TMP_DIR/adopt-rust-ancestor-config.out.err" \
+  "inherits project-controlled Cargo execution config '.cargo/config.toml'"
+
+ADOPT_RUST_LOCK_VERSION="$TMP_DIR/adopt-rust-lock-version"
+init_adoption_repo "$ADOPT_RUST_LOCK_VERSION"
+mkdir -p "$ADOPT_RUST_LOCK_VERSION/src"
+printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+  >"$ADOPT_RUST_LOCK_VERSION/Cargo.toml"
+printf '%s\n' 'version = 999' >"$ADOPT_RUST_LOCK_VERSION/Cargo.lock"
+printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_RUST_LOCK_VERSION/src/lib.rs"
+commit_adoption_repo "$ADOPT_RUST_LOCK_VERSION" "fixture"
+git -C "$ADOPT_RUST_LOCK_VERSION" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-lock-version.out" adopt --dry-run \
+  --project "$ADOPT_RUST_LOCK_VERSION"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unsupported Cargo lockfile version was accepted"
+assert_contains "$TMP_DIR/adopt-rust-lock-version.out.err" \
+  'Cargo.lock has no unique supported root lockfile version'
+
+ADOPT_RUST_IGNORED_SOURCE="$TMP_DIR/adopt-rust-ignored-source"
+init_adoption_repo "$ADOPT_RUST_IGNORED_SOURCE"
+printf '%s\n' 'src/' >"$ADOPT_RUST_IGNORED_SOURCE/.gitignore"
+printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+  >"$ADOPT_RUST_IGNORED_SOURCE/Cargo.toml"
+printf '%s\n' 'version = 4' '' '[[package]]' 'name = "fixture"' \
+  'version = "0.1.0"' >"$ADOPT_RUST_IGNORED_SOURCE/Cargo.lock"
+commit_adoption_repo "$ADOPT_RUST_IGNORED_SOURCE" "fixture"
+mkdir -p "$ADOPT_RUST_IGNORED_SOURCE/src"
+printf '%s\n' 'pub fn local_only() {}' >"$ADOPT_RUST_IGNORED_SOURCE/src/lib.rs"
+git -C "$ADOPT_RUST_IGNORED_SOURCE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-ignored-source.out" adopt --dry-run \
+  --project "$ADOPT_RUST_IGNORED_SOURCE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Rust target with only ignored source was accepted"
+assert_contains "$TMP_DIR/adopt-rust-ignored-source.out.err" 'has no tracked default src/lib.rs or src/main.rs'
+
+ADOPT_GO_IGNORED_SOURCE="$TMP_DIR/adopt-go-ignored-source"
+init_adoption_repo "$ADOPT_GO_IGNORED_SOURCE"
+printf '%s\n' '*.go' >"$ADOPT_GO_IGNORED_SOURCE/.gitignore"
+printf '%s\n' 'module example.invalid/fixture' 'go 1.24' >"$ADOPT_GO_IGNORED_SOURCE/go.mod"
+commit_adoption_repo "$ADOPT_GO_IGNORED_SOURCE" "fixture"
+printf '%s\n' 'package fixture' >"$ADOPT_GO_IGNORED_SOURCE/fixture.go"
+git -C "$ADOPT_GO_IGNORED_SOURCE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-ignored-source.out" adopt --dry-run \
+  --project "$ADOPT_GO_IGNORED_SOURCE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Go target with only ignored source was accepted"
+assert_contains "$TMP_DIR/adopt-go-ignored-source.out.err" 'has no tracked Go source'
+
+ADOPT_GO_VENDOR_SOURCE="$TMP_DIR/adopt-go-vendor-source"
+init_adoption_repo "$ADOPT_GO_VENDOR_SOURCE"
+mkdir -p "$ADOPT_GO_VENDOR_SOURCE/vendor/example.invalid/fixture"
+printf '%s\n' 'module example.invalid/fixture' 'go 1.24' \
+  >"$ADOPT_GO_VENDOR_SOURCE/go.mod"
+printf '%s\n' 'package fixture' \
+  >"$ADOPT_GO_VENDOR_SOURCE/vendor/example.invalid/fixture/fixture.go"
+commit_adoption_repo "$ADOPT_GO_VENDOR_SOURCE" "fixture"
+git -C "$ADOPT_GO_VENDOR_SOURCE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-vendor-source.out" adopt --dry-run \
+  --project "$ADOPT_GO_VENDOR_SOURCE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Go target with only vendored source was accepted"
+assert_contains "$TMP_DIR/adopt-go-vendor-source.out.err" 'has no tracked Go source'
+
+ADOPT_GO_NO_PACKAGE="$TMP_DIR/adopt-go-no-package"
+init_adoption_repo "$ADOPT_GO_NO_PACKAGE"
+printf '%s\n' 'module example.invalid/fixture' 'go 1.24' >"$ADOPT_GO_NO_PACKAGE/go.mod"
+printf '%s\n' 'package fixture' >"$ADOPT_GO_NO_PACKAGE/fixture.go"
+printf '%s\n' 'fail' >"$ADOPT_GO_NO_PACKAGE/.touchstone-go-list-fail"
+commit_adoption_repo "$ADOPT_GO_NO_PACKAGE" "fixture"
+git -C "$ADOPT_GO_NO_PACKAGE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-no-package.out" adopt --dry-run \
+  --project "$ADOPT_GO_NO_PACKAGE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "failed offline Go package selection was ignored"
+assert_contains "$TMP_DIR/adopt-go-no-package.out.err" \
+  'Go target has no package selected by ./... under offline local-toolchain resolution: ./... matched no packages'
+
+ADOPT_GO_WARNING="$TMP_DIR/adopt-go-warning"
+init_adoption_repo "$ADOPT_GO_WARNING"
+printf '%s\n' 'module example.invalid/fixture' 'go 1.24' >"$ADOPT_GO_WARNING/go.mod"
+printf '%s\n' 'package fixture' >"$ADOPT_GO_WARNING/fixture.go"
+printf '%s\n' 'warning' >"$ADOPT_GO_WARNING/.touchstone-go-list-warning"
+commit_adoption_repo "$ADOPT_GO_WARNING" "fixture"
+git -C "$ADOPT_GO_WARNING" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-warning.out" adopt --dry-run --project "$ADOPT_GO_WARNING"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Go warning was accepted as a selected package"
+assert_contains "$TMP_DIR/adopt-go-warning.out.err" \
+  'Go target has no package selected by ./... under offline local-toolchain resolution'
+
+ADOPT_GO_GENERATED="$TMP_DIR/adopt-go-generated"
+init_adoption_repo "$ADOPT_GO_GENERATED"
+printf '%s\n' 'module example.invalid/fixture' 'go 1.24' >"$ADOPT_GO_GENERATED/go.mod"
+printf '%s\n' '//go:build never' '' 'package fixture' >"$ADOPT_GO_GENERATED/excluded.go"
+printf '%s\n' 'generated.go' >"$ADOPT_GO_GENERATED/.gitignore"
+printf '%s\n' 'selected' >"$ADOPT_GO_GENERATED/.touchstone-go-selected-untracked"
+commit_adoption_repo "$ADOPT_GO_GENERATED" "fixture"
+printf '%s\n' 'package fixture' >"$ADOPT_GO_GENERATED/generated.go"
+git -C "$ADOPT_GO_GENERATED" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-generated.out" adopt --dry-run \
+  --project "$ADOPT_GO_GENERATED"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Go package backed only by ignored generated source was accepted"
+assert_contains "$TMP_DIR/adopt-go-generated.out.err" \
+  'Go target has no package selected by ./... under offline local-toolchain resolution'
+
+ADOPT_GO_EMBED="$TMP_DIR/adopt-go-embed"
+init_adoption_repo "$ADOPT_GO_EMBED"
+mkdir -p "$ADOPT_GO_EMBED/assets"
+printf '%s\n' 'module example.invalid/fixture' 'go 1.24' >"$ADOPT_GO_EMBED/go.mod"
+printf '%s\n' 'package fixture' '' '//go:embed assets/secret.txt' \
+  'var secret string' >"$ADOPT_GO_EMBED/fixture.go"
+printf '%s\n' 'assets/' >"$ADOPT_GO_EMBED/.gitignore"
+printf '%s\n' 'selected' >"$ADOPT_GO_EMBED/.touchstone-go-selected-embed"
+commit_adoption_repo "$ADOPT_GO_EMBED" "fixture"
+printf '%s\n' 'secret' >"$ADOPT_GO_EMBED/assets/secret.txt"
+git -C "$ADOPT_GO_EMBED" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-embed.out" adopt --dry-run --project "$ADOPT_GO_EMBED"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Go package with an ignored embed asset was accepted"
+assert_contains "$TMP_DIR/adopt-go-embed.out.err" \
+  'Go target has no package selected by ./... under offline local-toolchain resolution'
+
+ADOPT_RUST_LOCAL="$TMP_DIR/adopt-rust-local"
+init_adoption_repo "$ADOPT_RUST_LOCAL"
+printf '%s\n' '[package]' 'name = "fixture"' '[dependencies]' \
+  'shared = { path = "../shared" }' >"$ADOPT_RUST_LOCAL/Cargo.toml"
+printf '%s\n' 'version = 4' >"$ADOPT_RUST_LOCAL/Cargo.lock"
+commit_adoption_repo "$ADOPT_RUST_LOCAL" "fixture"
+git -C "$ADOPT_RUST_LOCAL" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-local.out" adopt --dry-run --project "$ADOPT_RUST_LOCAL"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "checkout-external Cargo dependency was accepted"
+assert_contains "$TMP_DIR/adopt-rust-local.out.err" 'declares a local path dependency'
 
 for cargo_boundary in dotted-path dotted-build external-workspace registry-dependency; do
   ADOPT_CARGO_BOUNDARY="$TMP_DIR/adopt-cargo-$cargo_boundary"
-  init_node_adoption_repo "$ADOPT_CARGO_BOUNDARY"
+  init_adoption_repo "$ADOPT_CARGO_BOUNDARY"
   mkdir -p "$ADOPT_CARGO_BOUNDARY/src"
   case "$cargo_boundary" in
     dotted-path)
@@ -1328,55 +1490,1590 @@ for cargo_boundary in dotted-path dotted-build external-workspace registry-depen
   printf '%s\n' 'version = 4' '' '[[package]]' 'name = "fixture"' \
     'version = "0.1.0"' >"$ADOPT_CARGO_BOUNDARY/Cargo.lock"
   printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_CARGO_BOUNDARY/src/lib.rs"
-  commit_node_adoption_repo "$ADOPT_CARGO_BOUNDARY"
-  set +e
-  PATH="$NATIVE_TOOL_BIN:$PATH" bash "$ROOT/bin/touchstone" adopt --dry-run \
-    --project "$ADOPT_CARGO_BOUNDARY" >"$TMP_DIR/adopt-cargo-$cargo_boundary.out" \
-    2>"$TMP_DIR/adopt-cargo-$cargo_boundary.err"
-  ADOPTION_STATUS=$?
-  set -e
+  commit_adoption_repo "$ADOPT_CARGO_BOUNDARY" "fixture"
+  git -C "$ADOPT_CARGO_BOUNDARY" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-cargo-$cargo_boundary.out" adopt --dry-run \
+    --project "$ADOPT_CARGO_BOUNDARY"
   [ "$ADOPTION_STATUS" -eq 4 ] || fail "$cargo_boundary Cargo boundary was accepted"
-  assert_contains "$TMP_DIR/adopt-cargo-$cargo_boundary.err" "$expected_cargo_boundary"
+  assert_contains "$TMP_DIR/adopt-cargo-$cargo_boundary.out.err" "$expected_cargo_boundary"
 done
 
-for go_boundary in warning generated-source embedded-asset; do
-  ADOPT_GO_BOUNDARY="$TMP_DIR/adopt-go-$go_boundary"
-  GO_BOUNDARY_BIN="$TMP_DIR/go-tools-$go_boundary"
-  init_node_adoption_repo "$ADOPT_GO_BOUNDARY"
-  mkdir -p "$GO_BOUNDARY_BIN"
-  printf '%s\n' 'module example.invalid/fixture' >"$ADOPT_GO_BOUNDARY/go.mod"
-  if [ "$go_boundary" = warning ]; then
-    printf '%s\n' 'package fixture' >"$ADOPT_GO_BOUNDARY/fixture.go"
-    printf '%s\n' '#!/usr/bin/env bash' \
-      'printf '\''go: warning: "./..." matched no packages\\n'\''' >"$GO_BOUNDARY_BIN/go"
-  elif [ "$go_boundary" = generated-source ]; then
-    printf '%s\n' '//go:build never' '' 'package fixture' \
-      >"$ADOPT_GO_BOUNDARY/excluded.go"
-    printf '%s\n' 'generated.go' >"$ADOPT_GO_BOUNDARY/.gitignore"
-    printf '%s\n' 'package fixture' >"$ADOPT_GO_BOUNDARY/generated.go"
-    printf '%s\n' '#!/usr/bin/env bash' \
-      'printf "%s/generated.go\\n" "$PWD"' >"$GO_BOUNDARY_BIN/go"
-  else
-    mkdir -p "$ADOPT_GO_BOUNDARY/assets"
-    printf '%s\n' 'package fixture' '' '//go:embed assets/secret.txt' \
-      'var secret string' >"$ADOPT_GO_BOUNDARY/fixture.go"
-    printf '%s\n' 'assets/' >"$ADOPT_GO_BOUNDARY/.gitignore"
-    printf '%s\n' 'secret' >"$ADOPT_GO_BOUNDARY/assets/secret.txt"
-    printf '%s\n' '#!/usr/bin/env bash' \
-      'printf "%s/fixture.go\\n%s/assets/secret.txt\\n" "$PWD" "$PWD"' \
-      >"$GO_BOUNDARY_BIN/go"
-  fi
-  chmod +x "$GO_BOUNDARY_BIN/go"
-  commit_node_adoption_repo "$ADOPT_GO_BOUNDARY"
-  set +e
-  PATH="$GO_BOUNDARY_BIN:$PATH" bash "$ROOT/bin/touchstone" adopt --dry-run \
-    --project "$ADOPT_GO_BOUNDARY" >"$TMP_DIR/adopt-go-$go_boundary.out" \
-    2>"$TMP_DIR/adopt-go-$go_boundary.err"
-  ADOPTION_STATUS=$?
-  set -e
-  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$go_boundary Go boundary was accepted"
-  assert_contains "$TMP_DIR/adopt-go-$go_boundary.err" \
-    'no package selected by ./... under offline local-toolchain resolution'
+ADOPT_GO_LOCAL="$TMP_DIR/adopt-go-local"
+init_adoption_repo "$ADOPT_GO_LOCAL"
+printf '%s\n' 'module example.invalid/fixture' 'go 1.24' \
+  'replace example.invalid/shared => ../shared' >"$ADOPT_GO_LOCAL/go.mod"
+commit_adoption_repo "$ADOPT_GO_LOCAL" "fixture"
+git -C "$ADOPT_GO_LOCAL" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-local.out" adopt --dry-run --project "$ADOPT_GO_LOCAL"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "checkout-external Go replacement was accepted"
+assert_contains "$TMP_DIR/adopt-go-local.out.err" 'declares a local replacement'
+
+ADOPT_GO_WORK="$TMP_DIR/adopt-go-work"
+init_adoption_repo "$ADOPT_GO_WORK"
+printf '%s\n' 'module example.invalid/fixture' 'go 1.24' >"$ADOPT_GO_WORK/go.mod"
+printf '%s\n' 'go 1.24' 'use ../shared' >"$ADOPT_GO_WORK/go.work"
+commit_adoption_repo "$ADOPT_GO_WORK" "fixture"
+git -C "$ADOPT_GO_WORK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-work.out" adopt --dry-run --project "$ADOPT_GO_WORK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "checkout-external go.work workspace was accepted"
+assert_contains "$TMP_DIR/adopt-go-work.out.err" 'declares a go.work workspace'
+
+ADOPT_NODE_IGNORED_LOCK="$TMP_DIR/adopt-node-ignored-lock"
+init_adoption_repo "$ADOPT_NODE_IGNORED_LOCK"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_NODE_IGNORED_LOCK/package.json"
+printf '%s\n' 'package-lock.json' >"$ADOPT_NODE_IGNORED_LOCK/.gitignore"
+commit_adoption_repo "$ADOPT_NODE_IGNORED_LOCK" "fixture"
+printf '%s\n' '{}' >"$ADOPT_NODE_IGNORED_LOCK/package-lock.json"
+git -C "$ADOPT_NODE_IGNORED_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-node-ignored-lock.out" adopt --dry-run --project "$ADOPT_NODE_IGNORED_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Node adoption accepted a locally present ignored lockfile"
+assert_contains "$TMP_DIR/adopt-node-ignored-lock.out.err" "compiler input 'package-lock.json' is not tracked"
+
+ADOPT_NODE_LOCAL="$TMP_DIR/adopt-node-local"
+init_adoption_repo "$ADOPT_NODE_LOCAL"
+printf '%s\n' \
+  '{"scripts":{"test":"node --test"},"dependencies":{"shared":"f\u0069le:../shared"}}' \
+  >"$ADOPT_NODE_LOCAL/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_NODE_LOCAL/package-lock.json"
+commit_adoption_repo "$ADOPT_NODE_LOCAL" "fixture"
+git -C "$ADOPT_NODE_LOCAL" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-node-local.out" adopt --dry-run --project "$ADOPT_NODE_LOCAL"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "checkout-external Node file dependency was accepted"
+assert_contains "$TMP_DIR/adopt-node-local.out.err" 'declares a local file dependency'
+
+ADOPT_NPM_BAD_LOCK="$TMP_DIR/adopt-npm-bad-lock"
+init_adoption_repo "$ADOPT_NPM_BAD_LOCK"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_NPM_BAD_LOCK/package.json"
+printf '{}\n' >"$ADOPT_NPM_BAD_LOCK/package-lock.json"
+commit_adoption_repo "$ADOPT_NPM_BAD_LOCK" "fixture"
+git -C "$ADOPT_NPM_BAD_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-npm-bad-lock.out" adopt --dry-run --project "$ADOPT_NPM_BAD_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unusable npm lockfile was accepted"
+assert_contains "$TMP_DIR/adopt-npm-bad-lock.out.err" \
+  'npm lockfile outside the dependency-free portable subset'
+
+ADOPT_NPM_NO_LOCK="$TMP_DIR/adopt-npm-no-lock"
+init_adoption_repo "$ADOPT_NPM_NO_LOCK"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_NPM_NO_LOCK/package.json"
+commit_adoption_repo "$ADOPT_NPM_NO_LOCK" "fixture"
+git -C "$ADOPT_NPM_NO_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-npm-no-lock.out" adopt --dry-run --project "$ADOPT_NPM_NO_LOCK"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "dependency-free npm project without a lockfile was refused"
+assert_not_contains "$TMP_DIR/adopt-npm-no-lock.out" 'setup = '
+
+ADOPT_NPM_CONFIG="$TMP_DIR/adopt-npm-config"
+init_adoption_repo "$ADOPT_NPM_CONFIG"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_NPM_CONFIG/package.json"
+printf '%s\n' 'script-shell=./custom-shell.sh' >"$ADOPT_NPM_CONFIG/.npmrc"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$ADOPT_NPM_CONFIG/custom-shell.sh"
+chmod +x "$ADOPT_NPM_CONFIG/custom-shell.sh"
+commit_adoption_repo "$ADOPT_NPM_CONFIG" "fixture"
+git -C "$ADOPT_NPM_CONFIG" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-npm-config.out" adopt --dry-run --project "$ADOPT_NPM_CONFIG"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "project-controlled npm script shell was accepted"
+assert_contains "$TMP_DIR/adopt-npm-config.out.err" \
+  "project-controlled config '.npmrc'"
+
+ADOPT_PNPM_BAD_LOCK="$TMP_DIR/adopt-pnpm-bad-lock"
+init_adoption_repo "$ADOPT_PNPM_BAD_LOCK"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_PNPM_BAD_LOCK/package.json"
+printf '%s\n' 'not: [valid' >"$ADOPT_PNPM_BAD_LOCK/pnpm-lock.yaml"
+commit_adoption_repo "$ADOPT_PNPM_BAD_LOCK" "fixture"
+git -C "$ADOPT_PNPM_BAD_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-bad-lock.out" adopt --dry-run --project "$ADOPT_PNPM_BAD_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed pnpm lockfile was accepted"
+assert_contains "$TMP_DIR/adopt-pnpm-bad-lock.out.err" \
+  'pnpm lockfile outside the dependency-free portable subset'
+
+for pnpm_spec in missing bogus unsupported; do
+  ADOPT_PNPM_VERSION="$TMP_DIR/adopt-pnpm-version-$pnpm_spec"
+  init_adoption_repo "$ADOPT_PNPM_VERSION"
+  case "$pnpm_spec" in
+    missing) printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+      >"$ADOPT_PNPM_VERSION/package.json" ;;
+    bogus) printf '%s\n' '{"packageManager":"pnpm@bogus","scripts":{"test":"node --test"}}' \
+      >"$ADOPT_PNPM_VERSION/package.json" ;;
+    unsupported) printf '%s\n' '{"packageManager":"pnpm@8.0.0","scripts":{"test":"node --test"}}' \
+      >"$ADOPT_PNPM_VERSION/package.json" ;;
+  esac
+  printf '%s\n' "lockfileVersion: '9.0'" >"$ADOPT_PNPM_VERSION/pnpm-lock.yaml"
+  commit_adoption_repo "$ADOPT_PNPM_VERSION" "fixture"
+  git -C "$ADOPT_PNPM_VERSION" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-pnpm-version-$pnpm_spec.out" adopt --dry-run \
+    --project "$ADOPT_PNPM_VERSION"
+  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$pnpm_spec pnpm version was accepted"
 done
+assert_contains "$TMP_DIR/adopt-pnpm-version-missing.out.err" \
+  'pnpm requires packageManager with an exact pnpm version'
+assert_contains "$TMP_DIR/adopt-pnpm-version-bogus.out.err" \
+  "pnpm requires an exact packageManager version, found 'bogus'"
+assert_contains "$TMP_DIR/adopt-pnpm-version-unsupported.out.err" \
+  "unsupported pnpm packageManager version '8.0.0'"
+
+for pnpm_config in pnpmfile npmrc pnpmfile-unlocked; do
+  ADOPT_PNPM_CONFIG="$TMP_DIR/adopt-pnpm-config-$pnpm_config"
+  init_adoption_repo "$ADOPT_PNPM_CONFIG"
+  printf '%s\n' '{"packageManager":"pnpm@10.0.0","scripts":{"test":"node --test"}}' \
+    >"$ADOPT_PNPM_CONFIG/package.json"
+  if [ "$pnpm_config" != pnpmfile-unlocked ]; then
+    printf '%s\n' "lockfileVersion: '9.0'" >"$ADOPT_PNPM_CONFIG/pnpm-lock.yaml"
+  fi
+  case "$pnpm_config" in
+    pnpmfile | pnpmfile-unlocked) printf '%s\n' 'module.exports = { hooks: {} }' \
+      >"$ADOPT_PNPM_CONFIG/.pnpmfile.cjs" ;;
+    npmrc) printf '%s\n' 'pnpmfile=hook.cjs' >"$ADOPT_PNPM_CONFIG/.npmrc" ;;
+  esac
+  commit_adoption_repo "$ADOPT_PNPM_CONFIG" "fixture"
+  git -C "$ADOPT_PNPM_CONFIG" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-pnpm-config-$pnpm_config.out" adopt --dry-run \
+    --project "$ADOPT_PNPM_CONFIG"
+  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$pnpm_config pnpm execution config was accepted"
+  assert_contains "$TMP_DIR/adopt-pnpm-config-$pnpm_config.out.err" \
+    'has project-controlled pnpm hook or config'
+done
+
+ADOPT_PNPM_UNLOCKED_VERSION="$TMP_DIR/adopt-pnpm-unlocked-version"
+init_adoption_repo "$ADOPT_PNPM_UNLOCKED_VERSION"
+printf '%s\n' '{"packageManager":"pnpm@bogus","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_PNPM_UNLOCKED_VERSION/package.json"
+commit_adoption_repo "$ADOPT_PNPM_UNLOCKED_VERSION" "fixture"
+git -C "$ADOPT_PNPM_UNLOCKED_VERSION" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-unlocked-version.out" adopt --dry-run \
+  --project "$ADOPT_PNPM_UNLOCKED_VERSION"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unlocked pnpm project with an invalid runtime version was accepted"
+assert_contains "$TMP_DIR/adopt-pnpm-unlocked-version.out.err" \
+  "pnpm requires an exact packageManager version, found 'bogus'"
+
+ADOPT_PNPM_GENERATED="$TMP_DIR/adopt-pnpm-generated"
+init_adoption_repo "$ADOPT_PNPM_GENERATED"
+printf '%s\n' '{"packageManager":"pnpm@10.28.1","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_PNPM_GENERATED/package.json"
+printf '%s\n' "lockfileVersion: '9.0'" 'settings:' \
+  '  autoInstallPeers: true' '  excludeLinksFromLockfile: false' \
+  'importers:' '  .: {}' >"$ADOPT_PNPM_GENERATED/pnpm-lock.yaml"
+commit_adoption_repo "$ADOPT_PNPM_GENERATED" "fixture"
+git -C "$ADOPT_PNPM_GENERATED" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-generated.out" adopt --dry-run \
+  --project "$ADOPT_PNPM_GENERATED"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "generated dependency-free pnpm lockfile was refused"
+assert_contains "$TMP_DIR/adopt-pnpm-generated.out" \
+  'COREPACK_ENABLE_NETWORK=0 pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile'
+
+ADOPT_NPM_PRECEDENCE="$TMP_DIR/adopt-npm-precedence"
+init_adoption_repo "$ADOPT_NPM_PRECEDENCE"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_NPM_PRECEDENCE/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' \
+  >"$ADOPT_NPM_PRECEDENCE/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{"dependencies":{"evil":"1.0.0"}}}}' \
+  >"$ADOPT_NPM_PRECEDENCE/npm-shrinkwrap.json"
+commit_adoption_repo "$ADOPT_NPM_PRECEDENCE" "fixture"
+git -C "$ADOPT_NPM_PRECEDENCE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-npm-precedence.out" adopt --dry-run \
+  --project "$ADOPT_NPM_PRECEDENCE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "package lock hid the effective npm shrinkwrap"
+assert_contains "$TMP_DIR/adopt-npm-precedence.out.err" \
+  'npm lockfile outside the dependency-free portable subset'
+
+ADOPT_YARN_STANDALONE="$TMP_DIR/adopt-yarn-standalone"
+init_adoption_repo "$ADOPT_YARN_STANDALONE"
+mkdir -p "$ADOPT_YARN_STANDALONE/apps/api"
+printf '%s\n' \
+  '{"name":"fixture","packageManager":"yarn@4.14.1","workspaces":["packages/*"]}' \
+  >"$ADOPT_YARN_STANDALONE/package.json"
+printf '%s\n' '__metadata:' '  version: 8' '  cacheKey: 10c0' \
+  '"fixture@workspace:.":' '  version: 0.0.0-use.local' \
+  '  resolution: "fixture@workspace:."' '  languageName: unknown' \
+  '  linkType: soft' \
+  >"$ADOPT_YARN_STANDALONE/yarn.lock"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_YARN_STANDALONE/apps/api/package.json"
+commit_adoption_repo "$ADOPT_YARN_STANDALONE" "fixture"
+git -C "$ADOPT_YARN_STANDALONE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-yarn-standalone.out" adopt --dry-run --json \
+  --project "$ADOPT_YARN_STANDALONE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "standalone child beneath Yarn root was refused"
+assert_contains "$TMP_DIR/adopt-yarn-standalone.out" 'command = \"npm run test\"'
+assert_not_contains "$TMP_DIR/adopt-yarn-standalone.out" \
+  'command = \"COREPACK_ENABLE_NETWORK=0 yarn test\"'
+
+ADOPT_IGNORED_CONTRACT="$TMP_DIR/adopt-ignored-contract"
+init_adoption_repo "$ADOPT_IGNORED_CONTRACT"
+printf '%s\n' '.touchstone.toml' >"$ADOPT_IGNORED_CONTRACT/.gitignore"
+commit_adoption_repo "$ADOPT_IGNORED_CONTRACT" "fixture"
+write_contract "$ADOPT_IGNORED_CONTRACT" 'true'
+git -C "$ADOPT_IGNORED_CONTRACT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-ignored-contract.out" adopt --dry-run --project "$ADOPT_IGNORED_CONTRACT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "adoption preserved an ignored existing contract"
+assert_contains "$TMP_DIR/adopt-ignored-contract.out.err" "compiler input '.touchstone.toml' is not tracked"
+
+ADOPT_INPUT_SYMLINK="$TMP_DIR/adopt-input-symlink"
+ADOPT_INPUT_OUTSIDE="$TMP_DIR/adopt-input-outside.json"
+init_adoption_repo "$ADOPT_INPUT_SYMLINK"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_INPUT_OUTSIDE"
+ln -s "$ADOPT_INPUT_OUTSIDE" "$ADOPT_INPUT_SYMLINK/package.json"
+commit_adoption_repo "$ADOPT_INPUT_SYMLINK" "fixture"
+git -C "$ADOPT_INPUT_SYMLINK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-input-symlink.out" adopt --dry-run --project "$ADOPT_INPUT_SYMLINK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "adoption read a compiler input through a symlink"
+assert_contains "$TMP_DIR/adopt-input-symlink.out.err" "compiler input 'package.json' must be a regular file"
+
+ADOPT_SWIFT_REMOTE="$TMP_DIR/adopt-swift-remote"
+init_adoption_repo "$ADOPT_SWIFT_REMOTE"
+printf '%s\n' '// swift-tools-version:6.2' 'import PackageDescription' \
+  'let package = Package(name: "Fixture", dependencies: [.package(url: "https://example.invalid/dependency", from: "1.0.0")])' \
+  >"$ADOPT_SWIFT_REMOTE/Package.swift"
+printf '%s\n' '{"version":3,"pins":[]}' >"$ADOPT_SWIFT_REMOTE/Package.resolved"
+commit_adoption_repo "$ADOPT_SWIFT_REMOTE" "fixture"
+git -C "$ADOPT_SWIFT_REMOTE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-swift-remote.out" adopt --dry-run --project "$ADOPT_SWIFT_REMOTE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Swift remote dependency with Package.resolved was accepted"
+assert_contains "$TMP_DIR/adopt-swift-remote.out.err" 'can fetch during validation'
+
+ADOPT_SWIFT_LOCAL_PATH="$TMP_DIR/adopt-swift-local-path"
+init_adoption_repo "$ADOPT_SWIFT_LOCAL_PATH"
+printf '%s\n' '// swift-tools-version:6.2' 'import PackageDescription' \
+  'let package = Package(name: "Fixture", dependencies: [.package(path: "../shared")])' \
+  >"$ADOPT_SWIFT_LOCAL_PATH/Package.swift"
+commit_adoption_repo "$ADOPT_SWIFT_LOCAL_PATH" "fixture"
+git -C "$ADOPT_SWIFT_LOCAL_PATH" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-swift-local-path.out" adopt --dry-run --project "$ADOPT_SWIFT_LOCAL_PATH"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Swift checkout-external path dependency was accepted"
+assert_contains "$TMP_DIR/adopt-swift-local-path.out.err" 'local package path this portable compiler cannot verify'
+
+ADOPT_DIFF_RENDER_FAIL="$TMP_DIR/adopt-diff-render-fail"
+init_adoption_repo "$ADOPT_DIFF_RENDER_FAIL"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_DIFF_RENDER_FAIL/package.json"
+commit_adoption_repo "$ADOPT_DIFF_RENDER_FAIL" "fixture"
+git -C "$ADOPT_DIFF_RENDER_FAIL" switch -q -c feat/adopt
+mkdir -p "$TMP_DIR/failing-sed"
+REAL_SED="$(command -v sed)"
+export REAL_SED
+cat >"$TMP_DIR/failing-sed/sed" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *'diff --git'*) exit 9 ;;
+  *) exec "$REAL_SED" "$@" ;;
+esac
+EOF
+chmod +x "$TMP_DIR/failing-sed/sed"
+PATH="$TMP_DIR/failing-sed:$PATH" run_adoption "$TMP_DIR/adopt-diff-render-fail.out" adopt --dry-run --project "$ADOPT_DIFF_RENDER_FAIL"
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "failed diff renderer did not stop adoption planning"
+assert_contains "$TMP_DIR/adopt-diff-render-fail.out.err" 'could not render proposed diff'
+[ ! -e "$ADOPT_DIFF_RENDER_FAIL/.touchstone.toml" ] || fail "failed diff rendering mutated the repository"
+
+ADOPT_APPLY_ROLLBACK="$TMP_DIR/adopt-apply-rollback"
+init_adoption_repo "$ADOPT_APPLY_ROLLBACK"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_APPLY_ROLLBACK/package.json"
+commit_adoption_repo "$ADOPT_APPLY_ROLLBACK" "fixture"
+git -C "$ADOPT_APPLY_ROLLBACK" switch -q -c feat/adopt
+mkdir -p "$TMP_DIR/failing-mv"
+REAL_MV="$(command -v mv)"
+MV_COUNT_FILE="$TMP_DIR/failing-mv/count"
+export REAL_MV MV_COUNT_FILE
+cat >"$TMP_DIR/failing-mv/mv" <<'EOF'
+#!/usr/bin/env bash
+count=0
+if [ -f "$MV_COUNT_FILE" ]; then count="$(cat "$MV_COUNT_FILE")"; fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$MV_COUNT_FILE"
+if [ "$count" -eq 2 ]; then exit 9; fi
+exec "$REAL_MV" "$@"
+EOF
+chmod +x "$TMP_DIR/failing-mv/mv"
+PATH="$TMP_DIR/failing-mv:$PATH" run_adoption "$TMP_DIR/adopt-apply-rollback.out" adopt --project "$ADOPT_APPLY_ROLLBACK"
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "partial apply failure did not report an operational error"
+assert_contains "$TMP_DIR/adopt-apply-rollback.out.err" 'all earlier writes were rolled back'
+[ ! -e "$ADOPT_APPLY_ROLLBACK/.touchstone.toml" ] || fail "failed apply retained an earlier contract write"
+[ ! -e "$ADOPT_APPLY_ROLLBACK/.touchstone" ] || fail "failed apply retained a managed directory"
+[ -z "$(git -C "$ADOPT_APPLY_ROLLBACK" status --porcelain=v1)" ] \
+  || fail "failed apply did not restore the clean checkout"
+
+ADOPT_SIGNAL_ROLLBACK="$TMP_DIR/adopt-signal-rollback"
+init_adoption_repo "$ADOPT_SIGNAL_ROLLBACK"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_SIGNAL_ROLLBACK/package.json"
+commit_adoption_repo "$ADOPT_SIGNAL_ROLLBACK" "fixture"
+git -C "$ADOPT_SIGNAL_ROLLBACK" switch -q -c feat/adopt
+mkdir -p "$TMP_DIR/terminating-mv"
+SIGNAL_MV_COUNT_FILE="$TMP_DIR/terminating-mv/count"
+export SIGNAL_MV_COUNT_FILE
+cat >"$TMP_DIR/terminating-mv/mv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+count=0
+if [ -f "$SIGNAL_MV_COUNT_FILE" ]; then count="$(cat "$SIGNAL_MV_COUNT_FILE")"; fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$SIGNAL_MV_COUNT_FILE"
+"$REAL_MV" "$@"
+if [ "$count" -eq 1 ]; then kill -TERM "$PPID"; fi
+EOF
+chmod +x "$TMP_DIR/terminating-mv/mv"
+PATH="$TMP_DIR/terminating-mv:$PATH" run_adoption "$TMP_DIR/adopt-signal-rollback.out" adopt --project "$ADOPT_SIGNAL_ROLLBACK"
+[ "$ADOPTION_STATUS" -eq 143 ] || fail "terminated apply did not preserve the signal exit status"
+[ ! -e "$ADOPT_SIGNAL_ROLLBACK/.touchstone.toml" ] || fail "terminated apply retained its contract write"
+[ ! -e "$ADOPT_SIGNAL_ROLLBACK/.touchstone" ] || fail "terminated apply retained a managed directory"
+[ -z "$(find "$ADOPT_SIGNAL_ROLLBACK" \( -name '.touchstone-write.*' -o -name '.touchstone-backup.*' \) -print -quit)" ] \
+  || fail "terminated apply retained transaction artifacts"
+[ -z "$(git -C "$ADOPT_SIGNAL_ROLLBACK" status --porcelain=v1)" ] \
+  || fail "terminated apply did not restore the clean checkout"
+
+ADOPT_CONCURRENT_EDIT="$TMP_DIR/adopt-concurrent-edit"
+init_adoption_repo "$ADOPT_CONCURRENT_EDIT"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_CONCURRENT_EDIT/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_CONCURRENT_EDIT/package-lock.json"
+printf '%s\n' 'PROJECT INSTRUCTIONS' >"$ADOPT_CONCURRENT_EDIT/AGENTS.md"
+commit_adoption_repo "$ADOPT_CONCURRENT_EDIT" "fixture"
+git -C "$ADOPT_CONCURRENT_EDIT" switch -q -c feat/adopt
+mkdir -p "$TMP_DIR/concurrent-git"
+REAL_GIT="$(command -v git)"
+CONCURRENT_HASH_COUNT="$TMP_DIR/concurrent-git/count"
+CONCURRENT_TARGET="$ADOPT_CONCURRENT_EDIT/AGENTS.md"
+export REAL_GIT CONCURRENT_HASH_COUNT CONCURRENT_TARGET
+cat >"$TMP_DIR/concurrent-git/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  *'hash-object '*'AGENTS.md')
+    count=0
+    if [ -f "$CONCURRENT_HASH_COUNT" ]; then count="$(cat "$CONCURRENT_HASH_COUNT")"; fi
+    count=$((count + 1))
+    printf '%s\n' "$count" >"$CONCURRENT_HASH_COUNT"
+    if [ "$count" -eq 2 ]; then printf '%s\n' 'CONCURRENT EDIT' >>"$CONCURRENT_TARGET"; fi
+    ;;
+esac
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$TMP_DIR/concurrent-git/git"
+PATH="$TMP_DIR/concurrent-git:$PATH" run_adoption "$TMP_DIR/adopt-concurrent-edit.out" adopt --project "$ADOPT_CONCURRENT_EDIT"
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "concurrent managed-file edit was overwritten"
+assert_contains "$TMP_DIR/adopt-concurrent-edit.out.err" 'AGENTS.md changed since planning'
+assert_contains "$ADOPT_CONCURRENT_EDIT/AGENTS.md" 'CONCURRENT EDIT'
+[ ! -e "$ADOPT_CONCURRENT_EDIT/.touchstone.toml" ] || fail "concurrent edit failure retained the contract write"
+[ ! -e "$ADOPT_CONCURRENT_EDIT/.touchstone" ] || fail "concurrent edit failure retained managed files"
+[ -z "$(find "$ADOPT_CONCURRENT_EDIT" \( -name '.touchstone-write.*' -o -name '.touchstone-backup.*' \) -print -quit)" ] \
+  || fail "concurrent edit failure retained transaction artifacts"
+
+ADOPT_CONCURRENT_COMMIT="$TMP_DIR/adopt-concurrent-commit"
+init_adoption_repo "$ADOPT_CONCURRENT_COMMIT"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_CONCURRENT_COMMIT/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_CONCURRENT_COMMIT/package-lock.json"
+printf '%s\n' 'PROJECT INSTRUCTIONS' >"$ADOPT_CONCURRENT_COMMIT/AGENTS.md"
+commit_adoption_repo "$ADOPT_CONCURRENT_COMMIT" "fixture"
+git -C "$ADOPT_CONCURRENT_COMMIT" switch -q -c feat/adopt
+mkdir -p "$TMP_DIR/concurrent-commit-git"
+CONCURRENT_COMMIT_MARKER="$TMP_DIR/concurrent-commit-git/committed"
+CONCURRENT_COMMIT_TARGET="$ADOPT_CONCURRENT_COMMIT/AGENTS.md"
+CONCURRENT_COMMIT_REPO="$ADOPT_CONCURRENT_COMMIT"
+export CONCURRENT_COMMIT_MARKER CONCURRENT_COMMIT_TARGET CONCURRENT_COMMIT_REPO
+cat >"$TMP_DIR/concurrent-commit-git/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$*" in
+  *'status --porcelain=v1'*)
+    if [ ! -e "$CONCURRENT_COMMIT_MARKER" ]; then
+      printf '%s\n' 'CONCURRENT COMMIT' >>"$CONCURRENT_COMMIT_TARGET"
+      "$REAL_GIT" -C "$CONCURRENT_COMMIT_REPO" add AGENTS.md
+      "$REAL_GIT" -C "$CONCURRENT_COMMIT_REPO" commit -qm 'concurrent commit'
+      : >"$CONCURRENT_COMMIT_MARKER"
+    fi
+    ;;
+esac
+exec "$REAL_GIT" "$@"
+EOF
+chmod +x "$TMP_DIR/concurrent-commit-git/git"
+PATH="$TMP_DIR/concurrent-commit-git:$PATH" run_adoption \
+  "$TMP_DIR/adopt-concurrent-commit.out" adopt --project "$ADOPT_CONCURRENT_COMMIT"
+[ "$ADOPTION_STATUS" -eq 6 ] || fail "clean concurrent commit was overwritten"
+assert_contains "$TMP_DIR/adopt-concurrent-commit.out.err" 'AGENTS.md changed since planning'
+assert_contains "$ADOPT_CONCURRENT_COMMIT/AGENTS.md" 'CONCURRENT COMMIT'
+[ ! -e "$ADOPT_CONCURRENT_COMMIT/.touchstone.toml" ] \
+  || fail "concurrent commit failure retained the contract write"
+[ ! -e "$ADOPT_CONCURRENT_COMMIT/.touchstone" ] \
+  || fail "concurrent commit failure retained managed files"
+[ -z "$(git -C "$ADOPT_CONCURRENT_COMMIT" status --porcelain=v1)" ] \
+  || fail "concurrent commit refusal dirtied the checkout"
+
+ADOPT_PYPROJECT="$TMP_DIR/adopt-pyproject"
+init_adoption_repo "$ADOPT_PYPROJECT"
+mkdir -p "$ADOPT_PYPROJECT/tests"
+printf '%s\n' '[project]' 'name = "\u0066ixture"' 'dependencies = [' '  "pytest",' ']' \
+  'authors = [{ name = "Touchstone", email = "test@example.invalid" }]' \
+  '[project.urls]' 'Homepage = "https://example.invalid/project"' \
+  >"$ADOPT_PYPROJECT/pyproject.toml"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_PYPROJECT/tests/test_fixture.py"
+commit_adoption_repo "$ADOPT_PYPROJECT" "fixture"
+git -C "$ADOPT_PYPROJECT" switch -q -c feat/adopt
+mkdir -p "$TMP_DIR/no-python"
+cat >"$TMP_DIR/no-python/python3" <<'EOF'
+#!/usr/bin/env bash
+exit 99
+EOF
+chmod +x "$TMP_DIR/no-python/python3"
+PATH="$TMP_DIR/no-python:$PATH" run_adoption "$TMP_DIR/adopt-pyproject.out" adopt --project "$ADOPT_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unlocked pyproject adoption was accepted"
+assert_contains "$TMP_DIR/adopt-pyproject.out.err" \
+  'requires uv.lock and an exact uv runtime'
+
+ADOPT_PYTHON_BUILD_HOOK="$TMP_DIR/adopt-python-build-hook"
+init_adoption_repo "$ADOPT_PYTHON_BUILD_HOOK"
+printf '%s\n' '[build-system]' 'requires = []' 'build-backend = "fixture_backend"' \
+  'backend-path = ["."]' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_PYTHON_BUILD_HOOK/pyproject.toml"
+printf '%s\n' 'def build_wheel(*args, **kwargs):' '    raise RuntimeError("network hook")' \
+  >"$ADOPT_PYTHON_BUILD_HOOK/fixture_backend.py"
+commit_adoption_repo "$ADOPT_PYTHON_BUILD_HOOK" "fixture"
+git -C "$ADOPT_PYTHON_BUILD_HOOK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-python-build-hook.out" adopt --dry-run --project "$ADOPT_PYTHON_BUILD_HOOK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "project-local Python build hook was accepted"
+assert_contains "$TMP_DIR/adopt-python-build-hook.out.err" 'build hook this portable compiler cannot verify offline'
+
+for hatch_hook_kind in build metadata; do
+  ADOPT_HATCH_HOOK="$TMP_DIR/adopt-hatch-$hatch_hook_kind-hook"
+  init_adoption_repo "$ADOPT_HATCH_HOOK"
+  printf '%s\n' '[build-system]' 'requires = ["hatchling"]' \
+    'build-backend = "hatchling.build"' '[project]' 'name = "fixture"' \
+    'dependencies = ["pytest"]' "[tool.hatch.$hatch_hook_kind.hooks.custom] # project code" \
+    'path = "hook.py"' >"$ADOPT_HATCH_HOOK/pyproject.toml"
+  printf '%s\n' 'raise RuntimeError("network hook")' >"$ADOPT_HATCH_HOOK/hook.py"
+  commit_adoption_repo "$ADOPT_HATCH_HOOK" "fixture"
+  git -C "$ADOPT_HATCH_HOOK" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-hatch-$hatch_hook_kind-hook.out" \
+    adopt --dry-run --project "$ADOPT_HATCH_HOOK"
+  [ "$ADOPTION_STATUS" -eq 4 ] \
+    || fail "Hatch $hatch_hook_kind hook was accepted"
+  assert_contains "$TMP_DIR/adopt-hatch-$hatch_hook_kind-hook.out.err" \
+    'build hook this portable compiler cannot verify offline'
+done
+
+ADOPT_NATIVE_BACKEND="$TMP_DIR/adopt-native-backend"
+init_adoption_repo "$ADOPT_NATIVE_BACKEND"
+printf '%s\n' '[build-system]' 'requires = ["scikit-build-core"]' \
+  'build-backend = "scikit_build_core.build"' '[project]' 'name = "fixture"' \
+  'dependencies = ["pytest"]' >"$ADOPT_NATIVE_BACKEND/pyproject.toml"
+printf '%s\n' 'cmake_minimum_required(VERSION 3.15)' \
+  'file(DOWNLOAD "https://example.invalid/payload" "payload")' \
+  >"$ADOPT_NATIVE_BACKEND/CMakeLists.txt"
+commit_adoption_repo "$ADOPT_NATIVE_BACKEND" "fixture"
+git -C "$ADOPT_NATIVE_BACKEND" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-native-backend.out" \
+  adopt --dry-run --project "$ADOPT_NATIVE_BACKEND"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "native Python build backend was accepted"
+assert_contains "$TMP_DIR/adopt-native-backend.out.err" \
+  'build hook this portable compiler cannot verify offline'
+
+ADOPT_PYTHON_SETUP_HOOK="$TMP_DIR/adopt-python-setup-hook"
+init_adoption_repo "$ADOPT_PYTHON_SETUP_HOOK"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_PYTHON_SETUP_HOOK/pyproject.toml"
+printf '%s\n' 'raise RuntimeError("network hook")' >"$ADOPT_PYTHON_SETUP_HOOK/setup.py"
+commit_adoption_repo "$ADOPT_PYTHON_SETUP_HOOK" "fixture"
+git -C "$ADOPT_PYTHON_SETUP_HOOK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-python-setup-hook.out" adopt --dry-run --project "$ADOPT_PYTHON_SETUP_HOOK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "setup.py Python build hook was accepted"
+assert_contains "$TMP_DIR/adopt-python-setup-hook.out.err" 'build hook this portable compiler cannot verify offline'
+
+ADOPT_REQUIREMENTS="$TMP_DIR/adopt-requirements"
+init_adoption_repo "$ADOPT_REQUIREMENTS"
+mkdir -p "$ADOPT_REQUIREMENTS/tests"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_REQUIREMENTS/tests/test_fixture.py"
+printf '%s\n' 'pytest==9.0.0' >"$ADOPT_REQUIREMENTS/requirements.txt"
+commit_adoption_repo "$ADOPT_REQUIREMENTS" "fixture"
+git -C "$ADOPT_REQUIREMENTS" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-requirements.out" adopt --project "$ADOPT_REQUIREMENTS"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "requirements without a verified offline source were accepted"
+assert_contains "$TMP_DIR/adopt-requirements.out.err" \
+  'requires uv.lock and an exact uv runtime'
+
+ADOPT_BAD_REQUIREMENT="$TMP_DIR/adopt-bad-requirement"
+init_adoption_repo "$ADOPT_BAD_REQUIREMENT"
+mkdir -p "$ADOPT_BAD_REQUIREMENT/tests"
+printf '%s\n' 'pytest' 'not a valid requirement ???' >"$ADOPT_BAD_REQUIREMENT/requirements.txt"
+commit_adoption_repo "$ADOPT_BAD_REQUIREMENT" "fixture"
+git -C "$ADOPT_BAD_REQUIREMENT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-bad-requirement.out" adopt --dry-run --project "$ADOPT_BAD_REQUIREMENT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed requirements entry was accepted"
+assert_contains "$TMP_DIR/adopt-bad-requirement.out.err" 'requirements.txt is malformed'
+
+ADOPT_REMOTE_REQUIREMENT="$TMP_DIR/adopt-remote-requirement"
+init_adoption_repo "$ADOPT_REMOTE_REQUIREMENT"
+mkdir -p "$ADOPT_REMOTE_REQUIREMENT/tests"
+printf '%s\n' 'pytest @ https://example.invalid/pytest.whl' >"$ADOPT_REMOTE_REQUIREMENT/requirements.txt"
+commit_adoption_repo "$ADOPT_REMOTE_REQUIREMENT" "fixture"
+git -C "$ADOPT_REMOTE_REQUIREMENT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-remote-requirement.out" adopt --dry-run --project "$ADOPT_REMOTE_REQUIREMENT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "remote requirements reference produced an offline adoption plan"
+assert_contains "$TMP_DIR/adopt-remote-requirement.out.err" 'remote direct dependency reference'
+
+ADOPT_FILE_REQUIREMENT="$TMP_DIR/adopt-file-requirement"
+init_adoption_repo "$ADOPT_FILE_REQUIREMENT"
+mkdir -p "$ADOPT_FILE_REQUIREMENT/tests"
+printf '%s\n' '--find-links file:///tmp/wheels' 'pytest==9.0.0' >"$ADOPT_FILE_REQUIREMENT/requirements.txt"
+commit_adoption_repo "$ADOPT_FILE_REQUIREMENT" "fixture"
+git -C "$ADOPT_FILE_REQUIREMENT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-file-requirement.out" adopt --dry-run --project "$ADOPT_FILE_REQUIREMENT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "checkout-external requirements source produced an adoption plan"
+assert_contains "$TMP_DIR/adopt-file-requirement.out.err" 'checkout-external source'
+
+ADOPT_FILE_PYPROJECT="$TMP_DIR/adopt-file-pyproject"
+init_adoption_repo "$ADOPT_FILE_PYPROJECT"
+mkdir -p "$ADOPT_FILE_PYPROJECT/tests"
+printf '%s\n' '[project]' 'name = "fixture"' \
+  'dependencies = ["pytest @ file:///tmp/pytest.whl"]' >"$ADOPT_FILE_PYPROJECT/pyproject.toml"
+commit_adoption_repo "$ADOPT_FILE_PYPROJECT" "fixture"
+git -C "$ADOPT_FILE_PYPROJECT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-file-pyproject.out" adopt --dry-run --project "$ADOPT_FILE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "checkout-external pyproject source produced an adoption plan"
+assert_contains "$TMP_DIR/adopt-file-pyproject.out.err" 'checkout-external source'
+
+ADOPT_MARKED_REQUIREMENT="$TMP_DIR/adopt-marked-requirement"
+init_adoption_repo "$ADOPT_MARKED_REQUIREMENT"
+mkdir -p "$ADOPT_MARKED_REQUIREMENT/tests"
+printf '%s\n' 'pytest[testing]; python_version < "0"' >"$ADOPT_MARKED_REQUIREMENT/requirements.txt"
+commit_adoption_repo "$ADOPT_MARKED_REQUIREMENT" "fixture"
+git -C "$ADOPT_MARKED_REQUIREMENT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-marked-requirement.out" adopt --dry-run --project "$ADOPT_MARKED_REQUIREMENT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "environment-marked requirement produced a non-reproducible plan"
+assert_contains "$TMP_DIR/adopt-marked-requirement.out.err" 'environment-marked dependency'
+
+ADOPT_MARKED_PYPROJECT="$TMP_DIR/adopt-marked-pyproject"
+init_adoption_repo "$ADOPT_MARKED_PYPROJECT"
+mkdir -p "$ADOPT_MARKED_PYPROJECT/tests"
+printf '%s\n' '[project]' 'name = "fixture"' \
+  'dependencies = ["pytest; python_version < '\''0'\''"]' >"$ADOPT_MARKED_PYPROJECT/pyproject.toml"
+commit_adoption_repo "$ADOPT_MARKED_PYPROJECT" "fixture"
+git -C "$ADOPT_MARKED_PYPROJECT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-marked-pyproject.out" adopt --dry-run --project "$ADOPT_MARKED_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "environment-marked pyproject dependency produced a plan"
+assert_contains "$TMP_DIR/adopt-marked-pyproject.out.err" 'environment-marked dependency'
+
+ADOPT_REMOTE_PYPROJECT="$TMP_DIR/adopt-remote-pyproject"
+init_adoption_repo "$ADOPT_REMOTE_PYPROJECT"
+mkdir -p "$ADOPT_REMOTE_PYPROJECT/tests"
+printf '%s\n' '[project]' 'name = "fixture"' \
+  'dependencies = ["pytest @ https://example.invalid/pytest.whl"]' \
+  >"$ADOPT_REMOTE_PYPROJECT/pyproject.toml"
+commit_adoption_repo "$ADOPT_REMOTE_PYPROJECT" "fixture"
+git -C "$ADOPT_REMOTE_PYPROJECT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-remote-pyproject.out" adopt --dry-run --project "$ADOPT_REMOTE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "remote pyproject reference produced an offline adoption plan"
+assert_contains "$TMP_DIR/adopt-remote-pyproject.out.err" 'remote direct dependency reference'
+
+ADOPT_VCS_PYPROJECT="$TMP_DIR/adopt-vcs-pyproject"
+init_adoption_repo "$ADOPT_VCS_PYPROJECT"
+printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+  'dependencies = ["evil @ git+git://example.invalid/repo.git"]' \
+  >"$ADOPT_VCS_PYPROJECT/pyproject.toml"
+commit_adoption_repo "$ADOPT_VCS_PYPROJECT" "fixture"
+git -C "$ADOPT_VCS_PYPROJECT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-vcs-pyproject.out" adopt --dry-run \
+  --project "$ADOPT_VCS_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unlisted VCS scheme produced an offline plan"
+assert_contains "$TMP_DIR/adopt-vcs-pyproject.out.err" 'remote direct dependency reference'
+
+ADOPT_SPACED_BUILD_HOOK="$TMP_DIR/adopt-spaced-build-hook"
+init_adoption_repo "$ADOPT_SPACED_BUILD_HOOK"
+printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+  'dependencies = ["ruff"]' '[ build-system ]' 'requires = ["setuptools"]' \
+  'build-backend = "setuptools.build_meta"' 'backend-path = ["."]' \
+  >"$ADOPT_SPACED_BUILD_HOOK/pyproject.toml"
+commit_adoption_repo "$ADOPT_SPACED_BUILD_HOOK" "fixture"
+git -C "$ADOPT_SPACED_BUILD_HOOK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-spaced-build-hook.out" adopt --dry-run \
+  --project "$ADOPT_SPACED_BUILD_HOOK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "spaced build-system hook header was accepted"
+assert_contains "$TMP_DIR/adopt-spaced-build-hook.out.err" 'project build hook'
+
+ADOPT_EXTRAS_BEFORE_URL="$TMP_DIR/adopt-extras-before-url"
+init_adoption_repo "$ADOPT_EXTRAS_BEFORE_URL"
+printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+  'dependencies = [' '  "foo[bar]",' \
+  '  "evil @ https://example.invalid/package.whl",' ']' \
+  >"$ADOPT_EXTRAS_BEFORE_URL/pyproject.toml"
+commit_adoption_repo "$ADOPT_EXTRAS_BEFORE_URL" "fixture"
+git -C "$ADOPT_EXTRAS_BEFORE_URL" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-extras-before-url.out" adopt --dry-run \
+  --project "$ADOPT_EXTRAS_BEFORE_URL"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "direct URL after an extras requirement was accepted"
+assert_contains "$TMP_DIR/adopt-extras-before-url.out.err" 'remote direct dependency reference'
+
+ADOPT_INVALID_REQUIREMENT="$TMP_DIR/adopt-invalid-requirement"
+init_adoption_repo "$ADOPT_INVALID_REQUIREMENT"
+printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+  'dependencies = ["ruff", "not a requirement!"]' \
+  >"$ADOPT_INVALID_REQUIREMENT/pyproject.toml"
+commit_adoption_repo "$ADOPT_INVALID_REQUIREMENT" "fixture"
+git -C "$ADOPT_INVALID_REQUIREMENT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-invalid-requirement.out" adopt --dry-run \
+  --project "$ADOPT_INVALID_REQUIREMENT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "invalid PEP 621 requirement produced a plan"
+assert_contains "$TMP_DIR/adopt-invalid-requirement.out.err" \
+  'outside the supported named-requirement subset'
+
+ADOPT_UV_SOURCE="$TMP_DIR/adopt-uv-source"
+init_adoption_repo "$ADOPT_UV_SOURCE"
+printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+  'requires-python = ">=3.11"' 'dependencies = ["evil"]' \
+  '[tool.uv.sources]' 'evil = { path = "../outside" }' \
+  >"$ADOPT_UV_SOURCE/pyproject.toml"
+printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+  '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+  'source = { virtual = "." }' '' '[[package]]' 'name = "evil"' \
+  'version = "1.0.0"' 'source = { directory = "../outside" }' \
+  >"$ADOPT_UV_SOURCE/uv.lock"
+commit_adoption_repo "$ADOPT_UV_SOURCE" "fixture"
+git -C "$ADOPT_UV_SOURCE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-uv-source.out" adopt --dry-run \
+  --project "$ADOPT_UV_SOURCE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "external uv source mapping was accepted"
+assert_contains "$TMP_DIR/adopt-uv-source.out.err" 'declares a uv source mapping'
+
+for poetry_marker in python platform; do
+  ADOPT_POETRY_MARKER="$TMP_DIR/adopt-poetry-marker-$poetry_marker"
+  init_adoption_repo "$ADOPT_POETRY_MARKER"
+  printf '%s\n' '[tool.poetry]' 'name = "fixture"' 'version = "0.1.0"' \
+    '[tool.poetry.dependencies]' \
+    "evil = { version = \"^1\", $poetry_marker = \"blocked\" }" \
+    '[build-system]' 'requires = ["poetry-core"]' \
+    'build-backend = "poetry.core.masonry.api"' \
+    >"$ADOPT_POETRY_MARKER/pyproject.toml"
+  commit_adoption_repo "$ADOPT_POETRY_MARKER" "fixture"
+  git -C "$ADOPT_POETRY_MARKER" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-poetry-marker-$poetry_marker.out" adopt --dry-run \
+    --project "$ADOPT_POETRY_MARKER"
+  [ "$ADOPTION_STATUS" -eq 4 ] || fail "Poetry $poetry_marker constraint produced a plan"
+  assert_contains "$TMP_DIR/adopt-poetry-marker-$poetry_marker.out.err" \
+    'environment-marked dependency'
+done
+
+ADOPT_MALFORMED_PYPROJECT="$TMP_DIR/adopt-malformed-pyproject"
+init_adoption_repo "$ADOPT_MALFORMED_PYPROJECT"
+mkdir -p "$ADOPT_MALFORMED_PYPROJECT/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest" "ruff"]' \
+  >"$ADOPT_MALFORMED_PYPROJECT/pyproject.toml"
+commit_adoption_repo "$ADOPT_MALFORMED_PYPROJECT" "fixture"
+git -C "$ADOPT_MALFORMED_PYPROJECT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-malformed-pyproject.out" adopt --dry-run --project "$ADOPT_MALFORMED_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed pyproject.toml produced an adoption plan"
+assert_contains "$TMP_DIR/adopt-malformed-pyproject.out.err" 'pyproject.toml is malformed'
+
+ADOPT_MALFORMED_INLINE="$TMP_DIR/adopt-malformed-inline-pyproject"
+init_adoption_repo "$ADOPT_MALFORMED_INLINE"
+mkdir -p "$ADOPT_MALFORMED_INLINE/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  'authors = [{ name = "Touchstone" email = "test@example.invalid" }]' \
+  >"$ADOPT_MALFORMED_INLINE/pyproject.toml"
+commit_adoption_repo "$ADOPT_MALFORMED_INLINE" "fixture"
+git -C "$ADOPT_MALFORMED_INLINE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-malformed-inline.out" adopt --dry-run --project "$ADOPT_MALFORMED_INLINE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed inline TOML table produced an adoption plan"
+assert_contains "$TMP_DIR/adopt-malformed-inline.out.err" 'pyproject.toml is malformed'
+
+ADOPT_DUPLICATE_PYPROJECT="$TMP_DIR/adopt-duplicate-pyproject"
+init_adoption_repo "$ADOPT_DUPLICATE_PYPROJECT"
+mkdir -p "$ADOPT_DUPLICATE_PYPROJECT/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  'dependencies = []' >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
+commit_adoption_repo "$ADOPT_DUPLICATE_PYPROJECT" "fixture"
+git -C "$ADOPT_DUPLICATE_PYPROJECT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-duplicate-pyproject.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate pyproject.toml key produced an adoption plan"
+assert_contains "$TMP_DIR/adopt-duplicate-pyproject.out.err" 'pyproject.toml is malformed'
+printf '%s\n' '[project]' 'name = "fixture"' '[project]' 'dependencies = ["pytest"]' \
+  >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
+run_adoption "$TMP_DIR/adopt-duplicate-table.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate pyproject.toml table produced an adoption plan"
+printf '%s\n' '[project]' 'name = "fixture"' \
+  'authors = [{ name = "first", name = "second" }]' \
+  >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
+run_adoption "$TMP_DIR/adopt-duplicate-inline-key.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate inline TOML key produced an adoption plan"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  'metadata = { x = 1, x.y = 2 }' \
+  >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
+run_adoption "$TMP_DIR/adopt-inline-prefix-collision.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "inline TOML scalar/prefix collision produced an adoption plan"
+assert_contains "$TMP_DIR/adopt-inline-prefix-collision.out.err" 'pyproject.toml is malformed'
+printf '%s\n' '[project]' 'name = "bad\qescape"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
+run_adoption "$TMP_DIR/adopt-invalid-string-escape.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "invalid TOML string escape produced an adoption plan"
+printf '%s\n' '[project]' 'name = "bad\uD800scalar"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
+run_adoption "$TMP_DIR/adopt-invalid-unicode-scalar.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "invalid TOML Unicode scalar produced an adoption plan"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  '[tool.fixture]' 'mode = nope' >"$ADOPT_DUPLICATE_PYPROJECT/pyproject.toml"
+run_adoption "$TMP_DIR/adopt-invalid-bare-value.out" adopt --dry-run --project "$ADOPT_DUPLICATE_PYPROJECT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "invalid TOML bare value produced an adoption plan"
+
+ADOPT_UNDECLARED_CHECKER="$TMP_DIR/adopt-undeclared-checker"
+init_adoption_repo "$ADOPT_UNDECLARED_CHECKER"
+mkdir -p "$ADOPT_UNDECLARED_CHECKER/tests"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_UNDECLARED_CHECKER/tests/test_fixture.py"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = []' \
+  >"$ADOPT_UNDECLARED_CHECKER/pyproject.toml"
+commit_adoption_repo "$ADOPT_UNDECLARED_CHECKER" "fixture"
+git -C "$ADOPT_UNDECLARED_CHECKER" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-undeclared-checker.out" adopt --dry-run --project "$ADOPT_UNDECLARED_CHECKER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "undeclared Python checker did not refuse"
+assert_contains "$TMP_DIR/adopt-undeclared-checker.out.err" \
+  'requires uv.lock and an exact uv runtime'
+
+ADOPT_MIXED_PYTHON="$TMP_DIR/adopt-mixed-python"
+init_adoption_repo "$ADOPT_MIXED_PYTHON"
+mkdir -p "$ADOPT_MIXED_PYTHON/tests"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_MIXED_PYTHON/tests/test_fixture.py"
+printf '%s\n' 'requests==2.0.0' >"$ADOPT_MIXED_PYTHON/requirements.txt"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_MIXED_PYTHON/pyproject.toml"
+commit_adoption_repo "$ADOPT_MIXED_PYTHON" "fixture"
+git -C "$ADOPT_MIXED_PYTHON" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-mixed-python.out" adopt --dry-run --project "$ADOPT_MIXED_PYTHON"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "mixed Python setup accepted an uninstalled checker"
+assert_contains "$TMP_DIR/adopt-mixed-python.out.err" \
+  'requires uv.lock and an exact uv runtime'
+
+ADOPT_TOOL_ONLY_PYTHON="$TMP_DIR/adopt-tool-only-python"
+init_adoption_repo "$ADOPT_TOOL_ONLY_PYTHON"
+printf '%s\n' '[tool.pytest.ini_options]' >"$ADOPT_TOOL_ONLY_PYTHON/pyproject.toml"
+commit_adoption_repo "$ADOPT_TOOL_ONLY_PYTHON" "fixture"
+git -C "$ADOPT_TOOL_ONLY_PYTHON" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-tool-only-python.out" adopt --dry-run --project "$ADOPT_TOOL_ONLY_PYTHON"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "tool-only Python project did not refuse"
+assert_contains "$TMP_DIR/adopt-tool-only-python.out.err" \
+  'requires uv.lock and an exact uv runtime'
+
+ADOPT_POETRY_OPTIONAL="$TMP_DIR/adopt-poetry-optional"
+init_adoption_repo "$ADOPT_POETRY_OPTIONAL"
+mkdir -p "$ADOPT_POETRY_OPTIONAL/tests"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_POETRY_OPTIONAL/tests/test_fixture.py"
+printf '%s\n' '[build-system]' 'requires = ["poetry-core>=2"]' \
+  'build-backend = "poetry.core.masonry.api"' \
+  '[tool.poetry]' 'name = "fixture"' 'version = "0.1.0"' \
+  '[tool.poetry.dependencies]' 'python = ">=3.11"' \
+  'pytest = { version = "8", optional = true }' '[tool.pytest.ini_options]' \
+  >"$ADOPT_POETRY_OPTIONAL/pyproject.toml"
+commit_adoption_repo "$ADOPT_POETRY_OPTIONAL" "fixture"
+git -C "$ADOPT_POETRY_OPTIONAL" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-poetry-optional.out" adopt --dry-run --project "$ADOPT_POETRY_OPTIONAL"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "optional Poetry checker was treated as installed"
+assert_contains "$TMP_DIR/adopt-poetry-optional.out.err" \
+  'requires uv.lock and an exact uv runtime'
+
+ADOPT_POETRY_NO_BACKEND="$TMP_DIR/adopt-poetry-no-backend"
+init_adoption_repo "$ADOPT_POETRY_NO_BACKEND"
+printf '%s\n' '[tool.poetry]' 'name = "fixture"' 'version = "0.1.0"' \
+  '[tool.poetry.dependencies]' 'python = ">=3.11"' 'pytest = "8"' \
+  >"$ADOPT_POETRY_NO_BACKEND/pyproject.toml"
+commit_adoption_repo "$ADOPT_POETRY_NO_BACKEND" "fixture"
+git -C "$ADOPT_POETRY_NO_BACKEND" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-poetry-no-backend.out" adopt --dry-run --project "$ADOPT_POETRY_NO_BACKEND"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Poetry project without its build backend was accepted"
+assert_contains "$TMP_DIR/adopt-poetry-no-backend.out.err" 'Poetry metadata without a verified poetry-core build backend'
+
+ADOPT_UV_DEV="$TMP_DIR/adopt-uv-dev"
+init_adoption_repo "$ADOPT_UV_DEV"
+mkdir -p "$ADOPT_UV_DEV/tests"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_UV_DEV/tests/test_fixture.py"
+printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+  'requires-python = ">=3.11"' 'dependencies = []' \
+  '[tool.uv]' 'default-groups = []' '[dependency-groups]' 'dev = ["pytest"]' \
+  >"$ADOPT_UV_DEV/pyproject.toml"
+printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+  '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+  'source = { virtual = "." }' '' '[[package]]' 'name = "pytest"' \
+  'version = "9.1.1"' 'source = { registry = "https://pypi.org/simple" }' \
+  >"$ADOPT_UV_DEV/uv.lock"
+commit_adoption_repo "$ADOPT_UV_DEV" "fixture"
+git -C "$ADOPT_UV_DEV" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-uv-dev.out" adopt --project "$ADOPT_UV_DEV"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "uv dev-group adoption failed"
+assert_contains "$ADOPT_UV_DEV/.touchstone.toml" 'uv 0.8.14'
+assert_contains "$ADOPT_UV_DEV/.touchstone.toml" 'uv sync --no-config --offline --frozen --group dev'
+
+ADOPT_UV_CONFIG="$TMP_DIR/adopt-uv-config"
+init_adoption_repo "$ADOPT_UV_CONFIG"
+mkdir -p "$ADOPT_UV_CONFIG/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+  'requires-python = ">=3.11"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_UV_CONFIG/pyproject.toml"
+printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+  '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+  'source = { virtual = "." }' '' '[[package]]' 'name = "pytest"' \
+  'version = "9.1.1"' 'source = { registry = "https://pypi.org/simple" }' \
+  >"$ADOPT_UV_CONFIG/uv.lock"
+printf '%s\n' 'this is malformed uv configuration [' >"$ADOPT_UV_CONFIG/uv.toml"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_UV_CONFIG/tests/test_fixture.py"
+commit_adoption_repo "$ADOPT_UV_CONFIG" "fixture"
+git -C "$ADOPT_UV_CONFIG" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-uv-config.out" adopt --project "$ADOPT_UV_CONFIG"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "uv config isolated by --no-config prevented adoption"
+assert_contains "$ADOPT_UV_CONFIG/.touchstone.toml" \
+  'uv sync --no-config --offline --frozen'
+assert_contains "$ADOPT_UV_CONFIG/.touchstone.toml" \
+  'uv run --no-sync --no-config pytest'
+
+ADOPT_PYTEST_NO_TESTS="$TMP_DIR/adopt-pytest-no-tests"
+init_adoption_repo "$ADOPT_PYTEST_NO_TESTS"
+printf '%s\n' 'pytest==9.0.0' >"$ADOPT_PYTEST_NO_TESTS/requirements.txt"
+commit_adoption_repo "$ADOPT_PYTEST_NO_TESTS" "fixture"
+git -C "$ADOPT_PYTEST_NO_TESTS" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pytest-no-tests.out" adopt --dry-run \
+  --project "$ADOPT_PYTEST_NO_TESTS"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "pytest dependency without tracked tests emitted a failing task"
+assert_contains "$TMP_DIR/adopt-pytest-no-tests.out.err" \
+  'requires uv.lock and an exact uv runtime'
+
+for pytest_input in empty symlink ignored-directory; do
+  ADOPT_PYTEST_INPUT="$TMP_DIR/adopt-pytest-$pytest_input-input"
+  init_adoption_repo "$ADOPT_PYTEST_INPUT"
+  if [ "$pytest_input" = ignored-directory ]; then
+    mkdir -p "$ADOPT_PYTEST_INPUT/.venv"
+  else
+    mkdir -p "$ADOPT_PYTEST_INPUT/tests"
+  fi
+  printf '%s\n' 'pytest==9.0.0' >"$ADOPT_PYTEST_INPUT/requirements.txt"
+  case "$pytest_input" in
+    empty) : >"$ADOPT_PYTEST_INPUT/tests/test_empty.py" ;;
+    symlink)
+      printf '%s\n' 'def test_outside():' '    assert True' >"$TMP_DIR/outside-test.py"
+      ln -s "$TMP_DIR/outside-test.py" "$ADOPT_PYTEST_INPUT/tests/test_outside.py"
+      ;;
+    ignored-directory)
+      printf '%s\n' 'def test_hidden():' '    assert True' \
+        >"$ADOPT_PYTEST_INPUT/.venv/test_hidden.py"
+      ;;
+  esac
+  commit_adoption_repo "$ADOPT_PYTEST_INPUT" "fixture"
+  git -C "$ADOPT_PYTEST_INPUT" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-pytest-$pytest_input-input.out" adopt --dry-run \
+    --project "$ADOPT_PYTEST_INPUT"
+  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$pytest_input pytest input emitted an uncollectable task"
+  assert_contains "$TMP_DIR/adopt-pytest-$pytest_input-input.out.err" \
+    'requires uv.lock and an exact uv runtime'
+done
+
+for mypy_source in missing tracked; do
+  ADOPT_MYPY_SOURCE="$TMP_DIR/adopt-mypy-source-$mypy_source"
+  init_adoption_repo "$ADOPT_MYPY_SOURCE"
+  printf '%s\n' 'mypy==1.20.2' >"$ADOPT_MYPY_SOURCE/requirements.txt"
+  if [ "$mypy_source" = tracked ]; then
+    printf '%s\n' 'value: int = 1' >"$ADOPT_MYPY_SOURCE/fixture.py"
+  fi
+  commit_adoption_repo "$ADOPT_MYPY_SOURCE" "fixture"
+  git -C "$ADOPT_MYPY_SOURCE" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-mypy-source-$mypy_source.out" adopt --dry-run \
+    --project "$ADOPT_MYPY_SOURCE"
+  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$mypy_source requirements-only mypy task was accepted"
+  assert_contains "$TMP_DIR/adopt-mypy-source-$mypy_source.out.err" \
+    'requires uv.lock and an exact uv runtime'
+done
+
+ADOPT_UV_BAD_LOCK="$TMP_DIR/adopt-uv-bad-lock"
+init_adoption_repo "$ADOPT_UV_BAD_LOCK"
+mkdir -p "$ADOPT_UV_BAD_LOCK/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_UV_BAD_LOCK/pyproject.toml"
+printf '%s\n' 'this is not TOML [' >"$ADOPT_UV_BAD_LOCK/uv.lock"
+commit_adoption_repo "$ADOPT_UV_BAD_LOCK" "fixture"
+git -C "$ADOPT_UV_BAD_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-uv-bad-lock.out" adopt --dry-run --project "$ADOPT_UV_BAD_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed uv.lock was accepted"
+assert_contains "$TMP_DIR/adopt-uv-bad-lock.out.err" 'uv.lock is malformed'
+
+ADOPT_UV_INCOMPLETE="$TMP_DIR/adopt-uv-incomplete"
+init_adoption_repo "$ADOPT_UV_INCOMPLETE"
+mkdir -p "$ADOPT_UV_INCOMPLETE/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'requires-python = ">=3.11"' \
+  'dependencies = ["pytest"]' >"$ADOPT_UV_INCOMPLETE/pyproject.toml"
+printf '%s\n' 'version = 1' >"$ADOPT_UV_INCOMPLETE/uv.lock"
+commit_adoption_repo "$ADOPT_UV_INCOMPLETE" "fixture"
+git -C "$ADOPT_UV_INCOMPLETE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-uv-incomplete.out" adopt --dry-run \
+  --project "$ADOPT_UV_INCOMPLETE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "incomplete uv.lock was accepted"
+assert_contains "$TMP_DIR/adopt-uv-incomplete.out.err" 'uv.lock has incomplete package records'
+
+ADOPT_UV_MISMATCH="$TMP_DIR/adopt-uv-mismatch"
+init_adoption_repo "$ADOPT_UV_MISMATCH"
+mkdir -p "$ADOPT_UV_MISMATCH/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'requires-python = ">=3.12"' \
+  'dependencies = ["pytest"]' >"$ADOPT_UV_MISMATCH/pyproject.toml"
+printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+  '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+  'source = { virtual = "." }' '' '[[package]]' 'name = "pytest"' \
+  'version = "9.1.1"' 'source = { registry = "https://pypi.org/simple" }' \
+  >"$ADOPT_UV_MISMATCH/uv.lock"
+commit_adoption_repo "$ADOPT_UV_MISMATCH" "fixture"
+git -C "$ADOPT_UV_MISMATCH" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-uv-mismatch.out" adopt --dry-run \
+  --project "$ADOPT_UV_MISMATCH"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "uv.lock with stale Python compatibility was accepted"
+assert_contains "$TMP_DIR/adopt-uv-mismatch.out.err" \
+  'uv.lock requires-python does not match pyproject.toml'
+
+ADOPT_UV_MISSING_CHECKER="$TMP_DIR/adopt-uv-missing-checker"
+init_adoption_repo "$ADOPT_UV_MISSING_CHECKER"
+mkdir -p "$ADOPT_UV_MISSING_CHECKER/tests"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_UV_MISSING_CHECKER/tests/test_fixture.py"
+printf '%s\n' '[project]' 'name = "fixture"' 'requires-python = ">=3.11"' \
+  'dependencies = ["pytest"]' >"$ADOPT_UV_MISSING_CHECKER/pyproject.toml"
+printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+  '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+  'source = { virtual = "." }' >"$ADOPT_UV_MISSING_CHECKER/uv.lock"
+commit_adoption_repo "$ADOPT_UV_MISSING_CHECKER" "fixture"
+git -C "$ADOPT_UV_MISSING_CHECKER" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-uv-missing-checker.out" adopt --dry-run \
+  --project "$ADOPT_UV_MISSING_CHECKER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "uv.lock without the emitted checker was accepted"
+assert_contains "$TMP_DIR/adopt-uv-missing-checker.out.err" \
+  'has pytest evidence without an installed pytest dependency'
+
+ADOPT_UV_STALE="$TMP_DIR/adopt-uv-stale"
+init_adoption_repo "$ADOPT_UV_STALE"
+mkdir -p "$ADOPT_UV_STALE/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'requires-python = ">=3.11"' \
+  'dependencies = ["pytest"]' >"$ADOPT_UV_STALE/pyproject.toml"
+printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+  '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+  'source = { virtual = "." }' '' '[[package]]' 'name = "pytest"' \
+  'version = "9.1.1"' 'source = { registry = "https://pypi.org/simple" }' \
+  >"$ADOPT_UV_STALE/uv.lock"
+printf '%s\n' 'stale' >"$ADOPT_UV_STALE/.touchstone-uv-check-fail"
+commit_adoption_repo "$ADOPT_UV_STALE" "fixture"
+git -C "$ADOPT_UV_STALE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-uv-stale.out" adopt --dry-run \
+  --project "$ADOPT_UV_STALE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "uv's failed offline compatibility check was ignored"
+assert_contains "$TMP_DIR/adopt-uv-stale.out.err" \
+  'uv.lock is incompatible with pyproject.toml under offline lock verification: fixture lock is stale'
+
+echo "==> adoption derives explicit monorepo targets"
+ADOPT_MONOREPO="$TMP_DIR/adopt-monorepo"
+init_adoption_repo "$ADOPT_MONOREPO"
+mkdir -p "$ADOPT_MONOREPO/apps/api" "$ADOPT_MONOREPO/packages/web"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0","workspaces":["apps/*","packages/*"],"scripts":{"lint":"eslint ."}}' \
+  >"$ADOPT_MONOREPO/package.json"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_MONOREPO/pnpm-lock.yaml"
+printf '%s\n' 'packages:' '  - apps/*' '  - packages/*' >"$ADOPT_MONOREPO/pnpm-workspace.yaml"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_MONOREPO/apps/api/package.json"
+printf '%s\n' '{"scripts":{"build":"node build.js"}}' >"$ADOPT_MONOREPO/packages/web/package.json"
+commit_adoption_repo "$ADOPT_MONOREPO" "fixture"
+git -C "$ADOPT_MONOREPO" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-monorepo.out" adopt --project "$ADOPT_MONOREPO"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "monorepo adoption failed"
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'path = "apps/api"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'path = "packages/web"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "test-apps-api"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "build-packages-web"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" \
+  'command = "COREPACK_ENABLE_NETWORK=0 pnpm run test"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" \
+  'command = "COREPACK_ENABLE_NETWORK=0 pnpm run build"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'name = "lint"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" 'target = "root"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" \
+  'command = "COREPACK_ENABLE_NETWORK=0 pnpm run lint"'
+assert_contains "$ADOPT_MONOREPO/.touchstone.toml" \
+  'setup = "COREPACK_ENABLE_NETWORK=0 pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile"'
+bash "$RUNNER" validate --check-contract --project "$ADOPT_MONOREPO" >/dev/null
+
+ADOPT_NON_WORKSPACE_CHILD="$TMP_DIR/adopt-non-workspace-child"
+init_adoption_repo "$ADOPT_NON_WORKSPACE_CHILD"
+mkdir -p "$ADOPT_NON_WORKSPACE_CHILD/apps/api"
+printf '%s\n' '{"packageManager":"npm@11.0.0"}' >"$ADOPT_NON_WORKSPACE_CHILD/package.json"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_NON_WORKSPACE_CHILD/apps/api/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_NON_WORKSPACE_CHILD/apps/api/package-lock.json"
+commit_adoption_repo "$ADOPT_NON_WORKSPACE_CHILD" "fixture"
+git -C "$ADOPT_NON_WORKSPACE_CHILD" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-non-workspace-child.out" adopt --project "$ADOPT_NON_WORKSPACE_CHILD"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "non-workspace child adoption failed"
+assert_contains "$ADOPT_NON_WORKSPACE_CHILD/.touchstone.toml" 'setup = "(cd apps/api && npm ci --offline --ignore-scripts)"'
+
+ADOPT_WORKSPACE_CHILD="$TMP_DIR/adopt-workspace-child"
+init_adoption_repo "$ADOPT_WORKSPACE_CHILD"
+mkdir -p "$ADOPT_WORKSPACE_CHILD/apps/api"
+printf '%s\n' '{"packageManager":"npm@11.0.0","workspaces":["apps/*"]}' \
+  >"$ADOPT_WORKSPACE_CHILD/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_WORKSPACE_CHILD/package-lock.json"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_WORKSPACE_CHILD/apps/api/package.json"
+commit_adoption_repo "$ADOPT_WORKSPACE_CHILD" "fixture"
+git -C "$ADOPT_WORKSPACE_CHILD" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-workspace-child.out" adopt --project "$ADOPT_WORKSPACE_CHILD"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "declared workspace child adoption failed"
+assert_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" 'setup = "npm ci --offline --ignore-scripts"'
+assert_not_contains "$ADOPT_WORKSPACE_CHILD/.touchstone.toml" '(cd apps/api'
+
+ADOPT_PNPM_AUTHORITY="$TMP_DIR/adopt-pnpm-authority"
+init_adoption_repo "$ADOPT_PNPM_AUTHORITY"
+mkdir -p "$ADOPT_PNPM_AUTHORITY/apps/api"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0","workspaces":["apps/*"]}' \
+  >"$ADOPT_PNPM_AUTHORITY/package.json"
+printf '%s\n' 'packages:' '  - packages/*' >"$ADOPT_PNPM_AUTHORITY/pnpm-workspace.yaml"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_AUTHORITY/pnpm-lock.yaml"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_PNPM_AUTHORITY/apps/api/package.json"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_AUTHORITY/apps/api/pnpm-lock.yaml"
+commit_adoption_repo "$ADOPT_PNPM_AUTHORITY" "fixture"
+git -C "$ADOPT_PNPM_AUTHORITY" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-authority.out" adopt --project "$ADOPT_PNPM_AUTHORITY"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "pnpm workspace authority adoption failed"
+assert_contains "$ADOPT_PNPM_AUTHORITY/.touchstone.toml" \
+  'setup = "(cd apps/api && COREPACK_ENABLE_NETWORK=0 pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile)"'
+
+ADOPT_PNPM_EXCLUSION="$TMP_DIR/adopt-pnpm-exclusion"
+init_adoption_repo "$ADOPT_PNPM_EXCLUSION"
+mkdir -p "$ADOPT_PNPM_EXCLUSION/apps/api"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0"}' >"$ADOPT_PNPM_EXCLUSION/package.json"
+printf '%s\n' 'packages:' '  - "!apps/api"' '  - "apps/*"' >"$ADOPT_PNPM_EXCLUSION/pnpm-workspace.yaml"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_EXCLUSION/pnpm-lock.yaml"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_PNPM_EXCLUSION/apps/api/package.json"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_EXCLUSION/apps/api/pnpm-lock.yaml"
+commit_adoption_repo "$ADOPT_PNPM_EXCLUSION" "fixture"
+git -C "$ADOPT_PNPM_EXCLUSION" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-exclusion.out" adopt --project "$ADOPT_PNPM_EXCLUSION"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "pnpm order-independent exclusion adoption failed"
+assert_contains "$ADOPT_PNPM_EXCLUSION/.touchstone.toml" \
+  'setup = "(cd apps/api && COREPACK_ENABLE_NETWORK=0 pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile)"'
+
+ADOPT_CARGO_WORKSPACE="$TMP_DIR/adopt-cargo-workspace"
+init_adoption_repo "$ADOPT_CARGO_WORKSPACE"
+mkdir -p "$ADOPT_CARGO_WORKSPACE/packages/core/src"
+printf '%s\n' '[workspace]' 'members = ["packages/core"]' 'resolver = "2"' \
+  >"$ADOPT_CARGO_WORKSPACE/Cargo.toml"
+printf '%s\n' 'version = 4' '' '[[package]]' 'name = "core"' \
+  'version = "0.1.0"' >"$ADOPT_CARGO_WORKSPACE/Cargo.lock"
+printf '%s\n' '[package]' 'name = "core"' 'version = "0.1.0"' 'edition = "2024"' \
+  >"$ADOPT_CARGO_WORKSPACE/packages/core/Cargo.toml"
+printf '%s\n' 'pub fn core() {}' >"$ADOPT_CARGO_WORKSPACE/packages/core/src/lib.rs"
+commit_adoption_repo "$ADOPT_CARGO_WORKSPACE" "fixture"
+git -C "$ADOPT_CARGO_WORKSPACE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-cargo-workspace.out" adopt --project "$ADOPT_CARGO_WORKSPACE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "Cargo workspace adoption failed"
+assert_contains "$ADOPT_CARGO_WORKSPACE/.touchstone.toml" 'path = "packages/core"'
+assert_contains "$ADOPT_CARGO_WORKSPACE/.touchstone.toml" 'name = "test-packages-core"'
+assert_contains "$ADOPT_CARGO_WORKSPACE/.touchstone.toml" \
+  'command = "cargo test --workspace --frozen"'
+
+ADOPT_CARGO_ROOT_WORKSPACE="$TMP_DIR/adopt-cargo-root-workspace"
+init_adoption_repo "$ADOPT_CARGO_ROOT_WORKSPACE"
+mkdir -p "$ADOPT_CARGO_ROOT_WORKSPACE/src" \
+  "$ADOPT_CARGO_ROOT_WORKSPACE/crates/bad/src"
+printf '%s\n' '[package]' 'name = "root"' 'version = "0.1.0"' \
+  '[workspace]' 'members = ["crates/bad"]' 'resolver = "2"' \
+  >"$ADOPT_CARGO_ROOT_WORKSPACE/Cargo.toml"
+printf '%s\n' 'version = 4' '' '[[package]]' 'name = "root"' \
+  'version = "0.1.0"' '' '[[package]]' 'name = "bad"' 'version = "0.1.0"' \
+  >"$ADOPT_CARGO_ROOT_WORKSPACE/Cargo.lock"
+printf '%s\n' 'pub fn root() {}' >"$ADOPT_CARGO_ROOT_WORKSPACE/src/lib.rs"
+printf '%s\n' '[package]' 'name = "bad"' 'version = "0.1.0"' \
+  >"$ADOPT_CARGO_ROOT_WORKSPACE/crates/bad/Cargo.toml"
+printf '%s\n' 'pub fn bad() {}' >"$ADOPT_CARGO_ROOT_WORKSPACE/crates/bad/src/lib.rs"
+commit_adoption_repo "$ADOPT_CARGO_ROOT_WORKSPACE" "fixture"
+git -C "$ADOPT_CARGO_ROOT_WORKSPACE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-cargo-root-workspace.out" adopt \
+  --project "$ADOPT_CARGO_ROOT_WORKSPACE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "non-virtual Cargo workspace adoption failed"
+assert_contains "$ADOPT_CARGO_ROOT_WORKSPACE/.touchstone.toml" \
+  'command = "cargo test --workspace --frozen"'
+bash "$RUNNER" validate --check-contract --project "$ADOPT_CARGO_ROOT_WORKSPACE" >/dev/null
+
+ADOPT_CARGO_MISSING_MEMBER="$TMP_DIR/adopt-cargo-missing-member"
+init_adoption_repo "$ADOPT_CARGO_MISSING_MEMBER"
+printf '%s\n' '[workspace]' 'members = ["crates/shared"]' 'resolver = "2"' \
+  >"$ADOPT_CARGO_MISSING_MEMBER/Cargo.toml"
+printf '%s\n' 'version = 4' >"$ADOPT_CARGO_MISSING_MEMBER/Cargo.lock"
+commit_adoption_repo "$ADOPT_CARGO_MISSING_MEMBER" "fixture"
+git -C "$ADOPT_CARGO_MISSING_MEMBER" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-cargo-missing-member.out" adopt --dry-run \
+  --project "$ADOPT_CARGO_MISSING_MEMBER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "missing Cargo workspace member was accepted"
+assert_contains "$TMP_DIR/adopt-cargo-missing-member.out.err" \
+  "Cargo workspace member 'crates/shared' has no regular Cargo.toml"
+
+ADOPT_CARGO_BAD_DEFAULT="$TMP_DIR/adopt-cargo-bad-default"
+init_adoption_repo "$ADOPT_CARGO_BAD_DEFAULT"
+mkdir -p "$ADOPT_CARGO_BAD_DEFAULT/crates/core/src"
+printf '%s\n' '[workspace]' 'members = ["crates/core"]' \
+  'default-members = ["crates/missing"]' 'resolver = "2"' \
+  >"$ADOPT_CARGO_BAD_DEFAULT/Cargo.toml"
+printf '%s\n' 'version = 4' >"$ADOPT_CARGO_BAD_DEFAULT/Cargo.lock"
+printf '%s\n' '[package]' 'name = "core"' 'version = "0.1.0"' \
+  >"$ADOPT_CARGO_BAD_DEFAULT/crates/core/Cargo.toml"
+printf '%s\n' 'pub fn core() {}' >"$ADOPT_CARGO_BAD_DEFAULT/crates/core/src/lib.rs"
+commit_adoption_repo "$ADOPT_CARGO_BAD_DEFAULT" "fixture"
+git -C "$ADOPT_CARGO_BAD_DEFAULT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-cargo-bad-default.out" adopt --dry-run \
+  --project "$ADOPT_CARGO_BAD_DEFAULT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "invalid Cargo default-member was accepted"
+assert_contains "$TMP_DIR/adopt-cargo-bad-default.out.err" \
+  "Cargo default member 'crates/missing' is not a verified workspace member"
+
+ADOPT_UNSUPPORTED_WORKSPACE_GLOB="$TMP_DIR/adopt-unsupported-workspace-glob"
+init_adoption_repo "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB"
+mkdir -p "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/apps/api"
+printf '%s\n' '{"packageManager":"npm@11.0.0","workspaces":["{apps,packages}/*"]}' \
+  >"$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/package-lock.json"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/apps/api/package.json"
+commit_adoption_repo "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB" "fixture"
+git -C "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-unsupported-workspace-glob.out" adopt --dry-run --project "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unsupported workspace glob produced an incomplete plan"
+assert_contains "$TMP_DIR/adopt-unsupported-workspace-glob.out.err" 'uses glob syntax this compiler cannot verify'
+[ ! -e "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB/.touchstone.toml" ] \
+  || fail "unsupported workspace glob mutated the repository"
+
+ADOPT_PNPM_FLOW_WORKSPACE="$TMP_DIR/adopt-pnpm-flow-workspace"
+init_adoption_repo "$ADOPT_PNPM_FLOW_WORKSPACE"
+mkdir -p "$ADOPT_PNPM_FLOW_WORKSPACE/apps/api"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0"}' >"$ADOPT_PNPM_FLOW_WORKSPACE/package.json"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_FLOW_WORKSPACE/pnpm-lock.yaml"
+printf '%s\n' "packages: ['apps/*']" >"$ADOPT_PNPM_FLOW_WORKSPACE/pnpm-workspace.yaml"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_PNPM_FLOW_WORKSPACE/apps/api/package.json"
+commit_adoption_repo "$ADOPT_PNPM_FLOW_WORKSPACE" "fixture"
+git -C "$ADOPT_PNPM_FLOW_WORKSPACE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-flow-workspace.out" adopt --project "$ADOPT_PNPM_FLOW_WORKSPACE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "flow-style pnpm workspace adoption failed"
+assert_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" 'path = "apps/api"'
+assert_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" \
+  'setup = "COREPACK_ENABLE_NETWORK=0 pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile"'
+assert_not_contains "$ADOPT_PNPM_FLOW_WORKSPACE/.touchstone.toml" '(cd apps/api'
+
+ADOPT_PNPM_QUOTED_KEY="$TMP_DIR/adopt-pnpm-quoted-key"
+init_adoption_repo "$ADOPT_PNPM_QUOTED_KEY"
+mkdir -p "$ADOPT_PNPM_QUOTED_KEY/apps/api"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0"}' >"$ADOPT_PNPM_QUOTED_KEY/package.json"
+printf '%s\n' '"packages": ["apps/*"]' >"$ADOPT_PNPM_QUOTED_KEY/pnpm-workspace.yaml"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_QUOTED_KEY/pnpm-lock.yaml"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_PNPM_QUOTED_KEY/apps/api/package.json"
+commit_adoption_repo "$ADOPT_PNPM_QUOTED_KEY" "fixture"
+git -C "$ADOPT_PNPM_QUOTED_KEY" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-quoted-key.out" adopt --dry-run --project "$ADOPT_PNPM_QUOTED_KEY"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "quoted pnpm workspace key was silently ignored"
+assert_contains "$TMP_DIR/adopt-pnpm-quoted-key.out.err" 'malformed, duplicate, or unsupported packages declarations'
+
+ADOPT_PNPM_MALFORMED_TAIL="$TMP_DIR/adopt-pnpm-malformed-tail"
+init_adoption_repo "$ADOPT_PNPM_MALFORMED_TAIL"
+mkdir -p "$ADOPT_PNPM_MALFORMED_TAIL/apps/api"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0"}' >"$ADOPT_PNPM_MALFORMED_TAIL/package.json"
+printf '%s\n' 'packages: ["apps/*"]' 'catalog: [' >"$ADOPT_PNPM_MALFORMED_TAIL/pnpm-workspace.yaml"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_MALFORMED_TAIL/pnpm-lock.yaml"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_PNPM_MALFORMED_TAIL/apps/api/package.json"
+commit_adoption_repo "$ADOPT_PNPM_MALFORMED_TAIL" "fixture"
+git -C "$ADOPT_PNPM_MALFORMED_TAIL" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-malformed-tail.out" adopt --dry-run --project "$ADOPT_PNPM_MALFORMED_TAIL"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed trailing pnpm YAML was ignored"
+assert_contains "$TMP_DIR/adopt-pnpm-malformed-tail.out.err" 'malformed, duplicate, or unsupported packages declarations'
+
+ADOPT_PNPM_NON_STRING="$TMP_DIR/adopt-pnpm-non-string"
+init_adoption_repo "$ADOPT_PNPM_NON_STRING"
+mkdir -p "$ADOPT_PNPM_NON_STRING/apps/api"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0"}' >"$ADOPT_PNPM_NON_STRING/package.json"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_PNPM_NON_STRING/pnpm-lock.yaml"
+printf '%s\n' 'packages:' '  - apps/*' '  - 1' >"$ADOPT_PNPM_NON_STRING/pnpm-workspace.yaml"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_PNPM_NON_STRING/apps/api/package.json"
+commit_adoption_repo "$ADOPT_PNPM_NON_STRING" "fixture"
+git -C "$ADOPT_PNPM_NON_STRING" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-non-string.out" adopt --dry-run --project "$ADOPT_PNPM_NON_STRING"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "non-string pnpm workspace entry produced a plan"
+assert_contains "$TMP_DIR/adopt-pnpm-non-string.out.err" 'malformed, duplicate, or unsupported packages declarations'
+
+ADOPT_DUPLICATE_WORKSPACES="$TMP_DIR/adopt-duplicate-workspaces"
+init_adoption_repo "$ADOPT_DUPLICATE_WORKSPACES"
+mkdir -p "$ADOPT_DUPLICATE_WORKSPACES/apps/api"
+printf '%s\n' '{"workspaces":["apps/*"],"workspaces":[],"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_DUPLICATE_WORKSPACES/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_DUPLICATE_WORKSPACES/package-lock.json"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_DUPLICATE_WORKSPACES/apps/api/package.json"
+commit_adoption_repo "$ADOPT_DUPLICATE_WORKSPACES" "fixture"
+git -C "$ADOPT_DUPLICATE_WORKSPACES" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-duplicate-workspaces.out" adopt --dry-run --project "$ADOPT_DUPLICATE_WORKSPACES"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate root workspaces declaration produced a plan"
+assert_contains "$TMP_DIR/adopt-duplicate-workspaces.out.err" "malformed, repeated, or unsupported workspace declaration"
+
+ADOPT_DUPLICATE_WORKSPACE_PACKAGES="$TMP_DIR/adopt-duplicate-workspace-packages"
+init_adoption_repo "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES"
+mkdir -p "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES/apps/api"
+printf '%s\n' '{"workspaces":{"packages":["apps/*"],"packages":[]},"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_DUPLICATE_WORKSPACE_PACKAGES/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_DUPLICATE_WORKSPACE_PACKAGES/package-lock.json"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_DUPLICATE_WORKSPACE_PACKAGES/apps/api/package.json"
+commit_adoption_repo "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES" "fixture"
+git -C "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-duplicate-workspace-packages.out" adopt --dry-run --project "$ADOPT_DUPLICATE_WORKSPACE_PACKAGES"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate workspace packages declaration produced a plan"
+assert_contains "$TMP_DIR/adopt-duplicate-workspace-packages.out.err" "malformed, repeated, or unsupported workspace declaration"
+
+ADOPT_NON_STRING_WORKSPACE="$TMP_DIR/adopt-non-string-workspace"
+init_adoption_repo "$ADOPT_NON_STRING_WORKSPACE"
+mkdir -p "$ADOPT_NON_STRING_WORKSPACE/apps/api"
+printf '%s\n' '{"packageManager":"npm@11.0.0","workspaces":["apps/*",1]}' \
+  >"$ADOPT_NON_STRING_WORKSPACE/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_NON_STRING_WORKSPACE/package-lock.json"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_NON_STRING_WORKSPACE/apps/api/package.json"
+commit_adoption_repo "$ADOPT_NON_STRING_WORKSPACE" "fixture"
+git -C "$ADOPT_NON_STRING_WORKSPACE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-non-string-workspace.out" adopt --dry-run --project "$ADOPT_NON_STRING_WORKSPACE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "non-string workspace entry produced a partial plan"
+assert_contains "$TMP_DIR/adopt-non-string-workspace.out.err" "malformed, repeated, or unsupported workspace declaration"
+[ ! -e "$ADOPT_NON_STRING_WORKSPACE/.touchstone.toml" ] \
+  || fail "non-string workspace entry mutated the repository"
+
+ADOPT_LARGE="$TMP_DIR/adopt-large"
+init_adoption_repo "$ADOPT_LARGE"
+mkdir -p "$ADOPT_LARGE/packages"
+printf '{}\n' >"$ADOPT_LARGE/tsconfig.json"
+index=1
+while [ "$index" -le 24 ]; do
+  mkdir -p "$ADOPT_LARGE/packages/unit-$index"
+  printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+    >"$ADOPT_LARGE/packages/unit-$index/package.json"
+  index=$((index + 1))
+done
+commit_adoption_repo "$ADOPT_LARGE" "fixture"
+git -C "$ADOPT_LARGE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-large.out" adopt --project "$ADOPT_LARGE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "large monorepo adoption failed"
+assert_contains "$ADOPT_LARGE/.touchstone.toml" 'path = "packages/unit-24"'
+task_count="$(grep -c '^\[\[validation.tasks\]\]$' "$ADOPT_LARGE/.touchstone.toml")"
+[ "$task_count" -eq 24 ] || fail "large monorepo did not derive all explicit tasks"
+bash "$RUNNER" validate --check-contract --project "$ADOPT_LARGE" >/dev/null
+
+echo "==> adoption fails closed on ambiguous and unsupported contracts"
+ADOPT_AMBIGUOUS="$TMP_DIR/adopt-ambiguous"
+init_adoption_repo "$ADOPT_AMBIGUOUS"
+mkdir -p "$ADOPT_AMBIGUOUS/packages/child"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_AMBIGUOUS/package.json"
+printf '%s\n' '[tool.pytest.ini_options]' >"$ADOPT_AMBIGUOUS/pyproject.toml"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_AMBIGUOUS/packages/child/package.json"
+commit_adoption_repo "$ADOPT_AMBIGUOUS" "fixture"
+git -C "$ADOPT_AMBIGUOUS" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-ambiguous.out" adopt --dry-run --project "$ADOPT_AMBIGUOUS"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "ambiguous adoption did not refuse"
+assert_contains "$TMP_DIR/adopt-ambiguous.out.err" "ambiguous project facts"
+[ ! -e "$ADOPT_AMBIGUOUS/.touchstone.toml" ] || fail "ambiguous adoption wrote a contract"
+
+ADOPT_MANAGER="$TMP_DIR/adopt-manager"
+init_adoption_repo "$ADOPT_MANAGER"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_MANAGER/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_MANAGER/package-lock.json"
+commit_adoption_repo "$ADOPT_MANAGER" "fixture"
+git -C "$ADOPT_MANAGER" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-manager.out" adopt --dry-run --project "$ADOPT_MANAGER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "package manager conflict did not refuse"
+assert_contains "$TMP_DIR/adopt-manager.out.err" "conflicts with the 'npm' lockfile"
+run_adoption "$TMP_DIR/adopt-manager-json.out" adopt --dry-run --json --project "$ADOPT_MANAGER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "JSON package manager conflict did not refuse"
+assert_contains "$TMP_DIR/adopt-manager-json.out" '"status":"contract-refused"'
+assert_contains "$TMP_DIR/adopt-manager-json.out" "conflicts with the 'npm' lockfile"
+
+ADOPT_SCOPED_MANAGER="$TMP_DIR/adopt-scoped-manager"
+init_adoption_repo "$ADOPT_SCOPED_MANAGER"
+printf '%s\n' '{"packageManager":"@evil/pm@1.0.0","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_SCOPED_MANAGER/package.json"
+commit_adoption_repo "$ADOPT_SCOPED_MANAGER" "fixture"
+git -C "$ADOPT_SCOPED_MANAGER" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-scoped-manager.out" adopt --dry-run \
+  --project "$ADOPT_SCOPED_MANAGER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "scoped packageManager declaration was accepted"
+assert_contains "$TMP_DIR/adopt-scoped-manager.out.err" \
+  "unsupported Node packageManager '@evil/pm'"
+
+ADOPT_DEV_ENGINES="$TMP_DIR/adopt-dev-engines"
+init_adoption_repo "$ADOPT_DEV_ENGINES"
+printf '%s\n' \
+  '{"devEngines":{"packageManager":{"name":"pnpm","version":"10.28.1","onFail":"error"}},"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_DEV_ENGINES/package.json"
+commit_adoption_repo "$ADOPT_DEV_ENGINES" "fixture"
+git -C "$ADOPT_DEV_ENGINES" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-dev-engines.out" adopt --dry-run \
+  --project "$ADOPT_DEV_ENGINES"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "devEngines package-manager policy was ignored"
+assert_contains "$TMP_DIR/adopt-dev-engines.out.err" 'declares devEngines runtime policy'
+
+ADOPT_CHILD_MANAGER="$TMP_DIR/adopt-child-manager"
+init_adoption_repo "$ADOPT_CHILD_MANAGER"
+mkdir -p "$ADOPT_CHILD_MANAGER/packages/child"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0"}' >"$ADOPT_CHILD_MANAGER/package.json"
+printf '%s\n' 'packages:' '  - packages/*' >"$ADOPT_CHILD_MANAGER/pnpm-workspace.yaml"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_CHILD_MANAGER/pnpm-lock.yaml"
+printf '%s\n' '{"packageManager":"npm@11.0.0","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_CHILD_MANAGER/packages/child/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_CHILD_MANAGER/packages/child/package-lock.json"
+commit_adoption_repo "$ADOPT_CHILD_MANAGER" "fixture"
+git -C "$ADOPT_CHILD_MANAGER" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-child-manager.out" adopt --dry-run --json --project "$ADOPT_CHILD_MANAGER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "JSON child manager conflict did not refuse"
+assert_contains "$TMP_DIR/adopt-child-manager.out" '"status":"contract-refused"'
+assert_contains "$TMP_DIR/adopt-child-manager.out" "conflicts with workspace package manager 'pnpm'"
+
+ADOPT_ESCAPED_JSON="$TMP_DIR/adopt-escaped-json"
+init_adoption_repo "$ADOPT_ESCAPED_JSON"
+printf '%s\n' '{"packageManager":"p\u006epm@10.0.0","scr\u0069pts":{"te\u0073t":"node --test"}}' \
+  >"$ADOPT_ESCAPED_JSON/package.json"
+printf 'lockfileVersion: '\''9.0'\''\n' >"$ADOPT_ESCAPED_JSON/pnpm-lock.yaml"
+commit_adoption_repo "$ADOPT_ESCAPED_JSON" "fixture"
+git -C "$ADOPT_ESCAPED_JSON" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-escaped-json.out" adopt --project "$ADOPT_ESCAPED_JSON"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "escaped JSON adoption failed"
+assert_contains "$ADOPT_ESCAPED_JSON/.touchstone.toml" \
+  'command = "COREPACK_ENABLE_NETWORK=0 pnpm run test"'
+
+ADOPT_EMPTY_AGGREGATE="$TMP_DIR/adopt-empty-aggregate"
+init_adoption_repo "$ADOPT_EMPTY_AGGREGATE"
+printf '%s\n' '{"scripts":{"validate":"","verify":" \t","test":"node --test"}}' \
+  >"$ADOPT_EMPTY_AGGREGATE/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' >"$ADOPT_EMPTY_AGGREGATE/package-lock.json"
+commit_adoption_repo "$ADOPT_EMPTY_AGGREGATE" "fixture"
+git -C "$ADOPT_EMPTY_AGGREGATE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-empty-aggregate.out" adopt --project "$ADOPT_EMPTY_AGGREGATE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "empty aggregate adoption failed"
+assert_contains "$ADOPT_EMPTY_AGGREGATE/.touchstone.toml" 'command = "npm run test"'
+assert_not_contains "$ADOPT_EMPTY_AGGREGATE/.touchstone.toml" 'npm run validate'
+assert_not_contains "$ADOPT_EMPTY_AGGREGATE/.touchstone.toml" 'npm run verify'
+
+for yarn_case in unlocked berry classic; do
+  ADOPT_YARN="$TMP_DIR/adopt-yarn-$yarn_case"
+  init_adoption_repo "$ADOPT_YARN"
+  if [ "$yarn_case" = classic ]; then
+    printf '%s\n' '{"packageManager":"yarn@1.22.22","scripts":{"test":"node --test"}}' \
+      >"$ADOPT_YARN/package.json"
+    printf '# yarn lockfile v1\n' >"$ADOPT_YARN/yarn.lock"
+  else
+    printf '%s\n' '{"name":"fixture","packageManager":"yarn@4.14.1","scripts":{"test":"node --test"}}' \
+      >"$ADOPT_YARN/package.json"
+    if [ "$yarn_case" = berry ]; then
+      printf '%s\n' '__metadata:' '  version: 8' '  cacheKey: 10c0' \
+        '"fixture@workspace:.":' '  version: 0.0.0-use.local' \
+        '  resolution: "fixture@workspace:."' '  languageName: unknown' \
+        '  linkType: soft' >"$ADOPT_YARN/yarn.lock"
+    fi
+  fi
+  commit_adoption_repo "$ADOPT_YARN" "fixture"
+  git -C "$ADOPT_YARN" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-yarn-$yarn_case.out" adopt --project "$ADOPT_YARN"
+  [ "$ADOPTION_STATUS" -eq 0 ] || fail "$yarn_case Yarn adoption failed"
+  assert_contains "$ADOPT_YARN/.touchstone.toml" \
+    'command = "COREPACK_ENABLE_NETWORK=0 yarn test"'
+  if [ "$yarn_case" = berry ]; then
+    assert_contains "$ADOPT_YARN/.touchstone.toml" \
+      'setup = "COREPACK_ENABLE_NETWORK=0 yarn install --immutable --immutable-cache --mode=skip-build"'
+  elif [ "$yarn_case" = classic ]; then
+    assert_contains "$ADOPT_YARN/.touchstone.toml" \
+      'setup = "COREPACK_ENABLE_NETWORK=0 yarn install --offline --frozen-lockfile --ignore-scripts"'
+  else
+    assert_not_contains "$ADOPT_YARN/.touchstone.toml" 'setup = '
+  fi
+done
+
+ADOPT_YARN_BAD_LOCK="$TMP_DIR/adopt-yarn-bad-lock"
+init_adoption_repo "$ADOPT_YARN_BAD_LOCK"
+printf '%s\n' '{"packageManager":"yarn@1.22.22","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_YARN_BAD_LOCK/package.json"
+printf '%s\n' '# yarn lockfile v1' 'malformed tail' >"$ADOPT_YARN_BAD_LOCK/yarn.lock"
+commit_adoption_repo "$ADOPT_YARN_BAD_LOCK" "fixture"
+git -C "$ADOPT_YARN_BAD_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-yarn-bad-lock.out" adopt --dry-run --project "$ADOPT_YARN_BAD_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed Yarn lockfile was accepted"
+assert_contains "$TMP_DIR/adopt-yarn-bad-lock.out.err" \
+  'Yarn lockfile outside the dependency-free portable subset'
+
+ADOPT_YARN_NO_VERSION="$TMP_DIR/adopt-yarn-no-version"
+init_adoption_repo "$ADOPT_YARN_NO_VERSION"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_YARN_NO_VERSION/package.json"
+printf '%s\n' '# yarn lockfile v1' >"$ADOPT_YARN_NO_VERSION/yarn.lock"
+commit_adoption_repo "$ADOPT_YARN_NO_VERSION" "fixture"
+git -C "$ADOPT_YARN_NO_VERSION" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-yarn-no-version.out" adopt --dry-run --project "$ADOPT_YARN_NO_VERSION"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Yarn lockfile without an exact runtime version was accepted"
+assert_contains "$TMP_DIR/adopt-yarn-no-version.out.err" \
+  'yarn requires packageManager with an exact yarn version'
+
+ADOPT_YARN_PATH="$TMP_DIR/adopt-yarn-path"
+init_adoption_repo "$ADOPT_YARN_PATH"
+printf '%s\n' '{"packageManager":"yarn@4.14.1","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_YARN_PATH/package.json"
+printf '%s\n' '__metadata:' '  version: 8' >"$ADOPT_YARN_PATH/yarn.lock"
+printf '%s\n' 'yarnPath: ./custom-yarn.cjs' >"$ADOPT_YARN_PATH/.yarnrc.yml"
+printf '%s\n' 'process.exit(0)' >"$ADOPT_YARN_PATH/custom-yarn.cjs"
+commit_adoption_repo "$ADOPT_YARN_PATH" "fixture"
+git -C "$ADOPT_YARN_PATH" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-yarn-path.out" adopt --dry-run --project "$ADOPT_YARN_PATH"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "project-controlled Yarn executable was accepted"
+assert_contains "$TMP_DIR/adopt-yarn-path.out.err" \
+  'has project-controlled config'
+
+ADOPT_YARN_CHILD_CONFIG="$TMP_DIR/adopt-yarn-child-config"
+init_adoption_repo "$ADOPT_YARN_CHILD_CONFIG"
+mkdir -p "$ADOPT_YARN_CHILD_CONFIG/apps/foo"
+printf '%s\n' '{"packageManager":"yarn@4.14.1","workspaces":["apps/*"]}' \
+  >"$ADOPT_YARN_CHILD_CONFIG/package.json"
+printf '%s\n' '__metadata:' '  version: 8' >"$ADOPT_YARN_CHILD_CONFIG/yarn.lock"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_YARN_CHILD_CONFIG/apps/foo/package.json"
+printf '%s\n' 'yarnPath: ./custom-yarn.cjs' \
+  >"$ADOPT_YARN_CHILD_CONFIG/apps/foo/.yarnrc.yml"
+printf '%s\n' 'process.exit(0)' >"$ADOPT_YARN_CHILD_CONFIG/apps/foo/custom-yarn.cjs"
+commit_adoption_repo "$ADOPT_YARN_CHILD_CONFIG" "fixture"
+git -C "$ADOPT_YARN_CHILD_CONFIG" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-yarn-child-config.out" adopt --dry-run \
+  --project "$ADOPT_YARN_CHILD_CONFIG"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "workspace child Yarn executable config was accepted"
+assert_contains "$TMP_DIR/adopt-yarn-child-config.out.err" \
+  "project-controlled config 'apps/foo/.yarnrc.yml'"
+
+ADOPT_BUN_LOCK="$TMP_DIR/adopt-bun-lock"
+init_adoption_repo "$ADOPT_BUN_LOCK"
+printf '%s\n' '{"packageManager":"bun@1.2.0","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_BUN_LOCK/package.json"
+printf '%s\n' '{}' >"$ADOPT_BUN_LOCK/bun.lock"
+commit_adoption_repo "$ADOPT_BUN_LOCK" "fixture"
+git -C "$ADOPT_BUN_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-bun-lock.out" adopt --dry-run --project "$ADOPT_BUN_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unverifiable Bun lockfile was accepted"
+assert_contains "$TMP_DIR/adopt-bun-lock.out.err" \
+  'Bun lockfile this portable compiler cannot validate'
+
+ADOPT_BAD_JSON="$TMP_DIR/adopt-bad-json"
+init_adoption_repo "$ADOPT_BAD_JSON"
+printf '%s\n' '{"scripts":null,"dependencies":{"test":"1.0.0"}}' \
+  >"$ADOPT_BAD_JSON/package.json"
+commit_adoption_repo "$ADOPT_BAD_JSON" "fixture"
+git -C "$ADOPT_BAD_JSON" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-bad-json.out" adopt --dry-run --project "$ADOPT_BAD_JSON"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "non-object package scripts did not refuse"
+assert_contains "$TMP_DIR/adopt-bad-json.out.err" "scripts is not an object"
+printf '%s\n' '{"scripts":{"test":{}}}' >"$ADOPT_BAD_JSON/package.json"
+run_adoption "$TMP_DIR/adopt-bad-script.out" adopt --dry-run --project "$ADOPT_BAD_JSON"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "non-string package script did not refuse"
+assert_contains "$TMP_DIR/adopt-bad-script.out.err" "package.json is malformed"
+printf '%s\n' '{"scripts":{"test":"node --test"} "missingComma":true}' \
+  >"$ADOPT_BAD_JSON/package.json"
+run_adoption "$TMP_DIR/adopt-invalid-json.out" adopt --dry-run --project "$ADOPT_BAD_JSON"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "syntactically invalid package.json did not refuse"
+assert_contains "$TMP_DIR/adopt-invalid-json.out.err" "package.json is malformed"
+printf '%s\n' '{"scripts":{"test":"node --test","test":""}}' >"$ADOPT_BAD_JSON/package.json"
+run_adoption "$TMP_DIR/adopt-duplicate-script.out" adopt --dry-run --project "$ADOPT_BAD_JSON"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "duplicate package script did not refuse"
+assert_contains "$TMP_DIR/adopt-duplicate-script.out.err" "package.json is malformed"
+
+ADOPT_UNSUPPORTED="$TMP_DIR/adopt-unsupported"
+init_adoption_repo "$ADOPT_UNSUPPORTED"
+printf 'schema = 2\n' >"$ADOPT_UNSUPPORTED/.touchstone.toml"
+commit_adoption_repo "$ADOPT_UNSUPPORTED" "fixture"
+git -C "$ADOPT_UNSUPPORTED" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-unsupported.out" upgrade --check --json --project "$ADOPT_UNSUPPORTED"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unsupported schema did not refuse"
+assert_contains "$TMP_DIR/adopt-unsupported.out" '"status":"contract-refused"'
+assert_contains "$TMP_DIR/adopt-unsupported.out" "accepts schema 1"
+
+ADOPT_MISSING_TARGET="$TMP_DIR/adopt-missing-target"
+init_adoption_repo "$ADOPT_MISSING_TARGET"
+cat >"$ADOPT_MISSING_TARGET/.touchstone.toml" <<'EOF'
+schema = 1
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "missing"
+path = "missing"
+
+[[validation.tasks]]
+name = "test"
+target = "missing"
+command = "true"
+required = true
+EOF
+commit_adoption_repo "$ADOPT_MISSING_TARGET" "fixture"
+git -C "$ADOPT_MISSING_TARGET" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-missing-target.out" adopt --dry-run --project "$ADOPT_MISSING_TARGET"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "existing contract with a missing target did not refuse"
+assert_contains "$TMP_DIR/adopt-missing-target.out.err" "path not found: missing"
+
+echo "==> adoption refuses default, dirty, and symlink-escaped writes"
+ADOPT_SAFETY="$TMP_DIR/adopt-safety"
+init_adoption_repo "$ADOPT_SAFETY"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_SAFETY/package.json"
+commit_adoption_repo "$ADOPT_SAFETY" "fixture"
+run_adoption "$TMP_DIR/adopt-default.out" adopt --project "$ADOPT_SAFETY"
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "default-branch apply did not refuse"
+assert_contains "$TMP_DIR/adopt-default.out.err" "non-default branch"
+[ ! -e "$ADOPT_SAFETY/.touchstone.toml" ] || fail "default-branch refusal partially wrote"
+ADOPT_UNKNOWN_DEFAULT="$TMP_DIR/adopt-unknown-default"
+init_adoption_repo "$ADOPT_UNKNOWN_DEFAULT"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_UNKNOWN_DEFAULT/package.json"
+commit_adoption_repo "$ADOPT_UNKNOWN_DEFAULT" "fixture"
+git -C "$ADOPT_UNKNOWN_DEFAULT" switch -q -c trunk
+git -C "$ADOPT_UNKNOWN_DEFAULT" symbolic-ref --delete refs/remotes/origin/HEAD
+run_adoption "$TMP_DIR/adopt-unknown-default.out" adopt --project "$ADOPT_UNKNOWN_DEFAULT"
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "unknown default branch did not refuse"
+assert_contains "$TMP_DIR/adopt-unknown-default.out.err" "known default branch"
+[ ! -e "$ADOPT_UNKNOWN_DEFAULT/.touchstone.toml" ] || fail "unknown default refusal partially wrote"
+git -C "$ADOPT_SAFETY" switch -q -c feat/adopt
+printf '\n' >>"$ADOPT_SAFETY/package.json"
+run_adoption "$TMP_DIR/adopt-dirty.out" adopt --project "$ADOPT_SAFETY"
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "dirty apply did not refuse"
+assert_contains "$TMP_DIR/adopt-dirty.out.err" "clean worktree"
+[ ! -e "$ADOPT_SAFETY/.touchstone.toml" ] || fail "dirty refusal partially wrote"
+
+ADOPT_SYMLINK="$TMP_DIR/adopt-symlink"
+ADOPT_OUTSIDE="$TMP_DIR/adopt-outside"
+init_adoption_repo "$ADOPT_SYMLINK"
+mkdir -p "$ADOPT_OUTSIDE"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_SYMLINK/package.json"
+ln -s "$ADOPT_OUTSIDE" "$ADOPT_SYMLINK/.touchstone"
+commit_adoption_repo "$ADOPT_SYMLINK" "fixture"
+git -C "$ADOPT_SYMLINK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-symlink.out" adopt --dry-run --project "$ADOPT_SYMLINK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "symlinked managed ancestor did not refuse"
+assert_contains "$TMP_DIR/adopt-symlink.out.err" "managed path traverses a symlink"
+[ -z "$(find "$ADOPT_OUTSIDE" -mindepth 1 -print -quit)" ] || fail "adoption wrote outside its boundary"
+
+ADOPT_TARGET_SYMLINK="$TMP_DIR/adopt-target-symlink"
+ADOPT_TARGET_OUTSIDE="$TMP_DIR/adopt-target-outside"
+init_adoption_repo "$ADOPT_TARGET_SYMLINK"
+mkdir -p "$ADOPT_TARGET_SYMLINK/apps" "$ADOPT_TARGET_OUTSIDE"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_TARGET_OUTSIDE/package.json"
+ln -s "$ADOPT_TARGET_OUTSIDE" "$ADOPT_TARGET_SYMLINK/apps/external"
+commit_adoption_repo "$ADOPT_TARGET_SYMLINK" "fixture"
+git -C "$ADOPT_TARGET_SYMLINK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-target-symlink.out" adopt --dry-run --project "$ADOPT_TARGET_SYMLINK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "symlinked monorepo target did not refuse"
+assert_contains "$TMP_DIR/adopt-target-symlink.out.err" "resolves outside the repository"
+
+ADOPT_IGNORED_TARGET_SYMLINK="$TMP_DIR/adopt-ignored-target-symlink"
+init_adoption_repo "$ADOPT_IGNORED_TARGET_SYMLINK"
+mkdir -p "$ADOPT_IGNORED_TARGET_SYMLINK/apps" "$ADOPT_IGNORED_TARGET_SYMLINK/modules/api"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_IGNORED_TARGET_SYMLINK/modules/api/package.json"
+printf '%s\n' 'apps/api' >"$ADOPT_IGNORED_TARGET_SYMLINK/.gitignore"
+commit_adoption_repo "$ADOPT_IGNORED_TARGET_SYMLINK" "fixture"
+ln -s ../modules/api "$ADOPT_IGNORED_TARGET_SYMLINK/apps/api"
+git -C "$ADOPT_IGNORED_TARGET_SYMLINK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-ignored-target-symlink.out" adopt --dry-run --project "$ADOPT_IGNORED_TARGET_SYMLINK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "ignored monorepo target symlink produced a plan"
+assert_contains "$TMP_DIR/adopt-ignored-target-symlink.out.err" "compiler input 'apps/api' is not tracked"
+
+ADOPT_MARKERS="$TMP_DIR/adopt-markers"
+init_adoption_repo "$ADOPT_MARKERS"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' >"$ADOPT_MARKERS/package.json"
+cat >"$ADOPT_MARKERS/AGENTS.md" <<'EOF'
+<!-- touchstone:steering:end -->
+PROJECT PROSE MUST SURVIVE
+<!-- touchstone:steering:start -->
+EOF
+commit_adoption_repo "$ADOPT_MARKERS" "fixture"
+git -C "$ADOPT_MARKERS" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-markers.out" adopt --dry-run --project "$ADOPT_MARKERS"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "out-of-order steering markers did not refuse"
+assert_contains "$TMP_DIR/adopt-markers.out.err" "markers are out of order"
+assert_contains "$ADOPT_MARKERS/AGENTS.md" "PROJECT PROSE MUST SURVIVE"
 
 echo "validation engine tests passed"
