@@ -167,7 +167,7 @@ EXISTING_REPLY="$(gh api --paginate \
   "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/comments" \
   --jq ".[] | select(.in_reply_to_id == $COMMENT_ID) | select((.user.login // \"\") == \"$REPLY_AUTHOR\") | .body" 2>&1)" \
   || fail "could not inspect existing replies for comment $COMMENT_ID: $EXISTING_REPLY"
-if printf '%s' "$EXISTING_REPLY" | grep -qF "$REPLY_MARKER"; then
+if grep -qF "$REPLY_MARKER" <<<"$EXISTING_REPLY"; then
   echo "==> Reply for comment $COMMENT_ID already posted (marker found); skipping the reply step."
   echo "    matched our own reply as @$REPLY_AUTHOR."
 else

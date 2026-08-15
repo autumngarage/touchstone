@@ -531,6 +531,9 @@ echo "==> durable overview does not duplicate Linear issue mappings"
 assert_contains "$TOUCHSTONE_ROOT/README.md" "canonical Linear execution plan"
 assert_not_contains "$TOUCHSTONE_ROOT/README.md" "AUT-282"
 assert_not_contains "$TOUCHSTONE_ROOT/README.md" "AUT-283"
+assert_not_contains "$TOUCHSTONE_ROOT/README.md" "Nothing here opens a PR or merges"
+assert_not_contains "$TOUCHSTONE_ROOT/README.md" "There is no CLI"
+assert_not_contains "$TOUCHSTONE_ROOT/docs/tracker-contract.md" 'future `touchstone pr`'
 
 # PR #818's late exact-head review found a surviving architectural claim about
 # a deleted merge helper. The path-integrity test cannot catch prose-only names,

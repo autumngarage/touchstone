@@ -2,7 +2,13 @@
 
 Every code change goes through a feature branch + PR + PR-visible review loop + merge. The documented emergency bypass remains inside that PR and must be disclosed there. This discipline catches bugs before they land on the default branch and creates an audit trail for every change, while leaving a legible escape hatch for production incidents.
 
-**There is no wrapper.** Every step below is a raw `git` or `gh` command you can run and verify yourself. That is deliberate: the mechanics live here, in prose, so that any agent with a shell and `gh` can deliver correctly. Tooling may accelerate these commands later, but it may never become the only way to run them.
+Every step below has a raw `git` or `gh` command you can run and verify
+yourself. That is deliberate: the mechanics live here, in prose, so any agent
+with a shell and `gh` can deliver correctly. `touchstone pr
+open|status|findings|respond|merge` accelerates the awkward sequencing and
+verification, but it is never the only recovery path and never replaces a
+GitHub verdict. Its stable boundary lives in
+`docs/pr-cli-contract.md`.
 
 ## Never commit on the default branch
 

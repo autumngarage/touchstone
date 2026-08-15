@@ -9,7 +9,10 @@ One person cannot read everything many agents produce. Touchstone exists so that
 
 The goal is that every Autumn Garage project gets the same dev flow by adopting Touchstone, and that the flow is industry-leading practice for GitHub and agent-driven delivery. Adoption is **set-and-forget**: an adopted repository must remain correct if Touchstone never rewrites it again. V1 serves one operator's portfolio through public-quality interfaces; it does not build a speculative third-party platform. The durable boundary is defined in `docs/product-contract.md`.
 
-**What the second half ships today is narrower than that ambition.** The surviving repository machinery claims issues, answers review threads, binds review evidence to the current head, runs a project's checks, and manages this repository's audited GitHub policy. **Nothing here opens a PR or merges** — those remain raw `git` and `gh`, documented below and in `principles/git-workflow.md`. Rebuilding that sequencing as a thin CLI is the open work; until it lands, read "push tooling" as a goal, not a complete inventory.
+**The second half is deliberately narrow.** The CLI validates declared project
+checks, claims and reconciles tracker work, and sequences five PR operations.
+It does not stage, commit, or push code, and it never replaces GitHub's merge
+verdict. Every operation retains a documented raw `git`/`gh` recovery path.
 
 ## Purpose
 
@@ -44,7 +47,13 @@ touchstone/
 └── tests/          # Self-tests
 ```
 
-**There is no CLI, no bootstrap, and no auto-update right now.** They were deleted with the propagation channel, deliberately and first: cutting propagation is what froze the downstream projects safely in place on their existing committed copies. The replacement is a thin, Homebrew-distributed CLI plus an organization-required workflow pinned to an immutable Touchstone revision outside the consumer PR. Both execute one versioned project contract. Project-type detection compiles an adoption proposal once; validation executes accepted declarations without guessing. Upgrading the installed tool never mutates repositories.
+The broad legacy CLI, bootstrap, and auto-update machinery was deleted with the
+propagation channel: cutting propagation froze downstream projects safely on
+their existing committed copies. The repository now contains the narrow
+versioned CLI entrypoint. Homebrew distribution and plan-first adoption are
+separate replacement capabilities; neither may restore background propagation.
+The organization-required workflow remains pinned to an immutable Touchstone
+revision outside the consumer PR and executes the same project contract.
 
 The surviving `templates/` describe the frozen pre-strip consumer shape and are
 historical inputs for compatibility audits, not the new architecture.
@@ -53,13 +62,27 @@ engine; its contract lives in [docs/validation-contract.md](docs/validation-cont
 `scripts/touchstone-tracker.sh` owns the tracker-neutral verified claim boundary;
 its versioned outcomes live in [docs/tracker-contract.md](docs/tracker-contract.md).
 Drivers reconcile delivered work through the configured tracker's API or CLI.
+`scripts/touchstone-pr.sh` owns the five PR sequencing operations; its
+versioned output and raw recovery equivalents live in
+[docs/pr-cli-contract.md](docs/pr-cli-contract.md).
 Current replacement scope and sequencing live in the [canonical Linear execution plan](https://linear.app/autumngarage/document/touchstone-execution-plan-post-strip-baseline-cac4c56e593e), not this durable overview.
 
 The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so GitHub approval count does not represent it. The required `review-binding` check instead binds trusted review evidence to the exact head and requires a later qualifying answer for every finding; GitHub independently requires every inline thread resolved.
 
 ## Delivery
 
-There is no delivery wrapper. Ship with `git` and `gh` directly:
+Ship with the CLI or the documented raw commands. The CLI starts after the
+branch is pushed:
+
+```bash
+touchstone pr open --title "fix: some change" --body-file /tmp/pr-body --issue AUT-123
+touchstone pr status <n>
+touchstone pr findings <n>
+touchstone pr respond <n> --comment-id <id> --body-file /tmp/reply
+touchstone pr merge <n> --head <reviewed-sha> --issue AUT-123
+```
+
+The exact raw recovery path remains:
 
 ```bash
 git checkout -b fix/some-slug
@@ -75,7 +98,8 @@ gh pr view <n> --json state,mergedAt      # confirm; the merge exit code lies in
 
 `principles/git-workflow.md` carries the full sequence, including thread resolution and the failure modes worth knowing about.
 
-Answering review findings is the one place a script genuinely earns its keep, because GitHub needs four API calls to reply-and-resolve correctly:
+The `respond` operation reuses the existing script because GitHub needs four
+API calls to reply-and-resolve correctly:
 
 ```bash
 bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file>
