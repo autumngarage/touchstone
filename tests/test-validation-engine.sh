@@ -4,8 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNNER="$ROOT/scripts/touchstone-run.sh"
 COMPAT="$ROOT/scripts/check-legacy-ci.sh"
+COMMITTED_INPUTS="$ROOT/scripts/lib/touchstone-committed-inputs.sh"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
+
+# shellcheck source=../scripts/lib/touchstone-committed-inputs.sh
+source "$COMMITTED_INPUTS"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -1068,5 +1072,75 @@ mkdir -p "$PLAN_RECORDS/project/packages/web"
     exit 30
   }
 ) || fail "adoption plan-record invariant failed"
+
+echo "==> compiler inputs must be regular files committed at HEAD"
+INPUT_REPO="$TMP_DIR/committed-inputs"
+mkdir -p "$INPUT_REPO/compiler" "$INPUT_REPO/large"
+git -C "$INPUT_REPO" init -q
+git -C "$INPUT_REPO" config user.email touchstone@example.com
+git -C "$INPUT_REPO" config user.name Touchstone
+printf 'schema = 1\n' >"$INPUT_REPO/.touchstone.toml"
+printf 'rule\n' >"$INPUT_REPO/compiler/rule.txt"
+printf 'ignored.txt\nlarge/ignored.txt\n' >"$INPUT_REPO/.gitignore"
+ln -s rule.txt "$INPUT_REPO/compiler/link.txt"
+large_index=0
+while [ "$large_index" -lt 3000 ]; do
+  printf 'x\n' >"$INPUT_REPO/large/input-$large_index.txt"
+  large_index=$((large_index + 1))
+done
+git -C "$INPUT_REPO" add .gitignore .touchstone.toml compiler large
+git -C "$INPUT_REPO" commit -qm "test inputs"
+
+touchstone_require_committed_file "$INPUT_REPO" .touchstone.toml \
+  || fail "clean committed file was rejected"
+touchstone_require_committed_directory "$INPUT_REPO" large \
+  || fail "large committed directory was rejected"
+
+assert_input_rejected() {
+  local kind="$1" path="$2" reason="$3" output status
+  output="$TMP_DIR/input-$reason.out"
+
+  set +e
+  "touchstone_require_committed_$kind" "$INPUT_REPO" "$path" >"$output" 2>&1
+  status=$?
+  set -e
+  [ "$status" -eq 1 ] || fail "$kind input '$path' did not fail closed"
+  assert_contains "$output" "reason=$reason"
+}
+
+printf 'staged\n' >"$INPUT_REPO/.touchstone.toml"
+git -C "$INPUT_REPO" add .touchstone.toml
+assert_input_rejected file .touchstone.toml staged
+git -C "$INPUT_REPO" commit -qm "stage input"
+
+printf 'dirty\n' >"$INPUT_REPO/.touchstone.toml"
+assert_input_rejected file .touchstone.toml dirty
+git -C "$INPUT_REPO" add .touchstone.toml
+git -C "$INPUT_REPO" commit -qm "dirty input"
+
+printf 'untracked\n' >"$INPUT_REPO/untracked.txt"
+assert_input_rejected file untracked.txt untracked
+rm "$INPUT_REPO/untracked.txt"
+printf 'ignored\n' >"$INPUT_REPO/ignored.txt"
+assert_input_rejected file ignored.txt untracked
+rm "$INPUT_REPO/ignored.txt"
+assert_input_rejected file missing.txt missing
+assert_input_rejected file compiler/link.txt symlink
+assert_input_rejected directory compiler symlink
+
+rm "$INPUT_REPO/.touchstone.toml"
+mkfifo "$INPUT_REPO/.touchstone.toml"
+assert_input_rejected file .touchstone.toml nonregular
+rm "$INPUT_REPO/.touchstone.toml"
+printf 'dirty\n' >"$INPUT_REPO/.touchstone.toml"
+
+assert_input_rejected file 'compiler\rule.txt' invalid-path
+assert_input_rejected file $'compiler/control\n.txt' invalid-path
+
+printf 'extra\n' >"$INPUT_REPO/large/untracked.txt"
+assert_input_rejected directory large untracked
+rm "$INPUT_REPO/large/untracked.txt"
+printf 'ignored\n' >"$INPUT_REPO/large/ignored.txt"
+assert_input_rejected directory large untracked
 
 echo "validation engine tests passed"
