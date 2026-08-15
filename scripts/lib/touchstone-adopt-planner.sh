@@ -249,6 +249,17 @@ plan_steering() {
   plan_file CLAUDE.md "$proposed" marked-block
 }
 
+git_plan_diff() {
+  git -c diff.algorithm=myers \
+    -c diff.indentHeuristic=false \
+    -c diff.compactionHeuristic=false \
+    -c diff.renames=false \
+    -c core.quotePath=true \
+    -c diff.mnemonicPrefix=false \
+    -c diff.noprefix=false \
+    diff "$@"
+}
+
 render_diff() {
   local action path ownership diff_status renderer_status
   local -a pipeline_status
@@ -259,14 +270,14 @@ render_diff() {
     if [ "$action" = create ]; then
       (
         cd "$PLAN_ROOT"
-        git diff --no-index --no-ext-diff --no-color --unified=3 --src-prefix=a/ --dst-prefix=b/ -- /dev/null "new/$path"
+        git_plan_diff --no-index --no-ext-diff --no-color --unified=3 --src-prefix=a/ --dst-prefix=b/ -- /dev/null "new/$path"
       ) | sed \
         -e 's#^diff --git a/new/\(.*\) b/new/#diff --git a/\1 b/#' \
         -e 's#^+++ b/new/#+++ b/#' >>"$DIFF_FILE"
     else
       (
         cd "$PLAN_ROOT"
-        git diff --no-index --no-ext-diff --no-color --unified=3 --src-prefix=a/ --dst-prefix=b/ -- "old/$path" "new/$path"
+        git_plan_diff --no-index --no-ext-diff --no-color --unified=3 --src-prefix=a/ --dst-prefix=b/ -- "old/$path" "new/$path"
       ) | sed \
         -e 's#^diff --git a/old/\(.*\) b/new/#diff --git a/\1 b/#' \
         -e 's#^--- a/old/#--- a/#' \
@@ -393,12 +404,13 @@ compile_plan() {
   elif [ "$OPERATION" = upgrade ]; then
     contract_refusal "repository is not adopted; run touchstone adopt first"
   else
-    require_compiler_inputs_tracked
     if [ "${#MANUAL_TASK_ARGS[@]}" -gt 0 ]; then
       compile_manual_tasks
     elif [ -f "$PROJECT_ROOT/.touchstone-config" ]; then
+      require_compiler_inputs_tracked
       compile_legacy
     else
+      require_compiler_inputs_tracked
       compile_detected
     fi
     render_contract "$proposed_contract"
