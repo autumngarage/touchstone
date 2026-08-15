@@ -651,6 +651,9 @@ if [ "${TOUCHSTONE_STRUCTURAL_NESTED:-false}" != true ]; then
     for needle in 'max_runs' 'scenario_timeout_seconds' 'claude_max_budget_usd' 'codex exec --json --ephemeral' 'claude --print --output-format stream-json' 'gemini --prompt' 'git-status.txt' 'summary.tsv'; do
       assert_has "$EVALUATOR" "$needle"
     done
+    if grep -qF 'trap "rm -rf' "$EVALUATOR"; then
+      fail "evaluator interpolates a temporary path into an EXIT trap"
+    fi
     if bash "$EVALUATOR" behavioral --output "$TMP/empty-option" \
       --driver '' --driver codex --scenario validation --mode steered --repeat 1 \
       >"$TMP/empty-option.out" 2>&1; then

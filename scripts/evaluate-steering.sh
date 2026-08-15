@@ -7,6 +7,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 EVAL_ROOT="$ROOT/evals/steering/v1"
 OPERATION="${1:-}"
 if [ "$#" -gt 0 ]; then shift; fi
+STRUCTURAL_TEMP=""
+
+cleanup() {
+  [ -z "$STRUCTURAL_TEMP" ] || rm -rf -- "$STRUCTURAL_TEMP"
+}
+trap cleanup EXIT
 
 usage() {
   cat >&2 <<'EOF'
@@ -91,9 +97,7 @@ structural_evaluation() {
   fi
   [ "$#" -eq 0 ] || usage
   temp="$(mktemp -d -t touchstone-steering-structural.XXXXXX)"
-  # Expand the validated mktemp path now; the variable is local to this function.
-  # shellcheck disable=SC2064
-  trap "rm -rf '$temp'" EXIT
+  STRUCTURAL_TEMP="$temp"
 
   for driver in codex claude gemini; do
     fixture="$EVAL_ROOT/structural/$driver"
