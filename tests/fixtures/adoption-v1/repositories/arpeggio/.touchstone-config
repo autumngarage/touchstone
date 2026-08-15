@@ -1,0 +1,22 @@
+# touchstone project profile. Commit this file so all clones use the same commands.
+project_type=python
+package_manager=auto
+monorepo=false
+targets=
+git_workflow=git
+gitbutler_mcp=false
+# Set sync_auto=false to opt out of automatic touchstone updates.
+sync_auto=true
+# Set sync_ship=false to create local update branches without auto-shipping PRs.
+sync_ship=true
+lint_command=uv run --no-sync --no-env-file ruff check backend
+typecheck_command=uv run --no-sync --no-env-file mypy backend/arpeggio
+build_command=
+test_command=uv run --no-sync --no-env-file pytest --cov=backend/arpeggio --cov-report=term-missing
+validate_command=
+# validate_lane=auto chooses affected/smoke only when safely configured; otherwise full.
+validate_lane=auto
+validate_affected_command=
+validate_smoke_command=
+validate_full_command=
+claude_principles_ref=connected

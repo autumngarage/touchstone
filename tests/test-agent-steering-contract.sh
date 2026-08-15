@@ -213,6 +213,25 @@ assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
 assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
   "cannot define npm"
 assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" "Portfolio scope is checked-in data"
+
+CORPUS_ROOT="$TOUCHSTONE_ROOT/tests/fixtures/adoption-v1"
+assert_contains "$CORPUS_ROOT/cases.tsv" $'none\tmanual\t-'
+assert_contains "$CORPUS_ROOT/cases.tsv" $'competing\tmanual\tanima:package.json,arpeggio:pyproject.toml'
+artifact_count=0
+while IFS=$'\t' read -r repository snapshot artifact expected_blob; do
+  case "$repository" in \#* | '') continue ;; esac
+  fixture="$CORPUS_ROOT/repositories/$repository/$artifact"
+  if [ ! -f "$fixture" ] || [ ! -s "$fixture" ]; then
+    fail "portfolio artifact is missing or empty: $repository/$artifact"
+    continue
+  fi
+  actual_blob="$(git hash-object "$fixture")"
+  if [ "$actual_blob" != "$expected_blob" ]; then
+    fail "portfolio artifact drifted from $snapshot: $repository/$artifact"
+  fi
+  artifact_count=$((artifact_count + 1))
+done <"$CORPUS_ROOT/blobs.tsv"
+[ "$artifact_count" -eq 17 ] || fail "expected 17 frozen portfolio artifacts, found $artifact_count"
 # #801 review: this doc promised the gate emits `review_requested` and
 # `review_result` events and that review latency is measurable from them.
 # lib/events.sh and every emit call were deleted in #737, so the promise became

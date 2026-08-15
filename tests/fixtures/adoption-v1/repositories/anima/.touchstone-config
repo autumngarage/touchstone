@@ -1,0 +1,21 @@
+# touchstone project profile. Commit this file so all clones use the same commands.
+project_type=node
+package_manager=npm
+monorepo=false
+targets=
+git_workflow=git
+gitbutler_mcp=false
+# Set sync_auto=false to opt out of automatic touchstone updates.
+sync_auto=true
+# Set sync_ship=false to create local update branches without auto-shipping PRs.
+sync_ship=true
+lint_command=
+typecheck_command=
+build_command=
+test_command=
+validate_command=
+# validate_lane=auto chooses affected/smoke only when safely configured; otherwise full.
+validate_lane=auto
+validate_affected_command=
+validate_smoke_command=
+validate_full_command=

@@ -1,0 +1,10 @@
+# touchstone project profile. Commit this file so all clones use the same commands.
+project_type=python
+package_manager=uv
+monorepo=false
+targets=
+lint_command=uv run ruff check src/ tests/
+typecheck_command=
+build_command=uv build
+test_command=uv run pytest
+validate_command=uv run ruff check src/ tests/ && uv run pytest
