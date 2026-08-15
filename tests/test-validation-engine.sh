@@ -915,6 +915,7 @@ echo "==> adoption planner handles fresh, repeat, and upgrade consumers"
   TOUCHSTONE_BLOCK_BEGIN='<!-- touchstone:steering:start -->'
   TOUCHSTONE_BLOCK_END='<!-- touchstone:steering:end -->'
   CR="$(printf '\r')"
+  export SCRIPT_ROOT TOUCHSTONE_BLOCK_BEGIN TOUCHSTONE_BLOCK_END CR
   mkdir -p "$PROJECT_ROOT"
   valid_relative_path() { case "$1" in /* | ../* | */../* | */..) return 1 ;; *) return 0 ;; esac }
   contract_refusal() {
@@ -931,6 +932,7 @@ echo "==> adoption planner handles fresh, repeat, and upgrade consumers"
     NEW_ROOT="$PLAN_ROOT/new"
     CHANGES_FILE="$PLAN_ROOT/changes"
     DIFF_FILE="$PLAN_ROOT/diff"
+    export PLAN_ROOT OLD_ROOT NEW_ROOT CHANGES_FILE DIFF_FILE
     mkdir -p "$OLD_ROOT" "$NEW_ROOT"
     : >"$CHANGES_FILE"
   }
@@ -985,5 +987,120 @@ EOF
 bash "$RUNNER" validate --check-contract --json --project "$PLANNER_DECLARED" >"$TMP_DIR/planner-contract.json"
 assert_contains "$TMP_DIR/planner-contract.json" '"verdict":"valid"'
 [ ! -e "$PLANNER_DECLARED/should-not-exist" ] || fail "contract-only validation executed a task"
+
+echo "==> adoption transaction writes atomically and preserves failed-restore backups"
+TRANSACTION_MODULE="$ROOT/scripts/lib/touchstone-adopt-transaction.sh"
+run_transaction_case() (
+  local case_name="$1" failure_mode="$2"
+  PROJECT_ROOT="$TMP_DIR/transaction-$case_name"
+  NEW_ROOT="$TMP_DIR/transaction-$case_name-new"
+  OLD_ROOT="$TMP_DIR/transaction-$case_name-old"
+  CHANGES_FILE="$TMP_DIR/transaction-$case_name-changes"
+  APPLY_STAGE_FILE="$TMP_DIR/transaction-$case_name-stage"
+  APPLY_APPLIED_FILE="$TMP_DIR/transaction-$case_name-applied"
+  APPLY_DIRECTORIES_FILE="$TMP_DIR/transaction-$case_name-directories"
+  LF="$(printf '\nX')"
+  LF="${LF%X}"
+  APPLY_ACTIVE=false
+  export APPLY_STAGE_FILE APPLY_APPLIED_FILE APPLY_DIRECTORIES_FILE APPLY_ACTIVE
+  mkdir -p "$PROJECT_ROOT" "$NEW_ROOT/nested" "$OLD_ROOT"
+  git -C "$PROJECT_ROOT" init -q
+  git -C "$PROJECT_ROOT" config user.name test
+  git -C "$PROJECT_ROOT" config user.email test@example.com
+  printf 'old\n' >"$PROJECT_ROOT/existing.txt"
+  printf 'old second\n' >"$PROJECT_ROOT/second.txt"
+  git -C "$PROJECT_ROOT" add existing.txt second.txt
+  git -C "$PROJECT_ROOT" commit -qm initial
+  git -C "$PROJECT_ROOT" branch -M main
+  git -C "$PROJECT_ROOT" update-ref refs/remotes/origin/main HEAD
+  git -C "$PROJECT_ROOT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  git -C "$PROJECT_ROOT" switch -qc feat/transaction
+  printf 'new\n' >"$NEW_ROOT/existing.txt"
+  printf 'new second\n' >"$NEW_ROOT/second.txt"
+  printf 'created\n' >"$NEW_ROOT/nested/created.txt"
+  printf 'old\n' >"$OLD_ROOT/existing.txt"
+  printf 'old second\n' >"$OLD_ROOT/second.txt"
+  printf 'update\texisting.txt\ttouchstone\nupdate\tsecond.txt\ttouchstone\ncreate\tnested/created.txt\ttouchstone\n' >"$CHANGES_FILE"
+  safe_owned_path() { return 0; }
+  safety_refusal() {
+    printf 'safety refusal: %s\n' "$*" >&2
+    exit 5
+  }
+  operational_failure() {
+    printf 'operational failure: %s\n' "$*" >&2
+    exit 6
+  }
+  # shellcheck source=scripts/lib/touchstone-adopt-transaction.sh
+  source "$TRANSACTION_MODULE"
+  case "$failure_mode" in
+    write)
+      write_moves=0
+      mv() {
+        case "$1" in
+          *.touchstone-write.*)
+            write_moves=$((write_moves + 1))
+            [ "$write_moves" -ne 2 ] || return 1
+            ;;
+        esac
+        command mv "$@"
+      }
+      ;;
+    backup)
+      backup_removals=0
+      rm() {
+        case "${2:-$1}" in
+          *.touchstone-backup.*)
+            backup_removals=$((backup_removals + 1))
+            [ "$backup_removals" -ne 2 ] || return 1
+            ;;
+        esac
+        command rm "$@"
+      }
+      ;;
+  esac
+  if [ "$failure_mode" != none ]; then
+    set +e
+    (apply_plan) >/dev/null 2>&1
+    apply_status=$?
+    set -e
+    [ "$apply_status" -eq 6 ] || exit 31
+    [ "$(cat "$PROJECT_ROOT/existing.txt")" = old ] || exit 32
+    [ "$(cat "$PROJECT_ROOT/second.txt")" = "old second" ] || exit 33
+    [ ! -e "$PROJECT_ROOT/nested/created.txt" ] || exit 33
+    [ ! -d "$PROJECT_ROOT/nested" ] || exit 34
+  else
+    apply_plan
+    [ "$(cat "$PROJECT_ROOT/existing.txt")" = new ] || exit 35
+    [ "$(cat "$PROJECT_ROOT/second.txt")" = "new second" ] || exit 36
+    [ "$(cat "$PROJECT_ROOT/nested/created.txt")" = created ] || exit 36
+  fi
+)
+run_transaction_case success none || fail "successful adoption transaction did not write the plan"
+run_transaction_case write-rollback write || fail "failed adoption write did not restore files and directories"
+run_transaction_case backup-rollback backup || fail "failed backup preparation did not roll back earlier writes"
+
+(
+  destination="$TMP_DIR/failed-restore-destination"
+  backup="$TMP_DIR/.touchstone-backup.failed-restore"
+  applied="$TMP_DIR/failed-restore-applied"
+  stage="$TMP_DIR/failed-restore-stage"
+  directories="$TMP_DIR/failed-restore-directories"
+  printf 'new\n' >"$destination"
+  printf 'old\n' >"$backup"
+  printf 'update\t%s\t%s\n' "$destination" "$backup" >"$applied"
+  : >"$stage"
+  : >"$directories"
+  mv() {
+    [ "$1" != "$backup" ] || return 1
+    command mv "$@"
+  }
+  # shellcheck source=scripts/lib/touchstone-adopt-transaction.sh
+  source "$TRANSACTION_MODULE"
+  if rollback_apply "$applied" "$stage" "$directories"; then
+    exit 41
+  fi
+  [ "$(cat "$backup")" = old ] || exit 42
+  grep -Fq "$backup" "$applied" || exit 43
+) || fail "rollback cleanup destroyed the only recoverable original"
 
 echo "validation engine tests passed"
