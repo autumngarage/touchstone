@@ -49,37 +49,6 @@ run_capture "$SMALL" "$TMP_DIR/small.out"
 [ "$(cat "$SMALL/marker")" = ran ] || fail "declared command did not run"
 assert_contains "$TMP_DIR/small.out" "ran=1 skipped=0 failed=0"
 
-echo "==> the known tracker table does not change validation semantics"
-TRACKER="$TMP_DIR/tracker"
-write_contract "$TRACKER" "printf tracker-ran > marker"
-sed '/^\[validation\]/i\
-[tracker]\
-schema = 1\
-type = "linear"\
-key_prefix = "AUT"\
-' "$TRACKER/.touchstone.toml" >"$TRACKER/with-tracker"
-mv "$TRACKER/with-tracker" "$TRACKER/.touchstone.toml"
-run_capture "$TRACKER" "$TMP_DIR/tracker.out"
-[ "$RUN_STATUS" -eq 0 ] || fail "known tracker table changed validation verdict"
-[ "$(cat "$TRACKER/marker")" = tracker-ran ] || fail "tracker table prevented the declared task"
-for invalid_tracker in missing-schema missing-type bad-type missing-prefix github-prefix; do
-  INVALID_TRACKER="$TMP_DIR/tracker-$invalid_tracker"
-  write_contract "$INVALID_TRACKER" "true"
-  case "$invalid_tracker" in
-    missing-schema) declaration='[tracker]\ntype = "github"' ;;
-    missing-type) declaration='[tracker]\nschema = 1' ;;
-    bad-type) declaration='[tracker]\nschema = 1\ntype = "jira"' ;;
-    missing-prefix) declaration='[tracker]\nschema = 1\ntype = "linear"' ;;
-    github-prefix) declaration='[tracker]\nschema = 1\ntype = "github"\nkey_prefix = "AUT"' ;;
-  esac
-  printf '%b\n' "$declaration" >"$INVALID_TRACKER/prefix"
-  sed -n '/^\[validation\]/,$p' "$INVALID_TRACKER/.touchstone.toml" >>"$INVALID_TRACKER/prefix"
-  printf 'schema = 1\n' >"$INVALID_TRACKER/.touchstone.toml"
-  cat "$INVALID_TRACKER/prefix" >>"$INVALID_TRACKER/.touchstone.toml"
-  run_capture "$INVALID_TRACKER" "$TMP_DIR/tracker-$invalid_tracker.out" --check-contract
-  [ "$RUN_STATUS" -eq 2 ] || fail "$invalid_tracker tracker declaration was accepted"
-done
-
 echo "==> optional undeclared task skips visibly"
 cat >>"$SMALL/.touchstone.toml" <<'EOF'
 [[validation.tasks]]

@@ -22,16 +22,13 @@ git -C "$TMP/github" init -q
 git -C "$TMP/linear" init -q
 git -C "$TMP/github" remote add origin git@github.com:autumngarage/current.git
 git -C "$TMP/linear" remote add origin https://github.com/autumngarage/current.git
-printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 1' 'type = "github"' \
-  '' '[validation]' 'runtime = "bash"' \
+printf '%s\n' 'schema = 1' '' '[validation]' 'runtime = "bash"' \
   '' '[[validation.targets]]' 'name = "root"' 'path = "."' \
   '' '[[validation.tasks]]' 'name = "test"' 'target = "root"' \
   'command = "true"' 'required = true' >"$TMP/github/.touchstone.toml"
-printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 1' 'type = "linear"' 'key_prefix = "AUT"' \
-  '' '[validation]' 'runtime = "bash"' \
-  '' '[[validation.targets]]' 'name = "root"' 'path = "."' \
-  '' '[[validation.tasks]]' 'name = "test"' 'target = "root"' \
-  'command = "true"' 'required = true' >"$TMP/linear/.touchstone.toml"
+cp "$TMP/github/.touchstone.toml" "$TMP/linear/.touchstone.toml"
+printf '%s\n' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone-tracker.toml"
+printf '%s\n' 'schema = 1' 'type = "linear"' 'key_prefix = "AUT"' >"$TMP/linear/.touchstone-tracker.toml"
 
 cat >"$TMP/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -215,58 +212,46 @@ assert_has "$TMP/out" 'verify the issue remains open'
 [ ! -s "$GH_CALLS" ] || fail "Linear reconciliation invoked the GitHub transport"
 
 echo "==> malformed, old-compatible, and unsupported tracker declarations are explicit"
-cp "$TMP/github/.touchstone.toml" "$TMP/github/config-good"
-printf '%s\n' 'schema = 1' >"$TMP/github/.touchstone.toml"
-sed -n '/^\[validation\]/,$p' "$TMP/github/config-good" >>"$TMP/github/.touchstone.toml"
+cp "$TMP/github/.touchstone-tracker.toml" "$TMP/github/tracker-good"
+rm "$TMP/github/.touchstone-tracker.toml"
 : >"$GH_STATE"
 run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
 assert_rc "$RUN_RC" 0
-printf '%s\n' 'schema = 1' '' '[tracker]' 'type = "linear"' 'key_prefix = "AUT"' >"$TMP/github/.touchstone.toml"
+printf '%s\n' 'type = "linear"' 'key_prefix = "AUT"' >"$TMP/github/.touchstone-tracker.toml"
 run_adapter "$TMP/out" claim AUT-1 --project "$TMP/github" --json
 assert_rc "$RUN_RC" 2
 assert_has "$TMP/out" 'missing-tracker-schema'
-printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 2' 'type = "github"' >"$TMP/github/.touchstone.toml"
+printf '%s\n' 'schema = 2' 'type = "github"' >"$TMP/github/.touchstone-tracker.toml"
 run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
 assert_rc "$RUN_RC" 2
 assert_has "$TMP/out" 'unsupported-tracker-schema'
-printf '%s\n' '[tracker]' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone.toml"
+printf '%s\n' 'schema = 1' 'type = "github"' 'type = "github"' >"$TMP/github/.touchstone-tracker.toml"
 run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
 assert_rc "$RUN_RC" 2
-assert_has "$TMP/out" 'missing-project-schema'
-printf '%s\n' 'schema = 2' '' '[tracker]' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone.toml"
-run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
-assert_rc "$RUN_RC" 2
-assert_has "$TMP/out" 'unsupported-project-schema'
-printf '%s\n' 'schema = 1' 'schema = 1' '' '[tracker]' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone.toml"
-run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
-assert_rc "$RUN_RC" 2
-assert_has "$TMP/out" 'duplicate-project-schema'
-printf '%s\n' 'schema = 1' '' '[[tracker]]' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone.toml"
-run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
-assert_rc "$RUN_RC" 2
-assert_has "$TMP/out" 'malformed-tracker-table'
-printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 1' 'type = "linear"' 'key_prefix = "aut"' >"$TMP/github/.touchstone.toml"
+assert_has "$TMP/out" 'duplicate-tracker-key'
+printf '%s\n' 'schema = 1' 'type = "linear"' 'key_prefix = "aut"' >"$TMP/github/.touchstone-tracker.toml"
 run_adapter "$TMP/out" claim AUT-1 --project "$TMP/github" --json
 assert_rc "$RUN_RC" 2
 assert_has "$TMP/out" 'invalid-key-prefix'
-printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 1' 'type = "github"' '[tracker]' 'schema = 1' 'type = "github"' >"$TMP/github/.touchstone.toml"
+printf '%s\n' 'schema = 1' '[tracker]' 'type = "github"' >"$TMP/github/.touchstone-tracker.toml"
 run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
 assert_rc "$RUN_RC" 2
-assert_has "$TMP/out" 'duplicate-tracker-table'
-mv "$TMP/github/config-good" "$TMP/github/.touchstone.toml"
+assert_has "$TMP/out" 'malformed-config'
+mv "$TMP/github/tracker-good" "$TMP/github/.touchstone-tracker.toml"
 
 echo "==> tracker mutations require a valid project contract"
-printf '%s\n' 'schema = 1' '' '[tracker]' 'schema = 1' 'type = "github"' \
-  '' '[validation]' 'runtime = "bash"' >"$TMP/github/.touchstone.toml"
+cp "$TMP/github/.touchstone.toml" "$TMP/github/project-good"
+printf '%s\n' 'schema = 1' '' '[validation]' 'runtime = "bash"' >"$TMP/github/.touchstone.toml"
 : >"$GH_CALLS"
 run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
 assert_rc "$RUN_RC" 2
 assert_has "$TMP/out" 'invalid-project-contract'
 assert_not_has "$GH_CALLS" 'issue edit'
+mv "$TMP/github/project-good" "$TMP/github/.touchstone.toml"
 
 echo "==> tracker selection cannot follow a configuration symlink"
-rm "$TMP/github/.touchstone.toml"
-ln -s "$TMP/linear/.touchstone.toml" "$TMP/github/.touchstone.toml"
+rm "$TMP/github/.touchstone-tracker.toml"
+ln -s "$TMP/linear/.touchstone-tracker.toml" "$TMP/github/.touchstone-tracker.toml"
 : >"$GH_CALLS"
 run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
 assert_rc "$RUN_RC" 2
