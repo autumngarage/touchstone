@@ -102,14 +102,16 @@ gh api graphql -f query='
         unresolvedCount: length,
         unresolvedThreads: map({
           threadId: .id,
-          comments: [.comments.nodes[] | {commentId: .databaseId, url}]
+          rootCommentId: .comments.nodes[0].databaseId,
+          rootCommentUrl: .comments.nodes[0].url
         })
       }'
 ```
 
 The last result includes both the unresolved count and the `PRRT_` thread ID
-to numeric comment-ID mapping needed to answer and resolve each finding. Zero
-is the requirement.
+to root comment-ID mapping needed to answer and resolve each finding.
+Replies are deliberately omitted because `respond-review.sh --comment-id`
+accepts the root finding ID. Zero is the requirement.
 
 **The configured AI reviewer reports `COMMENTED`, not `APPROVED`.** GitHub's review API can support approval for authorized integrations, but that is not this adapter's observed contract. Do not expect an approval here or treat its absence as a stalled review.
 
@@ -140,7 +142,7 @@ gh api graphql -f query='
   }' -F threadId=<PRRT_...>
 ```
 
-Thread IDs and their numeric review comment IDs come from the mapped
+Thread IDs and their numeric root review comment IDs come from the mapped
 `unresolvedThreads` result above. The token needs Contents: read and write.
 
 ## Merging

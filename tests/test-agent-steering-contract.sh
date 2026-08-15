@@ -165,7 +165,8 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "--match-head-comm
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "resolveReviewThread"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "unresolvedCount: length"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "threadId: .id"
-assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "commentId: .databaseId"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "rootCommentId: .comments.nodes[0].databaseId"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Replies are deliberately omitted"
 
 echo "==> PR babysitting preserves approved scope"
 # PR #829 showed how individually reasonable findings can turn an exact-head
