@@ -349,6 +349,10 @@ EOF
   run_adapter "$TMP/out" claim AUT-281 --project "$TMP/github"
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'Use a GitHub issue number such as #123'
+  run_adapter "$TMP/out" claim 42 --project "$TMP/missing" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" '"reason":"project-not-found"'
+  assert_json "$TMP/out"
 
   echo "==> malformed, old-compatible, and unsupported tracker declarations are explicit"
   cp "$TMP/github/.touchstone-tracker.toml" "$TMP/github/tracker-good"

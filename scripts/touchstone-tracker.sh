@@ -224,8 +224,7 @@ done
 
 if [ -n "$PROJECT_ARG" ]; then
   PROJECT_ROOT="$(cd "$PROJECT_ARG" 2>/dev/null && pwd -P)" || {
-    echo "ERROR: project not found: $PROJECT_ARG" >&2
-    exit 2
+    fail_input project-not-found "Pass an existing project directory; '$PROJECT_ARG' was not found."
   }
 else
   PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
