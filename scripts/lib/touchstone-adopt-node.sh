@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 
 tasks_for_node() {
-  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" effective_inherited="" manager setup_directory setup_command npm_lock="" yarn_kind="" task config found=false
+  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" effective_inherited="" manager setup_directory setup_command npm_lock="" yarn_kind="" yarn_name="" name_status=0 task config found=false
   [ -f "$directory/package.json" ] || contract_refusal "Node target '$target' has no package.json"
   if [ "$workspace_member" = true ]; then effective_inherited="$inherited"; fi
   node_package_manager "$directory" "$effective_inherited"
@@ -61,7 +61,15 @@ tasks_for_node() {
       elif grep -q '^__metadata:$' "$setup_directory/yarn.lock"; then
         yarn_kind=berry
       fi
-      yarn_lock_valid "$setup_directory/yarn.lock" "$yarn_kind" \
+      if yarn_name="$(json_root_string_value "$setup_directory/package.json" name)"; then
+        :
+      else
+        name_status=$?
+        [ "$name_status" -eq 1 ] \
+          || contract_refusal "Node target '$target' has a malformed or non-string package name"
+        yarn_name=""
+      fi
+      yarn_lock_valid "$setup_directory/yarn.lock" "$yarn_kind" "$yarn_name" \
         || contract_refusal "Node target '$target' has a Yarn lockfile outside the dependency-free portable subset; pass --task NAME=COMMAND"
     fi
   fi

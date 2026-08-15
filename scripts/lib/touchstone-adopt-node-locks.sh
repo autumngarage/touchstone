@@ -176,7 +176,7 @@ pnpm_lock_valid() {
 }
 
 yarn_lock_valid() {
-  local file="$1" kind="$2"
+  local file="$1" kind="$2" expected_name="${3:-}"
   case "$kind" in
     classic)
       awk '
@@ -188,8 +188,12 @@ yarn_lock_valid() {
       ' "$file" >/dev/null 2>&1
       ;;
     berry)
-      awk '
+      awk -v expected_name="$expected_name" '
         /^[[:space:]]*$/ { next }
+        /^#/ {
+          if (metadata_seen) exit 2
+          next
+        }
         /^__metadata:[[:space:]]*$/ {
           if (metadata_seen || workspace_seen) exit 2
           metadata_seen=1
@@ -208,6 +212,9 @@ yarn_lock_valid() {
         }
         /^"[^"[:space:]]+@workspace:[.]":[[:space:]]*$/ {
           if (!metadata_seen || workspace_seen) exit 2
+          workspace_name = $0
+          sub(/^"/, "", workspace_name)
+          sub(/@workspace:[.]":[[:space:]]*$/, "", workspace_name)
           workspace_seen=1
           section = "workspace"
           next
@@ -219,6 +226,9 @@ yarn_lock_valid() {
         }
         section == "workspace" && /^  resolution:[[:space:]]*"[^"[:space:]]+@workspace:[.]"[[:space:]]*$/ {
           if (resolution_seen) exit 2
+          resolution_name = $0
+          sub(/^  resolution:[[:space:]]*"/, "", resolution_name)
+          sub(/@workspace:[.]"[[:space:]]*$/, "", resolution_name)
           resolution_seen=1
           next
         }
@@ -235,7 +245,9 @@ yarn_lock_valid() {
         { exit 2 }
         END {
           if (!metadata_seen || !version_seen || !workspace_seen \
-            || !workspace_version_seen || !resolution_seen || !language_seen || !link_seen) exit 2
+            || !workspace_version_seen || !resolution_seen || !language_seen || !link_seen \
+            || workspace_name != resolution_name \
+            || (expected_name != "" && workspace_name != expected_name)) exit 2
         }
       ' "$file" >/dev/null 2>&1
       ;;
