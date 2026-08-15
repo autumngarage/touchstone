@@ -1043,20 +1043,28 @@ for profile in python swift rust go; do
       expected_setup='setup = "uv sync --offline --frozen"'
       ;;
     swift)
+      mkdir -p "$ADOPT_PROFILE/Tests/FixtureTests"
       printf '%s\n' '// swift-tools-version:6.2' 'import PackageDescription' \
-        'let package = Package(name: "Fixture")' >"$ADOPT_PROFILE/Package.swift"
+        'let package = Package(' '  name: "Fixture",' '  targets: [' \
+        '    .testTarget(name: "FixtureTests")' '  ]' ')' >"$ADOPT_PROFILE/Package.swift"
+      printf '%s\n' 'import Testing' '@Test func passes() { #expect(Bool(true)) }' \
+        >"$ADOPT_PROFILE/Tests/FixtureTests/FixtureTests.swift"
       expected_command='command = "swift test --disable-automatic-resolution --skip-update"'
       expected_setup=''
       ;;
     rust)
-      printf '%s\n' '[package]' 'name = "fixture"' >"$ADOPT_PROFILE/Cargo.toml"
+      mkdir -p "$ADOPT_PROFILE/src"
+      printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+        >"$ADOPT_PROFILE/Cargo.toml"
       printf '%s\n' 'version = 4' >"$ADOPT_PROFILE/Cargo.lock"
+      printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_PROFILE/src/lib.rs"
       expected_command='command = "cargo test --frozen"'
       expected_setup=''
       ;;
     go)
       printf '%s\n' 'module example.invalid/fixture' >"$ADOPT_PROFILE/go.mod"
-      expected_command='command = "GOWORK=off GOPROXY=off GOSUMDB=off go test ./..."'
+      printf '%s\n' 'package fixture' >"$ADOPT_PROFILE/fixture.go"
+      expected_command='command = "GOTOOLCHAIN=local GOWORK=off GOPROXY=off GOSUMDB=off go test ./..."'
       expected_setup=''
       ;;
   esac
@@ -1077,6 +1085,16 @@ git -C "$ADOPT_SWIFT_MALFORMED" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-swift-malformed.out" adopt --dry-run --project "$ADOPT_SWIFT_MALFORMED"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed Swift manifest was accepted"
 assert_contains "$TMP_DIR/adopt-swift-malformed.out.err" 'Package.swift is malformed'
+
+ADOPT_SWIFT_EMPTY="$TMP_DIR/adopt-swift-empty"
+init_adoption_repo "$ADOPT_SWIFT_EMPTY"
+printf '%s\n' '// swift-tools-version:6.2' 'import PackageDescription' \
+  'let package = Package(name: "Empty")' >"$ADOPT_SWIFT_EMPTY/Package.swift"
+commit_adoption_repo "$ADOPT_SWIFT_EMPTY" "fixture"
+git -C "$ADOPT_SWIFT_EMPTY" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-swift-empty.out" adopt --dry-run --project "$ADOPT_SWIFT_EMPTY"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Swift package without a buildable target was accepted"
+assert_contains "$TMP_DIR/adopt-swift-empty.out.err" 'portable buildable-target subset'
 
 ADOPT_GO_MALFORMED="$TMP_DIR/adopt-go-malformed"
 init_adoption_repo "$ADOPT_GO_MALFORMED"
@@ -1133,6 +1151,48 @@ git -C "$ADOPT_RUST_BAD_LOCK" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-rust-bad-lock.out" adopt --dry-run --project "$ADOPT_RUST_BAD_LOCK"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed Cargo.lock was accepted"
 assert_contains "$TMP_DIR/adopt-rust-bad-lock.out.err" 'Cargo.lock is malformed'
+
+ADOPT_RUST_LOCK_VERSION="$TMP_DIR/adopt-rust-lock-version"
+init_adoption_repo "$ADOPT_RUST_LOCK_VERSION"
+mkdir -p "$ADOPT_RUST_LOCK_VERSION/src"
+printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+  >"$ADOPT_RUST_LOCK_VERSION/Cargo.toml"
+printf '%s\n' 'version = 999' >"$ADOPT_RUST_LOCK_VERSION/Cargo.lock"
+printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_RUST_LOCK_VERSION/src/lib.rs"
+commit_adoption_repo "$ADOPT_RUST_LOCK_VERSION" "fixture"
+git -C "$ADOPT_RUST_LOCK_VERSION" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-lock-version.out" adopt --dry-run \
+  --project "$ADOPT_RUST_LOCK_VERSION"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unsupported Cargo lockfile version was accepted"
+assert_contains "$TMP_DIR/adopt-rust-lock-version.out.err" \
+  'Cargo.lock has no unique supported root lockfile version'
+
+ADOPT_RUST_IGNORED_SOURCE="$TMP_DIR/adopt-rust-ignored-source"
+init_adoption_repo "$ADOPT_RUST_IGNORED_SOURCE"
+printf '%s\n' 'src/' >"$ADOPT_RUST_IGNORED_SOURCE/.gitignore"
+printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+  >"$ADOPT_RUST_IGNORED_SOURCE/Cargo.toml"
+printf '%s\n' 'version = 4' >"$ADOPT_RUST_IGNORED_SOURCE/Cargo.lock"
+commit_adoption_repo "$ADOPT_RUST_IGNORED_SOURCE" "fixture"
+mkdir -p "$ADOPT_RUST_IGNORED_SOURCE/src"
+printf '%s\n' 'pub fn local_only() {}' >"$ADOPT_RUST_IGNORED_SOURCE/src/lib.rs"
+git -C "$ADOPT_RUST_IGNORED_SOURCE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-ignored-source.out" adopt --dry-run \
+  --project "$ADOPT_RUST_IGNORED_SOURCE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Rust target with only ignored source was accepted"
+assert_contains "$TMP_DIR/adopt-rust-ignored-source.out.err" 'has no tracked default src/lib.rs or src/main.rs'
+
+ADOPT_GO_IGNORED_SOURCE="$TMP_DIR/adopt-go-ignored-source"
+init_adoption_repo "$ADOPT_GO_IGNORED_SOURCE"
+printf '%s\n' '*.go' >"$ADOPT_GO_IGNORED_SOURCE/.gitignore"
+printf '%s\n' 'module example.invalid/fixture' 'go 1.24' >"$ADOPT_GO_IGNORED_SOURCE/go.mod"
+commit_adoption_repo "$ADOPT_GO_IGNORED_SOURCE" "fixture"
+printf '%s\n' 'package fixture' >"$ADOPT_GO_IGNORED_SOURCE/fixture.go"
+git -C "$ADOPT_GO_IGNORED_SOURCE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-go-ignored-source.out" adopt --dry-run \
+  --project "$ADOPT_GO_IGNORED_SOURCE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Go target with only ignored source was accepted"
+assert_contains "$TMP_DIR/adopt-go-ignored-source.out.err" 'has no tracked Go source'
 
 ADOPT_RUST_LOCAL="$TMP_DIR/adopt-rust-local"
 init_adoption_repo "$ADOPT_RUST_LOCAL"
@@ -1803,12 +1863,13 @@ assert_contains "$ADOPT_PNPM_EXCLUSION/.touchstone.toml" 'setup = "(cd apps/api 
 
 ADOPT_CARGO_WORKSPACE="$TMP_DIR/adopt-cargo-workspace"
 init_adoption_repo "$ADOPT_CARGO_WORKSPACE"
-mkdir -p "$ADOPT_CARGO_WORKSPACE/packages/core"
+mkdir -p "$ADOPT_CARGO_WORKSPACE/packages/core/src"
 printf '%s\n' '[workspace]' 'members = ["packages/core"]' 'resolver = "2"' \
   >"$ADOPT_CARGO_WORKSPACE/Cargo.toml"
 printf '%s\n' 'version = 4' >"$ADOPT_CARGO_WORKSPACE/Cargo.lock"
 printf '%s\n' '[package]' 'name = "core"' 'version = "0.1.0"' 'edition = "2024"' \
   >"$ADOPT_CARGO_WORKSPACE/packages/core/Cargo.toml"
+printf '%s\n' 'pub fn core() {}' >"$ADOPT_CARGO_WORKSPACE/packages/core/src/lib.rs"
 commit_adoption_repo "$ADOPT_CARGO_WORKSPACE" "fixture"
 git -C "$ADOPT_CARGO_WORKSPACE" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-cargo-workspace.out" adopt --project "$ADOPT_CARGO_WORKSPACE"
@@ -1833,13 +1894,14 @@ assert_contains "$TMP_DIR/adopt-cargo-missing-member.out.err" \
 
 ADOPT_CARGO_BAD_DEFAULT="$TMP_DIR/adopt-cargo-bad-default"
 init_adoption_repo "$ADOPT_CARGO_BAD_DEFAULT"
-mkdir -p "$ADOPT_CARGO_BAD_DEFAULT/crates/core"
+mkdir -p "$ADOPT_CARGO_BAD_DEFAULT/crates/core/src"
 printf '%s\n' '[workspace]' 'members = ["crates/core"]' \
   'default-members = ["crates/missing"]' 'resolver = "2"' \
   >"$ADOPT_CARGO_BAD_DEFAULT/Cargo.toml"
 printf '%s\n' 'version = 4' >"$ADOPT_CARGO_BAD_DEFAULT/Cargo.lock"
 printf '%s\n' '[package]' 'name = "core"' 'version = "0.1.0"' \
   >"$ADOPT_CARGO_BAD_DEFAULT/crates/core/Cargo.toml"
+printf '%s\n' 'pub fn core() {}' >"$ADOPT_CARGO_BAD_DEFAULT/crates/core/src/lib.rs"
 commit_adoption_repo "$ADOPT_CARGO_BAD_DEFAULT" "fixture"
 git -C "$ADOPT_CARGO_BAD_DEFAULT" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-cargo-bad-default.out" adopt --dry-run \

@@ -2039,16 +2039,46 @@ swift_has_dependency_source() {
 }
 
 validate_swift_manifest() {
-  local file="$1"
-  awk '
+  local file="$1" directory="$2" target source_root source_relative tracked_sources source
+  target="$(awk '
     /^[[:space:]]*$/ { next }
     count == 0 && /^\/\/ swift-tools-version:[[:space:]]*[0-9]+[.][0-9]+([.][0-9]+)?[[:space:]]*$/ { count++; next }
     count == 1 && /^[[:space:]]*import[[:space:]]+PackageDescription[[:space:]]*$/ { count++; next }
-    count == 2 && /^[[:space:]]*let[[:space:]]+package[[:space:]]*=[[:space:]]*Package[(][[:space:]]*name:[[:space:]]*"[A-Za-z0-9._-]+"[[:space:]]*[)][[:space:]]*$/ { count++; next }
+    count == 2 && /^[[:space:]]*let[[:space:]]+package[[:space:]]*=[[:space:]]*Package[(][[:space:]]*$/ { count++; next }
+    count == 3 && /^[[:space:]]*name:[[:space:]]*"[A-Za-z0-9._-]+",[[:space:]]*$/ { count++; next }
+    count == 4 && /^[[:space:]]*targets:[[:space:]]*\[[[:space:]]*$/ { count++; next }
+    count == 5 && /^[[:space:]]*[.]testTarget[(]name:[[:space:]]*"[A-Za-z0-9._-]+"[)][[:space:]]*$/ {
+      target=$0
+      sub(/^[[:space:]]*[.]testTarget[(]name:[[:space:]]*"/, "", target)
+      sub(/"[)][[:space:]]*$/, "", target)
+      count++
+      next
+    }
+    count == 6 && /^[[:space:]]*\][[:space:]]*$/ { count++; next }
+    count == 7 && /^[[:space:]]*[)][[:space:]]*$/ { count++; next }
     { invalid=1 }
-    END { exit invalid || count != 3 }
-  ' "$file" >/dev/null 2>&1 \
-    || contract_refusal "Package.swift is malformed or outside the portable static manifest subset; pass --task NAME=COMMAND for a manual contract"
+    END {
+      if (invalid || count != 8 || target == "") exit 2
+      print target
+    }
+  ' "$file" 2>/dev/null)" \
+    || contract_refusal "Package.swift is malformed or outside the portable buildable-target subset; pass --task NAME=COMMAND for a manual contract"
+  source_root="$directory/Tests/$target"
+  if [ "$directory" = "$PROJECT_ROOT" ]; then
+    source_relative="Tests/$target"
+  else
+    source_relative="${directory#"$PROJECT_ROOT"/}/Tests/$target"
+  fi
+  tracked_sources="$(git -C "$PROJECT_ROOT" ls-files -- "$source_relative" | awk '/[.]swift$/')"
+  [ -n "$tracked_sources" ] \
+    || contract_refusal "Swift test target '$target' has no tracked Swift source"
+  while IFS= read -r source; do
+    [ -n "$source" ] || continue
+    [ -f "$PROJECT_ROOT/$source" ] && [ ! -L "$PROJECT_ROOT/$source" ] \
+      || contract_refusal "Swift test target '$target' source '$source' is not a regular tracked file"
+  done <<<"$tracked_sources"
+  [ -d "$source_root" ] && [ ! -L "$source_root" ] \
+    || contract_refusal "Swift test target '$target' has no regular source directory"
 }
 
 toml_has_local_path_reference() {
@@ -2105,6 +2135,60 @@ validate_go_mod_document() {
     || contract_refusal "go.mod is malformed or outside the dependency-free portable subset; pass --task NAME=COMMAND for a manual contract"
 }
 
+validate_cargo_lock() {
+  local file="$1"
+  validate_toml_document "$file" Cargo.lock
+  awk '
+    BEGIN { in_root=1 }
+    /^[[:space:]]*\[/ { in_root=0 }
+    !in_root { next }
+    /^[[:space:]]*version[[:space:]]*=[[:space:]]*[34][[:space:]]*$/ {
+      if (version_seen) exit 2
+      version_seen=1
+      next
+    }
+    /^[[:space:]]*(#.*)?$/ { next }
+    { exit 2 }
+    END { if (!version_seen) exit 2 }
+  ' "$file" >/dev/null 2>&1 \
+    || contract_refusal "Cargo.lock has no unique supported root lockfile version; regenerate it or pass --task NAME=COMMAND"
+}
+
+rust_manifest_is_package() {
+  awk '/^[[:space:]]*\[package\][[:space:]]*$/ { found=1 } END { exit !found }' "$1"
+}
+
+require_tracked_rust_source() {
+  local directory="$1" relative source
+  rust_manifest_is_package "$directory/Cargo.toml" || return 0
+  if [ "$directory" = "$PROJECT_ROOT" ]; then relative=""; else relative="${directory#"$PROJECT_ROOT"/}/"; fi
+  for source in src/lib.rs src/main.rs; do
+    if git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$relative$source" >/dev/null 2>&1; then
+      [ -f "$PROJECT_ROOT/$relative$source" ] && [ ! -L "$PROJECT_ROOT/$relative$source" ] \
+        || contract_refusal "Rust source '$relative$source' is not a regular tracked file"
+      return 0
+    fi
+  done
+  contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' has no tracked default src/lib.rs or src/main.rs"
+}
+
+require_tracked_go_source() {
+  local directory="$1" relative tracked_sources source
+  if [ "$directory" = "$PROJECT_ROOT" ]; then relative=""; else relative="${directory#"$PROJECT_ROOT"/}"; fi
+  if [ -n "$relative" ]; then
+    tracked_sources="$(git -C "$PROJECT_ROOT" ls-files -- "$relative" | awk '/[.]go$/')"
+  else
+    tracked_sources="$(git -C "$PROJECT_ROOT" ls-files | awk '/[.]go$/')"
+  fi
+  [ -n "$tracked_sources" ] \
+    || contract_refusal "Go target '${directory#"$PROJECT_ROOT"/}' has no tracked Go source"
+  while IFS= read -r source; do
+    [ -n "$source" ] || continue
+    [ -f "$PROJECT_ROOT/$source" ] && [ ! -L "$PROJECT_ROOT/$source" ] \
+      || contract_refusal "Go source '$source' is not a regular tracked file"
+  done <<<"$tracked_sources"
+}
+
 validate_cargo_workspace_members() {
   local members defaults pattern manifest
   if ! members="$(cargo_workspace_values members)"; then
@@ -2128,6 +2212,7 @@ validate_cargo_workspace_members() {
     validate_toml_document "$manifest" "Cargo workspace member '$pattern' Cargo.toml"
     toml_has_local_path_reference "$manifest" \
       && contract_refusal "Cargo workspace member '$pattern' declares a local path dependency this portable compiler cannot verify; pass --task NAME=COMMAND"
+    require_tracked_rust_source "$PROJECT_ROOT/$pattern"
   done <<<"$members"
   if ! defaults="$(cargo_workspace_values default-members)"; then
     contract_refusal "root Cargo.toml has a malformed or repeated workspace default-members declaration"
@@ -2158,7 +2243,7 @@ tasks_for_profile() {
         && contract_refusal "Swift target '$target' declares a remote package dependency that can fetch during validation; use checkout-local dependencies with a manual contract or pass --task NAME=COMMAND"
       swift_has_dependency_source "$directory/Package.swift" path \
         && contract_refusal "Swift target '$target' declares a local package path this portable compiler cannot verify; pass --task NAME=COMMAND"
-      validate_swift_manifest "$directory/Package.swift"
+      validate_swift_manifest "$directory/Package.swift" "$directory"
       record_task "test$suffix" "$target" "swift test --disable-automatic-resolution --skip-update"
       ;;
     rust)
@@ -2174,7 +2259,8 @@ tasks_for_profile() {
         || contract_refusal "Rust target '$target' has no Cargo.lock; commit one or pass --task NAME=COMMAND"
       git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$cargo_lock_path" >/dev/null 2>&1 \
         || contract_refusal "Rust target '$target' has no tracked Cargo.lock; commit it or pass --task NAME=COMMAND"
-      validate_toml_document "$PROJECT_ROOT/$cargo_lock_path" Cargo.lock
+      validate_cargo_lock "$PROJECT_ROOT/$cargo_lock_path"
+      require_tracked_rust_source "$directory"
       record_task "test$suffix" "$target" "cargo test --frozen"
       ;;
     go)
@@ -2183,7 +2269,8 @@ tasks_for_profile() {
       go_has_local_replace "$directory/go.mod" \
         && contract_refusal "Go target '$target' declares a local replacement this portable compiler cannot verify within the checkout; pass --task NAME=COMMAND"
       validate_go_mod_document "$directory/go.mod"
-      record_task "test$suffix" "$target" "GOWORK=off GOPROXY=off GOSUMDB=off go test ./..."
+      require_tracked_go_source "$directory"
+      record_task "test$suffix" "$target" "GOTOOLCHAIN=local GOWORK=off GOPROXY=off GOSUMDB=off go test ./..."
       ;;
     generic) contract_refusal "no supported project facts found; pass --task NAME=COMMAND for a manual declaration" ;;
     ambiguous:*) contract_refusal "ambiguous project facts for target '$target': ${profile#ambiguous:}" ;;

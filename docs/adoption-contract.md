@@ -72,8 +72,10 @@ setup; required uv dev groups are named explicitly even when project defaults
 exclude them. Configuration or a test tree without the checker dependency refuses.
 Tool-only Python configuration without dependency facts refuses. Monorepo
 plans include executable root-level checks alongside explicit child targets.
-Swift and Go commands disable automatic resolution or both the Go proxy and
-checksum database. Rust requires a committed, completely parsed `Cargo.lock`,
+Swift automatic adoption requires a static test target with tracked source.
+Go commands disable automatic toolchain selection, workspace discovery, the
+module proxy, and the checksum database, and require tracked Go source. Rust
+requires tracked default package source plus a committed, completely parsed `Cargo.lock`,
 verifies exact workspace and default-member declarations, and uses Cargo's
 frozen mode so validation cannot rewrite it or reach the network. Every generated validation
 path fails when required dependencies are not vendored or pre-provisioned;
