@@ -27,8 +27,8 @@ Schema 1 is a deliberately narrow TOML subset:
 
 The optional `[tracker]` table belongs to the
 [tracker adapter contract](tracker-contract.md). The validation reader accepts
-that known table without interpreting it; no tracker value changes validation
-behavior.
+and validates that public shape without using it to choose tasks or verdicts;
+no tracker value changes validation behavior.
 
 The last restriction is part of the versioned contract, not an incomplete
 parser. A future schema may add syntax without changing what schema 1 means.

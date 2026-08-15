@@ -3,7 +3,7 @@
 # scripts/touchstone-run.sh — execute schema-v1 .touchstone.toml declarations.
 #
 # Usage:
-#   bash scripts/touchstone-run.sh validate [--json] [--project DIR] [--config FILE]
+#   bash scripts/touchstone-run.sh validate [--check-contract] [--json] [--project DIR] [--config FILE]
 #
 # This is the single validation engine used by the local CLI boundary and the
 # organization-required workflow. It executes declarations; it never detects a
@@ -15,6 +15,7 @@ ACTION="${1:-validate}"
 if [ "$#" -gt 0 ]; then shift; fi
 
 JSON_MODE=false
+CHECK_CONTRACT=false
 PROJECT_ARG=""
 CONFIG_ARG=".touchstone.toml"
 
@@ -22,6 +23,10 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --json)
       JSON_MODE=true
+      shift
+      ;;
+    --check-contract)
+      CHECK_CONTRACT=true
       shift
       ;;
     --project)
@@ -92,6 +97,9 @@ RUNTIME=""
 SETUP_COMMAND=""
 VALIDATION_SEEN=false
 TRACKER_SEEN=false
+TRACKER_SCHEMA=""
+TRACKER_TYPE=""
+TRACKER_KEY_PREFIX=""
 
 trim() {
   local value="$1"
@@ -317,10 +325,15 @@ while IFS= read -r line || [ -n "$line" ]; do
       ;;
     tracker:schema)
       parse_scalar "$raw_value" || config_error "tracker schema must be an integer at line $LINE_NUMBER"
-      [ "$PARSED_VALUE" = 1 ] || config_error "unsupported tracker schema '$PARSED_VALUE'; this runtime accepts tracker schema 1"
+      TRACKER_SCHEMA="$PARSED_VALUE"
       ;;
-    tracker:type | tracker:key_prefix)
+    tracker:type)
       parse_string "$raw_value" || config_error "tracker $key must be a single-line basic string at line $LINE_NUMBER"
+      TRACKER_TYPE="$PARSED_VALUE"
+      ;;
+    tracker:key_prefix)
+      parse_string "$raw_value" || config_error "tracker $key must be a single-line basic string at line $LINE_NUMBER"
+      TRACKER_KEY_PREFIX="$PARSED_VALUE"
       ;;
     target:name)
       parse_string "$raw_value" || config_error "target name must be a single-line basic string at line $LINE_NUMBER"
@@ -357,6 +370,17 @@ finalize_block
 }
 [ "$VALIDATION_SEEN" = true ] || config_error "missing [validation] section"
 [ "$RUNTIME" = bash ] || config_error "schema 1 requires runtime = \"bash\""
+if [ "$TRACKER_SEEN" = true ]; then
+  [ "$TRACKER_SCHEMA" = 1 ] \
+    || config_error "[tracker] requires schema = 1"
+  case "$TRACKER_TYPE" in github | linear) ;; *) config_error "[tracker] type must be \"github\" or \"linear\"" ;; esac
+  if [ "$TRACKER_TYPE" = linear ]; then
+    printf '%s' "$TRACKER_KEY_PREFIX" | grep -Eq '^[A-Z][A-Z0-9]*$' \
+      || config_error "linear [tracker] requires an uppercase key_prefix"
+  elif [ -n "$TRACKER_KEY_PREFIX" ]; then
+    config_error "github [tracker] must not declare key_prefix"
+  fi
+fi
 [ -s "$TARGETS_FILE" ] || config_error "schema 1 requires at least one explicit target"
 [ -s "$TASKS_FILE" ] || config_error "schema 1 requires at least one explicit task"
 
@@ -391,6 +415,15 @@ done <"$TARGETS_FILE"
 if [ "$FAILED" -ne 0 ]; then
   emit_report failed
   exit "$EXIT_STATUS"
+fi
+
+if [ "$CHECK_CONTRACT" = true ]; then
+  if [ "$JSON_MODE" = true ]; then
+    printf '{"schema":1,"verdict":"valid"}\n'
+  else
+    printf 'schema-v1 contract is valid\n'
+  fi
+  exit 0
 fi
 
 clear_git_hook_env() {
