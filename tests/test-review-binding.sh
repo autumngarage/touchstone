@@ -598,6 +598,10 @@ case "$1 ${2:-}" in
     ;;
   "pr merge")
     if [ "${GH_MODE:-ok}" = merge_failed ]; then exit 1; fi
+    if [ "${GH_MODE:-ok}" = merge_reconcile_failed ]; then
+      printf 'merge rejected by rules\n' >&2
+      exit 1
+    fi
     case "${GH_MODE:-ok}" in merge_queue | auto_merge) exit 0 ;; esac
     touch "$GH_STATE/merged"
     case "${GH_MODE:-ok}" in merge_lied | merge_head_moved) exit 1 ;; esac
@@ -608,7 +612,10 @@ case "$1 ${2:-}" in
   "api user") printf '%s\n' alice ;;
   "api graphql")
     if has 'mergeQueueEntry' "$@"; then
-      if [ "${GH_MODE:-ok}" = merge_head_moved ]; then
+      if [ "${GH_MODE:-ok}" = merge_reconcile_failed ]; then
+        printf 'GraphQL unavailable\n' >&2
+        exit 1
+      elif [ "${GH_MODE:-ok}" = merge_head_moved ]; then
         printf 'MERGED\thttps://example.test/pr/7\tmoved-head\tfalse\t\n'
       elif [ -f "$GH_STATE/merged" ]; then
         printf 'MERGED\thttps://example.test/pr/7\t%s\tfalse\t\n' "$GH_HEAD"
@@ -877,6 +884,13 @@ EOF
   GH_MODE=merge_failed run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" 'GitHub did not accept merge'
+  assert_not_has "$TMP/out" '"status":"merged"'
+
+  echo "==> merge preserves both diagnostics when reconciliation also fails"
+  GH_MODE=merge_reconcile_failed run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'merge rejected by rules'
+  assert_has "$TMP/out" 'GraphQL unavailable'
   assert_not_has "$TMP/out" '"status":"merged"'
 
   if [ "$ERRORS" -gt 0 ]; then

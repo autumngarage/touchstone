@@ -2,7 +2,11 @@
 
 Every code change goes through a feature branch + PR + PR-visible review loop + merge. The documented emergency bypass remains inside that PR and must be disclosed there. This discipline catches bugs before they land on the default branch and creates an audit trail for every change, while leaving a legible escape hatch for production incidents.
 
-**There is no wrapper.** Every step below is a raw `git` or `gh` command you can run and verify yourself. That is deliberate: the mechanics live here, in prose, so that any agent with a shell and `gh` can deliver correctly. Tooling may accelerate these commands later, but it may never become the only way to run them.
+The raw `git` and `gh` commands below are the portable recovery surface: any
+agent with a shell and `gh` can run and verify them. When repository-specific
+guidance names an executable boundary for one operation, use it; that boundary
+may sequence and reconcile these commands, but it may never replace GitHub's
+verdict or make the raw recovery path unavailable.
 
 ## Never commit on the default branch
 
@@ -154,6 +158,9 @@ Thread IDs and their numeric root review comment IDs come from the mapped
 `unresolvedThreads` result above. The token needs Contents: read and write.
 
 ## Merging
+
+Use a repository-specific executable merge boundary when project guidance
+names one, passing the exact reviewed head. Otherwise run the raw equivalent:
 
 ```bash
 gh pr merge <n> --squash --match-head-commit "$(gh pr view <n> --json headRefOid --jq .headRefOid)"
