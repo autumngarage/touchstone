@@ -1,0 +1,9 @@
+# Snapshot: 2026-08-15T13:19:00Z
+# repository	head	profile	root evidence
+touchstone	2e7a4354dc3648affd898a1824af32c740187cc2	declared	.touchstone.toml
+arpeggio	9cd3859d960a20171b6211a66a5bead8825e642e	python	pyproject.toml,uv.lock,.touchstone-config
+anima	3370316d07212ad9203e9803ffc30b0180427df4	npm	package.json,package-lock.json,.touchstone-config
+conductor	19c734a329bf78adad453812133bbea8549883b8	python	pyproject.toml,uv.lock,.touchstone-config
+cortex	f8448d2528c6fd4a0f83ca49aea4b1819a18cb2c	python	pyproject.toml,uv.lock,.touchstone-config
+sentinel	d78e8b0bed784ae760de883ff946f41fc8be176c	python	pyproject.toml,.touchstone-config
+autumn-mail	1ddd5bbdb5c5a1e05ed1636d1e87fb815a7fe777	swift	Package.swift,.touchstone-config
