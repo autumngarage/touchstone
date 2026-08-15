@@ -1082,4 +1082,50 @@ assert_contains "$TMP_DIR/adopt-yarn-standalone.json" \
 assert_not_contains "$TMP_DIR/adopt-yarn-standalone.json" \
   'command = \"COREPACK_ENABLE_NETWORK=0 yarn test\"'
 
+echo "==> Python adapter binds tasks to tracked executable evidence"
+ADOPT_PYTHON="$TMP_DIR/adopt-python"
+init_node_adoption_repo "$ADOPT_PYTHON"
+mkdir -p "$ADOPT_PYTHON/tests"
+printf '%s\n' 'pytest==9.0.0' >"$ADOPT_PYTHON/requirements.txt"
+printf '%s\n' 'def test_passes():' '    assert True' >"$ADOPT_PYTHON/tests/test_fixture.py"
+commit_node_adoption_repo "$ADOPT_PYTHON"
+bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_PYTHON" \
+  >"$TMP_DIR/adopt-python-plan.json"
+assert_contains "$TMP_DIR/adopt-python-plan.json" '"profile":"python"'
+assert_contains "$TMP_DIR/adopt-python-plan.json" \
+  'setup = \"python -m pip install --no-index -r requirements.txt\"'
+assert_contains "$TMP_DIR/adopt-python-plan.json" 'command = \"python -m pytest\"'
+
+for python_evidence in ignored-test missing-source malformed-toml; do
+  ADOPT_PYTHON_EVIDENCE="$TMP_DIR/adopt-python-$python_evidence"
+  init_node_adoption_repo "$ADOPT_PYTHON_EVIDENCE"
+  case "$python_evidence" in
+    ignored-test)
+      mkdir -p "$ADOPT_PYTHON_EVIDENCE/.venv"
+      printf '%s\n' 'pytest==9.0.0' >"$ADOPT_PYTHON_EVIDENCE/requirements.txt"
+      printf '%s\n' 'def test_hidden():' '    assert True' \
+        >"$ADOPT_PYTHON_EVIDENCE/.venv/test_hidden.py"
+      ;;
+    missing-source)
+      printf '%s\n' 'mypy==1.20.2' >"$ADOPT_PYTHON_EVIDENCE/requirements.txt"
+      ;;
+    malformed-toml)
+      printf '%s\n' '[project' 'name = "broken"' >"$ADOPT_PYTHON_EVIDENCE/pyproject.toml"
+      ;;
+  esac
+  commit_node_adoption_repo "$ADOPT_PYTHON_EVIDENCE"
+  set +e
+  bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_PYTHON_EVIDENCE" \
+    >"$TMP_DIR/adopt-python-$python_evidence.out" \
+    2>"$TMP_DIR/adopt-python-$python_evidence.err"
+  ADOPTION_STATUS=$?
+  set -e
+  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$python_evidence produced an unsafe Python task"
+done
+assert_contains "$TMP_DIR/adopt-python-ignored-test.err" \
+  'no declared ruff, mypy, or pytest evidence'
+assert_contains "$TMP_DIR/adopt-python-missing-source.err" \
+  'mypy evidence but no tracked regular Python source'
+assert_contains "$TMP_DIR/adopt-python-malformed-toml.err" 'pyproject.toml is malformed'
+
 echo "validation engine tests passed"
