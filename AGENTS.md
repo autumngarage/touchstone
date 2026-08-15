@@ -107,14 +107,9 @@ You are maintaining the standard baseline for a solo developer directing many ag
 ### Git Workflow
 
 - Start each code change from a feature branch. Before editing tracked files, run `git branch --show-current`; if it reports `main` or `master`, branch with `git checkout -b <type>/<short-description>`.
-- Claim every configured-tracker item before editing or dispatching an agent.
-  Touchstone uses Linear: assign the `AUT-N` item through Linear's API/MCP and
-  verify the surviving assignee. An unavailable transport is not verification.
+- Claim every GitHub issue you are actively implementing with `bash scripts/claim-issue.sh <n>` before editing or dispatching an agent.
 - Keep changes logically grouped. Stage explicit file paths, commit with a concise message, and avoid unrelated refactors.
-- Reconcile configured-tracker state before opening the PR. Touchstone fixes
-  put `Fixes AUT-N` in the **PR body**; linked GitHub issues remain evidence, not
-  a competing execution plan. A commit trailer alone does not survive every
-  squash merge.
+- Reconcile issue state before opening the PR. Put `Closes #N` in the **PR body** — a commit trailer alone does not close anything on a squash merge.
 - Ship with `git push -u origin HEAD` then `gh pr create`; request review with `gh pr comment <n> --body "@codex review"`; merge with `gh pr merge <n> --squash --match-head-commit <reviewed-sha>`. There is no wrapper — `principles/git-workflow.md` carries the full sequence.
 - The PR is the review surface. Do not treat PR creation as completion: answer every piece of PR feedback and resolve its thread — whoever left it — before merging.
 - File-writing subagents use isolated worktrees by default. Follow `principles/agent-swarms.md`; use `git worktree add` and `git worktree remove` for setup and teardown.

@@ -190,6 +190,12 @@ GH_MODE=timeline_fail run_adapter "$TMP/out" reconcile 42 --disposition partial 
 assert_rc "$RUN_RC" 1
 assert_has "$TMP/out" '"reason":"github-comment-verification-failed"'
 assert_has "$TMP/out" '"partial":true'
+printf '%s\n' CLOSED >"$GH_CLOSED"
+run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
+assert_rc "$RUN_RC" 1
+assert_has "$TMP/out" '"reason":"github-open-unverified"'
+assert_has "$TMP/out" '"partial":true'
+rm -f "$GH_CLOSED"
 GH_MODE=close_fail run_adapter "$TMP/out" reconcile 42 --disposition stale --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
 assert_rc "$RUN_RC" 1
 assert_has "$TMP/out" '"partial":true'
