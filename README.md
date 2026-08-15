@@ -32,6 +32,7 @@ That machinery has been deleted. What remains is the judgment layer plus a small
 ```
 touchstone/
 ├── TOUCHSTONE.md   # Canonical steering router — the universal contract for all drivers
+├── bin/            # Thin touchstone command dispatcher
 ├── docs/           # Touchstone-specific product contract and project documentation
 ├── principles/     # The judgment layer, routed to from TOUCHSTONE.md
 ├── skills/         # User-scoped Claude Code skills
@@ -44,7 +45,16 @@ touchstone/
 └── tests/          # Self-tests
 ```
 
-**There is no CLI, no bootstrap, and no auto-update right now.** They were deleted with the propagation channel, deliberately and first: cutting propagation is what froze the downstream projects safely in place on their existing committed copies. The replacement is a thin, Homebrew-distributed CLI plus an organization-required workflow pinned to an immutable Touchstone revision outside the consumer PR. Both execute one versioned project contract. Project-type detection compiles an adoption proposal once; validation executes accepted declarations without guessing. Upgrading the installed tool never mutates repositories.
+The thin CLI now exposes declaration validation plus plan-first adoption and
+upgrade. There is still no bootstrap, auto-update, project registry, or PR
+delivery wrapper. Those older surfaces were deleted with the propagation
+channel, deliberately and first: cutting propagation froze downstream projects
+safely on their existing committed copies. The replacement architecture pairs
+the CLI with an organization-required workflow pinned to an immutable
+Touchstone revision outside the consumer PR. The adoption core compiles explicit
+manual tasks; project-type adapters arrive as separate reviewed compiler units
+and refuse when absent. Validation executes accepted declarations without
+guessing. Upgrading the installed tool never scans for or mutates projects.
 
 The surviving `templates/` describe the frozen pre-strip consumer shape and are
 historical inputs for compatibility audits, not the new architecture.

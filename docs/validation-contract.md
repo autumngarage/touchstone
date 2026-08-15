@@ -7,7 +7,7 @@ here instead of copying the shape.
 ## Ownership
 
 Projects own declarations. `scripts/touchstone-run.sh` is the single generic
-engine: the future Homebrew CLI invokes it locally, and the organization
+engine: the public `touchstone validate` CLI invokes it locally, and the organization
 required workflow invokes the same reviewed revision remotely. Neither path
 detects a project type, package manager, command, or target.
 

@@ -1420,6 +1420,44 @@ run_transaction_case staging-cleanup-diagnostic staging-cleanup \
   [ -d "$backup_directory" ] || exit 44
 ) || fail "rollback cleanup destroyed the only recoverable original"
 
+echo "==> public CLI keeps help on the versioned boundary"
+bash "$ROOT/bin/touchstone" --help >"$TMP_DIR/touchstone-help.out"
+assert_contains "$TMP_DIR/touchstone-help.out" "touchstone validate [--check-contract]"
+bash "$ROOT/bin/touchstone" validate --help >"$TMP_DIR/validate-help.out"
+assert_contains "$TMP_DIR/validate-help.out" "touchstone validate"
+assert_contains "$TMP_DIR/validate-help.out" "touchstone validate [--check-contract]"
+assert_not_contains "$TMP_DIR/validate-help.out" "scripts/touchstone-run.sh"
+bash "$ROOT/bin/touchstone" validate --json --help >"$TMP_DIR/validate-help-after-option.out"
+assert_contains "$TMP_DIR/validate-help-after-option.out" "touchstone validate"
+assert_not_contains "$TMP_DIR/validate-help-after-option.out" "scripts/touchstone-run.sh"
+bash "$ROOT/bin/touchstone" adopt --help >"$TMP_DIR/adopt-help.out"
+assert_contains "$TMP_DIR/adopt-help.out" "touchstone adopt"
+
+CLI_PROJECT="$TMP_DIR/public-cli-project"
+write_contract "$CLI_PROJECT" true
+git -C "$CLI_PROJECT" init -q
+git -C "$CLI_PROJECT" config user.name fixture
+git -C "$CLI_PROJECT" config user.email fixture@example.com
+git -C "$CLI_PROJECT" add .touchstone.toml
+git -C "$CLI_PROJECT" commit -qm fixture
+git -C "$CLI_PROJECT" branch -M main
+git -C "$CLI_PROJECT" update-ref refs/remotes/origin/main HEAD
+git -C "$CLI_PROJECT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+git -C "$CLI_PROJECT" switch -qc feat/cli
+bash "$ROOT/bin/touchstone" validate --check-contract --json --project "$CLI_PROJECT" \
+  >"$TMP_DIR/public-cli-validate.json"
+assert_contains "$TMP_DIR/public-cli-validate.json" '"verdict":"valid"'
+bash "$ROOT/bin/touchstone" adopt --dry-run --project "$CLI_PROJECT" \
+  >"$TMP_DIR/public-cli-adopt.out"
+assert_contains "$TMP_DIR/public-cli-adopt.out" 'file change(s) proposed'
+bash "$ROOT/bin/touchstone" upgrade --dry-run --project "$CLI_PROJECT" \
+  >"$TMP_DIR/public-cli-upgrade.out"
+assert_contains "$TMP_DIR/public-cli-upgrade.out" 'file change(s) proposed'
+ln -s "$ROOT/bin/touchstone" "$TMP_DIR/touchstone-cli-link"
+bash "$TMP_DIR/touchstone-cli-link" validate --check-contract --project "$CLI_PROJECT" \
+  >"$TMP_DIR/public-cli-symlink.out"
+assert_contains "$TMP_DIR/public-cli-symlink.out" 'schema-v1 contract is valid'
+
 echo "==> adoption rejects transaction delimiters in the project root"
 assert_not_contains "$ROOT/scripts/touchstone-adopt.sh" '${#MANUAL_TASK_ARGS[@]}'
 assert_contains "$ROOT/scripts/touchstone-adopt.sh" 'MANUAL_TASK_COUNT=$((MANUAL_TASK_COUNT + 1))'
