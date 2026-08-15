@@ -332,10 +332,12 @@ read_github_issue_state() {
 }
 
 read_reconciliation_comment() {
-  local marker="$1"
+  local expected_body expected_json
+  expected_body="$(cat "$RECONCILE_NOTE_TEMP")"
+  expected_json="$(json_escape "$expected_body")"
   if capture_github_read gh api --paginate --hostname "$GITHUB_HOST" \
     "repos/$CURRENT_REPO/issues/$ISSUE_ID/comments" \
-    --jq ".[] | select((.body // \"\") | contains(\"$marker\")) | .html_url"; then
+    --jq ".[] | select((.body // \"\") == \"$expected_json\") | .html_url"; then
     RECONCILIATION_COMMENT_URL="$(printf '%s\n' "$GITHUB_READ_OUTPUT" | sed -n '1p')"
     RECONCILIATION_COMMENT_ERROR=""
   else
@@ -384,10 +386,10 @@ reconcile_github() {
     || fail_input note-staging-failed "Could not create a temporary reconciliation note."
   {
     cat "$NOTE_FILE"
-    printf '\n\n%s\n' "$note_marker"
+    printf '\n\n%s' "$note_marker"
   } >"$RECONCILE_NOTE_TEMP" || fail_input note-staging-failed "Could not stage the reconciliation note."
 
-  if ! read_reconciliation_comment "$note_marker"; then
+  if ! read_reconciliation_comment; then
     emit failed github-comment-inspection-failed "Reading existing reconciliation comments failed: $RECONCILIATION_COMMENT_ERROR"
     exit 1
   fi
@@ -402,7 +404,7 @@ reconcile_github() {
       emit failed github-comment-failed "Posting the reconciliation comment failed: $(clean_diagnostic "$comment_output")"
       exit 1
     fi
-    if ! read_reconciliation_comment "$note_marker"; then
+    if ! read_reconciliation_comment; then
       emit failed github-comment-verification-failed "The comment mutation completed, but verification failed: $RECONCILIATION_COMMENT_ERROR" true
       exit 1
     fi

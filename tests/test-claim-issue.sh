@@ -287,6 +287,9 @@ case "$1 ${2:-}" in
       exit 1
 		fi
 		[ "${GH_MODE:-ok}" != comment_unverified ] || exit 0
+		if [ "${GH_MODE:-ok}" = edited_comment ] && [ ! -f "$GH_COMMENT_REPOSTED" ]; then
+      exit 0
+		fi
 		if [ -f "$GH_COMMENT_BODY" ]; then
       marker="$(sed -n '/<!-- touchstone:reconcile-v1 /p' "$GH_COMMENT_BODY")"
       case "$*" in *"$marker"*) printf '%s\n' 'https://github.com/autumngarage/current/issues/42#issuecomment-1' ;; esac
@@ -332,6 +335,7 @@ case "$1 ${2:-}" in
     for argument in "$@"; do
       if [ "$previous" = --body-file ]; then
         cp "$argument" "$GH_COMMENT_BODY"
+        [ "${GH_MODE:-ok}" != edited_comment ] || touch "$GH_COMMENT_REPOSTED"
         break
       fi
       previous="$argument"
@@ -353,7 +357,7 @@ case "$1 ${2:-}" in
 esac
 EOF
   chmod +x "$TMP/bin/gh"
-  export PATH="$TMP/bin:$PATH" GH_REPO="autumngarage/current" GH_CALLS="$TMP/gh-calls" GH_STATE="$TMP/gh-state" GH_CLOSED="$TMP/gh-closed" GH_COMMENT_BODY="$TMP/gh-comment-body"
+  export PATH="$TMP/bin:$PATH" GH_REPO="autumngarage/current" GH_CALLS="$TMP/gh-calls" GH_STATE="$TMP/gh-state" GH_CLOSED="$TMP/gh-closed" GH_COMMENT_BODY="$TMP/gh-comment-body" GH_COMMENT_REPOSTED="$TMP/gh-comment-reposted"
 
   run_adapter() {
     local output="$1"
@@ -495,6 +499,15 @@ EOF
   run_adapter "$TMP/out" reconcile 42 --disposition partial --note-file "$TMP/note" --project "$TMP/github" --json
   assert_rc "$RUN_RC" 0
   assert_not_has "$GH_CALLS" 'issue comment 42'
+  sed 's/Evidence and remaining gap/Edited but marker retained/' "$GH_COMMENT_BODY" >"$TMP/edited-comment"
+  mv "$TMP/edited-comment" "$GH_COMMENT_BODY"
+  rm -f "$GH_COMMENT_REPOSTED"
+  : >"$GH_CALLS"
+  GH_MODE=edited_comment run_adapter "$TMP/out" reconcile 42 --disposition partial --note-file "$TMP/note" --project "$TMP/github" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$GH_CALLS" 'issue comment 42'
+  assert_has "$GH_COMMENT_BODY" 'Evidence and remaining gap.'
+  assert_not_has "$GH_COMMENT_BODY" 'Edited but marker retained'
   rm -f "$GH_COMMENT_BODY"
   : >"$GH_CALLS"
   GH_MODE=success_stderr run_adapter "$TMP/out" reconcile 42 --disposition partial --note-file "$TMP/note" --project "$TMP/github" --json

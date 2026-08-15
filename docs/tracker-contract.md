@@ -71,8 +71,9 @@ with a concrete remedy rather than hidden behind a local guess about PR text.
 
 Reconciliation is resumable across partial failures. GitHub notes carry a
 deterministic marker derived from the issue, disposition, and note content; a
-retry reuses the matching note. Before a stale close, and again afterward, the
-adapter reads GitHub's authoritative state. A retry that finds the requested
+retry reuses a comment only when its complete persisted body exactly matches
+the staged evidence. Before a stale close, and again afterward, the adapter
+reads GitHub's authoritative state. A retry that finds the requested
 `CLOSED/NOT_PLANNED` result succeeds without repeating the close. Provider
 failures retain a bounded, control-character-sanitized diagnostic so recovery
 does not discard the reason the operation failed.
