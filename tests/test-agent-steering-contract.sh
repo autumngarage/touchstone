@@ -342,6 +342,10 @@ for file in \
   assert_contains "$file" "time-bounded migration shims"
   assert_contains "$file" "unmatched"
 done
+assert_contains "$TOUCHSTONE_ROOT/skills/touchstone-pre-impl/SKILL.md" \
+  "The seven questions"
+assert_not_contains "$TOUCHSTONE_ROOT/skills/touchstone-pre-impl/SKILL.md" \
+  "The six questions"
 for file in \
   "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
   "$TOUCHSTONE_ROOT/skills/touchstone-pre-impl/SKILL.md"; do
