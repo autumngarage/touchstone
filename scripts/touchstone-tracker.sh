@@ -68,6 +68,10 @@ trim() {
   printf '%s' "$value"
 }
 
+file_has_content() {
+  [ -f "$1" ] && grep -q '[^[:space:]]' "$1"
+}
+
 parse_string() {
   local raw
   raw="$(trim "$1")"
@@ -246,12 +250,12 @@ validate_body() {
     fi
     expected="Closes $REFERENCE"
   fi
-  if [ "$DISPOSITION" = fixed ] && ! printf '%s\n' "$text" | grep -Eqi "(^|[[:space:]])${expected// /[[:space:]]+}([[:space:]]|$)"; then
+  if [ "$DISPOSITION" = fixed ] && ! printf '%s\n' "$text" | grep -Eqi "(^|[[:space:]])${expected// /[[:space:]]+}([[:space:]]|[.,;:!?)]|$)"; then
     fail_input missing-closing-reference "Add '$expected' to the PR body."
   fi
   if [ "$DISPOSITION" != fixed ]; then
     refs_expected="Refs $REFERENCE"
-    if ! printf '%s\n' "$text" | grep -Eqi "(^|[[:space:]])${refs_expected// /[[:space:]]+}([[:space:]]|$)"; then
+    if ! printf '%s\n' "$text" | grep -Eqi "(^|[[:space:]])${refs_expected// /[[:space:]]+}([[:space:]]|[.,;:!?)]|$)"; then
       fail_input missing-reconciliation-reference "Add '$refs_expected' to the PR body; $DISPOSITION work must not auto-close on merge."
     fi
     if [ "$TRACKER" = github ]; then
@@ -293,7 +297,7 @@ reconcile_github() {
     emit verified closing-reference-present "GitHub will reconcile $REFERENCE from the PR body when the PR merges."
     return 0
   fi
-  [ -f "$NOTE_FILE" ] || fail_input missing-note "Provide --note-file for a $DISPOSITION reconciliation."
+  file_has_content "$NOTE_FILE" || fail_input missing-note "Provide a non-empty --note-file for a $DISPOSITION reconciliation."
   command -v gh >/dev/null 2>&1 || {
     emit failed transport-unavailable "Install and authenticate the gh CLI."
     exit 1
@@ -347,8 +351,8 @@ reconcile_linear() {
     partial) action="post the --note-file contents to $REFERENCE and verify the issue remains open" ;;
     stale) action="post the --note-file contents to $REFERENCE, close it, and verify its final state" ;;
   esac
-  if [ "$DISPOSITION" != fixed ] && [ ! -f "$NOTE_FILE" ]; then
-    fail_input missing-note "Provide --note-file for a $DISPOSITION reconciliation."
+  if [ "$DISPOSITION" != fixed ] && ! file_has_content "$NOTE_FILE"; then
+    fail_input missing-note "Provide a non-empty --note-file for a $DISPOSITION reconciliation."
   fi
   emit unverifiable linear-transport-unavailable "Use the Linear API/MCP to $action."
   exit 3
