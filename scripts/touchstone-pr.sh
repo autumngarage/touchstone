@@ -11,12 +11,9 @@ PROJECT_ARG=""
 TITLE=""
 BODY_FILE=""
 BASE_REF=""
-COMMENT_ID=""
-FIX_COMMIT=""
 EXPECTED_HEAD=""
 OPERATION="${1:-}"
 PR_NUMBER=""
-SCRIPT_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 CAPTURE_STDERR_TEMP=""
 
 cleanup() {
@@ -40,8 +37,6 @@ usage() {
 Usage:
   touchstone pr open --title TITLE --body-file FILE [--base BRANCH] [--project DIR] [--json]
   touchstone pr status PR [--project DIR] [--json]
-  touchstone pr findings PR [--project DIR] [--json]
-  touchstone pr respond PR --comment-id ID --body-file FILE [--fix-commit SHA] [--project DIR] [--json]
   touchstone pr merge PR --head SHA [--project DIR] [--json]
 EOF
   exit 2
@@ -156,22 +151,12 @@ read_with_retry() {
   done
 }
 
-json_lines_to_array() {
-  printf '%s\n' "$1" | awk '
-    BEGIN { printf "[" }
-    NF {
-      if (count++) printf ","
-      printf "%s", $0
-    }
-    END { print "]" }
-  '
-}
-
 read_repository() {
   (
     unset GH_REPO
     cd "$PROJECT_ROOT"
-    gh repo view --json nameWithOwner,url --jq '[.nameWithOwner,.url] | @tsv'
+    gh repo view --json nameWithOwner,url,defaultBranchRef \
+      --jq '[.nameWithOwner,.url,.defaultBranchRef.name] | @tsv'
   )
 }
 
@@ -196,7 +181,7 @@ require_option_value() {
 }
 
 case "$OPERATION" in
-  status | findings | respond | merge)
+  status | merge)
     [ "$#" -ge 2 ] || usage
     PR_NUMBER="$2"
     case "$PR_NUMBER" in "" | *[!0-9]*) usage ;; esac
@@ -232,16 +217,6 @@ while [ "$#" -gt 0 ]; do
       BASE_REF="$2"
       shift 2
       ;;
-    --comment-id)
-      require_option_value "$@"
-      COMMENT_ID="$2"
-      shift 2
-      ;;
-    --fix-commit)
-      require_option_value "$@"
-      FIX_COMMIT="$2"
-      shift 2
-      ;;
     --head)
       require_option_value "$@"
       EXPECTED_HEAD="$2"
@@ -254,19 +229,15 @@ done
 
 case "$OPERATION" in
   open)
-    [ -z "$COMMENT_ID$FIX_COMMIT$EXPECTED_HEAD" ] \
+    [ -z "$EXPECTED_HEAD" ] \
       || fail_input "open received an option for another operation" "Use only --title, --body-file, and --base."
     ;;
-  status | findings)
-    [ -z "$TITLE$BODY_FILE$BASE_REF$COMMENT_ID$FIX_COMMIT$EXPECTED_HEAD" ] \
+  status)
+    [ -z "$TITLE$BODY_FILE$BASE_REF$EXPECTED_HEAD" ] \
       || fail_input "$OPERATION does not accept mutation options" "Pass only PR, --project, and --json."
     ;;
-  respond)
-    [ -z "$TITLE$BASE_REF$EXPECTED_HEAD" ] \
-      || fail_input "respond received an option for another operation" "Use only --comment-id, --body-file, and --fix-commit."
-    ;;
   merge)
-    [ -z "$TITLE$BODY_FILE$BASE_REF$COMMENT_ID$FIX_COMMIT" ] \
+    [ -z "$TITLE$BODY_FILE$BASE_REF" ] \
       || fail_input "merge received an option for another operation" "Use only --head."
     ;;
 esac
@@ -287,7 +258,7 @@ command -v gh >/dev/null 2>&1 \
   || fail_operation "GitHub CLI is unavailable" "Install and authenticate gh."
 read_with_retry read_repository \
   || fail_operation "could not resolve the canonical base repository: $READ_OUTPUT" "Verify origin and GitHub access."
-IFS="$(printf '\t')" read -r REPO REPO_URL <<<"$READ_OUTPUT"
+IFS="$(printf '\t')" read -r REPO REPO_URL DEFAULT_REF <<<"$READ_OUTPUT"
 case "$REPO" in */*) ;; *) fail_operation "GitHub returned an invalid repository identity" "Expected owner/name, got '$REPO'." ;; esac
 case "$REPO_URL" in
   http://* | https://*)
@@ -331,14 +302,13 @@ open_pr() {
   remote_head="${remote_line%%[[:space:]]*}"
   [ -n "$remote_head" ] || fail_input "origin/$branch does not exist" "Run 'git push -u origin HEAD' first."
   [ "$local_head" = "$remote_head" ] || fail_input "local and remote heads differ" "Push the current head, then retry."
-  if [ -z "$BASE_REF" ]; then
-    BASE_REF="$(git -C "$PROJECT_ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-    BASE_REF="${BASE_REF#origin/}"
-  fi
-  [ -n "$BASE_REF" ] || fail_input "default base branch is unknown" "Pass --base BRANCH or set origin/HEAD."
-  [ "$branch" != "$BASE_REF" ] \
+  [ -n "$DEFAULT_REF" ] || fail_operation "GitHub returned no default branch" "Set the repository's default branch before opening a pull request."
+  [ "$branch" != "$DEFAULT_REF" ] \
     || fail_input "cannot open a pull request from the default branch '$branch'" \
       "Create and push a feature branch first."
+  if [ -z "$BASE_REF" ]; then
+    BASE_REF="$DEFAULT_REF"
+  fi
 
   read_with_retry gh pr list --repo "$REPO_SPEC" --state open --head "$branch" --limit 100 \
     --json number,url,headRefOid,baseRefName,baseRefOid \
@@ -444,62 +414,6 @@ status_pr() {
   fi
 }
 
-findings_pr() {
-  local query threads reviews
-  # shellcheck disable=SC2016 # GraphQL variable references are intentionally literal.
-  query='query($endCursor: String, $owner: String!, $name: String!, $pr: Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$pr) { reviewThreads(first:100,after:$endCursor) { nodes { id isResolved comments(first:1) { nodes { databaseId path body url } } } pageInfo { hasNextPage endCursor } } } } }'
-  read_with_retry gh api graphql --hostname "$REPO_HOST" --paginate \
-    -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F pr="$PR_NUMBER" -f query="$query" \
-    --jq '.data.repository.pullRequest.reviewThreads.nodes[] | {threadId:.id,resolved:.isResolved,commentId:.comments.nodes[0].databaseId,path:(.comments.nodes[0].path // null),body:.comments.nodes[0].body,url:.comments.nodes[0].url} | @json' \
-    || fail_operation "could not read paginated review threads: $READ_OUTPUT" "Retry after GitHub recovers."
-  threads="$(json_lines_to_array "$READ_OUTPUT")"
-  read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
-    --jq '.[] | select((.body // "") != "") | {reviewId:.id,state:.state,body:.body,url:.html_url,commit:.commit_id} | @json' \
-    || fail_operation "could not read paginated review bodies: $READ_OUTPUT" "Retry after GitHub recovers."
-  reviews="$(json_lines_to_array "$READ_OUTPUT")"
-  if [ "$JSON_MODE" = true ]; then
-    printf '{"schema":"%s","operation":"findings","status":"observed","pullRequest":%s,"threads":%s,"reviews":%s}\n' \
-      "$OUTPUT_SCHEMA" "$PR_NUMBER" "$threads" "$reviews"
-  else
-    printf 'PR #%s findings\n' "$PR_NUMBER"
-    read_with_retry gh api graphql --hostname "$REPO_HOST" --paginate \
-      -f owner="${REPO%%/*}" -f name="${REPO##*/}" -F pr="$PR_NUMBER" -f query="$query" \
-      --jq '.data.repository.pullRequest.reviewThreads.nodes[] | "  thread \(.comments.nodes[0].databaseId) [resolved=\(.isResolved)] \(.comments.nodes[0].path // \"-\")\n    \(.comments.nodes[0].body)\n    \(.comments.nodes[0].url)"' \
-      || fail_operation "could not render review threads: $READ_OUTPUT" "Retry after GitHub recovers."
-    [ -z "$READ_OUTPUT" ] || printf '%s\n' "$READ_OUTPUT"
-    read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
-      --jq '.[] | select((.body // "") != "") | "  review \(.id) [\(.state)] at \(.commit_id)\n    \(.body)\n    \(.html_url)"' \
-      || fail_operation "could not render review bodies: $READ_OUTPUT" "Retry after GitHub recovers."
-    [ -z "$READ_OUTPUT" ] || printf '%s\n' "$READ_OUTPUT"
-  fi
-}
-
-respond_pr() {
-  local output status=0
-  local -a args
-  [ -n "$COMMENT_ID" ] || fail_input "respond requires --comment-id" "Pass the root review comment ID."
-  [ -f "$BODY_FILE" ] && [ -s "$BODY_FILE" ] \
-    || fail_input "respond requires a non-empty --body-file" "Write the reply to a file."
-  case "$COMMENT_ID" in *[!0-9]*) fail_input "comment ID must be numeric" "Pass a database ID." ;; esac
-  args=("$PR_NUMBER" --comment-id "$COMMENT_ID" --body-file "$BODY_FILE")
-  if [ -n "$FIX_COMMIT" ]; then args+=(--fix-commit "$FIX_COMMIT"); fi
-  output="$(cd "$PROJECT_ROOT" \
-    && TOUCHSTONE_GITHUB_REPOSITORY="$REPO" TOUCHSTONE_GITHUB_HOST="$REPO_HOST" \
-      bash "$SCRIPT_ROOT/scripts/respond-review.sh" "${args[@]}" 2>&1)" || status=$?
-  if [ "$status" -ne 0 ]; then
-    emit_error "$output" "Inspect the review thread before retrying."
-    exit "$status"
-  fi
-  if [ "$JSON_MODE" = true ]; then
-    printf '{"schema":"%s","operation":"respond","status":"verified","pullRequest":%s,"commentId":%s,"detail":' \
-      "$OUTPUT_SCHEMA" "$PR_NUMBER" "$COMMENT_ID"
-    json_string "$output"
-    printf '}\n'
-  else
-    printf '%s\n' "$output"
-  fi
-}
-
 merge_pr() {
   local number state url head base base_sha merge_state draft merge_output merge_status=0
   local final_row auto_merge queue_state
@@ -546,7 +460,5 @@ merge_pr() {
 case "$OPERATION" in
   open) open_pr ;;
   status) status_pr ;;
-  findings) findings_pr ;;
-  respond) respond_pr ;;
   merge) merge_pr ;;
 esac

@@ -10,8 +10,6 @@ precondition for recovery.
 ```text
 touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
 touchstone pr status PR
-touchstone pr findings PR
-touchstone pr respond PR --comment-id ID --body-file FILE [--fix-commit SHA]
 touchstone pr merge PR --head SHA
 ```
 
@@ -33,14 +31,6 @@ command runs a daemon, stores credentials, or persists derived PR state.
 - `status` is a read-only observation of state, URL, exact head, base ref/base
   SHA, draft state, and GitHub's merge-state observation. Raw equivalent:
   `gh pr view --json number,state,url,headRefOid,baseRefName,baseRefOid,mergeStateStatus,isDraft`.
-- `findings` paginates both inline review threads through GraphQL and body-only
-  formal reviews through REST. It reports resolved state and stable IDs needed
-  by `respond`. Raw equivalent: paginated `gh api graphql` review-thread reads
-  plus `gh api --paginate repos/OWNER/REPO/pulls/PR/reviews`.
-- `respond` delegates to `scripts/respond-review.sh`, passing the already
-  resolved canonical repository and hostname while preserving the single
-  reply, resolve, and fresh verification path. Raw equivalent: that script's
-  documented invocation.
 - `merge` requires the caller's exact reviewed head, binds
   `--match-head-commit` to it, asks GitHub to merge, and always re-reads actual
   PR state. A verified merge-queue entry or enabled auto-merge request is a
@@ -75,10 +65,12 @@ GitHub.
 
 ## Ownership boundary
 
-The CLI owns GitHub PR sequencing, stable output, retry limits, idempotency
-checks, and post-mutation verification. It does not parse tracker closing
-language or mutate tracker state. Drivers reconcile delivered work through the
-configured tracker API or CLI. `respond-review.sh` owns reply-and-resolve
-semantics. Repository rules and the required workflow own the merge verdict.
-This command neither reconstructs those rules nor treats a local inference as
-permission to merge.
+The CLI owns the three GitHub PR operations whose mutation boundaries have
+concrete failure evidence: exact-head review request, bounded state observation,
+and exact-head merge with live reconciliation. It does not reconstruct review
+findings, conversation state, or tracker state. Drivers inspect GitHub's review
+surface directly and use `scripts/respond-review.sh` for inline
+reply-and-resolve semantics; body-only answers remain the marked raw procedure
+in `principles/git-workflow.md`. Repository rules and the required workflow own
+the merge verdict. This command neither reconstructs those rules nor treats a
+local inference as permission to merge.

@@ -68,7 +68,7 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 8. **Merge** with `gh pr merge <n> --squash --match-head-commit <sha>`, binding to the head the review actually saw. Its exit code lies in both directions — confirm against real state rather than trusting it.
 9. **Clean up after merge.** Delete the local branch if it persists.
 
-Raw commands remain the recovery path. `touchstone pr open|status|findings|respond|merge` sequences them; GitHub keeps every verdict. `principles/git-workflow.md` carries the full sequence, including thread resolution.
+Raw commands remain the recovery path. `touchstone pr open|status|merge` sequences three bounded operations; GitHub remains the review and verdict authority. `principles/git-workflow.md` carries the full sequence, including thread resolution.
 
 Never use a direct default-branch push as an emergency path. Repositories with the audited policy enforce PR-only bypass; elsewhere this remains mandatory procedure until adoption. See `principles/git-workflow.md`.
 

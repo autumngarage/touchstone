@@ -10,7 +10,8 @@ One person cannot read everything many agents produce. Touchstone exists so that
 The goal is that every Autumn Garage project gets the same dev flow by adopting Touchstone, and that the flow is industry-leading practice for GitHub and agent-driven delivery. Adoption is **set-and-forget**: an adopted repository must remain correct if Touchstone never rewrites it again. V1 serves one operator's portfolio through public-quality interfaces; it does not build a speculative third-party platform. The durable boundary is defined in `docs/product-contract.md`.
 
 **The second half is deliberately narrow.** The CLI validates declared project
-checks, verifies tracker claims, and sequences five PR operations. Drivers
+checks, verifies tracker claims, and sequences three bounded PR operations.
+GitHub remains the review and findings surface; drivers
 reconcile delivered work through the configured tracker API or CLI.
 It does not stage, commit, or push code, and it never replaces GitHub's merge
 verdict. Every operation retains a documented raw `git`/`gh` recovery path.
@@ -63,7 +64,7 @@ engine; its contract lives in [docs/validation-contract.md](docs/validation-cont
 `scripts/touchstone-tracker.sh` owns the tracker-neutral verified claim boundary;
 its versioned outcomes live in [docs/tracker-contract.md](docs/tracker-contract.md).
 Drivers reconcile delivered work through the configured tracker's API or CLI.
-`scripts/touchstone-pr.sh` owns the five PR sequencing operations; its
+`scripts/touchstone-pr.sh` owns the three bounded PR sequencing operations; its
 versioned output and raw recovery equivalents live in
 [docs/pr-cli-contract.md](docs/pr-cli-contract.md).
 Current replacement scope and sequencing live in the [canonical Linear execution plan](https://linear.app/autumngarage/document/touchstone-execution-plan-post-strip-baseline-cac4c56e593e), not this durable overview.
@@ -78,8 +79,6 @@ branch is pushed:
 ```bash
 touchstone pr open --title "fix: some change" --body-file /tmp/pr-body
 touchstone pr status <n>
-touchstone pr findings <n>
-touchstone pr respond <n> --comment-id <id> --body-file /tmp/reply
 touchstone pr merge <n> --head <reviewed-sha>
 ```
 
@@ -99,8 +98,8 @@ gh pr view <n> --json state,mergedAt      # confirm; the merge exit code lies in
 
 `principles/git-workflow.md` carries the full sequence, including thread resolution and the failure modes worth knowing about.
 
-The `respond` operation reuses the existing script because GitHub needs four
-API calls to reply-and-resolve correctly:
+Answering inline review findings still uses the existing script because GitHub
+needs four API calls to reply-and-resolve correctly:
 
 ```bash
 bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file>

@@ -4,10 +4,10 @@ Every code change goes through a feature branch + PR + PR-visible review loop + 
 
 Every step below has a raw `git` or `gh` command you can run and verify
 yourself. That is deliberate: the mechanics live here, in prose, so any agent
-with a shell and `gh` can deliver correctly. `touchstone pr
-open|status|findings|respond|merge` accelerates the awkward sequencing and
-verification, but it is never the only recovery path and never replaces a
-GitHub verdict. Its stable boundary lives in
+with a shell and `gh` can deliver correctly. `touchstone pr open|status|merge`
+accelerates the three bounded operations with concrete failure evidence, but
+it is never the only recovery path and never replaces GitHub's review surface
+or verdict. Its stable boundary lives in
 `docs/pr-cli-contract.md`.
 
 ## Never commit on the default branch

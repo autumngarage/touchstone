@@ -528,11 +528,6 @@ value_after() {
   return 1
 }
 
-if has '--slurp' "$@" && has '--jq' "$@"; then
-  printf '%s\n' 'the `--slurp` option is not supported with `--jq` or `--template`' >&2
-  exit 1
-fi
-
 case "$1 ${2:-}" in
   "auth status")
     [ "${GH_MODE:-ok}" != auth_fail ]
@@ -541,9 +536,9 @@ case "$1 ${2:-}" in
   "repo view")
     [ "${GH_MODE:-ok}" != success_stderr ] || printf 'repo debug detail\n' >&2
     if [ -n "${GH_REPO:-}" ]; then
-      printf '%s\thttps://%s/%s\n' "$GH_REPO" "${GH_REPO_HOST:-github.com}" "$GH_REPO"
+      printf '%s\thttps://%s/%s\tmain\n' "$GH_REPO" "${GH_REPO_HOST:-github.com}" "$GH_REPO"
     else
-      printf 'autumngarage/current\thttps://%s/autumngarage/current\n' "${GH_REPO_HOST:-github.com}"
+      printf 'autumngarage/current\thttps://%s/autumngarage/current\tmain\n' "${GH_REPO_HOST:-github.com}"
     fi
     ;;
   "pr list")
@@ -735,6 +730,10 @@ EOF
   GH_HEAD="$MAIN_SHA" run_pr "$TMP/out" open --title 'Default branch' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'cannot open a pull request from the default branch'
+  GH_HEAD="$MAIN_SHA" GH_BASE_REF=release run_pr "$TMP/out" open --title 'Default branch' \
+    --body-file "$TMP/body" --base release --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'cannot open a pull request from the default branch'
   git -C "$TMP/project" switch -q feat/test
   touch "$TMP/state/pr-exists"
   GH_HEAD=wrong run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
@@ -810,32 +809,13 @@ EOF
   GH_BASE_REF=main
   GH_BASE_SHA=base-sha
 
-  echo "==> body and inline findings are complete, paginated, and machine-readable"
+  echo "==> review findings and responses stay on the canonical GitHub surface"
   run_pr "$TMP/out" findings 7 --json
-  assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"commentId":51'
-  assert_has "$TMP/out" '"reviewId":61'
-  jq -e '.threads | length == 1' "$TMP/out" >/dev/null \
-    || fail "findings did not emit one parseable thread"
-  jq -e '.reviews | length == 1' "$TMP/out" >/dev/null \
-    || fail "findings did not emit one parseable review"
-  assert_has "$GH_CALLS" 'api graphql --hostname github.com --paginate'
-  assert_not_has "$GH_CALLS" '--slurp'
-  assert_has "$GH_CALLS" '/reviews?per_page=100'
-
-  echo "==> respond reuses the existing reply/resolve path and is rerunnable"
-  rm -f "$TMP/state/reply"
-  GH_REPO_HOST=github.enterprise.example GH_REPO=ambient/wrong \
-    run_pr "$TMP/out" respond 7 --comment-id 51 --body-file "$TMP/reply" --fix-commit abc123 --json
-  assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"status":"verified"'
-  assert_has "$GH_CALLS" 'resolveReviewThread'
-  assert_has "$GH_CALLS" '--hostname github.enterprise.example'
-  assert_not_has "$GH_CALLS" 'ambient/wrong'
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'touchstone pr open'
   run_pr "$TMP/out" respond 7 --comment-id 51 --body-file "$TMP/reply" --json
-  assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" 'already posted'
-  assert_not_has "$GH_CALLS" '/comments/51/replies -f'
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'touchstone pr open'
 
   echo "==> merge binds the head, delegates the verdict, and verifies actual state"
   rm -f "$TMP/state/merged"
