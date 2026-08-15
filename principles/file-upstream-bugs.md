@@ -1,21 +1,25 @@
-# Filing bugs as issues
+# Filing bugs as tracked work
 
-When you find a bug, file a GitHub issue. Don't silently work around it. Two cases — bugs in the project you're working on, and bugs in the autumngarage tools you depend on — and the discipline is the same in both: write down what's broken so the next person doesn't trip over it.
+When you find a bug, file it in the project's configured tracker. Don't
+silently work around it. For bugs here and in upstream tools, the discipline is
+the same: write down what's broken so the next person does not rediscover it.
 
 The cost of filing an issue is two minutes. The cost of the next person rediscovering the same bug is hours.
 
 ## Bugs in this project
 
-If you find a bug in the project you're working on, file an issue against that project — even one you can't fix right now, even one you're about to fix in the same session. The issue is the durable record; the fix commit is the resolution. A bug that lives only in conversation gets rediscovered.
+If you find a bug in the project you're working on, file a tracker item against
+that project—even one you cannot fix now or are about to fix in the same
+session. The tracker item is the durable record; the fix commit is evidence.
 
 When to file:
 
-- **Discovered while doing unrelated work, not fixing now** → file an issue. Note it in the current PR description if relevant ("noticed in passing — see #123").
-- **Fixing in the current session** → file the issue first, then close it by putting `Closes #<n>` in the **PR body** (see `principles/git-workflow.md` — a commit trailer alone does not close anything on a squash merge).
-- **Suspect a bug but unsure** → file it as a question / "needs repro" issue rather than letting it sit in chat. Re-discovery later is more expensive than a wrong-flagged issue you close.
-- **Hard-won lesson worth capturing** → if the bug taught a generalizable lesson, file the issue and link it from `CLAUDE.md`'s "Hard-Won Lessons" section.
+- **Discovered during unrelated work, not fixing now** → file an item. Link it from the current PR when relevant.
+- **Fixing now** → claim the item first, then put its configured close (`Closes #123` or `Fixes AUT-123`) in the **PR body**.
+- **Suspect but unsure** → file it as "needs repro" rather than leaving it in chat.
 
-`gh issue create` (no `--repo` flag — it defaults to the current project's repo). Body shape:
+Use the configured tracker API or CLI. For a GitHub-backed project,
+`gh issue create` defaults to the current repository. Body shape:
 
 ```
 ## Symptom
@@ -34,20 +38,20 @@ When to file:
 <while doing <what>, on YYYY-MM-DD>
 ```
 
-Search before filing: `gh issue list --search "<keywords>"`. If a matching issue exists, comment with your repro instead of opening a duplicate.
+Search the configured tracker first. If a matching item exists, add the repro
+there instead of opening a duplicate.
 
 ## Bugs in autumngarage tools
 
-If you hit what looks like a bug in an autumngarage tool — actual unexpected behavior in the tool itself, not your project's misuse of it — file the issue **upstream against the tool's repo**, not against your project. The same bug will bite the next user; logging it in the tool's repo is how the ecosystem stays sharp.
+If an autumngarage tool itself misbehaves, file the bug **in that tool's
+configured upstream tracker**, not against the consumer project.
 
 This also applies to **workflow friction** caused by the tools, even when it is not a hard crash: excessive token use, poor parallelization, unclear delegation ergonomics, brittle review/merge behavior, or other agent-delivery inefficiency. If the pain repeats, it is an upstream product issue.
 
-The repos:
-
-- **touchstone** — the steering prose, `principles/`, `hooks/`, `scripts/`, and the delivery workflow → https://github.com/autumngarage/touchstone/issues
-- **cortex** — `.cortex/journal/`, `.cortex/doctrine/`, the Cortex Protocol → https://github.com/autumngarage/cortex/issues
-
-`gh issue create --repo autumngarage/<tool>` with the same body shape as above. Search first: `gh issue list --repo autumngarage/<tool> --search "<keywords>"`. If a matching issue exists, comment with your repro instead of opening a duplicate.
+Inspect the upstream project's tracker declaration or contributor guidance. If
+it is GitHub-backed, use `gh issue create --repo autumngarage/<tool>` and
+search that repository first. If it is Linear-backed, use the configured team
+key and Linear API or MCP, then verify the returned item.
 
 ## When NOT to file
 

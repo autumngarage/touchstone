@@ -35,7 +35,9 @@ echo "==> TOUCHSTONE.md and managed AGENTS blocks expose the driver/reviewer con
 for file in \
   "$TOUCHSTONE_ROOT/TOUCHSTONE.md" \
   "$TOUCHSTONE_ROOT/AGENTS.md" \
-  "$TOUCHSTONE_ROOT/templates/AGENTS.md"; do
+  "$TOUCHSTONE_ROOT/templates/AGENTS.md" \
+  "$TOUCHSTONE_ROOT/GEMINI.md" \
+  "$TOUCHSTONE_ROOT/templates/GEMINI.md"; do
   assert_contains "$file" "Agent Roles And Fallbacks"
   assert_contains "$file" "Driving CLI"
   assert_contains "$file" "PR-visible reviewer"
@@ -53,10 +55,13 @@ for file in \
   assert_contains "$file" "Answer every piece of PR feedback before merging"
   assert_contains "$file" "scripts/respond-review.sh"
   assert_not_contains "$file" "touchstone worker"
-  assert_contains "$file" "Claim issues before implementation"
-  assert_contains "$file" "bash scripts/claim-issue.sh <n>"
-  assert_contains "$file" "Reconcile issues"
-  assert_contains "$file" "Do not leave fixed issues open silently"
+  assert_contains "$file" "Claim tracked work before implementation"
+  assert_contains "$file" "configured tracker's race-safe claim"
+  assert_contains "$file" "unavailable transport is unverifiable"
+  assert_contains "$file" "Reconcile tracked work"
+  assert_contains "$file" 'Closes #123'
+  assert_contains "$file" 'Fixes AUT-123'
+  assert_not_contains "$file" "list every GitHub issue found"
   assert_contains "$file" "Do not infer adoption from this document"
   assert_contains "$file" "missing enforcement is a rollout gap"
   assert_contains "$file" "A security-review quota notice is never a blocker"
