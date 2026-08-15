@@ -950,4 +950,50 @@ mkdir -p "$LEGACY_COMPILER/packages/api" "$LEGACY_COMPILER/packages/web"
   [ "$collision_status" -eq 2 ] || exit 30
 ) || fail "legacy adapter changed validation coverage"
 
+echo "==> adoption planner validates contracts without executing tasks"
+PLANNER_CONTRACT="$TMP_DIR/planner-contract"
+mkdir -p "$PLANNER_CONTRACT"
+cat >"$PLANNER_CONTRACT/.touchstone.toml" <<'EOF'
+schema = 1
+
+[validation]
+runtime = "bash"
+
+[[validation.targets]]
+name = "root"
+path = "."
+
+[[validation.tasks]]
+name = "must-not-run"
+target = "root"
+command = "exit 77"
+required = true
+EOF
+planner_output="$(bash "$RUNNER" validate --check-contract --project "$PLANNER_CONTRACT")" \
+  || fail "parse-only contract validation failed"
+case "$planner_output" in *"schema-v1 contract is valid"*) ;; *) fail "parse-only validation did not report success" ;; esac
+
+echo "==> adoption planner rejects unsafe managed-path ancestors"
+PLANNER_PATHS="$TMP_DIR/planner-paths"
+mkdir -p "$PLANNER_PATHS"
+: >"$PLANNER_PATHS/.touchstone"
+(
+  PROJECT_ROOT="$(cd "$PLANNER_PATHS" && pwd -P)"
+  TAB="$(printf '\t')"
+  CR="$(printf '\r')"
+  LF="$(printf '\nX')"
+  LF="${LF%X}"
+  valid_relative_path() {
+    case "$1" in "" | /* | .. | ../* | */../* | */..) return 1 ;; esac
+    return 0
+  }
+  contract_refusal() {
+    printf 'refused: %s\n' "$*" >&2
+    exit 2
+  }
+  # shellcheck source=scripts/lib/touchstone-adopt-planner.sh
+  source "$ROOT/scripts/lib/touchstone-adopt-planner.sh"
+  safe_owned_path .touchstone/TOUCHSTONE.md
+) >/dev/null 2>&1 && fail "planner accepted a managed path through a regular file"
+
 echo "validation engine tests passed"
