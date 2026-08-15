@@ -576,7 +576,13 @@ case "$1 ${2:-}" in
       touch "$GH_STATE/retried"
       exit 1
     fi
-    if has '--json body' "$@"; then
+    if has '--json headRefOid,baseRefName,baseRefOid' "$@"; then
+      if [ "${GH_MODE:-ok}" = binding_moved ]; then
+        printf 'moved-head\t%s\t%s\n' "$GH_BASE_REF" "$GH_BASE_SHA"
+      else
+        printf '%s\t%s\t%s\n' "$GH_HEAD" "$GH_BASE_REF" "$GH_BASE_SHA"
+      fi
+    elif has '--json body' "$@"; then
       if [ -f "$GH_STATE/pr-body" ]; then
         cat "$GH_STATE/pr-body"
       else
@@ -626,7 +632,9 @@ case "$1 ${2:-}" in
     fi
     ;;
   "api --paginate")
-    if has '/issues/7/comments' "$@"; then
+    if has "/commits/$GH_HEAD/statuses?per_page=100" "$@"; then
+      [ "${GH_MODE:-ok}" = marker_missing ] || printf '%s\n' 81
+    elif has '/issues/7/comments' "$@"; then
       if [ "${GH_MODE:-ok}" = many_requests ]; then
         for index in $(awk 'BEGIN { for (i = 1; i <= 4000; i++) print i }'); do
           printf 'https://example.test/pr/7#issuecomment-%s\talice\t%s\n' "$index" \
@@ -680,7 +688,7 @@ EOF
   chmod +x "$TMP/bin/gh"
   export PATH="$TMP/bin:$PATH" GH_CALLS="$TMP/calls" GH_STATE="$TMP/state" GH_HEAD="$HEAD_SHA"
   export GH_BASE_REF=main GH_BASE_SHA=base-sha
-  export TOUCHSTONE_READ_ATTEMPTS=2 TOUCHSTONE_RETRY_DELAY=0
+  export TOUCHSTONE_READ_ATTEMPTS=2 TOUCHSTONE_REQUEST_ATTEMPTS=2 TOUCHSTONE_RETRY_DELAY=0
 
   run_pr() {
     local output="$1"
@@ -773,6 +781,14 @@ EOF
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewRequest":"existing:'
   [ "$(grep -c '^pr comment' "$GH_CALLS" || true)" -eq 0 ] || fail "rerun duplicated the review request"
+  assert_has "$GH_CALLS" "/commits/$HEAD_SHA/statuses?per_page=100"
+  assert_has "$GH_CALLS" 'touchstone/review-request-v1'
+  GH_MODE=marker_missing run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'has no matching server binding'
+  GH_MODE=binding_moved run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 2
+  assert_has "$TMP/out" 'PR coordinates moved before the review request was bound'
   rm -f "$TMP/state/review-request"
   GH_MODE=spoofed_request run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0

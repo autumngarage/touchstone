@@ -6,6 +6,7 @@ set -euo pipefail
 OUTPUT_SCHEMA="touchstone.pr/v1"
 READ_ATTEMPTS="${TOUCHSTONE_READ_ATTEMPTS:-3}"
 RETRY_DELAY="${TOUCHSTONE_RETRY_DELAY:-2}"
+REQUEST_ATTEMPTS="${TOUCHSTONE_REQUEST_ATTEMPTS:-15}"
 JSON_MODE=false
 PROJECT_ARG=""
 TITLE=""
@@ -27,6 +28,11 @@ case "$READ_ATTEMPTS" in '' | *[!0-9]* | 0)
 esac
 case "$RETRY_DELAY" in '' | *[!0-9]*)
   echo "ERROR: TOUCHSTONE_RETRY_DELAY must be a non-negative integer" >&2
+  exit 2
+  ;;
+esac
+case "$REQUEST_ATTEMPTS" in '' | *[!0-9]* | 0)
+  echo "ERROR: TOUCHSTONE_REQUEST_ATTEMPTS must be a positive integer" >&2
   exit 2
   ;;
 esac
@@ -275,6 +281,38 @@ emit_open_result() {
   fi
 }
 
+wait_for_request_binding() {
+  local number="$1" head="$2" base_ref="$3" base_sha="$4" request_url="$5"
+  local comment_id base_ref_hash description attempt=1 live_row live_head live_base live_base_sha marker
+  comment_id="${request_url##*issuecomment-}"
+  case "$comment_id" in '' | *[!0-9]*) fail_operation "review request URL has no stable comment ID: $request_url" "Inspect the surviving request comment." ;; esac
+  base_ref_hash="$(printf '%s' "$base_ref" | git hash-object --stdin)" \
+    || fail_operation "could not hash the review base ref" "Repair the local Git installation."
+  description="v1 p=$number r=$base_ref_hash b=$base_sha c=$comment_id"
+  while :; do
+    read_with_retry gh pr view "$number" --repo "$REPO_SPEC" \
+      --json headRefOid,baseRefName,baseRefOid \
+      --jq '[.headRefOid,.baseRefName,.baseRefOid] | @tsv' \
+      || fail_operation "could not re-read review coordinates: $READ_OUTPUT" "Inspect GitHub before retrying."
+    live_row="$READ_OUTPUT"
+    IFS="$(printf '\t')" read -r live_head live_base live_base_sha <<<"$live_row"
+    [ "$live_head" = "$head" ] && [ "$live_base" = "$base_ref" ] && [ "$live_base_sha" = "$base_sha" ] \
+      || fail_input "PR coordinates moved before the review request was bound" "Push or integrate the live head/base, then request review once for that binding."
+    read_with_retry gh api --paginate --hostname "$REPO_HOST" \
+      "repos/$REPO/commits/$head/statuses?per_page=100" \
+      --jq ".[] | select(.context == \"touchstone/review-request-v1\" and .state == \"success\" and (.creator.login // \"\") == \"github-actions[bot]\" and .description == \"$description\") | .id" \
+      || fail_operation "could not inspect the review-request binding: $READ_OUTPUT" "Retry after GitHub recovers."
+    marker="$READ_OUTPUT"
+    [ -z "$marker" ] || return 0
+    if [ "$attempt" -ge "$REQUEST_ATTEMPTS" ]; then
+      fail_operation "review request comment $comment_id has no matching server binding" "Inspect the review-binding workflow before retrying."
+    fi
+    [ "$JSON_MODE" = true ] || printf 'Review binding pending; retrying in %ss.\n' "$RETRY_DELAY" >&2
+    attempt=$((attempt + 1))
+    sleep "$RETRY_DELAY"
+  done
+}
+
 open_pr() {
   local branch local_head remote_line remote_head rows count number url pr_head pr_base pr_base_sha create_output create_status=0
   local request_marker request_head_marker comment_rows existing_request moved_request request_body request_url request_rows state request_author
@@ -342,6 +380,7 @@ open_pr() {
     '$2 == author && index($3, "@codex review") && index($3, marker) { print $1 }')"
   if [ -n "$existing_request" ]; then
     request_url="$(printf '%s\n' "$existing_request" | sed -n '1p')"
+    wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url"
     emit_open_result "$state" "$number" "$url" "$local_head" "existing:$request_url"
     return 0
   fi
@@ -367,6 +406,7 @@ $request_marker"
     '$1 == url && $2 == author && index($3, "@codex review") && index($3, marker) { found=1 } END { exit !found }' \
     || fail_operation "review request returned $request_url but was not verified" \
       "Inspect comments before retrying; a rerun will reuse a surviving exact-binding request."
+  wait_for_request_binding "$number" "$local_head" "$pr_base" "$pr_base_sha" "$request_url"
   emit_open_result "$state" "$number" "$url" "$local_head" "posted:$request_url"
 }
 

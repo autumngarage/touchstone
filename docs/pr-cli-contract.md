@@ -24,7 +24,9 @@ command runs a daemon, stores credentials, or persists derived PR state.
   open PR for that branch or runs `gh pr create`, re-reads GitHub after the
   mutation, and posts `@codex review` once for the exact head. Its invisible
   comment marker and the server-side `touchstone/review-request-v1` status make
-  partial reruns idempotent. Raw equivalent: compare `git rev-parse HEAD` with
+  partial reruns idempotent. It reports success only after the status binds the
+  request comment and a fresh PR read still matches the head and base. Raw
+  equivalent: compare `git rev-parse HEAD` with
   `git ls-remote`, inspect `gh pr list`, create with `gh pr create`, re-read,
   then inspect comments/status before `gh pr comment --body "@codex review"`.
 - `status` is a read-only observation of state, URL, exact head, base ref/base
