@@ -172,6 +172,8 @@ assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "claim_github_issu
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "claim-candidate:pending"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "--paginate --slurp"
 assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "issue comment ID is the claim token"
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "stand_down_github_issue() ("
+assert_contains "$TOUCHSTONE_ROOT/principles/git-workflow.md" "Release the active claim token before removing"
 assert_not_contains "$TOUCHSTONE_ROOT/TOUCHSTONE.md" "scripts/claim-issue.sh"
 assert_not_contains "$TOUCHSTONE_ROOT/templates/AGENTS.md" "scripts/claim-issue.sh"
 
@@ -183,6 +185,13 @@ awk '
   capture { print }
 ' "$GIT_WORKFLOW_GUIDE" >"$CLAIM_SNIPPET"
 bash -n "$CLAIM_SNIPPET" || fail "portable claim snippet is not valid Bash"
+STAND_DOWN_SNIPPET="$TEST_DIR/stand-down-snippet.sh"
+awk '
+  /^stand_down_github_issue\(\) \($/ { capture=1 }
+  capture && /^stand_down_github_issue <n>/ { exit }
+  capture { print }
+' "$GIT_WORKFLOW_GUIDE" >"$STAND_DOWN_SNIPPET"
+bash -n "$STAND_DOWN_SNIPPET" || fail "portable stand-down snippet is not valid Bash"
 CLAIM_BIN="$TEST_DIR/claim-bin"
 CLAIM_CALLS="$TEST_DIR/claim-calls"
 CLAIM_READS="$TEST_DIR/claim-reads"
@@ -206,6 +215,7 @@ case "$1 $2 ${3:-}" in
         ;;
       success:3 | activefail:3) printf 'OPEN\tme\n' ;;
       race:3) printf 'OPEN\tme\nother\n' ;;
+      stand:1 | standfail:1) printf 'OPEN\tme\n' ;;
       *) exit 3 ;;
     esac
     ;;
@@ -213,18 +223,28 @@ case "$1 $2 ${3:-}" in
     case "$CLAIM_MODE" in collision) printf '101\n' ;; *) printf '100\n' ;; esac
     ;;
   'api --paginate --slurp') printf '100\n' ;;
+  'api repos/owner/repo/issues/comments/100 --jq')
+    printf '%s\nDispatched. Branch `branch`, worktree at `path`. agent implementing.\n' \
+      '<!-- touchstone:claim-candidate:active -->'
+    ;;
   'api --method PATCH')
     if [ "$CLAIM_MODE" = activefail ] && [[ "$*" == *'claim-candidate:active'* ]]; then
       exit 1
     fi
     ;;
-  'issue edit 123') : ;;
+  'issue edit 123')
+    if [ "$CLAIM_MODE" = standfail ] && [[ "$*" == *'--remove-assignee me'* ]]; then
+      exit 1
+    fi
+    ;;
   *) exit 2 ;;
 esac
 EOF
 chmod +x "$CLAIM_BIN/gh"
 # shellcheck disable=SC1090
 source "$CLAIM_SNIPPET"
+# shellcheck disable=SC1090
+source "$STAND_DOWN_SNIPPET"
 export CLAIM_CALLS CLAIM_READS
 ORIGINAL_PATH="$PATH"
 PATH="$CLAIM_BIN:$PATH"
@@ -289,6 +309,28 @@ if claim_github_issue 123 branch path agent; then
   fail "portable claim sequence accepted a closed issue"
 fi
 assert_not_contains "$CLAIM_CALLS" "--method POST"
+
+: >"$CLAIM_CALLS"
+printf '0\n' >"$CLAIM_READS"
+CLAIM_MODE=stand
+export CLAIM_MODE
+stand_down_github_issue 123 complete || fail "portable stand-down sequence failed"
+assert_contains "$CLAIM_CALLS" "claim-candidate:released"
+assert_contains "$CLAIM_CALLS" "--remove-assignee me"
+release_line="$(grep -n 'claim-candidate:released' "$CLAIM_CALLS" | awk -F: 'NR == 1 { print $1 }')"
+unassign_line="$(grep -n -- '--remove-assignee me' "$CLAIM_CALLS" | awk -F: 'NR == 1 { print $1 }')"
+[ "$release_line" -lt "$unassign_line" ] || fail "stand-down removed assignment before releasing token"
+
+: >"$CLAIM_CALLS"
+printf '0\n' >"$CLAIM_READS"
+CLAIM_MODE=standfail
+export CLAIM_MODE
+if stand_down_github_issue 123 blocked; then
+  fail "portable stand-down sequence accepted failed unassignment"
+fi
+assert_contains "$CLAIM_CALLS" "claim-candidate:released"
+[ "$(grep -c 'claim-candidate:active' "$CLAIM_CALLS")" -ge 2 ] \
+  || fail "failed stand-down did not restore the active token"
 PATH="$ORIGINAL_PATH"
 
 echo "==> PR babysitting preserves approved scope"

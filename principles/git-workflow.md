@@ -505,7 +505,53 @@ Then start the agent. Not after.
 2. **No in-progress signal.** A reader scanning open issues can't tell which are actively being worked vs which are dormant. Triage decays.
 3. **Lost lineage.** The dispatch comment is the only record on the issue thread tying the work back to a specific agent, branch, and worktree. That breadcrumb matters months later.
 
-**When to unassign.** If you decide not to ship, unassign with `gh issue edit <n> --remove-assignee @me` and post a "stood down — <reason>" comment. Stale assignments are worse than no assignment at all.
+**When to stand down.** Release the active claim token before removing the
+assignee. That ordering keeps the assignment as the claim barrier until the
+token no longer blocks future work. The release edits the dispatch record so a
+reopened or deliberately resumed issue can be claimed again.
+
+```bash
+stand_down_github_issue() (
+  issue="$1"
+  reason="$2"
+  tab="$(printf '\t')"
+  released_marker='<!-- touchstone:claim-candidate:released -->'
+  me="$(gh api user --jq .login)" || exit 1
+  [ -n "$me" ] || exit 1
+  repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)" || exit 1
+  [ -n "$repo" ] || exit 1
+
+  snapshot="$(gh issue view "$issue" --json state,assignees \
+    --jq '.state + "\t" + ([.assignees[].login] | join("\n"))')" || exit 1
+  owners="${snapshot#*"$tab"}"
+  [ "$owners" = "$me" ] || exit 1
+
+  active="$(gh api --paginate --slurp \
+    "repos/$repo/issues/$issue/comments?per_page=100" \
+    --jq '[.[][] | select(.body | startswith("<!-- touchstone:claim-candidate:active -->")) | .id]
+      | if length == 1 then .[0] else empty end')" || exit 1
+  [ -n "$active" ] || exit 1
+  original_body="$(gh api "repos/$repo/issues/comments/$active" --jq .body)" || exit 1
+  [ -n "$original_body" ] || exit 1
+  released_body="$(printf '%s\n%s\n\nStood down — %s' \
+    "$released_marker" "$original_body" "$reason")"
+
+  gh api --method PATCH "repos/$repo/issues/comments/$active" \
+    -f body="$released_body" >/dev/null || exit 1
+  gh issue edit "$issue" --remove-assignee "$me" >/dev/null || {
+    gh api --method PATCH "repos/$repo/issues/comments/$active" \
+      -f body="$original_body" >/dev/null 2>&1 || true
+    exit 1
+  }
+)
+
+stand_down_github_issue <n> '<reason>'
+```
+
+The function refuses ambiguous ownership or multiple active tokens. If
+unassignment fails, it restores the active dispatch record when possible and
+returns nonzero. Stale assignments are worse than no assignment at all, but a
+stale active token is also a permanent false claim unless it is released.
 
 **When this rule does NOT apply.**
 
