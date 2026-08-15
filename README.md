@@ -50,6 +50,9 @@ The surviving `templates/` describe the frozen pre-strip consumer shape and are
 historical inputs for compatibility audits, not the new architecture.
 `scripts/touchstone-run.sh` is the declaration-only schema-v1 validation
 engine; its contract lives in [docs/validation-contract.md](docs/validation-contract.md).
+`scripts/touchstone-tracker.sh` owns the tracker-neutral verified claim boundary;
+its versioned outcomes live in [docs/tracker-contract.md](docs/tracker-contract.md).
+Drivers reconcile delivered work through the configured tracker's API or CLI.
 Current replacement scope and sequencing live in the [canonical Linear execution plan](https://linear.app/autumngarage/document/touchstone-execution-plan-post-strip-baseline-cac4c56e593e), not this durable overview.
 
 The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so GitHub approval count does not represent it. The required `review-binding` check instead binds trusted review evidence to the exact head and requires a later qualifying answer for every finding; GitHub independently requires every inline thread resolved.
@@ -63,7 +66,7 @@ git checkout -b fix/some-slug
 # ... edit, then stage explicit paths ...
 git commit -m "fix: what changed"
 git push -u origin HEAD
-gh pr create                      # put `Closes #123` in the PR BODY, not just the commit
+gh pr create                      # put `Fixes AUT-123` (or `Closes #123`) in the PR body
 gh pr comment <n> --body "@codex review"
 # ... answer every finding, resolve every thread ...
 gh pr merge <n> --squash --match-head-commit "$(gh pr view <n> --json headRefOid --jq .headRefOid)"

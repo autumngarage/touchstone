@@ -47,18 +47,26 @@ git push -u origin HEAD
 gh pr create --title "<type>: <what changed>" --body-file <(cat <<'EOF'
 <what and why>
 
-Closes #123
+<configured closing reference, for example: Fixes AUT-123>
 EOF
 )
 ```
 
-**The closing reference must be in the PR body.** This is the silent-failure trap in the whole flow: `Closes-issue: #123` in a *commit* body does nothing on a squash merge, because GitHub reads the **PR body** to decide what to auto-close. A commit trailer alone leaves the issue open and nothing reports it. If you write the trailer in commits, lift it into the PR body yourself before shipping.
+**The configured closing reference must be in the PR body.** A GitHub
+`Closes #123` or Linear `Fixes AUT-123` only in a commit body may disappear
+during squash merge. Put the configured tracker's closing grammar in the PR
+body and verify it there before shipping.
 
 Verify it took, rather than assuming:
 
 ```bash
-gh pr view <n> --json body --jq .body | grep -E '(Closes|Fixes|Resolves) #'
+expected='<configured closing reference>' # for example: Fixes AUT-123
+gh pr view <n> --json body --jq .body | grep -F -- "$expected"
 ```
+
+Set `expected` to the exact tracker item being reconciled, using the grammar
+declared by `.touchstone-tracker.toml`; a generic GitHub-or-Linear pattern can
+accept the wrong tracker or Linear team key.
 
 **Requesting review.** The PR-visible reviewer runs asynchronously against the exact pushed head:
 
@@ -169,7 +177,14 @@ gh pr view <n> --json state,mergedAt --jq '{state, mergedAt}'
 
 **Concise commit messages.** Lead with *what* changed in the subject line. Use the body to explain *why* when the why isn't obvious from the diff.
 
-**Issue reconciliation before PR.** Treat issue state as part of delivery, not cleanup after the fact. Before opening the PR, make a short ledger of every issue you touched: fixed, partially fixed, made stale, or investigated and left open. Fixed issues must be represented by `Closes #N` lines **in the PR body**. Partial fixes get `Refs #N` plus an issue comment that names what landed and what remains. Stale issues get a comment with the commit/test evidence before closing. The invariant: after a merge, a reader scanning issues should not have to infer whether a shipped fix was forgotten, partial, or unrelated.
+**Tracker reconciliation before PR.** Treat tracker state as part of delivery,
+not cleanup after the fact. Before opening the PR, make a short ledger of every
+item touched: fixed, partially fixed, made stale, or investigated and left
+open. Fixed items use the configured closing grammar in the **PR body**.
+Partial work uses `Refs <item>` plus a tracker note naming what landed and what
+remains. Stale work gets an evidence note before closure. The invariant: after
+merge, nobody should have to infer whether shipped work was forgotten,
+partial, or unrelated.
 
 **Stage explicit file paths.** Avoid `git add -A` or `git add .` — they accidentally stage sensitive files (`.env`, credentials) or large binaries. Naming files makes intent visible at the staging step.
 
@@ -399,41 +414,46 @@ Merge a chain in order, parent first, repeating both steps for each next child.
 
 **Bundling is still often simpler.** When the user says "ship it all," default to one PR with all the commits. Reviewers reason more cleanly about one coherent story than a chain. Use a stack only when a child truly depends on an unmerged parent and must be reviewable separately.
 
-## Claiming issues before agent dispatch
+## Claiming tracked work before agent dispatch
 
-Before spawning a coding agent — Claude Code subagent, Codex CLI, or any other — to work on a GitHub issue, **claim it first**. Set the assignee, post a one-line dispatch comment, then spawn the agent. The cost is ten seconds per issue; the cost of skipping it is two agents picking up the same issue and shipping competing PRs.
+Before spawning a coding agent to implement a tracker item, **claim it first**
+through the tracker declared in `.touchstone-tracker.toml`. Verify sole ownership, post
+a one-line dispatch comment only after the claim is stable, then spawn the
+agent.
 
-**The mechanical steps.**
-
-```bash
-bash scripts/claim-issue.sh <n>
-```
-
-Under the hood this uses the same GitHub API flow (claim + dispatch comment), equivalent to:
+Start with the repository's verified claim adapter:
 
 ```bash
-gh issue edit <n> --add-assignee @me
-gh issue comment <n> --body "Dispatched. Branch \`<branch>\`, worktree at \`<path>\`. <agent type> implementing."
+bash scripts/touchstone-tracker.sh claim <reference>
 ```
 
-The script is preferred because it detects races — another assignee appearing between the API read and write — and exits non-zero so the dispatching agent knows not to start work.
+For GitHub, the adapter performs the race-safe mutation and re-read. For Linear,
+it returns `unverifiable` and directs the driver to the configured API or MCP;
+use that authority to assign the `KEY-N` item and re-read its assignee. Only
+after either path proves sole ownership, post `Dispatched. Branch <branch>,
+worktree at <path>.` through that tracker's API or CLI. If ownership changes,
+publish no dispatch signal and stop. An unavailable transport is unverifiable,
+never successful.
 
 Then start the agent. Not after.
 
 **Why this is a rule.** Without it, three failure modes recur in agent-driven workflows:
 
-1. **Duplicate work.** Two agents pick up the same issue and ship competing PRs. The first to merge wins; the second rebases into conflict or closes orphaned. Both burned budget.
-2. **No in-progress signal.** A reader scanning open issues can't tell which are actively being worked vs which are dormant. Triage decays.
-3. **Lost lineage.** The dispatch comment is the only record on the issue thread tying the work back to a specific agent, branch, and worktree. That breadcrumb matters months later.
+1. **Duplicate work.** Two agents pick up the same item and ship competing PRs. The first to merge wins; the second rebases into conflict or closes orphaned. Both burned budget.
+2. **No in-progress signal.** A reader scanning tracked work cannot tell which items are active. Triage decays.
+3. **Lost lineage.** The dispatch comment ties the work to a specific agent, branch, and worktree. That breadcrumb matters months later.
 
-**When to unassign.** If you decide not to ship, unassign with `gh issue edit <n> --remove-assignee @me` and post a "stood down — <reason>" comment. Stale assignments are worse than no assignment at all.
+**When to unassign.** If you decide not to ship, unassign through the
+configured tracker and post a "stood down — <reason>" comment. Stale
+assignments are worse than no assignment at all.
 
 **When this rule does NOT apply.**
 
-- **Issues you're proposing or analyzing, not implementing.** Claim only when implementation actually starts.
+- **Items you're proposing or analyzing, not implementing.** Claim only when implementation actually starts.
 - **Drive-by fixes during unrelated work.** A one-line typo fix doesn't need a claim — but if it warrants its own commit, it warrants a closing reference at minimum.
 
-**For multi-issue bundles.** When one lane closes multiple issues, claim and comment on all of them with the same branch reference.
+**For bundles.** When one lane closes multiple items, claim and comment on all
+of them with the same branch reference.
 
 **Deterministic enforcement.** `.github/workflows/issue-claim-check.yml` runs on every `pull_request` open/edit/synchronize. It parses `Closes #N` / `Fixes #N` / `Resolves #N` / `Closes-issue: #N` from the PR body, fetches each open referenced issue, and fails the check if the PR author is not in the issue's assignees. The failure posts a comment on the PR explaining what to fix. `scripts/issue-claim-check.sh` is the same check, runnable locally before you push.
 

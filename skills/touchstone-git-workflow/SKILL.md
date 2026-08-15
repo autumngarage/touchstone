@@ -37,7 +37,7 @@ Your unstaged changes carry over. The trigger is *edit time*, not commit time �
 1. `git pull --rebase` on the default branch
 2. Branch (before any edit)
 3. Commit (explicit file paths, concise message, one concern per commit)
-4. `git push -u origin HEAD`, then `gh pr create` — **put `Closes #123` in the PR body**, not only the commit
+4. `git push -u origin HEAD`, then `gh pr create` — put the configured close (`Closes #123` or `Fixes AUT-123`) in the PR body, not only a commit
 5. Request review: `gh pr comment <n> --body "@codex review"` — against the head that actually landed on the remote
 6. Answer findings with `bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file>`; prove none remain with `--all-resolved-check`
 7. `gh pr merge <n> --squash --match-head-commit <reviewed-sha>`, then confirm `state == MERGED`
