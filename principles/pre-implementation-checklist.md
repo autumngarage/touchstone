@@ -40,3 +40,25 @@ The fail-closed fallback is itself a state to verify: include a dedicated fixtur
 Distinguish **active compatibility** (behavior the new code keeps indefinitely) from **inert, time-bounded migration shims** (warn-and-rewrite paths with a named removal version or condition). The distinction sets lifetime expectations — it exempts nothing: every executable compatibility shim is a temporary second code path and carries all of question 3's controls (named owner, removal condition, follow-up issue) until it is deleted. A named expiry bounds the drift window; it does not remove the drift.
 
 A bounded example, removing a config-file-backed subsystem: fresh project (no config → defaults, doctor clean); current project (modern config → behavior unchanged); legacy-only (retired file → migrate or fail closed with the migration command); mixed (both files → named precedence); retired CLI flags and subcommands (explicit error naming the replacement); stale downstream copies (update path reconciles or refuses loudly). Your subsystem's boundary decides which of these exist and which additional ones do.
+
+## 7. Is this a reviewable unit with adversarial boundary coverage?
+
+A PR that translates external declarations into commands, policy, generated
+files, or mutations is a compiler even when it is written as a small script.
+Before implementation, name its single correctness invariant and enumerate the
+independent input domains it accepts. If the change spans multiple ecosystems,
+protocols, or parsers that can be validated independently, split them into
+separate review units. Shared plumbing may land first; breadth is not evidence
+that the behaviors belong in one PR.
+
+For every retained input domain, map the effective discovery roots and the
+inputs execution will actually observe. Cover inherited and child-local
+configuration, missing and empty inputs, ignored and symlinked paths, malformed
+documents, and a representative normal case before the first review request.
+When static verification cannot prove the generated behavior will run from a
+clean checkout, refuse with a manual or explicit path instead of guessing.
+
+The reviewability test is concrete: a reviewer should be able to falsify one
+named invariant across a bounded fixture matrix. If the matrix keeps acquiring
+new dimensions while implementation proceeds, stop and split or narrow the
+design before review turns into serial test discovery.
