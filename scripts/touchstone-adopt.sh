@@ -1864,19 +1864,158 @@ validate_requirements_document() {
 }
 
 validate_uv_lock() {
-  local file="$1"
+  local file="$1" pyproject="$2" lock_requires project_metadata project_name project_requires
   validate_toml_document "$file" uv.lock
   awk '
+    function finish_package() {
+      if (in_package && (!name_seen || !version_seen || !source_seen)) exit 2
+    }
+    /^[[:space:]]*\[\[package\]\][[:space:]]*$/ {
+      finish_package()
+      in_package=1
+      nested=0
+      name_seen=version_seen=source_seen=0
+      packages++
+      next
+    }
+    in_package && /^[[:space:]]*\[/ { nested=1; next }
+    !in_package || nested { next }
+    /^[[:space:]]*name[[:space:]]*=[[:space:]]*"[A-Za-z0-9][A-Za-z0-9._-]*"[[:space:]]*$/ {
+      if (name_seen) exit 2
+      name_seen=1
+      next
+    }
+    /^[[:space:]]*name[[:space:]]*=/ { exit 2 }
+    /^[[:space:]]*version[[:space:]]*=[[:space:]]*"[^"]+"[[:space:]]*$/ {
+      if (version_seen) exit 2
+      version_seen=1
+      next
+    }
+    /^[[:space:]]*version[[:space:]]*=/ { exit 2 }
+    /^[[:space:]]*source[[:space:]]*=[[:space:]]*\{[^{}]+\}[[:space:]]*$/ {
+      if (source_seen) exit 2
+      source_seen=1
+      next
+    }
+    /^[[:space:]]*source[[:space:]]*=/ { exit 2 }
+    END {
+      finish_package()
+      if (!packages) exit 2
+    }
+  ' "$file" >/dev/null 2>&1 \
+    || contract_refusal "uv.lock has incomplete package records; regenerate it or pass --task NAME=COMMAND"
+  lock_requires="$(awk '
     BEGIN { in_root=1 }
     /^[[:space:]]*\[/ { in_root=0 }
     !in_root { next }
     /^[[:space:]]*version[[:space:]]*=[[:space:]]*1[[:space:]]*$/ {
       if (version_seen) exit 2
       version_seen=1
+      next
     }
-    END { if (!version_seen) exit 2 }
-  ' "$file" >/dev/null 2>&1 \
-    || contract_refusal "uv.lock has no unique supported root version; regenerate it or pass --task NAME=COMMAND"
+    /^[[:space:]]*version[[:space:]]*=/ { exit 2 }
+    /^[[:space:]]*revision[[:space:]]*=[[:space:]]*3[[:space:]]*$/ {
+      if (revision_seen) exit 2
+      revision_seen=1
+      next
+    }
+    /^[[:space:]]*revision[[:space:]]*=/ { exit 2 }
+    /^[[:space:]]*requires-python[[:space:]]*=/ {
+      if (requires_seen) exit 2
+      value=$0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      if (value !~ /^"[^"]+"$/) exit 2
+      requires=substr(value, 2, length(value) - 2)
+      requires_seen=1
+      next
+    }
+    END {
+      if (!version_seen || !revision_seen || !requires_seen) exit 2
+      print requires
+    }
+  ' "$file" 2>/dev/null)" \
+    || contract_refusal "uv.lock lacks the unique supported version, revision, or requires-python fields; regenerate it or pass --task NAME=COMMAND"
+  project_metadata="$(awk '
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      section=$0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*$/, "", section)
+      next
+    }
+    section == "project" && /^[[:space:]]*name[[:space:]]*=/ {
+      if (name_seen) exit 2
+      value=$0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      if (value !~ /^"[A-Za-z0-9][A-Za-z0-9._-]*"$/) exit 2
+      name=substr(value, 2, length(value) - 2)
+      name_seen=1
+      next
+    }
+    section == "project" && /^[[:space:]]*requires-python[[:space:]]*=/ {
+      if (requires_seen) exit 2
+      value=$0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      if (value !~ /^"[^"]+"$/) exit 2
+      requires=substr(value, 2, length(value) - 2)
+      requires_seen=1
+      next
+    }
+    END {
+      if (!name_seen || !requires_seen) exit 2
+      print name "\t" requires
+    }
+  ' "$pyproject" 2>/dev/null)" \
+    || contract_refusal "uv automatic adoption requires static project name and requires-python declarations"
+  IFS=$'\t' read -r project_name project_requires <<<"$project_metadata"
+  [ "$lock_requires" = "$project_requires" ] \
+    || contract_refusal "uv.lock requires-python does not match pyproject.toml; regenerate it or pass --task NAME=COMMAND"
+  uv_lock_has_package "$file" "$project_name" \
+    || contract_refusal "uv.lock does not contain the declared project package '$project_name'; regenerate it or pass --task NAME=COMMAND"
+}
+
+uv_lock_has_package() {
+  local file="$1" wanted="$2"
+  awk -v wanted="$wanted" '
+    function normalize(value) {
+      value=tolower(value)
+      gsub(/[._]+/, "-", value)
+      return value
+    }
+    /^[[:space:]]*\[\[package\]\][[:space:]]*$/ { in_package=1; next }
+    /^[[:space:]]*\[/ { in_package=0; next }
+    in_package && /^[[:space:]]*name[[:space:]]*=/ {
+      value=$0
+      sub(/^[^=]*=[[:space:]]*/, "", value)
+      sub(/[[:space:]]*$/, "", value)
+      if (value ~ /^"[A-Za-z0-9][A-Za-z0-9._-]*"$/) {
+        value=substr(value, 2, length(value) - 2)
+        if (normalize(value) == normalize(wanted)) found=1
+      }
+    }
+    END { exit !found }
+  ' "$file"
+}
+
+verify_uv_lock_compatibility() {
+  local directory="$1" output detail
+  command -v uv >/dev/null 2>&1 \
+    || contract_refusal "uv automatic adoption requires the declared uv tool to verify the lock offline; install uv or pass --task NAME=COMMAND"
+  if output="$(cd "$directory" \
+    && UV_NO_PROGRESS=1 UV_PYTHON_DOWNLOADS=never \
+      uv lock --check --offline --no-config 2>&1)"; then
+    return 0
+  fi
+  detail="$(printf '%s\n' "$output" | awk '
+    NF {
+      if (joined != "") joined=joined " "
+      joined=joined $0
+    }
+    END { print substr(joined, 1, 300) }
+  ')"
+  contract_refusal "uv.lock is incompatible with pyproject.toml under offline lock verification${detail:+: $detail}; regenerate it or pass --task NAME=COMMAND"
 }
 
 python_project_has_dependency() {
@@ -1941,8 +2080,9 @@ python_checker_declared() {
   if [ -f "$directory/uv.lock" ]; then
     include_dev=true
     [ -f "$directory/pyproject.toml" ] || return 1
-    python_project_has_dependency "$directory/pyproject.toml" "$checker" "$include_dev"
-    return
+    python_project_has_dependency "$directory/pyproject.toml" "$checker" "$include_dev" \
+      && uv_lock_has_package "$directory/uv.lock" "$checker"
+    return $?
   fi
   if [ -f "$directory/requirements.txt" ]; then
     grep -Eqi "^[[:space:]]*${checker}([[:space:]<=>~!\[]|$)" "$directory/requirements.txt"
@@ -1974,7 +2114,10 @@ tasks_for_python() {
     validate_requirements_document "$directory/requirements.txt"
   fi
   if [ -f "$directory/uv.lock" ]; then
-    validate_uv_lock "$directory/uv.lock"
+    [ -f "$directory/pyproject.toml" ] \
+      || contract_refusal "uv automatic adoption requires pyproject.toml compatibility facts"
+    validate_uv_lock "$directory/uv.lock" "$directory/pyproject.toml"
+    verify_uv_lock_compatibility "$directory"
     prefix="uv run --no-sync"
     if [ -f "$directory/pyproject.toml" ] && python_has_uv_dev_group "$directory/pyproject.toml"; then
       record_setup "$directory" "uv sync --offline --frozen --group dev"
@@ -2247,9 +2390,14 @@ tasks_for_profile() {
       record_task "test$suffix" "$target" "swift test --disable-automatic-resolution --skip-update"
       ;;
     rust)
-      local cargo_lock_path="Cargo.lock"
+      local cargo_lock_path="Cargo.lock" cargo_command="cargo test --frozen"
       validate_toml_document "$directory/Cargo.toml" Cargo.toml
-      if [ "$directory" = "$PROJECT_ROOT" ]; then validate_cargo_workspace_members; fi
+      if [ "$directory" = "$PROJECT_ROOT" ]; then
+        validate_cargo_workspace_members
+        if [ -n "$(cargo_workspace_values members)" ]; then
+          cargo_command="cargo test --workspace --frozen"
+        fi
+      fi
       toml_has_local_path_reference "$directory/Cargo.toml" \
         && contract_refusal "Rust target '$target' declares a local path dependency this portable compiler cannot verify within the checkout; pass --task NAME=COMMAND"
       if [ "$workspace_member" != true ] && [ "$directory" != "$PROJECT_ROOT" ]; then
@@ -2261,7 +2409,7 @@ tasks_for_profile() {
         || contract_refusal "Rust target '$target' has no tracked Cargo.lock; commit it or pass --task NAME=COMMAND"
       validate_cargo_lock "$PROJECT_ROOT/$cargo_lock_path"
       require_tracked_rust_source "$directory"
-      record_task "test$suffix" "$target" "cargo test --frozen"
+      record_task "test$suffix" "$target" "$cargo_command"
       ;;
     go)
       [ ! -f "$directory/go.work" ] \

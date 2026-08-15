@@ -64,9 +64,12 @@ Python tasks come from ruff, mypy, and pytest evidence in `pyproject.toml` or
 the test tree. A dependency-free portable parser verifies the complete
 `pyproject.toml` before any facts are derived and refuses TOML syntax it cannot
 verify with a manual-task remedy. Explicit setup uses a completely parsed uv
-lock, offline uv, no-index
-requirements, or no-index editable installation only for an installable
-project declaration.
+lock whose schema header, Python requirement, root package, and checker packages
+match the static project facts, followed by uv's own offline compatibility check;
+uv then runs offline and frozen. Automatic uv adoption therefore requires the
+project's declared uv tool to be available locally. Other paths use no-index
+requirements or no-index editable installation only for an installable project
+declaration.
 Each emitted checker must also be present in dependency facts installed by that
 setup; required uv dev groups are named explicitly even when project defaults
 exclude them. Configuration or a test tree without the checker dependency refuses.
@@ -75,9 +78,10 @@ plans include executable root-level checks alongside explicit child targets.
 Swift automatic adoption requires a static test target with tracked source.
 Go commands disable automatic toolchain selection, workspace discovery, the
 module proxy, and the checksum database, and require tracked Go source. Rust
-requires tracked default package source plus a committed, completely parsed `Cargo.lock`,
-verifies exact workspace and default-member declarations, and uses Cargo's
-frozen mode so validation cannot rewrite it or reach the network. Every generated validation
+requires tracked default package source plus a committed, completely parsed
+`Cargo.lock`, verifies exact workspace and default-member declarations, and tests
+every verified workspace package in Cargo's frozen mode so validation cannot
+rewrite it or reach the network. Every generated validation
 path fails when required dependencies are not vendored or pre-provisioned;
 none may turn a package-host outage into a required-check failure. The accepted commands and setup are
 written explicitly to `.touchstone.toml`; later preset changes never rewrite

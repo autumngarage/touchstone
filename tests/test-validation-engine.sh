@@ -7,6 +7,20 @@ COMPAT="$ROOT/scripts/check-legacy-ci.sh"
 CLI="$ROOT/bin/touchstone"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
+ADOPTION_BIN="$TMP_DIR/adoption-bin"
+mkdir -p "$ADOPTION_BIN"
+cat >"$ADOPTION_BIN/uv" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$*" = "lock --check --offline --no-config" ] || exit 8
+[ "${UV_NO_PROGRESS:-}" = 1 ] || exit 8
+[ "${UV_PYTHON_DOWNLOADS:-}" = never ] || exit 8
+if [ -f .touchstone-uv-check-fail ]; then
+  echo "fixture lock is stale" >&2
+  exit 9
+fi
+EOF
+chmod +x "$ADOPTION_BIN/uv"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -851,7 +865,7 @@ run_adoption() {
   local output="$1"
   shift
   set +e
-  "$CLI" "$@" >"$output" 2>"$output.err"
+  PATH="$ADOPTION_BIN:$PATH" "$CLI" "$@" >"$output" 2>"$output.err"
   ADOPTION_STATUS=$?
   set -e
 }
@@ -1036,9 +1050,14 @@ for profile in python swift rust go; do
   init_adoption_repo "$ADOPT_PROFILE"
   case "$profile" in
     python)
-      printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+        'requires-python = ">=3.11"' 'dependencies = ["pytest"]' \
         '[tool.pytest.ini_options]' >"$ADOPT_PROFILE/pyproject.toml"
-      printf 'version = 1\n' >"$ADOPT_PROFILE/uv.lock"
+      printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+        '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+        'source = { virtual = "." }' '' '[[package]]' 'name = "pytest"' \
+        'version = "9.1.1"' 'source = { registry = "https://pypi.org/simple" }' \
+        >"$ADOPT_PROFILE/uv.lock"
       expected_command='command = "uv run --no-sync pytest"'
       expected_setup='setup = "uv sync --offline --frozen"'
       ;;
@@ -1758,10 +1777,15 @@ assert_contains "$TMP_DIR/adopt-poetry-no-backend.out.err" 'Poetry metadata with
 ADOPT_UV_DEV="$TMP_DIR/adopt-uv-dev"
 init_adoption_repo "$ADOPT_UV_DEV"
 mkdir -p "$ADOPT_UV_DEV/tests"
-printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = []' \
+printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+  'requires-python = ">=3.11"' 'dependencies = []' \
   '[tool.uv]' 'default-groups = []' '[dependency-groups]' 'dev = ["pytest"]' \
   >"$ADOPT_UV_DEV/pyproject.toml"
-printf 'version = 1\n' >"$ADOPT_UV_DEV/uv.lock"
+printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+  '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+  'source = { virtual = "." }' '' '[[package]]' 'name = "pytest"' \
+  'version = "9.1.1"' 'source = { registry = "https://pypi.org/simple" }' \
+  >"$ADOPT_UV_DEV/uv.lock"
 commit_adoption_repo "$ADOPT_UV_DEV" "fixture"
 git -C "$ADOPT_UV_DEV" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-uv-dev.out" adopt --project "$ADOPT_UV_DEV"
@@ -1779,6 +1803,72 @@ git -C "$ADOPT_UV_BAD_LOCK" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-uv-bad-lock.out" adopt --dry-run --project "$ADOPT_UV_BAD_LOCK"
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed uv.lock was accepted"
 assert_contains "$TMP_DIR/adopt-uv-bad-lock.out.err" 'uv.lock is malformed'
+
+ADOPT_UV_INCOMPLETE="$TMP_DIR/adopt-uv-incomplete"
+init_adoption_repo "$ADOPT_UV_INCOMPLETE"
+mkdir -p "$ADOPT_UV_INCOMPLETE/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'requires-python = ">=3.11"' \
+  'dependencies = ["pytest"]' >"$ADOPT_UV_INCOMPLETE/pyproject.toml"
+printf '%s\n' 'version = 1' >"$ADOPT_UV_INCOMPLETE/uv.lock"
+commit_adoption_repo "$ADOPT_UV_INCOMPLETE" "fixture"
+git -C "$ADOPT_UV_INCOMPLETE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-uv-incomplete.out" adopt --dry-run \
+  --project "$ADOPT_UV_INCOMPLETE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "incomplete uv.lock was accepted"
+assert_contains "$TMP_DIR/adopt-uv-incomplete.out.err" 'uv.lock has incomplete package records'
+
+ADOPT_UV_MISMATCH="$TMP_DIR/adopt-uv-mismatch"
+init_adoption_repo "$ADOPT_UV_MISMATCH"
+mkdir -p "$ADOPT_UV_MISMATCH/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'requires-python = ">=3.12"' \
+  'dependencies = ["pytest"]' >"$ADOPT_UV_MISMATCH/pyproject.toml"
+printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+  '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+  'source = { virtual = "." }' '' '[[package]]' 'name = "pytest"' \
+  'version = "9.1.1"' 'source = { registry = "https://pypi.org/simple" }' \
+  >"$ADOPT_UV_MISMATCH/uv.lock"
+commit_adoption_repo "$ADOPT_UV_MISMATCH" "fixture"
+git -C "$ADOPT_UV_MISMATCH" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-uv-mismatch.out" adopt --dry-run \
+  --project "$ADOPT_UV_MISMATCH"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "uv.lock with stale Python compatibility was accepted"
+assert_contains "$TMP_DIR/adopt-uv-mismatch.out.err" \
+  'uv.lock requires-python does not match pyproject.toml'
+
+ADOPT_UV_MISSING_CHECKER="$TMP_DIR/adopt-uv-missing-checker"
+init_adoption_repo "$ADOPT_UV_MISSING_CHECKER"
+mkdir -p "$ADOPT_UV_MISSING_CHECKER/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'requires-python = ">=3.11"' \
+  'dependencies = ["pytest"]' >"$ADOPT_UV_MISSING_CHECKER/pyproject.toml"
+printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+  '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+  'source = { virtual = "." }' >"$ADOPT_UV_MISSING_CHECKER/uv.lock"
+commit_adoption_repo "$ADOPT_UV_MISSING_CHECKER" "fixture"
+git -C "$ADOPT_UV_MISSING_CHECKER" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-uv-missing-checker.out" adopt --dry-run \
+  --project "$ADOPT_UV_MISSING_CHECKER"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "uv.lock without the emitted checker was accepted"
+assert_contains "$TMP_DIR/adopt-uv-missing-checker.out.err" \
+  'has pytest evidence without an installed pytest dependency'
+
+ADOPT_UV_STALE="$TMP_DIR/adopt-uv-stale"
+init_adoption_repo "$ADOPT_UV_STALE"
+mkdir -p "$ADOPT_UV_STALE/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'requires-python = ">=3.11"' \
+  'dependencies = ["pytest"]' >"$ADOPT_UV_STALE/pyproject.toml"
+printf '%s\n' 'version = 1' 'revision = 3' 'requires-python = ">=3.11"' '' \
+  '[[package]]' 'name = "fixture"' 'version = "0.1.0"' \
+  'source = { virtual = "." }' '' '[[package]]' 'name = "pytest"' \
+  'version = "9.1.1"' 'source = { registry = "https://pypi.org/simple" }' \
+  >"$ADOPT_UV_STALE/uv.lock"
+printf '%s\n' 'stale' >"$ADOPT_UV_STALE/.touchstone-uv-check-fail"
+commit_adoption_repo "$ADOPT_UV_STALE" "fixture"
+git -C "$ADOPT_UV_STALE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-uv-stale.out" adopt --dry-run \
+  --project "$ADOPT_UV_STALE"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "uv's failed offline compatibility check was ignored"
+assert_contains "$TMP_DIR/adopt-uv-stale.out.err" \
+  'uv.lock is incompatible with pyproject.toml under offline lock verification: fixture lock is stale'
 
 echo "==> adoption derives explicit monorepo targets"
 ADOPT_MONOREPO="$TMP_DIR/adopt-monorepo"
@@ -1876,7 +1966,28 @@ run_adoption "$TMP_DIR/adopt-cargo-workspace.out" adopt --project "$ADOPT_CARGO_
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "Cargo workspace adoption failed"
 assert_contains "$ADOPT_CARGO_WORKSPACE/.touchstone.toml" 'path = "packages/core"'
 assert_contains "$ADOPT_CARGO_WORKSPACE/.touchstone.toml" 'name = "test-packages-core"'
-assert_contains "$ADOPT_CARGO_WORKSPACE/.touchstone.toml" 'command = "cargo test --frozen"'
+assert_contains "$ADOPT_CARGO_WORKSPACE/.touchstone.toml" \
+  'command = "cargo test --workspace --frozen"'
+
+ADOPT_CARGO_ROOT_WORKSPACE="$TMP_DIR/adopt-cargo-root-workspace"
+init_adoption_repo "$ADOPT_CARGO_ROOT_WORKSPACE"
+mkdir -p "$ADOPT_CARGO_ROOT_WORKSPACE/src" \
+  "$ADOPT_CARGO_ROOT_WORKSPACE/crates/bad/src"
+printf '%s\n' '[package]' 'name = "root"' 'version = "0.1.0"' \
+  '[workspace]' 'members = ["crates/bad"]' 'resolver = "2"' \
+  >"$ADOPT_CARGO_ROOT_WORKSPACE/Cargo.toml"
+printf '%s\n' 'version = 4' >"$ADOPT_CARGO_ROOT_WORKSPACE/Cargo.lock"
+printf '%s\n' 'pub fn root() {}' >"$ADOPT_CARGO_ROOT_WORKSPACE/src/lib.rs"
+printf '%s\n' '[package]' 'name = "bad"' 'version = "0.1.0"' \
+  >"$ADOPT_CARGO_ROOT_WORKSPACE/crates/bad/Cargo.toml"
+printf '%s\n' 'pub fn bad() {}' >"$ADOPT_CARGO_ROOT_WORKSPACE/crates/bad/src/lib.rs"
+commit_adoption_repo "$ADOPT_CARGO_ROOT_WORKSPACE" "fixture"
+git -C "$ADOPT_CARGO_ROOT_WORKSPACE" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-cargo-root-workspace.out" adopt \
+  --project "$ADOPT_CARGO_ROOT_WORKSPACE"
+[ "$ADOPTION_STATUS" -eq 0 ] || fail "non-virtual Cargo workspace adoption failed"
+assert_contains "$ADOPT_CARGO_ROOT_WORKSPACE/.touchstone.toml" \
+  'command = "cargo test --workspace --frozen"'
 bash "$RUNNER" validate --check-contract --project "$ADOPT_CARGO_WORKSPACE" >/dev/null
 
 ADOPT_CARGO_MISSING_MEMBER="$TMP_DIR/adopt-cargo-missing-member"
