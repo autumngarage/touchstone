@@ -831,4 +831,110 @@ echo "==> local authoring guard remains installed"
 assert_contains "$ROOT/.pre-commit-config.yaml" "id: no-commit-to-branch"
 assert_contains "$ROOT/.pre-commit-config.yaml" "stages: [pre-commit]"
 
+echo "==> adoption compiler records a narrow validated plan model"
+COMPILER_MODEL="$TMP_DIR/compiler-model"
+mkdir -p "$COMPILER_MODEL/packages/web"
+(
+  PROJECT_ROOT="$(cd "$COMPILER_MODEL" && pwd -P)"
+  TARGETS_FILE="$TMP_DIR/model-targets"
+  TASKS_FILE="$TMP_DIR/model-tasks"
+  SETUPS_FILE="$TMP_DIR/model-setups"
+  TAB="$(printf '\t')"
+  CR="$(printf '\r')"
+  LF="$(printf '\nX')"
+  LF="${LF%X}"
+  : >"$TARGETS_FILE"
+  : >"$TASKS_FILE"
+  : >"$SETUPS_FILE"
+  trim() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s' "$value"
+  }
+  valid_identifier() { case "$1" in "" | *[!A-Za-z0-9._-]*) return 1 ;; esac }
+  valid_relative_path() { case "$1" in /* | ../* | */../* | */..) return 1 ;; *) return 0 ;; esac }
+  contract_refusal() {
+    printf 'refused: %s\n' "$*" >&2
+    exit 2
+  }
+  operational_failure() {
+    printf 'failed: %s\n' "$*" >&2
+    exit 6
+  }
+  MANUAL_TASK_ARGS=('verify=true' 'lint=printf lint')
+  # shellcheck source=scripts/lib/touchstone-adopt-compiler.sh
+  source "$ROOT/scripts/lib/touchstone-adopt-compiler.sh"
+  compile_manual_tasks
+  grep -Fq $'root\t.\tmanual' "$TARGETS_FILE" || exit 11
+  grep -Fq $'verify\troot\ttrue\ttrue' "$TASKS_FILE" || exit 12
+  grep -Fq $'lint\troot\ttrue\tprintf lint' "$TASKS_FILE" || exit 13
+  set +e
+  (record_task unsafe root "printf $(printf '\033')") >/dev/null 2>&1
+  control_status=$?
+  set -e
+  [ "$control_status" -eq 2 ] || exit 14
+
+  : >"$TARGETS_FILE"
+  : >"$TASKS_FILE"
+  detect_profile() {
+    case "$1" in "$PROJECT_ROOT/packages/web") printf 'node\n' ;; *) printf 'generic\n' ;; esac
+  }
+  node_package_manager() {
+    NODE_MANAGER=npm
+    export NODE_MANAGER
+  }
+  node_workspace_contains() { return 1; }
+  tasks_for_node() { record_task "test$3" "$2" node-test; }
+  compile_detected
+  grep -Fq $'packages-web\tpackages/web\tnode' "$TARGETS_FILE" || exit 15
+  grep -Fq $'test-packages-web\tpackages-web\ttrue\tnode-test' "$TASKS_FILE" || exit 16
+
+  printf '[project]\n' >"$PROJECT_ROOT/pyproject.toml"
+  tasks_for_python() { :; }
+  grep() {
+    case "$*" in *pyproject.toml*) return 2 ;; esac
+    command grep "$@"
+  }
+  set +e
+  (profile_has_tasks "$PROJECT_ROOT" python) >/dev/null 2>&1
+  python_probe_status=$?
+  set -e
+  unset -f grep
+  [ "$python_probe_status" -eq 6 ] || exit 25
+
+  record_setup "$PROJECT_ROOT" 'npm install --offline'
+  grep -Fq $'.\tnpm install --offline' "$SETUPS_FILE" || exit 17
+  set +e
+  (record_setup "$PROJECT_ROOT" '   ') >/dev/null 2>&1
+  whitespace_setup_status=$?
+  (record_target packages-web packages/web node) >/dev/null 2>&1
+  duplicate_status=$?
+  (record_target newline-path "packages${LF}web" node) >/dev/null 2>&1
+  target_delimiter_status=$?
+  (record_setup "$PROJECT_ROOT/packages${LF}web" true) >/dev/null 2>&1
+  setup_delimiter_status=$?
+  set -e
+  [ "$whitespace_setup_status" -eq 2 ] || exit 18
+  [ "$duplicate_status" -eq 2 ] || exit 19
+  [ "$target_delimiter_status" -eq 2 ] || exit 20
+  [ "$setup_delimiter_status" -eq 2 ] || exit 21
+
+  TARGETS_FILE="$TMP_DIR/model-lookup-targets"
+  mkdir "$TARGETS_FILE"
+  TASKS_FILE="$TMP_DIR/model-missing-tasks"
+  SETUPS_FILE="$TMP_DIR/model-missing-setups"
+  set +e
+  (record_target lookup-failure . manual) >/dev/null 2>&1
+  target_lookup_status=$?
+  (record_task lookup-failure root true) >/dev/null 2>&1
+  task_lookup_status=$?
+  (record_setup "$PROJECT_ROOT/packages/web" true) >/dev/null 2>&1
+  setup_lookup_status=$?
+  set -e
+  [ "$target_lookup_status" -eq 6 ] || exit 22
+  [ "$task_lookup_status" -eq 6 ] || exit 23
+  [ "$setup_lookup_status" -eq 6 ] || exit 24
+) || fail "adoption compiler accepted an invalid plan record"
+
 echo "validation engine tests passed"
