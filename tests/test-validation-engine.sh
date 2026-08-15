@@ -843,6 +843,7 @@ mkdir -p "$LEGACY_COMPILER/packages/api" "$LEGACY_COMPILER/packages/web"
   CR="$(printf '\r')"
   LF="$(printf '\nX')"
   LF="${LF%X}"
+  export TAB CR LF
   : >"$TARGETS_FILE"
   : >"$TASKS_FILE"
   : >"$SETUPS_FILE"
@@ -906,5 +907,74 @@ mkdir -p "$LEGACY_COMPILER/packages/api" "$LEGACY_COMPILER/packages/web"
   set -e
   [ "$collision_status" -eq 2 ] || exit 22
 ) || fail "legacy adoption compiler changed validation coverage"
+
+echo "==> adoption planner handles fresh, repeat, and upgrade consumers"
+(
+  SCRIPT_ROOT="$ROOT"
+  PROJECT_ROOT="$TMP_DIR/planner-consumer"
+  TOUCHSTONE_BLOCK_BEGIN='<!-- touchstone:steering:start -->'
+  TOUCHSTONE_BLOCK_END='<!-- touchstone:steering:end -->'
+  CR="$(printf '\r')"
+  mkdir -p "$PROJECT_ROOT"
+  valid_relative_path() { case "$1" in /* | ../* | */../* | */..) return 1 ;; *) return 0 ;; esac }
+  contract_refusal() {
+    printf 'refused: %s\n' "$*" >&2
+    exit 2
+  }
+  operational_failure() {
+    printf 'operational failure: %s\n' "$*" >&2
+    exit 6
+  }
+  reset_planner_stage() {
+    PLAN_ROOT="$TMP_DIR/planner-$1"
+    OLD_ROOT="$PLAN_ROOT/old"
+    NEW_ROOT="$PLAN_ROOT/new"
+    CHANGES_FILE="$PLAN_ROOT/changes"
+    DIFF_FILE="$PLAN_ROOT/diff"
+    mkdir -p "$OLD_ROOT" "$NEW_ROOT"
+    : >"$CHANGES_FILE"
+  }
+  # shellcheck source=scripts/lib/touchstone-adopt-planner.sh
+  source "$ROOT/scripts/lib/touchstone-adopt-planner.sh"
+
+  reset_planner_stage fresh
+  plan_steering true
+  grep -Fq $'create\t.touchstone/TOUCHSTONE.md\ttouchstone-managed' "$CHANGES_FILE" || exit 51
+  grep -Fq $'create\tAGENTS.md\tmarked-block' "$CHANGES_FILE" || exit 52
+  if grep -R -Eq 'bash scripts/(claim-issue|respond-review)\.sh' "$NEW_ROOT"; then exit 53; fi
+  while IFS=$'\t' read -r _action path _ownership; do
+    mkdir -p "$PROJECT_ROOT/$(dirname "$path")"
+    cp "$NEW_ROOT/$path" "$PROJECT_ROOT/$path"
+  done <"$CHANGES_FILE"
+
+  reset_planner_stage repeat
+  plan_steering false
+  [ ! -s "$CHANGES_FILE" ] || exit 54
+
+  printf 'stale steering\n' >"$PROJECT_ROOT/.touchstone/TOUCHSTONE.md"
+  reset_planner_stage upgrade
+  plan_steering true
+  grep -Fq $'update\t.touchstone/TOUCHSTONE.md\ttouchstone-managed' "$CHANGES_FILE" || exit 55
+) || fail "adoption planner changed fresh, repeat, or upgrade semantics"
+
+echo "==> repeat adoption validates declarations without executing tasks"
+PLANNER_DECLARED="$TMP_DIR/planner-declared"
+mkdir -p "$PLANNER_DECLARED"
+cat >"$PLANNER_DECLARED/.touchstone.toml" <<'EOF'
+schema = 1
+[validation]
+runtime = "bash"
+[[validation.targets]]
+name = "root"
+path = "."
+[[validation.tasks]]
+name = "must-not-run"
+target = "root"
+command = "printf ran > should-not-exist"
+required = true
+EOF
+bash "$RUNNER" validate --check-contract --json --project "$PLANNER_DECLARED" >"$TMP_DIR/planner-contract.json"
+assert_contains "$TMP_DIR/planner-contract.json" '"verdict":"valid"'
+[ ! -e "$PLANNER_DECLARED/should-not-exist" ] || fail "contract-only validation executed a task"
 
 echo "validation engine tests passed"
