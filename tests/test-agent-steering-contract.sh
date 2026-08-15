@@ -104,6 +104,14 @@ assert_not_contains "$GIT_WORKFLOW_GUIDE" \
   "then an organization admin may use GitHub's PR-only ruleset bypass"
 assert_not_contains "$GIT_WORKFLOW_GUIDE" \
   'Direct pushes to `main` are rejected by the server even for organization admins.'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  'bash scripts/touchstone-tracker.sh claim <reference>'
+assert_not_contains "$GIT_WORKFLOW_GUIDE" \
+  'gh issue edit <n> --add-assignee'
+assert_contains "$GIT_WORKFLOW_GUIDE" \
+  "grep -F -- \"\$expected\""
+assert_not_contains "$GIT_WORKFLOW_GUIDE" \
+  "grep -E '(Closes|Fixes|Resolves)"
 
 echo "==> review-request recovery is complete, bounded, and fail-closed"
 # PR #827 exposed two weak points: a provider can accept a request and then

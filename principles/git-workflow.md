@@ -60,8 +60,13 @@ body and verify it there before shipping.
 Verify it took, rather than assuming:
 
 ```bash
-gh pr view <n> --json body --jq .body | grep -E '(Closes|Fixes|Resolves) (#[0-9]+|[A-Z][A-Z0-9]*-[0-9]+)'
+expected='<configured closing reference>' # for example: Fixes AUT-123
+gh pr view <n> --json body --jq .body | grep -F -- "$expected"
 ```
+
+Set `expected` to the exact tracker item being reconciled, using the grammar
+declared by `.touchstone-tracker.toml`; a generic GitHub-or-Linear pattern can
+accept the wrong tracker or Linear team key.
 
 **Requesting review.** The PR-visible reviewer runs asynchronously against the exact pushed head:
 
@@ -416,22 +421,19 @@ through the tracker declared in `.touchstone-tracker.toml`. Verify sole ownershi
 a one-line dispatch comment only after the claim is stable, then spawn the
 agent.
 
-**The mechanical steps are adapter-specific.** For GitHub:
+Start with the repository's verified claim adapter:
 
 ```bash
-me="$(gh api user --jq .login)"
-gh issue view <n> --json state,assignees
-gh issue edit <n> --add-assignee "$me"
-gh issue view <n> --json state,assignees
-gh issue comment <n> --body "Dispatched. Branch \`<branch>\`, worktree at \`<path>\`."
+bash scripts/touchstone-tracker.sh claim <reference>
 ```
 
-The first read avoids disturbing an existing owner. The second detects a race;
-require the issue to remain open with `$me` as its sole assignee. Otherwise
-remove only `$me`, publish no dispatch signal, and stop. For Linear, use its
-API or MCP to assign the `KEY-N` item and post the same dispatch note. Re-read
-the tracker authority after either write. An unavailable transport is
-unverifiable, never successful.
+For GitHub, the adapter performs the race-safe mutation and re-read. For Linear,
+it returns `unverifiable` and directs the driver to the configured API or MCP;
+use that authority to assign the `KEY-N` item and re-read its assignee. Only
+after either path proves sole ownership, post `Dispatched. Branch <branch>,
+worktree at <path>.` through that tracker's API or CLI. If ownership changes,
+publish no dispatch signal and stop. An unavailable transport is unverifiable,
+never successful.
 
 Then start the agent. Not after.
 
