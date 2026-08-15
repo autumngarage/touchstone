@@ -30,7 +30,7 @@ usage() {
 json_escape() {
   printf '%s' "$1" | awk 'BEGIN { ORS="" }
     {
-      gsub(/\\/, "\\\\"); gsub(/\"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, "\\r")
+      gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, "\\r")
       for (code = 1; code < 32; code++) {
         if (code == 9 || code == 13) continue
         control = sprintf("%c", code)
@@ -243,7 +243,7 @@ validate_body() {
 }
 
 claim_github() {
-  local output rc
+  local output rc partial
   if ! command -v gh >/dev/null 2>&1; then
     emit failed transport-unavailable "Install and authenticate the gh CLI."
     exit 1
@@ -253,7 +253,9 @@ claim_github() {
   rc=$?
   set -e
   if [ "$rc" -ne 0 ]; then
-    emit failed github-claim-failed "$output"
+    partial=false
+    printf '%s\n' "$output" | grep -Fx '==> touchstone-claim-state: assignment-mutated' >/dev/null && partial=true
+    emit failed github-claim-failed "$output" "$partial"
     exit 1
   fi
   emit verified claimed "GitHub assignment was re-read after the claim mutation."

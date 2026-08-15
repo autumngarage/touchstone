@@ -47,6 +47,8 @@ case "$1 ${2:-}" in
 		[ "${GH_MODE:-ok}" != state_fail ] || exit 1
 		if printf '%s\n' "$*" | grep -q -- '--json state'; then
       if [ -f "$GH_CLOSED" ]; then printf '%s\n' CLOSED; else printf '%s\n' OPEN; fi
+		elif [ "${GH_MODE:-ok}" = post_claim_read_fail ] && [ -s "$GH_STATE" ]; then
+			exit 1
     elif [ -f "$GH_STATE" ]; then cat "$GH_STATE"
     fi
     ;;
@@ -101,6 +103,12 @@ GH_MODE=claim_control_error run_adapter "$TMP/out" claim 42 --project "$TMP/gith
 assert_rc "$RUN_RC" 1
 assert_json "$TMP/out"
 assert_has "$TMP/out" 'claim failed\rwith control\u000cbyte'
+: >"$GH_STATE"
+GH_MODE=post_claim_read_fail run_adapter "$TMP/out" claim 42 --project "$TMP/github" --json
+assert_rc "$RUN_RC" 1
+assert_has "$TMP/out" '"reason":"github-claim-failed"'
+assert_has "$TMP/out" '"partial":true'
+test "$(cat "$GH_STATE")" = henry || fail "partial claim did not preserve the mutated assignment"
 
 echo "==> Linear claim exposes an exact MCP/API action without false verification"
 run_adapter "$TMP/out" claim aut-281 --project "$TMP/linear" --json
