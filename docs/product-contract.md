@@ -43,7 +43,7 @@ explain that owner's decision; they may not recompute it.
 | Bind merge to the reviewed head | GitHub merge API | Expected head passed to the merge mutation | Moving the head before merge is rejected |
 | Claim and reconcile work | Configured tracker adapter | Tracker-neutral claim/reconcile contract | GitHub- and Linear-backed fixtures reach equivalent tracker state |
 | Carry agent steering | Repository instruction files | Versioned, marked Touchstone block plus project-owned guidance | Resolved-instruction fixtures and controlled behavioral trials show each supported driver loads and follows the contract |
-| Adopt and evolve a repository | Touchstone CLI adoption module | `.touchstone.toml` and reviewable plan/apply output | Fresh, current, repeat, old-compatible, and unsupported-schema fixtures |
+| Adopt and evolve a repository | Touchstone CLI adoption module | Versioned project declarations and reviewable plan/apply output | Fresh, current, repeat, old-compatible, and unsupported-schema fixtures |
 | Install and upgrade the local tool | Homebrew | Versioned formula and checksummed release | Install, upgrade, rollback, and no-project-mutation tests pass |
 
 The canonical Linear execution plan maps active issues to these jobs. Do not
@@ -55,8 +55,8 @@ An adopted repository contains declarations and narrow integration points, not
 a copy of Touchstone's implementation:
 
 - `.touchstone.toml` declares its schema version, exact validation commands,
-  required tasks, runtime/setup requirements, explicit monorepo targets, and
-  its tracker once.
+  required tasks, runtime/setup requirements, and explicit monorepo targets.
+  `.touchstone-tracker.toml` declares the project's issue tracker once.
   [The validation contract](validation-contract.md) owns the schema-v1 shape
   and verdict semantics; [the tracker contract](tracker-contract.md) owns
   claim/reconcile configuration, references, and outcomes.
