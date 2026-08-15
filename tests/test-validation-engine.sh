@@ -1166,4 +1166,70 @@ for python_boundary in vcs-url poetry-python poetry-platform spaced-build-hook e
   assert_contains "$TMP_DIR/adopt-python-$python_boundary.err" "$expected_python_boundary"
 done
 
+echo "==> native adapters require tracked buildable targets"
+NATIVE_TOOL_BIN="$TMP_DIR/native-tools"
+mkdir -p "$NATIVE_TOOL_BIN"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "{}\\n"' >"$NATIVE_TOOL_BIN/cargo"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "example.invalid/fixture\\n"' >"$NATIVE_TOOL_BIN/go"
+chmod +x "$NATIVE_TOOL_BIN/cargo" "$NATIVE_TOOL_BIN/go"
+for native_profile in swift rust go; do
+  ADOPT_NATIVE="$TMP_DIR/adopt-native-$native_profile"
+  init_node_adoption_repo "$ADOPT_NATIVE"
+  case "$native_profile" in
+    swift)
+      mkdir -p "$ADOPT_NATIVE/Tests/FixtureTests"
+      printf '%s\n' '// swift-tools-version:6.2' 'import PackageDescription' \
+        'let package = Package(' '  name: "Fixture",' '  targets: [' \
+        '    .testTarget(name: "FixtureTests")' '  ]' ')' >"$ADOPT_NATIVE/Package.swift"
+      printf '%s\n' 'import Testing' '@Test func passes() { #expect(Bool(true)) }' \
+        >"$ADOPT_NATIVE/Tests/FixtureTests/FixtureTests.swift"
+      expected_native_command='command = \"swift test --disable-automatic-resolution --skip-update\"'
+      ;;
+    rust)
+      mkdir -p "$ADOPT_NATIVE/src"
+      printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+        >"$ADOPT_NATIVE/Cargo.toml"
+      printf '%s\n' 'version = 4' '' '[[package]]' 'name = "fixture"' \
+        'version = "0.1.0"' >"$ADOPT_NATIVE/Cargo.lock"
+      printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_NATIVE/src/lib.rs"
+      expected_native_command='command = \"cargo test --frozen\"'
+      ;;
+    go)
+      printf '%s\n' 'module example.invalid/fixture' >"$ADOPT_NATIVE/go.mod"
+      printf '%s\n' 'package fixture' >"$ADOPT_NATIVE/fixture.go"
+      expected_native_command='command = \"GOENV=off GOTOOLCHAIN=local GOWORK=off GOPROXY=off GOSUMDB=off go test ./...\"'
+      ;;
+  esac
+  commit_node_adoption_repo "$ADOPT_NATIVE"
+  set +e
+  PATH="$NATIVE_TOOL_BIN:$PATH" bash "$ROOT/bin/touchstone" adopt --dry-run --json \
+    --project "$ADOPT_NATIVE" \
+    >"$TMP_DIR/adopt-native-$native_profile.json" \
+    2>"$TMP_DIR/adopt-native-$native_profile.err"
+  ADOPTION_STATUS=$?
+  set -e
+  [ "$ADOPTION_STATUS" -eq 0 ] \
+    || fail "$native_profile adoption failed: $(cat "$TMP_DIR/adopt-native-$native_profile.err") $(cat "$TMP_DIR/adopt-native-$native_profile.json")"
+  assert_contains "$TMP_DIR/adopt-native-$native_profile.json" "$expected_native_command"
+done
+
+ADOPT_RUST_UNTRACKED="$TMP_DIR/adopt-rust-untracked"
+init_node_adoption_repo "$ADOPT_RUST_UNTRACKED"
+mkdir -p "$ADOPT_RUST_UNTRACKED/src"
+printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+  >"$ADOPT_RUST_UNTRACKED/Cargo.toml"
+printf '%s\n' 'version = 4' '' '[[package]]' 'name = "fixture"' \
+  'version = "0.1.0"' >"$ADOPT_RUST_UNTRACKED/Cargo.lock"
+printf '%s\n' 'pub fn fixture() {}' >"$ADOPT_RUST_UNTRACKED/src/lib.rs"
+printf '%s\n' 'src/' >"$ADOPT_RUST_UNTRACKED/.gitignore"
+commit_node_adoption_repo "$ADOPT_RUST_UNTRACKED"
+set +e
+bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_RUST_UNTRACKED" \
+  >"$TMP_DIR/adopt-rust-untracked.out" 2>"$TMP_DIR/adopt-rust-untracked.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "Rust task without tracked source was accepted"
+assert_contains "$TMP_DIR/adopt-rust-untracked.err" \
+  'has no tracked default src/lib.rs or src/main.rs'
+
 echo "validation engine tests passed"

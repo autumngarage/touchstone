@@ -72,6 +72,17 @@ execution; requirements and editable-install paths use no-index setup. Remote
 references, environment markers, project build hooks, missing checker
 dependencies, and unverifiable configuration refuse with a manual-task remedy.
 
+The native adapters require executable tracked targets, not just manifests.
+Swift requires a statically verified test target with tracked source and disables
+automatic dependency resolution. Rust requires tracked default package source,
+a completely parsed committed lock, frozen offline Cargo metadata agreement,
+and no project-controlled Cargo execution configuration or build program. Go
+disables persistent environment configuration, workspace discovery, automatic
+toolchain selection, proxy access, and the checksum database; `go list` must
+prove offline that `./...` selects a package backed by tracked non-vendor source.
+Local dependency paths and unverifiable workspaces refuse with a manual-task
+remedy.
+
 ## Ownership and safety
 
 The applier owns only these boundaries:
