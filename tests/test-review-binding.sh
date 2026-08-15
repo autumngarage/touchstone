@@ -674,7 +674,9 @@ case "$1 ${2:-}" in
     printf '%s\n' 71
     ;;
   api*)
-    if has '/issues/7/comments' "$@"; then
+    if has '/issues/comments/1' "$@"; then
+      [ "${GH_MODE:-ok}" = live_comment_invalid ] || printf '%s\n' 1
+    elif has '/issues/7/comments' "$@"; then
       if [ -f "$GH_STATE/review-request" ]; then printf '%s\n' https://example.test/pr/7#issuecomment-1; fi
     elif has '/commits/' "$@" && has '/status' "$@"; then
       if [ -f "$GH_STATE/review-request" ]; then printf '%s\n' https://example.test/pr/7#issuecomment-1; fi
@@ -789,6 +791,9 @@ EOF
   GH_MODE=binding_moved run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'PR coordinates moved before the review request was bound'
+  GH_MODE=live_comment_invalid run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 1
+  assert_has "$TMP/out" 'is no longer a valid driver request'
   rm -f "$TMP/state/review-request"
   GH_MODE=spoofed_request run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
