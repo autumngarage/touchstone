@@ -1,0 +1,8 @@
+# case	expected profile	sources
+declared	declared	touchstone
+npm	npm	anima
+python-uv	python	arpeggio
+python	python	sentinel
+swift	swift	autumn-mail
+none	manual	-
+competing	manual	anima:package.json,arpeggio:pyproject.toml

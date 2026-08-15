@@ -1,0 +1,159 @@
+[project]
+name = "cortex"
+version = "1.6.4"
+description = "A file-format protocol for per-project memory, and the reference CLI."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [
+    { name = "autumngarage" },
+]
+keywords = ["memory", "protocol", "agents", "doctrine", "journal"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development",
+]
+dependencies = [
+    "click>=8.1,<9",
+    "packaging>=21",
+]
+
+[project.optional-dependencies]
+# Semantic retrieval extras for `cortex retrieve --mode {semantic,hybrid}`.
+#
+# Cross-platform install footprint (council delta #7 + risk #7/#8):
+#   - sqlite-vec ships pre-built wheels for x86_64/arm64 macOS + x86_64 Linux.
+#     aarch64 Linux is supported. Windows wheels exist but are less battle-tested.
+#   - fastembed pulls onnxruntime, which has NO PyPI wheel for aarch64 Linux
+#     (Graviton, Raspberry Pi, ARM K8s nodes). Users on those platforms hit
+#     ImportError during semantic mode; cortex falls back to BM25 with a
+#     stderr notice rather than crashing.
+#   - First model load downloads ~25 MB to ~/.cache/cortex/models/
+#     (XDG-respectful; not fastembed's default location). Air-gapped users
+#     should pre-seed the cache or stay on --mode bm25.
+#
+# Pinned ranges below match the wheels available within the uv exclude-newer
+# cutoff (2026-04-25). Bump alongside the cutoff.
+semantic = [
+    "sqlite-vec>=0.1.6,<0.2",
+    "fastembed>=0.4,<0.8",
+]
+
+# Hosted Postgres driver for the cortex.hosted executable path (cortex#472).
+# Optional by design: the core CLI install stays driver-free per the
+# standalone-boundary rule, and the brew formula stays dependency-light.
+# cortex.hosted.db imports psycopg lazily and raises a visible HostedDbError
+# naming `pip install 'cortex[hosted]'` when the driver is absent.
+#
+# pyjwt[crypto] (cortex#386): GitHub App auth REQUIRES an RS256-signed JWT to
+# exchange for installation tokens. RS256 needs RSA signing over the App
+# private key; hand-rolling that against `cryptography` primitives is strictly
+# worse than depending on a vetted, widely audited JWT library. PyJWT is a
+# crypto/auth primitive, NOT a model/vendor SDK, so the cortex#348
+# vendor-boundary discipline (tests/test_vendor_boundary.py) does not apply —
+# it bans LLM provider SDKs, not RS256 signing. Like psycopg, it loads lazily
+# inside github_app_auth so the core CLI install stays dependency-free.
+hosted = [
+    "psycopg[binary]>=3.1,<4",
+    "pyjwt[crypto]>=2.8,<3",
+]
+
+[project.scripts]
+cortex = "cortex.cli:cli"
+# Hosted Stage 1 service entrypoints (cortex#470/#471). Stdlib-only HTTP
+# transport; both require the 'hosted' extra at runtime for Postgres access.
+cortex-api = "cortex.hosted.api.app:main"
+cortex-worker = "cortex.hosted.worker:main"
+
+[project.urls]
+Homepage = "https://github.com/autumngarage/cortex"
+Repository = "https://github.com/autumngarage/cortex"
+Documentation = "https://github.com/autumngarage/cortex/blob/main/SPEC.md"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "mypy>=1.11",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+# Pin the dependency-resolution cutoff to a fixed date so `uv lock` /
+# `uv sync` produce a byte-identical uv.lock across machines and days.
+# Without this, the system-level UV_EXCLUDE_NEWER policy (a rolling
+# 7-day window) bakes a fresh "now - 7 days" timestamp into uv.lock's
+# [options] block on every invocation, churning a 4-line diff with no
+# actual dependency change. Bump this date deliberately when you want
+# to refresh deps — it becomes a single intentional "refresh deps" PR
+# instead of accidental noise on unrelated branches.
+exclude-newer = "2026-04-25T00:00:00Z"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cortex"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/cortex/_data" = "cortex/_data"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/cortex",
+    "README.md",
+    "SPEC.md",
+    "LICENSE",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-config",
+    "--strict-markers",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W", "I", "N", "UP", "B", "A", "C4", "RET", "SIM", "TID", "ARG", "RUF",
+]
+ignore = [
+    "E501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG", "S101"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+# psycopg, pyjwt, and cryptography ship in the optional "hosted" extra;
+# environments without it must type-check identically to environments with it
+# (no env-dependent ignores).
+module = ["psycopg", "psycopg.*", "jwt", "jwt.*", "cryptography", "cryptography.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
