@@ -199,9 +199,11 @@ fi
 # deleted the block that installed the binary. A user on a fresh clone would
 # follow a successful setup straight into command-not-found.
 #
-# Matched by subcommand rather than by the bare word, so prose about the
-# project and the surviving scripts/touchstone-run.sh both stay legal. When
-# the CLI is rebuilt, delete this check in the commit that ships it.
+# Command syntax is explicit: inline Markdown code, a command line at the
+# start of a Markdown line (including a fenced block), or an executable
+# run/execute instruction. Ordinary prose about the project and the surviving
+# scripts/touchstone-run.sh stays legal. When the CLI is rebuilt, replace the
+# reject-all verdict with an allowlist derived from its public command surface.
 # =============================================================================
 
 echo ""
@@ -213,25 +215,43 @@ echo "==> No file invokes a touchstone CLI subcommand"
 # developer machine and red on the required check, which is the worst possible
 # split: local green is what people trust. Both boundaries are now bracket
 # expressions, which behave identically on both platforms.
-CLI_SUBCOMMANDS='doctor|status|update|update-all|new|init|version|release|list|diff|sync|changelog'
-CLI_PATTERN="(^|[^-/[:alnum:]])touchstone (${CLI_SUBCOMMANDS})([^[:alnum:]-]|$)"
+CLI_PATTERN='touchstone [a-z][a-z-]*'
 
 # The check must be able to fail, and must be proven to on THIS platform
 # before its silence is allowed to mean anything.
 probe_hit=0
-printf 'Run `touchstone doctor` to verify.\n' | grep -qE "$CLI_PATTERN" && probe_hit=1
+printf 'Run `touchstone retired-command` to verify.\n' | grep -qE "$CLI_PATTERN" && probe_hit=1
+probe_fence=0
+printf '```bash\ntouchstone retired-command\n```\n' \
+  | awk '/^[[:space:]]*(\$[[:space:]]+)?touchstone [a-z][a-z-]*/ { found=1 } END { exit !found }' \
+  && probe_fence=1
 probe_miss=0
-printf 'bash scripts/touchstone-run.sh validate\n' | grep -qE "$CLI_PATTERN" || probe_miss=1
-if [ "$probe_hit" -eq 1 ] && [ "$probe_miss" -eq 1 ]; then
-  echo "  OK: the pattern matches a CLI invocation and spares touchstone-run.sh"
+printf 'bash scripts/touchstone-run.sh validate\n' | grep -qE '(^|[[:space:]])touchstone [a-z]' || probe_miss=1
+if [ "$probe_hit" -eq 1 ] && [ "$probe_fence" -eq 1 ] && [ "$probe_miss" -eq 1 ]; then
+  echo "  OK: inline and fenced command syntax match while touchstone-run.sh is spared"
 else
-  fail "the CLI-reference pattern is not working on this platform (hit=$probe_hit spared=$probe_miss); its silence below proves nothing"
+  fail "the CLI-reference extractors are not working on this platform (inline=$probe_hit fenced=$probe_fence spared=$probe_miss)"
 fi
 
-cli_refs="$(
-  git -C "$TOUCHSTONE_ROOT" grep -nE "$CLI_PATTERN" \
-    -- ':!tests/test-steering-size-caps.sh' ':!audits' ':!feedback' 2>/dev/null || true
-)"
+cli_refs=$(
+  {
+    git -C "$TOUCHSTONE_ROOT" grep -nE "$CLI_PATTERN" \
+      -- '*.md' ':!tests' ':!audits' ':!feedback' 2>/dev/null \
+      | awk '
+          {
+            original = $0
+            text = $0
+            sub(/^[^:]*:[0-9]+:/, "", text)
+            if (text ~ /`touchstone [a-z][a-z-]*/ \
+              || text ~ /^[[:space:]]*(\$[[:space:]]+)?touchstone [a-z][a-z-]*/) print original
+          }
+        ' || true
+    git -C "$TOUCHSTONE_ROOT" grep -nE "([Rr]un|[Ee]xecute)[[:space:]]+$CLI_PATTERN" \
+      -- '*.sh' ':!tests' ':!audits' ':!feedback' 2>/dev/null || true
+    git -C "$TOUCHSTONE_ROOT" grep -nE "run:[[:space:]]+$CLI_PATTERN" \
+      -- '*.yml' '*.yaml' ':!tests' ':!audits' ':!feedback' 2>/dev/null || true
+  }
+)
 if [ -n "$cli_refs" ]; then
   printf '%s\n' "$cli_refs" >&2
   fail "a file tells the reader to run a touchstone CLI subcommand, but no CLI ships"
