@@ -8,26 +8,22 @@ precondition for recovery.
 ## Interface
 
 ```text
-touchstone pr open --title TITLE --body-file FILE [--base BRANCH] [--issue ITEM]
+touchstone pr open --title TITLE --body-file FILE [--base BRANCH]
 touchstone pr status PR
 touchstone pr findings PR
 touchstone pr respond PR --comment-id ID --body-file FILE [--fix-commit SHA]
-touchstone pr merge PR [--head SHA] [--issue ITEM]
+touchstone pr merge PR [--head SHA]
 ```
 
 Every command accepts `--project DIR` and `--json`. JSON has schema
 `touchstone.pr/v1`; adding fields is compatible, while changing field meaning
 requires a new schema. Exit 0 means the reported state was verified, exit 1 is
-an operational or transport failure, exit 2 is invalid or unsafe input, and
-exit 3 means a tracker action remains externally unverifiable. A merge can
-therefore be verified while the command exits 3: reconcile the configured
-tracker, then rerun. No command runs a daemon, stores credentials, or persists
-derived PR state.
+an operational or transport failure, and exit 2 is invalid or unsafe input. No
+command runs a daemon, stores credentials, or persists derived PR state.
 
 ## Operations and raw equivalents
 
-- `open` proves the local and remote branch heads match, validates tracker
-  reference grammar without claiming reconciliation, reuses an existing
+- `open` proves the local and remote branch heads match, reuses an existing
   open PR for that branch or runs `gh pr create`, re-reads GitHub after the
   mutation, and posts `@codex review` once for the exact head. Its invisible
   comment marker and the server-side `touchstone/review-request-v1` status make
@@ -46,7 +42,6 @@ derived PR state.
   documented invocation.
 - `merge` binds `--match-head-commit` to the live (and optionally caller-
   expected) head, asks GitHub to merge, and always re-reads actual PR state.
-  Only after that authoritative read does it reconcile tracker state.
   It does not reconstruct the ruleset, review, or conversation verdict before
   the mutation; GitHub alone decides whether the merge is allowed. Raw
   equivalent: `gh pr merge --squash --match-head-commit SHA`, then
@@ -57,9 +52,14 @@ derived PR state.
 All reads use bounded retries. Mutations are never blindly retried: their
 surviving state is read first or immediately afterward, so a timeout after a
 successful mutation does not create a second PR, review request, reply, or
-merge. A moved head, unknown or changed review base, tracker mismatch,
-ambiguous branch-to-PR mapping, GitHub rejection, or unverified final state
-fails closed with a concrete remedy.
+merge. A moved head, unknown or changed review base, ambiguous branch-to-PR
+mapping, GitHub rejection, or unverified final state fails closed with a
+concrete remedy.
+
+GitHub response data and diagnostics remain separate. Successful commands are
+parsed from stdout alone; failed commands retain a bounded, sanitized
+diagnostic. Debug output on stderr therefore cannot become a head, URL, or
+repository identity.
 
 Repository identity includes the canonical GitHub hostname as well as
 `owner/repo`. PR, REST, and GraphQL operations retain that host, so verification
@@ -72,8 +72,10 @@ GitHub.
 
 ## Ownership boundary
 
-The CLI owns sequencing, stable output, retry limits, idempotency checks, and
-post-mutation verification. The tracker adapter owns closing-reference syntax.
-`respond-review.sh` owns reply-and-resolve semantics. Repository rules and the
-required workflow own the merge verdict. This command neither reconstructs
-those rules nor treats a local inference as permission to merge.
+The CLI owns GitHub PR sequencing, stable output, retry limits, idempotency
+checks, and post-mutation verification. It does not parse tracker closing
+language or mutate tracker state. Drivers reconcile delivered work through the
+configured tracker API or CLI. `respond-review.sh` owns reply-and-resolve
+semantics. Repository rules and the required workflow own the merge verdict.
+This command neither reconstructs those rules nor treats a local inference as
+permission to merge.

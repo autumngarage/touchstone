@@ -10,7 +10,8 @@ One person cannot read everything many agents produce. Touchstone exists so that
 The goal is that every Autumn Garage project gets the same dev flow by adopting Touchstone, and that the flow is industry-leading practice for GitHub and agent-driven delivery. Adoption is **set-and-forget**: an adopted repository must remain correct if Touchstone never rewrites it again. V1 serves one operator's portfolio through public-quality interfaces; it does not build a speculative third-party platform. The durable boundary is defined in `docs/product-contract.md`.
 
 **The second half is deliberately narrow.** The CLI validates declared project
-checks, claims and reconciles tracker work, and sequences five PR operations.
+checks, verifies tracker claims, and sequences five PR operations. Drivers
+reconcile delivered work through the configured tracker API or CLI.
 It does not stage, commit, or push code, and it never replaces GitHub's merge
 verdict. Every operation retains a documented raw `git`/`gh` recovery path.
 
@@ -75,11 +76,11 @@ Ship with the CLI or the documented raw commands. The CLI starts after the
 branch is pushed:
 
 ```bash
-touchstone pr open --title "fix: some change" --body-file /tmp/pr-body --issue AUT-123
+touchstone pr open --title "fix: some change" --body-file /tmp/pr-body
 touchstone pr status <n>
 touchstone pr findings <n>
 touchstone pr respond <n> --comment-id <id> --body-file /tmp/reply
-touchstone pr merge <n> --head <reviewed-sha> --issue AUT-123
+touchstone pr merge <n> --head <reviewed-sha>
 ```
 
 The exact raw recovery path remains:

@@ -530,7 +530,10 @@ value_after() {
 
 case "$1 ${2:-}" in
   "auth status") [ "${GH_MODE:-ok}" != auth_fail ] ;;
-  "repo view") printf 'autumngarage/current\thttps://%s/autumngarage/current\n' "${GH_REPO_HOST:-github.com}" ;;
+  "repo view")
+    [ "${GH_MODE:-ok}" != success_stderr ] || printf 'repo debug detail\n' >&2
+    printf 'autumngarage/current\thttps://%s/autumngarage/current\n' "${GH_REPO_HOST:-github.com}"
+    ;;
   "pr list")
     if [ -f "$GH_STATE/pr-exists" ]; then
       printf '7\thttps://example.test/pr/7\t%s\t%s\t%s\n' \
@@ -554,12 +557,14 @@ case "$1 ${2:-}" in
     esac
     ;;
   "pr comment")
+    [ "${GH_MODE:-ok}" != comment_success_stderr ] || printf 'comment debug detail\n' >&2
     [ "${GH_MODE:-ok}" = comment_unverified ] ||
       printf '%s %s %s\n' "$GH_HEAD" "$GH_BASE_REF" "$GH_BASE_SHA" >"$GH_STATE/review-request"
     [ "${GH_MODE:-ok}" != comment_lied ] || exit 1
     printf '%s\n' https://example.test/pr/7#issuecomment-1
     ;;
   "pr view")
+    [ "${GH_MODE:-ok}" != success_stderr ] || printf 'view debug detail\n' >&2
     if [ "${GH_MODE:-ok}" = read_retry ] && [ ! -f "$GH_STATE/retried" ]; then
       touch "$GH_STATE/retried"
       exit 1
@@ -584,7 +589,7 @@ case "$1 ${2:-}" in
     [ "${GH_MODE:-ok}" != merge_lied ] || exit 1
     ;;
   "issue view")
-    if [ -f "$GH_STATE/merged" ]; then printf '%s\n' CLOSED; else printf '%s\n' OPEN; fi
+    if [ -f "$GH_STATE/merged" ]; then printf 'CLOSED\tCOMPLETED\n'; else printf 'OPEN\t\n'; fi
     ;;
   "api user") printf '%s\n' alice ;;
   "api graphql")
@@ -666,6 +671,10 @@ EOF
   GH_REPO_HOST=github.enterprise.example run_pr "$TMP/out" status 7 --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" 'pr view 7 --repo github.enterprise.example/autumngarage/current'
+  GH_MODE=success_stderr run_pr "$TMP/out" status 7 --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" "\"head\":\"$HEAD_SHA\""
+  assert_not_has "$TMP/out" 'debug detail'
   run_pr "$TMP/out" status 7 --title invalid
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'does not accept mutation options'
@@ -679,12 +688,12 @@ EOF
   echo "==> open refuses head drift and reconciles a lying creation response"
   rm -f "$TMP/state/pr-exists" "$TMP/state/review-request"
   git -C "$TMP/project" switch -q main
-  GH_HEAD="$MAIN_SHA" run_pr "$TMP/out" open --title 'Default branch' --body-file "$TMP/body" --issue 42 --json
+  GH_HEAD="$MAIN_SHA" run_pr "$TMP/out" open --title 'Default branch' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'cannot open a pull request from the default branch'
   git -C "$TMP/project" switch -q feat/test
   touch "$TMP/state/pr-exists"
-  GH_HEAD=wrong run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --issue 42 --json
+  GH_HEAD=wrong run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'does not match local/remote head'
   GH_HEAD="$HEAD_SHA"
@@ -692,7 +701,7 @@ EOF
   caller_directory="$PWD"
   canonical_body="$(cd "$TMP" && pwd -P)/body"
   cd "$TMP"
-  GH_MODE=create_lied run_pr "$TMP/out" open --title 'Test PR' --body-file body --issue 42 --json
+  GH_MODE=create_lied run_pr "$TMP/out" open --title 'Test PR' --body-file body --json
   cd "$caller_directory"
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"opened"'
@@ -700,68 +709,54 @@ EOF
   assert_has "$GH_CALLS" "pr create --repo github.com/autumngarage/current --head feat/test --base main --title Test PR --body-file $canonical_body"
   [ "$(grep -c '^pr comment' "$GH_CALLS")" -eq 1 ] || fail "open did not post one review request"
   rm -f "$TMP/state/review-request"
-  GH_MODE=comment_lied run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --issue 42 --json
+  GH_MODE=comment_lied run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" 'could not post the review request'
   rm -f "$TMP/state/review-request"
-  GH_MODE=comment_unverified run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --issue 42 --json
+  GH_MODE=comment_unverified run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" 'was not verified'
-  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --issue 42 --json
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"existing"'
   assert_has "$TMP/out" '"reviewRequest":"posted:'
   [ "$(grep -c '^pr comment' "$GH_CALLS")" -eq 1 ] || fail "recovery did not post exactly one review request"
-  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --issue 42 --json
+  rm -f "$TMP/state/review-request"
+  GH_MODE=comment_success_stderr run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
+  assert_has "$TMP/out" '"reviewRequest":"posted:https://example.test/pr/7#issuecomment-1"'
+  assert_not_has "$TMP/out" 'comment debug detail'
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewRequest":"existing:'
   [ "$(grep -c '^pr comment' "$GH_CALLS" || true)" -eq 0 ] || fail "rerun duplicated the review request"
-  GH_MODE=many_requests run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --issue 42 --json
+  GH_MODE=many_requests run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"reviewRequest":"existing:https://example.test/pr/7#issuecomment-1"'
 
   printf '%s\n' 'Local draft without a closer.' >"$TMP/local-draft"
-  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/local-draft" --issue 42 --json
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/local-draft" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"existing"'
 
-  printf '%s\n' 'Live body without a closer.' >"$TMP/state/pr-body"
-  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --issue 42 --json
-  assert_rc "$RUN_RC" 2
-  assert_has "$TMP/out" "Add 'Closes #42' to the PR body"
+  printf '%s\n' 'Live body without a locally parsed closer.' >"$TMP/state/pr-body"
+  run_pr "$TMP/out" open --title 'Test PR' --body-file "$TMP/body" --json
+  assert_rc "$RUN_RC" 0
   cp "$TMP/body" "$TMP/state/pr-body"
 
   GH_BASE_REF=release GH_BASE_SHA=release-sha \
     run_pr "$TMP/out" open --title 'Retargeted PR' --body-file "$TMP/body" \
-    --issue 42 --base release --json
+    --base release --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'already has a review request for different base coordinates'
   rm -f "$TMP/state/review-request"
   GH_BASE_REF=release GH_BASE_SHA=release-sha \
     run_pr "$TMP/out" open --title 'Retargeted PR' --body-file "$TMP/body" \
-    --issue 42 --base release --json
+    --base release --json
   assert_rc "$RUN_RC" 0
   assert_has "$GH_CALLS" "touchstone:pr-open head=$HEAD_SHA base=release base_sha=release-sha"
   GH_BASE_REF=main
   GH_BASE_SHA=base-sha
-
-  echo "==> Linear body validation does not pretend to reconcile tracker state"
-  cp "$TMP/project/.touchstone-tracker.toml" "$TMP/project/tracker-github"
-  sed 's/type = "github"/type = "linear"/' "$TMP/project/tracker-github" \
-    >"$TMP/project/.touchstone-tracker.toml"
-  sed -i.bak '/type = "linear"/a\
-key_prefix = "AUT"
-' "$TMP/project/.touchstone-tracker.toml"
-  rm "$TMP/project/.touchstone-tracker.toml.bak"
-  printf '%s\n' 'Change summary.' '' 'Fixes AUT-266' >"$TMP/linear-body"
-  rm -f "$TMP/state/pr-exists" "$TMP/state/review-request"
-  run_pr "$TMP/out" open --title 'Linear PR' --body-file "$TMP/linear-body" --issue AUT-266 --json
-  assert_rc "$RUN_RC" 0
-  assert_has "$TMP/out" '"status":"opened"'
-  assert_has "$TMP/out" '"tracker":"verified"'
-  assert_has "$GH_CALLS" 'pr comment'
-  mv "$TMP/project/tracker-github" "$TMP/project/.touchstone-tracker.toml"
-  cp "$TMP/body" "$TMP/state/pr-body"
 
   echo "==> body and inline findings are complete, paginated, and machine-readable"
   run_pr "$TMP/out" findings 7 --json
@@ -784,23 +779,23 @@ key_prefix = "AUT"
 
   echo "==> merge binds the head, delegates the verdict, and verifies actual state"
   rm -f "$TMP/state/merged"
-  run_pr "$TMP/out" merge 7 --head wrong --issue 42 --json
+  run_pr "$TMP/out" merge 7 --head wrong --json
   assert_rc "$RUN_RC" 2
   assert_has "$TMP/out" 'expected head wrong'
-  GH_MODE=merge_lied run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --issue 42 --json
+  GH_MODE=merge_lied run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"merged"'
   assert_has "$GH_CALLS" "--match-head-commit $HEAD_SHA"
   assert_not_has "$GH_CALLS" 'check-runs?check_name=review-binding'
   assert_not_has "$GH_CALLS" '--all-resolved-check'
-  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --issue 42 --json
+  run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"already-merged"'
   assert_not_has "$GH_CALLS" 'pr merge'
 
   echo "==> an unsuccessful mutation never claims a merge"
   rm -f "$TMP/state/merged"
-  GH_MODE=merge_failed run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --issue 42 --json
+  GH_MODE=merge_failed run_pr "$TMP/out" merge 7 --head "$HEAD_SHA" --json
   assert_rc "$RUN_RC" 1
   assert_has "$TMP/out" 'GitHub did not merge'
   assert_not_has "$TMP/out" '"status":"merged"'
@@ -809,5 +804,5 @@ key_prefix = "AUT"
     echo "==> FAIL: $ERRORS PR CLI assertion(s) failed" >&2
     exit 1
   fi
-  echo "==> PASS: PR CLI preserves exact-head, idempotency, and reconciliation invariants"
+  echo "==> PASS: PR CLI preserves exact-head and idempotency invariants"
 )

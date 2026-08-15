@@ -11,18 +11,16 @@ PROJECT_ARG=""
 TITLE=""
 BODY_FILE=""
 BASE_REF=""
-ISSUE_REFERENCE=""
 COMMENT_ID=""
 FIX_COMMIT=""
 EXPECTED_HEAD=""
-TRACKER_STATUS=not-requested
 OPERATION="${1:-}"
 PR_NUMBER=""
-PR_BODY_TEMP=""
 SCRIPT_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+CAPTURE_STDERR_TEMP=""
 
 cleanup() {
-  [ -z "$PR_BODY_TEMP" ] || rm -f -- "$PR_BODY_TEMP"
+  [ -z "$CAPTURE_STDERR_TEMP" ] || rm -f -- "$CAPTURE_STDERR_TEMP"
 }
 trap cleanup EXIT
 
@@ -40,11 +38,11 @@ esac
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  touchstone pr open --title TITLE --body-file FILE [--base BRANCH] [--issue ITEM] [--project DIR] [--json]
+  touchstone pr open --title TITLE --body-file FILE [--base BRANCH] [--project DIR] [--json]
   touchstone pr status PR [--project DIR] [--json]
   touchstone pr findings PR [--project DIR] [--json]
   touchstone pr respond PR --comment-id ID --body-file FILE [--fix-commit SHA] [--project DIR] [--json]
-  touchstone pr merge PR [--head SHA] [--issue ITEM] [--project DIR] [--json]
+  touchstone pr merge PR [--head SHA] [--project DIR] [--json]
 EOF
   exit 2
 }
@@ -100,17 +98,54 @@ fail_operation() {
   exit 1
 }
 
+clean_diagnostic() {
+  local cleaned
+  cleaned="$(printf '%s\n' "$1" | awk 'BEGIN { ORS="" }
+    {
+      for (code = 1; code < 32; code++) {
+        control = sprintf("%c", code)
+        gsub(control, " ")
+      }
+      if (NR > 1) printf " | "; printf "%s", $0
+    }')"
+  printf '%.2000s' "$cleaned"
+}
+
+capture_command() {
+  local output diagnostic status=0
+  CAPTURE_STDERR_TEMP="$(mktemp "${TMPDIR:-/tmp}/touchstone-pr-read.XXXXXX")" || {
+    CAPTURE_OUTPUT=""
+    CAPTURE_ERROR="could not create a temporary file for command diagnostics"
+    return 1
+  }
+  set +e
+  output="$("$@" 2>"$CAPTURE_STDERR_TEMP")"
+  status=$?
+  set -e
+  diagnostic="$(cat "$CAPTURE_STDERR_TEMP")"
+  rm -f -- "$CAPTURE_STDERR_TEMP"
+  CAPTURE_STDERR_TEMP=""
+  CAPTURE_OUTPUT="$output"
+  CAPTURE_ERROR=""
+  if [ "$status" -ne 0 ]; then
+    [ -z "$output" ] || diagnostic="${diagnostic}${diagnostic:+
+}${output}"
+    CAPTURE_ERROR="$(clean_diagnostic "$diagnostic")"
+  fi
+  return "$status"
+}
+
 read_with_retry() {
-  local attempt=1 status output
+  local attempt=1 status
   while :; do
     status=0
-    output="$("$@" 2>&1)" || status=$?
+    capture_command "$@" || status=$?
     if [ "$status" -eq 0 ]; then
-      READ_OUTPUT="$output"
+      READ_OUTPUT="$CAPTURE_OUTPUT"
       return 0
     fi
     if [ "$attempt" -ge "$READ_ATTEMPTS" ]; then
-      READ_OUTPUT="$output"
+      READ_OUTPUT="$CAPTURE_ERROR"
       return "$status"
     fi
     if [ "$JSON_MODE" = false ]; then
@@ -182,11 +217,6 @@ while [ "$#" -gt 0 ]; do
       BASE_REF="$2"
       shift 2
       ;;
-    --issue)
-      require_option_value "$@"
-      ISSUE_REFERENCE="$2"
-      shift 2
-      ;;
     --comment-id)
       require_option_value "$@"
       COMMENT_ID="$2"
@@ -210,19 +240,19 @@ done
 case "$OPERATION" in
   open)
     [ -z "$COMMENT_ID$FIX_COMMIT$EXPECTED_HEAD" ] \
-      || fail_input "open received an option for another operation" "Use only --title, --body-file, --base, and --issue."
+      || fail_input "open received an option for another operation" "Use only --title, --body-file, and --base."
     ;;
   status | findings)
-    [ -z "$TITLE$BODY_FILE$BASE_REF$ISSUE_REFERENCE$COMMENT_ID$FIX_COMMIT$EXPECTED_HEAD" ] \
+    [ -z "$TITLE$BODY_FILE$BASE_REF$COMMENT_ID$FIX_COMMIT$EXPECTED_HEAD" ] \
       || fail_input "$OPERATION does not accept mutation options" "Pass only PR, --project, and --json."
     ;;
   respond)
-    [ -z "$TITLE$BASE_REF$ISSUE_REFERENCE$EXPECTED_HEAD" ] \
+    [ -z "$TITLE$BASE_REF$EXPECTED_HEAD" ] \
       || fail_input "respond received an option for another operation" "Use only --comment-id, --body-file, and --fix-commit."
     ;;
   merge)
     [ -z "$TITLE$BODY_FILE$BASE_REF$COMMENT_ID$FIX_COMMIT" ] \
-      || fail_input "merge received an option for another operation" "Use only --head and --issue."
+      || fail_input "merge received an option for another operation" "Use only --head."
     ;;
 esac
 
@@ -255,34 +285,6 @@ case "$REPO_URL" in
 esac
 REPO_SPEC="$REPO_HOST/$REPO"
 
-run_tracker_operation() {
-  local operation="$1" output status=0
-  [ -n "$ISSUE_REFERENCE" ] || {
-    TRACKER_STATUS=not-requested
-    return 0
-  }
-  [ -f "$BODY_FILE" ] || fail_input "body file not found: $BODY_FILE" "Pass the PR body through --body-file."
-  output="$(bash "$SCRIPT_ROOT/scripts/touchstone-tracker.sh" "$operation" "$ISSUE_REFERENCE" \
-    --disposition fixed --body-file "$BODY_FILE" --project "$PROJECT_ROOT" --json 2>&1)" || status=$?
-  case "$status" in
-    0) TRACKER_STATUS=verified ;;
-    3) TRACKER_STATUS=unverifiable ;;
-    2) fail_input "tracker rejected the PR body: $output" "Use the configured tracker reference and closing grammar." ;;
-    *) fail_operation "tracker validation failed: $output" "Repair the tracker transport or configuration and retry." ;;
-  esac
-}
-
-stage_pr_body() {
-  local number="$1" body
-  PR_BODY_TEMP="$(mktemp "${TMPDIR:-/tmp}/touchstone-pr-body.XXXXXX")" \
-    || fail_operation "could not stage the PR body" "Check temporary-directory permissions."
-  read_with_retry gh pr view "$number" --repo "$REPO_SPEC" --json body --jq '.body' \
-    || fail_operation "could not read the PR body: $READ_OUTPUT" "Retry after GitHub recovers."
-  body="$READ_OUTPUT"
-  printf '%s' "$body" >"$PR_BODY_TEMP" \
-    || fail_operation "could not stage the PR body" "Check temporary-directory permissions."
-}
-
 emit_open_result() {
   local state="$1" number="$2" url="$3" head="$4" request="$5"
   if [ "$JSON_MODE" = true ]; then
@@ -292,20 +294,19 @@ emit_open_result() {
     json_string "$head"
     printf ',"reviewRequest":'
     json_string "$request"
-    printf ',"tracker":"%s"}\n' "$TRACKER_STATUS"
+    printf '}\n'
   else
-    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  review request: %s\n  tracker: %s\n' \
-      "$number" "$state" "$url" "$head" "$request" "$TRACKER_STATUS"
+    printf 'PR #%s: %s\n  url: %s\n  head: %s\n  review request: %s\n' \
+      "$number" "$state" "$url" "$head" "$request"
   fi
-  [ "$TRACKER_STATUS" != unverifiable ] || exit 3
 }
 
 open_pr() {
   local branch local_head remote_line remote_head rows count number url pr_head pr_base pr_base_sha create_output create_status=0
-  local request_marker request_head_marker comment_rows existing_request moved_request request_body request_url request_rows state supplied_body
+  local request_marker request_head_marker comment_rows existing_request moved_request request_body request_url request_rows state
   [ -n "$TITLE" ] || fail_input "open requires --title" "Pass the PR title explicitly."
   [ -f "$BODY_FILE" ] && [ -s "$BODY_FILE" ] \
-    || fail_input "open requires a non-empty --body-file" "Put the configured closing reference in that file."
+    || fail_input "open requires a non-empty --body-file" "Put the reviewed PR description in that file."
   branch="$(git -C "$PROJECT_ROOT" branch --show-current)" \
     || fail_operation "could not read the current branch" "Repair the local Git checkout."
   [ -n "$branch" ] || fail_input "detached HEAD cannot open a PR" "Create or switch to a feature branch."
@@ -332,7 +333,6 @@ open_pr() {
   count="$(printf '%s\n' "$rows" | awk 'NF { count++ } END { print count + 0 }')"
   [ "$count" -le 1 ] || fail_operation "multiple open pull requests use branch '$branch'" "Close or retarget duplicates."
   if [ "$count" -eq 0 ]; then
-    run_tracker_operation validate
     create_output="$(cd "$PROJECT_ROOT" && gh pr create --repo "$REPO_SPEC" --head "$branch" --base "$BASE_REF" \
       --title "$TITLE" --body-file "$BODY_FILE" 2>&1)" || create_status=$?
     read_with_retry gh pr list --repo "$REPO_SPEC" --state open --head "$branch" --limit 100 \
@@ -354,14 +354,6 @@ open_pr() {
     || fail_input "PR base $pr_base does not match requested base $BASE_REF" "Pass the live base or retarget the PR explicitly."
   [ -n "$pr_base_sha" ] \
     || fail_operation "GitHub returned no base SHA for PR #$number" "Retry after GitHub returns the complete PR binding."
-  if [ -n "$ISSUE_REFERENCE" ]; then
-    supplied_body="$BODY_FILE"
-    stage_pr_body "$number"
-    BODY_FILE="$PR_BODY_TEMP"
-    run_tracker_operation validate
-    BODY_FILE="$supplied_body"
-  fi
-
   request_marker="<!-- touchstone:pr-open head=$local_head base=$pr_base base_sha=$pr_base_sha -->"
   request_head_marker="<!-- touchstone:pr-open head=$local_head "
   read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$number/comments" \
@@ -383,8 +375,11 @@ open_pr() {
   request_body="@codex review
 
 $request_marker"
-  request_url="$(gh pr comment "$number" --repo "$REPO_SPEC" --body "$request_body" 2>&1)" \
-    || fail_operation "could not post the review request: $request_url" "Inspect comments before retrying."
+  if capture_command gh pr comment "$number" --repo "$REPO_SPEC" --body "$request_body"; then
+    request_url="$CAPTURE_OUTPUT"
+  else
+    fail_operation "could not post the review request: $CAPTURE_ERROR" "Inspect comments before retrying."
+  fi
   read_with_retry gh api --paginate --hostname "$REPO_HOST" "repos/$REPO/issues/$number/comments" \
     --jq '.[] | [.html_url, (.body // "")] | @tsv' \
     || fail_operation "review request returned $request_url but its surviving state could not be read: $READ_OUTPUT" \
@@ -492,9 +487,6 @@ merge_pr() {
     fail_input "expected head $EXPECTED_HEAD but PR #$PR_NUMBER is at $head" "Re-review the live head."
   fi
   EXPECTED_HEAD="$head"
-  stage_pr_body "$PR_NUMBER"
-  BODY_FILE="$PR_BODY_TEMP"
-  run_tracker_operation validate
   if [ "$state" = MERGED ]; then
     final_state=already-merged
   else
@@ -509,16 +501,14 @@ merge_pr() {
       || fail_operation "GitHub did not merge PR #$PR_NUMBER: $merge_output" "The repository ruleset remains authoritative."
     final_state=merged
   fi
-  run_tracker_operation reconcile
   if [ "$JSON_MODE" = true ]; then
     printf '{"schema":"%s","operation":"merge","status":"%s","pullRequest":%s,"head":' \
       "$OUTPUT_SCHEMA" "$final_state" "$PR_NUMBER"
     json_string "$EXPECTED_HEAD"
-    printf ',"tracker":"%s"}\n' "$TRACKER_STATUS"
+    printf '}\n'
   else
-    printf 'PR #%s: %s at %s\n  tracker: %s\n' "$PR_NUMBER" "$final_state" "$EXPECTED_HEAD" "$TRACKER_STATUS"
+    printf 'PR #%s: %s at %s\n' "$PR_NUMBER" "$final_state" "$EXPECTED_HEAD"
   fi
-  [ "$TRACKER_STATUS" != unverifiable ] || exit 3
 }
 
 case "$OPERATION" in

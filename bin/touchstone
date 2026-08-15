@@ -19,7 +19,7 @@ usage() {
   cat <<'EOF'
 Usage:
   touchstone validate [--json] [--project DIR] [--config FILE]
-  touchstone tracker claim|reconcile [arguments]
+  touchstone tracker claim [arguments]
   touchstone pr open|status|findings|respond|merge [arguments]
 EOF
 }
