@@ -1159,6 +1159,7 @@ mkdir -p "$STEERING_PLAN" "$STEERING_PROJECT"
   TOUCHSTONE_BLOCK_BEGIN='<!-- touchstone:steering:start -->'
   TOUCHSTONE_BLOCK_END='<!-- touchstone:steering:end -->'
   CR="$(printf '\r')"
+  export SCRIPT_ROOT TOUCHSTONE_BLOCK_BEGIN TOUCHSTONE_BLOCK_END CR
   operational_failure() {
     printf 'failed: %s\n' "$*" >&2
     exit 6
@@ -1241,5 +1242,182 @@ mkdir -p "$STEERING_PLAN" "$STEERING_PROJECT"
   ! grep -Fq 'unresolved threads and `CHANGES_REQUESTED` block the merge' \
     "$PLAN_ROOT/consumer.md" || exit 49
 ) || fail "steering renderer lost universal guidance or project-owned content"
+
+echo "==> adoption transaction writes atomically and preserves failed-restore backups"
+TRANSACTION_MODULE="$ROOT/scripts/lib/touchstone-adopt-transaction.sh"
+run_transaction_case() (
+  local case_name="$1" failure_mode="$2"
+  PROJECT_ROOT="$TMP_DIR/transaction-$case_name"
+  NEW_ROOT="$TMP_DIR/transaction-$case_name-new"
+  OLD_ROOT="$TMP_DIR/transaction-$case_name-old"
+  CHANGES_FILE="$TMP_DIR/transaction-$case_name-changes"
+  APPLY_STAGE_FILE="$TMP_DIR/transaction-$case_name-stage"
+  APPLY_APPLIED_FILE="$TMP_DIR/transaction-$case_name-applied"
+  APPLY_DIRECTORIES_FILE="$TMP_DIR/transaction-$case_name-directories"
+  LF="$(printf '\nX')"
+  LF="${LF%X}"
+  APPLY_ACTIVE=false
+  export APPLY_STAGE_FILE APPLY_APPLIED_FILE APPLY_DIRECTORIES_FILE APPLY_ACTIVE
+  mkdir -p "$PROJECT_ROOT" "$NEW_ROOT/nested" "$OLD_ROOT"
+  git -C "$PROJECT_ROOT" init -q
+  git -C "$PROJECT_ROOT" config user.name test
+  git -C "$PROJECT_ROOT" config user.email test@example.com
+  printf 'old\n' >"$PROJECT_ROOT/existing.txt"
+  printf 'old second\n' >"$PROJECT_ROOT/second.txt"
+  git -C "$PROJECT_ROOT" add existing.txt second.txt
+  git -C "$PROJECT_ROOT" commit -qm initial
+  git -C "$PROJECT_ROOT" branch -M main
+  git -C "$PROJECT_ROOT" update-ref refs/remotes/origin/main HEAD
+  git -C "$PROJECT_ROOT" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  git -C "$PROJECT_ROOT" switch -qc feat/transaction
+  printf 'new\n' >"$NEW_ROOT/existing.txt"
+  printf 'new second\n' >"$NEW_ROOT/second.txt"
+  printf 'created\n' >"$NEW_ROOT/nested/created.txt"
+  printf 'old\n' >"$OLD_ROOT/existing.txt"
+  printf 'old second\n' >"$OLD_ROOT/second.txt"
+  printf 'update\texisting.txt\ttouchstone\nupdate\tsecond.txt\ttouchstone\ncreate\tnested/created.txt\ttouchstone\n' >"$CHANGES_FILE"
+  safe_owned_path() { return 0; }
+  safety_refusal() {
+    printf 'safety refusal: %s\n' "$*" >&2
+    exit 5
+  }
+  operational_failure() {
+    printf 'operational failure: %s\n' "$*" >&2
+    exit 6
+  }
+  # shellcheck source=scripts/lib/touchstone-adopt-transaction.sh
+  source "$TRANSACTION_MODULE"
+  case "$failure_mode" in
+    write)
+      write_moves=0
+      mv() {
+        case "$1" in
+          *.touchstone-write.*)
+            write_moves=$((write_moves + 1))
+            [ "$write_moves" -ne 2 ] || return 1
+            ;;
+        esac
+        command mv "$@"
+      }
+      ;;
+    backup)
+      backup_counter="$TMP_DIR/transaction-$case_name-backup-count"
+      printf '0\n' >"$backup_counter"
+      mktemp() {
+        if [ "${1:-}" = -d ]; then
+          backup_directories="$(cat "$backup_counter")"
+          backup_directories=$((backup_directories + 1))
+          printf '%s\n' "$backup_directories" >"$backup_counter"
+          [ "$backup_directories" -ne 2 ] || return 1
+        fi
+        command mktemp "$@"
+      }
+      ;;
+    backup-cleanup)
+      backup_move_counter="$TMP_DIR/transaction-$case_name-backup-moves"
+      printf '0\n' >"$backup_move_counter"
+      mv() {
+        case "${1:-}:${2:-}" in
+          */pending:*/original)
+            backup_moves="$(cat "$backup_move_counter")"
+            backup_moves=$((backup_moves + 1))
+            printf '%s\n' "$backup_moves" >"$backup_move_counter"
+            [ "$backup_moves" -ne 2 ] || return 1
+            ;;
+        esac
+        command mv "$@"
+      }
+      rm() {
+        case "$*" in *pending*) return 1 ;; esac
+        command rm "$@"
+      }
+      ;;
+    staging-cleanup)
+      git() {
+        if [ "${1:-}" = hash-object ] && [ "${2:-}" = "$OLD_ROOT/existing.txt" ]; then return 1; fi
+        command git "$@"
+      }
+      rm() {
+        case "$*" in *touchstone-write*) return 1 ;; esac
+        command rm "$@"
+      }
+      ;;
+    observe)
+      mv() {
+        case "${1:-}:$2" in
+          *.touchstone-write.*:"$PROJECT_ROOT/existing.txt" | \
+            *.touchstone-write.*:"$PROJECT_ROOT/second.txt")
+            [ -e "$2" ] || return 88
+            ;;
+        esac
+        command mv "$@"
+      }
+      ;;
+  esac
+  if [ "$failure_mode" = write ] || [ "$failure_mode" = backup ] \
+    || [ "$failure_mode" = backup-cleanup ] || [ "$failure_mode" = staging-cleanup ]; then
+    set +e
+    (apply_plan) >"$TMP_DIR/transaction-$case_name.out" 2>&1
+    apply_status=$?
+    set -e
+    [ "$apply_status" -eq 6 ] || exit 31
+    [ "$(cat "$PROJECT_ROOT/existing.txt")" = old ] || exit 32
+    [ "$(cat "$PROJECT_ROOT/second.txt")" = "old second" ] || exit 33
+    [ ! -e "$PROJECT_ROOT/nested/created.txt" ] || exit 33
+    [ ! -d "$PROJECT_ROOT/nested" ] || exit 34
+  else
+    apply_plan
+    [ "$(cat "$PROJECT_ROOT/existing.txt")" = new ] || exit 35
+    [ "$(cat "$PROJECT_ROOT/second.txt")" = "new second" ] || exit 36
+    [ "$(cat "$PROJECT_ROOT/nested/created.txt")" = created ] || exit 36
+  fi
+  if [ "$failure_mode" = backup-cleanup ]; then
+    ! find "$PROJECT_ROOT" -name '.touchstone-write.*' -print -quit | grep -q . || exit 37
+    find "$PROJECT_ROOT" -name '.touchstone-backup.*' -print -quit | grep -q . || exit 38
+  elif [ "$failure_mode" = staging-cleanup ]; then
+    grep -Fq 'could not remove the staged write after snapshotting existing.txt failed' \
+      "$TMP_DIR/transaction-$case_name.out" || exit 39
+    find "$PROJECT_ROOT" -name '.touchstone-write.*' -print -quit | grep -q . || exit 40
+  else
+    ! find "$PROJECT_ROOT" \( -name '.touchstone-write.*' -o -name '.touchstone-backup.*' \) -print -quit | grep -q . \
+      || exit 37
+  fi
+)
+run_transaction_case success none || fail "successful adoption transaction did not write the plan"
+run_transaction_case atomic-update observe || fail "adoption exposed a missing destination during update"
+run_transaction_case write-rollback write || fail "failed adoption write did not restore files and directories"
+run_transaction_case backup-rollback backup || fail "failed backup preparation did not roll back earlier writes"
+run_transaction_case backup-cleanup-rollback backup-cleanup \
+  || fail "failed backup cleanup prevented rollback of earlier writes"
+run_transaction_case staging-cleanup-diagnostic staging-cleanup \
+  || fail "failed staging cleanup lost its operational diagnostic"
+
+(
+  destination="$TMP_DIR/failed-restore-destination"
+  backup_directory="$TMP_DIR/.touchstone-backup.failed-restore"
+  backup="$backup_directory/original"
+  applied="$TMP_DIR/failed-restore-applied"
+  stage="$TMP_DIR/failed-restore-stage"
+  directories="$TMP_DIR/failed-restore-directories"
+  mkdir -p "$backup_directory"
+  printf 'new\n' >"$destination"
+  printf 'old\n' >"$backup"
+  printf 'update\t%s\t%s\t%s\n' "$destination" "$backup" "$backup_directory" >"$applied"
+  : >"$stage"
+  : >"$directories"
+  mv() {
+    [ "$1" != "$backup" ] || return 1
+    command mv "$@"
+  }
+  # shellcheck source=scripts/lib/touchstone-adopt-transaction.sh
+  source "$TRANSACTION_MODULE"
+  if rollback_apply "$applied" "$stage" "$directories"; then
+    exit 41
+  fi
+  [ "$(cat "$destination")" = new ] || exit 45
+  [ "$(cat "$backup")" = old ] || exit 42
+  grep -Fq "$backup" "$applied" || exit 43
+  [ -d "$backup_directory" ] || exit 44
+) || fail "rollback cleanup destroyed the only recoverable original"
 
 echo "validation engine tests passed"
