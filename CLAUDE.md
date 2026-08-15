@@ -61,7 +61,8 @@ touchstone/
 | `TOUCHSTONE.md` | Canonical steering router — drives CLAUDE.md (@-import) and the AGENTS.md/GEMINI.md managed block |
 | `principles/git-workflow.md` | The full delivery sequence in raw `git` + `gh`, including thread resolution |
 | `scripts/respond-review.sh` | Reply to a review finding and resolve its thread in one step (GitHub needs four API calls) |
-| `scripts/claim-issue.sh` | Claim an issue before implementation so two agents do not ship competing fixes |
+| `scripts/touchstone-tracker.sh` | Versioned tracker-neutral verified claim adapter |
+| `scripts/claim-issue.sh` | GitHub transport used by the tracker adapter |
 | `hooks/branch-guard.sh` | Refuses `git commit` on the default branch at the Claude tool boundary |
 | `tests/test-steering-size-caps.sh` | Steering size caps plus path integrity — every path the docs name must exist |
 

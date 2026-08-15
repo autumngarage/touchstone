@@ -65,7 +65,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 - **Preserve compatibility at boundaries** — public API/config/schema/CLI/hook/template changes need a compatibility or migration plan.
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers).
 - **Isolate file-writing subagents** — parallel agents use dedicated worktrees and disjoint file ownership by default.
-- **File issues for bugs** — open a GitHub issue when you find a bug, in this project or in an autumngarage tool. Don't silently work around it.
+- **File tracked bugs** — open an item in the configured tracker when you find a bug, here or in an upstream tool. Don't silently work around it.
 - **Bound review convergence** — three finding-bearing rounds follow the capability across replacement PRs; closing or renaming never resets the budget. After exhaustion, narrow scope or redesign before requesting review again; record recurring tool/reviewer drag upstream.
 
 ## Never commit on the default branch
@@ -78,10 +78,10 @@ Drive this lifecycle automatically; do not ask the user for permission at each s
 
 1. **Pull.** `git pull --rebase` on the default branch.
 2. **Branch.** Before any edit that might become a commit.
-3. **Claim issues before implementation.** If the work starts from a GitHub issue, claim it before editing or dispatching an agent: `bash scripts/claim-issue.sh <n>`. Claim every issue in a multi-issue bundle so two agents do not ship competing fixes.
+3. **Claim tracked work before implementation.** Use the configured tracker's race-safe claim before editing or dispatching an agent. Claim every item in a bundle so two agents do not ship competing fixes; an unavailable transport is unverifiable, never success.
 4. **Change + commit.** Stage explicit file paths. Concise message. One concern per commit.
-5. **Reconcile issues.** Before opening the PR, list every GitHub issue found, claimed, fixed, partially fixed, or made stale by the work. Fully fixed issues get closing trailers (`Closes-issue: #123` or `Closes #123`) so merge auto-closes them; partial/stale issues get a comment explaining the evidence or remaining gap. Do not leave fixed issues open silently.
-6. **Ship.** `git push -u origin HEAD`, then `gh pr create`. Put the closing reference (`Closes #123`) in the **PR body** — squash-merge reads the body, not the commit. Request review by commenting `@codex review` on the PR.
+5. **Reconcile tracked work.** Before opening the PR, list every tracker item found, claimed, fixed, partially fixed, or made stale. Fixed items get the configured closing reference in the PR body; partial or stale items get a tracker note explaining the evidence or remaining gap. Do not leave shipped work stale silently.
+6. **Ship.** `git push -u origin HEAD`, then `gh pr create`. Put the configured closing reference (`Closes #123` or `Fixes AUT-123`) in the **PR body**, not only a commit. Request review by commenting `@codex review` on the PR.
 7. **Answer every piece of PR feedback before merging.** Whoever reviews (hosted AI, bot, or colleague), reply to each comment and resolve the thread; unresolved threads and `CHANGES_REQUESTED` block the merge. `bash scripts/respond-review.sh <pr> --comment-id <id> --body-file <file>` replies and resolves in one step; `--all-resolved-check` proves none remain.
 8. **Merge** with `gh pr merge <n> --squash --match-head-commit <sha>`, binding to the head the review actually saw. Its exit code lies in both directions — confirm against real state rather than trusting it.
 9. **Clean up after merge.** Delete the local branch if it persists.
@@ -116,10 +116,10 @@ Use the normal lifecycle unless the user asks for a different flow:
 
 1. Pull/rebase the default branch.
 2. Branch before editing.
-3. Claim every GitHub issue you are actively implementing with `bash scripts/claim-issue.sh <n>` before editing or dispatching an agent.
+3. Claim every configured-tracker item through its supported adapter or API before editing or dispatching an agent; re-read ownership after mutation.
 4. Make the change, stage explicit file paths, and commit with a concise message.
-5. Reconcile issue state before opening the PR: fixed issues get closing trailers/PR body lines; partial or stale issues get an issue comment with evidence and remaining gaps.
-6. Ship with `git push -u origin HEAD`, then `gh pr create` — put `Closes #123` in the **PR body**, since that is what squash-merge reads. Request review, answer every finding, then merge with `gh pr merge <n> --squash --match-head-commit <reviewed-sha>` and confirm the result rather than trusting the exit code.
+5. Reconcile configured-tracker state before opening the PR: fixed items get that tracker's closing reference in the PR body; partial or stale items get a tracker note with evidence and remaining gaps.
+6. Ship with `git push -u origin HEAD`, then `gh pr create` — put the configured closing reference in the **PR body**, since that is what squash-merge reads. Request review, answer every finding, then merge with `gh pr merge <n> --squash --match-head-commit <reviewed-sha>` and confirm the result rather than trusting the exit code.
 7. The PR is the review surface. Do not treat PR creation as completion: answer every piece of PR feedback and resolve the thread — whoever left it — before merging.
 8. Clean up the feature branch if it still exists locally.
 
