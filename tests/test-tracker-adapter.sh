@@ -123,6 +123,10 @@ printf '%s\n' 'Fixes AUT-281' >"$TMP/body"
 run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/linear" --json
 assert_rc "$RUN_RC" 3
 assert_has "$TMP/out" '"status":"unverifiable"'
+printf '%s\n' 'Fixes AUT-281.' >"$TMP/body"
+run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/linear" --json
+assert_rc "$RUN_RC" 3
+assert_not_has "$TMP/out" 'missing-closing-reference'
 printf '%s\n' '[skip-claim-check]' 'Closes #281' >"$TMP/body"
 run_adapter "$TMP/out" reconcile AUT-281 --disposition fixed --body-file "$TMP/body" --project "$TMP/linear"
 assert_rc "$RUN_RC" 2
@@ -171,6 +175,17 @@ GH_MODE=state_fail run_adapter "$TMP/out" reconcile 42 --disposition stale --bod
 assert_rc "$RUN_RC" 1
 assert_has "$TMP/out" 'github-close-verification-failed'
 rm -f "$GH_CLOSED"
+
+echo "==> reconciliation evidence must contain a substantive note"
+: >"$TMP/note"
+run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
+assert_rc "$RUN_RC" 2
+assert_has "$TMP/out" 'Provide a non-empty --note-file'
+printf '%s\n' '   ' >"$TMP/note"
+run_adapter "$TMP/out" reconcile 42 --disposition partial --body-file "$TMP/body" --note-file "$TMP/note" --project "$TMP/github" --json
+assert_rc "$RUN_RC" 2
+assert_has "$TMP/out" 'Provide a non-empty --note-file'
+printf '%s\n' 'Evidence and remaining gap.' >"$TMP/note"
 
 echo "==> partial and stale work require non-closing PR references"
 printf '%s\n' 'Summary only.' >"$TMP/body"
