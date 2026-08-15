@@ -467,7 +467,9 @@ respond_pr() {
   case "$COMMENT_ID" in *[!0-9]*) fail_input "comment ID must be numeric" "Pass a database ID." ;; esac
   args=("$PR_NUMBER" --comment-id "$COMMENT_ID" --body-file "$BODY_FILE")
   if [ -n "$FIX_COMMIT" ]; then args+=(--fix-commit "$FIX_COMMIT"); fi
-  output="$(cd "$PROJECT_ROOT" && bash "$SCRIPT_ROOT/scripts/respond-review.sh" "${args[@]}" 2>&1)" || status=$?
+  output="$(cd "$PROJECT_ROOT" \
+    && TOUCHSTONE_GITHUB_REPOSITORY="$REPO" TOUCHSTONE_GITHUB_HOST="$REPO_HOST" \
+      bash "$SCRIPT_ROOT/scripts/respond-review.sh" "${args[@]}" 2>&1)" || status=$?
   if [ "$status" -ne 0 ]; then
     emit_error "$output" "Inspect the review thread before retrying."
     exit "$status"

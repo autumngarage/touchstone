@@ -37,7 +37,8 @@ command runs a daemon, stores credentials, or persists derived PR state.
   formal reviews through REST. It reports resolved state and stable IDs needed
   by `respond`. Raw equivalent: paginated `gh api graphql` review-thread reads
   plus `gh api --paginate repos/OWNER/REPO/pulls/PR/reviews`.
-- `respond` delegates to `scripts/respond-review.sh`, preserving the single
+- `respond` delegates to `scripts/respond-review.sh`, passing the already
+  resolved canonical repository and hostname while preserving the single
   reply, resolve, and fresh verification path. Raw equivalent: that script's
   documented invocation.
 - `merge` binds `--match-head-commit` to the live (and optionally caller-

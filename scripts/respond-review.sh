@@ -74,12 +74,37 @@ while [ "$#" -gt 0 ]; do
   shift || true
 done
 
-REPO_WITH_OWNER="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)" \
-  || fail "could not resolve the GitHub repository (gh repo view failed)."
+REPO_WITH_OWNER="${TOUCHSTONE_GITHUB_REPOSITORY:-}"
+REPO_HOST="${TOUCHSTONE_GITHUB_HOST:-}"
+if [ -n "$REPO_WITH_OWNER$REPO_HOST" ]; then
+  [ -n "$REPO_WITH_OWNER" ] && [ -n "$REPO_HOST" ] \
+    || fail "TOUCHSTONE_GITHUB_REPOSITORY and TOUCHSTONE_GITHUB_HOST must be provided together."
+else
+  REPO_ROW="$(
+    (
+      unset GH_REPO
+      gh repo view --json nameWithOwner,url --jq '[.nameWithOwner,.url] | @tsv'
+    ) 2>/dev/null
+  )" \
+    || fail "could not resolve the GitHub repository (gh repo view failed)."
+  IFS="$(printf '\t')" read -r REPO_WITH_OWNER REPO_URL <<<"$REPO_ROW"
+  case "$REPO_URL" in
+    http://* | https://*)
+      REPO_HOST="${REPO_URL#*://}"
+      REPO_HOST="${REPO_HOST%%/*}"
+      ;;
+    *) fail "could not parse the GitHub repository URL '$REPO_URL'." ;;
+  esac
+fi
 REPO_OWNER="${REPO_WITH_OWNER%%/*}"
 REPO_NAME="${REPO_WITH_OWNER##*/}"
-[ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] \
+[ -n "$REPO_OWNER" ] && [ -n "$REPO_NAME" ] && [ "$REPO_OWNER" != "$REPO_NAME" ] \
   || fail "could not parse owner/name from '$REPO_WITH_OWNER'."
+case "$REPO_HOST" in '' | *[!A-Za-z0-9.-]*) fail "could not parse GitHub hostname '$REPO_HOST'." ;; esac
+
+gh_api() {
+  gh api "$@" --hostname "$REPO_HOST"
+}
 
 # Runs a GraphQL query with bounded retries; transient gateway responses
 # (HTML instead of JSON) surface as gh errors and are retried before the
@@ -88,7 +113,7 @@ graphql_with_retry() {
   local attempt=1 output status
   while :; do
     status=0
-    output="$(gh api graphql "$@" 2>&1)" || status=$?
+    output="$(gh_api graphql "$@" 2>&1)" || status=$?
     if [ "$status" -eq 0 ]; then
       printf '%s\n' "$output"
       return 0
@@ -160,10 +185,10 @@ $REPLY_MARKER"
 # be marked answered without the answer ever being written, and
 # --all-resolved-check would call the PR clean (#722). Authorship is therefore
 # part of the predicate: the reply must be ours.
-REPLY_AUTHOR="$(gh api user --jq '.login' 2>&1)" \
+REPLY_AUTHOR="$(gh_api user --jq '.login' 2>&1)" \
   || fail "could not resolve the authenticated user for reply idempotency: $REPLY_AUTHOR"
 [ -n "$REPLY_AUTHOR" ] || fail "GitHub returned no authenticated login; refusing to trust the idempotency marker."
-EXISTING_REPLY="$(gh api --paginate \
+EXISTING_REPLY="$(gh_api --paginate \
   "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/comments" \
   --jq ".[] | select(.in_reply_to_id == $COMMENT_ID) | select((.user.login // \"\") == \"$REPLY_AUTHOR\") | .body" 2>&1)" \
   || fail "could not inspect existing replies for comment $COMMENT_ID: $EXISTING_REPLY"
@@ -172,7 +197,7 @@ if grep -qF "$REPLY_MARKER" <<<"$EXISTING_REPLY"; then
   echo "    matched our own reply as @$REPLY_AUTHOR."
 else
   echo "==> Replying to review comment $COMMENT_ID on PR #$PR_NUMBER ..."
-  REPLY_ID="$(gh api "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/comments/$COMMENT_ID/replies" \
+  REPLY_ID="$(gh_api "repos/$REPO_OWNER/$REPO_NAME/pulls/$PR_NUMBER/comments/$COMMENT_ID/replies" \
     -f body="$REPLY_BODY" --jq '.id' 2>&1)" \
     || fail "could not post the reply: $REPLY_ID"
   echo "    reply id: $REPLY_ID"

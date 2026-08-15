@@ -776,10 +776,13 @@ EOF
 
   echo "==> respond reuses the existing reply/resolve path and is rerunnable"
   rm -f "$TMP/state/reply"
-  run_pr "$TMP/out" respond 7 --comment-id 51 --body-file "$TMP/reply" --fix-commit abc123 --json
+  GH_REPO_HOST=github.enterprise.example GH_REPO=ambient/wrong \
+    run_pr "$TMP/out" respond 7 --comment-id 51 --body-file "$TMP/reply" --fix-commit abc123 --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" '"status":"verified"'
   assert_has "$GH_CALLS" 'resolveReviewThread'
+  assert_has "$GH_CALLS" '--hostname github.enterprise.example'
+  assert_not_has "$GH_CALLS" 'ambient/wrong'
   run_pr "$TMP/out" respond 7 --comment-id 51 --body-file "$TMP/reply" --json
   assert_rc "$RUN_RC" 0
   assert_has "$TMP/out" 'already posted'
