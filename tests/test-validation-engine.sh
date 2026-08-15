@@ -831,4 +831,50 @@ echo "==> local authoring guard remains installed"
 assert_contains "$ROOT/.pre-commit-config.yaml" "id: no-commit-to-branch"
 assert_contains "$ROOT/.pre-commit-config.yaml" "stages: [pre-commit]"
 
+echo "==> adoption core compiles manual tasks and refuses unavailable adapters"
+ADOPT_MANUAL="$TMP_DIR/adopt-manual"
+mkdir -p "$ADOPT_MANUAL"
+git -C "$ADOPT_MANUAL" init -q
+git -C "$ADOPT_MANUAL" config user.name fixture
+git -C "$ADOPT_MANUAL" config user.email fixture@example.com
+printf '%s\n' '# fixture' >"$ADOPT_MANUAL/README.md"
+git -C "$ADOPT_MANUAL" add README.md
+git -C "$ADOPT_MANUAL" commit -qm fixture
+git -C "$ADOPT_MANUAL" update-ref refs/remotes/origin/main HEAD
+git -C "$ADOPT_MANUAL" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+git -C "$ADOPT_MANUAL" switch -q -c feat/adopt
+
+bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_MANUAL" \
+  --task 'verify=bash scripts/check.sh --all' >"$TMP_DIR/adopt-manual-plan.json"
+assert_contains "$TMP_DIR/adopt-manual-plan.json" '"profile":"manual"'
+assert_contains "$TMP_DIR/adopt-manual-plan.json" '"path":".touchstone.toml","action":"create"'
+assert_contains "$TMP_DIR/adopt-manual-plan.json" \
+  'command = \"bash scripts/check.sh --all\"'
+[ ! -e "$ADOPT_MANUAL/.touchstone.toml" ] || fail "adoption dry-run mutated the project"
+
+bash "$ROOT/bin/touchstone" adopt --project "$ADOPT_MANUAL" \
+  --task 'verify=bash scripts/check.sh --all' >"$TMP_DIR/adopt-manual-apply.out"
+assert_contains "$ADOPT_MANUAL/.touchstone.toml" \
+  'command = "bash scripts/check.sh --all"'
+assert_contains "$ADOPT_MANUAL/AGENTS.md" '<!-- touchstone:steering:start -->'
+
+ADOPT_NODE_UNAVAILABLE="$TMP_DIR/adopt-node-unavailable"
+mkdir -p "$ADOPT_NODE_UNAVAILABLE"
+git -C "$ADOPT_NODE_UNAVAILABLE" init -q
+git -C "$ADOPT_NODE_UNAVAILABLE" config user.name fixture
+git -C "$ADOPT_NODE_UNAVAILABLE" config user.email fixture@example.com
+printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_NODE_UNAVAILABLE/package.json"
+git -C "$ADOPT_NODE_UNAVAILABLE" add package.json
+git -C "$ADOPT_NODE_UNAVAILABLE" commit -qm fixture
+git -C "$ADOPT_NODE_UNAVAILABLE" switch -q -c feat/adopt
+set +e
+bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_NODE_UNAVAILABLE" \
+  >"$TMP_DIR/adopt-node-unavailable.out" 2>"$TMP_DIR/adopt-node-unavailable.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "missing Node adapter did not refuse automatic adoption"
+assert_contains "$TMP_DIR/adopt-node-unavailable.err" \
+  'automatic node adoption is unavailable in this Touchstone build'
+
 echo "validation engine tests passed"

@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# touchstone — versioned command boundary for validation and adoption.
+
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]:-$0}"
+while [ -h "$SCRIPT_PATH" ]; do
+  SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+  LINK_TARGET="$(readlink "$SCRIPT_PATH")"
+  case "$LINK_TARGET" in
+    /*) SCRIPT_PATH="$LINK_TARGET" ;;
+    *) SCRIPT_PATH="$SCRIPT_DIR/$LINK_TARGET" ;;
+  esac
+done
+TOUCHSTONE_ROOT="$(cd -P "$(dirname "$SCRIPT_PATH")/.." && pwd)"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  touchstone validate [--json] [--project DIR] [--config FILE]
+  touchstone adopt [--check|--dry-run] [--json] [--project DIR] [--task NAME=COMMAND]
+  touchstone upgrade [--check|--dry-run] [--json] [--project DIR]
+EOF
+}
+
+COMMAND="${1:-help}"
+if [ "$#" -gt 0 ]; then shift; fi
+
+case "$COMMAND" in
+  validate)
+    exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-run.sh" validate "$@"
+    ;;
+  adopt | upgrade)
+    exec bash "$TOUCHSTONE_ROOT/scripts/touchstone-adopt.sh" "$COMMAND" "$@"
+    ;;
+  help | -h | --help)
+    usage
+    ;;
+  *)
+    echo "ERROR: unknown command '$COMMAND'" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
