@@ -933,6 +933,22 @@ node_package_manager() {
   NODE_MANAGER="${manager:-${inherited:-$fallback}}"
 }
 
+node_effective_package_manager_spec() {
+  local directory="$1" spec status
+  if spec="$(json_root_string_value "$directory/package.json" packageManager)"; then
+    printf '%s\n' "$spec"
+    return 0
+  else
+    status=$?
+  fi
+  [ "$status" -eq 1 ] || return "$status"
+  if [ "$directory" != "$PROJECT_ROOT" ] && [ -f "$PROJECT_ROOT/package.json" ]; then
+    json_root_string_value "$PROJECT_ROOT/package.json" packageManager
+    return
+  fi
+  return 1
+}
+
 node_setup_command() {
   local manager="$1" directory="$2" declaration_status spec version major lock_kind=""
   case "$manager" in
@@ -943,6 +959,30 @@ node_setup_command() {
       ;;
     pnpm)
       if [ -f "$directory/pnpm-lock.yaml" ]; then
+        if spec="$(node_effective_package_manager_spec "$directory")"; then
+          declaration_status=0
+        else
+          declaration_status=$?
+        fi
+        case "$declaration_status" in
+          0)
+            case "$spec" in
+              pnpm@*)
+                version="${spec#pnpm@}"
+                printf '%s' "$version" | grep -Eq '^[0-9]+[.][0-9]+[.][0-9]+([+-][A-Za-z0-9.-]+)?$' \
+                  || contract_refusal "pnpm setup requires an exact packageManager version, found '$version'"
+                major="${version%%.*}"
+                case "$major" in 9 | 10) ;; *)
+                  contract_refusal "unsupported pnpm packageManager version '$version'"
+                  ;;
+                esac
+                ;;
+              *) contract_refusal "packageManager '$spec' conflicts with the 'pnpm' lockfile" ;;
+            esac
+            ;;
+          1) contract_refusal "pnpm-lock.yaml requires packageManager with an exact pnpm version" ;;
+          *) contract_refusal "package.json is malformed or packageManager is not a string" ;;
+        esac
         printf 'COREPACK_ENABLE_NETWORK=0 pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile\n'
       fi
       ;;
@@ -955,7 +995,7 @@ node_setup_command() {
         elif grep -q '^__metadata:' "$directory/yarn.lock"; then
           lock_kind=berry
         fi
-        if spec="$(json_root_string_value "$directory/package.json" packageManager)"; then
+        if spec="$(node_effective_package_manager_spec "$directory")"; then
           declaration_status=0
         else
           declaration_status=$?
@@ -1381,7 +1421,7 @@ cargo_workspace_contains() {
 }
 
 tasks_for_node() {
-  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" manager setup_directory setup_command npm_lock="" yarn_kind="" task found=false
+  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" manager setup_directory setup_command npm_lock="" yarn_kind="" task config found=false
   [ -f "$directory/package.json" ] || contract_refusal "Node target '$target' has no package.json"
   node_package_manager "$directory" "$inherited"
   for task in validate verify lint typecheck test build; do
@@ -1409,6 +1449,13 @@ tasks_for_node() {
     fi
   fi
   if [ "$manager" = pnpm ] && [ -f "$setup_directory/pnpm-lock.yaml" ]; then
+    for config in "$directory/.pnpmfile.cjs" "$directory/.pnpmfile.js" \
+      "$setup_directory/.pnpmfile.cjs" "$setup_directory/.pnpmfile.js" \
+      "$directory/.npmrc" "$setup_directory/.npmrc"; do
+      if [ -e "$config" ] || [ -L "$config" ]; then
+        contract_refusal "pnpm target '$target' has project-controlled pnpm hook or config '${config#"$PROJECT_ROOT"/}'; pass --task NAME=COMMAND"
+      fi
+    done
     pnpm_lock_valid "$setup_directory/pnpm-lock.yaml" \
       || contract_refusal "Node target '$target' has a pnpm lockfile outside the dependency-free portable subset; pass --task NAME=COMMAND"
   fi
@@ -2368,7 +2415,7 @@ require_tracked_rust_source() {
 }
 
 reject_rust_execution_config() {
-  local directory="$1" config
+  local directory="$1" config ancestor
   if [ -e "$directory/build.rs" ] || [ -L "$directory/build.rs" ]; then
     contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' has a build.rs program automatic validation cannot isolate; pass --task NAME=COMMAND"
   fi
@@ -2388,10 +2435,19 @@ reject_rust_execution_config() {
     END { exit !unsafe }
   ' "$directory/Cargo.toml" \
     && contract_refusal "Rust package '${directory#"$PROJECT_ROOT"/}' declares a custom build program automatic validation cannot isolate; pass --task NAME=COMMAND"
-  for config in "$directory/.cargo/config" "$directory/.cargo/config.toml"; do
-    if [ -e "$config" ] || [ -L "$config" ]; then
-      contract_refusal "Rust target '${directory#"$PROJECT_ROOT"/}' has project-controlled Cargo execution config; pass --task NAME=COMMAND"
-    fi
+  ancestor="$directory"
+  while :; do
+    for config in "$ancestor/.cargo/config" "$ancestor/.cargo/config.toml"; do
+      if [ -e "$config" ] || [ -L "$config" ]; then
+        contract_refusal "Rust target '${directory#"$PROJECT_ROOT"/}' inherits project-controlled Cargo execution config '${config#"$PROJECT_ROOT"/}'; pass --task NAME=COMMAND"
+      fi
+    done
+    [ "$ancestor" != "$PROJECT_ROOT" ] || break
+    ancestor="${ancestor%/*}"
+    case "$ancestor" in "$PROJECT_ROOT" | "$PROJECT_ROOT"/*) ;; *)
+      contract_refusal "Rust target '${directory#"$PROJECT_ROOT"/}' escapes the repository while checking Cargo config"
+      ;;
+    esac
   done
 }
 

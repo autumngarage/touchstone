@@ -52,10 +52,11 @@ Node tasks come only from non-empty declared package scripts. A declared
 the declared `lint`, `typecheck`, `test`, and `build` scripts in that order.
 When a dependency-free lockfile in the compiler's complete portable subset
 exists, the declaration prepares Node dependencies only in the manager's
-offline, frozen/immutable mode; pnpm and Yarn commands also disable Corepack
-network access before resolving their declared runtimes. Dependency-bearing or
-unverifiable locks require a manual declaration, and an unlocked project gets
-no generated install step.
+offline, frozen/immutable mode; pnpm and Yarn require exact supported runtime
+versions and disable Corepack network access before resolving them. Project-owned
+pnpm hook/config files require a manual task because pnpm also loads them while
+running declared scripts. Dependency-bearing or unverifiable locks require a
+manual declaration, and an unlocked project gets no generated install step.
 Yarn Classic and Berry require an exact declared package-manager version, and
 project-controlled Yarn configuration requires a manual declaration. A
 child uses the root setup only when an explicit JSON, block YAML, or single-line
@@ -83,8 +84,9 @@ selection, workspace discovery, the module proxy, and the checksum database;
 the Go tool must confirm offline that `./...` selects a package backed by tracked,
 non-excluded source. Rust requires tracked default package source plus a committed,
 completely parsed `Cargo.lock`; Cargo must confirm offline that the lock matches
-every verified manifest. Project-controlled Cargo execution config and build
-programs require a manual task. Workspace validation tests every verified package
+every verified manifest. Project-controlled Cargo execution config anywhere from
+a target through the repository root, and package build programs, require a
+manual task. Workspace validation tests every verified package
 in frozen mode so it cannot rewrite the lock or reach the network. Every generated validation
 path fails when required dependencies are not vendored or pre-provisioned;
 none may turn a package-host outage into a required-check failure. The accepted commands and setup are

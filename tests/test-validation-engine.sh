@@ -1265,7 +1265,26 @@ assert_contains "$TMP_DIR/adopt-rust-default-execution.out.err" \
 assert_contains "$TMP_DIR/adopt-rust-custom-execution.out.err" \
   'declares a custom build program automatic validation cannot isolate'
 assert_contains "$TMP_DIR/adopt-rust-config-execution.out.err" \
-  'has project-controlled Cargo execution config'
+  'inherits project-controlled Cargo execution config'
+
+ADOPT_RUST_ANCESTOR_CONFIG="$TMP_DIR/adopt-rust-ancestor-config"
+init_adoption_repo "$ADOPT_RUST_ANCESTOR_CONFIG"
+mkdir -p "$ADOPT_RUST_ANCESTOR_CONFIG/.cargo" \
+  "$ADOPT_RUST_ANCESTOR_CONFIG/apps/demo/src"
+printf '%s\n' '[build]' 'rustc-wrapper = "./wrapper"' \
+  >"$ADOPT_RUST_ANCESTOR_CONFIG/.cargo/config.toml"
+printf '%s\n' '[package]' 'name = "demo"' 'version = "0.1.0"' \
+  >"$ADOPT_RUST_ANCESTOR_CONFIG/apps/demo/Cargo.toml"
+printf '%s\n' 'version = 4' '' '[[package]]' 'name = "demo"' \
+  'version = "0.1.0"' >"$ADOPT_RUST_ANCESTOR_CONFIG/apps/demo/Cargo.lock"
+printf '%s\n' 'pub fn demo() {}' >"$ADOPT_RUST_ANCESTOR_CONFIG/apps/demo/src/lib.rs"
+commit_adoption_repo "$ADOPT_RUST_ANCESTOR_CONFIG" "fixture"
+git -C "$ADOPT_RUST_ANCESTOR_CONFIG" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-ancestor-config.out" adopt --dry-run \
+  --project "$ADOPT_RUST_ANCESTOR_CONFIG"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "ancestor Cargo execution config was accepted"
+assert_contains "$TMP_DIR/adopt-rust-ancestor-config.out.err" \
+  "inherits project-controlled Cargo execution config '.cargo/config.toml'"
 
 ADOPT_RUST_LOCK_VERSION="$TMP_DIR/adopt-rust-lock-version"
 init_adoption_repo "$ADOPT_RUST_LOCK_VERSION"
@@ -1422,6 +1441,51 @@ run_adoption "$TMP_DIR/adopt-pnpm-bad-lock.out" adopt --dry-run --project "$ADOP
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed pnpm lockfile was accepted"
 assert_contains "$TMP_DIR/adopt-pnpm-bad-lock.out.err" \
   'pnpm lockfile outside the dependency-free portable subset'
+
+for pnpm_spec in missing bogus unsupported; do
+  ADOPT_PNPM_VERSION="$TMP_DIR/adopt-pnpm-version-$pnpm_spec"
+  init_adoption_repo "$ADOPT_PNPM_VERSION"
+  case "$pnpm_spec" in
+    missing) printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+      >"$ADOPT_PNPM_VERSION/package.json" ;;
+    bogus) printf '%s\n' '{"packageManager":"pnpm@bogus","scripts":{"test":"node --test"}}' \
+      >"$ADOPT_PNPM_VERSION/package.json" ;;
+    unsupported) printf '%s\n' '{"packageManager":"pnpm@8.0.0","scripts":{"test":"node --test"}}' \
+      >"$ADOPT_PNPM_VERSION/package.json" ;;
+  esac
+  printf '%s\n' "lockfileVersion: '9.0'" >"$ADOPT_PNPM_VERSION/pnpm-lock.yaml"
+  commit_adoption_repo "$ADOPT_PNPM_VERSION" "fixture"
+  git -C "$ADOPT_PNPM_VERSION" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-pnpm-version-$pnpm_spec.out" adopt --dry-run \
+    --project "$ADOPT_PNPM_VERSION"
+  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$pnpm_spec pnpm version was accepted"
+done
+assert_contains "$TMP_DIR/adopt-pnpm-version-missing.out.err" \
+  'pnpm-lock.yaml requires packageManager with an exact pnpm version'
+assert_contains "$TMP_DIR/adopt-pnpm-version-bogus.out.err" \
+  "pnpm setup requires an exact packageManager version, found 'bogus'"
+assert_contains "$TMP_DIR/adopt-pnpm-version-unsupported.out.err" \
+  "unsupported pnpm packageManager version '8.0.0'"
+
+for pnpm_config in pnpmfile npmrc; do
+  ADOPT_PNPM_CONFIG="$TMP_DIR/adopt-pnpm-config-$pnpm_config"
+  init_adoption_repo "$ADOPT_PNPM_CONFIG"
+  printf '%s\n' '{"packageManager":"pnpm@10.0.0","scripts":{"test":"node --test"}}' \
+    >"$ADOPT_PNPM_CONFIG/package.json"
+  printf '%s\n' "lockfileVersion: '9.0'" >"$ADOPT_PNPM_CONFIG/pnpm-lock.yaml"
+  case "$pnpm_config" in
+    pnpmfile) printf '%s\n' 'module.exports = { hooks: {} }' \
+      >"$ADOPT_PNPM_CONFIG/.pnpmfile.cjs" ;;
+    npmrc) printf '%s\n' 'pnpmfile=hook.cjs' >"$ADOPT_PNPM_CONFIG/.npmrc" ;;
+  esac
+  commit_adoption_repo "$ADOPT_PNPM_CONFIG" "fixture"
+  git -C "$ADOPT_PNPM_CONFIG" switch -q -c feat/adopt
+  run_adoption "$TMP_DIR/adopt-pnpm-config-$pnpm_config.out" adopt --dry-run \
+    --project "$ADOPT_PNPM_CONFIG"
+  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$pnpm_config pnpm execution config was accepted"
+  assert_contains "$TMP_DIR/adopt-pnpm-config-$pnpm_config.out.err" \
+    'has project-controlled pnpm hook or config'
+done
 
 ADOPT_IGNORED_CONTRACT="$TMP_DIR/adopt-ignored-contract"
 init_adoption_repo "$ADOPT_IGNORED_CONTRACT"
