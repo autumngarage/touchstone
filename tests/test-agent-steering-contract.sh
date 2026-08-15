@@ -61,6 +61,9 @@ for file in \
   assert_contains "$file" "missing enforcement is a rollout gap"
   assert_contains "$file" "A security-review quota notice is never a blocker"
   assert_contains "$file" "bounded stalled-request recovery"
+  assert_contains "$file" "Bound review convergence"
+  assert_contains "$file" "follow the capability across replacement PRs"
+  assert_contains "$file" "closing or renaming never resets the budget"
   assert_not_contains "$file" "Review is an enforced gate."
 done
 
@@ -124,8 +127,8 @@ for file in "$GIT_WORKFLOW_GUIDE" "$GIT_WORKFLOW_SKILL"; do
   assert_contains "$file" "merge on acceptance alone"
   assert_contains "$file" "do not post a fourth request on the same"
   assert_contains "$file" "implementation shape"
-  assert_contains "$file" "redesigned head produces another finding-bearing"
-  assert_contains "$file" "split or close the PR"
+  assert_contains "$file" "redesigned attempt"
+  assert_contains "$file" "capability"
   assert_not_contains "$file" "retry until review"
 done
 
@@ -186,7 +189,30 @@ assert_contains "$GIT_WORKFLOW_GUIDE" "Do not grow the current PR one"
 assert_contains "$GIT_WORKFLOW_GUIDE" "scope containment is never permission to skip review"
 assert_contains "$GIT_WORKFLOW_GUIDE" "do not post a fourth request on the same"
 assert_contains "$GIT_WORKFLOW_GUIDE" "implementation shape"
-assert_contains "$GIT_WORKFLOW_GUIDE" "split or close the PR"
+assert_contains "$GIT_WORKFLOW_GUIDE" "split or close the"
+assert_contains "$GIT_WORKFLOW_GUIDE" "capability"
+assert_contains "$GIT_WORKFLOW_GUIDE" "per capability"
+assert_contains "$GIT_WORKFLOW_GUIDE" "does not reset its count"
+assert_contains "$GIT_WORKFLOW_GUIDE" "mechanical split is not budget laundering"
+assert_contains "$GIT_WORKFLOW_GUIDE" "gets one validation round"
+assert_contains "$GIT_WORKFLOW_GUIDE" "Exact-head review makes moving stacks multiply work"
+assert_contains "$GIT_WORKFLOW_GUIDE" "Do not open dependent"
+assert_contains "$GIT_WORKFLOW_GUIDE" "while a parent is still finding-bearing"
+
+echo "==> compiler scope and fixtures come from authoritative evidence"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "Bind that enumeration to a versioned source of truth"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "check in the supported inventory"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "Inputs absent from that source take the"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "explicit/manual path"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "captured real artifact"
+assert_contains "$TOUCHSTONE_ROOT/principles/pre-implementation-checklist.md" \
+  "cannot define npm"
+assert_contains "$TOUCHSTONE_ROOT/AGENTS.md" "Portfolio scope is checked-in data"
 # #801 review: this doc promised the gate emits `review_requested` and
 # `review_result` events and that review latency is measurable from them.
 # lib/events.sh and every emit call were deleted in #737, so the promise became

@@ -326,19 +326,26 @@ scope containment is never permission to skip review.
 
 **The loop.** If every finding resolves **without moving the head** (dispositions 3–4), answer every thread, prove none remain with `--all-resolved-check`, then merge — answered findings satisfy the gate (issue #751); do not request another review. If any fix lands as a commit (dispositions 1–2), batch ALL of them into ONE commit, answer every thread, push, and request one review for the new head.
 
-**The budget: three rounds per PR.** This is a discipline, not an enforced limit — the wrapper that refused a fourth request is gone, and a rule enforced by a script you can decline to run was never a rule. Past three rounds, the legitimate exits are:
+**The budget: three finding-bearing rounds per capability, never more than three
+on one PR.** This is a discipline, not an enforced limit — the wrapper that
+refused a fourth request is gone, and a rule enforced by a script you can
+decline to run was never a rule. Closing, renaming, restacking, or reopening the
+same acceptance criterion does not reset its count. Past three rounds, the
+legitimate exits are:
 
 - **Merge if answered** — all threads resolved satisfies the gate;
-- **Split the PR** — the diff is carrying more than one concern, and each fragment restarts with a budget it will rarely need;
+- **Split the PR** — only genuinely independent acceptance criteria receive
+  independent budgets; a mechanical split is not budget laundering;
 - **Close it, preserving the corpus** on the tracking issue (the #706 pattern) — correct when successive fixes keep creating defects.
 
 After a third finding-bearing review, **do not post a fourth request on the same
 implementation shape**. Stop, audit the repeated failure class, and put the
-chosen exit plus evidence in the PR. A fourth request is justified only after
-the diff has been materially narrowed, split, or redesigned around a class-level
-guardrail. If that redesigned head produces another finding-bearing round,
-split or close the PR; do not resume one-finding-at-a-time expansion. Exact-head
-review still applies to every replacement PR or redesigned head.
+chosen exit plus evidence in the PR. A later request is justified only after a
+durable root-cause record, a materially narrower acceptance boundary or
+replacement architecture, and a class-level guardrail. That redesigned attempt
+gets one validation round. If it produces another finding, split or close the
+capability; do not resume one-finding-at-a-time expansion. Exact-head review
+still applies to every replacement PR or redesigned head.
 
 AI review supplements deterministic checks; it does not replace lint, type checking, tests, or project-specific validators.
 
@@ -362,6 +369,13 @@ Never delete a branch that serves as an open PR's base or head; that is what orp
 ## Stacked PRs (and how they merge)
 
 A stacked PR is a PR whose base branch is another open PR's branch instead of the default branch. The goal: split a large change into a chain where each step is reviewable on its own. Open one with `gh pr create --base <parent-branch>`.
+
+**Exact-head review makes moving stacks multiply work.** Every parent update
+changes or invalidates each descendant's reviewed head. Do not open dependent
+descendants while a parent is still finding-bearing. Prepare them locally, then
+merge the parent and open the rebased child; use parallel PRs only for changes
+that are independently based on the default branch. An open stack is not a
+parallelization mechanism when exact-head evidence is required.
 
 **Retain the head branch on merge.** Do not enable `deleteBranchOnMerge`, and do not delete a parent branch that children are based on. If a head branch is deleted while open PRs are based on it, those PRs can be closed-without-merge with their review discussion abandoned — this fired on sentinel PRs #49/#50/#51 (2026-04-16) and is the reason the merge path retains branches (issue #713).
 

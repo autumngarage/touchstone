@@ -22,7 +22,7 @@ That division is the entire product; everything Touchstone ships exists to hold 
 
 **Review is always required.** The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so approval count does not represent it. Where `review-binding` is required, GitHub binds trusted review evidence and answers to the exact head. Until that gate is installed and verified, exact-head review remains mandatory driver procedure and the missing enforcement is a rollout gap, not permission to skip it.
 
-**A security-review quota notice is never a blocker.** It is provisional acceptance, not review evidence. Keep watching through the completion deadline, then use bounded stalled-request recovery.
+**A security-review quota notice is never a blocker.** It is provisional, not review evidence. Keep watching, then use bounded stalled-request recovery.
 
 Local hooks are fast feedback; configured GitHub policy is the real boundary. An adopted policy limits emergency admin bypass to pull requests, where GitHub records it. A repository without that enforcement still does not authorize a driver to push directly.
 
@@ -58,7 +58,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers).
 - **Isolate file-writing subagents** — parallel agents use dedicated worktrees and disjoint file ownership by default.
 - **File issues for bugs** — open a GitHub issue when you find a bug, in this project or in an autumngarage tool. Don't silently work around it.
-- **Escalate delivery friction upstream** — if Touchstone or the configured PR reviewer causes workflow drag (excessive latency, weak parallelization, brittle review/merge behavior, or other delivery inefficiency), file an actionable upstream issue with repro steps and impact instead of normalizing the pain.
+- **Bound review convergence** — three finding-bearing rounds follow the capability across replacement PRs; closing or renaming never resets the budget. After exhaustion, narrow scope or redesign before requesting review again; record recurring tool/reviewer drag upstream.
 
 ## Never commit on the default branch
 
@@ -119,6 +119,7 @@ You are maintaining the standard baseline for a solo developer directing many ag
 - **A rule must live at the layer that can enforce it.** GitHub enforces, prose instructs, scripts observe and sequence. Nothing lives at two layers at once. Re-deciding locally what GitHub decides at the merge button is the specific mistake that grew this repo to 49,000 lines.
 - **Adoption must stay set-and-forget.** Consumer repositories carry declarations and narrow integration points, never copied Touchstone implementation. An adopted repository remains valid without routine rewrites; evolution is backward-compatible or an explicit reviewable upgrade. `docs/product-contract.md` is the canonical boundary.
 - **Delete by default.** The burden of proof is on keeping. A change earns its way in when a real failure demanded it, not because a review round suggested it.
+- **Portfolio scope is checked-in data.** Before adding an adoption detector, commit the supported repository shapes and real generated artifacts that justify it. An absent or ambiguous shape uses the manual plan; it does not earn a speculative parser.
 - Files in `templates/` are legacy transition inputs for the frozen downstream shape, not the future adoption contract. Nothing copies them today; do not extend their detection, setup, or vendored-runner model.
 - Downstream projects are frozen on committed copies of the old scripts, deliberately. Do not try to fix them from here.
 - All shell must stay portable to macOS. The base tool surface is `bash`, `git`, `gh`, `sed`, and `awk`; policy operations additionally use `jq`, which `setup.sh` installs and verifies.

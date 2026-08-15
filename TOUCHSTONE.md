@@ -12,7 +12,7 @@ That division is the entire product; everything Touchstone ships exists to hold 
 
 **Review is always required.** The configured AI reviewer reports `COMMENTED`, not `APPROVED`, so approval count does not represent it. Where `review-binding` is required, GitHub binds trusted review evidence and answers to the exact head. Until that gate is installed and verified, exact-head review remains mandatory driver procedure and the missing enforcement is a rollout gap, not permission to skip it.
 
-**A security-review quota notice is never a blocker.** It is provisional acceptance, not review evidence. Keep watching through the completion deadline, then use bounded stalled-request recovery.
+**A security-review quota notice is never a blocker.** It is provisional, not review evidence. Keep watching, then use bounded stalled-request recovery.
 
 Local hooks are fast feedback; configured GitHub policy is the real boundary. An adopted policy limits emergency admin bypass to pull requests, where GitHub records it. A repository without that enforcement still does not authorize a driver to push directly.
 
@@ -48,7 +48,7 @@ Non-negotiable. Every code change is reviewed against them. Full rationale lives
 - **Audit weak-point classes** — find a structural bug → audit the class + add a guardrail. Use the `touchstone-audit-weak-points` skill (Claude) or read `principles/audit-weak-points.md` (other drivers).
 - **Isolate file-writing subagents** — parallel agents use dedicated worktrees and disjoint file ownership by default.
 - **File issues for bugs** — open a GitHub issue when you find a bug, in this project or in an autumngarage tool. Don't silently work around it.
-- **Escalate delivery friction upstream** — if Touchstone or the configured PR reviewer causes workflow drag (excessive latency, weak parallelization, brittle review/merge behavior, or other delivery inefficiency), file an actionable upstream issue with repro steps and impact instead of normalizing the pain.
+- **Bound review convergence** — three finding-bearing rounds follow the capability across replacement PRs; closing or renaming never resets the budget. After exhaustion, narrow scope or redesign before requesting review again; record recurring tool/reviewer drag upstream.
 
 ## Never commit on the default branch
 
