@@ -944,9 +944,10 @@ commit_node_adoption_repo() {
 ADOPT_NODE="$TMP_DIR/adopt-node"
 init_node_adoption_repo "$ADOPT_NODE"
 printf '%s\n' \
-  '{"scripts":{"lint":"eslint .","test":"node --test","postinstall":"curl https://example.invalid"}}' \
+  '{"name":"fixture","version":"1.0.0","scripts":{"lint":"eslint .","test":"node --test","postinstall":"curl https://example.invalid"}}' \
   >"$ADOPT_NODE/package.json"
-printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' \
+printf '%s\n' \
+  '{"name":"fixture","version":"1.0.0","lockfileVersion":3,"requires":true,"packages":{"":{"name":"fixture","version":"1.0.0"}}}' \
   >"$ADOPT_NODE/package-lock.json"
 commit_node_adoption_repo "$ADOPT_NODE"
 bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_NODE" \
@@ -957,6 +958,46 @@ assert_contains "$TMP_DIR/adopt-node-plan.json" 'command = \"npm run test\"'
 assert_contains "$TMP_DIR/adopt-node-plan.json" \
   'setup = \"npm ci --offline --ignore-scripts\"'
 assert_not_contains "$TMP_DIR/adopt-node-plan.json" 'postinstall'
+
+ADOPT_PNPM_GENERATED="$TMP_DIR/adopt-pnpm-generated"
+init_node_adoption_repo "$ADOPT_PNPM_GENERATED"
+printf '%s\n' '{"packageManager":"pnpm@10.28.1","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_PNPM_GENERATED/package.json"
+printf '%s\n' "lockfileVersion: '9.0'" 'settings:' \
+  '  autoInstallPeers: true' '  excludeLinksFromLockfile: false' \
+  'importers:' '  .: {}' >"$ADOPT_PNPM_GENERATED/pnpm-lock.yaml"
+commit_node_adoption_repo "$ADOPT_PNPM_GENERATED"
+bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_PNPM_GENERATED" \
+  >"$TMP_DIR/adopt-pnpm-generated.json"
+assert_contains "$TMP_DIR/adopt-pnpm-generated.json" \
+  'setup = \"COREPACK_ENABLE_NETWORK=0 pnpm install --offline --frozen-lockfile --ignore-scripts --ignore-pnpmfile\"'
+
+ADOPT_YARN_GENERATED="$TMP_DIR/adopt-yarn-generated"
+init_node_adoption_repo "$ADOPT_YARN_GENERATED"
+printf '%s\n' '{"name":"fixture","packageManager":"yarn@4.14.1","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_YARN_GENERATED/package.json"
+printf '%s\n' '__metadata:' '  version: 8' '  cacheKey: 10c0' \
+  '"fixture@workspace:.":' '  version: 0.0.0-use.local' \
+  '  resolution: "fixture@workspace:."' '  languageName: unknown' \
+  '  linkType: soft' >"$ADOPT_YARN_GENERATED/yarn.lock"
+commit_node_adoption_repo "$ADOPT_YARN_GENERATED"
+bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_YARN_GENERATED" \
+  >"$TMP_DIR/adopt-yarn-generated.json"
+assert_contains "$TMP_DIR/adopt-yarn-generated.json" \
+  'setup = \"COREPACK_ENABLE_NETWORK=0 yarn install --immutable --immutable-cache --mode=skip-build\"'
+
+ADOPT_SCOPED_MANAGER="$TMP_DIR/adopt-scoped-manager"
+init_node_adoption_repo "$ADOPT_SCOPED_MANAGER"
+printf '%s\n' '{"packageManager":"@evil/pm@1.0.0","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_SCOPED_MANAGER/package.json"
+commit_node_adoption_repo "$ADOPT_SCOPED_MANAGER"
+set +e
+bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_SCOPED_MANAGER" \
+  >"$TMP_DIR/adopt-scoped-manager.out" 2>"$TMP_DIR/adopt-scoped-manager.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "scoped packageManager declaration was accepted"
+assert_contains "$TMP_DIR/adopt-scoped-manager.err" "unsupported Node packageManager '@evil/pm'"
 
 for node_config in npmrc pnpmfile pnpmfile-unlocked; do
   ADOPT_NODE_CONFIG="$TMP_DIR/adopt-node-config-$node_config"
@@ -987,5 +1028,44 @@ assert_contains "$TMP_DIR/adopt-node-config-pnpmfile.err" \
   'project-controlled pnpm hook or config'
 assert_contains "$TMP_DIR/adopt-node-config-pnpmfile-unlocked.err" \
   'project-controlled pnpm hook or config'
+
+ADOPT_NPM_PRECEDENCE="$TMP_DIR/adopt-npm-precedence"
+init_node_adoption_repo "$ADOPT_NPM_PRECEDENCE"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_NPM_PRECEDENCE/package.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' \
+  >"$ADOPT_NPM_PRECEDENCE/package-lock.json"
+printf '%s\n' '{"lockfileVersion":3,"requires":true,"packages":{"":{"dependencies":{"evil":"1.0.0"}}}}' \
+  >"$ADOPT_NPM_PRECEDENCE/npm-shrinkwrap.json"
+commit_node_adoption_repo "$ADOPT_NPM_PRECEDENCE"
+set +e
+bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_NPM_PRECEDENCE" \
+  >"$TMP_DIR/adopt-npm-precedence.out" 2>"$TMP_DIR/adopt-npm-precedence.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "package lock hid the effective npm shrinkwrap"
+assert_contains "$TMP_DIR/adopt-npm-precedence.err" \
+  'npm lockfile outside the dependency-free portable subset'
+
+ADOPT_YARN_STANDALONE="$TMP_DIR/adopt-yarn-standalone"
+init_node_adoption_repo "$ADOPT_YARN_STANDALONE"
+mkdir -p "$ADOPT_YARN_STANDALONE/apps/api"
+printf '%s\n' \
+  '{"name":"fixture","packageManager":"yarn@4.14.1","workspaces":["packages/*"]}' \
+  >"$ADOPT_YARN_STANDALONE/package.json"
+printf '%s\n' '__metadata:' '  version: 8' '  cacheKey: 10c0' \
+  '"fixture@workspace:.":' '  version: 0.0.0-use.local' \
+  '  resolution: "fixture@workspace:."' '  languageName: unknown' \
+  '  linkType: soft' \
+  >"$ADOPT_YARN_STANDALONE/yarn.lock"
+printf '%s\n' '{"scripts":{"test":"node --test"}}' \
+  >"$ADOPT_YARN_STANDALONE/apps/api/package.json"
+commit_node_adoption_repo "$ADOPT_YARN_STANDALONE"
+bash "$ROOT/bin/touchstone" adopt --dry-run --json --project "$ADOPT_YARN_STANDALONE" \
+  >"$TMP_DIR/adopt-yarn-standalone.json"
+assert_contains "$TMP_DIR/adopt-yarn-standalone.json" \
+  'command = \"npm run test\"'
+assert_not_contains "$TMP_DIR/adopt-yarn-standalone.json" \
+  'command = \"COREPACK_ENABLE_NETWORK=0 yarn test\"'
 
 echo "validation engine tests passed"

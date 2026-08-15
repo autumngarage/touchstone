@@ -27,11 +27,142 @@ node_has_declared_dependency() {
   return 1
 }
 npm_lock_valid() {
-  local file="$1" compact
+  local file="$1"
   validate_json_document "$file" || return 1
-  compact="$(tr -d '[:space:]' <"$file")"
-  [ "$compact" = '{"lockfileVersion":3,"requires":true,"packages":{"":{}}}' ] \
-    || [ "$compact" = '{"lockfileVersion":2,"requires":true,"packages":{"":{}}}' ]
+  awk '
+    function hex_value(character, position) {
+      position = index("0123456789abcdef", tolower(character))
+      return position - 1
+    }
+    function decoded_unicode(hex, position, value) {
+      value = 0
+      for (position = 1; position <= 4; position++) {
+        value = (value * 16) + hex_value(substr(hex, position, 1))
+      }
+      if (value < 128) return sprintf("%c", value)
+      if (value < 2048) return sprintf("%c%c", 192 + int(value / 64), 128 + (value % 64))
+      return sprintf("%c%c%c", 224 + int(value / 4096),
+        128 + (int(value / 64) % 64), 128 + (value % 64))
+    }
+    function decoded_escape(character) {
+      if (character == "b") return sprintf("%c", 8)
+      if (character == "f") return sprintf("%c", 12)
+      if (character == "n") return "\n"
+      if (character == "r") return "\r"
+      if (character == "t") return "\t"
+      return character
+    }
+    function finish_string() {
+      pending = token
+      token = ""
+      in_string = 0
+    }
+    function finish_root_literal(value) {
+      value = root_literal
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      if (root_literal_key == "lockfileVersion") lock_version = value
+      else if (root_literal_key == "requires") requires = value
+      root_literal = ""
+      root_literal_key = ""
+    }
+    function unsafe_root_package_key(key) {
+      return key == "dependencies" || key == "devDependencies" \
+        || key == "optionalDependencies" || key == "peerDependencies"
+    }
+    {
+      line = $0 "\n"
+      for (position = 1; position <= length(line); position++) {
+        character = substr(line, position, 1)
+        if (in_string) {
+          if (unicode_left > 0) {
+            unicode_hex = unicode_hex character
+            unicode_left--
+            if (unicode_left == 0) {
+              token = token decoded_unicode(unicode_hex)
+              unicode_hex = ""
+            }
+          } else if (escaped) {
+            if (character == "u") {
+              unicode_left = 4
+              unicode_hex = ""
+            } else token = token decoded_escape(character)
+            escaped = 0
+          } else if (character == "\\") escaped = 1
+          else if (character == "\"") finish_string()
+          else token = token character
+          continue
+        }
+        if (root_literal_key != "") {
+          if (character == "," || (character == "}" && depth == 1)) {
+            finish_root_literal()
+          } else {
+            root_literal = root_literal character
+            continue
+          }
+        }
+        if ((seeking_packages || seeking_root_package) && character ~ /[[:space:]]/) continue
+        if ((seeking_packages || seeking_root_package) && character != "{") {
+          invalid = 1
+          seeking_packages = 0
+          seeking_root_package = 0
+        }
+        if (character == "\"") {
+          in_string = 1
+          token = ""
+          continue
+        }
+        if (character == ":") {
+          key = pending
+          pending = ""
+          if (depth == 1 && key == "packages") {
+            packages_seen++
+            seeking_packages = 1
+          } else if (depth == 1 && (key == "lockfileVersion" || key == "requires")) {
+            if (key == "lockfileVersion") lock_seen++
+            else requires_seen++
+            root_literal_key = key
+            root_literal = ""
+          } else if (depth == 1 && unsafe_root_package_key(key)) {
+            invalid = 1
+          } else if (packages_depth > 0 && depth == packages_depth) {
+            package_keys++
+            if (key != "") invalid = 1
+            seeking_root_package = 1
+          } else if (root_package_depth > 0 && depth == root_package_depth \
+            && unsafe_root_package_key(key)) invalid = 1
+          continue
+        }
+        if (character == "{") {
+          depth++
+          if (seeking_packages) {
+            packages_depth = depth
+            seeking_packages = 0
+          } else if (seeking_root_package) {
+            root_package_depth = depth
+            seeking_root_package = 0
+          }
+          pending = ""
+          continue
+        }
+        if (character == "}") {
+          if (depth == root_package_depth) root_package_depth = 0
+          if (depth == packages_depth) packages_depth = 0
+          depth--
+          pending = ""
+          continue
+        }
+        if (character !~ /[[:space:],]/) pending = ""
+      }
+    }
+    END {
+      if (root_literal_key != "") finish_root_literal()
+      if (invalid || in_string || escaped || unicode_left > 0 || depth != 0 \
+        || seeking_packages || seeking_root_package) exit 1
+      exit !(lock_seen == 1 && (lock_version == "2" || lock_version == "3") \
+        && requires_seen == 1 && requires == "true" \
+        && packages_seen == 1 && package_keys == 1)
+    }
+  ' "$file" >/dev/null 2>&1
 }
 
 pnpm_lock_valid() {
@@ -41,10 +172,31 @@ pnpm_lock_valid() {
     /^lockfileVersion:[[:space:]]*["\047]?[0-9]+([.][0-9]+)?["\047]?[[:space:]]*$/ {
       if (version_seen) exit 2
       version_seen=1
+      section = ""
+      next
+    }
+    /^settings:[[:space:]]*$/ {
+      if (settings_seen) exit 2
+      settings_seen=1
+      section = "settings"
+      next
+    }
+    /^importers:[[:space:]]*$/ {
+      if (importers_seen) exit 2
+      importers_seen=1
+      section = "importers"
+      next
+    }
+    section == "settings" && /^  [A-Za-z][A-Za-z0-9_-]*:[[:space:]]*[^[:space:]][^#]*$/ { next }
+    section == "importers" && /^  ["\047]?[.]["\047]?:[[:space:]]*[{][}][[:space:]]*$/ {
+      if (root_importer_seen) exit 2
+      root_importer_seen=1
       next
     }
     { exit 2 }
-    END { if (!version_seen) exit 2 }
+    END {
+      if (!version_seen || (importers_seen && !root_importer_seen)) exit 2
+    }
   ' "$file" >/dev/null 2>&1
 }
 
@@ -63,19 +215,53 @@ yarn_lock_valid() {
     berry)
       awk '
         /^[[:space:]]*$/ { next }
-        /^__metadata:[[:space:]]*$/ { if (metadata_seen) exit 2; metadata_seen=1; next }
+        /^__metadata:[[:space:]]*$/ {
+          if (metadata_seen || workspace_seen) exit 2
+          metadata_seen=1
+          section = "metadata"
+          next
+        }
         /^  version:[[:space:]]*[0-9]+[[:space:]]*$/ {
-          if (!metadata_seen || version_seen) exit 2
+          if (section != "metadata" || version_seen) exit 2
           version_seen=1
           next
         }
         /^  cacheKey:[[:space:]]*[^[:space:]]+[[:space:]]*$/ {
-          if (!metadata_seen || cache_seen) exit 2
+          if (section != "metadata" || cache_seen) exit 2
           cache_seen=1
           next
         }
+        /^"[^"[:space:]]+@workspace:[.]":[[:space:]]*$/ {
+          if (!metadata_seen || workspace_seen) exit 2
+          workspace_seen=1
+          section = "workspace"
+          next
+        }
+        section == "workspace" && /^  version:[[:space:]]*0[.]0[.]0-use[.]local[[:space:]]*$/ {
+          if (workspace_version_seen) exit 2
+          workspace_version_seen=1
+          next
+        }
+        section == "workspace" && /^  resolution:[[:space:]]*"[^"[:space:]]+@workspace:[.]"[[:space:]]*$/ {
+          if (resolution_seen) exit 2
+          resolution_seen=1
+          next
+        }
+        section == "workspace" && /^  languageName:[[:space:]]*unknown[[:space:]]*$/ {
+          if (language_seen) exit 2
+          language_seen=1
+          next
+        }
+        section == "workspace" && /^  linkType:[[:space:]]*soft[[:space:]]*$/ {
+          if (link_seen) exit 2
+          link_seen=1
+          next
+        }
         { exit 2 }
-        END { if (!metadata_seen || !version_seen) exit 2 }
+        END {
+          if (!metadata_seen || !version_seen || !workspace_seen \
+            || !workspace_version_seen || !resolution_seen || !language_seen || !link_seen) exit 2
+        }
       ' "$file" >/dev/null 2>&1
       ;;
     *) return 1 ;;
@@ -203,11 +389,14 @@ node_package_manager() {
       0 | 1) ;;
       *) contract_refusal "package.json is malformed or packageManager is not a string" ;;
     esac
-    declared="${declared%%@*}"
-    case "$declared" in "" | npm | pnpm | yarn | bun) ;; *)
-      contract_refusal "unsupported Node packageManager '$declared'"
-      ;;
-    esac
+    if [ "$declaration_status" -eq 0 ]; then
+      [ -n "$declared" ] || contract_refusal "unsupported Node packageManager ''"
+      declared="${declared%@*}"
+      case "$declared" in npm | pnpm | yarn | bun) ;; *)
+        contract_refusal "unsupported Node packageManager '$declared'"
+        ;;
+      esac
+    fi
   fi
   if [ -f "$directory/pnpm-lock.yaml" ] || [ -f "$directory/pnpm-workspace.yaml" ]; then
     manager=pnpm
@@ -239,7 +428,7 @@ node_package_manager() {
 }
 
 node_effective_package_manager_spec() {
-  local directory="$1" spec status
+  local directory="$1" inherit_root="${2:-false}" spec status
   if spec="$(json_root_string_value "$directory/package.json" packageManager)"; then
     printf '%s\n' "$spec"
     return 0
@@ -247,7 +436,8 @@ node_effective_package_manager_spec() {
     status=$?
   fi
   [ "$status" -eq 1 ] || return "$status"
-  if [ "$directory" != "$PROJECT_ROOT" ] && [ -f "$PROJECT_ROOT/package.json" ]; then
+  if [ "$inherit_root" = true ] && [ "$directory" != "$PROJECT_ROOT" ] \
+    && [ -f "$PROJECT_ROOT/package.json" ]; then
     json_root_string_value "$PROJECT_ROOT/package.json" packageManager
     return
   fi
@@ -255,11 +445,11 @@ node_effective_package_manager_spec() {
 }
 
 node_validate_package_manager_spec() {
-  local manager="$1" directory="$2" status spec version major
+  local manager="$1" directory="$2" inherit_root="${3:-false}" status spec version major
   NODE_MANAGER_SPEC=""
   NODE_MANAGER_MAJOR=""
   case "$manager" in pnpm | yarn) ;; *) return 0 ;; esac
-  if spec="$(node_effective_package_manager_spec "$directory")"; then
+  if spec="$(node_effective_package_manager_spec "$directory" "$inherit_root")"; then
     status=0
   else
     status=$?
@@ -700,9 +890,10 @@ cargo_workspace_contains() {
 }
 
 tasks_for_node() {
-  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" manager setup_directory setup_command npm_lock="" yarn_kind="" task config found=false
+  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" effective_inherited="" manager setup_directory setup_command npm_lock="" yarn_kind="" task config found=false
   [ -f "$directory/package.json" ] || contract_refusal "Node target '$target' has no package.json"
-  node_package_manager "$directory" "$inherited"
+  if [ "$workspace_member" = true ]; then effective_inherited="$inherited"; fi
+  node_package_manager "$directory" "$effective_inherited"
   for task in validate verify lint typecheck test build; do
     if node_has_script "$directory/package.json" "$task"; then :; fi
   done
@@ -716,17 +907,17 @@ tasks_for_node() {
     node_has_declared_dependency "$setup_directory/package.json" \
       && contract_refusal "Node workspace root declares dependencies whose lock compatibility this portable compiler cannot verify; pass --task NAME=COMMAND"
   fi
-  node_validate_package_manager_spec "$manager" "$directory"
+  node_validate_package_manager_spec "$manager" "$directory" "$workspace_member"
   if [ "$manager" = npm ]; then
     for config in "$directory/.npmrc" "$setup_directory/.npmrc"; do
       if [ -e "$config" ] || [ -L "$config" ]; then
         contract_refusal "npm target '$target' has project-controlled config '${config#"$PROJECT_ROOT"/}'; pass --task NAME=COMMAND"
       fi
     done
-    if [ -f "$setup_directory/package-lock.json" ]; then
-      npm_lock="$setup_directory/package-lock.json"
-    elif [ -f "$setup_directory/npm-shrinkwrap.json" ]; then
+    if [ -f "$setup_directory/npm-shrinkwrap.json" ]; then
       npm_lock="$setup_directory/npm-shrinkwrap.json"
+    elif [ -f "$setup_directory/package-lock.json" ]; then
+      npm_lock="$setup_directory/package-lock.json"
     fi
     if [ -n "$npm_lock" ]; then
       npm_lock_valid "$npm_lock" \
