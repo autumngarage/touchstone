@@ -1123,6 +1123,17 @@ assert_contains "$TMP_DIR/adopt-rust-malformed.out.err" \
 [ ! -e "$ADOPT_RUST_MALFORMED/.touchstone.toml" ] \
   || fail "malformed Cargo manifest refusal mutated the repository"
 
+ADOPT_RUST_BAD_LOCK="$TMP_DIR/adopt-rust-bad-lock"
+init_adoption_repo "$ADOPT_RUST_BAD_LOCK"
+printf '%s\n' '[package]' 'name = "fixture"' 'version = "0.1.0"' \
+  >"$ADOPT_RUST_BAD_LOCK/Cargo.toml"
+printf '%s\n' 'this is not TOML [' >"$ADOPT_RUST_BAD_LOCK/Cargo.lock"
+commit_adoption_repo "$ADOPT_RUST_BAD_LOCK" "fixture"
+git -C "$ADOPT_RUST_BAD_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-rust-bad-lock.out" adopt --dry-run --project "$ADOPT_RUST_BAD_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed Cargo.lock was accepted"
+assert_contains "$TMP_DIR/adopt-rust-bad-lock.out.err" 'Cargo.lock is malformed'
+
 ADOPT_RUST_LOCAL="$TMP_DIR/adopt-rust-local"
 init_adoption_repo "$ADOPT_RUST_LOCAL"
 printf '%s\n' '[package]' 'name = "fixture"' '[dependencies]' \
@@ -1196,6 +1207,18 @@ git -C "$ADOPT_NPM_NO_LOCK" switch -q -c feat/adopt
 run_adoption "$TMP_DIR/adopt-npm-no-lock.out" adopt --dry-run --project "$ADOPT_NPM_NO_LOCK"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "dependency-free npm project without a lockfile was refused"
 assert_not_contains "$TMP_DIR/adopt-npm-no-lock.out" 'setup = '
+
+ADOPT_PNPM_BAD_LOCK="$TMP_DIR/adopt-pnpm-bad-lock"
+init_adoption_repo "$ADOPT_PNPM_BAD_LOCK"
+printf '%s\n' '{"packageManager":"pnpm@10.0.0","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_PNPM_BAD_LOCK/package.json"
+printf '%s\n' 'not: [valid' >"$ADOPT_PNPM_BAD_LOCK/pnpm-lock.yaml"
+commit_adoption_repo "$ADOPT_PNPM_BAD_LOCK" "fixture"
+git -C "$ADOPT_PNPM_BAD_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-pnpm-bad-lock.out" adopt --dry-run --project "$ADOPT_PNPM_BAD_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed pnpm lockfile was accepted"
+assert_contains "$TMP_DIR/adopt-pnpm-bad-lock.out.err" \
+  'pnpm lockfile outside the dependency-free portable subset'
 
 ADOPT_IGNORED_CONTRACT="$TMP_DIR/adopt-ignored-contract"
 init_adoption_repo "$ADOPT_IGNORED_CONTRACT"
@@ -1685,6 +1708,18 @@ run_adoption "$TMP_DIR/adopt-uv-dev.out" adopt --project "$ADOPT_UV_DEV"
 [ "$ADOPTION_STATUS" -eq 0 ] || fail "uv dev-group adoption failed"
 assert_contains "$ADOPT_UV_DEV/.touchstone.toml" 'setup = "uv sync --offline --frozen --group dev"'
 
+ADOPT_UV_BAD_LOCK="$TMP_DIR/adopt-uv-bad-lock"
+init_adoption_repo "$ADOPT_UV_BAD_LOCK"
+mkdir -p "$ADOPT_UV_BAD_LOCK/tests"
+printf '%s\n' '[project]' 'name = "fixture"' 'dependencies = ["pytest"]' \
+  >"$ADOPT_UV_BAD_LOCK/pyproject.toml"
+printf '%s\n' 'this is not TOML [' >"$ADOPT_UV_BAD_LOCK/uv.lock"
+commit_adoption_repo "$ADOPT_UV_BAD_LOCK" "fixture"
+git -C "$ADOPT_UV_BAD_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-uv-bad-lock.out" adopt --dry-run --project "$ADOPT_UV_BAD_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed uv.lock was accepted"
+assert_contains "$TMP_DIR/adopt-uv-bad-lock.out.err" 'uv.lock is malformed'
+
 echo "==> adoption derives explicit monorepo targets"
 ADOPT_MONOREPO="$TMP_DIR/adopt-monorepo"
 init_adoption_repo "$ADOPT_MONOREPO"
@@ -1795,6 +1830,23 @@ run_adoption "$TMP_DIR/adopt-cargo-missing-member.out" adopt --dry-run \
 [ "$ADOPTION_STATUS" -eq 4 ] || fail "missing Cargo workspace member was accepted"
 assert_contains "$TMP_DIR/adopt-cargo-missing-member.out.err" \
   "Cargo workspace member 'crates/shared' has no regular Cargo.toml"
+
+ADOPT_CARGO_BAD_DEFAULT="$TMP_DIR/adopt-cargo-bad-default"
+init_adoption_repo "$ADOPT_CARGO_BAD_DEFAULT"
+mkdir -p "$ADOPT_CARGO_BAD_DEFAULT/crates/core"
+printf '%s\n' '[workspace]' 'members = ["crates/core"]' \
+  'default-members = ["crates/missing"]' 'resolver = "2"' \
+  >"$ADOPT_CARGO_BAD_DEFAULT/Cargo.toml"
+printf '%s\n' 'version = 4' >"$ADOPT_CARGO_BAD_DEFAULT/Cargo.lock"
+printf '%s\n' '[package]' 'name = "core"' 'version = "0.1.0"' \
+  >"$ADOPT_CARGO_BAD_DEFAULT/crates/core/Cargo.toml"
+commit_adoption_repo "$ADOPT_CARGO_BAD_DEFAULT" "fixture"
+git -C "$ADOPT_CARGO_BAD_DEFAULT" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-cargo-bad-default.out" adopt --dry-run \
+  --project "$ADOPT_CARGO_BAD_DEFAULT"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "invalid Cargo default-member was accepted"
+assert_contains "$TMP_DIR/adopt-cargo-bad-default.out.err" \
+  "Cargo default member 'crates/missing' is not a verified workspace member"
 
 ADOPT_UNSUPPORTED_WORKSPACE_GLOB="$TMP_DIR/adopt-unsupported-workspace-glob"
 init_adoption_repo "$ADOPT_UNSUPPORTED_WORKSPACE_GLOB"
@@ -2021,6 +2073,30 @@ for yarn_case in unlocked berry classic; do
     assert_not_contains "$ADOPT_YARN/.touchstone.toml" 'setup = '
   fi
 done
+
+ADOPT_YARN_BAD_LOCK="$TMP_DIR/adopt-yarn-bad-lock"
+init_adoption_repo "$ADOPT_YARN_BAD_LOCK"
+printf '%s\n' '{"packageManager":"yarn@1.22.22","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_YARN_BAD_LOCK/package.json"
+printf '%s\n' '# yarn lockfile v1' 'malformed tail' >"$ADOPT_YARN_BAD_LOCK/yarn.lock"
+commit_adoption_repo "$ADOPT_YARN_BAD_LOCK" "fixture"
+git -C "$ADOPT_YARN_BAD_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-yarn-bad-lock.out" adopt --dry-run --project "$ADOPT_YARN_BAD_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "malformed Yarn lockfile was accepted"
+assert_contains "$TMP_DIR/adopt-yarn-bad-lock.out.err" \
+  'Yarn lockfile outside the dependency-free portable subset'
+
+ADOPT_BUN_LOCK="$TMP_DIR/adopt-bun-lock"
+init_adoption_repo "$ADOPT_BUN_LOCK"
+printf '%s\n' '{"packageManager":"bun@1.2.0","scripts":{"test":"node --test"}}' \
+  >"$ADOPT_BUN_LOCK/package.json"
+printf '%s\n' '{}' >"$ADOPT_BUN_LOCK/bun.lock"
+commit_adoption_repo "$ADOPT_BUN_LOCK" "fixture"
+git -C "$ADOPT_BUN_LOCK" switch -q -c feat/adopt
+run_adoption "$TMP_DIR/adopt-bun-lock.out" adopt --dry-run --project "$ADOPT_BUN_LOCK"
+[ "$ADOPTION_STATUS" -eq 4 ] || fail "unverifiable Bun lockfile was accepted"
+assert_contains "$TMP_DIR/adopt-bun-lock.out.err" \
+  'Bun lockfile this portable compiler cannot validate'
 
 ADOPT_BAD_JSON="$TMP_DIR/adopt-bad-json"
 init_adoption_repo "$ADOPT_BAD_JSON"

@@ -50,9 +50,11 @@ selecting one silently.
 Node tasks come only from non-empty declared package scripts. A declared
 `validate` or `verify` script is the single task; otherwise the adapter records
 the declared `lint`, `typecheck`, `test`, and `build` scripts in that order.
-When a lockfile exists, the declaration prepares Node dependencies only in the
-manager's offline, frozen/immutable mode; an unlocked project gets no generated
-install step. Yarn Classic and Berry are distinguished by the declared major
+When a dependency-free lockfile in the compiler's complete portable subset
+exists, the declaration prepares Node dependencies only in the manager's
+offline, frozen/immutable mode; dependency-bearing or unverifiable locks require
+a manual declaration, and an unlocked project gets no generated install step.
+Yarn Classic and Berry are distinguished by the declared major
 version, with the lock format as the fallback when no version is declared. A
 child uses the root setup only when an explicit JSON, block YAML, or single-line
 flow YAML workspace glob proves membership. Every workspace entry must be a
@@ -61,7 +63,8 @@ or unsupported declarations refuse instead of compiling a partial view.
 Python tasks come from ruff, mypy, and pytest evidence in `pyproject.toml` or
 the test tree. A dependency-free portable parser verifies the complete
 `pyproject.toml` before any facts are derived and refuses TOML syntax it cannot
-verify with a manual-task remedy. Explicit setup uses offline uv, no-index
+verify with a manual-task remedy. Explicit setup uses a completely parsed uv
+lock, offline uv, no-index
 requirements, or no-index editable installation only for an installable
 project declaration.
 Each emitted checker must also be present in dependency facts installed by that
@@ -70,7 +73,8 @@ exclude them. Configuration or a test tree without the checker dependency refuse
 Tool-only Python configuration without dependency facts refuses. Monorepo
 plans include executable root-level checks alongside explicit child targets.
 Swift and Go commands disable automatic resolution or both the Go proxy and
-checksum database. Rust requires a committed `Cargo.lock` and uses Cargo's
+checksum database. Rust requires a committed, completely parsed `Cargo.lock`,
+verifies exact workspace and default-member declarations, and uses Cargo's
 frozen mode so validation cannot rewrite it or reach the network. Every generated validation
 path fails when required dependencies are not vendored or pre-provisioned;
 none may turn a package-host outage into a required-check failure. The accepted commands and setup are

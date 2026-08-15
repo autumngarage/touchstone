@@ -729,6 +729,54 @@ npm_lock_valid() {
     || [ "$compact" = '{"lockfileVersion":2,"requires":true,"packages":{"":{}}}' ]
 }
 
+pnpm_lock_valid() {
+  local file="$1"
+  awk '
+    /^[[:space:]]*($|#)/ { next }
+    /^lockfileVersion:[[:space:]]*["\047]?[0-9]+([.][0-9]+)?["\047]?[[:space:]]*$/ {
+      if (version_seen) exit 2
+      version_seen=1
+      next
+    }
+    { exit 2 }
+    END { if (!version_seen) exit 2 }
+  ' "$file" >/dev/null 2>&1
+}
+
+yarn_lock_valid() {
+  local file="$1" kind="$2"
+  case "$kind" in
+    classic)
+      awk '
+        /^[[:space:]]*$/ { next }
+        /^# yarn lockfile v1$/ { if (header_seen) exit 2; header_seen=1; next }
+        /^#/ { next }
+        { exit 2 }
+        END { if (!header_seen) exit 2 }
+      ' "$file" >/dev/null 2>&1
+      ;;
+    berry)
+      awk '
+        /^[[:space:]]*$/ { next }
+        /^__metadata:[[:space:]]*$/ { if (metadata_seen) exit 2; metadata_seen=1; next }
+        /^  version:[[:space:]]*[0-9]+[[:space:]]*$/ {
+          if (!metadata_seen || version_seen) exit 2
+          version_seen=1
+          next
+        }
+        /^  cacheKey:[[:space:]]*[^[:space:]]+[[:space:]]*$/ {
+          if (!metadata_seen || cache_seen) exit 2
+          cache_seen=1
+          next
+        }
+        { exit 2 }
+        END { if (!metadata_seen || !version_seen) exit 2 }
+      ' "$file" >/dev/null 2>&1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 node_has_script() {
   local file="$1" task="$2" status
   json_object_has_key "$file" scripts "$task" && return 0
@@ -1335,7 +1383,7 @@ cargo_workspace_contains() {
 }
 
 tasks_for_node() {
-  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" manager setup_directory setup_command npm_lock="" task found=false
+  local directory="$1" target="$2" suffix="$3" inherited="${4:-}" workspace_member="${5:-false}" manager setup_directory setup_command npm_lock="" yarn_kind="" task found=false
   [ -f "$directory/package.json" ] || contract_refusal "Node target '$target' has no package.json"
   node_package_manager "$directory" "$inherited"
   for task in validate verify lint typecheck test build; do
@@ -1345,6 +1393,12 @@ tasks_for_node() {
     && contract_refusal "Node target '$target' declares a local file dependency this portable compiler cannot verify within the checkout; pass --task NAME=COMMAND"
   manager="$NODE_MANAGER"
   if [ "$workspace_member" = true ]; then setup_directory="$PROJECT_ROOT"; else setup_directory="$directory"; fi
+  node_has_declared_dependency "$directory/package.json" \
+    && contract_refusal "Node target '$target' declares dependencies whose lock compatibility this portable compiler cannot verify; pass --task NAME=COMMAND"
+  if [ "$setup_directory" != "$directory" ]; then
+    node_has_declared_dependency "$setup_directory/package.json" \
+      && contract_refusal "Node workspace root declares dependencies whose lock compatibility this portable compiler cannot verify; pass --task NAME=COMMAND"
+  fi
   if [ "$manager" = npm ]; then
     if [ -f "$setup_directory/package-lock.json" ]; then
       npm_lock="$setup_directory/package-lock.json"
@@ -1352,17 +1406,25 @@ tasks_for_node() {
       npm_lock="$setup_directory/npm-shrinkwrap.json"
     fi
     if [ -n "$npm_lock" ]; then
-      node_has_declared_dependency "$directory/package.json" \
-        && contract_refusal "Node target '$target' declares npm dependencies whose lock compatibility this portable compiler cannot verify; pass --task NAME=COMMAND"
-      if [ "$setup_directory" != "$directory" ]; then
-        node_has_declared_dependency "$setup_directory/package.json" \
-          && contract_refusal "Node workspace root declares npm dependencies whose lock compatibility this portable compiler cannot verify; pass --task NAME=COMMAND"
-      fi
       npm_lock_valid "$npm_lock" \
         || contract_refusal "Node target '$target' has an npm lockfile outside the dependency-free portable subset; regenerate a schema-v2/v3 lock or pass --task NAME=COMMAND"
-    elif node_has_declared_dependency "$directory/package.json"; then
-      contract_refusal "Node target '$target' declares npm dependencies without a portable lockfile; commit a compatible lock or pass --task NAME=COMMAND"
     fi
+  fi
+  if [ "$manager" = pnpm ] && [ -f "$setup_directory/pnpm-lock.yaml" ]; then
+    pnpm_lock_valid "$setup_directory/pnpm-lock.yaml" \
+      || contract_refusal "Node target '$target' has a pnpm lockfile outside the dependency-free portable subset; pass --task NAME=COMMAND"
+  fi
+  if [ "$manager" = yarn ] && [ -f "$setup_directory/yarn.lock" ]; then
+    if grep -q '^# yarn lockfile v1$' "$setup_directory/yarn.lock"; then
+      yarn_kind=classic
+    elif grep -q '^__metadata:$' "$setup_directory/yarn.lock"; then
+      yarn_kind=berry
+    fi
+    yarn_lock_valid "$setup_directory/yarn.lock" "$yarn_kind" \
+      || contract_refusal "Node target '$target' has a Yarn lockfile outside the dependency-free portable subset; pass --task NAME=COMMAND"
+  fi
+  if [ "$manager" = bun ] && { [ -f "$setup_directory/bun.lock" ] || [ -f "$setup_directory/bun.lockb" ]; }; then
+    contract_refusal "Node target '$target' has a Bun lockfile this portable compiler cannot validate; pass --task NAME=COMMAND"
   fi
   setup_command="$(node_setup_command "$manager" "$setup_directory")"
   if [ -n "$setup_command" ]; then record_setup "$setup_directory" "$setup_command"; fi
@@ -1803,6 +1865,22 @@ validate_requirements_document() {
     || contract_refusal "requirements.txt is malformed or outside the portable named-requirement subset; pass --task NAME=COMMAND for a manual contract"
 }
 
+validate_uv_lock() {
+  local file="$1"
+  validate_toml_document "$file" uv.lock
+  awk '
+    BEGIN { in_root=1 }
+    /^[[:space:]]*\[/ { in_root=0 }
+    !in_root { next }
+    /^[[:space:]]*version[[:space:]]*=[[:space:]]*1[[:space:]]*$/ {
+      if (version_seen) exit 2
+      version_seen=1
+    }
+    END { if (!version_seen) exit 2 }
+  ' "$file" >/dev/null 2>&1 \
+    || contract_refusal "uv.lock has no unique supported root version; regenerate it or pass --task NAME=COMMAND"
+}
+
 python_project_has_dependency() {
   local file="$1" wanted="$2" include_dev="$3"
   awk -v wanted="$wanted" -v include_dev="$include_dev" '
@@ -1898,6 +1976,7 @@ tasks_for_python() {
     validate_requirements_document "$directory/requirements.txt"
   fi
   if [ -f "$directory/uv.lock" ]; then
+    validate_uv_lock "$directory/uv.lock"
     prefix="uv run --no-sync"
     if [ -f "$directory/pyproject.toml" ] && python_has_uv_dev_group "$directory/pyproject.toml"; then
       record_setup "$directory" "uv sync --offline --frozen --group dev"
@@ -2029,7 +2108,7 @@ validate_go_mod_document() {
 }
 
 validate_cargo_workspace_members() {
-  local members pattern manifest
+  local members defaults pattern manifest
   if ! members="$(cargo_workspace_values members)"; then
     contract_refusal "root Cargo.toml has a malformed or repeated workspace members declaration"
   fi
@@ -2052,6 +2131,22 @@ validate_cargo_workspace_members() {
     toml_has_local_path_reference "$manifest" \
       && contract_refusal "Cargo workspace member '$pattern' declares a local path dependency this portable compiler cannot verify; pass --task NAME=COMMAND"
   done <<<"$members"
+  if ! defaults="$(cargo_workspace_values default-members)"; then
+    contract_refusal "root Cargo.toml has a malformed or repeated workspace default-members declaration"
+  fi
+  while IFS= read -r pattern; do
+    [ -n "$pattern" ] || continue
+    workspace_pattern_supported "$pattern" \
+      || contract_refusal "Cargo default member '$pattern' uses syntax this compiler cannot verify"
+    case "$pattern" in *'*'*)
+      contract_refusal "Cargo default member '$pattern' requires expansion this portable compiler cannot verify; list exact tracked members or pass --task NAME=COMMAND"
+      ;;
+    esac
+    valid_relative_path "$pattern" \
+      || contract_refusal "Cargo default member '$pattern' escapes the repository"
+    printf '%s\n' "$members" | grep -Fqx -- "$pattern" \
+      || contract_refusal "Cargo default member '$pattern' is not a verified workspace member"
+  done <<<"$defaults"
   return 0
 }
 
@@ -2081,6 +2176,7 @@ tasks_for_profile() {
         || contract_refusal "Rust target '$target' has no Cargo.lock; commit one or pass --task NAME=COMMAND"
       git -C "$PROJECT_ROOT" ls-files --error-unmatch -- "$cargo_lock_path" >/dev/null 2>&1 \
         || contract_refusal "Rust target '$target' has no tracked Cargo.lock; commit it or pass --task NAME=COMMAND"
+      validate_toml_document "$PROJECT_ROOT/$cargo_lock_path" Cargo.lock
       record_task "test$suffix" "$target" "cargo test --frozen"
       ;;
     go)
