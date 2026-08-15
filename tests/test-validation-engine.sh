@@ -1114,4 +1114,56 @@ assert_contains "$TMP_DIR/adopt-python-missing-source.err" \
   'mypy evidence but no tracked regular Python source'
 assert_contains "$TMP_DIR/adopt-python-malformed-toml.err" 'pyproject.toml is malformed'
 
+for python_boundary in vcs-url poetry-python poetry-platform spaced-build-hook extras-before-url invalid-requirement; do
+  ADOPT_PYTHON_BOUNDARY="$TMP_DIR/adopt-python-$python_boundary"
+  init_node_adoption_repo "$ADOPT_PYTHON_BOUNDARY"
+  case "$python_boundary" in
+    vcs-url)
+      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+        'dependencies = ["evil @ git+git://example.invalid/repo.git"]' \
+        >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
+      expected_python_boundary='remote direct dependency reference'
+      ;;
+    poetry-python | poetry-platform)
+      marker_key="${python_boundary#poetry-}"
+      printf '%s\n' '[tool.poetry]' 'name = "fixture"' 'version = "0.1.0"' \
+        '[tool.poetry.dependencies]' \
+        "evil = { version = \"^1\", $marker_key = \"blocked\" }" \
+        '[build-system]' 'requires = ["poetry-core"]' \
+        'build-backend = "poetry.core.masonry.api"' \
+        >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
+      expected_python_boundary='environment-marked dependency'
+      ;;
+    spaced-build-hook)
+      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+        'dependencies = ["ruff"]' '[ build-system ]' \
+        'requires = ["setuptools"]' 'build-backend = "setuptools.build_meta"' \
+        'backend-path = ["."]' >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
+      expected_python_boundary='project build hook'
+      ;;
+    extras-before-url)
+      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+        'dependencies = [' '  "foo[bar]",' \
+        '  "evil @ https://example.invalid/package.whl",' ']' \
+        >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
+      expected_python_boundary='remote direct dependency reference'
+      ;;
+    invalid-requirement)
+      printf '%s\n' '[project]' 'name = "fixture"' 'version = "0.1.0"' \
+        'dependencies = ["ruff", "not a requirement!"]' \
+        >"$ADOPT_PYTHON_BOUNDARY/pyproject.toml"
+      expected_python_boundary='outside the supported named-requirement subset'
+      ;;
+  esac
+  commit_node_adoption_repo "$ADOPT_PYTHON_BOUNDARY"
+  set +e
+  bash "$ROOT/bin/touchstone" adopt --dry-run --project "$ADOPT_PYTHON_BOUNDARY" \
+    >"$TMP_DIR/adopt-python-$python_boundary.out" \
+    2>"$TMP_DIR/adopt-python-$python_boundary.err"
+  ADOPTION_STATUS=$?
+  set -e
+  [ "$ADOPTION_STATUS" -eq 4 ] || fail "$python_boundary dependency boundary was accepted"
+  assert_contains "$TMP_DIR/adopt-python-$python_boundary.err" "$expected_python_boundary"
+done
+
 echo "validation engine tests passed"

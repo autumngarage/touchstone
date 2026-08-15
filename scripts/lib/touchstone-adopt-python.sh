@@ -19,8 +19,8 @@ python_has_unverifiable_build_hook() {
       if (normalized_section ~ /^tool[.]hatch[.](build|metadata)[.]hooks([.]|$)/) unsafe=1
       next
     }
-    section == "build-system" && /^[[:space:]]*backend-path[[:space:]]*=/ { unsafe=1 }
-    section == "build-system" && /^[[:space:]]*build-backend[[:space:]]*=/ {
+    normalized_section == "build-system" && /^[[:space:]]*backend-path[[:space:]]*=/ { unsafe=1 }
+    normalized_section == "build-system" && /^[[:space:]]*build-backend[[:space:]]*=/ {
       value = $0
       sub(/^[^=]*=[[:space:]]*/, "", value)
       sub(/[[:space:]]*#.*/, "", value)
@@ -41,6 +41,7 @@ python_poetry_build_system_valid() {
       section = $0
       sub(/^[[:space:]]*\[/, "", section)
       sub(/\][[:space:]]*$/, "", section)
+      gsub(/[[:space:]"\047]/, "", section)
       in_requires = 0
       next
     }
@@ -62,7 +63,7 @@ python_has_remote_reference() {
       line = $0
       sub(/[[:space:]]+#.*/, "", line)
       line = tolower(line)
-      if (line ~ /(https?|ssh|file):/ || line ~ /git\+(https?|ssh):/ ||
+      if (line ~ /[A-Za-z][A-Za-z0-9+.-]*:\/\// ||
           line ~ /(^|[[:space:]"\047=])git@/ ||
           line ~ /(^|[[:space:]])(-f|--find-links|--index-url|--extra-index-url|--trusted-host|-e|--editable|-r|--requirement|-c|--constraint)([=[:space:]]|$)/ ||
           line ~ /@[[:space:]]*(\/|[.][.]?\/)/ || line ~ /^[[:space:]]*(\/|[.][.]?\/)/) found = 1
@@ -72,27 +73,58 @@ python_has_remote_reference() {
     return 0
   fi
   if [ -f "$pyproject" ] && awk '
+    function scan_array(value, position, character, quote, escaped) {
+      quote = ""
+      escaped = 0
+      for (position = 1; position <= length(value); position++) {
+        character = substr(value, position, 1)
+        if (quote != "") {
+          if (quote == "\"" && escaped) { escaped = 0; continue }
+          if (quote == "\"" && character == "\\") { escaped = 1; continue }
+          if (character == quote) quote = ""
+          continue
+        }
+        if (character == "\"" || character == "\047") { quote = character; continue }
+        if (character == "#") break
+        if (character == "[") { dependency_depth++; dependency_started = 1 }
+        if (character == "]") dependency_depth--
+      }
+    }
     function remote(value) {
       value = tolower(value)
-      return value ~ /(https?|ssh|file):/ || value ~ /git\+(https?|ssh):/ ||
-        value ~ /(^|[[:space:]"\047=])git@/ || value ~ /@[[:space:]]*(\/|[.][.]?\/)/
+      return value ~ /[A-Za-z][A-Za-z0-9+.-]*:\/\// ||
+        value ~ /(^|[[:space:]"\047=])git@/ ||
+        value ~ /@[[:space:]]*([A-Za-z][A-Za-z0-9+.-]*:|\/|[.][.]?\/)/ ||
+        value ~ /(^|[, {])(git|url|path)[[:space:]]*=/
     }
     /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
       section = $0
       sub(/^[[:space:]]*\[/, "", section)
       sub(/\][[:space:]]*$/, "", section)
+      gsub(/[[:space:]"\047]/, "", section)
       dependency_value = 0
+      dependency_depth = 0
+      dependency_started = 0
       next
     }
     {
       line = $0
       sub(/[[:space:]]+#.*/, "", line)
-      if (section == "project" && line ~ /^[[:space:]]*dependencies[[:space:]]*=/) dependency_value = 1
-      if (section == "build-system" && line ~ /^[[:space:]]*requires[[:space:]]*=/) dependency_value = 1
-      if (section == "dependency-groups" && line ~ /^[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*=/) dependency_value = 1
+      if (section == "project" && line ~ /^[[:space:]]*dependencies[[:space:]]*=/) {
+        dependency_value = 1; dependency_depth = 0; dependency_started = 0
+      }
+      if (section == "build-system" && line ~ /^[[:space:]]*requires[[:space:]]*=/) {
+        dependency_value = 1; dependency_depth = 0; dependency_started = 0
+      }
+      if (section == "dependency-groups" && line ~ /^[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*=/) {
+        dependency_value = 1; dependency_depth = 0; dependency_started = 0
+      }
       if (section == "tool.poetry.dependencies" || dependency_value) {
         if (remote(line)) found = 1
-        if (dependency_value && line ~ /\]/) dependency_value = 0
+        if (dependency_value) {
+          scan_array(line)
+          if (dependency_started && dependency_depth == 0) dependency_value = 0
+        }
       }
     }
     END { exit !found }
@@ -115,22 +147,52 @@ python_has_environment_marker() {
     return 0
   fi
   if [ -f "$pyproject" ] && awk '
+    function scan_array(value, position, character, quote, escaped) {
+      quote = ""
+      escaped = 0
+      for (position = 1; position <= length(value); position++) {
+        character = substr(value, position, 1)
+        if (quote != "") {
+          if (quote == "\"" && escaped) { escaped = 0; continue }
+          if (quote == "\"" && character == "\\") { escaped = 1; continue }
+          if (character == quote) quote = ""
+          continue
+        }
+        if (character == "\"" || character == "\047") { quote = character; continue }
+        if (character == "#") break
+        if (character == "[") { dependency_depth++; dependency_started = 1 }
+        if (character == "]") dependency_depth--
+      }
+    }
     /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
       section = $0
       sub(/^[[:space:]]*\[/, "", section)
       sub(/\][[:space:]]*$/, "", section)
+      gsub(/[[:space:]"\047]/, "", section)
       dependency_value = 0
+      dependency_depth = 0
+      dependency_started = 0
       next
     }
     {
       line = $0
       sub(/[[:space:]]+#.*/, "", line)
-      if (section == "project" && line ~ /^[[:space:]]*dependencies[[:space:]]*=/) dependency_value = 1
-      if (section == "build-system" && line ~ /^[[:space:]]*requires[[:space:]]*=/) dependency_value = 1
-      if (section == "dependency-groups" && line ~ /^[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*=/) dependency_value = 1
+      if (section == "project" && line ~ /^[[:space:]]*dependencies[[:space:]]*=/) {
+        dependency_value = 1; dependency_depth = 0; dependency_started = 0
+      }
+      if (section == "build-system" && line ~ /^[[:space:]]*requires[[:space:]]*=/) {
+        dependency_value = 1; dependency_depth = 0; dependency_started = 0
+      }
+      if (section == "dependency-groups" && line ~ /^[[:space:]]*[A-Za-z0-9_.-]+[[:space:]]*=/) {
+        dependency_value = 1; dependency_depth = 0; dependency_started = 0
+      }
       if (section == "tool.poetry.dependencies" || dependency_value) {
-        if (line ~ /;/ || line ~ /(^|[^A-Za-z])markers[[:space:]]*=/) found = 1
-        if (dependency_value && line ~ /\]/) dependency_value = 0
+        if (line ~ /;/ || line ~ /(^|[^A-Za-z])markers[[:space:]]*=/ \
+          || line ~ /[,{][[:space:]]*(python|platform)[[:space:]]*=/) found = 1
+        if (dependency_value) {
+          scan_array(line)
+          if (dependency_started && dependency_depth == 0) dependency_value = 0
+        }
       }
     }
     END { exit !found }
@@ -138,6 +200,81 @@ python_has_environment_marker() {
     return 0
   fi
   return 1
+}
+
+python_project_dependencies_valid() {
+  local file="$1"
+  awk '
+    function requirement_valid(value) {
+      return value ~ /^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._-]+([[:space:]]*,[[:space:]]*[A-Za-z0-9._-]+)*\])?([[:space:]]*(===|==|~=|!=|<=|>=|<|>)[[:space:]]*[A-Za-z0-9*+._!-]+([[:space:]]*,[[:space:]]*(===|==|~=|!=|<=|>=|<|>)[[:space:]]*[A-Za-z0-9*+._!-]+)*)?$/
+    }
+    function scan(value, position, character) {
+      for (position = 1; position <= length(value); position++) {
+        character = substr(value, position, 1)
+        if (quote != "") {
+          if (quote == "\"" && escaped) {
+            token = token character
+            escaped = 0
+            continue
+          }
+          if (quote == "\"" && character == "\\") { escaped = 1; continue }
+          if (character == quote) {
+            if (!requirement_valid(token)) invalid = 1
+            quote = ""
+            token = ""
+            continue
+          }
+          token = token character
+          continue
+        }
+        if (comment) continue
+        if (character == "#") { comment = 1; continue }
+        if (character == "\"" || character == "\047") {
+          quote = character
+          token = ""
+          continue
+        }
+        if (character == "[") { depth++; started = 1; continue }
+        if (character == "]") {
+          depth--
+          if (depth < 0) invalid = 1
+          if (started && depth == 0) closed = 1
+          continue
+        }
+        if (closed && character !~ /[[:space:]]/) invalid = 1
+        else if (!closed && character !~ /[[:space:],]/) invalid = 1
+      }
+      comment = 0
+    }
+    /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+      if (in_dependencies) invalid = 1
+      section = $0
+      sub(/^[[:space:]]*\[/, "", section)
+      sub(/\][[:space:]]*$/, "", section)
+      gsub(/[[:space:]"\047]/, "", section)
+      next
+    }
+    !in_dependencies && section == "project" && /^[[:space:]]*dependencies[[:space:]]*=/ {
+      if (dependencies_seen) invalid = 1
+      dependencies_seen = 1
+      in_dependencies = 1
+      depth = 0
+      started = 0
+      closed = 0
+      line = $0
+      sub(/^[^=]*=/, "", line)
+      scan(line)
+      if (closed) in_dependencies = 0
+      next
+    }
+    in_dependencies {
+      scan($0)
+      if (closed) in_dependencies = 0
+    }
+    END {
+      if (invalid || in_dependencies || quote != "" || depth != 0) exit 1
+    }
+  ' "$file" >/dev/null 2>&1
 }
 
 validate_requirements_document() {
@@ -239,6 +376,7 @@ validate_uv_lock() {
       section=$0
       sub(/^[[:space:]]*\[/, "", section)
       sub(/\][[:space:]]*$/, "", section)
+      gsub(/[[:space:]"\047]/, "", section)
       next
     }
     section == "project" && /^[[:space:]]*name[[:space:]]*=/ {
@@ -331,6 +469,7 @@ python_project_has_dependency() {
       section = $0
       sub(/^[[:space:]]*\[/, "", section)
       sub(/\][[:space:]]*$/, "", section)
+      gsub(/[[:space:]"\047]/, "", section)
       in_dependencies = 0
       in_dev = 0
       next
@@ -366,6 +505,7 @@ python_has_uv_dev_group() {
       section = $0
       sub(/^[[:space:]]*\[/, "", section)
       sub(/\][[:space:]]*$/, "", section)
+      gsub(/[[:space:]"\047]/, "", section)
       next
     }
     section == "dependency-groups" && /^[[:space:]]*dev[[:space:]]*=/ { found=1 }
@@ -444,6 +584,10 @@ tasks_for_python() {
   fi
   if python_has_remote_reference "$directory/pyproject.toml" "$directory/requirements.txt"; then
     contract_refusal "Python target '$target' contains a remote direct dependency reference or checkout-external source; use named dependencies from the offline lock source, or pass --task NAME=COMMAND"
+  fi
+  if [ -f "$directory/pyproject.toml" ]; then
+    python_project_dependencies_valid "$directory/pyproject.toml" \
+      || contract_refusal "Python target '$target' has a project dependency outside the supported named-requirement subset; pass --task NAME=COMMAND"
   fi
   if [ -f "$directory/requirements.txt" ]; then
     validate_requirements_document "$directory/requirements.txt"
