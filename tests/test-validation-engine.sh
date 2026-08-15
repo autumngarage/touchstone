@@ -1148,4 +1148,98 @@ mkdir -p "$PLANNER_PATHS"
   safe_owned_path .touchstone/TOUCHSTONE.md
 ) >/dev/null 2>&1 && fail "planner accepted a managed path through a regular file"
 
+echo "==> steering renderer carries universal rules without repository-only claims"
+STEERING_PLAN="$TMP_DIR/steering-plan"
+STEERING_PROJECT="$TMP_DIR/steering-project"
+mkdir -p "$STEERING_PLAN" "$STEERING_PROJECT"
+(
+  SCRIPT_ROOT="$ROOT"
+  PROJECT_ROOT="$(cd "$STEERING_PROJECT" && pwd -P)"
+  PLAN_ROOT="$(cd "$STEERING_PLAN" && pwd -P)"
+  TOUCHSTONE_BLOCK_BEGIN='<!-- touchstone:steering:start -->'
+  TOUCHSTONE_BLOCK_END='<!-- touchstone:steering:end -->'
+  CR="$(printf '\r')"
+  operational_failure() {
+    printf 'failed: %s\n' "$*" >&2
+    exit 6
+  }
+  contract_refusal() {
+    printf 'refused: %s\n' "$*" >&2
+    exit 4
+  }
+  # shellcheck source=scripts/lib/touchstone-adopt-steering.sh
+  source "$ROOT/scripts/lib/touchstone-adopt-steering.sh"
+
+  set +e
+  (render_inline_block "$PLAN_ROOT/missing-steering.md" "$PLAN_ROOT/missing-block.md") \
+    >/dev/null 2>&1
+  missing_steering_status=$?
+  set -e
+  [ "$missing_steering_status" -eq 6 ] || exit 50
+
+  render_consumer_steering "$PLAN_ROOT/consumer.md"
+  for source in "$ROOT"/principles/*.md; do
+    render_consumer_markdown "$source" "$PLAN_ROOT/rendered-$(basename "$source")"
+  done
+  grep -Fq 'A security-review quota notice is never a blocker' "$PLAN_ROOT/consumer.md" || exit 31
+  grep -Fq 'do not post a fourth request on the same' "$PLAN_ROOT/rendered-git-workflow.md" || exit 32
+  grep -Fq -- '-F body=@<file>' "$PLAN_ROOT/rendered-git-workflow.md" || exit 33
+  ! grep -Eq 'scripts/(claim-issue|respond-review|issue-claim-check)\.sh|hooks/branch-guard\.sh|\.github/workflows/|\.pre-commit-config\.yaml' "$PLAN_ROOT/consumer.md" || exit 34
+  ! grep -Rq 'Hard-Won Lessons\|required_conversation_resolution.*is on\|tool-boundary hook catches' "$PLAN_ROOT" || exit 39
+  ! grep -Fq '`.touchstone/principles/`, `hooks/`' \
+    "$PLAN_ROOT/rendered-file-upstream-bugs.md" || exit 54
+
+  render_inline_block "$PLAN_ROOT/consumer.md" "$PLAN_ROOT/block.md"
+  merge_managed_block "$PROJECT_ROOT/AGENTS.md" "$PLAN_ROOT/block.md" "$PLAN_ROOT/fresh.md" 'Agent instructions'
+  cp "$PLAN_ROOT/fresh.md" "$PROJECT_ROOT/AGENTS.md"
+  git -C "$PROJECT_ROOT" init -q -b main
+  git -C "$PROJECT_ROOT" config user.name fixture
+  git -C "$PROJECT_ROOT" config user.email fixture@example.com
+  set +e
+  (require_tracked_steering_file AGENTS.md) >/dev/null 2>&1
+  untracked_steering_status=$?
+  set -e
+  [ "$untracked_steering_status" -eq 4 ] || exit 55
+  git -C "$PROJECT_ROOT" add AGENTS.md
+  git -C "$PROJECT_ROOT" commit -qm fixture
+  merge_managed_block "$PROJECT_ROOT/AGENTS.md" "$PLAN_ROOT/block.md" "$PLAN_ROOT/repeat.md" 'Agent instructions'
+  cmp -s "$PLAN_ROOT/fresh.md" "$PLAN_ROOT/repeat.md" || exit 35
+
+  sed 's/A security-review quota notice is never a blocker/STALE MANAGED RULE/' \
+    "$PROJECT_ROOT/AGENTS.md" >"$PLAN_ROOT/stale.md"
+  printf '\nProject-owned tail.\n' >>"$PLAN_ROOT/stale.md"
+  cp "$PLAN_ROOT/stale.md" "$PROJECT_ROOT/AGENTS.md"
+  merge_managed_block "$PROJECT_ROOT/AGENTS.md" "$PLAN_ROOT/block.md" "$PLAN_ROOT/upgrade.md" 'Agent instructions'
+  grep -Fq 'A security-review quota notice is never a blocker' "$PLAN_ROOT/upgrade.md" || exit 36
+  grep -Fq 'Project-owned tail.' "$PLAN_ROOT/upgrade.md" || exit 37
+  ! grep -Fq 'STALE MANAGED RULE' "$PLAN_ROOT/upgrade.md" || exit 38
+
+  awk -v limit="$CODEX_INSTRUCTION_LIMIT_BYTES" \
+    'BEGIN { for (byte = 0; byte < limit; byte++) printf "x" }' \
+    >"$PROJECT_ROOT/AGENTS.md"
+  set +e
+  (merge_managed_block "$PROJECT_ROOT/AGENTS.md" "$PLAN_ROOT/block.md" \
+    "$PLAN_ROOT/oversized.md" 'Agent instructions') \
+    >"$PLAN_ROOT/oversized.out" 2>"$PLAN_ROOT/oversized.err"
+  oversized_status=$?
+  set -e
+  [ "$oversized_status" -eq 4 ] || exit 43
+  grep -Fq '32768-byte instruction limit' "$PLAN_ROOT/oversized.err" || exit 44
+  grep -Fq 'owners="$(gh issue view <n> --json assignees --jq' \
+    "$PLAN_ROOT/rendered-git-workflow.md" || exit 45
+  grep -Fq '[ -z "$owners" ] || [ "$owners" = "$me" ] || exit 1' \
+    "$PLAN_ROOT/rendered-git-workflow.md" || exit 46
+  grep -Fq 'if [ -z "$owners" ]; then' \
+    "$PLAN_ROOT/rendered-git-workflow.md" || exit 56
+  grep -Fq 'claim_added=true' \
+    "$PLAN_ROOT/rendered-git-workflow.md" || exit 57
+  grep -Fq 'An existing self-assignment' \
+    "$PLAN_ROOT/rendered-git-workflow.md" || exit 58
+  ! grep -Fq -- '-f body=@<file>' "$PLAN_ROOT/rendered-git-workflow.md" || exit 47
+  grep -Fq '7. **Answer every piece of PR feedback before merging.**' \
+    "$PLAN_ROOT/consumer.md" || exit 48
+  ! grep -Fq 'unresolved threads and `CHANGES_REQUESTED` block the merge' \
+    "$PLAN_ROOT/consumer.md" || exit 49
+) || fail "steering renderer lost universal guidance or project-owned content"
+
 echo "validation engine tests passed"
