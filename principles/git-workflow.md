@@ -83,15 +83,18 @@ What the merge gate says right now, in three commands:
 ```bash
 gh pr checks <n>                                          # required checks
 gh pr view <n> --json reviews --jq '.reviews[-1].state'   # latest review state
-gh api graphql -f query='
-  query($owner:String!, $repo:String!, $pr:Int!) {
+gh api graphql --paginate --slurp -f query='
+  query($owner:String!, $repo:String!, $pr:Int!, $endCursor:String) {
     repository(owner:$owner, name:$repo) {
       pullRequest(number:$pr) {
-        reviewThreads(first:100) { nodes { id isResolved } }
+        reviewThreads(first:100, after:$endCursor) {
+          nodes { id isResolved }
+          pageInfo { hasNextPage endCursor }
+        }
       }
     }
   }' -F owner=<owner> -F repo=<repo> -F pr=<n> \
-  --jq '[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)] | length'
+  --jq '[.[].data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved | not)] | length'
 ```
 
 The last one is the count of unresolved threads. Zero is the requirement.
