@@ -89,6 +89,8 @@ parse_string() {
 load_tracker() {
   local config="$PROJECT_ROOT/.touchstone.toml" section="" line key value lineno=0
   TRACKER="github"
+  [ ! -L "$config" ] \
+    || fail_input unsafe-config "Replace the .touchstone.toml symlink with a reviewed regular file in this repository."
   [ -f "$config" ] || fail_input missing-config "Create .touchstone.toml before using the tracker adapter."
 
   while IFS= read -r line || [ -n "$line" ]; do
