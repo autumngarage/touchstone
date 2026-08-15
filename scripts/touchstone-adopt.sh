@@ -780,9 +780,14 @@ managed_block_present() {
 plan_steering() {
   local refresh="$1"
   local consumer="$PLAN_ROOT/consumer-touchstone.md" inline="$PLAN_ROOT/inline-block.md"
-  local claude="$PLAN_ROOT/claude-block.md" proposed file relative rendered_principle
+  local block_consumer claude="$PLAN_ROOT/claude-block.md" proposed file relative rendered_principle
   render_consumer_steering "$consumer"
   plan_managed_file .touchstone/TOUCHSTONE.md "$consumer" "$refresh"
+  block_consumer="$consumer"
+  if [ "$refresh" = false ] && [ -f "$PROJECT_ROOT/.touchstone/TOUCHSTONE.md" ] \
+    && [ ! -L "$PROJECT_ROOT/.touchstone/TOUCHSTONE.md" ]; then
+    block_consumer="$PROJECT_ROOT/.touchstone/TOUCHSTONE.md"
+  fi
   for file in "$SCRIPT_ROOT"/principles/*.md; do
     [ "$(basename "$file")" != README.md ] || continue
     relative=".touchstone/principles/$(basename "$file")"
@@ -790,7 +795,7 @@ plan_steering() {
     render_consumer_markdown "$file" "$rendered_principle"
     plan_managed_file "$relative" "$rendered_principle" "$refresh"
   done
-  render_inline_block "$consumer" "$inline"
+  render_inline_block "$block_consumer" "$inline"
   render_claude_block "$claude"
   for file in AGENTS.md GEMINI.md; do
     if [ "$refresh" = false ] && managed_block_present "$file"; then continue; fi
@@ -816,14 +821,14 @@ render_diff() {
     if [ "$action" = create ]; then
       (
         cd "$PLAN_ROOT"
-        git diff --no-index --no-ext-diff --src-prefix=a/ --dst-prefix=b/ -- /dev/null "new/$path"
+        git diff --no-index --no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/ -- /dev/null "new/$path"
       ) | sed \
         -e 's#^diff --git a/new/\(.*\) b/new/#diff --git a/\1 b/#' \
         -e 's#^+++ b/new/#+++ b/#' >>"$DIFF_FILE"
     else
       (
         cd "$PLAN_ROOT"
-        git diff --no-index --no-ext-diff --src-prefix=a/ --dst-prefix=b/ -- "old/$path" "new/$path"
+        git diff --no-index --no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/ -- "old/$path" "new/$path"
       ) | sed \
         -e 's#^diff --git a/old/\(.*\) b/new/#diff --git a/\1 b/#' \
         -e 's#^--- a/old/#--- a/#' \
@@ -883,14 +888,33 @@ require_tracked_compiler_path() {
     || contract_refusal "adoption compiler input '$path' is not tracked; commit it or remove it before planning"
 }
 
+require_unignored_compiler_output() {
+  local path="$1" status
+  safe_owned_path "$path"
+  if git -C "$PROJECT_ROOT" check-ignore -q -- "$path"; then
+    contract_refusal "adoption compiler input '$path' is not tracked; commit it or remove it before planning"
+  else
+    status=$?
+  fi
+  [ "$status" -eq 1 ] \
+    || operational_failure "could not determine whether adoption output '$path' is ignored"
+}
+
 require_compiler_inputs_tracked() {
-  local directory relative name resolved_directory resolved_relative
+  local directory relative name resolved_directory resolved_relative output
   local -a inputs=(
-    .touchstone.toml .touchstone-config AGENTS.md CLAUDE.md GEMINI.md TOUCHSTONE.md
+    .touchstone-config
     package.json package-lock.json npm-shrinkwrap.json pnpm-lock.yaml pnpm-workspace.yaml yarn.lock .yarnrc.yml bun.lock bun.lockb tsconfig.json
     pyproject.toml setup.py setup.cfg uv.lock requirements.txt Package.swift Package.resolved Cargo.toml Cargo.lock go.mod go.sum go.work go.work.sum
   )
   for name in "${inputs[@]}"; do require_tracked_compiler_input "$name"; done
+  for output in .touchstone.toml AGENTS.md CLAUDE.md GEMINI.md .touchstone/TOUCHSTONE.md; do
+    require_unignored_compiler_output "$output"
+  done
+  for output in "$SCRIPT_ROOT"/principles/*.md; do
+    [ "$(basename "$output")" != README.md ] || continue
+    require_unignored_compiler_output ".touchstone/principles/$(basename "$output")"
+  done
   for directory in apps packages services; do
     [ -d "$PROJECT_ROOT/$directory" ] || continue
     for relative in "$PROJECT_ROOT/$directory"/*; do
@@ -914,13 +938,6 @@ require_compiler_inputs_tracked() {
       for name in "${inputs[@]}"; do require_tracked_compiler_input "$relative/$name"; done
     done
   done
-  if [ -d "$PROJECT_ROOT/.touchstone" ]; then
-    while IFS= read -r relative; do
-      [ -n "$relative" ] || continue
-      relative="${relative#"$PROJECT_ROOT"/}"
-      require_tracked_compiler_input "$relative"
-    done < <(find "$PROJECT_ROOT/.touchstone" -type f -print)
-  fi
 }
 
 compile_plan() {

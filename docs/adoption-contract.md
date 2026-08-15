@@ -72,6 +72,11 @@ legacy validation commands may seed the new declaration, but retiring the old
 file remains a separate reviewed action with its own recovery plan. Repeating
 an accepted apply produces no second diff.
 
+Repository facts that decide generated commands or setup must be tracked.
+Touchstone-managed outputs are exempt from that input rule so an immediate
+second plan after apply can report `current` before the user stages the new
+files. Any apply that still has changes retains the clean-worktree guard.
+
 Schema-v1 upgrade is intentionally conservative. A newer v1 CLI validates and
 preserves an older valid v1 declaration; upgrade may refresh the marked
 steering sources, but no v1 preset or catalog change forces repository
