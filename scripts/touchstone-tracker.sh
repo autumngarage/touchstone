@@ -219,7 +219,7 @@ same_repo_github_closers() {
   while IFS= read -r match; do
     normalized="$(printf '%s' "$match" | tr '[:upper:]' '[:lower:]')"
     target="$(printf '%s' "$normalized" | sed -nE 's,^(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved|closes-issue):?[[:space:]]*([[:alnum:]_.-]+/[[:alnum:]_.-]+)#[0-9]+$,\2,p')"
-    if [ -z "$target" ] || [ -z "$CURRENT_REPO" ] || [ "$target" = "$CURRENT_REPO" ]; then
+    if [ -z "$target" ] || { [ -n "$CURRENT_REPO" ] && [ "$target" = "$CURRENT_REPO" ]; }; then
       printf '%s\n' "$match"
     fi
   done <<<"$matches"
@@ -235,10 +235,6 @@ validate_body() {
     [ -z "$wrong" ] || fail_input wrong-tracker-closing-syntax "Replace '$wrong' with 'Fixes $REFERENCE'; qualify cross-repository GitHub closes as owner/repo#N."
     expected="Fixes $REFERENCE"
   else
-    if grep -Eqi '\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?[[:space:]]*[A-Za-z][A-Za-z0-9]*-[0-9]+\b' <<<"$text"; then
-      wrong="$(grep -Eio '\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved):?[[:space:]]*[A-Za-z][A-Za-z0-9]*-[0-9]+\b' <<<"$text" | sed -n '1p')"
-      fail_input wrong-tracker-closing-syntax "Replace '$wrong' with 'Closes $REFERENCE'."
-    fi
     expected="Closes $REFERENCE"
   fi
   if [ "$DISPOSITION" = fixed ] && ! grep -Eqi "(^|[[:space:]])${expected// /[[:space:]]+}([[:space:]]|[.,;:!?)]|$)" <<<"$text"; then
