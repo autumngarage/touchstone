@@ -886,6 +886,32 @@ assert_contains "$TMP_DIR/adopt-manual-preserved.json" 'OLD COMPATIBLE STEERING'
 assert_not_contains "$TMP_DIR/adopt-manual-preserved.json" \
   'Humans approve plans. Agents write and ship code. GitHub reviews code.'
 
+ADOPT_HIDDEN_UNTRACKED="$TMP_DIR/adopt-hidden-untracked"
+mkdir -p "$ADOPT_HIDDEN_UNTRACKED"
+git -C "$ADOPT_HIDDEN_UNTRACKED" init -q -b main
+git -C "$ADOPT_HIDDEN_UNTRACKED" config user.name fixture
+git -C "$ADOPT_HIDDEN_UNTRACKED" config user.email fixture@example.com
+printf '%s\n' '# fixture' >"$ADOPT_HIDDEN_UNTRACKED/README.md"
+git -C "$ADOPT_HIDDEN_UNTRACKED" add README.md
+git -C "$ADOPT_HIDDEN_UNTRACKED" commit -qm fixture
+git -C "$ADOPT_HIDDEN_UNTRACKED" update-ref refs/remotes/origin/main HEAD
+git -C "$ADOPT_HIDDEN_UNTRACKED" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+git -C "$ADOPT_HIDDEN_UNTRACKED" switch -q -c feat/adopt
+printf '%s\n' 'must survive' >"$ADOPT_HIDDEN_UNTRACKED/untracked.txt"
+set +e
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=status.showUntrackedFiles GIT_CONFIG_VALUE_0=no \
+  bash "$ROOT/bin/touchstone" adopt --project "$ADOPT_HIDDEN_UNTRACKED" \
+  --task 'verify=true' >"$TMP_DIR/adopt-hidden-untracked.out" \
+  2>"$TMP_DIR/adopt-hidden-untracked.err"
+ADOPTION_STATUS=$?
+set -e
+[ "$ADOPTION_STATUS" -eq 5 ] || fail "ambient status config hid an untracked apply input"
+assert_contains "$TMP_DIR/adopt-hidden-untracked.err" 'apply requires a clean worktree'
+[ ! -e "$ADOPT_HIDDEN_UNTRACKED/.touchstone.toml" ] \
+  || fail "hidden untracked apply partially wrote the project"
+[ "$(cat "$ADOPT_HIDDEN_UNTRACKED/untracked.txt")" = 'must survive' ] \
+  || fail "hidden untracked apply changed project-owned data"
+
 ADOPT_IGNORED_OUTPUT="$TMP_DIR/adopt-ignored-output"
 mkdir -p "$ADOPT_IGNORED_OUTPUT"
 git -C "$ADOPT_IGNORED_OUTPUT" init -q

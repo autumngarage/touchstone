@@ -18,7 +18,7 @@ apply_plan() {
   local expected_hash expected_mode current_hash current_mode
   local stage_file="$APPLY_STAGE_FILE" applied_file="$APPLY_APPLIED_FILE" directories_file="$APPLY_DIRECTORIES_FILE"
   [ -s "$CHANGES_FILE" ] || return 0
-  worktree_status="$(git -C "$PROJECT_ROOT" status --porcelain=v1)" \
+  worktree_status="$(git -C "$PROJECT_ROOT" status --porcelain=v1 --untracked-files=all)" \
     || operational_failure "could not inspect worktree state"
   [ -z "$worktree_status" ] || safety_refusal "apply requires a clean worktree"
   if current_branch_is_default; then
