@@ -60,6 +60,12 @@ run_capture "$CONTRACT_ONLY" "$TMP_DIR/contract-only.out" --check-contract
 assert_contains "$TMP_DIR/contract-only.out" "schema-v1 contract is valid"
 [ ! -e "$CONTRACT_ONLY/setup-ran" ] || fail "contract check executed setup"
 [ ! -e "$CONTRACT_ONLY/command-ran" ] || fail "contract check executed a task"
+run_capture "$CONTRACT_ONLY" "$TMP_DIR/contract-only-json.out" --check-contract --json
+[ "$RUN_STATUS" -eq 0 ] || fail "JSON contract-only validation failed"
+[ "$(cat "$TMP_DIR/contract-only-json.out")" = '{"schema":1,"verdict":"valid"}' ] \
+  || fail "contract-only JSON payload changed"
+[ ! -e "$CONTRACT_ONLY/setup-ran" ] || fail "JSON contract check executed setup"
+[ ! -e "$CONTRACT_ONLY/command-ran" ] || fail "JSON contract check executed a task"
 
 echo "==> optional undeclared task skips visibly"
 cat >>"$SMALL/.touchstone.toml" <<'EOF'
